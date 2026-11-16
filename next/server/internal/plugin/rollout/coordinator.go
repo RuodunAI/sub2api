@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -396,8 +397,8 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 // (plugin_migrations belongs to store's migration runner, so it has no
 // model here).
 func recordDataMigration(g *gorm.DB, key, id string) *gorm.DB {
-	return g.Exec(`INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES (?, ?, 'data')
-		ON CONFLICT DO NOTHING`, key, id)
+	return g.Table("plugin_migrations").Clauses(clause.OnConflict{DoNothing: true}).
+		Create(map[string]any{"plugin_key": key, "migration_id": id, "checksum": "data"})
 }
 
 // commit is the commit point: preparing -> activating.

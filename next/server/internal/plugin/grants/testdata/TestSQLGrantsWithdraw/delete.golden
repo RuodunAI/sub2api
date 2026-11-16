@@ -1,9 +1,5 @@
 -- sql
-WITH gone AS (DELETE FROM plugin_staged_grants WHERE plugin_key = $1 AND version = $2 RETURNING *),
-		kept AS (INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)
-			SELECT plugin_key, permission, scope, status, version, manifest_hash, granted_by, granted_at FROM gone WHERE status = 'revoked'
-			ON CONFLICT (plugin_key, permission) DO NOTHING)
-		SELECT count(*), COALESCE(array_agg(permission ORDER BY permission) FILTER (WHERE status = 'granted'), '{}') FROM gone
+DELETE FROM "plugin_staged_grants" WHERE plugin_key = $1 AND version = $2 RETURNING *
 -- vars
 $1 string "demo"
 $2 string "1.2.0"

@@ -282,9 +282,8 @@ func setPublisherPluginsReason(db *gorm.DB, pubID int64, reason string) *gorm.DB
 // runningSignedBy selects the keys of the running plugins whose active or
 // desired version key keyID signed.
 func runningSignedBy(db *gorm.DB, keyID string) *gorm.DB {
-	return db.Raw(`
-			SELECT p.key FROM plugins p
-			WHERE p.status IN ('enabled', 'enabling', 'upgrading')
-			  AND EXISTS (SELECT 1 FROM plugin_versions v WHERE v.plugin_key = p.key AND v.key_id = ?
-			              AND (v.version = p.active_version OR v.version = p.desired_version))`, keyID)
+	signed := db.Table("plugin_versions AS v").Select("1").
+		Where("v.plugin_key = p.key AND v.key_id = ? AND (v.version = p.active_version OR v.version = p.desired_version)", keyID)
+	return db.Table("plugins AS p").Select("p.key").
+		Where("p.status IN ('enabled', 'enabling', 'upgrading') AND EXISTS (?)", signed)
 }

@@ -12,6 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // ReadVersionAsset serves approved versioned assets for as long as the plugin
@@ -68,8 +69,10 @@ func (s *Packages) ReadVersionAsset(ctx context.Context, key, vh, name string) (
 // servedVersion reads the version, package sha256 and package URL of the
 // version of key whose version hash is vh, if its assets may be served.
 func servedVersion(db *gorm.DB, key, vh string) *gorm.DB {
-	return db.Raw(`SELECT v.version,v.package_sha256,v.package_url FROM plugin_versions v JOIN plugins p ON p.key=v.plugin_key
-		WHERE p.key=? AND v.version || '-' || left(v.package_sha256,8)=?
-		AND p.status IN ('enabled','enabling','upgrading') AND v.consent_status='approved' AND v.signature_status<>'revoked'
-		AND NOT EXISTS(SELECT 1 FROM plugin_uninstalls u WHERE u.plugin_key=p.key)`, key, vh)
+	uninstalling := db.Model(&model.PluginUninstall{}).Select("1").Where("plugin_uninstalls.plugin_key = p.key")
+	return db.Table("plugin_versions AS v").Select("v.version, v.package_sha256, v.package_url").
+		Joins("JOIN plugins p ON p.key = v.plugin_key").
+		Where("p.key = ? AND v.version || '-' || left(v.package_sha256, 8) = ?", key, vh).
+		Where("p.status IN ('enabled', 'enabling', 'upgrading') AND v.consent_status = 'approved' AND v.signature_status <> 'revoked'").
+		Where("NOT EXISTS (?)", uninstalling)
 }

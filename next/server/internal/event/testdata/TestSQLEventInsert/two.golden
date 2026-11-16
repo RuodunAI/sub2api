@@ -1,6 +1,7 @@
 -- sql
-INSERT INTO events (type, payload)
-	SELECT t, p FROM unnest($1::varchar[], $2::jsonb[]) WITH ORDINALITY AS e(t, p, o) ORDER BY o
+INSERT INTO "events" ("payload","type") VALUES ($1,$2),($3,$4)
 -- vars
-$1 store.Strings [balance.changed user.updated]
-$2 gormpg.Array[github.com/Sub2API-Devs/sup2api/next/server/internal/store.Bytes] [{"user_id":7} {}]
+$1 []uint8 [123 34 117 115 101 114 95 105 100 34 58 55 125]
+$2 string "balance.changed"
+$3 []uint8 [123 125]
+$4 string "user.updated"

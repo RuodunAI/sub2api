@@ -1,5 +1,0 @@
--- sql
-SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE plugin_key=$1 AND version=$2 AND consent_status='approved')
--- vars
-$1 string "openai"
-$2 string "1.2.0"

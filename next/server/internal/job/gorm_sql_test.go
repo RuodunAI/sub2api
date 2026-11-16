@@ -13,12 +13,12 @@ import (
 
 // The SQL snapshots of the job statements (see package gormtest).
 
-// The slot claim repeats key, job and slot: once for the row, once for the
-// NOT EXISTS check.
+// The slot claim leaves a taken slot (the partial slot index) as it is.
 func TestSQLClaimSlot(t *testing.T) {
-	slot := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return claimSlot(tx, "demo", "sync", "node-a", core.TaskCluster, slot)
+	run := core.TaskRun{ScheduledAt: time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)}
+	gormtest.AssertRun(t, func(tx *gorm.DB) error {
+		_, err := insertRunRow(tx, "demo", "sync", "node-a", core.TaskCluster, run, true)
+		return err
 	})
 }
 

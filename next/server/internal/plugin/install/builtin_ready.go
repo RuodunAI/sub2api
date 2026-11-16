@@ -12,6 +12,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // BuiltinRequirement is immutable image metadata, read once at startup.
@@ -119,9 +120,12 @@ func (s *Service) builtinsReady(ctx context.Context, want map[string]BuiltinRequ
 // builtinState selects the status and active version of built-in plugin key
 // and whether its versions need, active and local are approved.
 func builtinState(db *gorm.DB, key, need, local string) *gorm.DB {
-	return db.Raw(`SELECT status,active_version,EXISTS(SELECT 1 FROM plugin_versions v
-			WHERE v.plugin_key=plugins.key AND v.version=? AND consent_status='approved'),
-			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=plugins.active_version AND consent_status='approved'),
-			EXISTS(SELECT 1 FROM plugin_versions v WHERE v.plugin_key=plugins.key AND v.version=? AND consent_status='approved')
-			FROM plugins WHERE key=? AND builtin`, need, local, key)
+	approved := func(version any) *gorm.DB {
+		return db.Table("plugin_versions AS v").Select("1").
+			Where("v.plugin_key = plugins.key AND v.version = ? AND v.consent_status = 'approved'", version)
+	}
+	return db.Model(&model.Plugin{}).
+		Select("status, active_version, EXISTS (?), EXISTS (?), EXISTS (?)",
+			approved(need), approved(gorm.Expr("plugins.active_version")), approved(local)).
+		Where("key = ? AND builtin", key)
 }

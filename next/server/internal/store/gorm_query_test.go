@@ -135,3 +135,21 @@ func TestBoolsOnTheServer(t *testing.T) {
 	require.NoError(t, g.Raw(`SELECT ?::boolean[]`, store.Bools{true, false}).Row().Scan(&flags))
 	assert.Equal(t, []bool{true, false}, flags)
 }
+
+// DDL writes names and literals quoted: a name and a comment holding quotes,
+// a backslash and a placeholder come back as they were written.
+func TestDDLQuotes(t *testing.T) {
+	db, _ := widgetDB(t)
+	ctx := context.Background()
+	const name, note = `odd "name"`, `it's a \ ? @x`
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
+		require.NoError(t, store.DDL(g, `CREATE TEMP TABLE %s (id int)`, store.Ident(name)))
+		require.NoError(t, store.DDL(g, `COMMENT ON TABLE %s IS %s`, store.Ident(name), store.Literal(note)))
+		var got string
+		require.NoError(t, g.Raw(`SELECT obj_description(to_regclass(?), 'pg_class')`, store.QuoteIdent(name)).Row().Scan(&got))
+		assert.Equal(t, note, got)
+		return nil
+	})
+	require.NoError(t, err)
+}

@@ -1,16 +1,10 @@
 -- sql
-INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
-		SELECT $1::varchar, $2::varchar, $3::varchar, $4::timestamptz, now(), $5::varchar, false, $6
-		WHERE NOT EXISTS (SELECT 1 FROM plugin_job_runs
-			WHERE plugin_key = $7 AND job_id = $8 AND scheduled_at = $9 AND NOT manual)
-		RETURNING id
+INSERT INTO "plugin_job_runs" ("job_id","manual","node_id","plugin_key","scheduled_at","scope","started_at","status") VALUES ($1,$2,$3,$4,$5,$6,now(),$7) ON CONFLICT ("plugin_key","job_id","scheduled_at")  WHERE NOT manual DO NOTHING RETURNING "id"
 -- vars
-$1 string "demo"
-$2 string "sync"
+$1 string "sync"
+$2 bool false
 $3 string "node-a"
-$4 time.Time 2026-11-15 08:00:00 +0000 UTC
-$5 string "running"
+$4 string "demo"
+$5 time.Time 2026-11-15 08:00:00 +0000 UTC
 $6 string "cluster"
-$7 string "demo"
-$8 string "sync"
-$9 time.Time 2026-11-15 08:00:00 +0000 UTC
+$7 string "running"

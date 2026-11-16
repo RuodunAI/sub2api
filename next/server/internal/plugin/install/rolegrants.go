@@ -2,7 +2,6 @@ package install
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -15,6 +14,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // Role grants of a consent (DECISIONS "插件升级授权" C, D2, D3): the
@@ -513,37 +513,42 @@ type pendingRoleGrantRow struct {
 }
 
 // pendingRoleGrants selects the role grants of key withheld for review and
-// not cleared since (PendingRoleGrants), of version ("" for every version).
-// The parameters are named: key and version appear twice each.
+// not cleared since (PendingRoleGrants), of version ("" for every version):
+// the pending grants of each listing audit row (g), unless a later row
+// cleared its version or rejected that grant, and only of roles that are
+// not super admins.
 func pendingRoleGrants(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`
-SELECT a.detail->>'version' AS version, g->>'permission' AS permission, g->>'role' AS role,
-       COALESCE(g->>'scope', '') AS scope, COALESCE(g->>'via', '') AS via,
-       COALESCE((g->>'needs_consent')::boolean, true) AS needs_consent
-FROM audit_logs a CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g
-WHERE a.action = ANY(@listed) AND a.target_type = 'plugin' AND a.target_id = @key
-  AND jsonb_typeof(a.detail->'pending') = 'array'
-  AND a.created_at >= (SELECT installed_at FROM plugins WHERE key = @key)
-  AND (@version = '' OR a.detail->>'version' = @version)
-  AND NOT EXISTS (SELECT 1 FROM audit_logs b WHERE b.target_type = 'plugin' AND b.target_id = a.target_id
-      AND b.action = ANY(@cleared) AND b.id > a.id
-      AND (b.detail->>'version' = a.detail->>'version'
-        OR (b.action = @reject AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))))
-  AND EXISTS (SELECT 1 FROM roles r WHERE r.key = g->>'role' AND NOT r.superuser)
-ORDER BY a.id, 2, 3, 4`,
-		sql.Named("key", key), sql.Named("version", version),
-		sql.Named("listed", store.Strings{AuditConsentAuto, AuditConsent, AuditRoleGrantsCarry}),
-		sql.Named("cleared", store.Strings{AuditRoleGrantsConfirm, AuditRoleGrantsReject}),
-		sql.Named("reject", AuditRoleGrantsReject))
+	cleared := db.Table("audit_logs AS b").Select("1").
+		Where("b.target_type = 'plugin' AND b.target_id = a.target_id AND b.action = ANY(?) AND b.id > a.id",
+			store.Strings{AuditRoleGrantsConfirm, AuditRoleGrantsReject}).
+		Where(`b.detail->>'version' = a.detail->>'version'
+			OR (b.action = ? AND b.detail->'grants' @> jsonb_build_array(jsonb_build_object('permission', g->>'permission', 'role', g->>'role')))`,
+			AuditRoleGrantsReject)
+	q := db.Table("audit_logs AS a").
+		Select(`a.detail->>'version' AS version, g->>'permission' AS permission, g->>'role' AS role,
+			COALESCE(g->>'scope', '') AS scope, COALESCE(g->>'via', '') AS via,
+			COALESCE((g->>'needs_consent')::boolean, true) AS needs_consent`).
+		Joins("CROSS JOIN LATERAL jsonb_array_elements(a.detail->'pending') g").
+		Where("a.action = ANY(?) AND a.target_type = 'plugin' AND a.target_id = ?",
+			store.Strings{AuditConsentAuto, AuditConsent, AuditRoleGrantsCarry}, key).
+		Where("jsonb_typeof(a.detail->'pending') = 'array'").
+		Where("a.created_at >= (?)", db.Model(&model.Plugin{}).Select("installed_at").Where("key = ?", key)).
+		Where("NOT EXISTS (?)", cleared).
+		Where("EXISTS (?)", db.Model(&model.Role{}).Select("1").Where("roles.key = g->>'role' AND NOT roles.superuser")).
+		Order("a.id, 2, 3, 4")
+	if version != "" {
+		q = q.Where("a.detail->>'version' = ?", version)
+	}
+	return q
 }
 
 // latestConsentDecisions selects the override keys and the role_grants plan
 // of the latest consent of key@version.
 func latestConsentDecisions(db *gorm.DB, key, version string) *gorm.DB {
-	return db.Raw(`
-SELECT COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
-           THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
-       COALESCE(a.detail->'role_grants', '[]')
-FROM audit_logs a WHERE a.action = ? AND a.target_type = 'plugin' AND a.target_id = ? AND a.detail->>'version' = ?
-ORDER BY a.id DESC LIMIT 1`, AuditConsent, key, version)
+	return db.Table("audit_logs AS a").
+		Select(`COALESCE((SELECT array_agg(k) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(a.detail->'new_permission_roles') = 'object'
+				THEN a.detail->'new_permission_roles' ELSE '{}' END) k), '{}'),
+			COALESCE(a.detail->'role_grants', '[]')`).
+		Where("a.action = ? AND a.target_type = 'plugin' AND a.target_id = ? AND a.detail->>'version' = ?", AuditConsent, key, version).
+		Order("a.id DESC").Limit(1)
 }

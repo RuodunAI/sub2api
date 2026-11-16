@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -39,10 +40,15 @@ func retireKey(ctx context.Context, tx *gorm.DB, key string, actorID int64) erro
 
 // retire is the statement of retireKey.
 func retire(db *gorm.DB, key string, actorID int64) *gorm.DB {
-	return db.Exec(`INSERT INTO plugin_key_retirements (plugin_key, publisher_id, retired_by)
-		SELECT key, publisher_id, ? FROM plugins WHERE key = ?
-		ON CONFLICT (plugin_key) DO UPDATE SET publisher_id = EXCLUDED.publisher_id, retired_at = now(), retired_by = EXCLUDED.retired_by`,
-		nullID(actorID), key)
+	return db.Table(model.PluginKeyRetirement{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "plugin_key"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"publisher_id", "retired_by"}),
+			clause.Assignment{Column: clause.Column{Name: "retired_at"}, Value: gorm.Expr("now()")}),
+	}).Create(map[string]any{
+		"plugin_key":   key,
+		"publisher_id": gorm.Expr("(?)", db.Model(&model.Plugin{}).Select("publisher_id").Where("key = ?", key)),
+		"retired_by":   nullID(actorID),
+	})
 }
 
 // retirement is the plugin_key_retirements row of key.
@@ -115,13 +121,13 @@ type retiredKeyRow struct {
 // retiredKeys selects the retired keys with what each plugin left, newest
 // first.
 func retiredKeys(db *gorm.DB) *gorm.DB {
-	return db.Raw(`
-		SELECT r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at,
-		  EXISTS (SELECT 1 FROM plugins p WHERE p.key = r.plugin_key) AS installed,
-		  (SELECT count(*) FROM accounts a WHERE a.plugin_key = r.plugin_key AND a.deleted_at IS NULL) AS accounts,
-		  EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname = 'plg_' || r.plugin_key) AS schema
-		FROM plugin_key_retirements r LEFT JOIN publishers pub ON pub.id = r.publisher_id
-		ORDER BY r.retired_at DESC`)
+	return db.Table("plugin_key_retirements AS r").
+		Select("r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (?) AS installed, (?) AS accounts, EXISTS (?) AS schema",
+			db.Table("plugins AS p").Select("1").Where("p.key = r.plugin_key"),
+			db.Table("accounts AS a").Select("count(*)").Where("a.plugin_key = r.plugin_key AND a.deleted_at IS NULL"),
+			db.Table("pg_namespace AS n").Select("1").Where("n.nspname = 'plg_' || r.plugin_key")).
+		Joins("LEFT JOIN publishers pub ON pub.id = r.publisher_id").
+		Order("r.retired_at DESC")
 }
 
 // ReleaseOptions select what a release deletes besides the retirement.

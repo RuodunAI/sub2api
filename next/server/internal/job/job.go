@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -519,19 +520,12 @@ func (b *Bridge) writeManifestRows(ctx context.Context, gen core.Generation, plu
 }
 
 // upsertManifestTask records the plugin_manifest row of t; a runtime task
-// of the same name keeps its row. Raw SQL: the conflict branch only
-// overwrites a row of the same source (ON CONFLICT ... DO UPDATE ... WHERE),
-// and VALUES and the branch set seen_at, and the branch updated_at, to
-// now(), which a model's time.Time cannot carry; the clause.OnConflict tree
-// of EXCLUDED columns and expressions would only restate this statement.
+// of the same name keeps its row.
 func upsertManifestTask(g *gorm.DB, t *task.Task, version string) *gorm.DB {
-	return g.Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, now())
-		ON CONFLICT (name) DO UPDATE SET plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
-			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
-			seen_at = now(), updated_at = now()
-		WHERE scheduled_tasks.source = EXCLUDED.source`,
-		t.Name, string(task.SourcePluginManifest), t.PluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), version)
+	return task.UpsertRow(g, map[string]any{"name": t.Name, "source": string(task.SourcePluginManifest), "plugin_key": t.PluginKey,
+		"schedule": t.ScheduleText, "timeout_ms": t.Timeout.Milliseconds(), "max_attempts": t.Attempts(), "seen_version": version},
+		[]string{"plugin_key", "schedule", "timeout_ms", "max_attempts", "seen_version"},
+		clause.Expr{SQL: "scheduled_tasks.source = EXCLUDED.source"})
 }
 
 // manifestFor returns the manifest of a plugin version: the generation's
@@ -825,37 +819,39 @@ var errSlotTaken = errors.New("jobs: slot already ran")
 // insertRun records the start of a run. A scheduled cluster run claims its
 // slot: errSlotTaken when the slot already has a run.
 func (b *Bridge) insertRun(ctx context.Context, key, jobID string, scope core.TaskScope, run core.TaskRun) (int64, error) {
-	// Raw SQL: started_at is the database's now(), which a model's time.Time
-	// cannot carry (store stamps only created_at and updated_at).
-	// Row().Scan keeps the no-row answer of a taken slot (claimSlot).
-	var id int64
-	g := store.G(ctx, b.db.Gorm)
-	if scope == core.TaskCluster && !run.Manual {
-		err := claimSlot(g, key, jobID, b.nodeID, scope, run.ScheduledAt).Row().Scan(&id)
-		if store.IsNoRows(err) || store.IsUniqueViolation(err, slotUniqueIndex) {
-			return 0, errSlotTaken
-		}
-		return id, err
-	}
-	err := g.Raw(`INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
-		VALUES (?, ?, ?, ?, now(), ?, ?, ?) RETURNING id`,
-		key, jobID, b.nodeID, run.ScheduledAt, StatusRunning, run.Manual, string(scope)).Row().Scan(&id)
+	claim := scope == core.TaskCluster && !run.Manual
+	id, err := insertRunRow(store.G(ctx, b.db.Gorm), key, jobID, b.nodeID, scope, run, claim)
 	if store.IsUniqueViolation(err, slotUniqueIndex) {
 		// Two nodes started the same node job in the same microsecond: the
 		// run goes ahead without a row of its own.
 		return 0, nil
 	}
+	if claim && err == nil && id == 0 {
+		return 0, errSlotTaken
+	}
 	return id, err
 }
 
-// claimSlot inserts the running row of a scheduled run unless its slot
-// already has one, and returns its id (no row when the slot is taken).
-func claimSlot(g *gorm.DB, key, jobID, nodeID string, scope core.TaskScope, slot time.Time) *gorm.DB {
-	return g.Raw(`INSERT INTO plugin_job_runs (plugin_key, job_id, node_id, scheduled_at, started_at, status, manual, scope)
-		SELECT ?::varchar, ?::varchar, ?::varchar, ?::timestamptz, now(), ?::varchar, false, ?
-		WHERE NOT EXISTS (SELECT 1 FROM plugin_job_runs
-			WHERE plugin_key = ? AND job_id = ? AND scheduled_at = ? AND NOT manual)
-		RETURNING id`, key, jobID, nodeID, slot, StatusRunning, string(scope), key, jobID, slot)
+// insertRunRow inserts the running row of a run and returns its id. With
+// claim, a scheduled run's slot that already has a run (the slot index)
+// keeps it and the id is 0. started_at is the database's now(), which a
+// model's time.Time cannot carry, so the row is a column map.
+func insertRunRow(g *gorm.DB, key, jobID, nodeID string, scope core.TaskScope, run core.TaskRun, claim bool) (int64, error) {
+	row := map[string]any{"plugin_key": key, "job_id": jobID, "node_id": nodeID, "scheduled_at": run.ScheduledAt,
+		"started_at": gorm.Expr("now()"), "status": StatusRunning, "manual": run.Manual, "scope": string(scope)}
+	q := g.Table(model.PluginJobRun{}.TableName()).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}})
+	if claim {
+		q = q.Clauses(clause.OnConflict{
+			Columns:     []clause.Column{{Name: "plugin_key"}, {Name: "job_id"}, {Name: "scheduled_at"}},
+			TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "NOT manual"}}},
+			DoNothing:   true,
+		})
+	}
+	if err := q.Create(row).Error; err != nil {
+		return 0, err
+	}
+	id, _ := row["id"].(int64)
+	return id, nil
 }
 
 func (b *Bridge) finishRun(id int64, status, msg string) {

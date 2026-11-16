@@ -57,21 +57,15 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 // the shared lock: this preflight alone does not authorize a plugin change.
 func CoreUpdateBusy(ctx context.Context, q *gorm.DB) (bool, error) {
 	db := store.G(ctx, q)
-	var installed, busy bool
-	if err := updaterInstalled(db, &installed).Error; err != nil || !installed {
+	// The managed shell's updater schema is not part of the core schema.
+	installed, err := store.RelationExists(db, "updater.upgrades")
+	if err != nil || !installed {
 		return false, err
 	}
-	err := upgradeActive(db, &busy).Error
-	return busy, err
+	return store.Exists(db, upgradeActive(db))
 }
 
-// updaterInstalled reads into installed whether the managed shell's
-// updater schema is there; the table is not part of the core schema.
-func updaterInstalled(db *gorm.DB, installed *bool) *gorm.DB {
-	return db.Raw(`SELECT to_regclass('updater.upgrades') IS NOT NULL`).Scan(installed)
-}
-
-// upgradeActive reads into busy whether a core update is running or paused.
-func upgradeActive(db *gorm.DB, busy *bool) *gorm.DB {
-	return db.Raw(`SELECT EXISTS(SELECT 1 FROM updater.upgrades WHERE status IN ('running','paused'))`).Scan(busy)
+// upgradeActive selects the core updates running or paused.
+func upgradeActive(db *gorm.DB) *gorm.DB {
+	return db.Table("updater.upgrades").Where("status IN ('running', 'paused')")
 }

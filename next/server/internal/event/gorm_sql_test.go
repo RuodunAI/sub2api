@@ -5,20 +5,19 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
 // The SQL of the outbox insert built with GORM (see package gormtest): one
-// event binds its values, more go as two arrays in one text for any count.
+// INSERT, its rows in the batch order, nothing read back.
 func TestSQLEventInsert(t *testing.T) {
+	one := map[string]any{"type": "balance.changed", "payload": []byte(`{"user_id":7}`)}
 	t.Run("one", func(t *testing.T) {
-		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return insertEvent(db, "balance.changed", []byte(`{"user_id":7}`)) })
+		gormtest.AssertRun(t, func(db *gorm.DB) error { return insertEvents(db, []map[string]any{one}) })
 	})
 	t.Run("two", func(t *testing.T) {
-		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-			return insertEvents(db, store.Strings{"balance.changed", "user.updated"},
-				store.Array[store.Bytes]{store.Bytes(`{"user_id":7}`), store.Bytes(`{}`)})
+		gormtest.AssertRun(t, func(db *gorm.DB) error {
+			return insertEvents(db, []map[string]any{one, {"type": "user.updated", "payload": []byte(`{}`)}})
 		})
 	})
 }

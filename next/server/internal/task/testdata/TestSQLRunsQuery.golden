@@ -1,20 +1,14 @@
 -- sql
 SELECT id, st, scheduled_at, attempted_at, finalized_at, attempt, max_attempts,
-			COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by
-		FROM (SELECT j.*, CASE j.state
+		COALESCE((args->>'manual')::boolean, false), metadata->'output', errors, attempted_by FROM (SELECT j.*, CASE j.state
 	WHEN 'running' THEN 'running'
 	WHEN 'available' THEN 'queued' WHEN 'scheduled' THEN 'queued' WHEN 'pending' THEN 'queued'
 	WHEN 'retryable' THEN 'retrying'
 	WHEN 'cancelled' THEN 'cancelled'
 	ELSE COALESCE(j.metadata->'output'->>'status', CASE j.state WHEN 'completed' THEN 'succeeded' ELSE 'failed' END)
-	END AS st FROM river_job j
-			WHERE j.kind = 'sup2api.task' AND j.args->>'name' = $1 AND ($2 = 0 OR j.id < $3) ORDER BY j.id DESC) x
-		WHERE cardinality($4::text[]) = 0 OR st = ANY($5)
-		ORDER BY id DESC LIMIT $6
+	END AS st FROM river_job AS j WHERE (j.kind = 'sup2api.task' AND j.args->>'name' = ANY($1)) AND j.id < $2) AS x WHERE st = ANY($3) ORDER BY id DESC LIMIT $4
 -- vars
-$1 string "core.test.ok"
+$1 store.Strings [core.test.ok]
 $2 int64 120
-$3 int64 120
-$4 store.Strings [failed timeout]
-$5 store.Strings [failed timeout]
-$6 int 21
+$3 store.Strings [failed timeout]
+$4 int 21

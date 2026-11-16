@@ -17,6 +17,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/sync/semaphore"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/background"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -240,17 +241,26 @@ func (b *clusterBackend) upsert(ctx context.Context, t *Task) error {
 	if t.PluginKey != "" {
 		pluginKey = &t.PluginKey
 	}
-	// Raw SQL: VALUES and the conflict branch set seen_at, and the branch
-	// updated_at, to now(), which a model's time.Time cannot carry (store
-	// stamps only created_at and updated_at, and only on INSERT); the
-	// clause.OnConflict tree of EXCLUDED columns and expressions would only
-	// restate this statement.
-	return store.G(ctx, b.db.Gorm).Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, seen_version, seen_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, now())
-		ON CONFLICT (name) DO UPDATE SET source = EXCLUDED.source, plugin_key = EXCLUDED.plugin_key, schedule = EXCLUDED.schedule,
-			timeout_ms = EXCLUDED.timeout_ms, max_attempts = EXCLUDED.max_attempts, seen_version = EXCLUDED.seen_version,
-			seen_at = now(), updated_at = now()`,
-		t.Name, string(t.Source), pluginKey, t.ScheduleText, t.Timeout.Milliseconds(), t.Attempts(), b.version).Error
+	return UpsertRow(store.G(ctx, b.db.Gorm), map[string]any{"name": t.Name, "source": string(t.Source), "plugin_key": pluginKey,
+		"schedule": t.ScheduleText, "timeout_ms": t.Timeout.Milliseconds(), "max_attempts": t.Attempts(), "seen_version": b.version},
+		[]string{"source", "plugin_key", "schedule", "timeout_ms", "max_attempts", "seen_version"}).Error
+}
+
+// UpsertRow writes the scheduled_tasks row of cols (column: value), seen
+// now(). On a name conflict the row takes the new values of the columns of
+// update, and seen_at and updated_at now(), where every condition of only
+// holds (an expression of scheduled_tasks and EXCLUDED); RowsAffected is 0
+// when one does not. The values are a column map: VALUES and the conflict
+// branch set the times to the database's now(), which a model's time.Time
+// cannot carry.
+func UpsertRow(g *gorm.DB, cols map[string]any, update []string, only ...clause.Expression) *gorm.DB {
+	cols["seen_at"] = gorm.Expr("now()")
+	set := append(clause.AssignmentColumns(update),
+		clause.Assignment{Column: clause.Column{Name: "seen_at"}, Value: gorm.Expr("now()")},
+		clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")})
+	return g.Table(model.ScheduledTask{}.TableName()).Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "name"}}, DoUpdates: set, Where: clause.Where{Exprs: only},
+	}).Create(cols)
 }
 
 // taskRowExists reports whether name has a scheduled_tasks row.
@@ -260,12 +270,12 @@ func taskRowExists(ctx context.Context, q *gorm.DB, name string) (bool, error) {
 	return n > 0, err
 }
 
-// releaseLeases frees the leases of the tasks cond picks and sets
-// updated_at to at, now() or clock_timestamp() as the raw statement each
-// caller replaced had it.
-func releaseLeases(db *gorm.DB, at, cond string, args ...any) *gorm.DB {
-	return db.Model(&model.ScheduledTask{}).Where(cond, args...).
-		Updates(map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": gorm.Expr(at)})
+// releaseLeases frees the leases of the tasks the conditions of db pick and
+// sets updated_at to at, now() or clock_timestamp() as the raw statement
+// each caller replaced had it.
+func releaseLeases(db *gorm.DB, at clause.Expr) *gorm.DB {
+	return db.Model(&model.ScheduledTask{}).
+		Updates(map[string]any{"lease_job_id": nil, "lease_node": nil, "lease_until": nil, "updated_at": at})
 }
 
 // watchAdmission starts River while this node may do background work and
@@ -543,13 +553,14 @@ var errTaskRemoved = errors.New("task: removed")
 // takeLease claims the task's lease for job (§7.4); false when another run
 // holds it.
 func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (bool, error) {
-	// Raw SQL: the lease is a compare-and-set on the row, timed by
-	// clock_timestamp() and an interval parameter.
-	res := store.G(ctx, b.db.Gorm).Exec(`UPDATE scheduled_tasks
-		SET lease_job_id = ?, lease_node = ?, lease_until = clock_timestamp() + ?::interval,
-			last_started_at = clock_timestamp(), updated_at = clock_timestamp()
-		WHERE name = ? AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = ?)`,
-		jobID, b.nodeID, (t.Timeout + leaseGrace).String(), t.Name, jobID)
+	// The lease is a compare-and-set on the row, timed by clock_timestamp().
+	res := store.G(ctx, b.db.Gorm).Model(&model.ScheduledTask{}).
+		Where("name = ? AND (lease_until IS NULL OR lease_until < clock_timestamp() OR lease_job_id = ?)", t.Name, jobID).
+		Updates(map[string]any{
+			"lease_job_id": jobID, "lease_node": b.nodeID,
+			"lease_until":     gorm.Expr("clock_timestamp() + ?::interval", (t.Timeout + leaseGrace).String()),
+			"last_started_at": gorm.Expr("clock_timestamp()"), "updated_at": gorm.Expr("clock_timestamp()"),
+		})
 	if res.Error != nil {
 		return false, res.Error
 	}
@@ -580,7 +591,7 @@ func (b *clusterBackend) takeLease(ctx context.Context, t *Task, jobID int64) (b
 func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o runOutput, putOff bool) error {
 	g := store.G(ctx, b.db.Gorm)
 	if putOff {
-		return releaseLeases(g, "clock_timestamp()", "name = ? AND lease_job_id = ?", t.Name, jobID).Error
+		return releaseLeases(g.Where("name = ? AND lease_job_id = ?", t.Name, jobID), gorm.Expr("clock_timestamp()")).Error
 	}
 	// scheduled_tasks.last_status keeps the 0.1.235 values (its CHECK
 	// constraint): a continued run is a success there; its run record keeps
@@ -593,21 +604,28 @@ func (b *clusterBackend) finish(ctx context.Context, t *Task, jobID int64, o run
 }
 
 // recordRun makes job the task's latest run, recorded with status (a
-// last_status value) and o, and releases the lease if job still holds it.
-// Raw SQL: the release is conditional and the counters move by the status,
-// all in one statement; the named parameters stand for values the SQL uses
-// more than once.
+// last_status value) and o, and releases the lease if job still holds it,
+// in one statement: every expression reads the row as it was.
 func recordRun(g *gorm.DB, name string, jobID int64, nodeID, status string, o runOutput) *gorm.DB {
-	return g.Exec(`UPDATE scheduled_tasks SET
-			lease_job_id = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_job_id END,
-			lease_node = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_node END,
-			lease_until = CASE WHEN lease_job_id = @job THEN NULL ELSE lease_until END,
-			last_job_id = @job, last_node = @node, last_finished_at = clock_timestamp(), last_status = @status,
-			last_count = @count, last_message = NULLIF(@message, ''), last_error = NULLIF(@error, ''),
-			last_success_at = CASE WHEN @status = 'succeeded' THEN clock_timestamp() ELSE last_success_at END,
-			consecutive_failures = CASE WHEN @status = 'succeeded' THEN 0 WHEN @status = 'skipped' THEN consecutive_failures
-				ELSE consecutive_failures + 1 END,
-			updated_at = clock_timestamp()
-		WHERE name = @name`, map[string]any{"name": name, "job": jobID, "node": nodeID, "status": status,
-		"count": o.Count, "message": o.Message, "error": o.Error})
+	set := map[string]any{
+		"lease_job_id":     gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_job_id END", jobID),
+		"lease_node":       gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_node END", jobID),
+		"lease_until":      gorm.Expr("CASE WHEN lease_job_id = ? THEN NULL ELSE lease_until END", jobID),
+		"last_job_id":      jobID,
+		"last_node":        nodeID,
+		"last_finished_at": gorm.Expr("clock_timestamp()"),
+		"last_status":      status,
+		"last_count":       o.Count,
+		"last_message":     gorm.Expr("NULLIF(?, '')", o.Message),
+		"last_error":       gorm.Expr("NULLIF(?, '')", o.Error),
+		"updated_at":       gorm.Expr("clock_timestamp()"),
+	}
+	switch status {
+	case StatusSucceeded:
+		set["last_success_at"], set["consecutive_failures"] = gorm.Expr("clock_timestamp()"), 0
+	case StatusSkipped:
+	default:
+		set["consecutive_failures"] = gorm.Expr("consecutive_failures + 1")
+	}
+	return g.Model(&model.ScheduledTask{}).Where("name = ?", name).Updates(set)
 }

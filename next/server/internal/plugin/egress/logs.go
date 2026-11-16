@@ -452,19 +452,15 @@ func Summary(ctx context.Context, q *gorm.DB, pluginKey string, from, to time.Ti
 	return out, nil
 }
 
-// summaryQuery aggregates the rows by host into HostSummary columns. Raw
-// SQL: the counts are FILTER aggregates.
+// summaryQuery aggregates the rows by host into HostSummary columns.
 func summaryQuery(g *gorm.DB, pluginKey string, from, to time.Time) *gorm.DB {
-	return g.Raw(`
-SELECT host, count(*) AS connections,
-       count(*) FILTER (WHERE result = 'denied') AS denied,
-       count(*) FILTER (WHERE result IN ('dial_error', 'reset')) AS errors,
-       coalesce(sum(bytes_in), 0)::bigint AS bytes_in, coalesce(sum(bytes_out), 0)::bigint AS bytes_out,
-       min(started_at) AS first_seen, max(started_at) AS last_seen
-FROM plugin_egress_logs
-WHERE plugin_key = ? AND started_at >= ? AND started_at < ?
-GROUP BY host
-ORDER BY count(*) DESC, host`, pluginKey, from, to)
+	return g.Model(&model.PluginEgressLog{}).Select(`host, count(*) AS connections,
+		count(*) FILTER (WHERE result = 'denied') AS denied,
+		count(*) FILTER (WHERE result IN ('dial_error', 'reset')) AS errors,
+		coalesce(sum(bytes_in), 0)::bigint AS bytes_in, coalesce(sum(bytes_out), 0)::bigint AS bytes_out,
+		min(started_at) AS first_seen, max(started_at) AS last_seen`).
+		Where("plugin_key = ? AND started_at >= ? AND started_at < ?", pluginKey, from, to).
+		Group("host").Order("count(*) DESC, host")
 }
 
 // List returns a plugin's most recent egress rows in [from, to).

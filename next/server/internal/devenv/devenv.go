@@ -201,18 +201,18 @@ func localDatabase(ctx context.Context, database string, reset bool) (string, er
 	}
 	defer admin.Close()
 	conn := store.G(ctx, admin.Gorm)
-	name := store.QuoteIdent(database)
+	name := store.Ident(database)
 	if reset {
-		if err := conn.Exec("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)").Error; err != nil {
+		if err := store.DDL(conn, "DROP DATABASE IF EXISTS %s WITH (FORCE)", name); err != nil {
 			return "", fmt.Errorf("drop %s: %w", database, err)
 		}
 	}
-	var exists bool
-	if err := conn.Raw(`SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = ?)`, database).Row().Scan(&exists); err != nil {
+	exists, err := store.Exists(conn, conn.Table("pg_database").Where("datname = ?", database))
+	if err != nil {
 		return "", err
 	}
 	if !exists {
-		if err := conn.Exec("CREATE DATABASE " + name).Error; err != nil {
+		if err := store.DDL(conn, "CREATE DATABASE %s", name); err != nil {
 			return "", fmt.Errorf("create %s: %w", database, err)
 		}
 	}

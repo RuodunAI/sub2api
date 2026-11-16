@@ -61,3 +61,22 @@ func TryXactLock(ctx context.Context, tx *gorm.DB, key string) (bool, error) {
 func xactLock(db *gorm.DB, key string) *gorm.DB {
 	return db.Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, key)
 }
+
+// XactLockID is XactLock for a lock named by its id rather than a key.
+func XactLockID(ctx context.Context, tx *gorm.DB, id int64) error {
+	if err := RequireTx(tx); err != nil {
+		return err
+	}
+	return G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(?)`, id).Error
+}
+
+// XactLockHashtext is XactLock with the lock's id the key's 32-bit
+// hashtext, the id the locks taken before XactLock existed are named by:
+// they keep it, so that nodes of the previous release, during a rolling
+// upgrade, still take the same lock. A new lock takes XactLock.
+func XactLockHashtext(ctx context.Context, tx *gorm.DB, key string) error {
+	if err := RequireTx(tx); err != nil {
+		return err
+	}
+	return G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtext(?))`, key).Error
+}

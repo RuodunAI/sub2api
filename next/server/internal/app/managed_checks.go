@@ -18,6 +18,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type coreMigration struct {
@@ -189,16 +190,13 @@ func verifyCoreSchema(ctx context.Context, db *store.DB) error {
 // serve, as opposed to a query error.
 var errAdmissionRevoked = errors.New("node admission revoked")
 
-// admissionSQL reports whether the updater approved this boot of node with
-// these roles.
-const admissionSQL = `SELECT EXISTS(SELECT 1 FROM updater.node_admissions
-	WHERE node_id=? AND core_boot_id=? AND release_digest=? AND revision=?
-	AND serve_http=? AND claim_background=? AND coordinate_plugins=?)`
-
 func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimecontract.Admission) error {
-	var approved bool
-	err := store.G(ctx, db.Gorm).Raw(admissionSQL, node, a.BootID, a.ReleaseDigest, a.Revision, a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins).
-		Scan(&approved).Error
+	// Whether the updater approved this boot of node with these roles (the
+	// managed shell's table, outside the core schema).
+	g := store.G(ctx, db.Gorm)
+	approved, err := store.Exists(g, g.Table("updater.node_admissions").
+		Where("node_id = ? AND core_boot_id = ? AND release_digest = ? AND revision = ?", node, a.BootID, a.ReleaseDigest, a.Revision).
+		Where("serve_http = ? AND claim_background = ? AND coordinate_plugins = ?", a.ServeHTTP, a.ClaimBackground, a.CoordinatePlugins))
 	if err != nil {
 		return err
 	}
@@ -207,10 +205,6 @@ func verifyAdmission(ctx context.Context, db *store.DB, node string, a runtimeco
 	}
 	return nil
 }
-
-// versionApprovedSQL reports whether a plugin version has the operator's
-// approval.
-const versionApprovedSQL = `SELECT EXISTS(SELECT 1 FROM plugin_versions WHERE plugin_key=? AND version=? AND consent_status='approved')`
 
 // pluginState is a plugin row with the versions of a live rollout ("" when
 // none).
@@ -253,8 +247,9 @@ func approvedPluginsReady(ctx context.Context, db *store.DB, reg core.PluginRegi
 		if !ok || (local.Version != p.Active && local.Version != p.From && local.Version != p.Target) {
 			return "", fmt.Errorf("plugin %s has not converged to an approved version", p.Key)
 		}
-		var approved bool
-		if err := g.Raw(versionApprovedSQL, p.Key, local.Version).Scan(&approved).Error; err != nil {
+		approved, err := store.Exists(g, g.Model(&model.PluginVersion{}).
+			Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", p.Key, local.Version))
+		if err != nil {
 			return "", err
 		}
 		if !approved {
