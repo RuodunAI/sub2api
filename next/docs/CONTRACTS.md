@@ -8642,7 +8642,7 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 
 ## 100. 会话改为 Valkey 不透明令牌（核心 0.1.290 候选，无迁移）
 
-用户决定（2026-11-15）：控制台登录会话存 Valkey；Valkey 故障按基础服务故障处理，会话鉴权和登录直接 503 并告警，不做本地兜底、不回退 JWT。访问密钥 `sak_`（§80）和网关 API Key `sk-` 不受影响。发布方式：同一版本里两种令牌都认，签发哪种由运行时开关 `session.issue`（§100.5）决定，默认仍签发 JWT；全部节点升级后改开关，不需要第二次发版。
+用户决定（2026-11-15）：控制台登录会话存 Valkey；Valkey 故障按基础服务故障处理，会话鉴权和登录直接 503 并告警，不做本地兜底、不回退 JWT。访问密钥 `sak_`（§80）和网关 API Key `sk-` 的鉴权不读会话，不受影响；但网关请求本身（粘性会话、账号限额等）原本就依赖 Valkey，Valkey 故障时仍会 503，这与本节无关。发布方式：同一版本里两种令牌都认，签发哪种由运行时开关 `session.issue`（§100.5）决定，默认仍签发 JWT；全部节点升级后改开关，不需要第二次发版。
 
 ### 100.1 令牌与鉴权
 
@@ -8691,7 +8691,7 @@ sub2api admin authz-verify [--keys] [--key-users N] [--max-diffs N]
 - 回滚的边缘情况：保留的会话在提交前就改了 `tv`，事务若之后回滚，它的 `tv` 比库里大一，仍然放行（读状态走缓存，不会每个请求都绕过缓存查库）；之后任何没改到盖章的 bump 都加 2，一定大于它，承诺的“全部会话结束”成立；之后改盖章的 bump 把它当作仍有效的会话保留（它确实是被保留下来的）。
 - 不变量（`TestEndedSessionsStayEndedInAnyOrder` 按任意顺序检查：登录、轮换、refresh 换发、宽限期重试、重放、单个撤销、不透明会话登出、JWT 登出、撤销其他与结束全部、管理员改密码/禁用/重置安全、命令行 bump、回滚、Valkey 宕机时的各条路径、迟到的撤销脚本，从 `token_version` 为 0 和已 bump 过的用户开始，每一步之后在两个节点上检查；`TestEndedSessionsStayEndedConcurrently` 是并发版本）：一次提交的变更结束的会话，它的每个令牌都不会再被接受；没有被结束的会话仍然有效。只有新建（用持锁读到的当前版本）和结算（只抬高不低于 `from` 的盖章）会写盖章，轮换复制原盖章，续期不改盖章。
 - **重置安全（新）**：`DELETE /users/:id/security`（`ResetSecurity`）现在也结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。此前不结束任何会话。
-- 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。
+- 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。命令行也不发总线广播，各节点靠用户状态缓存（30 秒）发现新的 token_version，所以最多 30 秒后才失效；控制台里的管理员操作是立即失效。
 - 登出：带 `refresh_token` 照旧结束那个家族；不带时，调用者是不透明会话（ctx 里的令牌类型）就只结束它自己，会话已经不在（过期、已被撤销）也一样，不会退化成结束全部会话；JWT 调用者照旧结束全部会话。
 - `GET /me/sessions`：合并 Valkey 里的会话与仍有有效 refresh token 的 JWT 家族，按最近使用时间倒序；同一 id 只列一次。盖章低于当前 `token_version` 的不透明会话（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。开关为 `jwt` 且 Valkey 不可用时只列 JWT 家族（Valkey 里只有切换留下的会话）；开关为 `s2s` 时 503。
 - 审计点不变（`user.session.revoke`、`user.session.revoke_others`、`auth.superadmin_login` 等）。
