@@ -1277,7 +1277,7 @@ type ProxyResolver interface {
 
 | 区 | order | 核心项 | 内置插件菜单 |
 | --- | --- | --- | --- |
-| overview 概览（§90 起叫“控制台”） | 100 | 仪表盘（§90 起还有 API 密钥、模型与价格、用量概览、使用日志、全站概览、全站日志） | |
+| overview 概览（§90 起叫“控制台”） | 100 | 仪表盘（§90 起还有 API 密钥、模型与价格、用量概览、使用日志、全站概览、全站日志；§102 起还有账号用量概览、账号日志） | |
 | gateway 网关 | 200 | 分组、账号、平台、代理、模型价格（§90 起使用记录移到控制台；§90 第四版起只剩账号、代理） | 模型目录（anthropic 0.2.9–0.3.0，0.3.1 删除）、动态权重（dynweight；只有 0.5.4 在 `system` 区） |
 | security 安全 | 300 | 无（空区不返回） | 请求守卫（guard 0.2.7）、提示词审核（moderation 0.6.2） |
 | finance 财务 | 400 | 余额流水 `/ledger`（`balance:all:read`；§90 第四版取消、2026-11-13 T80 恢复） | 增长管理（growth 0.1.5，去掉了自己的 growth 区） |
@@ -6238,7 +6238,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 | 组 | 来自哪个区 | 内容 |
 | --- | --- | --- |
-| 控制台 | `overview`（标签“控制台 / Console”） | 仪表盘、API 密钥、模型与价格、用量概览（`/me/usage/overview`）、使用日志（`/me/usage`），以及有 `usage:all:read` 才有的全站概览（`/usage/overview`）、全站日志（`/usage`） |
+| 控制台 | `overview`（标签“控制台 / Console”） | 仪表盘、API 密钥、模型与价格、用量概览（`/me/usage/overview`）、使用日志（`/me/usage`），以及有 `usage:all:read` 才有的全站概览（`/usage/overview`）、全站日志（`/usage`）；有 `usage:account:read`（任意范围）而没有不带范围的 `usage:all:read` 才有的账号用量概览（`/account-usage/overview`）、账号日志（`/account-usage`）（§102.5，`menus.go` 的 `hideWith`：持有其中任一不带范围的 key 就隐藏，超管同样隐藏） |
 | 个人中心 | `me`（标签“个人中心 / Personal”） | 钱包、个人设置（`/me/profile`）；`section:"me"` 的插件菜单（我的邀请、每日签到）接在后面 |
 | 管理员 | 其余所有区，按服务端顺序 | `gateway`、`security`、`finance` 的项平铺、不画区标题；`users`、`plugins`、`system`（不含 `/settings`）和插件自己的区（`<插件>:<id>`）折叠成目录，见 90.3；最后一项是“系统设置”（`system` 区的 `/settings`） |
 
@@ -6249,7 +6249,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | gateway 网关 | 账号、代理 | 动态权重（dynweight；只有 0.5.4 在 `system` 区） |
 | security 安全 | 无 | 请求守卫、提示词审核 |
 | finance 财务 | 余额流水（`balance:all:read`，T80） | 增长管理 |
-| users 用户（标签“用户 / Users”） | 用户、用户组（§97 起）、角色与权限 | |
+| users 用户（标签“用户 / Users”） | 用户（`user:read` 的任意范围，代理供应商的 team 也显示，§102.3）、用户组（§97 起）、角色与权限 | |
 | plugins 插件 | 已安装插件、插件市场、发布者；`section:"plugins"` 的插件菜单接在后面 | |
 | system 系统（标签“系统 / System”） | 集群节点、定时任务、核心升级、审计日志、系统设置 `/settings` | |
 
@@ -7248,6 +7248,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 | 进程 | enforcer（p 行，被问到过的用户的 g 行，最多 `Options.Users` 个） | 版本 ≥ 判断要求的版本 |
 | 进程 | Casbin 决策缓存（按用户分组的 `cache.Cache`，每个用户最多 4096 条、总共 2^20 条，超出不再缓存） | 随该用户的变更或整体重载作废 |
 | 进程 | 每个用户的授予列表 | 同上 |
+| 进程 | team 持有者的下级（`authz.Service.Team`，最多 50000 个持有者，满了随机丢一个；§102.2） | 读取时的版本 ≥ 请求的 `PermissionSet.Version`；版本前进时丢弃更旧的 |
 
 Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，之后记在 enforcer 里，策略写入不把它忘掉（§99.3），只有被点名的用户才重读，请求路径上没有可以跨节点共享的读取。数据库从备份恢复后不需要清理 Valkey；授权版本回退时各节点会报“数据库版本低于已知版本”并让需要新版本的判断失败，重启核心即可。
 
@@ -7423,7 +7424,7 @@ CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体�
 
 ## 102. 代理供应商与 team 范围（迁移 0103；核心 0.1.291）
 
-设计见 `plan-0.1.291.md`（用户决定 D1–D9，2026-11-16）。代理供应商（`supplier_agent`）在供应商的能力之外，能管理挂在自己名下的用户（下级，多层），只读下级的账号与账号侧的使用记录。归属用两列表示：`users.owner_id`（用户属于谁，决定 team）与 `accounts.owner_id`（账号的“所属”，决定 own 与 team 覆盖哪些账号）。本节先写定各单元共用的契约（U0），team 的解析、用户接口与控制台由后续单元按此实现。
+设计见 `plan-0.1.291.md`（用户决定 D1–D9，2026-11-16）。代理供应商（`supplier_agent`）在供应商的能力之外，能管理挂在自己名下的用户（下级，多层），只读下级的账号与账号侧的使用记录。归属用两列表示：`users.owner_id`（用户属于谁，决定 team）与 `accounts.owner_id`（账号的“所属”，决定 own 与 team 覆盖哪些账号）。本节先写定各单元共用的契约（U0），用户接口与控制台由后续单元按此实现。
 
 ### 102.1 角色
 
@@ -7439,7 +7440,7 @@ CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体�
 - 语法：`<动作>:team`，只用于可带范围的动作，`account:create` 不接受（新行总是创建者自己的）。新的可带范围动作：`usage:account:read`（资源 account，范围与账号相同）、`user:read` `user:create` `user:update`（资源 user，`perm.ResourceUser`，只接受全部与 `team`：`own`、路径都 400 `invalid`，用户不属于自己）。`plugin.x:y:team` 不是范围，是普通的插件 key 写法（插件资源不支持 team）；保留资源名加 `user`（`manifest.ReservedScopeResources`）。
 - 蕴含：全部 ⊇ team ⊇ own；team 不蕴含任何路径，路径也不蕴含 team。共享向量 `sdk/permvectors/vectors.json` 已加（Go 与控制台 `web/src/authz/implies.ts` 共用）。访问密钥 `Restrict` 照常逐模式取较窄者：密钥 `account:read:team` + 持有者 own 得 own；密钥 `user:read` + 持有者 team 得 team。
 - Casbin 只判断是否持有 key（`permMatch` 就是 `perm.Implies`，不改）；行范围在 Enforce 之后展开：`DataScope` 编译时 own 与 team 都把持有者放进 `Owners`，team 另记待展开，`core.ResolveScope` 再把持有者的下级并入 `Owners`。
-- 下级（team）：沿 `users.owner_id` 向下最多 `core.MaxTeamDepth`（8）层，含已软删除的用户（D7），不含持有者本人（本人由 own 部分覆盖）。由 Authorizer 可选实现的 `core.TeamResolver` 给出（authz 实现，U1）；没有实现时 team 只覆盖 own。读不到 team 一律 503，不当作空。
+- 下级（team）：沿 `users.owner_id` 向下最多 `core.MaxTeamDepth`（8）层，含已软删除的用户（D7），不含持有者本人（本人由 own 部分覆盖）。由 Authorizer 可选实现的 `core.TeamResolver` 给出（`authz.Service.Team`；没有实现的 Authorizer，team 只覆盖 own）。读不到 team 一律 503，不当作空。
 - Go 接口（U0）：
 
 ```go
@@ -7457,22 +7458,29 @@ func UserRows() ScopeTable                  // id u.id, owner u.owner_id
 const MaxTeamDepth = 8
 type TeamResolver interface { Team(ctx context.Context, uid, atLeast int64) ([]int64, error) }
 func ResolveScope(ctx context.Context, az Authorizer, s DataScope, version int64) (DataScope, error)
-type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, owner *int64) (int64, error) }
+type OwnerGuard interface { CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error) }
 ```
 
 - `DataScope.Owner int64` 改为 `Owners []int64`（升序去重）；`Cond` 的 owner 部分是 `COALESCE(<owner> = ANY(?::bigint[]), false)`，文本固定。`AccountRows()` 的 owner 列改为 `a.owner_id`（102.4），`ProxyRows()` 仍是 `p.created_by`。`core.Scope` 与 `Router.PermScoped` 放进 ctx 的范围都已经过 `ResolveScope`。
 - `TeamResolver.Team(uid, atLeast)`：返回的下级必须读自不早于 `atLeast` 的 authz 版本（调用方传 `PermissionSet.Version`）；改 owner 的事务 `Bump` 点名被移动的用户，提交后广播 `authz:changed`（§99.4），不升 policy_version，不清决策缓存。
+- 解析（`authz/team.go`）：逐层 BFS，每层一条构造器语句 `owner_id = ANY(?)`（走 `users_owner_idx`），最多 8 层，带已访问集合，不用递归 CTE。未命中时在只读 RR 事务（`store.Snapshot()`）里同时读 `authz_meta.version` 与 BFS 结果；读到的版本低于 `atLeast` 时 503。结果按持有者缓存在进程内（§99.4 的 team 一行），条目只在读取版本 ≥ `atLeast` 时使用，`invalidate` 在版本前进时丢弃更旧的条目；Valkey 不存 team。
+- 访问密钥先收窄再展开（`Restrict` 在 `PermissionSet` 里，`ResolveScope` 在其后）：密钥 `account:read:own` + 持有者 team 得 own，不展开。
 
 ### 102.3 用户的 owner（`users.owner_id`）
 
 - 列：`users.owner_id bigint NULL REFERENCES users(id) ON DELETE SET NULL`，`CHECK (owner_id <> id)`，部分索引 `users_owner_idx (owner_id) WHERE owner_id IS NOT NULL`。环与深度由核心在 authz 锁下检查（`OwnerGuard`），数据库不查。
 - 用户 JSON（`/users` 列表与详情、`/auth/login` 的 `user` 同形）加：`owner_id`（int|null）、`owner_email`（string|null，owner 已软删除时仍显示其邮箱）。
-- POST `/users`、PATCH `/users/:id` 接受 `owner_id`：正整数为指定 owner，`0` 为无，省略或 `null` 为默认（新建：只能为 team 建用户的操作者为自己，其余为无；修改：不变）。规则（`OwnerGuard.CheckOwner`，iam 在建、改用户的事务内调用）：
-  - 指定 owner（含 `0`）需要不带范围的 `user:create`（新建）或 `user:update`（修改）；team 持有者只能指定自己，否则 403 `permission_denied`。
-  - 先拿 authz 锁（`Bump` 点名该用户），再检查；400 `invalid_argument`，`details.fields[{field:"owner_id", code}]`，`code`：`self`（是自己）、`cycle`（owner 在该用户之下）、`too_deep`（移动后该用户或其下任一用户距链顶超过 8 层）、`not_found`（不存在或已删除）、`owner_cannot_manage`（owner 按角色管不了该用户：该用户的每个角色都要在 owner 的可分配清单内、授予在 owner 之内，§43.6）。
-  - 操作者须能对该用户、旧 owner、新 owner 做 `ActOnIdentity`（`CanActOnUsers`）。
+- POST `/users`、PATCH `/users/:id` 接受 `owner_id`：正整数为指定 owner，`0` 为无，负数 400 `fields[{owner_id, invalid}]`，省略或 `null` 为默认（新建：只有 team 范围 `user:create` 的操作者为自己，由 POST 处理按路由范围填入，其余为无；修改：不变）。规则（`OwnerGuard.CheckOwner`，`authz/owner.go`）：
+  - 调用顺序（一个事务只 `Bump` 一次）：新建 = 带 owner 插入用户（不存在的 owner 由外键拦下，400 `not_found`）→ `SetUserRoles`（其 `Bump` 点名该用户；`CanActOnUsers` 的 team 步骤与 owner 不变量都看到新 owner）→ `CheckOwner(create=true, 插入的 owner)`；修改 = `Bump(该用户)` → `CheckOwner(create=false, owner)` → 锁用户行、写入。`CheckOwner` 依赖调用方已持有的 authz 锁，自己不 `Bump`、不写列。
+  - 指定 owner（含 `0`）需要不带范围的 `user:create`（新建）或 `user:update`（修改），按本次请求判断（访问密钥收窄）；只有 team 范围的持有者只能指定自己（新建时不传也是自己），其他任何人（包括自己的下级）或 `0` 一律 403 `permission_denied`。系统（操作者 0）不判权限，下列检查照做。
+  - 修改时与当前 owner 相同（或不传）即不变：不检查、不审计。新建时旧 owner 一律视为无。
+  - 400 `invalid_argument`，`details.fields[{field:"owner_id", code}]`，`code`：`self`（是自己）、`not_found`（不存在或已删除）、`cycle`（owner 在该用户之下）、`too_deep`（移动后该用户或其下任一用户距链顶超过 8 层，链顶以上的已删除用户也算层数）、`owner_cannot_manage`（owner 按角色管不了该用户：该用户的每个角色（user 除外）都要在 owner 的可分配清单内、授予在 owner 之内，§43.6，与 `CanActOnUsers` 的比较相同）。
+  - 不变量也约束之后的角色变更：给有 owner 的用户加角色（`SetUserRoles` 的 `checkAssignment`，系统操作者除外），变更后的角色 owner 管不了时 400 `owner_cannot_manage`，先改 owner。
+  - 操作者须能对旧 owner、新 owner 以及（修改时）该用户做 `ActOnIdentity`（`CanActOnUsers`），操作者自己除外（team 持有者把下级挂到自己名下时不对自己操作）；新建的用户已由 `SetUserRoles` 检查过。
   - 有变化时审计 `user.owner`，`detail {from, to}`（null 表示无）。
-- GET `/users`：改为 `PermScoped(user:read)`，按 `core.UserRows()` 过滤；新增筛选 `owner_id=<id>`（直属该用户的）或 `owner_id=none`（没有 owner 的），`direct=true`（`owner_id = 调用者`，与 team 叠加）。GET、PATCH `/users/:id` 目标不在范围内 404；POST `/users` 与 PATCH 按 `user:create` / `user:update` 的范围。DELETE、`/users/:id/roles`、`/users/:id/security` 仍是不带范围的权限（team 持有者分配角色经 `CanActOnUsers` 的 team 步骤，U1）。
+- `CanActOnUsers` 的 team 步骤（`authz/team.go` 的 `withinTeam`，plan 1.8、7.9）：操作者的角色（不经访问密钥收窄）里 `user:read`、`user:create`、`user:update` 的范围取并集，至少持有一个且都不是全部时，每个目标都必须是它的下级（经检查所在的事务读 owner 图，不用 team 缓存），否则 403 `permission_denied`，`details.reason = "not_in_team"`；对自己操作同样拒绝。三者都不持有（如只有 `role:assign` 的旧自定义角色）时不受此限。之后照常比较角色与授予（`within`、可分配清单）。`checkAssignment` 经它判断，所以 `/users/:id/roles` 与新建用户时的指派都只能落在 team 内。
+- 代理供应商是附加角色：只持有 `supplier_agent`、不持有 `user` 时，它的授予不含 `user` 角色的 `apikey:self:manage` `balance:self:read` `gateway:use`，管不了持有 `user` 角色的用户（SEC-H2 的 `within`）；照常与 `user` 一起持有。
+- GET `/users`：改为 `PermScoped(user:read)`，按 `core.UserRows()` 过滤；新增筛选 `owner_id=<id>`（直属该用户的）或 `owner_id=none`（没有 owner 的），`direct=true`（`owner_id = 调用者`，与 team 叠加）；`owner_id` 既不是正整数也不是 `none`、`direct` 不是布尔值时 400 `fields[{owner_id|direct, invalid}]`。GET、PATCH `/users/:id` 目标不在范围内 404，先于其他检查（team 持有者对自己也是 404）；POST `/users` 与 PATCH 按 `user:create` / `user:update` 的范围。DELETE、`/users/:id/roles`、`/users/:id/security` 仍是不带范围的权限（team 持有者分配角色经 `CanActOnUsers` 的 team 步骤，见上）。
 
 ### 102.4 账号的所属（`accounts.owner_id`）
 

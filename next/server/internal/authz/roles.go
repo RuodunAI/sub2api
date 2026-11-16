@@ -720,7 +720,7 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 	if len(added)+len(removed) == 0 {
 		return v, nil
 	}
-	if err := s.checkAssignment(ctx, tx, actorID, userID, len(cur) == 0, added, removed); err != nil {
+	if err := s.checkAssignment(ctx, tx, actorID, userID, len(cur) == 0, want, added, removed); err != nil {
 		return 0, err
 	}
 	if err := writeUserRoles(ctx, tx, userID, want); err != nil {
@@ -734,9 +734,11 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 // transferred); every role must be on the actor's assignable list, except
 // the default role for a user who has none yet (roleless); the actor must
 // be able to act on the user; and the added roles, with what they may assign
-// in turn, must be within the actor's grantSet. The system (actor 0) may
-// grant the initial super admin, never revoke one.
-func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, added, removed []roleRef) error {
+// in turn, must be within the actor's grantSet; a user with an owner keeps
+// one that manages it by its roles, want (owner_cannot_manage, CONTRACTS
+// §102.3). The system (actor 0) may grant the initial super admin, never
+// revoke one.
+func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, want, added, removed []roleRef) error {
 	if actorID == 0 {
 		if slices.ContainsFunc(removed, func(r roleRef) bool { return r.superuser }) {
 			return superAdminTransferOnly(ctx)
@@ -759,7 +761,18 @@ func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, user
 	if err != nil {
 		return err
 	}
-	return within(actor, grant, cannotGrant(ctx))
+	if err := within(actor, grant, cannotGrant(ctx)); err != nil || len(added) == 0 {
+		return err
+	}
+	owner, err := ownerOf(store.G(ctx, q), userID)
+	if err != nil || owner == 0 {
+		return err
+	}
+	target, err := s.RolesPermissions(ctx, q, roleKeysOf(want))
+	if err != nil {
+		return err
+	}
+	return s.ownerManages(ctx, q, owner, target, roleKeysOf(want))
 }
 
 // assignable fails unless actor may assign or revoke r (see checkAssignment).

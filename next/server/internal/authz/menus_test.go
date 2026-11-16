@@ -19,6 +19,7 @@ func testMenuRoutes(id string) ([]string, bool) {
 		"GET /me/api-keys": {"apikey:self:manage"}, "GET /me/prices": {"apikey:self:manage"},
 		"GET /me/usage/overview": {"usage:self:read"}, "GET /me/usage": {"usage:self:read"},
 		"GET /usage/overview": {"usage:all:read"}, "GET /usage": {"usage:all:read"},
+		"GET /account-usage/overview": {"usage:account:read"}, "GET /account-usage": {"usage:account:read"},
 		"GET /accounts": {"account:read"}, "GET /proxies": {"proxy:read"}, "GET /ledger": {"balance:all:read"},
 		"GET /users": {"user:read"}, "GET /segments": {"segment:read"}, "GET /roles": {"role:read"},
 		"GET /plugins": {"plugin:read"}, "GET /market/plugins": {"plugin:market:read"}, "GET /publishers": {"publisher:read"},
@@ -96,4 +97,30 @@ func TestPluginMenusScopedPermission(t *testing.T) {
 	assert.Equal(t, []string{"mod:flows"}, ids(core.PermissionSetOf("plugin.mod:flow:manage:own")))
 	assert.Equal(t, []string{"mod:flows"}, ids(core.PermissionSetOf("plugin.mod:flow:manage:flow/3")))
 	assert.Empty(t, ids(core.PermissionSetOf("plugin.mod:flow:read:own")))
+}
+
+// The account-side usage pages show to holders of usage:account:read at any
+// scope and hide behind the site-wide ones (hideWith usage:all:read); the
+// users page shows to a team holder of user:read (CONTRACTS §102.5, §22).
+func TestAccountUsageMenus(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	const site, own, account = "/usage/overview,/usage", "/dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage", "/account-usage/overview,/account-usage"
+	supplier := addUser(t, s, "s@x.com", RoleUser, RoleSupplier)
+	agent := addUser(t, s, "a@x.com", RoleUser, RoleSupplierAgent)
+	admin := addUser(t, s, "admin@x.com", RoleAdmin)
+	assert.Equal(t, own+","+account, sectionPaths(t, s, supplier, "overview"))
+	assert.Equal(t, own+","+account, sectionPaths(t, s, agent, "overview"))
+	assert.Equal(t, "/users,/roles", sectionPaths(t, s, agent, "users"))
+	assert.Equal(t, "", sectionPaths(t, s, supplier, "users"))
+	assert.Equal(t, own+","+site, sectionPaths(t, s, admin, "overview"))
+
+	_, err := s.CreateRole(ctx, admin, CreateRoleInput{Key: "both", Name: lt("b", "b"), PermissionKeys: []string{"usage:account:read:own", "usage:all:read"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := addUser(t, s, "b@x.com", "both")
+	assert.Equal(t, "/dashboard,"+site, sectionPaths(t, s, both, "overview"))
 }

@@ -369,7 +369,10 @@ type UserGuard interface {
 	// included: by the actor's roles, not narrowed by its access key, every
 	// role a target holds, the default user role aside, is one the actor may
 	// assign, and what the targets' roles grant is within the actor's (a
-	// superuser manages everyone). For ActOnIdentity a superuser target
+	// superuser manages everyone). An actor whose roles reach users by a
+	// team alone (user:read, user:create, user:update, none of them for
+	// every user) manages only the users below it (CONTRACTS §102). For
+	// ActOnIdentity a superuser target
 	// through an access key needs a step-up proof; for ActOnBalance a target
 	// holding a role besides user needs balance:adjust:any, which an access
 	// key must name. Actor 0 (the system) passes.

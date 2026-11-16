@@ -221,3 +221,14 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 		}},
 	})
 }
+
+// The owner graph (CONTRACTS §102): a level of a team (one per level, the
+// first only under DryRun), the owner of a user (one per level up), and the
+// live owner CheckOwner names (refused under DryRun, which finds none).
+func TestSQLAuthzTeam(t *testing.T) {
+	assertRuns(t, []runCase{
+		{"subtree", func(db *gorm.DB) error { _, _, err := subtree(db, 7); return err }},
+		{"owner_of", func(db *gorm.DB) error { _, err := ownerOf(db, 7); return err }},
+		{"live_owner", func(db *gorm.DB) error { return refused(new(Service).ownerFits(db.Statement.Context, db, 7, 9)) }},
+	})
+}

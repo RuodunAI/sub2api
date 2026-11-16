@@ -1,0 +1,4 @@
+-- sql
+SELECT "id" FROM "users" WHERE owner_id = ANY($1)
+-- vars
+$1 store.Int64s [7]

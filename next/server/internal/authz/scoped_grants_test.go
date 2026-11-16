@@ -150,3 +150,37 @@ func TestPluginScopedKeysResolveAndCover(t *testing.T) {
 	require.True(t, errors.As(err, &ce) && ce.Code == "permission_denied", "%v", err)
 	require.Equal(t, []string{"plugin.m:flow:manage"}, ce.Details["missing"])
 }
+
+// team is a scope like own, one level wider (CONTRACTS §102.2): a role
+// saves it for the actions that take it (users: every user or team only),
+// its holder grants team and own but not every row, and an own holder does
+// not grant team.
+func TestTeamScopedGrants(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	create := func(actor int64, key string, perms ...string) (*Role, error) {
+		return s.CreateRole(ctx, actor, CreateRoleInput{Key: key, Name: lt(key, key), PermissionKeys: perms})
+	}
+	r, err := create(root, "lead", "role:define", "account:read:team", "account:read:own", "user:read:team", "usage:account:read:team")
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"role:define", "account:read:team", "user:read:team", "usage:account:read:team"}, r.PermissionKeys, "own folds into team")
+	for i, key := range []string{"user:read:own", "user:update:account/3", "account:create:team"} {
+		_, err := create(root, fmt.Sprintf("bad_%d", i), key)
+		require.Equal(t, "invalid", fieldCode(err, "permission_keys"), "%s: %v", key, err)
+	}
+	_, err = create(root, "own_lead", "role:define", "account:read:own")
+	require.NoError(t, err)
+
+	lead, ownLead := addUser(t, s, "lead@x.com", "lead"), addUser(t, s, "own@x.com", "own_lead")
+	require.NoError(t, s.CanGrant(ctx, lead, []string{"account:read:own", "account:read:team", "user:read:team", "usage:account:read:own"}))
+	for _, tc := range []struct {
+		actor int64
+		key   string
+	}{{lead, "account:read"}, {lead, "user:read"}, {lead, "usage:account:read:group/1"}, {ownLead, "account:read:team"}} {
+		err := s.CanGrant(ctx, tc.actor, []string{tc.key})
+		require.Equal(t, []string{tc.key}, detail(err, "missing"), "%d %s: %v", tc.actor, tc.key, err)
+	}
+}
