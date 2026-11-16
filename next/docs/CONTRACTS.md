@@ -585,7 +585,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 
 - `PATCH /me/api-keys/:id`（2026-10-26 起）修改自己 Key 的名称、分组、IP 白名单、过期时间与限额，字段见本文 2026-10-26 的说明；分组被删除的 Key 选新分组即恢复。
 - 修改或删除后立即清除该 Key 的 Redis 缓存（`apikey:{sha256}`），网关侧立即生效。
-- 分组可用性按用户组判断（§97，取代原来按用户逐个分配的 `user_groups`）：分组是公开的（`visibility=public`），或是私有的（`visibility=restricted`）且已授权给 Key 所有者所在的用户组。创建 / 修改 Key 时的 `group_id` 校验、列表的 `group_status` 和网关鉴权用的是同一个条件（`segment.OpenToUserSQL`，§97.9）。授权每次请求从库里读，不经缓存：改授权、把用户移到另一个用户组，下一个请求就生效，已有的 Key 不用重建。
+- 分组可用性按用户组判断（§97，取代原来按用户逐个分配的 `user_groups`）：分组是公开的（`visibility=public`），或是私有的（`visibility=restricted`）且已授权给 Key 所有者所在的用户组。创建 / 修改 Key 时的 `group_id` 校验、列表的 `group_status` 和网关鉴权用的是同一个条件（`segment.OpenToUser` / `OpenToKeyOwner`，§97.9）。授权每次请求从库里读，不经缓存：改授权、把用户移到另一个用户组，下一个请求就生效，已有的 Key 不用重建。
 
 ### 15.2 列表接口的筛选与排序
 
@@ -4995,7 +4995,7 @@ native 执行路径（Worker 维护 CLI agent 会话、原生工具目录、历�
 
 **刷新**：集群任务 `core.usage.rollup`，每分钟一次，每条语句最长 60 秒，每个事务都持有 advisory 锁 `usage_hourly`。`usage_hourly_state` 记录已汇总的小时范围 [low, high)。每次运行做下面三件事，三步互相独立，一步出错不影响另外两步：
 
-1. 往前补，每个事务最多 6 小时。可汇总的边界按数据库时钟算（`sealedSQL`），取两者中更早的那个：
+1. 往前补，每个事务最多 6 小时。可汇总的边界按数据库时钟算（`sealedHours`），取两者中更早的那个：
    - 小时结束满 30 分钟；
    - 本角色在本库里还没结束的写事务中，最早的开始时间往前推 15 分钟。
 
@@ -8018,7 +8018,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | kind | 全量（不带 `mine`） | `mine=true` |
 |---|---|---|
 | users | `user:read` | 不支持（400） |
-| groups | `group:read`：全部分组，含已停用；只有 `account:group:bind`：调用者自己可用的分组（与 `mine=true` 同一范围，即 own 级账号可绑定的分组，`segment.UsableGroupSQL`）；两者都没有：调用者自己的权限范围里点名的分组（任一动作的 `group/G`、`group/G/account/X`，访问密钥按密钥自己的权限，`PermissionSet.ScopeGroups`，`Entity.Named`），让控制台按名称显示自己的范围，一个都没有时 403（权限加固期 4 验证修复） | 任何登录用户：`GET /me/groups` 的范围（状态 `active`，且公开或已授权给调用者所在的用户组，§97） |
+| groups | `group:read`：全部分组，含已停用；只有 `account:group:bind`：调用者自己可用的分组（与 `mine=true` 同一范围，即 own 级账号可绑定的分组，`segment.UsableGroup`）；两者都没有：调用者自己的权限范围里点名的分组（任一动作的 `group/G`、`group/G/account/X`，访问密钥按密钥自己的权限，`PermissionSet.ScopeGroups`，`Entity.Named`），让控制台按名称显示自己的范围，一个都没有时 403（权限加固期 4 验证修复） | 任何登录用户：`GET /me/groups` 的范围（状态 `active`，且公开或已授权给调用者所在的用户组，§97） |
 | api-keys | `usage:all:read`：全部用户的密钥（使用记录本来就向它展示所有密钥的 id、名称、所属用户） | `apikey:self:manage`：调用者自己的密钥 |
 | accounts | `account:read`：全部账号；只有 `account:own:read` 时自动只看自己创建的（同 `GET /accounts`，§21.2） | `account:read` 或 `account:own:read`：只看自己创建的 |
 | models | `price:read`：价格表里的全部模型，含已停用的价格 | `apikey:self:manage`：已启用的价格里，调用者任一可用分组（`/me/groups` 的范围）的模型名单放行的模型（0.1.279 时这等于 `GET /me/prices` 对每个可用分组结果的并集；§97 起 `/me/prices?group_id=` 只列分组里的账号提供的模型，所以这个范围是各可用分组 `/me/prices?group_id=` 结果并集的超集，§79.5） |
@@ -8434,7 +8434,7 @@ WHERE s.kind = 'personal' AND u.deleted_at IS NOT NULL;
 |---|---|---|---|
 | 实际倍率与来源 | `core.SegmentRate(groupDefault, discount decimal.Decimal, override *decimal.Decimal) (rate decimal.Decimal, source string)` | `apikey` 鉴权、`segment` 的各个 `Terms`、价格试算 | 三层替换、4 位小数取整和上限 999999.9999 都在这里（常量不导出）。`apikey` 鉴权为了一条 SQL 读完自己连表，但倍率同样只经这个函数 |
 | 倍率、折扣、规则倍数的写法 | `core.ParseRate(s string) (decimal.Decimal, bool)` | 分组默认倍率、专属倍率、全场折扣、规则倍数的保存校验 | 不小于 0、不超过 999999.9999、最多 4 位小数：保存进去的数一定原样存得进 `numeric(10,4)`。“全场折扣必须大于 0”由调用方另加 |
-| 用户能否使用分组 | `segment.OpenToUserSQL(groupAlias, userArg string) string`：一段 SQL 条件，“分组是公开的，或用户所在的用户组被授权了它” | `apikey`（创建和修改 Key 的校验、列表的 `group_status`、鉴权）、`group`（`/me/groups`）、`billing`（`/me/prices`）、`lookup`（`mine=true` 的范围） | 取代原来散在这 6 处的 `user_groups` 子查询。分组状态由调用方自己判断。鉴权那条一次读完的连表 SQL（`apikey.lookupSQL`）也嵌入这段条件，不自己写可见性（`TestLookupUsesOpenToUser` 固定） |
+| 用户能否使用分组 | `segment.OpenToUser`（用户是唯一的 `?` 参数）、`segment.OpenToKeyOwner`（用户是 API Key `k` 的所有者）：分组别名为 `g` 的 SQL 条件常量（2026-11-16 起，此前是按别名拼接的 `OpenToUserSQL`），“分组是公开的，或用户所在的用户组被授权了它” | `apikey`（创建和修改 Key 的校验、列表的 `group_status`、鉴权）、`group`（`/me/groups`）、`billing`（`/me/prices`）、`lookup`（`mine=true` 的范围） | 取代原来散在这 6 处的 `user_groups` 子查询。分组状态由调用方自己判断。鉴权那条一次读完的连表 SQL（`apikey.lookupQuery`）也嵌入这段条件，不自己写可见性（`TestLookupUsesOpenToUser` 固定） |
 | 用户组在分组里的条件 | `segment.UserTerms / SegmentTerms(ctx, q, id, groupIDs) (map[int64]segment.Terms, error)`（一个用户或一个用户组在若干分组里，按分组 id）；`segment.GroupTerms(ctx, q, groupID, segmentIDs)`（若干用户组在一个分组里，按用户组 id） | 需要成批读取的接口（各列表里的 `accessible`、`rate`、`effective_rate`，两个方向的设置列表，定价表，试算，`/me/prices`） | `Terms` 带授权、是否可用、分组默认倍率、全场折扣、专属倍率，以及由 `core.SegmentRate` 算出的实际倍率和来源。三个函数是同一条查询的三种取法 |
 | 引用一个用户组时的名称 | `segment.Ref(ctx, q, id, showUsers) (core.SegmentRef, error)`；`segment.Masked(ref, showUsers)`；`segment.ShowUsers(ctx, authz) (bool, error)` | `segment` 的各接口、定价表、试算、成员列表 | 个人专属的名称是成员的邮箱；调用者没有 `user:read`（`ShowUsers` 为假）时给 `#<user_id>`（97.6）。读名称走 `Ref`，已经读到的引用走 `Masked`；连表读用户组引用的列清单只有 `segment.RefColumns` 一份（`iam` 的用户列表也引用它）。用户组不存在的 404 是 `segment.NotFound(ctx)`（带中英文案，`Ref` 返回它，`billing` 的定价表与试算、`iam` 的成员列表都经它），字段里点名了不存在的用户组时的文案是 `segment.UnknownMessage(ctx)`（`iam` 新建用户、`billing` 保存规则） |
 | 引用一个分组 | `core.GroupRef{ID, Name}` | 各接口里的 `{id, name}`（`granted_groups`、定价表和 `/me/prices` 的 `group`、`groups`） | 同一个形状只有一个类型 |

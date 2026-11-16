@@ -497,7 +497,7 @@ most every 30 s per account) run.
 
 ## Batch 5b: the API key lookup and the remaining batches
 
-`apikey.(*Service).lookup` (`lookupSQL`) is the first statement of every
+`apikey.(*Service).lookup` (`lookupQuery`) is the first statement of every
 gateway request and is not cached. It stayed on pgx under
 `//gormguard:allow-pgx` until batch 5b; it is on GORM now as
 `Raw(...).Row().Scan` into local variables (`lookupQuery`; the jsonb
@@ -595,7 +595,7 @@ TestSQLAccountUsageOverview, TestSQLWriteRules, TestSQLAssetPut):
 
 - `listPage`: the page carries the total as a scalar subquery (`listRows`),
   run once, in the page's snapshot.
-- `usageOverview`: `usageOverviewSQL` reads each account's totals and limit
+- `usageOverview`: its one statement reads each account's totals and limit
   (LEFT JOIN, with whether there is one) and its window from midnight
   (LATERAL sums), one row per account in list order;
   TestUsageOverviewMatchesItsReads compares it with the three reads.
@@ -853,7 +853,7 @@ statement per request; it reaches the database through the services below.
 
 | When | Function | SQL |
 |---|---|---|
-| every request, synchronous | `apikey.(*Service).lookup` ← `Authenticate` ← gateway `call.run` | `lookupSQL`: `SELECT k.id, … FROM api_keys k JOIN users u … JOIN segments s … LEFT JOIN groups g … LEFT JOIN segment_groups sg … WHERE k.key_hash = $1 AND k.deleted_at IS NULL` (not cached, on purpose) |
+| every request, synchronous | `apikey.(*Service).lookup` ← `Authenticate` ← gateway `call.run` | `lookupQuery`: `SELECT k.id, … FROM api_keys k JOIN users u … JOIN segments s … LEFT JOIN groups g … LEFT JOIN segment_groups sg … WHERE k.key_hash = $1 AND k.deleted_at IS NULL` (not cached, on purpose) |
 | billable request, synchronous | `billing.(*Service).Precharge` → `prechargeTx` ← gateway `call.precharge` | BEGIN; `prechargeSQL` (CTE: `set_config('lock_timeout', '3s', true)` and the `user_balances` row FOR UPDATE, insert `balance_ledger` ON CONFLICT DO NOTHING RETURNING, insert `request_precharges`, update `user_balances`; a pgx batch with SET LOCAL, the balance row insert and the lock as statements of their own until batch 5a, one statement each in batch 5a); a user's first precharge also `prechargeEnsureSQL` and `prechargeSQL` again; `INSERT INTO events`; COMMIT |
 | billable request, Redis miss only | `billing.(*Service).Balance` ← `CheckBalance` | `SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = $1), 0), COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = $1), 0)` |
 | every request, settler (async) | `usage.(*Service).insertAtomic` ← `insert` ← `process` / `Submit` | BEGIN; `INSERT INTO usage_logs (47 columns) SELECT … FROM unnest($1::varchar[], …) WITH ORDINALITY … ORDER BY ord ON CONFLICT (request_id) DO NOTHING RETURNING id, request_id`, one statement for the batch (`VALUES (…)` for a batch of one; a pgx batch of one INSERT per row until batch 5a, one INSERT per power-of-two chunk in batch 5a); free rows: `releaseSQL` (`ReleasePrechargeTx`) and `INSERT INTO events`; COMMIT |
