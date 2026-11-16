@@ -30,6 +30,7 @@ export default {
   secretWillClear: '保存后将清除已保存的密钥',
   secretKeep: '已设置，留空保持不变', secretNone: '必填', secretRequired: '请填写密钥，或关闭上方开关',
   secretDropped: '更改更新源后，已保存的令牌会被清除。如仍需要，请重新填写。',
+  createToken: '在 GitHub 创建令牌',
   checkResult: '检测结果', checking: '正在检测…',
   connected: '连接正常：最新核心 {core}，最新网关 {gateway}'
 }

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SAlert, SButton, SHint, SInput, SSegmented, SSettingRow, SSettingsGroup, SSpinner, SSwitch } from '@sub2api/ui'
+import { SAlert, SButton, SHint, SInput, SLink, SSegmented, SSettingRow, SSettingsGroup, SSpinner, SSwitch } from '@sub2api/ui'
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
+import { githubTokenURL } from './githubToken'
 import { useSettingsForm } from '@/composables/useSettingsForm'
 import { useAuthStore } from '@/stores/auth'
 import { lineStatus, UPDATE_LINES, useUpdatesStore, type LineStatus, type UpdateLine } from '@/stores/updates'
@@ -104,17 +105,20 @@ onMounted(() => {
       <SAlert v-if="!form.private && form.hasSecret" tone="warning" class="my-3" data-testid="update-source-secret-clears">{{ t('coreUpdates.secretWillClear') }}</SAlert>
       <SSettingRow v-if="form.private" :label="t(`coreUpdates.secret.${form.kind}`)" :error="errors.secret">
         <template #details>{{ t('coreUpdates.secretDetails') }}</template>
-        <SInput
-          v-model="form.secret"
-          type="password"
-          name="secret"
-          autocomplete="new-password"
-          revealable
-          mono
-          class="w-full sm:w-96"
-          :placeholder="t(form.hasSecret && !sourceChanged ? 'coreUpdates.secretKeep' : 'coreUpdates.secretNone')"
-          :disabled="disabled"
-        />
+        <div class="flex w-full flex-col gap-1.5 sm:w-96">
+          <SInput
+            v-model="form.secret"
+            type="password"
+            name="secret"
+            autocomplete="new-password"
+            revealable
+            mono
+            class="w-full"
+            :placeholder="t(form.hasSecret && !sourceChanged ? 'coreUpdates.secretKeep' : 'coreUpdates.secretNone')"
+            :disabled="disabled"
+          />
+          <SLink v-if="form.kind === 'github'" :href="githubTokenURL(form.repository)" external class="self-start text-xs" data-testid="update-source-create-token">{{ t('coreUpdates.createToken') }}</SLink>
+        </div>
       </SSettingRow>
       <SAlert v-if="secretDropped" tone="warning" class="my-3" data-testid="update-source-secret-dropped">{{ t('coreUpdates.secretDropped') }}</SAlert>
       <SSettingRow v-if="canCheck && (updates.busy || result)" :label="t('coreUpdates.checkResult')" data-testid="update-source-result">
