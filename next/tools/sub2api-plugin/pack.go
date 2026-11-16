@@ -46,17 +46,12 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	runtimesDir := fs.String("runtimes", "", "directory containing runtimes/ (default: --dir)")
 	overlay := fs.String("overlay", "", "overlay directory: manifest override plus extra/replacement files")
 	allowMissingUI := fs.Bool("allow-missing-ui", false, "pack even when ui/native/dist is missing")
-	images := fs.String("images", "", "directory with images.json and the container image archives it lists (packed as images/, archives stored uncompressed)")
-	imageRoles := fs.String("image-roles", "", "comma separated roles images.json must list exactly (requires --images)")
 	skipDBCheck := fs.Bool("skip-db-check", false, "do not compare the GORM models with migrations/ (where no PostgreSQL is at hand)")
 	if _, err := parseInterspersed(fs, args); err != nil {
 		return err
 	}
 	if (*out == "") == (*outDir == "") {
 		return fmt.Errorf("exactly one of --out or --out-dir is required")
-	}
-	if *imageRoles != "" && *images == "" {
-		return fmt.Errorf("--image-roles requires --images")
 	}
 	ov, err := resolveOverlay(*dir, *overlay)
 	if err != nil {
@@ -80,18 +75,6 @@ func cmdPack(args []string, stdout, stderr io.Writer) error {
 	}
 	for _, w := range warnings {
 		fmt.Fprintln(stderr, "warning:", w)
-	}
-	if *images != "" {
-		bundled, err := collectImages(*images, m, splitList(*imageRoles))
-		if err != nil {
-			return err
-		}
-		for p, b := range bundled {
-			if _, dup := files[p]; dup {
-				return fmt.Errorf("images: %s is also provided by the plugin directory or overlay", p)
-			}
-			files[p] = b
-		}
 	}
 	dest := *out
 	if dest == "" {
@@ -319,8 +302,8 @@ func writePackageMode(dest string, files map[string][]byte, exclusive bool) erro
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
-	// The archive is streamed to its file (a package with bundled images is
-	// close to a gigabyte; it is not buffered a second time in memory).
+	// The archive is streamed to its file (a package may be up to a
+	// gigabyte; it is not buffered a second time in memory).
 	var f *os.File
 	var err error
 	if exclusive {
@@ -364,11 +347,7 @@ func writeZip(w io.Writer, files map[string][]byte) error {
 	// manifest.json first for readers that stream the archive.
 	sort.SliceStable(paths, func(i, j int) bool { return paths[i] == pkgsig.ManifestFile && paths[j] != pkgsig.ManifestFile })
 	for _, p := range paths {
-		method := zip.Deflate
-		if storedEntry(p) {
-			method = zip.Store
-		}
-		h := &zip.FileHeader{Name: p, Method: method, Modified: zipEpoch}
+		h := &zip.FileHeader{Name: p, Method: zip.Deflate, Modified: zipEpoch}
 		h.SetMode(fileMode(p))
 		fw, err := zw.CreateHeader(h)
 		if err != nil {

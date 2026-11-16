@@ -23,8 +23,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
 )
 
-// DefaultMaxBytes matches the core's plugin package limit: the ccgateway
-// package carries its runtime images (CONTRACTS §53.10).
+// DefaultMaxBytes matches the core's plugin package limit
+// (pkg.DefaultMaxPackageBytes).
 const DefaultMaxBytes = 1 << 30
 
 func validSum(s string) bool {

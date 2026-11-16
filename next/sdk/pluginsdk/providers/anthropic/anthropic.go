@@ -1,5 +1,5 @@
 // Package anthropic provides the error classification policy for Anthropic and
-// Anthropic-compatible APIs (relay, ccgateway): parsing the error body,
+// Anthropic-compatible APIs (relay): parsing the error body,
 // mapping statuses to client error types, and computing rate-limit resets.
 package anthropic
 

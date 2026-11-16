@@ -114,8 +114,8 @@ func recordReleasedPlugins(t *testing.T, root string) {
 
 var (
 	// unpackedDirs hold no package input: tests, dependencies, build
-	// outputs (ccgateway's images/ is written by the image build).
-	unpackedDirs = map[string]bool{"testdata": true, "node_modules": true, "dist": true, "runtimes": true, "images": true, "__tests__": true}
+	// outputs.
+	unpackedDirs = map[string]bool{"testdata": true, "node_modules": true, "dist": true, "runtimes": true, "__tests__": true}
 	// packedDirs are copied into the package (pack) or built into its ui.
 	packedDirs = append([]string{"ui/"}, func() (out []string) {
 		for _, d := range packDirs {

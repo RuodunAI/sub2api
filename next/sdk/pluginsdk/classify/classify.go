@@ -4,7 +4,7 @@
 // Nothing matched means the client sent a bad request: it is returned as-is.
 //
 // Vendor policies (pluginsdk/providers/...) are built from the shared rules
-// here, so the Anthropic-compatible plugins (anthropic, relay, ccgateway)
+// here, so the Anthropic-compatible plugins (anthropic, relay)
 // share one classifier and the others only add their own codes:
 //
 //	func (p *Plugin) ClassifyError(_ context.Context, in *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {

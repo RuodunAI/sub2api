@@ -28,19 +28,13 @@
 #   REQUIRE_UI=1    fail when a plugin's ui/native/dist is missing (guard,
 #                   moderation); default: pack without the native UI and warn.
 #   PLATFORMS=...   override target platforms (default linux/amd64,linux/arm64).
-#   PACK_IMAGES=... space separated <plugin>=<role,role,...>: bundle
-#                   plugins/<plugin>/images (images.json and the container
-#                   image archives it lists, CONTRACTS §53.10) into that
-#                   plugin's package, requiring exactly these roles. Only
-#                   the plugin's own package; overlay fixtures never get
-#                   images. Set by deploy/docker/build-go.sh for ccgateway.
 #   SKIP_DB_CHECK=1 pack without comparing the GORM models with migrations/
 #                   (pack --skip-db-check), where no PostgreSQL can run: the
 #                   image build (root, no network). TestDBCheck covers it.
 set -eu
 
 if [ $# -lt 3 ]; then
-  sed -n '2,30p' "$0"
+  sed -n '2,33p' "$0"
   exit 2
 fi
 
@@ -93,13 +87,6 @@ package() {
     set -- "$@" --skip-db-check
   fi
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
-  image_roles=
-  for spec in ${PACK_IMAGES:-}; do
-    case "$spec" in "$plugin="?*) image_roles=${spec#*=} ;; esac
-  done
-  if [ -n "$image_roles" ] && [ -z "$overlay" ]; then
-    set -- "$@" --images "$dir/images" --image-roles "$image_roles"
-  fi
   if [ -f "$dir/manifest.json" ] && grep -q '"native"' "$dir/manifest.json" && [ ! -f "$dir/ui/native/dist/entry.js" ]; then
     if [ "${REQUIRE_UI:-0}" = "1" ]; then
       echo "$dir/ui/native/dist/entry.js missing (REQUIRE_UI=1)" >&2

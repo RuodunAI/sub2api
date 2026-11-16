@@ -20,7 +20,6 @@ Usage:
   sub2api-plugin pack   --dir <plugin dir> (--out <file.s2plugin> | --out-dir <dir>) [--runtimes <dir>] [--overlay <dir>] [--allow-missing-ui]
                         [--skip-db-check]   (pack runs db check, overlay included, when the plugin has internal/model
                                              and a database; see db below for the PostgreSQL it needs)
-                        [--images <dir> [--image-roles a,b,...]]   (bundle container images, see images.go)
   sub2api-plugin sign   --key <private key file> --key-id <id> [--publisher <name>] <file.s2plugin>
   sub2api-plugin verify --pub <public key file|base64> <file.s2plugin>
   sub2api-plugin index  --dir <market dir> --key <private key file> [--base-url <url>]
