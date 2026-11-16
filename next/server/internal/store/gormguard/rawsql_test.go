@@ -6,7 +6,6 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"maps"
 	"regexp"
 	"slices"
 	"sort"
@@ -84,16 +83,6 @@ var sqlQuoting = map[string]string{
 	"internal/plugin/dbschema.quoteLiteral": "a quoted string literal",
 }
 
-// sqlPending lists the packages other teams are converting in parallel:
-// their findings of [raw-sql] and [sql-const] are logged, not failed.
-//
-// ---- PENDING OTHER TEAMS: the lead removes this block after merging ----
-var sqlPending = map[string]string{
-	"internal/authz": "authz rewrite (Casbin)",
-}
-
-// ---- end of PENDING OTHER TEAMS ----
-
 // sqlTextMethods are the gorm (*DB) methods whose first argument, when it
 // is a string, is SQL text ([sql-const]).
 var sqlTextMethods = map[string]bool{
@@ -101,16 +90,15 @@ var sqlTextMethods = map[string]bool{
 	"Order": true, "Group": true, "Joins": true, "Table": true, "Distinct": true, "Pluck": true,
 }
 
-// sqlPolicy holds the allowlists of the two rules, the packages left to
-// other teams, and what the check found.
+// sqlPolicy holds the allowlists of the two rules and which entries
+// allowed a finding.
 type sqlPolicy struct {
-	raw, constant, quoting, pending map[string]string
-	used                            map[string]bool // "rule key" of the entries that allowed a finding
-	pendingOut                      []string        // the findings in pending packages
+	raw, constant, quoting map[string]string
+	used                   map[string]bool // "rule key" of the entries that allowed a finding
 }
 
 func newSQLPolicy() *sqlPolicy {
-	return &sqlPolicy{raw: rawSQLAllowed, constant: sqlConstAllowed, quoting: sqlQuoting, pending: sqlPending, used: map[string]bool{}}
+	return &sqlPolicy{raw: rawSQLAllowed, constant: sqlConstAllowed, quoting: sqlQuoting, used: map[string]bool{}}
 }
 
 // unused returns the allowlist entries that allowed nothing.
@@ -219,18 +207,10 @@ func declName(decl ast.Decl) string {
 	return ""
 }
 
-// sqlReport reports a finding of rule at n unless list allows key; in a
-// pending package it is kept apart.
+// sqlReport reports a finding of rule at n unless list allows key.
 func (c *checker) sqlReport(n ast.Node, rule, key string, list map[string]string, format string, args ...any) {
 	if _, ok := list[key]; ok {
 		c.sql.used[rule+" "+key] = true
-		return
-	}
-	if listedWithin(c.sql.pending, c.rel) {
-		before := len(c.out)
-		c.report(n, format, args...)
-		c.sql.pendingOut = append(c.sql.pendingOut, c.out[before:]...)
-		c.out = c.out[:before]
 		return
 	}
 	c.report(n, format, args...)
@@ -727,7 +707,6 @@ func TestSQLRules(t *testing.T) {
 		raw:      map[string]string{"internal/billing.allowedRaw": "test"},
 		constant: map[string]string{"internal/billing.allowedText": "test"},
 		quoting:  map[string]string{"internal/store.QuoteIdent": "test"},
-		pending:  map[string]string{"internal/plugin": "test"},
 		used:     map[string]bool{},
 	}
 	r := rules{module: fixtureModule, sql: policy}
@@ -761,8 +740,6 @@ func f(db *gorm.DB) error {
 	return db.Table("t").Where("id = ?", 1).Updates(map[string]any{"a": gorm.Expr("a + ?", 1)}).Error
 }`},
 		{name: "raw-sql/a test file", pkg: "internal/billing", file: "x_test.go", src: `
-func f(db *gorm.DB) error { return db.Exec("UPDATE t SET a = 1").Error }`},
-		{name: "raw-sql/a pending package is logged", pkg: "internal/plugin/x", src: `
 func f(db *gorm.DB) error { return db.Exec("UPDATE t SET a = 1").Error }`},
 		{name: "sql-const/text built from constants passes", pkg: "internal/billing", src: `
 const cols = "a, b"
@@ -844,7 +821,6 @@ func allowedText(db *gorm.DB, col string) { db.Order(col) }`},
 			if err != nil {
 				t.Fatalf("fixture does not type-check: %v", err)
 			}
-			policy.pendingOut = nil
 			findings := r.check(fset, path, []*ast.File{f}, info)
 			var got []string
 			for _, finding := range findings {
@@ -852,9 +828,6 @@ func allowedText(db *gorm.DB, col string) { db.Order(col) }`},
 			}
 			if !slices.Equal(got, c.want) {
 				t.Fatalf("rules %v, want %v\n%s", got, c.want, strings.Join(findings, "\n"))
-			}
-			if strings.Contains(c.name, "pending") && len(policy.pendingOut) == 0 {
-				t.Fatal("the pending package's finding was not kept apart")
 			}
 		})
 	}
@@ -865,26 +838,17 @@ func allowedText(db *gorm.DB, col string) { db.Order(col) }`},
 	}
 }
 
-// verify fails on allowlist entries that allowed nothing and on packages
-// of the pending and quoting lists that are none of the module's, and logs
-// the findings of the pending packages (go test -v lists them).
+// verify fails on allowlist entries that allowed nothing and on quoting
+// helpers outside the module's packages.
 func (p *sqlPolicy) verify(t *testing.T, known map[string]bool) {
 	t.Helper()
 	for _, entry := range p.unused() {
 		t.Errorf("%s is listed but has no finding to allow; drop its entry", entry)
 	}
-	for pkg := range p.pending {
-		if !slices.ContainsFunc(slices.Collect(maps.Keys(known)), func(k string) bool { return within(k, pkg) }) {
-			t.Errorf("pending %s holds no package of the module; drop its entry", pkg)
-		}
-	}
 	for key := range p.quoting {
 		if pkg := key[:strings.LastIndex(key, ".")]; !known[pkg] {
 			t.Errorf("quoting helper %s: %s is no package of the module; drop its entry", key, pkg)
 		}
-	}
-	for _, finding := range p.pendingOut {
-		t.Logf("pending: %s", finding)
 	}
 }
 

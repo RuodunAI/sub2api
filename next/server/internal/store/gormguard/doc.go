@@ -152,8 +152,7 @@
 //     quoting helpers (sqlQuoting). A value goes in as a ? parameter; an
 //     identifier chosen at run time goes through a fixed map to a
 //     clause.Column or clause.OrderByColumn. sqlConstAllowed lists what the
-//     check cannot follow, with the reason. Packages another team is
-//     converting (sqlPending) are logged, not failed.
+//     check cannot follow, with the reason.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result
