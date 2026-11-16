@@ -398,7 +398,42 @@ describe('RolesView saving permissions', () => {
     await flushPromises()
     expect(mocks.put).toHaveBeenCalledTimes(2)
     expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', expect.objectContaining({ revision: 9 }))
-    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.conflictMerged'))
+    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.roleConflictMerged'))
+  })
+
+  it('a version conflict over a part someone else changed too is not saved again at once; a part the editor left alone takes what is read', async () => {
+    mocks.patch.mockClear()
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    mocks.patch.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({ assignable_role_keys: ['user'] })])
+    // Meanwhile someone renamed the role and took the user role off its list.
+    lookups.roles = [role({ name: 'Leader', assignable_role_keys: [], revision: 9 })]
+    await w.get('[data-testid="role-name"]').setValue('Lead 2')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledTimes(1)
+    expect((w.get('[data-testid="role-name"]').element as HTMLInputElement).value).toBe('Lead 2')
+    expect(toastState.items.map((x) => x.message)).toContain(i18n.global.t('roles.roleConflictClashes', { list: i18n.global.t('common.name') }))
+    // Saved again, it sends the name at the revision read; the managed roles, untouched here, stay as read.
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenLastCalledWith('/roles/2', expect.objectContaining({ revision: 9 }))
+    expect(mocks.put).not.toHaveBeenCalled()
+  })
+
+  it('a version conflict over parts the editor left alone saves its own part again at once', async () => {
+    mocks.patch.mockClear()
+    toastState.items.splice(0)
+    mocks.patch.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open([role({})])
+    lookups.roles = [role({ description: 'Theirs', assignable_role_keys: ['user'], revision: 9 })]
+    await w.get('[data-testid="role-name"]').setValue('Lead 2')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledTimes(2)
+    expect(mocks.patch).toHaveBeenLastCalledWith('/roles/2', { name: expect.anything(), revision: 9 })
+    expect(toastState.items.map((x) => x.message)).not.toContain(i18n.global.t('roles.roleConflictMerged'))
   })
 
   it('a version conflict reads the role again and keeps the edited cells on top', async () => {

@@ -94,15 +94,14 @@ async function selectRole(r: RoleRow, force = false) {
   if (!force && r.id === selectedId.value) return
   if (!force && dirty.value && !readOnly.value && !(await confirm({ message: t('roles.discardChanges') }))) return
   selectedId.value = r.id
-  const keys = [...(r.permission_keys || [])].sort()
-  const manages = [...(r.assignable_role_keys || [])].sort()
-  Object.assign(form, { name: lt(r.name), description: lt(r.description) })
-  perms.value = new Set(keys)
-  assignable.value = new Set(manages)
-  assignCustom.value = !!r.assign_custom
+  const parts = partsOf(r)
+  Object.assign(form, { name: parts.name, description: parts.description })
+  perms.value = new Set(parts.perms)
+  assignable.value = new Set(parts.assignable)
+  assignCustom.value = parts.assignCustom
   saveMissing.value = ''
   editErrors.value = {}
-  original.value = { ...form, perms: keys, assignable: manages, assignCustom: !!r.assign_custom }
+  original.value = parts
   loadMembers(r)
 }
 
@@ -138,7 +137,7 @@ function save() {
   return persist(false)
 }
 
-/** Saves the changed parts; resent: the same save again after a 409 that left the role as it was (asked about already). */
+/** Saves the changed parts; resent: the save again after a 409 where nobody else changed what it saves (asked about already). */
 async function persist(resent: boolean): Promise<void> {
   const r = selected.value
   if (!r || readOnly.value) return
@@ -192,26 +191,74 @@ function confirmRisky(r: RoleRow) {
 
 /**
  * A 409 version_conflict: reads the roles again (a failed read keeps the
- * edits for another try). The role's permissions as they were (the role
- * changed otherwise): saved again at once. Else the edited cells (one action
- * each, as the matrix keeps them) go on top of what is read (replayCells),
- * to be saved once more, naming the cells someone else changed too. The
- * other fields stay as edited.
+ * edits for another try) and takes in each part of the role (permissions,
+ * name, description, managed roles): one the editor left as it was takes
+ * what is read; one the editor changed stays as edited, on top of what is
+ * read when someone else changed it too (the permissions cell by cell,
+ * replayCells; the managed roles role by role). When nobody else changed a
+ * part the editor changed (the role changed otherwise, or this save's
+ * earlier steps went through) it is saved again at once; else it waits for
+ * another save, naming what both changed.
  */
 async function rebase(r: RoleRow, resent: boolean): Promise<void> {
-  const before = original.value.perms
-  const edited = [...perms.value]
+  const base = original.value
+  const edited = { perms: [...perms.value].sort(), assignable: [...assignable.value].sort(), assignCustom: assignCustom.value }
   await loadRoles()
   const fresh = roles.value.find((x) => x.id === r.id)
   if (!fresh) return
-  const keys = [...(fresh.permission_keys ?? [])].sort()
-  if (!resent && sameKeys(keys, before)) return persist(true)
-  const actions = [...new Set([...before, ...edited, ...keys].map(actionOf))]
-  const merged = replayCells({ [r.key]: before }, { [r.key]: edited }, { [r.key]: keys }, actions, [r.key])
-  original.value = { ...original.value, perms: keys }
-  perms.value = new Set(merged.value[r.key])
-  const list = merged.clashes.map((c) => lt(catalog.value.get(c.action)?.label) || c.action).join(t('roles.listSep'))
-  toast(list ? t('roles.conflictClashes', { list }) : t('roles.conflictMerged'), 'info')
+  const read = partsOf(fresh)
+  const clashes: string[] = []
+  let moved = false // a part the editor changed, someone else changed too
+  for (const [field, label] of [['name', t('common.name')], ['description', t('common.description')]] as const) {
+    const mine = form[field].trim()
+    if (mine === base[field]) form[field] = read[field]
+    else if (read[field] !== base[field] && read[field] !== mine) {
+      moved = true
+      clashes.push(label)
+    }
+  }
+  if (sameKeys(edited.perms, base.perms)) perms.value = new Set(read.perms)
+  else if (!sameKeys(read.perms, base.perms) && !sameKeys(read.perms, edited.perms)) {
+    moved = true
+    const actions = [...new Set([...base.perms, ...edited.perms, ...read.perms].map(actionOf))]
+    const merged = replayCells({ [r.key]: base.perms }, { [r.key]: edited.perms }, { [r.key]: read.perms }, actions, [r.key])
+    perms.value = new Set(merged.value[r.key])
+    clashes.push(...merged.clashes.map((c) => lt(catalog.value.get(c.action)?.label) || c.action))
+  }
+  const sameList = (a: Managed, b: Managed) => a.assignable.join() === b.assignable.join() && a.assignCustom === b.assignCustom
+  if (sameList(edited, base)) {
+    assignable.value = new Set(read.assignable)
+    assignCustom.value = read.assignCustom
+  } else if (!sameList(read, base) && !sameList(read, edited)) {
+    moved = true
+    // Role by role: each the editor added or took away, on what is read.
+    const next = new Set(read.assignable)
+    base.assignable.filter((k) => !edited.assignable.includes(k)).forEach((k) => next.delete(k))
+    edited.assignable.filter((k) => !base.assignable.includes(k)).forEach((k) => next.add(k))
+    assignable.value = next
+    assignCustom.value = edited.assignCustom !== base.assignCustom ? edited.assignCustom : read.assignCustom
+  }
+  original.value = read
+  if (!moved && !resent) return persist(true)
+  const list = clashes.join(t('roles.listSep'))
+  toast(list ? t('roles.roleConflictClashes', { list }) : t('roles.roleConflictMerged'), 'info')
+}
+
+/** The managed roles of a role, sorted, and its "every custom role" flag. */
+interface Managed {
+  assignable: string[]
+  assignCustom: boolean
+}
+
+/** The parts of r the editor edits, as original holds them. */
+function partsOf(r: RoleRow) {
+  return {
+    name: lt(r.name),
+    description: lt(r.description),
+    perms: [...(r.permission_keys ?? [])].sort(),
+    assignable: [...(r.assignable_role_keys ?? [])].sort(),
+    assignCustom: !!r.assign_custom
+  }
 }
 
 /**
