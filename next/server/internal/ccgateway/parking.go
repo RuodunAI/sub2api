@@ -185,19 +185,15 @@ func (s *Service) ParkedRuntimes(ctx context.Context, ids []int64) (map[int64]bo
 		return out, nil
 	}
 	var parked []int64
-	if err := parkedQuery(store.G(ctx, s.DB.Gorm), ids).Pluck("a.id", &parked).Error; err != nil {
+	if err := store.G(ctx, s.DB.Gorm).Table("accounts a").Joins("JOIN ccgateway_runtimes r ON r.account_id = a.id").
+		Where("a.id = ANY(?) AND a.plugin_key = 'ccgateway' AND "+sqlRuntimeParked, store.Int64s(ids)).
+		Pluck("a.id", &parked).Error; err != nil {
 		return out, err
 	}
 	for _, id := range parked {
 		out[id] = true
 	}
 	return out, nil
-}
-
-// parkedQuery is the ccgateway accounts among ids whose runtime is parked.
-func parkedQuery(db *gorm.DB, ids []int64) *gorm.DB {
-	return db.Table("accounts a").Joins("JOIN ccgateway_runtimes r ON r.account_id = a.id").
-		Where("a.id = ANY(?) AND a.plugin_key = 'ccgateway' AND "+sqlRuntimeParked, store.Int64s(ids))
 }
 
 // WakeRuntime starts the parked runtime of account id and waits until it is

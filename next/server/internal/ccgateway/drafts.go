@@ -91,16 +91,12 @@ func (s *Service) touchDraftOf(ctx context.Context, key string, scope *int64, ki
 	if !isDraftKey(key) {
 		return false, nil
 	}
-	res := touchDraftQuery(store.G(ctx, s.DB.Gorm), key, scope, kind)
+	res := openDraft(store.G(ctx, s.DB.Gorm), key).Scopes(createdBy(scope), draftKind(kind)).
+		Update("last_seen_at", gorm.Expr("now()"))
 	if res.Error != nil {
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
-}
-
-// touchDraftQuery marks open draft key of kind visible to scope as used.
-func touchDraftQuery(db *gorm.DB, key string, scope *int64, kind int64) *gorm.DB {
-	return openDraft(db, key).Scopes(createdBy(scope), draftKind(kind)).Update("last_seen_at", gorm.Expr("now()"))
 }
 
 // checkProxy validates a draft's proxy_id: none (direct egress), or visible
@@ -173,7 +169,14 @@ func (s *Service) draftCreate(c *gin.Context) {
 				return err
 			}
 		}
-		res := insertDraft(store.G(ctx, tx), key, in.ProxyID, uid, limit)
+		// The draft is inserted unless uid has limit open drafts already (0:
+		// no limit). Positional: GORM leaves a named parameter followed by a
+		// cast (@uid::bigint) unreplaced.
+		res := store.G(ctx, tx).Exec(`INSERT INTO ccgateway_runtimes(key, proxy_id, created_by)
+			SELECT ?, ?, NULLIF(?::bigint, 0)
+			WHERE ?::int = 0 OR (SELECT count(*) FROM ccgateway_runtimes
+				WHERE created_by = ? AND account_id IS NULL AND retired_at IS NULL) < ?`,
+			key, in.ProxyID, uid, limit, uid, limit)
 		if res.Error == nil && res.RowsAffected == 0 {
 			return core.ErrTooManyDrafts
 		}
@@ -186,18 +189,6 @@ func (s *Service) draftCreate(c *gin.Context) {
 	s.Kick(key)
 	s.record(c, "draft."+key+".create")
 	httpapi.Created(c, gin.H{"key": key})
-}
-
-// insertDraft inserts draft key of user uid unless uid has limit open drafts
-// already (limit 0: no limit); no row is inserted then.
-func insertDraft(db *gorm.DB, key string, proxyID *int64, uid int64, limit int) *gorm.DB {
-	// Positional: GORM leaves a named parameter followed by a cast (@uid::bigint)
-	// unreplaced.
-	return db.Exec(`INSERT INTO ccgateway_runtimes(key, proxy_id, created_by)
-			SELECT ?, ?, NULLIF(?::bigint, 0)
-			WHERE ?::int = 0 OR (SELECT count(*) FROM ccgateway_runtimes
-				WHERE created_by = ? AND account_id IS NULL AND retired_at IS NULL) < ?`,
-		key, proxyID, uid, limit, uid, limit)
 }
 
 // draftUpdate serves PUT /system/ccgateway/drafts/:key {proxy_id} → {key}.
@@ -399,7 +390,8 @@ func (s *Service) checkDraftLogin(ctx context.Context, key string, scope *int64,
 // 400 draft_not_found. A sweep deleting the draft concurrently holds the
 // row: the update waits and then finds nothing.
 func AdoptDraft(ctx context.Context, tx *gorm.DB, key string, accountID int64, scope *int64) error {
-	res := adoptDraftQuery(store.G(ctx, tx), key, accountID, scope)
+	res := newAccountDraft(store.G(ctx, tx), key, scope).
+		Updates(map[string]any{"account_id": accountID, "adopted_at": gorm.Expr("now()"), "last_seen_at": gorm.Expr("now()")})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -407,11 +399,4 @@ func AdoptDraft(ctx context.Context, tx *gorm.DB, key string, accountID int64, s
 		return draftNotFound(core.ErrInvalidArgument)
 	}
 	return nil
-}
-
-// adoptDraftQuery makes new-account draft key visible to scope the runtime
-// of account accountID.
-func adoptDraftQuery(db *gorm.DB, key string, accountID int64, scope *int64) *gorm.DB {
-	return newAccountDraft(db, key, scope).
-		Updates(map[string]any{"account_id": accountID, "adopted_at": gorm.Expr("now()"), "last_seen_at": gorm.Expr("now()")})
 }

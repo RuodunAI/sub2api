@@ -292,7 +292,8 @@ func (s *Service) saveAccountRequestLog(c *gin.Context, ctx context.Context, id 
 		if change.Level == requestLogFollow {
 			err = g.Where("account_id = ?", id).Delete(&model.CcgatewayAccountRequestLog{}).Error
 		} else {
-			err = saveRequestLog(g, &model.CcgatewayAccountRequestLog{AccountID: id, Level: change.Level, FullUntil: fullUntil, UpdatedBy: updatedBy}).Error
+			err = g.Clauses(upsertAccountRow("level", "full_until", "updated_by")).
+				Create(&model.CcgatewayAccountRequestLog{AccountID: id, Level: change.Level, FullUntil: fullUntil, UpdatedBy: updatedBy}).Error
 		}
 		if err != nil {
 			return err
@@ -304,11 +305,6 @@ func (s *Service) saveAccountRequestLog(c *gin.Context, ctx context.Context, id 
 	}
 	s.requestLogChanged(ctx, id)
 	return nil
-}
-
-// saveRequestLog writes an account's own level.
-func saveRequestLog(db *gorm.DB, row *model.CcgatewayAccountRequestLog) *gorm.DB {
-	return db.Clauses(upsertAccountRow("level", "full_until", "updated_by")).Create(row)
 }
 
 // requestLogChange is one validated PUT form: Level (+FullForHours for

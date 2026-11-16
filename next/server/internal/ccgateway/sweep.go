@@ -166,8 +166,12 @@ func (s *Service) sweepRetiredKey(ctx context.Context, tx *gorm.DB, key string) 
 	switch {
 	case accountKeyPattern.MatchString(key):
 		id, _ := strconv.ParseInt(key, 10, 64)
+		// Whether the account exists without a runtime row, so that it falls
+		// back to the runtime named after its id.
 		var used bool
-		if err := accountRuntimeQuery(g, id).Scan(&used).Error; err != nil {
+		if err := g.Raw("SELECT EXISTS(?) AND NOT EXISTS(?)",
+			g.Model(&model.Account{}).Select("1").Where("id = ?", id),
+			runtimes(g).Select("1").Where("account_id = ?", id)).Scan(&used).Error; err != nil {
 			return false, err
 		}
 		if used {
@@ -185,14 +189,6 @@ func (s *Service) sweepRetiredKey(ctx context.Context, tx *gorm.DB, key string) 
 		return false, err
 	}
 	return true, nil
-}
-
-// accountRuntimeQuery reports whether account id exists and has no runtime
-// row, so that it falls back to the runtime named after its id.
-func accountRuntimeQuery(db *gorm.DB, id int64) *gorm.DB {
-	return db.Raw("SELECT EXISTS(?) AND NOT EXISTS(?)",
-		db.Model(&model.Account{}).Select("1").Where("id = ?", id),
-		runtimes(db).Select("1").Where("account_id = ?", id))
 }
 
 // remoteRuntime is one entry of the controller's GET /accounts.

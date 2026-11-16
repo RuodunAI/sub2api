@@ -488,13 +488,8 @@ func (s *Service) markBlocked(ctx context.Context, tx *gorm.DB, key string, d ac
 	}
 	s.blocked[key] = blockedMark{revision: d.Revision, accountID: d.AccountID, at: now}
 	s.blockedMu.Unlock()
-	return markBlockedRow(store.G(ctx, tx), key, blockedRevision(d.Revision), now).Error
-}
-
-// markBlockedRow records a block of runtime key at revision (blockedRevision)
-// sent at at.
-func markBlockedRow(db *gorm.DB, key string, revision int64, at time.Time) *gorm.DB {
-	return runtimes(db).Where("key = ?", key).Updates(map[string]any{"blocked_revision": revision, "blocked_at": at})
+	return runtimes(store.G(ctx, tx)).Where("key = ?", key).
+		Updates(map[string]any{"blocked_revision": blockedRevision(d.Revision), "blocked_at": now}).Error
 }
 
 // forgetBlocked follows an account, proxy or configuration change: a

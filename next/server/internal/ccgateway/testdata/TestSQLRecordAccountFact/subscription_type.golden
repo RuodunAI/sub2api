@@ -1,6 +1,0 @@
--- sql
-UPDATE "accounts" SET "subscription_type"=$1 WHERE id = $2 AND subscription_type IS DISTINCT FROM $3
--- vars
-$1 string "max"
-$2 int64 7
-$3 string "max"

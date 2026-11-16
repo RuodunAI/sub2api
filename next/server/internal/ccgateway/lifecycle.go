@@ -26,7 +26,10 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 		return err
 	}
 	g := store.G(ctx, s.DB.Gorm)
-	res := insertPreparation(g, p)
+	// The settings are written as given: a nil value is NULL, not the column
+	// default.
+	res := runtimes(g).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
+		Create(map[string]any{"key": p.Key, "proxy_id": p.ProxyID, "created_by": p.CreatedBy, "initial_settings": p.Settings})
 	if res.Error != nil {
 		return res.Error
 	}
@@ -43,24 +46,11 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 	return nil
 }
 
-// insertPreparation inserts the draft of preparation p unless its key
-// exists. The settings are written as given: a nil value is NULL, not the
-// column default.
-func insertPreparation(db *gorm.DB, p core.AccountPreparation) *gorm.DB {
-	return runtimes(db).Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
-		Create(map[string]any{"key": p.Key, "proxy_id": p.ProxyID, "created_by": p.CreatedBy, "initial_settings": p.Settings})
-}
-
 // preparationMatches reports whether the open draft of p is the one p
 // describes (same creator, proxy and settings).
 func preparationMatches(db *gorm.DB, p core.AccountPreparation) (bool, error) {
-	return store.Exists(db, preparationDraft(db, p))
-}
-
-// preparationDraft is the open draft p describes.
-func preparationDraft(db *gorm.DB, p core.AccountPreparation) *gorm.DB {
-	return newAccountDraft(db, p.Key, &p.CreatedBy).
-		Where("proxy_id IS NOT DISTINCT FROM ? AND initial_settings = ?::jsonb", p.ProxyID, p.Settings)
+	return store.Exists(db, newAccountDraft(db, p.Key, &p.CreatedBy).
+		Where("proxy_id IS NOT DISTINCT FROM ? AND initial_settings = ?::jsonb", p.ProxyID, p.Settings))
 }
 
 // AccountPreparationAction runs one action on a preparation's draft runtime

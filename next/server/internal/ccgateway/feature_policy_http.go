@@ -125,7 +125,8 @@ func previewInput(c *gin.Context) (groupID int64, draft *AccountFeaturePolicy, o
 // them (0 means "no group selected").
 func (s *Service) accountGroups(c *gin.Context, ctx context.Context, id, groupID int64) ([]featureGroupRef, bool) {
 	var groups []featureGroupRef
-	if err := accountGroupsQuery(store.G(ctx, s.DB.Gorm), id).Scan(&groups).Error; err != nil {
+	if err := store.G(ctx, s.DB.Gorm).Table("groups g").Joins("JOIN account_groups a ON a.group_id = g.id").
+		Select("g.id, g.name").Where("a.account_id = ?", id).Order("g.id").Scan(&groups).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return nil, false
 	}
@@ -138,12 +139,6 @@ func (s *Service) accountGroups(c *gin.Context, ctx context.Context, id, groupID
 		return nil, false
 	}
 	return groups, true
-}
-
-// accountGroupsQuery lists the groups of account id.
-func accountGroupsQuery(db *gorm.DB, id int64) *gorm.DB {
-	return db.Table("groups g").Joins("JOIN account_groups a ON a.group_id = g.id").
-		Select("g.id, g.name").Where("a.account_id = ?", id).Order("g.id")
 }
 
 // Saving a custom draft requires at least one current account group without an

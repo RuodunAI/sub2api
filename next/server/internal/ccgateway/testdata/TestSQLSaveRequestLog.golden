@@ -1,7 +1,0 @@
--- sql
-INSERT INTO "ccgateway_account_request_logs" ("account_id","level","full_until","updated_by") VALUES ($1,$2,$3,$4) ON CONFLICT ("account_id") DO UPDATE SET "level"="excluded"."level","full_until"="excluded"."full_until","updated_by"="excluded"."updated_by","updated_at"=clock_timestamp() RETURNING "updated_at"
--- vars
-$1 int64 7
-$2 string "full"
-$3 *time.Time 2026-11-15 08:00:00 +0000 UTC
-$4 *int64 2

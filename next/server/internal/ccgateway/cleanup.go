@@ -47,31 +47,20 @@ const (
 func (s *Service) MarkAccountDeleted(ctx context.Context, tx *gorm.DB, id int64, opts core.AccountDeletionOptions) (time.Time, error) {
 	var purgeAfter time.Time
 	g := store.G(ctx, tx)
-	err := retireAccountRuntime(g, id, opts.RetainDays).Row().Scan(&purgeAfter)
+	err := g.Raw(`UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => ?::int),purged_at=NULL
+	 WHERE account_id=? RETURNING purge_after`, opts.RetainDays, id).Row().Scan(&purgeAfter)
 	if err == nil {
 		return purgeAfter, nil
 	}
 	if !store.IsNoRows(err) {
 		return time.Time{}, err
 	}
-	err = insertRetiredRuntime(g, id, opts.RetainDays).Row().Scan(&purgeAfter)
-	return purgeAfter, err
-}
-
-// retireAccountRuntime marks the runtime row of account id retired, due for
-// its purge in days days, and returns purge_after.
-func retireAccountRuntime(db *gorm.DB, id int64, days int) *gorm.DB {
-	return db.Raw(`UPDATE ccgateway_runtimes SET retired_at=now(),purge_after=now()+make_interval(days => ?::int),purged_at=NULL
-	 WHERE account_id=? RETURNING purge_after`, days, id)
-}
-
-// insertRetiredRuntime is retireAccountRuntime for an account without a row
-// (its runtime is named after its id) and returns purge_after.
-func insertRetiredRuntime(db *gorm.DB, id int64, days int) *gorm.DB {
-	return db.Raw(`INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
+	// No row: the account's runtime is named after its id.
+	err = g.Raw(`INSERT INTO ccgateway_runtimes(key,account_id,adopted_at,retired_at,purge_after)
 	 VALUES(?::bigint::text,?,now(),now(),now()+make_interval(days => ?::int)) ON CONFLICT(key) DO UPDATE
 	 SET account_id=EXCLUDED.account_id,retired_at=EXCLUDED.retired_at,purge_after=EXCLUDED.purge_after,purged_at=NULL
-	 RETURNING purge_after`, id, id, days)
+	 RETURNING purge_after`, id, id, opts.RetainDays).Row().Scan(&purgeAfter)
+	return purgeAfter, err
 }
 
 type cleanupCandidate struct {
@@ -266,8 +255,20 @@ type retainedRuntime struct {
 // purge_after and is due since it was retired. Times are RFC3339 (UTC).
 func (s *Service) retainedRuntimes(c *gin.Context) {
 	httpapi.NoStore(c)
-	var rows []retainedRow
-	if err := retainedQuery(store.G(c.Request.Context(), s.DB.Gorm)).Scan(&rows).Error; err != nil {
+	var rows []struct {
+		Key         string    `gorm:"column:key"`
+		AccountID   int64     `gorm:"column:account_id"`
+		AccountName string    `gorm:"column:account_name"`
+		AccountType string    `gorm:"column:account_type"`
+		DeletedAt   time.Time `gorm:"column:deleted_at"`
+		PurgeAt     time.Time `gorm:"column:purge_at"`
+		Due         bool      `gorm:"column:due"`
+	}
+	if err := store.G(c.Request.Context(), s.DB.Gorm).Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
+		Select("r.key, a.id AS account_id, a.name AS account_name, a.type AS account_type, a.deleted_at, " +
+			sqlPurgeAt + " AS purge_at, " + sqlPurgeAt + " <= now() AS due").
+		Where("a.plugin_key = 'ccgateway' AND " + sqlPendingPurge).
+		Order("purge_at, r.key").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, core.ErrUnavailable)
 		return
 	}
@@ -277,27 +278,6 @@ func (s *Service) retainedRuntimes(c *gin.Context) {
 			DeletedAt: r.DeletedAt.UTC().Format(time.RFC3339), PurgeAfter: r.PurgeAt.UTC().Format(time.RFC3339), Due: r.Due}
 	}
 	httpapi.OK(c, map[string]any{"runtimes": out})
-}
-
-// retainedRow is a row of retainedQuery.
-type retainedRow struct {
-	Key         string    `gorm:"column:key"`
-	AccountID   int64     `gorm:"column:account_id"`
-	AccountName string    `gorm:"column:account_name"`
-	AccountType string    `gorm:"column:account_type"`
-	DeletedAt   time.Time `gorm:"column:deleted_at"`
-	PurgeAt     time.Time `gorm:"column:purge_at"`
-	Due         bool      `gorm:"column:due"`
-}
-
-// retainedQuery lists the runtimes of deleted accounts not purged yet, the
-// one due first first.
-func retainedQuery(db *gorm.DB) *gorm.DB {
-	return db.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
-		Select("r.key, a.id AS account_id, a.name AS account_name, a.type AS account_type, a.deleted_at, " +
-			sqlPurgeAt + " AS purge_at, " + sqlPurgeAt + " <= now() AS due").
-		Where("a.plugin_key = 'ccgateway' AND " + sqlPendingPurge).
-		Order("purge_at, r.key")
 }
 
 // runtimePurge serves POST /system/ccgateway/runtimes/:key/purge: the
@@ -319,8 +299,17 @@ func (s *Service) runtimePurge(c *gin.Context) {
 	found, retained := false, false
 	err := s.lockedTx(ctx, key, true, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		var r purgeTarget
-		err := purgeTargetQuery(g, key).Take(&r).Error
+		// The runtime's account, and whether it is a deleted account's
+		// runtime not purged yet; the runtime row stays locked.
+		var r struct {
+			AccountID int64 `gorm:"column:id"`
+			Retained  bool  `gorm:"column:retained"`
+		}
+		err := g.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
+			Select("a.id, "+sqlPendingPurge+" AS retained").
+			Where("r.key = ? AND a.plugin_key = 'ccgateway'", key).
+			Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "r"}}).
+			Take(&r).Error
 		if store.IsNoRows(err) {
 			return nil
 		}
@@ -348,19 +337,4 @@ func (s *Service) runtimePurge(c *gin.Context) {
 		s.Kick(key)
 		httpapi.Accepted(c, map[string]any{"accepted": true, "key": key, "account_id": accountID})
 	}
-}
-
-// purgeTarget is the row of purgeTargetQuery.
-type purgeTarget struct {
-	AccountID int64 `gorm:"column:id"`
-	Retained  bool  `gorm:"column:retained"`
-}
-
-// purgeTargetQuery locks runtime key of a ccgateway account and reads its
-// account and whether it is a deleted account's runtime not purged yet.
-func purgeTargetQuery(db *gorm.DB, key string) *gorm.DB {
-	return db.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
-		Select("a.id, "+sqlPendingPurge+" AS retained").
-		Where("r.key = ? AND a.plugin_key = 'ccgateway'", key).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "r"}})
 }

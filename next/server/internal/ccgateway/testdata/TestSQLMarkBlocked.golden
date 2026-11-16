@@ -1,6 +1,0 @@
--- sql
-UPDATE "ccgateway_runtimes" SET "blocked_at"=$1,"blocked_revision"=$2 WHERE key = $3
--- vars
-$1 time.Time 2026-11-15 08:00:00 +0000 UTC
-$2 int64 42
-$3 string "7"
