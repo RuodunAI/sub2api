@@ -74,9 +74,14 @@ func (eventRow) TableName() string { return model.Event{}.TableName() }
 // events, inside the caller's transaction and with no round trip of its
 // own. The ids follow the batch order: each row takes the next id as the
 // VALUES list hands it over, in its order, as the rows of the former
-// unnest WITH ORDINALITY ... ORDER BY did.
+// unnest WITH ORDINALITY ... ORDER BY did. The usual few events go through
+// Create: CreateInBatches clones the session and the slice even for one
+// batch, on every request that emits.
 func insertEvents(db *gorm.DB, rows []eventRow) error {
-	return db.CreateInBatches(rows, insertBatch).Error
+	if len(rows) <= insertBatch {
+		return db.Create(&rows).Error
+	}
+	return db.CreateInBatches(&rows, insertBatch).Error
 }
 
 func marshal(v any) ([]byte, error) {

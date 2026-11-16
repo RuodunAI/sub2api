@@ -122,4 +122,12 @@ func TestUpsertDomainsReportsNewHosts(t *testing.T) {
 	if a.Connections != 5 || !a.FirstSeenAt.Equal(t0) || !a.LastSeenAt.Equal(t1) {
 		t.Fatalf("a.test after two batches: %+v", a)
 	}
+	// More hosts than one statement's 65535 parameters hold (5 each).
+	many := make([]domainDelta, 14_000)
+	for i := range many {
+		many[i] = delta(fmt.Sprintf("h%05d.test", i), 1, t1)
+	}
+	if got := upsert(many...); len(got) != len(many) {
+		t.Fatalf("%d new hosts of %d", len(got), len(many))
+	}
 }

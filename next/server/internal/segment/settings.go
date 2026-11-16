@@ -307,18 +307,28 @@ func (s *Service) savePairs(ctx context.Context, items []pairInput) error {
 // savePair writes the item: the pair is created, or what the item sets
 // replaces what the pair has.
 func savePair(db *gorm.DB, it pairInput) *gorm.DB {
-	// A map on the bare table: every column is written as given, and
-	// nothing is read back.
-	return db.Table(model.SegmentGroup{}.TableName()).Clauses(clause.OnConflict{
+	return db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "segment_id"}, {Name: "group_id"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"granted":       gorm.Expr("COALESCE(?, segment_groups.granted)", it.Granted),
 			"rate_override": gorm.Expr("CASE WHEN ? THEN ?::numeric ELSE segment_groups.rate_override END", it.RateOverride.Set, it.RateOverride.Value),
 			"updated_at":    gorm.Expr("now()"),
 		}),
-	}).Create(map[string]any{"segment_id": it.SegmentID, "group_id": it.GroupID,
-		"granted": gorm.Expr("COALESCE(?, false)", it.Granted), "rate_override": gorm.Expr("?::numeric", it.RateOverride.Value)})
+	}).Create(&newPair{SegmentID: it.SegmentID, GroupID: it.GroupID, Granted: it.Granted != nil && *it.Granted,
+		RateOverride: it.RateOverride.Value})
 }
+
+// newPair is a segment_groups row, every column written as given (an
+// unset grant is false); updated_at is the default, and nothing is read
+// back.
+type newPair struct {
+	SegmentID    int64            `gorm:"column:segment_id"`
+	GroupID      int64            `gorm:"column:group_id"`
+	Granted      bool             `gorm:"column:granted"`
+	RateOverride *decimal.Decimal `gorm:"column:rate_override"`
+}
+
+func (newPair) TableName() string { return model.SegmentGroup{}.TableName() }
 
 // lockPairs returns the segments and the groups the items are about, locked
 // against deletion until the transaction ends. It fails with the field

@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -394,12 +395,10 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 	return err == nil, err
 }
 
-// recordDataMigration records a data migration beside the SQL ones
-// (plugin_migrations belongs to store's migration runner, so it has no
-// model here).
+// recordDataMigration records a data migration beside the SQL ones.
 func recordDataMigration(g *gorm.DB, key, id string) *gorm.DB {
-	return g.Table("plugin_migrations").Clauses(clause.OnConflict{DoNothing: true}).
-		Create(map[string]any{"plugin_key": key, "migration_id": id, "checksum": "data"})
+	return g.Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&dbschema.AppliedMigration{PluginKey: key, MigrationID: id, Checksum: "data"})
 }
 
 // commit is the commit point: preparing -> activating.

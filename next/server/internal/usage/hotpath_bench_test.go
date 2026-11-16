@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
@@ -113,19 +114,10 @@ func BenchmarkHotSettlerInsertBatch(b *testing.B) {
 		return recs
 	}
 	ctx := context.Background()
-	if _, err := s.svc.insert(ctx, batch(1_000_000)); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := range b.N {
-		b.StopTimer()
-		recs := batch(i)
-		b.StartTimer()
-		if _, err := s.svc.insert(ctx, recs); err != nil {
-			b.Fatal(err)
-		}
-	}
+	benchEach(b, func(i int) []*core.UsageRecord { return batch(i) }, func(recs []*core.UsageRecord) error {
+		_, err := s.svc.insert(ctx, recs)
+		return err
+	})
 }
 
 // Settlement of a pending row whose request was precharged: one
@@ -144,17 +136,126 @@ func BenchmarkHotSettle(b *testing.B) {
 		s.insert(b, rec)
 		return fromRecord(rec)
 	}
-	if err := s.svc.settle(ctx, prepare(-1), false); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := range b.N {
+	benchEach(b, prepare, func(p *pending) error { return s.svc.settle(ctx, p, false) })
+}
+
+// benchEach times run on a new argument each iteration, which prepare makes
+// untimed; the first call, untimed too, prepares the statements.
+func benchEach[T any](b *testing.B, prepare func(i int) T, run func(T) error) {
+	step := func(i int) {
 		b.StopTimer()
-		p := prepare(i)
+		arg := prepare(i)
 		b.StartTimer()
-		if err := s.svc.settle(ctx, p, false); err != nil {
+		if err := run(arg); err != nil {
 			b.Fatal(err)
 		}
 	}
+	step(-1)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := range b.N {
+		step(i)
+	}
+}
+
+// benchAccount is the upstream account of the executions and tasks.
+var benchAccount int64 = 7
+
+// The plugin_executions writes of a request served through an Execute
+// plugin: the intent and the observation on every attempt, and the commit
+// (the row locked FOR UPDATE and marked committed in the usage transaction
+// of a free record).
+func BenchmarkHotExecution(b *testing.B) {
+	s := newBenchSettler(b)
+	ctx := context.Background()
+	intent := func(i int) *core.UsageRecord {
+		rec := s.record(i, false)
+		rec.RequestID = "bench-exec-" + strconv.Itoa(i)
+		rec.AccountID = &benchAccount
+		return rec
+	}
+	begin := func(rec *core.UsageRecord) error {
+		return s.svc.BeginExecution(ctx, core.ExecutionIntent{ID: rec.RequestID, RequestID: rec.RequestID,
+			PluginKey: rec.PluginKey, AccountID: *rec.AccountID, Attempt: 1, Record: rec})
+	}
+	observe := func(rec *core.UsageRecord) error {
+		return s.svc.ObserveExecution(ctx, rec.RequestID, rec, []byte("bounded observation"))
+	}
+	n := 0
+	// then is the record of a new execution with steps run, untimed.
+	then := func(steps ...func(*core.UsageRecord) error) func(int) *core.UsageRecord {
+		return func(int) *core.UsageRecord {
+			n++
+			rec := intent(n)
+			for _, step := range steps {
+				if err := step(rec); err != nil {
+					b.Fatal(err)
+				}
+			}
+			return rec
+		}
+	}
+	b.Run("begin", func(b *testing.B) { benchEach(b, then(), begin) })
+	b.Run("observe", func(b *testing.B) { benchEach(b, then(begin), observe) })
+	b.Run("commit", func(b *testing.B) {
+		benchEach(b, then(begin, observe), func(rec *core.UsageRecord) error {
+			_, err := s.svc.CommitExecution(ctx, core.ExecutionCommit{ID: rec.RequestID, Operation: "usage",
+				Digest: strings.Repeat("0", 64), Record: rec})
+			return err
+		})
+	})
+}
+
+// The task endpoints: BeginTask's receipt before a submission goes
+// upstream, ReceiveTask's write of the answer, RegisterTask (the usage row
+// and recordTask in one transaction) before the client gets its public ID,
+// and FindTask for every poll of a client.
+func BenchmarkHotTask(b *testing.B) {
+	s := newBenchSettler(b)
+	ctx := context.Background()
+	n := 0
+	// submission is a new task submission, its receipt taken through steps,
+	// untimed.
+	submission := func(steps ...func(core.TaskRegistration) error) func(int) core.TaskRegistration {
+		return func(int) core.TaskRegistration {
+			n++
+			rec := s.record(n, false)
+			rec.RequestID = "bench-task-" + strconv.Itoa(n)
+			rec.AccountID = &benchAccount
+			upstream := "up-" + rec.RequestID
+			reg := core.TaskRegistration{UpstreamID: upstream, Kind: "video",
+				Snapshot: []byte(`{"id":"` + upstream + `","status":"queued"}`), IDPaths: []string{"id"}, Record: rec}
+			for _, step := range steps {
+				if err := step(reg); err != nil {
+					b.Fatal(err)
+				}
+			}
+			return reg
+		}
+	}
+	var publicID string // BeginTask's, which RegisterTask takes
+	begin := func(reg core.TaskRegistration) (err error) {
+		r := reg.Record
+		publicID, err = s.svc.BeginTask(ctx, core.TaskIntent{RequestID: r.RequestID, PluginKey: r.PluginKey, Kind: reg.Kind,
+			Model: r.Model, Protocol: r.Protocol, UserID: r.UserID, APIKeyID: r.APIKeyID, GroupID: r.GroupID, AccountID: *r.AccountID})
+		return err
+	}
+	receive := func(reg core.TaskRegistration) error {
+		return s.svc.ReceiveTask(ctx, reg.Record.RequestID, 200, reg.Snapshot, "")
+	}
+	register := func(reg core.TaskRegistration) error {
+		reg.PublicID = publicID
+		return s.svc.RegisterTask(ctx, reg)
+	}
+	b.Run("begin", func(b *testing.B) { benchEach(b, submission(), begin) })
+	b.Run("receive", func(b *testing.B) { benchEach(b, submission(begin), receive) })
+	b.Run("register", func(b *testing.B) { benchEach(b, submission(begin, receive), register) })
+	b.Run("find", func(b *testing.B) {
+		reg := submission(begin, receive, register)(0)
+		q := core.TaskQuery{ID: publicID, PluginKey: reg.Record.PluginKey, Kind: reg.Kind, UserID: s.user, GroupID: s.group}
+		benchEach(b, func(int) core.TaskQuery { return q }, func(q core.TaskQuery) error {
+			_, err := s.svc.FindTask(ctx, q)
+			return err
+		})
+	})
 }

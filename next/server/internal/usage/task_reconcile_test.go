@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -74,6 +75,9 @@ func TestManagedTaskFencingFreePollingAndLegacyTransfer(t *testing.T) {
 	id := prepare("managed-fence", "up-fence", false)
 	due(id)
 	old := claim()
+	if entry := f.scalar(`SELECT id FROM pending_settlements WHERE task_public_id=$1`, id); fmt.Sprint(old.id) != entry {
+		t.Fatalf("claim read entry %d, want the task's entry %s", old.id, entry)
+	}
 	row, err := f.svc.loadReserved(ctx, old.usageLogID)
 	if err != nil {
 		t.Fatal(err)

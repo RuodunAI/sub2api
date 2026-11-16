@@ -135,6 +135,9 @@ CLAUDE.md
 #openspec/
 code-reviews/
 AGENTS.md
+# The repository root's AGENTS.md is the shared rulebook and is tracked;
+# nested ones stay ignored unless their directory re-includes them.
+!/AGENTS.md
 backend/cmd/server/server
 deploy/docker-compose.override.yml
 .gocache/

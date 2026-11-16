@@ -538,12 +538,21 @@ func selectEpochForShare(g *gorm.DB, key string) *gorm.DB {
 // upsertRuntimeNode records that this boot runs the plugin; the upsert
 // turns a stopped row back on.
 func upsertRuntimeNode(g *gorm.DB, key, bootID string) *gorm.DB {
-	return g.Table(model.PluginRuntimeNode{}.TableName()).Clauses(clause.OnConflict{
+	return g.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "plugin_key"}, {Name: "boot_id"}},
 		DoUpdates: clause.Set{{Column: clause.Column{Name: "stopped"}, Value: false},
 			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}},
-	}).Create(map[string]any{"plugin_key": key, "boot_id": bootID})
+	}).Create(&runningBoot{PluginKey: key, BootID: bootID})
 }
+
+// runningBoot is a new plugin_runtime_nodes row; the other columns are
+// their defaults, and nothing is read back.
+type runningBoot struct {
+	PluginKey string `gorm:"column:plugin_key"`
+	BootID    string `gorm:"column:boot_id"`
+}
+
+func (runningBoot) TableName() string { return model.PluginRuntimeNode{}.TableName() }
 
 // Only a reconciliation of the current PG generation may acknowledge cleanup.
 // Its removed instances must have completed Drain; stale passes cannot clear a

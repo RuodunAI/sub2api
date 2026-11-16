@@ -358,7 +358,7 @@ func rollupBackfill(ctx context.Context, tx *gorm.DB, st *rollupState) (int, boo
 		return 0, false, nil
 	}
 	var oldest *time.Time
-	if err := store.G(ctx, tx).Model(&usageLogRow{}).Select("min(created_at)").Row().Scan(&oldest); err != nil {
+	if err := store.G(ctx, tx).Model(&model.UsageLog{}).Select("min(created_at)").Row().Scan(&oldest); err != nil {
 		return 0, false, err
 	}
 	if oldest == nil || !oldest.Truncate(time.Hour).Before(*st.low) {

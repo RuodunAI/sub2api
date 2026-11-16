@@ -286,16 +286,16 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 			}
 		}
 		for _, s := range []struct {
-			ddl  string
-			args []store.DDLArg
+			action, ddl string
+			args        []store.DDLArg
 		}{
-			{"ALTER SCHEMA %s OWNER TO %s", []store.DDLArg{sid, rid}},
-			{"REVOKE ALL ON SCHEMA %s FROM PUBLIC", []store.DDLArg{sid}},
-			{"GRANT USAGE, CREATE ON SCHEMA %s TO %s", []store.DDLArg{sid, rid}},
-			{"ALTER ROLE %s SET search_path TO %s", []store.DDLArg{rid, sid}},
+			{"hand the schema to the role", "ALTER SCHEMA %s OWNER TO %s", []store.DDLArg{sid, rid}},
+			{"revoke the public's access", "REVOKE ALL ON SCHEMA %s FROM PUBLIC", []store.DDLArg{sid}},
+			{"grant the role the schema", "GRANT USAGE, CREATE ON SCHEMA %s TO %s", []store.DDLArg{sid, rid}},
+			{"set the role's search_path", "ALTER ROLE %s SET search_path TO %s", []store.DDLArg{rid, sid}},
 		} {
 			if err := store.DDL(g, s.ddl, s.args...); err != nil {
-				return fmt.Errorf("%s (schema %s): %w", s.ddl, schema, err)
+				return fmt.Errorf("%s (role %s): %w", s.action, role, err)
 			}
 		}
 		if err := grantMigrationFuncs(ctx, tx, role); err != nil {
@@ -503,12 +503,23 @@ func (t Tracker) recordQuery(g *gorm.DB, id, checksum string) *gorm.DB {
 	if t.AsPluginRole {
 		return g.Exec(`SELECT public.plugin_migration_record(?, ?, ?)`, t.PluginKey, id, checksum)
 	}
-	return g.Table("public.plugin_migrations").Clauses(clause.OnConflict{
+	return g.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "plugin_key"}, {Name: "migration_id"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"checksum"}),
 			clause.Assignment{Column: clause.Column{Name: "applied_at"}, Value: gorm.Expr("now()")}),
-	}).Create(map[string]any{"plugin_key": t.PluginKey, "migration_id": id, "checksum": checksum})
+	}).Create(&AppliedMigration{PluginKey: t.PluginKey, MigrationID: id, Checksum: checksum})
 }
+
+// AppliedMigration is a public.plugin_migrations row (store's migration
+// runner owns the table, so it has no model); applied_at is the default,
+// and nothing is read back.
+type AppliedMigration struct {
+	PluginKey   string `gorm:"column:plugin_key"`
+	MigrationID string `gorm:"column:migration_id"`
+	Checksum    string `gorm:"column:checksum"`
+}
+
+func (AppliedMigration) TableName() string { return "public.plugin_migrations" }
 
 // rewriteDSN replaces the credentials of dsn (URL or key=value form) and pins
 // search_path to schema. Empty user keeps the host credentials. The host's

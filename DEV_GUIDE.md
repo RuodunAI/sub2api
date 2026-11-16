@@ -1,5 +1,7 @@
 # sub2api 项目开发指南
 
+> 本文只适用于仓库根目录的旧版代码（`backend/`、`frontend/`）。现行的 `next/` 平台先读根目录的 [AGENTS.md](AGENTS.md)。
+
 > 本文档记录项目环境配置、常见坑点和注意事项，供 Claude Code 和团队成员参考。
 
 ## 一、项目基本信息
@@ -334,8 +336,7 @@ sub2api-bmai/
 │   │   └── i18n/            # 国际化
 │   ├── package.json         # 依赖配置
 │   └── pnpm-lock.yaml       # pnpm 锁文件（必须提交）
-└── .claude/
-    └── CLAUDE.md            # 本文档
+└── DEV_GUIDE.md             # 本文档
 ```
 
 ## 七、参考资源

@@ -28,7 +28,7 @@
 | | |
 |---|---|
 | 仓库 | `Sub2API-Devs/sup2api`（公开） |
-| 工作分支 | `feat/next-platform`（**不是** `main`） |
+| 工作分支 | 当时是 `feat/next-platform`（**不是** `main`）；现在的开发分支是 `develop`，`feat/next-platform` 不再使用 |
 | HEAD | `aab0c5cee`，== origin，树干净 |
 | 主目录 | `next/`（Go 1.27 多模块 workspace） |
 | 旧代码 | 仓库根还有老版本（`backend-ci.yml` 管它）。**这条线只碰 `next/`** |

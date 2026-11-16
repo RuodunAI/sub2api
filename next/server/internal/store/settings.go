@@ -18,8 +18,8 @@ func UpdateSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy
 		return nil, err
 	}
 	db := G(ctx, tx)
-	if err := db.Table("settings").Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
-		Create(map[string]any{"key": key, "value": gorm.Expr("'{}'")}).Error; err != nil {
+	if err := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
+		Create(&newSetting{Key: key, Value: json.RawMessage("{}")}).Error; err != nil {
 		return nil, err
 	}
 	raw, err := SettingValue(db, key, ForUpdate())
@@ -36,6 +36,15 @@ func UpdateSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy
 	}
 	return next, writeSetting(db, key, next, updatedBy).Error
 }
+
+// newSetting is a settings row with its first document; updated_at and
+// updated_by are the defaults, and nothing is read back.
+type newSetting struct {
+	Key   string          `gorm:"column:key"`
+	Value json.RawMessage `gorm:"column:value"`
+}
+
+func (newSetting) TableName() string { return "settings" }
 
 // SettingValue reads the document of settings row key; a missing row is an
 // IsNoRows error. clauses go into the SELECT: ForUpdate locks the row until

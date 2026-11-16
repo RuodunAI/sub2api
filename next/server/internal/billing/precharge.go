@@ -202,8 +202,16 @@ func ensurePrechargeBalance(db *gorm.DB, userID int64) *gorm.DB {
 
 // ensureBalanceRow inserts the user's balance row unless it exists.
 func ensureBalanceRow(db *gorm.DB, userID int64) *gorm.DB {
-	return db.Table("user_balances").Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"user_id": userID})
+	return db.Clauses(clause.OnConflict{DoNothing: true}).Create(&newBalance{UserID: userID})
 }
+
+// newBalance is a new user_balances row: the user alone, the balance and
+// updated_at their defaults, and nothing read back.
+type newBalance struct {
+	UserID int64 `gorm:"column:user_id"`
+}
+
+func (newBalance) TableName() string { return model.UserBalance{}.TableName() }
 
 // prechargeSQL is the whole precharge in one statement. locked takes the
 // balance row's FOR UPDATE lock after setting the lock timeout (its

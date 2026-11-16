@@ -7,7 +7,7 @@
 #
 # Env: SUP2API_DIR (default ~/sup2api), SUP2API_REPO, SUP2API_PORT (3130).
 set -euo pipefail
-BRANCH=${1:-feat/next-platform}
+BRANCH=${1:-develop}
 DIR=${SUP2API_DIR:-$HOME/sup2api}
 REPO=${SUP2API_REPO:-https://github.com/Sub2API-Devs/sup2api.git}
 PORT=${SUP2API_PORT:-3130}

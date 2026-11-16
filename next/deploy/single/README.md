@@ -23,7 +23,7 @@ the service is published on `127.0.0.1:3130` by default; set
 
 | Path on the server | What |
 |---|---|
-| `~/sup2api/src` | sparse clone of the repo (`next/` only), branch `feat/next-platform` |
+| `~/sup2api/src` | sparse clone of the repo (`next/` only), branch `develop` |
 | `~/sup2api/.env` | secrets and admin account, created on the first deploy (mode 600, never in git) |
 | volumes `sup2api_pgdata`, `sup2api_appdata`, `sup2api_market` | database, plugin files, market |
 

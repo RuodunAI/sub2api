@@ -335,13 +335,30 @@ func actor(id int64) *int64 {
 	return &id
 }
 
+// newRollout is a new plugin_rollouts row, its lease from the database's
+// clock; the other columns are their defaults, and the id is read back.
+type newRollout struct {
+	ID                    int64           `gorm:"column:id;->"`
+	PluginKey             string          `gorm:"column:plugin_key"`
+	Action                string          `gorm:"column:action"`
+	FromVersion           *string         `gorm:"column:from_version"`
+	TargetVersion         *string         `gorm:"column:target_version"`
+	Phase                 string          `gorm:"column:phase"`
+	CoordinatorNodeID     string          `gorm:"column:coordinator_node_id"`
+	CoordinatorBootID     string          `gorm:"column:coordinator_boot_id"`
+	CoordinatorLeaseUntil store.ExprValue `gorm:"column:coordinator_lease_until"`
+	CreatedBy             *int64          `gorm:"column:created_by"`
+}
+
+func (newRollout) TableName() string { return model.PluginRollout{}.TableName() }
+
 func (c *Controller) insertRollout(ctx context.Context, tx *gorm.DB, key, action string, from, target *string, phase string, actorID int64) (int64, error) {
 	g := store.G(ctx, tx)
-	row := map[string]any{"plugin_key": key, "action": action, "from_version": from, "target_version": target, "phase": phase,
-		"coordinator_node_id": c.o.Node.NodeID(), "coordinator_boot_id": c.o.Node.BootID(),
-		"coordinator_lease_until": gorm.Expr(leaseFromNow, c.o.LeaseTTL.Milliseconds()), "created_by": actor(actorID)}
-	err := g.Table(model.PluginRollout{}.TableName()).Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
-	id, _ := row["id"].(int64)
+	row := &newRollout{PluginKey: key, Action: action, FromVersion: from, TargetVersion: target, Phase: phase,
+		CoordinatorNodeID: c.o.Node.NodeID(), CoordinatorBootID: c.o.Node.BootID(),
+		CoordinatorLeaseUntil: store.ExprValue{Expr: gorm.Expr(leaseFromNow, c.o.LeaseTTL.Milliseconds())}, CreatedBy: actor(actorID)}
+	err := g.Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(row).Error
+	id := row.ID
 	if store.IsUniqueViolation(err, "") {
 		return 0, errOpen
 	}
@@ -654,27 +671,16 @@ func failRollout(g *gorm.DB, r *rolloutRow, phase, msg string, fenced bool, boot
 }
 
 // Mark every boot which could own an instance, including disconnected boots.
-// Liveness expiry is not evidence that an old version has stopped.
+// Liveness expiry is not evidence that an old version has stopped. One
+// statement: a cleanup row for each boot running the plugin, pending again
+// if it was there.
 func (c *Controller) markCleanup(ctx context.Context, tx *gorm.DB, r *rolloutRow) error {
-	return markCleanupRows(store.G(ctx, tx), r).Error
-}
-
-// markCleanupRows is markCleanup's statements: the boots running the
-// plugin, then a cleanup row for each, pending again if it was there.
-func markCleanupRows(g *gorm.DB, r *rolloutRow) *gorm.DB {
-	var boots []string
-	if res := g.Model(&model.PluginRuntimeNode{}).Where("plugin_key = ? AND NOT stopped", r.key).Pluck("boot_id", &boots); res.Error != nil || len(boots) == 0 {
-		return res
-	}
-	rows := make([]model.PluginRolloutCleanup, len(boots))
-	for i, b := range boots {
-		rows[i] = model.PluginRolloutCleanup{RolloutID: r.id, BootID: b, State: "cleanup_pending"}
-	}
-	return g.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
-		DoUpdates: clause.Set{{Column: clause.Column{Name: "state"}, Value: "cleanup_pending"},
-			{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}},
-	}).Create(&rows)
+	g := store.G(ctx, tx)
+	return gormpg.InsertSelect(g, model.PluginRolloutCleanup{}.TableName(), []string{"rollout_id", "boot_id", "state"},
+		g.Model(&model.PluginRuntimeNode{}).Select("?::bigint, boot_id, 'cleanup_pending'", r.id).Where("plugin_key = ? AND NOT stopped", r.key),
+		clause.OnConflict{Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
+			DoUpdates: clause.Set{{Column: clause.Column{Name: "state"}, Value: "cleanup_pending"},
+				{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}}}).Error
 }
 
 // writeNodes records the per-node outcome from the live node reports.
@@ -702,12 +708,24 @@ func (c *Controller) writeNodes(ctx context.Context, tx *gorm.DB, r *rolloutRow)
 
 // upsertRolloutNode records one node's outcome.
 func upsertRolloutNode(g *gorm.DB, rolloutID int64, nodeID, bootID, state, msg string) *gorm.DB {
-	return g.Table(model.PluginRolloutNode{}.TableName()).Clauses(clause.OnConflict{
+	return g.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "rollout_id"}, {Name: "boot_id"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"state", "error"}),
 			clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}),
-	}).Create(map[string]any{"rollout_id": rolloutID, "node_id": nodeID, "boot_id": bootID, "state": state, "error": msg})
+	}).Create(&rolloutNode{RolloutID: rolloutID, NodeID: nodeID, BootID: bootID, State: state, Error: msg})
 }
+
+// rolloutNode is a plugin_rollout_nodes row, every column written as given;
+// the timestamps are their defaults, and nothing is read back.
+type rolloutNode struct {
+	RolloutID int64  `gorm:"column:rollout_id"`
+	NodeID    string `gorm:"column:node_id"`
+	BootID    string `gorm:"column:boot_id"`
+	State     string `gorm:"column:state"`
+	Error     string `gorm:"column:error"`
+}
+
+func (rolloutNode) TableName() string { return model.PluginRolloutNode{}.TableName() }
 
 // nodeStates reads every live node's report for the rollout. selfSeen
 // tells whether this node is among the live nodes (guards against an empty
