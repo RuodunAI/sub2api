@@ -1538,10 +1538,17 @@ const ACCOUNT_RECORD_FIELDS = [
 ]
 const ACCOUNT_GROUPS = ['day', 'hour', 'none', 'model', 'account', 'platform', 'endpoint', 'protocol']
 
-/** A summary row or window without the billed cost: the account view bills nothing. */
-function unbilled({ total_cost, ...rest }: any) {
+/** A window without the charge (AccountTotals): the account view bills nothing. */
+function unbilled({ total_cost, estimated_cost, ...rest }: any) {
   void total_cost
+  void estimated_cost
   return rest
+}
+/** An AccountSummaryRow: a summary row without the user, the charge and last_at. */
+function accountSummaryRow({ user_email, last_at, ...rest }: any) {
+  void user_email
+  void last_at
+  return unbilled(rest)
 }
 
 /** Whether the caller reaches an account, by its id. */
@@ -1583,9 +1590,10 @@ accountUsageRoute('', [...ACCOUNT_USAGE_FILTERS, 'page', 'page_size', 'cursor'],
 )
 accountUsageRoute('/summary', [...ACCOUNT_USAGE_FILTERS, 'group_by', 'order', 'limit'], (rows, _, req) => {
   const { group_by: by, order } = req.query
-  if (by && !ACCOUNT_GROUPS.includes(by)) return fieldFail([{ field: 'group_by', code: 'invalid', message: `one of ${ACCOUNT_GROUPS.join(', ')}` }])
-  if (order && !['requests', 'tokens'].includes(order)) return fieldFail([{ field: 'order', code: 'invalid', message: 'requests or tokens' }])
-  return usageSummary(rows, req.query).map(unbilled)
+  // Like the server: invalid_argument with a message, no fields.
+  if (by && !ACCOUNT_GROUPS.includes(by)) return fail(400, 'invalid_argument', `group_by must be ${ACCOUNT_GROUPS.slice(0, -1).join(', ')} or ${ACCOUNT_GROUPS.at(-1)}`)
+  if (order && !['requests', 'tokens'].includes(order)) return fail(400, 'invalid_argument', 'order must be requests or tokens')
+  return usageSummary(rows, req.query).map(accountSummaryRow)
 })
 accountUsageRoute('/overview', ['tz'], (rows, reaches, req) => {
   const { today, yesterday, last_30d, ...o } = overviewOf(rows, req.query.tz || 'UTC')

@@ -52,6 +52,15 @@ describe('useScope', () => {
     expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:delete')).toBe(false)
   })
 
+  it('takes a team scope as own when the read scope lists rows beyond the team: every row, a group', () => {
+    for (const read of [['account:read'], ['account:read:team', 'account:read:group/12']]) {
+      signIn([...read, 'account:update:team'])
+      const s = useScope()
+      expect(s.can({ ...row(1, 7, [12]), owner_id: 8 }, 'account:update')).toBe(false)
+      expect(s.can({ ...row(1, 8, [12]), owner_id: 7 }, 'account:update')).toBe(true)
+    }
+  })
+
   it('reaches a proxy by its id', () => {
     signIn(['proxy:manage:proxy/8'])
     const s = useScope()

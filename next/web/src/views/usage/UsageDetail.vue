@@ -11,7 +11,7 @@ import { useAccountTypes } from '@/views/accounts/accountTypes'
 import ModelBadge from '@/components/platform/ModelBadge.vue'
 import PlatformBadge from '@/components/platform/PlatformBadge.vue'
 import { accountLabel, availabilityTrace, factText, hookTone, isConverted, knownUsageRounds, schedulingTrace, seconds, type UsageRow } from './usage'
-import type { UsageView } from './view'
+import { LIST_PRICE_LABEL, type UsageView } from './view'
 import UsageAccountMark from './UsageAccountMark.vue'
 import UsageAvailabilityTrace from './UsageAvailabilityTrace.vue'
 import UsageSchedulingTrace from './UsageSchedulingTrace.vue'
@@ -55,7 +55,7 @@ onMounted(async () => {
 
 const u = computed<UsageRow>(() => ({ ...props.row, ...(detail.value || {}) }))
 const summary = computed(() => [
-  { label: t('usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(accountView.value ? u.value.standard_cost : u.value.total_cost, 8) },
+  { label: t(accountView.value ? LIST_PRICE_LABEL : 'usage.cols.cost'), value: u.value.billing_status === 'free' ? t('usage.free') : formatMoney(accountView.value ? u.value.standard_cost : u.value.total_cost, 8) },
   { label: t('usage.request.latency'), value: seconds(u.value.latency_ms) },
   { label: t('usage.request.firstToken'), value: u.value.stream && u.value.first_token_ms != null ? seconds(u.value.first_token_ms) : '—' },
   { label: t('usage.request.upload'), value: u.value.upload_ms ? seconds(u.value.upload_ms) : '—' }

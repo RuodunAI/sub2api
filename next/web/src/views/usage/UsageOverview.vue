@@ -20,7 +20,7 @@ import { useAuthStore } from '@/stores/auth'
 import UsageFilters from './UsageFilters.vue'
 import { baseUsageFilters, entityPatch, queryUsageFilters } from './usageFilters'
 import { useUsageSummary } from './useUsageSummary'
-import type { UsageView } from './view'
+import { LIST_PRICE_LABEL, type UsageView } from './view'
 
 const props = withDefaults(
   defineProps<{
@@ -38,6 +38,8 @@ const route = useRoute()
 const auth = useAuthStore()
 
 const showAccount = computed(() => props.view === 'account' || (props.view === 'all' && auth.has('account:read')))
+/** The account view names its costs as the list price; the others keep each part's own label. */
+const costLabel = computed(() => (props.view === 'account' ? t(LIST_PRICE_LABEL) : undefined))
 
 const fromQuery = queryUsageFilters(route.query, props.view, showAccount.value)
 const range = ref<RangeKey>(fromQuery.from || fromQuery.to ? 'custom' : props.defaultRange)
@@ -124,7 +126,7 @@ function filterBy(patch: Record<string, string>) {
       </template>
     </UsageFilters>
 
-    <UsageSummaryCards :totals="totals.rows.value[0] || null" :loading="totals.loading.value" />
+    <UsageSummaryCards :totals="totals.rows.value[0] || null" :loading="totals.loading.value" :cost-label="costLabel" />
 
     <UsageCharts
       :summary-path="summaryPath"
@@ -133,6 +135,7 @@ function filterBy(patch: Record<string, string>) {
       :secondary="secondary"
       :revision="revisionCharts"
       :group="CHART_GROUPS[view]"
+      :cost-label="costLabel"
       :model-sources="view === 'all'"
       @select-model="filterBy(entityPatch('model', view === 'account' ? { id: $event } : { text: $event }))"
       @select-secondary="(k: string) => filterBy(secondaryFilter(k))"

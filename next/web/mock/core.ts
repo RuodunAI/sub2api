@@ -206,12 +206,16 @@ export function ownerScope(who: Identity, action: string): Reach | null {
   return scopes.length ? { level: 'own', scopes } : null
 }
 
-/** The users below uid, every level (users.owner_id, CONTRACTS §103.2); resources.ts, which holds the users, answers it. */
+/**
+ * The users below uid, the whole subtree (users.owner_id, CONTRACTS §103.2:
+ * reads do not truncate, the server bounds the depth on write);
+ * resources.ts, which holds the users, answers it.
+ */
 let teamOf: (uid: number) => number[] = () => []
 export const resolveTeams = (resolve: (uid: number) => number[]) => {
   teamOf = resolve
 }
-/** The team a held scope reaches beyond the caller's own rows (core.ResolveScope). */
+/** The team a held scope reaches beyond the caller's own rows (the server's UserTree().Below subquery inside ScopeTable.Scope). */
 const teamReaches = (s: Scope, who: Identity, row: ScopedRow) => !!s.team && teamOf(who.id).includes(rowOwner(row) ?? 0)
 
 /** Whether `row` is in the caller's reach (core.DataScope.AllowsRow); null owners need the all level or an id or group scope. */

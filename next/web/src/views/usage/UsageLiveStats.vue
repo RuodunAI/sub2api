@@ -10,7 +10,7 @@ import { api } from '@sub2api/host'
 import { formatTokens, hitRate, num } from '@/components/stats/stats'
 import { formatMoney, formatNumber } from '@/utils/format'
 import { useUsageSummary } from './useUsageSummary'
-import type { UsageView } from './view'
+import { LIST_PRICE_LABEL, type UsageView } from './view'
 
 interface Realtime {
   rpm: number
@@ -62,7 +62,7 @@ const badges = computed(() => {
   return [
     // The account view bills nothing: the list price alone, by its name.
     ...(props.view === 'account'
-      ? [{ key: 'standard', label: t('usage.live.listPrice'), value: standard, accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') }]
+      ? [{ key: 'standard', label: t(LIST_PRICE_LABEL), value: standard, accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') }]
       : [
           { key: 'cost', label: t('usage.live.cost'), value: r ? formatMoney(num(r.total_cost), 2) : '—', accent: 'bg-sky-500/70', title: t('usage.live.rangeHint') },
           { key: 'standard', label: t('usage.live.standard'), value: standard, accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') }

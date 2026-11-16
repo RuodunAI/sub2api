@@ -687,11 +687,14 @@ function findUser(req: MockRequest) {
   return users.find((u) => u.id === Number(req.params.id))
 }
 
-/** The users below uid, at most 8 levels (users.owner_id, CONTRACTS §103.2). */
+/**
+ * The users below uid, the whole subtree (users.owner_id, CONTRACTS §103.2:
+ * reads do not truncate, the server bounds the depth on write).
+ */
 function teamOf(uid: number): number[] {
   const out: number[] = []
   let frontier = [uid]
-  for (let depth = 0; depth < 8 && frontier.length; depth++) {
+  while (frontier.length) {
     frontier = users.filter((u) => u.owner_id !== null && frontier.includes(u.owner_id) && !out.includes(u.id)).map((u) => u.id)
     out.push(...frontier)
   }
@@ -757,17 +760,25 @@ on('POST', '/users', (req) => {
   const reach = userReach(who, 'user:create')
   if (reach === undefined) return noUserAction('user:create')
   const b = req.body || {}
-  const owner = ownerFor(who, reach, 0, b.owner_id)
-  if (!('owner' in owner)) return owner
-  // Choosing the user group is a segment assignment: it needs segment:manage as well, checked before the fields.
-  if (b.segment_id != null && !hasPerm(who, 'segment:manage')) return fail(403, 'permission_denied', 'segment:manage is required', { permission: 'segment:manage' })
-  if (!/^[^@\s]+@[^@\s]+$/.test(b.email || '')) return invalid('email', 'invalid email')
-  if (users.some((u) => u.email === b.email)) return invalid('email', 'email already registered')
-  if (!b.password || String(b.password).length < 8) return invalid('password', 'password must be at least 8 characters')
+  const roleKeys: string[] = Array.isArray(b.role_keys) && b.role_keys.length ? b.role_keys : ['user']
+  // Roles other than the default are a role assignment, the user group a
+  // segment assignment: each needs its key as well, checked before the body.
+  if ((roleKeys.length > 1 || roleKeys[0] !== 'user') && !hasPerm(who, 'role:assign')) return noUserAction('role:assign')
+  if (b.segment_id != null && !hasPerm(who, 'segment:manage')) return noUserAction('segment:manage')
+  if (!/^[^@\s]+@[^@\s]+$/.test(b.email || '')) return invalid('email', 'invalid email address')
+  if (String(b.password || '').length < 8) return invalid('password', 'at least 8 characters', 'too_short')
+  if (Number(b.owner_id) < 0) return invalid('owner_id', 'must be a user id, or 0 for none')
   // segment_id: the named user group the user starts in; without it, the default one.
   const segment = b.segment_id == null ? null : findSegment(Number(b.segment_id))
   if (segment !== null && segment?.kind !== 'named') return invalid('segment_id', 'unknown user group')
-  const roleKeys: string[] = Array.isArray(b.role_keys) && b.role_keys.length ? b.role_keys : ['user']
+  if (users.some((u) => u.email === b.email)) return fail(409, 'conflict', 'email already in use', { fields: [{ field: 'email', code: 'taken', message: 'email already in use' }] })
+  const owner = ownerFor(who, reach, 0, b.owner_id)
+  if (!('owner' in owner)) return owner
+  // Every role must be one the caller assigns, but the default one (authz checkAssignment).
+  const unknown = roleKeys.filter((k) => !roles.some((r) => r.key === k))
+  if (unknown.length) return invalid('role_keys', `unknown roles: ${unknown.join(', ')}`, 'unknown')
+  const refused = roleKeys.find((k) => k !== 'user' && !managesRole(who, k))
+  if (refused) return fail(403, 'permission_denied', 'you cannot assign or revoke this role', { role: refused })
   const u: MockUser = { id: nextId(), email: b.email, display_name: b.display_name || '', status: 'active', roles: roleKeys, balance: '0.00000000', owner_id: owner.owner, last_login_at: null, created_at: now(), updated_at: now() }
   users.unshift(u)
   if (segment) moveUser(u.id, segment)

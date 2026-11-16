@@ -3,7 +3,7 @@
 // per bucket, one y-axis (design §5: no dual axis). The legend hides a
 // series on click: cache read is usually most of the stack, and hiding it is
 // how the other three become readable. The tooltip lists the four, their
-// total and the bucket's cost.
+// total and the bucket's cost (named `costLabel` when given).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SChart } from '@sub2api/ui'
@@ -11,8 +11,9 @@ import type { UsageSummaryRow } from '@/api/types'
 import { useAppStore } from '@/stores/app'
 import { bucketLabel, formatCostShort, formatTokens, num, seriesColor, surfaceColor, type Granularity } from './stats'
 
-const props = withDefaults(defineProps<{ rows: UsageSummaryRow[]; buckets: string[]; granularity: Granularity; loading?: boolean; group?: string; height?: string }>(), {
-  height: '260px'
+const props = withDefaults(defineProps<{ rows: UsageSummaryRow[]; buckets: string[]; granularity: Granularity; loading?: boolean; group?: string; height?: string; costLabel?: string }>(), {
+  height: '260px',
+  costLabel: undefined
 })
 const { t } = useI18n()
 const app = useAppStore()
@@ -38,7 +39,7 @@ const option = computed(() => {
         const r = byKey.get(key)
         const lines = items.map((it) => `${it.marker}${it.seriesName}<span style="float:right;margin-left:16px">${formatTokens(num(it.value))}</span>`)
         const total = items.reduce((a, it) => a + num(it.value), 0)
-        return `<b>${key}</b><br/>${lines.join('<br/>')}<hr style="margin:4px 0;opacity:.3"/>${t('stats.total')}<span style="float:right">${formatTokens(total)}</span><br/>${t('stats.cost')}<span style="float:right">${formatCostShort(num(r?.total_cost))}</span>`
+        return `<b>${key}</b><br/>${lines.join('<br/>')}<hr style="margin:4px 0;opacity:.3"/>${t('stats.total')}<span style="float:right">${formatTokens(total)}</span><br/>${props.costLabel ?? t('stats.cost')}<span style="float:right">${formatCostShort(num(r?.total_cost))}</span>`
       }
     },
     xAxis: { type: 'category', boundaryGap: false, data: props.buckets.map((k) => bucketLabel(k, props.granularity, multiDay)) },

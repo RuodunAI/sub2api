@@ -134,6 +134,8 @@ describe('usage records layout', () => {
     expect(w.find('[data-testid="ip-address-filter"]').exists()).toBe(false)
     expect(w.text()).toContain('1.5')
     expect(w.text()).not.toContain('777')
+    expect(w.text()).toContain(i18n.global.t('usage.live.listPrice'))
+    expect(w.text()).not.toContain(i18n.global.t('usage.cols.cost'))
     expect(w.get('[data-testid="usage-account"]').text()).toContain('Account nine')
   })
   it('points at the upstream model only when the account mapped the request to another', () => {

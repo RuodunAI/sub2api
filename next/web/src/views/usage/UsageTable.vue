@@ -16,7 +16,7 @@ import UsageConversionBadges from './UsageConversionBadges.vue'
 import UsageAttemptChain from './UsageAttemptChain.vue'
 import UsageRetryBadge from './UsageRetryBadge.vue'
 import { accountLabel, accountPlatform, billingTone, hashColor, type UsageRow } from './usage'
-import type { UsageView } from './view'
+import { LIST_PRICE_LABEL, type UsageView } from './view'
 
 // The usage list: one row per request, its detail (billing trace, request
 // facts) expanded under it; cards on narrow screens. Clicking a client IP, a
@@ -46,6 +46,7 @@ const emit = defineEmits<{
   (e: 'filter-account-id', id: number): void
 }>()
 const { t } = useI18n()
+const costLabel = computed(() => t(props.view === 'account' ? LIST_PRICE_LABEL : 'usage.cols.cost'))
 const columns = computed<TableColumn[]>(() => [
   { key: 'created_at', label: t('common.time'), width: '150px', hideable: false },
   ...(props.showUser ? [{ key: 'user', label: t('common.user'), width: '150px' }] : []),
@@ -58,7 +59,7 @@ const columns = computed<TableColumn[]>(() => [
   { key: 'model', label: t('common.model'), width: '190px' },
   ...(props.showAccount ? [{ key: 'account', label: t('common.account'), width: '230px' }] : []),
   { key: 'tokens', label: t('usage.tokens.title'), width: '125px' },
-  { key: 'total_cost', label: t('usage.cols.cost'), width: '95px' },
+  { key: 'total_cost', label: costLabel.value, width: '95px' },
   { key: 'latency', label: t('usage.cols.timing'), width: '140px' },
   { key: 'detail', label: t('usage.cols.detail'), width: '240px' }
 ])
@@ -218,7 +219,7 @@ function rate(row: UsageRow) {
               <UsageTokens :row="row" />
             </div>
             <div v-if="isVisible('total_cost')">
-              <p class="mb-1 text-xxs text-fg-subtle">{{ t('usage.cols.cost') }}</p>
+              <p class="mb-1 text-xxs text-fg-subtle">{{ costLabel }}</p>
               <p class="font-mono text-xs font-medium">{{ cost(row) }}</p>
               <SBadge v-if="billingNote(row)" size="xs" class="mt-1" :tone="billingTone(row.billing_status)">{{
                 t(`usage.billing.status.${row.billing_status}`)

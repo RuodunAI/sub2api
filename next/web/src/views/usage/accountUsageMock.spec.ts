@@ -44,7 +44,7 @@ describe('account usage in the mock', () => {
     expect((await call('GET', `/account-usage/${outside.id}`, undefined, vendor)).status).toBe(404)
   })
 
-  it('refuses a parameter the account view does not take, by name, after the permission; the detail reads none', async () => {
+  it('refuses a parameter the account view does not take, by name, after the permission; the detail reads none; a bad group_by or order without fields', async () => {
     const r = await call('GET', '/account-usage?user_id=1&client_ip=1.2.3.4', undefined, vendor)
     expect([r.status, fields(r)]).toEqual([400, ['client_ip', 'user_id']])
     expect(fields(await call('GET', '/account-usage?limit=5', undefined, vendor))).toEqual(['limit'])
@@ -52,15 +52,17 @@ describe('account usage in the mock', () => {
     const id = (await call('GET', '/account-usage', undefined, vendor)).body.data.data[0].id
     expect((await call('GET', `/account-usage/${id}?user_id=1`, undefined, vendor)).status).toBe(200)
     expect((await call('GET', '/account-usage/overview?model=x', undefined, vendor)).status).toBe(400)
-    expect((await call('GET', '/account-usage/summary?group_by=user', undefined, vendor)).status).toBe(400)
-    expect((await call('GET', '/account-usage/summary?group_by=model&order=cost', undefined, vendor)).status).toBe(400)
+    for (const q of ['group_by=user', 'group_by=model&order=cost']) {
+      const bad = await call('GET', `/account-usage/summary?${q}`, undefined, vendor)
+      expect([bad.status, bad.body.error.code, fields(bad)]).toEqual([400, 'invalid_argument', undefined])
+    }
   })
 
-  it('sums by account with its name and without the billed cost', async () => {
+  it('sums by account with its name, without the charge or last_at', async () => {
     const rows = (await call('GET', '/account-usage/summary?group_by=account&from=1970-01-01T00:00:00Z', undefined, vendor)).body.data
     expect(rows.map((r: { key: string }) => r.key).sort()).toEqual(['13', '16'])
     expect(rows[0]).toMatchObject({ account_name: expect.any(String), standard_cost: expect.any(String) })
-    expect(rows.some((r: object) => 'total_cost' in r)).toBe(false)
+    for (const key of ['total_cost', 'estimated_cost', 'user_email', 'last_at']) expect(rows.some((r: object) => key in r)).toBe(false)
     const overview = (await call('GET', '/account-usage/overview', undefined, vendor)).body.data
     expect('total_cost' in overview.today).toBe(false)
     expect(overview.accounts.total).toBe(3)

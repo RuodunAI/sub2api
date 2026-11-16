@@ -5,3 +5,9 @@
  * only). The dev mock's export takes it too.
  */
 export type UsageView = 'all' | 'self' | 'account'
+
+/**
+ * The label of every cost in the account view, which has the list price only
+ * and no charged cost: the cards, the charts, the records and the detail.
+ */
+export const LIST_PRICE_LABEL = 'usage.live.listPrice'

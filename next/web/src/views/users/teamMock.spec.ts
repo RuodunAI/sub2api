@@ -30,6 +30,10 @@ describe('the team in the mock', () => {
 
   it('lets a team holder name only itself as the owner, and refuses an owner below the user', async () => {
     expect((await call('POST', '/users', { email: 'other@example.com', password: 'longenough', owner_id: 2 }, agent)).status).toBe(403)
+    // The body is checked before the owner, and the roles against what the caller assigns.
+    expect(fields(await call('POST', '/users', { email: 'bad', password: 'longenough', owner_id: 2 }, agent))).toEqual(['email'])
+    const admin = await call('POST', '/users', { email: 'adm@example.com', password: 'longenough', role_keys: ['admin'] }, agent)
+    expect([admin.status, admin.body.error.details]).toEqual([403, { role: 'admin' }])
     expect((await call('PATCH', '/users/100', { owner_id: 2 }, agent)).status).toBe(403)
     expect((await call('PATCH', '/users/2', { display_name: 'x' }, agent)).status).toBe(404)
     const cycle = await call('PATCH', '/users/11', { owner_id: 6 })

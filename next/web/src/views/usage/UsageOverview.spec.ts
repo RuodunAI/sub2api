@@ -17,7 +17,7 @@ let query: Record<string, string> = {}
 vi.mock('vue-router', () => ({ useRoute: () => ({ query }) }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => false, hasAction: () => false }) }))
 vi.mock('@/components/stats/UsageCharts.vue', () => ({
-  default: { name: 'UsageCharts', props: ['summaryPath', 'revision', 'granularity', 'secondary'], emits: ['select-model', 'select-secondary'], template: '<div data-testid="charts" />' }
+  default: { name: 'UsageCharts', props: ['summaryPath', 'revision', 'granularity', 'secondary', 'costLabel'], emits: ['select-model', 'select-secondary'], template: '<div data-testid="charts" />' }
 }))
 enableAutoUnmount(afterEach)
 
@@ -43,6 +43,8 @@ describe('usage overview page', () => {
     expect(w.findComponent({ name: 'UsageCharts' }).props('summaryPath')).toBe('/usage/summary')
     expect(w.find('[data-testid="usage-granularity"]').exists()).toBe(true)
     expect(w.find('[data-testid="export-usage"]').exists()).toBe(false)
+    expect(w.get('[data-testid="usage-summary-cards"]').text()).toContain('总消费')
+    expect(w.findComponent({ name: 'UsageCharts' }).props('costLabel')).toBeUndefined()
   })
 
   it('narrows to what a chart selects, and reloads on a refresh', async () => {
@@ -75,6 +77,10 @@ describe('usage overview page', () => {
     expect(summaries[0].filters.model_contains).toBeFalsy()
     const charts = w.findComponent({ name: 'UsageCharts' })
     expect(charts.props('secondary')).toMatchObject({ groupBy: 'account' })
+    // Its costs are the list price, never a charged cost.
+    expect(charts.props('costLabel')).toBe('原价')
+    expect(w.get('[data-testid="usage-summary-cards"]').text()).toContain('原价')
+    expect(w.get('[data-testid="usage-summary-cards"]').text()).not.toContain('总消费')
     // Named as the rows name it: a deleted account, or one beyond account:read, keeps its name.
     const { labelOf } = charts.props('secondary')
     expect([labelOf({ key: '13', account_name: 'main' }), labelOf({ key: '14' })]).toEqual(['main', '#14'])

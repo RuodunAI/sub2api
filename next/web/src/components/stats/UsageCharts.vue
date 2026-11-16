@@ -31,8 +31,10 @@ const props = withDefaults(
     group: string
     /** Offer the model breakdown by upstream model too (operators only). */
     modelSources?: boolean
+    /** The name of every cost, in place of each chart's own (the account view's list price). */
+    costLabel?: string
   }>(),
-  { secondary: null, layout: 'records', enabled: true, revision: 0, modelSources: false }
+  { secondary: null, layout: 'records', enabled: true, revision: 0, modelSources: false, costLabel: undefined }
 )
 const emit = defineEmits<{ (e: 'select-model', key: string): void; (e: 'select-secondary', key: string): void }>()
 const { t } = useI18n()
@@ -73,6 +75,7 @@ watch(() => props.revision, reload)
           :key-label="t('stats.model')"
           :rows="models.rows.value"
           :loading="models.loading.value"
+          :cost-label="costLabel"
           :selectable="!modelSources || source === 'model'"
           @select="emit('select-model', $event)"
         >
@@ -87,26 +90,27 @@ watch(() => props.revision, reload)
           :key-label="secondary.keyLabel"
           :rows="second.rows.value"
           :loading="second.loading.value"
+          :cost-label="costLabel"
           :label-of="secondary.labelOf"
           selectable
           @select="emit('select-secondary', $event)"
         />
       </div>
       <SCard :title="t('stats.tokenTrend')" :subtitle="t('stats.tokenTrendHint')">
-        <TokenTrendChart :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" />
+        <TokenTrendChart :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" :cost-label="costLabel" />
       </SCard>
     </template>
     <div v-else class="grid grid-cols-1 gap-4 xl:grid-cols-2">
       <SCard :title="t('stats.tokenTrend')" :subtitle="t('stats.tokenTrendHint')">
-        <TokenTrendChart :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" height="248px" />
+        <TokenTrendChart :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" :cost-label="costLabel" height="248px" />
       </SCard>
-      <DistributionCard :title="t('stats.modelDist')" :key-label="t('stats.model')" :rows="models.rows.value" :loading="models.loading.value">
+      <DistributionCard :title="t('stats.modelDist')" :key-label="t('stats.model')" :rows="models.rows.value" :loading="models.loading.value" :cost-label="costLabel">
         <template v-if="modelSources" #extra>
           <SSegmented v-model="source" size="sm" :aria-label="t('stats.model')" :options="sourceOptions" data-testid="model-source" />
         </template>
         <template #label="{ label }"><ModelBadge :model="label" plain /></template>
       </DistributionCard>
     </div>
-    <MetricStrip :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" />
+    <MetricStrip :rows="trend.rows.value" :buckets="buckets" :granularity="granularity" :loading="trend.loading.value" :group="group" :cost-label="costLabel" />
   </div>
 </template>

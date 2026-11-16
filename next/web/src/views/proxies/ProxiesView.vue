@@ -27,7 +27,7 @@ import {
 } from '@sub2api/ui'
 import type { Proxy, ProxyProbeResult, ProxyTestResult } from '@/api/types'
 import { deleteWithConfirm, toggleStatus, useStatusOptions } from '@/composables/crud'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useProxiesLookup } from '@/composables/lookups'
 import { PROXY_ACTIONS, PROXY_CREATE_KEY, useScope } from '@/composables/useScope'
 import { useAuthStore } from '@/stores/auth'
@@ -48,12 +48,7 @@ const canCreate = computed(() => auth.has(PROXY_CREATE_KEY))
 const canEditRow = (p: Proxy) => scope.can(p, PROXY_ACTIONS.manage)
 const showOwner = computed(() => scope.level(PROXY_ACTIONS.read) === 'all')
 const list = useList<Proxy>('/proxies', { mine: '', created_by: '' })
-const onlyMine = computed({
-  get: () => list.filters.mine === 'true',
-  set: (v: boolean) => {
-    list.filters.mine = v ? 'true' : ''
-  }
-})
+const onlyMine = filterFlag(list.filters, 'mine')
 
 const columns = computed<TableColumn[]>(() => {
   const cols: TableColumn[] = [

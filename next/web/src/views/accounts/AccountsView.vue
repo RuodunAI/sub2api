@@ -823,8 +823,8 @@ function resetFilters() {
               <SDescItem :label="t('accounts.schedulable')">{{ detail.schedulable ? t('common.yes') : t('common.no') }}</SDescItem>
               <SDescItem :label="t('accounts.lastUsed')">{{ formatDateTime(detail.last_used_at) }}</SDescItem>
               <SDescItem :label="t('accounts.lastTest.column')"><LastTestCell :last="detail.last_test" :testing="batchTesting.has(detail.id)" /></SDescItem>
-              <SDescItem v-if="showOwner" :label="t('accounts.owner')">{{ detail.owner_email || (detail.owner_id ? `#${detail.owner_id}` : '-') }}</SDescItem>
-              <SDescItem v-if="showCreator" :label="t('accounts.createdBy')">{{ detail.created_by_email || (detail.created_by ? `#${detail.created_by}` : '-') }}</SDescItem>
+              <SDescItem v-if="showOwner" :label="t('accounts.owner')"><UserRef :id="detail.owner_id" :email="detail.owner_email" /></SDescItem>
+              <SDescItem v-if="showCreator" :label="t('accounts.createdBy')"><UserRef :id="detail.created_by" :email="detail.created_by_email" /></SDescItem>
               <SDescItem :label="t('common.createdAt')">{{ formatDateTime(detail.created_at) }}</SDescItem>
             </SDescriptions>
             <div v-if="detail.credentials">

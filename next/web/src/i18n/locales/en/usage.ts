@@ -14,7 +14,7 @@ export default {
   live: {
     cost: 'Usage',
     standard: 'Base quota',
-    listPrice: 'Base price',
+    listPrice: 'List price',
     cacheHit: 'Cache hit',
     successRate: 'Success rate',
     rangeHint: 'Follows the time range and filters above',
