@@ -169,14 +169,13 @@ func (m *Manager) Start(ctx context.Context, s Spec) (State, error) {
 	return m.state, nil
 }
 
-// inheritedEnv lists the shell variables a core inherits: process basics,
+// inheritedEnv lists the shell variables a core inherits: process basics and
 // the configuration the core reads (server/internal/config and the few
-// packages that read the environment directly) and legacyCoreEnv. Anything
-// else in the shell's environment - its own settings, variables an operator
-// or image added for other tools - stays in the shell. The shell passes
-// DATABASE_URL, REDIS_URL and the managed-mode variables explicitly through
-// Spec.Env.
-var inheritedEnv = append([]string{
+// packages that read the environment directly). Anything else in the shell's
+// environment - its own settings, variables an operator or image added for
+// other tools - stays in the shell. The shell passes DATABASE_URL, REDIS_URL
+// and the managed-mode variables explicitly through Spec.Env.
+var inheritedEnv = []string{
 	// Process basics.
 	"PATH", "HOME", "USER", "LANG", "LC_ALL", "TZ", "TMPDIR",
 	"SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -197,14 +196,7 @@ var inheritedEnv = append([]string{
 	// Legacy CCGateway connection fallbacks and the local Docker client.
 	"CCGATEWAY_URL", "CCG_ADMIN_KEY", "CCG_API_KEY",
 	"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS_VERIFY",
-}, legacyCoreEnv...)
-
-// legacyCoreEnv is read only by cores before 0.1.290 (rollback target): the
-// console's JWT settings, which a core of that line needs to start
-// (SUB2API_JWT_SECRET is required). The shell is upgraded independently of
-// the core, so it keeps passing them while such a core can still run under
-// it, after an upgrade plan that has not finished or a restore from backup.
-var legacyCoreEnv = []string{"SUB2API_JWT_SECRET", "SUB2API_ACCESS_TOKEN_TTL", "SUB2API_REFRESH_TOKEN_TTL"}
+}
 
 // coreEnvironment builds a core's environment: the allowlisted part of the
 // inherited environment, then the explicit entries (which win, being last).

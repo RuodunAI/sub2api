@@ -83,29 +83,10 @@ func TestInheritedEnvCoversCoreConfiguration(t *testing.T) {
 		t.Fatalf("core reads variables a managed core would not receive; add them to inheritedEnv or coreProvidedEnv:\n%s", strings.Join(missing, "\n"))
 	}
 	// The other way round: a core setting the core no longer reads leaves
-	// the allowlist, unless legacyCoreEnv keeps it for an older core; a
-	// legacy name the core reads again is a current setting.
+	// the allowlist.
 	for _, name := range inheritedEnv {
-		_, current := read[name]
-		switch legacy := slices.Contains(legacyCoreEnv, name); {
-		case legacy && current:
-			t.Errorf("%s is read by the core again: move it from legacyCoreEnv to inheritedEnv", name)
-		case !legacy && !current && strings.HasPrefix(name, "SUB2API_"):
-			t.Errorf("%s is no longer read by the core: drop it, or keep it in legacyCoreEnv while an older core reads it", name)
+		if _, current := read[name]; !current && strings.HasPrefix(name, "SUB2API_") {
+			t.Errorf("%s is no longer read by the core: drop it from inheritedEnv", name)
 		}
-	}
-}
-
-// legacyCoreEnv keeps exactly the JWT settings of the cores before 0.1.290,
-// which the shell still starts on rollback (SUB2API_JWT_SECRET is required
-// there); they reach the core like any allowlisted variable.
-func TestLegacyCoreEnvReachesTheCore(t *testing.T) {
-	want := []string{"SUB2API_JWT_SECRET", "SUB2API_ACCESS_TOKEN_TTL", "SUB2API_REFRESH_TOKEN_TTL"}
-	if !slices.Equal(legacyCoreEnv, want) {
-		t.Fatalf("legacyCoreEnv = %v, want %v", legacyCoreEnv, want)
-	}
-	env := coreEnvironment([]string{"SUB2API_JWT_SECRET=jwt", "SUB2API_ACCESS_TOKEN_TTL=15m", "SUB2API_REFRESH_TOKEN_TTL=720h"}, nil, nil)
-	if !slices.Equal(env, []string{"SUB2API_JWT_SECRET=jwt", "SUB2API_ACCESS_TOKEN_TTL=15m", "SUB2API_REFRESH_TOKEN_TTL=720h"}) {
-		t.Fatalf("legacy settings did not reach the core: %v", env)
 	}
 }
