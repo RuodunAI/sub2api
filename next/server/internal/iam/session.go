@@ -179,11 +179,7 @@ func liveSessions(db *gorm.DB, userID int64) *gorm.DB {
 // rejected; the other JWT sessions renew on their next 401.
 func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID string) error {
 	return s.changeSessions(ctx, userID, oneSession(familyID), func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		live, err := store.Exists(g, userFamily(g, userID, familyID))
-		if err == nil && !live && s.sessions != nil {
-			live, err = s.sessions.Has(ctx, userID, familyID)
-		}
+		live, err := s.hasSession(ctx, store.G(ctx, tx), userID, familyID)
 		if err != nil {
 			return err
 		}
@@ -192,6 +188,23 @@ func (s *Service) RevokeSession(ctx context.Context, userID int64, familyID stri
 		}
 		return audit.Audit(ctx, tx, userID, "user.session.revoke", "user", strconv.FormatInt(userID, 10), nil)
 	})
+}
+
+// hasSession reports whether id is a live login session of userID: a
+// refresh token family with a live token, or an opaque session no bump
+// ended. One a bump ended may still be in Valkey (its cleanup failed, the
+// server CLI); it is not there, as the sessions list and authentication
+// tell.
+func (s *Service) hasSession(ctx context.Context, g *gorm.DB, userID int64, id string) (bool, error) {
+	live, err := store.Exists(g, userFamily(g, userID, id))
+	if err != nil || live || s.sessions == nil {
+		return live, err
+	}
+	var version int
+	if err := userTokenVersion(g, userID).Row().Scan(&version); err != nil {
+		return false, err
+	}
+	return s.sessions.Has(ctx, userID, id, version)
 }
 
 // userFamily are the unrevoked tokens of the refresh token family of userID.
@@ -222,9 +235,9 @@ func oneSession(family string) sessionsToEnd { return sessionsToEnd{only: family
 // the opaque sessions it keeps steps by 1. A bump that does not reach
 // Valkey steps by stamplessStep: a restamp whose transaction rolled back
 // leaves a stamp one ahead of the row (never more: each restamp is to the
-// row plus 1), and every opaque session must be passed. Since a restamp
-// only moves the sessions stamped at the row or above (tokenstore.Bump),
-// a session any bump ended stays ended.
+// row plus 1, once per transaction, keepingBump), and every opaque session
+// must be passed. Since a restamp only moves the sessions stamped at the
+// row or above (tokenstore.Bump), a session any bump ended stays ended.
 const stamplessStep = 2
 
 // endAllSessions ends every session of userID in tx, with PostgreSQL alone:
@@ -244,8 +257,8 @@ func (s *Service) endAllSessions(ctx context.Context, tx *gorm.DB, userID int64)
 // endSomeSessions ends the sessions `which` selects and keeps the others,
 // in tx: an opaque session no JWT of whose id may still be valid alone,
 // with no bump (endOpaqueSession); otherwise through a bump that keeps the
-// other opaque sessions (keepingBump). The caller holds the user row lock
-// and calls sessionsChanged after the commit.
+// other opaque sessions (keepingBump). The caller calls sessionsChanged
+// after the commit, and calls this once per transaction (keepingBump).
 func (s *Service) endSomeSessions(ctx context.Context, tx *gorm.DB, userID int64, which sessionsToEnd) error {
 	g := store.G(ctx, tx)
 	if err := endFamilies(g, userID, which); err != nil {
@@ -271,49 +284,47 @@ func (s *Service) endSomeSessions(ctx context.Context, tx *gorm.DB, userID int64
 // opaque session (the JWT sessions renew on their next 401): the change
 // goes through, erring on the safe side.
 func (s *Service) endOpaqueSession(ctx context.Context, g *gorm.DB, userID int64, id string) error {
-	done, err := s.reviseOpaque(ctx, userID, tokenstore.Selection{Only: id}, tokenstore.Bump{})
-	if err != nil || done {
-		return err
-	}
-	return bumpTokenVersion(g, userID, stamplessStep).Error
+	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Only: id}, tokenstore.Bump{}, stamplessStep)
 }
 
 // keepingBump bumps token_version by 1, which stops every JWT (a JWT
 // session kept renews on its next 401), and in the same step ends the
 // opaque sessions `which` selects and stamps the others with the new
-// version: they have no refresh token to renew with. It runs under the
-// user's lock, so no login slips a session in with the old version. When
-// Valkey cannot be reached the bump goes on to a stampless one, which ends
-// the opaque sessions kept too (a JWT caller signing out does not need
-// Valkey).
+// version: they have no refresh token to renew with. When Valkey cannot be
+// reached the bump goes on to a stampless one, which ends the opaque
+// sessions kept too (a JWT caller signing out does not need Valkey).
+//
+// The restamp is safe on two conditions. The version it starts from is the
+// latest committed one, read here under the row lock, so no login slips a
+// session in with the old version and no restamp starts below a bump that
+// committed meanwhile. And a transaction restamps once at most: a stamp is
+// then never more than one ahead of the row, even when the transaction
+// rolls back, which stamplessStep relies on; a second restamp in the same
+// transaction would stamp two ahead. endSomeSessions is its only caller.
 func (s *Service) keepingBump(ctx context.Context, g *gorm.DB, userID int64, which sessionsToEnd) error {
 	var from int
-	if err := userTokenVersion(g, userID).Row().Scan(&from); err != nil {
+	if err := userTokenVersion(g, userID).Clauses(store.ForUpdate).Row().Scan(&from); err != nil {
 		return err
 	}
 	if err := bumpTokenVersion(g, userID, 1).Error; err != nil {
 		return err
 	}
-	done, err := s.reviseOpaque(ctx, userID, tokenstore.Selection{Only: which.only, Keep: which.keep}, tokenstore.Bump{From: from, To: from + 1})
-	if err != nil || done {
-		return err
-	}
-	return bumpTokenVersion(g, userID, stamplessStep-1).Error
+	return s.reviseOrBump(ctx, g, userID, tokenstore.Selection{Only: which.only, Keep: which.keep},
+		tokenstore.Bump{From: from, To: from + 1}, stamplessStep-1)
 }
 
-// reviseOpaque runs a tokenstore Revoke. It reports false, with no error,
-// when Valkey could not be reached (or there is no store: the server CLI):
-// the caller then makes its bump stampless instead.
-func (s *Service) reviseOpaque(ctx context.Context, userID int64, sel tokenstore.Selection, b tokenstore.Bump) (bool, error) {
-	if s.sessions == nil {
-		return false, nil
-	}
-	err := s.sessions.Revoke(ctx, userID, sel, b)
-	if tokenstore.IsUnavailable(err) {
+// reviseOrBump runs a tokenstore Revoke. When Valkey cannot be reached (or
+// there is no store: the server CLI) it bumps token_version by step
+// instead, which with the caller's own bump makes a stampless one.
+func (s *Service) reviseOrBump(ctx context.Context, g *gorm.DB, userID int64, sel tokenstore.Selection, b tokenstore.Bump, step int) error {
+	if s.sessions != nil {
+		err := s.sessions.Revoke(ctx, userID, sel, b)
+		if !tokenstore.IsUnavailable(err) {
+			return err
+		}
 		slog.WarnContext(ctx, "iam: opaque sessions not revised, a token_version bump ends them", "user_id", userID, "err", err)
-		return false, nil
 	}
-	return err == nil, err
+	return bumpTokenVersion(g, userID, step).Error
 }
 
 // familyIssuedSince are the refresh tokens of the family of userID issued

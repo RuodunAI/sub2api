@@ -3,11 +3,13 @@ package iam
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -852,11 +854,12 @@ func endWithoutValkey(t *testing.T, e *env, uid int64, password string) {
 // server restart to wait for).
 type outage struct{ down atomic.Bool }
 
-// on gives s a session store on e's Valkey that fails while o is down.
+// on gives s a session store on e's Valkey that fails while o is down. A
+// token a rotation leaves behind lasts the test.
 func (o *outage) on(e *env, s *Service) {
 	rdb := redis.NewClient(&redis.Options{Addr: e.redis.Addr()})
 	rdb.AddHook(o)
-	s.sessions = tokenstore.NewValkey(rdb, tokenstore.Options{})
+	s.sessions = tokenstore.NewValkey(rdb, tokenstore.Options{RotateGrace: time.Hour})
 }
 
 // during runs fn with Valkey down.
@@ -929,7 +932,7 @@ func TestEndedSessionStaysEnded(t *testing.T) {
 
 // Valkey down, issuing JWTs: revoking a JWT family whose access tokens have
 // all expired goes through (a bump stands in for Valkey), and so does a
-// replayed refresh token.
+// replayed refresh token, whose bump reaches the other nodes at once.
 func TestRevokingAnIdleFamilyWithValkeyDown(t *testing.T) {
 	t.Setenv(IssueEnv, "")
 	e := setupAdmin(t)
@@ -940,10 +943,13 @@ func TestRevokingAnIdleFamilyWithValkeyDown(t *testing.T) {
 	require.NoError(t, s.db.Gorm.Exec(`UPDATE refresh_tokens SET created_at = now() - interval '3 hours' WHERE family_id = ?`, family).Error)
 	e.redis.Close()
 	require.NoError(t, s.RevokeSession(ctx, a.User.ID, family))
-	_, err := s.Refresh(ctx, b.RefreshToken)
-	assert.True(t, isCode(err, "unauthenticated"), "%v", err)
-	_, err = s.Refresh(ctx, a.RefreshToken)
+	a, err := s.Refresh(ctx, a.RefreshToken)
 	require.NoError(t, err)
+	other := New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	live(t, other, a.AccessToken)
+	_, err = s.Refresh(ctx, b.RefreshToken)
+	assert.True(t, isCode(err, "unauthenticated"), "%v", err)
+	ended(t, other, a.AccessToken)
 }
 
 // Cleaning up after ending every session leaves the sessions that signed
@@ -984,111 +990,724 @@ func TestKeepingBumpWithValkeyDownEndsAheadStamps(t *testing.T) {
 }
 
 // The sessions list leaves out the opaque sessions a bump ended that are
-// still in Valkey.
+// still in Valkey, and revoking one finds no such session.
 func TestSessionsLeaveOutEndedOnes(t *testing.T) {
 	t.Setenv(IssueEnv, "")
 	e := setupAdmin(t)
 	s, ctx := e.svc, context.Background()
 	uid := rootID(t, s)
 	issue(t, s, IssueOpaque)
-	opaqueLogin(t, s, adminEmail, adminPassword)
+	old := sid(t, s, opaqueLogin(t, s, adminEmail, adminPassword).AccessToken)
 	endWithoutValkey(t, e, uid, "another-password-1")
 	fresh := opaqueLogin(t, s, adminEmail, "another-password-1")
 	list, err := s.Sessions(ctx, uid, "")
 	require.NoError(t, err)
 	require.Len(t, list, 1)
 	assert.Equal(t, sid(t, s, fresh.AccessToken), list[0].ID)
+	err = s.RevokeSession(ctx, uid, old)
+	assert.True(t, isCode(err, "not_found"), "revoking an ended session: %v", err)
 }
 
-// Whatever the order of logins, rotations, revocations, logouts, bumps that
-// end every session or keep some, bumps rolled back and Valkey failing
-// meanwhile, a session stays ended once a committed change ended it, every
-// token of it: above all, no token issued before a change that ends every
-// session works again. The walks are fixed pseudo-random sequences; a
-// failure names the one that broke it.
+// ------------------------------------------------------------ third review fixes
+
+// A bump that keeps the other sessions keeps them for a user still at
+// token_version 0 too: after a JWT logout with its refresh token, or
+// revoking a JWT family, the user's opaque sessions stay signed in.
+func TestKeepingBumpFromVersionZero(t *testing.T) {
+	t.Setenv(IssueEnv, "")
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	root := rootID(t, s)
+	keeps := []struct {
+		name string
+		run  func(uid int64, jwtPair *TokenPair) error
+	}{
+		{"JWT logout", func(uid int64, p *TokenPair) error { return s.Logout(ctx, uid, p.RefreshToken) }},
+		{"revoking a JWT family", func(uid int64, p *TokenPair) error {
+			return s.RevokeSession(ctx, uid, familyOf(t, s, p.AccessToken))
+		}},
+	}
+	for i, keep := range keeps {
+		email := "zero-" + strconv.Itoa(i) + "@example.com"
+		u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})
+		require.NoError(t, err)
+		issue(t, s, IssueJWT)
+		j := mustLogin(t, s, email, adminPassword)
+		issue(t, s, IssueOpaque)
+		z := opaqueLogin(t, s, email, adminPassword)
+		var tv int
+		require.NoError(t, userTokenVersion(s.db.Gorm, u.ID).Row().Scan(&tv))
+		require.Zero(t, tv)
+		require.NoError(t, keep.run(u.ID, j), keep.name)
+		live(t, s, z.AccessToken)
+	}
+}
+
+// keepEnded is a session store whose Drop does nothing: a node that finds
+// a token ended without removing it, so a later change still has the
+// chance to revive it, which it must not.
+type keepEnded struct{ tokenstore.SessionStore }
+
+func (keepEnded) Drop(context.Context, string, tokenstore.Session) error { return nil }
+
+// walkNodes are the nodes the walks run on: s issues opaque sessions,
+// jwtNode JWTs, both verify either kind and share a bus; observer checks
+// ended tokens without removing them; cli is the server CLI (no Valkey, no
+// bus). valkey fails the session stores of s and jwtNode on demand.
+type walkNodes struct {
+	t                         *testing.T
+	ctx                       context.Context
+	s, jwtNode, observer, cli *Service
+	valkey                    *outage
+	rdb                       redis.Cmdable
+}
+
+// sessionWalk is one user's sessions through a walk of changes, and what
+// the walk expects of every opaque token issued: one is live unless a
+// committed change ended its session, or a second rotation ended it.
+type sessionWalk struct {
+	*walkNodes
+	rng   *rand.Rand
+	name  string
+	uid   int64
+	email string
+	trail []string
+
+	tokens   []walkToken
+	sids     []string          // the opaque sessions, in the order issued
+	current  map[string]string // session -> its token
+	prev     map[string]string // session -> the token its last rotation left
+	ended    map[string]bool   // sessions a committed change ended
+	rotated  map[string]bool   // tokens a second rotation ended
+	families []*walkFamily
+	late     *lateRevoke
+}
+
+type walkToken struct{ value, sid string }
+
+// walkFamily is a JWT login session: revoked once its refresh tokens are,
+// exchanged once traded for an opaque session of its id.
+type walkFamily struct {
+	id, refresh        string
+	revoked, exchanged bool
+}
+
+// lateRevoke is a revocation whose caller gave up on Valkey and bumped
+// past it, which Valkey may still run.
+type lateRevoke struct {
+	keep string
+	from int
+	at   time.Time
+}
+
+// walkSteps are the changes a walk picks from, by weight.
+var walkSteps = []struct {
+	name   string
+	weight int
+	run    func(*sessionWalk)
+}{
+	{"login", 3, (*sessionWalk).login},
+	{"rotate", 2, (*sessionWalk).rotate},
+	{"JWT login", 2, (*sessionWalk).jwtLogin},
+	{"exchange", 2, (*sessionWalk).exchange},
+	{"grace retry", 1, (*sessionWalk).graceRetry},
+	{"replay", 1, func(w *sessionWalk) { w.replay(false) }},
+	{"replay, Valkey down", 1, func(w *sessionWalk) { w.replay(true) }},
+	{"revoke one", 1, func(w *sessionWalk) { w.revokeOne(false) }},
+	{"revoke one, Valkey down", 1, func(w *sessionWalk) { w.revokeOne(true) }},
+	{"opaque logout", 1, func(w *sessionWalk) { w.opaqueLogout(false) }},
+	{"opaque logout, Valkey down", 1, func(w *sessionWalk) { w.opaqueLogout(true) }},
+	{"JWT logout", 1, func(w *sessionWalk) { w.jwtLogout(false) }},
+	{"JWT logout, Valkey down", 1, func(w *sessionWalk) { w.jwtLogout(true) }},
+	{"end all", 1, func(w *sessionWalk) { w.endAll(false) }},
+	{"end all, cleanup fails", 1, func(w *sessionWalk) { w.endAll(true) }},
+	{"revoke others", 1, func(w *sessionWalk) { w.revokeOthers(false) }},
+	{"revoke others, Valkey down", 1, func(w *sessionWalk) { w.revokeOthers(true) }},
+	{"revoke others, rolled back", 1, (*sessionWalk).revokeOthersRolledBack},
+	{"late revoke", 1, (*sessionWalk).runLate},
+	{"admin password reset", 1, (*sessionWalk).adminPasswordReset},
+	{"admin disable", 1, (*sessionWalk).adminDisable},
+	{"admin security reset", 1, (*sessionWalk).adminSecurityReset},
+	{"CLI bump", 1, (*sessionWalk).cliBump},
+}
+
+// Whatever the order of the changes a user's sessions go through (logins,
+// rotations, refresh tokens exchanged, retried within the grace and
+// replayed, single and bulk revocations, logouts, operators' changes, the
+// server CLI, rolled-back restamps), with Valkey failing meanwhile and a
+// revocation Valkey runs late: a session stays ended once a committed
+// change ended it, every token of it, and a session no change ended stays
+// signed in, on both nodes. Each step is checked at once, an ended token
+// without removing it (a later change must not revive it), and every
+// token again at the end of the walk on both nodes. The walks are fixed
+// pseudo-random sequences, from a user at token_version 0 and from one
+// bumped; a failure names the one that broke it.
 func TestEndedSessionsStayEndedInAnyOrder(t *testing.T) {
 	t.Setenv(IssueEnv, IssueOpaque)
 	e := setupAdmin(t)
 	s, ctx := e.svc, context.Background()
 	root := rootID(t, s)
 	t.Setenv(IssueEnv, IssueJWT)
-	jwtNode := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
-	var valkey outage
-	valkey.on(e, s)
-	valkey.on(e, jwtNode)
-	jwtCaller := core.WithSession(ctx, "a-jwt-family")
-	ops := []string{"login", "rotate", "end all", "end all, cleanup fails", "revoke others", "revoke others, Valkey down",
-		"revoke others, rolled back", "revoke one", "JWT logout"}
-	type token struct{ value, sid string }
-	rng := rand.New(rand.NewPCG(100, 2))
-	for walk := range 40 {
-		email := "walk-" + strconv.Itoa(walk) + "@example.com"
-		u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})
-		require.NoError(t, err)
-		var tokens []token
-		ended := map[string]bool{} // by session
-		var trail []string
-		for range 12 {
-			op := rng.IntN(len(ops))
-			trail = append(trail, ops[op])
-			var some token // a session to act on, if any
-			if len(tokens) > 0 {
-				some = tokens[rng.IntN(len(tokens))]
+	node := func() *Service {
+		return New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	}
+	nodes := &walkNodes{t: t, ctx: ctx, s: s, jwtNode: node(), observer: node(), valkey: &outage{},
+		cli: New(Deps{DB: s.db, Config: e.cfg, Authz: e.authz, BcryptCost: bcrypt.MinCost}),
+		rdb: redis.NewClient(&redis.Options{Addr: e.redis.Addr()})}
+	nodes.valkey.on(e, s)
+	nodes.valkey.on(e, nodes.jwtNode)
+	nodes.observer.sessions = keepEnded{nodes.observer.sessions}
+	for start, bumped := range []bool{false, true} {
+		rng := rand.New(rand.NewPCG(100, uint64(start)))
+		for n := range 30 {
+			email := fmt.Sprintf("walk-%d-%d@example.com", start, n)
+			u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})
+			require.NoError(t, err)
+			if bumped {
+				require.NoError(t, s.ResetSecurity(ctx, 0, u.ID))
 			}
-			endsAll, keep := false, "" // the change ends every session but keep
-			switch ops[op] {
-			case "login":
-				p := opaqueLogin(t, s, email, adminPassword)
-				tokens = append(tokens, token{p.AccessToken, sid(t, s, p.AccessToken)})
-			case "rotate": // what a step-up or a refresh retried does
-				if some.sid == "" {
-					continue
-				}
-				next, err := s.sessions.Rotate(ctx, u.ID, some.sid)
-				if !errors.Is(err, tokenstore.ErrNotFound) {
-					require.NoError(t, err)
-					tokens = append(tokens, token{next, some.sid})
-				}
-			case "end all":
-				require.NoError(t, s.Logout(jwtCaller, u.ID, ""))
-				endsAll = true
-			case "end all, cleanup fails":
-				require.NoError(t, valkey.during(func() error { return s.Logout(jwtCaller, u.ID, "") }))
-				endsAll = true
-			case "revoke others":
-				require.NoError(t, s.RevokeOtherSessions(ctx, u.ID, some.sid))
-				endsAll, keep = true, some.sid
-			case "revoke others, Valkey down":
-				require.NoError(t, valkey.during(func() error { return s.RevokeOtherSessions(ctx, u.ID, some.sid) }))
-				endsAll, keep = true, some.sid
-			case "revoke others, rolled back":
-				restore := failAudit(t, s, "user.session.revoke_others", true)
-				err := s.RevokeOtherSessions(ctx, u.ID, some.sid)
-				restore()
-				require.Error(t, err)
-			case "revoke one":
-				if some.sid == "" {
-					continue
-				}
-				if err := s.RevokeSession(ctx, u.ID, some.sid); !isCode(err, "not_found") {
-					require.NoError(t, err)
-					ended[some.sid] = true
-				}
-			case "JWT logout":
-				p := mustLogin(t, jwtNode, email, adminPassword)
-				require.NoError(t, jwtNode.Logout(ctx, u.ID, p.RefreshToken))
-			}
-			for _, tk := range tokens {
-				if endsAll && tk.sid != keep {
-					ended[tk.sid] = true
-				}
+			w := &sessionWalk{walkNodes: nodes, rng: rng, name: fmt.Sprintf("bumped %v, walk %d", bumped, n), uid: u.ID, email: email,
+				current: map[string]string{}, prev: map[string]string{}, ended: map[string]bool{}, rotated: map[string]bool{}}
+			w.walk(12)
+		}
+	}
+}
+
+// walk runs steps changes picked by weight, checking every token after
+// each, and once more at the end on both nodes.
+func (w *sessionWalk) walk(steps int) {
+	total := 0
+	for _, st := range walkSteps {
+		total += st.weight
+	}
+	for range steps {
+		pick := w.rng.IntN(total)
+		for _, st := range walkSteps {
+			if pick -= st.weight; pick < 0 {
+				w.trail = append(w.trail, st.name)
+				st.run(w)
+				break
 			}
 		}
-		s.forgetStatus(u.ID)
-		for _, tk := range tokens {
-			if ended[tk.sid] {
-				_, err := s.VerifyAccessToken(ctx, tk.value)
-				assert.True(t, isCode(err, "unauthenticated"), "walk %d %q: a token of an ended session works: %v", walk, trail, err)
+		w.check(w.observer)
+	}
+	w.check(w.jwtNode)
+	w.check(w.s)
+}
+
+// check verifies every token as the walk expects it: a live one on both
+// nodes, an ended one on ended (it removes the ended tokens unless it is
+// the observer).
+func (w *sessionWalk) check(ended *Service) {
+	w.t.Helper()
+	for _, tk := range w.tokens {
+		if !w.ended[tk.sid] && !w.rotated[tk.value] {
+			for _, n := range []*Service{w.s, w.jwtNode} {
+				_, err := n.VerifyAccessToken(w.ctx, tk.value)
+				require.NoError(w.t, err, "%s: a token of a session no change ended is rejected", w.where())
+			}
+			continue
+		}
+		_, err := ended.VerifyAccessToken(w.ctx, tk.value)
+		require.True(w.t, isCode(err, "unauthenticated"), "%s: a token of an ended session works: %v", w.where(), err)
+	}
+}
+
+func (w *sessionWalk) where() string { return fmt.Sprintf("%s %q", w.name, w.trail) }
+
+func (w *sessionWalk) ok(err error) {
+	w.t.Helper()
+	require.NoError(w.t, err, w.where())
+}
+
+// during runs fn, with Valkey down when down.
+func (w *sessionWalk) during(down bool, fn func() error) error {
+	if down {
+		return w.valkey.during(fn)
+	}
+	return fn()
+}
+
+// issued records a token of the opaque session id: a rotation when the
+// session has one already, which ends the token the last one left.
+func (w *sessionWalk) issued(id, token string) {
+	w.t.Helper()
+	if cur, ok := w.current[id]; ok {
+		if prev := w.prev[id]; prev != "" {
+			w.rotated[prev] = true
+		}
+		w.prev[id] = cur
+	} else {
+		w.sids = append(w.sids, id)
+	}
+	w.current[id] = token
+	w.tokens = append(w.tokens, walkToken{token, id})
+}
+
+// sessionOf is the opaque session of a live token.
+func (w *sessionWalk) sessionOf(token string) string {
+	w.t.Helper()
+	_, id, err := w.s.VerifySession(w.ctx, token)
+	w.ok(err)
+	return id
+}
+
+// endSessions records that every opaque session but keep ended.
+func (w *sessionWalk) endSessions(keep string) {
+	for _, id := range w.sids {
+		if id != keep {
+			w.ended[id] = true
+		}
+	}
+}
+
+// revokeFamilies records that every family but keep was revoked.
+func (w *sessionWalk) revokeFamilies(keep string) {
+	for _, f := range w.families {
+		if f.id != keep {
+			f.revoked = true
+		}
+	}
+}
+
+// endedEverything records a change that ended every session.
+func (w *sessionWalk) endedEverything() {
+	w.endSessions("")
+	w.revokeFamilies("")
+}
+
+// ended1 records that the session or family id ended.
+func (w *sessionWalk) ended1(id string) {
+	w.ended[id] = true
+	if f := w.family(id); f != nil {
+		f.revoked = true
+	}
+}
+
+func (w *sessionWalk) family(id string) *walkFamily {
+	for _, f := range w.families {
+		if f.id == id {
+			return f
+		}
+	}
+	return nil
+}
+
+// pickSession is an opaque session issued so far, "" before any.
+func (w *sessionWalk) pickSession() string {
+	if len(w.sids) == 0 {
+		return ""
+	}
+	return w.sids[w.rng.IntN(len(w.sids))]
+}
+
+// pickID is an opaque session or a family, "" before any.
+func (w *sessionWalk) pickID() string {
+	n := len(w.sids) + len(w.families)
+	if n == 0 {
+		return ""
+	}
+	i := w.rng.IntN(n)
+	if i < len(w.sids) {
+		return w.sids[i]
+	}
+	return w.families[i-len(w.sids)].id
+}
+
+// pickFamily is a family that ok accepts, nil when none does.
+func (w *sessionWalk) pickFamily(ok func(*walkFamily) bool) *walkFamily {
+	var fs []*walkFamily
+	for _, f := range w.families {
+		if ok(f) {
+			fs = append(fs, f)
+		}
+	}
+	if len(fs) == 0 {
+		return nil
+	}
+	return fs[w.rng.IntN(len(fs))]
+}
+
+func (w *sessionWalk) login() {
+	p, err := w.s.Login(w.ctx, w.email, adminPassword, testIP)
+	w.ok(err)
+	w.issued(w.sessionOf(p.AccessToken), p.AccessToken)
+}
+
+// rotate gives a session a new token, as a step-up does; one Valkey no
+// longer has is not found.
+func (w *sessionWalk) rotate() {
+	id := w.pickSession()
+	if id == "" {
+		return
+	}
+	token, err := w.s.sessions.Rotate(w.ctx, w.uid, id)
+	if w.ended[id] && errors.Is(err, tokenstore.ErrNotFound) {
+		return
+	}
+	w.ok(err)
+	w.issued(id, token)
+}
+
+func (w *sessionWalk) jwtLogin() {
+	p, err := w.jwtNode.Login(w.ctx, w.email, adminPassword, testIP)
+	w.ok(err)
+	w.families = append(w.families, &walkFamily{id: familyOf(w.t, w.jwtNode, p.AccessToken), refresh: p.RefreshToken})
+}
+
+// exchange trades a live family's refresh token for an opaque session of
+// the family's id.
+func (w *sessionWalk) exchange() {
+	f := w.pickFamily(func(f *walkFamily) bool { return !f.revoked })
+	if f == nil {
+		return
+	}
+	p, err := w.s.Refresh(w.ctx, f.refresh)
+	w.ok(err)
+	require.Equal(w.t, f.id, w.sessionOf(p.AccessToken), w.where())
+	f.revoked, f.exchanged = true, true
+	w.issued(f.id, p.AccessToken)
+}
+
+// graceRetry presents an exchanged refresh token again within the grace:
+// its session gets another token. An ended session may be gone, which
+// makes it a replay.
+func (w *sessionWalk) graceRetry() {
+	f := w.pickFamily(func(f *walkFamily) bool { return f.exchanged })
+	if f == nil {
+		return
+	}
+	p, err := w.s.Refresh(w.ctx, f.refresh)
+	if w.ended[f.id] && isCode(err, "unauthenticated") {
+		return
+	}
+	w.ok(err)
+	w.issued(f.id, p.AccessToken)
+}
+
+// replay presents a spent or revoked refresh token past the grace: its
+// family's opaque session ends, and with Valkey down every one (a bump
+// stands in).
+func (w *sessionWalk) replay(down bool) {
+	f := w.pickFamily(func(f *walkFamily) bool { return f.revoked })
+	if f == nil {
+		return
+	}
+	w.ok(w.s.db.Gorm.Exec(`UPDATE refresh_tokens SET replaced_at = replaced_at - interval '2 minutes' WHERE token_hash = ?`,
+		tokenstore.Hash(f.refresh)).Error)
+	err := w.during(down, func() error {
+		_, err := w.s.Refresh(w.ctx, f.refresh)
+		return err
+	})
+	require.True(w.t, isCode(err, "unauthenticated"), "%s: replay: %v", w.where(), err)
+	if f.exchanged {
+		w.ended[f.id] = true
+	}
+	if down {
+		w.endSessions("")
+	}
+}
+
+// revokeOne revokes a session or a family by id (DELETE /me/sessions/:id):
+// there while its family has a live refresh token, or its opaque session
+// no change ended. With Valkey down only a family can be found, and a bump
+// stands in for Valkey.
+func (w *sessionWalk) revokeOne(down bool) {
+	id := w.pickID()
+	if id == "" {
+		return
+	}
+	f := w.family(id)
+	_, opaque := w.current[id]
+	familyLive, opaqueLive := f != nil && !f.revoked, opaque && !w.ended[id]
+	err := w.during(down, func() error { return w.s.RevokeSession(w.ctx, w.uid, id) })
+	switch {
+	case familyLive || (!down && opaqueLive):
+		w.ok(err)
+	case down:
+		require.True(w.t, isCode(err, "unavailable"), "%s: revoking %s: %v", w.where(), id, err)
+		return
+	default:
+		require.True(w.t, isCode(err, "not_found"), "%s: revoking %s: %v", w.where(), id, err)
+		return
+	}
+	w.ended1(id)
+	if down {
+		w.endSessions("")
+	}
+}
+
+// opaqueLogout signs out with an opaque session: it ends alone, every one
+// with Valkey down.
+func (w *sessionWalk) opaqueLogout(down bool) {
+	id := w.pickSession()
+	if id == "" {
+		return
+	}
+	w.ok(w.during(down, func() error { return w.s.Logout(core.WithOpaqueSession(w.ctx, id), w.uid, "") }))
+	w.ended1(id)
+	if down {
+		w.endSessions("")
+	}
+}
+
+// jwtLogout signs a JWT session out with its refresh token on the JWT
+// node: no opaque session ends, unless Valkey is down (a bump stands in).
+func (w *sessionWalk) jwtLogout(down bool) {
+	f := w.pickFamily(func(f *walkFamily) bool { return !f.revoked })
+	if f == nil {
+		w.jwtLogin()
+		f = w.families[len(w.families)-1]
+	}
+	w.ok(w.during(down, func() error { return w.jwtNode.Logout(w.ctx, w.uid, f.refresh) }))
+	f.revoked = true
+	if down {
+		w.endSessions("")
+	}
+}
+
+// endAll ends every session, as a JWT caller signing out without its
+// refresh token does; with Valkey down the cleanup after the commit fails.
+func (w *sessionWalk) endAll(down bool) {
+	w.ok(w.during(down, func() error { return w.s.Logout(core.WithSession(w.ctx, "a-jwt-family"), w.uid, "") }))
+	w.endedEverything()
+}
+
+// revokeOthers ends every session but one. With Valkey down the one kept
+// ends too (a bump stands in), and the revocation is left for Valkey to
+// run late.
+func (w *sessionWalk) revokeOthers(down bool) {
+	keep := w.pickID()
+	var from int
+	w.ok(userTokenVersion(w.s.db.Gorm, w.uid).Row().Scan(&from))
+	at := time.Now()
+	w.ok(w.during(down, func() error { return w.s.RevokeOtherSessions(w.ctx, w.uid, keep) }))
+	w.revokeFamilies(keep)
+	if down {
+		w.endSessions("")
+		w.late = &lateRevoke{keep: keep, from: from, at: at}
+		return
+	}
+	w.endSessions(keep)
+}
+
+// revokeOthersRolledBack ends the other opaque sessions and restamps the
+// one kept before the commit, which then fails: Valkey does not roll back,
+// PostgreSQL does (no bump, the families stay).
+func (w *sessionWalk) revokeOthersRolledBack() {
+	keep := w.pickID()
+	restore := failAudit(w.t, w.s, "user.session.revoke_others", true)
+	err := w.s.RevokeOtherSessions(w.ctx, w.uid, keep)
+	restore()
+	require.Error(w.t, err, w.where())
+	w.endSessions(keep)
+}
+
+// runLate runs the revocation a caller gave up on, as Valkey would run it
+// late: the sessions issued since stay.
+func (w *sessionWalk) runLate() {
+	l := w.late
+	if l == nil {
+		return
+	}
+	late := tokenstore.NewValkey(w.rdb, tokenstore.Options{Now: func() time.Time { return l.at }})
+	w.ok(late.Revoke(w.ctx, w.uid, tokenstore.Selection{Keep: l.keep}, tokenstore.Bump{From: l.from, To: l.from + 1}))
+}
+
+func (w *sessionWalk) adminPasswordReset() {
+	password := adminPassword
+	_, err := w.s.UpdateUser(w.ctx, 0, w.uid, UpdateUserInput{Password: &password})
+	w.ok(err)
+	w.endedEverything()
+}
+
+// adminDisable disables the user and enables them again.
+func (w *sessionWalk) adminDisable() {
+	for _, status := range []string{StatusDisabled, StatusActive} {
+		_, err := w.s.UpdateUser(w.ctx, 0, w.uid, UpdateUserInput{Status: &status})
+		w.ok(err)
+	}
+	w.endedEverything()
+}
+
+func (w *sessionWalk) adminSecurityReset() {
+	w.ok(w.s.ResetSecurity(w.ctx, 0, w.uid))
+	w.endedEverything()
+}
+
+// cliBump ends every session the way `sub2api admin recover-superadmin`
+// does to its target: with PostgreSQL alone, no bus. The nodes notice
+// within statusCacheTTL, which the walk does not wait out.
+func (w *sessionWalk) cliBump() {
+	w.ok(w.cli.ResetSecurity(w.ctx, 0, w.uid))
+	for _, n := range []*Service{w.s, w.jwtNode, w.observer} {
+		n.forgetStatus(w.uid)
+	}
+	w.endedEverything()
+}
+
+// sessionRace is one user's sessions changed by workers at once. Every
+// login and change records the ticks it started and returned at.
+type sessionRace struct {
+	ctx        context.Context
+	s, jwtNode *Service
+	uid        int64
+	email      string
+	clock      atomic.Int64
+
+	mu       sync.Mutex
+	sessions []*raceSession
+	changes  []raceChange
+}
+
+// raceSession is an opaque session a worker signed in; its last token is
+// the current one.
+type raceSession struct {
+	sid    string
+	tokens []string
+	born   [2]int64
+}
+
+// raceChange ended the opaque session only, or every one but keep.
+type raceChange struct {
+	only, keep string
+	at         [2]int64
+}
+
+func (c raceChange) ends(sid string) bool {
+	if c.only != "" {
+		return c.only == sid
+	}
+	return c.keep != sid
+}
+
+// change runs fn and records c when it succeeds.
+func (r *sessionRace) change(c raceChange, fn func() error) error {
+	start := r.clock.Add(1)
+	err := fn()
+	c.at = [2]int64{start, r.clock.Add(1)}
+	if err == nil {
+		r.mu.Lock()
+		r.changes = append(r.changes, c)
+		r.mu.Unlock()
+	}
+	return err
+}
+
+// work runs steps changes picked by seed, on sessions of its own, and
+// returns their names.
+func (r *sessionRace) work(t *testing.T, seed uint64, steps int) []string {
+	rng := rand.New(rand.NewPCG(seed, 7))
+	var own []*raceSession
+	var trail []string
+	for range steps {
+		some := "" // one of its sessions, if any
+		if len(own) > 0 {
+			some = own[rng.IntN(len(own))].sid
+		}
+		var err error
+		switch op := rng.IntN(6); op {
+		case 0:
+			trail = append(trail, "login")
+			x := &raceSession{born: [2]int64{r.clock.Add(1), 0}}
+			var p *TokenPair
+			if p, err = r.s.Login(r.ctx, r.email, adminPassword, testIP); err != nil {
+				break
+			}
+			x.born[1] = r.clock.Add(1)
+			// Read as stored: a change running alongside may have ended
+			// it already, and one that removed it leaves nothing to check.
+			var stored tokenstore.Session
+			if stored, err = r.s.sessions.Lookup(r.ctx, p.AccessToken); err != nil {
+				if errors.Is(err, tokenstore.ErrNotFound) {
+					err = nil
+				}
+				break
+			}
+			x.sid, x.tokens = stored.ID, []string{p.AccessToken}
+			own = append(own, x)
+			r.mu.Lock()
+			r.sessions = append(r.sessions, x)
+			r.mu.Unlock()
+		case 1:
+			trail = append(trail, "rotate")
+			if len(own) == 0 {
+				continue
+			}
+			x := own[rng.IntN(len(own))]
+			var token string
+			if token, err = r.s.sessions.Rotate(r.ctx, r.uid, x.sid); err == nil {
+				x.tokens = append(x.tokens, token)
+			} else if errors.Is(err, tokenstore.ErrNotFound) {
+				err = nil
+			}
+		case 2:
+			trail = append(trail, "revoke others")
+			err = r.change(raceChange{keep: some}, func() error { return r.s.RevokeOtherSessions(r.ctx, r.uid, some) })
+		case 3:
+			trail = append(trail, "JWT logout")
+			var p *TokenPair
+			if p, err = r.jwtNode.Login(r.ctx, r.email, adminPassword, testIP); err == nil {
+				err = r.jwtNode.Logout(r.ctx, r.uid, p.RefreshToken)
+			}
+		case 4:
+			trail = append(trail, "end all")
+			err = r.change(raceChange{}, func() error { return r.s.Logout(core.WithSession(r.ctx, "a-jwt-family"), r.uid, "") })
+		case 5:
+			trail = append(trail, "opaque logout")
+			if some == "" {
+				continue
+			}
+			err = r.change(raceChange{only: some}, func() error {
+				return r.s.Logout(core.WithOpaqueSession(r.ctx, some), r.uid, "")
+			})
+		}
+		assert.NoError(t, err, "%q", trail)
+	}
+	return trail
+}
+
+// The same at once: whatever runs alongside (logins, rotations, bumps that
+// keep sessions or end them all), a change that started after a login
+// returned ends that session, every token of it, on both nodes; one that
+// returned before a login started leaves it signed in.
+func TestEndedSessionsStayEndedConcurrently(t *testing.T) {
+	t.Setenv(IssueEnv, IssueOpaque)
+	e := setupAdmin(t)
+	s, ctx := e.svc, context.Background()
+	root := rootID(t, s)
+	t.Setenv(IssueEnv, IssueJWT)
+	jwtNode := New(Deps{DB: s.db, Redis: redis.NewClient(&redis.Options{Addr: e.redis.Addr()}), Config: e.cfg, Authz: e.authz, Bus: e.bus, BcryptCost: bcrypt.MinCost})
+	for round := range 3 {
+		email := fmt.Sprintf("race-%d@example.com", round)
+		u, err := s.CreateUser(ctx, root, CreateUserInput{Email: email, Password: adminPassword})
+		require.NoError(t, err)
+		r := &sessionRace{ctx: ctx, s: s, jwtNode: jwtNode, uid: u.ID, email: email}
+		trails := make([][]string, 6)
+		var wg sync.WaitGroup
+		for worker := range trails {
+			wg.Go(func() { trails[worker] = r.work(t, uint64(round*len(trails)+worker), 8) })
+		}
+		wg.Wait()
+		for _, x := range r.sessions {
+			mustEnd, mayEnd := false, false
+			for _, c := range r.changes {
+				if c.ends(x.sid) {
+					mustEnd = mustEnd || c.at[0] > x.born[1]
+					mayEnd = mayEnd || c.at[1] > x.born[0]
+				}
+			}
+			for _, n := range []*Service{jwtNode, s} {
+				switch {
+				case mustEnd:
+					for _, tok := range x.tokens {
+						_, err := n.VerifyAccessToken(ctx, tok)
+						require.True(t, isCode(err, "unauthenticated"), "round %d %+v %+v %q: an ended session works: %v", round, x, r.changes, trails, err)
+					}
+				case !mayEnd:
+					_, err := n.VerifyAccessToken(ctx, x.tokens[len(x.tokens)-1])
+					require.NoError(t, err, "round %d %+v %+v %q: a session no change ended is rejected", round, x, r.changes, trails)
+				}
 			}
 		}
 	}

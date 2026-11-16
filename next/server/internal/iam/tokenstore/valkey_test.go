@@ -231,11 +231,14 @@ func TestListDropsExpired(t *testing.T) {
 	if ok, _ := c.mr.ZMembers(userKey(7)); len(ok) != 2 {
 		t.Fatalf("ghost kept: %v", ok)
 	}
-	if has, err := v.Has(ctx, 7, "newer"); err != nil || !has {
+	if has, err := v.Has(ctx, 7, "newer", 3); err != nil || !has {
 		t.Fatalf("has newer: %v %v", has, err)
 	}
-	if has, _ := v.Has(ctx, 8, "newer"); has {
+	if has, _ := v.Has(ctx, 8, "newer", 3); has {
 		t.Fatal("another user has newer")
+	}
+	if has, _ := v.Has(ctx, 7, "newer", 4); has {
+		t.Fatal("has newer, which a bump ended")
 	}
 	_ = newer
 }
@@ -364,7 +367,7 @@ func TestUnavailable(t *testing.T) {
 	check("rotate", err)
 	_, err = v.List(ctx, 7)
 	check("list", err)
-	_, err = v.Has(ctx, 7, "fam")
+	_, err = v.Has(ctx, 7, "fam", 0)
 	check("has", err)
 	check("revoke", v.Revoke(ctx, 7, Selection{}, Bump{From: 0, To: 1}))
 	check("prune", v.Prune(ctx, 7, 1))
@@ -498,7 +501,8 @@ func TestTouchDoesNotRecreate(t *testing.T) {
 }
 
 // Revoking one session with no stamp to give reads that session only: the
-// rest of the index is left as it is.
+// rest of the index is left as it is. With a stamp to give, even from
+// version 0, every session is read and the others are stamped.
 func TestRevokeOnlyReadsOneSession(t *testing.T) {
 	v, c := newStore(t)
 	create(t, v, 7, "a")
@@ -507,6 +511,40 @@ func TestRevokeOnlyReadsOneSession(t *testing.T) {
 	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "a"}, Bump{}))
 	ids, _ := c.mr.ZMembers(userKey(7))
 	assert.Equal(t, []string{"ghost"}, ids)
+
+	x, err := v.Create(ctx, Session{ID: "x", UserID: 7})
+	require.NoError(t, err)
+	y, err := v.Create(ctx, Session{ID: "y", UserID: 7})
+	require.NoError(t, err)
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Only: "x"}, Bump{From: 0, To: 1}))
+	gone(t, v, x)
+	assert.Equal(t, 1, mustLookup(t, v, y).TokenVersion)
+}
+
+// A revocation Valkey runs late, after the caller gave up on it, leaves
+// the sessions issued since alone: one stamped past the bump (the
+// caller's stampless fallback committed) and one created since below it
+// (the caller's change rolled back), the latter unstamped. One stamped to
+// the bump's version is never spared: it may be a session from before the
+// call that a node with its clock ahead created.
+func TestLateRevokeLeavesLaterSessions(t *testing.T) {
+	v, c := newStore(t) // sessions stamped 3
+	old, keep := create(t, v, 7, "old"), create(t, v, 7, "keep")
+	called := c.now
+	c.advance(time.Second)
+	afterFallback, err := v.Create(ctx, Session{ID: "after-fallback", UserID: 7, TokenVersion: 5})
+	require.NoError(t, err)
+	afterRollback := create(t, v, 7, "after-rollback")
+	stampedTo, err := v.Create(ctx, Session{ID: "stamped-to", UserID: 7, TokenVersion: 4})
+	require.NoError(t, err)
+
+	c.now = called // the call as it was made
+	require.NoError(t, v.Revoke(ctx, 7, Selection{Keep: "keep"}, Bump{From: 3, To: 4}))
+	gone(t, v, old)
+	gone(t, v, stampedTo)
+	assert.Equal(t, 4, mustLookup(t, v, keep).TokenVersion)
+	assert.Equal(t, 5, mustLookup(t, v, afterFallback).TokenVersion)
+	assert.Equal(t, 3, mustLookup(t, v, afterRollback).TokenVersion)
 }
 
 // The client NewClient makes answers a 503 within about authTimeout when

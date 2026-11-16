@@ -79,11 +79,16 @@ type SessionStore interface {
 	// List returns the live sessions of userID, most recently used first,
 	// dropping index entries whose session is gone.
 	List(ctx context.Context, userID int64) ([]Session, error)
-	// Has reports whether userID has the live session id.
-	Has(ctx context.Context, userID int64, id string) (bool, error)
+	// Has reports whether userID has the live session id stamped
+	// tokenVersion or above: one stamped below was ended by a bump.
+	Has(ctx context.Context, userID int64, id string, tokenVersion int) (bool, error)
 	// Revoke ends the sessions of userID that sel picks at once. With a
 	// bump it also ends the others stamped below b.From and stamps the rest
 	// below b.To with b.To; without one, Only touches that session alone.
+	// With a bump, the sessions issued after the call are left as they
+	// are, should Valkey run it late (after the caller gave up on it): one
+	// stamped above b.To, or created since and stamped below b.To. Neither
+	// can be a session from before the call that the bump would not end.
 	Revoke(ctx context.Context, userID int64, sel Selection, b Bump) error
 	// Prune ends the sessions of userID stamped below tokenVersion: those a
 	// bump ended without reaching Valkey. Later sessions stay.

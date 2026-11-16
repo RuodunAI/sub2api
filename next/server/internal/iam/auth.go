@@ -423,6 +423,9 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*TokenPair,
 	if replayed != nil {
 		slog.WarnContext(ctx, "iam: refresh token reuse detected, token family revoked",
 			"user_id", replayed.userID, "family_id", replayed.family, "token_id", replayed.id)
+		// Ending the opaque session may have bumped token_version in
+		// Valkey's place: the nodes must not wait out their status cache.
+		s.sessionsChanged(ctx, replayed.userID)
 		return nil, errBadRefresh
 	}
 	return pair, nil

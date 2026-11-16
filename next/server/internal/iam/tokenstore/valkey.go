@@ -97,8 +97,9 @@ func NewValkey(rdb redis.Cmdable, o Options) *Valkey {
 // connection (dialled or from the pool) or an answer, and honours the
 // deadline of each call (authTimeout), so an outage costs a console request
 // a 503 quickly instead of a long hang. A call is retried after its answer
-// was lost, so every write of the stores is idempotent. The caller closes
-// it.
+// was lost, so the session scripts are idempotent; a flow taken (GETDEL)
+// and retried that way finds nothing and reads as expired, and the user
+// starts that step again. The caller closes it.
 func NewClient(base *redis.Options) *redis.Client {
 	o := *base
 	o.Dialer = nil // base's dialer has base's timeout; this one is built from o
@@ -338,17 +339,19 @@ func (v *Valkey) List(ctx context.Context, userID int64) ([]Session, error) {
 	return out, nil
 }
 
-// hasScript reports whether the id names a live session of the user.
-// KEYS: sid. ARGV: prefix, uid.
+// hasScript reports whether the id names a live session of the user
+// stamped the version or above.
+// KEYS: sid. ARGV: prefix, uid, version.
 var hasScript = redis.NewScript(`
 local h = redis.call('GET', KEYS[1])
 if not h then return 0 end
-if redis.call('HGET', ARGV[1] .. 'sess:' .. h, 'uid') == ARGV[2] then return 1 end
+local f = redis.call('HMGET', ARGV[1] .. 'sess:' .. h, 'uid', 'tv')
+if f[1] == ARGV[2] and (tonumber(f[2]) or 0) >= tonumber(ARGV[3]) then return 1 end
 return 0`)
 
 // Has implements SessionStore.
-func (v *Valkey) Has(ctx context.Context, userID int64, id string) (bool, error) {
-	n, err := hasScript.Run(ctx, v.rdb, []string{sidKey(id)}, keyPrefix, userID).Int()
+func (v *Valkey) Has(ctx context.Context, userID int64, id string, tokenVersion int) (bool, error) {
+	n, err := hasScript.Run(ctx, v.rdb, []string{sidKey(id)}, keyPrefix, userID, tokenVersion).Int()
 	if err != nil {
 		return false, fail(ctx, "has", err)
 	}
@@ -360,14 +363,17 @@ func (v *Valkey) Has(ctx context.Context, userID int64, id string) (bool, error)
 // one stamped below from was ended by an earlier bump and ends now, one
 // below to is stamped to (both tokens too: a request still carrying the
 // old one must not find it stale). Nothing stamped below from is ever
-// stamped again, so no bump revives a session an earlier one ended. The
-// index entries whose session is gone are dropped. Only is tried even when
-// the index lost it; with no bump, it is the only session read. A session
-// is ended only when it is the user's. Prune is this with nothing picked.
-// KEYS: usess. ARGV: prefix, uid, pick (1/0), only, keep, from, to.
+// stamped again, so no bump revives a session an earlier one ended. With a
+// bump, a session issued after the call (later) is left alone: the script
+// may run long after it, Valkey having held it past the caller's timeout.
+// The index entries whose session is gone are dropped. Only is tried even
+// when the index lost it; with no bump (to 0), it is the only session
+// read. A session is ended only when it is the user's. Prune is this with
+// nothing picked.
+// KEYS: usess. ARGV: prefix, uid, pick (1/0), only, keep, from, to, now ms.
 var revokeScript = redis.NewScript(dropLua + `
 local p, uid, pick, only, keep = ARGV[1], ARGV[2], ARGV[3] == '1', ARGV[4], ARGV[5]
-local from, to = tonumber(ARGV[6]), tonumber(ARGV[7])
+local from, to, now = tonumber(ARGV[6]), tonumber(ARGV[7]), tonumber(ARGV[8])
 -- settle stamps the session key k up to to; false when it is stamped
 -- below from, ended.
 local function settle(k)
@@ -376,8 +382,21 @@ local function settle(k)
   if tv < to then redis.call('HSET', k, 'tv', to) end
   return true
 end
+-- later tells a session issued after the call. No session from before it
+-- is stamped above to (stamps are never more than one ahead of the
+-- version, from): one above signed in after the caller's stampless
+-- fallback committed. One stamped below to and created after now signed
+-- in after the caller's change rolled back. One stamped to is never
+-- spared, so a clock alone (another node's, ahead) spares nothing the bump
+-- does not end; nor is keep, or anything without a bump.
+local function later(id, k)
+  if to == 0 or id == keep then return false end
+  local f = redis.call('HMGET', k, 'tv', 'created_at')
+  local tv = tonumber(f[1]) or 0
+  return tv > to or (tv < to and (tonumber(f[2]) or 0) > now)
+end
 local ids = {}
-if only == '' or from > 0 then ids = redis.call('ZRANGE', KEYS[1], 0, -1) end
+if only == '' or to > 0 then ids = redis.call('ZRANGE', KEYS[1], 0, -1) end
 if only ~= '' then table.insert(ids, only) end
 for _, id in ipairs(ids) do
   local sid = p .. 'sid:' .. id
@@ -385,6 +404,8 @@ for _, id in ipairs(ids) do
   local k = h and (p .. 'sess:' .. h)
   if not h or redis.call('HGET', k, 'uid') ~= uid then
     redis.call('ZREM', KEYS[1], id)
+  elseif later(id, k) then
+    -- left as it is
   elseif (pick and (only == '' or id == only) and (keep == '' or id ~= keep)) or not settle(k) then
     drop(p, sid)
     redis.call('ZREM', KEYS[1], id)
@@ -407,7 +428,7 @@ func (v *Valkey) Prune(ctx context.Context, userID int64, tokenVersion int) erro
 }
 
 func (v *Valkey) revoke(ctx context.Context, op string, userID int64, pick bool, sel Selection, b Bump) error {
-	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, pick, sel.Only, sel.Keep, b.From, b.To).Err()
+	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, pick, sel.Only, sel.Keep, b.From, b.To, ms(v.o.Now())).Err()
 	if err != nil {
 		return fail(ctx, op, err)
 	}
