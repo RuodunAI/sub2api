@@ -61,6 +61,19 @@ describe('update source settings', () => {
     expect(putBody()).toEqual({ enabled: false, kind: 'github', repository: 'owner/private', url: '' })
   })
 
+  it('links to a pre-filled GitHub token for the repository owner, for a github source only', async () => {
+    const w = await render()
+    const link = () => w.get('[data-testid="update-source-create-token"]')
+    expect(link().text()).toBe('在 GitHub 创建令牌')
+    expect(link().attributes()).toMatchObject({ target: '_blank', rel: 'noopener noreferrer' })
+    expect(new URL(link().attributes('href')!).searchParams.get('target_name')).toBe('owner')
+    await w.get('input[name="repository"]').setValue('https://github.com/other-org/repo')
+    expect(new URL(link().attributes('href')!).searchParams.get('target_name')).toBe('other-org')
+    await w.get('[data-testid="update-source-kind"] input[value="url"]').setValue(true)
+    expect(w.find('input[name="secret"]').exists()).toBe(true)
+    expect(w.find('[data-testid="update-source-create-token"]').exists()).toBe(false)
+  })
+
   it('sends a new secret once and forgets it after saving', async () => {
     const w = await render()
     await w.get('input[name="secret"]').setValue(SECRET)

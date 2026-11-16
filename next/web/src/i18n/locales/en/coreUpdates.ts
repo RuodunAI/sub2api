@@ -29,6 +29,7 @@ export default {
   secretWillClear: 'The saved secret is cleared on save',
   secretKeep: 'Set; leave empty to keep it', secretNone: 'Required', secretRequired: 'Enter the secret, or turn the switch above off',
   secretDropped: 'Changing the source clears the saved token. Enter it again if it is still needed.',
+  createToken: 'Create a token on GitHub',
   checkResult: 'Check result', checking: 'Checking…',
   connected: 'Connected: latest core {core}, latest gateway {gateway}'
 }
