@@ -167,7 +167,7 @@ func (s *Service) SyncCore(ctx context.Context) error {
 		}
 		changed = changed || removed.RowsAffected > 0
 		if changed {
-			if v, err = s.Bump(ctx, tx); err != nil {
+			if v, err = s.bumpPolicy(ctx, tx); err != nil {
 				return err
 			}
 		}

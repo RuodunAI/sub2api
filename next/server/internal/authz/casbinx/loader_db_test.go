@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -76,7 +77,7 @@ func version(t *testing.T, db *store.DB) int64 {
 func TestLoaderPolicy(t *testing.T) {
 	t.Parallel()
 	db := policyDB(t)
-	seedPolicy(t, db)
+	s := seedPolicy(t, db)
 	p, err := casbinx.NewLoader(db).Policy(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -88,12 +89,22 @@ func TestLoaderPolicy(t *testing.T) {
 		t.Fatalf("active = %v", p.Active)
 	}
 	var mine []casbinx.Rule
+	links := map[string][]string{}
 	for _, r := range p.Rules {
-		if r.Ptype != "p" {
-			t.Fatalf("a %s row loaded", r.Ptype)
-		}
-		if strings.HasPrefix(r.V0, "r:cxt_") {
+		switch {
+		case r.Ptype == "p" && strings.HasPrefix(r.V0, "r:cxt_"):
 			mine = append(mine, r)
+		case r.Ptype == "g":
+			links[r.V0] = append(links[r.V0], r.V1)
+		}
+	}
+	// Every g row is read; the enforcer links the active users' only.
+	if got := links[casbinrule.UserSub(s.users["deleted"])]; !slices.Equal(got, []string{"r:cxt_b"}) {
+		t.Fatalf("g rows of the deleted user: %v", got)
+	}
+	for name, want := range map[string]bool{"a": true, "none": true, "disabled": false, "deleted": false} {
+		if got := slices.Contains(p.Users, s.users[name]); got != want {
+			t.Errorf("%s active: %v", name, got)
 		}
 	}
 	slices.SortFunc(mine, func(a, b casbinx.Rule) int { return strings.Compare(a.V0+a.V1+a.V2, b.V0+b.V1+b.V2) })
@@ -173,9 +184,10 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 		got := log.Take()
 		want := []*regexp.Regexp{
 			regexp.MustCompile(`^begin$`),
-			regexp.MustCompile(`^SELECT version FROM authz_meta`),
+			regexp.MustCompile(`^SELECT version, policy_version FROM authz_meta`),
 			regexp.MustCompile(`^SELECT key FROM permissions WHERE status = 'active'$`),
-			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1\) ORDER BY ID$`),
+			regexp.MustCompile(`^SELECT id FROM users WHERE deleted_at IS NULL AND status = 'active'$`),
+			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1,\$2\) ORDER BY ID$`),
 			regexp.MustCompile(`^commit$`),
 		}
 		if len(got) != len(want) {
@@ -192,17 +204,17 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 	}
 }
 
-// Through PostgreSQL, the resolution of each kind of user seeded: grants
-// with and without scopes, the self permissions of an active user, none of
-// a disabled permission, every key for the superuser, nothing for a
-// disabled or deleted user.
-func TestResolverThroughPostgres(t *testing.T) {
+// Through PostgreSQL, the decisions and lists of each kind of user seeded:
+// grants with and without scopes, the self permissions of an active user,
+// none of a disabled permission, every key for the superuser, nothing for
+// a disabled or deleted user.
+func TestEnforcerThroughPostgres(t *testing.T) {
 	t.Parallel()
 	db := policyDB(t)
 	s := seedPolicy(t, db)
-	l := casbinx.NewLoader(db)
-	r := casbinx.NewResolver(l, casbinx.NewRoleCache(l, nil), []string{"self:read"})
+	r := casbinx.New(casbinx.NewLoader(db), []string{"self:read"}, casbinx.Options{})
 	v := version(t, db)
+	ctx := context.Background()
 	for name, want := range map[string][]string{
 		"a":        {"cxt:read", "self:read"},
 		"ab":       {"account:read:group/12", "account:read:own", "cxt:read", "cxt:write", "self:read"},
@@ -211,15 +223,21 @@ func TestResolverThroughPostgres(t *testing.T) {
 		"disabled": {},
 		"deleted":  {},
 	} {
-		got, err := r.Grants(context.Background(), s.users[name], v)
+		got, err := r.Permissions(ctx, s.users[name], v)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if got.Superuser || !slices.Equal(got.KeyList(), want) {
 			t.Errorf("%s: superuser %v, keys %v, want %v", name, got.Superuser, got.KeyList(), want)
 		}
+		for _, k := range append(want, "cxt:old", "account:read") {
+			ok, err := r.Enforce(ctx, s.users[name], v, k)
+			if err != nil || ok != slices.Contains(want, k) {
+				t.Errorf("%s: Enforce(%s) = %v, %v", name, k, ok, err)
+			}
+		}
 	}
-	got, err := r.Grants(context.Background(), s.users["super"], v)
+	got, err := r.Permissions(ctx, s.users["super"], v)
 	if err != nil || !got.Superuser || !got.Has("cxt:a-key-to-come") {
 		t.Fatalf("super: %+v, %v", got, err)
 	}

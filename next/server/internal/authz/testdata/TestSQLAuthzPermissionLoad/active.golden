@@ -1,0 +1,3 @@
+-- sql
+SELECT key FROM permissions WHERE status = 'active'
+-- vars

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -24,6 +25,7 @@ func TestScopedRoleGrants(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	rows := func(id int64) (plain, scoped []string) { return grantRows(t, s, id) }
 
+	scopeRows(t, db, "account:update:group/12", "proxy:manage:proxy/8")
 	r, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "group_ops", Name: map[string]string{"en": "Group ops"},
 		PermissionKeys: []string{"account:update:group/12/*", "account:read:own", "proxy:manage:proxy/8", "user:read", "account:test:*"}})
 	require.NoError(t, err)
@@ -86,4 +88,54 @@ func TestScopedRoleGrants(t *testing.T) {
 	require.Equal(t, "account", types["account:credential:view"])
 	require.Equal(t, "proxy", types["proxy:read"])
 	require.Equal(t, "", types["account:relay"])
+}
+
+// A grant may only name rows that exist (C3): a deleted account, a group
+// or proxy never created, is refused, on a new role and on a role write; a
+// grant the role holds already stays. ClearScopeGrants announces the
+// version itself (S2): another node drops the holders' sets without the
+// deleting module saying anything.
+func TestScopeGrantsNameExistingRows(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	bus := newMemBus()
+	s := newService(t, db, bus, nil)
+	other := newService(t, db, bus, nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	scopeRows(t, db, "account:read:group/12/account/125", "proxy:read:proxy/8")
+
+	for _, keys := range [][]string{{"account:read:group/77"}, {"account:read:account/999"}, {"account:read:group/12/account/126"}, {"proxy:read:proxy/9"}} {
+		_, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "nope", Name: lt("n", "n"), PermissionKeys: keys})
+		require.True(t, isCode(err, "invalid_argument"), "%v: %v", keys, err)
+		require.Equal(t, "unknown_scope", fieldCode(err, "permission_keys"), "%v", keys)
+	}
+	keys := []string{"account:read:group/12/account/125", "proxy:read:proxy/8"}
+	r, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "scoped", Name: lt("s", "s"), PermissionKeys: keys})
+	require.NoError(t, err)
+	holder := addUser(t, s, "h@x.com", "scoped")
+	set, err := other.PermissionSet(ctx, holder)
+	require.NoError(t, err)
+	require.True(t, set.Has("proxy:read:proxy/8"))
+
+	// The proxy goes (as proxy's delete does): its grant is cleared, and
+	// the other node hears of it from authz.
+	require.NoError(t, s.db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := tx.Exec(`DELETE FROM proxies WHERE id = 8`).Error; err != nil {
+			return err
+		}
+		v, err := s.ClearScopeGrants(ctx, tx, root, core.ScopeRefProxy, []int64{8})
+		require.NotZero(t, v)
+		return err
+	}))
+	eventually(t, func() bool {
+		set, err := other.PermissionSet(ctx, holder)
+		return err == nil && !set.Has("proxy:read:proxy/8")
+	})
+	// Saving the role back with the cleared grant listed: refused; the
+	// grants it holds stay.
+	_, err = s.SetRolePermissions(ctx, root, r.ID, keys, nil)
+	require.Equal(t, "unknown_scope", fieldCode(err, "permission_keys"), "%v", err)
+	_, err = s.SetRolePermissions(ctx, root, r.ID, keys[:1], nil)
+	require.NoError(t, err)
 }

@@ -150,12 +150,14 @@ async function persist(resent: boolean): Promise<void> {
   if (!resent && permsDirty.value && permsMissing.value && !(await confirm({ message: t('roles.overwriteUnknown'), danger: true }))) return
   if (!resent && permsDirty.value && !(await confirmRisky(r))) return
   // Each changed part has its own endpoint; they run in order and stop at the
-  // first refusal. The permissions go first: they carry the version read with
-  // the role, which any other write would move on (C1).
+  // first refusal. Each carries the role's revision (C1): the one read for
+  // the first, then the one the previous step answered with.
+  let revision = r.revision
+  const rev = () => (revision !== undefined ? { revision } : {})
   const steps = [
-    permsDirty.value && (() => api.put(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort(), ...(r.version !== undefined && { version: r.version }) })),
-    metaDirty.value && (() => api.patch(`/roles/${r.id}`, metaPatch())),
-    assignableDirty.value && (() => api.put(`/roles/${r.id}/assignable`, { role_keys: [...assignable.value].sort(), assign_custom: assignCustom.value }))
+    permsDirty.value && (() => api.put<RoleRow>(`/roles/${r.id}/permissions`, { permission_keys: [...perms.value].sort(), ...rev() })),
+    metaDirty.value && (() => api.patch<RoleRow>(`/roles/${r.id}`, { ...metaPatch(), ...rev() })),
+    assignableDirty.value && (() => api.put<RoleRow>(`/roles/${r.id}/assignable`, { role_keys: [...assignable.value].sort(), assign_custom: assignCustom.value, ...rev() }))
   ].filter((step) => !!step)
   saving.value = true
   saveMissing.value = ''
@@ -163,7 +165,7 @@ async function persist(resent: boolean): Promise<void> {
   let missing = ''
   try {
     for (const step of steps) {
-      await step()
+      revision = (await step())?.revision ?? revision
       done++
     }
     toast(t('common.saved'), 'success')
@@ -190,8 +192,8 @@ function confirmRisky(r: RoleRow) {
 
 /**
  * A 409 version_conflict: reads the roles again (a failed read keeps the
- * edits for another try). The role as it was (the version moved for
- * something else): saved again at once. Else the edited cells (one action
+ * edits for another try). The role's permissions as they were (the role
+ * changed otherwise): saved again at once. Else the edited cells (one action
  * each, as the matrix keeps them) go on top of what is read (replayCells),
  * to be saved once more, naming the cells someone else changed too. The
  * other fields stay as edited.
@@ -309,7 +311,8 @@ async function restoreDefaults() {
   if (!(await confirm({ message: t('roles.restoreConfirm', { name: lt(r.name) || r.key }), danger: true }))) return
   saving.value = true
   try {
-    await api.post(`/roles/${r.id}/reset`)
+    // With the revision read, when there is one (C1).
+    await (r.revision !== undefined ? api.post(`/roles/${r.id}/reset`, { revision: r.revision }) : api.post(`/roles/${r.id}/reset`))
     toast(t('roles.restored'), 'success')
     await loadRoles()
     const fresh = roles.value.find((x) => x.id === r.id)

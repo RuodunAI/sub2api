@@ -4,18 +4,30 @@ WITH g AS (
     FROM unnest($1::text[], $2::text[], $3::text[]) AS t(role, action, v2)
     JOIN roles r ON r.key = t.role
     JOIN permissions p ON p.key = t.action
-    WHERE true),
+    WHERE (CAST($4 AS text) = '' OR p.source = $5) AND (CAST($6 AS text) = '' OR p.plugin_key = $7)
+    AND (CAST($8 AS text) = '' OR p.key = $9) AND p.status <> ALL(COALESCE(CAST($10 AS text[]), '{}'))
+    AND NOT (CAST($11 AS boolean) AND r.superuser)),
 ins AS (
     INSERT INTO casbin_rule (ptype, v0, v1, v2)
     SELECT 'p', v0, v1, v2 FROM g
     WHERE v2 = '*' OR NOT EXISTS (SELECT 1 FROM casbin_rule f
         WHERE f.ptype = 'p' AND f.v0 = g.v0 AND f.v1 = g.v1 AND f.v2 = '*')
     ON CONFLICT (ptype, v0, v1, v2, v3, v4, v5) DO NOTHING
-    RETURNING v0, v1, v2)
-SELECT g.role_id, CASE g.v2 WHEN '*' THEN g.v1 ELSE g.v1 || ':' || g.v2 END AS key
-FROM ins JOIN g ON g.v0 = ins.v0 AND g.v1 = ins.v1 AND g.v2 = ins.v2
-ORDER BY 1, 2
+    RETURNING v0, v1, v2),
+changed AS (
+    SELECT cr.role_id, CASE cr.v2 WHEN '*' THEN cr.v1 ELSE cr.v1 || ':' || cr.v2 END AS key
+    FROM ins JOIN g cr ON cr.v0 = ins.v0 AND cr.v1 = ins.v1 AND cr.v2 = ins.v2),
+revised AS (UPDATE roles SET revision = revision + 1 WHERE id IN (SELECT role_id FROM changed))
+SELECT role_id, key FROM changed ORDER BY 1, 2
 -- vars
 $1 store.Strings [admin operator]
 $2 store.Strings [account:read account:read]
 $3 store.Strings [* own]
+$4 string ""
+$5 string ""
+$6 string ""
+$7 string ""
+$8 string ""
+$9 string ""
+$10 store.Strings []
+$11 bool false

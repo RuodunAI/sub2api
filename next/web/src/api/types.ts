@@ -77,11 +77,11 @@ export interface Role {
   user_count?: number
   member_count?: number // deprecated alias
   /**
-   * The global authz version the role was read at (C1): PUT
-   * /roles/:id/permissions carries it back and is refused with 409
-   * version_conflict once grants changed meanwhile.
+   * The role's revision (C1), moved by every change to the role: its writes
+   * (permissions, name, assignable list, reset) carry it back and are
+   * refused with 409 version_conflict once the role changed meanwhile.
    */
-  version?: number
+  revision?: number
 }
 
 /** One role of GET /me/assignable-roles: on the caller's managed list (CONTRACTS §43.6). */
@@ -174,6 +174,8 @@ export interface PluginRoleRow {
   /** The caller may change the role (editableRole); the super admin role never is. */
   editable: boolean
   denied?: 'superuser_role' | 'not_editable' | 'not_assignable'
+  /** The role's revision (C1): the PUT carries it back per role (409 version_conflict once the role changed). */
+  revision?: number
   /** The role's keys of this plugin, removed ones included. */
   permission_keys: string[]
 }
@@ -187,8 +189,6 @@ export interface PluginRoleMatrix {
   plugin_key: string
   module: PermissionModule
   roles: PluginRoleRow[]
-  /** The global authz version the matrix was read at (C1): the PUT carries it back (409 version_conflict once grants changed). */
-  version?: number
 }
 
 // ------------------------------------------------------------------ keys, groups, proxies

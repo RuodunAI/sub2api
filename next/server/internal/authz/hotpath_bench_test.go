@@ -6,15 +6,19 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-// The reads behind every authorization check: a request whose user's
-// permission set is not cached at the current authz version (any authz
-// change drops the cache) loads it (loadPermissionSet, after the catalog,
-// ensureCatalog), and the version poll and committedLater read the version
-// (currentVersion). Measured against a real PostgreSQL (TEST_DATABASE_URL),
-// as recorded in internal/store/gormtest/BASELINE.md:
+// The reads behind authorization: none on a request (the node's Casbin
+// enforcer decides in memory); a write of one user's roles or status reads
+// that user (user_roles) on every node, a policy write reads the policy
+// (policy, with every active user's g rows) on every node, a superuser's
+// /me reads the active permissions (ActivePermissionKeys), and the version
+// poll and committedLater read the versions (currentVersions). Measured
+// against a real PostgreSQL (TEST_DATABASE_URL), as recorded in
+// internal/store/gormtest/BASELINE.md (permission_set there: the per-user
+// read the enforcer replaced):
 //
 //	go test -run '^$' -bench Hot -benchmem -benchtime 1000x -count 5 ./internal/authz/
 func BenchmarkHotAuthz(b *testing.B) {
@@ -34,26 +38,29 @@ func BenchmarkHotAuthz(b *testing.B) {
 	}); err != nil {
 		b.Fatal(err)
 	}
+	loader := casbinx.NewLoader(db)
 	for _, bc := range []struct {
 		name string
 		run  func() error
 	}{
-		// An admin, through the Casbin resolver (its snapshot and role cache warm).
-		{"permission_set", func() error {
-			set, err := s.loadPermissionSet(ctx, uid)
-			if err == nil && len(set.Keys) == 0 {
-				b.Fatal("empty permission set")
+		// An admin's g rows, as a node reads them after a write of them.
+		{"user_roles", func() error {
+			ur, err := loader.UserRoles(ctx, uid)
+			if err == nil && len(ur.Roles) == 0 {
+				b.Fatal("no roles read")
 			}
 			return err
 		}},
-		{"catalog", func() error {
-			s.mu.Lock()
-			s.catalog = nil
-			s.mu.Unlock()
-			return s.ensureCatalog(ctx)
+		{"policy", func() error {
+			_, err := loader.Policy(ctx)
+			return err
+		}},
+		{"active_permissions", func() error {
+			_, err := s.ActivePermissionKeys(ctx)
+			return err
 		}},
 		{"version", func() error {
-			_, err := s.currentVersion(ctx)
+			_, _, err := s.currentVersions(ctx)
 			return err
 		}},
 	} {

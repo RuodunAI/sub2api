@@ -1,20 +1,22 @@
-// Package casbinx resolves effective permissions with Casbin (CONTRACTS
-// §99).
+// Package casbinx decides permissions with Casbin (CONTRACTS §99).
 //
 // casbin_rule is the one store of the grants and the users' roles; its
 // writes are package casbinrule's, in the business transactions. This
-// package only reads it: one immutable enforcer per authz version
-// (snapshot), built from the p rows of active permissions and no g row; a
-// user's roles come from the two-level user-role cache (RoleCache) at the
-// snapshot's version, and the read-only role manager links each role
-// subject to itself only. Nothing here writes policy, opens a transaction
-// of its own or calls the gorm-adapter / Casbin management APIs (AddPolicy,
-// SavePolicy, Transaction, TransactionalEnforcer): gormguard rejects them.
+// package only reads it, into one Casbin enforcer per node: the p rows of
+// active permissions and the superuser row, the g rows of the active users,
+// and the virtual role SelfRole linked to every active user. Every decision
+// is the enforcer's Enforce through its decision cache, and every list of a
+// user's grants its GetImplicitPermissionsForUser.
 //
-// Requests read the PermissionSet Grants returns and test it with
-// PermissionSet.Has (perm.Implies, the same function permMatch registers);
-// the matcher itself only answers this package's tests, which check the
-// sets against it.
+// The enforcer follows the authz versions (authz_meta): a policy write
+// (grants, permission statuses, role definitions; policy_version moves)
+// makes the node load a new enforcer and drop every decision; a write of
+// one user's roles or status (version alone moves, naming the user) makes
+// it read that user again, replace the user's g rows in memory and drop
+// the user's decisions only. Casbin never writes: the enforcer has no
+// adapter and auto-save off, and nothing here calls a Casbin API that
+// persists, opens a transaction, watches or reloads by itself (gormguard
+// [casbin-api]).
 package casbinx
 
 import (
@@ -26,7 +28,7 @@ import (
 )
 
 // Subjects and the reserved policy values, casbinrule's: the store and the
-// resolver read the rows the same way.
+// enforcer read the rows the same way.
 const (
 	// SuperKey as the action of a p row grants every key, future ones
 	// included: a superuser role's row.
@@ -43,61 +45,71 @@ const (
 // subject, role subject, ""); v3..v5 are unused.
 type Rule struct{ Ptype, V0, V1, V2 string }
 
-// Policy is one consistent read of the policy: the authz version, the
-// status of every catalog action and the p rows, all from one read-only
-// repeatable-read transaction.
+// Policy is one consistent read of the policy: the authz and policy
+// versions, the status of every catalog action, the p and g rows and the
+// active users, all from one read-only repeatable-read transaction.
 type Policy struct {
-	Version int64
+	Version, PolicyVersion int64
 	// Active holds the actions whose permission is active; p rows of other
 	// actions (disabled or removed plugin permissions) stay stored but are
 	// not loaded. SuperKey rows are always loaded.
 	Active map[string]bool
 	Rules  []Rule
+	// Users are the active users (not deleted, status active): only their
+	// g rows are loaded, and each is linked to SelfRole.
+	Users []int64
 }
 
-// UserRoles is one user's g rows as read at Version: role subjects, and
-// whether the user is active (not deleted, status active). An inactive user
-// holds nothing, not even the self permissions.
+// UserRoles is one user's g rows as read at Version, under PolicyVersion
+// (both of the same read): role subjects, and whether the user is active
+// (not deleted, status active). An inactive user holds nothing, not even
+// the self permissions.
 type UserRoles struct {
-	Version int64
-	Active  bool
-	Roles   []string
+	Version, PolicyVersion int64
+	Active                 bool
+	Roles                  []string
 }
 
-// Loader reads the policy from PostgreSQL. Both reads see one snapshot
-// (read-only repeatable read) and report its authz version.
+// Loader reads the policy from PostgreSQL. Each read sees one snapshot of
+// the database and reports its versions.
 type Loader interface {
 	Policy(ctx context.Context) (Policy, error)
 	UserRoles(ctx context.Context, uid int64) (UserRoles, error)
 }
 
-// RoleCache is the two-level user-role cache: the process (L1) and Valkey
-// (L2, shared by the nodes; optional). Warm returns uid's roles read at a
-// version >= min: from L1, from L2 when its entry is at exactly min, or
-// from the Loader. A Valkey error skips L2 (PostgreSQL is the truth).
-//
-// The snapshots never read the cache themselves: a resolution hands the
-// roles Warm returned to the snapshot of the same version, so the two
-// halves of a set cannot come from different versions.
-type RoleCache interface {
-	Warm(ctx context.Context, uid, min int64) (UserRoles, error)
+// Change is what authz version Version changed, as the node learnt it
+// (its own write, authz:changed, the version poll): the users of a write
+// of their roles or status, or (Policy set, or no user named) anything.
+type Change struct {
+	Version int64
+	// Policy is the policy version a policy write moved to; 0 when the
+	// write changed users only.
+	Policy int64
+	// Users are the users whose roles or status changed; none means a
+	// change the node does not know the extent of.
+	Users []int64
 }
 
-// Resolver is what authz.Service calls. Grants is uid's effective
-// permission set as Casbin resolves it at a version >= min: the policy
-// snapshot (built if needed, blocking, failing closed after a timeout) and
-// the user's roles, both read at the set's Version. When they cannot be
-// had at one version it fails with ErrSkew.
-type Resolver interface {
-	Grants(ctx context.Context, uid, min int64) (core.PermissionSet, error)
-	// Prewarm starts building the snapshot of version min, off the caller,
-	// when the current one is older: the node learnt of a new version, and
-	// the requests that follow should find it built.
-	Prewarm(min int64)
+// UsersOnly reports whether c is known to change the users c.Users alone.
+func (c Change) UsersOnly() bool { return c.Policy == 0 && len(c.Users) > 0 }
+
+// Enforcer is what authz.Service calls: the node's Casbin enforcer. Every
+// call first waits until the enforcer holds authz version min or newer
+// (the newest version the node knows of), at most Options.Wait, and fails
+// with ErrStale past it (fail closed).
+type Enforcer interface {
+	// Enforce is Casbin's Enforce of key for user uid, through the decision
+	// cache.
+	Enforce(ctx context.Context, uid, min int64, key string) (bool, error)
+	// Permissions is uid's grants as Casbin lists them
+	// (GetImplicitPermissionsForUser; SuperKey sets Superuser), labelled
+	// with the version the enforcer held; its Has is Enforce.
+	Permissions(ctx context.Context, uid, min int64) (core.PermissionSet, error)
+	// Changed takes in a committed change; the enforcer applies it off the
+	// caller.
+	Changed(c Change)
 }
 
-// ErrSkew is the error of a resolution whose snapshot and roles were read
-// at different versions in every round until the snapshot wait ran out:
-// writes kept landing in between. The caller must not combine them (casbin
-// fails closed).
-var ErrSkew = errors.New("casbinx: the policy and the user's roles were read at different versions")
+// ErrStale is the error of a call that could not have an enforcer at the
+// version it needs in time: the caller must not decide from an older one.
+var ErrStale = errors.New("casbinx: the enforcer does not hold the required authz version")

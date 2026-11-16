@@ -34,6 +34,11 @@ type TokenVerifier interface {
 // Keys holds the unscoped keys, a scope of everything included (canonical,
 // perm.Canonical); Scoped the narrower scopes per action (CONTRACTS §21).
 // Build sets with Add or PermissionSetOf, which canonicalize.
+//
+// A user's set as the Authorizer resolves it (PermissionSet) is decided:
+// its lists are what Casbin lists for the user, and Has is Casbin's
+// Enforce (CONTRACTS §99.3). A set built from keys (a role's grants, an
+// access key's list) compares keys.
 type PermissionSet struct {
 	Superuser    bool
 	Keys         map[string]struct{}
@@ -41,6 +46,16 @@ type PermissionSet struct {
 	Assignable   map[string]struct{}
 	AssignCustom bool
 	Version      int64
+	// decide answers Has for a decided set (Decided), nil for one built
+	// from keys.
+	decide func(string) bool
+}
+
+// Decided returns s answering Has with decide: the authorizer's decision
+// for the holder, whose grants s lists.
+func (s PermissionSet) Decided(decide func(string) bool) PermissionSet {
+	s.decide = decide
+	return s
 }
 
 // Add grants k (any spelling: trailing wildcards included). A key that does
@@ -69,10 +84,20 @@ func (s *PermissionSet) add(p perm.Pattern) {
 	}
 }
 
-// Has reports whether the set implies k: a superuser, k held unscoped, or a
-// held scope implying k's. An unscoped k asks for every row, so
-// Has("account:read") is false for a holder of account:read:own only.
+// Has reports whether the set implies k: for a decided set, the
+// authorizer's decision; else a superuser, k held unscoped, or a held scope
+// implying k's. An unscoped k asks for every row, so Has("account:read") is
+// false for a holder of account:read:own only.
 func (s PermissionSet) Has(k string) bool {
+	if s.decide != nil {
+		return s.decide(k)
+	}
+	return s.lists(k)
+}
+
+// lists reports whether the lists of the set imply k (Has of a set built
+// from keys).
+func (s PermissionSet) lists(k string) bool {
 	if s.Superuser {
 		return true
 	}
@@ -269,14 +294,25 @@ func missingKeys(have, want map[string]struct{}) []string {
 // true for anything. The loss of the flag is deliberate: an access key never
 // acts as a superuser, so it cannot grant or act on what only a superuser
 // may (Missing). Assignable roles are not copied, also deliberately: an
-// access key never assigns roles.
+// access key never assigns roles. On a decided set, Has of the result is
+// the narrowed lists' and the holder's decision both.
 func (s PermissionSet) Restrict(keys []string) PermissionSet {
+	out := s.restrict(keys)
+	if s.decide != nil {
+		lists, decide := out, s.decide
+		out.decide = func(k string) bool { return lists.lists(k) && decide(k) }
+	}
+	return out
+}
+
+// restrict is Restrict on the lists of the set.
+func (s PermissionSet) restrict(keys []string) PermissionSet {
 	out := PermissionSet{Keys: make(map[string]struct{}, len(keys)), Version: s.Version}
 	for _, k := range keys {
 		p, err := perm.Parse(k)
 		switch {
 		case err != nil:
-		case s.Has(k):
+		case s.lists(k):
 			out.add(p)
 		default:
 			for _, sc := range s.Scoped[p.Action] {

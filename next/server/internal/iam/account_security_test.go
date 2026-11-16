@@ -949,7 +949,7 @@ func (k *keyEnv) bump(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
 	var v int64
-	if err := k.s.db.SQL.QueryRowContext(ctx, `UPDATE authz_meta SET version = version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
+	if err := k.s.db.SQL.QueryRowContext(ctx, `UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 RETURNING version`).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
 	k.authz.Committed(ctx, v)

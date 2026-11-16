@@ -16,7 +16,7 @@
 
 **升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
-**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；恢复后清掉 Valkey 的 `authz:c:ur:*`。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
+**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；Valkey 里没有授权的键，不用清理。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
 
 #### 插件权限声明与角色分配（迁移 0099）
 
@@ -36,7 +36,7 @@
 - 角色编辑页禁用编辑者自己没有的权限，核心权限也一样（以前能勾选，保存时才被拒）。插件停用期间它的权限不生效，但授予照常算持有：持有者仍可在矩阵、角色页授出和修改。
 - 插件菜单、页面、slot 按“任意范围持有”显示；iframe 桥 `permissions.check(本地 key)` 对不带范围的 key 只要持有任一范围即为 true，带范围的 key 按蕴含判断（持有全部范围也为 true，与服务端一致）。
 - 安装审查按查看者计算：同一个 URL，不同的人看到的“能否指定”“会挂起”不同。没有 `role:read` 的查看者看不到旧 key 由哪些角色持有（`removed_user_permissions[].holders`、复活和改名行的格子初值与“会挂起”标记、继承来的 `new_role_grants`、插件列表与详情里继承来的待复核授予都省略）。
-- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带 `version`（全局授权版本）；`PUT /roles/:id/permissions`、`PUT /permissions/plugins/:plugin` 带上读到的 `version` 时，期间别人改过授权就返回 409 `version_conflict`（`details.version` 为当前版本），不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。
+- **并发保存不再互相覆盖**：角色对象和插件权限矩阵带每个角色的修订号 `revision`；保存时带上读到的修订号，期间别人改过这个角色就返回 409 `version_conflict`，不写入；不带不检查。控制台收到后自动重读、合并本地改动，再提示保存。细节见下文 Casbin 一节的“并发保存角色”。
 - 通过角色编辑（新建角色、改角色权限、插件权限矩阵）**新授出关键（critical）插件权限**要二次验证，与安装同意、复核确认一致；只保留或撤销不需要。
 - 角色权限保存的审计（`role.permissions`）记下删掉的权限（`removed`，含已移除的插件权限），插件矩阵保存另记该插件上的 `before`/`after`。
 - 同意请求的 `new_permission_roles` 列出的权限，对改名继承同样生效：列出的角色以覆盖为准，没列的角色不继承（以前继承一律照常）；确认页上继承来的格子可以逐格修改。
@@ -56,11 +56,13 @@
 契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
 - **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个权限版本一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予、超管行和 active 用户的角色；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点重新装入；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
+- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`，取代开发中按全局授权版本 `version` 比较的做法），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
+- **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099（0099 在 develop 上的两种内容核心都接受）。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 

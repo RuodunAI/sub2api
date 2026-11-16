@@ -1,7 +1,9 @@
 package casbinx
 
 import (
+	"context"
 	"encoding/json"
+	"math"
 	"strconv"
 	"testing"
 
@@ -30,16 +32,19 @@ func activeOf(rules []Rule) map[string]bool {
 	return out
 }
 
-// held is the roles of an active user holding roles.
-func held(roles ...string) UserRoles { return UserRoles{Active: true, Roles: roles} }
+// testUser is the one user the single-user helpers ask about.
+const testUser int64 = 1
 
-// snap is build at version 1 with every action active.
-func snap(t testing.TB, rules ...Rule) *snapshot {
+// held is the g rows of an active user testUser holding roles.
+func held(roles ...string) UserRoles { return UserRoles{Version: 1, Active: true, Roles: roles} }
+
+// snap is a state at version 1 with every action active, holding no user.
+func snap(t testing.TB, rules ...Rule) *state {
 	t.Helper()
 	return snapOf(t, Policy{Version: 1, Active: activeOf(rules), Rules: rules})
 }
 
-func snapOf(t testing.TB, p Policy, self ...string) *snapshot {
+func snapOf(t testing.TB, p Policy, self ...string) *state {
 	t.Helper()
 	s, err := build(p, self)
 	if err != nil {
@@ -48,8 +53,8 @@ func snapOf(t testing.TB, p Policy, self ...string) *snapshot {
 	return s
 }
 
-// single is the snapshot where role r:t grants keys (user: held("r:t")).
-func single(t testing.TB, keys ...string) *snapshot {
+// single is the state where role r:t grants keys (user: held("r:t")).
+func single(t testing.TB, keys ...string) *state {
 	t.Helper()
 	var rules []Rule
 	for _, k := range keys {
@@ -58,35 +63,46 @@ func single(t testing.TB, keys ...string) *snapshot {
 	return snap(t, rules...)
 }
 
-func grants(t testing.TB, s *snapshot, ur UserRoles) core.PermissionSet {
+// as sets user uid's g rows in s to ur, whatever was set before.
+func (s *state) as(t testing.TB, uid int64, ur UserRoles) *state {
 	t.Helper()
-	set, err := s.grants(ur)
+	ur.Version = math.MaxInt64
+	if err := s.setUser(uid, ur); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// engineOf is an engine whose current state is s (nothing to load).
+func engineOf(s *state) *engine {
+	e := newEngine(nil, nil, Options{})
+	e.cur.Store(s)
+	return e
+}
+
+// grants is Permissions for testUser holding ur in s.
+func grants(t testing.TB, s *state, ur UserRoles) core.PermissionSet {
+	t.Helper()
+	set, err := engineOf(s.as(t, testUser, ur)).Permissions(context.Background(), testUser, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return set
 }
 
-// enforce runs key through the matcher for a user holding ur: allowed when
-// one of its subjects is (some(where p.eft == allow) over the union). The
-// tests check the sets of grants against it; requests never run it.
-func (s *snapshot) enforce(ur UserRoles, key string) (bool, error) {
-	for _, sub := range subjects(ur) {
-		if ok, err := s.e.Enforce(sub, key); ok || err != nil {
-			return ok, err
-		}
-	}
-	return false, nil
-}
-
-func enforce(t testing.TB, s *snapshot, ur UserRoles, key string) bool {
+// enforce is Casbin's Enforce of key for testUser holding ur in s.
+func enforce(t testing.TB, s *state, ur UserRoles, key string) bool {
 	t.Helper()
-	ok, err := s.enforce(ur, key)
+	ok, err := engineOf(s.as(t, testUser, ur)).Enforce(context.Background(), testUser, 0, key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return ok
 }
+
+// listsOf is set without its decisions: Has then answers from the lists
+// Casbin returned, which the tests compare with Enforce.
+func listsOf(set core.PermissionSet) core.PermissionSet { return set.Decided(nil) }
 
 type vectors struct {
 	Implies []struct {
@@ -117,7 +133,7 @@ func loadVectors(t testing.TB) vectors {
 
 // The shared implies vectors (sdk/permvectors, perm TestImpliesVectors)
 // through Casbin: have granted to a role, want enforced for its holder and
-// tested on the set Grants returns. Both answer as perm.Implies.
+// tested on the lists Permissions returns. Both answer as perm.Implies.
 func TestImpliesVectorsViaCasbin(t *testing.T) {
 	t.Parallel()
 	v := loadVectors(t)
@@ -126,8 +142,8 @@ func TestImpliesVectorsViaCasbin(t *testing.T) {
 		if got := enforce(t, s, held("r:t"), c.Want); got != c.OK {
 			t.Errorf("Enforce(have %q, want %q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
-		if got := grants(t, s, held("r:t")).Has(c.Want); got != c.OK {
-			t.Errorf("Grants(have %q).Has(%q) = %v, want %v", c.Have, c.Want, got, c.OK)
+		if got := listsOf(grants(t, s, held("r:t"))).Has(c.Want); got != c.OK {
+			t.Errorf("Permissions(have %q) lists %q = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
 	}
 	t.Logf("%d implies vectors via Casbin", len(v.Implies))
@@ -137,43 +153,45 @@ func TestImpliesVectorsViaCasbin(t *testing.T) {
 // calls it (the columns of the stored grant).
 func TestPermMatchIsImplies(t *testing.T) {
 	t.Parallel()
+	m := new(matcher)
 	for _, c := range loadVectors(t).Implies {
 		have, err := perm.Parse(c.Have)
 		if err != nil {
 			t.Fatal(c.Have, err)
 		}
-		if got := permMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
+		if got := m.permMatch(string(have.Action), scopeOf(have), c.Want); got != c.OK {
 			t.Errorf("permMatch(%q, %q) = %v, want %v", c.Have, c.Want, got, c.OK)
 		}
 	}
-	if !permMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
+	if !m.permMatch(SuperKey, AllRows, "plugin.later:x:y:flow/3") {
 		t.Fatal("SuperKey does not match a future key")
 	}
-	if permMatch("account:read", AllRows, "account:read:bogus/") {
+	if m.permMatch("account:read", AllRows, "account:read:bogus/") {
 		t.Fatal("an unparsable key matched")
 	}
-	if _, err := permMatchFunc("a", "b"); err == nil {
+	if _, err := m.fn("a", "b"); err == nil {
 		t.Fatal("permMatch took 2 arguments")
 	}
 }
 
 // The parse cache stops growing at its limit and keeps answering.
 func TestParseCacheBounded(t *testing.T) {
+	m := new(matcher)
 	for i := range parseCacheLimit + 100 {
-		if _, ok := parsed("account:read:group/" + strconv.Itoa(i+1)); !ok {
+		if _, ok := m.parsed("account:read:group/" + strconv.Itoa(i+1)); !ok {
 			t.Fatal("parse failed")
 		}
 	}
-	if n := parseCacheSize.Load(); n > parseCacheLimit {
+	if n := m.size.Load(); n > parseCacheLimit {
 		t.Fatalf("cache holds %d keys, limit %d", n, parseCacheLimit)
 	}
-	if p, ok := parsed("account:read:group/999999"); !ok || p.Scope.Group != 999999 {
+	if p, ok := m.parsed("account:read:group/999999"); !ok || p.Scope.Group != 999999 {
 		t.Fatalf("past the limit: %+v %v", p, ok)
 	}
 }
 
 // The shared row-check vectors (core TestAllowsRowVectors) on the set
-// Grants returns: DataScope stays ours, fed by Casbin's set.
+// Permissions returns: DataScope stays ours, fed by Casbin's lists.
 func TestAllowsRowVectorsOnCasbinGrants(t *testing.T) {
 	t.Parallel()
 	for _, c := range loadVectors(t).Allows {

@@ -792,7 +792,7 @@ func TestResetRoleAssignable(t *testing.T) {
 			t.Fatal(err)
 		}
 		def, _ := builtinRoleByKey(role)
-		r, err := s.ResetRole(ctx, root, id)
+		r, err := s.ResetRole(ctx, root, id, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

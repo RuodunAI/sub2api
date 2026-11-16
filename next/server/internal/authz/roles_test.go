@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,7 +35,7 @@ func grantRows(t *testing.T, s *Service, id int64) (plain, scoped []string) {
 	t.Helper()
 	err := s.db.SQL.QueryRowContext(context.Background(), `SELECT COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope = ''), '{}'),
     COALESCE(array_agg(key ORDER BY key) FILTER (WHERE scope <> ''), '{}')
-FROM (`+casbinrule.GrantsOf("(SELECT key FROM roles WHERE id = $1)")+`) g`, id).Scan(&plain, &scoped)
+FROM (`+casbinrule.Grants+`) g WHERE g.role = (SELECT key FROM roles WHERE id = $1)`, id).Scan(&plain, &scoped)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +58,7 @@ func TestSuperuserRoleFrozen(t *testing.T) {
 		_, writes["name"] = s.UpdateRole(ctx, actor, suID, UpdateRoleInput{Name: lt("Root", "根")})
 		_, writes["description"] = s.UpdateRole(ctx, actor, suID, UpdateRoleInput{Description: lt("x", "x")})
 		_, writes["permissions"] = s.SetRolePermissions(ctx, actor, suID, []string{"user:read"}, nil)
-		_, writes["reset"] = s.ResetRole(ctx, actor, suID)
+		_, writes["reset"] = s.ResetRole(ctx, actor, suID, nil)
 		writes["delete"] = s.DeleteRole(ctx, actor, suID)
 		for op, err := range writes {
 			if !isCode(err, "conflict") {
@@ -91,7 +92,7 @@ func TestBuiltinRolesEditable(t *testing.T) {
 		_, out["rename"] = s.UpdateRole(ctx, actor, id, UpdateRoleInput{Name: lt("x", "x")})
 		_, out["permissions"] = s.SetRolePermissions(ctx, actor, id, perms, nil)
 		_, out["assignable"] = s.SetRoleAssignable(ctx, actor, id, AssignableInput{})
-		_, out["reset"] = s.ResetRole(ctx, actor, id)
+		_, out["reset"] = s.ResetRole(ctx, actor, id, nil)
 		return out
 	}
 	// Not on the actor's list: the admin's own role, the operator's own.
@@ -133,7 +134,7 @@ func TestBuiltinRolesEditable(t *testing.T) {
 		if _, err := s.SetRolePermissions(ctx, admin, id, []string{"user:read"}, nil); err != nil {
 			t.Fatal(err)
 		}
-		r, err := s.ResetRole(ctx, admin, id)
+		r, err := s.ResetRole(ctx, admin, id, nil)
 		if err != nil || r.Key != key || !slices.Equal(r.PermissionKeys, def.PermissionKeys) || !slices.Equal(r.AssignableRoleKeys, def.AssignableRoleKeys) ||
 			r.Name.Get("en") != def.Name.Get("en") {
 			t.Fatalf("admin resets %s: %+v %v\nwant %+v", key, r, err, def)
@@ -202,7 +203,7 @@ func TestResetNeedsEveryDefault(t *testing.T) {
 	if _, err := s.UpdateRole(ctx, keeper, userID, UpdateRoleInput{Description: lt("Gateway only", "只能调网关")}); err != nil {
 		t.Fatalf("keeper edits the user role: %v", err)
 	}
-	_, err := s.ResetRole(ctx, keeper, userID)
+	_, err := s.ResetRole(ctx, keeper, userID, nil)
 	missing, _ := detail(err, "missing").([]string)
 	if !isCode(err, "permission_denied") || !slices.Contains(missing, "apikey:self:manage") {
 		t.Fatalf("keeper resets the user role: %v (missing %v)", err, detail(err, "missing"))
@@ -272,7 +273,7 @@ func TestSuperOnlyPermissions(t *testing.T) {
 	if got := holds(RoleAdmin); !slices.Equal(got, []string{"publisher:manage"}) {
 		t.Fatalf("admin after a sync that created a super-only permission: %v", got)
 	}
-	if _, err := s.ResetRole(ctx, root, adminID); err != nil {
+	if _, err := s.ResetRole(ctx, root, adminID, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := holds(RoleAdmin); len(got) != 0 {
@@ -313,7 +314,7 @@ func TestOperatorWhitelist(t *testing.T) {
 		t.Fatalf("audit:read module = %q, %v", module, err)
 	}
 
-	r, err := s.ResetRole(ctx, root, opID)
+	r, err := s.ResetRole(ctx, root, opID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func TestRoleWritesNeedActOnRole(t *testing.T) {
 	_, writes["weaken big"] = s.SetRolePermissions(ctx, helper, bigID, []string{"user:read"}, nil)
 	_, writes["rename big"] = s.UpdateRole(ctx, helper, bigID, UpdateRoleInput{Name: lt("x", "x")})
 	writes["delete big"] = s.DeleteRole(ctx, helper, bigID)
-	_, writes["reset admin"] = s.ResetRole(ctx, helper, roleID(t, s, RoleAdmin))
+	_, writes["reset admin"] = s.ResetRole(ctx, helper, roleID(t, s, RoleAdmin), nil)
 	for op, err := range writes {
 		if !isCode(err, "permission_denied") {
 			t.Errorf("helper may %s: %v", op, err)
@@ -432,7 +433,7 @@ func TestSetRolePermissionsKeepsInactive(t *testing.T) {
 
 	op := roleID(t, s, RoleOperator)
 	require.Contains(t, rolePermissionKeys(t, s, op), "proxy:read")
-	_, err = s.ResetRole(ctx, root, op)
+	_, err = s.ResetRole(ctx, root, op, nil)
 	require.NoError(t, err)
 	assert.Contains(t, rolePermissionKeys(t, s, op), "proxy:read", "a reset keeps removed core grants")
 }
@@ -523,7 +524,7 @@ func TestRoleWritesAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	opID := roleID(t, s, RoleOperator)
-	if _, err := s.ResetRole(ctx, root, opID); err != nil {
+	if _, err := s.ResetRole(ctx, root, opID, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -602,11 +603,12 @@ func TestUpdateRoleKeyImmutable(t *testing.T) {
 	}
 }
 
-// A role read and a plugin matrix carry the authz version they were read
-// at; a permissions write naming another version is refused with
-// version_conflict and writes nothing, one naming the current version or
-// none goes through (CONTRACTS C1).
-func TestPermissionWritesCheckVersion(t *testing.T) {
+// A role read and each role of a plugin matrix carry the role's revision,
+// which every change to that role moves and nothing else does (another
+// role's write, a user's); each role write naming another revision is
+// refused with version_conflict and writes nothing, one naming the current
+// revision or none goes through (CONTRACTS C1).
+func TestRoleWritesCheckRevision(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
 	s := newService(t, db, newMemBus(), nil)
@@ -614,32 +616,136 @@ func TestPermissionWritesCheckVersion(t *testing.T) {
 	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
 	require.NoError(t, syncer(t, s, "m")(core.PermissionDef{Key: "flow:read"}))
 	op := roleID(t, s, RoleOperator)
+	rev := func() int64 {
+		r, err := s.GetRole(ctx, op)
+		require.NoError(t, err)
+		return r.Revision
+	}
 
 	r, err := s.GetRole(ctx, op)
 	require.NoError(t, err)
 	m, err := s.PluginRoleGrants(ctx, root, "m")
 	require.NoError(t, err)
-	assert.Equal(t, r.Version, m.Version)
-	// Someone else's write moves the version.
-	_, err = s.SetRolePermissions(ctx, root, roleID(t, s, RoleUser), rolePermissionKeys(t, s, roleID(t, s, RoleUser)), nil)
-	require.NoError(t, err)
+	i := slices.IndexFunc(m.Roles, func(row PluginRoleRow) bool { return row.ID == op })
+	assert.Equal(t, r.Revision, m.Roles[i].Revision)
 
-	stale := r.Version
+	// Writes elsewhere leave the operator's revision alone.
+	user := roleID(t, s, RoleUser)
+	_, err = s.SetRolePermissions(ctx, root, user, rolePermissionKeys(t, s, user), nil)
+	require.NoError(t, err)
+	addUser(t, s, "op@x.com", RoleOperator)
+	require.Equal(t, r.Revision, rev(), "another role's write or a user's roles")
+
+	// A change of the role moves it; every write path then refuses the
+	// revision read before.
+	stale := r.Revision
+	_, err = s.UpdateRole(ctx, root, op, UpdateRoleInput{Description: lt("Ops", "运营"), Revision: &stale})
+	require.NoError(t, err)
+	require.Equal(t, stale+1, rev())
+	conflict := func(name string, err error) {
+		t.Helper()
+		require.True(t, isCode(err, "version_conflict"), "%s: %v", name, err)
+		assert.Equal(t, http.StatusConflict, core.AsError(err).Status)
+		assert.Equal(t, stale+1, core.AsError(err).Details["revision"], name)
+	}
 	_, err = s.SetRolePermissions(ctx, root, op, append(slices.Clone(r.PermissionKeys), "plugin.m:flow:read"), &stale)
-	require.True(t, isCode(err, "version_conflict"), "%v", err)
-	assert.Equal(t, stale+1, core.AsError(err).Details["version"])
-	assert.Equal(t, http.StatusConflict, core.AsError(err).Status)
-	_, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}}, &stale)
-	require.True(t, isCode(err, "version_conflict"), "%v", err)
+	conflict("permissions", err)
+	_, err = s.SetRoleAssignable(ctx, root, op, AssignableInput{RoleKeys: []string{RoleUser}, Revision: &stale})
+	conflict("assignable", err)
+	_, err = s.UpdateRole(ctx, root, op, UpdateRoleInput{Name: lt("Renamed", "改名"), Revision: &stale})
+	conflict("name", err)
+	_, err = s.ResetRole(ctx, root, op, &stale)
+	conflict("reset", err)
+	_, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}}, map[string]int64{RoleOperator: stale})
+	conflict("matrix", err)
 	assert.NotContains(t, rolePermissionKeys(t, s, op), "plugin.m:flow:read")
+	got, err := s.GetRole(ctx, op)
+	require.NoError(t, err)
+	assert.Equal(t, r.AssignableRoleKeys, got.AssignableRoleKeys)
+	assert.NotEqual(t, "Renamed", got.Name.Get("en"))
+	require.Equal(t, stale+1, rev(), "refused writes move nothing")
 
-	m, err = s.PluginRoleGrants(ctx, root, "m")
+	// A grant made outside the editor (a plugin's default grant on
+	// install) moves it too.
+	cur := rev()
+	require.NoError(t, s.db.Tx(ctx, func(tx *gorm.DB) error {
+		return s.SyncPlugin(ctx, tx, "m", []core.PermissionDef{{Key: "flow:read"},
+			{Key: "flow:list", GrantRoles: map[string][]string{RoleOperator: {""}}}})
+	}))
+
+	require.Contains(t, rolePermissionKeys(t, s, op), "plugin.m:flow:list")
+	require.Greater(t, rev(), cur)
+
+	// The current revision passes, on every path.
+	cur = rev()
+	m, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}}, map[string]int64{RoleOperator: cur})
 	require.NoError(t, err)
-	m, err = s.SetPluginRoleGrants(ctx, root, "m", map[string][]string{RoleOperator: {"plugin.m:flow:read"}}, &m.Version)
+	i = slices.IndexFunc(m.Roles, func(row PluginRoleRow) bool { return row.ID == op })
+	require.Greater(t, m.Roles[i].Revision, cur)
+	cur = m.Roles[i].Revision
+	r, err = s.SetRolePermissions(ctx, root, op, rolePermissionKeys(t, s, op), &cur)
 	require.NoError(t, err)
-	r, err = s.SetRolePermissions(ctx, root, op, rolePermissionKeys(t, s, op), &m.Version)
+	cur = r.Revision
+	r, err = s.SetRoleAssignable(ctx, root, op, AssignableInput{RoleKeys: r.AssignableRoleKeys, AssignCustom: r.AssignCustom, Revision: &cur})
 	require.NoError(t, err)
-	assert.Equal(t, m.Version+1, r.Version)
+	cur = r.Revision
+	r, err = s.UpdateRole(ctx, root, op, UpdateRoleInput{Name: lt("Operator", "运营"), Revision: &cur})
+	require.NoError(t, err)
+	cur = r.Revision
+	_, err = s.ResetRole(ctx, root, op, &cur)
+	require.NoError(t, err)
+}
+
+// Editors saving one role at the same revision concurrently: one write
+// goes through, every other one is refused with version_conflict (the
+// revision is compared under the role's row lock), whichever path each
+// takes.
+func TestRoleWritesRevisionConcurrent(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	root := addUser(t, s, "root@x.com", RoleSuperAdmin)
+	r, err := s.CreateRole(ctx, root, CreateRoleInput{Key: "ops", Name: lt("Ops", "运营")})
+	require.NoError(t, err)
+	rev := r.Revision
+
+	writes := []func() error{
+		func() error {
+			_, err := s.SetRolePermissions(ctx, root, r.ID, []string{"account:read"}, &rev)
+			return err
+		},
+		func() error {
+			_, err := s.SetRoleAssignable(ctx, root, r.ID, AssignableInput{RoleKeys: []string{RoleUser}, Revision: &rev})
+			return err
+		},
+		func() error {
+			_, err := s.UpdateRole(ctx, root, r.ID, UpdateRoleInput{Name: lt("Ops 2", "运营 2"), Revision: &rev})
+			return err
+		},
+		func() error {
+			_, err := s.SetRolePermissions(ctx, root, r.ID, []string{"group:read"}, &rev)
+			return err
+		},
+	}
+	errs := make([]error, len(writes))
+	var wg sync.WaitGroup
+	for i, w := range writes {
+		wg.Go(func() { errs[i] = w() })
+	}
+	wg.Wait()
+	ok := 0
+	for i, err := range errs {
+		if err == nil {
+			ok++
+			continue
+		}
+		require.True(t, isCode(err, "version_conflict"), "write %d: %v", i, err)
+	}
+	require.Equal(t, 1, ok, "exactly one write at revision %d: %v", rev, errs)
+	got, err := s.GetRole(ctx, r.ID)
+	require.NoError(t, err)
+	require.Greater(t, got.Revision, rev)
 }
 
 // stepUp is a step-up verifier whose proof is valid when ok, counting the

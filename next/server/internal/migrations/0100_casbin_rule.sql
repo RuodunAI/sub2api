@@ -89,7 +89,8 @@ END $$;
 -- casbinx loads with the adapter's AutoMigrate off, which would change them.
 -- The shape check keeps every row one the core reads as written: a g row's
 -- subject parses as a user id, no row names the virtual self role, no
--- column the loader needs is empty.
+-- column the loader needs is empty, and only super_admin (the one
+-- superuser role, roles_superuser_key) has the superuser row (action *).
 CREATE TABLE IF NOT EXISTS casbin_rule (
     id    bigserial    PRIMARY KEY,
     ptype varchar(1)   NOT NULL DEFAULT '',
@@ -100,7 +101,7 @@ CREATE TABLE IF NOT EXISTS casbin_rule (
     v4    varchar(1)   NOT NULL DEFAULT '',
     v5    varchar(1)   NOT NULL DEFAULT '',
     CONSTRAINT casbin_rule_shape CHECK (v3 = '' AND v4 = '' AND v5 = '' AND CASE ptype
-        WHEN 'p' THEN v0 ~ '^r:.' AND v0 <> 'r:_self' AND v1 <> '' AND v2 <> '' AND (v1 <> '*' OR v2 = '*')
+        WHEN 'p' THEN v0 ~ '^r:.' AND v0 <> 'r:_self' AND v1 <> '' AND v2 <> '' AND (v1 <> '*' OR (v2 = '*' AND v0 = 'r:super_admin'))
         WHEN 'g' THEN v0 ~ '^u:[0-9]+$' AND v1 ~ '^r:.' AND v1 <> 'r:_self' AND v2 = ''
         ELSE false END)
 );
@@ -117,10 +118,33 @@ CREATE INDEX IF NOT EXISTS casbin_rule_v1_idx ON casbin_rule (ptype, v1);
 -- commit and then fails with unique_violation.
 CREATE UNIQUE INDEX IF NOT EXISTS casbin_rule_one_superuser ON casbin_rule (v1) WHERE ptype = 'g' AND v1 = 'r:super_admin';
 
+-- 0099's COMMENT again: a development database that applied 0099 before
+-- it named the staged status keeps that first form (store.CoreTracker
+-- accepts its checksum), and gets the comment here.
+COMMENT ON COLUMN permissions.status IS
+    'active | disabled (owning plugin disabled) | removed (dropped from code or no longer declared by its plugin; grants kept, granting nothing) | staged (declared only by a staged plugin version; grants nothing until that version activates)';
+
+-- Two counters beside authz_meta.version, which every authz write moves
+-- (the X-Authz-Version of the console, the user caches):
+--   - policy_version moves with the writes of what the policy snapshot
+--     holds (grants, permission statuses, role definitions), not with a
+--     user's roles or status: a node rebuilds its snapshot on the first,
+--     and drops one user's cached roles on the second;
+--   - roles.revision moves with every change to the role (its grants,
+--     assignable list, name, description, a reset): a role editor sends it
+--     back and is refused (version_conflict) when the role changed since.
+ALTER TABLE authz_meta ADD COLUMN IF NOT EXISTS policy_version bigint NOT NULL DEFAULT 0;
+COMMENT ON COLUMN authz_meta.policy_version IS
+    'moved with version by the writes of grants, permission statuses and role definitions only (CONTRACTS §99.4)';
+ALTER TABLE roles ADD COLUMN IF NOT EXISTS revision bigint NOT NULL DEFAULT 0;
+COMMENT ON COLUMN roles.revision IS
+    'moved by every change to the role; its editors send it back (optimistic concurrency, CONTRACTS §99.4)';
+
 -- The conversion, while the role tables exist: their rows as policy rows
 -- (UNION drops a grant held both ways), then the tables go, their
--- triggers (0097's user_roles_one_superuser) with them. The version moves,
--- so that no node answers from a role cache of the old tables.
+-- triggers (0097's user_roles_one_superuser) with them. Both versions
+-- move, so that no node answers from a role cache or a policy snapshot of
+-- the old tables.
 DO $$
 BEGIN
     IF to_regclass('public.user_roles') IS NULL THEN
@@ -139,5 +163,5 @@ BEGIN
     FROM user_roles ur JOIN roles r ON r.id = ur.role_id;
     DROP TABLE user_roles, role_permission_scopes, role_permissions;
     DROP FUNCTION IF EXISTS user_roles_one_superuser();
-    UPDATE authz_meta SET version = version + 1 WHERE id = 1;
+    UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1;
 END $$;

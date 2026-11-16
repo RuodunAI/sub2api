@@ -183,6 +183,9 @@ type checker struct {
 	// passed adapterTurnedOff.
 	bodies        []*ast.BlockStmt
 	adapterVetted map[*ast.SelectorExpr]bool
+	// casbinCtorVetted are the enforcer constructors casbinCall saw called
+	// as casbinx may call them (casbinCtor).
+	casbinCtorVetted map[*ast.SelectorExpr]bool
 }
 
 // assignment is a value given to a local variable as of position at: rhs,
@@ -208,6 +211,7 @@ func (c *checker) index(files []*ast.File) {
 	c.rawFns = map[*types.Func]bool{}
 	c.lockFns = map[*types.Func]bool{}
 	c.adapterVetted = map[*ast.SelectorExpr]bool{}
+	c.casbinCtorVetted = map[*ast.SelectorExpr]bool{}
 	fieldReads := map[*ast.Ident]bool{}
 	assign := func(at token.Pos, lhs []ast.Expr, rhs []ast.Expr) {
 		for i, l := range lhs {

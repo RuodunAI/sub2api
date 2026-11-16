@@ -30,18 +30,17 @@ func (s *Service) querier() *gorm.DB {
 // an access key: the measure of a TARGET in SEC-H2 comparisons, and the base
 // of grantSet. PermissionSet, the effective set, is empty for a disabled
 // user, which is right for authorizing that user and wrong for deciding who
-// may act on it. Tests without a database seed the cache and are answered
-// from it.
+// may act on it.
 func (s *Service) usersRoleSet(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, error) {
 	set, _, err := s.usersRoles(ctx, q, userIDs)
 	return set, err
 }
 
-// usersRoles is usersRoleSet with the keys of those roles, sorted; tests
-// without a database have no role keys.
+// usersRoles is usersRoleSet with the keys of those roles, sorted; a
+// service without a database (tests) reads no roles.
 func (s *Service) usersRoles(ctx context.Context, q *gorm.DB, userIDs []int64) (core.PermissionSet, []string, error) {
 	if s.db == nil {
-		return s.cachedUnion(userIDs), nil, nil
+		return core.PermissionSet{Keys: map[string]struct{}{}}, nil, nil
 	}
 	keys := []string{}
 	if err := casbinrule.RoleKeysOf(store.G(ctx, q), userIDs).Scan(&keys).Error; err != nil {
@@ -49,21 +48,6 @@ func (s *Service) usersRoles(ctx context.Context, q *gorm.DB, userIDs []int64) (
 	}
 	set, err := s.RolesPermissions(ctx, q, keys)
 	return set, keys, err
-}
-
-// cachedUnion is usersRoleSet for tests without a database.
-func (s *Service) cachedUnion(userIDs []int64) core.PermissionSet {
-	set := core.PermissionSet{Keys: map[string]struct{}{}}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, id := range userIDs {
-		u := s.users[id]
-		set.Superuser = set.Superuser || u.Superuser
-		for _, k := range u.KeyList() {
-			set.Add(k)
-		}
-	}
-	return set
 }
 
 // grantSet is what actorID may hand out (grants and role assignment): what

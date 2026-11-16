@@ -13,9 +13,12 @@ import (
 	"testing"
 )
 
-// [casbin-api]: Casbin only reads the policy, which the core writes with
+// [casbin-api]: Casbin never writes the policy, which the core writes with
 // GORM in the business transaction (internal/authz/casbinrule; CONTRACTS
-// §99).
+// §99.6). The node's enforcer (casbinx) holds the policy in memory: it may
+// edit that copy (a user's g rows), on an enforcer made without an adapter;
+// nothing may persist, open a transaction, watch, dispatch or reload by
+// itself.
 
 const (
 	// casbinxPkg, relative to the module, resolves permissions with Casbin.
@@ -27,7 +30,7 @@ const (
 
 // casbinOwners may import gorm-adapter and call Casbin's own Enforce.
 var casbinOwners = map[string]string{
-	casbinxPkg: "the Casbin resolver: loads the p rows with gorm-adapter, read-only, and owns the enforcers",
+	casbinxPkg: "the node's Casbin enforcer: loads the policy with gorm-adapter, read-only, and owns the enforcer and its in-memory policy",
 }
 
 var (
@@ -37,14 +40,24 @@ var (
 	casbinWritePkg = regexp.MustCompile(`^github\.com/casbin/(casbin(/v\d+)?(/persist(/.*)?)?|gorm-adapter(/v\d+)?)$`)
 	// casbinRootPkg matches Casbin's enforcer package.
 	casbinRootPkg = regexp.MustCompile(`^github\.com/casbin/casbin(/v\d+)?$`)
-	// casbinWriteAPI matches the names of the write, transaction and
-	// self-reloading API: policy management (Add/Remove/Update/Delete of
-	// policies, grouping policies, roles, permissions, users; their Ctx,
-	// Ex and Self forms), SavePolicy, the adapter's and the transactional
-	// enforcer's transactions, StartAutoLoadPolicy and the synced,
-	// transactional and distributed enforcers.
-	casbinWriteAPI = regexp.MustCompile(`^(Self)?(Add|Remove|Update|Delete)\w*(Polic|Role|Permission|User)|^DeleteDomains?|^SavePolicy|` +
-		`^(Begin|With)?Transaction$|^Commit$|^Rollback$|^StartAutoLoadPolicy$|^New(Synced|Transactional|Distributed)`)
+	// casbinWriteAPI matches the names of the write, transaction, watching
+	// and self-reloading API: policy management (Add/Remove/Update/Delete
+	// of policies, grouping policies, roles, permissions, users; their Ctx,
+	// Ex and Self forms) but casbinMemoryAPI in casbinx, SavePolicy and
+	// LoadPolicy, the adapter's and the transactional enforcer's
+	// transactions, StartAutoLoadPolicy, adapters, watchers and dispatchers
+	// set on an enforcer, and the enforcer constructors but casbinCtor's
+	// one-argument call in casbinx.
+	casbinWriteAPI = regexp.MustCompile(`^(Self)?(Add|Remove|Update|Delete)\w*(Polic|Role|Permission|User)|^DeleteDomains?|^(Save|Load)Policy$|` +
+		`^(Begin|With)?Transaction$|^Commit$|^Rollback$|^StartAutoLoadPolicy$|^Set(Adapter|Watcher|Dispatcher)$|^New\w*Enforcer$`)
+	// casbinMemoryAPI matches the edits of the enforcer's in-memory policy
+	// casbinx makes (a user's g rows when the user's roles or status
+	// change): on an enforcer without an adapter and with auto-save off
+	// they reach nothing but memory.
+	casbinMemoryAPI = regexp.MustCompile(`^(Add|Remove)(Named)?(Grouping)?Polic(y|ies)$|^RemoveFiltered(Named)?(Grouping)?Policy$`)
+	// casbinCtor matches the enforcer constructors casbinx may call, with
+	// the model as their one argument: an enforcer without an adapter.
+	casbinCtor = regexp.MustCompile(`^New(Synced)?(Cached)?Enforcer$`)
 	// casbinEnforce matches Casbin's own matcher calls.
 	casbinEnforce = regexp.MustCompile(`^(Batch)?Enforce`)
 	// adapterPkg matches gorm-adapter's package.
@@ -56,11 +69,11 @@ var (
 // adapters that AutoMigrate the table to the adapter's own struct (DDL that
 // would narrow v1 and v2 back to varchar(100)), opens pools of its own
 // (Open, the DSN constructors, InitDbResolver), hands the adapter's handle
-// out (GetDb), loads every row (LoadPolicy: the g rows are not loaded) or
-// writes. adapterReadOnly is allowed only where adapterTurnedOff holds.
+// out (GetDb), loads outside the caller's snapshot transaction (LoadPolicy)
+// or writes. adapterReadOnly is allowed only where adapterTurnedOff holds.
 var adapterAllowed = map[string]bool{
 	"TurnOffAutoMigrate": true, // on the handle the adapter is then made on
-	"LoadFilteredPolicy": true, // one SELECT of the p rows, inside the caller's transaction
+	"LoadFilteredPolicy": true, // one SELECT of the p and g rows, inside the caller's transaction
 }
 
 // adapterReadOnly is the one gorm-adapter constructor allowed: on a handle
@@ -106,6 +119,8 @@ func funcPkg(fn *types.Func) string {
 func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 	pkg := funcPkg(fn)
 	switch {
+	case casbinRootPkg.MatchString(pkg) && c.casbinOwner && casbinMemoryAPI.MatchString(fn.Name()):
+	case casbinRootPkg.MatchString(pkg) && c.casbinCtorVetted[n]:
 	case casbinWritePkg.MatchString(pkg) && casbinWriteAPI.MatchString(fn.Name()):
 		c.report(n, "%s Casbin %s: the core writes the policy with GORM in the business transaction (internal/authz/casbinrule); Casbin and gorm-adapter only read it", ruleCasbin, fn.Name())
 	case casbinRootPkg.MatchString(pkg) && casbinEnforce.MatchString(fn.Name()) && !c.casbinOwner:
@@ -113,17 +128,22 @@ func (c *checker) casbinSelector(n *ast.SelectorExpr, fn *types.Func) {
 	case adapterPkg.MatchString(pkg) && fn.Name() == adapterReadOnly && !c.adapterVetted[n]:
 		c.report(n, "%s gorm-adapter %s on a handle no earlier %s of the same function ran on: the constructor AutoMigrates the table to the adapter's struct (narrowing v1 and v2) unless it did", ruleCasbin, fn.Name(), adapterTurnOffFun)
 	case adapterPkg.MatchString(pkg) && fn.Name() != adapterReadOnly && !adapterAllowed[fn.Name()]:
-		c.report(n, "%s gorm-adapter %s: only %s, %s (after it, on the same handle) and LoadFilteredPolicy are used; the rest AutoMigrates the table, opens pools of its own, hands out the adapter's handle, loads the g rows or writes", ruleCasbin, fn.Name(), adapterTurnOffFun, adapterReadOnly)
+		c.report(n, "%s gorm-adapter %s: only %s, %s (after it, on the same handle) and LoadFilteredPolicy are used; the rest AutoMigrates the table, opens pools of its own, hands out the adapter's handle, loads outside the snapshot or writes", ruleCasbin, fn.Name(), adapterTurnOffFun, adapterReadOnly)
 	}
 }
 
 // casbinCall reports EnableAutoSave with anything but the constant false:
 // an enforcer with auto-save writes every policy change through its adapter.
-// It vets a call of adapterReadOnly for casbinSelector, which sees the
-// selector after the call (ast.Inspect visits the call first).
+// It vets a call of adapterReadOnly, and casbinx's one-argument call of an
+// enforcer constructor, for casbinSelector, which sees the selector after
+// the call (ast.Inspect visits the call first).
 func (c *checker) casbinCall(fn *types.Func, n *ast.CallExpr) {
 	if fn.Name() == adapterReadOnly && adapterPkg.MatchString(funcPkg(fn)) && c.adapterTurnedOff(n) {
 		c.adapterVetted[ast.Unparen(n.Fun).(*ast.SelectorExpr)] = true
+	}
+	if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && c.casbinOwner && len(n.Args) == 1 &&
+		casbinCtor.MatchString(fn.Name()) && casbinRootPkg.MatchString(funcPkg(fn)) {
+		c.casbinCtorVetted[sel] = true
 	}
 	if fn.Name() != "EnableAutoSave" || !casbinRootPkg.MatchString(funcPkg(fn)) || len(n.Args) != 1 {
 		return
@@ -220,31 +240,49 @@ var (
 )
 `
 	casbinFixtures(t, []string{casbinPkgPath, casbinPkgPath + "/model", casbinPkgPath + "/persist", adapterPkgPath}, []casbinCase{
-		{name: "write, transaction and reloading API, in casbinx too", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
-func f(ctx context.Context, e *casbin.Enforcer, ie casbin.IEnforcer, a *gormadapter.Adapter, pa persist.Adapter, m model.Model) {
-	_, _ = e.AddPolicy("r:x", "a", "*")
-	_, _ = e.AddNamedPolicies("p", [][]string{{"r:x", "a", "*"}})
-	_, _ = e.RemoveFilteredPolicy(0, "r:x")
+		{name: "write, transaction, watching and reloading API, in casbinx too", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
+func f(ctx context.Context, e *casbin.Enforcer, se *casbin.SyncedCachedEnforcer, ie casbin.IEnforcer, a *gormadapter.Adapter, pa persist.Adapter, w persist.Watcher, m model.Model) {
 	_, _ = ie.UpdatePolicy([]string{"a"}, []string{"b"})
 	_, _ = e.AddRoleForUser("u:1", "r:x")
 	_ = e.SavePolicy()
+	_ = e.LoadPolicy()
 	_ = pa.AddPolicy("p", "p", []string{"r:x"})
 	_ = a.Transaction(e, func(casbin.IEnforcer) error { return nil })
 	_, _ = casbin.NewSyncedEnforcer()
-	_, _ = casbin.NewTransactionalEnforcer()
-	add := e.AddPolicies
-	_ = add
+	_, _ = casbin.NewSyncedCachedEnforcer(m, pa)
+	_, _ = casbin.NewTransactionalEnforcer(m)
+	newEnforcer := casbin.NewSyncedCachedEnforcer
+	_ = newEnforcer
+	e.SetAdapter(pa)
+	_ = e.SetWatcher(w)
+	se.StartAutoLoadPolicy(0)
 	e.EnableAutoSave(true)
 	on := true
 	e.EnableAutoSave(on)
+}`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin,
+			ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin}},
+		{name: "casbinx's enforcer: no adapter, its memory edited", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
+func f(m model.Model) {
+	e, _ := casbin.NewSyncedCachedEnforcer(m)
 	e.EnableAutoSave(false)
-	_ = m.AddPolicies("p", "p", [][]string{{"r:x", "a", "*"}})
 	e.AddFunction("permMatch", nil)
-	_ = e.LoadPolicy()
+	_, _ = e.AddGroupingPolicies([][]string{{"u:1", "r:x"}})
+	_, _ = e.RemoveFilteredGroupingPolicy(0, "u:1")
+	_, _ = e.AddPolicy("r:x", "a", "*")
+	_, _ = e.AddNamedPolicies("p", [][]string{{"r:x", "a", "*"}})
+	_, _ = e.RemoveFilteredPolicy(0, "r:x")
+	add := e.AddPolicies
+	_ = add
+	_ = m.AddPolicies("p", "p", [][]string{{"r:x", "a", "*"}})
 	_ = e.BuildRoleLinks()
 	_, _ = e.Enforce("u:1", "a")
-}`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin,
-			ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin, ruleCasbin}},
+	_, _ = e.GetImplicitPermissionsForUser("u:1")
+}`},
+		{name: "the enforcer's memory outside casbinx", pkg: "internal/authz", file: "service.go", imports: imports, src: uses + `
+func f(m model.Model, e *casbin.SyncedCachedEnforcer) {
+	_, _ = casbin.NewSyncedCachedEnforcer(m)
+	_, _ = e.AddGroupingPolicies([][]string{{"u:1", "r:x"}})
+}`, want: []string{ruleCasbin, ruleCasbin, ruleCasbin}}, // the import, then both calls
 		{name: "gorm-adapter constructors, in casbinx too", pkg: casbinxPkg + "/x", imports: imports, src: uses + `
 func f(db *gorm.DB) {
 	_, _ = gormadapter.NewAdapter("postgres", "dsn")

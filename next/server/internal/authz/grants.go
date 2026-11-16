@@ -172,15 +172,6 @@ func writeGrants(ctx context.Context, tx *gorm.DB, key string, grants []grant, p
 	return err
 }
 
-// roleGrantsJoin joins, to each role r, g.key: the canonical grants of r
-// whose permission p passes status, an SQL condition on p.
-func roleGrantsJoin(status string) string {
-	return `
-LEFT JOIN LATERAL (
-    SELECT rg.key FROM (` + casbinrule.GrantsOf("r.key") + `) rg JOIN permissions p ON p.key = rg.action AND ` + status + `
-) g ON true`
-}
-
 // canonicalKeys is keys canonical, in order, without duplicates or keys
 // another of them implies (account:read:own next to account:read): what a
 // role editor shows and saves back.
@@ -255,12 +246,20 @@ func scopeRefs(kind string, ids []int64) ([]string, error) {
 // ClearScopeGrants implements core.ScopeGrantClearer: it deletes, inside
 // tx, the scoped grants that name the deleted rows ids of kind
 // (core.ScopeRefAccount, ...), audited as authz.scope.clear by actorID (0 =
-// the system) per role, and moves the authz version when any went. A grant
-// naming a deleted row reaches nothing anyway; clearing it keeps roles
-// readable and a reused id from being reached. It returns the new authz
-// version, 0 when nothing went: the caller announces it after commit
-// (core.AnnounceAuthzChanged), as every authz write does.
-func (*Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
+// the system) per role, and moves both versions and those roles'
+// revisions when any went. A grant naming a deleted row reaches nothing
+// anyway; clearing it keeps roles readable and a reused id from being
+// reached. It returns the new authz version, 0 when nothing went, and
+// announces it itself once tx has committed (committedLater), as the
+// plugin catalog writes do.
+//
+// It takes the authz lock first, as every authz write does, and before it
+// reads: a role save that adds a grant naming one of ids holds the lock
+// until it commits, so the delete below, a statement started after the
+// lock, sees that grant (no grant naming a row deleted by tx survives).
+// Grants name existing rows only (checkScopeRefs), so none can name a
+// deleted one afterwards either.
+func (s *Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
 	if err := store.RequireTx(tx); err != nil {
 		return 0, err
 	}
@@ -272,34 +271,96 @@ func (*Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64
 	if actorID > 0 {
 		actor = &actorID
 	}
-	// The authz lock first, as every authz write takes it (a role save in
-	// flight would otherwise deadlock with this delete), and only when
-	// there is something to clear, so that deletes do not queue behind it.
 	db := store.G(ctx, tx)
-	found, err := store.Exists(db, casbinrule.ScopedGrants(db, patterns))
-	if err != nil || !found {
-		return 0, err
-	}
 	if err := lockVersion(db).Error; err != nil {
 		return 0, err
 	}
-	// No row: cleared meanwhile, before the lock; the version stays 0.
-	var version int64
-	err = clearScopeGrants(db, patterns, actor, kind, ids).Scan(&version).Error
-	return version, err
+	// No row: nothing named ids; the versions stay.
+	var c authzChange
+	if err := clearScopeGrants(db, patterns, actor, kind, ids).Row().Scan(&c.Version, &c.Policy); err != nil {
+		if store.IsNoRows(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	s.mu.Lock()
+	s.pending[c.Version] = c
+	s.mu.Unlock()
+	s.committedLater(c.Version)
+	return c.Version, nil
 }
 
 // clearScopeGrants deletes the scoped grants matching patterns, audits them
-// per role and moves the authz version, returning it when any went.
+// per role and moves those roles' revisions and both versions, returning
+// the versions when any went.
 func clearScopeGrants(db *gorm.DB, patterns []string, actor *int64, kind string, ids []int64) *gorm.DB {
-	return db.Raw(`WITH cleared AS (
+	return db.Raw(`WITH changed AS (
     `+casbinrule.DeleteScopedSQL+`
 ), audited AS (
     INSERT INTO audit_logs (user_id, action, target_type, target_id, detail)
     SELECT ?, 'authz.scope.clear', 'role', role_id::text,
         jsonb_build_object('kind', ?::text, 'ids', to_jsonb(?::bigint[]), 'keys', to_jsonb(array_agg(key ORDER BY key)))
-    FROM cleared GROUP BY role_id
+    FROM changed GROUP BY role_id
+), revised AS (
+    `+casbinrule.ReviseChanged+`
 )
-UPDATE authz_meta SET version = version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM cleared)
-RETURNING version`, store.Strings(patterns), actor, kind, store.Int64s(ids))
+UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1 AND EXISTS (SELECT 1 FROM changed)
+RETURNING version, policy_version`, store.Strings(patterns), actor, kind, store.Int64s(ids))
+}
+
+// scopeRefsOf returns the rows the scope of p names, by kind: its group
+// (group/G) and its account or proxy (account/X, group/G/account/X,
+// proxy/X).
+func scopeRefsOf(p perm.Pattern) map[string]int64 {
+	out := map[string]int64{}
+	if p.Scope.Group > 0 {
+		out[core.ScopeRefGroup] = p.Scope.Group
+	}
+	if p.Scope.ID > 0 {
+		out[string(perm.ScopeType(p.Action))] = p.Scope.ID
+	}
+	return out
+}
+
+// checkScopeRefs refuses keys whose scope names a row that does not exist
+// (a deleted account, group or proxy, or one never created): such a grant
+// would reach nothing now and the row of a reused id later, and the
+// clearing of a delete (ClearScopeGrants) would never see it. Only the
+// keys a write adds are checked: a grant a role holds already stays.
+func checkScopeRefs(ctx context.Context, tx *gorm.DB, keys []string) error {
+	var kinds, refKeys []string
+	var ids []int64
+	for _, k := range keys {
+		p, err := perm.Parse(k)
+		if err != nil {
+			continue
+		}
+		for kind, id := range scopeRefsOf(p) {
+			kinds, ids, refKeys = append(kinds, kind), append(ids, id), append(refKeys, k)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var missing []string
+	if err := missingScopeRefs(store.G(ctx, tx), refKeys, kinds, ids).Scan(&missing).Error; err != nil {
+		return err
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return core.InvalidFields(core.FieldError{Field: "permission_keys", Code: "unknown_scope",
+		Message: "the scope names a row that does not exist: " + strings.Join(dedupe(missing), ", ")})
+}
+
+// missingScopeRefs selects the keys of keys whose row (kinds[i], ids[i])
+// does not exist: a live account, group or proxy (scopeRefPatterns' kinds).
+func missingScopeRefs(db *gorm.DB, keys, kinds []string, ids []int64) *gorm.DB {
+	return db.Raw(`SELECT t.key FROM unnest(?::text[], ?::text[], ?::bigint[]) AS t(key, kind, id)
+WHERE NOT CASE t.kind
+    WHEN '`+core.ScopeRefAccount+`' THEN EXISTS (SELECT 1 FROM accounts WHERE deleted_at IS NULL AND id = t.id)
+    WHEN '`+core.ScopeRefGroup+`' THEN EXISTS (SELECT 1 FROM groups WHERE id = t.id)
+    WHEN '`+core.ScopeRefProxy+`' THEN EXISTS (SELECT 1 FROM proxies WHERE id = t.id)
+    ELSE false END
+ORDER BY 1`, store.Strings(keys), store.Strings(kinds), store.Int64s(ids))
 }
