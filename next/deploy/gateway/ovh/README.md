@@ -1,5 +1,7 @@
 # OVH当前部署入口
 
+> 0.1.290 删除了 CCGateway 插件（`plugins/ccgateway`、`docs/ccgateway-*`、`verify-ccgateway.py`、`verify-account-runtimes.py`、`build-ccgateway-images.sh`）：下文指向它们的链接只作出处，原文用 `git show 317b0c331:<路径>` 读取。ovh 上的 ccg-* 容器按 [0.1.290 发布手册](../../rollback/0.1.290-release.md) 发布后的步骤停止。
+>
 > 2026-11-02 再次清理：ovh `~/sup2api-managed/stage/` 只留 `0.1.229`、`0.1.230`、`ccgateway-0.1.120`、`ccgateway-0.1.121`、`gateway-0.1.130`，`~/sup2api/` 的 worktree 只留 `src` 与同名的五个 `release-*`；下文更早版本的 `stage/…` 脚本路径只作出处（能从会话记录还原的放在 `stage/_scripts/`），旧定制 CLI 二进制归档在 `~/sup2api/checks/cli-releases/`。
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
