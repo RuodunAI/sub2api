@@ -51,8 +51,8 @@ message AccountProperties {
   optional int64 proxy_id = 9;
   repeated string models = 10;
   map<string, string> model_mapping = 11;
-  // Explicit automatic/manual model configuration; absent uses the plugin default.
-  optional bool auto_models = 12;
+  reserved 12;
+  reserved "auto_models";
   // Limits of lists of client models on top of the account's own
   // (CONTRACTS §68); a model is in at most one list.
   repeated ModelLimit model_limits = 13;
@@ -70,65 +70,6 @@ message ModelLimit {
   int64 tpm_limit = 4;
   // Sessions per minute of the list (CONTRACTS §71).
   int32 spm_limit = 5;
-}
-
-// ModelLimitList is the whole model_limits of an account; empty removes them.
-message ModelLimitList {
-  repeated ModelLimit items = 1;
-}
-
-message AccountLifecycleRequest {
-  string phase = 1;
-  Account account = 2;
-  Caller caller = 3;
-  string preparation_key = 4;
-  string action = 5;
-  repeated string changed_fields = 6;
-  // Facts the core learned from the account's preparation, as a JSON object;
-  // on before_create or before_update (saved account facts), "" when unknown. Known keys:
-  // "subscription_type" (e.g. "max", "pro") and "account_email" (the
-  // upstream login's email), each absent when unknown.
-  string resource_facts_json = 7;
-}
-
-message AccountLifecycleResponse {
-  repeated FieldError errors = 1;
-  string settings_json = 2;
-  bool run_resource = 3;
-  // before_create / before_update: changes the plugin makes before saving;
-  // ignored in other phases. The core validates them like the
-  // caller's own input.
-  AccountPatch account_patch = 4;
-}
-
-// AccountPatch replaces account fields; an absent field is left unchanged.
-message AccountPatch {
-  ModelList models = 1;
-  ModelMappingValue model_mapping = 2;
-  // Values of the account type's read-only extensions (extensionsSchema
-  // properties with "readOnly": true), as a JSON object: the plugin's own
-  // facts about the account, which the admin cannot edit. Only the keys given
-  // change; a null value removes one. "" leaves them unchanged.
-  string extensions_json = 3;
-  // Scheduling and limits of the account (CONTRACTS §18, §68, §71),
-  // validated like the caller's own input; absent fields are left unchanged.
-  optional int32 priority = 4;
-  optional int32 weight = 5;
-  optional int32 max_concurrency = 6;
-  optional int32 rpm_limit = 7;
-  optional int64 tpm_limit = 8;
-  ModelLimitList model_limits = 9;
-  optional int32 spm_limit = 10;
-}
-
-// ModelList is a model id list; empty means every model.
-message ModelList {
-  repeated string ids = 1;
-}
-
-// ModelMappingValue is a client model -> upstream model mapping.
-message ModelMappingValue {
-  map<string, string> entries = 1;
 }
 
 // Caller identifies the console user on whose behalf the host calls a plugin.

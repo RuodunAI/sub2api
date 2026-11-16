@@ -12,7 +12,6 @@ import { useProxiesLookup } from '@/composables/lookups'
 import { errorMessage, fieldErrors, notifyError } from '@/utils/errors'
 import { accountControl, withoutFixed } from './commonControls'
 import { sectionOfErrors, splitFieldErrors, type EditorSection } from './editorErrors'
-import { subscriptionLabel } from './subscription'
 import type { useModelEdit } from './useModelEdit'
 import { fromCards, repeatedModel, type ModelLimitCard } from './modelLimits'
 import { windowOf } from './spmWindow'
@@ -180,10 +179,6 @@ export function useAccountSave(deps: AccountSaveDeps) {
     try {
       const result = await submit(body)
       toast(t(editing.value ? 'common.updated' : 'common.created'), 'success')
-      // The plugin may adjust a new account's models to its subscription (CONTRACTS §59).
-      if (!editing.value && result?.models && result.subscription_type && JSON.stringify(result.models) !== JSON.stringify(body.models)) {
-        toast(t('accounts.modelsAdjusted', { plan: subscriptionLabel(result.subscription_type), n: result.models.length }), 'info')
-      }
       if (body.proxy_url) {
         // The proxy picker cache may now miss the (re)used proxy.
         useProxiesLookup(true)

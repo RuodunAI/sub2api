@@ -28,7 +28,6 @@ export default {
     verification_required: '需要先验证身份',
     verification_cancelled: '已取消身份验证',
     rate_limited: '请求过于频繁',
-    too_many_drafts: '未完成的账号草稿过多。请先完成或关闭其中一个，或等待约 15 分钟由系统清理被放弃的草稿',
     no_available_account: '没有可用账号',
     plugin_unavailable: '插件不可用',
     unavailable: '服务不可用',

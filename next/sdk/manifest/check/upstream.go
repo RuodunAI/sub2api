@@ -124,7 +124,6 @@ func (v *validator) runtimeNone() {
 	for i, at := range m.AccountTypes {
 		f := fmt.Sprintf("accountTypes[%d]", i)
 		needs(f+".upstream", at.Upstream == nil)
-		needs(f+".lifecycle", at.Lifecycle != nil)
 		needs(f+".modelAvailability", at.ModelAvailability)
 		needs(f+".quota.query", at.Quota != nil && at.Quota.Query)
 		needs(f+".balance", at.Balance != nil)

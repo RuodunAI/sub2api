@@ -30,7 +30,7 @@ beforeEach(() => {
     Promise.resolve(
       {
         '/settings/failure-policy': { configured: true, policy: emptyFailurePolicy() },
-        '/settings/scheduling': { mode: 'default', metric: 'sessions', limit_load: false, model_limits: false }
+        '/settings/scheduling': { metric: 'sessions', limit_load: false, model_limits: false }
       }[path as string] ?? {}
     )
   )
@@ -92,9 +92,7 @@ describe('scheduling policy tabs (CONTRACTS §89)', () => {
     await w.get('[data-testid="balance-model-limits"]').setValue(true)
     await w.get('[data-testid="settings-save"]').trigger('click')
     await flushPromises()
-    // An older core's "default" goes back as "traffic".
     expect(api.put).toHaveBeenCalledWith('/settings/scheduling', {
-      mode: 'traffic',
       metric: 'tpm',
       limit_load: false,
       model_limits: true

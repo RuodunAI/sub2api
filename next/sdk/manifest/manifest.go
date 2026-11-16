@@ -84,7 +84,6 @@ const (
 	CapGatewayHook       = "gateway.hook.v1"
 	CapGatewayObserve    = "gateway.observe.v1"
 	CapAppJobs           = "app.jobs.v1"
-	CapAccountLifecycle  = "account.lifecycle.v1"
 	CapAppEvents         = "app.events.v1"
 	CapHTTPRoutes        = "http.routes.v1"
 	CapMigrationData     = "migration.data.v1"
@@ -357,22 +356,17 @@ type AccountType struct {
 	// (ValidModelID), at most MaxDefaultModels each; every mapping key must
 	// be in DefaultModels when that list is not empty, or the mapped model
 	// could never be scheduled.
-	DefaultModels []string `json:"defaultModels,omitempty"`
-	// Optional UI presets by runtime-reported subscription type. Business
-	// enforcement still belongs to the plugin's account lifecycle hooks.
-	DefaultModelsBySubscription map[string][]string `json:"defaultModelsBySubscription,omitempty"`
-	DefaultModelMapping         map[string]string   `json:"defaultModelMapping,omitempty"`
+	DefaultModels       []string          `json:"defaultModels,omitempty"`
+	DefaultModelMapping map[string]string `json:"defaultModelMapping,omitempty"`
 	// DefaultLimits prefill the scheduling and limit fields of a new account
 	// of this type in the console (CONTRACTS §68.5), like DefaultModels:
-	// suggestions only. To set them on the account itself the plugin answers
-	// before_create / before_update with an account_patch.
+	// suggestions only.
 	DefaultLimits *AccountDefaultLimits `json:"defaultLimits,omitempty"`
 	// CommonControls declare, per common account setting the core edits and
 	// enforces (CommonControlSpecs), its default and whether an operator may
 	// see and change it (CONTRACTS §87).
 	CommonControls    map[string]AccountCommonControl `json:"commonControls,omitempty"`
 	ExtensionsSchema  json.RawMessage                 `json:"extensionsSchema,omitempty"`
-	Lifecycle         *AccountLifecycle               `json:"lifecycle,omitempty"`
 	ModelAvailability bool                            `json:"modelAvailability,omitempty"`
 	// Quota declares that accounts of this type have subscription quota
 	// windows (5-hour / weekly limits and the like) the host can track
@@ -422,34 +416,6 @@ func (at AccountType) CustomUpstream() bool {
 	return slices.ContainsFunc(fields, func(f string) bool {
 		return !slices.ContainsFunc(at.GuardedSettings, func(g GuardedSetting) bool { return g.Field == f })
 	})
-}
-
-type AccountLifecycle struct {
-	Preparation bool                     `json:"preparation,omitempty"`
-	Required    bool                     `json:"required,omitempty"`
-	Actions     []AccountLifecycleAction `json:"actions,omitempty"`
-	// Deletion offers keeping an account's runtime resources for a while after
-	// the account is deleted, before they are removed.
-	Deletion *AccountDeletion `json:"deletion,omitempty"`
-}
-
-// AccountDeletion is what deleting an account of the type may keep. The
-// operator chooses per deletion; the days come from the manifest only.
-type AccountDeletion struct {
-	// RetentionDays is how long the runtime resources are kept, in days.
-	// It is inclusive of both ends: 1 to MaxRetentionDays. Values outside
-	// that range are rejected by manifest/check (code "invalid" on
-	// accountTypes[].lifecycle.deletion.retentionDays).
-	RetentionDays int `json:"retentionDays"`
-}
-
-// MaxRetentionDays bounds AccountDeletion.RetentionDays.
-const MaxRetentionDays = 30
-
-type AccountLifecycleAction struct {
-	ID    string        `json:"id"`
-	Label LocalizedText `json:"label"`
-	Icon  string        `json:"icon,omitempty"`
 }
 
 // AccountRefresh tells the host when to renew the credentials of an

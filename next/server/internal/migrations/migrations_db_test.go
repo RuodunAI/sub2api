@@ -42,33 +42,6 @@ func TestAPIKeyIPAllowlistMigrationPreservesKeys(t *testing.T) {
 	}
 }
 
-func TestAccountLifecycleMigrationPreservesExistingRuntimes(t *testing.T) {
-	// Through 0101: 0102 drops ccgateway_runtimes.
-	const last = "0101_drop_jwt_sessions.sql"
-	db, through := testutil.DBThrough(t, last), testutil.MigrationsThrough(t, last)
-	ctx := t.Context()
-	_, err := db.SQL.ExecContext(ctx, `DROP TABLE account_lifecycle_sync,account_preparations;
-		ALTER TABLE ccgateway_runtimes DROP COLUMN initial_settings;
-		DELETE FROM schema_migrations WHERE id='0051_account_preparations.sql';
-		INSERT INTO accounts(name,plugin_key,type,credentials_enc,status,schedulable) VALUES('preserved','ccgateway','managed','','disabled',false);
-		INSERT INTO ccgateway_runtimes(key,account_id) SELECT 'd1234567890abcdef',id FROM accounts WHERE name='preserved'`)
-	require.NoError(t, err)
-	query := `SELECT jsonb_build_object('accounts',(SELECT jsonb_agg(to_jsonb(a) ORDER BY id) FROM accounts a),'runtimes',(SELECT jsonb_agg(to_jsonb(r)-'initial_settings' ORDER BY key) FROM ccgateway_runtimes r))::text`
-	var before, after string
-	require.NoError(t, db.SQL.QueryRowContext(ctx, query).Scan(&before))
-	for i := range 2 {
-		done, err := store.Migrate(ctx, db, through, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
-		require.NoError(t, err)
-		if i == 0 {
-			require.Equal(t, []string{"0051_account_preparations.sql"}, done)
-		} else {
-			require.Empty(t, done)
-		}
-		require.NoError(t, db.SQL.QueryRowContext(ctx, query).Scan(&after))
-		require.Equal(t, before, after)
-	}
-}
-
 func TestAutomaticStateMigrationPreservesLegacyAccounts(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
@@ -490,11 +463,13 @@ func TestMigration0101DropsJWTSessions(t *testing.T) {
 }
 
 // 0102 removes CCGateway (deploy/rollback/0.1.290-release.md): its tables,
-// columns, settings and tasks, and the plugin as an uninstall with purge
-// would, its permissions and their grants included. Its accounts, their
-// usage and other plugins stay; a rerun changes nothing.
-func TestMigration0102DropsCCGateway(t *testing.T) {
-	const id = "0102_drop_ccgateway.sql"
+// columns, settings and tasks, the account lifecycle contract, and the plugin
+// as an uninstall with purge would, its permissions and their grants
+// included. Its accounts, their usage and other plugins stay. It also drops
+// what only the cores before 0.1.290 used: the scheduling mode (normalizing
+// the row) and async_tasks.legacy_imported. A rerun changes nothing.
+func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
+	const id = "0102_drop_ccgateway_and_legacy.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
 	ctx := t.Context()
 	exec := func(sql string) {
@@ -521,23 +496,34 @@ func TestMigration0102DropsCCGateway(t *testing.T) {
 			('ccgateway:x', 'ccgateway', '{}', 'plugin', 'ccgateway'), ('guard:x', 'guard', '{}', 'plugin', 'guard');
 		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'ccgateway:x', '*'), ('p', 'r:other', 'guard:x', '*');
 		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('ccgateway', 'example.com');
-		INSERT INTO accounts (name, plugin_key, type, credentials_enc, status, schedulable, rate_limit_tier, deleted_at) VALUES
-			('gone', 'ccgateway', 'managed', '', 'disabled', false, 'default_claude_max_20x', now()),
-			('live', 'ccgateway', 'managed', '', 'active', true, NULL, NULL);
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, status, schedulable, rate_limit_tier, subscription_type, auto_models, deleted_at) VALUES
+			('gone', 'ccgateway', 'managed', '', 'disabled', false, 'default_claude_max_20x', 'max', false, now()),
+			('live', 'ccgateway', 'managed', '', 'active', true, NULL, NULL, NULL, NULL);
+		INSERT INTO account_lifecycle_sync (account_id, status) SELECT id, 'applied' FROM accounts;
+		INSERT INTO account_preparations (key, plugin_key, account_type, created_by) SELECT 'p1', 'ccgateway', 'managed', id FROM users;
 		INSERT INTO ccgateway_runtimes (key, account_id) SELECT id::text, id FROM accounts;
 		INSERT INTO ccgateway_account_feature_policies (account_id, mode) SELECT id, 'follow' FROM accounts WHERE name = 'live';
 		INSERT INTO provider_fallback_credits (token_hash, user_id, group_id, account_id, principal_id, generation, plugin_key, source_model, prompt_digests, observed_at, expires_at)
 			SELECT 'h', u.id, g.id, 1, 'p', 'g', 'ccgateway', 'm', '[]', now(), now() + interval '1 minute' FROM users u, groups g;
-		INSERT INTO settings (key, value) VALUES ('ccgateway_remote', '{}'), ('kept', '{}');
-		INSERT INTO scheduled_tasks (name, source, timeout_ms) VALUES ('core.ccgateway.runtime_sync', 'core', 1000), ('core.helper.usage_replay', 'core', 1000), ('core.usage.rollup', 'core', 1000)`)
+		INSERT INTO settings (key, value) VALUES ('ccgateway_remote', '{}'), ('kept', '{}'),
+			('scheduling', '{"mode":"default","metric":"tpm","limit_load":false,"model_limits":true}');
+		INSERT INTO scheduled_tasks (name, source, timeout_ms) VALUES ('core.ccgateway.runtime_sync', 'core', 1000), ('core.helper.usage_replay', 'core', 1000),
+			('core.account.lifecycle_status', 'core', 1000), ('core.account.preparation_cleanup', 'core', 1000), ('core.usage.rollup', 'core', 1000)`)
 	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
 	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
 
 	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
 	require.Empty(t, read(`SELECT concat_ws(' ', to_regclass('ccgateway_runtimes'), to_regclass('ccgateway_account_feature_policies'),
 		to_regclass('ccgateway_account_request_logs'), to_regclass('provider_resources'), to_regclass('provider_fallback_credits'),
-		to_regclass('provider_helper_records'), to_regclass('provider_helper_usage_receipts'), to_regclass('provider_diagnostic_messages'))`), "tables left")
-	require.Equal(t, "0", read(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'accounts' AND column_name IN ('status_changed_at', 'rate_limit_tier')`))
+		to_regclass('provider_helper_records'), to_regclass('provider_helper_usage_receipts'), to_regclass('provider_diagnostic_messages'),
+		to_regclass('account_preparations'), to_regclass('account_lifecycle_sync'))`), "tables left")
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'accounts'
+		AND column_name IN ('status_changed_at', 'rate_limit_tier', 'subscription_type', 'auto_models')`))
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM information_schema.columns WHERE table_name = 'async_tasks' AND column_name = 'legacy_imported'`))
+	// A row of the former default mode with the limit load off had the metric
+	// and model limits greyed out: they take the defaults.
+	scheduling := `SELECT value::text FROM settings WHERE key = 'scheduling'`
+	require.Equal(t, `{"metric": "sessions", "limit_load": false, "model_limits": false}`, read(scheduling))
 	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
 	require.Equal(t, "guard:x", read(`SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL`))
 	require.Equal(t, "r:other guard:x", read(`SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule`))
@@ -551,9 +537,11 @@ func TestMigration0102DropsCCGateway(t *testing.T) {
 	require.Equal(t, "core.usage.rollup", read(`SELECT string_agg(name, ' ') FROM scheduled_tasks`))
 	require.Equal(t, "gone live", read(`SELECT string_agg(name, ' ' ORDER BY name) FROM accounts WHERE plugin_key = 'ccgateway'`), "accounts are kept")
 
+	exec(`UPDATE settings SET value = '{"metric":"rpm","limit_load":false,"model_limits":true}' WHERE key = 'scheduling'`)
 	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, "ccgateway", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
+	require.Equal(t, `{"metric": "rpm", "limit_load": false, "model_limits": true}`, read(scheduling), "a rerun reset a saved row")
 }
 
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are

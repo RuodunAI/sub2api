@@ -910,10 +910,10 @@ func TestOwnChangeGroupsAndCaps(t *testing.T) {
 
 // TestOwnCustomUpstream: account:relay is needed by an own-level caller only
 // to create an account whose upstream address can be set freely, or to move
-// its address (G2); the same rule covers fetching models and preparations.
+// its address (G2); the same rule covers fetching models.
 func TestOwnCustomUpstream(t *testing.T) {
 	authz := fakeAuthz{keys: map[int64][]string{}}
-	e, _, _, _ := preparationFixtureWith(t, authz)
+	e := setupWith(t, authz)
 	alice := e.addUser("alice@x.com")
 	authz.keys[e.uid], authz.keys[alice] = adminKeys, supplierKeys
 	oauth := core.PluginInfo{Key: "oauth", Manifest: &manifest.Manifest{Name: manifest.LocalizedText{"en": "OAuth"}}}
@@ -938,16 +938,6 @@ func TestOwnCustomUpstream(t *testing.T) {
 	}
 	if code, out := e.doAs(alice, "POST", "/account-types/relay/relay_key/models/fetch", map[string]any{"credentials": relayCreds}); code != 403 {
 		t.Fatalf("fetch custom: %d %v", code, out)
-	}
-	// The fixture's managed type declares no address fields and no guard:
-	// custom under the legacy rule.
-	if code, out := e.doAs(alice, "POST", "/account-types/fixture/managed/preparations", map[string]any{}); code != 403 {
-		t.Fatalf("prepare custom: %d %v", code, out)
-	}
-	fixture := slices.IndexFunc(e.gen.types, func(b core.AccountTypeBinding) bool { return b.Plugin.Key == "fixture" })
-	e.gen.types[fixture].Type.UpstreamFields = []string{}
-	if code, out := e.doAs(alice, "POST", "/account-types/fixture/managed/preparations", map[string]any{}); code != 201 {
-		t.Fatalf("prepare managed: %d %v", code, out)
 	}
 
 	authz.keys[alice] = append(slices.Clone(supplierKeys), "account:relay")
@@ -982,7 +972,7 @@ func TestOwnCustomUpstream(t *testing.T) {
 // role's default on accounts and proxies (it also reads its own usage).
 func TestBuiltinSupplierRole(t *testing.T) {
 	fake := fakeAuthz{keys: map[int64][]string{}}
-	e, _, _, _ := preparationFixtureWith(t, fake)
+	e := setupWith(t, fake)
 	ctx := context.Background()
 	roles := authz.New(authz.Deps{DB: e.db})
 	if err := roles.Start(ctx); err != nil {

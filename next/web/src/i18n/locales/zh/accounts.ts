@@ -1,8 +1,4 @@
 export default {
-  lifecycle: {
-    pending: '运行配置待同步', applied: '运行配置已同步', failed: '运行配置同步失败，请检查运行环境',
-    environmentDeferred: '配置已保存，现有运行环境保持不变；新设置在创建新运行环境时生效。'
-  },
   listUi: {
     loadFailedEmpty: '账号列表加载失败，请刷新重试',
     identity: '账号 / 接入类型', filters: '账号筛选', search: '搜索账号名称', advanced: '高级筛选', advancedApplied: '高级筛选条件已生效',
@@ -97,9 +93,6 @@ export default {
   orphanedHint: '插件"{plugin}"未安装，账号保留但不会被使用。',
   cooldownUntil: '冷却至 {time}',
   type: '类型',
-  subscription: '订阅',
-  subscriptionHint: '账号授权后上游报告的订阅类型',
-  modelsAdjusted: '已按 {plan} 订阅调整模型列表（{n} 个模型）',
   groups: '分组',
   proxy: '代理',
   proxyRequired: '此账号类型必须配置代理',
@@ -411,20 +404,13 @@ export default {
       path_slash: '路径须以 / 开头'
     }
   },
-  deleteResources: {
-    label: '运行资源',
-    now: '立即删除全部运行资源',
-    retain: '保留 {days} 天后自动清理',
-    nowHint: '账号的运行资源随账号一起删除，不可恢复。',
-    retainHint: '账号立即删除、不再接收请求；它的运行资源停止使用，保留 {days} 天后自动清理。',
-  },
   basic: '基本信息',
   core: '核心',
   testErrorCode: '错误代码',
   testErrorSource: '错误来源',
   testResponseHeaders: '上游响应信息',
   testNoHTTPResponse: '未收到 HTTP 响应',
-  testErrorSources: { gateway: '网关／运行环境', core: '核心（未到达账号容器）', transport: '传输链路', response: 'HTTP 响应', plugin: '插件', input: 'CC 请求输入', timeout: 'CC 请求超时', interrupted: 'CC 请求中断', internal: 'CC 运行环境' },
+  testErrorSources: { gateway: '网关', transport: '传输链路', response: 'HTTP 响应', plugin: '插件' },
   credentials: '凭证',
   orphanedEdit: '该账号类型所属的插件未启用，无法编辑凭证；基本信息仍可修改。',
   formUnavailable: '无法加载插件表单。',
@@ -483,13 +469,12 @@ export default {
     apply: '应用到 {n} 个账号', weightHint: '同一优先级内按权重随机分配（1–1000）', zeroUnlimited: '0 表示不限制', spmHint: '0 表示不限制；数量和周期（1 分钟–24 小时）一起应用',
     groupModeLabel: '分组修改方式', groupMode: { replace: '替换为', add: '追加', remove: '移除' },
     groupModeHint: { replace: '各账号的分组改为所选分组（不选即清空分组）', add: '在各账号原有分组上追加所选分组', remove: '从各账号移除所选分组，其余分组保留' },
-    proxyHint: '不选即不使用代理；Claude Code 账号没有代理时容器无法联网',
+    proxyHint: '不选即不使用代理',
     controlFixed: '{n} 个所选账号的类型不允许修改此项',
     editDone: '已更新 {ok} 个账号（{skipped} 个无需修改）', editPartial: '成功 {ok}，失败 {fail}，跳过 {skipped}',
     failures: '{n} 个账号未完成',
     deleteTitle: '删除 {n} 个账号', deleteConfirm: '确定删除所选 {n} 个账号？此操作不可撤销。', andMore: '等 {n} 个',
-    deleteRun: '删除 {n} 个账号', deleteRetain: '保留可保留的运行资源（{n} 个账号，最多 {days} 天）',
-    deleteRetainHint: '支持保留的账号停止运行并保留资源，其余账号立即删除资源。',
+    deleteRun: '删除 {n} 个账号',
     deleteDone: '已删除 {ok} 个账号', deletePartial: '已删除 {ok}，失败 {fail}，未执行 {skipped}'
   },
   latency: '延迟',
@@ -529,10 +514,7 @@ export default {
     refresh: '刷新',
     refreshing: '刷新中',
     refreshHint: '点击配额立即刷新用量',
-    refreshed: '用量已更新',
-    refreshBlocked: {
-      runtime_not_ready: '账号运行环境尚未同步完成，暂时无法查询额度，请稍后再试'
-    }
+    refreshed: '用量已更新'
   },
   autoReleaseAt: '{time} 自动启用',
   resetStatus: '重置状态',
@@ -541,7 +523,6 @@ export default {
   resetStatusConfirm: '确定清除账号「{name}」的禁用、错误原因与冷却并恢复为启用状态？允许调度开关保持不变；若上游凭证仍失效或限流，账号可能再次自动禁用或冷却。',
   resetStatusDone: '账号状态已重置',
   pluginActions: {
-    running: '正在执行「{name}」…',
     done: '「{name}」已完成'
   },
   credRefresh: {

@@ -225,8 +225,8 @@ type automaticChange struct {
 // locked in tx, with its audit row and account.status_changed event; the
 // caller runs changed once tx commits. It declares that tx writes
 // auto_disabled_source: the 0070 trigger otherwise takes a reason or release
-// time change of an automatic disable for a writer that does not know the
-// source (an older core) and clears the mark.
+// time change of an automatic disable for a write that does not declare the
+// source (such as a manual PATCH) and clears the mark.
 func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action string, ch automaticChange) error {
 	g := store.G(ctx, tx)
 	if err := store.SetLocal(ctx, tx, "sup2api.auto_disabled_source", "written"); err != nil {

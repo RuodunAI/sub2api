@@ -425,15 +425,6 @@ export interface ProxyProbeResult {
 
 // ------------------------------------------------------------------ accounts
 
-export interface AccountAction {
-  id: string
-  label: LText
-  icon?: string
-  plugin_key: string
-  account_type?: string
-  permission?: string
-}
-
 export interface AccountFormRef {
   mode: 'schema' | 'iframe' | 'native'
   page?: string
@@ -489,13 +480,11 @@ export interface AccountType {
   custom_upstream?: boolean
   /** Plugin suggestions prefilled into a new account's models / model_mapping (CONTRACTS §41). */
   default_models?: string[]
-  default_models_by_subscription?: Record<string, string[]>
   default_model_mapping?: Record<string, string>
   default_limits?: AccountDefaultLimits
   /** How the editor shows the common controls (docs/COMMON-CONTROLS.md §1); absent names keep the core behaviour. */
   common_controls?: Partial<Record<CommonControlName, CommonControlDecl>>
   extensions_schema?: { type: 'object'; properties: Record<string, unknown> }
-  lifecycle?: AccountLifecycle
   /** Platforms the type supports (built-in or plugin platforms). */
   platforms: AccountTypePlatform[]
   /** Endpoints of available supported platforms (native) plus converted ones. */
@@ -555,26 +544,6 @@ export interface UpstreamAccountLayer {
   routes?: Record<string, { path: string }>
   /** filterFields the account lets through. */
   allowFields?: string[]
-}
-
-/** manifest.AccountLifecycle: preparation, required lifecycle, row actions and deletion. */
-export interface AccountLifecycle {
-  preparation?: boolean
-  required?: boolean
-  actions?: AccountLifecycleAction[]
-  deletion?: AccountDeletion
-}
-
-/** manifest.AccountLifecycleAction: a plugin action on the account row. */
-export interface AccountLifecycleAction {
-  id: string
-  label: LText
-  icon?: string
-}
-
-/** manifest.AccountDeletion: runtime resources may be kept 1..30 days after the account is deleted. */
-export interface AccountDeletion {
-  retentionDays: number
 }
 
 /** Caps of a list of client models on one account; its models share one set of counters, 0 = unlimited (CONTRACTS §68, §71). */
@@ -705,9 +674,9 @@ export interface AccountUsageLimit {
   period_count: number
   /** Periods are counted from here (whole hours, from 2000 up to 2100); null = 2024-01-01 00:00 in `timezone`. */
   anchor: string | null
-  /** IANA time zone of the periods' boundaries ("" while never saved; an older core sends "UTC"); the console saves the browser's. */
+  /** IANA time zone of the periods' boundaries ("" while never saved); the console saves the browser's. */
   timezone: string
-  /** Whether the account ever saved a limit (sent by GET; ignored by PUT); absent from an older core. */
+  /** Whether the account ever saved a limit (sent by GET; ignored by PUT). */
   configured?: boolean
 }
 
@@ -718,7 +687,6 @@ export interface AccountOutcomes {
 }
 
 export interface Account {
-  lifecycle_sync?: { status: 'pending' | 'applied' | 'failed'; code?: string }
   id: number
   name: string
   /** Plugin that declares the account type. */
@@ -737,8 +705,6 @@ export interface Account {
   auto_disable: boolean
   /** Models this account can serve; empty = all models. */
   models: string[]
-  /** Null/absent follows the account plugin's default. */
-  auto_models?: boolean | null
   /** Client model -> upstream model, rewritten before the plugin builds the request. */
   model_mapping: Record<string, string>
   /** 0 = unlimited. */
@@ -800,12 +766,8 @@ export interface Account {
   refresh?: AccountRefresh | null
   /** Outcome of the latest test of the account (any model); null when never tested. */
   last_test?: AccountLastTest | null
-  /** Plan the account's runtime reported ("max", "pro" ...), CONTRACTS §59; null while unknown. */
-  subscription_type?: string | null
   /** Balance of the account (CONTRACTS §52); null when the type does not support balance. */
   balance?: AccountBalance | null
-  /** Plugin-registered custom actions available for this account (CONTRACTS §52). */
-  actions?: AccountAction[]
 }
 
 /** Latest test of an account, kept on the account (POST /accounts/:id/test). */
@@ -1219,8 +1181,6 @@ export type GatewayNumberSetting = Exclude<keyof GatewaySettings, 'claude_max_to
 
 /** Core load balancing of new sessions within a tier (GET/PUT /settings/scheduling, CONTRACTS §89). */
 export interface SchedulingSettings {
-  /** Always "traffic" since 2026-11-12; still sent so the cores before it balance by traffic too. */
-  mode: 'traffic'
   /** The usage both the traffic balance and the limit load are computed on. */
   metric: 'rpm' | 'concurrency' | 'tpm' | 'sessions'
   /** Lower the weight as the metric nears the account's limit. */
@@ -1643,8 +1603,8 @@ export interface MarketVersion {
   sha256?: string
   size?: number
   host_compat?: string
-  /** host_compat satisfied by the running core version; absent on old servers. */
-  compatible?: boolean
+  /** host_compat satisfied by the running core version. */
+  compatible: boolean
 }
 
 // ------------------------------------------------------------------ plugin egress (CONTRACTS §14.2)
@@ -1716,8 +1676,8 @@ export interface ReleaseRetiredKeyResult {
   kv_deleted: number
 }
 
-/** Response of DELETE /plugins/:key (CONTRACTS §14.3); 204 on older servers. */
+/** Response of DELETE /plugins/:key (CONTRACTS §14.3). */
 export interface UninstallResult {
   /** Accounts soft-deleted with purge_accounts=true. */
-  accounts_deleted?: number
+  accounts_deleted: number
 }

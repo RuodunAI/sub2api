@@ -320,7 +320,7 @@ describe('account model limits', () => {
 })
 
 describe('account usage limit', () => {
-  const saved = { raw_cost_accounting: false, enabled: true, amount: '200', period: 'week', period_count: 1, anchor: null, timezone: 'UTC' }
+  const saved = { raw_cost_accounting: false, enabled: true, amount: '200', period: 'week', period_count: 1, anchor: null, timezone: 'UTC', configured: true }
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone
   let limitGet: () => Promise<unknown>
 
@@ -432,11 +432,8 @@ describe('account usage limit', () => {
     expect(w.getComponent(AccountEditorNav).props('errors').scheduling).toBe(true)
   })
 
-  it.each([
-    ['a newer core ("")', ''],
-    ['an older core (UTC defaults)', 'UTC']
-  ])('starts a limit the account never saved in the browser time zone: %s', async (_, timezone) => {
-    const never = { raw_cost_accounting: false, enabled: false, amount: '0', period: 'month', period_count: 1, anchor: null, timezone }
+  it('starts a limit the account never saved in the browser time zone', async () => {
+    const never = { raw_cost_accounting: false, enabled: false, amount: '0', period: 'month', period_count: 1, anchor: null, timezone: '', configured: false }
     limitGet = () => Promise.resolve(never)
     const w = await open()
     expect(card(w).props('modelValue').timezone).toBe(zone)
@@ -445,12 +442,12 @@ describe('account usage limit', () => {
     expect(mocks.put).toHaveBeenCalledWith('/accounts/1/usage-limit', { ...never, enabled: true, amount: '50', timezone: zone })
   })
 
-  it('saves a switched-off limit whose amount was cleared with the saved amount', async () => {
+  it('saves a switched-off limit whose amount was cleared', async () => {
     const w = await open()
     card(w).vm.$emit('update:modelValue', { ...saved, enabled: false, amount: '' })
     await submit(w)
     expect(card(w).props('errors')).toEqual({})
-    expect(mocks.put).toHaveBeenCalledWith('/accounts/1/usage-limit', { ...saved, enabled: false, amount: '200' })
+    expect(mocks.put).toHaveBeenCalledWith('/accounts/1/usage-limit', { ...saved, enabled: false, amount: '' })
   })
 
   it('saves a lifetime limit whatever the hidden period length was', async () => {
@@ -459,7 +456,7 @@ describe('account usage limit', () => {
     card(w).vm.$emit('update:modelValue', { ...saved, period: 'none', period_count: 12 })
     await submit(w)
     expect(card(w).props('errors')).toEqual({})
-    expect(mocks.put).toHaveBeenCalledWith('/accounts/1/usage-limit', { ...saved, period: 'none', period_count: 1, timezone: zone })
+    expect(mocks.put).toHaveBeenCalledWith('/accounts/1/usage-limit', { ...saved, period: 'none', period_count: 12, timezone: zone })
   })
 
   it('saves an amount with more than 2 decimals (the card input takes step="any")', async () => {

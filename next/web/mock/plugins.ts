@@ -945,7 +945,7 @@ on('DELETE', '/plugins/:key', (req) => {
   const purgeAccounts = req.query.purge_accounts === 'true'
   const deleted = uninstallPluginAccounts(p.key, purgeAccounts)
   retiredKeys.set(p.key, { key: p.key, publisher: p.publisher || '', retired_at: now(), accounts: pluginAccountCount(p.key), schema: req.query.purge !== 'true' })
-  return purgeAccounts ? { accounts_deleted: deleted } : noContent()
+  return { accounts_deleted: deleted }
 })
 
 on('GET', '/plugins/:key/versions/:version/review', (req) => {

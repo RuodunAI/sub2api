@@ -40,8 +40,7 @@ function latestOf(m: MarketPlugin): string {
   return [...(m.versions || [])].sort((a, b) => compareVersions(b.version, a.version))[0]?.version || ''
 }
 
-// Compatibility with the running core (CONTRACTS §14.3). `compatible` is
-// absent on servers that do not report it: such versions are not blocked.
+// Compatibility with the running core (CONTRACTS §14.3).
 function incompatible(v: MarketVersion | undefined | null): boolean {
   return v?.compatible === false
 }

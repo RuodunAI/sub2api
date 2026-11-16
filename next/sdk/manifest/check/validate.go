@@ -24,7 +24,6 @@ var (
 	userPermKeyRe   = regexp.MustCompile(`^[a-z0-9_]+(:[a-z0-9_]+)+$`)
 	idRe            = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 	accountTypeIDRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,49}$`)
-	subscriptionRe  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 	protocolRe      = regexp.MustCompile(`^[a-z0-9_.-]+$`)
 	// coreKeys name the core itself where a plugin key is recorded (the
 	// source of a notification, an audit actor): no plugin may take them.
@@ -47,7 +46,6 @@ var KnownCapabilities = map[string]bool{
 	manifest.CapGatewayHook:       true,
 	manifest.CapGatewayObserve:    true,
 	manifest.CapAppJobs:           true,
-	manifest.CapAccountLifecycle:  true,
 	manifest.CapAppEvents:         true,
 	manifest.CapHTTPRoutes:        true,
 	manifest.CapMigrationData:     true,

@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
+	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0
 	github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0
@@ -11,7 +12,6 @@ require (
 )
 
 require (
-	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
 	github.com/fergusstrange/embedded-postgres v1.34.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect

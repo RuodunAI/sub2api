@@ -11,7 +11,6 @@ option go_package = "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1;plugi
 // forms, usage extraction rules, default pricing) live in manifest.json; this
 // service only covers behaviour that needs code.
 service PlatformService {
-  rpc OnAccountLifecycle(AccountLifecycleRequest) returns (AccountLifecycleResponse);
   // Pre-upstream metering estimate. The host checks endpoint billing types
   // first and prices the report itself; plugins never specify an amount.
   rpc EstimateUsage(EstimateUsageRequest) returns (UsageReport);
@@ -652,7 +651,8 @@ message BuildQuotaRequestResponse {
   string url = 2;
   map<string, string> headers = 3;
   string body_json = 4;            // optional
-  string runtime_operation = 5;
+  reserved 5;
+  reserved "runtime_operation";
 }
 
 message ParseQuotaResponseRequest {

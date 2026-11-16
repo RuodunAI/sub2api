@@ -26,8 +26,6 @@ export function useUsageLimitEdit(accountId: () => number | undefined, shown: ()
   const { t } = useI18n()
   const value = ref<AccountUsageLimit>(defaultUsageLimit())
   const saved = ref('')
-  /** The amount last loaded or saved: what a switched-off limit with no amount sends. */
-  let savedAmount = '0'
   const status = ref<UsageLimitStatus>('ready')
   const loadError = ref('')
   const errors = ref<Record<string, string>>({})
@@ -43,7 +41,6 @@ export function useUsageLimitEdit(accountId: () => number | undefined, shown: ()
   function reset(v: AccountUsageLimit, next: UsageLimitStatus) {
     value.value = v
     saved.value = fingerprint(v)
-    savedAmount = String(v.amount ?? '').trim() || '0'
     status.value = next
     errors.value = {}
   }
@@ -91,7 +88,7 @@ export function useUsageLimitEdit(accountId: () => number | undefined, shown: ()
   /** Saves the limit of the saved account when it loaded and changed. */
   async function save(a: Account) {
     if (status.value !== 'ready' || fingerprint(value.value) === saved.value) return
-    const body = usageLimitBody(value.value, savedAmount)
+    const body = usageLimitBody(value.value)
     await saveUsageLimit(a.id, body)
     reset(body, 'ready')
   }

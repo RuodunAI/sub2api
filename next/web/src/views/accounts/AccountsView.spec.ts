@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, shallowMount, type DOMWrapper } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
-import type { Account, AccountType, QuotaSnapshot } from '@/api/types'
+import type { Account, AccountType } from '@/api/types'
 import { i18n } from '@/i18n'
 import { SButton, SDropdown, SModal, STabs } from '@sub2api/ui'
 import AccountsView from './AccountsView.vue'
 import AccountModelTest from './AccountModelTest.vue'
 import AccountEditor from './AccountEditor.vue'
 import AccountGroupsCell from './AccountGroupsCell.vue'
-import AccountQuotaCell from './AccountQuotaCell.vue'
 import PlatformIcon from '@/components/platform/PlatformIcon.vue'
 import EntityPicker from '@/components/EntityPicker.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
@@ -17,7 +16,7 @@ import type { PluginAccountActionEntry, SlotEntry } from '@/stores/plugins'
 /** Toggles a switch: SSwitch is a checkbox (jsdom only activates connected ones on click), stubs are buttons. */
 const flip = (el: Omit<DOMWrapper<Element>, 'exists'>) => (el.element instanceof HTMLInputElement ? el.setValue(!el.element.checked) : el.trigger('click'))
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), findType: vi.fn(), confirm: vi.fn(), toast: vi.fn(), notifyError: vi.fn(), reload: vi.fn(), pluginFacts: vi.fn((): { key: string; label: string; value: string }[] => []), canUpdate: true, scope: 'all' as 'all' | 'own', slotEntries: vi.fn((_slot: string) => [] as SlotEntry[]), accountActions: [] as PluginAccountActionEntry[], groups: [] as { id: number; name: string; platforms?: string[] }[] }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), findType: vi.fn(), confirm: vi.fn(), toast: vi.fn(), notifyError: vi.fn(), reload: vi.fn(), canUpdate: true, scope: 'all' as 'all' | 'own', slotEntries: vi.fn((_slot: string) => [] as SlotEntry[]), accountActions: [] as PluginAccountActionEntry[], groups: [] as { id: number; name: string; platforms?: string[] }[] }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get, post: mocks.post, patch: mocks.patch, list: async () => ({ items: [] }) } }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<typeof import('@sub2api/ui')>(), confirm: mocks.confirm, toast: mocks.toast }))
 vi.mock('@/utils/errors', async (orig) => ({ reasonOf: (await orig<typeof import('@/utils/errors')>()).reasonOf, notifyError: mocks.notifyError, errorMessage: String }))
@@ -26,7 +25,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: () => false, hasAc
 vi.mock('@/stores/plugins', () => ({ usePluginStore: () => ({ slotEntries: mocks.slotEntries, get accountActions() { return mocks.accountActions }, plugin: () => undefined, component: () => undefined }) }))
 vi.mock('@/composables/lookups', async (original) => ({ ...await original<object>(), useGroupsLookup: () => ({ groups: ref(mocks.groups) }), useProxiesLookup: () => ({ proxies: ref([]) }) }))
 vi.mock('@/composables/useScope', async (original) => ({ ...await original<typeof import('@/composables/useScope')>(), useScope: () => ({ level: () => mocks.scope, can: (_a: Account, action: string) => action === 'account:update' && mocks.canUpdate }) }))
-vi.mock('./accountTypes', () => ({ typeKey: () => '', useAccountTypes: () => ({ load: vi.fn(), find: mocks.findType, grouped: ref([]), types: ref([]), pluginFacts: () => mocks.pluginFacts(), pluginName: (key: string) => key, typeLabel: (_key: string, type: string) => type }) }))
+vi.mock('./accountTypes', () => ({ typeKey: () => '', useAccountTypes: () => ({ load: vi.fn(), find: mocks.findType, grouped: ref([]), types: ref([]), pluginName: (key: string) => key, typeLabel: (_key: string, type: string) => type }) }))
 vi.mock('@/composables/useList', async (original) => ({ ...await original<object>(), useList: () => list }))
 
 const list = { items: ref<Account[]>([]), total: ref(1), page: ref(1), pageSize: ref(20), loading: ref(false), error: ref(''), filters: reactive<Record<string, string>>({}), reload: mocks.reload }
@@ -356,8 +355,7 @@ describe('account status recovery', () => {
     { status: 0, error_code: 'proxy_unavailable', error_source: 'gateway' },
     { status: 401, error_code: 'token_revoked', error_source: 'response' },
     { status: 502, error_code: 'ECONNRESET', error_source: 'transport', message: '{"error":{"code":"ECONNRESET","message":"read ECONNRESET"}}' },
-    { status: 504, error_code: 'cli_timeout', error_source: 'timeout', message: '{"error":{"code":"cli_timeout","message":"CC request timed out"}}' },
-    { status: 429, error_code: 'rate_limit_error', error_source: 'response', message: '{"error":{"type":"rate_limit_error","message":"Error"}}', reason: 'rate limited until tomorrow (default)', effect: 'disable', test_mode: 'native_build', response_headers: { 'request-id': 'req-test-429' } },
+    { status: 429, error_code: 'rate_limit_error', error_source: 'response', message: '{"error":{"type":"rate_limit_error","message":"Error"}}', reason: 'rate limited until tomorrow (default)', effect: 'disable', response_headers: { 'request-id': 'req-test-429' } },
   ])('shows diagnostic code without fabricating HTTP status: $error_code', async (diagnostic) => {
     mocks.post.mockResolvedValue({ ok: false, latency_ms: 0, message: 'failure', ...diagnostic })
     const w = shallowMount(AccountModelTest, { props: { open: false, account: { ...list.items.value[0], models: ['claude-test'] } }, global: { plugins: [i18n], stubs: {
@@ -373,9 +371,9 @@ describe('account status recovery', () => {
     expect(w.get('[data-testid="model-test-error-code"]').text()).toContain(diagnostic.error_code)
     expect(w.text().includes('401')).toBe(diagnostic.status === 401)
     expect(w.emitted('tested')?.[0]?.[1]).toMatchObject({ status: diagnostic.status, error_code: diagnostic.error_code, error_source: diagnostic.error_source })
-    if (diagnostic.error_source === 'transport' || diagnostic.error_source === 'timeout') {
+    if (diagnostic.error_source === 'transport') {
       expect(w.get('[data-testid="model-test-error-body"]').text()).toBe(diagnostic.message)
-      expect(w.text()).toContain(diagnostic.error_source === 'transport' ? '传输链路' : 'CC 请求超时')
+      expect(w.text()).toContain('传输链路')
       expect(w.text()).not.toContain('代理故障')
       expect(w.text()).not.toContain('HTTP 响应')
     }
@@ -487,60 +485,6 @@ describe('account status recovery', () => {
     expect(mocks.patch).toHaveBeenLastCalledWith('/accounts/23', { status: 'disabled', schedulable: false }, today)
     expect(list.items.value[0].status).toBe('disabled')
     expect(menu.props('actions').find((x: { key: string }) => x.key === 'disable')?.hidden).toBe(true)
-  })
-})
-
-describe('plugin account actions', () => {
-  const sync = { id: 'sync', label: { en: 'Sync', zh: '同步' }, plugin_key: 'claude-oauth', account_type: 'oauth' }
-  const check = { id: 'check', label: { en: 'Check', zh: '检查' }, plugin_key: 'claude-oauth', account_type: 'oauth' }
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mocks.canUpdate = true
-    i18n.global.locale.value = 'zh'
-    list.items.value = [{ id: 29, name: 'cc', status: 'active', schedulable: true, plugin_key: 'claude-oauth', type: 'oauth', orphaned: false, actions: [sync, check] } as unknown as Account]
-  })
-  const dropdown = (w: ReturnType<typeof render>) => w.findComponent(SDropdown)
-
-  it('lists the plugin actions and reports a completed one', async () => {
-    mocks.post.mockResolvedValue({})
-    const w = render()
-    const items = dropdown(w).props('actions') as Array<{ key: string; label: string; hidden?: boolean }>
-    expect(items.filter((x) => x.key.startsWith('plugin:') && !x.hidden).map((x) => x.label)).toEqual(['同步', '检查'])
-    dropdown(w).vm.$emit('select', 'plugin:claude-oauth:sync')
-    await flushPromises()
-    expect(mocks.post).toHaveBeenCalledWith('/accounts/29/actions/claude-oauth/sync', {}, expect.anything())
-    expect(mocks.toast).toHaveBeenLastCalledWith('「同步」已完成', 'success')
-  })
-
-  it('reports a refusal and hides actions from readers', async () => {
-    const refused = Object.assign(new Error('refused'), { details: { reason: 'token_revoked' } })
-    mocks.post.mockRejectedValue(refused)
-    const w = render()
-    dropdown(w).vm.$emit('select', 'plugin:claude-oauth:sync')
-    await flushPromises()
-    expect(mocks.notifyError).toHaveBeenCalledWith(refused)
-    mocks.canUpdate = false
-    const reader = render()
-    expect((dropdown(reader).props('actions') as Array<{ key: string; hidden?: boolean }>).filter((x) => x.key.startsWith('plugin:') && !x.hidden)).toEqual([])
-  })
-
-  it('names why a manual quota refresh cannot run instead of keeping the old snapshot silently', async () => {
-    const stale: QuotaSnapshot = { supported: true, source: '', updated_at: null, error: '', refresh_status: 'pending', windows: [] }
-    list.items.value[0].quota = stale
-    mocks.get.mockRejectedValueOnce(Object.assign(new Error('conflict'), { details: { reason: 'runtime_not_ready' } }))
-    const w = render({ STable: { props: ['rows'], template: '<div><div v-for="row in rows" :key="row.id"><slot name="cell-quota" :row="row" /></div></div>' } })
-    w.findComponent(AccountQuotaCell).vm.$emit('refresh')
-    await flushPromises()
-    expect(mocks.get).toHaveBeenCalledWith('/accounts/29/quota', { force: true })
-    expect(mocks.toast).toHaveBeenLastCalledWith('账号运行环境尚未同步完成，暂时无法查询额度，请稍后再试', 'error')
-    expect(mocks.notifyError).not.toHaveBeenCalled()
-    expect(list.items.value[0].quota).toEqual(stale)
-    const unknown = Object.assign(new Error('conflict'), { details: { reason: 'something_else' } })
-    mocks.get.mockRejectedValueOnce(unknown)
-    w.findComponent(AccountQuotaCell).vm.$emit('refresh')
-    await flushPromises()
-    expect(mocks.notifyError).toHaveBeenCalledWith(unknown)
   })
 })
 
@@ -784,7 +728,6 @@ describe('account list layout', () => {
   const row = (id: number, over: Partial<Account> = {}) => ({ id, name: 'a@example.com', plugin_key: 'claude-oauth', type: 'oauth', status: 'active', schedulable: true, created_by: 1, settings: {}, ...over }) as unknown as Account
   const renderLayout = () => render({ STable: { props: ['rows', 'columns'], template: '<div><i data-testid="cols">{{ columns.map((c) => c.key).join() }}</i><div v-for="row in rows" :key="row.id"><slot name="cell-name" :row="row" /><slot name="cell-groups" :row="row" /></div></div>' } })
   beforeEach(() => {
-    mocks.pluginFacts.mockReset().mockReturnValue([])
     mocks.findType.mockReset()
     mocks.groups = []
   })
@@ -794,14 +737,6 @@ describe('account list layout', () => {
     expect(renderLayout().get('[data-testid="cols"]').text()).not.toContain('created_by')
     list.items.value = [row(1), row(2, { created_by: 2 })]
     expect(renderLayout().get('[data-testid="cols"]').text()).toContain('created_by')
-  })
-
-  it('leaves out a plugin fact that repeats the account name', () => {
-    mocks.pluginFacts.mockReturnValue([{ key: 'email', label: '登录邮箱', value: 'a@example.com' }, { key: 'org', label: '组织', value: 'acme' }])
-    list.items.value = [row(1)]
-    const w = renderLayout()
-    expect(w.find('[data-testid="account-fact-email"]').exists()).toBe(false)
-    expect(w.get('[data-testid="account-fact-org"]').text()).toContain('acme')
   })
 
   it("leads the type line with the marks of the platforms the account's type serves now", () => {

@@ -32,7 +32,7 @@ func TestAvailabilityWireCompatibility(t *testing.T) {
 		{&pluginv1.AccountQuotaSnapshot{}, []string{"windows", "updated_at_unix", "error", "revision"}, []protoreflect.FieldNumber{1, 2, 3, 4}},
 		{&pluginv1.CheckModelAvailabilityResponse{}, []string{"results"}, []protoreflect.FieldNumber{1}},
 		{&pluginv1.ModelAvailability{}, []string{"account_id", "model", "state", "reason", "retry_at_unix"}, []protoreflect.FieldNumber{1, 2, 3, 4, 5}},
-		{&pluginv1.BuildQuotaRequestResponse{}, []string{"method", "url", "headers", "body_json", "runtime_operation"}, []protoreflect.FieldNumber{1, 2, 3, 4, 5}},
+		{&pluginv1.BuildQuotaRequestResponse{}, []string{"method", "url", "headers", "body_json"}, []protoreflect.FieldNumber{1, 2, 3, 4}},
 		{&pluginv1.QuotaResult{}, []string{"windows", "error_type", "error_message", "next_check_at_unix"}, []protoreflect.FieldNumber{1, 2, 3, 4}},
 		{&pluginv1.QuotaWindow{}, []string{"key", "utilization", "resets_at_unix", "status", "used", "limit", "utilization_unknown"}, []protoreflect.FieldNumber{1, 2, 3, 4, 5, 6, 7}},
 		{&pluginv1.ClassifyErrorResponse{}, []string{"local_failure", "quota"}, []protoreflect.FieldNumber{10, 12}},
@@ -44,15 +44,6 @@ func TestAvailabilityWireCompatibility(t *testing.T) {
 				t.Fatalf("%T.%s: %v", test.message, name, field)
 			}
 		}
-	}
-	old := &pluginv1.BuildQuotaRequestResponse{Method: "GET", Url: "https://example.test/quota"}
-	raw, err := proto.Marshal(old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var restored pluginv1.BuildQuotaRequestResponse
-	if err := proto.Unmarshal(raw, &restored); err != nil || !proto.Equal(old, &restored) || restored.RuntimeOperation != "" {
-		t.Fatalf("legacy quota request: %v %v", &restored, err)
 	}
 }
 

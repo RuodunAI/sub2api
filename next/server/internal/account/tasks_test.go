@@ -92,11 +92,8 @@ func registerTasks(t *testing.T, s *Service) *fakeTasks {
 
 func TestAccountTaskSpecs(t *testing.T) {
 	tasks := registerTasks(t, New(Deps{}))
-	for _, name := range []string{AutomaticRecoveryTask, LifecycleStatusTask, PreparationCleanupTask} {
-		spec := tasks.spec(t, name)
-		if spec.Scope != core.TaskCluster || spec.Every != time.Minute || spec.Timeout != 50*time.Second {
-			t.Fatalf("%s: %+v", name, spec)
-		}
+	if spec := tasks.spec(t, AutomaticRecoveryTask); spec.Scope != core.TaskCluster || spec.Every != time.Minute || spec.Timeout != 50*time.Second {
+		t.Fatalf("%s: %+v", AutomaticRecoveryTask, spec)
 	}
 	for name, want := range map[string]struct {
 		scope core.TaskScope

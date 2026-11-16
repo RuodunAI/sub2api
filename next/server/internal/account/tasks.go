@@ -11,13 +11,11 @@ import (
 
 // Scheduled tasks of the account module (TASK-FRAMEWORK-DESIGN.md §14.1).
 const (
-	AutomaticRecoveryTask  = "core.account.automatic_recovery"
-	LifecycleStatusTask    = "core.account.lifecycle_status"
-	PreparationCleanupTask = "core.account.preparation_cleanup"
-	QuotaMirrorTask        = "core.account.quota_mirror"
-	UsageLimitsTask        = "core.account.usage_limits"
-	CredentialRefreshTask  = "core.account.credential_refresh"
-	QuotaSweepTask         = "core.account.quota_sweep"
+	AutomaticRecoveryTask = "core.account.automatic_recovery"
+	QuotaMirrorTask       = "core.account.quota_mirror"
+	UsageLimitsTask       = "core.account.usage_limits"
+	CredentialRefreshTask = "core.account.credential_refresh"
+	QuotaSweepTask        = "core.account.quota_sweep"
 )
 
 // RegisterTasks registers the cluster tasks of the account module and keeps
@@ -36,28 +34,6 @@ func (s *Service) RegisterTasks(tasks core.Tasks) error {
 		Timeout:    50 * time.Second,
 		RunOnStart: true,
 		Handler:    s.automaticRecoveryTask,
-	}, {
-		Name:  LifecycleStatusTask,
-		Title: core.LocalizedText{"en": "Recheck account synchronization", "zh": "回写账号同步状态"},
-		Description: core.LocalizedText{
-			"en": "Reads again the runtime synchronization of accounts that stayed pending or failed, so quota queries do not skip them until the snapshot goes stale.",
-			"zh": "重新读取一直处于等待或失败的账号运行环境同步状态，避免额度查询在快照过期前一直跳过它们。",
-		},
-		Scope:   core.TaskCluster,
-		Every:   lifecycleStatusSweepEvery,
-		Timeout: 50 * time.Second,
-		Handler: s.lifecycleStatusTask,
-	}, {
-		Name:  PreparationCleanupTask,
-		Title: core.LocalizedText{"en": "Clean up expired account preparations", "zh": "清理过期的账号准备"},
-		Description: core.LocalizedText{
-			"en": "Cancels account preparations (draft runtimes of new accounts) that expired, were abandoned for 15 minutes or are being cancelled.",
-			"zh": "取消已过期、15 分钟无人操作或正在取消的账号准备（新账号的草稿运行环境）。",
-		},
-		Scope:   core.TaskCluster,
-		Every:   time.Minute,
-		Timeout: 50 * time.Second,
-		Handler: s.preparationCleanupTask,
 	}, {
 		Name:  UsageLimitsTask,
 		Title: core.LocalizedText{"en": "Apply account usage limits", "zh": "执行账号用量限制"},
@@ -112,16 +88,6 @@ func (s *Service) automaticRecoveryTask(ctx context.Context, _ core.TaskRun) (co
 		return core.TaskResult{Count: n, Message: fmt.Sprintf("enabled %d accounts", n)}, nil
 	}
 	return core.TaskResult{}, nil
-}
-
-func (s *Service) lifecycleStatusTask(ctx context.Context, _ core.TaskRun) (core.TaskResult, error) {
-	n, err := s.sweepLifecycleStatus(ctx)
-	return core.TaskResult{Count: n}, err
-}
-
-func (s *Service) preparationCleanupTask(ctx context.Context, _ core.TaskRun) (core.TaskResult, error) {
-	n, err := s.sweepPreparations(ctx)
-	return core.TaskResult{Count: n}, err
 }
 
 func (s *Service) usageLimitsTask(ctx context.Context, _ core.TaskRun) (core.TaskResult, error) {

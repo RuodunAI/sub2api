@@ -20,9 +20,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -953,32 +951,8 @@ func (s *Service) notifyAccountProxyChange(ctx context.Context, tx *gorm.DB, id 
 		return err
 	}
 	var events []core.Event
-	var syncIDs store.Int64s
-	var syncs []model.AccountLifecycleSync
 	for _, a := range accounts {
 		events = append(events, core.Event{Type: core.EventAccountUpdated, Payload: map[string]any{"account_id": a.ID, "plugin_key": a.PluginKey, "type": a.Type, "name": a.Name, "changed_fields": []string{field}}})
-		if s.opts.Registry != nil && s.opts.Registry.Current() != nil {
-			if binding, ok := s.opts.Registry.Current().AccountType(a.PluginKey, a.Type); ok && binding.Type.Lifecycle != nil {
-				syncIDs = append(syncIDs, a.ID)
-				syncs = append(syncs, model.AccountLifecycleSync{AccountID: a.ID, Status: "pending"})
-			}
-		}
-	}
-	if len(syncs) > 0 {
-		// A new generation of each account's synchronization, pending; the
-		// accounts' plugins get an event cursor at the newest event where
-		// they have none.
-		if err := g.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}}, DoUpdates: clause.Assignments(map[string]any{
-			"status": "pending", "code": "", "generation": gorm.Expr("account_lifecycle_sync.generation+1"), "updated_at": gorm.Expr("now()"),
-		})}).Create(&syncs).Error; err != nil {
-			return err
-		}
-		cursors := g.Model(&model.Account{}).Select("DISTINCT plugin_key, (?)", g.Model(&model.Event{}).Select("COALESCE(max(id),0)")).
-			Where("id = ANY(?)", syncIDs)
-		if err := gormpg.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursors,
-			clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).Error; err != nil {
-			return err
-		}
 	}
 	return s.opts.Events.Emit(ctx, tx, events...)
 }

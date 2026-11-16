@@ -57,7 +57,7 @@
 | 失败 | HTTP 状态码 + `{"error": {"code": "...", "message": "...", "details": {...}}}` |
 | 字段校验失败 | `invalid_argument`，`details.fields = [{"field","code","message"}]` |
 
-错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`too_many_drafts` 429（未完成的账号草稿或预备容器达到单用户上限，§49.9）、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、安装包已不在任何节点上，§5.7）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
+错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、安装包已不在任何节点上，§5.7）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
 
 ### 3.2 数据格式
 
@@ -1116,7 +1116,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
   - 新建代理（POST `/proxies`、`/proxies/probe`、保存账号时经 `proxy_url` 自动建）要求 `proxy:manage` 的范围是全部或 own；只有 `proxy/X` 时 403，`details.permission = proxy:manage:own`。
   - 受限档不能保存私网地址；连接设置被他人账号使用时 409 `proxy_in_use`。
   - 删除代理时清除 `proxy/X` 授予。
-  - 账号表单（POST/PATCH `/accounts`、预备容器、类型 models/fetch）可引用的代理统一为 `core.ProxyRefScope`：账号动作是全部时为全部代理，否则为 `proxy:read` 与 `proxy:manage` 范围的并集。
+  - 账号表单（POST/PATCH `/accounts`、类型 models/fetch）可引用的代理统一为 `core.ProxyRefScope`：账号动作是全部时为全部代理，否则为 `proxy:read` 与 `proxy:manage` 范围的并集。
   - 不持有任何 `proxy:manage` 时 `proxy_url` 返回 403，`details.permission` 为 `proxy:manage:own`（此前为 `proxy:own:manage`）。
   - `/proxies/probe` 不论是否保存，都要求能新建代理（全部或 own）。
   - `FindOrCreate` 只在新建时检查私网地址；范围内已有的代理按地址匹配，不受这条限制。
@@ -2400,7 +2400,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 | 结果与账务 | 快照终态和账务在同一事务校验执行权、锁行并提交；账本保留幂等键。客户端查询不会重复请求上游，也不会重复扣款 |
 | 截止 | 核心停止观测不是上游失败，不伪造 `failed`、不自动退款。未确认终态的任务到期查询返回 410；已确认终态的快照继续可读，包括人工重试后再次终止观测的情况。管理员仍可按既有机制核查账务 |
 
-任务只按 `s2task_` 公开 ID 查询。0.1.290 起不再把任务框架之前的裸上游 ID 导入为托管任务（`async_tasks.legacy_imported` 不再读写，§101）。
+任务只按 `s2task_` 公开 ID 查询。0.1.290 起不再把任务框架之前的裸上游 ID 导入为托管任务（标记列 `async_tasks.legacy_imported` 由迁移 0102 删除，§101.4）。
 
 ### 28.3 故障边界与插件作者须知
 
@@ -2572,7 +2572,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件互斥。** 核心计划与插件安装/批准/启用/升级/停用/卸载通过 Redis 锁 `system:cluster-change` 串行提交（25 秒提交上下文），running/paused 计划存在时插件变更被拒绝；紧急撤权例外。大包解包与哈希在取锁前完成。rollout 进入终态后，每个可能仍有旧实例的 boot 在 `plugin_rollout_cleanup`（迁移 0021）记录清理屏障 `cleanup_pending → cleaned`，`plugin_rollout_nodes` 保留各节点 active/failed 结果；未清理完成会阻止新核心计划；运行中的核心在本机旧实例排空后自行确认，已退出核心的 boot 只有网关确认进程组退出后才标为 `cleaned`，存活过期不算证据。
 
-**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes`，默认 1 GiB，2026-10-09 起，见 §53.10）；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
+**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes` / 核心 `SUB2API_PLUGIN_MAX_PACKAGE_BYTES`，默认 64 MiB；解包另限 256 MiB、2000 个文件，打包工具同样执行。三者统一定义在 `runtime-contract`（`PluginPackageMaxBytes` 等），0.1.290 起按当时最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）约 4 倍取整，此前为 1 GiB / 2 GiB；包下载与经外壳的传输超时 10 分钟）；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
 
 **CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，（最新规则见 CONTRACTS §39；未测得为未知）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
 
@@ -2669,15 +2669,14 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 |---|---|---|
 | `defaultModels` | `string[]` | 预设模型列表。每项是完整模型 ID（§16，`manifest.ValidModelID`），不重复，最多 `manifest.MaxDefaultModels`（500，与账号上限一致） |
 | `defaultModelMapping` | `{from: to}` | 预设模型映射。两侧都是完整模型 ID，最多 500 条；`defaultModels` 非空时每个 `from` 都必须在其中（否则账号永远不会因该模型被调度） |
-| `defaultModelsBySubscription` | `{订阅类型: string[]}` | 按订阅类型（§59.1，键须匹配 `^[a-z][a-z0-9_]{0,31}$`，最多 32 个）替换 `defaultModels` 的预设，规则同 `defaultModels`。只供控制台预填与展示；保存时真正生效的列表由插件的 `before_create` / `before_update` 决定（§59.3） |
 
-校验（`sdk/manifest/check` 的 `defaultModels`）字段错误：`accountTypes[i].defaultModels`（`too_many`）、`accountTypes[i].defaultModels[j]`（`invalid` / `duplicate`）、`accountTypes[i].defaultModelMapping`（`too_many`）、`accountTypes[i].defaultModelMapping.<from>`（`invalid` / `not_in_models`）；`accountTypes[i].defaultModelsBySubscription`（`too_many`，或键名 `invalid`）、`accountTypes[i].defaultModelsBySubscription.<订阅>.defaultModels[...]`（同 `defaultModels`）。旧宿主忽略这些字段，`hostCompat` 不需要提高。
+校验（`sdk/manifest/check` 的 `defaultModels`）字段错误：`accountTypes[i].defaultModels`（`too_many`）、`accountTypes[i].defaultModels[j]`（`invalid` / `duplicate`）、`accountTypes[i].defaultModelMapping`（`too_many`）、`accountTypes[i].defaultModelMapping.<from>`（`invalid` / `not_in_models`）。`defaultModelsBySubscription` 随账号生命周期契约在 0.1.290 删除（§59）。旧宿主忽略这些字段，`hostCompat` 不需要提高。
 
 核心**不会**自动把预设写进账号：经 API 创建、不带 `models` 的账号仍是"空 = 所有模型"。
 
 ### 41.2 接口
 
-`GET /account-types` 每项新增 `default_models: string[]`、`default_model_mapping: {from: to}`；未声明时为 `[]` / `{}`，不为 null。声明了 `defaultModelsBySubscription` 时另有 `default_models_by_subscription: {订阅: string[]}`（未声明时省略）；控制台按账号的 `subscription_type` 取对应预设，没有对应项时用 `default_models`。
+`GET /account-types` 每项新增 `default_models: string[]`、`default_model_mapping: {from: to}`；未声明时为 `[]` / `{}`，不为 null。
 
 ### 41.3 控制台
 
@@ -2940,7 +2939,7 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 - 类型不支持额度：`{supported: false, source: "", updated_at: null, error: "", windows: []}`，不访问上游。
 - 是否主动查询（仅 `quota.query` 类型）：非强制请求距 `last_active_at` 不足 30 分钟时直接返回快照；有 `next_check_at` 则在满足该下限后按调度时间决定。没有调度时间时，快照 `updated_at` 不足 30 分钟（被动或主动都算）也直接返回；失败重试同样等待 30 分钟。手动 `force=true` 跳过这些新鲜度、负缓存、调度时间与时间间隔限制，完成后可立即再次刷新；前端同样没有刷新冷却。同一节点同一账号正在进行的查询经 singleflight 合并；跨节点由 `LeaseAccountQuota` 的有效租约阻止并发查询，抢不到的直接返回当前快照。后台候选筛选和实际领取租约使用相同的 30 分钟下限，旧的提前调度记录也不能绕过；强制刷新仍不绕过有效租约。
-- 上游或插件失败不让接口失败：返回 200 与旧窗口，`error` 说明原因。账号此刻不能查询时（2026-10-20）不再静默返回旧快照，而是 409 `conflict`，`details.reason` 为 `runtime_not_ready`（生命周期运行环境未同步，见 §44.7），控制台按原因码提示。原因码 `account_not_active` 于 2026-10-22 取消：停用的账号照常查询额度（见 §49 末条）。
+- 上游或插件失败不让接口失败：返回 200 与旧窗口，`error` 说明原因。原因码 `account_not_active` 于 2026-10-22 取消：停用的账号照常查询额度（见 §49 末条）。生命周期运行环境未同步时的 409 `runtime_not_ready`（2026-10-20）随账号生命周期契约在 0.1.290 删除（§101.5）。
 - 窗口顺序、名称与短标签由插件的 `quota.windows` 声明；未声明的窗口按通用回退规则展示 key。`resets_at` 已过仅表示等待核验，返回 `expired: true`，保留上次实际观测的使用率、重置时间和状态；不得把时间经过伪装成上游已确认恢复。窗口可附 `label`、`short_label` 本地化文本，快照附 `next_check_at` 与 `refresh_status`（`pending` / `ready` / `error`）。
 - 控制台配额窗口始终竖排（包括紧凑列表），显示最近观测时间，不显示下次查询时间或独立刷新按钮。点击配额区域立即强制刷新；键盘 Enter/空格同样可用，进行中显示状态并阻止重复点击。列表和账号详情复用同一组件。
 
@@ -2971,9 +2970,9 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 - 请求按插件批量携带 `ModelAvailabilityCandidate{account_id, account_type, model, client_model, quota}` 与 `now_unix`。`model` 为上游模型，`quota` 为持久化快照，不携带凭据或任意账号配置。结果逐账号、逐模型返回 `AVAILABLE`、`UNAVAILABLE` 或 `UNKNOWN`，可附原因及可信重试时间。核心不认识供应商模型前缀、套餐窗口和耗尽阈值。
 - SDK 提供可选 `ModelAvailabilityChecker`；随 Host API 7 发布。wire protocol 仍为 1，插件不需要实现新接口。
 - 权重、优先级及粘性规则保持原有行为。有效粘性绑定不参加权重抽选，也不累计分配补偿；模型不可用是硬准入，不可用 `scheduler.rank` 的权重 0 代替，不可被排序插件 fail-open 恢复。（「硬准入」只针对插件明确返回的 `UNAVAILABLE`；核心侧检查本身失败时放行，见上一条。）
-- `quota.autoRefresh` 依赖 `quota.query`。录入事务记录待查询状态，提交并且账号生命周期资源就绪后执行首次查询；网络请求不在账号事务内。「就绪」指 `account_lifecycle_sync` 为 `applied`，或为 `pending` 且 `code = environment_requires_new_runtime`（只有新建的运行环境生效，现有的照常服务，2026-10-20）；其余 `pending`／`failed` 后台跳过、手动刷新回 409 `runtime_not_ready`。这个状态不只由事件投递写入：非 `applied` 且 30 秒内未更新的行，核心每分钟经资源的 `AccountSynchronization` 重读一次并写回（每页 50 行、最旧的先读；读取失败保持原状；按 generation 与账号 `updated_at` 防止覆盖更新的变更，2026-10-21）。此前投递时运行环境未就绪的账号会一直停在 `pending`／`failed`，即使后续对账已让它就绪。后台正常复查默认 30 分钟；插件可建议更早的复查（窗口重置），失败后按 1、2、4、8、16 分钟退避，之后每 30 分钟；任何非强制查询之间至少隔 1 分钟（PG 中执行，只防突发），较晚的调度时间仍保留（最多 24 小时）。此前下限为 30 分钟，窗口重置后的复查和失败重试都被推迟到 30 分钟后，期间账号不可调度（2026-10-21）；手动强制刷新跳过时间限制，但共用租约。失败保留账号及调度开关并记录错误；不得为额度查询启用停用账号、注销或刷新 OAuth 授权（额度查询只针对启用的账号）。
+- `quota.autoRefresh` 依赖 `quota.query`。录入事务记录待查询状态，提交后执行首次查询；网络请求不在账号事务内（0.1.290 之前还要等账号生命周期资源就绪，随该契约删除，§101.5）。后台正常复查默认 30 分钟；插件可建议更早的复查（窗口重置），失败后按 1、2、4、8、16 分钟退避，之后每 30 分钟；任何非强制查询之间至少隔 1 分钟（PG 中执行，只防突发），较晚的调度时间仍保留（最多 24 小时）。此前下限为 30 分钟，窗口重置后的复查和失败重试都被推迟到 30 分钟后，期间账号不可调度（2026-10-21）；手动强制刷新跳过时间限制，但共用租约。失败保留账号及调度开关并记录错误；不得为额度查询启用停用账号、注销或刷新 OAuth 授权（额度查询只针对启用的账号）。
 - `QuotaResult.next_check_at_unix` 由插件建议，核心限定调用频率并维护持久化检查计划。查询完成必须校验租约、身份代次和快照版本，旧任务不能覆盖重新授权后的身份或新收到的限额事实。没有首次成功快照时插件可返回 `UNKNOWN`，不得伪造 0% 或默认为已确认可用。（2026-11-02 起核心对 `UNKNOWN` 放行：它表示插件无法判断，插件要拦截必须返回 `UNAVAILABLE`。）
-- `BuildQuotaRequestResponse.runtime_operation` 与普通 HTTP URL 目标区分。运行时请求通过已注册的 `AccountQuotaRuntime`、当前账号与受限只读操作执行；不接受插件指定任意运行时 URL，也不向插件暴露运行时的管理密钥或令牌。配额解析仍统一由插件的 `ParseQuotaResponse` 完成。
+- 额度查询只有普通 HTTP 目标（`BuildQuotaRequestResponse.url`）；运行时目标 `runtime_operation`（字段 5，`AccountQuotaRuntime`）在 0.1.290 随 CCGateway 删除，字段号保留不用。配额解析统一由插件的 `ParseQuotaResponse` 完成。
 - 2026-10-21 起：快照（最近一次成功查询）有效期为 65 分钟，大于两个查询周期；有效期内查询失败（`transient: …`）不再判 `UNKNOWN`，仍按上次成功的窗口判断，过期后为 `quota_refresh_failed`。未耗尽窗口到达 reset 时间直接视为可用（只会多出额度），不再判 `quota_reset_unconfirmed`；已知耗尽窗口仍按上条规则等重置后的查询确认，核心按插件建议在重置后约 1 分钟内复查。核心与插件需一起发布：只升级插件时，旧核心的 30 分钟下限仍会推迟这次复查。
 - `ClassifyErrorResponse.quota` 承载插件确认的配额观测，核心只校验及存储。观测保存使用准入时由核心捕获的 `AccountQuotaSnapshot.generation`，不得信任插件指定的身份代次；重新授权前的迟到拒绝或恢复不能覆盖新身份。revision 已变化的旧查询不能延后更新的复查计划或覆盖失败计数。2026-11-02 起：插件失败放行的账号，准入仍记录核心读到的快照（含 generation），观测照常保存；准入时没有快照的账号（generation 0）不保存观测，HTTP 请求在执行前检查读到快照后补上准入，WebSocket 会话整个连接期间都不保存。执行前检查只在准入与当前两边 generation 都大于 0 且不同（重新授权等换代）时换号；准入用的是旧值或没有快照时，以执行前读到的为准；执行前读不到快照时沿用准入快照、不等待。执行前检查的结论（含换号）不交给故障策略（§69），不冷却、不停用账号。
 - `QuotaWindow.utilization_unknown` 默认为 false，兼容旧插件的数值语义。只有状态、没有数值的 CLI 观测设为 true，且 utilization、used、limit 必须都为 0；这三个默认值不表示真实使用量。API 保留未知标记，界面显示未知而非 0%，后续明确的真实 0 才作为已知数值展示。
@@ -3632,51 +3631,9 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - 决策记录保存到 `usage_logs.anomalies.failure_policy`，用量详情显示，统计时不把该过程记录本身算作异常。界面复用公共设置卡片、保存条、表格、菜单、弹窗和描述组件。详见 [设计与实现](GATEWAY-FAILURE-POLICY-DESIGN.md)。
 - 默认账号规则（`loginAccountRules`，迁移草稿与迁移 0072/0074 写入的同一组）：`login-invalid` = 401 + 登录失效关键词，`account-on-hold` = 403 + 账号被暂停关键词，动作都是自动禁用。插件把 401/403 判为禁用，但没有命中关键词时核心只冷却（§42、§69），所以 CLI 新增的登录错误码必须同时加进这两条规则。**2026-11-02（用户要求，配合 CLI v44（ccgateway 0.1.123）把 2.1.316 的 `StoredLoginHeldBackError` 按 `errorClass` 映射）**：`login-invalid` 加 `stored_login_refused_restart_needed`（CC 要求重启才能完成登录；每个请求都是新进程，只能重新授权，401），`account-on-hold` 加 `stored_login_refused_admin`（组织的受管设置不允许这个登录，403）；`stored_login_refused_settings_unloaded`（设置没加载到，提示检查网络）仍是可重试的 5xx，不进任何账号规则，由 `http-transient` 换号重试。已发布的策略由迁移 0075 补上：按规则 id 找到这两条（位置不限），只在规则还在、已有关键词（只按状态码匹配的规则加关键词会变窄，不动）、关键词少于 100 条、且还没有这个关键词（不分大小写）时追加；有改动才把旧策略写进历史并让 revision +1，重复执行不变。
 
-## 59. 账号订阅类型与保存前插件调整（2026-10-19，用户要求）
+## 59. 账号订阅类型与保存前插件调整（已删除）
 
-账号记录上游报告的订阅类型并在控制台展示，插件可在保存前按订阅类型调整模型列表（59.3）。核心只提供通用能力；第一个使用者 CCGateway（Pro 订阅去掉 Fable 模型）已在 0.1.290 删除。
-
-### 59.1 订阅类型从哪里来
-
-- 账号的生命周期资源在准备阶段观测（`core.AccountLifecycleResource.CheckAccountPreparation` 返回的 `core.AccountPreparationFacts`）。值必须匹配 `^[a-z][a-z0-9_]{0,31}$`（如 `max` / `pro`），否则视为未知。
-- 0.1.290 起核心里没有注册任何生命周期资源（唯一的实现 CCGateway 已删除），新账号不再得到订阅类型；已记录的值保留并照常显示。
-
-### 59.2 核心
-
-- 迁移 0054：`accounts.subscription_type text`（NULL = 未知）。账号视图新增 `subscription_type: string | null`。
-- `POST /accounts` 保存前：把事实写入 `subscription_type`，并作为 `resource_facts_json`（JSON 对象，未知时为空串）随 `before_create` 交给插件。
-- 迁移 0055：`accounts.auto_models boolean`（NULL = 按插件默认，即自动；`false` = 用户手动维护模型列表）。账号视图与 `POST /accounts`、`PATCH /accounts/:id` 增加 `auto_models: boolean | null`，并作为 `AccountProperties.auto_models`（字段 12，optional）随生命周期请求交给插件。
-
-### 59.3 插件协议：`before_create` / `before_update` 可以修改账号
-
-- `AccountLifecycleRequest.resource_facts_json`（字段 7）：准备阶段观察到的事实，目前只有 `subscription_type`。
-- `AccountLifecycleResponse.account_patch`（字段 4，`AccountPatch`）：`models`（`ModelList.ids`）与 `model_mapping`（`ModelMappingValue.entries`），未给的字段不改，给了就整体替换；在 `before_create` 与 `before_update` 生效（核心 0.1.172 起；`before_update` 同样带 `resource_facts_json`，取账号已记录的订阅类型）。
-- 核心按调用方输入的同一规则校验（完整模型 ID、去重、最多 500 个），不合规返回插件不可用错误、账号不保存。审计 `account.create` 的 `detail` 增加 `subscription_type` 与 `plugin_changed`（被插件改过的字段）；`account.update` 的 `detail` 增加 `plugin_changed`。
-- 旧插件不返回补丁，行为不变，不需要 manifest 开关；旧核心忽略补丁，新插件的 `hostCompat` 不需要提高。
-
-### 59.4 ccgateway 的规则（已删除）
-
-0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
-
-### 59.6 插件只读扩展字段与上游登录邮箱（2026-10-25，用户要求）
-
-插件专属的账号事实存放在通用的扩展字段（`accounts.settings`，按账号类型 `extensionsSchema` 校验）里，不给核心加专用列。第一个用例（CCGateway 记录 Claude Code 实际登录的邮箱）已随它在 0.1.290 删除。
-
-- **只读扩展**：`extensionsSchema` 里 `"readOnly": true` 的属性归插件所有。管理员通过 `settings` 写这些键返回 400，字段错误码为 `read_only`。管理员编辑自己的扩展时，插件的值保持不变。插件 `validate` 阶段只收到管理员可编辑的扩展。可选的 `"x-label": {en, zh}` 是控制台显示的标签。
-- **写入**：`AccountPatch.extensions_json`（字段 3）是 JSON 对象，只能包含该类型声明的只读键，值为 `null` 表示删除，空串表示不改。核心按 `extensionsSchema` 校验后合并进 `settings`；不合规按插件不可用处理，账号不保存。`before_create`、`before_update` 都生效。
-- **观测事实**：`resource_facts_json` 增加 `account_email`（上游登录邮箱，未知时不带），核心字段为 `core.AccountPreparationFacts.AccountEmail`；核心校验它是单个地址（不超过 320 字符、不含空白、恰好一个 `@`）。
-- **更新时机**：
-  - 授权后创建账号：事实随 `before_create` 交给插件。
-  - 只写真正改变的内容：模型只在自动模式下改，只读扩展不受自动模式影响。只读扩展的修改审计为 `account.extensions.plugin`，`detail` 只记改动的键、不记值。邮箱未知时不清除已有值。
-  - 请求、账号测试、令牌刷新都不更新。
-- **控制台**：账号列表在类型行下方、详情页在「订阅」之后，显示所有有值的只读扩展（标签取 `x-label`，没有就显示键名）。编辑器不提交这些键。
-- **发布顺序**：先插件后核心、先核心后插件都行。旧核心忽略 `extensions_json`；新核心面对旧插件时，旧插件不返回该字段。
-
-### 59.5 控制台
-
-- 账号列表在类型后显示订阅徽标（Max / Pro …），详情增加"订阅"一行。
-- 新建账号的保存结果与提交的模型列表不同（插件按订阅改了列表）时提示"已按 Pro 订阅调整模型列表（N 个模型）"。保存后照常编辑。
-- "自动配置模型"开关与新建时的订阅提示只用于 Claude Code（CCGateway）账号，0.1.290 随它删除。核心照常保存并下发 `auto_models`（59.2），控制台编辑器不再提交它。
+0.1.290 随账号生命周期契约一起删除（§101.5，CHANGELOG 0.1.290，迁移 0102）：订阅类型 `accounts.subscription_type`、自动模型开关 `accounts.auto_models`（视图、`POST/PATCH /accounts` 与 `AccountProperties` 字段 12 都已删除）、`before_create`/`before_update` 的 `AccountPatch` 与 `resource_facts_json`、插件只读扩展（`extensionsSchema` 的 `"readOnly": true` 不再有特殊含义，管理员可写全部扩展键）。账号的扩展字段（`accounts.settings`，按账号类型 `extensionsSchema` 校验）保留。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
 ## 60. API Key 的限速（2026-10-26，用户要求：由创建 Key 的人自己设置）
 
@@ -3995,7 +3952,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 ### 68.5 插件设置这些字段
 
-- **运行时**：`before_create` / `before_update` 的 `AccountPatch` 新增 `optional int32 priority = 4`、`optional int32 weight = 5`、`optional int32 max_concurrency = 6`、`optional int32 rpm_limit = 7`、`optional int64 tpm_limit = 8`、`ModelLimitList model_limits = 9`（`items` 为空表示清空）。没给的字段不变；给了的按管理员输入的规则校验，不合法时整次保存失败（`plugin_unavailable`，details 带字段错误），和 `models` 补丁一致。改了哪些字段记在审计的 `plugin_changed` 里。运行时事实触发的 `before_update`（§59 `FactsObserved`）只采纳模型列表和映射，不改调度字段。
+- **运行时**：`before_create` / `before_update` 的 `AccountPatch` 曾可改这些字段，0.1.290 随账号生命周期契约删除（§59、§101.5）；插件只能经下面的预设建议。
 - 插件看到的 `AccountProperties` 新增 `repeated ModelLimit model_limits = 13`。
 - **预设**：manifest `accountTypes[].defaultLimits`：`{priority, weight, maxConcurrency, rpmLimit, tpmLimit, modelLimits: [{models, maxConcurrency, rpmLimit, tpmLimit}]}`，字段都可选。和 `defaultModels` 一样只是建议：控制台新建账号时预填，`GET /account-types` 以 `default_limits`（字段名同账号）返回；核心不会自己套用到账号上。`sdk/manifest/check` 按账号字段的范围校验（`accountTypes[i].defaultLimits.<字段>`）。
 
@@ -4059,7 +4016,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 | `rate_usage.sessions`、`rate_usage.models[].sessions` | 只读 | 该层会话周期内被准入过的会话数（20 段计数，见 71.2；不等于进行中的会话，§78.1） |
 
 - POST / PATCH `/accounts` 可带 `spm_limit`、`spm_window_seconds`；字段错误 `spm_limit: invalid`、`spm_window_seconds: invalid`、`model_limits[i].spm_limit: invalid`、`model_limits[i].spm_window_seconds: invalid`。
-- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`、`AccountPatch`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60；插件经 `account_patch` 改 `model_limits` 时，模型相同的列表（按去空格、去重后的模型比较）保留管理员设的周期（`keepSPMWindows`），新列表为 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）（核心 0.1.276 起）。
+- `spm_window_seconds` 也是通用配置项（§87，`manifest.CommonControlSpecs`，int 60–86400，核心默认 60），账号类型可声明默认值或锁定。插件 proto（`AccountProperties`、`ModelLimit`）和 manifest `defaultLimits` **不带**这个字段：插件建的账号是 60。`GET /account-types` 的 `default_limits.model_limits[]` 带 `spm_window_seconds: 60`。`commonControls.model_limits.default` 是账号接口的形状，各列表可带 `spm_window_seconds`（`manifest.ModelLimitValue`，check 按 60–86400 校验，0 或缺省 = 60；与 `defaultLimits` 比冲突时 60 与缺省相同）（核心 0.1.276 起）。
 - 迁移 0094：`ADD COLUMN IF NOT EXISTS spm_window_seconds int NOT NULL DEFAULT 60`，约束先 DROP IF EXISTS 再 ADD；已有账号仍按 60 秒计。旧核心忽略该列、按 60 秒计。
 - 迁移 0063：列在 0009 就存在（早期 SPM 的残留），首次执行时清零旧值，避免它们突然变成生效的上限；之后用列注释 `CONTRACTS §71` 标记已执行，重跑不会清掉管理员新设的值。加约束 `accounts_spm_limit_chk`（0–10000000，先 DROP IF EXISTS 再 ADD）。旧核心忽略该列。
 
@@ -4087,7 +4044,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 ### 71.4 插件
 
-- `AccountProperties.spm_limit = 14`、`ModelLimit.spm_limit = 5`、`AccountPatch.optional int32 spm_limit = 10`；规则同 §68.5（按管理员输入校验，`plugin_changed` 记入审计；`FactsObserved` 触发的 `before_update` 不采纳）。
+- `AccountProperties.spm_limit = 14`、`ModelLimit.spm_limit = 5`（`AccountPatch` 的字段 10 在 0.1.290 随它删除，§59）。
 - manifest `accountTypes[].defaultLimits.spmLimit`、`defaultLimits.modelLimits[].spmLimit`，`GET /account-types` 以 `default_limits.spm_limit` 返回；`sdk/manifest/check` 校验 0–10000000。`spm_limit` 也加入扩展字段的保留名。
 
 ### 71.5 控制台
@@ -5111,8 +5068,8 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 - 「重置状态」或把状态改回「启用」恢复一个被用量限制禁用的账号时，在同一事务里记下造成这次禁用的周期（`waived_window`，即包含 `auto_disabled_until` 前一刻的周期，不是当前周期：周期已结束、巡检还没解除时放行的账号，在新周期超限照样禁用），该周期内不再禁用；总额度模式下一直有效。保存用量限制配置会清除这一豁免。`usage.limit` / 明细的 `limit` 新增 `waived`（当前周期已人工放行），控制台显示「本周期已人工放行」。人工恢复同时清除被暂缓的插件/失败策略禁用（73.3），账号直接回到 `active`。
 - 控制台：状态栏的自动禁用为一个徽章，有自动启用时间（`auto_disabled_until`）的为黄色，没有的（要人处理）为红色（2026-11-02 用户要求；人工禁用仍为红色；启用但人工关闭调度的账号归在「自动禁用」筛选里，徽章同人工禁用为红色）。原因与「何时自动启用」放在徽章的提示框里：鼠标悬停或键盘聚焦（有原因的徽章可用 Tab 聚焦，没有原因的不进 Tab 顺序）时显示，多数移动浏览器轻触也会聚焦并显示，不用 `title` 属性；账号详情的「状态」一栏也直接列出这两项，触屏上以详情为准。用量限制的原因翻译为「用量已达上限：…」（没有限额数字时只显示「用量已达上限」）。行内操作（启用/停用、重置状态、批量编辑）的请求带浏览器 `tz`，返回的行数据里「今日」与列表一致。编辑页「调度与限流」新增「用量限制」卡片，打开该分区时加载，加载成功前不可编辑、加载失败不会提交；账号保存成功后单独提交，提交失败只提示，不影响已保存的账号。
-  - 时区：只有改了周期、周期长度或起点时才改用浏览器时区；只改其它字段时保留已保存的时区，只有时区不同不算修改。从未保存过的限额（GET 返回 `configured:false`、`timezone` 为空；旧核心没有 `configured` 而返回 `"UTC"`，这时整份配置等于默认值即视为未保存）一律从浏览器时区开始，所以第一次开启限额保存的就是浏览器时区。任何一次 `PUT` 都带合法的 IANA `timezone`（新核心必填）。
-  - 金额输入不限步长（`step="any"`），由控制台检查 0–1e9、最多 8 位小数、开启时 > 0；关闭限额时金额可以留空，提交时发上次保存的金额（没有则 `"0"`），新旧核心都能保存。
+  - 时区：只有改了周期、周期长度或起点时才改用浏览器时区；只改其它字段时保留已保存的时区，只有时区不同不算修改。从未保存过的限额（GET 返回 `configured:false`、`timezone` 为空）一律从浏览器时区开始，所以第一次开启限额保存的就是浏览器时区。任何一次 `PUT` 都带合法的 IANA `timezone`（必填）。
+  - 金额输入不限步长（`step="any"`），由控制台检查 0–1e9、最多 8 位小数、开启时 > 0；关闭限额时金额可以留空，照原样提交，核心存 0（0.1.290 之前为兼容旧核心改发上次保存的金额）。
   - 选「不重置」时周期长度行隐藏，`period_count` 置为 1 且不再检查，提交也发 1。
   - 起点按已保存的时刻原样显示（含分钟：小时周期的 UTC 整点在 Asia/Kolkata 显示为 HH:30）；新选的时间按核心的保存规则取整（小时周期取 UTC 整点，其余取浏览器时区整点）后提交。
 - 列表启用开关（2026-11-08 用户要求在列表直接启用/禁用，不新增接口）：开关在「状态」列徽章前（手机卡片在标题右侧），只给有 `account:update`（或 own 级本人账号）且非孤立的账号；只读和孤立账号只显示徽章；`commonControls.schedulable` 不可配置的类型开关置灰。开关只在「启用」（`status=active` 且 `schedulable=true`）时为开，自动禁用、启用但关闭调度的账号都显示为关。打开发 `PATCH /accounts/:id {status:"active", schedulable:true}`，即人工启用：清除自动禁用、原因和自动启用时间，用量限制按本节第一条放行，恢复调度，不清冷却（冷却用「重置状态」）；关闭发 `{status:"disabled", schedulable:false}`。界面先显示新状态，失败时恢复原状态并提示错误。自动禁用的账号在行菜单里有「转为手动禁用」（同一请求）。批量「启用」作用于所选中未启用的账号（含自动禁用），批量「禁用」作用于未被人工禁用的账号，请求与开关相同。
@@ -5525,8 +5482,8 @@ cluster 任务：
 | --- | --- |
 | `core.task.housekeeping` | 1h / 1m |
 | `core.account.automatic_recovery`（接手时先跑一次） | 1m / 50s |
-| `core.account.lifecycle_status` | 1m / 50s |
-| `core.account.preparation_cleanup` | 1m / 50s |
+| `core.account.lifecycle_status`（0.1.290 删除，§101.5） | 1m / 50s |
+| `core.account.preparation_cleanup`（0.1.290 删除，§101.5） | 1m / 50s |
 | `core.audit.plugin_writes_purge` | 1h / 5m |
 | `core.events.retention` | 1h / 5m |
 | `core.jobs.retention` | 1h / 5m |
@@ -6120,7 +6077,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 - `accountTypes[].commonControls.<名>`：`{visible?, configurable?, default?, locked?, required?}`；名称与取值类型见 `sdk/manifest/common_controls.go` 的 `CommonControlSpecs`（schedulable、auto_disable、priority、weight、max_concurrency、rpm_limit、tpm_limit、spm_limit、spm_window_seconds（0.1.276 起，§71.1）、model_limits、usage_limit、model_mapping、param_override、header_passthrough、environment、proxy）。`default` 是账号接口该字段的 JSON，范围与账号接口相同（常量在 sdk，核心、校验共用）。老的 `{"configurable":…, "default":…}` 写法照旧有效。
 - 语义：新账号缺省值取 `default`（再缺省取核心默认，自己级用户的并发默认 10 照旧，有声明时声明优先）；`configurable: false` 新建只接受默认值、更新只接受原值；`locked` 新老账号都只接受 `default`；不符报 `read_only`。值按 JSON 比较（格式、键序、数字写法、null 与空不影响）。`proxy` 只能写 `required`：新建没有代理、或更新清掉了代理时报 `proxy_id: required`，老账号没代理时其他修改照常。`visible` 只影响界面。
-- 执行点：`account/common_controls.go`，更新在锁行之后；`PUT /accounts/:id/usage-limit` 同样检查（`usage_limit: read_only`）；插件生命周期返回的 `account_patch` 不能改固定项（固定项从可改字段中移除，可改的照常）。
+- 执行点：`account/common_controls.go`，更新在锁行之后；`PUT /accounts/:id/usage-limit` 同样检查（`usage_limit: read_only`）。
 - 校验（`sdk/manifest/check/common_controls.go`）：未知名称、类型或范围不符、`required` 用在 proxy 之外、proxy 写了 `required` 以外的字段、`locked` 没有 `default` 或同时写 `configurable: true`、与 `defaultLimits` 的值冲突（`conflict`）（核心 0.1.262 起）。
 - 锁定值收敛：更新账号时，请求没带锁定字段而存储值与锁定值不同，就写入锁定值（锁定的用量限制同样在更新事务里写入）；老账号在下次保存时收敛，不做后台迁移。控制台对已保存账号显示存储值，不同于锁定值时提示“保存后改为锁定值 X”。
 - 自己级用户：新建时，省略的字段或等于预填默认值（声明的、否则 `default_limits`）的字段收进自己级上限（priority 0–100、weight 1–100、并发 1–1000，0 变 10）；其他越界值仍报 `restricted`；固定项（不可改或锁定）以声明为准、不收。更新时不收。控制台预填同样的收后值。
@@ -6212,30 +6169,23 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 `settings` 表新增一行 `scheduling`（缺行 = 默认值，不需要迁移）：
 
 ```json
-{"mode":"traffic","metric":"sessions","limit_load":false,"model_limits":false}
+{"metric":"sessions","limit_load":false,"model_limits":false}
 ```
 
-（2026-11-12 前的默认值是 `{"mode":"default","metric":"rpm",...}`。）
+（2026-11-12 前的默认值是 `{"mode":"default","metric":"rpm",...}`；0.1.290 起没有 `mode`，见下。）
 
 | 字段 | 取值 | 默认 | 含义 |
 |------|------|------|------|
-| `mode` | 始终 `traffic` | `traffic` | 均衡策略，只有流量（89.2）。2026-11-12 起存库和响应里始终是 `traffic`，字段只为旧核心保留（见下）；之前还有 `default`（按权重随机、不读用量），是默认值 |
 | `metric` | `rpm` / `concurrency` / `tpm` / `sessions` | `sessions` | 均衡指标，流量均衡和上限负载共用；`sessions` 是 §71 的会话数（2026-11-11 加入；2026-11-12 起是默认值，之前是 `rpm`） |
 | `limit_load` | 布尔 | `false` | 基于上限负载调度，见 89.2 |
 | `model_limits` | 布尔 | `false` | 根据模型限速（按模型调度）：流量均衡比较请求模型在各账号上自己的用量；上限负载也算请求模型所在的指定模型限速列表（§68） |
 
 读入网关设置快照（10 秒 TTL，`config:changed` 广播失效）。还不认识 `sessions` 的旧核心读到它时按 `rpm` 调度，它的 `PUT` 拒绝这个值（2026-11-11）。
 
-已存的行按下面归一（2026-11-12，不迁移，行在下次保存时才改写）：
-
-- `mode` 不是 `traffic`（旧的 `default`、空、未知）且 `limit_load` 关：当时指标和根据模型限速都是置灰的、不是用户选的，`metric` 按 `sessions`，`model_limits` 按 `false`。
-- `mode` 不是 `traffic` 但 `limit_load` 开：这两项是用户选的，保留。
-- 未知 `metric` 按 `sessions`；最后 `mode` 一律当作 `traffic`。缺 `mode` 字段的行按 `traffic` 处理。
-
-兼容与回滚（2026-11-12）：新核心存下的 `mode` 始终是 `traffic`，滚动更新期间的旧核心（0.1.282 及以前）和回滚后的旧核心读到它照样做流量均衡（0.1.281 起认识 `sessions`）。没有保存过的行（缺行，或旧的 `default` 行）在旧核心上仍是旧的默认行为：不读用量、按权重随机。滚动更新期间控制台的请求可能落到旧节点：旧节点的 `GET` 返回未归一的旧值（没保存过的行是 `default` + `rpm`），控制台把 `mode` 当作 `traffic`、指标照旧节点返回的显示，这时保存会存下 `traffic` 和那个指标（例如原来置灰的 `rpm`），之后不再归一成 `sessions`；`PUT` 落到旧节点时由旧节点写入，`mode` 也是 `traffic`。
+均衡策略 `mode` 在 2026-11-12 只剩 `traffic`（之前还有默认的 `default`：按权重随机、不读用量），之后只为旧核心存库和返回；0.1.290 删除这个字段（§101.6）：迁移 0102 把 `mode` 不是 `traffic` 且 `limit_load` 关的行（当时指标和根据模型限速都是置灰的、不是用户选的）改为 `metric = sessions`、`model_limits = false`，再删掉 `mode` 键。核心读入时未知 `metric` 按 `sessions`。
 
 - `GET /settings/scheduling`（`settings:read`）：返回生效值。
-- `PUT /settings/scheduling`（`settings:manage`）：整行替换，缺省字段取默认值；`mode` 不校验，传什么或不传都存 `traffic`，`metric` 照传入的存（2026-11-12）；非法 `metric` 400 `invalid_argument`，`details.fields[{field:"metric", code:"invalid"}]`（2026-11-12 前也校验 `mode`）；响应是存下的值；写入记 `updated_by`，广播 `config:changed`（key `settings.scheduling`）。
+- `PUT /settings/scheduling`（`settings:manage`）：整行替换，缺省字段取默认值（带 `mode` 忽略）；非法 `metric` 400 `invalid_argument`，`details.fields[{field:"metric", code:"invalid"}]`（2026-11-12 前也校验 `mode`）；响应是存下的值；写入记 `updated_by`，广播 `config:changed`（key `settings.scheduling`）。
 
 ### 89.2 计算
 
@@ -7435,28 +7385,38 @@ Valkey 里没有授权的缓存：每个用户在被问到时读一条语句，�
 
 ### 101.2 数据库连接
 
-- `DATABASE_URL` 不再解析 pgxpool 的 `pool_*` 参数，连接池只由环境变量与默认值决定（§2“插件数据库”、§11.2）；PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`SQLState` 等）只在 `runtime-contract/gormpg`，核心不再 import pgx。
+- `DATABASE_URL` 不再解析 pgxpool 的 `pool_*` 参数，连接池只由环境变量与默认值决定（§2“插件数据库”、§11.2）。DSN 里仍带 `pool_*` 时 `gormpg.ParseConfig` 直接报错（只报参数名，不带 DSN），核心、网关外壳与插件 `pgdb.Open` 启动即失败，不会等到第一条语句才由 PostgreSQL 报未知参数；PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`SQLState` 等）只在 `runtime-contract/gormpg`，核心不再 import pgx。
 
 ### 101.3 网关外壳
 
 - 升级计划只认 `primary-first-v1` 与 `rolling-v1`：`updater_one_active_upgrade` 保证每个集群最多一个 running/paused 的计划，0.1.290 的计划在原来的外壳下执行、完成后才换外壳，所以新外壳启动时不会有旧策略（`legacy-rolling`）的计划未结束。暂停旧策略计划、拒绝继续与恢复、`legacy-plan-recovery` 的代码删除。
 - 节点心跳不再为没有 Redis 遥测的旧外壳（0.1.132 之前）刷新 PG 心跳与 `updater.nodes.cpu_percent`：CPU 只在 Redis 遥测里，PG 行只在控制快照变化时（或每 `heartbeatRewrite`）写。`cpu_percent` 列保留到下一次外壳 schema 变更，0.1.288 时的外壳在换外壳期间还会读它。
-- 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`（核心仍声明它，给换外壳之前驱动升级计划的旧外壳看）。
+- 停止核心时直接按调用方的要求发 `DrainRequest.Graceful`，不再看核心是否声明 `drain.graceful`；`Hello.Has` 删除。
+- 仍为 0.1.288 时的外壳（网关 0.1.133）保留、换外壳之后删除的两处：核心在 `Hello.capabilities` 里声明 `drain.graceful`（旧外壳只在核心声明时才发 `Graceful`）；核心在没有 `SUB2API_UPDATER_TOKEN_FILE` 时不带更新令牌访问管理 socket（旧外壳没有令牌）。0.1.290 的升级计划由旧外壳驱动，计划完成后才换外壳，所以这两处要等所有节点都换成 0.1.290 的外壳之后的第一个核心版本删除。
 - 插件变更阻塞检查不再看 `plugin_rollout_nodes` 的 `cleanup_pending`（迁移 0021 之前的开发版核心）。
 
 ### 101.4 账号与任务
 
 - 账号状态只有 `active`、`auto_disabled`、`disabled`（`PATCH` 只接受前后两个，线上没有别的值）：列表筛选、`/accounts/summary` 不再把旧的 `error` 当作自动禁用。
-- 任务只按 `s2task_` 公开 ID 查询，删除任务框架之前裸上游 ID 的懒导入（§28.2）与为它保留的结算加锁检查（导入可能在旧的结算循环领取之后把条目转给托管任务）。没有任务的预扣（插件在非任务端点返回 `Reservation`）仍由 `pending_settlements` 的对账循环处理。
+- 任务只按 `s2task_` 公开 ID 查询，删除任务框架之前裸上游 ID 的懒导入（§28.2）与为它保留的结算加锁检查（导入可能在旧的结算循环领取之后把条目转给托管任务）。没有任务的预扣（插件在非任务端点返回 `Reservation`）仍由 `pending_settlements` 的对账循环处理。只为懒导入记标记的列 `async_tasks.legacy_imported` 由迁移 0102 删除。
+- 0070 的触发器 `accounts_auto_disabled_source_reset` 是现行逻辑，不是旧核心兼容：手动改状态（`PATCH`）不声明来源，靠它清掉 `auto_disabled_source`。
+
+### 101.6 调度设置与控制台
+
+- 均衡负载设置（§89）去掉 `mode`：`GET/PUT /settings/scheduling` 只有 `metric`、`limit_load`、`model_limits`，核心不再读写 `mode`（`PUT` 带了也忽略）。迁移 0102 把库里带 `mode` 的行归一：`mode` 不是 `traffic` 且 `limit_load` 关的行，`metric` 改为 `sessions`、`model_limits` 改为 `false`（与原来读入时的归一相同），然后删掉 `mode` 键；不带 `mode` 的行不动，重跑不变。核心读入时只剩“未知 `metric` 按 `sessions`”。
+- 控制台与核心同版本，删除只为更早核心保留的分支：均衡负载表单不再收发 `mode`；用量限制（§73.3）关闭且金额留空时照原样提交空金额（核心存 0），终身限额照原样提交周期长度（核心按 1 存），从未保存的判断只看 `configured`（不再按 `UTC` 加默认值猜）；侧栏视图不再为“菜单里没有设置入口”的旧核心退回控制台菜单；API 密钥“选择全部结果”不再在前端按筛选条件复核；卸载插件不再兼容 204 响应；插件市场版本的 `compatible` 视为必有。
 
 ### 101.5 删除 CCGateway
 
-CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体删除，最后的源码是 `317b0c331`。§49、§51、§53、§57、§64、§65、§70、§76 与 §49.17、§59.4、§63.4–63.6、§63.8、§77.6 只留标题。
+CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体删除，最后的源码是 `317b0c331`。§49、§51、§53、§57、§64、§65、§70、§76 与 §49.17、§63.4–63.6、§63.8、§77.6 只留标题；§59 随账号生命周期契约整节删除，只留一段说明。
 
 - 核心模块：`internal/ccgateway`、`remotedocker`、`helperhistory`（辅助历史）、`providerresources`（文件资源与技能）、`fallbackcredits`（回退额度凭证）；`core` 里对应的接口（`ports_provider_resources`、`ports_resource_transport`、`ports_skills`、`ports_fallback_credits`、`ports_helper_history` 等），网关 `Deps` 的 `CCGateway`、`Resources`、`Skills`、`Credits`、`HelperHistory`、`ResourceTransport`。网关不再识别资源引用、辅助历史与回退额度凭证；调度原因 `bound_elsewhere` 只留在旧记录里。上游响应头的转发白名单（请求 id、重试提示、`anthropic-ratelimit-*`、`anthropic-fast-*`）是通用行为，移到 `core.ProviderHeaders`。
 - 接口：`/api/v1/system/ccgateway/*` 全部删除；`POST /accounts` 不再接受 `ccgateway_runtime`、`cc_feature_policy`，账号视图不再有 `runtime_parked`、`cc_feature_policy`、`rate_limit_tier`；使用记录详情不再有 `request_log_account_id`；账号测试结果不再有 `policy_scope`、`test_mode`。
-- 控制台：账号编辑器不再有“自动配置模型”开关（§59.5）；插件账号操作的回包不再按 `key`（继续重新授权）或 `refreshed`（令牌刷新）特别处理，失败统一按错误信息提示。
+- 控制台：账号编辑器不再有“自动配置模型”开关与订阅提示，账号列表与详情不再显示订阅类型和插件只读扩展；插件账号操作的回包不再按 `key`（继续重新授权）或 `refreshed`（令牌刷新）特别处理，失败统一按错误信息提示。
 - 二次验证：删除 `host.install` 范围与二次验证会话（`Router.StepUpSession`、`httpapi.OpenStepUpSession`、`core.StepUpSessions`、Valkey `s2a:flow:window:*`、错误码 `verification_expired`），它们只服务 CCGateway 的安装与镜像上传。
-- 账号生命周期契约（manifest `lifecycle`、`OnAccountLifecycle`、`account_preparations`、`account_lifecycle_sync`、`core.AccountLifecycleResource` 等）保留；核心里目前没有注册任何生命周期资源，声明 `lifecycle.preparation` 的账号类型无法准备账号；控制台的准备与授权面板原是 CCGateway 的组件，已一并删除，下一个需要准备流程的插件要自带界面（如原生表单）。
-- 数据库：迁移 0102 删除它的表、`accounts.status_changed_at`（及触发器）与 `accounts.rate_limit_tier`、设置 `ccgateway_remote`、它的定时任务、插件行与权限；`plugin_key = 'ccgateway'` 的账号、使用记录、账本与审计保留，账号在控制台显示为插件已卸载。明细与发布前的只读核对见 `deploy/rollback/0.1.290-release.md`。
-- 插件键 `ccgateway` 仍在保留键里（`install/reserved.go`），并记入 `plugin_key_retirements`，手动上传不能占用它。
+- 账号生命周期契约一并删除（CCGateway 是唯一的实现者，没有别的插件声明 `lifecycle`）：
+  - SDK 与清单：插件 RPC `OnAccountLifecycle` 与 `AccountLifecycleRequest/Response`、`AccountPatch`、`ModelList`、`ModelMappingValue`、`ModelLimitList`；`pluginsdk.AccountLifecycle`、能力 `account.lifecycle`；清单的 `accountTypes[].lifecycle`（准备、动作、删除保留天数）、`defaultModelsBySubscription`；`AccountProperties.auto_models`（字段 12）与 `BuildQuotaRequestResponse.runtime_operation`（字段 5）删除，字段号保留不用。扩展字段的保留名去掉 `preparation_key`、`lifecycle_sync`。
+  - 核心：`core.AccountLifecycleResource`、`AccountLifecyclePlugin`、`AccountQuotaRuntime`、错误码 `too_many_drafts`；账号预备（`POST/GET/DELETE /account-types/:plugin_key/:type/preparations…`）、账号动作（`GET /accounts/:id/actions`、`POST /accounts/:id/actions/:action`）路由；`POST /accounts` 的 `preparation_key`、`auto_models`，`PATCH /accounts/:id` 的 `auto_models`，`DELETE /accounts/:id` 与批量删除的 `retain_resources`；账号视图的 `subscription_type`、`auto_models`、`lifecycle_sync`、`actions`；账号类型视图的 `lifecycle`、`default_models_by_subscription`；额度查询的 409 `runtime_not_ready`；保存前插件改账号（§59）与插件只读扩展；定时任务 `core.account.lifecycle_status`、`core.account.preparation_cleanup`。清单 `ui.accountActions`（UI 3.6）是另一套机制，保留。
+- 数据库：迁移 0102（`0102_drop_ccgateway_and_legacy.sql`）删除它的表、`accounts.status_changed_at`（及触发器）与 `accounts.rate_limit_tier`、账号生命周期的 `account_preparations`、`account_lifecycle_sync`、`accounts.subscription_type`、`accounts.auto_models` 与两个定时任务、设置 `ccgateway_remote`、它的定时任务、插件行与权限；`plugin_key = 'ccgateway'` 的账号、使用记录、账本与审计保留，账号在控制台显示为插件已卸载。明细与发布前的只读核对见 `deploy/rollback/0.1.290-release.md`。
+- 插件键 `ccgateway` 记入 `plugin_key_retirements`，并列入已删除插件键（`install/reserved.go` 的 `removedKeys`）：任何来源（手动上传、内置、市场）、任何签名的包都不能安装它，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.290。官方签名的 ccgateway 0.1.133 包的 `hostCompat` 落在 0.1.290 范围内，没有这一条就能装上，但核心一侧已经没有它需要的部分。
+- 插件包大小上限从 1 GiB（压缩）/ 2 GiB（解包）降到 64 MiB / 256 MiB（另限 2000 个文件），只为 CCGateway 打包的运行时镜像而设的余量不再需要；定义在 `runtime-contract` 一处，核心、网关外壳的包存储、打包工具共用（§34“插件包分发”）。

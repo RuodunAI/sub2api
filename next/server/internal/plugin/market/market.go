@@ -22,6 +22,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
@@ -40,8 +41,8 @@ const (
 )
 
 // PackageDownloadTimeout bounds one package download: packages may be up to
-// 1 GiB (pkg.DefaultMaxPackageBytes), far more than an index request needs.
-const PackageDownloadTimeout = 30 * time.Minute
+// rc.PluginPackageMaxBytes, far more than an index request needs.
+const PackageDownloadTimeout = 10 * time.Minute
 
 // Source is a market_sources row.
 type Source struct {
@@ -110,7 +111,7 @@ func New(db *store.DB, inst Installer, client *http.Client, maxPackageBytes int6
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
 	if maxPackageBytes <= 0 {
-		maxPackageBytes = pkg.DefaultMaxPackageBytes
+		maxPackageBytes = rc.PluginPackageMaxBytes
 	}
 	pkgClient := *client
 	if pkgClient.Timeout != 0 && pkgClient.Timeout < PackageDownloadTimeout {

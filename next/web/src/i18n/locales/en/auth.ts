@@ -28,7 +28,6 @@ export default {
     verification_required: 'Verify it’s you to continue',
     verification_cancelled: 'Verification cancelled',
     rate_limited: 'Too many requests',
-    too_many_drafts: 'You have too many unfinished account drafts. Finish or close one, or wait about 15 minutes for abandoned ones to be cleaned up',
     no_available_account: 'No available account',
     plugin_unavailable: 'Plugin unavailable',
     unavailable: 'Service unavailable',

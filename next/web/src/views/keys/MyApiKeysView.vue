@@ -26,7 +26,7 @@ import KeyUseMenu from './KeyUseMenu.vue'
 import { useKeyBulk } from './keyBulk'
 import { gatewayBase } from './keyClients'
 import { groupOptions } from './keyForm'
-import { KEY_STATE_FILTERS, KEY_STATE_TONES, KEY_STATES, isExpired, keyState, matchesKeyFilter } from './keyState'
+import { KEY_STATE_FILTERS, KEY_STATE_TONES, KEY_STATES, isExpired, keyState } from './keyState'
 import { myRate } from './myGroup'
 import { useKeyUsage } from './keyUsage'
 import { searchQuery } from './reveal'
@@ -97,15 +97,8 @@ const columns = computed(() =>
 
 // ------------------------------------------------------------------ selection and bulk actions
 
-/**
- * Every key the filters match, for "select all results". A server from before
- * the filters ignores them and answers with every key, so its answer is
- * narrowed here: what is selected is what the list shows.
- */
-async function loadMatching() {
-  const filters = { ...list.filters }
-  return (await listAll<ApiKey>(api, '/me/api-keys', { query: filters })).filter((k) => matchesKeyFilter(k, filters))
-}
+/** Every key the filters match, for "select all results". */
+const loadMatching = () => listAll<ApiKey>(api, '/me/api-keys', { query: { ...list.filters } })
 const selection = useSelection<ApiKey>({ items: list.items, key: (k) => k.id, selectable: () => true, loadAll: loadMatching })
 const selectionKeys = computed({ get: () => selection.keys.value as unknown[], set: (v: unknown[]) => selection.update(v) })
 // A changed filter starts a new selection: rows outside it would be acted on unseen.

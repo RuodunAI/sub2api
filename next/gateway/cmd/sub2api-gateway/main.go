@@ -64,7 +64,8 @@ type config struct {
 	RuntimeABI       string            `json:"runtime_abi"`
 	ManagementSocket string            `json:"management_socket"`
 	CoreSocket       string            `json:"core_socket"`
-	// PluginMaxBytes bounds stored plugin packages (default 1 GiB).
+	// PluginMaxBytes bounds stored plugin packages (default
+	// runtimecontract.PluginPackageMaxBytes, 64 MiB).
 	PluginMaxBytes int64 `json:"plugin_max_bytes"`
 	// CoreEnvInherit names further shell variables a core may inherit,
 	// besides the supervisor's allowlist (supervisor.inheritedEnv).

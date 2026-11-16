@@ -1,9 +1,14 @@
 -- CCGateway is removed (0.1.290): the core module, the built-in plugin and
 -- the gateway features only it used (provider files, skills and containers,
--- fallback credits, helper history). Its last source is commit 317b0c331.
+-- fallback credits, helper history), and the account lifecycle contract it
+-- was the only implementer of (preparations, runtime synchronization, the
+-- subscription type and automatic models). Its last source is commit
+-- 317b0c331.
 -- This drops what the core kept for it and uninstalls the plugin the way
 -- plugin/install.Uninstall does with purge, without the node barrier: every
--- node is stopped while a release migrates (primary first).
+-- node is stopped while a release migrates (primary first). Last, it drops
+-- the data kept only for the cores before 0.1.290 (CONTRACTS §101.4), which
+-- never run next to this one.
 --
 -- Kept on purpose:
 --   - accounts with plugin_key 'ccgateway' (and their groups, usage rows,
@@ -11,9 +16,7 @@
 --     uninstalled plugin; an administrator deletes them in the console;
 --   - usage_logs, balance_ledger and audit_logs rows: billing history;
 --   - plugin_executions, plugin_history and plugin_egress_logs rows: the
---     plugin's operating history, kept by install.Uninstall too;
---   - account_lifecycle_sync rows of those accounts: they go with the
---     accounts.
+--     plugin's operating history, kept by install.Uninstall too.
 --
 -- deploy/rollback/0.1.290-release.md lists what this removes and the
 -- read-only counts to run before the upgrade. One way, like the rest of
@@ -41,16 +44,22 @@ DROP FUNCTION IF EXISTS accounts_status_changed_at();
 ALTER TABLE accounts DROP COLUMN IF EXISTS status_changed_at;
 ALTER TABLE accounts DROP COLUMN IF EXISTS rate_limit_tier;
 
+-- The account lifecycle contract: account preparations (0051), runtime
+-- synchronization (0051), the subscription type the runtime reported (0054)
+-- and the automatic model switch handed to lifecycle hooks (0055).
+DROP TABLE IF EXISTS account_preparations;
+DROP TABLE IF EXISTS account_lifecycle_sync;
+ALTER TABLE accounts DROP COLUMN IF EXISTS subscription_type;
+ALTER TABLE accounts DROP COLUMN IF EXISTS auto_models;
+
 -- The connection settings (controller address, keys, images, group CC
 -- policies) and the core tasks of the removed modules.
 DELETE FROM settings WHERE key = 'ccgateway_remote';
 DELETE FROM scheduled_tasks
 WHERE name IN ('core.ccgateway.draft_sweep', 'core.ccgateway.park_runtimes', 'core.ccgateway.runtime_sync',
-               'core.helper.payload_expiry', 'core.helper.usage_replay')
+               'core.helper.payload_expiry', 'core.helper.usage_replay',
+               'core.account.lifecycle_status', 'core.account.preparation_cleanup')
    OR plugin_key = 'ccgateway';
-
--- Open account preparations of the plugin.
-DELETE FROM account_preparations WHERE plugin_key = 'ccgateway';
 
 -- The plugin itself (install.Uninstall with purge). Its permissions go with
 -- their grants: casbin_rule names a permission by key, so no foreign key
@@ -71,8 +80,8 @@ DELETE FROM permissions WHERE plugin_key = 'ccgateway';
 UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1
 WHERE id = 1 AND EXISTS (SELECT 1 FROM plugins WHERE key = 'ccgateway');
 
--- The key stays with its publisher (install.retireKey), and the reservation
--- list keeps hand uploads off it.
+-- The key stays with its publisher (install.retireKey); the removed keys
+-- (install.removedKeys) refuse any new install of it.
 INSERT INTO plugin_key_retirements (plugin_key, publisher_id)
 SELECT key, publisher_id FROM plugins WHERE key = 'ccgateway'
 ON CONFLICT (plugin_key) DO UPDATE SET publisher_id = EXCLUDED.publisher_id, retired_by = NULL, retired_at = now();
@@ -99,3 +108,16 @@ BEGIN
         EXECUTE 'DROP ROLE plg_ccgateway';
     END IF;
 END $$;
+
+-- Kept only for the cores before 0.1.290 (CONTRACTS §101.4). The scheduling
+-- settings' mode is no longer read or written; a row of the former "default"
+-- mode (or any but "traffic") with the limit load off had the metric and
+-- model limits greyed out, not chosen, so they take the defaults (§89).
+UPDATE settings
+SET value = CASE WHEN value->>'mode' <> 'traffic' AND NOT coalesce((value->>'limit_load')::boolean, false)
+                 THEN value || '{"metric": "sessions", "model_limits": false}'
+                 ELSE value END - 'mode'
+WHERE key = 'scheduling' AND value ? 'mode';
+
+-- The mark of the bare upstream ids imported before the task framework.
+ALTER TABLE async_tasks DROP COLUMN IF EXISTS legacy_imported;

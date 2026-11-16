@@ -59,7 +59,7 @@ export function amountDecimals(v: string): number {
 /**
  * The field that keeps a limit from being saved: an enabled limit needs an
  * amount above 0, with at most 8 decimals. A switched-off limit may have no
- * amount (usageLimitBody sends one). "none" (lifetime) has no period length.
+ * amount (the server stores 0). "none" (lifetime) has no period length.
  */
 export function usageLimitError(l: AccountUsageLimit): 'amount' | 'period_count' | null {
   const raw = String(l.amount ?? '').trim()
@@ -88,38 +88,13 @@ export function anchorFloor(iso: string | null, period: UsageLimitPeriod, timezo
   return d.toISOString()
 }
 
-/**
- * The PUT body of a limit. A switched-off limit with no amount sends the last
- * saved amount (or "0"): an older core refuses an empty amount. "none" sends
- * period_count 1: an older core still checks it against "none"'s cap. The
- * anchor is floored as the server will store it.
- */
-export function usageLimitBody(l: AccountUsageLimit, savedAmount = '0'): AccountUsageLimit {
-  const amount = String(l.amount ?? '').trim()
-  return {
-    ...l,
-    amount: amount === '' && !l.enabled ? savedAmount.trim() || '0' : amount,
-    period_count: l.period === 'none' ? 1 : l.period_count,
-    anchor: anchorFloor(l.anchor, l.period, l.timezone)
-  }
-}
-
-/**
- * The server's limit of an account that never saved one. An older core sends
- * it with timezone "UTC" and no other sign; a newer one sends timezone "".
- */
-const SERVER_DEFAULT = { raw_cost_accounting: false, enabled: false, period: 'month', period_count: 1, anchor: null } as const
-
-/** Whether a loaded limit is the server's default of an account that never saved one. */
-export function neverSaved(l: Partial<AccountUsageLimit>): boolean {
-  if (l.configured != null) return !l.configured
-  if (l.timezone === '' || l.timezone == null) return true
-  if (l.timezone !== 'UTC') return false
-  return (Object.keys(SERVER_DEFAULT) as (keyof typeof SERVER_DEFAULT)[]).every((k) => (l[k] ?? null) === SERVER_DEFAULT[k]) && Number(l.amount) === 0
+/** The PUT body of a limit: the anchor floored as the server will store it. */
+export function usageLimitBody(l: AccountUsageLimit): AccountUsageLimit {
+  return { ...l, anchor: anchorFloor(l.anchor, l.period, l.timezone) }
 }
 
 /** A loaded limit for the editor: a limit never saved takes the browser's time zone. */
 export function loadedUsageLimit(l: Partial<AccountUsageLimit>): AccountUsageLimit {
   const v = { ...defaultUsageLimit(), ...l }
-  return neverSaved(l) ? { ...v, timezone: browserTZ() } : v
+  return l.configured ? v : { ...v, timezone: browserTZ() }
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode"
 
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -23,23 +24,15 @@ type Limits struct {
 	MaxFiles         int   // number of regular files
 }
 
-// Default limits used when a field is zero. Packages are read whole into
-// memory.
-const (
-	DefaultMaxPackageBytes  = 1 << 30
-	DefaultMaxUnpackedBytes = 2 << 30
-	DefaultMaxFiles         = 2000
-)
-
 func (l Limits) withDefaults() Limits {
 	if l.MaxPackageBytes <= 0 {
-		l.MaxPackageBytes = DefaultMaxPackageBytes
+		l.MaxPackageBytes = rc.PluginPackageMaxBytes
 	}
 	if l.MaxUnpackedBytes <= 0 {
-		l.MaxUnpackedBytes = DefaultMaxUnpackedBytes
+		l.MaxUnpackedBytes = rc.PluginUnpackedMaxBytes
 	}
 	if l.MaxFiles <= 0 {
-		l.MaxFiles = DefaultMaxFiles
+		l.MaxFiles = rc.PluginPackageMaxFiles
 	}
 	return l
 }

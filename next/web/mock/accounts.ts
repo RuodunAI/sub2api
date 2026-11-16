@@ -977,7 +977,7 @@ on('GET', '/accounts/:id/usage-limit', (req) => {
   const r = scopedAccount(req, 'read')
   if (!('a' in r)) return r
   const { waived: _waived, ...l } = usageLimits.get(r.a.id) || defaultLimit()
-  return l
+  return { ...l, configured: usageLimits.has(r.a.id) }
 })
 // Same checks and error shape as the core's validateUsageLimit: 400
 // invalid_argument with one field error per problem. A switched-off limit may

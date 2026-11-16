@@ -22,9 +22,3 @@ export function searchQuery(text: string) {
   return key ? key[0].slice(0, KEY_PREFIX_LENGTH) : text.trim()
 }
 
-/**
- * The key prefix a `q` asks for besides the name, as the server reads it
- * (lowercased): only text that starts as a key and says more than the scheme
- * every key starts with.
- */
-export const searchedPrefix = (q: string) => (/^sk-s2a-./i.test(q) ? q.slice(0, KEY_PREFIX_LENGTH).toLowerCase() : '')

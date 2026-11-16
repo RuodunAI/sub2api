@@ -125,33 +125,3 @@ func TestParseTimestamptz(t *testing.T) {
 		t.Errorf("Times.Scan of an infinite element = %v, want an error", err)
 	}
 }
-
-func TestInfTime(t *testing.T) {
-	at := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
-	for _, c := range []struct {
-		src  any
-		want InfTime
-	}{
-		{nil, InfTime{}},
-		{at, InfTime{Time: at, Valid: true}},
-		{"infinity", InfTime{Infinity: PositiveInfinity, Valid: true}},
-		{[]byte("-infinity"), InfTime{Infinity: NegativeInfinity, Valid: true}},
-	} {
-		var got InfTime
-		if err := got.Scan(c.src); err != nil || got != c.want {
-			t.Errorf("Scan(%#v) = %+v, %v; want %+v", c.src, got, err, c.want)
-		}
-		v, err := c.want.Value()
-		var again InfTime
-		if err != nil || again.Scan(v) != nil || again != c.want {
-			t.Errorf("%+v -> Value %#v -> %+v, %v", c.want, v, again, err)
-		}
-	}
-	got := InfTime{Time: at, Valid: true}
-	if err := got.Scan("2024-01-02 03:04:05+00"); err != nil || !got.Time.Equal(at) || got.Infinity != Finite {
-		t.Errorf("Scan of text = %+v, %v", got, err)
-	}
-	if err := got.Scan(1); err == nil {
-		t.Error("Scan(1): no error")
-	}
-}

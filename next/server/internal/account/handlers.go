@@ -76,9 +76,6 @@ type row struct {
 	LastTestStatus      *int
 	LastTestErrorCode   *string
 	LastTestErrorSource *string
-	// SubscriptionType is the plan the runtime reported (CONTRACTS §59); nil while unknown.
-	SubscriptionType *string
-	AutoModels       *bool
 	// AutoDisabledSource says who wrote an automatic disable (0070):
 	// usageLimitSource or '' (plugins and failure policies).
 	AutoDisabledSource string
@@ -95,7 +92,7 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
 // selectRows reads rowColumns, for scanRow over its Row().
 func selectRows(db *gorm.DB) *gorm.DB {
@@ -113,7 +110,7 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.SubscriptionType, &a.AutoModels, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
 	a.Environment = env.V
 	return &a, err
 }
@@ -155,6 +152,16 @@ func (a *row) mapping() map[string]string {
 }
 
 func (a *row) modelLimits() []core.ModelLimit { return parseModelLimits(a.ModelLimits) }
+
+// pluginAccount is the account as a plugin sees it, with the given plaintext
+// credentials.
+func (a *row) pluginAccount(credentials []byte) *pluginv1.Account {
+	return &pluginv1.Account{Id: a.ID, Name: a.Name, Type: a.Type, CredentialsJson: string(credentials), SettingsJson: string(a.Settings), Properties: &pluginv1.AccountProperties{
+		Status: a.Status, Schedulable: a.Schedulable, AutoDisable: a.AutoDisable, Priority: int32(a.Priority), Weight: int32(a.Weight), MaxConcurrency: int32(a.MaxConcurrency),
+		RpmLimit: int32(a.RPMLimit), TpmLimit: a.TPMLimit, SpmLimit: int32(a.SPMLimit), ProxyId: a.ProxyID, Models: a.Models, ModelMapping: a.mapping(),
+		ModelLimits: core.PluginModelLimits(a.modelLimits()),
+	}}
+}
 
 func notFound(ctx context.Context) error {
 	return core.ErrNotFound.WithMessage(t(ctx, "account not found", "账号不存在"))
@@ -237,7 +244,6 @@ type View struct {
 	// Models the account serves (empty = all) and the client → upstream
 	// model mapping (CONTRACTS §18).
 	Models       []string          `json:"models"`
-	AutoModels   *bool             `json:"auto_models"`
 	ModelMapping map[string]string `json:"model_mapping"`
 	RPMLimit     int               `json:"rpm_limit"`
 	TPMLimit     int64             `json:"tpm_limit"`
@@ -283,16 +289,10 @@ type View struct {
 	limitDisabled bool
 	// LastTest is the last console test (CONTRACTS §50); null until tested.
 	LastTest *LastTest `json:"last_test"`
-	// SubscriptionType is the plan the account's runtime reported ("max",
-	// "pro" ...), CONTRACTS §59; null while unknown.
-	SubscriptionType *string `json:"subscription_type"`
 	// Orphaned is true when the plugin declaring the account type is not
 	// enabled (disabled or uninstalled).
-	Orphaned      bool                         `json:"orphaned"`
-	Settings      json.RawMessage              `json:"settings"`
-	LifecycleSync *core.AccountSynchronization `json:"lifecycle_sync,omitempty"`
-	// Actions are the plugin-registered custom actions available for this account (CONTRACTS §52).
-	Actions []AccountAction `json:"actions,omitempty"`
+	Orphaned bool            `json:"orphaned"`
+	Settings json.RawMessage `json:"settings"`
 	// Credentials (settings + secret fields, sensitive ones masked) is only
 	// present on single-account responses.
 	Credentials json.RawMessage `json:"credentials,omitempty"`
@@ -330,15 +330,14 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type, TypeLabel: s.typeLabel(a.PluginKey, a.Type),
 			GroupIDs: []int64{}, Groups: []GroupRef{}, ProxyID: a.ProxyID, Status: a.Status,
 			StatusReason: a.StatusReason, AdminLocked: a.AdminLocked, AutoDisabledUntil: a.AutoDisabledUntil, Schedulable: a.Schedulable, AutoDisable: a.AutoDisable, Priority: a.Priority, Weight: a.Weight,
-			MaxConcurrency: a.MaxConcurrency, Models: models, AutoModels: a.AutoModels, ModelMapping: a.mapping(),
+			MaxConcurrency: a.MaxConcurrency, Models: models, ModelMapping: a.mapping(),
 			RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(), Environment: a.Environment,
 			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, ConversionLossPolicy: a.LossPolicy,
 			Orphaned: !s.pluginActive(a.PluginKey), Settings: st,
 			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail,
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
-			LastTest:         a.lastTest(),
-			SubscriptionType: a.SubscriptionType,
-			limitDisabled:    limitDisabled(a.Status, a.AutoDisabledSource),
+			LastTest:      a.lastTest(),
+			limitDisabled: limitDisabled(a.Status, a.AutoDisabledSource),
 		}
 		out[i], ids[i], byID[a.ID] = v, a.ID, v
 	}
@@ -348,9 +347,9 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 	// Every read below fills its own View fields from read-only inputs (rows,
 	// ids, byID and the fields set above), so they run concurrently: the page
 	// waits for the slowest read instead of the sum of all round trips. Only
-	// the group and lifecycle reads fail the request, as before; the others
-	// log and leave their column empty.
-	var groupsErr, lifecycleErr error
+	// the group read fails the request; the others log and leave their
+	// column empty.
+	var groupsErr error
 	tasks := []func(){
 		func() { s.fillCooldowns(ctx, ids, out) },
 		func() {
@@ -389,20 +388,12 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 		},
 		func() { s.fillUsage(ctx, out) },
 		func() { s.fillRefresh(ctx, rows, out) },
-		func() {
-			lifecycleErr = errViewPanicked
-			lifecycleErr = s.fillLifecycleStatus(ctx, out)
-		},
 	}
 	tasks = append(tasks, func() { runParallel(ctx, viewsPGParallel, pgTasks...) })
 	runParallel(ctx, 0, tasks...)
 	if groupsErr != nil {
 		return nil, groupsErr
 	}
-	if lifecycleErr != nil {
-		return nil, lifecycleErr
-	}
-	s.fillActions(ctx, rows, out)
 	return out, nil
 }
 
@@ -722,7 +713,6 @@ type input struct {
 	AutoDisable    *bool              `json:"auto_disable"`
 	Status         *string            `json:"status"`
 	Models         *[]string          `json:"models"`
-	AutoModels     *bool              `json:"auto_models"`
 	ModelMapping   *map[string]string `json:"model_mapping"`
 	RPMLimit       *int               `json:"rpm_limit"`
 	TPMLimit       *int64             `json:"tpm_limit"`
@@ -742,7 +732,6 @@ type input struct {
 	ConversionLossPolicy core.LossPolicyInput `json:"conversion_loss_policy"`
 	Credentials          json.RawMessage      `json:"credentials"`
 	Settings             json.RawMessage      `json:"settings"`
-	PreparationKey       *string              `json:"preparation_key"`
 }
 
 // hasCredentials reports whether the request carries a credentials object
@@ -784,7 +773,6 @@ func (in *input) columns(settings, reason, mapping, limits *string, adminLocked 
 	store.SetIf(set, "rpm_limit", in.RPMLimit)
 	store.SetIf(set, "tpm_limit", in.TPMLimit)
 	store.SetIf(set, "auto_disable", in.AutoDisable)
-	store.SetIf(set, "auto_models", in.AutoModels)
 	store.SetIf(set, "model_limits", limits)
 	store.SetIf(set, "spm_limit", in.SPMLimit)
 	if in.Environment != nil && *in.Environment != nil {
@@ -829,7 +817,6 @@ func (in *input) changedFields() []string {
 	set("auto_disable", in.AutoDisable != nil)
 	set("status", in.Status != nil)
 	set("models", in.Models != nil)
-	set("auto_models", in.AutoModels != nil)
 	set("model_mapping", in.ModelMapping != nil)
 	set("rpm_limit", in.RPMLimit != nil)
 	set("tpm_limit", in.TPMLimit != nil)
@@ -919,14 +906,11 @@ func (in *input) validate(ctx context.Context, create bool) []core.FieldError {
 	if create && len(in.Credentials) == 0 {
 		add("credentials", "required", "credentials are required", "凭证必填")
 	}
-	if in.PreparationKey != nil && (!create || len(*in.PreparationKey) == 0 || len(*in.PreparationKey) > 64) {
-		add("preparation_key", "invalid", "preparation_key is only accepted when creating an account", "preparation_key 只能在创建账号时提供")
-	}
 	return fe
 }
 
 // validateScheduling checks the scheduling and limit fields present in the
-// input, also those a plugin sets through account_patch (CONTRACTS §68).
+// input (CONTRACTS §68).
 func (in *input) validateScheduling(ctx context.Context) []core.FieldError {
 	var fe []core.FieldError
 	add := func(field, code, en, zh string) {
@@ -1273,7 +1257,7 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 // caller chose is written as such.
 var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
 	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by",
-	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "subscription_type", "auto_models", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
+	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
 	"conversion_loss_policy", "spm_window_seconds"}
 
 // nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
@@ -1431,17 +1415,12 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if p.settings, err = s.mergeExtensions(ctx, bt, p.settings, in.Settings); err != nil {
+	if p.settings, err = s.mergeExtensions(bt, p.settings, in.Settings); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	controls.clampOwnDefaults(&in, bt.Type.DefaultLimits, scope)
 	if err := s.checkOwnChange(ctx, scope, ownChange{bt: bt, in: &in, groups: groups}); err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	preparation, facts, err := s.checkPreparationForCreate(ctx, bt, &in, p.settings)
-	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -1455,32 +1434,6 @@ func (s *Service) create(c *gin.Context) {
 	mapping := *in.ModelMapping
 	rpm, tpm, spm, spmWindow := *in.RPMLimit, *in.TPMLimit, *in.SPMLimit, *in.SPMWindowSeconds
 	modelLimits, environment, headerPassthrough := *in.ModelLimits, *in.Environment, *in.HeaderPassthrough
-	before, err := s.accountLifecycle(ctx, bt, &pluginv1.AccountLifecycleRequest{Phase: "before_create", Caller: &pluginv1.Caller{UserId: uid}, ResourceFactsJson: factsJSON(facts), Account: &pluginv1.Account{
-		Name: *in.Name, Type: bt.Type.ID, SettingsJson: string(p.settings), Properties: &pluginv1.AccountProperties{
-			Status: status, Schedulable: sched, AutoDisable: autoDisable, Priority: int32(prio), Weight: int32(weight), MaxConcurrency: int32(maxc),
-			RpmLimit: int32(rpm), TpmLimit: tpm, SpmLimit: int32(spm), ProxyId: proxyID, Models: models, AutoModels: in.AutoModels, ModelMapping: mapping,
-			ModelLimits: core.PluginModelLimits(modelLimits),
-		},
-	}})
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	// The plugin may adjust the account before it is saved (CONTRACTS §59),
-	// and set its read-only extensions from the observed facts.
-	patched, err := applyAccountPatch(ctx, before, controls.guardPatch(patchTarget{Models: &models, Mapping: &mapping,
-		Priority: &prio, Weight: &weight, MaxConcurrency: &maxc, RPMLimit: &rpm, TPMLimit: &tpm, SPMLimit: &spm, ModelLimits: &modelLimits}))
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	if settings, changed, err := s.applyExtensionsPatch(bt, p.settings, before); err != nil {
-		httpapi.Fail(c, err)
-		return
-	} else if changed {
-		p.settings = settings
-		patched = append(patched, "settings")
-	}
 	var id int64
 	proxyCreated := false
 	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
@@ -1496,7 +1449,6 @@ func (s *Service) create(c *gin.Context) {
 			Settings: json.RawMessage(p.settings), ProxyID: proxyID, Status: &status, Schedulable: &sched, Priority: &prio,
 			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), Weight: &weight, Models: store.Strings(models),
 			ModelMapping: json.RawMessage(mappingJSON(mapping)), RpmLimit: rpm, TpmLimit: tpm, AutoDisable: &autoDisable,
-			SubscriptionType: nonZero(facts.SubscriptionType), AutoModels: in.AutoModels,
 			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
 			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
 			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
@@ -1515,24 +1467,14 @@ func (s *Service) create(c *gin.Context) {
 		if _, err := s.initializeQuota(ctx, tx, id, bt); err != nil {
 			return err
 		}
-		if preparation != nil {
-			if err := s.adoptPreparation(ctx, tx, *preparation, id); err != nil {
-				return err
-			}
-		}
 		if proxyID != nil {
 			if err := s.auditProxy(ctx, tx, proxyCreated, *proxyID, uid, id); err != nil {
 				return err
 			}
 		}
 		if err := audit.Audit(ctx, tx, uid, "account.create", "account", itoa(id),
-			createAudit(*in.Name, bt, facts, patched)); err != nil {
+			map[string]any{"name": *in.Name, "plugin_key": bt.Plugin.Key, "type": bt.Type.ID}); err != nil {
 			return err
-		}
-		if bt.Type.Lifecycle != nil {
-			if err := markLifecyclePending(ctx, tx, id); err != nil {
-				return err
-			}
 		}
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountCreated,
 			Payload: basicPayload(id, bt.Plugin.Key, bt.Type.ID, *in.Name)})
@@ -1614,8 +1556,8 @@ func (s *Service) update(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	// The controls judge what the caller asked for, before the plugin's
-	// account_patch is merged into in.
+	// The controls judge what the caller asked for, before converge fills
+	// in the locked fields.
 	requested := in
 	var extensionSettings *string
 	if len(in.Settings) > 0 {
@@ -1623,7 +1565,7 @@ func (s *Service) update(c *gin.Context) {
 		if p != nil {
 			base = p.settings
 		}
-		merged, err := s.mergeExtensions(ctx, bt, base, in.Settings)
+		merged, err := s.mergeExtensions(bt, base, in.Settings)
 		if err != nil {
 			httpapi.Fail(c, err)
 			return
@@ -1632,67 +1574,6 @@ func (s *Service) update(c *gin.Context) {
 		extensionSettings = &value
 	}
 	controls.converge(&in, cur)
-	lifecycleSettings := extensionSettings
-	if lifecycleSettings == nil && p != nil {
-		value := string(p.settings)
-		lifecycleSettings = &value
-	}
-	actorID, _ := core.UserID(ctx)
-	snapshot := in.lifecycleSnapshot(cur, lifecycleSettings)
-	facts := core.AccountPreparationFacts{SubscriptionType: core.ValueOr(cur.SubscriptionType, "")}
-	before, err := s.accountLifecycle(ctx, bt, &pluginv1.AccountLifecycleRequest{
-		Phase: "before_update", Caller: &pluginv1.Caller{UserId: actorID}, Account: snapshot,
-		ResourceFactsJson: factsJSON(facts), ChangedFields: in.changedFields(),
-	})
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	props := snapshot.GetProperties()
-	target := patchTarget{Models: new(props.GetModels()), Mapping: new(props.GetModelMapping()),
-		Priority: new(int(props.GetPriority())), Weight: new(int(props.GetWeight())), MaxConcurrency: new(int(props.GetMaxConcurrency())),
-		RPMLimit: new(int(props.GetRpmLimit())), TPMLimit: new(props.GetTpmLimit()), SPMLimit: new(int(props.GetSpmLimit())),
-		ModelLimits: new(core.ValueOr(in.ModelLimits, cur.modelLimits()))}
-	patched, err := applyAccountPatch(ctx, before, controls.guardPatch(target))
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	for _, field := range patched {
-		switch field {
-		case "models":
-			in.Models = target.Models
-		case "model_mapping":
-			in.ModelMapping = target.Mapping
-		case "priority":
-			in.Priority = target.Priority
-		case "weight":
-			in.Weight = target.Weight
-		case "max_concurrency":
-			in.MaxConcurrency = target.MaxConcurrency
-		case "rpm_limit":
-			in.RPMLimit = target.RPMLimit
-		case "tpm_limit":
-			in.TPMLimit = target.TPMLimit
-		case "spm_limit":
-			in.SPMLimit = target.SPMLimit
-		case "model_limits":
-			in.ModelLimits = target.ModelLimits
-		}
-	}
-	saving := cur.Settings
-	if extensionSettings != nil {
-		saving = []byte(*extensionSettings)
-	} else if p != nil {
-		saving = p.settings
-	}
-	if settings, changed, err := s.applyExtensionsPatch(bt, saving, before); err != nil {
-		httpapi.Fail(c, err)
-		return
-	} else if changed {
-		value := string(settings)
-		extensionSettings = &value
-	}
 	uid, _ := core.UserID(ctx)
 	setProxy, proxyCreated, usageLimitConverged := in.ProxyID.Set, false, false
 	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
@@ -1717,7 +1598,7 @@ func (s *Service) update(c *gin.Context) {
 		if usageLimitConverged, err = controls.convergeUsageLimit(ctx, tx, id); err != nil {
 			return err
 		}
-		if (p != nil || extensionSettings != nil || bt.Type.Lifecycle != nil) && !locked.UpdatedAt.Equal(cur.UpdatedAt) {
+		if (p != nil || extensionSettings != nil) && !locked.UpdatedAt.Equal(cur.UpdatedAt) {
 			return core.ErrConflict.WithMessage(t(ctx, "the account was modified concurrently, please retry",
 				"账号已被其他操作修改，请重试"))
 		}
@@ -1793,17 +1674,12 @@ func (s *Service) update(c *gin.Context) {
 			}
 		}
 		if err := audit.Audit(ctx, tx, uid, "account.update", "account", itoa(id),
-			map[string]any{"fields": in.changedFields(), "plugin_changed": patched}); err != nil {
+			map[string]any{"fields": in.changedFields()}); err != nil {
 			return err
 		}
 		name := locked.Name
 		if in.Name != nil {
 			name = *in.Name
-		}
-		if bt.Type.Lifecycle != nil {
-			if err := markLifecyclePending(ctx, tx, id); err != nil {
-				return err
-			}
 		}
 		payload := basicPayload(id, locked.PluginKey, locked.Type, name)
 		payload["changed_fields"] = in.changedFields()
@@ -1937,10 +1813,6 @@ func (s *Service) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	retain, ok := parseRetain(c)
-	if !ok {
-		return
-	}
 	scope := s.scopeOf(ctx, perm.AccountDelete)
 	uid, _ := core.UserID(ctx)
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
@@ -1962,15 +1834,7 @@ func (s *Service) delete(c *gin.Context) {
 		if _, err := s.d.ScopeGrants.ClearScopeGrants(ctx, tx, uid, core.ScopeRefAccount, []int64{id}); err != nil {
 			return err
 		}
-		retainUntil, err := s.markResourcesDeleted(ctx, tx, id, pk, typ, retain)
-		if err != nil {
-			return err
-		}
-		detail := map[string]any{"name": name}
-		if retainUntil != nil {
-			detail["retain_until"] = retainUntil.UTC().Format(time.RFC3339)
-		}
-		if err := audit.Audit(ctx, tx, uid, "account.delete", "account", itoa(id), detail); err != nil {
+		if err := audit.Audit(ctx, tx, uid, "account.delete", "account", itoa(id), map[string]any{"name": name}); err != nil {
 			return err
 		}
 		return s.d.Events.Emit(ctx, tx, core.Event{Type: core.EventAccountDeleted, Payload: basicPayload(id, pk, typ, name)})
@@ -1986,21 +1850,6 @@ func (s *Service) delete(c *gin.Context) {
 	s.evictBalanceCache(ctx, id)
 	s.changed(ctx, id)
 	httpapi.NoContent(c)
-}
-
-// parseRetain reads retain_resources: 1 keeps the account's resources
-// (stopped) for the retention days its type declares
-// (lifecycle.deletion.retentionDays); omitted deletes them at once. Anything
-// else is answered as invalid (ok false).
-func parseRetain(c *gin.Context) (retain, ok bool) {
-	switch c.Query("retain_resources") {
-	case "":
-		return false, true
-	case "1":
-		return true, true
-	}
-	httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("retain_resources must be 1 or omitted."))
-	return false, false
 }
 
 // ---------------------------------------------------------------- reveal

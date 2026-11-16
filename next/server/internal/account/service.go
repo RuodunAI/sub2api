@@ -26,14 +26,13 @@ import (
 
 // Deps are the collaborators of the account service.
 type Deps struct {
-	LifecycleResources map[string]core.AccountLifecycleResource
-	DB                 *store.DB
-	Redis              redis.UniversalClient
-	Cipher             *secret.Cipher
-	Registry           core.PluginRegistry
-	Proxies            core.ProxyDirectory
-	Events             core.EventPublisher
-	Slots              core.Slots // optional: in_use column is 0 without it
+	DB       *store.DB
+	Redis    redis.UniversalClient
+	Cipher   *secret.Cipher
+	Registry core.PluginRegistry
+	Proxies  core.ProxyDirectory
+	Events   core.EventPublisher
+	Slots    core.Slots // optional: in_use column is 0 without it
 	// Limiter reports rpm/tpm usage (rate_usage column); optional.
 	Limiter core.AccountLimiter
 	Stats   *Stats
@@ -147,7 +146,6 @@ func New(d Deps) *Service {
 // accepts any scope of its action (CONTRACTS §21.0); handlers narrow their
 // SQL with the caller's scope (scopeOf).
 func (s *Service) RegisterRoutes(r *httpapi.Router) {
-	s.registerPreparationRoutes(r)
 	r.Perm("GET", "/settings/account-stats", "settings:read", s.getStatsSettings)
 	r.Perm("PUT", "/settings/account-stats", "settings:manage", s.putStatsSettings)
 	r.PermScoped("GET", "/accounts/auto-disable", s.getAutoDisablePolicy, perm.AccountCreate, perm.AccountUpdate)
@@ -186,9 +184,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("PUT", "/accounts/:id/usage-limit", s.putUsageLimit, perm.AccountUpdate)
 	// Credential refresh (CONTRACTS §48).
 	r.PermScoped("POST", "/accounts/:id/refresh-credentials", s.refreshCredentials, perm.AccountUpdate)
-	// Account actions (CONTRACTS §52).
-	r.PermScoped("GET", "/accounts/:id/actions", s.getAccountActions, perm.AccountRead)
-	r.PermScoped("POST", "/accounts/:id/actions/:plugin_key/:action_id", s.executeAccountAction, perm.AccountUpdate)
 }
 
 // Run subscribes to account:changed, flushes last_used_at every 10 s, writes

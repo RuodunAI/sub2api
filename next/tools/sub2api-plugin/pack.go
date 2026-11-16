@@ -14,21 +14,13 @@ import (
 	"strings"
 	"time"
 
+	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pkgsig"
 )
 
 // PackageExt is the plugin package file extension.
 const PackageExt = ".s2plugin"
-
-// Package limits, the same the core applies to an installed package
-// (CONTRACTS §53.10): 1 GiB compressed, 2 GiB unpacked. maxPackageFiles is
-// the core's default file count limit.
-const (
-	maxPackageBytes  int64 = 1 << 30
-	maxUnpackedBytes int64 = 2 << 30
-	maxPackageFiles        = 2000
-)
 
 // zipEpoch is the fixed modification time of package entries, so packing the
 // same inputs yields the same bytes.
@@ -289,15 +281,15 @@ func writePackage(dest string, files map[string][]byte) error {
 }
 
 func writePackageMode(dest string, files map[string][]byte, exclusive bool) error {
-	if len(files) > maxPackageFiles {
-		return fmt.Errorf("package has %d files, the limit is %d", len(files), maxPackageFiles)
+	if len(files) > runtimecontract.PluginPackageMaxFiles {
+		return fmt.Errorf("package has %d files, the limit is %d", len(files), runtimecontract.PluginPackageMaxFiles)
 	}
 	var total int64
 	for _, b := range files {
 		total += int64(len(b))
 	}
-	if total > maxUnpackedBytes {
-		return fmt.Errorf("package files total %d bytes, the unpacked limit is %d", total, maxUnpackedBytes)
+	if total > runtimecontract.PluginUnpackedMaxBytes {
+		return fmt.Errorf("package files total %d bytes, the unpacked limit is %d", total, runtimecontract.PluginUnpackedMaxBytes)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
@@ -318,7 +310,7 @@ func writePackageMode(dest string, files map[string][]byte, exclusive bool) erro
 		return err
 	}
 	name := f.Name()
-	writeErr := writeZip(&limitedWriter{w: f, left: maxPackageBytes}, files)
+	writeErr := writeZip(&limitedWriter{w: f, left: runtimecontract.PluginPackageMaxBytes}, files)
 	if writeErr == nil && !exclusive {
 		writeErr = f.Chmod(0o644)
 	}
@@ -368,7 +360,7 @@ type limitedWriter struct {
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
 	if int64(len(p)) > l.left {
-		return 0, fmt.Errorf("package exceeds the %d byte limit", maxPackageBytes)
+		return 0, fmt.Errorf("package exceeds the %d byte limit", runtimecontract.PluginPackageMaxBytes)
 	}
 	l.left -= int64(len(p))
 	return l.w.Write(p)
@@ -428,8 +420,8 @@ func readPackage(src string) (map[string][]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if st.Size() > maxPackageBytes {
-		return nil, fmt.Errorf("%s is %d bytes, the package limit is %d", src, st.Size(), maxPackageBytes)
+	if st.Size() > runtimecontract.PluginPackageMaxBytes {
+		return nil, fmt.Errorf("%s is %d bytes, the package limit is %d", src, st.Size(), runtimecontract.PluginPackageMaxBytes)
 	}
 	zr, err := zip.OpenReader(src)
 	if err != nil {
@@ -449,22 +441,22 @@ func readPackage(src string) (map[string][]byte, error) {
 		if _, dup := files[name]; dup {
 			return nil, fmt.Errorf("duplicate entry %q in package", name)
 		}
-		if len(files) >= maxPackageFiles {
-			return nil, fmt.Errorf("%s has more than %d files", src, maxPackageFiles)
+		if len(files) >= runtimecontract.PluginPackageMaxFiles {
+			return nil, fmt.Errorf("%s has more than %d files", src, runtimecontract.PluginPackageMaxFiles)
 		}
 		rc, err := f.Open()
 		if err != nil {
 			return nil, err
 		}
 		// Never trust the declared size: read one byte past the limit.
-		b, err := io.ReadAll(io.LimitReader(rc, maxUnpackedBytes-total+1))
+		b, err := io.ReadAll(io.LimitReader(rc, runtimecontract.PluginUnpackedMaxBytes-total+1))
 		rc.Close()
 		if err != nil {
 			return nil, err
 		}
 		total += int64(len(b))
-		if total > maxUnpackedBytes {
-			return nil, fmt.Errorf("%s unpacks to more than %d bytes", src, maxUnpackedBytes)
+		if total > runtimecontract.PluginUnpackedMaxBytes {
+			return nil, fmt.Errorf("%s unpacks to more than %d bytes", src, runtimecontract.PluginUnpackedMaxBytes)
 		}
 		files[name] = b
 	}

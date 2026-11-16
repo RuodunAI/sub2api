@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { maskKey, revealKey, searchQuery, searchedPrefix } from './reveal'
+import { maskKey, revealKey, searchQuery } from './reveal'
 
 const post = vi.hoisted(() => vi.fn())
 vi.mock('@sub2api/host', () => ({ api: { post } }))
@@ -67,17 +67,5 @@ describe('API key search query', () => {
     const secret = FULL.slice(PREFIX.length)
     for (const around of ['', '"', "'", '`', 'Bearer ', 'KEY=', 'x\t', '(', '<', 'key:'])
       expect(searchQuery(`${around}${FULL}${around}`)).not.toContain(secret.slice(0, 4))
-  })
-})
-
-describe('the key prefix a search asks for', () => {
-  it('is the start of a key that says more than the scheme, lowercased and no longer than a prefix', () => {
-    expect(searchedPrefix('sk-s2a-a')).toBe('sk-s2a-a')
-    expect(searchedPrefix('SK-S2A-A1B2Cdef')).toBe(PREFIX)
-    expect(searchedPrefix(PREFIX)).toBe(PREFIX)
-  })
-
-  it('is none for the scheme alone, less of it, or text that does not start as a key', () => {
-    for (const q of ['', 's', 'sk-', 'sk-s2a-', 'laptop', 'my sk-s2a-a1b2c']) expect(searchedPrefix(q)).toBe('')
   })
 })

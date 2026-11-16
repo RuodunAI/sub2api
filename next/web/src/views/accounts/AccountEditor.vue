@@ -162,10 +162,7 @@ const toTop = () => formEl.value?.scrollIntoView({ block: 'start' })
 onMounted(toTop)
 watch(activeSection, toTop, { flush: 'post' })
 
-const editorModels = useModelEdit(
-  () => props.accountType,
-  () => props.account?.subscription_type
-)
+const editorModels = useModelEdit(() => props.accountType)
 const {
   models, mapping, prefilled, defaultModels, modelsTextMode,
   modelsError, mappingError, syncModelsText, clearPrefill, modelOptions
@@ -569,10 +566,6 @@ const { save } = useAccountSave({
                   {{ t(probed!.created ? 'accounts.proxyProbeCreated' : 'accounts.proxyProbeReused', { protocol: probed!.protocol, ip: probed!.ip, id: probed!.id }) }}
                 </SHint>
               </div>
-              <SHint v-if="account?.lifecycle_sync" size="xs" class="md:col-span-2" role="status" data-testid="account-lifecycle-status">
-                {{ t(`accounts.lifecycle.${account.lifecycle_sync.status}`) }}
-                <span v-if="account.lifecycle_sync.code === 'environment_requires_new_runtime'">{{ t('accounts.lifecycle.environmentDeferred') }}</span>
-              </SHint>
             </div>
           </SCard>
 

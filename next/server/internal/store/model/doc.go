@@ -20,12 +20,10 @@
 //     written as is, false and 0 included;
 //   - []byte, json.RawMessage and the store array types stay values: nil
 //     takes the default and an empty non-nil value is written; time.Time
-//     stays a value too, the zero time being no time one writes;
-//   - a timestamptz defaulting to ±infinity is a store.InfTime, which
-//     holds infinity (time.Time cannot): Valid false takes the default.
+//     stays a value too, the zero time being no time one writes.
 //
-// Nullable columns are pointers, except []byte, json.RawMessage and
-// store.InfTime, whose zero value already is NULL.
+// Nullable columns are pointers, except []byte and json.RawMessage, whose
+// zero value already is NULL.
 //
 // GORM's own timestamping is off: store.G fills a zero created_at or
 // updated_at without a database default with now() on INSERT, and an

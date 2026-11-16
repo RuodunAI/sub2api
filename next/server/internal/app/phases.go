@@ -140,8 +140,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)
 	}
 	b.marketClient = &http.Client{Timeout: 60 * time.Second}
-	// Packages may be 1 GiB (CONTRACTS §53.10): downloads get more time than
-	// index requests.
+	// Package downloads get more time than index requests.
 	packageHTTP := &http.Client{Timeout: market.PackageDownloadTimeout}
 	b.packageSrc = &blobs.Source{Store: packageStore, MaxBytes: cfg.Plugins.MaxPackageBytes,
 		Download: func(ctx context.Context, url string, limit int64) ([]byte, error) {
@@ -420,7 +419,7 @@ func (b *boot) buildBackground() {
 	}
 	b.jobBridge()
 	b.stopper.add("jobs", func(c context.Context) { _ = b.jobs.Stop(c) })
-	b.dlv = delivery.New(b.db, b.cl.Locker, b.cl.Bus, b.reg, b.log, b.cfg.NodeID, delivery.Options{CanRun: b.canWork, Subscriptions: b.acc.LifecycleSubscriptions})
+	b.dlv = delivery.New(b.db, b.cl.Locker, b.cl.Bus, b.reg, b.log, b.cfg.NodeID, delivery.Options{CanRun: b.canWork})
 	if b.tasks != nil {
 		for _, spec := range []core.TaskSpec{b.jobs.RetentionTaskSpec(), b.dlv.RetentionTaskSpec()} {
 			if err := b.tasks.Register(spec); err != nil {

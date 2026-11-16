@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
@@ -322,7 +323,7 @@ func versionRows(db *gorm.DB, key string) *gorm.DB {
 func (a *API) upload(c *gin.Context) {
 	max := a.d.Install.Limits().MaxPackageBytes
 	if max <= 0 {
-		max = pkg.DefaultMaxPackageBytes
+		max = rc.PluginPackageMaxBytes
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, max+1<<20)
 	fh, err := c.FormFile("file")

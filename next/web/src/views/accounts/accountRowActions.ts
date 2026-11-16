@@ -1,8 +1,7 @@
-// Row actions of the accounts list (CONTRACTS §52): the menu entries of a row
-// (built from the caller's rights, the account's plugin actions and the
-// declared plugin account actions) and their dispatch. The handlers come from
-// the view, so the table here stays pure.
-import type { Account, AccountAction } from '@/api/types'
+// Row actions of the accounts list: the menu entries of a row (built from the
+// caller's rights and the declared plugin account actions) and their
+// dispatch. The handlers come from the view, so the table here stays pure.
+import type { Account } from '@/api/types'
 import { forAccountType } from '@/components/plugin/slots'
 import { i18n, lt } from '@/i18n'
 import type { PluginAccountActionEntry } from '@/stores/plugins'
@@ -18,15 +17,12 @@ export interface RowActionDeps {
   canRefreshCreds: (a: Account) => boolean
   canUpdate: (a: Account) => boolean
   canDelete: (a: Account) => boolean
-  /** Accounts with a plugin action still running hide theirs. */
-  running: (a: Account) => boolean
   openDetail: (a: Account) => unknown
   reveal: (a: Account) => unknown
   resetStatus: (a: Account) => unknown
   disable: (a: Account) => unknown
   refreshCreds: (a: Account) => unknown
   remove: (a: Account) => unknown
-  runPluginAction: (a: Account, action: AccountAction) => unknown
   /** Declarative plugin account actions (manifest `ui.accountActions`, UI 3.6); `actionAppliesTo` says which rows offer one. */
   declaredActions: PluginAccountActionEntry[]
   runPluginAccountAction: (a: Account, entry: PluginAccountActionEntry) => unknown
@@ -51,7 +47,6 @@ export function rowActions(a: Account, deps: RowActionDeps) {
     { key: 'reset-status', label: t('accounts.resetStatus'), hidden: !deps.canResetStatus(a) },
     { key: 'disable', label: t('accounts.listUi.disableByHand'), hidden: !deps.canDisable(a) },
     { key: 'refresh-credentials', label: t('accounts.credRefresh.action'), hidden: !deps.canRefreshCreds(a) },
-    ...(a.actions || []).map((x) => ({ key: `plugin:${x.plugin_key}:${x.id}`, label: lt(x.label) || x.id, hidden: !deps.canUpdate(a) || a.orphaned || deps.running(a) })),
     ...deps.declaredActions.map((x) => ({ key: pluginAccountActionKey(x), label: lt(x.label) || x.id, icon: x.icon, danger: x.danger, hidden: !actionAppliesTo(x, a, deps.canUpdate) })),
     { key: 'delete', label: t('common.delete'), danger: true, hidden: !deps.canDelete(a) }
   ]
@@ -67,10 +62,8 @@ const HANDLERS: Record<string, (a: Account, deps: RowActionDeps) => unknown> = {
   delete: (a, deps) => deps.remove(a)
 }
 
-/** Runs a menu entry of one row: a plugin action by key (the account's or a declared one), otherwise a view handler. */
+/** Runs a menu entry of one row: a declared plugin action by key, otherwise a view handler. */
 export function runRowAction(a: Account, key: string, deps: RowActionDeps) {
-  const action = a.actions?.find((x) => `plugin:${x.plugin_key}:${x.id}` === key)
-  if (action) return deps.runPluginAction(a, action)
   const declared = deps.declaredActions.find((x) => pluginAccountActionKey(x) === key)
   if (declared) return deps.runPluginAccountAction(a, declared)
   return HANDLERS[key]?.(a, deps)

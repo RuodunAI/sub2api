@@ -25,7 +25,7 @@ import (
 // RegisterRoutes serves the console's update routes by forwarding them to
 // the shell's management socket. token (config Managed.UpdaterToken) is sent
 // as "Authorization: Bearer <token>" on every forwarded request; empty sends
-// none (older shells).
+// none (the gateway 0.1.133 shell, see config.ManagedConfig.UpdaterToken).
 func RegisterRoutes(r *httpapi.Router, socketPath, token string, db *store.DB) {
 	client := &http.Client{Timeout: 60 * time.Second, Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)

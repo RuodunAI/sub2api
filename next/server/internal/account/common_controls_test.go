@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
@@ -159,36 +158,6 @@ func TestCommonControlDefaultsOwnLevel(t *testing.T) {
 		"credentials": map[string]any{"api_key": "sk-good-key-123"}, "max_concurrency": 5})
 	require.Equal(t, 400, code, out)
 	require.Contains(t, fieldsOf(out), "max_concurrency:read_only")
-}
-
-// The plugin's account_patch cannot move a fixed control: a locked field
-// keeps its default, a non-configurable one the value the caller was held
-// to; configurable fields still follow the patch.
-func TestCommonControlsGuardAccountPatch(t *testing.T) {
-	e, resource, proxy, plugin := preparationPluginFixture(t)
-	resource.ready = true
-	off := false
-	e.gen.types[len(e.gen.types)-1].Type.CommonControls = map[string]manifest.AccountCommonControl{
-		"priority": {Locked: true, Default: json.RawMessage(`4`)},
-		"weight":   {Configurable: &off, Default: json.RawMessage(`2`)},
-	}
-	plugin.patch = func(in *pluginv1.AccountLifecycleRequest) *pluginv1.AccountPatch {
-		if in.GetPhase() == "before_update" {
-			return &pluginv1.AccountPatch{Priority: new(int32(8)), Weight: new(int32(9)), RpmLimit: new(int32(11))}
-		}
-		return &pluginv1.AccountPatch{Priority: new(int32(3)), Weight: new(int32(7)), TpmLimit: new(int64(5000))}
-	}
-	code, out := e.do("POST", "/account-types/fixture/managed/preparations", map[string]any{"proxy_id": proxy, "settings": map[string]string{"region": "jp"}})
-	require.Equal(t, 201, code, out)
-	code, out = e.do("POST", "/accounts", map[string]any{"name": "guarded", "plugin_key": "fixture", "type": "managed", "proxy_id": proxy,
-		"credentials": map[string]any{}, "settings": map[string]string{"region": "jp"}, "preparation_key": data(out)["key"]})
-	require.Equal(t, 201, code, out)
-	acc := data(out)
-	require.Equal(t, []any{4.0, 2.0, 5000.0}, []any{acc["priority"], acc["weight"], acc["tpm_limit"]})
-	code, out = e.do("PATCH", "/accounts/"+itoa(int64(acc["id"].(float64))), map[string]any{"name": "guarded-2"})
-	require.Equal(t, 200, code, out)
-	acc = data(out)
-	require.Equal(t, []any{4.0, 2.0, 11.0}, []any{acc["priority"], acc["weight"], acc["rpm_limit"]})
 }
 
 // Fixed object and list controls compare as JSON: the current value passes

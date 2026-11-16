@@ -35,10 +35,6 @@ type ModelAvailabilityChecker interface {
 	CheckModelAvailability(context.Context, *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error)
 }
 
-type AccountLifecycle interface {
-	OnAccountLifecycle(context.Context, *pluginv1.AccountLifecycleRequest) (*pluginv1.AccountLifecycleResponse, error)
-}
-
 // ModelLister is implemented by platforms whose upstream can list the models
 // an account may use (console "fetch models", CONTRACTS §19). Optional: a
 // Platform without it answers BuildModelsRequest with UNIMPLEMENTED.

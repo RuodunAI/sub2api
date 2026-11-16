@@ -12,12 +12,9 @@ const { t } = useI18n()
 const auth = useAuthStore()
 const canManage = computed(() => auth.has('settings:manage'))
 
-const defaults: SchedulingSettings = { mode: 'traffic', metric: 'sessions', limit_load: false, model_limits: false }
 const { form, loading, saving, dirty, errors, isLoaded, load, save, reset } = useSettingsForm<SchedulingSettings>({
   path: '/settings/scheduling',
-  defaults,
-  // An older core may still return "default"; the form always holds and sends "traffic".
-  fromServer: r => ({ ...defaults, ...r, mode: 'traffic' })
+  defaults: { metric: 'sessions', limit_load: false, model_limits: false }
 })
 
 const metrics = computed(() =>

@@ -161,8 +161,6 @@ func sample(t reflect.Type, c columnInfo) reflect.Value {
 	switch t {
 	case reflect.TypeFor[time.Time]():
 		v = sampleTime
-	case reflect.TypeFor[store.InfTime]():
-		v = store.InfTime{Infinity: store.PositiveInfinity, Valid: true}
 	case reflect.TypeFor[decimal.Decimal]():
 		v = decimal.NewFromInt(2)
 	case reflect.TypeFor[json.RawMessage]():
@@ -212,9 +210,6 @@ func sameValue(a, b reflect.Value) bool {
 		return x.Equal(b.Interface().(time.Time))
 	case decimal.Decimal:
 		return x.Equal(b.Interface().(decimal.Decimal))
-	case store.InfTime:
-		y := b.Interface().(store.InfTime)
-		return x.Valid == y.Valid && x.Infinity == y.Infinity && x.Time.Equal(y.Time)
 	}
 	return reflect.DeepEqual(a.Interface(), b.Interface())
 }

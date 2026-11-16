@@ -46,8 +46,6 @@ type Account struct {
 	LastTestStatus            *int            `gorm:"column:last_test_status"`                         // integer
 	LastTestErrorCode         *string         `gorm:"column:last_test_error_code"`                     // character varying(128)
 	LastTestErrorSource       *string         `gorm:"column:last_test_error_source"`                   // character varying(32)
-	SubscriptionType          *string         `gorm:"column:subscription_type"`                        // text
-	AutoModels                *bool           `gorm:"column:auto_models"`                              // boolean
 	ModelLimits               json.RawMessage `gorm:"column:model_limits;default:(-)"`                 // jsonb default '[]'::jsonb
 	Environment               json.RawMessage `gorm:"column:environment;default:(-)"`                  // jsonb default '{}'::jsonb
 	AutoDisabledSource        string          `gorm:"column:auto_disabled_source;default:(-)"`         // character varying(32) default ''::character varying

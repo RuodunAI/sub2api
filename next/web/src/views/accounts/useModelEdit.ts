@@ -18,7 +18,7 @@ const MAPPING_TEMPLATE: Mapping = { 'claude-3-5-sonnet-latest': 'claude-sonnet-4
 
 const mappingJSON = (m: Mapping) => (Object.keys(m).length ? JSON.stringify(m, null, 2) : '')
 
-export function useModelEdit(accountType: () => AccountType | null | undefined, subscription: () => string | null | undefined = () => undefined) {
+export function useModelEdit(accountType: () => AccountType | null | undefined) {
   const { t } = useI18n()
   const list = useModelList()
   const {
@@ -37,8 +37,7 @@ export function useModelEdit(accountType: () => AccountType | null | undefined, 
   const mappingJsonMode = ref(false)
   const mappingError = ref('')
 
-  const defaultsFor = (at: AccountType | null | undefined) =>
-    at?.default_models_by_subscription?.[subscription() || ''] ?? at?.default_models ?? []
+  const defaultsFor = (at: AccountType | null | undefined) => at?.default_models ?? []
   const defaultModels = computed(() => defaultsFor(accountType()))
   const defaultMapping = computed<Mapping>(() => defaultMappingOf(accountType()))
   /** "12 models" (+ "and 3 mappings" only when the preset has a mapping; most have none). */

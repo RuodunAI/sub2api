@@ -103,10 +103,6 @@ var goTypes = map[string]goType{
 	"_timestamptz": {name: "store.Times", pkg: storePkg},
 }
 
-// infiniteTime is the type of a timestamptz column whose default is
-// ±infinity, which time.Time cannot hold.
-var infiniteTime = goType{name: "store.InfTime", pkg: storePkg, nullZero: true}
-
 // literalDefault matches a default that is a constant as pg_get_expr prints
 // one: true, false, a number, or a quoted value with its cast. Anything
 // else (nextval(...), now(), a function call) is an expression.
@@ -264,12 +260,10 @@ func docFile(cfg Config) []byte {
 //     written as is, false and 0 included;
 //   - []byte, json.RawMessage and the store array types stay values: nil
 //     takes the default and an empty non-nil value is written; time.Time
-//     stays a value too, the zero time being no time one writes;
-//   - a timestamptz defaulting to ±infinity is a store.InfTime, which
-//     holds infinity (time.Time cannot): Valid false takes the default.
+//     stays a value too, the zero time being no time one writes.
 //
-// Nullable columns are pointers, except []byte, json.RawMessage and
-// store.InfTime, whose zero value already is NULL.
+// Nullable columns are pointers, except []byte and json.RawMessage, whose
+// zero value already is NULL.
 //
 // GORM's own timestamping is off: store.G fills a zero created_at or
 // updated_at without a database default with now() on INSERT, and an
@@ -329,11 +323,12 @@ func render(cfg Config, name string, t table) ([]byte, []string) {
 }
 
 // fieldType is the Go type of column c: its goTypes entry, a pointer where
-// the zero value can stand neither for NULL nor for the default.
+// the zero value can stand neither for NULL nor for the default. A
+// timestamptz defaulting to ±infinity has none: time.Time cannot hold it.
 func fieldType(c column) (goType, bool) {
 	typ, ok := goTypes[c.typName]
 	if c.typName == "timestamptz" && strings.Contains(c.def, "infinity") {
-		typ = infiniteTime
+		ok = false
 	}
 	if ok && (!c.notNull && !typ.nullZero || hidesValue(typ, c)) {
 		typ.name = "*" + typ.name

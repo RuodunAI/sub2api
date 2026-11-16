@@ -68,8 +68,6 @@ func TestGenerateDefaults(t *testing.T) {
 			names text[] NOT NULL DEFAULT '{a}',
 			at timestamptz NOT NULL DEFAULT now(),
 			fixed timestamptz NOT NULL DEFAULT '2020-01-01 00:00:00+00',
-			never timestamptz NOT NULL DEFAULT '-infinity',
-			until timestamptz DEFAULT 'infinity',
 			seg bigint NOT NULL DEFAULT (1 + 1)
 		);`)
 	require.NoError(t, err)
@@ -93,8 +91,6 @@ func TestGenerateDefaults(t *testing.T) {
 		"Names   store.Strings    `gorm:\"column:names;default:(-)\"`",
 		"At      time.Time        `gorm:\"column:at;default:(-)\"`",
 		"Fixed   time.Time        `gorm:\"column:fixed;default:(-)\"`",
-		"Never   store.InfTime    `gorm:\"column:never;default:(-)\"`",
-		"Until   store.InfTime    `gorm:\"column:until;default:(-)\"`",
 		"Seg     int64            `gorm:\"column:seg;default:(-)\"`",
 	} {
 		require.Contains(t, src, want)
@@ -102,13 +98,13 @@ func TestGenerateDefaults(t *testing.T) {
 }
 
 // A type without a deliberate mapping fails generation instead of guessing;
-// enums are no exception.
+// enums and a timestamptz defaulting to infinity are no exception.
 func TestGenerateRejectsUnmappedTypes(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := t.Context()
 	_, err := db.SQL.ExecContext(ctx, `CREATE SCHEMA gen; CREATE TYPE gen.mood AS ENUM ('ok');
-		CREATE TABLE gen.t (at timestamp, n int, m gen.mood)`)
+		CREATE TABLE gen.t (at timestamp, n int, m gen.mood, never timestamptz DEFAULT '-infinity')`)
 	require.NoError(t, err)
 	_, err = modelgen.Generate(ctx, db.Gorm, modelgen.Config{Package: "m", Schema: "gen"})
-	require.ErrorContains(t, err, "t.at (timestamp without time zone), t.m (gen.mood)")
+	require.ErrorContains(t, err, "t.at (timestamp without time zone), t.m (gen.mood), t.never (timestamp with time zone)")
 }

@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -17,57 +15,11 @@ import (
 
 var _ core.PluginAccountPurger = (*Service)(nil)
 
-// deletionResource is the resource recording a deleted account's cleanup
-// intent for accounts of pluginKey, nil when the plugin has none.
-func (s *Service) deletionResource(pluginKey string) core.AccountDeletionResource {
-	deletion, _ := s.d.LifecycleResources[pluginKey].(core.AccountDeletionResource)
-	return deletion
-}
-
-// retentionDays is how many days deleting an account of the type may keep
-// its resources (lifecycle.deletion.retentionDays), 0 when it may not.
-func (s *Service) retentionDays(pluginKey, typ string) int {
-	binding, ok := s.accountType(pluginKey, typ)
-	if !ok || binding.Type.Lifecycle == nil || binding.Type.Lifecycle.Deletion == nil {
-		return 0
-	}
-	days := binding.Type.Lifecycle.Deletion.RetentionDays
-	if days < 1 || days > manifest.MaxRetentionDays {
-		return 0
-	}
-	return days
-}
-
-// markResourcesDeleted records, with the deletion resource of the account's
-// plugin, the cleanup of deleted account id's resources: at once, or with
-// retain at the end of the retention days its type declares. It returns that
-// end (nil: at once). Retaining needs both a resource and retention days.
-func (s *Service) markResourcesDeleted(ctx context.Context, tx *gorm.DB, id int64, pluginKey, typ string, retain bool) (*time.Time, error) {
-	deletion := s.deletionResource(pluginKey)
-	var options core.AccountDeletionOptions
-	if retain {
-		days := s.retentionDays(pluginKey, typ)
-		if days == 0 || deletion == nil {
-			return nil, core.ErrInvalidArgument.WithMessage("This account type does not keep resources after deletion; delete without retain_resources.")
-		}
-		options.RetainDays = days
-	}
-	if deletion == nil {
-		return nil, nil
-	}
-	purgeAfter, err := deletion.MarkAccountDeleted(ctx, tx, id, options)
-	if err != nil || options.RetainDays == 0 {
-		return nil, err
-	}
-	return &purgeAfter, nil
-}
-
 // PurgePluginAccounts implements core.PluginAccountPurger (CONTRACTS §14.3):
 // it soft-deletes every account of the plugin's account types, removes their
-// group memberships, records their resources' cleanup (at once, no
-// retention) and emits one account.deleted event per account, all in one
-// transaction; then it clears their cooldowns and broadcasts account:changed
-// once. Returns the number of accounts deleted.
+// group memberships and emits one account.deleted event per account, all in
+// one transaction; then it clears their cooldowns and broadcasts
+// account:changed once. Returns the number of accounts deleted.
 func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (int, error) {
 	if pluginKey == "" {
 		return 0, core.ErrInvalidArgument.WithMessage("plugin key is required")
@@ -95,13 +47,6 @@ func (s *Service) PurgePluginAccounts(ctx context.Context, pluginKey string) (in
 		}
 		if _, err := s.d.ScopeGrants.ClearScopeGrants(ctx, tx, 0, core.ScopeRefAccount, ids); err != nil {
 			return err
-		}
-		if deletion := s.deletionResource(pluginKey); deletion != nil {
-			for _, id := range ids {
-				if _, err := deletion.MarkAccountDeleted(ctx, tx, id, core.AccountDeletionOptions{}); err != nil {
-					return err
-				}
-			}
 		}
 		return s.d.Events.Emit(ctx, tx, evs...)
 	})

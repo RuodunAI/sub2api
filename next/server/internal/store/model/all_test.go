@@ -8,8 +8,6 @@ func All() []any {
 		&AccountBalance{},
 		&AccountCredentialRefresh{},
 		&AccountGroup{},
-		&AccountLifecycleSync{},
-		&AccountPreparation{},
 		&AccountQuotaSnapshot{},
 		&AccountUsageDelta{},
 		&AccountUsageHourly{},

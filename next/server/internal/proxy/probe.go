@@ -104,7 +104,7 @@ func specURL(spec Spec) *url.URL {
 // proxy without saving it, detecting the protocol when none is given, and
 // looks up the exit IP's location. With save the working proxy is found or
 // created (the account proxy_url rule, CONTRACTS §21.4) and its id returned,
-// for callers that need a proxy_id (Claude Code draft runtimes). A proxy that
+// for callers that need a proxy_id (the account editor). A proxy that
 // works with no protocol is 200 {ok:false, attempts}.
 func (s *Service) probeURL(c *gin.Context) {
 	ctx := audit.Context(c)

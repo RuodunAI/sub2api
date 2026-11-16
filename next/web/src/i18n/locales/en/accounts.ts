@@ -1,8 +1,4 @@
 export default {
-  lifecycle: {
-    pending: 'Runtime configuration pending', applied: 'Runtime configuration synchronized', failed: 'Runtime synchronization failed; check the runtime',
-    environmentDeferred: 'Configuration saved. The running environment is unchanged; the new settings apply when a new runtime is created.'
-  },
   listUi: {
     loadFailedEmpty: 'Accounts could not be loaded. Refresh to retry.',
     identity: 'Account / integration', filters: 'Account filters', search: 'Search account names', advanced: 'More filters', advancedApplied: 'Advanced filters are applied',
@@ -98,9 +94,6 @@ export default {
   orphanedHint: 'Plugin "{plugin}" is not installed; the account is kept but not used.',
   cooldownUntil: 'Cooling down until {time}',
   type: 'Type',
-  subscription: 'Subscription',
-  subscriptionHint: 'Subscription type the upstream reported after authorization',
-  modelsAdjusted: 'Model list adjusted for the {plan} subscription ({n} models)',
   groups: 'Groups',
   proxy: 'Proxy',
   proxyRequired: 'This account type needs a proxy',
@@ -413,20 +406,13 @@ export default {
       path_slash: 'A path starts with /'
     }
   },
-  deleteResources: {
-    label: 'Runtime resources',
-    now: 'Delete all runtime resources now',
-    retain: 'Keep for {days} days, then clean up',
-    nowHint: "The account's runtime resources are deleted with it. This cannot be undone.",
-    retainHint: 'The account is deleted at once and takes no more requests. Its runtime resources stop and are kept for {days} days, then removed.',
-  },
   basic: 'Basic information',
   core: 'core',
   testErrorCode: 'Error code',
   testErrorSource: 'Error source',
   testResponseHeaders: 'Upstream response information',
   testNoHTTPResponse: 'No HTTP response received',
-  testErrorSources: { gateway: 'Gateway/runtime', core: 'Core (before the account runtime)', transport: 'Transport', response: 'HTTP response', plugin: 'Plugin', input: 'CC request input', timeout: 'CC request timeout', interrupted: 'CC request interrupted', internal: 'CC runtime' },
+  testErrorSources: { gateway: 'Gateway', transport: 'Transport', response: 'HTTP response', plugin: 'Plugin' },
   credentials: 'Credentials',
   orphanedEdit: 'The plugin that owns this account type is not enabled, so credentials cannot be edited. Basic information can still be changed.',
   formUnavailable: 'The plugin form could not be loaded.',
@@ -485,13 +471,12 @@ export default {
     apply: 'Apply to {n} accounts', weightHint: 'Random share within one priority (1–1000)', zeroUnlimited: '0 means unlimited', spmHint: '0 means unlimited; the count and the period (1 minute to 24 hours) apply together',
     groupModeLabel: 'How to change groups', groupMode: { replace: 'Replace with', add: 'Add', remove: 'Remove' },
     groupModeHint: { replace: 'Each account gets exactly the chosen groups (none clears them)', add: 'The chosen groups are added to each account\'s groups', remove: 'The chosen groups are removed from each account; others stay' },
-    proxyHint: 'None means no proxy; a Claude Code account without a proxy has no internet access',
+    proxyHint: 'None means no proxy',
     controlFixed: '{n} selected accounts have a type that does not allow changing this',
     editDone: '{ok} accounts updated ({skipped} needed no change)', editPartial: '{ok} succeeded, {fail} failed, {skipped} skipped',
     failures: '{n} accounts not completed',
     deleteTitle: 'Delete {n} accounts', deleteConfirm: 'Delete the {n} selected accounts? This cannot be undone.', andMore: 'and {n} more',
-    deleteRun: 'Delete {n} accounts', deleteRetain: 'Keep runtime resources where possible ({n} accounts, up to {days} days)',
-    deleteRetainHint: 'Accounts that support it stop and keep their resources; the others release them now.',
+    deleteRun: 'Delete {n} accounts',
     deleteDone: '{ok} accounts deleted', deletePartial: '{ok} deleted, {fail} failed, {skipped} not run'
   },
   latency: 'Latency',
@@ -538,10 +523,7 @@ export default {
     refresh: 'Refresh',
     refreshing: 'Refreshing',
     refreshHint: 'Click quota to refresh usage now',
-    refreshed: 'Usage updated',
-    refreshBlocked: {
-      runtime_not_ready: 'The account runtime is not synchronized yet, so its quota cannot be queried. Try again shortly.'
-    }
+    refreshed: 'Usage updated'
   },
   autoReleaseAt: 'Auto-enables at {time}',
   resetStatus: 'Reset status',
@@ -550,7 +532,6 @@ export default {
   resetStatusConfirm: 'Restore "{name}" to enabled and clear its error reason and cooldown? The scheduling switch stays unchanged. If credentials are still invalid or upstream limits remain, the account may be automatically disabled or cooled down again.',
   resetStatusDone: 'Account status reset',
   pluginActions: {
-    running: 'Running "{name}"…',
     done: '"{name}" completed'
   },
   credRefresh: {

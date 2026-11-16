@@ -17,12 +17,26 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
+// rawQuotaPlugin asks the fixture upstream for the quota and reads a fixed
+// window from any answer.
+type rawQuotaPlugin struct {
+	*fakePlatform
+	upstream string
+}
+
+func (p *rawQuotaPlugin) BuildQuotaRequest(context.Context, *pluginv1.BuildQuotaRequestRequest) (*pluginv1.BuildQuotaRequestResponse, error) {
+	return &pluginv1.BuildQuotaRequestResponse{Url: p.upstream + "/quota", Headers: map[string]string{"x-api-key": "sk-good-key-123"}}, nil
+}
+
+func (p *rawQuotaPlugin) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
+	return &pluginv1.QuotaResult{Windows: []*pluginv1.QuotaWindow{{Key: "custom", Utilization: 12}}}, nil
+}
+
 type optionalQuotaPlugin struct {
-	*runtimeQuotaPlugin
+	*rawQuotaPlugin
 	mode   string
 	builds atomic.Int32
 }
@@ -32,7 +46,7 @@ func (p *optionalQuotaPlugin) BuildQuotaRequest(ctx context.Context, in *pluginv
 	if p.mode == "builder" {
 		return nil, status.Error(codes.Unimplemented, "optional builder absent")
 	}
-	return p.runtimeQuotaPlugin.BuildQuotaRequest(ctx, in)
+	return p.rawQuotaPlugin.BuildQuotaRequest(ctx, in)
 }
 
 func (p *optionalQuotaPlugin) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
@@ -49,9 +63,8 @@ func TestQuotaOptionalReaderAbsentPreservesObservations(t *testing.T) {
 				t.Run(fmt.Sprintf("%s/observed=%t/automatic=%t", mode, observed, automatic), func(t *testing.T) {
 					e := setup(t)
 					e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: automatic})
-					p := &optionalQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}, mode: mode}
+					p := &optionalQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}, mode: mode}
 					e.gen.types[0].Client = p
-					e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &quotaRuntimeFixture{}}
 					id := e.mkRawAccount("anthropic", "apikey", "optional", "sk-good-key-123", true)
 					e.ensureQuotaRow(id, quotaPluginRevision(e.gen.types[0]), automatic)
 					if observed {
@@ -102,9 +115,8 @@ func TestQuotaOptionalReaderAbsentPreservesObservations(t *testing.T) {
 func TestQuotaSuccessfulEmptyWindowsPreservesMissing(t *testing.T) {
 	e := setup(t)
 	e.withQuota(&manifest.AccountQuota{Query: true})
-	p := &optionalQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}, mode: "empty"}
+	p := &optionalQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}, mode: "empty"}
 	e.gen.types[0].Client = p
-	e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &quotaRuntimeFixture{}}
 	id := e.mkRawAccount("anthropic", "apikey", "empty", "sk-good-key-123", true)
 	windows := map[string]store.QuotaWindow{"daily": {Utilization: 100, Status: "rejected"}, "weekly": {Utilization: 20}}
 	require.NoError(t, e.db.SaveAccountQuota(t.Context(), id, store.QuotaPassive, windows))
@@ -128,17 +140,12 @@ func TestQuotaSuccessfulEmptyWindowsPreservesMissing(t *testing.T) {
 	require.Equal(t, "transient: "+strings.Repeat("é", 128), err.Error())
 }
 
-func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
+func TestQuotaAutomaticRecordingAndRenewal(t *testing.T) {
 	e := setup(t)
 	up := newQuotaUpstream(t)
 	up.pct.Store(100)
 	e.plat.quotaURL = up.srv.URL
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
-	require.NoError(t, err)
-	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
-	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
-	e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &preparationResource{}}
 	code, out := e.do("POST", "/accounts", map[string]any{"name": "automatic", "plugin_key": "anthropic", "type": "apikey", "credentials": map[string]any{"api_key": "sk-good-key-123"}})
 	require.Equal(t, 201, code, fmt.Sprint(out))
 	id := int64(data(out)["id"].(float64))
@@ -149,9 +156,6 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	require.Nil(t, snap.UpdatedAt)
 	require.Zero(t, up.calls.Load())
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
-	require.Zero(t, up.calls.Load())
-	require.NoError(t, e.svc.deliverAccountLifecycle(t.Context(), id, "anthropic", core.EventAccountCreated, nil))
-	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 1, up.calls.Load())
 	snap, err = e.db.AccountQuota(t.Context(), id)
 	require.NoError(t, err)
@@ -161,7 +165,6 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	require.NoError(t, e.svc.SetCooldown(t.Context(), id, time.Now().Add(time.Hour), "manual hold"))
 	code, _ = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"name": "renamed"})
 	require.Equal(t, 200, code)
-	require.NoError(t, e.svc.deliverAccountLifecycle(t.Context(), id, "anthropic", core.EventAccountUpdated, []string{"name"}))
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 1, up.calls.Load())
 	// Existing schedules (including plugin hints) cannot pull an automatic
@@ -192,98 +195,15 @@ func TestQuotaAutomaticRecordingLifecycleAndRenewal(t *testing.T) {
 	require.True(t, schedulable)
 }
 
-// A runtime waiting only for its new environment (locale / timezone) keeps
-// serving with the existing container: its quota is queried as usual. Any
-// other pending synchronization keeps the account out of automatic refresh,
-// and a manual refresh says why instead of answering the old snapshot.
-func TestQuotaLifecycleEnvironmentPendingIsReady(t *testing.T) {
-	e := setup(t)
-	ctx := t.Context()
-	up := newQuotaUpstream(t)
-	e.plat.quotaURL = up.srv.URL
-	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Fixture"}','enabled')`)
-	require.NoError(t, err)
-	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
-	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
-	e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &preparationResource{}}
-	code, out := e.do("POST", "/accounts", map[string]any{"name": "environment", "plugin_key": "anthropic", "type": "apikey", "credentials": map[string]any{"api_key": "sk-good-key-123"}})
-	require.Equal(t, 201, code, fmt.Sprint(out))
-	id := int64(data(out)["id"].(float64))
-	path := fmt.Sprintf("/accounts/%d/quota?force=true", id)
-	setSync := func(status, code string) {
-		t.Helper()
-		tag, err := e.db.SQL.ExecContext(ctx, `UPDATE account_lifecycle_sync SET status=$2,code=$3 WHERE account_id=$1`, id, status, code)
-		require.NoError(t, err)
-		n, err := tag.RowsAffected()
-		require.NoError(t, err)
-		require.EqualValues(t, 1, n)
-	}
-	blocked := func() string {
-		t.Helper()
-		a, err := e.svc.loadRow(ctx, e.db.Gorm, id, core.AllScope, false)
-		require.NoError(t, err)
-		reason, err := e.svc.quotaBlocked(ctx, a, e.gen.types[0])
-		require.NoError(t, err)
-		return reason
-	}
-	reasonOf := func(out map[string]any) string {
-		errObj, _ := out["error"].(map[string]any)
-		details, _ := errObj["details"].(map[string]any)
-		reason, _ := details["reason"].(string)
-		return reason
-	}
-
-	for _, pending := range []struct{ status, code string }{{"pending", "runtime_pending"}, {"pending", "controller_outdated"}, {"failed", "environment_requires_new_runtime"}} {
-		setSync(pending.status, pending.code)
-		require.Equal(t, "runtime_not_ready", blocked(), pending)
-		require.NoError(t, e.svc.sweepQuotas(ctx))
-		require.Zero(t, up.calls.Load(), pending)
-		code, out = e.do("GET", path, nil)
-		require.Equal(t, 409, code, fmt.Sprint(out))
-		require.Equal(t, "runtime_not_ready", reasonOf(out))
-		require.Zero(t, up.calls.Load(), pending)
-	}
-	snap, err := e.db.AccountQuota(ctx, id)
-	require.NoError(t, err)
-	require.Equal(t, "pending", snap.RefreshStatus)
-
-	setSync("pending", "environment_requires_new_runtime")
-	require.Empty(t, blocked())
-	require.NoError(t, e.svc.sweepQuotas(ctx))
-	require.EqualValues(t, 1, up.calls.Load(), "the sweep selects an account whose runtime only waits for a new environment")
-	snap, err = e.db.AccountQuota(ctx, id)
-	require.NoError(t, err)
-	require.Equal(t, "ready", snap.RefreshStatus)
-	code, out = e.do("GET", path, nil)
-	require.Equal(t, 200, code, fmt.Sprint(out))
-	require.EqualValues(t, 2, up.calls.Load())
-
-	// A disabled account is only kept out of scheduling; its quota is queried.
-	_, err = e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status='disabled' WHERE id=$1`, id)
-	require.NoError(t, err)
-	code, out = e.do("GET", path, nil)
-	require.Equal(t, 200, code, fmt.Sprint(out))
-	require.EqualValues(t, 3, up.calls.Load())
-}
-
 func TestQuotaInitialRecordingWithSchedulingOff(t *testing.T) {
 	e := setup(t)
 	up := newQuotaUpstream(t)
 	up.failStatus.Store(503)
 	e.plat.quotaURL = up.srv.URL
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status,active_version) VALUES('anthropic','{"en":"Fixture"}','enabled','0.1.0')`)
-	require.NoError(t, err)
-	e.gen.types[0].Type.Lifecycle = &manifest.AccountLifecycle{}
-	e.gen.types[0].Client = &preparationPlugin{fakePlatform: e.plat}
-	e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &preparationResource{}}
 	code, out := e.do("POST", "/accounts", map[string]any{"name": "initial-off", "plugin_key": "anthropic", "type": "apikey", "schedulable": false, "credentials": map[string]any{"api_key": "sk-good-key-123"}})
 	require.Equal(t, 201, code, fmt.Sprint(out))
 	id := int64(data(out)["id"].(float64))
-	require.NoError(t, e.svc.sweepQuotas(t.Context()))
-	require.Zero(t, up.calls.Load())
-	require.NoError(t, e.svc.deliverAccountLifecycle(t.Context(), id, "anthropic", core.EventAccountCreated, nil))
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.EqualValues(t, 1, up.calls.Load())
 	snap, err := e.db.AccountQuota(t.Context(), id)
@@ -335,7 +255,7 @@ func TestQuotaAutomaticInactiveAndAdmission(t *testing.T) {
 }
 
 type heldQuotaPlugin struct {
-	*runtimeQuotaPlugin
+	*rawQuotaPlugin
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -351,9 +271,8 @@ func TestQuotaInitialFailureAndStaleAuthResult(t *testing.T) {
 	e := setup(t)
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
 	id := e.mkRawAccount("anthropic", "apikey", "race", "sk-good-key-123", true)
-	p := &heldQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}, started: make(chan struct{}), release: make(chan struct{})}
+	p := &heldQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}, started: make(chan struct{}), release: make(chan struct{})}
 	e.gen.types[0].Client = p
-	e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &quotaRuntimeFixture{}}
 	done := make(chan error, 1)
 	go func() { done <- e.svc.sweepQuotas(t.Context()) }()
 	<-p.started
@@ -417,7 +336,7 @@ func TestQuotaObservationValidationAndMissingWindows(t *testing.T) {
 	require.Equal(t, second[id].Revision, after[id].Revision)
 }
 
-type zeroQuotaPlugin struct{ *runtimeQuotaPlugin }
+type zeroQuotaPlugin struct{ *rawQuotaPlugin }
 
 func (p *zeroQuotaPlugin) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
 	return &pluginv1.QuotaResult{Windows: []*pluginv1.QuotaWindow{{Key: "scoped", Utilization: 0, Status: "allowed"}}}, nil
@@ -440,8 +359,7 @@ func TestQuotaUnknownScopedObservationRoundTrip(t *testing.T) {
 	require.Equal(t, before.UpdatedAt, stored.UpdatedAt)
 	for _, known := range []bool{false, true} {
 		if known {
-			e.gen.types[0].Client = &zeroQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}}
-			e.svc.d.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &quotaRuntimeFixture{}}
+			e.gen.types[0].Client = &zeroQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}}
 			code, out := e.do("GET", fmt.Sprintf("/accounts/%d/quota?force=true", id), nil)
 			require.Equal(t, 200, code, fmt.Sprint(out))
 		}
@@ -563,7 +481,7 @@ func TestQuotaSourceGenerationAndReadFailures(t *testing.T) {
 }
 
 type boundedQuotaPlugin struct {
-	*runtimeQuotaPlugin
+	*rawQuotaPlugin
 	calls  atomic.Int32
 	active atomic.Int32
 	peak   atomic.Int32
@@ -591,15 +509,13 @@ func TestQuotaSweepBoundedAcrossNodes(t *testing.T) {
 	e := setup(t)
 	e.svc.d.CanWork = func() bool { return false }
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
-	p := &boundedQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}}
+	p := &boundedQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}}
 	e.gen.types[0].Client = p
-	runtime := &quotaRuntimeFixture{}
 	for i := range quotaSweepPage + 2 {
 		e.mkRawAccount("anthropic", "apikey", fmt.Sprintf("bounded-%d", i), "sk-good-key-123", true)
 	}
 	deps := e.svc.d
 	deps.CanWork = func() bool { return true }
-	deps.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": runtime}
 	one, two := New(deps), New(deps)
 	errs := make(chan error, 2)
 	go func() { errs <- one.sweepQuotas(t.Context()) }()
@@ -626,7 +542,7 @@ func TestQuotaObservationSupersedesQueuedSample(t *testing.T) {
 }
 
 type cancellableQuotaPlugin struct {
-	*runtimeQuotaPlugin
+	*rawQuotaPlugin
 	started chan struct{}
 }
 
@@ -644,12 +560,11 @@ func TestQuotaSweepCancellation(t *testing.T) {
 			e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
 			_, err := e.db.SQL.ExecContext(t.Context(), `INSERT INTO plugins(key,name,status) VALUES('anthropic','{"en":"Test"}','enabled')`)
 			require.NoError(t, err)
-			p := &cancellableQuotaPlugin{runtimeQuotaPlugin: &runtimeQuotaPlugin{fakePlatform: e.plat}, started: make(chan struct{})}
+			p := &cancellableQuotaPlugin{rawQuotaPlugin: &rawQuotaPlugin{fakePlatform: e.plat, upstream: e.upstream.URL}, started: make(chan struct{})}
 			e.gen.types[0].Client = p
 			id := e.mkRawAccount("anthropic", "apikey", "cancel", "sk-good-key-123", true)
 			deps := e.svc.d
 			deps.CanWork = func() bool { return true }
-			deps.LifecycleResources = map[string]core.AccountLifecycleResource{"anthropic": &quotaRuntimeFixture{}}
 			worker := New(deps)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
@@ -701,7 +616,7 @@ func TestQuotaGenericModuleHasNoProviderBranches(t *testing.T) {
 			if strings.HasPrefix(strings.TrimSpace(line), "//") {
 				continue
 			}
-			for _, name := range []string{"ccgateway", "anthropic", "sonnet", "fable"} {
+			for _, name := range []string{"anthropic", "sonnet", "fable"} {
 				require.NotContains(t, strings.ToLower(line), name, path)
 			}
 		}

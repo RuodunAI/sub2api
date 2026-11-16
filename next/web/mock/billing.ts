@@ -1663,7 +1663,7 @@ on('PUT', '/settings/gateway', (req) => {
 })
 
 // Core load balancing (CONTRACTS §89): the row is replaced, absent fields take the defaults; mode is always traffic.
-const SCHEDULING_DEFAULTS = { mode: 'traffic', metric: 'sessions', limit_load: false, model_limits: false }
+const SCHEDULING_DEFAULTS = { metric: 'sessions', limit_load: false, model_limits: false }
 const schedulingSettings = { ...SCHEDULING_DEFAULTS }
 on('GET', '/settings/scheduling', () => schedulingSettings)
 on('PUT', '/settings/scheduling', req => {

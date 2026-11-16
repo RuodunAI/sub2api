@@ -14,6 +14,7 @@ import (
 
 	"gorm.io/gorm"
 
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -114,7 +115,7 @@ const pkgCacheSize = 8
 
 // maxCachedPackage: larger packages are unpacked again on every use
 // instead of being cached.
-const maxCachedPackage = 64 << 20
+const maxCachedPackage = rc.PluginPackageMaxBytes
 
 // New builds the install service.
 func New(d Deps, opt Options) *Service {
@@ -171,8 +172,9 @@ func (s *Service) Package(ctx context.Context, key, version string) (*pkg.Packag
 		return nil, err
 	}
 	if int64(len(raw)) > maxCachedPackage {
-		// A package carrying runtime images (CONTRACTS §53.10) would keep
-		// about twice its size in memory for as long as it stays cached.
+		// A package above the default size limit (possible only with a
+		// raised SUB2API_PLUGIN_MAX_PACKAGE_BYTES) would keep about twice its
+		// size in memory for as long as it stays cached.
 		return p, nil
 	}
 	s.cacheMu.Lock()

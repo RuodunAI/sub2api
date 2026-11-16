@@ -326,13 +326,11 @@ func TestGORMResultTypes(t *testing.T) {
 			Tags   store.Strings
 			NoTags store.Strings
 			Times  store.Times
-			Due    store.InfTime
-			Never  store.InfTime
 		}
 		require.NoError(t, g.Raw(`SELECT 3::int2 AS small, 4::int4 AS count, 1.25::numeric AS cost, 1.25::numeric(10,4) AS cost_s,
 			true AS flag, '\x01'::bytea AS raw, '{"k":"v"}'::jsonb AS doc, now() AS at, NULL::timestamptz AS opt,
 			'{1,2}'::int8[] AS refs, '{a}'::varchar[] AS tags, NULL::text[] AS no_tags,
-			ARRAY[?::timestamptz] AS times, '-infinity'::timestamptz AS due, NULL::timestamptz AS never`, ts).Scan(&r).Error)
+			ARRAY[?::timestamptz] AS times`, ts).Scan(&r).Error)
 		assert.Equal(t, int16(3), r.Small)
 		assert.Equal(t, 4, r.Count)
 		assert.Equal(t, 1.25, r.Cost)
@@ -347,8 +345,6 @@ func TestGORMResultTypes(t *testing.T) {
 		assert.Nil(t, r.NoTags)
 		require.Len(t, r.Times, 1)
 		assert.True(t, ts.Equal(r.Times[0]))
-		assert.Equal(t, store.InfTime{Infinity: store.NegativeInfinity, Valid: true}, r.Due)
-		assert.Equal(t, store.InfTime{}, r.Never)
 	})
 
 	t.Run("NULL elements", func(t *testing.T) {
@@ -400,9 +396,8 @@ func TestGORMReadsEverySchemaColumn(t *testing.T) {
 	}
 }
 
-// Array and InfTime parameters: arrays as plain slices for pgx to encode,
-// InfTime as a time.Time or "±infinity", in both of pgx's ways of sending a
-// statement.
+// Array parameters: plain slices for pgx to encode, in both of pgx's ways of
+// sending a statement.
 func TestStoreTypesAsParameters(t *testing.T) {
 	db, _ := widgetDB(t)
 	ctx := context.Background()
@@ -418,23 +413,15 @@ func TestStoreTypesAsParameters(t *testing.T) {
 				Tags  store.Strings
 				Flags string
 				Times store.Times
-				Due   store.InfTime
-				Late  store.InfTime
-				Nil   store.InfTime
 			}
-			require.NoError(t, g.Raw(`SELECT ?::int8[] AS ids, ?::text[] AS tags, ?::bool[]::text AS flags, ?::timestamptz[] AS times,
-				?::timestamptz AS due, ?::timestamptz AS late, ?::timestamptz AS nil`,
+			require.NoError(t, g.Raw(`SELECT ?::int8[] AS ids, ?::text[] AS tags, ?::bool[]::text AS flags, ?::timestamptz[] AS times`,
 				store.Int64s{-1, 0, 9007199254740993}, store.Strings{"", "a b", `q"uote`, `back\slash`, "NULL", "{,}"},
-				store.Bools{true, false}, store.Times{at}, store.InfTime{Infinity: store.PositiveInfinity, Valid: true},
-				store.InfTime{Time: at, Valid: true}, store.InfTime{}).Scan(&r).Error)
+				store.Bools{true, false}, store.Times{at}).Scan(&r).Error)
 			assert.Equal(t, store.Int64s{-1, 0, 9007199254740993}, r.Ids)
 			assert.Equal(t, store.Strings{"", "a b", `q"uote`, `back\slash`, "NULL", "{,}"}, r.Tags)
 			assert.Equal(t, "{t,f}", r.Flags)
 			require.Len(t, r.Times, 1)
 			assert.True(t, at.Truncate(time.Microsecond).Equal(r.Times[0]), "%v", r.Times[0])
-			assert.Equal(t, store.InfTime{Infinity: store.PositiveInfinity, Valid: true}, r.Due)
-			assert.True(t, r.Late.Valid && at.Truncate(time.Microsecond).Equal(r.Late.Time), "%+v", r.Late)
-			assert.Equal(t, store.InfTime{}, r.Nil)
 
 			var n int64
 			require.NoError(t, g.Raw(`SELECT count(*) FROM unnest(?::int8[]) x WHERE x = ANY(?)`,
