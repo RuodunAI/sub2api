@@ -2640,7 +2640,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 - `GET /system/update-check?force=true` 使用固定 GitHub API 查询 latest stable Release。响应包含当前/最新版本、是否有更新、兼容性、阻断原因、tag、发布说明、检查时间和缓存标记。检测不仅看 tag，还验证 `next-core-manifest.json` 的签名、语义版本绑定、当前平台和摘要包资产，并检查当前基线的 schema/协议兼容性。网络失败或不兼容不能冒充已经最新。
 - `POST /system/releases/import` 要求 `system:update:execute` 及既有二次认证，输入当前规范化 `repository` 与 `tag`。网关重新获取并验签，在 PG 事务持有集群行共享锁时复核来源，登记后仍走原有预检与升级计划。相同摘要已存在于其他来源时不静默改写下载地址，不影响已执行中的计划。核心桥记录 `system.update_source.update` 和 `system.release.import` 审计。
 - GitHub 下载使用独立 HTTPS 策略，仅允许 Release 资产路径与指定的 GitHub 资产 CDN 跳转；禁止非公开目标 IP，跳转不携带认证信息。原发布源继续禁止重定向，节点认证传输与发布下载隔离。完整 bundle 大小、摘要、解包文件清单和运行平台仍由现有 release manager 验证。
-- 更新检测结果属于临时状态，按来源及基线缓存；改变来源或集群基线后不得复用旧结果。前端也用请求代次防止过期响应覆盖新设置。发布包格式与导出工具见 `next/deploy/gateway/github/README.md`；已有旧版 backend Release 不是 next 核心包。
+- 更新检测结果属于临时状态，按来源及基线缓存；改变来源或集群基线后不得复用旧结果。前端也用请求代次防止过期响应覆盖新设置。发布包格式与发布流水线见 `next/deploy/gateway/github/README.md`；已有旧版 backend Release 不是 next 核心包。
 - 节点视图提供“图表 / 拓扑图”切换，默认拓扑。拓扑展示节点分组及网关—核心—插件连接，灰线仅表示归属；紫色箭头表示转发至主节点，橙色虚线表示 CPU 可接收候选，非流量追踪。保留详情图表，支持缩放与滚动；核心自身心跳过期时不因为网关在线而标成运行。
 
 ### 40.1 交互节点图
