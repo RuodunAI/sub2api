@@ -22,20 +22,18 @@
 
 **发布**：全部节点升级到本版本后再 `PUT /settings/session {"issue":"s2s"}`，不需要第二次发版。**回退**：切回 `jwt` 立即恢复签发 JWT，已发的 `s2s_` 有效到过期；接口不可用时直接改 `settings` 表（30 秒内全部节点生效）或设 `SUB2API_SESSION_ISSUE=jwt` 重启节点，见 `next/deploy/rollback/0.1.290-session-down.md`。代码回滚到上一版时 `s2s_` 用户需要重新登录。JWT 代码与 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表在切换 30 天后另行清理（§100.7）。
 
-### 核心 0.1.290（版本号推测）：权限判断接入 Casbin，影子模式（迁移 0100，可滚动）
+### 核心 0.1.290（版本号推测）：权限改由 Casbin 判断，授予只存 `casbin_rule`（迁移 0100，单向，停服发布）
 
-契约见 CONTRACTS §99。用户可见的权限不变：默认 `authz.engine = shadow`，旧加载器照常说了算。
+契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
-- **新表 `casbin_rule`**：旧角色表的投影，由触发器在同一事务里维护，迁移时回填；旧表仍是真相，写路径不变。
-- **影子比较**：每个用户每个版本首次解析权限时，Casbin 在请求外再算一遍并比较整个集合，`Can` 按 1% 抽样核对 matcher；请求不等 Casbin（每节点最多 32 个并发比较，满了丢弃计数）。不一致记 Warn `authz: shadow mismatch`；重读后才一致的（缓存用了版本没有记录的状态）单独记为 `stale_cache`、Warn `authz: shadow stale cache`。计数（含跳过与丢弃的比例）见新接口 `GET /settings/authz`（`settings:read`，本节点自启动以来）。
-- **开关**：`PUT /settings/authz {"engine": "legacy" | "shadow" | "casbin"}`（`settings:manage` + 二次验证 `authz.engine`，只有超管本人可以，写审计 `authz.engine.set`），广播后各节点立即生效；环境变量 `SUB2API_AUTHZ_ENGINE` 优先（已加入网关传给核心的环境变量白名单，`deploy/single` 的 compose 也映射了）。设置行里 `engine` 不是字符串时保持当前档并记错误，不回落到默认档。控制台没有页面。
-- **漂移任务** `core.authz.casbin_drift`（集群，每 10 分钟）：`casbin_rule` 与角色表不一致时告警、在权限写锁内复核后按角色表修正并升权限版本（没有可修的就不升）。
-- **离线核对** `sub2api admin authz-verify [--keys] [--key-users N]`：逐个用户比较旧加载器与 Casbin，有不一致退出码 1，有跳过（读到写入中间）退出码 3；在静止的副本上运行。
-- 用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
+- **判断**：每个权限版本一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
+- **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
 
-**发布**：迁移 0100 只做加法，可以与 0.1.289 滚动混跑（旧核心的写入同样被触发器投影）。发布后检查 `SELECT count(*) FROM authz_casbin_drift` 为 0。切到 `casbin` 的门槛见 §99.5（`shadow` 至少 2 周，不一致、`stale_cache` 与漂移都为 0，丢弃与跳过的比例在上限内）。
+**发布**：单向迁移，必须停服：停掉全部节点（主节点先停），备份数据库，启动主节点迁移，再启动其余节点；0.1.289 不能在迁移后的库上运行。核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。
 
-**回滚**：切 `authz.engine = legacy`，立即生效；接口不可用时直接改 `settings` 表（30 秒内全部节点生效）或设 `SUB2API_AUTHZ_ENGINE=legacy` 重启节点，见回滚文档；网关不允许跨 schema 回退，旧二进制照常运行。不经网关的部署可以按 `next/deploy/rollback/0.1.290-casbin-down.md` 删掉投影，不丢授予。
+**回滚**：只能从升级前的备份恢复，恢复后清掉 Valkey 的 `authz:c:ur:*`；升级后的写入会丢失。没有反向脚本，也没有运行时开关。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
 
 ### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
 
