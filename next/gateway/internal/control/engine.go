@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"gorm.io/gorm"
@@ -31,6 +32,14 @@ type Engine struct {
 	PeerCheck      func(context.Context) error
 	// CPU reports this node's averaged CPU load; ok is false when unmeasured.
 	CPU func() (percent float64, ok bool)
+	// Gateway installs and switches this node's gateway binaries for the
+	// gateway plans; nil on a node that cannot (Node.SelfUpdate).
+	Gateway *release.Manager
+	// Handoff restarts the gateway process once a recorded gw-swap or
+	// gw-revert changed the binary it should run; BundledVersion is the
+	// version of the image's own binary (default Node.GatewayVersion).
+	Handoff        func()
+	BundledVersion string
 
 	heartbeat     sync.Mutex
 	offloading    bool
@@ -55,6 +64,8 @@ type Engine struct {
 	// notReadySince is when an idle, reachable core was first seen not
 	// ready; Work restarts it only once that lasts notReadyRestart.
 	notReadySince time.Time
+	// handoff is set by a gateway switch that awaits the process restart.
+	handoff atomic.Bool
 }
 
 const (
@@ -193,10 +204,13 @@ type YieldState struct {
 	Offloading bool   `json:"offloading"`
 	Draining   bool   `json:"draining"`
 	Active     int64  `json:"active_requests"`
+	// GatewayVersion is the gateway running; BundledVersion the image's own.
+	GatewayVersion string `json:"gateway_version"`
+	BundledVersion string `json:"bundled_version"`
 }
 
 func (e *Engine) YieldState() YieldState {
-	st := YieldState{NodeID: e.Node.ID, Yielding: e.yielding.Load()}
+	st := YieldState{NodeID: e.Node.ID, Yielding: e.yielding.Load(), GatewayVersion: e.Node.GatewayVersion, BundledVersion: e.BundledVersion}
 	e.heartbeat.Lock()
 	st.Offloading = e.offloading
 	e.heartbeat.Unlock()
@@ -428,7 +442,7 @@ func (e *Engine) coordinateTx(ctx context.Context, tx *gorm.DB, primary string) 
 	var p Plan
 	var raw []byte
 	err := tx.Table("updater.upgrades").Where("cluster_id = ? AND status = 'running'", e.Store.Cluster).Clauses(forUpdate()).
-		Select("id,release_digest,nodes,cursor,strategy").Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy)
+		Select("id,release_digest,nodes,cursor,strategy,source_digest").Row().Scan(&p.ID, &p.ReleaseDigest, &raw, &p.Cursor, &p.Strategy, &p.SourceDigest)
 	if gormpg.IsNoRows(err) {
 		return false, nil
 	}
@@ -463,15 +477,23 @@ func (e *Engine) completePlan(ctx context.Context, tx *gorm.DB, p Plan) (bool, e
 	if err := e.requireFreshNodes(ctx, p.Nodes); err != nil {
 		return false, err
 	}
+	serving := e.Store.nodes(tx).Where("node_id = ANY(?) AND ready AND mode = 'local' AND release_digest = ?", gormpg.Array[string](p.Nodes), p.CoreDigest())
+	if p.Strategy == GatewayRolling {
+		r, err := e.Store.GatewayRelease(ctx, p.ReleaseDigest)
+		if err != nil {
+			return false, err
+		}
+		serving = serving.Where("gateway_version = ?", r.Manifest.GatewayVersion)
+	}
 	var verified int64
-	if err := e.Store.nodes(tx).Where("node_id = ANY(?) AND ready AND mode = 'local' AND release_digest = ?", gormpg.Array[string](p.Nodes), p.ReleaseDigest).Count(&verified).Error; err != nil {
+	if err := serving.Count(&verified).Error; err != nil {
 		return false, err
 	}
 	if verified != int64(len(p.Nodes)) {
 		reason := "waiting for all planned nodes to verify the target release"
 		return false, &blocked{p.ID, reason, errors.New(reason)}
 	}
-	if err := e.Store.clusterRow(tx).Updates(map[string]any{"baseline": p.ReleaseDigest, "revision": gorm.Expr("revision+1")}).Error; err != nil {
+	if err := e.Store.clusterRow(tx).Updates(map[string]any{"baseline": p.CoreDigest(), "revision": gorm.Expr("revision+1")}).Error; err != nil {
 		return false, err
 	}
 	if err := upgradeRow(tx, p.ID).Updates(map[string]any{"status": "completed", "updated_at": gorm.Expr("now()")}).Error; err != nil {
@@ -609,10 +631,13 @@ func (e *Engine) Work(ctx context.Context) error {
 		return nil
 	}
 	run := ctx
-	if st.Action == "prepare" {
+	if st.Action == "prepare" || st.Action == "gw-prepare" {
 		run = lock
 	}
 	err = e.Execute(run, st)
+	// A gateway switch restarts the process only once this step is recorded
+	// (below); one whose outcome is not recorded runs again and asks again.
+	handoff := e.handoff.Swap(false)
 	if run.Err() != nil {
 		return run.Err()
 	} // loss of lock never records completion
@@ -664,6 +689,10 @@ func (e *Engine) Work(ctx context.Context) error {
 	// Publish after the post-action report so a peer can observe the new route
 	// on its first wake. Report/publication failures are repaired by polling.
 	e.Store.NotifyUpgrade(ctx)
+	// The new process finds the switch done and continues the plan.
+	if handoff && execErr == nil && e.Handoff != nil {
+		e.Handoff()
+	}
 	return execErr
 }
 
@@ -725,20 +754,13 @@ func (e *Engine) Execute(ctx context.Context, st Step) error {
 		}
 		return e.Runtime.Maintenance(ctx)
 	case "yield":
-		// A core that is not serving has nothing to hand over; one that is
-		// must have a taker, or the plan pauses here rather than go dark.
-		if err := e.Yield(ctx, false); err != nil {
-			if stopped, _ := e.Runtime.Stopped(ctx); stopped {
-				e.yielding.Store(true)
-				return nil
-			}
-			if status, _, statusErr := e.Runtime.Status(ctx); statusErr != nil || !status.Ready {
-				e.yielding.Store(true)
-				return nil
-			}
-			return err
-		}
-		return nil
+		return e.yieldStep(ctx, st)
+	case "gw-prepare":
+		return e.prepareGateway(ctx, st.TargetDigest)
+	case "gw-swap", "gw-revert":
+		return e.swapGateway(ctx, st)
+	case "gw-confirm":
+		return e.confirmGateway(ctx)
 	case "resume":
 		return e.Resume(ctx)
 	case "stop":
@@ -975,11 +997,14 @@ func (e *Engine) start(ctx context.Context, planID, digest string, bootstrap boo
 		if p.Status != "running" {
 			return errors.New("plan is not runnable")
 		}
-		if p.Strategy == Rolling {
+		switch {
+		case gatewayStrategy(p.Strategy):
+			// The baseline core starts again as it runs on the others.
+		case p.Strategy == Rolling:
 			// The schema is unchanged by construction (rollingEligible), the
 			// other nodes keep serving: no migration, no barrier.
 			opts.ExpectedSchemaBefore = rel.Manifest.SchemaBefore
-		} else if e.Node.ID == primary {
+		case e.Node.ID == primary:
 			if err = e.followersStopped(ctx); err != nil {
 				return err
 			}
@@ -989,7 +1014,7 @@ func (e *Engine) start(ctx context.Context, planID, digest string, bootstrap boo
 			}
 			opts.AllowMigration = true
 			opts.ExpectedSchemaBefore = source.Manifest.SchemaAfter
-		} else {
+		default:
 			nodes, err := e.Store.Nodes(ctx)
 			if err != nil {
 				return err
@@ -1061,7 +1086,7 @@ func (e *Engine) recoverActivePlan(ctx context.Context, p Plan, primary string) 
 			member = true
 		}
 	}
-	if p.Strategy == Rolling && member {
+	if rollingStrategy(p.Strategy) && member {
 		return e.recoverRollingMember(ctx, p, primary)
 	}
 	stopped, startIssued, localDone, disrupted := scanNodeSteps(p, e.Node.ID)
@@ -1133,7 +1158,7 @@ func (e *Engine) recoverRollingMember(ctx context.Context, p Plan, primary strin
 	}
 	if localDone {
 		e.yielding.Store(yielded)
-		return e.startStable(ctx, p.ReleaseDigest, false, e.Node.ID == primary)
+		return e.startStable(ctx, p.CoreDigest(), false, e.Node.ID == primary)
 	}
 	if yielded || stopped {
 		e.yielding.Store(true)
@@ -1243,8 +1268,8 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	var id, status, target, strategy string
-	err = e.Store.activeUpgrade(e.Store.db(ctx)).Select("id,status,release_digest,strategy").Row().Scan(&id, &status, &target, &strategy)
+	var id, status, target, strategy, source string
+	err = e.Store.activeUpgrade(e.Store.db(ctx)).Select("id,status,release_digest,strategy,source_digest").Row().Scan(&id, &status, &target, &strategy, &source)
 	if gormpg.IsNoRows(err) {
 		if digest != baseline {
 			return errors.New("release is not the completed baseline")
@@ -1254,7 +1279,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	if digest != target {
+	if digest != coreTarget(strategy, target, source) {
 		return errors.New("active plan does not authorize this release")
 	}
 	var localDone, started bool
@@ -1268,7 +1293,7 @@ func (e *Engine) admissionAllowed(ctx context.Context, digest string) error {
 	if status != "running" || !started {
 		return errors.New("node has no runnable first-admission permission")
 	}
-	if strategy == Rolling {
+	if rollingStrategy(strategy) {
 		// Each node admits on its own turn; the others serve meanwhile.
 		return nil
 	}
@@ -1313,8 +1338,8 @@ func (e *Engine) requireFreshNodes(ctx context.Context, ids []string) error {
 // the active plan row or the cluster row, so share locks on both (plan first,
 // matching Coordinate and rollback) serialize the admission write with them.
 func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest string) error {
-	var id, status, target string
-	planErr := e.Store.activeUpgrade(tx).Clauses(forShare()).Select("id,status,release_digest").Row().Scan(&id, &status, &target)
+	var id, status, target, strategy, source string
+	planErr := e.Store.activeUpgrade(tx).Clauses(forShare()).Select("id,status,release_digest,strategy,source_digest").Row().Scan(&id, &status, &target, &strategy, &source)
 	if planErr != nil && !gormpg.IsNoRows(planErr) {
 		return planErr
 	}
@@ -1333,7 +1358,7 @@ func (e *Engine) planAuthorizesTx(ctx context.Context, tx *gorm.DB, digest strin
 		}
 		return nil
 	}
-	if digest != target {
+	if digest != coreTarget(strategy, target, source) {
 		return ErrConflict
 	}
 	var localDone, started bool

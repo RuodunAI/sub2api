@@ -444,7 +444,6 @@ func TestPostgresApplyRejects(t *testing.T) {
 		status      int
 		code, field string
 	}{
-		{map[string]any{"line": "gateway", "version": "0.1.136"}, 501, "not_implemented", ""},
 		{map[string]any{"line": "plugins", "version": "1.0.0"}, 400, "invalid_argument", "line"},
 		{map[string]any{"line": "core", "version": "v0.2.0"}, 400, "invalid_argument", "version"},
 		{map[string]any{"line": "core", "version": "0.2.1-rc.1"}, 400, "invalid_argument", "version"},

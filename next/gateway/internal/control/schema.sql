@@ -97,3 +97,7 @@ ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS gateway_version text NOT NULL
 ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS line text NOT NULL DEFAULT 'core';
 ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_assets jsonb;
 ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_revision bigint;
+-- One-click gateway updates (2026-11-17): a Linux gateway that can install
+-- gateway binaries under <root>/gateway and exec them registers
+-- self_update=true; gateway releases are stored with line='gateway'.
+ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS self_update boolean NOT NULL DEFAULT false;
