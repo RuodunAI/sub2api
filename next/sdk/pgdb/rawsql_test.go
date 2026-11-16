@@ -8,8 +8,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/sqlcheck"
 )
 
-// sqlPolicy is the SDK's and the plugins' ([raw-sql], [sql-const];
-// runtime-contract/gormpg/sqlcheck): keys are "package.Decl" relative to
+// sqlPolicy is the SDK's and the plugins' ([raw-sql], [sql-const],
+// [gorm-instance]; runtime-contract/gormpg/sqlcheck): keys are "package.Decl" relative to
 // next/. Everywhere else a statement is built by GORM from the models
 // (CONTRACTS §2, "插件数据库"), and SQL text is built from constants: values
 // go in as ? parameters, and identifiers chosen by a request through a fixed
@@ -31,6 +31,10 @@ var sqlPolicy = sqlcheck.Policy{
 		"sdk/pgdb/pgdbtool.ApplyMigrations":               "migration runner: SET LOCAL search_path and the migration files (DDL)",
 		"sdk/pgdb/pgdbtool.CreateSchema":                  "migration runner: CREATE SCHEMA",
 		"sdk/pgdb/pgdbtool.DropSchema":                    "migration runner: DROP SCHEMA",
+	},
+	Pool: map[string]string{
+		"sdk/pgdb.Close":         "closes the connections of a handle Open returned",
+		"sdk/testpg.runningPort": "pings the probe's one connection, with a timeout, to find a running server",
 	},
 	Dynamic: map[string]string{
 		"sdk/pgdb/pgdbtool.comparer.sameDefault":          "two default expressions read from pg_catalog (never input) cast to a type format_type printed",

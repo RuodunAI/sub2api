@@ -8,7 +8,8 @@ import (
 )
 
 // sqlPolicy allows the statements of query.go, which the core, the gateway
-// and the SDK share ([raw-sql]); the rest of the module builds none.
+// and the SDK share ([raw-sql]), and Open's pool ([gorm-instance]); the
+// rest of the module builds none.
 var sqlPolicy = sqlcheck.Policy{
 	Module: "github.com/Sub2API-Devs/sup2api/next/runtime-contract",
 	Raw: map[string]string{
@@ -19,6 +20,7 @@ var sqlPolicy = sqlcheck.Policy{
 		"gormpg.RelationExists":        "to_regclass: a catalog lookup",
 		"gormpg.TryXactLock":           "pg_try_advisory_xact_lock: a transaction-scoped advisory lock, without the wait",
 	},
+	Pool: map[string]string{"gormpg.Open": "installs sqlpool as the instance's connection pool"},
 }
 
 // TestNoRawSQL runs the SQL check (package sqlcheck) over the module.

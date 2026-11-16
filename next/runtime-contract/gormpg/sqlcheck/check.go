@@ -1,40 +1,59 @@
-// Package sqlcheck is the one implementation of the [raw-sql] and
-// [sql-const] source checks that keep SQL text out of the data: the core
-// (server/internal/store/gormguard), the gateway (internal/sqlguard), the SDK
-// with every plugin (pgdb's TestNoRawSQL) and runtime-contract itself
-// (gormpg's helpers) run it over their non-test Go files, each with a Policy
-// of its own: the declarations it allows and the helpers of its own that
-// take SQL text.
+// Package sqlcheck is the one implementation of the [raw-sql], [sql-const]
+// and pool ([gorm-instance]) source checks that keep SQL text out of the
+// data: the core (server/internal/store/gormguard), the gateway
+// (internal/sqlguard), the SDK with every plugin (pgdb's TestNoRawSQL) and
+// runtime-contract itself (gormpg's helpers) run it over their non-test Go
+// files, each with a Policy of its own: the declarations it allows and the
+// helpers of its own that take SQL text.
 //
 //   - [raw-sql] no gorm Raw or Exec, called or as a value, nor a call of a
 //     Policy.Text function marked raw, outside Policy.Raw: a statement is
 //     built by GORM's models and builder. A Raw or Exec whose text is a
 //     constant set operation over builder queries, "(?) UNION ALL (?)" or
-//     "? EXCEPT ?" with an optional ORDER BY of column numbers, passes.
+//     "? EXCEPT ?" with an optional ORDER BY of column numbers, passes. Nor
+//     gorm.G: the generic API takes SQL text in methods these checks do
+//     not follow.
+//
 //   - [sql-const] the SQL text handed to GORM is built from constants. SQL
 //     text is the first argument of Raw, Exec, Where, Not, Or, Having,
 //     Order, Group, Joins, InnerJoins, Table and Pluck; every argument of
 //     Select and Distinct, a string or a []string (column lists), unless
 //     the first is a constant fragment whose ? or @name take the rest; the
 //     first inline condition of Find, First, Take, Last, Delete,
-//     FirstOrInit and FirstOrCreate; the argument of gorm.Expr; the first
-//     string parameter, by signature, of a Policy.Text function; the SQL
-//     of a clause.Expr or NamedExpr literal or assignment; and the Table,
-//     Name and Alias of a clause.Column or clause.Table literal whose Raw is
-//     not the constant false. Such an argument typed as an interface
+//     FirstOrInit, FirstOrCreate and Preload; the argument of gorm.Expr;
+//     the first string parameter, by signature, of a Policy.Text function;
+//     the SQL of a clause.Expr or NamedExpr literal or assignment; the
+//     Table, Name and Alias of a clause.Column or clause.Table literal whose
+//     Raw is not the constant false, and every assignment to them (Raw is
+//     only set in a literal); and what WriteString, WriteByte, WriteRune or
+//     Write put into a statement (a gorm.Statement, its SQL, a
+//     clause.Writer or Builder). Such an argument typed as an interface
 //     without methods (any) is reported, its text being unknown; and so is
 //     a gorm method that takes SQL text used as a value or a method
-//     expression, whose arguments are only seen at a call. A method of an interface that is
-//     declared as gorm's (Exec(string, ...interface{}) *gorm.DB) counts as
-//     gorm's. Built from constants are: constants and + of them; variables,
-//     parameters, unexported fields of the package and package functions
-//     whose every value is such; elements of a map or slice literal of such
-//     that nothing writes; fmt.Sprintf, strings.Join, Repeat and the trims
-//     of such; values of a Policy.ConstTypes type, every conversion to which
-//     must itself be of such text; the TableName of a Policy.Generated
-//     package; and the results of Policy.Quoting functions. A value goes in
-//     as a ? parameter; an identifier chosen at run time goes through a
-//     fixed map to a clause.Column or clause.OrderByColumn.
+//     expression, whose arguments are only seen at a call. A method of an
+//     interface that is declared as gorm's (Exec(string, ...interface{})
+//     *gorm.DB) counts as gorm's.
+//
+//     Built from constants are: constants and + of them; fmt.Sprintf,
+//     strings.Join, Repeat and the trims of such, and conversions; values
+//     of a Policy.ConstTypes type, every conversion to which must itself be
+//     of such text; the results of Policy.Quoting functions and the
+//     TableName of a Policy.Generated package; elements of a list of such
+//     (a literal, append, slices.Concat); and, in the package checked, a
+//     local or unexported package variable every value given to which
+//     (declaration, assignment, range, v, ok := m[k]) is such and that no
+//     pointer or callee may write, an unexported field likewise (literals
+//     and assignments), a parameter of an unexported function without a
+//     receiver that is only called and every call passes such, and a call
+//     of a function every return of which gives such. Anything else is
+//     unknown: an exported package variable, any other parameter, a
+//     receiver, a type switch's binding, what another package gives. A
+//     value goes in as a ? parameter; an identifier chosen at run time goes
+//     through a fixed map to a clause.Column or clause.OrderByColumn.
+//
+//   - [gorm-instance] no gorm ConnPool, read or written, nor
+//     (*gorm.DB).DB outside Policy.Pool: a statement run on the connection
+//     or *sql.DB under a handle bypasses GORM and these checks.
 //
 // Every entry of a Policy must allow or match something: an entry that names
 // no declaration, or one that no longer needs it, fails (Unused).
@@ -55,6 +74,7 @@ import (
 const (
 	RuleRawSQL   = "[raw-sql]"
 	RuleSQLConst = "[sql-const]"
+	RuleInstance = "[gorm-instance]"
 )
 
 const (
@@ -75,6 +95,9 @@ type Policy struct {
 	// Dynamic lists the declarations whose SQL text may be built from what
 	// [sql-const] cannot prove constant, with the reason.
 	Dynamic map[string]string
+	// Pool lists the declarations that may reach the connection pool under
+	// a handle ([gorm-instance]), with the reason.
+	Pool map[string]string
 	// Quoting lists the functions whose string result is a quoted
 	// identifier or literal, constant text whatever their arguments.
 	Quoting map[string]string
@@ -105,7 +128,7 @@ func New(p Policy) *Checker { return &Checker{p: p, used: map[string]bool{}} }
 func (c *Checker) Unused() []string {
 	var out []string
 	lists := map[string][]string{
-		RuleRawSQL: keys(c.p.Raw), RuleSQLConst: keys(c.p.Dynamic), "Quoting": keys(c.p.Quoting),
+		RuleRawSQL: keys(c.p.Raw), RuleSQLConst: keys(c.p.Dynamic), RuleInstance: keys(c.p.Pool), "Quoting": keys(c.p.Quoting),
 		"Text": keys(c.p.Text), "ConstTypes": keys(c.p.ConstTypes), "Generated": keys(c.p.Generated),
 	}
 	for list, ks := range lists {
@@ -135,10 +158,17 @@ var textMethods = map[string]bool{
 }
 
 // condMethods are the gorm (*DB) finders whose second argument, the first
-// inline condition, is SQL text when it is a string.
+// inline condition, is SQL text when it is a string (Preload's: of the
+// association's query).
 var condMethods = map[string]bool{
 	"Find": true, "First": true, "Take": true, "Last": true, "Delete": true, "FirstOrInit": true, "FirstOrCreate": true,
+	"Preload": true,
 }
+
+// writeMethods are the methods that write SQL text straight into a
+// statement: those of gorm.Statement and of clause.Writer and Builder (a
+// clause.Expression's Build), and those of a Statement's SQL.
+var writeMethods = map[string]bool{"WriteString": true, "WriteByte": true, "WriteRune": true, "Write": true}
 
 // combinatorText is the text of a set operation over builder queries,
 // (q1) UNION ALL (q2) ... [ORDER BY 1], each query in parentheses or not:
@@ -182,6 +212,8 @@ func (c *Checker) Check(fset *token.FileSet, pkgPath string, files []*ast.File, 
 					p.literal(n, key)
 				case *ast.AssignStmt:
 					p.assign(n, key)
+				case *ast.Ident:
+					p.ident(n, key)
 				}
 				return true
 			})
@@ -301,6 +333,10 @@ func (p *pass) call(n *ast.CallExpr, key string) {
 		p.sqlArg(args[1], key, "the inline condition of (*gorm.DB)."+fn.Name(), false)
 	case isGormFunc(fn, "Expr") && len(args) > 0:
 		p.sqlArg(args[0], key, "gorm.Expr", false)
+	case sel != nil && writeMethods[fn.Name()] && p.writesStatement(fn, sel) && len(args) == 1:
+		if !p.constSQL(args[0]) {
+			p.constFinding(args[0], key, "text written into a statement by %s not built from constants", fn.Name())
+		}
 	default:
 		if text, _ := p.textFunc(fn); text {
 			if i := firstString(fn); i >= 0 && i < len(args) {
@@ -400,8 +436,9 @@ func (p *pass) rawNames(n *ast.CompositeLit, key string, t types.Type, raw ast.E
 }
 
 // assign checks what an assignment writes into the SQL of a clause.Expr or
-// NamedExpr, and the Raw of a clause.Column or Table, which only a literal
-// may set: there its names are checked.
+// NamedExpr; the Raw of a clause.Column or Table, which only a literal may
+// set, there with its names; and those names, which must be constant text
+// outside a literal: whether the Raw they go with is set is not seen.
 func (p *pass) assign(n *ast.AssignStmt, key string) {
 	for i, l := range n.Lhs {
 		sel, ok := ast.Unparen(l).(*ast.SelectorExpr)
@@ -426,6 +463,10 @@ func (p *pass) assign(n *ast.AssignStmt, key string) {
 			if rhs == nil || !p.constBool(rhs, false) {
 				p.constFinding(l, key, "Raw of %s set outside a literal: write the literal, with Raw and constant names", recv)
 			}
+		case (f.Name() == "Name" || f.Name() == "Alias" || f.Name() == "Table") && (isNamed(recv, clausePkg, "Column") || isNamed(recv, clausePkg, "Table")):
+			if rhs == nil || !p.constSQL(rhs) {
+				p.constFinding(l, key, "%s of %s set outside a literal to text not built from constants: write the literal (Raw false quotes it)", f.Name(), recv)
+			}
 		}
 	}
 }
@@ -449,6 +490,47 @@ func (p *pass) gormMethod(fn *types.Func) bool {
 	obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(db), false, db.Obj().Pkg(), fn.Name())
 	m, ok := obj.(*types.Func)
 	return ok && types.Identical(withoutRecv(m.Type().(*types.Signature)), withoutRecv(sig))
+}
+
+// writesStatement reports a method of gorm.Statement, clause.Writer or
+// clause.Builder, or one called on a Statement's SQL (a strings.Builder):
+// the text it writes goes into the statement as it is.
+func (p *pass) writesStatement(fn *types.Func, sel *ast.SelectorExpr) bool {
+	recv := fn.Type().(*types.Signature).Recv()
+	if recv != nil && (isNamed(recv.Type(), gormPkg, "Statement") || isNamed(recv.Type(), clausePkg, "Writer") || isNamed(recv.Type(), clausePkg, "Builder")) {
+		return true
+	}
+	x, ok := ast.Unparen(sel.X).(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	f := fieldOf(p.info, x)
+	return f != nil && f.Name() == "SQL" && isNamed(p.info.Selections[x].Recv(), gormPkg, "Statement")
+}
+
+// ident reports gorm.G, whose generic API takes SQL text in methods the
+// checks do not follow ([raw-sql]), and the connection pool under a handle
+// outside Policy.Pool: gorm's ConnPool, read or written, and (*gorm.DB).DB,
+// the *sql.DB ([gorm-instance]). A statement run on either bypasses GORM
+// and every rule here.
+func (p *pass) ident(id *ast.Ident, key string) {
+	switch obj := p.info.Uses[id].(type) {
+	case *types.Func:
+		if isGormFunc(obj, "G") {
+			p.report(id, RuleRawSQL, key, p.p.Raw, "gorm.G in %s: the generic API takes SQL text where the checks do not see it; use the *gorm.DB API (Where, Find, Create ...)", key)
+		}
+		if obj.Name() == "DB" && p.gormMethod(obj) {
+			p.poolFinding(id, key, "(*gorm.DB).DB, the *sql.DB under the handle")
+		}
+	case *types.Var:
+		if obj.IsField() && obj.Name() == "ConnPool" && obj.Pkg() != nil && obj.Pkg().Path() == gormPkg {
+			p.poolFinding(id, key, "gorm's ConnPool, the connection under the handle")
+		}
+	}
+}
+
+func (p *pass) poolFinding(n ast.Node, key, what string) {
+	p.report(n, RuleInstance, key, p.p.Pool, "%s in %s: a statement run on it bypasses GORM and these checks; run it through the handle, or list the declaration with the reason", what, key)
 }
 
 func withoutRecv(s *types.Signature) *types.Signature {

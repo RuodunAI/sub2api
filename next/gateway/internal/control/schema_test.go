@@ -34,7 +34,7 @@ func TestSchemaLockSpansScript(t *testing.T) {
 	}
 
 	t.Run("lock held through the script", func(t *testing.T) {
-		if err := s.execLocked(ctx, record("held")); err != nil {
+		if err := execLocked(s.db(ctx), record("held")); err != nil {
 			t.Fatal(err)
 		}
 		pid, locks, rows := held("held")
@@ -57,7 +57,7 @@ func TestSchemaLockSpansScript(t *testing.T) {
 			t.Fatal(err)
 		}
 		done := make(chan error, 1)
-		go func() { done <- s.execLocked(ctx, record("waited")) }()
+		go func() { done <- execLocked(s.db(ctx), record("waited")) }()
 		select {
 		case err := <-done:
 			t.Fatalf("script ran while another session held the schema lock: %v", err)
@@ -78,7 +78,7 @@ func TestSchemaLockSpansScript(t *testing.T) {
 	})
 
 	t.Run("failure undoes the script", func(t *testing.T) {
-		if err := s.execLocked(ctx, record("undone")+"SELECT 1/0;"); err == nil {
+		if err := execLocked(s.db(ctx), record("undone")+"SELECT 1/0;"); err == nil {
 			t.Fatal("failing script reported success")
 		}
 		if _, _, rows := held("undone"); rows != 0 {

@@ -28,7 +28,7 @@ import (
 )
 
 //go:embed schema.sql
-var Schema string
+var schema string
 var ErrConflict = errors.New("updater state changed; repeat preflight")
 
 type Store struct {
@@ -48,15 +48,15 @@ type Store struct {
 const schemaLock = "SELECT pg_advisory_xact_lock(hashtext('sub2api-shell-schema'));\n"
 
 // EnsureSchema installs or extends the shell schema behind schemaLock.
-func (s *Store) EnsureSchema(ctx context.Context) error { return s.execLocked(ctx, Schema) }
+func (s *Store) EnsureSchema(ctx context.Context) error { return execLocked(s.db(ctx), schema) }
 
 // execLocked runs schemaLock and script as one Exec without parameters. GORM
 // passes such text through unchanged, and pgx sends a statement without
 // arguments over the simple protocol, where PostgreSQL runs the whole
 // multi-statement text as one implicit transaction: the transaction-scoped
 // lock holds until the last statement, and a failure undoes all of them.
-func (s *Store) execLocked(ctx context.Context, script string) error {
-	return s.db(ctx).Exec(schemaLock + script).Error
+func execLocked(db *gorm.DB, script string) error {
+	return db.Exec(schemaLock + script).Error
 }
 func (s *Store) InitCluster(ctx context.Context, primary, baseline string) error {
 	return s.db(ctx).Clauses(clause.OnConflict{DoNothing: true}).Create(&clusterRecord{s.Cluster, primary, baseline}).Error
