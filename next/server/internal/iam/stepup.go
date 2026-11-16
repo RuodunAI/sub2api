@@ -291,7 +291,7 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 		if err := audit.Audit(ctx, tx, userID, "user.security_verify", "user", strconv.FormatInt(userID, 10), detail); err != nil {
 			return err
 		}
-		access, err = s.rotateOwnSession(ctx, userID)
+		access, err = s.rotateSession(ctx, userID, core.Session(ctx), bearerToken(r))
 		return err
 	})
 	if err != nil {
@@ -304,24 +304,35 @@ func (s *Service) VerifyStepUp(ctx context.Context, r *http.Request, userID int6
 		AccessToken: access}, nil
 }
 
-// rotateOwnSession gives the caller's session a new token after it
-// verified, so a token taken before the verification is not the one that
-// carries on (session fixation); the session id, which proofs and step-up
-// windows are bound to, stays. "" for an access key, which never reaches
-// Valkey here, and for a session that ended meanwhile.
-func (s *Service) rotateOwnSession(ctx context.Context, userID int64) (string, error) {
-	id := core.Session(ctx)
+// rotateSession gives the caller's session id a new token in place of
+// presented, the one the request carried, so a token taken before is not
+// the one that carries on (session fixation, a copied token); the session
+// id, which proofs and step-up windows are bound to, stays. "" for an
+// access key (no id), which never reaches Valkey here, for a session that
+// ended meanwhile, and for a presented token another rotation left behind
+// since the request was sent (another tab verified first): the token that
+// rotation issued is the caller's to use, and rotating it would end it.
+func (s *Service) rotateSession(ctx context.Context, userID int64, id, presented string) (string, error) {
 	if id == "" {
 		return "", nil
 	}
 	if s.sessions == nil {
 		return "", tokenstore.ErrUnavailable
 	}
-	token, err := s.sessions.Rotate(ctx, userID, id)
-	if errors.Is(err, tokenstore.ErrNotFound) {
+	token, err := s.sessions.Rotate(ctx, userID, id, presented)
+	if errors.Is(err, tokenstore.ErrNotFound) || errors.Is(err, tokenstore.ErrSuperseded) {
 		return "", nil
 	}
 	return token, err
+}
+
+// bearerToken is the token r authenticated with; "" without one.
+func bearerToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return token
 }
 
 // confirmCode checks a TOTP or backup code of userID; a wrong one counts

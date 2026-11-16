@@ -30,6 +30,9 @@ var (
 	// ErrNotFound: the token names no live session or flow (never issued,
 	// expired, revoked or already taken).
 	ErrNotFound = errors.New("tokenstore: not found")
+	// ErrSuperseded: the token a rotation starts from is no longer its
+	// session's current one (Rotate).
+	ErrSuperseded = errors.New("tokenstore: token superseded by a rotation")
 	// ErrUnavailable: Valkey did not answer. Sessions cannot be checked or
 	// issued without it, and nothing stands in for it.
 	ErrUnavailable = core.ErrUnavailable.WithMessage("the session store is unavailable, try again shortly")
@@ -67,13 +70,17 @@ type SessionStore interface {
 	Create(ctx context.Context, s Session) (string, error)
 	// Lookup resolves a token; ErrNotFound when it names no live session.
 	Lookup(ctx context.Context, token string) (Session, error)
-	// Touch records that s, found by token, was just used, extending its
-	// idle timeout; it writes only when s was last seen a while ago.
+	// Touch records that s, found by token, was just used, from s.IP with
+	// s.UserAgent, extending its idle timeout; it writes only when s was
+	// last seen a while ago.
 	Touch(ctx context.Context, token string, s Session) error
-	// Rotate gives the session id of userID a new token. The old one keeps
-	// working for a short grace, for the requests already sent with it.
-	// ErrNotFound when the user has no such session.
-	Rotate(ctx context.Context, userID int64, id string) (string, error)
+	// Rotate gives the session id of userID a new token in place of
+	// presented, the one the caller holds. The old one keeps working for a
+	// short grace, for the requests already sent with it. ErrNotFound when
+	// the user has no such session; ErrSuperseded when presented is no
+	// longer its current token (a rotation since left it in its grace):
+	// the newer token is out already, and rotating it would end it.
+	Rotate(ctx context.Context, userID int64, id, presented string) (string, error)
 	// List returns the live sessions of userID, most recently used first,
 	// dropping index entries whose session is gone.
 	List(ctx context.Context, userID int64) ([]Session, error)
@@ -91,11 +98,13 @@ type SessionStore interface {
 	// Prune ends the sessions of userID stamped below tokenVersion: those a
 	// bump ended without reaching Valkey. Later sessions stay.
 	Prune(ctx context.Context, userID int64, tokenVersion int) error
-	// Drop ends what token, found as s, still opens: its whole session when
-	// it is the session's current token, only itself when a rotation left
-	// it behind (the session's current token is not ended by a request
-	// that an old one sent).
-	Drop(ctx context.Context, token string, s Session) error
+	// Drop ends what token, found as s stamped below version, still opens:
+	// its whole session when it is the session's current token, only
+	// itself when a rotation left it behind (the session's current token
+	// is not ended by a request that an old one sent). False when token is
+	// stamped version or above by now (a bump that kept it restamped it
+	// after it was read): it stays, and is not ended.
+	Drop(ctx context.Context, token string, s Session, version int) (bool, error)
 }
 
 // Flow is a stored auth flow.

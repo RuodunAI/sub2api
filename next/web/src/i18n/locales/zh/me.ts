@@ -49,7 +49,7 @@ export default {
   },
   sessions: {
     title: '登录会话',
-    description: '正在登录你账号的设备。结束会话后，该设备最长 2 小时内退出登录。',
+    description: '正在登录你账号的设备，以及各自最近一次使用的地址。结束会话后，该设备立即退出登录。',
     device: '设备',
     signedInWith: '登录方式',
     since: '登录时间',
@@ -57,7 +57,8 @@ export default {
     current: '当前设备',
     revoke: '结束',
     revokeOthers: '结束其他会话',
-    revokeConfirm: '该设备要重新登录才能继续使用，最长 2 小时内生效。确定吗？',
+    revokeConfirm: '该设备要重新登录才能继续使用。确定吗？',
+    revokeOthersConfirm: '其他设备都要重新登录；本设备换用新的登录凭证，别处复制的本设备凭证也随之失效。确定吗？',
     revoked: '已结束',
     empty: '没有登录会话',
     unknownDevice: '未知设备',

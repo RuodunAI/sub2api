@@ -73,6 +73,9 @@
 - **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
 - **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
 - **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。控制台 UI 3.17：`@sub2api/host` 新增 `fetchWithSession`（原始字节、流、下载类请求带会话发送），用到它的插件声明 `hostUICompat ^3.17`、`hostCompat >=0.1.290`；`startKeepAlive` 等刷新相关导出留作弃用的空实现，到 UI 4.0 删除。
+- **被盗令牌的遏制**（取代 JWT 时期的重放检测，CONTRACTS §100.4）：“结束其他会话”同时给当前会话换令牌（`POST /me/sessions/revoke-others` 回 200 `{access_token}`），复制走的当前令牌 30 秒后失效；没有其他会话时这个按钮也可用。会话列表的 IP 与浏览器随续期更新为最近一次使用的（以前是登录时的）。两个标签页同时二次验证不再互相顶掉令牌：从宽限期里的旧令牌验证不再轮换，控制台只替换发请求时用的令牌（`@sub2api/host` 的 `session.adoptRotated`，UI 3.17）。
+- **单机部署的 Valkey 开启 AOF**（`deploy/single`，`--appendonly yes --appendfsync everysec`，新数据卷 `redisdata`）：会话只在 Valkey，没有持久化时 Valkey 一重启所有人被登出且没有告警。从 valkey 换到 redis 镜像时先删掉这个卷。
+- **可用性修正**：Valkey 内存满拒绝写入时，续期失败不再让已经通过鉴权的请求 503；请求恰好落在“撤销其他会话/改自己的密码”中间时，不再把刚保留的当前会话删掉；节点漏收“重新启用用户”的广播时，不再删掉重新启用后的新登录。
 
 会话部分的说明见 `next/deploy/rollback/0.1.290-session-down.md`。
 

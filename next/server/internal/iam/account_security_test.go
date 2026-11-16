@@ -501,7 +501,7 @@ func TestLoginSessions(t *testing.T) {
 		t.Fatal("revoked another user's session")
 	}
 	keep, other := list[0].ID, list[1].ID
-	if err := s.RevokeOtherSessions(ctx, id, keep); err != nil {
+	if _, err := s.RevokeOtherSessions(ctx, id, keep, ""); err != nil {
 		t.Fatal(err)
 	}
 	if list, _ = s.Sessions(ctx, id, keep); len(list) != 1 || list[0].ID != keep || !list[0].Current {

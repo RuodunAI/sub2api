@@ -174,6 +174,12 @@ func (s *Service) forgetStatus(userID int64) {
 // stamp: a stamp ahead of the row (a survivor of a bump not committed yet,
 // or rolled back) is accepted, and a stale cache can only be behind a newer
 // session, which it accepts too.
+//
+// A use is recorded with where it came from (Touch): the sessions list
+// shows where a session is in use. Recording it is not authenticating: a
+// failure (Valkey out of memory refuses writes, not reads) is logged by the
+// store and the request goes on; the session then idles out on its old
+// timeout at worst.
 func (s *Service) VerifySession(ctx context.Context, token string) (int64, string, error) {
 	if s.sessions == nil || !strings.HasPrefix(token, tokenstore.SessionPrefix) {
 		return 0, "", core.ErrUnauthenticated
@@ -185,20 +191,43 @@ func (s *Service) VerifySession(ctx context.Context, token string) (int64, strin
 	if err != nil {
 		return 0, "", err
 	}
-	active, version, err := s.isActiveWithVersion(ctx, sess.UserID)
+	ok, err := s.sessionAccepted(ctx, token, sess)
 	if err != nil {
 		return 0, "", err
 	}
-	if !active || sess.TokenVersion < version {
-		if err := s.sessions.Drop(ctx, token, sess); err != nil {
-			return 0, "", err
-		}
+	if !ok {
 		return 0, "", core.ErrUnauthenticated.WithMessage("session has been invalidated")
 	}
-	if err := s.sessions.Touch(ctx, token, sess); err != nil {
-		return 0, "", err
-	}
+	sess.IP, sess.UserAgent = usedFrom(ctx, sess)
+	_ = s.sessions.Touch(ctx, token, sess)
 	return sess.UserID, sess.ID, nil
+}
+
+// sessionAccepted reports whether sess, found by token, is still valid.
+// One stamped below the user's token_version was ended by a bump and is
+// dropped, unless the store finds it stamped at the version by now: a bump
+// that kept it restamped it after it was read (the stamp is checked again
+// in the script that would drop it). A session stamped current of a user
+// the cache holds inactive is checked against the row afresh: the cache
+// may have missed the user's re-enabling, which the session signed in
+// after. The status alone drops nothing: the bump that disables a user
+// leaves every session of theirs stamped below the row.
+func (s *Service) sessionAccepted(ctx context.Context, token string, sess tokenstore.Session) (bool, error) {
+	active, version, err := s.isActiveWithVersion(ctx, sess.UserID)
+	if err == nil && !active && sess.TokenVersion >= version {
+		s.forgetStatus(sess.UserID)
+		active, version, err = s.isActiveWithVersion(ctx, sess.UserID)
+	}
+	if err != nil {
+		return false, err
+	}
+	if sess.TokenVersion < version {
+		dropped, err := s.sessions.Drop(ctx, token, sess, version)
+		if err != nil || dropped {
+			return false, err
+		}
+	}
+	return active, nil
 }
 
 // isActiveWithVersion reads the user's status through the cache. A deleted

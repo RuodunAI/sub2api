@@ -361,37 +361,14 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	if err != nil {
 		return nil, err
 	}
-	var result *LoginResult
-	err = s.issueTx(ctx, func(is *issuer) error {
-		g := store.G(ctx, is.tx)
-		var status string
-		if err := lockLiveUser(g, user.id, "status").Row().Scan(&status); err != nil {
-			if store.IsNoRows(err) {
+	return s.signIn(withLoginMethod(ctx, loginMethodPasskey), user.id, login{gone: errPasskeyFailed, disabled: errPasskeyFailed,
+		check: func(g *gorm.DB, _ string) error {
+			res := usePasskey(passkeyByID(g, passkeyID, user.id), raw)
+			if res.Error == nil && res.RowsAffected == 0 {
 				return errPasskeyFailed
 			}
-			return err
-		}
-		if status != StatusActive {
-			return errPasskeyFailed
-		}
-		res := usePasskey(passkeyByID(g, passkeyID, user.id), raw)
-		if res.Error != nil {
 			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return errPasskeyFailed
-		}
-		if err := touchLastLogin(g, user.id).Error; err != nil {
-			return err
-		}
-		var err error
-		result, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+		}})
 }
 
 // passkeyByCredential reads the passkey of a credential the browser names.

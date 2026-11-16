@@ -225,14 +225,15 @@ func (v *Valkey) Lookup(ctx context.Context, token string) (Session, error) {
 	return s, nil
 }
 
-// touchScript extends a session that is still its id's current token: a
-// revoked one (sid key gone) or a rotated one (sid points elsewhere) is not
-// brought back, and neither is one that expired since it was read (no
-// partial HASH is written).
-// KEYS: sess, sid, usess. ARGV: hash, now ms, ttl ms, sid, usess ttl ms.
+// touchScript extends a session that is still its id's current token, and
+// records where it was used from: a revoked one (sid key gone) or a rotated
+// one (sid points elsewhere) is not brought back, and neither is one that
+// expired since it was read (no partial HASH is written).
+// KEYS: sess, sid, usess. ARGV: hash, now ms, ttl ms, sid, usess ttl ms,
+// ip, ua.
 var touchScript = redis.NewScript(`
 if redis.call('GET', KEYS[2]) ~= ARGV[1] or redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
-redis.call('HSET', KEYS[1], 'last_seen', ARGV[2])
+redis.call('HSET', KEYS[1], 'last_seen', ARGV[2], 'ip', ARGV[6], 'ua', ARGV[7])
 redis.call('PEXPIRE', KEYS[1], ARGV[3])
 redis.call('PEXPIRE', KEYS[2], ARGV[3])
 redis.call('ZADD', KEYS[3], ARGV[2], ARGV[4])
@@ -240,7 +241,8 @@ redis.call('PEXPIRE', KEYS[3], ARGV[5])
 return 1`)
 
 // Touch implements SessionStore: most requests only read, a use is written
-// once per TouchEvery.
+// once per TouchEvery. Where it was used from goes with it, so the sessions
+// list shows where a session is in use now, not only where it signed in.
 func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 	now := v.o.Now()
 	if now.Sub(s.LastSeen) < v.o.TouchEvery {
@@ -254,7 +256,7 @@ func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 	defer cancel()
 	h := Hash(token)
 	err := touchScript.Run(c, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)},
-		h, ms(now), ttl.Milliseconds(), s.ID, v.o.Max.Milliseconds()).Err()
+		h, ms(now), ttl.Milliseconds(), s.ID, v.o.Max.Milliseconds(), s.IP, s.UserAgent).Err()
 	if err != nil {
 		return fail(ctx, "touch", err)
 	}
@@ -267,14 +269,19 @@ func (v *Valkey) Touch(ctx context.Context, token string, s Session) error {
 // token the previous rotation left in its grace ends now: only one old
 // token is ever left behind. The id already at the new token is this
 // rotation retried (its answer was lost): done, and doing it again would
-// end the old token and cut the new one to the grace.
-// KEYS: sid. ARGV: prefix, uid, new hash, now ms, grace ms.
+// end the old token and cut the new one to the grace. The id at another
+// token than the presented one was rotated since the caller's request was
+// sent (another tab verified first): rotating again would end the token
+// that tab took up for one nobody receives but this caller, so it is left
+// (2), and the caller takes up the newer token from its tab.
+// KEYS: sid. ARGV: prefix, uid, new hash, now ms, grace ms, presented hash.
 var rotateScript = redis.NewScript(`
 local old = redis.call('GET', KEYS[1])
 if not old then return 0 end
 local oldKey = ARGV[1] .. 'sess:' .. old
 if redis.call('HGET', oldKey, 'uid') ~= ARGV[2] then return 0 end
 if old == ARGV[3] then return 1 end
+if old ~= ARGV[6] then return 2 end
 local ttl = redis.call('PTTL', oldKey)
 if ttl <= 0 then return 0 end
 local older = redis.call('HGET', oldKey, 'prev')
@@ -291,15 +298,17 @@ redis.call('PEXPIRE', oldKey, math.min(ttl, tonumber(ARGV[5])))
 return 1`)
 
 // Rotate implements SessionStore.
-func (v *Valkey) Rotate(ctx context.Context, userID int64, id string) (string, error) {
+func (v *Valkey) Rotate(ctx context.Context, userID int64, id, presented string) (string, error) {
 	token, h := NewToken(SessionPrefix)
 	n, err := rotateScript.Run(ctx, v.rdb, []string{sidKey(id)},
-		keyPrefix, userID, h, ms(v.o.Now()), v.o.RotateGrace.Milliseconds()).Int()
-	if err != nil {
+		keyPrefix, userID, h, ms(v.o.Now()), v.o.RotateGrace.Milliseconds(), Hash(presented)).Int()
+	switch {
+	case err != nil:
 		return "", fail(ctx, "rotate", err)
-	}
-	if n == 0 {
+	case n == 0:
 		return "", ErrNotFound
+	case n == 2:
+		return "", ErrSuperseded
 	}
 	return token, nil
 }
@@ -359,21 +368,20 @@ func (v *Valkey) Has(ctx context.Context, userID int64, id string, tokenVersion 
 }
 
 // revokeScript ends the picked sessions of the user (both tokens of a
-// rotation) and settles the others against a token_version bump from..to:
-// one stamped below from was ended by an earlier bump and ends now, one
-// below to is stamped to (both tokens too: a request still carrying the
-// old one must not find it stale). Nothing stamped below from is ever
-// stamped again, so no bump revives a session an earlier one ended. With a
-// bump, a session issued after the call (later) is left alone: the script
-// may run long after it, Valkey having held it past the caller's timeout.
-// The index entries whose session is gone are dropped. Only is tried even
-// when the index lost it; with no bump (to 0), it is the only session
-// read. A session is ended only when it is the user's. Prune is this with
-// nothing picked.
-// KEYS: usess. ARGV: prefix, uid, pick (1/0), only, keep, from, to, now ms.
+// rotation): Only, or every one but Keep. With a bump from..to it also
+// settles the others: one stamped below from was ended by an earlier bump
+// and ends now, one below to is stamped to (both tokens too: a request
+// still carrying the old one must not find it stale). Nothing stamped below
+// from is ever stamped again, so no bump revives a session an earlier one
+// ended. With a bump, a session issued after the call (later) is left
+// alone: the script may run long after it, Valkey having held it past the
+// caller's timeout. The index entries whose session is gone are dropped.
+// Only is tried even when the index lost it; with no bump (to 0), it is
+// the only session read. A session is ended only when it is the user's.
+// KEYS: usess. ARGV: prefix, uid, only, keep, from, to, now ms.
 var revokeScript = redis.NewScript(dropLua + `
-local p, uid, pick, only, keep = ARGV[1], ARGV[2], ARGV[3] == '1', ARGV[4], ARGV[5]
-local from, to, now = tonumber(ARGV[6]), tonumber(ARGV[7]), tonumber(ARGV[8])
+local p, uid, only, keep = ARGV[1], ARGV[2], ARGV[3], ARGV[4]
+local from, to, now = tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[7])
 -- settle stamps the session key k up to to; false when it is stamped
 -- below from, ended.
 local function settle(k)
@@ -383,12 +391,13 @@ local function settle(k)
   return true
 end
 -- later tells a session issued after the call. No session from before it
--- is stamped above to (stamps are never more than one ahead of the
--- version, from): one above signed in after the caller's stampless
--- fallback committed. One stamped below to and created after now signed
--- in after the caller's change rolled back. One stamped to is never
--- spared, so a clock alone (another node's, ahead) spares nothing the bump
--- does not end; nor is keep, or anything without a bump.
+-- is stamped above to (a stamp is never more than one ahead of the
+-- version, from), so one above signed in after the caller fell back to a
+-- stampless bump that committed. Nor was one from before created after
+-- now, so one stamped below to and created since signed in after the
+-- caller's change rolled back. One stamped to is never spared: a clock
+-- alone (another node's, ahead) then spares nothing the bump does not end.
+-- Keep is never spared, nor anything without a bump.
 local function later(id, k)
   if to == 0 or id == keep then return false end
   local f = redis.call('HMGET', k, 'tv', 'created_at')
@@ -406,7 +415,7 @@ for _, id in ipairs(ids) do
     redis.call('ZREM', KEYS[1], id)
   elseif later(id, k) then
     -- left as it is
-  elseif (pick and (only == '' or id == only) and (keep == '' or id ~= keep)) or not settle(k) then
+  elseif ((only == '' or id == only) and id ~= keep) or not settle(k) then
     drop(p, sid)
     redis.call('ZREM', KEYS[1], id)
   else
@@ -419,25 +428,50 @@ return 1`)
 
 // Revoke implements SessionStore.
 func (v *Valkey) Revoke(ctx context.Context, userID int64, sel Selection, b Bump) error {
-	return v.revoke(ctx, "revoke", userID, true, sel, b)
-}
-
-// Prune implements SessionStore.
-func (v *Valkey) Prune(ctx context.Context, userID int64, tokenVersion int) error {
-	return v.revoke(ctx, "prune", userID, false, Selection{}, Bump{From: tokenVersion, To: tokenVersion})
-}
-
-func (v *Valkey) revoke(ctx context.Context, op string, userID int64, pick bool, sel Selection, b Bump) error {
-	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, pick, sel.Only, sel.Keep, b.From, b.To, ms(v.o.Now())).Err()
+	err := revokeScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, sel.Only, sel.Keep, b.From, b.To, ms(v.o.Now())).Err()
 	if err != nil {
-		return fail(ctx, op, err)
+		return fail(ctx, "revoke", err)
 	}
 	return nil
 }
 
-// dropScript ends what one token still opens (Drop).
-// KEYS: sess, sid, usess. ARGV: prefix, hash, sid.
+// pruneScript ends the sessions of the user stamped below the version (and
+// a token a rotation left behind stamped below it), and drops the index
+// entries whose session is gone. It stamps nothing, so a session issued
+// since, stamped the version or above, stays whenever it runs.
+// KEYS: usess. ARGV: prefix, uid, version.
+var pruneScript = redis.NewScript(dropLua + `
+local p, uid, version = ARGV[1], ARGV[2], tonumber(ARGV[3])
+local function ended(k) return (tonumber(redis.call('HGET', k, 'tv')) or 0) < version end
+for _, id in ipairs(redis.call('ZRANGE', KEYS[1], 0, -1)) do
+  local sid = p .. 'sid:' .. id
+  local h = redis.call('GET', sid)
+  local k = h and (p .. 'sess:' .. h)
+  if not h or redis.call('HGET', k, 'uid') ~= uid then
+    redis.call('ZREM', KEYS[1], id)
+  elseif ended(k) then
+    drop(p, sid)
+    redis.call('ZREM', KEYS[1], id)
+  else
+    local prev = redis.call('HGET', k, 'prev')
+    if prev and ended(p .. 'sess:' .. prev) then redis.call('DEL', p .. 'sess:' .. prev) end
+  end
+end
+return 1`)
+
+// Prune implements SessionStore.
+func (v *Valkey) Prune(ctx context.Context, userID int64, tokenVersion int) error {
+	if err := pruneScript.Run(ctx, v.rdb, []string{userKey(userID)}, keyPrefix, userID, tokenVersion).Err(); err != nil {
+		return fail(ctx, "prune", err)
+	}
+	return nil
+}
+
+// dropScript ends what one token stamped below the version still opens
+// (Drop); 0 when it is stamped the version or above by now.
+// KEYS: sess, sid, usess. ARGV: prefix, hash, sid, version.
 var dropScript = redis.NewScript(dropLua + `
+if (tonumber(redis.call('HGET', KEYS[1], 'tv')) or 0) >= tonumber(ARGV[4]) then return 0 end
 if redis.call('GET', KEYS[2]) == ARGV[2] then
   drop(ARGV[1], KEYS[2])
   redis.call('ZREM', KEYS[3], ARGV[3])
@@ -447,15 +481,15 @@ end
 return 1`)
 
 // Drop implements SessionStore.
-func (v *Valkey) Drop(ctx context.Context, token string, s Session) error {
+func (v *Valkey) Drop(ctx context.Context, token string, s Session, version int) (bool, error) {
 	c, cancel := context.WithTimeout(ctx, authTimeout)
 	defer cancel()
 	h := Hash(token)
-	err := dropScript.Run(c, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)}, keyPrefix, h, s.ID).Err()
+	n, err := dropScript.Run(c, v.rdb, []string{sessKey(h), sidKey(s.ID), userKey(s.UserID)}, keyPrefix, h, s.ID, version).Int()
 	if err != nil {
-		return fail(ctx, "drop", err)
+		return false, fail(ctx, "drop", err)
 	}
-	return nil
+	return n == 1, nil
 }
 
 // ------------------------------------------------------------ flows

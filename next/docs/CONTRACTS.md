@@ -1350,6 +1350,7 @@ type ProxyResolver interface {
 - 失败抛 `ApiError {status, code, message, details, fields}`：`fields` 是 `details.fields[]` 折平后的 `{field: message}`（`invalid_argument`，§3.1；message 为 `{en,zh}` 时按当前语言取），用 `isApiError(e)` 判断。响应没有 `error.code` 时按 HTTP 状态映射（400 `invalid_argument`、401 `unauthenticated`、403 `permission_denied`、404 `not_found`、409 `conflict`、429 `rate_limited`、503 `unavailable`，其余 `internal`）。
 - `listAll<T>(client, path, {query?, max?})`（UI 3.3）：按核心最大页长 200 逐页读完一个分页列表（`page`、`page_size` 由它填，`query` 是其余筛选），读到短页、`page.total` 或 `max` 条（缺省不限）为止；任何一页失败都整体 reject，不返回半截列表。插件读核心分组等整表时用它（moderation、dynweight）。
 - `fetchWithSession(path, init?)`（UI 3.17）：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发；`path` 与 `api` 同样相对 `/api/v1`，`init` 是 `fetch` 的参数（`headers` 为普通对象）；带会话令牌、401 规则与 `api` 相同，返回的 `Response` 不论成败交给调用方读（§100.8）。用到它的插件声明 `hostUICompat ^3.17`，`hostCompat` 要求核心 `>=0.1.290`。
+- `session.adoptRotated(sentWith, next)`（UI 3.17）：会话轮换后（二次验证、撤销其他会话，§100.4）采用新令牌 `next`，前提是会话当前仍是发请求时用的令牌 `sentWith`；其他标签页已经存了更新的令牌（自己的轮换、重新登录）就保留那个，返回 `false`。先读一次存储，不等存储事件。`session.fromTokenResponse` 只用于登录响应。
 - 其他导出：`createClient(prefix)`、`api`（= `/api/v1` 客户端）、`session`、`configureHttp`（控制台用，插件不要调）、`satisfiesRange`、`bridge-protocol.ts`（iframe 插件的 postMessage 协议，与原生 UI 无关；2026-11-13 T83 增加请求 `permissions.check` `{keys}` → `{[key]: boolean}`：只认本插件的本地 key，至多 `BRIDGE_MAX_PERMISSION_KEYS` = 50 个，超出或不是数组 `invalid_argument`；带 `plugin.` 前缀的 key（含本插件自己的）一律 false；判断看 `/me` 的权限列表本身而不走超管捷径（超管的列表是全部有效权限），所以未声明的 key 对超管也是 false，iframe 无从得知调用者是否超管；老核心回 `not_found`；UI 3.16 起不带范围的本地 key 只要持有它的任一范围即为 true（持有 `flow:manage:own` 时 `flow:manage` 为 true），带范围的 key 须精确在列表里，§21.0）。
 
 `useList`（`useList.ts`，分页列表状态，控制台的列表页和插件的列表页共用）：
@@ -2250,7 +2251,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 - **实现**：`github.com/go-redsync/redsync/v4`。Redis 是单实例（§7 末尾），Redlock 法定数为 1，等价于 `SET lock:{key} <token> NX PX <ttl>` + 比对 token 删除 + 比对 token `PEXPIRE`。每次 Redis 调用的超时为 TTL 的 5%，但不低于 500 毫秒、不高于 TTL 的一半（`cluster/locker.go` 的 `timeoutFactor`）。
 - **删除了 PostgreSQL advisory lock 兜底**。原来 Redis 报错时改拿 PG 锁，但那是**第二个锁命名空间**：某节点自己的 Redis 连接出错时去拿 PG 锁，另一节点此时仍持有 Redis 锁，两边都以为独占。连不上 Redis 的节点本来就不能服务网关（并发槽 fail-closed），现在它干脆不拿锁——拿不到锁的后果只是「这一轮别的节点做或者没人做」，而两个节点同时做才是锁要防的事。
 - **不受影响**（各自独立的 PG advisory lock，与 `core.Locker` 无关）：核心迁移 `store/migrate.go`（`pg_advisory_lock`）、插件 schema 与迁移 `plugin/dbschema/dbschema.go`、IAM 引导 `iam/service.go`（`pg_advisory_xact_lock(hashtext('sub2api:iam:bootstrap'))`）、保存账号时自动关联代理 `proxy/resolve.go`（§21.4）。
-- **不用 `WithSetNXOnExtend`**：Redis 不开持久化，重启会清空所有锁。续期时发现 key 没了，说明中间可能已有别的节点拿过这把锁，必须**如实报告丢锁**，不能悄悄重建。
+- **不用 `WithSetNXOnExtend`**：Redis 重启会清空所有锁（没有持久化时全部丢失；`deploy/single` 开了 AOF，最后一秒的写入也可能丢失）。续期时发现 key 没了，说明中间可能已有别的节点拿过这把锁，必须**如实报告丢锁**，不能悄悄重建。
 
 接口：
 
@@ -7005,8 +7006,8 @@ node 任务（可工作节点各跑，`RequireWork`）：
 
 ### 79.4 登录会话和资料
 
-- `GET /me/sessions`：每个会话一行（Valkey，§100.2），`{id, method, ip, user_agent, created_at, last_used_at, current}`，按最近使用倒序；`current` 标出调用者自己的会话。
-- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：被撤销的会话立即失效，保留的会话不受影响（§100.4）。
+- `GET /me/sessions`：每个会话一行（Valkey，§100.2），`{id, method, ip, user_agent, created_at, last_used_at, current}`，按最近使用倒序；`current` 标出调用者自己的会话。`ip`、`user_agent` 是最近一次记下使用（续期，最多每 5 分钟一次）时的地址与浏览器，不只是登录时的。
+- `DELETE /me/sessions/:id`、`POST /me/sessions/revoke-others`：被撤销的会话立即失效（§100.4）。`revoke-others` 另给调用者的会话换一个新令牌，回 200 `{access_token}`（没有新令牌时为 `{}`），旧令牌再用 30 秒；`DELETE` 回 204。
 - `PUT /me {display_name}`：改自己的显示名称，回 `GET /me` 的内容。语言存在浏览器里。
 - 上面所有修改都写审计日志（`user.two_factor.*`、`user.passkey.*`、`user.session.*`、`user.profile.update`、`user.security.reset`）。
 
@@ -8617,7 +8618,9 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 - 令牌：`s2s_` + 32 字节随机数的 base64url（共 47 个字符，`tokenstore.SessionPrefix`）。Valkey 只存 SHA-256（hex），拿到 Valkey 的内容不能登录。
 - 放在 `Authorization: Bearer`，控制台 localStorage 的字段叫 `access_token`。没有 refresh token、没有 `/auth/refresh`：会话由服务端续期，登录响应的 `expires_in` 是空闲超时的秒数。
 - 鉴权分流（`core.AuthenticateBearer`）：`sak_` 访问密钥；其余交给 `iam.VerifySession`，不以 `s2s_` 开头的直接 401，不查 Valkey。会话 id 在鉴权时写进 ctx（`core.WithSession`，读 `core.Session`）：之后 step-up 换令牌、登出、标出当前会话都只看它；访问密钥的调用者没有会话 id。
-- 每个请求读一次 Valkey（`HGETALL`），再走用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：用户已停用，或会话的 `tv` 小于用户当前的 `token_version`，401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。
+- 每个请求读一次 Valkey（`HGETALL`），再走用户状态缓存（不论会话的 `tv`，都先用缓存）与 `token_version` 比较（§43.2）：会话的 `tv` 小于用户当前的 `token_version`，401，并删除这个令牌能打开的东西——它是会话的当前令牌就删整个会话，是轮换后留在宽限期里的旧令牌就只删它自己（旧令牌的请求不连累新令牌）；大于或等于都放行（保留下来的会话在 bump 提交前就被改成新版本，见 §100.4）。删除脚本（`Drop`）再核对一次盖章：读会话之后、读状态之前，保留型 bump 刚把它改成新版本的（撤销其他会话、改自己的密码时请求恰好落在中间），盖章已经不低于版本，不删、照常放行。
+- 用户状态为停用：盖章低于版本的按上一条删除（停用加 2，停用前的会话都低于版本）；盖章不低于版本的不删，绕过缓存重读一次用户行，仍是停用才 401。这种会话只可能出现在缓存漏了“重新启用”广播的节点上（30 秒内），重读后放行，不会把重新启用后的新登录删掉。
+- 续期（§100.2）随鉴权做，但不属于鉴权：写入失败（Valkey 内存满、`noeviction` 拒绝写入而读照常）由存储记 ERROR `tokenstore: valkey unavailable`，请求照常放行；最坏是会话按原来的空闲超时到期。
 - 鉴权路径上的 Valkey 调用（查找、续期、删除过期会话）每次最多等 1 秒；会话与流程用单独的客户端（`tokenstore.NewClient`：只重试一次，建连、读写、从连接池取连接各最多等 1 秒，遵守调用的截止时间），Valkey 卡住时控制台请求很快得到 503，而不是挂十几秒。回复丢失（服务端已执行、客户端超时或断连）时调用会被重试，所以会话的写脚本都是幂等的：新建（同 sid 先结束）、续期、撤销、清理、删除重复执行结果相同；轮换发现 sid 已经指向这次的新令牌就直接返回成功，不会再轮换一次（否则会结束旧令牌、并把新令牌缩短到 30 秒宽限）。流程的取用（`GETDEL`）重试时拿不到，按流程已过期处理，用户重新开始这一步即可。
 - 会话 id（sid）在令牌轮换时不变：step-up proof 与二次验证会话按它绑定（§80.2），`GET /me/sessions` 按它标出当前会话，`DELETE /me/sessions/:id` 按它撤销。
 
@@ -8625,7 +8628,7 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 | 键 | 类型 | 内容 | TTL |
 | --- | --- | --- | --- |
-| `s2a:sess:{hash}` | HASH | `uid`、`sid`、`method`、`ip`、`ua`、`created_at`、`last_seen`（Unix 毫秒）、`tv`；轮换后的新令牌另有 `prev`（旧令牌的哈希） | 空闲超时，且不超过创建后的绝对超时 |
+| `s2a:sess:{hash}` | HASH | `uid`、`sid`、`method`、`ip`、`ua`（最近一次记下使用时的地址与浏览器，登录时为登录的）、`created_at`、`last_seen`（Unix 毫秒）、`tv`；轮换后的新令牌另有 `prev`（旧令牌的哈希） | 空闲超时，且不超过创建后的绝对超时 |
 | `s2a:sid:{sid}` | STRING | 该会话当前令牌的哈希 | 同上 |
 | `s2a:usess:{uid}` | ZSET | 成员 sid，分数最近使用时间（毫秒）；会话列表与批量撤销用 | 绝对超时，每次写入顺延 |
 | `s2a:flow:{purpose}:{hash}` | STRING | 中间流程 `{"u": 所属用户, "p": 载荷}`（§100.3） | 5 分钟 |
@@ -8635,9 +8638,9 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 - 在已有的 sid 上新建会话（回复丢失后的重试）先结束原来的会话，不会留下只能靠 `token_version` 结束的令牌。
 - 轮换时，上一次轮换留在宽限期里的令牌立即结束：任何时候一个会话最多一个旧令牌（`prev`）。
 - 超时：空闲 `SUB2API_SESSION_IDLE_TTL`（默认 168h = 7 天），绝对 `SUB2API_SESSION_MAX_TTL`（默认 720h = 30 天）；空闲必须为正且不大于绝对，否则启动失败。
-- 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌、会话键还在，`HSET last_seen`，两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销、已轮换或刚好过期的令牌不会被续期复活，也不会写出残缺的 HASH。
+- 续期：`last_seen` 距今不足 5 分钟的请求只读；超过才用一个 Lua 脚本写一次（确认 `sid` 仍指向这个令牌、会话键还在，`HSET last_seen ip ua`（请求的地址与 User-Agent：`httpapi.Authenticate` 经 `core.WithClientIP`、`core.WithUserAgent` 放进 ctx；请求没有的沿用原值），两个键 `PEXPIRE` 到 min(空闲, 创建 + 绝对 − 现在)，`ZADD` 索引）。已撤销、已轮换或刚好过期的令牌不会被续期复活，也不会写出残缺的 HASH。
 - 索引残留：键自然过期后 ZSET 里会留下 sid。登录时去掉分数早于空闲超时的成员；列出、撤销时去掉键已不存在的成员。
-- 新建、撤销、清理（`Prune`）、列出、轮换、是否存在都是单个 Lua 脚本，原子执行。撤销单个会话且不需要改 `tv` 时只读这一个会话，不扫用户的全部会话。部署是单个 Valkey（`cluster.ParseRedisURL` 不支持 Cluster 模式），脚本里访问的键不全在 `KEYS` 里；以后要上 Cluster 需改用 hash tag。
+- 新建、撤销、清理（`Prune`）、列出、轮换、是否存在都是单个 Lua 脚本，原子执行。清理与撤销是两段脚本：清理只删盖章低于版本的会话（连同低于版本的旧令牌），不改盖章，也不看时钟，所以提交后才签发的会话怎么都不受影响；撤销的“迟到判断”（下面 §100.4）只属于撤销。撤销单个会话且不需要改 `tv` 时只读这一个会话，不扫用户的全部会话。部署是单个 Valkey（`cluster.ParseRedisURL` 不支持 Cluster 模式），脚本里访问的键不全在 `KEYS` 里；以后要上 Cluster 需改用 hash tag。
 
 ### 100.3 中间流程
 
@@ -8649,6 +8652,9 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 - 签发：密码登录、两步登录、通行密钥登录都新建一个会话（新 sid；超管登录审计不变）。在持用户行锁的事务里读 `token_version` 写进会话，撤销不会插在中间。写 Valkey 是事务里最后一步（读用户等都在它之前）；事务之后失败（包括提交失败），立即删除刚建的会话，不留下没人持有、却出现在会话列表里的会话。三条签发路径都经同一个 `iam.issueTx`，补偿只在这里。两步登录的流程在事务的最后才取用（`GETDEL`），之前任何一步失败都不消耗流程，可以重试；只有提交本身失败时 Valkey 里的流程已被取走。
 - 二次验证提权：会话调用 `POST /me/verify` 成功后给同一个会话换一个新令牌（防会话固定），响应多一个 `access_token`；sid 不变，所以刚签发的 proof 仍然绑定这个会话。旧令牌还能用 30 秒（给已经发出的请求），期间使用不续期；撤销会话时新旧两个一起删除。控制台的 StepUpDialog 收到后替换本地的 `access_token`；其他用控制台会话调 API 的客户端（脚本、e2e 客户端）也必须改用响应里的新令牌，旧令牌 30 秒后失效。访问密钥不换、不碰 Valkey。proof、审计 `user.security_verify` 与换令牌在同一个事务里，换令牌最后做：它失败（503）时审计回滚、Valkey 里的 proof 删除。
+- 换令牌从请求出示的令牌换起（`Rotate(…, presented)`）：出示的已经不是会话的当前令牌（别的标签页先完成了二次验证，把它留在宽限期里），就不再换，响应不带 `access_token`，proof 照常签发。否则后到的一次会结束先到的那次刚发出的令牌，换出一个只有自己收到的令牌；两个响应到达的顺序一反，存下来的就是 30 秒后失效的那个，所有标签页随之登出。没换的标签页从存储事件采用先到者的令牌；控制台采用新令牌时也核对（`session.adoptRotated`，§100.8），只在本地令牌仍是发请求时用的那个时才替换。
+- 撤销其他会话（`POST /me/sessions/revoke-others`）在结束其他会话、提交之后，也给调用者的会话换一个新令牌（与二次验证同一条换令牌的路径，同样从出示的令牌换起），响应 `{access_token}`，控制台的会话卡片采用它。原因：控制台令牌存在 localStorage，被 XSS、恶意扩展或本机泄露复制走的令牌与受害者共用同一个会话（sid），会话列表里只有一行，“撤销其他会话”保留的正是它。换令牌后复制走的令牌在宽限（30 秒）后失效。换令牌时 Valkey 不可用，就再结束全部会话（加 2，调用者也要重新登录），与撤销本身写不了 Valkey 时的退路一致。
+- 取舍（与 JWT 时期相比）：没有 refresh token，也就没有重放检测（被盗的刷新令牌与受害者抢着刷新时整个家族被撤销、能被察觉）；改用两件事遏制被盗令牌：二次验证与撤销其他会话都换令牌，会话列表的 `ip`、`user_agent` 随续期更新（最多每 5 分钟一次），同一会话在别处使用能看出来。仍然做不到的：攻击者与受害者交替使用时，列表只显示最近一次写入的地址；在受害者下一次二次验证或撤销其他会话之前，复制的令牌一直有效（滑动续期，最长到绝对超时 30 天）。
 - 结束会话有两条路，一个会话也可以只靠其中一条结束：从 Valkey 删掉，或 bump 用户的 `token_version` 让它的盖章（`tv`）落后（鉴权拒绝并删除，§100.1）。三种做法（`iam.endAllSessions`、`endSomeSessions` 里的 `endOneSession` 与 `keepingBump`）共用一条规则：**改盖章的 bump 加 1，没改到盖章的 bump 加 2**（`stamplessStep`）。会话的盖章最多比库里的 `token_version` 大一（下面的回滚情况：每次改盖章都改成“库里的值 + 1”），所以加 2 一定越过所有会话，任何不经 Valkey 的 bump 都结束全部会话。
 - 单个撤销（`DELETE /me/sessions/:id`、登出）：不 bump，只删这一个会话，立即失效；删的时候 Valkey 不可用，退回 bump 加 2，全部会话随之结束（偏安全），照常成功。`DELETE /me/sessions/:id` 先在 Valkey 里确认会话存在（盖章低于当前 `token_version` 的、已被 bump 结束的会话按不存在处理，404，与会话列表、鉴权一致），这一步 Valkey 不可用就 503。登出不确认：只结束调用者自己的会话（路由只限会话），会话已经不在（过期、已被撤销）也照常成功，不会退化成结束全部会话。
 - 结束全部会话（管理员改密码、禁用、删除用户、超管移交、命令行恢复超管、不保留当前会话的改密码与重置安全）：事务里只动 PostgreSQL，`token_version` **加 2**，bump 本身已让全部会话失效。提交后读一次当前的 `token_version`，只删 Valkey 里盖章低于它的会话（`Prune`）：提交之后才登录的会话不受影响。失败只记 ERROR（会话在下次出示时被删除，或空闲到期）。所以 Valkey 宕机时管理员照样能禁用被盗账号。
@@ -8658,7 +8664,7 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 - 不变量（`TestEndedSessionsStayEndedInAnyOrder` 按任意顺序检查：登录、轮换、单个撤销、登出、撤销其他、结束全部、管理员改密码/禁用/重置安全、命令行 bump、回滚、Valkey 宕机时的各条路径、迟到的撤销脚本，从 `token_version` 为 0 和已 bump 过的用户开始，每一步之后在两个节点上检查；`TestEndedSessionsStayEndedConcurrently` 是并发版本）：一次提交的变更结束的会话，它的每个令牌都不会再被接受；没有被结束的会话仍然有效。只有新建（用持锁读到的当前版本）和结算（只抬高不低于 `from` 的盖章）会写盖章，轮换复制原盖章，续期不改盖章。
 - 重置安全：`DELETE /users/:id/security`（`ResetSecurity`）结束目标用户的会话（丢失的设备上可能还登录着）；重置自己的因子时保留发起请求的会话。
 - 不经 Valkey 的 bump（命令行 `sub2api admin recover-superadmin`，没有 Redis）由 `tv` 比较生效：旧会话下次使用时被删除并 401。命令行也不发总线广播，各节点靠用户状态缓存（30 秒）发现新的 token_version，所以最多 30 秒后才失效；控制台里的管理员操作提交后广播 `iam:user:changed`，立即失效。
-- `GET /me/sessions`：Valkey 里的会话，按最近使用时间倒序；盖章低于当前 `token_version` 的（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。Valkey 不可用时 503。
+- `GET /me/sessions`：Valkey 里的会话，按最近使用时间倒序；盖章低于当前 `token_version` 的（已被 bump 结束、还没从 Valkey 删掉）不列出，与鉴权的判断一致（同一个状态缓存）。地址与浏览器是最近一次记下使用时的（§100.2）。Valkey 不可用时 503。
 - 审计点不变（`user.session.revoke`、`user.session.revoke_others`、`auth.superadmin_login` 等）。
 
 ### 100.5 故障
@@ -8667,6 +8673,8 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 - PostgreSQL 出错同样是故障：鉴权在用户状态缓存未命中时读 `users`，读不到返回 500（`httpapi.Authenticate` 只把 5xx 以下的鉴权失败改写成 401），会话留在 Valkey，数据库恢复后照常可用（`TestDatabaseDownIsAnOutage`）。
 - 不本地兜底。访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
 - 不依赖 Valkey 的：管理员改密码、禁用、删除用户、重置安全（bump 加 2，清理留到下次出示），以及保留型撤销在写不了 Valkey 时退回结束全部会话。
+- Valkey 内存满（`--maxmemory-policy noeviction`，`deploy/single` 与网关缓存、锁共用一个实例）：读照常，写被拒绝。鉴权只读，续期写失败只记 ERROR、请求照常放行（§100.1）；登录、二次验证、撤销等要写的操作 503。
+- **Valkey 重启**：会话与中间流程只在 Valkey。重启后若没有持久化，所有控制台会话、进行中的两步登录、step-up proof、TOTP 设置全部丢失，每个标签页下一次请求 401 回登录页；Valkey 重启后马上能应答，不会出现 `tokenstore: valkey unavailable`，这次全员登出没有告警（JWT 时期 refresh token 在 PostgreSQL，Valkey 重启不影响登录）。所以 `deploy/single` 的 Valkey 打开 AOF（`--appendonly yes --appendfsync everysec`，数据卷 `redisdata`）：宿主机重启、更新缓存镜像、OOM kill 后会话还在，最多丢最后一秒的写入（刚登录的会话、刚撤销的会话可能回来，后者仍被 `token_version` 拒绝，撤销单个会话的除外）。持久化不影响锁：锁本来就按“可能丢失”处理（§27.1）；恢复出来的锁（含最后一秒里已释放的）只会多占到它的 TTL 为止。托管网关（ovh、clicodeplus）用外部 Valkey，它的持久化由运维方保证；用不带持久化的 Valkey 时，重启等于全员登出。
 
 ### 100.6 删除的内容（2026-11-16）
 
@@ -8686,7 +8694,8 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 - `@sub2api/host`：401 直接清会话、调 `onUnauthenticated('expired')` 回登录页；唯一的例外是发出请求后会话已经换了令牌（step-up 轮换，或其他标签页刚登录、存储事件还没到），这时用新令牌重试一次。清会话前再看一眼：会话已经是别的令牌（更新的登录）就不清。
 - 多标签页：会话存 localStorage，各标签页共用。一个标签页登出或遇到 401 清掉会话，其他标签页从 `storage` 事件得知，调 `onUnauthenticated('unauthenticated')` 回登录页；其他标签页换上的新令牌（step-up 轮换、重新登录）直接采用。
-- StepUpDialog：`POST /me/verify` 的响应带 `access_token` 时替换本地令牌，重放请求与之后的请求都用新令牌。
+- StepUpDialog：`POST /me/verify` 的响应带 `access_token` 时用 `session.adoptRotated(发请求时的令牌, 新令牌)` 替换本地令牌，重放请求与之后的请求都用新令牌；其他标签页已经存了更新的令牌（它的轮换、或登出后重新登录）就不覆盖。
+- 会话卡片（`SessionsCard`）：“结束其他会话”只要列表里有当前会话就可用（即使没有其他行：它也给本会话换令牌，结束别处复制的本会话令牌）；响应的 `access_token` 同样经 `session.adoptRotated` 采用。
 - 登出：`POST /auth/logout` 不带请求体。
 - 5xx 不清会话：鉴权遇到 Valkey 或 PostgreSQL 故障返回 503/500（§100.5），控制台只报错，不回登录页。
 - `fetchWithSession(path, init?)`（UI 3.17，§23.2）：JSON 客户端带不了的请求按同一套 401 规则发送；控制台的镜像分片上传、请求日志文件读取、用量导出都用它。此前三处各自“401 后先发一个 JSON 请求再重发”，那是为了触发 JWT 刷新，现在只会多一个必然 401 的请求，已删除。
@@ -8694,8 +8703,8 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 ### 100.9 测试
 
-- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503、结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次、带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）。
-- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）；鉴权时 PostgreSQL 出错返回 500 而不是 401，会话照旧有效（`TestDatabaseDownIsAnOutage`）。
+- `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503、结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次、带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）、续期记下地址与浏览器（`TestTouchRecordsWhereUsed`）、从宽限期里的旧令牌轮换不生效（`TestRotateFromSupersededToken`）、`Drop` 不删已被改盖章的会话（`TestDropSparesARestampedSession`）、清理不看时钟（`TestPruneIgnoresClocks`）。
+- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）；鉴权时 PostgreSQL 出错返回 500 而不是 401，会话照旧有效（`TestDatabaseDownIsAnOutage`）；`session_use_test.go`：撤销其他会话给调用者换令牌、复制的令牌宽限后失效，换令牌时 Valkey 不可用则结束全部会话，从宽限期里的旧令牌二次验证不再轮换，会话列表显示最近使用的地址与浏览器，读会话与读状态之间被保留型 bump 改了盖章的会话不被删除，缓存漏了重新启用时重读用户行，续期写失败不影响请求。
 - `internal/migrations`（`migrations_db_test.go`）：0101 之后三张表不存在、`settings` 没有 `session` 行，再跑一遍不改变结果（`TestMigration0101DropsJWTSessions`）。
 - 网关 `internal/supervisor`：`legacyCoreEnv` 的三个变量照常传给核心；白名单里核心不读的 `SUB2API_` 名字只能是这三个，名单里的名字核心又读了也报错（`allowlist_test.go`）。
-- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌、5xx 不登出、`fetchWithSession` 带令牌并按同一规则处理 401、3.x 弃用导出仍在且什么也不做）。
+- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌、5xx 不登出、`fetchWithSession` 带令牌并按同一规则处理 401、`session.adoptRotated` 只替换发请求时的令牌、3.x 弃用导出仍在且什么也不做）；`StepUpDialog.spec.ts`、`SessionsCard.spec.ts`（采用轮换的令牌，不覆盖其他标签页更新的令牌；没有其他会话时也能结束其他会话）。

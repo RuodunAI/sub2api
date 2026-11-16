@@ -76,30 +76,57 @@ func (s *Service) Login(ctx context.Context, email, password, ip string) (*Login
 		}
 		return &LoginResult{TwoFactorRequired: true, FlowToken: token, ExpiresIn: flowTTLSeconds}, nil
 	}
+	// A password change may have committed while bcrypt was running above:
+	// the hash is checked again under the lock.
+	return s.signIn(ctx, id, login{gone: errBadCredentials, disabled: errUserDisabled, check: func(_ *gorm.DB, current string) error {
+		if current != hash {
+			return errBadCredentials
+		}
+		return nil
+	}})
+}
+
+// login is what a login path adds to signIn: the errors it answers a user
+// gone since it began, or not active, with; check, its own checks (the
+// password snapshot, the second factor, the passkey's use), given the
+// password hash read under the lock; and done (optional), the last step,
+// after the session is issued.
+type login struct {
+	gone, disabled error
+	check          func(g *gorm.DB, passwordHash string) error
+	done           func() error
+}
+
+// signIn ends every login path: in one transaction holding the user's row
+// lock (the parent lock of every session change), the user must still be
+// there and active and l.check pass; then the login is recorded, a session
+// issued (issueTx) and l.done run. ctx carries how it started
+// (withLoginMethod).
+func (s *Service) signIn(ctx context.Context, userID int64, l login) (*LoginResult, error) {
 	var result *LoginResult
-	err = s.issueTx(ctx, func(is *issuer) error {
-		// The user row is the parent lock for every session change.
-		// Recheck the password snapshot after acquiring it: a password change
-		// may have committed while bcrypt was running above.
+	err := s.issueTx(ctx, func(is *issuer) error {
 		g := store.G(ctx, is.tx)
-		var currentHash, currentStatus string
-		if err := lockLiveUser(g, id, "password_hash, status").Row().Scan(&currentHash, &currentStatus); err != nil {
+		var hash, status string
+		if err := lockLiveUser(g, userID, "password_hash, status").Row().Scan(&hash, &status); err != nil {
 			if store.IsNoRows(err) {
-				return errBadCredentials
+				return l.gone
 			}
 			return err
 		}
-		if currentHash != hash {
-			return errBadCredentials
+		if status != StatusActive {
+			return l.disabled
 		}
-		if currentStatus != StatusActive {
-			return errUserDisabled
-		}
-		if err := touchLastLogin(g, id).Error; err != nil {
+		if err := l.check(g, hash); err != nil {
 			return err
 		}
-		result, err = is.issue(ctx, id)
-		return err
+		if err := touchLastLogin(g, userID).Error; err != nil {
+			return err
+		}
+		var err error
+		if result, err = is.issue(ctx, userID); err != nil || l.done == nil {
+			return err
+		}
+		return l.done()
 	})
 	if err != nil {
 		return nil, err
@@ -126,37 +153,21 @@ func (s *Service) LoginSecondFactor(ctx context.Context, flowToken, code, ip str
 	if wait := s.limiter.check(ctx, payload.Email, ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
-	var result *LoginResult
-	err = s.issueTx(ctx, func(is *issuer) error {
-		g := store.G(ctx, is.tx)
-		var hash, status string
-		if err := lockLiveUser(g, userID, "password_hash, status").Row().Scan(&hash, &status); err != nil {
-			if store.IsNoRows(err) {
-				return errBadCredentials
+	result, err := s.signIn(withLoginMethod(ctx, loginMethodTwoFactor), userID, login{
+		gone: errBadCredentials, disabled: errUserDisabled,
+		check: func(g *gorm.DB, hash string) error {
+			if tokenstore.Hash(hash) != payload.Password {
+				return errFlowExpired
 			}
-			return err
-		}
-		if tokenstore.Hash(hash) != payload.Password {
-			return errFlowExpired
-		}
-		if status != StatusActive {
-			return errUserDisabled
-		}
-		if err := s.checkSecondFactor(ctx, is.tx, userID, code); err != nil {
-			return err
-		}
-		if err := touchLastLogin(g, userID).Error; err != nil {
-			return err
-		}
-		var err error
-		if result, err = is.issue(withLoginMethod(ctx, loginMethodTwoFactor), userID); err != nil {
-			return err
-		}
+			return s.checkSecondFactor(ctx, g, userID, code)
+		},
 		// Taken last: a failure before leaves the flow for another try (a
 		// flow in Valkey does not come back with a rollback).
-		var used login2FAPayload
-		_, err = s.takeFlow(ctx, flowToken, flowLogin2FA, userID, &used)
-		return err
+		done: func() error {
+			var used login2FAPayload
+			_, err := s.takeFlow(ctx, flowToken, flowLogin2FA, userID, &used)
+			return err
+		},
 	})
 	if isBadSecondFactor(err) {
 		s.limiter.fail(ctx, payload.Email, ip)

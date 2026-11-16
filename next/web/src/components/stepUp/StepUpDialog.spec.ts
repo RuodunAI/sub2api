@@ -152,4 +152,28 @@ describe('StepUpDialog', () => {
     expect(w.find('[data-testid="step-up-error"]').exists()).toBe(false)
     expect(w.emitted('verified')).toBeUndefined()
   })
+
+  it('takes up the rotated token in place of the one it verified with, never over a newer one', async () => {
+    const { session } = await import('@sub2api/host')
+    session.fromTokenResponse({ access_token: 's2s_a' })
+    api.get.mockResolvedValue(methods(['password']))
+    api.post.mockResolvedValue({ proof: 'P', access_token: 's2s_b' })
+    const verify = async () => {
+      const w = render()
+      await flushPromises()
+      await field(w, 'step-up-password').setValue('pw')
+      await submit(w)
+      expect(w.emitted('verified')).toEqual([['P']])
+    }
+    await verify()
+    expect(session.get()?.access_token).toBe('s2s_b')
+    // Another tab stores a newer token (its own rotation, a new login) while this one verifies.
+    api.post.mockImplementation(async () => {
+      session.fromTokenResponse({ access_token: 's2s_other' })
+      return { proof: 'P', access_token: 's2s_late' }
+    })
+    await verify()
+    expect(session.get()?.access_token).toBe('s2s_other')
+    session.clear()
+  })
 })

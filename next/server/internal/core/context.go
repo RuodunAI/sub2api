@@ -17,6 +17,7 @@ const (
 	ctxGranted
 	ctxClientIP
 	ctxTimeZone
+	ctxUserAgent
 )
 
 func WithClientIP(ctx context.Context, ip string) context.Context {
@@ -26,6 +27,18 @@ func WithClientIP(ctx context.Context, ip string) context.Context {
 func ClientIP(ctx context.Context) string {
 	ip, _ := ctx.Value(ctxClientIP).(string)
 	return ip
+}
+
+// WithUserAgent records the User-Agent of the request: a login session
+// keeps where it was last used from (CONTRACTS §100.2).
+func WithUserAgent(ctx context.Context, ua string) context.Context {
+	return context.WithValue(ctx, ctxUserAgent, ua)
+}
+
+// UserAgent returns what WithUserAgent recorded, "" when nothing.
+func UserAgent(ctx context.Context) string {
+	ua, _ := ctx.Value(ctxUserAgent).(string)
+	return ua
 }
 
 type accessKeyCtxKey struct{}
