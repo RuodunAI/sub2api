@@ -40,6 +40,8 @@ services:
       SUB2API_GATEWAY_POOL_MAX_CONNS: "4"
       REDIS_URL: ${REDIS_URL:?}
       SUB2API_MASTER_KEY: ${SUB2API_MASTER_KEY:?}
+      # Read only by cores before 0.1.290 (rollback target): keep the original value.
+      SUB2API_JWT_SECRET: ${SUB2API_JWT_SECRET:?}
     entrypoint: [sub2api-shell]
     command: [serve, -config, /etc/sub2api/shell.json]
 

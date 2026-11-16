@@ -294,8 +294,7 @@ func StampAuthzVersion(c *gin.Context, authz core.Authorizer) {
 // Authenticate resolves the request's bearer token (a login session or an
 // access key) and stores the caller in the request context, with the
 // step-up proof the request carries (core.WithStepUp). On failure it renders
-// unauthenticated (unavailable when the session store is down) and returns
-// false.
+// unauthenticated, or the server error as it is, and returns false.
 func Authenticate(c *gin.Context, tokens core.TokenVerifier) bool {
 	token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer ")
 	if !ok || token == "" {
@@ -304,19 +303,23 @@ func Authenticate(c *gin.Context, tokens core.TokenVerifier) bool {
 	}
 	ctx, _, err := core.AuthenticateBearer(c.Request.Context(), tokens, token, c.ClientIP())
 	if err != nil {
-		// The session store being down is an outage, not a bad token: a 401
-		// would send every console user to the login page, which cannot
-		// work either until it is back (CONTRACTS §100).
-		if e := core.AsError(err); e.Status == http.StatusServiceUnavailable {
-			Fail(c, e)
-			return false
-		}
-		Fail(c, core.ErrUnauthenticated.WithCause(err))
+		Fail(c, authFailure(err))
 		return false
 	}
 	ctx = core.WithStepUp(ctx, c.GetHeader(core.HeaderVerifyProof), c.Request.Method+" "+c.Request.URL.Path)
 	c.Request = c.Request.WithContext(ctx)
 	return true
+}
+
+// authFailure is what a failed authentication renders. A server error (the
+// session store or the database down) is an outage, not a bad token: a 401
+// would end every console session, and the login page cannot work either
+// until it is back (CONTRACTS §100.5).
+func authFailure(err error) *core.Error {
+	if e := core.AsError(err); e.Status >= http.StatusInternalServerError {
+		return e
+	}
+	return core.ErrUnauthenticated.WithCause(err)
 }
 
 // RejectAccessKey renders permission_denied and returns false when the

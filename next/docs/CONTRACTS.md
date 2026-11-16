@@ -1303,7 +1303,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.16.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。所以 `hostUICompat` 需要 3.4 或更高的插件，`hostCompat` 下限必须至少是 0.1.229，否则 `sdk/manifest` 校验报 `hostCompat / below_ui_core`（dynweight 0.4.1、growth 0.1.6 的下限因此提到 0.1.229）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。所以 `hostUICompat` 需要 3.4 或更高的插件，`hostCompat` 下限必须至少是 0.1.229，否则 `sdk/manifest` 校验报 `hostCompat / below_ui_core`（dynweight 0.4.1、growth 0.1.6 的下限因此提到 0.1.229）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -1343,9 +1343,10 @@ type ProxyResolver interface {
 | `request<T>(method, path, opts?)` | 通用 |
 
 - `path` 相对客户端根；`query` 中 `undefined`/`null`/`''` 省略，数组按重复键展开。`opts: {query?, body?, headers?, signal?, anonymous?}`（`noStepUp` 已删除，§3.3）。
-- 自动带 `Authorization`、`Accept-Language`；401 自动刷新一次并重试（多标签页串行，§14.2）；204 返回 `null`。（原 403 `step_up_required` 弹密码确认重试的逻辑与 `noStepUp` 选项随二次验证删除，§3.3。）
+- 自动带 `Authorization`、`Accept-Language`；401 表示会话已结束，清会话回登录页（发出请求后会话已换了令牌时用新令牌重发一次，§100.8），5xx 不登出；204 返回 `null`。（原 403 `step_up_required` 弹密码确认重试的逻辑与 `noStepUp` 选项随二次验证删除，§3.3。）
 - 失败抛 `ApiError {status, code, message, details, fields}`：`fields` 是 `details.fields[]` 折平后的 `{field: message}`（`invalid_argument`，§3.1；message 为 `{en,zh}` 时按当前语言取），用 `isApiError(e)` 判断。响应没有 `error.code` 时按 HTTP 状态映射（400 `invalid_argument`、401 `unauthenticated`、403 `permission_denied`、404 `not_found`、409 `conflict`、429 `rate_limited`、503 `unavailable`，其余 `internal`）。
 - `listAll<T>(client, path, {query?, max?})`（UI 3.3）：按核心最大页长 200 逐页读完一个分页列表（`page`、`page_size` 由它填，`query` 是其余筛选），读到短页、`page.total` 或 `max` 条（缺省不限）为止；任何一页失败都整体 reject，不返回半截列表。插件读核心分组等整表时用它（moderation、dynweight）。
+- `fetchWithSession(path, init?)`（UI 3.17）：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发；`path` 与 `api` 同样相对 `/api/v1`，`init` 是 `fetch` 的参数（`headers` 为普通对象）；带会话令牌、401 规则与 `api` 相同，返回的 `Response` 不论成败交给调用方读（§100.8）。用到它的插件声明 `hostUICompat ^3.17`，`hostCompat` 要求核心 `>=0.1.290`。
 - 其他导出：`createClient(prefix)`、`api`（= `/api/v1` 客户端）、`session`、`configureHttp`（控制台用，插件不要调）、`satisfiesRange`、`bridge-protocol.ts`（iframe 插件的 postMessage 协议，与原生 UI 无关；2026-11-13 T83 增加请求 `permissions.check` `{keys}` → `{[key]: boolean}`：只认本插件的本地 key，至多 `BRIDGE_MAX_PERMISSION_KEYS` = 50 个，超出或不是数组 `invalid_argument`；带 `plugin.` 前缀的 key（含本插件自己的）一律 false；判断看 `/me` 的权限列表本身而不走超管捷径（超管的列表是全部有效权限），所以未声明的 key 对超管也是 false，iframe 无从得知调用者是否超管；老核心回 `not_found`；UI 3.16 起不带范围的本地 key 只要持有它的任一范围即为 true（持有 `flow:manage:own` 时 `flow:manage` 为 true），带范围的 key 须精确在列表里，§21.0）。
 
 `useList`（`useList.ts`，分页列表状态，控制台的列表页和插件的列表页共用）：
@@ -8659,22 +8660,24 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 
 ### 100.5 故障
 
-- Valkey 不可用时：会话鉴权、登录与两步登录、通行密钥登录、会话列表与单个撤销、二次验证（proof 与窗口）、TOTP 设置都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 503 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
+- Valkey 不可用时：会话鉴权、登录与两步登录、通行密钥登录、会话列表与单个撤销、二次验证（proof 与窗口）、TOTP 设置都返回 503 `unavailable`；`httpapi.Authenticate` 遇到 5xx 原样返回，不改写成 401（否则控制台会把所有人送回登录页，而登录页此时也用不了）。每次失败记 ERROR `tokenstore: valkey unavailable`（`op` 字段），作为告警关键字。
+- PostgreSQL 出错同样是故障：鉴权在用户状态缓存未命中时读 `users`，读不到返回 500（`httpapi.Authenticate` 只把 5xx 以下的鉴权失败改写成 401），会话留在 Valkey，数据库恢复后照常可用（`TestDatabaseDownIsAnOutage`）。
 - 不本地兜底。访问密钥、网关 Key 不受影响；登录限流照旧失败放行（§14.2）。
 - 不依赖 Valkey 的：管理员改密码、禁用、删除用户、重置安全（bump 加 2，清理留到下次出示），以及保留型撤销在写不了 Valkey 时退回结束全部会话。
 
 ### 100.6 删除的内容（2026-11-16）
 
-- JWT 的签发与校验、`/auth/refresh`、refresh token 家族与宽限、重放检测；`SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL` 不再读取，也不再在网关传给核心的白名单里。
+- JWT 的签发与校验、`/auth/refresh`、refresh token 家族与宽限、重放检测；核心不再读取 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`。网关外壳仍把这三个传给核心（`supervisor.legacyCoreEnv`：只有 0.1.290 之前的核心读取，回退目标要用），compose 模板与 `ovh/prepare.sh` 也保留 `SUB2API_JWT_SECRET`，见 §100.7。
 - 签发开关 `session.issue`：`settings` 的 `session` 行、`GET/PUT /settings/session`、`SUB2API_SESSION_ISSUE`、二次验证 scope `session.issue`、节点心跳的能力标记（`caps`、`session.s2s`，没有别的用途，整个机制删除）。`internal/settingswitch` 随之删除（它的另一个用户 `authz.engine` 已在 §99 删除）。
 - 流程读 PostgreSQL 的路径；`refresh_tokens`、`login_sessions`、`auth_flows` 三张表与 `session` 设置行由迁移 `0101_drop_jwt_sessions.sql` 删除。
-- 控制台的刷新、跨标签页刷新锁与 keep-alive（`startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`），`Session` 只剩 `access_token`。
+- 控制台的刷新、跨标签页刷新锁与 keep-alive；`Session` 只存 `access_token`。`@sub2api/host` 的 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS` 与 `Session` 的 `refresh_token`、`expires_at` 留作弃用的空实现，到 UI 4.0 才删（§100.8）。
 
 ### 100.7 发布与回退
 
 - 单向发布，必须停服：先停掉全部核心节点，再启动新版本（网关托管的升级计划 `primary-first-v1` 本身先停从节点、主节点停机后迁移，满足要求；非托管部署手动全停）。旧节点读写被删的表，不能与新节点混跑。
 - 所有人重新登录：上一版的 JWT 与 refresh token 全部作废，控制台下一次请求 401，回到登录页。
-- 没有反向脚本：回退只能从发布前的数据库备份恢复（并恢复原来的 `SUB2API_JWT_SECRET`），步骤见 `deploy/rollback/0.1.290-session-down.md`。
+- 没有反向脚本：回退只能从发布前的数据库备份恢复（`.env` 里要有原来的 `SUB2API_JWT_SECRET`），步骤见 `deploy/rollback/0.1.290-session-down.md`。
+- 网关外壳与核心分开升级（外壳随镜像，核心随升级计划），新外壳也必须能启动 0.1.290 之前的核心：升级计划还没走完时重启的旧核心，或从备份回退后的旧核心。所以外壳继续把 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL` 传给核心（`supervisor.legacyCoreEnv`，`allowlist_test.go` 按这份名单接受核心不读的这三个名字，其余核心不读的 `SUB2API_` 名字照旧报错），`deploy/gateway`、`gateway/ovh`、`gateway/clicodeplus`、`deploy/single` 的 compose 与 `.env.example`、`ovh/prepare.sh` 保留 `SUB2API_JWT_SECRET`，注明只有 0.1.290 之前的核心读取。已有集群不要删这个变量；等不再支持回退到 0.1.290 之前，再在之后的版本一起删除。
 
 ### 100.8 控制台
 
@@ -8682,9 +8685,14 @@ valkey-cli -u "$REDIS_URL" --scan --pattern 'authz:c:ur:*' | xargs -r -n 500 val
 - 多标签页：会话存 localStorage，各标签页共用。一个标签页登出或遇到 401 清掉会话，其他标签页从 `storage` 事件得知，调 `onUnauthenticated('unauthenticated')` 回登录页；其他标签页换上的新令牌（step-up 轮换、重新登录）直接采用。
 - StepUpDialog：`POST /me/verify` 的响应带 `access_token` 时替换本地令牌，重放请求与之后的请求都用新令牌。
 - 登出：`POST /auth/logout` 不带请求体。
+- 5xx 不清会话：鉴权遇到 Valkey 或 PostgreSQL 故障返回 503/500（§100.5），控制台只报错，不回登录页。
+- `fetchWithSession(path, init?)`（UI 3.17，§23.2）：JSON 客户端带不了的请求按同一套 401 规则发送；控制台的镜像分片上传、请求日志文件读取、用量导出都用它。此前三处各自“401 后先发一个 JSON 请求再重发”，那是为了触发 JWT 刷新，现在只会多一个必然 401 的请求，已删除。
+- UI 3.x 兼容：`startKeepAlive`（什么也不做，返回空的停止函数）、`renewalDue`（恒为 `false`）、`RENEW_BEFORE_MS`（`0`）与 `Session` 的可选字段 `refresh_token`、`expires_at`（不再写入）保留并标 `@deprecated`，按 UI 3.x 构建、导入它们的插件照常加载；UI 4.0 删除（`http.spec.ts` 检查它们仍在）。
 
 ### 100.9 测试
 
 - `internal/iam/tokenstore`（miniredis）：签发与查找、只存哈希、空闲与绝对超时、续期节流、单个撤销立即失效且不会被续期复活、撤销其他与全部、保留会话的 `tv` 只增不减且旧令牌一起改、ZSET 残留清理、轮换（宽限、不续期、撤销一并删除、连续两次轮换后第一个令牌立即结束）、旧令牌只删自己、每用户会话上限与同 sid 重建、续期不写残缺 HASH、单个撤销不扫全部、流程只看不取与 `GETDEL` 一次性、二次验证窗口、Valkey 宕机全部返回 503 而不是“不存在”、专用客户端在服务端不应答时约 1 秒返回 503、结算删除低于 `from` 的会话与 `Prune`、轮换的回复丢失后重试只轮换一次、带 bump 的单个撤销即使从版本 0 起也结算其他会话、`Has` 按版本判断、迟到的撤销脚本不动之后签发的会话（`TestLateRevokeLeavesLaterSessions`）。
-- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）。
-- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌）。
+- `internal/iam`（PostgreSQL + miniredis，`session_test.go`）：只有 `s2s_` 能登录、`/auth/refresh` 404；单个撤销不 bump、撤销其他、改密码只留当前会话、登出只结束自己；管理员改密码、重置安全、禁用、删除各自结束会话，第二个节点立即跟随；不经 Valkey 的 bump；二次验证换令牌且 proof 仍可用、换令牌失败不留审计与 proof；流程一次性且只给所属用户；二次验证窗口；Valkey 宕机时 503 而管理员照样能禁用用户；通行密钥与密码登录事务失败不留会话、两步登录流程可重试；保留会话的 bump 不连累轮换留下的旧令牌；回滚留下的 `tv` 挡不住之后的 bump；已结束的会话不被之后保留型 bump 的改盖章复活；结束全部后的清理不删提交后的新登录；保留型 bump 改盖章失败时结束超前盖章；会话列表不列已结束的会话、撤销它们 404；任意顺序与并发的性质测试（上面的不变量）；鉴权时 PostgreSQL 出错返回 500 而不是 401，会话照旧有效（`TestDatabaseDownIsAnOutage`）。
+- `internal/migrations`（`migrations_db_test.go`）：0101 之后三张表不存在、`settings` 没有 `session` 行，再跑一遍不改变结果（`TestMigration0101DropsJWTSessions`）。
+- 网关 `internal/supervisor`：`legacyCoreEnv` 的三个变量照常传给核心；白名单里核心不读的 `SUB2API_` 名字只能是这三个，名单里的名字核心又读了也报错（`allowlist_test.go`）。
+- 控制台：`packages/host/src/http.spec.ts`（401 即登出、令牌已换时重试一次、不清更新的登录、跟随其他标签页登出、采用其他标签页的令牌、step-up 换令牌后重放用新令牌、5xx 不登出、`fetchWithSession` 带令牌并按同一规则处理 401、3.x 弃用导出仍在且什么也不做）。

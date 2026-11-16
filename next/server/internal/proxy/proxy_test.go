@@ -28,8 +28,8 @@ import (
 
 type fakeTokens struct{ testutil.StepUpPassed }
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 // VerifyAccessKey reads "sak_<uid>" as an access key acting for uid.

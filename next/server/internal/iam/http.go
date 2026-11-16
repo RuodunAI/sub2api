@@ -49,7 +49,7 @@ func (s *Service) handleLogin(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.Login(sessionContext(c, loginMethodPassword), in.Email, in.Password, c.ClientIP())
+	result, err := s.Login(sessionContext(c, loginMethodPassword), in.Email, in.Password, c.ClientIP())
 	if err != nil {
 		if e := core.AsError(err); e.Code == core.ErrRateLimited.Code {
 			if secs, ok := e.Details["retry_after_seconds"].(int64); ok {
@@ -59,7 +59,7 @@ func (s *Service) handleLogin(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handleLogout(c *gin.Context) {

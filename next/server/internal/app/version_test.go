@@ -14,7 +14,9 @@ import (
 
 type versionTokenVerifier struct{}
 
-func (versionTokenVerifier) VerifyAccessToken(context.Context, string) (int64, error) { return 1, nil }
+func (versionTokenVerifier) VerifySession(context.Context, string) (int64, string, error) {
+	return 1, "", nil
+}
 func (versionTokenVerifier) VerifyAccessKey(context.Context, string, string) (core.AccessKeyIdentity, error) {
 	return core.AccessKeyIdentity{UserID: 1, KeyID: 1}, nil
 }

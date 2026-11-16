@@ -139,12 +139,12 @@ func (s *Service) handleLogin2FA(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.LoginSecondFactor(sessionContext(c, loginMethodTwoFactor), in.FlowToken, in.Code, c.ClientIP())
+	result, err := s.LoginSecondFactor(sessionContext(c, loginMethodTwoFactor), in.FlowToken, in.Code, c.ClientIP())
 	if err != nil {
 		failLogin(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handlePasskeyLoginBegin(c *gin.Context) {
@@ -164,12 +164,12 @@ func (s *Service) handlePasskeyLoginFinish(c *gin.Context) {
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
-	pair, err := s.FinishPasskeyLogin(sessionContext(c, loginMethodPasskey), c.Request, in.FlowToken, in.Credential, c.ClientIP())
+	result, err := s.FinishPasskeyLogin(sessionContext(c, loginMethodPasskey), c.Request, in.FlowToken, in.Credential, c.ClientIP())
 	if err != nil {
 		failLogin(c, err)
 		return
 	}
-	httpapi.OK(c, pair)
+	httpapi.OK(c, result)
 }
 
 func (s *Service) handleTwoFactor(c *gin.Context) {

@@ -7,8 +7,7 @@ import RequestLogViewer from './RequestLogViewer.vue'
 const mocks = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('@sub2api/host', () => ({
   api: { get: mocks.get },
-  apiBase: () => '/api',
-  session: { get: () => ({ access_token: 'token' }) },
+  fetchWithSession: (path: string, init?: RequestInit) => fetch('/api' + path, init),
   ApiError: class extends Error { constructor(public status: number, public error: unknown) { super('api error') } },
   isApiError: () => false,
 }))

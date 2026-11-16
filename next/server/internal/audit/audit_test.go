@@ -241,8 +241,8 @@ func TestPluginWritesAndList(t *testing.T) {
 
 type allowAll struct{}
 
-func (allowAll) VerifyAccessToken(context.Context, string) (int64, error) { return 1, nil }
-func (allowAll) Can(context.Context, int64, string) (bool, error)         { return true, nil }
+func (allowAll) VerifySession(context.Context, string) (int64, string, error) { return 1, "", nil }
+func (allowAll) Can(context.Context, int64, string) (bool, error)             { return true, nil }
 func (allowAll) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }

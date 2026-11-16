@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, session } from '@sub2api/host'
 import {
   CHUNK_SIZE,
@@ -212,13 +212,15 @@ describe('upload transport', () => {
     vi.clearAllMocks()
     session.set({ access_token: 'tok-1' })
   })
+  afterEach(() => vi.unstubAllGlobals())
 
   const ok = (data: unknown) => new Response(JSON.stringify({ data }), { status: 200, headers: { 'Content-Type': 'application/json' } })
 
   it('PUTs the raw chunk with the offset header and the session token', async () => {
     const fetchImpl = vi.fn(async () => ok({ offset: 4, size: 8 }))
+    vi.stubGlobal('fetch', fetchImpl)
     const chunk = blob(4)
-    const r = await createUploadTransport(fetchImpl as unknown as typeof fetch).put(ID, 0, chunk)
+    const r = await createUploadTransport().put(ID, 0, chunk)
     expect(r).toEqual({ offset: 4, size: 8 })
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toBe(`/api/v1/system/ccgateway/runtime/uploads/${ID}`)
@@ -229,7 +231,8 @@ describe('upload transport', () => {
 
   it('reports a chunk of a lapsed upload session as an ApiError, not worth retrying', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: { code: 'verification_expired', message: 'start again', details: { scope: 'host.install' } } }), { status: 403 }))
-    const e = await createUploadTransport(fetchImpl as unknown as typeof fetch).put(ID, 0, blob(4)).catch(x => x)
+    vi.stubGlobal('fetch', fetchImpl)
+    const e = await createUploadTransport().put(ID, 0, blob(4)).catch(x => x)
     expect(e).toBeInstanceOf(ApiError)
     expect(e.code).toBe('verification_expired')
     expect(retryable(e)).toBe(false)
@@ -237,26 +240,27 @@ describe('upload transport', () => {
 
   it('turns a 409 into an ApiError carrying the controller offset', async () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ error: { code: 'conflict', message: 'offset mismatch', details: { reason: 'offset_mismatch', offset: 16 } } }), { status: 409 }))
-    const e = await createUploadTransport(fetchImpl as unknown as typeof fetch).put(ID, 0, blob(4)).catch(x => x)
+    vi.stubGlobal('fetch', fetchImpl)
+    const e = await createUploadTransport().put(ID, 0, blob(4)).catch(x => x)
     expect(e).toBeInstanceOf(ApiError)
     expect(mismatchOffset(e, 32)).toBe(16)
   })
 
-  it('lets the shared client renew the session after a 401, then sends the chunk again', async () => {
+  it('sends the chunk again with the session token that replaced the one a 401 refused', async () => {
     const fetchImpl = vi.fn()
-      .mockResolvedValueOnce(new Response('', { status: 401 }))
+      .mockImplementationOnce(async () => { session.set({ access_token: 'tok-2' }); return new Response('', { status: 401 }) })
       .mockResolvedValueOnce(ok({ offset: 4, size: 4 }))
-    mocks.get.mockImplementation(async () => { session.set({ access_token: 'tok-2' }); return { offset: 0, size: 4 } })
-    const r = await createUploadTransport(fetchImpl as unknown as typeof fetch).put(ID, 0, blob(4))
+    vi.stubGlobal('fetch', fetchImpl)
+    const r = await createUploadTransport().put(ID, 0, blob(4))
     expect(r).toEqual({ offset: 4, size: 4 })
-    expect(mocks.get).toHaveBeenCalledWith(`/system/ccgateway/runtime/uploads/${ID}`, undefined, expect.anything())
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(((fetchImpl.mock.calls[1] as unknown as [string, RequestInit])[1].headers as Record<string, string>).Authorization).toBe('Bearer tok-2')
   })
 
   it('creates, loads with apply and deletes through the console client', async () => {
     mocks.post.mockResolvedValue({})
     mocks.del.mockResolvedValue(null)
-    const t = createUploadTransport(vi.fn() as unknown as typeof fetch)
+    const t = createUploadTransport()
     // Creating may wait for the step-up verification: only the caller's signal ends it.
     const cancel = new AbortController()
     await t.create(123, cancel.signal)

@@ -16,8 +16,8 @@ import (
 
 type tokenTestAuth struct{}
 
-func (tokenTestAuth) VerifyAccessToken(context.Context, string) (int64, error) { return 1, nil }
-func (tokenTestAuth) Can(context.Context, int64, string) (bool, error)         { return true, nil }
+func (tokenTestAuth) VerifySession(context.Context, string) (int64, string, error) { return 1, "", nil }
+func (tokenTestAuth) Can(context.Context, int64, string) (bool, error)             { return true, nil }
 func (tokenTestAuth) PermissionSet(context.Context, int64) (core.PermissionSet, error) {
 	return core.PermissionSet{Superuser: true}, nil
 }

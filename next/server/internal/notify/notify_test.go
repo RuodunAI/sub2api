@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -61,8 +60,8 @@ func (fakeRegistry) OnChange(func(core.Generation)) (cancel func()) { return fun
 
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 type fakeAuthz struct{}

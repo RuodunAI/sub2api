@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -26,8 +24,8 @@ import (
 
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 // fakeAuthz holds, per user, which permissions they have; a user without an

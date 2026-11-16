@@ -149,11 +149,11 @@ func TestLoginAsksForTheSecondFactor(t *testing.T) {
 		t.Fatalf("replayed code: %v", err)
 	}
 	clearLastStep(t, s, id)
-	pair, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
-	if err != nil || pair.AccessToken == "" {
-		t.Fatalf("code: %+v %v", pair, err)
+	result, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP)
+	if err != nil || result.AccessToken == "" {
+		t.Fatalf("code: %+v %v", result, err)
 	}
-	if uid, err := s.VerifyAccessToken(ctx, pair.AccessToken); err != nil || uid != id {
+	if uid, _, err := s.VerifySession(ctx, result.AccessToken); err != nil || uid != id {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
 	if _, err := s.LoginSecondFactor(ctx, step.FlowToken, codeAt(t, secret, time.Now()), testIP); !isCode(err, "invalid_argument") || isBadSecondFactor(err) {
@@ -511,7 +511,7 @@ func TestLoginSessions(t *testing.T) {
 		t.Fatalf("already revoked: %v", err)
 	}
 	// The revoked session's token is rejected, the kept one's is not.
-	for _, p := range []*TokenPair{first, second} {
+	for _, p := range []*LoginResult{first, second} {
 		_, sid, err := s.VerifySession(ctx, p.AccessToken)
 		if (sid == keep) != (err == nil) {
 			t.Fatalf("session %q after revoking the others: %v", sid, err)
@@ -697,11 +697,11 @@ func TestPasskeyRegistrationAndLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	credential := a.get(t, begin)
-	pair, err := s.FinishPasskeyLogin(ctx, r, begin.FlowToken, credential, testIP)
+	result, err := s.FinishPasskeyLogin(ctx, r, begin.FlowToken, credential, testIP)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if uid, err := s.VerifyAccessToken(ctx, pair.AccessToken); err != nil || uid != id {
+	if uid, _, err := s.VerifySession(ctx, result.AccessToken); err != nil || uid != id {
 		t.Fatalf("verify: %d %v", uid, err)
 	}
 	list, _ := s.Passkeys(ctx, id)
@@ -1189,7 +1189,7 @@ func TestAccessKeyCannotManageSignIn(t *testing.T) {
 	key := k.createKey(t, root, "user:read")
 	// Anything that only verifies sessions refuses it (plugin routes refuse keys
 	// explicitly with 403).
-	if _, err := k.s.VerifyAccessToken(context.Background(), key.Key); err == nil {
+	if _, _, err := k.s.VerifySession(context.Background(), key.Key); err == nil {
 		t.Fatal("a key passed as a console token")
 	}
 	for _, p := range []struct{ method, path string }{

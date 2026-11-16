@@ -312,7 +312,7 @@ func (s *Service) BeginPasskeyLogin(ctx context.Context, r *http.Request, ip str
 // FinishPasskeyLogin verifies the assertion and issues tokens. A passkey checks
 // the user's presence and verification itself, so two-factor is not asked for
 // again. Every failure looks the same and counts towards the login rate limit.
-func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowToken string, credential json.RawMessage, ip string) (*TokenPair, error) {
+func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowToken string, credential json.RawMessage, ip string) (*LoginResult, error) {
 	if wait := s.limiter.check(ctx, "", ip); wait > 0 {
 		return nil, rateLimitedError(ctx, wait)
 	}
@@ -320,7 +320,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	if _, err := s.takeFlow(ctx, flowToken, flowPasskeyLogin, 0, &session); err != nil {
 		return nil, err
 	}
-	fail := func() (*TokenPair, error) {
+	fail := func() (*LoginResult, error) {
 		s.limiter.fail(ctx, "", ip)
 		return nil, errPasskeyFailed
 	}
@@ -361,7 +361,7 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 	if err != nil {
 		return nil, err
 	}
-	var pair *TokenPair
+	var result *LoginResult
 	err = s.issueTx(ctx, func(is *issuer) error {
 		g := store.G(ctx, is.tx)
 		var status string
@@ -385,13 +385,13 @@ func (s *Service) FinishPasskeyLogin(ctx context.Context, r *http.Request, flowT
 			return err
 		}
 		var err error
-		pair, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id)
+		result, err = is.issue(withLoginMethod(ctx, loginMethodPasskey), user.id)
 		return err
 	})
 	if err != nil {
 		return nil, err
 	}
-	return pair, nil
+	return result, nil
 }
 
 // passkeyByCredential reads the passkey of a credential the browser names.

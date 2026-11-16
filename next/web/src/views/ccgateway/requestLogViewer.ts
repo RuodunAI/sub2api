@@ -1,7 +1,7 @@
 // Reading an account's request logs (REQUEST-LOG-VIEWER-DESIGN.md §6/§8):
 // list, one request's summary, and content files in 1 MiB chunks. Content is
 // fetched as bytes (the console client only speaks JSON) and shown as text.
-import { ApiError, api, apiBase, session } from '@sub2api/host'
+import { ApiError, api, fetchWithSession } from '@sub2api/host'
 
 export type LogLevel = 'summary' | 'full'
 export type LogMode = 'direct' | 'build'
@@ -184,23 +184,9 @@ export function requestLogDetail(account: number, log: string, signal?: AbortSig
 
 export interface RequestLogChunk { bytes: Uint8Array; size: number; offset: number }
 
-/**
- * One file read with the session token. A 401 lets the shared client renew
- * the session (reading the detail), then the read is sent once more.
- */
+/** One file read with the session token (fetchWithSession). */
 async function readFile(account: number, log: string, name: string, query: string, signal?: AbortSignal): Promise<Response> {
-  const path = `${base(account)}/${encodeURIComponent(log)}/files/${encodeURIComponent(name)}${query}`
-  const send = () => {
-    const headers: Record<string, string> = {}
-    const token = session.get()?.access_token
-    if (token) headers.Authorization = 'Bearer ' + token
-    return fetch(apiBase() + path, { headers, signal })
-  }
-  let res = await send()
-  if (res.status === 401) {
-    await requestLogDetail(account, log, signal)
-    res = await send()
-  }
+  const res = await fetchWithSession(`${base(account)}/${encodeURIComponent(log)}/files/${encodeURIComponent(name)}${query}`, { signal })
   if (!res.ok) {
     let body: any = null
     try { body = await res.json() } catch { /* not JSON */ }

@@ -212,6 +212,41 @@ describe('session', () => {
     expect(onUnauthenticated).not.toHaveBeenCalled()
   })
 
+  it('keeps the session through a server error: an outage is not a sign-out', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    for (const status of [500, 503]) {
+      stubFetch(() => json({ code: 'internal' }, status))
+      await expect(http.api.get('/x')).rejects.toMatchObject({ status })
+    }
+    expect(http.session.get()?.access_token).toBe('s2s_a')
+    expect(onUnauthenticated).not.toHaveBeenCalled()
+  })
+
+  it('fetchWithSession sends a raw request with the token and the 401 policy of the client', async () => {
+    http.session.fromTokenResponse({ access_token: 's2s_old' })
+    const onUnauthenticated = vi.fn()
+    http.configureHttp({ onUnauthenticated })
+    const body = new Blob(['raw'])
+    const f = stubFetch((_url, init) => {
+      if (init.headers.Authorization !== 'Bearer s2s_old') return new Response('file')
+      http.session.fromTokenResponse({ access_token: 's2s_new' })
+      return json({ code: 'unauthenticated' }, 401)
+    })
+    const res = await http.fetchWithSession('/files/a?offset=1', { method: 'PUT', headers: { 'X-A': '1' }, body })
+    expect(await res.text()).toBe('file')
+    expect(f).toHaveBeenCalledTimes(2)
+    const [url, init] = f.mock.calls[1]
+    expect(url).toBe('/api/v1/files/a?offset=1')
+    expect(init).toMatchObject({ method: 'PUT', body, headers: { 'X-A': '1', Authorization: 'Bearer s2s_new' } })
+
+    stubFetch(() => json({ code: 'unauthenticated' }, 401))
+    expect((await http.fetchWithSession('/files/a')).status).toBe(401)
+    expect(http.session.get()).toBeNull()
+    expect(onUnauthenticated).toHaveBeenCalledWith('expired')
+  })
+
   it('follows another tab that signs out, or whose session ended, to the login page', () => {
     http.session.fromTokenResponse({ access_token: 's2s_a' })
     const onUnauthenticated = vi.fn()
@@ -371,5 +406,17 @@ describe('step-up verification', () => {
     stubFetch(() => json({ code: 'permission_denied', message: 'no' }, 403))
     await expect(http.api.del('/users/5')).rejects.toMatchObject({ code: 'permission_denied' })
     expect(ask).not.toHaveBeenCalled()
+  })
+})
+
+// Plugins built against UI 3.x may import the renewal API of the JWT console;
+// it stays, doing nothing, until host UI 4.0 (CONTRACTS §100.8).
+describe('host UI 3.x compatibility', () => {
+  it('keeps the renewal exports as harmless no-ops', () => {
+    expect(http.RENEW_BEFORE_MS).toBe(0)
+    expect(http.renewalDue({ access_token: 's2s_a', refresh_token: 'r', expires_at: 0 }, Date.now())).toBe(false)
+    const stop = http.startKeepAlive()
+    expect(stop).toBeTypeOf('function')
+    stop()
   })
 })

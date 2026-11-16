@@ -13,12 +13,13 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(strings.TrimPrefix(tok, "u"), 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "u")
 }
 
 // fakeAuthz grants per user a fixed key set.

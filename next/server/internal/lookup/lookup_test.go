@@ -25,8 +25,8 @@ import (
 // as an access key of that user limited to permissions a and b.
 type fakeTokens struct{}
 
-func (fakeTokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
-	return strconv.ParseInt(tok, 10, 64)
+func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
+	return testutil.SessionUser(tok, "")
 }
 
 func (fakeTokens) VerifyAccessKey(_ context.Context, raw, _ string) (core.AccessKeyIdentity, error) {

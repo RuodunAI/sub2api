@@ -416,3 +416,9 @@ const { EntityMultiPicker } = host.components
 插件的用户权限可以在清单里声明 `scope`（`{resource, own, options}` 或枚举 `{values}`），授权 key 写作 `plugin.<key>:<权限>:own`、`…:<resource>/<值>`，枚举的资源名固定为 `value`（`…:value/input`）。3.16 的控制台按语法解析这些 key，`host.permissions` 的三个方法对插件 key 与核心 key 同一口径：`has('plugin.p:flow:manage')` 只在持有全部范围时为真，`hasAction('plugin.p:flow:manage')` 任意范围即为真（决定“编辑”按钮是否出现），`scope('plugin.p:flow:manage')` 返回持有的规范 key，如 `["plugin.p:flow:manage:own", "plugin.p:flow:manage:flow/2"]`。行级能否编辑仍建议由插件后端在列表行里返回。方法签名与 3.15 相同；UI 3.15 的控制台不解析插件范围，依赖这些语义的页面声明 `hostUICompat: "^3.16"`，`hostCompat` 要求核心 `>=0.1.289`（0.1.288 是最后一个带 UI 3.15 的核心）。声明了 `scope`、`group`、`risk` 等新字段的清单本来就要求这一版本。
 
 同一版本导出 `useScrollClip(scroller, content)`：横向滚动容器的内容被裁到右侧之外时返回 `true`（随尺寸变化与滚动更新），用来在可横向滚动的表格右缘画渐隐或提示“还有列”。核心的权限矩阵与 `STable` 用的就是它；`scroller` 是 `overflow-x: auto` 的元素，`content` 是其中的表格，两个都是 `Ref<HTMLElement | undefined>`，挂载前为 `false`。
+
+## 带会话的原始请求（UI SDK 3.17）
+
+`@sub2api/host` 新导出 `fetchWithSession(path, init?)`：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发。`path` 与 `api` 的写法相同（相对 `/api/v1`，如 `/p/demo/export?x=1`），`init` 是 `fetch` 的参数，`headers` 写成普通对象。它带上会话令牌，401 按 `api` 的规则处理（其他标签页换了令牌就用新令牌重发一次，否则结束会话回登录页；5xx 不登出），返回的 `Response` 不论成败都交给调用方读。不要自己读 `session` 拼 `Authorization`，也不要为了“续期”先发一个 JSON 请求：会话由服务端续期（CONTRACTS §100）。用到它的插件声明 `hostUICompat: "^3.17"`，`hostCompat` 要求核心 `>=0.1.290`（0.1.289 是最后一个带 UI 3.16 的核心）。
+
+同一版本起 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS` 以及 `Session` 的 `refresh_token`、`expires_at` 标为弃用：控制台不再续期 JWT，这些导出保留到 UI 4.0，什么也不做（`startKeepAlive()` 返回空的停止函数，`renewalDue` 恒为 `false`，`RENEW_BEFORE_MS` 为 `0`，会话里没有这两个字段）。按 3.x 构建的插件照常加载。

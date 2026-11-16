@@ -3,7 +3,6 @@ package routes_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -51,21 +50,21 @@ func (e ext) Scheduler() core.SchedulerPlugin { return nil }
 
 type tokens struct{}
 
-func (tokens) VerifyAccessToken(_ context.Context, tok string) (int64, error) {
+func (tokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
 	switch tok {
 	case "admin":
-		return 1, nil
+		return 1, "", nil
 	case "nobody":
-		return 2, nil
+		return 2, "", nil
 	case "owner": // account:*:own (see accounts)
-		return 3, nil
+		return 3, "", nil
 	case "plain": // no account key
-		return 4, nil
+		return 4, "", nil
 	}
 	if u, ok := scopeUsers[tok]; ok {
-		return u.id, nil
+		return u.id, "", nil
 	}
-	return 0, errors.New("bad token")
+	return 0, "", core.ErrUnauthenticated
 }
 
 // VerifyAccessKey accepts any key as the admin's: sak_<permission> carries
@@ -76,7 +75,7 @@ func (t tokens) VerifyAccessKey(ctx context.Context, raw, _ string) (core.Access
 	uid := int64(1)
 	if !found {
 		perm = tok
-	} else if id, err := t.VerifyAccessToken(ctx, tok); err == nil {
+	} else if id, _, err := t.VerifySession(ctx, tok); err == nil {
 		uid = id
 	}
 	return core.AccessKeyIdentity{UserID: uid, KeyID: 1, Permissions: []string{"plugin.demo:" + perm}}, nil
