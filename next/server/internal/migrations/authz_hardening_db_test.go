@@ -21,9 +21,9 @@ const (
 	// the authz hardening.
 	lastReleased = "0096_usage_base_cost.sql"
 	hardening    = "0097_authz_hardening.sql"
-	// production is the last core migration of 0.1.288, the release 0.1.290
-	// upgrades.
-	production = "0098_plugin_staged_grants.sql"
+	// hardened is the last core migration of 0.1.286 (0.1.287 and 0.1.288
+	// added none), the release the rollback script reverses.
+	hardened = "0098_plugin_staged_grants.sql"
 )
 
 // hardeningDB is a database as core 0.1.285 leaves it, with the authz data
@@ -58,8 +58,8 @@ func (h *hardeningDB) migrate() error {
 }
 
 // migrateThrough applies the core migrations up to last and no further:
-// the release whose rollback script a test runs (0100 has none: its way
-// back is a backup).
+// the release whose rollback script a test runs (0100 has none: it is one
+// way).
 func (h *hardeningDB) migrateThrough(last string) error {
 	h.t.Helper()
 	_, err := store.Migrate(h.ctx, h.db, testutil.MigrationsThrough(h.t, last), store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
@@ -332,7 +332,7 @@ func TestAuthzHardeningRollback(t *testing.T) {
 	h := newHardeningDB(t)
 	schema, grants, keys := h.schema(), h.grants(), h.accessKeys()
 
-	require.NoError(t, h.migrateThrough(production))
+	require.NoError(t, h.migrateThrough(hardened))
 	upgraded := h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater")
 	// Written after the upgrade: a group scope, which 0.1.285 cannot express.
 	h.exec(`INSERT INTO role_permission_scopes (role_id, permission_id, scope)
@@ -359,7 +359,7 @@ func TestAuthzHardeningRollback(t *testing.T) {
 
 	require.ErrorContains(t, h.down("0.1.286-authz-down.sql"), "nothing to roll back")
 
-	require.NoError(t, h.migrateThrough(production))
+	require.NoError(t, h.migrateThrough(hardened))
 	require.Equal(t, upgraded, h.roleGrants("admin", "operator", "user", "seller", "mixed", "delegator", "updater"))
 }
 

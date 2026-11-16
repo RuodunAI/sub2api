@@ -39,7 +39,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish ./keys/release.key releas
 
 ## 配置节点
 
-复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。本版外壳不再把 `SUB2API_JWT_SECRET` 传给核心，只能运行 0.1.290 起的核心：从 0.1.288 升级时先在原来的外壳下跑完升级计划，再换本版外壳（`deploy/rollback/0.1.290-release.md`）。
+复制 `.env.example` 到 `.env`，填入同一集群的数据库、Redis 和主密钥。迁移已有集群时必须沿用原密钥及数据库。外壳只运行 0.1.290 起的核心。
 
 修改 `config/node-a.json` 和 `config/node-b.json`：
 

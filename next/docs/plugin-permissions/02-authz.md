@@ -2,7 +2,7 @@
 
 > 基于 `/home/claude/sup2api-dev` develop @ dae6ba57。下文 `path:line` 以 `next/server/internal/` 为根（另注明的除外），都是在代码里核对过的；标“推测”的是没有核实的判断。
 >
-> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 已删除，停在 0099 的开发库重建或恢复到 0098 的备份；线上的升级与回退见 `deploy/rollback/0.1.290-release.md`。
+> 存储为历史：本目录是 0.1.289 时的设计。0.1.290 起角色的授予（含范围授予）与用户的角色只存在 `casbin_rule`（迁移 0100，CONTRACTS §99），下文的 `role_permissions`、`role_permission_scopes`、`user_roles` 及引用它们的语句与行号都是当时的写法，那三张表已删除。版本号也是当时的推测：这部分随 0.1.290 与 Casbin、会话一起发布，0.1.289 没有单独发布，`PluginPermissionsFirstCore`、UI 3.16 的核心下限和内置插件的 `hostCompat` 都是 0.1.290；`0.1.289-plugin-perm-down` 已删除，停在 0099 的开发库重建或恢复到 0098 的备份；线上的升级见 CHANGELOG 0.1.290（发布手册已删除，CONTRACTS §101）。
 
 ## 2.1 本章范围
 
