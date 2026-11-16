@@ -10,6 +10,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 type lifecycleEvents struct {
@@ -109,7 +110,7 @@ func (s *Service) deliverAccountLifecycle(ctx context.Context, id int64, pluginK
 		return nil
 	}
 	var generation int64
-	if err := g.Raw(`SELECT COALESCE((SELECT generation FROM account_lifecycle_sync WHERE account_id=?),0)`, id).Row().Scan(&generation); err != nil {
+	if err := g.Model(&model.AccountLifecycleSync{}).Select("generation").Where("account_id = ?", id).Scan(&generation).Error; err != nil {
 		return err
 	}
 	result, err := s.accountLifecycle(ctx, binding, &pluginv1.AccountLifecycleRequest{Phase: phase, Account: account.lifecycleSnapshot(), ChangedFields: changed})

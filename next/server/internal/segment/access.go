@@ -14,23 +14,26 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-// OpenToUserSQL is the SQL condition for "the user may use the group": the
-// group is public, or the user's segment is granted it. group is the alias of
-// the groups row and user an expression of the user's id (a column or a
-// placeholder). It is the one place the rule is written; the group's status
-// is the caller's to check.
-func OpenToUserSQL(group, user string) string {
-	return `(` + group + `.visibility = 'public' OR EXISTS (SELECT 1 FROM segment_groups sg
+// openTo is the SQL condition for "the user may use the group g": the
+// group is public, or the user's segment is granted it, the user's id
+// being the expression that closes it (openTo, then the id, then "))").
+// It is the one place the rule is written; the group's status is the
+// caller's to check.
+const openTo = `(g.visibility = 'public' OR EXISTS (SELECT 1 FROM segment_groups sg
 		JOIN users su ON su.segment_id = sg.segment_id
-		WHERE sg.group_id = ` + group + `.id AND sg.granted AND su.id = ` + user + `))`
-}
+		WHERE sg.group_id = g.id AND sg.granted AND su.id = `
 
-// UsableGroupSQL is the SQL condition for the groups the user can use (GET
-// /me/groups): active, and OpenToUserSQL. It is also the range of groups an
-// "own" account holder may bind.
-func UsableGroupSQL(group, user string) string {
-	return group + `.status = 'active' AND ` + OpenToUserSQL(group, user)
-}
+const (
+	// OpenToUser is openTo of the user given as the one ? parameter, the
+	// groups row being aliased g.
+	OpenToUser = openTo + `?))`
+	// OpenToKeyOwner is openTo of the owner of the api_keys row k.
+	OpenToKeyOwner = openTo + `k.user_id))`
+	// UsableGroup is the SQL condition for the groups g the user (the one ?
+	// parameter) can use (GET /me/groups): active, and OpenToUser. It is
+	// also the range of groups an "own" account holder may bind.
+	UsableGroup = `g.status = 'active' AND ` + OpenToUser
+)
 
 // Terms is what a segment gets in a group.
 type Terms struct {

@@ -253,13 +253,11 @@ func (l *UsageLimit) scanTargets() []any {
 	return []any{&l.RawCost, &l.Enabled, &l.Amount, &l.Period, &l.PeriodCount, &l.Anchor, &l.Timezone, &l.waived}
 }
 
-// The usage reads below are written with ? placeholders and read through
-// GORM.
-
 // usageLimits loads the configured limits of the given accounts.
 func usageLimits(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageLimit, error) {
 	out := make(map[int64]UsageLimit, len(ids))
-	err := store.EachRow(store.G(ctx, q).Raw(usageLimitsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
+	limits := store.G(ctx, q).Table("account_usage_limits").Select("account_id, "+usageLimitColumns).Where("account_id = ANY(?)", store.Int64s(ids))
+	err := store.EachRow(limits, func(rows *sql.Rows) error {
 		var id int64
 		var l UsageLimit
 		if err := rows.Scan(append([]any{&id}, l.scanTargets()...)...); err != nil {
@@ -273,8 +271,6 @@ func usageLimits(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageL
 	}
 	return out, nil
 }
-
-const usageLimitsSQL = `SELECT account_id, ` + usageLimitColumns + ` FROM account_usage_limits WHERE account_id = ANY(?)`
 
 // usageWindow is the usage of one account from since up to until (nil = now).
 type usageWindow struct {
@@ -290,7 +286,15 @@ func usageIn(ctx context.Context, q *gorm.DB, windows []usageWindow) ([]UsageFig
 		return make([]UsageFigures, 0), nil
 	}
 	out := make([]UsageFigures, len(windows))
-	err := store.EachRow(store.G(ctx, q).Raw(usageInSQL, usageInArgs(windows)...), func(rows *sql.Rows) error {
+	ids, since, until := make(store.Int64s, len(windows)), make(store.Times, len(windows)), make(store.Array[*time.Time], len(windows))
+	for i, w := range windows {
+		ids[i], since[i], until[i] = w.account, w.since, w.until
+	}
+	sums := store.G(ctx, q).Table("unnest(?::bigint[], ?::timestamptz[], ?::timestamptz[]) WITH ORDINALITY AS w(id, since, until, i)", ids, since, until).
+		Select("w.i, " + hourlySums).
+		Joins("LEFT JOIN account_usage_hourly h ON h.account_id = w.id AND h.hour >= w.since AND (w.until IS NULL OR h.hour < w.until)").
+		Group("w.i")
+	err := store.EachRow(sums, func(rows *sql.Rows) error {
 		var i int
 		var f UsageFigures
 		if err := rows.Scan(&i, &f.Cost, &f.RawCost, &f.Requests, &f.Tokens); err != nil {
@@ -305,22 +309,14 @@ func usageIn(ctx context.Context, q *gorm.DB, windows []usageWindow) ([]UsageFig
 	return out, nil
 }
 
-const usageInSQL = `SELECT w.i, coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint
-		FROM unnest(?::bigint[], ?::timestamptz[], ?::timestamptz[]) WITH ORDINALITY AS w(id, since, until, i)
-		LEFT JOIN account_usage_hourly h ON h.account_id = w.id AND h.hour >= w.since AND (w.until IS NULL OR h.hour < w.until)
-		GROUP BY w.i`
-
-func usageInArgs(windows []usageWindow) []any {
-	ids, since, until := make(store.Int64s, len(windows)), make(store.Times, len(windows)), make(store.Array[*time.Time], len(windows))
-	for i, w := range windows {
-		ids[i], since[i], until[i] = w.account, w.since, w.until
-	}
-	return []any{ids, since, until}
-}
+// hourlySums are the usage figures summed over the account_usage_hourly
+// rows h, zero over none.
+const hourlySums = `coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint`
 
 func usageTotals(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageFigures, error) {
 	out := make(map[int64]UsageFigures, len(ids))
-	err := store.EachRow(store.G(ctx, q).Raw(usageTotalsSQL, store.Int64s(ids)), func(rows *sql.Rows) error {
+	rows := store.G(ctx, q).Table("account_usage_totals").Select("account_id, cost, raw_cost, requests, tokens").Where("account_id = ANY(?)", store.Int64s(ids))
+	err := store.EachRow(rows, func(rows *sql.Rows) error {
 		var id int64
 		var f UsageFigures
 		if err := rows.Scan(&id, &f.Cost, &f.RawCost, &f.Requests, &f.Tokens); err != nil {
@@ -334,8 +330,6 @@ func usageTotals(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]UsageF
 	}
 	return out, nil
 }
-
-const usageTotalsSQL = `SELECT account_id, cost, raw_cost, requests, tokens FROM account_usage_totals WHERE account_id = ANY(?)`
 
 // limitStates computes what the current period of each active limit used; a
 // lifetime limit reads the totals.
@@ -405,13 +399,27 @@ func (s *Service) fillUsage(ctx context.Context, out []*View) {
 }
 
 // usageOverview reads what usageTotals, usageIn (a window from since to now
-// for each account) and usageLimits read of ids, in one statement
-// (usageOverviewSQL): the totals and the limits by account, the windows in
-// the order of ids.
+// for each account) and usageLimits read of ids, in one statement: one row
+// per account in the order of ids. The totals and the limit are LEFT JOINed,
+// so the row says whether the account has them (an absent one reads as zero
+// values, which usageOverview drops); the window is usageIn's sums, zero
+// over no hour. It returns the totals and the limits by account, the
+// windows in the order of ids.
 func usageOverview(ctx context.Context, q *gorm.DB, ids []int64, since time.Time) (map[int64]UsageFigures, []UsageFigures, map[int64]UsageLimit, error) {
 	totals, limits := make(map[int64]UsageFigures, len(ids)), make(map[int64]UsageLimit, len(ids))
 	windows := make([]UsageFigures, 0, len(ids))
-	err := store.EachRow(store.G(ctx, q).Raw(usageOverviewSQL, store.Int64s(ids), since), func(rows *sql.Rows) error {
+	g := store.G(ctx, q)
+	window := g.Table("account_usage_hourly h").Select(hourlySums).Where("h.account_id = w.id AND h.hour >= ?", since)
+	overview := g.Table("unnest(?::bigint[]) WITH ORDINALITY AS w(id, i)", store.Int64s(ids)).Select(`w.id,
+		t.account_id IS NOT NULL, coalesce(t.cost, 0), coalesce(t.raw_cost, 0), coalesce(t.requests, 0), coalesce(t.tokens, 0),
+		d.cost, d.raw_cost, d.requests, d.tokens,
+		l.account_id IS NOT NULL, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ''),
+		coalesce(l.period_count, 0), l.anchor, coalesce(l.timezone, ''), l.waived_window`).
+		Joins("LEFT JOIN account_usage_totals t ON t.account_id = w.id").
+		Joins("LEFT JOIN account_usage_limits l ON l.account_id = w.id").
+		Joins("CROSS JOIN LATERAL (?) AS d(cost, raw_cost, requests, tokens)", window).
+		Order("w.i")
+	err := store.EachRow(overview, func(rows *sql.Rows) error {
 		var id int64
 		var hasTotals, hasLimit bool
 		var total, window UsageFigures
@@ -435,24 +443,6 @@ func usageOverview(ctx context.Context, q *gorm.DB, ids []int64, since time.Time
 	}
 	return totals, windows, limits, nil
 }
-
-// usageOverviewSQL is usageTotalsSQL, usageInSQL and usageLimitsSQL of each
-// account of the array, as one statement: one row per account in the
-// array's order, its window starting at the second parameter. The totals
-// and the limit are LEFT JOINed, so the row says whether the account has
-// them (an absent one reads as zero values, which usageOverview drops); the
-// window is usageInSQL's sums, zero over no hour.
-const usageOverviewSQL = `SELECT w.id,
-		t.account_id IS NOT NULL, coalesce(t.cost, 0), coalesce(t.raw_cost, 0), coalesce(t.requests, 0), coalesce(t.tokens, 0),
-		d.cost, d.raw_cost, d.requests, d.tokens,
-		l.account_id IS NOT NULL, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ''),
-		coalesce(l.period_count, 0), l.anchor, coalesce(l.timezone, ''), l.waived_window
-		FROM unnest(?::bigint[]) WITH ORDINALITY AS w(id, i)
-		LEFT JOIN account_usage_totals t ON t.account_id = w.id
-		LEFT JOIN account_usage_limits l ON l.account_id = w.id
-		CROSS JOIN LATERAL (SELECT coalesce(sum(h.cost),0), coalesce(sum(h.raw_cost),0), coalesce(sum(h.requests),0)::bigint, coalesce(sum(h.tokens),0)::bigint
-			FROM account_usage_hourly h WHERE h.account_id = w.id AND h.hour >= ?) AS d(cost, raw_cost, requests, tokens)
-		ORDER BY w.i`
 
 // getUsage is GET /accounts/:id/usage: today, the last 7 and 30 days, the
 // lifetime and the current limit period.
@@ -653,12 +643,13 @@ func (l UsageLimit) same(o UsageLimit) bool {
 // saveUsageLimit stores the configuration of an account, clearing an early
 // release.
 func saveUsageLimit(ctx context.Context, q *gorm.DB, id int64, l UsageLimit) error {
-	return usageLimitWriteError(ctx, store.G(ctx, q).Exec(`INSERT INTO account_usage_limits (account_id, `+usageLimitColumns+`, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, clock_timestamp())
-		ON CONFLICT (account_id) DO UPDATE SET raw_cost = EXCLUDED.raw_cost, enabled = EXCLUDED.enabled, amount = EXCLUDED.amount,
-			period = EXCLUDED.period, period_count = EXCLUDED.period_count, anchor = EXCLUDED.anchor, timezone = EXCLUDED.timezone,
-			waived_window = NULL, updated_at = clock_timestamp()`,
-		id, l.RawCost, l.Enabled, l.Amount, l.Period, l.PeriodCount, l.Anchor, l.Timezone).Error)
+	now := gorm.Expr("clock_timestamp()")
+	saved := clause.OnConflict{Columns: []clause.Column{{Name: "account_id"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"raw_cost", "enabled", "amount", "period", "period_count", "anchor", "timezone"}),
+			clause.Assignments(map[string]any{"waived_window": nil, "updated_at": now})...)}
+	return usageLimitWriteError(ctx, store.G(ctx, q).Model(&model.AccountUsageLimit{}).Clauses(saved).Create(map[string]any{
+		"account_id": id, "raw_cost": l.RawCost, "enabled": l.Enabled, "amount": l.Amount, "period": l.Period, "period_count": l.PeriodCount,
+		"anchor": l.Anchor, "timezone": l.Timezone, "waived_window": nil, "updated_at": now}).Error)
 }
 
 // checkUsageLimitControl refuses a configuration the account type's
@@ -763,7 +754,7 @@ func waiveUsageLimit(ctx context.Context, q *gorm.DB, id int64, until *time.Time
 	var at time.Time
 	if until != nil {
 		at = until.Add(-time.Nanosecond) // periods end before their end
-	} else if at, err = dbClock(ctx, q); err != nil {
+	} else if at, err = store.ClockTimestamp(store.G(ctx, q)); err != nil {
 		return err
 	}
 	start, _ := l.window(at)
@@ -772,19 +763,12 @@ func waiveUsageLimit(ctx context.Context, q *gorm.DB, id int64, until *time.Time
 	return store.G(ctx, q).Model(&model.AccountUsageLimit{}).Where("account_id = ?", id).Update("waived_window", start).Error
 }
 
-// dbClock is the database's clock_timestamp().
-func dbClock(ctx context.Context, q *gorm.DB) (time.Time, error) {
-	var at time.Time
-	err := store.G(ctx, q).Raw(`SELECT clock_timestamp()`).Row().Scan(&at)
-	return at, err
-}
-
 // foldUsage folds the usage journal into the hourly and lifetime sums. Only
 // core.account.usage_limits calls it (one run at a time in the cluster).
 func foldUsage(ctx context.Context, q *gorm.DB) error {
 	for range 20 {
 		var n int
-		if err := store.G(ctx, q).Raw(`SELECT account_usage_fold(?)`, usageFoldBatch).Row().Scan(&n); err != nil || n < usageFoldBatch {
+		if err := store.OneRow(store.G(ctx, q)).Select("account_usage_fold(?)", usageFoldBatch).Row().Scan(&n); err != nil || n < usageFoldBatch {
 			return err
 		}
 	}
@@ -831,22 +815,20 @@ func (s *Service) EnforceUsageLimits(ctx context.Context, ids []int64) error {
 	if s.d.DB == nil {
 		return nil
 	}
-	var filter any
-	if ids != nil {
-		filter = store.Int64s(ids)
-	}
 	def := defaultUsageLimit()
-	cands, err := store.CollectRows(store.G(ctx, s.d.DB.Gorm).Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
+	read := store.G(ctx, s.d.DB.Gorm).Table("accounts a").Select(`a.id, a.name, a.plugin_key, a.type, a.status, a.status_reason, a.auto_disabled_source, a.auto_disabled_until,
 			l.updated_at, coalesce(l.raw_cost, false), coalesce(l.enabled, false), coalesce(l.amount, 0), coalesce(l.period, ?), coalesce(l.period_count, 1),
-			l.anchor, coalesce(l.timezone, ?), l.waived_window
-		FROM accounts a LEFT JOIN account_usage_limits l ON l.account_id = a.id
-		WHERE a.deleted_at IS NULL AND (?::bigint[] IS NULL OR a.id = ANY(?))
-			AND ((l.enabled AND a.status = 'active') OR (a.status = 'auto_disabled' AND a.auto_disabled_source = ?))`,
-		def.Period, def.Timezone, filter, filter, usageLimitSource), scanUsageCandidate)
+			l.anchor, coalesce(l.timezone, ?), l.waived_window`, def.Period, def.Timezone).
+		Joins("LEFT JOIN account_usage_limits l ON l.account_id = a.id").
+		Where("a.deleted_at IS NULL AND ((l.enabled AND a.status = 'active') OR (a.status = 'auto_disabled' AND a.auto_disabled_source = ?))", usageLimitSource)
+	if ids != nil {
+		read = read.Where("a.id = ANY(?)", store.Int64s(ids))
+	}
+	cands, err := store.CollectRows(read, scanUsageCandidate)
 	if err != nil || len(cands) == 0 {
 		return err
 	}
-	now, err := dbClock(ctx, s.d.DB.Gorm)
+	now, err := store.ClockTimestamp(store.G(ctx, s.d.DB.Gorm))
 	if err != nil {
 		return err
 	}

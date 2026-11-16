@@ -99,9 +99,6 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
 	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.subscription_type,a.rate_limit_tier,a.auto_models,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
 
-// selectRow is the raw SQL form of selectRows, for loadLive.
-const selectRow = `SELECT ` + rowColumns + ` FROM accounts a LEFT JOIN users u ON u.id = a.created_by`
-
 // selectRows reads rowColumns, for scanRow over its Row().
 func selectRows(db *gorm.DB) *gorm.DB {
 	return db.Table("accounts a").Select(rowColumns).Joins("LEFT JOIN users u ON u.id = a.created_by")
@@ -1141,7 +1138,7 @@ func stillInScope(ctx context.Context, tx *gorm.DB, id int64, scope core.DataSco
 
 // loadGroupDiff compares want (deduplicated; nil = not sent) with the groups
 // of accountID (0 on create) and marks the added groups uid may not bind
-// (segment.UsableGroupSQL). Groups of want that do not exist fail group_ids
+// (segment.UsableGroup). Groups of want that do not exist fail group_ids
 // not_found.
 func loadGroupDiff(ctx context.Context, q *gorm.DB, accountID int64, want []int64, uid int64) (groupDiff, error) {
 	var d groupDiff
@@ -1149,9 +1146,9 @@ func loadGroupDiff(ctx context.Context, q *gorm.DB, accountID int64, want []int6
 		return d, nil
 	}
 	var groups []groupBinding
-	if err := store.G(ctx, q).Raw(`SELECT g.id, ag.account_id IS NOT NULL AS bound, `+segment.UsableGroupSQL("g", "?")+` AS bindable
-		FROM groups g LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = ?
-		WHERE g.id = ANY(?) OR ag.account_id IS NOT NULL`, uid, accountID, store.Int64s(want)).Scan(&groups).Error; err != nil {
+	if err := store.G(ctx, q).Table("groups g").Select("g.id, ag.account_id IS NOT NULL AS bound, "+segment.UsableGroup+" AS bindable", uid).
+		Joins("LEFT JOIN account_groups ag ON ag.group_id = g.id AND ag.account_id = ?", accountID).
+		Where("g.id = ANY(?) OR ag.account_id IS NOT NULL", store.Int64s(want)).Scan(&groups).Error; err != nil {
 		return d, err
 	}
 	found := 0
@@ -1292,8 +1289,14 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 		Delete(&model.AccountGroup{}).Error; err != nil {
 		return err
 	}
-	return g.Exec(`INSERT INTO account_groups (account_id, group_id) SELECT ?, unnest(?::bigint[])
-		ON CONFLICT DO NOTHING`, id, store.Int64s(groupIDs)).Error
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	rows := make([]model.AccountGroup, len(groupIDs))
+	for i, gid := range groupIDs {
+		rows[i] = model.AccountGroup{AccountID: id, GroupID: gid}
+	}
+	return g.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
 }
 
 // accountInsertColumns are the columns a create writes; the others take

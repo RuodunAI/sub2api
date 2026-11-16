@@ -77,7 +77,7 @@ var entities = []*Entity{
 
 // groupOpenTo holds for the groups a user ("?") can use: the range of GET
 // /me/groups.
-var groupOpenTo = segment.UsableGroupSQL("g", "?")
+const groupOpenTo = segment.UsableGroup
 
 // callerIs is the Scope of a kind whose own rows one condition selects; its
 // "?" takes the caller's id.

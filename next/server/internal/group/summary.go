@@ -82,15 +82,13 @@ func groupAccess(ctx context.Context, q *gorm.DB, ids []int64) (map[int64]Access
 	// For each private group of ids that grants a segment: the named
 	// segments granted it (ids and names in id order) and the number of
 	// personal ones.
-	if err := store.G(ctx, q).Raw(`SELECT sg.group_id,
+	if err := store.G(ctx, q).Table("segment_groups sg").Select(`sg.group_id,
 			COALESCE(array_agg(s.id ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS segment_ids,
 			COALESCE(array_agg(s.name ORDER BY s.id) FILTER (WHERE s.kind = 'named'), '{}') AS names,
-			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count
-		FROM segment_groups sg
-		JOIN segments s ON s.id = sg.segment_id
-		JOIN groups g ON g.id = sg.group_id
-		WHERE sg.group_id = ANY(?) AND sg.granted AND g.visibility = 'restricted'
-		GROUP BY sg.group_id`, store.Int64s(ids)).Scan(&rows).Error; err != nil {
+			count(*) FILTER (WHERE s.kind = 'personal') AS personal_count`).
+		Joins("JOIN segments s ON s.id = sg.segment_id").Joins("JOIN groups g ON g.id = sg.group_id").
+		Where("sg.group_id = ANY(?) AND sg.granted AND g.visibility = 'restricted'", store.Int64s(ids)).
+		Group("sg.group_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	for _, r := range rows {

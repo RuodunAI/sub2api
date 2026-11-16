@@ -526,7 +526,7 @@ func (s *Service) myGroups(c *gin.Context) {
 	}
 	if err := store.G(ctx, s.db.Gorm).Table("groups g").
 		Select("g.id, g.name, g.description, g.rate_multiplier, g.model_allowlist, g.model_filter_mode, g.visibility = 'restricted' AS exclusive").
-		Where(segment.UsableGroupSQL("g", "?"), uid).Order("g.id").Scan(&rows).Error; err != nil {
+		Where(segment.UsableGroup, uid).Order("g.id").Scan(&rows).Error; err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

@@ -63,7 +63,7 @@ func (s *Service) myPrices(c *gin.Context) {
 }
 
 // usableBy selects the active groups a user may use; it takes the user's id.
-var usableBy = segment.UsableGroupSQL("g", "?")
+const usableBy = segment.UsableGroup
 
 // pricesOfGroups lists every model with a global price, at that price, with
 // the groups of the user that provide it.

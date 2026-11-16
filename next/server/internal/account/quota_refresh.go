@@ -65,7 +65,9 @@ func (s *Service) quotaBlocked(ctx context.Context, a *row, bt core.AccountTypeB
 		return "", nil
 	}
 	var ready bool
-	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT COALESCE((SELECT `+lifecycleQuotaReady+` FROM account_lifecycle_sync l WHERE l.account_id=?),true)`, a.ID).Row().Scan(&ready); err != nil {
+	g := store.G(ctx, s.d.DB.Gorm)
+	sync := g.Table("account_lifecycle_sync l").Select(lifecycleQuotaReady).Where("l.account_id = ?", a.ID)
+	if err := store.OneRow(g).Select("COALESCE((?), true)", sync).Row().Scan(&ready); err != nil {
 		return "", err
 	}
 	if !ready {
@@ -288,12 +290,14 @@ func accountsOfTypes(db *gorm.DB, keys []string, after int64, limit int) *gorm.D
 // dueQuotaIDs selects the accounts whose quota is due for a refresh now.
 func (s *Service) dueQuotaIDs(ctx context.Context, keys []string) ([]int64, error) {
 	ids := []int64{}
-	err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT q.account_id FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
-  WHERE q.auto_refresh AND q.next_check_at<=now() AND (q.lease_until IS NULL OR q.lease_until<=now())
-  AND (q.last_active_at IS NULL OR q.last_active_at<=now()-make_interval(secs=>?::float8))
-  AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key||'/'||a.type=ANY(?)
-  AND NOT EXISTS(SELECT 1 FROM account_lifecycle_sync l WHERE l.account_id=a.id AND NOT `+lifecycleQuotaReady+`)
-  ORDER BY q.next_check_at,q.account_id LIMIT ?`, quotaQueryFloor.Seconds(), store.Strings(keys), quotaSweepPage).Scan(&ids).Error
+	g := store.G(ctx, s.d.DB.Gorm)
+	notReady := g.Table("account_lifecycle_sync l").Select("1").Where("l.account_id = a.id AND NOT " + lifecycleQuotaReady)
+	err := g.Table("account_quota_snapshots q").Joins("JOIN accounts a ON a.id = q.account_id").
+		Where(`q.auto_refresh AND q.next_check_at <= now() AND (q.lease_until IS NULL OR q.lease_until <= now())
+			AND (q.last_active_at IS NULL OR q.last_active_at <= now() - make_interval(secs => ?::float8))
+			AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key || '/' || a.type = ANY(?)
+			AND NOT EXISTS (?)`, quotaQueryFloor.Seconds(), store.Strings(keys), notReady).
+		Order("q.next_check_at, q.account_id").Limit(quotaSweepPage).Pluck("q.account_id", &ids).Error
 	return ids, err
 }
 

@@ -19,18 +19,18 @@ func TestScopeTableScopeSQL(t *testing.T) {
 	s := core.DataScope{Owner: 7, Groups: []int64{0, 3}, IDs: []int64{5}, PairG: []int64{2}, PairID: []int64{9}}
 	// The predicate text is fixed per table: one plan whatever the ids.
 	for _, c := range []struct {
-		t            core.ScopeTable
-		table, where string
-	}{{core.AccountRows, "accounts a", "($1::boolean OR COALESCE(a.created_by = $2::bigint, false) OR a.id = ANY($3::bigint[])" +
+		t                core.ScopeTable
+		table, id, where string
+	}{{core.AccountRows, "accounts a", "a.id", "($1::boolean OR COALESCE(a.created_by = $2::bigint, false) OR a.id = ANY($3::bigint[])" +
 		" OR EXISTS (SELECT 1 FROM account_groups ag WHERE ag.account_id = a.id AND ($4::boolean OR ag.group_id = ANY($5::bigint[])))" +
 		" OR EXISTS (SELECT 1 FROM account_groups ag JOIN unnest($6::bigint[], $7::bigint[]) sp(g, x) ON sp.x = ag.account_id AND (sp.g = 0 OR sp.g = ag.group_id) WHERE ag.account_id = a.id))"},
-		{core.ProxyRows, "proxies p", "($1::boolean OR COALESCE(p.created_by = $2::bigint, false) OR p.id = ANY($3::bigint[]))"}} {
+		{core.ProxyRows, "proxies p", "p.id", "($1::boolean OR COALESCE(p.created_by = $2::bigint, false) OR p.id = ANY($3::bigint[]))"}} {
 		query, vars, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB {
 			var ids []int64
-			return tx.Table(c.table).Select(c.t.ID).Scopes(c.t.Scope(s)).Find(&ids)
+			return tx.Table(c.table).Select(c.id).Scopes(c.t.Scope(s)).Find(&ids)
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "SELECT "+c.t.ID+" FROM "+c.table+" WHERE "+c.where, query)
+		assert.Equal(t, "SELECT "+c.id+" FROM "+c.table+" WHERE "+c.where, query)
 		want := c.t.Args(s)
 		require.Len(t, vars, len(want))
 		for i, v := range vars {
@@ -109,17 +109,17 @@ func TestScopeTableScopeMatchesAllowsRow(t *testing.T) {
 		"empty": {},
 	}
 	tables := []struct {
-		t    core.ScopeTable
-		from string
-		rows []row
+		t        core.ScopeTable
+		from, id string
+		rows     []row
 	}{
-		{core.AccountRows, "accounts a", accounts},
-		{core.ProxyRows, "proxies p", proxies},
+		{core.AccountRows, "accounts a", "a.id", accounts},
+		{core.ProxyRows, "proxies p", "p.id", proxies},
 	}
 	for name, s := range scopes {
 		for _, tb := range tables {
 			var viaGORM []int64
-			require.NoError(t, store.G(ctx, db.Gorm).Table(tb.from).Scopes(tb.t.Scope(s)).Order(tb.t.ID).Pluck(tb.t.ID, &viaGORM).Error, name)
+			require.NoError(t, store.G(ctx, db.Gorm).Table(tb.from).Scopes(tb.t.Scope(s)).Order(tb.id).Pluck(tb.id, &viaGORM).Error, name)
 
 			var want []int64
 			for _, r := range tb.rows {

@@ -59,10 +59,7 @@ func validBinding(b core.ResourceBinding) bool {
 	return b.AccountID > 0 && bounded(b.PrincipalID) && bounded(b.Generation)
 }
 func lock(ctx context.Context, q *gorm.DB, o core.ResourceOwner) error {
-	if err := store.RequireTx(q); err != nil {
-		return err
-	}
-	return store.G(ctx, q).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID)).Error
+	return store.XactLock(ctx, q, fmt.Sprintf("helper-history:%d:%d", o.UserID, o.GroupID))
 }
 func (s *Service) transaction(ctx context.Context, o core.ResourceOwner, fn func(*gorm.DB) error) error {
 	if !validOwner(o) || s.db == nil || s.cipher == nil {
@@ -100,22 +97,22 @@ type holdings struct{ Count, Size int64 }
 // holdingsQuery reads into dst the holdings of owner o: rows and bytes. Every
 // live reservation can become both a record and an outbox entry. Existing
 // outbox rows are counted once; acknowledged frozen usage needs no future
-// outbox reservation. Abort retains only bounded identity metadata. The
-// parameters are named, as each is used several times.
+// outbox reservation. Abort retains only bounded identity metadata.
 func holdingsQuery(db *gorm.DB, o core.ResourceOwner, now time.Time, dst *holdings) *gorm.DB {
-	return db.Raw(`WITH owned_attempts AS (
- SELECT a.* FROM provider_helper_attempts a WHERE user_id=@user AND group_id=@group AND state!='committed'
- ) SELECT
- (SELECT count(*) FROM provider_helper_records WHERE user_id=@user AND group_id=@group)+
- (SELECT count(*) FROM provider_helper_usage_outbox WHERE user_id=@user AND group_id=@group)+
- (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 1 WHEN usage_digest!='' THEN 1 ELSE 2 END),0) FROM owned_attempts) AS count,
- (SELECT coalesce(sum(payload_bytes),0) FROM provider_helper_records WHERE user_id=@user AND group_id=@group AND expires_at>@now)+
- (SELECT coalesce(sum(octet_length(payload)),0) FROM provider_helper_usage_outbox WHERE user_id=@user AND group_id=@group)+
- (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 0 ELSE
- CASE WHEN expires_at>@now THEN reserved_bytes+@record_overhead ELSE 0 END+
- CASE WHEN usage_digest='' THEN @usage_reserve ELSE 0 END END),0) FROM owned_attempts) AS size`,
-		map[string]any{"user": o.UserID, "group": o.GroupID, "now": now, "record_overhead": 64, "usage_reserve": maxUsageBytes + 64}).
-		Scan(dst)
+	of := func(m any) *gorm.DB { return db.Model(m).Scopes(owned(o)) }
+	records := func() *gorm.DB { return of(&model.ProviderHelperRecord{}) }
+	outbox := func() *gorm.DB { return of(&model.ProviderHelperUsageOutbox{}) }
+	attempts := func() *gorm.DB { return of(&model.ProviderHelperAttempt{}).Where("state != 'committed'") }
+	return store.OneRow(db).Select("(?) + (?) + (?) AS count, (?) + (?) + (?) AS size",
+		records().Select("count(*)"),
+		outbox().Select("count(*)"),
+		attempts().Select("coalesce(sum(CASE WHEN state = 'aborted' THEN 1 WHEN usage_digest != '' THEN 1 ELSE 2 END),0)"),
+		records().Select("coalesce(sum(payload_bytes),0)").Where("expires_at > ?", now),
+		outbox().Select("coalesce(sum(octet_length(payload)),0)"),
+		attempts().Select(`coalesce(sum(CASE WHEN state = 'aborted' THEN 0 ELSE
+			CASE WHEN expires_at > ? THEN reserved_bytes + ? ELSE 0 END +
+			CASE WHEN usage_digest = '' THEN ? ELSE 0 END END),0)`, now, 64, maxUsageBytes+64),
+	).Scan(dst)
 }
 
 func (s *Service) quota(ctx context.Context, q *gorm.DB, o core.ResourceOwner, now time.Time, bytes int64) error {

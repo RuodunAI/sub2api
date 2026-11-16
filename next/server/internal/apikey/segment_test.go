@@ -67,7 +67,7 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 			}
 			p, err := e.svc.Authenticate(t.Context(), e.addKey(e.user, group))
 			// Authentication and the key endpoints tell alike whether the
-			// owner may use the group: by the one rule, segment.OpenToUserSQL.
+			// owner may use the group: by the one rule, segment.OpenToKeyOwner.
 			var open bool
 			require.NoError(t, e.db.Tx(t.Context(), func(tx *gorm.DB) (err error) {
 				open, err = groupAvailable(t.Context(), tx, e.user, group)
@@ -88,8 +88,8 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 // rule every other reader uses (CONTRACTS §97.9), not a copy of it that a
 // change to the rule would leave behind.
 func TestLookupUsesOpenToUser(t *testing.T) {
-	require.Contains(t, lookupSQL, segment.OpenToUserSQL("g", "k.user_id"))
-	require.Contains(t, selectKey, segment.OpenToUserSQL("g", "k.user_id"))
+	require.Contains(t, lookupSQL, segment.OpenToKeyOwner)
+	require.Contains(t, selectKey, segment.OpenToKeyOwner)
 }
 
 // Nothing of a segment is cached: moving the owner to another segment, or

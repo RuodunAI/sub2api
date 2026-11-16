@@ -81,14 +81,6 @@ func read(ctx context.Context, q *gorm.DB, tokenHash string) (core.FallbackCredi
 	}, nil
 }
 
-// lockKey takes the transaction-scoped advisory lock of key.
-func lockKey(ctx context.Context, tx *gorm.DB, key string) error {
-	if err := store.RequireTx(tx); err != nil {
-		return err
-	}
-	return store.G(ctx, tx).Exec(`SELECT pg_advisory_xact_lock(hashtextextended(?,0))`, key).Error
-}
-
 func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 	in, err := normalize(input, time.Now())
 	if err != nil {
@@ -96,10 +88,10 @@ func (s *Service) Record(ctx context.Context, input core.FallbackCredit) error {
 	}
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		owner, _ := json.Marshal(in.Owner)
-		if err := lockKey(ctx, tx, "fallback-credit-owner:"+string(owner)); err != nil {
+		if err := store.XactLock(ctx, tx, "fallback-credit-owner:"+string(owner)); err != nil {
 			return err
 		}
-		if err := lockKey(ctx, tx, "fallback-credit-token:"+in.TokenHash); err != nil {
+		if err := store.XactLock(ctx, tx, "fallback-credit-token:"+in.TokenHash); err != nil {
 			return err
 		}
 		if !in.ExpiresAt.After(time.Now()) {

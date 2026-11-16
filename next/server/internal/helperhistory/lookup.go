@@ -89,8 +89,7 @@ func (s *Service) anyPrefix(ctx context.Context, o core.ResourceOwner, prefixes 
 
 // prefixProbe selects whether any of prefixes belongs to a record of o.
 func prefixProbe(db *gorm.DB, o core.ResourceOwner, prefixes []string) *gorm.DB {
-	return db.Raw(`SELECT EXISTS(SELECT 1 FROM provider_helper_records WHERE user_id=? AND group_id=? AND public_prefix_digest=ANY(?))`,
-		o.UserID, o.GroupID, store.Strings(prefixes))
+	return store.ExistsQuery(db, withPrefixes(db, o, prefixes))
 }
 
 // withPrefixes keeps the records of o under any of prefixes.

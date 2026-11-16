@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
@@ -29,10 +30,13 @@ const usageLimitsInterval = 5 * time.Second
 const maxAutomaticDisableDuration = 366 * 24 * time.Hour
 
 func automaticDisableEnabled(ctx context.Context, q *gorm.DB) (bool, error) {
+	g := store.G(ctx, q)
+	setting := func(flag, key string) *gorm.DB {
+		return g.Model(&model.Setting{}).Select("(value->>?)::boolean", flag).Where("key = ?", key)
+	}
 	var enabled bool
-	err := store.G(ctx, q).Raw(`SELECT COALESCE(
-		(SELECT (value->>'account_enabled')::boolean FROM settings WHERE key='failure_policy'),
-		(SELECT (value->>'enabled')::boolean FROM settings WHERE key='auto_disable'),true)`).Row().Scan(&enabled)
+	err := store.OneRow(g).Select("COALESCE((?), (?), true)", setting("account_enabled", "failure_policy"), setting("enabled", "auto_disable")).
+		Row().Scan(&enabled)
 	return enabled, err
 }
 
@@ -225,7 +229,7 @@ type automaticChange struct {
 // source (an older core) and clears the mark.
 func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action string, ch automaticChange) error {
 	g := store.G(ctx, tx)
-	if err := g.Exec(`SELECT set_config('sup2api.auto_disabled_source', 'written', true)`).Error; err != nil {
+	if err := store.SetConfig(g, "sup2api.auto_disabled_source", "written"); err != nil {
 		return err
 	}
 	if err := g.Model(&model.Account{}).Where("id = ?", ch.id).Updates(map[string]any{"status": ch.to, "status_reason": ch.reason,
@@ -256,10 +260,13 @@ func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		// Up to 200 accounts whose timed automatic disable ended, skipping
 		// rows another sweep holds.
-		if err := store.G(ctx, tx).Raw(`UPDATE accounts a SET status='active',status_reason='',auto_disabled_until=NULL,updated_at=clock_timestamp()
-			FROM (SELECT id FROM accounts WHERE deleted_at IS NULL AND status='auto_disabled' AND auto_disabled_until<=clock_timestamp()
-				ORDER BY auto_disabled_until,id LIMIT 200 FOR UPDATE SKIP LOCKED) due
-			WHERE a.id=due.id RETURNING a.id,a.name,a.plugin_key,a.type`).Scan(&accounts).Error; err != nil {
+		g := store.G(ctx, tx)
+		due := g.Model(&model.Account{}).Select("id").
+			Where("deleted_at IS NULL AND status = 'auto_disabled' AND auto_disabled_until <= clock_timestamp()").
+			Order("auto_disabled_until, id").Limit(200).Clauses(store.ForUpdate().SkipLocked())
+		if err := g.Model(&accounts).Table("accounts AS a").Clauses(store.UpdateFrom("(?) AS due", due), recoveredColumns).
+			Where("a.id = due.id").Updates(map[string]any{"status": "active", "status_reason": "",
+			"auto_disabled_until": nil, "updated_at": gorm.Expr("clock_timestamp()")}).Error; err != nil {
 			return err
 		}
 		for _, a := range accounts {
@@ -282,6 +289,11 @@ func (s *Service) SweepAutomaticState(ctx context.Context) (int, error) {
 	}
 	return len(accounts), nil
 }
+
+// recoveredColumns returns a recoveredAccount from SweepAutomaticState's
+// update.
+var recoveredColumns = clause.Returning{Columns: []clause.Column{{Table: "a", Name: "id"}, {Table: "a", Name: "name"},
+	{Table: "a", Name: "plugin_key"}, {Table: "a", Name: "type"}}}
 
 // recoveredAccount is an account SweepAutomaticState made active again.
 type recoveredAccount struct {

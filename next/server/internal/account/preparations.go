@@ -120,19 +120,21 @@ func (s *Service) createPreparation(c *gin.Context) {
 				return err
 			}
 		}
-		// The arguments repeat where the statement reuses one.
-		err := store.G(ctx, tx).Raw(`INSERT INTO account_preparations(key,plugin_key,account_type,proxy_id,settings,created_by,idempotency_key)
-			SELECT ?,?::text,?::text,?,?::jsonb,?::bigint,NULLIF(?::text,'')
-			WHERE ?::int = 0
-				OR (SELECT count(*) FROM account_preparations WHERE created_by=?::bigint AND account_id IS NULL AND state IN ('pending','ready') AND expires_at>now()) < ?::int
-				OR EXISTS (SELECT 1 FROM account_preparations WHERE created_by=?::bigint AND plugin_key=?::text AND account_type=?::text AND idempotency_key=NULLIF(?::text,''))
-			ON CONFLICT (created_by,plugin_key,account_type,idempotency_key) DO UPDATE SET last_seen_at=now()
-			RETURNING key,settings=?::jsonb AND proxy_id IS NOT DISTINCT FROM ?::bigint,account_id IS NULL AND state IN ('pending','ready') AND expires_at>now(),xmax=0`,
-			p.Key, p.PluginKey, p.Type, p.ProxyID, p.Settings, uid, in.IdempotencyKey,
-			limit,
-			uid, limit,
-			uid, p.PluginKey, p.Type, in.IdempotencyKey,
-			p.Settings, p.ProxyID).Row().Scan(&p.Key, &matches, &active, &fresh)
+		// The row goes in when the user is under the limit or repeats an
+		// idempotency key; a repeat only marks the existing row seen.
+		g := store.G(ctx, tx)
+		mine := func() *gorm.DB { return g.Model(&model.AccountPreparation{}).Where("created_by = ?", uid) }
+		open := mine().Select("count(*)").Where("account_id IS NULL AND state IN ('pending','ready') AND expires_at > now()")
+		repeat := mine().Select("1").Where("plugin_key = ? AND account_type = ? AND idempotency_key = NULLIF(?::text, '')", p.PluginKey, p.Type, in.IdempotencyKey)
+		row := store.OneRow(g).Select("?, ?::text, ?::text, ?, ?::jsonb, ?::bigint, NULLIF(?::text, '')",
+			p.Key, p.PluginKey, p.Type, p.ProxyID, p.Settings, uid, in.IdempotencyKey).
+			Where("?::int = 0 OR (?) < ?::int OR EXISTS (?)", limit, open, limit, repeat)
+		err := store.InsertSelectReturning(g, "account_preparations",
+			[]string{"key", "plugin_key", "account_type", "proxy_id", "settings", "created_by", "idempotency_key"}, row,
+			clause.OnConflict{Columns: []clause.Column{{Name: "created_by"}, {Name: "plugin_key"}, {Name: "account_type"}, {Name: "idempotency_key"}},
+				DoUpdates: clause.Assignments(map[string]any{"last_seen_at": gorm.Expr("now()")})},
+			gorm.Expr(`RETURNING key, settings = ?::jsonb AND proxy_id IS NOT DISTINCT FROM ?::bigint,
+				account_id IS NULL AND state IN ('pending','ready') AND expires_at > now(), xmax = 0`, p.Settings, p.ProxyID)).Row().Scan(&p.Key, &matches, &active, &fresh)
 		if store.IsNoRows(err) {
 			return core.ErrTooManyDrafts
 		}
@@ -393,24 +395,26 @@ func (s *Service) disposePreparation(ctx context.Context, p core.AccountPreparat
 			return err // the plugin may refuse its creator's cancel
 		}
 	}
-	var was string
 	g := store.G(ctx, s.d.DB.Gorm)
-	err = g.Raw(`UPDATE account_preparations ap SET state='cancelling'
-		FROM (SELECT key, state FROM account_preparations WHERE key=? FOR UPDATE) old
-		WHERE ap.key=old.key AND ap.account_id IS NULL
-		AND CASE ?::text WHEN 'abandoned' THEN ap.state='pending'
-			WHEN 'expired' THEN ap.state='cancelling' OR ap.state IN ('pending','ready') AND (ap.expires_at<=now() OR ap.last_seen_at<now()-interval '15 minutes')
-			ELSE ap.state IN ('pending','ready','cancelling') END
-		RETURNING old.state`, p.Key, reason).Row().Scan(&was)
-	if store.IsNoRows(err) {
+	// The state the row had, locked, before the update.
+	old := g.Model(&model.AccountPreparation{}).Select("key, state").Where("key = ?", p.Key).Clauses(store.ForUpdate())
+	var olds []struct{ State string }
+	err = g.Model(&olds).Table("account_preparations AS ap").
+		Clauses(store.UpdateFrom("(?) old", old), clause.Returning{Columns: []clause.Column{{Table: "old", Name: "state"}}}).
+		Where(`ap.key = old.key AND ap.account_id IS NULL
+		AND CASE ?::text WHEN 'abandoned' THEN ap.state = 'pending'
+			WHEN 'expired' THEN ap.state = 'cancelling' OR ap.state IN ('pending','ready') AND (ap.expires_at <= now() OR ap.last_seen_at < now() - interval '15 minutes')
+			ELSE ap.state IN ('pending','ready','cancelling') END`, reason).Update("state", "cancelling").Error
+	if err != nil {
+		return err
+	}
+	if len(olds) == 0 {
 		if reason == disposeExpired {
 			return nil
 		}
 		return core.ErrConflict
 	}
-	if err != nil {
-		return err
-	}
+	was := olds[0].State
 	// The system disposing of it tells the plugin once, when it starts to
 	// (not on a retry of one already cancelling); a refusal does not stop it.
 	if reason != disposeCancelled && was != "cancelling" {
@@ -459,7 +463,7 @@ func (s *Service) checkPreparationForCreate(ctx context.Context, bt core.Account
 		return nil, none, core.ErrInvalidArgument.WithMessage("Preparation does not match this account")
 	}
 	var equal bool
-	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT ?::jsonb=?::jsonb`, p.Settings, settings).Row().Scan(&equal); err != nil {
+	if err := store.OneRow(store.G(ctx, s.d.DB.Gorm)).Select("?::jsonb = ?::jsonb", p.Settings, settings).Row().Scan(&equal); err != nil {
 		return nil, none, err
 	}
 	if !equal {

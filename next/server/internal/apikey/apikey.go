@@ -265,7 +265,7 @@ func (s *Service) Authenticate(ctx context.Context, rawKey string) (*core.APIKey
 // lookupSQL reads what authenticating a key (its hash) needs in one
 // statement: the key, its owner and the owner's segment, the key's group and
 // what the segment gets there. Whether the owner may use the group is
-// segment.OpenToUserSQL, as for the key endpoints and /me/groups.
+// segment.OpenToKeyOwner, as for the key endpoints and /me/groups.
 //
 // It runs on every gateway request: Raw SQL scanned through Row into local
 // variables, the GORM form that allocates least (BenchmarkHotKeyLookup;
@@ -274,7 +274,7 @@ var lookupSQL = `SELECT k.id, k.user_id, k.status, k.expires_at,
 		(u.status = 'active' AND u.deleted_at IS NULL),
 		COALESCE(g.id, 0), COALESCE(g.name, ''), COALESCE(g.status, 'deleted'), COALESCE(g.rate_multiplier, 1),
 		COALESCE(g.model_allowlist, '[]'), COALESCE(g.model_filter_mode, 'blacklist'), COALESCE(g.environment, '{}'),
-		COALESCE(` + segment.OpenToUserSQL("g", "k.user_id") + `, false), k.allowed_ips,
+		COALESCE(` + segment.OpenToKeyOwner + `, false), k.allowed_ips,
 		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used, COALESCE(g.conversion_loss_policy, ''),
 		s.id, s.discount, sg.rate_override
 	FROM api_keys k
@@ -387,7 +387,7 @@ type APIKey struct {
 var selectKey = `k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, g.id AS group_id, COALESCE(g.name, '') AS group_name,
 		CASE WHEN g.id IS NULL THEN 'deleted'
 			WHEN g.status <> 'active' THEN 'disabled'
-			WHEN ` + segment.OpenToUserSQL("g", "k.user_id") + ` THEN 'active'
+			WHEN ` + segment.OpenToKeyOwner + ` THEN 'active'
 			ELSE 'unavailable' END AS group_status,
 		k.status, k.expires_at, k.last_used_at, k.created_at, k.key_cipher IS NOT NULL AS copyable, k.allowed_ips,
 		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used`
@@ -573,7 +573,7 @@ func groupAvailable(ctx context.Context, q *gorm.DB, userID, groupID int64) (boo
 func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
 	return db.Table("groups g").Select("true").
 		Where("g.id = ?", groupID).
-		Where(segment.UsableGroupSQL("g", "?"), userID).
+		Where(segment.UsableGroup, userID).
 		Clauses(store.Lock(store.LockingStrengthKeyShare).Of("g"))
 }
 

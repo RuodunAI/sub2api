@@ -20,14 +20,22 @@ func markLifecyclePending(ctx context.Context, q *gorm.DB, id int64) error {
 	})}).Create(&model.AccountLifecycleSync{AccountID: id, Status: "pending"}).Error; err != nil {
 		return err
 	}
-	return g.Exec(`INSERT INTO plugin_event_cursors(plugin_key,last_event_id) SELECT plugin_key,(SELECT COALESCE(max(id),0) FROM events) FROM accounts WHERE id=? ON CONFLICT (plugin_key) DO NOTHING`, id).Error
+	// The account's plugin gets a cursor at the latest event, if it has none.
+	cursor := g.Model(&model.Account{}).Select("plugin_key, (?)", g.Model(&model.Event{}).Select("COALESCE(max(id),0)")).Where("id = ?", id)
+	return store.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursor,
+		clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).Error
 }
 
 // saveLifecycleStatus records state for the account version and generation
 // that it was read for: a newer save or pending mark wins.
 func (s *Service) saveLifecycleStatus(ctx context.Context, id int64, version time.Time, generation int64, state core.AccountSynchronization) error {
-	return store.G(ctx, s.d.DB.Gorm).Exec(`INSERT INTO account_lifecycle_sync(account_id,status,code) SELECT id,?,? FROM accounts WHERE id=? AND updated_at=? ON CONFLICT (account_id) DO UPDATE SET status=EXCLUDED.status,code=EXCLUDED.code,updated_at=now() WHERE account_lifecycle_sync.generation=?`,
-		state.Status, state.Code, id, version, generation).Error
+	g := store.G(ctx, s.d.DB.Gorm)
+	row := g.Model(&model.Account{}).Select("id, ?, ?", state.Status, state.Code).Where("id = ? AND updated_at = ?", id, version)
+	return store.InsertSelect(g, "account_lifecycle_sync", []string{"account_id", "status", "code"}, row, clause.OnConflict{
+		Columns:   []clause.Column{{Name: "account_id"}},
+		DoUpdates: append(clause.AssignmentColumns([]string{"status", "code"}), clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}),
+		Where:     clause.Where{Exprs: []clause.Expression{gorm.Expr("account_lifecycle_sync.generation = ?", generation)}},
+	}).Error
 }
 
 func (s *Service) fillLifecycleStatus(ctx context.Context, views []*View) error {
@@ -71,9 +79,10 @@ const (
 // every page; a read that fails leaves the row as it is.
 func (s *Service) sweepLifecycleStatus(ctx context.Context) (int, error) {
 	var accounts []staleLifecycle
-	if err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT a.id,a.plugin_key,a.type,a.updated_at,l.generation,l.status,l.code FROM account_lifecycle_sync l JOIN accounts a ON a.id=l.account_id
-  WHERE l.status<>'applied' AND l.updated_at<=now()-make_interval(secs=>?::float8) AND a.deleted_at IS NULL
-  ORDER BY l.updated_at,a.id LIMIT ?`, lifecycleStatusSettle.Seconds(), lifecycleStatusSweepPage).Scan(&accounts).Error; err != nil {
+	if err := store.G(ctx, s.d.DB.Gorm).Table("account_lifecycle_sync l").
+		Select("a.id, a.plugin_key, a.type, a.updated_at, l.generation, l.status, l.code").Joins("JOIN accounts a ON a.id = l.account_id").
+		Where("l.status <> 'applied' AND l.updated_at <= now() - make_interval(secs => ?::float8) AND a.deleted_at IS NULL", lifecycleStatusSettle.Seconds()).
+		Order("l.updated_at, a.id").Limit(lifecycleStatusSweepPage).Scan(&accounts).Error; err != nil {
 		return 0, err
 	}
 	updated := 0

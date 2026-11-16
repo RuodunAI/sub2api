@@ -151,25 +151,22 @@ func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
 // InsertSelect runs INSERT INTO table (columns) sub, sub a query built on db,
 // with clauses after it (a clause.OnConflict): GORM's Create only inserts
 // values. RowsAffected counts the rows written.
-func InsertSelect(db *gorm.DB, table string, columns []string, sub *gorm.DB, clauses ...clause.Interface) *gorm.DB {
+func InsertSelect(db *gorm.DB, table string, columns []string, sub *gorm.DB, clauses ...clause.Expression) *gorm.DB {
 	return db.Exec("?", insertSelect{table: table, columns: columns, sub: sub, clauses: clauses})
 }
 
-// InsertSelectReturning is InsertSelect with a RETURNING of returning, not
-// yet run: Scan or Row reads the rows written.
-func InsertSelectReturning(db *gorm.DB, table string, columns []string, sub *gorm.DB, returning []string, clauses ...clause.Interface) *gorm.DB {
-	ret := clause.Returning{Columns: make([]clause.Column, len(returning))}
-	for i, c := range returning {
-		ret.Columns[i] = clause.Column{Name: c}
-	}
-	return db.Raw("?", insertSelect{table: table, columns: columns, sub: sub, clauses: append(clauses, ret)})
+// InsertSelectReturning is InsertSelect not yet run, for a RETURNING among
+// clauses (clause.Returning, or gorm.Expr("RETURNING ...") of expressions):
+// Scan or Row reads the rows written.
+func InsertSelectReturning(db *gorm.DB, table string, columns []string, sub *gorm.DB, clauses ...clause.Expression) *gorm.DB {
+	return db.Raw("?", insertSelect{table: table, columns: columns, sub: sub, clauses: clauses})
 }
 
 type insertSelect struct {
 	table   string
 	columns []string
 	sub     *gorm.DB
-	clauses []clause.Interface
+	clauses []clause.Expression
 }
 
 func (s insertSelect) Build(b clause.Builder) {
@@ -201,13 +198,6 @@ type updateFrom struct{ clause.Expr }
 
 func (updateFrom) Name() string                   { return "FROM" }
 func (f updateFrom) MergeClause(c *clause.Clause) { c.Expression = f.Expr }
-
-// NextVal draws the next value of sequence seq.
-func NextVal(db *gorm.DB, seq string) (int64, error) {
-	var v int64
-	err := db.Raw("SELECT nextval(?::regclass)", seq).Row().Scan(&v)
-	return v, err
-}
 
 // ClockTimestamp reads the database clock (clock_timestamp(): the time of
 // the call, not of the transaction's start).

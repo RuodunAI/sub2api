@@ -1,15 +1,7 @@
 -- sql
-WITH owned_attempts AS (
- SELECT a.* FROM provider_helper_attempts a WHERE user_id=$1 AND group_id=$2 AND state!='committed'
- ) SELECT
- (SELECT count(*) FROM provider_helper_records WHERE user_id=$3 AND group_id=$4)+
- (SELECT count(*) FROM provider_helper_usage_outbox WHERE user_id=$5 AND group_id=$6)+
- (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 1 WHEN usage_digest!='' THEN 1 ELSE 2 END),0) FROM owned_attempts) AS count,
- (SELECT coalesce(sum(payload_bytes),0) FROM provider_helper_records WHERE user_id=$7 AND group_id=$8 AND expires_at>$9)+
- (SELECT coalesce(sum(octet_length(payload)),0) FROM provider_helper_usage_outbox WHERE user_id=$10 AND group_id=$11)+
- (SELECT coalesce(sum(CASE WHEN state='aborted' THEN 0 ELSE
- CASE WHEN expires_at>$12 THEN reserved_bytes+$13 ELSE 0 END+
- CASE WHEN usage_digest='' THEN $14 ELSE 0 END END),0) FROM owned_attempts) AS size
+SELECT (SELECT count(*) FROM "provider_helper_records" WHERE user_id = $1 AND group_id = $2) + (SELECT count(*) FROM "provider_helper_usage_outbox" WHERE user_id = $3 AND group_id = $4) + (SELECT coalesce(sum(CASE WHEN state = 'aborted' THEN 1 WHEN usage_digest != '' THEN 1 ELSE 2 END),0) FROM "provider_helper_attempts" WHERE state != 'committed' AND (user_id = $5 AND group_id = $6)) AS count, (SELECT coalesce(sum(payload_bytes),0) FROM "provider_helper_records" WHERE expires_at > $7 AND (user_id = $8 AND group_id = $9)) + (SELECT coalesce(sum(octet_length(payload)),0) FROM "provider_helper_usage_outbox" WHERE user_id = $10 AND group_id = $11) + (SELECT coalesce(sum(CASE WHEN state = 'aborted' THEN 0 ELSE
+			CASE WHEN expires_at > $12 THEN reserved_bytes + $13 ELSE 0 END +
+			CASE WHEN usage_digest = '' THEN $14 ELSE 0 END END),0) FROM "provider_helper_attempts" WHERE state != 'committed' AND (user_id = $15 AND group_id = $16)) AS size FROM (SELECT) AS one
 -- vars
 $1 int64 3
 $2 int64 5
@@ -17,11 +9,13 @@ $3 int64 3
 $4 int64 5
 $5 int64 3
 $6 int64 5
-$7 int64 3
-$8 int64 5
-$9 time.Time 2026-01-02 03:04:05 +0000 UTC
+$7 time.Time 2026-01-02 03:04:05 +0000 UTC
+$8 int64 3
+$9 int64 5
 $10 int64 3
 $11 int64 5
 $12 time.Time 2026-01-02 03:04:05 +0000 UTC
 $13 int 64
 $14 int 2097216
+$15 int64 3
+$16 int64 5

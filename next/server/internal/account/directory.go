@@ -10,6 +10,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -68,15 +69,13 @@ func (s *Service) GroupHasType(ctx context.Context, groupID int64, types []core.
 	if len(types) == 0 {
 		return false, nil
 	}
-	plugins, kinds := make([]string, len(types)), make([]string, len(types))
+	pairs := make([]any, len(types))
 	for i, t := range types {
-		plugins[i], kinds[i] = t.PluginKey, t.Type
+		pairs[i] = []any{t.PluginKey, t.Type}
 	}
-	var ok bool
-	err := store.G(ctx, s.d.DB.Gorm).Raw(`SELECT EXISTS(SELECT 1 FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
-		JOIN unnest(?::text[], ?::text[]) AS t(plugin_key, type) ON t.plugin_key = a.plugin_key AND t.type = a.type
-		WHERE ag.group_id = ? AND a.deleted_at IS NULL)`, store.Strings(plugins), store.Strings(kinds), groupID).Row().Scan(&ok)
-	return ok, err
+	g := store.G(ctx, s.d.DB.Gorm)
+	return store.Exists(g, g.Table("accounts a").Joins("JOIN account_groups ag ON ag.account_id = a.id").
+		Where("ag.group_id = ? AND a.deleted_at IS NULL", groupID).Where(clause.IN{Column: []clause.Column{{Table: "a", Name: "plugin_key"}, {Table: "a", Name: "type"}}, Values: pairs}))
 }
 
 // Unschedulable lists the accounts of the group Candidates does not offer now,
@@ -170,16 +169,16 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 // readGroupSnap reads the group's snapshot taken at now: its schedulable
 // accounts in scheduling order, the active ones and those under a timed
 // automatic disable with its release time. A miss of the snapshot cache
-// runs it on a gateway request: Raw SQL scanned row by row.
+// runs it on a gateway request: its rows are scanned by position.
 func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
 	snap := groupSnap{at: now, refs: []core.AccountRef{}}
-	err := store.EachRow(db.Raw(`SELECT a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
+	err := store.EachRow(db.Table("accounts a").Select(`a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
-			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END
-		FROM accounts a JOIN account_groups ag ON ag.account_id = a.id
-		WHERE ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
-			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)
-		ORDER BY a.priority DESC, a.id`, groupID), func(rows *sql.Rows) error {
+			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END`).
+		Joins("JOIN account_groups ag ON ag.account_id = a.id").
+		Where(`ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
+			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)`, groupID).
+		Order("a.priority DESC, a.id"), func(rows *sql.Rows) error {
 		var a core.AccountRef
 		var mapping, limits []byte
 		var env store.JSON[core.EnvironmentValues]
@@ -249,10 +248,9 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 }
 
 // loadLive is loadRow of any live account, unlocked, for Load: a miss of
-// its cache runs it on a gateway request, so it is Raw SQL scanned through
-// Row.
+// its cache runs it on a gateway request, so it is scanned through Row.
 func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {
-	a, err := scanRow(store.G(ctx, s.d.DB.Gorm).Raw(selectRow+` WHERE a.id = ? AND a.deleted_at IS NULL`, id).Row())
+	a, err := scanRow(selectRows(store.G(ctx, s.d.DB.Gorm)).Where("a.id = ? AND a.deleted_at IS NULL", id).Row())
 	if store.IsNoRows(err) {
 		return nil, notFound(ctx)
 	}
@@ -369,9 +367,9 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 	}
 	// last_used_at only moves forward, and alone: updated_at is the version
 	// other writers check.
-	err := store.G(ctx, s.d.DB.Gorm).Exec(`UPDATE accounts a SET last_used_at = v.t
-		FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
-		WHERE a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)`, store.Int64s(ids), store.Times(ts)).Error
+	err := store.G(ctx, s.d.DB.Gorm).Table("accounts AS a").
+		Clauses(store.UpdateFrom("(SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v", store.Int64s(ids), store.Times(ts))).
+		Where("a.id = v.id AND (a.last_used_at IS NULL OR a.last_used_at < v.t)").Update("last_used_at", gorm.Expr("v.t")).Error
 	if err != nil {
 		s.touchMu.Lock()
 		for id, at := range pending {
