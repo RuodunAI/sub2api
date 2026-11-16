@@ -1,0 +1,65 @@
+{
+  "_comment": "The plugin versions production runs and the digests of their sources: TestReleasedPluginsBumped (tools/sub2api-plugin) fails when a plugin's sources changed and its version did not. Rewrite after each release.",
+  "plugins": {
+    "anthropic": {
+      "version": "0.3.2",
+      "digest": "sha256:48da79ecaa7b4c3f7856f5c159e15b766c322336ce750e31da447684ee0c55e0"
+    },
+    "ccgateway": {
+      "version": "0.1.133",
+      "digest": "sha256:fc8bac46fe2edcefbcadf62535699d312edde34fb226bf14446348a797e0a74c"
+    },
+    "claude-oauth": {
+      "version": "0.2.3",
+      "digest": "sha256:c4498ac31e11ca96e7cafb0e20b39ed37f6e5219ce234bd9cd4a66f47bea6942"
+    },
+    "codex": {
+      "version": "0.1.4",
+      "digest": "sha256:f066a7b222bd5aae568d8a645868fcdcad656ea8fc6b71ed30cca08a28f6c389"
+    },
+    "custom": {
+      "version": "0.1.0",
+      "digest": "sha256:1f2f213ae3fae1612c44cf14ec82b4753d319694742cae3b693538364baba6d4"
+    },
+    "dynweight": {
+      "version": "0.5.9",
+      "digest": "sha256:20fcd0edbde769373d0d97573975df2738a1da9dade450de3e15cef5dadd02b5"
+    },
+    "gemini": {
+      "version": "0.3.0",
+      "digest": "sha256:2d12277983a1746af860ead06d7b6b48791da9375cbbcd7c0f28348ee6da34fa"
+    },
+    "growth": {
+      "version": "0.2.0",
+      "digest": "sha256:9603f6024a2e047cd6e1883963b9806c8cf68461f3fd29b06c2eccb11008fc91"
+    },
+    "guard": {
+      "version": "0.2.9",
+      "digest": "sha256:4fa5244935b4c41088dde3ac8fa7aa040990bb9cc5f28a9ac7dfddf768ce2291"
+    },
+    "mailer": {
+      "version": "0.1.2",
+      "digest": "sha256:651d3965e8a2a85e55cf8d143f5763b516e6a03b944a575a802d2bfb6fa2a96f"
+    },
+    "moderation": {
+      "version": "0.12.0",
+      "digest": "sha256:2e573aa0493b6d13a3857339ea7a2f0e76f8bed8ca6499683bc202d22b30213b"
+    },
+    "openai": {
+      "version": "0.4.0",
+      "digest": "sha256:fad408fd849f773c109bafbb6d009508ef7cf58eae55e641518a533ccabfb814"
+    },
+    "payment": {
+      "version": "0.1.1",
+      "digest": "sha256:b91f0233b9c7220b9981258c0ebbc78685309d43dfd4ef83332ac12fc18e0845"
+    },
+    "relay": {
+      "version": "0.3.0",
+      "digest": "sha256:5841ffa1c811a4f826f144181aefb5a0a0be1f66f05a673426899b05c836199d"
+    },
+    "volcengine": {
+      "version": "0.12.7",
+      "digest": "sha256:a09a6ea2f2bdb3c4254ddf5b6a9f99d7514b8bf41f6276e82a3ef9de1a2b06ff"
+    }
+  }
+}

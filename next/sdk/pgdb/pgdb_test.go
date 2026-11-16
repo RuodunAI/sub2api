@@ -2,129 +2,19 @@ package pgdb_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
-
-// item is the model the migration of migrate() creates, exactly.
-type item struct {
-	ID      int64              `gorm:"primaryKey"`
-	Name    string             `gorm:"not null;default:'';index:item_name_idx"`
-	Tags    pgdb.Array[string] `gorm:"type:text[];not null;default:'{}'"`
-	Doc     json.RawMessage    `gorm:"type:jsonb;not null;default:'{}'"`
-	Until   time.Time          `gorm:"not null;default:'-infinity'"`
-	Created time.Time          `gorm:"not null;default:now()"`
-}
-
-func (item) TableName() string { return "item" }
-
-const itemSQL = `CREATE TABLE item (
-    id      bigserial   PRIMARY KEY,
-    name    text        NOT NULL DEFAULT '',
-    tags    text[]      NOT NULL DEFAULT '{}',
-    doc     jsonb       NOT NULL DEFAULT '{}',
-    until   timestamptz NOT NULL DEFAULT '-infinity',
-    created timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX item_name_idx ON item (name);`
-
-// migrate writes the migrations and returns them as Drift reads them.
-func migrate(t *testing.T, files ...string) []pgdb.Migration {
-	t.Helper()
-	dir := t.TempDir()
-	for i, f := range files {
-		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%04d_m.sql", i+1)), []byte(f), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	m, err := pgdb.ReadMigrations(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return m
-}
-
-func drift(t *testing.T, migrations []pgdb.Migration, models ...any) *pgdb.DriftReport {
-	t.Helper()
-	r, err := pgdb.Drift(context.Background(), testpg.URL(t), migrations, models)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
-func TestDriftCleanWhenModelsMatch(t *testing.T) {
-	if r := drift(t, migrate(t, itemSQL), &item{}); !r.Clean() {
-		t.Fatalf("drift = %+v", r)
-	}
-}
-
-func TestDriftCreatesWhatIsMissing(t *testing.T) {
-	r := drift(t, migrate(t), &item{})
-	if len(r.Statements) != 2 || !strings.HasPrefix(r.Statements[0], `CREATE TABLE "item"`) ||
-		!strings.Contains(r.Statements[1], `"item_name_idx"`) || len(r.Unmapped) != 0 {
-		t.Fatalf("drift = %+v", r)
-	}
-}
-
-// itemV2 adds a column and an index, drops tags and widens nothing.
-type itemV2 struct {
-	ID      int64           `gorm:"primaryKey"`
-	Name    string          `gorm:"not null;default:'';index:item_name_idx"`
-	Doc     json.RawMessage `gorm:"type:jsonb;not null;default:'{}'"`
-	Until   time.Time       `gorm:"not null;default:'-infinity'"`
-	Created time.Time       `gorm:"not null;default:now();index:item_created_idx"`
-	Score   int64           `gorm:"not null;default:0"`
-}
-
-func (itemV2) TableName() string { return "item" }
-
-func TestDriftReportsAdditionsAndUnmapped(t *testing.T) {
-	r := drift(t, migrate(t, itemSQL, `CREATE TABLE extra (id int); CREATE INDEX item_old_idx ON item (until);`), &itemV2{})
-	want := []string{
-		`ALTER TABLE "item" ADD "score" bigint NOT NULL DEFAULT 0`,
-		`CREATE INDEX IF NOT EXISTS "item_created_idx" ON "item" ("created")`,
-	}
-	if !slices.Equal(r.Statements, want) {
-		t.Errorf("statements = %q", r.Statements)
-	}
-	if want := []string{"column item.tags", "index item.item_old_idx", "table extra"}; !slices.Equal(r.Unmapped, want) {
-		t.Errorf("unmapped = %q", r.Unmapped)
-	}
-}
-
-// itemText changes the type of name.
-type itemText struct {
-	ID      int64              `gorm:"primaryKey"`
-	Name    string             `gorm:"type:varchar(20);not null;default:'';index:item_name_idx"`
-	Tags    pgdb.Array[string] `gorm:"type:text[];not null;default:'{}'"`
-	Doc     json.RawMessage    `gorm:"type:jsonb;not null;default:'{}'"`
-	Until   time.Time          `gorm:"not null;default:'-infinity'"`
-	Created time.Time          `gorm:"not null;default:now()"`
-}
-
-func (itemText) TableName() string { return "item" }
-
-func TestDriftReportsTypeChanges(t *testing.T) {
-	r := drift(t, migrate(t, itemSQL), &itemText{})
-	if len(r.Statements) != 1 || !strings.Contains(r.Statements[0], `ALTER COLUMN "name" TYPE varchar(20)`) {
-		t.Fatalf("statements = %q", r.Statements)
-	}
-}
 
 // A constraint violation is both GORM's error and the driver's.
 func TestErrorsTranslated(t *testing.T) {
@@ -166,100 +56,6 @@ func TestArrayRoundTrip(t *testing.T) {
 	}
 	if !slices.Equal(got.Tags, in) || !slices.Equal(got.IDs, pgdb.Array[int64]{1, 2}) || !got.Hit || got.Nil != nil {
 		t.Fatalf("got %+v", got)
-	}
-}
-
-// tagged has defaults GORM cannot compare as text: an ARRAY constructor
-// reads ARRAY['a' to it, cut at the first "::".
-type tagged struct {
-	ID    int64              `gorm:"primaryKey"`
-	Tags  pgdb.Array[string] `gorm:"type:text[];not null;default:ARRAY['a','b']"`
-	Kind  string             `gorm:"type:varchar(8);not null;default:'x'"`
-	Score int64              `gorm:"not null;default:0"`
-}
-
-func (tagged) TableName() string { return "tagged" }
-
-const taggedSQL = `CREATE TABLE tagged (
-    id    bigserial  PRIMARY KEY,
-    tags  text[]     NOT NULL DEFAULT ARRAY['a', 'b'],
-    kind  varchar(8) NOT NULL DEFAULT 'x'::character varying,
-    score bigint     NOT NULL DEFAULT 0
-);`
-
-func TestDriftComparesDefaultsByMeaning(t *testing.T) {
-	if r := drift(t, migrate(t, taggedSQL), &tagged{}); !r.Clean() {
-		t.Fatalf("same defaults: %+v", r)
-	}
-	r := drift(t, migrate(t, strings.Replace(taggedSQL, "ARRAY['a', 'b']", "ARRAY['a']", 1)), &tagged{})
-	if !slices.Equal(r.Statements, []string{`ALTER TABLE "tagged" ALTER COLUMN "tags" SET DEFAULT ARRAY['a','b']`}) || len(r.Unmapped) != 0 {
-		t.Fatalf("changed default: %+v", r)
-	}
-}
-
-// child maps the columns of the table below, none of its constraints.
-type child struct {
-	ID     int64 `gorm:"primaryKey;autoIncrement:false"`
-	ItemID *int64
-	Code   *string
-}
-
-func (child) TableName() string { return "child" }
-
-const childSQL = `CREATE TABLE child (
-    id      bigint PRIMARY KEY,
-    item_id bigint CONSTRAINT child_item_id_fkey REFERENCES item (id),
-    code    text UNIQUE,
-    CHECK (id > 0)
-);`
-
-func TestDriftReportsUnmappedObjects(t *testing.T) {
-	r := drift(t, migrate(t, itemSQL, childSQL, `
-ALTER TABLE item ADD CONSTRAINT item_name_len CHECK (length(name) < 100);
-CREATE INDEX item_lower_name_idx ON item (lower(name));
-CREATE VIEW item_names AS SELECT name FROM item;
-CREATE SEQUENCE item_seq;
-CREATE FUNCTION item_count(least_id bigint) RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM item WHERE id >= least_id';`),
-		&item{}, &child{})
-	want := []string{
-		"constraint child.child_code_key UNIQUE (code)",
-		"constraint child.child_id_check CHECK ((id > 0))",
-		"constraint child.child_item_id_fkey FOREIGN KEY (item_id) REFERENCES item(id)",
-		"constraint item.item_name_len CHECK ((length(name) < 100))",
-		"function item_count(least_id bigint)",
-		"index item.item_lower_name_idx",
-		"sequence item_seq",
-		"view item_names",
-	}
-	if len(r.Statements) != 0 || !slices.Equal(r.Unmapped, want) {
-		t.Fatalf("drift = %+v", r)
-	}
-}
-
-// mappedChild maps them all.
-type mappedChild struct {
-	ID     int64   `gorm:"primaryKey;autoIncrement:false;check:child_id_check,id > 0"`
-	ItemID *int64  `gorm:"index:child_item_idx"`
-	Code   *string `gorm:"unique"`
-	Item   *item   `gorm:"foreignKey:ItemID;constraint:child_item_id_fkey,"`
-}
-
-func (mappedChild) TableName() string { return "child" }
-
-func TestDriftMapsConstraintsByName(t *testing.T) {
-	r := drift(t, migrate(t, itemSQL, childSQL, `CREATE INDEX child_item_idx ON child (item_id);`), &item{}, &mappedChild{})
-	if !r.Clean() {
-		t.Fatalf("drift = %+v", r)
-	}
-}
-
-// A model that drops `unique` from a field whose constraint the migration
-// named <table>_<column>_key: GORM would drop uni_child_code, which does not
-// exist. The constraint is reported instead, by its name.
-func TestDriftReportsDroppedUnique(t *testing.T) {
-	r := drift(t, migrate(t, `CREATE TABLE child (id bigint PRIMARY KEY, item_id bigint, code text UNIQUE)`), &child{})
-	if len(r.Statements) != 0 || !slices.Equal(r.Unmapped, []string{"constraint child.child_code_key UNIQUE (code)"}) {
-		t.Fatalf("drift = %+v", r)
 	}
 }
 

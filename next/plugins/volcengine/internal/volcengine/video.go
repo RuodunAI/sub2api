@@ -207,7 +207,7 @@ func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequ
 	if id == "" {
 		return &pluginv1.ResolveModelResponse{}, nil
 	}
-	db, err := p.pool(ctx)
+	db, err := p.store(ctx)
 	if err != nil {
 		// A database blip must not be served as a free, unlimited request.
 		p.log.Warn("volcengine: ResolveModel cannot reach the database", "task_id", id, "error", err.Error())
@@ -518,16 +518,4 @@ func succeededFacts(body []byte) map[string]string {
 		}
 	}
 	return nil
-}
-
-// pool returns the plugin's database handle, bound to ctx.
-func (p *Plugin) pool(ctx context.Context) (*gorm.DB, error) {
-	if p.host == nil {
-		return nil, errors.New("plugin not initialised")
-	}
-	db, err := p.host.DB(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return db, nil
 }

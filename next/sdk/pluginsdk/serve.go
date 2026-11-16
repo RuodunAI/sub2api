@@ -21,8 +21,10 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// SDKVersion is reported in GetInfoResponse.sdk_version.
-const SDKVersion = "0.1.0"
+// SDKVersion is reported in GetInfoResponse.sdk_version. 0.2.0: Host.DB
+// returns a GORM handle bound to the call's context (it was a *pgxpool.Pool),
+// see "Database" in the package documentation.
+const SDKVersion = "0.2.0"
 
 // Build-time overrides, set by `sub2api-plugin build` with
 //

@@ -17,6 +17,7 @@ package volcengine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -215,13 +216,24 @@ func grpcNotFound(err error) bool {
 	return status.Code(err) == codes.NotFound
 }
 
-// db returns the database handle, bound to ctx, or an HTTP error.
-func (p *Plugin) db(ctx context.Context) (*gorm.DB, *pluginv1.HTTPResponse) {
+// errNotInitialised is a call before Init gave the plugin its host.
+var errNotInitialised = errors.New("plugin not initialised")
+
+// store returns the plugin's database handle, bound to ctx.
+func (p *Plugin) store(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
-		return nil, unavailable("plugin not initialised")
+		return nil, errNotInitialised
 	}
-	d, err := p.host.DB(ctx)
-	if err != nil {
+	return p.host.DB(ctx)
+}
+
+// db is store for a route: its error is the HTTP answer.
+func (p *Plugin) db(ctx context.Context) (*gorm.DB, *pluginv1.HTTPResponse) {
+	d, err := p.store(ctx)
+	switch {
+	case errors.Is(err, errNotInitialised):
+		return nil, unavailable(err.Error())
+	case err != nil:
 		return nil, unavailable("database unavailable: " + err.Error())
 	}
 	return d, nil

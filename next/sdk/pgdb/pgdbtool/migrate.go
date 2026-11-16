@@ -1,4 +1,8 @@
-package pgdb
+// Package pgdbtool is the development side of package pgdb: it runs a
+// plugin's migrations/*.sql (tests, sub2api-plugin) and compares them with
+// the plugin's GORM models (Drift, behind sub2api-plugin db diff and check).
+// Plugins never import it at run time.
+package pgdbtool
 
 import (
 	"context"

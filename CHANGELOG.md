@@ -80,8 +80,8 @@
 
 核心、网关和插件的数据库访问从 pgx 改为 GORM，驱动仍是 pgx，经 `database/sql` 连接池。语句的条件、锁、`ON CONFLICT`、`RETURNING` 不变，用户看到的功能不变。对外可见的变化：
 
-- **插件 SDK 不兼容**：`Host.DB(ctx)` 返回 `*gorm.DB`（以前是 `*pgxpool.Pool`），第三方插件把 SDK 升到这一版后，用到它的代码要改写。返回的句柄绑定这次调用的 ctx，不要跨调用缓存。已编译的旧插件二进制不受影响（gRPC 协议没变）。插件代码不再 import pgx，SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（`TestOnlyPgdbImportsPgx` 检查）。
-- **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致，这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
+- **插件 SDK 0.2.0 不兼容**：`Host.DB(ctx)` 返回 `*gorm.DB`（以前是 `*pgxpool.Pool`），第三方插件把 SDK 升到这一版后，用到它的代码和自实现的 `Host` 测试替身要改写。返回的句柄绑定这次调用的 ctx，ctx 结束后再用会报错，不要跨调用缓存；仍用 pgx 的插件可以用 `Host.DSN` 加 `egress.DialContext` 自己建池（CONTRACTS §11.2）。已编译的旧插件二进制不受影响（gRPC 协议没变）。插件代码不再 import pgx，SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（`TestOnlyPgdbImportsPgx` 检查）。
+- **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致（按系统目录比对列类型、NOT NULL、默认值、主键、索引和约束定义；迁移以受限角色执行；迁移里的函数、视图、序列等要在模型包的 `Unmanaged()` 里声明），这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
 - **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
 - **DSN 里的连接池参数**：`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样。
 
@@ -102,6 +102,8 @@
 | growth | — | 0.2.1 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
 | guard | — | 0.2.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；规则、统计、事件改用 GORM，功能不变 |
 | payment | — | 0.1.2 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；订单与通知改用 GORM，功能不变 |
+
+`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`（线上各插件的版本和源码摘要，取自 0.1.286 打包的 `951525943`），发现内容变了而版本没升的插件就失败；每次发布后按该测试的说明重写这个文件。
 
 上表的新版本都要求核心 ≥0.1.290，不能在线上的 0.1.288 上单独升级，要随核心一起发布。线上 0.1.288 没有安装 claude-oauth、growth、guard、payment。测试夹具：anthropic 的 0.3.4-test（`deploy/ci/check.sh`）和 guard 的 0.2.10-test（`e2e/guard.go`）。
 

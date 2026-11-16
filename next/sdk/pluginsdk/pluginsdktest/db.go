@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb/pgdbtool"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
 
@@ -28,11 +29,11 @@ func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 	}
 	schema = fmt.Sprintf("%s_%d_%d", prefix, os.Getpid(), schemaSeq.Add(1))
 	db := open(t, base)
-	if err := pgdb.CreateSchema(context.Background(), db, schema); err != nil {
+	if err := pgdbtool.CreateSchema(context.Background(), db, schema); err != nil {
 		t.Fatalf("pluginsdktest: create schema: %v", err)
 	}
 	// Cleanups run last in, first out: db is still open here.
-	t.Cleanup(func() { _ = pgdb.DropSchema(context.Background(), db, schema) })
+	t.Cleanup(func() { _ = pgdbtool.DropSchema(context.Background(), db, schema) })
 	u, err := url.Parse(base)
 	if err != nil {
 		t.Fatalf("pluginsdktest: parse TEST_DATABASE_URL: %v", err)
@@ -48,11 +49,11 @@ func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 // host migration runner (ARCHITECTURE 5.6). Returns the applied file names.
 func ApplyMigrations(t testing.TB, dsn, schema string, dirs ...string) []string {
 	t.Helper()
-	migrations, err := pgdb.ReadMigrations(dirs...)
+	migrations, err := pgdbtool.ReadMigrations(dirs...)
 	if err != nil {
 		t.Fatalf("pluginsdktest: %v", err)
 	}
-	if err := pgdb.ApplyMigrations(context.Background(), open(t, dsn), schema, migrations); err != nil {
+	if err := pgdbtool.ApplyMigrations(context.Background(), open(t, dsn), schema, migrations); err != nil {
 		t.Fatalf("pluginsdktest: %v", err)
 	}
 	names := make([]string, len(migrations))
