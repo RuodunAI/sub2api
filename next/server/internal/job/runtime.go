@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -224,14 +225,11 @@ func (b *Bridge) writeRuntime(ctx context.Context, key, version string,
 			if old, ok := have[name]; ok && old.schedule == r.schedule && old.timeoutMS == r.timeoutMS && old.attempts == r.attempts && jsonEqual(old.args, r.args) {
 				continue
 			}
-			// Raw SQL for the reasons of writeManifestRows' upsert.
-			res := g.Exec(`INSERT INTO scheduled_tasks (name, source, plugin_key, schedule, timeout_ms, max_attempts, args, seen_version, seen_at)
-				VALUES (?, ?, ?, ?, ?, ?, NULLIF(?, '')::jsonb, ?, now())
-				ON CONFLICT (name) DO UPDATE SET schedule = EXCLUDED.schedule, timeout_ms = EXCLUDED.timeout_ms,
-					max_attempts = EXCLUDED.max_attempts, args = EXCLUDED.args, seen_version = EXCLUDED.seen_version,
-					seen_at = now(), updated_at = now()
-				WHERE scheduled_tasks.source = EXCLUDED.source AND scheduled_tasks.plugin_key = EXCLUDED.plugin_key`,
-				name, string(task.SourcePluginRuntime), key, r.schedule, r.timeoutMS, r.attempts, r.args, b.opts.Version)
+			res := task.UpsertRow(g, map[string]any{"name": name, "source": string(task.SourcePluginRuntime), "plugin_key": key,
+				"schedule": r.schedule, "timeout_ms": r.timeoutMS, "max_attempts": r.attempts,
+				"args": gorm.Expr("NULLIF(?, '')::jsonb", r.args), "seen_version": b.opts.Version},
+				[]string{"schedule", "timeout_ms", "max_attempts", "args", "seen_version"},
+				clause.Expr{SQL: "scheduled_tasks.source = EXCLUDED.source AND scheduled_tasks.plugin_key = EXCLUDED.plugin_key"})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -320,9 +318,10 @@ func (b *Bridge) EnqueuePluginTask(ctx context.Context, key, id string, args jso
 	}
 	// river_job is River's table, read here with plain SQL; only River's own
 	// client writes it.
-	var queued int
-	if err := store.G(ctx, b.db.Gorm).Raw(`SELECT count(*) FROM river_job WHERE kind = 'sup2api.task' AND args->>'name' = ANY(?)
-		AND state IN ('available', 'scheduled', 'pending', 'retryable')`, store.Strings(names)).Row().Scan(&queued); err != nil {
+	var queued int64
+	if err := store.G(ctx, b.db.Gorm).Table("river_job").
+		Where("kind = 'sup2api.task' AND args->>'name' = ANY(?) AND state IN ('available', 'scheduled', 'pending', 'retryable')", store.Strings(names)).
+		Count(&queued).Error; err != nil {
 		return err
 	}
 	if queued >= MaxQueuedRuns {

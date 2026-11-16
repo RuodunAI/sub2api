@@ -43,11 +43,11 @@ func TestSQLMarkSeen(t *testing.T) {
 func TestSQLReleaseLeases(t *testing.T) {
 	t.Run("put off", func(t *testing.T) {
 		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-			return releaseLeases(tx, "clock_timestamp()", "name = ? AND lease_job_id = ?", "core.test", int64(42))
+			return releaseLeases(tx.Where("name = ? AND lease_job_id = ?", "core.test", int64(42)), gorm.Expr("clock_timestamp()"))
 		})
 	})
 	t.Run("expired", func(t *testing.T) {
-		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return releaseLeases(tx, "now()", "lease_until < now()") })
+		gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return releaseLeases(tx.Where("lease_until < now()"), gorm.Expr("now()")) })
 	})
 }
 
