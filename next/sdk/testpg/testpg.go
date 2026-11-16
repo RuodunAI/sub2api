@@ -69,8 +69,13 @@ func URL(t testing.TB) string {
 // Server is URL for programs: TEST_DATABASE_URL when set, else the local
 // server, started unless it runs. It keeps running afterwards; see Acquire.
 func Server(ctx context.Context) (string, error) {
-	url, _, err := Acquire(ctx)
-	return url, err
+	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
+		return u, nil
+	}
+	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
+		return "", ErrOff
+	}
+	return Ensure(ctx)
 }
 
 // Dir is where the local server keeps its binaries, data and port.
@@ -83,9 +88,12 @@ func Dir() (string, error) {
 }
 
 // Acquire is Server for a program that leaves no server behind
-// (sub2api-plugin pack and db): release stops the local server when Acquire
-// started it, and does nothing when TEST_DATABASE_URL is set or the server
-// was running already. Call release once the program is done with the DSN.
+// (sub2api-plugin pack and db). release stops the local server when an
+// Acquire started it and no other program uses it: each Acquire counts as a
+// user until its release, and a test (URL, Server) or Ensure keeps the
+// server running for good. It does nothing when TEST_DATABASE_URL is set.
+// Call release once the program is done with the DSN; a program that dies
+// first leaves the server running.
 func Acquire(ctx context.Context) (url string, release func(), err error) {
 	if u := os.Getenv("TEST_DATABASE_URL"); u != "" {
 		return u, func() {}, nil
@@ -93,57 +101,117 @@ func Acquire(ctx context.Context) (url string, release func(), err error) {
 	if strings.EqualFold(os.Getenv("SUB2API_TESTPG"), "off") {
 		return "", func() {}, ErrOff
 	}
-	url, started, err := ensure(ctx)
-	if err != nil || !started {
-		return url, func() {}, err
+	url, user, err := ensure(ctx, true)
+	if err != nil {
+		return "", func() {}, err
 	}
-	return url, func() { _ = Stop() }, nil
+	return url, func() { _ = leave(user) }, nil
 }
 
 // Ensure starts the local server unless one is already running and returns
-// its superuser DSN.
+// its superuser DSN. The server keeps running.
 func Ensure(ctx context.Context) (string, error) {
-	url, _, err := ensure(ctx)
+	url, _, err := ensure(ctx, false)
 	return url, err
 }
 
-// ensure is Ensure, also reporting whether it started the server.
-func ensure(ctx context.Context) (url string, started bool, err error) {
+// The files next to the server that track its users (Acquire): transient
+// exists while the server is one an Acquire started and only Acquires used,
+// users holds a file per Acquire not released yet.
+const (
+	transientFile = "transient"
+	usersDir      = "users"
+)
+
+// ensure is Ensure. For an Acquire (transient) it registers a user and
+// returns its file; otherwise the server is no longer transient.
+func ensure(ctx context.Context, transient bool) (url, user string, err error) {
 	dir, err := Dir()
 	if err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", false, err
+		return "", "", err
 	}
 	unlock, err := lock(filepath.Join(dir, "lock"))
 	if err != nil {
-		return "", false, fmt.Errorf("lock %s: %w", dir, err)
+		return "", "", fmt.Errorf("lock %s: %w", dir, err)
 	}
 	defer unlock()
 
-	if port, ok := runningPort(ctx, dir); ok {
-		return dsn(port), false, nil
+	port, running := runningPort(ctx, dir)
+	if !running {
+		if port, err = start(dir); err != nil {
+			return "", "", err
+		}
+		// Users of a server that is gone are gone too.
+		if err := os.RemoveAll(filepath.Join(dir, usersDir)); err != nil {
+			return "", "", err
+		}
+		if transient {
+			if err := os.WriteFile(filepath.Join(dir, transientFile), nil, 0o600); err != nil {
+				return "", "", err
+			}
+		}
 	}
+	if !transient {
+		if err := os.Remove(filepath.Join(dir, transientFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", "", err
+		}
+		return dsn(port), "", nil
+	}
+	if err := os.MkdirAll(filepath.Join(dir, usersDir), 0o700); err != nil {
+		return "", "", err
+	}
+	f, err := os.CreateTemp(filepath.Join(dir, usersDir), strconv.Itoa(os.Getpid())+"-*")
+	if err != nil {
+		return "", "", err
+	}
+	return dsn(port), f.Name(), f.Close()
+}
+
+// start starts the server in dir and records its port.
+func start(dir string) (uint32, error) {
 	port, err := freePort()
 	if err != nil {
-		return "", false, err
+		return 0, err
 	}
 	logf, err := os.OpenFile(filepath.Join(dir, "server.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return "", false, err
+		return 0, err
 	}
 	defer logf.Close()
 	pg := embeddedpostgres.NewDatabase(config(dir, port, logf))
 	// pg_ctl start -w returns once the server accepts connections and leaves
 	// it running in the background after this process exits.
 	if err := pg.Start(); err != nil {
-		return "", false, fmt.Errorf("start embedded PostgreSQL %s (log: %s): %w", Version, logf.Name(), err)
+		return 0, fmt.Errorf("start embedded PostgreSQL %s (log: %s): %w", Version, logf.Name(), err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "port"), []byte(strconv.Itoa(int(port))), 0o600); err != nil {
-		return "", false, err
+	return port, os.WriteFile(filepath.Join(dir, "port"), []byte(strconv.Itoa(int(port))), 0o600)
+}
+
+// leave ends the use of an Acquire and stops a transient server that has no
+// other user.
+func leave(user string) error {
+	dir, err := Dir()
+	if err != nil {
+		return err
 	}
-	return dsn(port), true, nil
+	unlock, err := lock(filepath.Join(dir, "lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := os.Remove(user); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(dir, transientFile)); err != nil {
+		return nil // started or used by a test: it keeps running
+	}
+	if others, err := os.ReadDir(filepath.Join(dir, usersDir)); err != nil || len(others) > 0 {
+		return err
+	}
+	return stop(dir)
 }
 
 // Stop stops the local server if it is running.
@@ -157,12 +225,18 @@ func Stop() error {
 		return err
 	}
 	defer unlock()
+	return stop(dir)
+}
+
+// stop stops the server in dir, under the lock, and forgets its users.
+func stop(dir string) error {
+	_ = os.Remove(filepath.Join(dir, transientFile))
+	_ = os.RemoveAll(filepath.Join(dir, usersDir))
 	port, ok := runningPort(context.Background(), dir)
 	if !ok {
 		return nil
 	}
-	pg := embeddedpostgres.NewDatabase(config(dir, port, io.Discard))
-	return pg.Stop()
+	return embeddedpostgres.NewDatabase(config(dir, port, io.Discard)).Stop()
 }
 
 func config(dir string, port uint32, log io.Writer) embeddedpostgres.Config {

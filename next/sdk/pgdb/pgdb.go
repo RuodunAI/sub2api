@@ -1,5 +1,6 @@
-// Package pgdb opens GORM handles on PostgreSQL for plugins, their tests
-// and the sub2api-plugin db commands.
+// Package pgdb opens GORM handles on PostgreSQL for plugins and their
+// tests. Running migrations and comparing them with the models is package
+// pgdbtool's, which only tests and sub2api-plugin import.
 //
 // This file is the only one in the SDK that imports pgx: a dial hook (the
 // egress tunnel of strict network mode) can only be installed on the driver
@@ -25,8 +26,12 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// DefaultMaxConns is the connection limit of a handle opened without one,
-// the pgxpool default the plugins used before.
+// DefaultMaxConns is the connection limit of a handle opened without one:
+// per plugin and node, against the plugin role's CONNECTION LIMIT 20, which
+// the host's migration connection shares. The pgxpool the plugins used
+// before took max(4, number of CPUs); a fixed 4 keeps four nodes of any
+// size, with the migration connection, under the role's limit (4 x 4 + 1).
+// pluginsdk.WithDBPoolSize sets another.
 const DefaultMaxConns = 4
 
 // Options tune Open. The zero value dials directly with the defaults.
@@ -47,18 +52,6 @@ type Options struct {
 // at Init does not fail the plugin's start. Its errors have the driver's
 // text (driverWording).
 func Open(dsn string, o Options) (*gorm.DB, error) {
-	db, err := open(dsn, o, nil)
-	if err != nil {
-		return nil, err
-	}
-	// After gorm.Open, which applied the postgres dialector's own options
-	// (identifier length): a wrapper would hide them.
-	db.Dialector = driverWording{db.Dialector}
-	return db, nil
-}
-
-// open is Open with the dialector wrapped (drift.go swaps the migrator).
-func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gorm.DB, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("pgdb: parse dsn: %w", err)
@@ -70,11 +63,20 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	// No PostgreSQL setting starts with pool_, so they all go; the pool is
 	// sized by Options alone. Parsing them (runtime-contract/pgdsn) would
 	// add a module dependency to every plugin for settings it does not use.
+	//
+	// Array columns reach Array.Scan as their text, which pgtype parses in
+	// the server's default formats only: DateStyle ISO for timestamps and
+	// dates, IntervalStyle postgres for intervals. Both are pinned below,
+	// over the DSN's (in any letter case: PostgreSQL's names have none, and
+	// two spellings would both be sent), its options and the role's,
+	// database's or server's default.
 	for k := range cfg.RuntimeParams {
-		if strings.HasPrefix(k, "pool_") {
+		if strings.HasPrefix(k, "pool_") || strings.EqualFold(k, "datestyle") || strings.EqualFold(k, "intervalstyle") {
 			delete(cfg.RuntimeParams, k)
 		}
 	}
+	cfg.RuntimeParams["datestyle"] = "ISO"
+	cfg.RuntimeParams["intervalstyle"] = "postgres"
 	if o.Dial != nil {
 		cfg.DialFunc = o.Dial
 	} else {
@@ -87,19 +89,6 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	if _, set := cfg.RuntimeParams["search_path"]; !set && o.SearchPath != "" {
 		cfg.RuntimeParams["search_path"] = o.SearchPath
 	}
-	// Array columns reach Array.Scan as their text, which pgtype parses in
-	// the server's default formats only: DateStyle ISO for timestamps and
-	// dates, IntervalStyle postgres for intervals. Both are pinned, over the
-	// DSN's (in any letter case: PostgreSQL's names have none, and two
-	// spellings would both be sent), its options and the role's, database's
-	// or server's default.
-	for k := range cfg.RuntimeParams {
-		if strings.EqualFold(k, "datestyle") || strings.EqualFold(k, "intervalstyle") {
-			delete(cfg.RuntimeParams, k)
-		}
-	}
-	cfg.RuntimeParams["datestyle"] = "ISO"
-	cfg.RuntimeParams["intervalstyle"] = "postgres"
 	sqlDB := stdlib.OpenDB(*cfg)
 	conns := o.MaxConns
 	if conns <= 0 {
@@ -112,11 +101,7 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	sqlDB.SetConnMaxLifetime(time.Hour)
 	sqlDB.SetConnMaxIdleTime(30 * time.Minute)
 
-	var dialector gorm.Dialector = postgres.New(postgres.Config{Conn: sqlDB})
-	if wrap != nil {
-		dialector = wrap(dialector)
-	}
-	db, err := gorm.Open(dialector, &gorm.Config{
+	db, err := gorm.Open(postgres.New(postgres.Config{Conn: sqlDB}), &gorm.Config{
 		// The caller owns transactions; a single statement needs none.
 		SkipDefaultTransaction: true,
 		DisableAutomaticPing:   true,
@@ -132,6 +117,9 @@ func open(dsn string, o Options, wrap func(gorm.Dialector) gorm.Dialector) (*gor
 	// After gorm.Open, which took sqlDB as the instance's pool (see pool).
 	db.ConnPool = pool{sqlDB}
 	db.Statement.ConnPool = db.ConnPool
+	// After gorm.Open, which applied the postgres dialector's own options
+	// (identifier length): a wrapper would hide them.
+	db.Dialector = driverWording{db.Dialector}
 	return db, nil
 }
 

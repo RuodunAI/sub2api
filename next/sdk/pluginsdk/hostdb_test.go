@@ -1,0 +1,53 @@
+package pluginsdk
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+
+	"google.golang.org/grpc"
+
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
+)
+
+type dsnHost struct {
+	pluginv1.HostServiceClient
+	dsn string
+}
+
+func (h dsnHost) GetDSN(context.Context, *pluginv1.GetDSNRequest, ...grpc.CallOption) (*pluginv1.GetDSNResponse, error) {
+	return &pluginv1.GetDSNResponse{Dsn: h.dsn, Schema: "public"}, nil
+}
+
+// A Host.DB handle kept past its context says so (review 1116 F5); one
+// asked for again works.
+func TestHostDBBoundToContext(t *testing.T) {
+	h := newHost(HostInfo{}, dsnHost{dsn: testpg.URL(t)}, nil, false, 1)
+	defer h.closeDB()
+	ctx, cancel := context.WithCancel(context.Background())
+	kept, err := h.DB(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var one int
+	if err := kept.Raw("SELECT 1").Scan(&one).Error; err != nil || one != 1 {
+		t.Fatalf("live handle: %v", err)
+	}
+	cancel()
+	err = kept.Raw("SELECT 1").Scan(&one).Error
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "ask Host.DB again") {
+		t.Fatalf("kept handle: %v", err)
+	}
+	if err := kept.Exec("SELECT 1").Error; !errors.Is(err, context.Canceled) {
+		t.Fatalf("kept handle, Exec: %v", err)
+	}
+	db, err := h.DB(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Raw("SELECT 2").Scan(&one).Error; err != nil || one != 2 {
+		t.Fatalf("handle asked again: %v", err)
+	}
+}

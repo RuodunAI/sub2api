@@ -291,11 +291,44 @@ func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 			// The host resolves the database host name at the tunnel's end.
 			o.Dial, o.DialByName = egress.DialContext, true
 		}
-		if h.db, err = pgdb.Open(info.DSN, o); err != nil {
+		db, err := pgdb.Open(info.DSN, o)
+		if err != nil {
 			return nil, fmt.Errorf("pluginsdk: %w", err)
 		}
+		if err := guardContext(db); err != nil {
+			_ = pgdb.Close(db)
+			return nil, fmt.Errorf("pluginsdk: %w", err)
+		}
+		h.db = db
 	}
 	return h.db.WithContext(ctx), nil
+}
+
+// guardContext makes a statement on a handle whose context is done say
+// why: Host.DB binds the handle to the context it was asked with, and one
+// kept past it (from Init, for a goroutine) fails on every call. The error
+// still wraps the context's (errors.Is context.Canceled).
+func guardContext(db *gorm.DB) error {
+	check := func(tx *gorm.DB) {
+		if err := tx.Statement.Context.Err(); err != nil {
+			_ = tx.AddError(fmt.Errorf("pluginsdk: the context of this Host.DB handle is done; "+
+				"a handle is bound to the context it was asked with: ask Host.DB again for each call: %w", err))
+		}
+	}
+	cb := db.Callback()
+	for name, r := range map[string]func(string, func(*gorm.DB)) error{
+		"create": cb.Create().Before("*").Register,
+		"query":  cb.Query().Before("*").Register,
+		"update": cb.Update().Before("*").Register,
+		"delete": cb.Delete().Before("*").Register,
+		"row":    cb.Row().Before("*").Register,
+		"raw":    cb.Raw().Before("*").Register,
+	} {
+		if err := r("pluginsdk:context:"+name, check); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (h *host) closeDB() {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb/pgdbtool"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
 
@@ -90,19 +91,21 @@ func TestNewMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if m, err := newMigration(dir, "plg_x", "models", &pgdb.DriftReport{}); m != nil || err != nil {
+	if m, err := newMigration(dir, "plg_x", "models", &pgdbtool.DriftReport{}); m != nil || err != nil {
 		t.Fatalf("no change rendered %v %v", m, err)
 	}
-	for _, r := range []pgdb.DriftReport{
+	for _, r := range []pgdbtool.DriftReport{
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`, `ALTER TABLE "t" ALTER COLUMN "s" TYPE varchar(9) USING "s"::varchar(9)`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint NOT NULL`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Unmapped: []string{"column t.old"}},
+		// What AutoMigrate does not change, e.g. a NOT NULL it never adds.
+		{Differences: []string{"column t.n: migrations: bigint; models: bigint NOT NULL"}},
 	} {
 		if m, err := newMigration(dir, "plg_x", "models", &r); !errors.Is(err, errManual) || m != nil {
 			t.Fatalf("%+v rendered %v %v", r, m, err)
 		}
 	}
-	m, err := newMigration(dir, "plg_x", "add_n", &pgdb.DriftReport{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}})
+	m, err := newMigration(dir, "plg_x", "add_n", &pgdbtool.DriftReport{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}})
 	if err != nil || m.name != "0004_add_n.sql" {
 		t.Fatalf("rendered %v %v", m, err)
 	}
@@ -266,4 +269,40 @@ func TestPackModelsWithoutDatabase(t *testing.T) {
 	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, errNoDatabase.Error()) {
 		t.Fatalf("db check without database: %s", msg)
 	}
+}
+
+// What AutoMigrate leaves alone fails check, and diff writes nothing for it
+// (review 1116 F1): here a NOT NULL the migration lacks.
+func TestDBDiffDifferences(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go run on a plugin module and needs PostgreSQL")
+	}
+	dir := gormPlugin(t)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text DEFAULT '');`)
+	want := "column t.code: migrations: text DEFAULT ''::text; models: text NOT NULL DEFAULT ''::text"
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, want) {
+		t.Fatalf("check: %s", msg)
+	}
+	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, want) || !strings.Contains(msg, errManual.Error()) {
+		t.Fatalf("diff: %s", msg)
+	}
+}
+
+// Functions, views and the like that the migrations create are declared by
+// the model package's Unmanaged (review 1116 F4).
+func TestDBCheckUnmanaged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go run on a plugin module and needs PostgreSQL")
+	}
+	dir := gormPlugin(t)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
+CREATE FUNCTION t_count() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM t';`)
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "function t_count()") {
+		t.Fatalf("check: %s", msg)
+	}
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "unmanaged.go"),
+		"package model\n\nfunc Unmanaged() []string { return []string{\"function t_count()\"} }\n")
+	runOK(t, "db", "check", "--dir", dir)
 }
