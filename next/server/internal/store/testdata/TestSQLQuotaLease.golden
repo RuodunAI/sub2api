@@ -1,14 +1,11 @@
 -- sql
-UPDATE account_quota_snapshots q SET last_active_at=clock_timestamp(),
-		lease_token=nextval('account_quota_generation_seq'),lease_until=clock_timestamp()+make_interval(secs=>$1::float8)
-		WHERE account_id=$2 AND plugin_revision=$3
+UPDATE account_quota_snapshots AS q SET "last_active_at"=clock_timestamp(),"lease_token"=nextval('account_quota_generation_seq'),"lease_until"=clock_timestamp()+make_interval(secs=>$1::float8) WHERE account_id=$2 AND plugin_revision=$3
 		AND (lease_until IS NULL OR lease_until<=clock_timestamp())
 		AND ($4::float8<=0 OR last_active_at IS NULL OR last_active_at<=clock_timestamp()-make_interval(secs=>$5::float8))
 		AND ($6 OR next_check_at IS NULL OR next_check_at<=clock_timestamp())
 		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
 		AND ($7 OR a.schedulable OR q.updated_at IS NULL)
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
-		RETURNING account_id,generation,lease_token,revision,failures,plugin_revision,updated_at IS NULL
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading'))) RETURNING "account_id","generation","lease_token","revision","failures","plugin_revision",updated_at IS NULL AS initial
 -- vars
 $1 float64 70
 $2 int64 11

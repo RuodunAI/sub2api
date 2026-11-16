@@ -7,6 +7,6 @@ import "gorm.io/gorm"
 // legacy loader and Casbin's both label what they read with it.
 func AuthzVersion(db *gorm.DB) (int64, error) {
 	var v int64
-	err := db.Raw(`SELECT version FROM authz_meta WHERE id = 1`).Row().Scan(&v)
+	err := db.Table("authz_meta").Select("version").Where("id = 1").Row().Scan(&v)
 	return v, err
 }

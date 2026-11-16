@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // Account quota snapshots (table account_quota_snapshots, CONTRACTS §44).
@@ -47,8 +48,14 @@ type QuotaSnapshot struct {
 	RefreshStatus string     `json:"refresh_status"`
 }
 
-const selectQuota = `SELECT account_id, windows, source, error, updated_at, last_passive_at, last_active_at, revision, next_check_at, refresh_status, generation
-	FROM account_quota_snapshots`
+// quotaColumns are the account_quota_snapshots columns scanQuota reads, in
+// order.
+const quotaColumns = "account_id, windows, source, error, updated_at, last_passive_at, last_active_at, revision, next_check_at, refresh_status, generation"
+
+// quotaSnapshots selects quotaColumns of account_quota_snapshots.
+func quotaSnapshots(db *gorm.DB) *gorm.DB {
+	return db.Table("account_quota_snapshots").Select(quotaColumns)
+}
 
 func scanQuota(r RowScanner) (*QuotaSnapshot, error) {
 	var q QuotaSnapshot
@@ -75,7 +82,7 @@ func quotaWindows(raw []byte) (map[string]QuotaWindow, error) {
 
 // AccountQuota returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountQuota(ctx context.Context, accountID int64) (*QuotaSnapshot, error) {
-	q, err := scanQuota(G(ctx, d.Gorm).Raw(selectQuota+` WHERE account_id = ?`, accountID).Row())
+	q, err := scanQuota(quotaSnapshots(G(ctx, d.Gorm)).Where("account_id = ?", accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -89,7 +96,7 @@ func (d *DB) AccountQuotas(ctx context.Context, accountIDs []int64) (map[int64]*
 	if len(accountIDs) == 0 {
 		return out, nil
 	}
-	err := EachRow(G(ctx, d.Gorm).Raw(selectQuota+` WHERE account_id = ANY(?)`, Int64s(accountIDs)), func(rows *sql.Rows) error {
+	err := EachRow(quotaSnapshots(G(ctx, d.Gorm)).Where("account_id = ANY(?)", Int64s(accountIDs)), func(rows *sql.Rows) error {
 		q, err := scanQuota(rows)
 		if err == nil {
 			out[q.AccountID] = q
@@ -122,8 +129,8 @@ func (d *DB) AccountQuotasAt(ctx context.Context, accountIDs []int64) (map[int64
 // quotasAt selects the rows of AccountQuotasAt: ReadAccountQuotas's read on
 // GORM.
 func quotasAt(db *gorm.DB, accountIDs []int64) *gorm.DB {
-	return db.Raw(`SELECT NULL::bigint, `+selectQuotaRead+`
-		FROM (SELECT statement_timestamp()) t LEFT JOIN account_quota_snapshots q ON q.account_id = ANY(?)`, Int64s(accountIDs))
+	return db.Table(readClock).Select("NULL::bigint, "+selectQuotaRead).
+		Joins("LEFT JOIN account_quota_snapshots q ON q.account_id = ANY(?)", Int64s(accountIDs))
 }
 
 // QuotaRead is a read of account quota snapshots for the core's in-memory
@@ -142,6 +149,10 @@ type QuotaRead struct {
 	Invalid map[int64]error
 }
 
+// readClock is the one row the quota reads join their rows to, so that a
+// read of no snapshot still returns its time.
+const readClock = "(SELECT statement_timestamp()) AS t"
+
 const selectQuotaRead = `statement_timestamp(), q.account_id, q.windows, COALESCE(q.source, ''), COALESCE(q.error, ''),
 		q.updated_at, q.last_passive_at, q.last_active_at, COALESCE(q.revision,0), q.next_check_at, COALESCE(q.refresh_status,'pending'), COALESCE(q.generation,0)`
 
@@ -156,8 +167,8 @@ func (d *DB) ReadAccountQuotas(ctx context.Context, accountIDs []int64) (*QuotaR
 // ReadAccountQuotasOfTypes reads the snapshot rows of every account not
 // deleted whose "plugin_key/type" is in keys; Accounts lists them all.
 func (d *DB) ReadAccountQuotasOfTypes(ctx context.Context, keys []string) (*QuotaRead, error) {
-	return readQuotaRows(G(ctx, d.Gorm).Raw(`SELECT a.id, `+selectQuotaRead+`
-		FROM (SELECT statement_timestamp()) t LEFT JOIN (accounts a LEFT JOIN account_quota_snapshots q ON q.account_id = a.id)
+	return readQuotaRows(G(ctx, d.Gorm).Table(readClock).Select("a.id, "+selectQuotaRead).
+		Joins(`LEFT JOIN (accounts a LEFT JOIN account_quota_snapshots q ON q.account_id = a.id)
 			ON a.deleted_at IS NULL AND a.plugin_key||'/'||a.type = ANY(?)`, Strings(keys)), true)
 }
 
@@ -225,21 +236,37 @@ func (d *DB) SaveAccountQuota(ctx context.Context, accountID int64, source strin
 }
 
 func saveAccountQuota(db *gorm.DB, accountID int64, source, windows string, nextAt *time.Time) *gorm.DB {
-	return db.Exec(`INSERT INTO account_quota_snapshots
-			(account_id, windows, source, error, updated_at, last_passive_at, revision, refresh_status, next_check_at)
-		SELECT ?::bigint, ?::jsonb, ?::text, '', clock_timestamp(), CASE WHEN ?::text = 'passive' THEN clock_timestamp() END, 1, 'ready', ?::timestamptz
-		WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ? AND deleted_at IS NULL)
-		ON CONFLICT (account_id) DO UPDATE SET
-			windows = account_quota_snapshots.windows || EXCLUDED.windows,
-			source = EXCLUDED.source,
-			error = '',
-			updated_at = clock_timestamp(),
-			revision = account_quota_snapshots.revision + 1,
-			refresh_status = 'ready',
-			next_check_at = CASE WHEN account_quota_snapshots.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(account_quota_snapshots.next_check_at,?::timestamptz) ELSE account_quota_snapshots.next_check_at END,
-			last_passive_at = COALESCE(EXCLUDED.last_passive_at, account_quota_snapshots.last_passive_at)`,
-		accountID, windows, source, source, nextAt, accountID, nextAt, nextAt)
+	row := db.Session(&gorm.Session{NewDB: true}).Table("accounts").
+		Select(`id, ?::jsonb, ?::text, '', clock_timestamp(), CASE WHEN ?::text = 'passive' THEN clock_timestamp() END, 1, 'ready', ?::timestamptz`,
+			windows, source, source, nextAt).
+		Where("id = ? AND deleted_at IS NULL", accountID)
+	return InsertSelect(db, quotaTable, []string{"account_id", "windows", "source", "error", "updated_at", "last_passive_at", "revision", "refresh_status", "next_check_at"}, row,
+		clause.OnConflict{Columns: quotaKey, DoUpdates: clause.Assignments(map[string]any{
+			"windows":         gorm.Expr("account_quota_snapshots.windows || EXCLUDED.windows"),
+			"source":          gorm.Expr("EXCLUDED.source"),
+			"error":           "",
+			"updated_at":      gorm.Expr("clock_timestamp()"),
+			"revision":        gorm.Expr("account_quota_snapshots.revision + 1"),
+			"refresh_status":  "ready",
+			"next_check_at":   gorm.Expr("CASE WHEN account_quota_snapshots.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(account_quota_snapshots.next_check_at,?::timestamptz) ELSE account_quota_snapshots.next_check_at END", nextAt, nextAt),
+			"last_passive_at": gorm.Expr("COALESCE(EXCLUDED.last_passive_at, account_quota_snapshots.last_passive_at)"),
+		})})
 }
+
+// quotaTable is the table of the snapshots, and quotaKey its conflict
+// target.
+const quotaTable = "account_quota_snapshots"
+
+var quotaKey = []clause.Column{{Name: "account_id"}}
+
+// quotaRows is the snapshots table as q, the alias the account checks of
+// the conditional updates name it by.
+func quotaRows(db *gorm.DB) *gorm.DB { return db.Table(quotaTable + " AS q") }
+
+// liveAccount holds of q's account while it is not deleted and its plugin
+// is enabled (or upgrading).
+const liveAccount = `EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`
 
 func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expectedGeneration int64, pluginKey, accountType, pluginVersion string, windows map[string]QuotaWindow, next *time.Time) (bool, error) {
 	if expectedGeneration <= 0 || len(windows) == 0 {
@@ -259,14 +286,24 @@ func (d *DB) ApplyAccountQuotaObservation(ctx context.Context, accountID, expect
 // the GORM form that allocates least (BenchmarkHotQuotaObservation). It
 // leaves updated_at as it is, as it always did.
 func applyQuotaObservation(db *gorm.DB, accountID, expectedGeneration int64, pluginKey, accountType, pluginVersion, windows string, next *time.Time) *gorm.DB {
-	return db.Exec(`UPDATE account_quota_snapshots q SET windows=q.windows||?::jsonb,
-		source='passive',last_passive_at=clock_timestamp(),revision=q.revision+1,
-		next_check_at=CASE WHEN q.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,?::timestamptz) ELSE q.next_check_at END
-		WHERE q.account_id=? AND q.generation=? AND EXISTS(
+	return quotaRows(db).Where(`q.account_id=? AND q.generation=? AND EXISTS(
 			SELECT 1 FROM accounts a JOIN plugins p ON p.key=a.plugin_key
 			WHERE a.id=q.account_id AND a.plugin_key=? AND a.type=? AND a.deleted_at IS NULL
 			AND p.status IN ('enabled','upgrading') AND p.active_version=?)`,
-		windows, next, next, accountID, expectedGeneration, pluginKey, accountType, pluginVersion)
+		accountID, expectedGeneration, pluginKey, accountType, pluginVersion).
+		Updates(map[string]any{
+			"windows":         gorm.Expr("q.windows||?::jsonb", windows),
+			"source":          QuotaPassive,
+			"last_passive_at": gorm.Expr("clock_timestamp()"),
+			"revision":        gorm.Expr("q.revision+1"),
+			"next_check_at":   nextCheck(next),
+		})
+}
+
+// nextCheck is next_check_at moved up to next, when the snapshot refreshes
+// itself and next is set.
+func nextCheck(next *time.Time) clause.Expr {
+	return gorm.Expr("CASE WHEN q.auto_refresh AND ?::timestamptz IS NOT NULL THEN LEAST(q.next_check_at,?::timestamptz) ELSE q.next_check_at END", next, next)
 }
 
 // ClaimAccountQuotaQuery reserves the right to query the upstream for the
@@ -282,12 +319,13 @@ func (d *DB) ClaimAccountQuotaQuery(ctx context.Context, accountID int64, floor 
 }
 
 func claimAccountQuotaQuery(db *gorm.DB, accountID int64, floor float64) *gorm.DB {
-	return db.Exec(`INSERT INTO account_quota_snapshots (account_id, last_active_at)
-		SELECT ?::bigint, now() WHERE EXISTS (SELECT 1 FROM accounts WHERE id = ?)
-		ON CONFLICT (account_id) DO UPDATE SET last_active_at = now()
-		WHERE account_quota_snapshots.last_active_at IS NULL
-			OR account_quota_snapshots.last_active_at <= now() - make_interval(secs => ?::float8)`,
-		accountID, accountID, floor)
+	row := db.Session(&gorm.Session{NewDB: true}).Table("accounts").Select("id, now()").Where("id = ?", accountID)
+	return InsertSelect(db, quotaTable, []string{"account_id", "last_active_at"}, row, clause.OnConflict{
+		Columns:   quotaKey,
+		DoUpdates: clause.Assignments(map[string]any{"last_active_at": gorm.Expr("now()")}),
+		Where: clause.Where{Exprs: []clause.Expression{gorm.Expr(`account_quota_snapshots.last_active_at IS NULL
+			OR account_quota_snapshots.last_active_at <= now() - make_interval(secs => ?::float8)`, floor)}},
+	})
 }
 
 // SetAccountQuotaError records the failure of an active query; the windows
@@ -297,7 +335,8 @@ func (d *DB) SetAccountQuotaError(ctx context.Context, accountID int64, msg stri
 }
 
 func setAccountQuotaError(db *gorm.DB, accountID int64, msg string) *gorm.DB {
-	return db.Exec(`UPDATE account_quota_snapshots SET error = ?, refresh_status='error', revision=revision+1 WHERE account_id = ?`, msg, accountID)
+	return db.Table(quotaTable).Where("account_id = ?", accountID).
+		Updates(map[string]any{"error": msg, "refresh_status": "error", "revision": gorm.Expr("revision+1")})
 }
 
 type QuotaClaim struct {
@@ -319,18 +358,21 @@ func EnsureAccountQuota(ctx context.Context, q *gorm.DB, id int64, pluginRevisio
 	return res.RowsAffected > 0, nil
 }
 
-// ensureAccountQuotaSQL names each value once however often it is used.
-var ensureAccountQuotaSQL = NewNumbered(`INSERT INTO account_quota_snapshots(account_id,plugin_revision,auto_refresh,next_check_at)
-		SELECT id,$rev,$auto,CASE WHEN $auto THEN now() END FROM accounts WHERE id=$id AND deleted_at IS NULL
-		ON CONFLICT(account_id) DO UPDATE SET plugin_revision=$rev,auto_refresh=$auto,
-		generation=CASE WHEN account_quota_snapshots.plugin_revision<>$rev THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END,
-		lease_until=CASE WHEN account_quota_snapshots.plugin_revision<>$rev THEN NULL ELSE account_quota_snapshots.lease_until END,
-		revision=account_quota_snapshots.revision+1,
-		next_check_at=CASE WHEN NOT $auto THEN NULL WHEN account_quota_snapshots.plugin_revision<>$rev THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END
-		WHERE account_quota_snapshots.plugin_revision<>$rev OR account_quota_snapshots.auto_refresh<>$auto`, "id", "rev", "auto")
-
 func ensureAccountQuota(db *gorm.DB, id int64, rev string, auto bool) *gorm.DB {
-	return ensureAccountQuotaSQL.Exec(db, id, rev, auto)
+	row := db.Session(&gorm.Session{NewDB: true}).Table("accounts").
+		Select("id, ?, ?, CASE WHEN ? THEN now() END", rev, auto, auto).Where("id = ? AND deleted_at IS NULL", id)
+	return InsertSelect(db, quotaTable, []string{"account_id", "plugin_revision", "auto_refresh", "next_check_at"}, row, clause.OnConflict{
+		Columns: quotaKey,
+		DoUpdates: clause.Assignments(map[string]any{
+			"plugin_revision": rev,
+			"auto_refresh":    auto,
+			"generation":      gorm.Expr("CASE WHEN account_quota_snapshots.plugin_revision<>? THEN nextval('account_quota_generation_seq') ELSE account_quota_snapshots.generation END", rev),
+			"lease_until":     gorm.Expr("CASE WHEN account_quota_snapshots.plugin_revision<>? THEN NULL ELSE account_quota_snapshots.lease_until END", rev),
+			"revision":        gorm.Expr("account_quota_snapshots.revision+1"),
+			"next_check_at":   gorm.Expr("CASE WHEN NOT ? THEN NULL WHEN account_quota_snapshots.plugin_revision<>? THEN now() ELSE COALESCE(account_quota_snapshots.next_check_at,now()) END", auto, rev),
+		}),
+		Where: clause.Where{Exprs: []clause.Expression{gorm.Expr("account_quota_snapshots.plugin_revision<>? OR account_quota_snapshots.auto_refresh<>?", rev, auto)}},
+	})
 }
 
 func ResetAccountQuota(ctx context.Context, q *gorm.DB, id int64) error {
@@ -338,42 +380,59 @@ func ResetAccountQuota(ctx context.Context, q *gorm.DB, id int64) error {
 }
 
 func resetAccountQuota(db *gorm.DB, id int64) *gorm.DB {
-	return db.Exec(`UPDATE account_quota_snapshots SET windows='{}',source='',error='',updated_at=NULL,last_passive_at=NULL,
-		generation=nextval('account_quota_generation_seq'),revision=revision+1,lease_until=NULL,failures=0,
-		refresh_status='pending',next_check_at=CASE WHEN auto_refresh THEN now() END WHERE account_id=?`, id)
+	return db.Table(quotaTable).Where("account_id=?", id).Updates(map[string]any{
+		"windows": gorm.Expr("'{}'"), "source": "", "error": "", "updated_at": gorm.Expr("NULL"), "last_passive_at": gorm.Expr("NULL"),
+		"generation": gorm.Expr("nextval('account_quota_generation_seq')"), "revision": gorm.Expr("revision+1"), "lease_until": gorm.Expr("NULL"),
+		"failures": 0, "refresh_status": "pending", "next_check_at": gorm.Expr("CASE WHEN auto_refresh THEN now() END"),
+	})
 }
 
 func (d *DB) LeaseAccountQuota(ctx context.Context, id int64, pluginRevision string, floor, lease time.Duration, force bool) (*QuotaClaim, error) {
-	var c QuotaClaim
-	err := leaseAccountQuota(G(ctx, d.Gorm), id, pluginRevision, floor.Seconds(), lease.Seconds(), force).Row().
-		Scan(&c.AccountID, &c.Generation, &c.Token, &c.Revision, &c.Failures, &c.PluginRevision, &c.Initial)
-	if IsNoRows(err) {
-		return nil, nil
+	var c quotaLease
+	res := leaseAccountQuota(G(ctx, d.Gorm), &c, id, pluginRevision, floor.Seconds(), lease.Seconds(), force)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return nil, res.Error
 	}
-	return &c, err
+	return &QuotaClaim{AccountID: c.AccountID, Generation: c.Generation, Token: c.LeaseToken, Revision: c.Revision,
+		Failures: c.Failures, PluginRevision: c.PluginRevision, Initial: c.Initial}, nil
 }
 
-func leaseAccountQuota(db *gorm.DB, id int64, rev string, floor, lease float64, force bool) *gorm.DB {
-	return db.Raw(`UPDATE account_quota_snapshots q SET last_active_at=clock_timestamp(),
-		lease_token=nextval('account_quota_generation_seq'),lease_until=clock_timestamp()+make_interval(secs=>?::float8)
-		WHERE account_id=? AND plugin_revision=?
+// quotaLease is the row a lease returns.
+type quotaLease struct {
+	AccountID, Generation, LeaseToken, Revision int64
+	Failures                                    int
+	PluginRevision                              string
+	Initial                                     bool
+}
+
+// leaseReturning are the columns of quotaLease, Initial whether the
+// snapshot holds no data yet.
+var leaseReturning = clause.Returning{Columns: []clause.Column{{Name: "account_id"}, {Name: "generation"}, {Name: "lease_token"},
+	{Name: "revision"}, {Name: "failures"}, {Name: "plugin_revision"}, {Name: "updated_at IS NULL AS initial", Raw: true}}}
+
+// leaseAccountQuota takes the lease of the account's quota query into dst;
+// RowsAffected is 0 when it is not due or held.
+func leaseAccountQuota(db *gorm.DB, dst *quotaLease, id int64, rev string, floor, lease float64, force bool) *gorm.DB {
+	return quotaRows(db).Model(dst).Clauses(leaseReturning).
+		Where(`account_id=? AND plugin_revision=?
 		AND (lease_until IS NULL OR lease_until<=clock_timestamp())
 		AND (?::float8<=0 OR last_active_at IS NULL OR last_active_at<=clock_timestamp()-make_interval(secs=>?::float8))
 		AND (? OR next_check_at IS NULL OR next_check_at<=clock_timestamp())
 		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
 		AND (? OR a.schedulable OR q.updated_at IS NULL)
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
-		RETURNING account_id,generation,lease_token,revision,failures,plugin_revision,updated_at IS NULL`,
-		lease, id, rev, floor, floor, force, force)
+		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`,
+			id, rev, floor, floor, force, force).
+		Updates(map[string]any{
+			"last_active_at": gorm.Expr("clock_timestamp()"),
+			"lease_token":    gorm.Expr("nextval('account_quota_generation_seq')"),
+			"lease_until":    gorm.Expr("clock_timestamp()+make_interval(secs=>?::float8)", lease),
+		})
 }
 
 func (d *DB) AccountQuotaClaimValid(ctx context.Context, c *QuotaClaim) (bool, error) {
-	var ok bool
-	err := G(ctx, d.Gorm).Raw(`SELECT EXISTS(SELECT 1 FROM account_quota_snapshots q JOIN accounts a ON a.id=q.account_id
-		WHERE q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp()
-		AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, c.AccountID, c.Generation, c.Token).Row().Scan(&ok)
-	return ok, err
+	g := G(ctx, d.Gorm)
+	return Exists(g, quotaRows(g).Where("q.account_id=? AND q.generation=? AND q.lease_token=? AND q.lease_until>clock_timestamp() AND "+liveAccount,
+		c.AccountID, c.Generation, c.Token))
 }
 
 func (d *DB) ReleaseAccountQuotaQuery(ctx context.Context, c *QuotaClaim, next time.Time) (bool, error) {
@@ -382,12 +441,10 @@ func (d *DB) ReleaseAccountQuotaQuery(ctx context.Context, c *QuotaClaim, next t
 }
 
 func releaseAccountQuota(db *gorm.DB, c *QuotaClaim, next time.Time) *gorm.DB {
-	return db.Exec(`UPDATE account_quota_snapshots q SET lease_until=NULL,
-		next_check_at=CASE WHEN revision<>? THEN next_check_at ELSE GREATEST(?::timestamptz,clock_timestamp()+interval '30 seconds') END
-		WHERE account_id=? AND generation=? AND lease_token=? AND lease_until>clock_timestamp()
-		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`,
-		c.Revision, next, c.AccountID, c.Generation, c.Token)
+	return claimed(quotaRows(db), c).Updates(map[string]any{
+		"lease_until":   gorm.Expr("NULL"),
+		"next_check_at": gorm.Expr("CASE WHEN revision<>? THEN next_check_at ELSE GREATEST(?::timestamptz,clock_timestamp()+interval '30 seconds') END", c.Revision, next),
+	})
 }
 
 func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows map[string]QuotaWindow, msg string, next time.Time) (bool, error) {
@@ -402,20 +459,24 @@ func (d *DB) CompleteAccountQuota(ctx context.Context, c *QuotaClaim, windows ma
 	return res.Error == nil && res.RowsAffected == 1, res.Error
 }
 
-// completeAccountQuotaSQL names each value once however often it is used:
-// msg and the claim's revision appear six and seven times.
-var completeAccountQuotaSQL = NewNumbered(`UPDATE account_quota_snapshots q SET
-		windows=CASE WHEN $msg='' AND revision=$rev THEN windows||$windows::jsonb ELSE windows END,
-		source=CASE WHEN $msg='' AND revision=$rev THEN 'active' ELSE source END,
-		updated_at=CASE WHEN $msg='' AND revision=$rev THEN clock_timestamp() ELSE updated_at END,
-		error=CASE WHEN revision=$rev THEN $msg ELSE error END,
-		refresh_status=CASE WHEN revision<>$rev THEN refresh_status WHEN $msg='' THEN 'ready' ELSE 'error' END,
-		failures=CASE WHEN revision<>$rev THEN failures WHEN $msg='' THEN 0 ELSE LEAST(failures+1,10) END,
-		next_check_at=CASE WHEN revision<>$rev THEN next_check_at ELSE $next::timestamptz END,lease_until=NULL,revision=revision+1
-		WHERE account_id=$account AND generation=$generation AND lease_token=$token AND lease_until>clock_timestamp()
-		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
-		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))`, "msg", "rev", "windows", "next", "account", "generation", "token")
-
 func completeAccountQuota(db *gorm.DB, c *QuotaClaim, windows, msg string, next time.Time) *gorm.DB {
-	return completeAccountQuotaSQL.Exec(db, msg, c.Revision, windows, next, c.AccountID, c.Generation, c.Token)
+	rev := c.Revision
+	return claimed(quotaRows(db), c).Updates(map[string]any{
+		"windows":        gorm.Expr("CASE WHEN ?='' AND revision=? THEN windows||?::jsonb ELSE windows END", msg, rev, windows),
+		"source":         gorm.Expr("CASE WHEN ?='' AND revision=? THEN 'active' ELSE source END", msg, rev),
+		"updated_at":     gorm.Expr("CASE WHEN ?='' AND revision=? THEN clock_timestamp() ELSE updated_at END", msg, rev),
+		"error":          gorm.Expr("CASE WHEN revision=? THEN ? ELSE error END", rev, msg),
+		"refresh_status": gorm.Expr("CASE WHEN revision<>? THEN refresh_status WHEN ?='' THEN 'ready' ELSE 'error' END", rev, msg),
+		"failures":       gorm.Expr("CASE WHEN revision<>? THEN failures WHEN ?='' THEN 0 ELSE LEAST(failures+1,10) END", rev, msg),
+		"next_check_at":  gorm.Expr("CASE WHEN revision<>? THEN next_check_at ELSE ?::timestamptz END", rev, next),
+		"lease_until":    gorm.Expr("NULL"),
+		"revision":       gorm.Expr("revision+1"),
+	})
+}
+
+// claimed narrows q, the snapshots, to the row of claim c while its lease
+// holds and its account lives.
+func claimed(q *gorm.DB, c *QuotaClaim) *gorm.DB {
+	return q.Where("account_id=? AND generation=? AND lease_token=? AND lease_until>clock_timestamp() AND "+liveAccount,
+		c.AccountID, c.Generation, c.Token)
 }

@@ -153,9 +153,12 @@ func (s *Service) CacheBalance(ctx context.Context, userID, ledgerID int64, bala
 
 // balanceSQL reads a user's balance and the ledger id it was observed at
 // (the user id twice).
-const balanceSQL = `
-		SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0),
-		       COALESCE((SELECT max(id) FROM balance_ledger WHERE user_id = ?), 0)`
+func balanceRead(db *gorm.DB, userID int64) *gorm.DB {
+	sub := db.Session(&gorm.Session{NewDB: true})
+	return store.OneRow(db).Select("COALESCE((?), 0), COALESCE((?), 0)",
+		sub.Table("user_balances").Select("balance").Where("user_id = ?", userID),
+		sub.Table("balance_ledger").Select("max(id)").Where("user_id = ?", userID))
+}
 
 // Balance returns a user's balance, served from Redis when cached.
 func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, error) {
@@ -174,7 +177,7 @@ func (s *Service) Balance(ctx context.Context, userID int64) (decimal.Decimal, e
 	var bal decimal.Decimal
 	var lastID int64
 	// Behind the Redis cache: only a miss reads PostgreSQL.
-	err := store.G(ctx, s.db.Gorm).Raw(balanceSQL, userID, userID).Row().Scan(&bal, &lastID)
+	err := balanceRead(store.G(ctx, s.db.Gorm), userID).Row().Scan(&bal, &lastID)
 	if err != nil {
 		return decimal.Zero, err
 	}

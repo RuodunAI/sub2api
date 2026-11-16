@@ -131,7 +131,7 @@ func (CoreTracker) Ensure(ctx context.Context, q *gorm.DB) error {
 
 func (CoreTracker) Applied(ctx context.Context, q *gorm.DB) (map[string]string, error) {
 	var rows []struct{ ID, Checksum string }
-	if err := G(ctx, q).Raw(`SELECT id, checksum FROM schema_migrations`).Scan(&rows).Error; err != nil {
+	if err := G(ctx, q).Table("schema_migrations").Select("id, checksum").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	m := make(map[string]string, len(rows))
@@ -168,7 +168,7 @@ func renameApplied(m map[string]string) map[string]string {
 }
 
 func (CoreTracker) Record(ctx context.Context, tx *gorm.DB, id, checksum string) error {
-	return G(ctx, tx).Exec(`INSERT INTO schema_migrations (id, checksum) VALUES (?, ?)`, id, checksum).Error
+	return G(ctx, tx).Table("schema_migrations").Create(map[string]any{"id": id, "checksum": checksum}).Error
 }
 
 func (CoreTracker) migrationSQL(id, checksum, body string) string {

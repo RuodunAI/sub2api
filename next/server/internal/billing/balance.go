@@ -56,7 +56,7 @@ func (s *Service) myBalance(c *gin.Context) {
 	ctx := c.Request.Context()
 	uid, _ := core.UserID(ctx)
 	var bal decimal.Decimal
-	err := store.G(ctx, s.db.Gorm).Raw(`SELECT COALESCE((SELECT balance FROM user_balances WHERE user_id = ?), 0)`, uid).Row().Scan(&bal)
+	err := store.G(ctx, s.db.Gorm).Table("user_balances").Select("balance").Where("user_id = ?", uid).Scan(&bal).Error
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

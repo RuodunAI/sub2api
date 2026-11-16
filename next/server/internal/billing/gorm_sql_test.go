@@ -74,7 +74,7 @@ func TestSQLLedger(t *testing.T) {
 	amount, min := decimal.RequireFromString("0.5"), decimal.RequireFromString("0")
 	var row struct{ ID int64 }
 	cases := map[string]func(*gorm.DB) *gorm.DB{
-		"ensure_balance": func(db *gorm.DB) *gorm.DB { return db.Exec(ensureBalanceSQL, int64(7)) },
+		"ensure_balance": func(db *gorm.DB) *gorm.DB { return ensureBalanceRow(db, 7) },
 		"apply": func(db *gorm.DB) *gorm.DB {
 			return applyStmt.Raw(db, int64(7), amount.Neg(), KindAdminAdjust, "manual", "ref-1", "adjust:1", &operator, "", "note").Scan(&row)
 		},
@@ -85,7 +85,7 @@ func TestSQLLedger(t *testing.T) {
 			return prechargeStmt.Raw(db, int64(7), "req-1", amount, KindUsage, "precharge", "req-1", "precharge:req-1", "request precharge", min).Scan(&row)
 		},
 		// A precharge's balance row, behind its lock timeout.
-		"precharge_ensure": func(db *gorm.DB) *gorm.DB { return db.Exec(prechargeEnsureSQL, int64(7)) },
+		"precharge_ensure": func(db *gorm.DB) *gorm.DB { return ensurePrechargeBalance(db, 7) },
 		"settle": func(db *gorm.DB) *gorm.DB {
 			ch := core.LedgerChange{UserID: 7, Amount: amount, Kind: KindUsage, RefType: "usage", RefID: "req-1", IdempotencyKey: "usage:req-1", Note: "note"}
 			return settleStmt.Raw(db, settleArgs(7, "req-1", &ch)...).Scan(&row)

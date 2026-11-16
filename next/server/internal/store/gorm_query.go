@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"slices"
+	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -143,3 +144,89 @@ func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
 	slices.Sort(ids)
 	return ids, err
 }
+
+// Statements the query builder has no form for, as thin combinators of
+// builder parts (gormguard [raw-sql] lists each one with its reason).
+
+// InsertSelect runs INSERT INTO table (columns) sub, sub a query built on db,
+// with clauses after it (a clause.OnConflict): GORM's Create only inserts
+// values. RowsAffected counts the rows written.
+func InsertSelect(db *gorm.DB, table string, columns []string, sub *gorm.DB, clauses ...clause.Interface) *gorm.DB {
+	return db.Exec("?", insertSelect{table: table, columns: columns, sub: sub, clauses: clauses})
+}
+
+// InsertSelectReturning is InsertSelect with a RETURNING of returning, not
+// yet run: Scan or Row reads the rows written.
+func InsertSelectReturning(db *gorm.DB, table string, columns []string, sub *gorm.DB, returning []string, clauses ...clause.Interface) *gorm.DB {
+	ret := clause.Returning{Columns: make([]clause.Column, len(returning))}
+	for i, c := range returning {
+		ret.Columns[i] = clause.Column{Name: c}
+	}
+	return db.Raw("?", insertSelect{table: table, columns: columns, sub: sub, clauses: append(clauses, ret)})
+}
+
+type insertSelect struct {
+	table   string
+	columns []string
+	sub     *gorm.DB
+	clauses []clause.Interface
+}
+
+func (s insertSelect) Build(b clause.Builder) {
+	b.WriteString("INSERT INTO ")
+	b.WriteQuoted(clause.Table{Name: s.table})
+	b.WriteString(" (")
+	for i, c := range s.columns {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteQuoted(clause.Column{Name: c})
+	}
+	b.WriteString(") ")
+	b.AddVar(b, s.sub)
+	for _, c := range s.clauses {
+		b.WriteByte(' ')
+		b.AddVar(b, c)
+	}
+}
+
+// UpdateFrom is the FROM list of an UPDATE, for db.Clauses: UPDATE t SET ...
+// FROM sql WHERE ..., sql taking vars at its ? placeholders (a set of rows
+// to join, such as unnest(?::bigint[], ?::timestamptz[]) AS v(id, at)).
+func UpdateFrom(sql string, vars ...any) clause.Interface {
+	return updateFrom{clause.Expr{SQL: sql, Vars: vars}}
+}
+
+type updateFrom struct{ clause.Expr }
+
+func (updateFrom) Name() string                   { return "FROM" }
+func (f updateFrom) MergeClause(c *clause.Clause) { c.Expression = f.Expr }
+
+// NextVal draws the next value of sequence seq.
+func NextVal(db *gorm.DB, seq string) (int64, error) {
+	var v int64
+	err := db.Raw("SELECT nextval(?::regclass)", seq).Row().Scan(&v)
+	return v, err
+}
+
+// ClockTimestamp reads the database clock (clock_timestamp(): the time of
+// the call, not of the transaction's start).
+func ClockTimestamp(db *gorm.DB) (time.Time, error) {
+	var at time.Time
+	err := db.Raw("SELECT clock_timestamp()").Row().Scan(&at)
+	return at, err
+}
+
+// SetConfig sets the custom setting name (such as sup2api.x) to value for
+// the rest of the transaction (set_config(name, value, true)): triggers read
+// it with current_setting.
+func SetConfig(tx *gorm.DB, name, value string) error {
+	if err := RequireTx(tx); err != nil {
+		return err
+	}
+	return tx.Exec("SELECT set_config(?, ?, true)", name, value).Error
+}
+
+// OneRow is a query of one row and no columns, for a Select of expressions
+// that read no table of their own (scalar subqueries, COALESCE((?), 0)).
+func OneRow(db *gorm.DB) *gorm.DB { return db.Table("(SELECT) AS one") }

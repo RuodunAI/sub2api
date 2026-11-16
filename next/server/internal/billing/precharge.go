@@ -9,6 +9,7 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -104,7 +105,7 @@ func (s *Service) prechargeTx(ctx context.Context, tx *gorm.DB, ch core.LedgerCh
 		// again, in the order lock timeout, balance row, lock, reservation.
 		// Unlike ApplyTx, Precharge
 		// returns an unknown user's foreign key violation as it is.
-		if err = g.Exec(prechargeEnsureSQL, ch.UserID).Error; err == nil {
+		if err = ensurePrechargeBalance(g, ch.UserID).Error; err == nil {
 			p, err = runPrecharge(g, ch, min)
 		}
 		if err == nil && !p.locked {
@@ -189,12 +190,19 @@ func runPrecharge(db *gorm.DB, ch core.LedgerChange, min decimal.Decimal) (prech
 // one that conflicts.
 const prechargeLockTimeoutSQL = `set_config('lock_timeout', '` + prechargeLockTimeout + `', true) IS NOT NULL`
 
-// prechargeEnsureSQL is ensureBalanceSQL behind the lock timeout, for a
+// ensurePrechargeBalance is ensureBalanceRow behind the lock timeout, for a
 // precharge that found no balance row: prechargeSQL did not set the timeout
 // then (it is evaluated on the row), and the insert may wait for another
 // transaction's insert of the row.
-const prechargeEnsureSQL = `INSERT INTO user_balances (user_id) SELECT ?::bigint WHERE ` + prechargeLockTimeoutSQL + `
-    ON CONFLICT DO NOTHING`
+func ensurePrechargeBalance(db *gorm.DB, userID int64) *gorm.DB {
+	row := db.Session(&gorm.Session{NewDB: true}).Table("(SELECT ?::bigint AS user_id) AS u", userID).Select("user_id").Where(prechargeLockTimeoutSQL)
+	return store.InsertSelect(db, "user_balances", []string{"user_id"}, row, clause.OnConflict{DoNothing: true})
+}
+
+// ensureBalanceRow inserts the user's balance row unless it exists.
+func ensureBalanceRow(db *gorm.DB, userID int64) *gorm.DB {
+	return db.Table("user_balances").Clauses(clause.OnConflict{DoNothing: true}).Create(map[string]any{"user_id": userID})
+}
 
 // prechargeSQL is the whole precharge in one statement. locked takes the
 // balance row's FOR UPDATE lock after setting the lock timeout (its

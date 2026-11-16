@@ -1,8 +1,5 @@
 -- sql
-UPDATE account_quota_snapshots q SET lease_until=NULL,
-		next_check_at=CASE WHEN revision<>$1 THEN next_check_at ELSE GREATEST($2::timestamptz,clock_timestamp()+interval '30 seconds') END
-		WHERE account_id=$3 AND generation=$4 AND lease_token=$5 AND lease_until>clock_timestamp()
-		AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
+UPDATE account_quota_snapshots AS q SET "lease_until"=NULL,"next_check_at"=CASE WHEN revision<>$1 THEN next_check_at ELSE GREATEST($2::timestamptz,clock_timestamp()+interval '30 seconds') END WHERE account_id=$3 AND generation=$4 AND lease_token=$5 AND lease_until>clock_timestamp() AND EXISTS(SELECT 1 FROM accounts a WHERE a.id=q.account_id AND a.deleted_at IS NULL
 		AND NOT EXISTS(SELECT 1 FROM plugins p WHERE p.key=a.plugin_key AND p.status NOT IN ('enabled','upgrading')))
 -- vars
 $1 int64 44

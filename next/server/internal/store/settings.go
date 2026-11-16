@@ -18,7 +18,8 @@ func UpdateSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy
 		return nil, err
 	}
 	db := G(ctx, tx)
-	if err := db.Exec(`INSERT INTO settings(key,value) VALUES(?,'{}') ON CONFLICT(key) DO NOTHING`, key).Error; err != nil {
+	if err := db.Table("settings").Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "key"}}, DoNothing: true}).
+		Create(map[string]any{"key": key, "value": gorm.Expr("'{}'")}).Error; err != nil {
 		return nil, err
 	}
 	raw, err := SettingValue(db, key, ForUpdate())

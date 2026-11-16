@@ -38,14 +38,11 @@ import (
 // holds no row lock (every write reads the locked row), so that path is the
 // old sequence, ensureBalanceSQL then the statement, after a read.
 
-// ensureBalanceSQL creates the balance row a later statement locks, when the
+// ensureBalance creates the balance row a later statement locks, when the
 // statement reported the row missing. An unknown user fails here with the
 // users foreign key (store.IsForeignKeyViolation → not found).
-const ensureBalanceSQL = `INSERT INTO user_balances (user_id) VALUES (?::bigint) ON CONFLICT DO NOTHING`
-
-// ensureBalance runs ensureBalanceSQL for the user on db.
 func ensureBalance(db *gorm.DB, userID int64) error {
-	err := db.Exec(ensureBalanceSQL, userID).Error
+	err := ensureBalanceRow(db, userID).Error
 	if store.IsForeignKeyViolation(err) {
 		return core.ErrNotFound.WithMessage("user not found").WithCause(err)
 	}

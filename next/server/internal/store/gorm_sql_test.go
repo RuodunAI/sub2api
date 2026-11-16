@@ -92,8 +92,9 @@ func TestSQLQuotaReset(t *testing.T) {
 }
 
 func TestSQLQuotaLease(t *testing.T) {
-	var id int64
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return store.LeaseQuotaSQL(db, 11, "v1", 2.5, 70, false).Scan(&id) })
+	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
+		return store.LeaseQuotaSQL(db, new(store.QuotaLease), 11, "v1", 2.5, 70, false)
+	})
 }
 
 func TestSQLQuotaRelease(t *testing.T) {
