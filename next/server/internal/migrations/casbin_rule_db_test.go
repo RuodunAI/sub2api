@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	// beforeCasbin is the last core migration of 0.1.289, whose role tables
-	// 0100 turns into casbin_rule.
+	// beforeCasbin is the last core migration before 0100, which turns its
+	// role tables into casbin_rule (0.1.290 runs 0099-0101 in one upgrade).
 	beforeCasbin = "0099_plugin_permission_meta.sql"
 	casbinRule   = "0100_casbin_rule.sql"
 )
@@ -77,11 +77,12 @@ func TestCasbinRuleColumnWidths(t *testing.T) {
 	require.Equal(t, "g "+casbinrule.UserSub(root)+" r:"+rk+", p r:"+rk+" "+pk+" "+sc, h.policy(rk))
 }
 
-// An upgrade: a database as 0.1.289 leaves it (through 0099) gets the
-// rows of what it holds, grants of removed, disabled and staged
-// permissions and soft-deleted users included, a grant held both for every
-// row and as a scope * row once; the role tables and 0097's one-holder
-// trigger go; the version moves once; a second run changes nothing.
+// An upgrade: a database through 0099 (as develop's 0.1.289 builds left
+// it) gets the rows of what it holds, grants of removed, disabled and
+// staged permissions and soft-deleted users included, a grant held both
+// for every row and as a scope * row once; the role tables and 0097's
+// one-holder trigger go; the version moves once; a second run changes
+// nothing.
 func TestCasbinRuleMigration(t *testing.T) {
 	h := &hardeningDB{t: t, db: testutil.DBThrough(t, beforeCasbin), ctx: context.Background()}
 	h.exec(`

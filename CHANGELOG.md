@@ -8,34 +8,17 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.290（版本号推测）：控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101，单向，停服发布，所有人重新登录）
+### 核心 0.1.290 + 插件：插件权限声明、Casbin 权限存储、Valkey 控制台会话、GORM（迁移 0099–0101，单向，停服发布，所有人重新登录）
 
-契约见 CONTRACTS §100。
+一个发布单元，从线上 0.1.288（schema 0098）直接升级，三个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**：相关的版本下限（`PluginPermissionsFirstCore`、UI 3.16 与 3.17 的核心下限、内置插件的 `hostCompat`）都是 0.1.290。步骤见 `next/deploy/rollback/0.1.290-release.md`。
 
-- **会话令牌**：控制台登录只签发 `s2s_` 令牌，存在 Valkey（只存哈希），一个令牌、服务端滑动续期（空闲 7 天、登录后最长 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话、登出立即失效；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
-- **删除**：JWT 签发与校验、`POST /auth/refresh`（现在 404）、refresh token 与重放检测；环境变量 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL` 不再读取（网关也不再传给核心，留在 `.env` 里无害，可以删掉）。
-- **迁移 0101**：删除 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表。两步登录、通行密钥、TOTP 设置、二次验证的中间流程只存 Valkey。
-- **Valkey 故障**：会话鉴权、登录、二次验证返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退；会话鉴权的 503 不会被改写成 401（控制台不会被登出）。访问密钥和网关 Key 不受影响；管理员禁用、删除用户、重置密码不依赖 Valkey。
-- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
-- **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
-- **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。
+**发布**：单向，停服。发布前在生产副本上演练，用 `0.1.290-effective-permissions.sql` 逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0101 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。
 
-**发布**：单向，**先停掉全部核心节点**再启动新版本（网关升级计划本身先停全部核心，满足要求）；发布前做数据库备份。上一版签发的登录全部作废，所有人重新登录。**回退**：只能从发布前的数据库备份恢复，见 `next/deploy/rollback/0.1.290-session-down.md`。
+**升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
-### 核心 0.1.290（版本号推测）：权限改由 Casbin 判断，授予只存 `casbin_rule`（迁移 0100，单向，停服发布）
+**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；恢复后清掉 Valkey 的 `authz:c:ur:*`。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
 
-契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
-
-- **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个权限版本一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
-- **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
-- **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
-
-**发布**：单向迁移，必须停服：停掉全部节点（主节点先停），备份数据库，启动主节点迁移，再启动其余节点；0.1.289 不能在迁移后的库上运行。核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。
-
-**回滚**：只能从升级前的备份恢复，恢复后清掉 Valkey 的 `authz:c:ur:*`；升级后的写入会丢失。没有反向脚本，也没有运行时开关。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
-
-### 核心 0.1.289（版本号推测）+ 9 个内置插件：插件权限声明与角色分配（迁移 0099，主节点优先，短暂停服）
+#### 插件权限声明与角色分配（迁移 0099）
 
 设计见 `next/docs/plugin-permissions/`，契约见 CONTRACTS §4“插件权限”、§5.2、§5.7、§5.8、§21.0“插件资源范围”。
 
@@ -62,13 +45,65 @@
 - 重新授予宿主权限（`PUT /plugins/:key/grants/:permission`）需要 `plugin:install`；请求体总是读取，不再依赖 `Content-Length`（以前分块传输的收窄请求会被当成“授予到清单申请的范围”）。
 - 清单的 `defaults` 省略时不授予任何角色（以前 `defaultRoles` 省略时给 `admin`）。
 
-**迁移 0099**（`0099_plugin_permission_meta.sql`，唯一的核心迁移，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列保留一个版本给旧核心读（新核心照写、不读），下一个迁移删除。按 0.1.286 的主节点优先方式发布（短暂停服），不与旧核心滚动混跑；发布迁移前需要确认。
+**迁移 0099**（`0099_plugin_permission_meta.sql`，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列新核心照写、不读，以后的迁移删除。`next/deploy/rollback/0.1.289-plugin-perm-down.md` 的反向脚本只用于停在 0099 的开发库、测试库（跑过 develop 上编号 0.1.289 的构建），线上不用。
 
-**回滚**：网关不允许跨 schema 回退，线上出问题修复前进，或从数据库备份恢复。不经网关的部署可以按 `next/deploy/rollback/0.1.289-plugin-perm-down.md` 跑反向脚本：删除已移除和暂存的插件权限及其授予、删除插件范围授予（逐条审计 `via: "rollback 0.1.289"`，保留的授予因此丢失），拒绝仍待复核的带范围或关键授予（旧核心会把它们确认成整行授予），删掉新列，再把升级过的插件切回旧版本。
+**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.290（`below_feature_core`；声明 `hostUICompat` `^3.16` 或 `^3.17` 的也一样，`below_ui_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
-**第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.289（`below_feature_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
+**内置插件**：9 个声明了用户权限的插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.290 <0.2.0`，需要核心 ≥0.1.290；版本见下文“插件版本”。被管理员停用的内置插件不会自动升级（只升级已启用的），重新启用之前目录停在迁移回填的状态（风险只按旧的 `sensitive` 回填，没有 `defaults` 和分组，`moderation:exempt` 仍是 low）；已安装的旧格式版本再次同意或激活时风险按 low 写入，内置插件也一样（暂存同意取新旧较高的风险，不受影响）。
 
-**内置插件**：9 个声明了用户权限的内置插件（anthropic、claude-oauth、codex、dynweight、growth、guard、moderation、payment、volcengine）的清单已改用 `risk`/`defaults`，`hostCompat` 升到 `>=0.1.289 <0.2.0`，所以需要核心 ≥0.1.289；回滚核心时内置插件集合也要回到旧版本。**版本号还没升，发布前必须升**（同一版本号、不同内容时会保留旧清单）；注意 codex 的 `plugin.go` 里的 `Version`、guard 的 0.2.9-test overlay 和 anthropic 的 0.3.3-test 测试夹具。当前分支上的版本：anthropic 0.3.2、claude-oauth 0.2.3、codex 0.1.4、dynweight 0.5.9、growth 0.2.0、guard 0.2.9、moderation 0.12.0、payment 0.1.1、volcengine 0.12.7。不升版本时存量库的目录停在迁移回填的状态（风险只按旧的 `sensitive` 回填，没有 `defaults` 和分组，`moderation:exempt` 仍是 low），与新部署不一致。升了版本之后，被管理员停用的内置插件不会自动升级（只升级已启用的），重新启用之前同样停在回填状态；已安装的旧格式版本再次同意或激活时风险按 low 写入，内置插件也一样（暂存同意取新旧较高的风险，不受影响）。
+#### 权限改由 Casbin 判断，授予只存 `casbin_rule`（迁移 0100）
+
+契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
+
+- **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
+- **判断**：每个权限版本一份 Casbin 策略快照，请求用由它算出的权限集合，不逐条跑 matcher。用户角色缓存的 Valkey 键 `authz:c:ur:{uid}`（TTL 15 分钟，只认版本完全相同的条目），Valkey 出错时直接读 PG。**从数据库备份恢复后要清掉这些键**（命令见 CONTRACTS §99.4）。
+- **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
+- **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
+
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。用过未发布的 Mode P 版 0100 的开发库要重建或恢复到 0099。
+
+#### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
+
+契约见 CONTRACTS §100。
+
+- **会话令牌**：控制台登录只签发 `s2s_` 令牌，存在 Valkey（只存哈希），一个令牌、服务端滑动续期（空闲 7 天、登录后最长 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话、登出立即失效；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
+- **删除**：JWT 签发与校验、`POST /auth/refresh`（现在 404）、refresh token 与重放检测；核心不再读取环境变量 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`。网关外壳仍把这三个传给核心（`legacyCoreEnv`），compose 模板与 `.env.example` 也保留 `SUB2API_JWT_SECRET`：**已有部署不要删它**，回退后的 0.1.288、升级计划没走完时重启的旧核心启动时都要用原值（CONTRACTS §100.7）。
+- **迁移 0101**：删除 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表。两步登录、通行密钥、TOTP 设置、二次验证的中间流程只存 Valkey。
+- **Valkey 故障**：会话鉴权、登录、二次验证返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退；会话鉴权的 503 不会被改写成 401（控制台不会被登出）。访问密钥和网关 Key 不受影响；管理员禁用、删除用户、重置密码不依赖 Valkey。
+- **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
+- **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
+- **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。控制台 UI 3.17：`@sub2api/host` 新增 `fetchWithSession`（原始字节、流、下载类请求带会话发送），用到它的插件声明 `hostUICompat ^3.17`、`hostCompat >=0.1.290`；`startKeepAlive` 等刷新相关导出留作弃用的空实现，到 UI 4.0 删除。
+
+会话部分的说明见 `next/deploy/rollback/0.1.290-session-down.md`。
+
+#### 数据库访问改用 GORM
+
+核心、网关和插件的数据库访问从 pgx 改为 GORM，驱动仍是 pgx，经 `database/sql` 连接池。语句的条件、锁、`ON CONFLICT`、`RETURNING` 不变，用户看到的功能不变。对外可见的变化：
+
+- **插件 SDK 不兼容**：`Host.DB(ctx)` 返回 `*gorm.DB`（以前是 `*pgxpool.Pool`），第三方插件把 SDK 升到这一版后，用到它的代码要改写。返回的句柄绑定这次调用的 ctx，不要跨调用缓存。已编译的旧插件二进制不受影响（gRPC 协议没变）。插件代码不再 import pgx，SDK 里只有 `sdk/pgdb/pgdb.go` 用 pgx（`TestOnlyPgdbImportsPgx` 检查）。
+- **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致，这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
+- **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
+- **DSN 里的连接池参数**：`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样。
+
+#### 插件版本
+
+相对线上（0.1.288 的内置集合）：
+
+| 插件 | 线上 | 本次 | 变化 |
+|---|---|---|---|
+| anthropic（内置） | 0.3.2 | 0.3.3 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；模型目录改用 GORM，功能不变 |
+| codex（内置） | 0.1.4 | 0.1.5 | 清单改用 `risk`/`defaults`（`codex:manage` 提为 sensitive），`hostCompat >=0.1.290`；版本号随清单升级（同一版本号、内容不同时线上会保留旧清单） |
+| dynweight（内置） | 0.5.9 | 0.5.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
+| moderation（内置） | 0.12.0 | 0.12.1 | 清单改用 `risk`/`defaults`（`moderation:exempt` 改为 critical，`moderation:read` 提为 sensitive），`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
+| volcengine（内置） | 0.12.7 | 0.12.8 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；素材索引与视频账本改用 GORM，功能不变 |
+| ccgateway、mailer（内置） | 0.1.133、0.1.2 | 不变 | 只换了 SDK 依赖，发布时沿用线上包的字节（重新编译的包内容不同、版本号相同，内置同步会跳过） |
+| openai、gemini、custom（内置） | 0.4.0、0.3.0、0.1.0 | 不变 | — |
+| claude-oauth | — | 0.2.4 | 清单改用 `risk`/`defaults`（`claude_oauth:manage` 提为 sensitive），`hostCompat >=0.1.290` |
+| growth | — | 0.2.1 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；存储改用 GORM，功能不变 |
+| guard | — | 0.2.10 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；规则、统计、事件改用 GORM，功能不变 |
+| payment | — | 0.1.2 | 清单改用 `risk`/`defaults`，`hostCompat >=0.1.290`；订单与通知改用 GORM，功能不变 |
+
+上表的新版本都要求核心 ≥0.1.290，不能在线上的 0.1.288 上单独升级，要随核心一起发布。线上 0.1.288 没有安装 claude-oauth、growth、guard、payment。测试夹具：anthropic 的 0.3.4-test（`deploy/ci/check.sh`）和 guard 的 0.2.10-test（`e2e/guard.go`）。
 
 ## 2026-11-14
 
