@@ -59,7 +59,7 @@
 - **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予与超管行，用户的角色在第一次被问到时按需读入（最多记住 5 万个用户，10 万用户的库重载一次只要几毫秒）；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），读库出错时返回 503 并记日志，不当作无权限，`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点原地换掉授予、保留已读入的用户（删除角色或版本缺失时换一个新的 enforcer）；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
 - **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；写入返回的是本次写入的修订号；启动同步、删除角色（从别的角色的可分配清单移除）对角色的改动同样推进修订号；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
-- **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
+- **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 400 `invalid_argument`（字段错误码 `unknown_scope`）；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。`sub2api admin` 只在已迁移到本版本 schema 的库上执行；0100 因多个超管停止时，用 0.1.288 的 `sub2api admin recover-superadmin` 保留一个。
 
 迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
