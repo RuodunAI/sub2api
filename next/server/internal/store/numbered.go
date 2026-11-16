@@ -11,9 +11,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Numbered is SQL written with pgx's numbered placeholders ($1, $2 ...),
-// as Filter numbers its conditions and as a CTE statement names each
-// parameter once however often it uses it, rewritten for GORM: each $n is
+// Numbered is SQL written with PostgreSQL's numbered placeholders ($1,
+// $2 ...), as a CTE statement names each parameter once however often it
+// uses it, rewritten for GORM: each $n is
 // a ? bound to the n-th argument, again wherever $n repeats; the text is
 // sent otherwise unchanged. A $ inside a quoted literal ('...', where a
 // doubled quote is a quote, and E'...', where a backslash also escapes one)
@@ -23,8 +23,7 @@ import (
 // parameter wherever it stands (see Bytes).
 //
 // NewNumbered rewrites a statement once (a package-level statement, at
-// start-up); RawNumbered and ExecNumbered rewrite SQL assembled per call.
-// The SQL is the caller's own: a malformed placeholder, an argument a
+// start-up). The SQL is the caller's own: a malformed placeholder, an argument a
 // placeholder names but the call does not pass, or an @ (which makes GORM
 // parse named parameters) is a programming error and panics.
 type Numbered struct {
@@ -142,16 +141,6 @@ func (n Numbered) Raw(db *gorm.DB, args ...any) *gorm.DB { return db.Raw(n.sql, 
 
 // Exec runs the statement with args on db.
 func (n Numbered) Exec(db *gorm.DB, args ...any) *gorm.DB { return db.Exec(n.sql, n.Vars(args...)...) }
-
-// RawNumbered is db.Raw for numbered SQL assembled per call (see Numbered).
-func RawNumbered(db *gorm.DB, query string, args ...any) *gorm.DB {
-	return NewNumbered(query).Raw(db, args...)
-}
-
-// ExecNumbered is db.Exec for numbered SQL assembled per call.
-func ExecNumbered(db *gorm.DB, query string, args ...any) *gorm.DB {
-	return NewNumbered(query).Exec(db, args...)
-}
 
 // escapeLiteral reports whether the quote at query[i] opens an E'...'
 // literal: an E or e right before it that does not end a longer word.

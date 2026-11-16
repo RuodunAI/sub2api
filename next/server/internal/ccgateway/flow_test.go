@@ -79,12 +79,9 @@ func (a fixtureAccess) AccountsInScope(ctx context.Context, uid int64, action st
 	case scope.All:
 		return true, nil, nil
 	}
-	rows, err := a.db.SQL.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE a.id = ANY($1) AND a.deleted_at IS NULL AND `+core.AccountRows.SQL(2),
-		append([]any{ids}, core.AccountRows.Args(scope)...)...)
-	if err != nil {
-		return false, nil, err
-	}
-	allowed, err := testutil.Column[int64](rows)
+	var allowed []int64
+	err = store.G(ctx, a.db.Gorm).Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).
+		Scopes(core.AccountRows.Scope(scope)).Pluck("a.id", &allowed).Error
 	return false, allowed, err
 }
 
