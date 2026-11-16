@@ -2540,7 +2540,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 > 本节记录10月1日的已验证方案。10月2日起由 §34 主节点优先流程与 Redis 节点密钥鉴权取代：本节的滚动顺序与 mTLS 节点身份不再是当前行为，其余发布单元、核心状态和管理接口约定仍适用。
 
-独立 Go 模块 `runtime-contract` 定义协议，`gateway` 实现 Linux 网关。网关保持公共 HTTP 入口、私网 mTLS 入口和本机管理 Unix socket；核心仅监听回环 HTTP 和令牌认证的控制 Unix socket。网关自身不经该协议在线替换。部署与发布步骤见 [`deploy/gateway`](../deploy/gateway/README.md)。
+独立 Go 模块 `runtime-contract` 定义协议，`gateway` 实现 Linux 网关。网关保持公共 HTTP 入口、私网 mTLS 入口和本机管理 Unix socket；核心仅监听回环 HTTP 和令牌认证的控制 Unix socket。网关自身不经该协议在线替换，由网关升级计划换二进制（§102.9）。部署与发布步骤见 [`deploy/gateway`](../deploy/gateway/README.md)。
 
 **发布单元。** Ed25519 签名覆盖清单的精确 Payload 字节，清单摘要与压缩包摘要分离；清单包含源提交、构建标识、实际核心版本、目标 OS/架构/运行 ABI、逐文件摘要/大小/权限及协议范围。核心 `version`、`schema-contract` 命令不依赖配置或数据库。后者是嵌入迁移库存的确定性摘要；候选报告的版本及摘要必须等于签名声明。下载来源固定且不跟随重定向，解包拒绝逃逸、链接、特殊文件、未声明内容及超限体积。发布私钥不进入运行节点。
 
@@ -2556,9 +2556,9 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件。** 内建与第三方插件均使用自身发布生命周期。核心升级预检当前启用及 rollout 中插件的 `hostCompat`；准备、准入和运行就绪检查本机是否加载已批准且兼容的插件。随包内建插件仅是首次安装来源，不覆盖已安装版本、不复活已删除插件。任务轮询、调度和记账仍由现有核心机制负责，更新主节点不独占业务任务。
 
-**管理接口。** `/api/v1/system/releases`、`/system/upgrades` 与计划的详情/事件接口需要 `system:update:read`；创建需要 `system:update:execute`，暂停/恢复/取消需要 `system:update:recover`，沿用核心 RBAC；execute、recover 与 `releases/import` 每次要二次验证 `system.update`（§80.2，2026-11-13 起；此前只认登录会话），会话与带权限的访问密钥一样。创建携带 `release_digest`、预检取得的 `expected_revision` 和 `idempotency_key`，过期预检或同幂等键不同请求被拒绝。核心仅转发认证后的操作到 mode 0600 本机 socket。
+**管理接口。** `/api/v1/system/releases`、`/system/upgrades` 与计划的详情/事件接口需要 `system:update:read`；创建需要 `system:update:execute`，暂停/恢复/取消需要 `system:update:recover`，沿用核心 RBAC；execute、recover、`PUT /system/update-source` 与 `POST /system/updates/apply` 每次要二次验证 `system.update`（§80.2，2026-11-13 起；此前只认登录会话），会话与带权限的访问密钥一样。创建携带 `release_digest`、预检取得的 `expected_revision` 和 `idempotency_key`，过期预检或同幂等键不同请求被拒绝。核心仅转发认证后的操作到 mode 0600 本机 socket。
 
-当前 v1 仅支持 schema/cluster/task/Host API 契约保持不变的滚动更新。维护迁移、跨协议转换、自动主节点选举、未经校验的任意目标强制回滚、网关自身更新不在此协议实现范围内。不能用新签名或更改声明绕过这些检查。
+当前 v1 仅支持 schema/cluster/task/Host API 契约保持不变的滚动更新。维护迁移、跨协议转换、自动主节点选举、未经校验的任意目标强制回滚不在此协议实现范围内；网关自身更新见 §102.9。不能用新签名或更改声明绕过这些检查。
 
 ## 34. 主节点优先升级与 Redis 节点密钥（2026-10-02）
 
@@ -2633,14 +2633,10 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 - 此变化属于网关二进制，单发核心安装包不会生效；需在无 running/paused 核心计划时逐个更换网关，从节点先、主节点最后，保留状态卷与旧镜像。核心版本无需仅为此变更而升级。控制台仍按既有轮询周期刷新，本次不新增浏览器推送。
 - 网关控制器（`gateway/internal/control`）的 PG 语句由 GORM 的模型与查询构造器生成（2026-11-16，0.1.290）：谓词、行锁、`ON CONFLICT`、`RETURNING` 与往返次数不变。整条手写的只剩 schema 脚本（`execLocked`，内嵌的 `schema.sql`）和心跳的 data-modifying CTE（`Store.Heartbeat`，条件更新与身份检查一次往返）；`to_regclass` 查询与 `SELECT EXISTS` 组合器用 `runtime-contract/gormpg` 的 `RelationExists`、`ExistsQuery`。`gateway/internal/sqlguard` 的测试用与核心相同的检查器（`runtime-contract/gormpg/sqlcheck`，规则见 §2“核心的 SQL”）按允许列表（`包.函数` + 理由）检查 `Raw`/`Exec`（`[raw-sql]`）、交给 GORM 的 SQL 文本（`[sql-const]`）和 gorm 连接池的使用（`[gorm-instance]`，只有 `main` 关闭连接池和记录池大小的两处）。
 
-## 40. 核心版本提示、GitHub 更新源及拓扑视角（2026-10-03）
+## 40. 核心版本提示与拓扑视角（2026-10-03；更新检测与一键更新 2026-11-17 改写，见 §102）
 
-- 左上角品牌旁显示当前核心版本，基础 `GET /system/version` 仅要求登录（访问密钥也可调用，§80），返回 `version/managed`。托管模式下有 `system:update:read` 权限的用户可以打开更新面板，查看稳定版与发布说明、手动检测；其他用户不获得更新源读取或导入权限。
-- 更新源在 PG `updater.clusters.update_repository` 持久保存。`GET /system/update-source` 要求 `settings:read`，`PUT` 要求 `settings:manage` 并显式二次认证。接受 GitHub.com 公开仓库的 `owner/repo` 或完整 HTTPS 仓库地址，空值关闭。此设置不改变网关信任密钥、不支持任意 URL、私人 token 或预发布版本。
-- `GET /system/update-check?force=true` 使用固定 GitHub API 查询 latest stable Release。响应包含当前/最新版本、是否有更新、兼容性、阻断原因、tag、发布说明、检查时间和缓存标记。检测不仅看 tag，还验证 `next-core-manifest.json` 的签名、语义版本绑定、当前平台和摘要包资产，并检查当前基线的 schema/协议兼容性。网络失败或不兼容不能冒充已经最新。
-- `POST /system/releases/import` 要求 `system:update:execute` 及既有二次认证，输入当前规范化 `repository` 与 `tag`。网关重新获取并验签，在 PG 事务持有集群行共享锁时复核来源，登记后仍走原有预检与升级计划。相同摘要已存在于其他来源时不静默改写下载地址，不影响已执行中的计划。核心桥记录 `system.update_source.update` 和 `system.release.import` 审计。
-- GitHub 下载使用独立 HTTPS 策略，仅允许 Release 资产路径与指定的 GitHub 资产 CDN 跳转；禁止非公开目标 IP，跳转不携带认证信息。原发布源继续禁止重定向，节点认证传输与发布下载隔离。完整 bundle 大小、摘要、解包文件清单和运行平台仍由现有 release manager 验证。
-- 更新检测结果属于临时状态，按来源及基线缓存；改变来源或集群基线后不得复用旧结果。前端也用请求代次防止过期响应覆盖新设置。发布包格式与发布流水线见 `next/deploy/gateway/github/README.md`；已有旧版 backend Release 不是 next 核心包。
+- 左上角品牌旁显示当前核心版本，基础 `GET /system/version` 仅要求登录（访问密钥也可调用，§80），返回 `version/managed`。托管模式下有 `system:update:read` 权限的用户可以打开“版本与更新”面板：核心、网关两条版本线各显示当前版本、最新稳定版、检测时间、发布说明与发布页，可手动检测；另有 `system:update:execute` 时显示“一键更新”。更新源、检测与一键更新的契约见 §102。
+- 检测失败、来源没有该线的稳定版或结果与当前集群不兼容时，面板显示“检测失败”或“检测结果需要处理”，不显示成“已是最新”。前端用请求代次防止过期响应覆盖新设置。
 - 节点视图提供“图表 / 拓扑图”切换，默认拓扑。拓扑展示节点分组及网关—核心—插件连接，灰线仅表示归属；紫色箭头表示转发至主节点，橙色虚线表示 CPU 可接收候选，非流量追踪。保留详情图表，支持缩放与滚动；核心自身心跳过期时不因为网关在线而标成运行。
 
 ### 40.1 交互节点图
@@ -5756,7 +5752,7 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | `plugin.install` | POST `/plugins/upload`、`/plugins/install-from-market` | `plugin:install` |
 | `plugin.grant` | POST `/plugins/:key/versions/:version/consent`、`/role-grants/confirm` | `plugin:install`（及授出所需的 `plugin:grant:*`） |
 | `publisher.manage` | 发布者与公钥的写操作 | `publisher:manage` |
-| `system.update` | POST `/system/upgrades`、升级计划与节点的 recover 操作、`/system/releases/import` | `system:update:execute` / `recover` |
+| `system.update` | POST `/system/upgrades`、`/system/updates/apply`（§102.6）、升级计划与节点的 recover 操作 | `system:update:execute` / `recover` |
 | `system.update` | PUT `/system/update-source`（更新源决定下一次升级运行的代码；期 4 R0） | `settings:manage` |
 | `self.access_key.write` | POST `/me/access-keys`、PATCH `/me/access-keys/:id`（只允许登录会话；期 4 收尾 F3） | 无（登录会话） |
 | `superadmin.identity` | 超管经访问密钥修改超管账号本身（§43.6，本请求已消耗过 proof 时不再要） | 路由本身的权限 |
@@ -7420,3 +7416,152 @@ CCGateway（Claude Code 托管账号）与只为它服务的核心功能整体�
 
 - 均衡负载设置（§89）去掉 `mode`：`GET/PUT /settings/scheduling` 只有 `metric`、`limit_load`、`model_limits`，核心不再读写 `mode`（`PUT` 带了也忽略）。迁移 0102 把库里带 `mode` 的行归一：`mode` 不是 `traffic` 且 `limit_load` 关的行，`metric` 改为 `sessions`、`model_limits` 改为 `false`（与原来读入时的归一相同），然后删掉 `mode` 键；不带 `mode` 的行不动，重跑不变。核心读入时只剩“未知 `metric` 按 `sessions`”。
 - 控制台与核心同版本，删除只为更早核心保留的分支：均衡负载表单不再收发 `mode`；用量限制（§73.3）关闭且金额留空时照原样提交空金额（核心存 0），终身限额照原样提交周期长度（核心按 1 存），从未保存的判断只看 `configured`（不再按 `UTC` 加默认值猜）；侧栏视图不再为“菜单里没有设置入口”的旧核心退回控制台菜单；API 密钥“选择全部结果”不再在前端按筛选条件复核；卸载插件不再兼容 204 响应；插件市场版本的 `compatible` 视为必有。
+
+## 102. 更新源、版本检测与核心/网关一键更新（2026-11-17，用户要求；网关二进制变更，核心桥同版）
+
+核心与网关两条版本线都由 GitHub Actions 构建、签名并发布成 GitHub Release，以 Release 里的签名清单为准。网关从集群配置的更新源检测两条线的新稳定版；管理员在控制台点“一键更新”才执行：导入验签过的发布、预检、创建升级计划。从不自动升级，不发邮件，只在控制台提示。`release_origin` 与 CLI `init/import -manifest` 保留，供离线与手工发布（§33、`deploy/gateway/README.md`）。代码：网关 `internal/updatesource`（来源）、`internal/control/updates.go`（存储、检测、接口、导入）、`internal/control/selfupdate.go` 与 `internal/release/selfupdate.go`（网关自更新）、`cmd/sub2api-gateway/handoff*.go`（启动交接），核心 `internal/updater/http.go`（转发与审计），控制台 `views/settings/UpdateSourceCard.vue`、`components/VersionBadge.vue`。
+
+### 102.1 版本线、tag 与发布产物
+
+| 版本线 `line` | tag | 签名清单资产 | 安装物资产 |
+|---|---|---|---|
+| `core` | `core-v<X.Y.Z>` | `next-core-manifest.json`（`rc.SignedManifest`，payload `rc.Manifest`） | 每个平台一个 `<bundle_digest>.tar.gz` |
+| `gateway` | `gateway-v<X.Y.Z>` | `next-gateway-manifest.json`（`rc.SignedManifest`，payload `rc.GatewayManifest`） | 每个平台一个 `sub2api-gateway_<X.Y.Z>_<os>_<arch>.tar.gz`；另推镜像 `ghcr.io/<owner 小写>/sup2api-gateway:<X.Y.Z>` |
+
+- 只认严格语义化版本（`semver.StrictNewVersion`），不带预发布后缀；草稿、prerelease 和其他 tag 忽略。签名清单里的版本必须等于 tag 去掉前缀后的版本（核心 `core_version` 去掉可选的 `v`，网关 `gateway_version`），否则检测与导入都失败。
+- 流水线 `.github/workflows/next-release.yml`（tag 推送，或对已有 tag 的 `workflow_dispatch`，后者默认演练）：校验 tag，版本必须大于同一条线已发布的最新 Release；跑与 next-ci 相同的门禁；构建 linux/amd64 与 linux/arm64（构建任务不接触密钥；网关版本由 `deploy/gateway/Dockerfile` 的 `ARG VERSION` 经 `-ldflags "-X main.Version=…"` 注入）；只在受保护环境 `release` 里签名；先建草稿 Release、上传全部资产再发布，检测方不会看到半个 Release。核心的 `schema_before` 取上一个 `core-v*` 清单的 `schema_after`，没有上一版时等于本版（策略记为 `rolling`）。发布说明取 `CHANGELOG.md` 里写着“核心 X.Y.Z”或“网关 X.Y.Z”的 `###` 小节。操作手册见 `deploy/gateway/github/README.md`。
+- 签名密钥只放在 GitHub 环境 `release`：Secrets `SUB2API_RELEASE_SIGNING_KEY`（签核心与网关清单）、`SUB2API_PLUGIN_SIGNING_KEY`（签内置插件），Variables `SUB2API_RELEASE_KEY_ID`、`SUB2API_PLUGIN_KEY_ID`。缺任何一项 sign 任务失败并列出缺的名字，不打印值。
+
+### 102.2 网关签名清单（`runtime-contract/gateway_manifest.go`）
+
+```go
+const GatewayManifestKind = "sub2api-gateway-release-v1"
+
+type GatewayManifest struct {
+    Kind            string            `json:"kind"`             // == GatewayManifestKind
+    GatewayVersion  string            `json:"gateway_version"`
+    ReleaseID       string            `json:"release_id"`       // 流水线里是 tag
+    SourceCommit    string            `json:"source_commit"`
+    BuildID         string            `json:"build_id"`
+    CreatedAt       time.Time         `json:"created_at"`
+    PeerProtocol    int               `json:"peer_protocol"`    // 构建的 control.PeerProtocol
+    RuntimeProtocol int               `json:"runtime_protocol"` // 构建的 rc.Protocol，须在核心清单 shell_protocol 范围内
+    Platforms       []GatewayPlatform `json:"platforms"`        // os, arch, archive, archive_digest, archive_bytes, binary_digest
+    Images          []GatewayImage    `json:"images,omitempty"` // ref, digest；仅供参考
+}
+```
+
+- 与核心清单同一个签名信封、同一组信任公钥。`release.VerifyGateway`：签名、严格解码（`DisallowUnknownFields`，文档后不许有内容）、`kind` 正确、`gateway_version` 是严格语义化版本、`release_id`/`build_id` 非空、至少一个平台、`os/arch` 不重复、归档名是普通文件名、两个摘要是小写 sha256、`archive_bytes` 在 1 字节到 1 GiB 之间。`release.Verify`（核心）同样严格解码，所以带 `kind` 的网关 payload 验不成核心清单，反之亦然。
+- 归档是 tar.gz，只含一个常规文件 `sub2api-gateway`。`sub2api-release pack-gateway --archive os/arch=FILE … [--image REF@sha256:…]` 生成清单，打包时检查归档内容并计算二进制摘要。
+
+### 102.3 更新源（`gateway/internal/updatesource`）
+
+两种来源，集群只配一个（`kind`）：
+
+- **`github`**：`repository` 为 `owner/repo`（也接受 `https://github.com/owner/repo[.git]`，保存时规范化），默认 `Sub2API-Devs/sup2api`，可选只读令牌。列表 `GET https://api.github.com/repos/<repo>/releases?per_page=50`（只看最新 50 个 Release，不翻页）；资产 `GET https://api.github.com/repos/<repo>/releases/assets/<id>`，`Accept: application/octet-stream`。令牌以 `Authorization: Bearer` 只发给 `api.github.com`；资产跳转只跟随到 `release-assets.githubusercontent.com`、`objects.githubusercontent.com`（HTTPS、默认端口、最多 3 跳），跳转请求的头整体换掉，不带令牌。发布页固定为 `https://github.com/<repo>/releases/tag/<tag>`。
+- **`url`**：`url` 为 HTTPS 发布目录（不含账号密码、query、fragment，保存时补结尾 `/`），可选 Bearer 密钥。读 `<url>releases.json`：
+
+```json
+{"schema": "sub2api-releases-v1",
+ "releases": [{"line": "core", "version": "0.1.291", "published_at": "2026-11-20T08:00:00Z",
+               "notes": "…", "page": "https://…",
+               "assets": {"next-core-manifest.json": {"path": "core/0.1.291/next-core-manifest.json", "size": 1234}}}]}
+```
+
+  `schema` 不对、同一 `line`+`version` 重复、资产名不是普通文件名、`size` ≤ 0 或路径不合法，都使整个索引无效；其他 `line`、预发布版本的条目直接跳过；`page` 只保留 HTTPS 链接。资产路径必须相对、不含空段、`.`、`..`、`\`、`?`、`#`，解析后与目录同源且在目录之下。请求只跟随同源（scheme + host）跳转，跨源跳转直接失败；密钥只发给这个源站。`sub2api-release mirror` 生成这种目录（§102.10）。
+- **网络**：不用环境代理；连接时自己解析域名并只连解析出的地址。`github` 只允许公网地址；`url` 默认也只允许公网地址，网关配置 `allow_private_update_sources: true` 时允许内网（内网镜像）。非公网指非全局单播、私有、回环、链路本地，以及 `0.0.0.0/8`、`100.64.0.0/10`、`192.0.0.0/24`、文档网段、`198.18.0.0/15`、`240.0.0.0/4`。列表请求 30 秒超时，签名清单下载 1 分钟（`release.DefaultManifestTimeout`）。大小上限：列表与索引 2 MiB，签名清单 8 MiB，安装物不超过签名声明的大小。请求带 `User-Agent: sub2api-gateway-updater`、`Accept-Encoding: identity`。
+- **错误**：错误信息不含 URL（跳转目标可能带签名 query）和密钥。429，或 403 且 `X-RateLimit-Remaining: 0`：限流，提示稍后再试或配置令牌；401/403：来源拒绝了凭据；404：未找到（私有来源需要令牌）。
+- 来源只搬运字节：清单签名、版本、摘要全部由调用方验证。
+
+### 102.4 来源密钥
+
+- 存在 `updater.clusters.update_secret_enc`：AES-256-GCM（`runtime-contract/secret`，与核心加密凭据同一实现），主密钥是 `SUB2API_MASTER_KEY`（base64 的 32 字节；配置 `core_env` 里的值优先于网关自己的环境，与 supervisor 传给核心的一致），AAD `updater:source-secret:<kind>:<repository 或 url>`，密文不能挪到别的来源用。主密钥格式不对时网关拒绝启动；没有主密钥时设置密钥返回 400 `master_key_missing`，不带密钥的来源照常工作；已存的密钥解不开时检测与下载报错，不退回匿名访问。
+- 只写不读：`GET` 只返回 `has_secret`；密钥不进响应、日志、错误信息和审计。只发给 `api.github.com`（`github`）或配置的源站（`url`），从不随跨源跳转发出。
+- 取值为 1–4096 个可打印 ASCII 字符，不含空格。
+- 各节点必须用同一个主密钥：网关一键更新时每个节点自己经来源下载（§102.9）。
+
+### 102.5 存储（网关 `control/schema.sql`，幂等追加）
+
+- `updater.clusters`：`update_check_enabled boolean NOT NULL DEFAULT true`、`update_source_kind text NOT NULL DEFAULT 'github'`、`update_repository`（默认改为 `'Sub2API-Devs/sup2api'`，原来的空值一并改成它；关闭检测用开关，不再用空仓库）、`update_url text NOT NULL DEFAULT ''`、`update_secret_enc bytea`（NULL = 未设置）。已有的 `update_source_revision` 在开关、`kind`、`repository`、`url` 或密钥任一变化时 +1，旧的检测结果与旧来源导入的资产引用随之作废。
+- `updater.update_checks`：每集群每条线一行，主键 `(cluster_id, line)`，`source_revision`、`baseline`（检测时的集群基线摘要）、`result jsonb`、`checked_at`、`last_success_at`。
+- `updater.nodes`：`gateway_version text NOT NULL DEFAULT ''`、`self_update boolean NOT NULL DEFAULT false`，节点登记时写入（心跳不写）；节点 JSON 带同名字段。
+- `updater.releases`：`line text NOT NULL DEFAULT 'core'`、`source_assets jsonb`（资产名 → `{name, size, ref}`，`ref` 是 GitHub 资产 id 或索引里的相对路径）、`source_revision bigint`（导入时的来源 revision）。经更新源导入的发布 `bundle_base` 为空，安装物经来源下载；`bundle_base` 只给 `release_origin` 导入的发布用。`GET /system/releases` 只列核心发布。
+- 同一集群任何时刻最多一个 running/paused 计划（`updater_one_active_upgrade`），核心计划和网关计划共用这条约束。
+
+### 102.6 接口（网关管理 socket；核心经 `server/internal/updater` 原样转发，前缀 `/api/v1`）
+
+| 方法 路径 | 核心权限 | 二次验证 | 说明 |
+|---|---|---|---|
+| `GET /system/update-source` | `settings:read` | 否 | `{enabled, kind, repository, url, has_secret, default_repository, revision}` |
+| `PUT /system/update-source` | `settings:manage` | `system.update` | 整体替换：`{enabled, kind, repository, url, secret?}`，响应同 GET |
+| `GET /system/update-check[?force=true]` | `system:update:read` | 否 | 读保存的检测结果；`force=true` 时先同步检测一次 |
+| `POST /system/updates/apply` | `system:update:execute` | `system.update` | `{line, version, confirm?, idempotency_key?}` |
+
+- **PUT**：未知字段 400。`kind` 必须是 `github` 或 `url`；所选 `kind` 的定位必须有效（`github` 要 `repository`，`url` 要 `url`），另一个可空，给了也校验并保存。`secret` 省略 = 不变，`""` = 清除，非空 = 设置；`kind`、`repository`、`url` 任一变化而没给新 `secret` 时清除旧密钥。有变化且开关打开时，处理请求的节点在后台立即检测一次。
+- **update-check** 响应：
+
+```json
+{"enabled": true,
+ "source": {"kind": "github", "repository": "Sub2API-Devs/sup2api", "url": ""},
+ "core": {"current_version": "0.1.290", "latest_version": "0.1.291", "has_update": true,
+          "compatible": true, "reason": "", "strategy": "rolling", "tag": "core-v0.1.291",
+          "notes": "…", "page": "https://…", "published_at": "…",
+          "checked_at": "…", "last_success_at": "…", "error": ""},
+ "gateway": {"nodes": [{"node_id": "node-a", "version": "0.1.135"}],
+             "latest_version": "0.1.136", "has_update": true, "compatible": true, "reason": "",
+             "self_update": true, "image": "ghcr.io/…/sup2api-gateway:0.1.136@sha256:…", "tag": "gateway-v0.1.136",
+             "notes": "…", "page": "…", "published_at": "…",
+             "checked_at": "…", "last_success_at": "…", "error": ""}}
+```
+
+  - 只返回当前来源 revision 与当前基线的结果；没有时该线 `checked_at` 为 null、`latest_version` 为空。`error` 非空表示最近一次检测失败，其余字段保留同一来源、同一基线下最近一次成功的结果；从未成功时 `latest_version` 为空。来源没有该线的稳定版时 `latest_version` 为空、`reason` 说明原因。
+  - `has_update`、`self_update` 按读取时的节点计算：核心比较基线核心版本；网关只要有一个启用节点的 `gateway_version` 低于最新版（没报版本的节点算作更低）即为 true。`self_update` = 至少一个启用节点，且每个启用节点都报了 `gateway_version` 并且 `self_update` 为 true。`image` 取清单 `images[0]` 的 `ref@digest`，只供参考（不能一键更新时控制台提示用它手动换网关）。
+  - `force=true` 时只有两条线的结果有一条早于 30 秒才真的检测；别的节点正在检测时直接返回已有结果。
+- **apply**：`line` 必须是 `core`/`gateway`，`version` 是不带预发布后缀的严格语义化版本，否则 400 字段错误。返回 `{status: "started", plan_id}` 或 `{status: "needs_confirmation", reasons: […], preflight: {…}}`；带 `confirm: true` 重发即创建计划。`idempotency_key` 可选：同一个键已建过计划时，同一发布返回原计划（`started`），不同发布 409；不给时用 `apply:<digest>:<expected_revision>`。
+- **错误**（网关的错误体 `{"error": {code, message, details?}}`，核心原样返回）：
+
+| 状态 | `code` | 场景 |
+|---|---|---|
+| 400 | `invalid_argument` | 请求体解析失败或有未知字段；`kind`、`repository`、`url`、`secret`、`line`、`version` 不合法（`details.fields`） |
+| 400 | `master_key_missing` | 设置密钥而网关没有 `SUB2API_MASTER_KEY` |
+| 404 | `release_not_found` | 来源没有这条线的这个稳定版 |
+| 409 | `preflight_blocked` | 预检有阻断项，`details.blockers`、`details.preflight` |
+| 409 | `updater_conflict` | 其他失败：来源在列出与登记之间变了、幂等键已用于别的发布、下载或验签失败、检测出错等（查不到行时为 404） |
+| 503 | `updater_unavailable` | 核心不受网关托管，或连不上本机网关 |
+
+- **审计**（核心桥，只在网关返回 2xx 后写；写失败只记 ERROR，不改响应）：`system.update_source.update`，details 只有 `kind`、`repository`、`url` 与 `secret: "set" | "cleared" | "unchanged"`（按请求里的 `secret` 字段判断），从不记密钥；`system.update.apply`，target 为 `plan_id`，details `line`、`version`、`plan_id`，只在 `status = "started"` 时写。转发的请求体最多 32 KiB。
+
+### 102.7 检测
+
+- 后台：每个节点每分钟看一次，只有升级主节点执行；当前来源 revision 与基线的结果缺失或早于 6 小时才检测，所以启动约 1 分钟后跑第一次。保存来源后另触发一次（§102.6）。一次检测在 Redis 锁 `system:update-check:<cluster_id>` 下进行（拿不到锁直接返回，预算 3 分钟）。
+- 一次检测 = 一次列表 + 每条线最多一次签名清单下载与验签。检测完再读一次来源 revision 与基线，期间变了就丢弃结果（新状态另有检测）。成功写入整份结果与 `last_success_at`；失败只写 `error` 与 `checked_at`，同一来源与基线下保留上次成功的字段。列表失败时两条线记同一个错误。
+- 核心：取最新稳定版，验签（未知 key id 时错误里带出 `key_id`），`core_version` 等于 tag，本节点平台存在，清单里每个平台的 `<bundle_digest>.tar.gz` 资产都存在且大小等于签名值（异构集群也能安装）。`strategy` 取自清单。摘要等于当前基线时兼容；版本号相同而签名身份不同时给出原因；否则按 `Compatibility` 给出阻断原因。
+- 网关：取最新稳定版，验签与 `kind`，`gateway_version` 等于 tag，清单里每个平台的归档资产都存在且大小等于签名值。兼容条件：`peer_protocol` 等于集群的 `PeerProtocol`；`runtime_protocol` 在当前基线核心清单的 `shell_protocol` 范围内；每个启用节点的 `os/arch` 都有归档。
+
+### 102.8 核心一键更新
+
+`apply {line: "core"}`：在来源里找这个版本 → 重新验签（与检测相同的检查）→ 在事务里以 `FOR SHARE` 复核集群行的来源 revision 未变后登记到 `updater.releases`（写 `source_assets`、`source_revision`；同一摘要已由 `release_origin` 导入的保留原 `bundle_base`）→ 预检（§34、§82）→ 有阻断返回 409；预检选中 `rolling-v1` 时直接建计划；否则是 `primary-first-v1`（停服），没带 `confirm` 时返回 `needs_confirmation`，`reasons` 是不能滚动的原因。计划的 `prepare` 步骤：主节点经更新源下载摘要包（`release.Manager.PrepareFrom`，大小、sha256、文件清单照常验证），从节点照旧从主节点拉取。来源在导入之后变了，下载失败并提示重新 apply。
+
+### 102.9 网关一键更新
+
+- **能力**：Linux 上能在 `<root>/gateway` 下建文件的网关登记 `self_update=true`（非 Linux 或目录不可写为 false）；`gateway_version` 是二进制自己的版本。
+- **预检**（`gatewayPreflight`，策略 `gateway-rolling-v1`）：§102.7 的兼容条件，加上每个启用节点本地服务就绪、运行集群基线核心、`rolling` 为 true、报了 `gateway_version` 且目标版本更高、`self_update` 为 true；另有插件变更与未托管核心的阻断、已有活动计划、主节点必须启用。停用的节点不进计划，保留原网关。
+- **确认**：只有一个启用节点时无处让流量，`apply` 返回 `needs_confirmation`（`single node: about 10 s interruption`），确认后照常执行。
+- **步骤**：全部节点先 `gw-prepare`；然后从节点在前、主节点最后，每个节点依次 `yield → stop → gw-swap → start → admit → local → gw-confirm → resume`。`start/admit/local` 的目标是集群基线核心（计划的 `source_digest`），核心版本不变。
+  - `gw-prepare`：每个节点自己经更新源下载本平台归档（`release.Manager.InstallGateway`）：先验签，再按签名大小与 sha256 下载，解出唯一的常规文件 `sub2api-gateway`（≤ 512 MiB），校验二进制摘要，以空环境运行 `<binary> version`（10 秒）必须输出签名版本，最后一次 rename 成 `<root>/gateway/<version>/sub2api-gateway`（0755）。已完好安装的版本不重下。
+  - `yield`：同 §82.2，另外让 `/readyz` 返回 503，带健康检查的入口先切走；单节点计划让不出去也继续。
+  - `gw-swap`：先停本机核心，再校验已安装二进制的摘要，原子写 `<root>/gateway/current`（JSON `{version, digest, previous}`；`previous` 记切换前在跑的版本：上一个已安装版本，或镜像自带的 `{version, bundled: true}`）。步骤结果记入 PG 后网关关闭监听（让出期间继续转发给承接节点）、释放锁，exec 镜像自带的二进制，由它的启动交接 exec 新版本；新进程恢复计划、拉起核心。exec 失败时用原二进制继续服务，`gw-confirm` 失败使计划暂停。
+  - `gw-confirm`：本进程版本与 PG 里本次登记的 `gateway_version` 都等于 `current` 所选版本；然后删除 `<root>/gateway` 下 `current` 与 `previous` 之外的已安装版本和中断留下的暂存目录。
+  - 完成条件：全部成员本地服务基线核心、心跳新鲜且 `gateway_version` 等于目标；然后集群 revision +1（基线摘要不变）。
+- **回滚**：暂停的 `gateway-rolling-v1` 计划可 `rollback`，生成 `gateway-rollback-v1` 计划（没有 prepare），每个节点 `yield → stop → gw-revert → start → admit → local → gw-confirm → resume`；`gw-revert` 把 `current` 改回 `previous`（已安装的上一版本须仍通过摘要校验），尚未切换的节点不动。`gateway-rollback-v1` 本身不能再回滚，修复原因后继续。
+- **启动交接**（`serve` 最先执行）：`current` 指向的已安装版本高于本二进制时，经打开的文件描述符校验 sha256 后 exec 它（`/proc/self/fd/N`），带环境变量 `SUB2API_GATEWAY_HANDOFF=<版本>`、`SUB2API_GATEWAY_BUNDLED=<镜像自带二进制路径>`、`SUB2API_GATEWAY_BUNDLED_VERSION=<其版本>`。以下情况记 WARN、用本二进制继续服务：`current` 损坏；版本不高于本二进制（换了更新的镜像时镜像版本优先）；摘要不符；exec 失败；被 exec 的二进制报出的版本与 `SUB2API_GATEWAY_HANDOFF` 不同；该版本已连续 3 次启动都没走到服务（计数在 `<root>/gateway/handoff`，走完启动恢复即清零，重写 `current` 时重新计数）。没有 `current` 或选的是镜像自带版本时不交接。
+- `POST /system/upgrades/preflight` 与 `POST /system/upgrades` 也接受网关发布摘要（按发布的 `line` 分派预检）；单节点确认只在 `apply` 里。
+
+### 102.10 版本号、信任公钥、安全规则与镜像源
+
+- 网关版本：`main.Version`（默认 `0.0.0-dev`），构建时 `-X main.Version=<版本>`；`sub2api-gateway version` 只打印版本，不读配置。
+- 信任公钥：编进网关的 `gateway/internal/release/trusted/<key id>.pub`（`go:embed`，内容为 base64 公钥）与配置 `trusted_keys` 合并，核心与网关清单都用合并后的集合验签；同一 key id 两处公钥不同或文件格式不对时网关拒绝启动。控制台不能添加或更改信任公钥，更换更新源也不改变信任的密钥。
+- 验签在前：签名清单验签通过之前不下载任何摘要包或归档；之后每个安装物都按签名大小与 sha256 校验。
+- 来源密钥只写不读、AES-GCM 加密存储，只发往 `api.github.com` 或配置的源站，从不随跨源跳转发出（§102.3、§102.4）。
+- 发布签名私钥只在 GitHub 环境 `release` 的 Secrets 里（§102.1），不进仓库、节点和日志。
+- `sub2api-release mirror --github owner/repo | --url <目录> [--token-env VAR] (--tags … | --latest N) --out DIR`：用网关同一套来源实现，把若干稳定版原样（清单不重签）下载成 `<line>/<version>/<资产>` 加 `releases.json`；再次运行合并索引、跳过已完整的资产。这是运维工具，允许内网来源。其他子命令：`pack`（`--platform os/arch=DIR` 可重复，多平台一个清单）、`pack-gateway`、`pubkey`（打印私钥对应的 base64 公钥）、`keygen`。

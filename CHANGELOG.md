@@ -9,6 +9,10 @@
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
 - 发布流水线：核心与网关改由 GitHub Actions（`.github/workflows/next-release.yml`）按 `core-v*`、`gateway-v*` tag 构建 linux/amd64 与 linux/arm64、在受保护环境 `release` 里签名、先草稿后发布 GitHub Release；网关另推多架构镜像 `ghcr.io/<owner>/sup2api-gateway`。`sub2api-release` 新增 `pack --platform`（多平台一个清单）、`pack-gateway`、`mirror`、`pubkey`；删除 `deploy/gateway/github/prepare-assets.py`。
+- 版本检测与一键更新（网关与核心同版发布；契约 CONTRACTS §102）：网关从更新源检测核心与网关两条线的新稳定版，控制台“版本与更新”面板分两条线显示，管理员点“一键更新”后导入验签过的发布、预检并建升级计划，从不自动升级。更新源在“设置 → 在线更新”：GitHub 仓库（默认 `Sub2API-Devs/sup2api`，私有仓库可填只读令牌）或带 `releases.json` 索引的 HTTPS 目录（可选 Bearer 密钥）；密钥只在把来源标为私有后填写，只写不读，用 `SUB2API_MASTER_KEY` 加密保存，只发给 `api.github.com` 或该目录的源站。网关一键更新用新计划策略 `gateway-rolling-v1`（逐个节点换网关二进制，核心不变；单节点约 10 秒中断，需确认），可回滚（`gateway-rollback-v1`）。
+  - 接口：新增 `POST /system/updates/apply`（`system:update:execute` + 二次验证）；`PUT /system/update-source` 改为整体替换 `{enabled, kind, repository, url, secret?}`；`GET /system/update-check` 返回 `core`、`gateway` 两条线。删除 `POST /system/releases/import` 与审计 `system.release.import`，新增审计 `system.update.apply`。只认 `core-v*`、`gateway-v*` tag 的 Release，不再读 `v*` tag 的 `releases/latest`。
+  - 网关 schema（启动时幂等追加，无核心迁移）：`updater.clusters` 加检测开关（默认打开）、来源类型、URL、加密密钥列，原来表示“关闭”的空 `update_repository` 改成默认仓库，所以换上本版网关后所有集群都开始检测，不想检测要在设置里关掉；新表 `updater.update_checks`；`updater.nodes` 加 `gateway_version`、`self_update`；`updater.releases` 加 `line`、`source_assets`、`source_revision`。
+  - 网关：新子命令 `sub2api-gateway version`；新配置 `allow_private_update_sources`（`url` 来源允许内网地址）；已安装的网关放在 `<root>/gateway/<版本>/`，`<root>/gateway/current` 指定启动哪一版。第一次换上本版网关仍按镜像手动换；之后各节点都报告版本并能自更新时才出现网关的一键更新。`release_origin` 与 `import -manifest` 保留给离线发布。
 
 ## 2026-11-17
 
