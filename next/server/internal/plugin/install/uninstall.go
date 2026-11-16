@@ -1,8 +1,8 @@
 package install
 
 import (
-	"database/sql"
 	"context"
+	"database/sql"
 	"fmt"
 	"log/slog"
 	"time"

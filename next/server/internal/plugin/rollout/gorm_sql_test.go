@@ -20,7 +20,7 @@ var sqlRollout = &rolloutRow{id: 42, key: "demo", action: "upgrade", rowVersion:
 
 func TestSQLLockPlugin(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return selectPluginForUpdate(tx, "demo", "status, active_version, row_version").Take(&model.Plugin{})
+		return selectPluginForUpdate(tx, "demo", "status", "active_version", "row_version").Take(&model.Plugin{})
 	})
 }
 

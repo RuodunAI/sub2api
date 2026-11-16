@@ -117,11 +117,12 @@ type Decision struct {
 // another version runs, else as the plugin's grants. Each decision is an
 // upsert of its row, granted now.
 func Record(ctx context.Context, tx *gorm.DB, key, version, manifestHash string, by *int64, staged bool, ds []Decision) error {
-	table, versionColumn := model.PluginPermissionGrant{}.TableName(), "plugin_version"
+	var target any = &model.PluginPermissionGrant{}
+	versionColumn := "plugin_version"
 	conflict := []clause.Column{{Name: "plugin_key"}, {Name: "permission"}}
 	set := []string{"scope", "status", "plugin_version", "manifest_hash", "granted_by"}
 	if staged {
-		table, versionColumn = model.PluginStagedGrant{}.TableName(), "version"
+		target, versionColumn = &model.PluginStagedGrant{}, "version"
 		conflict = []clause.Column{{Name: "plugin_key"}, {Name: "version"}, {Name: "permission"}}
 		set = []string{"scope", "status", "manifest_hash", "granted_by"}
 	}
@@ -129,7 +130,7 @@ func Record(ctx context.Context, tx *gorm.DB, key, version, manifestHash string,
 		clause.Assignment{Column: clause.Column{Name: "granted_at"}, Value: gorm.Expr("now()")})}
 	g := store.G(ctx, tx)
 	for _, d := range ds {
-		if err := g.Table(table).Clauses(upsert).Create(map[string]any{"plugin_key": key, versionColumn: version,
+		if err := g.Model(target).Clauses(upsert).Create(map[string]any{"plugin_key": key, versionColumn: version,
 			"manifest_hash": manifestHash, "granted_by": by, "permission": d.Permission, "scope": d.Scope,
 			"status": d.Status, "granted_at": gorm.Expr("now()")}).Error; err != nil {
 			return err
@@ -236,8 +237,8 @@ func Revoke(ctx context.Context, tx *gorm.DB, key, permission string, by *int64)
 	}
 	g := store.G(ctx, tx)
 	var n int64
-	for _, table := range []string{model.PluginPermissionGrant{}.TableName(), model.PluginStagedGrant{}.TableName()} {
-		res := g.Table(table).Where("plugin_key = ? AND permission = ? AND status = 'granted'", key, permission).
+	for _, target := range []any{&model.PluginPermissionGrant{}, &model.PluginStagedGrant{}} {
+		res := g.Model(target).Where("plugin_key = ? AND permission = ? AND status = 'granted'", key, permission).
 			Updates(map[string]any{"status": "revoked", "granted_by": by, "granted_at": gorm.Expr("now()")})
 		if res.Error != nil {
 			return false, res.Error

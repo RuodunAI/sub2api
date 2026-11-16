@@ -1,5 +1,5 @@
 -- sql
-INSERT INTO "plugin_permission_grants" ("granted_at","granted_by","manifest_hash","permission","plugin_key","plugin_version","scope","status") VALUES (now(),$1,$2,$3,$4,$5,$6,$7) ON CONFLICT ("plugin_key","permission") DO UPDATE SET "scope"="excluded"."scope","status"="excluded"."status","plugin_version"="excluded"."plugin_version","manifest_hash"="excluded"."manifest_hash","granted_by"="excluded"."granted_by","granted_at"=now()
+INSERT INTO "plugin_permission_grants" ("granted_at","granted_by","manifest_hash","permission","plugin_key","plugin_version","scope","status") VALUES (now(),$1,$2,$3,$4,$5,$6,$7) ON CONFLICT ("plugin_key","permission") DO UPDATE SET "scope"="excluded"."scope","status"="excluded"."status","plugin_version"="excluded"."plugin_version","manifest_hash"="excluded"."manifest_hash","granted_by"="excluded"."granted_by","granted_at"=now() RETURNING "scope","granted_at"
 -- vars
 $1 *int64 7
 $2 string "hash"

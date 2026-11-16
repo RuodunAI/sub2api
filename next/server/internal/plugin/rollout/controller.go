@@ -290,7 +290,7 @@ func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, erro
 	}
 	g := store.G(ctx, tx)
 	var p model.Plugin
-	err := selectPluginForUpdate(g, key, "status, active_version, row_version").Take(&p).Error
+	err := selectPluginForUpdate(g, key, "status", "active_version", "row_version").Take(&p).Error
 	if store.IsNoRows(err) {
 		return nil, errNoPlugin
 	}
@@ -314,8 +314,9 @@ func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, erro
 	return &pluginLock{status: p.Status, active: p.ActiveVersion, rowVersion: p.RowVersion}, nil
 }
 
-// selectPluginForUpdate selects cols of the plugin row and locks it.
-func selectPluginForUpdate(g *gorm.DB, key, cols string) *gorm.DB {
+// selectPluginForUpdate selects the columns cols of the plugin row and locks
+// it.
+func selectPluginForUpdate(g *gorm.DB, key string, cols ...string) *gorm.DB {
 	return g.Model(&model.Plugin{}).Select(cols).Where("key = ?", key).
 		Clauses(store.ForUpdate())
 }
