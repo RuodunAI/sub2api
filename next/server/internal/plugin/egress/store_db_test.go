@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -15,7 +17,8 @@ import (
 // then closes exactly the rows those ids name (C1 of the GORM review: the
 // ids came from the order of a multi-row INSERT's RETURNING, which
 // PostgreSQL does not promise; a mismatch would close one connection's row
-// with another's figures). The ids are read back by WITH ORDINALITY.
+// with another's figures). The ids are reserved before the INSERT
+// (store.NextIDs).
 func TestInsertOpenIDsFollowTheRows(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -77,5 +80,46 @@ func TestInsertOpenIDsFollowTheRows(t *testing.T) {
 	}
 	if ids, err := st.insertOpen(ctx, nil); err != nil || len(ids) != 0 {
 		t.Fatalf("insertOpen(nil) = %v, %v", ids, err)
+	}
+}
+
+// upsertDomains reports the hosts the batch added, each once with its own
+// first sighting, and adds the counts of the known ones.
+func TestUpsertDomainsReportsNewHosts(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	st := pgStore{db: db}
+	key := fmt.Sprintf("dom%d", time.Now().UnixNano()%1_000_000_000)
+	t0 := time.Now().UTC().Truncate(time.Millisecond)
+	delta := func(host string, n int64, at time.Time) domainDelta {
+		return domainDelta{PluginKey: key, Host: host, Connections: n, FirstSeen: at, LastSeen: at}
+	}
+	upsert := func(ds ...domainDelta) map[string]time.Time {
+		t.Helper()
+		news := map[string]time.Time{}
+		if err := st.upsertDomains(ctx, ds, func(_ context.Context, _ *gorm.DB, ns []domainDelta) error {
+			for _, d := range ns {
+				news[d.Host] = d.FirstSeen
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return news
+	}
+	if got := upsert(delta("a.test", 2, t0)); len(got) != 1 || !got["a.test"].Equal(t0) {
+		t.Fatalf("first batch: %v", got)
+	}
+	t1 := t0.Add(time.Minute)
+	got := upsert(delta("b.test", 1, t1), delta("a.test", 3, t1), delta("c.test", 4, t1))
+	if len(got) != 2 || !got["b.test"].Equal(t1) || !got["c.test"].Equal(t1) {
+		t.Fatalf("second batch: %v", got)
+	}
+	var a model.PluginEgressDomain
+	if err := store.G(ctx, db.Gorm).Where("plugin_key = ? AND host = ?", key, "a.test").Take(&a).Error; err != nil {
+		t.Fatal(err)
+	}
+	if a.Connections != 5 || !a.FirstSeenAt.Equal(t0) || !a.LastSeenAt.Equal(t1) {
+		t.Fatalf("a.test after two batches: %+v", a)
 	}
 }

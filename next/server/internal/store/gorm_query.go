@@ -143,3 +143,18 @@ func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
 	slices.Sort(ids)
 	return ids, err
 }
+
+// UpdateFrom is the FROM list of an UPDATE, for db.Clauses: UPDATE t SET
+// ... FROM <sql> WHERE ..., which GORM's PostgreSQL dialect places but only
+// builds from table names. sql, a constant, takes vars as Where does
+// (array parameters are Int64s, Strings, Times); it typically turns arrays
+// into rows (unnest), so that one statement writes each row its own values,
+// joined to the table in Where.
+func UpdateFrom(sql string, vars ...any) clause.Interface {
+	return updateFrom{clause.Expr{SQL: sql, Vars: vars}}
+}
+
+type updateFrom struct{ clause.Expr }
+
+func (updateFrom) Name() string                  { return "FROM" }
+func (f updateFrom) MergeClause(c *clause.Clause) { c.Expression = f.Expr }
