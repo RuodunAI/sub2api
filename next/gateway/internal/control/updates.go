@@ -450,10 +450,11 @@ func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Sourc
 	if !ok {
 		return gatewayResult{lineResult: lineResult{Reason: "the update source has no stable gateway release"}}, nil
 	}
-	m, err := u.verifyGateway(ctx, src, l)
+	g, err := u.verifyGateway(ctx, src, l)
 	if err != nil {
 		return gatewayResult{}, err
 	}
+	m := g.Manifest
 	r := gatewayResult{lineResult: describe(l)}
 	if len(m.Images) > 0 {
 		r.Image = m.Images[0].Ref + "@" + m.Images[0].Digest
@@ -465,24 +466,24 @@ func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Sourc
 
 // verifyGateway checks a gateway listing: its signed manifest, the version
 // it binds and an archive asset of the signed size for every platform.
-func (u *UpdateService) verifyGateway(ctx context.Context, src updatesource.Source, l updatesource.Listing) (rc.GatewayManifest, error) {
+func (u *UpdateService) verifyGateway(ctx context.Context, src updatesource.Source, l updatesource.Listing) (GatewayRelease, error) {
 	signed, err := openManifest(ctx, src, l, gatewayManifestAsset)
 	if err != nil {
-		return rc.GatewayManifest{}, err
+		return GatewayRelease{}, err
 	}
-	m, _, err := release.VerifyGateway(signed, u.Manager.TrustedKeys)
+	m, digest, err := release.VerifyGateway(signed, u.Manager.TrustedKeys)
 	if err != nil {
-		return m, fmt.Errorf("%s: %w", l.Tag, err)
+		return GatewayRelease{}, fmt.Errorf("%s: %w", l.Tag, err)
 	}
 	if m.GatewayVersion != l.Version {
-		return m, fmt.Errorf("%s: the signed gateway version differs from the tag", l.Tag)
+		return GatewayRelease{}, fmt.Errorf("%s: the signed gateway version differs from the tag", l.Tag)
 	}
 	for _, p := range m.Platforms {
 		if a, ok := l.Assets[p.Archive]; !ok || a.Size != p.ArchiveBytes {
-			return m, fmt.Errorf("%s: a signed gateway archive is missing or differs in size", l.Tag)
+			return GatewayRelease{}, fmt.Errorf("%s: a signed gateway archive is missing or differs in size", l.Tag)
 		}
 	}
-	return m, nil
+	return GatewayRelease{Digest: digest, Manifest: m, Signed: signed, SourceAssets: l.Assets}, nil
 }
 
 // gatewayCompatibility says why m cannot replace the cluster's gateways: it
@@ -610,8 +611,10 @@ func (s *Store) UpdateCheck(ctx context.Context) (UpdateCheck, error) {
 		}
 	}
 	out.Core.HasUpdate = older(out.Core.CurrentVersion, out.Core.LatestVersion)
+	out.Gateway.SelfUpdate = enabledNodes(nodes) > 0
 	for _, n := range nodes {
 		out.Gateway.HasUpdate = out.Gateway.HasUpdate || (n.Enabled && older(n.GatewayVersion, out.Gateway.LatestVersion))
+		out.Gateway.SelfUpdate = out.Gateway.SelfUpdate && (!n.Enabled || (n.SelfUpdate && n.GatewayVersion != ""))
 	}
 	return out, nil
 }
@@ -647,18 +650,46 @@ type blockedError struct{ preflight Preflight }
 
 func (e *blockedError) Error() string { return strings.Join(e.preflight.Blockers, "; ") }
 
-// ApplyCore imports a core release from the update source and starts its
-// plan: at once for a rolling plan, after confirm for a primary-first one,
-// whose followers stop serving while the primary migrates.
-func (s *Store) ApplyCore(ctx context.Context, q ApplyRequest, actor string) (ApplyResult, error) {
-	r, err := s.importCore(ctx, q.Version)
-	if err != nil {
-		return ApplyResult{}, err
+// Apply imports release version of q.Line from the update source and
+// starts its plan. A core plan starts at once when it rolls; a primary-first
+// one, whose followers stop serving while the primary migrates, waits for
+// confirm. A gateway plan waits for confirm when a single node has nobody
+// to hand its traffic to.
+func (s *Store) Apply(ctx context.Context, q ApplyRequest, actor string) (ApplyResult, error) {
+	var digest string
+	var confirm func(Preflight, []Node) []string
+	switch q.Line {
+	case updatesource.LineCore:
+		r, err := s.importCore(ctx, q.Version)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		digest = r.Digest
+		confirm = func(pf Preflight, nodes []Node) []string {
+			if pf.Strategy == Rolling {
+				return nil
+			}
+			return rollingBlockers(r, nodes, 2)
+		}
+	case updatesource.LineGateway:
+		r, err := s.importGateway(ctx, q.Version)
+		if err != nil {
+			return ApplyResult{}, err
+		}
+		digest = r.Digest
+		confirm = func(_ Preflight, nodes []Node) []string {
+			if enabledNodes(nodes) == 1 {
+				return []string{"single node: about 10 s interruption"}
+			}
+			return nil
+		}
+	default:
+		return ApplyResult{}, errors.New("line must be core or gateway")
 	}
 	if q.IdempotencyKey != "" {
-		var id, digest string
-		err = s.idempotentUpgrade(s.db(ctx), q.IdempotencyKey).Select("id,release_digest").Row().Scan(&id, &digest)
-		if err == nil && digest != r.Digest {
+		var id, prior string
+		err := s.idempotentUpgrade(s.db(ctx), q.IdempotencyKey).Select("id,release_digest").Row().Scan(&id, &prior)
+		if err == nil && prior != digest {
 			return ApplyResult{}, ErrConflict
 		}
 		if err == nil {
@@ -668,80 +699,129 @@ func (s *Store) ApplyCore(ctx context.Context, q ApplyRequest, actor string) (Ap
 			return ApplyResult{}, err
 		}
 	}
-	pf, err := s.Preflight(ctx, r.Digest)
+	pf, err := s.Preflight(ctx, digest)
 	if err != nil {
 		return ApplyResult{}, err
 	}
 	if len(pf.Blockers) > 0 {
 		return ApplyResult{}, &blockedError{pf}
 	}
-	if pf.Strategy != Rolling && !q.Confirm {
-		nodes, err := s.Nodes(ctx)
-		return ApplyResult{Status: "needs_confirmation", Reasons: rollingBlockers(r, nodes, 2), Preflight: &pf}, err
+	nodes, err := s.Nodes(ctx)
+	if err != nil {
+		return ApplyResult{}, err
+	}
+	if reasons := confirm(pf, nodes); len(reasons) > 0 && !q.Confirm {
+		return ApplyResult{Status: "needs_confirmation", Reasons: reasons, Preflight: &pf}, nil
 	}
 	key := q.IdempotencyKey
 	if key == "" {
-		key = "apply:" + r.Digest + ":" + strconv.FormatInt(pf.ExpectedRevision, 10)
+		key = "apply:" + digest + ":" + strconv.FormatInt(pf.ExpectedRevision, 10)
 	}
-	p, err := s.Create(ctx, r.Digest, pf.ExpectedRevision, key, actor)
+	p, err := s.Create(ctx, digest, pf.ExpectedRevision, key, actor)
 	return ApplyResult{Status: "started", PlanID: p.ID}, err
 }
 
-// importCore stores a verified core release of the source, bound to the
-// source revision it came from; a release imported before from the source
-// takes the new asset references.
-func (s *Store) importCore(ctx context.Context, version string) (Release, error) {
-	if s.Updates == nil {
-		return Release{}, errUpdatesOff
-	}
-	row, err := s.readSource(s.clusterRow(s.db(ctx)))
-	if err != nil {
-		return Release{}, err
-	}
-	src, err := s.Updates.source(row)
-	if err != nil {
-		return Release{}, err
-	}
-	ls, err := src.Releases(ctx)
-	if err != nil {
-		return Release{}, err
-	}
-	var listing *updatesource.Listing
-	for i := range ls {
-		if ls[i].Line == updatesource.LineCore && ls[i].Version == version {
-			listing = &ls[i]
+func enabledNodes(nodes []Node) int {
+	n := 0
+	for _, node := range nodes {
+		if node.Enabled {
+			n++
 		}
 	}
-	if listing == nil {
-		return Release{}, errReleaseNotFound
+	return n
+}
+
+// importCore stores a verified core release of the source.
+func (s *Store) importCore(ctx context.Context, version string) (Release, error) {
+	src, row, l, err := s.sourceListing(ctx, updatesource.LineCore, version)
+	if err != nil {
+		return Release{}, err
 	}
-	r, err := s.Updates.verifyCore(ctx, src, *listing)
+	r, err := s.Updates.verifyCore(ctx, src, l)
 	if err != nil {
 		return r, err
 	}
 	r.SourceRevision = row.revision
-	err = s.withTx(ctx, func(tx *gorm.DB) error {
-		var revision int64
-		if err := s.clusterRow(tx).Clauses(forShare()).Select("update_source_revision").Row().Scan(&revision); err != nil {
-			return err
-		}
-		if revision != row.revision {
-			return ErrConflict
-		}
-		return tx.Clauses(clause.OnConflict{Columns: columns("digest"), DoUpdates: clause.AssignmentColumns([]string{"source_assets", "source_revision"}),
-			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "updater.releases.bundle_base=''"}}}}).Create(newReleaseRecord(r)).Error
-	})
-	if err != nil {
+	if err = s.storeImported(ctx, row.revision, newReleaseRecord(r)); err != nil {
 		return r, err
 	}
 	return s.Release(ctx, r.Digest)
+}
+
+// importGateway stores a verified gateway release of the source.
+func (s *Store) importGateway(ctx context.Context, version string) (GatewayRelease, error) {
+	src, row, l, err := s.sourceListing(ctx, updatesource.LineGateway, version)
+	if err != nil {
+		return GatewayRelease{}, err
+	}
+	r, err := s.Updates.verifyGateway(ctx, src, l)
+	if err != nil {
+		return r, err
+	}
+	m, _ := json.Marshal(r.Manifest)
+	signed, _ := json.Marshal(r.Signed)
+	assets, _ := json.Marshal(r.SourceAssets)
+	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, Line: updatesource.LineGateway,
+		SourceAssets: assets, SourceRevision: &row.revision}
+	if err = s.storeImported(ctx, row.revision, rec); err != nil {
+		return r, err
+	}
+	return s.GatewayRelease(ctx, r.Digest)
+}
+
+// sourceListing finds the stable release version of line at the configured
+// source, read at the revision it returns.
+func (s *Store) sourceListing(ctx context.Context, line, version string) (updatesource.Source, sourceRow, updatesource.Listing, error) {
+	if s.Updates == nil {
+		return nil, sourceRow{}, updatesource.Listing{}, errUpdatesOff
+	}
+	row, err := s.readSource(s.clusterRow(s.db(ctx)))
+	if err != nil {
+		return nil, row, updatesource.Listing{}, err
+	}
+	src, err := s.Updates.source(row)
+	if err != nil {
+		return nil, row, updatesource.Listing{}, err
+	}
+	ls, err := src.Releases(ctx)
+	if err != nil {
+		return nil, row, updatesource.Listing{}, err
+	}
+	for _, l := range ls {
+		if l.Line == line && l.Version == version {
+			return src, row, l, nil
+		}
+	}
+	return nil, row, updatesource.Listing{}, errReleaseNotFound
+}
+
+// storeImported stores rec, a release verified from the source at revision,
+// unless the source changed meanwhile; a release imported before from the
+// source takes the new asset references.
+func (s *Store) storeImported(ctx context.Context, revision int64, rec *releaseRecord) error {
+	return s.withTx(ctx, func(tx *gorm.DB) error {
+		var now int64
+		if err := s.clusterRow(tx).Clauses(forShare()).Select("update_source_revision").Row().Scan(&now); err != nil {
+			return err
+		}
+		if now != revision {
+			return ErrConflict
+		}
+		return tx.Clauses(clause.OnConflict{Columns: columns("digest"), DoUpdates: clause.AssignmentColumns([]string{"source_assets", "source_revision"}),
+			Where: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "updater.releases.bundle_base=''"}}}}).Create(rec).Error
+	})
 }
 
 // OpenSourceAsset opens an asset of r, a release imported from the update
 // source, through the source as configured now: it must be the revision r
 // was imported at, since asset references belong to their source.
 func (s *Store) OpenSourceAsset(ctx context.Context, r Release, name string, max int64) (io.ReadCloser, error) {
-	a, ok := r.SourceAssets[name]
+	return s.openAsset(ctx, r.SourceAssets, r.SourceRevision, name, max)
+}
+
+// openAsset opens asset name of a release imported at revision with assets.
+func (s *Store) openAsset(ctx context.Context, assets map[string]updatesource.Asset, revision int64, name string, max int64) (io.ReadCloser, error) {
+	a, ok := assets[name]
 	if !ok {
 		return nil, fmt.Errorf("release has no source asset %s", name)
 	}
@@ -752,7 +832,7 @@ func (s *Store) OpenSourceAsset(ctx context.Context, r Release, name string, max
 	if err != nil {
 		return nil, err
 	}
-	if row.revision != r.SourceRevision {
+	if row.revision != revision {
 		return nil, errors.New("the update source changed after this release was imported; apply it again")
 	}
 	src, err := s.Updates.source(row)
@@ -804,11 +884,7 @@ func (s *Store) updateHandlers(mux *http.ServeMux, reply func(http.ResponseWrite
 			invalid(w, "", err.Error())
 			return
 		}
-		switch {
-		case q.Line == updatesource.LineGateway:
-			writeError(w, http.StatusNotImplemented, "not_implemented", "one-click gateway updates are not available yet", nil)
-			return
-		case q.Line != updatesource.LineCore:
+		if q.Line != updatesource.LineCore && q.Line != updatesource.LineGateway {
 			invalid(w, "line", "line must be core or gateway")
 			return
 		}
@@ -816,7 +892,7 @@ func (s *Store) updateHandlers(mux *http.ServeMux, reply func(http.ResponseWrite
 			invalid(w, "version", "version must be a stable semantic version")
 			return
 		}
-		v, err := s.ApplyCore(r.Context(), q, r.Header.Get("X-Updater-Actor"))
+		v, err := s.Apply(r.Context(), q, r.Header.Get("X-Updater-Actor"))
 		var blocked *blockedError
 		switch {
 		case errors.As(err, &blocked):

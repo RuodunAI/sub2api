@@ -307,30 +307,8 @@ func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener)
 	}
 	defer os.RemoveAll(stage)
 	blob := filepath.Join(stage, "bundle.tar.gz")
-	f, e := os.OpenFile(blob, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if e != nil {
+	if e = m.fetch(ctx, open, blob, p.BundleBytes, p.BundleDigest); e != nil {
 		return out, e
-	}
-	r, e := m.download(ctx, open)
-	if e != nil {
-		f.Close()
-		return out, e
-	}
-	h := sha256.New()
-	n, e := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, p.BundleBytes+1))
-	r.Close()
-	if e == nil {
-		e = f.Sync()
-	}
-	ce := f.Close()
-	if e == nil {
-		e = ce
-	}
-	if e != nil {
-		return out, e
-	}
-	if n != p.BundleBytes || hex.EncodeToString(h.Sum(nil)) != p.BundleDigest {
-		return out, errors.New("bundle size or SHA256 mismatch")
 	}
 	root := filepath.Join(stage, "content")
 	if e = os.Mkdir(root, 0700); e != nil {
@@ -369,6 +347,37 @@ func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener)
 	e = atomicWrite(filepath.Join(m.Root, "manifests", d), b)
 	return out, e
 }
+
+// fetch downloads what open opens into the new file dst, which must hold
+// exactly size bytes of the SHA-256 digest.
+func (m *Manager) fetch(ctx context.Context, open Opener, dst string, size int64, digest string) error {
+	f, e := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if e != nil {
+		return e
+	}
+	r, e := m.download(ctx, open)
+	if e != nil {
+		f.Close()
+		return e
+	}
+	h := sha256.New()
+	n, e := io.Copy(io.MultiWriter(f, h), io.LimitReader(r, size+1))
+	r.Close()
+	if e == nil {
+		e = f.Sync()
+	}
+	if ce := f.Close(); e == nil {
+		e = ce
+	}
+	if e != nil {
+		return e
+	}
+	if n != size || hex.EncodeToString(h.Sum(nil)) != digest {
+		return errors.New("download size or SHA256 mismatch")
+	}
+	return nil
+}
+
 func validPath(v string) bool {
 	return v != "" && len(v) <= 4096 && v != "." && path.Clean(v) == v && !strings.HasPrefix(v, "/") && !strings.Contains(v, "\\") && !strings.Contains(v, ":") && v != ".." && !strings.HasPrefix(v, "../")
 }

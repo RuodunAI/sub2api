@@ -19,6 +19,7 @@ import (
 
 	"github.com/Masterminds/semver/v3"
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 
@@ -91,32 +92,47 @@ func createRelease(db *gorm.DB, r Release) *gorm.DB {
 func newReleaseRecord(r Release) *releaseRecord {
 	m, _ := json.Marshal(r.Manifest)
 	signed, _ := json.Marshal(r.Signed)
-	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase}
+	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase, Line: updatesource.LineCore}
 	if r.SourceAssets != nil {
 		rec.SourceAssets, _ = json.Marshal(r.SourceAssets)
 		rec.SourceRevision = &r.SourceRevision
 	}
 	return rec
 }
+
+// Release is the core release digest; a gateway release is never one.
 func (s *Store) Release(ctx context.Context, digest string) (r Release, err error) {
-	var m, b, assets []byte
 	r.Digest = digest
-	err = releaseRow(s.db(ctx), digest).Select("manifest,signed_manifest,bundle_base,source_assets,COALESCE(source_revision,0)").Row().Scan(&m, &b, &r.BundleBase, &assets, &r.SourceRevision)
-	if err != nil {
-		return
-	}
-	err = json.Unmarshal(m, &r.Manifest)
-	if err == nil {
-		err = json.Unmarshal(b, &r.Signed)
-	}
-	if err == nil && assets != nil {
-		err = json.Unmarshal(assets, &r.SourceAssets)
-	}
+	err = s.scanRelease(ctx, updatesource.LineCore, digest, &r.Manifest, &r.Signed, &r.BundleBase, &r.SourceAssets, &r.SourceRevision)
 	return
+}
+
+// GatewayRelease is the gateway release digest.
+func (s *Store) GatewayRelease(ctx context.Context, digest string) (r GatewayRelease, err error) {
+	var base string
+	r.Digest = digest
+	err = s.scanRelease(ctx, updatesource.LineGateway, digest, &r.Manifest, &r.Signed, &base, &r.SourceAssets, &r.SourceRevision)
+	return
+}
+
+// scanRelease reads release digest of line into its parts.
+func (s *Store) scanRelease(ctx context.Context, line, digest string, manifest any, signed *rc.SignedManifest, base *string, assets *map[string]updatesource.Asset, revision *int64) error {
+	var m, b, a []byte
+	err := releaseRow(s.db(ctx), line, digest).Select("manifest,signed_manifest,bundle_base,source_assets,COALESCE(source_revision,0)").Row().Scan(&m, &b, base, &a, revision)
+	if err != nil {
+		return err
+	}
+	if err = json.Unmarshal(m, manifest); err == nil {
+		err = json.Unmarshal(b, signed)
+	}
+	if err == nil && a != nil {
+		err = json.Unmarshal(a, assets)
+	}
+	return err
 }
 func (s *Store) Releases(ctx context.Context) ([]Release, error) {
 	var ids []string
-	if err := s.db(ctx).Table("updater.releases").Order("created_at DESC").Limit(100).Pluck("digest", &ids).Error; err != nil {
+	if err := s.db(ctx).Table("updater.releases").Where("line = ?", updatesource.LineCore).Order("created_at DESC").Limit(100).Pluck("digest", &ids).Error; err != nil {
 		return nil, err
 	}
 	out := []Release{}
@@ -144,7 +160,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 	// stopped, in maintenance, not offloading, joining the plan
 	// the registration found); under the same boot it keeps that state.
 	const sameBoot = "CASE WHEN updater.nodes.shell_boot_id=EXCLUDED.shell_boot_id THEN updater.nodes."
-	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy", "gateway_version"})
+	set := clause.AssignmentColumns([]string{"peer_url", "shell_boot_id", "rolling", "os", "arch", "runtime_abi", "peer_protocol", "strategy", "gateway_version", "self_update"})
 	set = append(set, clause.Assignments(map[string]any{
 		"ready":        gorm.Expr(sameBoot + "ready ELSE false END"),
 		"stopped":      gorm.Expr(sameBoot + "stopped ELSE false END"),
@@ -163,7 +179,7 @@ func (s *Store) RegisterLocked(ctx context.Context, n Node) error {
 				return err
 			}
 			res := tx.Clauses(conflict).Create(&nodeRecord{NodeID: n.ID, ClusterID: s.Cluster, PeerURL: n.PeerURL, ShellBootID: n.ShellBootID,
-				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling, GatewayVersion: n.GatewayVersion})
+				OS: n.OS, Arch: n.Arch, RuntimeABI: n.RuntimeABI, PeerProtocol: n.PeerProtocol, Strategy: n.Strategy, JoiningPlan: plan, Rolling: n.Rolling, GatewayVersion: n.GatewayVersion, SelfUpdate: n.SelfUpdate})
 			if res.Error != nil {
 				return res.Error
 			}
@@ -200,7 +216,7 @@ func (s *Store) Heartbeat(ctx context.Context, n Node) error {
 	return s.reportTelemetry(ctx, n, observedLocally)
 }
 func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling,gateway_version").Order("node_id").Rows()
+	rows, err := s.nodes(s.db(ctx)).Select("node_id,peer_url,shell_boot_id,release_digest,core_boot_id,mode,ready,last_seen,error,os,arch,runtime_abi,route_revision,stopped,enabled,peer_protocol,strategy,joining_plan,offloading,telemetry_boot_id,rolling,gateway_version,self_update").Order("node_id").Rows()
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +224,7 @@ func (s *Store) Nodes(ctx context.Context) ([]Node, error) {
 	out := []Node{}
 	for rows.Next() {
 		var n Node
-		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling, &n.GatewayVersion); err != nil {
+		if err = rows.Scan(&n.ID, &n.PeerURL, &n.ShellBootID, &n.ReleaseDigest, &n.CoreBootID, &n.Mode, &n.Ready, &n.LastSeen, &n.Error, &n.OS, &n.Arch, &n.RuntimeABI, &n.RouteRevision, &n.Stopped, &n.Enabled, &n.PeerProtocol, &n.Strategy, &n.JoiningPlan, &n.Offloading, &n.TelemetryBootID, &n.Rolling, &n.GatewayVersion, &n.SelfUpdate); err != nil {
 			return nil, err
 		}
 		out = append(out, n)
@@ -252,6 +268,14 @@ func (s *Store) NodeDirectory() []Node {
 }
 
 func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error) {
+	var gateway bool
+	db := s.db(ctx)
+	if err := gormpg.ExistsQuery(db, releaseRow(db, updatesource.LineGateway, digest)).Row().Scan(&gateway); err != nil {
+		return Preflight{}, err
+	}
+	if gateway {
+		return s.gatewayPreflight(ctx, digest)
+	}
 	p := Preflight{ReleaseDigest: digest, Nodes: []string{}, Blockers: []string{}, Strategy: PrimaryFirst}
 	primary, base, rev, err := s.ClusterState(ctx)
 	if err != nil {
@@ -309,30 +333,42 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 			p.Blockers = append(p.Blockers, "unsupported node platform: "+n.ID)
 		}
 	}
-	sort.SliceStable(p.Nodes, func(i, j int) bool {
-		if p.Nodes[i] == primary {
-			return p.Nodes[j] != primary
-		}
-		if p.Nodes[j] == primary {
-			return false
-		}
-		return p.Nodes[i] < p.Nodes[j]
-	})
-	if len(p.Nodes) == 0 || p.Nodes[0] != primary {
-		p.Blockers = append(p.Blockers, "primary is not registered")
-	}
+	p.Blockers = orderPrimaryFirst(p.Nodes, primary, p.Blockers)
 	if rollingEligible(target, nodes, 2) {
 		p.Strategy = Rolling
 	}
+	return s.activeBlocker(ctx, p)
+}
+
+// activeBlocker adds the blocker of a plan already in flight to p.
+func (s *Store) activeBlocker(ctx context.Context, p Preflight) (Preflight, error) {
 	var active bool
 	db := s.db(ctx)
-	if err = gormpg.ExistsQuery(db, s.activeUpgrade(db)).Row().Scan(&active); err != nil {
+	if err := gormpg.ExistsQuery(db, s.activeUpgrade(db)).Row().Scan(&active); err != nil {
 		return p, err
 	}
 	if active {
 		p.Blockers = append(p.Blockers, "another upgrade is active")
 	}
 	return p, nil
+}
+
+// orderPrimaryFirst sorts nodes, the primary first, and adds a blocker when
+// the primary is not among them.
+func orderPrimaryFirst(nodes []string, primary string, blockers []string) []string {
+	sort.SliceStable(nodes, func(i, j int) bool {
+		if nodes[i] == primary {
+			return nodes[j] != primary
+		}
+		if nodes[j] == primary {
+			return false
+		}
+		return nodes[i] < nodes[j]
+	})
+	if len(nodes) == 0 || nodes[0] != primary {
+		blockers = append(blockers, "primary is not registered")
+	}
+	return blockers
 }
 
 // rollingEligible decides whether a plan for target may restart the nodes
@@ -532,8 +568,13 @@ func (s *Store) createUpgrade(tx *gorm.DB, id, digest string, nodes []byte, acto
 
 // createdMessage is the first event of a plan; the console shows it.
 func createdMessage(strategy string) string {
-	if strategy == Rolling {
+	switch strategy {
+	case Rolling:
 		return "rolling update approved: nodes restart one at a time while the others serve"
+	case GatewayRolling:
+		return "gateway update approved: nodes switch gateways one at a time while the others serve"
+	case GatewayRollback:
+		return "gateway rollback approved: nodes return to their previous gateways one at a time"
 	}
 	return "primary-first maintenance update approved"
 }
@@ -610,7 +651,7 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 			}
 		case "cancel":
 			var disruptive bool
-			if err := gormpg.ExistsQuery(tx, tx.Table("updater.steps").Where("upgrade_id = ? AND action <> 'prepare'", id)).Row().Scan(&disruptive); err != nil {
+			if err := gormpg.ExistsQuery(tx, tx.Table("updater.steps").Where("upgrade_id = ? AND action NOT IN ('prepare','gw-prepare')", id)).Row().Scan(&disruptive); err != nil {
 				return err
 			}
 			if disruptive {
@@ -698,9 +739,9 @@ func (s *Store) rollbackWithBarrier(ctx context.Context, id, actor string) (Plan
 func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, error) {
 	var planID string
 	if err := s.withTx(ctx, func(tx *gorm.DB) error {
-		var status, target string
+		var status, target, strategy string
 		var raw []byte
-		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,release_digest,nodes").Row().Scan(&status, &target, &raw); err != nil {
+		if err := upgradeRow(tx, id).Where("cluster_id = ?", s.Cluster).Clauses(forUpdate()).Select("status,release_digest,nodes,strategy").Row().Scan(&status, &target, &raw, &strategy); err != nil {
 			return err
 		}
 		key := "rollback:" + id
@@ -717,6 +758,16 @@ func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, err
 		var baseline string
 		var revision int64
 		if err := s.clusterRow(tx).Clauses(forUpdate()).Select("baseline,revision").Row().Scan(&baseline, &revision); err != nil {
+			return err
+		}
+		if gatewayStrategy(strategy) {
+			// The members switch back to the gateways they ran before, on
+			// the baseline core they kept.
+			if strategy == GatewayRollback {
+				return errors.New("a gateway rollback cannot be rolled back; resume it after resolving its blocker")
+			}
+			var err error
+			planID, err = s.supersede(tx, id, actor, target, raw, key, fmt.Sprintf("%s:%d", target, revision), GatewayRollback)
 			return err
 		}
 		if target == baseline {
@@ -763,35 +814,41 @@ func (s *Store) rollbackLocked(ctx context.Context, id, actor string) (Plan, err
 		if members[0] != primary {
 			return errors.New("configured primary is not a plan member")
 		}
-		ordered := members
-		random := make([]byte, 16)
-		if _, err = rand.Read(random); err != nil {
-			return err
-		}
-		planID = hex.EncodeToString(random)
-		encoded, _ := json.Marshal(ordered)
+		encoded, _ := json.Marshal(members)
 		// The recovery restarts the members one at a time when the baseline
 		// release qualifies and the nodes can. One serving node is enough:
 		// a member the superseded plan left stopped yields nothing and is
 		// simply restarted on the baseline, then takes the other's traffic.
-		strategy := PrimaryFirst
+		strategy = PrimaryFirst
 		if nodes, err := s.Nodes(ctx); err == nil && rollingEligible(to, nodes, 1) {
 			strategy = Rolling
 		}
-		if err = upgradeRow(tx, id).Updates(map[string]any{"status": "superseded", "error": "", "updated_at": gorm.Expr("now()")}).Error; err != nil {
-			return err
-		}
-		if err = s.createUpgrade(tx, planID, baseline, encoded, actor, key, fmt.Sprintf("%s:%d", baseline, revision), strategy); err != nil {
-			return err
-		}
-		if err = s.clusterRow(tx).Update("revision", gorm.Expr("revision+1")).Error; err != nil {
-			return err
-		}
-		return insertEvents(tx, eventRow{id, "superseded", "replaced by baseline recovery " + planID}, eventRow{planID, "recovery", "recover completed baseline from " + id + " by " + actor})
+		planID, err = s.supersede(tx, id, actor, baseline, encoded, key, fmt.Sprintf("%s:%d", baseline, revision), strategy)
+		return err
 	}); err != nil {
 		return Plan{}, err
 	}
 	return s.Plan(ctx, planID)
+}
+
+// supersede replaces the paused plan id by a new recovery plan of digest
+// over nodes (JSON) under strategy, in tx, and returns the new plan's id.
+func (s *Store) supersede(tx *gorm.DB, id, actor, digest string, nodes []byte, key, requestHash, strategy string) (string, error) {
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	planID := hex.EncodeToString(random)
+	if err := upgradeRow(tx, id).Updates(map[string]any{"status": "superseded", "error": "", "updated_at": gorm.Expr("now()")}).Error; err != nil {
+		return "", err
+	}
+	if err := s.createUpgrade(tx, planID, digest, nodes, actor, key, requestHash, strategy); err != nil {
+		return "", err
+	}
+	if err := s.clusterRow(tx).Update("revision", gorm.Expr("revision+1")).Error; err != nil {
+		return "", err
+	}
+	return planID, insertEvents(tx, eventRow{id, "superseded", "replaced by baseline recovery " + planID}, eventRow{planID, "recovery", "recover completed baseline from " + id + " by " + actor})
 }
 
 const clusterChangeLock = rc.ClusterChangeLock
@@ -843,9 +900,9 @@ func revokedAdmission() map[string]any {
 	return map[string]any{"serve_http": false, "claim_background": false, "coordinate_plugins": false, "revision": gorm.Expr("revision+1")}
 }
 
-// releaseRow is the updater.releases row digest.
-func releaseRow(db *gorm.DB, digest string) *gorm.DB {
-	return db.Table("updater.releases").Where("digest = ?", digest)
+// releaseRow is the updater.releases row digest of line.
+func releaseRow(db *gorm.DB, line, digest string) *gorm.DB {
+	return db.Table("updater.releases").Where("digest = ? AND line = ?", digest, line)
 }
 
 // upgradeRow is the updater.upgrades row id; activeUpgrade is this cluster's
@@ -1020,7 +1077,7 @@ func (s *Store) AuthorizePeer(ctx context.Context, source, boot, target, scope, 
 		return fmt.Errorf("%w: peer scope is not permitted", peer.ErrForbidden)
 	}
 	db := s.db(ctx)
-	rows, err := db.Table("updater.releases").Select("digest,manifest").Where("digest = ? OR digest IN (?)", baseline, s.activeUpgrade(db).Select("release_digest")).Rows()
+	rows, err := db.Table("updater.releases").Select("digest,manifest").Where("line = ? AND (digest = ? OR digest IN (?))", updatesource.LineCore, baseline, s.activeUpgrade(db).Select("release_digest")).Rows()
 	if err != nil {
 		return peer.ErrUnavailable
 	}

@@ -202,12 +202,8 @@ func runCommand(opts cliOptions) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if opts.command == "serve" {
-		set, err := newServeSet(ctx, c)
-		if err != nil {
-			return err
-		}
-		defer set.close()
-		return set.serve(ctx, cancel, opts.bootstrap)
+		startupHandoff(c.Root, execGateway)
+		return serveGateway(ctx, cancel, c, opts.bootstrap)
 	}
 	s, err := newShell(ctx, c, opts.command)
 	if err != nil {
@@ -366,6 +362,27 @@ func (s *shell) importRelease(ctx context.Context, manifestURL string) error {
 	return nil
 }
 
+// serveGateway serves until a stop signal or a listener failure, or until a
+// gateway plan switched this node's gateway: it then shuts down as on a
+// signal and execs the bundled binary, which starts the gateway the node
+// selects. Should that exec fail, it serves again with this binary, and the
+// plan's gw-confirm step reports the node's unchanged version.
+func serveGateway(ctx context.Context, cancel context.CancelFunc, c config, bootstrap bool) error {
+	for {
+		set, err := newServeSet(ctx, c)
+		if err != nil {
+			return err
+		}
+		err = set.serve(ctx, cancel, bootstrap)
+		set.close()
+		if err != nil || !set.handingOff.Load() || ctx.Err() != nil {
+			return err
+		}
+		err = restartGateway(execGateway)
+		slog.Error("gateway restart failed; serving again with this binary", "error", err)
+	}
+}
+
 // serveSet holds the long-lived objects of a serving gateway, so the lifecycle
 // is one set of fields rather than a web of captured closures.
 type serveSet struct {
@@ -386,6 +403,8 @@ type serveSet struct {
 	private         *http.Server
 	listener        net.Listener
 	cleanups        []func()
+	// handingOff is set when a gateway plan restarts this process.
+	handingOff atomic.Bool
 }
 
 // newServeSet opens the shared shell and builds the serving pieces in dependency
@@ -470,7 +489,7 @@ func (s *serveSet) build(ctx context.Context) error {
 	if _, err = rand.Read(boot); err != nil {
 		return err
 	}
-	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, Rolling: true, GatewayVersion: Version}
+	s.ownNode = control.Node{ID: c.NodeID, PeerURL: c.PeerURL, ShellBootID: hex.EncodeToString(boot), OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI, PeerProtocol: peer.Protocol, Strategy: control.PrimaryFirst, Rolling: true, GatewayVersion: Version, SelfUpdate: selfUpdatable(s.releases)}
 	// Configure structured logging with cluster context
 	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})
 	logger := slog.New(handler).With(
@@ -584,7 +603,10 @@ func (s *serveSet) buildRuntime(ctx context.Context, peerManager *peer.Manager, 
 	}
 	cpu := &cpuload.Sampler{Counters: cpuload.Counters(), Window: 10}
 	go cpu.Run(ctx, time.Second)
-	s.engine = &control.Engine{Store: s.store, Locks: locks, Runtime: rt, Node: s.ownNode, PeerMaintain: peerManager.Maintain, PeerCheck: peerManager.Check, CPU: cpu.Percent}
+	s.engine = &control.Engine{Store: s.store, Locks: locks, Runtime: rt, Node: s.ownNode, PeerMaintain: peerManager.Maintain, PeerCheck: peerManager.Check, CPU: cpu.Percent, BundledVersion: bundledVersion()}
+	if s.ownNode.SelfUpdate {
+		s.engine.Gateway = s.releases
+	}
 	return nil
 }
 
@@ -643,6 +665,9 @@ func (s *serveSet) listen() error {
 // so a failed listener also stops the engine and its background work.
 func (s *serveSet) serve(ctx context.Context, cancel context.CancelFunc, bootstrap bool) error {
 	c := s.c
+	ctx, handoff := context.WithCancel(ctx)
+	defer handoff()
+	s.engine.Handoff = func() { s.handingOff.Store(true); handoff() }
 	errs := make(chan error, 3)
 	go func() { errs <- s.local.Serve(s.listener) }()
 	go func() { errs <- s.public.ListenAndServe() }()
@@ -655,7 +680,12 @@ func (s *serveSet) serve(ctx context.Context, cancel context.CancelFunc, bootstr
 	if err != nil {
 		slog.Error("startup reconciliation paused", "error", err)
 	}
-	go func() { _ = s.engine.Run(ctx) }()
+	// This binary reached serving: a later startup may hand off to it again.
+	if err = s.releases.ServingGateway(Version); err != nil {
+		slog.Warn("gateway handoff count not cleared", "error", err)
+	}
+	engineDone := make(chan struct{})
+	go func() { _ = s.engine.Run(ctx); close(engineDone) }()
 	go s.store.RunUpdateChecks(ctx, c.NodeID)
 	select {
 	case <-ctx.Done():
@@ -664,7 +694,17 @@ func (s *serveSet) serve(ctx context.Context, cancel context.CancelFunc, bootstr
 	}
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer stopCancel()
-	_ = s.router.SetRoute(proxy.Route{Mode: "maintenance", Revision: time.Now().UnixNano()})
+	// A handing-off node keeps forwarding to the serving nodes it yielded to
+	// until its listeners close.
+	if !s.handingOff.Load() {
+		_ = s.router.SetRoute(proxy.Route{Mode: "maintenance", Revision: time.Now().UnixNano()})
+	}
+	// The engine releases its locks before the cache closes, so that the
+	// gateway that follows a handoff takes them at once.
+	select {
+	case <-engineDone:
+	case <-stopCtx.Done():
+	}
 	stopErr := s.supervisor.Terminate(stopCtx)
 	_ = s.public.Shutdown(stopCtx)
 	_ = s.private.Shutdown(stopCtx)

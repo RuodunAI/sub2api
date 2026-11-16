@@ -41,6 +41,7 @@ type releaseRecord struct {
 	Manifest       []byte
 	SignedManifest []byte
 	BundleBase     string
+	Line           string // updatesource.LineCore or LineGateway
 	SourceAssets   []byte // NULL unless imported from the update source
 	SourceRevision *int64
 }
@@ -61,6 +62,7 @@ type nodeRecord struct {
 	JoiningPlan    string
 	Rolling        bool
 	GatewayVersion string
+	SelfUpdate     bool
 }
 
 func (nodeRecord) TableName() string { return "updater.nodes" }
