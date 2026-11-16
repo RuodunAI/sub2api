@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter, type RouteLocationRaw } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { api, isApiError } from '@sub2api/host'
+import { api } from '@sub2api/host'
 import { confirm, SAlert, SButton, SHint, SModal, SStatusDot } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
 import { lineStatus, UPDATE_LINES, useUpdatesStore, type UpdateLine } from '@/stores/updates'
@@ -13,15 +13,13 @@ defineProps<{ compact?: boolean }>()
 const { t } = useI18n()
 const auth = useAuthStore(), updates = useUpdatesStore(), router = useRouter()
 const open = ref(false), applying = ref<UpdateLine | ''>('')
-/** The gateway answered 501 to a one-click update: its image stays the manual path. */
-const gatewayApplyMissing = ref(false)
 const basic = ref<{ version: string; managed: boolean } | null>(null)
 const allowed = computed(() => auth.has('system:update:read') && basic.value?.managed === true)
 const version = computed(() => (basic.value?.version || updates.result?.core.current_version)?.replace(/^v/, ''))
 onMounted(async () => { try { basic.value = await api.get('/system/version') } catch { /* version unavailable remains explicitly unknown */ } })
 const status = (line: UpdateLine) => lineStatus(updates.result, line, !!updates.error)
 const summary = computed(() => UPDATE_LINES.map(line => `${t(`coreUpdates.lines.${line}`)}: ${t(`coreUpdates.status.${status(line)}`)}`).join(' · '))
-const supported = (line: UpdateLine) => line === 'core' || (!!updates.result?.gateway.self_update && !gatewayApplyMissing.value)
+const supported = (line: UpdateLine) => line === 'core' || !!updates.result?.gateway.self_update
 const versionText = computed(() => (version.value ? `v${version.value}` : '—'))
 function go(to: RouteLocationRaw) {
   open.value = false
@@ -42,10 +40,7 @@ async function apply(line: UpdateLine) {
       result = await updates.apply(line, target, true)
     }
     if (result.status === 'started' && result.plan_id) go({ path: '/system/upgrades', query: { upgrade: result.plan_id } })
-  } catch (e) {
-    if (line === 'gateway' && isApiError(e) && e.status === 501) gatewayApplyMissing.value = true
-    else notifyError(e)
-  } finally { applying.value = '' }
+  } catch (e) { notifyError(e) } finally { applying.value = '' }
 }
 </script>
 

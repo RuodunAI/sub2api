@@ -49,11 +49,12 @@ export interface ApplyResult {
   reasons?: string[]
 }
 
-export type LineStatus = 'unchecked' | 'disabled' | 'failed' | 'available' | 'blocked' | 'upToDate'
+export type LineStatus = 'unchecked' | 'disabled' | 'failed' | 'noRelease' | 'available' | 'blocked' | 'upToDate'
 
 /**
  * What a line's check says. A failed or never successful check is "failed",
- * never "upToDate": an unknown latest version is not the current one.
+ * never "upToDate": an unknown latest version is not the current one. A
+ * successful check that found no stable release says why in its reason.
  */
 export function lineStatus(check: UpdateCheck | null, line: UpdateLine, requestFailed = false): LineStatus {
   if (requestFailed) return 'failed'
@@ -61,7 +62,8 @@ export function lineStatus(check: UpdateCheck | null, line: UpdateLine, requestF
   if (!check.enabled) return 'disabled'
   const l = check[line]
   if (!l.checked_at && !l.error) return 'unchecked'
-  if (l.error || !l.latest_version) return 'failed'
+  if (l.error) return 'failed'
+  if (!l.latest_version) return l.reason ? 'noRelease' : 'failed'
   if (l.has_update) return 'available'
   return l.reason || !l.compatible ? 'blocked' : 'upToDate'
 }

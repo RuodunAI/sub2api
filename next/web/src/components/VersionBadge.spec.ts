@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { ApiError } from '@sub2api/host'
 import { i18n } from '@/i18n'
 import { updateCheck } from '@/stores/__fixtures__/updateCheck'
 import type { UpdateCheck } from '@/stores/updates'
@@ -87,21 +86,39 @@ describe('version badge', () => {
     expect(router.push).not.toHaveBeenCalled()
   })
 
-  it('offers the gateway image instead of a one-click update the gateway cannot run', async () => {
+  it('updates the gateway in one click, or offers its image when a node cannot update itself', async () => {
     check = updateCheck({ gateway: { has_update: true, latest_version: '0.1.136', self_update: false, image: 'ghcr.io/o/sup2api-gateway@sha256:abc' } })
     let w = await open()
     expect(section(w, 'gateway').find('[data-testid="update-apply"]').exists()).toBe(false)
     expect(section(w, 'gateway').text()).toContain('ghcr.io/o/sup2api-gateway@sha256:abc')
-    expect(section(w, 'gateway').find('[data-testid="update-manual"]').exists()).toBe(true)
+    expect(section(w, 'gateway').get('[data-testid="update-manual"]').text()).toContain('部分节点的网关版本过旧')
     w.unmount()
 
     check = updateCheck({ gateway: { has_update: true, latest_version: '0.1.136', self_update: true } })
-    api.post.mockRejectedValueOnce(new ApiError(501, { code: 'not_implemented', message: 'not implemented' }))
+    api.post.mockResolvedValueOnce({ status: 'started', plan_id: 'plan-g' })
     setActivePinia(createPinia())
     w = await open()
+    expect(section(w, 'gateway').find('[data-testid="update-manual"]').exists()).toBe(false)
     await section(w, 'gateway').get('[data-testid="update-apply"]').trigger('click')
     await flushPromises()
-    expect(section(w, 'gateway').find('[data-testid="update-apply"]').exists()).toBe(false)
-    expect(section(w, 'gateway').find('[data-testid="update-manual"]').exists()).toBe(true)
+    expect(api.post.mock.calls[0][1]).toEqual({ line: 'gateway', version: '0.1.136', confirm: false })
+    expect(router.push).toHaveBeenCalledWith({ path: '/system/upgrades', query: { upgrade: 'plan-g' } })
+  })
+
+  it('explains a line with no stable release instead of calling the check failed', async () => {
+    check = updateCheck({ core: { latest_version: '', compatible: false, reason: 'the update source has no stable core release' } })
+    const w = await open()
+    expect(section(w, 'core').get('[data-testid="update-line-status"]').text()).toBe('没有稳定版本')
+    expect(section(w, 'core').get('[data-testid="update-blocker"]').text()).toBe('the update source has no stable core release')
+    expect(w.get('[data-testid="version-badge"]').attributes('title')).toContain('核心: 没有稳定版本')
+  })
+
+  it('lists the gateway versions oldest first and counts unreported nodes apart', async () => {
+    const nodes = ['0.1.135', '', '0.1.99', '0.1.135'].map((version, i) => ({ node_id: `n${i}`, version }))
+    check = updateCheck({ gateway: { nodes } })
+    const w = await open()
+    expect(section(w, 'gateway').text()).toContain('0.1.99, 0.1.135')
+    expect(section(w, 'gateway').text()).not.toContain('未知')
+    expect(section(w, 'gateway').get('[data-testid="update-unreported"]').text()).toContain('1/4 个节点')
   })
 })

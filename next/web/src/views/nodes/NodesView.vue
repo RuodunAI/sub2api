@@ -24,8 +24,13 @@ const canReadTasks = computed(() => auth.has('task:read'))
 /** Node task states per node (System → Scheduled tasks), when readable. */
 const nodeTasks = ref<NodeTasks[]>([])
 const canReadGateways = computed(() => auth.has('system:update:read'))
-/** Gateway version per node id, from the gateways' heartbeats ('' = not reported), when readable. */
-const gatewayVersions = ref(new Map<string, string>())
+/**
+ * Gateway version per node id, from the gateways' heartbeats ('' = not
+ * reported): undefined before the first answer, null when there was none (a
+ * node the gateway does not manage answers 503), which hides the column and
+ * asks again only on a manual refresh. A later failure keeps the last answer.
+ */
+const gatewayVersions = ref<Map<string, string> | null>()
 const loading = ref(true)
 const lastLoaded = ref<Date | null>(null)
 const tick = ref(Date.now())
@@ -43,8 +48,8 @@ async function load(manual = false) {
       // The node list stays usable when the task overview cannot be read.
       nodeTasks.value = await api.get<{ nodes: NodeTasks[] }>('/system/tasks').then((o) => o.nodes || [], () => nodeTasks.value)
     }
-    if (canReadGateways.value) {
-      gatewayVersions.value = await api.get<{ nodes: ShellNode[] }>('/system/upgrades').then((o) => new Map((o.nodes || []).map((n) => [n.node_id, n.gateway_version || ''])), () => gatewayVersions.value)
+    if (canReadGateways.value && (manual || gatewayVersions.value !== null)) {
+      gatewayVersions.value = await api.get<{ nodes: ShellNode[] }>('/system/upgrades').then((o) => new Map((o.nodes || []).map((n) => [n.node_id, n.gateway_version || ''])), () => gatewayVersions.value ?? null)
     }
     lastLoaded.value = new Date()
     failures = 0
@@ -141,7 +146,7 @@ const columns = computed<TableColumn[]>(() => [
   { key: 'node_id', label: t('nodes.node'), mobile: 'title' },
   { key: 'addr', label: t('nodes.addr'), mobile: 'subtitle' },
   { key: 'host_version', label: t('nodes.coreVersion'), mobile: 'meta' },
-  ...(canReadGateways.value ? [{ key: 'gateway_version', label: t('nodes.gatewayVersion'), mobile: 'meta' } satisfies TableColumn] : []),
+  ...(gatewayVersions.value ? [{ key: 'gateway_version', label: t('nodes.gatewayVersion'), mobile: 'meta' } satisfies TableColumn] : []),
   { key: 'started_at', label: t('nodes.uptime'), mobile: 'meta' },
   { key: 'last_heartbeat', label: t('nodes.heartbeat'), mobile: 'meta' },
   { key: 'plugins', label: t('nodes.plugins'), mobile: 'meta', mobileSpan: 2 },
@@ -151,9 +156,10 @@ const columns = computed<TableColumn[]>(() => [
 const healthy = computed(() => nodes.value.filter((n) => !isStale(n)).length)
 const pluginIssues = computed(() => [...badges.value.values()].flat().filter((p) => p.tone === 'danger' || p.tone === 'warning').length)
 const versions = computed(() => new Set(nodes.value.map((n) => n.host_version)).size)
-const gatewayVersionCount = computed(() => new Set(gatewayVersions.value.values()).size)
+/** Distinct gateway versions; a gateway too old to report one is not a version. */
+const gatewayVersionCount = computed(() => new Set([...(gatewayVersions.value?.values() || [])].filter(Boolean)).size)
 const mixedVersions = computed(() => versions.value > 1 || gatewayVersionCount.value > 1)
-const versionsText = computed(() => (gatewayVersions.value.size ? t('nodes.versionCounts', { core: versions.value, gateway: gatewayVersionCount.value }) : versions.value))
+const versionsText = computed(() => (gatewayVersions.value?.size ? t('nodes.versionCounts', { core: versions.value, gateway: gatewayVersionCount.value }) : versions.value))
 </script>
 
 <template>
@@ -192,7 +198,7 @@ const versionsText = computed(() => (gatewayVersions.value.size ? t('nodes.versi
         <SBadge tone="gray">{{ row.host_version }}</SBadge>
       </template>
       <template #cell-gateway_version="{ row }">
-        <SBadge v-if="gatewayVersions.get(row.node_id)" tone="gray" data-testid="node-gateway-version">{{ gatewayVersions.get(row.node_id) }}</SBadge>
+        <SBadge v-if="gatewayVersions?.get(row.node_id)" tone="gray" data-testid="node-gateway-version">{{ gatewayVersions.get(row.node_id) }}</SBadge>
         <SHint v-else inline data-testid="node-gateway-version">{{ t('nodes.unknownVersion') }}</SHint>
       </template>
       <template #cell-started_at="{ row }">

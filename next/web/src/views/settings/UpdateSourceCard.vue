@@ -5,7 +5,7 @@ import { SAlert, SButton, SHint, SInput, SSegmented, SSettingRow, SSettingsGroup
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
 import { useSettingsForm } from '@/composables/useSettingsForm'
 import { useAuthStore } from '@/stores/auth'
-import { lineStatus, UPDATE_LINES, useUpdatesStore } from '@/stores/updates'
+import { lineStatus, UPDATE_LINES, useUpdatesStore, type LineStatus, type UpdateLine } from '@/stores/updates'
 
 // Update source of both version lines (GET/PUT /system/update-source, served
 // by the gateway). A public source needs no secret, so the secret field shows
@@ -53,8 +53,12 @@ const result = computed(() => {
   if (!check) return null
   const statuses = UPDATE_LINES.map(line => lineStatus(check, line))
   if (!check.enabled || statuses.includes('unchecked')) return { tone: 'muted' as const, lines: [t(`coreUpdates.status.${check.enabled ? 'unchecked' : 'disabled'}`)] }
-  const failed = UPDATE_LINES.filter((_, i) => statuses[i] === 'failed')
-  if (failed.length) return { tone: 'danger' as const, lines: failed.map(line => `${t(`coreUpdates.lines.${line}`)}: ${check[line].error || t('coreUpdates.status.failed')}`) }
+  const lines = (status: LineStatus, text: (line: UpdateLine) => string) =>
+    UPDATE_LINES.filter((_, i) => statuses[i] === status).map(line => `${t(`coreUpdates.lines.${line}`)}: ${text(line)}`)
+  const failed = lines('failed', line => check[line].error || t('coreUpdates.status.failed'))
+  if (failed.length) return { tone: 'danger' as const, lines: failed }
+  const none = lines('noRelease', line => check[line].reason || '')
+  if (none.length) return { tone: 'warning' as const, lines: none }
   return { tone: 'success' as const, lines: [t('coreUpdates.connected', { core: check.core.latest_version, gateway: check.gateway.latest_version })] }
 })
 

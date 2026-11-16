@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@sub2api/host'
 import { SDateTime, useAutoRefresh, SAlert, SBadge, SButton, SCard, SCode, SEmpty, SField, SHint, SPageHeader, SSectionTitle, SSelect, STable, confirm, type TableColumn, type Tone } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
+import { useUpdatesStore } from '@/stores/updates'
 import { notifyError } from '@/utils/errors'
 import TopologyGraph from '../nodes/TopologyGraph.vue'
 import StepLanes from './StepLanes.vue'
@@ -35,6 +36,10 @@ const STATUS_TONE: Record<string, Tone> = { completed: 'success', done: 'success
 const tone = (status: string): Tone => STATUS_TONE[status] ?? 'gray'
 function version(digest: string) { return releases.value.find(r => r.digest === digest)?.manifest.release_id || digest.slice(0, 12) || '—' }
 watch(target, () => { preflight.value = null; requestKey = crypto.randomUUID() })
+// The update check compares the latest releases with the installed versions,
+// which a plan changes: read it again once the last active plan ends.
+const updates = useUpdatesStore()
+watch(active, (now, before) => { if (before && !now && updates.result) void updates.check() })
 // A plan opened from elsewhere (the version badge's one-click update) while this page is shown.
 watch(() => route.query.upgrade, value => { if (typeof value === 'string' && value && value !== selectedID.value) { selectedID.value = value; void load() } })
 async function load(manual = false) {
