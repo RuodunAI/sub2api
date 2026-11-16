@@ -1,7 +1,9 @@
--- Reverses core migration 0099_plugin_permission_meta.sql (core 0.1.289):
--- puts the database back in the shape core 0.1.288 runs on (migrations
--- through 0098). Run it with every node stopped, as the database owner, in
--- one go:
+-- Reverses core migration 0099_plugin_permission_meta.sql on a development
+-- or test database stopped at 0099, as develop's builds numbered 0.1.289
+-- left it (0099 ships in release 0.1.290 with 0100 and 0101, and the way
+-- back from that is a backup: 0.1.290-release.md): puts the database back
+-- in the shape core 0.1.288 runs on (migrations through 0098). Run it with
+-- every node stopped, as the database owner, in one go:
 --
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f 0.1.289-plugin-perm-down.sql
 --
