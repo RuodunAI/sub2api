@@ -12,6 +12,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -39,15 +40,18 @@ type Watch struct {
 	Lock   string `json:"lock,omitempty"`
 }
 
-const watchColumns = `user_id, level, source, since_at, expires_at, hit_count, violation_count, violation_epoch, last_hit_at, hits_since_seen, note, updated_at, locked`
+// watchOf is the entry of a stored row, its times in UTC.
+func watchOf(m model.Watch) Watch {
+	return Watch{UserID: m.UserID, Level: m.Level, Source: m.Source, SinceAt: m.SinceAt.UTC(), ExpiresAt: utcPtr(m.ExpiresAt),
+		HitCount: m.HitCount, ViolationCount: m.ViolationCount, ViolationEpoch: m.ViolationEpoch, LastHitAt: utcPtr(m.LastHitAt),
+		HitsSinceSeen: m.HitsSinceSeen, Note: m.Note, UpdatedAt: m.UpdatedAt.UTC(), Locked: m.Locked, Lock: lockOf(m.Locked, m.Level)}
+}
 
-func scanWatch(r row) (Watch, error) {
-	var w Watch
-	err := r.Scan(&w.UserID, &w.Level, &w.Source, &w.SinceAt, &w.ExpiresAt, &w.HitCount, &w.ViolationCount, &w.ViolationEpoch, &w.LastHitAt, &w.HitsSinceSeen, &w.Note, &w.UpdatedAt, &w.Locked)
-	w.SinceAt, w.UpdatedAt = w.SinceAt.UTC(), w.UpdatedAt.UTC()
-	w.ExpiresAt, w.LastHitAt = utcPtr(w.ExpiresAt), utcPtr(w.LastHitAt)
-	w.Lock = lockOf(w.Locked, w.Level)
-	return w, err
+// takeWatch reads the entry q selects (gorm.ErrRecordNotFound: none).
+func takeWatch(q *gorm.DB) (Watch, error) {
+	var m model.Watch
+	err := q.Take(&m).Error
+	return watchOf(m), err
 }
 
 func utcPtr(t *time.Time) *time.Time {
@@ -61,7 +65,7 @@ func utcPtr(t *time.Time) *time.Time {
 // loadWatch reads (and locks) one entry; the caller holds the user's
 // block_subjects lock.
 func loadWatch(tx *gorm.DB, uid int64) (Watch, bool, error) {
-	w, err := scanWatch(queryRow(tx, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ? FOR UPDATE`, uid))
+	w, err := takeWatch(tx.Clauses(forUpdate()).Where("user_id = ?", uid))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return Watch{}, false, nil
 	}
@@ -78,13 +82,13 @@ type watchChange struct {
 }
 
 func watchEvent(tx *gorm.DB, c watchChange) error {
-	return tx.Exec(`INSERT INTO watch_events (user_id, action, from_level, to_level, reason, operator_id) VALUES (?,?,?,?,?,?)`,
-		c.uid, c.action, c.from, c.to, truncateRunes(c.reason, 500), c.operator).Error
+	return tx.Create(&model.WatchEvent{UserID: c.uid, Action: c.action, FromLevel: c.from, ToLevel: c.to,
+		Reason: truncateRunes(c.reason, 500), OperatorID: c.operator}).Error
 }
 
 // removeEntry deletes an entry and records c (c.from is the level it had).
 func removeEntry(tx *gorm.DB, c watchChange) error {
-	if err := tx.Exec(`DELETE FROM watchlist WHERE user_id = ?`, c.uid).Error; err != nil {
+	if err := tx.Where("user_id = ?", c.uid).Delete(&model.Watch{}).Error; err != nil {
 		return err
 	}
 	if err := watchEvent(tx, c); err != nil {
@@ -256,8 +260,9 @@ func (p *Plugin) createWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 		if in.Note != nil {
 			w.Note = strings.TrimSpace(*in.Note)
 		}
-		if err := tx.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
-			VALUES (?,?,?,?,?,?,?,?)`, uid, w.Level, w.Source, now, w.ExpiresAt, w.ViolationEpoch, w.Note, now).Error; err != nil {
+		err := tx.Create(&model.Watch{UserID: uid, Level: w.Level, Source: w.Source, SinceAt: now, ExpiresAt: w.ExpiresAt,
+			ViolationEpoch: w.ViolationEpoch, Note: w.Note, UpdatedAt: now}).Error
+		if err != nil {
 			return w, err
 		}
 		return w, watchEvent(tx, watchChange{uid: uid, action: "add", to: level, reason: in.historyReason(w.Note),
@@ -320,13 +325,12 @@ func (p *Plugin) updateWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 			w.Note = strings.TrimSpace(*in.Note)
 		}
 		w.UpdatedAt = now
-		if err := tx.Exec(`UPDATE watchlist SET level = ?, expires_at = ?, note = ?, updated_at = ?,
-			source = CASE WHEN ? THEN 'manual' ELSE source END,
-			since_at = CASE WHEN ? THEN ? ELSE since_at END,
-			violation_count = CASE WHEN ? THEN 0 ELSE violation_count END,
-			violation_epoch = CASE WHEN ? THEN ? ELSE violation_epoch END,
-			hits_since_seen = CASE WHEN ? THEN 0 ELSE hits_since_seen END
-			WHERE user_id = ?`, w.Level, w.ExpiresAt, w.Note, now, changed, changed, now, changed, changed, w.ViolationEpoch, changed, uid).Error; err != nil {
+		set := map[string]any{"level": w.Level, "expires_at": w.ExpiresAt, "note": w.Note, "updated_at": now}
+		if changed {
+			set["source"], set["since_at"], set["violation_count"] = w.Source, now, 0
+			set["violation_epoch"], set["hits_since_seen"] = w.ViolationEpoch, 0
+		}
+		if err := tx.Model(&model.Watch{}).Where("user_id = ?", uid).Updates(set).Error; err != nil {
 			return w, err
 		}
 		action := "update"
@@ -435,18 +439,14 @@ func (p *Plugin) listWatchEvents(ctx context.Context, req *pluginv1.HTTPRequest)
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := collect(db.Raw(`SELECT id, user_id, action, from_level, to_level, reason, operator_id, created_at
-		FROM watch_events WHERE user_id = ? ORDER BY id DESC LIMIT 200`, uid), func(r row) (WatchEvent, error) {
-		var e WatchEvent
-		err := r.Scan(&e.ID, &e.UserID, &e.Action, &e.FromLevel, &e.ToLevel, &e.Reason, &e.OperatorID, &e.CreatedAt)
-		e.CreatedAt = e.CreatedAt.UTC()
-		return e, err
-	})
-	if err != nil {
+	var rows []model.WatchEvent
+	if err := db.Where("user_id = ?", uid).Order("id DESC").Limit(200).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	if list == nil {
-		list = []WatchEvent{}
+	list := make([]WatchEvent, len(rows))
+	for i, e := range rows {
+		list[i] = WatchEvent{ID: e.ID, UserID: e.UserID, Action: e.Action, FromLevel: e.FromLevel, ToLevel: e.ToLevel,
+			Reason: e.Reason, OperatorID: e.OperatorID, CreatedAt: e.CreatedAt.UTC()}
 	}
 	return pluginsdk.DataResponse(list), nil
 }

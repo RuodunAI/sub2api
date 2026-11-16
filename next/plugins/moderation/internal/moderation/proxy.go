@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	"gorm.io/gorm"
 )
 
@@ -123,11 +124,11 @@ func (p *Plugin) storeProxy(ctx context.Context, tx *gorm.DB, id int64, proxy *s
 	}
 	v := strings.TrimSpace(*proxy)
 	if v == "" {
-		return tx.Exec(`UPDATE channels SET proxy_enc = NULL WHERE id = ?`, id).Error
+		return tx.Model(&model.Channel{}).Where("id = ?", id).Update("proxy_enc", nil).Error
 	}
 	enc, err := p.host.SealSecret(ctx, secretContext(id, "proxy"), []byte(v))
 	if err != nil {
 		return fmt.Errorf("seal channel proxy: %w", err)
 	}
-	return tx.Exec(`UPDATE channels SET proxy_enc = ? WHERE id = ?`, enc, id).Error
+	return tx.Model(&model.Channel{}).Where("id = ?", id).Update("proxy_enc", enc).Error
 }

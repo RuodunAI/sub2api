@@ -591,17 +591,20 @@ func (p *Plugin) flushStats(ctx context.Context) {
 	}
 }
 
-// latAdd sums two latency arrays elementwise in an upsert.
-func latAdd(table string) string {
-	return `ARRAY(SELECT x + y FROM unnest(` + table + `.lat, EXCLUDED.lat) WITH ORDINALITY AS t(x, y, i) ORDER BY i)`
+// latAdd assigns lat the stored latency array of table plus the new one,
+// elementwise, in an upsert.
+func latAdd(table string) clause.Assignment {
+	return clause.Assignment{Column: clause.Column{Name: "lat"}, Value: gorm.Expr(
+		"ARRAY(SELECT x + y FROM unnest(?, EXCLUDED.lat) WITH ORDINALITY AS t(x, y, i) ORDER BY i)", clause.Column{Table: table, Name: "lat"})}
 }
 
-// added assigns each counter column the stored value plus the new one in
-// an upsert.
+// added assigns each counter column the stored value of table plus the new
+// one in an upsert.
 func added(table string, cols ...string) clause.Set {
 	set := make(clause.Set, len(cols))
 	for i, c := range cols {
-		set[i] = assign(c, table+"."+c+" + EXCLUDED."+c)
+		set[i] = clause.Assignment{Column: clause.Column{Name: c},
+			Value: gorm.Expr("? + ?", clause.Column{Table: table, Name: c}, clause.Column{Table: "excluded", Name: c})}
 	}
 	return set
 }
@@ -612,12 +615,12 @@ var (
 		Columns: columns("hour", "group_id", "flow_id", "stage", "auditor_id", "timing"),
 		DoUpdates: append(added("stats_hourly", "audited", "hit", "blocked", "overturned", "errors", "cache_skipped", "calls",
 			"tokens_in", "tokens_out", "latency_ms_sum", "cost", "priced_calls", "unpriced_calls", "unpriced_tokens", "free_calls", "replayed"),
-			assign("lat", latAdd("stats_hourly"))),
+			latAdd("stats_hourly")),
 	}
 	costsUpsert = clause.OnConflict{
 		Columns: columns("hour", "channel_id", "source"),
 		DoUpdates: append(added("costs", "calls", "errors", "latency_ms_sum", "priced_calls", "unpriced_calls", "unpriced_tokens",
-			"free_calls", "tokens_in", "tokens_out", "cost"), assign("lat", latAdd("costs"))),
+			"free_calls", "tokens_in", "tokens_out", "cost"), latAdd("costs")),
 	}
 	userDailyUpsert = clause.OnConflict{
 		Columns: columns("day", "user_id"),

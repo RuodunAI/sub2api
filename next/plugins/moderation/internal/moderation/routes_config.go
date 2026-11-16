@@ -12,7 +12,9 @@ import (
 	"unicode/utf8"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -54,13 +56,56 @@ type AuditorRef struct {
 	Name string `json:"name"`
 }
 
-const channelColumns = `id, type, protocol, name, base_url, api_key_tail, api_key_enc IS NOT NULL, proxy_enc IS NOT NULL, model, billing_model, timeout_ms, enabled, created_at, updated_at`
+// channelColumns are the columns of a ChannelView: the sealed key and proxy
+// only as whether they are set.
+const channelColumns = `id, type, protocol, name, base_url, api_key_tail, api_key_enc IS NOT NULL AS has_key,
+	proxy_enc IS NOT NULL AS has_proxy, model, billing_model, timeout_ms, enabled, created_at, updated_at`
 
-func scanChannel(r row) (ChannelView, error) {
-	var c ChannelView
-	err := r.Scan(&c.ID, &c.Type, &c.Protocol, &c.Name, &c.BaseURL, &c.APIKeyTail, &c.HasKey, &c.HasProxy, &c.Model, &c.BillingModel, &c.TimeoutMs, &c.Enabled, &c.CreatedAt, &c.UpdatedAt)
-	c.CreatedAt, c.UpdatedAt = c.CreatedAt.UTC(), c.UpdatedAt.UTC()
-	return c, err
+// channelViewRow is a channel row as channelColumns selects it.
+type channelViewRow struct {
+	ID                                        int64
+	Type, Protocol, Name, BaseURL, APIKeyTail string
+	HasKey, HasProxy                          bool
+	Model, BillingModel                       string
+	TimeoutMs                                 int
+	Enabled                                   bool
+	CreatedAt, UpdatedAt                      time.Time
+}
+
+// channelViews reads the channels q selects, by id.
+func channelViews(q *gorm.DB) ([]ChannelView, error) {
+	var rows []channelViewRow
+	if err := q.Model(&model.Channel{}).Select(channelColumns).Order("id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make([]ChannelView, len(rows))
+	for i, r := range rows {
+		out[i] = ChannelView{ID: r.ID, Type: r.Type, Protocol: r.Protocol, Name: r.Name, BaseURL: r.BaseURL, APIKeyTail: r.APIKeyTail,
+			HasKey: r.HasKey, HasProxy: r.HasProxy, Model: r.Model, BillingModel: r.BillingModel, TimeoutMs: r.TimeoutMs,
+			Enabled: r.Enabled, CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC()}
+	}
+	return out, nil
+}
+
+// takeChannel reads the one channel q selects (gorm.ErrRecordNotFound: none).
+func takeChannel(q *gorm.DB) (ChannelView, error) {
+	list, err := channelViews(q)
+	if err == nil && len(list) == 0 {
+		err = gorm.ErrRecordNotFound
+	}
+	if err != nil {
+		return ChannelView{}, err
+	}
+	return list[0], nil
+}
+
+// insertRow creates a row of m from the columns of row and returns its id.
+// A map, not a model: GORM would write a column's default for a zero field
+// (a disabled channel or flow would be enabled).
+func insertRow(tx *gorm.DB, m any, row map[string]any) (int64, error) {
+	err := tx.Model(m).Clauses(clause.Returning{Columns: columns("id")}).Create(row).Error
+	id, _ := row["id"].(int64)
+	return id, err
 }
 
 // channelInput is the POST / PUT body. api_key absent or "" keeps the stored
@@ -78,6 +123,12 @@ type channelInput struct {
 	Enabled      *bool  `json:"enabled"`
 	// Proxy: absent keeps it, "" removes it.
 	Proxy *string `json:"proxy"`
+}
+
+// row is the channels row of a new channel.
+func (in *channelInput) row(enabled bool, now time.Time) map[string]any {
+	return map[string]any{"type": in.Type, "protocol": in.Protocol, "name": in.Name, "base_url": in.BaseURL, "model": in.Model,
+		"billing_model": in.BillingModel, "timeout_ms": in.TimeoutMs, "enabled": enabled, "created_at": now, "updated_at": now}
 }
 
 func (in *channelInput) normalize() pluginsdk.FieldErrors {
@@ -134,12 +185,9 @@ func (p *Plugin) listChannels(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := collect(db.Raw(`SELECT `+channelColumns+` FROM channels WHERE deleted_at IS NULL ORDER BY id`), func(r row) (ChannelView, error) { return scanChannel(r) })
+	list, err := channelViews(db.Where("deleted_at IS NULL"))
 	if err != nil {
 		return nil, err
-	}
-	if list == nil {
-		list = []ChannelView{}
 	}
 	if err := p.decorateChannels(ctx, req, db, list); err != nil {
 		return nil, err
@@ -166,15 +214,15 @@ func (p *Plugin) decorateChannels(ctx context.Context, req *pluginv1.HTTPRequest
 	if err != nil {
 		return err
 	}
-	q := db.Raw(`SELECT channel_id, id, name FROM auditors WHERE deleted_at IS NULL AND channel_id = ANY(?) ORDER BY id`, pgdb.Array[int64](ids))
-	users := map[int64][]AuditorRef{}
-	var ch int64
-	var a AuditorRef
-	if err := eachRow(q, []any{&ch, &a.ID, &a.Name}, func() error {
-		users[ch] = append(users[ch], a)
-		return nil
-	}); err != nil {
+	var auditors []model.Auditor
+	err = db.Select("channel_id, id, name").Where("deleted_at IS NULL AND channel_id = ANY(?)", pgdb.Array[int64](ids)).
+		Order("id").Find(&auditors).Error
+	if err != nil {
 		return err
+	}
+	users := map[int64][]AuditorRef{}
+	for _, a := range auditors {
+		users[a.ChannelID] = append(users[a.ChannelID], AuditorRef{ID: a.ID, Name: a.Name})
 	}
 	for i := range list {
 		c := &list[i]
@@ -188,20 +236,22 @@ func (p *Plugin) decorateChannels(ctx context.Context, req *pluginv1.HTTPRequest
 // redactedProxies maps the channels of ids that have a proxy to its
 // redacted URL (empty when it does not open).
 func (p *Plugin) redactedProxies(ctx context.Context, db *gorm.DB, ids []int64) (map[int64]string, error) {
-	q := db.Raw(`SELECT id, proxy_enc FROM channels WHERE proxy_enc IS NOT NULL AND deleted_at IS NULL AND id = ANY(?)`, pgdb.Array[int64](ids))
+	var rows []model.Channel
+	err := db.Select("id, proxy_enc").Where("proxy_enc IS NOT NULL AND deleted_at IS NULL AND id = ANY(?)", pgdb.Array[int64](ids)).
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
 	out := map[int64]string{}
-	var id int64
-	var enc []byte
-	err := eachRow(q, []any{&id, &enc}, func() error {
-		proxy, err := p.openProxy(ctx, id, enc)
+	for _, r := range rows {
+		proxy, err := p.openProxy(ctx, r.ID, r.ProxyEnc)
 		if err != nil {
-			p.log.Warn("moderation: channel proxy does not open", "channel_id", id, "error", err.Error())
-			return nil
+			p.log.Warn("moderation: channel proxy does not open", "channel_id", r.ID, "error", err.Error())
+			continue
 		}
-		out[id] = redactProxy(proxy)
-		return nil
-	})
-	return out, err
+		out[r.ID] = redactProxy(proxy)
+	}
+	return out, nil
 }
 
 // decorateChannel adds the price state and the 30-day cost.
@@ -227,7 +277,7 @@ func (p *Plugin) getChannel(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	c, err := scanChannel(queryRow(db, `SELECT `+channelColumns+` FROM channels WHERE id = ? AND deleted_at IS NULL`, id))
+	c, err := takeChannel(db.Where("id = ? AND deleted_at IS NULL", id))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return notFound("channel"), nil
 	}
@@ -263,9 +313,8 @@ func (p *Plugin) createChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 	var out ChannelView
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		now := p.now().UTC()
-		var id int64
-		if err := queryRow(tx, `INSERT INTO channels (type, protocol, name, base_url, model, billing_model, timeout_ms, enabled, created_at, updated_at)
-			VALUES (?,?,?,?,?,?,?,?,?,?) RETURNING id`, in.Type, in.Protocol, in.Name, in.BaseURL, in.Model, in.BillingModel, in.TimeoutMs, enabled, now, now).Scan(&id); err != nil {
+		id, err := insertRow(tx, &model.Channel{}, in.row(enabled, now))
+		if err != nil {
 			return err
 		}
 		if err := p.storeKey(ctx, tx, id, in.APIKey); err != nil {
@@ -274,8 +323,7 @@ func (p *Plugin) createChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 		if err := p.storeProxy(ctx, tx, id, in.Proxy); err != nil {
 			return err
 		}
-		var err error
-		out, err = scanChannel(queryRow(tx, `SELECT `+channelColumns+` FROM channels WHERE id = ?`, id))
+		out, err = takeChannel(tx.Where("id = ?", id))
 		return err
 	})
 	if err != nil {
@@ -294,7 +342,7 @@ func (p *Plugin) storeKey(ctx context.Context, tx *gorm.DB, id int64, key *strin
 	if err != nil {
 		return fmt.Errorf("seal channel key: %w", err)
 	}
-	return tx.Exec(`UPDATE channels SET api_key_enc = ?, api_key_tail = ? WHERE id = ?`, enc, keyTail(k), id).Error
+	return tx.Model(&model.Channel{}).Where("id = ?", id).Updates(map[string]any{"api_key_enc": enc, "api_key_tail": keyTail(k)}).Error
 }
 
 // keyTail is the last 4 characters shown for a key.
@@ -318,7 +366,7 @@ func (p *Plugin) updateChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 	var out ChannelView
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
-		cur, err := scanChannel(queryRow(tx, `SELECT `+channelColumns+` FROM channels WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id))
+		cur, err := takeChannel(tx.Clauses(forUpdate()).Where("id = ? AND deleted_at IS NULL", id))
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = notFound("channel")
 			return errRollback
@@ -351,7 +399,10 @@ func (p *Plugin) updateChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 		if in.Enabled != nil {
 			enabled = *in.Enabled
 		}
-		if err := tx.Exec(`UPDATE channels SET protocol=?, name=?, base_url=?, model=?, billing_model=?, timeout_ms=?, enabled=?, updated_at=? WHERE id=?`, in.Protocol, in.Name, in.BaseURL, in.Model, in.BillingModel, in.TimeoutMs, enabled, p.now().UTC(), id).Error; err != nil {
+		err = tx.Model(&model.Channel{}).Where("id = ?", id).Updates(map[string]any{"protocol": in.Protocol, "name": in.Name,
+			"base_url": in.BaseURL, "model": in.Model, "billing_model": in.BillingModel, "timeout_ms": in.TimeoutMs,
+			"enabled": enabled, "updated_at": p.now().UTC()}).Error
+		if err != nil {
 			return err
 		}
 		if err := p.storeKey(ctx, tx, id, in.APIKey); err != nil {
@@ -360,7 +411,7 @@ func (p *Plugin) updateChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 		if err := p.storeProxy(ctx, tx, id, in.Proxy); err != nil {
 			return err
 		}
-		out, err = scanChannel(queryRow(tx, `SELECT `+channelColumns+` FROM channels WHERE id = ?`, id))
+		out, err = takeChannel(tx.Where("id = ?", id))
 		return err
 	})
 	if resp != nil {
@@ -379,11 +430,11 @@ func (p *Plugin) proxyChange(ctx context.Context, tx *gorm.DB, id int64, sent *s
 	if sent == nil {
 		return nil, false, nil
 	}
-	var enc []byte
-	if err := queryRow(tx, `SELECT proxy_enc FROM channels WHERE id = ?`, id).Scan(&enc); err != nil {
+	var ch model.Channel
+	if err := tx.Select("proxy_enc").Where("id = ?", id).Take(&ch).Error; err != nil {
 		return nil, false, err
 	}
-	cur, err := p.openProxy(ctx, id, enc)
+	cur, err := p.openProxy(ctx, id, ch.ProxyEnc)
 	v := strings.TrimSpace(*sent)
 	if err == nil && v == redactProxy(cur) {
 		return nil, false, nil
@@ -410,19 +461,20 @@ func (p *Plugin) deleteChannel(ctx context.Context, req *pluginv1.HTTPRequest) (
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var used []AuditorRef
-		if err := tx.Raw(`SELECT id, name FROM auditors WHERE channel_id = ? AND deleted_at IS NULL ORDER BY id`, id).Scan(&used).Error; err != nil {
+		if err := tx.Model(&model.Auditor{}).Select("id, name").Where("channel_id = ? AND deleted_at IS NULL", id).Order("id").Scan(&used).Error; err != nil {
 			return err
 		}
 		if len(used) > 0 {
 			resp = errorWithDetails(http.StatusConflict, "in_use", "the channel is used by auditors / 该渠道仍被审核器使用", map[string]any{"auditors": used})
 			return errRollback
 		}
-		n, err := affected(tx.Exec(`UPDATE channels SET deleted_at = ?, api_key_enc = NULL, proxy_enc = NULL WHERE id = ? AND deleted_at IS NULL`, p.now().UTC(), id))
-		if err == nil && n == 0 {
+		res := tx.Model(&model.Channel{}).Where("id = ? AND deleted_at IS NULL", id).
+			Updates(map[string]any{"deleted_at": p.now().UTC(), "api_key_enc": nil, "proxy_enc": nil})
+		if res.Error == nil && res.RowsAffected == 0 {
 			resp = notFound("channel")
 			return errRollback
 		}
-		return err
+		return res.Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -501,10 +553,11 @@ func (p *Plugin) loadChannel(ctx context.Context, id int64) (*liveChannel, error
 		return nil, err
 	}
 	ch := &liveChannel{ID: id, client: p.httpClient, ttft: p.ttftTimeout}
-	var keyEnc, proxyEnc []byte
-	var timeout int
-	err = queryRow(db, `SELECT type, protocol, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms FROM channels WHERE id = ? AND deleted_at IS NULL`, id).
-		Scan(&ch.Type, &ch.Protocol, &ch.BaseURL, &keyEnc, &proxyEnc, &ch.Model, &ch.BillingModel, &timeout)
+	var row model.Channel
+	err = db.Select("type, protocol, base_url, api_key_enc, proxy_enc, model, billing_model, timeout_ms").
+		Where("id = ? AND deleted_at IS NULL", id).Take(&row).Error
+	ch.Type, ch.Protocol, ch.BaseURL, ch.Model, ch.BillingModel = row.Type, row.Protocol, row.BaseURL, row.Model, row.BillingModel
+	keyEnc, proxyEnc, timeout := row.APIKeyEnc, row.ProxyEnc, row.TimeoutMs
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, errNotFound
 	}
@@ -583,19 +636,36 @@ type auditorInput struct {
 	Config    AuditorConfig `json:"config"`
 }
 
-func (p *Plugin) auditorViews(db *gorm.DB, where string, args ...any) ([]AuditorView, error) {
-	list, err := collect(db.Raw(`SELECT a.id, a.name, a.type, a.channel_id, a.config, coalesce(c.name, ''), coalesce(c.type, ''),
-			coalesce(c.enabled, false), coalesce(c.timeout_ms, 0), a.created_at, a.updated_at
-		FROM auditors a LEFT JOIN channels c ON c.id = a.channel_id AND c.deleted_at IS NULL
-		WHERE a.deleted_at IS NULL `+where+` ORDER BY a.id`, args...), func(r row) (AuditorView, error) {
-		var a AuditorView
-		err := r.Scan(&a.ID, &a.Name, &a.Type, &a.ChannelID, (*[]byte)(&a.Config), &a.ChannelName, &a.ChannelType, &a.ChannelEnabled,
-			&a.ChannelTimeoutMs, &a.CreatedAt, &a.UpdatedAt)
-		a.CreatedAt, a.UpdatedAt = a.CreatedAt.UTC(), a.UpdatedAt.UTC()
-		return a, err
-	})
-	if err != nil {
+// auditorViewRow is an auditor row with its channel, as auditorViews reads it.
+type auditorViewRow struct {
+	ID                       int64
+	Name, Type               string
+	ChannelID                int64
+	Config                   json.RawMessage
+	ChannelName, ChannelType string
+	ChannelEnabled           bool
+	ChannelTimeoutMs         int
+	CreatedAt, UpdatedAt     time.Time
+}
+
+// auditorViews reads the live auditors, or the one of id (0 = all).
+func (p *Plugin) auditorViews(db *gorm.DB, id int64) ([]AuditorView, error) {
+	q := db.Table("auditors a").
+		Select(`a.id, a.name, a.type, a.channel_id, a.config, coalesce(c.name, '') AS channel_name, coalesce(c.type, '') AS channel_type,
+			coalesce(c.enabled, false) AS channel_enabled, coalesce(c.timeout_ms, 0) AS channel_timeout_ms, a.created_at, a.updated_at`).
+		Joins("LEFT JOIN channels c ON c.id = a.channel_id AND c.deleted_at IS NULL").Where("a.deleted_at IS NULL")
+	if id != 0 {
+		q = q.Where("a.id = ?", id)
+	}
+	var rows []auditorViewRow
+	if err := q.Order("a.id").Scan(&rows).Error; err != nil {
 		return nil, err
+	}
+	list := make([]AuditorView, len(rows))
+	for i, r := range rows {
+		list[i] = AuditorView{ID: r.ID, Name: r.Name, Type: r.Type, ChannelID: r.ChannelID, Config: r.Config, ChannelName: r.ChannelName,
+			ChannelType: r.ChannelType, ChannelEnabled: r.ChannelEnabled, ChannelTimeoutMs: r.ChannelTimeoutMs,
+			CreatedAt: r.CreatedAt.UTC(), UpdatedAt: r.UpdatedAt.UTC()}
 	}
 	snap := p.snap.Load()
 	for i := range list {
@@ -606,9 +676,6 @@ func (p *Plugin) auditorViews(db *gorm.DB, where string, args ...any) ([]Auditor
 			}
 		}
 	}
-	if list == nil {
-		list = []AuditorView{}
-	}
 	return list, nil
 }
 
@@ -617,7 +684,7 @@ func (p *Plugin) listAuditors(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := p.auditorViews(db, "")
+	list, err := p.auditorViews(db, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -641,7 +708,7 @@ func (p *Plugin) getAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	list, err := p.auditorViews(db, "AND a.id = ?", id)
+	list, err := p.auditorViews(db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -664,7 +731,7 @@ func (p *Plugin) validateAuditor(tx *gorm.DB, in *auditorInput) pluginsdk.FieldE
 		return errs.Add("type", "enum", "type must be openai_moderation, typesafe, llm_verdict or llm_questions / type 取值为 openai_moderation、typesafe、llm_verdict、llm_questions")
 	}
 	var chType string
-	err := queryRow(tx, `SELECT type FROM channels WHERE id = ? AND deleted_at IS NULL`, in.ChannelID).Scan(&chType)
+	err := tx.Model(&model.Channel{}).Select("type").Where("id = ? AND deleted_at IS NULL", in.ChannelID).Take(&chType).Error
 	switch {
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		errs = errs.Add("channel_id", "not_found", "channel does not exist / 渠道不存在")
@@ -694,7 +761,9 @@ func (p *Plugin) createAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (
 		}
 		cfg, _ := json.Marshal(in.Config)
 		now := p.now().UTC()
-		return queryRow(tx, `INSERT INTO auditors (name, type, channel_id, config, created_at, updated_at) VALUES (?,?,?,?,?,?) RETURNING id`, in.Name, in.Type, in.ChannelID, cfg, now, now).Scan(&id)
+		var err error
+		id, err = insertAuditor(tx, in.Name, in.Type, in.ChannelID, cfg, now)
+		return err
 	})
 	if resp != nil {
 		return resp, nil
@@ -717,7 +786,7 @@ func (p *Plugin) updateAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var curType string
-		err := queryRow(tx, `SELECT type FROM auditors WHERE id = ? AND deleted_at IS NULL FOR UPDATE`, id).Scan(&curType)
+		err := tx.Model(&model.Auditor{}).Clauses(forUpdate()).Select("type").Where("id = ? AND deleted_at IS NULL", id).Take(&curType).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			resp = notFound("auditor")
 			return errRollback
@@ -737,7 +806,8 @@ func (p *Plugin) updateAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (
 			return errRollback
 		}
 		cfg, _ := json.Marshal(in.Config)
-		return tx.Exec(`UPDATE auditors SET name=?, channel_id=?, config=?, updated_at=? WHERE id=?`, in.Name, in.ChannelID, cfg, p.now().UTC(), id).Error
+		return tx.Model(&model.Auditor{}).Where("id = ?", id).
+			Updates(map[string]any{"name": in.Name, "channel_id": in.ChannelID, "config": json.RawMessage(cfg), "updated_at": p.now().UTC()}).Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -763,12 +833,12 @@ func (p *Plugin) deleteAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (
 			resp = pluginsdk.ErrorResponse(http.StatusConflict, "in_use", fmt.Sprintf("the auditor is used by flows %v / 该审核器仍被流程 %v 使用", flows, flows))
 			return errRollback
 		}
-		n, err := affected(tx.Exec(`UPDATE auditors SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`, p.now().UTC(), id))
-		if err == nil && n == 0 {
+		res := tx.Model(&model.Auditor{}).Where("id = ? AND deleted_at IS NULL", id).Update("deleted_at", p.now().UTC())
+		if res.Error == nil && res.RowsAffected == 0 {
 			resp = notFound("auditor")
 			return errRollback
 		}
-		return err
+		return res.Error
 	})
 	if resp != nil {
 		return resp, nil
@@ -781,16 +851,25 @@ func (p *Plugin) deleteAuditor(ctx context.Context, req *pluginv1.HTTPRequest) (
 
 // flowsUsing lists live flows whose draft or published spec names the auditor.
 func flowsUsing(tx *gorm.DB, auditorID int64) ([]int64, error) {
-	return column[int64](tx.Raw(`SELECT id FROM flows WHERE deleted_at IS NULL AND (
+	ids := []int64{}
+	err := tx.Model(&model.Flow{}).Where(`deleted_at IS NULL AND (
 		jsonb_path_exists(draft, ?::jsonpath, jsonb_build_object('a', ?::bigint)) OR
-		jsonb_path_exists(coalesce(published, '{}'), ?::jsonpath, jsonb_build_object('a', ?::bigint)))
-		ORDER BY id`, usesAuditor, auditorID, usesAuditor, auditorID))
+		jsonb_path_exists(coalesce(published, '{}'), ?::jsonpath, jsonb_build_object('a', ?::bigint)))`,
+		usesAuditor, auditorID, usesAuditor, auditorID).Order("id").Pluck("id", &ids).Error
+	return ids, err
 }
 
 // usesAuditor is the JSON path of a spec's auditors equal to $a. It is bound
 // as a parameter: written into the statement, GORM would read its ? as a
 // placeholder and its @ as a named argument.
 const usesAuditor = `$.stages[*].auditors[*] ? (@ == $a)`
+
+// insertAuditor creates an auditor and returns its id.
+func insertAuditor(tx *gorm.DB, name, typ string, channel int64, cfg []byte, now time.Time) (int64, error) {
+	row := model.Auditor{Name: name, Type: typ, ChannelID: channel, Config: cfg, CreatedAt: now, UpdatedAt: now}
+	err := tx.Clauses(clause.Returning{Columns: columns("id")}).Create(&row).Error
+	return row.ID, err
+}
 
 // TryResult is POST /auditors/:id/try.
 type TryResult struct {
@@ -928,15 +1007,16 @@ func (e *compileError) Error() string { return e.field + ": " + e.msg }
 
 func auditorSourceOf(db *gorm.DB, id int64) (auditorSource, error) {
 	var src auditorSource
-	var raw []byte
-	err := queryRow(db, `SELECT name, type, channel_id, config FROM auditors WHERE id = ? AND deleted_at IS NULL`, id).Scan(&src.name, &src.typ, &src.channel, &raw)
+	var row model.Auditor
+	err := db.Select("name, type, channel_id, config").Where("id = ? AND deleted_at IS NULL", id).Take(&row).Error
+	src.name, src.typ, src.channel = row.Name, row.Type, row.ChannelID
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return src, errNotFound
 	}
 	if err != nil {
 		return src, err
 	}
-	if json.Unmarshal(raw, &src.cfg) != nil {
+	if json.Unmarshal(row.Config, &src.cfg) != nil {
 		return src, errStoredAuditor
 	}
 	return src, nil

@@ -14,13 +14,13 @@ import (
 // filter is written once: listPaged applies it to both the count and the page.
 type pagedQuery struct {
 	// columns is the page's select list.
-	columns string
+	columns pgdb.SQL
 	// where is the optional filter shared by both statements; args are its
 	// arguments.
-	where string
+	where pgdb.SQL
 	args  []any
 	// orderBy is the page statement's ORDER BY ("created_at DESC").
-	orderBy string
+	orderBy pgdb.SQL
 	// Labels are the failure prefixes, kept per stage because the endpoints
 	// report the raw error to administrators ("count codes: ...").
 	countLabel string
@@ -33,7 +33,7 @@ type pagedQuery struct {
 func listPaged[M, T any](db *gorm.DB, q pagedQuery, limit, offset int, conv func(M) T) ([]T, int, error) {
 	db = db.Model(new(M))
 	if q.where != "" {
-		db = db.Where(q.where, q.args...)
+		db = db.Where(string(q.where), q.args...)
 	}
 	rows, total, err := pgdb.List[M](db, q.columns, q.orderBy, limit, offset)
 	if err != nil {
@@ -56,8 +56,8 @@ func listPaged[M, T any](db *gorm.DB, q pagedQuery, limit, offset int, conv func
 // keeps its own.
 type lockedRow struct {
 	// columns are read; where selects exactly one row with one argument.
-	columns string
-	where   string
+	columns pgdb.SQL
+	where   pgdb.SQL
 	arg     any
 	// missing is returned when no row matches.
 	missing string
@@ -72,7 +72,7 @@ func withLockedRow[M any](db *gorm.DB, l lockedRow, fn func(tx *gorm.DB, row M) 
 	return inTx(db, func(tx *gorm.DB) error {
 		var row M
 		err := tx.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate}).
-			Select(l.columns).Where(l.where, l.arg).Take(&row).Error
+			Select(string(l.columns)).Where(string(l.where), l.arg).Take(&row).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return errors.New(l.missing)
 		}

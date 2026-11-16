@@ -256,7 +256,7 @@ func (p *Plugin) putRules(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 // span to protect. Not pg_advisory_xact_lock either: advisory keys are
 // database-wide, shared with the core and every other plugin.
 func replaceRules(tx *gorm.DB, rules []Rule) error {
-	if err := tx.Exec(`LOCK TABLE rules IN SHARE ROW EXCLUSIVE MODE`).Error; err != nil {
+	if err := pgdb.LockTable(tx, "rules"); err != nil {
 		return err
 	}
 	// Never nil: a NULL array matches no row, and nothing would be deleted.
@@ -295,8 +295,8 @@ func upsertRule(tx *gorm.DB, r Rule) error {
 		if res.Error != nil || res.RowsAffected > 0 {
 			return res.Error
 		}
-		var exists bool
-		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM rules WHERE id = ?)`, r.ID).Scan(&exists).Error; err != nil {
+		exists, err := pgdb.Exists(tx, tx.Model(&model.Rule{}).Where("id = ?", r.ID))
+		if err != nil {
 			return err
 		}
 		if exists {

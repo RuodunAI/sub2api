@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
@@ -72,23 +73,19 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 
 			codeHash := HashRedeemCode(code)
 
-			// SQL rather than Create: GORM would store the column default
-			// for an empty type ('balance'), this stores ''.
-			var row model.RedeemCode
-			err = tx.Raw(`
-				INSERT INTO redeem_codes (
-					code, code_hash, type, value, group_id, validity_days,
-					status, expires_at, notes
-				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-				RETURNING id, created_at
-			`, code, codeHash, req.Type, req.Value, req.GroupID, req.ValidityDays,
-				RedeemStatusUnused, req.ExpiresAt, req.Notes).Scan(&row).Error
+			// A map rather than a model: GORM would store the column
+			// default for an empty type ('balance'), this stores ''.
+			row := map[string]any{"code": code, "code_hash": codeHash, "type": req.Type, "value": req.Value,
+				"group_id": req.GroupID, "validity_days": req.ValidityDays, "status": RedeemStatusUnused,
+				"expires_at": req.ExpiresAt, "notes": req.Notes}
+			err = tx.Model(&model.RedeemCode{}).
+				Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "created_at"}}}).Create(row).Error
 			if err != nil {
 				return fmt.Errorf("insert code: %w", err)
 			}
 
 			rc := RedeemCode{
-				ID:           row.ID,
+				ID:           row["id"].(int64),
 				Code:         code,
 				CodeHash:     codeHash,
 				Type:         req.Type,
@@ -98,7 +95,7 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 				Status:       RedeemStatusUnused,
 				ExpiresAt:    req.ExpiresAt,
 				Notes:        req.Notes,
-				CreatedAt:    row.CreatedAt,
+				CreatedAt:    row["created_at"].(time.Time),
 			}
 			codes = append(codes, rc)
 		}

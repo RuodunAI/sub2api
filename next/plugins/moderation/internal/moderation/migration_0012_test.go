@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -107,16 +108,17 @@ func TestMigration0012Rolling(t *testing.T) {
 	// A 0.10.0 node runs with every migration applied.
 	pluginsdktest.ApplyMigrations(t, dsn, schema, filepath.Join("..", "..", "migrations"))
 	for _, uid := range []int64{10, 11, 20, 21} {
-		w, err := scanWatch(queryRow(db, `SELECT `+watchColumns+` FROM watchlist WHERE user_id = ?`, uid))
+		w, err := takeWatch(db.Where("user_id = ?", uid))
 		if err != nil || w.Locked || w.UserID != uid {
 			t.Fatalf("user %d: %+v (%v)", uid, w, err)
 		}
 	}
 	for _, id := range []int64{before, after} {
-		var e Event
-		if err := queryRow(db, `SELECT `+eventColumns+` FROM events WHERE id = ?`, id).Scan(e.scanTargets()...); err != nil {
+		var row model.Event
+		if err := db.Select(eventColumns).Take(&row, id).Error; err != nil {
 			t.Fatal(err)
 		}
+		e := eventOf(row)
 		if e.Level != nil || e.LevelSource != nil || e.Result != ResultHit {
 			t.Fatalf("record %d = %+v", id, e)
 		}

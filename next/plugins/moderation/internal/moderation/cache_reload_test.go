@@ -31,10 +31,10 @@ type reloadBarrier struct {
 	entered, release chan struct{}
 }
 
-// hold runs after the block reload's SELECT: its snapshot is taken, but the
-// plugin has not read or published its rows.
+// hold runs after the block reload's SELECT: its snapshot is taken and its
+// rows read, but the plugin has not published them.
 func (b *reloadBarrier) hold(db *gorm.DB) {
-	if strings.Contains(db.Statement.SQL.String(), "SELECT user_id, expires_at FROM blocks") && b.armed.CompareAndSwap(true, false) {
+	if strings.Contains(db.Statement.SQL.String(), `SELECT user_id, expires_at FROM "blocks"`) && b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
 		<-b.release
 	}
@@ -57,7 +57,7 @@ func TestBlockCacheRejectsLateReload(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = pgdb.Close(db) }()
-			if err := db.Callback().Row().After("gorm:row").Register("test:reload_barrier", barrier.hold); err != nil {
+			if err := db.Callback().Query().After("gorm:query").Register("test:reload_barrier", barrier.hold); err != nil {
 				t.Fatal(err)
 			}
 			var once sync.Once

@@ -269,7 +269,7 @@ func (p *Plugin) postCheckin(ctx context.Context, req *pluginv1.HTTPRequest) (*p
 // pagedList answers an admin list: it counts the rows from selects and reads
 // the page the request asks for (columns, ordered by orderBy) into T. An
 // empty page is null, as these endpoints have always answered.
-func pagedList[T any](ctx context.Context, p *Plugin, req *pluginv1.HTTPRequest, from func(*gorm.DB) *gorm.DB, columns, orderBy string) (*pluginv1.HTTPResponse, error) {
+func pagedList[T any](ctx context.Context, p *Plugin, req *pluginv1.HTTPRequest, from func(*gorm.DB) *gorm.DB, columns, orderBy pgdb.SQL) (*pluginv1.HTTPResponse, error) {
 	db, err := p.db(ctx)
 	if err != nil {
 		return unavailable(err), nil

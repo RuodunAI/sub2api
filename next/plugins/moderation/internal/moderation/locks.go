@@ -5,7 +5,9 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
@@ -68,14 +70,21 @@ func lockEntry(tx *gorm.DB, w Watch, found bool, list string, now time.Time, c w
 	if found {
 		c.from = w.Level
 	}
-	w, err := scanWatch(queryRow(tx, `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at)
-		VALUES (?, ?, 'manual', ?, NULL, ?, true, ?)
-		ON CONFLICT (user_id) DO UPDATE SET level = EXCLUDED.level, source = 'manual', expires_at = NULL, locked = true,
-			updated_at = EXCLUDED.updated_at,
-			since_at = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.since_at ELSE EXCLUDED.since_at END,
-			violation_count = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_count ELSE 0 END,
-			violation_epoch = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_epoch ELSE EXCLUDED.violation_epoch END
-		RETURNING `+watchColumns, c.uid, c.to, now, newEpoch(), now))
+	// A new level opens a new counting window; the same level keeps it.
+	same := func(col string) clause.Expr {
+		return gorm.Expr("CASE WHEN watchlist.level = EXCLUDED.level THEN ? ELSE ? END",
+			clause.Column{Table: "watchlist", Name: col}, clause.Column{Table: "excluded", Name: col})
+	}
+	row := model.Watch{UserID: c.uid, Level: c.to, Source: "manual", SinceAt: now, ViolationEpoch: newEpoch(), Locked: true, UpdatedAt: now}
+	err := tx.Clauses(clause.OnConflict{
+		Columns: columns("user_id"),
+		DoUpdates: append(clause.AssignmentColumns([]string{"level", "updated_at"}), clause.Assignments(map[string]any{
+			"source": "manual", "expires_at": nil, "locked": true,
+			"since_at": same("since_at"), "violation_epoch": same("violation_epoch"),
+			"violation_count": gorm.Expr("CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_count ELSE 0 END"),
+		})...),
+	}, clause.Returning{}).Create(&row).Error
+	w = watchOf(row)
 	if err != nil {
 		return w, false, err
 	}

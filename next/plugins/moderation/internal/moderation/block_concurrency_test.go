@@ -41,7 +41,7 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 	}
 	defer barrier.Rollback()
 	var key int64
-	if err := queryRow(barrier, `SELECT pg_backend_pid()`).Scan(&key); err != nil {
+	if err := barrier.Raw(`SELECT pg_backend_pid()`).Row().Scan(&key); err != nil {
 		t.Fatal(err)
 	}
 	if err := barrier.Exec(`SELECT pg_advisory_lock(?)`, key).Error; err != nil {
@@ -70,8 +70,8 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 	}()
 	var autoPID int
 	for autoPID == 0 {
-		if err := queryRow(db, `SELECT coalesce((SELECT pid FROM pg_locks
-			WHERE locktype='advisory' AND objid=? AND NOT granted LIMIT 1),0)`, key).Scan(&autoPID); err != nil {
+		if err := db.Raw(`SELECT coalesce((SELECT pid FROM pg_locks
+			WHERE locktype='advisory' AND objid=? AND NOT granted LIMIT 1),0)`, key).Row().Scan(&autoPID); err != nil {
 			t.Fatal(err)
 		}
 		if autoPID == 0 {
@@ -90,8 +90,8 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 	var unblock *result
 	for unblock == nil {
 		var waiting bool
-		if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM pg_locks
-			WHERE relation='block_subjects'::regclass AND pid<>? AND cardinality(pg_blocking_pids(pid))>0)`, autoPID).Scan(&waiting); err != nil {
+		if err := db.Raw(`SELECT EXISTS(SELECT 1 FROM pg_locks
+			WHERE relation='block_subjects'::regclass AND pid<>? AND cardinality(pg_blocking_pids(pid))>0)`, autoPID).Row().Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {
@@ -119,12 +119,12 @@ func TestUnblockCannotBeOvertakenByAnOldAutoBan(t *testing.T) {
 		t.Fatalf("unblock: %v %v", unblock.resp, unblock.err)
 	}
 	var blocked bool
-	if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
+	if err := db.Raw(`SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Row().Scan(&blocked); err != nil || blocked {
 		t.Fatalf("completed unblock was undone: blocked=%v err=%v", blocked, err)
 	}
 	// A late event batch from another node must also observe the new baseline.
 	p.applyBans(ctx, map[int64]bool{3: true})
-	if err := queryRow(db, `SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Scan(&blocked); err != nil || blocked {
+	if err := db.Raw(`SELECT EXISTS(SELECT 1 FROM blocks WHERE user_id=3)`).Row().Scan(&blocked); err != nil || blocked {
 		t.Fatalf("old events re-banned the user: blocked=%v err=%v", blocked, err)
 	}
 }
