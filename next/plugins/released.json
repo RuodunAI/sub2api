@@ -5,10 +5,6 @@
       "version": "0.3.2",
       "digest": "sha256:48da79ecaa7b4c3f7856f5c159e15b766c322336ce750e31da447684ee0c55e0"
     },
-    "ccgateway": {
-      "version": "0.1.133",
-      "digest": "sha256:fc8bac46fe2edcefbcadf62535699d312edde34fb226bf14446348a797e0a74c"
-    },
     "claude-oauth": {
       "version": "0.2.3",
       "digest": "sha256:c4498ac31e11ca96e7cafb0e20b39ed37f6e5219ce234bd9cd4a66f47bea6942"
