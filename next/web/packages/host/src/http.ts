@@ -130,16 +130,36 @@ export interface Session {
 const SESSION_KEY = 's2a.session'
 const listeners = new Set<(s: Session | null) => void>()
 
-function readSession(): Session | null {
+/** The stored session, raw as storage holds it; undefined when storage cannot be read. */
+function storedRaw(): string | null | undefined {
   try {
-    const raw = localStorage.getItem(SESSION_KEY)
+    return localStorage.getItem(SESSION_KEY)
+  } catch {
+    return undefined
+  }
+}
+
+function parseSession(raw: string | null | undefined): Session | null {
+  try {
     return raw ? (JSON.parse(raw) as Session) : null
   } catch {
     return null
   }
 }
 
-let current: Session | null = typeof localStorage !== 'undefined' ? readSession() : null
+let current: Session | null = typeof localStorage !== 'undefined' ? parseSession(storedRaw()) : null
+
+/**
+ * Takes up the session another tab stored (raw, as storage holds it) when
+ * its token differs, and tells the listeners. Returns whether it changed.
+ */
+function adoptStored(raw: string | null): boolean {
+  const stored = parseSession(raw)
+  if (stored?.access_token === current?.access_token) return false
+  current = stored
+  listeners.forEach((fn) => fn(current))
+  return true
+}
 
 export const session = {
   get(): Session | null {
@@ -155,9 +175,24 @@ export const session = {
     }
     listeners.forEach((fn) => fn(s))
   },
-  /** Store a login or step-up response carrying a new access token. */
+  /** Store a login response carrying a new access token. */
   fromTokenResponse(r: { access_token: string }) {
     session.set({ access_token: r.access_token })
+  },
+  /**
+   * Take up the token a rotation of the session gave (a step-up, ending
+   * the other sessions: CONTRACTS §100.4) in place of sentWith, the token
+   * the request that rotated it was sent with; only while the session
+   * still holds sentWith. Another tab may have stored a newer token
+   * meanwhile (its own rotation, or a new login): that one stays. Reads
+   * what other tabs stored first, as their storage event may not have
+   * arrived yet. Returns whether it was taken up. UI 3.17.
+   */
+  adoptRotated(sentWith: string | undefined, next: string): boolean {
+    syncSession()
+    if (!next || !current || current.access_token !== sentWith) return false
+    session.set({ ...current, access_token: next })
+    return true
   },
   clear() {
     session.set(null)
@@ -224,9 +259,7 @@ if (typeof window !== 'undefined') {
   window.addEventListener('storage', (e) => {
     if (e.key !== SESSION_KEY) return
     const had = !!current
-    current = readSession()
-    listeners.forEach((fn) => fn(current))
-    if (had && !current) config.onUnauthenticated?.('unauthenticated')
+    if (adoptStored(storedRaw() ?? null) && had && !current) config.onUnauthenticated?.('unauthenticated')
   })
 }
 
@@ -256,18 +289,8 @@ function buildURL(path: string, query?: Query): string {
 
 /** Re-reads the session written by other tabs (the storage event may not have fired yet). */
 function syncSession(): Session | null {
-  if (typeof localStorage === 'undefined') return current
-  let raw: string | null
-  try {
-    raw = localStorage.getItem(SESSION_KEY)
-  } catch {
-    return current // storage unavailable: keep the in-memory session
-  }
-  const stored = raw ? readSession() : null
-  if (stored?.access_token !== current?.access_token) {
-    current = stored
-    listeners.forEach((fn) => fn(current))
-  }
+  const raw = typeof localStorage === 'undefined' ? undefined : storedRaw()
+  if (raw !== undefined) adoptStored(raw) // storage unavailable: keep the in-memory session
   return current
 }
 

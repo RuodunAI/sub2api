@@ -49,7 +49,7 @@ export default {
   },
   sessions: {
     title: 'Sessions',
-    description: 'The devices signed in to your account. An ended session signs out within 2 hours.',
+    description: 'The devices signed in to your account, and where each was last used. An ended session signs out at once.',
     device: 'Device',
     signedInWith: 'Signed in with',
     since: 'Since',
@@ -57,7 +57,8 @@ export default {
     current: 'This device',
     revoke: 'End',
     revokeOthers: 'End other sessions',
-    revokeConfirm: 'That device must sign in again to continue, within 2 hours at most. Continue?',
+    revokeConfirm: 'That device must sign in again to continue. Continue?',
+    revokeOthersConfirm: 'Every other device must sign in again, and this device gets a new sign-in, so a copy of it in use elsewhere stops working too. Continue?',
     revoked: 'Ended',
     empty: 'No sessions',
     unknownDevice: 'Unknown device',

@@ -73,11 +73,12 @@ async function submit() {
   errors.value = {}
   try {
     const body = { scope: props.scope, context: props.context, method: method.value, ...(needsPassword.value ? { password: password.value } : {}), ...(await factor()) }
+    const sentWith = session.get()?.access_token
     const r = await api.post<{ proof: string; access_token?: string }>('/me/verify', body)
     // A session gets a new token of the same session on verifying (CONTRACTS
-    // §100): the replay and everything after it use that one.
-    const current = session.get()
-    if (r.access_token && current) session.set({ ...current, access_token: r.access_token })
+    // §100.4): the replay and everything after it use that one, unless
+    // another tab stored a newer one meanwhile.
+    if (r.access_token) session.adoptRotated(sentWith, r.access_token)
     emit('verified', r.proof)
   } catch (e) {
     if (passkeyCancelled(e)) return

@@ -272,6 +272,46 @@ describe('session', () => {
   })
 })
 
+describe('session.adoptRotated', () => {
+  it('takes up a rotated token in place of the one the request was sent with', () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    const seen = vi.fn()
+    http.session.onChange(seen)
+    expect(http.session.adoptRotated('s2s_a', 's2s_b')).toBe(true)
+    expect(http.session.get()?.access_token).toBe('s2s_b')
+    expect(JSON.parse(localStorage.getItem('s2a.session')!)).toEqual({ access_token: 's2s_b' })
+    expect(seen).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a newer token another tab stored, its storage event not in yet', () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_other' }))
+    expect(http.session.adoptRotated('s2s_a', 's2s_late')).toBe(false)
+    expect(http.session.get()?.access_token).toBe('s2s_other')
+    expect(JSON.parse(localStorage.getItem('s2a.session')!)).toEqual({ access_token: 's2s_other' })
+  })
+
+  it('does not sign a signed-out or newly signed-in console back into the old session', () => {
+    expect(http.session.adoptRotated('s2s_a', 's2s_b')).toBe(false)
+    expect(http.session.get()).toBeNull()
+    http.session.fromTokenResponse({ access_token: 's2s_new_login' })
+    expect(http.session.adoptRotated('s2s_a', 's2s_b')).toBe(false)
+    expect(http.session.adoptRotated(undefined, 's2s_b')).toBe(false)
+    expect(http.session.get()?.access_token).toBe('s2s_new_login')
+  })
+
+  it('tells listeners of a token another tab stored once, by the event or by a read first', () => {
+    http.session.fromTokenResponse({ access_token: 's2s_a' })
+    const seen = vi.fn()
+    http.session.onChange(seen)
+    localStorage.setItem('s2a.session', JSON.stringify({ access_token: 's2s_b' }))
+    http.session.adoptRotated('s2s_a', 's2s_c') // reads s2s_b first
+    window.dispatchEvent(new StorageEvent('storage', { key: 's2a.session' }))
+    expect(seen).toHaveBeenCalledTimes(1)
+    expect(http.session.get()?.access_token).toBe('s2s_b')
+  })
+})
+
 describe('authz hooks', () => {
   afterEach(() => http.configureHttp({ onAuthzVersion: undefined, onForbidden: undefined }))
 
