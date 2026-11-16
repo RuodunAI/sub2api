@@ -40,7 +40,7 @@ func TestParseFilterRequestIDs(t *testing.T) {
 			t.Parallel()
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest("GET", "/usage?"+tc.query, nil)
-			f, err := parseFilter(c, nil, true)
+			f, err := parseFilter(c, nil, trailAccounts)
 			require.NoError(t, err)
 			where, args := filterSQL(t, f)
 			require.Equal(t, strings.Join(tc.conds, " AND "), where)
@@ -50,7 +50,7 @@ func TestParseFilterRequestIDs(t *testing.T) {
 	// A user's own search keeps its user condition first and the same match.
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("GET", "/me/usage?request_id=r1&from=2026-09-01T00:00:00Z", nil)
-	f, err := parseFilter(c, new(int64), false)
+	f, err := parseFilter(c, new(int64), trailSelf)
 	require.NoError(t, err)
 	where, _ := filterSQL(t, f)
 	require.Equal(t, "u.user_id = $1 AND ((u.request_id = $2 OR u.client_request_id = $3)) AND u.created_at >= $4", where)
@@ -131,7 +131,7 @@ func TestParseFilterInvalidSearch(t *testing.T) {
 		t.Run(query, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest("GET", "/usage?"+query, nil)
-			_, err := parseFilter(c, nil, true)
+			_, err := parseFilter(c, nil, trailAccounts)
 			require.Error(t, err)
 		})
 	}
@@ -482,9 +482,9 @@ func TestUsageAttemptTrail(t *testing.T) {
 // A stored trail that cannot be read is dropped, whoever reads it.
 func TestShapeTrailDropsUnreadable(t *testing.T) {
 	t.Parallel()
-	for _, view := range []trailView{trailAccounts, trailRefs, trailSelf} {
+	for _, view := range []trailView{trailAccounts, trailRefs, trailSelf, trailScoped} {
 		r := Record{AttemptTrail: json.RawMessage(`{"steps":[{"account_id":5`)}
-		require.Nil(t, r.shapeTrail(view))
+		require.Nil(t, r.shapeTrail(view, nil))
 		require.Nil(t, r.AttemptTrail)
 	}
 }

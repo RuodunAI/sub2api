@@ -26,7 +26,7 @@ func sqlFilter(t *testing.T, query string, self *int64) store.Conds {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest("GET", "/usage?"+query, nil)
-	f, err := parseFilter(c, self, self == nil)
+	f, err := parseFilter(c, self, trailViewFor(self, self == nil))
 	if err != nil {
 		t.Fatal(err)
 	}
