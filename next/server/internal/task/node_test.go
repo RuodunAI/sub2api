@@ -137,9 +137,15 @@ func TestNodeTaskDoesNotOverlapItself(t *testing.T) {
 	close(release)
 	waitFor(t, "first run finished", func() bool { return state(t, env.rdb, "n1", "core.test.slow").Status == StatusSucceeded })
 	require.EqualValues(t, 1, calls.Load())
-	runs, err := ReadNodeRuns(t.Context(), env.rdb, "n1", "core.test.slow")
-	require.NoError(t, err)
-	require.Len(t, runs, 2)
+	// State and history are written by one pipeline, not one transaction: a
+	// reader can see the new state before the run is appended.
+	var runs []NodeTaskRun
+	waitFor(t, "first run recorded", func() bool {
+		var err error
+		runs, err = ReadNodeRuns(t.Context(), env.rdb, "n1", "core.test.slow")
+		require.NoError(t, err)
+		return len(runs) == 2
+	})
 	require.Equal(t, StatusSucceeded, runs[0].Status)
 	require.Equal(t, StatusSkipped, runs[1].Status)
 	require.True(t, runs[1].Manual)
