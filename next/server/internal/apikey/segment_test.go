@@ -88,7 +88,7 @@ func TestAuthenticateSegmentTerms(t *testing.T) {
 // rule every other reader uses (CONTRACTS §97.9), not a copy of it that a
 // change to the rule would leave behind.
 func TestLookupUsesOpenToUser(t *testing.T) {
-	require.Contains(t, lookupSQL, segment.OpenToKeyOwner)
+	require.Contains(t, lookupColumns, segment.OpenToKeyOwner)
 	require.Contains(t, selectKey, segment.OpenToKeyOwner)
 }
 

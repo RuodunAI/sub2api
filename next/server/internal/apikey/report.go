@@ -118,18 +118,16 @@ func rateReports(k *APIKey) []RateReport {
 	return out
 }
 
-// usageTotalsSQL sums the usage records of key @key from @today on, and in
+// usageTotalsColumns sum the usage records of a key from @today on, and in
 // total.
-const usageTotalsSQL = `SELECT
-		count(*) FILTER (WHERE created_at >= @today), count(*),
+const usageTotalsColumns = `count(*) FILTER (WHERE created_at >= @today), count(*),
 		COALESCE(sum(input_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(input_tokens), 0),
 		COALESCE(sum(output_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(output_tokens), 0),
 		COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens) FILTER (WHERE created_at >= @today), 0),
 		COALESCE(sum(cache_creation_tokens + cache_creation_1h_tokens), 0),
 		COALESCE(sum(cache_read_tokens) FILTER (WHERE created_at >= @today), 0), COALESCE(sum(cache_read_tokens), 0),
 		COALESCE(sum(apikey_quota_charge(billing_status, total_cost)) FILTER (WHERE created_at >= @today), 0),
-		COALESCE(sum(apikey_quota_charge(billing_status, total_cost)), 0)
-	FROM usage_logs WHERE api_key_id = @key`
+		COALESCE(sum(apikey_quota_charge(billing_status, total_cost)), 0)`
 
 // usageTotals sums the key's usage records today and in total; the cost is
 // what the quota counts (apikey_quota_charge, migration 0059).
@@ -137,7 +135,8 @@ func (s *Service) usageTotals(ctx context.Context, keyID int64, r *UsageReport) 
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	var cost [2]decimal.Decimal
 	t, a := &r.Usage.Today, &r.Usage.Total
-	err := store.G(ctx, s.db.Gorm).Raw(usageTotalsSQL, map[string]any{"key": keyID, "today": today}).Row().Scan(
+	err := store.G(ctx, s.db.Gorm).Table("usage_logs").Select(usageTotalsColumns, map[string]any{"today": today}).
+		Where("api_key_id = ?", keyID).Row().Scan(
 		&t.Requests, &a.Requests, &t.InputTokens, &a.InputTokens, &t.OutputTokens, &a.OutputTokens,
 		&t.CacheCreationTokens, &a.CacheCreationTokens, &t.CacheReadTokens, &a.CacheReadTokens, &cost[0], &cost[1])
 	if err != nil {

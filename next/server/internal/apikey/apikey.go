@@ -117,7 +117,10 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 		ids = append(ids, id)
 		ts = append(ts, at)
 	}
-	err := store.G(ctx, s.db.Gorm).Exec(flushLastUsedSQL, store.Int64s(ids), store.Times(ts)).Error
+	// last_used_at only moves forward.
+	err := store.G(ctx, s.db.Gorm).Table("api_keys AS k").
+		Clauses(store.UpdateFrom("(SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v", store.Int64s(ids), store.Times(ts))).
+		Where("k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)").Update("last_used_at", gorm.Expr("v.t")).Error
 	if err != nil {
 		// Put them back so the next tick retries.
 		s.mu.Lock()
@@ -130,12 +133,6 @@ func (s *Service) FlushLastUsed(ctx context.Context) error {
 	}
 	return err
 }
-
-// flushLastUsedSQL moves last_used_at of the keys (the ids, then the times
-// in the same order) forward, never back.
-const flushLastUsedSQL = `UPDATE api_keys k SET last_used_at = v.t
-	FROM (SELECT unnest(?::bigint[]) AS id, unnest(?::timestamptz[]) AS t) v
-	WHERE k.id = v.id AND (k.last_used_at IS NULL OR k.last_used_at < v.t)`
 
 func (s *Service) touch(id int64) {
 	s.mu.Lock()
@@ -262,30 +259,30 @@ func (s *Service) Authenticate(ctx context.Context, rawKey string) (*core.APIKey
 	}, nil
 }
 
-// lookupSQL reads what authenticating a key (its hash) needs in one
-// statement: the key, its owner and the owner's segment, the key's group and
-// what the segment gets there. Whether the owner may use the group is
+// lookupColumns are what authenticating a key needs (lookupQuery): the key,
+// its owner and the owner's segment, the key's group and what the segment
+// gets there. Whether the owner may use the group is
 // segment.OpenToKeyOwner, as for the key endpoints and /me/groups.
-//
-// It runs on every gateway request: Raw SQL scanned through Row into local
-// variables, the GORM form that allocates least (BenchmarkHotKeyLookup;
-// internal/store/gormtest/BASELINE.md).
-var lookupSQL = `SELECT k.id, k.user_id, k.status, k.expires_at,
+const lookupColumns = `k.id, k.user_id, k.status, k.expires_at,
 		(u.status = 'active' AND u.deleted_at IS NULL),
 		COALESCE(g.id, 0), COALESCE(g.name, ''), COALESCE(g.status, 'deleted'), COALESCE(g.rate_multiplier, 1),
 		COALESCE(g.model_allowlist, '[]'), COALESCE(g.model_filter_mode, 'blacklist'), COALESCE(g.environment, '{}'),
 		COALESCE(` + segment.OpenToKeyOwner + `, false), k.allowed_ips,
 		k.rpm_limit, k.tpm_limit, k.max_concurrency, k.quota_limit, k.quota_used, COALESCE(g.conversion_loss_policy, ''),
-		s.id, s.discount, sg.rate_override
-	FROM api_keys k
-	JOIN users u ON u.id = k.user_id
-	JOIN segments s ON s.id = u.segment_id
-	LEFT JOIN groups g ON g.id = k.group_id
-	LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id
-	WHERE k.key_hash = ? AND k.deleted_at IS NULL`
+		s.id, s.discount, sg.rate_override`
 
-// lookupQuery is the statement of lookup.
-func lookupQuery(db *gorm.DB, hash string) *gorm.DB { return db.Raw(lookupSQL, hash) }
+// lookupQuery reads lookupColumns of the key hash in one statement. It runs
+// on every gateway request: its row is scanned through Row into local
+// variables, the GORM form that allocates least (BenchmarkHotKeyLookup;
+// internal/store/gormtest/BASELINE.md).
+func lookupQuery(db *gorm.DB, hash string) *gorm.DB {
+	return db.Table("api_keys k").Select(lookupColumns).
+		Joins("JOIN users u ON u.id = k.user_id").
+		Joins("JOIN segments s ON s.id = u.segment_id").
+		Joins("LEFT JOIN groups g ON g.id = k.group_id").
+		Joins("LEFT JOIN segment_groups sg ON sg.segment_id = s.id AND sg.group_id = g.id").
+		Where("k.key_hash = ? AND k.deleted_at IS NULL", hash)
+}
 
 func (s *Service) lookup(ctx context.Context, hash string) (*cached, error) {
 	e := &cached{}
@@ -384,7 +381,7 @@ type APIKey struct {
 }
 
 // selectKey are the columns of keyRow, read by keyView.
-var selectKey = `k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, g.id AS group_id, COALESCE(g.name, '') AS group_name,
+const selectKey = `k.id, k.user_id, u.email AS user_email, k.name, k.key_prefix, g.id AS group_id, COALESCE(g.name, '') AS group_name,
 		CASE WHEN g.id IS NULL THEN 'deleted'
 			WHEN g.status <> 'active' THEN 'disabled'
 			WHEN ` + segment.OpenToKeyOwner + ` THEN 'active'

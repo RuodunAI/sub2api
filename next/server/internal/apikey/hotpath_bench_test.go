@@ -2,12 +2,13 @@ package apikey
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -33,8 +34,11 @@ func BenchmarkHotKeyLookup(b *testing.B) {
 		b.Fatal(err)
 	}
 	svc := New(db, nil, nil, nil)
-	// pgxLookupSQL is lookupSQL as pgx ran it.
-	pgxLookupSQL := strings.Replace(lookupSQL, "k.key_hash = ?", "k.key_hash = $1", 1)
+	// pgxLookupSQL is lookupQuery's statement, as pgx ran it.
+	pgxLookupSQL, _, err := gormtest.Build(func(tx *gorm.DB) *gorm.DB { return lookupQuery(tx, hash).Scan(&struct{}{}) })
+	if err != nil {
+		b.Fatal(err)
+	}
 	for _, bc := range []struct {
 		name   string
 		lookup func() (*cached, error)

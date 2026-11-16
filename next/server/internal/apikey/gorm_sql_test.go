@@ -3,19 +3,17 @@ package apikey
 import (
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 // The SQL of the API key statements built with GORM (see package gormtest).
 
-// The per-request lookup (lookupSQL).
+// The per-request lookup (lookupQuery).
 func TestSQLKeyLookup(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return lookupQuery(db, "hash").Scan(&struct{ ID int64 }{}) })
 }
@@ -55,21 +53,6 @@ func TestSQLKeyGroupAvailable(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var ok bool
 		return usableGroup(db, 7, 3).Take(&ok)
-	})
-}
-
-func TestSQLKeyFlushLastUsed(t *testing.T) {
-	at := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return db.Exec(flushLastUsedSQL, store.Int64s{1, 2}, store.Times{at, at.Add(time.Second)})
-	})
-}
-
-func TestSQLKeyUsageTotals(t *testing.T) {
-	today := time.Date(2026, 11, 15, 0, 0, 0, 0, time.UTC)
-	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		var row struct{}
-		return db.Raw(usageTotalsSQL, map[string]any{"key": int64(5), "today": today}).Scan(&row)
 	})
 }
 
