@@ -24,7 +24,8 @@ func InTx(q *gorm.DB) bool {
 // function that takes a *gorm.DB but means a transaction - a row lock
 // (FOR UPDATE), a transaction-scoped advisory lock, several writes that
 // commit together - calls it first: the type no longer says so, and on the
-// pool such a lock would end with its own statement.
+// pool such a lock would end with its own statement. gormguard [tx-lock]
+// holds every function that locks to it.
 func RequireTx(q *gorm.DB) error {
 	if InTx(q) {
 		return nil

@@ -55,9 +55,12 @@ func retirement(db *gorm.DB, key string) *gorm.DB {
 // takes its key back: the image decides (the reservation list keeps other
 // publishers off first-party keys).
 func claimRetiredKey(ctx context.Context, tx *gorm.DB, key string, publisher *int64, source string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	g := store.G(ctx, tx)
 	var r model.PluginKeyRetirement
-	err := retirement(g, key).Select("publisher_id").Clauses(store.ForUpdate).Take(&r).Error
+	err := retirement(g, key).Select("publisher_id").Clauses(store.ForUpdate()).Take(&r).Error
 	switch {
 	case store.IsNoRows(err):
 		return nil
@@ -150,7 +153,7 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 	err := s.purgeTx(ctx, opt.PurgeAccounts, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
 		var one int
-		err := retirement(g, key).Select("1").Clauses(store.ForUpdate).Take(&one).Error
+		err := retirement(g, key).Select("1").Clauses(store.ForUpdate()).Take(&one).Error
 		if store.IsNoRows(err) {
 			return core.ErrNotFound.WithMessage("the plugin key is not retired")
 		}

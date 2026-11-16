@@ -201,8 +201,11 @@ func (s *Service) endOneSession(ctx context.Context, g *gorm.DB, userID int64, i
 // rolls back, which stamplessStep relies on; a second restamp in the same
 // transaction would stamp two ahead. endSomeSessions is its only caller.
 func (s *Service) keepingBump(ctx context.Context, g *gorm.DB, userID int64, keep string) error {
+	if err := store.RequireTx(g); err != nil {
+		return err
+	}
 	var from int
-	if err := userTokenVersion(g, userID).Clauses(store.ForUpdate).Row().Scan(&from); err != nil {
+	if err := userTokenVersion(g, userID).Clauses(store.ForUpdate()).Row().Scan(&from); err != nil {
 		return err
 	}
 	if err := bumpTokenVersion(g, userID, 1).Error; err != nil {

@@ -533,7 +533,7 @@ func (c *Controller) registerRuntime(ctx context.Context, key string, expected .
 // no rollout or uninstall moves it until the registration commits.
 func selectEpochForShare(g *gorm.DB, key string) *gorm.DB {
 	return g.Model(&model.Plugin{}).Select("row_version").Where("key = ?", key).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthShare})
+		Clauses(store.Lock(clause.LockingStrengthShare))
 }
 
 // upsertRuntimeNode records that this boot runs the plugin. Raw SQL: the

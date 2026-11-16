@@ -11,7 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -362,5 +361,5 @@ func purgeTargetQuery(db *gorm.DB, key string) *gorm.DB {
 	return db.Table("ccgateway_runtimes r").Joins("JOIN accounts a ON a.id = r.account_id").
 		Select("a.id, "+sqlPendingPurge+" AS retained").
 		Where("r.key = ? AND a.plugin_key = 'ccgateway'", key).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "r"}})
+		Clauses(store.ForUpdate().Of("r"))
 }

@@ -466,6 +466,126 @@ func f(db *gorm.DB) {
 				ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance},
 		},
 		{
+			name:    "instance/session overrides and Debug outside store",
+			pkg:     "internal/billing",
+			imports: `import "gorm.io/gorm/logger"`,
+			src: `
+func f(db *gorm.DB) {
+	db.Session(&gorm.Session{PrepareStmt: true})
+	db.Session(&gorm.Session{NewDB: true, AllowGlobalUpdate: true, Logger: logger.Default})
+	db.Session(&gorm.Session{SkipDefaultTransaction: false})
+	_ = gorm.Session{DryRun: true}
+	db.Debug()
+	debug := db.Debug
+	_ = debug
+	s := &gorm.Session{}
+	s.PrepareStmt = true
+	db.Session(s)
+}
+`,
+			want: []string{ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance, ruleInstance},
+		},
+		{
+			name: "instance/plain sessions outside store, overrides inside it",
+			pkg:  "internal/billing",
+			src: `
+func f(ctx context.Context, db *gorm.DB) {
+	db.Session(&gorm.Session{NewDB: true, Context: ctx})
+	db.Session(&gorm.Session{})
+}
+`,
+		},
+		{
+			name: "instance/session overrides inside store",
+			pkg:  "internal/store",
+			src: `
+func f(db *gorm.DB) {
+	db.Session(&gorm.Session{DryRun: true, NewDB: true})
+	db.Debug()
+}
+`,
+		},
+		{
+			name: "tx-lock/functions that lock on a handle they do not check",
+			pkg:  "internal/billing",
+			src: `
+const lockSQL = "SELECT id FROM t WHERE id = ? FOR NO KEY UPDATE"
+
+func locked(db *gorm.DB, id int64) *gorm.DB { return db.Table("t").Where("id = ?", id).Clauses(store.ForUpdate()) }
+
+func read(ctx context.Context, tx *gorm.DB, id int64) error {
+	var n int64
+	return locked(store.G(ctx, tx), id).Select("id").Take(&n).Error
+}
+
+func share(db *gorm.DB) error {
+	return db.Table("t").Clauses(store.Lock(store.LockingStrengthKeyShare).Of("t")).Take(&struct{}{}).Error
+}
+
+func raw(db *gorm.DB) error {
+	var n int64
+	return db.Raw(lockSQL, 1).Row().Scan(&n)
+}
+
+func advisory(db *gorm.DB) error {
+	return db.Exec("SELECT pg_advisory_xact_lock(?)", 1).Error
+}
+
+func literal(db *gorm.DB) error {
+	return db.Table("t").Clauses(clause.Locking{Strength: "SHARE"}).Take(&struct{}{}).Error
+}
+
+func (r repo) method(tx *gorm.DB) error {
+	return tx.Raw("SELECT 1 FROM t FOR key share").Row().Err()
+}
+
+type repo struct{}
+`,
+			want: []string{ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock},
+		},
+		{
+			name: "tx-lock/checked handles, builders, conditional checks and functions without a handle pass",
+			pkg:  "internal/billing",
+			src: `
+func locked(db *gorm.DB, id int64) *gorm.DB { return db.Table("t").Where("id = ?", id).Clauses(store.ForUpdate()) }
+
+func read(ctx context.Context, tx *gorm.DB, id int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	var n int64
+	return locked(store.G(ctx, tx), id).Select("id").Take(&n).Error
+}
+
+func maybe(db *gorm.DB, lock bool) error {
+	q := db.Table("t")
+	if lock {
+		if err := store.RequireTx(db); err != nil {
+			return err
+		}
+		q = q.Clauses(store.ForUpdate())
+	}
+	return q.Take(&struct{}{}).Error
+}
+
+func run(ctx context.Context, db *store.DB) error {
+	return db.Tx(ctx, func(tx *gorm.DB) error {
+		return tx.Raw("SELECT 1 FROM t FOR UPDATE").Row().Err()
+	})
+}
+
+func plain(db *gorm.DB) error {
+	return db.Raw("SELECT 'for updates'").Row().Err()
+}
+`,
+		},
+		{
+			name: "tx-lock/test files",
+			pkg:  "internal/billing",
+			file: "billing_test.go",
+			src:  `func f(db *gorm.DB) error { return db.Raw("SELECT 1 FOR UPDATE").Row().Err() }`,
+		},
+		{
 			name: "instance/inside store, and statement state elsewhere",
 			pkg:  "internal/store",
 			src: `

@@ -21,7 +21,7 @@ func (s *Service) mutate(ctx context.Context, owner core.ResourceOwner, id strin
 		if err := lockOwner(ctx, tx, owner); err != nil {
 			return err
 		}
-		r, _, err := read(store.G(ctx, tx).Clauses(store.ForUpdate), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
+		r, _, err := read(store.G(ctx, tx).Clauses(store.ForUpdate()), `user_id=? AND group_id=? AND public_id=?`, owner.UserID, owner.GroupID, id)
 		if store.IsNoRows(err) {
 			return core.ErrNotFound
 		}

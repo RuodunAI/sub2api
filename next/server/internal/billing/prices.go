@@ -11,7 +11,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
@@ -73,12 +72,17 @@ func (r *priceRow) price() *Price {
 func priceByID(db *gorm.DB, id int64, lock bool) *gorm.DB {
 	db = pricesWithSource(db).Select(priceColumns).Where("mp.id = ?", id)
 	if lock {
-		db = db.Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "mp"}})
+		db = db.Clauses(store.ForUpdate().Of("mp"))
 	}
 	return db
 }
 
 func (s *Service) getPrice(ctx context.Context, q *gorm.DB, id int64, lock bool) (*Price, error) {
+	if lock {
+		if err := store.RequireTx(q); err != nil {
+			return nil, err
+		}
+	}
 	var row priceRow
 	err := priceByID(store.G(ctx, q), id, lock).Take(&row).Error
 	if store.IsNoRows(err) {

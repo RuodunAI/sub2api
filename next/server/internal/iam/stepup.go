@@ -527,6 +527,9 @@ func passwordChecked(p proofPayload) bool {
 // when their proofs were spent. A request whose proof was issued with the
 // password passes; so do calls outside a console request.
 func (s *Service) keepLastFactor(ctx context.Context, tx *gorm.DB, userID int64, scope string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	_, operation, ok := core.StepUpRequest(ctx)
 	if !ok || core.StepUpPassword(ctx) {
 		return nil

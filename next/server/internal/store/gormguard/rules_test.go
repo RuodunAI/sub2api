@@ -7,6 +7,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -45,7 +46,21 @@ var (
 
 // instanceMethods are the gorm (*DB) methods that reach or change the
 // shared instance behind every handle: its *sql.DB, callbacks and plugins.
-var instanceMethods = map[string]bool{"DB": true, "Callback": true, "Use": true}
+// Debug is a session that logs every statement with its values (Info
+// level), past the instance's logger.Discard.
+var instanceMethods = map[string]bool{"DB": true, "Callback": true, "Use": true, "Debug": true}
+
+// sessionOverrides are the gorm.Session fields that override, for the
+// statements of a session, what the instance was configured with on
+// purpose: PrepareStmt runs them as *sql.Stmt on the pool, past sqlpool's
+// result reading (the RowsAffected wait it prevents comes back);
+// AllowGlobalUpdate lets an UPDATE or DELETE without WHERE through; Logger
+// logs the SQL with its values; SkipDefaultTransaction=false wraps writes
+// in a transaction of their own, outside store.DB.Tx; DryRun builds
+// statements that never run.
+var sessionOverrides = map[string]bool{
+	"PrepareStmt": true, "AllowGlobalUpdate": true, "Logger": true, "SkipDefaultTransaction": true, "DryRun": true,
+}
 
 // conditionMethods are the gorm (*DB) methods whose arguments become SQL
 // parameters, by the index of the first such argument: Find and the other
@@ -91,6 +106,7 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 		name := filepath.Base(fset.Position(f.Package).Filename)
 		test := strings.HasSuffix(name, "_test.go")
 		c.sqlOwner = sqlOwner || test
+		c.test = test
 		ast.Inspect(f, c.visit)
 	}
 	return c.out
@@ -139,6 +155,9 @@ type checker struct {
 
 	// [casbin-api]: whether the package owns Casbin.
 	casbinOwner bool
+	// test is whether the file being checked is a test file ([tx-lock]
+	// leaves them alone).
+	test bool
 
 	// What [gorm-raw-unrun] follows a Raw statement through: the functions
 	// of the package, the assignments and uses of its local variables, and
@@ -147,6 +166,9 @@ type checker struct {
 	assigns map[*types.Var][]assignment
 	uses    map[*types.Var][]use
 	rawFns  map[*types.Func]bool
+	// [tx-lock]: whether a function of the package is a lock builder
+	// (memoized).
+	lockFns map[*types.Func]bool
 
 	// [casbin-api]: the bodies of the package's functions and function
 	// literals, and the gorm-adapter constructor selectors whose call
@@ -176,6 +198,7 @@ func (c *checker) index(files []*ast.File) {
 	c.assigns = map[*types.Var][]assignment{}
 	c.uses = map[*types.Var][]use{}
 	c.rawFns = map[*types.Func]bool{}
+	c.lockFns = map[*types.Func]bool{}
 	c.adapterVetted = map[*ast.SelectorExpr]bool{}
 	fieldReads := map[*ast.Ident]bool{}
 	assign := func(at token.Pos, lhs []ast.Expr, rhs []ast.Expr) {
@@ -270,6 +293,8 @@ func (c *checker) visit(n ast.Node) bool {
 		c.assign(n)
 	case *ast.CompositeLit:
 		c.literal(n)
+	case *ast.FuncDecl:
+		c.txLock(n)
 	}
 	return true
 }
@@ -283,7 +308,7 @@ func (c *checker) selector(n *ast.SelectorExpr) {
 	case isGormMethod(fn) && bannedMethods[fn.Name()] && !c.owner:
 		c.report(n, "%s gorm (*DB).%s outside package store: transactions start and end in store.DB.Tx or TxOptions, connections come from WithConn, and the schema comes from the SQL migrations", ruleTx, fn.Name())
 	case isGormMethod(fn) && instanceMethods[fn.Name()] && !c.owner:
-		c.report(n, "%s gorm (*DB).%s outside package store: every handle shares store.G's instance", ruleInstance, fn.Name())
+		c.report(n, "%s gorm (*DB).%s outside package store: every handle shares store.G's instance, with its pool, callbacks and silent logger", ruleInstance, fn.Name())
 	case isGormFunc(fn, "Open") && !c.owner:
 		c.report(n, "%s gorm.Open outside package store: take a handle from store.G", ruleOpen)
 	case fn.Name() == "SQLTx" && fn.Pkg() != nil && fn.Pkg().Path() == c.storePkg && !c.sqlOwner:
@@ -580,9 +605,14 @@ func (c *checker) parameterArgs(fn *types.Func, n *ast.CallExpr) []ast.Expr {
 	return nil
 }
 
-// literal checks the Vars of a clause.Expr or clause.NamedExpr literal.
+// literal checks the Vars of a clause.Expr or clause.NamedExpr literal,
+// and the fields of a gorm.Session one (session).
 func (c *checker) literal(n *ast.CompositeLit) {
 	t := c.info.TypeOf(n)
+	if isNamed(t, gormPkg, "Session") {
+		c.session(n)
+		return
+	}
 	if !isNamed(t, clausePkg, "Expr") && !isNamed(t, clausePkg, "NamedExpr") {
 		return
 	}
@@ -600,6 +630,36 @@ func (c *checker) literal(n *ast.CompositeLit) {
 	c.checkParenBytes(fieldValue(n, "SQL", 0), vars.Elts, all, t.String())
 }
 
+// session reports a gorm.Session literal that sets one of
+// sessionOverrides outside the owners ([gorm-instance]): it reconfigures
+// the shared instance for the statements of that session.
+func (c *checker) session(n *ast.CompositeLit) {
+	if c.owner {
+		return
+	}
+	for _, e := range n.Elts {
+		kv, ok := e.(*ast.KeyValueExpr)
+		if !ok {
+			// Positional: the literal sets every field.
+			c.report(n, "%s positional gorm.Session literal outside package store: name the fields, and set none of %s", ruleInstance, overrideNames())
+			return
+		}
+		if key, ok := kv.Key.(*ast.Ident); ok && sessionOverrides[key.Name] {
+			c.report(kv, "%s gorm.Session{%s} outside package store: it overrides the instance's configuration for the session's statements", ruleInstance, key.Name)
+		}
+	}
+}
+
+// overrideNames lists sessionOverrides, sorted.
+func overrideNames() string {
+	names := make([]string, 0, len(sessionOverrides))
+	for name := range sessionOverrides {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
+}
+
 func (c *checker) checkParam(arg ast.Expr, where string) {
 	if t := c.info.TypeOf(arg); expandedSlice(t) {
 		c.report(arg, "%s %s argument to %s: GORM expands it into a list; pass store.Int64s, store.Strings or store.Times", ruleSlice, t, where)
@@ -612,8 +672,13 @@ func (c *checker) assign(n *ast.AssignStmt) {
 		return
 	}
 	for _, lhs := range n.Lhs {
-		if v := assignedField(c.info, lhs); v != nil && instanceField(v) {
+		v := assignedField(c.info, lhs)
+		switch {
+		case v == nil:
+		case instanceField(v):
 			c.report(lhs, "%s assignment to gorm %s outside package store: every handle shares store.G's instance", ruleInstance, v.Name())
+		case sessionField(v):
+			c.report(lhs, "%s assignment to gorm.Session's %s outside package store: it overrides the instance's configuration for the session's statements", ruleInstance, v.Name())
 		}
 	}
 }
@@ -655,6 +720,21 @@ func instanceField(v *types.Var) bool {
 	if tn == nil {
 		return false
 	}
+	st, _ := tn.Type().Underlying().(*types.Struct)
+	for i := range st.NumFields() {
+		if st.Field(i) == v {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionField reports a field of gorm.Session among sessionOverrides.
+func sessionField(v *types.Var) bool {
+	if v.Pkg() == nil || v.Pkg().Path() != gormPkg || !sessionOverrides[v.Name()] {
+		return false
+	}
+	tn, _ := v.Pkg().Scope().Lookup("Session").(*types.TypeName)
 	st, _ := tn.Type().Underlying().(*types.Struct)
 	for i := range st.NumFields() {
 		if st.Field(i) == v {

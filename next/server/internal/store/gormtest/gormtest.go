@@ -77,11 +77,15 @@ func Assert(t testing.TB, build func(*gorm.DB) *gorm.DB) {
 // AssertRun is Assert for a function that runs its statements rather than
 // returning one, or runs several: every statement run sends to its DryRun
 // session, in order. A read ends in gorm.ErrDryRunModeUnsupported (DryRun
-// returns no rows), which is not a failure here.
+// returns no rows), which is not a failure here. The session stands for a
+// transaction's (store.RequireTx passes), so that the functions that lock
+// can be snapshot; store.DryRun and DB are no transaction.
 func AssertRun(t testing.TB, run func(*gorm.DB) error) {
 	t.Helper()
 	rec := &recorder{}
-	err := run(DB().Session(&gorm.Session{NewDB: true, Context: context.WithValue(context.Background(), recorderKey{}, rec)}))
+	s := DB().Session(&gorm.Session{NewDB: true, Context: context.WithValue(context.Background(), recorderKey{}, rec)})
+	s.Statement.ConnPool = dryTx{s.Statement.ConnPool}
+	err := run(s)
 	if err != nil && !errors.Is(err, gorm.ErrDryRunModeUnsupported) {
 		t.Fatal(err)
 	}
@@ -90,6 +94,13 @@ func AssertRun(t testing.TB, run func(*gorm.DB) error) {
 	}
 	compare(t, strings.Join(rec.stmts, "\n"))
 }
+
+// dryTx is the connection pool of AssertRun's session as a transaction's
+// (gorm.TxCommitter). DryRun sends nothing to it.
+type dryTx struct{ gorm.ConnPool }
+
+func (dryTx) Commit() error   { return nil }
+func (dryTx) Rollback() error { return nil }
 
 // recorder collects the statements of the session whose context holds it.
 type recorder struct{ stmts []string }

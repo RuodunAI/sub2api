@@ -195,6 +195,9 @@ func totpFailed(db *gorm.DB, userID int64, lockUntil time.Time) *gorm.DB {
 // and are written by the caller with recordSecondFactorFailure, after the
 // transaction, so they survive its rollback.
 func (s *Service) checkSecondFactor(ctx context.Context, tx *gorm.DB, userID int64, code string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	var sealed []byte
 	var lastStep int64
 	var lockedUntil *time.Time
@@ -241,7 +244,7 @@ func (s *Service) checkSecondFactor(ctx context.Context, tx *gorm.DB, userID int
 // lockTOTP reads the two-factor state of userID, locked until the
 // transaction ends.
 func lockTOTP(db *gorm.DB, userID int64) *gorm.DB {
-	return totpOf(db, userID).Select("secret_enc, last_step, locked_until").Clauses(store.ForUpdate)
+	return totpOf(db, userID).Select("secret_enc, last_step, locked_until").Clauses(store.ForUpdate())
 }
 
 // backupCodesLeft are the backup codes of userID still to be used.

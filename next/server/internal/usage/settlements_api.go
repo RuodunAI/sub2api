@@ -228,6 +228,9 @@ func (s *Service) refundAbandoned(c *gin.Context) {
 // lockSettlement loads a usage row and its settlement entry, both locked, or
 // reports why the action does not apply.
 func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reservedRowState, *Settlement, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, nil, err
+	}
 	// Shared lock order with managed reconciliation: task, usage, settlement.
 	g := store.G(ctx, tx)
 	if err := lockTasksOfUsage(g, usageLogID).Error; err != nil {
@@ -236,7 +239,7 @@ func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reserv
 	p := &pending{}
 	st := &reservedRowState{p: p}
 	err := g.Model(&model.UsageLog{}).Select("request_id, user_id, billing_status, total_cost").Where("id = ?", usageLogID).
-		Clauses(store.ForUpdate).Row().Scan(&p.RequestID, &p.UserID, &st.status, &st.totalCost)
+		Clauses(store.ForUpdate()).Row().Scan(&p.RequestID, &p.UserID, &st.status, &st.totalCost)
 	if store.IsNoRows(err) {
 		return nil, nil, core.ErrNotFound.WithMessage("usage record not found")
 	}
@@ -244,7 +247,7 @@ func lockSettlement(ctx context.Context, tx *gorm.DB, usageLogID int64) (*reserv
 		return nil, nil, err
 	}
 	e := &Settlement{}
-	err = settlementOf(g, usageLogID).Clauses(store.ForUpdate).Row().Scan(e.scanTargets()...)
+	err = settlementOf(g, usageLogID).Clauses(store.ForUpdate()).Row().Scan(e.scanTargets()...)
 	if store.IsNoRows(err) {
 		return nil, nil, core.ErrNotFound.WithMessage("this usage record was not pre-charged")
 	}

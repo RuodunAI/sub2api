@@ -9,10 +9,36 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
+
+// A row lock is a value: refining or changing the one a caller got leaves
+// every other caller's lock as it was (G3 of the GORM review: ForUpdate was
+// a package variable, one assignment away from SKIP LOCKED everywhere).
+func TestRowLockIsAValue(t *testing.T) {
+	mine := store.ForUpdate()
+	mine.Options = clause.LockingOptionsSkipLocked
+	_ = mine.Of("a").SkipLocked()
+	assert.Equal(t, clause.Locking{Strength: clause.LockingStrengthUpdate}, store.ForUpdate().Locking)
+	base := store.Lock(store.LockingStrengthKeyShare)
+	_ = base.Of("g").SkipLocked()
+	assert.Equal(t, clause.Locking{Strength: store.LockingStrengthKeyShare}, base.Locking)
+	for lock, want := range map[store.RowLock]string{
+		store.ForUpdate():                               "FOR UPDATE",
+		store.ForUpdate().Of("a").SkipLocked():          `FOR UPDATE OF "a" SKIP LOCKED`,
+		store.Lock(store.LockingStrengthNoKeyUpdate):    "FOR NO KEY UPDATE",
+		store.Lock(clause.LockingStrengthShare).Of("g"): `FOR SHARE OF "g"`,
+	} {
+		sql, _, err := gormtest.Build(func(db *gorm.DB) *gorm.DB {
+			return db.Table("t").Select("id").Clauses(lock).Take(&numberedSink)
+		})
+		require.NoError(t, err)
+		assert.Equal(t, `SELECT id FROM "t" LIMIT $1 `+want, sql)
+	}
+}
 
 // Conds ANDs its conditions in the order added, a scope included; none
 // leaves the statement without a WHERE.

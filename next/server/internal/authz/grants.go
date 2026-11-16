@@ -261,6 +261,9 @@ func scopeRefs(kind string, ids []int64) ([]string, error) {
 // version, 0 when nothing went: the caller announces it after commit
 // (core.AnnounceAuthzChanged), as every authz write does.
 func (*Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int64, kind string, ids []int64) (int64, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return 0, err
+	}
 	patterns, err := scopeRefs(kind, ids)
 	if err != nil || len(ids) == 0 {
 		return 0, err

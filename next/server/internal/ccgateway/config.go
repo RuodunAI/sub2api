@@ -349,9 +349,14 @@ func (s *Service) loadVersioned(ctx context.Context) (Config, []byte, error) {
 // own changes; forShare keeps it from changing until the transaction ends)
 // and the stored value as read.
 func (s *Service) loadIn(ctx context.Context, q *gorm.DB, forShare bool) (Config, []byte, error) {
+	if forShare {
+		if err := store.RequireTx(q); err != nil {
+			return Config{}, nil, err
+		}
+	}
 	var lock []clause.Expression
 	if forShare {
-		lock = append(lock, clause.Locking{Strength: clause.LockingStrengthShare})
+		lock = append(lock, store.Lock(clause.LockingStrengthShare))
 	}
 	raw, e := store.SettingValue(store.G(ctx, q), settingKey, lock...)
 	if store.IsNoRows(e) {

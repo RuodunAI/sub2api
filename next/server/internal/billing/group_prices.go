@@ -426,6 +426,9 @@ func segmentsOf(changes []ruleChange) []int64 {
 // them in: two requests that change the same rules then lock them in the
 // same order, and neither waits for the other in a circle.
 func applyChanges(ctx context.Context, tx *gorm.DB, changes []ruleChange, updatedBy int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	if len(changes) == 0 {
 		return nil
 	}

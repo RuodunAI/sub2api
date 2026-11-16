@@ -66,7 +66,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 			return core.ErrConflict.WithMessage("the plugin was re-enabled concurrently")
 		}
 		var stopped bool
-		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate).Take(&stopped).Error; err != nil {
+		if err := uninstallRow(g, key).Select("target_boot_ids <@ stopped_boot_ids").Clauses(store.ForUpdate()).Take(&stopped).Error; err != nil {
 			return err
 		}
 		if !stopped {

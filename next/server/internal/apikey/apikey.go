@@ -557,6 +557,9 @@ func (s *Service) loadKey(ctx context.Context, id, ownerID int64) (*APIKey, erro
 // waits for the key write (and then unbinds it) instead of turning it into a
 // foreign key violation.
 func groupAvailable(ctx context.Context, q *gorm.DB, userID, groupID int64) (bool, error) {
+	if err := store.RequireTx(q); err != nil {
+		return false, err
+	}
 	var ok bool
 	err := usableGroup(store.G(ctx, q), userID, groupID).Take(&ok).Error
 	if store.IsNoRows(err) {
@@ -571,7 +574,7 @@ func usableGroup(db *gorm.DB, userID, groupID int64) *gorm.DB {
 	return db.Table("groups g").Select("true").
 		Where("g.id = ?", groupID).
 		Where(segment.UsableGroupSQL("g", "?"), userID).
-		Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare, Table: clause.Table{Name: "g"}})
+		Clauses(store.Lock(store.LockingStrengthKeyShare).Of("g"))
 }
 
 // requireGroup fails with a group_id field error unless the group is usable by user.
@@ -900,7 +903,7 @@ func (s *Service) rotate(c *gin.Context, ownerID int64) {
 	var oldHash string
 	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate).Take(&oldHash).Error; err != nil {
+		if err := owned(g, id, ownerID).Select("key_hash").Clauses(store.ForUpdate()).Take(&oldHash).Error; err != nil {
 			if store.IsNoRows(err) {
 				return notFound(ctx)
 			}

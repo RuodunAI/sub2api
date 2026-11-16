@@ -140,7 +140,7 @@ func TestSQLUsageExportAudit(t *testing.T) {
 func TestSQLSettlementActions(t *testing.T) {
 	now := time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC)
 	t.Run("lock_entry", func(t *testing.T) {
-		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return settlementOf(db, 5).Clauses(store.ForUpdate).Scan(&sqlSink) })
+		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return settlementOf(db, 5).Clauses(store.ForUpdate()).Scan(&sqlSink) })
 	})
 	t.Run("retry_row", func(t *testing.T) {
 		gormtest.Assert(t, func(db *gorm.DB) *gorm.DB { return markUsageRow(db, 5, "reserved", nil, reconcileMarker("retrying")) })

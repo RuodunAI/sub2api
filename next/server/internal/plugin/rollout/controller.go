@@ -284,6 +284,9 @@ type pluginLock struct {
 }
 
 func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	g := store.G(ctx, tx)
 	var p model.Plugin
 	err := selectPluginForUpdate(g, key, "status, active_version, row_version").Take(&p).Error
@@ -313,7 +316,7 @@ func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, erro
 // selectPluginForUpdate selects cols of the plugin row and locks it.
 func selectPluginForUpdate(g *gorm.DB, key, cols string) *gorm.DB {
 	return g.Model(&model.Plugin{}).Select(cols).Where("key = ?", key).
-		Clauses(store.ForUpdate)
+		Clauses(store.ForUpdate())
 }
 
 func approved(ctx context.Context, tx *gorm.DB, key, version string) (bool, error) {

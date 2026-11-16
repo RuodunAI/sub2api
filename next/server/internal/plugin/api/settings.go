@@ -242,9 +242,14 @@ func mergeSettings(fields []manifest.SecretField, old, in map[string]any, manage
 }
 
 func (a *API) loadValues(c *gin.Context, q *gorm.DB, key string, forUpdate bool) (map[string]any, error) {
+	if forUpdate {
+		if err := store.RequireTx(q); err != nil {
+			return nil, err
+		}
+	}
 	db := store.G(c.Request.Context(), q).Select("config_enc").Where("key = ?", key)
 	if forUpdate {
-		db = db.Clauses(store.ForUpdate)
+		db = db.Clauses(store.ForUpdate())
 	}
 	var row model.Plugin
 	if err := db.Take(&row).Error; err != nil {

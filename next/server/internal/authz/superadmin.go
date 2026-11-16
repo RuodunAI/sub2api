@@ -141,6 +141,9 @@ func (policyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
 type legacyHolders struct{}
 
 func (legacyHolders) lock(db *gorm.DB) ([]int64, error) {
+	if err := store.RequireTx(db); err != nil {
+		return nil, err
+	}
 	ids := []int64{}
 	err := db.Raw(`SELECT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.superuser ORDER BY 1 FOR UPDATE OF ur`).Scan(&ids).Error
 	return slices.Compact(ids), err
@@ -158,6 +161,9 @@ func (legacyHolders) grant(db *gorm.DB, role string, userIDs []int64) error {
 // checkTransferTarget fails unless targetID is an active, undeleted user
 // other than the acting super admin, and locks its row.
 func checkTransferTarget(ctx context.Context, tx *gorm.DB, actorID, targetID int64) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	if actorID != 0 && targetID == actorID {
 		return errTransferToSelf
 	}

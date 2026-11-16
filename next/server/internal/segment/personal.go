@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
@@ -185,6 +184,9 @@ func moveTarget(ctx context.Context, tx *gorm.DB, to string) (int64, error) {
 // to join it cannot be left pointing at nothing. It is core.ErrNotFound when
 // id names no named segment.
 func LockNamed(ctx context.Context, tx *gorm.DB, id *int64) (int64, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return 0, err
+	}
 	var found int64
 	err := lockNamedQuery(store.G(ctx, tx), id).Take(&found).Error
 	if store.IsNoRows(err) {
@@ -202,5 +204,5 @@ func lockNamedQuery(db *gorm.DB, id *int64) *gorm.DB {
 	} else {
 		db = db.Where("id = ?", *id)
 	}
-	return db.Clauses(clause.Locking{Strength: store.LockingStrengthKeyShare})
+	return db.Clauses(store.Lock(store.LockingStrengthKeyShare))
 }

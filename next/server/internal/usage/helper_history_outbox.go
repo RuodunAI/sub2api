@@ -79,12 +79,12 @@ func lockHelperUsage(db *gorm.DB, requestID string) *gorm.DB {
 // helperUsageReceipt selects, locked, the digest a helper usage record was
 // persisted with.
 func helperUsageReceipt(db *gorm.DB, requestID string) *gorm.DB {
-	return db.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", requestID).Clauses(store.ForUpdate)
+	return db.Model(&model.ProviderHelperUsageReceipt{}).Select("digest").Where("request_id = ?", requestID).Clauses(store.ForUpdate())
 }
 
 // lockedUsageID selects, locked, the id of the usage row of requestID.
 func lockedUsageID(db *gorm.DB, requestID string) *gorm.DB {
-	return db.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", requestID).Clauses(store.ForUpdate)
+	return db.Model(&model.UsageLog{}).Select("id").Where("request_id = ?", requestID).Clauses(store.ForUpdate())
 }
 
 type helperUsageOutbox interface {

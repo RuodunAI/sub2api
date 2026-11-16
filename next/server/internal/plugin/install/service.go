@@ -217,7 +217,7 @@ func pluginRow(db *gorm.DB, key string) *gorm.DB {
 // lockedPlugin is the plugins row of key, read FOR UPDATE: the lock every
 // lifecycle change takes first (no lock-order deadlock with the grant rows).
 func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
-	return pluginRow(db, key).Clauses(store.ForUpdate)
+	return pluginRow(db, key).Clauses(store.ForUpdate())
 }
 
 // versionRow is the plugin_versions row of key@version.

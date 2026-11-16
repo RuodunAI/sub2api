@@ -7,7 +7,6 @@ import (
 	"net/http"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -66,7 +65,7 @@ func reauthKeyQuery(db *gorm.DB, accountID int64) *gorm.DB {
 	return db.Table("accounts a").Joins("LEFT JOIN ccgateway_runtimes r ON r.account_id = a.id").
 		Select("COALESCE(r.key, a.id::text)").
 		Where("a.id = ? AND a.plugin_key = 'ccgateway' AND a.type = 'managed' AND a.deleted_at IS NULL", accountID).
-		Clauses(clause.Locking{Strength: clause.LockingStrengthUpdate, Table: clause.Table{Name: "a"}})
+		Clauses(store.ForUpdate().Of("a"))
 }
 
 // CommitReauth verifies login on the same runtime and resets account-side

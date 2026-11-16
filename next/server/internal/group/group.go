@@ -515,7 +515,7 @@ func (s *Service) delete(c *gin.Context) {
 // lockGroups selects the groups of ids, locked for update in id order.
 func lockGroups(db *gorm.DB, ids []int64) *gorm.DB {
 	return db.Model(&model.Group{}).Where("id = ANY(?)", store.Int64s(ids)).Order("id").
-		Clauses(store.ForUpdate)
+		Clauses(store.ForUpdate())
 }
 
 // moveKeys moves every API key of the group (soft-deleted ones included) to

@@ -112,6 +112,9 @@ type lockedExecution struct {
 // lockExecution locks and reads the execution id. It runs for every request
 // of an Execute plugin (BenchmarkHotExecution, gormtest/BASELINE.md).
 func lockExecution(ctx context.Context, tx *gorm.DB, id string) (lockedExecution, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return lockedExecution{}, err
+	}
 	var x lockedExecution
 	err := store.G(ctx, tx).Raw(`SELECT state,operation,digest,task_id,request_id,plugin_key,account_id FROM plugin_executions WHERE id=? FOR UPDATE`, id).
 		Row().Scan(&x.state, &x.op, &x.digest, &x.taskID, &x.requestID, &x.pluginKey, &x.accountID)

@@ -114,6 +114,9 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 // uid: it checks the receipt, inserts the task, links the row's
 // settlement entry and closes the receipt.
 func recordTask(ctx context.Context, tx *gorm.DB, in core.TaskRegistration, uid int64, next, deadline time.Time) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
 	r := in.Record
 	// The receipt is the trusted dispatch identity; parsing cannot substitute it.
 	g := store.G(ctx, tx)

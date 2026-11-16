@@ -31,7 +31,7 @@ func TestSQLSettingValue(t *testing.T) {
 func TestSQLSettingLock(t *testing.T) {
 	var raw []byte
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
-		return store.SettingValueSQL(db, "gateway").Clauses(store.ForUpdate).Scan(&raw)
+		return store.SettingValueSQL(db, "gateway").Clauses(store.ForUpdate()).Scan(&raw)
 	})
 }
 

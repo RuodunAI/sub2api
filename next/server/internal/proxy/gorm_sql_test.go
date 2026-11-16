@@ -56,7 +56,7 @@ func TestSQLProxyList(t *testing.T) {
 func TestSQLProxyLockForUpdate(t *testing.T) {
 	gormtest.Assert(t, func(db *gorm.DB) *gorm.DB {
 		var cur row
-		return scoped(db, 5, snapshotScope).Select(connectionColumns).Clauses(store.ForUpdate).Take(&cur)
+		return scoped(db, 5, snapshotScope).Select(connectionColumns).Clauses(store.ForUpdate()).Take(&cur)
 	})
 }
 

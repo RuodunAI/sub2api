@@ -169,6 +169,9 @@ func UserRoleSubs(db *gorm.DB, uid int64) ([]string, error) {
 // LockMembers returns the ids of the users holding the role key, sorted,
 // and locks their rows.
 func LockMembers(db *gorm.DB, key string) ([]int64, error) {
+	if err := store.RequireTx(db); err != nil {
+		return nil, err
+	}
 	ids := []int64{}
 	err := db.Raw(`SELECT `+userIDOf("v0")+` FROM `+Table+` WHERE ptype = '`+ptypeRole+`' AND v1 = ? ORDER BY 1 FOR UPDATE`, RoleSub(key)).Scan(&ids).Error
 	return ids, err

@@ -167,7 +167,7 @@ func (s *Service) AckUsage(ctx context.Context, requestID, digest string) error 
 	return s.db.Tx(ctx, func(tx *gorm.DB) error {
 		db := store.G(ctx, tx)
 		var old model.ProviderHelperUsageOutbox
-		e := outboxDigest(db, requestID).Clauses(store.ForUpdate).Take(&old).Error
+		e := outboxDigest(db, requestID).Clauses(store.ForUpdate()).Take(&old).Error
 		if store.IsNoRows(e) {
 			return nil
 		}

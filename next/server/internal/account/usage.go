@@ -944,7 +944,7 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 		g := store.G(ctx, tx)
 		err := g.Model(&model.Account{}).Select(`status, status_reason, auto_disabled_source, auto_disabled_until,
 				deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until, clock_timestamp()`).
-			Where("id = ? AND deleted_at IS NULL", c.id).Clauses(store.ForUpdate).Row().
+			Where("id = ? AND deleted_at IS NULL", c.id).Clauses(store.ForUpdate()).Row().
 			Scan(&status, &reason, &source, &until, &deferred, &deferredReason, &deferredUntil, &now)
 		if store.IsNoRows(err) {
 			return nil
@@ -956,7 +956,7 @@ func (s *Service) writeUsageLimitState(ctx context.Context, c usageCandidate, ch
 			return nil
 		}
 		err = g.Model(&model.AccountUsageLimit{}).Select("updated_at, waived_window").Where("account_id = ?", c.id).
-			Clauses(clause.Locking{Strength: clause.LockingStrengthShare}).Row().Scan(&saved, &waived)
+			Clauses(store.Lock(clause.LockingStrengthShare)).Row().Scan(&saved, &waived)
 		if err != nil && !store.IsNoRows(err) {
 			return err
 		}

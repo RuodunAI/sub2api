@@ -234,6 +234,9 @@ func grantDecisions(ds []decision) []grants.Decision {
 // barrier an approval must pass: uninstall in progress, consent status,
 // signature revocation, publisher revocation and exclusive resources.
 func (s *Service) loadConsentable(ctx context.Context, tx *gorm.DB, key, version string) (*consentable, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	g := store.G(ctx, tx)
 	var p consentablePlugin
 	err := lockedPlugin(g, key).Select(consentablePluginColumns).Take(&p).Error
@@ -249,7 +252,7 @@ func (s *Service) loadConsentable(ctx context.Context, tx *gorm.DB, key, version
 		return nil, err
 	}
 	var v model.PluginVersion
-	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate).Take(&v).Error
+	err = versionRow(g, key, version).Select("consent_status, signature_status, manifest_hash").Clauses(store.ForUpdate()).Take(&v).Error
 	if store.IsNoRows(err) {
 		return nil, core.ErrNotFound.WithMessage("plugin version not found")
 	}

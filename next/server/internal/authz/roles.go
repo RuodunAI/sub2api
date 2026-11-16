@@ -174,6 +174,9 @@ func (s *Service) getRole(ctx context.Context, q *gorm.DB, id int64) (*Role, err
 // an admin thus changes operator, supplier and user but not admin. The
 // system (actor 0) passes. Every role write goes through it.
 func (s *Service) editableRole(ctx context.Context, tx *gorm.DB, actorID, id int64) (*Role, error) {
+	if err := store.RequireTx(tx); err != nil {
+		return nil, err
+	}
 	r, err := readRole(lockRole(store.G(ctx, tx), id))
 	switch {
 	case store.IsNoRows(err):
