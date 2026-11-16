@@ -93,11 +93,7 @@ func (s *Service) ConfirmUninstallStopped(ctx context.Context, key string, in Co
 	var out *UninstallState
 	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		g := store.G(ctx, tx)
-		var keyLocked string
-		if err := lockedPlugin(g, key).Select("key").Take(&keyLocked).Error; err != nil {
-			if store.IsNoRows(err) {
-				return core.ErrNotFound.WithMessage("plugin not found")
-			}
+		if err := lockPlugin(g, key); err != nil {
 			return err
 		}
 		state, err := readUninstallState(ctx, tx, key, true)

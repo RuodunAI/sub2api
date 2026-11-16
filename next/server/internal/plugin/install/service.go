@@ -220,6 +220,20 @@ func lockedPlugin(db *gorm.DB, key string) *gorm.DB {
 	return pluginRow(db, key).Clauses(store.ForUpdate())
 }
 
+// lockPlugin locks the plugins row of key (lockedPlugin) and reads
+// nothing from it; NotFound when there is none.
+func lockPlugin(tx *gorm.DB, key string) error {
+	if err := store.RequireTx(tx); err != nil {
+		return err
+	}
+	var locked string
+	err := lockedPlugin(tx, key).Select("key").Take(&locked).Error
+	if store.IsNoRows(err) {
+		return core.ErrNotFound.WithMessage("plugin not found")
+	}
+	return err
+}
+
 // versionRow is the plugin_versions row of key@version.
 func versionRow(db *gorm.DB, key, version string) *gorm.DB {
 	return db.Model(&model.PluginVersion{}).Where("plugin_key = ? AND version = ?", key, version)
