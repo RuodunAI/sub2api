@@ -2,6 +2,8 @@ package gormpg
 
 import (
 	"database/sql"
+	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -18,17 +20,27 @@ import (
 // which PostgreSQL applies before the startup parameters) and the role's,
 // database's or server's default.
 //
-// The pool is sized by the caller (Settings), never by the DSN: every
-// parameter of it but these two goes to PostgreSQL as a setting.
+// The pool is sized by the caller (Settings), never by the DSN: pgx would
+// send a pool_* parameter to PostgreSQL as a setting, which fails only on
+// the first statement of a pool that connects lazily, so it is refused here
+// (naming the parameter, never the DSN).
 func ParseConfig(dsn string) (*pgx.ConnConfig, error) {
 	cfg, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
 	}
+	var pool []string
 	for k := range cfg.RuntimeParams {
-		if strings.EqualFold(k, "datestyle") || strings.EqualFold(k, "intervalstyle") {
+		switch {
+		case strings.HasPrefix(strings.ToLower(k), "pool_"):
+			pool = append(pool, k)
+		case strings.EqualFold(k, "datestyle") || strings.EqualFold(k, "intervalstyle"):
 			delete(cfg.RuntimeParams, k)
 		}
+	}
+	if len(pool) > 0 {
+		slices.Sort(pool)
+		return nil, fmt.Errorf("database DSN: %s: the pool is sized by environment variables, not the DSN", strings.Join(pool, ", "))
 	}
 	cfg.RuntimeParams["datestyle"] = "ISO"
 	cfg.RuntimeParams["intervalstyle"] = "postgres"

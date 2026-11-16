@@ -54,6 +54,21 @@ func TestParseConfigRejects(t *testing.T) {
 	}
 }
 
+// A pool parameter in the DSN fails at once, naming the parameters and not
+// the password.
+func TestParseConfigRejectsPoolParameters(t *testing.T) {
+	for dsn, want := range map[string]string{
+		"postgres://u:secret@db/app?pool_max_conns=5":                            "pool_max_conns",
+		"host=db password=secret pool_min_conns=1 POOL_MAX_CONN_LIFETIME=1h":     "POOL_MAX_CONN_LIFETIME, pool_min_conns",
+		"postgres://u:secret@db/app?sslmode=disable&pool_health_check_period=1m": "pool_health_check_period",
+	} {
+		_, err := ParseConfig(dsn)
+		if err == nil || !strings.Contains(err.Error(), "database DSN: "+want+": ") || strings.Contains(err.Error(), "secret") {
+			t.Errorf("ParseConfig(%q) = %v", dsn, err)
+		}
+	}
+}
+
 func TestWithMaxConns(t *testing.T) {
 	def := Settings{MaxConns: 7, MaxConnLifetime: time.Hour}
 	for _, c := range []struct {
