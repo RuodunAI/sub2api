@@ -23,8 +23,9 @@ type pgLoader struct{ db *store.DB }
 // NewLoader returns the Loader over db.
 func NewLoader(db *store.DB) Loader { return &pgLoader{db: db} }
 
-// Policy reads the authz and policy versions, the active actions, the p
-// and g rows and the active users in one snapshot.
+// Policy reads the authz and policy versions, the active actions, the
+// roles and the p rows in one snapshot. No g row: users are read one by
+// one (UserRoles), as the enforcer is asked about them.
 func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	var p Policy
 	err := l.db.TxOptions(ctx, store.Snapshot(), func(tx *gorm.DB) error {
@@ -41,9 +42,13 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 		for _, k := range active {
 			p.Active[k] = true
 		}
-		// The users whose g rows are loaded: not deleted, status active.
-		if err := q.Model(&model.User{}).Where("deleted_at IS NULL AND status = 'active'").Pluck("id", &p.Users).Error; err != nil {
+		var roles []model.Role
+		if err := q.Select("id", "key").Find(&roles).Error; err != nil {
 			return err
+		}
+		p.Roles = make(map[string]int64, len(roles))
+		for _, r := range roles {
+			p.Roles[r.Key] = r.ID
 		}
 		p.Rules, err = loadPolicyRows(q)
 		return err
@@ -54,8 +59,8 @@ func (l *pgLoader) Policy(ctx context.Context) (Policy, error) {
 	return p, nil
 }
 
-// loadPolicyRows reads the p and g rows through gorm-adapter, bound to tx
-// and used for this one read only:
+// loadPolicyRows reads the p rows through gorm-adapter, bound to tx and
+// used for this one read only:
 //   - TurnOffAutoMigrate first: otherwise the constructor AutoMigrates the
 //     table to the adapter's struct, which would retype every column to
 //     varchar(100) (and needs DDL rights);
@@ -79,18 +84,16 @@ func loadPolicyRows(tx *gorm.DB) ([]Rule, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := a.LoadFilteredPolicy(m, gormadapter.Filter{Ptype: []string{"p", "g"}}); err != nil {
+	if err := a.LoadFilteredPolicy(m, gormadapter.Filter{Ptype: []string{"p"}}); err != nil {
 		return nil, err
 	}
-	var out []Rule
-	for _, sec := range []string{"p", "g"} {
-		rows, err := m.GetPolicy(sec, sec)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			out = append(out, Rule{Ptype: sec, V0: r[0], V1: r[1], V2: at(r, 2)})
-		}
+	rows, err := m.GetPolicy("p", "p")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Rule, len(rows))
+	for i, r := range rows {
+		out[i] = Rule{Ptype: "p", V0: r[0], V1: r[1], V2: at(r, 2)}
 	}
 	return out, nil
 }

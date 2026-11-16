@@ -153,8 +153,8 @@ func lockVersion(db *gorm.DB) error {
 }
 
 // syncRoles creates the built-in roles (builtinRoles) missing and fixes the
-// superuser flag of existing ones, calling synced with the key of each role
-// created or fixed and whether it was created.
+// superuser flag of existing ones (their revision moves), calling synced
+// with the key of each role created or fixed and whether it was created.
 func syncRoles(db *gorm.DB, synced func(key string, created bool)) error {
 	keys := make(store.Strings, len(builtinRoles))
 	for i, r := range builtinRoles {
@@ -169,7 +169,8 @@ func syncRoles(db *gorm.DB, synced func(key string, created bool)) error {
 		i := slices.IndexFunc(have, func(h model.Role) bool { return h.Key == r.key })
 		if i >= 0 {
 			if have[i].Superuser != r.superuser {
-				if err := db.Model(&model.Role{}).Where("id = ?", have[i].ID).Update("superuser", r.superuser).Error; err != nil {
+				fix := map[string]any{"superuser": r.superuser, "revision": gorm.Expr("revision + 1")}
+				if err := db.Model(&model.Role{}).Where("id = ?", have[i].ID).Updates(fix).Error; err != nil {
 					return err
 				}
 				synced(r.key, false)
@@ -297,7 +298,7 @@ func grantDefaultPermissions(db *gorm.DB, roleKey string, keys []string) ([]casb
 
 // grantDefaultAssignable adds to the assignable list of the role roleKey
 // the built-in, non-superuser roles of keys it lacks, returning them by
-// role id and key.
+// role id and key; the role's revision moves when it added any.
 func grantDefaultAssignable(db *gorm.DB, roleKey string, keys []string) ([]casbinrule.Added, error) {
 	var found []struct {
 		RoleID, AssignableRoleID int64
@@ -322,7 +323,10 @@ func grantDefaultAssignable(db *gorm.DB, roleKey string, keys []string) ([]casbi
 	if len(rows) == 0 {
 		return added, nil
 	}
-	return added, db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error
+	if err := db.Clauses(clause.OnConflict{DoNothing: true}).Create(&rows).Error; err != nil {
+		return nil, err
+	}
+	return added, reviseRole(db, rows[0].RoleID).Error
 }
 
 // removeUndeclaredCore marks removed the core permissions but keys.
@@ -354,8 +358,8 @@ func builtinKeyConflict(db *gorm.DB) error {
 // rev up to it and calls behind with the role, the rev reached and whether
 // it is held (by an undeleted user; the super admin role, never reset,
 // counts as held): SyncCore then grants a held role the defaults it lacks,
-// turned assign_custom on here where its defaults have it (audited), and
-// resets one nobody holds (resetUnheld).
+// turned assign_custom on here where its defaults have it (audited; the
+// role's revision moves), and resets one nobody holds (resetUnheld).
 func (s *Service) advanceDefaults(ctx context.Context, tx *gorm.DB, behind func(key string, rev int32, held bool)) error {
 	db := store.G(ctx, tx)
 	keys := make(store.Strings, len(builtinRoles))
@@ -380,7 +384,11 @@ func (s *Service) advanceDefaults(ctx context.Context, tx *gorm.DB, behind func(
 			}
 		}
 		custom := held && def.assignCustom && !r.AssignCustom
-		if err := db.Model(&model.Role{}).Where("id = ?", r.ID).Updates(map[string]any{"defaults_rev": def.rev, "assign_custom": r.AssignCustom || custom}).Error; err != nil {
+		set := map[string]any{"defaults_rev": def.rev}
+		if custom {
+			set["assign_custom"], set["revision"] = true, gorm.Expr("revision + 1")
+		}
+		if err := db.Model(&model.Role{}).Where("id = ?", r.ID).Updates(set).Error; err != nil {
 			return err
 		}
 		behind(r.Key, def.rev, held)
@@ -401,6 +409,9 @@ func (s *Service) advanceDefaults(ctx context.Context, tx *gorm.DB, behind func(
 func (s *Service) resetUnheld(ctx context.Context, tx *gorm.DB, def builtinRole) error {
 	r, err := readRole(roleByKey(store.G(ctx, tx), def.key))
 	if err != nil {
+		return err
+	}
+	if err := reviseRole(store.G(ctx, tx), r.ID).Error; err != nil {
 		return err
 	}
 	return s.resetDefaults(ctx, tx, 0, r, def, map[string]any{"via": "sync", "defaults_rev": def.rev})

@@ -287,16 +287,12 @@ func (s *Service) ClearScopeGrants(ctx context.Context, tx *gorm.DB, actorID int
 			return 0, err
 		}
 	}
-	m, err := bumpVersions(db, true)
+	v, err := s.bumpPolicy(ctx, tx)
 	if err != nil {
 		return 0, err
 	}
-	c := authzChange{Version: m.Version, Policy: m.PolicyVersion}
-	s.mu.Lock()
-	s.pending[c.Version] = c
-	s.mu.Unlock()
-	s.committedLater(c.Version)
-	return c.Version, nil
+	s.committedLater(v)
+	return v, nil
 }
 
 // scopeRefsOf returns the rows the scope of p names, by kind: its group

@@ -46,7 +46,7 @@ func snap(t testing.TB, rules ...Rule) *state {
 
 func snapOf(t testing.TB, p Policy, self ...string) *state {
 	t.Helper()
-	s, err := build(p, self)
+	s, err := build(p, self, Options{}.withDefaults().Users)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +66,9 @@ func single(t testing.TB, keys ...string) *state {
 // as sets user uid's g rows in s to ur, whatever was set before.
 func (s *state) as(t testing.TB, uid int64, ur UserRoles) *state {
 	t.Helper()
-	ur.Version = math.MaxInt64
-	if err := s.setUser(uid, ur); err != nil {
-		t.Fatal(err)
+	ur.Version, ur.PolicyVersion = math.MaxInt64, s.policy
+	if ok, err := s.setUser(uid, ur); !ok || err != nil {
+		t.Fatal("not set", err)
 	}
 	return s
 }

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinx"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -77,7 +76,7 @@ func version(t *testing.T, db *store.DB) int64 {
 func TestLoaderPolicy(t *testing.T) {
 	t.Parallel()
 	db := policyDB(t)
-	s := seedPolicy(t, db)
+	seedPolicy(t, db)
 	p, err := casbinx.NewLoader(db).Policy(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -89,22 +88,19 @@ func TestLoaderPolicy(t *testing.T) {
 		t.Fatalf("active = %v", p.Active)
 	}
 	var mine []casbinx.Rule
-	links := map[string][]string{}
 	for _, r := range p.Rules {
-		switch {
-		case r.Ptype == "p" && strings.HasPrefix(r.V0, "r:cxt_"):
+		if r.Ptype != "p" {
+			t.Fatalf("a row not of the policy: %v", r)
+		}
+		if strings.HasPrefix(r.V0, "r:cxt_") {
 			mine = append(mine, r)
-		case r.Ptype == "g":
-			links[r.V0] = append(links[r.V0], r.V1)
 		}
 	}
-	// Every g row is read; the enforcer links the active users' only.
-	if got := links[casbinrule.UserSub(s.users["deleted"])]; !slices.Equal(got, []string{"r:cxt_b"}) {
-		t.Fatalf("g rows of the deleted user: %v", got)
-	}
-	for name, want := range map[string]bool{"a": true, "none": true, "disabled": false, "deleted": false} {
-		if got := slices.Contains(p.Users, s.users[name]); got != want {
-			t.Errorf("%s active: %v", name, got)
+	// Every role by key, with its id.
+	for _, k := range []string{"cxt_a", "cxt_b", "cxt_old", authz.RoleSuperAdmin} {
+		var id int64
+		if err := db.SQL.QueryRow(`SELECT id FROM roles WHERE key = $1`, k).Scan(&id); err != nil || p.Roles[k] != id {
+			t.Fatalf("role %s: id %d, read %d (%v)", k, id, p.Roles[k], err)
 		}
 	}
 	slices.SortFunc(mine, func(a, b casbinx.Rule) int { return strings.Compare(a.V0+a.V1+a.V2, b.V0+b.V1+b.V2) })
@@ -186,8 +182,8 @@ func TestLoaderAdapterReadOnly(t *testing.T) {
 			regexp.MustCompile(`^begin$`),
 			regexp.MustCompile(`^SELECT version, policy_version FROM "authz_meta" WHERE id = 1$`),
 			regexp.MustCompile(`^SELECT "key" FROM "permissions" WHERE status = 'active'$`),
-			regexp.MustCompile(`^SELECT "id" FROM "users" WHERE deleted_at IS NULL AND status = 'active'$`),
-			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1,\$2\) ORDER BY ID$`),
+			regexp.MustCompile(`^SELECT "id","key" FROM "roles"$`),
+			regexp.MustCompile(`^SELECT .* FROM "casbin_rule" WHERE ptype in \(\$1\) ORDER BY ID$`),
 			regexp.MustCompile(`^commit$`),
 		}
 		if len(got) != len(want) {
