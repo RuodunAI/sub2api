@@ -90,6 +90,7 @@
 - **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
+- **开发约束**（插件、SDK）：插件和 SDK 的语句全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`），不再手写整条 SQL；`Raw`/`Exec` 只用来组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），非数据语句走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`。`Raw`、`Exec`、`Where`、`Select`、`Order`、`Joins`、`Table`、`gorm.Expr`、`clause.Expr` 等的 SQL 文本必须是常量，值只走 `?` 参数，请求选的列经白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.List` 的列与排序参数改为 `pgdb.SQL`。SDK 的 `TestNoRawSQL` 检查（例外只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL，逐个文件写明原因）。审核插件去掉了模仿 pgx 的 `queryRow`/`collect` 等封装。
 
 #### 插件版本
 
