@@ -16,7 +16,7 @@
 
 **升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
-**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；Valkey 里没有授权的键，不用清理。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。`.env` 里的 `SUB2API_JWT_SECRET` 不要删，回退后的 0.1.288 要用。
+**回退**：目标是 0.1.288，只能从升级前的备份恢复，升级后的写入全部丢失；Valkey 不用清理。网关外壳也一起回到 0.1.288 时的版本（镜像、compose 和 `.env`，和数据库一起备份）；本次的外壳不能运行 0.1.288，升级计划在原来的外壳下执行，完成后再换外壳。没有反向脚本，也没有运行时开关；网关不允许跨 schema 回退，线上出问题首选修复前进。
 
 #### 插件权限声明与角色分配（迁移 0099）
 
@@ -45,7 +45,7 @@
 - 重新授予宿主权限（`PUT /plugins/:key/grants/:permission`）需要 `plugin:install`；请求体总是读取，不再依赖 `Content-Length`（以前分块传输的收窄请求会被当成“授予到清单申请的范围”）。
 - 清单的 `defaults` 省略时不授予任何角色（以前 `defaultRoles` 省略时给 `admin`）。
 
-**迁移 0099**（`0099_plugin_permission_meta.sql`，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填。`sensitive` 列新核心照写、不读，以后的迁移删除。`next/deploy/rollback/0.1.289-plugin-perm-down.md` 的反向脚本只用于停在 0099 的开发库、测试库（跑过 develop 上编号 0.1.289 的构建），线上不用。
+**迁移 0099**（`0099_plugin_permission_meta.sql`，可重跑）：`permissions` 加 `risk`、`requires`、`group_key`、`group_label`、`group_sort`、`scope`、`defaults` 七列与约束 `permissions_risk_check`，`scope_type` 加宽到 `varchar(40)`，`risk` 按 `sensitive` 回填（`sensitive` 列由 0100 删除）。
 
 **第三方插件不兼容**（不做旧字段兼容）：清单里还有 `userPermissions[].sensitive` 或 `defaultRoles` 的，打包和上传都被拒（`unsupported`），要改用 `risk`、`defaults`；用了新字段（`group`、`risk`、`requires`、`scope`、`defaults`、`permissionGroups`、`routes[].scopeFrom`）的清单 `hostCompat` 下限须 ≥0.1.290（`below_feature_core`；声明 `hostUICompat` `^3.16` 或 `^3.17` 的也一样，`below_ui_core`）。清单检查另要求：权限声明了 `scope` 的非 GET 路由必须写 `scopeFrom`（`required`）；`inheritFrom` 只能指向本清单已不再声明的 key（`invalid_value`）。已安装（含已上传、待同意）的旧版本照常运行和同意，但旧字段不再读取：同步时风险按 low 写入，新建的权限不授予任何角色。
 
@@ -55,26 +55,26 @@
 
 契约见 CONTRACTS §99。用户可见的权限不变：同样的角色、授予得到同样的结果。
 
-- **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
-- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予与超管行，用户的角色在第一次被问到时按需读入（最多记住 5 万个用户，10 万用户的库重载一次只要几毫秒）；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），读库出错时返回 503 并记日志，不当作无权限，`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点原地换掉授予、保留已读入的用户（删除角色或版本缺失时换一个新的 enforcer）；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`（只有版本数字的旧格式按全部变化处理）。不再使用 Valkey 缓存用户角色（原 `authz:c:ur:{uid}`），从备份恢复数据库后也不用清 Valkey。
+- **存储**：迁移 0100 把 `role_permissions`、`role_permission_scopes`、`user_roles` 与超管标志转换成新表 `casbin_rule`（Casbin gorm-adapter 的列布局）的行，然后删除这三张表和 `permissions.sensitive`；之后所有授予与角色指派只写 `casbin_rule`（核心在业务事务里写，不经 Casbin 的管理 API）。已移除、已停用的权限的授予与软删除用户的角色照常保留。
+- **判断**：每个节点一个 Casbin enforcer（`SyncedCachedEnforcer`，Casbin 自带的角色管理器），装入 active 权限的授予与超管行，用户的角色在第一次被问到时按需读入（最多记住 5 万个用户，10 万用户的库重载一次只要几毫秒）；每个权限判断都是 Casbin 的 `Enforce`（经它的决策缓存，命中约 0.2–0.4 µs），读库出错时返回 503 并记日志，不当作无权限，`/me`、菜单、访问密钥收窄用到的授予列表来自 Casbin（`GetImplicitPermissionsForUser`）。改授予、权限状态、角色定义（`authz_meta.policy_version` 随之变化）时各节点原地换掉授予、保留已读入的用户（删除角色或版本缺失时换一个新的 enforcer）；给用户指派角色、改用户状态时各节点只在内存里换掉这个用户的角色、作废这个用户的决策缓存。`authz:changed` 的 payload 改为 JSON `{"v","p"?,"u"?}`。
 - **约束**：只有 `super_admin` 能是超管角色，持有者最多一人（`casbin_rule_one_superuser`，取代 0097 的触发器）；角色 key 不能是 `_self`，权限 key 不能是 `*`。库里已有这类数据时迁移报错停止，提示怎样改。
-- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`，取代开发中按全局授权版本 `version` 比较的做法），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；写入返回的是本次写入的修订号；启动同步、删除角色（从别的角色的可分配清单移除）对角色的改动同样推进修订号；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
+- **并发保存角色**：角色与插件角色矩阵带每个角色自己的修订号 `revision`（`roles.revision`），PATCH、PUT permissions、PUT assignable、reset、插件矩阵都可带回读到的修订号，不一致 409 `version_conflict`（`details.revision`）；写入返回的是本次写入的修订号；启动同步、删除角色（从别的角色的可分配清单移除）对角色的改动同样推进修订号；别的角色或用户的写入不会造成 409（CONTRACTS §5.2）。
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 422 `unknown_scope`；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
-- **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。停在 0097 的库上 `sub2api admin recover-superadmin` 只做移交（目标须已启用，不接受 `--reset-password`、`--reset-2fa`），迁移完成后再跑一次带上它们。
+- **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。`sub2api admin` 只在已迁移到本版本 schema 的库上执行；0100 因多个超管停止时，用 0.1.288 的 `sub2api admin recover-superadmin` 保留一个。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前版本 0100 的开发、预发库（Mode P 版及之后的五次修改）都要重建，或恢复到 0099 的备份后再升级（0099 在 develop 上的两种内容核心都接受，0100 的不接受；经网关升级时也接受 0099 第一版构建的 schema 契约作为迁移许可的源）。
+迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
 契约见 CONTRACTS §100。
 
 - **会话令牌**：控制台登录只签发 `s2s_` 令牌，存在 Valkey（只存哈希），一个令牌、服务端滑动续期（空闲 7 天、登录后最长 30 天，`SUB2API_SESSION_IDLE_TTL` / `SUB2API_SESSION_MAX_TTL`），没有 refresh token。撤销单个会话、登出立即失效；改密码、禁用、删除用户、撤销其他会话时批量删除，`token_version` 兜底。每个用户最多 50 个会话，再登录时结束最久未用的那个。二次验证后换发同一会话的新令牌（`POST /me/verify` 响应的 `access_token`）。
-- **删除**：JWT 签发与校验、`POST /auth/refresh`（现在 404）、refresh token 与重放检测；核心不再读取环境变量 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`。网关外壳仍把这三个传给核心（`legacyCoreEnv`），compose 模板与 `.env.example` 也保留 `SUB2API_JWT_SECRET`：**已有部署不要删它**，回退后的 0.1.288、升级计划没走完时重启的旧核心启动时都要用原值（CONTRACTS §100.7）。
+- **删除**：JWT 签发与校验、`POST /auth/refresh`（现在 404）、refresh token 与重放检测；核心不再读取环境变量 `SUB2API_JWT_SECRET`、`SUB2API_ACCESS_TOKEN_TTL`、`SUB2API_REFRESH_TOKEN_TTL`。网关外壳不再把它们传给核心，compose 模板、`.env.example` 去掉了 `SUB2API_JWT_SECRET`；回退时 `.env` 随备份恢复原值（CONTRACTS §100.7）。
 - **迁移 0101**：删除 `refresh_tokens`、`login_sessions`、`auth_flows` 三张表。两步登录、通行密钥、TOTP 设置、二次验证的中间流程只存 Valkey。
 - **Valkey 故障**：会话鉴权、登录、二次验证返回 503 并记 ERROR `tokenstore: valkey unavailable`，不回退；会话鉴权的 503 不会被改写成 401（控制台不会被登出）。访问密钥和网关 Key 不受影响；管理员禁用、删除用户、重置密码不依赖 Valkey。
 - **行为变化**：重置用户的安全设置（`DELETE /users/:id/security`）现在会结束该用户的会话（重置自己时保留当前会话）。`POST /auth/logout` 不带请求体，只结束调用者自己的会话（以前不带 refresh token 时结束全部）。结束全部会话时 `token_version` 一次加 2。
 - **API 调用方注意**：用会话调 `POST /me/verify` 的客户端（脚本、自动化）必须改用响应里的 `access_token`，旧令牌 30 秒后失效。
-- **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。控制台 UI 3.17：`@sub2api/host` 新增 `fetchWithSession`（原始字节、流、下载类请求带会话发送），用到它的插件声明 `hostUICompat ^3.17`、`hostCompat >=0.1.290`；`startKeepAlive` 等刷新相关导出留作弃用的空实现，到 UI 4.0 删除。
+- **控制台**：401 直接回登录页（不再刷新令牌，删除跨标签页刷新锁与 keep-alive）；一个标签页登出或会话失效，其他标签页也回登录页。控制台 UI 3.17：`@sub2api/host` 新增 `fetchWithSession`（原始字节、流、下载类请求带会话发送），用到它的插件声明 `hostUICompat ^3.17`、`hostCompat >=0.1.290`；`Session` 只剩 `access_token`，控制台内部用的 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS` 删除（插件文档从未提供，内置插件没有用到，UI 不升主版本）。
 - **被盗令牌的遏制**（取代 JWT 时期的重放检测，CONTRACTS §100.4）：“结束其他会话”同时给当前会话换令牌（`POST /me/sessions/revoke-others` 回 200 `{access_token}`），复制走的当前令牌 30 秒后失效；没有其他会话时这个按钮也可用。会话列表的 IP 与浏览器随续期更新为最近一次使用的（以前是登录时的）。两个标签页同时二次验证不再互相顶掉令牌：从宽限期里的旧令牌验证不再轮换，控制台只替换发请求时用的令牌（`@sub2api/host` 的 `session.adoptRotated`，UI 3.17；401 后改用别的标签页的令牌重发时，以实际发出的那个为准，`RequestOptions.onSentWith`）。
 - **单机部署的 Valkey 开启 AOF**（`deploy/single`，`--appendonly yes --appendfsync everysec`，新数据卷 `redisdata`）：会话只在 Valkey，没有持久化时 Valkey 一重启所有人被登出且没有告警。从 valkey 换到 redis 镜像时先删掉这个卷。
 - **可用性修正**：Valkey 内存满拒绝写入时，续期失败不再让已经通过鉴权的请求 503；请求恰好落在“撤销其他会话/改自己的密码”中间时，不再把刚保留的当前会话删掉；节点漏收“重新启用用户”的广播时，不再删掉重新启用后的新登录。
@@ -89,7 +89,7 @@
 - **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致（按系统目录比对列类型、NOT NULL、默认值、主键、索引和约束定义；迁移以受限角色执行；迁移里的函数、视图、序列等要在模型包的 `Unmanaged()` 里声明），这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
 - **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
 - **连接与 DSN 里的连接池参数**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `runtime-contract/pgdsn`）。`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS`、网关的 `SUB2API_GATEWAY_POOL_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样；插件的连接池只按 SDK 的选项（`pluginsdk.WithDBPoolSize`）确定，DSN 里的 `pool_*` 一律去掉。所有连接固定 `DateStyle=ISO`、`IntervalStyle=postgres`（数组列按这两种格式解析）。
-- **出口日志**：插件出口连接的日志行先按条数预留 id（`gormpg.NextIDs`，升序，取到的个数不对即报错），写进各自的行再插入，id 与行一一对应；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。插件管理、任务、事件、控制台资源等模块的语句全部改由 GORM 构造（插件迁移记录调用 `plugin_migration_record` 的函数调用除外），DDL、advisory 锁、系统函数只经 `store` 的小助手（`store.DDL`、`XactLockID`、`XactLockHashtext`、`CurrentSnapshot` 等），`EXISTS`、`INSERT ... SELECT`、`nextval`、`to_regclass` 的组合器由核心、网关、SDK 共用（`runtime-contract/gormpg`）。
+- **出口日志**：插件出口连接的日志行先按条数预留 id（`gormpg.NextIDs`，升序，取到的个数不对即报错），写进各自的行再插入，id 与行一一对应；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。插件管理、任务、事件、控制台资源等模块的语句全部改由 GORM 构造（插件迁移记录调用 `plugin_migration_record` 的函数调用除外），DDL、advisory 锁、系统函数只经 `store` 的小助手（`store.DDL`、`XactLock`、`CurrentSnapshot` 等），`EXISTS`、`INSERT ... SELECT`、`nextval`、`to_regclass` 的组合器由核心、网关、SDK 共用（`runtime-contract/gormpg`）。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
 - **网关控制器与核心的 CCGateway、网关包不再手写整条 SQL**：改用 GORM 模型与查询构造器，生成的谓词、锁（含 `SKIP LOCKED`）、`RETURNING` 与往返次数不变；CCGateway 的运行时锁、重新授权锁和故障策略锁改用 `store.XactLock` / 新增的 `store.TryXactLock`。网关新增 `internal/sqlguard` 测试（与核心、SDK 同一个检查器 `runtime-contract/gormpg/sqlcheck`）：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本都会失败（CONTRACTS §39）。
 - **核心不再手写整条 SQL**：账号、计费、使用记录、用户、API Key、用户组、代理等模块的语句改由 GORM 模型与查询构造器生成，谓词、锁、`ON CONFLICT`、`RETURNING` 不变；使用记录的多行批量写入改为先预留 id（`gormpg.NextIDs`，多一次往返）再一次 `Create`。分组价格规则的写入（PUT `/groups/:id/model-prices`）不再是一条数据修改 CTE，改为同一事务里的几条语句：表达式历史、按键序 `FOR UPDATE` 锁住改动的已有规则、删除、两级各一次 upsert（锁序不变，并发请求仍不会互相死锁）；outbox 事件改用类型化的行模型批量插入，不再每次格式化整批事件。整条手写的只剩账本的 data-modifying CTE 与 `store` 里锁、DDL、系统函数的小助手；gormguard 新增 `[raw-sql]`、`[sql-const]`：允许列表之外的 `Raw`/`Exec`、交给 GORM 的非常量 SQL 文本（含 `Select` 的全部参数、`Find`/`First`/`Delete` 等的内联条件、`Raw: true` 的列名与表名、经接口或方法值的调用）都会失败，允许列表里没有命中的条目也会失败（CONTRACTS §2“核心的 SQL”）。
