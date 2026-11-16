@@ -89,7 +89,6 @@ type rules struct {
 	module    string
 	owners    map[string]string // packages that own the instance, relative to the module
 	sqlOwners map[string]string // packages that may use store.DB.SQL, relative to the module
-	pgxFiles  map[string]string // the files that may import pgx, relative to the module
 	// casbinOwners may import gorm-adapter and call Casbin's Enforce
 	// (casbin_test.go).
 	casbinOwners map[string]string
@@ -123,11 +122,9 @@ func (r rules) check(fset *token.FileSet, pkgPath string, files []*ast.File, inf
 }
 
 // imports returns the [pgx-import] findings of f, a file of the package
-// rel (relative to the module): pgx is imported by the files of pgxFiles
-// only, test files included.
+// rel (relative to the module): no file imports pgx, test files included.
 func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
 	name := filepath.Base(fset.Position(f.Package).Filename)
-	_, pgxFile := r.pgxFiles[rel+"/"+name]
 	// [testutil-import]: internal/testutil owns the instance as test
 	// infrastructure, so only test files (and its own) may import it.
 	production := !strings.HasSuffix(name, "_test.go") && !within(rel, testutilPkg)
@@ -136,8 +133,8 @@ func (r rules) imports(fset *token.FileSet, rel string, f *ast.File) []string {
 		path, err := strconv.Unquote(imp.Path.Value)
 		switch {
 		case err != nil:
-		case !pgxFile && within(path, pgxModule):
-			out = append(out, fmt.Sprintf("%s: %s import of %s: statements go through GORM and PostgreSQL errors through store (pgerror.go is the one file that reads pgconn's errors)",
+		case within(path, pgxModule):
+			out = append(out, fmt.Sprintf("%s: %s import of %s: statements go through GORM and PostgreSQL errors through store's error readers (runtime-contract/gormpg)",
 				fset.Position(imp.Pos()), rulePgx, path))
 		case production && within(path, r.module+"/"+testutilPkg):
 			out = append(out, fmt.Sprintf("%s: %s import of %s outside the test files: it owns the GORM instance and the pool as test infrastructure only",

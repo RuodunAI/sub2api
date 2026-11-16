@@ -19,7 +19,7 @@ const (
 	// pgxModule is pgx's module path, without its major version: every
 	// version's packages start with it. It is spelt in two pieces, and the
 	// fixtures write it {{pgx}}, so that a search of the module's sources
-	// for pgx imports finds pgerror.go alone.
+	// for pgx imports finds none.
 	pgxModule = "github.com/jackc/" + "pgx"
 )
 
@@ -40,13 +40,6 @@ var sqlOwners = map[string]string{
 	"internal/store":    "the pool itself: Close, Ping, MaxConns, WithConn's connection",
 	"internal/task":     "River's driver (riverdatabasesql) takes the *sql.DB, its InsertTx the *sql.Tx",
 	"internal/testutil": "test infrastructure: seeding, Connect's single connection, ExecWithoutTrigger",
-}
-
-// pgxFiles lists the files, relative to the module, that may import pgx:
-// the PostgreSQL errors GORM's driver returns are pgconn's, and their
-// SQLSTATE and constraint name can only be read from that type.
-var pgxFiles = map[string]string{
-	"internal/store/pgerror.go": "reads *pgconn.PgError",
 }
 
 // moduleRoot is the directory of the module under test.
@@ -77,7 +70,7 @@ func goList(t *testing.T, dir string, args ...string) []sqlcheck.Package {
 // gorm-adapter's of [casbin-api]).
 func TestRepositoryFollowsGORMRules(t *testing.T) {
 	root, module := moduleRoot(t), fixtureModule
-	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles,
+	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners,
 		casbinOwners: casbinOwners, sql: sqlcheck.New(sqlPolicy)}
 	known := map[string]bool{} // packages and their files, relative to the module
 	var targets []sqlcheck.Package
@@ -91,7 +84,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			targets = append(targets, p)
 		}
 	}
-	for _, list := range []map[string]string{instanceOwners, sqlOwners, pgxFiles, casbinOwners} {
+	for _, list := range []map[string]string{instanceOwners, sqlOwners, casbinOwners} {
 		for rel := range list {
 			if !known[rel] {
 				t.Errorf("%s is listed but is no package or Go file of %s; drop its entry", rel, module)
@@ -191,7 +184,6 @@ func TestRules(t *testing.T) {
 		module:    fixtureModule,
 		owners:    map[string]string{"internal/store": "test"},
 		sqlOwners: map[string]string{"internal/store": "test", "internal/task": "test"},
-		pgxFiles:  map[string]string{"internal/store/pgerror.go": "test"},
 	}
 	cases := []struct {
 		name    string
@@ -769,19 +761,12 @@ var (
 			want: []string{rulePgx, rulePgx},
 		},
 		{
-			name:    "pgx-import/the other files of package store",
+			name:    "pgx-import/package store",
 			pkg:     "internal/store",
 			file:    "db.go",
 			imports: `import "{{pgx}}/v5/pgconn"`,
 			src:     `var _ *pgconn.PgError`,
 			want:    []string{rulePgx},
-		},
-		{
-			name:    "pgx-import/the error file",
-			pkg:     "internal/store",
-			file:    "pgerror.go",
-			imports: `import "{{pgx}}/v5/pgconn"`,
-			src:     `var _ *pgconn.PgError`,
 		},
 		{
 			name: "sql-handle/selectors, values, literal keys and promotion",

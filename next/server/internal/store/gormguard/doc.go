@@ -117,9 +117,9 @@
 //     glue a port needs lives in store (store.XactLock) or the caller;
 //   - [pgx-import] no Go file of the module, test files and files left out
 //     by build constraints included, imports pgx (any package of its
-//     module) but internal/store/pgerror.go (pgxFiles), which reads the
-//     SQLSTATE and constraint name of the *pgconn.PgError that GORM's
-//     driver returns;
+//     module): the driver is runtime-contract/gormpg's, which also reads
+//     the SQLSTATE and constraint name of its errors (store's error
+//     readers);
 //   - [casbin-api] Casbin never writes the policy (CONTRACTS §99.6): the
 //     core writes casbin_rule with GORM in the business transaction
 //     (internal/authz/casbinrule). gorm-adapter is imported by
