@@ -39,7 +39,7 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 		}
 		return p.db.Tx(ctx, func(tx *gorm.DB) error { return p.Emit(ctx, tx, events...) })
 	}
-	rows := make([]map[string]any, len(events))
+	rows := make([]eventRow, len(events))
 	for i, ev := range events {
 		if ev.Type == "" {
 			return errors.New("event: empty type")
@@ -48,7 +48,7 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 		if err != nil {
 			return fmt.Errorf("event %s: %w", ev.Type, err)
 		}
-		rows[i] = map[string]any{"type": ev.Type, "payload": payload}
+		rows[i] = eventRow{Type: ev.Type, Payload: payload}
 	}
 	return insertEvents(store.G(ctx, tx), rows)
 }
@@ -57,13 +57,26 @@ func (p *Publisher) Emit(ctx context.Context, tx *gorm.DB, events ...core.Event)
 // well under PostgreSQL's 65535.
 const insertBatch = 1000
 
-// insertEvents writes rows (column maps: no RETURNING) to the outbox in one
-// INSERT per insertBatch events, inside the caller's transaction and with no
-// round trip of its own. The ids follow the batch order: each row takes the
-// next id as the VALUES list hands it over, in its order, as the rows of the
-// former unnest WITH ORDINALITY ... ORDER BY did.
-func insertEvents(db *gorm.DB, rows []map[string]any) error {
-	return db.Table(model.Event{}.TableName()).CreateInBatches(rows, insertBatch).Error
+// eventRow is the part of an outbox row that Emit writes. The id and
+// occurred_at come from the column defaults (the sequence, now()): the
+// struct has no field for them, so GORM neither binds nor reads them back
+// (no RETURNING), and as a typed model its schema is parsed once and cached
+// (a []map[string]any destination fails the parse on every insert and
+// formats the rows into the discarded error).
+type eventRow struct {
+	Type    string `gorm:"column:type"`
+	Payload []byte `gorm:"column:payload"`
+}
+
+func (eventRow) TableName() string { return model.Event{}.TableName() }
+
+// insertEvents writes rows to the outbox in one INSERT per insertBatch
+// events, inside the caller's transaction and with no round trip of its
+// own. The ids follow the batch order: each row takes the next id as the
+// VALUES list hands it over, in its order, as the rows of the former
+// unnest WITH ORDINALITY ... ORDER BY did.
+func insertEvents(db *gorm.DB, rows []eventRow) error {
+	return db.CreateInBatches(rows, insertBatch).Error
 }
 
 func marshal(v any) ([]byte, error) {

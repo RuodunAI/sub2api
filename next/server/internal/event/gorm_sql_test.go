@@ -11,13 +11,13 @@ import (
 // The SQL of the outbox insert built with GORM (see package gormtest): one
 // INSERT, its rows in the batch order, nothing read back.
 func TestSQLEventInsert(t *testing.T) {
-	one := map[string]any{"type": "balance.changed", "payload": []byte(`{"user_id":7}`)}
+	one := eventRow{Type: "balance.changed", Payload: []byte(`{"user_id":7}`)}
 	t.Run("one", func(t *testing.T) {
-		gormtest.AssertRun(t, func(db *gorm.DB) error { return insertEvents(db, []map[string]any{one}) })
+		gormtest.AssertRun(t, func(db *gorm.DB) error { return insertEvents(db, []eventRow{one}) })
 	})
 	t.Run("two", func(t *testing.T) {
 		gormtest.AssertRun(t, func(db *gorm.DB) error {
-			return insertEvents(db, []map[string]any{one, {"type": "user.updated", "payload": []byte(`{}`)}})
+			return insertEvents(db, []eventRow{one, {Type: "user.updated", Payload: []byte(`{}`)}})
 		})
 	})
 }
