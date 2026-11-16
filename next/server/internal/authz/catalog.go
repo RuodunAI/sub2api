@@ -248,12 +248,14 @@ var supplierPermissions = []string{
 }
 
 // supplierAgentPermissions are granted to the built-in "supplier_agent"
-// role (CONTRACTS §102): a user's and a supplier's, so that the role alone
-// is enough (D8) and covers the users it makes, and for the users below it (team) reading their accounts and the usage
-// of those, and creating, editing and assigning roles to those users. Left
-// out: deleting users and resetting their passwords, balances, user groups,
-// group binding, defining roles, and writing, testing or revealing their
-// accounts or anything of their proxies.
+// role (CONTRACTS §102.1): a user's and a supplier's, so that the role
+// alone is enough (D8) and covers the users it manages, and for the users
+// below it (team) reading their accounts and the usage of those, and
+// reading, creating, editing and assigning roles to those users. Left out
+// (D4, D5): deleting users and resetting their passwords, balances, user
+// groups, group binding, defining roles, and writing, testing or revealing
+// their accounts or anything of their proxies. The team keys imply the
+// own ones they widen, which SyncCore stores once.
 var supplierAgentPermissions = slices.Concat(userRolePermissions, supplierPermissions, []string{
 	"account:read:team", "usage:account:read:team",
 	"user:read:team", "user:create:team", "user:update:team",
