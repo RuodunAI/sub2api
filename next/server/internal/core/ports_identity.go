@@ -376,23 +376,28 @@ type UserGuard interface {
 	CanActOnUsers(ctx context.Context, actorID int64, action UserAction, targetIDs ...int64) error
 }
 
-// OwnerGuard decides the owner of a user (users.owner_id, CONTRACTS §102);
+// OwnerGuard decides the owner of a user (users.owner_id, CONTRACTS §102.3);
 // authz implements it, iam calls it inside the transaction that creates or
-// updates the user, before writing the owner it returns.
+// updates the user, after Bump naming the user (which holds the authz lock
+// the checks rely on and announces the move); the caller writes the owner
+// it returns.
 type OwnerGuard interface {
 	// CheckOwner returns the owner actorID gives userID (0: none). owner is
-	// the requested owner_id: nil when not given (on a create: the actor
-	// when it creates users for its team only, else none; on an update:
-	// the current owner), 0 for none. Naming an owner, or none, needs
-	// user:create (create) or user:update (update) for every user; a team
-	// holder may name only itself. It takes the authz lock first (Bump
-	// naming userID), then refuses an owner that is userID or below it,
-	// would put userID, or a user below it, more than MaxTeamDepth levels
-	// below the top of its chain, is deleted, or may not
-	// manage userID by its roles, and an actor that may not act on userID
-	// and on the old and new owner (ActOnIdentity); a change is audited as
-	// user.owner (from, to).
-	CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, owner *int64) (int64, error)
+	// the requested owner_id, 0 for none. On a create (create: userID was
+	// inserted in tx, its roles set) the previous owner is none whatever
+	// the row holds, and nil is the actor when it creates users for its
+	// team only, else none; on an update nil, or the current owner, is no
+	// change and passes as is. Naming an owner, or none, needs user:create
+	// (create) or user:update (update) for every user; a holder for its
+	// team only may name only itself (403 otherwise). It refuses (400
+	// owner_id) an owner that is userID (self) or below it (cycle), would
+	// put userID, or a user below it, more than MaxTeamDepth levels below
+	// the top of its chain (too_deep), is missing or deleted (not_found),
+	// or may not manage userID by its roles (owner_cannot_manage), and an
+	// actor that may not act (ActOnIdentity) on the old and new owner and,
+	// on an update, on userID, the actor itself aside. A change is audited
+	// as user.owner (from, to). Actor 0 (the system) needs no permission.
+	CheckOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error)
 }
 
 // GuardOrDeny is g, or a guard refusing everything with ErrInternal when g
