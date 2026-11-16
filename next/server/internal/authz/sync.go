@@ -476,29 +476,27 @@ func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 }
 
 // grantPluginDefaults grants roleKey, a built-in role created now, the
-// defaults of the plugin permissions created before it existed: those their
-// stored defaults (DefaultGrants when created) give it or, not naming it,
-// the roles it follows together (manifest.FollowedDefaults), so that a
-// supplier agent gets what installed plugins gave users and suppliers. Audited as authz.sync.grant
-// (via plugin_default).
+// plugin grants the roles it follows (manifest.RoleDefaultsFrom) hold now,
+// together and canonical: a supplier agent gets what administrators gave
+// users and suppliers of the plugins installed before it existed, not the
+// manifests' suggestions (a default removed at consent, or held for review,
+// stays off). Audited as authz.sync.grant (via plugin_default).
 func (s *Service) grantPluginDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any) error {
 	db := store.G(ctx, tx)
-	var perms []model.Permission
-	if err := db.Select("key", "defaults").Where("source = 'plugin'").Order("key").Find(&perms).Error; err != nil {
+	var held []struct{ Action, Scope string }
+	if err := db.Table("(?) g", casbinrule.GrantRows(db)).Select("g.action, g.scope").
+		Joins("JOIN permissions p ON p.key = g.action AND p.source = 'plugin'").
+		Where("g.role = ANY(?)", store.Strings(manifest.RoleDefaultsFrom[roleKey])).Scan(&held).Error; err != nil {
 		return err
 	}
+	scopes := map[string][]string{}
+	for _, h := range held {
+		scopes[h.Action] = append(scopes[h.Action], h.Scope)
+	}
 	var grants []casbinrule.Grant
-	for _, p := range perms {
-		var defaults map[string][]string
-		if err := json.Unmarshal(p.Defaults, &defaults); err != nil {
-			return fmt.Errorf("authz: defaults of %s: %w", p.Key, err)
-		}
-		suffixes, named := defaults[roleKey]
-		if !named {
-			suffixes = manifest.FollowedDefaults(roleKey, defaults)
-		}
-		for _, sfx := range suffixes {
-			grants = append(grants, casbinrule.Grant{Role: roleKey, Action: p.Key, Suffix: sfx})
+	for _, action := range slices.Sorted(maps.Keys(scopes)) {
+		for _, sfx := range manifest.CanonicalSuffixes(scopes[action]) {
+			grants = append(grants, casbinrule.Grant{Role: roleKey, Action: action, Suffix: sfx})
 		}
 	}
 	added, err := casbinrule.AddGrants(db, grants, casbinrule.Filter{Source: "plugin", Skip: []string{"staged", "removed"}})
