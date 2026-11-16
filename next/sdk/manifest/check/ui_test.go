@@ -438,12 +438,14 @@ func TestHostUICompatNeedsMatchingHostCompat(t *testing.T) {
 		{"^3.15", ">=0.1.283 <0.2.0", true},
 		{"^3.15", ">=0.1.285 <0.2.0", true},
 		{"^3.15", ">=0.1.286 <0.2.0", false},
-		// UI 3.16 starts at core 0.1.289 (PluginPermissionsFirstCore); 0.1.288
-		// is the last core with 3.15.
+		// UI 3.16 and 3.17 both start at core 0.1.290
+		// (PluginPermissionsFirstCore); 0.1.288 is the last core, with 3.15,
+		// and 0.1.289 was never released, so it is refused like any core
+		// before 0.1.290.
 		{"^3.16", ">=0.1.286 <0.2.0", true},
 		{"^3.16", ">=0.1.288 <0.2.0", true},
-		{"^3.16", ">=0.1.289 <0.2.0", false},
-		// UI 3.17 starts at core 0.1.290; 0.1.289 is the last core with 3.16.
+		{"^3.16", ">=0.1.289 <0.2.0", true},
+		{"^3.16", ">=0.1.290 <0.2.0", false},
 		{"^3.17", ">=0.1.288 <0.2.0", true},
 		{"^3.17", ">=0.1.289 <0.2.0", true},
 		{"^3.17", ">=0.1.290 <0.2.0", false},
@@ -692,7 +694,7 @@ func TestAccountActions(t *testing.T) {
 	}
 	// The core checks an action on accounts alone, so a plugin scope on its
 	// permission would mean nothing.
-	m = withAccountAction(">=0.1.289 <0.2.0", good)
+	m = withAccountAction(">=0.1.290 <0.2.0", good)
 	m.UserPermissions[1].Scope = &manifest.PermissionScope{Resource: "asset", Own: true}
 	if c := uiCodes(m); c["ui.accountActions[0].permission"] != "unsupported" {
 		t.Errorf("an action over a scoped permission must be rejected: %v", c)

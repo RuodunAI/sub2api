@@ -55,9 +55,10 @@ func TestManifest(t *testing.T) {
 	}
 	// 0.1.229 is the first core that renders a table page's "create" link
 	// (the asset forms have no sidebar entry of their own); 0.1.286 the
-	// first that honours route accounts and upstreamFields; 0.1.289 the
-	// first that honours userPermissions defaults.
-	for version, want := range map[string]bool{"0.1.125": false, "0.1.229": false, "0.1.286": false, "0.1.288": false, "0.1.289": true} {
+	// first that honours route accounts and upstreamFields; 0.1.290 the
+	// first that honours userPermissions defaults (0.1.289 was never
+	// released, check.PluginPermissionsFirstCore).
+	for version, want := range map[string]bool{"0.1.125": false, "0.1.229": false, "0.1.286": false, "0.1.288": false, "0.1.289": false, "0.1.290": true} {
 		if got, err := check.HostCompatible(m.HostCompat, version); err != nil || got != want {
 			t.Fatalf("host %s compatibility: %v %v", version, got, err)
 		}
@@ -616,7 +617,7 @@ func TestValidate(t *testing.T) {
 	for _, icon := range []string{"assets/volcengine-color.svg", "assets/doubao-color.svg"} {
 		files[icon] = mustFile(t, icon)
 	}
-	if err := check.Validate(decodeManifest(t), files, check.ValidateOptions{HostVersion: "0.1.289"}); err != nil {
+	if err := check.Validate(decodeManifest(t), files, check.ValidateOptions{HostVersion: "0.1.290"}); err != nil {
 		t.Fatalf("core manifest validation: %v", err)
 	}
 }

@@ -81,7 +81,7 @@ func label(s string) manifest.LocalizedText { return manifest.LocalizedText{"en"
 // core that honours them: GET /flows is the options route of flow:manage.
 func permissionManifest() *manifest.Manifest {
 	m := minimal()
-	m.HostCompat = ">=0.1.289 <0.2.0"
+	m.HostCompat = ">=0.1.290 <0.2.0"
 	m.Capabilities = []manifest.Capability{{ID: manifest.CapHTTPRoutes}}
 	m.HostPermissions = []manifest.HostPermission{{ID: "routes.admin"}}
 	m.PermissionGroups = []manifest.PermissionGroup{{Key: "flow", Label: label("Flows")}, {Key: "record", Label: label("Records")}}
@@ -227,7 +227,9 @@ func TestPluginPermissionsFloor(t *testing.T) {
 		return m
 	}
 	assert.Equal(t, "below_feature_core", codes(Validate(onlyDefaults(">=0.1.286 <0.2.0"), nil, ValidateOptions{Tooling: true}))["hostCompat"])
-	assert.Empty(t, codes(Validate(onlyDefaults(">=0.1.289 <0.2.0"), nil, ValidateOptions{Tooling: true})))
+	// 0.1.289 was never released: the floor is the release, 0.1.290.
+	assert.Equal(t, "below_feature_core", codes(Validate(onlyDefaults(">=0.1.289 <0.2.0"), nil, ValidateOptions{Tooling: true}))["hostCompat"])
+	assert.Empty(t, codes(Validate(onlyDefaults(">=0.1.290 <0.2.0"), nil, ValidateOptions{Tooling: true})))
 	plain := minimal()
 	plain.UserPermissions = []manifest.UserPermission{{Key: "x:use", Label: label("Use")}}
 	assert.Empty(t, codes(Validate(plain, nil, ValidateOptions{Tooling: true})))
@@ -240,6 +242,6 @@ func TestPluginPermissionsFloor(t *testing.T) {
 	m.HostUICompat = "^3.16"
 	m.HostCompat = ">=0.1.286 <0.2.0"
 	assert.Equal(t, map[string]string{"hostCompat": "below_ui_core"}, codes(Validate(m, nil, ValidateOptions{Tooling: true})))
-	m.HostCompat = ">=0.1.289 <0.2.0"
+	m.HostCompat = ">=0.1.290 <0.2.0"
 	assert.Empty(t, codes(Validate(m, nil, ValidateOptions{Tooling: true})))
 }

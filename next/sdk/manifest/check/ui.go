@@ -509,8 +509,10 @@ type uiFloor struct {
 // starts at 0.1.280); 0.1.280 is the last with UI 3.12 (3.13 starts at
 // 0.1.281); 0.1.283 is the last with UI 3.13 (3.14 starts at 0.1.284);
 // 0.1.285 is the last with UI 3.14 (3.15 starts at 0.1.286); 0.1.288 is the
-// last with UI 3.15 (3.16 starts at PluginPermissionsFirstCore); 0.1.289
-// is the last with UI 3.16 (3.17 starts at 0.1.290).
+// last with UI 3.15, and 3.16 and 3.17 both start at
+// PluginPermissionsFirstCore (0.1.290). 0.1.289 was never released: their
+// lastCore is 0.1.289, the patch right before, as for coreFloors, so a
+// range admitting it is refused like one admitting 0.1.288.
 // 3.10 to 3.13 add components and props, no manifest declaration, so only
 // hostUICompat asks for them. 3.14 adds ui.pages.<page>.nav, but it needs
 // no floor of its own either: an older console ignores nav and the page
@@ -521,8 +523,8 @@ type uiFloor struct {
 // answers hostUICompat ^3.16. 3.17 adds fetchWithSession to @sub2api/host,
 // no manifest declaration.
 var uiFloors = []uiFloor{
-	{minor: 17, lastUI: "3.16.0", lastCore: "0.1.289", firstCore: "0.1.290"},
-	{minor: 16, lastUI: "3.15.0", lastCore: "0.1.288", firstCore: PluginPermissionsFirstCore},
+	{minor: 17, lastUI: "3.16.0", lastCore: "0.1.289", firstCore: PluginPermissionsFirstCore},
+	{minor: 16, lastUI: "3.15.0", lastCore: "0.1.289", firstCore: PluginPermissionsFirstCore},
 	{minor: 15, lastUI: "3.14.0", lastCore: "0.1.285", firstCore: "0.1.286"},
 	{minor: 14, lastUI: "3.13.0", lastCore: "0.1.283", firstCore: "0.1.284"},
 	{minor: 13, lastUI: "3.12.0", lastCore: "0.1.280", firstCore: "0.1.281"},

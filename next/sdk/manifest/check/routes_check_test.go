@@ -79,7 +79,7 @@ func TestRouteScopeFrom(t *testing.T) {
 	// withAccountAction routes: [3] POST /assets/:id/reset (admin), [5]
 	// POST /assets/ping (public); assets:edit is scoped, assets:manage not.
 	scoped := func() *manifest.Manifest {
-		m := withAccountAction(">=0.1.289 <0.2.0", good)
+		m := withAccountAction(">=0.1.290 <0.2.0", good)
 		m.UserPermissions = append(m.UserPermissions, manifest.UserPermission{Key: "assets:edit", Label: manifest.LocalizedText{"en": "Edit"},
 			Scope: &manifest.PermissionScope{Resource: "asset", Own: true}})
 		m.Routes[3].Permission = "assets:edit"

@@ -50,10 +50,13 @@ const RouteAccountsFirstCore = "0.1.286"
 // PluginPermissionsFirstCore is the first core that honours
 // userPermissions[].group/risk/requires/scope/defaults, permissionGroups and
 // routes[].scopeFrom, and ships UI 3.16 (the permission matrix, plugin
-// resource scopes). An older core ignores them: it would grant a permission
-// without defaultRoles to admin (critical ones included), treat every risk
-// as not sensitive and forward scopeFrom routes unchecked.
-const PluginPermissionsFirstCore = "0.1.289"
+// resource scopes) and 3.17. An older core ignores them: it would grant a
+// permission without defaultRoles to admin (critical ones included), treat
+// every risk as not sensitive and forward scopeFrom routes unchecked.
+// Development planned this work as 0.1.289; it ships with the Casbin and
+// session changes as one release, 0.1.290, after 0.1.288, and 0.1.289 is
+// never released.
+const PluginPermissionsFirstCore = "0.1.290"
 
 // ConvertMatrixFirstCore is the first core of the protocol conversion
 // matrix (CONTRACTS §88), which adds the openai.responses -> openai.chat

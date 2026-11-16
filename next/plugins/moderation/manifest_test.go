@@ -67,7 +67,7 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("manifest check: %+v", fields)
 	}
 	// hostCompat: risk and defaults need the plugin permission core,
-	// 0.1.289 (check.PluginPermissionsFirstCore; an older one would grant
+	// 0.1.290 (check.PluginPermissionsFirstCore; an older one would grant
 	// the critical exempt to admin); inheritFrom needed the authz-hardening
 	// core, 0.1.286, which also ships UI 3.15 (permissions.hasAction,
 	// resource scopes; the UI feature-detects it, so ^3.15 is declared for
@@ -80,7 +80,7 @@ func TestManifest(t *testing.T) {
 	// the forms) came with 0.1.279, UI 3.10 (SFilterBar more filters,
 	// SFilterChips, SChipList, TableColumn.grow) with 0.1.277, the verdict
 	// cache's batch KV calls with 0.1.273.
-	if m.Key != "moderation" || m.Version != "0.12.1" || m.HostCompat != ">=0.1.289 <0.2.0" || m.HostUICompat != "^3.15" || m.UI == nil || m.UI.Native == nil ||
+	if m.Key != "moderation" || m.Version != "0.12.1" || m.HostCompat != ">=0.1.290 <0.2.0" || m.HostUICompat != "^3.15" || m.UI == nil || m.UI.Native == nil ||
 		m.UI.Native.Entry != "ui/native/entry.js" || m.Database == nil || m.Database.Schema != "plg_moderation" {
 		t.Fatalf("manifest = %+v", m)
 	}
