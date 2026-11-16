@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -49,7 +50,7 @@ func (s *Service) PrepareAccount(ctx context.Context, p core.AccountPreparation)
 // preparationMatches reports whether the open draft of p is the one p
 // describes (same creator, proxy and settings).
 func preparationMatches(db *gorm.DB, p core.AccountPreparation) (bool, error) {
-	return store.Exists(db, newAccountDraft(db, p.Key, &p.CreatedBy).
+	return gormpg.Exists(db, newAccountDraft(db, p.Key, &p.CreatedBy).
 		Where("proxy_id IS NOT DISTINCT FROM ? AND initial_settings = ?::jsonb", p.ProxyID, p.Settings))
 }
 

@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -216,7 +217,7 @@ func (s *Service) CreateAccessKey(ctx context.Context, userID int64, in CreateAc
 // insertAccessKey creates an access key and returns its accessKeyColumns.
 func insertAccessKey(db *gorm.DB, userID int64, name, hash, hint string, perms []string, expiresAt *time.Time) *gorm.DB {
 	row := store.OneRow(db).Select("?, ?, ?, ?, ?, ?", userID, name, hash, hint, store.Strings(perms), expiresAt)
-	return store.InsertSelectReturning(db, model.UserAccessKey{}.TableName(),
+	return gormpg.InsertSelectReturning(db, model.UserAccessKey{}.TableName(),
 		[]string{"user_id", "name", "token_hash", "token_hint", "permissions", "expires_at"}, row, accessKeyReturning)
 }
 

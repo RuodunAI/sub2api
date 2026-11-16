@@ -18,6 +18,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -599,7 +600,7 @@ var skipLoggedRequest = clause.OnConflict{Columns: []clause.Column{{Name: "reque
 //
 // A batch of one, the settler's usual one when it is not busy, is one
 // INSERT that returns the new row's id. A larger batch reserves its ids
-// first (store.NextIDs, ascending in batch order) and inserts the rows with
+// first (gormpg.NextIDs, ascending in batch order) and inserts the rows with
 // them: two round trips whatever its size. Only when some row was skipped
 // does a third read which ids made it.
 func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
@@ -614,7 +615,7 @@ func insertUsageRows(db *gorm.DB, batch []*core.UsageRecord) ([]int64, error) {
 		err := db.Omit("id").Clauses(skipLoggedRequest, clause.Returning{Columns: []clause.Column{{Name: "id"}}}).Create(&rows[0]).Error
 		return []int64{rows[0].ID}, err
 	}
-	ids, err := store.NextIDs(db, "usage_logs", len(rows))
+	ids, err := gormpg.NextIDs(db, "usage_logs", len(rows))
 	if err != nil {
 		return nil, err
 	}

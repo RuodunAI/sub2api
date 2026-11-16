@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -58,11 +59,11 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 func CoreUpdateBusy(ctx context.Context, q *gorm.DB) (bool, error) {
 	db := store.G(ctx, q)
 	// The managed shell's updater schema is not part of the core schema.
-	installed, err := store.RelationExists(db, "updater.upgrades")
+	installed, err := gormpg.RelationExists(db, "updater.upgrades")
 	if err != nil || !installed {
 		return false, err
 	}
-	return store.Exists(db, upgradeActive(db))
+	return gormpg.Exists(db, upgradeActive(db))
 }
 
 // upgradeActive selects the core updates running or paused.

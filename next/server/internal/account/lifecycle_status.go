@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -22,7 +23,7 @@ func markLifecyclePending(ctx context.Context, q *gorm.DB, id int64) error {
 	}
 	// The account's plugin gets a cursor at the latest event, if it has none.
 	cursor := g.Model(&model.Account{}).Select("plugin_key, (?)", g.Model(&model.Event{}).Select("COALESCE(max(id),0)")).Where("id = ?", id)
-	return store.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursor,
+	return gormpg.InsertSelect(g, "plugin_event_cursors", []string{"plugin_key", "last_event_id"}, cursor,
 		clause.OnConflict{Columns: []clause.Column{{Name: "plugin_key"}}, DoNothing: true}).Error
 }
 
@@ -31,7 +32,7 @@ func markLifecyclePending(ctx context.Context, q *gorm.DB, id int64) error {
 func (s *Service) saveLifecycleStatus(ctx context.Context, id int64, version time.Time, generation int64, state core.AccountSynchronization) error {
 	g := store.G(ctx, s.d.DB.Gorm)
 	row := g.Model(&model.Account{}).Select("id, ?, ?", state.Status, state.Code).Where("id = ? AND updated_at = ?", id, version)
-	return store.InsertSelect(g, "account_lifecycle_sync", []string{"account_id", "status", "code"}, row, clause.OnConflict{
+	return gormpg.InsertSelect(g, "account_lifecycle_sync", []string{"account_id", "status", "code"}, row, clause.OnConflict{
 		Columns:   []clause.Column{{Name: "account_id"}},
 		DoUpdates: append(clause.AssignmentColumns([]string{"status", "code"}), clause.Assignment{Column: clause.Column{Name: "updated_at"}, Value: gorm.Expr("now()")}),
 		Where:     clause.Where{Exprs: []clause.Expression{gorm.Expr("account_lifecycle_sync.generation = ?", generation)}},

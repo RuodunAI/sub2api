@@ -20,7 +20,6 @@ var (
 	ReleaseQuotaSQL     = releaseAccountQuota
 	CompleteQuotaSQL    = completeAccountQuota
 	ApplyObservationSQL = applyQuotaObservation
-	XactLockSQL         = xactLock
 )
 
 // QuotaLease is the row LeaseQuotaSQL returns.

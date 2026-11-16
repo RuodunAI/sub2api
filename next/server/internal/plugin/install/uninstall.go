@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
@@ -128,7 +129,7 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 func checkUninstall(ctx context.Context, q *gorm.DB, key string) error {
 	g := store.G(ctx, q)
 	var pending bool
-	if err := store.ExistsQuery(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
+	if err := gormpg.ExistsQuery(g, uninstallRow(g, key)).Scan(&pending).Error; err != nil {
 		return err
 	}
 	if pending {
@@ -175,7 +176,7 @@ func (s *Service) quiesce(ctx context.Context, key string, actorID int64) error 
 				return ErrBuiltin
 			}
 			var open bool
-			if err := store.ExistsQuery(g, g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)).
+			if err := gormpg.ExistsQuery(g, g.Model(&model.PluginRollout{}).Where("plugin_key = ? AND phase IN ('preparing','activating')", key)).
 				Scan(&open).Error; err != nil {
 				return err
 			}

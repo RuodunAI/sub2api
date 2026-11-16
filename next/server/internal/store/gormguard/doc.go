@@ -82,17 +82,27 @@
 //     what a called function does with the pool is not followed, so a
 //     function that may run inside a transaction takes the handle (q
 //     *gorm.DB) instead of reading s.db itself;
-//   - [tx-lock] a function (not a test's) that takes a *gorm.DB and runs
-//     a statement with a lock held until the transaction ends - a row lock
-//     (store.ForUpdate, store.Lock, a clause.Locking literal), SQL text
-//     with FOR UPDATE / NO KEY UPDATE / SHARE / KEY SHARE or an
-//     *_xact_lock call, or a call of a lock builder of its package (a
-//     function that returns such a *gorm.DB) - calls store.RequireTx: on
-//     the pool the lock would end with its statement. The handle's type no
-//     longer says "transaction" as pgx.Tx did, so the check stands in for
-//     it. A function that returns a *gorm.DB only builds the statement and
-//     is not reported; its caller is. A check under the condition that
-//     takes the lock (if lock { RequireTx }) counts;
+//   - [tx-lock] a function (not a test's) that runs a statement with a
+//     lock held until the transaction ends - a row lock (any value of type
+//     store.RowLock or clause.Locking: store.ForUpdate, store.Lock, a
+//     literal, a variable or field holding one), SQL text with FOR UPDATE /
+//     NO KEY UPDATE / SHARE / KEY SHARE or an *_xact_lock call, or a call
+//     of a lock builder of its package (a function that returns such a
+//     *gorm.DB) - calls store.RequireTx on the handle it locks on: on the
+//     pool the lock would end with its statement. The handle is followed to
+//     the variables it is built on (method chains, store.G, locals, the
+//     values the package writes into a field, the *gorm.DB arguments of a
+//     package function that returns one): a parameter, a local, a struct
+//     field or a package variable, and RequireTx must name one of them; a
+//     check under the condition that takes the lock (if lock { RequireTx })
+//     counts. Not checked: the pool (store.DB's Gorm), on which a lock only
+//     serves its one statement, and the parameters of function literals
+//     (store.DB.Tx's callback holds a transaction; what another caller
+//     passes is not followed). A lock whose handle is not seen needs a
+//     RequireTx of any handle in a function that takes a *gorm.DB. A
+//     function that returns a *gorm.DB only builds the statement and is not
+//     reported; its caller is. The handle's type no longer says
+//     "transaction" as pgx.Tx did, so the check stands in for it;
 //   - [testutil-import] no Go file but the test files and internal/testutil
 //     itself imports internal/testutil: it is an owner because it is test
 //     infrastructure, which production code never reaches;
@@ -131,28 +141,18 @@
 //     AddPolicies, how a load is built) and the role manager are not
 //     covered. Packages that depend on Casbin are checked as well as those
 //     that depend on GORM;
-//   - [raw-sql] no gorm Raw or Exec, called or as a value, nor
-//     store.NewNumbered, outside rawSQLAllowed: a statement is built by
-//     GORM (models, Where, Updates, clause.OnConflict, store.InsertSelect
-//     ...), and the declarations that keep a written statement (the ledger
-//     CTEs, store's helpers for locks, DDL, sequences and system functions,
-//     the migrations runner) are listed by name with the reason. A Raw or
-//     Exec whose text is only a set operation over builder queries,
-//     "(?) UNION ALL (?)" with an optional ORDER BY of column numbers,
-//     passes. An entry that allows nothing fails;
-//   - [sql-const] the SQL text handed to GORM - the first string argument
-//     of Raw, Exec, Where, Not, Or, Having, Select, Order, Group, Joins,
-//     Table, Distinct and Pluck, of gorm.Expr, store.Conds.And,
-//     store.UpdateFrom, store.DDL and store.NewNumbered, and the SQL of a
-//     clause.Expr or NamedExpr literal - is built from constants: constants
-//     joined with +, variables, parameters, unexported fields and package
-//     functions whose every value is such, elements of a map or slice
-//     literal of such that nothing writes, fmt.Sprintf, strings.Join and
-//     the trims of such, the TableName of a generated model, and the
-//     quoting helpers (sqlQuoting). A value goes in as a ? parameter; an
-//     identifier chosen at run time goes through a fixed map to a
-//     clause.Column or clause.OrderByColumn. sqlConstAllowed lists what the
-//     check cannot follow, with the reason.
+//   - [raw-sql] and [sql-const], runtime-contract/gormpg/sqlcheck's rules,
+//     which the gateway, the SDK and the plugins run as well, with the
+//     core's sqlPolicy (rawsql_test.go): no statement written as SQL text
+//     outside the declarations listed with the reason GORM cannot express
+//     it (the ledger CTEs, store's system statements in system.go and
+//     ddl.go, the migrations runner, the dev tool modelgen; the shared
+//     combinators are gormpg's), and SQL text handed to GORM built from
+//     constants. store's own SQL text parameters are checked as gorm's:
+//     store.Conds.And, store.UpdateFrom, store.DDL's format and
+//     store.NewNumbered, which also counts as a statement written out.
+//     store.QuoteIdent's result is constant text, and so is the TableName
+//     of a generated model. Every entry must allow or match something.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result

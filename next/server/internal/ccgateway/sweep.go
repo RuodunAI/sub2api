@@ -11,6 +11,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -168,7 +169,7 @@ func (s *Service) sweepRetiredKey(ctx context.Context, tx *gorm.DB, key string) 
 		id, _ := strconv.ParseInt(key, 10, 64)
 		// Whether the account exists without a runtime row, so that it falls
 		// back to the runtime named after its id.
-		used, e := store.Exists(g, g.Model(&model.Account{}).Where("id = ? AND NOT EXISTS (?)", id, runtimes(g).Select("1").Where("account_id = ?", id)))
+		used, e := gormpg.Exists(g, g.Model(&model.Account{}).Where("id = ? AND NOT EXISTS (?)", id, runtimes(g).Select("1").Where("account_id = ?", id)))
 		if e != nil {
 			return false, e
 		}
@@ -270,7 +271,7 @@ func (s *Service) sweepOrphans(ctx context.Context) (int, error) {
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		e := s.lockedTx(c, key, false, func(tx *gorm.DB) error {
 			g := store.G(c, tx)
-			if found, e := store.Exists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
+			if found, e := gormpg.Exists(g, runtimes(g).Where("key = ?", key)); e != nil || found {
 				return e
 			}
 			if e := s.deleteRemote(c, tx, key, false); e != nil {

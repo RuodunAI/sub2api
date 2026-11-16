@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/sqlcheck"
 )
 
 // [casbin-api]: Casbin never writes the policy, which the core writes with
@@ -217,7 +219,7 @@ const (
 // TestCasbinAPIRule runs once the module requires Casbin and gorm-adapter
 // (their export data type-checks the fixtures).
 func TestCasbinAPIRule(t *testing.T) {
-	root, _ := moduleRoot(t)
+	root := moduleRoot(t)
 	for _, m := range []string{casbinPkgPath, adapterPkgPath} {
 		cmd := exec.Command("go", "list", "-m", m)
 		cmd.Dir = root
@@ -368,9 +370,9 @@ func casbinFixtures(t *testing.T, extra []string, cases []casbinCase) {
 // checks).
 func casbinFixture(t *testing.T, extra []string, c casbinCase) ([]string, error) {
 	t.Helper()
-	root, _ := moduleRoot(t)
+	root := moduleRoot(t)
 	fset := token.NewFileSet()
-	imp := exportImporter(fset, goList(t, root, append([]string{"-export", "-deps",
+	imp := sqlcheck.Importer(fset, goList(t, root, append([]string{"-export", "-deps",
 		gormPkg, clausePkg, fixtureModule + "/internal/store"}, extra...)...))
 	r := rules{module: fixtureModule, casbinOwners: casbinOwners}
 	src := "package p\n" + fixtureImports + c.imports + "\n" + c.src + fixtureUses
@@ -383,7 +385,7 @@ func casbinFixture(t *testing.T, extra []string, c casbinCase) ([]string, error)
 		t.Fatal(err)
 	}
 	path := fixtureModule + "/" + c.pkg
-	info, err := typeCheck(fset, imp, path, []*ast.File{f})
+	info, err := sqlcheck.TypeCheck(fset, imp, path, []*ast.File{f})
 	if err != nil {
 		return nil, err
 	}

@@ -136,7 +136,7 @@ func (s PermissionSet) DataScope(uid int64, action perm.Key) DataScope {
 
 // ScopeGroups lists the groups its scopes name (group/G, group/G/account/X)
 // under any action, sorted: the groups whose names the holder's own grants
-// show (lookup.Entity.Named).
+// show (lookup's entity.named).
 func (s PermissionSet) ScopeGroups() []int64 {
 	var out []int64
 	for _, scopes := range s.Scoped {

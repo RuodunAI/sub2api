@@ -1,22 +1,16 @@
 package gormguard
 
 import (
-	"bytes"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"go/ast"
-	"go/importer"
 	"go/parser"
 	"go/token"
-	"go/types"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/sqlcheck"
 )
 
 const (
@@ -55,82 +49,24 @@ var pgxFiles = map[string]string{
 	"internal/store/pgerror.go": "reads *pgconn.PgError",
 }
 
-// --- loading -------------------------------------------------------------
-
-type listed struct {
-	ImportPath string
-	Dir        string
-	GoFiles    []string
-	Deps       []string
-	Export     string
-	Error      *struct{ Err string }
-}
-
-// goList runs go list -json in dir. The go command is the one that builds
-// the tests, so its export data matches this go/types.
-func goList(t *testing.T, dir string, args ...string) []listed {
+// moduleRoot is the directory of the module under test.
+func moduleRoot(t *testing.T) string {
 	t.Helper()
-	cmd := exec.Command("go", append([]string{"list", "-json=ImportPath,Dir,GoFiles,Deps,Export,Error"}, args...)...)
-	cmd.Dir = dir
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	dir, err := sqlcheck.ModuleDir(".", fixtureModule)
 	if err != nil {
-		t.Fatalf("go list %v: %v\n%s", args, err, stderr.String())
+		t.Fatal(err)
 	}
-	var pkgs []listed
-	for dec := json.NewDecoder(bytes.NewReader(out)); ; {
-		var p listed
-		if err := dec.Decode(&p); errors.Is(err, io.EOF) {
-			return pkgs
-		} else if err != nil {
-			t.Fatal(err)
-		}
-		if p.Error != nil {
-			t.Fatalf("go list %s: %s", p.ImportPath, p.Error.Err)
-		}
-		pkgs = append(pkgs, p)
-	}
+	return dir
 }
 
-// moduleRoot returns the directory and path of the module under test.
-func moduleRoot(t *testing.T) (dir, path string) {
+// goList lists packages as sqlcheck.List does, failing t on an error.
+func goList(t *testing.T, dir string, args ...string) []sqlcheck.Package {
 	t.Helper()
-	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}} {{.Path}}", "github.com/Sub2API-Devs/sup2api/next/server").Output()
+	pkgs, err := sqlcheck.List(dir, args...)
 	if err != nil {
-		t.Fatalf("go list -m: %v", err)
+		t.Fatal(err)
 	}
-	dir, path, _ = strings.Cut(strings.TrimSpace(string(out)), " ")
-	return dir, path
-}
-
-// exportImporter imports packages from the export data go list -export
-// produced, so only the checked packages are type-checked from source.
-func exportImporter(fset *token.FileSet, pkgs []listed) types.Importer {
-	files := map[string]string{}
-	for _, p := range pkgs {
-		if p.Export != "" {
-			files[p.ImportPath] = p.Export
-		}
-	}
-	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
-		f, ok := files[path]
-		if !ok {
-			return nil, fmt.Errorf("no export data for %s", path)
-		}
-		return os.Open(f)
-	})
-}
-
-func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*ast.File) (*types.Info, error) {
-	info := &types.Info{
-		Types:      map[ast.Expr]types.TypeAndValue{},
-		Defs:       map[*ast.Ident]types.Object{},
-		Uses:       map[*ast.Ident]types.Object{},
-		Selections: map[*ast.SelectorExpr]*types.Selection{},
-	}
-	_, err := (&types.Config{Importer: imp}).Check(path, fset, files, info)
-	return info, err
+	return pkgs
 }
 
 // --- the repository ------------------------------------------------------
@@ -140,11 +76,11 @@ func typeCheck(fset *token.FileSet, imp types.Importer, path string, files []*as
 // module, test files included ([pgx-import], [testutil-import], and
 // gorm-adapter's of [casbin-api]).
 func TestRepositoryFollowsGORMRules(t *testing.T) {
-	root, module := moduleRoot(t)
+	root, module := moduleRoot(t), fixtureModule
 	r := rules{module: module, owners: instanceOwners, sqlOwners: sqlOwners, pgxFiles: pgxFiles,
-		casbinOwners: casbinOwners, sql: newSQLPolicy()}
+		casbinOwners: casbinOwners, sql: sqlcheck.New(sqlPolicy)}
 	known := map[string]bool{} // packages and their files, relative to the module
-	var targets []listed
+	var targets []sqlcheck.Package
 	for _, p := range goList(t, root, "./...") {
 		rel := strings.TrimPrefix(p.ImportPath, module+"/")
 		known[rel] = true
@@ -162,7 +98,7 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			}
 		}
 	}
-	if !slices.ContainsFunc(targets, func(p listed) bool { return p.ImportPath == module+"/internal/store/gormtest" }) {
+	if !slices.ContainsFunc(targets, func(p sqlcheck.Package) bool { return p.ImportPath == module+"/internal/store/gormtest" }) {
 		t.Fatal("internal/store/gormtest was not among the GORM users: the scan did not see the module")
 	}
 	paths := make([]string, len(targets))
@@ -170,18 +106,14 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 		paths[i] = p.ImportPath
 	}
 	fset := token.NewFileSet()
-	imp := exportImporter(fset, goList(t, root, append([]string{"-export", "-deps"}, paths...)...))
+	imp := sqlcheck.Importer(fset, goList(t, root, append([]string{"-export", "-deps"}, paths...)...))
 	scanImports(t, root, r)
 	for _, p := range targets {
-		var files []*ast.File
-		for _, name := range p.GoFiles {
-			f, err := parser.ParseFile(fset, filepath.Join(p.Dir, name), nil, parser.SkipObjectResolution|parser.ParseComments)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files = append(files, f)
+		files, err := sqlcheck.ParseFiles(fset, p.Dir, p.GoFiles)
+		if err != nil {
+			t.Fatal(err)
 		}
-		info, err := typeCheck(fset, imp, p.ImportPath, files)
+		info, err := sqlcheck.TypeCheck(fset, imp, p.ImportPath, files)
 		if err != nil {
 			t.Fatalf("type-check %s: %v", p.ImportPath, err)
 		}
@@ -189,7 +121,9 @@ func TestRepositoryFollowsGORMRules(t *testing.T) {
 			t.Error(finding)
 		}
 	}
-	r.sql.verify(t, known)
+	for _, entry := range r.sql.Unused() {
+		t.Errorf("%s (sqlPolicy) is listed but matched nothing; drop its entry", entry)
+	}
 }
 
 // scanImports checks the imports of every Go file under root, whatever its
@@ -249,9 +183,9 @@ var (
 `
 
 func TestRules(t *testing.T) {
-	root, _ := moduleRoot(t)
+	root := moduleRoot(t)
 	fset := token.NewFileSet()
-	imp := exportImporter(fset, goList(t, root, "-export", "-deps",
+	imp := sqlcheck.Importer(fset, goList(t, root, "-export", "-deps",
 		gormPkg, clausePkg, pgxModule+"/v5", pgxModule+"/v5/pgconn", fixtureModule+"/internal/store", fixtureModule+"/"+testutilPkg))
 	r := rules{
 		module:    fixtureModule,
@@ -577,6 +511,72 @@ func run(ctx context.Context, db *store.DB) error {
 
 func plain(db *gorm.DB) error {
 	return db.Raw("SELECT 'for updates'").Row().Err()
+}
+`,
+		},
+		{
+			name: "tx-lock/a lock in a variable, RequireTx of another handle, a handle in a field",
+			pkg:  "internal/billing",
+			src: `
+var lk = store.ForUpdate()
+
+func pkgVar(db *gorm.DB) error { return db.Clauses(lk).Take(&struct{}{}).Error }
+
+func other(ctx context.Context, db, audit *gorm.DB) error {
+	if err := store.RequireTx(audit); err != nil {
+		return err
+	}
+	return store.G(ctx, db).Clauses(store.ForUpdate()).Take(&struct{}{}).Error
+}
+
+type view struct{ tx *gorm.DB }
+
+func (v view) field() error { return v.tx.Clauses(store.ForUpdate()).Take(&struct{}{}).Error }
+
+var shared *gorm.DB
+
+func global() error { return shared.Raw("SELECT 1 FOR UPDATE").Row().Err() }
+`,
+			want: []string{ruleTxLock, ruleTxLock, ruleTxLock, ruleTxLock},
+		},
+		{
+			name: "tx-lock/a checked field, a field a transaction callback sets, the pool and a reassigned handle pass",
+			pkg:  "internal/billing",
+			src: `
+type view struct{ tx *gorm.DB }
+
+func (v view) checked() error {
+	if err := store.RequireTx(v.tx); err != nil {
+		return err
+	}
+	return v.tx.Clauses(store.ForUpdate()).Take(&struct{}{}).Error
+}
+
+type issuer struct{ tx *gorm.DB }
+
+func (i *issuer) lock() error { return i.tx.Clauses(store.ForUpdate()).Take(&struct{}{}).Error }
+
+func run(ctx context.Context, db *store.DB) error {
+	is := &issuer{}
+	return db.Tx(ctx, func(tx *gorm.DB) error {
+		is.tx = tx
+		return is.lock()
+	})
+}
+
+type svc struct{ db *store.DB }
+
+func (s svc) claim(ctx context.Context) error {
+	return store.G(ctx, s.db.Gorm).Where("id IN (?)", s.db.Gorm.Table("t").Select("id").Clauses(store.ForUpdate().SkipLocked())).Delete(&struct{}{}).Error
+}
+
+func reassigned(ctx context.Context, db *gorm.DB) error {
+	db = store.G(ctx, db)
+	if err := store.RequireTx(db); err != nil {
+		return err
+	}
+	q := db.Table("t")
+	return q.Clauses(store.ForUpdate()).Take(&struct{}{}).Error
 }
 `,
 		},
@@ -1020,7 +1020,7 @@ func f(ctx context.Context, s *svc, db *store.DB, x fake) error {
 				t.Fatal(err)
 			}
 			path := fixtureModule + "/" + c.pkg
-			info, err := typeCheck(fset, imp, path, []*ast.File{f})
+			info, err := sqlcheck.TypeCheck(fset, imp, path, []*ast.File{f})
 			if err != nil {
 				t.Fatalf("fixture does not type-check: %v", err)
 			}

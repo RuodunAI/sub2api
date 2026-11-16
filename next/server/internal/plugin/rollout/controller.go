@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
@@ -297,14 +298,14 @@ func lockPlugin(ctx context.Context, tx *gorm.DB, key string) (*pluginLock, erro
 	if err != nil {
 		return nil, err
 	}
-	uninstalling, err := store.Exists(g, uninstallPending(g, key))
+	uninstalling, err := gormpg.Exists(g, uninstallPending(g, key))
 	if err != nil {
 		return nil, err
 	}
 	if uninstalling {
 		return nil, core.ErrConflict.WithMessage("plugin uninstall is waiting for nodes to stop")
 	}
-	open, err := store.Exists(g, openRollouts(g, key).Select("1"))
+	open, err := gormpg.Exists(g, openRollouts(g, key).Select("1"))
 	if err != nil {
 		return nil, err
 	}
@@ -323,7 +324,7 @@ func selectPluginForUpdate(g *gorm.DB, key string, cols ...string) *gorm.DB {
 
 func approved(ctx context.Context, tx *gorm.DB, key, version string) (bool, error) {
 	g := store.G(ctx, tx)
-	return store.Exists(g, g.Model(&model.PluginVersion{}).Select("1").
+	return gormpg.Exists(g, g.Model(&model.PluginVersion{}).Select("1").
 		Where("plugin_key = ? AND version = ? AND consent_status = 'approved'", key, version))
 }
 

@@ -6,9 +6,9 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
@@ -63,7 +63,7 @@ func (s *Service) BeginSkillDelete(ctx context.Context, owner core.ResourceOwner
 // busyVersions reads whether a version of the skill parentID has an
 // unfinished mutation.
 func busyVersions(db *gorm.DB, parentID string) *gorm.DB {
-	return store.ExistsQuery(db, db.Model(&model.ProviderSkillVersion{}).
+	return gormpg.ExistsQuery(db, db.Model(&model.ProviderSkillVersion{}).
 		Where("parent_id = ? AND state IN ('pending','uncertain','deleting','delete_uncertain')", parentID))
 }
 

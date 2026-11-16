@@ -229,7 +229,7 @@ type automaticChange struct {
 // source (an older core) and clears the mark.
 func (s *Service) writeAutomaticStatus(ctx context.Context, tx *gorm.DB, action string, ch automaticChange) error {
 	g := store.G(ctx, tx)
-	if err := store.SetConfig(g, "sup2api.auto_disabled_source", "written"); err != nil {
+	if err := store.SetLocal(ctx, tx, "sup2api.auto_disabled_source", "written"); err != nil {
 		return err
 	}
 	if err := g.Model(&model.Account{}).Where("id = ?", ch.id).Updates(map[string]any{"status": ch.to, "status_reason": ch.reason,

@@ -6,7 +6,7 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -51,8 +51,8 @@ func TestSQLUserLocks(t *testing.T) {
 		"lock_user":            func(db *gorm.DB) *gorm.DB { return read(lockUser(db, 7)) },
 		"lock_user_if_any":     func(db *gorm.DB) *gorm.DB { return lockUserIfAny(db, 7) },
 		"factors":              func(db *gorm.DB) *gorm.DB { return read(userFactors(db, 7)) },
-		"has_two_factor":       func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, totpOf(db, 7))) },
-		"bootstrap_exists":     func(db *gorm.DB) *gorm.DB { return read(store.ExistsQuery(db, liveUsers(db))) },
+		"has_two_factor":       func(db *gorm.DB) *gorm.DB { return read(gormpg.ExistsQuery(db, totpOf(db, 7))) },
+		"bootstrap_exists":     func(db *gorm.DB) *gorm.DB { return read(gormpg.ExistsQuery(db, liveUsers(db))) },
 		"touch_last_login":     func(db *gorm.DB) *gorm.DB { return touchLastLogin(db, 7) },
 		"bump_tokenversion":    func(db *gorm.DB) *gorm.DB { return bumpTokenVersion(db, 7, 2) },
 	})

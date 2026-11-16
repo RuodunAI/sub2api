@@ -19,6 +19,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -208,7 +209,7 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) (Status, error) 
 		if err != nil {
 			return err
 		}
-		exists, err := store.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
+		exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
 		if err != nil {
 			return err
 		}

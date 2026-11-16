@@ -10,15 +10,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
-
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // slot is the local state of one plugin on this node.
@@ -518,7 +517,7 @@ func (c *Controller) registerRuntime(ctx context.Context, key string, expected .
 		if len(expected) > 0 && p.RowVersion != expected[0].epoch {
 			return errStaleGeneration
 		}
-		pending, err := store.Exists(g, uninstallPending(g, key))
+		pending, err := gormpg.Exists(g, uninstallPending(g, key))
 		if err != nil {
 			return err
 		}

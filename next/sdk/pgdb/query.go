@@ -1,63 +1,41 @@
 package pgdb
 
 import (
-	"fmt"
-	"slices"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 )
 
 // SQL is a fragment of SQL text that a helper hands on to GORM (a column
 // list, an ORDER BY, a condition): a constant of the code, never input.
 // An untyped string constant converts to it by itself; a string variable
 // takes an explicit conversion, which TestNoRawSQL rejects unless the value
-// is a constant. Values go in as ? parameters, and identifiers a request
-// chooses through a fixed whitelist into clause.Column or
+// is built from constants. Values go in as ? parameters, and identifiers a
+// request chooses through a fixed whitelist into clause.Column or
 // clause.OrderByColumn.
 type SQL string
 
+// The statements GORM's builder has no form for are runtime-contract/
+// gormpg's, which the core and the gateway run as well; these are the
+// plugins' names for them.
+
 // Exists reports whether sub, a query built on db, finds a row, in one
 // SELECT EXISTS round trip; sub's select list becomes 1.
-func Exists(db, sub *gorm.DB) (bool, error) {
-	var found bool
-	err := db.Raw("SELECT EXISTS (?)", sub.Select("1")).Scan(&found).Error
-	return found, err
-}
+func Exists(db, sub *gorm.DB) (bool, error) { return gormpg.Exists(db, sub) }
 
 // InsertSelect inserts the rows sub selects into table, its values in the
-// order of columns, with conflict (nil = none) as the ON CONFLICT clause:
-// INSERT ... SELECT, which Create, writing VALUES, cannot. The statement
-// runs; its result has the error and the rows written.
-func InsertSelect(db *gorm.DB, table string, columns []string, sub *gorm.DB, conflict *clause.OnConflict) *gorm.DB {
-	cols := make([]clause.Column, len(columns))
-	for i, c := range columns {
-		cols[i] = clause.Column{Name: c}
-	}
-	if conflict == nil {
-		return db.Exec("INSERT INTO ? ? ?", clause.Table{Name: table}, cols, sub)
-	}
-	return db.Exec("INSERT INTO ? ? ? ?", clause.Table{Name: table}, cols, sub, *conflict)
+// order of columns, with clauses after it (a clause.OnConflict, or a
+// pointer to one): INSERT ... SELECT, which Create, writing VALUES, cannot.
+// The statement runs; its result has the error and the rows written.
+func InsertSelect(db *gorm.DB, table string, columns []string, sub *gorm.DB, clauses ...clause.Expression) *gorm.DB {
+	return gormpg.InsertSelect(db, table, columns, sub, clauses...)
 }
 
 // NextIDs reserves n ids from the id sequence of table, ascending, for a
 // batch insert that must know each row's id before it writes the rows: the
 // caller sets the ids on its models and creates them with one INSERT.
-func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) {
-	ids := make([]int64, 0, n)
-	if n <= 0 {
-		return ids, nil
-	}
-	err := db.Raw(`SELECT nextval(pg_get_serial_sequence(?, 'id')) FROM generate_series(1, ?)`, table, n).Scan(&ids).Error
-	if err != nil {
-		return nil, err
-	}
-	if len(ids) != n {
-		return nil, fmt.Errorf("pgdb: drew %d ids from %s, want %d", len(ids), table, n)
-	}
-	slices.Sort(ids)
-	return ids, nil
-}
+func NextIDs(db *gorm.DB, table string, n int) ([]int64, error) { return gormpg.NextIDs(db, table, n) }
 
 // LockTable takes the SHARE ROW EXCLUSIVE lock on table until tx ends: it
 // conflicts with itself and with every row write, not with plain reads, so
@@ -72,9 +50,7 @@ func LockTable(tx *gorm.DB, table string) error {
 // TryXactLock tries the transaction-level advisory lock of name in the
 // current schema (installs sharing a database keep their own keys) and
 // reports whether tx got it; it is held until tx ends. The key is
-// hashtextextended(name || ':' || current_schema(), 0).
+// hashtextextended(name || ':' || current_schema(), 0) (gormpg.TryXactLock).
 func TryXactLock(tx *gorm.DB, name string) (bool, error) {
-	var locked bool
-	err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtextextended(? || ':' || current_schema(), 0))", name).Scan(&locked).Error
-	return locked, err
+	return gormpg.TryXactLock(tx, gorm.Expr("? || ':' || current_schema()", name))
 }

@@ -7,6 +7,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -35,10 +36,10 @@ const logBatch = 4000
 
 // insertOpen inserts result='open' rows and returns their ids in order, all
 // rows or none (on an error no id is returned, nothing was written). The ids
-// are reserved first (store.NextIDs), so each is its row's whatever order
+// are reserved first (gormpg.NextIDs), so each is its row's whatever order
 // the INSERT stores the rows in.
 func (s pgStore) insertOpen(ctx context.Context, rows []logEntry) ([]int64, error) {
-	ids, err := store.NextIDs(store.G(ctx, s.db.Gorm), model.PluginEgressLog{}.TableName(), len(rows))
+	ids, err := gormpg.NextIDs(store.G(ctx, s.db.Gorm), model.PluginEgressLog{}.TableName(), len(rows))
 	if err != nil {
 		return nil, err
 	}

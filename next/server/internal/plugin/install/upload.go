@@ -10,6 +10,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -115,7 +116,7 @@ func (s *Service) openAndValidate(ctx context.Context, data []byte, opt UploadOp
 func (s *Service) storedIdentical(ctx context.Context, p *pkg.Package) (bool, error) {
 	g := store.G(ctx, s.d.DB.Gorm)
 	var ok bool
-	err := store.ExistsQuery(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
+	err := gormpg.ExistsQuery(g, versionRow(g, p.Manifest.Key, p.Manifest.Version).
 		Where("package_sha256 = ? AND consent_status <> ?", p.SHA256, ConsentRejected)).Scan(&ok).Error
 	return ok, err
 }

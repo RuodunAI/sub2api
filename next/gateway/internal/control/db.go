@@ -1,8 +1,6 @@
 package control
 
 import (
-	"strings"
-
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -114,24 +112,3 @@ func columns(names ...string) []clause.Column {
 // ends. Each call returns a new clause, so no statement can change another's.
 func forUpdate() clause.Locking { return clause.Locking{Strength: clause.LockingStrengthUpdate} }
 func forShare() clause.Locking  { return clause.Locking{Strength: clause.LockingStrengthShare} }
-
-// existsQuery selects, in one round trip, whether each of subs (queries
-// built on db) finds a row: SELECT EXISTS (sub1), EXISTS (sub2) ... Each
-// sub's select list becomes 1. It only combines builder queries; the SQL of
-// each is GORM's.
-func existsQuery(db *gorm.DB, subs ...*gorm.DB) *gorm.DB {
-	args := make([]any, len(subs))
-	for i, sub := range subs {
-		args[i] = sub.Select("1")
-	}
-	return db.Raw("SELECT "+strings.TrimSuffix(strings.Repeat("EXISTS (?),", len(subs)), ","), args...)
-}
-
-// relationExists reports whether the relation name (schema-qualified) exists:
-// the core's tables are absent from a shell-only bootstrap database or an
-// older core's schema.
-func relationExists(db *gorm.DB, name string) (bool, error) {
-	var present bool
-	err := db.Raw(`SELECT to_regclass(?) IS NOT NULL`, name).Row().Scan(&present)
-	return present, err
-}

@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
@@ -382,7 +383,7 @@ func (c *Controller) migrateData(ctx context.Context, r *rolloutRow, from string
 	// MigrateData must stay idempotent.
 	id := fmt.Sprintf("data:rollout-%d:%s->%s", r.id, from, *r.target)
 	g := store.G(ctx, c.o.DB.Gorm)
-	done, err := store.Exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
+	done, err := gormpg.Exists(g, g.Table("plugin_migrations").Select("1").Where("plugin_key = ? AND migration_id = ?", r.key, id))
 	if err != nil || done {
 		return done, err
 	}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -207,7 +208,7 @@ func localDatabase(ctx context.Context, database string, reset bool) (string, er
 			return "", fmt.Errorf("drop %s: %w", database, err)
 		}
 	}
-	exists, err := store.Exists(conn, conn.Table("pg_database").Where("datname = ?", database))
+	exists, err := gormpg.Exists(conn, conn.Table("pg_database").Where("datname = ?", database))
 	if err != nil {
 		return "", err
 	}

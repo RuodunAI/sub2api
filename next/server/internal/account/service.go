@@ -382,7 +382,7 @@ func (s *Service) AccountsInScope(ctx context.Context, userID int64, action stri
 
 // liveInScope is the live accounts of ids in scope.
 func liveInScope(db *gorm.DB, ids []int64, scope core.DataScope) *gorm.DB {
-	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows.Scope(scope))
+	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows().Scope(scope))
 }
 
 // proxyRefs is the proxies a caller writing an account under action may

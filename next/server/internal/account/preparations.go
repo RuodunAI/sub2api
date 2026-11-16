@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -129,7 +130,7 @@ func (s *Service) createPreparation(c *gin.Context) {
 		row := store.OneRow(g).Select("?, ?::text, ?::text, ?, ?::jsonb, ?::bigint, NULLIF(?::text, '')",
 			p.Key, p.PluginKey, p.Type, p.ProxyID, p.Settings, uid, in.IdempotencyKey).
 			Where("?::int = 0 OR (?) < ?::int OR EXISTS (?)", limit, open, limit, repeat)
-		err := store.InsertSelectReturning(g, "account_preparations",
+		err := gormpg.InsertSelectReturning(g, "account_preparations",
 			[]string{"key", "plugin_key", "account_type", "proxy_id", "settings", "created_by", "idempotency_key"}, row,
 			clause.OnConflict{Columns: []clause.Column{{Name: "created_by"}, {Name: "plugin_key"}, {Name: "account_type"}, {Name: "idempotency_key"}},
 				DoUpdates: clause.Assignments(map[string]any{"last_seen_at": gorm.Expr("now()")})},

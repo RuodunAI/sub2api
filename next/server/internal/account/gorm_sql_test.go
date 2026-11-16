@@ -20,7 +20,7 @@ var snapshotScope = core.DataScope{Owner: 7, IDs: []int64{3, 4}, Groups: []int64
 func TestSQLAccountList(t *testing.T) {
 	var conds store.Conds
 	conds.And("a.deleted_at IS NULL")
-	conds = append(conds, core.AccountRows.Scope(snapshotScope))
+	conds = append(conds, core.AccountRows().Scope(snapshotScope))
 	conds.And("a.plugin_key = ANY(?)", store.Strings{"anthropic", "openai"})
 	conds.And("(a.status IN (?, 'error') OR (a.status = 'active' AND NOT a.schedulable))", "auto_disabled")
 	conds.And("a.id = ANY(?)", store.Int64s{3, 4})

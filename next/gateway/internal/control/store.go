@@ -320,7 +320,7 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 	}
 	var active bool
 	db := s.db(ctx)
-	if err = existsQuery(db, s.activeUpgrade(db)).Row().Scan(&active); err != nil {
+	if err = gormpg.ExistsQuery(db, s.activeUpgrade(db)).Row().Scan(&active); err != nil {
 		return p, err
 	}
 	if active {
@@ -395,11 +395,11 @@ func rollbackCompatibility(from, to Release) []string {
 // including third-party plugins. Candidate admission repeats the runtime check.
 func (s *Store) PluginCompatibility(ctx context.Context, version string) ([]string, error) {
 	db := s.db(ctx)
-	if present, err := relationExists(db, "public.plugins"); err != nil || !present {
+	if present, err := gormpg.RelationExists(db, "public.plugins"); err != nil || !present {
 		return nil, err // shell-only bootstrap database has no plugins yet
 	}
 	var missing bool
-	if err := existsQuery(db, db.Table("plugins").Where("status IN ('enabled','upgrading') AND COALESCE(active_version,'')=''")).Row().Scan(&missing); err != nil {
+	if err := gormpg.ExistsQuery(db, db.Table("plugins").Where("status IN ('enabled','upgrading') AND COALESCE(active_version,'')=''")).Row().Scan(&missing); err != nil {
 		return nil, err
 	}
 	v, err := semver.NewVersion(version)
@@ -595,7 +595,7 @@ func (s *Store) Action(ctx context.Context, id, action, actor string) (Plan, err
 			}
 		case "cancel":
 			var disruptive bool
-			if err := existsQuery(tx, tx.Table("updater.steps").Where("upgrade_id = ? AND action <> 'prepare'", id)).Row().Scan(&disruptive); err != nil {
+			if err := gormpg.ExistsQuery(tx, tx.Table("updater.steps").Where("upgrade_id = ? AND action <> 'prepare'", id)).Row().Scan(&disruptive); err != nil {
 				return err
 			}
 			if disruptive {
@@ -907,7 +907,7 @@ func (s *Store) ValidateNode(ctx context.Context, node, boot string) error {
 	}
 	var ok bool
 	db := s.db(ctx)
-	err := existsQuery(db, s.nodeRow(db, node).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst)).Row().Scan(&ok)
+	err := gormpg.ExistsQuery(db, s.nodeRow(db, node).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst)).Row().Scan(&ok)
 	if err != nil {
 		return err
 	}
@@ -1182,7 +1182,7 @@ func (s *Store) PluginMutationBlockers(ctx context.Context) ([]string, error) {
 		{"public.plugin_rollout_nodes", db.Table("plugin_rollout_nodes").Where("state = 'cleanup_pending'")},
 	}
 	for _, c := range checks {
-		present, err := relationExists(db, c.table)
+		present, err := gormpg.RelationExists(db, c.table)
 		if err != nil {
 			return nil, err
 		}
@@ -1190,7 +1190,7 @@ func (s *Store) PluginMutationBlockers(ctx context.Context) ([]string, error) {
 			continue
 		}
 		var busy bool
-		if err := existsQuery(db, c.busy).Row().Scan(&busy); err != nil {
+		if err := gormpg.ExistsQuery(db, c.busy).Row().Scan(&busy); err != nil {
 			return nil, err
 		}
 		if busy {
@@ -1243,7 +1243,7 @@ func (s *Store) ConfirmStoppedCore(ctx context.Context, node, shellBoot, coreBoo
 			{"public.plugin_rollout_cleanup", tx.Table("plugin_rollout_cleanup").Where("boot_id = ? AND state = 'cleanup_pending'", coreBoot), cleaned},
 			{"public.plugin_rollout_nodes", tx.Table("plugin_rollout_nodes").Where("boot_id = ? AND state = 'cleanup_pending'", coreBoot), cleaned},
 		} {
-			present, err := relationExists(tx, item.table)
+			present, err := gormpg.RelationExists(tx, item.table)
 			if err != nil {
 				return err
 			}
@@ -1259,11 +1259,11 @@ func (s *Store) ConfirmStoppedCore(ctx context.Context, node, shellBoot, coreBoo
 
 func (s *Store) packageReferenced(ctx context.Context, sum string) (bool, error) {
 	db := s.db(ctx)
-	if present, err := relationExists(db, "public.plugin_versions"); err != nil || !present {
+	if present, err := gormpg.RelationExists(db, "public.plugin_versions"); err != nil || !present {
 		return false, err
 	}
 	var referenced bool
-	err := existsQuery(db, db.Table("plugin_versions").Where("package_sha256 = ?", sum)).Row().Scan(&referenced)
+	err := gormpg.ExistsQuery(db, db.Table("plugin_versions").Where("package_sha256 = ?", sum)).Row().Scan(&referenced)
 	return referenced, err
 }
 
@@ -1271,7 +1271,7 @@ func (s *Store) packageReferenced(ctx context.Context, sum string) (bool, error)
 func (s *Store) ReferencedPackages(ctx context.Context) (map[string]bool, error) {
 	out := map[string]bool{}
 	db := s.db(ctx)
-	if present, err := relationExists(db, "public.plugin_versions"); err != nil || !present {
+	if present, err := gormpg.RelationExists(db, "public.plugin_versions"); err != nil || !present {
 		return out, err
 	}
 	var sums []string
@@ -1312,7 +1312,7 @@ func (s *Store) SetPrimary(ctx context.Context, node string) error {
 	return s.withChange(ctx, func(ctx context.Context) error {
 		if err := s.withTx(ctx, func(tx *gorm.DB) error {
 			var active bool
-			if err := existsQuery(tx, s.activeUpgrade(tx)).Row().Scan(&active); err != nil {
+			if err := gormpg.ExistsQuery(tx, s.activeUpgrade(tx)).Row().Scan(&active); err != nil {
 				return err
 			}
 			if active {

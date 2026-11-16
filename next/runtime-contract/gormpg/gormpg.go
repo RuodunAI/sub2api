@@ -4,7 +4,9 @@
 // sized from those parameters (Pool.Apply), and GORM runs its statements on
 // a sqlpool.Pool, which reads every Exec's result before the connection
 // goes back (Open). It also holds the small helpers the three need alike:
-// the array parameter Array, IsNoRows and IsUniqueViolation.
+// the array parameter Array, IsNoRows and IsUniqueViolation, and the
+// statements GORM's builder has no form for (query.go); package sqlcheck
+// is the SQL source check all of them run.
 //
 // The protocol packages of this module (the root, locklease, sqlpool) stay
 // standard library only; this one depends on GORM and pgx, which every

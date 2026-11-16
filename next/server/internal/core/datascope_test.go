@@ -112,10 +112,10 @@ func TestAllowsRowVectors(t *testing.T) {
 // snapshot pins), a group wildcard being a flag of its own.
 func TestScopeTableArgs(t *testing.T) {
 	t.Parallel()
-	if args := AccountRows.Args(DataScope{Groups: []int64{0, 12}}); len(args) != 7 || args[3] != true || len(args[4].([]int64)) != 1 {
+	if args := AccountRows().Args(DataScope{Groups: []int64{0, 12}}); len(args) != 7 || args[3] != true || len(args[4].([]int64)) != 1 {
 		t.Fatalf("account args = %#v", args)
 	}
-	if args := ProxyRows.Args(DataScope{}); len(args) != 3 || args[2] == nil {
+	if args := ProxyRows().Args(DataScope{}); len(args) != 3 || args[2] == nil {
 		t.Fatalf("proxy args = %#v", args)
 	}
 }
