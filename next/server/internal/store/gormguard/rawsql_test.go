@@ -15,7 +15,7 @@ import (
 )
 
 // [raw-sql] and [sql-const]: statements are built by GORM, and SQL text is
-// code, never data (CONTRACTS §100).
+// code, never data (CONTRACTS §2, "核心的 SQL").
 const (
 	ruleRawSQL   = "[raw-sql]"
 	ruleSQLConst = "[sql-const]"
@@ -28,35 +28,35 @@ const (
 // builder; an entry with no such call left fails the repository test.
 var rawSQLAllowed = map[string]string{
 	// The ledger: data-modifying CTEs that move money in one statement.
-	"internal/billing.prechargeStmt": "ledger CTE: precharge (hold the amount, write the ledger row and the request precharge in one statement)",
-	"internal/billing.applyStmt":     "ledger CTE: apply a charge or credit to user_balances and balance_ledger in one statement",
-	"internal/billing.releaseStmt":   "ledger CTE: release a request precharge and refund it in one statement",
-	"internal/billing.settleStmt":    "ledger CTE: settle (release the precharge, apply the charge) in one statement",
-	"internal/billing.writeRules":    "price rules: history, lock, delete and both partial-index upserts of any number of changes in one data-modifying CTE and one round trip (lock order = change order); GORM needs five statements",
+	"internal/billing.prechargeStmt":               "ledger CTE: precharge (hold the amount, write the ledger row and the request precharge in one statement)",
+	"internal/billing.applyStmt":                   "ledger CTE: apply a charge or credit to user_balances and balance_ledger in one statement",
+	"internal/billing.releaseStmt":                 "ledger CTE: release a request precharge and refund it in one statement",
+	"internal/billing.settleStmt":                  "ledger CTE: settle (release the precharge, apply the charge) in one statement",
+	"internal/billing.writeRules":                  "price rules: history, lock, delete and both partial-index upserts of any number of changes in one data-modifying CTE and one round trip (lock order = change order); GORM needs five statements",
+	"internal/plugin/dbschema.Tracker.recordQuery": "call of the void SECURITY DEFINER function plugin_migration_record as the plugin role",
 	// store: the runners of those statements and the helpers for what is
 	// no data statement.
-	"internal/store.Numbered.Raw":                  "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
-	"internal/store.Numbered.Exec":                 "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
-	"internal/store.ExistsQuery":                   "thin combinator: SELECT EXISTS (sub) around a builder query",
-	"internal/store.InsertSelect":                  "thin combinator: INSERT INTO t (cols) <builder query> [ON CONFLICT], which GORM's Create cannot express",
-	"internal/store.InsertSelectReturning":         "thin combinator: InsertSelect with RETURNING, scanned into the caller's rows",
-	"internal/store.NextIDs":                       "nextval of a table's id sequence, for a batch insert that needs its ids first",
-	"internal/store.xactLock":                      "pg_advisory_xact_lock: a transaction-scoped advisory lock",
-	"internal/store.TryXactLock":                   "pg_try_advisory_xact_lock: XactLock without the wait",
-	"internal/store.XactLockID":                    "pg_advisory_xact_lock of a lock named by its id",
-	"internal/store.DDL":                           "DDL and SET take no parameters: a constant format with quoted identifiers and literals (the format is checked where DDL is called)",
-	"internal/store.CurrentSnapshot":               "pg_current_snapshot(): server state, no table",
-	"internal/store.CurrentDatabase":               "current_database(): server state, no table",
-	"internal/store.RelationExists":                "to_regclass: a catalog lookup",
-	"internal/plugin/dbschema.Tracker.recordQuery": "call of the void SECURITY DEFINER function plugin_migration_record as the plugin role",
-	"internal/store.XactLockHashtext":              "pg_advisory_xact_lock(hashtext(key)): the 32-bit lock ids existing deployments already hold",
-	"internal/store.SetConfig":                     "set_config of a transaction-local custom setting read by triggers",
-	"internal/store.ClockTimestamp":                "clock_timestamp(): the database clock, outside any table",
-	"internal/store.Migrate":                       "the migrations runner: session advisory lock and unlock",
-	"internal/store.migrateFile":                   "the migrations runner: SET LOCAL search_path and the migration files' DDL",
-	"internal/store.CoreTracker.Ensure":            "the migrations runner: DDL of schema_migrations",
-	"internal/store/modelgen.FromMigrations":       "dev tool: CREATE / DROP DATABASE of a scratch database",
-	"internal/store/modelgen.readTables":           "dev tool: reads the system catalog (pg_catalog)",
+	"internal/store.Numbered.Raw":            "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
+	"internal/store.Numbered.Exec":           "runs a NewNumbered statement (the ledger CTEs); the text is checked where NewNumbered is called",
+	"internal/store.ExistsQuery":             "thin combinator: SELECT EXISTS (sub) around a builder query",
+	"internal/store.InsertSelect":            "thin combinator: INSERT INTO t (cols) <builder query> [ON CONFLICT], which GORM's Create cannot express",
+	"internal/store.InsertSelectReturning":   "thin combinator: InsertSelect with RETURNING, scanned into the caller's rows",
+	"internal/store.NextIDs":                 "nextval of a table's id sequence, for a batch insert that needs its ids first",
+	"internal/store.xactLock":                "pg_advisory_xact_lock: a transaction-scoped advisory lock",
+	"internal/store.TryXactLock":             "pg_try_advisory_xact_lock: XactLock without the wait",
+	"internal/store.XactLockID":              "pg_advisory_xact_lock of a lock named by its id",
+	"internal/store.DDL":                     "DDL and SET take no parameters: a constant format with quoted identifiers and literals (the format is checked where DDL is called)",
+	"internal/store.CurrentSnapshot":         "pg_current_snapshot(): server state, no table",
+	"internal/store.CurrentDatabase":         "current_database(): server state, no table",
+	"internal/store.RelationExists":          "to_regclass: a catalog lookup",
+	"internal/store.XactLockHashtext":        "pg_advisory_xact_lock(hashtext(key)): the 32-bit lock ids existing deployments already hold",
+	"internal/store.SetConfig":               "set_config of a transaction-local custom setting read by triggers",
+	"internal/store.ClockTimestamp":          "clock_timestamp(): the database clock, outside any table",
+	"internal/store.Migrate":                 "the migrations runner: session advisory lock and unlock",
+	"internal/store.migrateFile":             "the migrations runner: SET LOCAL search_path and the migration files' DDL",
+	"internal/store.CoreTracker.Ensure":      "the migrations runner: DDL of schema_migrations",
+	"internal/store/modelgen.FromMigrations": "dev tool: CREATE / DROP DATABASE of a scratch database",
+	"internal/store/modelgen.readTables":     "dev tool: reads the system catalog (pg_catalog)",
 }
 
 // sqlConstAllowed lists the declarations whose SQL text may be built from

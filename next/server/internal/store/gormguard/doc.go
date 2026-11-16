@@ -130,7 +130,30 @@
 //     and the rest are reported. The in-memory model (model.Model's
 //     AddPolicies, how a load is built) and the role manager are not
 //     covered. Packages that depend on Casbin are checked as well as those
-//     that depend on GORM.
+//     that depend on GORM;
+//   - [raw-sql] no gorm Raw or Exec, called or as a value, nor
+//     store.NewNumbered, outside rawSQLAllowed: a statement is built by
+//     GORM (models, Where, Updates, clause.OnConflict, store.InsertSelect
+//     ...), and the declarations that keep a written statement (the ledger
+//     CTEs, store's helpers for locks, DDL, sequences and system functions,
+//     the migrations runner) are listed by name with the reason. A Raw or
+//     Exec whose text is only a set operation over builder queries,
+//     "(?) UNION ALL (?)" with an optional ORDER BY of column numbers,
+//     passes. An entry that allows nothing fails;
+//   - [sql-const] the SQL text handed to GORM - the first string argument
+//     of Raw, Exec, Where, Not, Or, Having, Select, Order, Group, Joins,
+//     Table, Distinct and Pluck, of gorm.Expr, store.Conds.And,
+//     store.UpdateFrom, store.DDL and store.NewNumbered, and the SQL of a
+//     clause.Expr or NamedExpr literal - is built from constants: constants
+//     joined with +, variables, parameters, unexported fields and package
+//     functions whose every value is such, elements of a map or slice
+//     literal of such that nothing writes, fmt.Sprintf, strings.Join and
+//     the trims of such, the TableName of a generated model, and the
+//     quoting helpers (sqlQuoting). A value goes in as a ? parameter; an
+//     identifier chosen at run time goes through a fixed map to a
+//     clause.Column or clause.OrderByColumn. sqlConstAllowed lists what the
+//     check cannot follow, with the reason. Packages another team is
+//     converting (sqlPending) are logged, not failed.
 //
 // Why empty lists matter (gorm v1.31; gormtest's TestExpansionTraps keeps
 // the shapes): GORM turns an expanded empty list into NULL, and the result
@@ -145,6 +168,6 @@
 // parameter instead: Not("id = ANY(?)", store.Int64s(ids)) means what it
 // says for every ids.
 //
-// The package has no code of its own; see guard_test.go, rules_test.go and
-// casbin_test.go.
+// The package has no code of its own; see guard_test.go, rules_test.go,
+// rawsql_test.go and casbin_test.go.
 package gormguard
