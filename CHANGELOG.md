@@ -87,7 +87,7 @@
 - **`sub2api-plugin pack` 默认执行 `db check`**：有 `internal/model` 和 `database` 声明的插件，打包前会在临时 schema 上核对 GORM 模型与迁移是否一致（按系统目录比对列类型、NOT NULL、默认值、主键、索引和约束定义；迁移以受限角色执行；迁移里的函数、视图、序列等要在模型包的 `Unmanaged()` 里声明），这一步需要 PostgreSQL（`TEST_DATABASE_URL`；没设置时启动本机 testpg）。`--skip-db-check` 可以关闭。`sub2api-plugin db diff` 可以从模型生成下一个迁移（CONTRACTS §2）。
 - **River 只轮询**：集群任务改由 `database/sql` 驱动的 River 执行，没有 LISTEN。事务里投递的运行、其他节点投递的运行，最多晚 1 秒被取走（CONTRACTS §77.1）。
 - **连接与 DSN 里的连接池参数**：核心、网关、插件 SDK 用同一份 `runtime-contract/gormpg` 打开数据库，DSN 由 pgx 解析（取代手写的 `runtime-contract/pgdsn`）。`pool_max_conns`、`pool_max_conn_lifetime`、`pool_max_conn_idle_time` 照旧生效（核心的 `SUB2API_PG_MAX_CONNS`、网关的 `SUB2API_GATEWAY_POOL_MAX_CONNS` 仍然优先）。`pool_min_conns`、`pool_min_idle_conns`、`pool_health_check_period`、`pool_max_conn_lifetime_jitter` 不再生效，启动时记一条 WARN `database DSN pool parameters ignored`。核心和网关都是这样；插件的连接池只按 SDK 的选项（`pluginsdk.WithDBPoolSize`）确定，DSN 里的 `pool_*` 一律去掉。所有连接固定 `DateStyle=ISO`、`IntervalStyle=postgres`（数组列按这两种格式解析）。
-- **出口日志**：插件出口连接的日志行一次插入后按行序（`WITH ORDINALITY`）取回 id；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。
+- **出口日志**：插件出口连接的日志行先按条数预留 id（`store.NextIDs`，升序），写进各自的行再插入，id 与行一一对应；以前依赖多行 INSERT 的 RETURNING 顺序，PostgreSQL 不保证这个顺序，连接结束时可能把结果写到别的连接的行上。插件管理、任务、事件、控制台资源等模块的语句全部改由 GORM 构造（插件迁移记录调用 `plugin_migration_record` 的函数调用除外），DDL、advisory 锁、系统目录查询只经 `store` 的小助手（`store.DDL`、`XactLockID`、`XactLockHashtext`、`CurrentSnapshot` 等）。
 - **网关**：升级协调的一步（Coordinate）和节点准入各在一个事务里完成，进度在提交后才计。
 - **开发约束**（核心）：需要事务的函数（行锁、事务级 advisory 锁）在连接池上调用直接返回错误（`store.RequireTx`，gormguard `[tx-lock]` 检查）；`store.ForUpdate()` 改为函数，返回不可变的行锁（`.Of`、`.SkipLocked`），共享锁用 `store.Lock`；禁止 `Debug()` 与覆盖会话配置的 `Session`；`core` 不再 import `store`（`[core-store]`）。
 
