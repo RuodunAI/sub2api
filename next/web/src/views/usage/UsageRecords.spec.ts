@@ -37,7 +37,7 @@ vi.mock('vue-router', () => ({ useRoute: () => ({ query }), useRouter: () => ({ 
 vi.mock('@sub2api/host', async original => ({ ...(await original<typeof import('@sub2api/host')>()), api: { get: async () => ({ items: [], more: false }) } }))
 const perms = vi.hoisted(() => ({ accountRead: true }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (key: string | string[]) => perms.accountRead || ![key].flat().includes('account:read'), hasAction: () => perms.accountRead }) }))
-vi.mock('./UsageTable.vue', () => ({ default: { name: 'UsageTable', props: ['rows', 'showAccount', 'mine'], emits: ['filter-account-id'], template: '<div data-testid="usage-table" />' } }))
+vi.mock('./UsageTable.vue', () => ({ default: { name: 'UsageTable', props: ['rows', 'showAccount', 'view'], emits: ['filter-account-id'], template: '<div data-testid="usage-table" />' } }))
 vi.mock('./UsageIPPanel.vue', () => ({ default: { name: 'UsageIPPanel', template: '<div data-testid="ip-panel" />' } }))
 vi.mock('./UsageLiveStats.vue', () => ({ default: { name: 'UsageLiveStats', props: ['realtimePath', 'summaryPath', 'revision'], template: '<div data-testid="live-stats" />' } }))
 vi.mock('./UserRanking.vue', () => ({ default: { name: 'UserRanking', emits: ['select'], template: '<div data-testid="ranking" />' } }))
@@ -48,7 +48,7 @@ enableAutoUnmount(afterEach)
 
 function render(admin = false, extraTabs: Array<{ key: string; label: string }> = []) {
   return mount(UsageRecords, {
-    props: { listPath: admin ? '/usage' : '/me/usage', summaryPath: admin ? '/usage/summary' : '/me/usage/summary', admin, extraTabs },
+    props: { listPath: admin ? '/usage' : '/me/usage', summaryPath: admin ? '/usage/summary' : '/me/usage/summary', view: admin ? 'all' : 'self', extraTabs },
     slots: { 'tab-ledger': '<div data-testid="ledger" />', 'tab-ledger-range': '<div data-testid="ledger-range" />', 'tab-ledger-filters': '<div data-testid="ledger-filters" />' },
     global: { plugins: [i18n], stubs: { SChart: true } }
   })
@@ -211,11 +211,11 @@ describe('usage records page', () => {
 
   it('shows the upstream account to operators only; clicking one filters by it', async () => {
     // A user's own records: their retried requests' attempts name no account either.
-    expect(render().findComponent({ name: 'UsageTable' }).props()).toMatchObject({ showAccount: false, mine: true })
+    expect(render().findComponent({ name: 'UsageTable' }).props()).toMatchObject({ showAccount: false, view: 'self' })
     lists.length = 0
     const w = render(true)
     const table = w.findComponent({ name: 'UsageTable' })
-    expect(table.props()).toMatchObject({ showAccount: true, mine: false })
+    expect(table.props()).toMatchObject({ showAccount: true, view: 'all' })
     lists[0].filters.account_name = 'main'
     table.vm.$emit('filter-account-id', 9)
     await flushPromises()
@@ -310,7 +310,7 @@ describe('usage records page', () => {
 
   it('renders the page actions in the search bar beside Export', async () => {
     const w = mount(UsageRecords, {
-      props: { listPath: '/me/usage', summaryPath: '/me/usage/summary' },
+      props: { listPath: '/me/usage', summaryPath: '/me/usage/summary', view: 'self' },
       slots: { actions: '<button data-testid="page-refresh" />' },
       global: { plugins: [i18n], stubs: { SChart: true } }
     })

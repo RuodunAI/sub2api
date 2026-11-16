@@ -2,7 +2,7 @@
 // publishers. (Accounts and account types live in their own mock module.)
 import { SCOPABLE, canonicalPermission, parsePermission, permissionIndex } from '../src/authz/implies'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
-import { ALL_PERMISSIONS, MANAGER_PLUGIN_KEYS, SUPER_ONLY_KEYS, agentUser, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, resolveTeams, stepUp, stepUpRequired, userEmail, vendorUser, type Identity } from './core'
+import { ALL_PERMISSIONS, MANAGER_PLUGIN_KEYS, SUPER_ONLY_KEYS, SUPPLIER_AGENT_KEYS, SUPPLIER_KEYS, USER_KEYS, agentUser, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, resolveTeams, stepUp, stepUpRequired, userEmail, vendorUser, type Identity } from './core'
 import { accounts, groupAccountCount, groupPlatforms, proxyAccountCount } from './accounts'
 import { pricedModels } from './billing'
 import { accessOf, findSegment, forgetGroup, forgetUser, groupAccess, moveUser, rateOf, rulesWhere, segmentOfUser, segmentRef, type RuleRow } from './pricingStore'
@@ -186,19 +186,19 @@ interface MockRole {
 
 const CORE_KEYS = ALL_PERMISSIONS.filter((k) => !k.startsWith('plugin.'))
 // Built-in defaults (CONTRACTS §4, authz/catalog.go): admin has every core
-// permission but the super-only ones; operator and supplier are explicit lists.
-const USER_KEYS = ['apikey:self:manage', 'balance:self:read', 'usage:self:read', 'gateway:use']
-const SUPPLIER_KEYS = ['account:read:own', 'account:create:own', 'account:update:own', 'account:delete:own', 'account:test:own', 'account:credential:view:own', 'proxy:read:own', 'proxy:manage:own', 'usage:self:read']
+// permission but the super-only ones; operator, supplier, supplier_agent and
+// user are explicit lists (core.ts holds those an identity signs in with).
 const OPERATOR_KEYS = [
   'user:read', 'user:create', 'user:update', 'role:read', 'role:assign', 'group:read', 'group:manage', 'segment:read', 'segment:manage',
-  'account:read', 'account:create', 'account:update', 'account:delete', 'account:test', 'proxy:read', 'proxy:manage', 'price:read',
-  'balance:all:read', 'usage:all:read', 'node:read', 'audit:read', 'task:read', 'task:run', ...SUPPLIER_KEYS.filter((k) => !USER_KEYS.includes(k)), ...USER_KEYS
+  'account:read', 'account:create', 'account:update', 'account:delete', 'account:test', 'account:credential:view:own', 'proxy:read', 'proxy:manage', 'price:read',
+  'balance:all:read', 'usage:all:read', 'usage:account:read', 'node:read', 'audit:read', 'task:read', 'task:run', ...USER_KEYS
 ]
 const ADMIN_KEYS = CORE_KEYS.filter((k) => !SUPER_ONLY_KEYS.has(k))
 const BUILTIN_DEFAULTS: Record<string, { name: L; description: string; keys: string[]; assignable: string[]; assignCustom: boolean }> = {
-  admin: { name: L('Admin', '管理员'), description: 'Every core permission except the super-only ones', keys: ADMIN_KEYS, assignable: ['operator', 'supplier', 'user'], assignCustom: true },
+  admin: { name: L('Admin', '管理员'), description: 'Every core permission except the super-only ones', keys: ADMIN_KEYS, assignable: ['operator', 'supplier', 'supplier_agent', 'user'], assignCustom: true },
   operator: { name: L('Operator', '运维'), description: 'Users, accounts, proxies and operations', keys: OPERATOR_KEYS, assignable: ['supplier', 'user'], assignCustom: false },
   supplier: { name: L('Supplier', '供应商'), description: 'Own accounts, proxies and usage (an add-on to user)', keys: SUPPLIER_KEYS, assignable: [], assignCustom: false },
+  supplier_agent: { name: L('Supplier agent', '代理供应商'), description: "A user's and a supplier's permissions, and managing the users below it and reading their accounts and usage", keys: SUPPLIER_AGENT_KEYS, assignable: ['supplier', 'supplier_agent'], assignCustom: false },
   user: { name: L('User', '普通用户'), description: 'Own API keys, usage and balance; gateway access', keys: USER_KEYS, assignable: [], assignCustom: false }
 }
 const at = (days: number) => now(-86400 * days)
@@ -216,6 +216,7 @@ const roles: MockRole[] = [
   builtin(3, 'user'),
   builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read', 'plugin.guard:rules:test']),
   builtin(9, 'supplier'),
+  builtin(11, 'supplier_agent'),
   // CONTRACTS §21.1 typical roles: vendor (own-level only, no settings:custom) and read-only.
   custom(5, 'vendor', L('Vendor', '供应商（自定义）'), 'Maintains only the accounts and proxies it created', vendorUser.permissions),
   custom(6, 'readonly', L('Read only', '只读'), 'Sees every account and proxy, changes nothing', readonlyUser.permissions),
@@ -797,12 +798,20 @@ on('DELETE', '/users/:id', stepUp('user.delete', (req) => {
   forgetUser(u.id)
   return noContent()
 }))
+// role:assign, on a user in reach of user:update; every role added or taken
+// away must be one the caller manages (authz checkAssignment).
 on('PUT', '/users/:id/roles', (req) => {
+  const who = caller(req)
+  if (!hasPerm(who, 'role:assign')) return noUserAction('role:assign')
+  const reach = userReach(who, 'user:update')
   const u = findUser(req)
-  if (!u) return fail(404, 'not_found', 'user not found')
+  if (!u || reach === undefined || !reaches(reach, u.id)) return fail(404, 'not_found', 'user not found')
   const keys: string[] = Array.isArray(req.body?.role_keys) ? req.body.role_keys : []
   const bad = keys.find((k) => !roles.some((r) => r.key === k))
   if (bad) return invalid('role_keys', `unknown role ${bad}`)
+  const changed = [...keys.filter((k) => !u.roles.includes(k)), ...u.roles.filter((k) => !keys.includes(k))]
+  const refused = changed.find((k) => !managesRole(who, k))
+  if (refused) return fail(403, 'permission_denied', `${refused} is not a role you may assign`, { role: refused })
   u.roles = keys
   return userOut(u)
 })

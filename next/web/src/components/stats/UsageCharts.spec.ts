@@ -38,7 +38,7 @@ describe('UsageCharts model distribution', () => {
   })
 
   it('labels each model with its vendor mark, untinted, and leaves the second breakdown as text', async () => {
-    const w = render({ secondary: { groupBy: 'api_key', title: 'Keys', keyLabel: 'Key', labelOf: (key: string) => `key #${key}` } })
+    const w = render({ secondary: { groupBy: 'api_key', title: 'Keys', keyLabel: 'Key', labelOf: (r: UsageSummaryRow) => `key #${r.key}` } })
     expect(badges(w).map(b => b.get('.truncate').text())).toEqual(['claude-sonnet-4-5', 'gpt-4o', 'zeta-large'])
     expect(brands(w)).toEqual(['anthropic', 'openai', 'zeta-large'])
     expect(badges(w).some(b => b.classes().includes('brand-tint'))).toBe(false)

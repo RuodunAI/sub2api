@@ -11,9 +11,10 @@
 // its name.
 // With `logTypes` the first filter picks what the page lists, as new-api's log
 // type does; it applies at once like any pick. A type these fields do not
-// search (`searchable` = false) brings its own in #filters. The account view
-// (`accountView`, CONTRACTS §102.5) searches the accounts in the caller's
-// reach by their facts only, entities picked, never named.
+// search (`searchable` = false) brings its own in #filters. The `view` says
+// whose usage is searched: an operator's search, the caller's own entities,
+// or (`account`, CONTRACTS §102.5) the accounts in the caller's reach by their
+// facts only, entities picked, never named.
 // The filters sit in an SFilterBar: on a phone the range sits above it, the
 // log type and the first-row fields stay in sight beside its Filters button
 // and the More filters fold into its sheet, where a pick waits with the rest
@@ -24,13 +25,13 @@ import { SFilterBar, SFilterChips, SSelect, useViewport } from '@sub2api/ui'
 import UsageFilterFields from './UsageFilterFields.vue'
 import UsageSearchButtons from './UsageSearchButtons.vue'
 import { chipParams, entityPatch, fieldParams, keyHoldsForUser, usageSearchLayout, useUsageSearchLabels } from './usageFilters'
+import type { UsageView } from './view'
 
 const props = withDefaults(defineProps<{
   modelValue: Record<string, unknown>
-  admin?: boolean
+  view: UsageView
   /** The account filter, for an operator who may read accounts. */
   accounts?: boolean
-  accountView?: boolean
   /** The request types (protocol ids) under the current search, for the type select. */
   protocolOptions?: string[]
   /** The models under the current search, for the model picker (besides the models it looks up). */
@@ -39,16 +40,16 @@ const props = withDefaults(defineProps<{
   logTypes?: Array<{ value: string; label: string }>
   logType?: string
   searchable?: boolean
-}>(), { admin: false, accounts: false, accountView: false, protocolOptions: () => [], modelOptions: () => [], logTypes: () => [], logType: '', searchable: true })
+}>(), { accounts: false, protocolOptions: () => [], modelOptions: () => [], logTypes: () => [], logType: '', searchable: true })
 const emit = defineEmits<{ 'update:modelValue': [value: Record<string, string>]; 'update:logType': [value: string]; reset: [] }>()
 const { t } = useI18n()
 const { compact } = useViewport()
 const slots = useSlots()
 /** The stats and actions row; without either the reset and search buttons end the filter row. */
 const bottomRow = computed(() => !!slots.stats || !!slots.actions)
-const layout = computed(() => usageSearchLayout({ admin: props.admin, accounts: props.accounts, accountView: props.accountView, errors: props.logType === 'errors' }))
-/** Everyone but an operator and the account view searches their own records: the pickers and the names are of their own entities. */
-const mine = computed(() => !props.admin && !props.accountView)
+const layout = computed(() => usageSearchLayout({ view: props.view, accounts: props.accounts, errors: props.logType === 'errors' }))
+/** The caller's own records: the pickers and the names are of their own entities. */
+const mine = computed(() => props.view === 'self')
 const { label, valueLabel } = useUsageSearchLabels(() => props.protocolOptions, () => String(props.modelValue.protocol ?? ''), mine)
 const isSet = (key: string) => String(props.modelValue[key] ?? '') !== ''
 const draft = reactive<Record<string, string>>({})
@@ -149,7 +150,7 @@ async function pick(patch: Record<string, string>, held = false) {
               :fields="layout.primary"
               :values="draft"
               :mine="mine"
-              :text-search="!accountView"
+              :text-search="view !== 'account'"
               :model-options="modelOptions"
               @update="Object.assign(draft, $event)"
               @pick="pick"
@@ -170,7 +171,7 @@ async function pick(patch: Record<string, string>, held = false) {
             :fields="layout.advanced"
             :values="draft"
             :mine="mine"
-            :text-search="!accountView"
+            :text-search="view !== 'account'"
             :protocol-options="protocolOptions"
             @update="Object.assign(draft, $event)"
             @pick="pick($event, compact)"

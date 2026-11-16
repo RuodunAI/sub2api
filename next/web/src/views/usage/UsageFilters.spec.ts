@@ -44,7 +44,7 @@ const applied = (w: VueWrapper) => w.emitted('update:modelValue')?.at(-1)?.[0] a
 
 describe('shared usage search', () => {
   it('uses the same search criteria for the totals and every chart', async () => {
-    const w = mount(UsageOverviewView, { props: { admin: true }, global: { plugins: [i18n, createPinia()], stubs: { SChart: true } } })
+    const w = mount(UsageOverviewView, { props: { view: 'all' }, global: { plugins: [i18n, createPinia()], stubs: { SChart: true } } })
     await flushPromises()
     w.getComponent(UsageFilters).vm.$emit('update:modelValue', { client_ip: '192.0.2.7', api_key_name: 'laptop', status_code: '429', stream: 'true' })
     await flushPromises()
@@ -72,7 +72,7 @@ describe('shared usage search', () => {
 
   it('picks the group by id: among a user\'s own on their first row, among all behind an operator\'s More filters', async () => {
     for (const admin of [false, true]) {
-      const w = mount(UsageFilters, { props: { modelValue: { group_id: '7' }, admin }, global })
+      const w = mount(UsageFilters, { props: { modelValue: { group_id: '7' }, view: admin ? 'all' : 'self' }, global })
       await flushPromises()
       expect(inAdvanced(w, 'group')).toBe(admin)
       // no name search: the group is picked, group_name only comes with a link
@@ -87,7 +87,7 @@ describe('shared usage search', () => {
 
   it('binds each picker to its id and name-search parameters, and narrows it by the draft', async () => {
     const w = mount(UsageFilters, {
-      props: { modelValue: { model: 'gpt-4o', user_email: 'ann', api_key_id: '104', account_name: 'main' }, modelOptions: ['gpt-4o', 'o3'], admin: true, accounts: true },
+      props: { modelValue: { model: 'gpt-4o', user_email: 'ann', api_key_id: '104', account_name: 'main' }, modelOptions: ['gpt-4o', 'o3'], view: 'all', accounts: true },
       global
     })
     expect(picker(w, 'model').props()).toMatchObject({ id: 'gpt-4o', text: '', extra: [{ id: 'gpt-4o', name: 'gpt-4o' }, { id: 'o3', name: 'o3' }] })
@@ -110,7 +110,7 @@ describe('shared usage search', () => {
   })
 
   it('a new user keeps the picked API key only when it is theirs', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: { api_key_id: '104' }, admin: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: { api_key_id: '104' }, view: 'all' }, global })
     picker(w, 'user').vm.$emit('change', { id: '7', text: '' })
     await flushPromises()
     expect(get).toHaveBeenCalledWith('/lookup/api-keys', expect.objectContaining({ ids: '104', user_id: '7' }))
@@ -135,7 +135,7 @@ describe('shared usage search', () => {
       if (path !== '/lookup/api-keys' || !asked.user_id) return lookup(String(path), asked)
       return new Promise(resolve => answers.push(theirs => resolve({ items: theirs ? [{ id: Number(asked.ids), name: 'laptop' }] : [], more: false })))
     })
-    const w = mount(UsageFilters, { props: { modelValue: { api_key_id: '104' }, admin: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: { api_key_id: '104' }, view: 'all' }, global })
     picker(w, 'user').vm.$emit('change', { id: '12', text: '' })
     picker(w, 'user').vm.$emit('change', { id: '7', text: '' })
     await flushPromises()
@@ -159,7 +159,7 @@ describe('shared usage search', () => {
 
   it('applies typed text on Search only and a pick at once with what is typed, and resets without changing time bounds', async () => {
     const w = mount(UsageFilters, {
-      props: { modelValue: { from: '2026-10-01T00:00:00Z', client_request_id: 'request-one' }, admin: true, logType: 'errors' },
+      props: { modelValue: { from: '2026-10-01T00:00:00Z', client_request_id: 'request-one' }, view: 'all', logType: 'errors' },
       global,
       attachTo: document.body
     })
@@ -191,7 +191,7 @@ describe('shared usage search', () => {
   })
 
   it('offers the account filter only to an operator who may read accounts', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: {}, admin: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: {}, view: 'all' }, global })
     expect(inAdvanced(w, 'user')).toBe(false)
     expect(w.find('[data-testid="filter-account"]').exists()).toBe(false)
     await w.get('form').trigger('submit')
@@ -205,7 +205,7 @@ describe('shared usage search', () => {
   })
 
   it('names the entities picked behind More filters on their chips', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: { group_id: '7', account_id: '25', user_id: '3', group_name: 'vip' }, admin: true, accounts: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: { group_id: '7', account_id: '25', user_id: '3', group_name: 'vip' }, view: 'all', accounts: true }, global })
     await flushPromises()
     expect(w.get('[data-testid="filter-advanced-count"]').text()).toBe('2')
     expect(w.get('[data-filter-key="group_id"]').text()).toContain('Team #7')
@@ -220,7 +220,7 @@ describe('shared usage search', () => {
   it('filters operators by protocol conversion (CONVERT-MATRIX §6.2)', async () => {
     const locale = i18n.global.locale.value
     i18n.global.locale.value = 'zh'
-    const w = mount(UsageFilters, { props: { modelValue: { conversion: 'lossy' }, admin: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: { conversion: 'lossy' }, view: 'all' }, global })
     expect(inAdvanced(w, 'conversion')).toBe(true)
     const select = w.get('[data-testid="filter-conversion"]')
     const options = select.findAll('option')
@@ -231,7 +231,7 @@ describe('shared usage search', () => {
     expect(w.get('[data-filter-key="conversion"]').text()).toContain('协议转换：有丢失')
     await select.setValue('4')
     expect(applied(w)).toMatchObject({ conversion: 'fair' })
-    const self = mount(UsageFilters, { props: { modelValue: {} }, global })
+    const self = mount(UsageFilters, { props: { view: 'self', modelValue: {} }, global })
     expect(self.find('[data-testid="filter-conversion"]').exists()).toBe(false)
     i18n.global.locale.value = locale
   })
@@ -240,7 +240,7 @@ describe('shared usage search', () => {
     const locale = i18n.global.locale.value
     i18n.global.locale.value = 'zh'
     for (const admin of [true, false]) {
-      const w = mount(UsageFilters, { props: { modelValue: { retried: 'true' }, admin }, global })
+      const w = mount(UsageFilters, { props: { modelValue: { retried: 'true' }, view: admin ? 'all' : 'self' }, global })
       expect(inAdvanced(w, 'retried')).toBe(true)
       const select = w.get('[data-testid="filter-retried"]')
       expect(select.findAll('option').map(option => option.text())).toEqual(['重试', '重试过', '未重试'])
@@ -255,7 +255,7 @@ describe('shared usage search', () => {
   })
 
   it('selects the request type behind More filters from the types under the search, keeping a preset one', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: { protocol: 'vid.gen' }, protocolOptions: ['anthropic.messages', 'openai.chat'] }, global })
+    const w = mount(UsageFilters, { props: { view: 'self', modelValue: { protocol: 'vid.gen' }, protocolOptions: ['anthropic.messages', 'openai.chat'] }, global })
     expect(inAdvanced(w, 'protocol')).toBe(true)
     const select = w.get('[data-testid="filter-protocol"]')
     const options = select.findAll('option')
@@ -267,7 +267,7 @@ describe('shared usage search', () => {
   })
 
   it('keeps administrative fields out of self-service and synchronizes external request-id filters', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: {} }, global })
+    const w = mount(UsageFilters, { props: { view: 'self', modelValue: {} }, global })
     for (const field of ['user', 'account', 'node_id', 'conversion']) expect(w.find(`[data-testid="filter-${field}"]`).exists()).toBe(false)
     expect(inAdvanced(w, 'request_id')).toBe(true)
     expect(w.find('[data-testid="filter-chips"]').exists()).toBe(false)
@@ -285,7 +285,7 @@ describe('shared usage search', () => {
   })
 
   it('drops the account type with its plugin chip, and Clear all clears the chips only', async () => {
-    const w = mount(UsageFilters, { props: { modelValue: { model_contains: 'gpt', plugin_key: 'p', account_type: 'apikey' }, admin: true }, global })
+    const w = mount(UsageFilters, { props: { modelValue: { model_contains: 'gpt', plugin_key: 'p', account_type: 'apikey' }, view: 'all' }, global })
     // the API refuses account_type without plugin_key
     await w.get('[data-filter-key="plugin_key"] button').trigger('click')
     expect(w.emitted('update:modelValue')![0]![0]).toEqual({ plugin_key: '', account_type: '' })
@@ -296,23 +296,23 @@ describe('shared usage search', () => {
   })
 
   it('ends the filter row with reset and search when there is no stats or actions row', () => {
-    const bare = mount(UsageFilters, { props: { modelValue: {} }, global })
+    const bare = mount(UsageFilters, { props: { view: 'self', modelValue: {} }, global })
     expect(bare.find('.mt-3').exists()).toBe(false)
     expect(bare.get('[data-testid="filter-success"]').element.closest('form > div')).toBe(bare.get('[data-testid="search-usage"]').element.closest('form > div'))
-    const full = mount(UsageFilters, { props: { modelValue: {} }, slots: { stats: '<span>stats</span>' }, global })
+    const full = mount(UsageFilters, { props: { view: 'self', modelValue: {} }, slots: { stats: '<span>stats</span>' }, global })
     expect(full.get('.mt-3').find('[data-testid="search-usage"]').exists()).toBe(true)
     expect(full.findAll('[data-testid="search-usage"]')).toHaveLength(1)
   })
 
   it('puts the tools after the actions, before Reset / Search, on a wide screen', () => {
-    const w = mount(UsageFilters, { props: { modelValue: {} }, slots: { actions: '<button type="button" class="act" />', tools: '<button type="button" class="tool" />' }, global })
+    const w = mount(UsageFilters, { props: { view: 'self', modelValue: {} }, slots: { actions: '<button type="button" class="act" />', tools: '<button type="button" class="tool" />' }, global })
     expect(w.get('.mt-3').findAll('button').map(b => b.classes('act') ? 'act' : b.classes('tool') ? 'tool' : b.attributes('data-testid'))).toEqual(['act', 'tool', 'reset-usage-filters', 'search-usage'])
   })
 
   it('keeps the range, the log type and the first row in sight on a phone, folds More filters into the Filters sheet and applies it on Done', async () => {
     const logTypes = [{ value: 'records', label: 'Records' }, { value: 'errors', label: 'Errors' }]
     const w = mountPinned(UsageFilters, {
-      props: { modelValue: { protocol: 'openai.chat', stream: 'true', success: 'false' }, logTypes, logType: 'errors' },
+      props: { view: 'self', modelValue: { protocol: 'openai.chat', stream: 'true', success: 'false' }, logTypes, logType: 'errors' },
       slots: { range: '<button class="range">Today</button>', stats: '<span>stats</span>', tools: '<button type="button" class="tool">Export</button>' },
       global
     })

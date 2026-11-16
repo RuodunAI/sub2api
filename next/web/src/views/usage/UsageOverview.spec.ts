@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { i18n } from '@/i18n'
 import UsageOverview from './UsageOverview.vue'
+import type { UsageView } from './view'
 
 const summaries: Array<{ path: string; groupBy: string; filters: Record<string, unknown>; reload: ReturnType<typeof vi.fn> }> = []
 vi.mock('./useUsageSummary', () => ({
@@ -20,9 +21,9 @@ vi.mock('@/components/stats/UsageCharts.vue', () => ({
 }))
 enableAutoUnmount(afterEach)
 
-function render(admin = false, accountView = false) {
+function render(view: UsageView = 'self') {
   return mount(UsageOverview, {
-    props: { summaryPath: admin ? '/usage/summary' : '/me/usage/summary', defaultRange: '7d', admin, accountView },
+    props: { summaryPath: view === 'all' ? '/usage/summary' : '/me/usage/summary', defaultRange: '7d', view },
     global: { plugins: [i18n], stubs: { SChart: true } }
   })
 }
@@ -35,7 +36,7 @@ describe('usage overview page', () => {
   })
 
   it('shows the totals and the charts of its summary, and no request list', async () => {
-    const w = render(true)
+    const w = render('all')
     await flushPromises()
     expect(summaries[0]).toMatchObject({ path: '/usage/summary', groupBy: 'none' })
     expect(w.find('[data-testid="usage-summary-cards"]').exists()).toBe(true)
@@ -58,7 +59,7 @@ describe('usage overview page', () => {
 
   it('starts from the filters of a link; a user cannot preset another user', () => {
     query = { user_id: '3', from: '2026-10-01T00:00:00.000Z', to: '2026-10-08T00:00:00.000Z' }
-    render(true)
+    render('all')
     expect(summaries[0].filters).toMatchObject(query)
     summaries.length = 0
     render()
@@ -68,12 +69,15 @@ describe('usage overview page', () => {
 
   it('breaks an account view down by account, and narrows only by what it may send (CONTRACTS §102.5)', async () => {
     query = { account_id: '12', user_id: '3', model_contains: 'op' }
-    const w = render(false, true)
+    const w = render('account')
     expect(summaries[0].filters).toMatchObject({ account_id: '12' })
     expect(summaries[0].filters.user_id).toBeUndefined()
     expect(summaries[0].filters.model_contains).toBeFalsy()
     const charts = w.findComponent({ name: 'UsageCharts' })
     expect(charts.props('secondary')).toMatchObject({ groupBy: 'account' })
+    // Named as the rows name it: a deleted account, or one beyond account:read, keeps its name.
+    const { labelOf } = charts.props('secondary')
+    expect([labelOf({ key: '13', account_name: 'main' }), labelOf({ key: '14' })]).toEqual(['main', '#14'])
     charts.vm.$emit('select-model', 'opus')
     charts.vm.$emit('select-secondary', '13')
     await flushPromises()

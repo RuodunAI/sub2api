@@ -1,14 +1,16 @@
 <script setup lang="ts">
 // The figures beside the usage list, as new-api's usage log page shows them.
-// Usage, base quota and the cache hit rate follow the search; RPM, TPM and the
-// success rate are the last minute's under the same filters, without the time
-// range and the status (CONTRACTS §66.7). Loaded on a search or a refresh.
+// Usage, base quota (the account view: the list price alone) and the cache hit
+// rate follow the search; RPM, TPM and the success rate are the last minute's
+// under the same filters, without the time range and the status (CONTRACTS
+// §66.7). Loaded on a search or a refresh.
 import { computed, ref, toRef, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { formatTokens, hitRate, num } from '@/components/stats/stats'
 import { formatMoney, formatNumber } from '@/utils/format'
 import { useUsageSummary } from './useUsageSummary'
+import type { UsageView } from './view'
 
 interface Realtime {
   rpm: number
@@ -16,7 +18,7 @@ interface Realtime {
   recent_failures: number
 }
 
-const props = withDefaults(defineProps<{ realtimePath: string; summaryPath: string; filters: Record<string, unknown>; revision?: number }>(), { revision: 0 })
+const props = withDefaults(defineProps<{ realtimePath: string; summaryPath: string; filters: Record<string, unknown>; view: UsageView; revision?: number }>(), { revision: 0 })
 const { t } = useI18n()
 
 const totals = useUsageSummary(props.summaryPath, props.filters, 'none')
@@ -56,9 +58,15 @@ const badges = computed(() => {
   const r = row.value
   const hit = hitRate(r)
   const v = live.value
+  const standard = r ? formatMoney(num(r.standard_cost), 2) : '—'
   return [
-    { key: 'cost', label: t('usage.live.cost'), value: r ? formatMoney(num(r.total_cost), 2) : '—', accent: 'bg-sky-500/70', title: t('usage.live.rangeHint') },
-    { key: 'standard', label: t('usage.live.standard'), value: r ? formatMoney(num(r.standard_cost), 2) : '—', accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') },
+    // The account view bills nothing: the list price alone, by its name.
+    ...(props.view === 'account'
+      ? [{ key: 'standard', label: t('usage.live.listPrice'), value: standard, accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') }]
+      : [
+          { key: 'cost', label: t('usage.live.cost'), value: r ? formatMoney(num(r.total_cost), 2) : '—', accent: 'bg-sky-500/70', title: t('usage.live.rangeHint') },
+          { key: 'standard', label: t('usage.live.standard'), value: standard, accent: 'bg-violet-500/70', title: t('usage.live.rangeHint') }
+        ]),
     { key: 'rpm', label: 'RPM', value: v ? formatNumber(v.rpm) : '—', accent: 'bg-rose-500/65', title: t('usage.live.rpmHint') },
     { key: 'tpm', label: 'TPM', value: v ? formatTokens(v.tpm) : '—', accent: 'bg-slate-400/70', title: t('usage.live.tpmHint') },
     { key: 'hit', label: t('usage.live.cacheHit'), value: hit == null ? '—' : `${(hit * 100).toFixed(1)}%`, accent: 'bg-emerald-500/70', title: t('usage.live.rangeHint') },

@@ -56,7 +56,7 @@ describe('useAssignableRoles', () => {
   it('withSupplierUser adds the default role to supplier only', () => {
     expect(withSupplierUser(['supplier'], true)).toEqual(['supplier', 'user'])
     expect(withSupplierUser(['operator'], true)).toEqual(['operator'])
-    // A caller who may not grant the default role (a supplier agent) assigns supplier alone.
+    // A caller who may not give the default role (to an existing user: a supplier agent) assigns supplier alone.
     expect(withSupplierUser(['supplier'], false)).toEqual(['supplier'])
   })
 })

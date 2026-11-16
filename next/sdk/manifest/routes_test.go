@@ -20,3 +20,19 @@ func TestCoreRouteOf(t *testing.T) {
 		}
 	}
 }
+
+func TestConsoleRouteOf(t *testing.T) {
+	for p, want := range map[string]string{
+		"/account-usage": "/account-usage", "/account-usage/overview": "/account-usage",
+		"/Account-Usage/:id": "/account-usage", "/segments/x": "/segments", "/assets/*rest": "/assets",
+	} {
+		if got, ok := ConsoleRouteOf("GET", p); !ok || got != want {
+			t.Errorf("GET %s: %q %v, want %q", p, got, ok, want)
+		}
+	}
+	for _, c := range [][2]string{{"POST", "/account-usage"}, {"GET", "/account-usagex"}, {"HEAD", "/v1/account-usage"}} {
+		if got, ok := ConsoleRouteOf(c[0], c[1]); ok {
+			t.Errorf("%s %s reserved as %s", c[0], c[1], got)
+		}
+	}
+}

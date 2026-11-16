@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
 import { activePlatforms, platformById, platformLabel } from './platforms'
 import { agentUser, caller, filterOwned, hasAction, hasPerm, inScope, ownerScope, stepUp, userEmail, type Identity } from './core'
 import { resolveProxyURL, validateProxyURL } from './resources'
+import { nextPath } from './paths'
 import { codexAccountTypes, codexCredentialErrors } from './codex'
 import { customAccountTypes, customCredentialErrors, customForm } from './custom'
 import { checkControls, controlsAccountTypes, controlsForm } from './controls'
@@ -300,7 +300,7 @@ function pluginDefaults(pluginKey: string, type: string) {
   // Plugin directories use dashes where keys use underscores (claude_oauth -> plugins/claude-oauth).
   for (const dir of new Set([pluginKey, pluginKey.replace(/_/g, '-')])) {
     try {
-      const m = JSON.parse(readFileSync(fileURLToPath(new URL(`../../plugins/${dir}/manifest.json`, import.meta.url)), 'utf8'))
+      const m = JSON.parse(readFileSync(nextPath('plugins', dir, 'manifest.json'), 'utf8'))
       const at = (m.accountTypes || []).find((x: any) => x.id === type)
       return { default_models: at?.defaultModels || [], default_model_mapping: at?.defaultModelMapping || {}, common_controls: at?.commonControls || {} }
     } catch {
@@ -634,7 +634,7 @@ on('GET', '/account-types/:plugin_key/:type/form', (req) => {
     // The real plugin form (plugins/claude-oauth/forms).
     const file = req.params.type === 'claude_setup_token' ? 'setup_token' : 'oauth'
     try {
-      return { schema: JSON.parse(readFileSync(fileURLToPath(new URL(`../../plugins/claude-oauth/forms/${file}.schema.json`, import.meta.url)), 'utf8')), ui_schema: {} }
+      return { schema: JSON.parse(readFileSync(nextPath('plugins', 'claude-oauth', 'forms', `${file}.schema.json`), 'utf8')), ui_schema: {} }
     } catch {
       return { schema: { type: 'object', required: ['access_token'], properties: { access_token: { type: 'string', title: 'Access Token', writeOnly: true } } }, ui_schema: {} }
     }

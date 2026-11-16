@@ -58,7 +58,7 @@ describe('DistributionCard', () => {
   })
 
   it('names a key through labelOf, with or without the slot', () => {
-    const labelOf = (key: string) => (key ? `key ${key}` : '')
+    const labelOf = (r: UsageSummaryRow) => (r.key ? `key ${r.key}` : '')
     expect(labels(render({}, { labelOf }))[0].text()).toBe('key claude-a')
     expect(render({ label: LABEL }, { labelOf }).get('[data-testid="custom-label"]').text()).toBe('key claude-a')
   })

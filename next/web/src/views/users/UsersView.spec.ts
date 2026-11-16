@@ -174,6 +174,13 @@ describe('UsersView owners (CONTRACTS §102.3)', () => {
     expect(mocks.patch.mock.calls[0][1].owner_id).toBeUndefined()
   })
 
+  it('shows the owner column without any owner on the page, a dash for none', async () => {
+    mocks.users = [user(2, ['user'])]
+    const w = await render()
+    expect(w.findAll('th').map((h) => h.text())).toContain('所属')
+    expect(w.text()).toContain('—')
+  })
+
   it('a holder over every user moves a user under another owner, or takes the owner away', async () => {
     mocks.users = [{ ...user(6, ['supplier']), owner_id: 11 }]
     const w = await render()

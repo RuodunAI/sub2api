@@ -15,7 +15,7 @@ import { formatMoney, formatNumber } from '@/utils/format'
 import { entityColors, escapeHtml, formatCostShort, formatTokens, num, otherColor, rowTokens, surfaceColor, topWithOther } from './stats'
 
 const props = withDefaults(
-  defineProps<{ title: string; keyLabel: string; rows: UsageSummaryRow[]; loading?: boolean; labelOf?: (key: string) => string; selectable?: boolean }>(),
+  defineProps<{ title: string; keyLabel: string; rows: UsageSummaryRow[]; loading?: boolean; labelOf?: (row: UsageSummaryRow) => string; selectable?: boolean }>(),
   { labelOf: undefined, selectable: false }
 )
 const emit = defineEmits<{ (e: 'select', key: string): void }>()
@@ -24,13 +24,13 @@ const app = useAppStore()
 
 const metric = ref<'tokens' | 'cost'>('tokens')
 const value = (r: UsageSummaryRow) => (metric.value === 'cost' ? num(r.total_cost) : rowTokens(r))
-const name = (key: string) => (props.labelOf ? props.labelOf(key) : key) || '—'
+const name = (r: UsageSummaryRow) => (props.labelOf ? props.labelOf(r) : r.key) || '—'
 
 const view = computed(() => {
   const dark = app.theme === 'dark'
   const { top, other, otherCount } = topWithOther(props.rows, value)
   const colors = entityColors(top.map((r) => r.key), dark)
-  const items = top.map((r) => ({ key: r.key, label: name(r.key), color: colors.get(r.key)!, row: r, other: false }))
+  const items = top.map((r) => ({ key: r.key, label: name(r), color: colors.get(r.key)!, row: r, other: false }))
   if (other) items.push({ key: '', label: t('stats.other', { n: otherCount }), color: otherColor(dark), row: other, other: true })
   const total = items.reduce((a, i) => a + value(i.row), 0)
   return { items, total, dark }

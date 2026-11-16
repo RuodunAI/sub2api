@@ -51,7 +51,7 @@ export default {
     none: 'No accounts',
     selected: '{n} selected',
     saveFailed: 'Group saved, but these accounts could not be updated: {names}',
-    notEditable: 'You cannot edit this account (only accounts you created)'
+    notEditable: 'You cannot edit this account (only accounts you own)'
   },
   whoCanUse: 'Who can use it',
   modelPricing: 'Model pricing',

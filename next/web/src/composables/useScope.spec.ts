@@ -43,6 +43,15 @@ describe('useScope', () => {
     expect(s.can({ id: 3, created_by: 8 }, 'proxy:manage')).toBe(false)
   })
 
+  it('takes a team scope on any row listed, whoever owns it: the server knows the team and enforces it', () => {
+    signIn(['account:read:team', 'account:update:team'])
+    const s = useScope()
+    expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:update')).toBe(true)
+    expect(s.can({ ...row(1, 7), owner_id: 7 }, 'account:update')).toBe(true)
+    expect(s.can(null, 'account:update')).toBe(false)
+    expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:delete')).toBe(false)
+  })
+
   it('reaches a proxy by its id', () => {
     signIn(['proxy:manage:proxy/8'])
     const s = useScope()

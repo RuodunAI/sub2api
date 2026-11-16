@@ -36,6 +36,7 @@ import { applyFormError } from '@/utils/formErrors'
 import { parseProxyURL, type ProxySpec } from '@/utils/proxyUrl'
 import { copyText } from '@/utils/clipboard'
 import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -319,11 +320,7 @@ function onAction(p: Proxy, key: string) {
         </div>
         <SHint v-else inline>—</SHint>
       </template>
-      <template #cell-created_by="{ row }">
-        <span v-if="row.created_by_email" class="text-xs" :title="row.created_by ? `#${row.created_by}` : ''">{{ row.created_by_email }}</span>
-        <SHint v-else-if="row.created_by" inline size="xs">#{{ row.created_by }}</SHint>
-        <SHint v-else inline>—</SHint>
-      </template>
+      <template #cell-created_by="{ row }"><UserRef :id="row.created_by" :email="row.created_by_email" /></template>
       <template #cell-created_at="{ row }">
         <SDateTime mode="absolute" muted :value="row.created_at" />
       </template>

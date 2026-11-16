@@ -36,6 +36,19 @@ export interface Identity {
   superuser: boolean
 }
 
+// The built-in roles' defaults (authz/catalog.go): the user role's, the
+// supplier's, and the supplier agent's (CONTRACTS §102.1): both of those and
+// its team's.
+export const USER_KEYS = ['apikey:self:manage', 'balance:self:read', 'usage:self:read', 'gateway:use']
+export const SUPPLIER_KEYS = [
+  'account:read:own', 'account:create:own', 'account:update:own', 'account:delete:own', 'account:test:own', 'account:credential:view:own',
+  'proxy:read:own', 'proxy:manage:own', 'usage:self:read', 'usage:account:read:own'
+]
+export const SUPPLIER_AGENT_KEYS = [...new Set([
+  ...USER_KEYS, ...SUPPLIER_KEYS,
+  'account:read:team', 'usage:account:read:team', 'user:read:team', 'user:create:team', 'user:update:team', 'role:read', 'role:assign'
+])]
+
 export const me: Identity = {
   id: 1,
   email: 'admin@example.com',
@@ -51,7 +64,7 @@ const plainUser: Identity = {
   email: 'user@example.com',
   display_name: 'User',
   roles: ['user'],
-  permissions: ['apikey:self:manage', 'balance:self:read', 'usage:self:read', 'gateway:use'],
+  permissions: USER_KEYS,
   superuser: false
 }
 
@@ -76,19 +89,17 @@ export const vendorUser: Identity = {
 
 /**
  * Sign in as agent@example.com (password admin): the built-in supplier_agent
- * role (CONTRACTS §102.1), the vendor's keys plus its team's: reads, creates
- * and edits the users below it (vendor@example.com among them), reads their
- * accounts and those accounts' usage, never their credentials or proxies.
+ * role (CONTRACTS §102.1), a user's and a supplier's keys plus its team's:
+ * reads, creates, edits and assigns roles to the users below it
+ * (vendor@example.com among them), reads their accounts and those accounts'
+ * usage, never their credentials or proxies.
  */
 export const agentUser: Identity = {
   id: 11,
   email: 'agent@example.com',
   display_name: 'Agent',
   roles: ['supplier_agent'],
-  permissions: [
-    ...vendorUser.permissions.filter((k) => k !== 'account:read:own' && k !== 'usage:account:read:own'),
-    'account:read:team', 'usage:account:read:team', 'user:read:team', 'user:create:team', 'user:update:team', 'role:read', 'role:assign'
-  ],
+  permissions: SUPPLIER_AGENT_KEYS,
   superuser: false
 }
 

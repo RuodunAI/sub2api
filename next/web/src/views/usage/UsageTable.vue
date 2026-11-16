@@ -16,12 +16,15 @@ import UsageConversionBadges from './UsageConversionBadges.vue'
 import UsageAttemptChain from './UsageAttemptChain.vue'
 import UsageRetryBadge from './UsageRetryBadge.vue'
 import { accountLabel, accountPlatform, billingTone, hashColor, type UsageRow } from './usage'
+import type { UsageView } from './view'
 
 // The usage list: one row per request, its detail (billing trace, request
 // facts) expanded under it; cards on narrow screens. Clicking a client IP, a
 // client request ID or (operators) the upstream account asks the page to
-// filter by it. The account view (`accountView`, CONTRACTS §102.5) has the
-// account's facts only: no API key or client IP, the cost at the list price.
+// filter by it. The `view` says whose records they are: the caller's own
+// (`self`) show no accounts in a retried request's attempts; the account view
+// (`account`, CONTRACTS §102.5) has the account's facts only: no API key or
+// client IP, the cost at the list price.
 const props = withDefaults(
   defineProps<{
     rows: UsageRow[]
@@ -29,15 +32,13 @@ const props = withDefaults(
     showUser?: boolean
     showAccount?: boolean
     showClientRequestId?: boolean
-    /** The caller's own records: the attempts of a retried request show no accounts. */
-    mine?: boolean
-    accountView?: boolean
+    view: UsageView
     detailPath?: (id: number) => string
     columnSettingsKey?: string
     /** false when the page draws the column settings itself (from the exposed columnState), e.g. in its toolbar. */
     columnSettings?: boolean
   }>(),
-  { showUser: true, showAccount: true, showClientRequestId: false, mine: false, accountView: false, columnSettings: true }
+  { showUser: true, showAccount: true, showClientRequestId: false, columnSettings: true }
 )
 const emit = defineEmits<{
   (e: 'filter-client-request-id', id: string): void
@@ -48,7 +49,7 @@ const { t } = useI18n()
 const columns = computed<TableColumn[]>(() => [
   { key: 'created_at', label: t('common.time'), width: '150px', hideable: false },
   ...(props.showUser ? [{ key: 'user', label: t('common.user'), width: '150px' }] : []),
-  ...(props.accountView
+  ...(props.view === 'account'
     ? []
     : [
         { key: 'api_key', label: t('usage.request.apiKey'), width: '140px' },
@@ -73,9 +74,9 @@ function accountVars(row: UsageRow) {
   return platform ? brandVars(platformBrand(platform)) : undefined
 }
 /** What the request cost: billed, or the list price in the account view, which shows no billing. */
-const cost = (row: UsageRow) => (row.billing_status === 'free' ? t('usage.free') : formatMoney(props.accountView ? row.standard_cost : row.total_cost))
+const cost = (row: UsageRow) => (row.billing_status === 'free' ? t('usage.free') : formatMoney(props.view === 'account' ? row.standard_cost : row.total_cost))
 /** A billing state that is neither billed nor free, for a badge. */
-const billingNote = (row: UsageRow) => !props.accountView && row.billing_status !== 'billed' && row.billing_status !== 'free'
+const billingNote = (row: UsageRow) => props.view !== 'account' && row.billing_status !== 'billed' && row.billing_status !== 'free'
 /** "model → upstream model" when the account's mapping sent another model upstream. */
 const mappedModel = (row: UsageRow) => (row.upstream_model && row.upstream_model !== row.model ? `${row.model} → ${row.upstream_model}` : '')
 /** "×1.5" when the group's rate is not 1. */
@@ -108,7 +109,7 @@ function rate(row: UsageRow) {
           <!-- The retry badge shares the time's line: beside the outcome it would not fit the column. -->
           <span class="inline-flex items-center gap-1.5 whitespace-nowrap">
             <SDateTime :value="row.created_at" mode="time" class="font-mono text-xs tabular-nums" />
-            <UsageRetryBadge :row="row" :mine="mine" />
+            <UsageRetryBadge :row="row" :mine="view === 'self'" />
           </span>
           <UsageStatus :row="row" />
           <UsageError v-if="!row.success" :row="row" class="max-w-full" data-testid="usage-error-summary" />
@@ -195,7 +196,7 @@ function rate(row: UsageRow) {
           </button>
         </div>
       </template>
-      <template #expand="{ row }"><UsageDetail :row="row" :path="detailPath?.(row.id)" :mine="mine" :account-view="accountView" /></template>
+      <template #expand="{ row }"><UsageDetail :row="row" :path="detailPath?.(row.id)" :view="view" /></template>
       <template #card="{ row, expanded, toggleExpand }">
         <div data-testid="mobile-usage-record">
           <div class="flex items-start justify-between gap-3">
@@ -205,7 +206,7 @@ function rate(row: UsageRow) {
                 <SDateTime muted :value="row.created_at" mode="time" class="tabular-nums" />
               </p>
             </div>
-            <span class="inline-flex items-center gap-1.5"><UsageRetryBadge :row="row" :mine="mine" /><UsageStatus :row="row" /></span>
+            <span class="inline-flex items-center gap-1.5"><UsageRetryBadge :row="row" :mine="view === 'self'" /><UsageStatus :row="row" /></span>
           </div>
           <template v-if="!row.success">
             <UsageError :row="row" class="mt-2" />
@@ -273,7 +274,7 @@ function rate(row: UsageRow) {
           <button type="button" class="mt-3 text-xs font-medium text-primary-600" :aria-expanded="expanded" @click.stop="toggleExpand()">
             {{ expanded ? t('usage.hideDetails') : t('usage.showDetails') }}
           </button>
-          <UsageDetail v-if="expanded" :row="row" :path="detailPath?.(row.id)" :mine="mine" :account-view="accountView" class="-mx-4 -mb-4 mt-3 border-t border-line" />
+          <UsageDetail v-if="expanded" :row="row" :path="detailPath?.(row.id)" :view="view" class="-mx-4 -mb-4 mt-3 border-t border-line" />
         </div>
       </template>
     </STable>
