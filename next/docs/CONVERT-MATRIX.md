@@ -48,7 +48,7 @@
 - 设置：网关设置行 `gateway`（`gateway/settings.go` `GatewaySettings`，`GET/PUT /settings/gateway`，控制台 `GatewaySettingsCard.vue`）。SSRF 检查在 `internal/netguard`（`gateway/ssrf.go` 调用）。
 - 账号/分组：`accounts` 已有 `header_passthrough`（0089）、`param_override`（0091）等列；`groups` 有 `model_filter_mode`、`environment`。调度快照 `core.AccountRef`（`account/directory.go` `groupSnapshot`），分组随 API Key 认证带入 `core.GroupInfo`（`apikey/apikey.go`）。迁移只要求编号唯一。
 - 账号类型接口 `account/types.go`：`endpoints[].native=false` 表示经转换，靠 `CanConvert`。`sdk/manifest/check/corefloor.go` 的 `SamePlatformConversions` 只有 `chat → responses`。
-- 插件声明（develop）：codex 只声明 openai `responses`/`responses_websocket`（streamOnly）；ccgateway 只声明 anthropic `messages`/`count_tokens`；volcengine 声明 openai+anthropic+volcengine；custom 三类各声明一家全部端点。
+- 插件声明（develop）：codex 只声明 openai `responses`/`responses_websocket`（streamOnly）；volcengine 声明 openai+anthropic+volcengine；custom 三类各声明一家全部端点。
 
 ### 1.2 每对的复用与改造
 

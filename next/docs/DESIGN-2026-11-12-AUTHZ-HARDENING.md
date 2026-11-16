@@ -1,6 +1,8 @@
 # 权限加固：行为变化与回滚（升级说明）
 
 > 日期：2026-11-12。分支：`feat/authz-hardening`。每个产生行为变化或产品性收紧的提交在这里追加一条：影响对象、回滚方式。路径省略前缀 `next/`；Go 文件省略 `server/internal/`。
+>
+> 0.1.290 删除了 CCGateway（最后源码 `317b0c331`）：下文关于 ccgateway 路由、请求日志、运行时、`host.install` 和二次验证会话（`StepUpSession`）的条目描述的是已删除的代码，只作记录。
 
 ---
 

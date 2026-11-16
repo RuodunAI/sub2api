@@ -95,7 +95,7 @@
 
 **不支持续读的路径**（策略为 `continue` 时按 `precharge` 处理；`precharge`、`free` 两种策略对它们照常生效）：
 
-- 插件 `Execute` 执行的请求（`executeAttempt`，如 ccgateway）：上游调用由插件驱动，有自己的 context 和结算；
+- 插件 `Execute` 执行的请求（`executeAttempt`，如 codex、volcengine）：上游调用由插件驱动，有自己的 context 和结算；
 - 任务提交（`task.submit`）、资源与额度流（`forwardResourceResponse`、`forwardCreditSSE`）；
 - WebSocket。
 

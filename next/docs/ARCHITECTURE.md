@@ -1587,7 +1587,6 @@ next/
 ├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
 │   ├── anthropic/  openai/  gemini/  volcengine/  custom/  relay/  claude-oauth/
 │   ├── codex/                     # 含 ui/native
-│   ├── ccgateway/                 # 含 companions/（engine、worker、controller-go、guard、contracts、cli-mods、xray-egress）
 │   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
 │   └── mailer/  payment/
 ├── protocol-codec/                # 早期的协议转换库；next/ 内无人引用，只剩旧版 backend/ 依赖

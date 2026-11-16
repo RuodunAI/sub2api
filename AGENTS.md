@@ -1,6 +1,6 @@
 # AGENTS.md：在 sup2api 仓库工作的 AI 与成员
 
-这是仓库的总规则，开始任何工作前先读完它。子目录可以有自己的 `AGENTS.md`（例如 `next/plugins/ccgateway/cli-reverse/AGENTS.md`），它只补充本目录特有的规则，本文件在那里同样适用。
+这是仓库的总规则，开始任何工作前先读完它。子目录可以有自己的 `AGENTS.md`，它只补充本目录特有的规则，本文件在那里同样适用。
 
 本文只写入口、结论和规则。细节以文档为准：`next/docs/CONTRACTS.md`（开发契约，权威）、`next/docs/ARCHITECTURE.md`（整体设计）、`CHANGELOG.md`（发布记录）。文档之间冲突时 CONTRACTS 优先；文档与代码冲突时以代码为准，并把文档改对。
 
@@ -29,6 +29,8 @@
 | `next/protocol-codec` | 早期为 ccgateway 引入的协议转换库。`next/` 里没有模块 import 它，next CI 也不检查；但根目录旧版 `backend/` 经 `replace` 依赖它（根目录 `Dockerfile` 也复制它），所以暂不能删（CONVERT-MATRIX.md 开头）。不要在新代码里引用 |
 | `next/docs` | 契约、架构、设计稿、交接、审计记录 |
 
+CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse`、核心里的 `internal/ccgateway` 和只为它服务的 helper history、provider resources、fallback credits）已在 0.1.290 删除，只留在 Git 历史里：最后的源码是 `317b0c331`（`git show 317b0c331:next/plugins/ccgateway/manifest.json`）。迁移 0102 删掉了它的表和插件行，见 `deploy/rollback/0.1.290-release.md`。
+
 **仓库根目录的 `backend/`、`frontend/` 是旧版 Sub2API**（Ent ORM + Gin，前端用 pnpm），连同根目录的 `Dockerfile`、`Makefile`、`deploy/`、`docs/`、`openspec/`、`DEV_GUIDE.md` 以及 `.github/workflows/backend-ci.yml`、`release.yml`。它们只作参考保留（ARCHITECTURE §16.1）：`next/` 不引用它们，`go.work` 不包含它们，2026-11-05 导入以来没有提交改动过它们。除非用户明确要求，不要改动、不要在它们上面开发新功能。`DEV_GUIDE.md` 描述的就是这套旧代码。
 
 根目录的 `CHANGELOG.md` 记录的是 `next/` 的发布，属于现行文档。
@@ -46,7 +48,7 @@
 ### 数据库：PostgreSQL 16 + GORM
 
 - 驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`，GORM 跑在上面。连接由 `runtime-contract/gormpg` 一处打开，核心、网关、插件 SDK 共用；连接池大小只由环境变量（核心 `SUB2API_PG_MAX_CONNS`、网关 `SUB2API_GATEWAY_POOL_MAX_CONNS`）或默认值决定，DSN 里不写 `pool_*` 参数。PostgreSQL 错误的 SQLSTATE、约束名也只经 `gormpg`（核心经 `store` 的同名函数）读取。
-- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0101），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
+- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0102），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
 - **只用 GORM 的模型和查询构造器写语句**（`Create`、`Updates`、`Where`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()` 等；子查询和 `UNION ALL` 用 `(?)` 组合）。整条手写的 SQL 只允许出现在允许列表登记过的地方：账本的 4 条 data-modifying CTE（`billing` 的 precharge、apply、release、settle）、`store` 里非数据语句的小助手（事务级 advisory 锁、`SetLocal`、`ClockTimestamp` 等）、`DDL`、迁移执行器、`modelgen`，以及 `gormpg` 的薄组合器（`Exists`、`InsertSelect`、`NextIDs`、`RelationExists`、`TryXactLock`）。
 - 交给 GORM 的 SQL 文本必须由常量构成，**值只走 `?` 参数**；运行时选的列名经固定白名单变成 `clause.Column`/`clause.OrderByColumn`。
 - 这些规则由源码检查强制执行，检查器是 `runtime-contract/gormpg/sqlcheck`，各模块只保留自己的允许列表：核心是 `server/internal/store/gormguard`（`[raw-sql]`、`[sql-const]`、`[tx-lock]`、`[gorm-tx]`、`[pgx-import]`、`[casbin-api]` 等，说明见 `gormguard/doc.go`，允许列表在 `rawsql_test.go`），网关是 `gateway/internal/sqlguard`，SDK 与插件是 `sdk/pgdb` 的 `TestNoRawSQL`、`TestNoPgxImports`。允许列表里没有命中的条目也算失败。
