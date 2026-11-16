@@ -15,13 +15,13 @@
 2. **gate**：调用 `next-ci.yml`（`workflow_call`），对 tag 指向的提交跑与日常 CI 相同的全部模块门禁。
 3. **build**（不接触任何密钥）：
    - 核心：`deploy/docker/build-ui.sh` 构建控制台与插件原生界面；`deploy/docker/build-go.sh` 构建 linux/amd64 的核心、插件 CLI 与全部插件，内置插件集合与镜像构建完全相同（`BUILTIN_PLUGINS`），打包时连 PostgreSQL 服务容器做 `db check`；再用 `GOARCH=arm64 GO_BINARIES_ONLY=1` 构建 arm64 的两个二进制。Go 版本取 `next/Dockerfile` 的 `GO_IMAGE`。核心必须报告与 tag 相同的版本号，`schema-contract` 作为 `schema_after`。这一步的插件包用临时生成的密钥签名，只为让脚本照常跑完。
-   - 网关：`deploy/gateway/Dockerfile` 交叉编译两个平台（`--build-arg VERSION` 注入 `main.Version`），导出二进制打成归档；非演练时用同一构建阶段推送多架构镜像并记录摘要。只有这个任务有 `packages: write`。
-4. **sign**（受保护环境 `release`，唯一能读签名密钥的任务）：
-   - 核心（`.github/next-release/sign-core.sh`）：用插件密钥重签全部内置插件包，写入 `builtin/trust.pub`、`trust.keyid`；若上一版核心带的 `trust.pub` 与之不同则失败（换插件密钥会让已装插件验签失败）；按 `package-release.sh` 的布局（`bin/` + `builtin/`）为每个平台组 stage，一次 `sub2api-release pack --platform …` 签出含两个平台的清单。`schema_before` 取上一版清单的 `schema_after`，没有上一版时等于本版。
+   - 网关：`deploy/gateway/Dockerfile` 交叉编译两个平台（`--build-arg VERSION` 注入 `main.Version`），导出二进制打成归档；非演练时用同一构建阶段把多架构镜像只按摘要推送（不打版本标签）并记录摘要。
+4. **sign**（受保护环境 `release`，唯一能读签名密钥的任务）：`sub2api-release` 和（核心线）`sub2api-plugin` 在本任务里从同一提交的源码构建，构建产物里的任何文件都不在这里执行。
+   - 核心（`.github/next-release/sign-core.sh`）：用插件密钥重签全部内置插件包，写入 `builtin/trust.pub`、`trust.keyid`；若上一版核心带的 `trust.pub` 与之不同则失败（换插件密钥会让已装插件验签失败）；按 `package-release.sh` 的布局（`bin/` + `builtin/`）为每个平台组 stage，一次 `sub2api-release pack --platform …` 签出含两个平台的清单。`schema_before` 取上一版清单的 `schema_after`；没有上一版时必须由 `workflow_dispatch` 的 `schema_before` 输入给出（见下文“注意”）。
    - 网关（`.github/next-release/sign-gateway.sh`）：`sub2api-release pack-gateway` 校验归档（只有一个可执行的常规文件 `sub2api-gateway`）并签出清单，含各平台归档与二进制摘要、镜像引用与摘要、`peer_protocol`、`runtime_protocol`。
-5. **publish**：先建草稿 Release，上传全部资产，再发布，检测方不会看到只有一半资产的 Release。之前失败留下的同 tag 草稿会被删掉重建；已发布的 Release 从不修改，出错只能发下一个版本。
+5. **publish**：之前失败留下的同 tag 草稿会被删掉重建；已发布的 Release 从不修改（镜像标签也不再动），出错只能发下一个版本。网关线这时才给清单记录的镜像摘要打上 `:<X.Y.Z>` 标签。然后先建草稿 Release，上传全部资产，再发布，检测方不会看到只有一半资产的 Release。
 
-`workflow_dispatch` 可以对已有 tag 重跑：填 `tag`，`dry_run` 默认勾选。演练照常经过门禁、构建与签名（仍需审批 `release` 环境），但不推镜像、不建 Release，签好的资产在运行的 `release-assets` artifact 里（保留 7 天）。建议在 “Use workflow from” 里选这个 tag 本身或默认分支，各任务都检出 tag 指向的提交。
+`workflow_dispatch` 可以对已有 tag 重跑：填 `tag`，`dry_run` 默认勾选；`schema_before` 只在第一个 `core-v*` 发布时填。演练照常经过门禁、构建与签名（仍需审批 `release` 环境），但不推镜像、不建 Release，签好的资产在运行的 `release-assets` artifact 里（保留 7 天）。建议在 “Use workflow from” 里选这个 tag 本身或默认分支，各任务都检出 tag 指向的提交。
 
 ## CHANGELOG 小节的格式
 
@@ -53,7 +53,7 @@ Release 标题是这个标题的文字，正文到下一个一至三级标题为
    缺任何一项，sign 会失败并列出缺的名字。
 4. **tag 保护**：Settings → Rules → Rulesets 新建 tag 规则，目标 `core-v*`、`gateway-v*`，限制创建、禁止更新与删除，只有发布负责人能推这类 tag。
 5. **GHCR**：第一次发布网关后，在仓库所有者的 Packages 里打开 `sup2api-gateway` → Package settings：确认已关联本仓库（镜像带 `org.opencontainers.image.source` 标签）；节点要免登录拉取就把可见性改成 Public。组织仓库还要在组织设置里允许公开包。
-6. Actions 的默认 `GITHUB_TOKEN` 权限保持只读即可，工作流按任务声明所需权限（`contents: write` 只给 publish，`packages: write` 只给网关构建）。
+6. Actions 的默认 `GITHUB_TOKEN` 权限保持只读即可，工作流按任务声明所需权限（`contents: write` 只给 publish，`packages: write` 只给网关构建和 publish）。
 
 fork 完成以上配置后，在自己 fork 的控制台“设置 → 在线更新”把来源改成自己的 `owner/repo`。
 
@@ -69,8 +69,8 @@ git push origin core-v0.1.291
 
 注意：
 
-- **第一个 `core-v*` 发布**没有上一版清单可读，`schema_before` 等于本版、策略记为 `rolling`。所以第一个 CI 发布的核心不能含数据库迁移；有迁移的版本至少要等第一个 CI 发布之后。
-- 镜像推送发生在审批之前；审批被拒时 GHCR 里会留下一个没有签名清单引用的版本标签，删掉即可。节点只认清单里记录的镜像摘要。
+- **第一个 `core-v*` 发布**没有上一版清单可读：推 tag 触发的运行会在 validate tag 失败。在 Actions 里手动运行本工作流，填这个 tag、取消 `dry_run`，`schema_before` 填它要升级的线上核心的 `sub2api schema-contract` 输出（64 位十六进制）；与本版相同时策略记为 `rolling`，不同时为 `maintenance`（主节点优先升级）。
+- 镜像按摘要推送发生在审批之前；审批被拒时 GHCR 里只留下一个无标签的版本，可在包设置里删掉。节点只认清单里记录的镜像摘要。
 - 旧网关（本流水线之前的版本）只认 `v*` tag 的 `releases/latest`，会把新 tag 当成检测失败，不会误装。
 
 ## 镜像源：`sub2api-release mirror`

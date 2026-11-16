@@ -9,8 +9,9 @@ name: next release
 #
 # meta (tag, previous release, CHANGELOG notes) -> gate (next CI) -> build
 # (no secrets) -> sign (environment `release`, the only job with signing keys)
-# -> publish (draft, upload every asset, then publish, so update checks never
-# see half a release). Operator guide: next/deploy/gateway/github/README.md.
+# -> publish (tag the image pushed by digest, draft, upload every asset, then
+# publish, so update checks never see half a release). Operator guide:
+# next/deploy/gateway/github/README.md.
 #
 # Release builds use no Actions caches. Untrusted values reach `run:` only
 # through env.
@@ -30,6 +31,10 @@ on:
         description: Build and sign only (no image push, no GitHub Release)
         type: boolean
         default: true
+      schema_before:
+        description: First core-v release only, which has no previous manifest to read it from; the schema-contract of the core it upgrades
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -55,7 +60,7 @@ jobs:
       go_version: ${{ steps.go.outputs.version }}
       line: ${{ steps.meta.outputs.line }}
       version: ${{ steps.meta.outputs.version }}
-      prev_schema: ${{ steps.meta.outputs.prev_schema }}
+      schema_before: ${{ steps.meta.outputs.schema_before }}
       prev_trust_sha256: ${{ steps.meta.outputs.prev_trust_sha256 }}
     steps:
       - id: tag
@@ -81,6 +86,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.tag.outputs.tag }}
+          SCHEMA_BEFORE: ${{ inputs.schema_before }}
         run: sh .github/next-release/release-meta.sh "$TAG"
       - name: Release notes from CHANGELOG.md
         env:
@@ -228,6 +234,7 @@ jobs:
               gzip -9n > "$RUNNER_TEMP/build/sub2api-gateway_${VERSION}_linux_${arch}.tar.gz"
           done
           ls -l "$RUNNER_TEMP/build"
+      # Pushed by digest only; publish adds the version tag after approval.
       - id: image
         name: Push the image
         if: env.DRY_RUN != 'true'
@@ -236,16 +243,18 @@ jobs:
         run: |
           set -eu
           owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
-          ref=ghcr.io/$owner/sup2api-gateway:$VERSION
+          repo=ghcr.io/$owner/sup2api-gateway
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION="$VERSION" \
             --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$SOURCE_COMMIT" \
-            --metadata-file "$RUNNER_TEMP/image.json" --push -t "$ref" -f next/deploy/gateway/Dockerfile next
+            --metadata-file "$RUNNER_TEMP/image.json" \
+            --output "type=image,name=$repo,push-by-digest=true,name-canonical=true,push=true" \
+            -f next/deploy/gateway/Dockerfile next
           docker logout ghcr.io
           digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image.json")
           printf '%s\n' "$digest" | grep -Eqx 'sha256:[0-9a-f]{64}' || { echo "::error::no image digest"; exit 1; }
-          echo "image=$ref@$digest" >> "$GITHUB_OUTPUT"
+          echo "image=$repo:$VERSION@$digest" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: build
@@ -267,7 +276,7 @@ jobs:
       TAG: ${{ needs.meta.outputs.tag }}
       SOURCE_COMMIT: ${{ needs.meta.outputs.sha }}
       SCHEMA: ${{ needs.core-build.outputs.schema }}
-      PREV_SCHEMA: ${{ needs.meta.outputs.prev_schema }}
+      SCHEMA_BEFORE: ${{ needs.meta.outputs.schema_before }}
       PREV_TRUST_SHA256: ${{ needs.meta.outputs.prev_trust_sha256 }}
       IMAGE: ${{ needs.gateway-build.outputs.image }}
     steps:
@@ -279,11 +288,17 @@ jobs:
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: false
+      # Signing tools are built here from the checked-out commit; nothing from
+      # the build artifact is ever executed next to the keys.
       - name: sub2api-release
         working-directory: next/gateway
         run: |
           go build -trimpath -o "$RUNNER_TEMP/tools/sub2api-release" ./cmd/sub2api-release
           echo "$RUNNER_TEMP/tools" >> "$GITHUB_PATH"
+      - name: sub2api-plugin
+        if: env.LINE == 'core'
+        working-directory: next/tools/sub2api-plugin
+        run: go build -trimpath -o "$RUNNER_TEMP/tools/sub2api-plugin" .
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: build
@@ -320,15 +335,17 @@ jobs:
 
   publish:
     name: publish
-    needs: [meta, sign]
+    needs: [meta, gateway-build, sign]
     if: ${{ !cancelled() && needs.sign.result == 'success' && needs.meta.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       TAG: ${{ needs.meta.outputs.tag }}
+      IMAGE: ${{ needs.gateway-build.outputs.image }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -339,16 +356,31 @@ jobs:
           name: release-notes
           path: ${{ runner.temp }}/notes
       # A draft left by an earlier failed attempt is replaced; a published
-      # release is never touched.
-      - name: Draft, upload, publish
+      # release (and so its image tag) is never touched.
+      - name: Replace drafts
         run: |
           set -eu
           gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
-            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" |
+            --jq ".[] | select(.tag_name == \"$TAG\") | \"\(.id) \(.draft)\"" > "$RUNNER_TEMP/existing"
           while read -r id draft; do
             [ "$draft" = true ] || { echo "::error::release $TAG is already published"; exit 1; }
             gh api -X DELETE "repos/$GH_REPO/releases/$id"
-          done
+          done < "$RUNNER_TEMP/existing"
+      # IMAGE is REF:VERSION@DIGEST, as the signed manifest names it.
+      - name: Tag the image
+        if: env.IMAGE != ''
+        run: |
+          set -eu
+          tag=${IMAGE%@*}
+          digest=${IMAGE#*@}
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          docker buildx imagetools create -t "$tag" "${tag%:*}@$digest"
+          got=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$tag")
+          docker logout ghcr.io
+          [ "$got" = "$digest" ] || { echo "::error::$tag is $got, not $digest"; exit 1; }
+      - name: Draft, upload, publish
+        run: |
+          set -eu
           gh release create "$TAG" --draft --verify-tag \
             --title "$(cat "$RUNNER_TEMP/notes/title.txt")" --notes-file "$RUNNER_TEMP/notes/notes.md"
           gh release upload "$TAG" "$RUNNER_TEMP"/assets/*

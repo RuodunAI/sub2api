@@ -15,8 +15,10 @@
 # architecture.
 #
 # Environment: VERSION, TAG, SOURCE_COMMIT, BUILD_ID, SCHEMA (schema-contract
-# of the new core); PREV_SCHEMA and PREV_TRUST_SHA256 from release-meta.sh,
-# empty for the first core release. sub2api-release must be on PATH.
+# of the new core); SCHEMA_BEFORE and PREV_TRUST_SHA256 from release-meta.sh
+# (PREV_TRUST_SHA256 is empty for the first core release). sub2api-release and
+# sub2api-plugin must be on PATH, built from source: nothing in <build> is
+# executed here, next to the keys.
 set -eu
 build=$1
 keys=$2
@@ -34,14 +36,8 @@ if [ -n "${PREV_TRUST_SHA256:-}" ] && [ "$trust" != "$PREV_TRUST_SHA256" ]; then
   echo "::error::SUB2API_PLUGIN_SIGNING_KEY is not the key whose public half the previous core release ships as builtin/trust.pub; installed plugins would no longer verify (prepare-core-release.sh refused this too)" >&2
   exit 1
 fi
-case $(uname -m) in
-  x86_64) host=amd64 ;;
-  aarch64) host=arm64 ;;
-  *) echo "unsupported build host $(uname -m)" >&2; exit 1 ;;
-esac
-cli=$stage/bin-$host/sub2api-plugin
-"$cli" sign --key "$keys/plugin.key" --key-id "$plugin_key_id" "$builtin"/*.s2plugin
-"$cli" verify --pub "$builtin/trust.pub" "$builtin"/*.s2plugin
+sub2api-plugin sign --key "$keys/plugin.key" --key-id "$plugin_key_id" "$builtin"/*.s2plugin
+sub2api-plugin verify --pub "$builtin/trust.pub" "$builtin"/*.s2plugin
 
 set --
 for bin in "$stage"/bin-*; do
@@ -54,7 +50,7 @@ for bin in "$stage"/bin-*; do
 done
 digests=$(sub2api-release pack "$@" --out "$out" --key "$keys/release.key" --key-id "$(cat "$keys/release.keyid")" \
   --release-id "$TAG" --core-version "$VERSION" --source-commit "$SOURCE_COMMIT" --build-id "$BUILD_ID" \
-  --schema "$SCHEMA" --schema-before "${PREV_SCHEMA:-$SCHEMA}" --runtime-abi linux-static-v1)
+  --schema "$SCHEMA" --schema-before "$SCHEMA_BEFORE" --runtime-abi linux-static-v1)
 printf '%s\n' "$digests"
 manifest=$(printf '%s\n' "$digests" | sed -n 's/^manifest_digest=//p')
 mv "$out/$manifest.json" "$out/next-core-manifest.json"
