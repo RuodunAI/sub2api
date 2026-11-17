@@ -855,3 +855,46 @@ func migrationsAfter(t *testing.T, id string) []string {
 	require.True(t, found, "no migration %s", id)
 	return names[i+1:]
 }
+
+// 0104 removes the built-in plugin custom (CONTRACTS §106) as an uninstall
+// with purge would: the plugin row with what cascades from it and its egress
+// domains go, the key is retired; its accounts and other plugins stay. A
+// rerun changes nothing.
+func TestMigration0104DropsCustomPlugin(t *testing.T) {
+	const id = "0104_drop_custom_plugin.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO plugins (key, name, status, builtin) VALUES ('custom', '{"en":"Custom upstream"}', 'enabled', true), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('custom', '0.1.1', '{}', 'x', 'x', 1, 'valid'), ('guard', '0.2.10', '{}', 'y', 'y', 1, 'valid');
+		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('custom', 'example.com'), ('guard', 'example.com');
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('orphan', 'custom', 't', '')`)
+
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
+	require.Equal(t, "guard", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_versions`))
+	require.Equal(t, "guard", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_egress_domains`))
+	require.Equal(t, "custom", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
+	require.Equal(t, "orphan", read(`SELECT string_agg(name, ' ') FROM accounts WHERE plugin_key = 'custom'`), "accounts are kept")
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "custom", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
+	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
+}

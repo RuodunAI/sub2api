@@ -609,7 +609,7 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 	// (claude_max_tokens, CONTRACTS §84.1), then the account's request
 	// parameter override (§84) precede the build: the plugin builds from,
 	// and may still patch, what they decided (param_override.go).
-	upBody, upModel, failure := c.rewriteBody(ctx, acc, rt, pacct, upBody, upModel, n)
+	upBody, upModel, failure := c.rewriteBody(ctx, acc, rt, upBody, upModel, n)
 	if failure != nil {
 		return *failure
 	}
@@ -690,12 +690,12 @@ func (c *call) passthroughHeaders(h http.Header, acc *core.Account) {
 // the declaration decides the credential the upstream receives, so neither
 // the plugin (extend), the passthrough (§81) nor the account's override
 // (§84) can replace or remove it under a custom header name.
-func writeDeclaredAuth(h http.Header, rt *typeRoute, pacct *pluginv1.Account, built *pluginv1.BuildUpstreamRequestResponse) {
+func writeDeclaredAuth(h http.Header, rt *typeRoute, built *pluginv1.BuildUpstreamRequestResponse) {
 	d, ok := rt.binding.Client.(core.DeclaredUpstream)
 	if !ok {
 		return
 	}
-	name := d.AuthHeader(pacct)
+	name := d.AuthHeader()
 	if name == "" {
 		return
 	}
@@ -819,7 +819,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	c.passthroughHeaders(req.Header, acc)
 	c.paramOverride.headers.Apply(req.Header)
 	setBuiltHeaders(req, plugin)
-	writeDeclaredAuth(req.Header, rt, pacct, built)
+	writeDeclaredAuth(req.Header, rt, built)
 	if req.Header.Get("Content-Type") == "" && reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

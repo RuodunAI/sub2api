@@ -13,10 +13,6 @@
       "version": "0.1.8",
       "digest": "sha256:c9c4675032ba9dae1f87803aa36f0cc27467352413e3a065eef7b339d9bd705c"
     },
-    "custom": {
-      "version": "0.1.1",
-      "digest": "sha256:3cb7ba9558e2420a2264e7051183f1756137fb640bd95c9033bf22c66484037d"
-    },
     "dynweight": {
       "version": "0.5.10",
       "digest": "sha256:7c68d59aed69e3e80a80cd1c432685185d3b75fa83375d72d7ab7d50bdfc4a27"

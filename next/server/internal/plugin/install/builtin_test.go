@@ -206,7 +206,7 @@ func TestEnsureBuiltinUnreadableInstallOnlyInstallsNothing(t *testing.T) {
 }
 
 // A built-in of runtime "none" (an account type declaring its upstream,
-// docs/UPSTREAM-DECLARATIVE.md §5) carries no runtimes and asks for no
+// docs/UPSTREAM-DECLARATIVE.md §4.2) carries no runtimes and asks for no
 // accounts.credentials: it is installed, granted and enabled like any other.
 func TestEnsureBuiltinInstallsRuntimeNonePackage(t *testing.T) {
 	e := newEnv(t)

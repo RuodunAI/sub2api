@@ -33,13 +33,10 @@ type Upstream struct {
 	// Extend makes the core build the request and then pass it to the
 	// plugin's BuildUpstreamRequest (field base) to amend: runtime "grpc"
 	// and the accounts.credentials permission only.
-	Extend bool `json:"extend,omitempty"`
-	// AccountConfig lets an account override part of the declaration in its
-	// settings field "upstream" (custom upstream types only).
-	AccountConfig bool                 `json:"accountConfig,omitempty"`
-	BaseURL       *UpstreamBaseURL     `json:"baseURL,omitempty"`
-	Credentials   *UpstreamCredentials `json:"credentials,omitempty"`
-	Auth          *UpstreamAuth        `json:"auth,omitempty"`
+	Extend      bool                 `json:"extend,omitempty"`
+	BaseURL     *UpstreamBaseURL     `json:"baseURL,omitempty"`
+	Credentials *UpstreamCredentials `json:"credentials,omitempty"`
+	Auth        *UpstreamAuth        `json:"auth,omitempty"`
 	// Headers are written on every route, keyed by lower-case header name;
 	// a nil entry (JSON null) removes the header of a lower layer.
 	Headers map[string]*HeaderWrite `json:"headers,omitempty"`
@@ -49,8 +46,8 @@ type Upstream struct {
 	// DefaultProtocol is the route of a request whose meta.protocol is empty.
 	DefaultProtocol string `json:"defaultProtocol,omitempty"`
 	// FilterFields are top-level request body fields removed before the
-	// request is sent (an account layer may allow some again). nil inherits
-	// the lower layer; an empty list removes nothing.
+	// request is sent. nil inherits the lower layer; an empty list removes
+	// nothing.
 	FilterFields []string `json:"filterFields,omitzero"`
 	// ParamOverride is a fixed rewrite in the format of an account's
 	// parameter override (CONTRACTS §84), applied before the routes' patches.

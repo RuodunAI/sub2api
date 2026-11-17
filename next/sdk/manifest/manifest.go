@@ -389,16 +389,12 @@ type AccountType struct {
 
 // AddressFields returns the upstream address fields of the type and whether
 // they are known: declared in UpstreamFields, or derived from a declarative
-// Upstream (the core builds requests from base_url, plus the account's
-// "upstream" layer when AccountConfig is set).
+// Upstream (the core builds requests from base_url).
 func (at AccountType) AddressFields() ([]string, bool) {
 	switch {
 	case at.UpstreamFields != nil:
 		return at.UpstreamFields, true
 	case at.Upstream != nil:
-		if at.Upstream.AccountConfig {
-			return []string{"base_url", "upstream"}, true
-		}
 		return []string{"base_url"}, true
 	}
 	return nil, false

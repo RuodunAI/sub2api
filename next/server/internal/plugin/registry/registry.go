@@ -393,7 +393,7 @@ func (g *generation) bindDeclared() {
 	kept := g.accTypes[:0]
 	for _, atb := range g.accTypes {
 		if atb.Type.Upstream != nil {
-			profile, err := upstream.Resolve(&atb.Type, atb.PassHeaders(g.Platform), nil)
+			profile, err := upstream.Resolve(&atb.Type, atb.PassHeaders(g.Platform))
 			if err != nil {
 				slog.Error("plugin registry: account type skipped, its upstream declaration does not resolve",
 					"plugin", atb.Plugin.Key, "version", atb.Plugin.Version, "accountType", atb.Type.ID, "err", err)
