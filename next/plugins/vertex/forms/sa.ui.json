@@ -18,8 +18,8 @@
       "zh": "粘贴整个 JSON 密钥文件"
     },
     "ui:help": {
-      "en": "The JSON key of a service account (IAM & Admin → Service accounts → Keys → Add key → JSON) that may call Vertex AI, e.g. with the role Vertex AI User. Paste the whole file. Stored encrypted; the access token is fetched shortly after saving (within five minutes) and renewed automatically.",
-      "zh": "服务账号的 JSON 密钥（IAM 和管理 → 服务账号 → 密钥 → 添加密钥 → JSON），该服务账号要有调用 Vertex AI 的权限，例如 Vertex AI User 角色。粘贴整个文件的内容。加密保存；保存后几分钟内（最多 5 分钟）获取访问令牌，并自动续期。"
+      "en": "The JSON key of a service account (IAM & Admin → Service accounts → Keys → Add key → JSON) that may call Vertex AI, e.g. with the role Vertex AI User. Paste the whole file. Stored encrypted; the access token is fetched automatically after saving (an older core can take up to five minutes) and then renewed automatically.",
+      "zh": "服务账号的 JSON 密钥（IAM 和管理 → 服务账号 → 密钥 → 添加密钥 → JSON），该服务账号要有调用 Vertex AI 的权限，例如 Vertex AI User 角色。粘贴整个文件的内容。加密保存；保存后自动获取访问令牌（旧版核心最多等待 5 分钟），之后自动续期。"
     }
   },
   "project_id": {
