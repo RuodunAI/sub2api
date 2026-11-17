@@ -60,8 +60,8 @@ fork 完成以上配置后，在自己 fork 的控制台“设置 → 在线更�
 
 ```sh
 # CHANGELOG 小节、released.json 等已经合并；tag 打在要发布的提交上
-git tag core-v0.1.291 <commit>
-git push origin core-v0.1.291
+git tag core-v0.1.293 <commit>
+git push origin core-v0.1.293
 ```
 
 然后在 Actions 里批准 `package` 任务，等 publish 完成，核对 Release 的资产与 package 任务摘要里的 sha256。核心与网关各打各的 tag，可以同一个提交。
@@ -81,7 +81,7 @@ cd next/gateway && go build -o /usr/local/bin/sub2api-release ./cmd/sub2api-rele
 # GitHub：每条线最新 3 个稳定版；私有仓库把只读令牌放在环境变量里
 GITHUB_TOKEN=… sub2api-release mirror --github owner/repo --token-env GITHUB_TOKEN --latest 3 --out /srv/sub2api-releases
 # 指定 tag
-sub2api-release mirror --github owner/repo --tags core-v0.1.291,gateway-v0.1.135 --out /srv/sub2api-releases
+sub2api-release mirror --github owner/repo --tags core-v0.1.293,gateway-v0.1.136 --out /srv/sub2api-releases
 # 从另一个 url 来源转存（可选 Bearer 密钥）
 MIRROR_SECRET=… sub2api-release mirror --url https://releases.example.com/sub2api/ --token-env MIRROR_SECRET --latest 5 --out /srv/sub2api-releases
 ```

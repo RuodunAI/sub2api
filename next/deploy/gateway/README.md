@@ -107,7 +107,7 @@ docker compose up -d node-b
 cd next/gateway && go build -o /usr/local/bin/sub2api-release ./cmd/sub2api-release
 # 私有仓库：令牌放在环境变量里，用 --token-env 传变量名，不写在命令行上
 sub2api-release mirror --github owner/repo --token-env GITHUB_TOKEN --latest 3 --out /srv/sub2api-releases
-sub2api-release mirror --github owner/repo --tags core-v0.1.291,gateway-v0.1.136 --out /srv/sub2api-releases
+sub2api-release mirror --github owner/repo --tags core-v0.1.293,gateway-v0.1.136 --out /srv/sub2api-releases
 ```
 
 再次运行只补新的版本、合并 `releases.json`。目录的源站需要鉴权时，在控制台给 `url` 来源填同一个 Bearer 密钥。
@@ -128,7 +128,7 @@ sub2api-release mirror --github owner/repo --tags core-v0.1.291,gateway-v0.1.136
 
 **插件签名密钥**（核心发布用它重签内置插件）只放在 GitHub 仓库的环境 `release` 里：Secret `SUB2API_PLUGIN_SIGNING_KEY`、Variable `SUB2API_PLUGIN_KEY_ID`（配置方法见 [github/README.md](github/README.md)）。私钥不进仓库、不上节点，不要在终端、日志或工单里输出。发布清单不签名，没有发布密钥。
 
-**从网关 0.1.135 过渡**：0.1.135 及更早的网关只认签名清单，装不了不签名的发布，所以第一次换上不验签的网关必须手动换镜像（见下文“升级和恢复”最后一段），之后核心与网关都能一键更新。
+**从网关 0.1.135 过渡**：0.1.135 及更早的网关只认签名清单，装不了不签名的发布，所以第一次换上不验签的网关必须手动换镜像（见下文“升级和恢复”最后一段），之后核心与网关都能一键更新。混跑期间新旧网关都不要导入或应用更新；基线换成不签名的核心之后，网关不能再回到 0.1.135。
 
 ## 升级和恢复
 
