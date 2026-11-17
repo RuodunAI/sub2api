@@ -8,11 +8,6 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 网关 0.1.138：停用的节点不进升级计划，删节点不再要求停止确认
-
-- **预检跳过停用节点**：手动停用的节点（例如两节点集群改成单节点后留下的那一台）不再列入核心升级计划，此前它会进入计划并让计划在它的第一步暂停（`planned node is disabled`）。没有任何启用节点时预检报 `no_nodes`。
-- **`remove-node` 不再要求 `stopped`**：只要节点已停用且 5 分钟内没有心跳就能删除。`stopped` 只由升级计划的停止步骤写入，手动停容器或停用都不写，所以 ec2pool 的 node-b 这类节点以前删不掉。
-
 ### 核心 0.1.300：答完后才断开的请求按成功计费（无迁移，滚动）
 
 - **答完后才断开的请求记为成功**（CONTRACTS §25.8）：流式应答的终止用量事件（Anthropic `message_delta`，OpenAI Responses `response.completed` / `response.incomplete`）已经转发给客户端之后，客户端在上游关闭连接前断开的请求，记为成功（状态码取上游的，通常是 200），按上游报告的真实用量（含缓存读）计费。此前 Codex 等客户端收到完成事件就断开连接时，网关先读到上游结束就记 200，客户端先断开就记 499 `client canceled`，并且输出按预扣保留量（默认约 4000 token）计费，同一个客户端两种结果随机出现，多收了钱；插件执行的请求（例如 codex）同样如此。账号统计也不再把这类请求计为取消。终止用量事件之前断开的请求，行为不变。`continue` 策略下这类请求也不再继续读上游。
@@ -21,22 +16,36 @@
 - **发布故障策略后，插件执行的请求也执行插件给出的限时禁用与额度观测**（CONTRACTS §69）：此前发布了故障策略时，codex、volcengine 等插件执行的请求遇到上游 HTTP 错误不会调用插件的错误分类，codex 在 429 且用量窗口已满时“禁用到重置时刻”不执行，额度用满的账号每个请求仍会被先试一次。现在与普通转发一致：插件分类，重试、换号、冷却仍由故障策略决定。
 - **插件开发文档**：新增 `next/docs/PLUGIN-DEVELOPMENT.md`，逐项列出系统设置在普通转发、插件执行、WebSocket 三条路径上由谁生效、插件要配合什么。
 
-### 核心 0.1.298：codex 登录方式改名为“设备码”和“Codex”、网关托管的核心自动信任内置插件签名密钥（codex 0.1.8；无迁移，滚动）
-
-- **codex 0.1.8：登录方式改名**：新建账号表单的“认证方式”选项卡与账号类型的认证方式改为中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为。
-- **网关托管的核心自动信任内置插件签名密钥**：未设 `SUB2API_BUILTIN_TRUST_KEY` 时，核心从内置插件目录的 `builtin/trust.pub` + `trust.keyid`（镜像和 Release 包都带）读取签内置包的密钥并始终信任，镜像入口脚本里同样的推导删除。此前网关托管的核心不走镜像入口脚本，compose 不手动配这个变量就会拒绝 Release 内置包（`unknown signing key sup2api-plugins-2026`），内置插件停在旧版本：ec2pool 升到 0.1.297 时 codex 停在 0.1.6，当时是手动在 compose 里补的变量，升级到本版后可以去掉。
-
 ### codex 0.1.10：同一会话固定到同一上游提示缓存（需要核心 0.1.297 及以上）
 
 - **修复 Codex 会话缓存时有时无**：请求体带 `prompt_cache_key` 时（Codex CLI 每个会话都带），插件按 API Key 隔离派生一个会话 ID，作为 `session_id` / `conversation_id` 头发给 ChatGPT 后端，同一会话的每一轮落到同一份提示缓存。此前插件不发会话头，ec2pool 上同一会话、同一账号的请求缓存读只有 0、5632 或停在早先某轮的长度，命中率约 27%。客户端原值不发给上游，`originator`、`user-agent` 仍如实写 sup2api（docs/PLUGIN-CODEX.md §16）。
 
-### codex 0.1.9：设备码授权引导、验证页链接一键复制（只改界面；需要核心 0.1.297 及以上）
+### 核心 0.1.299：codex 0.1.9 设备码授权引导、验证页链接一键复制、中文类型名标题重复修复（无迁移，滚动）
+
+只升级内置 codex 到 0.1.9（只改界面与清单文字，需要核心 0.1.297 及以上），核心代码与 0.1.298 相同。
 
 - **设备码授权引导**：设备码登录表单顶部说明去哪里开启设备代码登录：ChatGPT 设置 → 账户安全与登录 → 应用安全 → “为 Codex、Excel、PowerPoint 和 Word 启用设备代码登录”，附“打开 ChatGPT 安全设置”链接（`https://chatgpt.com/settings/security`），授权前就能看到，不再只在授权失败时提示（旧提示的“设置 → 安全 → 设备码授权”路径也已过时）。
 - **验证页面链接旁加复制按钮**，在别的设备上打开验证页时不用手动选中链接。
 - 中文界面的账号类型名称改为“ChatGPT（Codex） · 设备码”“ChatGPT（Codex） · Codex”：0.1.8 的中文名在“·”前少一个空格，控制台没识别出插件名前缀，新建账号标题显示成“ChatGPT（Codex） · ChatGPT（Codex）· 设备码”。
 
 ## 2026-11-17
+
+### 网关 0.1.138：停用的节点不进升级计划，删节点不再要求停止确认（`0bbda1192`）
+
+- **Release 与上线**：上游 PR #45 合并为 `0bbda1192`（next/ CI 全过；旧版 backend 的 backend-security、shell 两项与 PR #44 一样失败，不涉及 next/），tag `gateway-v0.1.138` 与 `core-v0.1.298` 一起构建（run 44101318342、44101327224），release 环境由我代批（用户在决策卡上同意这次发布），北京时间 22:35:11 发布。网关清单 sha256 `0761e99c…104c`，amd64 二进制 `82baa5c2…51f4`；ovh 从同一提交构建的镜像（`sha256:f2951276…a2f`）里的二进制与之相同。逐个节点手动换：ccp 22:36:26 让出、22:37:03 就绪（`.env.bak-gw137`），ovh 22:37:19 让出、22:37:27 就绪，ec2pool（单节点）22:37:44 重建、22:37:49 就绪。之后 `updater.nodes` 三个节点 0.1.138。
+
+- **预检跳过停用节点**：手动停用的节点（例如两节点集群改成单节点后留下的那一台）不再列入核心升级计划，此前它会进入计划并让计划在它的第一步暂停（`planned node is disabled`）。没有任何启用节点时预检报 `no_nodes`。
+- **`remove-node` 不再要求 `stopped`**：只要节点已停用且 5 分钟内没有心跳就能删除。`stopped` 只由升级计划的停止步骤写入，手动停容器或停用都不写，所以 ec2pool 的 node-b 这类节点以前删不掉。
+
+### 核心 0.1.298：codex 登录方式改名为“设备码”和“Codex”、网关托管的核心自动信任内置插件签名密钥（`0bbda1192`，codex 0.1.8；无迁移，滚动）
+
+- **Release**：22:35:59 发布，清单 sha256 `108d2c7d0115cccdb9f83839be85045ea8ca26fedf6a4fbd9e415e8cff2ff9d7`（amd64 bundle `698a2d21…07a4`、arm64 `09059b7a…d1b0`），strategy rolling，schema 仍 `ab35f2f6…187d`。`next/plugins/released.json` 按 `0bbda1192` 重写（codex 0.1.8）。
+- **ovh 集群**：Release 清单与 bundle 核对摘要后导入，预检 rolling-v1、无阻断（expected_revision 564），计划 `1fc58f57c4c85ed5a179e53a4cc10468` 22:38:23→22:39:32（先 ccp 后 ovh），`/readyz` 全程 200。两节点 9 个插件 active、ready，codex 0.1.8；codex 账号类型的认证方式为“设备码”“Codex”（英文 Device Code、Codex）。5xx 0，日志无 ERROR；392 仍是关闭状态，没有动。
+- **ec2pool**（单节点）：计划 `5598fc2899a37cbd5f7212e118ad618d` primary-first-v1 22:40:05→22:40:11，`/readyz` 503 约 4 秒；codex 0.1.8。随后删掉 0.1.297 时在 compose 手动补的 `SUB2API_BUILTIN_TRUST_KEY`，22:40:36 重建 node-a（约 6 秒），日志没有 `unknown signing key`，内置插件照常（这次各内置插件版本都已存在，没有触发新的上传验签）。
+- 回滚：核心回 0.1.297（清单 `64bc544f…c431`），ovh 集群 rolling、ec2pool 主节点优先；插件只升不降，codex 留在 0.1.8；网关回 0.1.137 用各节点 `.env` 备份再让出、重建（ec2pool 回 0.1.297 核心时要把 `SUB2API_BUILTIN_TRUST_KEY` 加回 compose，备份 `compose.yml.bak-with-trustkey`）。
+
+- **codex 0.1.8：登录方式改名**：新建账号表单的“认证方式”选项卡与账号类型的认证方式改为中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为。
+- **网关托管的核心自动信任内置插件签名密钥**：未设 `SUB2API_BUILTIN_TRUST_KEY` 时，核心从内置插件目录的 `builtin/trust.pub` + `trust.keyid`（镜像和 Release 包都带）读取签内置包的密钥并始终信任，镜像入口脚本里同样的推导删除。此前网关托管的核心不走镜像入口脚本，compose 不手动配这个变量就会拒绝 Release 内置包（`unknown signing key sup2api-plugins-2026`），内置插件停在旧版本：ec2pool 升到 0.1.297 时 codex 停在 0.1.6，当时是手动在 compose 里补的变量，升级到本版后可以去掉。
 
 ### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（`f40c7831d`，codex 0.1.7；无迁移，滚动）
 
