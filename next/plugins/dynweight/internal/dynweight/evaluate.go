@@ -15,6 +15,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/rules"
 )
@@ -434,7 +435,7 @@ func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 	if deadline, ok := ctx.Deadline(); ok {
 		budget = min(budget, time.Until(deadline)-stickyMargin)
 	}
-	if budget < time.Second {
+	if budget < time.Second || !p.stickyEnabled(ctx) {
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, budget)
@@ -467,6 +468,20 @@ func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 		}
 	}
 	p.record(after, s, events, false)
+}
+
+// stickyEnabled reports whether the core's sticky sessions are on (CONTRACTS
+// §106). While they are off no binding is read, so a clear would only walk
+// the binding keyspace for nothing: the queued clears wait, and run if
+// sticky sessions come back on before cleanup gives them up. When the
+// settings cannot be read the clears run as before.
+func (p *Plugin) stickyEnabled(ctx context.Context) bool {
+	sticky, err := pluginsdk.Settings[protocol.StickySettings](ctx, p.host)
+	if err != nil {
+		p.log.Debug("dynweight: read sticky settings failed", "error", err.Error())
+		return true
+	}
+	return sticky.Enabled
 }
 
 // clearSticky runs one clear: done when it succeeded or is given up, with
