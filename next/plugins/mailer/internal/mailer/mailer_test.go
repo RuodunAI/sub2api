@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"mime"
 	"net"
 	"strings"
@@ -218,6 +219,50 @@ func TestDeliverOutcomes(t *testing.T) {
 	p.cfg.Load().TimeoutSeconds = 5
 	if _, err := p.DeliverNotification(ctx, request()); err == nil {
 		t.Fatal("unreachable server delivered")
+	}
+}
+
+// A failed step names itself in the error, so the delivery record shows the
+// cause: an SMTP host that does not exist is told apart from an unreachable
+// one, and a TLS mismatch hints at the usual security mode of the port.
+func TestDeliverDiagnostics(t *testing.T) {
+	ctx := context.Background()
+	srv := startSMTP(t, "")
+	p := configured(t, srv, map[string]any{"host": "mail.example.invalid"})
+	p.dial = func(context.Context, string) (net.Conn, error) {
+		return nil, errors.New("egress: resolve mail.example.invalid: no such host")
+	}
+	p.lookup = func(context.Context, string) ([]string, error) {
+		return nil, &net.DNSError{Err: "no such host", Name: "mail.example.invalid", IsNotFound: true}
+	}
+	_, err := p.DeliverNotification(ctx, request())
+	if err == nil || !strings.HasPrefix(err.Error(), "SMTP host mail.example.invalid does not exist") || !strings.Contains(err.Error(), "找不到 SMTP 服务器 mail.example.invalid") {
+		t.Fatalf("unknown host: %v", err)
+	}
+	p.lookup = func(context.Context, string) ([]string, error) { return []string{"192.0.2.1"}, nil }
+	if _, err := p.DeliverNotification(ctx, request()); err == nil || !strings.HasPrefix(err.Error(), "cannot connect to SMTP server mail.example.invalid:") {
+		t.Fatalf("unreachable host: %v", err)
+	}
+	// TLS from the start against a plain server: the handshake fails at the
+	// greeting.
+	p = configured(t, srv, map[string]any{"security": "tls"})
+	if _, err := p.DeliverNotification(ctx, request()); err == nil || !strings.HasPrefix(err.Error(), "no SMTP greeting from ") {
+		t.Fatalf("tls mismatch: %v", err)
+	}
+}
+
+func TestPortHint(t *testing.T) {
+	for _, c := range []struct {
+		port     int
+		security string
+		want     string
+	}{
+		{465, SecuritySTARTTLS, "port 465"}, {465, SecurityNone, "port 465"}, {465, SecurityTLS, ""},
+		{587, SecurityTLS, "port 587"}, {587, SecuritySTARTTLS, ""}, {2525, SecurityTLS, ""},
+	} {
+		if got := portHint(&Settings{Port: c.port, Security: c.security}); !strings.Contains(got, c.want) || (c.want == "") != (got == "") {
+			t.Errorf("%d %s: %q", c.port, c.security, got)
+		}
 	}
 }
 

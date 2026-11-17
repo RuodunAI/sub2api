@@ -5144,6 +5144,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 渠道 id 和平台 id 一样保留给第一方插件（`email` 只能由 `mailer` 声明），因为渠道的提供方能读到发往该渠道的每条通知。
   - `mailer` 一封邮件发给全部接收人：任一接收人被 SMTP 以 5xx 拒绝，整条通知按最终失败处理。超时上限 25 秒，低于核心投递调用的 30 秒期限。邮件正文已被服务器接受（DATA 结束）后 QUIT 失败不算失败，避免重试造成重复邮件。
   - `mailer` 的接收人只放在信封里（`RCPT TO`）。只有一个接收人时 `To` 头写该地址；多于一个时 `To` 头写 `undisclosed-recipients:;`（RFC 5322 的空组），等同密送，发给多名终端用户时互相看不到邮箱（mailer 0.1.1 起，之前 `To` 列出全部接收人）。
+  - `mailer` 投递失败时，错误先用英文和中文说明哪一步失败、该检查什么，再接底层错误：连接失败时若 SMTP 服务器的域名不存在，报“找不到 SMTP 服务器 <host>（域名不存在）”（出口隧道只回文本，插件在连接失败后再解析一次域名来区分）；其他连接失败、服务器不应答（含 TLS 握手失败）、STARTTLS、登录、发件地址各有说明；端口 465 没选“全程 TLS”或端口 587 选了“全程 TLS”时附上提示（mailer 0.1.4 起）。设置保存时不做网络检查：`Configure` 在插件启动时也会调用，拒绝会让插件起不来。
 - **发送方只认渠道 id**：持有 `notify.send` 授权的插件调用 `ListNotificationChannels` 和 `Notify{channel, recipients 1..20, subject, body 纯文本, severity info|warning|critical, dedupe_key, dedupe_seconds}`，核心自己发通知也走同一条路。
   - 业务插件不需要了解是哪个插件在投递。
   - `notify.send` 风险等级为 High（2026-10-31 由 Medium 提高）：持有者能以本站的发件身份给任意地址发任意内容，限速只能限量。
@@ -5176,6 +5177,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 插件实例在调用到达插件进程之前就拒绝（`plugin_unavailable`：启动中、崩溃后等待重启、升级或停止时旧实例 draining）也按上一条处理：不计次数，30 秒后再试，排队超过 24 小时才最终失败，所以插件长期起不来时不会无限重试。调用已经到达插件进程之后的错误照常计次数，包括进程中途崩溃和插件自己返回的 Unavailable：那一次可能已经发出，而且一条让插件崩溃的通知也要能耗尽次数。
   - 记录保留 30 天。每小时清理一次（过期删除、把租约耗尽的最后一次投递标为失败），0.1.235 起由全集群任务 `core.notify.purge`（§77）执行，锁 `notify:purge` 不再使用。
   - 控制台的测试通知以 `core:test` 为来源，不占核心通知的限速额度。
+  - `last_error`：插件处理投递时自己返回的错误（gRPC `Unknown`）原样记录插件的消息，不带核心错误码和 gRPC 状态前缀（核心 0.1.302 起；之前是 `internal: internal error: plugin <key>: Unknown: …`）；其他错误仍是核心错误的文本。最多 1000 字节，在字符边界截断。控制台的通知记录完整显示错误（换行，不截断）。
 - **控制台**：`GET /notifications/channels`、`GET /notifications`，以及 `POST /notifications/test`（需要 `settings:manage`）。
 
 ### 74.5 dynweight 插件
