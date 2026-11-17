@@ -18,6 +18,10 @@
 - **codex 0.1.8：登录方式改名**：新建账号表单的“认证方式”选项卡与账号类型的认证方式改为中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为。
 - **网关托管的核心自动信任内置插件签名密钥**：未设 `SUB2API_BUILTIN_TRUST_KEY` 时，核心从内置插件目录的 `builtin/trust.pub` + `trust.keyid`（镜像和 Release 包都带）读取签内置包的密钥并始终信任，镜像入口脚本里同样的推导删除。此前网关托管的核心不走镜像入口脚本，compose 不手动配这个变量就会拒绝 Release 内置包（`unknown signing key sup2api-plugins-2026`），内置插件停在旧版本：ec2pool 升到 0.1.297 时 codex 停在 0.1.6，当时是手动在 compose 里补的变量，升级到本版后可以去掉。
 
+### codex 0.1.10：同一会话固定到同一上游提示缓存（需要核心 0.1.297 及以上）
+
+- **修复 Codex 会话缓存时有时无**：请求体带 `prompt_cache_key` 时（Codex CLI 每个会话都带），插件按 API Key 隔离派生一个会话 ID，作为 `session_id` / `conversation_id` 头发给 ChatGPT 后端，同一会话的每一轮落到同一份提示缓存。此前插件不发会话头，ec2pool 上同一会话、同一账号的请求缓存读只有 0、5632 或停在早先某轮的长度，命中率约 27%。客户端原值不发给上游，`originator`、`user-agent` 仍如实写 sup2api（docs/PLUGIN-CODEX.md §16）。
+
 ### codex 0.1.9：设备码授权引导、验证页链接一键复制（只改界面；需要核心 0.1.297 及以上）
 
 - **设备码授权引导**：设备码登录表单顶部说明去哪里开启设备代码登录：ChatGPT 设置 → 账户安全与登录 → 应用安全 → “为 Codex、Excel、PowerPoint 和 Word 启用设备代码登录”，附“打开 ChatGPT 安全设置”链接（`https://chatgpt.com/settings/security`），授权前就能看到，不再只在授权失败时提示（旧提示的“设置 → 安全 → 设备码授权”路径也已过时）。

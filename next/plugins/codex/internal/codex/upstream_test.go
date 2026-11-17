@@ -203,6 +203,52 @@ func TestBuildUpstreamRequestWebSocket(t *testing.T) {
 	}
 }
 
+// The upstream session follows the conversation's prompt_cache_key, isolated
+// per API key, over HTTP and WebSocket alike; without a usable key none is
+// sent.
+func TestBuildUpstreamRequestSession(t *testing.T) {
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
+	build := func(proto string, apiKeyID int64, fields map[string]string) map[string]string {
+		r, err := h.Platform.BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
+			Meta:           &pluginv1.RequestMeta{Protocol: proto, Model: "gpt-5.4", ApiKeyId: apiKeyID},
+			Account:        account(TypeDevice, deviceCreds),
+			Fields:         fields,
+			InboundHeaders: map[string]string{"session_id": "client-session"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.GetHeaders()
+	}
+	conv := map[string]string{FieldPromptCacheKey: `"conv-1"`}
+	first := build(ProtocolResponses, 7, conv)
+	id := first["session_id"]
+	if len(id) != 36 || id[14] != '8' || first["conversation_id"] != id || strings.Contains(id, "conv-1") || id == "client-session" {
+		t.Fatalf("session headers = %v", first)
+	}
+	if again := build(ProtocolResponses, 7, conv); again["session_id"] != id {
+		t.Fatalf("same conversation, other session: %q vs %q", again["session_id"], id)
+	}
+	if ws := build(ProtocolResponsesWS, 7, conv); ws["session_id"] != id || ws["conversation_id"] != id {
+		t.Fatalf("ws session headers = %v, want %q", ws, id)
+	}
+	if other := build(ProtocolResponses, 8, conv); other["session_id"] == id {
+		t.Fatal("two API keys share an upstream session")
+	}
+	if next := build(ProtocolResponses, 7, map[string]string{FieldPromptCacheKey: `"conv-2"`}); next["session_id"] == id {
+		t.Fatal("two conversations share an upstream session")
+	}
+	for _, fields := range []map[string]string{nil, {FieldPromptCacheKey: `""`}, {FieldPromptCacheKey: `123`}} {
+		hd := build(ProtocolResponses, 7, fields)
+		if _, ok := hd["session_id"]; ok {
+			t.Errorf("fields %v: session sent: %v", fields, hd)
+		}
+		if _, ok := hd["conversation_id"]; ok {
+			t.Errorf("fields %v: conversation sent: %v", fields, hd)
+		}
+	}
+}
+
 func TestBuildUpstreamRequestErrors(t *testing.T) {
 	p := mustPlugin(DefaultEndpoints)
 	for _, tc := range []struct {

@@ -119,7 +119,7 @@ func TestManifestShape(t *testing.T) {
 			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || len(ap.PassHeaders) != 0 {
 			t.Errorf("%s platform = %+v", at.ID, ap)
 		}
-		wantFields := []string{"model", codex.FieldHasInstructions, codex.FieldStringInput, codex.FieldSystemRoles}
+		wantFields := []string{"model", codex.FieldHasInstructions, codex.FieldStringInput, codex.FieldSystemRoles, codex.FieldPromptCacheKey}
 		if !slices.Equal(ap.RequestFields, wantFields) {
 			t.Errorf("%s requestFields = %v, want %v", at.ID, ap.RequestFields, wantFields)
 		}
@@ -140,6 +140,8 @@ func TestManifestShape(t *testing.T) {
 		{`{"input":"system"}`, codex.FieldSystemRoles, ""},
 		{`{"input":{"role":"system"}}`, codex.FieldSystemRoles, `[]`}, // not an array: no item to patch
 		{`{}`, codex.FieldSystemRoles, ""},
+		{`{"prompt_cache_key":"conv-1"}`, codex.FieldPromptCacheKey, `"conv-1"`},
+		{`{}`, codex.FieldPromptCacheKey, ""},
 	} {
 		if got := gjson.Get(tc.body, tc.query).Raw; got != tc.want {
 			t.Errorf("gjson(%s, %s) = %q, want %q", tc.body, tc.query, got, tc.want)
