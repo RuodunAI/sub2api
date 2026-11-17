@@ -8,7 +8,7 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心（下一版）：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
+### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
 
 - **修复：Sign in with ChatGPT 账号的流式请求不计费**（用户 11-17 报告，ec2pool 实测）：上游对 `stream:true` 返回 SSE 正文却标 `Content-Type: application/json`，网关按 JSON 处理，token、首字时间都记 0、计费状态 `free`，而且整段缓冲到结束才发给客户端。现在流式请求的 2xx 应答若正文以 SSE 字段开头就按事件流转发与计量（CONTRACTS §104.1）。已有的 0 token 记录不会补算。
 - **OpenAI Responses 缓存写入**：`input_tokens_details.cache_write_tokens` 计为缓存写入，按价格的 `cc` 计；价格没有 `cc` 的模型仍按输入价计（`inclusive` 语义下未计价的缓存写入留在输入里，CONTRACTS §104.3）。TPM 与实时 token 统计不含缓存写入，OpenAI 请求的这两个数会比以前略小。
