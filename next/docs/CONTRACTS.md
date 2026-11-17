@@ -2191,9 +2191,10 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 - **估算与已报告用量的合并改为分侧取值**，取代上一段的「每项取较大值」：输入侧四项（`input`、`cache_read`、`cache_creation`、`cache_creation_1h`）只要响应报告过任意一项就整体采用响应的数，否则整体采用估算；输出取两者较大值。原因：估算把整段提示算作输入，响应把同一段提示的缓存部分算在缓存项下，逐项取较大值在输入不含缓存的协议（Anthropic）上把提示计了两遍。实现 `gateway/pipeline.go` 的 `canceledTokens`。
 - **`continue` 不另设等待上限**（2026-11-14 用户决定：与请求本身的超时保持一致，不单独配置）：续读只受这次上游交换原有的超时约束，即环境变量 `relay_timeout_seconds`（上游整体超时）和 `streaming_idle_timeout_seconds`（流式空闲超时，§74.3），与客户端还在时相同（`relay_timeout_seconds` 未设置即不限，这时非流式响应读正文没有上限，流式只受空闲超时约束）；到时上游被取消，按 `precharge` 处理。原设置 `client_disconnect_wait_seconds`（5–1800，默认 120）删除，接口不再返回、PUT 不再接受，已存的值留在行里但不读；滚动期间旧核心仍按它等待。读取期间请求不退出，账号与 API Key 的并发名额照常占用。
 - **上游请求的 context 不再派生自客户端请求**（`gateway/dispatch.go` 的 `forwardBuilt`）：由 `gateway/disconnect.go` 的 `upstreamDrain` 在客户端 context 结束时取消它，`continue` 且 `forward` 正在转发成功响应时不取消，读到结束或被上游超时取消。
-- **`continue` 只覆盖核心直接转发的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。插件 `Execute` 执行的请求、`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。
+- **`continue` 只覆盖由核心 `forward()` 中继的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。插件 `Execute` 执行的请求经 `ForwardUpstream` 交给宿主转发时（如 `pluginsdk.ExecuteDefault`：codex，以及 volcengine 的非任务请求），上游同样由 `forwardBuilt` 发出、`forward()` 中继和记用量，**核心 0.1.300 起同样续读**（此前一律按 `precharge` 处理，系统设置里的“读完再计费”对它们不生效）：插件在 `ForwardUpstream` 里等待没有期限（`grpcruntime` 在转发开始时停掉准备计时，结束后才开始 `FinishTimeout`），续读结束后照常 `RecordUsage`，提交的记录按上游报告的用量计费。插件放弃这次 `ForwardUpstream`（被终止、超时）不算客户端断开：转发观察的客户端 context 只取自请求本身（`gatewayExecution.network`），插件的调用结束时 `forwardBuilt` 以 `errExecutionAborted` 取消上游，记为上游中断；非流式应答先写进暂存（`spool.go`），暂存写失败（超过 64 MiB、临时文件出错）记为内部错误，同样不算客户端断开。插件自己结算的部分不受影响：`Reservation` 只出现在 `task.submit`（仍不续读），`Replacement` 由 `settleCanceled` 原样保留。实现：`gateway/dispatch.go` 的 `watchClient(ctx, ucancel, !c.ep.TaskSubmit())`。
 - 旧的 `billing` 行没有这个字段，读出默认值，**所以升级后既有部署即按 `continue` 运行**；存储值不在取值集合内时策略取默认值。设置读取失败时网关按 `precharge` 处理。
 - **什么算「读完」**：有输出因客户端已离开而被丢弃，且上游正常结束、没有以流内错误事件收尾。客户端收完最后一个字节才断开的请求没有丢输出，照常记为成功。关停不再等待在途请求时调用 `Gateway.AbandonReads()`（`app/phases.go` 的 `cancelRequests`），续读立即中止，按 `precharge` 处理。
+- **终止用量送达后才断开的请求算已服务**（核心 0.1.300）：流里的终止用量事件已经转发给客户端（转发时客户端还在、此前没有丢过输出），之后客户端在上游关流前断开的请求，记为成功（状态码取上游的），按上游报告的用量计费，三种策略都不适用，也不再续读（`continue` 下同样立即取消上游）；之后上游流空闲超时同样记成功，账号统计不计为取消（`pipeline.go` 的 `statsCanceled`）。核心直接转发和插件 `Execute` 执行的 HTTP 请求都适用（判定在 `forward()`，`upstreamDrain.serve`/`served`）。**终止用量事件**由 manifest 的 usage 规则判定，不按协议写死（`usagerules.Acc.Final`）：`usage.sse` 里**指名事件**（`event` 非空）且映射了 `output_tokens` 的规则命中、并且该事件里输出数存在且不为 null。输出数只有应答结束时才知道，所以声明它的具名事件就是最终用量：Anthropic `message_delta`（`message_start` 只报输入侧，不映射输出，不算）、OpenAI Responses（HTTP 流）`response.completed` / `response.incomplete`。规则匹配任意事件（`"event": ""`）的协议（OpenAI Chat Completions 末尾的 usage chunk、Gemini 每个 chunk 的 `usageMetadata`）没有可判定的终止事件（Gemini 与部分 OpenAI 兼容上游每个 chunk 都带累计用量），仍以读到上游结束为准；非流式 JSON 读完才提取用量，同样不变。终止用量事件之前断开的，行为不变。WebSocket 轮次本来就在终止事件写给客户端后结束（`websocket.go` 的 `observe`），客户端之后断开不影响已结束的轮次，无需改动。测试：`gateway/disconnect_test.go`（终止用量后断开记成功，含转换路由与插件执行的 Responses `response.completed`；之前断开仍是 499 加预扣补齐；插件执行路径两种情况；插件放弃转发不算断开）、`usagerules/final_test.go`。
 - 策略经 `core.ClientDisconnectSource.ClientDisconnectPolicy` 读取，`billing.Service` 实现；网关拿不到时按 `precharge` 处理。网关包的测试环境同样默认 `precharge`，只有针对 `continue` 的用例显式开启。
 - 测试：`gateway/disconnect_test.go`（三种策略、续读被上游整体超时结束、续读中关停的端到端，`canceledTokens`）、`e2e/ac26_client_disconnect_test.go`（整机验收）、`gateway/precharge_cancel_test.go`（判定）、`billing/settings_disconnect_test.go`（设置读写与校验）。
 
@@ -2227,7 +2228,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 | `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex` | 安装，首次安装即启用 |
 | `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
-（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节；`custom` 在 0.1.300 删除，见 §106。）
+（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节；`custom` 在 0.1.301 删除，见 §106。）
 
 同一个插件同时出现在两份列表里时构建失败。第二份列表写进内建目录的 **`install-only.txt`**（每行一个 key，`#` 注释、空行、CRLF 都容忍），核心的 `EnsureBuiltin`（`server/internal/plugin/install/builtin.go`）读它。
 
@@ -3983,7 +3984,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，插件给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次。
 
 规则：
-- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类），并执行其中两项：
+- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类；核心 0.1.300 前代码没有做到：发布故障策略后 `forwardCallback` 对任何上游失败都向插件返回错误，插件的 `ClassifyError` 不运行，下面两项对 codex、volcengine 等插件执行的请求都不生效。现在只有传输错误这样处理，与 `classify` 一致），并执行其中两项：
   1. `quota`：配额观测照常保存（§44）。
   2. `automatic_state` 为 `DISABLE` 且带解除时间（`until_unix` 在未来，或 `duration_seconds` > 0，最长 366 天）：账号立即设为 `auto_disabled`，`auto_disabled_until` = 解除时间，原因用插件给的 `reason`。解除时间一过调度即可再选中它（惰性过期），核心的低频巡检随后把状态写回 `active`。
 - 其余仍由策略决定：是否重试、同账号重试次数、换号、冷却、返回给客户端的内容。插件的 `action`、`account_effect`、`cooldown_until_unix` 不采用。
@@ -5112,7 +5113,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
   - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；Anthropic 官方 Messages API 仍限 32 MB）。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
-  - 三个超时只作用于 HTTP 转发；WebSocket 会话是长连接，只用请求体上限（作为单条消息的上限）。
+  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限。
   - 资源请求（Files API 等，`resource_http.go`）不受 `max_request_body_mb` 和三个超时约束，用自己的上限（文件 512 MB、JSON 16 KB）和期限。
   - `relay_timeout_seconds` 从发出上游请求时起算，与 `response_header_timeout_seconds` 同时开始；之前的本地准备（资源与额度请求头、辅助历史包装、可用性检查、任务登记）不计入。`streaming_idle_timeout_seconds` 只在核心等待上游数据（读响应体）时计时，客户端读得慢不算上游空闲。
   - 账号层取本次尝试重新加载的账号，不取挑选候选时的快照。
@@ -6007,7 +6008,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **代价**：没有插件声明这个点时没有任何开销。声明了的插件每次尝试多一次 RPC，在钩子内同步执行期间占着账号的并发名额，所以插件应该尽量用 `skip_attempt_hooks` 在请求钩子里结束。
 - 测试：`gateway/attempt_hook_test.go`（每次尝试都调用并带账号、拒绝不换账号、`skip_attempt_hooks` 只跳过本插件、补丁被拒、WebSocket 每条消息）、`sdk/manifest/check/attempt_hook_test.go`。
 
-## 86. 声明式上游、只有清单的插件与自定义上游（自定义上游已在 0.1.300 删除，§106；2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
+## 86. 声明式上游、只有清单的插件与自定义上游（自定义上游已在 0.1.301 删除，§106；2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
 
 起因：三个 API Key 插件和 relay 的代码几乎是同一套模板（上游路径、鉴权头、固定头、base_url 规范化、错误归类各写一遍）；接一个兼容站点也得写插件。改为核心按清单声明构造上游请求，并新增不用写插件的“自定义上游”账号类型。
 
@@ -6042,7 +6043,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | gemini | 0.3.0 | runtime none，`{"preset":"gemini","filterFields":[]}` |
 | relay | 0.3.0 | runtime none，preset anthropic、base_url 必填、不设默认协议 |
 | anthropic | 0.3.0 | 账号类型声明 preset anthropic；只保留模型目录（/models 路由、插件库） |
-| custom（新，0.1.300 删除，§106） | 0.1.0 | runtime none，内置启用；自定义上游账号类型 |
+| custom（新，0.1.301 删除，§106） | 0.1.0 | runtime none，内置启用；自定义上游账号类型 |
 
 - 四个老插件的行为由黄金样例保证（`sdk/upstream/testdata/golden`，旧插件代码对约 1500 个输入采集，新引擎逐项回放一致）。样例已冻结，旧代码和采集器已删除，不再重新生成。唯一差异：relay 的测试请求现在带 `model` 和 `usage_protocol`。
 
@@ -7729,14 +7730,14 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - WebSocket 会话中的错误事件（`type: "error"`，`status` ≥ 400）带顶层 `headers` 对象时（Codex 后端：`{"type":"error","status":429,"error":{...},"headers":{"x-codex-primary-used-percent":"100.0",...}}`），核心把它当作这次错误的响应头：头名转小写，字符串与数字值转成文本（其他类型忽略），交给插件 `ClassifyError` 的 `headers`，并按上一条采样（429 被接受）。没有 `headers` 对象的错误事件照旧不带头分类、不采样。
 - 随核心 0.1.297 发布。旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到 0.1.297。
 
-## 106. 删除内置插件 custom 与账号上游层（2026-11-17，用户要求；迁移 0104，核心 0.1.300）
+## 106. 删除内置插件 custom 与账号上游层（2026-11-17，用户要求；迁移 0104，核心 0.1.301）
 
 用户决定删除内置插件 `custom`（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，§86.4）：内置 openai、anthropic、gemini 插件的 API Key 账号已经能填 Base URL 接兼容端点，协议转换由平台做（§88），不在账号层做。`custom` 是唯一声明账号上游层的插件，这一层（账号 settings 字段 `upstream` 覆盖鉴权方式、追加请求头、改各协议路径、放开默认过滤字段）随它整体删除，不留兼容代码。最后的源码是 `845d9aa47`（`git show 845d9aa47:next/plugins/custom/manifest.json`）。§86 里关于自定义上游与账号层的内容已删去，UPSTREAM-DECLARATIVE.md §5 只留一段说明。
 
 ### 106.1 插件
 
 - `next/plugins/custom` 删除（`go.work`、`plugins/released.json`、`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS` 随之去掉）。它的 `custom_*` 账号类型不再存在。
-- 插件键 `custom` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.300）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.300。`TestReservedCoverRepo` 双向核对：仓库里的插件都保留、保留的键都在仓库里、已删除的键不在仓库里。
+- 插件键 `custom` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.301）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.301。`TestReservedCoverRepo` 双向核对：仓库里的插件都保留、保留的键都在仓库里、已删除的键不在仓库里。
 
 ### 106.2 SDK 与清单（改契约）
 
@@ -7759,5 +7760,5 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 ### 106.5 数据库与升级
 
 - 迁移 0104（`0104_drop_custom_plugin.sql`）按 `install.Uninstall`（purge）卸载 `custom`：键记入 `plugin_key_retirements`，删除插件行（级联版本、暂存授权、宿主权限授权、rollout、运行节点与卸载屏障）和 `plugin_egress_domains`。`custom` 是 runtime none，没有声明过用户权限、数据库权限或任务，所以没有权限与授予（授权策略不变、`authz_meta` 不升）、schema、角色、插件迁移记录与定时任务要删。重跑不变。
-- `plugin_key = 'custom'` 的账号保留，在控制台显示为插件已卸载，由管理员删除；CHANGELOG 0.1.300 要求升级前先在控制台删除这些账号。使用记录、账本与审计保留。
+- `plugin_key = 'custom'` 的账号保留，在控制台显示为插件已卸载，由管理员删除；CHANGELOG 0.1.301 要求升级前先在控制台删除这些账号。使用记录、账本与审计保留。
 - 有迁移，按主节点优先（`primary-first-v1`）发布；单向，回退只能用升级前的备份。

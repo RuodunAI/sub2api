@@ -26,7 +26,7 @@
 4. 换令牌：`POST https://auth.openai.com/oauth/token`，form：`grant_type=authorization_code`、`code`、`redirect_uri=https://auth.openai.com/deviceauth/callback`、`client_id`、`code_verifier` → `{id_token, access_token, refresh_token, expires_in}`。
 5. 刷新：`POST https://auth.openai.com/oauth/token`，JSON `{"client_id", "grant_type":"refresh_token", "refresh_token", "scope":"openid profile email"}`（与旧版 `backend/internal/pkg/openai/oauth.go` 一致）；refresh token 会轮换。
 6. 身份：id_token 的 `https://api.openai.com/auth` 声明里有 `chatgpt_account_id`、`chatgpt_plan_type`；`email` 在顶层。
-7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator: sup2api`、`user-agent`、`accept: text/event-stream`；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
+7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator: sup2api`、`user-agent`、`accept: text/event-stream`，请求体带 `prompt_cache_key` 时另加 `session_id` / `conversation_id`（§16）；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
 
 ### 2.2 Sign in with ChatGPT（`chatgpt_siwc`，已删除，见第 14 节）
 
@@ -270,3 +270,9 @@
 - 验证页面链接旁加图标复制按钮（`SCopyButton`，与 Sign in with Codex 的授权链接同样式）。
 - 中文账号类型名称在“·”前补空格，与控制台去重插件名前缀的规则（`插件名 + ' · '`）一致。
 
+## 16. 0.1.10：按会话固定上游提示缓存（2026-11-17，用户要求）
+
+- 现象：ec2pool 上 Codex CLI 的同一会话 22 条请求全走同一账号、粘性全部命中，缓存读却只有 0、5632（系统提示与工具）或停在约 15.6 万（早先某轮的长度），账号当日命中率 26.7%。判断是 Codex 后端按会话把提示缓存放在某台机器上，请求不带会话时每轮随机落点。插件原先不转发任何客户端头、也不发会话头；旧 sub2api 对 Codex 账号用 `prompt_cache_key` 按 API Key 隔离后生成 `session_id` / `conversation_id`。这是从数据推断的，上线后以命中率对比确认。
+- 做法：manifest 两个账号类型的 `requestFields` 加 `prompt_cache_key`。`BuildUpstreamRequest`（HTTP 与 WebSocket 握手）在它是非空字符串时加头 `session_id` 和 `conversation_id`，值相同：`sha256("<api_key_id>:<prompt_cache_key>")` 取前 16 字节排成 UUID（version 8）。同一 Key 的同一会话每轮相同；不同 Key 即使 `prompt_cache_key` 相同也不同；不回显客户端原值。没有该字段、空串或非字符串时不发。客户端自己的 `session_id` 等头仍不转发。
+- 会话键与核心内置粘性规则 `openai-prompt-cache-key` 同源，所以同一会话既固定账号，也固定上游缓存。这两个头只是缓存路由，不是客户端标识：`originator`、`user-agent` 仍如实写 sup2api，不发 `x-codex-*`。
+- 测试：`upstream_test.go` 的 `TestBuildUpstreamRequestSession`（HTTP/WS 同值、同 Key 同会话稳定、换 Key 或换会话不同、不含原值、不用客户端头、缺失/空串/非字符串不发）；`manifest_test.go` 的 `requestFields` 与 gjson 查询。

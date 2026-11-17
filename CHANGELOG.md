@@ -8,7 +8,7 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.300：删除内置插件 custom（自定义上游）（迁移 0104，主节点优先）
+### 核心 0.1.301：删除内置插件 custom（自定义上游）（迁移 0104，主节点优先）
 
 - **升级前**：每个集群先在控制台删除 custom 类型的账号（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，账号类型 `custom_*`）。新版不再认识这些类型，迁移 0104 卸载插件后它们只显示为插件已卸载。升级前只读核对：`SELECT count(*) FROM accounts WHERE plugin_key = 'custom' AND deleted_at IS NULL;` 应为 0。
 - **删除内置插件 custom**（CONTRACTS §106）：接任意 OpenAI、Anthropic、Gemini 兼容接口，改用内置 openai、anthropic、gemini 插件的 API Key 账号并填 Base URL，协议转换由平台做。新建账号不再有“自定义上游”一组。`custom` 键不能再安装（任何来源、任何签名都返回 403 `plugin_key_reserved`）。
@@ -16,6 +16,18 @@
 - **插件 SDK**：清单 `accountTypes[].upstream` 删除账号层开关，`upstream.Resolve` 去掉账号参数（CONTRACTS §106.2）。
 - **@sub2api/ui、@sub2api/host、@sub2api/vite-preset 3.18**：`@sub2api/host` 不再导出 `UpstreamEditor`，schema 表单控件 `upstream-editor` 删除。内置插件都没有用它。
 - **迁移 0104**：删除 custom 的插件行（连同版本与授权）并记入已退役的插件键；它的账号、使用记录、账本与审计保留。单向，回退用升级前的备份。
+
+### 核心 0.1.300：答完后才断开的请求按成功计费（无迁移，滚动）
+
+- **答完后才断开的请求记为成功**（CONTRACTS §25.8）：流式应答的终止用量事件（Anthropic `message_delta`，OpenAI Responses `response.completed` / `response.incomplete`）已经转发给客户端之后，客户端在上游关闭连接前断开的请求，记为成功（状态码取上游的，通常是 200），按上游报告的真实用量（含缓存读）计费。此前 Codex 等客户端收到完成事件就断开连接时，网关先读到上游结束就记 200，客户端先断开就记 499 `client canceled`，并且输出按预扣保留量（默认约 4000 token）计费，同一个客户端两种结果随机出现，多收了钱；插件执行的请求（例如 codex）同样如此。账号统计也不再把这类请求计为取消。终止用量事件之前断开的请求，行为不变。`continue` 策略下这类请求也不再继续读上游。
+- 判定依据是平台 manifest 的 usage 规则：指名事件且映射了输出 token 的规则命中，就算终止用量事件。OpenAI Chat Completions、Gemini 的用量在不具名的数据块里，没有可以判定的终止事件，仍以读到上游结束为准。WebSocket 不受影响：轮次本来就在完成事件发给客户端后结束。
+- **“读完再计费”现在对插件执行的请求也生效**（CONTRACTS §25.8）：系统设置 → 计费 → “客户端中途断开时”选“读完再计费”（`continue`，默认）时，插件执行（`platform.execute.v1`）、由核心代为转发的 HTTP 请求（codex，以及 volcengine 的非任务请求）在客户端断开后也会把上游读完，按实际用量计费。此前这类请求无论怎么设置都立即中止上游、按预扣估算计费，这个设置对 codex 不生效。任务提交仍不续读。插件放弃转发（被终止、超时）时记为上游中断，不再算作客户端断开。
+- **发布故障策略后，插件执行的请求也执行插件给出的限时禁用与额度观测**（CONTRACTS §69）：此前发布了故障策略时，codex、volcengine 等插件执行的请求遇到上游 HTTP 错误不会调用插件的错误分类，codex 在 429 且用量窗口已满时“禁用到重置时刻”不执行，额度用满的账号每个请求仍会被先试一次。现在与普通转发一致：插件分类，重试、换号、冷却仍由故障策略决定。
+- **插件开发文档**：新增 `next/docs/PLUGIN-DEVELOPMENT.md`，逐项列出系统设置在普通转发、插件执行、WebSocket 三条路径上由谁生效、插件要配合什么。
+
+### codex 0.1.10：同一会话固定到同一上游提示缓存（需要核心 0.1.297 及以上）
+
+- **修复 Codex 会话缓存时有时无**：请求体带 `prompt_cache_key` 时（Codex CLI 每个会话都带），插件按 API Key 隔离派生一个会话 ID，作为 `session_id` / `conversation_id` 头发给 ChatGPT 后端，同一会话的每一轮落到同一份提示缓存。此前插件不发会话头，ec2pool 上同一会话、同一账号的请求缓存读只有 0、5632 或停在早先某轮的长度，命中率约 27%。客户端原值不发给上游，`originator`、`user-agent` 仍如实写 sup2api（docs/PLUGIN-CODEX.md §16）。
 
 ### 核心 0.1.299：codex 0.1.9 设备码授权引导、验证页链接一键复制、中文类型名标题重复修复（无迁移，滚动）
 

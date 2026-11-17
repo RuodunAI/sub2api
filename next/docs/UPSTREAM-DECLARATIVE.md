@@ -152,7 +152,7 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 
 ## 5. 自定义上游（已删除）
 
-内置插件 `custom`（三个“自定义上游”账号类型、账号 settings 里的 `upstream` 账号层、控制台 `upstream-editor` 控件，以及为它们在 `GET /account-types` 返回的 `upstream`、`pass_headers`）在核心 0.1.300 删除（CONTRACTS §106，迁移 0104）：接任意 OpenAI、Anthropic、Gemini 兼容接口用内置 openai、anthropic、gemini 插件的 API Key 账号填 Base URL，协议转换由平台做。最后的源码是 `845d9aa47`。
+内置插件 `custom`（三个“自定义上游”账号类型、账号 settings 里的 `upstream` 账号层、控制台 `upstream-editor` 控件，以及为它们在 `GET /account-types` 返回的 `upstream`、`pass_headers`）在核心 0.1.301 删除（CONTRACTS §106，迁移 0104）：接任意 OpenAI、Anthropic、Gemini 兼容接口用内置 openai、anthropic、gemini 插件的 API Key 账号填 Base URL，协议转换由平台做。最后的源码是 `845d9aa47`。
 
 ## 6. 四个插件
 

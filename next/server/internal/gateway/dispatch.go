@@ -789,13 +789,20 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	// Send. The upstream request does not hang off ctx: when the client goes
 	// the watcher cancels it - at once, or not at all when the answer is
 	// being read to its end for billing, within the timeouts below
-	// (disconnect.go). Plugin executions and task submissions settle on
-	// their own and are never kept.
-	// The cause names the timeout that cut the request (forward records it).
+	// (disconnect.go). A plugin execution forwarding through here is relayed
+	// and metered by forward like any other answer, so it is kept alike; the
+	// plugin abandoning its forward cuts the exchange as an upstream
+	// interruption, never as a hang-up. Task submissions settle on their own
+	// and are never kept.
+	// The cause names what cut the request (forward records it).
 	uctx, ucancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer ucancel(nil)
-	c.drain = c.watchClient(ctx, ucancel, execution == nil && !c.ep.TaskSubmit())
+	c.drain = c.watchClient(ctx, ucancel, !c.ep.TaskSubmit())
 	defer c.drain.stop()
+	if execution != nil {
+		stop := context.AfterFunc(execution.callback, func() { ucancel(errExecutionAborted) })
+		defer stop()
+	}
 	method := strings.ToUpper(built.GetMethod())
 	if method == "" {
 		method = http.MethodPost
@@ -878,7 +885,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 			return attemptResult{kind: attemptCanceled, err: canceledErr()}
 		}
 		msg := err.Error()
-		if cause := context.Cause(uctx); errors.Is(cause, errRelayTimeout) || errors.Is(cause, errHeaderTimeout) {
+		if cause := context.Cause(uctx); errors.Is(cause, errRelayTimeout) || errors.Is(cause, errHeaderTimeout) || errors.Is(cause, errExecutionAborted) {
 			msg = cause.Error()
 		}
 		if execution != nil {

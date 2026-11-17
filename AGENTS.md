@@ -79,6 +79,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 - 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 seccomp、rlimit、内存看门狗和出口隧道（插件的对外连接经核心转发）。
 - 插件包：`manifest.json`、`migrations/*.sql`、`forms/`、`i18n/`、`assets/`、`ui/`（schema、iframe 或原生微前端）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
 - 每个插件有自己的 schema `plg_<key>`，有权限时还有同名的受限数据库角色。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
+- 平台插件必须遵守全部系统设置：每项设置在普通转发、插件执行、WebSocket 三条路径上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md`，改动相关行为时同步它。
 - 内置插件随核心升级（CONTRACTS §37）。**插件内容变了必须升版本号**：`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`，内容变了而版本没升就失败；每次发布后按该测试的说明重写这个文件。
 - Host API 版本在 `runtime-contract.HostAPIVersion` 与 `sdk/protocol.HostAPIVersion`，两者必须相等。
 

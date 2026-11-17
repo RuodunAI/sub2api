@@ -501,6 +501,12 @@ type fakeBalance struct {
 	// the product default: a test that drops its client expects the upstream
 	// to stop, and only the tests about "continue" want it kept.
 	disconnect string
+	// outputReserve is output_reserve_tokens; zero reserves nothing.
+	outputReserve int64
+}
+
+func (b *fakeBalance) OutputReserveTokens(context.Context) (int64, error) {
+	return b.outputReserve, nil
 }
 
 func (b *fakeBalance) ClientDisconnectPolicy(context.Context) (string, error) {
@@ -743,6 +749,7 @@ type upstreamRule struct {
 	delay       time.Duration
 	hold        chan struct{} // SSE: wait after message_start
 	breakStream bool          // SSE: abort the connection after message_start
+	linger      bool          // SSE: keep the stream open after message_stop until canceled
 	waitCancel  bool          // block until the request is canceled
 	// body replaces the default error body of a status rule.
 	body string
@@ -872,6 +879,10 @@ func (u *upstream) handle(w http.ResponseWriter, r *http.Request) {
 		"delta": map[string]any{"type": "text_delta", "text": "hello"}})
 	send("message_delta", map[string]any{"type": "message_delta", "usage": map[string]any{"output_tokens": upOutput}})
 	send("message_stop", map[string]any{"type": "message_stop"})
+	if rule.linger {
+		<-r.Context().Done()
+		u.canceled <- key
+	}
 }
 
 // ---------------------------------------------------------------- environment

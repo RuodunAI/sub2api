@@ -1,5 +1,5 @@
 -- The built-in plugin custom (custom upstream: an account type for each of
--- the openai, anthropic and gemini platforms) is removed (core 0.1.300,
+-- the openai, anthropic and gemini platforms) is removed (core 0.1.301,
 -- CONTRACTS §106): an API key account of the built-in openai, anthropic or
 -- gemini plugin takes any compatible Base URL and the platform converts
 -- protocols, so accounts no longer override their upstream (the account
@@ -15,7 +15,7 @@
 --   - accounts with plugin_key 'custom' (and their groups, usage rows,
 --     ledger entries): they show as orphaned, like the accounts of any
 --     uninstalled plugin; an administrator deletes them in the console
---     (CHANGELOG 0.1.300 asks to do it before the upgrade);
+--     (CHANGELOG 0.1.301 asks to do it before the upgrade);
 --   - usage_logs, balance_ledger and audit_logs rows: billing history;
 --   - plugin_history rows: the plugin's operating history, kept by
 --     install.Uninstall too.

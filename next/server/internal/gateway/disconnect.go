@@ -59,7 +59,8 @@ func (c *call) loadDisconnectPolicy(ctx context.Context) string {
 // "continue" policy and only while forward is relaying an answer, not at
 // all: the answer is read to its end with nobody listening, within the
 // exchange's own timeouts (relay, stream idle), so the request is billed
-// what the upstream reports.
+// what the upstream reports. A client that leaves once the answer's final
+// usage reached it was served (served): there is nothing left to read on for.
 //
 // A nil *upstreamDrain is valid and never keeps anything alive.
 type upstreamDrain struct {
@@ -67,11 +68,12 @@ type upstreamDrain struct {
 	keep   bool // the answer may be read on after the client left
 	unhook []func() bool
 
-	mu      sync.Mutex
-	armed   bool // forward is relaying an answer worth finishing
-	left    bool // the client is gone
-	dropped bool // output was withheld from it
-	stopped bool
+	mu        sync.Mutex
+	armed     bool // forward is relaying an answer worth finishing
+	left      bool // the client is gone
+	dropped   bool // output was withheld from it
+	delivered bool // the answer's final usage reached the client
+	stopped   bool
 }
 
 // watchClient ties the upstream exchange behind cancel to the client context
@@ -93,15 +95,40 @@ func (d *upstreamDrain) clientLeft() {
 }
 
 // leave records that the client is gone and cancels the exchange unless its
-// answer is being read on. The caller holds mu.
+// answer is being read on for a usage it has not reported yet. The caller
+// holds mu.
 func (d *upstreamDrain) leave() {
 	if d.left || d.stopped {
 		return
 	}
 	d.left = true
-	if !d.armed {
+	if !d.armed || d.delivered {
 		d.cancel(context.Canceled)
 	}
+}
+
+// serve records that forward relayed the event reporting the answer's final
+// usage (usagerules.Acc.Final) and flushed it. It counts only while the
+// client, whose context is ctx, is still there and has missed nothing.
+func (d *upstreamDrain) serve(ctx context.Context) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.delivered = d.delivered || !d.left && !d.dropped && ctx.Err() == nil
+}
+
+// served reports whether the answer's final usage reached the client: a
+// client that leaves after it, before the upstream closed the stream, was
+// served all the same and is billed what the upstream reported.
+func (d *upstreamDrain) served() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.delivered
 }
 
 // arm marks the exchange as worth finishing: forward is about to relay a
@@ -186,10 +213,19 @@ func (w *clientWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	n, err := w.ResponseWriter.Write(p)
-	if err != nil && w.drain.writeFailed() {
+	if err != nil && !errors.Is(err, errSpool) && w.drain.writeFailed() {
 		return len(p), nil
 	}
 	return n, err
+}
+
+// relayWriteError is what a failed write ends a relay with: the client is
+// gone, unless the response spool (a local writer, spool.go) failed.
+func relayWriteError(err error) error {
+	if errors.Is(err, errSpool) {
+		return err
+	}
+	return errClientGone
 }
 
 func (w *clientWriter) WriteString(s string) (int, error) {

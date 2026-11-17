@@ -124,6 +124,7 @@ type accountStatsSample struct {
 	CompletedAt  time.Time
 	Tokens       int64
 	Success      bool
+	Canceled     bool
 	UsagePending bool
 }
 
@@ -131,7 +132,7 @@ func (s *statsCapture) PublishObservation(e *pluginv1.RequestObservation) {
 	if e.Phase != observation.UsageFinalized {
 		return
 	}
-	s.ch <- accountStatsSample{RequestID: e.RequestId, AccountID: e.AccountId, CompletedAt: time.UnixMilli(e.CompletedAtUnixMs), Tokens: e.TotalTokens, Success: e.Success, UsagePending: e.UsagePending}
+	s.ch <- accountStatsSample{RequestID: e.RequestId, AccountID: e.AccountId, CompletedAt: time.UnixMilli(e.CompletedAtUnixMs), Tokens: e.TotalTokens, Success: e.Success, Canceled: e.Canceled, UsagePending: e.UsagePending}
 }
 
 func (s *statsCapture) next(t *testing.T) accountStatsSample {

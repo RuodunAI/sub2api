@@ -832,7 +832,8 @@ func (c *call) submit() {
 	rec.Scheduling = c.schedulingTrace()
 	rec.AttemptTrail = c.attemptTrail()
 	c.statsCompletedAt = c.g.now()
-	c.statsCanceled = c.c.Request.Context().Err() != nil
+	// A client that left once it was served did not cancel anything.
+	c.statsCanceled = c.c.Request.Context().Err() != nil && !rec.Success
 	c.observeRequest(observation.Completed, rec)
 	if c.taskPersisted {
 		c.observeRequest(observation.UsageFinalized, rec)

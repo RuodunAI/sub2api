@@ -2,7 +2,9 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
@@ -27,11 +29,13 @@ import (
 //     ["system"] for an item whose role is "system", [] for any other item
 //     (another role, no role, not an object). It is absent when the input is
 //     not an array. Only "system" is ever echoed, so the field stays at about
-//     three bytes per item whatever the items hold.
+//     three bytes per item whatever the items hold;
+//   - FieldPromptCacheKey is the client's prompt_cache_key (sessionHeaders).
 const (
 	FieldHasInstructions = "[instructions]|#"
 	FieldStringInput     = `[input]|#(%"*")`
 	FieldSystemRoles     = `input.#.[role].#(=="system")#`
+	FieldPromptCacheKey  = "prompt_cache_key"
 )
 
 // maxRoleRewrites caps the role patches of one request. Each patch is a copy
@@ -76,6 +80,33 @@ func upstreamHeaders(c credentials) map[string]string {
 		h["chatgpt-account-id"] = c.ChatGPTAccountID
 	}
 	return h
+}
+
+// sessionHeaders add the upstream session of the request's conversation.
+// The Codex backend keeps a conversation's prompt cache on the machine its
+// session picks; without one the turns land anywhere and most of a long
+// prompt is read uncached. The session is derived from the client's
+// prompt_cache_key - the key the core's sticky rule already binds the
+// conversation to one account by - mixed with the API key, so two keys
+// sending the same prompt_cache_key never share an upstream session and the
+// client's value is not echoed. A request without the key gets none.
+func sessionHeaders(h map[string]string, apiKeyID int64, fields map[string]string) {
+	var key string
+	if json.Unmarshal([]byte(fields[FieldPromptCacheKey]), &key) != nil || key == "" {
+		return
+	}
+	id := upstreamSessionID(apiKeyID, key)
+	h["session_id"] = id
+	h["conversation_id"] = id
+}
+
+// upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the API key
+// id and the prompt cache key.
+func upstreamSessionID(apiKeyID int64, key string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(apiKeyID, 10) + ":" + key))
+	sum[6] = sum[6]&0x0f | 0x80
+	sum[8] = sum[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
 }
 
 // responsesURL is the HTTP Responses endpoint of the Codex backend.
@@ -148,6 +179,7 @@ func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstr
 	default:
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", proto)
 	}
+	sessionHeaders(resp.Headers, in.GetMeta().GetApiKeyId(), in.GetFields())
 	resp.Patches = bodyPatches(ws, in.GetFields())
 	return resp, nil
 }
