@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -51,11 +52,12 @@ func (p *Plugin) modelURL(t target, model, action string) (address, id string, e
 	return p.apiBase(t) + path + "/publishers/google/models/" + url.PathEscape(id) + ":" + action, id, nil
 }
 
-// headers are the upstream headers of an account's requests: the API key, or
-// the access token the core keeps renewing. An account still waiting for its
-// first token answers FAILED_PRECONDITION; the gateway moves on to another
-// account without penalizing this one.
-func (a account) headers() (map[string]string, error) {
+// headers are the upstream headers of an account's requests at now: the API
+// key, or the access token the core keeps renewing. An account without a
+// usable token (none fetched yet, or the stored one has expired) answers
+// FAILED_PRECONDITION; the gateway moves on to another account without
+// penalizing this one.
+func (a account) headers(now time.Time) (map[string]string, error) {
 	h := map[string]string{"content-type": "application/json"}
 	if a.typ == TypeAPIKey {
 		key := a.creds.str(fieldAPIKey)
@@ -66,24 +68,43 @@ func (a account) headers() (map[string]string, error) {
 		return h, nil
 	}
 	token := a.creds.str(fieldAccessToken)
-	if token == "" {
-		return nil, status.Error(codes.FailedPrecondition, "the account has no access token yet; it is fetched by the next credential refresh / 账号还没有访问令牌，等待下一次凭证刷新")
+	if token == "" || a.tokenExpired(now) {
+		return nil, status.Error(codes.FailedPrecondition, "the account has no valid access token (none yet, or expired); the next credential refresh fetches one / 账号没有有效的访问令牌（尚未获取或已过期），等待下一次凭证刷新")
 	}
 	h["authorization"] = "Bearer " + token
+	if keyKinds[a.typ].quotaProject {
+		h["x-goog-user-project"] = a.target.Project
+	}
 	return h, nil
 }
 
+// tokenExpired reports a stored access token whose expires_at has passed. A
+// token without a readable expiry is not known to be expired.
+func (a account) tokenExpired(now time.Time) bool {
+	at, ok := expiry.ExpiresAt(a.creds)
+	return ok && !at.After(now)
+}
+
+// upstreamRequest is a POST of an action on a model for an account.
+type upstreamRequest struct {
+	url string
+	// model is the model id the URL names.
+	model   string
+	headers map[string]string
+}
+
 // request describes a POST of action on model for the account.
-func (p *Plugin) request(acc *pluginv1.Account, model, action string) (address, id string, headers map[string]string, err error) {
+func (p *Plugin) request(acc *pluginv1.Account, model, action string) (upstreamRequest, error) {
 	a, err := readAccount(acc)
 	if err != nil {
-		return "", "", nil, err
+		return upstreamRequest{}, err
 	}
-	if headers, err = a.headers(); err != nil {
-		return "", "", nil, err
+	headers, err := a.headers(p.now())
+	if err != nil {
+		return upstreamRequest{}, err
 	}
-	address, id, err = p.modelURL(a.target, model, action)
-	return address, id, headers, err
+	address, id, err := p.modelURL(a.target, model, action)
+	return upstreamRequest{url: address, model: id, headers: headers}, err
 }
 
 // BuildUpstreamRequest implements pluginsdk.Platform. The body is the Gemini
@@ -95,11 +116,11 @@ func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstr
 	if !ok {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
-	address, model, headers, err := p.request(in.GetAccount(), in.GetMeta().GetModel(), action)
+	req, err := p.request(in.GetAccount(), in.GetMeta().GetModel(), action)
 	if err != nil {
 		return nil, err
 	}
-	return &pluginv1.BuildUpstreamRequestResponse{Method: http.MethodPost, Url: address, Headers: headers, UpstreamModel: model}, nil
+	return &pluginv1.BuildUpstreamRequestResponse{Method: http.MethodPost, Url: req.url, Headers: req.headers, UpstreamModel: req.model}, nil
 }
 
 // BuildTestRequest implements pluginsdk.Platform: the smallest
@@ -109,16 +130,16 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 	if model == "" {
 		model = DefaultTestModel
 	}
-	address, model, headers, err := p.request(in.GetAccount(), model, actions[ProtocolGenerate])
+	req, err := p.request(in.GetAccount(), model, actions[ProtocolGenerate])
 	if err != nil {
 		return nil, err
 	}
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        http.MethodPost,
-		Url:           address,
-		Headers:       headers,
+		Url:           req.url,
+		Headers:       req.headers,
 		BodyJson:      gemini.GenerateContentPingBody(1),
-		Model:         model,
+		Model:         req.model,
 		UsageProtocol: ProtocolGenerate,
 	}, nil
 }

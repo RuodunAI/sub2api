@@ -21,6 +21,10 @@ const (
 	// assertionLifetime is how long a signed assertion is valid (Google's
 	// maximum).
 	assertionLifetime = time.Hour
+	// assertionBackdate is how far before now an assertion is issued, so a
+	// node whose clock runs a few seconds fast is not refused for an iat in
+	// the future (golang.org/x/oauth2/jwt does the same).
+	assertionBackdate = 10 * time.Second
 
 	grantJWTBearer    = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 	grantRefreshToken = "refresh_token"
@@ -43,12 +47,16 @@ type keyKind struct {
 	// field is the credentials field holding the file's JSON text.
 	field string
 	parse func(raw string) (keyFile, error)
+	// quotaProject makes requests name the account's project in
+	// x-goog-user-project: user credentials belong to no project, and
+	// without a quota project aiplatform answers 403.
+	quotaProject bool
 }
 
 // keyKinds are the account types authorized by a key file, by type id.
 var keyKinds = map[string]keyKind{
 	TypeServiceAccount: {field: "service_account_json", parse: parseServiceAccount},
-	TypeAuthorizedUser: {field: "authorized_user_json", parse: parseAuthorizedUser},
+	TypeAuthorizedUser: {field: "authorized_user_json", parse: parseAuthorizedUser, quotaProject: true},
 }
 
 // errNotJSON deliberately carries no detail of the text: a decoding error
@@ -104,14 +112,16 @@ func (k *serviceAccountKey) fingerprint() string { return fingerprint(k.ClientEm
 func (k *serviceAccountKey) project() string { return strings.TrimSpace(k.ProjectID) }
 
 // grant signs the assertion Google exchanges for an access token (RFC 7523):
-// issued by the service account for the token endpoint, valid one hour.
+// issued by the service account for the token endpoint assertionBackdate
+// ago, valid one hour from then.
 func (k *serviceAccountKey) grant(now time.Time) (url.Values, error) {
+	issued := now.Add(-assertionBackdate)
 	assertion, err := signRS256(k.signer, k.PrivateKeyID, map[string]any{
 		"iss":   k.ClientEmail,
 		"scope": CloudPlatformScope,
 		"aud":   TokenURL,
-		"iat":   now.Unix(),
-		"exp":   now.Add(assertionLifetime).Unix(),
+		"iat":   issued.Unix(),
+		"exp":   issued.Add(assertionLifetime).Unix(),
 	})
 	if err != nil {
 		return nil, err

@@ -40,6 +40,9 @@ func TestClassifyError(t *testing.T) {
 	}{
 		{"401 on a token account", keyed, 401, nil, googleError(401, "UNAUTHENTICATED", "Request had invalid authentication credentials."),
 			"", failover, cooldown, 60, "UNAUTHENTICATED"},
+		// A type the plugin does not know is never disabled by a 401.
+		{"401 on an unknown or missing type", []string{"", "vertex_other"}, 401, nil, googleError(401, "UNAUTHENTICATED", "Request had invalid authentication credentials."),
+			"", failover, cooldown, 60, "UNAUTHENTICATED"},
 		{"401 on an API key", []string{TypeAPIKey}, 401, nil, googleError(401, "UNAUTHENTICATED", "API keys are not supported by this API."),
 			"", failover, disable, 0, "UNAUTHENTICATED"},
 		{"403", all, 403, nil, googleError(403, "PERMISSION_DENIED", "Permission 'aiplatform.endpoints.predict' denied"),

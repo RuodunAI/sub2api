@@ -13,6 +13,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 )
 
 // Credential and settings fields besides the key file (keyKinds).
@@ -35,8 +36,11 @@ const expiredAt = 1
 var (
 	projectPattern  = regexp.MustCompile(`^[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
 	locationPattern = regexp.MustCompile(`^[a-z0-9-]{2,32}$`)
-	apiKeyPattern   = regexp.MustCompile(`^[!-~]{8,512}$`)
 )
+
+// apiKeySpec checks the api_key of an API key account the way every API key
+// form does: 8-512 visible characters. The type has no base_url.
+var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey}
 
 // expiry reads expires_at the way the core does.
 var expiry = &manifest.AccountRefresh{}
@@ -44,7 +48,9 @@ var expiry = &manifest.AccountRefresh{}
 // object is a decoded JSON object (numbers kept as written).
 type object map[string]any
 
-// decodeObject decodes a JSON object; blank input is an empty one.
+// decodeObject decodes a JSON object; blank input is an empty one. Not
+// apikey.DecodeObject: ValidateCredentials re-encodes what it decodes, and
+// only UseNumber keeps numbers (the token expiry, large integers) as written.
 func decodeObject(raw string) (object, error) {
 	o := object{}
 	if strings.TrimSpace(raw) == "" {
@@ -132,19 +138,16 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	if err != nil {
 		return invalid(fieldError("", "invalid", "settings must be a JSON object / 设置必须是 JSON 对象")), nil
 	}
-	credsBefore, settingsBefore := creds.json(), settings.json()
-
-	var bad *pluginv1.FieldError
 	typ := in.GetAccountType()
-	switch kind, keyed := keyKinds[typ]; {
-	case keyed:
-		bad = validateKeyAccount(kind, creds, settings)
-	case typ == TypeAPIKey:
-		bad = validateAPIKeyAccount(creds, settings)
-	default:
-		bad = fieldError("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型")
+	if typ == TypeAPIKey {
+		return validateAPIKeyAccount(in, settings), nil
 	}
-	if bad != nil {
+	kind, keyed := keyKinds[typ]
+	if !keyed {
+		return invalid(fieldError("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型")), nil
+	}
+	credsBefore, settingsBefore := creds.json(), settings.json()
+	if bad := validateKeyAccount(kind, creds, settings); bad != nil {
 		return invalid(bad), nil
 	}
 	return &pluginv1.ValidateCredentialsResponse{
@@ -204,16 +207,18 @@ func bootstrapToken(creds object, keyFingerprint string) {
 	creds[fieldExpiresAt] = expiredAt
 }
 
-// validateAPIKeyAccount checks an API key account: project and location are
-// given together (the full address) or not at all (the express address).
-func validateAPIKeyAccount(creds, settings object) *pluginv1.FieldError {
-	switch key := creds.str(fieldAPIKey); {
-	case key == "":
-		return fieldError(fieldAPIKey, "required", "API key is required / 请填写 API Key")
-	case !apiKeyPattern.MatchString(key):
-		return fieldError(fieldAPIKey, "pattern", "API key must be 8-512 visible characters / API Key 必须是 8–512 个可见字符")
+// validateAPIKeyAccount checks an API key account: the key by apiKeySpec
+// (which also trims it), and that project and location are given together
+// (the full address) or not at all (the express address).
+func validateAPIKeyAccount(in *pluginv1.ValidateCredentialsRequest, settings object) *pluginv1.ValidateCredentialsResponse {
+	resp := apiKeySpec.Validate(in)
+	if len(resp.GetErrors()) > 0 {
+		return resp
 	}
-	return readTarget(settings).check(true)
+	if bad := readTarget(settings).check(true); bad != nil {
+		return invalid(bad)
+	}
+	return resp
 }
 
 // ---------------------------------------------------------------- stored accounts

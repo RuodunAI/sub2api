@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -239,9 +240,18 @@ func TestValidateAPIKey(t *testing.T) {
 		"full":          {fieldProject: testProject, fieldLocation: "us-central1"},
 		"global":        {fieldProject: testProject, fieldLocation: "global"},
 	} {
-		resp, _, _ := validate(t, TypeAPIKey, key, settings)
-		if len(resp.GetErrors()) > 0 || resp.GetNormalizedCredentialsJson() != "" || resp.GetNormalizedSettingsJson() != "" {
+		resp, creds, saved := validate(t, TypeAPIKey, key, settings)
+		if len(resp.GetErrors()) > 0 || !maps.Equal(creds, key) || !maps.Equal(saved, settings) {
 			t.Errorf("%s: %+v", name, resp)
 		}
+	}
+	// The key is checked and trimmed by apikey.Spec, as in every API key form.
+	resp, creds, _ := validate(t, TypeAPIKey, map[string]any{fieldAPIKey: "  AQ.Ab8RN6-example\n"}, nil)
+	if len(resp.GetErrors()) > 0 || creds[fieldAPIKey] != "AQ.Ab8RN6-example" {
+		t.Errorf("trimmed key: %+v %v", resp, creds)
+	}
+	resp, _, _ = validate(t, TypeAPIKey, map[string]any{fieldAPIKey: 12345678}, nil)
+	if got := fieldErrors(resp); !slices.Equal(got, []string{"api_key:type"}) {
+		t.Errorf("key that is not a string: %v", got)
 	}
 }
