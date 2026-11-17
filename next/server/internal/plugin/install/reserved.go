@@ -24,8 +24,8 @@ import (
 // TestReservedCoverRepo keeps the lists in step with next/plugins.
 var (
 	reservedKeys = map[string]bool{
-		"anthropic": true, "claude_oauth": true, "codex": true, "dynweight": true, "gemini": true, "growth": true, "guard": true,
-		"mailer": true, "moderation": true, "openai": true, "payment": true, "relay": true, "volcengine": true,
+		"anthropic": true, "azure_openai": true, "bedrock": true, "claude_oauth": true, "codex": true, "dynweight": true, "gemini": true, "growth": true, "guard": true,
+		"mailer": true, "moderation": true, "openai": true, "payment": true, "relay": true, "vertex": true, "volcengine": true,
 	}
 	// removedKeys maps the key of a first-party plugin the core no longer
 	// supports to the release that removed it: no package of it installs,
