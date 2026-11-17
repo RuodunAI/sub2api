@@ -14,7 +14,7 @@
 | 插件执行（`platform.execute.v1`） | codex、volcengine | 插件的 `Execute` 调 `ForwardUpstream`，上游请求仍由核心的同一段代码（`forwardBuilt` → `forward`）发出和中继；用量由插件在 `Execute` 里 `RecordUsage`（SDK 的 `ExecuteDefault` 已做好），异步任务用 `ReserveAndWatch` |
 | WebSocket（`platform.websocket.v1`） | openai、custom、codex 的 `/v1/responses` WebSocket 模式 | 核心建连并逐轮中继，每轮按规则记用量（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)） |
 
-因为分叉发生在改写之后、发送之前，大部分设置对三条路径天然一致；插件执行路径曾经有两处没做到（下表标“0.1.299 起”）。
+因为分叉发生在改写之后、发送之前，大部分设置对三条路径天然一致；插件执行路径曾经有两处没做到（下表标“0.1.300 起”）。
 
 ## 2. 设置对照表
 
@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
-| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.299 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.299 起，三种策略都一样）；插件放弃 `ForwardUpstream`（被终止、超时）记为上游中断，不算客户端断开 |
+| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.300 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.300 起，三种策略都一样）；插件放弃 `ForwardUpstream`（被终止、超时）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usage.source: "plugin"` 并实现 `ExtractUsage` | 一致 / 在 `Execute` 内记录 / WebSocket 不支持 `source: plugin`（清单检查拒绝） | `usageplugin.go`、`sdk/manifest/check/websocket.go` |
 
 流式用量规则的写法会影响断开判定：**输出 token 数要映射在一个指名的终止事件上**（例如 Anthropic 的 `message_delta`、Responses 的 `response.completed`），核心据此判断“最终用量已经送达客户端”（`usagerules.Acc.Final`）。映射在任意事件（`"event": ""`）上的规则不会被当成终止，只能以读到流结束为准。
@@ -55,7 +55,7 @@
 
 | 设置 | 归属 | 普通 / 执行 / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用 | 一致 / 一致（**0.1.299 起**，此前故障策略下插件执行的 HTTP 错误不调用插件分类，codex 的“禁用到重置时刻”失效）/ 握手和流内错误事件都分类 | `applyClassification`、`execute.go` `forwardCallback`；CONTRACTS §69 |
+| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用 | 一致 / 一致（**0.1.300 起**，此前故障策略下插件执行的 HTTP 错误不调用插件分类，codex 的“禁用到重置时刻”失效）/ 握手和流内错误事件都分类 | `applyClassification`、`execute.go` `forwardCallback`；CONTRACTS §69 |
 | 订阅额度窗口（5 小时、周） | **插件配合**：在账号类型上声明 `quota.headers` | 一致 / 一致 / 握手头和带头的错误事件 | `observeQuota`；CONTRACTS §44、§105 |
 
 ## 3. 现有平台插件
