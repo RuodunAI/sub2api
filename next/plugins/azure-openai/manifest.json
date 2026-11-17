@@ -10,7 +10,7 @@
   "publisher": "sub2api",
   "icon": "assets/azure-color.svg",
   "runtime": "none",
-  "hostCompat": ">=0.1.290 <0.2.0",
+  "hostCompat": ">=0.1.304 <0.2.0",
 
   "capabilities": [
     { "id": "platform.adapter.v1" }
@@ -48,6 +48,7 @@
           "texts": { "baseURLRequired": "Resource endpoint is required / 请填写资源地址" }
         },
         "auth": { "type": "header", "name": "api-key", "value": "{api_key}" },
+        "classify": "azure_openai",
         "routes": {
           "openai.chat": { "path": "/openai/v1/chat/completions" },
           "openai.responses": { "path": "/openai/v1/responses" },
@@ -89,6 +90,7 @@
           "fields": ["api_version"]
         },
         "auth": { "type": "header", "name": "api-key", "value": "{api_key}" },
+        "classify": "azure_openai",
         "routes": {
           "openai.chat": {
             "path": "/openai/deployments/{model}/chat/completions?api-version={credentials.api_version}",
