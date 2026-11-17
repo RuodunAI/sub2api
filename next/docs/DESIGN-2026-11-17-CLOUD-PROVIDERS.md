@@ -363,7 +363,7 @@ volcengine 的素材库签名（插件自己发请求、算法细节不同）以
 | 字段 | 标题 | 控件 | 存储 | 默认 | 校验 |
 |---|---|---|---|---|---|
 | `region` | 区域 | select（可搜索，可输入） | 设置 | `us-east-1` | `^[a-z]{2}(-[a-z]+)+-\d$`（它会拼进主机名，必须严格）；`cn-*` 和隔离分区另外拒绝（16.7 第 14 条） |
-| `inference_profile_prefix` | 跨区域推理前缀 | select：不加 / us / eu / apac / jp / au / in / global | 设置 | 不加 | 枚举 |
+| `inference_profile_prefix` | 跨区域推理前缀 | select：不加 / us / eu / apac / jp / au / in / global | 设置 | `global`（最初是“不加”，16.7 第 3 条） | 枚举 |
 
 各类型自己的：
 
@@ -435,7 +435,7 @@ volcengine 的素材库签名（插件自己发请求、算法细节不同）以
 
 ### 9.5 模型与映射
 
-客户端用的是 Anthropic 的模型名，Bedrock 要的是 `anthropic.claude-…-v1:0` 这样的 ID、带区域前缀的推理配置 ID 或 ARN。做法：清单 `defaultModels` 列 Anthropic 模型名，`defaultModelMapping` 预填“Anthropic 名 → Bedrock ID”（不带区域前缀），新建账号时带进表单，管理员可以改（CONTRACTS §41）。前缀由 `inference_profile_prefix` 统一加。映射表的具体 ID 实现时从 AWS 文档抄，逐个核对，本文不列（实际用的 ID 和出处见 16.7 第 9 条）。
+客户端用的是 Anthropic 的模型名，Bedrock 要的是 `anthropic.claude-…-v1:0` 这样的 ID、带区域前缀的推理配置 ID 或 ARN。做法：清单 `defaultModels` 列 Anthropic 模型名，`defaultModelMapping` 预填“Anthropic 名 → Bedrock ID”（不带区域前缀；实现里 Opus 4.1 例外，16.7 第 9 条），新建账号时带进表单，管理员可以改（CONTRACTS §41）。前缀由 `inference_profile_prefix` 统一加。映射表的具体 ID 实现时从 AWS 文档抄，逐个核对，本文不列（实际用的 ID 和出处见 16.7 第 9 条）。
 
 插件不内置别名表：映射只有账号上那一份，看得见、改得了。
 
@@ -505,7 +505,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 6. Azure：`services.ai.azure.com` 域名下 v1 路径是否完全一致（表单接受 `/api/projects/<名>` 结尾的地址，请求会发到 `<该地址>/openai/v1/...`，这个路径没有验证）；经典接口 `2024-10-21` 是否接受 `stream_options`；v1 的 `/embeddings`。
 7. Bedrock + Claude Code：Claude Code 会在工具定义里带 `custom`、在 `cache_control` 里带 `scope` / `ttl`，旧版为此做了深度清洗（`bedrock_request.go:197-265`）。首版插件没有做，三个表单的“区域与模型”分组说明里写了这条限制。可以在账号的参数覆盖（§84，带通配路径的删除和 `prune_objects`）里手工配，但这套配置没有实测过。**如果 Bedrock 账号主要给 Claude Code 用，这一条要先解决再上线**。
 8. 所有错误分类表都来自文档里的错误码，没有用真实回答核对过。
-9. Bedrock：默认模型映射（`defaultModelMapping`）的 ID 已经按 AWS 模型卡片改过（16.7 第 9 条），但只对照了文档，没有用真实账号调过；卡片上已知的出入见 16.7 第 16 条。按模型卡片，现行的 Claude 模型在 bedrock-runtime 上几乎都没有区域内（In-Region）可用性，只能经推理配置（要选前缀）调用。默认测试模型是不带前缀的 `anthropic.claude-haiku-4-5-20251001-v1:0`，而 Haiku 4.5 的卡片写明裸模型 ID 不支持按需调用，所以前缀选“不加”时账号测试在 AWS 上预期会失败（16.7 第 8 条）。
+9. Bedrock：默认模型映射（`defaultModelMapping`）的 ID 已经按 AWS 模型卡片改过（16.7 第 9 条），但只对照了文档，没有用真实账号调过；卡片上已知的出入见 16.7 第 16 条。按模型卡片，现行的 Claude 模型在 bedrock-runtime 上几乎都没有区域内（In-Region）可用性，只能经推理配置调用，所以前缀的默认值是 `global`、默认测试模型是 Haiku 4.5 的 `global.` 配置（16.7 第 3、8 条）；“新建账号用默认设置能调通预填的模型”同样只是按文档推出来的，没有实测。
 10. Bedrock：短期 API Key 过期、临时凭证过期时上游实际回的状态码和错误类型（现在的规则：`ExpiredToken` 禁用，其余 403 冷却 60 秒）。
 11. Vertex：用户凭证账号带 `x-goog-user-project` 是否足够、用户在该项目上还需要什么权限；令牌端点对时钟偏差的报错文字是否就是代码里匹配的那两句（`reasonable timeframe`、`short-lived token`）。
 12. Vertex：`defaultModels` 与 gemini 插件的预设列表相同，没有按 Vertex 文档核对哪些模型在 Vertex 上存在、哪些有 `global` 区域。
@@ -612,7 +612,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 
 1. **`hostCompat` 下限写的是 0.1.304**（`>=0.1.304 <0.2.0`），清单测试钉住了这个值。
 2. **`region` 是文本框**（默认 `us-east-1`，留空时保存成 `us-east-1`），不是下拉。校验 `^[a-z]{2}(-[a-z]+)+-\d$`。
-3. **`inference_profile_prefix` 的“不加”存成字符串 `none`**（枚举 `none / us / eu / apac / jp / au / in / global`），留空时保存成 `none`；不是空字符串。`in` 是印度地域的推理配置前缀（例如 `in.anthropic.claude-sonnet-5`，见 Opus 5、Sonnet 5、Haiku 4.5 的模型卡片），设计里没有。已经以这些前缀之一或 `us-gov.` 开头的 ID、以及 ARN 原样发送；`us-gov` 不在可选项里，这类 ID 由管理员在映射里写全。
+3. **`inference_profile_prefix` 的“不加”存成字符串 `none`**（枚举 `none / us / eu / apac / jp / au / in / global`），不是空字符串。**默认值是 `global`**（常量 `DefaultProfilePrefix`；表单 schema 的 `default`，留空时也保存成它，已存的账号缺这个字段时同样按它处理），设计里是“不加”。改的原因：按 AWS 模型卡片，默认映射里的模型在 bedrock-runtime 上几乎都没有区域内可用性（只有 Opus 5.5、Opus 4.6、Sonnet 4.6 在 `eu-west-2`，Opus 5 在 `ap-northeast-2`，Sonnet 5 在 `eu-west-2`、`ap-northeast-2`、`ap-southeast-1`；Haiku 4.5 连裸模型 ID 都没有），默认“不加”时新建的账号一个预填模型都调不通；而除 Opus 4.1 之外每个预填模型的卡片都列了 `global.` 配置，除 GovCloud 之外的区域都可用。地域前缀做不了默认：各模型有的地域不一样（Fable 5.2、5.1、5 只有 `us.`；Opus 4.5 只有 `us.`、`eu.`；没有模型有 `apac.`）。Opus 4.1 只有 `us.` 配置，默认映射里直接写带前缀的 ID（第 9 条）。此前保存的账号存的是 `none`，不会自动变。表单的帮助文字写明了这些，清单测试检查。`in` 是印度地域的推理配置前缀（例如 `in.anthropic.claude-sonnet-5`，见 Opus 5、Sonnet 5、Haiku 4.5 的模型卡片），设计里没有。已经以这些前缀之一或 `us-gov.` 开头的 ID、以及 ARN 原样发送；`us-gov` 不在可选项里，这类 ID 由管理员在映射里写全。
 4. **`session_expires_at` 只检查格式**（RFC 3339 的日期时间，只在提交表单时检查），不参与任何逻辑；已存的账号不管它写了什么都照常服务。
 5. `session_token` 是单行 `secret` 控件（同 16.6 第 1 条）。`access_key_id` 存在凭证里但不是敏感字段，界面上明文显示。
 6. **beta 处理**（`beta.go`）比设计多：除了 `anthropic-beta` 头，请求体自带的 `anthropic_beta` 也算进来（清单把它声明成请求字段，数组或逗号分隔的字符串都认），先头后体；`advanced-tool-use-2025-11-20` 改名为 `tool-search-tool-2025-10-19`；带了 tool search 就自动补上 `tool-examples-2025-10-29`；不在名单里的丢弃，同一个只写一次。有剩下的就写进 `anthropic_beta`，一个都不剩而请求体原来有这个字段时删掉它。结果里没有 `context-management-2025-06-27` 时删掉顶层的 `context_management`。白名单（`supportedBetas`）共 15 项，不分模型，某个模型没有的特性由上游拒绝：
@@ -632,38 +632,42 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    - 408、5xx（含 529）：换号，不动账号。
    - 没有规则命中的（400 `ValidationException`、404、424）原样回客户端。
    - 错误类型比较时不看 `Exception` 后缀，先取响应头 `x-amzn-errortype`（去掉 `:` 之后的部分和 `#` 之前的命名空间），没有再取响应体的 `__type`。
-8. **默认测试模型**是 `anthropic.claude-haiku-4-5-20251001-v1:0`（常量 `DefaultTestModel`，是默认映射里的一个目标），会按账号的前缀加前缀。它是不带前缀的裸 ID，而 Haiku 4.5 的模型卡片写明 “requires a geo or global inference profile ID. The bare model ID isn't supported for on-demand throughput”（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html>），所以前缀是“不加”的账号在 AWS 上测试预期会失败，要选与区域相符的前缀。
-9. **默认模型映射的 ID 取自 AWS 模型卡片**（索引 <https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html>，各模型页 `https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-<名字>.html`，名字为 `fable-5-1`、`fable-5`、`opus-5`、`opus-4-8`、`opus-4-7`、`opus-4-6`、`opus-4-5`、`opus-4-1`、`sonnet-5`、`sonnet-4-6`、`sonnet-4-5`、`sonnet-4`、`haiku-4-5`）。最初是把旧版的 `DefaultBedrockModelMapping` 去掉 `us.` 前缀抄过来的，后来按卡片改正。三个类型相同，17 个客户端模型名各有一条，都不带区域前缀。到 Opus 4.6 为止的 ID 带版本后缀，之后的不带：
+8. **默认测试模型**是 `global.anthropic.claude-haiku-4-5-20251001-v1:0`（常量 `DefaultTestModel`），即默认映射里 `claude-haiku-4-5` 的目标加上默认前缀，清单测试钉住这个关系。Haiku 4.5 的模型卡片写明 “requires a geo or global inference profile ID. The bare model ID isn't supported for on-demand throughput”，并在 “Global inference ID” 一栏列出这个 ID（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html>）。它自己带前缀，`modelID` 对带前缀的 ID 原样发送，所以前缀是“不加”、`us`、`global` 的账号测的都是同一个 ID（`TestBuildTestRequest`）。代价：选了地域前缀的账号，默认测试请求走的是全球配置；GovCloud 的账号要在测试对话框里指定模型。最初是不带前缀的裸 ID，前缀“不加”的账号在 AWS 上测不通。
+9. **默认模型映射的 ID 取自 AWS 模型卡片**（索引 <https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html>，各模型页 `https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-<名字>.html`，名字为 `fable-5-2`、`fable-5-1`、`fable-5`、`opus-5-5`、`opus-5`、`opus-4-8`、`opus-4-7`、`opus-4-6`、`opus-4-5`、`opus-4-1`、`sonnet-5-5`、`sonnet-5`、`sonnet-4-6`、`sonnet-4-5`、`haiku-5-5`、`haiku-4-5`，2026-11-17 读取）。最初是把旧版的 `DefaultBedrockModelMapping` 去掉 `us.` 前缀抄过来的，后来按卡片改正。三个类型相同，19 个客户端模型名各有一条，取卡片 “Programmatic Access” 表里 bedrock-runtime 一行的 Model ID，不带区域前缀（前缀由账号设置加，默认 `global`）。唯一的例外是 Opus 4.1：它的卡片只列了 `us.` 配置，没有 `global.`，映射里直接写 `us.` 开头的 ID，不受账号前缀影响。到 Opus 4.6 为止的 ID 带版本后缀，之后的不带：
 
    | 客户端模型 | Bedrock 模型 ID |
    |---|---|
+   | `claude-fable-5-2` | `anthropic.claude-fable-5-2` |
    | `claude-fable-5-1` | `anthropic.claude-fable-5-1` |
    | `claude-fable-5` | `anthropic.claude-fable-5` |
+   | `claude-opus-5-5` | `anthropic.claude-opus-5-5` |
    | `claude-opus-5` | `anthropic.claude-opus-5` |
    | `claude-opus-4-8` | `anthropic.claude-opus-4-8` |
    | `claude-opus-4-7` | `anthropic.claude-opus-4-7` |
    | `claude-opus-4-6` | `anthropic.claude-opus-4-6-v1` |
    | `claude-opus-4-5`、`claude-opus-4-5-20251101` | `anthropic.claude-opus-4-5-20251101-v1:0` |
-   | `claude-opus-4-1` | `anthropic.claude-opus-4-1-20250805-v1:0` |
-   | `claude-opus-4-20250514` | `anthropic.claude-opus-4-20250514-v1:0` |
+   | `claude-opus-4-1` | `us.anthropic.claude-opus-4-1-20250805-v1:0` |
+   | `claude-sonnet-5-5` | `anthropic.claude-sonnet-5-5` |
    | `claude-sonnet-5` | `anthropic.claude-sonnet-5` |
    | `claude-sonnet-4-6` | `anthropic.claude-sonnet-4-6` |
    | `claude-sonnet-4-5`、`claude-sonnet-4-5-20250929` | `anthropic.claude-sonnet-4-5-20250929-v1:0` |
-   | `claude-sonnet-4-20250514` | `anthropic.claude-sonnet-4-20250514-v1:0` |
+   | `claude-haiku-5-5` | `anthropic.claude-haiku-5-5` |
    | `claude-haiku-4-5`、`claude-haiku-4-5-20251001` | `anthropic.claude-haiku-4-5-20251001-v1:0` |
 
-   只对照了文档，没有用真实账号调过（第 12 节第 9 条）；已知的出入见第 16 条。
+   只对照了文档，没有用真实账号调过（第 12 节第 9 条）；2026-11-17 的核对结果见第 16 条。
 10. **`externalServices`**：`amazonaws.com`（核心匹配等于它或在它之下的主机；请求的主机是 `bedrock-runtime.<区域>.amazonaws.com`）。
 11. **openai 平台从插件里去掉了**（第 14 节第 4 条的决定）。没有账号类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）完全不用；`BuildUpstreamRequest` 只接受 `anthropic.messages`。客户端用 OpenAI 协议（chat completions、responses）访问时，核心把请求转换成 Messages 请求，走同一条 InvokeModel 路。原因有两条：这条路依赖的行为没验证的最多（`/openai/v1` 上的 SigV4、`stream_options`、支持哪些模型，第 12 节第 2 条）；AWS 的模型卡片显示 Claude 模型在 bedrock-runtime 上根本不支持 Responses 和 Chat Completions 接口，这条路对 Claude 没有用。后果：Bedrock 账号没有 OpenAI 兼容的路由，Claude 以外的 Bedrock 模型这一版不支持。`response_stream` 只在流式请求上设置。
 12. 表单的“区域与模型”分组说明里写明了 Claude Code 的限制（第 12 节第 7 条），清单测试检查这段文字存在。
 13. **请求体顶层字段的处理**（`upstream.go` 的 `invokePatches`、`droppedFields`）：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`，再加第 6 条的 beta 处理。**`output_config`、`output_format` 特意保留**（旧版会删）：AWS 文档写明 InvokeModel 读 `output_config.format`（结构化输出）和 `output_config.effort`（<https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html>），`output_format` 是它已废弃的写法，插件不替客户端转换。插件仍然不做的（它只看得到清单声明的请求字段）：清理请求体深处的字段（工具定义里的 `custom`，`cache_control` 的 `scope` / `ttl`）；请求体需要某个 beta 而没有点名时替它补上（computer use、tool search）。
 14. **不支持的区域在保存时拒绝**（`credentials.go` 的 `unsupportedPartition`）：`cn-*` 和隔离分区（`us-iso-*`、`us-isob-*`、`us-isof-*`、`eu-isoe-*`；代码判断的是第二段以 `iso` 开头）报字段错误 `region:unsupported`，一条中英双语的消息，因为它们的接入地址不在 `amazonaws.com` 下。已经存着这种区域的账号不服务任何请求（`FAILED_PRECONDITION`，网关换下一个账号）。`us-gov-*` 接受。（`eusc-*` 本来就过不了区域的格式校验。）
 15. **账号的解码、校验用新的 SDK 包 `accountform`**，请求体补丁用 `pluginsdk.SetPatch` / `DeletePatch`（16.9）。
-16. **2026-11-17 在 AWS 模型卡片上看到、代码没有跟着改的出入**：
-    - Claude Sonnet 4 在 AWS 上已于 2026-10-14 停止服务（end of life），`claude-sonnet-4-20250514` 仍在默认映射里。
-    - `claude-opus-4-20250514` 在索引页里已经没有模型卡片，仍在默认映射里。
-    - AWS 列出的更新的模型（Fable 5.2、Opus 5.5、Sonnet 5.5、Haiku 5.5）不在默认映射里。
-    - Opus 4.1、Sonnet 4.5 处于 Legacy 阶段。
+16. **2026-11-17 按 AWS 模型卡片核对默认映射，代码已经跟着改**：
+    - Claude Sonnet 4 的卡片写 “Model lifecycle: EOL: 2026-10-14”（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4.html>），`claude-sonnet-4-20250514` 从默认映射里删掉。
+    - Claude Opus 4 不在索引页里，`model-card-anthropic-claude-opus-4.html` 已经跳转到用户指南首页，`claude-opus-4-20250514` 从默认映射里删掉。清单测试不让这两个名字回来。
+    - 新增 `claude-fable-5-2`（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-fable-5-2.html>）、`claude-opus-5-5`（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-5-5.html>）、`claude-sonnet-5-5`（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5-5.html>）、`claude-haiku-5-5`（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-5-5.html>），ID 是各卡片 bedrock-runtime 一行的 Model ID。
+    - Opus 4.1（Legacy，2027-01-08 停止服务）、Sonnet 4.5（Legacy，2027-04-08 停止服务）仍在默认映射里。
+    - Mythos 5.2、5.1、5 在索引页里，但要通过 Anthropic 的验证项目才能用，不预填；Claude 3 Haiku 也不预填。
+    - 各预填模型的推理配置（卡片的 “Geo inference ID” / “Global inference ID” 两栏）：都有 `global.`，只有 Opus 4.1 没有（只有 `us.`）。地域配置：Fable 5.2、5.1、5 只有 `us`；Opus 5.5 有 `us`、`eu`、`au`、`jp`；Sonnet 5.5 有 `us`、`ca`、`eu`、`au`；Haiku 5.5 有 `us`、`ca`、`eu`、`au`、`jp`；Opus 5、Sonnet 5 有 `us`、`eu`、`au`、`in`；Opus 4.8、4.7 有 `us`、`eu`、`jp`、`au`；Opus 4.6 有 `us`、`eu`、`au`；Sonnet 4.6、Sonnet 4.5 有 `us`、`eu`、`au`、`jp`；Opus 4.5 有 `us`、`eu`；Haiku 4.5 有 `us`、`eu`、`au`、`jp`、`in`。`ca.` 不在前缀的可选项里，也不算“已经带前缀的 ID”：要用它，前缀选“不加”并在映射里写全。`global.` 在 GovCloud 的两个区域不可用。
 
 ### 16.8 模拟上游与测试
 

@@ -181,11 +181,15 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 | 字段 | 含义 | 默认 | 例子 |
 |---|---|---|---|
 | 区域（`region`） | Bedrock 运行时所在的 AWS 区域，请求发往 `bedrock-runtime.<区域>.amazonaws.com`。文本框，手动输入 | `us-east-1`（留空也保存成它） | `us-east-1`、`us-west-2`、`eu-central-1`、`ap-northeast-1` |
-| 跨区域推理前缀（`inference_profile_prefix`） | 加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置（inference profile） | 不加 | 不加 / `us` / `eu` / `apac` / `jp` / `au` / `in` / `global` |
+| 跨区域推理前缀（`inference_profile_prefix`） | 加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置（inference profile） | `global`（留空也保存成它） | 不加 / `us` / `eu` / `apac` / `jp` / `au` / `in` / `global` |
 
 **不支持的区域**：中国区（`cn-*`）和隔离分区（`us-iso-*`、`us-isob-*`、`us-isof-*`、`eu-isoe-*`）保存时会被拒绝（提示“不支持 AWS 中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）：其接入地址不在 amazonaws.com 下”）。GovCloud（`us-gov-*`）可以填。
 
-**前缀怎么选**：模型只能通过推理配置调用时就要选前缀。按 AWS 的模型卡片，现行的 Claude 模型在 bedrock-runtime 上几乎都没有区域内（In-Region）可用性，只能经地域或全球推理配置调用；Haiku 4.5 的卡片写明 “requires a geo or global inference profile ID. The bare model ID isn't supported for on-demand throughput”（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html>）。所以多数账号都应该选一个与区域相符的前缀，“不加”只适合映射里已经写了带前缀的完整 ID 或 ARN 的账号。`in` 是印度地域的前缀（例如 `in.anthropic.claude-sonnet-5`）。
+**前缀怎么选**：模型只能通过推理配置调用时就要选前缀。按 AWS 的模型卡片，现行的 Claude 模型在 bedrock-runtime 上几乎都没有区域内（In-Region）可用性，只能经地域或全球推理配置调用；Haiku 4.5 的卡片写明 “requires a geo or global inference profile ID. The bare model ID isn't supported for on-demand throughput”（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html>）。所以默认是 `global`（全球推理配置）：预填的模型在各自的卡片上都有 `global.` 配置，除 GovCloud（`us-gov-*`）之外的区域都能调用，新建的账号不用改前缀就能用预填的模型。唯一的例外是 Opus 4.1，它只有 `us.` 配置（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-1.html>），预填的映射里直接写了 `us.anthropic.claude-opus-4-1-20250805-v1:0`，只有美国地域的区域能调。
+
+- 要把请求留在某个地域内（数据驻留），改选地域前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`）。不是每个模型都有每个地域的配置：例如 Fable 5.2、Fable 5.1、Fable 5 只有 `us.` 和 `global.`，Opus 4.5 只有 `us.`、`eu.` 和 `global.`，现行模型都没有 `apac.`（以各模型卡片的 “Geo inference ID” 一栏为准）。`in` 是印度地域的前缀（例如 `in.anthropic.claude-sonnet-5`）。
+- “不加”按原样发送模型 ID，只适合映射里已经写了带前缀的完整 ID 或 ARN 的账号（GovCloud 的账号属于这种：`global.` 在那里不可用，要选“不加”并在映射里写 `us-gov.` 开头的 ID），或者模型在所选区域有区域内可用性（按卡片只有少数几个：Opus 5.5、Opus 4.6、Sonnet 4.6 在 `eu-west-2`，Opus 5 在 `ap-northeast-2`，Sonnet 5 在 `eu-west-2`、`ap-northeast-2`、`ap-southeast-1`）。
+- 这次改动之前保存的账号，前缀存的是 `none`（“不加”），不会自动变成 `global`，要在账号上手动改。
 
 IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:InvokeModel`、`bedrock:InvokeModelWithResponseStream`，并且在 AWS 账号里开通了要用的模型。
 
@@ -193,7 +197,7 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 
 客户端用的是 Anthropic 的模型名（`claude-sonnet-4-5`），Bedrock 要的是它自己的 ID。分两步：
 
-1. **模型映射**把客户端模型名换成 Bedrock 模型 ID。新建账号时已经预填了一份（17 个 Claude 模型），例如：
+1. **模型映射**把客户端模型名换成 Bedrock 模型 ID。新建账号时已经预填了一份（19 个客户端模型名，16 个 Bedrock 模型），例如：
 
    | 客户端模型 | 映射到 |
    |---|---|
@@ -203,10 +207,13 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
    | `claude-opus-4-6` | `anthropic.claude-opus-4-6-v1` |
    | `claude-opus-4-8` | `anthropic.claude-opus-4-8` |
    | `claude-sonnet-5` | `anthropic.claude-sonnet-5` |
+   | `claude-fable-5-2` | `anthropic.claude-fable-5-2` |
+   | `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5` | `anthropic.claude-opus-5-5`、`anthropic.claude-sonnet-5-5`、`anthropic.claude-haiku-5-5` |
+   | `claude-opus-4-1` | `us.anthropic.claude-opus-4-1-20250805-v1:0`（唯一带前缀的一条，见 5.2） |
 
-   预填的 ID 取自 AWS 的模型卡片（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html>）：到 Opus 4.6 为止的 ID 带版本后缀，之后的不带。**只对照了文档，没有用真实账号调过**，启用前请到 Bedrock 控制台的模型目录核对你要用的模型 ID，不对就在账号上改。2026-11-17 在模型卡片上看到的出入（预填表没有跟着改）：Claude Sonnet 4 在 AWS 上已于 2026-10-14 停止服务，`claude-sonnet-4-20250514` 仍在表里；`claude-opus-4-20250514` 已经没有模型卡片，仍在表里；AWS 上更新的模型（Fable 5.2、Opus 5.5、Sonnet 5.5、Haiku 5.5）不在表里，要用就自己加；Opus 4.1、Sonnet 4.5 处于 Legacy 阶段。
+   预填的 ID 取自 AWS 的模型卡片（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html>）：到 Opus 4.6 为止的 ID 带版本后缀，之后的不带。**只对照了文档，没有用真实账号调过**，启用前请到 Bedrock 控制台的模型目录核对你要用的模型 ID，不对就在账号上改。2026-11-17 按模型卡片核对过一遍：Claude Sonnet 4 在 AWS 上已于 2026-10-14 停止服务（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-4.html>），Claude Opus 4 在索引页里已经没有模型卡片，`claude-sonnet-4-20250514`、`claude-opus-4-20250514` 不再预填；新增 Fable 5.2、Opus 5.5、Sonnet 5.5、Haiku 5.5。Opus 4.1（2027-01-08 停止服务）、Sonnet 4.5（2027-04-08 停止服务）处于 Legacy 阶段，仍在表里。Mythos 系列要通过 Anthropic 的验证项目才能用，不预填。已经建好的账号的映射不会跟着变，要用新模型就在账号上自己加。
 
-2. **跨区域推理前缀**加在映射结果前面：选了 `us`，`anthropic.claude-sonnet-4-5-20250929-v1:0` 就变成 `us.anthropic.claude-sonnet-4-5-20250929-v1:0`。现行的 Claude 模型几乎都只能通过推理配置调用（见 5.2），不选前缀会被拒绝。前缀要和区域相符（`us-east-1` 配 `us`，`eu-central-1` 配 `eu`，以此类推；`global` 是全球配置）。
+2. **跨区域推理前缀**加在映射结果前面：默认的 `global` 把 `anthropic.claude-sonnet-4-5-20250929-v1:0` 变成 `global.anthropic.claude-sonnet-4-5-20250929-v1:0`，选了 `us` 就变成 `us.anthropic.claude-sonnet-4-5-20250929-v1:0`。现行的 Claude 模型几乎都只能通过推理配置调用（见 5.2），选“不加”而映射里又是裸 ID 的请求会被 AWS 拒绝。地域前缀要和区域相符（`us-east-1` 配 `us`，`eu-central-1` 配 `eu`，以此类推）。
 
 下面两种映射值**原样发送，不再加前缀**：
 
@@ -215,7 +222,7 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 
 其他说明：
 
-- 账号测试走非流式 InvokeModel，默认模型 `anthropic.claude-haiku-4-5-20251001-v1:0`（同样会加账号的前缀）。这是不带前缀的裸 ID，而 Haiku 4.5 不支持用裸 ID 按需调用（见 5.2），所以**前缀是“不加”的账号在 AWS 上测试预期会失败**，选一个与区域相符的前缀再测。这个模型没开通时，在测试对话框里指定别的模型。
+- 账号测试走非流式 InvokeModel，默认模型 `global.anthropic.claude-haiku-4-5-20251001-v1:0`，也就是 Haiku 4.5 的全球推理配置（Haiku 4.5 不支持用裸 ID 按需调用，见 5.2）。它自己带着前缀，所以不管账号的前缀选的是什么（包括“不加”）都原样发送。注意：选了地域前缀的账号，这一次默认测试请求（内容只有一个 `ping`）也是走全球配置的；不想这样，或者这个模型没开通、区域是 GovCloud 时，在测试对话框里指定别的模型（那里填的 ID 照常加账号的前缀）。
 - 不支持“从上游获取模型列表”。
 
 ### 5.4 行为与限制
