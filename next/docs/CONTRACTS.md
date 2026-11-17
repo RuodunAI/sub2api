@@ -2194,10 +2194,10 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 - **估算与已报告用量的合并改为分侧取值**，取代上一段的「每项取较大值」：输入侧四项（`input`、`cache_read`、`cache_creation`、`cache_creation_1h`）只要响应报告过任意一项就整体采用响应的数，否则整体采用估算；输出取两者较大值。原因：估算把整段提示算作输入，响应把同一段提示的缓存部分算在缓存项下，逐项取较大值在输入不含缓存的协议（Anthropic）上把提示计了两遍。实现 `gateway/pipeline.go` 的 `canceledTokens`。
 - **`continue` 不另设等待上限**（2026-11-14 用户决定：与请求本身的超时保持一致，不单独配置）：续读只受这次上游交换原有的超时约束，即环境变量 `relay_timeout_seconds`（上游整体超时）和 `streaming_idle_timeout_seconds`（流式空闲超时，§74.3），与客户端还在时相同（`relay_timeout_seconds` 未设置即不限，这时非流式响应读正文没有上限，流式只受空闲超时约束）；到时上游被取消，按 `precharge` 处理。原设置 `client_disconnect_wait_seconds`（5–1800，默认 120）删除，接口不再返回、PUT 不再接受，已存的值留在行里但不读；滚动期间旧核心仍按它等待。读取期间请求不退出，账号与 API Key 的并发名额照常占用。
 - **上游请求的 context 不再派生自客户端请求**（`gateway/dispatch.go` 的 `forwardBuilt`）：由 `gateway/disconnect.go` 的 `upstreamDrain` 在客户端 context 结束时取消它，`continue` 且 `forward` 正在转发成功响应时不取消，读到结束或被上游超时取消。
-- **`continue` 只覆盖由核心 `forward()` 中继的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。插件 `Execute` 执行的请求经 `ForwardUpstream` 交给宿主转发时（如 `pluginsdk.ExecuteDefault`：codex，以及 volcengine 的非任务请求），上游同样由 `forwardBuilt` 发出、`forward()` 中继和记用量，**核心 0.1.300 起同样续读**（此前一律按 `precharge` 处理，系统设置里的“读完再计费”对它们不生效）：插件在 `ForwardUpstream` 里等待没有期限（`grpcruntime` 在转发开始时停掉准备计时，结束后才开始 `FinishTimeout`），续读结束后照常 `RecordUsage`，提交的记录按上游报告的用量计费。插件放弃这次 `ForwardUpstream`（被终止、超时）不算客户端断开：转发观察的客户端 context 只取自请求本身（`gatewayExecution.network`），插件的调用结束时 `forwardBuilt` 以 `errExecutionAborted` 取消上游，记为上游中断；非流式应答先写进暂存（`spool.go`），暂存写失败（超过 64 MiB、临时文件出错）记为内部错误，同样不算客户端断开。插件自己结算的部分不受影响：`Reservation` 只出现在 `task.submit`（仍不续读），`Replacement` 由 `settleCanceled` 原样保留。实现：`gateway/dispatch.go` 的 `watchClient(ctx, ucancel, !c.ep.TaskSubmit())`。
+- **`continue` 只覆盖由核心 `forward()` 中继的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。插件 `Execute` 执行的请求经 `ForwardUpstream` 交给宿主转发时（如 `pluginsdk.ExecuteDefault`：codex，以及 volcengine 的非任务请求），上游同样由 `forwardBuilt` 发出、`forward()` 中继和记用量，**核心 0.1.301 起同样续读**（此前一律按 `precharge` 处理，系统设置里的“读完再计费”对它们不生效）：插件在 `ForwardUpstream` 里等待没有期限（`grpcruntime` 在转发开始时停掉准备计时，结束后才开始 `FinishTimeout`），续读结束后照常 `RecordUsage`，提交的记录按上游报告的用量计费。插件放弃这次 `ForwardUpstream`（被终止、超时）不算客户端断开：转发观察的客户端 context 只取自请求本身（`gatewayExecution.network`），插件的调用结束时 `forwardBuilt` 以 `errExecutionAborted` 取消上游，记为上游中断；非流式应答先写进暂存（`spool.go`），暂存写失败（超过 64 MiB、临时文件出错）记为内部错误，同样不算客户端断开。插件自己结算的部分不受影响：`Reservation` 只出现在 `task.submit`（仍不续读），`Replacement` 由 `settleCanceled` 原样保留。实现：`gateway/dispatch.go` 的 `watchClient(ctx, ucancel, !c.ep.TaskSubmit())`。
 - 旧的 `billing` 行没有这个字段，读出默认值，**所以升级后既有部署即按 `continue` 运行**；存储值不在取值集合内时策略取默认值。设置读取失败时网关按 `precharge` 处理。
 - **什么算「读完」**：有输出因客户端已离开而被丢弃，且上游正常结束、没有以流内错误事件收尾。客户端收完最后一个字节才断开的请求没有丢输出，照常记为成功。关停不再等待在途请求时调用 `Gateway.AbandonReads()`（`app/phases.go` 的 `cancelRequests`），续读立即中止，按 `precharge` 处理。
-- **终止用量送达后才断开的请求算已服务**（核心 0.1.300）：流里的终止用量事件已经转发给客户端（转发时客户端还在、此前没有丢过输出），之后客户端在上游关流前断开的请求，记为成功（状态码取上游的），按上游报告的用量计费，三种策略都不适用，也不再续读（`continue` 下同样立即取消上游）；之后上游流空闲超时同样记成功，账号统计不计为取消（`pipeline.go` 的 `statsCanceled`）。核心直接转发和插件 `Execute` 执行的 HTTP 请求都适用（判定在 `forward()`，`upstreamDrain.serve`/`served`）。**终止用量事件**由 manifest 的 usage 规则判定，不按协议写死（`usagerules.Acc.Final`）：`usage.sse` 里**指名事件**（`event` 非空）且映射了 `output_tokens` 的规则命中、并且该事件里输出数存在且不为 null。输出数只有应答结束时才知道，所以声明它的具名事件就是最终用量：Anthropic `message_delta`（`message_start` 只报输入侧，不映射输出，不算）、OpenAI Responses（HTTP 流）`response.completed` / `response.incomplete`。规则匹配任意事件（`"event": ""`）的协议（OpenAI Chat Completions 末尾的 usage chunk、Gemini 每个 chunk 的 `usageMetadata`）没有可判定的终止事件（Gemini 与部分 OpenAI 兼容上游每个 chunk 都带累计用量），仍以读到上游结束为准；非流式 JSON 读完才提取用量，同样不变。终止用量事件之前断开的，行为不变。WebSocket 轮次本来就在终止事件写给客户端后结束（`websocket.go` 的 `observe`），客户端之后断开不影响已结束的轮次，无需改动。测试：`gateway/disconnect_test.go`（终止用量后断开记成功，含转换路由与插件执行的 Responses `response.completed`；之前断开仍是 499 加预扣补齐；插件执行路径两种情况；插件放弃转发不算断开）、`usagerules/final_test.go`。
+- **终止用量送达后才断开的请求算已服务**（核心 0.1.301）：流里的终止用量事件已经转发给客户端（转发时客户端还在、此前没有丢过输出），之后客户端在上游关流前断开的请求，记为成功（状态码取上游的），按上游报告的用量计费，三种策略都不适用，也不再续读（`continue` 下同样立即取消上游）；之后上游流空闲超时同样记成功，账号统计不计为取消（`pipeline.go` 的 `statsCanceled`）。核心直接转发和插件 `Execute` 执行的 HTTP 请求都适用（判定在 `forward()`，`upstreamDrain.serve`/`served`）。**终止用量事件**由 manifest 的 usage 规则判定，不按协议写死（`usagerules.Acc.Final`）：`usage.sse` 里**指名事件**（`event` 非空）且映射了 `output_tokens` 的规则命中、并且该事件里输出数存在且不为 null。输出数只有应答结束时才知道，所以声明它的具名事件就是最终用量：Anthropic `message_delta`（`message_start` 只报输入侧，不映射输出，不算）、OpenAI Responses（HTTP 流）`response.completed` / `response.incomplete`。规则匹配任意事件（`"event": ""`）的协议（OpenAI Chat Completions 末尾的 usage chunk、Gemini 每个 chunk 的 `usageMetadata`）没有可判定的终止事件（Gemini 与部分 OpenAI 兼容上游每个 chunk 都带累计用量），仍以读到上游结束为准；非流式 JSON 读完才提取用量，同样不变。终止用量事件之前断开的，行为不变。WebSocket 轮次本来就在终止事件写给客户端后结束（`websocket.go` 的 `observe`），客户端之后断开不影响已结束的轮次，无需改动。测试：`gateway/disconnect_test.go`（终止用量后断开记成功，含转换路由与插件执行的 Responses `response.completed`；之前断开仍是 499 加预扣补齐；插件执行路径两种情况；插件放弃转发不算断开）、`usagerules/final_test.go`。
 - 策略经 `core.ClientDisconnectSource.ClientDisconnectPolicy` 读取，`billing.Service` 实现；网关拿不到时按 `precharge` 处理。网关包的测试环境同样默认 `precharge`，只有针对 `continue` 的用例显式开启。
 - 测试：`gateway/disconnect_test.go`（三种策略、续读被上游整体超时结束、续读中关停的端到端，`canceledTokens`）、`e2e/ac26_client_disconnect_test.go`（整机验收）、`gateway/precharge_cancel_test.go`（判定）、`billing/settings_disconnect_test.go`（设置读写与校验）。
 
@@ -3988,7 +3988,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，插件给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次。
 
 规则：
-- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类；核心 0.1.300 前代码没有做到：发布故障策略后 `forwardCallback` 对任何上游失败都向插件返回错误，插件的 `ClassifyError` 不运行，下面两项对 codex、volcengine 等插件执行的请求都不生效。现在只有传输错误这样处理，与 `classify` 一致），并执行其中两项：
+- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类；核心 0.1.301 前代码没有做到：发布故障策略后 `forwardCallback` 对任何上游失败都向插件返回错误，插件的 `ClassifyError` 不运行，下面两项对 codex、volcengine 等插件执行的请求都不生效。现在只有传输错误这样处理，与 `classify` 一致），并执行其中两项：
   1. `quota`：配额观测照常保存（§44）。
   2. `automatic_state` 为 `DISABLE` 且带解除时间（`until_unix` 在未来，或 `duration_seconds` > 0，最长 366 天）：账号立即设为 `auto_disabled`，`auto_disabled_until` = 解除时间，原因用插件给的 `reason`。解除时间一过调度即可再选中它（惰性过期），核心的低频巡检随后把状态写回 `active`。
 - 其余仍由策略决定：是否重试、同账号重试次数、换号、冷却、返回给客户端的内容。插件的 `action`、`account_effect`、`cooldown_until_unix` 不采用。
@@ -5134,7 +5134,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 变量名常量在 SDK 的 `protocol` 包（`protocol.EnvVarRelayTimeoutSeconds` 等），核心复用同一组常量。
   - 目前没有插件读这两处：转发由核心完成，变量也由核心应用。它们是留给自己向上游转发的插件（自带 HTTP 客户端、后台任务直接调上游）的扩展点，这类插件应按同样的变量设超时和上限。
 - **读声明的接口** `GET /environment/variables` 需要 `settings:read`、`group:read`、`account:read`、`account:own:read` 或 `account:own:create` 之一（三层编辑器都要用；只有本人账号权限的用户也能改自己账号的账号层，所以也要能读声明，2026-10-31 补上 own 级）。
-- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=settings.environment`，0.1.300 前是 `environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
+- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=settings.environment`，0.1.301 前是 `environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
 
 ### 74.4 通知
 
@@ -5201,7 +5201,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **0.5.7（2026-11-12）**：只改原生界面。自写的 `IdPicker` 删除，账号、分组、模型筛选和批量重置、分组配置、账号覆盖弹窗都改用宿主的 `EntityPicker`（§96.6）；模型是精确匹配，候选是价格表里的模型加当前页出现过的模型，不在其中的名称可以按输入原样使用。新建分组配置 / 账号覆盖时，已有配置的分组 / 账号仍会列出，选中就报错并禁止保存（原来是不列出）；非规范写法的 id（`013`）不接受。**`hostUICompat` 改为 `^3.11`，`hostCompat` 抬到 `>=0.1.279 <0.2.0`**。接口、能力、授权、配置文档格式都不变，没有新迁移。
 - **0.5.8（2026-11-13）**：线上把“首字 p95 过慢”调整项关掉后，状态表“命中规则”列仍显示它命中，被当成关掉的规则还在生效。调整项的开关只关策略，规则本身仍启用、照常判定（`last_rules`、位图照写；不再有启用的降权策略引用它，所以按宽松模式，样本不足也判定，比开着时更容易显示命中），但没有启用的策略引用它，命中不降权、不清粘性（线上核对：配置第 9 版以来 7876 条事件的 `steps` 和清粘性都不含它）。`GET /status` 的规则加 `used`（`rules.Resolved.UsedRules`，与 `FiredRules` 共用同一份引用标记）；控制台“命中规则”列只列被使用的规则，展开明细里未被使用的规则标“只观察”并说明、本窗结果用中性色；接口没有 `used`（旧节点）时按被使用处理。接口只加字段，能力、授权、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变。
 - **0.5.10（2026-11-15）**：插件 SDK 改用 GORM 的试点，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`），与 `migrations/0001`–`0003` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；`store.go` 的 pgx 代码全部改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句语义不变，原来 `pgx.Batch` 的批量写入（计数、基准权重、事件）和重置标记改为一个事务里的多行 `INSERT … ON CONFLICT`（每条至多 1000 行，仍按键排序，全成或全不成）。能力、授权、接口、配置文档格式都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.5.9 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.5.9 之后又改了清单（`risk`/`defaults`，`hostCompat >=0.1.289`），0.5.10 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
-- **0.5.11（未发布，随核心 0.1.300）**：核心关闭粘性会话时放弃排队的粘性清理并记事件（见下文“粘性清理队列”），用到 `HostService.GetSettings`，`hostCompat` 改为 `>=0.1.300 <0.2.0`。能力、授权、迁移、接口都不变。
+- **0.5.11（未发布，随核心 0.1.301）**：核心关闭粘性会话时放弃排队的粘性清理并记事件（见下文“粘性清理队列”），用到 `HostService.GetSettings`，`hostCompat` 改为 `>=0.1.301 <0.2.0`。能力、授权、迁移、接口都不变。
 - **只安装不启用**（`BUILTIN_PLUGINS_INSTALL_ONLY`）：启用后每次调度都会调用它，所以要由管理员有意打开。
 
 #### 计数
@@ -7768,7 +7768,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - `plugin_key = 'custom'` 的账号保留，在控制台显示为插件已卸载，由管理员删除；CHANGELOG 0.1.301 要求升级前先在控制台删除这些账号。使用记录、账本与审计保留。
 - 有迁移，按主节点优先（`primary-first-v1`）发布；单向，回退只能用升级前的备份。
 
-## 107. 插件读取系统设置与变更通知（2026-11-17，用户要求；无迁移；Host API 仍是 9；核心 0.1.300）
+## 107. 插件读取系统设置与变更通知（2026-11-17，用户要求；无迁移；Host API 仍是 9；核心 0.1.301）
 
 插件此前读不到核心的系统设置：dynweight 清粘性会话时不知道粘性会话是否开启，第三方插件要按网关的重试次数、超时或计费策略调整自己的行为，只能让运营方在插件设置里再填一遍。本节让插件只读地按分组读取系统设置，并在设置变化时及时得知。
 
@@ -7828,5 +7828,5 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 ### 107.5 兼容与版本
 
 - Host API 不升，仍是 9，理由同 91.3、93：只加 RPC，升版会让 rolling-v1 滚动更新不可用。
-- 旧核心对 `GetSettings` 回 `UNIMPLEMENTED`，也不会调 `SettingsChanged`。用到本节的插件把 `hostCompat` 下限提到 `>=0.1.300`。
+- 旧核心对 `GetSettings` 回 `UNIMPLEMENTED`，也不会调 `SettingsChanged`。用到本节的插件把 `hostCompat` 下限提到 `>=0.1.301`。
 - 没有迁移。环境变量设置的 `config:changed` payload 从 `{"key":"environment"}` 改为 `{"key":"settings.environment"}`，与其他分组一致。滚动更新期间新旧节点互相认不出对方的这条广播，全局层缓存最多晚 10 秒（§74.3 的缓存时长）。

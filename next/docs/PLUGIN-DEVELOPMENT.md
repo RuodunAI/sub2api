@@ -14,7 +14,7 @@
 | 插件执行（`platform.execute.v1`） | codex、volcengine | 插件的 `Execute` 调 `ForwardUpstream`，上游请求仍由核心的同一段代码（`forwardBuilt` → `forward`）发出和中继；用量由插件在 `Execute` 里 `RecordUsage`（SDK 的 `ExecuteDefault` 已做好），异步任务用 `ReserveAndWatch` |
 | WebSocket（`platform.websocket.v1`） | openai、codex 的 `/v1/responses` WebSocket 模式 | 核心建连并逐轮中继，每轮按规则记用量（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)） |
 
-因为分叉发生在改写之后、发送之前，大部分设置对三条路径天然一致；插件执行路径曾经有两处没做到（下表标“0.1.300 起”）。
+因为分叉发生在改写之后、发送之前，大部分设置对三条路径天然一致；插件执行路径曾经有两处没做到（下表标“0.1.301 起”）。
 
 ## 2. 设置对照表
 
@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
-| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.300 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.300 起，三种策略都一样）；插件放弃 `ForwardUpstream`（被终止、超时）记为上游中断，不算客户端断开 |
+| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.301 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.301 起，三种策略都一样）；插件放弃 `ForwardUpstream`（被终止、超时）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usage.source: "plugin"` 并实现 `ExtractUsage` | 一致 / 在 `Execute` 内记录 / WebSocket 不支持 `source: plugin`（清单检查拒绝） | `usageplugin.go`、`sdk/manifest/check/websocket.go` |
 
 流式用量规则的写法会影响断开判定：**输出 token 数要映射在一个指名的终止事件上**（例如 Anthropic 的 `message_delta`、Responses 的 `response.completed`），核心据此判断“最终用量已经送达客户端”（`usagerules.Acc.Final`）。映射在任意事件（`"event": ""`）上的规则不会被当成终止，只能以读到流结束为准。
@@ -55,7 +55,7 @@
 
 | 设置 | 归属 | 普通 / 执行 / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用 | 一致 / 一致（**0.1.300 起**，此前故障策略下插件执行的 HTTP 错误不调用插件分类，codex 的“禁用到重置时刻”失效）/ 握手和流内错误事件都分类 | `applyClassification`、`execute.go` `forwardCallback`；CONTRACTS §69 |
+| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用 | 一致 / 一致（**0.1.301 起**，此前故障策略下插件执行的 HTTP 错误不调用插件分类，codex 的“禁用到重置时刻”失效）/ 握手和流内错误事件都分类 | `applyClassification`、`execute.go` `forwardCallback`；CONTRACTS §69 |
 | 订阅额度窗口（5 小时、周） | **插件配合**：在账号类型上声明 `quota.headers` | 一致 / 一致 / 握手头和带头的错误事件 | `observeQuota`；CONTRACTS §44、§105 |
 
 ## 3. 现有平台插件
@@ -76,7 +76,7 @@
 - 后台逻辑需要系统设置时用 `pluginsdk.Settings` 在用到的地方读（第 5 节），不要在 `Init` 里读一次存起来，也不要另设一份插件设置。
 - 改了上表涉及的行为，同步本文、CONTRACTS 对应章节，并在三条路径上补测试（参考 `gateway/disconnect_test.go` 的 `TestClientDisconnectExecutedRequest`、`execute_test.go`）。
 
-## 5. 读取系统设置与变更通知（核心 0.1.300 起）
+## 5. 读取系统设置与变更通知（核心 0.1.301 起）
 
 插件可以只读地读取下表的系统设置分组，并在管理员保存后立即得知（CONTRACTS §107）：
 
@@ -101,5 +101,5 @@ if !sticky.Enabled { ... }
 - SDK 在进程里缓存每个分组，核心在任一节点保存设置后会通知每个节点上的插件进程（`PluginService.SettingsChanged`，SDK 已实现），缓存随即作废；另外最多缓存 10 秒。缓存失效时并发调用只读宿主一次；读取失败时返回上次读成功的值，2 秒内不再读宿主，从未读成功过才返回错误（宿主的读取失败一律是 `UNAVAILABLE`）。所以在用到的地方直接调用即可，热路径（如 `RankAccounts`）也一样：命中时不访问宿主，只解码一次 JSON。
 - 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §107.2。故障策略只给开关和 `schema_version`，规则不开放。
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
-- 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.300`。
+- 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.301`。
 - 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。
