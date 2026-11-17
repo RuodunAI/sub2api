@@ -9,6 +9,7 @@
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
 - 更新检测结果的原因按代码显示中文/英文：`GET /system/update-check` 每条线新增 `reason_code`（`no_release`、`version_conflict`、`incompatible`，契约 §102），控制台不再直接显示“the update source has no stable … release”之类的英文原文。网关二进制变更，随下一个网关版本生效；网关 0.1.135 不带该字段，控制台照旧显示它的英文原因。
+- 网关内置官方发布公钥 `sup2api-ovh-2026`（`next/gateway/internal/release/trusted/sup2api-ovh-2026.pub`，线上核心清单一直用它签名、节点 `trusted_keys` 已信任它）：GitHub Actions 发布的核心与网关 Release 用同一把密钥签名，带这个文件的网关不配置 `trusted_keys` 也能验签。
 
 ## 2026-11-17
 
