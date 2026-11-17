@@ -121,3 +121,30 @@ func TestSigV4CheckAcceptsSDKSignatures(t *testing.T) {
 		}
 	}
 }
+
+// The values of a repeated key are taken in sorted order, whatever order
+// they arrive in (AWS's published suite, get-vanilla-query-order-value), and
+// a query that does not parse is refused instead of checked in part.
+func TestSigV4CheckQueryOrder(t *testing.T) {
+	const (
+		secret        = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
+		authorization = "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/service/aws4_request, SignedHeaders=host;x-amz-date, Signature=5772eed61e12b33fae39ee5e7012498b51d56abc0abb7c60486157bd471c4694"
+	)
+	now := time.Date(2015, 8, 30, 12, 36, 0, 0, time.UTC)
+	for query, ok := range map[string]bool{
+		"Param1=value2&Param1=value1":       true,
+		"Param1=value1&Param1=value2":       true,
+		"Param1=value1":                     false,
+		"Param1=value1&Param1=value3":       false,
+		"Param1=value2;Param1=value1":       false,
+		"Param1=value1&Param1=value2&x=%zz": false,
+	} {
+		req := httptest.NewRequest("GET", "https://example.amazonaws.com/", nil)
+		req.URL.RawQuery = query
+		req.Header.Set("Authorization", authorization)
+		req.Header.Set("X-Amz-Date", "20150830T123600Z")
+		if err := checkSigV4(req, nil, secret, now); (err == nil) != ok {
+			t.Errorf("%s: %v", query, err)
+		}
+	}
+}

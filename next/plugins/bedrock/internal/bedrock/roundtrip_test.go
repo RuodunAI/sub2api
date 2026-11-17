@@ -251,7 +251,7 @@ func coreForward(t *testing.T, built *pluginv1.BuildUpstreamRequestResponse, cli
 	a.ContentType, _, _ = mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	var stream io.Reader = resp.Body
 	if built.GetResponseStream() == ResponseStream && resp.StatusCode/100 == 2 && a.ContentType == awseventstream.ContentType {
-		stream, a.ContentType = awseventstream.NewSSEReader(resp.Body), "text/event-stream"
+		stream, a.ContentType = awseventstream.NewChunkSSEReader(resp.Body), "text/event-stream"
 	}
 	if a.Body, err = io.ReadAll(stream); err != nil {
 		t.Fatalf("read the answer: %v", err)

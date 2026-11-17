@@ -1,6 +1,9 @@
 // Package awseventstream reads and writes the AWS event stream framing
-// (application/vnd.amazon.eventstream) and adapts a stream of such frames to
-// server-sent events. Only the standard library is used.
+// (application/vnd.amazon.eventstream): Decoder and AppendMessage know the
+// framing only and fit any service using it. ChunkSSEReader is narrower: it
+// presents one kind of event stream, the "chunk" events of Bedrock's
+// InvokeModelWithResponseStream, as server-sent events (FormatChunk). Only
+// the standard library is used.
 //
 // A message on the wire:
 //
@@ -22,13 +25,15 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"slices"
 )
 
 // ContentType is the media type of a response framed as an event stream.
 const ContentType = "application/vnd.amazon.eventstream"
 
-// MaxMessageSize is the largest message the decoder accepts and the encoder
-// produces: the format's own limit of 16 MiB.
+// MaxMessageSize is the largest message the encoder produces and a decoder
+// can be told to accept: the format's own limit of 16 MiB. It is also a
+// decoder's limit unless WithMaxMessageSize lowers it.
 const MaxMessageSize = 16 << 20
 
 const (
@@ -37,6 +42,12 @@ const (
 	minMessageSize = preludeSize + 4
 	// maxHeadersSize is the format's limit on the header block.
 	maxHeadersSize = 128 << 10
+	// readStep is how far ahead of the bytes received the message buffer
+	// grows: a length announced in a prelude reserves nothing by itself.
+	readStep = 64 << 10
+	// retainSize is the largest buffer kept from one message to the next;
+	// the buffer of a larger message is released after it.
+	retainSize = 256 << 10
 )
 
 // Names and values of the headers that route a message.
@@ -57,6 +68,11 @@ const (
 // be trusted any further: a bad length, a checksum mismatch, a malformed
 // header block.
 var ErrCorrupt = errors.New("awseventstream: corrupt message")
+
+// ErrTooLarge is wrapped by the error for a message the format allows but
+// that is over the decoder's own limit (WithMaxMessageSize). The message is
+// not read, so the stream cannot be decoded any further either.
+var ErrTooLarge = errors.New("awseventstream: message over the size limit")
 
 // Header is one message header. Only string values are kept: the decoder
 // checks the values of the other types and leaves them out.
@@ -87,17 +103,33 @@ func (m Message) Header(name string) string {
 type Decoder struct {
 	r   *bufio.Reader
 	buf []byte
+	max uint32
+}
+
+// DecoderOption adjusts a Decoder.
+type DecoderOption func(*Decoder)
+
+// WithMaxMessageSize makes the decoder refuse messages longer than n bytes
+// (ErrTooLarge), for streams whose messages are known to be small. Values
+// outside the format's range are brought into it.
+func WithMaxMessageSize(n int) DecoderOption {
+	return func(d *Decoder) { d.max = uint32(min(max(n, minMessageSize), MaxMessageSize)) }
 }
 
 // NewDecoder returns a decoder reading from r.
-func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{r: bufio.NewReaderSize(r, 32<<10)}
+func NewDecoder(r io.Reader, opts ...DecoderOption) *Decoder {
+	d := &Decoder{r: bufio.NewReaderSize(r, 32<<10), max: MaxMessageSize}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // Decode returns the next message. Its payload is only valid until the next
 // call. At a clean end of the stream it returns io.EOF; a stream that ends
 // inside a message returns io.ErrUnexpectedEOF, a malformed message an error
-// wrapping ErrCorrupt, and a failing reader that reader's error.
+// wrapping ErrCorrupt, a message over the decoder's limit an error wrapping
+// ErrTooLarge, and a failing reader that reader's error.
 func (d *Decoder) Decode() (Message, error) {
 	var prelude [preludeSize]byte
 	if _, err := io.ReadFull(d.r, prelude[:]); err != nil {
@@ -115,11 +147,11 @@ func (d *Decoder) Decode() (Message, error) {
 	if headersLen > maxHeadersSize || headersLen > total-minMessageSize {
 		return Message{}, fmt.Errorf("%w: headers length %d in a message of %d", ErrCorrupt, headersLen, total)
 	}
-	rest := d.grow(int(total) - preludeSize)
-	if _, err := io.ReadFull(d.r, rest); err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
+	if total > d.max {
+		return Message{}, fmt.Errorf("%w: message length %d, limit %d", ErrTooLarge, total, d.max)
+	}
+	rest, err := d.read(int(total) - preludeSize)
+	if err != nil {
 		return Message{}, err
 	}
 	body, sum := rest[:len(rest)-4], binary.BigEndian.Uint32(rest[len(rest)-4:])
@@ -133,12 +165,30 @@ func (d *Decoder) Decode() (Message, error) {
 	return Message{Headers: headers, Payload: body[headersLen:]}, nil
 }
 
-// grow returns the decoder's buffer resized to n bytes.
-func (d *Decoder) grow(n int) []byte {
-	if cap(d.buf) < n {
-		d.buf = make([]byte, n)
+// read reads the n bytes after a prelude into the decoder's buffer. The
+// buffer grows as the bytes arrive, readStep at a time, so a prelude
+// announcing a large message costs nothing until the message is really sent;
+// a buffer that grew past retainSize for one message is not kept for the next.
+func (d *Decoder) read(n int) ([]byte, error) {
+	if cap(d.buf) > retainSize {
+		d.buf = nil
 	}
-	return d.buf[:n]
+	buf := d.buf[:0]
+	for len(buf) < n {
+		step := min(n-len(buf), readStep)
+		buf = slices.Grow(buf, step)
+		got, err := io.ReadFull(d.r, buf[len(buf):len(buf)+step])
+		buf = buf[:len(buf)+got]
+		if err != nil {
+			d.buf = buf
+			if err == io.EOF {
+				err = io.ErrUnexpectedEOF
+			}
+			return nil, err
+		}
+	}
+	d.buf = buf
+	return buf, nil
 }
 
 // Value types of a header.

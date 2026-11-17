@@ -141,6 +141,13 @@ func (x *BodyPatch) GetValueJson() string {
 // when the signature covers the body, which it never sees whole. The message
 // carries the signing secret: the host uses it for this one request and
 // neither stores nor logs it.
+//
+// Only the scheme name is generic. The other fields are the inputs of the
+// access-key HMAC family of schemes (AWS SigV4 and those shaped after it): a
+// key id and a secret scoped to a region and a service, optionally a session
+// token. They are typed rather than an open map so that the host knows which
+// ones are secret; a scheme of another family needs new fields, not a
+// reinterpretation of these.
 type RequestSigning struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

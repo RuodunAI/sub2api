@@ -65,7 +65,7 @@ func TestInvokeModelURLs(t *testing.T) {
 			}
 			wantStream := ""
 			if tc.stream {
-				wantStream = "aws-eventstream"
+				wantStream = "aws-eventstream-chunk"
 			}
 			if resp.GetResponseStream() != wantStream {
 				t.Fatalf("response_stream = %q, want %q", resp.GetResponseStream(), wantStream)

@@ -1,9 +1,11 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // tokenUpstream is an OAuth token endpoint that rotates refresh tokens:
@@ -255,5 +258,185 @@ func TestCredentialRefresh(t *testing.T) {
 	up.mu.Unlock()
 	if d := out["data"].(map[string]any); d["skipped"] != "changed" || e.creds(due)["refresh_token"] != "rt-admin" {
 		t.Fatalf("concurrent edit: %v, stored %v", out, e.creds(due))
+	}
+}
+
+// eventually polls cond until it holds; background work has a few seconds.
+func (e *env) eventually(what string, cond func() bool) {
+	e.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			e.t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRefreshDue(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	decl := &manifest.AccountRefresh{} // 30 minutes ahead
+	for _, tc := range []struct {
+		name  string
+		creds map[string]any
+		want  bool
+	}{
+		{"no expiry", map[string]any{"access_token": "at"}, false},
+		{"unreadable expiry", map[string]any{"expires_at": "soon"}, false},
+		{"zero is not an expiry", map[string]any{"expires_at": json.Number("0")}, false},
+		{"far away", map[string]any{"expires_at": json.Number("1800018000")}, false},
+		{"just outside the window", map[string]any{"expires_at": json.Number("1800001801")}, false},
+		{"on the edge of the window", map[string]any{"expires_at": json.Number("1800001800")}, true},
+		{"inside the window", map[string]any{"expires_at": json.Number("1800000060")}, true},
+		{"expired", map[string]any{"expires_at": json.Number("1799999999")}, true},
+		// What a form without an authorization flow stores to ask for the
+		// first token.
+		{"expired since 1970", map[string]any{"expires_at": json.Number("1")}, true},
+		{"numeric string", map[string]any{"expires_at": "1"}, true},
+	} {
+		if got := refreshDue(decl, tc.creds, now); got != tc.want {
+			t.Errorf("%s: due = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if !refreshDue(&manifest.AccountRefresh{BeforeExpirySec: 7200}, map[string]any{"expires_at": json.Number("1800007000")}, now) {
+		t.Error("the type's own window is not used")
+	}
+}
+
+// Saving an account whose credentials are already due renews them at once
+// (CONTRACTS §48.3); a save of credentials that are not due, of an account
+// without readable expiry, of a type without refresh, or without
+// credentials at all sends nothing.
+func TestRefreshAfterSave(t *testing.T) {
+	e := setup(t)
+	up := newTokenUpstream(t)
+	e.plat.refreshURL = up.srv.URL + "/token"
+	ctx := context.Background()
+	oauth := func(refreshToken string, expiresAt any) map[string]any {
+		c := map[string]any{"api_key": "sk-good-key-123", "access_token": "at-old", "refresh_token": refreshToken}
+		if expiresAt != nil {
+			c["expires_at"] = expiresAt
+		}
+		return c
+	}
+	create := func(name string, creds map[string]any) int64 {
+		t.Helper()
+		return int64(e.createAs(e.uid, name, map[string]any{"credentials": creds})["id"].(float64))
+	}
+	patch := func(id int64, body map[string]any) {
+		t.Helper()
+		if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), body); code != http.StatusOK {
+			t.Fatalf("update %d: %d %v", id, code, out)
+		}
+	}
+	refreshed := func(id int64, token string) func() bool {
+		return func() bool { return e.creds(id)["access_token"] == token }
+	}
+
+	// The type does not declare refresh: a due save sends nothing.
+	undeclared := create("undeclared", oauth("rt-undeclared", 1))
+
+	e.gen.types[0].Type.Refresh = &manifest.AccountRefresh{} // 30 minutes ahead
+	later := create("later", oauth("rt-later", time.Now().Add(5*time.Hour).Unix()))
+	noExpiry := create("no-expiry", oauth("rt-none", nil))
+
+	// Created already due, the way a form without an authorization flow
+	// asks for its first token: renewed without waiting for the sweep.
+	due := create("due", oauth("rt-1", 1))
+	e.eventually("the refresh after create", refreshed(due, "at-2"))
+	if c := e.creds(due); c["refresh_token"] != "rt-2" || c["api_key"] != "sk-good-key-123" {
+		t.Fatalf("renewed credentials: %v", c)
+	}
+	states, err := e.db.AccountRefreshStates(ctx, []int64{due})
+	if st := states[due]; err != nil || st == nil || st.LastSuccessAt == nil || st.ErrorType != "" {
+		t.Fatalf("refresh state: %+v %v", st, err)
+	}
+	if rows := e.auditRows("account.credentials_refresh"); len(rows) != 1 || rows[0]["target_id"] != strconv.FormatInt(due, 10) {
+		t.Fatalf("audit: %v", rows)
+	}
+	if n := up.calls.Load(); n != 1 {
+		t.Fatalf("upstream calls after the saves: %d, want 1", n)
+	}
+	for name, id := range map[string]int64{"undeclared": undeclared, "later": later, "no-expiry": noExpiry} {
+		if e.creds(id)["access_token"] != "at-old" {
+			t.Fatalf("%s was renewed by its save", name)
+		}
+	}
+
+	// Updates: only one that stores due credentials renews. A rename of an
+	// account whose stored credentials are due is left to the sweep, and
+	// so are new credentials that are not due.
+	e.setCreds(later, oauth("rt-spent", time.Now().Add(time.Minute).Unix()))
+	patch(later, map[string]any{"name": "later-renamed"})
+	patch(noExpiry, map[string]any{"credentials": oauth("rt-none", time.Now().Add(5*time.Hour).Unix())})
+	patch(due, map[string]any{"credentials": oauth("rt-2", 1)})
+	e.eventually("the refresh after update", refreshed(due, "at-3"))
+	if n := up.calls.Load(); n != 2 {
+		t.Fatalf("upstream calls after the updates: %d, want 2", n)
+	}
+	if e.creds(later)["access_token"] != "at-old" || e.creds(noExpiry)["access_token"] != "at-old" {
+		t.Fatal("an update that stored no due credentials renewed them")
+	}
+
+	// A refusal after a save is recorded like the sweep's, and the save
+	// itself succeeded.
+	refused := create("refused", oauth("rt-wrong", 1))
+	e.eventually("the refused refresh", func() bool {
+		states, _ := e.db.AccountRefreshStates(ctx, []int64{refused})
+		return states[refused] != nil && states[refused].ErrorType == "auth_rejected"
+	})
+	if e.creds(refused)["access_token"] != "at-old" {
+		t.Fatal("a refused refresh changed the credentials")
+	}
+}
+
+// lockedBuffer is a log sink written by a background goroutine.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// The renewal a save starts runs outside every request's recovery: a panic
+// in it is recovered and logged, and does not take the process (here, the
+// test binary) down.
+func TestRefreshAfterSaveRecoversPanic(t *testing.T) {
+	var logs lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := &Service{} // no database: the renewal panics at its first read
+	bt := core.AccountTypeBinding{Type: manifest.AccountType{Refresh: &manifest.AccountRefresh{}}, Client: &fakePlatform{}}
+	s.refreshSaved(context.Background(), 1, bt, []byte(`{"refresh_token":"rt-1","expires_at":1}`))
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(logs.String(), "panicked") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no recovered panic was logged: %q", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "refreshAccount") {
+		t.Fatalf("the log does not show where it panicked: %q", logs.String())
+	}
+
+	// Credentials that are not due start nothing.
+	logs.b.Reset()
+	s.refreshSaved(context.Background(), 1, bt, []byte(`{"refresh_token":"rt-1"}`))
+	time.Sleep(50 * time.Millisecond)
+	if logs.String() != "" {
+		t.Fatalf("a save that is not due started a renewal: %q", logs.String())
 	}
 }

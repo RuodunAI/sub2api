@@ -831,7 +831,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if req.Header.Get("Content-Type") == "" && reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if failure := applyUpstreamExt(req, body, built); failure != nil {
+	if failure := signUpstreamRequest(req, body, built); failure != nil {
 		return *failure
 	}
 	if failure := c.guardAvailability(prepareCtx, &acc.AccountRef); failure != nil {

@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/awseventstream"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 )
 
@@ -58,7 +59,7 @@ const (
 	AnthropicVersion = "bedrock-2023-05-31"
 	// ResponseStream names the framing of a streamed InvokeModel answer
 	// (BuildUpstreamRequestResponse.response_stream).
-	ResponseStream = "aws-eventstream"
+	ResponseStream = awseventstream.FormatChunk
 
 	// DefaultTestModel is the Bedrock model id BuildTestRequest invokes when
 	// no model is given. The manifest's default mapping leads to it.

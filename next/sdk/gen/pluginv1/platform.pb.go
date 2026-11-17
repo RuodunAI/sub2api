@@ -997,13 +997,30 @@ type BuildUpstreamRequestResponse struct {
 	// as plugin-unavailable and nothing is sent. Hosts older than these fields
 	// ignore them and would send the request unsigned: a plugin setting them
 	// must require a host that has them (manifest hostCompat).
+	//
+	// With signing, url must carry its path the way it goes on the wire, every
+	// segment already percent-encoded: a ":" in a segment as %3A, a "/" inside
+	// one as %2F. The signer does not encode the path for the plugin: it signs
+	// each segment of the path as given escaped once more (%3A is signed as
+	// %253A), so a raw ":" would be sent and signed as a different path than
+	// the one the upstream expects. The query is sent as it is signed: sorted
+	// by key, then value, and re-encoded (a space as %20); a query that cannot
+	// be parsed fails the attempt. A default port in url (:443 for https, :80
+	// for http) is left out of the Host header.
 	Signing *RequestSigning `protobuf:"bytes,6,opt,name=signing,proto3" json:"signing,omitempty"`
-	// Optional: framing of the response body when it is not SSE or JSON.
-	// "aws-eventstream": when the upstream answers 2xx with the content type
+	// Optional: format of the response body when it is not SSE or JSON; the
+	// name covers the framing and the shape of the events in it.
+	// "aws-eventstream-chunk" (sdk/awseventstream.FormatChunk): when the
+	// upstream answers 2xx with the content type
 	// application/vnd.amazon.eventstream, the host decodes the frames into
-	// server-sent events (sdk/awseventstream) and treats the answer as an
-	// ordinary text/event-stream from then on. An answer with another content
-	// type is left as it is. An unknown name fails the attempt as
+	// server-sent events and treats the answer as an ordinary
+	// text/event-stream from then on. It reads "chunk" events only, the ones
+	// of Bedrock's InvokeModelWithResponseStream: the payload
+	// {"bytes": base64} becomes one SSE event carrying the decoded bytes, and
+	// an exception or error frame becomes a final "error" event in the shape
+	// of an Anthropic stream error. Event streams of another shape (Bedrock's
+	// ConverseStream) are not covered by this name. An answer with another
+	// content type is left as it is. An unknown name fails the attempt as
 	// plugin-unavailable and nothing is sent.
 	ResponseStream string `protobuf:"bytes,7,opt,name=response_stream,json=responseStream,proto3" json:"response_stream,omitempty"`
 }
