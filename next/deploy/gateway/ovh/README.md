@@ -6,6 +6,11 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-18 核心 **0.1.302**（Release `core-v0.1.302`，`92ca8c469`，内置 mailer 0.1.4；北京时间 03:40–03:41；无迁移，滚动；网关仍 0.1.138）：
+- 核心：`~/rel302/fetch.sh` 下载 Release 清单 `188dc02f01e331299f100dcccc4226a08c32e784415c515637e5f69d88c8ec78` 与两个 bundle（amd64 `ba765c82…d5d9`、arm64 `38519cf8…900e`），核对摘要后放进 `publish/sup2api/`（`stage/0.1.302/`），import，预检 rolling-v1、无 blocker（expected_revision 568），计划 `d218afa5ca5672abb9ba55a24f0c3889` 03:40:38→03:41:43（先 ccp 后 ovh，`~/rel302/observe.py`，输出 `~/rel302/plan.out`），ovh 3130 与 api.prophey.ai `/readyz` 全程 200。
+- 核验（`~/rel302/verify302.py`，输出 `verify-before.out`、`verify-after2.out`）：两节点核心 0.1.302，8 个插件 active、ready、restarts 0；mailer 在新核心就绪后由内置同步升级（03:41:58，0.1.3→0.1.4），刚就绪时查到的还是 0.1.3，要等约 20 秒再查。通知 3（03:41:37 控制台“发送测试”创建）的 last_error 已是“找不到 SMTP 服务器 mail.codingplus.ai（域名不存在）…”；SMTP 设置没有动。强制检测无更新、无错误；sup2api-1、sup2api-ccp 日志无 ERROR；`errs.sh` 03:30–03:50 无请求。
+- 回滚：0.1.301 清单 `8fb8ddbd75afb13eceaa6041f10bfc145249ed2aa7021df4a9add3369611b0b6` 建 rolling 计划（插件只升不降，mailer 留在 0.1.4）。
+
 2026-11-18 核心 **0.1.301**（Release `core-v0.1.301`，`e0a985c81`，内置 codex 0.1.10、dynweight 0.5.11，删除 custom；北京时间 01:18–01:19；迁移 0104，主节点优先；网关仍 0.1.138）：
 - 发布前（只读）：custom 账号 0（含已删除）；392 仍是管理员关闭（11-17 15:43:47，`manual operation`），用户定不动、不恢复；不备份数据库。
 - 核心：Release 清单 `8fb8ddbd75afb13eceaa6041f10bfc145249ed2aa7021df4a9add3369611b0b6` 与两个 bundle（amd64 `3e632f88…8684`、arm64 `7c27ff05…6e57`）核对摘要后放进 `publish/sup2api/`（`stage/0.1.301/`），import，预检 primary-first-v1、无 blocker（expected_revision 566），计划 `f6f50d8a3fa6cd5ad048d3462099583e` 01:18:22→01:19:27（`~/rel301/observe.py`，要 `sudo` 读 `shell.token`；输出 `~/rel301/plan.out`）：ccp 01:18:31 转为 forward，主节点 01:18:37 进入 maintenance，迁移 0104 于 01:18:41 应用，01:18:46 主节点就绪，ccp 01:19:26 恢复 local。**停服**：ovh 3130 与 api.prophey.ai `/readyz` 503 01:18:37.0→01:18:46.0 约 9 秒。schema `ab35f2f6…187d` → `50a07a21…2437`。

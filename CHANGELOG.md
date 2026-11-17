@@ -27,6 +27,11 @@
 
 ### 核心 0.1.302：通知投递错误看得懂、复制 API Key 不再二次验证（`0295123ea`，mailer 0.1.4；无迁移，滚动）
 
+- **Release**：tag `core-v0.1.302`（`92ca8c469`，即 `0295123ea` 加本节说明）自动构建（run 44155847574），北京时间 03:35:40 发布。清单 sha256 `188dc02f01e331299f100dcccc4226a08c32e784415c515637e5f69d88c8ec78`（amd64 bundle `ba765c82…d5d9`、arm64 `38519cf8…900e`，与 GitHub 资产摘要一致），strategy rolling，schema 仍 `50a07a21…2437`；内置集合只有 mailer 由 0.1.3 升到 0.1.4。网关没有改动，仍 0.1.138。`next/plugins/released.json` 按 `92ca8c469` 重写（mailer 0.1.4）。
+- **ovh 集群**：Release 清单与 bundle 核对摘要后导入，预检 rolling-v1、无阻断（expected_revision 568），计划 `d218afa5ca5672abb9ba55a24f0c3889` 03:40:38→03:41:43（先 ccp 后 ovh），ovh 3130 与 api.prophey.ai `/readyz` 全程 200。两节点核心 0.1.302，8 个插件 active、ready、restarts 0；mailer 在节点就绪后由内置同步升到 0.1.4（03:41:58，`plugin.upgrade` 0.1.3→0.1.4，原有 net 授权沿用）。通知记录 3（03:41:37 控制台“发送测试”创建，经 sup2api-ccp）重试后 last_error 为“SMTP host mail.codingplus.ai does not exist, correct it in the mailer settings / 找不到 SMTP 服务器 mail.codingplus.ai（域名不存在），请在邮件插件设置里改正: dial tcp …: no such host”，不再带 `internal: … plugin mailer: Unknown:` 前缀；旧记录 1、2 保留旧文字。SMTP 设置没有动。强制检测核心 0.1.302 无更新、无错误；两节点日志无 ERROR；03:30–03:50 无请求（392 关着）。
+- **ec2pool**（单节点）：计划 `ee9a061b7c1c6546f64cef3aba926e19` primary-first-v1 03:44:02→03:44:09，`/readyz` 503 03:44:05.8→03:44:09.8 约 4 秒。核心 0.1.302，anthropic、codex 0.1.10、gemini、moderation、openai active、ready、restarts 0（dynweight、mailer、volcengine 仍只安装未启用，mailer 0.1.4 包已存入）；两个 codex 账号（`codex_device`，id 2、3）active、可调度；强制检测无更新；日志无 ERROR。
+- 回滚：核心回 0.1.301（清单 `8fb8ddbd…b0b6`），ovh 集群 rolling、ec2pool 主节点优先；插件只升不降，mailer 留在 0.1.4。
+
 - **mailer 0.1.4：投递失败说明是哪一步、该查什么**（CONTRACTS §74.4）：SMTP 服务器域名不存在时，通知记录显示“找不到 SMTP 服务器 <host>（域名不存在），请在邮件插件设置里改正”；连不上、服务器不应答（含 TLS 握手失败）、STARTTLS 失败、登录失败、发件地址被拒也各有中英文说明，后面接底层错误。端口 465 没选“全程 TLS”、端口 587 选了“全程 TLS”时附上提示（这种组合以前只会等到超时）。
 - **核心**：插件自己返回的投递错误原样记入通知记录，不再带 `internal: internal error: plugin mailer: Unknown:` 前缀；错误截断到 1000 字节时在字符边界截断，中文错误不会写坏。
 - **控制台**：系统设置 → 通知的投递记录完整显示错误并换行，不再截断成一行（以前只看得到 `internal: internal error: plugin mailer: Unknown: dial t…`）。
