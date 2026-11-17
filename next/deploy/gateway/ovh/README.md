@@ -6,6 +6,17 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-17 网关 **0.1.136** + 核心 **0.1.293**（`eaf21e48`，develop；北京时间 16:07–16:10；发布清单不再签名，只校验摘要；网关先逐个节点手动换镜像，再用新网关导入不签名的核心清单，计划 `c72a712f4433b33b07698fc4aadc42f7` rolling-v1 completed，16:09:34→16:10:42，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `ab35f2f6…187d`（0103）；Host API 仍 9）：
+- 内容：CHANGELOG 2026-11-17“网关 0.1.136”“核心 0.1.293”（不签名清单、`updater.releases.manifest` 改 `bytea`、检测原因代码、角色从其他角色复制授权）。
+- 发布前核对：自 0.1.292（`e3f5d36aa`）起 `next/plugins`、`next/sdk` 与核心迁移 SQL 没有改动（最后仍是 0103），`runtime-contract` 只删了 `SignedManifest`，peer 协议仍 2；`updater.releases` 没有 0.1.293 行（另一会话从 `f4567e55b` 起的签名版 0.1.293 已取消，未导入）。
+- 构建：`stage/0.1.293-unsigned/`（取自 `stage/0.1.291/` 模板，单独目录、单独的 UI 镜像标签与测试网络；内置集合 = `stage/0.1.292` 逐字节，9 个包，仍用 sup2api-plugins-2026 签名）。`pack.sh` 用新网关镜像里的 `sub2api-release`（不再要发布密钥）写清单：清单 `cd41acb0068c0588bf566c470a0775d1d5def9b8be6e85627fdf5855dae8096b`（= 清单文件 sha256），bundle `ea874baff0f1a9735a90b56ad7f63a1c2efe5602267c3771666e8e4479fb3572`，核心 sha256 `444099ecc531d6b91a288ac1a8a5e275ff598a00c5323a43ca58fa366cc659ef`，strategy rolling。网关镜像 `sup2api-gateway:0.1.136`（`--build-arg VERSION=0.1.136`，`sha256:0e1cc8f9…607a`，runtime-contract 与 gateway 的 vet/test 通过；镜像包 `stage/0.1.293-unsigned/sup2api-gateway-0.1.136.tar.gz`，clicodeplus `/root/gateway-images/`）。`test.sh` TEST-OK（server 65 包、-race updater/httpapi/authz 5 包、sdk 19 包、控制台 2221 条与三个原生界面）。
+- 网关：`gwswap.sh`（让出 → `/readyz` 503 且在途 0 → `.env` 备份为 `.env.bak-gw135` → `GATEWAY_IMAGE=sup2api-gateway:0.1.136` → `docker compose up -d --no-deps`）。ccp 16:07:58→16:08:36（就绪 31 秒），ovh 16:08:49→16:08:58（5 秒）。换完 ccp 后 `updater.releases.manifest` 已是 `bytea`（`signed_manifest` 仍是可空的 `jsonb`），v0.1.290–v0.1.292 三行的 `digest` 都等于 `sha256(manifest)`。混跑约 13 秒，期间没有导入或应用发布。
+- 核心：`release.sh` 用新网关 import，`--preflight-only` 选中 rolling-v1、无 blocker（expected_revision 556）后执行（`~/rel293/observe.py`）。基线 `54bc00a9…` → `cd41acb0…`。9 个插件两节点 active、ready、restarts 0。
+- 渠道与备份：392 没有动（发布前 15:43:47 已被人工关闭，`manual operation`；15:10 起账号 126、127 成批 502 upstream request failed，与本次发布无关）；不备份数据库。
+- 核验：两节点核心 0.1.293、网关 0.1.136；`/system/update-check` 两条线 `reason_code: no_release`；控制台只读检查（`~/rel293/pw/ui293.mjs`）：“设置 → 在线更新”显示中文原因，节点页两节点 0.1.293 / 0.1.136，无页面错误与 API 4xx/5xx；两节点日志无 ERROR；`errs.sh` 16:07 起没有请求（392 关着），5xx 0。
+- 回滚：核心用 0.1.292 清单 `54bc00a95ee1837d284eb1ff03138d3619f1dcec7e39fe6913efa5d05dd5a682` 建 rolling 计划；基线已换成不签名的 0.1.293，网关不能回到 0.1.135（`.env.bak-gw135` 只在导入不签名发布前有用），网关修复前进。
+- 脚本 `stage/0.1.293-unsigned/`；工作树 `~/sup2api/release-0.1.293-eaf21e48`；计划观测与核验在 `~/rel293/`。上游同步 PR 未提。
+
 2026-11-17 核心 **0.1.291** + 网关 **0.1.135**（`a0eac3c38`，develop 头；北京时间 03:55–03:58；核心计划 `8041bf318cb8884029391dee3061d87f` rolling-v1 completed，03:55:33→03:56:41，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `d78ba831…333c`；Host API 仍 9；网关镜像随后逐个节点手动更换）：
 - 内容：删除为外壳 0.1.133 与回退到 0.1.288 保留的代码（托管核心必须有 `SUB2API_UPDATER_TOKEN_FILE`）、升级预检误报修正、版本检测与一键更新（CONTRACTS §102；网关启动时幂等追加 `updater.*` 列与 `updater.update_checks`，删除 `updater.nodes.cpu_percent`），CHANGELOG 2026-11-17。
 - 发布前核对：自 0.1.290（`e3906cc68`）起 `next/plugins`、`next/sdk` 与核心迁移 SQL 都没有改动（最后仍是 0102），peer 协议仍 2；`runtime-contract` 只删了 `Hello.capabilities`。
