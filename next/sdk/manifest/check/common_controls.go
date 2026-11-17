@@ -82,6 +82,9 @@ func (v *validator) controlDefault(f, name string, spec manifest.CommonControlSp
 	case manifest.ControlParamOverride:
 		_, errs := paramoverride.Compile(f, raw, false)
 		v.addAll(errs)
+	case manifest.ControlHeaderOverride:
+		_, errs := paramoverride.CompileHeaderOverride(f, raw, false)
+		v.addAll(errs)
 	case manifest.ControlHeaderPassthrough:
 		var rules []string
 		if err = decodeStrict(raw, &rules); err == nil {

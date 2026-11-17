@@ -61,6 +61,7 @@ type row struct {
 	Environment       core.EnvironmentValues
 	HeaderPassthrough []string
 	ParamOverride     []byte
+	HeaderOverride    []byte
 	LossPolicy        *string
 	LastUsedAt        *time.Time
 	CreatedBy         *int64
@@ -94,7 +95,7 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.owner_id, o.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked,a.header_override`
 
 // rowJoins join the users whose emails rowColumns read: u the creator, o
 // the owner.
@@ -116,7 +117,7 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.OwnerID, &a.OwnerEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked, &a.HeaderOverride)
 	a.Environment = env.V
 	return &a, err
 }
@@ -178,6 +179,7 @@ func (a *row) coreAccount(plain []byte) core.Account {
 		Settings:          json.RawMessage(settings),
 		HeaderPassthrough: a.HeaderPassthrough,
 		ParamOverride:     core.LoadParamOverride(a.ParamOverride),
+		HeaderOverride:    core.LoadHeaderOverride(a.HeaderOverride),
 	}
 }
 
@@ -291,6 +293,9 @@ type View struct {
 	// ParamOverride is the account's request parameter override (CONTRACTS
 	// §84); null = none.
 	ParamOverride json.RawMessage `json:"param_override"`
+	// HeaderOverride is the account's request header override (CONTRACTS
+	// §108); null = none.
+	HeaderOverride json.RawMessage `json:"header_override"`
 	// ConversionLossPolicy is the account's conversion loss policy (§88);
 	// null inherits the group's.
 	ConversionLossPolicy *string        `json:"conversion_loss_policy"`
@@ -368,7 +373,7 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			StatusReason: a.StatusReason, AdminLocked: a.AdminLocked, AutoDisabledUntil: a.AutoDisabledUntil, Schedulable: a.Schedulable, AutoDisable: a.AutoDisable, Priority: a.Priority, Weight: a.Weight,
 			MaxConcurrency: a.MaxConcurrency, Models: models, ModelMapping: a.mapping(),
 			RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(), Environment: a.Environment,
-			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, ConversionLossPolicy: a.LossPolicy,
+			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, HeaderOverride: a.HeaderOverride, ConversionLossPolicy: a.LossPolicy,
 			Orphaned: !s.pluginActive(a.PluginKey), Settings: st,
 			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail, OwnerID: a.OwnerID, OwnerEmail: a.OwnerEmail,
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
@@ -799,6 +804,9 @@ type input struct {
 	// ParamOverride replaces the request parameter override (§84); null or
 	// {} clears it, absent keeps it.
 	ParamOverride json.RawMessage `json:"param_override"`
+	// HeaderOverride replaces the request header override (§108); null or
+	// {} clears it, absent keeps it.
+	HeaderOverride json.RawMessage `json:"header_override"`
 	// ConversionLossPolicy sets (allow, safe, strict) or, with null, clears
 	// the conversion loss policy (§88); absent keeps it.
 	ConversionLossPolicy core.LossPolicyInput `json:"conversion_loss_policy"`
@@ -813,13 +821,13 @@ func (in *input) hasCredentials() bool {
 	return creds != "" && creds != "null"
 }
 
-// paramOverride is the param_override column value: nil (NULL) when the
-// override is absent or cleared.
-func (in *input) paramOverride() *string {
-	if len(in.ParamOverride) == 0 || string(in.ParamOverride) == "null" {
+// overrideColumn is the column value of a validated override field
+// (param_override, header_override): nil (NULL) when it is absent or cleared.
+func overrideColumn(raw json.RawMessage) *string {
+	if len(raw) == 0 || string(raw) == "null" {
 		return nil
 	}
-	s := string(in.ParamOverride)
+	s := string(raw)
 	return &s
 }
 
@@ -852,7 +860,10 @@ func (in *input) columns(settings, reason, mapping, limits *string, adminLocked 
 	}
 	setList(set, "header_passthrough", in.HeaderPassthrough)
 	if len(in.ParamOverride) > 0 {
-		set["param_override"] = in.paramOverride()
+		set["param_override"] = overrideColumn(in.ParamOverride)
+	}
+	if len(in.HeaderOverride) > 0 {
+		set["header_override"] = overrideColumn(in.HeaderOverride)
 	}
 	if in.ConversionLossPolicy.Set {
 		set["conversion_loss_policy"] = in.ConversionLossPolicy.Stored()
@@ -898,6 +909,7 @@ func (in *input) changedFields() []string {
 	set("environment", in.Environment != nil)
 	set("header_passthrough", in.HeaderPassthrough != nil)
 	set("param_override", len(in.ParamOverride) > 0)
+	set("header_override", len(in.HeaderOverride) > 0)
 	set("conversion_loss_policy", in.ConversionLossPolicy.Set)
 	set("credentials", in.hasCredentials())
 	set("settings", len(in.Settings) > 0)
@@ -1023,6 +1035,11 @@ func (in *input) validateScheduling(ctx context.Context) []core.FieldError {
 		p, errs := core.CompileParamOverride(ctx, "param_override", in.ParamOverride)
 		fe = append(fe, errs...)
 		in.ParamOverride = p.Raw()
+	}
+	if len(in.HeaderOverride) > 0 {
+		m, errs := core.CompileHeaderOverride(ctx, "header_override", in.HeaderOverride)
+		fe = append(fe, errs...)
+		in.HeaderOverride = m.Raw()
 	}
 	fe = append(fe, in.ConversionLossPolicy.Validate(ctx, "conversion_loss_policy")...)
 	if in.ModelLimits != nil {
@@ -1337,7 +1354,7 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
 	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by", "owner_id",
 	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
-	"conversion_loss_policy", "spm_window_seconds"}
+	"header_override", "conversion_loss_policy", "spm_window_seconds"}
 
 // nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
 func nonZero[T comparable](v T) *T {
@@ -1536,7 +1553,8 @@ func (s *Service) create(c *gin.Context) {
 			MaxConcurrency: &maxc, CreatedBy: nonZero(uid), OwnerID: nonZero(uid), Weight: &weight, Models: store.Strings(models),
 			ModelMapping: json.RawMessage(mappingJSON(mapping)), RpmLimit: rpm, TpmLimit: tpm, AutoDisable: &autoDisable,
 			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
-			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(in.paramOverride()),
+			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(overrideColumn(in.ParamOverride)),
+			HeaderOverride:       rawJSON(overrideColumn(in.HeaderOverride)),
 			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
 		if err := store.G(ctx, tx).Select(accountInsertColumns).Create(&created).Error; err != nil {
 			return err

@@ -520,7 +520,7 @@ export interface ModelRateUsage {
 /** Account fields an account type may declare a common control for (manifest accountTypes[].commonControls). */
 export const COMMON_CONTROL_NAMES = [
   'schedulable', 'auto_disable', 'priority', 'weight', 'max_concurrency', 'rpm_limit', 'tpm_limit', 'spm_limit', 'spm_window_seconds',
-  'model_limits', 'usage_limit', 'model_mapping', 'param_override', 'header_passthrough', 'environment', 'proxy'
+  'model_limits', 'usage_limit', 'model_mapping', 'param_override', 'header_override', 'header_passthrough', 'environment', 'proxy'
 ] as const
 export type CommonControlName = (typeof COMMON_CONTROL_NAMES)[number]
 
@@ -671,6 +671,8 @@ export interface Account {
   header_passthrough?: string[]
   /** Request parameter override in new-api's param_override format (CONTRACTS §84); null when unset. */
   param_override?: Record<string, unknown> | null
+  /** Request header override in new-api's channel header_override format (CONTRACTS §108); null when unset. */
+  header_override?: Record<string, string> | null
   /** Loss policy for converted requests; null inherits the group's. */
   conversion_loss_policy?: ConversionLossPolicy | null
   /** Read-only usage of the last 60 seconds, sessions within each layer's spm_window_seconds (0 when Redis is unavailable), with one entry per model list. */

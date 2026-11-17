@@ -1307,7 +1307,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.18.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.19.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -5783,6 +5783,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **禁止列表**（任何规则都不透传，`core.HeaderPassthroughBlocked`）：逐跳和分帧头（connection、keep-alive、te、trailer、transfer-encoding、upgrade、expect、host、content-length、content-encoding、accept-encoding），凭证（authorization、x-api-key、x-goog-api-key、api-key、cookie），客户端地址和代理痕迹（x-forwarded-for、x-forwarded-host、x-forwarded-proto、x-forwarded-port、x-real-ip、forwarded、via、cf-connecting-ip、true-client-ip、x-client-ip、x-cluster-client-ip），以及前缀 `proxy-`、`sec-websocket-`、`x-sub2api-`（本网关内部头）、`x-kin-`（vm2api/sakura 的控制头，例如 `x-kin-debug` 会让下游写调试日志并回传槽位和账号）。比 new-api 的跳过列表多了客户端地址和网关控制头，避免客户端伪造 IP 或操控下游。
 - 控制台：账号编辑页“高级”分区（左侧导航第 4 项）的“请求转发”组：请求头透传（标签输入，一条一个规则）和账号层环境变量（各项超时，从“调度与限流”移来）。导航摘要如“透传 * · 超时跟随”，都没配时“全部跟随默认”；`header_passthrough`、`environment.*` 的字段错误定位到这个分区。这一组也放请求参数覆盖（§84）。
 - 未做：分组 / 全局层的透传、WebSocket 端点（`websocket.go`）的透传。
+- 2026-11-17 起另有账号请求头覆盖（§108，new-api 渠道 `header_override` 的格式），其中的透传键与本节规则取并集。
 - **粘性规则的透传头**（2026-11-06，迁移 0090，参考 new-api 渠道亲和规则模板里的 `pass_headers`）：`sticky_rules.pass_headers text[]`，接口字段 `pass_headers`，manifest `StickyRule.passHeaders`。规则写法、校验和禁止列表与账号透传相同（字段名 `pass_headers`）。请求命中某条粘性规则并取到会话值时（`c.sticky` 非空），核心在账号透传之后再按这条规则补上客户端请求头，同样不覆盖已设置的头；粘性会话关闭、没有命中规则、count_tokens 请求都不透传。内置规则 `claude-code-session` 默认带 `x-claude-code-session-id`、`x-claude-code-agent-id`、`x-claude-code-parent-agent-id`、`x-claude-code-request-class`、`x-claude-code-agent-type`；`pass_headers` 属于规则定义，管理员改过的内置规则升级时不被覆盖，“恢复默认”时重置。
 - **平台默认**：内置 anthropic 平台的 `passHeaders` 和 anthropic 插件（0.2.9）的默认转发同样带上这 5 个头，所以 anthropic API Key 账号不配置也会转发。
 
@@ -5970,11 +5971,11 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
   - `return_error`：见下。
   - 请求头：`set_header`（`path` 为头名，`value` 为字符串或令牌映射，结果为空即删除这个头；`keep_origin` 时前面的操作已设置则跳过）、`delete_header`、`copy_header`/`move_header`（`from`/`to` 为空时取 `path`；源头不存在时跳过、不报错；move 同时删除源头）、`pass_headers`（`value` 为头名数组或逗号分隔字符串，逐个把客户端头原样带上）。头的当前值先取前面操作设置的值，再取客户端请求头；被删除的头视为不存在。
   - 令牌映射（编辑 `anthropic-beta` 这类逗号列表头）：`{"<令牌>": 替换（字符串、数组，null 表示去掉）, "*": 未声明令牌的替换, "$append": [追加的令牌], "$keep_only_declared": true}`，把当前值按逗号拆开逐个映射，去重后用 `,` 连接。
-  - `prune_objects`、`sync_fields` 和未知模式报 `unsupported`（暂不支持）。
-- **条件**：`full`（null 只等于 null，布尔按布尔比较，其余类型不同是运行失败）、`prefix`、`suffix`、`contains`（按字符串）、`gt`、`gte`、`lt`、`lte`（两边都须是数字，否则运行失败）；`invert` 取反；路径取不到时结果就是 `pass_missing_key`（不取反）。条件路径先在请求体里找，找不到再到上下文对象里找。
-- **上下文键**：`model`、`upstream_model`（账号模型映射后的上游模型）、`original_model`（客户端模型）、`request_path`、`request_headers.<小写头名>`（客户端请求头，多个值用 `, ` 连接；禁止列表里的头不出现）、`header_override.<头名>`（前面的头操作已设置的值）、`retry_index`、`is_retry`、`retry.index`、`retry.is_retry`、`user_id`、`group`（分组名）、`account_id`、`stream`（含 streamOnly 强制的流式）。构造在 `core.ParamOverrideContext`，网关和预览共用。
+  - `sync_fields`、`prune_objects`（2026-11-17 补齐，见 §108.4）。未知模式报 `unsupported`。
+- **条件**：`full`（null 只等于 null，布尔按布尔比较，其余类型不同是运行失败）、`prefix`、`suffix`、`contains`（按字符串）、`regex`（Go 正则，值须是字符串，保存时编译，§108.4）、`gt`、`gte`、`lt`、`lte`（两边都须是数字，否则运行失败）；`invert` 取反；路径取不到时结果就是 `pass_missing_key`（不取反）。条件路径先在请求体里找，找不到再到上下文对象里找。
+- **上下文键**：`model`、`upstream_model`（账号模型映射后的上游模型）、`original_model`（客户端模型）、`request_path`、`request_headers.<小写头名>`（客户端请求头，多个值用 `, ` 连接；禁止列表里的头不出现）、`header_override.<头名>`（账号请求头覆盖 §108 与前面的头操作已设置的值）、`retry_index`、`is_retry`、`retry.index`、`retry.is_retry`、`user_id`、`group`（分组名）、`using_group`（同 `group`，§108.4）、`account_id`、`stream`（含 streamOnly 强制的流式）。构造在 `core.ParamOverrideContext`，网关和预览共用。
 - **生效位置**（§86.5）：每次尝试执行一次，在模型映射、`mapReferencedModels`、`mapResourceReferences`、`forceStreamPath`、声明式上游的过滤字段与清单 paramOverride **之后**，取 `requestFields` 和 BuildUpstreamRequest / `platform.execute.v1` 的 Execute **之前**（`gateway/param_override.go` `rewriteBody`）。插件看到的就是覆盖后的请求体，`meta.model` 是覆盖后的模型，插件的 patch 还可以再改覆盖的结果：插件改写是插件自己的内部特殊逻辑，插件知道前面已经执行过账号参数覆盖，所以排在覆盖之后，看到覆盖结果再改（用户 2026-11-09 定）。WebSocket 每轮 `response.create` 同样在插件 patch 之前执行请求体部分。`forwardBuilt` 在插件 patch 之后仍重新强制 stream。
-- **请求头优先级**（`forwardBuilt`，含插件经核心转发的执行请求，后面的盖前面的）：声明构造的头（inbound、预设、清单、路由）和声明的 paramOverride 头 → 账号透传（§81）和粘性规则透传（只补没有的）→ **参数覆盖的设置和删除** → 插件的头（老插件构造的头、extend 追加的头；理由同请求体）→ 声明式类型的鉴权头重写（§86.5）→ 核心的资源头、额度头（仍然最后设置、最优先）。WebSocket 握手同样分层（没有透传）。头名须是合法字段名；落在 §81 禁止列表（`core.HeaderPassthroughBlocked`）里的头，不论作为目标还是 copy/move/pass 的源，都报 `blocked`。
+- **请求头优先级**（`forwardBuilt`，含插件经核心转发的执行请求，后面的盖前面的）：声明构造的头（inbound、预设、清单、路由）和声明的 paramOverride 头 → 账号透传（§81）、请求头覆盖的透传键（§108）和粘性规则透传（只补没有的）→ 请求头覆盖的设值和删除（§108）→ **参数覆盖的设置和删除** → 插件的头（老插件构造的头、extend 追加的头；理由同请求体）→ 声明式类型的鉴权头重写（§86.5）→ 核心的资源头、额度头（仍然最后设置、最优先）。WebSocket 握手同样分层（没有透传）。头名须是合法字段名；落在 §81 禁止列表（`core.HeaderPassthroughBlocked`）里的头，不论作为目标还是 copy/move/pass 的源，都报 `blocked`。
 - **模型**：覆盖改了请求体的模型字段（平台的 `modelPath`）时，上游模型以覆盖结果为准：`meta.model`、使用记录的 `upstream_model`、上游用量的主模型身份都用它，`forwardBuilt` 的模型可用性一致性检查也以它为期望值，不会因此报 `upstream_model_mismatch`。计费仍按客户端模型；可用性预检仍按映射后的模型。
 - **return_error**：`value` 为消息字符串，或 `{message|msg, status_code|status, code, type, skip_retry}`；默认 400、`invalid_request`、`invalid_request_error`、`skip_retry: true`，状态码须在 100–599。`skip_retry: true` 直接回给客户端（记录类型 `invalid_request`），false 换下一个账号（所有账号都这样时把最后一个错误回给客户端）。不冷却、不惩罚账号；有失败策略时也不跑账号规则（与可用性拒绝相同）。
 - **运行失败**（类型不符、源路径不存在、条件比较的类型不符等）：WARN 日志带账号 ID，本次尝试换账号（`param_override_failed`，记录类型 `internal`，全都失败时客户端看到“无可用账号”），同样不惩罚账号。
@@ -6092,8 +6093,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
-- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（另有 `UpstreamEditor`，UI 3.18 删除，§106.4），v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
-- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
+- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（另有 `UpstreamEditor`，UI 3.18 删除，§106.4；UI 3.19 加 `HeaderOverrideEditor`，§108.3），v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
+- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`；UI 3.19 加 `header-override`，§108.3）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
 - `SModal` / `SFormModal` 新增 `fixed`（只是新增属性，更早的核心忽略、平稳降级，见 §23 组件表）。
 
 ### 87.4 编辑页分区插槽 `account.editor.section`
@@ -7831,3 +7832,52 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - Host API 不升，仍是 9，理由同 91.3、93：只加 RPC，升版会让 rolling-v1 滚动更新不可用。
 - 旧核心对 `GetSettings` 回 `UNIMPLEMENTED`，也不会调 `SettingsChanged`。用到本节的插件把 `hostCompat` 下限提到 `>=0.1.301`。
 - 没有迁移。环境变量设置的 `config:changed` payload 从 `{"key":"environment"}` 改为 `{"key":"settings.environment"}`，与其他分组一致。滚动更新期间新旧节点互相认不出对方的这条广播，全局层缓存最多晚 10 秒（§74.3 的缓存时长）。
+
+## 108. 账号请求头覆盖与参数覆盖补齐（2026-11-17，用户要求“请求头覆盖参考 new-api 进行优化，支持 new-api 的覆盖方式”；迁移 0105；设计见 [DESIGN-2026-11-17-header-override.md](DESIGN-2026-11-17-header-override.md)）
+
+### 108.1 字段与格式
+
+- **字段**：`accounts.header_override jsonb`（NULL = 无），接口字段 `header_override`（对象或 null，列表、详情返回）。`POST`/`PATCH /accounts` 整体替换，PATCH 不带时不变；只有 `null`、`{}` 清空，只含被忽略的项（空键、空值）的对象照原样保存。账号载入目录缓存时编译一次；已存的值编译不过时，这个账号的每次尝试（HTTP 和 WebSocket 握手）按运行失败处理：`param_override_failed` 换号，不冷却（同 §84）。
+- **格式**：与 new-api 渠道的 `header_override` 相同，键是请求头名（不区分大小写），值是字符串：
+
+  | 写法 | 含义 |
+  |---|---|
+  | 键 `*` | 透传全部客户端请求头，值忽略 |
+  | 键 `re:<正则>`、`regex:<正则>` | 透传名称匹配的请求头（不区分大小写），值忽略 |
+  | 普通文本 | 设成这个值 |
+  | `{client_header:名}` | 客户端这个头的值，客户端没带时不设 |
+  | `{client_header:名:追加值}` | 客户端带了为 `客户端的值,追加值`，没带为 `追加值` |
+  | `{unset}` | 删除这个头 |
+  | 空字符串 | 忽略 |
+  | 空键（含只有空白的键） | 忽略（同 new-api） |
+
+- **校验**（字段 `header_override`，消息以键开头）：必须是对象（`invalid`）；值必须是字符串（`invalid`）；最多 100 项（`too_many`）、64 KiB（`too_large`）；透传键规则同 §81（最多 32 条、正则能编译）；头名须是合法字段名，值不得含控制字符（水平制表符除外）；占位符须是整个值，名称、追加值不能为空（`invalid`）；目标头或 `client_header` 的来源头落在 §81 禁止列表报 `blocked`；`{api_key}` 报 `unsupported`。
+- **运行时**：经 `client_header` 取到的客户端值含控制字符时（经 net/http 进来的请求不会有）不写这个头，按运行失败处理，同上。
+- **与 new-api 的差异**：
+  - 凭证（Authorization、x-api-key、Cookie 等）、逐跳头（含 Host）、客户端地址和网关控制头既不能设置、删除，也不能经 `client_header` 读取，凭证只由账号类型的鉴权设置（有意如此）；不支持 `{api_key}`（账号密钥由插件持有）。
+  - 正则透传不区分大小写。
+  - 客户端同名头有多个值时，`client_header` 取全部，以 `, ` 连接（new-api 取第一个）。
+  - 透传键只补上游请求里还没有的头，不进参数覆盖的初始状态，所以参数覆盖 `set_header` 的 `keep_origin` 不保留透传来的头（new-api 把透传的头并入请求头覆盖的结果，`keep_origin` 会保留）。
+  - 值和 `param_override` 一样随账号返回给有 `account:read` 的人，不要放密钥；凭证头本来就写不进去。
+
+### 108.2 生效位置
+
+- 请求头分层（§84、§86.5）：声明构造的头 → 透传（只补没有的：账号 §81 规则、**本字段的透传键**、粘性规则）→ **本字段的设值和 `{unset}`** → 账号参数覆盖（§84）的设置和删除 → 插件的头 → 声明式鉴权头 → 核心资源头、额度头。
+- 参数覆盖以本字段解析出的结果为初始请求头状态（同 new-api）：条件可读 `header_override.<名>`，`set_header` 的 `keep_origin` 不覆盖它设的头，`copy_header`、`pass_headers`、`sync_fields` 的 `header:` 源先取它的值再取客户端的，参数覆盖可以再改、再删它设的头。
+- WebSocket 握手同样应用设值和删除，透传键不生效（同 §81）。请求头覆盖与首条消息的请求体改写分开解析：改写失败时（由这一轮报告）握手仍带请求头覆盖的决定；解析失败时这个账号换号，同 HTTP。
+- 预览 `POST /accounts/param-override/preview` 可带 `header_override`，结果的 `set_headers`、`delete_headers` 包含它的决定。
+
+### 108.3 通用配置项与控制台
+
+- 通用配置项（§87）新增 `header_override`（kind `header_override`，默认值是对象，清单检查用同一个编译器）。
+- 控制台：账号编辑页“高级 › 请求转发”组，请求头透传与请求参数覆盖之间一行“请求头覆盖”，编辑弹窗为键值表格（值旁有占位符快捷项）和 JSON 文本两种模式，可直接粘贴 new-api 的配置；导航摘要加“请求头覆盖 N 项”。
+- UI 3.19（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.19.0，`HOST_UI_VERSION` 3.19.0，只加不改）：宿主组件 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`）、schema 控件 `header-override`；`ParamOverrideEditor` 另收可选的 `headerOverride`，试运行从它的结果开始。用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.302（最后一个带 UI 3.18 的核心）。
+
+### 108.4 参数覆盖（§84）补齐
+
+- 条件模式 `regex`：值须是字符串，保存时编译（Go 正则）。
+- `sync_fields`：`from`、`to` 为 `json:路径`、`body:路径`、`header:名`，不带前缀按 JSON 路径；一边有值（非 null、非空字符串）而另一边没有时复制过去，其余情况不动。`header:` 的名受 §81 禁止列表约束。写进请求头的值（对象、数组按 JSON 文本）含控制字符时不写，按运行失败处理（`param_override_failed` 换号，不冷却），不把上游传输层会拒绝的请求发出去；`copy_header`、`pass_headers`、`set_header` 的令牌映射同样如此，`set_header` 的固定值和令牌含控制字符在保存时报 `invalid`。
+- `prune_objects`：在 `path`（空为整个请求体；`*`、负下标同其他路径操作）下的每个位置删除满足条件的对象，这些位置上的对象本身不删；`value` 为字符串（去掉首尾空白后等于 `{"type": 值}`）或 `{logic: AND（默认）| OR, recursive: true（默认）| false, conditions, where, type}`，条件写法同操作的 `conditions`，`where` 的路径去掉首尾空白、跳过空键（同 new-api），路径相对被检查的对象，取不到再查上下文。对象成员重复的键（同 new-api）：命中的成员键所有副本一起删除。
+- 路径里由成员键拼出的段（顶层字面键、`*` 展开、合并、`prune_objects`）中 `.`、`*`、`?`、`#`、`@`、`|`、`\` 按字面处理。操作的 `conditions` 写成对象时键原样作路径（不去空白）。
+- `pass_headers` 的值另收对象 `{headers | names | header}` 和 JSON 字符串。
+- 上下文增加 `using_group`（同 `group`）。new-api 的 `user_group`、`token_group`、`last_error*`、`is_channel_test` 不提供，按缺失处理。

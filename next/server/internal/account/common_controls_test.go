@@ -33,6 +33,7 @@ func TestCommonControlEnforcement(t *testing.T) {
 		"spm_window_seconds": {Default: raw(`300`)},
 		"header_passthrough": {Visible: &off, Default: raw(`["X-Foo"]`)},
 		"param_override":     {Locked: true, Default: raw(`{"temperature": 0.5}`)},
+		"header_override":    {Default: raw(`{"User-Agent": "client/1.0"}`)},
 		"usage_limit":        {Locked: true, Default: raw(`{"enabled": true, "amount": "5", "period": "day", "timezone": "UTC"}`)},
 		"proxy":              {Required: true},
 	})
@@ -80,6 +81,7 @@ func TestCommonControlEnforcement(t *testing.T) {
 	require.Equal(t, 300.0, created["spm_window_seconds"])
 	require.Equal(t, []any{"x-foo"}, created["header_passthrough"])
 	require.Equal(t, map[string]any{"temperature": 0.5}, created["param_override"])
+	require.Equal(t, map[string]any{"User-Agent": "client/1.0"}, created["header_override"])
 	id := itoa(int64(created["id"].(float64)))
 	status, result = e.do("GET", "/accounts/"+id+"/usage-limit", nil)
 	require.Equal(t, 200, status)
@@ -90,6 +92,7 @@ func TestCommonControlEnforcement(t *testing.T) {
 	status, result = e.do("POST", "/accounts", body(map[string]any{"name": "chosen", "priority": 70, "header_passthrough": []string{}}))
 	require.Equal(t, 201, status, result)
 	require.Equal(t, 70.0, data(result)["priority"])
+	require.Equal(t, map[string]any{"User-Agent": "client/1.0"}, data(result)["header_override"])
 	require.Equal(t, 300.0, data(result)["spm_window_seconds"])
 	require.Empty(t, data(result)["header_passthrough"])
 

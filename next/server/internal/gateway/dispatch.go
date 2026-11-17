@@ -662,16 +662,16 @@ func setBuiltHeaders(req *http.Request, h map[string]string) {
 }
 
 // passthroughHeaders fills in the client headers the account's passthrough
-// (CONTRACTS §81) and the matched sticky rule (§5.6; the built-in Claude
-// Code rule forwards the session and sub-agent headers) forward, where h
-// has none yet.
+// (CONTRACTS §81), the passthrough keys of its header override (§108) and
+// the matched sticky rule (§5.6; the built-in Claude Code rule forwards the
+// session and sub-agent headers) forward, where h has none yet.
 func (c *call) passthroughHeaders(h http.Header, acc *core.Account) {
 	if c.c == nil || c.c.Request == nil {
 		return
 	}
 	var rules [][]string
 	if acc != nil {
-		rules = append(rules, acc.HeaderPassthrough)
+		rules = append(rules, acc.HeaderPassthrough, acc.HeaderOverride.Passthrough())
 	}
 	if c.sticky != nil {
 		rules = append(rules, c.sticky.rule.PassHeaders)
@@ -817,7 +817,8 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	}
 	// Headers in layers (CONTRACTS §86.5), each over the one before: the
 	// declaration's and its paramOverride's, the passthrough (fills only
-	// what is unset), the account's parameter override, the plugin's (it
+	// what is unset), the account's header override (§108) and parameter
+	// override (one result, param_override.go), the plugin's (it
 	// knows the override ran and may change its result), then the declared
 	// auth header and the core's own below.
 	declared, plugin := splitHeaders(rt, request, built)

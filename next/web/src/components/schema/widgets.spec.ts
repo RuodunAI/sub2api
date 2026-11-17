@@ -18,6 +18,7 @@ const schema = {
     headers: { type: 'array', items: { type: 'string' } },
     limits: { type: 'object' },
     override: { type: 'object' },
+    header_override: { type: 'object' },
     model_limits: { type: 'array', items: { type: 'object' } },
     mapping: { type: 'object' }
   }
@@ -26,6 +27,7 @@ const uiSchema = {
   headers: { 'ui:widget': 'header-passthrough' },
   limits: { 'ui:widget': 'rate-limits' },
   override: { 'ui:widget': 'param-override' },
+  header_override: { 'ui:widget': 'header-override' },
   model_limits: { 'ui:widget': 'model-limits' },
   mapping: { 'ui:widget': 'model-mapping' }
 }
@@ -55,6 +57,7 @@ describe('core editor widgets (docs/COMMON-CONTROLS.md §3)', () => {
       'entity-select',
       'param-override',
       'header-passthrough',
+      'header-override',
       'rate-limits',
       'model-limits',
       'model-mapping'
@@ -62,10 +65,11 @@ describe('core editor widgets (docs/COMMON-CONTROLS.md §3)', () => {
   })
 
   it('edits each field in the account API format, without the schema props on the controls', async () => {
-    const w = await render({ headers: ['x-a'], limits: { rpm_limit: 1 }, mapping: { a: 'b' }, model_limits: [] })
+    const w = await render({ headers: ['x-a'], limits: { rpm_limit: 1 }, mapping: { a: 'b' }, model_limits: [], header_override: { 'x-b': '{unset}' } })
     expect(w.getComponent(STagInput).props('modelValue')).toEqual(['x-a'])
     expect(w.getComponent(SKeyValue).props('modelValue')).toEqual({ a: 'b' })
     expect(w.find('[data-testid="account-param-override-summary"]').exists()).toBe(true)
+    expect(w.get('[data-testid="account-header-override-summary"]').text()).toContain('1')
     expect(w.find('[schema]').exists()).toBe(false)
     expect(w.find('[multiple]').exists()).toBe(false)
 

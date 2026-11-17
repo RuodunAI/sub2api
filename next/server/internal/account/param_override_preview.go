@@ -27,19 +27,24 @@ type paramOverridePreview struct {
 // previewParamOverride runs a request parameter override on a sample request
 // without saving anything (CONTRACTS §84): the console's dry run. The model
 // is the context's model, upstream_model and original_model (the body's
-// model when omitted); headers are the client request headers.
+// model when omitted); headers are the client request headers. An optional
+// header_override (§108) is resolved against them first and seeds the run,
+// as on a real request.
 func (s *Service) previewParamOverride(c *gin.Context) {
 	ctx := c.Request.Context()
 	var in struct {
-		ParamOverride json.RawMessage   `json:"param_override"`
-		Body          json.RawMessage   `json:"body"`
-		Model         string            `json:"model"`
-		Headers       map[string]string `json:"headers"`
+		ParamOverride  json.RawMessage   `json:"param_override"`
+		HeaderOverride json.RawMessage   `json:"header_override"`
+		Body           json.RawMessage   `json:"body"`
+		Model          string            `json:"model"`
+		Headers        map[string]string `json:"headers"`
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
 	}
 	p, fe := core.CompileParamOverride(ctx, "param_override", in.ParamOverride)
+	hm, hfe := core.CompileHeaderOverride(ctx, "header_override", in.HeaderOverride)
+	fe = append(fe, hfe...)
 	body := bytes.TrimSpace(in.Body)
 	if len(body) == 0 || string(body) == "null" {
 		body = []byte("{}")
@@ -60,8 +65,14 @@ func (s *Service) previewParamOverride(c *gin.Context) {
 		headers.Set(k, v)
 	}
 	uid, _ := core.UserID(ctx)
-	out, err := p.Apply(body, &core.ParamOverrideContext{Model: model, OriginalModel: model, Headers: headers, UserID: uid,
-		Stream: gjson.GetBytes(body, "stream").Bool()})
+	// Compiled just now, Resolve fails only on a client value with a
+	// control character, as a run would.
+	seed, err := hm.Resolve(headers)
+	var out core.ParamOverrideResult
+	if err == nil {
+		out, err = p.Apply(body, &core.ParamOverrideContext{Model: model, OriginalModel: model, Headers: headers, UserID: uid,
+			Stream: gjson.GetBytes(body, "stream").Bool(), InitialHeaders: seed})
+	}
 	res := paramOverridePreview{Body: out.Body, SetHeaders: out.Headers.Set, DeleteHeaders: out.Headers.Delete}
 	var returned *core.ParamOverrideError
 	switch {

@@ -14,6 +14,7 @@ const props = defineProps<{ problems: Problem[]; contextListId: string }>()
 const { t } = useI18n()
 const P = 'accounts.paramOverride'
 const HEADER_EXAMPLES = { remove: '{"context-1m-2025-08-07": null}', append: '"$append": ["…"]' }
+const PRUNE_EXAMPLE = { example: '{"type": "…", "where": {…}, "conditions": […], "logic": "AND", "recursive": true}' }
 
 const meta = computed(() => MODES[draft.value.mode])
 const modes = computed(() => modeOptions(t))
@@ -29,7 +30,17 @@ const fromTo = computed(() => {
     ? { from: regex ? 'regexFrom' : 'textFrom', to: regex ? 'regexTo' : 'textTo' }
     : { from: `${kind}From`, to: `${kind}To` }
 })
-const pathPlaceholder = computed(() => t(meta.value?.path === 'header' ? `${P}.headerPlaceholder` : `${P}.pathPlaceholder`))
+const pathPlaceholder = computed(() =>
+  t(
+    meta.value?.path === 'header'
+      ? `${P}.headerPlaceholder`
+      : meta.value?.pathOptional
+        ? `${P}.prunePathPlaceholder`
+        : `${P}.pathPlaceholder`
+  )
+)
+const syncHint = computed(() => (meta.value?.fromTo === 'sync' ? t(`${P}.syncHint`) : undefined))
+const valueHint = computed(() => (draft.value.mode === 'prune_objects' ? t(`${P}.pruneValueHint`, PRUNE_EXAMPLE) : t(`${P}.valueJsonHint`)))
 </script>
 
 <template>
@@ -47,7 +58,7 @@ const pathPlaceholder = computed(() => t(meta.value?.path === 'header' ? `${P}.h
           <SInput v-model="draft.path" size="sm" mono :placeholder="pathPlaceholder" data-testid="po-path" />
         </SField>
         <template v-if="meta?.fromTo">
-          <SField :label="t(`${P}.${fromTo.from}`)" :error="errorOf('from')">
+          <SField :label="t(`${P}.${fromTo.from}`)" :hint="syncHint" :error="errorOf('from')">
             <SInput v-model="draft.from" size="sm" mono data-testid="po-from" />
           </SField>
           <SField :label="t(`${P}.${fromTo.to}`)" :error="errorOf('to')">
@@ -57,7 +68,7 @@ const pathPlaceholder = computed(() => t(meta.value?.path === 'header' ? `${P}.h
       </div>
 
       <div v-if="meta?.value" class="mt-3">
-        <SField v-if="meta.value === 'json'" :label="t(`${P}.value`)" :hint="t(`${P}.valueJsonHint`)" :error="errorOf('value')">
+        <SField v-if="meta.value === 'json'" :label="t(`${P}.value`)" :hint="valueHint" :error="errorOf('value')">
           <STextarea v-model="draft.valueText" size="sm" mono :rows="3" data-testid="po-value" />
         </SField>
         <SField v-else-if="meta.value === 'text'" :label="t(`${P}.value`)" :error="errorOf('value')">

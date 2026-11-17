@@ -3,7 +3,8 @@ package paramoverride
 import "strings"
 
 // The blocked headers are never copied from a client (header passthrough,
-// CONTRACTS §81) nor written, read or removed by an override (§84):
+// CONTRACTS §81) nor written, read or removed by an override (the parameter
+// override §84, the header override §108):
 // credentials (credentialHeaders; an account's own are set by the code
 // building its upstream request), hop-by-hop and framing headers the
 // transport owns, and client addresses a client could forge. Declared
@@ -90,6 +91,18 @@ func ValidHeaderName(s string) bool {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
 		default:
+			return false
+		}
+	}
+	return true
+}
+
+// ValidHeaderValue reports whether s may be sent as an HTTP field value: no
+// control character but horizontal tab (RFC 9110 §5.5, what net/http's
+// transport checks before sending).
+func ValidHeaderValue(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; (c < ' ' && c != '\t') || c == 0x7f {
 			return false
 		}
 	}

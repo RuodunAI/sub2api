@@ -14,11 +14,12 @@ const override = {
   ]
 }
 
-function render(modelValue: Record<string, unknown> | null = override) {
+function render(modelValue: Record<string, unknown> | null = override, props: Record<string, unknown> = {}) {
   const w = mount(ParamOverrideField, {
     props: {
       modelValue,
       models: ['claude-sonnet-4-5'],
+      ...props,
       'onUpdate:modelValue': (v: unknown) => void w.setProps({ modelValue: v as Record<string, unknown> | null })
     },
     global: { plugins: [i18n], stubs: { Teleport: true } },
@@ -91,7 +92,7 @@ describe('request parameter override editor', () => {
     expect(w.emitted('update:modelValue')?.at(-1)?.[0]).toEqual({ operations: [{ mode: 'set', path: 'temperature', value: 1 }] })
   })
 
-  it('dry-runs the draft on the server', async () => {
+  it('dry-runs the draft on the server, starting from the header override', async () => {
     mocks.post.mockResolvedValue({
       body: { temperature: 0.7 },
       set_headers: {},
@@ -99,14 +100,14 @@ describe('request parameter override editor', () => {
       return_error: null,
       error: null
     })
-    const w = render()
+    const w = render(override, { headerOverride: { 'x-bar': '{unset}' } })
     await w.get('[data-testid="account-param-override-edit"]').trigger('click')
     await flushPromises()
     await click(view('试运行'))
     await click(q('po-preview-run'))
     expect(mocks.post).toHaveBeenCalledWith(
       '/accounts/param-override/preview',
-      expect.objectContaining({ param_override: override, model: 'claude-sonnet-4-5' })
+      expect.objectContaining({ param_override: override, header_override: { 'x-bar': '{unset}' }, model: 'claude-sonnet-4-5' })
     )
     expect(q('po-preview-headers')!.textContent).toContain('x-foo')
     expect(q('po-preview-result')!.textContent).toContain('"temperature": 0.7')

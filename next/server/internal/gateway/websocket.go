@@ -711,10 +711,19 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	if mapped, err := cl.mapReferencedModels(body, ref, rt); err == nil {
 		body = mapped
 	}
+	// The account's header override is the handshake's whatever the body:
+	// one that cannot resolve fails this account over, as on HTTP.
+	headers, err := accountHeaders(acc, cl.c.Request.Header)
+	if err != nil {
+		return *cl.paramOverrideFailure(ctx, acc, accountOverride, err)
+	}
 	// And after the rewrites before the plugin (param_override.go), whose
-	// failure is the turn's to report too.
+	// failure is the turn's to report too; the handshake then carries the
+	// header override's decisions alone.
 	if prepared, m, failure := cl.rewriteBody(ctx, acc, rt, body, upModel, max(0, cl.rec.Attempts-1)); failure == nil {
 		body, upModel = prepared, m
+	} else {
+		cl.paramOverride.headers = headers
 	}
 	fields := requestFieldValues(body, rt.requestFields)
 	cl.env = cl.environment(&acc.AccountRef)
@@ -748,7 +757,8 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	hc.Timeout = 0
 	// The handshake's headers in the layers of an HTTP request (forwardBuilt,
 	// without the passthrough): the declaration's and its paramOverride's,
-	// the account's parameter override, the plugin's, then the declared auth.
+	// the account's header override (§108) and parameter override, the
+	// plugin's, then the declared auth.
 	declared, plugin := splitHeaders(rt, request, built)
 	header := http.Header{}
 	setHandshakeHeaders(header, declared)

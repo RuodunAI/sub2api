@@ -6,6 +6,11 @@
 // once, when it is saved or the account is loaded, and Apply (apply.go) runs it
 // for every upstream attempt.
 //
+// The account's request header override (CONTRACTS §108, header_override.go)
+// compiles here too, in the format of a new-api channel's header_override:
+// what it resolves for a request is the initial header state of the
+// parameter override's run (Context.InitialHeaders).
+//
 // It lives in the SDK, not in the core, because the same format is also a
 // manifest field (accountTypes[].upstream.paramOverride, see sdk/upstream):
 // manifest/check validates it wherever a manifest is checked - the installing
@@ -35,6 +40,19 @@ const (
 	maxDescription = 200
 )
 
+// The logic of a list of conditions; an operation's default is OR,
+// prune_objects' AND (as new-api).
+const (
+	logicAND = "AND"
+	logicOR  = "OR"
+)
+
+// The message of a header value that cannot be sent.
+const (
+	controlCharsEn = "must not contain control characters"
+	controlCharsZh = "不能包含控制字符"
+)
+
 // Override is a compiled override. nil means none.
 type Override struct {
 	raw    json.RawMessage
@@ -58,6 +76,7 @@ type paramOp struct {
 type paramCond struct {
 	path, mode          string
 	value               gjson.Result
+	re                  *regexp.Regexp // mode regex, compiled when saved
 	invert, passMissing bool
 }
 
@@ -73,7 +92,7 @@ type Error struct {
 func (e *Error) Error() string { return e.Message }
 
 var paramConditionModes = map[string]bool{"full": true, "prefix": true, "suffix": true, "contains": true,
-	"gt": true, "gte": true, "lt": true, "lte": true}
+	"regex": true, "gt": true, "gte": true, "lt": true, "lte": true}
 
 // Raw is the override as saved (compact JSON); null when there is none.
 func (p *Override) Raw() json.RawMessage {
@@ -114,13 +133,8 @@ func Compile(field string, raw []byte, zh bool) (*Override, []FieldError) {
 		return nil, nil
 	}
 	c := &overrideCompiler{zh: zh, field: field}
-	if len(raw) > MaxBytes {
-		c.fail("too_large", "", "the override is larger than 64 KiB", "参数覆盖超过 64 KiB")
-		return nil, c.errs
-	}
-	root := gjson.ParseBytes(raw)
-	if !json.Valid(raw) || !root.IsObject() {
-		c.fail("invalid", "", "must be a JSON object", "必须是 JSON 对象")
+	root, ok := c.object(raw, "the override", "参数覆盖")
+	if !ok {
 		return nil, c.errs
 	}
 	p := &Override{}
@@ -138,10 +152,30 @@ func Compile(field string, raw []byte, zh bool) (*Override, []FieldError) {
 	if len(p.legacy) == 0 && len(p.ops) == 0 {
 		return nil, nil
 	}
-	var buf bytes.Buffer
-	_ = json.Compact(&buf, raw) // valid JSON, checked above
-	p.raw = buf.Bytes()
+	p.raw = compact(raw)
 	return p, nil
+}
+
+// object parses raw as a JSON object of at most MaxBytes; what names it in
+// the error of one too large.
+func (c *overrideCompiler) object(raw []byte, what, whatZh string) (gjson.Result, bool) {
+	if len(raw) > MaxBytes {
+		c.fail("too_large", "", what+" is larger than 64 KiB", whatZh+"超过 64 KiB")
+		return gjson.Result{}, false
+	}
+	root := gjson.ParseBytes(raw)
+	if !json.Valid(raw) || !root.IsObject() {
+		c.fail("invalid", "", "must be a JSON object", "必须是 JSON 对象")
+		return gjson.Result{}, false
+	}
+	return root, true
+}
+
+// compact is valid JSON without insignificant space.
+func compact(raw []byte) json.RawMessage {
+	var buf bytes.Buffer
+	_ = json.Compact(&buf, raw)
+	return buf.Bytes()
 }
 
 type overrideCompiler struct {
@@ -218,7 +252,7 @@ func (c *overrideCompiler) operation(loc string, o gjson.Result) paramOp {
 		c.fail("invalid", loc+".description", "at most 200 characters", "最多 200 个字符")
 	}
 	op := paramOp{label: loc + " (" + mode + ")"}
-	op.conds, op.all = c.conditions(o, loc)
+	op.conds, op.all = c.conditions(o, loc, logicOR)
 	switch mode {
 	case "":
 		c.required(loc + ".mode")
@@ -241,23 +275,29 @@ func (c *overrideCompiler) operation(loc string, o gjson.Result) paramOp {
 		op.run = func(*overrideRun) error { return e }
 	case "set_header":
 		name, set := c.header(loc+".path", path), c.headerValue(loc+".value", value)
-		op.run = func(r *overrideRun) error { r.setHeaderOp(name, keep, set); return nil }
+		op.run = func(r *overrideRun) error { return r.setHeaderOp(name, keep, set) }
 	case "delete_header":
 		name := c.header(loc+".path", path)
 		op.run = func(r *overrideRun) error { r.deleteHeader(name); return nil }
 	case "copy_header", "move_header":
 		src, dst := c.header(loc+".from", firstText(from, path)), c.header(loc+".to", firstText(to, path))
-		op.run = func(r *overrideRun) error { r.copyHeader(src, dst, keep, mode == "move_header"); return nil }
+		op.run = func(r *overrideRun) error { return r.copyHeader(src, dst, keep, mode == "move_header") }
 	case "pass_headers":
 		names := c.headerList(loc+".value", value)
 		op.run = func(r *overrideRun) error {
 			for _, n := range names {
-				r.copyHeader(n, n, keep, false)
+				if err := r.copyHeader(n, n, keep, false); err != nil {
+					return err
+				}
 			}
 			return nil
 		}
-	case "prune_objects", "sync_fields":
-		c.fail("unsupported", loc+".mode", "mode "+mode+" is not supported yet", "暂不支持模式 "+mode)
+	case "sync_fields":
+		src, dst := c.syncTarget(loc+".from", from), c.syncTarget(loc+".to", to)
+		op.run = func(r *overrideRun) error { return r.syncFields(src, dst) }
+	case "prune_objects":
+		spec := c.pruneSpec(loc+".value", value)
+		op.run = func(r *overrideRun) error { return r.prune(path, spec) }
 	default:
 		c.fail("unsupported", loc+".mode", "unknown mode "+mode, "未知模式 "+mode)
 	}
@@ -270,12 +310,17 @@ func (c *overrideCompiler) need(loc, s string) {
 	}
 }
 
-// conditions compiles the conditions of an operation: an array of
-// {path, mode, value, invert, pass_missing_key}, or an object of path →
-// value (mode full).
-func (c *overrideCompiler) conditions(o gjson.Result, loc string) ([]paramCond, bool) {
+// conditions compiles the conditions of an operation (or of prune_objects):
+// an array of {path, mode, value, invert, pass_missing_key}, or an object of
+// path → value (mode full). It also returns whether all must hold: the
+// logic member, or defaultLogic without one, is AND.
+func (c *overrideCompiler) conditions(o gjson.Result, loc, defaultLogic string) ([]paramCond, bool) {
 	logic := strings.ToUpper(strings.TrimSpace(c.str(o, loc, "logic")))
-	if logic != "" && logic != "AND" && logic != "OR" {
+	switch logic {
+	case "":
+		logic = defaultLogic
+	case logicAND, logicOR:
+	default:
 		c.fail("invalid", loc+".logic", "must be AND or OR", "必须是 AND 或 OR")
 	}
 	raw, loc := o.Get("conditions"), loc+".conditions"
@@ -283,11 +328,7 @@ func (c *overrideCompiler) conditions(o gjson.Result, loc string) ([]paramCond, 
 	switch {
 	case !raw.Exists() || raw.Type == gjson.Null:
 	case raw.IsObject():
-		raw.ForEach(func(k, v gjson.Result) bool {
-			out = append(out, paramCond{path: k.Str, mode: "full", value: v})
-			return true
-		})
-		if len(out) == 0 {
+		if out = fullConditions(raw); len(out) == 0 {
 			c.fail("invalid", loc, "must not be empty", "不能为空")
 		}
 	case raw.IsArray():
@@ -297,7 +338,7 @@ func (c *overrideCompiler) conditions(o gjson.Result, loc string) ([]paramCond, 
 	default:
 		c.fail("invalid", loc, "must be an array or an object", "必须是数组或对象")
 	}
-	return out, logic == "AND"
+	return out, logic == logicAND
 }
 
 func (c *overrideCompiler) condition(loc string, o gjson.Result) paramCond {
@@ -313,11 +354,31 @@ func (c *overrideCompiler) condition(loc string, o gjson.Result) paramCond {
 		c.required(loc + ".mode")
 	case !paramConditionModes[cond.mode]:
 		c.fail("unsupported", loc+".mode", "unknown condition mode "+cond.mode, "未知条件模式 "+cond.mode)
+	case cond.mode == "regex":
+		cond.re = c.regex(loc+".value", cond.value)
 	}
 	if !cond.value.Exists() {
 		cond.value = gjson.Parse("null")
 	}
 	return cond
+}
+
+// regex compiles the pattern of a regex condition.
+func (c *overrideCompiler) regex(loc string, v gjson.Result) *regexp.Regexp {
+	if v.Type != gjson.String {
+		c.fail("invalid", loc, "must be a regular expression string", "必须是正则表达式字符串")
+		return nil
+	}
+	return c.compileRegexp(loc, v.Str)
+}
+
+func (c *overrideCompiler) compileRegexp(loc, pattern string) *regexp.Regexp {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		c.fail("invalid", loc, "invalid regular expression: "+err.Error(), "正则表达式无效："+err.Error())
+		return nil
+	}
+	return re
 }
 
 // stringEdit compiles the string transformation of a string mode.
@@ -363,9 +424,8 @@ func (c *overrideCompiler) stringEdit(loc, mode string, value gjson.Result, from
 	}
 	// regex_replace, the last string mode
 	c.need(loc+".from", from)
-	re, err := regexp.Compile(from)
-	if err != nil {
-		c.fail("invalid", loc+".from", "invalid regular expression: "+err.Error(), "正则表达式无效："+err.Error())
+	re := c.compileRegexp(loc+".from", from)
+	if re == nil {
 		return nil
 	}
 	return func(s string) string { return re.ReplaceAllString(s, to) }
@@ -427,19 +487,10 @@ func (c *overrideCompiler) header(loc, name string) string {
 	return n
 }
 
-// headerList compiles the header names of pass_headers: an array or a
-// comma-separated string.
+// headerList compiles the header names of pass_headers.
 func (c *overrideCompiler) headerList(loc string, v gjson.Result) []string {
-	var raw []string
-	switch {
-	case v.Type == gjson.String:
-		raw = strings.Split(v.Str, ",")
-	case v.IsArray():
-		for _, item := range v.Array() {
-			raw = append(raw, item.String())
-		}
-	default:
-		c.fail("invalid", loc, "must be an array or a comma-separated string of header names", "必须是请求头名称数组或逗号分隔的字符串")
+	raw, ok := c.headerNames(loc, v)
+	if !ok {
 		return nil
 	}
 	var names []string
@@ -454,6 +505,116 @@ func (c *overrideCompiler) headerList(loc string, v gjson.Result) []string {
 	return uniqueStrings(names)
 }
 
+// headerNames lists the names of a pass_headers value: an array, a
+// comma-separated string, either as JSON in a string, or an object whose
+// headers, names and header members hold such values (new-api's forms).
+func (c *overrideCompiler) headerNames(loc string, v gjson.Result) ([]string, bool) {
+	switch {
+	case v.Type == gjson.String:
+		s := strings.TrimSpace(v.Str)
+		if (strings.HasPrefix(s, "[") || strings.HasPrefix(s, "{")) && gjson.Valid(s) {
+			return c.headerNames(loc, gjson.Parse(s))
+		}
+		return strings.Split(s, ","), true
+	case v.IsArray():
+		var raw []string
+		for _, item := range v.Array() {
+			raw = append(raw, item.String())
+		}
+		return raw, true
+	case v.IsObject():
+		var raw []string
+		for _, key := range []string{"headers", "names", "header"} {
+			if m := v.Get(key); m.Exists() {
+				names, _ := c.headerNames(loc+"."+key, m)
+				raw = append(raw, names...)
+			}
+		}
+		return raw, true
+	}
+	c.fail("invalid", loc, "must be an array, a comma-separated string or an object of header names", "必须是请求头名称数组、逗号分隔的字符串或对象")
+	return nil, false
+}
+
+// syncTarget compiles a side of sync_fields: "json:<path>", "body:<path>",
+// "header:<name>", or a bare JSON path.
+func (c *overrideCompiler) syncTarget(loc, spec string) syncTarget {
+	raw := strings.TrimSpace(spec)
+	kind, key, prefixed := strings.Cut(raw, ":")
+	if !prefixed {
+		c.need(loc, raw)
+		return syncTarget{key: raw}
+	}
+	key = strings.TrimSpace(key)
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "json", "body":
+		c.need(loc, key)
+		return syncTarget{key: key}
+	case "header":
+		return syncTarget{key: c.header(loc, key), header: true}
+	}
+	c.fail("invalid", loc, "must start with json:, body: or header:", "必须以 json:、body: 或 header: 开头")
+	return syncTarget{}
+}
+
+// pruneSpec compiles the value of prune_objects: a type (the objects whose
+// type is it), or {logic, recursive, conditions, where, type}; the
+// conditions of all three must hold unless logic is OR.
+func (c *overrideCompiler) pruneSpec(loc string, v gjson.Result) pruneSpec {
+	spec := pruneSpec{all: true, recursive: true}
+	typeCond := func(t gjson.Result) paramCond { return paramCond{path: "type", mode: "full", value: t} }
+	switch text := strings.TrimSpace(v.Str); {
+	case v.Type == gjson.String && text != "":
+		spec.conds = []paramCond{typeCond(gjson.Result{Type: gjson.String, Str: text})}
+	case v.IsObject():
+		spec.conds, spec.all = c.conditions(v, loc, logicAND)
+		if r := v.Get("recursive"); r.Exists() && r.Type != gjson.Null {
+			spec.recursive = c.flag(loc+".recursive", r)
+		}
+		spec.conds = append(spec.conds, c.where(loc+".where", v.Get("where"))...)
+		if t := v.Get("type"); t.Exists() {
+			spec.conds = append(spec.conds, typeCond(t))
+		}
+		if len(spec.conds) == 0 {
+			c.fail("required", loc+".conditions", "required (conditions, where or type)", "必填（conditions、where 或 type）")
+		}
+	case v.Exists() && v.Type != gjson.Null && v.Type != gjson.String:
+		c.fail("invalid", loc, "must be a type string or an object", "必须是类型字符串或对象")
+	default:
+		c.required(loc)
+	}
+	return spec
+}
+
+// where compiles the where member of prune_objects: path → value (mode
+// full); like new-api it trims the paths and skips blank ones.
+func (c *overrideCompiler) where(loc string, v gjson.Result) []paramCond {
+	if !v.Exists() || v.Type == gjson.Null {
+		return nil
+	}
+	if !v.IsObject() {
+		c.fail("invalid", loc, "must be an object", "必须是对象")
+		return nil
+	}
+	var out []paramCond
+	for _, cond := range fullConditions(v) {
+		if cond.path = strings.TrimSpace(cond.path); cond.path != "" {
+			out = append(out, cond)
+		}
+	}
+	return out
+}
+
+// fullConditions are the conditions of an object of path → value.
+func fullConditions(o gjson.Result) []paramCond {
+	var out []paramCond
+	o.ForEach(func(k, v gjson.Result) bool {
+		out = append(out, paramCond{path: k.Str, mode: "full", value: v})
+		return true
+	})
+	return out
+}
+
 // headerValue compiles the value of set_header into a function of the
 // header's current value: a fixed string, or a token mapping (see
 // headerTokens). An empty result removes the header.
@@ -466,8 +627,16 @@ func (c *overrideCompiler) headerValue(loc string, v gjson.Result) func(current 
 	case v.IsArray():
 		c.fail("invalid", loc, "must be a string or a token mapping object", "必须是字符串或令牌映射对象")
 	}
-	text := strings.TrimSpace(v.String())
+	text := c.headerText(loc, strings.TrimSpace(v.String()))
 	return func(string) string { return text }
+}
+
+// headerText checks that a header value of the override can be sent.
+func (c *overrideCompiler) headerText(loc, s string) string {
+	if !ValidHeaderValue(s) {
+		c.fail("invalid", loc, controlCharsEn, controlCharsZh)
+	}
+	return s
 }
 
 // headerTokens compiles a token mapping of set_header, applied to the
@@ -507,7 +676,7 @@ func (c *overrideCompiler) tokens(loc string, v gjson.Result) []string {
 			c.fail("invalid", loc, "must be a string, an array of strings or null", "必须是字符串、字符串数组或 null")
 			continue
 		}
-		out = append(out, splitTokens(item.String())...)
+		out = append(out, splitTokens(c.headerText(loc, item.String()))...)
 	}
 	return uniqueStrings(out)
 }
@@ -569,14 +738,19 @@ func firstText(s ...string) string {
 	return ""
 }
 
+// pathSpecial are the characters gjson and sjson read as path syntax:
+// separators, wildcards, the escape, queries and arrays (#), modifiers (@)
+// and pipes (|).
+const pathSpecial = `.*?\#@|`
+
 // escapePathKey makes key one literal gjson/sjson path segment.
 func escapePathKey(key string) string {
-	if !strings.ContainsAny(key, `.*?\`) {
+	if !strings.ContainsAny(key, pathSpecial) {
 		return key
 	}
 	var b strings.Builder
 	for i := 0; i < len(key); i++ {
-		if strings.IndexByte(`.*?\`, key[i]) >= 0 {
+		if strings.IndexByte(pathSpecial, key[i]) >= 0 {
 			b.WriteByte('\\')
 		}
 		b.WriteByte(key[i])

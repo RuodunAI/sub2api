@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -20,7 +21,9 @@ import (
 // plugin builds from the result, with meta.model the model the override
 // settled on, and its patches may still change it (user decision,
 // 2026-11-09). The account override's header decisions still apply over the
-// plugin's headers (forwardBuilt).
+// plugin's headers (forwardBuilt). The account's header override (CONTRACTS
+// §108) is the initial header state of its parameter override, so the
+// account override's header decisions are both of theirs.
 
 // paramOverrideState is what the rewrites decided for the current attempt:
 // the headers forwardBuilt applies and, when a rewrite changed the body's
@@ -29,7 +32,8 @@ type paramOverrideState struct {
 	// declared are the header decisions of the declared paramOverride,
 	// applied with the built headers.
 	declared core.HeaderOverride
-	// headers are the account override's, applied after the passthrough.
+	// headers are the account's header override and parameter override's,
+	// applied after the passthrough.
 	headers core.HeaderOverride
 	model   string
 }
@@ -97,14 +101,21 @@ func (c *call) overrideBuiltin(ctx context.Context, acc *core.Account, rt *typeR
 	return body, upModel, failure
 }
 
-// overrideAccount runs the account's override on body; its header
-// decisions are kept for forwardBuilt.
+// overrideAccount runs the account's override on body, from what its header
+// override decided for the client's headers; the header decisions of both
+// are kept for forwardBuilt.
 func (c *call) overrideAccount(ctx context.Context, acc *core.Account, rt *typeRoute, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
-	if acc == nil || acc.ParamOverride == nil {
+	if acc == nil || (acc.ParamOverride == nil && acc.HeaderOverride == nil) {
 		return body, upModel, nil
 	}
+	run := func(body []byte, in *core.ParamOverrideContext) (out core.ParamOverrideResult, err error) {
+		if in.InitialHeaders, err = accountHeaders(acc, in.Headers); err != nil {
+			return out, err
+		}
+		return acc.ParamOverride.Apply(body, in)
+	}
 	var failure *attemptResult
-	body, upModel, c.paramOverride.headers, failure = c.overrideBody(ctx, acc, rt, body, upModel, n, acc.ParamOverride.Apply, accountOverride)
+	body, upModel, c.paramOverride.headers, failure = c.overrideBody(ctx, acc, rt, body, upModel, n, run, accountOverride)
 	return body, upModel, failure
 }
 
@@ -146,11 +157,26 @@ func failureErr(r *attemptResult) *gwError {
 	return r.err
 }
 
-// accountOverride and builtinOverride name the overrides in errors.
+// accountOverride, accountHeaderOverride and builtinOverride name the
+// overrides in errors.
 const (
-	accountOverride = "account request parameter override"
-	builtinOverride = "built-in request parameter override"
+	accountOverride       = "account request parameter override"
+	accountHeaderOverride = "account request header override"
+	builtinOverride       = "built-in request parameter override"
 )
+
+// accountHeaders is what the account's header override (CONTRACTS §108)
+// decides for the client headers: the initial header state of its parameter
+// override on HTTP, and on a WebSocket also the handshake's when the rewrites
+// of the first message failed. A stored override that no longer compiles
+// (or a client value that cannot be sent) is an error.
+func accountHeaders(acc *core.Account, client http.Header) (core.HeaderOverride, error) {
+	h, err := acc.HeaderOverride.Resolve(client)
+	if err != nil {
+		return h, fmt.Errorf("%s: %w", accountHeaderOverride, err)
+	}
+	return h, nil
+}
 
 // paramOverrideContext is the context the override's conditions read.
 func (c *call) paramOverrideContext(acc *core.Account, rt *typeRoute, upModel string, n int) *core.ParamOverrideContext {

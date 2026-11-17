@@ -69,23 +69,25 @@ func fieldControl[T any](field func(*input) **T, current func(*row) T, coreDefau
 
 func always[T any](v T) func(core.DataScope) T { return func(core.DataScope) T { return v } }
 
-// paramOverrideControl is the control of param_override, a raw JSON field
-// whose core default is none.
-var paramOverrideControl = commonControl{
-	value: func(in *input) (any, bool) { return in.ParamOverride, len(in.ParamOverride) > 0 },
-	current: func(a *row) any {
-		if len(a.ParamOverride) == 0 {
+// rawJSONControl is the control of a raw JSON field (param_override,
+// header_override) whose core default is none.
+func rawJSONControl(field func(*input) *json.RawMessage, current func(*row) []byte) commonControl {
+	return commonControl{
+		value: func(in *input) (any, bool) { return *field(in), len(*field(in)) > 0 },
+		current: func(a *row) any {
+			if len(current(a)) == 0 {
+				return nil
+			}
+			return json.RawMessage(current(a))
+		},
+		set: func(in *input, raw json.RawMessage) error {
+			*field(in) = raw
 			return nil
-		}
-		return json.RawMessage(a.ParamOverride)
-	},
-	set: func(in *input, raw json.RawMessage) error {
-		in.ParamOverride = raw
-		return nil
-	},
-	copy:        func(dst, src *input) { dst.ParamOverride = src.ParamOverride },
-	coreDefault: func(core.DataScope) any { return nil },
-	fillCore:    func(*input, core.DataScope) {},
+		},
+		copy:        func(dst, src *input) { *field(dst) = *field(src) },
+		coreDefault: func(core.DataScope) any { return nil },
+		fillCore:    func(*input, core.DataScope) {},
+	}
 }
 
 // commonControlFields are the controls of account fields, keyed by control
@@ -118,7 +120,10 @@ var commonControlFields = map[string]commonControl{
 		func(a *row) core.EnvironmentValues { return a.Environment }, always(core.EnvironmentValues{})),
 	"header_passthrough": fieldControl(func(in *input) **[]string { return &in.HeaderPassthrough },
 		func(a *row) []string { return a.HeaderPassthrough }, always([]string{})),
-	"param_override": paramOverrideControl,
+	"param_override": rawJSONControl(func(in *input) *json.RawMessage { return &in.ParamOverride },
+		func(a *row) []byte { return a.ParamOverride }),
+	"header_override": rawJSONControl(func(in *input) *json.RawMessage { return &in.HeaderOverride },
+		func(a *row) []byte { return a.HeaderOverride }),
 }
 
 // declaredControl is a field control an account type declares.

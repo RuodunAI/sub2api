@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, useId, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SButton, SDropdown, SField, SIcon, SInput, SModal, SSegmented, STextarea, toast } from '@sub2api/ui'
+import { SButton, SDropdown, SField, SIcon, SInput, STextarea, toast } from '@sub2api/ui'
+import OverrideDialog from '../controls/OverrideDialog.vue'
+import { useJsonView } from '../controls/useJsonView'
 import OperationPane from './OperationPane.vue'
 import OverridePreview from './OverridePreview.vue'
 import { describeOperation, describeProblem, operationName } from './describe'
@@ -30,23 +32,20 @@ import {
 // against the server. It edits a copy: Apply hands the override back to the
 // account form, which saves it with the account; Cancel drops the copy.
 const open = defineModel<boolean>('open', { required: true })
-const props = defineProps<{ value: Override | null; models: string[] }>()
+const props = defineProps<{ value: Override | null; models: string[]; headerOverride?: Record<string, string> | null }>()
 const emit = defineEmits<{ (e: 'apply', value: Override | null): void }>()
 const { t } = useI18n()
 const P = 'accounts.paramOverride'
 const JSON_PLACEHOLDER = JSON.stringify({ operations: [{ mode: 'set', path: 'temperature', value: 0.7 }] })
 const JSON_SHAPE = { shape: '{"operations": [...]}' }
 
-type Mode = 'visual' | 'json' | 'preview'
-const mode = ref<Mode>('visual')
+const VIEWS = ['visual', 'json', 'preview'] as const
+type View = (typeof VIEWS)[number]
 const drafts = ref<OperationDraft[]>([])
 const selectedId = ref(0)
 const search = ref('')
-const jsonText = ref('')
-const jsonError = ref('')
 const contextListId = `po-context-${useId()}`
 
-const modeOptions = computed(() => (['visual', 'json', 'preview'] as const).map(m => ({ value: m, label: t(`${P}.view.${m}`) })))
 const selectedIndex = computed(() => drafts.value.findIndex(d => d.id === selectedId.value))
 const selected = computed(() => drafts.value[selectedIndex.value] ?? null)
 const problems = computed(() => drafts.value.map(validateOperation))
@@ -57,9 +56,17 @@ function load(value: Override | null, select = 0) {
   selectedId.value = drafts.value[Math.min(select, drafts.value.length - 1)]?.id ?? 0
 }
 
+const { view, jsonText, jsonError, editJson, setView, jsonInvalid, reset } = useJsonView({
+  ns: P,
+  views: VIEWS,
+  parse: parseOverride,
+  load: value => load(value, Math.max(0, i())),
+  format: () => (current.value ? JSON.stringify(current.value, null, 2) : '')
+})
+
 watch(open, now => {
   if (!now) return
-  mode.value = 'visual'
+  reset()
   search.value = ''
   load(props.value)
 })
@@ -97,29 +104,12 @@ const move = (by: -1 | 1) => setDrafts(moveDraft(drafts.value, i(), by), i() + b
 const duplicate = () => setDrafts(duplicateDraft(drafts.value, i()), i() + 1)
 const remove = () => setDrafts(removeDraft(drafts.value, i()), i())
 
-function editJson(text: string) {
-  jsonText.value = text
-  const parsed = parseOverride(text)
-  jsonError.value = parsed.error ? (['object', 'operations'].includes(parsed.error) ? t(`${P}.json.${parsed.error}`) : parsed.error) : ''
-  if (!parsed.error) load(parsed.value ?? null, Math.max(0, i()))
-}
-
-function setMode(next: Mode) {
-  if (next === mode.value) return
-  if (mode.value === 'json' && jsonError.value) return toast(t(`${P}.json.invalid`), 'error')
-  if (next === 'json') {
-    jsonText.value = current.value ? JSON.stringify(current.value, null, 2) : ''
-    jsonError.value = ''
-  }
-  mode.value = next
-}
-
 function apply() {
-  if (mode.value === 'json' && jsonError.value) return toast(t(`${P}.json.invalid`), 'error')
+  if (jsonInvalid()) return
   const bad = problems.value.findIndex(p => p.length)
   if (bad >= 0) {
     selectedId.value = drafts.value[bad].id
-    mode.value = 'visual'
+    view.value = 'visual'
     return toast(t(`${P}.invalid`, { n: bad + 1, problem: describeProblem(problems.value[bad][0], t) }), 'error')
   }
   emit('apply', current.value)
@@ -128,30 +118,19 @@ function apply() {
 </script>
 
 <template>
-  <SModal v-model:open="open" width="2xl" fixed persistent data-testid="po-editor">
-    <template #header>
-      <div class="flex w-full flex-wrap items-start gap-3 pr-8">
-        <div class="w-full min-w-0 sm:w-auto sm:flex-1">
-          <h3 class="text-base font-semibold text-fg">{{ t(`${P}.editorTitle`) }}</h3>
-          <p class="mt-0.5 text-xs text-fg-muted">{{ t(`${P}.editorHint`) }}</p>
-        </div>
-        <SSegmented
-          :model-value="mode"
-          size="sm"
-          :options="modeOptions"
-          data-testid="po-view"
-          @update:model-value="setMode($event as Mode)"
-        />
-      </div>
-    </template>
-
+  <OverrideDialog v-model:open="open" :ns="P" testid="po" :views="VIEWS" :view="view" @view="setView($event as View)" @apply="apply">
     <datalist :id="contextListId">
       <option v-for="k in CONTEXT_KEYS" :key="k" :value="k" />
     </datalist>
 
-    <OverridePreview v-if="mode === 'preview'" :override="current" :model="models[0] || 'claude-sonnet-4-5'" />
+    <OverridePreview
+      v-if="view === 'preview'"
+      :override="current"
+      :header-override="headerOverride ?? null"
+      :model="models[0] || 'claude-sonnet-4-5'"
+    />
 
-    <SField v-else-if="mode === 'json'" :hint="t(`${P}.json.hint`, JSON_SHAPE)" :error="jsonError">
+    <SField v-else-if="view === 'json'" :hint="t(`${P}.json.hint`, JSON_SHAPE)" :error="jsonError">
       <STextarea
         :model-value="jsonText"
         :rows="18"
@@ -237,11 +216,5 @@ function apply() {
         <SButton size="sm" icon="plus" @click="add()">{{ t(`${P}.add`) }}</SButton>
       </div>
     </div>
-
-    <template #footer>
-      <span class="mr-auto hidden text-xs text-fg-muted sm:inline">{{ t(`${P}.applyHint`) }}</span>
-      <SButton @click="open = false">{{ t('common.cancel') }}</SButton>
-      <SButton variant="primary" data-testid="po-apply" @click="apply">{{ t(`${P}.apply`) }}</SButton>
-    </template>
-  </SModal>
+  </OverrideDialog>
 </template>

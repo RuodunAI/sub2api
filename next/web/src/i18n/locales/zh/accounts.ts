@@ -143,6 +143,7 @@ export default {
     passNone: '不透传',
     envFollow: '超时跟随',
     envCustom: '{n} 项自定义',
+    headerOverride: '请求头覆盖 {n} 项',
     override: '覆盖 {n} 条',
     conversion: '转换：{policy}'
   },
@@ -163,6 +164,58 @@ export default {
     gradeHints: { local: '由核心本地估算，不请求上游' },
     convertedGrade: '转换·{grade}',
     categories: { tool: '工具', reasoning: '推理', image: '图片', other: '其他' }
+  },
+  headerOverride: {
+    title: '请求头覆盖',
+    hint: "按请求头名设置发往上游的值，格式兼容 new-api 渠道的请求头覆盖，可直接粘贴。值可写固定文本、{'{client_header:名}'}（取客户端的值）、{'{client_header:名:追加值}'}（客户端的值后追加）、{'{unset}'}（删除）；键 * 或 regex:正则 表示透传。在请求头透传之后、请求参数覆盖之前生效。凭证、逐跳、客户端地址和网关控制头不能覆盖，不支持 {'{api_key}'}",
+    none: '未设置',
+    count: '{n} 项',
+    edit: '编辑',
+    clear: '清空',
+    editorTitle: '编辑请求头覆盖',
+    editorHint: '每行一个请求头，值旁边的按钮可以插入占位符；值为空的行会被忽略（与 new-api 相同）',
+    view: { visual: '表格', json: 'JSON' },
+    key: '请求头',
+    value: '值',
+    keyPlaceholder: 'User-Agent、* 或 regex:^x-',
+    valuePlaceholder: '固定值或占位符',
+    add: '添加请求头',
+    remove: '删除',
+    removeOf: '删除 {name}',
+    max: '最多 {n} 个请求头',
+    applyHint: '「应用」只改草稿，回到账号页点保存后生效',
+    apply: '应用',
+    invalid: '第 {n} 行有误：{problem}',
+    problems: {
+      noKey: '缺少请求头名',
+      duplicate: '请求头名重复（不区分大小写）',
+      noSource: "{'{client_header:…}'} 缺少客户端请求头名",
+      emptySuffix: "第二个冒号后的追加值为空：填上追加值，或改用 {'{client_header:名}'}",
+      partialPlaceholder: "占位符必须是整个值：{'{client_header:…}'}、{'{unset}'} 前后不能有其他内容"
+    },
+    insert: {
+      title: '插入占位符',
+      titleOf: '为 {name} 插入占位符',
+      client: '客户端请求头',
+      clientAppend: '客户端请求头 + 追加',
+      unset: '删除此头',
+      passAll: '透传全部（键 *）'
+    },
+    say: {
+      passAll: '透传全部客户端请求头',
+      passRegex: '透传名称匹配 {name} 的客户端请求头',
+      ignored: '{key}：值为空，忽略',
+      unset: '删除 {key}',
+      client: '{key} 取客户端 {name} 的值',
+      clientAppend: '{key} 取客户端 {name} 的值，再追加 {suffix}',
+      static: '{key} 设为 {value}'
+    },
+    json: {
+      hint: '整个请求头覆盖：键是请求头名，值是字符串，与 new-api 渠道的 header_override 相同。合法时会同步到表格',
+      object: '需要一个 JSON 对象',
+      string: '{key} 的值需要是字符串',
+      invalid: 'JSON 有误，先改正再切换或应用'
+    }
   },
   paramOverride: {
     title: '请求参数覆盖',
@@ -217,6 +270,11 @@ export default {
     headerPlaceholder: 'anthropic-beta',
     pathFrom: '来源路径',
     pathTo: '目标路径',
+    syncFrom: '来源',
+    syncTo: '目标',
+    syncHint: '写 json:路径、body:路径 或 header:名称，不带前缀按请求体路径；一边有值、另一边为空时把值复制过去',
+    prunePathPlaceholder: '留空为整个请求体，例如 tools',
+    pruneValueHint: '写类型（如 "thinking"）删除 type 等于它的对象；也可写对象，例如 {example}。条件里的路径相对被检查的对象',
     headerFrom: '来源请求头',
     headerTo: '目标请求头',
     textFrom: '查找',
@@ -249,6 +307,8 @@ export default {
       prepend: '插入到开头',
       copy: '复制字段',
       move: '移动字段',
+      sync_fields: '同步字段',
+      prune_objects: '删除匹配的对象',
       replace: '字符串替换',
       regex_replace: '正则替换',
       trim_prefix: '去掉前缀',
@@ -265,7 +325,7 @@ export default {
       pass_headers: '透传请求头',
       return_error: '返回自定义错误'
     },
-    cond: { full: '等于', prefix: '前缀是', suffix: '后缀是', contains: '包含', gt: '大于', gte: '大于等于', lt: '小于', lte: '小于等于' },
+    cond: { full: '等于', prefix: '前缀是', suffix: '后缀是', contains: '包含', regex: '匹配正则', gt: '大于', gte: '大于等于', lt: '小于', lte: '小于等于' },
     say: {
       set: '设置 {path} = {value}',
       delete: '删除 {path}',
@@ -273,6 +333,9 @@ export default {
       prepend: '{path} 开头插入 {value}',
       copy: '复制 {from} → {to}',
       move: '移动 {from} → {to}',
+      sync_fields: '{from} 与 {to} 互相补齐',
+      prune_objects: '删除 {path} 下匹配 {value} 的对象',
+      wholeBody: '请求体',
       replace: '{path} 中的 {from} 替换为 {to}',
       regex_replace: '{path} 按正则 {from} 替换为 {to}',
       trim_prefix: '{path} 去掉前缀 {value}',
@@ -298,9 +361,12 @@ export default {
     },
     problems: {
       required: '{field}：必填',
-      unsupported: '不支持的操作 {detail}（prune_objects、sync_fields 暂未支持）',
+      unsupported: '不支持的操作 {detail}',
       invalid_json: '{field}：JSON 无效（{detail}）',
       invalid_regex: '{field}：正则无效（{detail}）',
+      regex_string: '{field}：正则需要是字符串；会被当作 JSON 的要加引号，例如 "123"',
+      invalid_prefix: '{field}：前缀需为 json:、body: 或 header:，不是 {detail}:',
+      invalid_prune: '{field}：需要是类型字符串或 JSON 对象',
       invalid_header: '{field}：请求头名称无效 {detail}',
       status: '{field}：状态码需在 100–599 之间',
       too_long: '{field}：过长'
@@ -308,6 +374,8 @@ export default {
     templates: {
       setParam: '固定 temperature',
       deleteParam: '删除上游不支持的 top_p',
+      syncSession: '用 session_id 请求头补 prompt_cache_key',
+      pruneTools: '去掉 web search 工具',
       byModel: 'claude- 模型设置 max_tokens',
       betaToken: 'anthropic-beta 去掉 1M 上下文',
       setHeader: '设置自定义请求头',

@@ -24,8 +24,8 @@ export const CONNECTION_FIELDS = ['name', 'group_ids', 'proxy_id', 'proxy_url', 
 /** Whether the field (or a part of it: `field.x`, `field[0]`) is one of these. */
 const fieldOf = (fields: readonly string[]) => (k: string) => fields.some(p => k === p || k.startsWith(`${p}.`) || k.startsWith(`${p}[`))
 
-/** The advanced section (request forwarding): header passthrough rules (CONTRACTS §81), the parameter override (§84), the conversion loss policy (CONVERT-MATRIX §6.3) and the account layer of the environment variables (`environment.<key>`). */
-export const isAdvancedField = fieldOf(['header_passthrough', 'param_override', 'conversion_loss_policy', 'environment'])
+/** The advanced section (request forwarding): header passthrough rules (CONTRACTS §81), the header override (§108), the parameter override (§84), the conversion loss policy (CONVERT-MATRIX §6.3) and the account layer of the environment variables (`environment.<key>`). */
+export const isAdvancedField = fieldOf(['header_passthrough', 'header_override', 'param_override', 'conversion_loss_policy', 'environment'])
 
 /** Scheduling and limit fields: the scheduling section's controls and the session window (a model list's limits included). */
 export const isSchedulingField = fieldOf([...SCHEDULING_CONTROLS, 'spm_window_seconds'])

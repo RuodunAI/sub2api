@@ -144,6 +144,7 @@ export default {
     passNone: 'No passthrough',
     envFollow: 'Timeouts follow',
     envCustom: '{n} custom',
+    headerOverride: '{n} header overrides',
     override: '{n} overrides',
     conversion: 'Conversion: {policy}'
   },
@@ -164,6 +165,58 @@ export default {
     gradeHints: { local: 'Estimated by the core without an upstream request' },
     convertedGrade: 'Converted · {grade}',
     categories: { tool: 'Tools', reasoning: 'Reasoning', image: 'Images', other: 'Other' }
+  },
+  headerOverride: {
+    title: 'Request header override',
+    hint: "Sets headers sent upstream by name, in the format of a new-api channel's header override, which can be pasted as is. A value is literal text, {'{client_header:name}'} (the client's value), {'{client_header:name:suffix}'} (the client's value with the suffix appended) or {'{unset}'} (removes it); a key * or regex:<pattern> passes client headers through. Applies after header passthrough and before the parameter override. Credentials, hop-by-hop headers, client addresses and gateway control headers cannot be overridden; {'{api_key}'} is not supported",
+    none: 'Not set',
+    count: '{n} entries',
+    edit: 'Edit',
+    clear: 'Clear',
+    editorTitle: 'Edit request header override',
+    editorHint: 'One header per row; the button beside a value inserts a placeholder. Rows with an empty value are ignored (as in new-api)',
+    view: { visual: 'Table', json: 'JSON' },
+    key: 'Header',
+    value: 'Value',
+    keyPlaceholder: 'User-Agent, * or regex:^x-',
+    valuePlaceholder: 'Literal value or placeholder',
+    add: 'Add header',
+    remove: 'Remove',
+    removeOf: 'Remove {name}',
+    max: 'At most {n} headers',
+    applyHint: 'Apply only changes the draft; save the account to make it take effect',
+    apply: 'Apply',
+    invalid: 'Row {n} has an error: {problem}',
+    problems: {
+      noKey: 'Header name missing',
+      duplicate: 'Header name used twice (names are case-insensitive)',
+      noSource: "{'{client_header:…}'} needs the name of a client header",
+      emptySuffix: "Nothing to append after the second colon: add a value, or use {'{client_header:name}'}",
+      partialPlaceholder: "A placeholder must be the whole value: nothing before {'{client_header:…}'} or {'{unset}'}, nothing after its closing brace"
+    },
+    insert: {
+      title: 'Insert placeholder',
+      titleOf: 'Insert a placeholder into {name}',
+      client: 'Client header',
+      clientAppend: 'Client header + suffix',
+      unset: 'Remove this header',
+      passAll: 'Pass all through (key *)'
+    },
+    say: {
+      passAll: 'Passes every client header through',
+      passRegex: 'Passes client headers matching {name} through',
+      ignored: '{key}: empty value, ignored',
+      unset: 'Removes {key}',
+      client: "{key} takes the client's {name}",
+      clientAppend: "{key} takes the client's {name} and appends {suffix}",
+      static: '{key} set to {value}'
+    },
+    json: {
+      hint: "The whole header override: header names to string values, as a new-api channel's header_override. Valid JSON is mirrored into the table",
+      object: 'A JSON object is needed',
+      string: 'The value of {key} must be a string',
+      invalid: 'Fix the JSON before switching or applying'
+    }
   },
   paramOverride: {
     title: 'Request parameter override',
@@ -218,6 +271,11 @@ export default {
     headerPlaceholder: 'anthropic-beta',
     pathFrom: 'From path',
     pathTo: 'To path',
+    syncFrom: 'Source',
+    syncTo: 'Target',
+    syncHint: 'json:path, body:path or header:name; no prefix is a body path. When one side has a value and the other is empty, the value is copied over',
+    prunePathPlaceholder: 'Empty = the whole body, e.g. tools',
+    pruneValueHint: 'A type such as "thinking" removes the objects whose type is it; or an object like {example}. Condition paths are relative to each object',
     headerFrom: 'From header',
     headerTo: 'To header',
     textFrom: 'Find',
@@ -250,6 +308,8 @@ export default {
       prepend: 'Prepend',
       copy: 'Copy field',
       move: 'Move field',
+      sync_fields: 'Sync fields',
+      prune_objects: 'Prune objects',
       replace: 'Replace text',
       regex_replace: 'Regex replace',
       trim_prefix: 'Trim prefix',
@@ -266,7 +326,7 @@ export default {
       pass_headers: 'Pass headers through',
       return_error: 'Return an error'
     },
-    cond: { full: 'equals', prefix: 'starts with', suffix: 'ends with', contains: 'contains', gt: '>', gte: '≥', lt: '<', lte: '≤' },
+    cond: { full: 'equals', prefix: 'starts with', suffix: 'ends with', contains: 'contains', regex: 'matches regex', gt: '>', gte: '≥', lt: '<', lte: '≤' },
     say: {
       set: 'Set {path} = {value}',
       delete: 'Delete {path}',
@@ -274,6 +334,9 @@ export default {
       prepend: 'Prepend {value} to {path}',
       copy: 'Copy {from} → {to}',
       move: 'Move {from} → {to}',
+      sync_fields: 'Sync {from} ↔ {to}',
+      prune_objects: 'Prune objects {value} under {path}',
+      wholeBody: 'the body',
       replace: 'Replace {from} with {to} in {path}',
       regex_replace: 'Replace /{from}/ with {to} in {path}',
       trim_prefix: 'Trim prefix {value} from {path}',
@@ -299,9 +362,12 @@ export default {
     },
     problems: {
       required: '{field}: required',
-      unsupported: 'Unsupported operation {detail} (prune_objects and sync_fields are not supported yet)',
+      unsupported: 'Unsupported operation {detail}',
       invalid_json: '{field}: invalid JSON ({detail})',
       invalid_regex: '{field}: invalid regex ({detail})',
+      regex_string: '{field}: a regex must be a string; quote one that reads as JSON, like "123"',
+      invalid_prefix: '{field}: starts with json:, body: or header:, not {detail}:',
+      invalid_prune: '{field}: a type string or a JSON object',
       invalid_header: '{field}: invalid header name {detail}',
       status: '{field}: status must be 100–599',
       too_long: '{field}: too long'
@@ -309,6 +375,8 @@ export default {
     templates: {
       setParam: 'Fix temperature',
       deleteParam: 'Drop top_p the upstream rejects',
+      syncSession: 'prompt_cache_key from the session_id header',
+      pruneTools: 'Drop the web search tool',
       byModel: 'max_tokens for claude- models',
       betaToken: 'Drop 1M context from anthropic-beta',
       setHeader: 'Set a custom header',
