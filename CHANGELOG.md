@@ -14,10 +14,10 @@
 - **openai 0.4.3**：API Key 账号默认模型同样加上这两个模型。
 - 只改默认模型列表，不改价格；已有账号的模型列表不变，需要时在账号上手动添加。
 
-### 预设模型补上 Claude Fable 5.2 与 Gemini 3.5 / 3.8 / 4（anthropic 0.3.4、claude-oauth 0.2.5、relay 0.3.2、gemini 0.3.2）
+### 预设模型补上 Claude Fable 5.2 与 Gemini 3.5 / 3.6 / 3.8 / 4（anthropic 0.3.4、claude-oauth 0.2.5、relay 0.3.2、gemini 0.3.2）
 
 - **Claude**：Anthropic（API Key）、Claude OAuth、Claude Setup Token、中转 Key 四种账号类型的“填入预设模型”在最前面加上 `claude-fable-5-2`。
-- **Gemini**：API Key 账号的“填入预设模型”加上 `gemini-4-carbon`、`gemini-4-argon`、`gemini-4-hydrogen`、`gemini-3.8-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`（Google 模型页与弃用表列出的 ID；`gemini-3.5-flash` 上游已自动转到 `gemini-3.6-flash`，但端点仍可用）。
+- **Gemini**：API Key 账号的“填入预设模型”加上 `gemini-4-carbon`、`gemini-4-argon`、`gemini-4-hydrogen`、`gemini-3.8-flash`、`gemini-3.6-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`（Google 模型页与弃用表列出的 ID，3.6 只有 flash 一个正式型号；`gemini-3.5-flash` 上游已自动转到 `gemini-3.6-flash`，但端点仍可用）。
 - 只改预设列表，不含价格；已有账号的模型列表不变，要用新列表请在账号上重新填入或从上游获取。
 - anthropic 的升级测试夹具随之由 0.3.4-test 改为 0.3.5-test（`deploy/ci/check.sh`、e2e AC05、`tools/sub2api-plugin` 测试和 `build-demo.sh`）。anthropic 插件自带的模型目录（`GET /models`）没有加 Fable 5.2，那需要新迁移。
 
