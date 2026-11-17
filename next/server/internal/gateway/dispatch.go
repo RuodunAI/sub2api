@@ -789,12 +789,13 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	// Send. The upstream request does not hang off ctx: when the client goes
 	// the watcher cancels it - at once, or not at all when the answer is
 	// being read to its end for billing, within the timeouts below
-	// (disconnect.go). Plugin executions and task submissions settle on
-	// their own and are never kept.
+	// (disconnect.go). A plugin execution forwarding through here is relayed
+	// and metered by forward like any other answer, so it is kept alike; task
+	// submissions settle on their own and are never kept.
 	// The cause names the timeout that cut the request (forward records it).
 	uctx, ucancel := context.WithCancelCause(context.WithoutCancel(ctx))
 	defer ucancel(nil)
-	c.drain = c.watchClient(ctx, ucancel, execution == nil && !c.ep.TaskSubmit())
+	c.drain = c.watchClient(ctx, ucancel, !c.ep.TaskSubmit())
 	defer c.drain.stop()
 	method := strings.ToUpper(built.GetMethod())
 	if method == "" {

@@ -73,7 +73,12 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		c.drain.arm()
 		err = c.forwardJSON(resp, u, cap)
 	}
-	if err == nil && c.drain.outputDropped() {
+	switch {
+	case c.drain.served() && (err == nil || clientGone(ctx, err)):
+		// The client had the final usage before it left: whatever it missed
+		// after that, or the read ended with once it was gone, it was served.
+		err = nil
+	case err == nil && c.drain.outputDropped():
 		// Nobody received the end of it. An upstream that finished has
 		// reported its usage in full, which is billed as it stands
 		// (settleCanceled); one that ended on an error event has not, and the
@@ -109,7 +114,7 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 			writeError(c.c, c.format, &gwError{Status: http.StatusBadGateway, Code: "upstream_error",
 				Message: "upstream response could not be converted"})
 		}
-	case ctx.Err() != nil || errors.Is(err, errClientGone):
+	case clientGone(ctx, err):
 		c.rec.Success = false
 		c.rec.ErrorType = errTypeClientCanceled
 		c.rec.StatusCode = statusClientClosed
@@ -135,6 +140,11 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 }
 
 var errClientGone = errors.New("client connection closed")
+
+// clientGone reports whether err ended a relay because the client left.
+func clientGone(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, errClientGone)
+}
 
 func isSSE(ct string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "text/event-stream")
@@ -415,6 +425,9 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 			err = emit([]convert.Event{{Name: event, Data: data}}, nil)
 		}
 		event, data = "", data[:0]
+		if err == nil && u.Final() {
+			c.drain.serve()
+		}
 		return err
 	}
 	for {
