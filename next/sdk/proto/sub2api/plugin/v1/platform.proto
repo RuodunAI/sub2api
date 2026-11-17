@@ -257,6 +257,20 @@ message BuildUpstreamRequestResponse {
   repeated BodyPatch patches = 4;
   // Upstream model after mapping, recorded in usage logs (optional).
   string upstream_model = 5;
+  // Optional: the host signs the final request before sending it (see
+  // RequestSigning). With a scheme the host does not know the attempt fails
+  // as plugin-unavailable and nothing is sent. Hosts older than these fields
+  // ignore them and would send the request unsigned: a plugin setting them
+  // must require a host that has them (manifest hostCompat).
+  RequestSigning signing = 6;
+  // Optional: framing of the response body when it is not SSE or JSON.
+  // "aws-eventstream": when the upstream answers 2xx with the content type
+  // application/vnd.amazon.eventstream, the host decodes the frames into
+  // server-sent events (sdk/awseventstream) and treats the answer as an
+  // ordinary text/event-stream from then on. An answer with another content
+  // type is left as it is. An unknown name fails the attempt as
+  // plugin-unavailable and nothing is sent.
+  string response_stream = 7;
 }
 
 message ClassifyErrorRequest {
