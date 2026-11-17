@@ -454,51 +454,79 @@ describe('RolesView copy from role', () => {
   const role = (over: object) => ({ id: 2, key: 'lead', name: 'Lead', builtin: false, superuser: false, permission_keys: ['user:read', 'plugin.g:read'], assignable_role_keys: [], assign_custom: false, revision: 7, ...over })
   const modules = [
     { module: 'user', label: 'Users', source: 'core', status: 'active', permissions: [{ key: 'user:read', label: 'View', risk: 'low', status: 'active' }, { key: 'user:delete', label: 'Delete', risk: 'sensitive', status: 'active' }] },
-    { module: 'plugin.g', label: 'G', source: 'plugin', plugin_key: 'g', status: 'active', permissions: [{ key: 'plugin.g:read', label: 'Read', risk: 'low', status: 'active' }, { key: 'plugin.g:old', label: 'Old', risk: 'low', status: 'removed' }] }
+    { module: 'plugin.g', label: 'G', source: 'plugin', plugin_key: 'g', status: 'active', permissions: [
+      { key: 'plugin.g:read', label: 'Read', risk: 'low', status: 'active' },
+      { key: 'plugin.g:old', label: 'Old', risk: 'low', status: 'removed' },
+      { key: 'plugin.g:bypass', label: 'Bypass', risk: 'critical', status: 'active' }
+    ] },
+    { module: 'plugin.d', label: 'D', source: 'plugin', plugin_key: 'd', status: 'disabled', permissions: [{ key: 'plugin.d:use', label: 'Use', risk: 'low', status: 'disabled' }] }
   ]
+  const source = role({ id: 3, key: 'src', name: 'Source', permission_keys: ['user:read', 'user:delete', 'plugin.g:old', 'plugin.g:bypass', 'plugin.d:use'] })
   const list = [
     role({}),
-    role({ id: 3, key: 'src', name: 'Source', permission_keys: ['user:read', 'user:delete', 'plugin.g:old'] }),
-    role({ id: 4, key: 'super_admin', name: 'Super', builtin: true, superuser: true, permission_keys: undefined })
+    source,
+    role({ id: 4, key: 'super_admin', name: 'Super', builtin: true, superuser: true, permission_keys: ['user:read'] }),
+    role({ id: 5, key: 'unread', name: 'Unread', permission_keys: undefined })
   ]
   const PermissionTree = { name: 'PermissionTree', props: ['granted', 'modules', 'allGranted', 'readOnly', 'scopeLimit', 'roleKey', 'grantable'], emits: ['update:granted'], template: '<i />' }
   const SSelect = { name: 'SSelect', props: ['modelValue', 'options'], emits: ['update:modelValue'], template: '<i />' }
   const SRadioGroup = { name: 'SRadioGroup', props: ['modelValue', 'options'], emits: ['update:modelValue'], template: '<i />' }
+  type Me = { superuser: boolean; permissions: string[]; roles?: string[] }
 
-  async function open(me: { superuser: boolean; permissions: string[] }) {
+  async function open(me: Me, roles: object[] = list, target = 'lead') {
     auth.me = { id: 1900 + Math.random(), roles: [], ...me }
     auth.perms = ['role:define']
-    lookups.roles = list
+    lookups.roles = roles
     mocks.get.mockImplementation(async (path: string) => (path === '/permissions' ? modules : []))
     const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, PermissionTree, SSelect, SRadioGroup } } })
     await flushPromises()
-    await w.findAll('button').find((b) => b.text().includes('lead'))!.trigger('click')
+    await w.findAll('button').find((b) => b.text().includes(target))!.trigger('click')
     await flushPromises()
     return w
   }
   async function copy(w: Awaited<ReturnType<typeof open>>, from: number, mode?: 'union' | 'intersect') {
     await w.get('[data-testid="role-copy"]').trigger('click')
-    const select = w.getComponent(SSelect)
-    expect((select.props('options') as { value: number }[]).map((o) => o.value)).toEqual([3])
-    select.vm.$emit('update:modelValue', from)
+    w.getComponent(SSelect).vm.$emit('update:modelValue', from)
     if (mode) w.getComponent(SRadioGroup).vm.$emit('update:modelValue', mode)
     await flushPromises()
     await w.find('form').trigger('submit')
     await flushPromises()
   }
   const granted = (w: Awaited<ReturnType<typeof open>>) => [...(w.getComponent(PermissionTree).props('granted') as Set<string>)].sort()
+  const note = (w: Awaited<ReturnType<typeof open>>) => (w.find('[data-testid="role-copy-note"]').exists() ? w.get('[data-testid="role-copy-note"]').text() : '')
 
-  it('union adds the source role\'s permissions to the ticks, leaving out removed ones, and saves only on Save', async () => {
+  it('offers the other roles with readable permissions, never the super admin role', async () => {
+    const w = await open({ superuser: true, permissions: [] })
+    await w.get('[data-testid="role-copy"]').trigger('click')
+    expect((w.getComponent(SSelect).props('options') as { value: number }[]).map((o) => o.value)).toEqual([3])
+  })
+
+  it('union adds the source role\'s permissions to the ticks, names what it left out, and saves only on Save', async () => {
     mocks.put.mockClear()
     toastState.items.splice(0)
     const w = await open({ superuser: true, permissions: [] })
     await copy(w, 3)
-    expect(granted(w)).toEqual(['plugin.g:read', 'user:delete', 'user:read'])
+    expect(granted(w)).toEqual(['plugin.d:use', 'plugin.g:read', 'user:delete', 'user:read'])
     expect(mocks.put).not.toHaveBeenCalled()
-    expect(toastState.items.at(-1)?.message).toContain('plugin.g:old')
+    expect(toastState.items.at(-1)?.message).toBe(i18n.global.t('roles.copied'))
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftCritical', { n: 1, list: 'plugin.g:bypass' }, 1))
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftGone', { n: 1, list: 'plugin.g:old' }, 1))
     await w.get('[data-testid="role-save"]').trigger('click')
     await flushPromises()
-    expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:read', 'user:delete', 'user:read'], revision: 7 })
+    expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.d:use', 'plugin.g:read', 'user:delete', 'user:read'], revision: 7 })
+    expect(note(w)).toBe('')
+  })
+
+  it('asks before saving a sensitive permission it copied', async () => {
+    mocks.put.mockClear()
+    ui.confirm.mockClear()
+    ui.confirm.mockResolvedValueOnce(false)
+    const w = await open({ superuser: true, permissions: [] })
+    await copy(w, 3)
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect((ui.confirm.mock.calls[0][0] as { message: string }).message).toContain('Delete')
+    expect(mocks.put).not.toHaveBeenCalled()
   })
 
   it('intersect keeps only what both roles grant', async () => {
@@ -507,25 +535,38 @@ describe('RolesView copy from role', () => {
     expect(granted(w)).toEqual(['user:read'])
   })
 
-  it('leaves out and names what the editor may not grant', async () => {
+  it('says so when the ticks do not change', async () => {
     toastState.items.splice(0)
-    const w = await open({ superuser: false, permissions: ['role:define', 'user:read', 'plugin.g:read'] })
+    const w = await open({ superuser: true, permissions: [] }, [role({}), role({ id: 3, key: 'src', name: 'Source', permission_keys: ['user:read'] })])
     await copy(w, 3)
-    expect(granted(w)).toEqual(['plugin.g:read', 'user:read'])
-    const last = toastState.items.at(-1)!
-    expect(last.kind).toBe('warning')
-    expect(last.message).toContain('user:delete')
+    expect(toastState.items.at(-1)?.message).toBe(i18n.global.t('roles.copyNoChange'))
+    expect((w.get('[data-testid="role-save"]').element as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('is not offered on the super admin role', async () => {
-    auth.me = { id: 2900 + Math.random(), roles: [], superuser: true, permissions: [] }
-    auth.perms = ['role:define']
-    lookups.roles = list
-    mocks.get.mockImplementation(async (path: string) => (path === '/permissions' ? modules : []))
-    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, PermissionTree } } })
-    await flushPromises()
-    await w.findAll('button').find((b) => b.text().includes('super_admin'))!.trigger('click')
-    await flushPromises()
+  it('leaves out what the editor may not grant, and copies a disabled plugin\'s permission its role holds', async () => {
+    const holder = role({ id: 6, key: 'holder', name: 'Holder', permission_keys: ['plugin.d:use'] })
+    const w = await open({ superuser: false, permissions: ['role:define', 'user:read', 'plugin.g:read'], roles: ['holder'] }, [...list, holder])
+    await copy(w, 3)
+    expect(granted(w)).toEqual(['plugin.d:use', 'plugin.g:read', 'user:read'])
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftNotGrantable', { n: 1, list: 'user:delete' }, 1))
+  })
+
+  it('is not offered while the role\'s permissions are not loaded, and is off with no role to copy from', async () => {
+    const w = await open({ superuser: true, permissions: [] }, list, 'unread')
     expect(w.find('[data-testid="role-copy"]').exists()).toBe(false)
+    const alone = await open({ superuser: true, permissions: [] }, [role({})])
+    expect((alone.get('[data-testid="role-copy"]').element as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('a version conflict after a copy saves the copied ticks again with the new revision', async () => {
+    mocks.put.mockClear()
+    mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
+    const w = await open({ superuser: true, permissions: [] })
+    lookups.roles = [role({ revision: 9 }), source]
+    await copy(w, 3, 'intersect')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledTimes(2)
+    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', { permission_keys: ['user:read'], revision: 9 })
   })
 })

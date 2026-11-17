@@ -14,7 +14,7 @@ import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
 import { isVersionConflict, missingText } from '@/utils/permErrors'
 import { actionOf, newRiskyGrants, replayCells, sameKeys } from '@/authz/pluginGrants'
-import { copyGrants, type CopyMode } from '@/authz/copyGrants'
+import { copyGrants, type CopyMode, type CopyRules } from '@/authz/copyGrants'
 import { useEditorGrants } from '@/components/permission/useEditorGrants'
 import { confirmRiskyGrants } from '@/components/permission/confirmRiskyGrants'
 import PermissionTree from './PermissionTree.vue'
@@ -101,6 +101,7 @@ async function selectRole(r: RoleRow, force = false) {
   assignable.value = new Set(parts.assignable)
   assignCustom.value = parts.assignCustom
   saveMissing.value = ''
+  copyNote.value = []
   editErrors.value = {}
   original.value = parts
   loadMembers(r)
@@ -301,8 +302,8 @@ function resetEditor() {
 
 // Fills the editor's ticks from another role's saved keys (union or
 // intersect, authz/copyGrants); nothing is written until Save, which checks
-// the result like any edit. A key the editor may not grant is left out and
-// named, as is one of a removed permission (it cannot be ticked here).
+// the result like any edit. What a union leaves out (beyond the editor,
+// critical, removed) is named in a note that stays until the editor reloads.
 const copyOpen = ref(false)
 const copyFrom = ref<number | null>(null)
 const copyMode = ref<CopyMode>('union')
@@ -314,10 +315,12 @@ const copyModeOptions = computed<SelectOption[]>(() => [
   { value: 'union', label: t('roles.copyUnion') },
   { value: 'intersect', label: t('roles.copyIntersect') }
 ])
-const mayCopy = (key: string) => {
-  const item = catalog.value.get(actionOf(key))
-  return !!item && item.status !== 'removed' && editor.mayGrant(key)
+const copyRules: CopyRules = {
+  mayGrant: (key) => editor.mayGrant(key),
+  gone: (action) => (catalog.value.get(action)?.status ?? 'removed') === 'removed',
+  critical: (action) => catalog.value.get(action)?.risk === 'critical'
 }
+const copyNote = ref<string[]>([])
 
 function openCopy() {
   copyFrom.value = null
@@ -328,11 +331,13 @@ function openCopy() {
 function applyCopy() {
   const source = copySources.value.find((r) => r.id === copyFrom.value)
   if (!source) return
-  const { keys, skipped } = copyGrants([...perms.value], source.permission_keys ?? [], copyMode.value, mayCopy)
-  perms.value = new Set(keys)
+  const res = copyGrants([...perms.value], source.permission_keys ?? [], copyMode.value, copyRules)
+  const changed = !sameKeys([...perms.value], res.keys)
+  perms.value = new Set(res.keys)
   copyOpen.value = false
-  if (skipped.length) toast(t('roles.copySkipped', { n: skipped.length, list: skipped.join(t('roles.listSep')) }), 'warning', 8000)
-  else toast(t('roles.copied'), 'success')
+  const left = (key: string, list: string[]) => (list.length ? [t(key, { n: list.length, list: list.join(t('roles.listSep')) }, list.length)] : [])
+  copyNote.value = [...left('roles.copyLeftNotGrantable', res.notGrantable), ...left('roles.copyLeftCritical', res.critical), ...left('roles.copyLeftGone', res.gone)]
+  toast(changed ? t('roles.copied') : t('roles.copyNoChange'), changed ? 'success' : 'info')
 }
 
 // ------------------------------------------------------------------ create / delete
@@ -459,7 +464,7 @@ async function restoreDefaults() {
         </template>
         <template v-if="!readOnly" #actions>
           <SButton v-if="selected.builtin" size="sm" icon="refresh" :disabled="saving" data-testid="role-restore" @click="restoreDefaults">{{ t('roles.restoreDefaults') }}</SButton>
-          <SButton v-if="!selected.superuser && !permsMissing" size="sm" icon="copy" :disabled="saving || !copySources.length" data-testid="role-copy" @click="openCopy">{{ t('roles.copyFrom') }}</SButton>
+          <SButton v-if="!permsMissing" size="sm" icon="copy" :disabled="saving || !copySources.length" data-testid="role-copy" @click="openCopy">{{ t('roles.copyFrom') }}</SButton>
           <SButton size="sm" :disabled="!dirty || saving" @click="resetEditor">{{ t('common.reset') }}</SButton>
           <SButton variant="primary" size="sm" :disabled="!dirty" :loading="saving" data-testid="role-save" @click="save">{{ t('common.save') }}</SButton>
           <SDropdown v-if="!selected.builtin" :actions="roleActions" data-testid="role-menu" @select="removeRole" />
@@ -470,6 +475,7 @@ async function restoreDefaults() {
           <SAlert v-else-if="builtinLocked && canDefine" tone="info" icon="lock" data-testid="role-builtin-locked">{{ t('roles.builtinLocked') }}</SAlert>
           <SAlert v-else-if="permsMissing" tone="warning">{{ t('roles.permsNotLoaded') }}</SAlert>
           <SAlert v-if="saveMissing" tone="danger" data-testid="role-save-missing">{{ saveMissing }}</SAlert>
+          <SAlert v-if="copyNote.length" tone="info" data-testid="role-copy-note"><p v-for="line in copyNote" :key="line">{{ line }}</p></SAlert>
 
           <SGrid :cols="1" :md-cols="3">
             <SField :label="t('roles.key')" :hint="t('roles.keyLocked')" :error="editErrors.key">

@@ -3,48 +3,83 @@
 // grants and the role does not; intersect keeps only what both grant. Both
 // work per action on scopes, so "account:read:team" meets "account:read:own"
 // as scopes, not as unrelated strings. Pure.
-import { parsePermission, permissionIndex, scopeImplies, type Scope } from './implies'
+import { parsePermission, patternKey, permissionIndex, scopeImplies, type Scope } from './implies'
 import { actionOf, cellOfScopes, scopesOfCell } from './pluginGrants'
 
 export type CopyMode = 'union' | 'intersect'
 
+/** What the editor's catalog and grants say about a permission. */
+export interface CopyRules {
+  /** The editor may grant key (useEditorGrants.mayGrant). */
+  mayGrant: (key: string) => boolean
+  /** The action is removed or unknown to the catalog: it cannot be granted, and its scopes are not narrowed. */
+  gone: (action: string) => boolean
+  /** The action is critical: never ticked in bulk, only one by one (PermissionTree). */
+  critical: (action: string) => boolean
+}
+
 export interface CopyResult {
   /** The role's keys after the copy: canonical, sorted. */
   keys: string[]
-  /** Keys of source the role lacked that the editor may not grant, canonical: left out (the server would refuse the save). */
-  skipped: string[]
+  /** Keys of the source a union left out, canonical and sorted: the editor may not grant them, they are critical (tick them by hand), or gone. */
+  notGrantable: string[]
+  critical: string[]
+  gone: string[]
 }
 
-/** The scopes of list that one of other implies. */
-const coveredBy = (list: readonly Scope[], other: readonly Scope[]) => list.filter((s) => other.some((o) => scopeImplies(o, s)))
+/** A group range without a row, or a row without a group: the two halves of "group/<g>/account/<id>". */
+const plain = (s: Scope) => !s.all && !s.own && !s.team && !s.ref
+const groupOnly = (s: Scope) => plain(s) && s.group !== 0 && s.id === 0
+const rowOnly = (s: Scope) => plain(s) && s.group === 0 && s.id !== 0
+
+/**
+ * The rows both scopes cover, as one scope, or null when that is no scope
+ * (own within a group, two different groups or rows). One implying the other
+ * is the narrower; a group range and an account are that account within the
+ * group.
+ */
+function meet(a: Scope, b: Scope): Scope | null {
+  if (scopeImplies(a, b)) return b
+  if (scopeImplies(b, a)) return a
+  const [g, r] = groupOnly(a) && rowOnly(b) ? [a, b] : groupOnly(b) && rowOnly(a) ? [b, a] : []
+  return g && r ? { all: false, own: false, group: g.group, id: r.id } : null
+}
+
+const meets = (cur: readonly Scope[], src: readonly Scope[]) =>
+  cur.flatMap((c) => src.map((s) => meet(c, s))).filter((s): s is Scope => !!s)
 
 /**
  * current after copying source. union: every scope of source that current
- * does not already imply and that mayGrant allows is added, and the rest of
- * current stays. intersect: per action, the scopes one side holds that the
- * other implies (current "account:read" and source "account:read:own" keep
- * "account:read:own"); it only takes away, so it needs no grant. A key of
- * current that does not parse is kept as it is; one of source is ignored.
+ * does not already imply is added when the editor may grant it, the action is
+ * neither critical nor gone; the rest of current stays (a narrower scope gives
+ * way to a wider one). intersect: per action, the rows both sides cover, at
+ * the narrower scope (current "account:read" and source "account:read:own"
+ * keep "account:read:own"); a gone action keeps only its scopes of current the
+ * source implies, since the server would not store a narrowed gone key.
+ * Intersect only takes away, so it needs no grant. A key of current that does
+ * not parse is kept as it is; one of source is ignored.
  */
-export function copyGrants(current: readonly string[], source: readonly string[], mode: CopyMode, mayGrant: (key: string) => boolean): CopyResult {
+export function copyGrants(current: readonly string[], source: readonly string[], mode: CopyMode, rules: CopyRules): CopyResult {
   const have = permissionIndex(current)
-  const skipped: string[] = []
-  const keys = current.filter((k) => !parsePermission(k))
+  const out: CopyResult = { keys: current.filter((k) => !parsePermission(k)), notGrantable: [], critical: [], gone: [] }
   for (const action of new Set([...current, ...source].map(actionOf))) {
     const cur = scopesOfCell(current, action)
     const src = scopesOfCell(source, action)
     if (mode === 'intersect') {
-      keys.push(...cellOfScopes(action, [...coveredBy(cur, src), ...coveredBy(src, cur)]))
+      const kept = rules.gone(action) ? cur.filter((c) => src.some((s) => scopeImplies(s, c))) : meets(cur, src)
+      out.keys.push(...cellOfScopes(action, kept))
       continue
     }
     const added: Scope[] = []
-    for (const s of src) {
-      const [key] = cellOfScopes(action, [s])
+    for (const scope of src) {
+      const key = patternKey({ action, scope })
       if (have.has(key)) continue
-      if (mayGrant(key)) added.push(s)
-      else skipped.push(key)
+      const left = rules.gone(action) ? out.gone : rules.critical(action) ? out.critical : rules.mayGrant(key) ? null : out.notGrantable
+      if (left) left.push(key)
+      else added.push(scope)
     }
-    keys.push(...cellOfScopes(action, [...cur, ...added]))
+    out.keys.push(...cellOfScopes(action, [...cur, ...added]))
   }
-  return { keys: [...new Set(keys)].sort(), skipped: skipped.sort() }
+  const sorted = (list: string[]) => [...new Set(list)].sort()
+  return { keys: sorted(out.keys), notGrantable: sorted(out.notGrantable), critical: sorted(out.critical), gone: sorted(out.gone) }
 }

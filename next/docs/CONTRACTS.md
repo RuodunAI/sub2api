@@ -1253,6 +1253,7 @@ type ProxyResolver interface {
 - 代理页表单加"粘贴代理串自动填充"（前端解析填到各字段，不依赖后端）。
 - `url-presets` 组件：schema 有 `enum` 时只能选预设；只读时显示"由管理员设置"提示。
 - 角色页：见上文 R8 的范围选择（新 key 由 `/permissions` 带 label 与 `scope_type` 下发）。
+- 角色页“从角色复制”（0.1.293，只在控制台）：编辑器里按来源角色（不含超管角色、未读到权限的角色）改勾选，点保存才写入，保存走同一个 PUT `/roles/:id/permissions` 与风险确认。按动作比较范围（`web/src/authz/copyGrants.ts`）：并集加上来源有、当前未蕴含的范围（同一动作留较宽的），不加操作者不能授出的、关键（critical，与整组勾选同样只能单独勾）和已移除或目录里没有的权限，三类分别列在编辑器提示里；交集保留两边都覆盖的行，取较窄的范围（全部∩own 为 own，team∩own 为 own，`group/G`∩`account/X` 为 `group/G/account/X`，互不覆盖的不保留），已移除的动作不收窄，只留当前持有且被来源蕴含的 key。交集只减不加，不需要授出权。
 
 ### 21.6 测试
 
