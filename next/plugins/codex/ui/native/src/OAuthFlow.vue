@@ -5,6 +5,7 @@
 // /auth/codex/exchange → credentials. Re-authorizing runs the same flow.
 // Not a <form>: the panel sits inside the account editor's form.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { isApiError } from '@sub2api/host'
 import { SAlert, SButton, SCopyButton, SField, SHint, SIcon, SInput, SLink, SSteps } from '@sub2api/ui'
 import { errorMessage, exchangeOAuth, startOAuth, useCodexHost, type CodexCredentials, type OAuthStart } from './host'
 import { callbackShape } from './flow'
@@ -17,7 +18,11 @@ const session = ref<OAuthStart | null>(null)
 const callback = ref('')
 const busy = ref<'' | 'start' | 'exchange'>('')
 const failure = ref('')
-const failedStep = ref<'' | 'start' | 'exchange'>('')
+// 'session': the exchange failed because the session is gone (expired, or
+// the consent was denied); only a new link helps.
+const failedStep = ref<'' | 'start' | 'exchange' | 'session'>('')
+/** Exchange refusals that end the session (the plugin's error codes). */
+const SESSION_GONE = new Set(['session_expired', 'access_denied'])
 const shape = computed(() => callbackShape(callback.value))
 const shapeHint = computed(() => (shape.value === 'invalid' || shape.value === 'denied' || shape.value === 'no_code' ? t(`oauth.shape.${shape.value}`) : ''))
 // A failed exchange is stale once the operator pastes another address.
@@ -75,7 +80,7 @@ async function complete() {
   } catch (e) {
     if (!alive || gen !== generation) return
     failure.value = errorMessage(e, t('actionFailed'))
-    failedStep.value = 'exchange'
+    failedStep.value = isApiError(e) && SESSION_GONE.has(e.code) ? 'session' : 'exchange'
     setBusy('')
   }
 }
@@ -154,8 +159,10 @@ const steps = computed(() => [
 
     <SAlert v-if="failure" tone="danger" dense :title="t('oauth.failed')" data-testid="codex-oauth-error">
       <span class="cx-break">{{ failure }}</span>
-      <template v-if="failedStep === 'start'" #actions>
-        <SButton size="sm" icon="refresh" @click="generate">{{ t('oauth.generate') }}</SButton>
+      <template v-if="failedStep === 'start' || failedStep === 'session'" #actions>
+        <SButton size="sm" icon="refresh" :loading="busy === 'start'" data-testid="codex-oauth-retry" @click="generate">{{
+          t(failedStep === 'session' ? 'oauth.regenerate' : 'oauth.generate')
+        }}</SButton>
       </template>
     </SAlert>
   </div>

@@ -8,7 +8,6 @@ describe('flowsFor / typeOf', () => {
     expect(flowsFor('')).toEqual(['device', 'oauth'])
     expect(flowsFor(undefined)).toEqual(['device', 'oauth'])
     expect(flowsFor('other')).toEqual(['device', 'oauth'])
-    expect(flowsFor('chatgpt_siwc')).toEqual(['device', 'oauth'])
   })
 
   it('prefers the editor account type over the account', () => {

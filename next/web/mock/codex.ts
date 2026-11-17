@@ -246,7 +246,7 @@ on('POST', '/p/codex/reset-credits/list', async (req) => {
   return { data: { available_count: available(list).length, credits: list } }
 })
 
-// Only the cache: accounts whose count the usage query has seen (here every codex account with resets).
+// Only the cache: accounts whose count /reset-credits/list has written (here every codex account with resets).
 on('POST', '/p/codex/reset-credits/summary', (req) => {
   const ids: number[] = Array.isArray(req.body?.account_ids) ? req.body.account_ids : []
   const out: Record<string, { available_count: number; updated_at: number }> = {}

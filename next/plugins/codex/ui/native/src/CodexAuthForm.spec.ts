@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ref } from 'vue'
-import type { PluginHost } from '@sub2api/host'
+import { ApiError, type PluginHost } from '@sub2api/host'
 import CodexAuthForm from './CodexAuthForm.vue'
 import { setHost } from './host'
 
@@ -190,6 +190,62 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s` } })
     expect(lastValue(w)).toEqual(OAUTH_CREDS)
     expect(w.find('[data-testid="codex-authorized"]').exists()).toBe(true)
+  })
+
+  it('offers to try again when generating the link fails', async () => {
+    let starts = 0
+    answer = (path) => {
+      if (path !== '/auth/codex/start') throw new Error(`unexpected ${path}`)
+      return ++starts === 1 ? new Error('issuer down') : { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
+    }
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+    await flushPromises()
+    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('issuer down')
+    expect(w.get('[data-testid="codex-oauth-retry"]').text()).toBe('oauth.generate')
+    await w.get('[data-testid="codex-oauth-retry"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="codex-oauth-error"]').exists()).toBe(false)
+    expect(w.find('[data-testid="codex-oauth-url"]').exists()).toBe(true)
+  })
+
+  for (const code of ['session_expired', 'access_denied']) {
+    it(`offers a new link inside the error when the exchange answers ${code}, and the new link clears the callback`, async () => {
+      let starts = 0
+      answer = (path) => {
+        if (path === '/auth/codex/start') return { session_id: `w${++starts}`, authorize_url: `https://auth.openai.com/oauth/authorize?x=${starts}` }
+        if (path === '/auth/codex/exchange') return new ApiError(code === 'session_expired' ? 404 : 400, { code, message: `${code} message` })
+        throw new Error(`unexpected ${path}`)
+      }
+      const w = mountForm({ accountType: { type: 'codex_oauth' } })
+      await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+      await flushPromises()
+      await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+      await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
+      await flushPromises()
+      expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain(`${code} message`)
+      expect(w.get('[data-testid="codex-oauth-retry"]').text()).toBe('oauth.regenerate')
+      await w.get('[data-testid="codex-oauth-retry"]').trigger('click')
+      await flushPromises()
+      expect(w.find('[data-testid="codex-oauth-error"]').exists()).toBe(false)
+      expect((w.get('[data-testid="codex-oauth-url"]').element as HTMLInputElement).value).toBe('https://auth.openai.com/oauth/authorize?x=2')
+      expect((w.get('[data-testid="codex-oauth-callback"]').element as HTMLInputElement).value).toBe('')
+    })
+  }
+
+  it('keeps a plain exchange error without a new-link button', async () => {
+    answer = (path) => {
+      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
+      return new ApiError(400, { code: 'state_mismatch', message: 'state mismatch' })
+    }
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+    await flushPromises()
+    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
+    await flushPromises()
+    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('state mismatch')
+    expect(w.find('[data-testid="codex-oauth-retry"]').exists()).toBe(false)
   })
 })
 

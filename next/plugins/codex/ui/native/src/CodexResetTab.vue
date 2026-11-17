@@ -1,10 +1,14 @@
 <script setup lang="ts">
 // account.detail.tabs slot (both account types): OpenAI's official Codex
 // usage resets. Shows how many the account has, every credit (usable first,
-// then being used and used ones, dimmed) with its status, wording and expiry, and the account's current 5 h / weekly usage; "Use" spends one
-// (the header button the soonest to expire, a row's button that row's),
-// then refreshes the usage and the list. A refusal (nothing to reset, no reset
-// left) is a warning, not an error: nothing was spent.
+// then being used and used ones, dimmed) with its status, wording and
+// expiry, and the account's 5 h / weekly usage from the core's snapshot;
+// "Use" spends one (the header button the soonest to expire, a row's button
+// that row's), then reloads the list. The snapshot only changes with the
+// account's next upstream response, so after windows were reset the usage
+// is marked as awaiting that request instead of still showing "used up". A
+// refusal (nothing to reset, no reset left) is a warning, not an error:
+// nothing was spent.
 import { computed, ref, watch } from 'vue'
 import { isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SDateTime, SEmpty, SHint, SSkeleton, SStatusBadge, type Tone } from '@sub2api/ui'
@@ -33,7 +37,8 @@ const statusLabels = computed(() => ({
 }))
 
 const data = ref<ResetCredits | null>(null)
-const quota = ref<QuotaLike | null>(props.account.quota ?? null)
+/** Set once a reset cleared windows: the snapshot is stale until the account's next request. */
+const awaitingUsage = ref(false)
 const loading = ref(false)
 const error = ref('')
 /** The id of the credit being used, '' when idle. */
@@ -42,7 +47,10 @@ const busy = ref('')
 const credits = computed(() => availableCredits(data.value))
 const listed = computed(() => allCredits(data.value))
 const count = computed(() => data.value?.available_count ?? 0)
-const usage = computed(() => usageWindows(quota.value))
+const usage = computed(() => {
+  const ws = usageWindows(props.account.quota)
+  return awaitingUsage.value ? ws.map((w) => ({ ...w, full: false })) : ws
+})
 const full = computed(() => anyFull(usage.value))
 
 async function load() {
@@ -58,15 +66,6 @@ async function load() {
     if (id === props.account.id) error.value = errorMessage(e, t('reset.loadFailed'))
   } finally {
     if (id === props.account.id) loading.value = false
-  }
-}
-
-async function refreshQuota(id: number) {
-  try {
-    const q = await host.api.get<QuotaLike>(`/accounts/${id}/quota`, { force: true })
-    if (id === props.account.id) quota.value = q
-  } catch {
-    // The usage line keeps the old values; the list below is what matters.
   }
 }
 
@@ -87,20 +86,21 @@ async function use(c: ResetCredit) {
   try {
     const r = await redeemResetCredit(id, c.id)
     host.toast(r.account_restored ? t('reset.done', { n: r.windows_reset }) : t('reset.doneNotRestored'), r.account_restored ? 'success' : 'warning')
+    if (r.windows_reset > 0 && id === props.account.id) awaitingUsage.value = true
   } catch (e) {
     const refused = isApiError(e) && REFUSALS.has(e.code)
     host.toast(errorMessage(e, t('reset.failed')), refused ? 'warning' : 'error')
   } finally {
     busy.value = ''
   }
-  await Promise.all([refreshQuota(id), load()])
+  await load()
 }
 
 watch(
   () => props.account.id,
   () => {
     data.value = null
-    quota.value = props.account.quota ?? null
+    awaitingUsage.value = false
     void load()
   },
   { immediate: true }
@@ -123,6 +123,7 @@ watch(
           </span>
         </span>
         <span v-if="!usage.length" class="cx-muted">{{ t('reset.noUsage') }}</span>
+        <span v-else-if="awaitingUsage" class="cx-muted" data-testid="codex-reset-usage-awaiting">{{ t('reset.usageAwaiting') }}</span>
       </div>
       <SButton
         v-if="canUse"

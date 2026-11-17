@@ -103,7 +103,7 @@ export interface ResetOutcome {
   account_restored: boolean
 }
 
-/** Cached counts (POST /reset-credits/summary): read from the usage query, never from OpenAI on the call; accounts without one are left out. */
+/** Cached counts (POST /reset-credits/summary): written by /reset-credits/list, never read from OpenAI on the call; accounts without one are left out. */
 export interface ResetSummary {
   accounts: Record<string, { available_count: number; updated_at: number }>
 }

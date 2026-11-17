@@ -383,7 +383,10 @@ seedTest(19, true, 1450, 'gpt-4o-mini', 'model gpt-4o-mini answered', 600)
 // Plan windows of subscription accounts (QuotaSnapshot). Types without plan
 // limits (API keys, relays, ...) report quota = null. A window resets every
 // `period` seconds, first at `firstIn` seconds after the mock started.
-const QUOTA_TYPES = new Set(['claude_oauth/claude_oauth', 'claude_oauth/claude_setup_token', 'codex/codex_device', 'codex/codex_oauth'])
+// Only types declaring a usage query are queried on force; codex declares
+// response headers only, so force returns its snapshot (CONTRACTS §44).
+const QUERY_TYPES = new Set(['claude_oauth/claude_oauth', 'claude_oauth/claude_setup_token'])
+const QUOTA_TYPES = new Set([...QUERY_TYPES, 'codex/codex_device', 'codex/codex_oauth'])
 const MOCK_T0 = Date.now()
 const H = 3600
 const D = 86400
@@ -420,22 +423,27 @@ const quotaState = new Map<number, QuotaState>([
   }],
   // Never queried yet.
   [24, { source: '', updated_at: null, error: '', activeAt: 0, windows: [] }],
-  // ChatGPT (Codex): the 5 h window used up, the account paused until it resets (mock/codex.ts resets it).
-  [29, { source: 'active', updated_at: now(-300), error: '', activeAt: 0, windows: [
-    { key: '5h', utilization: 100, status: 'rejected', firstIn: 2 * H + 1200, period: 5 * H },
-    { key: '7d', utilization: 63, status: 'allowed', firstIn: 3 * D + 9 * H, period: 7 * D }
+  // ChatGPT (Codex), sampled from the x-codex-* response headers: #29's 5 h window used up, the account paused until it resets (mock/codex.ts resets it).
+  [29, { source: 'passive', updated_at: now(-300), error: '', activeAt: 0, windows: [
+    { key: '5h', utilization: 100, status: '', firstIn: 2 * H + 1200, period: 5 * H },
+    { key: '7d', utilization: 63, status: '', firstIn: 3 * D + 9 * H, period: 7 * D }
+  ] }],
+  [30, { source: 'passive', updated_at: now(-900), error: '', activeAt: 0, windows: [
+    { key: '5h', utilization: 18, status: '', firstIn: 3 * H + 600, period: 5 * H },
+    { key: '7d', utilization: 7.5, status: '', firstIn: 6 * D + 2 * H, period: 7 * D }
   ] }]
 ])
 
-/** An official Codex usage reset (mock/codex.ts): every window back to 0 and the paused account resumed. */
+/**
+ * An official Codex usage reset (mock/codex.ts): the paused account resumes
+ * (the plugin clears its automatic state). Like the real core, the snapshot
+ * keeps the old usage until the account's next request; the answer counts
+ * the used-up windows the upstream reset.
+ */
 export function resetCodexUsage(id: number): number {
-  const st = quotaState.get(id)
   const a = accounts.find((x) => x.id === id)
   if (a?.status === 'auto_disabled') Object.assign(a, { status: 'active', status_reason: '', auto_disabled_until: null, cooldown_until: null })
-  if (!st) return 0
-  for (const w of st.windows) Object.assign(w, { utilization: 0, status: 'allowed' })
-  st.updated_at = now()
-  return st.windows.length
+  return quotaState.get(id)?.windows.filter((w) => w.utilization >= 100).length ?? 0
 }
 
 /** Next reset after now: MOCK_T0 + firstIn + k·period. */
@@ -1032,7 +1040,7 @@ on('GET', '/accounts/:id/quota', async (req) => {
   if (!('a' in r)) return r
   const st = quotaStateOf(r.a)
   if (!st) return { supported: false, source: '', updated_at: null, error: '', windows: [] }
-  if (req.query.force === 'true') {
+  if (req.query.force === 'true' && QUERY_TYPES.has(`${r.a.plugin_key}/${r.a.type}`)) {
     await new Promise((ok) => setTimeout(ok, 700))
     st.activeAt = Date.now()
     st.source = 'active'
