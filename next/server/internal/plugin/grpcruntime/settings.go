@@ -15,7 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// System settings for plugins (CONTRACTS §106).
+// System settings for plugins (CONTRACTS §107).
 
 // SettingsChangedTimeout bounds one PluginService.SettingsChanged call.
 const SettingsChangedTimeout = 2 * time.Second

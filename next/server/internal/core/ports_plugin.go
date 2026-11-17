@@ -75,13 +75,10 @@ type PlatformPlugin interface {
 // declaration, and the gateway takes from it the parts of sending around
 // BuildUpstreamRequest. A code plugin's client does not implement it.
 type DeclaredUpstream interface {
-	// Upstream is the resolved declaration without an account layer: the
-	// defaults of the account layer the console edits.
-	Upstream() manifest.Upstream
 	// PrepareBody is the declaration's part of the body before
-	// BuildUpstreamRequest: the filtered fields the account does not allow
-	// are removed, then the declared paramOverride runs.
-	PrepareBody(acc *pluginv1.Account, body []byte, in *ParamOverrideContext) (ParamOverrideResult, error)
+	// BuildUpstreamRequest: the filtered fields are removed, then the
+	// declared paramOverride runs.
+	PrepareBody(body []byte, in *ParamOverrideContext) (ParamOverrideResult, error)
 	// UpstreamURL is the URL of built once the plugin's patches (extend)
 	// changed the upstream model to model: the declaration's URL rendered
 	// again, so a model in the path follows the model really sent, or
@@ -92,9 +89,9 @@ type DeclaredUpstream interface {
 	// the account's parameter override (§86.5).
 	SplitHeaders(in *pluginv1.BuildUpstreamRequestRequest, built *pluginv1.BuildUpstreamRequestResponse) (declared, plugin map[string]string)
 	// AuthHeader is the lower-case name of the header the declaration
-	// authenticates with for acc (empty for query or no auth). The gateway
-	// writes built's value of it after every other header source.
-	AuthHeader(acc *pluginv1.Account) string
+	// authenticates with (empty for query or no auth). The gateway writes
+	// built's value of it after every other header source.
+	AuthHeader() string
 }
 
 // ExecutionHTTP is the one-request network capability supplied by the current

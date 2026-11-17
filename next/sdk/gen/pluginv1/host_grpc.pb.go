@@ -34,7 +34,7 @@ type HostServiceClient interface {
 	// (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
 	GetEnvironment(ctx context.Context, in *GetEnvironmentRequest, opts ...grpc.CallOption) (*GetEnvironmentResponse, error)
 	// settings (always granted): the effective values of sections of the
-	// system settings, for work outside a gateway request (CONTRACTS §106).
+	// system settings, for work outside a gateway request (CONTRACTS §107).
 	// values_json holds the fields CONTRACTS lists for the section, never a
 	// secret; version changes exactly when the values do. No sections asks
 	// for all of them; an unknown section is INVALID_ARGUMENT. Changes are
@@ -618,7 +618,7 @@ type HostServiceServer interface {
 	// (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
 	GetEnvironment(context.Context, *GetEnvironmentRequest) (*GetEnvironmentResponse, error)
 	// settings (always granted): the effective values of sections of the
-	// system settings, for work outside a gateway request (CONTRACTS §106).
+	// system settings, for work outside a gateway request (CONTRACTS §107).
 	// values_json holds the fields CONTRACTS lists for the section, never a
 	// secret; version changes exactly when the values do. No sections asks
 	// for all of them; an unknown section is INVALID_ARGUMENT. Changes are

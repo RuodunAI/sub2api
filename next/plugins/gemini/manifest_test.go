@@ -41,7 +41,7 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("account type %s platforms = %+v, want apikey on %s", at.ID, at.Platforms, platform)
 	}
 	assertJSON(t, at.Upstream.Layer(), declaration)
-	p, err := upstream.Resolve(&at, nil, nil)
+	p, err := upstream.Resolve(&at, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

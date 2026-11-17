@@ -66,7 +66,7 @@ func TestManifest(t *testing.T) {
 		t.Fatal("model_mapping must be neither a settings field nor a form property")
 	}
 	assertJSON(t, at.Upstream.Layer(), declaration)
-	p, err := upstream.Resolve(&at, nil, nil)
+	p, err := upstream.Resolve(&at, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

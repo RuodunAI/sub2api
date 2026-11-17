@@ -12,7 +12,7 @@ import (
 
 // Every gateway settings section is read for plugins as the core runs it,
 // and saving one records settings.changed naming it in the same transaction
-// (CONTRACTS §106).
+// (CONTRACTS §107).
 func TestSettingsForPlugins(t *testing.T) {
 	ctx := context.Background()
 	e := newDBEnv(t, func(d *Deps) { d.Events = event.NewPublisher(d.DB) })

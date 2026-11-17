@@ -29,7 +29,7 @@ const (
 )
 
 // Settings returns the effective values of one section of the system
-// settings (CONTRACTS §106), the section of T:
+// settings (CONTRACTS §107), the section of T:
 //
 //	sticky, err := pluginsdk.Settings[protocol.StickySettings](ctx, host)
 //

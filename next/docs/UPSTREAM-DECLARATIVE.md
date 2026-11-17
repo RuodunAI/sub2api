@@ -21,7 +21,7 @@
 sdk/platforms/upstream/{openai,anthropic,gemini}.json   核心预设（路由表）
 sdk/manifest            AccountType.Upstream 类型、Runtime "none"
 sdk/manifest/check      upstream 与 runtime none 的校验
-sdk/upstream            Resolve（预设+清单+账号）与 Build/Test/Models/Validate/Classify
+sdk/upstream            Resolve（预设+清单）与 Build/Test/Models/Validate/Classify
 sdk/paramoverride       §84 引擎（从 server/internal/core 原样迁出，核心保留别名）
 server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 包装）
 ```
@@ -32,9 +32,8 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
 
 ```jsonc
 "upstream": {
-  "preset": "anthropic",            // openai | anthropic | gemini；自定义上游类型也必须写
+  "preset": "anthropic",            // openai | anthropic | gemini
   "extend": false,                  // true：核心构造后再调插件 BuildUpstreamRequest（需 runtime grpc）
-  "accountConfig": false,           // true：账号 settings.upstream 可覆盖（只给自定义上游类型）
   "baseURL": { "default": "https://api.anthropic.com", "required": false, "stripSuffixes": ["/v1"] },
   "credentials": {                  // 与 baseURL 一起对应 apikey.Spec
     "keyValidator": { "prefixes": ["sk-", "sess-"], "minLength": 10 },   // 省略 = 任意 8-512 个可见字符
@@ -52,7 +51,7 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
     "anthropic.count_tokens": { "path": "/v1/messages/count_tokens" }
   },
   "defaultProtocol": "anthropic.messages",   // meta.protocol 为空时用
-  "filterFields": [],               // 默认不透传的请求体顶层字段（账号层可用 allowFields 放开）
+  "filterFields": [],               // 默认不透传的请求体顶层字段
   "paramOverride": null,            // §84 格式；清单的固定改写
   "classify": "anthropic",          // openai | anthropic | gemini → sdk/pluginsdk/providers/<x>.Policy
   "test":   { "protocol": "anthropic.messages", "model": "claude-haiku-4-5", "body": "anthropic.ping" },
@@ -97,9 +96,7 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
 
 ### 2.3 合并规则
 
-`Resolve(preset, manifest, account)`：预设 → 清单 → 账号，后面覆盖前面；对象按字段合并，`headers` 按头名、`routes` 按协议合并（路由内逐字段，`headers` 按头名、`patches` 整体替换），写 `null` 删除。清单可新增预设没有的协议键，但必须是账号类型 `platforms[].endpoints` 覆盖到的协议。
-
-账号层（仅 `accountConfig: true`，即自定义上游）：账号 settings 字段 `upstream`，只能写 `baseURL`（default 之外由账号 base_url 设置给出）、`auth`、`headers`、`routes` 的 `path`，以及 `allowFields`（放开哪些 filterFields）。不能改 `credentials`、`classify`、`test`、`models`、`paramOverride`、`transport`、`patches`、`model`。
+`Resolve(preset, manifest)`：预设 → 清单，后面覆盖前面；对象按字段合并，`headers` 按头名、`routes` 按协议合并（路由内逐字段，`headers` 按头名、`patches` 整体替换），写 `null` 删除。清单可新增预设没有的协议键，但必须是账号类型 `platforms[].endpoints` 覆盖到的协议。
 
 可服务的端点 = routes 里列出的协议（原生）加核心能转换到它们的协议；调度规则不变（routes 必须与账号类型 `platforms[].endpoints` 一致，check 校验）。
 
@@ -109,7 +106,7 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
 
 ### 2.5 默认过滤字段
 
-`filterFields` 是请求体顶层字段名列表，构造时删除（账号层 `allowFields` 列出的除外）。预设声明各家的候选列表（openai/anthropic：`service_tier`、`safety_identifier`、`inference_geo`、`speed` 中适用的），但为了行为不变，openai、anthropic、gemini、relay 四个插件的清单把 `filterFields` 设为 `[]`；只有自定义上游类型用预设的默认过滤。
+`filterFields` 是请求体顶层字段名列表，构造时删除。预设声明各家的候选列表（openai/anthropic：`service_tier`、`safety_identifier`、`inference_geo`、`speed` 中适用的），清单不写 `filterFields` 时用它；为了行为不变，openai、anthropic、gemini、relay 四个插件的清单把 `filterFields` 设为 `[]`。
 
 ## 3. 引擎（sdk/upstream）
 
@@ -117,16 +114,18 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
 type Profile struct { /* Resolve 的结果，全部字段已合并 */ }
 
 func Preset(name string) (manifest.Upstream, bool)
-func Resolve(m *manifest.AccountType, passHeaders []string, account json.RawMessage) (*Profile, error)
+func Resolve(m *manifest.AccountType, passHeaders []string) (*Profile, error)
 func (p *Profile) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.ValidateCredentialsResponse
 func (p *Profile) Build(in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error)
 func (p *Profile) Test(in *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error)
 func (p *Profile) Models(in *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error)
 func (p *Profile) Classify(now time.Time, in *pluginv1.ClassifyErrorRequest) *pluginv1.ClassifyErrorResponse
+func (p *Profile) PrepareBody(body []byte, ctx *paramoverride.Context) (paramoverride.Result, error)   // filterFields 与清单 paramOverride（§4.3）
+func (p *Profile) URL(in *pluginv1.BuildUpstreamRequestRequest, model string) (string, error)        // 按最终模型重算 URL
 func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核心最后重写
 ```
 
-- Validate：`apikey.Spec{AccountType, DefaultBaseURL, StripSuffixes, RequireBaseURL, KeyValidator, Texts}.Validate`；`accountConfig` 时额外校验 settings.upstream 的形状与模板。
+- Validate：`apikey.Spec{AccountType, DefaultBaseURL, StripSuffixes, RequireBaseURL, KeyValidator, Texts}.Validate`。
 - Build：返回的 `Patches` 是路由 `patches`，再接清单 `paramOverride` 产生的补丁（引擎把 §84 结果转成 SET/DELETE 补丁不现实，所以清单 paramOverride 由核心在 extend 之前对请求体执行，见 §4；引擎不处理它）。
 - Test：`body` 取值 `openai.chat_ping` | `anthropic.ping` | `gemini.ping`（复用 providers 的 ping 体，maxTokens 1），或一个含 `{model}` 的 JSON 模板。`UsageProtocol` = test.protocol；URL 与请求头按该协议路由构造（不带 inbound 头）。
 - Models：`apikey.ModelListRequest` 等价。
@@ -147,22 +146,13 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 
 ### 4.3 发送顺序（gateway）
 
-请求体：模型映射 → 协议转换 → filterFields（账号没放开的）→ 预设/清单 paramOverride（声明的固定改写）→ **账号 §84 覆盖** → Build（`meta.model` 为覆盖后的模型）的路由 patches → 插件 extend / 老插件 patches → streamOnly 强制。插件 patch 改了 model 时，声明式类型按最终请求体的 model 重新渲染 URL（`core.DeclaredUpstream.UpstreamURL`）；代码插件的 URL 是它自己的。WebSocket 每轮同样。
+请求体：模型映射 → 协议转换 → filterFields → 预设/清单 paramOverride（声明的固定改写）→ **账号 §84 覆盖** → Build（`meta.model` 为覆盖后的模型）的路由 patches → 插件 extend / 老插件 patches → streamOnly 强制。插件 patch 改了 model 时，声明式类型按最终请求体的 model 重新渲染 URL（`core.DeclaredUpstream.UpstreamURL`）；代码插件的 URL 是它自己的。WebSocket 每轮同样。
 
 请求头：声明构造的头（inbound → 预设/清单 → 路由）→ 声明的 paramOverride 头 → 透传 §81 与粘性规则（只补没设的）→ 账号 §84 头 → 插件头（`SplitHeaders` 区分声明和插件的）→ **鉴权头重写** → 核心资源头、额度头。
 
-### 4.4 接口
+## 5. 自定义上游（已删除）
 
-`GET /api/v1/account-types`（及账号类型详情）为声明式类型返回 `upstream`：Resolve 后的清单层结果（不含账号层），控制台“从预设填入”用它。
-
-## 5. 自定义上游（内置插件 `custom` 0.1.0）
-
-- runtime none，内置随核心安装并启用。
-- 三个账号类型，`creationGroup: "custom"`（新建账号时归在同一组“自定义上游”）：`custom_openai`（preset openai，platforms openai 全部端点）、`custom_anthropic`（preset anthropic）、`custom_gemini`（preset gemini）。都 `accountConfig: true`、`baseURL.required: true`、key 任意，`filterFields` 用预设的默认过滤（service_tier、inference_geo、speed、safety_identifier 中该协议适用的）。
-- 表单 schema：`api_key`、`base_url`、`upstream`（object，可选；uiSchema `"ui:widget": "upstream-editor"`）；settingsFields `base_url`、`proxy_id`、`upstream`。凭证加密不回显，其余是设置。
-- 控制台 `UpstreamEditor` 组件（schema 表单的 `upstream` 控件）：编辑 auth（方式、名称、模板）、headers、按协议的 path、放开哪些默认过滤字段；默认值来自账号类型 Resolve 后的 `upstream`，可一键恢复；保存的数据就是 §2.3 账号层结构，核心用同一份校验。
-- 模型和测试：“获取模型”走 models，“测试”走 test；只服务部分模型用账号的模型列表。
-- 不做：路由上选转换器（核心自动选）、按模型分路由、账号上关掉单个协议（第 3 期 count_tokens 本地估算兜底）。
+内置插件 `custom`（三个“自定义上游”账号类型、账号 settings 里的 `upstream` 账号层、控制台 `upstream-editor` 控件，以及为它们在 `GET /account-types` 返回的 `upstream`、`pass_headers`）在核心 0.1.301 删除（CONTRACTS §106，迁移 0104）：接任意 OpenAI、Anthropic、Gemini 兼容接口用内置 openai、anthropic、gemini 插件的 API Key 账号填 Base URL，协议转换由平台做。最后的源码是 `845d9aa47`。
 
 ## 6. 四个插件
 
@@ -179,14 +169,13 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 
 - 黄金样例：在改动前用旧插件代码对输入矩阵生成 `sdk/upstream/testdata/golden/<plugin>.json`（每种协议 × 有无 base_url × 有无 inbound 头 × stream × gemini models/ 前缀 × anthropic-version 传与不传 × ws；测试请求；模型列表；校验的合法/非法凭证；classify 的现有测试数据），新引擎逐项比对。
 - 引擎单测、check 单测、registry/rollout 单测（runtime none、extend）、gateway 单测（§84 位置、鉴权头重写、model 改写后 URL 重算）。
-- `go test -race` 全量（容器内），web 单测，控制台截图（新建自定义上游、编辑路由）。
+- `go test -race` 全量（容器内），web 单测。
 
 ## 8. 实现记录（与上文不同或上文没写的地方）
 
 契约以 CONTRACTS §86 为准，这里记实现时定下的细节。
 
 - **合并**：各层按 JSON merge patch 合并原始 JSON；一个请求头的写法和 `paramOverride` 整体替换。路由里写 `null` 的头只对该路由删除共用头。`manifest.Upstream` 保留解码时的原始字节（`Layer()`），所以 Go 里构造的声明表达不了 `null`。未知字段拒绝。
-- **账号层**：只能写 `auth`、`headers`、已声明协议的 `path`、`allowFields`；`baseURL` 由账号的 `base_url` 设置给出，账号层不能写。先读设置，再读凭证。账号层能改鉴权头名，所以 `AuthHeader` 带账号参数。
 - **inbound 头**：引擎自己按 passHeaders 过滤（小写精确匹配、去空白、空值跳过），与旧插件的 `apikey.ForwardHeaders` 一致。
 - **模型**：只有路由设了 `trimPrefix`（gemini）时 Build 才去空白和前缀；测试模型总是去前缀。“model is required” 的文案由路由路径推出，与旧 gemini 一致。
 - **append**：值是 `key=version` 时，已有同 key 的任意版本就不追加（openai-beta 的规则）。
@@ -194,6 +183,4 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 - **新增字段**：`models.stripPrefix`（gemini 的 `models/`）；`providers/gemini.GenerateContentPingBody`。
 - **`accounts.credentials`**：只有存在没声明 upstream 或声明了 extend 的账号类型时才需要。
 - **runtime none**：能力只允许 `platform.adapter.v1`、`platform.websocket.v1`（responses_ws 需要后者）。
-- **表单控件**：schema 表单用 uiSchema 的 `"ui:widget": "upstream-editor"`（不是上文早期写的 `x-widget`）。
-- **字段错误**：账号层每个问题一个字段错误，`credentials.upstream.<路径>`。
 - **执行路径**：`platform.execute.v1` 插件拿到的是覆盖后的请求体和模型，经核心转发的请求不再重复执行覆盖。

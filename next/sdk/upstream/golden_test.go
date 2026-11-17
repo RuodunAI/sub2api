@@ -137,7 +137,7 @@ func TestGolden(t *testing.T) {
 			if err := json.Unmarshal([]byte(gt.upstream), at.Upstream); err != nil {
 				t.Fatal(err)
 			}
-			p, err := Resolve(at, gt.passHeaders, nil)
+			p, err := Resolve(at, gt.passHeaders)
 			if err != nil {
 				t.Fatal(err)
 			}

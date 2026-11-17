@@ -18,7 +18,7 @@ type settingsReceiver interface {
 
 // onConfigChanged hands a settings section saved anywhere in the cluster to
 // every plugin instance loaded on this node, a rollout's included
-// (PluginService.SettingsChanged, CONTRACTS §106). Every node receives config:changed, the writer's own
+// (PluginService.SettingsChanged, CONTRACTS §107). Every node receives config:changed, the writer's own
 // included, so every plugin process learns of the change; the
 // settings.changed event reaches one instance per plugin. It runs on the
 // bus goroutine, so the calls go out on their own.

@@ -25,7 +25,7 @@ service HostService {
   // (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
   rpc GetEnvironment(GetEnvironmentRequest) returns (GetEnvironmentResponse);
   // settings (always granted): the effective values of sections of the
-  // system settings, for work outside a gateway request (CONTRACTS §106).
+  // system settings, for work outside a gateway request (CONTRACTS §107).
   // values_json holds the fields CONTRACTS lists for the section, never a
   // secret; version changes exactly when the values do. No sections asks
   // for all of them; an unknown section is INVALID_ARGUMENT. Changes are
@@ -303,7 +303,7 @@ message GetSettingsResponse {
 message SettingsSection {
   string name = 1;
   string version = 2;     // the first 16 hex digits of the SHA-256 of values_json
-  string values_json = 3; // a JSON object, the fields of CONTRACTS §106
+  string values_json = 3; // a JSON object, the fields of CONTRACTS §107
 }
 
 message GetUsersRequest {

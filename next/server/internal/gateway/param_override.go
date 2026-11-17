@@ -61,25 +61,22 @@ func (c *call) overrideBody(ctx context.Context, acc *core.Account, rt *typeRout
 
 // prepareDeclared runs the declaration's part of the body of a declared
 // account type before BuildUpstreamRequest; other types are left alone.
-func (c *call) prepareDeclared(ctx context.Context, acc *core.Account, rt *typeRoute, pacct *pluginv1.Account, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
+func (c *call) prepareDeclared(ctx context.Context, acc *core.Account, rt *typeRoute, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
 	c.paramOverride = paramOverrideState{}
 	d, ok := rt.binding.Client.(core.DeclaredUpstream)
 	if !ok {
 		return body, upModel, nil
 	}
-	run := func(b []byte, in *core.ParamOverrideContext) (core.ParamOverrideResult, error) {
-		return d.PrepareBody(pacct, b, in)
-	}
 	var failure *attemptResult
-	body, upModel, c.paramOverride.declared, failure = c.overrideBody(ctx, acc, rt, body, upModel, n, run, "upstream declaration")
+	body, upModel, c.paramOverride.declared, failure = c.overrideBody(ctx, acc, rt, body, upModel, n, d.PrepareBody, "upstream declaration")
 	return body, upModel, failure
 }
 
 // rewriteBody runs the rewrites of an attempt's body before
 // BuildUpstreamRequest: the declaration's part, the built-in override, then
 // the account's override.
-func (c *call) rewriteBody(ctx context.Context, acc *core.Account, rt *typeRoute, pacct *pluginv1.Account, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
-	body, upModel, failure := c.prepareDeclared(ctx, acc, rt, pacct, body, upModel, n)
+func (c *call) rewriteBody(ctx context.Context, acc *core.Account, rt *typeRoute, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
+	body, upModel, failure := c.prepareDeclared(ctx, acc, rt, body, upModel, n)
 	if failure != nil {
 		return nil, "", failure
 	}
@@ -134,11 +131,11 @@ func (c *call) declaredTarget(rt *typeRoute, request *pluginv1.BuildUpstreamRequ
 // rewriteTurn runs the rewrites of a WebSocket turn's message before the
 // plugin's patches, as on HTTP. The account override's header decisions do
 // not apply: the connection's headers were sent with the handshake.
-func (c *call) rewriteTurn(ctx context.Context, acc *core.Account, rt *typeRoute, pacct *pluginv1.Account, payload []byte, n int) ([]byte, *gwError) {
+func (c *call) rewriteTurn(ctx context.Context, acc *core.Account, rt *typeRoute, payload []byte, n int) ([]byte, *gwError) {
 	if acc == nil {
 		return payload, nil
 	}
-	payload, _, failure := c.rewriteBody(ctx, acc, rt, pacct, payload, c.upstreamModel(acc), n)
+	payload, _, failure := c.rewriteBody(ctx, acc, rt, payload, c.upstreamModel(acc), n)
 	return payload, failureErr(failure)
 }
 

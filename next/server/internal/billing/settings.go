@@ -22,7 +22,7 @@ const (
 )
 
 // settingsKey is the settings row and the plugin-visible section
-// (CONTRACTS §106) of the billing settings.
+// (CONTRACTS §107) of the billing settings.
 const settingsKey = protocol.SettingsBilling
 
 // Settings is the "billing" row of the settings table (CONTRACTS §8).
@@ -147,7 +147,7 @@ func loadSettings(ctx context.Context, q *gorm.DB) (Settings, error) {
 }
 
 // SettingsReaders reads the billing section as plugins see it
-// (CONTRACTS §106), with the read and defaults of Settings.
+// (CONTRACTS §107), with the read and defaults of Settings.
 func (s *Service) SettingsReaders() map[string]core.SettingsReader {
 	return map[string]core.SettingsReader{settingsKey: func(ctx context.Context) (protocol.SettingsValues, error) {
 		v, err := loadSettings(ctx, s.db.Gorm)

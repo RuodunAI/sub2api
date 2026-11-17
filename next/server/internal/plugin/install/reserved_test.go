@@ -228,13 +228,15 @@ func renamePlatform(m *manifest.Manifest, id string) *manifest.Manifest {
 	return m
 }
 
-// The reservations cover every first-party plugin in next/plugins: its key
-// and the platform and notification channel ids it declares.
+// The reservations cover every first-party plugin in next/plugins, and only
+// those: its key and the platform and notification channel ids it declares.
+// A removed key is no longer in the repository.
 func TestReservedCoverRepo(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join("..", "..", "..", "..", "plugins", "*", "manifest.json"))
 	if err != nil || len(paths) < 5 {
 		t.Fatalf("first-party manifests: %v %v", err, paths)
 	}
+	keys := map[string]bool{}
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -244,8 +246,12 @@ func TestReservedCoverRepo(t *testing.T) {
 		if err := json.Unmarshal(raw, &m); err != nil {
 			t.Fatalf("%s: %v", path, err)
 		}
+		keys[m.Key] = true
 		if !reservedKeys[m.Key] {
 			t.Errorf("first-party key %q is not reserved", m.Key)
+		}
+		if _, ok := removedKeys[m.Key]; ok {
+			t.Errorf("removed key %q is still a first-party plugin", m.Key)
 		}
 		for _, p := range m.Platforms {
 			if reservedPlatforms[p.ID] != m.Key {
@@ -260,6 +266,11 @@ func TestReservedCoverRepo(t *testing.T) {
 			}
 		}
 	}
+	for key := range reservedKeys {
+		if !keys[key] {
+			t.Errorf("reserved key %q is no first-party plugin: remove it, or move it to removedKeys", key)
+		}
+	}
 }
 
 // A removed plugin installs from no source, officially signed or not: the
@@ -267,11 +278,13 @@ func TestReservedCoverRepo(t *testing.T) {
 func TestRemovedKeyRefused(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
-	official := pkgtest.Build(pkgtest.Minimal("ccgateway", "0.1.133", "sub2api"), e.root)
-	for _, source := range []string{"", "builtin", "market:1"} {
-		_, err := e.svc.Upload(ctx, official, e.admin, UploadOptions{Source: source})
-		if errCode(err) != "plugin_key_reserved" || !strings.Contains(err.Error(), "removed in core 0.1.290") {
-			t.Errorf("source %q: %v", source, err)
+	for key, release := range removedKeys {
+		official := pkgtest.Build(pkgtest.Minimal(key, "0.9.0", "sub2api"), e.root)
+		for _, source := range []string{"", "builtin", "market:1"} {
+			_, err := e.svc.Upload(ctx, official, e.admin, UploadOptions{Source: source})
+			if errCode(err) != "plugin_key_reserved" || !strings.Contains(err.Error(), "removed in core "+release) {
+				t.Errorf("%s from source %q: %v", key, source, err)
+			}
 		}
 	}
 }

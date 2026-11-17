@@ -34,7 +34,7 @@ type Deps struct {
 	Bus   core.Bus
 	Node  core.Node
 	// Events records settings.changed when a settings section of the
-	// gateway is saved (CONTRACTS §106); nil records nothing.
+	// gateway is saved (CONTRACTS §107); nil records nothing.
 	Events core.EventPublisher
 	// Environment supplies the global layer of the environment variables
 	// merged over the process layer (GlobalEnvironment, CONTRACTS §74.3);

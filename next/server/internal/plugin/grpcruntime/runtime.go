@@ -72,7 +72,7 @@ type Options struct {
 	// UNAVAILABLE.
 	Environment core.EnvironmentResolver
 	// Settings serves HostService.GetSettings: the reader of each section
-	// (CONTRACTS §106). A section without one fails with UNAVAILABLE.
+	// (CONTRACTS §107). A section without one fails with UNAVAILABLE.
 	Settings map[string]core.SettingsReader
 	// Notifier serves HostService.ListNotificationChannels and Notify; nil
 	// makes them fail with UNAVAILABLE.

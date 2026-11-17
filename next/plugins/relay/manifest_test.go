@@ -49,7 +49,7 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("passHeaders = %v", passHeaders)
 	}
 	assertJSON(t, at.Upstream.Layer(), declaration)
-	if _, err := upstream.Resolve(&at, passHeaders, nil); err != nil {
+	if _, err := upstream.Resolve(&at, passHeaders); err != nil {
 		t.Fatal(err)
 	}
 }

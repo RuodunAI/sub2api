@@ -1,6 +1,6 @@
 package protocol
 
-// System settings as plugins read them (CONTRACTS §106). The core answers
+// System settings as plugins read them (CONTRACTS §107). The core answers
 // HostService.GetSettings with one of these per section, filled by the
 // section's owner from the same read and normalisation its own caches use,
 // and announces changes with PluginService.SettingsChanged on every node

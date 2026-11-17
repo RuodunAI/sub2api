@@ -10,9 +10,9 @@
 
 | 路径 | 用在哪里 | 谁发上游请求、谁记用量 |
 |---|---|---|
-| 普通转发 | 只有清单的插件（openai、gemini、custom、relay）和实现了 `BuildUpstreamRequest` 的 gRPC 插件（anthropic、claude-oauth） | 核心按插件给的请求（或声明式上游）发出，核心中继响应、按 `usage` 规则记用量 |
+| 普通转发 | 只有清单的插件（openai、gemini、relay）和实现了 `BuildUpstreamRequest` 的 gRPC 插件（anthropic、claude-oauth） | 核心按插件给的请求（或声明式上游）发出，核心中继响应、按 `usage` 规则记用量 |
 | 插件执行（`platform.execute.v1`） | codex、volcengine | 插件的 `Execute` 调 `ForwardUpstream`，上游请求仍由核心的同一段代码（`forwardBuilt` → `forward`）发出和中继；用量由插件在 `Execute` 里 `RecordUsage`（SDK 的 `ExecuteDefault` 已做好），异步任务用 `ReserveAndWatch` |
-| WebSocket（`platform.websocket.v1`） | openai、custom、codex 的 `/v1/responses` WebSocket 模式 | 核心建连并逐轮中继，每轮按规则记用量（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)） |
+| WebSocket（`platform.websocket.v1`） | openai、codex 的 `/v1/responses` WebSocket 模式 | 核心建连并逐轮中继，每轮按规则记用量（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)） |
 
 因为分叉发生在改写之后、发送之前，大部分设置对三条路径天然一致；插件执行路径曾经有两处没做到（下表标“0.1.300 起”）。
 
@@ -63,7 +63,7 @@
 | 插件 | 路径 | 插件配合的部分 |
 |---|---|---|
 | anthropic、claude-oauth | 普通转发（gRPC，`BuildUpstreamRequest`） | claude-oauth 声明额度头 |
-| openai、gemini、custom、relay | 普通转发（只有清单）；openai、custom 另有 WebSocket | 无，全部由清单和核心完成 |
+| openai、gemini、relay | 普通转发（只有清单）；openai 另有 WebSocket | 无，全部由清单和核心完成 |
 | codex | 插件执行 + WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16） |
 | volcengine | 插件执行（含异步任务） | `ClassifyError`、`EstimateUsage`（视频任务）、`ReserveAndWatch` |
 
@@ -78,7 +78,7 @@
 
 ## 5. 读取系统设置与变更通知（核心 0.1.300 起）
 
-插件可以只读地读取下表的系统设置分组，并在管理员保存后立即得知（CONTRACTS §106）：
+插件可以只读地读取下表的系统设置分组，并在管理员保存后立即得知（CONTRACTS §107）：
 
 | 分组 | SDK 类型 | 典型用途 |
 |---|---|---|
@@ -99,7 +99,7 @@ if !sticky.Enabled { ... }
 
 - 不用授权，不用在清单里声明能力；只读，不能改设置。
 - SDK 在进程里缓存每个分组，核心在任一节点保存设置后会通知每个节点上的插件进程（`PluginService.SettingsChanged`，SDK 已实现），缓存随即作废；另外最多缓存 10 秒。缓存失效时并发调用只读宿主一次；读取失败时返回上次读成功的值，2 秒内不再读宿主，从未读成功过才返回错误（宿主的读取失败一律是 `UNAVAILABLE`）。所以在用到的地方直接调用即可，热路径（如 `RankAccounts`）也一样：命中时不访问宿主，只解码一次 JSON。
-- 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §106.2。故障策略只给开关和 `schema_version`，规则不开放。
+- 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §107.2。故障策略只给开关和 `schema_version`，规则不开放。
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
 - 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.300`。
 - 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。

@@ -8,7 +8,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// System settings as plugins read them (CONTRACTS §106). Each section has
+// System settings as plugins read them (CONTRACTS §107). Each section has
 // one owner (billing, gateway, environment) that reads it with the same
 // load and normalisation as its own cache and hands it out as the SDK type
 // of the section (protocol.BillingSettings ...). The owner records

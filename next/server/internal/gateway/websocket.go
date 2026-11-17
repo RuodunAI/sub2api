@@ -549,7 +549,7 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 	// The message goes through the rewrites of an HTTP body
 	// (param_override.go) before the plugin's patches.
 	n := max(0, cl.rec.Attempts-1)
-	if payload, e = cl.rewriteTurn(ctx, s.acc, s.rt, s.pacct, payload, n); e != nil {
+	if payload, e = cl.rewriteTurn(ctx, s.acc, s.rt, payload, n); e != nil {
 		return reject(cl, e)
 	}
 	// The plugin's body patches for this message (CONTRACTS §83.6): the
@@ -713,7 +713,7 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	}
 	// And after the rewrites before the plugin (param_override.go), whose
 	// failure is the turn's to report too.
-	if prepared, m, failure := cl.rewriteBody(ctx, acc, rt, pacct, body, upModel, max(0, cl.rec.Attempts-1)); failure == nil {
+	if prepared, m, failure := cl.rewriteBody(ctx, acc, rt, body, upModel, max(0, cl.rec.Attempts-1)); failure == nil {
 		body, upModel = prepared, m
 	}
 	fields := requestFieldValues(body, rt.requestFields)
@@ -755,7 +755,7 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	cl.paramOverride.declared.Apply(header)
 	cl.paramOverride.headers.Apply(header)
 	setHandshakeHeaders(header, plugin)
-	writeDeclaredAuth(header, rt, pacct, built)
+	writeDeclaredAuth(header, rt, built)
 	// The handshake gets its own deadline; the connection itself lives as
 	// long as the session.
 	if failure := cl.guardAvailability(ctx, ref); failure != nil {

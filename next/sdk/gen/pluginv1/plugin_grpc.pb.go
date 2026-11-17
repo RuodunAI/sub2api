@@ -30,7 +30,7 @@ type PluginServiceClient interface {
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	// SettingsChanged tells the process that sections of the system settings
-	// changed (CONTRACTS §106). The host of every node calls it on the plugins
+	// changed (CONTRACTS §107). The host of every node calls it on the plugins
 	// it serves, best effort, so values cached from HostService.GetSettings
 	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
 	// which the host ignores.
@@ -111,7 +111,7 @@ type PluginServiceServer interface {
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	// SettingsChanged tells the process that sections of the system settings
-	// changed (CONTRACTS §106). The host of every node calls it on the plugins
+	// changed (CONTRACTS §107). The host of every node calls it on the plugins
 	// it serves, best effort, so values cached from HostService.GetSettings
 	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
 	// which the host ignores.

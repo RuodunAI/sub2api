@@ -8,7 +8,7 @@ import (
 )
 
 // Plugins read the billing section with its defaults, read now; a saved
-// section records settings.changed in its transaction (CONTRACTS §106).
+// section records settings.changed in its transaction (CONTRACTS §107).
 func TestSettingsForPlugins(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)

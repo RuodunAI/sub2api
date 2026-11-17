@@ -26,7 +26,7 @@ import (
 )
 
 // SettingsKey is the settings row of the global layer and its plugin-visible
-// section (CONTRACTS §106); config:changed names it as configKey.
+// section (CONTRACTS §107); config:changed names it as configKey.
 const (
 	SettingsKey = protocol.SettingsEnvironment
 	configKey   = "settings." + SettingsKey
@@ -180,7 +180,7 @@ func (s *Service) overProcess(global core.EnvironmentValues) core.EnvironmentVal
 }
 
 // SettingsReaders reads the environment section as plugins see it
-// (CONTRACTS §106): the global layer read now over the process layer,
+// (CONTRACTS §107): the global layer read now over the process layer,
 // resolved like the layers of a request.
 func (s *Service) SettingsReaders() map[string]core.SettingsReader {
 	return map[string]core.SettingsReader{SettingsKey: func(ctx context.Context) (protocol.SettingsValues, error) {

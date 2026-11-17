@@ -1173,7 +1173,7 @@ flowchart TD
 | `user.created` / `user.updated` | 用户变更 |
 | `balance.changed` | 账本新增记录 |
 | `plugin.enabled` / `plugin.disabled` | 插件状态变化 |
-| `settings.changed` | 保存插件可读的系统设置分组（CONTRACTS §106） |
+| `settings.changed` | 保存插件可读的系统设置分组（CONTRACTS §107） |
 
 **投递机制（至少一次）**：
 
@@ -1204,7 +1204,7 @@ sequenceDiagram
 - 所有插件的游标都越过之后，事件保留 7 天后由核心清理任务删除
 - 权限：订阅需要 `events` 权限，scope 限定可订阅的事件类型
 
-**系统设置的变更通知（节点本地）**：事件只由一个节点投递给每个插件，作废不了其他节点上插件进程的缓存。所以设置另走一条路：保存设置的节点提交后广播 `config:changed` `{"key":"settings.<分组>"}`，每个节点（含写入节点）的插件发布控制器收到后，对本节点加载的插件实例（含发布中的新版本）调用 `PluginService.SettingsChanged`（SDK 自己回答，不占插件调用槽位），SDK 作废这些分组的缓存，下次 `pluginsdk.Settings` 时经 `HostService.GetSettings` 重新读库（并发调用合并成一次读，读失败时沿用上次的值）。广播丢失时 SDK 缓存最多 10 秒后过期。插件不用声明能力或权限（CONTRACTS §106.3）。
+**系统设置的变更通知（节点本地）**：事件只由一个节点投递给每个插件，作废不了其他节点上插件进程的缓存。所以设置另走一条路：保存设置的节点提交后广播 `config:changed` `{"key":"settings.<分组>"}`，每个节点（含写入节点）的插件发布控制器收到后，对本节点加载的插件实例（含发布中的新版本）调用 `PluginService.SettingsChanged`（SDK 自己回答，不占插件调用槽位），SDK 作废这些分组的缓存，下次 `pluginsdk.Settings` 时经 `HostService.GetSettings` 重新读库（并发调用合并成一次读，读失败时沿用上次的值）。广播丢失时 SDK 缓存最多 10 秒后过期。插件不用声明能力或权限（CONTRACTS §107.3）。
 
 ### 8.2 后台任务
 
@@ -1589,7 +1589,7 @@ next/
 │   ├── pgdb/                      # 插件的 GORM 句柄、组合器、TestNoRawSQL/TestNoPgxImports
 │   └── testpg/                    # 测试用 PostgreSQL（TEST_DATABASE_URL 或本机 embedded-postgres）
 ├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
-│   ├── anthropic/  openai/  gemini/  volcengine/  custom/  relay/  claude-oauth/
+│   ├── anthropic/  openai/  gemini/  volcengine/  relay/  claude-oauth/
 │   ├── codex/                     # 含 ui/native
 │   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
 │   └── mailer/  payment/

@@ -277,9 +277,17 @@ describe('account model limits', () => {
     expect(capFixed.get('input[data-testid="account-spm_limit-window"]').attributes('disabled')).toBeUndefined()
   })
 
+  it('shows the concurrency cap in the limits group, ahead of the rate limits', async () => {
+    const w = render(savedAccount())
+    await flushPromises()
+    expect(w.find('[data-testid="account-scheduling"] [data-testid="account-max_concurrency"]').exists()).toBe(false)
+    const limits = w.get('[data-testid="account-limits"]').findAll('input').map(i => i.attributes('data-testid'))
+    expect(limits.slice(0, 2)).toEqual(['account-max_concurrency', 'account-rpm_limit'])
+  })
+
   it('hides the limits group of a type hiding every limit, its undeclared period included', async () => {
     const hidden = { visible: false }
-    const w = render(savedAccount(), false, { ...accountType, common_controls: { rpm_limit: hidden, tpm_limit: hidden, spm_limit: hidden } } as unknown as AccountType)
+    const w = render(savedAccount(), false, { ...accountType, common_controls: { max_concurrency: hidden, rpm_limit: hidden, tpm_limit: hidden, spm_limit: hidden } } as unknown as AccountType)
     await flushPromises()
     expect(w.find('[data-testid="account-limits"]').exists()).toBe(false)
   })

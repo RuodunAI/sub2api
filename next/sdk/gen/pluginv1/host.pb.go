@@ -624,7 +624,7 @@ type SettingsSection struct {
 
 	Name       string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Version    string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`                         // the first 16 hex digits of the SHA-256 of values_json
-	ValuesJson string `protobuf:"bytes,3,opt,name=values_json,json=valuesJson,proto3" json:"values_json,omitempty"` // a JSON object, the fields of CONTRACTS §106
+	ValuesJson string `protobuf:"bytes,3,opt,name=values_json,json=valuesJson,proto3" json:"values_json,omitempty"` // a JSON object, the fields of CONTRACTS §107
 }
 
 func (x *SettingsSection) Reset() {

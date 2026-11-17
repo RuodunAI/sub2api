@@ -689,7 +689,7 @@ func TestDeclaredAccountTypes(t *testing.T) {
 	if want := "bare/plain full/plain full/extended"; strings.Join(keys, " ") != want {
 		t.Fatalf("account types = %v, want %s", keys, want)
 	}
-	if b, ok := g.AccountType("full", "plain"); !ok || len(g.AccountTypesForPlatform(manifest.PlatformOpenAI)) != 3 || b.Client.(core.DeclaredUpstream).Upstream().Classify != "openai" {
+	if b, ok := g.AccountType("full", "plain"); !ok || len(g.AccountTypesForPlatform(manifest.PlatformOpenAI)) != 3 || b.Client.(core.DeclaredUpstream).AuthHeader() != "authorization" {
 		t.Fatalf("full/plain = %+v %v", b, ok)
 	}
 }

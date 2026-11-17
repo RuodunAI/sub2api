@@ -8,7 +8,7 @@ import (
 )
 
 // settingsReaders merges the readers of the plugin-visible settings sections
-// (CONTRACTS §106) that their owners hand out. Every section of the SDK has
+// (CONTRACTS §107) that their owners hand out. Every section of the SDK has
 // exactly one owner, so a new section cannot ship unreadable.
 func settingsReaders(owners ...map[string]core.SettingsReader) (map[string]core.SettingsReader, error) {
 	out := map[string]core.SettingsReader{}

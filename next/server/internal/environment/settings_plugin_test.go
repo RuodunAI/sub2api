@@ -10,7 +10,7 @@ import (
 )
 
 // Plugins read the global layer over the process layer, read now; a saved
-// layer records settings.changed in its transaction (CONTRACTS §106).
+// layer records settings.changed in its transaction (CONTRACTS §107).
 func TestSettingsForPlugins(t *testing.T) {
 	ctx := context.Background()
 	e := setup(t)

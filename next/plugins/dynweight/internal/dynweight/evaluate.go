@@ -476,7 +476,7 @@ func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 }
 
 // stickyEnabled reports whether the core's sticky sessions are on (CONTRACTS
-// §106). While they are off a new request neither binds a session nor reads
+// §107). While they are off a new request neither binds a session nor reads
 // a binding, and the bindings left behind expire with their TTL; only a
 // WebSocket connection opened before keeps using its own until it closes.
 // A clear then mostly walks the binding keyspace for nothing, and kept

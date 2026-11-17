@@ -20,7 +20,7 @@ func declared(t *testing.T, upstream string) (*manifest.Manifest, map[string][]b
 	at := manifest.AccountType{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
 		Form:           manifest.Form{Mode: "schema", Schema: "forms/a.json"},
-		SettingsFields: []string{"base_url", "upstream"},
+		SettingsFields: []string{"base_url"},
 		Platforms:      []manifest.AccountPlatform{{Platform: "openai"}},
 		Upstream:       &manifest.Upstream{},
 	}
@@ -44,7 +44,6 @@ func TestUpstreamDeclaration(t *testing.T) {
 		field, code    string
 	}{
 		{"preset only", `{"preset":"openai","filterFields":[]}`, "", ""},
-		{"account layer", `{"preset":"openai","accountConfig":true,"baseURL":{"required":true}}`, "", ""},
 		{"unknown preset", `{"preset":"mistral"}`, "accountTypes[0].upstream.preset", "unknown"},
 		{"route not served", `{"preset":"openai","routes":{"anthropic.messages":{"path":"/v1/messages"}}}`,
 			"accountTypes[0].upstream.routes.anthropic.messages", "unknown_protocol"},
@@ -83,14 +82,6 @@ func TestUpstreamDeclaration(t *testing.T) {
 				t.Fatalf("errors = %v, want %s on %s", err, tc.code, tc.field)
 			}
 		})
-	}
-}
-
-func TestUpstreamAccountConfigNeedsSettingsField(t *testing.T) {
-	m, files := declared(t, `{"preset":"openai","accountConfig":true}`)
-	m.AccountTypes[0].SettingsFields = []string{"base_url"}
-	if err := Validate(m, files, ValidateOptions{Tooling: true}); !hasCode(err, "accountTypes[0].upstream.accountConfig", "invalid") {
-		t.Fatalf("errors = %v", err)
 	}
 }
 

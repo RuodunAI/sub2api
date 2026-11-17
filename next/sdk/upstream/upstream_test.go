@@ -12,8 +12,8 @@ import (
 )
 
 // The golden test pins the four presets to the plugins they replace; these
-// cover what no plugin did: templates, query auth, account layers, body
-// filters, the fixed rewrite and the URL re-render.
+// cover what no plugin did: templates, query auth, body filters, the fixed
+// rewrite and the URL re-render.
 
 func resolve(t *testing.T, upstream string, passHeaders ...string) *Profile {
 	t.Helper()
@@ -21,7 +21,7 @@ func resolve(t *testing.T, upstream string, passHeaders ...string) *Profile {
 	if err := json.Unmarshal([]byte(upstream), at.Upstream); err != nil {
 		t.Fatal(err)
 	}
-	p, err := Resolve(at, passHeaders, nil)
+	p, err := Resolve(at, passHeaders)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,53 +80,9 @@ func TestHeaderAppend(t *testing.T) {
 	}
 }
 
-func TestAccountLayer(t *testing.T) {
-	p := resolve(t, `{"preset":"openai","accountConfig":true,"baseURL":{"required":true}}`)
-	layer := `{"base_url":"https://x.example.com","upstream":{"auth":{"name":"api-key","value":"{api_key}"},
-		"headers":{"x-team":{"set":"t1"}},"routes":{"openai.chat":{"path":"/chat"}},"allowFields":["service_tier"]}}`
-	acc := account(layer)
-	out, err := p.Build(&pluginv1.BuildUpstreamRequestRequest{Meta: &pluginv1.RequestMeta{Protocol: "openai.chat"}, Account: acc})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Url != "https://x.example.com/chat" || out.Headers["api-key"] != "k-123456789" || out.Headers["x-team"] != "t1" || out.Headers["authorization"] != "" {
-		t.Errorf("got %s %v", out.Url, out.Headers)
-	}
-	if got := p.AuthHeader(acc); got != "api-key" {
-		t.Errorf("auth header %q", got)
-	}
-	res, err := p.PrepareBody(acc, []byte(`{"model":"m","service_tier":"flex","safety_identifier":"u"}`), nil)
-	if err != nil || string(res.Body) != `{"model":"m","service_tier":"flex"}` {
-		t.Errorf("body %s, %v", res.Body, err)
-	}
-
-	for name, tc := range map[string]struct{ bad, field string }{
-		"credentials":     {`{"credentials":{"fields":["x"]}}`, "upstream.credentials"},
-		"route transport": {`{"routes":{"openai.chat":{"transport":"websocket"}}}`, "upstream.routes.openai.chat"},
-		"new route":       {`{"routes":{"openai.audio":{"path":"/a"}}}`, "upstream.routes.openai.audio"},
-		"allow unknown":   {`{"allowFields":["temperature"]}`, "upstream.allowFields"},
-		"blocked header":  {`{"headers":{"cookie":{"set":"a"}}}`, "upstream.headers.cookie"},
-		"auth on host":    {`{"auth":{"name":"host"}}`, "upstream.auth.name"},
-		"auth on control": {`{"auth":{"name":"x-sub2api-user"}}`, "upstream.auth.name"},
-		"not an object":   {`[]`, SettingsField},
-	} {
-		resp := p.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "custom", CredentialsJson: `{"api_key":"sk-123456789"}`,
-			SettingsJson: `{"base_url":"https://x.example.com","upstream":` + tc.bad + `}`})
-		if len(resp.Errors) == 0 || resp.Errors[0].Field != tc.field {
-			t.Errorf("%s: errors %v, want field %s", name, resp.Errors, tc.field)
-		}
-	}
-	// Every problem is its own field error.
-	resp := p.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "custom", CredentialsJson: `{"api_key":"sk-123456789"}`,
-		SettingsJson: `{"base_url":"https://x.example.com","upstream":{"classify":"openai","models":null}}`})
-	if len(resp.Errors) != 2 {
-		t.Errorf("errors %v, want one per problem", resp.Errors)
-	}
-}
-
 func TestPrepareBodyAndURL(t *testing.T) {
 	p := resolve(t, `{"preset":"gemini","filterFields":["cachedContent"],"paramOverride":{"operations":[{"mode":"set","path":"labels.via","value":"s2a"}]}}`)
-	res, err := p.PrepareBody(account(""), []byte(`{"cachedContent":"c","contents":[]}`), &paramoverride.Context{})
+	res, err := p.PrepareBody([]byte(`{"cachedContent":"c","contents":[]}`), &paramoverride.Context{})
 	if err != nil || string(res.Body) != `{"contents":[],"labels":{"via":"s2a"}}` {
 		t.Errorf("body %s, %v", res.Body, err)
 	}
@@ -140,7 +96,7 @@ func TestPrepareBodyAndURL(t *testing.T) {
 func TestResolveProblems(t *testing.T) {
 	at := &manifest.AccountType{ID: "x", Upstream: &manifest.Upstream{}}
 	_ = json.Unmarshal([]byte(`{"preset":"anthropic","routes":{"anthropic.messages":{"path":"v1"}},"test":{"protocol":"none"}}`), at.Upstream)
-	_, err := Resolve(at, nil, nil)
+	_, err := Resolve(at, nil)
 	var probs Problems
 	if !errors.As(err, &probs) {
 		t.Fatalf("error %v", err)

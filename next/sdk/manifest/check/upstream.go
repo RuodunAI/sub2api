@@ -18,7 +18,7 @@ import (
 func (v *validator) upstream(f string, at manifest.AccountType, own map[string]*manifest.Platform) {
 	f += ".upstream"
 	protocols, passHeaders, complete := v.servedProtocols(at, own)
-	p, err := upstream.Resolve(&at, passHeaders, nil)
+	p, err := upstream.Resolve(&at, passHeaders)
 	if err != nil {
 		var probs upstream.Problems
 		if !errors.As(err, &probs) {
@@ -44,14 +44,6 @@ func (v *validator) upstream(f string, at manifest.AccountType, own map[string]*
 	}
 	if at.Upstream.Extend && v.m.Runtime != manifest.RuntimeGRPC {
 		v.add(f+".extend", "unsupported", "extend calls the plugin's BuildUpstreamRequest: it needs runtime %q", manifest.RuntimeGRPC)
-	}
-	if at.Upstream.AccountConfig {
-		if at.Form.Mode != "schema" {
-			v.add(f+".accountConfig", "invalid", "an account upstream layer is edited in a schema form")
-		}
-		if !slices.Contains(at.SettingsFields, upstream.SettingsField) {
-			v.add(f+".accountConfig", "invalid", "settingsFields must list %q, the account upstream layer", upstream.SettingsField)
-		}
 	}
 }
 

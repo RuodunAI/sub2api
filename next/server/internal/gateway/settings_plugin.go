@@ -11,7 +11,7 @@ import (
 )
 
 // SettingsReaders reads the settings sections the gateway owns as plugins
-// see them (CONTRACTS §106): each row read now and normalised exactly as
+// see them (CONTRACTS §107): each row read now and normalised exactly as
 // settingsCache.load does, so a plugin notified of a change never reads the
 // value the cache held before it. It only needs the database, so it is
 // built before the plugin runtime and the gateway.

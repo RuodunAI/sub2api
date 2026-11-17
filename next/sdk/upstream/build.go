@@ -19,7 +19,7 @@ import (
 
 // call is one request being built for one account.
 type call struct {
-	p   *Profile // with the account layer applied
+	p   *Profile
 	cfg *apikey.Config
 	acc *pluginv1.Account
 	// fields are the decoded credentials and settings {credentials.<k>}
@@ -27,8 +27,8 @@ type call struct {
 	fields []map[string]any
 }
 
-// newCall resolves the account: its type, its account layer and its
-// api_key / base_url (apikey.Spec.FromAccount, errors as it returns them).
+// newCall resolves the account: its type and its api_key / base_url
+// (apikey.Spec.FromAccount, errors as it returns them).
 func (p *Profile) newCall(acc *pluginv1.Account) (*call, error) {
 	if t := acc.GetType(); t != "" && t != p.accountType {
 		return nil, status.Errorf(codes.FailedPrecondition, "account %d: unsupported account type %q", acc.GetId(), t)
@@ -37,11 +37,7 @@ func (p *Profile) newCall(acc *pluginv1.Account) (*call, error) {
 	if err != nil {
 		return nil, err
 	}
-	ap, err := p.forAccount(acc)
-	if err != nil {
-		return nil, err
-	}
-	return &call{p: ap, cfg: cfg, acc: acc}, nil
+	return &call{p: p, cfg: cfg, acc: acc}, nil
 }
 
 // route is the route of protocol, the default protocol when it is empty.
