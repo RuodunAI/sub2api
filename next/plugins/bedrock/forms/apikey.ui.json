@@ -1,0 +1,65 @@
+{
+  "ui:order": [
+    "api_key",
+    "region",
+    "inference_profile_prefix"
+  ],
+  "api_key": {
+    "ui:widget": "secret",
+    "ui:title": {
+      "en": "API key",
+      "zh": "API Key"
+    },
+    "ui:help": {
+      "en": "An Amazon Bedrock API key (Bedrock console → API keys), sent as a bearer token. A short-term key lasts at most 12 hours and only works in the region it was created in; nothing renews it, so replace it here when it expires. Stored encrypted.",
+      "zh": "Amazon Bedrock 的 API Key（Bedrock 控制台 → API keys），以 Bearer 令牌发送。短期 Key 最长 12 小时有效，且只能用在创建它的区域；不会自动续期，到期后请在这里更换。加密保存。"
+    }
+  },
+  "region": {
+    "ui:section": {
+      "title": {
+        "en": "Region and models",
+        "zh": "区域与模型"
+      },
+      "description": {
+        "en": "Claude requests go to InvokeModel with the body as the client sent it; only model, stream, anthropic_version and anthropic_beta are rewritten. Known limitation: fields Bedrock rejects that Claude Code puts inside the body (custom in tool definitions, scope and ttl in cache_control) are not removed. If the account serves Claude Code, remove them with the account's parameter override.",
+        "zh": "Claude 请求发往 InvokeModel，请求体按客户端原样转发，只改写 model、stream、anthropic_version 和 anthropic_beta。已知限制：不会清理 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义里的 custom，cache_control 里的 scope 和 ttl）。账号要给 Claude Code 用时，请在账号的参数覆盖里删除这些字段。"
+      }
+    },
+    "ui:title": {
+      "en": "Region",
+      "zh": "区域"
+    },
+    "ui:placeholder": "us-east-1",
+    "ui:help": {
+      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com. Leave empty for us-east-1.",
+      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com。留空使用 us-east-1。"
+    },
+    "ui:options": {
+      "mono": true
+    }
+  },
+  "inference_profile_prefix": {
+    "ui:widget": "select",
+    "ui:title": {
+      "en": "Cross-region inference prefix",
+      "zh": "跨区域推理前缀"
+    },
+    "ui:enumNames": [
+      {
+        "en": "None",
+        "zh": "不加"
+      },
+      "us",
+      "eu",
+      "apac",
+      "jp",
+      "au",
+      "global"
+    ],
+    "ui:help": {
+      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0. Many newer models can only be invoked through one. A model ID that already has a prefix (us., eu., apac., jp., au., us-gov., global.) and an ARN are sent as they are. Pick the prefix that matches the region.",
+      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 us.anthropic.claude-sonnet-4-5-20250929-v1:0。很多较新的模型只能通过它调用。已经带前缀（us.、eu.、apac.、jp.、au.、us-gov.、global.）的模型 ID 和 ARN 原样发送。请选择与区域相符的前缀。"
+    }
+  }
+}

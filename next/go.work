@@ -6,6 +6,7 @@ use (
 	./gateway
 	./plugins/anthropic
 	./plugins/azure-openai
+	./plugins/bedrock
 	./plugins/claude-oauth
 	./plugins/codex
 	./plugins/dynweight
