@@ -5200,6 +5200,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **0.5.7（2026-11-12）**：只改原生界面。自写的 `IdPicker` 删除，账号、分组、模型筛选和批量重置、分组配置、账号覆盖弹窗都改用宿主的 `EntityPicker`（§96.6）；模型是精确匹配，候选是价格表里的模型加当前页出现过的模型，不在其中的名称可以按输入原样使用。新建分组配置 / 账号覆盖时，已有配置的分组 / 账号仍会列出，选中就报错并禁止保存（原来是不列出）；非规范写法的 id（`013`）不接受。**`hostUICompat` 改为 `^3.11`，`hostCompat` 抬到 `>=0.1.279 <0.2.0`**。接口、能力、授权、配置文档格式都不变，没有新迁移。
 - **0.5.8（2026-11-13）**：线上把“首字 p95 过慢”调整项关掉后，状态表“命中规则”列仍显示它命中，被当成关掉的规则还在生效。调整项的开关只关策略，规则本身仍启用、照常判定（`last_rules`、位图照写；不再有启用的降权策略引用它，所以按宽松模式，样本不足也判定，比开着时更容易显示命中），但没有启用的策略引用它，命中不降权、不清粘性（线上核对：配置第 9 版以来 7876 条事件的 `steps` 和清粘性都不含它）。`GET /status` 的规则加 `used`（`rules.Resolved.UsedRules`，与 `FiredRules` 共用同一份引用标记）；控制台“命中规则”列只列被使用的规则，展开明细里未被使用的规则标“只观察”并说明、本窗结果用中性色；接口没有 `used`（旧节点）时按被使用处理。接口只加字段，能力、授权、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变。
 - **0.5.10（2026-11-15）**：插件 SDK 改用 GORM 的试点，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`），与 `migrations/0001`–`0003` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；`store.go` 的 pgx 代码全部改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句语义不变，原来 `pgx.Batch` 的批量写入（计数、基准权重、事件）和重置标记改为一个事务里的多行 `INSERT … ON CONFLICT`（每条至多 1000 行，仍按键排序，全成或全不成）。能力、授权、接口、配置文档格式都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.5.9 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.5.9 之后又改了清单（`risk`/`defaults`，`hostCompat >=0.1.289`），0.5.10 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
+- **0.5.11（未发布，随核心 0.1.300）**：核心关闭粘性会话时放弃排队的粘性清理并记事件（见下文“粘性清理队列”），用到 `HostService.GetSettings`，`hostCompat` 改为 `>=0.1.300 <0.2.0`。能力、授权、迁移、接口都不变。
 - **只安装不启用**（`BUILTIN_PLUGINS_INSTALL_ONLY`）：启用后每次调度都会调用它，所以要由管理员有意打开。
 
 #### 计数
@@ -5251,7 +5252,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - **关闭即重置**（0.5.2 起，与 new-api 2f4465fa1 一致）：`PUT /config` 把总开关从开改为关时，保存后立即把全部有状态或保留期内有计数的键按"重置"写成重置标记（消费截止为各自最近一个已结束窗口），并广播 `dynweight.weights`；不记事件（new-api 关闭时也不记）。0.5.1 只靠上一条"钉回基准"，而它要等键的下一个窗口结束才做：在那之前重新开启，关闭前的降权原样恢复。写重置标记失败时保存照常成功，响应的 `warnings` 多一条说明，下一次 `evaluate`（关闭期间照常运行）把仍低于基准的键当场写成重置标记，不等新窗口。关闭期间 `RankAccounts` 本来就不改权重，`/degraded` 回答 0 个、`/weights` 回答空对象，不看本节点快照（别的节点可能还没重新加载）。
   - 配置还没读到时（启动时加载失败）不按出厂配置运行：出厂配置是关闭的，会把所有键钉回基准，按它的保留期清理也会删掉还要用的计数。`evaluate`、`cleanup` 先重新加载，仍失败则返回 Unavailable；`/status` 和重置同样回答不可用。调度在此期间按原权重放行。
   - 顺序（0.3.0 起）：逐键评估、写状态；全部键评估完后先记录事件、广播权重、发一条通知摘要（状态已写入，这一步另有 15 秒，不与已用完的任务时限共用），最后才做粘性清理。某个键失败不影响其他键，已写入状态的键的事件照常记录，任务最后报告失败数。0.2.0 在逐键评估中同步清理，每次调用核心都要全量扫描 `sticky:*`（单次最长 10 秒），任务 60 秒时限内几个键就会把后面的事件和通知挤掉、而且不重发。
-  - **粘性清理队列**（表 `sticky_pending`，迁移 0002）：需要清理的键与它的状态在同一个事务里写入，每个键一行（同一键还没做完又有新的清理时合并成一行：取新窗口的 `salt` 和较大的比例），所以状态写入了才有清理、CAS 输了就没有。任务在事件和通知之后按入队先后领取（租约，不与重叠的运行重复做），总共最多 30 秒且留出 5 秒给收尾；时间用完没做的、核心返回可重试错误的，退回队列由下一次运行再做。做完或放弃时删掉这一行，记一条 `affinity_cleared` 事件（`detail.matched` / `cleared`；放弃时 `detail.error`、`attempts`）。核心拒绝（`PermissionDenied`、`InvalidArgument`）立即放弃，其他错误最多重试 10 次；`cleanup` 删掉入队超过 1 小时仍没做完的。重试用同一个 `salt`，选中的是同一批绑定，不会多删。
+  - **粘性清理队列**（表 `sticky_pending`，迁移 0002；0.5.11 起核心关闭粘性会话时放弃，见本条末尾）：需要清理的键与它的状态在同一个事务里写入，每个键一行（同一键还没做完又有新的清理时合并成一行：取新窗口的 `salt` 和较大的比例），所以状态写入了才有清理、CAS 输了就没有。任务在事件和通知之后按入队先后领取（租约，不与重叠的运行重复做），总共最多 30 秒且留出 5 秒给收尾；时间用完没做的、核心返回可重试错误的，退回队列由下一次运行再做。做完或放弃时删掉这一行，记一条 `affinity_cleared` 事件（`detail.matched` / `cleared`；放弃时 `detail.error`、`attempts`）。核心拒绝（`PermissionDenied`、`InvalidArgument`）立即放弃，其他错误最多重试 10 次；`cleanup` 删掉入队超过 1 小时仍没做完的。重试用同一个 `salt`，选中的是同一批绑定，不会多删。0.5.11 起，任务领取前读核心的 `sticky` 设置（§106）：粘性会话关闭时，领到的清理全部放弃，各记一条 `affinity_cleared` 事件（`detail.skipped = "sticky_disabled"`，没有 `matched`/`cleared`），不调用核心。关闭期间新请求既不绑定也不读绑定，留下的绑定按 TTL 过期，只有关闭前建立的 WebSocket 连接还在用自己的绑定（连接建立时取了粘性设置的快照）；如果把清理留到重新开启后再做，会把开启后新建、指向已恢复账号的绑定按比例清掉，所以放弃而不是推迟。读不到设置时照常清理。
   - **合并**：同一个键、同一个窗口里多个策略要清理时只排一行，取最大比例：同一个 `salt` 下，大比例选中的绑定包含小比例选中的。核心接口一次只接受一个模型（§74.2），所以同一账号的多个模型仍是多次调用、每次全量扫描；要真正按账号合并，需要核心接口接受多个模型（或按账号清理），这一点留给核心。
   - 有效权重有变化时广播 `dynweight.weights`，各节点重新加载快照。快照里只有不在基准上的键。
 - **基准权重**：从 `RankCandidate` 学到（账号、分组）的权重，写入 `bases`。
@@ -7749,12 +7750,12 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | `PluginService.SettingsChanged`（核心调插件） | `sections[]` | 空 |
 
 - `values_json` 是该分组的 JSON 对象，字段固定为 SDK `protocol` 包的类型（106.2），由 `encoding/json` 编码，同样的值编码结果相同。`version` 是 `values_json` 的 SHA-256 前 8 字节的十六进制（16 个字符）：值不变，`version` 不变，插件可以用它判断是否需要重新计算。
-- 未知分组名：`INVALID_ARGUMENT`，整个调用失败。核心读库失败：错误照常转换（`UNAVAILABLE` 等），不回部分结果。
+- 未知分组名：`INVALID_ARGUMENT`，整个调用失败。读取失败（数据库出错，或负责方不接受库里存的值，如不合法的故障策略）一律 `UNAVAILABLE`（`<分组> settings unavailable`，原因只记在核心日志里），不回部分结果：插件能做的只有沿用手上的值、稍后再读。
 - 不需要授权（与 `GetEnvironment` 相同，§74.3）：这些是每个插件都该遵守的运行参数，不含密钥、凭证或用户数据（106.4）。
 - 不能写。设置仍只能由管理员在控制台修改。
-- SDK：`pluginsdk.Settings[T](ctx, host)`，`T` 是 106.2 的类型之一，如 `pluginsdk.Settings[protocol.StickySettings](ctx, p.host)`。SDK 在插件进程里缓存每个分组的 `values_json`，收到 `SettingsChanged` 时丢掉其中列出的分组（`sections` 为空时丢掉全部），另外每个分组最多缓存 10 秒，作为通知丢失时的兜底；在丢弃之前发出的读取，结果不进缓存。每次调用都重新解码，返回的值可以随意修改。宿主未就绪时返回 `ErrHostNotReady`，宿主的错误原样返回、不缓存。
+- SDK：`pluginsdk.Settings[T](ctx, host)`，`T` 是 106.2 的类型之一，如 `pluginsdk.Settings[protocol.StickySettings](ctx, p.host)`。SDK 在插件进程里缓存每个分组的 `values_json`，收到 `SettingsChanged` 时作废其中列出的分组（`sections` 为空时作废全部），另外每个分组最多用 10 秒，作为通知丢失时的兜底；在作废之前发出的读取，结果不进缓存。缓存失效时，同一分组的并发调用只向宿主读一次（按分组和作废次数合并，读取最长 5 秒，不受先到的调用方取消影响；调用方自己的 ctx 结束时先返回）。读取失败时返回上次读成功的值，2 秒内不再读宿主（收到 `SettingsChanged` 时立即重读）；从未读成功过才返回错误，同样 2 秒内直接返回这个错误。所以可以在 `RankAccounts` 这类热路径上调用：命中时不访问宿主，宿主出故障时也不会每个请求读一次。每次调用都重新解码，返回的值可以随意修改。宿主未就绪时返回 `ErrHostNotReady`。
 - SDK 已经处理 `SettingsChanged`，插件不需要实现它。用旧 SDK 构建的插件回 `UNIMPLEMENTED`，核心不当作错误（旧插件不缓存设置）。
-- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置一个分组（没设置的分组回 `UNAVAILABLE`），`SettingsReads()` 是宿主被读的次数；`Harness.SettingsChanged(sections...)` 模拟变更通知。
+- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置一个分组（没设置的分组回 `UNAVAILABLE`，与核心读取失败相同），`SettingsReads()` 是宿主被读的次数；`Harness.SettingsChanged(sections...)` 模拟变更通知。注意读取失败后 2 秒内 SDK 不再读宿主：测试里先失败、再 `SetSettings` 时，要调一次 `Harness.SettingsChanged`。
 
 ### 106.2 分组与字段
 
@@ -7767,10 +7768,10 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
 | `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
 | `auto_disable` | `AutoDisableSettings` | `enabled`、`status_codes`、`keywords`（§42.2）；发布了故障策略时由策略的账号规则决定，开关看 `failure_policy.account_enabled` |
-| `failure_policy` | `FailurePolicySettings` | `configured`、`revision`、`retry_enabled`、`max_retries`、`retries_per_account`、`switch_account`、`reset_sticky`、`backoff_ms`、`max_wait_ms`、`respect_retry_after`、`account_enabled`（§69）；没有发布的策略时除 `configured=false` 外全是零值 |
+| `failure_policy` | `FailurePolicySettings` | `configured`、`revision`、`schema_version`（1–4，决定哪些开关生效：1 时每条重试规则自带同账号重试次数和之后的动作，`retries_per_account`、`switch_account`、`reset_sticky` 不生效；2 起这三项作用于所有规则，`retries_per_account` 只在 `switch_account` 时生效、否则 `max_retries` 都在同一账号上；3 起 `max_wait_ms`、`respect_retry_after` 不生效）、`retry_enabled`、`max_retries`、`retries_per_account`、`switch_account`、`reset_sticky`、`backoff_ms`、`max_wait_ms`、`respect_retry_after`、`account_enabled`（§69）；没有发布的策略时除 `configured=false` 外全是零值 |
 | `environment` | `EnvironmentSettings` | `values`：全局层叠加进程层后的每个变量（§74.3）；分组层、账号层仍用 `GetEnvironment` |
 
-- 值是核心实际使用的值：没有保存过的分组给默认值，超出范围的旧值按核心的规则收敛（与核心自己的缓存用同一个读取与规整函数：网关的 `settingsCache.load`、计费的 `loadSettings`、环境变量的 `load` + `ResolveEnvironment`）。宿主每次调用直接读库，不读本节点的缓存，所以插件收到通知后读到的一定是新值。
+- 值是核心实际使用的值：没有保存过的分组给默认值，超出范围的旧值按核心的规则收敛（与核心自己的缓存用同一组逐行读取与规整函数：网关的 `loadGatewaySettings` + `normalized`、`loadSchedulingSettings`、`loadStickySettings`、`loadAutoDisableSettings`、`loadFailurePolicy`，计费的 `loadSettings`，环境变量的 `load` + `ResolveEnvironment`）。宿主每次调用直接读库，不读本节点的缓存，所以插件收到通知后读到的一定是新值。
 - 字段只增不改：改名或改变含义按不兼容变更处理。插件解码时应忽略不认识的字段（`encoding/json` 默认如此）。
 - 核心实现：`sdk/protocol/settings.go`（类型）、`server/internal/{billing,gateway,environment}` 各自的 `SettingsReaders`（每个分组恰有一个负责方，`app.settingsReaders` 在启动时检查分组齐全且不重复）、`plugin/grpcruntime/settings.go`。
 
@@ -7781,7 +7782,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 1. 在保存设置的同一事务里写 outbox 事件 `settings.changed`，payload `{"sections": ["<分组>"]}`（§6）。一次保存只改一个分组。保存被拒绝（校验失败、版本冲突）时不写。
 2. 提交后广播 `config:changed` `{"key":"settings.<分组>"}`（§7）。
 
-每个节点的插件发布控制器（`plugin/rollout/settings.go`）订阅 `config:changed`，认出 `settings.<分组>` 且分组在 106.2 里时，对本节点在服务的每个插件实例调用 `PluginService.SettingsChanged`（每次最长 2 秒，失败只记日志）。`config:changed` 发给包括写入节点在内的所有节点，所以每个节点上的每个插件进程都能立刻丢掉缓存；SDK 的 10 秒缓存上限兜住广播丢失和调用失败。不需要在清单里声明任何东西。
+每个节点的插件发布控制器（`plugin/rollout/settings.go`）订阅 `config:changed`，认出 `settings.<分组>` 且分组在 106.2 里时，对本节点加载的每个插件实例（在服务的，以及发布中尚未切换的新版本）调用 `PluginService.SettingsChanged`（每次最长 2 秒，失败只记日志）。这个调用由 SDK 自己回答、不运行插件代码，所以不占插件的调用槽位（`grpcruntime` 的 `classControl`），定时任务、事件投递等后台调用占满槽位时也不会被拖住。`config:changed` 发给包括写入节点在内的所有节点，所以每个节点上的每个插件进程都能立刻丢掉缓存；SDK 的 10 秒缓存上限兜住广播丢失和调用失败。不需要在清单里声明任何东西。
 
 `settings.changed` 事件给需要可靠记录的插件：经 `app.events.v1` 订阅（授权 `events`，`subscribe` 列出它），至少一次投递、每个插件只由一个节点处理（§11.7），适合在变更后做一次性的工作（重算、通知）。它不能代替上面的通知去作废各节点的缓存。
 

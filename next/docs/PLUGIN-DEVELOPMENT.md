@@ -85,21 +85,21 @@
 | `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、缺价策略、断开计费策略处理 |
 | `gateway` | `protocol.GatewaySettings` | 自己调上游的后台任务参照重试次数、超时、媒体下载上限 |
 | `scheduling` | `protocol.SchedulingSettings` | 排序插件（`RankAccounts`）参照均衡负载的指标 |
-| `sticky` | `protocol.StickySettings` | 粘性会话关闭时不必清理绑定（dynweight 0.5.11） |
-| `auto_disable`、`failure_policy` | `protocol.AutoDisableSettings`、`protocol.FailurePolicySettings` | 判断核心会不会自动禁用、冷却账号，避免插件重复处理 |
+| `sticky` | `protocol.StickySettings` | 粘性会话关闭时放弃排队的绑定清理（dynweight 0.5.11） |
+| `auto_disable`、`failure_policy` | `protocol.AutoDisableSettings`、`protocol.FailurePolicySettings` | 判断核心会不会自动禁用、冷却账号，避免插件重复处理；故障策略的开关按 `schema_version` 解读 |
 | `environment` | `protocol.EnvironmentSettings` | 全局层的环境变量；分组层、账号层用 `GetEnvironment` |
 
 ```go
 sticky, err := pluginsdk.Settings[protocol.StickySettings](ctx, p.host)
 if err != nil {
-	// 宿主暂时读不到：按插件自己的安全默认继续
+	// 从未读成功过且宿主读不到：按插件自己的安全默认继续
 }
 if !sticky.Enabled { ... }
 ```
 
 - 不用授权，不用在清单里声明能力；只读，不能改设置。
-- SDK 在进程里缓存每个分组，核心在任一节点保存设置后会通知每个节点上的插件进程（`PluginService.SettingsChanged`，SDK 已实现），缓存随即作废；另外最多缓存 10 秒，所以在用到的地方直接调用即可：缓存命中时不访问宿主，只解码一次 JSON。
-- 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §106.2。故障策略只给开关，规则不开放。
+- SDK 在进程里缓存每个分组，核心在任一节点保存设置后会通知每个节点上的插件进程（`PluginService.SettingsChanged`，SDK 已实现），缓存随即作废；另外最多缓存 10 秒。缓存失效时并发调用只读宿主一次；读取失败时返回上次读成功的值，2 秒内不再读宿主，从未读成功过才返回错误（宿主的读取失败一律是 `UNAVAILABLE`）。所以在用到的地方直接调用即可，热路径（如 `RankAccounts`）也一样：命中时不访问宿主，只解码一次 JSON。
+- 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §106.2。故障策略只给开关和 `schema_version`，规则不开放。
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
 - 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.300`。
-- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知。
+- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。
