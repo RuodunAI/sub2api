@@ -88,7 +88,7 @@ flowchart LR
 
   pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema<br/>updater：升级计划")]
   redis[("Redis / Valkey<br/>会话 · 节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播 · 节点密钥登记")]
-  rel["更新源<br/>GitHub Releases 或 HTTPS 目录（releases.json）<br/>核心与网关的签名清单与安装物"]
+  rel["更新源<br/>GitHub Releases 或 HTTPS 目录（releases.json）<br/>核心与网关的清单与安装物"]
   market["插件市场索引<br/>签名的静态 JSON"]
   up["上游<br/>api.anthropic.com 等"]
   ext["插件访问的外部服务<br/>（经出口隧道）"]
@@ -116,7 +116,7 @@ flowchart LR
 - **PostgreSQL 是期望状态和账本的唯一依据**
 - **Redis 保存实时状态**，数据丢失后几秒内自动恢复；余额缓存丢失时回源 PG。本文的"Redis"指任何 Redis 协议的服务，默认部署用 Valkey（Redis 7.2 的分支，协议、命令、Lua 均兼容），Redis 7+ 同样可用；`SUB2API_REDIS_URL` 接受 `redis://`、`rediss://`、`valkey://`、`valkeys://`、`unix://`
 - **插件进程运行在每个节点本地**，通过本机 unix socket 与核心通信，所有对外连接经核心的出口隧道
-- **版本检测与一键更新**：核心与网关两条版本线由 GitHub Actions 签名发布（tag `core-v*`、`gateway-v*`）。升级主节点每 6 小时从集群配置的更新源（GitHub 仓库，或带 `releases.json` 的 HTTPS 目录）检测两条线的新稳定版，结果存 PG `updater.update_checks`；管理员在控制台点“一键更新”，网关导入验签后的发布并建升级计划。核心走上面两种策略；网关走 `gateway-rolling-v1`：各节点先下载新二进制到 `<root>/gateway/<版本>/`，再逐个节点让出流量、停核心、改 `<root>/gateway/current` 并 exec 新网关、拉起原核心。从不自动升级（CONTRACTS §102）
+- **版本检测与一键更新**：核心与网关两条版本线由 GitHub Actions 打包发布（tag `core-v*`、`gateway-v*`）；清单不签名，网关信任配置的更新源，只校验摘要（发布摘要是清单原文的 sha256）。升级主节点每 6 小时从集群配置的更新源（GitHub 仓库，或带 `releases.json` 的 HTTPS 目录）检测两条线的新稳定版，结果存 PG `updater.update_checks`；管理员在控制台点“一键更新”，网关导入并校验发布、建升级计划。核心走上面两种策略；网关走 `gateway-rolling-v1`：各节点先下载新二进制到 `<root>/gateway/<版本>/`，再逐个节点让出流量、停核心、改 `<root>/gateway/current` 并 exec 新网关、拉起原核心。从不自动升级（CONTRACTS §102）
 
 ### 2.2 节点内部架构
 
@@ -1576,7 +1576,7 @@ next/
 │   └── web/                       # 嵌入前端构建产物（dist/index.html 是被跟踪的占位文件）
 ├── gateway/                       # 节点外壳（独立 Go module）
 │   ├── cmd/sub2api-gateway/       # 公网入口、本机核心的 supervisor、托管升级、节点间转发
-│   ├── cmd/sub2api-release/       # 发布密钥、核心与网关清单的打包签名（pack、pack-gateway）、镜像源（mirror）
+│   ├── cmd/sub2api-release/       # 核心与网关清单的打包（pack、pack-gateway）、镜像源（mirror）、插件公钥（pubkey）
 │   └── internal/                  # control、supervisor、proxy、peer、release、updatesource、pluginblob、sqlguard ...
 ├── runtime-contract/              # 外壳与核心的协议；gormpg（共用的数据库层与 sqlcheck）、sqlpool、locklease
 ├── sdk/                           # 插件 SDK（独立 Go module，插件只依赖它和 runtime-contract）
