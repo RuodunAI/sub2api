@@ -1,6 +1,7 @@
 package reqsign
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,7 +59,7 @@ func suiteRequest(t *testing.T, raw string) (req *http.Request, payload []byte, 
 // request, the string to sign and the Authorization header must all match.
 func TestOfficialSuite(t *testing.T) {
 	dirs, err := filepath.Glob("testdata/aws-sig-v4-test-suite/*")
-	if err != nil || len(dirs) < 11 {
+	if err != nil || len(dirs) < 12 {
 		t.Fatalf("suite cases: %d %v", len(dirs), err)
 	}
 	now := time.Date(2015, 8, 30, 12, 36, 0, 0, time.UTC)
@@ -161,6 +162,106 @@ func TestCanonicalPathIsEscapedTwice(t *testing.T) {
 	}
 	if got := req.URL.EscapedPath(); got != "/model/anthropic.claude-v1%3A0/invoke" {
 		t.Fatalf("wire path %q", got)
+	}
+}
+
+// The query is signed sorted by key, then value, and sent exactly as signed.
+func TestCanonicalQuery(t *testing.T) {
+	v := sdkVectors(t)[0]
+	for raw, want := range map[string]string{
+		"":                         "",
+		"b=2&a=1":                  "a=1&b=2",
+		"p=b&p=a&p=B&a=z":          "a=z&p=B&p=a&p=b",
+		"a-=1&a=2":                 "a=2&a-=1", // by key, not by "key=value"
+		"q=a+b&r=a%20b":            "q=a%20b&r=a%20b",
+		"flag&k=":                  "flag=&k=",
+		"x=%E2%9C%93&y=a%2Fb%3Ac~": "x=%E2%9C%93&y=a%2Fb%3Ac~",
+		"x=a/b:c*":                 "x=a%2Fb%3Ac%2A",
+	} {
+		req, _ := http.NewRequest(http.MethodGet, "https://example.amazonaws.com/?"+raw, nil)
+		if err := Sign(req, nil, v.directive(), v.Time); err != nil {
+			t.Errorf("%q: %v", raw, err)
+			continue
+		}
+		canonical, _ := sigV4CanonicalRequest(req, nil)
+		if got := strings.Split(canonical, "\n")[2]; got != want || req.URL.RawQuery != want {
+			t.Errorf("%q: signed %q, sent %q, want %q", raw, got, req.URL.RawQuery, want)
+		}
+		if !strings.HasSuffix(req.URL.RequestURI(), "?"+want) && want != "" {
+			t.Errorf("%q: request URI %q", raw, req.URL.RequestURI())
+		}
+	}
+	// A query that cannot be parsed whole is refused, not signed without the
+	// parameters net/url drops; the request is left as it was.
+	for _, raw := range []string{"a=1;b=2", "a=1&b=%zz", "%=1", "a=%2"} {
+		req, _ := http.NewRequest(http.MethodGet, "https://example.amazonaws.com/", nil)
+		req.URL.RawQuery = raw
+		err := Sign(req, nil, v.directive(), v.Time)
+		if err == nil {
+			t.Errorf("%q: signed", raw)
+		}
+		if req.URL.RawQuery != raw || req.Host != "example.amazonaws.com" || len(req.Header) != 0 {
+			t.Errorf("%q: request touched: %q %q %v", raw, req.URL.RawQuery, req.Host, req.Header)
+		}
+	}
+}
+
+// The scheme's default port is neither signed nor sent: Go would otherwise
+// send "Host: h:443" under a signature made for "h".
+func TestHostSentIsHostSigned(t *testing.T) {
+	v := sdkVectors(t)[0]
+	for _, tc := range []struct{ url, host, want string }{
+		{"https://example.amazonaws.com:443/x", "", "example.amazonaws.com"},
+		{"http://example.amazonaws.com:80/x", "", "example.amazonaws.com"},
+		{"https://example.amazonaws.com/x", "", "example.amazonaws.com"},
+		{"https://example.amazonaws.com:8443/x", "", "example.amazonaws.com:8443"},
+		{"https://example.amazonaws.com:80/x", "", "example.amazonaws.com:80"},
+		{"http://example.amazonaws.com:443/x", "", "example.amazonaws.com:443"},
+		{"https://[::1]:443/x", "", "[::1]"},
+		{"https://10.0.0.1:443/x", "other.example.com:443", "other.example.com"},
+		{"https://10.0.0.1/x", "other.example.com:8443", "other.example.com:8443"},
+	} {
+		req, _ := http.NewRequest(http.MethodGet, tc.url, nil)
+		req.Host = tc.host
+		if err := Sign(req, nil, v.directive(), v.Time); err != nil {
+			t.Fatal(err)
+		}
+		canonical, _ := sigV4CanonicalRequest(req, nil)
+		if !strings.Contains(canonical, "\nhost:"+tc.want+"\n") {
+			t.Errorf("%s: signed\n%s", tc.url, canonical)
+		}
+		var wire bytes.Buffer
+		if err := req.Write(&wire); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(wire.String(), "\r\nHost: "+tc.want+"\r\n") {
+			t.Errorf("%s: sent\n%s", tc.url, wire.String())
+		}
+		// Where the request connects to is not changed.
+		if u, _ := http.NewRequest(http.MethodGet, tc.url, nil); req.URL.Host != u.URL.Host {
+			t.Errorf("%s: URL host %q", tc.url, req.URL.Host)
+		}
+	}
+}
+
+// escapeUnreserved keeps exactly the RFC 3986 unreserved set and writes
+// every other byte as an upper-case percent escape.
+func TestEscapeUnreservedEveryByte(t *testing.T) {
+	const unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~"
+	var all, want strings.Builder
+	for c := 0; c < 256; c++ {
+		in, out := string([]byte{byte(c)}), fmt.Sprintf("%%%02X", c)
+		if strings.Contains(unreserved, in) {
+			out = in
+		}
+		if got := escapeUnreserved(in); got != out {
+			t.Errorf("byte %#x: %q, want %q", c, got, out)
+		}
+		all.WriteString(in)
+		want.WriteString(out)
+	}
+	if got := escapeUnreserved(all.String()); got != want.String() {
+		t.Errorf("all bytes: %q", got)
 	}
 }
 

@@ -196,7 +196,10 @@ func signForMock(req *http.Request, body, accessKey, secret, token string) {
 	// The server sees the host the client dialled.
 	seen := req.Clone(req.Context())
 	seen.Host = req.URL.Host
-	sig := sigV4Signature(seen, []byte(body), secret, amzDate, "us-east-1", "bedrock", signed)
+	sig, err := sigV4Signature(seen, []byte(body), secret, amzDate, "us-east-1", "bedrock", signed)
+	if err != nil {
+		panic(err)
+	}
 	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKey+"/"+amzDate[:8]+"/us-east-1/bedrock/aws4_request, SignedHeaders="+signed+", Signature="+sig)
 }
 

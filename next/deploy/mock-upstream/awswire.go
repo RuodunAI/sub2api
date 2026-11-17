@@ -80,15 +80,25 @@ func checkSigV4(r *http.Request, body []byte, secret string, now time.Time) erro
 	if r.Header.Get("X-Amz-Security-Token") != "" && !strings.Contains(signed, ";x-amz-security-token;") {
 		return errors.New("x-amz-security-token must be signed")
 	}
-	if want := sigV4Signature(r, body, secret, amzDate, m[3], m[4], signedHeaders); !hmac.Equal([]byte(want), []byte(signature)) {
+	want, err := sigV4Signature(r, body, secret, amzDate, m[3], m[4], signedHeaders)
+	if err != nil {
+		return err
+	}
+	if !hmac.Equal([]byte(want), []byte(signature)) {
 		return errors.New("the request signature we calculated does not match the signature you provided")
 	}
 	return nil
 }
 
 // sigV4Signature computes the signature of r as received, for the signed
-// headers named: canonical request, string to sign, derived key.
-func sigV4Signature(r *http.Request, body []byte, secret, amzDate, region, service, signedHeaders string) string {
+// headers named: canonical request, string to sign, derived key. The query
+// is taken sorted by key, then value; one that does not parse is refused
+// rather than checked without the parameters that were dropped.
+func sigV4Signature(r *http.Request, body []byte, secret, amzDate, region, service, signedHeaders string) (string, error) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		return "", fmt.Errorf("the query string cannot be parsed: %w", err)
+	}
 	var headers strings.Builder
 	for _, name := range strings.Split(signedHeaders, ";") {
 		value := strings.Join(r.Header.Values(name), ",")
@@ -102,13 +112,18 @@ func sigV4Signature(r *http.Request, body []byte, secret, amzDate, region, servi
 	for i, seg := range segments {
 		segments[i] = awsEscape(seg)
 	}
+	keys := make([]string, 0, len(query))
+	for key := range query {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
 	var pairs []string
-	for key, values := range r.URL.Query() {
-		for _, v := range values {
+	for _, key := range keys {
+		sort.Strings(query[key])
+		for _, v := range query[key] {
 			pairs = append(pairs, awsEscape(key)+"="+awsEscape(v))
 		}
 	}
-	sort.Strings(pairs)
 	canonical := strings.Join([]string{r.Method, strings.Join(segments, "/"), strings.Join(pairs, "&"),
 		headers.String(), signedHeaders, sha256Hex(body)}, "\n")
 	date := amzDate[:8]
@@ -117,7 +132,7 @@ func sigV4Signature(r *http.Request, body []byte, secret, amzDate, region, servi
 	for _, part := range []string{date, region, service, "aws4_request"} {
 		key = hmacSHA256(key, part)
 	}
-	return hex.EncodeToString(hmacSHA256(key, strings.Join([]string{"AWS4-HMAC-SHA256", amzDate, scope, sha256Hex([]byte(canonical))}, "\n")))
+	return hex.EncodeToString(hmacSHA256(key, strings.Join([]string{"AWS4-HMAC-SHA256", amzDate, scope, sha256Hex([]byte(canonical))}, "\n"))), nil
 }
 
 // awsEscape percent-encodes everything but the RFC 3986 unreserved set.
