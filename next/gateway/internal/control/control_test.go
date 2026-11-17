@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -215,7 +217,7 @@ func setupEngines(t *testing.T) (*Store, *Engine, *Engine, Release) {
 }
 
 // setupEnginesWith registers two nodes, a (primary) and b, serving the old
-// release. rolling signs both releases rolling; otherwise they are signed
+// release. rolling declares both releases rolling; otherwise they are declared
 // maintenance and upgrade primary-first.
 func setupEnginesWith(t *testing.T, rolling bool) (*Store, *Engine, *Engine, Release) {
 	t.Helper()
@@ -231,6 +233,7 @@ func setupEnginesWith(t *testing.T, rolling bool) (*Store, *Engine, *Engine, Rel
 		old.Manifest.Strategy, target.Manifest.Strategy = "maintenance", "maintenance"
 	}
 	for _, r := range []Release{old, target} {
+		r.Raw, _ = json.Marshal(r.Manifest)
 		if err := s.PutRelease(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -743,7 +746,10 @@ func TestPostgresCrossSchemaRollbackIsRejected(t *testing.T) {
 	if _, err = s.Action(ctx, p.ID, "pause", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.db(ctx).Exec(`UPDATE updater.releases SET manifest=jsonb_set(manifest,'{schema_after}','"contract-2"') WHERE digest=?`, target.Digest).Error; err != nil {
+	crossSchema := target.Manifest
+	crossSchema.SchemaAfter = "contract-2"
+	raw, _ := json.Marshal(crossSchema)
+	if err = releaseRow(s.db(ctx), updatesource.LineCore, target.Digest).Update("manifest", raw).Error; err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.Rollback(ctx, p.ID, "admin"); err == nil {

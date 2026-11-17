@@ -1,7 +1,7 @@
-// Package updatesource lists the signed releases of the core and gateway
+// Package updatesource lists the releases of the core and gateway
 // lines and opens their assets, from GitHub Releases or from an HTTPS release
 // directory indexed by releases.json. It only transports bytes: the caller
-// verifies every manifest signature and every digest.
+// verifies every manifest and every digest.
 package updatesource
 
 import (

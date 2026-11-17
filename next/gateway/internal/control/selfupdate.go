@@ -15,7 +15,7 @@ import (
 )
 
 // One-click gateway updates (CONTRACTS §102.9): a
-// GatewayRolling plan installs a signed gateway release on every node and
+// GatewayRolling plan installs a gateway release on every node and
 // then, one node at a time, swaps the node's gateway process for it while
 // its baseline core restarts; GatewayRollback swaps back.
 
@@ -141,11 +141,11 @@ func (e *Engine) prepareGateway(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	installed, _, err := e.Gateway.InstallGateway(ctx, r.Signed, func(ctx context.Context, archive string, size int64) (io.ReadCloser, error) {
+	installed, _, err := e.Gateway.InstallGateway(ctx, r.Raw, func(ctx context.Context, archive string, size int64) (io.ReadCloser, error) {
 		return e.Store.openAsset(ctx, r.SourceAssets, r.SourceLocator, archive, size)
 	})
 	if err == nil && installed != digest {
-		err = errors.New("stored signed gateway manifest digest mismatch")
+		err = errors.New("stored gateway manifest digest mismatch")
 	}
 	return err
 }

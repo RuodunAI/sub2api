@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,18 +17,15 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// gcRelease is one signed release with its own bundle (body differs).
+// gcRelease is one release (its manifest bytes) with its own bundle (body
+// differs).
 type gcRelease struct {
-	signed rc.SignedManifest
-	bundle []byte
+	manifest []byte
+	bundle   []byte
 }
 
-func gcReleases(t *testing.T, n int) ([]gcRelease, map[string]ed25519.PublicKey) {
+func gcReleases(t *testing.T, n int) []gcRelease {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
 	var out []gcRelease
 	for i := 0; i < n; i++ {
 		body := []byte("#!/bin/sh\nexit " + string(rune('0'+i)) + "\n")
@@ -48,10 +43,10 @@ func gcReleases(t *testing.T, n int) ([]gcRelease, map[string]ed25519.PublicKey)
 			ShellProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, CoreControlProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol},
 			Platforms: []rc.Platform{{OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", BundleDigest: Digest(bundle), BundleBytes: int64(len(bundle)),
 				Files: []rc.File{{Path: "bin/sub2api", SHA256: Digest(body), Size: int64(len(body)), Mode: 0755}}}}}
-		payload, _ := json.Marshal(m)
-		out = append(out, gcRelease{rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(priv, payload)}, bundle})
+		raw, _ := json.Marshal(m)
+		out = append(out, gcRelease{raw, bundle})
 	}
-	return out, map[string]ed25519.PublicKey{"test": pub}
+	return out
 }
 
 // age makes every file of release digest (directory, manifest, blob) old.
@@ -71,16 +66,16 @@ func TestGCKeepsCurrentPreviousAndRecentlyPrepared(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("durable rename and directory fsync require Linux")
 	}
-	rels, keys := gcReleases(t, 4)
+	rels := gcReleases(t, 4)
 	var serving []byte
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(serving) }))
 	defer server.Close()
-	m := Manager{Root: t.TempDir(), TrustedKeys: keys, OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
+	m := Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
 	ctx := context.Background()
 
 	// Nothing switched yet: nothing is known to be unneeded.
 	serving = rels[0].bundle
-	first, err := m.Prepare(ctx, rels[0].signed, server.URL)
+	first, err := m.Prepare(ctx, rels[0].manifest, server.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +87,7 @@ func TestGCKeepsCurrentPreviousAndRecentlyPrepared(t *testing.T) {
 	var prepared []Prepared
 	for i, r := range rels {
 		serving = r.bundle
-		p, err := m.Prepare(ctx, r.signed, server.URL)
+		p, err := m.Prepare(ctx, r.manifest, server.URL)
 		if err != nil {
 			t.Fatal(err)
 		}

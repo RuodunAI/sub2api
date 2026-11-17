@@ -65,10 +65,11 @@ func (n Node) ServingLocal(now time.Time) bool {
 }
 
 type Release struct {
-	Digest     string            `json:"digest"`
-	Manifest   rc.Manifest       `json:"manifest"`
-	Signed     rc.SignedManifest `json:"-"`
-	BundleBase string            `json:"-"`
+	Digest   string      `json:"digest"`
+	Manifest rc.Manifest `json:"manifest"`
+	// Raw is the manifest as published; Digest is its SHA-256.
+	Raw        []byte `json:"-"`
+	BundleBase string `json:"-"`
 	// SourceAssets are the assets, by file name, of a release imported from
 	// the update source at SourceLocator (sourceRow.locator); its bundles are
 	// downloaded through that source and BundleBase is empty.
@@ -76,12 +77,13 @@ type Release struct {
 	SourceLocator string                        `json:"-"`
 }
 
-// GatewayRelease is a signed gateway release imported from the update
-// source; its archives are downloaded through that source.
+// GatewayRelease is a gateway release imported from the update source; its
+// archives are downloaded through that source.
 type GatewayRelease struct {
-	Digest        string                        `json:"digest"`
-	Manifest      rc.GatewayManifest            `json:"manifest"`
-	Signed        rc.SignedManifest             `json:"-"`
+	Digest   string             `json:"digest"`
+	Manifest rc.GatewayManifest `json:"manifest"`
+	// Raw is the manifest as published; Digest is its SHA-256.
+	Raw           []byte                        `json:"-"`
 	SourceAssets  map[string]updatesource.Asset `json:"-"`
 	SourceLocator string                        `json:"-"`
 }
@@ -131,7 +133,7 @@ func (p *Preflight) block(blockers ...Issue) {
 // code with its parameters, for the console to word, and the English
 // message. The codes, and their params:
 //
-//	release_incompatible  the signed release cannot follow the installed one
+//	release_incompatible  the release cannot follow the installed one
 //	plugin_incompatible   an active plugin does not support the target core
 //	plugins_changing      a plugin install, upgrade or removal is in progress
 //	core_unmanaged        a core the gateway does not manage is serving
@@ -143,7 +145,7 @@ func (p *Preflight) block(blockers ...Issue) {
 //	node_off_baseline     {node} does not run the approved baseline
 //	node_unsupported      {node} cannot run this plan: an old shell, its
 //	                      platform, its gateway version, or no self-update
-//	maintenance_release   the release is signed for a maintenance update
+//	maintenance_release   the release is declared for a maintenance update
 //	schema_change         the release changes the database schema
 //	too_few_serving       {min} fewer nodes serve than a rolling update needs
 //	single_node           {seconds} the only node restarts its gateway with
@@ -229,14 +231,14 @@ const PrimaryFirst = "primary-first-v1"
 // serving. Each node first yields its new requests to the serving nodes
 // (Node.Offloading, the CPU offload channel), drains and restarts its core
 // on the target release, serves locally again and takes its traffic back.
-// Only a release whose SchemaBefore equals its SchemaAfter and whose signed
+// Only a release whose SchemaBefore equals its SchemaAfter and whose declared
 // strategy is "rolling" qualifies, with at least two enabled nodes serving
 // (Preflight).
 const Rolling = "rolling-v1"
 
 // GatewayRolling (2026-11-17) replaces the gateway binary of one node at a
 // time, followers first, while the others serve: each node installs the
-// signed release (gw-prepare), yields, stops its core, points
+// release (gw-prepare), yields, stops its core, points
 // <root>/gateway/current at the new binary and execs it (gw-swap), starts
 // and admits the unchanged baseline core again, checks that the new gateway
 // registered (gw-confirm) and takes its traffic back. GatewayRollback undoes

@@ -19,8 +19,8 @@ import (
 // mirror copies stable releases of an update source (a GitHub repository or
 // another url source) into a directory that serves as a url update source:
 // <line>/<version>/<asset> plus releases.json. Listing and downloads use the
-// gateway's own update sources; assets are copied byte for byte, so manifests
-// keep their original signatures.
+// gateway's own update sources; assets are copied byte for byte, so every
+// manifest keeps its digest.
 
 const (
 	releasesIndex = "releases.json"

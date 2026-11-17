@@ -22,7 +22,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// The signed manifests a release of each line carries.
+// The manifests a release of each line carries.
 const (
 	coreManifestAsset    = "next-core-manifest.json"
 	gatewayManifestAsset = "next-gateway-manifest.json"
@@ -46,7 +46,7 @@ const (
 
 // UpdateService holds what update checks and imports need beyond the store.
 type UpdateService struct {
-	Manager *release.Manager // trusted keys and this node's platform
+	Manager *release.Manager // this node's platform
 	// Cipher seals the source secret; nil without SUB2API_MASTER_KEY.
 	Cipher  *secret.Cipher
 	Sources updatesource.Options
@@ -439,7 +439,7 @@ func (u *UpdateService) checkCore(ctx context.Context, src updatesource.Source, 
 	case target.Digest == current.Digest:
 		r.Compatible = true
 	case strings.TrimPrefix(current.Manifest.CoreVersion, "v") == l.Version:
-		r.ReasonCode, r.Reason = reasonVersionConflict, "the latest release uses the installed version number with a different signed identity"
+		r.ReasonCode, r.Reason = reasonVersionConflict, "the latest release uses the installed version number with a different manifest digest"
 	case len(blockers) > 0:
 		r.ReasonCode, r.Reason = reasonIncompatible, strings.Join(blockers, "; ")
 	default:
@@ -448,20 +448,20 @@ func (u *UpdateService) checkCore(ctx context.Context, src updatesource.Source, 
 	return r, nil
 }
 
-// verifyCore checks a core listing: its signed manifest, the version it
-// binds, this node's platform and a bundle asset of the signed size for
-// every platform, so that a heterogeneous cluster can install it.
+// verifyCore checks a core listing: its manifest, the version it binds,
+// this node's platform and a bundle asset of the declared size for every
+// platform, so that a heterogeneous cluster can install it.
 func (u *UpdateService) verifyCore(ctx context.Context, src updatesource.Source, l updatesource.Listing) (Release, error) {
-	signed, err := openManifest(ctx, src, l, coreManifestAsset)
+	raw, err := openManifest(ctx, src, l, coreManifestAsset)
 	if err != nil {
 		return Release{}, err
 	}
-	manifest, digest, err := release.Verify(signed, u.Manager.TrustedKeys)
+	manifest, digest, err := release.Verify(raw)
 	if err != nil {
 		return Release{}, fmt.Errorf("%s: %w", l.Tag, err)
 	}
 	if strings.TrimPrefix(manifest.CoreVersion, "v") != l.Version {
-		return Release{}, fmt.Errorf("%s: the signed core version differs from the tag", l.Tag)
+		return Release{}, fmt.Errorf("%s: the manifest's core version differs from the tag", l.Tag)
 	}
 	if _, err = u.Manager.ValidatePlatform(manifest); err != nil {
 		return Release{}, fmt.Errorf("%s: %w", l.Tag, err)
@@ -469,10 +469,10 @@ func (u *UpdateService) verifyCore(ctx context.Context, src updatesource.Source,
 	for _, p := range manifest.Platforms {
 		a, ok := l.Assets[p.BundleDigest+".tar.gz"]
 		if !release.ValidDigest(p.BundleDigest) || p.BundleBytes <= 0 || p.BundleBytes > 16<<30 || !ok || a.Size != p.BundleBytes {
-			return Release{}, fmt.Errorf("%s: a signed bundle is missing or differs in size", l.Tag)
+			return Release{}, fmt.Errorf("%s: a declared bundle is missing or differs in size", l.Tag)
 		}
 	}
-	return Release{Digest: digest, Manifest: manifest, Signed: signed, SourceAssets: l.Assets}, nil
+	return Release{Digest: digest, Manifest: manifest, Raw: raw, SourceAssets: l.Assets}, nil
 }
 
 func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Source, ls []updatesource.Listing, current Release, nodes []Node) (gatewayResult, error) {
@@ -497,26 +497,26 @@ func (u *UpdateService) checkGateway(ctx context.Context, src updatesource.Sourc
 	return r, nil
 }
 
-// verifyGateway checks a gateway listing: its signed manifest, the version
-// it binds and an archive asset of the signed size for every platform.
+// verifyGateway checks a gateway listing: its manifest, the version it binds
+// and an archive asset of the declared size for every platform.
 func (u *UpdateService) verifyGateway(ctx context.Context, src updatesource.Source, l updatesource.Listing) (GatewayRelease, error) {
-	signed, err := openManifest(ctx, src, l, gatewayManifestAsset)
+	raw, err := openManifest(ctx, src, l, gatewayManifestAsset)
 	if err != nil {
 		return GatewayRelease{}, err
 	}
-	m, digest, err := release.VerifyGateway(signed, u.Manager.TrustedKeys)
+	m, digest, err := release.VerifyGateway(raw)
 	if err != nil {
 		return GatewayRelease{}, fmt.Errorf("%s: %w", l.Tag, err)
 	}
 	if m.GatewayVersion != l.Version {
-		return GatewayRelease{}, fmt.Errorf("%s: the signed gateway version differs from the tag", l.Tag)
+		return GatewayRelease{}, fmt.Errorf("%s: the manifest's gateway version differs from the tag", l.Tag)
 	}
 	for _, p := range m.Platforms {
 		if a, ok := l.Assets[p.Archive]; !ok || a.Size != p.ArchiveBytes {
-			return GatewayRelease{}, fmt.Errorf("%s: a signed gateway archive is missing or differs in size", l.Tag)
+			return GatewayRelease{}, fmt.Errorf("%s: a declared gateway archive is missing or differs in size", l.Tag)
 		}
 	}
-	return GatewayRelease{Digest: digest, Manifest: m, Signed: signed, SourceAssets: l.Assets}, nil
+	return GatewayRelease{Digest: digest, Manifest: m, Raw: raw, SourceAssets: l.Assets}, nil
 }
 
 // gatewayCompatibility says why m cannot replace the cluster's gateways: it
@@ -542,28 +542,24 @@ func gatewayCompatibility(m rc.GatewayManifest, current Release, nodes []Node) [
 	return out
 }
 
-// openManifest downloads and decodes a listing's signed manifest asset.
-func openManifest(ctx context.Context, src updatesource.Source, l updatesource.Listing, name string) (rc.SignedManifest, error) {
-	var s rc.SignedManifest
+// openManifest downloads the bytes of a listing's manifest asset.
+func openManifest(ctx context.Context, src updatesource.Source, l updatesource.Listing, name string) ([]byte, error) {
 	a, ok := l.Assets[name]
 	if !ok {
-		return s, fmt.Errorf("%s has no %s", l.Tag, name)
+		return nil, fmt.Errorf("%s has no %s", l.Tag, name)
 	}
 	ctx, cancel := context.WithTimeout(ctx, release.DefaultManifestTimeout)
 	defer cancel()
-	body, err := src.Open(ctx, a, release.MaxManifestBytes*2)
+	body, err := src.Open(ctx, a, release.MaxManifestBytes)
 	if err != nil {
-		return s, fmt.Errorf("%s: %w", l.Tag, err)
+		return nil, fmt.Errorf("%s: %w", l.Tag, err)
 	}
 	defer body.Close()
-	b, err := io.ReadAll(body)
-	if err == nil {
-		err = json.Unmarshal(b, &s)
-	}
+	b, err := release.ReadManifest(body)
 	if err != nil {
-		return s, fmt.Errorf("%s: unreadable %s", l.Tag, name)
+		return nil, fmt.Errorf("%s: unreadable %s", l.Tag, name)
 	}
-	return s, nil
+	return b, nil
 }
 
 // UpdateCheck is GET /system/update-check.
@@ -795,10 +791,8 @@ func (s *Store) importGateway(ctx context.Context, version string) (GatewayRelea
 	if err != nil {
 		return r, err
 	}
-	m, _ := json.Marshal(r.Manifest)
-	signed, _ := json.Marshal(r.Signed)
 	assets, _ := json.Marshal(r.SourceAssets)
-	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, Line: updatesource.LineGateway,
+	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: r.Raw, Line: updatesource.LineGateway,
 		SourceAssets: assets, SourceLocator: row.locator()}
 	if err = s.storeImported(ctx, row.revision, rec); err != nil {
 		return r, err

@@ -2,7 +2,6 @@ package release
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,23 +11,20 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// MaxGatewayArchiveBytes bounds one signed gateway archive.
+// MaxGatewayArchiveBytes bounds one gateway archive.
 const MaxGatewayArchiveBytes = 1 << 30
 
-// VerifyGateway checks a signed gateway release manifest: the signature under
-// keys, one JSON document, the gateway kind, which a core manifest never
-// carries, and well-formed platform archives. It returns the manifest and its
-// payload digest.
-func VerifyGateway(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.GatewayManifest, string, error) {
+// VerifyGateway checks the bytes of a gateway release manifest: one JSON
+// document, the gateway kind, which a core manifest never carries, and
+// well-formed platform archives. It returns the manifest and its digest, the
+// SHA-256 of raw.
+func VerifyGateway(raw []byte) (rc.GatewayManifest, string, error) {
 	var m rc.GatewayManifest
-	if err := verifySignature(s, keys); err != nil {
-		return m, "", err
-	}
-	if err := decodeManifest(s.Payload, &m); err != nil {
+	if err := decodeManifest(raw, &m); err != nil {
 		return m, "", errors.New("invalid gateway release manifest")
 	}
 	if m.Kind != rc.GatewayManifestKind {
-		return m, "", errors.New("signed manifest is not a gateway release")
+		return m, "", errors.New("manifest is not a gateway release")
 	}
 	if _, err := semver.StrictNewVersion(m.GatewayVersion); err != nil || m.ReleaseID == "" || m.BuildID == "" || len(m.Platforms) == 0 {
 		return m, "", errors.New("unsupported gateway release contract")
@@ -42,15 +38,19 @@ func VerifyGateway(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.G
 		}
 		seen[key] = true
 	}
-	return m, Digest(s.Payload), nil
+	return m, Digest(raw), nil
 }
 
-// decodeManifest decodes one JSON document. Unknown fields are ignored, so
-// that a release adding an optional field still installs on the gateways
-// deployed before it (including the self-update that would teach them the
-// field); the kind and contract checks keep the two manifest kinds apart.
-func decodeManifest(payload []byte, v any) error {
-	dec := json.NewDecoder(bytes.NewReader(payload))
+// decodeManifest decodes one JSON document of at most MaxManifestBytes.
+// Unknown fields are ignored, so that a release adding an optional field
+// still installs on the gateways deployed before it (including the
+// self-update that would teach them the field); the kind and contract checks
+// keep the two manifest kinds apart.
+func decodeManifest(raw []byte, v any) error {
+	if len(raw) > MaxManifestBytes {
+		return errors.New("manifest too large")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	if err := dec.Decode(v); err != nil {
 		return err
 	}

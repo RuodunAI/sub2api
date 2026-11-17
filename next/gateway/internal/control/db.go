@@ -34,16 +34,16 @@ type clusterRecord struct {
 
 func (clusterRecord) TableName() string { return "updater.clusters" }
 
-// releaseRecord is an updater.releases row; the documents are JSON.
+// releaseRecord is an updater.releases row. Manifest holds the manifest
+// bytes as published (Digest is their SHA-256); SourceAssets is JSON.
 type releaseRecord struct {
-	Digest         string
-	ReleaseID      string
-	Manifest       []byte
-	SignedManifest []byte
-	BundleBase     string
-	Line           string // updatesource.LineCore or LineGateway
-	SourceAssets   []byte // NULL unless imported from the update source
-	SourceLocator  string
+	Digest        string
+	ReleaseID     string
+	Manifest      []byte
+	BundleBase    string
+	Line          string // updatesource.LineCore or LineGateway
+	SourceAssets  []byte // NULL unless imported from the update source
+	SourceLocator string
 }
 
 func (releaseRecord) TableName() string { return "updater.releases" }

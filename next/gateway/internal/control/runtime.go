@@ -54,9 +54,8 @@ type LocalRuntime struct {
 }
 
 func (r *LocalRuntime) Prepare(ctx context.Context, v Release, base string) error {
-	digest := release.Digest(v.Signed.Payload)
-	if digest != v.Digest {
-		return errors.New("stored signed manifest digest mismatch")
+	if release.Digest(v.Raw) != v.Digest {
+		return errors.New("stored manifest digest mismatch")
 	}
 	var platform rc.Platform
 	for _, p := range v.Manifest.Platforms {
@@ -77,16 +76,16 @@ func (r *LocalRuntime) Prepare(ctx context.Context, v Release, base string) erro
 		if r.SourceAsset == nil {
 			return errors.New("update source downloads are not configured")
 		}
-		p, err = r.Releases.PrepareFrom(ctx, v.Signed, func(ctx context.Context) (io.ReadCloser, error) {
+		p, err = r.Releases.PrepareFrom(ctx, v.Raw, func(ctx context.Context) (io.ReadCloser, error) {
 			return r.SourceAsset(ctx, v, bundle+".tar.gz", platform.BundleBytes)
 		})
 	case fromPeer:
 		if r.PeerArtifactClient == nil {
 			return errors.New("peer artifact client not configured")
 		}
-		p, err = r.Releases.PrepareWithClient(ctx, v.Signed, bundleURL, r.PeerArtifactClient)
+		p, err = r.Releases.PrepareWithClient(ctx, v.Raw, bundleURL, r.PeerArtifactClient)
 	default:
-		p, err = r.Releases.Prepare(ctx, v.Signed, bundleURL)
+		p, err = r.Releases.Prepare(ctx, v.Raw, bundleURL)
 	}
 	if err != nil {
 		return err
@@ -356,16 +355,16 @@ func (r *LocalRuntime) collectReleases(ctx context.Context) {
 }
 
 // Validate embedded capabilities before issuing Prepare, which may migrate the
-// shared database. A signed declaration is not proof of the binary's protocol.
+// shared database. A manifest's declaration is not proof of the binary's protocol.
 func verifyCandidate(st rc.Status, m rc.Manifest) error {
 	if st.Protocol != rc.Protocol || st.CoreVersion == "" || st.CoreVersion != m.CoreVersion {
-		return errors.New("candidate core/control version differs from signed release")
+		return errors.New("candidate core/control version differs from the release manifest")
 	}
 	if !st.ClusterProtocol.Contains(m.ClusterProtocol.Min) || !st.ClusterProtocol.Contains(m.ClusterProtocol.Max) || !st.TaskProtocol.Contains(m.TaskProtocol.Min) || !st.TaskProtocol.Contains(m.TaskProtocol.Max) || st.HostAPIVersion != m.HostAPIVersion {
-		return errors.New("candidate embedded capabilities differ from signed release")
+		return errors.New("candidate embedded capabilities differ from the release manifest")
 	}
 	if st.SchemaContract == "" || st.SchemaContract != m.SchemaAfter {
-		return errors.New("candidate embedded schema differs from signed release")
+		return errors.New("candidate embedded schema differs from the release manifest")
 	}
 	return nil
 }

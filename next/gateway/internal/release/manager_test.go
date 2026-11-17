@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +17,8 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-func fixture(t *testing.T) (rc.SignedManifest, []byte, map[string]ed25519.PublicKey) {
+// fixture is the manifest bytes of a one-file release and its bundle.
+func fixture(t *testing.T) ([]byte, []byte) {
 	t.Helper()
 	body := []byte("#!/bin/sh\nexit 0\n")
 	var buf bytes.Buffer
@@ -33,45 +32,42 @@ func fixture(t *testing.T) (rc.SignedManifest, []byte, map[string]ed25519.Public
 	gz.Close()
 	bundle := buf.Bytes()
 	manifest := rc.Manifest{ManifestVersion: 1, ReleaseID: "r1", BuildID: "build1", Strategy: "rolling", ShellProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, CoreControlProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, Platforms: []rc.Platform{{OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", BundleDigest: Digest(bundle), BundleBytes: int64(len(bundle)), Files: []rc.File{{Path: "bin/sub2api", SHA256: Digest(body), Size: int64(len(body)), Mode: 0755}}}}}
-	payload, _ := json.Marshal(manifest)
-	pub, priv, e := ed25519.GenerateKey(rand.Reader)
-	if e != nil {
-		t.Fatal(e)
-	}
-	return rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(priv, payload)}, bundle, map[string]ed25519.PublicKey{"test": pub}
+	raw, _ := json.MarshalIndent(manifest, "", "  ")
+	return append(raw, '\n'), bundle
 }
-func TestVerifyRejectsTamperingAndUnknownKey(t *testing.T) {
-	s, _, keys := fixture(t)
-	if _, _, e := Verify(s, keys); e != nil {
-		t.Fatal(e)
+
+// TestVerifyDigestsTheExactBytes: the release digest is the SHA-256 of the
+// manifest bytes as published, so a reformatted manifest is another release.
+func TestVerifyDigestsTheExactBytes(t *testing.T) {
+	raw, _ := fixture(t)
+	m, d, e := Verify(raw)
+	if e != nil || d != Digest(raw) || m.ReleaseID != "r1" {
+		t.Fatalf("manifest %+v, digest %s: %v", m, d, e)
 	}
-	s.Payload = append(s.Payload, ' ')
-	if _, _, e := Verify(s, keys); e == nil {
-		t.Fatal("tampered manifest accepted")
+	compact, _ := json.Marshal(m)
+	if _, d2, e := Verify(compact); e != nil || d2 == d {
+		t.Fatalf("reformatted manifest: digest %s: %v", d2, e)
 	}
-	s, _, _ = fixture(t)
-	if _, _, e := Verify(s, keys); e == nil {
-		t.Fatal("wrong signing key accepted")
+	m.ManifestVersion = 2
+	unsupported, _ := json.Marshal(m)
+	if _, _, e := Verify(unsupported); e == nil {
+		t.Fatal("unsupported manifest version accepted")
+	}
+	if _, _, e := Verify(append(raw, bytes.Repeat([]byte(" "), MaxManifestBytes)...)); e == nil {
+		t.Fatal("oversized manifest accepted")
 	}
 }
 
 // TestVerifyIgnoresNewFieldsButNotTrailingData: a field a later release adds
 // must not stop the deployed gateways from installing it.
 func TestVerifyIgnoresNewFieldsButNotTrailingData(t *testing.T) {
-	s, _, _ := fixture(t)
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys := map[string]ed25519.PublicKey{"test": pub}
-	sign := func(p []byte) rc.SignedManifest {
-		return rc.SignedManifest{KeyID: "test", Payload: p, Signature: ed25519.Sign(priv, p)}
-	}
-	extra := append(s.Payload[:len(s.Payload)-1:len(s.Payload)-1], []byte(`,"rollout_hint":"later"}`)...)
-	if _, _, err := Verify(sign(extra), keys); err != nil {
+	raw, _ := fixture(t)
+	body := bytes.TrimSpace(raw)
+	extra := append(body[:len(body)-1:len(body)-1], []byte(`,"rollout_hint":"later"}`)...)
+	if _, _, err := Verify(extra); err != nil {
 		t.Fatalf("manifest with a new optional field: %v", err)
 	}
-	if _, _, err := Verify(sign(append(append([]byte{}, s.Payload...), []byte(` {}`)...)), keys); err == nil {
+	if _, _, err := Verify(append(append([]byte{}, raw...), []byte(` {}`)...)); err == nil {
 		t.Fatal("manifest with trailing data accepted")
 	}
 }
@@ -103,11 +99,11 @@ func TestExtractRejectsUnsafeEntries(t *testing.T) {
 	}
 }
 func TestPrepareRejectsBadDigestBeforeInstalling(t *testing.T) {
-	s, bundle, keys := fixture(t)
+	raw, bundle := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(append(bundle, 'x')) }))
 	defer server.Close()
-	m := Manager{Root: t.TempDir(), TrustedKeys: keys, OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
-	if _, e := m.Prepare(context.Background(), s, server.URL); e == nil {
+	m := Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
+	if _, e := m.Prepare(context.Background(), raw, server.URL); e == nil {
 		t.Fatal("oversized bundle accepted")
 	}
 	if _, e := m.Current(); !os.IsNotExist(e) {
@@ -128,10 +124,10 @@ func TestPrepareSwitchAndJournalRecovery(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("durable rename and directory fsync require Linux")
 	}
-	s, bundle, keys := fixture(t)
+	s, bundle := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(bundle) }))
 	defer server.Close()
-	m := Manager{Root: t.TempDir(), TrustedKeys: keys, OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
+	m := Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true}
 	ctx := context.Background()
 	p, e := m.Prepare(ctx, s, server.URL)
 	if e != nil {
@@ -163,21 +159,25 @@ func TestPrepareSwitchAndJournalRecovery(t *testing.T) {
 	if e = m.Switch(ctx, "op1", d); e != nil {
 		t.Fatal(e)
 	}
-	// Two distinct signed releases may share an identical content-addressed
+	// The stored manifest must still hash to the digest it is filed under.
+	if e = os.WriteFile(filepath.Join(m.Root, "manifests", d), append(s, ' '), 0600); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.Switch(ctx, "op1", d); e == nil || !strings.Contains(e.Error(), "digest mismatch") {
+		t.Fatalf("altered stored manifest: %v", e)
+	}
+	if _, e = m.Prepare(ctx, s, server.URL); e != nil {
+		t.Fatal(e)
+	}
+	// Two distinct releases may share an identical content-addressed
 	// bundle; switching still retains the prior manifest identity atomically.
 	var next rc.Manifest
-	if e = json.Unmarshal(s.Payload, &next); e != nil {
+	if e = json.Unmarshal(s, &next); e != nil {
 		t.Fatal(e)
 	}
 	next.ReleaseID = "r2"
 	next.BuildID = "build2"
-	pub, priv, e := ed25519.GenerateKey(rand.Reader)
-	if e != nil {
-		t.Fatal(e)
-	}
-	keys["next"] = pub
-	payload, _ := json.Marshal(next)
-	s2 := rc.SignedManifest{KeyID: "next", Payload: payload, Signature: ed25519.Sign(priv, payload)}
+	s2, _ := json.Marshal(next)
 	p2, e := m.Prepare(ctx, s2, server.URL)
 	if e != nil {
 		t.Fatal(e)

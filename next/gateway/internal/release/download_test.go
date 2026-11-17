@@ -29,7 +29,7 @@ func trickle(w http.ResponseWriter, r *http.Request, b []byte, chunk int, gap ti
 }
 
 func TestBundleDownloadOutlivesClientTimeoutWhileBytesArrive(t *testing.T) {
-	_, bundle, _ := fixture(t)
+	_, bundle := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		trickle(w, r, bundle, 8, 25*time.Millisecond)
 	}))
@@ -59,14 +59,14 @@ func TestBundleDownloadOutlivesClientTimeoutWhileBytesArrive(t *testing.T) {
 }
 
 func TestPrepareFailsAfterIdleTimeoutWhenDownloadStalls(t *testing.T) {
-	s, bundle, keys := fixture(t)
+	s, bundle := fixture(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write(bundle[:len(bundle)/2])
 		w.(http.Flusher).Flush()
 		<-r.Context().Done()
 	}))
 	defer server.Close()
-	m := Manager{Root: t.TempDir(), TrustedKeys: keys, OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true, IdleTimeout: 200 * time.Millisecond}
+	m := Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64", RuntimeABI: "linux-static-v1", AllowHTTP: true, IdleTimeout: 200 * time.Millisecond}
 	start := time.Now()
 	_, err := m.Prepare(context.Background(), s, server.URL)
 	if !errors.Is(err, errStalled) {

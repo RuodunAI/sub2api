@@ -20,19 +20,16 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// gatewayManifestAsset is the release asset holding the signed gateway
-// manifest.
+// gatewayManifestAsset is the release asset holding the gateway manifest.
 const gatewayManifestAsset = "next-gateway-manifest.json"
 
 var imageDigest = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// packGateway signs a gateway release: one archive per platform plus the
-// container images built from the same source.
+// packGateway writes the manifest of a gateway release: one archive per
+// platform plus the container images built from the same source.
 func packGateway(args []string, out io.Writer) error {
 	f := flag.NewFlagSet("pack-gateway", flag.ContinueOnError)
 	dest := f.String("out", "", "output directory for "+gatewayManifestAsset)
-	key := f.String("key", "", "base64 Ed25519 private-key file")
-	keyID := f.String("key-id", "", "configured signing key ID")
 	version := f.String("version", "", "gateway version (semver without prefix)")
 	releaseID := f.String("release-id", "", "immutable release ID (defaults to gateway-v<version>)")
 	commit := f.String("source-commit", "", "source commit")
@@ -47,8 +44,8 @@ func packGateway(args []string, out io.Writer) error {
 	if err := f.Parse(args); err != nil {
 		return err
 	}
-	if *dest == "" || *key == "" || *keyID == "" || *version == "" || *commit == "" || len(archives) == 0 {
-		return errors.New("--out, --key, --key-id, --version, --source-commit and --archive are required")
+	if *dest == "" || *version == "" || *commit == "" || len(archives) == 0 {
+		return errors.New("--out, --version, --source-commit and --archive are required")
 	}
 	if v, err := semver.StrictNewVersion(*version); err != nil || v.Prerelease() != "" || v.Metadata() != "" {
 		return errors.New("--version must be a stable semantic version without prefix")
@@ -58,10 +55,6 @@ func packGateway(args []string, out io.Writer) error {
 	}
 	if *build == "" {
 		*build = *releaseID
-	}
-	priv, err := loadKey(*key)
-	if err != nil {
-		return err
 	}
 	m := rc.GatewayManifest{Kind: rc.GatewayManifestKind, GatewayVersion: *version, ReleaseID: *releaseID, SourceCommit: *commit, BuildID: *build, CreatedAt: time.Now().UTC(), PeerProtocol: control.PeerProtocol, RuntimeProtocol: rc.Protocol}
 	for _, a := range archives {
@@ -78,7 +71,7 @@ func packGateway(args []string, out io.Writer) error {
 		}
 		m.Images = append(m.Images, rc.GatewayImage{Ref: ref, Digest: digest})
 	}
-	manifest, digest, err := signManifest(m, priv, *keyID)
+	manifest, digest, err := encodeManifest(m)
 	if err != nil {
 		return err
 	}
