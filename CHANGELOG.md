@@ -19,6 +19,8 @@
 - 判定依据是平台 manifest 的 usage 规则：指名事件且映射了输出 token 的规则命中，就算终止用量事件。OpenAI Chat Completions、Gemini 的用量在不具名的数据块里，没有可以判定的终止事件，仍以读到上游结束为准。WebSocket 不受影响：轮次本来就在完成事件发给客户端后结束。
 - **“读完再计费”现在对插件执行的请求也生效**（CONTRACTS §25.8）：系统设置 → 计费 → “客户端中途断开时”选“读完再计费”（`continue`，默认）时，插件执行（`platform.execute.v1`）、由核心代为转发的 HTTP 请求（codex，以及 volcengine 的非任务请求）在客户端断开后也会把上游读完，按实际用量计费。此前这类请求无论怎么设置都立即中止上游、按预扣估算计费，这个设置对 codex 不生效。任务提交仍不续读。
 - **发布故障策略后，插件执行的请求也执行插件给出的限时禁用与额度观测**（CONTRACTS §69）：此前发布了故障策略时，codex、volcengine 等插件执行的请求遇到上游 HTTP 错误不会调用插件的错误分类，codex 在 429 且用量窗口已满时“禁用到重置时刻”不执行，额度用满的账号每个请求仍会被先试一次。现在与普通转发一致：插件分类，重试、换号、冷却仍由故障策略决定。
+- **插件开发文档**：新增 `next/docs/PLUGIN-DEVELOPMENT.md`，逐项列出系统设置在普通转发、插件执行、WebSocket 三条路径上由谁生效、插件要配合什么。
+
 ### 核心 0.1.298：codex 登录方式改名为“设备码”和“Codex”、网关托管的核心自动信任内置插件签名密钥（codex 0.1.8；无迁移，滚动）
 
 - **codex 0.1.8：登录方式改名**：新建账号表单的“认证方式”选项卡与账号类型的认证方式改为中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为。
