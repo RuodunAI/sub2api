@@ -25,8 +25,8 @@ import (
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 )
 
 const (
@@ -97,24 +97,28 @@ type Plugin struct {
 	// Its transport is the default one, which the SDK routes through the
 	// host's egress tunnel in strict network mode.
 	client *http.Client
-	// policy classifies upstream failures (classify.go).
-	policy classify.Policy
-	now    func() time.Time
+	// quota are the quota headers ClassifyError reads (quota.go).
+	quota []manifest.QuotaHeader
+	now   func() time.Time
 	// log is the host log (Init); it discards until then. Never log tokens,
 	// authorization codes, PKCE verifiers, state or session ids.
 	log *slog.Logger
 }
 
-// New returns the plugin talking to the production endpoints. manifestJSON
-// is the plugin's own manifest.json, whose codex_device quota headers
-// ClassifyError reads (quota.go).
+// New returns the plugin talking to the production endpoints.
 func New(manifestJSON []byte) (*Plugin, error) {
-	return NewWithEndpoints(DefaultEndpoints).withManifest(manifestJSON)
+	return NewWithEndpoints(DefaultEndpoints, manifestJSON)
 }
 
-// NewWithEndpoints returns the plugin talking to ep (tests); it reads no
-// quota headers until withManifest.
-func NewWithEndpoints(ep Endpoints) *Plugin {
+// NewWithEndpoints returns the plugin talking to ep. manifestJSON is the
+// plugin's own manifest.json: both account types declare the same quota
+// headers (asserted by manifest_test), and ClassifyError reads codex_device's
+// (quota.go).
+func NewWithEndpoints(ep Endpoints, manifestJSON []byte) (*Plugin, error) {
+	quota, err := quotaHeaders(manifestJSON)
+	if err != nil {
+		return nil, err
+	}
 	p := &Plugin{
 		Router: pluginsdk.NewRouter(),
 		ep: Endpoints{
@@ -122,7 +126,7 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 			ChatGPT: strings.TrimRight(ep.ChatGPT, "/"),
 		},
 		client: &http.Client{Timeout: authTimeout},
-		policy: newPolicy(nil),
+		quota:  quota,
 		now:    time.Now,
 		log:    slog.New(slog.DiscardHandler),
 	}
@@ -133,7 +137,7 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 	p.Handle(http.MethodPost, "/reset-credits/list", p.handleResetList)
 	p.Handle(http.MethodPost, "/reset-credits/consume", p.handleResetConsume)
 	p.Handle(http.MethodPost, "/reset-credits/summary", p.handleResetSummary)
-	return p
+	return p, nil
 }
 
 // Init implements pluginsdk.Initializer.

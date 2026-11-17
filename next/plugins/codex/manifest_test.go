@@ -194,7 +194,10 @@ func TestManifestShape(t *testing.T) {
 	// A fake issuer: no route may reach the real one.
 	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
 	defer issuer.Close()
-	p := codex.NewWithEndpoints(codex.Endpoints{Auth: issuer.URL, ChatGPT: issuer.URL})
+	p, err := codex.NewWithEndpoints(codex.Endpoints{Auth: issuer.URL, ChatGPT: issuer.URL}, manifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i, r := range m.Routes {
 		if r.Method != http.MethodPost || r.Path != wantRoutes[i].path || r.Scope != "admin" || r.Permission != wantRoutes[i].permission {
 			t.Errorf("route %d = %+v", i, r)

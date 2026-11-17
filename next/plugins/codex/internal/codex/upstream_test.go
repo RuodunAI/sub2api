@@ -53,7 +53,7 @@ func sorted(s []string) []string {
 var clientHeaders = map[string]string{"user-agent": "codex_cli_rs/0.99", "openai-beta": "responses=experimental", "x-stainless-lang": "js"}
 
 func TestBuildUpstreamRequestDevice(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	r, err := h.Platform.BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
 		Meta:           &pluginv1.RequestMeta{Protocol: ProtocolResponses, ClientProtocol: "openai.chat", Model: "gpt-5.4"},
 		Account:        account(TypeDevice, deviceCreds),
@@ -126,7 +126,7 @@ func TestBuildUpstreamRequestDevice(t *testing.T) {
 // A Sign in with Codex account holds the same tokens: its request is the
 // device code account's.
 func TestBuildUpstreamRequestOAuth(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	build := func(typ string) *pluginv1.BuildUpstreamRequestResponse {
 		r, err := h.Platform.BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
 			Meta:    &pluginv1.RequestMeta{Protocol: ProtocolResponses, Model: "gpt-5.4"},
@@ -151,7 +151,7 @@ func TestBuildUpstreamRequestOAuth(t *testing.T) {
 }
 
 func TestBuildUpstreamRequestWebSocket(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	for _, typ := range accountTypes {
 		r, err := h.Platform.BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
 			Meta:           &pluginv1.RequestMeta{Protocol: ProtocolResponsesWS, Model: "gpt-5.4"},
@@ -194,7 +194,7 @@ func TestBuildUpstreamRequestWebSocket(t *testing.T) {
 		}
 	}
 	// A test server root keeps its scheme family.
-	p := NewWithEndpoints(testEndpoints("http://127.0.0.1:9"))
+	p := mustPlugin(testEndpoints("http://127.0.0.1:9"))
 	r, err := p.BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
 		Meta: &pluginv1.RequestMeta{Protocol: ProtocolResponsesWS}, Account: account(TypeOAuth, deviceCreds),
 	})
@@ -204,7 +204,7 @@ func TestBuildUpstreamRequestWebSocket(t *testing.T) {
 }
 
 func TestBuildUpstreamRequestErrors(t *testing.T) {
-	p := NewWithEndpoints(DefaultEndpoints)
+	p := mustPlugin(DefaultEndpoints)
 	for _, tc := range []struct {
 		name string
 		meta *pluginv1.RequestMeta
@@ -225,7 +225,7 @@ func TestBuildUpstreamRequestErrors(t *testing.T) {
 }
 
 func TestBuildTestRequest(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	for _, tc := range []struct {
 		typ, model, wantModel string
 	}{
@@ -257,7 +257,7 @@ func TestBuildTestRequest(t *testing.T) {
 // The Codex backend's model list is the Codex CLI's internal endpoint: the
 // plugin lists none and the console keeps the manifest defaults.
 func TestNoModelList(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	for _, typ := range accountTypes {
 		if _, err := h.Platform.BuildModelsRequest(context.Background(), &pluginv1.BuildModelsRequestRequest{Account: account(typ, deviceCreds)}); status.Code(err) != codes.Unimplemented {
 			t.Fatalf("%s models: %v", typ, err)
@@ -284,7 +284,7 @@ func TestExecuteForwardsOnce(t *testing.T) {
 		}
 		return &pluginv1.ExecutionReceipt{}, nil
 	}
-	h := pluginsdktest.Start(t, NewWithEndpoints(DefaultEndpoints), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
+	h := pluginsdktest.Start(t, mustPlugin(DefaultEndpoints), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	r, err := h.Platform.Execute(ctx, &pluginv1.ExecuteRequest{ExecutionToken: "req-1", Request: &pluginv1.BuildUpstreamRequestRequest{
@@ -296,7 +296,7 @@ func TestExecuteForwardsOnce(t *testing.T) {
 }
 
 func TestValidateCredentials(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	validate := func(typ, creds string) *pluginv1.ValidateCredentialsResponse {
 		t.Helper()
 		r, err := h.Platform.ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: typ, CredentialsJson: creds})
@@ -369,7 +369,7 @@ func TestIdentity(t *testing.T) {
 // as the core reads it (gjson over the body) and apply as the core applies
 // them (sjson).
 func TestSystemItemsBecomeDeveloper(t *testing.T) {
-	h := startPlugin(t, NewWithEndpoints(DefaultEndpoints))
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
 	body := `{"model":"gpt-5.4","input":[{"role":"system","content":"be brief"},{"type":"function_call","call_id":"c","name":"f","arguments":"{}"},` +
 		`{"role":"user","content":"hi"},{"type":"message","role":"system","content":[{"type":"input_text","text":"x"}]},{"role":"developer","content":"d"},"odd",{"role":{"nested":"system"}}]}`
 	roles := gjson.Get(body, FieldSystemRoles).Raw

@@ -2,9 +2,11 @@ package codex
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 	"time"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
@@ -55,7 +57,7 @@ func TestManifestQuotaHeaders(t *testing.T) {
 }
 
 func TestUsedUpUntil(t *testing.T) {
-	decls := deviceQuota(t).Headers
+	p := newTestPlugin(DefaultEndpoints)
 	future, later, past := "1800003600", "1800500000", "1799990000"
 	for _, tc := range []struct {
 		name    string
@@ -73,21 +75,27 @@ func TestUsedUpUntil(t *testing.T) {
 		{"no headers", map[string]string{}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			until, ok := usedUpUntil(decls, tc.headers, testNow)
+			until, ok := p.usedUpUntil(&pluginv1.ClassifyErrorRequest{Status: http.StatusTooManyRequests, Headers: tc.headers}, testNow)
 			if ok != (tc.want != 0) || (ok && until.Unix() != tc.want) {
 				t.Fatalf("usedUpUntil = %s %v, want %s", until, ok, time.Unix(tc.want, 0).UTC())
 			}
 		})
 	}
+	// Only a 429 counts.
+	full := slotHeaders(map[string]string{}, "primary", "300", "100", future)
+	if _, ok := p.usedUpUntil(&pluginv1.ClassifyErrorRequest{Status: http.StatusOK, Headers: full}, testNow); ok {
+		t.Fatal("a 200 showed a used-up window")
+	}
 }
 
-func TestWithManifest(t *testing.T) {
-	if _, err := NewWithEndpoints(DefaultEndpoints).withManifest(testManifest); err != nil {
-		t.Fatalf("manifest.json: %v", err)
+func TestNewWithEndpointsReadsTheQuotaHeaders(t *testing.T) {
+	p, err := NewWithEndpoints(DefaultEndpoints, testManifest)
+	if err != nil || len(p.quota) != len(deviceQuota(t).Headers) {
+		t.Fatalf("manifest.json: %v %+v", err, p)
 	}
 	noQuota, _ := json.Marshal(manifest.Manifest{AccountTypes: []manifest.AccountType{{ID: TypeDevice}}})
 	for name, raw := range map[string][]byte{"not json": []byte("{"), "no quota headers": noQuota} {
-		if _, err := NewWithEndpoints(DefaultEndpoints).withManifest(raw); err == nil {
+		if _, err := NewWithEndpoints(DefaultEndpoints, raw); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

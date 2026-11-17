@@ -124,7 +124,7 @@ func decodeError(t *testing.T, r *pluginv1.HTTPResponse) errorBody {
 func TestDeviceFlow(t *testing.T) {
 	iss := newFakeIssuer(t)
 	clk := &clock{t: testNow}
-	p := NewWithEndpoints(testEndpoints(iss.srv.URL))
+	p := mustPlugin(testEndpoints(iss.srv.URL))
 	p.now = clk.now
 	h := startPlugin(t, p)
 
@@ -257,7 +257,7 @@ func TestDeviceStartErrors(t *testing.T) {
 func TestDevicePollStates(t *testing.T) {
 	iss := newFakeIssuer(t)
 	clk := &clock{t: testNow}
-	p := NewWithEndpoints(testEndpoints(iss.srv.URL))
+	p := mustPlugin(testEndpoints(iss.srv.URL))
 	p.now = clk.now
 	h := startPlugin(t, p)
 	iss.on(pathUserCode, reply(200, `{"device_auth_id":"dev-1","user_code":"ABCD","interval":"5"}`))
@@ -504,6 +504,7 @@ func TestCodexExchange(t *testing.T) {
 		{"state mismatch", "?code=code-1&state=other", "state_mismatch", 400},
 		{"access denied", "?error=access_denied&error_description=user+said+no&state=%s", "access_denied", 400},
 		{"other error", "?error=server_error&state=%s", "authorization_failed", 400},
+		{"error of another authorization", "?error=access_denied&state=other", "state_mismatch", 400},
 		{"no code", "http://localhost:1455/auth/callback", "invalid_callback", 400},
 		{"empty", "  ", "invalid_callback", 400},
 	} {
@@ -516,10 +517,10 @@ func TestCodexExchange(t *testing.T) {
 		})
 	}
 
-	// A wrong state or another OAuth error keeps the session: the right
-	// address still works. A denied consent ends it.
+	// A wrong state (even on a denial) or another OAuth error keeps the
+	// session: the right address still works. A denied consent ends it.
 	id, q = start()
-	for _, cb := range []string{"?code=code-1&state=wrong", "?error=server_error&state=" + q.Get("state")} {
+	for _, cb := range []string{"?code=code-1&state=wrong", "?error=access_denied&state=wrong", "?error=server_error&state=" + q.Get("state")} {
 		if r := exchange(id, cb); r.GetStatus() != 400 {
 			t.Fatalf("%s accepted", cb)
 		}

@@ -10,7 +10,6 @@ import (
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 )
 
@@ -27,71 +26,71 @@ const (
 	// codeCodexUsageLimit is the error type the Codex backend reports for a
 	// usage limit; it is passed on to the client as the error code.
 	codeCodexUsageLimit = "usage_limit_reached"
-	// usageLimitReason starts the reason of a used-up usage window.
+	// usageLimitReason is the reason of a used-up usage window.
 	usageLimitReason = "Codex usage limit reached"
 	// reauthorizeHint ends the reason of a refused token. Reasons are plain
 	// English, like the SDK's own (classify).
 	reauthorizeHint = "; refresh the token or authorize the account again"
 )
 
-// newPolicy classifies the failures of the plugin's accounts; quota are the
-// codex_device quota header declarations of the manifest (withManifest).
-// The first matching rule wins; an unmatched 4xx is the client's request
-// and is returned as is.
-func newPolicy(quota []manifest.QuotaHeader) classify.Policy {
-	windowReset := func(in *classify.Input) (time.Time, string, bool) {
-		t, ok := usedUpUntil(quota, in.Headers, in.Now)
-		return t, "x-codex window reset", ok
-	}
-	windowFull := func(in *classify.Input) bool {
-		_, _, ok := windowReset(in)
-		return ok
-	}
-	return classify.Policy{
-		Parse:     parseError,
-		ErrorType: errorType,
-		Detail:    classify.DetailCodeMessage,
-		Rules: []classify.Rule{
-			// A CDN / WAF page is not the account's fault.
-			classify.EdgeBlock(),
-			// A 429 whose headers show a used-up usage window: the account
-			// is disabled until the window resets (ClassifyError adds the
-			// automatic state), the request moves to another account.
-			{When: classify.All(classify.Status(http.StatusTooManyRequests), windowFull), Effect: classify.Cooldown, Until: windowReset, Reason: usageLimitReason},
-			// A refused access token: usually expired; the core renews it.
-			{When: classify.Status(http.StatusUnauthorized), Effect: classify.Cooldown, Cooldown: authCooldown, Reason: "upstream rejected the access token (%d)" + reauthorizeHint},
-			// Other 403s with a vendor error body: the account may not use this.
-			{When: classify.Status(http.StatusForbidden), Effect: classify.Disable, Reason: "upstream refused the account (%d)"},
-			// Any other 429 goes back to the client as is: no cooldown, no
-			// disable (only a used-up usage window takes an account out).
-			{When: classify.Status(http.StatusTooManyRequests), Return: true, Reason: "upstream 429 without a used-up usage window"},
-			classify.ServerErrors(serverErrorCooldown),
-		},
-	}
+// policy classifies the failures of the plugin's accounts. The first
+// matching rule wins; an unmatched 4xx is the client's request and is
+// returned as is. For a 429 showing a used-up usage window ClassifyError
+// puts usageLimitRule first.
+var policy = classify.Policy{
+	Parse:     parseError,
+	ErrorType: errorType,
+	Detail:    classify.DetailCodeMessage,
+	Rules: []classify.Rule{
+		// A CDN / WAF page is not the account's fault.
+		classify.EdgeBlock(),
+		// A refused access token: usually expired; the core renews it.
+		{When: classify.Status(http.StatusUnauthorized), Effect: classify.Cooldown, Cooldown: authCooldown, Reason: "upstream rejected the access token (%d)" + reauthorizeHint},
+		// Other 403s with a vendor error body: the account may not use this.
+		{When: classify.Status(http.StatusForbidden), Effect: classify.Disable, Reason: "upstream refused the account (%d)"},
+		// Any other 429 goes back to the client as is: no cooldown, no
+		// disable (only a used-up usage window takes an account out).
+		{When: classify.Status(http.StatusTooManyRequests), Return: true, Reason: "upstream 429 without a used-up usage window"},
+		classify.ServerErrors(serverErrorCooldown),
+	},
+}
+
+// usageLimitRule takes an account out until the latest reset of its used-up
+// usage windows; the request moves to another account.
+func usageLimitRule(until time.Time) classify.Rule {
+	return classify.Rule{When: classify.Status(http.StatusTooManyRequests), Effect: classify.Cooldown, Reason: usageLimitReason,
+		Until: func(*classify.Input) (time.Time, string, bool) { return until, "x-codex window reset", true }}
 }
 
 // ClassifyError implements pluginsdk.Platform. The upstream error code is
 // passed on to the client (client_error_code) when it is a plain code.
 //
-// A used-up usage window disables the account until the window resets:
-// automatic_state DISABLE until the reset the headers give, which the core
+// A 429 whose headers show a used-up usage window disables the account until
+// the latest reset of those windows: automatic_state DISABLE, which the core
 // applies with or without a published failure policy (CONTRACTS §69) and
-// undoes by itself at that time; the cooldown to the same time is the
-// fallback where the account may not be disabled. The windows themselves
-// reach the console through the core's sampling of the declared headers
-// (CONTRACTS §44.3), not through this answer.
+// undoes by itself at that time, and a cooldown to the same time where the
+// account may not be disabled. The windows themselves reach the console
+// through the core's sampling of the declared headers (CONTRACTS §44.3), not
+// through this answer.
 func (p *Plugin) ClassifyError(_ context.Context, in *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
-	resp := p.policy.Classify(p.now(), in)
-	if in.GetStatus() == 0 {
-		return resp, nil
+	now := p.now()
+	until, full := p.usedUpUntil(in, now)
+	if !full {
+		return withClientCode(policy.Classify(now, in), in), nil
 	}
-	if strings.HasPrefix(resp.GetReason(), usageLimitReason) {
-		resp.AutomaticState = &pluginv1.AccountAutomaticState{
-			Action:  pluginv1.AccountAutomaticState_ACTION_DISABLE,
-			Reason:  resp.GetReason(),
-			Release: &pluginv1.AccountAutomaticState_UntilUnix{UntilUnix: resp.GetCooldownUntilUnix()},
-		}
+	resp := policy.With(usageLimitRule(until)).Classify(now, in)
+	resp.AutomaticState = &pluginv1.AccountAutomaticState{
+		Action:  pluginv1.AccountAutomaticState_ACTION_DISABLE,
+		Reason:  resp.GetReason(),
+		Release: &pluginv1.AccountAutomaticState_UntilUnix{UntilUnix: resp.GetCooldownUntilUnix()},
 	}
+	return withClientCode(resp, in), nil
+}
+
+// withClientCode passes the upstream error code on to the client as
+// client_error_code when it is a plain code (a usage limit reports it as the
+// error type).
+func withClientCode(resp *pluginv1.ClassifyErrorResponse, in *pluginv1.ClassifyErrorRequest) *pluginv1.ClassifyErrorResponse {
 	e := parseError(in.GetBodyPrefix())
 	code := e.Code
 	if code == "" && e.Type == codeCodexUsageLimit {
@@ -100,7 +99,7 @@ func (p *Plugin) ClassifyError(_ context.Context, in *pluginv1.ClassifyErrorRequ
 	if clientCode.MatchString(code) {
 		resp.ClientErrorCode = code
 	}
-	return resp, nil
+	return resp
 }
 
 // clientCode is the shape the host accepts for client_error_code.

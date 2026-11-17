@@ -73,9 +73,10 @@ func (p *Plugin) expiresAt(tr tokenResponse) int64 {
 
 // ParseRefreshResponse implements pluginsdk.CredentialRefresher. A success
 // saves access_token and expires_at, plus refresh_token (rotated), id_token
-// and the identity fields read from it, when the answer carries them. A terminal OAuth error or a 401 is AUTH_REJECTED
-// (authorize again); invalid_client is a client configuration error that
-// retrying cannot fix either; anything else is TRANSIENT.
+// and the identity fields read from it, when the answer carries them. A
+// terminal OAuth error or a 401 is AUTH_REJECTED (authorize again);
+// invalid_client is a client configuration error that retrying cannot fix
+// either; anything else is TRANSIENT.
 func (p *Plugin) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
 	st := in.GetStatus()
 	switch {

@@ -52,13 +52,18 @@ var testManifest = func() []byte {
 	return b
 }()
 
-// newTestPlugin is a plugin with the fixed clock, the given roots and the
-// quota headers of the plugin's manifest.
-func newTestPlugin(ep Endpoints) *Plugin {
-	p, err := NewWithEndpoints(ep).withManifest(testManifest)
+// mustPlugin is the plugin with the given roots and the plugin's manifest.
+func mustPlugin(ep Endpoints) *Plugin {
+	p, err := NewWithEndpoints(ep, testManifest)
 	if err != nil {
 		panic(err)
 	}
+	return p
+}
+
+// newTestPlugin is mustPlugin with the fixed clock.
+func newTestPlugin(ep Endpoints) *Plugin {
+	p := mustPlugin(ep)
 	p.now = func() time.Time { return testNow }
 	return p
 }

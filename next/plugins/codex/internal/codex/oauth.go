@@ -697,11 +697,11 @@ func (p *Plugin) handleCodexExchange(ctx context.Context, req *pluginv1.HTTPRequ
 	if !found {
 		return pluginsdk.ErrorResponse(http.StatusNotFound, "session_expired", "the authorization session expired; generate a new link / 授权会话已过期，请重新生成链接"), nil
 	}
-	if cb.Error != "" {
-		return p.callbackRefused(ctx, id, cb), nil
-	}
 	if cb.State != s.State {
 		return flowError("state_mismatch", "the callback does not belong to this authorization (state mismatch); paste the address from the latest link / 回调与本次授权不匹配（state 不一致），请粘贴最新链接的回调地址"), nil
+	}
+	if cb.Error != "" {
+		return p.callbackRefused(ctx, id, cb), nil
 	}
 	c, f := p.redeemCode(ctx, "Sign in with Codex", cb.Code, s.Verifier, CodexRedirectURI)
 	if f != nil {
@@ -718,7 +718,7 @@ func (p *Plugin) callbackRefused(ctx context.Context, id string, cb callbackPara
 	if cb.ErrorDescription != "" {
 		msg += ": " + cb.ErrorDescription
 	}
-	p.log.Warn("codex: Sign in with Codex authorization failed", "oauth_error", cb.Error)
+	p.log.Warn("codex: Sign in with Codex authorization failed", "oauth_error", textutil.Clip(cb.Error, 64))
 	if cb.Error == "access_denied" {
 		p.deleteSession(ctx, kvCodex, id)
 		return flowError("access_denied", "authorization was denied / 授权被拒绝 ("+msg+")")

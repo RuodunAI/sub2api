@@ -38,10 +38,9 @@ func TestClassifyError(t *testing.T) {
 			headers: slotHeaders(slotHeaders(map[string]string{}, "primary", "300", "100", "1800003600"), "secondary", "10080", "30", "1800500000"),
 			body:    `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}`,
 			action:  fail, effect: cool, until: 1800003600, code: "usage_limit_reached", reason: "Codex usage limit reached until "},
-		{name: "429 with a full weekly window in the primary slot", status: 429, headers: map[string]string{
-			"X-Codex-Primary-Used-Percent": "100.0", "X-Codex-Primary-Window-Minutes": "10080", "X-Codex-Primary-Reset-At": "1800090000",
-			"X-Codex-Secondary-Used-Percent": "12", "X-Codex-Secondary-Window-Minutes": "300", "X-Codex-Secondary-Reset-At": "1800001000"},
-			body: `{"error":{"message":"slow down"}}`, action: fail, effect: cool, until: 1800090000},
+		{name: "429 with a full weekly window in the primary slot", status: 429,
+			headers: slotHeaders(slotHeaders(map[string]string{}, "primary", "10080", "100.0", "1800090000"), "secondary", "300", "12", "1800001000"),
+			body:    `{"error":{"message":"slow down"}}`, action: fail, effect: cool, until: 1800090000},
 		{name: "429 with both windows full: the latest reset", status: 429,
 			headers: slotHeaders(slotHeaders(map[string]string{}, "primary", "300", "100", "1800003600"), "secondary", "10080", "100", "1800500000"),
 			action:  fail, effect: cool, until: 1800500000},
