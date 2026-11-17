@@ -8,9 +8,9 @@
 | 上游 | 插件（键） | 版本 | 最低核心版本 | 服务的平台 | 来源 |
 |---|---|---|---|---|---|
 | OpenAI 组织 / 项目 | `openai` | 0.4.4 | 0.1.290 | openai | 内置 |
-| Azure OpenAI | `azure_openai` | 0.1.0 | 0.1.290 | openai | 市场，自己安装 |
+| Azure OpenAI | `azure_openai` | 0.1.0 | **0.1.304** | openai | 市场，自己安装 |
 | Vertex AI（Gemini） | `vertex` | 0.1.0 | 0.1.290 | gemini | 市场，自己安装 |
-| AWS Bedrock | `bedrock` | 0.1.0 | **0.1.304** | anthropic、openai | 市场，自己安装 |
+| AWS Bedrock | `bedrock` | 0.1.0 | **0.1.304** | anthropic | 市场，自己安装 |
 
 - 三个新插件装好并启用后，在“新建账号”里各显示为一项，进去后用“鉴权方式”切换具体的账号类型。
 - 客户端用哪种协议访问都可以：账号服务的平台不是客户端用的协议时，核心负责转换（CONVERT-MATRIX）。
@@ -33,6 +33,8 @@
 - WebSocket 模式（`/v1/responses`）的握手同样带上。
 
 ## 3. Azure OpenAI
+
+**需要核心 0.1.304 或更高**（插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`）：它的错误分类用的策略 `azure_openai` 是这个版本的核心才认识的，更早的核心装不上这个插件。
 
 ### 3.1 选哪种类型
 
@@ -71,8 +73,8 @@ Azure 上的“模型”是你自己起名的**部署**。
 
 - 客户端带的 `OpenAI-Organization`、`OpenAI-Project` 头不转给 Azure；请求体顶层的 `service_tier`、`safety_identifier` 会被删掉。
 - 流式 Chat Completions 会自动加 `stream_options.include_usage = true` 以便计量。
-- 错误处理与 OpenAI 账号相同：401 / 403 禁用账号；429 冷却（按 `retry-after-ms` / `retry-after`，没有就 60 秒）；408、5xx 换号并冷却 10 秒；400（包括内容过滤 `content_filter`）原样回给客户端。
-- **部署不存在（404 `DeploymentNotFound`）原样回给客户端，不会换到分组里的其他账号**。同一分组的多个 Azure 账号要保证各自映射到的部署都存在。
+- 错误处理除下一条外与 OpenAI 账号相同：401 / 403 禁用账号；429 冷却（按 `retry-after-ms` / `retry-after`，没有就 60 秒）；408、5xx 换号并冷却 10 秒；400（包括内容过滤 `content_filter`）原样回给客户端。
+- **部署不存在（404 且错误码是 `DeploymentNotFound`）时换到分组里的下一个账号，这个账号不受惩罚**（不禁用、不冷却）：这个资源没有这个部署，别的账号的资源可能有。所有账号都没有时客户端才收到错误。其他 404 原样回给客户端。各账号映射到的部署最好都存在，否则每个请求都要在缺部署的账号上白试一次。
 - **不支持 Entra ID（Azure AD）令牌**，只支持 API Key。
 - 这类账号的地址由用户自己填，只有“自己的账号”权限的用户新建它需要 `account:relay` 权限。
 
@@ -143,12 +145,14 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 
 **需要核心 0.1.304 或更高**（插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`）：SigV4 签名和二进制响应流的解码都由核心完成，更早的核心装不上这个插件。
 
-服务两个平台：
+只服务 anthropic 平台，只有一条路：
 
 | 平台 | 客户端接口 | Bedrock 上的接口 |
 |---|---|---|
 | anthropic | `/v1/messages` | InvokeModel（`/model/<模型 ID>/invoke`），流式是 InvokeModelWithResponseStream |
-| openai | `/v1/chat/completions`、`/v1/responses` | Bedrock 的 OpenAI 兼容接口 `/openai/v1/chat/completions`、`/openai/v1/responses` |
+
+- **没有 OpenAI 兼容的路由**：Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接。客户端用 OpenAI 协议（`/v1/chat/completions`、`/v1/responses`）访问时，核心先把请求转换成 Messages 请求，再走上面这条 InvokeModel 路。
+- **这一版只支持 Claude**，Bedrock 上 Claude 以外的模型不支持。
 
 ### 5.1 选哪种类型
 
@@ -177,7 +181,11 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 | 字段 | 含义 | 默认 | 例子 |
 |---|---|---|---|
 | 区域（`region`） | Bedrock 运行时所在的 AWS 区域，请求发往 `bedrock-runtime.<区域>.amazonaws.com`。文本框，手动输入 | `us-east-1`（留空也保存成它） | `us-east-1`、`us-west-2`、`eu-central-1`、`ap-northeast-1` |
-| 跨区域推理前缀（`inference_profile_prefix`） | 加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置（inference profile） | 不加 | 不加 / `us` / `eu` / `apac` / `jp` / `au` / `global` |
+| 跨区域推理前缀（`inference_profile_prefix`） | 加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置（inference profile） | 不加 | 不加 / `us` / `eu` / `apac` / `jp` / `au` / `in` / `global` |
+
+**不支持的区域**：中国区（`cn-*`）和隔离分区（`us-iso-*`、`us-isob-*`、`us-isof-*`、`eu-isoe-*`）保存时会被拒绝（提示“不支持 AWS 中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）：其接入地址不在 amazonaws.com 下”）。GovCloud（`us-gov-*`）可以填。
+
+**前缀怎么选**：模型只能通过推理配置调用时就要选前缀。按 AWS 的模型卡片，现行的 Claude 模型在 bedrock-runtime 上几乎都没有区域内（In-Region）可用性，只能经地域或全球推理配置调用；Haiku 4.5 的卡片写明 “requires a geo or global inference profile ID. The bare model ID isn't supported for on-demand throughput”（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html>）。所以多数账号都应该选一个与区域相符的前缀，“不加”只适合映射里已经写了带前缀的完整 ID 或 ARN 的账号。`in` 是印度地域的前缀（例如 `in.anthropic.claude-sonnet-5`）。
 
 IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:InvokeModel`、`bedrock:InvokeModelWithResponseStream`，并且在 AWS 账号里开通了要用的模型。
 
@@ -192,42 +200,51 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
    | `claude-sonnet-4-5`、`claude-sonnet-4-5-20250929` | `anthropic.claude-sonnet-4-5-20250929-v1:0` |
    | `claude-haiku-4-5`、`claude-haiku-4-5-20251001` | `anthropic.claude-haiku-4-5-20251001-v1:0` |
    | `claude-opus-4-5` | `anthropic.claude-opus-4-5-20251101-v1:0` |
+   | `claude-opus-4-6` | `anthropic.claude-opus-4-6-v1` |
+   | `claude-opus-4-8` | `anthropic.claude-opus-4-8` |
+   | `claude-sonnet-5` | `anthropic.claude-sonnet-5` |
 
-   这份预填表抄自旧版的映射表，**没有逐个对照 AWS 文档核对**。启用前请到 Bedrock 控制台的模型目录核对你要用的模型 ID，不对就在账号上改。
+   预填的 ID 取自 AWS 的模型卡片（<https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html>）：到 Opus 4.6 为止的 ID 带版本后缀，之后的不带。**只对照了文档，没有用真实账号调过**，启用前请到 Bedrock 控制台的模型目录核对你要用的模型 ID，不对就在账号上改。2026-11-17 在模型卡片上看到的出入（预填表没有跟着改）：Claude Sonnet 4 在 AWS 上已于 2026-10-14 停止服务，`claude-sonnet-4-20250514` 仍在表里；`claude-opus-4-20250514` 已经没有模型卡片，仍在表里；AWS 上更新的模型（Fable 5.2、Opus 5.5、Sonnet 5.5、Haiku 5.5）不在表里，要用就自己加；Opus 4.1、Sonnet 4.5 处于 Legacy 阶段。
 
-2. **跨区域推理前缀**加在映射结果前面：选了 `us`，`anthropic.claude-sonnet-4-5-20250929-v1:0` 就变成 `us.anthropic.claude-sonnet-4-5-20250929-v1:0`。很多较新的模型只能通过推理配置调用，不选前缀会被拒绝。前缀要和区域相符（`us-east-1` 配 `us`，`eu-central-1` 配 `eu`，以此类推；`global` 是全球配置）。
+2. **跨区域推理前缀**加在映射结果前面：选了 `us`，`anthropic.claude-sonnet-4-5-20250929-v1:0` 就变成 `us.anthropic.claude-sonnet-4-5-20250929-v1:0`。现行的 Claude 模型几乎都只能通过推理配置调用（见 5.2），不选前缀会被拒绝。前缀要和区域相符（`us-east-1` 配 `us`，`eu-central-1` 配 `eu`，以此类推；`global` 是全球配置）。
 
 下面两种映射值**原样发送，不再加前缀**：
 
-- 已经带前缀的 ID：以 `us.`、`eu.`、`apac.`、`jp.`、`au.`、`us-gov.`、`global.` 开头。想让个别模型用不同的前缀，就在映射里直接写带前缀的完整 ID。
+- 已经带前缀的 ID：以 `us.`、`eu.`、`apac.`、`jp.`、`au.`、`in.`、`us-gov.`、`global.` 开头（`us-gov` 不在前缀的可选项里，GovCloud 的 ID 要在映射里写全）。想让个别模型用不同的前缀，就在映射里直接写带前缀的完整 ID。
 - ARN（以 `arn:` 开头）：应用推理配置、预置吞吐、导入的模型。例如 `arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abcd1234`。
 
 其他说明：
 
-- 前缀只作用于 anthropic 平台（InvokeModel）的请求。openai 平台的请求模型名留在请求体里，按映射结果原样发送，不加前缀。
-- 账号测试走非流式 InvokeModel，默认模型 `anthropic.claude-haiku-4-5-20251001-v1:0`（同样会加账号的前缀）。这个模型没开通时，在测试对话框里指定别的模型。
+- 账号测试走非流式 InvokeModel，默认模型 `anthropic.claude-haiku-4-5-20251001-v1:0`（同样会加账号的前缀）。这是不带前缀的裸 ID，而 Haiku 4.5 不支持用裸 ID 按需调用（见 5.2），所以**前缀是“不加”的账号在 AWS 上测试预期会失败**，选一个与区域相符的前缀再测。这个模型没开通时，在测试对话框里指定别的模型。
 - 不支持“从上游获取模型列表”。
 
 ### 5.4 行为与限制
 
-- **Claude Code 的请求体不做深度清洗**（已知限制，表单里也写了）。Claude Code 会在工具定义里带 `custom`，在 `cache_control` 里带 `scope`、`ttl`，Bedrock 不接受这些字段，会回 400。插件只改写请求体顶层的 `model`、`stream`、`anthropic_version`、`anthropic_beta`，够不到这些位置。账号要给 Claude Code 用时，在账号的“请求参数覆盖”里删除这些字段（带通配路径的删除，或 `prune_objects`）；这套配置还没有实测过。**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
-- `anthropic-beta`：Bedrock 不认这个请求头。插件把客户端带的 beta 里 Bedrock 支持的那些写进请求体的 `anthropic_beta`，不支持的丢弃，请求头本身不发给上游。支持的名单：`computer-use-2025-01-24`、`computer-use-2025-11-24`、`context-1m-2025-08-07`、`context-management-2025-06-27`、`compact-2026-01-12`、`fine-grained-tool-streaming-2025-05-14`、`tool-search-tool-2025-10-19`、`tool-examples-2025-10-29`（`advanced-tool-use-2025-11-20` 会换成 tool search，并自动带上 tool examples）。名单抄自旧版，没有对照 AWS 的现状。
+- **Claude Code 的请求体不做深度清洗**（已知限制，表单里也写了）。Claude Code 会在工具定义里带 `custom`，在 `cache_control` 里带 `scope`、`ttl`，Bedrock 不接受这些字段，会回 400。插件只处理请求体顶层的几个字段（见下一条），够不到这些位置。账号要给 Claude Code 用时，在账号的“请求参数覆盖”里删除这些字段（带通配路径的删除，或 `prune_objects`）；这套配置还没有实测过。**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
+- 请求体按客户端原样转发，只处理这些顶层字段：
+  - 删除 `model`、`stream`（都移到地址里），写入 `anthropic_version: bedrock-2023-05-31`。
+  - 删除 `metadata`、`provider`。
+  - `anthropic_beta`：见下一条。
+  - `context_management`：请求没有带 `context-management-2025-06-27` 这个 beta 时删除。
+  - `output_config`、`output_format` **保留**（旧版会删除）：按 AWS 文档，InvokeModel 读 `output_config.format`（结构化输出）和 `output_config.effort`；`output_format` 是已废弃的写法，插件不替客户端转换。
+- `anthropic-beta`：Bedrock 不认这个请求头，beta 要写在请求体的 `anthropic_beta` 里。插件把客户端请求头里的和请求体自带的 `anthropic_beta` 里的合在一起，Bedrock 支持的写进请求体的 `anthropic_beta`，不支持的丢弃、重复的只留一个，请求头本身不发给上游；一个都不剩时请求体里的 `anthropic_beta` 也删掉。支持的名单（15 项，不分模型，某个模型没有的特性由上游拒绝）：`computer-use-2025-01-24`、`computer-use-2025-11-24`、`context-1m-2025-08-07`、`context-management-2025-06-27`、`compact-2026-01-12`、`compact-2026-09-04`、`fallback-credit-2026-07-01`、`thinking-display-updates-2026-08-18`、`mid-conversation-output-config-2026-07-01`、`mid-conversation-effort-2026-08-01`、`per-turn-control-2026-07-01`、`per-message-effort-2026-07-01`、`fine-grained-tool-streaming-2025-05-14`、`tool-search-tool-2025-10-19`、`tool-examples-2025-10-29`（`advanced-tool-use-2025-11-20` 会换成 tool search，并自动带上 tool examples）。前 5 项和最后 3 项抄自旧版，其余 7 项取自 AWS 用户指南（模型卡片和 adaptive thinking 一页）；都没有用真实账号试过。
+- 插件不会根据请求体的内容补 beta（computer use、tool search 等）：请求体用到的特性要客户端自己在 `anthropic-beta` 头或 `anthropic_beta` 里点名。
 - `count_tokens` 不发给 Bedrock，由核心本地估算。
 - 错误处理：
 
   | 上游回答 | 结果 |
   |---|---|
-  | 429（限流、模型未就绪） | 换号，冷却到 `retry-after` 指的时间，没有就 60 秒 |
+  | 429（限流、模型未就绪） | 换号，冷却到 `retry-after-ms` / `retry-after` 指的时间，没有就 60 秒 |
+  | 400 且是 `ServiceQuotaExceeded`（AWS 账号的配额用完） | 换号，不动账号 |
   | 401，或密钥不对（`UnrecognizedClient`、`InvalidClientTokenId`、签名不匹配） | 换号，禁用账号 |
   | 临时凭证过期（`ExpiredToken`） | 换号，禁用账号，原因写明凭证已过期 |
   | 其余 403（多数是 `AccessDenied`：这个模型没开通或没权限） | 换号，冷却 60 秒，不禁用 |
   | 签名时间被拒绝（`RequestExpired`、`Signature expired`）、签名格式被拒绝（`IncompleteSignature`） | 换号，不动账号；前者说明服务器时钟不准 |
   | 408、500、503、529 | 换号，不动账号 |
-  | 400 `ValidationException`、404、424 | 原样回给客户端 |
+  | 其他 400（如 `ValidationException`）、404、424 | 原样回给客户端 |
   | 流式响应中途的异常 | 客户端收到 `error` 事件，记为上游流错误 |
 
-- 不支持：Converse 接口、自定义端点（VPC 端点）、AssumeRole 自动续期、从上游拉模型列表。
-- openai 平台这条路（`/openai/v1/*`）依赖的行为没验证的最多（SigV4 能否用、支持哪些模型、是否接受 `stream_options`），先用 anthropic 平台。
+- 不支持：Bedrock 的 OpenAI 兼容接口（`/openai/v1`）、Claude 以外的模型、Converse 接口、自定义端点（VPC 端点）、中国区和隔离分区、AssumeRole 自动续期、从上游拉模型列表。
 
 ## 6. 还没验证的事（上线前必读）
 
@@ -236,5 +253,5 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 1. 三家的请求地址、签名、令牌换取、错误码都只对照过文档和模拟上游，第一次接真实账号时要逐项看使用记录和账号状态。
 2. Azure 的验收测试（`next/e2e/ac29_azure_test.go`）已经写好，但还没有在任何 e2e 环境里执行过。
 3. 这些新表单没有在控制台里做过界面走查（分组折叠、鉴权方式切换、编辑时隐藏字段的回传、日期时间控件、预填的模型映射）。
-4. Bedrock 预填的模型映射和 beta 名单抄自旧版，没有对照 AWS 文档。
+4. Bedrock 预填的模型映射和 beta 名单只对照过 AWS 文档（beta 名单里旧版的 8 项连文档也没对照），没有用真实账号调过；保留 `output_config` / `output_format` 也只有文档依据。
 5. Bedrock + Claude Code 的参数覆盖配置没有实测过。

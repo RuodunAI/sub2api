@@ -64,9 +64,9 @@
 |---|---|---|
 | anthropic、claude-oauth | 普通转发（gRPC，`BuildUpstreamRequest`） | claude-oauth 声明额度头 |
 | openai、gemini、relay | 普通转发（只有清单）；openai 另有 WebSocket | 无，全部由清单和核心完成 |
-| azure_openai（目录 `plugins/azure-openai`，市场） | 普通转发（只有清单），不提供 WebSocket | 无；清单里覆盖鉴权头（`api-key`）、路由和类型自己的 `passHeaders`（[UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) §6.1） |
+| azure_openai（目录 `plugins/azure-openai`，市场，核心 0.1.304 起） | 普通转发（只有清单），不提供 WebSocket | 无；清单里覆盖鉴权头（`api-key`）、路由和类型自己的 `passHeaders`，错误分类用策略 `azure_openai`（[UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) §6.1） |
 | vertex（市场） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；插件不联网 |
-| bedrock（市场，核心 0.1.304 起） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
+| bedrock（市场，核心 0.1.304 起；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
 | codex | 插件执行 + WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16） |
 | volcengine | 插件执行（含异步任务） | `ClassifyError`、`EstimateUsage`（视频任务）、`ReserveAndWatch` |
 
@@ -122,3 +122,31 @@ if !sticky.Enabled { ... }
 - 两个库都在 SDK 里、只用标准库：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
 
+## 7. SDK 里的账号表单与请求体补丁辅助（2026-11-17）
+
+自己实现 `ValidateCredentials`、`BuildUpstreamRequest` 的 gRPC 插件可以用下面两组辅助，不用各写一份（vertex、bedrock 在用）。
+
+**账号表单：包 `sdk/pluginsdk/accountform`**。给字段是自己一套的账号类型用（云凭证、密钥文件）；`api_key` + `base_url` 的表单仍由 `apikey.Spec` 整个实现。
+
+| 导出 | 用途 |
+|---|---|
+| `Object`（`map[string]any`），方法 `Str(k)`、`JSON()` | 解码后的 JSON 对象。数字保持原样（`json.Number`），重新编码不改动它们（令牌过期时间、大整数）。`Str` 返回去掉首尾空白的字符串值，没有或不是字符串时为空 |
+| `Decode(raw) (Object, error)` | 解码一个 JSON 对象；空白和 `null` 得到空对象，对象后面还有内容报错 |
+| `FieldError(field, code, msg)` | 一条字段错误（`*pluginv1.FieldError`） |
+| `Invalid(e)` | 用一条字段错误拒绝表单的 `ValidateCredentials` 回答 |
+| `DecodeForm(in) (*Form, *ValidateCredentialsResponse)`，`Form{Creds, Settings}` | 解出 `ValidateCredentials` 请求的凭证和设置。有一个不是 JSON 对象时第二个返回值是拒绝的回答，直接返回它 |
+| `(*Form).Normalized()` | 接受表单的回答。校验过程可以直接改写 `Creds`、`Settings`（填默认值、归一化）；回答里只带被改过的那个对象的 JSON，没改的留空，核心保留提交的内容 |
+| `DecodeAccount(acc) (creds, settings Object, err error)` | 解出已存账号的凭证和设置（构造请求时用）；不是 JSON 对象时回 `INVALID_ARGUMENT` |
+
+```go
+form, refused := accountform.DecodeForm(in)
+if refused != nil {
+	return refused, nil
+}
+if bad := check(form.Creds, form.Settings); bad != nil { // 插件自己的校验，可以顺手填默认值
+	return accountform.Invalid(bad), nil
+}
+return form.Normalized(), nil
+```
+
+**请求体补丁：`pluginsdk.SetPatch(path, value)`、`pluginsdk.DeletePatch(path)`**（`sdk/pluginsdk/request.go`）。构造 `BuildUpstreamRequestResponse.Patches` 的元素（`*pluginv1.BodyPatch`）：`SetPatch` 把值编码成 JSON 写到路径上，编码不了时写 `null`；`DeletePatch` 删除路径，路径不存在时什么都不变。插件看不到整个请求体，只能按固定路径打补丁（要读的字段在清单的 `requestFields` 里声明）。

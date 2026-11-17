@@ -6028,7 +6028,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 86.1 上游声明
 
-- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`、`test`、`models{path, idPath, stripPrefix}`。
+- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`（`openai`/`azure_openai`/`anthropic`/`gemini`，`azure_openai` 自核心 0.1.304 起，§109.6）、`test`、`models{path, idPath, stripPrefix}`。
 - 合并：预设 → 清单，按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
 - 模板变量：`{api_key}`（只能在 auth 值和路径查询串）、`{base_url}`（auth 和请求头）、`{model}`（映射和账号参数覆盖之后的上游模型；插件 patch 改了模型时只重算 URL，请求头和查询值不变）、`{credentials.<k>}`（k 须在 `credentials.fields`，不能是 api_key/base_url）、`{client_header.<名>}`（须在该类型的 passHeaders 里、不在 §81 禁止列表，只能用在普通请求头）。
 - `auth.name` 只能是凭证头（authorization、x-api-key、x-goog-api-key、api-key、cookie）或普通头名，不能是逐跳、分帧、客户端地址或网关控制头。
@@ -7910,7 +7910,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - `region`、`service`、`access_key_id`、`secret_access_key` 缺任何一个，签名失败。
 - **失败**：方案名核心不认识，或签名失败：这次尝试按插件不可用换号（`plugin_unavailable`，不惩罚账号），**没有请求发出**，绝不发出未签名的请求。
 - **保密**：`signing` 带着密钥。核心只用于这一次请求，不保存、不写日志、不进使用记录和回给客户端的错误；错误信息只提方案名。`reqsign.Directive` 的 `String`、`GoString`、`LogValue` 不输出密钥和会话令牌。插件同样不得把它写进日志。
-- **旧核心**不认识这个字段，会把请求不签名就发出去。设置它的插件必须用 `hostCompat` 要求带本节的核心（bedrock：`>=0.1.304`）。不加能力 ID，Host API 版本不变。
+- **旧核心**不认识这个字段，会把请求不签名就发出去。设置它的插件必须用 `hostCompat` 要求带本节的核心（bedrock：`>=0.1.304 <0.2.0`）。不加能力 ID，Host API 版本不变。
 - 账号测试的请求体是插件自己给的、核心原样发送，所以测试请求由插件在 `BuildTestRequest` 里调 `reqsign.Sign` 自己签，账号测试的代码没有改。
 
 ### 109.2 `response_stream`（字段 7）：把非 SSE 的响应流转成 SSE
@@ -7949,12 +7949,16 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 插件（键） | 版本 | 形态 | `hostCompat` | 账号类型 | 平台与端点 |
 |---|---|---|---|---|---|
 | `openai` | 0.4.4 | 只有清单 | `>=0.1.290` | `apikey` 加设置 `organization`、`project` | 不变 |
-| `azure_openai`（目录 `plugins/azure-openai`） | 0.1.0 | 只有清单 | `>=0.1.290` | `azure_v1`、`azure_deployment` | openai：v1 类型 chat_completions、responses、embeddings；经典类型 chat_completions、embeddings |
+| `azure_openai`（目录 `plugins/azure-openai`） | 0.1.0 | 只有清单 | `>=0.1.304` | `azure_v1`、`azure_deployment` | openai：v1 类型 chat_completions、responses、embeddings；经典类型 chat_completions、embeddings |
 | `vertex` | 0.1.0 | gRPC | `>=0.1.290` | `vertex_sa`、`vertex_authorized_user`、`vertex_apikey` | gemini：generate_content、stream_generate_content、count_tokens |
-| `bedrock` | 0.1.0 | gRPC | `>=0.1.304` | `bedrock_apikey`、`bedrock_aksk`、`bedrock_sts` | anthropic：messages；openai：chat_completions、responses |
+| `bedrock` | 0.1.0 | gRPC | `>=0.1.304` | `bedrock_apikey`、`bedrock_aksk`、`bedrock_sts` | anthropic：messages |
+
+`hostCompat` 的上限都是 `<0.2.0`。核心 0.1.303 不含本节，第一个带本节的核心是 0.1.304。
+
+**分类策略 `azure_openai`**（声明式上游 `classify` 的新取值，§86；`sdk/upstream/validate.go` 的 `policies`，实现是 `sdk/pluginsdk/providers/openai` 的 `AzurePolicy`）：`openai` 策略加一条规则，404 且错误码是 `DeploymentNotFound` 时换号、不惩罚账号（原因 `upstream has no such deployment (404), the account is not at fault`）；其余与 `openai` 策略相同。`classify` 现在可取 `openai`、`azure_openai`、`anthropic`、`gemini`。策略名在核心链接的 SDK 里，更早的核心不认识 `azure_openai`、会拒绝清单，所以用它的插件要 `hostCompat >=0.1.304`。
 
 - **openai 0.4.4**：账号设置 `organization`、`project` 非空时以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端带的；留空时这次写入整个跳过，客户端经 passHeaders 带来的头保持原样（与 0.4.3 逐字节相同）。写在 openai 插件的清单里，不在 `openai` 预设里。WebSocket 握手同样带上。
-- **azure_openai**：`preset: openai`；`baseURL` 必填、无默认值，保存时去掉末尾的 `/openai/v1`、`/openai`；鉴权头 `api-key: {api_key}`，key 不要求前缀；`models: null`（不拉模型列表）；`openai.responses_ws` 为 `null`。类型自己的 `passHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；没有写 `filterFields`，所以预设的 `service_tier`、`safety_identifier` 过滤生效。经典类型的路径是 `/openai/deployments/{model}/…?api-version={credentials.api_version}`，`{model}` 是映射后的模型（部署名），`openai.responses` 为 `null`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 `openai` 策略：404 `DeploymentNotFound` 原样回客户端。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
+- **azure_openai**：`preset: openai`；`baseURL` 必填、无默认值，保存时去掉末尾的 `/openai/v1`、`/openai`；鉴权头 `api-key: {api_key}`，key 不要求前缀；`models: null`（不拉模型列表）；`openai.responses_ws` 为 `null`。类型自己的 `passHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；没有写 `filterFields`，所以预设的 `service_tier`、`safety_identifier` 过滤生效。经典类型的路径是 `/openai/deployments/{model}/…?api-version={credentials.api_version}`，`{model}` 是映射后的模型（部署名），`openai.responses` 为 `null`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 `azure_openai` 策略（见上）：404 `DeploymentNotFound` 换号、不惩罚账号，其他 404 原样回客户端。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstreamRequest` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
-- **bedrock**：插件不联网。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型的构造结果带 `signing{scheme: aws-sigv4, service: bedrock}`。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`，请求体补丁删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，把客户端 `anthropic-beta` 里 Bedrock 支持的项写进 `anthropic_beta`；流式时 `response_stream: aws-eventstream-chunk`。openai 平台走 `/openai/v1/chat/completions`、`/openai/v1/responses`，请求体不动（流式 chat 加 `stream_options.include_usage`）。没有自动续期。分类是插件自带的策略（设计文档 16.7 第 7 条）。
+- **bedrock**：插件不联网。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型的构造结果带 `signing{scheme: aws-sigv4, service: bedrock}`。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`，请求体补丁只动顶层字段：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta`（清单声明的请求字段）里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstreamRequest` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用），补丁用 `pluginsdk.SetPatch` / `DeletePatch` 构造。
 
