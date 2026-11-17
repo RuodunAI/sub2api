@@ -21,20 +21,18 @@
 - **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。
 - **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（**已写，尚未在任何 e2e 栈上执行**）。新表单没有做过控制台界面走查。
 
-### codex 0.1.11、openai 0.4.3：默认模型加上 gpt-6.2
+## 2026-11-18
 
-- **codex 0.1.11**：两种账号类型（设备码、Sign in with Codex）的默认模型最前面加 `gpt-6.2-astra`、`gpt-6.2-sol`（ec2pool 设备码账号实测上游可用，docs/PLUGIN-CODEX.md §17）。
-- **openai 0.4.3**：API Key 账号默认模型同样加上这两个模型。
-- 只改默认模型列表，不改价格；已有账号的模型列表不变，需要时在账号上手动添加。
+### 核心 0.1.303：账号请求头覆盖（兼容 new-api）与参数覆盖补齐、通知测试同步发送、默认模型加上 gpt-6.2 / Claude Fable 5.2 / Gemini 3.5–4（`6d6b2caa3`，codex 0.1.11、openai 0.4.3、anthropic 0.3.4、gemini 0.3.2；迁移 0105，主节点优先）
 
-### 预设模型补上 Claude Fable 5.2 与 Gemini 3.5 / 3.6 / 3.8 / 4（anthropic 0.3.4、claude-oauth 0.2.5、relay 0.3.2、gemini 0.3.2）
+- **Release**：tag `core-v0.1.303`（`4414334c8`，即 `6d6b2caa3` 加本节说明）。第一次运行（run 44172908784）在门禁 `update coordination race checks` 失败：网关测试 `TestUpgradeWakeupsReconnectAfterRedisRestart`（-race 下 5 秒内没等到订阅重连）偶发失败，网关代码自 0.1.302 没有改动，同一提交 develop 的 next CI（run 44172888097）通过；jkjk02 没有重跑权限，于是删掉 tag 后在同一提交重推，第二次运行（run 44174717893）全过，`release` 环境已没有审批规则，北京时间 05:12:32 发布。清单 sha256 `d97809231015c5269addc248f406e8db3851bba4f2f222c4c8c97564a92100a8`（amd64 bundle `cf96d8c6…44c0`、arm64 `56eeb4b1…2b08`，与 GitHub 资产摘要一致），strategy maintenance，schema `50a07a21…2437` → `19cabc85…c100`。`next/plugins/released.json` 按 `4414334c8` 重写（anthropic 0.3.4、claude-oauth 0.2.5、codex 0.1.11、gemini 0.3.2、openai 0.4.3、relay 0.3.2）。
+- **ovh 集群**：Release 清单与 bundle 核对摘要后导入，预检 primary-first-v1、无阻断（expected_revision 570），计划 `3cb837e48d67124fdaff65c5641336d2` 05:13:20→05:14:23（ccp 先转发主节点、停止，主节点停机迁移启动，再启动 ccp 并恢复 local）；**停服**：ovh 3130 与 api.prophey.ai `/readyz` 503 05:13:34.0→05:13:43.0 约 9 秒；迁移 0105 于 05:13:38 应用（`accounts.header_override` jsonb 可空，129 个账号都为空）。内置同步 05:14:33–05:14:37 把 anthropic 升到 0.3.4、codex 0.1.11、gemini 0.3.2、openai 0.4.3。两节点核心 0.1.303，8 个插件 active、ready、restarts 0；强制检测核心 0.1.303 无更新、网关 0.1.138 无更新、无错误。日志：sup2api-ccp 无 ERROR；sup2api-1 只有 05:13:34.4 旧核心排空退出时的一条 river `PeriodicJobEnqueuer: Error starting transaction`（`context canceled`），新核心起来后无 ERROR；05:00–05:30 无请求（392 关着）。
+- **ec2pool**（单节点）：预检 primary-first-v1、无阻断（expected_revision 9），计划 `4e649809f536490fe8b9dc0f9da79522` 05:15:28→05:15:34，`/readyz` 503 05:15:31.3→05:15:35.3 约 4 秒；迁移 0105 于 05:15:33 应用。核心 0.1.303，anthropic 0.3.4、codex 0.1.11、gemini 0.3.2、moderation 0.12.1、openai 0.4.3 active、ready、restarts 0（05:15:37 内置同步；dynweight、mailer、volcengine 仍只安装未启用）；两个 codex 账号（`codex_device`，id 2、3）active、可调度；强制检测无更新；日志无 ERROR。
+- 回滚：schema 已变（迁移 0105），核心不回退到 0.1.302，出问题修复前进；插件只升不降。
+- 内置集合里 anthropic 0.3.3→0.3.4、codex 0.1.10→0.1.11、gemini 0.3.1→0.3.2、openai 0.4.2→0.4.3，其余（dynweight 0.5.11、mailer 0.1.4、moderation 0.12.1、volcengine 0.12.8）不变。claude-oauth 0.2.5、relay 0.3.2 不在内置集合，随源码记入 `released.json`，线上没有安装。网关、runtime-contract 没有改动，不发新网关（仍 0.1.138）。
+- **控制台版本徽标**：打开徽标时重新读取版本和更新检测，两者都返回后才提供一键更新；点更新前先复查，这一版本已不可用时不发请求，只提示当前状态。此前跨过一次服务端升级仍开着的页面，会继续提供已经装上的更新。
 
-- **Claude**：Anthropic（API Key）、Claude OAuth、Claude Setup Token、中转 Key 四种账号类型的“填入预设模型”在最前面加上 `claude-fable-5-2`。
-- **Gemini**：API Key 账号的“填入预设模型”加上 `gemini-4-carbon`、`gemini-4-argon`、`gemini-4-hydrogen`、`gemini-3.8-flash`、`gemini-3.6-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`（Google 模型页与弃用表列出的 ID，3.6 只有 flash 一个正式型号；`gemini-3.5-flash` 上游已自动转到 `gemini-3.6-flash`，但端点仍可用）。
-- 只改预设列表，不含价格；已有账号的模型列表不变，要用新列表请在账号上重新填入或从上游获取。
-- anthropic 的升级测试夹具随之由 0.3.4-test 改为 0.3.5-test（`deploy/ci/check.sh`、e2e AC05、`tools/sub2api-plugin` 测试和 `build-demo.sh`）。anthropic 插件自带的模型目录（`GET /models`）没有加 Fable 5.2，那需要新迁移。
-
-### 账号请求头覆盖（兼容 new-api）与参数覆盖补齐（迁移 0105）
+#### 账号请求头覆盖（兼容 new-api）与参数覆盖补齐（迁移 0105）
 
 - **请求头覆盖**（CONTRACTS §108）：账号新增“请求头覆盖”（接口字段 `header_override`），格式与 new-api 渠道的请求头覆盖相同，new-api 的配置可以直接粘贴。键是请求头名，值是固定文本或占位符：`{client_header:名}` 取客户端的这个头（没带就不设），`{client_header:名:追加值}` 在客户端的值后面追加（没带时只发追加值），`{unset}` 删除这个头，空值忽略；键 `*` 透传全部客户端请求头，键 `re:正则` / `regex:正则` 透传名称匹配的头。它在请求头透传之后、参数覆盖之前生效，参数覆盖从它的结果开始（条件可读 `header_override.名`，`keep_origin` 不覆盖它设的头），插件的头和鉴权头仍在最后。WebSocket 握手同样生效（透传键除外）。
 - 与 new-api 不同：凭证（Authorization、x-api-key、Cookie 等）、Host 等逐跳头、客户端地址和网关控制头不能设置、删除，也不能经 `client_header` 读取，保存时报“不能覆盖”；不支持 `{api_key}`；客户端同名头有多个值时全部取出、以 `, ` 连接。请求头覆盖的值和参数覆盖一样，有账号查看权限的人都能看到，不要放密钥。
@@ -49,7 +47,22 @@
 - **@sub2api/ui、@sub2api/host、@sub2api/vite-preset 3.19**：`@sub2api/host` 新增宿主组件 `HeaderOverrideEditor`，schema 表单新增控件 `header-override`，`ParamOverrideEditor` 可传 `headerOverride` 作为试运行的初始请求头。只加不改；用到的插件声明 `hostUICompat: "^3.19"`。
 - **迁移 0105**：`accounts` 加可空列 `header_override`（jsonb），旧账号为空、行为不变。
 
-## 2026-11-18
+#### 通知测试发送改为同步，投递记录不再一直显示“发送中”
+
+- 系统设置 → 通知 → 发送测试：接口等这条测试通知第一次投递完成（最多 35 秒）再返回结果，控制台在点击时和返回后各刷新一次投递记录，并提示已发送、发送失败（带完整错误）、将重试或仍在发送。不轮询、不自动刷新、没有服务端推送（CONTRACTS §74.4）。
+
+#### codex 0.1.11、openai 0.4.3：默认模型加上 gpt-6.2
+
+- **codex 0.1.11**：两种账号类型（设备码、Sign in with Codex）的默认模型最前面加 `gpt-6.2-astra`、`gpt-6.2-sol`（ec2pool 设备码账号实测上游可用，docs/PLUGIN-CODEX.md §17）。
+- **openai 0.4.3**：API Key 账号默认模型同样加上这两个模型。
+- 只改默认模型列表，不改价格；已有账号的模型列表不变，需要时在账号上手动添加。
+
+#### 预设模型补上 Claude Fable 5.2 与 Gemini 3.5 / 3.6 / 3.8 / 4（anthropic 0.3.4、claude-oauth 0.2.5、relay 0.3.2、gemini 0.3.2）
+
+- **Claude**：Anthropic（API Key）、Claude OAuth、Claude Setup Token、中转 Key 四种账号类型的“填入预设模型”在最前面加上 `claude-fable-5-2`。
+- **Gemini**：API Key 账号的“填入预设模型”加上 `gemini-4-carbon`、`gemini-4-argon`、`gemini-4-hydrogen`、`gemini-3.8-flash`、`gemini-3.6-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`（Google 模型页与弃用表列出的 ID，3.6 只有 flash 一个正式型号；`gemini-3.5-flash` 上游已自动转到 `gemini-3.6-flash`，但端点仍可用）。
+- 只改预设列表，不含价格；已有账号的模型列表不变，要用新列表请在账号上重新填入或从上游获取。
+- anthropic 的升级测试夹具随之由 0.3.4-test 改为 0.3.5-test（`deploy/ci/check.sh`、e2e AC05、`tools/sub2api-plugin` 测试和 `build-demo.sh`）。anthropic 插件自带的模型目录（`GET /models`）没有加 Fable 5.2，那需要新迁移。
 
 ### 核心 0.1.302：通知投递错误看得懂、复制 API Key 不再二次验证（`0295123ea`，mailer 0.1.4；无迁移，滚动）
 

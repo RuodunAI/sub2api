@@ -2,7 +2,7 @@
 
 ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ovh/clicodeplus 集群不共用数据库。同一台机器上还有 sakura-2api、cli-proxy-api、antigravity 和 kin 容器，与 sup2api 无关，操作时不要碰。
 
-## 现状（2026-11-17 起）：网关托管，单节点，网关 0.1.138、核心 0.1.302
+## 现状（2026-11-17 起）：网关托管，单节点，网关 0.1.138、核心 0.1.303
 
 - 目录 `/opt/sup2api-gw`，compose 项目 `sup2api-gw`，接入外部网络 `sup2api_default`。
   - `node-a`（容器 `sup2api-gw-a`，主节点，`127.0.0.1:18080`），镜像 `sup2api-gateway:0.1.138`，状态卷 `sup2api-gw_node-a`（`/var/lib/sub2api`，持久）。只有一个节点（用户 11-17 决定）：核心更新没有别的节点承接流量，走主节点优先，会短暂停服；网关一键更新单节点中断约 10 秒，控制台要求确认。
@@ -13,6 +13,12 @@ ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ov
 - 入口：宿主机 systemd Caddy 的 `/etc/caddy/sup2api-customer.caddy`（`sub2api-customer.sakura-api.com`、`sup2api.32.191.20.99.nip.io`、`https://sup2api.32.191.20.99.sslip.io`）反代到 `127.0.0.1:18080`。主 Caddyfile 是 `admin off`，`systemctl reload caddy` 会失败，改配置要 `restart`（会断开同一个 Caddy 上 antigravity、cliproxy 站点的连接）。
 - 内置插件签名密钥：核心 0.1.298 起在没设 `SUB2API_BUILTIN_TRUST_KEY` 时自己读 `builtin/trust.pub`，compose 里不再设这个变量（0.1.297 期间手动设过，备份 `compose.yml.bak-with-trustkey`；回到 0.1.297 要加回去）。
 - 插件：`SUB2API_PLUGIN_VERIFY_SIGNATURES=false`（沿用旧部署）；已装插件包原来由旧核心用开发密钥 `sub2api-dev` 签名，Release 内置包用 `sup2api-plugins-2026` 签名，同版本的包保留原样。
+
+## 2026-11-18 核心 0.1.303（codex 0.1.11 等，迁移 0105）
+
+- Release `core-v0.1.303`（`4414334c8`，清单 `d97809231015c5269addc248f406e8db3851bba4f2f222c4c8c97564a92100a8`，amd64 bundle `cf96d8c6…44c0`）由 `fetch303.sh` 下载到 `stage303/`，核对摘要后放进 `publish/sup2api/`，`docker compose exec -T node-a sub2api-shell import …`；预检只有 node-a、primary-first-v1、无阻断（expected_revision 9）；计划 `4e649809f536490fe8b9dc0f9da79522` 05:15:28→05:15:34，`/readyz` 503 05:15:31.3→05:15:35.3 约 4 秒（`observe303.py`，输出 `plan303.out`）；迁移 0105 于 05:15:33 应用。
+- 核验（`verify303.py`、`db303.sh`）：核心 0.1.303；anthropic 0.3.4、codex 0.1.11、gemini 0.3.2、moderation 0.12.1、openai 0.4.3 active、ready、restarts 0（05:15:37 内置同步），dynweight、mailer、volcengine 仍只安装未启用；两个 codex 账号（id 2、3）active、可调度；强制检测无更新；日志无 ERROR。
+- 回滚：迁移 0105 改了 schema，不回退核心，出问题修复前进。
 
 ## 2026-11-18 核心 0.1.302（mailer 0.1.4，无迁移）
 

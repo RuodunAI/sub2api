@@ -2,24 +2,24 @@
   "_comment": "The plugin versions production runs and the digests of their sources: TestReleasedPluginsBumped (tools/sub2api-plugin) fails when a plugin's sources changed and its version did not. Rewrite after each release.",
   "plugins": {
     "anthropic": {
-      "version": "0.3.3",
-      "digest": "sha256:cb12075b266cf07e95e97b590dbaa9519a0b03213284c263bb3ae719b7ee6318"
+      "version": "0.3.4",
+      "digest": "sha256:efe2891f6c99d5f82677d1948921c5da958cca165d59e66f74c280be18956ea5"
     },
     "claude-oauth": {
-      "version": "0.2.4",
-      "digest": "sha256:79bcd5f67f8bb351aebbaa2788ff0b8f0218042ec27462cb2b2d9dcfdf6fc970"
+      "version": "0.2.5",
+      "digest": "sha256:2344abfaf1b0dfa0fae754d7a40957850f8b28c6cd1add7c171ea1b39a9ba1fe"
     },
     "codex": {
-      "version": "0.1.10",
-      "digest": "sha256:3a0eec5a02551756f8f4b85a4859f0d6ce1260810268f5f1f448243e96749438"
+      "version": "0.1.11",
+      "digest": "sha256:b1201427c407c0de6ca6f0bd6ea415a2ebd022c8b8342648b37c4a1f300286c4"
     },
     "dynweight": {
       "version": "0.5.11",
       "digest": "sha256:0be6507364d372a8146ee2123ac0e073d2465d01a93c6998d99fb86598dd0d2e"
     },
     "gemini": {
-      "version": "0.3.1",
-      "digest": "sha256:9295be39f14747292a9c06bd7ed0638aa403cfcb3914b2333492952b373a97dc"
+      "version": "0.3.2",
+      "digest": "sha256:98ddcb191e4fbc0301f728ad78923f8293e6efebd4c8286f8868b0009c5f2778"
     },
     "growth": {
       "version": "0.2.1",
@@ -38,16 +38,16 @@
       "digest": "sha256:92a95ffa34045d0ea739791942be89a5f10f04e140707bfe4b8c9dd47216c209"
     },
     "openai": {
-      "version": "0.4.2",
-      "digest": "sha256:307b8668e43d7f6fca1f772e19e5e299184d9bcc03fe6164134863172eadac85"
+      "version": "0.4.3",
+      "digest": "sha256:d8cd9300a28d0e9a9504baa7f763c9167c13a4afbb3ac59e1d44157e2b2c372b"
     },
     "payment": {
       "version": "0.1.2",
       "digest": "sha256:7607e604c34282be726eebe5678777368b9da17ed46d9cba6046877ab38e3909"
     },
     "relay": {
-      "version": "0.3.1",
-      "digest": "sha256:9399fa6bd46b4b066ea4cc3c524b45ec96fe7b526b2e4c558981dd89fb2c114b"
+      "version": "0.3.2",
+      "digest": "sha256:810ac0159b530b1a7eb47d3da69fc39b2e26528e8b86f0b7a1cda7644bfe0eeb"
     },
     "volcengine": {
       "version": "0.12.8",

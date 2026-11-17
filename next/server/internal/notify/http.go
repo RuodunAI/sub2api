@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"context"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -73,11 +74,16 @@ func (s *Service) list(c *gin.Context) {
 	}
 	items := make([]Record, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, Record{ID: r.ID, Source: r.Source, Channel: r.Channel, Recipients: r.Recipients, Subject: r.Subject,
-			Body: r.Body, Severity: core.ValueOr(r.Severity, ""), Status: core.ValueOr(r.Status, ""), Attempts: r.Attempts, LastError: r.LastError,
-			NextAttemptAt: r.NextAttemptAt, CreatedAt: r.CreatedAt, SentAt: r.SentAt})
+		items = append(items, recordOf(r))
 	}
 	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+}
+
+// recordOf is row r as the console shows it.
+func recordOf(r model.Notification) Record {
+	return Record{ID: r.ID, Source: r.Source, Channel: r.Channel, Recipients: r.Recipients, Subject: r.Subject,
+		Body: r.Body, Severity: core.ValueOr(r.Severity, ""), Status: core.ValueOr(r.Status, ""), Attempts: r.Attempts, LastError: r.LastError,
+		NextAttemptAt: r.NextAttemptAt, CreatedAt: r.CreatedAt, SentAt: r.SentAt}
 }
 
 // recordColumns are the columns of a Record.
@@ -106,7 +112,9 @@ func recordPage(db *gorm.DB, status, source string, limit, offset int, dst *[]mo
 const sourceTest = core.NotificationSourceCore + ":test"
 
 // test is POST /notifications/test {channel, recipients}: a test message
-// from the core, to check a channel's configuration.
+// from the core, to check a channel's configuration. It answers with the
+// Record once the first attempt is recorded, or as it is after TestWait
+// (awaitAttempt), so the console shows whether the channel works.
 func (s *Service) test(c *gin.Context) {
 	var in struct {
 		Channel    string   `json:"channel"`
@@ -123,7 +131,49 @@ func (s *Service) test(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, gin.H{"id": r.ID})
+	rec, err := s.awaitAttempt(ctx, r.ID)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, rec)
+}
+
+// attemptCheck is how often awaitAttempt reads the row.
+const attemptCheck = 250 * time.Millisecond
+
+// awaitAttempt reads row id until its first attempt is recorded or TestWait
+// passes, and returns it as it is then. The row is delivered by the worker
+// like any other (whichever node claims it, with its lease, retries and
+// outcome rules); this only reads the record.
+func (s *Service) awaitAttempt(ctx context.Context, id int64) (Record, error) {
+	deadline := time.Now().Add(s.opts.TestWait)
+	for {
+		var row model.Notification
+		if err := store.G(ctx, s.db.Gorm).Select(recordColumns).Take(&row, id).Error; err != nil {
+			return Record{}, err
+		}
+		if attempted(row) || time.Now().After(deadline) {
+			return recordOf(row), nil
+		}
+		select {
+		case <-ctx.Done():
+			return Record{}, ctx.Err()
+		case <-time.After(attemptCheck):
+		}
+	}
+}
+
+// attempted reports whether an attempt at a new row has been recorded: it
+// was sent or failed, or it waits for a retry with the attempt's error.
+func attempted(r model.Notification) bool {
+	switch core.ValueOr(r.Status, "") {
+	case "sent", "failed":
+		return true
+	case "pending":
+		return r.LastError != ""
+	}
+	return false
 }
 
 func pluginName(p core.PluginInfo) manifest.LocalizedText {

@@ -5184,6 +5184,8 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 控制台的测试通知以 `core:test` 为来源，不占核心通知的限速额度。
   - `last_error`：插件处理投递时自己返回的错误（gRPC `Unknown`）原样记录插件的消息，不带核心错误码和 gRPC 状态前缀（核心 0.1.302 起；之前是 `internal: internal error: plugin <key>: Unknown: …`）；其他错误仍是核心错误的文本。最多 1000 字节，在字符边界截断。控制台的通知记录完整显示错误（换行，不截断）。
 - **控制台**：`GET /notifications/channels`、`GET /notifications`，以及 `POST /notifications/test`（需要 `settings:manage`）。
+  - `POST /notifications/test {channel, recipients}` 是同步的（0.1.302 之后的核心起；之前排队后立即回 `{id}`）：排队后等这一条的第一次投递记下结果再回答，最多等 35 秒（与关闭时的等待相同：投递调用的 30 秒期限加记录结果），回答该行的通知记录（与 `GET /notifications` 的一项相同，含 `status`、`attempts`、`last_error`）。投递仍由 worker 照常领取（任一节点，租约、重试、结果规则不变），接口只读这一行，每 250 毫秒一次。第一次投递已记下指 `sent`、`failed`，或 `pending` 且 `last_error` 非空（等待重试，含渠道未绑定、插件未运行）；35 秒内没有记下就回答当时的状态（`pending` 或 `sending`）。
+  - 控制台点"发送测试"后：按钮保持加载状态；请求发出的同时读一次投递记录，让新的一行出现；回答到达（或失败）后再读一次，显示第一次投递的结果，并按结果提示"已发送"、"发送失败：<完整错误>"、"发送失败，将按退避重试：<完整错误>"或"仍在发送"。之后不轮询、不自动刷新，也没有服务端推送；还未结束的行要重新打开页面或翻页才会更新。
 
 ### 74.5 dynweight 插件
 
