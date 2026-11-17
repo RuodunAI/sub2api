@@ -84,7 +84,7 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	if err != nil || json.Unmarshal(raw, &shipped) != nil || shipped.Version == "" {
 		t.Fatal("cannot read the release manifest version", err)
 	}
-	if release == fixture || filepath.Base(release) != "anthropic-"+shipped.Version+".s2plugin" || filepath.Base(fixture) != "anthropic-0.3.4-test.s2plugin" {
+	if release == fixture || filepath.Base(release) != "anthropic-"+shipped.Version+".s2plugin" || filepath.Base(fixture) != "anthropic-0.3.5-test.s2plugin" {
 		t.Fatalf("release=%s fixture=%s", release, fixture)
 	}
 	after, _ := os.ReadFile(release)
@@ -107,7 +107,7 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 		if err := json.Unmarshal(files["manifest.json"], &m); err != nil {
 			t.Fatal(err)
 		}
-		if (m["version"] == "0.3.4-test") != tc.wantFixture {
+		if (m["version"] == "0.3.5-test") != tc.wantFixture {
 			t.Fatalf("unexpected packaged manifest: %s", files["manifest.json"])
 		}
 	}

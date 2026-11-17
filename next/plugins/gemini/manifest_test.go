@@ -18,7 +18,7 @@ import (
 // the plugin code it replaced, so keep the two in step.
 const (
 	key         = "gemini"
-	version     = "0.3.1"
+	version     = "0.3.2"
 	platform    = "gemini"
 	declaration = `{"preset":"gemini","filterFields":[]}`
 )
