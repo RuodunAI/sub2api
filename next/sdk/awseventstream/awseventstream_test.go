@@ -275,6 +275,90 @@ func TestLengthLimits(t *testing.T) {
 	}
 }
 
+// A prelude announcing a large message reserves nothing: the buffer follows
+// the bytes that really arrive, and one that grew large is not kept.
+func TestBufferFollowsTheData(t *testing.T) {
+	const sent = 1000
+	cut := append(rawPrelude(MaxMessageSize, 0), make([]byte, sent)...)
+	d := NewDecoder(bytes.NewReader(cut))
+	if _, err := d.Decode(); err != io.ErrUnexpectedEOF {
+		t.Fatalf("cut message: %v", err)
+	}
+	if cap(d.buf) > 2*readStep {
+		t.Fatalf("%d bytes allocated for %d received", cap(d.buf), sent)
+	}
+
+	// Whatever the size, the buffer stays within a step and the growth
+	// factor of what was received.
+	big := mustAppend(t, nil, nil, bytes.Repeat([]byte("x"), 3<<20))
+	d = NewDecoder(bytes.NewReader(big[:len(big)/2]))
+	if _, err := d.Decode(); err != io.ErrUnexpectedEOF {
+		t.Fatalf("half a message: %v", err)
+	}
+	if cap(d.buf) > len(big)/2*2+readStep {
+		t.Fatalf("%d bytes allocated for %d received", cap(d.buf), len(big)/2)
+	}
+
+	// A large message is decoded whole, and its buffer goes with the next.
+	small := mustAppend(t, nil, eventHeaders(), []byte("small"))
+	d = NewDecoder(bytes.NewReader(append(bytes.Clone(big), append(bytes.Clone(small), small...)...)))
+	if msg, err := d.Decode(); err != nil || len(msg.Payload) != 3<<20 {
+		t.Fatalf("large message: %v", err)
+	}
+	var kept *byte
+	for i := 0; i < 2; i++ {
+		msg, err := d.Decode()
+		if err != nil || string(msg.Payload) != "small" {
+			t.Fatalf("message after the large one: %q %v", msg.Payload, err)
+		}
+		if cap(d.buf) > retainSize {
+			t.Fatalf("a buffer of %d bytes is kept", cap(d.buf))
+		}
+		// An ordinary buffer is reused, not allocated per message.
+		if i == 1 && kept != &d.buf[0] {
+			t.Fatal("the small buffer was not reused")
+		}
+		kept = &d.buf[0]
+	}
+}
+
+// A decoder can be given a limit below the format's; a message over it is
+// refused before anything is read for it.
+func TestMaxMessageSizeOption(t *testing.T) {
+	frame := mustAppend(t, nil, nil, make([]byte, 100)) // 116 bytes
+	for name, tc := range map[string]struct {
+		limit int
+		is    error
+	}{
+		"at the limit":        {len(frame), nil},
+		"over the limit":      {len(frame) - 1, ErrTooLarge},
+		"below the format's":  {-1, ErrTooLarge}, // raised to the smallest message
+		"above the format's":  {MaxMessageSize + 1, nil},
+		"the package maximum": {MaxMessageSize, nil},
+	} {
+		d := NewDecoder(io.MultiReader(bytes.NewReader(frame[:preludeSize]), iotest.ErrReader(errors.New("read past the prelude"))), WithMaxMessageSize(tc.limit))
+		_, err := d.Decode()
+		if tc.is == nil {
+			if d.max > MaxMessageSize || err == nil || errors.Is(err, ErrTooLarge) {
+				t.Errorf("%s: limit %d, %v", name, d.max, err)
+			}
+			continue
+		}
+		if !errors.Is(err, tc.is) || errors.Is(err, ErrCorrupt) || d.buf != nil {
+			t.Errorf("%s: %v, %d bytes allocated", name, err, cap(d.buf))
+		}
+	}
+	if d := NewDecoder(bytes.NewReader(frame), WithMaxMessageSize(len(frame))); d.max != uint32(len(frame)) {
+		t.Fatalf("limit %d", d.max)
+	} else if msg, err := d.Decode(); err != nil || len(msg.Payload) != 100 {
+		t.Fatalf("message at the limit: %v", err)
+	}
+	// Beyond the format's own limit a length is still corrupt, whatever the option.
+	if _, err := NewDecoder(bytes.NewReader(rawPrelude(MaxMessageSize+1, 0)), WithMaxMessageSize(1<<10)).Decode(); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("over 16 MiB: %v", err)
+	}
+}
+
 // Header blocks with correct checksums and broken contents.
 func TestMalformedHeaders(t *testing.T) {
 	str := func(name, value string) []byte {
@@ -334,8 +418,8 @@ func FuzzDecoder(f *testing.F) {
 			}
 		}
 		// The SSE view never panics and ends the same way.
-		if _, err := io.Copy(io.Discard, NewSSEReader(bytes.NewReader(data))); err != nil &&
-			err != io.ErrUnexpectedEOF && !errors.Is(err, ErrCorrupt) {
+		if _, err := io.Copy(io.Discard, NewChunkSSEReader(bytes.NewReader(data))); err != nil &&
+			err != io.ErrUnexpectedEOF && !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrTooLarge) {
 			t.Fatalf("sse: %v", err)
 		}
 	})
@@ -368,19 +452,28 @@ func sseStream(t testing.TB) (stream []byte, want string) {
 	return stream, want
 }
 
-func TestSSEReader(t *testing.T) {
+func TestChunkSSEReader(t *testing.T) {
+	if FormatChunk != "aws-eventstream-chunk" {
+		t.Fatalf("the format name is part of the plugin protocol: %q", FormatChunk)
+	}
+	// The largest chunk message passes; other event shapes come out empty.
+	largest := mustAppend(t, nil, nil, make([]byte, MaxChunkMessageSize-minMessageSize))
+	converse := mustAppend(t, largest, []Header{{HeaderMessageType, MessageTypeEvent}, {HeaderEventType, "contentBlockDelta"}}, []byte(`{"contentBlockIndex":0,"delta":{"text":"x"}}`))
+	if got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(converse))); err != nil || len(got) != 0 {
+		t.Fatalf("messages without chunk bytes: %q %v", got, err)
+	}
 	stream, want := sseStream(t)
-	got, err := io.ReadAll(NewSSEReader(bytes.NewReader(stream)))
+	got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(stream)))
 	if err != nil || string(got) != want {
 		t.Fatalf("err %v\n got %q\nwant %q", err, got, want)
 	}
-	if got, err := io.ReadAll(NewSSEReader(bytes.NewReader(nil))); err != nil || len(got) != 0 {
+	if got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(nil))); err != nil || len(got) != 0 {
 		t.Fatalf("empty stream: %q %v", got, err)
 	}
 }
 
 // The output does not depend on how the bytes arrive or how they are read.
-func TestSSEReaderChunkBoundaries(t *testing.T) {
+func TestChunkSSEReaderChunkBoundaries(t *testing.T) {
 	stream, want := sseStream(t)
 	readers := map[string]func() io.Reader{
 		"one byte at a time": func() io.Reader { return iotest.OneByteReader(bytes.NewReader(stream)) },
@@ -394,14 +487,14 @@ func TestSSEReaderChunkBoundaries(t *testing.T) {
 		}
 	}
 	for name, mk := range readers {
-		got, err := io.ReadAll(NewSSEReader(mk()))
+		got, err := io.ReadAll(NewChunkSSEReader(mk()))
 		if err != nil || string(got) != want {
 			t.Errorf("%s: err %v, got %q", name, err, got)
 		}
 	}
 	// A caller reading into a tiny buffer gets the same bytes.
 	var out []byte
-	r, p := NewSSEReader(bytes.NewReader(stream)), make([]byte, 3)
+	r, p := NewChunkSSEReader(bytes.NewReader(stream)), make([]byte, 3)
 	for {
 		n, err := r.Read(p)
 		out = append(out, p[:n]...)
@@ -436,7 +529,7 @@ func (s *splitReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func TestSSEReaderExceptions(t *testing.T) {
+func TestChunkSSEReaderExceptions(t *testing.T) {
 	v := sdkVectors(t)
 	after := chunkFrame(t, evStop) // never delivered: the error ends the stream
 	for name, tc := range map[string]struct {
@@ -455,7 +548,7 @@ func TestSSEReaderExceptions(t *testing.T) {
 			`{"type":"error","error":{"type":"upstream_error","message":"upstream_error"}}`},
 	} {
 		stream := append(append(chunkFrame(t, evStart), tc.frame...), after...)
-		got, err := io.ReadAll(NewSSEReader(bytes.NewReader(stream)))
+		got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(stream)))
 		want := "event: message_start\ndata: " + evStart + "\n\nevent: error\ndata: " + tc.want + "\n\n"
 		if err != nil || string(got) != want {
 			t.Errorf("%s: err %v\n got %q\nwant %q", name, err, got, want)
@@ -465,11 +558,11 @@ func TestSSEReaderExceptions(t *testing.T) {
 
 // Data never spans lines: JSON is compacted, other text gets a data line
 // per line, and an event name cannot inject a field.
-func TestSSEReaderLineBreaks(t *testing.T) {
+func TestChunkSSEReaderLineBreaks(t *testing.T) {
 	stream := chunkFrame(t, "{\n  \"type\": \"ping\",\r\n  \"n\": 1\n}")
 	stream = append(stream, chunkFrame(t, "plain\ntext\r\n\r\nend")...)
 	stream = append(stream, chunkFrame(t, `{"type":"a\nevent: forged","x":1}`)...)
-	got, err := io.ReadAll(NewSSEReader(bytes.NewReader(stream)))
+	got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(stream)))
 	want := "event: ping\ndata: {\"type\":\"ping\",\"n\":1}\n\n" +
 		"data: plain\ndata: text\ndata: end\n\n" +
 		"data: {\"type\":\"a\\nevent: forged\",\"x\":1}\n\n"
@@ -479,7 +572,7 @@ func TestSSEReaderLineBreaks(t *testing.T) {
 }
 
 // A damaged stream delivers what came before the damage and then fails.
-func TestSSEReaderCorruptAndTruncated(t *testing.T) {
+func TestChunkSSEReaderCorruptAndTruncated(t *testing.T) {
 	good, bad := chunkFrame(t, evStart), chunkFrame(t, evDelta)
 	want := "event: message_start\ndata: " + evStart + "\n\n"
 	corrupt := bytes.Clone(bad)
@@ -488,13 +581,14 @@ func TestSSEReaderCorruptAndTruncated(t *testing.T) {
 		tail []byte
 		is   error
 	}{
-		"corrupt payload":    {corrupt, ErrCorrupt},
-		"cut in the prelude": {bad[:5], io.ErrUnexpectedEOF},
-		"cut in the message": {bad[:len(bad)-1], io.ErrUnexpectedEOF},
-		"oversized":          {rawPrelude(MaxMessageSize+1, 0), ErrCorrupt},
-		"garbage":            {[]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"), ErrCorrupt},
+		"corrupt payload":      {corrupt, ErrCorrupt},
+		"cut in the prelude":   {bad[:5], io.ErrUnexpectedEOF},
+		"cut in the message":   {bad[:len(bad)-1], io.ErrUnexpectedEOF},
+		"oversized":            {rawPrelude(MaxMessageSize+1, 0), ErrCorrupt},
+		"over the chunk limit": {rawPrelude(MaxChunkMessageSize+1, 0), ErrTooLarge},
+		"garbage":              {[]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"), ErrCorrupt},
 	} {
-		r := NewSSEReader(bytes.NewReader(append(bytes.Clone(good), tc.tail...)))
+		r := NewChunkSSEReader(bytes.NewReader(append(bytes.Clone(good), tc.tail...)))
 		got, err := io.ReadAll(r)
 		if !errors.Is(err, tc.is) || string(got) != want {
 			t.Errorf("%s: err %v, got %q", name, err, got)
@@ -508,10 +602,10 @@ func TestSSEReaderCorruptAndTruncated(t *testing.T) {
 
 // An event is readable as soon as its message is complete, while the stream
 // stays open and nothing else arrives.
-func TestSSEReaderDeliversEachMessageAtOnce(t *testing.T) {
+func TestChunkSSEReaderDeliversEachMessageAtOnce(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pw.Close()
-	r := NewSSEReader(pr)
+	r := NewChunkSSEReader(pr)
 	type read struct {
 		data string
 		err  error
@@ -551,7 +645,7 @@ func TestSSEReaderDeliversEachMessageAtOnce(t *testing.T) {
 }
 
 // A reader failing between messages or inside one is reported as it is.
-func TestSSEReaderPropagatesReaderErrors(t *testing.T) {
+func TestChunkSSEReaderPropagatesReaderErrors(t *testing.T) {
 	frame := chunkFrame(t, evStart)
 	boom := errors.New("connection reset")
 	for name, src := range map[string]io.Reader{
@@ -559,7 +653,7 @@ func TestSSEReaderPropagatesReaderErrors(t *testing.T) {
 		"inside a message": io.MultiReader(bytes.NewReader(frame), bytes.NewReader(frame[:20]), iotest.ErrReader(boom)),
 		"timeout":          io.MultiReader(bytes.NewReader(frame), iotest.TimeoutReader(bytes.NewReader(frame))),
 	} {
-		got, err := io.ReadAll(NewSSEReader(src))
+		got, err := io.ReadAll(NewChunkSSEReader(src))
 		if err == nil || (!errors.Is(err, boom) && !errors.Is(err, iotest.ErrTimeout)) {
 			t.Errorf("%s: %v", name, err)
 		}

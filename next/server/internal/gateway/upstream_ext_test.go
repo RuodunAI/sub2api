@@ -67,7 +67,7 @@ func (p *extPlatform) BuildUpstreamRequest(ctx context.Context, in *pluginv1.Bui
 			SessionToken: creds.Get("session_token").String()},
 	}
 	if in.GetMeta().GetStream() {
-		action, out.ResponseStream = "invoke-with-response-stream", "aws-eventstream"
+		action, out.ResponseStream = "invoke-with-response-stream", awseventstream.FormatChunk
 	}
 	// The model id carries ":" as %3A on the wire, as Bedrock's do.
 	out.Url = p.base + "/model/anthropic." + in.GetMeta().GetModel() + "-v1%3A0/" + action
@@ -169,7 +169,12 @@ func verifySigV4(r *http.Request, body []byte) (accessKey string, err error) {
 	for i, s := range segments {
 		segments[i] = strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 	}
-	query := r.URL.Query()
+	// Sorted by key, then value; a query that does not parse is refused, as
+	// its parameters would not all be covered.
+	query, qerr := url.ParseQuery(r.URL.RawQuery)
+	if qerr != nil {
+		return accessKey, fmt.Errorf("query %q: %w", r.URL.RawQuery, qerr)
+	}
 	keys := make([]string, 0, len(query))
 	for k := range query {
 		keys = append(keys, k)
@@ -583,7 +588,7 @@ func TestEventStreamExceptionBecomesAnErrorEvent(t *testing.T) {
 func TestResponseStreamOnlyAdaptsItsOwnContentType(t *testing.T) {
 	x := newExtEnv(t)
 	x.plat.amend = func(_ *pluginv1.BuildUpstreamRequestRequest, out *pluginv1.BuildUpstreamRequestResponse) {
-		out.ResponseStream = "aws-eventstream" // also on the non-streaming request
+		out.ResponseStream = awseventstream.FormatChunk // also on the non-streaming request
 	}
 	r := x.messages(body(testModel, false))
 	require.Equal(t, 200, r.status, string(r.body))
@@ -679,7 +684,7 @@ func TestCheckUpstreamExt(t *testing.T) {
 	}{
 		"nil":            {nil, true},
 		"neither":        {&pluginv1.BuildUpstreamRequestResponse{}, true},
-		"both known":     {&pluginv1.BuildUpstreamRequestResponse{Signing: sig("aws-sigv4"), ResponseStream: "aws-eventstream"}, true},
+		"both known":     {&pluginv1.BuildUpstreamRequestResponse{Signing: sig("aws-sigv4"), ResponseStream: awseventstream.FormatChunk}, true},
 		"unknown scheme": {&pluginv1.BuildUpstreamRequestResponse{Signing: sig("x")}, false},
 		"empty scheme":   {&pluginv1.BuildUpstreamRequestResponse{Signing: sig("")}, false},
 		"unknown format": {&pluginv1.BuildUpstreamRequestResponse{ResponseStream: "x"}, false},
@@ -692,11 +697,71 @@ func TestCheckUpstreamExt(t *testing.T) {
 		}
 	}
 	assert.Nil(t, unsupportedOnWebSocket(&pluginv1.BuildUpstreamRequestResponse{}))
-	for _, built := range []*pluginv1.BuildUpstreamRequestResponse{{Signing: sig("aws-sigv4")}, {ResponseStream: "aws-eventstream"}} {
+	for _, built := range []*pluginv1.BuildUpstreamRequestResponse{{Signing: sig("aws-sigv4")}, {ResponseStream: awseventstream.FormatChunk}} {
 		res := unsupportedOnWebSocket(built)
 		require.NotNil(t, res)
 		assert.Equal(t, attemptFailover, res.kind)
 		assert.Equal(t, errTypePluginUnavailable, res.err.RecordType)
+	}
+}
+
+// The request leaves as it is signed: the query in canonical order, no
+// default port in Host, and a body-less request over the empty payload even
+// though the caller still holds body bytes.
+func TestSignUpstreamRequest(t *testing.T) {
+	built := &pluginv1.BuildUpstreamRequestResponse{Signing: &pluginv1.RequestSigning{Scheme: "aws-sigv4", Region: "us-east-1", Service: "bedrock",
+		AccessKeyId: "AKIAUNIT", SecretAccessKey: extSecretPrefix + "AKIAUNIT"}}
+	held := []byte(`{"held":"by the caller"}`)
+	for name, tc := range map[string]struct {
+		method, url string
+		sent        []byte
+		query, host string
+	}{
+		"post":             {"POST", "https://bedrock.example.com/model/m%3A0/invoke", held, "", "bedrock.example.com"},
+		"get, no body":     {"GET", "https://bedrock.example.com/foundation-models", nil, "", "bedrock.example.com"},
+		"query reordered":  {"GET", "https://bedrock.example.com/x?b=2&a=2&a=1&c=a+b", nil, "a=1&a=2&b=2&c=a%20b", "bedrock.example.com"},
+		"default port":     {"POST", "https://bedrock.example.com:443/model/m/invoke", held, "", "bedrock.example.com"},
+		"non-default port": {"POST", "https://bedrock.example.com:8443/model/m/invoke", held, "", "bedrock.example.com:8443"},
+	} {
+		var reqBody io.Reader
+		if tc.sent != nil {
+			reqBody = bytes.NewReader(tc.sent)
+		}
+		req, err := http.NewRequest(tc.method, tc.url, reqBody)
+		require.NoError(t, err, name)
+		require.Nil(t, signUpstreamRequest(req, held, built), name)
+		assert.Equal(t, tc.query, req.URL.RawQuery, name)
+		assert.Equal(t, tc.host, req.Host, name)
+		// The upstream sees the body that was sent, not the one held.
+		_, err = verifySigV4(req, tc.sent)
+		assert.NoError(t, err, name)
+	}
+
+	// Nothing asked: the request is left alone.
+	req, _ := http.NewRequest("GET", "https://example.com:443/x?b=2&a=1", nil)
+	require.Nil(t, signUpstreamRequest(req, nil, &pluginv1.BuildUpstreamRequestResponse{}))
+	assert.Equal(t, "b=2&a=1", req.URL.RawQuery)
+	assert.Equal(t, "example.com:443", req.Host)
+	assert.Empty(t, req.Header)
+
+	// What the signer refuses fails the attempt over to the next account and
+	// names no credential.
+	for name, edit := range map[string]func(*http.Request, *pluginv1.BuildUpstreamRequestResponse){
+		"unparsable query": func(r *http.Request, _ *pluginv1.BuildUpstreamRequestResponse) { r.URL.RawQuery = "a=1;b=2" },
+		"unknown scheme":   func(_ *http.Request, b *pluginv1.BuildUpstreamRequestResponse) { b.Signing.Scheme = "x" },
+		"no region":        func(_ *http.Request, b *pluginv1.BuildUpstreamRequestResponse) { b.Signing.Region = "" },
+		"unknown format":   func(_ *http.Request, b *pluginv1.BuildUpstreamRequestResponse) { b.ResponseStream = "aws-eventstream" }, // the name before FormatChunk
+	} {
+		req, _ := http.NewRequest("GET", "https://example.com/x", nil)
+		b := &pluginv1.BuildUpstreamRequestResponse{Signing: &pluginv1.RequestSigning{Scheme: "aws-sigv4", Region: "us-east-1", Service: "bedrock",
+			AccessKeyId: "AKIAUNIT", SecretAccessKey: extSecretPrefix + "AKIAUNIT"}}
+		edit(req, b)
+		res := signUpstreamRequest(req, nil, b)
+		require.NotNil(t, res, name)
+		assert.Equal(t, attemptFailover, res.kind, name)
+		assert.Equal(t, errTypePluginUnavailable, res.err.RecordType, name)
+		assert.NotContains(t, fmt.Sprint(res.err), extSecretPrefix, name)
+		assert.Empty(t, req.Header.Get("Authorization"), name)
 	}
 }
 
@@ -706,12 +771,12 @@ func TestAdaptResponseStream(t *testing.T) {
 		format, contentType string
 		adapted             bool
 	}{
-		"announced":                {"aws-eventstream", "application/vnd.amazon.eventstream", true},
-		"announced, with a param":  {"aws-eventstream", "Application/VND.amazon.eventstream; charset=binary", true},
+		"announced":                {awseventstream.FormatChunk, "application/vnd.amazon.eventstream", true},
+		"announced, with a param":  {awseventstream.FormatChunk, "Application/VND.amazon.eventstream; charset=binary", true},
 		"not announced":            {"", "application/vnd.amazon.eventstream", false},
-		"announced, JSON answer":   {"aws-eventstream", "application/json", false},
-		"announced, SSE answer":    {"aws-eventstream", "text/event-stream", false},
-		"announced, no type":       {"aws-eventstream", "", false},
+		"announced, JSON answer":   {awseventstream.FormatChunk, "application/json", false},
+		"announced, SSE answer":    {awseventstream.FormatChunk, "text/event-stream", false},
+		"announced, no type":       {awseventstream.FormatChunk, "", false},
 		"unknown format (guarded)": {"x", "application/vnd.amazon.eventstream", false},
 	} {
 		closed := false

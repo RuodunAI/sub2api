@@ -14,15 +14,21 @@ package reqsign
 //     (URL.EscapedPath) is escaped once more with the RFC 3986 unreserved
 //     set, so ":" sent as "%3A" is signed as "%253A";
 //   - canonical query: sorted by key, then value, percent-encoded with the
-//     unreserved set (a space is "%20", never "+");
+//     unreserved set (a space is "%20", never "+"). URL.RawQuery is rewritten
+//     to that string, so the query sent is the query signed; one that cannot
+//     be parsed is an error, never signed in part;
 //   - host: Request.Host, else URL.Host, without the scheme's default port.
+//     It is written back to Request.Host, so the Host header sent is the
+//     host signed.
 
 import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -38,6 +44,14 @@ func signAWSSigV4(req *http.Request, payload []byte, d Directive, now time.Time)
 	if d.AccessKeyID == "" || d.SecretAccessKey == "" || d.Region == "" || d.Service == "" {
 		return errors.New("reqsign: aws-sigv4 needs region, service, access key id and secret access key")
 	}
+	query, err := sigV4Query(req.URL.RawQuery)
+	if err != nil {
+		return err
+	}
+	// What goes on the wire is exactly what is signed.
+	req.URL.RawQuery = query
+	req.Host = sigV4Host(req)
+
 	amzDate := now.UTC().Format(sigV4TimeFormat)
 	date := amzDate[:8]
 
@@ -68,14 +82,15 @@ func signAWSSigV4(req *http.Request, payload []byte, d Directive, now time.Time)
 }
 
 // sigV4CanonicalRequest is the canonical form of req with the body payload,
-// and the list of headers it signs.
+// and the list of headers it signs. The query of req is canonical already
+// (sigV4Query).
 func sigV4CanonicalRequest(req *http.Request, payload []byte) (canonical, signedHeaders string) {
 	names, headers := sigV4Headers(req)
 	signedHeaders = strings.Join(names, ";")
 	return strings.Join([]string{
 		req.Method,
 		sigV4Path(req.URL.EscapedPath()),
-		strings.ReplaceAll(req.URL.Query().Encode(), "+", "%20"),
+		req.URL.RawQuery,
 		headers,
 		signedHeaders,
 		sha256Hex(payload),
@@ -108,6 +123,21 @@ func sigV4Headers(req *http.Request) (names []string, canonical string) {
 	return names, b.String()
 }
 
+// sigV4Query is the canonical form of a raw query string: parameters sorted
+// by key, then by value, each percent-encoded with the unreserved set. A
+// query net/url cannot parse (a ";" separator, a bad escape) is an error: its
+// parameters would otherwise be left out of the signature and still be sent.
+func sigV4Query(raw string) (string, error) {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return "", fmt.Errorf("reqsign: aws-sigv4 cannot parse the query string: %w", err)
+	}
+	for _, vs := range values {
+		sort.Strings(vs)
+	}
+	return strings.ReplaceAll(values.Encode(), "+", "%20"), nil // Encode sorts the keys
+}
+
 // sigV4Host is the authority the request is addressed to, without the port
 // when it is the scheme's default: that is how the AWS side canonicalises it.
 func sigV4Host(req *http.Request) string {
@@ -135,23 +165,11 @@ func sigV4Path(escaped string) string {
 }
 
 // escapeUnreserved percent-encodes everything outside the RFC 3986
-// unreserved set. net/url's PathEscape is not equivalent: it leaves
-// sub-delimiters such as "$&+,:;=@" alone.
+// unreserved set: url.QueryEscape does, except that it writes a space as "+".
+// net/url's PathEscape is not equivalent: it leaves sub-delimiters such as
+// "$&+,:;=@" alone.
 func escapeUnreserved(s string) string {
-	const hexDigits = "0123456789ABCDEF"
-	var b strings.Builder
-	b.Grow(len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '_' || c == '.' || c == '~' {
-			b.WriteByte(c)
-			continue
-		}
-		b.WriteByte('%')
-		b.WriteByte(hexDigits[c>>4])
-		b.WriteByte(hexDigits[c&15])
-	}
-	return b.String()
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 func hmacSHA256(key []byte, content string) []byte {

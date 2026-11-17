@@ -509,6 +509,10 @@ func refreshDue(decl *manifest.AccountRefresh, creds map[string]any, now time.Ti
 // The renewal runs in the background and is the sweep's, not a forced one:
 // the account lock, the re-read and the refused-credentials check all apply,
 // and a failure is recorded in the refresh state like any other.
+// Nothing waits for it, a shutdown included: an account whose renewal was cut
+// is still due and is renewed by the next sweep. A panic in it is recovered
+// and logged like one in any other goroutine of the package (runRecovered),
+// as no HTTP recovery middleware sees this one.
 func (s *Service) refreshSaved(ctx context.Context, id int64, bt core.AccountTypeBinding, secret []byte) {
 	if bt.Type.Refresh == nil || bt.Client == nil {
 		return
@@ -518,9 +522,9 @@ func (s *Service) refreshSaved(ctx context.Context, id int64, bt core.AccountTyp
 		return
 	}
 	ctx = context.WithoutCancel(ctx)
-	go func() {
+	go runRecovered(ctx, func() {
 		if _, err := s.refreshAccount(ctx, id, false); err != nil {
 			slog.WarnContext(ctx, "account: credential refresh after save", "account", id, "err", err)
 		}
-	}()
+	})
 }
