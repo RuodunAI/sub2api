@@ -2,7 +2,7 @@
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
-import { SAlert, SBadge, SButton, SCard, SChip, SDropdown, SEmpty, SField, SGrid, SHint, SIcon, SInput, SLink, SFormModal, SPageHeader, SSpinner, STextarea, confirm, toast } from '@sub2api/ui'
+import { SAlert, SBadge, SButton, SCard, SChip, SDropdown, SEmpty, SField, SGrid, SHint, SIcon, SInput, SLink, SFormModal, SPageHeader, SRadioGroup, SSelect, SSpinner, STextarea, confirm, toast, type SelectOption } from '@sub2api/ui'
 import type { PermissionModule, User } from '@/api/types'
 import { roleMemberCount, type RoleRow } from '@/api/admin'
 import { deleteWithConfirm } from '@/composables/crud'
@@ -14,6 +14,7 @@ import { fieldErrors, notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
 import { isVersionConflict, missingText } from '@/utils/permErrors'
 import { actionOf, newRiskyGrants, replayCells, sameKeys } from '@/authz/pluginGrants'
+import { copyGrants, type CopyMode } from '@/authz/copyGrants'
 import { useEditorGrants } from '@/components/permission/useEditorGrants'
 import { confirmRiskyGrants } from '@/components/permission/confirmRiskyGrants'
 import PermissionTree from './PermissionTree.vue'
@@ -296,6 +297,44 @@ function resetEditor() {
   if (selected.value) selectRole(selected.value, true)
 }
 
+// ------------------------------------------------------------------ copy from another role
+
+// Fills the editor's ticks from another role's saved keys (union or
+// intersect, authz/copyGrants); nothing is written until Save, which checks
+// the result like any edit. A key the editor may not grant is left out and
+// named, as is one of a removed permission (it cannot be ticked here).
+const copyOpen = ref(false)
+const copyFrom = ref<number | null>(null)
+const copyMode = ref<CopyMode>('union')
+const copySources = computed(() =>
+  roles.value.filter((r) => r.id !== selectedId.value && !r.superuser && Array.isArray(r.permission_keys))
+)
+const copySourceOptions = computed<SelectOption[]>(() => copySources.value.map((r) => ({ value: r.id, label: lt(r.name) || r.key, hint: r.key })))
+const copyModeOptions = computed<SelectOption[]>(() => [
+  { value: 'union', label: t('roles.copyUnion') },
+  { value: 'intersect', label: t('roles.copyIntersect') }
+])
+const mayCopy = (key: string) => {
+  const item = catalog.value.get(actionOf(key))
+  return !!item && item.status !== 'removed' && editor.mayGrant(key)
+}
+
+function openCopy() {
+  copyFrom.value = null
+  copyMode.value = 'union'
+  copyOpen.value = true
+}
+
+function applyCopy() {
+  const source = copySources.value.find((r) => r.id === copyFrom.value)
+  if (!source) return
+  const { keys, skipped } = copyGrants([...perms.value], source.permission_keys ?? [], copyMode.value, mayCopy)
+  perms.value = new Set(keys)
+  copyOpen.value = false
+  if (skipped.length) toast(t('roles.copySkipped', { n: skipped.length, list: skipped.join(t('roles.listSep')) }), 'warning', 8000)
+  else toast(t('roles.copied'), 'success')
+}
+
 // ------------------------------------------------------------------ create / delete
 
 /** Field error codes of POST and PATCH /roles shown in the console's language. */
@@ -420,6 +459,7 @@ async function restoreDefaults() {
         </template>
         <template v-if="!readOnly" #actions>
           <SButton v-if="selected.builtin" size="sm" icon="refresh" :disabled="saving" data-testid="role-restore" @click="restoreDefaults">{{ t('roles.restoreDefaults') }}</SButton>
+          <SButton v-if="!selected.superuser && !permsMissing" size="sm" icon="copy" :disabled="saving || !copySources.length" data-testid="role-copy" @click="openCopy">{{ t('roles.copyFrom') }}</SButton>
           <SButton size="sm" :disabled="!dirty || saving" @click="resetEditor">{{ t('common.reset') }}</SButton>
           <SButton variant="primary" size="sm" :disabled="!dirty" :loading="saving" data-testid="role-save" @click="save">{{ t('common.save') }}</SButton>
           <SDropdown v-if="!selected.builtin" :actions="roleActions" data-testid="role-menu" @select="removeRole" />
@@ -469,6 +509,24 @@ async function restoreDefaults() {
       </SCard>
       <SCard v-else :padded="false"><SEmpty :text="t('roles.selectRole')" /></SCard>
     </SGrid>
+
+    <SFormModal
+      v-model:open="copyOpen"
+      :title="t('roles.copyTitle')"
+      :submit-text="t('roles.copyApply')"
+      :submit-disabled="copyFrom === null"
+      :submit-attrs="{ 'data-testid': 'role-copy-apply' }"
+      data-testid="role-copy-modal"
+      @submit="applyCopy"
+    >
+      <SField :label="t('roles.copySource')" required>
+        <SSelect v-model="copyFrom" :options="copySourceOptions" searchable :placeholder="t('roles.copySourcePlaceholder')" :aria-label="t('roles.copySource')" data-testid="role-copy-source" />
+      </SField>
+      <SField :label="t('roles.copyMode')" :hint="copyMode === 'union' ? t('roles.copyUnionHint') : t('roles.copyIntersectHint')">
+        <SRadioGroup v-model="copyMode" :options="copyModeOptions" inline :aria-label="t('roles.copyMode')" data-testid="role-copy-mode" />
+      </SField>
+      <SHint>{{ t('roles.copyNotSaved') }}</SHint>
+    </SFormModal>
 
     <SFormModal v-model:open="createOpen" :title="t('roles.create')" :loading="creating" :submit-text="t('common.create')" @submit="submitCreate">
       <SField :label="t('roles.key')" required :hint="t('roles.keyHint')" :error="createErrors.key">

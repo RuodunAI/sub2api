@@ -449,3 +449,83 @@ describe('RolesView saving permissions', () => {
     expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:read', 'user:delete'], revision: 9 })
   })
 })
+
+describe('RolesView copy from role', () => {
+  const role = (over: object) => ({ id: 2, key: 'lead', name: 'Lead', builtin: false, superuser: false, permission_keys: ['user:read', 'plugin.g:read'], assignable_role_keys: [], assign_custom: false, revision: 7, ...over })
+  const modules = [
+    { module: 'user', label: 'Users', source: 'core', status: 'active', permissions: [{ key: 'user:read', label: 'View', risk: 'low', status: 'active' }, { key: 'user:delete', label: 'Delete', risk: 'sensitive', status: 'active' }] },
+    { module: 'plugin.g', label: 'G', source: 'plugin', plugin_key: 'g', status: 'active', permissions: [{ key: 'plugin.g:read', label: 'Read', risk: 'low', status: 'active' }, { key: 'plugin.g:old', label: 'Old', risk: 'low', status: 'removed' }] }
+  ]
+  const list = [
+    role({}),
+    role({ id: 3, key: 'src', name: 'Source', permission_keys: ['user:read', 'user:delete', 'plugin.g:old'] }),
+    role({ id: 4, key: 'super_admin', name: 'Super', builtin: true, superuser: true, permission_keys: undefined })
+  ]
+  const PermissionTree = { name: 'PermissionTree', props: ['granted', 'modules', 'allGranted', 'readOnly', 'scopeLimit', 'roleKey', 'grantable'], emits: ['update:granted'], template: '<i />' }
+  const SSelect = { name: 'SSelect', props: ['modelValue', 'options'], emits: ['update:modelValue'], template: '<i />' }
+  const SRadioGroup = { name: 'SRadioGroup', props: ['modelValue', 'options'], emits: ['update:modelValue'], template: '<i />' }
+
+  async function open(me: { superuser: boolean; permissions: string[] }) {
+    auth.me = { id: 1900 + Math.random(), roles: [], ...me }
+    auth.perms = ['role:define']
+    lookups.roles = list
+    mocks.get.mockImplementation(async (path: string) => (path === '/permissions' ? modules : []))
+    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, PermissionTree, SSelect, SRadioGroup } } })
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('lead'))!.trigger('click')
+    await flushPromises()
+    return w
+  }
+  async function copy(w: Awaited<ReturnType<typeof open>>, from: number, mode?: 'union' | 'intersect') {
+    await w.get('[data-testid="role-copy"]').trigger('click')
+    const select = w.getComponent(SSelect)
+    expect((select.props('options') as { value: number }[]).map((o) => o.value)).toEqual([3])
+    select.vm.$emit('update:modelValue', from)
+    if (mode) w.getComponent(SRadioGroup).vm.$emit('update:modelValue', mode)
+    await flushPromises()
+    await w.find('form').trigger('submit')
+    await flushPromises()
+  }
+  const granted = (w: Awaited<ReturnType<typeof open>>) => [...(w.getComponent(PermissionTree).props('granted') as Set<string>)].sort()
+
+  it('union adds the source role\'s permissions to the ticks, leaving out removed ones, and saves only on Save', async () => {
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    const w = await open({ superuser: true, permissions: [] })
+    await copy(w, 3)
+    expect(granted(w)).toEqual(['plugin.g:read', 'user:delete', 'user:read'])
+    expect(mocks.put).not.toHaveBeenCalled()
+    expect(toastState.items.at(-1)?.message).toContain('plugin.g:old')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(mocks.put).toHaveBeenCalledWith('/roles/2/permissions', { permission_keys: ['plugin.g:read', 'user:delete', 'user:read'], revision: 7 })
+  })
+
+  it('intersect keeps only what both roles grant', async () => {
+    const w = await open({ superuser: true, permissions: [] })
+    await copy(w, 3, 'intersect')
+    expect(granted(w)).toEqual(['user:read'])
+  })
+
+  it('leaves out and names what the editor may not grant', async () => {
+    toastState.items.splice(0)
+    const w = await open({ superuser: false, permissions: ['role:define', 'user:read', 'plugin.g:read'] })
+    await copy(w, 3)
+    expect(granted(w)).toEqual(['plugin.g:read', 'user:read'])
+    const last = toastState.items.at(-1)!
+    expect(last.kind).toBe('warning')
+    expect(last.message).toContain('user:delete')
+  })
+
+  it('is not offered on the super admin role', async () => {
+    auth.me = { id: 2900 + Math.random(), roles: [], superuser: true, permissions: [] }
+    auth.perms = ['role:define']
+    lookups.roles = list
+    mocks.get.mockImplementation(async (path: string) => (path === '/permissions' ? modules : []))
+    const w = mount(RolesView, { global: { plugins: [i18n, createPinia()], stubs: { SFormModal, teleport: true, PermissionTree } } })
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('super_admin'))!.trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="role-copy"]').exists()).toBe(false)
+  })
+})
