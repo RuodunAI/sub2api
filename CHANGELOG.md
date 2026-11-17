@@ -8,15 +8,14 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-- **复制 API Key 不再二次验证**：在“我的 API Key”里复制、查看自己的 Key（`POST /me/api-keys/:id/reveal`）不再要求二次验证，仍只能操作自己的 Key，每次照常记 `apikey.reveal` 审计。权限 `apikey:self:manage` 不再标记高危和二次验证，二次验证范围里去掉 `apikey.reveal`（CONTRACTS §80.2）。
+## 2026-11-18
 
-### 通知投递错误看得懂（mailer 0.1.4）
+### 核心 0.1.302：通知投递错误看得懂、复制 API Key 不再二次验证（`0295123ea`，mailer 0.1.4；无迁移，滚动）
 
 - **mailer 0.1.4：投递失败说明是哪一步、该查什么**（CONTRACTS §74.4）：SMTP 服务器域名不存在时，通知记录显示“找不到 SMTP 服务器 <host>（域名不存在），请在邮件插件设置里改正”；连不上、服务器不应答（含 TLS 握手失败）、STARTTLS 失败、登录失败、发件地址被拒也各有中英文说明，后面接底层错误。端口 465 没选“全程 TLS”、端口 587 选了“全程 TLS”时附上提示（这种组合以前只会等到超时）。
 - **核心**：插件自己返回的投递错误原样记入通知记录，不再带 `internal: internal error: plugin mailer: Unknown:` 前缀；错误截断到 1000 字节时在字符边界截断，中文错误不会写坏。
 - **控制台**：系统设置 → 通知的投递记录完整显示错误并换行，不再截断成一行（以前只看得到 `internal: internal error: plugin mailer: Unknown: dial t…`）。
-
-## 2026-11-18
+- **复制 API Key 不再二次验证**：在“我的 API Key”里复制、查看自己的 Key（`POST /me/api-keys/:id/reveal`）不再要求二次验证，仍只能操作自己的 Key，每次照常记 `apikey.reveal` 审计。权限 `apikey:self:manage` 不再标记高危和二次验证，二次验证范围里去掉 `apikey.reveal`（CONTRACTS §80.2）。
 
 ### 核心 0.1.301：删除 custom 插件、答完后才断开的请求按成功计费、插件可读取系统设置并感知变更、最大并发移入限流（`e0a985c81`，codex 0.1.10、dynweight 0.5.11；迁移 0104，主节点优先）
 
