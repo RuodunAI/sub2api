@@ -302,6 +302,7 @@
 | `user.created` / `user.updated` | `{user_id, email, status}` | A |
 | `balance.changed` | `{user_id, ledger_id, delta, balance_after, kind}` | B |
 | `plugin.enabled` / `plugin.disabled` | `{plugin_key, version}` | C |
+| `settings.changed` | `{sections}`：保存的系统设置分组（§106），与设置同一事务写入 | B、G、环境变量 |
 
 ## 7. Redis key
 
@@ -330,7 +331,7 @@
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
 
-广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本（§99.4）；不是这个格式的 payload 不当作变化，节点改为读一次版本。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
+广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本（§99.4）；不是这个格式的 payload 不当作变化，节点改为读一次版本。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`，系统设置 `{"key":"settings.<分组>"}`（插件可读的分组同时通知各节点的插件进程，§106.3），其余核心缓存 `{"key":k}`（如 `prices`、`price_rules`、`sticky_rules`）。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
 节点插件状态（`node:plugins:{boot_id}` 每个插件一个 JSON，C2 写、C1 与控制台读）：`{state, serving, standby?, rollout_id?, rollout?, error?, instances:[{version, state, error?, restarts}]}`。`state` 汇总本节点：有进行中的发布时等于 `rollout`（`pending|ready|active|failed`），否则按在服务的实例为 `active|pending|failed`，没有在服务的版本为 `stopped`。
 
@@ -344,6 +345,8 @@
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
 | `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}` | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
+
+上表只列最初的字段，后加的字段见各节。插件经 `HostService.GetSettings` 只读地读取的分组与完整字段见 §106.2。
 
 ## 9. 环境变量
 
@@ -5126,11 +5129,11 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 分组层和账号层是 `groups.environment` 和 `accounts.environment` 两列，随分组和账号一起编辑。
 - **插件**：
   - 网关请求的解析结果在 `RequestMeta.environment`。选定账号之前的调用（钩子、`RankAccounts`、用量估算等）拿到的是分组层和全局层（含进程层）的解析结果，没有账号层；针对某次尝试的调用（构建上游请求、`ClassifyError`、用量提取等）含该账号的账号层。
-  - 后台任务调用 `HostService.GetEnvironment(group_id, account_id)`，总是授权。
+  - 后台任务调用 `HostService.GetEnvironment(group_id, account_id)`，总是授权。只要全局层时也可以用 `pluginsdk.Settings[protocol.EnvironmentSettings]`（§106）。
   - 变量名常量在 SDK 的 `protocol` 包（`protocol.EnvVarRelayTimeoutSeconds` 等），核心复用同一组常量。
   - 目前没有插件读这两处：转发由核心完成，变量也由核心应用。它们是留给自己向上游转发的插件（自带 HTTP 客户端、后台任务直接调上游）的扩展点，这类插件应按同样的变量设超时和上限。
 - **读声明的接口** `GET /environment/variables` 需要 `settings:read`、`group:read`、`account:read`、`account:own:read` 或 `account:own:create` 之一（三层编辑器都要用；只有本人账号权限的用户也能改自己账号的账号层，所以也要能读声明，2026-10-31 补上 own 级）。
-- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
+- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=settings.environment`，0.1.300 前是 `environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
 
 ### 74.4 通知
 
@@ -7733,3 +7736,66 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - 采样、限频、写库（§44.3）不变：网关对每个 2xx、429、101 响应读取声明的头。
 - WebSocket 会话中的错误事件（`type: "error"`，`status` ≥ 400）带顶层 `headers` 对象时（Codex 后端：`{"type":"error","status":429,"error":{...},"headers":{"x-codex-primary-used-percent":"100.0",...}}`），核心把它当作这次错误的响应头：头名转小写，字符串与数字值转成文本（其他类型忽略），交给插件 `ClassifyError` 的 `headers`，并按上一条采样（429 被接受）。没有 `headers` 对象的错误事件照旧不带头分类、不采样。
 - 随核心 0.1.297 发布。旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到 0.1.297。
+
+## 106. 插件读取系统设置与变更通知（2026-11-17，用户要求；无迁移；Host API 仍是 9；核心 0.1.300）
+
+插件此前读不到核心的系统设置：dynweight 清粘性会话时不知道粘性会话是否开启，第三方插件要按网关的重试次数、超时或计费策略调整自己的行为，只能让运营方在插件设置里再填一遍。本节让插件只读地按分组读取系统设置，并在设置变化时及时得知。
+
+### 106.1 接口
+
+| 调用 | 请求 | 响应 |
+| --- | --- | --- |
+| `HostService.GetSettings` | `sections[]`（空 = 全部分组） | `sections[]`，每项 `{name, version, values_json}`，按请求的顺序，同一分组只回一次 |
+| `PluginService.SettingsChanged`（核心调插件） | `sections[]` | 空 |
+
+- `values_json` 是该分组的 JSON 对象，字段固定为 SDK `protocol` 包的类型（106.2），由 `encoding/json` 编码，同样的值编码结果相同。`version` 是 `values_json` 的 SHA-256 前 8 字节的十六进制（16 个字符）：值不变，`version` 不变，插件可以用它判断是否需要重新计算。
+- 未知分组名：`INVALID_ARGUMENT`，整个调用失败。核心读库失败：错误照常转换（`UNAVAILABLE` 等），不回部分结果。
+- 不需要授权（与 `GetEnvironment` 相同，§74.3）：这些是每个插件都该遵守的运行参数，不含密钥、凭证或用户数据（106.4）。
+- 不能写。设置仍只能由管理员在控制台修改。
+- SDK：`pluginsdk.Settings[T](ctx, host)`，`T` 是 106.2 的类型之一，如 `pluginsdk.Settings[protocol.StickySettings](ctx, p.host)`。SDK 在插件进程里缓存每个分组的 `values_json`，收到 `SettingsChanged` 时丢掉其中列出的分组（`sections` 为空时丢掉全部），另外每个分组最多缓存 10 秒，作为通知丢失时的兜底；在丢弃之前发出的读取，结果不进缓存。每次调用都重新解码，返回的值可以随意修改。宿主未就绪时返回 `ErrHostNotReady`，宿主的错误原样返回、不缓存。
+- SDK 已经处理 `SettingsChanged`，插件不需要实现它。用旧 SDK 构建的插件回 `UNIMPLEMENTED`，核心不当作错误（旧插件不缓存设置）。
+- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置一个分组（没设置的分组回 `UNAVAILABLE`），`SettingsReads()` 是宿主被读的次数；`Harness.SettingsChanged(sections...)` 模拟变更通知。
+
+### 106.2 分组与字段
+
+分组名就是 `settings` 表的 key（§8），控制台「系统设置」里的同名页面。
+
+| 分组 | 类型 | 字段 |
+| --- | --- | --- |
+| `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
+| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
+| `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
+| `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
+| `auto_disable` | `AutoDisableSettings` | `enabled`、`status_codes`、`keywords`（§42.2）；发布了故障策略时由策略的账号规则决定，开关看 `failure_policy.account_enabled` |
+| `failure_policy` | `FailurePolicySettings` | `configured`、`revision`、`retry_enabled`、`max_retries`、`retries_per_account`、`switch_account`、`reset_sticky`、`backoff_ms`、`max_wait_ms`、`respect_retry_after`、`account_enabled`（§69）；没有发布的策略时除 `configured=false` 外全是零值 |
+| `environment` | `EnvironmentSettings` | `values`：全局层叠加进程层后的每个变量（§74.3）；分组层、账号层仍用 `GetEnvironment` |
+
+- 值是核心实际使用的值：没有保存过的分组给默认值，超出范围的旧值按核心的规则收敛（与核心自己的缓存用同一个读取与规整函数：网关的 `settingsCache.load`、计费的 `loadSettings`、环境变量的 `load` + `ResolveEnvironment`）。宿主每次调用直接读库，不读本节点的缓存，所以插件收到通知后读到的一定是新值。
+- 字段只增不改：改名或改变含义按不兼容变更处理。插件解码时应忽略不认识的字段（`encoding/json` 默认如此）。
+- 核心实现：`sdk/protocol/settings.go`（类型）、`server/internal/{billing,gateway,environment}` 各自的 `SettingsReaders`（每个分组恰有一个负责方，`app.settingsReaders` 在启动时检查分组齐全且不重复）、`plugin/grpcruntime/settings.go`。
+
+### 106.3 变更通知
+
+保存上表任一分组时，负责方：
+
+1. 在保存设置的同一事务里写 outbox 事件 `settings.changed`，payload `{"sections": ["<分组>"]}`（§6）。一次保存只改一个分组。保存被拒绝（校验失败、版本冲突）时不写。
+2. 提交后广播 `config:changed` `{"key":"settings.<分组>"}`（§7）。
+
+每个节点的插件发布控制器（`plugin/rollout/settings.go`）订阅 `config:changed`，认出 `settings.<分组>` 且分组在 106.2 里时，对本节点在服务的每个插件实例调用 `PluginService.SettingsChanged`（每次最长 2 秒，失败只记日志）。`config:changed` 发给包括写入节点在内的所有节点，所以每个节点上的每个插件进程都能立刻丢掉缓存；SDK 的 10 秒缓存上限兜住广播丢失和调用失败。不需要在清单里声明任何东西。
+
+`settings.changed` 事件给需要可靠记录的插件：经 `app.events.v1` 订阅（授权 `events`，`subscribe` 列出它），至少一次投递、每个插件只由一个节点处理（§11.7），适合在变更后做一次性的工作（重算、通知）。它不能代替上面的通知去作废各节点的缓存。
+
+`account-stats`（控制台统计页的显示参数）保存时也广播 `config:changed` `{"key":"settings.account-stats"}`，但不在 106.2 里，不通知插件；`reconcile`（核心对账的内部参数）不广播。两者插件都用不上。
+
+### 106.4 没有开放的设置
+
+- 故障策略的规则（`failure_policy` 的 `rules`、`history`）：只由核心求值，规则格式也会调整；插件只拿开关（106.2）。
+- `reconcile`、`account-stats`：同上一节。
+- 不在 `settings` 表里的配置：更新源与签名公钥（§102）、市场源、插件自己的设置（插件经 `Configure` 收到）、配置文件与环境变量里的连接串和密钥。
+- 用户、分组、账号的数据：有各自的接口和授权（`users.read` 等）。
+
+### 106.5 兼容与版本
+
+- Host API 不升，仍是 9，理由同 91.3、93：只加 RPC，升版会让 rolling-v1 滚动更新不可用。
+- 旧核心对 `GetSettings` 回 `UNIMPLEMENTED`，也不会调 `SettingsChanged`。用到本节的插件把 `hostCompat` 下限提到 `>=0.1.300`。
+- 没有迁移。环境变量设置的 `config:changed` payload 从 `{"key":"environment"}` 改为 `{"key":"settings.environment"}`，与其他分组一致。滚动更新期间新旧节点互相认不出对方的这条广播，全局层缓存最多晚 10 秒（§74.3 的缓存时长）。

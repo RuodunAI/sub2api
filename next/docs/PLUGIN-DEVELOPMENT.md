@@ -18,7 +18,7 @@
 
 ## 2. 设置对照表
 
-“核心统一”表示插件什么都不用做；“插件配合”写明插件要实现或声明什么。
+“核心统一”表示插件什么都不用做；“插件配合”写明插件要实现或声明什么。表里说的都是网关请求上的生效方式；插件在请求之外（定时任务、事件处理、自己的 HTTP 路由）要按这些设置行事时，用第 5 节的接口读取当前值，不要让运营方在插件设置里再填一遍。
 
 ### 2.1 计费（系统设置 → 计费）
 
@@ -73,4 +73,33 @@
 - 走插件执行时用 SDK 的 `ExecuteDefault`，或在自己的 `Execute` 里同样经 `ForwardUpstream` 发请求、经 `RecordUsage` 记用量，不要自己连上游（插件的对外连接本来也要经核心转发）。
 - 需要账号被自动禁用到某个时刻时实现 `ClassifyError`，不要在插件里自己改账号状态。
 - 不要在插件里实现限流、并发、粘性、价格、断开计费这类核心已经统一处理的逻辑。
+- 后台逻辑需要系统设置时用 `pluginsdk.Settings` 在用到的地方读（第 5 节），不要在 `Init` 里读一次存起来，也不要另设一份插件设置。
 - 改了上表涉及的行为，同步本文、CONTRACTS 对应章节，并在三条路径上补测试（参考 `gateway/disconnect_test.go` 的 `TestClientDisconnectExecutedRequest`、`execute_test.go`）。
+
+## 5. 读取系统设置与变更通知（核心 0.1.300 起）
+
+插件可以只读地读取下表的系统设置分组，并在管理员保存后立即得知（CONTRACTS §106）：
+
+| 分组 | SDK 类型 | 典型用途 |
+|---|---|---|
+| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、缺价策略、断开计费策略处理 |
+| `gateway` | `protocol.GatewaySettings` | 自己调上游的后台任务参照重试次数、超时、媒体下载上限 |
+| `scheduling` | `protocol.SchedulingSettings` | 排序插件（`RankAccounts`）参照均衡负载的指标 |
+| `sticky` | `protocol.StickySettings` | 粘性会话关闭时不必清理绑定（dynweight 0.5.11） |
+| `auto_disable`、`failure_policy` | `protocol.AutoDisableSettings`、`protocol.FailurePolicySettings` | 判断核心会不会自动禁用、冷却账号，避免插件重复处理 |
+| `environment` | `protocol.EnvironmentSettings` | 全局层的环境变量；分组层、账号层用 `GetEnvironment` |
+
+```go
+sticky, err := pluginsdk.Settings[protocol.StickySettings](ctx, p.host)
+if err != nil {
+	// 宿主暂时读不到：按插件自己的安全默认继续
+}
+if !sticky.Enabled { ... }
+```
+
+- 不用授权，不用在清单里声明能力；只读，不能改设置。
+- SDK 在进程里缓存每个分组，核心在任一节点保存设置后会通知每个节点上的插件进程（`PluginService.SettingsChanged`，SDK 已实现），缓存随即作废；另外最多缓存 10 秒，所以在用到的地方直接调用即可：缓存命中时不访问宿主，只解码一次 JSON。
+- 值与核心实际使用的一致（默认值、范围收敛都已算好），字段说明见 CONTRACTS §106.2。故障策略只给开关，规则不开放。
+- 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
+- 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.300`。
+- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知。
