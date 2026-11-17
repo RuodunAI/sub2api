@@ -76,7 +76,7 @@ func pluginFailurePolicy(ctx context.Context, q *gorm.DB) (protocol.SettingsValu
 		return protocol.FailurePolicySettings{}, err
 	}
 	return protocol.FailurePolicySettings{
-		Configured: true, Revision: p.Revision, RetryEnabled: p.RetryEnabled, MaxRetries: p.MaxRetries,
+		Configured: true, Revision: p.Revision, SchemaVersion: p.SchemaVersion, RetryEnabled: p.RetryEnabled, MaxRetries: p.MaxRetries,
 		RetriesPerAccount: p.RetriesPerAccount, SwitchAccount: p.SwitchAccount, ResetSticky: p.ResetSticky,
 		BackoffMs: p.BackoffMS, MaxWaitMs: p.MaxWaitMS, RespectRetryAfter: p.RespectRetryAfter, AccountEnabled: p.AccountEnabled,
 	}, nil

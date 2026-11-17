@@ -42,7 +42,11 @@ func (h *hostServer) GetSettings(ctx context.Context, in *pluginv1.GetSettingsRe
 		}
 		v, err := read(ctx)
 		if err != nil {
-			return nil, toStatus(err)
+			// Whatever the owner's error (the database, a stored value it
+			// cannot use), the plugin can only keep what it has and read
+			// again later.
+			h.i.log.Warn("plugin settings read failed", "section", name, "err", err)
+			return nil, status.Errorf(codes.Unavailable, "%s settings unavailable", name)
 		}
 		raw, err := json.Marshal(v)
 		if err != nil {
@@ -54,11 +58,12 @@ func (h *hostServer) GetSettings(ctx context.Context, in *pluginv1.GetSettingsRe
 	return out, nil
 }
 
-// SettingsChanged tells the plugin process that sections changed. A plugin
-// built with an SDK that predates the call answers UNIMPLEMENTED: it caches
-// nothing, so that is not an error.
+// SettingsChanged tells the plugin process that sections changed. The SDK
+// answers it without plugin code, so it takes no call slot (classControl).
+// A plugin built with an SDK that predates the call answers UNIMPLEMENTED:
+// it caches nothing, so that is not an error.
 func (i *Instance) SettingsChanged(ctx context.Context, sections []string) error {
-	return i.call(ctx, classBackground, SettingsChangedTimeout, func(ctx context.Context, p *proc) error {
+	return i.call(ctx, classControl, SettingsChangedTimeout, func(ctx context.Context, p *proc) error {
 		_, err := p.plugin.SettingsChanged(ctx, &pluginv1.SettingsChangedRequest{Sections: sections})
 		if status.Code(err) == codes.Unimplemented {
 			return nil

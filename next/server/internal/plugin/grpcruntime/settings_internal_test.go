@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -60,9 +62,13 @@ func TestHostGetSettings(t *testing.T) {
 		t.Fatalf("all sections %v", names)
 	}
 
-	i.rt.o.Settings[protocol.SettingsSticky] = func(context.Context) (protocol.SettingsValues, error) { return nil, core.ErrUnavailable }
-	if _, err := h.GetSettings(ctx, &pluginv1.GetSettingsRequest{Sections: []string{protocol.SettingsSticky}}); status.Code(err) != codes.Unavailable {
-		t.Fatalf("reader error: %v", err)
+	// Any reader error (the database, a stored value the owner refuses) is
+	// UNAVAILABLE: the plugin keeps what it has and reads again later.
+	for _, readErr := range []error{errors.New("connection refused"), core.InvalidFields(core.FieldError{Field: "retry_rules", Code: "invalid"})} {
+		i.rt.o.Settings[protocol.SettingsSticky] = func(context.Context) (protocol.SettingsValues, error) { return nil, readErr }
+		if _, err := h.GetSettings(ctx, &pluginv1.GetSettingsRequest{Sections: []string{protocol.SettingsSticky}}); status.Code(err) != codes.Unavailable {
+			t.Fatalf("reader error %v: %v", readErr, err)
+		}
 	}
 }
 
@@ -97,5 +103,17 @@ func TestInstanceSettingsChanged(t *testing.T) {
 	sp.err = status.Error(codes.Internal, "boom")
 	if err := i.SettingsChanged(ctx, nil); err == nil {
 		t.Fatalf("failure: %v", err)
+	}
+
+	// Background work holding every slot does not hold the call up.
+	sp.err = nil
+	bg := i.sems[classBackground]
+	for range cap(bg) {
+		bg <- struct{}{}
+	}
+	short, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	if err := i.SettingsChanged(short, nil); err != nil {
+		t.Fatalf("with the background slots taken: %v", err)
 	}
 }

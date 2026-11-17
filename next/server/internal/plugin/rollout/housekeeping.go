@@ -179,23 +179,50 @@ func (c *Controller) servingInstance(key string) Instance {
 	return nil
 }
 
-// servingInstances returns the instance each plugin served here has in the
-// generation, by plugin key.
-func (c *Controller) servingInstances() map[string]Instance {
+// eachSlot calls fn with every slot, under the slot's lock.
+func (c *Controller) eachSlot(fn func(s *slot)) {
 	c.mu.Lock()
 	slots := make([]*slot, 0, len(c.slots))
 	for _, s := range c.slots {
 		slots = append(slots, s)
 	}
 	c.mu.Unlock()
-	out := make(map[string]Instance, len(slots))
 	for _, s := range slots {
 		s.mu.Lock()
+		fn(s)
+		s.mu.Unlock()
+	}
+}
+
+// servingInstances returns the instance each plugin served here has in the
+// generation, by plugin key.
+func (c *Controller) servingInstances() map[string]Instance {
+	out := map[string]Instance{}
+	c.eachSlot(func(s *slot) {
 		if e := s.entries[s.serving]; s.serving != "" && e != nil && e.inst != nil {
 			out[s.key] = e.inst
 		}
-		s.mu.Unlock()
-	}
+	})
+	return out
+}
+
+// keyedInstance is an instance with its plugin key.
+type keyedInstance struct {
+	key  string
+	inst Instance
+}
+
+// loadedInstances returns every instance loaded here, the one in the
+// generation and those of a rollout alike.
+func (c *Controller) loadedInstances() []keyedInstance {
+	var out []keyedInstance
+	c.eachSlot(func(s *slot) {
+		for _, e := range s.entries {
+			if e.inst != nil {
+				out = append(out, keyedInstance{s.key, e.inst})
+			}
+		}
+	})
 	return out
 }
 

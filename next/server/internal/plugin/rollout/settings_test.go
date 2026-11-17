@@ -22,19 +22,25 @@ func (f settingsInst) SettingsChanged(_ context.Context, sections []string) erro
 	return f.fail
 }
 
-// A settings section saved anywhere reaches every plugin served here; other
-// config:changed messages reach none.
+// A settings section saved anywhere reaches every plugin instance loaded
+// here, a rollout's candidate included; other config:changed messages reach
+// none.
 func TestConfigChangedNotifiesPlugins(t *testing.T) {
 	dir := t.TempDir()
 	c := newTestController(t, &stubRuntime{}, &registrytest.MemBus{}, dir)
 	a := settingsInst{newStub(loadPkg(t, dir, "guard", "1.0.0")), make(chan []string, 4), errors.New("plugin error")} // only logged
 	b := settingsInst{newStub(loadPkg(t, dir, "dynweight", "1.0.0")), make(chan []string, 4), nil}
+	next := settingsInst{newStub(loadPkg(t, dir, "dynweight", "1.1.0")), make(chan []string, 4), nil}
 	c.serveForTest(a)
 	c.serveForTest(b)
+	s := c.slotFor("dynweight") // loaded, not yet in the generation
+	s.mu.Lock()
+	s.entries["1.1.0"] = &entry{version: "1.1.0", inst: next, epoch: 1}
+	s.mu.Unlock()
 	c.serveForTest(newStub(loadPkg(t, dir, "plain", "1.0.0"))) // cannot be told
 
 	c.onConfigChanged([]byte(`{"key":"settings.sticky"}`))
-	for _, inst := range []settingsInst{a, b} {
+	for _, inst := range []settingsInst{a, b, next} {
 		select {
 		case got := <-inst.sections:
 			if len(got) != 1 || got[0] != protocol.SettingsSticky {

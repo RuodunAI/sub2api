@@ -77,6 +77,7 @@ func TestSettingsForPlugins(t *testing.T) {
 	fp := read(protocol.SettingsFailurePolicy).(protocol.FailurePolicySettings)
 	require.True(t, fp.Configured)
 	require.Equal(t, int64(1), fp.Revision)
+	require.Equal(t, 4, fp.SchemaVersion)
 	require.Equal(t, 3, fp.MaxRetries) // the draft takes max_attempts - 1
 
 	// A refused save records nothing.

@@ -17,8 +17,8 @@ type settingsReceiver interface {
 }
 
 // onConfigChanged hands a settings section saved anywhere in the cluster to
-// every plugin served on this node (PluginService.SettingsChanged,
-// CONTRACTS §106). Every node receives config:changed, the writer's own
+// every plugin instance loaded on this node, a rollout's included
+// (PluginService.SettingsChanged, CONTRACTS §106). Every node receives config:changed, the writer's own
 // included, so every plugin process learns of the change; the
 // settings.changed event reaches one instance per plugin. It runs on the
 // bus goroutine, so the calls go out on their own.
@@ -38,14 +38,14 @@ func (c *Controller) onConfigChanged(payload []byte) {
 		defer c.wg.Done()
 		sections := []string{section}
 		var wg sync.WaitGroup
-		for key, inst := range c.servingInstances() {
-			r, ok := inst.(settingsReceiver)
+		for _, ki := range c.loadedInstances() {
+			r, ok := ki.inst.(settingsReceiver)
 			if !ok {
 				continue
 			}
 			wg.Go(func() {
 				if err := r.SettingsChanged(c.ctx, sections); err != nil {
-					c.log.Warn("plugin settings change not delivered", "plugin", key, "section", section, "err", err)
+					c.log.Warn("plugin settings change not delivered", "plugin", ki.key, "section", section, "err", err)
 				}
 			})
 		}
