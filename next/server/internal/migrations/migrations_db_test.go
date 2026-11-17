@@ -581,14 +581,22 @@ func TestMigration0103UserAndAccountOwners(t *testing.T) {
 		FROM users WHERE email = 'a@x';
 		INSERT INTO account_quota_snapshots (account_id, windows, updated_at, auto_refresh) SELECT id, '{"5h": {}}', now(), true FROM accounts;
 		RESET sup2api.auto_disabled_source`))
-	rows := `SELECT md5(string_agg((to_jsonb(a) - 'owner_id')::text || to_jsonb(q)::text, '' ORDER BY a.id))
+	// Each row afterwards contains what it held before, owner_id aside, so
+	// the columns later migrations add do not count.
+	rows := `SELECT jsonb_agg(jsonb_build_object('a', to_jsonb(a) - 'owner_id', 'q', to_jsonb(q)) ORDER BY a.id)
 		FROM accounts a JOIN account_quota_snapshots q ON q.account_id = a.id`
 	before := read(rows)
+	unchanged := func() bool {
+		t.Helper()
+		var ok bool
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT (`+rows+`) @> $1::jsonb`, before).Scan(&ok))
+		return ok
+	}
 	owners := `SELECT string_agg(a.name || '=' || COALESCE(u.email, '-'), ' ' ORDER BY a.name) FROM accounts a LEFT JOIN users u ON u.id = a.owner_id`
 
 	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
 	require.Equal(t, "limited=a@x mine=a@x nobody=-", read(owners))
-	require.Equal(t, before, read(rows), "the backfill changed an account or its quota snapshot")
+	require.True(t, unchanged(), "the backfill changed an account or its quota snapshot")
 	require.Equal(t, "3", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'users_owner_path_idx', 'accounts_owner_idx')`))
 	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id, owner_path = ARRAY[id] WHERE email = 'a@x'`), "users_owner_not_self")
 	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999, owner_path = '{999999}' WHERE email = 'a@x'`), "users_owner_fk")

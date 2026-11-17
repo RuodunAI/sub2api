@@ -171,7 +171,7 @@ func TestParamOverrideRuntimeFailures(t *testing.T) {
 			assertContains(t, err.Error(), tc.msg)
 		})
 	}
-	broken := Load([]byte(`{"operations":[{"mode":"prune_objects","path":"a"}]}`))
+	broken := Load([]byte(`{"operations":[{"mode":"bogus","path":"a"}]}`))
 	_, err := broken.Apply([]byte(`{}`), nil)
 	assertErrorContains(t, err, "stored override is invalid")
 }
@@ -186,17 +186,24 @@ func TestCompileParamOverrideValidation(t *testing.T) {
 		{"missing mode and path", `{"operations":[{"value":1},{"mode":"set","value":1}]}`,
 			[]string{"required: operations[0].mode", "required: operations[1].path"}},
 		{"set without value", `{"operations":[{"mode":"set","path":"a"}]}`, []string{"required: operations[0].value"}},
-		{"unsupported modes", `{"operations":[{"mode":"prune_objects","path":"a"},{"mode":"sync_fields"},{"mode":"bogus"}]}`,
-			[]string{"unsupported: operations[0].mode: mode prune_objects is not supported yet", "unsupported: operations[1].mode: mode sync_fields",
-				"unsupported: operations[2].mode: unknown mode bogus"}},
+		{"unsupported mode", `{"operations":[{"mode":"bogus"}]}`, []string{"unsupported: operations[0].mode: unknown mode bogus"}},
+		{"sync_fields", `{"operations":[{"mode":"sync_fields"},{"mode":"sync_fields","from":"json:","to":"x:y"},{"mode":"sync_fields","from":"a","to":"header:cookie"}]}`,
+			[]string{"required: operations[0].from", "required: operations[0].to", "required: operations[1].from", "invalid: operations[1].to: must start with",
+				"blocked: operations[2].to: header cookie"}},
+		{"prune_objects", `{"operations":[{"mode":"prune_objects"},{"mode":"prune_objects","value":1},{"mode":"prune_objects","value":{"recursive":false}},
+			{"mode":"prune_objects","value":{"where":[1],"logic":"x","recursive":"no","conditions":[{"path":"a","mode":"regex","value":"("}]}}]}`,
+			[]string{"required: operations[0].value", "invalid: operations[1].value: must be a type string or an object", "required: operations[2].value.conditions",
+				"invalid: operations[3].value.logic", "invalid: operations[3].value.conditions[0].value: invalid regular expression", "invalid: operations[3].value.recursive",
+				"invalid: operations[3].value.where"}},
 		{"bad regex", `{"operations":[{"mode":"regex_replace","path":"a","from":"("}]}`, []string{"invalid: operations[0].from: invalid regular expression"}},
 		{"string mode requirements", `{"operations":[{"mode":"replace","path":"a"},{"mode":"ensure_prefix","path":"a","value":""},{"mode":"trim_suffix","path":"a"}]}`,
 			[]string{"required: operations[0].from", "required: operations[1].value", "required: operations[2].value"}},
 		{"copy without from/to", `{"operations":[{"mode":"copy","from":"a"}]}`, []string{"required: operations[0].to"}},
 		{"wrong member types", `{"operations":[{"mode":"set","path":1,"value":1,"keep_origin":"yes","logic":"XOR"}]}`,
 			[]string{"invalid: operations[0].path: must be a string", "invalid: operations[0].keep_origin", "invalid: operations[0].logic", "required: operations[0].path"}},
-		{"conditions", `{"operations":[{"mode":"delete","path":"a","conditions":[{"path":"a"},{"mode":"regex","path":"b"},1]}]}`,
-			[]string{"required: operations[0].conditions[0].mode", "unsupported: operations[0].conditions[1].mode", "invalid: operations[0].conditions[2]"}},
+		{"conditions", `{"operations":[{"mode":"delete","path":"a","conditions":[{"path":"a"},{"mode":"like","path":"b"},1,{"mode":"regex","path":"c","value":1},{"mode":"regex","path":"d","value":"["}]}]}`,
+			[]string{"required: operations[0].conditions[0].mode", "unsupported: operations[0].conditions[1].mode", "invalid: operations[0].conditions[2]",
+				"invalid: operations[0].conditions[3].value: must be a regular expression string", "invalid: operations[0].conditions[4].value: invalid regular expression"}},
 		{"description too long", `{"operations":[{"mode":"delete","path":"a","description":"` + strings.Repeat("x", 201) + `"}]}`,
 			[]string{"invalid: operations[0].description"}},
 		{"blocked headers", `{"operations":[{"mode":"set_header","path":"Authorization","value":"x"},{"mode":"delete_header","path":"x-forwarded-for"},

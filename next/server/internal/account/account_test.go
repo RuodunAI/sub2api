@@ -1439,7 +1439,7 @@ func TestAccountParamOverride(t *testing.T) {
 	require.Equal(t, override, out["data"].([]any)[0].(map[string]any)["param_override"])
 
 	code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"param_override": map[string]any{"operations": []any{
-		map[string]any{"mode": "set"}, map[string]any{"mode": "set_header", "path": "x-api-key", "value": "k"}, map[string]any{"mode": "prune_objects", "path": "a"}}}})
+		map[string]any{"mode": "set"}, map[string]any{"mode": "set_header", "path": "x-api-key", "value": "k"}, map[string]any{"mode": "bogus", "path": "a"}}}})
 	require.Equal(t, 400, code, fmt.Sprint(out))
 	require.Equal(t, []string{"param_override:required", "param_override:required", "param_override:blocked", "param_override:unsupported"}, fieldsOf(out))
 
@@ -1462,6 +1462,52 @@ func TestAccountParamOverride(t *testing.T) {
 		"credentials": map[string]any{"api_key": "sk-good-key-456"}, "param_override": nil})
 	require.Equal(t, 201, code, fmt.Sprint(out))
 	require.Nil(t, data(out)["param_override"])
+}
+
+// A request header override (CONTRACTS §108) is validated on save, stored as
+// given, read back in the list and detail, replaced or cleared by PATCH and
+// compiled into the account by Load.
+func TestAccountHeaderOverride(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	override := map[string]any{"*": "", "User-Agent": "my-client/1.0", "x-trace": "{client_header:x-request-id}", "x-drop": "{unset}"}
+	code, out := e.do("POST", "/accounts", map[string]any{"name": "headers", "plugin_key": "anthropic", "type": "apikey",
+		"credentials": map[string]any{"api_key": "sk-good-key-123"}, "header_override": override})
+	require.Equal(t, 201, code, fmt.Sprint(out))
+	id := int64(data(out)["id"].(float64))
+	require.Equal(t, override, data(out)["header_override"])
+
+	acc, err := e.svc.Load(ctx, id)
+	require.NoError(t, err)
+	require.Equal(t, []string{"*"}, acc.HeaderOverride.Passthrough())
+	res, err := acc.HeaderOverride.Resolve(http.Header{"X-Request-Id": {"r1"}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{"user-agent": "my-client/1.0", "x-trace": "r1"}, res.Set)
+	require.Equal(t, []string{"x-drop"}, res.Delete)
+
+	_, out = e.do("GET", "/accounts", nil)
+	require.Equal(t, override, out["data"].([]any)[0].(map[string]any)["header_override"])
+
+	code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"header_override": map[string]any{
+		"Authorization": "Bearer x", "x-key": "{api_key}", "x-n": 1}})
+	require.Equal(t, 400, code, fmt.Sprint(out))
+	require.ElementsMatch(t, []string{"header_override:blocked", "header_override:unsupported", "header_override:invalid"}, fieldsOf(out))
+
+	code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"name": "renamed"})
+	require.Equal(t, 200, code, fmt.Sprint(out))
+	require.Equal(t, override, data(out)["header_override"], "absent keeps the override")
+
+	code, out = e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"header_override": map[string]any{}})
+	require.Equal(t, 200, code, fmt.Sprint(out))
+	require.Nil(t, data(out)["header_override"])
+	acc, err = e.svc.Load(ctx, id)
+	require.NoError(t, err)
+	require.Nil(t, acc.HeaderOverride)
+
+	code, out = e.do("POST", "/accounts", map[string]any{"name": "plain", "plugin_key": "anthropic", "type": "apikey",
+		"credentials": map[string]any{"api_key": "sk-good-key-456"}})
+	require.Equal(t, 201, code, fmt.Sprint(out))
+	require.Nil(t, data(out)["header_override"])
 }
 
 // The preview runs an override on a sample request without saving it.
@@ -1490,10 +1536,24 @@ func TestAccountParamOverridePreview(t *testing.T) {
 	require.Contains(t, data(out)["error"], "value is a number, not a string")
 	require.Nil(t, data(out)["body"])
 
+	// A header override seeds the run; without a param override it is the result.
 	code, out = e.do("POST", "/accounts/param-override/preview", map[string]any{
-		"param_override": map[string]any{"operations": []any{map[string]any{"mode": "bogus"}}}, "body": []any{}})
+		"header_override": map[string]any{"x-a": "{client_header:x-trace:extra}", "x-gone": "{unset}"},
+		"param_override": map[string]any{"operations": []any{
+			map[string]any{"mode": "set", "path": "seen", "value": true, "conditions": map[string]any{"header_override.x-a": "t1,extra"}}}},
+		"headers": map[string]string{"X-Trace": "t1"}})
+	require.Equal(t, 200, code, fmt.Sprint(out))
+	require.Equal(t, map[string]any{"body": map[string]any{"seen": true}, "set_headers": map[string]any{"x-a": "t1,extra"},
+		"delete_headers": []any{"x-gone"}, "return_error": nil, "error": nil}, data(out))
+	code, out = e.do("POST", "/accounts/param-override/preview", map[string]any{"header_override": map[string]any{"x-b": "v"}})
+	require.Equal(t, 200, code, fmt.Sprint(out))
+	require.Equal(t, map[string]any{"x-b": "v"}, data(out)["set_headers"])
+
+	code, out = e.do("POST", "/accounts/param-override/preview", map[string]any{
+		"param_override": map[string]any{"operations": []any{map[string]any{"mode": "bogus"}}}, "body": []any{},
+		"header_override": map[string]any{"cookie": "x"}})
 	require.Equal(t, 400, code, fmt.Sprint(out))
-	require.Equal(t, []string{"param_override:unsupported", "body:invalid"}, fieldsOf(out))
+	require.Equal(t, []string{"param_override:unsupported", "header_override:blocked", "body:invalid"}, fieldsOf(out))
 }
 
 // conversion_loss_policy (CONTRACTS §88) is saved, cleared with null and

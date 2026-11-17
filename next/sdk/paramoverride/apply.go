@@ -25,10 +25,16 @@ type Context struct {
 	UserID, AccountID    int64
 	Group                string
 	Stream               bool
+	// InitialHeaders is what the account's header override (CONTRACTS
+	// §108) decided for this request: the run starts from it, so its
+	// conditions, keep_origin and header reads see it, and the result
+	// includes what the run leaves of it.
+	InitialHeaders HeaderOverride
 }
 
 // document is the context object conditions read: the keys new-api offers
-// a channel's override, plus account_id and stream.
+// a channel's override (group also as using_group), plus account_id and
+// stream.
 func (in *Context) document(headerOverride map[string]string) []byte {
 	if in == nil {
 		in = &Context{}
@@ -45,7 +51,7 @@ func (in *Context) document(headerOverride map[string]string) []byte {
 		"model": firstText(in.Model, in.OriginalModel), "upstream_model": in.Model, "original_model": in.OriginalModel,
 		"request_path": in.RequestPath, "request_headers": headers, "header_override": headerOverride,
 		"retry_index": in.RetryIndex, "is_retry": in.RetryIndex > 0, "retry": retry,
-		"user_id": in.UserID, "group": in.Group, "account_id": in.AccountID, "stream": in.Stream,
+		"user_id": in.UserID, "group": in.Group, "using_group": in.Group, "account_id": in.AccountID, "stream": in.Stream,
 	})
 	return doc
 }
@@ -76,15 +82,19 @@ type Result struct {
 // Apply runs the override on a JSON request body. A return_error operation
 // ends it with a *Error; any other error is an operation that
 // could not run on this body (a type mismatch, a missing source). A nil
-// override returns the body unchanged.
+// override returns the body unchanged and the context's header override.
 func (p *Override) Apply(body []byte, in *Context) (Result, error) {
 	if p == nil {
-		return Result{Body: body}, nil
+		out := Result{Body: body}
+		if in != nil {
+			out.Headers = in.InitialHeaders
+		}
+		return out, nil
 	}
 	if p.broken != "" {
 		return Result{}, errors.New(p.broken)
 	}
-	r := &overrideRun{body: body, in: in, set: map[string]string{}, deleted: map[string]bool{}}
+	r := newRun(body, in)
 	for _, s := range p.legacy {
 		if err := r.setRaw(s.path, s.raw); err != nil {
 			return Result{}, fmt.Errorf("set %s: %w", s.path, err)
@@ -92,7 +102,7 @@ func (p *Override) Apply(body []byte, in *Context) (Result, error) {
 	}
 	for i := range p.ops {
 		op := &p.ops[i]
-		ok, err := r.matches(op)
+		ok, err := r.matches(r.body, op.conds, op.all)
 		if err == nil && ok {
 			err = op.run(r)
 		}
@@ -118,6 +128,21 @@ type overrideRun struct {
 	deleted map[string]bool
 }
 
+// newRun starts a run from the context's header override.
+func newRun(body []byte, in *Context) *overrideRun {
+	r := &overrideRun{body: body, in: in, set: map[string]string{}, deleted: map[string]bool{}}
+	if in == nil {
+		return r
+	}
+	for name, v := range in.InitialHeaders.Set {
+		r.set[name] = v
+	}
+	for _, name := range in.InitialHeaders.Delete {
+		r.deleted[name] = true
+	}
+	return r
+}
+
 func (r *overrideRun) setRaw(path, raw string) (err error) {
 	r.body, err = sjson.SetRawBytes(r.body, path, []byte(raw))
 	return err
@@ -130,20 +155,22 @@ func (r *overrideRun) setString(path, s string) (err error) {
 
 // ---- conditions
 
-func (r *overrideRun) matches(op *paramOp) (bool, error) {
-	for _, c := range op.conds {
-		ok, err := r.check(c)
-		if err != nil || ok != op.all {
+// matches evaluates conditions on data (the body, or an object
+// prune_objects checks): all of them, or any.
+func (r *overrideRun) matches(data []byte, conds []paramCond, all bool) (bool, error) {
+	for _, c := range conds {
+		ok, err := r.check(data, c)
+		if err != nil || ok != all {
 			return ok, err // OR: the first match; AND: the first miss
 		}
 	}
-	return len(op.conds) == 0 || op.all, nil
+	return len(conds) == 0 || all, nil
 }
 
-// check evaluates a condition on the body, or on the context when the body
-// has no such path.
-func (r *overrideRun) check(c paramCond) (bool, error) {
-	v := gjson.GetBytes(r.body, resolvePaths(r.body, c.path, false)[0])
+// check evaluates a condition on data, or on the context when data has no
+// such path.
+func (r *overrideRun) check(data []byte, c paramCond) (bool, error) {
+	v := gjson.GetBytes(data, resolvePaths(data, c.path, false)[0])
 	if !v.Exists() {
 		if r.ctx == nil {
 			r.ctx = r.in.document(r.set)
@@ -153,14 +180,15 @@ func (r *overrideRun) check(c paramCond) (bool, error) {
 	if !v.Exists() {
 		return c.passMissing, nil
 	}
-	ok, err := compareCondition(v, c.value, c.mode)
+	ok, err := c.compare(v)
 	if err != nil {
 		return false, fmt.Errorf("condition on %s: %w", c.path, err)
 	}
 	return ok != c.invert, nil
 }
 
-func compareCondition(v, want gjson.Result, mode string) (bool, error) {
+func (c paramCond) compare(v gjson.Result) (bool, error) {
+	want, mode := c.value, c.mode
 	switch mode {
 	case "full":
 		return conditionEqual(v, want)
@@ -170,6 +198,8 @@ func compareCondition(v, want gjson.Result, mode string) (bool, error) {
 		return strings.HasSuffix(v.String(), want.String()), nil
 	case "contains":
 		return strings.Contains(v.String(), want.String()), nil
+	case "regex":
+		return c.re.MatchString(v.String()), nil
 	}
 	if v.Type != gjson.Number || want.Type != gjson.Number {
 		return false, fmt.Errorf("%s compares numbers, got %s and %s", mode, kindOf(v), kindOf(want))
@@ -278,18 +308,29 @@ func resolvePaths(data []byte, path string, wildcard bool) []string {
 // childPaths lists the paths of the elements or members of node.
 func childPaths(node gjson.Result, prefix string) []string {
 	var out []string
-	switch {
-	case node.IsArray():
-		for i := range node.Array() {
-			out = append(out, joinPath(prefix, strconv.Itoa(i)))
-		}
-	case node.IsObject():
-		node.ForEach(func(k, _ gjson.Result) bool {
-			out = append(out, joinPath(prefix, escapePathKey(k.Str)))
-			return true
-		})
-	}
+	eachChild(node, func(seg string, _ gjson.Result) bool {
+		out = append(out, joinPath(prefix, seg))
+		return true
+	})
 	return out
+}
+
+// eachChild calls fn with the path segment and the value of each element of
+// an array or member of an object, until fn returns false; other nodes have
+// none.
+func eachChild(node gjson.Result, fn func(seg string, child gjson.Result) bool) {
+	if !node.IsArray() && !node.IsObject() {
+		return
+	}
+	i := 0
+	node.ForEach(func(k, child gjson.Result) bool {
+		seg := strconv.Itoa(i)
+		if node.IsObject() {
+			seg = escapePathKey(k.Str)
+		}
+		i++
+		return fn(seg, child)
+	})
 }
 
 func nodeAt(data []byte, path string) gjson.Result {
@@ -431,6 +472,120 @@ func (r *overrideRun) copyValue(from, to string, move bool) error {
 	return nil
 }
 
+// syncTarget is a side of sync_fields: a JSON path of the body, or a header.
+type syncTarget struct {
+	key    string
+	header bool
+}
+
+// syncFields copies the side that has a value to the side that has none;
+// with both or neither it does nothing.
+func (r *overrideRun) syncFields(from, to syncTarget) error {
+	src, srcOK := r.syncValue(from)
+	dst, dstOK := r.syncValue(to)
+	switch {
+	case srcOK && !dstOK:
+		return r.syncWrite(to, src)
+	case dstOK && !srcOK:
+		return r.syncWrite(from, dst)
+	}
+	return nil
+}
+
+// syncValue reads a side; null and blank strings count as no value.
+func (r *overrideRun) syncValue(t syncTarget) (gjson.Result, bool) {
+	if t.header {
+		v, ok := r.header(t.key)
+		return gjson.Result{Type: gjson.String, Str: v}, ok
+	}
+	v := gjson.GetBytes(r.body, resolvePaths(r.body, t.key, false)[0])
+	ok := v.Exists() && v.Type != gjson.Null && (v.Type != gjson.String || strings.TrimSpace(v.Str) != "")
+	return v, ok
+}
+
+func (r *overrideRun) syncWrite(t syncTarget, v gjson.Result) error {
+	switch {
+	case t.header:
+		return r.setHeader(t.key, strings.TrimSpace(v.String()))
+	case v.Raw == "":
+		return r.setString(resolvePaths(r.body, t.key, false)[0], v.Str)
+	}
+	return r.setRaw(resolvePaths(r.body, t.key, false)[0], v.Raw)
+}
+
+// pruneSpec is the value of prune_objects.
+type pruneSpec struct {
+	conds          []paramCond
+	all, recursive bool
+}
+
+// pruned is an object prune_objects removes: a member of an object (every
+// copy of its key goes, as in new-api) or an element of an array.
+type pruned struct {
+	path   string
+	member bool
+}
+
+// prune removes the objects under each path the operation's path names
+// (the whole body when empty) that meet the conditions; the objects at
+// those paths themselves stay.
+func (r *overrideRun) prune(path string, spec pruneSpec) error {
+	var drop []pruned
+	for _, p := range resolvePaths(r.body, path, true) {
+		if err := r.collectPruned(nodeAt(r.body, p), p, spec, &drop); err != nil {
+			return err
+		}
+	}
+	// From the back, so the indexes of earlier elements stay valid.
+	for i := len(drop) - 1; i >= 0; i-- {
+		if err := r.deletePruned(drop[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectPruned appends to drop, in document order, the children of node
+// that are objects meeting the conditions, evaluated on each object (then
+// the context). The elements of an array are always checked; the members of
+// an object only when the spec is recursive.
+func (r *overrideRun) collectPruned(node gjson.Result, path string, spec pruneSpec, drop *[]pruned) error {
+	if node.IsObject() && !spec.recursive {
+		return nil
+	}
+	var err error
+	eachChild(node, func(seg string, child gjson.Result) bool {
+		p := joinPath(path, seg)
+		hit := false
+		if child.IsObject() {
+			hit, err = r.matches([]byte(child.Raw), spec.conds, spec.all)
+		}
+		switch {
+		case err != nil:
+		case hit:
+			*drop = append(*drop, pruned{path: p, member: node.IsObject()})
+		default:
+			err = r.collectPruned(child, p, spec, drop)
+		}
+		return err == nil
+	})
+	return err
+}
+
+// deletePruned removes a pruned object; a member removed with all its copies.
+func (r *overrideRun) deletePruned(d pruned) error {
+	for {
+		size := len(r.body)
+		var err error
+		if r.body, err = sjson.DeleteBytes(r.body, d.path); err != nil {
+			return err
+		}
+		if !d.member || len(r.body) == size || !gjson.GetBytes(r.body, d.path).Exists() {
+			return nil
+		}
+	}
+}
+
 // ---- header operations
 
 // header is the current value of a header: set by an earlier operation,
@@ -442,19 +597,25 @@ func (r *overrideRun) header(name string) (string, bool) {
 	if r.deleted[name] || r.in == nil {
 		return "", false
 	}
-	v := strings.TrimSpace(strings.Join(r.in.Headers.Values(name), ", "))
+	v := headerValue(r.in.Headers, name)
 	return v, v != ""
 }
 
-// setHeader sets a header; an empty value removes it.
-func (r *overrideRun) setHeader(name, value string) {
+// setHeader sets a header; an empty value removes it. A value that cannot
+// be sent (a control character, say from the body by sync_fields) fails the
+// run rather than the upstream request.
+func (r *overrideRun) setHeader(name, value string) error {
 	if value == "" {
 		r.deleteHeader(name)
-		return
+		return nil
+	}
+	if !ValidHeaderValue(value) {
+		return fmt.Errorf("header %s: the value contains a control character", name)
 	}
 	r.set[name] = value
 	delete(r.deleted, name)
 	r.ctx = nil
+	return nil
 }
 
 func (r *overrideRun) deleteHeader(name string) {
@@ -465,24 +626,27 @@ func (r *overrideRun) deleteHeader(name string) {
 
 // setHeaderOp is set_header: keep_origin leaves a header an earlier
 // operation set.
-func (r *overrideRun) setHeaderOp(name string, keep bool, value func(current string) string) {
+func (r *overrideRun) setHeaderOp(name string, keep bool, value func(current string) string) error {
 	if keep && r.set[name] != "" {
-		return
+		return nil
 	}
 	cur, _ := r.header(name)
-	r.setHeader(name, value(cur))
+	return r.setHeader(name, value(cur))
 }
 
 // copyHeader is copy_header / move_header; a missing source does nothing.
-func (r *overrideRun) copyHeader(src, dst string, keep, move bool) {
+func (r *overrideRun) copyHeader(src, dst string, keep, move bool) error {
 	v, ok := r.header(src)
 	if !ok {
-		return
+		return nil
 	}
-	r.setHeaderOp(dst, keep, func(string) string { return v })
+	if err := r.setHeaderOp(dst, keep, func(string) string { return v }); err != nil {
+		return err
+	}
 	if move && src != dst {
 		r.deleteHeader(src)
 	}
+	return nil
 }
 
 func (r *overrideRun) headerResult() HeaderOverride {

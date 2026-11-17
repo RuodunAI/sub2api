@@ -78,6 +78,8 @@ const (
 	ControlParamOverride ControlKind = "param_override"
 	// ControlHeaderPassthrough is the list of header passthrough rules (§81).
 	ControlHeaderPassthrough ControlKind = "header_passthrough"
+	// ControlHeaderOverride is a request header override (§108, sdk/paramoverride).
+	ControlHeaderOverride ControlKind = "header_override"
 	// ControlEnvironment is the account layer of the environment variables (§74.3).
 	ControlEnvironment ControlKind = "environment"
 	// ControlProxy is proxy_id / proxy_url; it only takes Required.
@@ -157,6 +159,7 @@ var CommonControlSpecs = map[string]CommonControlSpec{
 	"model_mapping":      {Kind: ControlModelMapping},
 	"param_override":     {Kind: ControlParamOverride},
 	"header_passthrough": {Kind: ControlHeaderPassthrough},
+	"header_override":    {Kind: ControlHeaderOverride},
 	"environment":        {Kind: ControlEnvironment},
 	"proxy":              {Kind: ControlProxy},
 }

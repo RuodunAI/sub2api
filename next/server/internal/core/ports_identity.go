@@ -977,6 +977,9 @@ type Account struct {
 	// ParamOverride rewrites the upstream body and headers (CONTRACTS §84);
 	// nil = none.
 	ParamOverride *ParamOverride
+	// HeaderOverride sets, removes and passes through upstream headers
+	// (CONTRACTS §108), before ParamOverride; nil = none.
+	HeaderOverride *HeaderOverrideRules
 }
 
 func (a *Account) PluginAccount(platform string) *pluginv1.Account {

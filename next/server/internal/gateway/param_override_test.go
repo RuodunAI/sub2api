@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"net/http"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -148,4 +150,180 @@ func TestClaudeMaxTokensBuiltinOverride(t *testing.T) {
 
 	setParamOverride(t, e, 1, `{"operations":[{"mode":"set","path":"max_tokens","value":5}]}`)
 	assert.Equal(t, int64(5), maxTokens(noLimit).Int(), "the account's override runs after")
+}
+
+func setHeaderOverride(t *testing.T, e *env, id int64, raw string) {
+	t.Helper()
+	m, errs := core.CompileHeaderOverride(context.Background(), "header_override", []byte(raw))
+	require.Empty(t, errs)
+	e.accounts.mu.Lock()
+	e.accounts.accounts[id].HeaderOverride = m
+	e.accounts.mu.Unlock()
+}
+
+// An account's header override (CONTRACTS §108): its passthrough keys join
+// the account's passthrough, its values and {unset} apply over the
+// passthrough, and it is the initial header state of the parameter
+// override; the plugin's headers and the account key stay the plugin's.
+func TestAccountHeaderOverrideReachesUpstream(t *testing.T) {
+	e := newEnv(t)
+	setHeaderOverride(t, e, 1, `{"re:^x-pass-":"","X-Client":"my-client/1.0","x-trace-id":"{client_header:x-request-id}",
+		"x-beta":"{client_header:x-beta:extra}","x-tier":"{unset}","anthropic-beta":"from-override"}`)
+	setParamOverride(t, e, 1, `{"operations":[{"mode":"set_header","path":"x-client","value":"op","keep_origin":true},
+		{"mode":"set_header","path":"x-seen","value":"yes","conditions":{"header_override.x-client":"my-client/1.0"}}]}`)
+	e.accounts.mu.Lock()
+	e.accounts.accounts[1].HeaderPassthrough = []string{"x-tier"}
+	e.accounts.mu.Unlock()
+
+	r := e.do("/v1/messages", body(testModel, false), map[string]string{"X-Pass-One": "p1", "X-Request-Id": "r1", "X-Beta": "b",
+		"X-Tier": "gold", "X-Other": "o", "Anthropic-Beta": "beta-a"})
+	require.Equal(t, 200, r.status, string(r.body))
+	got := e.up.last().header
+	assert.Equal(t, "acc-1", got.Get("x-api-key"))
+	assert.Equal(t, "p1", got.Get("X-Pass-One"))
+	assert.Equal(t, "my-client/1.0", got.Get("X-Client"))
+	assert.Equal(t, "r1", got.Get("X-Trace-Id"))
+	assert.Equal(t, "b,extra", got.Get("X-Beta"))
+	assert.Equal(t, "yes", got.Get("X-Seen"))
+	assert.Empty(t, got.Get("X-Tier"), "{unset} removes the passthrough's header")
+	assert.Empty(t, got.Get("X-Other"))
+	assert.Equal(t, "beta-a", got.Get("Anthropic-Beta"), "the plugin's header wins over the override")
+
+	// Without a parameter override the header override applies alone.
+	setParamOverride(t, e, 1, `{}`)
+	r = e.do("/v1/messages", body(testModel, false), map[string]string{"X-Request-Id": "r2"})
+	require.Equal(t, 200, r.status, string(r.body))
+	got = e.up.last().header
+	assert.Equal(t, "r2", got.Get("X-Trace-Id"))
+	assert.Equal(t, "my-client/1.0", got.Get("X-Client"))
+}
+
+// A stored header override that no longer compiles fails the account's
+// attempts over to the next account without cooling it down.
+func TestAccountHeaderOverrideBroken(t *testing.T) {
+	e := newEnv(t)
+	e.accounts.mu.Lock()
+	e.accounts.accounts[1].HeaderOverride = core.LoadHeaderOverride([]byte(`{"Authorization":"x"}`))
+	e.accounts.mu.Unlock()
+	r := e.messages(body(testModel, false))
+	require.Equal(t, 200, r.status, string(r.body))
+	assert.Equal(t, []string{"acc-2"}, e.up.keys())
+	assert.Empty(t, e.accounts.cooldowns)
+}
+
+// 模拟上游实际调用: one request through the gateway for an account with a
+// header override and a parameter override; the fake upstream receives
+// exactly these headers and this body.
+func TestAccountOverridesExactUpstreamRequest(t *testing.T) {
+	e := newEnv(t)
+	setHeaderOverride(t, e, 1, `{"re:^x-pass-":"","X-Static":"static-1","x-beta":"{client_header:x-beta:extra}",
+		"x-only":"{client_header:x-missing:only}","x-tier":"{unset}","x-keep":"from-ho","":"ignored"}`)
+	setParamOverride(t, e, 1, `{"operations":[
+		{"mode":"set","path":"temperature","value":0.2},
+		{"mode":"set_header","path":"x-keep","value":"op","keep_origin":true},
+		{"mode":"set_header","path":"x-new","value":"op","keep_origin":true},
+		{"mode":"set_header","path":"x-static","value":"static-2","conditions":{"header_override.x-static":"static-1"}},
+		{"mode":"sync_fields","from":"json:metadata.user_id","to":"header:x-user"},
+		{"mode":"sync_fields","from":"header:x-session","to":"json:metadata.session"}]}`)
+	e.accounts.mu.Lock()
+	e.accounts.accounts[1].HeaderPassthrough = []string{"x-tier"}
+	e.accounts.mu.Unlock()
+
+	r := e.do("/v1/messages", withSession(body(testModel, false), "u-1"), map[string]string{"X-Pass-One": "p1", "X-Beta": "b",
+		"X-Tier": "gold", "X-Session": "s-1", "X-Other": "o"})
+	require.Equal(t, 200, r.status, string(r.body))
+	got := e.up.last()
+	assert.JSONEq(t, `{"model":"`+testModel+`","max_tokens":64,"stream":false,"temperature":0.2,
+		"messages":[{"role":"user","content":"hello there"}],"metadata":{"user_id":"u-1","session":"s-1"}}`, string(got.body))
+	assert.Equal(t, http.Header{
+		// The plugin's and the transport's.
+		"X-Api-Key": {"acc-1"}, "Content-Type": {"application/json"}, "Anthropic-Version": {"2023-06-01"},
+		"Content-Length": {strconv.Itoa(len(got.body))}, "Accept-Encoding": {"gzip"}, "User-Agent": {"Go-http-client/1.1"},
+		// The header override's passthrough key (X-Other is not passed,
+		// X-Tier is passed by the account's rules and removed by {unset}).
+		"X-Pass-One": {"p1"},
+		// Its values, then the parameter override over them: keep_origin
+		// keeps x-keep, a condition reads x-static and changes it, and
+		// sync_fields writes x-user from the body.
+		"X-Beta": {"b,extra"}, "X-Only": {"only"}, "X-Keep": {"from-ho"}, "X-New": {"op"}, "X-Static": {"static-2"}, "X-User": {"u-1"},
+	}, got.header)
+}
+
+// sync_fields writing body content that cannot be a header value (here a
+// newline) fails the attempt over neutrally instead of sending a request
+// the transport rejects, which would cool the account down.
+func TestAccountParamOverrideHeaderControlCharacters(t *testing.T) {
+	e := newEnv(t)
+	setParamOverride(t, e, 1, `{"operations":[{"mode":"sync_fields","from":"json:metadata.user_id","to":"header:x-user"}]}`)
+	r := e.messages(withSession(body(testModel, false), "u-1\nx-injected: 1"))
+	require.Equal(t, 200, r.status, string(r.body))
+	assert.Equal(t, []string{"acc-2"}, e.up.keys())
+	assert.Empty(t, e.up.last().header.Get("X-User"))
+	assert.Empty(t, e.accounts.cooldowns)
+}
+
+// The WebSocket handshake carries the account's header override and the
+// first message's parameter override (no passthrough, §81); the plugin's
+// headers come after them.
+func TestWebSocketHandshakeHeaderOverride(t *testing.T) {
+	e := newWSEnv(t)
+	setHeaderOverride(t, e.env, 11, `{"X-Static":"static-1","x-beta":"{client_header:x-beta:extra}","x-keep":"from-ho",
+		"x-gone":"{unset}","openai-beta":"from-ho","*":""}`)
+	setParamOverride(t, e.env, 11, `{"operations":[{"mode":"set_header","path":"x-keep","value":"op","keep_origin":true},
+		{"mode":"sync_fields","from":"json:input","to":"header:x-input"}]}`)
+	c, _, err := e.dial(http.Header{"Authorization": {"Bearer " + testKey}, "X-Beta": {"b"}, "X-Gone": {"g"}, "X-Other": {"o"}})
+	require.NoError(t, err)
+	c.send(create(wsModel, "hello"))
+	c.until("response.completed")
+	e.record()
+	e.wsUp.mu.Lock()
+	h := e.wsUp.headers[0]
+	e.wsUp.mu.Unlock()
+	assert.Equal(t, "static-1", h.Get("X-Static"))
+	assert.Equal(t, "b,extra", h.Get("X-Beta"))
+	assert.Equal(t, "from-ho", h.Get("X-Keep"))
+	assert.Equal(t, "hello", h.Get("X-Input"))
+	assert.Equal(t, "responses_websockets=2026-02-06", h.Get("Openai-Beta"), "the plugin's header wins")
+	assert.Equal(t, "Bearer oa-11", h.Get("Authorization"))
+	assert.Empty(t, h.Get("X-Gone"))
+	assert.Empty(t, h.Get("X-Other"), "no passthrough on a WebSocket")
+}
+
+// On a WebSocket the header override resolves on its own: when the first
+// message's rewrites fail (the turn reports it) the handshake still carries
+// it, and a stored one that no longer compiles fails the account over.
+func TestWebSocketHeaderOverrideIndependentOfTheBody(t *testing.T) {
+	t.Run("rewrite fails", func(t *testing.T) {
+		e := newWSEnv(t)
+		setHeaderOverride(t, e.env, 11, `{"X-Static":"static-1"}`)
+		setParamOverride(t, e.env, 11, `{"operations":[{"mode":"trim_prefix","path":"store","value":"x","conditions":{"input":"first"}},
+			{"mode":"set_header","path":"x-op","value":"op"}]}`)
+		c := e.mustDial()
+		c.send(create(wsModel, "first"))
+		ev := c.until("error")
+		assert.Equal(t, "param_override_failed", ev[0].Get("error.code").String(), "%v", ev)
+		e.record()
+		c.send(create(wsModel, "second"))
+		c.until("response.completed")
+		e.record()
+		e.wsUp.mu.Lock()
+		headers := e.wsUp.headers
+		e.wsUp.mu.Unlock()
+		require.Len(t, headers, 1)
+		assert.Equal(t, "static-1", headers[0].Get("X-Static"))
+		assert.Empty(t, headers[0].Get("X-Op"), "the failed rewrite's headers are not the handshake's")
+	})
+	t.Run("broken", func(t *testing.T) {
+		e := newWSEnv(t)
+		e.accounts.mu.Lock()
+		e.accounts.accounts[11].HeaderOverride = core.LoadHeaderOverride([]byte(`{"Authorization":"x"}`))
+		e.accounts.mu.Unlock()
+		c := e.mustDial()
+		c.send(create(wsModel, "hello"))
+		c.until("response.completed")
+		r := e.record()
+		require.NotNil(t, r.AccountID)
+		assert.Equal(t, int64(12), *r.AccountID)
+		assert.Empty(t, e.accounts.cooldowns)
+	})
 }
