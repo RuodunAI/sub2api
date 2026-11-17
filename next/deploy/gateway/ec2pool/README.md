@@ -2,7 +2,7 @@
 
 ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ovh/clicodeplus 集群不共用数据库。同一台机器上还有 sakura-2api、cli-proxy-api、antigravity 和 kin 容器，与 sup2api 无关，操作时不要碰。
 
-## 现状（2026-11-17 起）：网关托管，单节点
+## 现状（2026-11-17 起）：网关托管，单节点，核心 0.1.297
 
 - 目录 `/opt/sup2api-gw`，compose 项目 `sup2api-gw`，接入外部网络 `sup2api_default`。
   - `node-a`（容器 `sup2api-gw-a`，主节点，`127.0.0.1:18080`），镜像 `sup2api-gateway:0.1.137`，状态卷 `sup2api-gw_node-a`（`/var/lib/sub2api`，持久）。只有一个节点（用户 11-17 决定）：核心更新没有别的节点承接流量，走主节点优先，会短暂停服；网关一键更新单节点中断约 10 秒，控制台要求确认。
@@ -11,7 +11,18 @@ ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ov
   - `.env`（0600）：与旧部署同一个 PostgreSQL、Valkey、`SUB2API_MASTER_KEY` 与引导管理员。
 - PostgreSQL 16（`sup2api-pg-1`，库 `sup2api`）、Valkey 9（`sup2api-redis-1`，AOF）与开发插件市场（`sup2api-market-1`）仍属于旧项目 `sup2api`（`/opt/sup2api`，`./compose.sh`），继续运行。
 - 入口：宿主机 systemd Caddy 的 `/etc/caddy/sup2api-customer.caddy`（`sub2api-customer.sakura-api.com`、`sup2api.32.191.20.99.nip.io`、`https://sup2api.32.191.20.99.sslip.io`）反代到 `127.0.0.1:18080`。主 Caddyfile 是 `admin off`，`systemctl reload caddy` 会失败，改配置要 `restart`（会断开同一个 Caddy 上 antigravity、cliproxy 站点的连接）。
+- `compose.yml` 设了 `SUB2API_BUILTIN_TRUST_KEY=sup2api-plugins-2026=<公钥>`：Release 内置包用这把插件密钥签名，网关托管的核心 0.1.297 自己不从 `builtin/trust.pub` 推导它（单机镜像的入口脚本才推导），不设时内置插件升级报 `unknown signing key`。核心下一版（touwaeriol develop `cc6f14164`）会自己读 `builtin/trust.pub`，装上后这个变量可以去掉。
 - 插件：`SUB2API_PLUGIN_VERIFY_SIGNATURES=false`（沿用旧部署）；已装插件包原来由旧核心用开发密钥 `sub2api-dev` 签名，Release 内置包用 `sup2api-plugins-2026` 签名，同版本的包保留原样。
+
+## 2026-11-17 核心 0.1.297（codex 0.1.7），删除 ChatGPT 账号
+
+- 20:40:17（北京时间）经控制台接口软删除 `chatgpt_siwc` 账号 id 1 `gpt-plus-1117-01`（用户要求，codex 0.1.7 删除了这个类型）；之后没有 `chatgpt_siwc` 账号。
+- Release `core-v0.1.297`（`f40c7831d`，清单 `64bc544f5b13d683d4565cb4fb5a0fefc60369ed6f0e434457285e857710c431`，amd64 bundle `7222fad2…bfa5` 核对摘要）放进 `publish/sup2api/`，`import -manifest https://sup2api-gw-releases/sup2api/<清单>.json`。
+- 预检的计划节点仍是 `["node-a","node-b"]`：网关 0.1.137 会把停用节点放进计划，计划走到它会暂停（停止步骤还要等它的停止确认），而 node-b 已不存在。经用户同意（“继续做”）只改一行 `UPDATE updater.nodes SET stopped = true WHERE cluster_id = 'sup2api-ec2pool' AND node_id = 'node-b' AND NOT enabled`（1 行），再 `remove-node -node node-b`（登记与准入记录删除）；重新预检只剩 node-a。网关 0.1.138（`09ee340f6`）起不再需要这样做。
+- 计划 `64d9594ce44007181b36ac7dafa1749c` primary-first-v1 completed，21:16:24→21:16:30；入口 `/readyz` 503 21:16:26.9→21:16:31.0 约 4 秒（`observe.py`，输出 `plan297.out`）。
+- 内置插件没有升级：`builtin plugin … upload …: plugin signature: unknown signing key "sup2api-plugins-2026"`。在 `compose.yml` 补 `SUB2API_BUILTIN_TRUST_KEY`（备份 `compose.yml.bak-pre-trustkey`）后 21:17:45 重建 node-a（`/readyz` 约 5 秒后 200），codex rollout 升到 0.1.7、旧包删除；其余内置插件同版本已存在，保留原包（WARN `version already stored with other content`）。
+- 核验：核心 0.1.297；anthropic 0.3.3、codex 0.1.7、custom 0.1.1、gemini 0.3.1、moderation 0.12.1、openai 0.4.2 active、ready、restarts 0；codex 账号类型只剩 `codex_device`、`codex_oauth`；三个入口域名 `/readyz` 200；30 分钟内没有请求，5xx 0；强制检测核心、网关无更新、无错误。
+- 回滚：核心用 0.1.296 清单 `9fbbdae1f86286fa0b72498f74fb61352403805bc9d7ce4aa46d2f13bc7bcf90` 建主节点优先计划（插件只升不降，codex 留在 0.1.7）。
 
 ## 2026-11-17 改为单节点
 

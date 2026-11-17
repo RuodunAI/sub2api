@@ -23,7 +23,12 @@
 
 ## 2026-11-17
 
-### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（codex 0.1.7；无迁移，滚动）
+### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（`f40c7831d`，codex 0.1.7；无迁移，滚动）
+
+- **Release**：上游 PR #44 合并为 `f40c7831d`，tag `core-v0.1.297` 自动构建（run 44085237135，用户提前批准，release 环境由我代批），北京时间 20:59:56 发布。清单 sha256 `64bc544f5b13d683d4565cb4fb5a0fefc60369ed6f0e434457285e857710c431`（amd64 bundle `7222fad2…bfa5`、arm64 `f3f4441a…a09b`），strategy rolling，schema 仍 `ab35f2f6…187d`。`next/plugins/released.json` 按 `f40c7831d` 的插件重写（codex 0.1.7 等）。
+- **ovh 集群**：Release 清单与 bundle 核对摘要后放进 ovh 发布目录导入，预检 rolling-v1、无阻断（expected_revision 562），计划 `d3602f6e87e5df4a901786b57ab988e0` 21:02:05→21:03:14（先 ccp 后 ovh），`/readyz` 全程 200；两节点 9 个插件 active、ready，codex 0.1.7，账号类型只剩 `codex_device`、`codex_oauth`；集群上没有 codex 账号，被动用量快照未实测。392 仍是关闭状态，没有动。
+- **ec2pool**（单节点）：20:40:17 经控制台接口软删除 `chatgpt_siwc` 账号 id 1（`gpt-plus-1117-01`，用户要求不保留）。预检发现计划仍含已停用的 node-b（网关 0.1.137 会把停用节点放进计划，见网关 0.1.138），经用户同意把 `updater.nodes` 里 node-b 一行改为 `stopped=true` 后 `remove-node`，再预检只剩 node-a；计划 `64d9594ce44007181b36ac7dafa1749c` primary-first-v1 21:16:24→21:16:30，`/readyz` 503 约 4 秒。内置插件随后因 `unknown signing key "sup2api-plugins-2026"` 没有升级（网关托管时没人设 `SUB2API_BUILTIN_TRUST_KEY`，见“核心（下一版）”），在 `/opt/sup2api-gw/compose.yml` 补上该变量重建 node-a（21:17:45，约 5 秒）后 codex 升到 0.1.7、`chatgpt_siwc` 类型消失。详见 [ec2pool 部署记录](next/deploy/gateway/ec2pool/README.md)。
+- 回滚：核心回 0.1.295（ovh 集群，清单 `b62f6c8b…0721`）或 0.1.296（ec2pool，`9fbbdae1…cf90`），rolling / 主节点优先计划；插件只升不降，codex 留在 0.1.7。
 
 - **升级前**：每个集群先在控制台删除已有的 Sign in with ChatGPT 账号（类型 `chatgpt_siwc`），新版不再认识这个类型。
 - **额度响应头可按窗口时长命名**（CONTRACTS §105）：manifest `quota.headers[].windowMinutes` 指向携带窗口分钟数的响应头，窗口名按时长生成（300 → `5h`、10080 → `7d`），供 codex 每次响应按 `x-codex-*` 头更新用量窗口。
