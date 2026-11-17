@@ -44,6 +44,8 @@ func writeErrorFormat(w http.ResponseWriter, format string, status int) {
 		writeOpenAIMockError(w, status)
 	case formatGemini:
 		writeGeminiMockError(w, status)
+	case formatBedrock:
+		writeBedrockMockError(w, status)
 	default:
 		writeMockError(w, status)
 	}
