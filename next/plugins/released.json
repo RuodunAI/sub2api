@@ -10,8 +10,8 @@
       "digest": "sha256:79bcd5f67f8bb351aebbaa2788ff0b8f0218042ec27462cb2b2d9dcfdf6fc970"
     },
     "codex": {
-      "version": "0.1.7",
-      "digest": "sha256:bed6dbd83947d583c52cb5ea6c61a0ec822b2388c8662db8370846e5a261b876"
+      "version": "0.1.8",
+      "digest": "sha256:c9c4675032ba9dae1f87803aa36f0cc27467352413e3a065eef7b339d9bd705c"
     },
     "custom": {
       "version": "0.1.1",

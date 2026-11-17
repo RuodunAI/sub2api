@@ -2,17 +2,25 @@
 
 ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ovh/clicodeplus 集群不共用数据库。同一台机器上还有 sakura-2api、cli-proxy-api、antigravity 和 kin 容器，与 sup2api 无关，操作时不要碰。
 
-## 现状（2026-11-17 起）：网关托管，单节点，核心 0.1.297
+## 现状（2026-11-17 起）：网关托管，单节点，网关 0.1.138、核心 0.1.298
 
 - 目录 `/opt/sup2api-gw`，compose 项目 `sup2api-gw`，接入外部网络 `sup2api_default`。
-  - `node-a`（容器 `sup2api-gw-a`，主节点，`127.0.0.1:18080`），镜像 `sup2api-gateway:0.1.137`，状态卷 `sup2api-gw_node-a`（`/var/lib/sub2api`，持久）。只有一个节点（用户 11-17 决定）：核心更新没有别的节点承接流量，走主节点优先，会短暂停服；网关一键更新单节点中断约 10 秒，控制台要求确认。
+  - `node-a`（容器 `sup2api-gw-a`，主节点，`127.0.0.1:18080`），镜像 `sup2api-gateway:0.1.138`，状态卷 `sup2api-gw_node-a`（`/var/lib/sub2api`，持久）。只有一个节点（用户 11-17 决定）：核心更新没有别的节点承接流量，走主节点优先，会短暂停服；网关一键更新单节点中断约 10 秒，控制台要求确认。
   - `releases`（`sup2api-gw-releases`，caddy，`https://sup2api-gw-releases/sup2api` 提供 `publish/sup2api/`）：节点配置的 `release_origin`，离线导入核心清单用；平时更新走控制台的更新源（默认 GitHub `Sub2API-Devs/sup2api`），这里的超管能用密码完成二次验证。
   - 证书是本机自签的 Ed25519 CA（`certs/`，CA 私钥在 `certs/ca/`，0700），SAN 为容器名；`config/node-a.json`：`cluster_id` = `sup2api-ec2pool`，`trusted_proxies` = docker 网关 `10.200.70.1/32`。
   - `.env`（0600）：与旧部署同一个 PostgreSQL、Valkey、`SUB2API_MASTER_KEY` 与引导管理员。
 - PostgreSQL 16（`sup2api-pg-1`，库 `sup2api`）、Valkey 9（`sup2api-redis-1`，AOF）与开发插件市场（`sup2api-market-1`）仍属于旧项目 `sup2api`（`/opt/sup2api`，`./compose.sh`），继续运行。
 - 入口：宿主机 systemd Caddy 的 `/etc/caddy/sup2api-customer.caddy`（`sub2api-customer.sakura-api.com`、`sup2api.32.191.20.99.nip.io`、`https://sup2api.32.191.20.99.sslip.io`）反代到 `127.0.0.1:18080`。主 Caddyfile 是 `admin off`，`systemctl reload caddy` 会失败，改配置要 `restart`（会断开同一个 Caddy 上 antigravity、cliproxy 站点的连接）。
-- `compose.yml` 设了 `SUB2API_BUILTIN_TRUST_KEY=sup2api-plugins-2026=<公钥>`：Release 内置包用这把插件密钥签名，网关托管的核心 0.1.297 自己不从 `builtin/trust.pub` 推导它（单机镜像的入口脚本才推导），不设时内置插件升级报 `unknown signing key`。核心下一版（touwaeriol develop `cc6f14164`）会自己读 `builtin/trust.pub`，装上后这个变量可以去掉。
+- 内置插件签名密钥：核心 0.1.298 起在没设 `SUB2API_BUILTIN_TRUST_KEY` 时自己读 `builtin/trust.pub`，compose 里不再设这个变量（0.1.297 期间手动设过，备份 `compose.yml.bak-with-trustkey`；回到 0.1.297 要加回去）。
 - 插件：`SUB2API_PLUGIN_VERIFY_SIGNATURES=false`（沿用旧部署）；已装插件包原来由旧核心用开发密钥 `sub2api-dev` 签名，Release 内置包用 `sup2api-plugins-2026` 签名，同版本的包保留原样。
+
+## 2026-11-17 网关 0.1.138 + 核心 0.1.298（codex 0.1.8）
+
+- 网关：镜像 `sup2api-gateway:0.1.138` 从 ovh 复制（二进制 sha256 `82baa5c2…51f4`，与 Release `gateway-v0.1.138` 一致）；`.env` 备份 `.env.bak-gw137` 后改 `GATEWAY_IMAGE`，22:37:44 重建 node-a（在途 0），22:37:49 `/readyz` 200。
+- 核心：Release `core-v0.1.298`（`0bbda1192`，清单 `108d2c7d0115cccdb9f83839be85045ea8ca26fedf6a4fbd9e415e8cff2ff9d7`，amd64 bundle `698a2d21…07a4` 核对摘要）放进 `publish/sup2api/` 导入；预检只有 node-a、primary-first-v1、无阻断；计划 `5598fc2899a37cbd5f7212e118ad618d` 22:40:05→22:40:11，`/readyz` 503 22:40:07.8→22:40:11.8 约 4 秒（`plan298.out`）；codex rollout 到 0.1.8。
+- 去掉 `SUB2API_BUILTIN_TRUST_KEY`（备份 `compose.yml.bak-with-trustkey`），22:40:36 重建 node-a，22:40:42 就绪；日志没有 `unknown signing key`，内置插件“run the versions of this release”。这次各内置插件版本都已存在，没有触发新的上传验签；下一个带新内置插件版本的核心会真正走到它。
+- 核验：核心 0.1.298、网关 0.1.138；6 个启用插件 active、ready（codex 0.1.8）；codex 认证方式“设备码”“Codex”；三个入口域名 `/readyz` 200；检测无更新、无错误；日志无 ERROR。
+- 回滚：核心用 0.1.297 清单 `64bc544f…c431` 建主节点优先计划，并把 `SUB2API_BUILTIN_TRUST_KEY` 加回 compose；网关 `.env` 换回 `.env.bak-gw137` 后重建。
 
 ## 2026-11-17 核心 0.1.297（codex 0.1.7），删除 ChatGPT 账号
 
