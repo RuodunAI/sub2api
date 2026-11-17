@@ -30,8 +30,8 @@
       "digest": "sha256:ef2987b6fa4659d24fdc0afa54d5c96009d1cf8677573a03164f3945b584af3f"
     },
     "mailer": {
-      "version": "0.1.3",
-      "digest": "sha256:471322765ce008cf906642af24fcdabbc1243601fac6f6fba7cc42ff0bf46f6d"
+      "version": "0.1.4",
+      "digest": "sha256:72bdf826d42d1f8e191a2f75975f5a57900848d110a2b77194f6d333a0b4dfc8"
     },
     "moderation": {
       "version": "0.12.1",
