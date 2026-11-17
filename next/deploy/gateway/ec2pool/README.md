@@ -2,7 +2,7 @@
 
 ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ovh/clicodeplus 集群不共用数据库。同一台机器上还有 sakura-2api、cli-proxy-api、antigravity 和 kin 容器，与 sup2api 无关，操作时不要碰。
 
-## 现状（2026-11-17 起）：网关托管，单节点，网关 0.1.138、核心 0.1.298
+## 现状（2026-11-17 起）：网关托管，单节点，网关 0.1.138、核心 0.1.301
 
 - 目录 `/opt/sup2api-gw`，compose 项目 `sup2api-gw`，接入外部网络 `sup2api_default`。
   - `node-a`（容器 `sup2api-gw-a`，主节点，`127.0.0.1:18080`），镜像 `sup2api-gateway:0.1.138`，状态卷 `sup2api-gw_node-a`（`/var/lib/sub2api`，持久）。只有一个节点（用户 11-17 决定）：核心更新没有别的节点承接流量，走主节点优先，会短暂停服；网关一键更新单节点中断约 10 秒，控制台要求确认。
@@ -13,6 +13,14 @@ ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ov
 - 入口：宿主机 systemd Caddy 的 `/etc/caddy/sup2api-customer.caddy`（`sub2api-customer.sakura-api.com`、`sup2api.32.191.20.99.nip.io`、`https://sup2api.32.191.20.99.sslip.io`）反代到 `127.0.0.1:18080`。主 Caddyfile 是 `admin off`，`systemctl reload caddy` 会失败，改配置要 `restart`（会断开同一个 Caddy 上 antigravity、cliproxy 站点的连接）。
 - 内置插件签名密钥：核心 0.1.298 起在没设 `SUB2API_BUILTIN_TRUST_KEY` 时自己读 `builtin/trust.pub`，compose 里不再设这个变量（0.1.297 期间手动设过，备份 `compose.yml.bak-with-trustkey`；回到 0.1.297 要加回去）。
 - 插件：`SUB2API_PLUGIN_VERIFY_SIGNATURES=false`（沿用旧部署）；已装插件包原来由旧核心用开发密钥 `sub2api-dev` 签名，Release 内置包用 `sup2api-plugins-2026` 签名，同版本的包保留原样。
+
+## 2026-11-18 核心 0.1.301（codex 0.1.10，删除 custom）
+
+- 发布前（只读）：custom 账号 0；账号只有两个 `codex_device`（id 2、3）。不备份数据库。
+- Release `core-v0.1.301`（`e0a985c81`，清单 `8fb8ddbd75afb13eceaa6041f10bfc145249ed2aa7021df4a9add3369611b0b6`，amd64 bundle `3e632f88…8684` 核对摘要）下载到 `publish/sup2api/`，`docker compose exec -T node-a sub2api-shell import -config /etc/sub2api/shell.json -manifest https://sup2api-gw-releases/sup2api/<清单>.json`；预检只有 node-a、primary-first-v1、无阻断（expected_revision 5）；计划 `bf6597af4f50491e9567509e33d397d8` 01:20:07→01:20:13，`/readyz` 503 01:20:09.7→01:20:13.7 约 4 秒（`observe301.py`，输出 `plan301.out`）；迁移 0104 于 01:20:12 应用（`plugin_key_retirements` 记入 custom）。
+- 核验（`verify301.py`）：核心 0.1.301；anthropic 0.3.3、codex 0.1.10、gemini 0.3.1、moderation 0.12.1、openai 0.4.2 active、ready、restarts 0，dynweight、mailer、volcengine 仍只安装未启用；无 custom 类型；两个 codex 账号 active、可调度；强制检测无更新、无错误；日志无 ERROR。
+- codex 会话缓存（codex 0.1.10 的修复）：上线前 11-17 21:56–22:13 codex-test 22 次，cache_read/input 26.6%（cache_read 945280 / input 3558073）；上线后到记录时还没有新请求，复查用 `usage_logs` 按 `api_key_id`（codex-test）与 `created_at >= '2026-11-17 17:20:13+00'` 汇总 `cache_read_tokens` / `input_tokens`。
+- 回滚：迁移 0104 单向，不回退核心，出问题修复前进。
 
 ## 2026-11-17 网关 0.1.138 + 核心 0.1.298（codex 0.1.8）
 

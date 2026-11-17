@@ -6,6 +6,12 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-18 核心 **0.1.301**（Release `core-v0.1.301`，`e0a985c81`，内置 codex 0.1.10、dynweight 0.5.11，删除 custom；北京时间 01:18–01:19；迁移 0104，主节点优先；网关仍 0.1.138）：
+- 发布前（只读）：custom 账号 0（含已删除）；392 仍是管理员关闭（11-17 15:43:47，`manual operation`），用户定不动、不恢复；不备份数据库。
+- 核心：Release 清单 `8fb8ddbd75afb13eceaa6041f10bfc145249ed2aa7021df4a9add3369611b0b6` 与两个 bundle（amd64 `3e632f88…8684`、arm64 `7c27ff05…6e57`）核对摘要后放进 `publish/sup2api/`（`stage/0.1.301/`），import，预检 primary-first-v1、无 blocker（expected_revision 566），计划 `f6f50d8a3fa6cd5ad048d3462099583e` 01:18:22→01:19:27（`~/rel301/observe.py`，要 `sudo` 读 `shell.token`；输出 `~/rel301/plan.out`）：ccp 01:18:31 转为 forward，主节点 01:18:37 进入 maintenance，迁移 0104 于 01:18:41 应用，01:18:46 主节点就绪，ccp 01:19:26 恢复 local。**停服**：ovh 3130 与 api.prophey.ai `/readyz` 503 01:18:37.0→01:18:46.0 约 9 秒。schema `ab35f2f6…187d` → `50a07a21…2437`。
+- 核验（`~/rel301/verify301.py`）：两节点核心 0.1.301，8 个插件 active、ready、restarts 0（anthropic 0.3.3、codex 0.1.10、dynweight 0.5.11、gemini 0.3.1、mailer 0.1.3、moderation 0.12.1、openai 0.4.2、volcengine 0.12.8）；plugins 无 custom 行，`plugin_key_retirements` 有 custom（01:18:41）；`/account-types` 无 custom 类型；强制检测核心 0.1.301 无更新、网关 0.1.138 无更新、无错误；sup2api-1、sup2api-ccp 日志无 ERROR；`errs.sh` 01:00–02:00 无请求（392 关着）。
+- 回滚：迁移 0104 单向，不回退核心，出问题修复前进。
+
 2026-11-17 网关 **0.1.138** + 核心 **0.1.298**（Release `gateway-v0.1.138` / `core-v0.1.298`，`0bbda1192`，内置 codex 0.1.8；北京时间 22:36–22:39；无核心迁移）：
 - 网关：`stage/gateway-0.1.138/` 从 `~/sup2api/release-0.1.298`（`9abaa23ff`，树与 `0bbda1192` 相同）构建（`--build-arg VERSION=0.1.138`，镜像 `sha256:f2951276…a2f`），二进制 sha256 `82baa5c287a8f1320ff034a6b86ae5a530c29e741f51caaef8755352570e51f4` 与 Release 网关清单（`0761e99c…104c`）一致；镜像包 gzip `8ce875d7…7eee`，clicodeplus `/root/gateway-images/`。`gwswap.sh`：ccp 22:36:26 让出、22:36:28 排空、22:37:03 就绪；ovh 22:37:19 让出、22:37:27 就绪；`.env.bak-gw137`。两节点 `updater.nodes` 0.1.138。
 - 核心：Release 清单 `108d2c7d0115cccdb9f83839be85045ea8ca26fedf6a4fbd9e415e8cff2ff9d7` 与两个 bundle 核对摘要后放进 `publish/sup2api/`（`stage/0.1.298/`），import，预检 rolling-v1、无 blocker（expected_revision 564），计划 `1fc58f57c4c85ed5a179e53a4cc10468` 22:38:23→22:39:32（先 ccp 后 ovh，`~/rel298/observe.py`），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200。

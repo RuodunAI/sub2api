@@ -10,12 +10,12 @@
       "digest": "sha256:79bcd5f67f8bb351aebbaa2788ff0b8f0218042ec27462cb2b2d9dcfdf6fc970"
     },
     "codex": {
-      "version": "0.1.8",
-      "digest": "sha256:c9c4675032ba9dae1f87803aa36f0cc27467352413e3a065eef7b339d9bd705c"
+      "version": "0.1.10",
+      "digest": "sha256:3a0eec5a02551756f8f4b85a4859f0d6ce1260810268f5f1f448243e96749438"
     },
     "dynweight": {
-      "version": "0.5.10",
-      "digest": "sha256:7c68d59aed69e3e80a80cd1c432685185d3b75fa83375d72d7ab7d50bdfc4a27"
+      "version": "0.5.11",
+      "digest": "sha256:0be6507364d372a8146ee2123ac0e073d2465d01a93c6998d99fb86598dd0d2e"
     },
     "gemini": {
       "version": "0.3.1",

@@ -8,7 +8,15 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.301：删除 custom 插件、答完后才断开的请求按成功计费、插件可读取系统设置并感知变更、最大并发移入限流（codex 0.1.10、dynweight 0.5.11；迁移 0104，主节点优先）
+## 2026-11-18
+
+### 核心 0.1.301：删除 custom 插件、答完后才断开的请求按成功计费、插件可读取系统设置并感知变更、最大并发移入限流（`e0a985c81`，codex 0.1.10、dynweight 0.5.11；迁移 0104，主节点优先）
+
+- **Release**：上游 PR #46 合并为 `e0a985c81`（next/ CI 全过；旧 backend 的 backend-security、shell 两项与 #44、#45 一样失败，不涉及 next/），tag `core-v0.1.301` 自动构建（run 44132030346，用户在项目线程原话同意提上游同步 PR、推 tag、批准 release 环境，release 环境由我代批），北京时间 01:17:03 发布。清单 sha256 `8fb8ddbd75afb13eceaa6041f10bfc145249ed2aa7021df4a9add3369611b0b6`（amd64 bundle `3e632f88…8684`、arm64 `7c27ff05…6e57`），strategy maintenance，schema `ab35f2f6…187d` → `50a07a21…2437`；内置集合 anthropic 0.3.3、codex 0.1.10、dynweight 0.5.11、gemini 0.3.1、mailer 0.1.3、moderation 0.12.1、openai 0.4.2、volcengine 0.12.8，不再有 custom。网关、runtime-contract 没有改动，不发新网关（仍 0.1.138）。`next/plugins/released.json` 按 `e0a985c81` 重写（codex 0.1.10、dynweight 0.5.11）。原计划的核心 0.1.299、0.1.300 没有发布，版本号跳过。
+- **发布前**：两个集群 custom 账号都是 0（`plugin_key = 'custom' AND deleted_at IS NULL`，连已删除的也没有）。new-api 渠道 392 自 11-17 15:43:47 起由管理员手动关闭（用户定不动、不恢复），发布前后都没有动；不备份数据库。
+- **ovh 集群**：Release 清单与 bundle 核对摘要后导入，预检 primary-first-v1、无阻断（expected_revision 566），计划 `f6f50d8a3fa6cd5ad048d3462099583e` 01:18:22→01:19:27（ccp 先转发主节点，主节点停机迁移启动，再恢复 ccp）；**停服**：ovh 3130 与 api.prophey.ai `/readyz` 503 01:18:37.0→01:18:46.0 约 9 秒；迁移 0104 于 01:18:41 应用（`plugin_key_retirements` 记入 custom，plugins 无 custom 行）。两节点核心 0.1.301，8 个插件 active、ready、restarts 0（codex 0.1.10、dynweight 0.5.11）；`/account-types` 没有 custom 类型；强制检测无更新、无错误；日志无 ERROR；392 关着，期间没有请求。
+- **ec2pool**（单节点）：计划 `bf6597af4f50491e9567509e33d397d8` primary-first-v1 01:20:07→01:20:13，`/readyz` 503 01:20:09.7→01:20:13.7 约 4 秒；迁移 0104 于 01:20:12 应用。核心 0.1.301，codex 0.1.10 active（dynweight、mailer、volcengine 仍只安装未启用）；两个 codex 账号（`codex_device`）active、可调度；无 custom 类型；日志无 ERROR。上线后 codex-test 还没有新请求，缓存比例待复查（上线前 11-17 21:56–22:13 共 22 次，cache_read/input 26.6%）。
+- 回滚：迁移 0104 单向，不回退核心，出问题修复前进（插件只升不降）。
 
 - **升级前**：每个集群先在控制台删除 custom 类型的账号（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，账号类型 `custom_*`）。新版不再认识这些类型，迁移 0104 卸载插件后它们只显示为插件已卸载。升级前只读核对：`SELECT count(*) FROM accounts WHERE plugin_key = 'custom' AND deleted_at IS NULL;` 应为 0。
 - **删除内置插件 custom**（CONTRACTS §106）：接任意 OpenAI、Anthropic、Gemini 兼容接口，改用内置 openai、anthropic、gemini 插件的 API Key 账号并填 Base URL，协议转换由平台做。新建账号不再有“自定义上游”一组。`custom` 键不能再安装（任何来源、任何签名都返回 403 `plugin_key_reserved`）。
