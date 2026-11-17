@@ -309,16 +309,9 @@ func (u *Acc) ApplySSE(event string, data []byte) {
 	}
 }
 
-// Final reports whether the stream's final usage has been read: an event
-// that an sse rule names explicitly reported the output count. Output is the
-// count only the end of an answer knows, so the event declared to carry it is
-// the last word on usage - Anthropic's message_delta, the Responses API's
-// response.completed / incomplete / failed - while an event declared for the
-// counts known early (message_start's prompt side) maps none. A rule for any
-// event ("event": "") never makes a stream final: OpenAI chat and Gemini put
-// usage on unnamed chunks, and Gemini and OpenAI-compatible upstreams repeat
-// a growing count on every chunk, so no single chunk can be told to be the
-// last one.
+// Final reports whether the stream's final usage has been read: an event an
+// sse rule names explicitly reported the output count. Rules for any event
+// never make a stream final (CONTRACTS §25.8).
 func (u *Acc) Final() bool { return u.final }
 
 // finalUsage reports whether data, matched by rule, reported the final usage

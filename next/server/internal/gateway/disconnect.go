@@ -64,7 +64,6 @@ func (c *call) loadDisconnectPolicy(ctx context.Context) string {
 //
 // A nil *upstreamDrain is valid and never keeps anything alive.
 type upstreamDrain struct {
-	client context.Context
 	cancel context.CancelCauseFunc
 	keep   bool // the answer may be read on after the client left
 	unhook []func() bool
@@ -80,7 +79,7 @@ type upstreamDrain struct {
 // watchClient ties the upstream exchange behind cancel to the client context
 // ctx. keep says whether this attempt may be read on after the client left.
 func (c *call) watchClient(ctx context.Context, cancel context.CancelCauseFunc, keep bool) *upstreamDrain {
-	d := &upstreamDrain{client: ctx, cancel: cancel, keep: keep && c.disconnectPolicy(ctx) == core.DisconnectContinue}
+	d := &upstreamDrain{cancel: cancel, keep: keep && c.disconnectPolicy(ctx) == core.DisconnectContinue}
 	d.unhook = append(d.unhook, context.AfterFunc(ctx, d.clientLeft))
 	if d.keep {
 		d.unhook = append(d.unhook, context.AfterFunc(c.g.readsAbandoned, func() { cancel(errServerClosing) }))
@@ -109,15 +108,15 @@ func (d *upstreamDrain) leave() {
 }
 
 // serve records that forward relayed the event reporting the answer's final
-// usage (usagerules.Acc.Final). It counts only while the client is still
-// there and has missed nothing.
-func (d *upstreamDrain) serve() {
+// usage (usagerules.Acc.Final) and flushed it. It counts only while the
+// client, whose context is ctx, is still there and has missed nothing.
+func (d *upstreamDrain) serve(ctx context.Context) {
 	if d == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.delivered = d.delivered || !d.left && !d.dropped && d.client.Err() == nil
+	d.delivered = d.delivered || !d.left && !d.dropped && ctx.Err() == nil
 }
 
 // served reports whether the answer's final usage reached the client: a
@@ -214,10 +213,19 @@ func (w *clientWriter) Write(p []byte) (int, error) {
 		return len(p), nil
 	}
 	n, err := w.ResponseWriter.Write(p)
-	if err != nil && w.drain.writeFailed() {
+	if err != nil && !errors.Is(err, errSpool) && w.drain.writeFailed() {
 		return len(p), nil
 	}
 	return n, err
+}
+
+// relayWriteError is what a failed write ends a relay with: the client is
+// gone, unless the response spool (a local writer, spool.go) failed.
+func relayWriteError(err error) error {
+	if errors.Is(err, errSpool) {
+		return err
+	}
+	return errClientGone
 }
 
 func (w *clientWriter) WriteString(s string) (int, error) {

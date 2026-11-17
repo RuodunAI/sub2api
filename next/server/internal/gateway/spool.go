@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -12,6 +13,10 @@ import (
 
 const spoolMemoryLimit = 1 << 20
 const spoolTotalLimit = 64 << 20
+
+// errSpool marks a failure of the spool itself (size limit, temp file): a
+// local error, never the client going away.
+var errSpool = errors.New("response spool failed")
 
 // bufferedResponse keeps a successful non-streaming answer private until its
 // accounting receipt commits. Large answers spill to an owner-only temp file.
@@ -50,28 +55,37 @@ func (w *bufferedResponse) Write(p []byte) (int, error) {
 	if w.err != nil {
 		return 0, w.err
 	}
+	n, err := w.write(p)
+	if err != nil {
+		w.err = fmt.Errorf("%w: %w", errSpool, err)
+	}
+	return n, w.err
+}
+
+func (w *bufferedResponse) write(p []byte) (int, error) {
 	if w.size+len(p) > spoolTotalLimit {
-		w.err = errors.New("response exceeds 64 MiB spool limit")
-		return 0, w.err
+		return 0, errors.New("response exceeds 64 MiB spool limit")
 	}
 	if w.file == nil && w.size+len(p) > spoolMemoryLimit {
-		w.file, w.err = os.CreateTemp("", "sup2api-response-*")
-		if w.err == nil {
-			_, w.err = w.file.Write(w.mem.Bytes())
-			w.mem.Reset()
+		f, err := os.CreateTemp("", "sup2api-response-*")
+		if err != nil {
+			return 0, err
 		}
-		if w.err != nil {
-			return 0, w.err
+		w.file = f
+		if _, err := f.Write(w.mem.Bytes()); err != nil {
+			return 0, err
 		}
+		w.mem.Reset()
 	}
 	var n int
+	var err error
 	if w.file == nil {
-		n, w.err = w.mem.Write(p)
+		n, err = w.mem.Write(p)
 	} else {
-		n, w.err = w.file.Write(p)
+		n, err = w.file.Write(p)
 	}
 	w.size += n
-	return n, w.err
+	return n, err
 }
 func (w *bufferedResponse) close() {
 	if w.file != nil {

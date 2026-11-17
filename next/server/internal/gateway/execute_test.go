@@ -26,6 +26,9 @@ type executeTestPlatform struct {
 	afterRecord  func(context.Context, core.ExecutionCallbacks, *pluginv1.ForwardUpstreamResponse) error
 	calls        atomic.Int64
 	deadline     atomic.Value // time.Time of the Execute context
+	// abort, closed, cancels the context of the plugin's Forward call, as a
+	// plugin that is killed or drained mid-answer does.
+	abort chan struct{}
 }
 
 func (p *executeTestPlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest, cb core.ExecutionCallbacks) (*pluginv1.ExecuteResponse, error) {
@@ -37,7 +40,18 @@ func (p *executeTestPlatform) Execute(ctx context.Context, in *pluginv1.ExecuteR
 	if err != nil {
 		return nil, err
 	}
-	out, err := cb.Forward(ctx, &pluginv1.ForwardUpstreamRequest{Request: built})
+	fctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if p.abort != nil {
+		go func() {
+			select {
+			case <-p.abort:
+				cancel()
+			case <-fctx.Done():
+			}
+		}()
+	}
+	out, err := cb.Forward(fctx, &pluginv1.ForwardUpstreamRequest{Request: built})
 	if err != nil {
 		return nil, err
 	}

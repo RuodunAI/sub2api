@@ -43,6 +43,9 @@ type responsesUpstream struct {
 	// terminal replaces the last event: "incomplete", "failed", "error429",
 	// "error_flat", "none" (the stream just ends).
 	terminal string
+	// linger, when set, keeps the stream open after the last event until the
+	// request is canceled, which it is then told.
+	linger chan struct{}
 }
 
 func newResponsesUpstream(t *testing.T) *responsesUpstream {
@@ -73,8 +76,14 @@ func (u *responsesUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.bodies = append(u.bodies, raw)
-	streamOnly, empty, terminal := u.streamOnly, u.emptyOutput, u.terminal
+	streamOnly, empty, terminal, linger := u.streamOnly, u.emptyOutput, u.terminal, u.linger
 	u.mu.Unlock()
+	if linger != nil {
+		defer func() {
+			<-r.Context().Done()
+			linger <- struct{}{}
+		}()
+	}
 	if !gjson.GetBytes(raw, "stream").Bool() {
 		if streamOnly {
 			w.Header().Set("Content-Type", "application/json")

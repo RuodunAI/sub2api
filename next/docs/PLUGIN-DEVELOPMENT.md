@@ -26,7 +26,7 @@
 |---|---|---|---|
 | 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
-| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.299 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.299 起，三种策略都一样） |
+| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致 / 一致（**0.1.299 起**，此前插件执行一律按预扣） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（0.1.299 起，三种策略都一样）；插件放弃 `ForwardUpstream`（被终止、超时）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usage.source: "plugin"` 并实现 `ExtractUsage` | 一致 / 在 `Execute` 内记录 / WebSocket 不支持 `source: plugin`（清单检查拒绝） | `usageplugin.go`、`sdk/manifest/check/websocket.go` |
 
 流式用量规则的写法会影响断开判定：**输出 token 数要映射在一个指名的终止事件上**（例如 Anthropic 的 `message_delta`、Responses 的 `response.completed`），核心据此判断“最终用量已经送达客户端”（`usagerules.Acc.Final`）。映射在任意事件（`"event": ""`）上的规则不会被当成终止，只能以读到流结束为准。
