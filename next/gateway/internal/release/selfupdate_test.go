@@ -63,27 +63,27 @@ func gatewayArchive(t *testing.T, bin []byte) []byte {
 	return buf.Bytes()
 }
 
-// installFixture is a signed gateway release of version with its archive.
+// installFixture is a gateway release (its manifest bytes) of version with
+// its archive.
 type installFixture struct {
-	m       *Manager
-	signed  rc.SignedManifest
-	archive []byte
-	bin     []byte
-	opened  int
+	m        *Manager
+	manifest []byte
+	archive  []byte
+	bin      []byte
+	opened   int
 }
 
 func newInstallFixture(t *testing.T, version string, mutate func(*rc.GatewayManifest, *[]byte)) *installFixture {
 	t.Helper()
-	m, priv, keys := gatewayFixture(t)
-	f := &installFixture{m: &Manager{Root: t.TempDir(), TrustedKeys: keys, OS: "linux", Arch: "amd64"}, bin: gatewayScript(version)}
+	m := gatewayFixture()
+	f := &installFixture{m: &Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64"}, bin: gatewayScript(version)}
 	f.archive = gatewayArchive(t, f.bin)
 	m.GatewayVersion = version
 	m.Platforms[0].ArchiveDigest, m.Platforms[0].ArchiveBytes, m.Platforms[0].BinaryDigest = sha(f.archive), int64(len(f.archive)), sha(f.bin)
 	if mutate != nil {
 		mutate(&m, &f.archive)
 	}
-	payload, _ := json.Marshal(m)
-	f.signed = signPayload(priv, payload)
+	f.manifest, _ = json.Marshal(m)
 	return f
 }
 
@@ -96,7 +96,7 @@ func (f *installFixture) open(_ context.Context, archive string, size int64) (io
 }
 
 func (f *installFixture) install() error {
-	_, _, err := f.m.InstallGateway(context.Background(), f.signed, f.open)
+	_, _, err := f.m.InstallGateway(context.Background(), f.manifest, f.open)
 	return err
 }
 
@@ -189,16 +189,13 @@ func TestInstallGatewayRejectsUnsafeArchives(t *testing.T) {
 	if err := CopyGatewayBinary(&huge, &written); err == nil || !strings.Contains(err.Error(), "exceeds") || written.Len() != 0 {
 		t.Fatalf("oversized binary: %v (%d bytes written)", err, written.Len())
 	}
-	// Not executable: pack-gateway would not have signed it either.
+	// Not executable: pack-gateway would not have packed it either.
 	if err := CopyGatewayBinary(bytes.NewReader(tarGz(t, &tar.Header{Name: "sub2api-gateway", Mode: 0644, Size: 1, Typeflag: tar.TypeReg})), io.Discard); err == nil {
 		t.Fatal("a non-executable binary was accepted")
 	}
 	f := newInstallFixture(t, "0.1.136", nil)
-	s := f.signed
-	s.Signature = append([]byte(nil), s.Signature...)
-	s.Signature[0] ^= 1
-	if _, _, err := f.m.InstallGateway(context.Background(), s, f.open); err == nil || f.opened != 0 {
-		t.Fatalf("a forged manifest was downloaded: %v (opened %d)", err, f.opened)
+	if _, _, err := f.m.InstallGateway(context.Background(), f.manifest[:len(f.manifest)-1], f.open); err == nil || f.opened != 0 {
+		t.Fatalf("a malformed manifest was downloaded: %v (opened %d)", err, f.opened)
 	}
 }
 

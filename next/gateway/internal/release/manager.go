@@ -1,11 +1,12 @@
-// Package release verifies and installs immutable, publisher-signed core bundles.
+// Package release verifies and installs immutable core bundles. A release is
+// identified by the SHA-256 of its manifest bytes; the manifest pins every
+// bundle and file by size and SHA-256 (CONTRACTS §33).
 package release
 
 import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -36,7 +37,6 @@ const (
 
 type Manager struct {
 	Root                 string
-	TrustedKeys          map[string]ed25519.PublicKey
 	OS, Arch, RuntimeABI string
 	Client               *http.Client
 	// AllowHTTP is intended for explicitly configured development repositories.
@@ -70,12 +70,13 @@ func ValidDigest(s string) bool {
 	return e == nil && len(b) == 32 && s == strings.ToLower(s)
 }
 func Digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func Verify(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.Manifest, string, error) {
+
+// Verify checks the bytes of a core release manifest: one JSON document of
+// the supported contract. It returns the manifest and its digest, the
+// SHA-256 of raw.
+func Verify(raw []byte) (rc.Manifest, string, error) {
 	var m rc.Manifest
-	if err := verifySignature(s, keys); err != nil {
-		return m, "", err
-	}
-	if err := decodeManifest(s.Payload, &m); err != nil {
+	if err := decodeManifest(raw, &m); err != nil {
 		return m, "", err
 	}
 	if m.ManifestVersion != 1 || m.ReleaseID == "" || m.BuildID == "" || !m.ShellProtocol.Contains(rc.Protocol) || !m.CoreControlProtocol.Contains(rc.Protocol) {
@@ -84,20 +85,7 @@ func Verify(s rc.SignedManifest, keys map[string]ed25519.PublicKey) (rc.Manifest
 	if m.Strategy != "rolling" && m.Strategy != "maintenance" {
 		return m, "", errors.New("invalid release strategy")
 	}
-	return m, Digest(s.Payload), nil
-}
-
-// verifySignature checks s against keys; an unknown key is named, so an
-// operator can tell a release of another publisher from a forged one.
-func verifySignature(s rc.SignedManifest, keys map[string]ed25519.PublicKey) error {
-	key, known := keys[s.KeyID]
-	if !known {
-		return fmt.Errorf("release is signed by untrusted key %.64q", s.KeyID)
-	}
-	if len(s.Payload) > MaxManifestBytes || len(key) != ed25519.PublicKeySize || !ed25519.Verify(key, s.Payload, s.Signature) {
-		return errors.New("invalid release signature")
-	}
-	return nil
+	return m, Digest(raw), nil
 }
 func (m *Manager) selectPlatform(v rc.Manifest) (rc.Platform, error) {
 	for _, p := range v.Platforms {
@@ -119,26 +107,27 @@ func (m *Manager) init() error {
 	return nil
 }
 
-// FetchManifest permits only HTTPS and does not follow redirects. The caller must
-// select the URL from its configured publisher, never from a business request.
-func (m *Manager) FetchManifest(ctx context.Context, rawURL string) (rc.SignedManifest, error) {
-	var s rc.SignedManifest
+// FetchManifest returns the manifest bytes at rawURL. It permits only HTTPS
+// and does not follow redirects. The caller must select the URL from its
+// configured publisher, never from a business request.
+func (m *Manager) FetchManifest(ctx context.Context, rawURL string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, orDefault(m.ManifestTimeout, DefaultManifestTimeout))
 	defer cancel()
 	r, err := m.getUsing(ctx, rawURL, m.Client)
 	if err != nil {
-		return s, err
+		return nil, err
 	}
 	defer r.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(r.Body, MaxManifestBytes*2+1))
-	if err != nil {
-		return s, err
+	return ReadManifest(r.Body)
+}
+
+// ReadManifest reads manifest bytes of at most MaxManifestBytes.
+func ReadManifest(r io.Reader) ([]byte, error) {
+	b, err := io.ReadAll(io.LimitReader(r, MaxManifestBytes+1))
+	if err == nil && len(b) > MaxManifestBytes {
+		err = errors.New("manifest too large")
 	}
-	if len(b) > MaxManifestBytes*2 {
-		return s, errors.New("manifest too large")
-	}
-	err = json.Unmarshal(b, &s)
-	return s, err
+	return b, err
 }
 func (m *Manager) getUsing(ctx context.Context, raw string, client *http.Client) (*http.Response, error) {
 	u, e := url.Parse(raw)
@@ -253,29 +242,30 @@ func (b *idleBody) Close() error {
 	return b.body.Close()
 }
 
-// ValidatePlatform checks the same signed platform contract as Prepare.
+// ValidatePlatform checks the same platform contract as Prepare.
 func (m *Manager) ValidatePlatform(v rc.Manifest) (rc.Platform, error) { return m.selectPlatform(v) }
 
-// Prepare verifies the signed manifest before downloading the exact bundleURL.
-// It never changes current and is safe while the old core serves traffic.
-func (m *Manager) Prepare(ctx context.Context, s rc.SignedManifest, bundleURL string) (Prepared, error) {
-	return m.prepare(ctx, s, m.urlOpener(bundleURL, m.Client))
+// Prepare verifies the manifest bytes raw before downloading the exact
+// bundleURL. It never changes current and is safe while the old core serves
+// traffic.
+func (m *Manager) Prepare(ctx context.Context, raw []byte, bundleURL string) (Prepared, error) {
+	return m.prepare(ctx, raw, m.urlOpener(bundleURL, m.Client))
 }
 
 // PrepareWithClient isolates the authenticated cluster transport from publishers.
-func (m *Manager) PrepareWithClient(ctx context.Context, s rc.SignedManifest, bundleURL string, client *http.Client) (Prepared, error) {
-	return m.prepare(ctx, s, m.urlOpener(bundleURL, client))
+func (m *Manager) PrepareWithClient(ctx context.Context, raw []byte, bundleURL string, client *http.Client) (Prepared, error) {
+	return m.prepare(ctx, raw, m.urlOpener(bundleURL, client))
 }
 
 // PrepareFrom is Prepare with the bundle opened by open, e.g. from an update
 // source; size and digest are verified all the same.
-func (m *Manager) PrepareFrom(ctx context.Context, s rc.SignedManifest, open Opener) (Prepared, error) {
-	return m.prepare(ctx, s, open)
+func (m *Manager) PrepareFrom(ctx context.Context, raw []byte, open Opener) (Prepared, error) {
+	return m.prepare(ctx, raw, open)
 }
-func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener) (Prepared, error) {
+func (m *Manager) prepare(ctx context.Context, raw []byte, open Opener) (Prepared, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v, d, e := Verify(s, m.TrustedKeys)
+	v, d, e := Verify(raw)
 	if e != nil {
 		return Prepared{}, e
 	}
@@ -294,11 +284,7 @@ func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener)
 		}
 		existing = true
 		if _, err := os.Stat(filepath.Join(m.Root, "blobs", "sha256", p.BundleDigest)); err == nil {
-			b, err := json.Marshal(s)
-			if err != nil {
-				return out, err
-			}
-			return out, atomicWrite(filepath.Join(m.Root, "manifests", d), b)
+			return out, atomicWrite(filepath.Join(m.Root, "manifests", d), raw)
 		}
 	}
 	stage, e := os.MkdirTemp(filepath.Join(m.Root, "staging"), "release-")
@@ -340,12 +326,7 @@ func (m *Manager) prepare(ctx context.Context, s rc.SignedManifest, open Opener)
 	if e = syncDir(filepath.Join(m.Root, "blobs", "sha256")); e != nil {
 		return out, e
 	}
-	b, e := json.Marshal(s)
-	if e != nil {
-		return out, e
-	}
-	e = atomicWrite(filepath.Join(m.Root, "manifests", d), b)
-	return out, e
+	return out, atomicWrite(filepath.Join(m.Root, "manifests", d), raw)
 }
 
 // fetch downloads what open opens into the new file dst, which must hold
@@ -382,7 +363,7 @@ func validPath(v string) bool {
 	return v != "" && len(v) <= 4096 && v != "." && path.Clean(v) == v && !strings.HasPrefix(v, "/") && !strings.Contains(v, "\\") && !strings.Contains(v, ":") && v != ".." && !strings.HasPrefix(v, "../")
 }
 
-// validateDeclarations checks the signed file list before any archive byte is
+// validateDeclarations checks the declared file list before any archive byte is
 // read, and returns the per-path declarations plus the declared directory set.
 // Every condition here is a security boundary: do not relax it.
 func validateDeclarations(files []rc.File) (map[string]rc.File, map[string]bool, error) {
@@ -579,11 +560,7 @@ func (m *Manager) Switch(ctx context.Context, operation, digest string) error {
 	if e != nil {
 		return e
 	}
-	var s rc.SignedManifest
-	if e = json.Unmarshal(b, &s); e != nil {
-		return e
-	}
-	v, d, e := Verify(s, m.TrustedKeys)
+	v, d, e := Verify(b)
 	if e != nil {
 		return e
 	}
@@ -686,19 +663,15 @@ func (m *Manager) GC(ctx context.Context, grace time.Duration) (int, error) {
 		}
 	}
 
-	// The blobs the kept releases name, from their signed manifests.
+	// The blobs the kept releases name, from their manifests.
 	keepBlobs := make(map[string]bool)
 	for digest := range keep {
 		b, err := os.ReadFile(filepath.Join(m.Root, "manifests", digest))
 		if err != nil {
 			continue
 		}
-		var s rc.SignedManifest
-		if err := json.Unmarshal(b, &s); err != nil {
-			continue
-		}
 		var v rc.Manifest
-		if err := json.Unmarshal(s.Payload, &v); err != nil {
+		if err := json.Unmarshal(b, &v); err != nil {
 			continue
 		}
 		for _, p := range v.Platforms {

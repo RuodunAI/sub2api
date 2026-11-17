@@ -1,24 +1,24 @@
 #!/bin/sh
-# sign-core.sh <build> <keys> <out>
+# package-core.sh <build> <keys> <out>
 #
-# Signs a core release from the core-build job of next-release.yml.
+# Packages a core release from the core-build job of next-release.yml.
 # <build>/core-stage.tar holds:
 #   bin-<arch>/   sub2api and sub2api-plugin of each linux architecture
 #   builtin/      the builtin plugin packages and install-only.txt, as
 #                 deploy/docker/build-go.sh made them (throwaway signature)
-# <keys> holds release.{key,keyid} and plugin.{key,keyid} (signing-keys.sh).
+# <keys> holds plugin.{key,keyid} (signing-keys.sh).
 #
 # The builtin packages are re-signed with the plugin key, builtin/trust.pub
 # and trust.keyid name that key, and each architecture is staged as
 # package-release.sh expects (bin/ + builtin/) and packed into one manifest.
-# <out> receives next-core-manifest.json and <bundle_digest>.tar.gz per
-# architecture.
+# <out> receives next-core-manifest.json (unsigned; its SHA-256 is the release
+# digest) and <bundle_digest>.tar.gz per architecture.
 #
 # Environment: VERSION, TAG, SOURCE_COMMIT, BUILD_ID, SCHEMA (schema-contract
 # of the new core); SCHEMA_BEFORE and PREV_TRUST_SHA256 from release-meta.sh
 # (PREV_TRUST_SHA256 is empty for the first core release). sub2api-release and
 # sub2api-plugin must be on PATH, built from source: nothing in <build> is
-# executed here, next to the keys.
+# executed here, next to the plugin key.
 set -eu
 build=$1
 keys=$2
@@ -48,7 +48,7 @@ for bin in "$stage"/bin-*; do
   cp -a "$builtin" "$dir/builtin"
   set -- "$@" --platform "linux/$arch=$dir"
 done
-digests=$(sub2api-release pack "$@" --out "$out" --key "$keys/release.key" --key-id "$(cat "$keys/release.keyid")" \
+digests=$(sub2api-release pack "$@" --out "$out" \
   --release-id "$TAG" --core-version "$VERSION" --source-commit "$SOURCE_COMMIT" --build-id "$BUILD_ID" \
   --schema "$SCHEMA" --schema-before "$SCHEMA_BEFORE" --runtime-abi linux-static-v1)
 printf '%s\n' "$digests"

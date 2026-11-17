@@ -91,9 +91,7 @@ func createRelease(db *gorm.DB, r Release) *gorm.DB {
 }
 
 func newReleaseRecord(r Release) *releaseRecord {
-	m, _ := json.Marshal(r.Manifest)
-	signed, _ := json.Marshal(r.Signed)
-	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: m, SignedManifest: signed, BundleBase: r.BundleBase, Line: updatesource.LineCore}
+	rec := &releaseRecord{Digest: r.Digest, ReleaseID: r.Manifest.ReleaseID, Manifest: r.Raw, BundleBase: r.BundleBase, Line: updatesource.LineCore}
 	if r.SourceAssets != nil {
 		rec.SourceAssets, _ = json.Marshal(r.SourceAssets)
 		rec.SourceLocator = r.SourceLocator
@@ -104,7 +102,7 @@ func newReleaseRecord(r Release) *releaseRecord {
 // Release is the core release digest; a gateway release is never one.
 func (s *Store) Release(ctx context.Context, digest string) (r Release, err error) {
 	r.Digest = digest
-	err = s.scanRelease(ctx, updatesource.LineCore, digest, &r.Manifest, &r.Signed, &r.BundleBase, &r.SourceAssets, &r.SourceLocator)
+	err = s.scanRelease(ctx, updatesource.LineCore, digest, &r.Manifest, &r.Raw, &r.BundleBase, &r.SourceAssets, &r.SourceLocator)
 	return
 }
 
@@ -112,20 +110,19 @@ func (s *Store) Release(ctx context.Context, digest string) (r Release, err erro
 func (s *Store) GatewayRelease(ctx context.Context, digest string) (r GatewayRelease, err error) {
 	var base string
 	r.Digest = digest
-	err = s.scanRelease(ctx, updatesource.LineGateway, digest, &r.Manifest, &r.Signed, &base, &r.SourceAssets, &r.SourceLocator)
+	err = s.scanRelease(ctx, updatesource.LineGateway, digest, &r.Manifest, &r.Raw, &base, &r.SourceAssets, &r.SourceLocator)
 	return
 }
 
-// scanRelease reads release digest of line into its parts.
-func (s *Store) scanRelease(ctx context.Context, line, digest string, manifest any, signed *rc.SignedManifest, base *string, assets *map[string]updatesource.Asset, locator *string) error {
-	var m, b, a []byte
-	err := releaseRow(s.db(ctx), line, digest).Select("manifest,signed_manifest,bundle_base,source_assets,source_locator").Row().Scan(&m, &b, base, &a, locator)
+// scanRelease reads release digest of line into its parts: raw receives the
+// stored manifest bytes, manifest their decoding.
+func (s *Store) scanRelease(ctx context.Context, line, digest string, manifest any, raw *[]byte, base *string, assets *map[string]updatesource.Asset, locator *string) error {
+	var a []byte
+	err := releaseRow(s.db(ctx), line, digest).Select("manifest,bundle_base,source_assets,source_locator").Row().Scan(raw, base, &a, locator)
 	if err != nil {
 		return err
 	}
-	if err = json.Unmarshal(m, manifest); err == nil {
-		err = json.Unmarshal(b, signed)
-	}
+	err = json.Unmarshal(*raw, manifest)
 	if err == nil && a != nil {
 		err = json.Unmarshal(a, assets)
 	}
@@ -389,7 +386,7 @@ func orderPrimaryFirst(nodes []string, primary string) bool {
 }
 
 // rollingEligible decides whether a plan for target may restart the nodes
-// one at a time (Rolling). The release must keep the schema and be signed
+// one at a time (Rolling). The release must keep the schema and be declared
 // rolling, with at least two enabled nodes serving so that one can take the
 // other's traffic. Anything else upgrades primary-first.
 func rollingEligible(target Release, nodes []Node, minServing int) bool {
@@ -401,7 +398,7 @@ func rollingBlockers(target Release, nodes []Node, minServing int) []Issue {
 	m := target.Manifest
 	var out []Issue
 	if m.Strategy != "rolling" {
-		out = append(out, Issue{Code: issueMaintenanceRelease, Message: "the release is signed for a maintenance update"})
+		out = append(out, Issue{Code: issueMaintenanceRelease, Message: "the release is declared for a maintenance update"})
 	}
 	if m.SchemaBefore == "" || m.SchemaBefore != m.SchemaAfter {
 		out = append(out, Issue{Code: issueSchemaChange, Message: "the release changes the database schema"})
@@ -422,7 +419,7 @@ func rollingBlockers(target Release, nodes []Node, minServing int) []Issue {
 	return out
 }
 
-// Compatibility validates the signed migration start and executable protocols.
+// Compatibility validates the declared migration start and executable protocols.
 // Database changes run with all followers stopped; equality is not required.
 func Compatibility(old, target Release) []string {
 	out := []string{}
@@ -431,7 +428,7 @@ func Compatibility(old, target Release) []string {
 		out = append(out, "target core_version must be explicit semantic version")
 	}
 	if b.Strategy != "maintenance" && b.Strategy != "rolling" {
-		out = append(out, "unsupported signed release strategy")
+		out = append(out, "unsupported release strategy")
 	}
 	if a.SchemaAfter == "" || b.SchemaBefore != a.SchemaAfter || b.SchemaAfter == "" {
 		out = append(out, "target migration must start at the approved baseline schema")

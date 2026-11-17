@@ -58,7 +58,7 @@ func TestRollingEligibility(t *testing.T) {
 		{"two rolling nodes serving", rel, []Node{serving("a"), serving("b")}, 2, true},
 		{"a disabled node does not count", rel, []Node{serving("a"), serving("b"), disabled}, 2, true},
 		{"one node cannot roll", rel, []Node{serving("a")}, 2, false},
-		{"signed maintenance stays primary-first", maintenance, []Node{serving("a"), serving("b")}, 2, false},
+		{"declared maintenance stays primary-first", maintenance, []Node{serving("a"), serving("b")}, 2, false},
 		{"a schema change stays primary-first", migrating, []Node{serving("a"), serving("b")}, 2, false},
 		{"recovery needs one serving node", rel, []Node{serving("a"), stopped}, 1, true},
 		{"a new plan needs two", rel, []Node{serving("a"), stopped}, 2, false},

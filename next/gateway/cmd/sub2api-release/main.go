@@ -1,12 +1,12 @@
-// sub2api-release packages already-built binaries. Signing keys are supplied by
-// the release operator, never copied into the runtime or generated on a node.
+// sub2api-release packages already-built binaries into release manifests and
+// bundles (CONTRACTS §33, §102). A manifest is plain JSON; its SHA-256 is the
+// release digest.
 package main
 
 import (
 	"archive/tar"
 	"compress/gzip"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -26,10 +26,9 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-const usage = "usage: sub2api-release keygen|pubkey|pack|pack-gateway|mirror [flags]"
+const usage = "usage: sub2api-release pubkey|pack|pack-gateway|mirror [flags]"
 
 var commands = map[string]func([]string, io.Writer) error{
-	"keygen":       keygen,
 	"pubkey":       pubkey,
 	"pack":         pack,
 	"pack-gateway": packGateway,
@@ -54,40 +53,8 @@ func run(args []string, out io.Writer) error {
 	return cmd(args[1:], out)
 }
 
-func keygen(args []string, out io.Writer) error {
-	f := flag.NewFlagSet("keygen", flag.ContinueOnError)
-	dest := f.String("out", "", "output directory")
-	if err := f.Parse(args); err != nil {
-		return err
-	}
-	if *dest == "" {
-		return errors.New("--out is required")
-	}
-	if err := os.MkdirAll(*dest, 0700); err != nil {
-		return err
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return err
-	}
-	for _, p := range []string{"release.key", "release.pub"} {
-		if _, err := os.Lstat(filepath.Join(*dest, p)); !errors.Is(err, os.ErrNotExist) {
-			return errors.New("key files already exist or cannot be inspected")
-		}
-	}
-	if err = writeNew(filepath.Join(*dest, "release.key"), []byte(base64.StdEncoding.EncodeToString(priv)+"\n"), 0600); err != nil {
-		return err
-	}
-	if err = writeNew(filepath.Join(*dest, "release.pub"), []byte(base64.StdEncoding.EncodeToString(pub)+"\n"), 0644); err != nil {
-		return err
-	}
-	_, err = fmt.Fprintln(out, "Created release.key and release.pub; keep the private key off runtime nodes.")
-	return err
-}
-
-// pubkey prints the base64 public half of a private key file: the content of
-// a gateway trusted key (internal/release/trusted/<key-id>.pub, trusted_keys)
-// or of a core bundle's builtin/trust.pub.
+// pubkey prints the base64 public half of a plugin signing key file
+// (sub2api-plugin keygen): the content of a core bundle's builtin/trust.pub.
 func pubkey(args []string, out io.Writer) error {
 	f := flag.NewFlagSet("pubkey", flag.ContinueOnError)
 	key := f.String("key", "", "base64 Ed25519 private key or seed file")
@@ -111,8 +78,6 @@ func pack(args []string, out io.Writer) error {
 	dir := f.String("dir", "", "staged release directory (bin/sub2api required) of --os/--arch")
 	var platforms platformFlag
 	f.Var(&platforms, "platform", "os/arch=DIR: one staged release directory per platform (repeatable)")
-	key := f.String("key", "", "base64 Ed25519 private-key file")
-	keyID := f.String("key-id", "", "configured signing key ID")
 	version := f.String("release-id", "", "immutable release version")
 	coreVersion := f.String("core-version", "", "actual core binary version")
 	commit := f.String("source-commit", "", "source commit or snapshot digest")
@@ -131,17 +96,13 @@ func pack(args []string, out io.Writer) error {
 			return err
 		}
 	}
-	if *dest == "" || len(platforms) == 0 || *key == "" || *keyID == "" || *version == "" || *coreVersion == "" || *commit == "" || *schema == "" {
-		return errors.New("--out, --dir or --platform, --key, --key-id, --release-id, --core-version, --source-commit and --schema are required")
+	if *dest == "" || len(platforms) == 0 || *version == "" || *coreVersion == "" || *commit == "" || *schema == "" {
+		return errors.New("--out, --dir or --platform, --release-id, --core-version, --source-commit and --schema are required")
 	}
 	if *schemaBefore == "" {
 		*schemaBefore = *schema
 	}
 	output, err := filepath.Abs(*dest)
-	if err != nil {
-		return err
-	}
-	priv, err := loadKey(*key)
 	if err != nil {
 		return err
 	}
@@ -160,7 +121,7 @@ func pack(args []string, out io.Writer) error {
 		platform.OS, platform.Arch, platform.RuntimeABI = p.OS, p.Arch, *abi
 		m.Platforms = append(m.Platforms, platform)
 	}
-	manifest, manifestDigest, err := signManifest(m, priv, *keyID)
+	manifest, manifestDigest, err := encodeManifest(m)
 	if err != nil {
 		return err
 	}
@@ -210,23 +171,20 @@ func packPlatform(dir, output string) (rc.Platform, error) {
 	return p, publishFile(tmp.Name(), filepath.Join(output, p.BundleDigest+".tar.gz"))
 }
 
-// signManifest signs the JSON encoding of payload and returns the indented
-// SignedManifest envelope and the payload digest (the manifest digest).
-func signManifest(payload any, priv ed25519.PrivateKey, keyID string) ([]byte, string, error) {
-	raw, err := json.Marshal(payload)
+// encodeManifest returns the manifest file of m, indented JSON, and its
+// SHA-256: the release digest a gateway computes over the same bytes.
+func encodeManifest(m any) ([]byte, string, error) {
+	raw, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, "", err
 	}
-	signed, err := json.MarshalIndent(rc.SignedManifest{KeyID: keyID, Payload: raw, Signature: ed25519.Sign(priv, raw)}, "", "  ")
-	if err != nil {
-		return nil, "", err
-	}
+	raw = append(raw, '\n')
 	digest := sha256.Sum256(raw)
-	return append(signed, '\n'), hex.EncodeToString(digest[:]), nil
+	return raw, hex.EncodeToString(digest[:]), nil
 }
 
-// loadKey reads a base64 Ed25519 private key (keygen) or 32-byte seed
-// (sub2api-plugin keygen).
+// loadKey reads a base64 Ed25519 32-byte seed (sub2api-plugin keygen) or
+// 64-byte private key, as sub2api-plugin sign does.
 func loadKey(path string) (ed25519.PrivateKey, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -393,7 +351,7 @@ func publishFile(src, dst string) error {
 	return err
 }
 
-// releaseStrategy signs a release that keeps the schema as "rolling": the
+// releaseStrategy declares a release that keeps the schema "rolling": the
 // shells may then restart one node at a time while the others serve
 // (control.Rolling). A release that migrates is "maintenance" and upgrades
 // primary-first.

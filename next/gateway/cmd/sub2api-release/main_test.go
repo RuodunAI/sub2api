@@ -5,10 +5,10 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -19,36 +19,10 @@ import (
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-func TestPackSignedImmutableRelease(t *testing.T) {
-	root := t.TempDir()
-	keys := filepath.Join(root, "keys")
-	stage := filepath.Join(root, "stage")
-	dest := filepath.Join(root, "publish")
-	if err := run([]string{"keygen", "--out", keys}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(filepath.Join(keys, "release.key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = run([]string{"keygen", "--out", keys}, io.Discard); err == nil {
-		t.Fatal("overwrote key")
-	}
-	after, _ := os.ReadFile(filepath.Join(keys, "release.key"))
-	if !bytes.Equal(before, after) {
-		t.Fatal("private key changed")
-	}
-	if err = os.MkdirAll(filepath.Join(stage, "bin"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	core := []byte("real build output goes here\n")
-	if err = os.WriteFile(filepath.Join(stage, "bin", "sub2api"), core, 0644); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	if err = run([]string{"pack", "--dir", stage, "--out", dest, "--key", filepath.Join(keys, "release.key"), "--key-id", "test", "--release-id", "r1", "--core-version", "0.1.0", "--source-commit", "source-snapshot", "--schema", "schema-hash", "--os", "linux", "--arch", "amd64"}, &out); err != nil {
-		t.Fatal(err)
-	}
+// readManifest reads the one manifest pack wrote to dest and verifies it as
+// a gateway does: its file name is the SHA-256 of its bytes.
+func readManifest(t *testing.T, dest string) ([]byte, rc.Manifest) {
+	t.Helper()
 	paths, err := filepath.Glob(filepath.Join(dest, "*.json"))
 	if err != nil || len(paths) != 1 {
 		t.Fatalf("manifests %v: %v", paths, err)
@@ -57,21 +31,37 @@ func TestPackSignedImmutableRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var signed rc.SignedManifest
-	if err = json.Unmarshal(raw, &signed); err != nil {
-		t.Fatal(err)
-	}
-	pubRaw, _ := os.ReadFile(filepath.Join(keys, "release.pub"))
-	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(pubRaw)))
+	m, digest, err := release.Verify(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, digest, err := release.Verify(signed, map[string]ed25519.PublicKey{"test": pub})
-	if err != nil {
+	if filepath.Base(paths[0]) != digest+".json" {
+		t.Fatalf("manifest %s has digest %s", paths[0], digest)
+	}
+	return raw, m
+}
+
+func TestPackImmutableRelease(t *testing.T) {
+	root := t.TempDir()
+	stage := filepath.Join(root, "stage")
+	dest := filepath.Join(root, "publish")
+	if err := os.MkdirAll(filepath.Join(stage, "bin"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(paths[0]) != digest+".json" || m.ReleaseID != "r1" || m.SchemaBefore != "schema-hash" || m.SchemaAfter != "schema-hash" || m.Strategy != "rolling" {
+	core := []byte("real build output goes here\n")
+	if err := os.WriteFile(filepath.Join(stage, "bin", "sub2api"), core, 0644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := run([]string{"pack", "--dir", stage, "--out", dest, "--release-id", "r1", "--core-version", "0.1.0", "--source-commit", "source-snapshot", "--schema", "schema-hash", "--os", "linux", "--arch", "amd64"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	raw, m := readManifest(t, dest)
+	if m.ReleaseID != "r1" || m.SchemaBefore != "schema-hash" || m.SchemaAfter != "schema-hash" || m.Strategy != "rolling" {
 		t.Fatalf("bad manifest: %+v", m)
+	}
+	if sum := sha256.Sum256(raw); !strings.HasPrefix(out.String(), "manifest_digest="+hex.EncodeToString(sum[:])+"\n") {
+		t.Fatalf("output %q does not name the manifest file's digest", out.String())
 	}
 	if !m.ShellProtocol.Contains(rc.Protocol) || !m.CoreControlProtocol.Contains(rc.Protocol) {
 		t.Fatal("release cannot be used by the current shell/core protocol")
@@ -105,31 +95,14 @@ func TestPackSignedImmutableRelease(t *testing.T) {
 	if _, err = tr.Next(); err != io.EOF {
 		t.Fatalf("extra archive entry: %v", err)
 	}
-	// A migration release must sign both ends. The source must not be silently
-	// overwritten with the target contract when publishing the bundle.
+	// A migration release must declare both ends. The source must not be
+	// silently overwritten with the target contract when publishing the bundle.
 	migrationDest := filepath.Join(root, "migration")
-	if err = run([]string{"pack", "--dir", stage, "--out", migrationDest, "--key", filepath.Join(keys, "release.key"), "--key-id", "test", "--release-id", "r2", "--core-version", "0.2.0", "--source-commit", "migration-snapshot", "--schema-before", "schema-hash", "--schema", "schema-new", "--os", "linux", "--arch", "amd64"}, io.Discard); err != nil {
+	if err = run([]string{"pack", "--dir", stage, "--out", migrationDest, "--release-id", "r2", "--core-version", "0.2.0", "--source-commit", "migration-snapshot", "--schema-before", "schema-hash", "--schema", "schema-new", "--os", "linux", "--arch", "amd64"}, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	migrationPaths, err := filepath.Glob(filepath.Join(migrationDest, "*.json"))
-	if err != nil || len(migrationPaths) != 1 {
-		t.Fatalf("migration manifests %v: %v", migrationPaths, err)
-	}
-	migrationRaw, err := os.ReadFile(migrationPaths[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	var migrationSigned rc.SignedManifest
-	if err = json.Unmarshal(migrationRaw, &migrationSigned); err != nil {
-		t.Fatal(err)
-	}
-	migration, _, err := release.Verify(migrationSigned, map[string]ed25519.PublicKey{"test": pub})
-	if err != nil || migration.SchemaBefore != "schema-hash" || migration.SchemaAfter != "schema-new" || migration.Strategy != "maintenance" {
-		t.Fatalf("migration contract lost: %+v %v", migration, err)
-	}
-	signed.Payload = append(signed.Payload, ' ')
-	if _, _, err = release.Verify(signed, map[string]ed25519.PublicKey{"test": pub}); err == nil {
-		t.Fatal("tampered manifest verified")
+	if _, migration := readManifest(t, migrationDest); migration.SchemaBefore != "schema-hash" || migration.SchemaAfter != "schema-new" || migration.Strategy != "maintenance" {
+		t.Fatalf("migration contract lost: %+v", migration)
 	}
 }
 
@@ -180,7 +153,7 @@ func TestPublishCannotReplaceArtifact(t *testing.T) {
 
 func TestReleaseStrategyFollowsTheSchema(t *testing.T) {
 	if releaseStrategy("s1", "s1") != "rolling" {
-		t.Fatal("a release that keeps the schema is signed rolling")
+		t.Fatal("a release that keeps the schema is declared rolling")
 	}
 	for _, c := range [][2]string{{"s1", "s2"}, {"", "s1"}, {"", ""}} {
 		if releaseStrategy(c[0], c[1]) != "maintenance" {
@@ -189,13 +162,9 @@ func TestReleaseStrategyFollowsTheSchema(t *testing.T) {
 	}
 }
 
-func TestPackSignsEveryPlatformInOneManifest(t *testing.T) {
+func TestPackDeclaresEveryPlatformInOneManifest(t *testing.T) {
 	root := t.TempDir()
-	keys := filepath.Join(root, "keys")
-	if err := run([]string{"keygen", "--out", keys}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	args := []string{"pack", "--out", filepath.Join(root, "publish"), "--key", filepath.Join(keys, "release.key"), "--key-id", "test", "--release-id", "core-v0.2.0", "--core-version", "0.2.0", "--source-commit", "c", "--schema", "s"}
+	args := []string{"pack", "--out", filepath.Join(root, "publish"), "--release-id", "core-v0.2.0", "--core-version", "0.2.0", "--source-commit", "c", "--schema", "s"}
 	for _, arch := range []string{"amd64", "arm64"} {
 		stage := filepath.Join(root, "stage-"+arch)
 		if err := os.MkdirAll(filepath.Join(stage, "bin"), 0755); err != nil {
@@ -210,19 +179,7 @@ func TestPackSignsEveryPlatformInOneManifest(t *testing.T) {
 	if err := run(args, &out); err != nil {
 		t.Fatal(err)
 	}
-	paths, _ := filepath.Glob(filepath.Join(root, "publish", "*.json"))
-	if len(paths) != 1 {
-		t.Fatalf("want one manifest, got %v", paths)
-	}
-	raw, _ := os.ReadFile(paths[0])
-	var signed rc.SignedManifest
-	if err := json.Unmarshal(raw, &signed); err != nil {
-		t.Fatal(err)
-	}
-	m, _, err := release.Verify(signed, map[string]ed25519.PublicKey{"test": readPub(t, filepath.Join(keys, "release.pub"))})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, m := readManifest(t, filepath.Join(root, "publish"))
 	if len(m.Platforms) != 2 || m.Platforms[0].Arch != "amd64" || m.Platforms[1].Arch != "arm64" || m.Platforms[0].BundleDigest == m.Platforms[1].BundleDigest {
 		t.Fatalf("platforms: %+v", m.Platforms)
 	}
@@ -244,46 +201,29 @@ func TestPackSignsEveryPlatformInOneManifest(t *testing.T) {
 	}
 }
 
-func TestPubkeyReadsReleaseAndPluginKeys(t *testing.T) {
+// pubkey prints builtin/trust.pub from a plugin signing key: the 32-byte seed
+// sub2api-plugin keygen stores, or a 64-byte private key.
+func TestPubkeyReadsPluginKeys(t *testing.T) {
 	root := t.TempDir()
-	if err := run([]string{"keygen", "--out", root}, io.Discard); err != nil {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var out bytes.Buffer
-	if err := run([]string{"pubkey", "--key", filepath.Join(root, "release.key")}, &out); err != nil {
+	want := base64.StdEncoding.EncodeToString(pub) + "\n"
+	key := filepath.Join(root, "plugin.key")
+	for _, b := range [][]byte{priv.Seed(), priv} {
+		if err = os.WriteFile(key, []byte(base64.StdEncoding.EncodeToString(b)+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if err = run([]string{"pubkey", "--key", key}, &out); err != nil || out.String() != want {
+			t.Fatalf("pubkey of a %d-byte key %q: %v", len(b), out.String(), err)
+		}
+	}
+	if err = os.WriteFile(key, []byte("bm90IGEga2V5\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	want, _ := os.ReadFile(filepath.Join(root, "release.pub"))
-	if out.String() != string(want) {
-		t.Fatalf("pubkey %q, want %q", out.String(), want)
-	}
-	// sub2api-plugin keygen stores the 32-byte seed.
-	priv, _ := loadKey(filepath.Join(root, "release.key"))
-	seed := filepath.Join(root, "plugin.key")
-	if err := os.WriteFile(seed, []byte(base64.StdEncoding.EncodeToString(priv.Seed())+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	out.Reset()
-	if err := run([]string{"pubkey", "--key", seed}, &out); err != nil || out.String() != string(want) {
-		t.Fatalf("seed pubkey %q: %v", out.String(), err)
-	}
-	if err := os.WriteFile(seed, []byte("bm90IGEga2V5\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := run([]string{"pubkey", "--key", seed}, io.Discard); err == nil {
+	if err = run([]string{"pubkey", "--key", key}, io.Discard); err == nil {
 		t.Fatal("accepted an invalid key")
 	}
-}
-
-func readPub(t *testing.T, path string) ed25519.PublicKey {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pub
 }

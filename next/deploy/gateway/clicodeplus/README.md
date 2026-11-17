@@ -149,6 +149,10 @@
 
 源码 `a0eac3c38`，镜像 `sup2api-gateway:0.1.135`（ID `da491cb9…`，`--build-arg VERSION=0.1.135`），在 ovh 的 `~/sup2api/release-0.1.291` 构建（`stage/0.1.291/build.sh`），经本机复制到 clicodeplus（gzip SHA `96d90c19…`，`/root/gateway-images/`）。核心 0.1.291 的 rolling 计划在 0.1.134 下完成后，按下文“网关换版流程”先换本节点：`/root/sup2api-node/gwswap-0.1.135.sh` 让出（北京 03:57:15）、排空（03:57:19，在途 0）、`.env` 备份为 `.env.bak-gw134` 并把 `GATEWAY_IMAGE` 改成 0.1.135、`docker compose up -d --no-deps sup2api-ccp`，03:57:53 `/readyz` 200；期间 Caddy 把 api.prophey.ai 切到 ovh，没有 5xx。之后才换 ovh 的主节点（03:58:10–03:58:27）。本版起各节点向 `updater.nodes` 报告 `gateway_version` 与能否自更新，之后的网关版本可以在控制台一键更新（`gateway-rolling-v1`）。回退：`.env` 换回 `.env.bak-gw134`，同样先让出再重建。
 
+## 网关 0.1.136：发布清单不再签名（2026-11-17）
+
+源码 `eaf21e48`，镜像 `sup2api-gateway:0.1.136`（ID `0e1cc8f9…`），在 ovh 的 `~/sup2api/release-0.1.293-eaf21e48` 构建（`stage/0.1.293-unsigned/build.sh`），经本机复制到 clicodeplus（gzip SHA `715869ec…`，`/root/gateway-images/`）。0.1.135 装不了不签名的发布，所以这一版仍手动换：`/root/sup2api-node/gwswap-0.1.136.sh` 让出（北京 16:07:58）、排空（16:08:01）、`.env` 备份为 `.env.bak-gw135`、`GATEWAY_IMAGE` 改成 0.1.136、重建，16:08:36 `/readyz` 200；之后换 ovh 主节点，再滚动升级核心 0.1.293。基线换成不签名的核心之后网关不能再回到 0.1.135；以后的网关版本在控制台一键更新。
+
 ## 网关换版流程（2026-11-08 起，下一版网关（预计 0.1.133）：节点让出，不再改 Caddy）
 
 下一版网关起（CONTRACTS §82），本机管理 socket 提供 `POST /system/nodes/self/yield`。换网关镜像前先让节点把新请求交给另一个节点并让 `/readyz` 返回 503，Caddy 的健康检查会在 5 秒内把流量切到 ovh；重建容器后新网关就绪、`/readyz` 恢复 200，Caddy 自动切回。**不再需要改 Caddyfile。** 旧网关（≤0.1.132）没有这个接口，换到新版的那一次仍按上面“从 Caddy 摘下 3140”的老办法做。

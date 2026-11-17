@@ -17,7 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/updatesource"
 )
 
-var mirrorBlobs = map[int]string{1: `{"key_id":"k"}`, 2: "core bundle", 3: "old manifest", 4: "gateway manifest", 5: "gateway archive"}
+var mirrorBlobs = map[int]string{1: `{"core_version":"0.1.291"}`, 2: "core bundle", 3: "old manifest", 4: "gateway manifest", 5: "gateway archive"}
 
 // routed sends every request, whatever its host, to srv; the handler sees the
 // requested host in r.Host.

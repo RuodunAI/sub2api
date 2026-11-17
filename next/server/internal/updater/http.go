@@ -36,7 +36,7 @@ func RegisterRoutes(r *httpapi.Router, socketPath, token string, db *store.DB) {
 
 // How long a forwarded request waits for the gateway. The slowRoutes (a
 // forced update check, an update apply) read the update source, listings and
-// signed manifests, first: the gateway bounds them at 3 minutes (control
+// manifests, first: the gateway bounds them at 3 minutes (control
 // updateCheckBudget; applyBudget plus plan creation), and slowBridgeTimeout
 // outlasts that.
 const (

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prepare one signed core release from an exact clean Git checkout.
+# Prepare one core release from an exact clean Git checkout.
 # Does not import, create an upgrade plan, restart or replace any service.
 set -eu
 [ "$#" = 2 ] || { echo 'usage: prepare-core-release.sh VERSION FULL_GIT_SHA' >&2; exit 2; }
@@ -16,7 +16,6 @@ stage=$managed/stage/$version
 publish=$managed/publish/sup2api
 digests=$managed/publish/v$version.digests
 [ ! -e "$stage" ] && [ ! -e "$digests" ] || { echo 'release version already reserved; refusing overwrite' >&2; exit 1; }
-[ -s "$managed/keys/release.key" ] && [ -s "$managed/keys/release.pub" ] || { echo 'existing release key required' >&2; exit 1; }
 tag=sup2api-core-build:$version
 if docker image inspect "$tag" >/dev/null 2>&1; then echo 'image tag already exists' >&2; exit 1; fi
 [ "$(docker info --format '{{.CgroupDriver}} {{.CgroupVersion}}')" = 'systemd 2' ] || { echo 'requires systemd cgroup v2' >&2; exit 1; }
@@ -75,12 +74,11 @@ docker buildx build --builder default --cgroup-parent "$slice" --load \
   -f "$src/deploy/gateway/Dockerfile" -t "$gateway_image" "$src"
 docker run --rm --network none --user "$(id -u):$(id -g)" \
   -v "$payload:/stage:ro" -v "$publish:/publish" \
-  -v "$managed/keys/release.key:/release.key:ro" \
   -v "$src/deploy/gateway/package-release.sh:/package-release.sh:ro" \
-  --entrypoint sh "$gateway_image" /package-release.sh /stage /publish /release.key \
-  sup2api-ovh-2026 "v$version" "$sha" "$source_schema" > "$stage/digests.pending"
+  --entrypoint sh "$gateway_image" /package-release.sh /stage /publish \
+  "v$version" "$sha" "$source_schema" > "$stage/digests.pending"
 # pack creates its bundle via a private temporary file. Make only these two
-# newly signed public artifacts readable by the existing release-origin user.
+# newly packaged public artifacts readable by the existing release-origin user.
 manifest_digest=$(sed -n 's/^manifest_digest=//p' "$stage/digests.pending")
 bundle_digest=$(sed -n 's/^bundle_digest=//p' "$stage/digests.pending")
 for value in "$manifest_digest" "$bundle_digest"; do

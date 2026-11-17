@@ -42,29 +42,28 @@ import (
 )
 
 type config struct {
-	Root             string            `json:"root"`
-	ClusterID        string            `json:"cluster_id"`
-	NodeID           string            `json:"node_id"`
-	PrimaryNode      string            `json:"primary_node"`
-	BaselineDigest   string            `json:"baseline_digest"`
-	DatabaseURL      string            `json:"database_url"`
-	RedisURL         string            `json:"redis_url"`
-	PublicAddr       string            `json:"public_addr"`
-	PeerAddr         string            `json:"peer_addr"`
-	PeerURL          string            `json:"peer_url"`
-	CertFile         string            `json:"cert_file"`
-	KeyFile          string            `json:"key_file"`
-	CAFile           string            `json:"ca_file"`
-	PeerAuthKey      string            `json:"peer_auth_key"`
-	TrustedProxies   []string          `json:"trusted_proxies"`
-	TrustedKeys      map[string]string `json:"trusted_keys"`
-	ReleaseOrigin    string            `json:"release_origin"`
-	CoreURL          string            `json:"core_url"`
-	CoreArgs         []string          `json:"core_args"`
-	CoreEnv          []string          `json:"core_env"`
-	RuntimeABI       string            `json:"runtime_abi"`
-	ManagementSocket string            `json:"management_socket"`
-	CoreSocket       string            `json:"core_socket"`
+	Root             string   `json:"root"`
+	ClusterID        string   `json:"cluster_id"`
+	NodeID           string   `json:"node_id"`
+	PrimaryNode      string   `json:"primary_node"`
+	BaselineDigest   string   `json:"baseline_digest"`
+	DatabaseURL      string   `json:"database_url"`
+	RedisURL         string   `json:"redis_url"`
+	PublicAddr       string   `json:"public_addr"`
+	PeerAddr         string   `json:"peer_addr"`
+	PeerURL          string   `json:"peer_url"`
+	CertFile         string   `json:"cert_file"`
+	KeyFile          string   `json:"key_file"`
+	CAFile           string   `json:"ca_file"`
+	PeerAuthKey      string   `json:"peer_auth_key"`
+	TrustedProxies   []string `json:"trusted_proxies"`
+	ReleaseOrigin    string   `json:"release_origin"`
+	CoreURL          string   `json:"core_url"`
+	CoreArgs         []string `json:"core_args"`
+	CoreEnv          []string `json:"core_env"`
+	RuntimeABI       string   `json:"runtime_abi"`
+	ManagementSocket string   `json:"management_socket"`
+	CoreSocket       string   `json:"core_socket"`
 	// PluginMaxBytes bounds stored plugin packages (default
 	// runtimecontract.PluginPackageMaxBytes, 64 MiB).
 	PluginMaxBytes int64 `json:"plugin_max_bytes"`
@@ -121,7 +120,7 @@ func parseCLI(args []string) (cliOptions, error) {
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	cfgPath := fs.String("config", "/etc/sub2api/shell.json", "gateway configuration")
-	manifestURL := fs.String("manifest", "", "signed manifest URL at the configured release origin")
+	manifestURL := fs.String("manifest", "", "release manifest URL at the configured release origin")
 	socket := fs.String("socket", "", "local management socket")
 	tokenFile := fs.String("token-file", "", "management token file (default: from -config, or shell.token beside -socket)")
 	id := fs.String("id", "", "upgrade ID")
@@ -289,21 +288,16 @@ func newShell(ctx context.Context, c config, command string) (*shell, error) {
 		slog.Info("gateway database pool", "max_conns", sqlDB.Stats().MaxOpenConnections)
 	}
 	s.store = &control.Store{DB: db, Cluster: c.ClusterID}
-	keys, err := release.TrustedKeys(c.TrustedKeys)
-	if err != nil {
-		s.close()
-		return nil, err
-	}
 	cipher, err := c.masterCipher()
 	if err != nil {
 		s.close()
 		return nil, err
 	}
-	s.releases = &release.Manager{Root: c.Root, TrustedKeys: keys, OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI}
+	s.releases = &release.Manager{Root: c.Root, OS: runtime.GOOS, Arch: runtime.GOARCH, RuntimeABI: c.RuntimeABI}
 	s.store.Updates = control.NewUpdateService(s.releases, cipher, c.AllowPrivateUpdateSources)
 	// The publisher is usually served with a public certificate, but may use
-	// the cluster CA; signatures, not the transport, authorize its content.
-	// init/import and serve share this client. It never carries node keys.
+	// the cluster CA. init/import and serve share this client. It never
+	// carries node keys.
 	if s.releases.Client, err = publisherClient(c.CAFile); err != nil {
 		s.close()
 		return nil, err
@@ -319,7 +313,7 @@ func newShell(ctx context.Context, c config, command string) (*shell, error) {
 	return s, nil
 }
 
-// initCluster imports an optional signed manifest and records the cluster's
+// initCluster imports an optional release manifest and records the cluster's
 // baseline. It never starts a core.
 func (s *shell) initCluster(ctx context.Context, manifestURL string) error {
 	c := s.c
@@ -337,7 +331,7 @@ func (s *shell) initCluster(ctx context.Context, manifestURL string) error {
 		fmt.Println(r.Digest)
 	}
 	if !release.ValidDigest(c.BaselineDigest) {
-		return errors.New("init requires baseline_digest or a signed -manifest")
+		return errors.New("init requires baseline_digest or -manifest")
 	}
 	if _, err := s.store.Release(ctx, c.BaselineDigest); err != nil {
 		return err
@@ -345,7 +339,7 @@ func (s *shell) initCluster(ctx context.Context, manifestURL string) error {
 	return s.store.InitCluster(ctx, c.PrimaryNode, c.BaselineDigest)
 }
 
-// importRelease records the release named by a signed manifest without touching
+// importRelease records the release named by a manifest without touching
 // the cluster baseline.
 func (s *shell) importRelease(ctx context.Context, manifestURL string) error {
 	if manifestURL == "" {
@@ -888,15 +882,15 @@ func importRelease(ctx context.Context, c config, m *release.Manager, raw string
 	if u.Scheme != origin.Scheme || u.Host != origin.Host || u.User != nil || !strings.HasPrefix(u.Path, strings.TrimRight(origin.Path, "/")+"/") {
 		return out, errors.New("manifest must come from the configured release origin")
 	}
-	signed, err := m.FetchManifest(ctx, raw)
+	b, err := m.FetchManifest(ctx, raw)
 	if err != nil {
 		return out, err
 	}
-	manifest, digest, err := release.Verify(signed, m.TrustedKeys)
+	manifest, digest, err := release.Verify(b)
 	if err != nil {
 		return out, err
 	}
-	return control.Release{Digest: digest, Manifest: manifest, Signed: signed, BundleBase: strings.TrimRight(c.ReleaseOrigin, "/")}, nil
+	return control.Release{Digest: digest, Manifest: manifest, Raw: b, BundleBase: strings.TrimRight(c.ReleaseOrigin, "/")}, nil
 }
 
 // defaultTokenFile is where the management token lives unless configured:

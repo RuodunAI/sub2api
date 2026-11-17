@@ -132,7 +132,7 @@ func gatewayCluster(t *testing.T) (*Store, *sourceFixture, []*Engine) {
 	for _, e := range engines {
 		e.Runtime = &rollingRuntime{fakeRuntime: e.Runtime.(*fakeRuntime), store: s, node: e.Node.ID}
 		e.Node.GatewayVersion, e.Node.SelfUpdate, e.BundledVersion = "0.1.135", true, "0.1.135"
-		e.Gateway = &release.Manager{Root: t.TempDir(), TrustedKeys: f.keys, OS: "linux", Arch: "amd64"}
+		e.Gateway = &release.Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64"}
 		if err := s.Register(ctx, e.Node); err != nil {
 			t.Fatal(err)
 		}

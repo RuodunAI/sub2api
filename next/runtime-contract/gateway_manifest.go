@@ -3,12 +3,12 @@ package runtimecontract
 import "time"
 
 // GatewayManifestKind separates gateway release manifests from core release
-// manifests. Both travel in the same SignedManifest envelope under the same
-// keys; a verifier of one kind rejects a payload of the other.
+// manifests: a verifier of one kind rejects a document of the other.
 const GatewayManifestKind = "sub2api-gateway-release-v1"
 
-// GatewayManifest describes one signed release of the node gateway
-// (sub2api-gateway). Like Manifest, signatures cover the exact Payload bytes.
+// GatewayManifest describes one release of the node gateway
+// (sub2api-gateway). Like Manifest, its digest is the SHA-256 of the exact
+// published bytes.
 type GatewayManifest struct {
 	Kind           string    `json:"kind"`
 	GatewayVersion string    `json:"gateway_version"`

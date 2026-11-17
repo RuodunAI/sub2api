@@ -3,7 +3,6 @@ package control
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -32,11 +31,9 @@ const fixtureURL = "https://releases.example.com/rel/"
 
 var bundleDigest = strings.Repeat("a", 64)
 
-// sourceFixture is a release directory of one signed core (0.2.0) and one
-// signed gateway (0.1.136) release.
+// sourceFixture is a release directory of one core (0.2.0) and one gateway
+// (0.1.136) release.
 type sourceFixture struct {
-	keys    map[string]ed25519.PublicKey
-	priv    ed25519.PrivateKey
 	id      string
 	mu      sync.Mutex
 	files   map[string][]byte // path below /rel/ -> content
@@ -48,11 +45,11 @@ type sourceFixture struct {
 
 func newSourceFixture(t *testing.T) *sourceFixture {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
+	id := make([]byte, 8)
+	if _, err := rand.Read(id); err != nil {
 		t.Fatal(err)
 	}
-	f := &sourceFixture{keys: map[string]ed25519.PublicKey{"test": pub}, priv: priv, id: "src-" + hex.EncodeToString(pub[:8]), files: map[string][]byte{}}
+	f := &sourceFixture{id: "src-" + hex.EncodeToString(id), files: map[string][]byte{}}
 	f.core = testRelease(f.id).Manifest
 	f.core.CoreVersion = "0.2.0"
 	f.core.Platforms = []rc.Platform{{OS: "linux", Arch: "amd64", RuntimeABI: "test", BundleDigest: bundleDigest, BundleBytes: 100,
@@ -67,20 +64,20 @@ func newSourceFixture(t *testing.T) *sourceFixture {
 	return f
 }
 
-// publish signs the manifests as they are now.
+// publish writes the manifests as they are now.
 func (f *sourceFixture) publish() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.files["core/"+coreManifestAsset] = f.sign(f.core)
+	f.files["core/"+coreManifestAsset] = manifestFile(f.core)
 	f.files["core/"+bundleDigest+".tar.gz"] = bytes.Repeat([]byte("b"), 100)
-	f.files["gateway/"+gatewayManifestAsset] = f.sign(f.gateway)
+	f.files["gateway/"+gatewayManifestAsset] = manifestFile(f.gateway)
 	f.files["gateway/gw.tar.gz"] = bytes.Repeat([]byte("g"), 50)
 }
 
-func (f *sourceFixture) sign(v any) []byte {
-	payload, _ := json.Marshal(v)
-	signed, _ := json.Marshal(rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(f.priv, payload)})
-	return signed
+// manifestFile is v as sub2api-release publishes a manifest.
+func manifestFile(v any) []byte {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	return append(b, '\n')
 }
 
 func (f *sourceFixture) serve(w http.ResponseWriter, r *http.Request) {
@@ -128,12 +125,12 @@ func (f *sourceFixture) service(t *testing.T) *UpdateService {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := NewUpdateService(&release.Manager{TrustedKeys: f.keys, OS: "linux", Arch: "amd64", RuntimeABI: "test"}, cipher, false)
+	u := NewUpdateService(&release.Manager{OS: "linux", Arch: "amd64", RuntimeABI: "test"}, cipher, false)
 	u.Sources.Client = f.client()
 	return u
 }
 
-// updateStore is a two-node cluster (on rolling-signed releases when rolling) whose
+// updateStore is a two-node cluster (on rolling releases when rolling) whose
 // update source is the fixture.
 func updateStore(t *testing.T, rolling bool) (*Store, *sourceFixture) {
 	t.Helper()
@@ -333,20 +330,22 @@ func TestPostgresUpdateCheckPersistsAndKeepsLastSuccess(t *testing.T) {
 		t.Fatalf("new source after failure: %+v", other.Core)
 	}
 
-	// An untrusted signature is an error naming the key.
+	// A damaged manifest is an error naming the release.
 	f.mu.Lock()
 	f.fail = false
+	for _, name := range []string{"core/" + coreManifestAsset, "gateway/" + gatewayManifestAsset} {
+		f.files[name] = f.files[name][:len(f.files[name])/2]
+	}
 	f.mu.Unlock()
 	if _, err = s.SetUpdateSource(ctx, SourceRequest{Enabled: true, Kind: "url", URL: fixtureURL}); err != nil {
 		t.Fatal(err)
 	}
-	s.Updates.Manager.TrustedKeys = map[string]ed25519.PublicKey{}
 	if err = s.CheckUpdates(ctx); err != nil {
 		t.Fatal(err)
 	}
-	untrusted, err := s.UpdateCheck(ctx)
-	if err != nil || !strings.Contains(untrusted.Core.Error, `untrusted key "test"`) || !strings.Contains(untrusted.Gateway.Error, `untrusted key "test"`) {
-		t.Fatalf("untrusted: %+v %v", untrusted, err)
+	damaged, err := s.UpdateCheck(ctx)
+	if err != nil || !strings.Contains(damaged.Core.Error, "core-v0.2.0") || !strings.Contains(damaged.Gateway.Error, "gateway-v0.1.136") {
+		t.Fatalf("damaged manifests: %+v %v", damaged, err)
 	}
 }
 
@@ -557,7 +556,7 @@ func (f *sourceFixture) listing(line, version string) (updatesource.Listing, mem
 	return l, src
 }
 
-func TestVerifyCoreRequiresSignatureAndMatchingAssets(t *testing.T) {
+func TestVerifyCoreRequiresAWellFormedManifestAndMatchingAssets(t *testing.T) {
 	f := newSourceFixture(t)
 	u := f.service(t)
 	ctx := context.Background()
@@ -574,11 +573,15 @@ func TestVerifyCoreRequiresSignatureAndMatchingAssets(t *testing.T) {
 			l.Assets[a.Name] = a
 		},
 		"wrong tag": func(l *updatesource.Listing, _ memSource) { l.Version = "0.3.0" },
-		"bad signature": func(l *updatesource.Listing, src memSource) {
-			var s rc.SignedManifest
-			_ = json.Unmarshal(src.files["core/"+coreManifestAsset], &s)
-			s.Signature[0] ^= 1
-			src.files["core/"+coreManifestAsset], _ = json.Marshal(s)
+		"truncated manifest": func(_ *updatesource.Listing, src memSource) {
+			b := src.files["core/"+coreManifestAsset]
+			src.files["core/"+coreManifestAsset] = b[:len(b)-2]
+		},
+		"bundle digest": func(_ *updatesource.Listing, src memSource) {
+			m := f.core
+			m.Platforms = []rc.Platform{m.Platforms[0]}
+			m.Platforms[0].BundleDigest = "not-a-digest"
+			src.files["core/"+coreManifestAsset] = manifestFile(m)
 		},
 		"gateway manifest": func(l *updatesource.Listing, src memSource) {
 			src.files["core/"+coreManifestAsset] = f.files["gateway/"+gatewayManifestAsset]
@@ -611,12 +614,10 @@ func TestVerifyGatewayRequiresKindVersionAndArchives(t *testing.T) {
 		"wrong kind": func(_ *updatesource.Listing, src memSource) {
 			m := f.gateway
 			m.Kind = "sub2api-core"
-			src.files["gateway/"+gatewayManifestAsset] = f.sign(m)
+			src.files["gateway/"+gatewayManifestAsset] = manifestFile(m)
 		},
 		"trailing data": func(_ *updatesource.Listing, src memSource) {
-			b, _ := json.Marshal(f.gateway)
-			payload := append(b, []byte(` {}`)...)
-			src.files["gateway/"+gatewayManifestAsset], _ = json.Marshal(rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(f.priv, payload)})
+			src.files["gateway/"+gatewayManifestAsset] = append(manifestFile(f.gateway), []byte(`{}`)...)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -657,10 +658,12 @@ func TestOlder(t *testing.T) {
 
 func TestLocalRuntimePreparesSourceReleasesThroughTheSource(t *testing.T) {
 	f := newSourceFixture(t)
-	var signed rc.SignedManifest
-	_ = json.Unmarshal(f.files["core/"+coreManifestAsset], &signed)
-	r := Release{Digest: release.Digest(signed.Payload), Manifest: f.core, Signed: signed}
-	rt := &LocalRuntime{Releases: &release.Manager{Root: t.TempDir(), TrustedKeys: f.keys, OS: "linux", Arch: "amd64", RuntimeABI: "test"}}
+	raw := f.files["core/"+coreManifestAsset]
+	r := Release{Digest: release.Digest(raw), Manifest: f.core, Raw: raw}
+	rt := &LocalRuntime{Releases: &release.Manager{Root: t.TempDir(), OS: "linux", Arch: "amd64", RuntimeABI: "test"}}
+	if err := rt.Prepare(context.Background(), Release{Digest: r.Digest, Raw: append(raw, ' ')}, ""); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("altered stored manifest: %v", err)
+	}
 	if err := rt.Prepare(context.Background(), r, ""); err == nil || !strings.Contains(err.Error(), "not configured") {
 		t.Fatalf("no source: %v", err)
 	}

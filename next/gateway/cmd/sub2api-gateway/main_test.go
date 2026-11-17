@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -18,6 +20,8 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/control"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
+	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -248,6 +252,44 @@ func TestPublisherClientTrustsClusterCA(t *testing.T) {
 	res.Body.Close()
 	if _, err = publisherClient(filepath.Join(t.TempDir(), "missing.crt")); err == nil {
 		t.Fatal("missing CA file accepted")
+	}
+}
+
+// import -manifest reads a plain release manifest from the release origin:
+// the release digest is the SHA-256 of the bytes served, which it keeps for
+// the release row. A signed envelope of earlier releases is no manifest.
+func TestImportReleaseReadsThePlainManifest(t *testing.T) {
+	m := rc.Manifest{CoreVersion: "0.1.292", ManifestVersion: 1, ReleaseID: "core-v0.1.292", BuildID: "b", Strategy: "rolling",
+		ShellProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, CoreControlProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}}
+	manifest, _ := json.MarshalIndent(m, "", "  ")
+	compact, _ := json.Marshal(m)
+	envelope, _ := json.Marshal(map[string]any{"key_id": "k", "payload": compact, "signature": []byte("sig")})
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/rel/next-core-manifest.json":
+			_, _ = w.Write(manifest)
+		case "/rel/signed.json":
+			_, _ = w.Write(envelope)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer origin.Close()
+	c := config{ReleaseOrigin: origin.URL + "/rel/"}
+	mgr := &release.Manager{Client: origin.Client()}
+	ctx := context.Background()
+	r, err := importRelease(ctx, c, mgr, origin.URL+"/rel/next-core-manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum := sha256.Sum256(manifest); r.Digest != hex.EncodeToString(sum[:]) || !bytes.Equal(r.Raw, manifest) || r.Manifest.ReleaseID != m.ReleaseID || r.BundleBase != origin.URL+"/rel" {
+		t.Fatalf("imported %+v", r)
+	}
+	if _, err = importRelease(ctx, c, mgr, origin.URL+"/rel/signed.json"); err == nil {
+		t.Fatal("a signed envelope was imported as a manifest")
+	}
+	if _, err = importRelease(ctx, c, mgr, origin.URL+"/other/next-core-manifest.json"); err == nil {
+		t.Fatal("a manifest outside the release origin was imported")
 	}
 }
 
