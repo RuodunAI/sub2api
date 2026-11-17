@@ -51,16 +51,20 @@ func TestSettingsCachedUntilChanged(t *testing.T) {
 	require.Equal(t, 4, fh.SettingsReads(), "a change without sections drops every section")
 }
 
-// A host error is returned as is and nothing is kept.
+// A host error is returned as is while no read succeeded, and the host is
+// not asked again until it says the section changed (or settingsErrorTTL).
 func TestSettingsHostError(t *testing.T) {
 	ctx := context.Background()
 	fh := pluginsdktest.NewFakeHost()
 	p := &locker{}
-	pluginsdktest.Start(t, p, pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(lockManifest))}})
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(lockManifest))}})
 
 	_, err := pluginsdk.Settings[protocol.FailurePolicySettings](ctx, p.host)
 	require.Equal(t, codes.Unavailable, status.Code(err))
 	fh.SetSettings(protocol.FailurePolicySettings{Configured: true, MaxRetries: 2})
+	_, err = pluginsdk.Settings[protocol.FailurePolicySettings](ctx, p.host)
+	require.Equal(t, codes.Unavailable, status.Code(err), "held back after a failure")
+	require.NoError(t, h.SettingsChanged(protocol.SettingsFailurePolicy))
 	v, err := pluginsdk.Settings[protocol.FailurePolicySettings](ctx, p.host)
 	require.NoError(t, err)
 	require.Equal(t, 2, v.MaxRetries)

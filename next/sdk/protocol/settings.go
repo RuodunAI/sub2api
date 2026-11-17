@@ -112,16 +112,23 @@ type AutoDisableSettings struct {
 // which alone evaluates them. Every field but Configured is zero while no
 // policy is published.
 type FailurePolicySettings struct {
-	Configured        bool  `json:"configured"`
-	Revision          int64 `json:"revision"`
-	RetryEnabled      bool  `json:"retry_enabled"`
-	MaxRetries        int   `json:"max_retries"`
-	RetriesPerAccount int   `json:"retries_per_account"`
-	SwitchAccount     bool  `json:"switch_account"`
-	ResetSticky       bool  `json:"reset_sticky"`
-	BackoffMs         int   `json:"backoff_ms"`
-	MaxWaitMs         int   `json:"max_wait_ms"`
-	RespectRetryAfter bool  `json:"respect_retry_after"`
+	Configured bool  `json:"configured"`
+	Revision   int64 `json:"revision"`
+	// SchemaVersion (1-4) decides which switches apply. At 1 every retry
+	// rule carries its own same-account retries and what follows them, so
+	// RetriesPerAccount, SwitchAccount and ResetSticky do not apply; from 2
+	// they apply to every rule (RetriesPerAccount only with SwitchAccount,
+	// else MaxRetries are all on one account); from 3 MaxWaitMs and
+	// RespectRetryAfter do not apply.
+	SchemaVersion     int  `json:"schema_version"`
+	RetryEnabled      bool `json:"retry_enabled"`
+	MaxRetries        int  `json:"max_retries"`
+	RetriesPerAccount int  `json:"retries_per_account"`
+	SwitchAccount     bool `json:"switch_account"`
+	ResetSticky       bool `json:"reset_sticky"`
+	BackoffMs         int  `json:"backoff_ms"`
+	MaxWaitMs         int  `json:"max_wait_ms"`
+	RespectRetryAfter bool `json:"respect_retry_after"`
 	// AccountEnabled: whether the core may disable or cool down accounts.
 	AccountEnabled bool `json:"account_enabled"`
 }
