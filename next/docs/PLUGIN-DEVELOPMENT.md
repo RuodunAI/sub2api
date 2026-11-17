@@ -10,7 +10,7 @@
 
 | 路径 | 用在哪里 | 谁发上游请求、谁记用量 |
 |---|---|---|
-| 普通转发 | 只有清单的插件（openai、gemini、relay）和实现了 `BuildUpstreamRequest` 的 gRPC 插件（anthropic、claude-oauth） | 核心按插件给的请求（或声明式上游）发出，核心中继响应、按 `usage` 规则记用量 |
+| 普通转发 | 只有清单的插件（openai、gemini、relay、azure_openai）和实现了 `BuildUpstreamRequest` 的 gRPC 插件（anthropic、claude-oauth、vertex、bedrock） | 核心按插件给的请求（或声明式上游）发出，核心中继响应、按 `usage` 规则记用量 |
 | 插件执行（`platform.execute.v1`） | codex、volcengine | 插件的 `Execute` 调 `ForwardUpstream`，上游请求仍由核心的同一段代码（`forwardBuilt` → `forward`）发出和中继；用量由插件在 `Execute` 里 `RecordUsage`（SDK 的 `ExecuteDefault` 已做好），异步任务用 `ReserveAndWatch` |
 | WebSocket（`platform.websocket.v1`） | openai、codex 的 `/v1/responses` WebSocket 模式 | 核心建连并逐轮中继，每轮按规则记用量（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)） |
 
@@ -64,6 +64,9 @@
 |---|---|---|
 | anthropic、claude-oauth | 普通转发（gRPC，`BuildUpstreamRequest`） | claude-oauth 声明额度头 |
 | openai、gemini、relay | 普通转发（只有清单）；openai 另有 WebSocket | 无，全部由清单和核心完成 |
+| azure_openai（目录 `plugins/azure-openai`，市场） | 普通转发（只有清单），不提供 WebSocket | 无；清单里覆盖鉴权头（`api-key`）、路由和类型自己的 `passHeaders`（[UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) §6.1） |
+| vertex（市场） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；插件不联网 |
+| bedrock（市场，核心 0.1.304 起） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
 | codex | 插件执行 + WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16） |
 | volcengine | 插件执行（含异步任务） | `ClassifyError`、`EstimateUsage`（视频任务）、`ReserveAndWatch` |
 
@@ -103,3 +106,19 @@ if !sticky.Enabled { ... }
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
 - 用到这些接口的插件把清单的 `hostCompat` 下限提到 `>=0.1.301`。
 - 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。
+
+## 6. 请求签名与响应流格式（`BuildUpstreamRequestResponse.signing`、`.response_stream`；CONTRACTS §109）
+
+上游要对整个请求体签名，或者流式响应不是 SSE 时，插件不用自己发请求，在 `BuildUpstreamRequest` 的结果里说明，由核心执行。三条路径上的情况：
+
+| 字段 | 普通转发 / 插件执行 / WebSocket | 插件要配合什么 |
+|---|---|---|
+| `signing`（`RequestSigning`，方案名如 `aws-sigv4`） | 一致 / 一致（`ForwardUpstream` 经同一段 `forwardBuilt`）/ **不支持**：握手带了它就按插件不可用换号 | `url` 的路径按线上的样子编码好（`:` → `%3A`、段内 `/` → `%2F`），签名器只做二次转义；查询串会被核心排序重编码后再发；主机的默认端口会被去掉。每次尝试核心都重新签。密钥只放在这个字段里，不要写日志 |
+| `response_stream`（格式名如 `aws-eventstream-chunk`） | 一致 / 一致 / **不支持**，同上 | 只在这一次请求的回答确实是该格式时设置（bedrock 只在流式 InvokeModel 上设）；回答的内容类型不是该格式时核心不处理。转成 SSE 之后按平台的流式用量规则计量，所以事件要是该平台规则认识的形状 |
+
+- 核心不认识的方案名或格式名：这次尝试在发送前失败（插件不可用，换号），没有请求发出。
+- 更早的核心会忽略这两个字段：请求不签名就发出去，二进制流原样转给客户端。用到它们的插件必须在 `hostCompat` 里要求带 §109 的核心（bedrock 是 `>=0.1.304`）。
+- 账号测试请求（`BuildTestRequest`）核心原样发送、不签名：请求体是插件自己写的，插件调 `sdk/reqsign` 的 `Sign` 自己签（bedrock 的 `sign`）。
+- 两个库都在 SDK 里、只用标准库：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
+- 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
+

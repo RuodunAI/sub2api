@@ -8,6 +8,19 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（openai 0.4.4、azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0；核心加请求签名与响应流格式；无迁移）
+
+分支 `feat/cloud-providers`，未合并。**没有真实云账号，三家的行为都只对文档、黄金样例和模拟上游验证过**；没验证的事项见 [设计文档](next/docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节，验证之前不要对外说“已支持”。填法见 [PLUGIN-CLOUD-PROVIDERS.md](next/docs/PLUGIN-CLOUD-PROVIDERS.md)。
+
+- **openai 0.4.4**：API Key 账号“高级（可选）”里新增组织 ID、项目 ID，填了就以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端自己带的；留空时行为不变。
+- **azure_openai 0.1.0**（新，市场插件，只有清单）：Azure OpenAI 资源地址加 API Key（`api-key` 头）。两种类型：v1 接口（chat、responses、embeddings）和按部署的经典接口（chat、embeddings，带 `api-version`；`/v1/responses` 请求由核心转成 chat）。上游模型就是部署名，用账号的模型映射对应。客户端的 `OpenAI-Organization` / `OpenAI-Project` 和请求体里的 `service_tier`、`safety_identifier` 不转给 Azure。粘贴带 deployments、chat/completions 或 api-version 的请求地址会在保存时报错。不支持 Entra ID 令牌。
+- **vertex 0.1.0**（新，市场插件）：Vertex AI 上的 Gemini（generateContent、streamGenerateContent、countTokens）。三种鉴权：服务账号 JSON、用户凭证 JSON（`gcloud auth application-default login`）、API Key。访问令牌由核心换取并自动续期（CONTRACTS §48），插件自身不联网。不支持 Vertex 上的 Claude。
+- **bedrock 0.1.0**（新，市场插件，需要核心 0.1.304）：Claude 走 InvokeModel（anthropic 平台），Bedrock 的 OpenAI 兼容接口走 chat、responses（openai 平台）。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由核心做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射，可选跨区域推理前缀。已知限制：不清理 Claude Code 写在请求体深处、Bedrock 不接受的字段，给 Claude Code 用的账号要在参数覆盖里手工删。
+- **核心：请求签名与响应流格式**（CONTRACTS §109）：插件构造上游请求时可以要求核心对最终请求签名（`signing`，现有方案 `aws-sigv4`），或声明响应流的格式（`response_stream`，现有 `aws-eventstream-chunk`，核心解码成 SSE 后照常中继、计量、转换）。核心不认识的方案或格式、以及 WebSocket 握手带了这两项时，这次尝试换号、不发请求。新包 `next/sdk/reqsign`、`next/sdk/awseventstream`，只用标准库。不用这两项的插件不受影响；节点外壳没有改动。
+- **核心：保存账号后立即续期到期的凭证**（CONTRACTS §48.3）：新建账号或修改凭证后，类型支持自动续期且凭证已到期时，后台马上续一次，不用等 5 分钟一轮的扫描。Vertex 账号保存后几秒内可用；其他账号类型（凭证没到期）不受影响。
+- **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。
+- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（**已写，尚未在任何 e2e 栈上执行**）。新表单没有做过控制台界面走查。
+
 ### codex 0.1.11、openai 0.4.3：默认模型加上 gpt-6.2
 
 - **codex 0.1.11**：两种账号类型（设备码、Sign in with Codex）的默认模型最前面加 `gpt-6.2-astra`、`gpt-6.2-sol`（ec2pool 设备码账号实测上游可用，docs/PLUGIN-CODEX.md §17）。

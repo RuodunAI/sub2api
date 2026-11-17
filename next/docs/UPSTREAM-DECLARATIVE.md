@@ -136,7 +136,7 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 ### 4.1 绑定（registry.addAccountTypes）
 
 - 类型声明了 upstream：`Client = declarative.New(profile, ext.Platform())`。不需要 `accounts.credentials` 授权（凭证只在核心内使用），插件进程可以没有（runtime none）。
-- `extend: true`：BuildUpstreamRequest 先由 Profile 构造得到 base，再调 `ext.Platform().BuildUpstreamRequest`，请求里带 `base`（proto 新字段）；插件返回的 headers 追加覆盖 base 的（鉴权头除外），patches 接在 base patches 之后，url 非空时替换。其他 4 个入口仍由 Profile 实现。extend 要求 `accounts.credentials` 授权（插件要看凭证）。
+- `extend: true`：BuildUpstreamRequest 先由 Profile 构造得到 base，再调 `ext.Platform().BuildUpstreamRequest`，请求里带 `base`（proto 新字段）；插件返回的 headers 追加覆盖 base 的（鉴权头除外），patches 接在 base patches 之后，url 非空时替换。插件结果里的 `signing`、`response_stream`（CONTRACTS §109）原样带进最终结果，声明本身没有这两项。其他 4 个入口仍由 Profile 实现。extend 要求 `accounts.credentials` 授权（插件要看凭证）。
 - 声明式 Client 不实现 `core.ExecutePlugin`，所以走 BuildUpstreamRequest + forwardBuilt 路径。
 
 ### 4.2 runtime none
@@ -164,6 +164,25 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 | anthropic | 0.3.0 | runtime grpc（保留模型目录 /models 路由与迁移），账号类型声明 `preset: anthropic`，Platform 实现删除 |
 
 账号类型 id、plugin key 不变；`accounts.credentials` 授权在 runtime none 插件里删除。
+
+### 6.1 例子：azure_openai（2026-11-17，`plugins/azure-openai/manifest.json`）
+
+第五个只有清单的插件，引用 `openai` 预设后覆盖了几处，可以当作“接一个鉴权头和路径都不同的 OpenAI 兼容上游”的样板：
+
+| 清单写法 | 效果 |
+|---|---|
+| `"auth": { "type": "header", "name": "api-key", "value": "{api_key}" }` | 鉴权头换成 `api-key`（`api-key` 在允许的凭证头里，CONTRACTS §86.1），不再发 `Authorization: Bearer` |
+| `"credentials": { "keyValidator": null, ... }` | 去掉预设的 `sk-` / `sess-` 前缀要求，回到“8–512 个可见字符” |
+| `"baseURL": { "default": null, "required": true, "stripSuffixes": ["/openai/v1", "/openai"] }` | 没有默认地址、必填；粘贴时带的后缀在保存时去掉。表单 schema 另有 `pattern`，把带路径或查询串的请求地址挡在保存之前 |
+| `"routes": { "openai.chat": { "path": "/openai/v1/chat/completions" }, ..., "openai.responses_ws": null }` | 路径逐条覆盖；写 `null` 删掉预设的路由。类型的 `platforms[].endpoints` 要与剩下的路由一致 |
+| 经典类型的 `"path": "/openai/deployments/{model}/chat/completions?api-version={credentials.api_version}"`、`"model": { "required": true }`、`"credentials": { "fields": ["api_version"] }` | 模型（映射后的部署名）进路径；设置字段经 `credentials.fields` 进查询串 |
+| 账号类型 `platforms[].passHeaders` 写出完整列表 | 覆盖平台的 passHeaders（§86.1：类型的列表非空就用类型的）。这里是 openai 平台的列表去掉 `openai-organization`、`openai-project`，客户端带的这两个头不转给 Azure |
+| 不写 `filterFields` | 用预设的列表（`service_tier`、`safety_identifier` 从请求体删除）。openai 插件为了与旧行为一致写的是 `[]` |
+| `"models": null` | 不支持拉模型列表 |
+
+同一个清单里的两个类型路径不同（v1 与按部署），是因为路由只能按协议选、不能按账号设置分支（§2.1）；用 `creationGroup` 让它们在新建账号时合成一项。
+
+openai 插件 0.4.4 是另一个例子：`"headers": { "openai-organization": { "set": "{credentials.organization}" } }` 配 `"credentials": { "fields": ["organization", "project"] }`。账号没填时模板取不到值，这次写入整个跳过，客户端经 passHeaders 带来的头保持原样（§2.2、§2.4）。
 
 ## 7. 测试
 
