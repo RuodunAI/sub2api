@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -42,9 +43,22 @@ func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
 }
 
-// newTestPlugin is a plugin with the fixed clock and the given roots.
+// testManifest is the plugin's own manifest.json.
+var testManifest = func() []byte {
+	b, err := os.ReadFile("../../manifest.json")
+	if err != nil {
+		panic(err)
+	}
+	return b
+}()
+
+// newTestPlugin is a plugin with the fixed clock, the given roots and the
+// quota headers of the plugin's manifest.
 func newTestPlugin(ep Endpoints) *Plugin {
-	p := NewWithEndpoints(ep)
+	p, err := NewWithEndpoints(ep).withManifest(testManifest)
+	if err != nil {
+		panic(err)
+	}
 	p.now = func() time.Time { return testNow }
 	return p
 }

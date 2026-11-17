@@ -166,7 +166,7 @@ func (p *Plugin) handleResetConsume(ctx context.Context, req *pluginv1.HTTPReque
 		return pluginsdk.ErrorResponse(http.StatusConflict, outcomeNoCredit, "The account has no reset left / 账号没有剩余重置次数"), nil
 	}
 	// A credit was (or, for an unknown code, may have been) spent: the
-	// cached count is stale until the next usage query or list writes it.
+	// cached count is stale until the next list writes it.
 	p.deleteSession(ctx, kvResetCount, resetCountKey(id))
 	if outcome != outcomeReset && outcome != outcomeAlreadyRedeemed {
 		return upstreamError("upstream_error", "unknown reset outcome / 未知的重置结果: "+strconv.Quote(textutil.Clip(outcome, 64))), nil
@@ -236,9 +236,17 @@ func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad
 	return c, nil
 }
 
+// backendHeaders are the headers of a codex_device request to the ChatGPT
+// backend's JSON endpoints (reset credits).
+func backendHeaders(c credentials) map[string]string {
+	h := upstreamHeaders(TypeDevice, c)
+	h["accept"] = "application/json"
+	return h
+}
+
 // sendBackend has the core send one request to the ChatGPT backend for the
-// account, with the usage query's headers. r is the backend's answer; bad is
-// the route answer when it is not a usable 2xx (r is still returned then).
+// account, with backendHeaders. r is the backend's answer; bad is the route
+// answer when it is not a usable 2xx (r is still returned then).
 func (p *Plugin) sendBackend(ctx context.Context, id int64, c credentials, method, path string, body []byte) (r *pluginv1.ExecutionHTTPResponse, bad *pluginv1.HTTPResponse) {
 	h := backendHeaders(c)
 	if body != nil {

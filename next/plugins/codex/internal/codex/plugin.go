@@ -25,12 +25,13 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 )
 
 const (
 	// Version is the plugin version (manifest.json "version"); it is part of
 	// the User-Agent every request sends.
-	Version = "0.1.6"
+	Version = "0.1.7"
 	// UserAgent and Originator name sup2api as the client, truthfully.
 	UserAgent  = "sup2api-codex/" + Version
 	Originator = "sup2api"
@@ -92,8 +93,8 @@ type Endpoints struct {
 var DefaultEndpoints = Endpoints{Auth: DefaultAuthBase, ChatGPT: DefaultChatGPTBase, API: DefaultAPIBase}
 
 // Plugin is the codex plugin. It implements pluginsdk.Platform, Executor,
-// ModelLister, CredentialRefresher, QuotaReader (codex_device usage
-// windows), HTTP (authorization and usage reset routes) and Initializer.
+// ModelLister, CredentialRefresher, HTTP (authorization and usage reset
+// routes) and Initializer.
 type Plugin struct {
 	*pluginsdk.Router
 	host pluginsdk.Host
@@ -102,16 +103,23 @@ type Plugin struct {
 	// Its transport is the default one, which the SDK routes through the
 	// host's egress tunnel in strict network mode.
 	client *http.Client
+	// policy classifies upstream failures (classify.go).
+	policy classify.Policy
 	now    func() time.Time
 	// log is the host log (Init); it discards until then. Never log tokens,
 	// authorization codes, PKCE verifiers, state or session ids.
 	log *slog.Logger
 }
 
-// New returns the plugin talking to the production endpoints.
-func New() *Plugin { return NewWithEndpoints(DefaultEndpoints) }
+// New returns the plugin talking to the production endpoints. manifestJSON
+// is the plugin's own manifest.json, whose codex_device quota headers
+// ClassifyError reads (quota.go).
+func New(manifestJSON []byte) (*Plugin, error) {
+	return NewWithEndpoints(DefaultEndpoints).withManifest(manifestJSON)
+}
 
-// NewWithEndpoints returns the plugin talking to ep (tests).
+// NewWithEndpoints returns the plugin talking to ep (tests); it reads no
+// quota headers until withManifest.
 func NewWithEndpoints(ep Endpoints) *Plugin {
 	p := &Plugin{
 		Router: pluginsdk.NewRouter(),
@@ -121,6 +129,7 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 			API:     strings.TrimRight(ep.API, "/"),
 		},
 		client: &http.Client{Timeout: authTimeout},
+		policy: newPolicy(nil),
 		now:    time.Now,
 		log:    slog.New(slog.DiscardHandler),
 	}

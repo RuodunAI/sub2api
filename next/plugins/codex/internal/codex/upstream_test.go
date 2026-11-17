@@ -226,7 +226,7 @@ func TestBuildUpstreamRequestWebSocket(t *testing.T) {
 }
 
 func TestBuildUpstreamRequestErrors(t *testing.T) {
-	p := New()
+	p := NewWithEndpoints(DefaultEndpoints)
 	for _, tc := range []struct {
 		name string
 		meta *pluginv1.RequestMeta
@@ -322,7 +322,7 @@ func TestExecuteForwardsOnce(t *testing.T) {
 		}
 		return &pluginv1.ExecutionReceipt{}, nil
 	}
-	h := pluginsdktest.Start(t, New(), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
+	h := pluginsdktest.Start(t, NewWithEndpoints(DefaultEndpoints), pluginsdktest.Options{Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	r, err := h.Platform.Execute(ctx, &pluginv1.ExecuteRequest{ExecutionToken: "req-1", Request: &pluginv1.BuildUpstreamRequestRequest{

@@ -5,6 +5,7 @@ package main
 
 import (
 	_ "embed"
+	"log"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/codex/internal/codex"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -14,5 +15,9 @@ import (
 var manifestJSON []byte
 
 func main() {
-	pluginsdk.Serve(codex.New(), pluginsdk.WithManifest(manifestJSON))
+	p, err := codex.New(manifestJSON)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pluginsdk.Serve(p, pluginsdk.WithManifest(manifestJSON))
 }

@@ -54,7 +54,7 @@
 - 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.execute.v1`、`platform.websocket.v1`、`http.routes.v1`。
 - 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
 - `BuildUpstreamRequest`：按账号类型选 URL 和头；patch `store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；`codex_device` 缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，并对每轮 `response.create` 消息返回同样的 patch（不含 stream 相关字段，`chatgpt_siwc` 保留 `previous_response_id`；核心每轮应用，CONTRACTS §83.6）。
-- `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；`subscription_sharing_usage_limit_exceeded` → 冷却（有 `resets_at`/`retry-after` 用之，否则 5 分钟）；额度窗口用满（`usage_limit_reached`，或 429 且 `x-codex-*` 头显示 5h/周窗口 ≥100%）→ 自动禁用到窗口重置（0.1.2 起，见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；403 资格类错误 → 禁用；400 原样返回。
+- `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，按账号类型选端点和格式；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON、`client_id` / `ext_agent_host_id` 格式不对）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body` / `client_id` / `ext_agent_host_id`，code 为 `required` / `invalid_json` / `pattern`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed`、`registration_incomplete`、`client_mismatch`、`scope_missing` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
   - `POST /auth/device/start` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id，15 分钟过期）。
@@ -66,7 +66,7 @@
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
   - `codex_device`：`chatgpt_account_id`。
   - `chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`（空格分隔的字符串，与 OAuth 返回一致）。
-- 网络权限（与 manifest 一致）：`net` 只有 `auth.openai.com`（插件自己只在授权时访问授权服务器）；`chatgpt.com`、`api.openai.com` 只列在 `externalServices`，上游请求、模型列表、额度查询（0.1.2）与令牌刷新都由核心发出。
+- 网络权限（与 manifest 一致）：`net` 只有 `auth.openai.com`（插件自己只在授权时访问授权服务器）；`chatgpt.com`、`api.openai.com` 只列在 `externalServices`，上游请求、模型列表与令牌刷新都由核心发出（0.1.2–0.1.6 的额度查询也是，0.1.7 删除）。
 - 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
 - `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与（`codex_device`）`chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
@@ -99,6 +99,8 @@
 
 目标：和 Claude 账号一样在控制台显示 5 小时窗口（key `5h`）和周窗口（key `7d`）的用量与重置时间；窗口真满时按项目规则自动禁用到重置，其他上游 429 原路返回（CONTRACTS §69 末两条，CCGateway 0.1.127 同一规则）。
 
+> **0.1.7 起本节 9.2–9.4 已被第 13 节取代**（9.1 里按 ±5% 容差定 key、`reset-after-seconds`、`wham/usage` 的内容和 9.5 的测试清单同样作废）：窗口只来自响应头，`wham/usage` 查询已删除，判满只看 429 的响应头。下面保留的是 0.1.2–0.1.6 的历史设计。
+
 ### 9.1 协议事实
 
 - 响应头：`x-codex-primary-used-percent`（百分比）、`x-codex-primary-window-minutes`、`x-codex-primary-reset-at`（Unix 秒，新后端）或 `x-codex-primary-reset-after-seconds`（旧后端），`secondary` 同名三项。
@@ -107,7 +109,7 @@
 - `reset-at` / `reset_at` 优先（大于 1e11 视为毫秒），没有时用 `reset-after-seconds` / `reset_after_seconds` 加当前时间；都没有时重置时间未知（0）。没有用量百分比的窗口记为 `utilization_unknown`。用量 ≥100% 的窗口状态记 `rejected`，其他不写状态（后端不报）。
 - `additional_rate_limits`（按功能的额外限额，如 Codex Spark）与 SSE 里的 `codex.rate_limits` 事件不读：前者不是账号级窗口，后者核心不交给插件。
 
-### 9.2 manifest（只给 `codex_device`）
+### 9.2 manifest（只给 `codex_device`）（已被第 13 节取代）
 
 ```json
 "quota": {
@@ -125,13 +127,13 @@
 - 不声明 `modelAvailability`：额度窗口不参与调度准入（同 CCGateway 0.1.112 起的做法），真满时由下面的自动禁用把账号拿出调度。
 - `autoRefresh` 需要 Host API 7（SDK 在旧核心上拒绝初始化）；`hostCompat` 仍为 `>=0.1.257 <0.2.0`，所用能力（`quota.query/autoRefresh/windows`、`automatic_state`、Host API 7）0.1.257 都有。控制台已认识 `5h` / `7d`，前端不用改。
 
-### 9.3 查询（插件描述、核心发送）
+### 9.3 查询（插件描述、核心发送）（已被第 13 节取代，查询已删除）
 
 - `BuildQuotaRequest`：`GET <chatgpt>/backend-api/wham/usage`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`（凭证里有时）、`originator: sup2api`、`user-agent: sup2api-codex/<版本>`、`accept: application/json`。不发任何伪装 Codex 客户端的头（`openai-beta`、`oai-language`、`sec-fetch-*` 等旧版用过的都不发）。凭证无 `access_token` → `FailedPrecondition`，凭证不是 JSON → `InvalidArgument`。
 - 核心经账号代理发送，所以插件 `net` 权限不变（仍只有 `auth.openai.com`），`chatgpt.com` 已在 `externalServices`。
 - `ParseQuotaResponse`：401/403 → `auth_rejected`；连接失败、其他非 2xx、响应过大、无法解析 → `transient`（只记录在快照上，不冷却、不禁用账号）；`rate_limit` 为 `null` 或两个窗口都为 `null` → 成功、没有窗口。
 
-### 9.4 `ClassifyError`：窗口用满才禁用
+### 9.4 `ClassifyError`：窗口用满才禁用（已被第 13 节取代）
 
 - **窗口用满**（`windowFull`）：上游错误 type/code 为 `usage_limit_reached`（任何状态码），或 429 且 `x-codex-*` 头里 `5h` / `7d` 窗口用量 ≥100%。其他时长的窗口满、只有重置时间或 `retry-after`，都不算。
 - 用满时：`action = FAILOVER`，`automatic_state = DISABLE`、`until_unix` = 重置时刻，reason `Codex usage limit reached until <时间> (<来源>)`。重置时刻依次取：错误体 `resets_at`（秒或毫秒）/ `resets_in_seconds`（错误对象内或顶层）→ 头里已满的 5h/周窗口中最晚的重置时刻 → `retry-after(-ms)` → 5 分钟；限定在 [现在+1 秒, 现在+7 天]。核心不论是否发布了故障策略都执行这个临时禁用，到点自动恢复（CONTRACTS §69）；账号不允许自动禁用时，核心退回冷却到同一时刻（`cooldown_until_unix`，仅无故障策略时）。
@@ -153,12 +155,12 @@
 - 根为 `https://chatgpt.com/backend-api`，鉴权头与 `wham/usage` 完全相同。只有 `codex_device` 能用：Sign in with ChatGPT 禁止调用 `backend-api`。
 - `GET /backend-api/wham/rate-limit-reset-credits` → `{"available_count": int, "credits": [{"id", "reset_type", "status": "available"|"redeeming"|"redeemed"|…, "granted_at": RFC3339, "expires_at": RFC3339|null, "title": str|null, "description": str|null}]}`。
 - `POST /backend-api/wham/rate-limit-reset-credits/consume`，body `{"redeem_request_id": "<uuid>", "credit_id"?: "<id>"}`（不带 `credit_id` 时后端挑下一个）→ `{"code": "reset"|"nothing_to_reset"|"no_credit"|"already_redeemed", "windows_reset": int}`。`redeem_request_id` 是幂等键：同一个 id 重复提交只扣一次（第二次答 `already_redeemed`）。
-- `wham/usage` 里也有 `rate_limit_reset_credits: {available_count}`（可能缺失或为 `null`）：不进额度窗口，只用来缓存次数（见 10.6）。
+- `wham/usage` 里也有 `rate_limit_reset_credits: {available_count}`（可能缺失或为 `null`）：0.1.3–0.1.6 用它缓存次数；0.1.7 删除了 `wham/usage` 查询，不再读（见 10.6）。
 
 ### 10.2 发送方式
 
 - 插件不直连 `chatgpt.com`（`net` 仍只有 `auth.openai.com`）：两个请求都经 `pluginsdk.SendAccountRequest` 由核心通过账号代理发出（CONTRACTS §91，URL 主机须在 `externalServices`，`chatgpt.com` 已在；核心 0.1.269 起提供，旧核心答 `Unimplemented`，路由回 503 并提示需要的核心版本）。
-- 头与额度查询相同（`backendHeaders`）：`authorization: Bearer <access_token>`、`chatgpt-account-id`（有时）、`originator: sup2api`、`user-agent: sup2api-codex/0.1.3`、`accept: application/json`，consume 另加 `content-type: application/json`。不发 `x-codex-*` 或任何伪装 Codex CLI 的头。
+- 头为 `backendHeaders`（0.1.2–0.1.6 额度查询用的同一组）：`authorization: Bearer <access_token>`、`chatgpt-account-id`（有时）、`originator: sup2api`、`user-agent: sup2api-codex/0.1.3`、`accept: application/json`，consume 另加 `content-type: application/json`。不发 `x-codex-*` 或任何伪装 Codex CLI 的头。
 
 ### 10.3 路由（`scope: admin`，新权限 `codex:reset`）
 
@@ -190,13 +192,11 @@
 ### 10.6 次数缓存（账号列表装饰器）
 
 - 位置：插件 KV，namespace `reset_count`，key 为账号 id，值 `{"available_count", "updated_at"}`，TTL 7 天（键名与读写封装都在 `resetcache.go`）。
-- 写入：
-  - `ParseQuotaResponse` 成功解析 `wham/usage` 时（core 每 30 分钟查一次、点用量单元格强制查），如果应答里 `rate_limit_reset_credits.available_count` 是数字就写入（账号 id 取自请求的 `account`）；字段缺失、为 `null` 或不是数字时**不写**（不会覆盖成 0）；查询失败也不写。
-  - `/reset-credits/list` 成功时用应答的 `available_count` 写入。
-- 失效：consume 得到 `reset` / `already_redeemed` 或未知 `code`（可能已扣）后**删除**该账号的缓存键，而不是写“原数 − 1”（原数可能已过时，`already_redeemed` 也未必是这次扣的），也不为此再调一次 list（多一次上游请求）。装饰器在下次额度查询或打开明细（list）后恢复显示。`nothing_to_reset` / `no_credit` 不动缓存。
-- KV 读写失败一律只记 warn：不影响额度解析结果，不让 list / consume 失败；summary 中读失败的账号视为没有缓存（一次请求只记一条 warn，带失败个数）。
+- 写入：`/reset-credits/list` 成功时用应答的 `available_count` 写入。0.1.3–0.1.6 还在 `ParseQuotaResponse` 解析 `wham/usage` 时写入，0.1.7 随查询一起删除（第 13 节），所以次数只由 list 刷新、由 consume 删除。
+- 失效：consume 得到 `reset` / `already_redeemed` 或未知 `code`（可能已扣）后**删除**该账号的缓存键，而不是写“原数 − 1”（原数可能已过时，`already_redeemed` 也未必是这次扣的），也不为此再调一次 list（多一次上游请求）。装饰器在下次打开明细（list）后恢复显示。`nothing_to_reset` / `no_credit` 不动缓存。
+- KV 读写失败一律只记 warn：不让 list / consume 失败；summary 中读失败的账号视为没有缓存（一次请求只记一条 warn，带失败个数）。
 - summary 的 KV 只有单键 `Get`，所以并发读：最多 16 个同时进行，整次请求限时 5 秒（超时后未读到的账号视为没有缓存）。
-- 测试：`resetcache_test.go`：额度解析写缓存（有字段写入、缺失 / null / 非数字不覆盖、失败查询不写、0 照写）、KV 失败时额度结果不变、summary（去重与非正整数过滤、缺失账号不出现、500 个通过、501 个 400、坏 JSON、KV 失败仍 200、不发上游请求）、list 写入与 consume 后删除（拒绝的 consume 不删，KV 失败不影响 consume）。
+- 测试：`resetcache_test.go`：summary（去重与非正整数过滤、缺失账号不出现、500 个通过、501 个 400、坏 JSON、KV 失败仍 200、不发上游请求）、list 写入与 consume 后删除（拒绝的 consume 不删，KV 失败不影响 consume）。
 
 ## 11. 0.1.4：权限加固（2026-11-13，随核心权限加固发布）
 
@@ -215,3 +215,22 @@
 - 用户反映内置模型和上游对不上，`gpt-6-astra` 请求在账号模型里没有它时被调度拒绝（`model_not_served`，503）。在 ec2pool 测试实例上对 Sign in with ChatGPT 账号获取模型（`GET /v1/models`，`visibility=="list"`）得到：`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra`。两种账号类型的 `defaultModels` 都换成这 8 个（新到旧），`DefaultTestModel` 由已不在列表里的 `gpt-5.1-codex-mini` 改为最便宜的 `gpt-6-luna`。`codex_device` 没有在线模型列表，沿用同一份；测试实例上没有设备码账号，未单独核实。
 - 生图：同一账号带 `tools:[{"type":"image_generation"}]` 请求，上游回 400 `subscription_sharing_unsupported_capability`（“User subscription sharing currently supports only 'web_search' and developer-defined 'function' and 'custom' tools … tool 'image_generation' is not supported”），所以 SIWC 账号不能生图，不加生图模型。`codex_device`（ChatGPT Codex 后端）是否支持需要真实设备码账号验证，见 [DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md](DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md)。
 - 计费为 0 的根因不在插件：上游 SSE 标成 `application/json`，由核心按正文嗅探修复（CONTRACTS §104.1）。
+
+## 13. 0.1.7：用量窗口以响应头为准（2026-11-17，用户要求）
+
+用户要求“以响应头为准，不要乱加兜底”“429 + 响应头判断”。本节取代 §9.2–9.4（以及 §9.1 中按 ±5% 容差定 key、`reset-after-seconds`、`wham/usage` 的内容）。
+
+- 协议事实（openai/codex `codex-rs/codex-api/src/rate_limits.rs`）：`x-codex-{primary,secondary}-used-percent`（百分比）、`-window-minutes`、`-reset-at`（Unix 秒），没有别的。哪个槽位是 5 小时、哪个是周不固定。
+- manifest（`codex_device`）：`quota` 改为声明这 6 个头，每个槽位一条，用 `windowMinutes` 按窗口时长命名（CONTRACTS §105：300 → `5h`，10080 → `7d`，其他时长为 `<n>d` / `<n>h` / `<n>m`，没有容差；同一响应两个槽位同名时保留用得多的）；`windows` 保留 5 小时 / 周的标签；删掉 `query`、`autoRefresh`。核心的被动采样（CONTRACTS §44.3）在每个 2xx、429、101 响应上读这些头，所以每个响应都会更新窗口。没有了主动查询，控制台的用量单元格也不能再强制刷新；核心按旧声明建的查询计划因声明里没有 `query` 而跳过。
+- 删除 `wham/usage` 查询：`BuildQuotaRequest`、`ParseQuotaResponse` 及其解析、按时长定 key 的容差、窗口合并、`reset-after-seconds` 处理全部删除，插件不再实现 `pluginsdk.QuotaReader`（SDK 对查询调用回 `Unimplemented`）。`backendHeaders` 只剩重置次数接口在用，移到 `resetcredits.go`。
+- 头名只写在 manifest：`main.go` 把嵌入的 manifest 传给 `codex.New(manifestJSON)`，插件读出 `codex_device` 的 `quota.headers`，`ClassifyError` 用这份声明调 `manifest.ReadQuotaHeaders`（与核心采样同一个函数）；manifest 里没有这份声明时插件启动失败。
+- `ClassifyError`：
+  - 窗口用满：状态 429，且响应头里某个窗口（任何时长都算，不只 5 小时 / 周）用量 ≥100% 并有晚于现在的重置时刻。此时 `FAILOVER`，`automatic_state = DISABLE`、`until_unix` 为这些已满窗口中最晚的重置时刻（限定在 7 天内），冷却到同一时刻作为核心不能自动禁用时的后备，reason `Codex usage limit reached until <时间> (x-codex window reset)`。到点由核心自动恢复（CONTRACTS §69）。
+  - 只看响应头：不再读错误体的 `resets_at` / `resets_in_seconds`，不用 `retry-after`，没有 5 分钟默认值。窗口满但没有重置时刻（或重置时刻已过）→ 当作普通 429，原样返回客户端。
+  - 删除“错误 type/code 为 `usage_limit_reached`（任何状态码）即算用满”：只有这个错误体、没有满窗口的头 → 原样返回客户端。上游错误码仍作为 `client_error_code` 返回（type `usage_limit_reached` 照旧当作 code）。
+  - 不再在 `ClassifyErrorResponse.quota` 里附窗口：429 的头由核心自己采样。
+  - 其他 429 → `RETURN_TO_CLIENT`，不冷却、不禁用；其他状态码从不因窗口头禁用。401、403、5xx、传输错误的规则不变。
+  - Sign in with ChatGPT（`chatgpt_siwc`）整体删除（同期另一项改动），它的错误规则（`subscription_sharing_*`、`chatpass_v2_*`）随之从 `ClassifyError` 删除。
+- 重置次数缓存（§10.6）不再由用量查询写入，只由 `/reset-credits/list` 成功时写入、consume 后删除。
+- `version` 0.1.7，`hostCompat` `>=0.1.297 <0.2.0`（`windowMinutes` 随核心 0.1.297 发布，旧核心因缺 `key` 拒绝安装）。宿主权限 `accounts.credentials`、`net` 的说明去掉“用量查询”。
+- 测试：`quota_test.go`（manifest 的声明经 `ReadQuotaHeaders` 在两种槽位顺序下都得到 `5h` / `7d`；判满：任一窗口满且有未来重置时刻、取最晚、无重置时刻或已过、未满、没有时长头；manifest 缺声明时启动失败）、`classify_test.go`（429 满窗口 → 禁用到最晚重置并冷却到同一时刻；满但无 `reset-at`、未满、没有头、只有 `usage_limit_reached` 错误体 → 原样返回；200 / 503 / 401 带满窗口头不禁用；不附 `quota`）、`manifest_test.go`（`codex_device` 声明 `windowMinutes` 头、没有查询）。

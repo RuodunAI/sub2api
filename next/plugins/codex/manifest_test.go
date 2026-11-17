@@ -94,18 +94,19 @@ func TestManifestShape(t *testing.T) {
 		if len(at.DefaultModels) == 0 {
 			t.Errorf("%s has no default models", at.ID)
 		}
-		// Only codex_device has usage windows (docs/PLUGIN-CODEX.md §9): Sign in
-		// with ChatGPT documents none and may not call backend-api.
-		if at.ID == codex.TypeSIWC {
-			if at.Quota != nil {
-				t.Errorf("%s quota = %+v, want none", at.ID, at.Quota)
-			}
-		} else {
+		// codex_device usage windows come from the response headers only,
+		// named by window length (docs/PLUGIN-CODEX.md §13): no usage query.
+		if at.ID == codex.TypeDevice {
 			q := at.Quota
-			if q == nil || !q.Query || !q.AutoRefresh || len(q.Headers) != 0 || at.ModelAvailability {
+			if q == nil || q.Query || q.AutoRefresh || len(q.Headers) != 2 || at.ModelAvailability {
 				t.Fatalf("%s quota = %+v modelAvailability = %v", at.ID, q, at.ModelAvailability)
 			}
-			if len(q.Windows) != 2 || q.Windows[0].Key != codex.QuotaKey5h || q.Windows[1].Key != codex.QuotaKey7d {
+			for _, h := range q.Headers {
+				if h.Key != "" || h.WindowMinutes == "" || h.Utilization == "" || h.UtilizationUnit != manifest.QuotaUnitPercent || h.Reset == "" || h.Status != "" {
+					t.Errorf("%s quota header = %+v", at.ID, h)
+				}
+			}
+			if len(q.Windows) != 2 || q.Windows[0].Key != "5h" || q.Windows[1].Key != "7d" {
 				t.Fatalf("%s quota windows = %+v", at.ID, q.Windows)
 			}
 			for _, w := range q.Windows {
@@ -176,7 +177,7 @@ func TestManifestShape(t *testing.T) {
 		}
 	}
 	// The plugin itself only talks to the authorization server; upstream
-	// requests, usage queries and refreshes are sent by the core.
+	// requests and refreshes are sent by the core.
 	if d, _ := perms["net"].Scope["domains"].([]any); len(d) != 1 || d[0] != "auth.openai.com" {
 		t.Errorf("net domains = %v", perms["net"].Scope)
 	}
@@ -241,7 +242,11 @@ func TestManifestShape(t *testing.T) {
 
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, codex.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	p, err := codex.New(manifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
 	if h.Info.GetPluginKey() != "codex" {
 		t.Fatalf("info = %v", h.Info)
 	}
