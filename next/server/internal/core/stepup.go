@@ -23,7 +23,6 @@ var ErrVerificationRequired = NewError(http.StatusForbidden, "verification_requi
 // for one scope and spent only on it.
 const (
 	StepUpCredentialReveal   = "credential.reveal"
-	StepUpAPIKeyReveal       = "apikey.reveal"
 	StepUpProxyReveal        = "proxy.reveal"
 	StepUpSuperAdminTransfer = "superadmin.transfer"
 	StepUpSelfPassword       = "self.password.change"

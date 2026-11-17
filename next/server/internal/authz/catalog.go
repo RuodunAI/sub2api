@@ -82,8 +82,8 @@ var coreModules = []coreModule{
 			desc: lt("Give or take roles from users, only roles on your assignable list.", "给用户分配或撤销角色，只限自己可分配清单内的角色。"), requires: req(perm.RoleRead, perm.UserRead)},
 	}},
 	{"apikey", lt("API keys", "API Key"), []corePerm{
-		{key: perm.APIKeySelfManage, en: "Manage own API keys", zh: "管理自己的 API Key", sensitive: true, stepUp: true,
-			desc: lt("Create and manage your own gateway API keys; showing a key in plain text asks for verification each time.", "新建与管理自己的网关 API Key；查看明文每次需要二次验证。")},
+		{key: perm.APIKeySelfManage, en: "Manage own API keys", zh: "管理自己的 API Key",
+			desc: lt("Create and manage your own gateway API keys.", "新建与管理自己的网关 API Key。")},
 	}},
 	{"group", lt("Groups", "分组"), []corePerm{
 		{key: perm.GroupRead, en: "View groups", zh: "查看分组",
