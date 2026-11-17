@@ -61,7 +61,7 @@ export default {
   copyNoChange: 'The ticks did not change',
   copyLeftNotGrantable: '{n} permission you cannot grant was not copied: {list} | {n} permissions you cannot grant were not copied: {list}',
   copyLeftCritical: '{n} critical permission is not ticked by a copy; tick it by hand if needed: {list} | {n} critical permissions are not ticked by a copy; tick them by hand if needed: {list}',
-  copyLeftGone: '{n} removed permission was not copied: {list} | {n} removed permissions were not copied: {list}',
+  copyLeftGone: '{n} removed or unknown permission was not copied: {list} | {n} removed or unknown permissions were not copied: {list}',
   restoreConfirm: 'Restore the name, description, core permissions and managed roles of "{name}" to the built-in defaults? Changes made to them are lost; plugin permissions are kept.',
   restored: 'Defaults restored',
   builtinLocked: 'You do not manage this built-in role: it can be changed by the super admin, or by role definers who have it among their managed roles and hold its permissions.',

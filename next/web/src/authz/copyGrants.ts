@@ -3,7 +3,7 @@
 // grants and the role does not; intersect keeps only what both grant. Both
 // work per action on scopes, so "account:read:team" meets "account:read:own"
 // as scopes, not as unrelated strings. Pure.
-import { parsePermission, patternKey, permissionIndex, scopeImplies, type Scope } from './implies'
+import { WILDCARD, parsePermission, patternKey, permissionIndex, scopeImplies, type Scope } from './implies'
 import { actionOf, cellOfScopes, scopesOfCell } from './pluginGrants'
 
 export type CopyMode = 'union' | 'intersect'
@@ -21,27 +21,27 @@ export interface CopyRules {
 export interface CopyResult {
   /** The role's keys after the copy: canonical, sorted. */
   keys: string[]
-  /** Keys of the source a union left out, canonical and sorted: the editor may not grant them, they are critical (tick them by hand), or gone. */
+  /** Keys of the source a union left out, canonical and sorted: gone, beyond the editor, or critical ones it may grant (tick them by hand). */
   notGrantable: string[]
   critical: string[]
   gone: string[]
 }
 
-/** A group range without a row, or a row without a group: the two halves of "group/<g>/account/<id>". */
+/** A group range without a row, or a row in no particular group: the two halves of "group/<g>/account/<id>". */
 const plain = (s: Scope) => !s.all && !s.own && !s.team && !s.ref
 const groupOnly = (s: Scope) => plain(s) && s.group !== 0 && s.id === 0
-const rowOnly = (s: Scope) => plain(s) && s.group === 0 && s.id !== 0
+const rowAnyGroup = (s: Scope) => plain(s) && s.id !== 0 && (s.group === 0 || s.group === WILDCARD)
 
 /**
  * The rows both scopes cover, as one scope, or null when that is no scope
  * (own within a group, two different groups or rows). One implying the other
- * is the narrower; a group range and an account are that account within the
- * group.
+ * is the narrower; a group range and an account in any group (account/X or
+ * a wildcard group with that account) are that account within the group.
  */
 function meet(a: Scope, b: Scope): Scope | null {
   if (scopeImplies(a, b)) return b
   if (scopeImplies(b, a)) return a
-  const [g, r] = groupOnly(a) && rowOnly(b) ? [a, b] : groupOnly(b) && rowOnly(a) ? [b, a] : []
+  const [g, r] = groupOnly(a) && rowAnyGroup(b) ? [a, b] : groupOnly(b) && rowAnyGroup(a) ? [b, a] : []
   return g && r ? { all: false, own: false, group: g.group, id: r.id } : null
 }
 
@@ -74,7 +74,7 @@ export function copyGrants(current: readonly string[], source: readonly string[]
     for (const scope of src) {
       const key = patternKey({ action, scope })
       if (have.has(key)) continue
-      const left = rules.gone(action) ? out.gone : rules.critical(action) ? out.critical : rules.mayGrant(key) ? null : out.notGrantable
+      const left = rules.gone(action) ? out.gone : !rules.mayGrant(key) ? out.notGrantable : rules.critical(action) ? out.critical : null
       if (left) left.push(key)
       else added.push(scope)
     }

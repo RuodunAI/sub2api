@@ -548,7 +548,14 @@ describe('RolesView copy from role', () => {
     const w = await open({ superuser: false, permissions: ['role:define', 'user:read', 'plugin.g:read'], roles: ['holder'] }, [...list, holder])
     await copy(w, 3)
     expect(granted(w)).toEqual(['plugin.d:use', 'plugin.g:read', 'user:read'])
-    expect(note(w)).toContain(i18n.global.t('roles.copyLeftNotGrantable', { n: 1, list: 'user:delete' }, 1))
+    // Critical or not, what the editor does not hold is beyond it, not something to tick by hand.
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftNotGrantable', { n: 2, list: ['plugin.g:bypass', 'user:delete'].join(i18n.global.t('roles.listSep')) }, 2))
+    expect(note(w)).not.toContain(i18n.global.t('roles.copyLeftCritical', { n: 1, list: 'plugin.g:bypass' }, 1))
+  })
+
+  it('is not offered on the super admin role', async () => {
+    const w = await open({ superuser: true, permissions: [] }, list, 'super_admin')
+    expect(w.find('[data-testid="role-copy"]').exists()).toBe(false)
   })
 
   it('is not offered while the role\'s permissions are not loaded, and is off with no role to copy from', async () => {

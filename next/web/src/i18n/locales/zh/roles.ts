@@ -61,7 +61,7 @@ export default {
   copyNoChange: '勾选没有变化',
   copyLeftNotGrantable: '{n} 项你不能授出，没有复制：{list}',
   copyLeftCritical: '{n} 项关键权限不随复制勾上，需要的话请单独勾选：{list}',
-  copyLeftGone: '{n} 项权限已移除，没有复制：{list}',
+  copyLeftGone: '{n} 项权限已移除或不存在，没有复制：{list}',
   restoreConfirm: '将「{name}」的名称、描述、核心权限和可管理角色恢复为内置默认值？对它们做过的修改会丢失，插件权限保持不变。',
   restored: '已恢复默认',
   builtinLocked: '你不能管理这个内置角色：只有超级管理员，或可管理角色清单里有它、且拥有它全部权限的角色定义者才能修改。',

@@ -34,6 +34,8 @@ describe('copyGrants union', () => {
       mayGrant: (k) => k !== 'user:delete'
     }))
     expect(res).toEqual({ keys: [], notGrantable: ['user:delete'], critical: ['plugin.g:bypass'], gone: ['plugin.g:old'] })
+    // A critical key beyond the editor cannot be ticked by hand either: it is not grantable.
+    expect(copyGrants([], ['plugin.g:bypass'], 'union', rules({ critical: () => true, mayGrant: () => false })).notGrantable).toEqual(['plugin.g:bypass'])
   })
 
   it('does not ask for what the role already implies', () => {
@@ -59,7 +61,8 @@ describe('copyGrants intersect', () => {
   it('meets a group range and an account as that account within the group', () => {
     expect(copyGrants(['account:read:group/12'], ['account:read:account/5'], 'intersect', rules()).keys).toEqual(['account:read:group/12/account/5'])
     expect(copyGrants(['account:read:account/5'], ['account:read:group/*'], 'intersect', rules()).keys).toEqual(['account:read:group/*/account/5'])
-    expect(copyGrants(['account:read:group/12'], ['account:read:group/13', 'account:read:own'], 'intersect', rules()).keys).toEqual([])
+    expect(copyGrants(['account:read:group/12'], ['account:read:group/*/account/5'], 'intersect', rules()).keys).toEqual(['account:read:group/12/account/5'])
+    expect(copyGrants(['account:read:group/12'], ['account:read:group/13', 'account:read:own', 'account:read:group/13/account/5'], 'intersect', rules()).keys).toEqual([])
   })
 
   it('meets plugin scopes', () => {
