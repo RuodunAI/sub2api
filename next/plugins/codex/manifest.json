@@ -6,7 +6,7 @@
     "en": "Serves /v1/responses (including its WebSocket mode) and, through the core's conversion, /v1/chat/completions from your own ChatGPT subscription through the Codex CLI's logins: device code or Sign in with Codex. Only for the account owner's own use with their own ChatGPT subscription; do not pool several people's accounts or resell access (this violates OpenAI's terms). Requests identify themselves truthfully as sup2api (originator: sup2api, User-Agent: sup2api-codex/<version>); the plugin does not imitate the Codex CLI and adds no Codex system prompt.",
     "zh": "用你自己的 ChatGPT 订阅提供 /v1/responses（含 WebSocket 模式），并经核心转换提供 /v1/chat/completions；通过 Codex CLI 的登录方式授权：设备码登录或 Sign in with Codex。仅用于账号所有者用自己的 ChatGPT 订阅自用；不得把多人账号做成号池对外出售（违反 OpenAI 条款）。请求如实标明来源为 sup2api（originator: sup2api，User-Agent: sup2api-codex/<版本>），不伪装 Codex CLI，也不注入 Codex 系统提示词。"
   },
-  "version": "0.1.8",
+  "version": "0.1.10",
   "publisher": "sub2api",
   "icon": "assets/openai.svg",
   "runtime": "grpc",
@@ -25,7 +25,7 @@
     {
       "id": "codex_device",
       "upstreamFields": [],
-      "label": { "en": "ChatGPT (Codex) · Device Code", "zh": "ChatGPT（Codex）· 设备码" },
+      "label": { "en": "ChatGPT (Codex) · Device Code", "zh": "ChatGPT（Codex） · 设备码" },
       "description": {
         "en": "Your own ChatGPT subscription, authorized with the Codex device code login. Requests go to the ChatGPT Codex backend and use your plan's Codex usage. Own use only; pooling or reselling accounts is not allowed.",
         "zh": "你自己的 ChatGPT 订阅，用 Codex 设备码登录授权。请求发往 ChatGPT 的 Codex 后端，消耗你套餐的 Codex 用量。仅限自用，不得做成号池或转售。"
@@ -60,7 +60,7 @@
         {
           "platform": "openai",
           "endpoints": ["responses", "responses_websocket"],
-          "requestFields": ["model", "[instructions]|#", "[input]|#(%\"*\")", "input.#.[role].#(==\"system\")#"],
+          "requestFields": ["model", "[instructions]|#", "[input]|#(%\"*\")", "input.#.[role].#(==\"system\")#", "prompt_cache_key"],
           "streamOnly": ["openai.responses"]
         }
       ]
@@ -68,7 +68,7 @@
     {
       "id": "codex_oauth",
       "upstreamFields": [],
-      "label": { "en": "ChatGPT (Codex) · Codex", "zh": "ChatGPT（Codex）· Codex" },
+      "label": { "en": "ChatGPT (Codex) · Codex", "zh": "ChatGPT（Codex） · Codex" },
       "description": {
         "en": "Your own ChatGPT subscription, authorized with the Codex CLI's browser sign-in (Sign in with Codex). Requests go to the ChatGPT Codex backend and use your plan's Codex usage. Own use only; pooling or reselling accounts is not allowed.",
         "zh": "你自己的 ChatGPT 订阅，用 Codex CLI 的浏览器登录（Sign in with Codex）授权。请求发往 ChatGPT 的 Codex 后端，消耗你套餐的 Codex 用量。仅限自用，不得做成号池或转售。"
@@ -103,7 +103,7 @@
         {
           "platform": "openai",
           "endpoints": ["responses", "responses_websocket"],
-          "requestFields": ["model", "[instructions]|#", "[input]|#(%\"*\")", "input.#.[role].#(==\"system\")#"],
+          "requestFields": ["model", "[instructions]|#", "[input]|#(%\"*\")", "input.#.[role].#(==\"system\")#", "prompt_cache_key"],
           "streamOnly": ["openai.responses"]
         }
       ]

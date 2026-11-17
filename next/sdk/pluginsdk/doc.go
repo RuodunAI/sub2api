@@ -31,6 +31,10 @@
 // into InitHost, Configure, Health and Shutdown. After InitHost the plugin
 // reaches the host through the Host interface (log, KV, database, authz,
 // ledger, cluster broadcasts via Publish, cluster locks via Locks).
+// Settings[T] reads a section of the core's system settings (types in
+// package protocol, CONTRACTS §107): kept in the process and read again
+// once the host says the section changed, so call it where the value is
+// used instead of copying it at Init.
 //
 // # Running on several nodes
 //

@@ -10,9 +10,9 @@ export const pluginSection = (key: string): EditorSection => `plugin:${key}`
  * Rows of the scheduling group and of the limits group. The session window is
  * part of the spm_limit row, not a row: a type hiding every limit hides the group.
  */
-export const SCHEDULING_ROWS: readonly CommonControlName[] = ['priority', 'weight', 'max_concurrency', 'schedulable', 'auto_disable']
-export const RATE_LIMITS: readonly CommonControlName[] = ['rpm_limit', 'tpm_limit', 'spm_limit']
-const SCHEDULING_CONTROLS: readonly CommonControlName[] = [...SCHEDULING_ROWS, ...RATE_LIMITS, 'usage_limit', 'model_limits']
+export const SCHEDULING_ROWS: readonly CommonControlName[] = ['priority', 'weight', 'schedulable', 'auto_disable']
+export const LIMIT_ROWS: readonly CommonControlName[] = ['max_concurrency', 'rpm_limit', 'tpm_limit', 'spm_limit']
+const SCHEDULING_CONTROLS: readonly CommonControlName[] = [...SCHEDULING_ROWS, ...LIMIT_ROWS, 'usage_limit', 'model_limits']
 /**
  * Sections made only of common controls: hidden when every one of them is.
  * The advanced section is not: its conversion loss policy is always shown.

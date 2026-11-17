@@ -16,6 +16,12 @@ service PluginService {
   rpc Configure(ConfigureRequest) returns (ConfigureResponse);
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+  // SettingsChanged tells the process that sections of the system settings
+  // changed (CONTRACTS §107). The host of every node calls it on the plugins
+  // it serves, best effort, so values cached from HostService.GetSettings
+  // are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
+  // which the host ignores.
+  rpc SettingsChanged(SettingsChangedRequest) returns (SettingsChangedResponse);
 }
 
 message GetInfoRequest {}
@@ -73,3 +79,9 @@ message ShutdownRequest {
 }
 
 message ShutdownResponse {}
+
+message SettingsChangedRequest {
+  repeated string sections = 1;
+}
+
+message SettingsChangedResponse {}

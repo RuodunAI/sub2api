@@ -88,7 +88,7 @@ type Controller struct {
 	ctx      context.Context // cancelled by Stop
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
-	unsub    func()
+	unsubs   []func()
 }
 
 var _ core.RolloutController = (*Controller)(nil)
@@ -139,7 +139,8 @@ func New(o Options) (*Controller, error) {
 func (c *Controller) Start(context.Context) {
 	ctx := c.ctx
 	if c.o.Bus != nil {
-		c.unsub = c.o.Bus.Subscribe(core.ChannelPluginEvents, c.onPluginEvent)
+		c.unsubs = append(c.unsubs, c.o.Bus.Subscribe(core.ChannelPluginEvents, c.onPluginEvent),
+			c.o.Bus.Subscribe(core.ChannelConfigChanged, c.onConfigChanged))
 	}
 	c.pruneOrphans(ctx)
 	c.Reconcile(ctx)
@@ -164,8 +165,8 @@ func (c *Controller) Start(context.Context) {
 // generation. Coordinated rollouts are left to be taken over by other nodes.
 func (c *Controller) Stop(ctx context.Context) {
 	c.stopOnce.Do(func() {
-		if c.unsub != nil {
-			c.unsub()
+		for _, unsub := range c.unsubs {
+			unsub()
 		}
 		c.hub.close()
 		c.mu.Lock()

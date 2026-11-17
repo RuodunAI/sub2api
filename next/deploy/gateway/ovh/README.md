@@ -6,6 +6,12 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-17 网关 **0.1.138** + 核心 **0.1.298**（Release `gateway-v0.1.138` / `core-v0.1.298`，`0bbda1192`，内置 codex 0.1.8；北京时间 22:36–22:39；无核心迁移）：
+- 网关：`stage/gateway-0.1.138/` 从 `~/sup2api/release-0.1.298`（`9abaa23ff`，树与 `0bbda1192` 相同）构建（`--build-arg VERSION=0.1.138`，镜像 `sha256:f2951276…a2f`），二进制 sha256 `82baa5c287a8f1320ff034a6b86ae5a530c29e741f51caaef8755352570e51f4` 与 Release 网关清单（`0761e99c…104c`）一致；镜像包 gzip `8ce875d7…7eee`，clicodeplus `/root/gateway-images/`。`gwswap.sh`：ccp 22:36:26 让出、22:36:28 排空、22:37:03 就绪；ovh 22:37:19 让出、22:37:27 就绪；`.env.bak-gw137`。两节点 `updater.nodes` 0.1.138。
+- 核心：Release 清单 `108d2c7d0115cccdb9f83839be85045ea8ca26fedf6a4fbd9e415e8cff2ff9d7` 与两个 bundle 核对摘要后放进 `publish/sup2api/`（`stage/0.1.298/`），import，预检 rolling-v1、无 blocker（expected_revision 564），计划 `1fc58f57c4c85ed5a179e53a4cc10468` 22:38:23→22:39:32（先 ccp 后 ovh，`~/rel298/observe.py`），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200。
+- 核验：两节点核心 0.1.298、网关 0.1.138，9 个插件 active、ready，codex 0.1.8，认证方式“设备码”“Codex”；检测无更新、无错误；5xx 0，日志无 ERROR。392 仍关闭，没有动。`PLUGIN_TRUST_KEY` / `SUB2API_BUILTIN_TRUST_KEY` 保留不动。
+- 回滚：核心 0.1.297 清单 `64bc544f5b13d683d4565cb4fb5a0fefc60369ed6f0e434457285e857710c431` 建 rolling 计划；网关 `.env` 换回 `.env.bak-gw137` 再让出、重建（插件只升不降，codex 留在 0.1.8）。
+
 2026-11-17 核心 **0.1.297**（Release `core-v0.1.297`，`f40c7831d`，内置 codex 0.1.7；北京时间 21:02–21:03；计划 `d3602f6e87e5df4a901786b57ab988e0` rolling-v1 completed，21:02:05→21:03:14，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移；网关仍 0.1.137）：
 - Release 的 `next-core-manifest.json`（sha256 `64bc544f5b13d683d4565cb4fb5a0fefc60369ed6f0e434457285e857710c431`）与两个 bundle 核对摘要后放进 `publish/sup2api/`（`stage/0.1.297/`），主节点 import，`--preflight-only` 选中 rolling-v1、无 blocker（expected_revision 562）后执行（`~/rel297/observe.py`）。基线 `b62f6c8b…`（0.1.295）→ `64bc544f…`。
 - 核验：两节点核心 0.1.297，9 个插件 active、ready、restarts 0，codex 0.1.7；codex 账号类型只剩 `codex_device`、`codex_oauth`（`chatgpt_siwc` 已删除，本集群原本没有 codex 账号，被动用量快照未实测）；强制检测无更新、无错误；两节点日志无 ERROR，5xx 0。392 仍是关闭状态，没有动。

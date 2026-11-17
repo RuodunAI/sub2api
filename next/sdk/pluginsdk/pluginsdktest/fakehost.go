@@ -114,6 +114,9 @@ type FakeHost struct {
 	ledgerBy  map[string]LedgerEntry
 	dials     []string
 	published []PublishedMessage
+	// settings: section -> values JSON (SetSettings).
+	settings      map[string]string
+	settingsReads int
 }
 
 // PublishedMessage is one broadcast received through HostService.Publish.

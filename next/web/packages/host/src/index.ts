@@ -12,7 +12,7 @@ export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
-export const HOST_UI_VERSION = '3.17.0'
+export const HOST_UI_VERSION = '3.18.0'
 
 /**
  * Accounts per plugin account action request and per `GET /accounts?ids=`
@@ -83,7 +83,6 @@ export interface HostPermissions {
  * - HeaderPassthroughEditor: `header_passthrough` string[]
  * - ProxyPicker: `proxy_id` number | null
  * - ModelMappingEditor: `model_mapping` object; `models?: string[]` (the account's model list)
- * - UpstreamEditor: the account layer of `upstream`; `accountType` (its resolved declaration), `errors?`
  * - EntityPicker: picks a user / group / api_key / account / model / proxy (`kind`) by name or id from
  *   GET /lookup/{kind}. `v-model:id` string ('' = none; a model's id is its name); `v-model:text?` string
  *   (bound: typed text can be kept as a "name contains" search; id and text exclude each other); `change`
@@ -103,7 +102,6 @@ export const HOST_COMPONENT_NAMES = [
   'HeaderPassthroughEditor',
   'ProxyPicker',
   'ModelMappingEditor',
-  'UpstreamEditor',
   'EntityPicker',
   'EntityMultiPicker'
 ] as const

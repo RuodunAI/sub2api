@@ -8,16 +8,13 @@ package declarative
 
 import (
 	"context"
-	"crypto/sha256"
 	"strings"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/upstream"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -36,8 +33,7 @@ type Client struct {
 	platform
 	profile *upstream.Profile
 	// plugin amends the built request in extend mode; nil otherwise.
-	plugin   core.PlatformPlugin
-	accounts profileCache
+	plugin core.PlatformPlugin
 }
 
 var (
@@ -46,12 +42,11 @@ var (
 	_ core.AccountModelAvailabilityPlugin = (*Client)(nil)
 )
 
-// New returns the client of the account type profile was resolved for
-// (without an account layer). plugin is the declaring plugin's platform
-// service, nil when it has none or may not see credentials: it serves the
-// entry points the declaration does not cover and, when the declaration says
-// extend, amends every built request (the registry only binds an extend type
-// that has one).
+// New returns the client of the account type profile was resolved for.
+// plugin is the declaring plugin's platform service, nil when it has none or
+// may not see credentials: it serves the entry points the declaration does
+// not cover and, when the declaration says extend, amends every built
+// request (the registry only binds an extend type that has one).
 func New(profile *upstream.Profile, plugin core.PlatformPlugin) *Client {
 	c := &Client{platform: plugin, profile: profile}
 	if plugin == nil {
@@ -73,11 +68,7 @@ func (c *Client) CheckModelAvailability(ctx context.Context, in *pluginv1.CheckM
 	return nil, status.Error(codes.Unimplemented, "the plugin has no model availability check")
 }
 
-// Upstream implements core.DeclaredUpstream.
-func (c *Client) Upstream() manifest.Upstream { return c.profile.Upstream() }
-
-// ValidateCredentials checks the key and base URL, and an account layer in
-// settings "upstream" for types taking one.
+// ValidateCredentials checks the key and base URL.
 func (c *Client) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	return c.profile.Validate(in), nil
 }
@@ -85,11 +76,7 @@ func (c *Client) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 // BuildUpstreamRequest builds the request from the declaration; in extend
 // mode the plugin then amends it (merge).
 func (c *Client) BuildUpstreamRequest(ctx context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	p, err := c.forAccount(in.GetAccount())
-	if err != nil {
-		return nil, err
-	}
-	base, err := p.Build(in)
+	base, err := c.profile.Build(in)
 	if err != nil || c.plugin == nil {
 		return base, err
 	}
@@ -98,7 +85,7 @@ func (c *Client) BuildUpstreamRequest(ctx context.Context, in *pluginv1.BuildUps
 	if err != nil || amended == nil {
 		return amended, err
 	}
-	return merge(base, amended, p.AuthHeader(in.GetAccount())), nil
+	return merge(base, amended, c.profile.AuthHeader()), nil
 }
 
 // merge applies the plugin's amendment to base (§4.1): its headers are
@@ -134,11 +121,7 @@ func (c *Client) SplitHeaders(in *pluginv1.BuildUpstreamRequestRequest, built *p
 	if c.plugin == nil {
 		return built.GetHeaders(), nil
 	}
-	p, err := c.forAccount(in.GetAccount())
-	if err != nil {
-		return built.GetHeaders(), nil
-	}
-	base, err := p.Build(in)
+	base, err := c.profile.Build(in)
 	if err != nil {
 		return built.GetHeaders(), nil
 	}
@@ -151,109 +134,38 @@ func (c *Client) SplitHeaders(in *pluginv1.BuildUpstreamRequestRequest, built *p
 	return declared, plugin
 }
 
-// ClassifyError classifies with the declared provider policy (an account
-// layer cannot change it).
+// ClassifyError classifies with the declared provider policy.
 func (c *Client) ClassifyError(_ context.Context, in *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
 	return c.profile.Classify(time.Now(), in), nil
 }
 
 // BuildTestRequest builds the console's account test.
 func (c *Client) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
-	p, err := c.forAccount(in.GetAccount())
-	if err != nil {
-		return nil, err
-	}
-	return p.Test(in)
+	return c.profile.Test(in)
 }
 
 // BuildModelsRequest builds the model listing request (Unimplemented when
 // the declaration has none).
 func (c *Client) BuildModelsRequest(_ context.Context, in *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error) {
-	p, err := c.forAccount(in.GetAccount())
-	if err != nil {
-		return nil, err
-	}
-	return p.Models(in)
+	return c.profile.Models(in)
 }
 
 // PrepareBody implements core.DeclaredUpstream.
-func (c *Client) PrepareBody(acc *pluginv1.Account, body []byte, in *core.ParamOverrideContext) (core.ParamOverrideResult, error) {
-	p, err := c.forAccount(acc)
-	if err != nil {
-		return core.ParamOverrideResult{}, err
-	}
-	return p.PrepareBody(acc, body, in)
+func (c *Client) PrepareBody(body []byte, in *core.ParamOverrideContext) (core.ParamOverrideResult, error) {
+	return c.profile.PrepareBody(body, in)
 }
 
 // UpstreamURL implements core.DeclaredUpstream. built's URL is the
 // declaration's when rendering it for built's upstream model gives it back;
 // otherwise the plugin replaced it and it is kept, as a code plugin's is.
 func (c *Client) UpstreamURL(in *pluginv1.BuildUpstreamRequestRequest, built *pluginv1.BuildUpstreamRequestResponse, model string) (string, error) {
-	p, err := c.forAccount(in.GetAccount())
-	if err != nil {
-		return "", err
-	}
 	if c.plugin != nil {
-		if own, err := p.URL(in, built.GetUpstreamModel()); err != nil || own != built.GetUrl() {
+		if own, err := c.profile.URL(in, built.GetUpstreamModel()); err != nil || own != built.GetUrl() {
 			return built.GetUrl(), err
 		}
 	}
-	return p.URL(in, model)
+	return c.profile.URL(in, model)
 }
 
 // AuthHeader implements core.DeclaredUpstream.
-func (c *Client) AuthHeader(acc *pluginv1.Account) string {
-	p, err := c.forAccount(acc)
-	if err != nil {
-		return ""
-	}
-	return p.AuthHeader(acc)
-}
-
-// forAccount is the profile of acc: the type's own unless the declaration
-// takes an account layer, then one cached per account settings.
-func (c *Client) forAccount(acc *pluginv1.Account) (*upstream.Profile, error) {
-	if acc == nil || !c.profile.Upstream().AccountConfig {
-		return c.profile, nil
-	}
-	return c.accounts.get(c.profile, acc)
-}
-
-// maxCachedProfiles bounds profileCache; past it the cache starts over.
-const maxCachedProfiles = 1024
-
-// profileCache keeps the profiles of accounts with an account layer, keyed
-// by a hash of the settings and credentials the layer is read from, so a
-// request does not merge and check the layer again on every call. A changed
-// account has another key; the client, and with it the cache, is rebuilt
-// with every registry generation.
-type profileCache struct {
-	mu sync.Mutex
-	m  map[[sha256.Size]byte]*upstream.Profile
-}
-
-func (pc *profileCache) get(base *upstream.Profile, acc *pluginv1.Account) (*upstream.Profile, error) {
-	h := sha256.New()
-	h.Write([]byte(acc.GetSettingsJson()))
-	h.Write([]byte{0})
-	h.Write([]byte(acc.GetCredentialsJson()))
-	var key [sha256.Size]byte
-	h.Sum(key[:0])
-	pc.mu.Lock()
-	p := pc.m[key]
-	pc.mu.Unlock()
-	if p != nil {
-		return p, nil
-	}
-	p, err := base.ForAccount(acc)
-	if err != nil {
-		return nil, err
-	}
-	pc.mu.Lock()
-	if pc.m == nil || len(pc.m) >= maxCachedProfiles {
-		pc.m = map[[sha256.Size]byte]*upstream.Profile{}
-	}
-	pc.m[key] = p
-	pc.mu.Unlock()
-	return p, nil
-}
+func (c *Client) AuthHeader() string { return c.profile.AuthHeader() }

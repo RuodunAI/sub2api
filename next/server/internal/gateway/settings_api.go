@@ -20,7 +20,10 @@ type gatewaySettingsStore interface {
 	update(ctx context.Context, in gatewaySettingsInput, updatedBy int64) (GatewaySettings, error)
 }
 
-type dbGatewaySettings struct{ db *store.DB }
+type dbGatewaySettings struct {
+	db     *store.DB
+	events core.EventPublisher
+}
 
 func (s dbGatewaySettings) load(ctx context.Context) (GatewaySettings, error) {
 	if s.db == nil {
@@ -40,14 +43,16 @@ func (s dbGatewaySettings) update(ctx context.Context, in gatewaySettingsInput, 
 				return err
 			}
 		}
-		_, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyGateway, nullID(updatedBy), func(raw json.RawMessage) (json.RawMessage, error) {
+		if _, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyGateway, nullID(updatedBy), func(raw json.RawMessage) (json.RawMessage, error) {
 			if err := json.Unmarshal(raw, &v); err != nil {
 				return nil, err
 			}
 			in.applyTo(&v)
 			return json.Marshal(v.normalized())
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, s.events, tx, settingsKeyGateway)
 	})
 	return v.normalized(), err
 }

@@ -24,6 +24,13 @@ service HostService {
   // group and optionally an account, for work outside a gateway request
   // (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
   rpc GetEnvironment(GetEnvironmentRequest) returns (GetEnvironmentResponse);
+  // settings (always granted): the effective values of sections of the
+  // system settings, for work outside a gateway request (CONTRACTS §107).
+  // values_json holds the fields CONTRACTS lists for the section, never a
+  // secret; version changes exactly when the values do. No sections asks
+  // for all of them; an unknown section is INVALID_ARGUMENT. Changes are
+  // announced to every plugin process by PluginService.SettingsChanged.
+  rpc GetSettings(GetSettingsRequest) returns (GetSettingsResponse);
   // users.read (grant "users.read"): basic facts of console users by id, to
   // check that a user exists or to show who they are (CONTRACTS §75.3). At
   // most 500 ids per call; unknown and deleted users are left out.
@@ -283,6 +290,20 @@ message GetEnvironmentRequest {
 
 message GetEnvironmentResponse {
   map<string, int64> environment = 1;
+}
+
+message GetSettingsRequest {
+  repeated string sections = 1; // e.g. "sticky"; none = every section
+}
+
+message GetSettingsResponse {
+  repeated SettingsSection sections = 1; // in request order, once each
+}
+
+message SettingsSection {
+  string name = 1;
+  string version = 2;     // the first 16 hex digits of the SHA-256 of values_json
+  string values_json = 3; // a JSON object, the fields of CONTRACTS §107
 }
 
 message GetUsersRequest {

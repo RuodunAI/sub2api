@@ -76,10 +76,10 @@ export default {
     fillDefaults: 'Add preset models ({n})', fillDefaultsHint: 'Merges the plugin preset into the list; existing entries stay', fillDefaultMapping: 'Add preset mapping ({n})', defaultsAdded: '{n} preset models added', defaultMappingAdded: '{n} preset mappings added', defaultsNothingNew: 'The preset is already in the list',
     copyModels: 'Copy', copied: '{n} models copied', clearModels: 'Clear', unrestricted: 'Unrestricted: the account serves every request model', mappedTo: 'Mapped to {model}',
     mappingEmpty: 'No mapping: request models go upstream unchanged', mappingAdd: 'Add mapping', mappingRowNotInModels: 'Not in the model list: the account is never scheduled for this model', mappingNotInModels: '{n} request models are not in the model list, so the account is never scheduled for them: {models}', mappingAddToModels: 'Add to model list',
-    schedulingCardHint: 'Decides the order accounts are picked in and how many requests each handles at once', schedulableHint: 'When off the account is kept but receives no requests', autoDisableHint: 'Disable the account when the upstream reports invalid credentials, exhausted quota and similar errors (rules under Settings → Scheduling policy → Automatic disabling). When off the account is only cooled down for 60 seconds', limitsHint: 'RPM and TPM count the last 60 seconds, sessions their period: once any limit is reached the account is skipped until its usage falls back; 0 means unlimited',
+    schedulingCardHint: 'Decides the order accounts are picked in, whether they take requests and whether errors disable them', schedulableHint: 'When off the account is kept but receives no requests', autoDisableHint: 'Disable the account when the upstream reports invalid credentials, exhausted quota and similar errors (rules under Settings → Scheduling policy → Automatic disabling). When off the account is only cooled down for 60 seconds', limitsHint: 'Concurrency counts the requests in progress, RPM and TPM the last 60 seconds, sessions their period: once any limit is reached the account is skipped until its usage falls back; 0 means unlimited',
     commonControlFixed: 'The plugin makes this read-only. Existing accounts keep their current setting.', commonControlLocked: 'The plugin fixes this to its preset value.', commonControlLockedPending: 'The plugin fixes this to its preset value; saving changes it to {value}.',
     autoDisableGlobalOff: 'Automatic disabling is globally off. This switch has no effect and cannot be changed; the account preference is preserved.', autoDisableUnavailable: 'Unable to load the global automatic disabling setting. This switch cannot be changed for now; the account preference is preserved.',
-    unitRpm: 'req / min', unitTpm: 'tokens / min', unitTpd: 'tokens / day', create: 'Create account', noCredentials: 'This account type has no credential fields to fill in here.', modelsInputHint: 'Type or pick a model, Enter or comma adds it, paste comma or line separated lists; click a tag to copy it, mapped models show → target' },
+    unitConcurrency: 'requests', unitRpm: 'req / min', unitTpm: 'tokens / min', unitTpd: 'tokens / day', create: 'Create account', noCredentials: 'This account type has no credential fields to fill in here.', modelsInputHint: 'Type or pick a model, Enter or comma adds it, paste comma or line separated lists; click a tag to copy it, mapped models show → target' },
   title: 'Accounts',
   subtitle: 'Upstream accounts used by the gateway. Account types are declared by plugins; a group can mix accounts of different types.',
   new: 'New account',
@@ -370,51 +370,6 @@ export default {
   editTitle: 'Edit account',
   newStep1: 'New account · choose a type',
   newTitle: 'New account',
-  upstream: {
-    hint: 'Only what differs from the account type is stored; leave a field empty to keep the default (the grey text)',
-    resetAll: 'Reset all',
-    reset: 'Reset',
-    noDefaults: 'The account type provides no upstream defaults; editing is unavailable',
-    auth: {
-      title: 'Authentication',
-      hint: "How the upstream identifies this account; the value is a template, {'{api_key}'} is the API key",
-      types: { header: 'Header', query: 'Query parameter', none: 'None' },
-      name: 'Name',
-      value: 'Value',
-      namePlaceholder: { header: 'Header name, e.g. x-api-key', query: 'Parameter name, e.g. key' }
-    },
-    headers: {
-      title: 'Headers',
-      hint: "Headers sent upstream. Set: always written; Default: only when the client sent none; Append: added to the existing value after a comma. Values may use {'{model}'}, {'{base_url}'}, {'{credentials.<field>}'}, {'{client_header.<name>}'}",
-      modes: { set: 'Set', default: 'Default', append: 'Append' },
-      name: 'Header name',
-      value: 'Value',
-      add: 'Add header',
-      remove: 'Remove',
-      restore: 'Restore'
-    },
-    routes: {
-      title: 'Paths',
-      hint: "Path appended to the base URL per protocol, a query string allowed; {'{model}'} is the upstream model"
-    },
-    allow: {
-      title: 'Allowed fields',
-      hint: 'These body fields are not sent upstream by default; checked ones are forwarded'
-    },
-    hints: {
-      required: 'Required',
-      not_here: '{name} cannot be used here',
-      unknown_var: 'Unknown variable {name}',
-      not_field: '{name} is not a credential field of the account type',
-      not_passed: '{name} is not a client header this account type receives',
-      header_name: 'Not a valid header name',
-      header_blocked: '{name} is a credential, hop-by-hop or gateway control header and cannot be set here; credentials go in authentication',
-      auth_blocked: '{name} is a hop-by-hop, client address or gateway control header and cannot carry the credential',
-      auth_header: '{name} is written by authentication',
-      duplicate: 'Header {name} is duplicated',
-      path_slash: 'A path starts with /'
-    }
-  },
   basic: 'Basic information',
   core: 'core',
   testErrorCode: 'Error code',

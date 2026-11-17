@@ -55,8 +55,7 @@ func (c *checker) add(path, code, format string, args ...any) {
 	c.probs = append(c.probs, Problem{Path: path, Code: code, Message: fmt.Sprintf(format, args...)})
 }
 
-// check validates a merged declaration; paramOverride is compiled by the
-// caller (an account layer cannot change it, so it is compiled once).
+// check validates a merged declaration; Resolve compiles paramOverride.
 func check(up *manifest.Upstream, passHeaders []string) Problems {
 	c := &checker{up: up, passHeaders: passHeaders}
 	c.baseURL()

@@ -46,6 +46,10 @@ const (
 	classConsole
 	classBackground
 	classExecute
+	// classControl is for calls the SDK answers itself without plugin code
+	// (SettingsChanged): they take no slot, so plugin work filling the other
+	// classes never holds them up.
+	classControl
 	numClasses
 )
 
@@ -80,13 +84,14 @@ func (i *Instance) call(ctx context.Context, class callClass, timeout time.Durat
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	sem := i.sems[class]
-	select {
-	case sem <- struct{}{}:
-	case <-ctx.Done():
-		return fmt.Errorf("plugin %s: waiting for a free call slot: %w", i.pkg.Key, ctx.Err())
+	if sem := i.sems[class]; sem != nil {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			return fmt.Errorf("plugin %s: waiting for a free call slot: %w", i.pkg.Key, ctx.Err())
+		}
+		defer func() { <-sem }()
 	}
-	defer func() { <-sem }()
 	return i.mapErr(fn(ctx, p))
 }
 

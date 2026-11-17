@@ -30,6 +30,7 @@ type gatewayExecution struct {
 	id                       string
 	records                  core.ExecutionRecords
 	network                  context.Context
+	callback                 context.Context // the plugin's ForwardUpstream call
 	response                 *pluginv1.ForwardUpstreamResponse
 	result                   attemptResult
 	raw                      []byte
@@ -42,6 +43,11 @@ type gatewayExecution struct {
 	pendingCommit            *core.ExecutionCommit
 	pendingBody              []byte
 }
+
+// errExecutionAborted cancels the upstream exchange of a plugin execution
+// whose plugin gave up its ForwardUpstream call (killed, drained, timed out)
+// while the client is still there.
+var errExecutionAborted = errors.New("plugin execution aborted")
 
 func (c *call) canExecute(rt *typeRoute) bool {
 	if _, ok := rt.binding.Client.(core.ExecutePlugin); !ok {
@@ -178,10 +184,16 @@ func (x *gatewayExecution) forwardCallback(ctx context.Context, in *pluginv1.For
 	if err != nil {
 		return nil, err
 	}
-	x.result = c.forwardBuilt(nctx, x.rt, x.account, x.request, x.body, in.Request, x)
-	// Keep the network facts in x for the core. Returning an error terminates
-	// the default Execute flow before it invokes the plugin's ClassifyError.
-	if c.failurePolicy != nil && x.response.GetError() != nil {
+	// The exchange watches the client alone: the plugin abandoning its call
+	// is no hang-up, and forwardBuilt cuts the upstream for it instead.
+	x.callback = ctx
+	x.result = c.forwardBuilt(x.network, x.rt, x.account, x.request, x.body, in.Request, x)
+	// Keep the network facts in x for the core. Under a failure policy a
+	// transport error (no status) is the policy's alone, as in classify:
+	// returning an error terminates the default Execute flow before it
+	// invokes the plugin's ClassifyError. An HTTP error is still classified
+	// by the plugin, whose quota and timed disable the policy takes (§69).
+	if c.failurePolicy != nil && x.response.GetError() != nil && x.response.GetError().GetStatus() == 0 {
 		return nil, errors.New("upstream failure handled by core policy")
 	}
 	if x.response == nil {

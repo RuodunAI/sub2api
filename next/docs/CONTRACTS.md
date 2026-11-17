@@ -302,6 +302,7 @@
 | `user.created` / `user.updated` | `{user_id, email, status}` | A |
 | `balance.changed` | `{user_id, ledger_id, delta, balance_after, kind}` | B |
 | `plugin.enabled` / `plugin.disabled` | `{plugin_key, version}` | C |
+| `settings.changed` | `{sections}`：保存的系统设置分组（§107），与设置同一事务写入 | B、G、环境变量 |
 
 ## 7. Redis key
 
@@ -330,7 +331,7 @@
 | `rl:apikey:{id}:rpmb`、`rl:apikey:{id}:tpmb` | HASH API Key 近 60 秒窗口的分段计数，格式同账号（§60.3、§68.3）；API Key 没有会话上限 | A |
 | `slot:account-model:{key}:{id}` | ZSET 账号某个模型列表的并发槽位，格式同 `slot:{kind}:{id}`（§68.2） | D |
 
-广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本（§99.4）；不是这个格式的 payload 不当作变化，节点改为读一次版本。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
+广播频道：`plugin:events`、`authz:changed`、`account:changed`、`config:changed`（`core/ports_cluster.go`）。权限版本以 PG `authz_meta` 为准，Redis 不存。`authz:changed` payload：JSON `{"v":授权版本,"p":策略版本?,"u":[用户 id]?}`（0.1.290）：`u` 是只改了这些用户的角色或状态的写入，`p` 是策略写入后的策略版本（§99.4）；不是这个格式的 payload 不当作变化，节点改为读一次版本。`config:changed` payload：代理 `{"type":"proxy","id":N}`，插件配置 `{"type":"config","plugin_key":k}`，系统设置 `{"key":"settings.<分组>"}`（插件可读的分组同时通知各节点的插件进程，§107.3），其余核心缓存 `{"key":k}`（如 `prices`、`price_rules`、`sticky_rules`）。`plugin:events` payload：`{"type":"rollout"|"config","plugin_key","rollout_id"?}`。
 
 节点插件状态（`node:plugins:{boot_id}` 每个插件一个 JSON，C2 写、C1 与控制台读）：`{state, serving, standby?, rollout_id?, rollout?, error?, instances:[{version, state, error?, restarts}]}`。`state` 汇总本节点：有进行中的发布时等于 `rollout`（`pending|ready|active|failed`），否则按在服务的实例为 `active|pending|failed`，没有在服务的版本为 `stopped`。
 
@@ -344,6 +345,8 @@
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
 | `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}` | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
+
+上表只列最初的字段，后加的字段见各节。插件经 `HostService.GetSettings` 只读地读取的分组与完整字段见 §107.2。
 
 ## 9. 环境变量
 
@@ -1192,7 +1195,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 
 manifest `accountTypes[].guardedSettings`（可选）：`[{field, allowed:[...]}]`。`field` 必须在 `settingsFields` 中；`allowed` 非空、每项为绝对 `http(s)` URL。三个内置账号类型插件声明 `[{field:"base_url", allowed:["https://api.anthropic.com"]}]`（openai `https://api.openai.com`，gemini `https://generativelanguage.googleapis.com`）；relay 不声明（它本来就是自定义地址），没声明的类型不受限。
 
-manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint、账号级 `upstream` 模板）。未声明时由声明式 `upstream` 推出（`base_url`，`accountConfig` 时再加 `upstream`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复；schema 表单里出现 `base_url` 或 `*_endpoint` 却未声明也推不出时，打包工具给警告（`check.Warnings`），不阻止安装。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
+manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复；schema 表单里出现 `base_url` 或 `*_endpoint` 却未声明也推不出时，打包工具给警告（`check.Warnings`），不阻止安装。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
 
 校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
 
@@ -1304,7 +1307,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.18.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -2191,9 +2194,10 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 - **估算与已报告用量的合并改为分侧取值**，取代上一段的「每项取较大值」：输入侧四项（`input`、`cache_read`、`cache_creation`、`cache_creation_1h`）只要响应报告过任意一项就整体采用响应的数，否则整体采用估算；输出取两者较大值。原因：估算把整段提示算作输入，响应把同一段提示的缓存部分算在缓存项下，逐项取较大值在输入不含缓存的协议（Anthropic）上把提示计了两遍。实现 `gateway/pipeline.go` 的 `canceledTokens`。
 - **`continue` 不另设等待上限**（2026-11-14 用户决定：与请求本身的超时保持一致，不单独配置）：续读只受这次上游交换原有的超时约束，即环境变量 `relay_timeout_seconds`（上游整体超时）和 `streaming_idle_timeout_seconds`（流式空闲超时，§74.3），与客户端还在时相同（`relay_timeout_seconds` 未设置即不限，这时非流式响应读正文没有上限，流式只受空闲超时约束）；到时上游被取消，按 `precharge` 处理。原设置 `client_disconnect_wait_seconds`（5–1800，默认 120）删除，接口不再返回、PUT 不再接受，已存的值留在行里但不读；滚动期间旧核心仍按它等待。读取期间请求不退出，账号与 API Key 的并发名额照常占用。
 - **上游请求的 context 不再派生自客户端请求**（`gateway/dispatch.go` 的 `forwardBuilt`）：由 `gateway/disconnect.go` 的 `upstreamDrain` 在客户端 context 结束时取消它，`continue` 且 `forward` 正在转发成功响应时不取消，读到结束或被上游超时取消。
-- **`continue` 只覆盖核心直接转发的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。插件 `Execute` 执行的请求、`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。
+- **`continue` 只覆盖由核心 `forward()` 中继的响应**（`forwardSSE`、`forwardJSON`、`forwardJSONConverted`）。`task.submit`、资源与额度流、WebSocket 不续读，按 `precharge` 处理。插件 `Execute` 执行的请求经 `ForwardUpstream` 交给宿主转发时（如 `pluginsdk.ExecuteDefault`：codex，以及 volcengine 的非任务请求），上游同样由 `forwardBuilt` 发出、`forward()` 中继和记用量，**核心 0.1.301 起同样续读**（此前一律按 `precharge` 处理，系统设置里的“读完再计费”对它们不生效）：插件在 `ForwardUpstream` 里等待没有期限（`grpcruntime` 在转发开始时停掉准备计时，结束后才开始 `FinishTimeout`），续读结束后照常 `RecordUsage`，提交的记录按上游报告的用量计费。插件放弃这次 `ForwardUpstream`（被终止、超时）不算客户端断开：转发观察的客户端 context 只取自请求本身（`gatewayExecution.network`），插件的调用结束时 `forwardBuilt` 以 `errExecutionAborted` 取消上游，记为上游中断；非流式应答先写进暂存（`spool.go`），暂存写失败（超过 64 MiB、临时文件出错）记为内部错误，同样不算客户端断开。插件自己结算的部分不受影响：`Reservation` 只出现在 `task.submit`（仍不续读），`Replacement` 由 `settleCanceled` 原样保留。实现：`gateway/dispatch.go` 的 `watchClient(ctx, ucancel, !c.ep.TaskSubmit())`。
 - 旧的 `billing` 行没有这个字段，读出默认值，**所以升级后既有部署即按 `continue` 运行**；存储值不在取值集合内时策略取默认值。设置读取失败时网关按 `precharge` 处理。
 - **什么算「读完」**：有输出因客户端已离开而被丢弃，且上游正常结束、没有以流内错误事件收尾。客户端收完最后一个字节才断开的请求没有丢输出，照常记为成功。关停不再等待在途请求时调用 `Gateway.AbandonReads()`（`app/phases.go` 的 `cancelRequests`），续读立即中止，按 `precharge` 处理。
+- **终止用量送达后才断开的请求算已服务**（核心 0.1.301）：流里的终止用量事件已经转发给客户端（转发时客户端还在、此前没有丢过输出），之后客户端在上游关流前断开的请求，记为成功（状态码取上游的），按上游报告的用量计费，三种策略都不适用，也不再续读（`continue` 下同样立即取消上游）；之后上游流空闲超时同样记成功，账号统计不计为取消（`pipeline.go` 的 `statsCanceled`）。核心直接转发和插件 `Execute` 执行的 HTTP 请求都适用（判定在 `forward()`，`upstreamDrain.serve`/`served`）。**终止用量事件**由 manifest 的 usage 规则判定，不按协议写死（`usagerules.Acc.Final`）：`usage.sse` 里**指名事件**（`event` 非空）且映射了 `output_tokens` 的规则命中、并且该事件里输出数存在且不为 null。输出数只有应答结束时才知道，所以声明它的具名事件就是最终用量：Anthropic `message_delta`（`message_start` 只报输入侧，不映射输出，不算）、OpenAI Responses（HTTP 流）`response.completed` / `response.incomplete`。规则匹配任意事件（`"event": ""`）的协议（OpenAI Chat Completions 末尾的 usage chunk、Gemini 每个 chunk 的 `usageMetadata`）没有可判定的终止事件（Gemini 与部分 OpenAI 兼容上游每个 chunk 都带累计用量），仍以读到上游结束为准；非流式 JSON 读完才提取用量，同样不变。终止用量事件之前断开的，行为不变。WebSocket 轮次本来就在终止事件写给客户端后结束（`websocket.go` 的 `observe`），客户端之后断开不影响已结束的轮次，无需改动。测试：`gateway/disconnect_test.go`（终止用量后断开记成功，含转换路由与插件执行的 Responses `response.completed`；之前断开仍是 499 加预扣补齐；插件执行路径两种情况；插件放弃转发不算断开）、`usagerules/final_test.go`。
 - 策略经 `core.ClientDisconnectSource.ClientDisconnectPolicy` 读取，`billing.Service` 实现；网关拿不到时按 `precharge` 处理。网关包的测试环境同样默认 `precharge`，只有针对 `continue` 的用例显式开启。
 - 测试：`gateway/disconnect_test.go`（三种策略、续读被上游整体超时结束、续读中关停的端到端，`canceledTokens`）、`e2e/ac26_client_disconnect_test.go`（整机验收）、`gateway/precharge_cancel_test.go`（判定）、`billing/settings_disconnect_test.go`（设置读写与校验）。
 
@@ -2224,10 +2228,10 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 | 列表 | 默认值 | 含义 |
 |---|---|---|
-| `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex custom` | 安装，首次安装即启用 |
+| `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex` | 安装，首次安装即启用 |
 | `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
-（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，`custom`（自定义上游，runtime none）见 docs/UPSTREAM-DECLARATIVE.md §5，其余只安装插件见各自章节。）
+（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节；`custom` 在 0.1.301 删除，见 §106。）
 
 同一个插件同时出现在两份列表里时构建失败。第二份列表写进内建目录的 **`install-only.txt`**（每行一个 key，`#` 注释、空行、CRLF 都容忍），核心的 `EnsureBuiltin`（`server/internal/plugin/install/builtin.go`）读它。
 
@@ -3967,6 +3971,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - 保存时每个列表展开成一条 `model_limits`，读取时把相邻、上限相同的条目合回一张卡片。
   - 同一模型出现在两个列表里时，不允许保存。
   - 新建账号时，按账号类型的 `default_limits` 预填。
+  - 2026-11-17 起（用户要求）：“最大并发”从“调度”组移到“限流”组，排在 RPM、TPM、会话数限制前面；“调度”组只留优先级、权重、参与调度和允许自动禁用。账号类型把四项限流（含最大并发）全部隐藏时，“限流”组不显示。
 - 批量编辑里 RPM 排到 TPM 前面。
 
 ### 68.7 按模型明细（2026-11-09，用户要求参照 new-api 渠道 RPM / TPM / TPD / SPM 悬浮明细）
@@ -3983,7 +3988,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，插件给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次。
 
 规则：
-- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类），并执行其中两项：
+- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类；核心 0.1.301 前代码没有做到：发布故障策略后 `forwardCallback` 对任何上游失败都向插件返回错误，插件的 `ClassifyError` 不运行，下面两项对 codex、volcengine 等插件执行的请求都不生效。现在只有传输错误这样处理，与 `classify` 一致），并执行其中两项：
   1. `quota`：配额观测照常保存（§44）。
   2. `automatic_state` 为 `DISABLE` 且带解除时间（`until_unix` 在未来，或 `duration_seconds` > 0，最长 366 天）：账号立即设为 `auto_disabled`，`auto_disabled_until` = 解除时间，原因用插件给的 `reason`。解除时间一过调度即可再选中它（惰性过期），核心的低频巡检随后把状态写回 `active`。
 - 其余仍由策略决定：是否重试、同账号重试次数、换号、冷却、返回给客户端的内容。插件的 `action`、`account_effect`、`cooldown_until_unix` 不采用。
@@ -5112,7 +5117,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
   - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；Anthropic 官方 Messages API 仍限 32 MB）。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
-  - 三个超时只作用于 HTTP 转发；WebSocket 会话是长连接，只用请求体上限（作为单条消息的上限）。
+  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限。
   - 资源请求（Files API 等，`resource_http.go`）不受 `max_request_body_mb` 和三个超时约束，用自己的上限（文件 512 MB、JSON 16 KB）和期限。
   - `relay_timeout_seconds` 从发出上游请求时起算，与 `response_header_timeout_seconds` 同时开始；之前的本地准备（资源与额度请求头、辅助历史包装、可用性检查、任务登记）不计入。`streaming_idle_timeout_seconds` 只在核心等待上游数据（读响应体）时计时，客户端读得慢不算上游空闲。
   - 账号层取本次尝试重新加载的账号，不取挑选候选时的快照。
@@ -5125,11 +5130,11 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 分组层和账号层是 `groups.environment` 和 `accounts.environment` 两列，随分组和账号一起编辑。
 - **插件**：
   - 网关请求的解析结果在 `RequestMeta.environment`。选定账号之前的调用（钩子、`RankAccounts`、用量估算等）拿到的是分组层和全局层（含进程层）的解析结果，没有账号层；针对某次尝试的调用（构建上游请求、`ClassifyError`、用量提取等）含该账号的账号层。
-  - 后台任务调用 `HostService.GetEnvironment(group_id, account_id)`，总是授权。
+  - 后台任务调用 `HostService.GetEnvironment(group_id, account_id)`，总是授权。只要全局层时也可以用 `pluginsdk.Settings[protocol.EnvironmentSettings]`（§107）。
   - 变量名常量在 SDK 的 `protocol` 包（`protocol.EnvVarRelayTimeoutSeconds` 等），核心复用同一组常量。
   - 目前没有插件读这两处：转发由核心完成，变量也由核心应用。它们是留给自己向上游转发的插件（自带 HTTP 客户端、后台任务直接调上游）的扩展点，这类插件应按同样的变量设超时和上限。
 - **读声明的接口** `GET /environment/variables` 需要 `settings:read`、`group:read`、`account:read`、`account:own:read` 或 `account:own:create` 之一（三层编辑器都要用；只有本人账号权限的用户也能改自己账号的账号层，所以也要能读声明，2026-10-31 补上 own 级）。
-- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
+- **全局层的缓存**：每个节点缓存"全局层 + 进程层"的合并结果 10 秒，收到 `config:changed`（`key=settings.environment`，0.1.301 前是 `environment`）或本节点 PUT 后立即作废。过期后先返回旧值、由一次后台读刷新（stale-while-revalidate），网关请求不等库；只有还没读成功过、或刚被作废时，调用方才等这一次读（最长 1 秒）。读库失败时继续用上一次读成功的值（从未成功过才只用进程层），并在 2 秒内不再读库。
 
 ### 74.4 通知
 
@@ -5196,6 +5201,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **0.5.7（2026-11-12）**：只改原生界面。自写的 `IdPicker` 删除，账号、分组、模型筛选和批量重置、分组配置、账号覆盖弹窗都改用宿主的 `EntityPicker`（§96.6）；模型是精确匹配，候选是价格表里的模型加当前页出现过的模型，不在其中的名称可以按输入原样使用。新建分组配置 / 账号覆盖时，已有配置的分组 / 账号仍会列出，选中就报错并禁止保存（原来是不列出）；非规范写法的 id（`013`）不接受。**`hostUICompat` 改为 `^3.11`，`hostCompat` 抬到 `>=0.1.279 <0.2.0`**。接口、能力、授权、配置文档格式都不变，没有新迁移。
 - **0.5.8（2026-11-13）**：线上把“首字 p95 过慢”调整项关掉后，状态表“命中规则”列仍显示它命中，被当成关掉的规则还在生效。调整项的开关只关策略，规则本身仍启用、照常判定（`last_rules`、位图照写；不再有启用的降权策略引用它，所以按宽松模式，样本不足也判定，比开着时更容易显示命中），但没有启用的策略引用它，命中不降权、不清粘性（线上核对：配置第 9 版以来 7876 条事件的 `steps` 和清粘性都不含它）。`GET /status` 的规则加 `used`（`rules.Resolved.UsedRules`，与 `FiredRules` 共用同一份引用标记）；控制台“命中规则”列只列被使用的规则，展开明细里未被使用的规则标“只观察”并说明、本窗结果用中性色；接口没有 `used`（旧节点）时按被使用处理。接口只加字段，能力、授权、配置文档格式都不变，没有新迁移，`hostCompat`、`hostUICompat` 不变。
 - **0.5.10（2026-11-15）**：插件 SDK 改用 GORM 的试点，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`），与 `migrations/0001`–`0003` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；`store.go` 的 pgx 代码全部改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句语义不变，原来 `pgx.Batch` 的批量写入（计数、基准权重、事件）和重置标记改为一个事务里的多行 `INSERT … ON CONFLICT`（每条至多 1000 行，仍按键排序，全成或全不成）。能力、授权、接口、配置文档格式都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.5.9 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.5.9 之后又改了清单（`risk`/`defaults`，`hostCompat >=0.1.289`），0.5.10 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
+- **0.5.11（未发布，随核心 0.1.301）**：核心关闭粘性会话时放弃排队的粘性清理并记事件（见下文“粘性清理队列”），用到 `HostService.GetSettings`，`hostCompat` 改为 `>=0.1.301 <0.2.0`。能力、授权、迁移、接口都不变。
 - **只安装不启用**（`BUILTIN_PLUGINS_INSTALL_ONLY`）：启用后每次调度都会调用它，所以要由管理员有意打开。
 
 #### 计数
@@ -5247,7 +5253,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - **关闭即重置**（0.5.2 起，与 new-api 2f4465fa1 一致）：`PUT /config` 把总开关从开改为关时，保存后立即把全部有状态或保留期内有计数的键按"重置"写成重置标记（消费截止为各自最近一个已结束窗口），并广播 `dynweight.weights`；不记事件（new-api 关闭时也不记）。0.5.1 只靠上一条"钉回基准"，而它要等键的下一个窗口结束才做：在那之前重新开启，关闭前的降权原样恢复。写重置标记失败时保存照常成功，响应的 `warnings` 多一条说明，下一次 `evaluate`（关闭期间照常运行）把仍低于基准的键当场写成重置标记，不等新窗口。关闭期间 `RankAccounts` 本来就不改权重，`/degraded` 回答 0 个、`/weights` 回答空对象，不看本节点快照（别的节点可能还没重新加载）。
   - 配置还没读到时（启动时加载失败）不按出厂配置运行：出厂配置是关闭的，会把所有键钉回基准，按它的保留期清理也会删掉还要用的计数。`evaluate`、`cleanup` 先重新加载，仍失败则返回 Unavailable；`/status` 和重置同样回答不可用。调度在此期间按原权重放行。
   - 顺序（0.3.0 起）：逐键评估、写状态；全部键评估完后先记录事件、广播权重、发一条通知摘要（状态已写入，这一步另有 15 秒，不与已用完的任务时限共用），最后才做粘性清理。某个键失败不影响其他键，已写入状态的键的事件照常记录，任务最后报告失败数。0.2.0 在逐键评估中同步清理，每次调用核心都要全量扫描 `sticky:*`（单次最长 10 秒），任务 60 秒时限内几个键就会把后面的事件和通知挤掉、而且不重发。
-  - **粘性清理队列**（表 `sticky_pending`，迁移 0002）：需要清理的键与它的状态在同一个事务里写入，每个键一行（同一键还没做完又有新的清理时合并成一行：取新窗口的 `salt` 和较大的比例），所以状态写入了才有清理、CAS 输了就没有。任务在事件和通知之后按入队先后领取（租约，不与重叠的运行重复做），总共最多 30 秒且留出 5 秒给收尾；时间用完没做的、核心返回可重试错误的，退回队列由下一次运行再做。做完或放弃时删掉这一行，记一条 `affinity_cleared` 事件（`detail.matched` / `cleared`；放弃时 `detail.error`、`attempts`）。核心拒绝（`PermissionDenied`、`InvalidArgument`）立即放弃，其他错误最多重试 10 次；`cleanup` 删掉入队超过 1 小时仍没做完的。重试用同一个 `salt`，选中的是同一批绑定，不会多删。
+  - **粘性清理队列**（表 `sticky_pending`，迁移 0002；0.5.11 起核心关闭粘性会话时放弃，见本条末尾）：需要清理的键与它的状态在同一个事务里写入，每个键一行（同一键还没做完又有新的清理时合并成一行：取新窗口的 `salt` 和较大的比例），所以状态写入了才有清理、CAS 输了就没有。任务在事件和通知之后按入队先后领取（租约，不与重叠的运行重复做），总共最多 30 秒且留出 5 秒给收尾；时间用完没做的、核心返回可重试错误的，退回队列由下一次运行再做。做完或放弃时删掉这一行，记一条 `affinity_cleared` 事件（`detail.matched` / `cleared`；放弃时 `detail.error`、`attempts`）。核心拒绝（`PermissionDenied`、`InvalidArgument`）立即放弃，其他错误最多重试 10 次；`cleanup` 删掉入队超过 1 小时仍没做完的。重试用同一个 `salt`，选中的是同一批绑定，不会多删。0.5.11 起，任务领取前读核心的 `sticky` 设置（§107）：粘性会话关闭时，领到的清理全部放弃，各记一条 `affinity_cleared` 事件（`detail.skipped = "sticky_disabled"`，没有 `matched`/`cleared`），不调用核心。关闭期间新请求既不绑定也不读绑定，留下的绑定按 TTL 过期，只有关闭前建立的 WebSocket 连接还在用自己的绑定（连接建立时取了粘性设置的快照）；如果把清理留到重新开启后再做，会把开启后新建、指向已恢复账号的绑定按比例清掉，所以放弃而不是推迟。读不到设置时照常清理。
   - **合并**：同一个键、同一个窗口里多个策略要清理时只排一行，取最大比例：同一个 `salt` 下，大比例选中的绑定包含小比例选中的。核心接口一次只接受一个模型（§74.2），所以同一账号的多个模型仍是多次调用、每次全量扫描；要真正按账号合并，需要核心接口接受多个模型（或按账号清理），这一点留给核心。
   - 有效权重有变化时广播 `dynweight.weights`，各节点重新加载快照。快照里只有不在基准上的键。
 - **基准权重**：从 `RankCandidate` 学到（账号、分组）的权重，写入 `bases`。
@@ -6007,27 +6013,26 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **代价**：没有插件声明这个点时没有任何开销。声明了的插件每次尝试多一次 RPC，在钩子内同步执行期间占着账号的并发名额，所以插件应该尽量用 `skip_attempt_hooks` 在请求钩子里结束。
 - 测试：`gateway/attempt_hook_test.go`（每次尝试都调用并带账号、拒绝不换账号、`skip_attempt_hooks` 只跳过本插件、补丁被拒、WebSocket 每条消息）、`sdk/manifest/check/attempt_hook_test.go`。
 
-## 86. 声明式上游、只有清单的插件与自定义上游（2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
+## 86. 声明式上游、只有清单的插件与自定义上游（自定义上游已在 0.1.301 删除，§106；2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
 
 起因：三个 API Key 插件和 relay 的代码几乎是同一套模板（上游路径、鉴权头、固定头、base_url 规范化、错误归类各写一遍）；接一个兼容站点也得写插件。改为核心按清单声明构造上游请求，并新增不用写插件的“自定义上游”账号类型。
 
 ### 86.1 上游声明
 
-- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`accountConfig`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`、`test`、`models{path, idPath, stripPrefix}`。
-- 合并：预设 → 清单 → 账号层（只有 `accountConfig` 类型），按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
+- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`、`test`、`models{path, idPath, stripPrefix}`。
+- 合并：预设 → 清单，按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
 - 模板变量：`{api_key}`（只能在 auth 值和路径查询串）、`{base_url}`（auth 和请求头）、`{model}`（映射和账号参数覆盖之后的上游模型；插件 patch 改了模型时只重算 URL，请求头和查询值不变）、`{credentials.<k>}`（k 须在 `credentials.fields`，不能是 api_key/base_url）、`{client_header.<名>}`（须在该类型的 passHeaders 里、不在 §81 禁止列表，只能用在普通请求头）。
 - `auth.name` 只能是凭证头（authorization、x-api-key、x-goog-api-key、api-key、cookie）或普通头名，不能是逐跳、分帧、客户端地址或网关控制头。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = routes 列出的协议（须与 `platforms[].endpoints` 一致）加核心能转换到它们的协议；调度不变。
-- 校验：`sdk/manifest/check/upstream.go`（打包、安装、核心加载共用）；引擎 `sdk/upstream`（`Resolve` → `Profile.Validate/Build/URL/Test/Models/Classify/AuthHeader/PrepareBody/ForAccount`）。
+- 校验：`sdk/manifest/check/upstream.go`（打包、安装、核心加载共用）；引擎 `sdk/upstream`（`Resolve` → `Profile.Validate/Build/URL/Test/Models/Classify/AuthHeader/PrepareBody`）。
 
 ### 86.2 核心
 
-- `server/internal/plugin/declarative`：声明了 upstream 的账号类型由核心本地实现校验凭证、构造请求、错误归类、测试请求、模型列表，不走 gRPC；按账号缓存 Profile（设置和凭证的 sha256，上限 1024，随注册代际重建）。不实现 `core.ExecutePlugin`，走 BuildUpstreamRequest + `forwardBuilt`。账号生命周期、模型可用性等可选接口在插件实现时转给插件，否则 Unimplemented。
-- 网关只通过可选接口 `core.DeclaredUpstream`（`Upstream`、`PrepareBody`、`UpstreamURL`、`AuthHeader`）感知声明式类型。
+- `server/internal/plugin/declarative`：声明了 upstream 的账号类型由核心本地实现校验凭证、构造请求、错误归类、测试请求、模型列表，不走 gRPC。不实现 `core.ExecutePlugin`，走 BuildUpstreamRequest + `forwardBuilt`。账号生命周期、模型可用性等可选接口在插件实现时转给插件，否则 Unimplemented。
+- 网关只通过可选接口 `core.DeclaredUpstream`（`PrepareBody`、`UpstreamURL`、`SplitHeaders`、`AuthHeader`）感知声明式类型。
 - `registry.addAccountTypes`：声明了 upstream 的类型绑定声明式客户端，不再要求插件实现 platform adapter，也不要求 `accounts.credentials` 授权（凭证只在核心内使用）；`extend` 仍要求两者。声明解析失败的类型丢弃并记 ERROR。
 - `extend: true`：核心先按声明构造，再调插件 BuildUpstreamRequest，请求带 `base`（`BuildUpstreamRequestRequest` 字段 6）；插件的头覆盖声明的头（鉴权头除外），patches 接在声明的之后，url、upstream_model 非空时替换。
-- 接口：`GET /account-types` 对声明式类型返回 `upstream`（解析到清单层的声明，形状同 manifest）；所有类型返回 `pass_headers`。账号层 `settings.upstream` 经 ValidateCredentials 校验，字段错误为 `credentials.upstream.<路径>`。
 
 ### 86.3 只有清单的插件（`runtime: "none"`）
 
@@ -6043,22 +6048,19 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | gemini | 0.3.0 | runtime none，`{"preset":"gemini","filterFields":[]}` |
 | relay | 0.3.0 | runtime none，preset anthropic、base_url 必填、不设默认协议 |
 | anthropic | 0.3.0 | 账号类型声明 preset anthropic；只保留模型目录（/models 路由、插件库） |
-| custom（新） | 0.1.0 | runtime none，内置启用；`custom_openai`、`custom_anthropic`、`custom_gemini`，`creationGroup: "custom"` |
+| custom（新，0.1.301 删除，§106） | 0.1.0 | runtime none，内置启用；自定义上游账号类型 |
 
 - 四个老插件的行为由黄金样例保证（`sdk/upstream/testdata/golden`，旧插件代码对约 1500 个输入采集，新引擎逐项回放一致）。样例已冻结，旧代码和采集器已删除，不再重新生成。唯一差异：relay 的测试请求现在带 `model` 和 `usage_protocol`。
-- 自定义上游：base_url 必填、Key 任意 8–512 个可见字符、`accountConfig: true`、默认过滤 `filterFields`（预设的 service_tier、safety_identifier、inference_geo、speed 中该协议适用的）；表单字段 `api_key`、`base_url`、`upstream`（`ui:widget: upstream-editor`）。账号层只能改 auth、headers、已声明协议的 path 和 `allowFields`（放开默认过滤字段）。暂不能按账号关掉单个协议。
-- `custom` 加入保留的官方插件名。
 
 ### 86.5 请求构造顺序
 
 原则：账号参数覆盖（§84）先执行，插件在它之后。插件改写是插件自己的内部特殊逻辑，插件知道前面已经执行过账号参数覆盖，所以排在覆盖之后，看到覆盖结果再改；请求体和请求头一致，鉴权头除外（用户 2026-11-09 定）。
 
-- 请求体：模型映射、引用与资源映射、强制流式 → 协议转换 → 过滤字段（账号没放开的）→ 预设和清单的 paramOverride → **账号参数覆盖（§84）** → BuildUpstreamRequest（`meta.model` 为覆盖后的模型）：路由 patches、插件（extend、老插件、执行路径转发）的 patch → 插件 patch 改了模型时声明式类型按最终请求体的模型重算 URL → 再次强制 stream。普通转发、插件执行路径、WebSocket 每轮一致。
+- 请求体：模型映射、引用与资源映射、强制流式 → 协议转换 → 过滤字段 → 预设和清单的 paramOverride → **账号参数覆盖（§84）** → BuildUpstreamRequest（`meta.model` 为覆盖后的模型）：路由 patches、插件（extend、老插件、执行路径转发）的 patch → 插件 patch 改了模型时声明式类型按最终请求体的模型重算 URL → 再次强制 stream。普通转发、插件执行路径、WebSocket 每轮一致。
 - 请求头（后面的盖前面的）：声明构造的头（inbound 按 passHeaders 过滤、预设、清单、路由）→ 声明的 paramOverride 头 → 账号透传与粘性透传（只补没有的）→ 账号参数覆盖的头 → 插件的头（老插件构造的、extend 追加的，`core.DeclaredUpstream.SplitHeaders` 区分）→ **鉴权头按 auth 模板重写**（声明不产生值时删除）→ 核心资源头、额度头。WebSocket 握手同样分层（没有透传）。鉴权头只能由 auth 模板写，请求头覆盖、透传、插件头都改不了它。
 
 ### 86.6 控制台
 
-- `web/src/views/accounts/upstream/`：`upstream-editor` 表单控件。默认值取账号类型的 `upstream`，可按项和整体恢复默认；只写和默认不同的项，全部默认时不存。服务端字段错误显示在对应输入上；客户端提示与服务端规则一致，只提示不拦截。
 - 请求参数覆盖的提示文字为“在模型映射之后、插件改写之前执行，插件还可以再改”。
 
 ### 86.7 兼容与上线
@@ -6089,8 +6091,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
-- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`、`UpstreamEditor`，v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
-- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`、`upstream-editor`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
+- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（另有 `UpstreamEditor`，UI 3.18 删除，§106.4），v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
+- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
 - `SModal` / `SFormModal` 新增 `fixed`（只是新增属性，更早的核心忽略、平稳降级，见 §23 组件表）。
 
 ### 87.4 编辑页分区插槽 `account.editor.section`
@@ -7732,3 +7734,99 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - 采样、限频、写库（§44.3）不变：网关对每个 2xx、429、101 响应读取声明的头。
 - WebSocket 会话中的错误事件（`type: "error"`，`status` ≥ 400）带顶层 `headers` 对象时（Codex 后端：`{"type":"error","status":429,"error":{...},"headers":{"x-codex-primary-used-percent":"100.0",...}}`），核心把它当作这次错误的响应头：头名转小写，字符串与数字值转成文本（其他类型忽略），交给插件 `ClassifyError` 的 `headers`，并按上一条采样（429 被接受）。没有 `headers` 对象的错误事件照旧不带头分类、不采样。
 - 随核心 0.1.297 发布。旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到 0.1.297。
+
+## 106. 删除内置插件 custom 与账号上游层（2026-11-17，用户要求；迁移 0104，核心 0.1.301）
+
+用户决定删除内置插件 `custom`（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，§86.4）：内置 openai、anthropic、gemini 插件的 API Key 账号已经能填 Base URL 接兼容端点，协议转换由平台做（§88），不在账号层做。`custom` 是唯一声明账号上游层的插件，这一层（账号 settings 字段 `upstream` 覆盖鉴权方式、追加请求头、改各协议路径、放开默认过滤字段）随它整体删除，不留兼容代码。最后的源码是 `845d9aa47`（`git show 845d9aa47:next/plugins/custom/manifest.json`）。§86 里关于自定义上游与账号层的内容已删去，UPSTREAM-DECLARATIVE.md §5 只留一段说明。
+
+### 106.1 插件
+
+- `next/plugins/custom` 删除（`go.work`、`plugins/released.json`、`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS` 随之去掉）。它的 `custom_*` 账号类型不再存在。
+- 插件键 `custom` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.301）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.301。`TestReservedCoverRepo` 双向核对：仓库里的插件都保留、保留的键都在仓库里、已删除的键不在仓库里。
+
+### 106.2 SDK 与清单（改契约）
+
+- `manifest.Upstream` 删除 `accountConfig`。清单再写它就是未知字段，`upstream.Resolve` 拒绝，校验报在 `accountTypes[i].upstream`；`sdk/manifest/check` 删除它的两条检查（必须是 schema 表单、`settingsFields` 必须含 `upstream`）。
+- `manifest.AccountType.AddressFields()`：声明式类型只推出 `base_url`。
+- `sdk/upstream`：删除 `SettingsField`、`Profile.ForAccount` 与账号层的合并、形状检查；`Resolve(at, passHeaders)` 去掉账号参数，`Profile.AuthHeader()`、`Profile.PrepareBody(body, ctx)` 去掉账号参数（只为账号层能改鉴权头名、放开过滤字段而带），`Profile.Validate` 只做 `apikey.Spec` 校验，`filterFields` 总是删除。插件测试里的 `upstream.Resolve(&at, nil, nil)` 改为两个参数；测试文件不进插件包，内置插件不升版本。
+
+### 106.3 核心
+
+- `plugin/declarative`：每个入口都用账号类型自己的 Profile，删除按账号缓存的 Profile（§86.2）。
+- `core.DeclaredUpstream` 删除 `Upstream()`（只给控制台上游编辑器取默认值），`PrepareBody(body, in)`、`AuthHeader()` 去掉账号参数；网关的 `rewriteBody`、`rewriteTurn`、`writeDeclaredAuth` 随之不再传插件账号。
+- `GET /account-types` 不再返回 `upstream` 与 `pass_headers`（两者只给上游编辑器用）。
+- 账号 settings 里的 `upstream` 键不再被读取。
+
+### 106.4 控制台（UI 3.18）
+
+- `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.18.0，`HOST_UI_VERSION` 3.18.0。`host.components` 与 `HOST_COMPONENT_NAMES` 不再有 `UpstreamEditor`（§87.3），schema 表单控件 `upstream-editor` 删除，账号类型的 API 类型去掉 `upstream`、`pass_headers`。3.18 删除了一个导出，不是只加不改；内置插件都没有用过它。
+- 新建账号不再有“自定义上游”一组；接兼容端点用 openai、anthropic、gemini 的 API Key 类型并填 Base URL。
+
+### 106.5 数据库与升级
+
+- 迁移 0104（`0104_drop_custom_plugin.sql`）按 `install.Uninstall`（purge）卸载 `custom`：键记入 `plugin_key_retirements`，删除插件行（级联版本、暂存授权、宿主权限授权、rollout、运行节点与卸载屏障）和 `plugin_egress_domains`。`custom` 是 runtime none，没有声明过用户权限、数据库权限或任务，所以没有权限与授予（授权策略不变、`authz_meta` 不升）、schema、角色、插件迁移记录与定时任务要删。重跑不变。
+- `plugin_key = 'custom'` 的账号保留，在控制台显示为插件已卸载，由管理员删除；CHANGELOG 0.1.301 要求升级前先在控制台删除这些账号。使用记录、账本与审计保留。
+- 有迁移，按主节点优先（`primary-first-v1`）发布；单向，回退只能用升级前的备份。
+
+## 107. 插件读取系统设置与变更通知（2026-11-17，用户要求；无迁移；Host API 仍是 9；核心 0.1.301）
+
+插件此前读不到核心的系统设置：dynweight 清粘性会话时不知道粘性会话是否开启，第三方插件要按网关的重试次数、超时或计费策略调整自己的行为，只能让运营方在插件设置里再填一遍。本节让插件只读地按分组读取系统设置，并在设置变化时及时得知。
+
+### 107.1 接口
+
+| 调用 | 请求 | 响应 |
+| --- | --- | --- |
+| `HostService.GetSettings` | `sections[]`（空 = 全部分组） | `sections[]`，每项 `{name, version, values_json}`，按请求的顺序，同一分组只回一次 |
+| `PluginService.SettingsChanged`（核心调插件） | `sections[]` | 空 |
+
+- `values_json` 是该分组的 JSON 对象，字段固定为 SDK `protocol` 包的类型（106.2），由 `encoding/json` 编码，同样的值编码结果相同。`version` 是 `values_json` 的 SHA-256 前 8 字节的十六进制（16 个字符）：值不变，`version` 不变，插件可以用它判断是否需要重新计算。
+- 未知分组名：`INVALID_ARGUMENT`，整个调用失败。读取失败（数据库出错，或负责方不接受库里存的值，如不合法的故障策略）一律 `UNAVAILABLE`（`<分组> settings unavailable`，原因只记在核心日志里），不回部分结果：插件能做的只有沿用手上的值、稍后再读。
+- 不需要授权（与 `GetEnvironment` 相同，§74.3）：这些是每个插件都该遵守的运行参数，不含密钥、凭证或用户数据（106.4）。
+- 不能写。设置仍只能由管理员在控制台修改。
+- SDK：`pluginsdk.Settings[T](ctx, host)`，`T` 是 106.2 的类型之一，如 `pluginsdk.Settings[protocol.StickySettings](ctx, p.host)`。SDK 在插件进程里缓存每个分组的 `values_json`，收到 `SettingsChanged` 时作废其中列出的分组（`sections` 为空时作废全部），另外每个分组最多用 10 秒，作为通知丢失时的兜底；在作废之前发出的读取，结果不进缓存。缓存失效时，同一分组的并发调用只向宿主读一次（按分组和作废次数合并，读取最长 5 秒，不受先到的调用方取消影响；调用方自己的 ctx 结束时先返回）。读取失败时返回上次读成功的值，2 秒内不再读宿主（收到 `SettingsChanged` 时立即重读）；从未读成功过才返回错误，同样 2 秒内直接返回这个错误。所以可以在 `RankAccounts` 这类热路径上调用：命中时不访问宿主，宿主出故障时也不会每个请求读一次。每次调用都重新解码，返回的值可以随意修改。宿主未就绪时返回 `ErrHostNotReady`。
+- SDK 已经处理 `SettingsChanged`，插件不需要实现它。用旧 SDK 构建的插件回 `UNIMPLEMENTED`，核心不当作错误（旧插件不缓存设置）。
+- 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置一个分组（没设置的分组回 `UNAVAILABLE`，与核心读取失败相同），`SettingsReads()` 是宿主被读的次数；`Harness.SettingsChanged(sections...)` 模拟变更通知。注意读取失败后 2 秒内 SDK 不再读宿主：测试里先失败、再 `SetSettings` 时，要调一次 `Harness.SettingsChanged`。
+
+### 107.2 分组与字段
+
+分组名就是 `settings` 表的 key（§8），控制台「系统设置」里的同名页面。
+
+| 分组 | 类型 | 字段 |
+| --- | --- | --- |
+| `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
+| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
+| `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
+| `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
+| `auto_disable` | `AutoDisableSettings` | `enabled`、`status_codes`、`keywords`（§42.2）；发布了故障策略时由策略的账号规则决定，开关看 `failure_policy.account_enabled` |
+| `failure_policy` | `FailurePolicySettings` | `configured`、`revision`、`schema_version`（1–4，决定哪些开关生效：1 时每条重试规则自带同账号重试次数和之后的动作，`retries_per_account`、`switch_account`、`reset_sticky` 不生效；2 起这三项作用于所有规则，`retries_per_account` 只在 `switch_account` 时生效、否则 `max_retries` 都在同一账号上；3 起 `max_wait_ms`、`respect_retry_after` 不生效）、`retry_enabled`、`max_retries`、`retries_per_account`、`switch_account`、`reset_sticky`、`backoff_ms`、`max_wait_ms`、`respect_retry_after`、`account_enabled`（§69）；没有发布的策略时除 `configured=false` 外全是零值 |
+| `environment` | `EnvironmentSettings` | `values`：全局层叠加进程层后的每个变量（§74.3）；分组层、账号层仍用 `GetEnvironment` |
+
+- 值是核心实际使用的值：没有保存过的分组给默认值，超出范围的旧值按核心的规则收敛（与核心自己的缓存用同一组逐行读取与规整函数：网关的 `loadGatewaySettings` + `normalized`、`loadSchedulingSettings`、`loadStickySettings`、`loadAutoDisableSettings`、`loadFailurePolicy`，计费的 `loadSettings`，环境变量的 `load` + `ResolveEnvironment`）。宿主每次调用直接读库，不读本节点的缓存，所以插件收到通知后读到的一定是新值。
+- 字段只增不改：改名或改变含义按不兼容变更处理。插件解码时应忽略不认识的字段（`encoding/json` 默认如此）。
+- 核心实现：`sdk/protocol/settings.go`（类型）、`server/internal/{billing,gateway,environment}` 各自的 `SettingsReaders`（每个分组恰有一个负责方，`app.settingsReaders` 在启动时检查分组齐全且不重复）、`plugin/grpcruntime/settings.go`。
+
+### 107.3 变更通知
+
+保存上表任一分组时，负责方：
+
+1. 在保存设置的同一事务里写 outbox 事件 `settings.changed`，payload `{"sections": ["<分组>"]}`（§6）。一次保存只改一个分组。保存被拒绝（校验失败、版本冲突）时不写。
+2. 提交后广播 `config:changed` `{"key":"settings.<分组>"}`（§7）。
+
+每个节点的插件发布控制器（`plugin/rollout/settings.go`）订阅 `config:changed`，认出 `settings.<分组>` 且分组在 106.2 里时，对本节点加载的每个插件实例（在服务的，以及发布中尚未切换的新版本）调用 `PluginService.SettingsChanged`（每次最长 2 秒，失败只记日志）。这个调用由 SDK 自己回答、不运行插件代码，所以不占插件的调用槽位（`grpcruntime` 的 `classControl`），定时任务、事件投递等后台调用占满槽位时也不会被拖住。`config:changed` 发给包括写入节点在内的所有节点，所以每个节点上的每个插件进程都能立刻丢掉缓存；SDK 的 10 秒缓存上限兜住广播丢失和调用失败。不需要在清单里声明任何东西。
+
+`settings.changed` 事件给需要可靠记录的插件：经 `app.events.v1` 订阅（授权 `events`，`subscribe` 列出它），至少一次投递、每个插件只由一个节点处理（§11.7），适合在变更后做一次性的工作（重算、通知）。它不能代替上面的通知去作废各节点的缓存。
+
+`account-stats`（控制台统计页的显示参数）保存时也广播 `config:changed` `{"key":"settings.account-stats"}`，但不在 106.2 里，不通知插件；`reconcile`（核心对账的内部参数）不广播。两者插件都用不上。
+
+### 107.4 没有开放的设置
+
+- 故障策略的规则（`failure_policy` 的 `rules`、`history`）：只由核心求值，规则格式也会调整；插件只拿开关（106.2）。
+- `reconcile`、`account-stats`：同上一节。
+- 不在 `settings` 表里的配置：更新源与签名公钥（§102）、市场源、插件自己的设置（插件经 `Configure` 收到）、配置文件与环境变量里的连接串和密钥。
+- 用户、分组、账号的数据：有各自的接口和授权（`users.read` 等）。
+
+### 107.5 兼容与版本
+
+- Host API 不升，仍是 9，理由同 91.3、93：只加 RPC，升版会让 rolling-v1 滚动更新不可用。
+- 旧核心对 `GetSettings` 回 `UNIMPLEMENTED`，也不会调 `SettingsChanged`。用到本节的插件把 `hostCompat` 下限提到 `>=0.1.301`。
+- 没有迁移。环境变量设置的 `config:changed` payload 从 `{"key":"environment"}` 改为 `{"key":"settings.environment"}`，与其他分组一致。滚动更新期间新旧节点互相认不出对方的这条广播，全局层缓存最多晚 10 秒（§74.3 的缓存时长）。

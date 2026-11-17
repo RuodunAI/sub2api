@@ -52,6 +52,9 @@ type Acc struct {
 	Metrics map[string]any
 	// StreamError is set when an SSE stream carried an error event.
 	StreamError string
+	// final is set once an SSE event reported the stream's final usage
+	// (Final).
+	final bool
 
 	// logAttrs identify the request in the warnings below; warned keeps each
 	// distinct warning to one line per accumulator. Both matter because the
@@ -296,6 +299,7 @@ func (u *Acc) ApplySSE(event string, data []byte) {
 		for field, path := range rule.Map {
 			u.set(field, Path(data, path))
 		}
+		u.final = u.final || finalUsage(rule, data)
 	}
 	u.applyFacts(data)
 	for _, rule := range u.rules.SSE {
@@ -303,6 +307,22 @@ func (u *Acc) ApplySSE(event string, data []byte) {
 			u.observeCacheEvidence(data, rule.Map, "sse")
 		}
 	}
+}
+
+// Final reports whether the stream's final usage has been read: an event an
+// sse rule names explicitly reported the output count. Rules for any event
+// never make a stream final (CONTRACTS §25.8).
+func (u *Acc) Final() bool { return u.final }
+
+// finalUsage reports whether data, matched by rule, reported the final usage
+// (Final).
+func finalUsage(rule manifest.SSEUsageMap, data []byte) bool {
+	path := rule.Map[manifest.UsageOutputTokens]
+	if rule.Event == "" || path == "" {
+		return false
+	}
+	r := Path(data, path)
+	return r.Exists() && r.Type != gjson.Null
 }
 
 // Tokens converts to core.UsageTokens. cache_creation_tokens is the total

@@ -21,13 +21,13 @@ func profile(t *testing.T, layer string) *upstream.Profile {
 	t.Helper()
 	var up manifest.Upstream
 	require.NoError(t, json.Unmarshal([]byte(layer), &up))
-	p, err := upstream.Resolve(&manifest.AccountType{ID: "t", Upstream: &up}, nil, nil)
+	p, err := upstream.Resolve(&manifest.AccountType{ID: "t", Upstream: &up}, nil)
 	require.NoError(t, err)
 	return p
 }
 
-func account(settings string) *pluginv1.Account {
-	return &pluginv1.Account{Id: 7, Type: "t", CredentialsJson: `{"api_key":"sk-account-key"}`, SettingsJson: settings}
+func account() *pluginv1.Account {
+	return &pluginv1.Account{Id: 7, Type: "t", CredentialsJson: `{"api_key":"sk-account-key"}`, SettingsJson: `{}`}
 }
 
 func buildRequest(acc *pluginv1.Account, model string) *pluginv1.BuildUpstreamRequestRequest {
@@ -60,21 +60,21 @@ func TestClientServesTheDeclaration(t *testing.T) {
 	_, executes := client.(core.ExecutePlugin)
 	assert.False(t, executes, "the gateway must send what BuildUpstreamRequest built")
 
-	built, err := c.BuildUpstreamRequest(context.Background(), buildRequest(account(`{}`), "claude-x"))
+	built, err := c.BuildUpstreamRequest(context.Background(), buildRequest(account(), "claude-x"))
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.anthropic.com/v1/messages", built.GetUrl())
 	assert.Equal(t, "sk-account-key", built.GetHeaders()["x-api-key"])
 	assert.Equal(t, "claude-x", built.GetUpstreamModel())
-	assert.Equal(t, "x-api-key", c.AuthHeader(account(`{}`)))
+	assert.Equal(t, "x-api-key", c.AuthHeader())
 
 	v, err := c.ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: "t", CredentialsJson: `{"api_key":"x"}`})
 	require.NoError(t, err)
 	assert.NotEmpty(t, v.GetErrors(), "a key of one character is rejected")
 
-	test, err := c.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: account(`{}`)})
+	test, err := c.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: account()})
 	require.NoError(t, err)
 	assert.Equal(t, "claude-haiku-4-5", test.GetModel())
-	models, err := c.BuildModelsRequest(context.Background(), &pluginv1.BuildModelsRequestRequest{Account: account(`{}`)})
+	models, err := c.BuildModelsRequest(context.Background(), &pluginv1.BuildModelsRequestRequest{Account: account()})
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.anthropic.com/v1/models?limit=1000", models.GetUrl())
 	cls, err := c.ClassifyError(context.Background(), &pluginv1.ClassifyErrorRequest{Status: 429})
@@ -88,7 +88,6 @@ func TestClientServesTheDeclaration(t *testing.T) {
 	} {
 		assert.Equal(t, codes.Unimplemented, status.Code(call()))
 	}
-	assert.Equal(t, "anthropic", c.Upstream().Classify)
 }
 
 // Extend: the plugin sees the built request as base; its headers win except
@@ -101,7 +100,7 @@ func TestExtendMerge(t *testing.T) {
 		Patches:       []*pluginv1.BodyPatch{{Op: pluginv1.BodyPatch_OP_SET, Path: "b", ValueJson: "2"}},
 		UpstreamModel: "claude-amended"}}
 	c := New(profile(t, `{"preset":"anthropic","extend":true,"routes":{"anthropic.messages":{"patches":[{"op":"set","path":"a","value":1}]}}}`), plugin)
-	in := buildRequest(account(`{}`), "claude-x")
+	in := buildRequest(account(), "claude-x")
 	built, err := c.BuildUpstreamRequest(context.Background(), in)
 	require.NoError(t, err)
 
@@ -134,7 +133,7 @@ func TestExtendMerge(t *testing.T) {
 func TestUpstreamURL(t *testing.T) {
 	const layer = `{"preset":"anthropic","routes":{"anthropic.messages":{"path":"/v1/models/{model}/messages"}}}`
 	c := New(profile(t, layer), nil)
-	in := buildRequest(account(`{}`), "claude-x")
+	in := buildRequest(account(), "claude-x")
 	built, err := c.BuildUpstreamRequest(context.Background(), in)
 	require.NoError(t, err)
 	assert.Equal(t, "https://api.anthropic.com/v1/models/claude-x/messages", built.GetUrl())
@@ -156,40 +155,6 @@ func TestUpstreamURL(t *testing.T) {
 	u, err = ext.UpstreamURL(in, built, "claude-y")
 	require.NoError(t, err)
 	assert.Equal(t, "https://elsewhere/v1/x", u, "a URL the plugin chose is kept, as a code plugin's")
-}
-
-// An account layer applies to every entry point, and its profile is cached
-// per account settings.
-func TestAccountLayer(t *testing.T) {
-	c := New(profile(t, `{"preset":"anthropic","accountConfig":true}`), nil)
-	acc := account(`{"upstream":{"auth":{"type":"header","name":"x-relay-token","value":"Bearer {api_key}"},"routes":{"anthropic.messages":{"path":"/relay/messages"}},"allowFields":["speed"]}}`)
-	built, err := c.BuildUpstreamRequest(context.Background(), buildRequest(acc, "claude-x"))
-	require.NoError(t, err)
-	assert.Equal(t, "https://api.anthropic.com/relay/messages", built.GetUrl())
-	assert.Equal(t, "Bearer sk-account-key", built.GetHeaders()["x-relay-token"])
-	assert.NotContains(t, built.GetHeaders(), "x-api-key")
-	assert.Equal(t, "x-relay-token", c.AuthHeader(acc))
-
-	out, err := c.PrepareBody(acc, []byte(`{"model":"m","speed":"fast","service_tier":"priority","inference_geo":"us"}`), &core.ParamOverrideContext{})
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"model":"m","speed":"fast"}`, string(out.Body), "filtered fields go unless the account allows them")
-
-	first, err := c.forAccount(acc)
-	require.NoError(t, err)
-	again, err := c.forAccount(account(acc.GetSettingsJson()))
-	require.NoError(t, err)
-	assert.Same(t, first, again)
-	other, err := c.forAccount(account(`{}`))
-	require.NoError(t, err)
-	assert.NotSame(t, first, other)
-
-	_, err = c.BuildUpstreamRequest(context.Background(), buildRequest(account(`{"upstream":{"classify":"openai"}}`), "m"))
-	assert.Equal(t, codes.FailedPrecondition, status.Code(err))
-	v, err := c.ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: "t",
-		CredentialsJson: `{"api_key":"sk-account-key"}`, SettingsJson: `{"upstream":{"classify":"openai"}}`})
-	require.NoError(t, err)
-	require.NotEmpty(t, v.GetErrors())
-	assert.Equal(t, upstream.SettingsField+".classify", v.GetErrors()[0].GetField(), "a problem is reported at its path in the layer")
 }
 
 func (e *extender) CheckModelAvailability(context.Context, *pluginv1.CheckModelAvailabilityRequest) (*pluginv1.CheckModelAvailabilityResponse, error) {

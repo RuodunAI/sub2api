@@ -147,7 +147,7 @@ func TestGlobalLayerRoutes(t *testing.T) {
 	if code != 200 || fmt.Sprint(out["data"]) != "map[values:map[max_request_body_mb:64]]" {
 		t.Fatalf("put: %d %v", code, out)
 	}
-	if len(e.bus.msgs) != 1 || e.bus.msgs[0] != core.ChannelConfigChanged+` {"key":"environment"}` {
+	if len(e.bus.msgs) != 1 || e.bus.msgs[0] != core.ChannelConfigChanged+` {"key":"settings.environment"}` {
 		t.Fatalf("broadcast: %v", e.bus.msgs)
 	}
 	// The put invalidated the cached (empty) layer.

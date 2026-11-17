@@ -27,8 +27,6 @@ func TestAccountTypeCustomUpstream(t *testing.T) {
 		{"empty list", AccountType{UpstreamFields: []string{}}, []string{}, true, false},
 		{"declarative", AccountType{Upstream: &Upstream{}}, []string{"base_url"}, true, true},
 		{"declarative guarded", AccountType{Upstream: &Upstream{}, GuardedSettings: guard("base_url")}, []string{"base_url"}, true, false},
-		{"declarative account config", AccountType{Upstream: &Upstream{AccountConfig: true}, GuardedSettings: guard("base_url")},
-			[]string{"base_url", "upstream"}, true, true},
 		{"declared wins over upstream", AccountType{Upstream: &Upstream{}, UpstreamFields: []string{}}, []string{}, true, false},
 		{"all guarded", AccountType{UpstreamFields: []string{"base_url", "asset_base_url"}, GuardedSettings: guard("base_url", "asset_base_url")},
 			[]string{"base_url", "asset_base_url"}, true, false},

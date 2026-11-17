@@ -29,6 +29,12 @@ type PluginServiceClient interface {
 	Configure(ctx context.Context, in *ConfigureRequest, opts ...grpc.CallOption) (*ConfigureResponse, error)
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
+	// SettingsChanged tells the process that sections of the system settings
+	// changed (CONTRACTS §107). The host of every node calls it on the plugins
+	// it serves, best effort, so values cached from HostService.GetSettings
+	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
+	// which the host ignores.
+	SettingsChanged(ctx context.Context, in *SettingsChangedRequest, opts ...grpc.CallOption) (*SettingsChangedResponse, error)
 }
 
 type pluginServiceClient struct {
@@ -84,6 +90,15 @@ func (c *pluginServiceClient) Shutdown(ctx context.Context, in *ShutdownRequest,
 	return out, nil
 }
 
+func (c *pluginServiceClient) SettingsChanged(ctx context.Context, in *SettingsChangedRequest, opts ...grpc.CallOption) (*SettingsChangedResponse, error) {
+	out := new(SettingsChangedResponse)
+	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.PluginService/SettingsChanged", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PluginServiceServer is the server API for PluginService service.
 // All implementations must embed UnimplementedPluginServiceServer
 // for forward compatibility
@@ -95,6 +110,12 @@ type PluginServiceServer interface {
 	Configure(context.Context, *ConfigureRequest) (*ConfigureResponse, error)
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
+	// SettingsChanged tells the process that sections of the system settings
+	// changed (CONTRACTS §107). The host of every node calls it on the plugins
+	// it serves, best effort, so values cached from HostService.GetSettings
+	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
+	// which the host ignores.
+	SettingsChanged(context.Context, *SettingsChangedRequest) (*SettingsChangedResponse, error)
 	mustEmbedUnimplementedPluginServiceServer()
 }
 
@@ -116,6 +137,9 @@ func (UnimplementedPluginServiceServer) Health(context.Context, *HealthRequest) 
 }
 func (UnimplementedPluginServiceServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Shutdown not implemented")
+}
+func (UnimplementedPluginServiceServer) SettingsChanged(context.Context, *SettingsChangedRequest) (*SettingsChangedResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SettingsChanged not implemented")
 }
 func (UnimplementedPluginServiceServer) mustEmbedUnimplementedPluginServiceServer() {}
 
@@ -220,6 +244,24 @@ func _PluginService_Shutdown_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PluginService_SettingsChanged_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SettingsChangedRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PluginServiceServer).SettingsChanged(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sub2api.plugin.v1.PluginService/SettingsChanged",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PluginServiceServer).SettingsChanged(ctx, req.(*SettingsChangedRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PluginService_ServiceDesc is the grpc.ServiceDesc for PluginService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -246,6 +288,10 @@ var PluginService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Shutdown",
 			Handler:    _PluginService_Shutdown_Handler,
+		},
+		{
+			MethodName: "SettingsChanged",
+			Handler:    _PluginService_SettingsChanged_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

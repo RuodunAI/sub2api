@@ -647,7 +647,12 @@ func (g *Gateway) putStickySettingsHandler(c *gin.Context) {
 		cur.DefaultTTLSeconds = *in.DefaultTTLSeconds
 	}
 	uid, _ := core.UserID(ctx)
-	if err := store.PatchSettingJSON(ctx, db, settingsKeySticky, nullID(uid), in, &cur); err != nil {
+	if err := db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := store.PatchSettingJSONTx(ctx, tx, settingsKeySticky, nullID(uid), in, &cur); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, g.d.Events, tx, settingsKeySticky)
+	}); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}

@@ -73,7 +73,14 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		c.drain.arm()
 		err = c.forwardJSON(resp, u, cap)
 	}
-	if err == nil && c.drain.outputDropped() {
+	switch {
+	case c.drain.served() && (err == nil || clientGone(ctx, err) ||
+		errors.Is(context.Cause(resp.Request.Context()), errStreamIdleTimeout)):
+		// The client had the final usage before it left, or before an
+		// upstream that kept the stream open went idle: whatever it missed
+		// after that, it was served.
+		err = nil
+	case err == nil && c.drain.outputDropped():
 		// Nobody received the end of it. An upstream that finished has
 		// reported its usage in full, which is billed as it stands
 		// (settleCanceled); one that ended on an error event has not, and the
@@ -109,15 +116,20 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 			writeError(c.c, c.format, &gwError{Status: http.StatusBadGateway, Code: "upstream_error",
 				Message: "upstream response could not be converted"})
 		}
-	case ctx.Err() != nil || errors.Is(err, errClientGone):
+	case errors.Is(err, errSpool):
+		c.rec.Success = false
+		c.rec.ErrorType = errTypeInternal
+		c.rec.ErrorMessage = truncateUTF8(err.Error(), 1000)
+	case clientGone(ctx, err):
 		c.rec.Success = false
 		c.rec.ErrorType = errTypeClientCanceled
 		c.rec.StatusCode = statusClientClosed
 		c.rec.ErrorMessage = "client canceled"
 	default:
-		// The client is still here: a timeout that canceled the upstream
-		// request names itself (dispatch.go cancels it with a cause).
-		if cause := context.Cause(resp.Request.Context()); errors.Is(cause, errRelayTimeout) || errors.Is(cause, errStreamIdleTimeout) {
+		// The client is still here: a timeout, or the executing plugin giving
+		// up, that canceled the upstream request names itself (dispatch.go
+		// cancels it with a cause).
+		if cause := context.Cause(resp.Request.Context()); errors.Is(cause, errRelayTimeout) || errors.Is(cause, errStreamIdleTimeout) || errors.Is(cause, errExecutionAborted) {
 			err = cause
 		}
 		c.rec.Success = false
@@ -135,6 +147,11 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 }
 
 var errClientGone = errors.New("client connection closed")
+
+// clientGone reports whether err ended a relay because the client left.
+func clientGone(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, errClientGone)
+}
 
 func isSSE(ct string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "text/event-stream")
@@ -267,7 +284,7 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 		n, rerr := resp.Body.Read(chunk)
 		if n > 0 {
 			if _, werr := w.Write(chunk[:n]); werr != nil {
-				return errClientGone
+				return relayWriteError(werr)
 			}
 			if !overflow {
 				if buf.Len()+n > maxUsageJSONBuf {
@@ -320,7 +337,7 @@ func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usage
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	if _, err := w.Write(out); err != nil {
-		return errClientGone
+		return relayWriteError(err)
 	}
 	w.Flush()
 	return nil
@@ -445,6 +462,11 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 			}
 			if passthrough && (len(t) == 0 || br.Buffered() == 0) {
 				w.Flush()
+			}
+			// An event ends at its blank line, and has been flushed by now
+			// in every framing (emit flushes its own output).
+			if len(t) == 0 && u.Final() {
+				c.drain.serve(ctx)
 			}
 		}
 		if rerr != nil {

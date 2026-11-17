@@ -166,6 +166,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		return nil, err
 	}
 	b.env = environment.New(b.db, b.cl.Bus, b.cfg.Environment)
+	b.env.Events = b.events
 	b.stopper.add("environment", b.env.Close)
 	b.settler = usage.New(b.db, bill, bill, b.events, usage.Options{CanRetry: b.canWork, Environment: b.env})
 	b.settler.Start(b.ctx)
@@ -282,11 +283,15 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 	}
 	launcher := sandbox.NewLauncher(sandbox.LauncherOptions{DisableWrap: cfg.Plugins.DevMode, Landlock: cfg.Plugins.Landlock, Logger: b.log})
 	schemas := dbschema.New(b.db, cfg.DatabaseURL, cfg.MasterKey, cfg.Plugins.DBRoleIsolation)
+	settings, err := settingsReaders(b.bill.SettingsReaders(), gateway.SettingsReaders(b.db), b.env.SettingsReaders())
+	if err != nil {
+		return err
+	}
 
 	rt, err := grpcruntime.New(grpcruntime.Options{
 		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Locker: b.cl.Locker, Cipher: b.cipher, Node: b.cl.Registry, Launcher: launcher,
 		Egress: egress, Authorizer: b.az, Ledger: b.bill, Prices: b.bill, Schemas: schemas, Accounts: b.acc, Sticky: gateway.NewStickyClearer(b.rdb), Environment: b.env, Notifier: b.ntf, Users: b.idm,
-		Tasks:       b.jobBridge(),
+		Settings: settings, Tasks: b.jobBridge(),
 		HostVersion: b.version, DataDir: cfg.Plugins.DataDir, RunDir: cfg.Plugins.RunDir,
 		StrictNetwork: cfg.Plugins.StrictNetwork, Seccomp: cfg.Plugins.Seccomp, MaxMemoryMB: cfg.Plugins.MaxMemoryMB,
 		Logger: b.log,
@@ -305,7 +310,7 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		Phases: []string{observation.UsageFinalized, observation.AttemptFinished}, Metrics: observation.CoreMetrics, Client: account.StatsConsumer{}})
 	b.stopper.add("observations", observations.Close)
 	b.gw = gateway.New(gateway.Deps{
-		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Node: b.cl.Registry, Registry: b.reg,
+		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Node: b.cl.Registry, Registry: b.reg, Events: b.events,
 		Auth: b.keys, Pricer: b.bill, Balance: b.bill, Slots: b.cl.Slots,
 		Environment: b.env,
 		Accounts:    b.acc, Proxies: b.prx, Settler: b.settler, Observations: observations, Tasks: b.settler, Limiter: b.limiter, KeyWindows: b.keys.Windows, KeyUsage: b.keys, Quota: b.acc, Config: cfg, Converters: b.converters,

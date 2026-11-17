@@ -342,10 +342,10 @@ type AccountType struct {
 	// declare none are unrestricted.
 	GuardedSettings []GuardedSetting `json:"guardedSettings,omitempty"`
 	// UpstreamFields are the top-level credentials/settings keys that say
-	// where requests go (base_url, endpoints, the per-account "upstream"
-	// template). nil: not declared (derived from Upstream, otherwise the
-	// legacy rule applies); []: the type has no caller-set address (OAuth
-	// and managed types). omitzero keeps [] apart from nil.
+	// where requests go (base_url, endpoints). nil: not declared (derived
+	// from Upstream, otherwise the legacy rule applies); []: the type has no
+	// caller-set address (OAuth and managed types). omitzero keeps [] apart
+	// from nil.
 	UpstreamFields []string          `json:"upstreamFields,omitzero"`
 	Platforms      []AccountPlatform `json:"platforms"`
 	// DefaultModels and DefaultModelMapping prefill the core account fields
@@ -389,16 +389,12 @@ type AccountType struct {
 
 // AddressFields returns the upstream address fields of the type and whether
 // they are known: declared in UpstreamFields, or derived from a declarative
-// Upstream (the core builds requests from base_url, plus the account's
-// "upstream" layer when AccountConfig is set).
+// Upstream (the core builds requests from base_url).
 func (at AccountType) AddressFields() ([]string, bool) {
 	switch {
 	case at.UpstreamFields != nil:
 		return at.UpstreamFields, true
 	case at.Upstream != nil:
-		if at.Upstream.AccountConfig {
-			return []string{"base_url", "upstream"}, true
-		}
 		return []string{"base_url"}, true
 	}
 	return nil, false

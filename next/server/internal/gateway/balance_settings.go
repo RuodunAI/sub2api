@@ -8,12 +8,13 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
-const settingsKeyScheduling = "scheduling"
+const settingsKeyScheduling = protocol.SettingsScheduling
 
 // Values of SchedulingSettings.Metric (CONTRACTS §89).
 const (
@@ -103,10 +104,12 @@ func (g *Gateway) putSchedulingHandler(c *gin.Context) {
 	}
 	uid, _ := core.UserID(ctx)
 	if err := db.Tx(ctx, func(tx *gorm.DB) error {
-		_, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyScheduling, nullID(uid), func(json.RawMessage) (json.RawMessage, error) {
+		if _, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyScheduling, nullID(uid), func(json.RawMessage) (json.RawMessage, error) {
 			return json.Marshal(in)
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, g.d.Events, tx, settingsKeyScheduling)
 	}); err != nil {
 		httpapi.Fail(c, err)
 		return

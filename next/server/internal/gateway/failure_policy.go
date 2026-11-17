@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-const failurePolicyKey = "failure_policy"
+const failurePolicyKey = protocol.SettingsFailurePolicy
 
 const (
 	failureReturn = "return"

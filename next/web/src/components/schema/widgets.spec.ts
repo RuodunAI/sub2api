@@ -53,7 +53,6 @@ describe('core editor widgets (docs/COMMON-CONTROLS.md §3)', () => {
       'proxy-select',
       'group-select',
       'entity-select',
-      'upstream-editor',
       'param-override',
       'header-passthrough',
       'rate-limits',

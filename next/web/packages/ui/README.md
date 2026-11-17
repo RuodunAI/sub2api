@@ -422,3 +422,7 @@ const { EntityMultiPicker } = host.components
 `@sub2api/host` 新导出 `fetchWithSession(path, init?)`：JSON 客户端带不了的请求（原始字节上传、流、文件下载）用它发。`path` 与 `api` 的写法相同（相对 `/api/v1`，如 `/p/demo/export?x=1`），`init` 是 `fetch` 的参数，`headers` 写成普通对象。它带上会话令牌，401 按 `api` 的规则处理（其他标签页换了令牌就用新令牌重发一次，否则结束会话回登录页；5xx 不登出），返回的 `Response` 不论成败都交给调用方读。不要自己读 `session` 拼 `Authorization`，也不要为了“续期”先发一个 JSON 请求：会话由服务端续期（CONTRACTS §100）。用到它的插件声明 `hostUICompat: "^3.17"`，`hostCompat` 要求核心 `>=0.1.290`（UI 3.16、3.17 都随核心 0.1.290 发布）。
 
 同一版本起 `Session` 只有 `access_token`，`@sub2api/host` 也不再导出 JWT 控制台自己用的续期函数 `startKeepAlive`、`renewalDue`、`RENEW_BEFORE_MS`（控制台内部的导出，插件文档从未提供，内置插件都没有用到）。
+
+## 去掉账号上游编辑器（UI SDK 3.18）
+
+内置插件 custom（自定义上游）删除后，账号上游层（账号设置字段 `upstream`）也一起删除：`host.components` 不再有账号上游编辑器，控制台的 SchemaForm 也不再有对应的部件。本包的组件没有变化，其他宿主组件和部件与 3.17 相同；没用到这两项的插件不用改，`hostUICompat` 照旧。UI 3.18 随核心 0.1.301 发布，0.1.298 是最后一个带 UI 3.17 的核心。

@@ -30,7 +30,7 @@ func (e *env) declare(layer string, plugin core.PlatformPlugin) {
 	require.NoError(e.t, json.Unmarshal(fmt.Appendf(nil, `{"preset":"anthropic","baseURL":{"default":%q}%s}`, e.up.srv.URL, layer), &up))
 	at := e.gen.accountTypes[0].Type
 	at.Upstream = &up
-	p, err := sdkupstream.Resolve(&at, builtinPlatform(e.t, "anthropic").PassHeaders, nil)
+	p, err := sdkupstream.Resolve(&at, builtinPlatform(e.t, "anthropic").PassHeaders)
 	require.NoError(e.t, err)
 	e.gen.accountTypes[0].Type = at
 	e.gen.accountTypes[0].Client = declarative.New(p, plugin)
@@ -139,20 +139,18 @@ func TestDeclaredAuthHeaderIsWrittenLast(t *testing.T) {
 	}
 }
 
-// The body goes through, in order: the filtered fields the account did not
-// allow are removed, the manifest's paramOverride, the account's override,
-// the route's patches (CONTRACTS §86.5).
+// The body goes through, in order: the filtered fields are removed, the
+// manifest's paramOverride, the account's override, the route's patches
+// (CONTRACTS §86.5).
 func TestDeclaredBodyRewriteOrder(t *testing.T) {
-	const layer = `"accountConfig":true,
-		"paramOverride":{"operations":[{"mode":"set","path":"temperature","value":0.1},{"mode":"set","path":"top_k","value":1}]},
+	const layer = `"paramOverride":{"operations":[{"mode":"set","path":"temperature","value":0.1},{"mode":"set","path":"top_k","value":1}]},
 		"routes":{"anthropic.messages":{"patches":[{"op":"set","path":"temperature","value":0.2}]}}`
 	e := newEnv(t)
 	e.declare(layer, nil)
-	e.setAccount(1, func(a *core.Account) { a.Settings = json.RawMessage(`{"upstream":{"allowFields":["speed"]}}`) })
 	require.Equal(t, 200, e.messages(body(testModel, false, "service_tier", "priority", "speed", "fast")).status)
 	up := gjson.ParseBytes(e.up.last().body)
 	assert.False(t, up.Get("service_tier").Exists(), "filtered")
-	assert.Equal(t, "fast", up.Get("speed").String(), "allowed by the account")
+	assert.False(t, up.Get("speed").Exists(), "filtered")
 	assert.Equal(t, 0.2, up.Get("temperature").Float(), "the route's patch follows the manifest's override")
 	assert.Equal(t, int64(1), up.Get("top_k").Int())
 	e.record()
@@ -260,7 +258,7 @@ func TestWebSocketDeclaredUpstream(t *testing.T) {
 	i := len(e.gen.accountTypes) - 1
 	at := e.gen.accountTypes[i].Type
 	at.Upstream = &up
-	p, err := sdkupstream.Resolve(&at, builtinPlatform(t, "openai").PassHeaders, nil)
+	p, err := sdkupstream.Resolve(&at, builtinPlatform(t, "openai").PassHeaders)
 	require.NoError(t, err)
 	e.gen.accountTypes[i].Type, e.gen.accountTypes[i].Client = at, declarative.New(p, nil)
 

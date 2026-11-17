@@ -7,14 +7,13 @@
 // Every core field follows the account type's common controls (hidden, fixed,
 // a default, a required proxy: commonControls.ts); plugin sections declared
 // for the type (account.editor.section) come after the core ones.
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SchemaForm, SChoiceCards, SField, SHint, SIcon, SInput, SLink, SSegmented, SSelect, SSettingRow, SSettingsGroup, SSpinner, SSwitch, toast } from '@sub2api/ui'
 import type { Account, AccountType, ConversionLossPolicy, EnvironmentValues, ProxyProbeResult } from '@/api/types'
 import EnvironmentEditor from '@/components/environment/EnvironmentEditor.vue'
 import { schemaWidgets } from '@/components/schema/widgets'
-import { ACCOUNT_FORM_KEY } from '@/components/schema/accountForm'
 import PluginIframe from '@/components/plugin/PluginIframe.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
 import { forAccountType, slotKey } from '@/components/plugin/slots'
@@ -46,7 +45,7 @@ import { newAccountConcurrency } from './accountLimits'
 import { shouldPrefillOnEdit } from './modelDefaults'
 import { useModelEdit } from './useModelEdit'
 import { useAccountSave } from './useAccountSave'
-import { CONNECTION_FIELDS, isAdvancedField, isSchedulingField, mappingErrorText, modelsErrorText, pluginSection, RATE_LIMITS, SCHEDULING_ROWS, SECTION_CONTROLS, splitFieldErrors, type EditorSection } from './editorErrors'
+import { CONNECTION_FIELDS, isAdvancedField, isSchedulingField, LIMIT_ROWS, mappingErrorText, modelsErrorText, pluginSection, SCHEDULING_ROWS, SECTION_CONTROLS, splitFieldErrors, type EditorSection } from './editorErrors'
 
 const props = defineProps<{ accountType: AccountType | null; accountTypeOptions?: AccountType[]; account?: Account | null }>()
 const emit = defineEmits<{ (e: 'change-type', at: AccountType): void; (e: 'saved', a: Account): void; (e: 'cancel'): void; (e: 'back'): void; (e: 'test', a: Account): void }>()
@@ -97,7 +96,6 @@ const formLoading = ref(false)
 const formError = ref('')
 const errors = ref<Record<string, string>>({})
 const credErrors = ref<Record<string, string>>({})
-provide(ACCOUNT_FORM_KEY, { accountType: computed(() => props.accountType), errors: credErrors })
 const saving = ref(false)
 
 const schemaForm = ref<InstanceType<typeof SchemaForm>>()
@@ -238,12 +236,11 @@ const editorSections = computed(() => [
     summary: editing.value ? lt(plugins.plugin(e.pluginKey)?.name) || e.pluginKey : t('accounts.editorUi.pluginSectionAfterSave')
   }))
 ].filter(s => !SECTION_CONTROLS[s.key]?.length || anyVisible(SECTION_CONTROLS[s.key]!)))
-/** Priority, weight and concurrency rows of the scheduling group. */
+/** Priority and weight rows of the scheduling group. */
 const schedulingFields = computed(() =>
   [
     { key: 'priority' as const, label: t('accounts.priority'), hint: t('accounts.priorityHint'), min: 0, max: 1_000_000 },
-    { key: 'weight' as const, label: t('accounts.weight'), hint: t('accounts.weightHint'), min: 1, max: 1000 },
-    { key: 'max_concurrency' as const, label: t('accounts.maxConcurrency'), hint: t('accounts.zeroUnlimited'), min: 0, max: undefined }
+    { key: 'weight' as const, label: t('accounts.weight'), hint: t('accounts.weightHint'), min: 1, max: 1000 }
   ].filter(f => controls.value[f.key].visible)
 )
 /** Server field errors of the model list / mapping, shown under the editor. */
@@ -641,7 +638,10 @@ const { save } = useAccountSave({
             </SSettingRow>
           </SSettingsGroup>
 
-          <SSettingsGroup v-if="anyVisible(RATE_LIMITS)" :title="t('accounts.limits')" :description="t('accounts.editorUi.limitsHint')" data-testid="account-limits">
+          <SSettingsGroup v-if="anyVisible(LIMIT_ROWS)" :title="t('accounts.limits')" :description="t('accounts.editorUi.limitsHint')" data-testid="account-limits">
+            <SSettingRow v-if="controls.max_concurrency.visible" :label="t('accounts.maxConcurrency')" :description="controls.max_concurrency.reason || t('accounts.zeroUnlimited')" :error="errors.max_concurrency">
+              <SInput v-model.number="basic.max_concurrency" type="number" :min="0" :suffix="t('accounts.editorUi.unitConcurrency')" :disabled="controls.max_concurrency.disabled" class="w-full sm:w-48" data-testid="account-max_concurrency" />
+            </SSettingRow>
             <RateLimitEditor :model-value="basic" :errors="errors" :controls="controls" @update:model-value="Object.assign(basic, $event)" />
           </SSettingsGroup>
 

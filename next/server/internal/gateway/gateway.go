@@ -33,6 +33,9 @@ type Deps struct {
 	Redis redis.UniversalClient
 	Bus   core.Bus
 	Node  core.Node
+	// Events records settings.changed when a settings section of the
+	// gateway is saved (CONTRACTS §107); nil records nothing.
+	Events core.EventPublisher
 	// Environment supplies the global layer of the environment variables
 	// merged over the process layer (GlobalEnvironment, CONTRACTS §74.3);
 	// nil drops both and leaves only the group and account layers.
@@ -170,7 +173,7 @@ func New(d Deps) *Gateway {
 		}
 	}
 	g.settings = newSettingsCache(d.DB)
-	g.gwStore = dbGatewaySettings{db: d.DB}
+	g.gwStore = dbGatewaySettings{db: d.DB, events: d.Events}
 	g.rules = newRuleCache(d.DB)
 	g.hooks = newHookRuntime(d.Redis)
 

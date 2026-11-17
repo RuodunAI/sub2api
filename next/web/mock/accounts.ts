@@ -5,7 +5,6 @@ import { agentUser, caller, filterOwned, hasAction, hasPerm, inScope, ownerScope
 import { resolveProxyURL, validateProxyURL } from './resources'
 import { nextPath } from './paths'
 import { codexAccountTypes, codexCredentialErrors } from './codex'
-import { customAccountTypes, customCredentialErrors, customForm } from './custom'
 import { checkControls, controlsAccountTypes, controlsForm } from './controls'
 
 // Mock handlers: accounts, account types (form modes schema + iframe) and
@@ -145,10 +144,6 @@ interface MockAccountType {
   default_models?: string[]
   default_model_mapping?: Record<string, string>
   extensions_schema?: { type: 'object'; properties: Record<string, unknown> }
-  /** Client headers the type receives (GET /account-types never sends null). */
-  pass_headers?: string[]
-  /** Resolved upstream declaration of a declarative type (mock/custom.ts). */
-  upstream?: unknown
   default_limits?: Record<string, unknown>
   /** Declared common controls (mock/controls.ts); others come from the plugin manifest. */
   common_controls?: Record<string, any>
@@ -267,8 +262,6 @@ const accountTypeDecls: MockAccountType[] = [
   },
   // Native account form (plugins/codex/ui/native, mock/codex.ts): one creation card, two auth methods.
   ...codexAccountTypes,
-  // Custom upstream (built-in plugin `custom`, mock/custom.ts): the upstream-editor widget.
-  ...customAccountTypes,
   // Declared common controls and an editor section (mock/controls.ts).
   ...controlsAccountTypes
 ]
@@ -288,7 +281,7 @@ function accountTypeOut(d: MockAccountType) {
     const e = platformById(c.platform)?.endpoints.find((x) => x.path === c.path)
     if (e) endpoints.push({ method: e.method, path: e.path, protocol: e.protocol, platform: c.platform, native: false, grade: 'good', via: [e.protocol, platformById(supports[0])?.endpoints[0]?.protocol].filter(Boolean) })
   }
-  return { pass_headers: [], ...rest, ...defaults, common_controls: d.common_controls ?? defaults.common_controls, platforms, endpoints }
+  return { ...rest, ...defaults, common_controls: d.common_controls ?? defaults.common_controls, platforms, endpoints }
 }
 
 /**
@@ -357,8 +350,6 @@ export const accounts: any[] = [
   { id: 30, name: 'chatgpt-codex', plugin_key: 'codex', type: 'codex_oauth', created_by: 1, group_ids: [1], proxy_id: null, priority: 3, weight: 1, max_concurrency: 3, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-86400), credentials: { access_token: '******', refresh_token: '******', id_token: '******', expires_at: Math.floor(Date.now() / 1000) - 600, email: 'owner@example.com', chatgpt_account_id: '8b0e6f2a-1c4d-4e9b-a7f3-5d2c9e1b0a64', plan_type: 'pro' } },
   // Automatically disabled until a release time (yellow badge); the list switch reads off and turning it on enables it by hand.
   { id: 31, name: 'relay-limited', plugin_key: 'relay', type: 'relay_key', created_by: 1, group_ids: [1], proxy_id: null, priority: 4, weight: 1, max_concurrency: 10, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'auto_disabled', status_reason: 'matched auto-disable rule: status 429', auto_disabled_until: now(3 * 3600), in_use: 0, cooldown_until: null, orphaned: false, last_used_at: now(-1800), created_at: now(-86400 * 8), credentials: { api_key: '******', base_url: 'https://relay.example.com' } },
-  // A custom upstream (mock/custom.ts) with an account layer: edit it to see the upstream editor.
-  { id: 32, name: 'custom-anthropic', plugin_key: 'custom', type: 'custom_anthropic', created_by: 1, group_ids: [1], proxy_id: null, priority: 5, weight: 1, max_concurrency: 5, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-86400 * 2), credentials: { api_key: '******', base_url: 'https://claude.example.com', upstream: { auth: { name: 'authorization', value: 'Bearer {api_key}' }, headers: { 'anthropic-version': null, 'x-org': { set: 'acme' } }, routes: { 'anthropic.messages': { path: '/api/messages' } }, allowFields: ['service_tier'] } } },
   // Its plugin was uninstalled without purge_accounts: kept as an orphaned account.
   { id: 15, name: 'legacy-vendor', plugin_key: 'legacy_vendor', type: 'apikey', created_by: null, type_label: { en: 'API key', zh: 'API Key' }, group_ids: [], proxy_id: null, priority: 10, weight: 1, max_concurrency: 5, schedulable: false, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, orphaned: true, created_at: now(-86400 * 90) }
 ]
@@ -636,7 +627,6 @@ on('GET', '/account-types/:plugin_key/:type/form', (req) => {
   if (k === 'videogen') return { schema: videoSchema, ui_schema: { api_key: { 'ui:widget': 'secret' } } }
   if (k === 'openai') return guardForm(who, k, openaiForm)
   if (k === 'gemini') return guardForm(who, k, geminiForm)
-  if (k === 'custom') return customForm()
   if (k === 'controls_demo') return controlsForm
   if (k === 'claude_oauth') {
     // The real plugin form (plugins/claude-oauth/forms).
@@ -807,8 +797,6 @@ on('POST', '/accounts', (req) => {
     const invalid = codexCredentialErrors(b.type, creds)
     if (invalid) return invalid
   }
-  const upstreamInvalid = b.plugin_key === 'custom' && customCredentialErrors(creds)
-  if (upstreamInvalid) return upstreamInvalid
   if (b.plugin_key === 'anthropic' && !String(creds.api_key || '').startsWith('sk-')) {
     return fail(400, 'invalid_argument', 'invalid credentials', { fields: [{ field: 'credentials.api_key', code: 'invalid', message: 'API key must start with sk-' }] })
   }
@@ -854,7 +842,7 @@ on('PATCH', '/accounts/:id', (req) => {
   const bad = validateScheduling(req.body || {}) || applyCommonControls(a.plugin_key, a.type, req.body || {}, a)
   if (bad) return bad
   const { credentials, platform: _p, plugin_key: _k, type: _t, proxy_id: _pid, proxy_url: _purl, ...rest } = req.body || {}
-  const guarded = checkGuarded(caller(req), a.plugin_key, credentials, a.credentials) || (a.plugin_key === 'custom' && credentials && customCredentialErrors(credentials))
+  const guarded = checkGuarded(caller(req), a.plugin_key, credentials, a.credentials)
   if (guarded) return guarded
   const { who, scope } = accountScope(req, 'update')
   // A restricted caller may not move the account out of its scope (CONTRACTS §21).
@@ -876,8 +864,6 @@ on('PATCH', '/accounts/:id', (req) => {
   if (proxy.proxy_id !== undefined) a.proxy_id = proxy.proxy_id
   if (credentials) {
     a.credentials ??= {}
-    // The account layer is a setting replaced with the credentials: an account back at the defaults sends none.
-    if (a.plugin_key === 'custom') delete a.credentials.upstream
     const sensitive = accountTypeDecls.find((x) => x.plugin_key === a.plugin_key && x.type === a.type)?.sensitive_fields ?? []
     for (const [k, v] of Object.entries(credentials)) if (v !== '******') a.credentials[k] = k === 'api_key' || k === 'token' || (sensitive.includes(k) && v) ? '******' : v
   }

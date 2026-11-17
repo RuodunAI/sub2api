@@ -553,7 +553,7 @@ testdata/ir/<upstream protocol>/<case>.{json,sse}.txt   reader 输出的 IR 快�
 8. **Gemini schema**：直接用 `parametersJsonSchema`/`responseJsonSchema`，Gemini 1.5/2.0 等旧模型可能不支持（备选：清洗为 OpenAPI 子集 `parameters`，有损 other）。
 9. **性能**：转换提前到挑选阶段，按顺序惰性进行；组合对做两次。大请求（多 MB base64 图片）在多次回退时 CPU 增加。
 10. **缓存与费用（D7）**：OpenAI 客户端走 Anthropic 上游没有提示缓存，输入成本明显上升。
-11. **custom_openai 只有 chat 的站点**：类型仍声明全部 openai 端点为原生，responses 请求不会走 responses → chat（设计已知，账号级关协议不在本期）。
+11. **只有 chat 的 OpenAI 兼容站点**：openai 的 API Key 类型声明全部 openai 端点为原生，responses 请求不会走 responses → chat（设计已知，账号级关协议不在本期）。
 12. **第 2 期并行**：`AccountEditor.vue`、`GroupsView.vue`、`GatewaySettingsCard.vue` 可能与第 2 期冲突，合并时手工合并；迁移号与节号按 0093、§88。
 
 ## 13. 已定决策（用户 2026-11-09）
