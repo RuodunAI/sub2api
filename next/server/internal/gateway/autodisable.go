@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -24,7 +25,7 @@ import (
 // AutomaticDisableKeywords.
 
 const (
-	settingsKeyAutoDisable = "auto_disable"
+	settingsKeyAutoDisable = protocol.SettingsAutoDisable
 
 	maxAutoDisableRanges     = 50
 	maxAutoDisableKeywords   = 100
@@ -272,7 +273,7 @@ func (g *Gateway) putAutoDisableHandler(c *gin.Context) {
 		if err := legacyFailureSettingGuard(ctx, tx); err != nil {
 			return err
 		}
-		_, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyAutoDisable, nullID(uid), func(raw json.RawMessage) (json.RawMessage, error) {
+		if _, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyAutoDisable, nullID(uid), func(raw json.RawMessage) (json.RawMessage, error) {
 			if err := json.Unmarshal(raw, &cur); err != nil {
 				return nil, err
 			}
@@ -286,8 +287,10 @@ func (g *Gateway) putAutoDisableHandler(c *gin.Context) {
 				cur.Keywords = *in.Keywords
 			}
 			return json.Marshal(cur)
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, g.d.Events, tx, settingsKeyAutoDisable)
 	}); err != nil {
 		httpapi.Fail(c, err)
 		return

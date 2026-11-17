@@ -179,24 +179,34 @@ func (c *Controller) servingInstance(key string) Instance {
 	return nil
 }
 
-// syncBroadcast subscribes to the broadcast channels of the plugins served
-// here that declare app.broadcast.v1.
-func (c *Controller) syncBroadcast() {
+// servingInstances returns the instance each plugin served here has in the
+// generation, by plugin key.
+func (c *Controller) servingInstances() map[string]Instance {
 	c.mu.Lock()
 	slots := make([]*slot, 0, len(c.slots))
 	for _, s := range c.slots {
 		slots = append(slots, s)
 	}
 	c.mu.Unlock()
-	var keys []string
+	out := make(map[string]Instance, len(slots))
 	for _, s := range slots {
 		s.mu.Lock()
 		if e := s.entries[s.serving]; s.serving != "" && e != nil && e.inst != nil {
-			if r, ok := e.inst.(broadcastReceiver); ok && r.HandlesBroadcast() {
-				keys = append(keys, s.key)
-			}
+			out[s.key] = e.inst
 		}
 		s.mu.Unlock()
+	}
+	return out
+}
+
+// syncBroadcast subscribes to the broadcast channels of the plugins served
+// here that declare app.broadcast.v1.
+func (c *Controller) syncBroadcast() {
+	var keys []string
+	for key, inst := range c.servingInstances() {
+		if r, ok := inst.(broadcastReceiver); ok && r.HandlesBroadcast() {
+			keys = append(keys, key)
+		}
 	}
 	sort.Strings(keys)
 	c.hub.sync(keys)

@@ -71,6 +71,12 @@ func writeSetting(db *gorm.DB, key string, next json.RawMessage, updatedBy *int6
 // Validate patch values before calling (and use UpdateSettingJSONTx directly
 // when validation depends on several merged fields).
 func PatchSettingJSON(ctx context.Context, db *DB, key string, updatedBy *int64, patch, into any) error {
+	return db.Tx(ctx, func(tx *gorm.DB) error { return PatchSettingJSONTx(ctx, tx, key, updatedBy, patch, into) })
+}
+
+// PatchSettingJSONTx is PatchSettingJSON in the caller's transaction, for a
+// caller that writes more in it (the settings.changed event).
+func PatchSettingJSONTx(ctx context.Context, tx *gorm.DB, key string, updatedBy *int64, patch, into any) error {
 	data, err := json.Marshal(patch)
 	if err != nil {
 		return err
@@ -79,29 +85,27 @@ func PatchSettingJSON(ctx context.Context, db *DB, key string, updatedBy *int64,
 	if err = json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	return db.Tx(ctx, func(tx *gorm.DB) error {
-		_, err := UpdateSettingJSONTx(ctx, tx, key, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
-			var current map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &current); err != nil {
-				return nil, err
+	_, err = UpdateSettingJSONTx(ctx, tx, key, updatedBy, func(raw json.RawMessage) (json.RawMessage, error) {
+		var current map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &current); err != nil {
+			return nil, err
+		}
+		if current == nil {
+			current = map[string]json.RawMessage{}
+		}
+		for key, value := range fields {
+			if string(value) != "null" {
+				current[key] = value
 			}
-			if current == nil {
-				current = map[string]json.RawMessage{}
-			}
-			for key, value := range fields {
-				if string(value) != "null" {
-					current[key] = value
-				}
-			}
-			merged, err := json.Marshal(current)
-			if err != nil {
-				return nil, err
-			}
-			if err := json.Unmarshal(merged, into); err != nil {
-				return nil, err
-			}
-			return json.Marshal(into)
-		})
-		return err
+		}
+		merged, err := json.Marshal(current)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(merged, into); err != nil {
+			return nil, err
+		}
+		return json.Marshal(into)
 	})
+	return err
 }

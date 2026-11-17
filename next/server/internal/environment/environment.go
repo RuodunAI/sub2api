@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -24,8 +25,12 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// SettingsKey is the settings row of the global layer.
-const SettingsKey = "environment"
+// SettingsKey is the settings row of the global layer and its plugin-visible
+// section (CONTRACTS §106); config:changed names it as configKey.
+const (
+	SettingsKey = protocol.SettingsEnvironment
+	configKey   = "settings." + SettingsKey
+)
 
 // globalTTL bounds how stale the cached global layer gets on a node that
 // missed the config:changed broadcast; past it the cached layer is still
@@ -47,6 +52,9 @@ type Service struct {
 	process core.EnvironmentValues
 	// load reads the global layer; tests replace it.
 	load func(context.Context) (core.EnvironmentValues, error)
+	// Events records settings.changed with a saved global layer; nil
+	// records nothing.
+	Events core.EventPublisher
 
 	unsubscribe func()
 
@@ -72,7 +80,7 @@ func New(db *store.DB, bus core.Bus, process core.EnvironmentValues) *Service {
 	if bus != nil {
 		s.unsubscribe = bus.Subscribe(core.ChannelConfigChanged, func(payload []byte) {
 			var msg struct{ Key string }
-			if json.Unmarshal(payload, &msg) == nil && msg.Key == SettingsKey {
+			if json.Unmarshal(payload, &msg) == nil && msg.Key == configKey {
 				s.invalidate()
 			}
 		})
@@ -156,13 +164,32 @@ func (s *Service) read(ctx context.Context, epoch uint64) core.EnvironmentValues
 		}
 		return s.fallback(s.last)
 	}
-	values := core.EnvironmentValues{}
-	maps.Copy(values, s.process)
-	maps.Copy(values, global)
+	values := s.overProcess(global)
 	if s.epoch == epoch {
 		s.last, s.lastAt, s.retryAt = values, time.Now(), time.Time{}
 	}
 	return values
+}
+
+// overProcess is the global layer over the process layer.
+func (s *Service) overProcess(global core.EnvironmentValues) core.EnvironmentValues {
+	values := core.EnvironmentValues{}
+	maps.Copy(values, s.process)
+	maps.Copy(values, global)
+	return values
+}
+
+// SettingsReaders reads the environment section as plugins see it
+// (CONTRACTS §106): the global layer read now over the process layer,
+// resolved like the layers of a request.
+func (s *Service) SettingsReaders() map[string]core.SettingsReader {
+	return map[string]core.SettingsReader{SettingsKey: func(ctx context.Context) (protocol.SettingsValues, error) {
+		global, err := s.load(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return protocol.EnvironmentSettings{Values: core.ResolveEnvironment(s.overProcess(global), nil, nil)}, nil
+	}}
 }
 
 // fallback is last, or the process layer alone before any read succeeded.
@@ -251,17 +278,19 @@ func (s *Service) put(c *gin.Context) {
 		by = &uid
 	}
 	if err := s.db.Tx(ctx, func(tx *gorm.DB) error {
-		_, err := store.UpdateSettingJSONTx(ctx, tx, SettingsKey, by, func(json.RawMessage) (json.RawMessage, error) {
+		if _, err := store.UpdateSettingJSONTx(ctx, tx, SettingsKey, by, func(json.RawMessage) (json.RawMessage, error) {
 			return json.Marshal(values)
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, s.Events, tx, SettingsKey)
 	}); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	s.invalidate()
 	if s.bus != nil {
-		payload, _ := json.Marshal(map[string]string{"key": SettingsKey})
+		payload, _ := json.Marshal(map[string]string{"key": configKey})
 		if err := s.bus.Publish(context.WithoutCancel(ctx), core.ChannelConfigChanged, payload); err != nil {
 			slog.WarnContext(ctx, "environment: publish config:changed", "err", err)
 		}

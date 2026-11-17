@@ -8,14 +8,15 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
 const (
-	settingsKeyGateway = "gateway"
-	settingsKeySticky  = "sticky"
+	settingsKeyGateway = protocol.SettingsGateway
+	settingsKeySticky  = protocol.SettingsSticky
 
 	settingsTTL = 10 * time.Second
 

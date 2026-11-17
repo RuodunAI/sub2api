@@ -87,7 +87,7 @@ func (g *Gateway) putFailurePolicy(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	err = publishPolicy(ctx, db, uid, &in)
+	err = g.publishPolicy(ctx, db, uid, &in)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -116,7 +116,7 @@ func archiveFailurePolicy(ctx context.Context, tx *gorm.DB, uid int64, old *Fail
 	return err
 }
 
-func publishPolicy(ctx context.Context, db *store.DB, uid int64, in *publishFailurePolicy) error {
+func (g *Gateway) publishPolicy(ctx context.Context, db *store.DB, uid int64, in *publishFailurePolicy) error {
 	return db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := lockFailureSettings(ctx, tx); err != nil {
 			return err
@@ -136,8 +136,10 @@ func publishPolicy(ctx context.Context, db *store.DB, uid int64, in *publishFail
 		if err := archiveFailurePolicy(ctx, tx, uid, old); err != nil {
 			return err
 		}
-		_, err = store.UpdateSettingJSONTx(ctx, tx, failurePolicyKey, nullID(uid), func(json.RawMessage) (json.RawMessage, error) { return json.Marshal(in.Policy) })
-		return err
+		if _, err = store.UpdateSettingJSONTx(ctx, tx, failurePolicyKey, nullID(uid), func(json.RawMessage) (json.RawMessage, error) { return json.Marshal(in.Policy) }); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, g.d.Events, tx, failurePolicyKey)
 	})
 }
 

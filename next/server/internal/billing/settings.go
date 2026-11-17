@@ -9,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -20,7 +21,9 @@ const (
 	PolicyFree   = "free"
 )
 
-const settingsKey = "billing"
+// settingsKey is the settings row and the plugin-visible section
+// (CONTRACTS §106) of the billing settings.
+const settingsKey = protocol.SettingsBilling
 
 // Settings is the "billing" row of the settings table (CONTRACTS §8).
 type Settings struct {
@@ -143,6 +146,21 @@ func loadSettings(ctx context.Context, q *gorm.DB) (Settings, error) {
 	return v, nil
 }
 
+// SettingsReaders reads the billing section as plugins see it
+// (CONTRACTS §106), with the read and defaults of Settings.
+func (s *Service) SettingsReaders() map[string]core.SettingsReader {
+	return map[string]core.SettingsReader{settingsKey: func(ctx context.Context) (protocol.SettingsValues, error) {
+		v, err := loadSettings(ctx, s.db.Gorm)
+		if err != nil {
+			return nil, err
+		}
+		return protocol.BillingSettings{
+			MissingPricePolicy: v.MissingPricePolicy, MinBalance: v.MinBalance.String(), BigCostWarningUSD: v.BigCostWarningUSD.String(),
+			PreConsumeTokens: v.PreConsumeTokens, OutputReserveTokens: v.OutputReserveTokens, ClientDisconnectPolicy: v.ClientDisconnectPolicy,
+		}, nil
+	}}
+}
+
 func (s *Service) registerSettingsRoutes(r *httpapi.Router) {
 	r.Perm("GET", "/settings/billing", "settings:read", s.getSettings)
 	r.Perm("PUT", "/settings/billing", "settings:manage", s.putSettings)
@@ -203,12 +221,17 @@ func (s *Service) putSettings(c *gin.Context) {
 		return
 	}
 	uid, _ := core.UserID(ctx)
-	if err := store.PatchSettingJSON(ctx, s.db, settingsKey, nullID(uid), in, &cur); err != nil {
+	if err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := store.PatchSettingJSONTx(ctx, tx, settingsKey, nullID(uid), in, &cur); err != nil {
+			return err
+		}
+		return core.EmitSettingsChanged(ctx, s.events, tx, settingsKey)
+	}); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	cur.normalizeClientDisconnect()
-	s.changed(ctx, "settings.billing")
+	s.changed(ctx, "settings."+settingsKey)
 	httpapi.OK(c, cur)
 }
 
