@@ -1588,6 +1588,7 @@ func (s *Service) create(c *gin.Context) {
 		return
 	}
 	s.changed(ctx, id)
+	s.refreshSaved(ctx, id, bt, p.secret)
 	// The row was just created by the caller: no scope needed.
 	v, err := s.fullView(ctx, id, core.AllScope)
 	if err != nil {
@@ -1811,6 +1812,9 @@ func (s *Service) update(c *gin.Context) {
 		}
 	}
 	s.changed(ctx, id)
+	if p != nil {
+		s.refreshSaved(ctx, id, bt, p.secret)
+	}
 	v, err := s.fullView(ctx, id, scope)
 	if err != nil {
 		httpapi.Fail(c, err)
