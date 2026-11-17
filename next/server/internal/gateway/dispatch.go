@@ -831,6 +831,9 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 	if req.Header.Get("Content-Type") == "" && reqBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if failure := signUpstreamRequest(req, body, built); failure != nil {
+		return *failure
+	}
 	if failure := c.guardAvailability(prepareCtx, &acc.AccountRef); failure != nil {
 		return attemptResult{kind: attemptFailover, err: failure}
 	}
@@ -919,6 +922,7 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 		}
 		return c.upstreamFailure(ctx, rt, acc, pacct, execution, resp.StatusCode, resp.Header, body)
 	}
+	adaptResponseStream(resp, built.GetResponseStream())
 	if c.stream || forced {
 		sniffEventStream(resp)
 	}

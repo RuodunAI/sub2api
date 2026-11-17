@@ -1,0 +1,317 @@
+{
+  "apiVersion": 1,
+  "key": "bedrock",
+  "name": {
+    "en": "AWS Bedrock",
+    "zh": "AWS Bedrock"
+  },
+  "description": {
+    "en": "Claude on Amazon Bedrock, through InvokeModel, for the built-in anthropic platform; requests in an OpenAI protocol are converted by the core. Accounts authorize with a Bedrock API key, a long-term access key or temporary credentials; requests of the latter two are signed by the core (SigV4). The plugin itself makes no network connection. Model prices are set by administrators in the core.",
+    "zh": "Amazon Bedrock 上的 Claude：为内置 anthropic 平台通过 InvokeModel 提供，OpenAI 协议的请求由核心转换后走同一条路。账号可用 Bedrock API Key、长期 Access Key 或临时凭证鉴权，后两种的请求由核心签名（SigV4）。插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
+  },
+  "version": "0.1.0",
+  "publisher": "sub2api",
+  "icon": "assets/bedrock-color.svg",
+  "runtime": "grpc",
+  "entry": {
+    "grpc": {
+      "binaries": "runtimes/{os}-{arch}/plugin"
+    }
+  },
+  "hostCompat": ">=0.1.304 <0.2.0",
+  "capabilities": [
+    {
+      "id": "platform.adapter.v1"
+    }
+  ],
+  "accountTypes": [
+    {
+      "id": "bedrock_apikey",
+      "upstreamFields": [],
+      "label": {
+        "en": "AWS Bedrock · API Key",
+        "zh": "AWS Bedrock · API Key"
+      },
+      "description": {
+        "en": "An Amazon Bedrock API key, sent as a bearer token. Short-term keys last at most 12 hours and are bound to a region; nothing renews them.",
+        "zh": "Amazon Bedrock 的 API Key，以 Bearer 令牌发送。短期 Key 最长 12 小时有效且绑定区域，不会自动续期。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/apikey.schema.json",
+        "uiSchema": "forms/apikey.ui.json"
+      },
+      "creationGroup": "bedrock",
+      "authMethodLabel": {
+        "en": "API Key",
+        "zh": "API Key"
+      },
+      "sensitiveFields": [
+        "api_key"
+      ],
+      "settingsFields": [
+        "region",
+        "inference_profile_prefix"
+      ],
+      "defaultModels": [
+        "claude-fable-5-2",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-1",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-5-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "defaultModelMapping": {
+        "claude-fable-5-2": "anthropic.claude-fable-5-2",
+        "claude-fable-5-1": "anthropic.claude-fable-5-1",
+        "claude-fable-5": "anthropic.claude-fable-5",
+        "claude-opus-5-5": "anthropic.claude-opus-5-5",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
+        "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
+        "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-1": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "claude-sonnet-5-5": "anthropic.claude-sonnet-5-5",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
+        "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
+        "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-haiku-5-5": "anthropic.claude-haiku-5-5",
+        "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0"
+      },
+      "platforms": [
+        {
+          "platform": "anthropic",
+          "endpoints": [
+            "messages"
+          ],
+          "requestFields": [
+            "model",
+            "anthropic_beta"
+          ],
+          "passHeaders": [
+            "anthropic-beta"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bedrock_aksk",
+      "upstreamFields": [],
+      "label": {
+        "en": "AWS Bedrock · Access Key",
+        "zh": "AWS Bedrock · Access Key"
+      },
+      "description": {
+        "en": "The long-term access key of an IAM user. The core signs every request with it (SigV4).",
+        "zh": "IAM 用户的长期 Access Key。核心用它为每个请求签名（SigV4）。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/aksk.schema.json",
+        "uiSchema": "forms/aksk.ui.json"
+      },
+      "creationGroup": "bedrock",
+      "authMethodLabel": {
+        "en": "Access Key",
+        "zh": "Access Key"
+      },
+      "sensitiveFields": [
+        "secret_access_key"
+      ],
+      "settingsFields": [
+        "region",
+        "inference_profile_prefix"
+      ],
+      "defaultModels": [
+        "claude-fable-5-2",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-1",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-5-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "defaultModelMapping": {
+        "claude-fable-5-2": "anthropic.claude-fable-5-2",
+        "claude-fable-5-1": "anthropic.claude-fable-5-1",
+        "claude-fable-5": "anthropic.claude-fable-5",
+        "claude-opus-5-5": "anthropic.claude-opus-5-5",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
+        "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
+        "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-1": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "claude-sonnet-5-5": "anthropic.claude-sonnet-5-5",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
+        "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
+        "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-haiku-5-5": "anthropic.claude-haiku-5-5",
+        "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0"
+      },
+      "platforms": [
+        {
+          "platform": "anthropic",
+          "endpoints": [
+            "messages"
+          ],
+          "requestFields": [
+            "model",
+            "anthropic_beta"
+          ],
+          "passHeaders": [
+            "anthropic-beta"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "bedrock_sts",
+      "upstreamFields": [],
+      "label": {
+        "en": "AWS Bedrock · Temporary Credentials",
+        "zh": "AWS Bedrock · 临时凭证"
+      },
+      "description": {
+        "en": "Temporary credentials from AWS STS (access key, secret key and session token). They are not renewed: once they expire the account is refused upstream and an administrator replaces them.",
+        "zh": "AWS STS 签发的临时凭证（Access Key、Secret Key 和 Session Token）。不会自动续期：到期后上游拒绝该账号，需要管理员手动更换。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/sts.schema.json",
+        "uiSchema": "forms/sts.ui.json"
+      },
+      "creationGroup": "bedrock",
+      "authMethodLabel": {
+        "en": "Temporary Credentials",
+        "zh": "临时凭证"
+      },
+      "sensitiveFields": [
+        "secret_access_key",
+        "session_token"
+      ],
+      "settingsFields": [
+        "region",
+        "inference_profile_prefix",
+        "session_expires_at"
+      ],
+      "defaultModels": [
+        "claude-fable-5-2",
+        "claude-fable-5-1",
+        "claude-fable-5",
+        "claude-opus-5-5",
+        "claude-opus-5",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-5-20251101",
+        "claude-opus-4-1",
+        "claude-sonnet-5-5",
+        "claude-sonnet-5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-5-20250929",
+        "claude-haiku-5-5",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001"
+      ],
+      "defaultModelMapping": {
+        "claude-fable-5-2": "anthropic.claude-fable-5-2",
+        "claude-fable-5-1": "anthropic.claude-fable-5-1",
+        "claude-fable-5": "anthropic.claude-fable-5",
+        "claude-opus-5-5": "anthropic.claude-opus-5-5",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
+        "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
+        "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "claude-opus-4-1": "us.anthropic.claude-opus-4-1-20250805-v1:0",
+        "claude-sonnet-5-5": "anthropic.claude-sonnet-5-5",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
+        "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
+        "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "claude-haiku-5-5": "anthropic.claude-haiku-5-5",
+        "claude-haiku-4-5": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "claude-haiku-4-5-20251001": "anthropic.claude-haiku-4-5-20251001-v1:0"
+      },
+      "platforms": [
+        {
+          "platform": "anthropic",
+          "endpoints": [
+            "messages"
+          ],
+          "requestFields": [
+            "model",
+            "anthropic_beta"
+          ],
+          "passHeaders": [
+            "anthropic-beta"
+          ]
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "memoryMB": 64,
+    "cpu": 0.1,
+    "maxThreads": 32,
+    "maxOpenFiles": 64
+  },
+  "hostPermissions": [
+    {
+      "id": "platform.register",
+      "reason": {
+        "en": "Register the AWS Bedrock account types (API key, access key, temporary credentials) for the built-in anthropic platform",
+        "zh": "为内置 anthropic 平台注册 AWS Bedrock 账号类型（API Key、Access Key、临时凭证）"
+      }
+    },
+    {
+      "id": "accounts.credentials",
+      "scope": {
+        "types": "own"
+      },
+      "reason": {
+        "en": "Read the API key or access key of its own accounts to build upstream requests and their signing directive (the core signs and sends them)",
+        "zh": "读取本插件账号的 API Key 或 Access Key，用于构造上游请求及其签名指令（由核心签名并发送）"
+      }
+    }
+  ],
+  "externalServices": [
+    "amazonaws.com"
+  ]
+}

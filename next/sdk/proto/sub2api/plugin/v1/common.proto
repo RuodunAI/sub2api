@@ -25,6 +25,32 @@ message BodyPatch {
   string value_json = 3;
 }
 
+// RequestSigning asks the host to sign the final upstream request: after the
+// body patches, the forced stream flag and every header layer, right before
+// it is sent, and again for every attempt. The plugin cannot do it itself
+// when the signature covers the body, which it never sees whole. The message
+// carries the signing secret: the host uses it for this one request and
+// neither stores nor logs it.
+//
+// Only the scheme name is generic. The other fields are the inputs of the
+// access-key HMAC family of schemes (AWS SigV4 and those shaped after it): a
+// key id and a secret scoped to a region and a service, optionally a session
+// token. They are typed rather than an open map so that the host knows which
+// ones are secret; a scheme of another family needs new fields, not a
+// reinterpretation of these.
+message RequestSigning {
+  // Signing scheme, looked up by name (sdk/reqsign). "aws-sigv4": AWS
+  // Signature Version 4 with header authentication; signs host, x-amz-date
+  // and, when present, content-type and x-amz-security-token.
+  string scheme = 1;
+  string region = 2;
+  string service = 3;
+  string access_key_id = 4;
+  string secret_access_key = 5;
+  // Temporary credentials only; sent as x-amz-security-token and signed.
+  string session_token = 6;
+}
+
 // Account is what a platform plugin sees of one core account row.
 message Account {
   int64 id = 1;

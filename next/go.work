@@ -5,6 +5,8 @@ use (
 	./e2e
 	./gateway
 	./plugins/anthropic
+	./plugins/azure-openai
+	./plugins/bedrock
 	./plugins/claude-oauth
 	./plugins/codex
 	./plugins/dynweight
@@ -16,6 +18,7 @@ use (
 	./plugins/openai
 	./plugins/payment
 	./plugins/relay
+	./plugins/vertex
 	./plugins/volcengine
 	./protocol-codec
 	./runtime-contract

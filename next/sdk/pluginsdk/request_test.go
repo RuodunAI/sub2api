@@ -40,3 +40,24 @@ func TestRequestModel(t *testing.T) {
 		t.Fatalf("empty request = %q, want empty", got)
 	}
 }
+
+func TestPatches(t *testing.T) {
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{
+		{true, "true"},
+		{"bedrock-2023-05-31", `"bedrock-2023-05-31"`},
+		{[]string{"a", "b"}, `["a","b"]`},
+		{nil, "null"},
+		{func() {}, "null"},
+	} {
+		p := SetPatch("a.b", tc.value)
+		if p.GetOp() != pluginv1.BodyPatch_OP_SET || p.GetPath() != "a.b" || p.GetValueJson() != tc.want {
+			t.Errorf("SetPatch(%v) = %v", tc.value, p)
+		}
+	}
+	if p := DeletePatch("model"); p.GetOp() != pluginv1.BodyPatch_OP_DELETE || p.GetPath() != "model" || p.GetValueJson() != "" {
+		t.Errorf("DeletePatch = %v", p)
+	}
+}

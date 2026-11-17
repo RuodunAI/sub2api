@@ -72,7 +72,7 @@ func check(up *manifest.Upstream, passHeaders []string) Problems {
 		}
 	}
 	if _, ok := policies[up.Classify]; !ok {
-		c.add("classify", "invalid", "classify must be openai, anthropic or gemini")
+		c.add("classify", "invalid", "classify must be %s", policyNames())
 	}
 	c.test()
 	c.models()

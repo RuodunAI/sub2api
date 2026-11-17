@@ -1,0 +1,115 @@
+{
+  "apiVersion": 1,
+  "key": "azure_openai",
+  "name": { "en": "Azure OpenAI", "zh": "Azure OpenAI" },
+  "description": {
+    "en": "Adds Azure OpenAI account types for the built-in openai platform: a resource endpoint with its API key, served through the v1 API or the classic per-deployment API. The upstream model is the deployment name; map client model names to deployments on the account. Declares no platform, no endpoints and no prices.",
+    "zh": "为内置 openai 平台新增 Azure OpenAI 账号类型：资源地址加 API Key，走 v1 接口或按部署的经典接口。上游的模型就是部署名，在账号上把客户端的模型名映射到部署名。不声明平台、端点和价格。"
+  },
+  "version": "0.1.0",
+  "publisher": "sub2api",
+  "icon": "assets/azure-color.svg",
+  "runtime": "none",
+  "hostCompat": ">=0.1.304 <0.2.0",
+
+  "capabilities": [
+    { "id": "platform.adapter.v1" }
+  ],
+
+  "accountTypes": [
+    {
+      "id": "azure_v1",
+      "label": { "en": "Azure OpenAI · v1 API", "zh": "Azure OpenAI · v1 接口" },
+      "description": {
+        "en": "An Azure OpenAI resource and its API key. Requests go to <resource endpoint>/openai/v1/chat/completions, /responses and /embeddings with the key in api-key.",
+        "zh": "Azure OpenAI 资源及其 API Key。请求发往 <资源地址>/openai/v1/chat/completions、/responses、/embeddings，Key 放在 api-key 中。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/azure_v1.schema.json",
+        "uiSchema": "forms/azure_v1.ui.json"
+      },
+      "creationGroup": "azure-openai",
+      "authMethodLabel": { "en": "v1 API", "zh": "v1 接口" },
+      "sensitiveFields": ["api_key"],
+      "settingsFields": ["base_url"],
+      "platforms": [
+        {
+          "platform": "openai",
+          "endpoints": ["chat_completions", "responses", "embeddings"],
+          "passHeaders": ["openai-beta", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"]
+        }
+      ],
+      "upstream": {
+        "preset": "openai",
+        "baseURL": { "default": null, "required": true, "stripSuffixes": ["/openai/v1", "/openai"] },
+        "credentials": {
+          "keyValidator": null,
+          "texts": { "baseURLRequired": "Resource endpoint is required / 请填写资源地址" }
+        },
+        "auth": { "type": "header", "name": "api-key", "value": "{api_key}" },
+        "classify": "azure_openai",
+        "routes": {
+          "openai.chat": { "path": "/openai/v1/chat/completions" },
+          "openai.responses": { "path": "/openai/v1/responses" },
+          "openai.embeddings": { "path": "/openai/v1/embeddings" },
+          "openai.responses_ws": null
+        },
+        "models": null
+      }
+    },
+    {
+      "id": "azure_deployment",
+      "label": { "en": "Azure OpenAI · Deployments (classic)", "zh": "Azure OpenAI · 按部署（经典）" },
+      "description": {
+        "en": "An Azure OpenAI resource and its API key, served through the classic per-deployment API. Requests go to <resource endpoint>/openai/deployments/<deployment>/chat/completions and /embeddings with an api-version and the key in api-key; /v1/responses requests are converted to chat completions.",
+        "zh": "Azure OpenAI 资源及其 API Key，走按部署的经典接口。请求发往 <资源地址>/openai/deployments/<部署名>/chat/completions、/embeddings，带 api-version，Key 放在 api-key 中；/v1/responses 请求会转成 chat completions 再发。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/azure_deployment.schema.json",
+        "uiSchema": "forms/azure_deployment.ui.json"
+      },
+      "creationGroup": "azure-openai",
+      "authMethodLabel": { "en": "Deployments (classic)", "zh": "按部署（经典）" },
+      "sensitiveFields": ["api_key"],
+      "settingsFields": ["base_url", "api_version"],
+      "platforms": [
+        {
+          "platform": "openai",
+          "endpoints": ["chat_completions", "embeddings"],
+          "passHeaders": ["openai-beta", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"]
+        }
+      ],
+      "upstream": {
+        "preset": "openai",
+        "baseURL": { "default": null, "required": true, "stripSuffixes": ["/openai/v1", "/openai"] },
+        "credentials": {
+          "keyValidator": null,
+          "texts": { "baseURLRequired": "Resource endpoint is required / 请填写资源地址" },
+          "fields": ["api_version"]
+        },
+        "auth": { "type": "header", "name": "api-key", "value": "{api_key}" },
+        "classify": "azure_openai",
+        "routes": {
+          "openai.chat": {
+            "path": "/openai/deployments/{model}/chat/completions?api-version={credentials.api_version}",
+            "model": { "required": true }
+          },
+          "openai.embeddings": {
+            "path": "/openai/deployments/{model}/embeddings?api-version={credentials.api_version}",
+            "model": { "required": true }
+          },
+          "openai.responses": null,
+          "openai.responses_ws": null
+        },
+        "models": null
+      }
+    }
+  ],
+
+  "hostPermissions": [
+    { "id": "platform.register",
+      "reason": { "en": "Register the Azure OpenAI account types for the built-in openai platform", "zh": "为内置 openai 平台注册 Azure OpenAI 账号类型" } }
+  ]
+}

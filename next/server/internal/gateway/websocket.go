@@ -743,6 +743,9 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	if built.GetUpstreamModel() != "" && built.GetUpstreamModel() != cl.model {
 		cl.rec.UpstreamModel = built.GetUpstreamModel()
 	}
+	if failure := unsupportedOnWebSocket(built); failure != nil {
+		return *failure
+	}
 	target, err := s.checkURL(ctx, built)
 	if err != nil {
 		slog.WarnContext(ctx, "gateway: upstream websocket url rejected", "plugin", rt.binding.Plugin.Key, "account", acc.ID, "err", err)

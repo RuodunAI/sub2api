@@ -91,7 +91,8 @@ func (c *Client) BuildUpstreamRequest(ctx context.Context, in *pluginv1.BuildUps
 // merge applies the plugin's amendment to base (§4.1): its headers are
 // written over base's except auth (the declaration alone decides the
 // credential sent), its patches run after base's, a non-empty url or
-// upstream model replaces base's.
+// upstream model replaces base's, and its request signing and response
+// stream format are carried over.
 func merge(base, amended *pluginv1.BuildUpstreamRequestResponse, auth string) *pluginv1.BuildUpstreamRequestResponse {
 	out := &pluginv1.BuildUpstreamRequestResponse{Method: base.GetMethod(), Url: base.GetUrl(), UpstreamModel: base.GetUpstreamModel(),
 		Headers: make(map[string]string, len(base.GetHeaders())+len(amended.GetHeaders())),
@@ -110,6 +111,9 @@ func merge(base, amended *pluginv1.BuildUpstreamRequestResponse, auth string) *p
 	if m := amended.GetUpstreamModel(); m != "" {
 		out.UpstreamModel = m
 	}
+	// Signing and the response framing are the plugin's alone: a declaration
+	// has neither.
+	out.Signing, out.ResponseStream = amended.GetSigning(), amended.GetResponseStream()
 	return out
 }
 

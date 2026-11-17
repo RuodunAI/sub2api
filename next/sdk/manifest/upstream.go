@@ -52,7 +52,8 @@ type Upstream struct {
 	// ParamOverride is a fixed rewrite in the format of an account's
 	// parameter override (CONTRACTS §84), applied before the routes' patches.
 	ParamOverride json.RawMessage `json:"paramOverride,omitempty"`
-	// Classify names the error policy: "openai", "anthropic" or "gemini".
+	// Classify names the error policy: "openai", "azure_openai", "anthropic"
+	// or "gemini".
 	Classify string          `json:"classify,omitempty"`
 	Test     *UpstreamTest   `json:"test,omitempty"`
 	Models   *UpstreamModels `json:"models,omitempty"`

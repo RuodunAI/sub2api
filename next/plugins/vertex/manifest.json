@@ -1,0 +1,258 @@
+{
+  "apiVersion": 1,
+  "key": "vertex",
+  "name": {
+    "en": "Vertex AI",
+    "zh": "Vertex AI"
+  },
+  "description": {
+    "en": "Gemini on Google Cloud Vertex AI for the built-in gemini platform (generateContent, streamGenerateContent, countTokens). Accounts authorize with a service account key, a user's application default credentials or a Vertex AI API key. Access tokens are fetched and renewed by the core; the plugin itself makes no network connection. Model prices are set by administrators in the core.",
+    "zh": "通过 Google Cloud Vertex AI 为内置 gemini 平台提供 Gemini（generateContent、streamGenerateContent、countTokens）。账号可用服务账号密钥、用户的应用默认凭证或 Vertex AI API Key 鉴权。访问令牌由核心获取和续期，插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
+  },
+  "version": "0.1.0",
+  "publisher": "sub2api",
+  "icon": "assets/vertexai-color.svg",
+  "runtime": "grpc",
+  "entry": {
+    "grpc": {
+      "binaries": "runtimes/{os}-{arch}/plugin"
+    }
+  },
+  "hostCompat": ">=0.1.290 <0.2.0",
+  "capabilities": [
+    {
+      "id": "platform.adapter.v1"
+    }
+  ],
+  "accountTypes": [
+    {
+      "id": "vertex_sa",
+      "upstreamFields": [],
+      "label": {
+        "en": "Vertex AI · Service Account",
+        "zh": "Vertex AI · 服务账号"
+      },
+      "description": {
+        "en": "A Google Cloud service account key (JSON). The core exchanges it for one-hour access tokens and renews them; requests go to the project and location of the account.",
+        "zh": "Google Cloud 服务账号密钥（JSON）。核心用它换取 1 小时有效的访问令牌并自动续期；请求发往账号填写的项目和区域。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/sa.schema.json",
+        "uiSchema": "forms/sa.ui.json"
+      },
+      "creationGroup": "vertex",
+      "authMethodLabel": {
+        "en": "Service Account",
+        "zh": "服务账号"
+      },
+      "sensitiveFields": [
+        "service_account_json",
+        "access_token"
+      ],
+      "settingsFields": [
+        "project_id",
+        "location"
+      ],
+      "refresh": {},
+      "defaultModels": [
+        "gemini-4-carbon",
+        "gemini-4-argon",
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite-preview-09-2025",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image",
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-image-preview"
+      ],
+      "platforms": [
+        {
+          "platform": "gemini",
+          "endpoints": [
+            "generate_content",
+            "stream_generate_content",
+            "count_tokens"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vertex_authorized_user",
+      "upstreamFields": [],
+      "label": {
+        "en": "Vertex AI · User Credentials",
+        "zh": "Vertex AI · 用户凭证"
+      },
+      "description": {
+        "en": "A user's application default credentials file (gcloud auth application-default login). The core exchanges its refresh token for one-hour access tokens and renews them.",
+        "zh": "用户的应用默认凭证文件（gcloud auth application-default login 生成）。核心用其中的 refresh token 换取 1 小时有效的访问令牌并自动续期。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/authorized_user.schema.json",
+        "uiSchema": "forms/authorized_user.ui.json"
+      },
+      "creationGroup": "vertex",
+      "authMethodLabel": {
+        "en": "User Credentials",
+        "zh": "用户凭证"
+      },
+      "sensitiveFields": [
+        "authorized_user_json",
+        "access_token"
+      ],
+      "settingsFields": [
+        "project_id",
+        "location"
+      ],
+      "refresh": {},
+      "defaultModels": [
+        "gemini-4-carbon",
+        "gemini-4-argon",
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite-preview-09-2025",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image",
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-image-preview"
+      ],
+      "platforms": [
+        {
+          "platform": "gemini",
+          "endpoints": [
+            "generate_content",
+            "stream_generate_content",
+            "count_tokens"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "vertex_apikey",
+      "upstreamFields": [],
+      "label": {
+        "en": "Vertex AI · API Key",
+        "zh": "Vertex AI · API Key"
+      },
+      "description": {
+        "en": "A Vertex AI API key. With project ID and location the requests use the full resource address; with both empty they use the express address.",
+        "zh": "Vertex AI 的 API Key。填写项目 ID 和区域时使用带项目的完整地址；两者都留空时使用 express 地址。"
+      },
+      "form": {
+        "mode": "schema",
+        "schema": "forms/apikey.schema.json",
+        "uiSchema": "forms/apikey.ui.json"
+      },
+      "creationGroup": "vertex",
+      "authMethodLabel": {
+        "en": "API Key",
+        "zh": "API Key"
+      },
+      "sensitiveFields": [
+        "api_key"
+      ],
+      "settingsFields": [
+        "project_id",
+        "location"
+      ],
+      "defaultModels": [
+        "gemini-4-carbon",
+        "gemini-4-argon",
+        "gemini-4-hydrogen",
+        "gemini-3.8-flash",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.5-flash-lite-preview-09-2025",
+        "gemini-2.0-flash",
+        "gemini-2.0-flash-001",
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash-lite-001",
+        "gemini-2.5-flash-image",
+        "gemini-3-pro-image",
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image",
+        "gemini-3.1-flash-image-preview"
+      ],
+      "platforms": [
+        {
+          "platform": "gemini",
+          "endpoints": [
+            "generate_content",
+            "stream_generate_content",
+            "count_tokens"
+          ]
+        }
+      ]
+    }
+  ],
+  "resources": {
+    "memoryMB": 64,
+    "cpu": 0.1,
+    "maxThreads": 32,
+    "maxOpenFiles": 64
+  },
+  "hostPermissions": [
+    {
+      "id": "platform.register",
+      "reason": {
+        "en": "Register the Vertex AI account types (service account, user credentials, API key) for the built-in gemini platform",
+        "zh": "为内置 gemini 平台注册 Vertex AI 账号类型（服务账号、用户凭证、API Key）"
+      }
+    },
+    {
+      "id": "accounts.credentials",
+      "scope": {
+        "types": "own"
+      },
+      "reason": {
+        "en": "Read the key file, access token or API key of its own accounts to build upstream and token requests (the core sends them all)",
+        "zh": "读取本插件账号的密钥文件、访问令牌或 API Key，用于构造上游请求和令牌请求（均由核心发送）"
+      }
+    }
+  ],
+  "externalServices": [
+    "oauth2.googleapis.com",
+    "aiplatform.googleapis.com",
+    "googleapis.com"
+  ]
+}

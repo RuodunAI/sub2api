@@ -1,6 +1,9 @@
 package upstream
 
 import (
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/tidwall/sjson"
@@ -15,9 +18,16 @@ import (
 
 // policies are the error policies upstream.classify names.
 var policies = map[string]classify.Policy{
-	"openai":    openai.Policy,
-	"anthropic": anthropic.Policy,
-	"gemini":    gemini.Policy,
+	"openai":       openai.Policy,
+	"azure_openai": openai.AzurePolicy,
+	"anthropic":    anthropic.Policy,
+	"gemini":       gemini.Policy,
+}
+
+// policyNames lists the names of policies for a problem message.
+func policyNames() string {
+	names := slices.Sorted(maps.Keys(policies))
+	return strings.Join(names[:len(names)-1], ", ") + " or " + names[len(names)-1]
 }
 
 // pings are the built-in test bodies upstream.test.body names: the

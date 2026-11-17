@@ -17,6 +17,17 @@
 //	POST /v1beta/models/{m}:generateContent        Gemini, usageMetadata incl. thoughtsTokenCount
 //	POST /v1beta/models/{m}:streamGenerateContent  ?alt=sse -> SSE, otherwise a JSON array
 //	POST /v1beta/models/{m}:countTokens            {"totalTokens": N}
+//	POST /openai/v1/{chat/completions,responses,embeddings}
+//	                                Azure OpenAI v1: the OpenAI endpoints above, key in the api-key header
+//	POST /openai/deployments/{d}/{chat/completions,embeddings}?api-version=YYYY-MM-DD[-preview]
+//	                                Azure OpenAI classic: the deployment is the model (cloud.go)
+//	POST /model/{id}/invoke         Bedrock InvokeModel for Claude: Anthropic JSON
+//	POST /model/{id}/invoke-with-response-stream
+//	                                the same as an AWS event stream (application/vnd.amazon.eventstream);
+//	                                a SigV4 request must be signed with the secret "mock-secret-<access key id>"
+//	POST /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:{action}
+//	POST /v1/publishers/google/models/{m}:{action}
+//	                                Vertex AI: the Gemini actions above
 //	GET  /v1/models                 Anthropic/OpenAI style list {"data":[{"id":...}]}
 //	GET  /v1beta/models             Gemini style list {"models":[{"name":"models/..."}]}
 //	GET  /__requests[?since=ID]     last 100 recorded requests (newest last)
@@ -25,8 +36,9 @@
 //	ANY  /__webhook/*               accepts and records anything (plugin webhook target)
 //	GET  /healthz
 //
-// The upstream API key is read from x-api-key, Authorization: Bearer,
-// x-goog-api-key or ?key= (in that order) and recorded as "api_key".
+// The upstream API key is read from x-api-key, api-key, Authorization (Bearer,
+// or the access key id of a SigV4 credential), x-goog-api-key or ?key= (in
+// that order) and recorded as "api_key".
 //
 // Behaviour for a request is resolved in this order (first match wins):
 //  1. request headers x-mock-status / x-mock-delay-ms / x-mock-usage
@@ -149,6 +161,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/moderations", s.moderations)
 	mux.HandleFunc("POST /v1/systemone", s.systemOne)
 	mux.HandleFunc("POST /v1beta/models/{spec}", s.gemini)
+	s.cloudRoutes(mux)
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("GET /v1beta/models", s.listGeminiModels)
 	mux.HandleFunc("POST /api/v3/contents/generations/tasks", s.submitVideo)
@@ -165,12 +178,19 @@ func (s *server) handler() http.Handler {
 }
 
 // requestKey returns the upstream API key of r: x-api-key (Anthropic),
-// Authorization: Bearer (OpenAI), x-goog-api-key or ?key= (Gemini).
+// api-key (Azure OpenAI), Authorization: Bearer (OpenAI) or the access key
+// id of a SigV4 Authorization (AWS), x-goog-api-key or ?key= (Gemini).
 func requestKey(r *http.Request) string {
 	if k := r.Header.Get("x-api-key"); k != "" {
 		return k
 	}
+	if k := r.Header.Get("api-key"); k != "" {
+		return k
+	}
 	if a := r.Header.Get("Authorization"); a != "" {
+		if m := sigV4Authorization.FindStringSubmatch(a); m != nil {
+			return m[1]
+		}
 		return strings.TrimSpace(strings.TrimPrefix(a, "Bearer "))
 	}
 	if k := r.Header.Get("x-goog-api-key"); k != "" {
@@ -447,35 +467,40 @@ func usageJSON(u Usage, output int64) map[string]any {
 }
 
 func (s *server) stream(w http.ResponseWriter, r *http.Request, model, msgID string, b behaviour) {
-	sw := startSSE(w, r, b.chunkDelay)
-	if !sw.send("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+	messageEvents(startSSE(w, r, b.chunkDelay).send, model, msgID, b)
+}
+
+// messageEvents sends the events of a streamed Anthropic message through
+// send, which reports whether to continue.
+func messageEvents(send func(event string, data any) bool, model, msgID string, b behaviour) {
+	if !send("message_start", map[string]any{"type": "message_start", "message": map[string]any{
 		"id": msgID, "type": "message", "role": "assistant", "model": model, "content": []any{},
 		"stop_reason": nil, "stop_sequence": nil, "usage": usageJSON(b.usage, 1),
 	}}) {
 		return
 	}
-	if !sw.send("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+	if !send("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
 		"content_block": map[string]any{"type": "text", "text": ""}}) {
 		return
 	}
-	if !sw.send("ping", map[string]any{"type": "ping"}) {
+	if !send("ping", map[string]any{"type": "ping"}) {
 		return
 	}
 	for _, part := range chunks(b.text) {
-		if !sw.send("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+		if !send("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
 			"delta": map[string]any{"type": "text_delta", "text": part}}) {
 			return
 		}
 	}
-	if !sw.send("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}) {
+	if !send("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0}) {
 		return
 	}
-	if !sw.send("message_delta", map[string]any{"type": "message_delta",
+	if !send("message_delta", map[string]any{"type": "message_delta",
 		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil},
 		"usage": map[string]any{"output_tokens": b.usage.OutputTokens}}) {
 		return
 	}
-	sw.send("message_stop", map[string]any{"type": "message_stop"})
+	send("message_stop", map[string]any{"type": "message_stop"})
 }
 
 // chunks splits text into word-sized deltas (at least one).

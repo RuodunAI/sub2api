@@ -8,6 +8,20 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（openai 0.4.4、azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0；核心加请求签名与响应流格式；无迁移）
+
+分支 `feat/cloud-providers`，未合并。**没有真实云账号，三家的行为都只对文档、黄金样例和模拟上游验证过**；没验证的事项见 [设计文档](next/docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节，验证之前不要对外说“已支持”。填法见 [PLUGIN-CLOUD-PROVIDERS.md](next/docs/PLUGIN-CLOUD-PROVIDERS.md)。
+
+- **openai 0.4.4**：API Key 账号“高级（可选）”里新增组织 ID、项目 ID，填了就以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端自己带的；留空时行为不变。
+- **azure_openai 0.1.0**（新，市场插件，只有清单）：Azure OpenAI 资源地址加 API Key（`api-key` 头）。两种类型：v1 接口（chat、responses、embeddings）和按部署的经典接口（chat、embeddings，带 `api-version`；`/v1/responses` 请求由核心转成 chat）。**需要核心 0.1.304**：两个类型的错误分类用新策略 `azure_openai`（`openai` 策略加一条规则），更早的核心不认识这个策略名，装不上。部署不存在（404 `DeploymentNotFound`）时换到下一个账号、不惩罚这个账号，其余错误与 OpenAI 账号相同。上游模型就是部署名，用账号的模型映射对应。客户端的 `OpenAI-Organization` / `OpenAI-Project` 和请求体里的 `service_tier`、`safety_identifier` 不转给 Azure。粘贴带 deployments、chat/completions 或 api-version 的请求地址会在保存时报错。不支持 Entra ID 令牌。
+- **vertex 0.1.0**（新，市场插件）：Vertex AI 上的 Gemini（generateContent、streamGenerateContent、countTokens）。三种鉴权：服务账号 JSON、用户凭证 JSON（`gcloud auth application-default login`）、API Key。访问令牌由核心换取并自动续期（CONTRACTS §48），插件自身不联网。不支持 Vertex 上的 Claude。
+- **bedrock 0.1.0**（新，市场插件，需要核心 0.1.304）：只服务 anthropic 平台，Claude 走 InvokeModel / InvokeModelWithResponseStream。客户端用 OpenAI 协议（chat、responses）访问时由核心先转换成 Messages 请求，走同一条路；Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接，Claude 以外的 Bedrock 模型这一版不支持。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由核心做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射（ID 按 2026-11-17 的 AWS 模型卡片，含 Fable 5.2、Opus / Sonnet / Haiku 5.5，不含 AWS 已停止服务的 Sonnet 4 和 Opus 4），可选跨区域推理前缀（us、eu、apac、jp、au、in、global）；按 AWS 模型卡片，现行的 Claude 模型几乎都只能经推理配置调用，所以前缀默认是 `global`（预填模型里只有 Opus 4.1 没有全球配置，它的映射直接写 `us.` 开头的 ID），要把请求留在某个地域内就改选地域前缀。账号测试的默认模型是 Haiku 4.5 的全球推理配置。中国区（`cn-*`）和隔离分区的区域在保存时被拒绝。请求体顶层的 `output_config`、`output_format` 保留（旧版会删）；`anthropic_beta` 白名单 15 项。已知限制：不清理 Claude Code 写在请求体深处、Bedrock 不接受的字段，给 Claude Code 用的账号要在参数覆盖里手工删。
+- **核心：请求签名与响应流格式**（CONTRACTS §109）：插件构造上游请求时可以要求核心对最终请求签名（`signing`，现有方案 `aws-sigv4`），或声明响应流的格式（`response_stream`，现有 `aws-eventstream-chunk`，核心解码成 SSE 后照常中继、计量、转换）。核心不认识的方案或格式、以及 WebSocket 握手带了这两项时，这次尝试换号、不发请求。新包 `next/sdk/reqsign`、`next/sdk/awseventstream`，只用标准库。不用这两项的插件不受影响；节点外壳没有改动。
+- **核心：保存账号后立即续期到期的凭证**（CONTRACTS §48.3）：新建账号或修改凭证后，类型支持自动续期且凭证已到期时，后台马上续一次，不用等 5 分钟一轮的扫描。Vertex 账号保存后几秒内可用；其他账号类型（凭证没到期）不受影响。
+- **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。声明式上游的 `classify` 多一个可选值 `azure_openai`。
+- **SDK**：新包 `next/sdk/pluginsdk/accountform`（自带账号表单的插件解码、校验、归一化的公共部分，vertex、bedrock 在用）；`pluginsdk.SetPatch` / `pluginsdk.DeletePatch` 构造请求体补丁。
+- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（**已写，尚未在任何 e2e 栈上执行**）。新表单没有做过控制台界面走查。
+
 ## 2026-11-18
 
 ### 核心 0.1.303：账号请求头覆盖（兼容 new-api）与参数覆盖补齐、通知测试同步发送、默认模型加上 gpt-6.2 / Claude Fable 5.2 / Gemini 3.5–4（`6d6b2caa3`，codex 0.1.11、openai 0.4.3、anthropic 0.3.4、gemini 0.3.2；迁移 0105，主节点优先）
