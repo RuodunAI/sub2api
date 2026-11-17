@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// account.detail.tabs slot (codex_device accounts): OpenAI's official Codex
+// account.detail.tabs slot (both account types): OpenAI's official Codex
 // usage resets. Shows how many the account has, every credit (usable first,
 // then being used and used ones, dimmed) with its status, wording and expiry, and the account's current 5 h / weekly usage; "Use" spends one
 // (the header button the soonest to expire, a row's button that row's),

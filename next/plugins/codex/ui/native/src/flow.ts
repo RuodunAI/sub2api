@@ -3,17 +3,15 @@
 // checks on what the operator pastes. Covered by flow.spec.ts.
 import type { CodexCredentials } from './host'
 
-export type Flow = 'device' | 'siwc'
+export type Flow = 'device' | 'oauth'
 
-/** Account types of the plugin (manifest accountTypes[].id). */
-export const DEVICE_TYPE = 'codex_device'
-export const SIWC_TYPE = 'chatgpt_siwc'
+/** The flow of each account type (manifest accountTypes[].id). */
+const FLOW_OF: Record<string, Flow> = { codex_device: 'device', codex_oauth: 'oauth' }
 
 /** Flows of an account type; both when the type is not known. */
 export function flowsFor(type: string | null | undefined): Flow[] {
-  if (type === DEVICE_TYPE) return ['device']
-  if (type === SIWC_TYPE) return ['siwc']
-  return ['device', 'siwc']
+  const f = type ? FLOW_OF[type] : undefined
+  return f ? [f] : ['device', 'oauth']
 }
 
 /** The account type the form is for: the editor's accountType prop, else the account's own. */
@@ -23,22 +21,10 @@ export function typeOf(accountType: { type?: string } | null | undefined, accoun
 
 /**
  * Credential keys the flows write. A fresh authorization replaces all of
- * them, so a key the new flow does not return (a device account's plan on a
- * Sign in with ChatGPT login, an id_token the issuer left out) does not
- * survive as a stale or masked value; any other key is kept.
+ * them, so a key the new login does not return (an id_token the issuer left
+ * out) does not survive as a stale or masked value; any other key is kept.
  */
-export const CODEX_FIELDS = [
-  'access_token',
-  'refresh_token',
-  'id_token',
-  'expires_at',
-  'email',
-  'chatgpt_account_id',
-  'plan_type',
-  'client_id',
-  'ext_agent_host_id',
-  'scopes'
-] as const
+export const CODEX_FIELDS = ['access_token', 'refresh_token', 'id_token', 'expires_at', 'email', 'chatgpt_account_id', 'plan_type'] as const
 
 export function mergeCredentials(current: Record<string, unknown> | null | undefined, fresh: CodexCredentials): Record<string, unknown> {
   const out: Record<string, unknown> = { ...(current || {}) }
@@ -59,7 +45,6 @@ export interface CredentialSummary {
   /** ms since the epoch, or null when unknown. */
   expiresAt: number | null
   accountId: string
-  clientId: string
 }
 
 const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '')
@@ -71,8 +56,7 @@ export function summarize(creds: Record<string, unknown> | null | undefined): Cr
     email: str(c.email),
     plan: str(c.plan_type),
     expiresAt: Number.isFinite(exp) && exp > 0 ? exp * 1000 : null,
-    accountId: str(c.chatgpt_account_id),
-    clientId: str(c.client_id)
+    accountId: str(c.chatgpt_account_id)
   }
 }
 
@@ -86,7 +70,7 @@ export function formatCountdown(seconds: number): string {
 }
 
 /**
- * Shape of the callback address pasted back after Sign in with ChatGPT (only
+ * Shape of the callback address pasted back after Sign in with Codex (only
  * a hint: the plugin parses and checks it). It reads what the plugin's
  * parseCallback reads: the whole address, the address without its scheme, or
  * only the query ("?code=..." or "code=..."), with parameters in the fragment

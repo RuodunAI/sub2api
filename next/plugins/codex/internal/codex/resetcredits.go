@@ -24,8 +24,8 @@ import (
 // Official usage resets ("rate-limit reset credits", docs/PLUGIN-CODEX.md
 // §10): a ChatGPT plan may grant a few credits, each of which resets the
 // account's used-up Codex usage windows once. Two admin routes (permission
-// codex:reset) list and spend them for ONE codex_device account; Sign in with
-// ChatGPT may not call backend-api.
+// codex:reset) list and spend them for ONE account of the plugin (either
+// type: both hold Codex tokens).
 //
 // The plugin describes each request; the core sends it through the account's
 // proxy (pluginsdk.SendAccountRequest), identified truthfully as sup2api like
@@ -213,8 +213,8 @@ func (p *Plugin) restoreAccount(ctx context.Context, id int64) bool {
 // resetLockName is the reset lock of one account.
 func resetLockName(id int64) string { return "codex-reset:" + strconv.FormatInt(id, 10) }
 
-// resetAccount reads a codex_device account's credentials for the reset
-// routes; bad is the route answer when it cannot be used.
+// resetAccount reads an account's credentials for the reset routes; bad is
+// the route answer when it cannot be used.
 func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad *pluginv1.HTTPResponse) {
 	if p.host == nil {
 		return c, errNotReady()
@@ -225,9 +225,6 @@ func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad
 	}
 	if err != nil {
 		return c, pluginsdk.Unavailable("read the account / 读取账号失败: " + err.Error())
-	}
-	if acc.Type != TypeDevice {
-		return c, flowError("unsupported_account_type", "only Codex device code accounts have official usage resets / 只有 Codex 设备码登录的账号支持官方用量重置")
 	}
 	c, err = parseCredentials(acc.CredentialsJSON)
 	if err != nil || c.AccessToken == "" {

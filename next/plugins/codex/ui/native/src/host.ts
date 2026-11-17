@@ -33,15 +33,9 @@ export interface CodexCredentials {
   /** Unix seconds. */
   expires_at?: number
   email?: string
-  /** ChatGPT plan, read from the tokens; either account type may carry it. */
+  /** ChatGPT plan, read from the tokens. */
   plan_type?: string
-  // codex_device
   chatgpt_account_id?: string
-  // chatgpt_siwc
-  client_id?: string
-  ext_agent_host_id?: string
-  /** The granted scope, space separated as OAuth sends it. */
-  scopes?: string
 }
 
 // ------------------------------------------------------------------ device code (codex_device)
@@ -69,24 +63,18 @@ export interface DevicePoll {
 export const startDevice = () => api().post<DeviceStart>('/auth/device/start', {})
 export const pollDevice = (sessionId: string) => api().post<DevicePoll>('/auth/device/poll', { session_id: sessionId })
 
-// ------------------------------------------------------------------ Sign in with ChatGPT (chatgpt_siwc)
+// ------------------------------------------------------------------ Sign in with Codex (codex_oauth)
 
-export interface SiwcStart {
+export interface OAuthStart {
   session_id: string
   authorize_url: string
 }
 
-/** Re-authorizing an account sends its issued client_id and host id. */
-export interface SiwcStartBody {
-  client_id?: string
-  ext_agent_host_id?: string
-}
+export const startOAuth = () => api().post<OAuthStart>('/auth/codex/start', {})
+export const exchangeOAuth = (sessionId: string, callbackUrl: string) =>
+  api().post<{ credentials: CodexCredentials }>('/auth/codex/exchange', { session_id: sessionId, callback_url: callbackUrl })
 
-export const startSiwc = (body: SiwcStartBody) => api().post<SiwcStart>('/auth/siwc/start', body)
-export const exchangeSiwc = (sessionId: string, callbackUrl: string) =>
-  api().post<{ credentials: CodexCredentials }>('/auth/siwc/exchange', { session_id: sessionId, callback_url: callbackUrl })
-
-// ------------------------------------------------------------------ official usage resets (codex_device)
+// ------------------------------------------------------------------ official usage resets
 
 /** One reset credit of the account (POST /reset-credits/list); times are Unix seconds. */
 export interface ResetCredit {

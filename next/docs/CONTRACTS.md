@@ -1513,7 +1513,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 | `v-model`（`modelValue` + `update:modelValue`） | 凭证对象 `Record<string, any>`（`credentials`）。新建时为空对象，编辑时为 `account.credentials` 的浅拷贝（与 schema 表单拿到的相同）。组件通过 `update:modelValue` 交回要保存的完整凭证对象 |
 | `mode` | `'create'` \| `'edit'` |
 | `account` | 编辑时为账号对象（含 `id`、`type`、`credentials` 等）；新建时为 `null` / 未传 |
-| `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `chatgpt_siwc`），靠 `accountType.type` 区分 |
+| `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分 |
 | `errors` | `Record<string, string>`：保存或拉取模型被服务端拒绝时，`invalid_argument` 的 `details.fields[]`（§3.1）中 `credentials.<字段>` 的那些，键去掉 `credentials.` 前缀（`web/src/views/accounts/editorErrors.ts` `splitFieldErrors`）；用户再改凭证即清空。组件应显示在对应输入旁 |
 
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
@@ -5943,7 +5943,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 **codex 插件 0.1.1**：
 
-- WebSocket 协议返回与 HTTP 相同的 body patch：`store=false`；字符串 `input` 转成一条 user 消息的数组（空白字符串，即空串或只含空白字符的串，转 `[]`）；`role:"system"` 的 input 项改成 `role:"developer"`（见下）；`codex_device` 缺 `instructions` 时补 `""`；删除上游不接受的字段。WebSocket 下不包含 stream 相关字段（不删 `stream_options`，也从不设置 `stream`），`chatgpt_siwc` 不删 `previous_response_id`（同一上游连接内可续接）。
+- WebSocket 协议返回与 HTTP 相同的 body patch：`store=false`；字符串 `input` 转成一条 user 消息的数组（空白字符串，即空串或只含空白字符的串，转 `[]`）；`role:"system"` 的 input 项改成 `role:"developer"`（见下）；`codex_device` 缺 `instructions` 时补 `""`；删除上游不接受的字段。WebSocket 下不包含 stream 相关字段（不删 `stream_options`，也从不设置 `stream`），`chatgpt_siwc` 不删 `previous_response_id`（同一上游连接内可续接；该账号类型已于 2026-11-17 删除，见 PLUGIN-CODEX.md §13）。
 - system → developer（两种账号类型、HTTP 与 WebSocket）：Sign in with ChatGPT 上游拒绝 `role:"system"` 的 input 项。manifest `requestFields` 增加查询 `input.#.[role].#(=="system")#`：`input` 是数组时按项序返回 `["system"]`（角色恰为 `"system"`）或 `[]`（其他角色、无角色、非对象），每项约 3 字节，从不回显其他内容；`input` 是字符串或缺失时字段不存在（字符串由上一条转换成 user 消息，无需改角色）；`input` 是对象时为 `[]`。插件据此为每个 system 项生成 `input.<i>.role` = `"developer"` 的 `OP_SET`，每个请求最多 256 个（每个 patch 在核心是一次整体复制），超出的项保持原样由上游报错。
 - 已知限制：字符串 `input` 的字段 `[input]|#(%"*")` 会回显整段字符串，超过插件 gRPC 接收上限（4 MiB）的字符串输入会使调用失败。
 

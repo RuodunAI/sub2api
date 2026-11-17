@@ -123,7 +123,7 @@ func TestBuildQuotaRequest(t *testing.T) {
 		name, typ, creds string
 		code             codes.Code
 	}{
-		{"siwc", TypeSIWC, `{"access_token":"at","client_id":"c"}`, codes.Unimplemented},
+		{"oauth", TypeOAuth, `{"access_token":"at"}`, codes.Unimplemented},
 		{"no token", TypeDevice, `{"refresh_token":"rt"}`, codes.FailedPrecondition},
 		{"bad json", TypeDevice, `{`, codes.InvalidArgument},
 	} {

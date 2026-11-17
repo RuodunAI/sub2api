@@ -9,6 +9,7 @@
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
 - **额度响应头可按窗口时长命名**（CONTRACTS §105）：manifest `quota.headers[].windowMinutes` 指向携带窗口分钟数的响应头，窗口名按时长生成（300 → `5h`、10080 → `7d`），供 codex 每次响应按 `x-codex-*` 头更新用量窗口。
+- **codex：新增 Sign in with Codex，删除 Sign in with ChatGPT**（docs/PLUGIN-CODEX.md §13）：ChatGPT（Codex）账号的登录方式改为“Device Code”（设备码，原有）和新增的“Sign in with Codex”（Codex CLI 的浏览器登录，授权后把 `localhost:1455` 回调网址粘回表单），两者令牌、上游、刷新、用量窗口与官方重置次数完全相同。Sign in with ChatGPT（`chatgpt_siwc`）账号类型整体删除，没有兼容处理：**升级前必须手动删除已有的 Sign in with ChatGPT 账号**。
 
 ## 2026-11-17
 

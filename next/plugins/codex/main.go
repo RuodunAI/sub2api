@@ -1,6 +1,6 @@
 // Command codex is the sub2api-next codex plugin: ChatGPT (Codex) account
 // types for the built-in openai platform that use the operator's own ChatGPT
-// subscription (Codex device code login, Sign in with ChatGPT).
+// subscription (Codex device code login, Sign in with Codex).
 package main
 
 import (

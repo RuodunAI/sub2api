@@ -264,7 +264,7 @@ func (p *Plugin) BuildQuotaRequest(_ context.Context, in *pluginv1.BuildQuotaReq
 // backendHeaders are the headers of a codex_device request to the ChatGPT
 // backend's JSON endpoints (usage, reset credits).
 func backendHeaders(c credentials) map[string]string {
-	h := upstreamHeaders(TypeDevice, c)
+	h := upstreamHeaders(c)
 	h["accept"] = "application/json"
 	return h
 }

@@ -1,37 +1,25 @@
 <script setup lang="ts">
-// Sign in with ChatGPT (chatgpt_siwc): Generate → POST /auth/siwc/start
-// (re-authorizing sends the account's client_id and ext_agent_host_id) → the
-// link, opened in a new window → the operator pastes the 127.0.0.1 callback
-// address → POST /auth/siwc/exchange → credentials.
+// Sign in with Codex (codex_oauth), the Codex CLI's browser login: Generate →
+// POST /auth/codex/start → the link, opened in a new window → the operator
+// pastes the localhost callback address the browser could not open → POST
+// /auth/codex/exchange → credentials. Re-authorizing runs the same flow.
 // Not a <form>: the panel sits inside the account editor's form.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { SAlert, SButton, SCopyButton, SField, SHint, SIcon, SInput, SLink, SSteps } from '@sub2api/ui'
-import { errorMessage, exchangeSiwc, startSiwc, useCodexHost, type CodexCredentials, type SiwcStart, type SiwcStartBody } from './host'
+import { errorMessage, exchangeOAuth, startOAuth, useCodexHost, type CodexCredentials, type OAuthStart } from './host'
 import { callbackShape } from './flow'
 
-const props = defineProps<{
-  /** Re-authorization of an existing account: its issued client_id and host id. */
-  reauth?: SiwcStartBody | null
-}>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
 const t = host.t
 
-const session = ref<SiwcStart | null>(null)
+const session = ref<OAuthStart | null>(null)
 const callback = ref('')
 const busy = ref<'' | 'start' | 'exchange'>('')
 const failure = ref('')
 const failedStep = ref<'' | 'start' | 'exchange'>('')
 const shape = computed(() => callbackShape(callback.value))
-const shapeHint = computed(() => (shape.value === 'invalid' || shape.value === 'denied' || shape.value === 'no_code' ? t(`siwc.shape.${shape.value}`) : ''))
-const reauthBody = computed<SiwcStartBody>(() => {
-  const r = props.reauth
-  const body: SiwcStartBody = {}
-  if (r?.client_id) body.client_id = r.client_id
-  if (r?.ext_agent_host_id) body.ext_agent_host_id = r.ext_agent_host_id
-  return body
-})
-const reauthorizing = computed(() => !!reauthBody.value.client_id)
+const shapeHint = computed(() => (shape.value === 'invalid' || shape.value === 'denied' || shape.value === 'no_code' ? t(`oauth.shape.${shape.value}`) : ''))
 // A failed exchange is stale once the operator pastes another address.
 watch(callback, () => {
   if (failedStep.value === 'exchange') {
@@ -58,7 +46,7 @@ async function generate() {
   failedStep.value = ''
   setBusy('start')
   try {
-    const s = await startSiwc(reauthBody.value)
+    const s = await startOAuth()
     if (!alive || gen !== generation) return
     session.value = s
     callback.value = ''
@@ -78,7 +66,7 @@ async function complete() {
   failedStep.value = ''
   setBusy('exchange')
   try {
-    const r = await exchangeSiwc(session.value.session_id, callback.value.trim())
+    const r = await exchangeOAuth(session.value.session_id, callback.value.trim())
     if (!alive || gen !== generation) return
     session.value = null
     callback.value = ''
@@ -103,18 +91,17 @@ function reset() {
 defineExpose({ reset })
 
 const steps = computed(() => [
-  { key: 'open', title: t('siwc.step1') },
-  { key: 'paste', title: t('siwc.step2') }
+  { key: 'open', title: t('oauth.step1') },
+  { key: 'paste', title: t('oauth.step2') }
 ])
 </script>
 
 <template>
-  <div class="cx-flow" data-testid="codex-siwc-flow" :data-phase="session ? 'link' : busy || 'idle'">
-    <SHint size="xs">{{ t('intro.siwc') }}</SHint>
-    <SHint v-if="reauthorizing" size="xs">{{ t('siwc.reauthKeepsHost') }}</SHint>
+  <div class="cx-flow" data-testid="codex-oauth-flow" :data-phase="session ? 'link' : busy || 'idle'">
+    <SHint size="xs">{{ t('intro.oauth') }}</SHint>
 
     <div v-if="!session" class="cx-actions">
-      <SButton variant="primary" icon="link" :loading="busy === 'start'" data-testid="codex-siwc-start" @click="generate">{{ t('siwc.generate') }}</SButton>
+      <SButton variant="primary" icon="link" :loading="busy === 'start'" data-testid="codex-oauth-start" @click="generate">{{ t('oauth.generate') }}</SButton>
     </div>
 
     <SSteps v-else :steps="steps" direction="vertical" :current="callback.trim() ? 'paste' : 'open'">
@@ -127,24 +114,24 @@ const steps = computed(() => [
               mono
               size="sm"
               class="cx-grow"
-              :aria-label="t('siwc.linkLabel')"
-              data-testid="codex-siwc-url"
+              :aria-label="t('oauth.linkLabel')"
+              data-testid="codex-oauth-url"
               @focus="($event.target as HTMLInputElement).select()"
             />
-            <SCopyButton :text="session.authorize_url" :label="t('siwc.copyLink')" icon-only variant="secondary" size="sm" />
+            <SCopyButton :text="session.authorize_url" :label="t('oauth.copyLink')" icon-only variant="secondary" size="sm" />
           </div>
           <div class="cx-actions">
-            <SLink :href="session.authorize_url" external class="cx-link" data-testid="codex-siwc-open">
-              <SIcon name="external" class="cx-icon" />{{ t('siwc.openLink') }}
+            <SLink :href="session.authorize_url" external class="cx-link" data-testid="codex-oauth-open">
+              <SIcon name="external" class="cx-icon" />{{ t('oauth.openLink') }}
             </SLink>
-            <SButton size="xs" variant="ghost" icon="refresh" :loading="busy === 'start'" :disabled="busy === 'exchange'" data-testid="codex-siwc-regenerate" @click="generate">{{ t('siwc.regenerate') }}</SButton>
+            <SButton size="xs" variant="ghost" icon="refresh" :loading="busy === 'start'" :disabled="busy === 'exchange'" data-testid="codex-oauth-regenerate" @click="generate">{{ t('oauth.regenerate') }}</SButton>
           </div>
         </div>
       </template>
       <template #step-paste>
         <div class="cx-step-body">
-          <SAlert tone="info" dense icon="info" data-testid="codex-siwc-note">{{ t('siwc.redirectNote') }}</SAlert>
-          <SField :label="t('siwc.callbackLabel')" size="sm">
+          <SAlert tone="info" dense icon="info" data-testid="codex-oauth-note">{{ t('oauth.redirectNote') }}</SAlert>
+          <SField :label="t('oauth.callbackLabel')" size="sm">
             <div class="cx-link-row cx-wrap">
               <SInput
                 v-model="callback"
@@ -153,22 +140,22 @@ const steps = computed(() => [
                 inputmode="url"
                 autocomplete="off"
                 :disabled="busy === 'exchange'"
-                :placeholder="t('siwc.callbackPlaceholder')"
-                data-testid="codex-siwc-callback"
+                :placeholder="t('oauth.callbackPlaceholder')"
+                data-testid="codex-oauth-callback"
                 @keydown.enter.prevent="complete"
               />
-              <SButton variant="primary" :loading="busy === 'exchange'" :disabled="!callback.trim() || shape === 'invalid'" data-testid="codex-siwc-complete" @click="complete">{{ t('siwc.complete') }}</SButton>
+              <SButton variant="primary" :loading="busy === 'exchange'" :disabled="!callback.trim() || shape === 'invalid'" data-testid="codex-oauth-complete" @click="complete">{{ t('oauth.complete') }}</SButton>
             </div>
           </SField>
-          <SHint v-if="shapeHint" tone="warning" size="xs" data-testid="codex-siwc-shape">{{ shapeHint }}</SHint>
+          <SHint v-if="shapeHint" tone="warning" size="xs" data-testid="codex-oauth-shape">{{ shapeHint }}</SHint>
         </div>
       </template>
     </SSteps>
 
-    <SAlert v-if="failure" tone="danger" dense :title="t('siwc.failed')" data-testid="codex-siwc-error">
+    <SAlert v-if="failure" tone="danger" dense :title="t('oauth.failed')" data-testid="codex-oauth-error">
       <span class="cx-break">{{ failure }}</span>
       <template v-if="failedStep === 'start'" #actions>
-        <SButton size="sm" icon="refresh" @click="generate">{{ t('siwc.generate') }}</SButton>
+        <SButton size="sm" icon="refresh" @click="generate">{{ t('oauth.generate') }}</SButton>
       </template>
     </SAlert>
   </div>
