@@ -8,8 +8,11 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.292：代理供应商、team 范围、账号所属（迁移 0103）
+## 2026-11-17
 
+### 核心 0.1.292：代理供应商、team 范围、账号所属（`e3f5d36aa`，迁移 0103，primary-first 停服；网关保持 0.1.135，内置插件与 0.1.291 相同）
+
+- **上线**：北京时间 15:09:58–15:11:03，计划 `09029830db9caf041b0e90f3e5917920` primary-first-v1 completed（清单 `54bc00a9…a682`，maintenance）；**停服约 10 秒**（`/readyz` 503：api.prophey.ai 15:10:12.9→15:10:23.0，ovh 3130 15:10:12.7→15:10:22.7）；迁移 0103 于 15:10:17 应用，schema `d78ba831…333c` → `ab35f2f6…187d`。new-api 渠道 392 没有关（用户在决策卡上选“发布，不关 392”），不备份数据库。升级前预检 ①②③ 都干净：没有 key 为 `supplier_agent` 的自定义角色，没有能分配供应商的自定义角色，user、supplier 的核心授予与默认值相同（supplier 由升级补上 `usage:account:read:own`）。5xx：发布前 14:40–15:09:58 共 2496 次 0 个，计划期间 42 次 0 个（15 个 499 是停服时客户端断开），之后 0 个。核验：两节点核心 0.1.292；`schema_migrations` 有 `0103_user_owner.sql`；内置角色 `supplier_agent` 已建（20 条核心授予，含 `account:read:team`、`usage:account:read:team`、`user:read/create/update:team`）；129 个账号的 `owner_id` 全部回填（空值 0，`created_by` 本来就没有空的）；9 个内置插件不变。**回滚**：不能回退（网关拒绝跨 schema，0.1.291 也拒绝带 0103 记录的库），线上出问题修复前进。
 契约见 CONTRACTS §103。
 
 - **账号所属**：账号新增“所属”（`accounts.owner_id`），表示账号属于哪个用户。新建时就是创建者，管理员可以用 `PUT /accounts/:id/owner` 改成别的用户（新权限 `account:owner:update`，admin 自动获得，operator、供应商没有；审计 `account.owner`）。“创建者”只记录谁建的，不再决定归属：供应商的“自己的账号”、账号列表“只看我的”、管理员停用锁定、插件账号路由都改按所属判断，管理员把账号改给别人后，原创建者就看不到、改不了它。账号 JSON 加 `owner_id`、`owner_email`，列表可按 `owner_id=` 筛选。代理不变，仍按创建者。
@@ -28,8 +31,6 @@
 **迁移 0103**（`0103_user_owner.sql`，可重跑，只加列、约束和索引）：`users.owner_id`（外键、不能指向自己、部分索引）、`users.owner_path`（`bigint[] NOT NULL DEFAULT '{}'`，按 `owner_id` 递归算出已有行的路径，只改不同的行，重跑结果相同；最后一个必须等于 `owner_id` 的约束；GIN 索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
 
 **发布**：核心 0.1.292 带迁移 0103，走 `primary-first-v1`：旧核心建账号不写 `owner_id`，迁移之后不能再有旧核心建账号，所以不用滚动升级。0103 只加列、约束、索引，算出用户的上级路径（线上还没有上级，全是空路径）并回填 `accounts.owner_id = created_by`（只填空的，重跑不改已改过的所属，也不改账号的其他列和额度快照）；5 万用户、2 万账号的合成库上整个迁移约 0.36 秒（几乎都是回填），用户路径的计算、约束与 GIN 索引在 5 万用户上另加约 0.06 秒，已迁移的库重跑约 10 毫秒。**升级前预检**（在主库上执行，任何一项有结果先处理再建升级计划）：① `SELECT id, key FROM roles WHERE key = 'supplier_agent' AND NOT builtin;` 有行时，新核心在迁移之后启动同步失败（`builtinKeyConflict`，日志给出改名 SQL），主节点起不来、集群停在维护：先在线上改名，`BEGIN; UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1; UPDATE casbin_rule SET v0 = 'r:supplier_agent_custom' WHERE ptype = 'p' AND v0 = 'r:supplier_agent'; UPDATE casbin_rule SET v1 = 'r:supplier_agent_custom' WHERE ptype = 'g' AND v1 = 'r:supplier_agent'; UPDATE roles SET key = 'supplier_agent_custom' WHERE id = <id>; COMMIT;`（授予与持有者跟着走；已经卡在维护时同样改名后 `sub2api-gateway resume`）；② `SELECT r.key FROM roles r JOIN role_assignable_roles ra ON ra.role_id = r.id JOIN roles s ON s.id = ra.assignable_role_id WHERE s.key = 'supplier' AND NOT r.builtin;` 列出能分配供应商的自定义角色：升级后 supplier 多了 `usage:account:read:own`（`rev` 2），持有这些角色的人自己没有它就不能再分配、管理供应商（`within`），要给该角色加 `usage:account:read:own`（admin、operator 已自带）；③ user、supplier 角色的核心授予与默认值不同时：supplier 有人持有，升级时补回缺少的全部默认权限（包括管理员删掉的，审计 `authz.sync.grant` `defaults_rev = 2`），多出的授予保留；代理供应商的核心权限按代码默认值，持有者的授予超出它（user、supplier 多出的权限或别的角色）时代理管不了这些用户（403 `missing`），需要时给 supplier_agent 加上同样的权限。**回退**：托管部署不能经升级计划回到 0.1.291（网关拒绝跨 schema），0.1.291 核心也拒绝带 0103 记录的库（`database includes migrations unknown to this core`），线上出问题修复前进。非托管部署实测 0.1.291 能在迁移过 0103 的库上照常运行（新列可空或有默认值，旧核心建用户不碰上级，按 `created_by` 判断，改过所属的账号回到创建者名下）；这期间旧核心新建的账号 `owner_id` 为空，再升到 0.1.292 前删掉 `schema_migrations` 里的 `0103_user_owner.sql`，启动时重跑 0103 补上。
-
-## 2026-11-17
 
 ### 核心 0.1.291 + 网关 0.1.135：删除为网关 0.1.133 与回退到 0.1.288 保留的代码，修正升级预检误报（`a0eac3c38`，滚动；无核心迁移，内置插件与 0.1.290 相同）
 
