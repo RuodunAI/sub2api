@@ -8,6 +8,15 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 核心 0.1.300：删除内置插件 custom（自定义上游）（迁移 0104，主节点优先）
+
+- **升级前**：每个集群先在控制台删除 custom 类型的账号（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，账号类型 `custom_*`）。新版不再认识这些类型，迁移 0104 卸载插件后它们只显示为插件已卸载。
+- **删除内置插件 custom**（CONTRACTS §106）：接任意 OpenAI、Anthropic、Gemini 兼容接口，改用内置 openai、anthropic、gemini 插件的 API Key 账号并填 Base URL，协议转换由平台做。新建账号不再有“自定义上游”一组。`custom` 键不能再安装（任何来源、任何签名都返回 403 `plugin_key_reserved`）。
+- **账号上游层一并删除**：自定义上游账号的“Key 发送方式”“追加请求头”“修改路径”“放开过滤字段”这些设置（账号 settings 的 `upstream`）没有了，核心不再读取；声明式上游的其余功能不变。`GET /account-types` 不再返回 `upstream`、`pass_headers`。
+- **插件 SDK**：清单 `accountTypes[].upstream` 删除账号层开关，`upstream.Resolve` 去掉账号参数（CONTRACTS §106.2）。
+- **@sub2api/ui、@sub2api/host、@sub2api/vite-preset 3.18**：`@sub2api/host` 不再导出 `UpstreamEditor`，schema 表单控件 `upstream-editor` 删除。内置插件都没有用它。
+- **迁移 0104**：删除 custom 的插件行（连同版本与授权）并记入已退役的插件键；它的账号、使用记录、账本与审计保留。单向，回退用升级前的备份。
+
 ### 核心 0.1.299：codex 0.1.9 设备码授权引导、验证页链接一键复制、中文类型名标题重复修复（无迁移，滚动）
 
 只升级内置 codex 到 0.1.9（只改界面与清单文字，需要核心 0.1.297 及以上），核心代码与 0.1.298 相同。

@@ -1192,7 +1192,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 
 manifest `accountTypes[].guardedSettings`（可选）：`[{field, allowed:[...]}]`。`field` 必须在 `settingsFields` 中；`allowed` 非空、每项为绝对 `http(s)` URL。三个内置账号类型插件声明 `[{field:"base_url", allowed:["https://api.anthropic.com"]}]`（openai `https://api.openai.com`，gemini `https://generativelanguage.googleapis.com`）；relay 不声明（它本来就是自定义地址），没声明的类型不受限。
 
-manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint、账号级 `upstream` 模板）。未声明时由声明式 `upstream` 推出（`base_url`，`accountConfig` 时再加 `upstream`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复；schema 表单里出现 `base_url` 或 `*_endpoint` 却未声明也推不出时，打包工具给警告（`check.Warnings`），不阻止安装。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
+manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复；schema 表单里出现 `base_url` 或 `*_endpoint` 却未声明也推不出时，打包工具给警告（`check.Warnings`），不阻止安装。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
 
 校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
 
@@ -1304,7 +1304,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.17.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.18.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -2224,10 +2224,10 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 | 列表 | 默认值 | 含义 |
 |---|---|---|
-| `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex custom` | 安装，首次安装即启用 |
+| `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex` | 安装，首次安装即启用 |
 | `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
-（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，`custom`（自定义上游，runtime none）见 docs/UPSTREAM-DECLARATIVE.md §5，其余只安装插件见各自章节。）
+（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节；`custom` 在 0.1.300 删除，见 §106。）
 
 同一个插件同时出现在两份列表里时构建失败。第二份列表写进内建目录的 **`install-only.txt`**（每行一个 key，`#` 注释、空行、CRLF 都容忍），核心的 `EnsureBuiltin`（`server/internal/plugin/install/builtin.go`）读它。
 
@@ -6007,27 +6007,26 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **代价**：没有插件声明这个点时没有任何开销。声明了的插件每次尝试多一次 RPC，在钩子内同步执行期间占着账号的并发名额，所以插件应该尽量用 `skip_attempt_hooks` 在请求钩子里结束。
 - 测试：`gateway/attempt_hook_test.go`（每次尝试都调用并带账号、拒绝不换账号、`skip_attempt_hooks` 只跳过本插件、补丁被拒、WebSocket 每条消息）、`sdk/manifest/check/attempt_hook_test.go`。
 
-## 86. 声明式上游、只有清单的插件与自定义上游（2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
+## 86. 声明式上游、只有清单的插件与自定义上游（自定义上游已在 0.1.300 删除，§106；2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”第 1 期，规格见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md)）
 
 起因：三个 API Key 插件和 relay 的代码几乎是同一套模板（上游路径、鉴权头、固定头、base_url 规范化、错误归类各写一遍）；接一个兼容站点也得写插件。改为核心按清单声明构造上游请求，并新增不用写插件的“自定义上游”账号类型。
 
 ### 86.1 上游声明
 
-- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`accountConfig`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`、`test`、`models{path, idPath, stripPrefix}`。
-- 合并：预设 → 清单 → 账号层（只有 `accountConfig` 类型），按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
+- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`、`test`、`models{path, idPath, stripPrefix}`。
+- 合并：预设 → 清单，按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
 - 模板变量：`{api_key}`（只能在 auth 值和路径查询串）、`{base_url}`（auth 和请求头）、`{model}`（映射和账号参数覆盖之后的上游模型；插件 patch 改了模型时只重算 URL，请求头和查询值不变）、`{credentials.<k>}`（k 须在 `credentials.fields`，不能是 api_key/base_url）、`{client_header.<名>}`（须在该类型的 passHeaders 里、不在 §81 禁止列表，只能用在普通请求头）。
 - `auth.name` 只能是凭证头（authorization、x-api-key、x-goog-api-key、api-key、cookie）或普通头名，不能是逐跳、分帧、客户端地址或网关控制头。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = routes 列出的协议（须与 `platforms[].endpoints` 一致）加核心能转换到它们的协议；调度不变。
-- 校验：`sdk/manifest/check/upstream.go`（打包、安装、核心加载共用）；引擎 `sdk/upstream`（`Resolve` → `Profile.Validate/Build/URL/Test/Models/Classify/AuthHeader/PrepareBody/ForAccount`）。
+- 校验：`sdk/manifest/check/upstream.go`（打包、安装、核心加载共用）；引擎 `sdk/upstream`（`Resolve` → `Profile.Validate/Build/URL/Test/Models/Classify/AuthHeader/PrepareBody`）。
 
 ### 86.2 核心
 
-- `server/internal/plugin/declarative`：声明了 upstream 的账号类型由核心本地实现校验凭证、构造请求、错误归类、测试请求、模型列表，不走 gRPC；按账号缓存 Profile（设置和凭证的 sha256，上限 1024，随注册代际重建）。不实现 `core.ExecutePlugin`，走 BuildUpstreamRequest + `forwardBuilt`。账号生命周期、模型可用性等可选接口在插件实现时转给插件，否则 Unimplemented。
-- 网关只通过可选接口 `core.DeclaredUpstream`（`Upstream`、`PrepareBody`、`UpstreamURL`、`AuthHeader`）感知声明式类型。
+- `server/internal/plugin/declarative`：声明了 upstream 的账号类型由核心本地实现校验凭证、构造请求、错误归类、测试请求、模型列表，不走 gRPC。不实现 `core.ExecutePlugin`，走 BuildUpstreamRequest + `forwardBuilt`。账号生命周期、模型可用性等可选接口在插件实现时转给插件，否则 Unimplemented。
+- 网关只通过可选接口 `core.DeclaredUpstream`（`PrepareBody`、`UpstreamURL`、`SplitHeaders`、`AuthHeader`）感知声明式类型。
 - `registry.addAccountTypes`：声明了 upstream 的类型绑定声明式客户端，不再要求插件实现 platform adapter，也不要求 `accounts.credentials` 授权（凭证只在核心内使用）；`extend` 仍要求两者。声明解析失败的类型丢弃并记 ERROR。
 - `extend: true`：核心先按声明构造，再调插件 BuildUpstreamRequest，请求带 `base`（`BuildUpstreamRequestRequest` 字段 6）；插件的头覆盖声明的头（鉴权头除外），patches 接在声明的之后，url、upstream_model 非空时替换。
-- 接口：`GET /account-types` 对声明式类型返回 `upstream`（解析到清单层的声明，形状同 manifest）；所有类型返回 `pass_headers`。账号层 `settings.upstream` 经 ValidateCredentials 校验，字段错误为 `credentials.upstream.<路径>`。
 
 ### 86.3 只有清单的插件（`runtime: "none"`）
 
@@ -6043,22 +6042,19 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 | gemini | 0.3.0 | runtime none，`{"preset":"gemini","filterFields":[]}` |
 | relay | 0.3.0 | runtime none，preset anthropic、base_url 必填、不设默认协议 |
 | anthropic | 0.3.0 | 账号类型声明 preset anthropic；只保留模型目录（/models 路由、插件库） |
-| custom（新） | 0.1.0 | runtime none，内置启用；`custom_openai`、`custom_anthropic`、`custom_gemini`，`creationGroup: "custom"` |
+| custom（新，0.1.300 删除，§106） | 0.1.0 | runtime none，内置启用；自定义上游账号类型 |
 
 - 四个老插件的行为由黄金样例保证（`sdk/upstream/testdata/golden`，旧插件代码对约 1500 个输入采集，新引擎逐项回放一致）。样例已冻结，旧代码和采集器已删除，不再重新生成。唯一差异：relay 的测试请求现在带 `model` 和 `usage_protocol`。
-- 自定义上游：base_url 必填、Key 任意 8–512 个可见字符、`accountConfig: true`、默认过滤 `filterFields`（预设的 service_tier、safety_identifier、inference_geo、speed 中该协议适用的）；表单字段 `api_key`、`base_url`、`upstream`（`ui:widget: upstream-editor`）。账号层只能改 auth、headers、已声明协议的 path 和 `allowFields`（放开默认过滤字段）。暂不能按账号关掉单个协议。
-- `custom` 加入保留的官方插件名。
 
 ### 86.5 请求构造顺序
 
 原则：账号参数覆盖（§84）先执行，插件在它之后。插件改写是插件自己的内部特殊逻辑，插件知道前面已经执行过账号参数覆盖，所以排在覆盖之后，看到覆盖结果再改；请求体和请求头一致，鉴权头除外（用户 2026-11-09 定）。
 
-- 请求体：模型映射、引用与资源映射、强制流式 → 协议转换 → 过滤字段（账号没放开的）→ 预设和清单的 paramOverride → **账号参数覆盖（§84）** → BuildUpstreamRequest（`meta.model` 为覆盖后的模型）：路由 patches、插件（extend、老插件、执行路径转发）的 patch → 插件 patch 改了模型时声明式类型按最终请求体的模型重算 URL → 再次强制 stream。普通转发、插件执行路径、WebSocket 每轮一致。
+- 请求体：模型映射、引用与资源映射、强制流式 → 协议转换 → 过滤字段 → 预设和清单的 paramOverride → **账号参数覆盖（§84）** → BuildUpstreamRequest（`meta.model` 为覆盖后的模型）：路由 patches、插件（extend、老插件、执行路径转发）的 patch → 插件 patch 改了模型时声明式类型按最终请求体的模型重算 URL → 再次强制 stream。普通转发、插件执行路径、WebSocket 每轮一致。
 - 请求头（后面的盖前面的）：声明构造的头（inbound 按 passHeaders 过滤、预设、清单、路由）→ 声明的 paramOverride 头 → 账号透传与粘性透传（只补没有的）→ 账号参数覆盖的头 → 插件的头（老插件构造的、extend 追加的，`core.DeclaredUpstream.SplitHeaders` 区分）→ **鉴权头按 auth 模板重写**（声明不产生值时删除）→ 核心资源头、额度头。WebSocket 握手同样分层（没有透传）。鉴权头只能由 auth 模板写，请求头覆盖、透传、插件头都改不了它。
 
 ### 86.6 控制台
 
-- `web/src/views/accounts/upstream/`：`upstream-editor` 表单控件。默认值取账号类型的 `upstream`，可按项和整体恢复默认；只写和默认不同的项，全部默认时不存。服务端字段错误显示在对应输入上；客户端提示与服务端规则一致，只提示不拦截。
 - 请求参数覆盖的提示文字为“在模型映射之后、插件改写之前执行，插件还可以再改”。
 
 ### 86.7 兼容与上线
@@ -6089,8 +6085,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
-- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`、`UpstreamEditor`，v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
-- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`、`upstream-editor`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
+- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`，v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
+- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
 - `SModal` / `SFormModal` 新增 `fixed`（只是新增属性，更早的核心忽略、平稳降级，见 §23 组件表）。
 
 ### 87.4 编辑页分区插槽 `account.editor.section`
@@ -7732,3 +7728,36 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - 采样、限频、写库（§44.3）不变：网关对每个 2xx、429、101 响应读取声明的头。
 - WebSocket 会话中的错误事件（`type: "error"`，`status` ≥ 400）带顶层 `headers` 对象时（Codex 后端：`{"type":"error","status":429,"error":{...},"headers":{"x-codex-primary-used-percent":"100.0",...}}`），核心把它当作这次错误的响应头：头名转小写，字符串与数字值转成文本（其他类型忽略），交给插件 `ClassifyError` 的 `headers`，并按上一条采样（429 被接受）。没有 `headers` 对象的错误事件照旧不带头分类、不采样。
 - 随核心 0.1.297 发布。旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到 0.1.297。
+
+## 106. 删除内置插件 custom 与账号上游层（2026-11-17，用户要求；迁移 0104，核心 0.1.300）
+
+用户决定删除内置插件 `custom`（“自定义上游（OpenAI/Anthropic/Gemini 兼容）”，§86.4）：内置 openai、anthropic、gemini 插件的 API Key 账号已经能填 Base URL 接兼容端点，协议转换由平台做（§88），不在账号层做。`custom` 是唯一声明账号上游层的插件，这一层（账号 settings 字段 `upstream` 覆盖鉴权方式、追加请求头、改各协议路径、放开默认过滤字段）随它整体删除，不留兼容代码。最后的源码是 `845d9aa47`（`git show 845d9aa47:next/plugins/custom/manifest.json`）。§86 里关于自定义上游与账号层的内容已删去，UPSTREAM-DECLARATIVE.md §5 只留一段说明。
+
+### 106.1 插件
+
+- `next/plugins/custom` 删除（`go.work`、`plugins/released.json`、`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS` 随之去掉）。它的 `custom_*` 账号类型不再存在。
+- 插件键 `custom` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.300）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.300。`TestReservedCoverRepo` 双向核对：仓库里的插件都保留、保留的键都在仓库里、已删除的键不在仓库里。
+
+### 106.2 SDK 与清单（改契约）
+
+- `manifest.Upstream` 删除 `accountConfig`。清单再写它就是未知字段，`upstream.Resolve` 拒绝，校验报在 `accountTypes[i].upstream`；`sdk/manifest/check` 删除它的两条检查（必须是 schema 表单、`settingsFields` 必须含 `upstream`）。
+- `manifest.AccountType.AddressFields()`：声明式类型只推出 `base_url`。
+- `sdk/upstream`：删除 `SettingsField`、`Profile.ForAccount` 与账号层的合并、形状检查；`Resolve(at, passHeaders)` 去掉账号参数，`Profile.AuthHeader()`、`Profile.PrepareBody(body, ctx)` 去掉账号参数（只为账号层能改鉴权头名、放开过滤字段而带），`Profile.Validate` 只做 `apikey.Spec` 校验，`filterFields` 总是删除。插件测试里的 `upstream.Resolve(&at, nil, nil)` 改为两个参数；测试文件不进插件包，内置插件不升版本。
+
+### 106.3 核心
+
+- `plugin/declarative`：每个入口都用账号类型自己的 Profile，删除按账号缓存的 Profile（§86.2）。
+- `core.DeclaredUpstream` 删除 `Upstream()`（只给控制台上游编辑器取默认值），`PrepareBody(body, in)`、`AuthHeader()` 去掉账号参数；网关的 `rewriteBody`、`rewriteTurn`、`writeDeclaredAuth` 随之不再传插件账号。
+- `GET /account-types` 不再返回 `upstream` 与 `pass_headers`（两者只给上游编辑器用）。
+- 账号 settings 里的 `upstream` 键不再被读取。
+
+### 106.4 控制台（UI 3.18）
+
+- `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.18.0，`HOST_UI_VERSION` 3.18.0。`host.components` 与 `HOST_COMPONENT_NAMES` 不再有 `UpstreamEditor`（§87.3），schema 表单控件 `upstream-editor` 删除，账号类型的 API 类型去掉 `upstream`、`pass_headers`。3.18 删除了一个导出，不是只加不改；内置插件都没有用过它。
+- 新建账号不再有“自定义上游”一组；接兼容端点用 openai、anthropic、gemini 的 API Key 类型并填 Base URL。
+
+### 106.5 数据库与升级
+
+- 迁移 0104（`0104_drop_custom_plugin.sql`）按 `install.Uninstall`（purge）卸载 `custom`：键记入 `plugin_key_retirements`，删除插件行（级联版本、暂存授权、宿主权限授权、rollout、运行节点与卸载屏障）和 `plugin_egress_domains`。`custom` 是 runtime none，没有声明过用户权限、数据库权限或任务，所以没有权限与授予（授权策略不变、`authz_meta` 不升）、schema、角色、插件迁移记录与定时任务要删。重跑不变。
+- `plugin_key = 'custom'` 的账号保留，在控制台显示为插件已卸载，由管理员删除；CHANGELOG 0.1.300 要求升级前先在控制台删除这些账号。使用记录、账本与审计保留。
+- 有迁移，按主节点优先（`primary-first-v1`）发布；单向，回退只能用升级前的备份。
