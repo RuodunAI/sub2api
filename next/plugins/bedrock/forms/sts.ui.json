@@ -1,0 +1,104 @@
+{
+  "ui:order": [
+    "access_key_id",
+    "secret_access_key",
+    "session_token",
+    "session_expires_at",
+    "region",
+    "inference_profile_prefix"
+  ],
+  "access_key_id": {
+    "ui:title": {
+      "en": "Access key ID",
+      "zh": "Access Key ID"
+    },
+    "ui:placeholder": "ASIA...",
+    "ui:options": {
+      "mono": true
+    },
+    "ui:help": {
+      "en": "The access key ID of temporary credentials (AWS STS: AssumeRole, GetSessionToken, IAM Identity Center).",
+      "zh": "临时凭证的 Access Key ID（AWS STS：AssumeRole、GetSessionToken、IAM Identity Center）。"
+    }
+  },
+  "secret_access_key": {
+    "ui:widget": "secret",
+    "ui:title": {
+      "en": "Secret access key",
+      "zh": "Secret Access Key"
+    },
+    "ui:help": {
+      "en": "The secret access key of the temporary credentials. The core signs every request with it (SigV4); it is stored encrypted and never sent upstream.",
+      "zh": "临时凭证的 Secret Access Key。核心用它为每个请求签名（SigV4）；加密保存，不会发送给上游。"
+    }
+  },
+  "session_token": {
+    "ui:widget": "secret",
+    "ui:title": {
+      "en": "Session token",
+      "zh": "Session Token"
+    },
+    "ui:help": {
+      "en": "The session token issued with the temporary credentials. Stored encrypted.",
+      "zh": "与临时凭证一起签发的 Session Token。加密保存。"
+    }
+  },
+  "session_expires_at": {
+    "ui:widget": "date-time",
+    "ui:title": {
+      "en": "Credentials expire at (optional)",
+      "zh": "凭证到期时间（可选）"
+    },
+    "ui:help": {
+      "en": "A reminder only: nothing reads it. Temporary credentials are not renewed automatically. Once they expire the upstream refuses the account and it is disabled; paste new credentials here and enable it again.",
+      "zh": "只作提示，不参与任何逻辑。临时凭证不会自动续期：到期后上游会拒绝该账号，账号被禁用；请在这里粘贴新的凭证并重新启用。"
+    }
+  },
+  "region": {
+    "ui:section": {
+      "title": {
+        "en": "Region and models",
+        "zh": "区域与模型"
+      },
+      "description": {
+        "en": "Claude requests go to InvokeModel with the body as the client sent it; only model, stream, anthropic_version and anthropic_beta are rewritten. Known limitation: fields Bedrock rejects that Claude Code puts inside the body (custom in tool definitions, scope and ttl in cache_control) are not removed. If the account serves Claude Code, remove them with the account's parameter override.",
+        "zh": "Claude 请求发往 InvokeModel，请求体按客户端原样转发，只改写 model、stream、anthropic_version 和 anthropic_beta。已知限制：不会清理 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义里的 custom，cache_control 里的 scope 和 ttl）。账号要给 Claude Code 用时，请在账号的参数覆盖里删除这些字段。"
+      }
+    },
+    "ui:title": {
+      "en": "Region",
+      "zh": "区域"
+    },
+    "ui:placeholder": "us-east-1",
+    "ui:help": {
+      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com. Leave empty for us-east-1.",
+      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com。留空使用 us-east-1。"
+    },
+    "ui:options": {
+      "mono": true
+    }
+  },
+  "inference_profile_prefix": {
+    "ui:widget": "select",
+    "ui:title": {
+      "en": "Cross-region inference prefix",
+      "zh": "跨区域推理前缀"
+    },
+    "ui:enumNames": [
+      {
+        "en": "None",
+        "zh": "不加"
+      },
+      "us",
+      "eu",
+      "apac",
+      "jp",
+      "au",
+      "global"
+    ],
+    "ui:help": {
+      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0. Many newer models can only be invoked through one. A model ID that already has a prefix (us., eu., apac., jp., au., us-gov., global.) and an ARN are sent as they are. Pick the prefix that matches the region.",
+      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 us.anthropic.claude-sonnet-4-5-20250929-v1:0。很多较新的模型只能通过它调用。已经带前缀（us.、eu.、apac.、jp.、au.、us-gov.、global.）的模型 ID 和 ARN 原样发送。请选择与区域相符的前缀。"
+    }
+  }
+}
