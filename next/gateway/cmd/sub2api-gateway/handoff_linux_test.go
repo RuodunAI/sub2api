@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,21 @@ import (
 	"testing"
 )
 
-const execChildEnv = "SUB2API_TEST_EXEC_CHILD"
+const (
+	execChildEnv = "SUB2API_TEST_EXEC_CHILD"
+	execEchoEnv  = "SUB2API_TEST_EXEC_ECHO"
+)
+
+// The program TestExecGatewayChild hands off to: a copy of this test binary
+// that prints "handed off". /bin/echo cannot stand in for it, because a
+// multi-call coreutils refuses to run under another executable name.
+func TestExecGatewayEcho(t *testing.T) {
+	if os.Getenv(execEchoEnv) == "" {
+		t.Skip("run by TestExecGatewayChild")
+	}
+	fmt.Println("handed off")
+	os.Exit(0)
+}
 
 // The child of TestExecGatewayRunsTheCheckedDescriptor: a hardened gateway
 // process that replaces itself with the binary in execChildEnv.
@@ -25,13 +40,17 @@ func TestExecGatewayChild(t *testing.T) {
 	if err := hardenProcess(); err != nil {
 		t.Fatal(err)
 	}
-	t.Fatal(execGateway(path, digest, []string{"echo", "handed", "off"}, nil))
+	t.Fatal(execGateway(path, digest, []string{"sub2api-gateway", "-test.run=^TestExecGatewayEcho$"}, []string{execEchoEnv + "=1"}))
 }
 
 func TestExecGatewayRunsTheCheckedDescriptor(t *testing.T) {
-	body, err := os.ReadFile("/bin/echo")
+	self, err := os.Executable()
 	if err != nil {
-		t.Skip("no /bin/echo to exec:", err)
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
 	}
 	bin := filepath.Join(t.TempDir(), "sub2api-gateway")
 	if err = os.WriteFile(bin, body, 0755); err != nil {
