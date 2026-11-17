@@ -8,7 +8,7 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心（下一版）：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
+### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
 
 - **修复：Sign in with ChatGPT 账号的流式请求不计费**（用户 11-17 报告，ec2pool 实测）：上游对 `stream:true` 返回 SSE 正文却标 `Content-Type: application/json`，网关按 JSON 处理，token、首字时间都记 0、计费状态 `free`，而且整段缓冲到结束才发给客户端。现在流式请求的 2xx 应答若正文以 SSE 字段开头就按事件流转发与计量（CONTRACTS §104.1）。已有的 0 token 记录不会补算。
 - **OpenAI Responses 缓存写入**：`input_tokens_details.cache_write_tokens` 计为缓存写入，按价格的 `cc` 计；价格没有 `cc` 的模型仍按输入价计（`inclusive` 语义下未计价的缓存写入留在输入里，CONTRACTS §104.3）。TPM 与实时 token 统计不含缓存写入，OpenAI 请求的这两个数会比以前略小。
@@ -16,16 +16,20 @@
 - **codex 0.1.6**：两种账号类型的默认模型改为上游实际可用的 `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（Sign in with ChatGPT 账号 `/v1/models` 的结果），测试模型改为 `gpt-6-luna`。已有账号的模型列表不变，要用新列表请在账号上重新获取模型。生图：Sign in with ChatGPT 上游明确拒绝 `image_generation` 工具（`subscription_sharing_unsupported_capability`），所以不加生图模型。
 - **openai 0.4.2**：API Key 账号默认模型补上上述 8 个新模型。
 
-### 网关 0.1.137：删除只给网关 0.1.135 留的 `signed_manifest` 列（首个由 GitHub Actions 发布的网关）
+## 2026-11-17
+
+### 网关 0.1.137：删除只给网关 0.1.135 留的 `signed_manifest` 列（首个由 GitHub Actions 发布的网关，`3c8cbbda9`）
+
+- **Release**：上游 PR #41（`eec4bb0d3`）、#42（`3c8cbbda9`，修两个门禁测试）合并后，在 `3c8cbbda9` 打 tag：`gateway-v0.1.137`（run 44054676233）与 `core-v0.1.295`（手动 run 44054717060，`schema_before` = 线上 0.1.294 的 `ab35f2f6…187d`），release 环境由用户批准，北京时间 17:44:50、17:45:15 发布。网关清单 sha256 `383be985…08e7`（amd64 二进制 `fc74f2f2…2618`），核心清单 sha256 `b62f6c8b04628ff00a155506737ce5103a7ff8b3d5f555222b224636a3720721`（amd64、arm64 两个 bundle）。第一次门禁失败（growth `TestManifestValid`、网关 handoff 测试用了 runner 上改名后拒跑的 `echo`），修好后删掉两个 tag 重打。
+- **上线（用户要求逐个节点手动处理，没有用一键更新）**：网关镜像 0.1.137 在 ovh 从 `3c8cbbda9` 构建，二进制 sha256 与 Release 的 `fc74f2f2…2618` 一致；ccp 18:23:27 让出、18:24:05 就绪，ovh 18:24:21 让出、18:24:30 就绪（`.env.bak-gw136`），`signed_manifest` 列随后删除。核心用 Release 的清单与 bundle（摘要核对）放到 ovh 的发布目录导入，预检 rolling-v1、无阻断（expected_revision 560），计划 `4d9d574cffbb3aa86a3f7238c1f80b2e` 18:25:31→18:26:37 completed（先 ccp 后 ovh），`/readyz` 全程 200；9 个插件两节点 active、ready、restarts 0；之后在线检测两条线都没有更新。392 仍是管理员关闭状态，没有动；期间没有请求，5xx 0。
+- 回滚：核心用 0.1.294 清单 `013a7736…` 建 rolling 计划；网关把 `.env` 换回 `.env.bak-gw136` 后让出、重建（0.1.136 不读 `signed_manifest`）。ec2pool（非托管单机）没有动。
 
 - 两个节点都已运行不验签的网关 0.1.136，`updater.releases.signed_manifest` 不再有人读，网关启动时删除它，同时删掉 0.1.136 里把签名发布记录转成清单原文的一次性转换（线上已转换过）。还在 0.1.135 或更早的网关要先手动换到 0.1.136，再一键更新。
 - 这是第一个由 GitHub Actions 按 tag `gateway-v0.1.137` 构建、发在 Sub2API-Devs/sup2api Release 上的网关，线上可以在控制台“系统设置→在线更新”一键滚动更新。
 
-### 核心 0.1.295：首个由 GitHub Actions 发布的核心（代码与 0.1.294 相同，无迁移，滚动）
+### 核心 0.1.295：首个由 GitHub Actions 发布的核心（`3c8cbbda9`，代码与 0.1.294 相同，无迁移，滚动）
 
 - 第一个由 GitHub Actions 按 tag `core-v0.1.295` 构建、发在 Sub2API-Devs/sup2api Release 上的核心，清单不签名、摘要即清单原文的 sha256；内置插件版本与 0.1.294 相同，仍用插件密钥 sup2api-plugins-2026 签名（集群里已存的同版本插件包保持不变）。代码与线上 0.1.294 相同，用来验证从 GitHub 一键更新核心的整条流程。
-
-## 2026-11-17
 
 ### 核心 0.1.294：角色复制改为“合并”和“覆盖”（`1ca4d32de`，滚动，无迁移；只改控制台，网关保持 0.1.136，内置插件与 0.1.293 相同）
 
