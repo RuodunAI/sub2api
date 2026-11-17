@@ -231,6 +231,9 @@ type host struct {
 
 	mu sync.Mutex
 	db *gorm.DB
+
+	// settings caches what Settings read.
+	settings settingsCache
 }
 
 func newHost(info HostInfo, c pluginv1.HostServiceClient, e pluginv1.EgressServiceClient, installed bool, poolSize int32) *host {

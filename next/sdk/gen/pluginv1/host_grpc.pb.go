@@ -33,6 +33,13 @@ type HostServiceClient interface {
 	// group and optionally an account, for work outside a gateway request
 	// (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
 	GetEnvironment(ctx context.Context, in *GetEnvironmentRequest, opts ...grpc.CallOption) (*GetEnvironmentResponse, error)
+	// settings (always granted): the effective values of sections of the
+	// system settings, for work outside a gateway request (CONTRACTS §106).
+	// values_json holds the fields CONTRACTS lists for the section, never a
+	// secret; version changes exactly when the values do. No sections asks
+	// for all of them; an unknown section is INVALID_ARGUMENT. Changes are
+	// announced to every plugin process by PluginService.SettingsChanged.
+	GetSettings(ctx context.Context, in *GetSettingsRequest, opts ...grpc.CallOption) (*GetSettingsResponse, error)
 	// users.read (grant "users.read"): basic facts of console users by id, to
 	// check that a user exists or to show who they are (CONTRACTS §75.3). At
 	// most 500 ids per call; unknown and deleted users are left out.
@@ -247,6 +254,15 @@ func (c *hostServiceClient) ClearStickyBindings(ctx context.Context, in *ClearSt
 func (c *hostServiceClient) GetEnvironment(ctx context.Context, in *GetEnvironmentRequest, opts ...grpc.CallOption) (*GetEnvironmentResponse, error) {
 	out := new(GetEnvironmentResponse)
 	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.HostService/GetEnvironment", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *hostServiceClient) GetSettings(ctx context.Context, in *GetSettingsRequest, opts ...grpc.CallOption) (*GetSettingsResponse, error) {
+	out := new(GetSettingsResponse)
+	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.HostService/GetSettings", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -601,6 +617,13 @@ type HostServiceServer interface {
 	// group and optionally an account, for work outside a gateway request
 	// (CONTRACTS §74.3). Requests carry theirs in RequestMeta.environment.
 	GetEnvironment(context.Context, *GetEnvironmentRequest) (*GetEnvironmentResponse, error)
+	// settings (always granted): the effective values of sections of the
+	// system settings, for work outside a gateway request (CONTRACTS §106).
+	// values_json holds the fields CONTRACTS lists for the section, never a
+	// secret; version changes exactly when the values do. No sections asks
+	// for all of them; an unknown section is INVALID_ARGUMENT. Changes are
+	// announced to every plugin process by PluginService.SettingsChanged.
+	GetSettings(context.Context, *GetSettingsRequest) (*GetSettingsResponse, error)
 	// users.read (grant "users.read"): basic facts of console users by id, to
 	// check that a user exists or to show who they are (CONTRACTS §75.3). At
 	// most 500 ids per call; unknown and deleted users are left out.
@@ -794,6 +817,9 @@ func (UnimplementedHostServiceServer) ClearStickyBindings(context.Context, *Clea
 func (UnimplementedHostServiceServer) GetEnvironment(context.Context, *GetEnvironmentRequest) (*GetEnvironmentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetEnvironment not implemented")
 }
+func (UnimplementedHostServiceServer) GetSettings(context.Context, *GetSettingsRequest) (*GetSettingsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSettings not implemented")
+}
 func (UnimplementedHostServiceServer) GetUsers(context.Context, *GetUsersRequest) (*GetUsersResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetUsers not implemented")
 }
@@ -986,6 +1012,24 @@ func _HostService_GetEnvironment_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HostServiceServer).GetEnvironment(ctx, req.(*GetEnvironmentRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HostService_GetSettings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSettingsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HostServiceServer).GetSettings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/sub2api.plugin.v1.HostService/GetSettings",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HostServiceServer).GetSettings(ctx, req.(*GetSettingsRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1678,6 +1722,10 @@ var HostService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetEnvironment",
 			Handler:    _HostService_GetEnvironment_Handler,
+		},
+		{
+			MethodName: "GetSettings",
+			Handler:    _HostService_GetSettings_Handler,
 		},
 		{
 			MethodName: "GetUsers",
