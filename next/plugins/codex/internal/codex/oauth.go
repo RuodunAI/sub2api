@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -26,8 +25,9 @@ import (
 )
 
 // Authorization routes (manifest routes, scope admin, permission
-// codex:manage). The console's CodexAuthForm drives both flows; every route
-// call sends at most one request to OpenAI and never waits in a loop.
+// codex:manage). The console's CodexAuthForm drives both logins (device code
+// and Sign in with Codex); every route call sends at most one request to
+// OpenAI and never waits in a loop.
 //
 // Sessions live in the plugin KV (shared by every node), keyed by a random
 // session id. Answers follow CONTRACTS §3.1: a success is {"data": ...}
@@ -38,13 +38,13 @@ import (
 
 const (
 	kvDevice = "device_session"
-	kvSIWC   = "siwc_session"
+	kvCodex  = "codex_session"
 
 	// deviceTTL is how long a device code stays valid (Codex: 15 minutes).
 	deviceTTL = 15 * time.Minute
-	// siwcTTL is how long a Sign in with ChatGPT session waits for the
+	// codexTTL is how long a Sign in with Codex session waits for the
 	// pasted callback.
-	siwcTTL = 30 * time.Minute
+	codexTTL = 30 * time.Minute
 	// defaultInterval / maxInterval bound the device code poll interval.
 	defaultInterval = 5
 	maxInterval     = 60
@@ -77,7 +77,7 @@ func pkceChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-// newUUID returns a random UUIDv4.
+// newUUID returns a random UUIDv4 (a reset's redeem_request_id).
 func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -87,15 +87,6 @@ func newUUID() (string, error) {
 	b[8] = b[8]&0x3f | 0x80
 	h := hex.EncodeToString(b[:])
 	return h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], nil
-}
-
-// newHostID returns urn:uuid:<random UUIDv4>.
-func newHostID() (string, error) {
-	id, err := newUUID()
-	if err != nil {
-		return "", err
-	}
-	return "urn:uuid:" + id, nil
 }
 
 // authAnswer is one response of the authorization server.
@@ -271,40 +262,32 @@ func internalError(msg string, err error) *pluginv1.HTTPResponse {
 	return pluginsdk.ErrorResponse(http.StatusInternalServerError, "internal", msg+": "+err.Error())
 }
 
-const (
-	msgRandom = "cannot generate random values / 无法生成随机数"
-	msgHostID = "cannot create the host id / 无法生成宿主 ID"
-)
+const msgRandom = "cannot generate random values / 无法生成随机数"
 
 // ---------------------------------------------------------------- credentials
 
-// Credentials is the credential object both flows return: the fields the
+// Credentials is the credential object both logins return: the fields the
 // console stores on the account (docs/PLUGIN-CODEX.md §4).
 type Credentials struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token,omitempty"`
-	IDToken      string `json:"id_token,omitempty"`
-	ExpiresAt    int64  `json:"expires_at,omitempty"`
-	Email        string `json:"email,omitempty"`
-	PlanType     string `json:"plan_type,omitempty"`
-	// codex_device
+	AccessToken      string `json:"access_token"`
+	RefreshToken     string `json:"refresh_token,omitempty"`
+	IDToken          string `json:"id_token,omitempty"`
+	ExpiresAt        int64  `json:"expires_at,omitempty"`
+	Email            string `json:"email,omitempty"`
+	PlanType         string `json:"plan_type,omitempty"`
 	ChatGPTAccountID string `json:"chatgpt_account_id,omitempty"`
-	// chatgpt_siwc
-	ClientID       string `json:"client_id,omitempty"`
-	ExtAgentHostID string `json:"ext_agent_host_id,omitempty"`
-	// Scopes is the granted scope, space separated as OAuth sends it.
-	Scopes string `json:"scopes,omitempty"`
 }
 
 func (p *Plugin) credentialsFrom(tr tokenResponse) Credentials {
 	id := parseIdentity(tr.IDToken, tr.AccessToken)
 	return Credentials{
-		AccessToken:  strings.TrimSpace(tr.AccessToken),
-		RefreshToken: strings.TrimSpace(tr.RefreshToken),
-		IDToken:      strings.TrimSpace(tr.IDToken),
-		ExpiresAt:    p.expiresAt(tr),
-		Email:        id.Email,
-		PlanType:     id.PlanType,
+		AccessToken:      strings.TrimSpace(tr.AccessToken),
+		RefreshToken:     strings.TrimSpace(tr.RefreshToken),
+		IDToken:          strings.TrimSpace(tr.IDToken),
+		ExpiresAt:        p.expiresAt(tr),
+		Email:            id.Email,
+		PlanType:         id.PlanType,
+		ChatGPTAccountID: id.AccountID,
 	}
 }
 
@@ -317,6 +300,38 @@ func readToken(a authAnswer) (tokenResponse, error) {
 		return tr, errors.New("token response has no access_token / 令牌响应中没有 access_token")
 	}
 	return tr, nil
+}
+
+// redeemFailure is why redeemCode got no tokens: the route error code
+// (upstream_unavailable, token_exchange_failed) and an "English / 中文"
+// message.
+type redeemFailure struct{ code, msg string }
+
+// redeemCode exchanges an authorization code of the Codex client for its
+// tokens (one form POST to the token endpoint), the last step of both
+// logins; login names the flow in the log.
+func (p *Plugin) redeemCode(ctx context.Context, login, code, verifier, redirectURI string) (Credentials, *redeemFailure) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("client_id", CodexClientID)
+	form.Set("code_verifier", verifier)
+	a, err := p.postForm(ctx, p.ep.Auth+"/oauth/token", form)
+	if err != nil {
+		p.log.Warn("codex: "+login+" token exchange failed", "error", err.Error())
+		return Credentials{}, &redeemFailure{"upstream_unavailable", "cannot reach the OpenAI authorization server, start again / 无法连接 OpenAI 授权服务器，请重新开始: " + err.Error()}
+	}
+	if !a.ok() {
+		p.log.Warn("codex: "+login+" token exchange refused", "status", a.status, "oauth_error", oauthErrorCode(a.body))
+		return Credentials{}, &redeemFailure{"token_exchange_failed", "token exchange failed, start again / 换取令牌失败，请重新开始 (" + a.describe() + ")"}
+	}
+	tr, err := readToken(a)
+	if err != nil {
+		p.log.Warn("codex: "+login+" token answer unusable", "error", err.Error())
+		return Credentials{}, &redeemFailure{"token_exchange_failed", err.Error()}
+	}
+	return p.credentialsFrom(tr), nil
 }
 
 // ---------------------------------------------------------------- device code
@@ -545,147 +560,78 @@ func (p *Plugin) exchangeDeviceCode(ctx context.Context, approval authAnswer) *p
 		p.log.Warn("codex: device code approval without authorization_code or code_verifier")
 		return pollFailed("the approval answer has no authorization_code or code_verifier / 授权响应缺少 authorization_code 或 code_verifier")
 	}
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("code", code)
-	form.Set("redirect_uri", p.ep.Auth+"/deviceauth/callback")
-	form.Set("client_id", CodexClientID)
-	form.Set("code_verifier", verifier)
-	t, err := p.postForm(ctx, p.ep.Auth+"/oauth/token", form)
-	if err != nil {
-		p.log.Warn("codex: device code token exchange failed", "error", err.Error())
-		return pollFailed("token exchange failed, start again / 换取令牌失败，请重新开始: " + err.Error())
+	c, f := p.redeemCode(ctx, "device code", code, verifier, p.ep.Auth+"/deviceauth/callback")
+	if f != nil {
+		return pollFailed(f.msg)
 	}
-	if !t.ok() {
-		p.log.Warn("codex: device code token exchange refused", "status", t.status, "oauth_error", oauthErrorCode(t.body))
-		return pollFailed("token exchange failed, start again / 换取令牌失败，请重新开始 (" + t.describe() + ")")
-	}
-	tr, err := readToken(t)
-	if err != nil {
-		p.log.Warn("codex: device code token answer unusable", "error", err.Error())
-		return pollFailed(err.Error())
-	}
-	c := p.credentialsFrom(tr)
-	c.ChatGPTAccountID = parseIdentity(tr.IDToken, tr.AccessToken).AccountID
 	return pollAnswer(DevicePollResponse{Status: pollDone, Credentials: &c})
 }
 
-// ---------------------------------------------------------------- Sign in with ChatGPT
+// ---------------------------------------------------------------- Sign in with Codex
 
-// siwcSession is the KV state of one Sign in with ChatGPT authorization.
-type siwcSession struct {
+// codexSession is the KV state of one Sign in with Codex login.
+type codexSession struct {
 	State    string `json:"state"`
-	Nonce    string `json:"nonce"`
 	Verifier string `json:"code_verifier"`
-	HostID   string `json:"ext_agent_host_id"`
-	// ClientID is the issued client of a re-authorization ("" for a new
-	// registration, which uses dynamic_agent_client).
-	ClientID string `json:"client_id,omitempty"`
 }
 
-// SIWCStartRequest is the body of POST /auth/siwc/start; a re-authorization
-// sends the account's client_id and ext_agent_host_id.
-type SIWCStartRequest struct {
-	ClientID       string `json:"client_id"`
-	ExtAgentHostID string `json:"ext_agent_host_id"`
-}
-
-// SIWCStartResponse answers POST /auth/siwc/start.
-type SIWCStartResponse struct {
+// CodexStartResponse answers POST /auth/codex/start.
+type CodexStartResponse struct {
 	SessionID    string `json:"session_id"`
 	AuthorizeURL string `json:"authorize_url"`
 }
 
-// SIWCExchangeRequest is the body of POST /auth/siwc/exchange.
-type SIWCExchangeRequest struct {
+// CodexExchangeRequest is the body of POST /auth/codex/exchange.
+type CodexExchangeRequest struct {
 	SessionID   string `json:"session_id"`
 	CallbackURL string `json:"callback_url"`
 }
 
-// SIWCExchangeResponse answers POST /auth/siwc/exchange.
-type SIWCExchangeResponse struct {
+// CodexExchangeResponse answers POST /auth/codex/exchange.
+type CodexExchangeResponse struct {
 	Credentials Credentials `json:"credentials"`
 }
 
-// validClientID accepts an issued client id: printable, no spaces.
-func validClientID(s string) bool {
-	if s == "" || len(s) > 256 {
-		return false
-	}
-	for _, r := range s {
-		if r <= ' ' || r > '~' {
-			return false
-		}
-	}
-	return true
-}
-
-// handleSIWCStart creates the PKCE session and returns the authorize URL.
-// It sends nothing to OpenAI.
-func (p *Plugin) handleSIWCStart(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
-	var in SIWCStartRequest
-	if err := decodeOptional(req, &in); err != nil {
-		return errInvalidJSON(), nil
-	}
-	clientID := strings.TrimSpace(in.ClientID)
-	if clientID == SIWCDynamicClient {
-		clientID = ""
-	}
-	if clientID != "" && !validClientID(clientID) {
-		return pluginsdk.BadRequest("client_id", "pattern", "client_id is not a valid client id / client_id 格式不正确"), nil
-	}
-	hostID := strings.TrimSpace(in.ExtAgentHostID)
-	if hostID != "" && !hostIDPattern.MatchString(hostID) {
-		return pluginsdk.BadRequest("ext_agent_host_id", "pattern", "ext_agent_host_id must be urn:uuid:<UUID> / ext_agent_host_id 必须是 urn:uuid:<UUID>"), nil
-	}
+// handleCodexStart creates the PKCE session and returns the Codex CLI's
+// authorize URL. It sends nothing to OpenAI.
+func (p *Plugin) handleCodexStart(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
+	var s codexSession
 	var err error
-	if hostID == "" {
-		if hostID, err = newHostID(); err != nil {
-			return internalError(msgHostID, err), nil
-		}
-	}
-	s := siwcSession{HostID: hostID, ClientID: clientID}
-	for _, f := range []*string{&s.State, &s.Nonce} {
-		if *f, err = randomToken(24); err != nil {
-			return internalError(msgRandom, err), nil
-		}
+	if s.State, err = randomToken(24); err != nil {
+		return internalError(msgRandom, err), nil
 	}
 	if s.Verifier, err = randomToken(48); err != nil { // 64 characters
 		return internalError(msgRandom, err), nil
 	}
-	sessionID, err := p.newSession(ctx, kvSIWC, req, s, siwcTTL)
+	sessionID, err := p.newSession(ctx, kvCodex, req, s, codexTTL)
 	if err != nil {
 		return sessionNotStored(err), nil
 	}
 	q := url.Values{}
-	if clientID == "" {
-		q.Set("client_id", SIWCDynamicClient)
-		q.Set("agent_name_hint", SIWCAgentName)
-	} else {
-		q.Set("client_id", clientID)
-	}
-	q.Set("ext_agent_host_id", hostID)
+	q.Set("client_id", CodexClientID)
 	q.Set("response_type", "code")
-	q.Set("redirect_uri", SIWCRedirectURI)
-	q.Set("scope", SIWCScope)
-	q.Set("resource", SIWCResource)
+	q.Set("redirect_uri", CodexRedirectURI)
+	q.Set("scope", CodexScope)
 	q.Set("state", s.State)
-	q.Set("nonce", s.Nonce)
 	q.Set("code_challenge_method", "S256")
 	q.Set("code_challenge", pkceChallenge(s.Verifier))
-	return pluginsdk.DataResponse(SIWCStartResponse{
-		SessionID: sessionID, AuthorizeURL: p.ep.Auth + "/api/accounts/authorize?" + q.Encode(),
+	// As the Codex CLI asks: the workspaces in the id_token, and the
+	// ChatGPT-only consent without the API organization setup.
+	q.Set("id_token_add_organizations", "true")
+	q.Set("codex_cli_simplified_flow", "true")
+	return pluginsdk.DataResponse(CodexStartResponse{
+		SessionID: sessionID, AuthorizeURL: p.ep.Auth + "/oauth/authorize?" + q.Encode(),
 	}), nil
 }
 
 // callbackParams are the parameters of the redirect to the local callback.
 type callbackParams struct {
-	Code, State, ClientID, Scope string
-	Error, ErrorDescription      string
+	Code, State             string
+	Error, ErrorDescription string
 }
 
 // parseCallback reads what the operator pasted: the whole address of the
-// page the browser could not open (http://127.0.0.1:1455/auth/callback?...),
+// page the browser could not open (http://localhost:1455/auth/callback?...),
 // the address without its scheme, or only the query ("?code=..." or
 // "code=..."). Parameters in a fragment are read when the query has none.
 // HTML-escaped ampersands and surrounding quotes or angle brackets are
@@ -720,7 +666,6 @@ func parseCallback(raw string) (callbackParams, error) {
 	}
 	cb := callbackParams{
 		Code: strings.TrimSpace(values.Get("code")), State: strings.TrimSpace(values.Get("state")),
-		ClientID: strings.TrimSpace(values.Get("client_id")), Scope: strings.TrimSpace(values.Get("scope")),
 		Error: strings.TrimSpace(values.Get("error")), ErrorDescription: strings.TrimSpace(values.Get("error_description")),
 	}
 	if cb.Code == "" && cb.Error == "" {
@@ -729,15 +674,10 @@ func parseCallback(raw string) (callbackParams, error) {
 	return cb, nil
 }
 
-// hasScope reports whether the space separated scope list grants want.
-func hasScope(scopes, want string) bool {
-	return slices.Contains(strings.Fields(scopes), want)
-}
-
-// handleSIWCExchange checks the pasted callback against the session and
+// handleCodexExchange checks the pasted callback against the session and
 // exchanges the code for tokens (one request).
-func (p *Plugin) handleSIWCExchange(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
-	var in SIWCExchangeRequest
+func (p *Plugin) handleCodexExchange(ctx context.Context, req *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
+	var in CodexExchangeRequest
 	if err := decodeOptional(req, &in); err != nil {
 		return errInvalidJSON(), nil
 	}
@@ -749,75 +689,39 @@ func (p *Plugin) handleSIWCExchange(ctx context.Context, req *pluginv1.HTTPReque
 	if err != nil {
 		return flowError("invalid_callback", err.Error()), nil
 	}
-	var s siwcSession
-	found, err := p.loadSession(ctx, kvSIWC, id, req, &s)
+	var s codexSession
+	found, err := p.loadSession(ctx, kvCodex, id, req, &s)
 	if err != nil {
-		return pluginsdk.Unavailable("read the session / 读取会话失败: " + err.Error()), nil
+		return sessionUnreadable(err), nil
 	}
 	if !found {
 		return pluginsdk.ErrorResponse(http.StatusNotFound, "session_expired", "the authorization session expired; generate a new link / 授权会话已过期，请重新生成链接"), nil
 	}
-	if cb.Error != "" {
-		msg := cb.Error
-		if cb.ErrorDescription != "" {
-			msg += ": " + cb.ErrorDescription
-		}
-		p.log.Warn("codex: Sign in with ChatGPT authorization failed", "oauth_error", cb.Error)
-		if cb.Error == "access_denied" {
-			p.deleteSession(ctx, kvSIWC, id)
-			return flowError("access_denied", "authorization was denied / 授权被拒绝 ("+msg+")"), nil
-		}
-		return flowError("authorization_failed", "authorization failed / 授权失败 ("+msg+")"), nil
-	}
 	if cb.State != s.State {
 		return flowError("state_mismatch", "the callback does not belong to this authorization (state mismatch); paste the address from the latest link / 回调与本次授权不匹配（state 不一致），请粘贴最新链接的回调地址"), nil
 	}
-	clientID := s.ClientID
-	switch issued := cb.ClientID; {
-	case clientID == "" && (issued == "" || issued == SIWCDynamicClient):
-		return flowError("registration_incomplete", "the callback has no issued client_id: the registration did not complete; authorize again / 回调中没有发放的 client_id，注册未完成，请重新授权"), nil
-	case clientID == "":
-		if !validClientID(issued) {
-			return flowError("invalid_callback", "the callback client_id is not valid / 回调中的 client_id 格式不正确"), nil
-		}
-		clientID = issued
-	case issued != "" && issued != clientID:
-		return flowError("client_mismatch", "the callback client_id differs from the account's; re-authorize with the same ChatGPT account / 回调中的 client_id 与账号已有的不同，请用同一个 ChatGPT 账号重新授权"), nil
+	if cb.Error != "" {
+		return p.callbackRefused(ctx, id, cb), nil
 	}
+	c, f := p.redeemCode(ctx, "Sign in with Codex", cb.Code, s.Verifier, CodexRedirectURI)
+	if f != nil {
+		return upstreamError(f.code, f.msg), nil
+	}
+	p.deleteSession(ctx, kvCodex, id)
+	return pluginsdk.DataResponse(CodexExchangeResponse{Credentials: c}), nil
+}
 
-	form := url.Values{}
-	form.Set("grant_type", "authorization_code")
-	form.Set("client_id", clientID)
-	form.Set("code", cb.Code)
-	form.Set("code_verifier", s.Verifier)
-	form.Set("redirect_uri", SIWCRedirectURI)
-	form.Set("resource", SIWCResource)
-	a, err := p.postForm(ctx, p.ep.Auth+"/api/accounts/oauth/token", form)
-	if err != nil {
-		p.log.Warn("codex: Sign in with ChatGPT token exchange failed", "error", err.Error())
-		return upstreamError("upstream_unavailable", "cannot reach the OpenAI authorization server / 无法连接 OpenAI 授权服务器: "+err.Error()), nil
+// callbackRefused answers a callback carrying an OAuth error; a denied
+// consent also ends the session.
+func (p *Plugin) callbackRefused(ctx context.Context, id string, cb callbackParams) *pluginv1.HTTPResponse {
+	msg := cb.Error
+	if cb.ErrorDescription != "" {
+		msg += ": " + cb.ErrorDescription
 	}
-	if !a.ok() {
-		p.log.Warn("codex: Sign in with ChatGPT token exchange refused", "status", a.status, "oauth_error", oauthErrorCode(a.body))
-		return upstreamError("token_exchange_failed", "token exchange failed; generate a new link if the code was used / 换取令牌失败，授权码已用过时请重新生成链接 ("+a.describe()+")"), nil
+	p.log.Warn("codex: Sign in with Codex authorization failed", "oauth_error", textutil.Clip(cb.Error, 64))
+	if cb.Error == "access_denied" {
+		p.deleteSession(ctx, kvCodex, id)
+		return flowError("access_denied", "authorization was denied / 授权被拒绝 ("+msg+")")
 	}
-	tr, err := readToken(a)
-	if err != nil {
-		p.log.Warn("codex: Sign in with ChatGPT token answer unusable", "error", err.Error())
-		return upstreamError("token_exchange_failed", err.Error()), nil
-	}
-	scopes := strings.TrimSpace(tr.Scope)
-	if scopes == "" {
-		scopes = cb.Scope
-	}
-	if !hasScope(scopes, ScopeDirect) {
-		p.log.Warn("codex: Sign in with ChatGPT authorization lacks the direct-use scope", "scopes", scopes)
-		return flowError("scope_missing", "the authorization did not grant "+ScopeDirect+" (ChatGPT plan usage); authorize again and allow it / 授权未包含 "+ScopeDirect+"（ChatGPT 套餐用量），请重新授权并允许 (granted: "+strconv.Quote(scopes)+")"), nil
-	}
-	p.deleteSession(ctx, kvSIWC, id)
-	c := p.credentialsFrom(tr)
-	c.ClientID = clientID
-	c.ExtAgentHostID = s.HostID
-	c.Scopes = scopes
-	return pluginsdk.DataResponse(SIWCExchangeResponse{Credentials: c}), nil
+	return flowError("authorization_failed", "authorization failed / 授权失败 ("+msg+")")
 }

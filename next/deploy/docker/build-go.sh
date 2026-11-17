@@ -147,7 +147,7 @@ ls -l "$OUT/market"
 # catalog). moderation is the LLM prompt moderation hook (CONTRACTS §20):
 # enabled at install, but its mode defaults to off until configured.
 # codex adds the ChatGPT subscription account types (Codex device code and
-# Sign in with ChatGPT, docs/PLUGIN-CODEX.md) on the built-in openai platform:
+# Sign in with Codex, docs/PLUGIN-CODEX.md) on the built-in openai platform:
 # enabled at install; it does nothing until an operator authorizes an account.
 # custom adds the custom upstream account types (any OpenAI-, Anthropic- or
 # Gemini-compatible API, docs/UPSTREAM-DECLARATIVE.md §5): enabled at install;

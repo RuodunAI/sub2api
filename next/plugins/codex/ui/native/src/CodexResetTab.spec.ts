@@ -6,7 +6,8 @@ import CodexResetTab from './CodexResetTab.vue'
 import { setHost } from './host'
 
 // A plugin host whose t() returns the key; the plugin API answers POSTs from
-// `answer`, the core API answers the forced quota query, confirm() says yes.
+// `answer`, confirm() says yes. The tab never calls the core API: the usage
+// comes from the account's snapshot.
 type Answer = (path: string, body: any) => unknown
 let answer: Answer
 let calls: Array<{ path: string; body: any }>
@@ -35,7 +36,7 @@ function fakeHost(canReset = true, actions = ['account:update']): PluginHost {
     permissions: { hasAction: (a: string) => actions.includes(a) },
     confirm: vi.fn(async () => true),
     toast: vi.fn(),
-    api: { get: vi.fn(async () => ({ windows: [{ key: '5h', utilization: 0, resets_at: null }] })) },
+    api: { get: vi.fn(async () => new Error('unexpected')) },
     pluginApi: { post }
   } as unknown as PluginHost
 }
@@ -93,7 +94,7 @@ describe('CodexResetTab', () => {
     expect(rows[1].findAll('button')).toHaveLength(0)
   })
 
-  it('spends the soonest-expiring reset from the header, then refreshes the usage and the list', async () => {
+  it('spends the soonest-expiring reset from the header, then reloads the list and awaits the next request for the usage', async () => {
     const w = await mountTab()
     answer = (path) =>
       path === '/reset-credits/consume'
@@ -104,9 +105,20 @@ describe('CodexResetTab', () => {
     expect(host.confirm).toHaveBeenCalledOnce()
     expect(calls.find((c) => c.path === '/reset-credits/consume')?.body).toEqual({ account_ids: [29], credit_id: 'soon' })
     expect(host.toast).toHaveBeenCalledWith('reset.done:{"n":1}', 'success')
-    expect(host.api.get).toHaveBeenCalledWith('/accounts/29/quota', { force: true })
+    expect(host.api.get).not.toHaveBeenCalled()
     expect(w.get('[data-testid="codex-reset-count"]').text()).toBe('1')
     expect(w.text()).not.toContain('reset.fullHint')
+    expect(w.find('[data-testid="codex-reset-usage-awaiting"]').text()).toBe('reset.usageAwaiting')
+  })
+
+  it('keeps the used-up usage when no window was reset', async () => {
+    const w = await mountTab()
+    answer = (path) =>
+      path === '/reset-credits/consume' ? { outcome: 'already_redeemed', windows_reset: 0, account_restored: true } : structuredClone(CREDITS)
+    await w.get('[data-testid="codex-reset-use-next"]').trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('reset.fullHint')
+    expect(w.find('[data-testid="codex-reset-usage-awaiting"]').exists()).toBe(false)
   })
 
   it('shows a refusal that spent nothing as a warning', async () => {

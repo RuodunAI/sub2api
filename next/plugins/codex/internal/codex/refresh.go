@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -31,21 +30,15 @@ var terminalRefreshCodes = map[string]bool{
 	"refresh_token_reused":      true,
 }
 
-// BuildRefreshRequest implements pluginsdk.CredentialRefresher.
+// BuildRefreshRequest implements pluginsdk.CredentialRefresher: POST
+// <auth>/oauth/token, JSON {client_id (Codex public client), grant_type,
+// refresh_token, scope "openid profile email"}, for both account types.
 //
-//   - codex_device: POST <auth>/oauth/token, JSON {client_id (Codex public
-//     client), grant_type, refresh_token, scope "openid profile email"};
-//   - chatgpt_siwc: POST <auth>/api/accounts/oauth/token, form
-//     grant_type=refresh_token, client_id (the issued one), refresh_token,
-//     resource; no scope.
-//
-// Credentials that cannot be renewed (no refresh token, a Sign in with
-// ChatGPT account without its client_id) answer FAILED_PRECONDITION, which
-// the core records like a refusal until the account is authorized again.
+// Credentials without a refresh token answer FAILED_PRECONDITION, which the
+// core records like a refusal until the account is authorized again.
 func (p *Plugin) BuildRefreshRequest(_ context.Context, in *pluginv1.BuildRefreshRequestRequest) (*pluginv1.BuildRefreshRequestResponse, error) {
 	acc := in.GetAccount()
-	typ := acc.GetType()
-	if typ != TypeDevice && typ != TypeSIWC {
+	if typ := acc.GetType(); !knownType(typ) {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported account type %q", typ)
 	}
 	c, err := parseCredentials(acc.GetCredentialsJson())
@@ -55,33 +48,19 @@ func (p *Plugin) BuildRefreshRequest(_ context.Context, in *pluginv1.BuildRefres
 	if c.RefreshToken == "" {
 		return nil, status.Error(codes.FailedPrecondition, "the account has no refresh_token; authorize it again / 账号没有 refresh_token，请重新授权")
 	}
-	h := map[string]string{"Accept": "application/json", "User-Agent": UserAgent, "Originator": Originator}
-	if typ == TypeDevice {
-		body, _ := json.Marshal(map[string]string{
-			"client_id": CodexClientID, "grant_type": "refresh_token", "refresh_token": c.RefreshToken, "scope": RefreshScope,
-		})
-		h["Content-Type"] = "application/json"
-		return &pluginv1.BuildRefreshRequestResponse{Method: http.MethodPost, Url: p.ep.Auth + "/oauth/token", Headers: h, BodyJson: string(body)}, nil
-	}
-	if c.ClientID == "" {
-		return nil, status.Error(codes.FailedPrecondition, "the account has no client_id; authorize it again / 账号没有 client_id，请重新授权")
-	}
-	form := url.Values{}
-	form.Set("grant_type", "refresh_token")
-	form.Set("client_id", c.ClientID)
-	form.Set("refresh_token", c.RefreshToken)
-	form.Set("resource", SIWCResource)
-	h["Content-Type"] = "application/x-www-form-urlencoded"
-	return &pluginv1.BuildRefreshRequestResponse{Method: http.MethodPost, Url: p.ep.Auth + "/api/accounts/oauth/token", Headers: h, BodyJson: form.Encode()}, nil
+	body, _ := json.Marshal(map[string]string{
+		"client_id": CodexClientID, "grant_type": "refresh_token", "refresh_token": c.RefreshToken, "scope": RefreshScope,
+	})
+	h := map[string]string{"Accept": "application/json", "Content-Type": "application/json", "User-Agent": UserAgent, "Originator": Originator}
+	return &pluginv1.BuildRefreshRequestResponse{Method: http.MethodPost, Url: p.ep.Auth + "/oauth/token", Headers: h, BodyJson: string(body)}, nil
 }
 
-// tokenResponse is the answer of both token endpoints.
+// tokenResponse is the answer of the token endpoint.
 type tokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	IDToken      string `json:"id_token"`
 	ExpiresIn    int64  `json:"expires_in"`
-	Scope        string `json:"scope"`
 }
 
 // expiresAt is now + expires_in, else the access token's exp claim, else 0.
@@ -94,10 +73,10 @@ func (p *Plugin) expiresAt(tr tokenResponse) int64 {
 
 // ParseRefreshResponse implements pluginsdk.CredentialRefresher. A success
 // saves access_token and expires_at, plus refresh_token (rotated), id_token
-// and the identity fields read from it, and scopes (chatgpt_siwc) when the
-// answer carries them. A terminal OAuth error or a 401 is AUTH_REJECTED
-// (authorize again); invalid_client is a client configuration error that
-// retrying cannot fix either; anything else is TRANSIENT.
+// and the identity fields read from it, when the answer carries them. A
+// terminal OAuth error or a 401 is AUTH_REJECTED (authorize again);
+// invalid_client is a client configuration error that retrying cannot fix
+// either; anything else is TRANSIENT.
 func (p *Plugin) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
 	st := in.GetStatus()
 	switch {
@@ -143,11 +122,8 @@ func (p *Plugin) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefre
 	if id.PlanType != "" {
 		patch["plan_type"] = id.PlanType
 	}
-	if in.GetAccount().GetType() == TypeDevice && id.AccountID != "" {
+	if id.AccountID != "" {
 		patch["chatgpt_account_id"] = id.AccountID
-	}
-	if in.GetAccount().GetType() == TypeSIWC && strings.TrimSpace(tr.Scope) != "" {
-		patch["scopes"] = strings.TrimSpace(tr.Scope)
 	}
 	b, _ := json.Marshal(patch)
 	return &pluginv1.RefreshResult{CredentialsPatchJson: string(b)}, nil

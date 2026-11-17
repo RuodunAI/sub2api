@@ -1009,7 +1009,11 @@ func (s *wsSession) observe(ctx context.Context, t *wsTurn, data []byte) (bool, 
 	// An error event; the plugin decides what its status means.
 	local := false
 	if status >= 400 {
-		res := cl.classify(ctx, s.rt, s.pacct, status, nil, data, "")
+		header := errorEventHeaders(data)
+		if header != nil {
+			s.g.observeQuota(s.rt, s.acc.ID, status, header)
+		}
+		res := cl.classify(ctx, s.rt, s.pacct, status, header, data, "")
 		local = res.err != nil && res.err.LocalFailure
 		if cl.failurePolicy != nil {
 			cl.finishFailureDecision(s.ref, cl.rec.Attempts, "response_committed")
@@ -1023,6 +1027,25 @@ func (s *wsSession) observe(ctx context.Context, t *wsTurn, data []byte) (bool, 
 		msg = "upstream error event"
 	}
 	return true, wsOutcome{status: status, errType: errTypeUpstream, local: local, msg: "upstream stream error: " + msg}
+}
+
+// errorEventHeaders reads the top-level "headers" object of an error event
+// (the Codex backend wraps the upstream response headers there) as the
+// error's response headers; nil when the event carries none. String and
+// number values are kept, as their text.
+func errorEventHeaders(data []byte) http.Header {
+	obj := gjson.GetBytes(data, "headers")
+	if !obj.IsObject() {
+		return nil
+	}
+	h := http.Header{}
+	obj.ForEach(func(k, v gjson.Result) bool {
+		if v.Type == gjson.String || v.Type == gjson.Number {
+			h.Set(k.String(), v.String())
+		}
+		return true
+	})
+	return h
 }
 
 type wsOutcome struct {

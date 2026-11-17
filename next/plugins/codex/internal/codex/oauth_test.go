@@ -85,7 +85,6 @@ const (
 	pathUserCode    = "/api/accounts/deviceauth/usercode"
 	pathDeviceToken = "/api/accounts/deviceauth/token"
 	pathOAuthToken  = "/oauth/token"
-	pathSIWCToken   = "/api/accounts/oauth/token"
 )
 
 // clock is a settable test clock.
@@ -125,7 +124,7 @@ func decodeError(t *testing.T, r *pluginv1.HTTPResponse) errorBody {
 func TestDeviceFlow(t *testing.T) {
 	iss := newFakeIssuer(t)
 	clk := &clock{t: testNow}
-	p := NewWithEndpoints(testEndpoints(iss.srv.URL))
+	p := mustPlugin(testEndpoints(iss.srv.URL))
 	p.now = clk.now
 	h := startPlugin(t, p)
 
@@ -211,7 +210,7 @@ func TestDeviceFlow(t *testing.T) {
 	}
 	c := got.Credentials
 	if c.AccessToken != "at-1" || c.RefreshToken != "rt-1" || c.IDToken != tok || c.ExpiresAt != clk.now().Unix()+864000 ||
-		c.Email != "me@example.com" || c.ChatGPTAccountID != "acct-1" || c.PlanType != "plus" || c.ClientID != "" || c.Scopes != "" {
+		c.Email != "me@example.com" || c.ChatGPTAccountID != "acct-1" || c.PlanType != "plus" {
 		t.Fatalf("credentials = %+v", c)
 	}
 	if ct := iss.headers[pathOAuthToken].Get("Content-Type"); ct != "application/x-www-form-urlencoded" {
@@ -258,7 +257,7 @@ func TestDeviceStartErrors(t *testing.T) {
 func TestDevicePollStates(t *testing.T) {
 	iss := newFakeIssuer(t)
 	clk := &clock{t: testNow}
-	p := NewWithEndpoints(testEndpoints(iss.srv.URL))
+	p := mustPlugin(testEndpoints(iss.srv.URL))
 	p.now = clk.now
 	h := startPlugin(t, p)
 	iss.on(pathUserCode, reply(200, `{"device_auth_id":"dev-1","user_code":"ABCD","interval":"5"}`))
@@ -346,11 +345,8 @@ func TestRouteRequestErrors(t *testing.T) {
 		{"/auth/device/poll", map[string]string{}, "session_id", "required"},
 		{"/auth/device/poll", map[string]string{"session_id": "  "}, "session_id", "required"},
 		{"/auth/device/poll", "{not json", "body", "invalid_json"},
-		{"/auth/siwc/exchange", map[string]string{"callback_url": "?code=x"}, "session_id", "required"},
-		{"/auth/siwc/exchange", "{not json", "body", "invalid_json"},
-		{"/auth/siwc/start", "{not json", "body", "invalid_json"},
-		{"/auth/siwc/start", map[string]string{"client_id": "has space"}, "client_id", "pattern"},
-		{"/auth/siwc/start", map[string]string{"ext_agent_host_id": "host-1"}, "ext_agent_host_id", "pattern"},
+		{"/auth/codex/exchange", map[string]string{"callback_url": "?code=x"}, "session_id", "required"},
+		{"/auth/codex/exchange", "{not json", "body", "invalid_json"},
 	} {
 		r := h.Do("POST", tc.path, nil, tc.body)
 		e := decodeError(t, r)
@@ -404,113 +400,89 @@ func TestDevicePollLocked(t *testing.T) {
 	}
 }
 
-func TestSIWCStart(t *testing.T) {
+func TestCodexStart(t *testing.T) {
 	h := startPlugin(t, newTestPlugin(testEndpoints("https://auth.example")))
-	r := h.Do("POST", "/auth/siwc/start", nil, nil)
+	r := h.Do("POST", "/auth/codex/start", nil, nil)
 	if r.GetStatus() != 200 {
 		t.Fatalf("start = %d %s", r.GetStatus(), r.GetBody())
 	}
-	var s SIWCStartResponse
+	var s CodexStartResponse
 	mustData(t, r.GetBody(), &s)
 	u, err := url.Parse(s.AuthorizeURL)
-	if err != nil || s.SessionID == "" || u.Scheme+"://"+u.Host+u.Path != "https://auth.example/api/accounts/authorize" {
+	if err != nil || s.SessionID == "" || u.Scheme+"://"+u.Host+u.Path != "https://auth.example/oauth/authorize" {
 		t.Fatalf("start = %+v", s)
 	}
+	// The Codex CLI's own browser login.
 	q := u.Query()
-	for k, v := range map[string]string{
-		"client_id": SIWCDynamicClient, "agent_name_hint": "sup2api", "response_type": "code", "redirect_uri": SIWCRedirectURI,
-		"scope": SIWCScope, "resource": SIWCResource, "code_challenge_method": "S256",
-	} {
+	want := map[string]string{
+		"client_id": CodexClientID, "response_type": "code", "redirect_uri": "http://localhost:1455/auth/callback",
+		"scope": "openid profile email offline_access", "code_challenge_method": "S256",
+		"id_token_add_organizations": "true", "codex_cli_simplified_flow": "true",
+	}
+	for k, v := range want {
 		if q.Get(k) != v {
 			t.Errorf("%s = %q, want %q", k, q.Get(k), v)
 		}
 	}
-	if !hostIDPattern.MatchString(q.Get("ext_agent_host_id")) || q.Get("ext_agent_host_id")[23] != '4' {
-		t.Errorf("host id = %q (want urn:uuid:<UUIDv4>)", q.Get("ext_agent_host_id"))
+	if len(q) != len(want)+2 || q.Get("state") == "" || len(q.Get("code_challenge")) != 43 {
+		t.Errorf("query = %v", q)
 	}
-	if q.Get("state") == "" || q.Get("nonce") == "" || len(q.Get("code_challenge")) != 43 {
-		t.Errorf("state/nonce/challenge = %v", q)
-	}
-	// The stored verifier matches the challenge.
-	var sess siwcSession
-	kv, _ := h.Host.KVGet(context.Background(), &pluginv1.KVGetRequest{Namespace: kvSIWC, Key: s.SessionID})
+	// The stored verifier matches the challenge; the session is bound to
+	// its caller (Harness.Do is user 1).
+	kv, _ := h.Host.KVGet(context.Background(), &pluginv1.KVGetRequest{Namespace: kvCodex, Key: s.SessionID})
 	if !kv.GetFound() {
 		t.Fatal("no session stored")
 	}
-	// The session is bound to its caller (Harness.Do is user 1).
+	var sess codexSession
 	stored := struct {
-		UserID  int64        `json:"uid"`
-		Session *siwcSession `json:"v"`
+		UserID  int64         `json:"uid"`
+		Session *codexSession `json:"v"`
 	}{Session: &sess}
 	mustJSON(t, kv.GetValue(), &stored)
-	if stored.UserID != 1 {
-		t.Fatalf("session owner = %d", stored.UserID)
-	}
-	if pkceChallenge(sess.Verifier) != q.Get("code_challenge") || sess.State != q.Get("state") || sess.Nonce != q.Get("nonce") ||
-		sess.HostID != q.Get("ext_agent_host_id") || sess.ClientID != "" {
-		t.Fatalf("session = %+v", sess)
-	}
-
-	// Re-authorization: the issued client, no name hint, the same host.
-	host := "urn:uuid:123e4567-e89b-42d3-a456-426614174000"
-	r = h.Do("POST", "/auth/siwc/start", nil, map[string]string{"client_id": "client-9", "ext_agent_host_id": host})
-	mustData(t, r.GetBody(), &s)
-	u, _ = url.Parse(s.AuthorizeURL)
-	q = u.Query()
-	if q.Get("client_id") != "client-9" || q.Has("agent_name_hint") || q.Get("ext_agent_host_id") != host {
-		t.Fatalf("reauth query = %v", q)
-	}
-	for _, body := range []any{
-		map[string]string{"ext_agent_host_id": "host-1"},
-		map[string]string{"client_id": "has space"},
-		"{not json",
-	} {
-		if r := h.Do("POST", "/auth/siwc/start", nil, body); r.GetStatus() != 400 {
-			t.Errorf("%v = %d %s", body, r.GetStatus(), r.GetBody())
-		}
+	if stored.UserID != 1 || pkceChallenge(sess.Verifier) != q.Get("code_challenge") || sess.State != q.Get("state") || len(sess.Verifier) != 64 {
+		t.Fatalf("session = %d %+v", stored.UserID, sess)
 	}
 }
 
-func TestSIWCExchange(t *testing.T) {
+func TestCodexExchange(t *testing.T) {
 	iss := newFakeIssuer(t)
 	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
-	start := func(body any) (string, url.Values) {
+	start := func() (string, url.Values) {
 		t.Helper()
-		var s SIWCStartResponse
-		mustData(t, h.Do("POST", "/auth/siwc/start", nil, body).GetBody(), &s)
+		var s CodexStartResponse
+		mustData(t, h.Do("POST", "/auth/codex/start", nil, nil).GetBody(), &s)
 		u, _ := url.Parse(s.AuthorizeURL)
 		return s.SessionID, u.Query()
 	}
 	exchange := func(id, cb string) *pluginv1.HTTPResponse {
-		return h.Do("POST", "/auth/siwc/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
+		return h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
 	}
-	tok := idToken("me@example.com", "", "")
-	iss.on(pathSIWCToken, func(w http.ResponseWriter, body []byte) {
+	tok := idToken("me@example.com", "acct-1", "plus")
+	iss.on(pathOAuthToken, func(w http.ResponseWriter, body []byte) {
 		form, _ := url.ParseQuery(string(body))
-		if form.Get("grant_type") != "authorization_code" || form.Get("client_id") != "client-new" || form.Get("code") != "code-1" ||
-			form.Get("redirect_uri") != SIWCRedirectURI || form.Get("resource") != SIWCResource || form.Get("code_verifier") == "" {
+		if form.Get("grant_type") != "authorization_code" || form.Get("client_id") != CodexClientID || form.Get("code") != "code-1" ||
+			form.Get("redirect_uri") != CodexRedirectURI || form.Get("code_verifier") == "" || len(form) != 5 {
 			t.Errorf("token form = %v", form)
 		}
-		reply(200, `{"access_token":"at-1","refresh_token":"rt-1","id_token":"`+tok+`","expires_in":3600,"scope":"openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"}`)(w, body)
+		reply(200, `{"access_token":"at-1","refresh_token":"rt-1","id_token":"`+tok+`","expires_in":3600,"scope":"openid profile email offline_access"}`)(w, body)
 	})
 
-	// A new registration, the whole address pasted.
-	id, q := start(nil)
-	cb := SIWCRedirectURI + "?code=code-1&state=" + q.Get("state") + "&client_id=client-new&scope=openid"
+	// The whole address pasted: the same credentials as a device code login.
+	id, q := start()
+	cb := CodexRedirectURI + "?code=code-1&scope=openid+profile+email+offline_access&state=" + q.Get("state")
 	r := exchange(id, cb)
 	if r.GetStatus() != 200 {
 		t.Fatalf("exchange = %d %s", r.GetStatus(), r.GetBody())
 	}
-	var out SIWCExchangeResponse
+	var out CodexExchangeResponse
 	mustData(t, r.GetBody(), &out)
-	c := out.Credentials
-	if c.AccessToken != "at-1" || c.RefreshToken != "rt-1" || c.IDToken != tok || c.ExpiresAt != testNow.Unix()+3600 ||
-		c.Email != "me@example.com" || c.ClientID != "client-new" || c.ExtAgentHostID != q.Get("ext_agent_host_id") ||
-		!hasScope(c.Scopes, ScopeDirect) || c.ChatGPTAccountID != "" {
-		t.Fatalf("credentials = %+v", c)
+	want := Credentials{AccessToken: "at-1", RefreshToken: "rt-1", IDToken: tok, ExpiresAt: testNow.Unix() + 3600,
+		Email: "me@example.com", PlanType: "plus", ChatGPTAccountID: "acct-1"}
+	if out.Credentials != want {
+		t.Fatalf("credentials = %+v", out.Credentials)
 	}
 	// The verifier sent is the one behind the challenge.
-	form, _ := url.ParseQuery(iss.lastBody(pathSIWCToken))
+	form, _ := url.ParseQuery(iss.lastBody(pathOAuthToken))
 	if pkceChallenge(form.Get("code_verifier")) != q.Get("code_challenge") {
 		t.Fatal("code_verifier does not match the challenge")
 	}
@@ -520,8 +492,8 @@ func TestSIWCExchange(t *testing.T) {
 	}
 
 	// Only the query pasted works as well.
-	id, q = start(nil)
-	if r := exchange(id, "code=code-1&state="+q.Get("state")+"&client_id=client-new"); r.GetStatus() != 200 {
+	id, q = start()
+	if r := exchange(id, "code=code-1&state="+q.Get("state")); r.GetStatus() != 200 {
 		t.Fatalf("query only = %d %s", r.GetStatus(), r.GetBody())
 	}
 
@@ -529,85 +501,65 @@ func TestSIWCExchange(t *testing.T) {
 		name, cb, code string
 		status         int32
 	}{
-		{"state mismatch", "?code=code-1&state=other&client_id=client-new", "state_mismatch", 400},
+		{"state mismatch", "?code=code-1&state=other", "state_mismatch", 400},
 		{"access denied", "?error=access_denied&error_description=user+said+no&state=%s", "access_denied", 400},
 		{"other error", "?error=server_error&state=%s", "authorization_failed", 400},
-		{"no client id", "?code=code-1&state=%s", "registration_incomplete", 400},
-		{"dynamic client id", "?code=code-1&state=%s&client_id=dynamic_agent_client", "registration_incomplete", 400},
-		{"no code", "http://127.0.0.1:1455/auth/callback", "invalid_callback", 400},
+		{"error of another authorization", "?error=access_denied&state=other", "state_mismatch", 400},
+		{"no code", "http://localhost:1455/auth/callback", "invalid_callback", 400},
 		{"empty", "  ", "invalid_callback", 400},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			id, q := start(nil)
+			id, q := start()
 			r := exchange(id, strings.Replace(tc.cb, "%s", q.Get("state"), 1))
 			if r.GetStatus() != tc.status || decodeError(t, r).Error.Code != tc.code {
 				t.Fatalf("%d %s, want %d %s", r.GetStatus(), r.GetBody(), tc.status, tc.code)
 			}
 		})
 	}
-	if r := exchange("", "?code=x"); r.GetStatus() != 400 {
-		t.Fatalf("no session id = %d", r.GetStatus())
-	}
 
-	// A wrong state keeps the session: the right address still works.
-	id, q = start(nil)
-	if r := exchange(id, "?code=code-1&state=wrong&client_id=client-new"); r.GetStatus() != 400 {
-		t.Fatal("wrong state accepted")
+	// A wrong state (even on a denial) or another OAuth error keeps the
+	// session: the right address still works. A denied consent ends it.
+	id, q = start()
+	for _, cb := range []string{"?code=code-1&state=wrong", "?error=access_denied&state=wrong", "?error=server_error&state=" + q.Get("state")} {
+		if r := exchange(id, cb); r.GetStatus() != 400 {
+			t.Fatalf("%s accepted", cb)
+		}
 	}
-	if r := exchange(id, "?code=code-1&state="+q.Get("state")+"&client_id=client-new"); r.GetStatus() != 200 {
+	if r := exchange(id, "?code=code-1&state="+q.Get("state")); r.GetStatus() != 200 {
 		t.Fatalf("retry = %d %s", r.GetStatus(), r.GetBody())
 	}
-
-	// Re-authorization: the stored client is used; a different one is refused.
-	iss.on(pathSIWCToken, func(w http.ResponseWriter, body []byte) {
-		form, _ := url.ParseQuery(string(body))
-		if form.Get("client_id") != "client-9" {
-			t.Errorf("reauth client = %q", form.Get("client_id"))
-		}
-		reply(200, `{"access_token":"at-2","refresh_token":"rt-2","expires_in":60,"scope":"chatgpt.tokens.use.direct openid"}`)(w, body)
-	})
-	host := "urn:uuid:123e4567-e89b-42d3-a456-426614174000"
-	id, q = start(map[string]string{"client_id": "client-9", "ext_agent_host_id": host})
-	if r := exchange(id, "?code=c&state="+q.Get("state")+"&client_id=client-other"); r.GetStatus() != 400 || decodeError(t, r).Error.Code != "client_mismatch" {
-		t.Fatalf("client mismatch = %d %s", r.GetStatus(), r.GetBody())
+	id, q = start()
+	exchange(id, "?error=access_denied&state="+q.Get("state"))
+	if r := exchange(id, "?code=code-1&state="+q.Get("state")); r.GetStatus() != 404 {
+		t.Fatalf("after denial = %d %s", r.GetStatus(), r.GetBody())
 	}
+
+	// The token endpoint refuses the code: the answer says why.
+	iss.on(pathOAuthToken, reply(400, `{"error":"invalid_grant","error_description":"code already used"}`))
+	id, q = start()
 	r = exchange(id, "?code=c&state="+q.Get("state"))
-	mustData(t, r.GetBody(), &out)
-	if r.GetStatus() != 200 || out.Credentials.ClientID != "client-9" || out.Credentials.ExtAgentHostID != host {
-		t.Fatalf("reauth = %d %s", r.GetStatus(), r.GetBody())
-	}
-
-	// The direct-use scope must be granted.
-	iss.on(pathSIWCToken, reply(200, `{"access_token":"at","scope":"openid profile email"}`))
-	id, q = start(nil)
-	if r := exchange(id, "?code=c&state="+q.Get("state")+"&client_id=client-new"); r.GetStatus() != 400 || decodeError(t, r).Error.Code != "scope_missing" {
-		t.Fatalf("scope missing = %d %s", r.GetStatus(), r.GetBody())
-	}
-	// No scope in the token answer: the callback's scope decides.
-	iss.on(pathSIWCToken, reply(200, `{"access_token":"at"}`))
-	id, q = start(nil)
-	if r := exchange(id, "?code=c&state="+q.Get("state")+"&client_id=client-new&scope=openid+chatgpt.tokens.use.direct"); r.GetStatus() != 200 {
-		t.Fatalf("callback scope = %d %s", r.GetStatus(), r.GetBody())
-	}
-	id, q = start(nil)
-	if r := exchange(id, "?code=c&state="+q.Get("state")+"&client_id=client-new"); r.GetStatus() != 400 || decodeError(t, r).Error.Code != "scope_missing" {
-		t.Fatalf("no scope at all = %d %s", r.GetStatus(), r.GetBody())
-	}
-	// The token endpoint refuses the code.
-	iss.on(pathSIWCToken, reply(400, `{"error":"invalid_grant","error_description":"code already used"}`))
-	id, q = start(nil)
-	r = exchange(id, "?code=c&state="+q.Get("state")+"&client_id=client-new")
 	if r.GetStatus() != 502 || decodeError(t, r).Error.Code != "token_exchange_failed" || !strings.Contains(string(r.GetBody()), "code already used") {
 		t.Fatalf("token refused = %d %s", r.GetStatus(), r.GetBody())
+	}
+	// An answer without an access token.
+	iss.on(pathOAuthToken, reply(200, `{"refresh_token":"r"}`))
+	id, q = start()
+	if r := exchange(id, "?code=c&state="+q.Get("state")); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "token_exchange_failed" {
+		t.Fatalf("no access token = %d %s", r.GetStatus(), r.GetBody())
+	}
+	// The issuer cannot be reached.
+	id, q = start()
+	iss.srv.Close()
+	if r := exchange(id, "?code=c&state="+q.Get("state")); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "upstream_unavailable" {
+		t.Fatalf("down = %d %s", r.GetStatus(), r.GetBody())
 	}
 }
 
 func TestParseCallback(t *testing.T) {
 	for _, tc := range []struct {
-		in, code, state, clientID, scope, errCode string
+		in, code, state, errCode string
 	}{
-		{in: "http://127.0.0.1:1455/auth/callback?code=abc&state=s1&client_id=c1&scope=openid+chatgpt.tokens.use.direct",
-			code: "abc", state: "s1", clientID: "c1", scope: "openid chatgpt.tokens.use.direct"},
+		{in: "http://localhost:1455/auth/callback?code=abc&scope=openid+profile&state=s1", code: "abc", state: "s1"},
 		{in: "  \"http://localhost:1455/auth/callback?code=abc&amp;state=s1\"\n", code: "abc", state: "s1"},
 		{in: "127.0.0.1:1455/auth/callback?state=s1&code=a%2Fb", code: "a/b", state: "s1"},
 		{in: "?code=abc&state=s1", code: "abc", state: "s1"},
@@ -621,7 +573,7 @@ func TestParseCallback(t *testing.T) {
 			t.Errorf("%q: %v", tc.in, err)
 			continue
 		}
-		if cb.Code != tc.code || cb.State != tc.state || cb.ClientID != tc.clientID || cb.Scope != tc.scope || cb.Error != tc.errCode {
+		if cb.Code != tc.code || cb.State != tc.state || cb.Error != tc.errCode {
 			t.Errorf("%q = %+v", tc.in, cb)
 		}
 	}
@@ -635,8 +587,8 @@ func TestParseCallback(t *testing.T) {
 // Keep the JSON field names the console relies on (CodexAuthForm).
 func TestRouteJSONNames(t *testing.T) {
 	b, _ := json.Marshal(DevicePollResponse{Status: "done", Credentials: &Credentials{AccessToken: "a", RefreshToken: "r", IDToken: "i", ExpiresAt: 1,
-		Email: "e", PlanType: "p", ChatGPTAccountID: "acc", ClientID: "c", ExtAgentHostID: "h", Scopes: "s"}, Interval: 5})
-	want := `{"status":"done","credentials":{"access_token":"a","refresh_token":"r","id_token":"i","expires_at":1,"email":"e","plan_type":"p","chatgpt_account_id":"acc","client_id":"c","ext_agent_host_id":"h","scopes":"s"},"interval":5}`
+		Email: "e", PlanType: "p", ChatGPTAccountID: "acc"}, Interval: 5})
+	want := `{"status":"done","credentials":{"access_token":"a","refresh_token":"r","id_token":"i","expires_at":1,"email":"e","plan_type":"p","chatgpt_account_id":"acc"},"interval":5}`
 	if string(b) != want {
 		t.Fatalf("poll JSON = %s", b)
 	}
@@ -644,9 +596,9 @@ func TestRouteJSONNames(t *testing.T) {
 	if string(b) != `{"session_id":"s","verification_url":"u","user_code":"c","interval":5,"expires_in":900}` {
 		t.Fatalf("start JSON = %s", b)
 	}
-	b, _ = json.Marshal(SIWCStartResponse{SessionID: "s", AuthorizeURL: "u"})
+	b, _ = json.Marshal(CodexStartResponse{SessionID: "s", AuthorizeURL: "u"})
 	if string(b) != `{"session_id":"s","authorize_url":"u"}` {
-		t.Fatalf("siwc start JSON = %s", b)
+		t.Fatalf("codex start JSON = %s", b)
 	}
 }
 
@@ -662,8 +614,8 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 	})
 	var device DeviceStartResponse
 	mustData(t, h.Do("POST", "/auth/device/start", nil, map[string]any{}).GetBody(), &device)
-	var siwc SIWCStartResponse
-	mustData(t, h.Do("POST", "/auth/siwc/start", nil, nil).GetBody(), &siwc)
+	var codex CodexStartResponse
+	mustData(t, h.Do("POST", "/auth/codex/start", nil, nil).GetBody(), &codex)
 	stored := func(ns, id string) bool {
 		kv, _ := h.Host.KVGet(context.Background(), &pluginv1.KVGetRequest{Namespace: ns, Key: id})
 		return kv.GetFound()
@@ -678,16 +630,16 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 				t.Fatalf("user %d poll of %q = %d %s, want expired", uid, id, r.GetStatus(), r.GetBody())
 			}
 		}
-		u, _ := url.Parse(siwc.AuthorizeURL)
+		u, _ := url.Parse(codex.AuthorizeURL)
 		cb := "?code=code-1&state=" + u.Query().Get("state")
-		for _, id := range []string{siwc.SessionID, "no-such-session"} {
-			r := h.DoAs(uid, "POST", "/auth/siwc/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
+		for _, id := range []string{codex.SessionID, "no-such-session"} {
+			r := h.DoAs(uid, "POST", "/auth/codex/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
 			if r.GetStatus() != 404 || decodeError(t, r).Error.Code != "session_expired" {
 				t.Fatalf("user %d exchange of %q = %d %s, want 404 session_expired", uid, id, r.GetStatus(), r.GetBody())
 			}
 		}
 	}
-	if !stored(kvDevice, device.SessionID) || !stored(kvSIWC, siwc.SessionID) {
+	if !stored(kvDevice, device.SessionID) || !stored(kvCodex, codex.SessionID) {
 		t.Fatal("another user's attempt removed a session")
 	}
 
@@ -707,7 +659,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 	}
 
 	// A flow cannot be started without a caller.
-	for _, path := range []string{"/auth/device/start", "/auth/siwc/start"} {
+	for _, path := range []string{"/auth/device/start", "/auth/codex/start"} {
 		if r := h.DoAs(0, "POST", path, nil, map[string]any{}); r.GetStatus() != 401 {
 			t.Fatalf("%s without a caller = %d %s", path, r.GetStatus(), r.GetBody())
 		}

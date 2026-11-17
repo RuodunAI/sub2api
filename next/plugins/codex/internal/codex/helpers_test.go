@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func idToken(email, accountID, plan string) string {
 }
 
 // testEndpoints point every service root at base.
-func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base, API: base} }
+func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base} }
 
 // startPlugin runs p in the SDK harness with a fake host (in-memory KV).
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
@@ -42,9 +43,27 @@ func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
 }
 
-// newTestPlugin is a plugin with the fixed clock and the given roots.
+// testManifest is the plugin's own manifest.json.
+var testManifest = func() []byte {
+	b, err := os.ReadFile("../../manifest.json")
+	if err != nil {
+		panic(err)
+	}
+	return b
+}()
+
+// mustPlugin is the plugin with the given roots and the plugin's manifest.
+func mustPlugin(ep Endpoints) *Plugin {
+	p, err := NewWithEndpoints(ep, testManifest)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+// newTestPlugin is mustPlugin with the fixed clock.
 func newTestPlugin(ep Endpoints) *Plugin {
-	p := NewWithEndpoints(ep)
+	p := mustPlugin(ep)
 	p.now = func() time.Time { return testNow }
 	return p
 }

@@ -31,10 +31,19 @@ type QuotaReading struct {
 // case-insensitive). Windows none of whose headers carries a usable value
 // are left out, so the result is empty for a response without quota
 // headers.
+//
+// A declaration with WindowMinutes is named by the length its header
+// carries; when two declarations of one response name the same window, the
+// more used one is kept.
 func ReadQuotaHeaders(decls []QuotaHeader, get func(name string) string, now time.Time) []QuotaReading {
 	var out []QuotaReading
 	for _, d := range decls {
 		r := QuotaReading{Key: d.Key}
+		if d.WindowMinutes != "" {
+			if r.Key = QuotaWindowKey(get(d.WindowMinutes)); r.Key == "" {
+				continue
+			}
+		}
 		found := false
 		if d.Utilization != "" {
 			if u, ok := parseUtilization(get(d.Utilization), d.UtilizationUnit); ok {
@@ -52,10 +61,54 @@ func ReadQuotaHeaders(decls []QuotaHeader, get func(name string) string, now tim
 			}
 		}
 		if found {
-			out = append(out, r)
+			out = keepMoreUsed(out, r)
 		}
 	}
 	return out
+}
+
+// maxQuotaWindowMinutes bounds a believable window length (a year).
+const maxQuotaWindowMinutes = 366 * 24 * 60
+
+// QuotaWindowKey names a window by its length in minutes (a header value):
+// whole days "<n>d", whole hours "<n>h", otherwise "<n>m", so 300 is "5h"
+// and 10080 is "7d". A value that is not a whole number of minutes between
+// 1 and a year gives "".
+func QuotaWindowKey(minutes string) string {
+	m, err := strconv.Atoi(strings.TrimSpace(minutes))
+	switch {
+	case err != nil || m <= 0 || m > maxQuotaWindowMinutes:
+		return ""
+	case m%(24*60) == 0:
+		return strconv.Itoa(m/(24*60)) + "d"
+	case m%60 == 0:
+		return strconv.Itoa(m/60) + "h"
+	default:
+		return strconv.Itoa(m) + "m"
+	}
+}
+
+// keepMoreUsed adds r to out, or replaces the window of the same key when r
+// is the more used one (moreUsed).
+func keepMoreUsed(out []QuotaReading, r QuotaReading) []QuotaReading {
+	for i := range out {
+		if out[i].Key == r.Key {
+			if moreUsed(r, out[i]) {
+				out[i] = r
+			}
+			return out
+		}
+	}
+	return append(out, r)
+}
+
+// moreUsed reports whether a is more used than b: a higher utilization or,
+// at equal utilization, a later reset (a known one beats an unknown one).
+func moreUsed(a, b QuotaReading) bool {
+	if a.Utilization != b.Utilization {
+		return a.Utilization > b.Utilization
+	}
+	return a.ResetsAt != nil && (b.ResetsAt == nil || a.ResetsAt.After(*b.ResetsAt))
 }
 
 func parseUtilization(raw, unit string) (float64, bool) {

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tidwall/gjson"
-
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -16,10 +14,9 @@ import (
 // Cached reset counts (docs/PLUGIN-CODEX.md §10.6). The console's account
 // list shows each account's remaining official resets and reloads every few
 // seconds, so it reads them from the plugin KV (POST /reset-credits/summary)
-// instead of asking ChatGPT per row. The count is written by the usage query
-// (wham/usage carries rate_limit_reset_credits.available_count) and by a
-// successful list; a spent reset drops it until the next of those. A cache
-// failure is only logged: it never fails the usage query or a route.
+// instead of asking ChatGPT per row. The count is written by a successful
+// list; a spent reset drops it until the next list. A cache failure is only
+// logged: it never fails a route.
 
 const (
 	// kvResetCount is the KV namespace of the cached counts, keyed by
@@ -31,8 +28,6 @@ const (
 	// (the KV serves one key per call).
 	summaryReaders = 16
 	summaryTimeout = 5 * time.Second
-	// usageResetCountPath is the count in the wham/usage answer.
-	usageResetCountPath = "rate_limit_reset_credits.available_count"
 )
 
 // ResetCount is one account's cached count; UpdatedAt is Unix seconds.
@@ -60,16 +55,6 @@ func (p *Plugin) storeResetCount(ctx context.Context, id int64, n int) {
 	if err != nil {
 		p.log.Warn("codex: cache the reset count", "account_id", id, "error", err.Error())
 	}
-}
-
-// cacheUsageResetCount caches the count a usage answer reports; an answer
-// without one (missing or null) leaves the cache as it is.
-func (p *Plugin) cacheUsageResetCount(ctx context.Context, id int64, body []byte) {
-	n := gjson.GetBytes(body, usageResetCountPath)
-	if id <= 0 || n.Type != gjson.Number {
-		return
-	}
-	p.storeResetCount(ctx, id, int(n.Int()))
 }
 
 // loadResetCounts reads the cached counts of ids, a few at a time and within

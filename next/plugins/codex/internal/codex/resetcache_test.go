@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
@@ -39,67 +38,6 @@ func (e *resetEnv) summary(t *testing.T, ids ...int64) map[string]ResetCount {
 		t.Fatalf("summary without accounts: %s", r.GetBody())
 	}
 	return got.Accounts
-}
-
-// parseUsage runs ParseQuotaResponse for the device account on a 200 body.
-func (e *resetEnv) parseUsage(t *testing.T, body string) *pluginv1.QuotaResult {
-	t.Helper()
-	r, err := e.p.ParseQuotaResponse(context.Background(), &pluginv1.ParseQuotaResponseRequest{
-		Account: &pluginv1.Account{Id: resetDeviceID, Type: TypeDevice}, Status: 200, Body: []byte(body),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return r
-}
-
-const usageWindowJSON = `"rate_limit":{"primary_window":{"used_percent":40,"limit_window_seconds":18000,"reset_at":1800003600}}`
-
-func TestUsageCachesResetCount(t *testing.T) {
-	e := newResetEnv(t)
-	key := resetCountKey(resetDeviceID)
-
-	e.parseUsage(t, `{`+usageWindowJSON+`,"rate_limit_reset_credits":{"available_count":3}}`)
-	if got := e.summary(t, resetDeviceID)[key]; got != (ResetCount{AvailableCount: 3, UpdatedAt: testNow.Unix()}) {
-		t.Fatalf("cached = %+v", got)
-	}
-	// An answer without the count leaves the cache as it is (never 0).
-	for _, body := range []string{
-		`{` + usageWindowJSON + `}`,
-		`{` + usageWindowJSON + `,"rate_limit_reset_credits":null}`,
-		`{` + usageWindowJSON + `,"rate_limit_reset_credits":{"available_count":null}}`,
-		`{` + usageWindowJSON + `,"rate_limit_reset_credits":{"available_count":"2"}}`,
-	} {
-		e.parseUsage(t, body)
-		if got := e.summary(t, resetDeviceID)[key]; got.AvailableCount != 3 {
-			t.Fatalf("after %s: cached = %+v", body, got)
-		}
-	}
-	// A failed query writes nothing.
-	if _, err := e.p.ParseQuotaResponse(context.Background(), &pluginv1.ParseQuotaResponseRequest{
-		Account: &pluginv1.Account{Id: resetDeviceID, Type: TypeDevice}, Status: 500,
-		Body: []byte(`{"rate_limit_reset_credits":{"available_count":9}}`),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// A reported 0 is written.
-	e.parseUsage(t, `{"rate_limit_reset_credits":{"available_count":0}}`)
-	if got, ok := e.summary(t, resetDeviceID)[key]; !ok || got.AvailableCount != 0 {
-		t.Fatalf("cached = %+v %v, want 0", got, ok)
-	}
-}
-
-func TestUsageCacheFailureKeepsQuota(t *testing.T) {
-	e := newResetEnv(t)
-	body := `{` + usageWindowJSON + `,"rate_limit_reset_credits":{"available_count":3}}`
-	want := e.parseUsage(t, body)
-	e.host.kv = failingKV{}
-	got := e.parseUsage(t, body)
-	if got.GetErrorType() != pluginv1.QuotaResult_ERROR_TYPE_UNSPECIFIED || len(got.GetWindows()) != 1 ||
-		got.GetWindows()[0].GetKey() != QuotaKey5h || got.GetWindows()[0].GetUtilization() != 40 ||
-		got.GetNextCheckAtUnix() != want.GetNextCheckAtUnix() {
-		t.Fatalf("result with a failing KV = %v, want %v", got, want)
-	}
 }
 
 func TestResetSummary(t *testing.T) {

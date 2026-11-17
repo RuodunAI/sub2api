@@ -24,7 +24,7 @@ import (
 const (
 	resetToken     = "tok-secret-123"
 	resetDeviceID  = 7
-	resetSIWCID    = 8
+	resetOAuthID   = 8
 	resetNoTokenID = 9
 )
 
@@ -149,7 +149,7 @@ func newResetEnv(t *testing.T) *resetEnv {
 	e.client = &resetClient{HostServiceClient: p.host.Client()}
 	e.host = &resetHost{Host: p.host, client: e.client, accounts: map[int64]pluginsdk.AccountCredentials{
 		resetDeviceID:  resetAccountRow(resetDeviceID, TypeDevice, `{"access_token":"`+resetToken+`","chatgpt_account_id":"acc-1"}`),
-		resetSIWCID:    resetAccountRow(resetSIWCID, TypeSIWC, `{"access_token":"`+resetToken+`","client_id":"c"}`),
+		resetOAuthID:   resetAccountRow(resetOAuthID, TypeOAuth, `{"access_token":"`+resetToken+`","chatgpt_account_id":"acc-1"}`),
 		resetNoTokenID: resetAccountRow(resetNoTokenID, TypeDevice, `{"refresh_token":"r"}`),
 	}}
 	// Requests reach the plugin over the harness connection after this write.
@@ -245,6 +245,14 @@ func TestResetListParsesAndSorts(t *testing.T) {
 	if _, ok := sent[0].headers["content-type"]; ok {
 		t.Errorf("a GET has no content-type: %v", sent[0].headers)
 	}
+	// A Sign in with Codex account has the same resets.
+	if r := e.h.Do("POST", "/reset-credits/list", nil, map[string]any{"account_id": resetOAuthID}); r.GetStatus() != 200 {
+		t.Fatalf("oauth list = %d %s", r.GetStatus(), r.GetBody())
+	}
+	if sent = e.client.requests(); len(sent) != 2 || sent[1].accountID != resetOAuthID {
+		t.Fatalf("sent = %+v", sent)
+	}
+	checkHeaders(t, sent[1].headers)
 }
 
 func TestResetListErrors(t *testing.T) {
@@ -259,7 +267,6 @@ func TestResetListErrors(t *testing.T) {
 		{"missing account", map[string]any{}, 400, "invalid_argument"},
 		{"invalid json", "{", 400, "invalid_argument"},
 		{"unknown account", map[string]any{"account_id": 404}, 404, "account_not_found"},
-		{"siwc", map[string]any{"account_id": resetSIWCID}, 400, "unsupported_account_type"},
 		{"no token", map[string]any{"account_id": resetNoTokenID}, 409, "not_authorized"},
 		{"unreadable answer", map[string]any{"account_id": resetDeviceID}, 502, "upstream_error"},
 	} {
@@ -449,7 +456,6 @@ func TestResetConsumeRefusals(t *testing.T) {
 		{"two ids", map[string]any{"account_ids": []int64{resetDeviceID, resetNoTokenID}}, 400, "invalid_argument", "account_ids"},
 		{"zero id", map[string]any{"account_ids": []int64{0}}, 400, "invalid_argument", "account_ids"},
 		{"invalid json", "{", 400, "invalid_argument", "body"},
-		{"siwc", map[string]any{"account_ids": []int64{resetSIWCID}}, 400, "unsupported_account_type", ""},
 		{"no token", map[string]any{"account_ids": []int64{resetNoTokenID}}, 409, "not_authorized", ""},
 		{"unknown account", map[string]any{"account_ids": []int64{404}}, 404, "account_not_found", ""},
 	} {

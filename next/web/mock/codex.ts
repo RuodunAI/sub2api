@@ -9,9 +9,10 @@ import { fail, on } from './router'
 // plugins/codex/ui/native/dist (build it first). Nothing leaves the mock:
 //   device code   the code is "approved" on the third poll (about 6 s);
 //                 a session the mock does not know reads as expired.
-//   SIWC          the authorize link is the real OpenAI address shape (it
+//   Sign in with Codex
+//                 the authorize link is the real OpenAI address shape (it
 //                 does not work); paste back any
-//                 http://127.0.0.1:1455/auth/callback?code=<anything>&state=<state of the link>.
+//                 http://localhost:1455/auth/callback?code=<anything>&state=<state of the link>.
 //                 error=access_denied, a missing code or another state fail
 //                 as the plugin would.
 // Answers have the plugin's shapes (CONTRACTS §3.1): {"data": ...} on
@@ -52,10 +53,10 @@ const declared = (id: string): any => (manifest.accountTypes || []).find((a: any
 const NAME = manifest.name || { en: 'ChatGPT (Codex)', zh: 'ChatGPT（Codex）' }
 const VERSION = manifest.version || '0.1.0'
 const FALLBACK = {
-  codex_device: { authMethodLabel: { en: 'Device code', zh: '设备码登录' }, description: { en: 'Your own ChatGPT subscription, authorized with the Codex device code login', zh: '你自己的 ChatGPT 订阅，用 Codex 设备码登录授权' } },
-  chatgpt_siwc: { authMethodLabel: { en: 'Sign in with ChatGPT', zh: 'Sign in with ChatGPT' }, description: { en: "Your own ChatGPT subscription through OpenAI's Sign in with ChatGPT", zh: '通过 OpenAI 官方 Sign in with ChatGPT 接入你自己的 ChatGPT 订阅' } }
+  codex_device: { authMethodLabel: { en: 'Device Code', zh: '设备码登录' }, description: { en: 'Your own ChatGPT subscription, authorized with the Codex device code login', zh: '你自己的 ChatGPT 订阅，用 Codex 设备码登录授权' } },
+  codex_oauth: { authMethodLabel: { en: 'Sign in with Codex', zh: 'Sign in with Codex' }, description: { en: "Your own ChatGPT subscription, authorized with the Codex CLI's browser sign-in", zh: '你自己的 ChatGPT 订阅，用 Codex CLI 的浏览器登录授权' } }
 }
-export const codexAccountTypes = (['codex_device', 'chatgpt_siwc'] as const).map((type) => {
+export const codexAccountTypes = (['codex_device', 'codex_oauth'] as const).map((type) => {
   const d = declared(type)
   return {
     plugin_key: 'codex',
@@ -91,9 +92,9 @@ export const codexUIPlugin = {
   host_ui_compat: manifest.hostUICompat || '*'
 }
 
-/** The plugin's ValidateCredentials as far as the mock goes: the tokens of the type's flow. */
+/** The plugin's ValidateCredentials as far as the mock goes: the tokens both logins return. */
 export function codexCredentialErrors(type: string, creds: Record<string, unknown>) {
-  const need = ['access_token', 'refresh_token', type === 'codex_device' ? 'chatgpt_account_id' : 'client_id']
+  const need = ['access_token', 'refresh_token', 'chatgpt_account_id']
   const missing = need.filter((k) => typeof creds[k] !== 'string' || !creds[k])
   if (!missing.length) return null
   return fail(400, 'invalid_argument', 'invalid credentials', { fields: missing.map((k) => ({ field: `credentials.${k}`, code: 'required', message: k === 'access_token' ? 'Authorize the account first' : `${k} is required for ${type}` })) })
@@ -159,69 +160,61 @@ on('POST', '/p/codex/auth/device/poll', (req) => {
   } }
 })
 
-// ------------------------------------------------------------------ Sign in with ChatGPT
+// ------------------------------------------------------------------ Sign in with Codex
 
-const siwcSessions = new Map<string, { state: string; client_id: string; host: string }>()
+const oauthSessions = new Map<string, string>() // session id -> state
 
-on('POST', '/p/codex/auth/siwc/start', (req) => {
-  const clientId = String(req.body?.client_id || '')
-  const host = String(req.body?.ext_agent_host_id || '') || `urn:uuid:${randomUUID()}`
+on('POST', '/p/codex/auth/codex/start', () => {
   const state = randomBytes(12).toString('base64url')
   const session_id = randomUUID()
-  siwcSessions.set(session_id, { state, client_id: clientId, host })
+  oauthSessions.set(session_id, state)
   const q = new URLSearchParams({
-    client_id: clientId || 'dynamic_agent_client',
-    ...(clientId ? {} : { agent_name_hint: 'sup2api' }),
-    ext_agent_host_id: host,
+    client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
     response_type: 'code',
-    redirect_uri: 'http://127.0.0.1:1455/auth/callback',
-    scope: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct',
-    resource: 'https://api.openai.com/v1',
+    redirect_uri: 'http://localhost:1455/auth/callback',
+    scope: 'openid profile email offline_access',
     state,
-    nonce: randomBytes(12).toString('base64url'),
     code_challenge_method: 'S256',
-    code_challenge: randomBytes(32).toString('base64url')
+    code_challenge: randomBytes(32).toString('base64url'),
+    id_token_add_organizations: 'true',
+    codex_cli_simplified_flow: 'true'
   })
-  return { data: { session_id, authorize_url: `https://auth.openai.com/api/accounts/authorize?${q}` } }
+  return { data: { session_id, authorize_url: `https://auth.openai.com/oauth/authorize?${q}` } }
 })
 
-on('POST', '/p/codex/auth/siwc/exchange', (req) => {
+on('POST', '/p/codex/auth/codex/exchange', (req) => {
   const id = String(req.body?.session_id || '').trim()
   if (!id) return noSession()
   const p = callbackQuery(String(req.body?.callback_url || ''))
   if (!p.get('code') && !p.get('error'))
     return fail(400, 'invalid_callback', 'the callback address has no code: paste the whole address of the page that failed to open / 回调网址中没有 code：请粘贴打不开的那个页面的完整地址')
-  const s = siwcSessions.get(id)
-  if (!s) return fail(404, 'session_expired', 'the authorization session expired; generate a new link / 授权会话已过期，请重新生成链接')
+  const state = oauthSessions.get(id)
+  if (!state) return fail(404, 'session_expired', 'the authorization session expired; generate a new link / 授权会话已过期，请重新生成链接')
   if (p.get('error') === 'access_denied') {
-    siwcSessions.delete(id)
+    oauthSessions.delete(id)
     return fail(400, 'access_denied', `authorization was denied / 授权被拒绝 (${p.get('error')})`)
   }
   if (p.get('error')) return fail(400, 'authorization_failed', `authorization failed / 授权失败 (${p.get('error')})`)
-  if (p.get('state') !== s.state)
+  if (p.get('state') !== state)
     return fail(400, 'state_mismatch', 'the callback does not belong to this authorization (state mismatch); paste the address from the latest link / 回调与本次授权不匹配（state 不一致），请粘贴最新链接的回调地址')
-  const issued = p.get('client_id') || s.client_id || `agent_${randomBytes(8).toString('hex')}`
-  if (s.client_id && issued !== s.client_id)
-    return fail(400, 'client_mismatch', "the callback client_id differs from the account's; re-authorize with the same ChatGPT account / 回调中的 client_id 与账号已有的不同，请用同一个 ChatGPT 账号重新授权")
-  siwcSessions.delete(id)
+  oauthSessions.delete(id)
   return { data: {
     credentials: {
-      access_token: token('eyJhbGciOiJSUzI1NiJ9.mock-siwc'),
+      access_token: token('eyJhbGciOiJSUzI1NiJ9.mock-oauth'),
       refresh_token: token('rt'),
       id_token: token('eyJhbGciOiJSUzI1NiJ9.mock-id'),
       expires_at: inAnHour(),
-      email: 'siwc-owner@example.com',
-      client_id: issued,
-      ext_agent_host_id: s.host,
-      scopes: 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct'
+      email: 'codex-owner@example.com',
+      chatgpt_account_id: randomUUID(),
+      plan_type: 'pro'
     }
   } }
 })
 
-// ------------------------------------------------------------------ official usage resets (codex_device)
+// ------------------------------------------------------------------ official usage resets
 // POST /reset-credits/list, /summary and /consume as the plugin answers
 // them (docs/PLUGIN-CODEX.md, official usage resets). Account 29 starts with
-// two resets and a used-up 5 h window; other codex_device accounts have none.
+// two resets and a used-up 5 h window; other codex accounts have none.
 
 const day = 86400
 const unix = (offsetSec: number) => Math.floor(Date.now() / 1000) + offsetSec
@@ -240,7 +233,6 @@ async function resetAccount(id: number) {
   const { accounts } = await accountsMock()
   const a = accounts.find((x) => x.id === id)
   if (!a || a.plugin_key !== 'codex') return fail(404, 'not_found', 'account not found / 账号不存在')
-  if (a.type !== 'codex_device') return badRequest('account_id', 'unsupported_account_type', 'only device code accounts have official resets / 只有设备码登录的账号有官方重置次数')
   return a
 }
 
@@ -254,7 +246,7 @@ on('POST', '/p/codex/reset-credits/list', async (req) => {
   return { data: { available_count: available(list).length, credits: list } }
 })
 
-// Only the cache: accounts whose count the usage query has seen (here every codex_device account with resets).
+// Only the cache: accounts whose count /reset-credits/list has written (here every codex account with resets).
 on('POST', '/p/codex/reset-credits/summary', (req) => {
   const ids: number[] = Array.isArray(req.body?.account_ids) ? req.body.account_ids : []
   const out: Record<string, { available_count: number; updated_at: number }> = {}

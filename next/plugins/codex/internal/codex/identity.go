@@ -23,8 +23,8 @@ const authClaim = "https://api.openai.com/auth"
 //   - the answers of OpenAI's token endpoint (authorization and refresh),
 //     straight over TLS in the same exchange;
 //   - the id_token an administrator submits with the account's credentials
-//     (ValidateCredentials), from which missing email / plan_type and, for
-//     codex_device, chatgpt_account_id are filled in. That account id is
+//     (ValidateCredentials), from which missing email / plan_type /
+//     chatgpt_account_id are filled in. That account id is
 //     then sent upstream as the chatgpt-account-id header.
 //
 // Not verifying is deliberate and safe in both cases. The credentials are

@@ -98,6 +98,10 @@ func (u *wsUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		case "rate-limit":
 			send(map[string]any{"type": "error", "status": 429, "error": map[string]any{"type": "rate_limit_error", "message": "slow down"}})
 			continue
+		case "usage-limit":
+			send(map[string]any{"type": "error", "status": 429, "error": map[string]any{"type": "usage_limit_reached", "message": "limit"},
+				"headers": map[string]any{"X-Codex-Primary-Used-Percent": "100.0", "x-codex-primary-window-minutes": 300, "x-flag": true}})
+			continue
 		case "fail":
 			send(map[string]any{"type": "response.failed", "response": map[string]any{"id": id, "model": model, "status": "failed",
 				"error": map[string]any{"code": "server_error", "message": "boom"}}})
@@ -441,6 +445,45 @@ func TestWebSocketUpstreamEventsDecideTheTurn(t *testing.T) {
 	}
 	if r := e.record(); r.Success || r.ErrorType != errTypeUpstream {
 		t.Fatalf("dropped turn: %+v", r)
+	}
+}
+
+// An error event's "headers" object is the error's response headers: the
+// plugin classifies with them and the quota observer samples them, like a
+// handshake's; an error event without one is classified without headers.
+func TestWebSocketErrorEventHeadersAreResponseHeaders(t *testing.T) {
+	e := newWSEnv(t)
+	obs := &fakeQuotaObserver{}
+	e.gw.d.Quota = obs
+	e.gen.accountTypes[len(e.gen.accountTypes)-1].Type.Quota = &manifest.AccountQuota{Headers: []manifest.QuotaHeader{{
+		WindowMinutes: "x-codex-primary-window-minutes", Utilization: "x-codex-primary-used-percent"}}}
+	// turn waits for the turn's record: an event is relayed before it is
+	// classified.
+	turn := func(c *wsClient, input, until string) map[string]string {
+		c.send(create(wsModel, input))
+		c.until(until)
+		e.record()
+		return e.wsPlat.classify[len(e.wsPlat.classify)-1].GetHeaders()
+	}
+	c := e.mustDial()
+	// The first turn opens the upstream; its handshake is sampled too.
+	c.send(create(wsModel, "ok"))
+	c.until("response.completed")
+	e.record()
+	n := len(obs.calls)
+	got := turn(c, "usage-limit", "error")
+	if len(obs.calls) != n+1 || obs.calls[n] != (quotaCall{11, 1, 429}) {
+		t.Fatalf("quota calls = %+v", obs.calls)
+	}
+	if h := obs.headers[n]; h.Get("X-Codex-Primary-Used-Percent") != "100.0" || h.Get("X-Codex-Primary-Window-Minutes") != "300" || h.Get("X-Flag") != "" {
+		t.Fatalf("observed headers = %v", h)
+	}
+	want := map[string]string{"x-codex-primary-used-percent": "100.0", "x-codex-primary-window-minutes": "300"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("classify headers = %v, want %v", got, want)
+	}
+	if got := turn(c, "rate-limit", "error"); len(got) != 0 || len(obs.calls) != n+1 {
+		t.Fatalf("an error event without headers: classify headers %v, quota calls %+v", got, obs.calls)
 	}
 }
 

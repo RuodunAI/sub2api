@@ -2,11 +2,11 @@
 // vue-i18n syntax: avoid the special characters @ | { } in plain text.
 const zh = {
   // tabs.CodexResetTab is the account detail tab's label (plugin.codex.tabs.<component>).
-  tabs: { device: '设备码登录', siwc: 'Sign in with ChatGPT', CodexResetTab: '官方重置' },
+  tabs: { device: '设备码登录', oauth: 'Sign in with Codex', CodexResetTab: '官方重置' },
   tabsLabel: '授权方式',
   intro: {
     device: '在任意设备的浏览器里打开 OpenAI 验证页并输入验证码，授权后自动完成。与 Codex CLI 设备码登录相同。',
-    siwc: 'OpenAI 官方第三方入口（ChatGPT plan usage）。在浏览器里登录同意后，把跳转后的网址粘回这里。'
+    oauth: '与 Codex CLI 的浏览器登录相同。在浏览器里登录 ChatGPT 并同意后，把跳转后的网址粘回这里。'
   },
   current: {
     title: '当前授权',
@@ -14,7 +14,6 @@ const zh = {
     expires: '令牌过期',
     expired: '已过期（会自动刷新）',
     accountId: 'ChatGPT 账号 ID',
-    clientId: 'Client ID',
     unknown: '—',
     reauth: '重新授权',
     cancelReauth: '取消重新授权',
@@ -42,7 +41,7 @@ const zh = {
     cancel: '取消',
     notEnabled: '如提示未开启：在 ChatGPT 设置 → 安全 中开启“设备码授权”（企业工作区需管理员开启）。'
   },
-  siwc: {
+  oauth: {
     generate: '生成授权链接',
     regenerate: '重新生成链接',
     linkLabel: '授权链接',
@@ -50,17 +49,16 @@ const zh = {
     openLink: '在新窗口打开',
     step1: '在浏览器中打开授权链接，登录 ChatGPT 并同意授权',
     step2: '粘贴跳转后的完整网址',
-    redirectNote: '同意后浏览器会跳到一个 127.0.0.1 开头、打不开的页面，这是正常的。把地址栏里的完整网址复制下来，粘到下面。',
+    redirectNote: '同意后浏览器会跳到一个 localhost:1455 开头、打不开的页面，这是正常的。把地址栏里的完整网址复制下来，粘到下面。',
     callbackLabel: '回调网址',
-    callbackPlaceholder: 'http://127.0.0.1:1455/auth/callback?code=…',
+    callbackPlaceholder: 'http://localhost:1455/auth/callback?code=…',
     complete: '完成授权',
     shape: {
       invalid: '无法解析这段内容（含有非法的 % 转义或分号），请粘贴地址栏里的完整网址。',
       denied: '这个网址带有 error 参数：授权被拒绝或失败，请重新生成链接再试。',
       no_code: '网址里没有 code 参数，请确认复制的是同意授权后跳转到的地址。'
     },
-    failed: '授权失败',
-    reauthKeepsHost: '重新授权沿用本账号已有的 Client ID 和宿主 ID。'
+    failed: '授权失败'
   },
   plan: {
     free: 'Free',
@@ -86,6 +84,7 @@ const zh = {
     window7d: '周',
     resetsAt: '重置于',
     noUsage: '还没有用量数据',
+    usageAwaiting: '用量会在账号下一次请求后更新',
     expires: '过期于',
     noExpiry: '不过期',
     granted: '发放于',
@@ -117,11 +116,11 @@ const zh = {
 type Messages = typeof zh
 
 const en: Messages = {
-  tabs: { device: 'Device code', siwc: 'Sign in with ChatGPT', CodexResetTab: 'Official resets' },
+  tabs: { device: 'Device Code', oauth: 'Sign in with Codex', CodexResetTab: 'Official resets' },
   tabsLabel: 'Sign-in method',
   intro: {
     device: 'Open the OpenAI verification page in a browser on any device and enter the code; this form finishes by itself once you approve. Same as the Codex CLI device code login.',
-    siwc: "OpenAI's official third-party sign-in (ChatGPT plan usage). Sign in and consent in your browser, then paste the address you land on back here."
+    oauth: "Same as the Codex CLI's browser sign-in. Sign in to ChatGPT and consent in your browser, then paste the address you land on back here."
   },
   current: {
     title: 'Current authorization',
@@ -129,7 +128,6 @@ const en: Messages = {
     expires: 'Token expires',
     expired: 'Expired (refreshed automatically)',
     accountId: 'Account ID',
-    clientId: 'Client ID',
     unknown: '—',
     reauth: 'Re-authorize',
     cancelReauth: 'Cancel re-authorization',
@@ -157,7 +155,7 @@ const en: Messages = {
     cancel: 'Cancel',
     notEnabled: 'If it says device codes are not enabled: turn on "Device code authorization" in ChatGPT Settings → Security (a workspace admin has to allow it for business workspaces).'
   },
-  siwc: {
+  oauth: {
     generate: 'Generate sign-in link',
     regenerate: 'Generate a new link',
     linkLabel: 'Sign-in link',
@@ -165,17 +163,16 @@ const en: Messages = {
     openLink: 'Open in a new window',
     step1: 'Open the link in your browser, sign in to ChatGPT and consent',
     step2: 'Paste the full address you were sent to',
-    redirectNote: 'After you consent, the browser goes to a page starting with 127.0.0.1 that does not load. That is expected: copy the full address from the address bar and paste it below.',
+    redirectNote: 'After you consent, the browser goes to a page starting with localhost:1455 that does not load. That is expected: copy the full address from the address bar and paste it below.',
     callbackLabel: 'Callback address',
-    callbackPlaceholder: 'http://127.0.0.1:1455/auth/callback?code=…',
+    callbackPlaceholder: 'http://localhost:1455/auth/callback?code=…',
     complete: 'Complete sign-in',
     shape: {
       invalid: 'This cannot be read (a malformed % escape or a semicolon). Paste the full address from the address bar.',
       denied: 'This address carries an error parameter: consent was refused or failed. Generate a new link and try again.',
       no_code: 'The address has no code parameter. Make sure you copied the address you landed on after consenting.'
     },
-    failed: 'Sign-in failed',
-    reauthKeepsHost: "Re-authorizing reuses this account's issued client ID and host ID."
+    failed: 'Sign-in failed'
   },
   plan: {
     free: 'Free',
@@ -201,6 +198,7 @@ const en: Messages = {
     window7d: 'Weekly',
     resetsAt: 'resets',
     noUsage: 'No usage seen yet',
+    usageAwaiting: "Usage updates after the account's next request",
     expires: 'Expires',
     noExpiry: 'Does not expire',
     granted: 'granted',

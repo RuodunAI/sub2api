@@ -68,3 +68,65 @@ func TestReadQuotaHeadersFormats(t *testing.T) {
 		t.Fatalf("min = %+v", got[1])
 	}
 }
+
+// Codex's x-codex-{primary,secondary}-* headers: which slot is the 5-hour
+// window is not fixed, so the window is named by the length header.
+func TestReadQuotaHeadersWindowMinutes(t *testing.T) {
+	now := time.Unix(1_790_000_000, 0)
+	slot := func(name string) QuotaHeader {
+		p := "x-codex-" + name + "-"
+		return QuotaHeader{WindowMinutes: p + "window-minutes", Utilization: p + "used-percent",
+			UtilizationUnit: QuotaUnitPercent, Reset: p + "reset-at"}
+	}
+	decls := []QuotaHeader{slot("primary"), slot("secondary")}
+	h := http.Header{}
+	h.Set("x-codex-primary-window-minutes", "10080")
+	h.Set("x-codex-primary-used-percent", "100")
+	h.Set("x-codex-primary-reset-at", "1790300000")
+	h.Set("x-codex-secondary-window-minutes", "300")
+	h.Set("x-codex-secondary-used-percent", "12.5")
+	got := ReadQuotaHeaders(decls, h.Get, now)
+	if len(got) != 2 || got[0].Key != "7d" || got[0].Utilization != 100 || got[0].ResetsAt.Unix() != 1790300000 ||
+		got[1].Key != "5h" || got[1].Utilization != 12.5 || got[1].ResetsAt != nil {
+		t.Fatalf("got %+v", got)
+	}
+	// Two slots of one length keep the more used one, whichever comes first.
+	h.Set("x-codex-secondary-window-minutes", "10080")
+	if got := ReadQuotaHeaders(decls, h.Get, now); len(got) != 1 || got[0].Key != "7d" || got[0].Utilization != 100 {
+		t.Fatalf("same length: got %+v", got)
+	}
+	if got := ReadQuotaHeaders([]QuotaHeader{slot("secondary"), slot("primary")}, h.Get, now); len(got) != 1 || got[0].Utilization != 100 {
+		t.Fatalf("same length, more used declared later: got %+v", got)
+	}
+	// At equal use the later reset wins; a known reset beats none.
+	h.Set("x-codex-secondary-used-percent", "100")
+	h.Set("x-codex-secondary-reset-at", "1790400000")
+	if got := ReadQuotaHeaders(decls, h.Get, now); len(got) != 1 || got[0].ResetsAt.Unix() != 1790400000 {
+		t.Fatalf("tie, later reset declared later: got %+v", got)
+	}
+	h.Set("x-codex-secondary-reset-at", "1790200000")
+	if got := ReadQuotaHeaders(decls, h.Get, now); len(got) != 1 || got[0].ResetsAt.Unix() != 1790300000 {
+		t.Fatalf("tie, earlier reset declared later: got %+v", got)
+	}
+	h.Del("x-codex-primary-reset-at")
+	if got := ReadQuotaHeaders(decls, h.Get, now); len(got) != 1 || got[0].ResetsAt == nil || got[0].ResetsAt.Unix() != 1790200000 {
+		t.Fatalf("tie, only the later declaration has a reset: got %+v", got)
+	}
+	// No usable length: nothing for that slot.
+	h.Set("x-codex-secondary-window-minutes", "soon")
+	h.Del("x-codex-primary-window-minutes")
+	if got := ReadQuotaHeaders(decls, h.Get, now); len(got) != 0 {
+		t.Fatalf("no length: got %+v", got)
+	}
+}
+
+func TestQuotaWindowKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"300": "5h", "10080": "7d", " 1440 ": "1d", "90": "90m", "60": "1h",
+		"0": "", "-5": "", "1.5": "", "": "", "527041": "",
+	} {
+		if got := QuotaWindowKey(in); got != want {
+			t.Errorf("QuotaWindowKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

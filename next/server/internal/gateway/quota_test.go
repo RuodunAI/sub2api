@@ -14,10 +14,14 @@ type quotaCall struct {
 	status int
 }
 
-type fakeQuotaObserver struct{ calls []quotaCall }
+type fakeQuotaObserver struct {
+	calls   []quotaCall
+	headers []http.Header
+}
 
-func (f *fakeQuotaObserver) ObserveQuotaHeaders(id int64, h []manifest.QuotaHeader, status int, _ http.Header) {
+func (f *fakeQuotaObserver) ObserveQuotaHeaders(id int64, h []manifest.QuotaHeader, status int, header http.Header) {
 	f.calls = append(f.calls, quotaCall{id, len(h), status})
+	f.headers = append(f.headers, header)
 }
 
 // Upstream responses of account types declaring quota headers reach the

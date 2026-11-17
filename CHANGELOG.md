@@ -8,15 +8,27 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
+## 2026-11-17
+
+### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（codex 0.1.7；无迁移，滚动）
+
+- **升级前**：每个集群先在控制台删除已有的 Sign in with ChatGPT 账号（类型 `chatgpt_siwc`），新版不再认识这个类型。
+- **额度响应头可按窗口时长命名**（CONTRACTS §105）：manifest `quota.headers[].windowMinutes` 指向携带窗口分钟数的响应头，窗口名按时长生成（300 → `5h`、10080 → `7d`），供 codex 每次响应按 `x-codex-*` 头更新用量窗口。
+- **WebSocket 错误事件的响应头**（CONTRACTS §105）：上游 WebSocket 会话里的错误事件带顶层 `headers` 对象时（Codex 后端的用量超限就是这样），核心把它当作这次错误的响应头，交给插件判断错误并按声明采样用量窗口；此前只采样握手的响应头，会话中途用满不会禁用账号。
+- **codex 0.1.7：用量窗口以响应头为准**（PLUGIN-CODEX.md 第 13 节，需要核心 0.1.297）：两种账号类型的 5 小时 / 周窗口只取自每个 HTTP 响应、WebSocket 握手和带响应头的 WebSocket 错误事件里的 `x-codex-*` 头，删除 `wham/usage` 主动查询（控制台点击用量只重新读取快照，用量随账号的下一次请求更新）；只有 429 且头里有窗口用满并给出重置时刻时才自动禁用账号，到最晚的重置时刻由核心自动恢复；其他 429（包括只有 `usage_limit_reached` 错误体、窗口满但没有重置时刻）一律原样返回客户端，不冷却不禁用，不再按错误体、`retry-after` 或 5 分钟默认值禁用。重置次数缓存只由查看重置明细刷新；使用重置后，重置页把用量标为“用量会在账号下一次请求后更新”。
+- **codex 0.1.7：新增 Sign in with Codex，删除 Sign in with ChatGPT**（docs/PLUGIN-CODEX.md §14）：ChatGPT（Codex）账号的登录方式改为“Device Code”（设备码，原有）和新增的“Sign in with Codex”（Codex CLI 的浏览器登录，授权后把 `localhost:1455` 回调网址粘回表单），两者令牌、上游、刷新、用量窗口与官方重置次数完全相同。Sign in with ChatGPT（`chatgpt_siwc`）账号类型整体删除，没有兼容处理：**升级前必须手动删除已有的 Sign in with ChatGPT 账号**。
+
+### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（`cf4718dcb`，codex 0.1.6、openai 0.4.2；无迁移，滚动）
+
+- **Release**：上游 PR #43 合并为 `cf4718dcb`（代码在 `179142ae6` 已同步），tag `core-v0.1.296` 推送后自动构建（run 44070757390，用户提前批准，release 环境由我代批），北京时间 19:25:10 发布。清单 sha256 `9fbbdae1f86286fa0b72498f74fb61352403805bc9d7ce4aa46d2f13bc7bcf90`（amd64 bundle `5a59c505…2777`、arm64 `b9a5aea7…cac4`），strategy rolling，schema 仍 `ab35f2f6…187d`。
+- **ec2pool 上线**（用户要求把 ec2pool 改成网关托管的 docker compose）：原来是非托管的 `deploy/single`（`/opt/sup2api`，app、app-2 两个核心，已跑 `179142ae6`），改为 `/opt/sup2api-gw` 的网关集群（网关 0.1.137，沿用原来的 PostgreSQL、Valkey 与开发插件市场；先按两节点同机运行，随后按用户要求改为单节点 node-a），以 Release 0.1.296 为基线 `init`。19:25:47 停旧 app、app-2，复制 11 个插件包到 node-a 的 `plugin-blobs/`，19:26:05 node-a 就绪、19:26:09 node-b 就绪；入口 `127.0.0.1:18080` 不变，宿主机 Caddy 没改。6 个启用插件两节点 active、ready。详见 [ec2pool 部署记录](next/deploy/gateway/ec2pool/README.md)。
+- **ovh 集群（ovh + clicodeplus）仍是核心 0.1.295、网关 0.1.137，没有装 0.1.296**（要装时可在控制台一键更新或按部署记录手动）。
 
 - **修复：Sign in with ChatGPT 账号的流式请求不计费**（用户 11-17 报告，ec2pool 实测）：上游对 `stream:true` 返回 SSE 正文却标 `Content-Type: application/json`，网关按 JSON 处理，token、首字时间都记 0、计费状态 `free`，而且整段缓冲到结束才发给客户端。现在流式请求的 2xx 应答若正文以 SSE 字段开头就按事件流转发与计量（CONTRACTS §104.1）。已有的 0 token 记录不会补算。
 - **OpenAI Responses 缓存写入**：`input_tokens_details.cache_write_tokens` 计为缓存写入，按价格的 `cc` 计；价格没有 `cc` 的模型仍按输入价计（`inclusive` 语义下未计价的缓存写入留在输入里，CONTRACTS §104.3）。TPM 与实时 token 统计不含缓存写入，OpenAI 请求的这两个数会比以前略小。
 - **OpenAI 端点不带 `/v1`**：`POST /responses`、`/chat/completions`、`/embeddings` 与 WebSocket `GET /responses` 自动按 `/v1/...` 处理，适配 base URL 没写 `/v1` 的客户端；只对 openai 平台（CONTRACTS §104.2）。
 - **codex 0.1.6**：两种账号类型的默认模型改为上游实际可用的 `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（Sign in with ChatGPT 账号 `/v1/models` 的结果），测试模型改为 `gpt-6-luna`。已有账号的模型列表不变，要用新列表请在账号上重新获取模型。生图：Sign in with ChatGPT 上游明确拒绝 `image_generation` 工具（`subscription_sharing_unsupported_capability`），所以不加生图模型。
 - **openai 0.4.2**：API Key 账号默认模型补上上述 8 个新模型。
-
-## 2026-11-17
 
 ### 网关 0.1.137：删除只给网关 0.1.135 留的 `signed_manifest` 列（首个由 GitHub Actions 发布的网关，`3c8cbbda9`）
 

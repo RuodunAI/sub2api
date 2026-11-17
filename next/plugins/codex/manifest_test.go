@@ -72,11 +72,11 @@ func TestManifestShape(t *testing.T) {
 		t.Fatalf("capabilities = %v, want %v", caps, wantCaps)
 	}
 
-	if len(m.AccountTypes) != 2 || m.AccountTypes[0].ID != codex.TypeDevice || m.AccountTypes[1].ID != codex.TypeSIWC {
+	if len(m.AccountTypes) != 2 || m.AccountTypes[0].ID != codex.TypeDevice || m.AccountTypes[1].ID != codex.TypeOAuth {
 		t.Fatalf("accountTypes = %+v", m.AccountTypes)
 	}
-	labels := map[string]string{codex.TypeDevice: "Device code", codex.TypeSIWC: "Sign in with ChatGPT"}
-	zhLabels := map[string]string{codex.TypeDevice: "设备码登录", codex.TypeSIWC: "Sign in with ChatGPT"}
+	labels := map[string]string{codex.TypeDevice: "Device Code", codex.TypeOAuth: "Sign in with Codex"}
+	zhLabels := map[string]string{codex.TypeDevice: "设备码登录", codex.TypeOAuth: "Sign in with Codex"}
 	for _, at := range m.AccountTypes {
 		if at.Form.Mode != "native" || at.Form.Component != "CodexAuthForm" || at.Form.Schema != "" {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
@@ -94,24 +94,18 @@ func TestManifestShape(t *testing.T) {
 		if len(at.DefaultModels) == 0 {
 			t.Errorf("%s has no default models", at.ID)
 		}
-		// Only codex_device has usage windows (docs/PLUGIN-CODEX.md §9): Sign in
-		// with ChatGPT documents none and may not call backend-api.
-		if at.ID == codex.TypeSIWC {
-			if at.Quota != nil {
-				t.Errorf("%s quota = %+v, want none", at.ID, at.Quota)
-			}
-		} else {
-			q := at.Quota
-			if q == nil || !q.Query || !q.AutoRefresh || len(q.Headers) != 0 || at.ModelAvailability {
-				t.Fatalf("%s quota = %+v modelAvailability = %v", at.ID, q, at.ModelAvailability)
-			}
-			if len(q.Windows) != 2 || q.Windows[0].Key != codex.QuotaKey5h || q.Windows[1].Key != codex.QuotaKey7d {
-				t.Fatalf("%s quota windows = %+v", at.ID, q.Windows)
-			}
-			for _, w := range q.Windows {
-				if w.Label["en"] == "" || w.Label["zh"] == "" || w.ShortLabel["en"] == "" || w.ShortLabel["zh"] == "" {
-					t.Errorf("%s window %s needs en and zh labels: %+v", at.ID, w.Key, w)
-				}
+		// Usage windows come from the x-codex-* headers of every answer,
+		// named by window length (docs/PLUGIN-CODEX.md §13): no usage query.
+		q := at.Quota
+		if q == nil || q.Query || q.AutoRefresh || !reflect.DeepEqual(q.Headers, codexQuotaHeaders) || at.ModelAvailability {
+			t.Fatalf("%s quota = %+v modelAvailability = %v", at.ID, q, at.ModelAvailability)
+		}
+		if len(q.Windows) != 2 || q.Windows[0].Key != "5h" || q.Windows[1].Key != "7d" {
+			t.Fatalf("%s quota windows = %+v", at.ID, q.Windows)
+		}
+		for _, w := range q.Windows {
+			if w.Label["en"] == "" || w.Label["zh"] == "" || w.ShortLabel["en"] == "" || w.ShortLabel["zh"] == "" {
+				t.Errorf("%s window %s needs en and zh labels: %+v", at.ID, w.Key, w)
 			}
 		}
 		if len(at.Platforms) != 1 {
@@ -122,10 +116,7 @@ func TestManifestShape(t *testing.T) {
 			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || len(ap.PassHeaders) != 0 {
 			t.Errorf("%s platform = %+v", at.ID, ap)
 		}
-		wantFields := []string{"model", codex.FieldStringInput, codex.FieldSystemRoles}
-		if at.ID == codex.TypeDevice {
-			wantFields = []string{"model", codex.FieldHasInstructions, codex.FieldStringInput, codex.FieldSystemRoles}
-		}
+		wantFields := []string{"model", codex.FieldHasInstructions, codex.FieldStringInput, codex.FieldSystemRoles}
 		if !slices.Equal(ap.RequestFields, wantFields) {
 			t.Errorf("%s requestFields = %v, want %v", at.ID, ap.RequestFields, wantFields)
 		}
@@ -176,9 +167,12 @@ func TestManifestShape(t *testing.T) {
 		}
 	}
 	// The plugin itself only talks to the authorization server; upstream
-	// requests, usage queries and refreshes are sent by the core.
+	// requests and refreshes are sent by the core.
 	if d, _ := perms["net"].Scope["domains"].([]any); len(d) != 1 || d[0] != "auth.openai.com" {
 		t.Errorf("net domains = %v", perms["net"].Scope)
+	}
+	if !slices.Equal(m.ExternalServices, []string{"auth.openai.com", "chatgpt.com"}) {
+		t.Errorf("externalServices = %v", m.ExternalServices)
 	}
 
 	// Route path -> permission: authorization routes, then the usage reset
@@ -189,7 +183,7 @@ func TestManifestShape(t *testing.T) {
 		accounts         *manifest.RouteAccounts
 	}{
 		{"/auth/device/start", "codex:manage", nil}, {"/auth/device/poll", "codex:manage", nil},
-		{"/auth/siwc/start", "codex:manage", nil}, {"/auth/siwc/exchange", "codex:manage", nil},
+		{"/auth/codex/start", "codex:manage", nil}, {"/auth/codex/exchange", "codex:manage", nil},
 		{"/reset-credits/list", "codex:reset", &manifest.RouteAccounts{Action: manifest.AccountsUpdate, From: []string{"body:account_id"}}},
 		{"/reset-credits/consume", "codex:reset", &manifest.RouteAccounts{Action: manifest.AccountsUpdate, From: []string{manifest.AccountActionIDs}}},
 		{"/reset-credits/summary", "codex:reset", &manifest.RouteAccounts{Action: manifest.AccountsRead, From: []string{"body:account_ids"}}},
@@ -200,7 +194,10 @@ func TestManifestShape(t *testing.T) {
 	// A fake issuer: no route may reach the real one.
 	issuer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) }))
 	defer issuer.Close()
-	p := codex.NewWithEndpoints(codex.Endpoints{Auth: issuer.URL, ChatGPT: issuer.URL, API: issuer.URL})
+	p, err := codex.NewWithEndpoints(codex.Endpoints{Auth: issuer.URL, ChatGPT: issuer.URL}, manifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i, r := range m.Routes {
 		if r.Method != http.MethodPost || r.Path != wantRoutes[i].path || r.Scope != "admin" || r.Permission != wantRoutes[i].permission {
 			t.Errorf("route %d = %+v", i, r)
@@ -222,26 +219,40 @@ func TestManifestShape(t *testing.T) {
 		t.Errorf("codex:reset description = %v", d)
 	}
 
-	// The reset entry points show only on device code accounts; the row
-	// action is never bulk (consume takes exactly one account) and confirms.
+	// The reset entry points show on both account types; the row action is
+	// never bulk (consume takes exactly one account) and confirms.
 	if len(m.UI.AccountActions) != 1 {
 		t.Fatalf("accountActions = %+v", m.UI.AccountActions)
 	}
 	a := m.UI.AccountActions[0]
 	if a.Route != "POST /reset-credits/consume" || a.Permission != "codex:reset" || a.Bulk || !a.Danger ||
-		a.Confirm["en"] == "" || a.Confirm["zh"] == "" || !slices.Equal(a.AccountTypes, []string{codex.TypeDevice}) {
+		a.Confirm["en"] == "" || a.Confirm["zh"] == "" || !slices.Equal(a.AccountTypes, accountTypes) {
 		t.Errorf("reset action = %+v", a)
 	}
 	for _, sl := range m.UI.Slots {
-		if sl.Permission != "codex:reset" || !slices.Equal(sl.AccountTypes, []string{codex.TypeDevice}) {
+		if sl.Permission != "codex:reset" || !slices.Equal(sl.AccountTypes, accountTypes) {
 			t.Errorf("slot %s = %+v", sl.Slot, sl)
 		}
 	}
 }
 
+// accountTypes are the plugin's account types, in manifest order.
+var accountTypes = []string{codex.TypeDevice, codex.TypeOAuth}
+
+// codexQuotaHeaders name the usage windows by the length the Codex backend
+// sends with each answer (CONTRACTS §105).
+var codexQuotaHeaders = []manifest.QuotaHeader{
+	{WindowMinutes: "x-codex-primary-window-minutes", Utilization: "x-codex-primary-used-percent", UtilizationUnit: "percent", Reset: "x-codex-primary-reset-at"},
+	{WindowMinutes: "x-codex-secondary-window-minutes", Utilization: "x-codex-secondary-used-percent", UtilizationUnit: "percent", Reset: "x-codex-secondary-reset-at"},
+}
+
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, codex.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	p, err := codex.New(manifestJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
 	if h.Info.GetPluginKey() != "codex" {
 		t.Fatalf("info = %v", h.Info)
 	}
