@@ -988,12 +988,12 @@ on('PATCH', '/me/api-keys/:id', (req) => {
   if (b.allowed_ips !== undefined) k.allowed_ips = b.allowed_ips
   return keyOut(k)
 })
-on('POST', '/me/api-keys/:id/reveal', stepUp('apikey.reveal', (req) => {
+on('POST', '/me/api-keys/:id/reveal', (req) => {
   const k = keys.find((x) => x.id === Number(req.params.id) && x.user_id === ME_ID)
   if (!k) return fail(404, 'not_found', 'api key not found')
   if (legacyKeyIds.has(k.id)) return fail(409, 'conflict', 'This legacy key cannot be recovered. Create a new key to enable copying.')
   return { key: plaintextOf(k) }
-}))
+})
 on('POST', '/me/api-keys/:id/rotate', (req) => {
   const k = keys.find((x) => x.id === Number(req.params.id) && x.user_id === ME_ID)
   if (!k) return fail(404, 'not_found', 'api key not found')

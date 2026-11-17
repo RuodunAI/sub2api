@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { cancelStepUps, pendingStepUp, requestStepUp, settleStepUp } from './stepUp'
 
 const DELETE = { scope: 'user.delete', context: 'DELETE /api/v1/users/1' }
-const REVEAL = { scope: 'apikey.reveal', context: 'POST /api/v1/me/api-keys/2/reveal' }
+const REVEAL = { scope: 'credential.reveal', context: 'POST /api/v1/accounts/2/credentials/reveal' }
 
 describe('requestStepUp', () => {
   it('shows one verification at a time and resolves each with its proof or null', async () => {

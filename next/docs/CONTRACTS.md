@@ -94,7 +94,7 @@
 |---|---|
 | user | `user:read` `user:create` `user:update`（三者可带范围 `:team`，§103） `user:delete`🔐🔑 `user:password:reset`🔐🔑 |
 | role | `role:read` `role:define`🔐 `role:assign`🔐（2026-11-12 由 `role:manage` 拆分：定义角色 / 给用户分配角色。迁移 `0097_authz_hardening.sql` 把存量 `role:manage` 授予改写为两者（内置 operator 只得 `role:assign`，决策 D3），然后删除 `role:manage`） |
-| apikey | `apikey:self:manage`🔐🔑（查看明文每次二次验证 `apikey.reveal`，期 4 收尾 F2） |
+| apikey | `apikey:self:manage`（查看、复制明文不要二次验证，2026-11-17 用户定） |
 | group | `group:read` `group:manage`🔐 |
 | segment | `segment:read` `segment:manage`（用户组，§97.7） |
 | account | `account:read` `account:create` `account:update` `account:delete`🔐 `account:test` `account:credential:view`🔐🔑，均可带范围（`:own`、`:team`、`:group/<g>`、`:group/<g>/account/<a>`、`:account/<a>`；create 不接受 id 与 team，§21.0、§103；旧 key `account:own:<x>` 已由迁移改写为 `account:<x>:own` 并删除，不再接受）；`account:settings:custom`（§21）`account:group:bind` `account:relay`🔐 `account:owner:update`🔐（改账号所属，§103.4） |
@@ -574,7 +574,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 | `key` | 明文 Key（`sk-s2a-` + 40 位 base62），只在创建和显式授权的复制响应中出现，列表不返回 |
 | `copyable` | 是否保存了可解密密钥；旧的仅哈希 Key 为 `false`，无法恢复 |
 
-新建 Key 除认证哈希外使用服务器主密钥 AES-GCM 加密保存，AAD 为 `apikey:{id}`。POST `/me/api-keys/:id/reveal` 要求 `apikey:self:manage` 与每次二次验证 `apikey.reveal`（目录里 `apikey:self:manage` 带 `stepUp`、`sensitive` 标记，期 4 收尾）并校验所有权，管理员也只可操作自己的 Key。响应 `{key}`、`Cache-Control: no-store`，返回前写 `apikey.reveal` 审计（不含密钥）。旧 Key 返回 409，删除或非本人 Key 返回 404。
+新建 Key 除认证哈希外使用服务器主密钥 AES-GCM 加密保存，AAD 为 `apikey:{id}`。POST `/me/api-keys/:id/reveal` 要求 `apikey:self:manage` 并校验所有权，不要二次验证（2026-11-17 用户定：复制 API Key 不需要二次验证；此前期 4 收尾 F2 要求每次 `apikey.reveal` 二次验证，目录标记 `stepUp`、`sensitive` 一并去掉），管理员也只可操作自己的 Key。响应 `{key}`、`Cache-Control: no-store`，返回前写 `apikey.reveal` 审计（不含密钥）。旧 Key 返回 409，删除或非本人 Key 返回 404。
 
 POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理员绕过。原子替换认证哈希、前缀、加密密钥，写 `apikey.rotate` 审计，保留 ID、名称、分组、状态、有效期和历史记录。响应新 `APIKey`（含 `key`），旧密钥立即失效；前端要求用户确认后执行，入口在编辑窗口（2026-11-10 起，见 §92）。
 
@@ -5747,7 +5747,6 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | scope | 接口 | 所需权限 |
 |---|---|---|
 | `credential.reveal` | POST `/accounts/:id/credentials/reveal` | `account:credential:view`（任意范围） |
-| `apikey.reveal` | POST `/me/api-keys/:id/reveal` | `apikey:self:manage` |
 | `proxy.reveal` | POST `/proxies/:id/reveal-url` | `proxy:manage`（任意范围） |
 | `superadmin.transfer` | POST `/system/super-admin/transfer`（密码 + 第二因素） | `self:security`，且是超管本人 |
 | `self.password.change` | PUT `/me/password`、PATCH `/users/:id` 改自己的密码（密码 + 第二因素） | `self:security` / `user:update` |

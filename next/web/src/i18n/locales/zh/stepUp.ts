@@ -18,7 +18,6 @@ export default {
   passkeyUnsupported: '你只设置了通行密钥，但当前浏览器或网址不能使用它（需要 HTTPS 域名）。请换一个浏览器，或先开启两步验证。',
   scope: {
     credential_reveal: '查看账号凭证',
-    apikey_reveal: '查看 API 密钥',
     proxy_reveal: '查看代理地址',
     superadmin_transfer: '移交超级管理员',
     self_password_change: '修改登录密码',

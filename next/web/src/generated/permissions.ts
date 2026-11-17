@@ -189,12 +189,12 @@ export const PERMISSIONS: Record<PermKey, PermMeta> = {
   },
   'apikey:self:manage': {
     module: 'apikey',
-    risk: 'sensitive',
-    stepUp: true,
+    risk: 'low',
+    stepUp: false,
     requires: [],
     description: {
-      en: 'Create and manage your own gateway API keys; showing a key in plain text asks for verification each time.',
-      zh: '新建与管理自己的网关 API Key；查看明文每次需要二次验证。'
+      en: 'Create and manage your own gateway API keys.',
+      zh: '新建与管理自己的网关 API Key。'
     }
   },
   'group:read': {
