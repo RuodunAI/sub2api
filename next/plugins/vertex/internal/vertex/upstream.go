@@ -60,14 +60,14 @@ func (p *Plugin) modelURL(t target, model, action string) (address, id string, e
 func (a account) headers(now time.Time) (map[string]string, error) {
 	h := map[string]string{"content-type": "application/json"}
 	if a.typ == TypeAPIKey {
-		key := a.creds.str(fieldAPIKey)
+		key := a.creds.Str(fieldAPIKey)
 		if key == "" {
 			return nil, status.Error(codes.FailedPrecondition, "the account has no API key / 账号没有 API Key")
 		}
 		h["x-goog-api-key"] = key
 		return h, nil
 	}
-	token := a.creds.str(fieldAccessToken)
+	token := a.creds.Str(fieldAccessToken)
 	if token == "" || a.tokenExpired(now) {
 		return nil, status.Error(codes.FailedPrecondition, "the account has no valid access token (none yet, or expired); the next credential refresh fetches one / 账号没有有效的访问令牌（尚未获取或已过期），等待下一次凭证刷新")
 	}
