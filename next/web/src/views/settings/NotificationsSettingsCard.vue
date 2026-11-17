@@ -3,7 +3,7 @@
 // and the delivery record of what the core and plugins sent.
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
+import { api, type ToastKind } from '@sub2api/host'
 import { SDateTime, SBadge, SButton, SHint, SInput, SPagination, SSectionTitle, SSelect, SSettingRow, SSettingsGroup, STable, localizedText, toast, type TableColumn, type Tone } from '@sub2api/ui'
 import type { NotificationChannel, NotificationRecord, NotificationStatus } from '@/api/types'
 import { useList } from '@/composables/useList'
@@ -61,18 +61,30 @@ async function loadChannels() {
   }
 }
 
+/** The toast of a test send, by the first attempt's outcome (§74.4). */
+function testOutcome(r: NotificationRecord): [string, ToastKind] {
+  if (r.status === 'sent') return [t('settings.notifications.testSent'), 'success']
+  if (!r.last_error) return [t('settings.notifications.testWaiting'), 'info']
+  if (r.status === 'failed') return [t('settings.notifications.testFailed', { error: r.last_error }), 'error']
+  return [t('settings.notifications.testRetrying', { error: r.last_error }), 'warning']
+}
+
+// The test send answers once its first attempt is recorded (or after 35 s):
+// the record is read as the request goes out, to show the new row, and again
+// when the answer comes, to show how it ended.
 async function sendTest() {
   testErrors.value = {}
   const recipients = test.value.recipients.split(/[\s,;]+/).filter(Boolean)
   testing.value = true
+  const sending = api.post<NotificationRecord>('/notifications/test', { channel: test.value.channel, recipients })
+  void records.reload()
   try {
-    await api.post('/notifications/test', { channel: test.value.channel, recipients })
-    toast(t('settings.notifications.testQueued'), 'success')
-    await records.reload()
+    toast(...testOutcome(await sending))
   } catch (e) {
     applyFormError(e, testErrors, TEST_ERROR_CODES)
   } finally {
     testing.value = false
+    await records.reload()
   }
 }
 
