@@ -5,6 +5,7 @@ use (
 	./e2e
 	./gateway
 	./plugins/anthropic
+	./plugins/azure-openai
 	./plugins/claude-oauth
 	./plugins/codex
 	./plugins/dynweight
