@@ -1,13 +1,14 @@
-# codex 插件：ChatGPT 账号（Codex 设备码 / Sign in with ChatGPT）
+# codex 插件：ChatGPT 账号（Codex 设备码 / Sign in with Codex）
 
-日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286）。核心契约见 CONTRACTS §83（WebSocket 每轮 patch 见 §83.6），额度见 §44、§69。
+日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；2026-11-17 新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 13 节）。核心契约见 CONTRACTS §83（WebSocket 每轮 patch 见 §83.6），额度见 §44、§69。
 
 ## 1. 目标与边界
 
 - 新增内置并默认启用的插件 `codex`，让运营者用**自己的** ChatGPT 订阅为**自己的**应用提供 OpenAI 兼容接口：`/v1/chat/completions`、`/v1/responses`、`/v1/responses`（WebSocket 模式）。
 - 两种建号方式（同一 `creationGroup: "codex"` 下的两个账号类型）：
   1. `codex_device`：Codex 设备码登录（与 Codex CLI `--device-auth`、OpenCode 等第三方工具相同的公开流程）。
-  2. `chatgpt_siwc`：OpenAI 官方第三方入口 Sign in with ChatGPT · ChatGPT plan usage（授权码 + PKCE）。
+  2. `codex_oauth`：Sign in with Codex，Codex CLI 自己的浏览器登录（授权码 + PKCE，2026-11-17 新增，见第 13 节）。
+  - ~~`chatgpt_siwc`：OpenAI 官方第三方入口 Sign in with ChatGPT · ChatGPT plan usage~~（2026-11-17 删除，见第 13 节；下文涉及 `chatgpt_siwc` 的内容只作历史记录）。
 - 守线（写进插件说明，不做技术强制）：
   - 请求如实标明来源：`originator: sup2api`、`User-Agent: sup2api-codex/<版本>`；**不**伪装 Codex CLI 的 UA、TLS 指纹、`x-codex-*` 头，**不**注入 Codex 官方系统提示词。
   - 仅供账号所有者自用；把多人 ChatGPT 账号做成号池对外出售违反 OpenAI 条款（付费/托管应用需先通过 OpenAI 的 Sign in with ChatGPT 候补审批）。
@@ -27,7 +28,7 @@
 6. 身份：id_token 的 `https://api.openai.com/auth` 声明里有 `chatgpt_account_id`、`chatgpt_plan_type`；`email` 在顶层。
 7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator: sup2api`、`user-agent`、`accept: text/event-stream`；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
 
-### 2.2 Sign in with ChatGPT（`chatgpt_siwc`）
+### 2.2 Sign in with ChatGPT（`chatgpt_siwc`，已删除，见第 13 节）
 
 来源：developers.openai.com/siwc/token-sharing-open-source/*。
 
@@ -56,21 +57,21 @@
 - `BuildUpstreamRequest`：按账号类型选 URL 和头；patch `store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；`codex_device` 缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，并对每轮 `response.create` 消息返回同样的 patch（不含 stream 相关字段，`chatgpt_siwc` 保留 `previous_response_id`；核心每轮应用，CONTRACTS §83.6）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，按账号类型选端点和格式；轮换后的 refresh token 一并保存。
-- 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON、`client_id` / `ext_agent_host_id` 格式不对）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body` / `client_id` / `ext_agent_host_id`，code 为 `required` / `invalid_json` / `pattern`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed`、`registration_incomplete`、`client_mismatch`、`scope_missing` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
+- 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
   - `POST /auth/device/start` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id，15 分钟过期）。
   - `POST /auth/device/poll` `{session_id}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
-  - `POST /auth/siwc/start` `{client_id?, ext_agent_host_id?}`（重新授权时带上） → `{session_id, authorize_url}`；PKCE verifier、state、nonce、host_id 存 KV。
-  - `POST /auth/siwc/exchange` `{session_id, callback_url}` → `{credentials}` 或错误。
+  - `POST /auth/codex/start`（请求体忽略） → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 13 节。
+  - `POST /auth/codex/exchange` `{session_id, callback_url}` → `{credentials}` 或错误。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
-  - `codex_device`：`chatgpt_account_id`。
-  - `chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`（空格分隔的字符串，与 OAuth 返回一致）。
-- 网络权限（与 manifest 一致）：`net` 只有 `auth.openai.com`（插件自己只在授权时访问授权服务器）；`chatgpt.com`、`api.openai.com` 只列在 `externalServices`，上游请求、模型列表与令牌刷新都由核心发出（0.1.2–0.1.6 的额度查询也是，0.1.7 删除）。
+  - `chatgpt_account_id`（两种类型都有）。
+  - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
+- 网络权限（与 manifest 一致）：`net` 只有 `auth.openai.com`（插件自己只在授权时访问授权服务器）；`chatgpt.com`、`api.openai.com` 只列在 `externalServices`，上游请求、模型列表、额度查询（0.1.2）与令牌刷新都由核心发出。
 - 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
-- `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与（`codex_device`）`chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
-- 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with ChatGPT 页签（生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
+- `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与 `chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
+- 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 页签（2026-11-17 起取代 Sign in with ChatGPT 页签；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
 
 ## 5. 内置
 
@@ -234,3 +235,30 @@
 - 重置次数缓存（§10.6）不再由用量查询写入，只由 `/reset-credits/list` 成功时写入、consume 后删除。
 - `version` 0.1.7，`hostCompat` `>=0.1.297 <0.2.0`（`windowMinutes` 随核心 0.1.297 发布，旧核心因缺 `key` 拒绝安装）。宿主权限 `accounts.credentials`、`net` 的说明去掉“用量查询”。
 - 测试：`quota_test.go`（manifest 的声明经 `ReadQuotaHeaders` 在两种槽位顺序下都得到 `5h` / `7d`；判满：任一窗口满且有未来重置时刻、取最晚、无重置时刻或已过、未满、没有时长头；manifest 缺声明时启动失败）、`classify_test.go`（429 满窗口 → 禁用到最晚重置并冷却到同一时刻；满但无 `reset-at`、未满、没有头、只有 `usage_limit_reached` 错误体 → 原样返回；200 / 503 / 401 带满窗口头不禁用；不附 `quota`）、`manifest_test.go`（`codex_device` 声明 `windowMinutes` 头、没有查询）。
+
+## 14. Sign in with Codex（2026-11-17，用户要求）
+
+用户要三种 ChatGPT 登录方式，随后改为只保留两种：“Device Code”（`codex_device`）与新增的“Sign in with Codex”（`codex_oauth`）；Sign in with ChatGPT（`chatgpt_siwc`）整体删除。插件版本号不在本改动里升（同期另一项改动统一升到 0.1.7）。
+
+### 14.1 协议（与旧版 Sub2API `backend/internal/pkg/openai/oauth.go` 及其服务代码一致）
+
+- Codex CLI 的浏览器登录：公开客户端 `client_id = app_EMoamEEZ73f0CkXaXp7hrann`（与设备码相同），授权码 + PKCE（S256），没有动态客户端注册。
+- 授权地址 `https://auth.openai.com/oauth/authorize`，参数：`client_id`、`response_type=code`、`redirect_uri=http://localhost:1455/auth/callback`（Codex 客户端登记的回调，必须是 `localhost`）、`scope=openid profile email offline_access`、`state`、`code_challenge_method=S256`、`code_challenge`，以及 Codex CLI 同样带的 `id_token_add_organizations=true`（id_token 带上工作区信息）、`codex_cli_simplified_flow=true`（只走 ChatGPT 授权页，不进入 API 组织设置）。旧版还会发的 `originator` 等 Codex 标识不发。
+- 服务器不在本地：浏览器最后跳到 `localhost:1455/auth/callback?...` 打不开，运营者把地址栏完整网址粘回表单（解析与原 SIWC 相同：完整网址、无 scheme、只有查询串、片段都接受）。
+- 换令牌：`POST https://auth.openai.com/oauth/token`，form：`grant_type=authorization_code`、`code`、`redirect_uri`（同上）、`client_id`、`code_verifier`。与设备码登录的最后一步完全相同（只有 `redirect_uri` 不同），代码共用 `redeemCode`。
+- 得到的令牌与设备码登录相同：上游 `chatgpt.com/backend-api/codex/responses`、`chatgpt-account-id` 取自 id_token、刷新用同一个 Codex 客户端（`POST /oauth/token` JSON，scope `openid profile email`，`refresh.go`）、`x-codex-*` 用量头、429 处理、官方重置次数都一样。插件里两种类型没有任何分支，只在 `knownType` 里一起列出。
+
+### 14.2 插件改动
+
+- manifest：新账号类型 `codex_oauth`（`authMethodLabel` “Sign in with Codex”，表单、敏感字段、设置字段、`refresh`、默认模型、`requestFields`、`streamOnly` 与 `codex_device` 相同）；额度用 `quota.headers` 按 `windowMinutes` 从每次应答的 `x-codex-primary-*` / `x-codex-secondary-*` 头命名窗口（CONTRACTS §105），窗口标签与 `codex_device` 相同；`codex_device` 的 `authMethodLabel` 改为 “Device Code”。路由 `POST /auth/codex/start`、`POST /auth/codex/exchange`（`scope: admin`，`codex:manage`）。重置次数的两个 UI 插槽与行操作的 `accountTypes` 加上 `codex_oauth`。宿主权限说明改为设备码与 Sign in with Codex。
+- 会话：KV namespace `codex_session`，`{state, code_verifier}`，30 分钟，绑定发起人（`SaveCallerSession`，他人或过期都回 404 `session_expired`）。exchange 的错误码沿用原 SIWC：`invalid_callback`、`state_mismatch`、`access_denied`（结束会话）、`authorization_failed`（400），`session_expired`（404），`upstream_unavailable`、`token_exchange_failed`（502）。
+- 表单：`SiwcFlow.vue` 改为 `OAuthFlow.vue`（生成链接 → 新窗口打开 → 粘贴 `localhost:1455` 回调网址 → 换取），重新授权走同一流程；文案 `oauth.*`。
+
+### 14.3 删除 Sign in with ChatGPT（`chatgpt_siwc`）
+
+- 删掉账号类型、`/auth/siwc/*` 路由、动态客户端注册（`dynamic_agent_client`、`ext_agent_host_id`、`resource`、`nonce`、`chatgpt.tokens.use.direct` scope 检查）、`api.openai.com` 上游与模型列表（`BuildModelsRequest` 不再实现，两种类型都用 manifest 默认模型）、SIWC 的刷新分支、凭证字段 `client_id` / `ext_agent_host_id` / `scopes`、`externalServices` 里的 `api.openai.com`。上文 §2.2、§4 中 SIWC 的路由与凭证、§6–§9 中 SIWC 的行为、§12 中 SIWC 的模型核实都只是历史记录。`classify.go` 里 SIWC 的错误码规则由同期另一项改动删除。
+- 不留兼容代码：已有的 `chatgpt_siwc` 账号必须在升级前手动删除；升级后插件不认识该类型（`ValidateCredentials` 回 `account_type unsupported`，上游与刷新回 `FailedPrecondition` / `InvalidArgument`）。
+
+### 14.4 测试
+
+- `oauth_test.go`：start 的授权地址参数与 KV 会话（verifier 对得上 challenge、绑定用户 1）、exchange 成功（换令牌表单、凭证与设备码相同）、会话用后即删、只粘查询串、state 不符 / access_denied / 其他错误 / 无 code / 空、错误后会话保留与拒绝后删除、令牌端点拒绝 / 无 access_token / 连不上；他人会话。`upstream_test.go`、`refresh_test.go`、`resetcredits_test.go`：`codex_oauth` 与 `codex_device` 的上游请求、刷新、重置次数相同；无模型列表。`manifest_test.go`：两个类型、标签、`codex_oauth` 的额度头、路由、插槽与行操作覆盖两种类型、`externalServices`。UI：`CodexAuthForm.spec.ts`（Sign in with Codex 流程、编辑与重新授权）、`flow.spec.ts`、`messages.spec.ts`。

@@ -5,7 +5,7 @@
 // :account-type) and calls validate() before saving.
 //
 // - Only the flow of the account type is shown (codex_device: device code,
-//   chatgpt_siwc: Sign in with ChatGPT); both, as tabs, when the type is not known.
+//   codex_oauth: Sign in with Codex); both, as tabs, when the type is not known.
 // - A finished flow writes the credentials it returned into v-model.
 // - Editing: the current email / plan / expiry and "Re-authorize". Until a
 //   re-authorization finishes v-model is left as loaded, so the masked
@@ -15,7 +15,7 @@ import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SHint, STabs } from 
 import { useCodexHost, type CodexCredentials } from './host'
 import { flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, type Flow } from './flow'
 import DeviceFlow from './DeviceFlow.vue'
-import SiwcFlow from './SiwcFlow.vue'
+import OAuthFlow from './OAuthFlow.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -73,11 +73,6 @@ const hasCurrent = computed(() => editing.value && hasAccessToken(original.value
 const showFlows = computed(() => !fresh.value && (!hasCurrent.value || reauthOpen.value))
 const freshSummary = computed(() => summarize(fresh.value as Record<string, unknown> | null))
 const tabs = computed(() => flows.value.map((f) => ({ key: f, label: t(`tabs.${f}`) })))
-const reauthBody = computed(() => {
-  if (!hasCurrent.value) return null
-  const c = original.value
-  return { client_id: typeof c.client_id === 'string' ? c.client_id : '', ext_agent_host_id: typeof c.ext_agent_host_id === 'string' ? c.ext_agent_host_id : '' }
-})
 const errorList = computed(() => Object.entries(props.errors || {}).filter(([, v]) => !!v))
 
 function planLabel(plan: string): string {
@@ -149,7 +144,6 @@ defineExpose({ validate })
           <span v-if="current.expiresAt && current.expiresAt < Date.now()" class="cx-muted cx-ml">{{ t('current.expired') }}</span>
         </SDescItem>
         <SDescItem v-if="current.accountId" :label="t('current.accountId')" :value="current.accountId" mono />
-        <SDescItem v-if="current.clientId" :label="t('current.clientId')" :value="current.clientId" mono />
       </SDescriptions>
       <div class="cx-actions">
         <SButton v-if="!reauthOpen" size="sm" icon="refresh" data-testid="codex-reauth" @click="openReauth">{{ t('current.reauth') }}</SButton>
@@ -172,7 +166,7 @@ defineExpose({ validate })
     <STabs v-if="showFlows" v-model="tab" :tabs="tabs" size="sm" :aria-label="t('tabsLabel')" data-testid="codex-flows">
       <template #default="{ active }">
         <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" @authorized="onAuthorized" @busy="onBusy" />
-        <SiwcFlow v-else-if="active === 'siwc'" :key="`siwc-${type}`" :reauth="reauthBody" @authorized="onAuthorized" @busy="onBusy" />
+        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" @authorized="onAuthorized" @busy="onBusy" />
       </template>
     </STabs>
 

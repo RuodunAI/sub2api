@@ -4,14 +4,15 @@ import { callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown
 describe('flowsFor / typeOf', () => {
   it('shows only the flow of a known type, both otherwise', () => {
     expect(flowsFor('codex_device')).toEqual(['device'])
-    expect(flowsFor('chatgpt_siwc')).toEqual(['siwc'])
-    expect(flowsFor('')).toEqual(['device', 'siwc'])
-    expect(flowsFor(undefined)).toEqual(['device', 'siwc'])
-    expect(flowsFor('other')).toEqual(['device', 'siwc'])
+    expect(flowsFor('codex_oauth')).toEqual(['oauth'])
+    expect(flowsFor('')).toEqual(['device', 'oauth'])
+    expect(flowsFor(undefined)).toEqual(['device', 'oauth'])
+    expect(flowsFor('other')).toEqual(['device', 'oauth'])
+    expect(flowsFor('chatgpt_siwc')).toEqual(['device', 'oauth'])
   })
 
   it('prefers the editor account type over the account', () => {
-    expect(typeOf({ type: 'chatgpt_siwc' }, { type: 'codex_device' })).toBe('chatgpt_siwc')
+    expect(typeOf({ type: 'codex_oauth' }, { type: 'codex_device' })).toBe('codex_oauth')
     expect(typeOf(null, { type: 'codex_device' })).toBe('codex_device')
     expect(typeOf(undefined, null)).toBe('')
   })
@@ -20,8 +21,8 @@ describe('flowsFor / typeOf', () => {
 describe('mergeCredentials', () => {
   it('replaces every flow field and keeps the others', () => {
     const current = { access_token: '******', refresh_token: '******', id_token: '******', plan_type: 'plus', chatgpt_account_id: 'acc', proxy_id: 3 }
-    const out = mergeCredentials(current, { access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', client_id: 'cid', ext_agent_host_id: 'urn:uuid:x' })
-    expect(out).toEqual({ proxy_id: 3, access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', client_id: 'cid', ext_agent_host_id: 'urn:uuid:x' })
+    const out = mergeCredentials(current, { access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', chatgpt_account_id: 'acc-2' })
+    expect(out).toEqual({ proxy_id: 3, access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', chatgpt_account_id: 'acc-2' })
     // A masked id_token must not survive a login that did not return one.
     expect(out).not.toHaveProperty('id_token')
     expect(current.access_token).toBe('******')
@@ -32,7 +33,7 @@ describe('mergeCredentials', () => {
   })
 
   it('covers the documented credential fields', () => {
-    expect([...CODEX_FIELDS].sort()).toEqual(['access_token', 'chatgpt_account_id', 'client_id', 'email', 'expires_at', 'ext_agent_host_id', 'id_token', 'plan_type', 'refresh_token', 'scopes'])
+    expect([...CODEX_FIELDS].sort()).toEqual(['access_token', 'chatgpt_account_id', 'email', 'expires_at', 'id_token', 'plan_type', 'refresh_token'])
   })
 })
 
@@ -48,15 +49,14 @@ describe('hasAccessToken', () => {
 
 describe('summarize', () => {
   it('reads email, plan, expiry (seconds → ms) and ids', () => {
-    expect(summarize({ email: ' a@b.c ', plan_type: 'pro', expires_at: 1700000000, chatgpt_account_id: 'acc', client_id: 'cid' })).toEqual({
+    expect(summarize({ email: ' a@b.c ', plan_type: 'pro', expires_at: 1700000000, chatgpt_account_id: 'acc' })).toEqual({
       email: 'a@b.c',
       plan: 'pro',
       expiresAt: 1700000000000,
-      accountId: 'acc',
-      clientId: 'cid'
+      accountId: 'acc'
     })
     expect(summarize({ expires_at: 'soon' }).expiresAt).toBeNull()
-    expect(summarize(undefined)).toEqual({ email: '', plan: '', expiresAt: null, accountId: '', clientId: '' })
+    expect(summarize(undefined)).toEqual({ email: '', plan: '', expiresAt: null, accountId: '' })
   })
 })
 

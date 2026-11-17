@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// account.list.quota slot (codex_device accounts): how many official usage
+// account.list.quota slot (both account types): how many official usage
 // resets the account has, beside its usage windows. The count is the
 // plugin's cache (resetCount.ts), so the list's refreshes never reach
 // OpenAI; nothing shows until one is known. A click opens the detail tab's

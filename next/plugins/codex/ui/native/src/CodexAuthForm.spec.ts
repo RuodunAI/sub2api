@@ -29,7 +29,8 @@ function fakeHost(): PluginHost {
 }
 
 const DEVICE_CREDS = { access_token: 'at', refresh_token: 'rt', id_token: 'it', expires_at: 1800000000, email: 'me@example.com', chatgpt_account_id: 'acc-1', plan_type: 'plus' }
-const SIWC_CREDS = { access_token: 'at2', refresh_token: 'rt2', id_token: 'it2', expires_at: 1800000000, email: 'me@example.com', client_id: 'client-1', ext_agent_host_id: 'urn:uuid:h', scopes: 'openid' }
+const OAUTH_CREDS = { access_token: 'at2', refresh_token: 'rt2', id_token: 'it2', expires_at: 1800000000, email: 'me@example.com', chatgpt_account_id: 'acc-2', plan_type: 'pro' }
+const CALLBACK = 'http://localhost:1455/auth/callback'
 
 let wrapper: VueWrapper | null = null
 function mountForm(props: Record<string, unknown>) {
@@ -58,20 +59,20 @@ describe('CodexAuthForm: flows by account type', () => {
   it('shows only the device flow for codex_device, without a tab bar', () => {
     const w = mountForm({ accountType: { type: 'codex_device' } })
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(true)
-    expect(w.find('[data-testid="codex-siwc-flow"]').exists()).toBe(false)
+    expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(false)
     expect(w.find('[role="tablist"]').exists()).toBe(false)
   })
 
   it('takes the type from the account when the editor gives none', () => {
-    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'chatgpt_siwc' }, modelValue: {} })
-    expect(w.find('[data-testid="codex-siwc-flow"]').exists()).toBe(true)
+    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'codex_oauth' }, modelValue: {} })
+    expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(true)
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(false)
   })
 
   it('offers both flows as tabs when the type is unknown', async () => {
     const w = mountForm({})
     expect(w.find('[role="tablist"]').exists()).toBe(true)
-    expect(w.findAll('[role="tab"]').map((t) => t.text())).toEqual(['tabs.device', 'tabs.siwc'])
+    expect(w.findAll('[role="tab"]').map((t) => t.text())).toEqual(['tabs.device', 'tabs.oauth'])
   })
 })
 
@@ -160,64 +161,64 @@ describe('CodexAuthForm: device code', () => {
   })
 })
 
-describe('CodexAuthForm: Sign in with ChatGPT', () => {
+describe('CodexAuthForm: Sign in with Codex', () => {
   it('generates a link, exchanges the pasted callback and writes the credentials', async () => {
     answer = (path, body) => {
-      if (path === '/auth/siwc/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/api/accounts/authorize?x=1' }
-      if (path === '/auth/siwc/exchange') return body.callback_url.includes('code=') ? { credentials: SIWC_CREDS } : new Error('bad callback')
+      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
+      if (path === '/auth/codex/exchange') return body.callback_url.includes('code=') ? { credentials: OAUTH_CREDS } : new Error('bad callback')
       throw new Error(`unexpected ${path}`)
     }
-    const w = mountForm({ accountType: { type: 'chatgpt_siwc' } })
-    await w.get('[data-testid="codex-siwc-start"]').trigger('click')
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/siwc/start', body: {} })
-    expect((w.get('[data-testid="codex-siwc-url"]').element as HTMLInputElement).value).toBe('https://auth.openai.com/api/accounts/authorize?x=1')
-    expect(w.get('[data-testid="codex-siwc-open"]').attributes('target')).toBe('_blank')
-    expect(w.find('[data-testid="codex-siwc-note"]').exists()).toBe(true)
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: {} })
+    expect((w.get('[data-testid="codex-oauth-url"]').element as HTMLInputElement).value).toBe('https://auth.openai.com/oauth/authorize?x=1')
+    expect(w.get('[data-testid="codex-oauth-open"]').attributes('target')).toBe('_blank')
+    expect(w.find('[data-testid="codex-oauth-note"]').exists()).toBe(true)
 
-    await w.get('[data-testid="codex-siwc-callback"]').setValue('http://127.0.0.1:1455/auth/callback?state=s')
-    expect(w.find('[data-testid="codex-siwc-shape"]').text()).toBe('siwc.shape.no_code')
-    await w.get('[data-testid="codex-siwc-complete"]').trigger('click')
+    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?state=s`)
+    expect(w.find('[data-testid="codex-oauth-shape"]').text()).toBe('oauth.shape.no_code')
+    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(w.get('[data-testid="codex-siwc-error"]').text()).toContain('bad callback')
+    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('bad callback')
 
-    await w.get('[data-testid="codex-siwc-callback"]').setValue('http://127.0.0.1:1455/auth/callback?code=c&state=s')
+    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
     // The error of the previous paste goes away with the new one.
-    expect(w.find('[data-testid="codex-siwc-error"]').exists()).toBe(false)
-    await w.get('[data-testid="codex-siwc-complete"]').trigger('click')
+    expect(w.find('[data-testid="codex-oauth-error"]').exists()).toBe(false)
+    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(calls.at(-1)).toEqual({ path: '/auth/siwc/exchange', body: { session_id: 'w1', callback_url: 'http://127.0.0.1:1455/auth/callback?code=c&state=s' } })
-    expect(lastValue(w)).toEqual(SIWC_CREDS)
+    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s` } })
+    expect(lastValue(w)).toEqual(OAUTH_CREDS)
     expect(w.find('[data-testid="codex-authorized"]').exists()).toBe(true)
   })
 })
 
 describe('CodexAuthForm: editing', () => {
-  const masked = { access_token: '******', refresh_token: '******', id_token: '******', email: 'old@example.com', expires_at: 1700000000, client_id: 'client-1', ext_agent_host_id: 'urn:uuid:h' }
+  const masked = { access_token: '******', refresh_token: '******', id_token: '******', email: 'old@example.com', expires_at: 1700000000, chatgpt_account_id: 'acc-2' }
 
   it('shows the current authorization and keeps the masked credentials until re-authorized', async () => {
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'chatgpt_siwc' }, modelValue: { ...masked } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked } })
     expect(w.get('[data-testid="codex-current"]').text()).toContain('old@example.com')
-    expect(w.find('[data-testid="codex-siwc-flow"]').exists()).toBe(false)
+    expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(false)
     expect(await (w.vm as unknown as { validate: () => Promise<boolean> }).validate()).toBe(true)
     expect(w.emitted('update:modelValue')).toBeUndefined()
   })
 
-  it('re-authorizes with the issued client id and host id', async () => {
+  it('re-authorizes with the same flow', async () => {
     answer = (path) => {
-      if (path === '/auth/siwc/start') return { session_id: 'w2', authorize_url: 'https://auth.openai.com/a' }
-      if (path === '/auth/siwc/exchange') return { credentials: { ...SIWC_CREDS, email: 'old@example.com' } }
+      if (path === '/auth/codex/start') return { session_id: 'w2', authorize_url: 'https://auth.openai.com/a' }
+      if (path === '/auth/codex/exchange') return { credentials: { ...OAUTH_CREDS, email: 'old@example.com' } }
       throw new Error(`unexpected ${path}`)
     }
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'chatgpt_siwc' }, modelValue: { ...masked, proxy_note: 'kept' } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked, proxy_note: 'kept' } })
     await w.get('[data-testid="codex-reauth"]').trigger('click')
-    await w.get('[data-testid="codex-siwc-start"]').trigger('click')
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/siwc/start', body: { client_id: 'client-1', ext_agent_host_id: 'urn:uuid:h' } })
-    await w.get('[data-testid="codex-siwc-callback"]').setValue('http://127.0.0.1:1455/auth/callback?code=c&state=s')
-    await w.get('[data-testid="codex-siwc-complete"]').trigger('click')
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: {} })
+    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(lastValue(w)).toEqual({ ...SIWC_CREDS, email: 'old@example.com', proxy_note: 'kept' })
+    expect(lastValue(w)).toEqual({ ...OAUTH_CREDS, email: 'old@example.com', proxy_note: 'kept' })
     expect(w.get('[data-testid="codex-authorized"]').text()).toContain('done.titleReauth')
 
     // "Authorize again" puts the loaded credentials back.

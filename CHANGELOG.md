@@ -10,6 +10,7 @@
 
 - **额度响应头可按窗口时长命名**（CONTRACTS §105）：manifest `quota.headers[].windowMinutes` 指向携带窗口分钟数的响应头，窗口名按时长生成（300 → `5h`、10080 → `7d`），供 codex 每次响应按 `x-codex-*` 头更新用量窗口。
 - **codex 0.1.7：用量窗口以响应头为准**（PLUGIN-CODEX.md 第 13 节，需要核心 0.1.297）：`codex_device` 的 5 小时 / 周窗口只取自每个响应的 `x-codex-*` 头，删除 `wham/usage` 主动查询（控制台不能再强制刷新用量）；只有 429 且头里有窗口用满并给出重置时刻时才自动禁用账号，到最晚的重置时刻由核心自动恢复；只有 `usage_limit_reached` 错误体、或窗口满但没有重置时刻的 429 原样返回客户端，不再按错误体、`retry-after` 或 5 分钟默认值禁用。重置次数缓存只由查看重置明细刷新。
+- **codex：新增 Sign in with Codex，删除 Sign in with ChatGPT**（docs/PLUGIN-CODEX.md §14）：ChatGPT（Codex）账号的登录方式改为“Device Code”（设备码，原有）和新增的“Sign in with Codex”（Codex CLI 的浏览器登录，授权后把 `localhost:1455` 回调网址粘回表单），两者令牌、上游、刷新、用量窗口与官方重置次数完全相同。Sign in with ChatGPT（`chatgpt_siwc`）账号类型整体删除，没有兼容处理：**升级前必须手动删除已有的 Sign in with ChatGPT 账号**。
 
 ## 2026-11-17
 

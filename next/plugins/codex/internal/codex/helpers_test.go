@@ -35,7 +35,7 @@ func idToken(email, accountID, plan string) string {
 }
 
 // testEndpoints point every service root at base.
-func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base, API: base} }
+func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base} }
 
 // startPlugin runs p in the SDK harness with a fake host (in-memory KV).
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {

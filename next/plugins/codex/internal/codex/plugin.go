@@ -1,11 +1,13 @@
 // Package codex implements the codex plugin: two account types for the
 // built-in openai platform that use the operator's OWN ChatGPT subscription
-// (docs/PLUGIN-CODEX.md):
+// (docs/PLUGIN-CODEX.md). They differ only in how the Codex CLI's tokens are
+// obtained; afterwards both go to the ChatGPT Codex backend and refresh with
+// the Codex client:
 //
 //   - codex_device: the Codex device code login (the public flow of the Codex
-//     CLI's --device-auth); requests go to the ChatGPT Codex backend;
-//   - chatgpt_siwc: OpenAI's Sign in with ChatGPT for third-party tools
-//     (authorization code + PKCE); requests go to api.openai.com.
+//     CLI's --device-auth);
+//   - codex_oauth: Sign in with Codex, the Codex CLI's browser login
+//     (authorization code + PKCE).
 //
 // Requests identify themselves truthfully: originator "sup2api" and
 // User-Agent "sup2api-codex/<version>". The plugin does not imitate the
@@ -18,7 +20,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +39,7 @@ const (
 
 	// Account types (manifest accountTypes[].id).
 	TypeDevice = "codex_device"
-	TypeSIWC   = "chatgpt_siwc"
+	TypeOAuth  = "codex_oauth"
 
 	// PlatformID is the built-in platform both types serve.
 	PlatformID = "openai"
@@ -51,23 +52,16 @@ const (
 	// Default service roots; tests point them at fake servers (Endpoints).
 	DefaultAuthBase    = "https://auth.openai.com"
 	DefaultChatGPTBase = "https://chatgpt.com"
-	DefaultAPIBase     = "https://api.openai.com"
 
-	// CodexClientID is the Codex CLI's public OAuth client (device code
-	// flow and its refresh).
+	// CodexClientID is the Codex CLI's public OAuth client (both logins and
+	// the refresh).
 	CodexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-	// RefreshScope is the scope of a codex_device refresh.
+	// RefreshScope is the scope of a refresh.
 	RefreshScope = "openid profile email"
-
-	// Sign in with ChatGPT.
-	SIWCDynamicClient = "dynamic_agent_client"
-	SIWCAgentName     = "sup2api"
-	SIWCRedirectURI   = "http://127.0.0.1:1455/auth/callback"
-	SIWCScope         = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct"
-	SIWCResource      = "https://api.openai.com/v1"
-	// ScopeDirect must be granted for a Sign in with ChatGPT account to call
-	// the Responses API on the user's plan.
-	ScopeDirect = "chatgpt.tokens.use.direct"
+	// CodexRedirectURI and CodexScope are Sign in with Codex's: the redirect
+	// registered for the Codex client and the scope the Codex CLI asks for.
+	CodexRedirectURI = "http://localhost:1455/auth/callback"
+	CodexScope       = "openid profile email offline_access"
 
 	// WebSocketBeta opts the upstream connection into the Responses
 	// WebSocket mode.
@@ -83,18 +77,18 @@ const (
 type Endpoints struct {
 	// Auth is the OpenAI issuer: device code, token and authorize endpoints.
 	Auth string
-	// ChatGPT serves the Codex backend (codex_device upstream).
+	// ChatGPT serves the Codex backend (the upstream).
 	ChatGPT string
-	// API serves the Responses API (chatgpt_siwc upstream, model list).
-	API string
 }
 
 // DefaultEndpoints are the production roots.
-var DefaultEndpoints = Endpoints{Auth: DefaultAuthBase, ChatGPT: DefaultChatGPTBase, API: DefaultAPIBase}
+var DefaultEndpoints = Endpoints{Auth: DefaultAuthBase, ChatGPT: DefaultChatGPTBase}
 
 // Plugin is the codex plugin. It implements pluginsdk.Platform, Executor,
-// ModelLister, CredentialRefresher, HTTP (authorization and usage reset
-// routes) and Initializer.
+// CredentialRefresher, HTTP (authorization and usage reset routes) and
+// Initializer. It lists no models: the Codex backend's model list is an
+// internal endpoint of the Codex CLI, so the console keeps the manifest
+// defaults.
 type Plugin struct {
 	*pluginsdk.Router
 	host pluginsdk.Host
@@ -126,7 +120,6 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 		ep: Endpoints{
 			Auth:    strings.TrimRight(ep.Auth, "/"),
 			ChatGPT: strings.TrimRight(ep.ChatGPT, "/"),
-			API:     strings.TrimRight(ep.API, "/"),
 		},
 		client: &http.Client{Timeout: authTimeout},
 		policy: newPolicy(nil),
@@ -135,8 +128,8 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 	}
 	p.Handle(http.MethodPost, "/auth/device/start", p.handleDeviceStart)
 	p.Handle(http.MethodPost, "/auth/device/poll", p.handleDevicePoll)
-	p.Handle(http.MethodPost, "/auth/siwc/start", p.handleSIWCStart)
-	p.Handle(http.MethodPost, "/auth/siwc/exchange", p.handleSIWCExchange)
+	p.Handle(http.MethodPost, "/auth/codex/start", p.handleCodexStart)
+	p.Handle(http.MethodPost, "/auth/codex/exchange", p.handleCodexExchange)
 	p.Handle(http.MethodPost, "/reset-credits/list", p.handleResetList)
 	p.Handle(http.MethodPost, "/reset-credits/consume", p.handleResetConsume)
 	p.Handle(http.MethodPost, "/reset-credits/summary", p.handleResetSummary)
@@ -161,8 +154,6 @@ type credentials struct {
 	RefreshToken     string `json:"refresh_token"`
 	IDToken          string `json:"id_token"`
 	ChatGPTAccountID string `json:"chatgpt_account_id"`
-	ClientID         string `json:"client_id"`
-	ExtAgentHostID   string `json:"ext_agent_host_id"`
 }
 
 func parseCredentials(raw string) (credentials, error) {
@@ -175,13 +166,11 @@ func parseCredentials(raw string) (credentials, error) {
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
 	c.IDToken = strings.TrimSpace(c.IDToken)
 	c.ChatGPTAccountID = strings.TrimSpace(c.ChatGPTAccountID)
-	c.ClientID = strings.TrimSpace(c.ClientID)
-	c.ExtAgentHostID = strings.TrimSpace(c.ExtAgentHostID)
 	return c, err
 }
 
-// hostIDPattern is ext_agent_host_id: urn:uuid:<UUID>.
-var hostIDPattern = regexp.MustCompile(`^urn:uuid:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+// knownType reports whether the account type is one of the plugin's.
+func knownType(typ string) bool { return typ == TypeDevice || typ == TypeOAuth }
 
 // masked is the value the core shows (and sends back) for a stored
 // sensitive field; it means "keep the stored value".
@@ -195,7 +184,7 @@ const masked = "******"
 // from the id_token payload (see jwtClaims for why it is not verified).
 func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	typ := in.GetAccountType()
-	if typ != TypeDevice && typ != TypeSIWC {
+	if !knownType(typ) {
 		return invalid("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型"), nil
 	}
 	var m credMap
@@ -210,12 +199,7 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	if bad != nil {
 		return bad, nil
 	}
-	if typ == TypeSIWC {
-		if bad := m.checkSIWC(); bad != nil {
-			return bad, nil
-		}
-	}
-	filled := m.fillIdentity(typ)
+	filled := m.fillIdentity()
 	out := &pluginv1.ValidateCredentialsResponse{}
 	if changed || expChanged || filled {
 		b, _ := json.Marshal(m)
@@ -229,7 +213,7 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 type credMap map[string]any
 
 // stringFields are the optional credential fields that must be strings.
-var stringFields = []string{"refresh_token", "id_token", "email", "chatgpt_account_id", "plan_type", "client_id", "ext_agent_host_id"}
+var stringFields = []string{"refresh_token", "id_token", "email", "chatgpt_account_id", "plan_type"}
 
 // str reads a string field: ("", true) when absent or null, ok=false when
 // the value is not a string.
@@ -295,21 +279,10 @@ func (m credMap) normalizeExpiresAt() (changed bool, bad *pluginv1.ValidateCrede
 	}
 }
 
-// checkSIWC requires the issued client_id and a well-formed host id.
-func (m credMap) checkSIWC() *pluginv1.ValidateCredentialsResponse {
-	if c, _ := m.str("client_id"); c == "" {
-		return invalid("client_id", "required", "client_id is required: authorize the account with Sign in with ChatGPT first / 请先通过 Sign in with ChatGPT 完成授权")
-	}
-	if h, _ := m.str("ext_agent_host_id"); h != "" && !hostIDPattern.MatchString(h) {
-		return invalid("ext_agent_host_id", "pattern", "ext_agent_host_id must be urn:uuid:<UUID> / ext_agent_host_id 必须是 urn:uuid:<UUID>")
-	}
-	return nil
-}
-
-// fillIdentity fills email, plan_type and (codex_device) chatgpt_account_id
-// from the submitted id_token where the credentials leave them empty. A
-// masked id_token ("******", the stored one) is not read.
-func (m credMap) fillIdentity(typ string) bool {
+// fillIdentity fills email, plan_type and chatgpt_account_id from the
+// submitted id_token where the credentials leave them empty. A masked
+// id_token ("******", the stored one) is not read.
+func (m credMap) fillIdentity() bool {
 	idt, _ := m.str("id_token")
 	if idt == "" || idt == masked {
 		return false
@@ -324,9 +297,7 @@ func (m credMap) fillIdentity(typ string) bool {
 	}
 	fill("email", id.Email)
 	fill("plan_type", id.PlanType)
-	if typ == TypeDevice {
-		fill("chatgpt_account_id", id.AccountID)
-	}
+	fill("chatgpt_account_id", id.AccountID)
 	return changed
 }
 
