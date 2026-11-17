@@ -16,7 +16,7 @@ ec2pool（AWS us-west-2，x86_64）上的 sup2api 是一个独立集群，和 ov
 ## 2026-11-17 改为单节点
 
 切换后先按两节点（node-b 在 `127.0.0.1:18082`）运行；用户随后说“ec2pool 单节点就行了”。node-b 先 `yield`（在途 0），`disable-node -id node-b` 停用，停容器，从 `compose.yml` 删掉 node-b 服务与卷（两节点版本留在 `compose.yml.bak-two-nodes`），删除容器、卷 `sup2api-gw_node-b`、`config/node-b.json` 与证书；`switch.sh`、`rollback.sh` 改成单节点。node-a 全程没有中断。
-- `remove-node` 删不掉 node-b 的登记：它要求 `updater.nodes.stopped` 为 true 且 5 分钟内没有心跳，而 `stopped` 只由升级计划的停止步骤写入，手动停容器或停用都不写。所以 `updater.nodes` 里留一行 `enabled=false` 的 node-b：预检、网关自更新与更新检测只看已启用的节点，不受影响；控制台节点页（核心心跳）只剩 node-a，升级页的节点列表里会显示停用的 node-b。
+- （网关 0.1.138 起已修：停用节点不进计划，`remove-node` 不再要求 `stopped`。）`remove-node` 删不掉 node-b 的登记：它要求 `updater.nodes.stopped` 为 true 且 5 分钟内没有心跳，而 `stopped` 只由升级计划的停止步骤写入，手动停容器或停用都不写。所以 `updater.nodes` 里留一行 `enabled=false` 的 node-b：预检、网关自更新与更新检测只看已启用的节点，不受影响；控制台节点页（核心心跳）只剩 node-a，升级页的节点列表里会显示停用的 node-b。
 - Caddy 曾为 node-b 加过备用上游（`lb_policy first` + `/readyz`），因为 `admin off` 没能 reload，随即用备份 `sup2api-customer.caddy.bak-20261117-pre-node-b` 还原，运行中的配置始终未变。
 - 核验：`/nodes` 只有 node-a（核心 0.1.296）；强制检测核心、网关都没有更新、无错误；三个入口域名 `/readyz` 200。
 

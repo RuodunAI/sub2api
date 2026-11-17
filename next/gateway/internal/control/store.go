@@ -302,15 +302,16 @@ func (s *Store) Preflight(ctx context.Context, digest string) (Preflight, error)
 	if err != nil {
 		return p, err
 	}
-	if len(nodes) < 1 {
+	if enabledNodes(nodes) == 0 {
 		p.block(Issue{Code: issueNoNodes, Message: "upgrade requires at least one registered node"})
 	}
 	for _, n := range nodes {
-		p.Nodes = append(p.Nodes, n.ID)
 		if !n.Enabled {
-			// Disabled nodes do not block preflight; they are excluded from plans.
+			// A disabled node neither blocks the preflight nor joins the
+			// plan: it could not run its steps.
 			continue
 		}
+		p.Nodes = append(p.Nodes, n.ID)
 		if n.PeerProtocol != PeerProtocol || n.Strategy != PrimaryFirst {
 			p.block(nodeIssue(issueNodeUnsupported, n.ID, "node lacks enabled current shell/peer capabilities: "+n.ID))
 		}
@@ -1432,13 +1433,15 @@ func (s *Store) SetPrimary(ctx context.Context, node string) error {
 }
 
 // RemoveNode permanently removes a disabled node from the cluster. The node
-// must be disabled, stopped, and explicitly isolated. Audit records are preserved.
+// must be disabled and silent for 5 minutes: a node stopped by hand never
+// gets the stopped mark a plan's stop step writes, so silence is the proof
+// that it is gone. Audit records are preserved.
 func (s *Store) RemoveNode(ctx context.Context, node string) error {
 	return s.withChange(ctx, func(ctx context.Context) error {
 		if err := s.withTx(ctx, func(tx *gorm.DB) error {
-			var enabled, stopped bool
+			var enabled bool
 			var lastSeen time.Time
-			if err := s.nodeRow(tx, node).Select("enabled,stopped,last_seen").Row().Scan(&enabled, &stopped, &lastSeen); err != nil {
+			if err := s.nodeRow(tx, node).Select("enabled,last_seen").Row().Scan(&enabled, &lastSeen); err != nil {
 				if gormpg.IsNoRows(err) {
 					return fmt.Errorf("node %q is not registered", node)
 				}
@@ -1447,11 +1450,8 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 			if enabled {
 				return fmt.Errorf("node %q is still enabled; disable it first", node)
 			}
-			if !stopped {
-				return fmt.Errorf("node %q is not marked stopped; wait for confirmation or isolate it", node)
-			}
 			if time.Since(lastSeen) < 5*time.Minute {
-				return fmt.Errorf("node %q was seen recently (%v ago); explicitly isolate it first", node, time.Since(lastSeen).Round(time.Second))
+				return fmt.Errorf("node %q was seen recently (%v ago); stop it and wait until it has been silent for 5 minutes", node, time.Since(lastSeen).Round(time.Second))
 			}
 			primary, _, _, err := s.ClusterState(ctx)
 			if err != nil {

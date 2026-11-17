@@ -35,7 +35,7 @@ func TestPostgresRemoveNodeSetPrimaryAndPackageFallback(t *testing.T) {
 	if err := s.DisableNode(ctx, b.Node.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET stopped=true, last_seen=now()-interval '10 minutes' WHERE cluster_id=? AND node_id=?`, s.Cluster, b.Node.ID).Error; err != nil {
+	if err := s.db(ctx).Exec(`UPDATE updater.nodes SET last_seen=now()-interval '10 minutes' WHERE cluster_id=? AND node_id=?`, s.Cluster, b.Node.ID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetPrimary(ctx, b.Node.ID); err == nil {
@@ -53,5 +53,24 @@ func TestPostgresRemoveNodeSetPrimaryAndPackageFallback(t *testing.T) {
 	}
 	if err := s.RemoveNode(ctx, a.Node.ID); err == nil {
 		t.Fatal("enabled primary removed")
+	}
+}
+
+// A node disabled by hand (the second node of a cluster cut down to one) is
+// left out of a core plan instead of joining it and pausing it at its first
+// step ("planned node is disabled").
+func TestPostgresPreflightLeavesDisabledNodesOut(t *testing.T) {
+	s, a, b, target := setupEngines(t)
+	ctx := context.Background()
+	s.RevokePeer = func(context.Context, string) error { return nil }
+	if err := s.DisableNode(ctx, b.Node.ID); err != nil {
+		t.Fatal(err)
+	}
+	pf, err := s.Preflight(ctx, target.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pf.Nodes) != 1 || pf.Nodes[0] != a.Node.ID || len(pf.Blockers) != 0 {
+		t.Fatalf("preflight nodes %v, blockers %v", pf.Nodes, pf.Blockers)
 	}
 }
