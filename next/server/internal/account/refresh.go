@@ -482,9 +482,45 @@ func (s *Service) dueAccounts(ctx context.Context, keys []string, after int64) (
 		if err != nil {
 			continue
 		}
-		if exp, ok := c.decl.ExpiresAt(creds); ok && exp.Sub(now) <= c.decl.Before() {
+		if refreshDue(c.decl, creds, now) {
 			due = append(due, c.id)
 		}
 	}
 	return due, last, n, nil
+}
+
+// refreshDue reports whether credentials are inside their type's refresh
+// window at now. Credentials without a readable expiry are never due: they
+// are only renewed on request.
+func refreshDue(decl *manifest.AccountRefresh, creds map[string]any, now time.Time) bool {
+	exp, ok := decl.ExpiresAt(creds)
+	return ok && exp.Sub(now) <= decl.Before()
+}
+
+// ---------------------------------------------------------------- after a save
+
+// refreshSaved renews the credentials of account id right after a save
+// stored secret (their plaintext), when the type declares refresh and they
+// are already due. An account type whose form cannot fetch the first token
+// itself stores an expiry in the past instead, and is then usable seconds
+// after the save rather than after the next sweep; credentials that are not
+// due (every other save) start nothing.
+//
+// The renewal runs in the background and is the sweep's, not a forced one:
+// the account lock, the re-read and the refused-credentials check all apply,
+// and a failure is recorded in the refresh state like any other.
+func (s *Service) refreshSaved(ctx context.Context, id int64, bt core.AccountTypeBinding, secret []byte) {
+	if bt.Type.Refresh == nil || bt.Client == nil {
+		return
+	}
+	creds, err := decodeCreds(secret)
+	if err != nil || !refreshDue(bt.Type.Refresh, creds, time.Now()) {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	go func() {
+		if _, err := s.refreshAccount(ctx, id, false); err != nil {
+			slog.WarnContext(ctx, "account: credential refresh after save", "account", id, "err", err)
+		}
+	}()
 }
