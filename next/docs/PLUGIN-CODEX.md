@@ -209,3 +209,9 @@
 - **账号类型（T26）**：`codex_device`、`chatgpt_siwc` 声明 `upstreamFields: []`（没有可改的上游地址），控制台据 `custom_upstream=false` 不显示上游地址字段。
 - **访问密钥（S4）**：`plugin.codex:codex:manage` 与 `plugin.codex:codex:reset` 可以加入访问密钥的权限；`consume` 会花掉 OpenAI 发放的次数，不可撤销，授给密钥前确认用途。
 - 回滚：装回 0.1.3（核心回滚时随之回滚）；会话格式不兼容，进行中的授权需重新发起。
+
+## 12. 0.1.6：默认模型换成上游现有模型（2026-11-17，用户要求）
+
+- 用户反映内置模型和上游对不上，`gpt-6-astra` 请求在账号模型里没有它时被调度拒绝（`model_not_served`，503）。在 ec2pool 测试实例上对 Sign in with ChatGPT 账号获取模型（`GET /v1/models`，`visibility=="list"`）得到：`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra`。两种账号类型的 `defaultModels` 都换成这 8 个（新到旧），`DefaultTestModel` 由已不在列表里的 `gpt-5.1-codex-mini` 改为最便宜的 `gpt-6-luna`。`codex_device` 没有在线模型列表，沿用同一份；测试实例上没有设备码账号，未单独核实。
+- 生图：同一账号带 `tools:[{"type":"image_generation"}]` 请求，上游回 400 `subscription_sharing_unsupported_capability`（“User subscription sharing currently supports only 'web_search' and developer-defined 'function' and 'custom' tools … tool 'image_generation' is not supported”），所以 SIWC 账号不能生图，不加生图模型。`codex_device`（ChatGPT Codex 后端）是否支持需要真实设备码账号验证，见 [DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md](DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md)。
+- 计费为 0 的根因不在插件：上游 SSE 标成 `application/json`，由核心按正文嗅探修复（CONTRACTS §104.1）。

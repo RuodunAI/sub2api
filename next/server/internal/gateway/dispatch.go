@@ -911,6 +911,9 @@ func (c *call) forwardBuilt(ctx context.Context, rt *typeRoute, acc *core.Accoun
 		}
 		return c.upstreamFailure(ctx, rt, acc, pacct, execution, resp.StatusCode, resp.Header, body)
 	}
+	if c.stream || forced {
+		sniffEventStream(resp)
+	}
 	if forced {
 		if res, failed := c.collectStreamOnly(ctx, uctx, rt, acc, pacct, execution, resp); failed {
 			return res

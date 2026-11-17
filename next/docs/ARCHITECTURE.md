@@ -1073,7 +1073,7 @@ tier("base", p*5 + c*25) ||| param("service_tier") == "priority" ? 1.5 : 1 ||| h
 | `exclusive` | Anthropic：`input_tokens` 不含缓存 | 输入 + 缓存读 + 缓存写 |
 | `inclusive` | OpenAI 风格：`prompt_tokens` 包含缓存 | `prompt_tokens` |
 
-两种口径下 `p` 都是不含任何缓存的纯输入 token（inclusive 口径由核心从 `prompt_tokens` 中扣除全部缓存）。缓存 token 只有在表达式写了对应变量（`cr`、`cc`、`cc1h`）时才计费，没写的不收费。只给 `cc` 定价时，1 小时缓存写也按 `cc` 计。因此表达式只写 `p*3 + c*15` 时，缓存 token 不收费；要收缓存费，需在表达式里写出 `cr`、`cc`（价格编辑器的"按 token"模式会自动写入）。
+缓存 token 在表达式写了对应变量（`cr`、`cc`、`cc1h`）时单独计价；只给 `cc` 定价时，1 小时缓存写也按 `cc` 计。exclusive 口径下 `p` 是 `input_tokens`，没写的缓存类别不收费。inclusive 口径下核心从 `prompt_tokens` 中扣掉缓存读和已单独计价的缓存写：缓存读没写 `cr` 就不收费；缓存写没写 `cc`/`cc1h` 时留在 `p` 里按输入价计（CONTRACTS §104.3，OpenAI 把写入算在输入里）。因此表达式只写 `p*3 + c*15` 时，缓存读不收费；要收缓存费，需在表达式里写出 `cr`、`cc`（价格编辑器的"按 token"模式会自动写入）。
 
 #### 存储
 

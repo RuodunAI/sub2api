@@ -140,6 +140,72 @@ func isSSE(ct string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(ct)), "text/event-stream")
 }
 
+// sseFields are the field names an event stream can open with (a ':' comment
+// is checked apart). A JSON body never starts with one of them.
+var sseFields = [][]byte{[]byte("data:"), []byte("event:"), []byte("id:"), []byte("retry:")}
+
+// Verdicts of sseVerdict.
+const (
+	sseNo      = -1
+	sseUnknown = 0
+	sseYes     = 1
+)
+
+// maxSSESniff bounds how much of a mislabeled body sniffEventStream looks at.
+const maxSSESniff = 16
+
+// sniffEventStream relabels the answer to a streaming request as
+// text/event-stream when the upstream sent an event stream under another
+// Content-Type (Sign in with ChatGPT's Responses API streams with
+// application/json). Without it the stream would take the JSON path: held
+// back from the client until it ends, and no usage read from it. The bytes
+// looked at stay in the body; it only waits for bytes the stream sends anyway.
+func sniffEventStream(resp *http.Response) {
+	if isSSE(resp.Header.Get("Content-Type")) {
+		return
+	}
+	br := bufio.NewReader(resp.Body)
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{br, resp.Body}
+	for n := 1; n <= maxSSESniff; n++ {
+		b, err := br.Peek(n)
+		switch sseVerdict(b) {
+		case sseYes:
+			resp.Header.Set("Content-Type", "text/event-stream")
+			return
+		case sseNo:
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// sseVerdict tells from the first bytes of a body whether it is an event
+// stream, is not, or cannot tell yet.
+func sseVerdict(b []byte) int {
+	t := bytes.TrimLeft(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), " \t\r\n")
+	if len(t) == 0 {
+		return sseUnknown
+	}
+	if t[0] == ':' {
+		return sseYes
+	}
+	verdict := sseNo
+	for _, f := range sseFields {
+		switch {
+		case bytes.HasPrefix(t, f):
+			return sseYes
+		case bytes.HasPrefix(f, t):
+			verdict = sseUnknown
+		}
+	}
+	return verdict
+}
+
 // checkResponseShape compares the shape the upstream actually answered with
 // against the one the upstream endpoint promises in endpoint.response, and
 // records the disagreement without acting on it.

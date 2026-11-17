@@ -228,8 +228,9 @@ func TestNormalize(t *testing.T) {
 		want Vars
 	}{
 		{"inclusive, all priced", SemanticsInclusive, all, Vars{P: 720, C: 500, CR: 200, CC: 50, CC1h: 30, Len: 1000}},
-		{"inclusive, unpriced cache is free", SemanticsInclusive, only("p", "c"), Vars{P: 720, C: 500, Len: 1000}},
-		{"inclusive, only cr", SemanticsInclusive, only("p", "cr"), Vars{P: 720, C: 500, CR: 200, Len: 1000}},
+		{"inclusive, unpriced read is free, unpriced writes stay input", SemanticsInclusive, only("p", "c"), Vars{P: 800, C: 500, Len: 1000}},
+		{"inclusive, only cr", SemanticsInclusive, only("p", "cr"), Vars{P: 800, C: 500, CR: 200, Len: 1000}},
+		{"inclusive, only cc1h: 5m writes stay input", SemanticsInclusive, only("p", "cc1h"), Vars{P: 770, C: 500, CC1h: 30, Len: 1000}},
 		{"exclusive, all priced", SemanticsExclusive, all, Vars{P: 1000, C: 500, CR: 200, CC: 50, CC1h: 30, Len: 1280}},
 		{"exclusive, unpriced cache is free", SemanticsExclusive, only("p", "c"), Vars{P: 1000, C: 500, Len: 1280}},
 		{"exclusive, cc1h falls back to cc", SemanticsExclusive, only("p", "cc"), Vars{P: 1000, C: 500, CC: 80, Len: 1280}},

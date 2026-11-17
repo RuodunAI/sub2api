@@ -7703,3 +7703,20 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 ### 103.6 端到端安全测试
 
 `next/e2e/ac28_supplier_agent_test.go`（`TestAC28_SupplierAgentTeam`）在真实核心上搭 admin → 代理 A → 代理 B → 供应商 C，另有无关的代理 X 与普通用户 U，逐项验证计划 §5.1–5.6：用户、账号、代理、`/account-usage`、`/lookup` 越出 team 一律 404（403 用于不带范围的入口）；角色指派（不在可分配清单、team 外、对自己、角色不变的重放）、`owner_cannot_manage`、operator 不能分配或管理代理（D6）；owner 的 self、cycle（含两个并发移动）、`too_deep`（8 层链）；访问密钥先收窄再展开；dynweight 的账号路由（read 看 team，update 只能自己的）；删除用户后 team 照旧（D7）；管理员改账号所属后可见性立即跟随。单节点即可跑：`sub2api-plugin dev`（anthropic、dynweight 内置）加本机 `deploy/mock-upstream`，`E2E_NODE_URLS` 指向同一节点。同样的单节点也能跑 AC02、AC04、AC07、AC23 与网关的故障转移、冷却测试（冷却靠 dev 内存 Redis 按时过期，§47）；用到 `/market/` 的（AC02 插件矩阵、AC27）要在核心前面放一个提供签名市场目录（`sub2api-plugin pack`/`sign`/`index` 生成）、其余请求转发给核心的服务，`E2E_BASE_URL` 指向它，e2e 栈里这是 Caddy。
+
+## 104. 上游流的内容类型嗅探、OpenAI 端点不带 `/v1`（2026-11-17，用户要求：codex 账号计费为 0、客户端 base URL 不带 /v1；无迁移）
+
+### 104.1 内容类型嗅探
+
+- 起因（ec2pool 测试实例实测）：Sign in with ChatGPT（`chatgpt_siwc`）的 Responses API 对 `stream:true` 返回 SSE 正文，但 `Content-Type` 是 `application/json`。转发按 `Content-Type` 选路，于是走了 JSON 分支：整段缓冲到结束才发给客户端，JSON 用量规则读不到 SSE，`input/output_tokens`、`first_token_ms` 全为 0，计费状态 `free`。
+- 规则：客户端请求是流式的（`c.stream`，或 `streamOnly` 强制流式），上游 2xx 应答的 `Content-Type` 不是 `text/event-stream` 时，网关看正文开头（跳过 UTF-8 BOM 与空白，最多 16 字节）：以 SSE 字段 `data:`、`event:`、`id:`、`retry:` 或注释 `:` 开头就把应答当作 `text/event-stream`，之后的 SSE 转发、用量规则、`streamOnly` 收集、执行路径的缓冲判断都照常。JSON 正文不会以这些开头，所以判断不会误伤；看过的字节留在正文里，只等上游本来就要发的字节。非流式请求、错误应答不做嗅探。
+- 实现：`server/internal/gateway/forward.go` 的 `sniffEventStream`，在 `dispatch.go` 收到 2xx 后调用一次。
+
+### 104.2 OpenAI 端点不带 `/v1`
+
+- 网关中间件找不到路由时，若 `/v1` + 原路径是 `openai` 平台的端点（如 `POST /responses`、`POST /chat/completions`、`POST /embeddings`、WebSocket `GET /responses`），请求路径改写成带 `/v1` 的路径再处理，使用记录的端点仍是 `/v1/...`。只对 `openai` 平台生效（其他平台如 `/messages` 仍 404）；已经以 `/v1` 开头的路径不再加。控制台路由与插件路由先于网关中间件匹配，不受影响。
+- 实现：`routes.go` 的 `routeTable.matchUnversioned`，`gateway.go` 的 `Middleware`。
+
+### 104.3 OpenAI Responses 的缓存写入
+
+- 上游的 Responses 用量带 `input_tokens_details.cache_write_tokens`（同时有 `cache_write_tokens_details.ttl_30m_tokens` / `ttl_12h_tokens`）。内置 `openai` 平台的 `responses`、`responses_websocket` 端点规则把它映射为 `cache_creation_tokens`（总量，不区分 TTL）。`inclusive` 语义下，价格单独计价的缓存写入（`cc`；只定 `cc1h` 时是 1 小时那部分）从 `p` 里扣掉按各自的价计，其余写入留在 `p` 里按输入价计（`billing/expr.Normalize`；此前没有 `inclusive` 平台上报缓存写入，规则改为这样是为了不让没标价的写入算成免费）。OpenAI 规则只映射总量到 `cache_creation_tokens`（5 分钟桶），所以 OpenAI 模型要按写入价收就定 `cc`。`exclusive` 语义与缓存读 `cr` 的规则不变：表达式不计价的类别不计费。TPM 与实时 token 统计在 `inclusive` 下仍扣掉缓存读写（§18.1），与计费口径不同。

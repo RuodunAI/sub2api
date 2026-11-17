@@ -221,8 +221,10 @@ func (g *Gateway) Close() {
 // Middleware dispatches requests matching an endpoint of a built-in platform
 // or of a platform declared by an enabled plugin to the pipeline. Anything
 // else (including endpoints of disabled or uninstalled plugins) falls
-// through to the next handler, i.e. 404. Mount it with engine.Use before the
-// core routes, or in engine.NoRoute.
+// through to the next handler, i.e. 404. An openai endpoint is also served
+// without its /v1 prefix (POST /responses), the request rewritten to the
+// /v1 path. Mount it with engine.Use before the core routes, or in
+// engine.NoRoute.
 func (g *Gateway) Middleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		method, path := c.Request.Method, c.Request.URL.Path
@@ -231,7 +233,14 @@ func (g *Gateway) Middleware() gin.HandlerFunc {
 			return
 		}
 		t := g.table.Load()
-		if rt, params := t.match(method, path); rt != nil {
+		rt, params := t.match(method, path)
+		if rt == nil {
+			var full string
+			if rt, params, full = t.matchUnversioned(method, path); rt != nil {
+				c.Request.URL.Path = full
+			}
+		}
+		if rt != nil {
 			g.serve(c, t.gen, rt.binding, params)
 			c.Abort()
 			return

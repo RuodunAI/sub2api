@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -211,4 +212,23 @@ func (t *routeTable) match(method, path string) (*route, map[string]string) {
 		}
 	}
 	return nil, nil
+}
+
+// unversionedPrefix is the path prefix of the OpenAI endpoints that clients
+// configured with a base URL lacking it (POST /responses) leave out.
+const unversionedPrefix = "/v1"
+
+// matchUnversioned serves an OpenAI endpoint addressed without its /v1
+// prefix: it returns the route of /v1 + path when that is an openai platform
+// endpoint, with the path the request is rewritten to.
+func (t *routeTable) matchUnversioned(method, path string) (*route, map[string]string, string) {
+	if path == unversionedPrefix || strings.HasPrefix(path, unversionedPrefix+"/") {
+		return nil, nil, ""
+	}
+	full := unversionedPrefix + path
+	r, params := t.match(method, full)
+	if r == nil || r.binding.Platform != manifest.PlatformOpenAI {
+		return nil, nil, ""
+	}
+	return r, params, full
 }

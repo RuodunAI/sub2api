@@ -19,24 +19,16 @@ type Tokens struct {
 // Normalize maps raw tokens to expression variables (ARCHITECTURE 7.3):
 //
 //   - len is the full context: input + cache (exclusive) or input (inclusive)
-//   - p is the input without any cache tokens, never negative
 //   - every cache category the expression prices (cr, cc, cc1h) gets its own
-//     count; categories it does not price are not billed. A 1-hour cache
-//     write falls back to cc when only cc is priced.
+//     count; a 1-hour cache write falls back to cc when only cc is priced
+//   - p is the input without the cache tokens counted apart, never negative.
+//     Unpriced cache reads are not billed. Unpriced cache writes are not
+//     billed under exclusive semantics; under inclusive semantics they stay
+//     in p, being input the upstream merely reports apart (OpenAI).
 //
 // usedVars is typically Program.Uses.
 func Normalize(semantics string, t Tokens, uses func(string) bool) Vars {
-	cache := float64(t.CacheRead + t.CacheCreation + t.CacheCreation1h)
-	total := float64(t.Input)
-	p := total - cache
-	if semantics != SemanticsInclusive {
-		total += cache
-		p = float64(t.Input)
-	}
-	if p < 0 {
-		p = 0
-	}
-	v := Vars{P: p, C: float64(t.Output), Len: total}
+	v := Vars{C: float64(t.Output), Len: float64(t.Input)}
 	if uses("cr") {
 		v.CR = float64(t.CacheRead)
 	}
@@ -48,6 +40,12 @@ func Normalize(semantics string, t Tokens, uses func(string) bool) Vars {
 		}
 	case uses("cc"):
 		v.CC = float64(t.CacheCreation + t.CacheCreation1h)
+	}
+	if semantics == SemanticsInclusive {
+		v.P = max(float64(t.Input)-float64(t.CacheRead)-v.CC-v.CC1h, 0)
+	} else {
+		v.P = float64(t.Input)
+		v.Len += float64(t.CacheRead + t.CacheCreation + t.CacheCreation1h)
 	}
 	return v
 }

@@ -18,7 +18,7 @@ import (
 // the plugin code it replaced, so keep the two in step.
 const (
 	key         = "openai"
-	version     = "0.4.1"
+	version     = "0.4.2"
 	platform    = "openai"
 	declaration = `{"preset":"openai","filterFields":[]}`
 )
