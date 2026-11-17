@@ -2902,7 +2902,8 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 | 字段 | 说明 |
 |---|---|
-| `headers[]` | 被动采样声明，最多 `manifest.MaxQuotaHeaders`（16）个窗口。`key` 必填且不重复；`utilization` / `reset` / `status` 是响应头名（大小写不敏感），至少给一个 |
+| `headers[]` | 被动采样声明，最多 `manifest.MaxQuotaHeaders`（16）个窗口。`key` 必填且不重复；`utilization` / `reset` / `status` 是响应头名（大小写不敏感），至少给一个。`key` 与 `windowMinutes` 二选一（§105） |
+| `headers[].windowMinutes` | 携带窗口时长（分钟）的响应头名；给了它就不写 `key`，窗口名按该头的值生成（§105） |
 | `headers[].utilizationUnit` | `ratio`（默认，0–1，乘 100 存储；Anthropic 即此）或 `percent` |
 | `headers[].resetFormat` | `unix`（默认，Unix 秒；大于 1e11 视为毫秒）、`rfc3339`、`delta`（距现在的秒数） |
 | `query` | 插件实现 `BuildQuotaRequest` / `ParseQuotaResponse`（§44.4） |
@@ -7720,3 +7721,13 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 ### 104.3 OpenAI Responses 的缓存写入
 
 - 上游的 Responses 用量带 `input_tokens_details.cache_write_tokens`（同时有 `cache_write_tokens_details.ttl_30m_tokens` / `ttl_12h_tokens`）。内置 `openai` 平台的 `responses`、`responses_websocket` 端点规则把它映射为 `cache_creation_tokens`（总量，不区分 TTL）。`inclusive` 语义下，价格单独计价的缓存写入（`cc`；只定 `cc1h` 时是 1 小时那部分）从 `p` 里扣掉按各自的价计，其余写入留在 `p` 里按输入价计（`billing/expr.Normalize`；此前没有 `inclusive` 平台上报缓存写入，规则改为这样是为了不让没标价的写入算成免费）。OpenAI 规则只映射总量到 `cache_creation_tokens`（5 分钟桶），所以 OpenAI 模型要按写入价收就定 `cc`。`exclusive` 语义与缓存读 `cr` 的规则不变：表达式不计价的类别不计费。TPM 与实时 token 统计在 `inclusive` 下仍扣掉缓存读写（§18.1），与计费口径不同。
+
+## 105. 额度响应头按窗口时长命名（2026-11-17，用户要求：codex 用量以响应头为准）
+
+用户要求 codex 账号的 5 小时 / 周窗口“以响应头为准，不要乱加兜底”。Codex 后端在每个响应里用 `x-codex-{primary,secondary}-{used-percent,window-minutes,reset-at}` 报两个窗口，但哪个槽位是 5 小时、哪个是周不固定，§44.2 的“固定头 → 固定 key”表达不了。
+
+- `accountTypes[].quota.headers[]` 新增 `windowMinutes`：携带窗口时长（分钟）的响应头名。给了它就不写 `key`（两者都给 → `.windowMinutes` `unexpected`；都不给 → `.key` `required`；头名不合法 → `.windowMinutes` `invalid_format`）。
+- 窗口名由 `manifest.QuotaWindowKey` 按分钟数生成：整天 `<n>d`、整小时 `<n>h`、否则 `<n>m`，所以 300 是 `5h`、10080 是 `7d`，没有容差。值不是 1 到一年之间的整数分钟时，这条声明对该响应不报窗口。
+- 同一响应里两条声明得到同一个窗口名时，保留用量较大的一条（`ReadQuotaHeaders`）。显式 `key` 仍不许重复。
+- 采样、限频、写库（§44.3）不变：网关对每个 2xx、429、101 响应读取声明的头。
+- 旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到支持它的核心版本。

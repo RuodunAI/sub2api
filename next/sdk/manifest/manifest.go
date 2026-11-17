@@ -472,7 +472,14 @@ const MaxQuotaHeaders = 16
 type QuotaHeader struct {
 	// Key names the window (^[a-z0-9][a-z0-9_]{0,31}$). The console knows
 	// "5h", "7d", "7d_sonnet" and "7d_fable"; others are shown as is.
-	Key string `json:"key"`
+	// Exactly one of Key and WindowMinutes is set.
+	Key string `json:"key,omitempty"`
+	// WindowMinutes is the header carrying the window's length in minutes;
+	// the window is then named by that length (QuotaWindowKey), for an
+	// upstream whose header slots do not stand for a fixed window. A
+	// response whose length header is absent or unusable reports nothing
+	// for this declaration.
+	WindowMinutes string `json:"windowMinutes,omitempty"`
 	// Utilization is the header carrying the share of the window used.
 	Utilization string `json:"utilization,omitempty"`
 	// UtilizationUnit is "ratio" (default: 0-1, e.g. Anthropic's 0.42) or

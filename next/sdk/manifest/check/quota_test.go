@@ -61,6 +61,29 @@ func TestAccountTypeQuota(t *testing.T) {
 			t.Errorf("%s = %q, want %q (all: %v)", f, got[f], c, got)
 		}
 	}
+	// A window length header names the window instead of a key.
+	m.AccountTypes[0].Quota = &manifest.AccountQuota{Headers: []manifest.QuotaHeader{
+		{WindowMinutes: "x-primary-window-minutes", Utilization: "x-primary-used", UtilizationUnit: "percent", Reset: "x-primary-reset"},
+		{WindowMinutes: "x-secondary-window-minutes", Utilization: "x-secondary-used", UtilizationUnit: "percent"},
+	}}
+	if err := Validate(m, files, ValidateOptions{Tooling: true}); err != nil {
+		t.Fatalf("windowMinutes quota rejected: %v", codes(err))
+	}
+	m.AccountTypes[0].Quota = &manifest.AccountQuota{Headers: []manifest.QuotaHeader{
+		{Key: "5h", WindowMinutes: "x-minutes", Utilization: "x-u"},
+		{WindowMinutes: "bad header", Utilization: "x-u"},
+		{Utilization: "x-u"},
+	}}
+	got = codes(Validate(m, files, ValidateOptions{Tooling: true}))
+	for f, c := range map[string]string{
+		"accountTypes[0].quota.headers[0].windowMinutes": "unexpected",
+		"accountTypes[0].quota.headers[1].windowMinutes": "invalid_format",
+		"accountTypes[0].quota.headers[2].key":           "required",
+	} {
+		if got[f] != c {
+			t.Errorf("%s = %q, want %q (all: %v)", f, got[f], c, got)
+		}
+	}
 	m.AccountTypes[0].Quota = &manifest.AccountQuota{Headers: make([]manifest.QuotaHeader, manifest.MaxQuotaHeaders+1)}
 	for i := range m.AccountTypes[0].Quota.Headers {
 		m.AccountTypes[0].Quota.Headers[i] = manifest.QuotaHeader{Key: "w" + string(rune('a'+i)), Status: "x-s"}

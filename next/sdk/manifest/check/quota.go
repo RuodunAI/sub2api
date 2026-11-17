@@ -16,8 +16,9 @@ var (
 )
 
 // quota validates accountTypes[].quota (CONTRACTS §44): at least one header
-// window or query, distinct well-formed window keys, every window naming at
-// least one header, valid header names and known units and formats.
+// window or query, distinct well-formed window keys (or a window length
+// header instead of a key), every window naming at least one header, valid
+// header names and known units and formats.
 func (v *validator) quota(f string, q *manifest.AccountQuota) {
 	if q == nil {
 		return
@@ -59,18 +60,23 @@ func (v *validator) quota(f string, q *manifest.AccountQuota) {
 	for i, h := range q.Headers {
 		hf := fmt.Sprintf("%s.headers[%d]", f, i)
 		switch {
+		case h.Key != "" && h.WindowMinutes != "":
+			v.add(hf+".windowMinutes", "unexpected", "windowMinutes names the window; leave key out")
+		case h.WindowMinutes != "":
 		case h.Key == "":
-			v.add(hf+".key", "required", "key is required")
+			v.add(hf+".key", "required", "key or windowMinutes is required")
 		case !quotaKeyRe.MatchString(h.Key):
 			v.add(hf+".key", "invalid_format", "key %q must match %s", h.Key, quotaKeyRe.String())
 		case keys[h.Key]:
 			v.add(hf+".key", "duplicate", "window %q declared twice", h.Key)
 		}
-		keys[h.Key] = true
+		if h.Key != "" {
+			keys[h.Key] = true
+		}
 		if h.Utilization == "" && h.Reset == "" && h.Status == "" {
 			v.add(hf, "required", "at least one of utilization, reset and status is required")
 		}
-		for name, value := range map[string]string{"utilization": h.Utilization, "reset": h.Reset, "status": h.Status} {
+		for name, value := range map[string]string{"utilization": h.Utilization, "reset": h.Reset, "status": h.Status, "windowMinutes": h.WindowMinutes} {
 			if value != "" && !headerNameRe.MatchString(value) {
 				v.add(hf+"."+name, "invalid_format", "%q is not an HTTP header name", value)
 			}
