@@ -42,7 +42,8 @@ func TestNameableRule(t *testing.T) {
 }
 
 // On an upgrade a grant needs consent unless it is of a low risk
-// permission to admin, operator or supplier; on a first install none does.
+// permission to admin, operator, supplier or supplier agent (the agent's
+// share of a user default included); on a first install none does.
 func TestPlanNeedsConsentByRisk(t *testing.T) {
 	m := &manifest.Manifest{Key: "mod", UserPermissions: []manifest.UserPermission{
 		newPerm("low:read", "", "admin", "user"), newPerm("flow:manage", manifest.RiskSensitive, "admin"),
@@ -56,7 +57,7 @@ func TestPlanNeedsConsentByRisk(t *testing.T) {
 			needs[g.Permission+" "+g.Role] = g.NeedsConsent
 		}
 		assert.Equal(t, map[string]bool{
-			"plugin.mod:low:read admin": false, "plugin.mod:low:read auditor": upgrade, "plugin.mod:low:read user": upgrade,
+			"plugin.mod:low:read admin": false, "plugin.mod:low:read auditor": upgrade, "plugin.mod:low:read user": upgrade, "plugin.mod:low:read supplier_agent": false,
 			"plugin.mod:flow:manage admin": upgrade,
 		}, needs, "upgrade %v", upgrade)
 	}
@@ -93,7 +94,7 @@ func TestInstallWithholdsUnnameableDefaults(t *testing.T) {
 	require.NoError(t, err)
 	flow := "plugin.guard:flow:manage"
 	assert.Equal(t, []RoleGrant{{Permission: flow, Role: "admin", Risk: manifest.RiskSensitive, Via: viaDefault, Withheld: true}}, res.Withheld)
-	assert.Equal(t, map[string][]string{"operator": {"own"}, "supplier": {""}}, lastDef(t, e, flow).GrantRoles)
+	assert.Equal(t, map[string][]string{"operator": {"own"}, "supplier": {""}, "supplier_agent": {""}}, lastDef(t, e, flow).GrantRoles)
 	var pending string
 	require.NoError(t, e.db.SQL.QueryRowContext(ctx, `SELECT detail->>'pending' FROM audit_logs WHERE action = $1 AND target_id = 'guard'`, AuditConsent).Scan(&pending))
 	assert.Contains(t, pending, `"role": "admin"`)
@@ -134,7 +135,7 @@ func TestInstallWithoutRoleDefineWithholdsAllDefaults(t *testing.T) {
 	require.NoError(t, err)
 	res, err := e.svc.Consent(ctx, "guard", "0.1.0", ConsentRequest{Grants: explicitGuardGrants()}, e.admin)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"admin", "operator", "supplier"}, rolesOf(res.Withheld))
+	assert.Equal(t, []string{"admin", "operator", "supplier", "supplier_agent"}, rolesOf(res.Withheld))
 	assert.Equal(t, map[string][]string{}, lastDef(t, e, "plugin.guard:flow:manage").GrantRoles)
 	assert.Empty(t, e.perms.checked)
 }
@@ -219,7 +220,8 @@ VALUES ('plugin.guard:old:gone', 'plugin.guard', '{"en":"Gone"}', 'plugin', 'gua
 	}
 	flow := byKey["flow:manage"]
 	assert.True(t, flow.New)
-	assert.Equal(t, map[string][]string{"admin": {""}, "operator": {"own"}, "supplier": {""}}, flow.Defaults)
+	// A supplier agent follows the user and the supplier (manifest.RoleDefaultsFrom).
+	assert.Equal(t, map[string][]string{"admin": {""}, "operator": {"own"}, "supplier": {""}, "supplier_agent": {""}}, flow.Defaults)
 	assert.Equal(t, &manifest.PermissionScope{Resource: "flow", Own: true}, flow.Scope)
 	assert.Equal(t, ReviewCell{Grant: []string{""}, Reason: "held", Withheld: true}, flow.Cells["admin"])
 	assert.Equal(t, ReviewCell{Grant: []string{"own"}, Nameable: true}, flow.Cells["operator"])

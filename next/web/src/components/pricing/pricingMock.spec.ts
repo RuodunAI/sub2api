@@ -106,7 +106,7 @@ describe('what a caller without user:read sees in the mock', () => {
     expect(members.body.error.details).toEqual({ permission: 'user:read' })
     const created = await call('POST', '/users', { email: 'x@example.com', password: 'longenough', segment_id: 2 }, pricer)
     expect(created.status).toBe(403)
-    expect(created.body.error.details).toEqual({ permission: 'segment:manage' })
+    expect(created.body.error.details).toEqual({ permission: 'user:create' })
   })
 })
 

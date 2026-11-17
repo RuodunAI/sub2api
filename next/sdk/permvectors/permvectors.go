@@ -14,5 +14,10 @@ import _ "embed"
 //	 "allows":    [{"have": ["..."], "action": "...", "me": 7,
 //	               "row": {"id": 1, "created_by": 7 | null, "group_ids": [12] | null}, "ok": bool}]}
 //
+// A row's created_by is its owner column (core.ScopeTable: an account's
+// owner_id, a proxy's created_by). The allows vectors judge rows in
+// memory, where a team reaches what own does: the rows of the users below
+// its holder are the server's statements' to read (core.UserTree).
+//
 //go:embed vectors.json
 var JSON []byte

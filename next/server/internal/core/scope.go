@@ -5,6 +5,7 @@ import (
 	"maps"
 	"slices"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/hierarchy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 )
 
@@ -57,6 +58,17 @@ func Scope(ctx context.Context, az Authorizer, action perm.Key) (DataScope, erro
 		return DataScope{}, err
 	}
 	return set.DataScope(uid, action), nil
+}
+
+// MaxTeamDepth is how many levels of owners a user may have above it: a
+// team spans at most that many below its holder (CONTRACTS §103).
+const MaxTeamDepth = 8
+
+// UserTree is the users by owner (users.owner_id, with users.owner_path;
+// sdk/hierarchy): a team scope reaches the rows owned by a user below its
+// holder (ScopeTable), and authz moves users in it (OwnerGuard).
+func UserTree() hierarchy.Tree {
+	return hierarchy.Tree{Table: "users", ID: "id", Parent: "owner_id", Path: "owner_path", MaxDepth: MaxTeamDepth}
 }
 
 // ProxyRefScope is the proxies the caller may reference from an account

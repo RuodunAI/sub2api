@@ -304,7 +304,11 @@ func (s *Service) credBase(ctx context.Context, a *row) (*credBase, error) {
 	if err != nil {
 		return nil, err
 	}
-	reveal, err := inScope(ctx, s.d.DB.Gorm, a.ID, s.scopeOf(ctx, perm.AccountCredentialView))
+	scope, err := s.scopeOf(ctx, perm.AccountCredentialView)
+	if err != nil {
+		return nil, err
+	}
+	reveal, err := inScope(ctx, s.d.DB.Gorm, a.ID, scope)
 	if err != nil {
 		return nil, err
 	}

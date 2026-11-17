@@ -4,11 +4,15 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SCheckbox, SField, SFormModal, SInput, toast } from '@sub2api/ui'
 import type { Role } from '@/api/types'
+import EntityPicker from '@/components/EntityPicker.vue'
 import SegmentSelect from '@/components/pricing/SegmentSelect.vue'
+import { P } from '@/generated/permissions'
 import { lt } from '@/i18n'
 import { useAuthStore } from '@/stores/auth'
-import { useAssignableRoles, withSupplierUser, DEFAULT_ROLE } from '@/composables/useAssignableRoles'
+import { useAssignableRoles, withSupplierUser, DEFAULT_ROLE, SUPPLIER_ROLE } from '@/composables/useAssignableRoles'
+import { useScope } from '@/composables/useScope'
 import { applyFormError } from '@/utils/formErrors'
+import { OWNER_ERRORS } from './userOwner'
 import { useNamedSegments } from './userSegments'
 
 // New user (POST /users). The roles offered are the caller's managed roles
@@ -16,25 +20,42 @@ import { useNamedSegments } from './userSegments'
 // (CONTRACTS POST /users); `roles` (the page's role list) only names it. A
 // caller who lists and manages segments also says which one the user joins
 // (`segment_id`); left out, the server puts the user in the default segment.
+// A caller holding user:create over every user may name the user's owner
+// (`owner_id`, CONTRACTS §103.3); a team holder's new users are its own.
 const props = defineProps<{ open: boolean; roles: Role[] }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'created'): void }>()
 const { t } = useI18n()
 const auth = useAuthStore()
 const managed = useAssignableRoles()
+const scope = useScope()
 const segments = useNamedSegments()
 const defaultSegmentId = computed(() => segments.value.find((s) => s.is_default)?.id ?? null)
 const canPlace = computed(() => auth.has('segment:read') && auth.has('segment:manage'))
+const canSetOwner = computed(() => auth.has(P.UserCreate))
 
 const creating = ref(false)
 const errors = ref<Record<string, string>>({})
-const form = reactive({ email: '', display_name: '', password: '', role_keys: [] as string[], segment_id: null as number | null })
+const form = reactive({ email: '', display_name: '', password: '', role_keys: [] as string[], segment_id: null as number | null, owner_id: '' })
+
+/**
+ * The roles a new user starts with, sent explicitly: the default role where
+ * the caller may give it (roleSelectable's rule); a team holder (a supplier
+ * agent, CONTRACTS §103.1) makes suppliers, so supplier too where it may
+ * assign it. Never another role by fallback.
+ */
+function startingRoles(): string[] {
+  const keys = managed.defaultWithin() ? [DEFAULT_ROLE] : []
+  return scope.level(P.UserCreate) === 'team' && managed.assignable(SUPPLIER_ROLE) ? [...keys, SUPPLIER_ROLE] : keys
+}
 
 watch(
   () => props.open,
-  (v) => {
+  async (v) => {
     if (!v) return
-    Object.assign(form, { email: '', display_name: '', password: '', role_keys: ['user'], segment_id: defaultSegmentId.value })
+    Object.assign(form, { email: '', display_name: '', password: '', role_keys: [], segment_id: defaultSegmentId.value, owner_id: '' })
     errors.value = {}
+    await managed.load()
+    form.role_keys = startingRoles()
   }
 )
 
@@ -54,7 +75,7 @@ function roleSelectable(key: string) {
 /** Supplier is an add-on role: checking it checks the default role with it. */
 function toggleRole(key: string) {
   const keys = form.role_keys.includes(key) ? form.role_keys.filter((k) => k !== key) : [...form.role_keys, key]
-  form.role_keys = key === 'supplier' ? withSupplierUser(keys) : keys
+  form.role_keys = key === SUPPLIER_ROLE ? withSupplierUser(keys, managed.defaultWithin()) : keys
 }
 
 async function submit() {
@@ -69,13 +90,14 @@ async function submit() {
       display_name: form.display_name.trim(),
       password: form.password,
       role_keys: form.role_keys,
-      segment_id: canPlace.value ? (form.segment_id ?? undefined) : undefined
+      segment_id: canPlace.value ? (form.segment_id ?? undefined) : undefined,
+      owner_id: canSetOwner.value && form.owner_id ? Number(form.owner_id) : undefined
     })
     toast(t('common.created'), 'success')
     emit('update:open', false)
     emit('created')
   } catch (e) {
-    applyFormError(e, errors)
+    applyFormError(e, errors, OWNER_ERRORS)
   } finally {
     creating.value = false
   }
@@ -108,6 +130,9 @@ async function submit() {
     </SField>
     <SField v-if="canPlace" :label="t('users.segment')" :hint="t('users.segmentHint')" :error="errors.segment_id">
       <SegmentSelect v-model="form.segment_id" data-testid="user-create-segment" />
+    </SField>
+    <SField v-if="canSetOwner" :label="t('users.owner')" :hint="t('users.ownerHint')" :error="errors.owner_id">
+      <EntityPicker v-model:id="form.owner_id" kind="user" data-testid="user-create-owner" />
     </SField>
   </SFormModal>
 </template>

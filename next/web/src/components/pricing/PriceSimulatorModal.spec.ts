@@ -8,7 +8,7 @@ import PriceSimulatorModal from './PriceSimulatorModal.vue'
 const api = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), post: vi.fn() }))
 const denied = vi.hoisted(() => new Set<string>())
 vi.mock('@sub2api/host', async (original) => ({ ...(await original<object>()), api }))
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (key: string) => !denied.has(key) }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (key: string) => !denied.has(key), hasAction: (action: string) => !denied.has(action) }) }))
 enableAutoUnmount(afterEach)
 
 const GROUPS = [

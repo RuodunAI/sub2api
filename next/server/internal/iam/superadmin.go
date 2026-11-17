@@ -84,7 +84,7 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 	}
 	if status != StatusActive {
 		active := StatusActive
-		if _, err := s.UpdateUser(ctx, 0, id, UpdateUserInput{Status: &active}); err != nil {
+		if _, err := s.UpdateUser(ctx, 0, id, core.AllScope, UpdateUserInput{Status: &active}); err != nil {
 			return "", err
 		}
 	}
@@ -93,7 +93,7 @@ func (s *Service) RecoverSuperAdmin(ctx context.Context, email string, opts Reco
 	}
 	if opts.ResetPassword {
 		password = randomPassword()
-		if _, err := s.UpdateUser(ctx, 0, id, UpdateUserInput{Password: &password}); err != nil {
+		if _, err := s.UpdateUser(ctx, 0, id, core.AllScope, UpdateUserInput{Password: &password}); err != nil {
 			return "", err
 		}
 	}

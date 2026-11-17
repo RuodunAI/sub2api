@@ -5,9 +5,10 @@ import { useI18n } from 'vue-i18n'
 import { api, MAX_ACCOUNT_BATCH } from '@sub2api/host'
 import { SAutoRefresh, SBadge, SBulkBar, SButton, SChip, SCode, SCopyButton, SDescItem, SDescriptions, SDropdown, SHint, SIcon, SInput, SLink, SModal, SPageHeader, SPagination, SSectionTitle, SSelect, SSpinner, SSwitch, STable, STabs, STooltip, confirm, toast, useAutoRefresh, type SelectOption, type TableColumn } from '@sub2api/ui'
 import type { Account, AccountLastTest, AccountType } from '@/api/types'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useGroupsLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
+import { P } from '@/generated/permissions'
 import { useAuthStore } from '@/stores/auth'
 import { usePluginStore, type PluginAccountActionEntry, type SlotEntry } from '@/stores/plugins'
 import { notifyError } from '@/utils/errors'
@@ -19,6 +20,7 @@ import AccountTypeEndpoints from './AccountTypeEndpoints.vue'
 import AccountTypePlatforms from './AccountTypePlatforms.vue'
 import PlatformIcon from '@/components/platform/PlatformIcon.vue'
 import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 import AccountGroupsCell from './AccountGroupsCell.vue'
 import AccountEditor from './AccountEditor.vue'
 import AccountNumberCell from './AccountNumberCell.vue'
@@ -35,6 +37,7 @@ import AccountQuotaCell from './AccountQuotaCell.vue'
 import AccountBalanceCell from './AccountBalanceCell.vue'
 import AccountModelTest from './AccountModelTest.vue'
 import AccountDeleteDialog from './AccountDeleteDialog.vue'
+import AccountOwnerDialog, { type AccountOwner } from './AccountOwnerDialog.vue'
 import LastTestCell from './AccountLastTest.vue'
 import { actionAppliesTo, pluginAccountActionKey, rowActions, runRowAction, type RowActionDeps } from './accountRowActions'
 import { usePluginAccountActions } from './usePluginAccountActions'
@@ -57,20 +60,27 @@ accountTypes.load()
 const typeOf = (a?: Pick<Account, 'plugin_key' | 'type'> | null) => (a ? accountTypes.find(a.plugin_key, a.type) : undefined)
 const { groups } = useGroupsLookup()
 
-// Scopes (CONTRACTS §21): account:read sees every account, a narrower scope
+// Scopes (CONTRACTS §21, §103.4): account:read sees every account, a narrower scope
 // only the accounts in it (the server filters; row actions follow the same rule).
-const showOwner = computed(() => scope.level(ACCOUNT_ACTIONS.read) === 'all')
+// The owner (所属) shows to a caller reaching more than its own accounts (every
+// account, or its team's), the creator, shown only, to one reaching every account.
+const readLevel = computed(() => scope.level(ACCOUNT_ACTIONS.read))
+const showCreator = computed(() => readLevel.value === 'all')
+const showOwner = computed(() => readLevel.value === 'all' || readLevel.value === 'team')
 // One creator on the whole page says nothing per row: the column only shows when creators differ.
-const mixedOwners = computed(() => new Set(list.items.value.map((a) => a.created_by)).size > 1)
+const mixedCreators = computed(() => new Set(list.items.value.map((a) => a.created_by)).size > 1)
 const canCreate = computed(() => auth.hasAction(ACCOUNT_ACTIONS.create))
 const canUpdate = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.update)
 const canTest = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.test)
 const canDelete = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.delete)
 const canReveal = (a: Account) => scope.can(a, ACCOUNT_ACTIONS.reveal)
 
-// `mine=true` works at both levels; `created_by=<id>` only at the all level (ignored otherwise).
+// `mine=true` (owned by the caller) and `owner_id=<id>` work at every level, `subordinates=true`
+// (owned by the caller's team) with a team scope; `created_by=<id>` only at the all level (ignored otherwise).
 // The usage column's "today" is the browser's day (CONTRACTS §73).
-const list = useList<Account>(`/accounts?${new URLSearchParams(todayQuery())}`, { plugin_key: '', type: '', group_id: '', status: '', model: '', q: '', mine: '', created_by: '', orphaned: '', ids: '' })
+const list = useList<Account>(`/accounts?${new URLSearchParams(todayQuery())}`, {
+  plugin_key: '', type: '', group_id: '', status: '', model: '', q: '', mine: '', owner_id: '', subordinates: '', created_by: '', orphaned: '', ids: ''
+})
 // The account.list.toolbar slot (CONTRACTS §23.3 UI 3.6) narrows the list to
 // the ids plugins name. Each plugin keeps its own set and chip label (a
 // plugin's `ids` prop is that set; an empty array or null clears it); the list
@@ -105,12 +115,8 @@ const idsCommon = computed(() => {
 watch(idsCommon, (c) => {
   list.filters.ids = !c ? '' : c.ids.length ? c.ids.join(',') : '0'
 })
-const onlyMine = computed({
-  get: () => list.filters.mine === 'true',
-  set: (v: boolean) => {
-    list.filters.mine = v ? 'true' : ''
-  }
-})
+const onlyMine = filterFlag(list.filters, 'mine')
+const onlySubordinates = filterFlag(list.filters, 'subordinates')
 // Accounts of disabled/uninstalled plugins are hidden by default; the switch
 // asks for `orphaned=all`.
 const showOrphaned = computed({
@@ -138,7 +144,8 @@ const hasQuotaCell = (a: Account) => hasQuota(a.quota) || hasBalance(a.balance) 
 const columns = computed<TableColumn[]>(() => [
   { key: 'name', label: t('accounts.listUi.identity'), width: '280px', mobile: 'title' },
   { key: 'groups', label: t('accounts.groups'), mobile: 'meta', mobileSpan: 2 },
-  ...(showOwner.value && mixedOwners.value ? [{ key: 'created_by', label: t('accounts.createdBy') }] : []),
+  ...(showOwner.value ? [{ key: 'owner', label: t('accounts.owner') }] : []),
+  ...(showCreator.value && mixedCreators.value ? [{ key: 'created_by', label: t('accounts.createdBy') }] : []),
   { key: 'status', label: t('common.status'), mobile: 'status' },
   { key: 'priority', label: t('accounts.priority'), width: '72px', mobile: 'meta' },
   // A plugin decoration (account.list.weight) sits beside the number on the same line, so the column grows when one is registered.
@@ -524,6 +531,15 @@ function remove(a: Account) {
   deleteOpen.value = true
 }
 
+// The owner (所属, CONTRACTS §103.4): account:owner:update moves an account to another user.
+const ownerOpen = ref(false)
+const ownerTarget = ref<Account | null>(null)
+function changeOwner(a: Account) {
+  ownerTarget.value = a
+  ownerOpen.value = true
+}
+const ownerChanged = ({ id, ...owner }: AccountOwner) => patchAccount(id, owner)
+
 const rowActionDeps: RowActionDeps = {
   canReveal,
   canResetStatus,
@@ -531,11 +547,13 @@ const rowActionDeps: RowActionDeps = {
   canRefreshCreds,
   canUpdate,
   canDelete,
+  canChangeOwner: () => auth.has(P.AccountOwnerUpdate),
   openDetail,
   reveal,
   resetStatus,
   disable: (a) => toggleEnabled(a, false),
   refreshCreds,
+  changeOwner,
   remove,
   // Read on each menu build: the plugin list may change after a refresh.
   get declaredActions() {
@@ -564,7 +582,7 @@ const typeOptions = computed<SelectOption[]>(() => [
 const advancedFilters = ref(false)
 const denseRows = ref(true)
 const filterCount = computed(() => activeFilterCount(list.filters, ['plugin_key']))
-const hasAdvancedFilters = computed(() => !!list.filters.model || !!list.filters.created_by || onlyMine.value || showOrphaned.value)
+const hasAdvancedFilters = computed(() => ['model', 'owner_id', 'created_by', 'mine', 'subordinates', 'orphaned'].some((key) => !!list.filters[key]))
 function resetFilters() {
   for (const key of Object.keys(list.filters)) list.filters[key] = ''
   clearIds()
@@ -598,8 +616,10 @@ function resetFilters() {
 
     <section v-if="advancedFilters" class="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-surface px-3 py-2" :aria-label="t('accounts.listUi.filters')">
       <EntityPicker v-model:id="list.filters.model" kind="model" class="w-full sm:w-64" data-testid="model-filter" />
-      <EntityPicker v-if="showOwner" v-model:id="list.filters.created_by" kind="user" class="w-full sm:w-72" data-testid="created-by-filter" :placeholder="t('accounts.createdBy')" />
+      <EntityPicker v-if="showOwner" v-model:id="list.filters.owner_id" kind="user" class="w-full sm:w-72" data-testid="owner-filter" :placeholder="t('accounts.owner')" />
+      <EntityPicker v-if="showCreator" v-model:id="list.filters.created_by" kind="user" class="w-full sm:w-72" data-testid="created-by-filter" :placeholder="t('accounts.createdBy')" />
       <SSwitch v-model="onlyMine" :label="t('common.onlyMine')" data-testid="only-mine" />
+      <SSwitch v-if="readLevel === 'team'" v-model="onlySubordinates" :label="t('accounts.onlySubordinates')" data-testid="only-subordinates" />
       <SSwitch v-model="showOrphaned" :label="t('accounts.showOrphaned')" data-testid="show-orphaned" />
     </section>
     <p v-else-if="hasAdvancedFilters" class="mb-3 text-xs text-primary-600 dark:text-primary-300">{{ t('accounts.listUi.advancedApplied') }}</p>
@@ -652,11 +672,8 @@ function resetFilters() {
         </div>
       </template>
       <template #cell-groups="{ row }"><AccountGroupsCell :groups="groupTags(row)" /></template>
-      <template #cell-created_by="{ row }">
-        <span v-if="row.created_by_email" class="text-xs" :title="row.created_by ? `#${row.created_by}` : ''">{{ row.created_by_email }}</span>
-        <SHint v-else-if="row.created_by" inline size="xs">#{{ row.created_by }}</SHint>
-        <SHint v-else inline>-</SHint>
-      </template>
+      <template #cell-owner="{ row }"><UserRef :id="row.owner_id" :email="row.owner_email" /></template>
+      <template #cell-created_by="{ row }"><UserRef :id="row.created_by" :email="row.created_by_email" /></template>
       <template #cell-status="{ row }">
         <STooltip :content="statusOf(row).detail" :disabled="!statusOf(row).detail" placement="bottom" :delay="150" max-width="24rem">
           <!-- Focusable when there is a reason: keyboard focus shows it too, not only hover (§73.4); the detail drawer lists it for touch. -->
@@ -744,6 +761,7 @@ function resetFilters() {
     <AccountBulkEditDialog v-model:open="bulkEditOpen" :accounts="picked.edit" :type-of="typeOf" @saved="onBulkSaved" />
     <AccountBulkDeleteDialog v-model:open="bulkDeleteOpen" :accounts="picked.remove" @deleted="onBulkDeleted" />
     <AccountDeleteDialog v-model:open="deleteOpen" :account="deleteTarget" @deleted="list.reload" />
+    <AccountOwnerDialog v-model:open="ownerOpen" :account="ownerTarget" @changed="ownerChanged" />
 
     <!-- reveal -->
     <SModal v-model:open="revealOpen" :title="t('accounts.revealCredentials')" width="lg" @close="revealed = null">
@@ -805,7 +823,8 @@ function resetFilters() {
               <SDescItem :label="t('accounts.schedulable')">{{ detail.schedulable ? t('common.yes') : t('common.no') }}</SDescItem>
               <SDescItem :label="t('accounts.lastUsed')">{{ formatDateTime(detail.last_used_at) }}</SDescItem>
               <SDescItem :label="t('accounts.lastTest.column')"><LastTestCell :last="detail.last_test" :testing="batchTesting.has(detail.id)" /></SDescItem>
-              <SDescItem v-if="showOwner" :label="t('accounts.createdBy')">{{ detail.created_by_email || (detail.created_by ? `#${detail.created_by}` : '-') }}</SDescItem>
+              <SDescItem v-if="showOwner" :label="t('accounts.owner')"><UserRef :id="detail.owner_id" :email="detail.owner_email" /></SDescItem>
+              <SDescItem v-if="showCreator" :label="t('accounts.createdBy')"><UserRef :id="detail.created_by" :email="detail.created_by_email" /></SDescItem>
               <SDescItem :label="t('common.createdAt')">{{ formatDateTime(detail.created_at) }}</SDescItem>
             </SDescriptions>
             <div v-if="detail.credentials">

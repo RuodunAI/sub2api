@@ -19,6 +19,7 @@ import {
   SPageHeader,
   SPagination,
   SSelect,
+  SSwitch,
   STable,
   confirm,
   toast,
@@ -28,14 +29,17 @@ import {
 } from '@sub2api/ui'
 import type { Role, User } from '@/api/types'
 import { deleteWithConfirm, useStatusOptions } from '@/composables/crud'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useSelection } from '@/composables/useSelection'
-import { SUPPLIER_ROLE, isPlainUser, useAssignableRoles, withSupplierUser } from '@/composables/useAssignableRoles'
+import { DEFAULT_ROLE, SUPPLIER_ROLE, isPlainUser, useAssignableRoles, withSupplierUser } from '@/composables/useAssignableRoles'
+import { useScope } from '@/composables/useScope'
 import { useAuthStore } from '@/stores/auth'
 import { lt } from '@/i18n'
 import { notifyError } from '@/utils/errors'
 import { applyFormError } from '@/utils/formErrors'
 import { formatMoney } from '@/utils/format'
+import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 import SegmentBadge from '@/components/pricing/SegmentBadge.vue'
 import AdjustBalanceModal from '@/views/ledger/AdjustBalanceModal.vue'
 import ResetPasswordDialog from './ResetPasswordDialog.vue'
@@ -44,8 +48,9 @@ import UserCreateDialog from './UserCreateDialog.vue'
 import UserPricingDrawer from './UserPricingDrawer.vue'
 import UserSegmentMoveDialog from './UserSegmentMoveDialog.vue'
 import { segmentFilterOptions, useNamedSegments } from './userSegments'
+import { OWNER_ERRORS } from './userOwner'
 import { useScopeLabels } from '@/components/permission/scopeLabels'
-import type { PermRef } from '@/generated/permissions'
+import { P, type PermRef } from '@/generated/permissions'
 
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -53,7 +58,13 @@ const route = useRoute()
 const router = useRouter()
 /** A filter the address bar may set: other pages link here with ?role= or ?segment=. */
 const fromQuery = (key: string) => (typeof route.query[key] === 'string' ? route.query[key] : '')
-const list = useList<User>('/users', { q: '', status: '', role: fromQuery('role'), segment: fromQuery('segment') })
+const scope = useScope()
+// The users in reach of user:read (CONTRACTS §103.3): every user, or the
+// caller's team; owner_id narrows to those directly under a user, direct to
+// those directly under the caller.
+const list = useList<User>('/users', { q: '', status: '', role: fromQuery('role'), segment: fromQuery('segment'), owner_id: '', direct: '' })
+const teamOnly = computed(() => scope.level(P.UserRead) === 'team')
+const onlyDirect = filterFlag(list.filters, 'direct')
 
 // ------------------------------------------------------------------ roles lookup
 
@@ -97,7 +108,9 @@ const columns = computed<TableColumn[]>(() => {
     { key: 'email', label: t('users.email'), mobile: 'title' },
     { key: 'display_name', label: t('users.displayName'), mobile: 'subtitle' },
     { key: 'roles', label: t('users.roles'), mobile: 'meta' },
-    { key: 'segment', label: t('users.segment'), mobile: 'meta' }
+    { key: 'segment', label: t('users.segment'), mobile: 'meta' },
+    // The owner (所属) always: user:read reaches every user or a team, past one's own, as the accounts list's does.
+    { key: 'owner', label: t('users.owner'), mobile: 'meta' }
   ]
   if (showBalance.value) cols.push({ key: 'balance', label: t('users.balance'), align: 'right', mobile: 'meta' })
   cols.push(
@@ -129,9 +142,12 @@ const managed = useAssignableRoles()
 function rowActions(u: User): MenuAction[] {
   const self = u.id === auth.me?.id
   if (isSuper(u)) return self ? [{ key: 'transfer', label: t('users.transfer.action'), danger: true }] : []
-  const may = (perm: PermRef) => auth.has(perm) && managed.manageable(u.roles)
+  const manageable = managed.manageable(u.roles)
+  const may = (perm: PermRef) => auth.has(perm) && manageable
   return [
-    { key: 'edit', label: t('common.edit'), hidden: !may('user:update') },
+    // user:update at any scope: the list holds only the users in reach. The
+    // password and delete need the unscoped keys, never the team's (CONTRACTS §103.1).
+    { key: 'edit', label: t('common.edit'), hidden: !(manageable && auth.hasAction(P.UserUpdate)) },
     { key: 'roles', label: t('users.assignRoles'), hidden: !may('role:assign') },
     { key: 'pricing', label: t('users.pricing.action'), hidden: !auth.has('segment:read') },
     { key: 'ledger', label: t('users.ledger'), hidden: !auth.has('balance:all:read') },
@@ -201,11 +217,13 @@ const editUser = ref<User | null>(null)
 const editOpen = ref(false)
 const saving = ref(false)
 const editErrors = ref<Record<string, string>>({})
-const editForm = reactive({ display_name: '', status: 'active' })
+const editForm = reactive({ display_name: '', status: 'active', owner_id: '' })
+// Naming the owner takes user:update over every user; a team holder's users stay under it.
+const canSetOwner = computed(() => auth.has(P.UserUpdate))
 
 function openEdit(u: User) {
   editUser.value = u
-  Object.assign(editForm, { display_name: u.display_name, status: u.status })
+  Object.assign(editForm, { display_name: u.display_name, status: u.status, owner_id: u.owner_id ? String(u.owner_id) : '' })
   editErrors.value = {}
   editOpen.value = true
 }
@@ -214,16 +232,19 @@ async function submitEdit() {
   if (!editUser.value) return
   saving.value = true
   editErrors.value = {}
+  // Sent only when changed; 0 takes the owner away.
+  const owner = Number(editForm.owner_id) || 0
   try {
     await api.patch(`/users/${editUser.value.id}`, {
       display_name: editForm.display_name.trim(),
-      status: editForm.status
+      status: editForm.status,
+      owner_id: canSetOwner.value && owner !== (editUser.value.owner_id ?? 0) ? owner : undefined
     })
     toast(t('common.updated'), 'success')
     editOpen.value = false
     list.reload()
   } catch (e) {
-    applyFormError(e, editErrors)
+    applyFormError(e, editErrors, OWNER_ERRORS)
   } finally {
     saving.value = false
   }
@@ -263,7 +284,7 @@ function openRoles(u: User) {
 /** Checking supplier checks the default role with it, as when creating a user. */
 function setRolesSel(v: ChoiceOption['value'][]) {
   const added = v.includes(SUPPLIER_ROLE) && !rolesSel.value.includes(SUPPLIER_ROLE)
-  rolesSel.value = added ? withSupplierUser(v.map(String)) : v
+  rolesSel.value = added ? withSupplierUser(v.map(String), managed.assignable(DEFAULT_ROLE)) : v
 }
 
 async function submitRoles() {
@@ -323,7 +344,7 @@ function remove(u: User) {
   <div>
     <SPageHeader :title="t('users.title')" :description="t('users.description')" :filters-active-count="activeFilterCount(list.filters)">
       <template #actions>
-        <SButton v-permission="'user:create'" variant="primary" icon="plus" fab @click="openCreate">{{ t('users.create') }}</SButton>
+        <SButton v-if="auth.hasAction(P.UserCreate)" variant="primary" icon="plus" fab @click="openCreate">{{ t('users.create') }}</SButton>
       </template>
       <template #filters-primary>
         <SInput v-model="list.filters.q" class="w-64" icon="search" clearable :aria-label="t('common.search')" :placeholder="t('users.searchPlaceholder')" />
@@ -332,6 +353,8 @@ function remove(u: User) {
         <SSelect v-model="list.filters.status" class="w-40" :options="statusFilterOptions" :aria-label="t('common.status')" />
         <SSelect v-if="roles.length" v-model="list.filters.role" class="w-44" :options="roleOptions" :aria-label="t('users.roles')" />
         <SSelect v-model="list.filters.segment" class="w-44" :options="segmentOptions" :aria-label="t('users.segment')" data-testid="user-segment-filter" />
+        <EntityPicker v-model:id="list.filters.owner_id" kind="user" class="w-60" :placeholder="t('users.owner')" data-testid="user-owner-filter" />
+        <SSwitch v-if="teamOnly" v-model="onlyDirect" :label="t('users.onlyDirect')" data-testid="user-direct-filter" />
       </template>
     </SPageHeader>
 
@@ -364,6 +387,7 @@ function remove(u: User) {
       <template #cell-segment="{ row }">
         <SegmentBadge :segment="row.segment" />
       </template>
+      <template #cell-owner="{ row }"><UserRef :id="row.owner_id" :email="row.owner_email" /></template>
       <template #cell-balance="{ row }">
         <span class="font-mono">{{ formatMoney(row.balance) }}</span>
       </template>
@@ -394,6 +418,9 @@ function remove(u: User) {
         </SField>
         <SField :label="t('common.status')" :error="editErrors.status">
           <SSelect v-model="editForm.status" :options="statusOptions" />
+        </SField>
+        <SField v-if="canSetOwner" :label="t('users.owner')" :hint="t('users.ownerHint')" :error="editErrors.owner_id">
+          <EntityPicker v-model:id="editForm.owner_id" kind="user" :exclude="editUser ? [editUser.id] : []" data-testid="user-edit-owner" />
         </SField>
     </SFormModal>
 

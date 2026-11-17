@@ -5,7 +5,8 @@
 // alone. Colors follow the entity (stats.entityColors). A row click emits
 // `select` with its key ('' for "other" is not emitted). The optional `label`
 // slot ({ label }) draws the label of a row that has a key (not "other", not
-// a row of no key), e.g. a model with its vendor's mark.
+// a row of no key), e.g. a model with its vendor's mark. `costLabel` renames
+// the cost metric.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SCard, SChart, SEmpty, SSegmented } from '@sub2api/ui'
@@ -15,22 +16,23 @@ import { formatMoney, formatNumber } from '@/utils/format'
 import { entityColors, escapeHtml, formatCostShort, formatTokens, num, otherColor, rowTokens, surfaceColor, topWithOther } from './stats'
 
 const props = withDefaults(
-  defineProps<{ title: string; keyLabel: string; rows: UsageSummaryRow[]; loading?: boolean; labelOf?: (key: string) => string; selectable?: boolean }>(),
-  { labelOf: undefined, selectable: false }
+  defineProps<{ title: string; keyLabel: string; rows: UsageSummaryRow[]; loading?: boolean; labelOf?: (row: UsageSummaryRow) => string; selectable?: boolean; costLabel?: string }>(),
+  { labelOf: undefined, selectable: false, costLabel: undefined }
 )
 const emit = defineEmits<{ (e: 'select', key: string): void }>()
 const { t } = useI18n()
 const app = useAppStore()
 
 const metric = ref<'tokens' | 'cost'>('tokens')
+const costName = computed(() => props.costLabel ?? t('stats.byCost'))
 const value = (r: UsageSummaryRow) => (metric.value === 'cost' ? num(r.total_cost) : rowTokens(r))
-const name = (key: string) => (props.labelOf ? props.labelOf(key) : key) || '—'
+const name = (r: UsageSummaryRow) => (props.labelOf ? props.labelOf(r) : r.key) || '—'
 
 const view = computed(() => {
   const dark = app.theme === 'dark'
   const { top, other, otherCount } = topWithOther(props.rows, value)
   const colors = entityColors(top.map((r) => r.key), dark)
-  const items = top.map((r) => ({ key: r.key, label: name(r.key), color: colors.get(r.key)!, row: r, other: false }))
+  const items = top.map((r) => ({ key: r.key, label: name(r), color: colors.get(r.key)!, row: r, other: false }))
   if (other) items.push({ key: '', label: t('stats.other', { n: otherCount }), color: otherColor(dark), row: other, other: true })
   const total = items.reduce((a, i) => a + value(i.row), 0)
   return { items, total, dark }
@@ -43,7 +45,7 @@ const option = computed(() => {
     tooltip: { trigger: 'item', formatter: (p: any) => `${p.marker}${escapeHtml(String(p.name))}<br/>${fmt(p.value)}（${p.percent}%）` },
     title: {
       text: fmt(total),
-      subtext: metric.value === 'cost' ? t('stats.byCost') : t('stats.byTokens'),
+      subtext: metric.value === 'cost' ? costName.value : t('stats.byTokens'),
       left: 'center',
       top: '38%',
       itemGap: 2,
@@ -80,7 +82,7 @@ function pct(r: UsageSummaryRow) {
         :aria-label="title"
         :options="[
           { value: 'tokens', label: t('stats.byTokens') },
-          { value: 'cost', label: t('stats.byCost') }
+          { value: 'cost', label: costName }
         ]"
       />
     </template>
@@ -93,7 +95,7 @@ function pct(r: UsageSummaryRow) {
             <tr class="text-left text-fg-subtle">
               <th class="py-1.5 pr-2 font-medium">{{ keyLabel }}</th>
               <th class="py-1.5 pr-2 text-right font-medium">{{ t('stats.requests') }}</th>
-              <th class="py-1.5 pr-2 text-right font-medium">{{ metric === 'cost' ? t('stats.byCost') : t('stats.byTokens') }}</th>
+              <th class="py-1.5 pr-2 text-right font-medium">{{ metric === 'cost' ? costName : t('stats.byTokens') }}</th>
               <th class="py-1.5 text-right font-medium">{{ t('stats.share') }}</th>
             </tr>
           </thead>

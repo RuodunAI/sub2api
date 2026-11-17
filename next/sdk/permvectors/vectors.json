@@ -138,7 +138,7 @@
   },
   {
    "in": "user:read:*",
-   "invalid": true
+   "out": "user:read"
   },
   {
    "in": "settings:manage:group/1",
@@ -262,6 +262,58 @@
   },
   {
    "in": "x:y:own",
+   "invalid": true
+  },
+  {
+   "in": "account:read:team",
+   "out": "account:read:team"
+  },
+  {
+   "in": "usage:account:read:team",
+   "out": "usage:account:read:team"
+  },
+  {
+   "in": "usage:account:read:group/3",
+   "out": "usage:account:read:group/3"
+  },
+  {
+   "in": "proxy:manage:team",
+   "out": "proxy:manage:team"
+  },
+  {
+   "in": "user:read:team",
+   "out": "user:read:team"
+  },
+  {
+   "in": "user:create:team",
+   "out": "user:create:team"
+  },
+  {
+   "in": "user:update:team",
+   "out": "user:update:team"
+  },
+  {
+   "in": "plugin.x:y:team",
+   "out": "plugin.x:y:team"
+  },
+  {
+   "in": "account:create:team",
+   "invalid": true
+  },
+  {
+   "in": "account:read:team/1",
+   "invalid": true
+  },
+  {
+   "in": "user:read:group/1",
+   "invalid": true
+  },
+  {
+   "in": "user:update:user/5",
+   "invalid": true
+  },
+  {
+   "in": "user:update:own",
    "invalid": true
   }
  ],
@@ -685,6 +737,66 @@
    "have": "plugin.m:f:m:flow/3",
    "want": "plugin.n:f:m:flow/3",
    "ok": false
+  },
+  {
+   "have": "account:read:team",
+   "want": "account:read:team",
+   "ok": true
+  },
+  {
+   "have": "account:read:team",
+   "want": "account:read:own",
+   "ok": true
+  },
+  {
+   "have": "account:read:own",
+   "want": "account:read:team",
+   "ok": false
+  },
+  {
+   "have": "account:read",
+   "want": "account:read:team",
+   "ok": true
+  },
+  {
+   "have": "account:read:team",
+   "want": "account:read",
+   "ok": false
+  },
+  {
+   "have": "account:read:team",
+   "want": "account:read:group/12",
+   "ok": false
+  },
+  {
+   "have": "account:read:group/*",
+   "want": "account:read:team",
+   "ok": false
+  },
+  {
+   "have": "account:read:team",
+   "want": "account:read:account/5",
+   "ok": false
+  },
+  {
+   "have": "account:update:team",
+   "want": "account:read:team",
+   "ok": false
+  },
+  {
+   "have": "user:read",
+   "want": "user:read:team",
+   "ok": true
+  },
+  {
+   "have": "user:read:team",
+   "want": "user:read",
+   "ok": false
+  },
+  {
+   "have": "usage:account:read:team",
+   "want": "usage:account:read:own",
+   "ok": true
   }
  ],
  "allows": [
@@ -1070,6 +1182,32 @@
     "id": 3,
     "created_by": 7,
     "group_ids": null
+   },
+   "ok": false
+  },
+  {
+   "have": [
+    "account:read:team"
+   ],
+   "action": "account:read",
+   "me": 7,
+   "row": {
+    "id": 1,
+    "created_by": 7,
+    "group_ids": []
+   },
+   "ok": true
+  },
+  {
+   "have": [
+    "account:read:team"
+   ],
+   "action": "account:read",
+   "me": 8,
+   "row": {
+    "id": 1,
+    "created_by": 7,
+    "group_ids": []
    },
    "ok": false
   }

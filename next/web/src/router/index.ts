@@ -8,7 +8,7 @@ import { isPluginKey, pluginSettingsPath } from '@/views/plugins/pluginUtil'
 import { settingsLanding } from '@/views/settings/settingsNav'
 import { closeLayersOnBack } from './layerBack'
 import { deniedRoute } from './guard'
-import type { PermRef, ScopableKey } from '@/generated/permissions'
+import { P, type PermRef, type ScopableKey } from '@/generated/permissions'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -49,7 +49,7 @@ const children: RouteRecordRaw[] = [
   { path: '', redirect: '/dashboard' },
   { path: 'dashboard', component: () => import('@/views/dashboard/DashboardView.vue'), meta: { title: 'nav.items.dashboard' } },
 
-  { path: 'users', component: () => import('@/views/users/UsersView.vue'), meta: { perm: 'user:read', title: 'nav.items.users' } },
+  { path: 'users', component: () => import('@/views/users/UsersView.vue'), meta: { action: P.UserRead, title: 'nav.items.users' } },
   { path: 'segments', component: () => import('@/views/segments/SegmentsView.vue'), meta: { perm: 'segment:read', title: 'nav.items.segments' } },
   { path: 'roles', component: () => import('@/views/roles/RolesView.vue'), meta: { perm: 'role:read', title: 'nav.items.roles' } },
   { path: 'api-keys', redirect: '/me/api-keys' },
@@ -65,8 +65,11 @@ const children: RouteRecordRaw[] = [
   { path: 'prices/sources', component: () => import('@/views/prices/PriceSourcesView.vue'), meta: { perm: 'price:read', title: 'prices.sources.title', parent: '/prices' } },
   { path: 'prices/sources/:id/sync', component: () => import('@/views/prices/PriceSyncView.vue'), meta: { perm: 'price:manage', title: 'prices.syncPrices', parent: '/prices/sources' } },
   { path: 'prices/:id', component: () => import('@/views/prices/PriceEditView.vue'), meta: { perm: 'price:read', title: 'prices.editTitleShort', parent: '/prices' } },
-  { path: 'usage/overview', component: () => import('@/views/usage/UsageOverviewView.vue'), props: { admin: true }, meta: { perm: 'usage:all:read', title: 'nav.items.usageOverview' } },
+  { path: 'usage/overview', component: () => import('@/views/usage/UsageOverviewView.vue'), props: { view: 'all' }, meta: { perm: 'usage:all:read', title: 'nav.items.usageOverview' } },
   { path: 'usage', component: () => import('@/views/usage/UsageView.vue'), meta: { perm: 'usage:all:read', title: 'nav.items.usage' } },
+  // The usage of the accounts in reach, with the account's facts only (CONTRACTS §103.5).
+  { path: 'account-usage/overview', component: () => import('@/views/usage/UsageOverviewView.vue'), props: { view: 'account' }, meta: { action: P.UsageAccountRead, title: 'nav.items.accountUsageOverview' } },
+  { path: 'account-usage', component: () => import('@/views/usage/UsageView.vue'), props: { view: 'account' }, meta: { action: P.UsageAccountRead, title: 'nav.items.accountUsage' } },
   { path: 'me/models', component: () => import('@/views/me/MyModelsView.vue'), meta: { perm: 'apikey:self:manage', title: 'nav.items.myModels' } },
   { path: 'me/wallet', component: () => import('@/views/me/WalletView.vue'), meta: { perm: 'balance:self:read', title: 'nav.items.myWallet' } },
   { path: 'me/profile', component: () => import('@/views/me/ProfileView.vue'), meta: { title: 'nav.items.myProfile' } },

@@ -1,8 +1,14 @@
 -- sql
-SELECT count(*) FROM users u WHERE u.deleted_at IS NULL AND ((u.email ILIKE $1 OR u.display_name ILIKE $2)) AND u.status = $3 AND ($4 IN (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id))) AND u.segment_id = $5
+SELECT count(*) FROM users u WHERE (($1::boolean OR COALESCE(u.owner_id = ANY($2::bigint[]) OR u.owner_id IN (SELECT "id" FROM "users" WHERE "owner_path" && $3), false) OR u.id = ANY($4::bigint[]))) AND u.deleted_at IS NULL AND ((u.email ILIKE $5 OR u.display_name ILIKE $6)) AND u.status = $7 AND ($8 IN (SELECT substr(cr.v1, 3) FROM casbin_rule cr WHERE cr.ptype = 'g' AND cr.v0 = ('u:' || u.id))) AND u.segment_id = $9 AND u.owner_id = $10 AND u.owner_id = $11
 -- vars
-$1 string "%ann%"
-$2 string "%ann%"
-$3 string "active"
-$4 string "admin"
-$5 int64 3
+$1 bool false
+$2 core.int64s [9]
+$3 gormpg.Array[int64] [9]
+$4 core.int64s []
+$5 string "%ann%"
+$6 string "%ann%"
+$7 string "active"
+$8 string "admin"
+$9 int64 3
+$10 int64 5
+$11 int64 9

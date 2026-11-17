@@ -434,8 +434,7 @@ func TestPluginPermissionMetaMigration(t *testing.T) {
 }
 
 // 0101 drops the JWT session tables (CONTRACTS §100.6), and a rerun
-// changes nothing: what the release runbook checks
-// (deploy/rollback/0.1.290-session-down.md).
+// changes nothing.
 func TestMigration0101DropsJWTSessions(t *testing.T) {
 	const id = "0101_drop_jwt_sessions.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
@@ -462,12 +461,12 @@ func TestMigration0101DropsJWTSessions(t *testing.T) {
 	require.Empty(t, tables(), "a rerun recreated tables")
 }
 
-// 0102 removes CCGateway (deploy/rollback/0.1.290-release.md): its tables,
-// columns, settings and tasks, the account lifecycle contract, and the plugin
-// as an uninstall with purge would, its permissions and their grants
-// included. Its accounts, their usage and other plugins stay. It also drops
-// what only the cores before 0.1.290 used: the scheduling mode (normalizing
-// the row) and async_tasks.legacy_imported. A rerun changes nothing.
+// 0102 removes CCGateway (CONTRACTS §101.5): its tables, columns, settings
+// and tasks, the account lifecycle contract, and the plugin as an uninstall
+// with purge would, its permissions and their grants included. Its accounts,
+// their usage and other plugins stay. It also drops what only the cores
+// before 0.1.290 used: the scheduling mode (normalizing the row) and
+// async_tasks.legacy_imported. A rerun changes nothing.
 func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 	const id = "0102_drop_ccgateway_and_legacy.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
@@ -542,6 +541,82 @@ func TestMigration0102DropsCCGatewayAndLegacy(t *testing.T) {
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, "ccgateway", read(`SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements`))
 	require.Equal(t, `{"metric": "rpm", "limit_load": false, "model_limits": true}`, read(scheduling), "a rerun reset a saved row")
+}
+
+// 0103 adds the owners of CONTRACTS §103: an account's owner starts as its
+// creator, a user cannot own itself or a missing user, its owner path ends
+// with its owner and is computed from owner_id (again on a rerun), a user
+// that owns others is not hard-deleted, a hard delete of an account's
+// owner clears it, and a rerun keeps an account owner moved since.
+func TestMigration0103UserAndAccountOwners(t *testing.T) {
+	const id = "0103_user_owner.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) error {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		return err
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	require.NoError(t, exec(`INSERT INTO users (email, password_hash) VALUES ('a@x', ''), ('b@x', '');
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by) SELECT 'mine', 'p', 't', '', id FROM users WHERE email = 'a@x';
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('nobody', 'p', 't', '')`))
+	// The backfill fires the accounts triggers (0053, 0070): an account
+	// auto-disabled by a usage limit with a deferred disable, and its quota
+	// snapshot, come out as they went in, owner_id aside.
+	require.NoError(t, exec(`SET sup2api.auto_disabled_source = 'written';
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by, status, auto_disabled_source, auto_disabled_until,
+			deferred_auto_disable, deferred_auto_disable_reason, deferred_auto_disabled_until)
+		SELECT 'limited', 'p', 't', '', id, 'auto_disabled', 'usage_limit', now() + interval '1 hour', true, 'limit', now() + interval '1 hour'
+		FROM users WHERE email = 'a@x';
+		INSERT INTO account_quota_snapshots (account_id, windows, updated_at, auto_refresh) SELECT id, '{"5h": {}}', now(), true FROM accounts;
+		RESET sup2api.auto_disabled_source`))
+	rows := `SELECT md5(string_agg((to_jsonb(a) - 'owner_id')::text || to_jsonb(q)::text, '' ORDER BY a.id))
+		FROM accounts a JOIN account_quota_snapshots q ON q.account_id = a.id`
+	before := read(rows)
+	owners := `SELECT string_agg(a.name || '=' || COALESCE(u.email, '-'), ' ' ORDER BY a.name) FROM accounts a LEFT JOIN users u ON u.id = a.owner_id`
+
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, "limited=a@x mine=a@x nobody=-", read(owners))
+	require.Equal(t, before, read(rows), "the backfill changed an account or its quota snapshot")
+	require.Equal(t, "3", read(`SELECT count(*)::text FROM pg_indexes WHERE indexname IN ('users_owner_idx', 'users_owner_path_idx', 'accounts_owner_idx')`))
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = id, owner_path = ARRAY[id] WHERE email = 'a@x'`), "users_owner_not_self")
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = 999999, owner_path = '{999999}' WHERE email = 'a@x'`), "users_owner_fk")
+	require.ErrorContains(t, exec(`UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE email = 'a@x'`), "users_owner_path_ck")
+	require.ErrorContains(t, exec(`UPDATE accounts SET owner_id = 999999`), "accounts_owner_fk")
+
+	// A rerun computes every path from owner_id (here with the paths
+	// emptied and their check dropped), the same ones again.
+	paths := `SELECT string_agg(email || '=' || owner_path::text, ' ' ORDER BY email) FROM users`
+	require.NoError(t, exec(`INSERT INTO users (email, password_hash) VALUES ('c@x', '');
+		UPDATE accounts SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE name = 'mine';
+		ALTER TABLE users DROP CONSTRAINT users_owner_path_ck;
+		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'a@x') WHERE email = 'b@x';
+		UPDATE users SET owner_id = (SELECT id FROM users WHERE email = 'b@x') WHERE email = 'c@x';
+		DELETE FROM schema_migrations WHERE id = '`+id+`'`))
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "limited=a@x mine=b@x nobody=-", read(owners), "a rerun moved an owner back")
+	want := read(`SELECT format('a@x={} b@x={%s} c@x={%s,%s}', a.id, a.id, b.id) FROM users a, users b WHERE a.email = 'a@x' AND b.email = 'b@x'`)
+	require.Equal(t, want, read(paths))
+	require.NoError(t, exec(`DELETE FROM schema_migrations WHERE id = '`+id+`'`))
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, read(paths), "a second rerun")
+
+	// A user that owns others is not deleted: its id is in their paths.
+	require.ErrorContains(t, exec(`DELETE FROM users WHERE email = 'b@x'`), "users_owner_fk")
+	require.NoError(t, exec(`DELETE FROM users WHERE email = 'c@x'; DELETE FROM users WHERE email = 'b@x'`))
+	require.Equal(t, "limited=a@x mine=- nobody=-", read(owners))
+	require.Equal(t, "0", read(`SELECT count(*)::text FROM users WHERE owner_id IS NOT NULL`))
 }
 
 // 0064 and 0068 sum an account's usage (CONTRACTS §73): existing rows are

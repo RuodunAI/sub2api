@@ -1,20 +1,22 @@
 import { useAuthStore } from '@/stores/auth'
-import { scopeAllowsRow, type ScopedRow } from '@/authz/implies'
-import { P, type ScopableKey, type ScopedPermKey } from '@/generated/permissions'
+import { TEAM_SCOPE, scopeAllowsRow, scopeImplies, type ScopedRow } from '@/authz/implies'
+import { P, SCOPE_TYPE, type ScopableKey, type ScopedPermKey } from '@/generated/permissions'
 
-// Resource scopes of accounts and proxies (CONTRACTS §21): an action key
-// reaches every row (account:update), or the rows of its scope: own (those
-// the caller created), group/<g> (accounts bound to the group), account/<id>,
+// Resource scopes (CONTRACTS §21, §103.2): an action key reaches every row
+// (account:update), or the rows of its scope: own (the caller's: an account
+// it owns, a proxy it created), team (the caller's and those of the users
+// below it), group/<g> (accounts bound to the group), account/<id>,
 // group/<g>/account/<id>, proxy/<id>. The server filters in SQL; the console
 // uses the same rule (scopeAllowsRow, core.DataScope.AllowsRow) to show or
-// hide row actions and columns.
+// hide row actions and columns. Only the server knows a team (see can).
 
 /**
- * 'all' reaches every row; 'own' is the restricted tier, any narrower scope
- * (own, groups, ids), where the own-level limits apply (capped fields, the
- * administrator's lock); null reaches nothing.
+ * 'all' reaches every row; 'team' the caller's and its team's rows (and
+ * maybe more by other scopes); 'own' is the restricted tier, any narrower
+ * scope (own, groups, ids). The own-level limits apply below 'all' (capped
+ * fields, the administrator's lock); null reaches nothing.
  */
-export type ScopeLevel = 'all' | 'own' | null
+export type ScopeLevel = 'all' | 'team' | 'own' | null
 
 /** The scoped account actions. */
 export const ACCOUNT_ACTIONS = {
@@ -52,12 +54,29 @@ export function useScope() {
   /** How far action reaches for the caller. */
   function level(action: ScopableKey): ScopeLevel {
     if (auth.has(action)) return 'all'
+    if (auth.has(`${action}:team`)) return 'team'
     return auth.hasAction(action) ? 'own' : null
   }
 
-  /** Whether one of the caller's scopes of action reaches row. */
+  /**
+   * Whether every row the server lists of action's resource is within the
+   * caller's team: each scope of its read action is team or own. A wider
+   * one (all, a group, an id) lists rows outside the team too.
+   */
+  function listsTeamOnly(action: ScopableKey): boolean {
+    const read = auth.scopes(`${SCOPE_TYPE[action]}:read`)
+    return read.length > 0 && read.every((s) => scopeImplies(TEAM_SCOPE, s))
+  }
+
+  /**
+   * Whether one of the caller's scopes of action reaches row, a row the
+   * server listed to the caller. Only the server knows a team (who is below
+   * the caller), so a team scope takes such a row when the list holds the
+   * team's rows only (listsTeamOnly); otherwise it reaches what own does.
+   * The server still refuses the action on a row outside the team.
+   */
   function can(row: ScopedRow | null | undefined, action: ScopableKey): boolean {
-    return auth.scopes(action).some((s) => scopeAllowsRow(s, row, auth.me?.id))
+    return auth.scopes(action).some((s) => (s.team && !!row && listsTeamOnly(action)) || scopeAllowsRow(s, row, auth.me?.id))
   }
 
   return { level, can }

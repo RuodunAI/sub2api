@@ -19,11 +19,11 @@ describe('useScopeLabels', () => {
     i18n.global.locale.value = 'en'
     const { summary } = labels()
     expect(summary(['user:read', 'account:read', 'account:update:own', 'account:update:group/3', 'account:delete:group/3/account/12', 'proxy:manage:proxy/8', 'account:test:group/*'])).toBe(
-      'Accounts · Edit: Created by them, cc-low #3; Accounts · Delete: cc-low #3 / #12 (deleted); Proxies · Manage: #8; Accounts · Test: group/*'
+      'Accounts · Edit: Their own, cc-low #3; Accounts · Delete: cc-low #3 / #12 (deleted); Proxies · Manage: #8; Accounts · Test: group/*'
     )
     expect(summary(['account:read', 'user:read'])).toBe('')
     i18n.global.locale.value = 'zh'
-    expect(labels().summary(['account:credential:view:own'])).toBe('账号 · 查看凭证：自己创建的')
+    expect(labels().summary(['account:credential:view:own', 'user:read:team'])).toBe('账号 · 查看凭证：自己的; 用户 · 查看：自己及下级的')
     i18n.global.locale.value = 'en'
   })
 })

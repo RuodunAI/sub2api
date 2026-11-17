@@ -2,21 +2,25 @@ package core
 
 import (
 	"database/sql/driver"
+	"slices"
 
 	"gorm.io/gorm"
 )
 
-// Scope is Cond and Args as a GORM scope: the same fixed text, so the plan
-// is shared with every other user of Cond, and each id list one array
-// parameter (int64s; GORM would expand a plain []int64).
+// Scope is the predicate of t for s as a GORM scope: the same fixed text
+// for every scope, so the plan is shared, each id list one array parameter
+// (int64s; GORM would expand a plain []int64), and the users below the
+// holders of a team (s.Teams) a subquery on UserTree's index.
 func (t ScopeTable) Scope(s DataScope) func(*gorm.DB) *gorm.DB {
-	cond, args := t.Cond(), t.Args(s)
-	for i, a := range args {
-		if ids, ok := a.([]int64); ok {
-			args[i] = int64s(ids)
+	anyGroup := slices.Contains(s.Groups, 0)
+	groups := slices.DeleteFunc(slices.Clone(s.Groups), func(g int64) bool { return g == 0 })
+	return func(db *gorm.DB) *gorm.DB {
+		args := []any{s.All, int64s(s.Owners), UserTree().Below(db, s.Teams...), int64s(s.IDs)}
+		if t.grouped {
+			args = append(args, anyGroup, int64s(groups), int64s(s.PairG), int64s(s.PairID))
 		}
+		return db.Where(t.cond(), args...)
 	}
-	return func(db *gorm.DB) *gorm.DB { return db.Where(cond, args...) }
 }
 
 // int64s is an id list as one bigint[] parameter, nil being the empty

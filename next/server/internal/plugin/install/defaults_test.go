@@ -74,7 +74,7 @@ func TestRoleGrantsPriority(t *testing.T) {
 			Defaults: map[string]manifest.RoleDefault{"admin": {Scopes: []string{"*"}}, "operator": {Scopes: []string{"own"}}}},
 	}}
 	defaults := map[string]map[string][]string{
-		"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}},
+		"growth:use": {"admin": {""}, "supplier_agent": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}},
 	}
 	cases := []struct {
 		name      string
@@ -87,9 +87,9 @@ func TestRoleGrantsPriority(t *testing.T) {
 		{"rename", nil, catalogPerms{"plugin.growth:growth:read": {}},
 			map[string]map[string][]string{"growth:use": {}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},
 		{"existing and revived", nil, catalogPerms{"plugin.growth:flow:manage": {}},
-			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {}}},
+			map[string]map[string][]string{"growth:use": {"admin": {""}, "supplier_agent": {""}, "user": {""}}, "growth:stats:read": {}, "flow:manage": {}}},
 		{"override", map[string]map[string][]string{"flow:manage": {"operator": {""}, "auditor": {"flow/3"}}, "growth:stats:read": {}}, nil,
-			map[string]map[string][]string{"growth:use": {"admin": {""}, "user": {""}}, "growth:stats:read": {},
+			map[string]map[string][]string{"growth:use": {"admin": {""}, "supplier_agent": {""}, "user": {""}}, "growth:stats:read": {},
 				"flow:manage": {"admin": {""}, "operator": {""}, "auditor": {"flow/3"}}}},
 		{"override of a rename", map[string]map[string][]string{"growth:use": {"auditor": {""}}}, catalogPerms{"plugin.growth:growth:read": {}},
 			map[string]map[string][]string{"growth:use": {"auditor": {""}}, "growth:stats:read": {}, "flow:manage": {"admin": {""}, "operator": {"own"}}}},

@@ -49,6 +49,21 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 		_ = nodes[i].engine.Heartbeat(ctx)
 		t.Logf("follower %s downloaded, prepared and admitted", nodes[i].engine.Node.ID)
 	}
+	// The bundled plugins roll out in the background once the cores are up;
+	// until that settles the snapshot below is a moving target and preflight
+	// refuses the update.
+	for deadline := time.Now().Add(3 * time.Minute); ; time.Sleep(200 * time.Millisecond) {
+		busy, e := store.PluginMutationBlockers(ctx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(busy) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bundled plugin rollout did not settle: %v", busy)
+		}
+	}
 	pluginSnapshot := func() string {
 		var raw string
 		if e := testDB.WithContext(ctx).Raw(`SELECT COALESCE(jsonb_agg(jsonb_build_object('key',key,'version',active_version,'status',status) ORDER BY key),'[]'::jsonb)::text FROM plugins`).Row().Scan(&raw); e != nil {

@@ -39,13 +39,13 @@ const row = {
 } as UsageRow
 const global = {
   plugins: [i18n],
-  stubs: { UsageDetail: { props: ['row', 'path', 'mine'], template: '<div data-testid="usage-detail" :data-mine="mine">{{ path }}</div>' } }
+  stubs: { UsageDetail: { props: ['row', 'path', 'view'], template: '<div data-testid="usage-detail" :data-view="view">{{ path }}</div>' } }
 }
 
 describe('usage records layout', () => {
   it('uses the SDK picker for desktop and mobile fields and persists separately for self-service', async () => {
     localStorage.clear()
-    const w = mount(UsageTable, { props: { rows: [row], columnSettingsKey: 'core.usage.all' }, global, attachTo: document.body })
+    const w = mount(UsageTable, { props: { view: 'all', rows: [row], columnSettingsKey: 'core.usage.all' }, global, attachTo: document.body })
     await w.get('[data-testid="table-column-settings"]').trigger('click')
     const ip = Array.from(document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]'))
       .find(button => button.textContent?.trim() === i18n.global.t('usage.request.clientIP'))!
@@ -53,15 +53,15 @@ describe('usage records layout', () => {
     await nextTick()
     expect(w.find('[data-testid="ip-address-filter"]').exists()).toBe(false)
     w.unmount()
-    const restored = mount(UsageTable, { props: { rows: [row], columnSettingsKey: 'core.usage.all' }, global })
+    const restored = mount(UsageTable, { props: { view: 'all', rows: [row], columnSettingsKey: 'core.usage.all' }, global })
     expect(restored.find('[data-testid="ip-address-filter"]').exists()).toBe(false)
-    const card = mountPinned(UsageTable, { props: { rows: [row], columnSettingsKey: 'core.usage.all' }, global })
+    const card = mountPinned(UsageTable, { props: { view: 'all', rows: [row], columnSettingsKey: 'core.usage.all' }, global })
     expect(card.get('[data-testid="mobile-usage-record"]').text()).not.toContain(row.client_ip)
-    const mine = mount(UsageTable, { props: { rows: [row], showUser: false, showAccount: false, columnSettingsKey: 'core.usage.self' }, global })
+    const mine = mount(UsageTable, { props: { view: 'all', rows: [row], showUser: false, showAccount: false, columnSettingsKey: 'core.usage.self' }, global })
     expect(mine.get('[data-testid="ip-address-filter"]').text()).toBe(row.client_ip)
   })
   it('keeps model, routing and error readable while preserving request-id filtering', async () => {
-    const w = mount(UsageTable, { props: { rows: [row], showClientRequestId: true }, global })
+    const w = mount(UsageTable, { props: { view: 'all', rows: [row], showClientRequestId: true }, global })
     expect(w.findAll('th').length).toBe(11)
     expect(w.text()).toContain(row.model)
     expect(w.text()).toContain(row.group_name)
@@ -82,7 +82,7 @@ describe('usage records layout', () => {
   it('marks a converted request with its grade, protocol chain and losses (CONVERT-MATRIX §7)', () => {
     i18n.global.locale.value = 'zh'
     const conversion = { v: 1, grade: 'fair', hops: ['anthropic.messages', 'openai.responses'], lost: { tool: ['tools[3]'] }, response_lost: { reasoning: ['response.output[0]'] } } as const
-    const w = mount(UsageTable, { props: { rows: [
+    const w = mount(UsageTable, { props: { view: 'all', rows: [
       { ...row, upstream_protocol: 'openai.responses', conversion },
       { ...row, id: 2, conversion: { v: 1, grade: 'local', hops: ['anthropic.count_tokens'] } },
       { ...row, id: 3, upstream_protocol: 'openai.chat' },
@@ -97,7 +97,7 @@ describe('usage records layout', () => {
     expect(w.findAll('tbody tr')[3].text()).not.toContain('转换')
   })
   it('shows the upstream account as "#id name" and filters by it on click', async () => {
-    const w = mount(UsageTable, { props: { rows: [row, { ...row, id: 2, account_id: null, account_name: '' }] }, global })
+    const w = mount(UsageTable, { props: { view: 'all', rows: [row, { ...row, id: 2, account_id: null, account_name: '' }] }, global })
     const accounts = w.findAll('[data-testid="usage-account"]')
     expect(accounts.length).toBe(1)
     expect(accounts[0].findAll('span').map(x => x.text()).filter(Boolean)).toEqual(['#9', 'Account nine'])
@@ -110,7 +110,7 @@ describe('usage records layout', () => {
       { ...row, platform: 'openai', protocol: 'openai.chat', upstream_protocol: 'anthropic.messages' },
       { ...row, id: 2, model: '', protocol: 'anthropic.count_tokens', upstream_protocol: 'local' }
     ] as UsageRow[]
-    const [converted, local] = mount(UsageTable, { props: { rows }, global }).findAll('tbody tr')
+    const [converted, local] = mount(UsageTable, { props: { view: 'all', rows }, global }).findAll('tbody tr')
     expect(converted.get('[data-testid="model-badge"] [data-brand]').attributes('data-brand')).toBe('anthropic')
     const account = converted.get('[data-testid="usage-account"]')
     expect(account.get('[data-platform]').attributes('data-platform')).toBe('anthropic')
@@ -119,17 +119,27 @@ describe('usage records layout', () => {
     expect(local.find('[data-testid="model-badge"]').exists()).toBe(false)
     expect(local.get('[data-testid="usage-account"]').find('[data-platform]').exists()).toBe(false)
     expect(local.get('[data-testid="usage-account"]').classes()).not.toContain('brand-tint')
-    const card = mountPinned(UsageTable, { props: { rows: rows.slice(0, 1) }, global }).get('[data-testid="mobile-usage-record"]')
+    const card = mountPinned(UsageTable, { props: { view: 'all', rows: rows.slice(0, 1) }, global }).get('[data-testid="mobile-usage-record"]')
     expect(card.get('[data-testid="model-badge"] [data-brand]').attributes('data-brand')).toBe('anthropic')
     expect(card.get('[data-platform]').attributes('data-platform')).toBe('anthropic')
   })
   it('keeps the account and its platform out of the self-service list', () => {
-    const w = mount(UsageTable, { props: { rows: [{ ...row, upstream_protocol: 'anthropic.messages' }], showUser: false, showAccount: false }, global })
+    const w = mount(UsageTable, { props: { view: 'all', rows: [{ ...row, upstream_protocol: 'anthropic.messages' }], showUser: false, showAccount: false }, global })
     expect(w.find('[data-testid="model-badge"]').exists()).toBe(true)
     expect(w.find('[data-platform]').exists()).toBe(false)
   })
+  it('shows the account view no API key or client, and the cost at the list price (CONTRACTS §103.5)', () => {
+    const w = mount(UsageTable, { props: { rows: [{ ...row, success: true, billing_status: undefined, total_cost: '777', standard_cost: '1.5' } as unknown as UsageRow], showUser: false, view: 'account' }, global })
+    expect(w.text()).not.toContain(i18n.global.t('usage.request.apiKey'))
+    expect(w.find('[data-testid="ip-address-filter"]').exists()).toBe(false)
+    expect(w.text()).toContain('1.5')
+    expect(w.text()).not.toContain('777')
+    expect(w.text()).toContain(i18n.global.t('usage.live.listPrice'))
+    expect(w.text()).not.toContain(i18n.global.t('usage.cols.cost'))
+    expect(w.get('[data-testid="usage-account"]').text()).toContain('Account nine')
+  })
   it('points at the upstream model only when the account mapped the request to another', () => {
-    const w = mount(UsageTable, { props: { rows: [
+    const w = mount(UsageTable, { props: { view: 'all', rows: [
       row,
       { ...row, id: 2, upstream_model: row.model },
       { ...row, id: 3, upstream_model: 'claude-opus-5-5-20261001' }
@@ -144,7 +154,7 @@ describe('usage records layout', () => {
     expect(badges[2].find('[title]').exists()).toBe(false)
   })
   it('loads owner-scoped mobile detail only when expanded and keeps admin fields hidden', async () => {
-    const w = mountPinned(UsageTable, { props: { rows: [row], showUser: false, showAccount: false, detailPath: id => `/me/usage/${id}` }, global })
+    const w = mountPinned(UsageTable, { props: { view: 'all', rows: [row], showUser: false, showAccount: false, detailPath: id => `/me/usage/${id}` }, global })
     expect(w.find('[data-testid="usage-detail"]').exists()).toBe(false)
     expect(w.text()).not.toContain('Account nine')
     expect(w.text()).not.toContain('#9')
@@ -153,7 +163,7 @@ describe('usage records layout', () => {
     await expand.trigger('click')
     expect(expand.attributes('aria-expanded')).toBe('true')
     expect(w.get('[data-testid="usage-detail"]').text()).toBe('/me/usage/1')
-    expect(w.get('[data-testid="usage-detail"]').attributes('data-mine')).toBe('false')
+    expect(w.get('[data-testid="usage-detail"]').attributes('data-view')).toBe('all')
     await expand.trigger('click')
     expect(w.find('[data-testid="usage-detail"]').exists()).toBe(false)
   })
@@ -163,18 +173,18 @@ describe('usage records layout', () => {
       { account_id: 16, status: 502, error_type: 'upstream_error', ms: 702, next: 'switch' },
       { account_id: 9, status: 200, ms: 2950 }
     ] } } as UsageRow
-    const [once, again] = mount(UsageTable, { props: { rows: [row, retried] }, global }).findAll('tbody tr')
+    const [once, again] = mount(UsageTable, { props: { view: 'all', rows: [row, retried] }, global }).findAll('tbody tr')
     expect(once.find('[data-testid="usage-retry-badge"]').exists()).toBe(false)
     expect(once.find('[data-testid="usage-attempt-chain"]').exists()).toBe(false)
     expect(again.get('[data-testid="usage-retry-badge"]').element.closest('td')?.querySelector('time')).not.toBeNull()
     const cell = again.get('[data-testid="usage-account"]').element.closest('td')!
     expect(cell.querySelector('[data-testid="usage-attempt-chain"]')?.textContent?.replace(/\s+/g, '')).toBe('#16×2→')
     // a user's own records: the badge, but no account column for the chain, and the detail told so
-    const mine = mountPinned(UsageTable, { props: { rows: [retried], showAccount: false, mine: true }, global })
+    const mine = mountPinned(UsageTable, { props: { rows: [retried], showAccount: false, view: 'self' }, global })
     expect(mine.find('[data-testid="usage-retry-badge"]').exists()).toBe(true)
     expect(mine.find('[data-testid="usage-attempt-chain"]').exists()).toBe(false)
     await mine.get('[data-testid="mobile-usage-record"] button[aria-expanded]').trigger('click')
-    expect(mine.get('[data-testid="usage-detail"]').attributes('data-mine')).toBe('true')
+    expect(mine.get('[data-testid="usage-detail"]').attributes('data-view')).toBe('self')
   })
   it('preserves cache-only usage on failed requests', () => {
     const w = mount(UsageTokens, { props: { row: { ...row, cache_read_tokens: 1234 } }, global })
@@ -188,7 +198,7 @@ describe('usage records layout', () => {
     expect(w.get('p').attributes('title')).toContain('model not allowed for this group')
   })
   it('shows a failed request as "status_code=…, message" in the detail column, whole text on hover', async () => {
-    const w = mount(UsageTable, { props: { rows: [row, { ...row, id: 2, success: true, status_code: 200, matched_tier: 'tier-a' }] }, global, attachTo: document.body })
+    const w = mount(UsageTable, { props: { view: 'all', rows: [row, { ...row, id: 2, success: true, status_code: 200, matched_tier: 'tier-a' }] }, global, attachTo: document.body })
     const texts = w.findAll('[data-testid="usage-error-text"]')
     expect(texts.map(x => x.text())).toEqual(['status_code=403, model not allowed for this group'])
     expect(texts[0].element.closest('td')).not.toBeNull()
@@ -197,7 +207,7 @@ describe('usage records layout', () => {
     expect(document.querySelector('[role="tooltip"]')?.textContent).toContain('status_code=403, model not allowed for this group')
   })
   it('shows each request as a card on a phone, with the same fields and filters', async () => {
-    const w = mountPinned(UsageTable, { props: { rows: [row], showClientRequestId: true }, global })
+    const w = mountPinned(UsageTable, { props: { view: 'all', rows: [row], showClientRequestId: true }, global })
     expect(w.find('table').exists()).toBe(false)
     const card = w.get('[data-testid="mobile-usage-record"]')
     expect(card.text()).toContain(row.model)

@@ -35,7 +35,7 @@ func TestUpdateInUseByOthers(t *testing.T) {
 	path := fmt.Sprintf("/proxies/%d", id)
 	account := func(name string, owner int64) {
 		t.Helper()
-		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, created_by)
+		if _, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, proxy_id, owner_id)
 			VALUES ($1, 'p', 't', '\x00', $2, $3)`, name, id, owner); err != nil {
 			t.Fatal(err)
 		}

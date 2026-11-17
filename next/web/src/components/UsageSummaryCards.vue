@@ -2,7 +2,8 @@
 // The four totals of a usage summary (one group_by=none row): requests with
 // the success rate, tokens split into input / output / cache, cost with the
 // list price when a group multiplier changed it (and the estimated part), and
-// the average duration with the first token.
+// the average duration with the first token. `costLabel` renames the cost (the
+// account view's list price).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SGrid, SStatCard } from '@sub2api/ui'
@@ -10,7 +11,7 @@ import type { UsageSummaryRow } from '@/api/types'
 import { formatMoney, formatNumber, formatPercent } from '@/utils/format'
 import { formatMs, formatTokens, num, rowTokens } from './stats/stats'
 
-const props = defineProps<{ totals: UsageSummaryRow | null; loading?: boolean }>()
+const props = defineProps<{ totals: UsageSummaryRow | null; loading?: boolean; costLabel?: string }>()
 const { t } = useI18n()
 
 const v = computed(() => {
@@ -54,7 +55,7 @@ const v = computed(() => {
       :loading="loading"
     />
     <SStatCard
-      :label="t('stats.cards.cost')"
+      :label="costLabel ?? t('stats.cards.cost')"
       :value="formatMoney(v.cost, 2)"
       :sub="v.standard !== null ? t('stats.cards.standard', { cost: formatMoney(v.standard, 2) }) : undefined"
       :sub2="v.estimated ? t('stats.cards.estimated', { cost: formatMoney(v.estimated, 2) }) : undefined"

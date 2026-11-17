@@ -97,6 +97,15 @@ export default {
   proxy: '代理',
   proxyRequired: '此账号类型必须配置代理',
   createdBy: '创建人',
+  owner: '所属',
+  onlySubordinates: '只看下级的',
+  ownerChange: {
+    action: '更改所属',
+    title: '更改 {name} 的所属',
+    hint: '所属决定谁能按“自己的”“自己及下级的”权限看到和管理这个账号；创建人不变。',
+    done: '所属已更改',
+    notFound: '用户不存在或已删除'
+  },
   proxyPickExisting: '选择已有',
   proxyPasteUrl: '粘贴代理串',
   groupsLocked: '修改分组需要 group:manage 或 account:group:bind 权限。',

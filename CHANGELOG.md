@@ -2,13 +2,60 @@
 
 记录 next 平台（`next/`）发布到线上的版本，从 2026-11-04 开始，更早的版本见部署记录。日期是北京时间。部署细节、核验和回滚方式见 [OVH 部署记录](next/deploy/gateway/ovh/README.md) 和 [clicodeplus 部署记录](next/deploy/gateway/clicodeplus/README.md)。
 
-每次发布在最前面加一节，写清版本、提交和用户能看到的变化。版本有三条线：核心、网关（外壳）、插件（如 moderation）。
+每次发布在最前面加一节，写清版本、提交和用户能看到的变化。版本有三条线：核心、网关（外壳）、插件（如 moderation）。核心与网关由 tag `core-v<版本>`、`gateway-v<版本>` 触发 GitHub Actions 发布，Release 说明取标题里写着“核心 <版本>”或“网关 <版本>”的那个 `###` 小节，所以打 tag 前先写好这一节（格式见 `next/deploy/gateway/github/README.md`）。
 
 ## 未发布
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
 ## 2026-11-17
+
+### 核心 0.1.292：代理供应商、team 范围、账号所属（`e3f5d36aa`，迁移 0103，primary-first 停服；网关保持 0.1.135，内置插件与 0.1.291 相同）
+
+- **上线**：北京时间 15:09:58–15:11:03，计划 `09029830db9caf041b0e90f3e5917920` primary-first-v1 completed（清单 `54bc00a9…a682`，maintenance）；**停服约 10 秒**（`/readyz` 503：api.prophey.ai 15:10:12.9→15:10:23.0，ovh 3130 15:10:12.7→15:10:22.7）；迁移 0103 于 15:10:17 应用，schema `d78ba831…333c` → `ab35f2f6…187d`。new-api 渠道 392 没有关（用户在决策卡上选“发布，不关 392”），不备份数据库。升级前预检 ①②③ 都干净：没有 key 为 `supplier_agent` 的自定义角色，没有能分配供应商的自定义角色，user、supplier 的核心授予与默认值相同（supplier 由升级补上 `usage:account:read:own`）。5xx：发布前 14:40–15:09:58 共 2496 次 0 个，计划期间 42 次 0 个（15 个 499 是停服时客户端断开），之后 0 个。核验：两节点核心 0.1.292；`schema_migrations` 有 `0103_user_owner.sql`；内置角色 `supplier_agent` 已建（20 条核心授予，含 `account:read:team`、`usage:account:read:team`、`user:read/create/update:team`）；129 个账号的 `owner_id` 全部回填（空值 0，`created_by` 本来就没有空的）；9 个内置插件不变。**回滚**：不能回退（网关拒绝跨 schema，0.1.291 也拒绝带 0103 记录的库），线上出问题修复前进。
+契约见 CONTRACTS §103。
+
+- **账号所属**：账号新增“所属”（`accounts.owner_id`），表示账号属于哪个用户。新建时就是创建者，管理员可以用 `PUT /accounts/:id/owner` 改成别的用户（新权限 `account:owner:update`，admin 自动获得，operator、供应商没有；审计 `account.owner`）。“创建者”只记录谁建的，不再决定归属：供应商的“自己的账号”、账号列表“只看我的”、管理员停用锁定、插件账号路由都改按所属判断，管理员把账号改给别人后，原创建者就看不到、改不了它。账号 JSON 加 `owner_id`、`owner_email`，列表可按 `owner_id=` 筛选。代理不变，仍按创建者。
+- **新角色“代理供应商”（`supplier_agent`）**：普通用户和供应商的全部能力（只给这一个角色就够；插件权限：升级时取普通用户、供应商两个角色当时实际持有的插件授予，同意页去掉的、待复核的不给，之后新装的插件按 manifest 给普通用户、供应商的默认值一并给它），加上管理挂在自己名下的用户（下级，最多 8 层，含已删除的用户）：读、建、改下级用户并给他们分配供应商或代理供应商角色，只读下级的账号（不能改、测、看凭证，看不到下级的代理）和这些账号的使用记录。不能删除用户、重置密码。admin 和超管能分配它，operator 不能（也就不能修改、停用持有它的用户）。
+- **新权限范围 `team`**（“自己及下级”）：`account:*`、`proxy:*`、`usage:account:read`、`user:read/create/update` 可带 `:team`（`account:create` 不行）；`user:read/create/update` 只接受全部与 team。下级是上级关系下的整棵子树（链最多 8 层）、含已删除的用户：每个用户存着自己的上级路径（`users.owner_path`），“A 的下级”就是路径含 A 的用户，由每条查询自己用一条走 GIN 索引的子查询读出，不缓存、不预先展开，改上级提交后各节点的权限判断、列表与详情立即生效（账号侧概览与汇总除外，见下文“账号侧使用记录”）。只有 team 范围用户权限的人只能管理（改资料、分配角色）自己的下级，不能对自己或别人操作。
+- **新权限 `usage:account:read`**（敏感，看范围内账号服务过的请求，只给白名单字段）：供应商默认 `:own`（`rev` 2，有人持有的只补缺），operator 默认全部。侧栏新增“账号用量概览”“账号日志”，持有全站使用记录权限的人（admin、operator、超管）只看到全站的两项。
+- **账号侧使用记录**：新接口 `/account-usage`（列表、`/summary`、`/overview`、`/realtime`、`/export`、`/:id`），给持有 `usage:account:read` 的人看自己范围内的账号（含已删除的账号）服务过的请求。只返回白名单字段：没有用户、API 密钥、分组、IP、收费金额（只有原价 `standard_cost`）、错误详情；调用链里范围外的账号只显示编号；用户、密钥、分组、IP 等筛选和分组一律 400 `not_allowed`。概览和汇总按调用者的范围在每个节点的进程里缓存，改用户上级或账号所属不让缓存失效，这两项在各节点上最多滞后 30 秒；列表、详情、导出与权限判断立即生效。`/usage` 不变。
+- **用户的上级**（`users.owner_id`）：用户 JSON 加 `owner_id`、`owner_email`（上级已删除时仍显示邮箱）。新建、修改用户可传 `owner_id`（`0` 为无）：管理员可以指定任何人或无；代理供应商只能挂在自己名下，不传时也是自己。用户列表、详情、修改和实体查找（`/lookup/users`）都按调用者的范围：代理供应商只看得到、改得了下级，别的用户（包括自己）一律 404；列表新增筛选 `owner_id=<id>|none` 和 `direct=true`（只看直属下级）。上级不能是自己或自己的下级，链最多 8 层（含已删除的用户），上级必须按角色管得了该用户（否则 400 `owner_cannot_manage`，之后给该用户加上级管不了的角色，或改角色的权限、可分配清单、恢复默认使某个上级管不了它的下级，也一样拒绝，字段是 `permission_keys`、`role_keys` 或插件矩阵的 `roles.<角色>`）；改上级时操作者要管得了新旧上级以及它们之上的每一级（自己和自己之上的除外），所以 operator 不能借供应商把用户挪进或挪出代理供应商的下级；改上级时连同该用户下面整棵子树的路径一起在同一事务里改写，并发的两次改动不会成环；有下级的用户不能被硬删除（外键，用户本来只软删除）；代理供应商指定别人当上级一律 403，不会因用户是否存在而得到不同的回答；改上级审计 `user.owner`。
+- **控制台**：权限选择器加“自己及下级的”（只在权限接受 team 时出现；用户权限只有“全部”和它）。用户列表加“所属”列和所属筛选，team 范围的人多一个“仅直属”；能管全部用户的人新建、编辑用户时可以指定所属，team 范围的人新建的用户归自己；新建用户总是明确提交角色：权限覆盖“用户”角色时默认勾选它（服务端允许任何创建者给无角色的新用户这个角色），team 范围的人再默认勾选可分配的“供应商”，勾选“供应商”时带上“用户”，不会退而默认勾选别的角色；只有 team 范围的人看不到删除和重置密码。账号列表加“所属”列（全部与 team 范围的人可见）和所属筛选，team 范围的人多一个“只看下级的”；有 `account:owner:update` 的人在账号操作里“更改所属”；“创建者”列与筛选照旧只给全部范围的人；持有 team 范围操作权限（如自定义角色的 `account:update:team`）的人在列表里下级的账号上也能看到对应操作，由服务端判断。新菜单“账号用量概览”“账号日志”（`/account-usage`，有 `usage:account:read`、没有 `usage:all:read` 的人可见）：按账号统计，账号名取自记录（已删除的账号也有名字），只显示白名单字段，费用按标准价（日志的统计条只有一项“原价”），没有用户、密钥、分组、IP 与计费信息。`/account-usage` 是新的控制台页面根，插件的 GET / HEAD 网关端点不能以它开头（`manifest.ConsoleSegments`）。
+- **插件 SDK 新包 `sdk/hierarchy`**：在插件自己的表上存树（层级）：表按约定有父列和 `bigint[]` 路径列（GIN 索引），`Tree.Move` 在一个事务里检查自己、成环、找不到与最大深度并改写整棵子树的路径（锁住所涉两棵树的根行，同一棵树的移动依次进行），`Ancestors` 读路径，`Below` 是“某些节点之下的行”的子查询。核心的用户上级是它的第一个使用者；它不读核心的用户树，Host API 不变（CONTRACTS §2“插件数据库”、§103.2）。
+- **`sub2api dev` 的内存 Redis 按时过期键**：进程内 miniredis 原来从不推进时钟，带 TTL 的键（冷却、会话、并发槽位、锁）永远不到期，账号冷却后一直不被调度。现在每 100ms 按墙钟推进一次（CONTRACTS §47）。单机 e2e 的 `TestGatewayFailoverAndCooldown` 因此能等到冷却结束；它对 401 之后状态的旧断言（`disabled`/`error`）一并改为 `auto_disabled`（§42）。e2e AC23 去掉供应商建账号时传的分组（供应商没有 `account:group:bind`），own 范围下 `created_by` 的断言改为“在范围内收窄”（§21.0）。
+- **修复**：不是全部范围的人建、改、测账号带 `proxy_id` 时，读不到它可引用的代理范围（授权读库失败）原来当作没有代理，回 400 `proxy_id` `not_found`，现在回 503（CONTRACTS §103.2）。
+- 更新检测结果的原因按代码显示中文/英文：`GET /system/update-check` 每条线新增 `reason_code`（`no_release`、`version_conflict`、`incompatible`，契约 §102），控制台不再直接显示“the update source has no stable … release”之类的英文原文。网关二进制变更，随下一个网关版本生效；网关 0.1.135 不带该字段，控制台照旧显示它的英文原因。
+- 网关内置官方发布公钥 `sup2api-ovh-2026`（`next/gateway/internal/release/trusted/sup2api-ovh-2026.pub`，线上核心清单一直用它签名、节点 `trusted_keys` 已信任它）：GitHub Actions 发布的核心与网关 Release 用同一把密钥签名，带这个文件的网关不配置 `trusted_keys` 也能验签。
+
+**迁移 0103**（`0103_user_owner.sql`，可重跑，只加列、约束和索引）：`users.owner_id`（外键、不能指向自己、部分索引）、`users.owner_path`（`bigint[] NOT NULL DEFAULT '{}'`，按 `owner_id` 递归算出已有行的路径，只改不同的行，重跑结果相同；最后一个必须等于 `owner_id` 的约束；GIN 索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
+
+**发布**：核心 0.1.292 带迁移 0103，走 `primary-first-v1`：旧核心建账号不写 `owner_id`，迁移之后不能再有旧核心建账号，所以不用滚动升级。0103 只加列、约束、索引，算出用户的上级路径（线上还没有上级，全是空路径）并回填 `accounts.owner_id = created_by`（只填空的，重跑不改已改过的所属，也不改账号的其他列和额度快照）；5 万用户、2 万账号的合成库上整个迁移约 0.36 秒（几乎都是回填），用户路径的计算、约束与 GIN 索引在 5 万用户上另加约 0.06 秒，已迁移的库重跑约 10 毫秒。**升级前预检**（在主库上执行，任何一项有结果先处理再建升级计划）：① `SELECT id, key FROM roles WHERE key = 'supplier_agent' AND NOT builtin;` 有行时，新核心在迁移之后启动同步失败（`builtinKeyConflict`，日志给出改名 SQL），主节点起不来、集群停在维护：先在线上改名，`BEGIN; UPDATE authz_meta SET version = version + 1, policy_version = policy_version + 1 WHERE id = 1; UPDATE casbin_rule SET v0 = 'r:supplier_agent_custom' WHERE ptype = 'p' AND v0 = 'r:supplier_agent'; UPDATE casbin_rule SET v1 = 'r:supplier_agent_custom' WHERE ptype = 'g' AND v1 = 'r:supplier_agent'; UPDATE roles SET key = 'supplier_agent_custom' WHERE id = <id>; COMMIT;`（授予与持有者跟着走；已经卡在维护时同样改名后 `sub2api-gateway resume`）；② `SELECT r.key FROM roles r JOIN role_assignable_roles ra ON ra.role_id = r.id JOIN roles s ON s.id = ra.assignable_role_id WHERE s.key = 'supplier' AND NOT r.builtin;` 列出能分配供应商的自定义角色：升级后 supplier 多了 `usage:account:read:own`（`rev` 2），持有这些角色的人自己没有它就不能再分配、管理供应商（`within`），要给该角色加 `usage:account:read:own`（admin、operator 已自带）；③ user、supplier 角色的核心授予与默认值不同时：supplier 有人持有，升级时补回缺少的全部默认权限（包括管理员删掉的，审计 `authz.sync.grant` `defaults_rev = 2`），多出的授予保留；代理供应商的核心权限按代码默认值，持有者的授予超出它（user、supplier 多出的权限或别的角色）时代理管不了这些用户（403 `missing`），需要时给 supplier_agent 加上同样的权限。**回退**：托管部署不能经升级计划回到 0.1.291（网关拒绝跨 schema），0.1.291 核心也拒绝带 0103 记录的库（`database includes migrations unknown to this core`），线上出问题修复前进。非托管部署实测 0.1.291 能在迁移过 0103 的库上照常运行（新列可空或有默认值，旧核心建用户不碰上级，按 `created_by` 判断，改过所属的账号回到创建者名下）；这期间旧核心新建的账号 `owner_id` 为空，再升到 0.1.292 前删掉 `schema_migrations` 里的 `0103_user_owner.sql`，启动时重跑 0103 补上。
+
+### 核心 0.1.291 + 网关 0.1.135：删除为网关 0.1.133 与回退到 0.1.288 保留的代码，修正升级预检误报（`a0eac3c38`，滚动；无核心迁移，内置插件与 0.1.290 相同）
+
+0.1.290 已在所有节点上线（核心 0.1.290、网关外壳 0.1.134），升级前的备份已删除，不能再回到 0.1.288。按“迁移完成后不留兼容代码”，删除只为外壳 0.1.133、核心 0.1.288 和这次回退保留的部分（CONTRACTS §101.3）。
+
+- **上线**：北京时间 03:55:33–03:58:27。核心：计划 `8041bf318cb8884029391dee3061d87f` rolling-v1 completed（清单 `5a0fff61…3824`，03:55:33→03:56:41，先 ccp 后 ovh），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200。网关：镜像 `sup2api-gateway:0.1.135` 逐个节点手动更换（先从节点 ccp 03:57:15–03:57:53，再主节点 ovh 03:58:10–03:58:27），每个节点先 `sub2api-gateway yield` 等 `/readyz` 503 且在途请求为 0 再重建容器；两节点 `updater.nodes.gateway_version` = 0.1.135、`self_update` = true。
+- new-api 渠道 392 没有关（滚动发布，用户 11-12 要求）；不备份数据库。03:30–04:08 的请求 5xx 为 0（发布前 243 次、滚动与换网关期间 17 次、之后到 04:08 共 45 次）。
+- 首次更新检测（03:59:27，默认来源 GitHub `Sub2API-Devs/sup2api`）两条线都返回“the update source has no stable core/gateway release”：还没有 `core-v*`、`gateway-v*` Release，节点也没有发布流水线的公钥，属预期。
+- 回滚：核心用 0.1.290 清单 `8823ac9e…bb32` 建 rolling 计划（schema 相同）；网关把节点 `.env` 的 `GATEWAY_IMAGE` 改回 `sup2api-gateway:0.1.134` 后同样先让出再重建（0.1.134 启动时把空的 `cpu_percent` 列加回来，不影响服务）。部署细节见 [OVH 部署记录](next/deploy/gateway/ovh/README.md)。
+
+- **托管核心必须有管理 socket 令牌**：`SUB2API_MANAGED=true` 时没有 `SUB2API_UPDATER_TOKEN_FILE`、文件读不到或内容不是 64 位十六进制，核心启动失败；转发升级接口与插件包读写总是带令牌，不再有“没有令牌就不带”的分支。非托管核心既不读这个变量也不读 `UPDATER_SOCKET`：升级接口返回 503 `updater_unavailable`，插件包存本地目录。线上的外壳 0.1.134（以及之前的 0.1.133）总是传这个变量并在启动核心前写好令牌文件，不需要改配置。
+- **核心不再声明 `drain.graceful`**：`runtimecontract.Hello` 去掉 `capabilities` 与 `CapabilityGracefulDrain`，只有外壳 0.1.133 看它。`DrainRequest.graceful` 照旧：外壳 0.1.134 起按需要发送，核心照样让在途请求跑完。
+- **网关外壳 schema 删除 `updater.nodes.cpu_percent`**（`DROP COLUMN IF EXISTS`）：只有外壳 0.1.133 读写这一列，0.1.134 不读。外壳启动核心时总是传令牌文件路径，不再判断它是否为空。
+- **删除 0.1.290 的发布与回退手册**：`next/deploy/rollback/0.1.290-release.md`、`0.1.290-casbin-down.md/.sql`、`0.1.290-session-down.md`、`0.1.290-effective-permissions.sql` 只服务那次已完成的单向升级，删除（原文用 `git show 91e0c26bc:next/deploy/rollback/<文件名>` 读取）；只为它们存在的测试 `TestEffectivePermissionsScript`、`TestCasbinRuleOneWay` 与从 0.1.288 升级的 `TestManagedUpgradeFromProductionResumesWithTheSamePermit` 一并删除，后者固定的线上 schema 契约改为 0.1.290 的（迁移到 0102，`d78ba831…333c`，`TestReleasedMigrationsKeepTheProductionSchema`）。回到 0.1.285 的 `0.1.286-authz-down.md/.sql` 与 `TestAuthzHardeningRollback` 同样不再适用，一并删除，`next/deploy/rollback/` 现在为空（下一次单向发布再建）。已应用的迁移 0097、0098、0100–0102 的注释里仍写着这些文件名（迁移文件不能再改）。
+- `next/deploy/gateway/.env.example` 去掉外壳 0.1.134 起不再读取的 `SUB2API_ALLOW_TOKENLESS_MANAGEMENT`。
+- **rolling-v1 不再检查节点的 `rolling` 标记**（网关）：外壳 0.1.133 起都登记 `rolling=true`，资格只看签名策略、schema 不变与至少两个节点在服务。0.1.135 照常写 true、不再读；列保留，换外壳期间的 0.1.134 协调者还读它。
+- **升级预检不再把刚启动的托管核心当成未托管**（网关）：预检、回退到基线和迁移屏障共用的“未托管核心”检查用心跳缓存的节点目录核对 Redis 里的核心登记，而这份快照早于本节点这次心跳写入的新 `core_boot_id`，核心重启后可能要再过一个心跳才不误报 `unmanaged or unrecognized active core`。改为从 PG 读启用节点的 `core_boot_id`；核心在 Redis 登记后、外壳下一次心跳前仍会被报出，误报不超过一个心跳（外壳 0.1.132 起有这个问题）。
+- **真实核心测试 `TestRealCore*` 恢复可跑**：harness 给核心传它实际读取的 `DATABASE_URL`/`REDIS_URL`（原来是核心不读的 `SUB2API_` 前缀名）；清理测试库时一并删除核心为它建的插件数据库角色（角色属于整个 PostgreSQL 集群，留下来下一个测试装内置插件会 `plugin_db_role_conflict`）；滚动升级测试等内置插件 rollout 结束再预检；测试 API 客户端遇到 `verification_required` 用密码完成二次验证后重发；Responses WebSocket 测试按“优先级越大越先用”（2026-11-09 起）让被拒的账号先被选中；核心监听端口选在内核临时端口范围之下，避免被测试自己的出站连接占用；`next/deploy/ci/check.sh` 构建的两个测试核心改为 0.1.900/0.1.901，落在内置插件 `hostCompat`（`>=0.1.290 <0.2.0`）里。
+- 发布流水线：核心与网关改由 GitHub Actions（`.github/workflows/next-release.yml`）按 `core-v*`、`gateway-v*` tag 构建 linux/amd64 与 linux/arm64、在受保护环境 `release` 里签名、先草稿后发布 GitHub Release；网关另推多架构镜像 `ghcr.io/<owner>/sup2api-gateway`。`sub2api-release` 新增 `pack --platform`（多平台一个清单）、`pack-gateway`、`mirror`、`pubkey`；删除 `deploy/gateway/github/prepare-assets.py`。
+- 版本检测与一键更新（网关与核心同版发布；契约 CONTRACTS §102）：网关从更新源检测核心与网关两条线的新稳定版，控制台“版本与更新”面板分两条线显示，管理员点“一键更新”后导入验签过的发布、预检并建升级计划，从不自动升级。更新源在“设置 → 在线更新”：GitHub 仓库（默认 `Sub2API-Devs/sup2api`，私有仓库可填只读令牌）或带 `releases.json` 索引的 HTTPS 目录（可选 Bearer 密钥）；密钥只在把来源标为私有后填写（GitHub 来源旁有“在 GitHub 创建令牌”链接，打开预填好只读 Contents 权限、不过期的细粒度令牌页面），只写不读，用 `SUB2API_MASTER_KEY` 加密保存，只发给 `api.github.com` 或该目录的源站。网关一键更新用新计划策略 `gateway-rolling-v1`（逐个节点换网关二进制，核心不变；已是目标版本的节点不进计划、照常服务；单节点约 10 秒中断，需确认），可回滚（`gateway-rollback-v1`）。预检阻断项与确认原因按代码显示中文或英文说明。
+  - 接口：新增 `POST /system/updates/apply`（`system:update:execute` + 二次验证）；`PUT /system/update-source` 改为整体替换 `{enabled, kind, repository, url, secret?}`；`GET /system/update-check` 返回 `core`、`gateway` 两条线。`PUT` 响应带 `changed`、`secret_change`，什么都没改时不写审计；预检与一键更新的阻断项、确认原因另带代码（`blocker_codes`、`reason_codes`）。核心转发 `update-check` 与一键更新时最多等 4 分钟（其他升级接口 60 秒）。删除 `POST /system/releases/import` 与审计 `system.release.import`，新增审计 `system.update.apply`。GitHub 来源翻页读最新 500 个 Release。只认 `core-v*`、`gateway-v*` tag 的 Release，不再读 `v*` tag 的 `releases/latest`。
+  - 网关 schema（启动时幂等追加，无核心迁移）：`updater.clusters` 加检测开关（默认打开）、来源类型、URL、加密密钥列，原来表示“关闭”的空 `update_repository` 改成默认仓库，所以换上本版网关后所有集群都开始检测，不想检测要在设置里关掉；新表 `updater.update_checks`；`updater.nodes` 加 `gateway_version`、`self_update`；`updater.releases` 加 `line`、`source_assets`、`source_locator`：下载时按导入时的来源定位校验，开关检测、重存令牌不影响进行中的计划，改了仓库或 URL 后之前导入的发布要重新一键更新。
+  - 网关：新子命令 `sub2api-gateway version`；新配置 `allow_private_update_sources`（`url` 来源允许内网地址）；已安装的网关放在 `<root>/gateway/<版本>/`，`<root>/gateway/current` 指定启动哪一版（换了更新的镜像时镜像自带的版本优先，只记 INFO）。第一次换上本版网关仍按镜像手动换；之后各节点都报告版本并能自更新时才出现网关的一键更新。`release_origin` 与 `import -manifest` 保留给离线发布。
+
+**发布**：两条线互不依赖，顺序不限。核心 0.1.291 没有迁移，可以在外壳 0.1.134 下走 `rolling-v1`；外壳 0.1.134 照常发 `graceful`、传令牌文件。网关 0.1.135 按部署记录逐个节点更换，它照常驱动核心 0.1.290（外壳不检查 `capabilities`，多出的字段忽略）；换外壳期间 0.1.134 重启时会把空的 `cpu_percent` 加回来，之后的 0.1.135 启动时再删掉，都不影响服务。
 
 ### 核心 0.1.290 + 插件 + 网关 0.1.134：插件权限声明、Casbin 权限存储、Valkey 控制台会话、GORM、删除 CCGateway（`e3906cc68`，迁移 0099–0102，单向，停服发布，所有人重新登录）
 
@@ -18,9 +65,9 @@
 - 发布前在 11-16 22:10 的生产副本上完整演练（迁移 0.8 秒、0102 重跑不变、全套冒烟通过）。部署细节见 OVH 部署记录。
 
 
-一个发布单元，从线上 0.1.288（schema 0098）直接升级，四个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**。全部内置插件的 `hostCompat` 都是 `>=0.1.290 <0.2.0`；清单检查不再按用到的功能核对 `hostCompat`/`hostUICompat` 的核心下限，SDK 也不再为旧核心降级或报 `Unimplemented`（0.1.290 之前的核心不会与它同时运行）。步骤见 `next/deploy/rollback/0.1.290-release.md`。
+一个发布单元，从线上 0.1.288（schema 0098）直接升级，四个迁移在同一次升级里依次执行。插件权限这部分开发时按 0.1.289 规划，**0.1.289 没有单独发布**。全部内置插件的 `hostCompat` 都是 `>=0.1.290 <0.2.0`；清单检查不再按用到的功能核对 `hostCompat`/`hostUICompat` 的核心下限，SDK 也不再为旧核心降级或报 `Unimplemented`（0.1.290 之前的核心不会与它同时运行）。步骤见当时的发布手册（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）。
 
-**发布**：单向，停服。发布前在生产副本上演练，用 `0.1.290-effective-permissions.sql` 逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0102 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。事务级 advisory 锁的 id 全部换了（见下文“数据库访问改用 GORM”），新旧核心同时运行时彼此不互斥，所以只能停服升级：0.1.288 与 0.1.290 的核心任何时候都不能同时连着同一个库。
+**发布**：单向，停服。发布前在生产副本上演练，用当时的 `0.1.290-effective-permissions.sql`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-effective-permissions.sql`）逐个用户比较升级前后的有效权限，结果必须完全相同。托管部署在建升级计划**之前**备份整个数据库，然后建 `primary-first-v1` 计划：各从节点先把入口转发到主节点再停掉核心，主节点最后进入维护（停服从这里开始）、停掉旧核心，带迁移许可启动新版本，执行 0099–0102 并恢复服务（停服到这里结束），最后从节点启动新版本。计划从停从节点到迁移之间不停顿，备份之后、维护开始之前的写入在回退时会丢失。非托管部署先停掉全部节点（顺序不限），再备份，然后启动一个节点执行迁移，再启动其余节点。上一版签发的登录全部作废，所有人重新登录。事务级 advisory 锁的 id 全部换了（见下文“数据库访问改用 GORM”），新旧核心同时运行时彼此不互斥，所以只能停服升级：0.1.288 与 0.1.290 的核心任何时候都不能同时连着同一个库。
 
 **升级停在中途**（例如 0100 因为多个超管被拒，此时 0099 已提交）：托管部署里 0.1.288 和 0.1.290 都不在这个库上提供服务，集群停在维护状态；按报错修复数据后，用同一个计划继续（`sub2api-gateway resume`），或者从备份恢复。
 
@@ -70,7 +117,7 @@
 - **范围授予只能点名存在的行**：给角色新增 `group/G`、`account/X`、`proxy/X` 范围时，对应的分组、账号（未删除）、代理须存在，否则 400 `invalid_argument`（字段错误码 `unknown_scope`）；删除它们时的授予清理先加授权锁，不会漏掉同时提交的授予，并由权限服务自己广播。
 - **行为变化**：启动时发现自定义角色占用内置角色 key，报错给出的改名 SQL 改为一条同时改 `casbin_rule` 的语句（直接 `UPDATE roles SET key` 会让该角色的授予和指派失效）。`sub2api admin` 只在已迁移到本版本 schema 的库上执行；0100 因多个超管停止时，用 0.1.288 的 `sub2api admin recover-superadmin` 保留一个。
 
-迁移前的自检、迁移后的核对 SQL 见 `next/deploy/rollback/0.1.290-casbin-down.md`。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
+迁移前的自检、迁移后的核对 SQL 见当时的 `0.1.290-casbin-down.md`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-casbin-down.md`）。应用过任何发布前构建的 0099、0100 或 0101 的开发、预发库都要重建，或恢复到 0098 的备份后再升级。
 
 #### 控制台会话改为 Valkey 令牌，删除 JWT（迁移 0101）
 
@@ -87,7 +134,7 @@
 - **单机部署的 Valkey 开启 AOF**（`deploy/single`，`--appendonly yes --appendfsync everysec`，新数据卷 `redisdata`）：会话只在 Valkey，没有持久化时 Valkey 一重启所有人被登出且没有告警。从 valkey 换到 redis 镜像时先删掉这个卷。
 - **可用性修正**：Valkey 内存满拒绝写入时，续期失败不再让已经通过鉴权的请求 503；请求恰好落在“撤销其他会话/改自己的密码”中间时，不再把刚保留的当前会话删掉；节点漏收“重新启用用户”的广播时，不再删掉重新启用后的新登录。
 
-会话部分的说明见 `next/deploy/rollback/0.1.290-session-down.md`。
+会话部分的说明见当时的 `0.1.290-session-down.md`（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-session-down.md`）。
 
 #### 数据库访问改用 GORM
 
@@ -123,7 +170,7 @@
   - **保留**：`plugin_key = 'ccgateway'` 的账号（线上 104 个，都已软删除）及它们的分组关系、使用记录、余额流水和审计日志；插件的执行记录、历史与出口日志（卸载任何插件都保留）。账号在控制台显示为插件已卸载，需要时由管理员删除；使用记录照常读出。
 - **不能再安装**：`ccgateway` 列入已删除插件键，任何来源、任何签名的包都装不上（403 `plugin_key_reserved`）；官方签名的 0.1.133 包的 `hostCompat` 覆盖 0.1.290，没有这一条就能装回来，但核心一侧已经没有它需要的部分。
 - **插件包上限**：从 1 GiB（压缩）/ 2 GiB（解包）降到 64 MiB / 256 MiB（另限 2000 个文件），约为现在最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）的 4 倍；核心（`SUB2API_PLUGIN_MAX_PACKAGE_BYTES` 的默认值）、网关外壳（`plugin_max_bytes` 的默认值）与打包工具共用 `runtime-contract` 里的同一组常量。包下载、经外壳的传输与外壳从其他节点拉包的超时从 30 分钟降到 10 分钟（`runtime-contract` 的 `PluginPackageTransferTimeout`）。
-- **发布前**：在生产副本上执行 `next/deploy/rollback/0.1.290-release.md` 的只读核对，记下各项行数。**发布后**（需要用户同意）：停止并删除 ovh 上的 `ccg-controller`、`ccg-guard`、`ccg-state`、`ccg-shared-egress` 容器，步骤同一文件。
+- **发布前**：在生产副本上执行发布手册（已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）的只读核对，记下各项行数。**发布后**（需要用户同意）：停止并删除 ovh 上的 `ccg-controller`、`ccg-guard`、`ccg-state`、`ccg-shared-egress` 容器，步骤同一文件。
 
 #### 删除旧版本兼容
 

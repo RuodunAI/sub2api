@@ -1,0 +1,5 @@
+-- sql
+SELECT count(*) FROM "users" WHERE id = ANY($1) AND id IN (SELECT "id" FROM "users" WHERE "owner_path" && $2)
+-- vars
+$1 store.Int64s [9 11]
+$2 gormpg.Array[int64] [7]

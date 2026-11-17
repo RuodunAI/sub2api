@@ -17,10 +17,10 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
@@ -167,6 +167,8 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("GET", "/accounts/:id", s.get, perm.AccountRead)
 	r.PermScoped("PATCH", "/accounts/:id", s.update, perm.AccountUpdate).Uses(fieldKeys...)
 	r.PermScoped("DELETE", "/accounts/:id", s.delete, perm.AccountDelete)
+	// 所属: an administrator moves an account to another owner (CONTRACTS §103).
+	r.Perm("PUT", "/accounts/:id/owner", perm.AccountOwnerUpdate, s.putOwner)
 	r.PermScoped("POST", "/accounts/:id/test", s.test, perm.AccountTest)
 	r.PermScoped("POST", "/accounts/:id/models/fetch", s.fetchAccountModels, perm.AccountTest).Uses(perm.AccountRelay)
 	r.PermScoped("POST", "/account-types/:plugin_key/:type/models/fetch", s.fetchTypeModels, perm.AccountCreate).Uses(perm.AccountRelay)
@@ -369,16 +371,6 @@ func (s *Service) AccountsInScope(ctx context.Context, userID int64, action stri
 // liveInScope is the live accounts of ids in scope.
 func liveInScope(db *gorm.DB, ids []int64, scope core.DataScope) *gorm.DB {
 	return db.Table("accounts a").Where("a.id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(ids)).Scopes(core.AccountRows().Scope(scope))
-}
-
-// proxyRefs is the proxies a caller writing an account under action may
-// reference (core.ProxyRefScope); an error reaches none (logged).
-func (s *Service) proxyRefs(ctx context.Context, action perm.Key) core.DataScope {
-	scope, err := core.ProxyRefScope(ctx, s.d.Authorizer, action)
-	if err != nil {
-		slog.WarnContext(ctx, "proxy reference scope", "action", action, "err", err)
-	}
-	return scope
 }
 
 func t(ctx context.Context, en, zh string) string { return core.Text(ctx, en, zh) }

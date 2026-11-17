@@ -9,8 +9,8 @@ const account = { id: 7, name: 'a', orphaned: false } as Account
 function deps(over: Partial<RowActionDeps> = {}): RowActionDeps {
   const yes = () => true
   return {
-    canReveal: yes, canResetStatus: yes, canDisable: yes, canRefreshCreds: yes, canUpdate: yes, canDelete: yes,
-    openDetail: vi.fn(), reveal: vi.fn(), resetStatus: vi.fn(), disable: vi.fn(), refreshCreds: vi.fn(), remove: vi.fn(),
+    canReveal: yes, canResetStatus: yes, canDisable: yes, canRefreshCreds: yes, canUpdate: yes, canDelete: yes, canChangeOwner: yes,
+    openDetail: vi.fn(), reveal: vi.fn(), resetStatus: vi.fn(), disable: vi.fn(), refreshCreds: vi.fn(), changeOwner: vi.fn(), remove: vi.fn(),
     declaredActions: [reset], runPluginAccountAction: vi.fn(),
     ...over
   }
@@ -64,5 +64,16 @@ describe('declared plugin account actions limited to account types (CONTRACTS §
     const d = deps({ declaredActions: [typed] })
     const hidden = (a: Account) => rowActions(a, d).find((x) => x.key === 'declared:dynweight:reset')?.hidden
     expect([hidden(row()), hidden(row({ type: 'apikey' }))]).toEqual([false, true])
+  })
+})
+
+describe('changing the owner (CONTRACTS §103.4)', () => {
+  it('is offered with account:owner:update only, and runs the view handler', () => {
+    const hidden = (d: RowActionDeps) => rowActions(account, d).find((x) => x.key === 'owner')?.hidden
+    expect(hidden(deps({ canChangeOwner: () => false }))).toBe(true)
+    const d = deps()
+    expect(hidden(d)).toBe(false)
+    runRowAction(account, 'owner', d)
+    expect(d.changeOwner).toHaveBeenCalledWith(account)
   })
 })

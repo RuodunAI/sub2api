@@ -20,16 +20,16 @@
 | `next/server` | 核心服务（模块化单体）：控制台 API、网关流水线、计费、插件运行时，二进制 `sub2api` |
 | `next/gateway` | 节点外壳 `sub2api-gateway`：公网入口、管理本机核心进程（supervisor）、托管升级；另有发布签名工具 `sub2api-release` |
 | `next/runtime-contract` | 外壳与核心的协议，以及核心、网关、SDK 共用的数据库层 `gormpg`（打开连接、组合器、SQL 检查器 `gormpg/sqlcheck`） |
-| `next/sdk` | 插件契约：`proto`/`gen`（gRPC）、`manifest`、`pluginsdk`（插件开发包）、`pgdb`（插件的 GORM 句柄）、`testpg`（测试用 PostgreSQL） |
+| `next/sdk` | 插件契约：`proto`/`gen`（gRPC）、`manifest`、`pluginsdk`（插件开发包）、`pgdb`（插件的 GORM 句柄）、`hierarchy`（表里的树：物化路径，核心的用户上级也用它）、`testpg`（测试用 PostgreSQL） |
 | `next/plugins/*` | 官方插件，每个是独立 Go 模块；`plugins/released.json` 记录线上版本 |
 | `next/tools/sub2api-plugin` | 插件 CLI：keygen、build、pack、sign、verify、index、`db diff/check`、`dev` |
 | `next/web` | 控制台（Vue 3 + Vite + TS + Pinia + Tailwind），`packages/` 下是共享给插件的 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` |
-| `next/deploy` | 镜像构建脚本、网关托管部署（`gateway/`）、单机栈（`single/`）、e2e 栈、发布与回退手册（`rollback/`） |
+| `next/deploy` | 镜像构建脚本、网关托管部署（`gateway/`）、单机栈（`single/`）、e2e 栈、单向发布进行中的发布与回退手册（`rollback/`，发布完成、不能再回退后删除，现在没有） |
 | `next/e2e` | 验收测试，需要部署好的栈；CI 只编译不运行 |
 | `next/protocol-codec` | 早期为 ccgateway 引入的协议转换库。`next/` 里没有模块 import 它，next CI 也不检查；但根目录旧版 `backend/` 经 `replace` 依赖它（根目录 `Dockerfile` 也复制它），所以暂不能删（CONVERT-MATRIX.md 开头）。不要在新代码里引用 |
 | `next/docs` | 契约、架构、设计稿、交接、审计记录 |
 
-CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse`、核心里的 `internal/ccgateway` 和只为它服务的 helper history、provider resources、fallback credits）已在 0.1.290 删除，只留在 Git 历史里：最后的源码是 `317b0c331`（`git show 317b0c331:next/plugins/ccgateway/manifest.json`）。迁移 0102 删掉了它的表和插件行，见 `deploy/rollback/0.1.290-release.md`。
+CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse`、核心里的 `internal/ccgateway` 和只为它服务的 helper history、provider resources、fallback credits）已在 0.1.290 删除，只留在 Git 历史里：最后的源码是 `317b0c331`（`git show 317b0c331:next/plugins/ccgateway/manifest.json`）。迁移 0102 删掉了它的表和插件行（CONTRACTS §101.5）。
 
 **仓库根目录的 `backend/`、`frontend/` 是旧版 Sub2API**（Ent ORM + Gin，前端用 pnpm），连同根目录的 `Dockerfile`、`Makefile`、`deploy/`、`docs/`、`openspec/`、`DEV_GUIDE.md` 以及 `.github/workflows/backend-ci.yml`、`release.yml`。它们只作参考保留（ARCHITECTURE §16.1）：`next/` 不引用它们，`go.work` 不包含它们，2026-11-05 导入以来没有提交改动过它们。除非用户明确要求，不要改动、不要在它们上面开发新功能。`DEV_GUIDE.md` 描述的就是这套旧代码。
 
@@ -48,7 +48,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 数据库：PostgreSQL 16 + GORM
 
 - 驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`，GORM 跑在上面。连接由 `runtime-contract/gormpg` 一处打开，核心、网关、插件 SDK 共用；连接池大小只由环境变量（核心 `SUB2API_PG_MAX_CONNS`、网关 `SUB2API_GATEWAY_POOL_MAX_CONNS`）或默认值决定，DSN 里不写 `pool_*` 参数。PostgreSQL 错误的 SQLSTATE、约束名也只经 `gormpg`（核心经 `store` 的同名函数）读取。
-- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0102），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
+- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0103），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
 - **只用 GORM 的模型和查询构造器写语句**（`Create`、`Updates`、`Where`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()` 等；子查询和 `UNION ALL` 用 `(?)` 组合）。整条手写的 SQL 只允许出现在允许列表登记过的地方：账本的 4 条 data-modifying CTE（`billing` 的 precharge、apply、release、settle）、`store` 里非数据语句的小助手（事务级 advisory 锁、`SetLocal`、`ClockTimestamp` 等）、`DDL`、迁移执行器、`modelgen`，以及 `gormpg` 的薄组合器（`Exists`、`InsertSelect`、`NextIDs`、`RelationExists`、`TryXactLock`）。
 - 交给 GORM 的 SQL 文本必须由常量构成，**值只走 `?` 参数**；运行时选的列名经固定白名单变成 `clause.Column`/`clause.OrderByColumn`。
 - 这些规则由源码检查强制执行，检查器是 `runtime-contract/gormpg/sqlcheck`，各模块只保留自己的允许列表：核心是 `server/internal/store/gormguard`（`[raw-sql]`、`[sql-const]`、`[tx-lock]`、`[gorm-tx]`、`[pgx-import]`、`[casbin-api]` 等，说明见 `gormguard/doc.go`，允许列表在 `rawsql_test.go`），网关是 `gateway/internal/sqlguard`，SDK 与插件是 `sdk/pgdb` 的 `TestNoRawSQL`、`TestNoPgxImports`。允许列表里没有命中的条目也算失败。
@@ -82,11 +82,11 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 - 内置插件随核心升级（CONTRACTS §37）。**插件内容变了必须升版本号**：`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`，内容变了而版本没升就失败；每次发布后按该测试的说明重写这个文件。
 - Host API 版本在 `runtime-contract.HostAPIVersion` 与 `sdk/protocol.HostAPIVersion`，两者必须相等。
 
-### 网关外壳与托管升级（CONTRACTS §33、§34、§39、§82）
+### 网关与托管升级（CONTRACTS §33、§34、§39、§82、§102）
 
 - 每个节点由 `sub2api-gateway` 监听公网入口，核心只监听回环地址；外壳的 supervisor 启停本机核心。节点之间用 HTTPS 和 Redis 里每节点一份的密钥鉴权。
 - 核心以签名发布包分发，升级计划持久化在 PG 的 `updater` schema。改库的版本走 `primary-first-v1`：从节点先转发到主节点并停止，主节点最后停机、迁移、启动，再逐个恢复从节点。不改库的版本可走 `rolling-v1`。
-- 网关二进制的变更要单独换网关，单发核心安装包不会生效。注意 `next/gateway`（外壳）与 `server/internal/gateway`（核心的业务网关流水线）是两回事。
+- 网关二进制的变更要单独更新网关，单发核心安装包不会生效。每个节点都运行能自更新的网关（0.1.135 起）后，控制台可以一键更新网关（`gateway-rolling-v1`，CONTRACTS §102）；第一次换上这样的网关仍要手动换镜像。注意 `next/gateway`（外壳）与 `server/internal/gateway`（核心的业务网关流水线）是两回事。
 
 ### 前端（`next/web`）
 
@@ -102,7 +102,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
    - 接口、表结构、行为约定 → `next/docs/CONTRACTS.md` 对应章节（新约定加新的一节）；
    - 架构变化 → `next/docs/ARCHITECTURE.md`；
    - 用户能看到的变化、版本、迁移 → `CHANGELOG.md` 的“未发布”一节；
-   - 发布、回退步骤 → `next/deploy/rollback/` 和 `next/deploy/gateway/*/README.md` 的手册。
+   - 发布、回退步骤 → `next/deploy/rollback/`（单向发布完成、不能再回退后删除）和 `next/deploy/gateway/*/README.md` 的手册。
 4. 插件改了内容就升版本（见上文 `released.json`）；manifest 用到新核心能力时同时提高 `hostCompat` 下限。
 5. 新增 Go 模块要加进 `next/go.work`，并在 `go.mod` 里按相对路径 `replace` `next/sdk` 和 `next/runtime-contract`（CONTRACTS §2）。整理依赖用 `GOWORK=off go mod tidy`，然后 `cd next && go work sync`，提交 `go.sum`/`go.work.sum` 的变化（CI 检查它们没有未提交的改动）。
 6. Linux 专有代码用 `//go:build linux`，并提供非 Linux 的空实现。

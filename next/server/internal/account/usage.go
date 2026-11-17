@@ -452,7 +452,7 @@ func (s *Service) getUsage(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
+	if _, err := s.loadIn(ctx, id, perm.AccountRead); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -508,7 +508,7 @@ func (s *Service) getUsageLimit(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountRead), false); err != nil {
+	if _, err := s.loadIn(ctx, id, perm.AccountRead); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
@@ -705,7 +705,11 @@ func (s *Service) putUsageLimit(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	scope := s.scopeOf(ctx, perm.AccountUpdate)
+	scope, err := s.scopeOf(ctx, perm.AccountUpdate)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	uid, _ := core.UserID(ctx)
 	err = s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
 		a, err := s.loadRow(ctx, tx, id, scope, true)

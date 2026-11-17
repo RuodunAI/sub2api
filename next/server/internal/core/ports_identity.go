@@ -369,11 +369,44 @@ type UserGuard interface {
 	// included: by the actor's roles, not narrowed by its access key, every
 	// role a target holds, the default user role aside, is one the actor may
 	// assign, and what the targets' roles grant is within the actor's (a
-	// superuser manages everyone). For ActOnIdentity a superuser target
+	// superuser manages everyone). An actor whose roles reach users by a
+	// team alone (user:read, user:create, user:update, none of them for
+	// every user) manages only the users below it (CONTRACTS §103). For
+	// ActOnIdentity a superuser target
 	// through an access key needs a step-up proof; for ActOnBalance a target
 	// holding a role besides user needs balance:adjust:any, which an access
 	// key must name. Actor 0 (the system) passes.
 	CanActOnUsers(ctx context.Context, actorID int64, action UserAction, targetIDs ...int64) error
+}
+
+// OwnerGuard decides and writes the owner of a user (users.owner_id and
+// users.owner_path, UserTree; CONTRACTS §103.3): authz implements it, the
+// one writer of both; iam calls it inside the transaction that creates or
+// updates the user, on a create once the user is inserted (without an
+// owner). SetOwner takes the authz lock itself, so the owners it reads
+// cannot move under it.
+type OwnerGuard interface {
+	// SetOwner gives userID the owner actorID names and returns it (0:
+	// none). owner is the requested owner_id, 0 for none. On a create
+	// (create) nil is the actor when it creates users for its team only,
+	// else none; on an update nil, or the current owner, is no change and
+	// passes as is. Naming an owner, or none, needs user:create (create) or
+	// user:update (update) for every user; a holder for its team only may
+	// name only itself (403 otherwise), decided before the owner is read.
+	// It refuses (400 owner_id) an owner that is userID (self) or below it
+	// (cycle), would put userID, or a user below it, more than
+	// MaxTeamDepth levels below the top of its chain (too_deep), is missing
+	// or deleted (not_found), or may not manage userID by its roles
+	// (owner_cannot_manage; on a create the roles come after, and
+	// assigning them, but for the system's, checks it), and an actor that
+	// may not act (ActOnIdentity), on an update, on userID as it stands
+	// under the lock, before the move (after it a team holder naming itself
+	// holds userID in its team), or, after the move, on every user of the
+	// old and the new owner's chains (the owner and those above it, whose
+	// teams the user leaves or joins); the actor itself and those above it
+	// in a chain aside. A change is audited as user.owner (from, to). Actor
+	// 0 (the system) needs no permission.
+	SetOwner(ctx context.Context, tx *gorm.DB, actorID, userID int64, create bool, owner *int64) (int64, error)
 }
 
 // GuardOrDeny is g, or a guard refusing everything with ErrInternal when g

@@ -430,8 +430,9 @@ func deleteRole(db *gorm.DB, id int64) *gorm.DB {
 // defaults (builtinRoles): name, description and what resetDefaults
 // writes. The actor must hold every default, as for SetRolePermissions and
 // SetRoleAssignable; what the reset drops is within the actor already
-// (editableRole), so it cannot weaken a role above the actor (C-L2). rev,
-// when set, must be the role's revision, else version_conflict.
+// (editableRole), so it cannot weaken a role above the actor (C-L2). Every
+// owner keeps managing its users (ownersKeepManaging, on permission_keys).
+// rev, when set, must be the role's revision, else version_conflict.
 func (s *Service) ResetRole(ctx context.Context, actorID, id int64, rev *int64) (*Role, error) {
 	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, rev)
@@ -445,7 +446,10 @@ func (s *Service) ResetRole(ctx context.Context, actorID, id int64, rev *int64) 
 		if err := resetRoleText(store.G(ctx, tx), id, def).Error; err != nil {
 			return 0, err
 		}
-		return id, s.resetDefaults(ctx, tx, actorID, r, def, map[string]any{})
+		if err := s.resetDefaults(ctx, tx, actorID, r, def, map[string]any{}); err != nil {
+			return 0, err
+		}
+		return id, s.ownersKeepManaging(ctx, tx, r.Key, "permission_keys")
 	})
 }
 
@@ -509,15 +513,19 @@ func roleDetail(r *Role) map[string]any {
 }
 
 // SetRolePermissions replaces the permissions of a role actorID may edit
-// (editableRole), as setRolePart does. rev, when set, must be the role's
-// revision the editor read (Role.Revision), else version_conflict.
+// (editableRole), as setRolePart does; every owner keeps managing its users
+// (ownersKeepManaging, on permission_keys). rev, when set, must be the
+// role's revision the editor read (Role.Revision), else version_conflict.
 func (s *Service) SetRolePermissions(ctx context.Context, actorID, id int64, keys []string, rev *int64) (*Role, error) {
 	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, rev)
 		if err != nil {
 			return 0, err
 		}
-		return id, s.setRolePart(ctx, tx, actorID, r, keys, grantPart{}, map[string]any{})
+		if err := s.setRolePart(ctx, tx, actorID, r, keys, grantPart{}, map[string]any{}); err != nil {
+			return 0, err
+		}
+		return id, s.ownersKeepManaging(ctx, tx, r.Key, "permission_keys")
 	})
 }
 
@@ -595,7 +603,8 @@ type AssignableInput struct {
 // SetRoleAssignable replaces the assignable list of a role actorID may edit
 // (editableRole). The actor must be able to assign what is added (the
 // "every custom role" flag included); what the role keeps is within it
-// already.
+// already. Every owner keeps managing its users (ownersKeepManaging, on
+// role_keys).
 func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in AssignableInput) (*Role, error) {
 	return s.mutateRole(ctx, func(tx *gorm.DB) (int64, error) {
 		r, err := s.editableRole(ctx, tx, actorID, id, in.Revision)
@@ -616,6 +625,9 @@ func (s *Service) SetRoleAssignable(ctx context.Context, actorID, id int64, in A
 			return 0, err
 		}
 		if err := setRoleAssignable(ctx, tx, id, assign, in.AssignCustom); err != nil {
+			return 0, err
+		}
+		if err := s.ownersKeepManaging(ctx, tx, r.Key, "role_keys"); err != nil {
 			return 0, err
 		}
 		return id, s.audit(ctx, tx, actorID, "role.assignable", "role", id, map[string]any{"role_keys": keys, "assign_custom": in.AssignCustom, "added": added})
@@ -702,7 +714,8 @@ func setAssignCustom(db *gorm.DB, id int64, custom bool) *gorm.DB {
 // SetUserRoles replaces a user's roles inside tx, bumping the authz version
 // (call Committed with the returned version after commit). actorID is the
 // acting user (0 = system); checkAssignment judges what the change adds and
-// removes, and a change is audited as user.roles.
+// removes, and a change is audited as user.roles. An unchanged set is only
+// held to the team step, as the caller shows the user.
 func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID int64, roleKeys []string) (int64, error) {
 	v, err := s.Bump(ctx, tx, userID)
 	if err != nil {
@@ -718,9 +731,17 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 	}
 	added, removed := diffRoles(want, cur), diffRoles(cur, want)
 	if len(added)+len(removed) == 0 {
+		// A team holder reads no user past its team (CONTRACTS §103.3).
+		actor, err := s.usersRoleSet(ctx, tx, []int64{actorID})
+		if err == nil {
+			err = withinTeam(ctx, tx, actorID, actor, []int64{userID})
+		}
+		if err != nil {
+			return 0, err
+		}
 		return v, nil
 	}
-	if err := s.checkAssignment(ctx, tx, actorID, userID, len(cur) == 0, added, removed); err != nil {
+	if err := s.checkAssignment(ctx, tx, actorID, userID, len(cur) == 0, want, added, removed); err != nil {
 		return 0, err
 	}
 	if err := writeUserRoles(ctx, tx, userID, want); err != nil {
@@ -734,9 +755,11 @@ func (s *Service) SetUserRoles(ctx context.Context, tx *gorm.DB, actorID, userID
 // transferred); every role must be on the actor's assignable list, except
 // the default role for a user who has none yet (roleless); the actor must
 // be able to act on the user; and the added roles, with what they may assign
-// in turn, must be within the actor's grantSet. The system (actor 0) may
-// grant the initial super admin, never revoke one.
-func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, added, removed []roleRef) error {
+// in turn, must be within the actor's grantSet; a user with an owner keeps
+// one that manages it by its roles, want (owner_cannot_manage, CONTRACTS
+// §103.3). The system (actor 0) may grant the initial super admin, never
+// revoke one.
+func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, userID int64, roleless bool, want, added, removed []roleRef) error {
 	if actorID == 0 {
 		if slices.ContainsFunc(removed, func(r roleRef) bool { return r.superuser }) {
 			return superAdminTransferOnly(ctx)
@@ -759,7 +782,18 @@ func (s *Service) checkAssignment(ctx context.Context, q *gorm.DB, actorID, user
 	if err != nil {
 		return err
 	}
-	return within(actor, grant, cannotGrant(ctx))
+	if err := within(actor, grant, cannotGrant(ctx)); err != nil || len(added) == 0 {
+		return err
+	}
+	owner, err := ownerOf(store.G(ctx, q), userID)
+	if err != nil || owner == 0 {
+		return err
+	}
+	target, err := s.RolesPermissions(ctx, q, roleKeysOf(want))
+	if err != nil {
+		return err
+	}
+	return s.ownerManages(ctx, q, owner, target, roleKeysOf(want))
 }
 
 // assignable fails unless actor may assign or revoke r (see checkAssignment).
@@ -1199,7 +1233,9 @@ func (s *Service) pluginRoleGrants(ctx context.Context, q *gorm.DB, actorID int6
 // permissions, for each role listed; other roles and the roles' other
 // grants stay. Each role is changed as SetRolePermissions changes it
 // (editableRole, setRolePart), in key order, all or none; a key of another
-// plugin is foreign, and a refusal names its role (details.role). revs[k],
+// plugin is foreign, and a refusal names its role (details.role). Once all
+// are written, every owner keeps managing its users (ownersKeepManaging, on
+// roles.<k>), so roles changed together are judged together. revs[k],
 // when set, must be role k's revision (PluginRoleRow.Revision), else
 // version_conflict.
 func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, pluginKey string, roles map[string][]string, revs map[string]int64) (*PluginRoleMatrix, error) {
@@ -1232,6 +1268,11 @@ func (s *Service) SetPluginRoleGrants(ctx context.Context, actorID int64, plugin
 				if errors.As(err, &ce) {
 					return ce.WithDetails(map[string]any{"role": k})
 				}
+				return err
+			}
+		}
+		for _, k := range keys {
+			if err := s.ownersKeepManaging(ctx, tx, k, "roles."+k); err != nil {
 				return err
 			}
 		}

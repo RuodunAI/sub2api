@@ -1,4 +1,4 @@
-import { watch } from 'vue'
+import { computed, watch, type WritableComputedRef } from 'vue'
 import { api, useList as useHostList, type UseListOptions, type UseListResult } from '@sub2api/host'
 import { notifyError } from '@/utils/errors'
 
@@ -34,4 +34,14 @@ export function useList<T>(
  */
 export function activeFilterCount(filters: Record<string, unknown>, ignore: readonly string[] = ['q']): number {
   return Object.entries(filters).filter(([key, value]) => !ignore.includes(key) && value !== '' && value != null && value !== false).length
+}
+
+/** A list filter switch: `key=true` while on, unset while off (?mine=true, ?direct=true). */
+export function filterFlag(filters: Record<string, unknown>, key: string): WritableComputedRef<boolean> {
+  return computed({
+    get: () => filters[key] === 'true',
+    set: (v: boolean) => {
+      filters[key] = v ? 'true' : ''
+    }
+  })
 }

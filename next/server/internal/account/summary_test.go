@@ -17,7 +17,7 @@ func TestAccountSummaryFollowsOwnerScope(t *testing.T) {
 	authz.keys[admin], authz.keys[alice], authz.keys[nobody] = adminKeys, supplierKeys, nil
 	insert := func(owner int64, status string, schedulable bool, deleted bool) {
 		t.Helper()
-		e.exec1(`INSERT INTO accounts (name, plugin_key, type, credentials_enc, created_by, status, schedulable, deleted_at)
+		e.exec1(`INSERT INTO accounts (name, plugin_key, type, credentials_enc, owner_id, status, schedulable, deleted_at)
 			VALUES ('s', 'anthropic', 'apikey', ''::bytea, $1, $2, $3, CASE WHEN $4 THEN now() END) RETURNING id`, owner, status, schedulable, deleted)
 	}
 	insert(alice, "active", true, false)
@@ -26,7 +26,7 @@ func TestAccountSummaryFollowsOwnerScope(t *testing.T) {
 	insert(alice, "active", true, true) // deleted: not counted
 	insert(admin, "active", true, false)
 	insert(admin, "auto_disabled", true, false)
-	// Nobody's (created_by NULL): only the full range counts it.
+	// Nobody's (owner_id NULL): only the full range counts it.
 	e.exec1(`INSERT INTO accounts (name, plugin_key, type, credentials_enc, status) VALUES ('s', 'anthropic', 'apikey', ''::bytea, 'disabled') RETURNING id`)
 	// Holding both levels is the full range.
 	both := e.addUser("both-summary@example.test")

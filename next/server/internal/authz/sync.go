@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -118,6 +119,11 @@ func (s *Service) SyncCore(ctx context.Context) error {
 			if err := s.grantDefaults(ctx, tx, r.key, fill, r.assignable,
 				func(k string) bool { return newRoles[k] }, "assignable", grantDefaultAssignable); err != nil {
 				return err
+			}
+			if newRoles[r.key] {
+				if err := s.grantPluginDefaults(ctx, tx, r.key, fill); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -467,6 +473,37 @@ func (s *Service) grantScopedDefaults(ctx context.Context, tx *gorm.DB, roleKey 
 		return err
 	}
 	return s.syncGrant(ctx, tx, withVia(fill, "default"), added)
+}
+
+// grantPluginDefaults grants roleKey, a built-in role created now, the
+// plugin grants the roles it follows (manifest.RoleDefaultsFrom) hold now,
+// together and canonical: a supplier agent gets what administrators gave
+// users and suppliers of the plugins installed before it existed, not the
+// manifests' suggestions (a default removed at consent, or held for review,
+// stays off). Audited as authz.sync.grant (via plugin_default).
+func (s *Service) grantPluginDefaults(ctx context.Context, tx *gorm.DB, roleKey string, fill map[string]any) error {
+	db := store.G(ctx, tx)
+	var held []struct{ Action, Scope string }
+	if err := db.Table("(?) g", casbinrule.GrantRows(db)).Select("g.action, g.scope").
+		Joins("JOIN permissions p ON p.key = g.action AND p.source = 'plugin'").
+		Where("g.role = ANY(?)", store.Strings(manifest.RoleDefaultsFrom[roleKey])).Scan(&held).Error; err != nil {
+		return err
+	}
+	scopes := map[string][]string{}
+	for _, h := range held {
+		scopes[h.Action] = append(scopes[h.Action], h.Scope)
+	}
+	var grants []casbinrule.Grant
+	for _, action := range slices.Sorted(maps.Keys(scopes)) {
+		for _, sfx := range manifest.CanonicalSuffixes(scopes[action]) {
+			grants = append(grants, casbinrule.Grant{Role: roleKey, Action: action, Suffix: sfx})
+		}
+	}
+	added, err := casbinrule.AddGrants(db, grants, casbinrule.Filter{Source: "plugin", Skip: []string{"staged", "removed"}})
+	if err != nil {
+		return err
+	}
+	return s.syncGrant(ctx, tx, withVia(fill, "plugin_default"), added)
 }
 
 // syncGrant audits each automatic grant of added (by role id, of a

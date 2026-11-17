@@ -61,7 +61,8 @@ export default {
   selectRole: 'Select a role on the left',
   scope: {
     all: 'All',
-    own: 'Created by them',
+    own: 'Their own',
+    team: 'Theirs and their team’s',
     groups: 'Groups',
     accounts: 'Accounts',
     proxies: 'Proxies',
@@ -77,6 +78,6 @@ export default {
     deleted: '{label} (deleted)',
     summary: '{action}: {scopes}',
     actions: { read: 'View', create: 'Create', update: 'Edit', delete: 'Delete', test: 'Test', view: 'View credentials', manage: 'Manage' },
-    resources: { account: 'Accounts', proxy: 'Proxies' }
+    resources: { account: 'Accounts', proxy: 'Proxies', user: 'Users', usage: 'Account usage' }
   }
 }

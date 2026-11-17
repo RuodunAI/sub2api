@@ -1,6 +1,8 @@
 package control
 
 import (
+	"time"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -39,6 +41,9 @@ type releaseRecord struct {
 	Manifest       []byte
 	SignedManifest []byte
 	BundleBase     string
+	Line           string // updatesource.LineCore or LineGateway
+	SourceAssets   []byte // NULL unless imported from the update source
+	SourceLocator  string
 }
 
 func (releaseRecord) TableName() string { return "updater.releases" }
@@ -55,10 +60,27 @@ type nodeRecord struct {
 	PeerProtocol int
 	Strategy     string
 	JoiningPlan  string
-	Rolling      bool
+	// Rolling is always true: shells 0.1.134 still read it to choose
+	// rolling-v1 while the gateways are replaced one at a time.
+	Rolling        bool
+	GatewayVersion string
+	SelfUpdate     bool
 }
 
 func (nodeRecord) TableName() string { return "updater.nodes" }
+
+// updateCheckRecord is the latest update check of one release line.
+type updateCheckRecord struct {
+	ClusterID      string
+	Line           string
+	SourceRevision int64
+	Baseline       string
+	Result         []byte
+	CheckedAt      time.Time
+	LastSuccessAt  *time.Time
+}
+
+func (updateCheckRecord) TableName() string { return "updater.update_checks" }
 
 // stepRecord is a new updater.steps row; its status starts pending.
 type stepRecord struct {

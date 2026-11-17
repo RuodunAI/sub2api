@@ -1,0 +1,155 @@
+super_admin rev=1 superuser=true assign_custom=false
+  assignable: -
+  menu overview: /dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/usage/overview,/usage
+  menu gateway: /accounts,/proxies
+  menu finance: /ledger
+  menu users: /users,/segments,/roles
+  menu plugins: /plugins,/market,/publishers
+  menu system: /nodes,/system/tasks,/system/upgrades,/system/audit,/settings
+  menu me: /me/wallet,/me/profile
+admin rev=1 superuser=false assign_custom=true
+  assignable: operator supplier supplier_agent user
+  account:create
+  account:credential:view
+  account:delete
+  account:group:bind
+  account:owner:update
+  account:read
+  account:relay
+  account:settings:custom
+  account:test
+  account:update
+  apikey:self:manage
+  audit:read
+  balance:adjust
+  balance:all:read
+  balance:self:read
+  gateway:use
+  group:manage
+  group:read
+  node:read
+  plugin:egress:read
+  plugin:grant:high
+  plugin:install
+  plugin:manage
+  plugin:market:read
+  plugin:read
+  plugin:uninstall
+  price:manage
+  price:read
+  proxy:manage
+  proxy:read
+  publisher:read
+  role:assign
+  role:define
+  role:read
+  segment:manage
+  segment:read
+  settings:manage
+  settings:read
+  sticky:manage
+  sticky:read
+  system:update:read
+  task:manage
+  task:read
+  task:run
+  usage:account:read
+  usage:all:read
+  usage:self:read
+  usage:settle
+  user:create
+  user:delete
+  user:password:reset
+  user:read
+  user:update
+  menu overview: /dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/usage/overview,/usage
+  menu gateway: /accounts,/proxies
+  menu finance: /ledger
+  menu users: /users,/segments,/roles
+  menu plugins: /plugins,/market,/publishers
+  menu system: /nodes,/system/tasks,/system/upgrades,/system/audit,/settings
+  menu me: /me/wallet,/me/profile
+operator rev=1 superuser=false assign_custom=false
+  assignable: supplier user
+  account:create
+  account:credential:view:own
+  account:delete
+  account:read
+  account:test
+  account:update
+  apikey:self:manage
+  audit:read
+  balance:all:read
+  balance:self:read
+  gateway:use
+  group:manage
+  group:read
+  node:read
+  price:read
+  proxy:manage
+  proxy:read
+  role:assign
+  role:read
+  segment:manage
+  segment:read
+  task:read
+  task:run
+  usage:account:read
+  usage:all:read
+  usage:self:read
+  user:create
+  user:read
+  user:update
+  menu overview: /dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/usage/overview,/usage
+  menu gateway: /accounts,/proxies
+  menu finance: /ledger
+  menu users: /users,/segments,/roles
+  menu system: /nodes,/system/tasks,/system/audit,/settings
+  menu me: /me/wallet,/me/profile
+supplier rev=2 superuser=false assign_custom=false
+  assignable: -
+  account:create:own
+  account:credential:view:own
+  account:delete:own
+  account:read:own
+  account:test:own
+  account:update:own
+  proxy:manage:own
+  proxy:read:own
+  usage:account:read:own
+  usage:self:read
+  menu overview: /dashboard,/me/usage/overview,/me/usage,/account-usage/overview,/account-usage
+  menu gateway: /accounts,/proxies
+  menu me: /me/profile
+supplier_agent rev=1 superuser=false assign_custom=false
+  assignable: supplier supplier_agent
+  account:create:own
+  account:credential:view:own
+  account:delete:own
+  account:read:team
+  account:test:own
+  account:update:own
+  apikey:self:manage
+  balance:self:read
+  gateway:use
+  proxy:manage:own
+  proxy:read:own
+  role:assign
+  role:read
+  usage:account:read:team
+  usage:self:read
+  user:create:team
+  user:read:team
+  user:update:team
+  menu overview: /dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage,/account-usage/overview,/account-usage
+  menu gateway: /accounts,/proxies
+  menu users: /users,/roles
+  menu me: /me/wallet,/me/profile
+user rev=1 superuser=false assign_custom=false
+  assignable: -
+  apikey:self:manage
+  balance:self:read
+  gateway:use
+  usage:self:read
+  menu overview: /dashboard,/me/api-keys,/me/models,/me/usage/overview,/me/usage
+  menu me: /me/wallet,/me/profile

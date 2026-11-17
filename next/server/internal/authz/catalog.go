@@ -16,7 +16,10 @@ const (
 	// RoleSupplier is an add-on role: a supplier holds it next to RoleUser
 	// and brings its own accounts and proxies (CONTRACTS §21).
 	RoleSupplier = "supplier"
-	RoleUser     = "user"
+	// RoleSupplierAgent is an add-on role: a supplier that also manages the
+	// users below it (CONTRACTS §103).
+	RoleSupplierAgent = "supplier_agent"
+	RoleUser          = "user"
 )
 
 type coreModule struct {
@@ -100,7 +103,7 @@ var coreModules = []coreModule{
 		// Scopable (perm.ScopeType): account:read reaches every account,
 		// account:read:own, :group/12, :account/125 … some (CONTRACTS §21).
 		{key: perm.AccountRead, en: "View accounts", zh: "查看账号",
-			desc: lt("View upstream accounts within the scope granted (all, own, a group or one account).", "查看授权范围内的上游账号（全部、自己创建、某分组或单个账号）。")},
+			desc: lt("View upstream accounts within the scope granted (all, own, own and the users below, a group or one account).", "查看授权范围内的上游账号（全部、自己的、自己及下级、某分组或单个账号）。")},
 		{key: perm.AccountCreate, en: "Create accounts", zh: "新建账号",
 			desc: lt("Create upstream accounts within the scope granted.", "在授权范围内新建上游账号。"), requires: req(perm.AccountRead)},
 		{key: perm.AccountUpdate, en: "Edit accounts", zh: "编辑账号",
@@ -117,6 +120,10 @@ var coreModules = []coreModule{
 			desc: lt("Bind accounts to groups you can use; only matters to callers with a restricted account scope (own, a group or one account) and without group:manage.", "把账号绑定到自己可用的分组；只对账号范围受限（仅自己、某分组或单个账号）且没有 group:manage 的人生效。"), requires: req(perm.AccountUpdate)},
 		{key: perm.AccountRelay, en: "Create relay-type accounts with custom upstream", zh: "创建自定义上游的 relay 类账号", sensitive: true,
 			desc: lt("Create accounts whose upstream address is free (relay) or re-point it; only matters to callers with a restricted account scope (own, group or account).", "创建或改动可自定义上游地址的账号（relay）；只对账号范围受限（仅自己、某分组或单个账号）的人生效。"), requires: req(perm.AccountCreate)},
+		// 所属 (accounts.owner_id) decides whose own and team scopes reach
+		// an account (CONTRACTS §103).
+		{key: perm.AccountOwnerUpdate, en: "Change account owners", zh: "修改账号所属", sensitive: true,
+			desc: lt("Move an account to another user, its owner: whose own and team account scopes reach it.", "把账号的所属改为其他用户；所属决定哪些人的“自己的”“自己及下级”账号范围能看到它。"), requires: req(perm.AccountRead)},
 	}},
 	{"proxy", lt("Proxies", "代理"), []corePerm{
 		{key: perm.ProxyRead, en: "View proxies", zh: "查看代理",
@@ -148,6 +155,11 @@ var coreModules = []coreModule{
 			desc: lt("View your own usage logs and statistics.", "查看自己的使用日志与统计。")},
 		{key: perm.UsageAllRead, en: "View all usage", zh: "查看全部使用记录",
 			desc: lt("View site-wide usage logs and statistics, user emails included.", "查看全站使用日志与统计，包含用户邮箱。")},
+		// Scopable like account:read: the requests served by the accounts
+		// of the scope, through the account-side view (/account-usage,
+		// CONTRACTS §103), which shows no user, API key or billed amount.
+		{key: perm.UsageAccountRead, en: "View account usage", zh: "查看账号的使用记录", sensitive: true,
+			desc: lt("View the usage logs and statistics of accounts within the scope granted, without users, API keys or billed amounts.", "查看授权范围内账号的使用记录与统计，不含用户、API Key 与计费金额。"), requires: req(perm.AccountRead)},
 		// Reconcile again, or refund, a pre-charged request the core gave up
 		// on (CONTRACTS §25.4). It moves money, so it is sensitive and is
 		// not implied by reading usage.
@@ -226,13 +238,29 @@ var coreModules = []coreModule{
 var userRolePermissions = []string{"apikey:self:manage", "balance:self:read", "usage:self:read", "gateway:use"}
 
 // supplierPermissions are granted to the built-in "supplier" role: its own
-// accounts and proxies and its own usage, nothing else. account:group:bind
-// is left out for now (decision D27), so a supplier binds no groups.
+// accounts and proxies, its own usage and that of its accounts, nothing
+// else. account:group:bind is left out for now (decision D27), so a
+// supplier binds no groups.
 var supplierPermissions = []string{
 	"account:read:own", "account:create:own", "account:update:own", "account:delete:own", "account:test:own", "account:credential:view:own",
 	"proxy:read:own", "proxy:manage:own",
-	"usage:self:read",
+	"usage:self:read", "usage:account:read:own",
 }
+
+// supplierAgentPermissions are granted to the built-in "supplier_agent"
+// role (CONTRACTS §103.1): a user's and a supplier's, so that the role
+// alone is enough (D8) and covers the users it manages, and for the users
+// below it (team) reading their accounts and the usage of those, and
+// reading, creating, editing and assigning roles to those users. Left out
+// (D4, D5): deleting users and resetting their passwords, balances, user
+// groups, group binding, defining roles, and writing, testing or revealing
+// their accounts or anything of their proxies. The team keys imply the
+// own ones they widen, which SyncCore stores once.
+var supplierAgentPermissions = slices.Concat(userRolePermissions, supplierPermissions, []string{
+	"account:read:team", "usage:account:read:team",
+	"user:read:team", "user:create:team", "user:update:team",
+	"role:read", "role:assign",
+})
 
 // operatorPermissions are granted to the built-in "operator" role, an
 // explicit list (decision D3), so that a new core permission reaches the
@@ -246,8 +274,9 @@ var supplierPermissions = []string{
 // settings, plugins, publishers and core updates.
 //
 // account:credential:view:own shows the credentials of the accounts the
-// operator created itself; with the full-level account and proxy keys it
-// covers the supplier defaults, so an operator may assign that role.
+// operator owns itself; with the full-level account, proxy and account
+// usage keys it covers the supplier defaults, so an operator may assign
+// that role.
 var operatorPermissions = slices.Concat([]string{
 	"user:read", "user:create", "user:update",
 	"role:read", "role:assign",
@@ -258,7 +287,7 @@ var operatorPermissions = slices.Concat([]string{
 	"proxy:read", "proxy:manage",
 	"price:read",
 	"balance:all:read",
-	"usage:all:read",
+	"usage:all:read", "usage:account:read",
 	"node:read",
 	"audit:read",
 	"task:read", "task:run",
@@ -310,12 +339,15 @@ var builtinRoles = []builtinRole{
 	{key: RoleSuperAdmin, name: lt("Super admin", "超级管理员"), description: lt("Has every permission, including future ones", "拥有全部权限（包括以后新增的）"), superuser: true, rev: 1},
 	{key: RoleAdmin, name: lt("Admin", "管理员"), description: lt("All core permissions by default, except those reserved for the super admin", "默认拥有除超级管理员专属权限以外的全部核心权限"), rev: 1,
 		grants:     func(corePerm) bool { return true },
-		assignable: []string{RoleOperator, RoleSupplier, RoleUser}, assignCustom: true},
+		assignable: []string{RoleOperator, RoleSupplier, RoleSupplierAgent, RoleUser}, assignCustom: true},
 	{key: RoleOperator, name: lt("Operator", "运维"), description: lt("Day-to-day users, groups, accounts and proxies; read-only billing and monitoring", "日常管理用户、分组、账号和代理，查看余额、用量、节点、审计和定时任务"), rev: 1,
 		grants: oneOf(operatorPermissions), scoped: scopedOf(operatorPermissions),
 		assignable: []string{RoleSupplier, RoleUser}},
-	{key: RoleSupplier, name: lt("Supplier", "供应商"), description: lt("Add-on role: own accounts and proxies, own usage", "附加角色：管理自己创建的账号和代理，查看自己的用量"), rev: 1,
+	{key: RoleSupplier, name: lt("Supplier", "供应商"), description: lt("Add-on role: own accounts and proxies, own usage", "附加角色：管理自己的账号和代理，查看自己的用量"), rev: 2,
 		grants: oneOf(supplierPermissions), scoped: scopedOf(supplierPermissions)},
+	{key: RoleSupplierAgent, name: lt("Supplier agent", "代理供应商"), description: lt("A user's and a supplier's permissions, and managing the users below it and reading their accounts and usage", "拥有普通用户和供应商的全部权限，并管理下级用户、查看下级的账号和用量"), rev: 1,
+		grants: oneOf(supplierAgentPermissions), scoped: scopedOf(supplierAgentPermissions),
+		assignable: []string{RoleSupplier, RoleSupplierAgent}},
 	{key: RoleUser, name: lt("User", "普通用户"), description: lt("Own API keys, usage and balance; gateway access", "管理自己的 API Key、查看自己的用量和余额、调用网关"), rev: 1,
 		grants: oneOf(userRolePermissions)},
 }

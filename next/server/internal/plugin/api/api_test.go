@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	authzsvc "github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
@@ -32,7 +33,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"

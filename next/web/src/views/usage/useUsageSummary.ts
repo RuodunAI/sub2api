@@ -1,7 +1,12 @@
 import { ref, toValue, watch, type MaybeRefOrGetter } from 'vue'
 import { api } from '@sub2api/host'
-import type { UsageSummaryRow } from '@/api/types'
+import type { Money, UsageSummaryRow } from '@/api/types'
 import { browserTZ } from '@/components/stats/stats'
+
+/** A row as answered: the account view's (CONTRACTS §103.5) has no billed cost. */
+type SummaryAnswer = Omit<UsageSummaryRow, 'total_cost'> & { total_cost?: Money }
+/** The row's cost: billed, or the list price where nothing billed is shown. */
+const withCost = ({ total_cost, ...r }: SummaryAnswer): UsageSummaryRow => ({ ...r, total_cost: total_cost ?? r.standard_cost ?? '0' })
 
 /**
  * GET <path>?group_by=<groupBy>&tz=<browser time zone> under the list's
@@ -33,8 +38,8 @@ export function useUsageSummary(
     loading.value = true
     error.value = null
     try {
-      const r = await api.get<UsageSummaryRow[] | { items?: UsageSummaryRow[] }>(path, query())
-      if (my === seq) rows.value = Array.isArray(r) ? r : r?.items || []
+      const r = await api.get<SummaryAnswer[] | { items?: SummaryAnswer[] }>(path, query())
+      if (my === seq) rows.value = (Array.isArray(r) ? r : r?.items || []).map(withCost)
     } catch (e) {
       if (my === seq) {
         rows.value = []

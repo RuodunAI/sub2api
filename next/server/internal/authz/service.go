@@ -36,8 +36,8 @@ type Deps struct {
 	PollInterval time.Duration
 }
 
-// Service is the authz module. It implements core.Authorizer and
-// core.PermissionCatalog.
+// Service is the authz module. It implements core.Authorizer,
+// core.PermissionCatalog and core.OwnerGuard.
 type Service struct {
 	db      *store.DB
 	bus     core.Bus
@@ -66,6 +66,7 @@ var (
 	_ core.PermissionCatalog = (*Service)(nil)
 	_ core.AuthzVersioner    = (*Service)(nil)
 	_ core.ScopeGrantClearer = (*Service)(nil)
+	_ core.OwnerGuard        = (*Service)(nil)
 )
 
 // New creates the service. Call Start before serving requests.

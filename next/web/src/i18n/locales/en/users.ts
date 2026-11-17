@@ -77,5 +77,15 @@ export default {
     submit: 'Transfer',
     done: 'Super admin transferred. Sign in again.'
   },
-  roleScopes: 'Scopes of this role: {list}'
+  roleScopes: 'Scopes of this role: {list}',
+  owner: 'Owner',
+  ownerHint: 'The user this one belongs to: that user and those above it manage it by their team permissions. Leave empty for none.',
+  onlyDirect: 'Direct only',
+  ownerErrors: {
+    self: 'A user cannot belong to itself',
+    cycle: 'The chosen user is below this one: that would make a loop',
+    too_deep: 'More than 8 levels',
+    not_found: 'No such user, or deleted',
+    owner_cannot_manage: 'The chosen user cannot manage this one by its roles: change this user\'s roles or pick another'
+  }
 }

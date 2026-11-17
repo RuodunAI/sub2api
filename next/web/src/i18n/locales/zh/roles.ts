@@ -61,7 +61,8 @@ export default {
   selectRole: '请在左侧选择一个角色',
   scope: {
     all: '全部',
-    own: '自己创建的',
+    own: '自己的',
+    team: '自己及下级的',
     groups: '指定分组',
     accounts: '指定账号',
     proxies: '指定代理',
@@ -77,6 +78,6 @@ export default {
     deleted: '{label}（已删除）',
     summary: '{action}：{scopes}',
     actions: { read: '查看', create: '新建', update: '编辑', delete: '删除', test: '测试', view: '查看凭证', manage: '管理' },
-    resources: { account: '账号', proxy: '代理' }
+    resources: { account: '账号', proxy: '代理', user: '用户', usage: '账号使用记录' }
   }
 }

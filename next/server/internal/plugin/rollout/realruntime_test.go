@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
@@ -13,7 +14,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 

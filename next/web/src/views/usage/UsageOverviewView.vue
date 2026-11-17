@@ -1,29 +1,31 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SButton, SPageHeader } from '@sub2api/ui'
 import UsageOverview from './UsageOverview.vue'
+import type { UsageView } from './view'
 
-// The overview menu item: all users' statistics (`admin`) or the caller's.
-withDefaults(defineProps<{ admin?: boolean }>(), { admin: false })
+// The overview menu items: all users' statistics, the caller's, or those of
+// the accounts in the caller's reach (`account`, CONTRACTS §103.5).
+const props = withDefaults(defineProps<{ view?: UsageView }>(), { view: 'self' })
 const { t } = useI18n()
 const revision = ref(0)
 const loading = ref(false)
+const PAGES: Record<UsageView, { summary: string; title: string; description: string }> = {
+  all: { summary: '/usage/summary', title: 'usage.overviewTitle', description: 'usage.overviewDescription' },
+  self: { summary: '/me/usage/summary', title: 'usage.myOverviewTitle', description: 'usage.myOverviewDescription' },
+  account: { summary: '/account-usage/summary', title: 'usage.accountOverviewTitle', description: 'usage.accountOverviewDescription' }
+}
+const page = computed(() => PAGES[props.view])
 </script>
 
 <template>
   <div>
-    <SPageHeader :title="t(admin ? 'usage.overviewTitle' : 'usage.myOverviewTitle')" :description="t(admin ? 'usage.overviewDescription' : 'usage.myOverviewDescription')">
+    <SPageHeader :title="t(page.title)" :description="t(page.description)">
       <template #actions>
         <SButton :loading="loading" icon="refresh" @click="revision++">{{ t('common.refresh') }}</SButton>
       </template>
     </SPageHeader>
-    <UsageOverview
-      v-model:loading="loading"
-      :revision="revision"
-      :summary-path="admin ? '/usage/summary' : '/me/usage/summary'"
-      :default-range="admin ? 'today' : '7d'"
-      :admin="admin"
-    />
+    <UsageOverview v-model:loading="loading" :revision="revision" :summary-path="page.summary" :default-range="view === 'self' ? '7d' : 'today'" :view="view" />
   </div>
 </template>

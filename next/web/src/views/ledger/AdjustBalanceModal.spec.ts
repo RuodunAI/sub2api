@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({ post: vi.fn(), toast: vi.fn(), refreshBalance:
 vi.mock('@sub2api/host', async (original) => ({ ...(await original<typeof import('@sub2api/host')>()), api: { post: mocks.post } }))
 vi.mock('@sub2api/ui', async (original) => ({ ...(await original<typeof import('@sub2api/ui')>()), toast: mocks.toast }))
 // No lookup permission: where the picker is not stubbed it is the text box of an operator without user:read.
-vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ me: { id: 1 }, refreshBalance: mocks.refreshBalance, has: () => false }) }))
+vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ me: { id: 1 }, refreshBalance: mocks.refreshBalance, has: () => false, hasAction: () => false }) }))
 
 enableAutoUnmount(afterEach)
 

@@ -5,18 +5,19 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@sub2api/host'
 import { SDateTime, useAutoRefresh, SAlert, SBadge, SButton, SCard, SCode, SEmpty, SField, SHint, SPageHeader, SSectionTitle, SSelect, STable, confirm, type TableColumn, type Tone } from '@sub2api/ui'
 import { useAuthStore } from '@/stores/auth'
+import { useUpdatesStore, type UpdateIssue } from '@/stores/updates'
 import { notifyError } from '@/utils/errors'
 import TopologyGraph from '../nodes/TopologyGraph.vue'
 import StepLanes from './StepLanes.vue'
-import { useUpgradeLabel, type UpgradeEvent, type UpgradeStep } from './upgrades'
+import { useIssueText, useUpgradeLabel, type UpgradeEvent, type UpgradeStep } from './upgrades'
 import ReleaseHistory from '../plugins/parts/ReleaseHistory.vue'
 import type { ShellNode as Node } from '@/api/observability'
 
 interface Release { digest: string; manifest: { release_id: string; build_id: string; source_commit: string; created_at: string } }
 interface Plan { id: string; release_digest: string; status: string; cursor: number; error?: string; nodes: string[]; created_at: string; steps?: UpgradeStep[] }
-interface Preflight { release_digest: string; expected_revision: number; primary_node: string; nodes: string[]; blockers: string[]; strategy: string }
+interface Preflight { release_digest: string; expected_revision: number; primary_node: string; nodes: string[]; blocker_codes: UpdateIssue[]; strategy: string }
 const { t } = useI18n()
-const label = useUpgradeLabel()
+const label = useUpgradeLabel(), issueText = useIssueText()
 const auth = useAuthStore(), route = useRoute(), router = useRouter()
 const releases = ref<Release[]>([]), nodes = ref<Node[]>([]), plans = ref<Plan[]>([]), events = ref<UpgradeEvent[]>([])
 const target = ref<string | number | boolean | null>(''), selected = ref<Plan | null>(null), preflight = ref<Preflight | null>(null)
@@ -30,12 +31,17 @@ const options = computed(() => releases.value.map(r => ({ value: r.digest, label
 const active = computed(() => plans.value.some(p => !['completed', 'cancelled', 'failed', 'superseded'].includes(p.status)))
 const columns = computed<TableColumn[]>(() => [{ key: 'node_id', label: t('upgrades.node') }, { key: 'release_digest', label: t('upgrades.version') }, { key: 'mode', label: t('upgrades.mode') }, { key: 'ready', label: t('upgrades.ready') }, { key: 'cpu_percent', label: t('common.cpu') }, { key: 'offloading', label: t('observe.offloadState') }, { key: 'last_seen', label: t('upgrades.lastSeen') }, { key: 'error', label: t('upgrades.reason') }, ...(canRecover.value ? [{ key: 'manage', label: t('upgrades.manageNode') }] : [])])
 const stepColumns = computed<TableColumn[]>(() => [{ key: 'node_id', label: t('upgrades.node') }, { key: 'action', label: t('upgrades.step') }, { key: 'status', label: t('upgrades.status') }, { key: 'error', label: t('upgrades.reason') }])
-const readyToCreate = computed(() => canExecute.value && available.value && !stale.value && !active.value && !!preflight.value && preflight.value.blockers.length === 0 && preflight.value.expected_revision === revision.value && preflight.value.release_digest === target.value)
+const readyToCreate = computed(() => canExecute.value && available.value && !stale.value && !active.value && !!preflight.value && preflight.value.blocker_codes.length === 0 && preflight.value.expected_revision === revision.value && preflight.value.release_digest === target.value)
 const STATUS_TONE: Record<string, Tone> = { completed: 'success', done: 'success', ready: 'success', failed: 'danger', error: 'danger', paused: 'warning', pending: 'warning', running: 'warning' }
 const tone = (status: string): Tone => STATUS_TONE[status] ?? 'gray'
 function version(digest: string) { return releases.value.find(r => r.digest === digest)?.manifest.release_id || digest.slice(0, 12) || '—' }
 watch(target, () => { preflight.value = null; requestKey = crypto.randomUUID() })
-watch(() => route.query.release, value => { if (typeof value === 'string' && value) target.value = value }, { immediate: true })
+// The update check compares the latest releases with the installed versions,
+// which a plan changes: read it again once the last active plan ends.
+const updates = useUpdatesStore()
+watch(active, (now, before) => { if (before && !now && updates.result) void updates.check() })
+// A plan opened from elsewhere (the version badge's one-click update) while this page is shown.
+watch(() => route.query.upgrade, value => { if (typeof value === 'string' && value && value !== selectedID.value) { selectedID.value = value; void load() } })
 async function load(manual = false) {
   if (inflight || disposed) return
   inflight = true
@@ -112,7 +118,7 @@ onBeforeUnmount(() => { disposed = true })
       </STable>
       <SCard v-if="canExecute" :title="t('upgrades.newPlan')">
         <div class="space-y-4">
-          <SAlert v-if="preflight && preflight.strategy === 'rolling-v1' && !preflight.blockers.length" tone="info" dense>{{ t('upgrades.rollingWindow') }}</SAlert>
+          <SAlert v-if="preflight && preflight.strategy === 'rolling-v1' && !preflight.blocker_codes.length" tone="info" dense>{{ t('upgrades.rollingWindow') }}</SAlert>
           <SAlert v-else tone="warning" dense>{{ t('upgrades.maintenanceWindow') }}</SAlert>
           <SHint>{{ t('upgrades.independentPlugins') }}</SHint>
           <SField :label="t('upgrades.target')"><SSelect v-model="target" :options="options" :placeholder="t('upgrades.choose')" :disabled="busy || active" /></SField>
@@ -122,9 +128,9 @@ onBeforeUnmount(() => { disposed = true })
           <div v-if="preflight" class="space-y-2">
             <p class="text-sm">{{ t('upgrades.order') }}: {{ preflight.nodes.join(' → ') }}</p>
             <p class="text-sm text-fg-muted">{{ t(preflight.strategy === 'rolling-v1' ? 'upgrades.rollingSequence' : 'upgrades.sequence') }}</p>
-            <SAlert v-if="!preflight.blockers.length" tone="success" dense>{{ t('upgrades.preflightOK') }}</SAlert>
+            <SAlert v-if="!preflight.blocker_codes.length" tone="success" dense>{{ t('upgrades.preflightOK') }}</SAlert>
             <SAlert v-else tone="danger" dense data-testid="upgrade-blockers">
-              <ul class="list-disc space-y-1 pl-5"><li v-for="reason in preflight.blockers" :key="reason">{{ reason }}</li></ul>
+              <ul class="list-disc space-y-1 pl-5"><li v-for="(blocker, i) in preflight.blocker_codes" :key="i">{{ issueText(blocker) }}</li></ul>
             </SAlert>
           </div>
         </div>

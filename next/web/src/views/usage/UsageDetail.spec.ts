@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { i18n } from '@/i18n'
 import UsageDetail from './UsageDetail.vue'
 import type { UsageRow } from './usage'
+import type { UsageView } from './view'
 
 const get = vi.hoisted(() => vi.fn())
 vi.mock('@sub2api/host', () => ({ api: { get } }))
@@ -21,9 +22,9 @@ const row = {
   ] } }
 } as unknown as UsageRow
 
-function render(value = row, path?: string, mine = false) {
+function render(value = row, path?: string, view: UsageView = 'all') {
   i18n.global.locale.value = 'zh'
-  return mount(UsageDetail, { props: { row: value, path, mine }, global: {
+  return mount(UsageDetail, { props: { row: value, path, view }, global: {
     plugins: [i18n], stubs: { ExprHistoryModal: true, BillingBreakdown: true }
   } })
 }
@@ -43,7 +44,7 @@ describe('call chain', () => {
   })
 
   it('leaves the accounts out of the caller\'s own records', () => {
-    const wrapper = render(retried, undefined, true)
+    const wrapper = render(retried, undefined, 'self')
     expect(wrapper.findAll('[data-testid="attempt-step"]')).toHaveLength(2)
     expect(wrapper.find('[data-testid="attempt-account"]').exists()).toBe(false)
   })

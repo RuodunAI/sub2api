@@ -135,7 +135,7 @@ func (s *Service) refreshCredentials(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a, err := s.loadRow(ctx, s.d.DB.Gorm, id, s.scopeOf(ctx, perm.AccountUpdate), false)
+	a, err := s.loadIn(ctx, id, perm.AccountUpdate)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

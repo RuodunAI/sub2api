@@ -33,8 +33,9 @@ var sqlPolicy = sqlcheck.Policy{
 		"sdk/pgdb/pgdbtool.DropSchema":                    "migration runner: DROP SCHEMA",
 	},
 	Pool: map[string]string{
-		"sdk/pgdb.Close":         "closes the connections of a handle Open returned",
-		"sdk/testpg.runningPort": "pings the probe's one connection, with a timeout, to find a running server",
+		"sdk/pgdb.Close":          "closes the connections of a handle Open returned",
+		"sdk/hierarchy.requireTx": "only asks whether the handle's connection is a transaction (gorm.TxCommitter); runs nothing on it",
+		"sdk/testpg.runningPort":  "pings the probe's one connection, with a timeout, to find a running server",
 	},
 	Dynamic: map[string]string{
 		"sdk/pgdb/pgdbtool.comparer.sameDefault":          "two default expressions read from pg_catalog (never input) cast to a type format_type printed",

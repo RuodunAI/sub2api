@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -359,7 +361,7 @@ func TestPermScoped(t *testing.T) {
 	if code, v, _ := call(1); code != 200 || !v.Read.All || strings.Join(v.Granted, ",") != "account:read" || !v.Update.Empty() {
 		t.Fatalf("all: %d %+v", code, v)
 	}
-	if code, v, _ := call(2); code != 200 || v.Read.Owner != 2 || v.Read.All || len(v.Granted) != 0 || v.Update.Groups[0] != 12 {
+	if code, v, _ := call(2); code != 200 || !slices.Equal(v.Read.Owners, []int64{2}) || v.Read.All || len(v.Granted) != 0 || v.Update.Groups[0] != 12 {
 		t.Fatalf("own: %d %+v", code, v)
 	}
 	// A group scope only: an empty scope for the action not held.
@@ -369,4 +371,28 @@ func TestPermScoped(t *testing.T) {
 	if code, _, e := call(4); code != http.StatusForbidden || e["details"].(map[string]any)["permission"] != "account:read" {
 		t.Fatalf("denied: %d %v", code, e)
 	}
+}
+
+// PermScoped hands the handler a team scope as compiled: the holder as an
+// owner and as the top of its team, whose users the statements read.
+func TestPermScopedTeam(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	r := NewRouter(engine, fakeTokens{}, fakeAuthz{keys: map[int64][]string{5: {"account:read:team", "account:update:own"}}})
+	r.PermScoped("GET", "/accounts", func(c *gin.Context) {
+		ctx := c.Request.Context()
+		read, _ := core.Scope(ctx, nil, perm.AccountRead)
+		update, _ := core.Scope(ctx, nil, perm.AccountUpdate)
+		OK(c, []core.DataScope{read, update})
+	}, perm.AccountRead, perm.AccountUpdate)
+	req := httptest.NewRequest("GET", "/api/v1/accounts", nil)
+	req.Header.Set("Authorization", "Bearer u5")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	var out struct {
+		Data []core.DataScope `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []core.DataScope{{Owners: []int64{5}, Teams: []int64{5}}, {Owners: []int64{5}}}, out.Data, "own stays own")
 }

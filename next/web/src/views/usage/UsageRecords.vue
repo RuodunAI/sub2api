@@ -1,8 +1,10 @@
 <script setup lang="ts">
-// Usage records, for an operator (`admin`: all users) or for the caller: the
-// search bar with the live statistics, and below it what the log type asks for
-// - the request list, the failed requests (that list with success=false), the
-// client IPs, the user ranking (operator only), plus any type the page adds
+// Usage records of the `view`: all users' (an operator's), the caller's, or
+// those of the accounts in the caller's reach (`account`, CONTRACTS §103.5: the
+// account's facts only, no client IPs): the search bar with the live
+// statistics, and below it what the log type asks for - the request list, the
+// failed requests (that list with success=false), the client IPs (not in the
+// account view), the user ranking (operator only), plus any type the page adds
 // (`extraTabs`, rendered from the #tab-<key> slot, with its own filters in
 // #tab-<key>-range and #tab-<key>-filters). Every part but an added type follows
 // the same filters, which a link may preset (?user_id=, ?from=, …); Export
@@ -26,17 +28,18 @@ import UserRanking from './UserRanking.vue'
 import { useUsageSummary } from './useUsageSummary'
 import { baseUsageFilters, entityPatch, queryUsageFilters } from './usageFilters'
 import type { UsageRow } from './usage'
+import type { UsageView } from './view'
 
 const props = withDefaults(
   defineProps<{
     listPath: string
     summaryPath: string
-    admin?: boolean
+    view: UsageView
     /** Bumped by the page's refresh button: reload everything (the page owns the header). */
     revision?: number
     extraTabs?: TabItem[]
   }>(),
-  { admin: false, revision: 0, extraTabs: () => [] }
+  { revision: 0, extraTabs: () => [] }
 )
 const emit = defineEmits<{ (e: 'update:loading', value: boolean): void; (e: 'update:tab', value: string): void }>()
 const { t } = useI18n()
@@ -44,16 +47,18 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
+/** Where each view keeps the table's column settings. */
+const COLUMN_SETTINGS: Record<UsageView, string> = { all: 'usage-log', self: 'my-usage-log', account: 'account-usage-log' }
 // Which account served a request is shown to operators who may read accounts
-// (the server leaves it out for everyone else, CONTRACTS §66.5).
-const showAccount = computed(() => props.admin && auth.has('account:read'))
+// (the server leaves it out for everyone else, CONTRACTS §66.5), and in the account view.
+const showAccount = computed(() => props.view === 'account' || (props.view === 'all' && auth.has('account:read')))
 
 // The request log opens like new-api's: today from 00:00:00 to an hour from
 // now, both ends shown to the second.
 const range = ref<RangeKey>('today')
 const baseFilters = baseUsageFilters('today', true)
 // A link from the dashboard opens the page already filtered.
-const fromQuery = queryUsageFilters(route.query, props.admin, showAccount.value)
+const fromQuery = queryUsageFilters(route.query, props.view, showAccount.value)
 if (fromQuery.from || fromQuery.to) range.value = 'custom'
 
 // The log type.
@@ -61,8 +66,8 @@ const logTypes = computed(() =>
   [
     { key: 'records', label: t('stats.tabs.records') },
     { key: 'errors', label: t('stats.tabs.errors') },
-    { key: 'ips', label: t('stats.tabs.ips') },
-    ...(props.admin ? [{ key: 'ranking', label: t('stats.tabs.ranking') }] : []),
+    ...(props.view === 'account' ? [] : [{ key: 'ips', label: t('stats.tabs.ips') }]),
+    ...(props.view === 'all' ? [{ key: 'ranking', label: t('stats.tabs.ranking') }] : []),
     ...props.extraTabs
   ].map((x) => ({ value: x.key, label: x.label }))
 )
@@ -126,7 +131,7 @@ async function exportCsv() {
       v-model:log-type="tab"
       class="!mb-0"
       :model-value="filters"
-      :admin="admin"
+      :view="view"
       :accounts="showAccount"
       :protocol-options="protocolOptions"
       :model-options="modelOptions"
@@ -143,7 +148,7 @@ async function exportCsv() {
         <slot v-if="extraOpen" :name="`tab-${tab}-filters`" />
       </template>
       <template v-if="!extraOpen" #stats>
-        <UsageLiveStats :realtime-path="`${listPath}/realtime`" :summary-path="summaryPath" :filters="filters" :revision="revision" />
+        <UsageLiveStats :realtime-path="`${listPath}/realtime`" :summary-path="summaryPath" :filters="filters" :revision="revision" :view="view" />
       </template>
       <template #actions>
         <slot name="actions" />
@@ -161,11 +166,11 @@ async function exportCsv() {
       :column-settings="false"
       :rows="items"
       :loading="loading"
-      :show-user="admin"
+      :show-user="view === 'all'"
       :show-account="showAccount"
-      :column-settings-key="admin ? 'usage-log' : 'my-usage-log'"
-      show-client-request-id
-      :mine="!admin"
+      :column-settings-key="COLUMN_SETTINGS[view]"
+      :show-client-request-id="view !== 'account'"
+      :view="view"
       :detail-path="(id: number) => `${listPath}/${id}`"
       @filter-client-request-id="(id: string) => (filters.client_request_id = id)"
       @filter-client-ip="(ip: string) => (filters.client_ip = ip)"
@@ -180,7 +185,7 @@ async function exportCsv() {
       :active="filters.client_ip"
       @filter="(ip: string) => (filters.client_ip = ip)"
     />
-    <UserRanking v-if="admin && tab === 'ranking'" :summary-path="summaryPath" :filters="filters" :revision="revision" @select="selectUser" />
+    <UserRanking v-if="view === 'all' && tab === 'ranking'" :summary-path="summaryPath" :filters="filters" :revision="revision" @select="selectUser" />
     <template v-for="x in extraTabs" :key="x.key">
       <slot v-if="tab === x.key" :name="`tab-${x.key}`" />
     </template>

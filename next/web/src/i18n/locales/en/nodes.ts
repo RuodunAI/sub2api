@@ -13,6 +13,10 @@ export default {
   autoRefresh: 'Auto refresh every 5s',
   online: 'Online nodes',
   pluginIssues: 'Plugin issues',
-  hostVersions: 'Host versions',
+  hostVersions: 'Versions',
+  coreVersion: 'Core version',
+  gatewayVersion: 'Gateway version',
+  unknownVersion: 'Unknown',
+  versionCounts: 'Core {core} · Gateway {gateway}',
   mixedVersions: 'Nodes run different versions'
 }

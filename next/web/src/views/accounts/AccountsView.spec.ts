@@ -3,7 +3,7 @@ import { enableAutoUnmount, flushPromises, shallowMount, type DOMWrapper } from 
 import { reactive, ref } from 'vue'
 import type { Account, AccountType } from '@/api/types'
 import { i18n } from '@/i18n'
-import { SButton, SDropdown, SModal, STabs } from '@sub2api/ui'
+import { SButton, SDropdown, SModal, SSwitch, STabs } from '@sub2api/ui'
 import AccountsView from './AccountsView.vue'
 import AccountModelTest from './AccountModelTest.vue'
 import AccountEditor from './AccountEditor.vue'
@@ -16,7 +16,7 @@ import type { PluginAccountActionEntry, SlotEntry } from '@/stores/plugins'
 /** Toggles a switch: SSwitch is a checkbox (jsdom only activates connected ones on click), stubs are buttons. */
 const flip = (el: Omit<DOMWrapper<Element>, 'exists'>) => (el.element instanceof HTMLInputElement ? el.setValue(!el.element.checked) : el.trigger('click'))
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), findType: vi.fn(), confirm: vi.fn(), toast: vi.fn(), notifyError: vi.fn(), reload: vi.fn(), canUpdate: true, scope: 'all' as 'all' | 'own', slotEntries: vi.fn((_slot: string) => [] as SlotEntry[]), accountActions: [] as PluginAccountActionEntry[], groups: [] as { id: number; name: string; platforms?: string[] }[] }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), findType: vi.fn(), confirm: vi.fn(), toast: vi.fn(), notifyError: vi.fn(), reload: vi.fn(), canUpdate: true, scope: 'all' as 'all' | 'team' | 'own', slotEntries: vi.fn((_slot: string) => [] as SlotEntry[]), accountActions: [] as PluginAccountActionEntry[], groups: [] as { id: number; name: string; platforms?: string[] }[] }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<typeof import('@sub2api/host')>(), api: { get: mocks.get, post: mocks.post, patch: mocks.patch, list: async () => ({ items: [] }) } }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<typeof import('@sub2api/ui')>(), confirm: mocks.confirm, toast: mocks.toast }))
 vi.mock('@/utils/errors', () => ({ notifyError: mocks.notifyError, errorMessage: String }))
@@ -739,6 +739,23 @@ describe('account list layout', () => {
     expect(renderLayout().get('[data-testid="cols"]').text()).toContain('created_by')
   })
 
+  it('shows the owner column to every reader past its own rows, and the creator only to one over every row', () => {
+    list.items.value = [row(1, { owner_id: 7 }), row(2, { owner_id: 7 })]
+    const cols = () => renderLayout().get('[data-testid="cols"]').text().split(',')
+    expect(cols()).toContain('owner')
+    expect(cols()).not.toContain('created_by')
+    mocks.scope = 'team'
+    try {
+      list.items.value = [row(1, { owner_id: 7 }), row(2, { owner_id: 8, created_by: 2 })]
+      expect(cols()).toContain('owner')
+      expect(cols()).not.toContain('created_by')
+      mocks.scope = 'own'
+      expect(cols()).not.toContain('owner')
+    } finally {
+      mocks.scope = 'all'
+    }
+  })
+
   it("leads the type line with the marks of the platforms the account's type serves now", () => {
     mocks.findType.mockReturnValue({ platforms: [{ id: 'anthropic', available: true }, { id: 'foo', available: false }, { id: 'openai' }] })
     list.items.value = [row(1)]
@@ -773,20 +790,35 @@ describe('account list filters', () => {
     for (const key of Object.keys(list.filters)) delete list.filters[key]
   })
 
-  it('picks the group, and under the advanced filters the model and the creator, into the list filters', async () => {
+  it('picks the group, and under the advanced filters the model, the owner and the creator, into the list filters', async () => {
     const w = renderFilters()
     expect(pickers(w)).toEqual([['group', 'group-filter']])
     await w.get('[aria-expanded]').trigger('click')
-    expect(pickers(w)).toEqual([['group', 'group-filter'], ['model', 'model-filter'], ['user', 'created-by-filter']])
+    expect(pickers(w)).toEqual([['group', 'group-filter'], ['model', 'model-filter'], ['user', 'owner-filter'], ['user', 'created-by-filter']])
+    expect(w.find('[data-testid="only-subordinates"]').exists()).toBe(false)
     const pick = (testid: string, id: string) => w.getComponent<typeof EntityPicker>(`[data-testid="${testid}"]`).vm.$emit('update:id', id)
     pick('group-filter', '3')
     pick('model-filter', 'claude-opus-5')
+    pick('owner-filter', '8')
     pick('created-by-filter', '7')
-    expect(list.filters).toEqual({ group_id: '3', model: 'claude-opus-5', created_by: '7' })
+    expect(list.filters).toEqual({ group_id: '3', model: 'claude-opus-5', owner_id: '8', created_by: '7' })
     await flushPromises()
     expect(w.getComponent<typeof EntityPicker>('[data-testid="group-filter"]').props('id')).toBe('3')
     // The filters count and clear as before.
     await w.get('[data-testid="clear-filters"]').trigger('click')
     expect(Object.values(list.filters).filter(Boolean)).toEqual([])
+  })
+
+  it('gives a team reader the owner filter and its team switch, and no creator filter (CONTRACTS §103.4)', async () => {
+    mocks.scope = 'team'
+    try {
+      const w = renderFilters()
+      await w.get('[aria-expanded]').trigger('click')
+      expect(pickers(w)).toEqual([['group', 'group-filter'], ['model', 'model-filter'], ['user', 'owner-filter']])
+      w.getComponent<typeof SSwitch>('[data-testid="only-subordinates"]').vm.$emit('update:modelValue', true)
+      expect(list.filters.subordinates).toBe('true')
+    } finally {
+      mocks.scope = 'all'
+    }
   })
 })

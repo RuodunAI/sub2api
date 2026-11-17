@@ -515,7 +515,7 @@ func TestAccountResetStatusOwnership(t *testing.T) {
 	authz.keys[stranger] = []string{"account:update:own"}
 	authz.keys[reader] = []string{"account:read"}
 	id := e.mkRawAccount("anthropic", "apikey", "private", "sk-good-key-123", false)
-	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET created_by=$2,status_reason='rejected' WHERE id=$1`, id, owner); err != nil {
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET created_by=$2,owner_id=$2,status_reason='rejected' WHERE id=$1`, id, owner); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.SetCooldown(t.Context(), id, time.Now().Add(time.Hour), "429"); err != nil {

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   users: [] as object[],
   assignable: [] as object[],
   put: vi.fn(async () => ({})),
+  patch: vi.fn(async (_path: string, _body: Record<string, unknown>) => ({})),
   epoch: 0,
   superuser: false,
   perms: null as string[] | null
@@ -17,7 +18,8 @@ vi.mock('@sub2api/host', async (original) => {
     ...real.api,
     get: vi.fn(async (path: string) => (path === '/me/assignable-roles' ? mocks.assignable : [])),
     list: vi.fn(async () => ({ items: mocks.users, page: { page: 1, page_size: 20, total: mocks.users.length }, paged: true })),
-    put: mocks.put
+    put: mocks.put,
+    patch: mocks.patch
   }
   return { ...real, api }
 })
@@ -26,7 +28,12 @@ vi.mock('@/composables/lookups', async (original) => ({
   fetchFirstPage: async () => ['admin', 'operator', 'supplier', 'user', 'super_admin'].map((key) => ({ key, name: key, superuser: key === 'super_admin' }))
 }))
 vi.mock('@/stores/auth', () => ({
-  useAuthStore: () => ({ has: (p: string) => mocks.superuser || !mocks.perms || mocks.perms.includes(p), me: { id: 1, superuser: mocks.superuser }, permissionsEpoch: mocks.epoch })
+  useAuthStore: () => ({
+    has: (p: string) => mocks.superuser || !mocks.perms || mocks.perms.includes(p),
+    hasAction: (a: string) => mocks.superuser || !mocks.perms || mocks.perms.some((p) => p === a || p.startsWith(`${a}:`)),
+    me: { id: 1, superuser: mocks.superuser },
+    permissionsEpoch: mocks.epoch
+  })
 }))
 vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }), useRouter: () => ({ push: vi.fn() }) }))
 enableAutoUnmount(afterEach)
@@ -34,6 +41,7 @@ enableAutoUnmount(afterEach)
 import UsersView from './UsersView.vue'
 
 const SDropdown = { props: ['actions'], emits: ['select'], template: '<div class="row-actions"><button v-for="a in actions.filter(x => !x.hidden)" :key="a.key" :data-action="a.key" @click="$emit(\'select\', a.key)">{{ a.key }}</button></div>' }
+const EntityPicker = { props: ['id'], emits: ['update:id'], template: '<input :value="id" @change="$emit(\'update:id\', $event.target.value)" />' }
 const SFormModal = { props: ['open'], emits: ['submit'], template: '<form v-if="open" data-testid="modal" @submit.prevent="$emit(\'submit\')"><slot /></form>' }
 const managed = (key: string, grantable = true) => ({ key, name: key, builtin: true, grantable, missing: grantable ? [] : ['user:delete'] })
 const user = (id: number, roles: string[]) => ({ id, email: `u${id}@x`, display_name: '', roles, status: 'active' }) as unknown as User
@@ -42,7 +50,7 @@ async function render() {
   const w = mount(UsersView, {
     global: {
       plugins: [i18n],
-      stubs: { SDropdown, SFormModal, Teleport: true, UserCreateDialog: true, UserPricingDrawer: true, UserSegmentMoveDialog: true, AdjustBalanceModal: true, ResetPasswordDialog: true, TransferSuperAdminDialog: true },
+      stubs: { SDropdown, SFormModal, EntityPicker, Teleport: true, UserCreateDialog: true, UserPricingDrawer: true, UserSegmentMoveDialog: true, AdjustBalanceModal: true, ResetPasswordDialog: true, TransferSuperAdminDialog: true },
       directives: { permission: {} }
     }
   })
@@ -58,6 +66,7 @@ beforeEach(() => {
   mocks.superuser = false
   mocks.perms = null
   mocks.put.mockClear()
+  mocks.patch.mockClear()
   mocks.assignable = [managed('operator'), managed('supplier'), managed('user')]
 })
 
@@ -138,5 +147,51 @@ describe('UsersView managed users (T78)', () => {
     mocks.users = [user(2, ['user'])]
     const w = await render()
     expect(actions(w, 2)).toEqual(['pricing', 'ledger'])
+  })
+})
+
+describe('UsersView owners (CONTRACTS §103.3)', () => {
+  const edit = async (w: Awaited<ReturnType<typeof render>>, id: number) => {
+    await row(w, id).get('[data-action="edit"]').trigger('click')
+    await flushPromises()
+  }
+  const save = async (w: Awaited<ReturnType<typeof render>>) => {
+    await w.get('[data-testid="modal"]').trigger('submit')
+    await flushPromises()
+  }
+
+  it('a team holder edits and assigns the roles of its team, never deletes or resets a password, and names no owner', async () => {
+    mocks.perms = ['user:read:team', 'user:create:team', 'user:update:team', 'role:read', 'role:assign']
+    mocks.assignable = [managed('supplier'), managed('supplier_agent')]
+    mocks.users = [{ ...user(6, ['supplier']), owner_id: 11, owner_email: 'agent@x' }]
+    const w = await render()
+    expect(actions(w, 6)).toEqual(['edit', 'roles'])
+    expect(w.text()).toContain('agent@x')
+    expect(w.find('[data-testid="user-direct-filter"]').exists()).toBe(true)
+    await edit(w, 6)
+    expect(w.find('[data-testid="user-edit-owner"]').exists()).toBe(false)
+    await save(w)
+    expect(mocks.patch.mock.calls[0][1].owner_id).toBeUndefined()
+  })
+
+  it('shows the owner column without any owner on the page, a dash for none', async () => {
+    mocks.users = [user(2, ['user'])]
+    const w = await render()
+    expect(w.findAll('th').map((h) => h.text())).toContain('所属')
+    expect(w.text()).toContain('—')
+  })
+
+  it('a holder over every user moves a user under another owner, or takes the owner away', async () => {
+    mocks.users = [{ ...user(6, ['supplier']), owner_id: 11 }]
+    const w = await render()
+    expect(w.find('[data-testid="user-direct-filter"]').exists()).toBe(false)
+    await edit(w, 6)
+    await w.get('[data-testid="user-edit-owner"]').setValue('12')
+    await save(w)
+    expect(mocks.patch).toHaveBeenLastCalledWith('/users/6', expect.objectContaining({ owner_id: 12 }))
+    await edit(w, 6)
+    await w.get('[data-testid="user-edit-owner"]').setValue('')
+    await save(w)
+    expect(mocks.patch).toHaveBeenLastCalledWith('/users/6', expect.objectContaining({ owner_id: 0 }))
   })
 })

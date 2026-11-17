@@ -2,6 +2,9 @@
 // (POST /users/:id/balance/adjust and GET /me/balance live in resources.ts / core.ts.)
 import { createHash } from 'node:crypto'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
+import { accounts } from './accounts'
+import { caller, inScope, ownerScope } from './core'
+import type { UsageView } from '../src/views/usage/view'
 
 type PriceMode = 'per_request' | 'per_token' | 'expression'
 type LText = { en: string; zh: string }
@@ -1272,23 +1275,20 @@ function conversionMatch(c: any, want: string) {
   return c?.grade === want
 }
 
+/** The filters that match a record's field exactly. */
+const EXACT_FILTERS = [
+  'user_id', 'group_id', 'group_name', 'api_key_id', 'account_id', 'client_request_id', 'client_ip', 'stream', 'billing_status', 'model',
+  'platform', 'protocol', 'endpoint', 'plugin_key', 'account_type', 'error_type', 'request_id', 'status_code'
+]
+
 function usageFilter(rows: any[], q: Record<string, string>) {
   return rows.filter((u) => {
     if (q.from && u.created_at < q.from) return false
     if (q.to && u.created_at > q.to) return false
-    if (q.user_id && String(u.user_id) !== q.user_id) return false
-    if (q.group_id && String(u.group_id) !== q.group_id) return false
-    if (q.group_name && u.group_name !== q.group_name) return false
-    if (q.api_key_id && String(u.api_key_id) !== q.api_key_id) return false
-    if (q.account_id && String(u.account_id) !== q.account_id) return false
-    if (q.client_request_id && u.client_request_id !== q.client_request_id) return false
-    if (q.client_ip && u.client_ip !== q.client_ip) return false
+    if (EXACT_FILTERS.some((k) => q[k] && String(u[k]) !== q[k])) return false
     if (q.model_contains && !u.model.toLowerCase().includes(q.model_contains.toLowerCase())) return false
     if (q.api_key_name && !u.api_key_name.toLowerCase().includes(q.api_key_name.toLowerCase())) return false
-    if (q.stream && String(u.stream) !== q.stream) return false
-    if (q.billing_status && u.billing_status !== q.billing_status) return false
     if (q.conversion && !conversionMatch(u.conversion, q.conversion)) return false
-    if (q.model && u.model !== q.model) return false
     if (q.retried === 'true' && !((u.attempts ?? 1) > 1)) return false
     // Like the server: a request that never reached an account (attempts 0) is in neither.
     if (q.retried === 'false' && (u.attempts ?? 1) !== 1) return false
@@ -1298,24 +1298,30 @@ function usageFilter(rows: any[], q: Record<string, string>) {
   })
 }
 
-function usageDetail(u: any, self = false) {
-  // Explicit synthetic TTL evidence lets the detail preview exercise both the
-  // compact summary and its expanded counters without using production data.
+/**
+ * A detail's metrics. Explicit synthetic TTL evidence lets the detail preview
+ * exercise both the compact summary and its expanded counters without using
+ * production data.
+ */
+function usageMetrics(u: any) {
   const cacheWrite = u.cache_creation_tokens + (u.cache_creation_1h_tokens || 0)
-  const metrics = cacheWrite ? { cache_write_evidence: {
+  return cacheWrite ? { cache_write_evidence: {
     version: 1, total: { state: 'value', value: cacheWrite },
     explicit_5m: { state: 'value', value: u.cache_creation_tokens },
     explicit_1h: { state: 'value', value: u.cache_creation_1h_tokens || 0 },
     unclassified_tokens: 0, completeness: 'complete', source: 'json',
     pricing_policy: 'platform_default_cache_write_compat'
   } } : {}
+}
+
+function usageDetail(u: any, self = false) {
   const row = publicUsage(u, self)
   // The detail names the accounts of the trail; the list has their IDs only.
   if (row.attempt_trail && !self) row.attempt_trail = { ...row.attempt_trail, steps: row.attempt_trail.steps.map((s: any) => ({ ...s, account_name: ACCOUNTS.find((a) => a.id === s.account_id)?.name })) }
   return {
     ...row,
     billing_detail: u._detail ? { ...u._detail, ledger_id: u.ledger_id ?? null } : null,
-    price: u._price, metrics, attempts: u.attempts ?? 1,
+    price: u._price, metrics: usageMetrics(u), attempts: u.attempts ?? 1,
     // Self-service details carry no anomalies, like the server.
     ...(u._anomalies && !self ? { anomalies: u._anomalies } : {}),
     user_agent: 'claude-cli/mock (external, cli; usage-detail-preview)'
@@ -1339,6 +1345,7 @@ function usageSummary(rows: any[], query: Record<string, string>) {
       case 'model': return u.model
       case 'upstream_model': return u.upstream_model
       case 'user': return String(u.user_id)
+      case 'account': return String(u.account_id ?? '')
       case 'ip': return u.client_ip
       case 'api_key': return String(u.api_key_id)
       case 'group': return u.group_name
@@ -1356,6 +1363,7 @@ function usageSummary(rows: any[], query: Record<string, string>) {
     const key = keyOf(u)
     const s = map.get(key) || { key, requests: 0, success: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0, prompt_tokens: 0, total_cost: 0, standard_cost: 0, _lat: 0, _ft: 0, _n: 0 }
     if (by === 'user') s.user_email = u.user_email
+    if (by === 'account') s.account_name = u.account_name
     if (by === 'ip' && (!s.last_at || u.created_at > s.last_at)) s.last_at = u.created_at
     s.requests++
     if (u.success) {
@@ -1438,25 +1446,26 @@ function callChain(u: any, self: boolean, zh: boolean): string {
 }
 
 /** GET …/usage/export (CONTRACTS §66.5): a short CSV with the BOM, like the server. */
-function usageCSV(rows: any[], q: Record<string, string>, self: boolean) {
+function usageCSV(rows: any[], q: Record<string, string>, view: UsageView) {
   const zh = q.lang === 'zh'
-  const cols: Array<[string, string, (u: any) => unknown, boolean?]> = [
+  const cols: Array<[string, string, (u: any) => unknown, UsageView[]?]> = [
     ['时间', 'Time', (u) => u.created_at],
     ['请求 ID', 'Request ID', (u) => u.request_id],
-    ['用户', 'User', (u) => u.user_email, true],
-    ['API 密钥', 'API key', (u) => u.api_key_name],
-    ['账号', 'Account', (u) => u.account_name ?? '', true],
+    ['用户', 'User', (u) => u.user_email, ['all']],
+    ['API 密钥', 'API key', (u) => u.api_key_name, ['all', 'self']],
+    ['账号', 'Account', (u) => u.account_name ?? '', ['all', 'account']],
     ['模型', 'Model', (u) => u.model],
-    ['上游模型', 'Upstream model', (u) => u.upstream_model, true],
+    ['上游模型', 'Upstream model', (u) => u.upstream_model, ['all', 'account']],
     ['状态', 'Status', (u) => u.status_code],
     ['输入', 'Input', (u) => u.input_tokens],
     ['输出', 'Output', (u) => u.output_tokens],
     ['缓存读', 'Cache read', (u) => u.cache_read_tokens],
     ['缓存写', 'Cache write', (u) => u.cache_creation_tokens],
-    ['费用', 'Cost', (u) => u.total_cost],
-    ['调用链路', 'Call chain', (u) => callChain(u, self, zh)]
+    // The account view bills nothing: the list price.
+    ['费用', 'Cost', (u) => (view === 'account' ? money(baseCost(u)) : u.total_cost)],
+    ['调用链路', 'Call chain', (u) => callChain(u, view !== 'all', zh)]
   ]
-  const shown = cols.filter((c) => !(self && c[3]))
+  const shown = cols.filter((c) => !c[3] || c[3].includes(view))
   const cell = (v: unknown) => {
     let s = String(v ?? '')
     if (/^[=+\-@\t\r]/.test(s)) s = "'" + s
@@ -1500,8 +1509,8 @@ function realtimeOf(rows: typeof usageRows, q: Record<string, string>) {
 }
 on('GET', '/usage/realtime', (req) => realtimeOf(usageRows, req.query))
 on('GET', '/me/usage/realtime', (req) => realtimeOf(usageRows.filter((u) => u.user_id === 1), req.query))
-on('GET', '/usage/export', (req) => usageCSV(usageRows, req.query, false))
-on('GET', '/me/usage/export', (req) => usageCSV(usageRows.filter((u) => u.user_id === 1), req.query, true))
+on('GET', '/usage/export', (req) => usageCSV(usageRows, req.query, 'all'))
+on('GET', '/me/usage/export', (req) => usageCSV(usageRows.filter((u) => u.user_id === 1), req.query, 'self'))
 on('GET', '/usage', (req) => paginate(usageFilter(usageRows, req.query).map((u) => publicUsage(u)), req.query))
 on('GET', '/usage/:id', (req) => {
   const u = usageRows.find((x) => x.id === Number(req.params.id))
@@ -1511,6 +1520,92 @@ on('GET', '/me/usage', (req) => paginate(usageFilter(usageRows.filter((u) => u.u
 on('GET', '/me/usage/:id', (req) => {
   const u = usageRows.find((x) => x.id === Number(req.params.id) && x.user_id === 1)
   return u ? usageDetail(u, true) : fail(404, 'not_found', 'usage record not found')
+})
+
+// ------------------------------------------------------------------ account usage
+
+// GET /account-usage/* (CONTRACTS §103.5): the records of the accounts in the
+// caller's reach of usage:account:read (deleted ones' records stay out of the
+// mock: it forgets a deleted account), whitelisted fields only.
+const ACCOUNT_USAGE_FILTERS = [
+  'account_id', 'model', 'platform', 'plugin_key', 'account_type', 'protocol', 'endpoint', 'error_type', 'request_id',
+  'success', 'stream', 'status_code', 'retried', 'from', 'to', 'tz'
+]
+const ACCOUNT_RECORD_FIELDS = [
+  'id', 'request_id', 'created_at', 'account_id', 'account_name', 'plugin_key', 'platform', 'account_type', 'protocol', 'endpoint',
+  'model', 'upstream_model', 'stream', 'status_code', 'success', 'error_type', 'input_tokens', 'output_tokens', 'cache_read_tokens',
+  'cache_creation_tokens', 'cache_creation_1h_tokens', 'latency_ms', 'first_token_ms'
+]
+const ACCOUNT_GROUPS = ['day', 'hour', 'none', 'model', 'account', 'platform', 'endpoint', 'protocol']
+
+/** A window without the charge (AccountTotals): the account view bills nothing. */
+function unbilled({ total_cost, estimated_cost, ...rest }: any) {
+  void total_cost
+  void estimated_cost
+  return rest
+}
+/** An AccountSummaryRow: a summary row without the user, the charge and last_at. */
+function accountSummaryRow({ user_email, last_at, ...rest }: any) {
+  void user_email
+  void last_at
+  return unbilled(rest)
+}
+
+/** Whether the caller reaches an account, by its id. */
+type AccountReach = (id: number | null | undefined) => boolean
+
+/** An AccountRecord: in the trail, an account outside the reach is only its account_ref. */
+function accountRecord(u: any, reaches: AccountReach) {
+  const row: any = { ...Object.fromEntries(ACCOUNT_RECORD_FIELDS.map((k) => [k, u[k]])), attempts: u.attempts ?? 1, standard_cost: money(baseCost(u)) }
+  if (!u.attempt_trail) return row
+  const refs: number[] = []
+  const ref = (id: number) => refs.indexOf(id) + 1 || refs.push(id)
+  const steps = u.attempt_trail.steps.map(({ account_id, status, error_type, ms, next }: any) => ({
+    status, error_type, ms, next,
+    ...(reaches(account_id) ? { account_id, account_name: accounts.find((a) => a.id === account_id)?.name } : { account_ref: ref(account_id) })
+  }))
+  return { ...row, attempt_trail: { ...u.attempt_trail, steps } }
+}
+
+/**
+ * Registers GET /account-usage<path>, as the server checks it: 403 without
+ * usage:account:read, then a parameter beyond `params` is 400 (by name; a
+ * route without `params` reads none and ignores them), and `handler` gets the
+ * records in reach.
+ */
+function accountUsageRoute(path: string, params: string[] | null, handler: (rows: any[], reaches: AccountReach, req: MockRequest) => unknown) {
+  on('GET', `/account-usage${path}`, (req) => {
+    const who = caller(req)
+    const scope = ownerScope(who, 'usage:account:read')
+    if (!scope) return fail(403, 'permission_denied', 'Permission denied')
+    const extra = params ? Object.keys(req.query).filter((k) => !params.includes(k)).sort() : []
+    if (extra.length) return fieldFail(extra.map((field) => ({ field, code: 'not_allowed', message: 'not accepted here' })))
+    const reaches: AccountReach = (id) => accounts.some((a) => a.id === id && inScope(scope, who, a))
+    return handler(usageRows.filter((u) => reaches(u.account_id)), reaches, req)
+  })
+}
+
+accountUsageRoute('', [...ACCOUNT_USAGE_FILTERS, 'page', 'page_size', 'cursor'], (rows, reaches, req) =>
+  paginate(usageFilter(rows, req.query).map((u) => accountRecord(u, reaches)), req.query)
+)
+accountUsageRoute('/summary', [...ACCOUNT_USAGE_FILTERS, 'group_by', 'order', 'limit'], (rows, _, req) => {
+  const { group_by: by, order } = req.query
+  // Like the server: invalid_argument with a message, no fields.
+  if (by && !ACCOUNT_GROUPS.includes(by)) return fail(400, 'invalid_argument', `group_by must be ${ACCOUNT_GROUPS.slice(0, -1).join(', ')} or ${ACCOUNT_GROUPS.at(-1)}`)
+  if (order && !['requests', 'tokens'].includes(order)) return fail(400, 'invalid_argument', 'order must be requests or tokens')
+  return usageSummary(rows, req.query).map(accountSummaryRow)
+})
+accountUsageRoute('/overview', ['tz'], (rows, reaches, req) => {
+  const { today, yesterday, last_30d, ...o } = overviewOf(rows, req.query.tz || 'UTC')
+  const live = accounts.filter((a) => reaches(a.id))
+  const count = (status: string) => live.filter((a) => a.status === status).length
+  return { ...o, today: unbilled(today), yesterday: unbilled(yesterday), last_30d: unbilled(last_30d), accounts: { total: live.length, available: count('active'), auto_disabled: count('auto_disabled'), disabled: count('disabled') } }
+})
+accountUsageRoute('/realtime', ACCOUNT_USAGE_FILTERS, (rows, _, req) => realtimeOf(rows, req.query))
+accountUsageRoute('/export', [...ACCOUNT_USAGE_FILTERS, 'lang'], (rows, _, req) => usageCSV(rows, req.query, 'account'))
+accountUsageRoute('/:id', null, (rows, reaches, req) => {
+  const u = rows.find((x) => x.id === Number(req.params.id))
+  return u ? { ...accountRecord(u, reaches), metrics: usageMetrics(u) } : fail(404, 'not_found', 'usage record not found')
 })
 
 // ------------------------------------------------------------------ ledger

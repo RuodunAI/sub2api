@@ -47,6 +47,8 @@ var tickerAllowed = map[string]struct {
 	"task/cluster.go": {1, "River admission watch"},
 	"task/node.go":    {1, "node task state refresh"},
 	"job/job.go":      {1, "plugin job registration resync (TASK-FRAMEWORK-DESIGN §11.3)"},
+	// Development only: sub2api dev's in-process Redis clock (CONTRACTS §47).
+	"devenv/devenv.go": {1, "advances miniredis so keys expire"},
 }
 
 // tickersIn counts the time.NewTicker and time.Tick calls of the non-test Go

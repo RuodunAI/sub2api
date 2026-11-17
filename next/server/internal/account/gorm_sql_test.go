@@ -13,7 +13,7 @@ import (
 // The SQL of the account statements assembled per call: the console list
 // and the plugin page (see package gormtest).
 
-var snapshotScope = core.DataScope{Owner: 7, IDs: []int64{3, 4}, Groups: []int64{9}}
+var snapshotScope = core.DataScope{Owners: []int64{7}, IDs: []int64{3, 4}, Groups: []int64{9}}
 
 // The account list: the total and one page, under the same conditions
 // (the caller's scope among them).

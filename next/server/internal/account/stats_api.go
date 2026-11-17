@@ -100,7 +100,11 @@ func (s *Service) getAccountStats(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	scope := s.scopeOf(ctx, perm.AccountRead)
+	scope, err := s.scopeOf(ctx, perm.AccountRead)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	var found []int64
 	if err := liveInScope(store.G(ctx, s.d.DB.Gorm), ids, scope).Pluck("a.id", &found).Error; err != nil {
 		httpapi.Fail(c, err)

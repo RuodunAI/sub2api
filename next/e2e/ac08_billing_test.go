@@ -136,7 +136,7 @@ func TestAC08_BillingModes(t *testing.T) {
 
 			// Ledger: exactly one usage debit for this request, equal to the cost.
 			var hits []string
-			for _, l := range e.Ledger(admin, tn.User.UserID, "usage") {
+			for _, l := range e.UsageDebits(admin, tn.User.UserID) {
 				if l.Get("ref_id").String() == g.RequestID {
 					hits = append(hits, l.Get("delta").String())
 				}
@@ -172,7 +172,7 @@ func TestAC08_BillingModes(t *testing.T) {
 			t.Errorf("gateway reused the client-supplied X-Request-Id %q; request ids must be server generated", g.RequestID)
 		}
 		n := 0
-		for _, l := range e.Ledger(admin, tn.User.UserID, "usage") {
+		for _, l := range e.UsageDebits(admin, tn.User.UserID) {
 			if l.Get("ref_id").String() == g.RequestID {
 				n++
 			}

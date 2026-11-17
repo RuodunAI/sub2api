@@ -21,6 +21,7 @@ type UserSpec struct {
 	Password    string
 	DisplayName string
 	Roles       []string
+	OwnerID     *int64 // owner_id (CONTRACTS §103.3); nil leaves it to the server
 }
 
 // CreateUser creates a user with POST /users and logs in as that user.
@@ -41,7 +42,7 @@ func (e *Env) CreateUser(admin *Session, u UserSpec) *Session {
 	// Assigning a non-default role at creation needs role:assign.
 	d := admin.OK(e.T, http.MethodPost, "/users", map[string]any{
 		"email": u.Email, "display_name": u.DisplayName, "password": u.Password,
-		"role_keys": u.Roles,
+		"role_keys": u.Roles, "owner_id": u.OwnerID,
 	})
 	id := d.Get("id").Int()
 	if id == 0 {
@@ -342,4 +343,18 @@ func (e *Env) Ledger(admin *Session, userID int64, kind string) []gjson.Result {
 		kv = append(kv, "kind", kind)
 	}
 	return admin.ListAll(e.T, "/ledger", kv...)
+}
+
+// UsageDebits returns the user's settled usage debits: the kind=usage ledger
+// rows without the request precharges (ref_type precharge, released by a
+// refund row at settlement).
+func (e *Env) UsageDebits(admin *Session, userID int64) []gjson.Result {
+	e.T.Helper()
+	var out []gjson.Result
+	for _, l := range e.Ledger(admin, userID, "usage") {
+		if l.Get("ref_type").String() == "usage" {
+			out = append(out, l)
+		}
+	}
+	return out
 }

@@ -1,13 +1,15 @@
 // The scopes of one scoped action as the permission editors show them
-// (CONTRACTS §21): every row, the caller's own, chosen groups, chosen rows,
-// rows within a chosen group, chosen plugin scopes; scopes the editors do
-// not offer (group/*, group/*/account/X) are kept as they are. Pure;
+// (CONTRACTS §21): every row, the caller's own, the caller's and its team's
+// (CONTRACTS §103.2), chosen groups, chosen rows, rows within a chosen
+// group, chosen plugin scopes; scopes the editors do not offer (group/*,
+// group/*/account/X) are kept as they are. Pure;
 // PermissionTree / ScopePicker render it.
-import { ALL_SCOPE, OWN_SCOPE, WILDCARD, parsePermission, patternKey, reduceScopes, refScope, scopeImplies, takesRowIds, type Scope } from './implies'
+import { ALL_SCOPE, OWN_SCOPE, SCOPABLE, TEAM_SCOPE, WILDCARD, parsePermission, patternKey, reduceScopes, refScope, scopeImplies, takesRowIds, takesTeam, type Scope } from './implies'
 
 export interface ScopeChoice {
   all: boolean
   own: boolean
+  team: boolean
   /** group/<id> */
   groups: number[]
   /** account/<id> or proxy/<id> */
@@ -24,10 +26,11 @@ const scope = (group: number, id: number): Scope => ({ all: false, own: false, g
 
 /** The choice the scopes make. */
 export function choiceOf(scopes: readonly Scope[]): ScopeChoice {
-  const c: ScopeChoice = { all: false, own: false, groups: [], ids: [], pairs: [], refs: [], other: [] }
+  const c: ScopeChoice = { all: false, own: false, team: false, groups: [], ids: [], pairs: [], refs: [], other: [] }
   for (const s of scopes) {
     if (s.all) c.all = true
     else if (s.own) c.own = true
+    else if (s.team) c.team = true
     else if (s.ref) c.refs.push(s.ref)
     else if (s.group === WILDCARD) c.other.push(s)
     else if (s.group && s.id) c.pairs.push([s.group, s.id])
@@ -42,6 +45,7 @@ export function scopesOf(c: ScopeChoice): Scope[] {
   if (c.all) return [ALL_SCOPE]
   return reduceScopes([
     ...(c.own ? [OWN_SCOPE] : []),
+    ...(c.team ? [TEAM_SCOPE] : []),
     ...c.groups.map((g) => scope(g, 0)),
     ...c.ids.map((id) => scope(0, id)),
     ...c.pairs.map(([g, id]) => scope(g, id)),
@@ -67,11 +71,13 @@ export type RefOffer = Offer<string>
  * The options a caller holding `limit` (its scopes of the action) may grant:
  * only what its scopes imply (the server refuses the rest, details.missing).
  * Pairs are offered by group (any account within it); a held pair alone
- * offers nothing. account:create names no rows.
+ * offers nothing. account:create names no rows; a user action takes every
+ * user or the team only; a plugin action no team.
  */
 export interface ScopeOffer {
   all: boolean
   own: boolean
+  team: boolean
   /** group/<id>, and the group of group/<id>/account/<x> (the account: any within it). */
   groups: Offer
   /** account/<id> or proxy/<id>. */
@@ -85,20 +91,23 @@ export function offerOf(limit: readonly Scope[], action = ''): ScopeOffer {
   const all = implied(ALL_SCOPE)
   const anyGroup = implied(scope(WILDCARD, 0))
   const groups = limit.filter((l) => l.group > 0 && !l.id).map((l) => l.group)
-  const ids = limit.filter((l) => !l.all && !l.own && !l.group && !l.ref).map((l) => l.id)
+  const ids = limit.filter((l) => l.id && !l.group).map((l) => l.id)
   const refs = limit.flatMap((l) => (l.ref ? [l.ref] : []))
   const listed = <T>(ok: boolean, list: T[]): Offer<T> => (ok ? 'any' : list.length ? list : null)
+  const rows = SCOPABLE[action] !== 'user'
   return {
     all,
-    own: implied(OWN_SCOPE),
+    own: rows && implied(OWN_SCOPE),
+    team: takesTeam(action) && implied(TEAM_SCOPE),
     groups: listed(anyGroup, groups),
-    ids: takesRowIds(action) ? listed(all, ids) : null,
+    ids: rows && takesRowIds(action) ? listed(all, ids) : null,
     refs: listed(all, refs)
   }
 }
 
-/** The scopes ticking the action grants at first: the widest offered (every row, else the own rows), else none to choose from yet. */
+/** The scopes ticking the action grants at first: the widest offered (every row, else the team's, else the own rows), else none to choose from yet. */
 export function defaultScopes(offer: ScopeOffer): Scope[] {
   if (offer.all) return [ALL_SCOPE]
+  if (offer.team) return [TEAM_SCOPE]
   return offer.own ? [OWN_SCOPE] : []
 }

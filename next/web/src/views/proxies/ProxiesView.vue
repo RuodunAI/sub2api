@@ -27,7 +27,7 @@ import {
 } from '@sub2api/ui'
 import type { Proxy, ProxyProbeResult, ProxyTestResult } from '@/api/types'
 import { deleteWithConfirm, toggleStatus, useStatusOptions } from '@/composables/crud'
-import { activeFilterCount, useList } from '@/composables/useList'
+import { activeFilterCount, filterFlag, useList } from '@/composables/useList'
 import { useProxiesLookup } from '@/composables/lookups'
 import { PROXY_ACTIONS, PROXY_CREATE_KEY, useScope } from '@/composables/useScope'
 import { useAuthStore } from '@/stores/auth'
@@ -36,6 +36,7 @@ import { applyFormError } from '@/utils/formErrors'
 import { parseProxyURL, type ProxySpec } from '@/utils/proxyUrl'
 import { copyText } from '@/utils/clipboard'
 import EntityPicker from '@/components/EntityPicker.vue'
+import UserRef from '@/components/entity/UserRef.vue'
 
 const { t } = useI18n()
 const auth = useAuthStore()
@@ -47,12 +48,7 @@ const canCreate = computed(() => auth.has(PROXY_CREATE_KEY))
 const canEditRow = (p: Proxy) => scope.can(p, PROXY_ACTIONS.manage)
 const showOwner = computed(() => scope.level(PROXY_ACTIONS.read) === 'all')
 const list = useList<Proxy>('/proxies', { mine: '', created_by: '' })
-const onlyMine = computed({
-  get: () => list.filters.mine === 'true',
-  set: (v: boolean) => {
-    list.filters.mine = v ? 'true' : ''
-  }
-})
+const onlyMine = filterFlag(list.filters, 'mine')
 
 const columns = computed<TableColumn[]>(() => {
   const cols: TableColumn[] = [
@@ -319,11 +315,7 @@ function onAction(p: Proxy, key: string) {
         </div>
         <SHint v-else inline>—</SHint>
       </template>
-      <template #cell-created_by="{ row }">
-        <span v-if="row.created_by_email" class="text-xs" :title="row.created_by ? `#${row.created_by}` : ''">{{ row.created_by_email }}</span>
-        <SHint v-else-if="row.created_by" inline size="xs">#{{ row.created_by }}</SHint>
-        <SHint v-else inline>—</SHint>
-      </template>
+      <template #cell-created_by="{ row }"><UserRef :id="row.created_by" :email="row.created_by_email" /></template>
       <template #cell-created_at="{ row }">
         <SDateTime mode="absolute" muted :value="row.created_at" />
       </template>

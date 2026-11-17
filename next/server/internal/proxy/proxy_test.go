@@ -19,10 +19,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -556,7 +556,7 @@ func TestFindOrCreate(t *testing.T) {
 		t.Helper()
 		scope := core.AllScope
 		if creator != nil {
-			scope = core.DataScope{Owner: *creator}
+			scope = core.DataScope{Owners: []int64{*creator}}
 		}
 		var id int64
 		var created bool
@@ -679,7 +679,7 @@ func TestFindOrCreate(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = db.Tx(ctx, func(tx *gorm.DB) error {
-				id, created, err := svc.FindOrCreate(ctx, tx, fresh, alice, core.DataScope{Owner: alice})
+				id, created, err := svc.FindOrCreate(ctx, tx, fresh, alice, core.DataScope{Owners: []int64{alice}})
 				if err != nil {
 					return err
 				}

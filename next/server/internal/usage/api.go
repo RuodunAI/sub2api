@@ -19,6 +19,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
@@ -135,6 +136,14 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.Perm("GET", "/usage/export", "usage:all:read", s.allExport)
 	r.Perm("GET", "/me/usage/export", "usage:self:read", s.myExport)
 	r.Perm("GET", "/usage/:id", "usage:all:read", s.usageDetail)
+	// The account side (CONTRACTS §103.5): the records of the accounts in
+	// the caller's usage:account:read scope, allowlisted fields only.
+	r.PermScoped("GET", "/account-usage", s.accountUsage, perm.UsageAccountRead)
+	r.PermScoped("GET", "/account-usage/summary", s.accountSummary, perm.UsageAccountRead)
+	r.PermScoped("GET", "/account-usage/overview", s.accountOverview, perm.UsageAccountRead)
+	r.PermScoped("GET", "/account-usage/realtime", s.accountRealtime, perm.UsageAccountRead)
+	r.PermScoped("GET", "/account-usage/export", s.accountExport, perm.UsageAccountRead)
+	r.PermScoped("GET", "/account-usage/:id", s.accountUsageDetail, perm.UsageAccountRead)
 	// The manual way out of the abandon policy (§25.4). Both move money, so
 	// they get their own permission rather than riding on usage:all:read.
 	r.Perm("POST", "/usage/:id/reconcile", "usage:settle", s.retryReconcile)
@@ -174,6 +183,24 @@ func recordQuery(db *gorm.DB, f store.Conds) *gorm.DB {
 		Order("u.created_at DESC, u.id DESC")
 }
 
+// scanRecords reads the records q selects (recordQuery).
+func scanRecords(q *gorm.DB) ([]Record, error) {
+	rows, err := q.Rows()
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Record{}
+	for rows.Next() {
+		var r Record
+		if err := rows.Scan(r.scanTargets()...); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // hideUpstream removes upstream account details (account, account type,
 // upstream protocol and conversion, the account's model mapping) from
 // self-service views.
@@ -185,13 +212,18 @@ func (r *Record) hideUpstream() {
 	// replaces SEC-L3's 5xx blanking).
 }
 
-// trailView is who reads an attempt trail (CONTRACTS §98).
+// trailView is who reads usage records: it decides the attempt trail they
+// see (CONTRACTS §98) and the filters they may use (parseFilter).
 type trailView int
 
 const (
 	trailAccounts trailView = iota // an operator with account:read: as stored
 	trailRefs                      // an operator without: account_ref instead of account_id
 	trailSelf                      // the request's owner: each attempt's outcome and time
+	// trailScoped is the account side (CONTRACTS §103.5): the outcome, time
+	// and next step of each attempt, its account as stored and named when
+	// the caller's scope reaches it, else as account_ref.
+	trailScoped
 )
 
 // trailViewFor is the trail view of a usage view (seesAccounts).
@@ -207,25 +239,37 @@ func trailViewFor(self *int64, accounts bool) trailView {
 
 // shapeTrail leaves of the row's attempt trail what view may see and returns
 // it; a trail that cannot be read goes (null) rather than unredacted.
-// Without account:read the same account keeps the same account_ref, so a
-// retry on one account still reads as one.
-func (r *Record) shapeTrail(view trailView) *core.AttemptTrail {
+// scoped names the trail's accounts the caller's scope reaches (trailScoped
+// only). Where an account is hidden the same account keeps the same
+// account_ref, so a retry on one account still reads as one.
+func (r *Record) shapeTrail(view trailView, scoped map[int64]string) *core.AttemptTrail {
 	var tr core.AttemptTrail
 	if len(r.AttemptTrail) == 0 || json.Unmarshal(r.AttemptTrail, &tr) != nil || len(tr.Steps) == 0 {
 		r.AttemptTrail = nil
 		return nil
 	}
 	refs := map[int64]int{}
+	ref := func(id int64) int {
+		if _, ok := refs[id]; !ok {
+			refs[id] = len(refs) + 1
+		}
+		return refs[id]
+	}
 	for i := range tr.Steps {
 		st := &tr.Steps[i]
 		switch view {
 		case trailSelf:
 			*st = core.AttemptStep{Status: st.Status, ErrorType: st.ErrorType, Ms: st.Ms}
 		case trailRefs:
-			if _, ok := refs[st.AccountID]; !ok {
-				refs[st.AccountID] = len(refs) + 1
+			st.AccountRef, st.AccountID, st.AccountName = ref(st.AccountID), 0, ""
+		case trailScoped:
+			out := core.AttemptStep{Status: st.Status, ErrorType: st.ErrorType, Ms: st.Ms, Next: st.Next}
+			if name, ok := scoped[st.AccountID]; ok {
+				out.AccountID, out.AccountName = st.AccountID, name
+			} else {
+				out.AccountRef = ref(st.AccountID)
 			}
-			st.AccountRef, st.AccountID, st.AccountName = refs[st.AccountID], 0, ""
+			*st = out
 		}
 	}
 	r.AttemptTrail, _ = json.Marshal(&tr)
@@ -336,9 +380,11 @@ func (s *Service) seesAccounts(ctx context.Context, self *int64) (bool, error) {
 	return core.Can(ctx, s.Authz, "account:read")
 }
 
-// parseFilter reads the common query parameters. self restricts to userID;
-// accounts allows the account filters (seesAccounts).
-func parseFilter(c *gin.Context, self *int64, accounts bool) (store.Conds, error) {
+// parseFilter reads the common query parameters for view. self restricts to
+// userID; trailAccounts and trailScoped allow the account filters
+// (seesAccounts).
+func parseFilter(c *gin.Context, self *int64, view trailView) (store.Conds, error) {
+	accounts := view == trailAccounts || view == trailScoped
 	var f store.Conds
 	if self != nil {
 		f.And("u.user_id = ?", *self)
@@ -372,9 +418,10 @@ func parseFilter(c *gin.Context, self *int64, accounts bool) (store.Conds, error
 	// X-Request-Id (CONTRACTS §14.4), so one search box finds the row.
 	// client_request_id has no index, so the client half needs a time range
 	// (from) to stay a range scan like the other unindexed filters; without
-	// one only our indexed request_id is matched.
+	// one only our indexed request_id is matched. The account side holds no
+	// client's ID and matches ours alone.
 	if v := c.Query("request_id"); v != "" {
-		if c.Query("from") != "" {
+		if c.Query("from") != "" && view != trailScoped {
 			f.And("(u.request_id = ? OR u.client_request_id = ?)", v, v)
 		} else {
 			f.And("u.request_id = ?", v)
@@ -525,26 +572,43 @@ func (s *Service) myUsage(c *gin.Context) {
 
 func (s *Service) allUsage(c *gin.Context) { s.list(c, nil) }
 
-// list serves the usage lists. By default it pages by number with a total
-// (page, page_size; the console's pager). With a cursor parameter - empty
-// for the first page - it pages by keyset instead: no count(*) and no
-// OFFSET, so deep pages of a large usage_logs stay cheap; the answer carries
-// page.next_cursor while there is more.
+// list serves the usage lists (servePage).
 func (s *Service) list(c *gin.Context, self *int64) {
-	ctx := c.Request.Context()
-	accounts, err := s.seesAccounts(ctx, self)
+	accounts, err := s.seesAccounts(c.Request.Context(), self)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	f, err := parseFilter(c, self, accounts)
+	view := trailViewFor(self, accounts)
+	f, err := parseFilter(c, self, view)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
+	s.servePage(c, f, func(items []Record) (any, error) {
+		for i := range items {
+			r := &items[i]
+			if self != nil {
+				r.hideUpstream()
+			} else if !accounts {
+				r.hideAccount()
+			}
+			r.shapeTrail(view, nil)
+		}
+		return items, nil
+	})
+}
+
+// servePage serves a page of the records f keeps, as items makes them. By
+// default it pages by number with a total (page, page_size; the console's
+// pager). With a cursor parameter - empty for the first page - it pages by
+// keyset instead: no count(*) and no OFFSET, so deep pages of a large
+// usage_logs stay cheap; the answer carries page.next_cursor while there is
+// more.
+func (s *Service) servePage(c *gin.Context, f store.Conds, items func([]Record) (any, error)) {
 	page, size := httpapi.Pagination(c)
 	cursor, keyset := c.GetQuery("cursor")
-	g := store.G(ctx, s.db.Gorm)
+	g := store.G(c.Request.Context(), s.db.Gorm)
 	var total int64
 	if keyset {
 		if cursor != "" {
@@ -563,42 +627,29 @@ func (s *Service) list(c *gin.Context, self *int64) {
 	if keyset {
 		limit, offset = size+1, 0 // one extra row tells whether there is more
 	}
-	rows, err := recordQuery(g, f).Limit(limit).Offset(offset).Rows()
+	records, err := scanRecords(recordQuery(g, f).Limit(limit).Offset(offset))
+	more := keyset && len(records) > size
+	if more {
+		records = records[:size]
+	}
+	var out any
+	if err == nil {
+		out, err = items(records)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	defer rows.Close()
-	items := []Record{}
-	for rows.Next() {
-		var r Record
-		if err := rows.Scan(r.scanTargets()...); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		if self != nil {
-			r.hideUpstream()
-		} else if !accounts {
-			r.hideAccount()
-		}
-		r.shapeTrail(trailViewFor(self, accounts))
-		items = append(items, r)
-	}
-	if err := rows.Err(); err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
 	if !keyset {
-		httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
+		httpapi.List(c, out, httpapi.Page{Page: page, PageSize: size, Total: total})
 		return
 	}
-	p := gin.H{"page_size": size, "has_more": len(items) > size}
-	if len(items) > size {
-		items = items[:size]
-		last := items[len(items)-1]
+	p := gin.H{"page_size": size, "has_more": more}
+	if more {
+		last := records[len(records)-1]
 		p["next_cursor"] = last.CreatedAt.UTC().Format(time.RFC3339Nano) + "," + x.Itoa64(last.ID)
 	}
-	c.JSON(200, gin.H{"data": items, "page": p})
+	c.JSON(200, gin.H{"data": out, "page": p})
 }
 
 // parseCursor reads "<created_at RFC 3339>,<id>" (page.next_cursor).
@@ -661,7 +712,7 @@ func (s *Service) detail(c *gin.Context, self *int64) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if tr := d.shapeTrail(trailViewFor(self, accounts)); tr != nil && accounts {
+	if tr := d.shapeTrail(trailViewFor(self, accounts), nil); tr != nil && accounts {
 		s.nameTrail(ctx, tr)
 		d.AttemptTrail, _ = json.Marshal(tr)
 	}
@@ -882,8 +933,12 @@ func redactFailurePolicy(v json.RawMessage) (json.RawMessage, bool) {
 
 // SummaryRow is one group of GET /usage/summary.
 type SummaryRow struct {
-	Key                 string          `json:"key"`
-	UserEmail           string          `json:"user_email,omitempty"`
+	Key string `json:"key"`
+	// Extra is the grouping's extra column (summaryShape.extra): the user's
+	// email under group_by=user, the one grouping of /usage/summary that has
+	// one, hence its JSON name; the account side's group_by=account carries
+	// the account's name in it (AccountSummaryRow.AccountName).
+	Extra               string          `json:"user_email,omitempty"`
 	Requests            int64           `json:"requests"`
 	Success             int64           `json:"success"`
 	InputTokens         int64           `json:"input_tokens"`
@@ -943,21 +998,55 @@ func (s *Service) mySummary(c *gin.Context) {
 }
 
 func (s *Service) summarize(c *gin.Context, self *int64) {
+	accounts, err := s.seesAccounts(c.Request.Context(), self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, trailViewFor(self, accounts))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	// The caller's own rows are few; an operator's query scans everyone's, so
+	// it is cached (CONTRACTS §66.3). Parsing above has already refused what
+	// this caller may not ask, and the answer depends only on the query.
+	groups, cacheKey := operatorGroups, c.Request.URL.Query().Encode()
+	if self != nil {
+		groups, cacheKey = selfGroups, ""
+	}
+	out, err := s.summaryRows(c, f, groups, c.Query("order"), cacheKey)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, out)
+}
+
+// groupBys are the group_by values a summary view takes, in the order its
+// error lists them.
+type groupBys []string
+
+var (
+	operatorGroups = groupBys{"day", "hour", "none", "model", "upstream_model", "user", "api_key", "group", "endpoint", "platform", "protocol", "ip"}
+	// The model the upstream was asked for is upstream-side detail
+	// (hideUpstream): operators only, like the users.
+	selfGroups = groupBys{"day", "hour", "none", "model", "api_key", "group", "endpoint", "platform", "protocol", "ip"}
+)
+
+func (g groupBys) invalid() error {
+	return core.ErrInvalidArgument.WithMessage("group_by must be " + strings.Join(g[:len(g)-1], ", ") + " or " + g[len(g)-1])
+}
+
+// summaryRows is the summary of the records f keeps by the group_by of c,
+// one of groups, ranked by order (rankRows). With a cacheKey the load is an
+// operator's, kept in the snapshot cache under it (shared by every caller
+// whose answer it is); without one it is the caller's alone.
+func (s *Service) summaryRows(c *gin.Context, f store.Conds, groups groupBys, order, cacheKey string) ([]SummaryRow, error) {
 	ctx := c.Request.Context()
-	accounts, err := s.seesAccounts(ctx, self)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	f, err := parseFilter(c, self, accounts)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
 	tz, loc, err := parseTZ(c)
 	if err != nil {
-		httpapi.Fail(c, err)
-		return
+		return nil, err
 	}
 	from, to := summaryRange(c)
 	if c.Query("from") == "" {
@@ -965,75 +1054,22 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 	}
 	end := cmp.Or(to, time.Now())
 	groupKey := c.DefaultQuery("group_by", "day")
-	// Day and hour buckets bind the time zone (keyVars); spanTZ says the
-	// rollup must be aligned with it.
-	var keyVars []any
-	var spanTZ *time.Location
-	const inTZ = `u.created_at AT TIME ZONE ?::text`
-	var key, join, extra string
-	order, lastAt, groupBy, limit := `k`, `NULL::timestamptz`, `k`, 0
-	switch groupKey {
-	case "day":
-		key, spanTZ, keyVars = `to_char(`+inTZ+`, 'YYYY-MM-DD')`, loc, []any{tz}
-	case "hour":
-		if end.Sub(from) > maxHourSpan {
-			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by=hour covers at most 31 days"))
-			return
-		}
-		key, spanTZ, keyVars = `to_char(date_trunc('hour', `+inTZ+`), 'YYYY-MM-DD HH24:00')`, loc, []any{tz}
-	case "none":
-		key, groupBy = `''`, ``
-	case "model":
-		key = `u.model`
-	case "api_key":
-		key = `u.api_key_id::text`
-	case "group":
-		key = `COALESCE(gg.name, u.group_id::text)`
-		join = ` LEFT JOIN groups gg ON gg.id = u.group_id`
-	case "endpoint":
-		key = `u.endpoint`
-	case "protocol":
-		// The request type: the protocol id (anthropic.messages, openai.chat, …)
-		// the usage records page lists in its request-type filter.
-		key = `u.protocol`
-	case "platform":
-		key = `u.platform`
-	case "ip":
-		key = `u.client_ip`
-		lastAt = `max(u.at)`
-		order, limit = `sum(u.requests) DESC, k`, maxIPGroups
-	case "user":
-		if self != nil {
-			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by must be day, hour, none, model, api_key, group, endpoint, platform, protocol or ip"))
-			return
-		}
-		key = `u.user_id::text`
-		join = ` LEFT JOIN users us ON us.id = u.user_id`
-		extra = `us.email`
-	case "upstream_model":
-		// The model the upstream was asked for is upstream-side detail
-		// (hideUpstream): operators only.
-		if self != nil {
-			httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by must be day, hour, none, model, api_key, group, endpoint, platform, protocol or ip"))
-			return
-		}
-		key = `u.upstream_model`
-	default:
-		httpapi.Fail(c, core.ErrInvalidArgument.WithMessage("group_by must be day, hour, none, model, upstream_model, user, api_key, group, endpoint, platform, protocol or ip"))
-		return
+	if !slices.Contains(groups, groupKey) {
+		return nil, groups.invalid()
 	}
-	if extra == "" {
-		extra = `''`
+	if groupKey == "hour" && end.Sub(from) > maxHourSpan {
+		return nil, core.ErrInvalidArgument.WithMessage("group_by=hour covers at most 31 days")
 	}
-	outKey := `u.k`
-	if groupBy == "" {
-		outKey = `''` // one row, also over no rows
-	}
+	sh, spanTZ := summaryShapeOf(groupKey, tz, loc)
 	rollable := summaryRollable(c, groupKey)
-	rankOrder, rankLimit := c.Query("order"), c.Query("limit")
+	limitArg := c.Query("limit")
+	lim := directStats
+	if cacheKey != "" {
+		lim = snapshotStats
+	}
 	load := func(ctx context.Context) ([]SummaryRow, error) {
 		out := []SummaryRow{}
-		err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
+		err := s.statsTx(ctx, lim, func(tx *gorm.DB) error {
 			var span *hourSpan
 			if rollable {
 				var err error
@@ -1041,8 +1077,6 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 					return err
 				}
 			}
-			sh := summaryShape{outKey: outKey, key: clause.Expr{SQL: key, Vars: keyVars}, extra: extra, join: join, lastAt: lastAt,
-				groupBy: groupBy, order: order, limit: limit}
 			rows, err := summaryQuery(store.G(ctx, tx), sh, f, span).Rows()
 			if err != nil {
 				return err
@@ -1050,7 +1084,7 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 			defer rows.Close()
 			for rows.Next() {
 				var r SummaryRow
-				if err := rows.Scan(&r.Key, &r.UserEmail, &r.Requests, &r.Success, &r.InputTokens, &r.OutputTokens,
+				if err := rows.Scan(&r.Key, &r.Extra, &r.Requests, &r.Success, &r.InputTokens, &r.OutputTokens,
 					&r.CacheReadTokens, &r.CacheCreationTokens, &r.PromptTokens, &r.TotalCost, &r.StandardCost, &r.LatencyMsAvg, &r.FirstTokenMsAvg,
 					&r.Anomalies, &r.Estimated, &r.EstimatedCost, &r.LastAt); err != nil {
 					return err
@@ -1063,24 +1097,56 @@ func (s *Service) summarize(c *gin.Context, self *int64) {
 		if err != nil {
 			return nil, err
 		}
-		return rankRows(rankOrder, rankLimit, out)
+		return rankRows(order, limitArg, out)
 	}
-	// The caller's own rows are few; an operator's query scans everyone's, so
-	// it is cached (CONTRACTS §66.3). Parsing above has already refused what
-	// this caller may not ask, and the answer depends only on the query.
-	var out []SummaryRow
-	if self != nil {
-		out, err = load(ctx)
-	} else {
-		var hit bool
-		out, hit, err = s.summaries.get(ctx, c.Request.URL.Query().Encode(), load)
-		c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+	if cacheKey == "" {
+		return load(ctx)
 	}
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
+	out, hit, err := s.summaries.get(ctx, cacheKey, load)
+	c.Header("X-Snapshot-Cache", snapshotHeader(hit))
+	return out, err
+}
+
+// summaryShapeOf is the shape of group_by=groupKey and the time zone the
+// rollup must be aligned with (day and hour buckets, which bind tz). Days
+// ("YYYY-MM-DD") and hours ("YYYY-MM-DD HH:00") are calendar buckets in tz.
+func summaryShapeOf(groupKey, tz string, loc *time.Location) (summaryShape, *time.Location) {
+	const inTZ = `u.created_at AT TIME ZONE ?::text`
+	sh := summaryShape{outKey: `u.k`, extra: `''`, lastAt: `NULL::timestamptz`, groupBy: `k`, order: `k`}
+	var spanTZ *time.Location
+	switch groupKey {
+	case "day":
+		sh.key, spanTZ = clause.Expr{SQL: `to_char(` + inTZ + `, 'YYYY-MM-DD')`, Vars: []any{tz}}, loc
+	case "hour":
+		sh.key, spanTZ = clause.Expr{SQL: `to_char(date_trunc('hour', ` + inTZ + `), 'YYYY-MM-DD HH24:00')`, Vars: []any{tz}}, loc
+	case "none":
+		sh.key, sh.outKey, sh.groupBy = clause.Expr{SQL: `''`}, `''`, `` // one row, also over no rows
+	case "model":
+		sh.key = clause.Expr{SQL: `u.model`}
+	case "upstream_model":
+		sh.key = clause.Expr{SQL: `u.upstream_model`}
+	case "api_key":
+		sh.key = clause.Expr{SQL: `u.api_key_id::text`}
+	case "group":
+		sh.key, sh.join = clause.Expr{SQL: `COALESCE(gg.name, u.group_id::text)`}, ` LEFT JOIN groups gg ON gg.id = u.group_id`
+	case "endpoint":
+		sh.key = clause.Expr{SQL: `u.endpoint`}
+	case "protocol":
+		// The request type: the protocol id (anthropic.messages, openai.chat, …)
+		// the usage records page lists in its request-type filter.
+		sh.key = clause.Expr{SQL: `u.protocol`}
+	case "platform":
+		sh.key = clause.Expr{SQL: `u.platform`}
+	case "ip":
+		sh.key, sh.lastAt = clause.Expr{SQL: `u.client_ip`}, `max(u.at)`
+		sh.order, sh.limit = `sum(u.requests) DESC, k`, maxIPGroups
+	case "user":
+		sh.key, sh.join, sh.extra = clause.Expr{SQL: `u.user_id::text`}, ` LEFT JOIN users us ON us.id = u.user_id`, `us.email`
+	case "account":
+		// The account side's: the extra column is the account's name.
+		sh.key, sh.join, sh.extra = clause.Expr{SQL: `u.account_id::text`}, ` LEFT JOIN accounts ga ON ga.id = u.account_id`, `ga.name`
 	}
-	httpapi.OK(c, out)
+	return sh, spanTZ
 }
 
 // summaryShape is what the group_by of a summary makes of its query: the

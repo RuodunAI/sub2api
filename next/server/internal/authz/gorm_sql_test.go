@@ -221,3 +221,24 @@ func TestSQLAuthzSyncWrites(t *testing.T) {
 		}},
 	})
 }
+
+// The owner graph (CONTRACTS §103): whether users are below a team holder
+// (core.UserTree's subquery; refused under DryRun, which counts none), the
+// owner of a user, the live owner SetOwner names (refused under DryRun,
+// which finds none), and the role sets of owners and their users a role
+// write rechecks. The tree's own statements are sdk/hierarchy's.
+func TestSQLAuthzTeam(t *testing.T) {
+	assertRuns(t, []runCase{
+		{"within_team", func(db *gorm.DB) error {
+			return refused(withinTeam(db.Statement.Context, db, 7, core.PermissionSetOf("user:read:team"), []int64{9, 11}))
+		}},
+		{"owner_of", func(db *gorm.DB) error { _, err := ownerOf(db, 7); return err }},
+		{"live_owner", func(db *gorm.DB) error {
+			_, err := new(Service).moveUser(db.Statement.Context, db, 7, 9)
+			return refused(err)
+		}},
+	})
+	assertCases(t, []sqlCase{
+		{"owned_role_sets", func(db *gorm.DB) *gorm.DB { return scan(ownedRoleSets(db, RoleSupplierAgent)) }},
+	})
+}

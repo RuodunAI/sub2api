@@ -1,10 +1,11 @@
 -- sql
-SELECT count(*) FROM proxies p WHERE ((p.name ILIKE $1 OR p.host ILIKE $2)) AND p.status = $3 AND p.created_by = $4 AND (($5::boolean OR COALESCE(p.created_by = $6::bigint, false) OR p.id = ANY($7::bigint[])))
+SELECT count(*) FROM proxies p WHERE ((p.name ILIKE $1 OR p.host ILIKE $2)) AND p.status = $3 AND p.created_by = $4 AND (($5::boolean OR COALESCE(p.created_by = ANY($6::bigint[]) OR p.created_by IN (SELECT "id" FROM "users" WHERE "owner_path" && $7), false) OR p.id = ANY($8::bigint[])))
 -- vars
 $1 string "%eu%"
 $2 string "%eu%"
 $3 string "active"
 $4 int64 9
 $5 bool false
-$6 int64 7
-$7 core.int64s [3 4]
+$6 core.int64s [7]
+$7 gormpg.Array[int64] []
+$8 core.int64s [3 4]

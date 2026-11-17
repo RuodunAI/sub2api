@@ -11,8 +11,8 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/require"
 
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 )
 
 const litellmSample = `{

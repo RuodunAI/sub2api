@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -10,7 +9,6 @@ import (
 
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/migrations"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
@@ -93,92 +91,25 @@ func TestMigrationAndPluginPreparationDoNotAdmitBusiness(t *testing.T) {
 	}
 }
 
-// productionSchema is the schema contract of core 0.1.288, the release in
-// production: the migrations through 0098, as `sub2api schema-contract`
-// prints it and the gateway's plan expects before the 0.1.290 upgrade
-// (deploy/gateway/ovh/README.md, 1f73f300…9d4f). A change to any released
+// productionSchema is the schema contract of core 0.1.290, the release in
+// production: the migrations through 0102, as `sub2api schema-contract`
+// prints it and the next upgrade's plan expects as its source schema
+// (deploy/gateway/ovh/README.md, d78ba831…333c). A change to any released
 // migration changes it, and a database that applied the old bytes would
 // refuse the new core.
-const productionSchema = "1f73f300166fd6f94fc4332169fb1016c64ae88a2587d49da9294327b38b9d4f"
+const productionSchema = "d78ba831a99f861b9be6ce3b8e1f5b698f9dcb5bd3a6d0734584c086bdfe333c"
 
-// The 0.1.290 upgrade as the primary-first plan runs it on production: a
-// database at 0098 takes 0099-0101 under the one permit start-primary
-// hands the core. 0100 refuses a database with two super admin holders
-// after 0099 has committed; the core does not serve that schema and
-// neither does 0.1.288 (fix forward or restore). Once the data is fixed,
-// the same permit finishes the upgrade, and starting again with it
-// changes nothing.
-func TestManagedUpgradeFromProductionResumesWithTheSamePermit(t *testing.T) {
-	const production = "0098_plugin_staged_grants.sql"
-	ctx := t.Context()
-	db := testutil.DBThrough(t, production)
-	exec := func(query string, args ...any) {
-		t.Helper()
-		if _, err := db.SQL.ExecContext(ctx, query, args...); err != nil {
-			t.Fatal(err)
-		}
-	}
-	applied := func() map[string]string {
-		t.Helper()
-		m, err := (store.CoreTracker{}).Applied(ctx, db.Gorm)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return m
-	}
+func TestReleasedMigrationsKeepTheProductionSchema(t *testing.T) {
+	const production = "0102_drop_ccgateway_and_legacy.sql"
 	inventory, err := migrationInventory(migrations.FS)
 	if err != nil {
 		t.Fatal(err)
 	}
 	released := slices.IndexFunc(inventory, func(m coreMigration) bool { return m.name == production }) + 1
-	permit := rc.PrepareRequest{AllowMigration: true,
-		ExpectedSchemaBefore: inventoryContract(inventory[:released]), ExpectedSchemaAfter: inventoryContract(inventory)}
-	if permit.ExpectedSchemaBefore != productionSchema {
-		t.Fatalf("the migrations through %s are not the ones 0.1.288 applied: contract %s", production, permit.ExpectedSchemaBefore)
+	if released == 0 {
+		t.Fatalf("%s is missing", production)
 	}
-
-	// What 0.1.288 holds: a role with a grant, and two super admins, which
-	// 0097's trigger refuses but a repair bypassing it may have left.
-	exec(`INSERT INTO roles (key, name, builtin, superuser) VALUES ('super_admin', '{}', true, true), ('editor', '{}', false, false);
-		INSERT INTO permissions (key, module, label, source) VALUES ('account:read', 'account', '{}', 'core');
-		INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p WHERE r.key = 'editor';`)
-	a, b := testutil.InsertUser(t, db, "a@x"), testutil.InsertUser(t, db, "b@x")
-	exec(`INSERT INTO user_roles (user_id, role_id) SELECT $1, id FROM roles WHERE key = 'editor'`, b)
-	testutil.ExecWithoutTrigger(t, db, "user_roles", "user_roles_one_superuser",
-		`INSERT INTO user_roles (user_id, role_id) SELECT u, r.id FROM unnest($1::bigint[]) u, roles r WHERE r.key = 'super_admin'`, []int64{a, b})
-
-	if _, err := prepareCoreSchema(ctx, db, permit); err == nil || !strings.Contains(err.Error(), "several super admins") {
-		t.Fatalf("0100 must refuse two super admins: %v", err)
-	}
-	half := applied()
-	if _, ok := half["0099_plugin_permission_meta.sql"]; !ok || len(half) != released+1 {
-		t.Fatalf("0099 alone stays committed, got %d migrations", len(half))
-	}
-	if err := VerifyCoreSchema(ctx, db); err == nil {
-		t.Fatal("the new core served a half-migrated schema")
-	}
-	if _, err := appliedPrefix(inventory[:released], half); err == nil {
-		t.Fatal("core 0.1.288 accepted a schema with 0099")
-	}
-
-	// The fix 0.1.288's recover-superadmin makes on this schema: one holder stays.
-	exec(`DELETE FROM user_roles WHERE user_id = $1 AND role_id = (SELECT id FROM roles WHERE key = 'super_admin')`, b)
-	done, err := prepareCoreSchema(ctx, db, permit)
-	if err != nil {
-		t.Fatalf("the same permit must finish the upgrade: %v", err)
-	}
-	if want := []string{"0100_casbin_rule.sql", "0101_drop_jwt_sessions.sql"}; !slices.Equal(done[:min(len(done), 2)], want) {
-		t.Fatalf("the rerun applied %v, want %v first", done, want)
-	}
-	var policy string
-	if err := db.SQL.QueryRowContext(ctx, `SELECT string_agg(concat_ws(' ', ptype, v0, v1, NULLIF(v2, '')), ', ' ORDER BY ptype, v0, v1)
-		FROM casbin_rule`).Scan(&policy); err != nil {
-		t.Fatal(err)
-	}
-	if want := fmt.Sprintf("g u:%d r:super_admin, g u:%d r:editor, p r:editor account:read *, p r:super_admin * *", a, b); policy != want {
-		t.Fatalf("policy %q, want %q", policy, want)
-	}
-	if done, err = prepareCoreSchema(ctx, db, permit); err != nil || len(done) != 0 {
-		t.Fatalf("a third start with the permit: %v %v", done, err)
+	if got := inventoryContract(inventory[:released]); got != productionSchema {
+		t.Fatalf("the migrations through %s are not the ones 0.1.290 applied: contract %s", production, got)
 	}
 }

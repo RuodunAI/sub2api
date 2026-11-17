@@ -13,9 +13,9 @@ describe('useScope', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
   it('rates the reach of an action: every row, a restricted scope, or none', () => {
-    signIn(['account:update', 'account:read:group/12', 'account:test:own'])
+    signIn(['account:update', 'account:read:group/12', 'account:test:own', 'account:delete:team', 'account:create:own'])
     const s = useScope()
-    expect([s.level('account:update'), s.level('account:read'), s.level('account:test'), s.level('account:delete')]).toEqual(['all', 'own', 'own', null])
+    expect([s.level('account:update'), s.level('account:read'), s.level('account:test'), s.level('account:delete'), s.level('account:create'), s.level('account:credential:view')]).toEqual(['all', 'own', 'own', 'team', 'own', null])
     signIn([], true)
     expect(s.level('account:delete')).toBe('all')
   })
@@ -32,13 +32,33 @@ describe('useScope', () => {
     expect(s.can(row(1, 7), 'account:delete')).toBe(false)
   })
 
-  it('keeps the supplier rule: only rows the caller created, never a row without a creator', () => {
+  it('keeps the supplier rule: only rows the caller owns (an account its owner_id, a proxy its creator), never a row without an owner', () => {
     signIn(['account:update:own', 'proxy:manage:own'])
     const s = useScope()
     expect(s.can(row(1, 7), 'account:update')).toBe(true)
     expect(s.can(row(1, null), 'account:update')).toBe(false)
+    expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:update')).toBe(false)
+    expect(s.can({ ...row(1, 8), owner_id: 7 }, 'account:update')).toBe(true)
     expect(s.can({ id: 3, created_by: 7 }, 'proxy:manage')).toBe(true)
     expect(s.can({ id: 3, created_by: 8 }, 'proxy:manage')).toBe(false)
+  })
+
+  it('takes a team scope on any row listed, whoever owns it: the server knows the team and enforces it', () => {
+    signIn(['account:read:team', 'account:update:team'])
+    const s = useScope()
+    expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:update')).toBe(true)
+    expect(s.can({ ...row(1, 7), owner_id: 7 }, 'account:update')).toBe(true)
+    expect(s.can(null, 'account:update')).toBe(false)
+    expect(s.can({ ...row(1, 7), owner_id: 8 }, 'account:delete')).toBe(false)
+  })
+
+  it('takes a team scope as own when the read scope lists rows beyond the team: every row, a group', () => {
+    for (const read of [['account:read'], ['account:read:team', 'account:read:group/12']]) {
+      signIn([...read, 'account:update:team'])
+      const s = useScope()
+      expect(s.can({ ...row(1, 7, [12]), owner_id: 8 }, 'account:update')).toBe(false)
+      expect(s.can({ ...row(1, 8, [12]), owner_id: 7 }, 'account:update')).toBe(true)
+    }
   })
 
   it('reaches a proxy by its id', () => {

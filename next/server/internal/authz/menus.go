@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -67,6 +68,10 @@ var coreMenus = []coreMenuSection{
 		{"my-usage", lt("Usage logs", "使用日志"), "usage", "/me/usage", []string{"GET /me/usage"}},
 		{"usage-overview", lt("Site overview", "全站概览"), "chart", "/usage/overview", []string{"GET /usage/overview"}},
 		{"usage", lt("Site usage logs", "全站日志"), "usage", "/usage", []string{"GET /usage"}},
+		// The usage of the accounts in the caller's scope (CONTRACTS
+		// §103.5), for those who do not see the whole site's (hideWith).
+		{"account-usage-overview", lt("Account usage overview", "账号用量概览"), "chart", "/account-usage/overview", []string{"GET /account-usage/overview"}},
+		{"account-usage", lt("Account usage logs", "账号日志"), "usage", "/account-usage", []string{"GET /account-usage"}},
 	}},
 	// Accounts and the proxies they go out through, each for the keys of its
 	// list endpoint (GET /accounts, GET /proxies).
@@ -111,6 +116,14 @@ var coreMenus = []coreMenuSection{
 		{"my-wallet", lt("Wallet", "钱包"), "balance", "/me/wallet", []string{"GET /me/balance"}},
 		{"my-profile", lt("Profile", "个人设置"), "user", "/me/profile", nil},
 	}},
+}
+
+// hideWith hides a core menu item, by id, from the holders of any of its
+// keys for every row (PermissionSet.Has), who have a wider page in its
+// place: the site's usage pages stand for the account-side ones.
+var hideWith = map[string][]string{
+	"account-usage-overview": {string(perm.UsageAllRead)},
+	"account-usage":          {string(perm.UsageAllRead)},
 }
 
 // BindMenuRoutes gives the core menu items the permissions of their main
@@ -188,7 +201,7 @@ func (s *Service) Menus(ctx context.Context, userID int64) ([]MenuSection, error
 		i := add(sec.id, sec.label, order)
 		for _, it := range sec.items {
 			anyOf, bound := s.menuAnyOf(it)
-			if !bound || !hasAny(set, anyOf) {
+			if !bound || !hasAny(set, anyOf) || slices.ContainsFunc(hideWith[it.id], set.Has) {
 				continue
 			}
 			out[i].Items = append(out[i].Items, MenuItem{ID: it.id, Label: it.label, Icon: it.icon, Path: it.path})

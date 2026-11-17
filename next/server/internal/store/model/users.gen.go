@@ -4,6 +4,8 @@ package model
 
 import (
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
 
 // User is a row of table users.
@@ -20,6 +22,10 @@ type User struct {
 	DeletedAt      *time.Time `gorm:"column:deleted_at"`                                  // timestamp with time zone
 	TokenVersion   int64      `gorm:"column:token_version;default:(-)"`                   // bigint default 0
 	SegmentID      int64      `gorm:"column:segment_id;default:(-)"`                      // bigint default default_segment_id()
+	// the user this user belongs to (team scopes, CONTRACTS §103); NULL for none
+	OwnerID *int64 `gorm:"column:owner_id"` // bigint
+	// the owners above this user, the top of its chain first and owner_id last (CONTRACTS §103); written with owner_id
+	OwnerPath store.Int64s `gorm:"column:owner_path;default:(-)"` // bigint[] default '{}'::bigint[]
 }
 
 // TableName implements gorm's schema.Tabler.

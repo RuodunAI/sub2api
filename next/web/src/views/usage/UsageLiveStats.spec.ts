@@ -3,6 +3,7 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { nextTick, reactive } from 'vue'
 import { i18n } from '@/i18n'
 import UsageLiveStats from './UsageLiveStats.vue'
+import type { UsageView } from './view'
 
 const { get } = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('@sub2api/host', () => ({ api: { get } }))
@@ -11,9 +12,9 @@ enableAutoUnmount(afterEach)
 const summary = { total_cost: '12.5', standard_cost: '25', cache_read_tokens: 75, prompt_tokens: 100 }
 let realtime: unknown
 
-function render(filters: Record<string, unknown>) {
+function render(filters: Record<string, unknown>, view: UsageView = 'all') {
   return mount(UsageLiveStats, {
-    props: { realtimePath: '/usage/realtime', summaryPath: '/usage/summary', filters },
+    props: { realtimePath: '/usage/realtime', summaryPath: '/usage/summary', filters, view },
     global: { plugins: [i18n] }
   })
 }
@@ -41,6 +42,13 @@ describe('usage live statistics', () => {
     expect(badge(w, 'success').text()).toContain('95%')
     expect(badge(w, 'success').attributes('title')).toContain('成功 95 / 失败 5')
     expect(badge(w, 'success').find('.bg-amber-500\\/70').exists()).toBe(true)
+  })
+
+  it('shows the account view the list price alone, by its name: it bills nothing', async () => {
+    const w = render({}, 'account')
+    await flushPromises()
+    expect(w.find('[data-testid="usage-live-cost"]').exists()).toBe(false)
+    expect(badge(w, 'standard').text()).toBe('原价$25.00')
   })
 
   it('asks for the last minute without the time range and the status, and only reloads it when another filter changes', async () => {

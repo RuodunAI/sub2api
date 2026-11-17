@@ -1,20 +1,31 @@
 # OVH当前部署入口
 
-> 0.1.290 删除了 CCGateway 插件（`plugins/ccgateway`、`docs/ccgateway-*`、`verify-ccgateway.py`、`verify-account-runtimes.py`、`build-ccgateway-images.sh`）：下文指向它们的链接只作出处，原文用 `git show 317b0c331:<路径>` 读取。ovh 上的 ccg-* 容器按 [0.1.290 发布手册](../../rollback/0.1.290-release.md) 发布后的步骤停止。
+> 0.1.290 删除了 CCGateway 插件（`plugins/ccgateway`、`docs/ccgateway-*`、`verify-ccgateway.py`、`verify-account-runtimes.py`、`build-ccgateway-images.sh`）：下文指向它们的链接只作出处，原文用 `git show 317b0c331:<路径>` 读取。ovh 上的 ccg-* 容器已在 0.1.290 上线后停止。
 >
 > 2026-11-02 再次清理：ovh `~/sup2api-managed/stage/` 只留 `0.1.229`、`0.1.230`、`ccgateway-0.1.120`、`ccgateway-0.1.121`、`gateway-0.1.130`，`~/sup2api/` 的 worktree 只留 `src` 与同名的五个 `release-*`；下文更早版本的 `stage/…` 脚本路径只作出处（能从会话记录还原的放在 `stage/_scripts/`），旧定制 CLI 二进制归档在 `~/sup2api/checks/cli-releases/`。
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
-2026-11-17 核心 **0.1.290** + 网关外壳 **0.1.134**（`e3906cc68`，develop 头；北京时间 00:25–00:29；计划 `c50106034b2ed8086cdecf03deb4e6a4` primary-first-v1 completed，00:25:42→00:26:44；**停服**：api.prophey.ai `/readyz` 503 00:25:58.3→00:26:07.3 约 9 秒，ovh 3130 00:25:58.2→00:26:08.2；迁移 0099–0102 于 00:26:02 应用，schema `1f73f300…9d4f` → `d78ba831…333c`；Host API 仍 9；单向发布，见 [0.1.290 发布手册](../../rollback/0.1.290-release.md)）：
+2026-11-17 核心 **0.1.291** + 网关 **0.1.135**（`a0eac3c38`，develop 头；北京时间 03:55–03:58；核心计划 `8041bf318cb8884029391dee3061d87f` rolling-v1 completed，03:55:33→03:56:41，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `d78ba831…333c`；Host API 仍 9；网关镜像随后逐个节点手动更换）：
+- 内容：删除为外壳 0.1.133 与回退到 0.1.288 保留的代码（托管核心必须有 `SUB2API_UPDATER_TOKEN_FILE`）、升级预检误报修正、版本检测与一键更新（CONTRACTS §102；网关启动时幂等追加 `updater.*` 列与 `updater.update_checks`，删除 `updater.nodes.cpu_percent`），CHANGELOG 2026-11-17。
+- 发布前核对：自 0.1.290（`e3906cc68`）起 `next/plugins`、`next/sdk` 与核心迁移 SQL 都没有改动（最后仍是 0102），peer 协议仍 2；`runtime-contract` 只删了 `Hello.capabilities`。
+- 构建：`stage/0.1.291/`（无插件重建模板，取自 `stage/0.1.288/`；内置集合 = `stage/0.1.290` 逐字节，`diff -r`，9 个包，`install-only.txt` = volcengine、dynweight、mailer）。清单 `5a0fff618dce478765ee3f1c6222748c16315bb7a0849b88fdf8c002faa23824`，bundle `4c9a0c34403b994c87bf0736e680f825510550eb5c55d690be39a3d7a4213a86`，核心 sha256 `3646fc28afb980d2b279575e87ddd298e21281b666406012d232d07d5f362eae`，strategy rolling（用线上外壳 0.1.134 的 `sub2api-release` 签名）。网关镜像 `sup2api-gateway:0.1.135`（`--build-arg VERSION=0.1.135`，`sub2api-gateway version` 输出 0.1.135；`sha256:da491cb9…77dc`；runtime-contract 与 gateway 的 vet/test 通过；镜像包 `stage/0.1.291/sup2api-gateway-0.1.135.tar.gz`，clicodeplus `/root/gateway-images/`）。`test.sh` TEST-OK（server 65 包、-race 15 包、sdk 18 包、控制台 2134 条与三个原生界面）；第一次跑时 -race 清单里写了已删除的 `internal/secret` 包（setup failed），改清单后重跑全过。
+- 核心：`release.sh` 只 import，`--preflight-only` 选中 rolling-v1、无 blocker（expected_revision 552）后正式执行（`~/rel291/observe.py`）。ccp 让出 03:55:40→恢复 03:56:27，ovh 停止 03:56:28→就绪 03:56:40；基线 `8823ac9e…` → `5a0fff61…`，revision 554。内置集合与线上相同，没有插件 rollout；9 个插件两节点 active、ready、restarts 0。
+- 网关：`stage/0.1.291/gwswap.sh`（clicodeplus 上是 `/root/sup2api-node/gwswap-0.1.135.sh`）：`sub2api-gateway yield` → 等 `/readyz` 503 且 `active_requests` 0 → 备份 `.env` 为 `.env.bak-gw134` → `GATEWAY_IMAGE=sup2api-gateway:0.1.135` → `docker compose up -d --no-deps <服务>` → 等 `/readyz` 200。ccp 03:57:15 让出、03:57:19 排空、03:57:53 就绪（30 秒）；ovh 03:58:10 让出（在途 4 个）、03:58:19 排空、03:58:27 就绪（5 秒）；期间 api.prophey.ai 由 Caddy 切到另一节点。之后 `updater.nodes` 两行 `gateway_version` 0.1.135、`self_update` true、`rolling` true，`cpu_percent` 列已删除，`yield-status` 显示 `gateway_version`/`bundled_version` 0.1.135。
+- 渠道与备份：new-api 渠道 392 没有关（滚动发布）；不备份数据库。
+- 核验：`errs.sh` 03:30–03:55:33 共 243 次、滚动与换网关期间（03:55:33–03:58:27）17 次、之后到 04:08 共 45 次，5xx 0、499 0；两节点日志切换后无 ERROR（WARN 只有核验脚本的超管登录）。`~/rel291/smoke291.py`：`/nodes` 两节点 `host_version` 0.1.291；`GET /system/update-source` 为默认 GitHub `Sub2API-Devs/sup2api`、检测打开；首次检测 03:59:27，两条线都是 “the update source has no stable core/gateway release”（还没有 `core-v*`/`gateway-v*` Release，节点也没有发布流水线的公钥，属预期）。控制台只读检查（`~/rel291/pw/ui291.mjs`，1440）：设置 → 在线更新卡片显示来源与检测结果；节点页表格两节点核心 0.1.291、网关 0.1.135，顶部“版本数”卡片显示“核心 1 · 网关 1”（这是版本种类数，不是版本号）；无页面错误与 API 4xx/5xx。
+- 回滚：核心用 0.1.290 清单 `8823ac9e11055e993e776b89bd821aeccd12d04f8155604891b0396dff45bb32` 建 rolling 计划（schema 相同）；网关把节点 `.env` 换回 `.env.bak-gw134`（`sup2api-gateway:0.1.134`）再按上面的步骤让出、重建。
+- 脚本 `stage/0.1.291/`；工作树 `~/sup2api/release-0.1.291`；计划观测、核验脚本与输出在 `~/rel291/`。上游同步 PR 未提（需要用户原话同意）。
+
+2026-11-17 核心 **0.1.290** + 网关外壳 **0.1.134**（`e3906cc68`，develop 头；北京时间 00:25–00:29；计划 `c50106034b2ed8086cdecf03deb4e6a4` primary-first-v1 completed，00:25:42→00:26:44；**停服**：api.prophey.ai `/readyz` 503 00:25:58.3→00:26:07.3 约 9 秒，ovh 3130 00:25:58.2→00:26:08.2；迁移 0099–0102 于 00:26:02 应用，schema `1f73f300…9d4f` → `d78ba831…333c`；Host API 仍 9；单向发布；发布手册已删除，原文 `git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）：
 - 内容：插件权限声明（0099）、Casbin 权限存储（0100）、Valkey 控制台会话（0101，所有人重新登录）、删除 CCGateway 与旧版本兼容数据（0102）、GORM（CHANGELOG 2026-11-17）。
 - 构建：`stage/0.1.290/`（全内置重建：9 个插件从 `e3906cc68` 构建，pack 的 db check 跑在一次性 PostgreSQL 17 上，用 sup2api-plugins-2026 签名——anthropic 0.3.3、codex 0.1.5、custom 0.1.1、dynweight 0.5.10、gemini 0.3.1、mailer 0.1.3、moderation 0.12.1、openai 0.4.1、volcengine 0.12.8；ccgateway 不再内置；`install-only.txt` = volcengine、dynweight、mailer）。清单 `8823ac9e11055e993e776b89bd821aeccd12d04f8155604891b0396dff45bb32`，strategy maintenance，核心 sha256 `606ef5127fc83c9d1563160d6090fb263574db7812fba164a543c42e4d18a4b2`。网关外壳 `sup2api-gateway:0.1.134`（`sha256:b17f0838…73f5`，runtime-contract 与 gateway 的 vet/test 通过；镜像包 `stage/0.1.290/sup2api-gateway-0.1.134.tar.gz`，clicodeplus `/root/gateway-images/`）。`test.sh` TEST-OK（server 65 包、-race 19 包、sdk 18 包、9 个插件、控制台 2101 条与三个原生界面）；第一次跑在北京 00:01 命中 `TestMyOverview` 的午夜边界（午夜后 1 秒的行落在最近 5 分钟窗口里），00:1x 重跑全过，属于测试本身的问题。
 - 发布前（只读）：超管 1 个（user 1）；三个节点的 `DATABASE_URL` 都没有 `pool_*`；插件版本与 0102 要删的行数和 11-16 生产副本一致（ccgateway 0.1.133 enabled、`ccgateway_runtimes` 104 行、账号 104 个全部已软删除等），记录在 `stage/0.1.290/prod-precheck.out`；有效权限导出 `prod-before.tsv`（82 行）；两节点 compose、`.env`、config 与外壳镜像版本备份在 `stage/0.1.290/node-backup/ovh/` 与 clicodeplus `/root/sup2api-node/backup-0.1.290/`。
 - 渠道：new-api 只有 392（prophey外卖 → api.prophey.ai）指向 sup2api（405/406 是 api.125837.xyz）。392 于 00:18:04 在 new-api 控制台关闭（状态 2），00:30:10 恢复（状态 1、42 条 abilities 启用；关闭前后的行存于 `stage/0.1.290/ch392/`）。关闭期间 sup2api 0 次请求。
-- 备份：用户同意的临时全库备份 `~/sup2api-managed/backups/core-0.1.290-pre/before-0.1.290-20261116T162420Z.dump`（497 MB，北京 00:24:20–00:25:27，含 events，`pg_restore -l` 可读），确认发布无误后删除。
+- 备份：用户同意的临时全库备份 `~/sup2api-managed/backups/core-0.1.290-pre/before-0.1.290-20261116T162420Z.dump`（497 MB，北京 00:24:20–00:25:27，含 events，`pg_restore -l` 可读），确认发布无误后已按用户要求删除。
 - 核验：有效权限升级后与升级前逐行相同；casbin `p` 103 / `g` 10，`*` 只授给 `r:super_admin`；`refresh_tokens`、`login_sessions`、`auth_flows`、`role_permissions`、`role_permission_scopes`、`user_roles` 已删除；`ccgateway_runtimes`、`provider_resources` 已删除，plugins 无 ccgateway，`plugin_key_retirements` 有 ccgateway；失败策略 revision 6→7（login-invalid 剩 6 个关键词、account-on-hold 1 个、rate-limit 1 个并改名 Account quota (429)）；scheduling 去掉 `mode`。9 个内置插件 00:27:18 全部 active = desired。`smoke290.py`（ovh 3130 与 api.prophey.ai）：超管登录得到 `s2s_`、无 refresh token，`/me` 70 个权限，各只读接口 200，`/auth/refresh` 404，`/system/ccgateway/config` 404，登出 204、之后 401。两节点日志切换后无 ERROR。`errs.sh`：00:00–00:18 共 1994 次 0 个 5xx；00:30:10–00:50 共 39 次，5xx 1 次（上游 529）。392 恢复后流量回升较慢，与以往恢复 392 后的现象相同。
-- 回滚：只能用上面的备份恢复整个数据库，并把两节点的外壳镜像、compose、`.env` 恢复成备份里的 0.1.133 版本（手册第五节）；首选修复前进。
-- 未做：ovh 上 ccg-controller、ccg-guard、ccg-state、ccg-shared-egress 四个容器仍在运行，按手册第六节，等用户同意并确认不再回退后再停。上游同步 PR 未提（需用户原话）。`sup2api-cc1`（ovh 上独立的单节点，自带 PG，核心 0.1.279）不属于这个集群，未动。
+- 回滚：上面的备份已删除，不能再回到 0.1.288，出问题修复前进。
+- 发布后（用户 11-17 00:48 同意）：临时备份 00:48:51 删除；上游同步 PR #38 合并为 `91e0c26bc`（gh 令牌没有 workflow scope，改用 SSH 推送同样的 `--no-ff` 合并提交）；ccg-controller、ccg-guard、ccg-state、ccg-shared-egress 00:49:09 停止，之后按用户“全部删除”删掉 11 个 ccg-* 容器（含 7 个旧账号容器）、14 个 ccg-* 卷、138 个 ccgateway* 镜像、`~/sup2api-managed/ccgateway-images`、`/opt/ccgateway*`、`/var/lib/ccgateway-guard`，根分区释放约 60 GiB；删除后 `/readyz` 200、5xx 0。`sup2api-cc1`（ovh 上独立的单节点，自带 PG，核心 0.1.279）不属于这个集群，未动。
 - 脚本 `stage/0.1.290/`；工作树 `~/sup2api/release-0.1.290`；计划观测、冒烟脚本与输出在 `~/rel290/`。
 
 2026-11-15 核心 **0.1.288**（`b06ef60bf`，develop 头，合并了 `feat/usage-attempt-chain`（`43a1a936`、`3c15fb10`、`22b6e289`），基于 develop `d08d3c8d9` = 0.1.287 上游同步；北京时间 02:55–02:58；计划 `d61b679ddde4eb917590b20213f23fad` rolling-v1 completed，02:55:17→02:58:03，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `1f73f300…9d4f`；Host API 仍 9；内置插件与 0.1.287 逐字节相同）：
@@ -41,7 +52,7 @@
 - 测试与验证：`test.sh` TEST-OK（server 59 包、-race 11 包、sdk、7 个插件、控制台 2340 条与三个原生界面）；本机生产快照验证；worker 在 11-14 生产快照上用 stage 产物独立验证 r3 全部 17 项（211 条）通过，r4 复验第 1–3 项与插件运行时授予一致性通过（其余项发布时仍在进行）。
 - 发布前只读确认：线上 0.1.285、schema 0096、超管 1 个、网关 revision 544、预检无 blocker；线上 10 个插件的宿主权限授予全部在新 manifest 声明内。按用户 11-12 的要求没有关闭 new-api 渠道。
 - 核验（`~/rel286/`，只读）：两节点 0.1.286；10 个插件 enabled 且两节点 ready（版本同上）；超管 1 个；内置角色等于默认值（admin 51 + 可分配 operator/supplier/user 与 assign_custom，operator 27 + 1 范围、可分配 supplier/user，supplier 1 + 8 范围，user 4），旧 own 键与 `role:manage` 为 0；`smoke286.py` 超管只读接口全部 200；`errs.sh` 19:39–19:42 共 80 次请求 0 个 5xx（sup2api-1 11 个 499 为停服窗口客户端断开），19:41 起 0 个 5xx；sup2api-1 日志只有停服时的 `local core unreachable` WARN。
-- 回滚：网关不允许跨 schema 回退（升级计划与 `sub2api-gateway rollback` 都会拒绝），线上出问题修复前进（0.1.287，新迁移接在 0098 之后）或从数据库自动备份恢复；`deploy/rollback/0.1.286-authz-down.sql/.md` 只用于不经网关的环境。
+- 回滚：网关不允许跨 schema 回退（升级计划与 `sub2api-gateway rollback` 都会拒绝），线上出问题修复前进（0.1.287，新迁移接在 0098 之后）或从数据库自动备份恢复；`deploy/rollback/0.1.286-authz-down.sql/.md` 只用于不经网关的环境（0.1.290 后已删除，`git show 91e0c26bc:next/deploy/rollback/0.1.286-authz-down.sql`）。
 - 上游同步 PR 未提，未合入 develop（等用户决定）。
 
 2026-11-14 核心 **0.1.285**（`b12c9aede`，develop 头，合并了 `fix/disconnect-wait-and-claude-max-tokens` `bdbb2875e`；北京时间 05:21–05:23；计划 `db8e5317a6b261e70cf08175c44864f4` rolling-v1 completed，05:21:39→05:23:39 约 120 秒，两节点轮流让出（先 ccp 后 ovh），`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `a9befa8c…1e11`；Host API 仍 9）：
@@ -932,13 +943,12 @@
 
 ## 更新原则
 
-1. 本地审查、提交、推送；服务器Git fetch精确SHA，clean detached工作树构建，禁止scp/rsync上传源码。
-2. 从仓库内执行`prepare-core-release.sh VERSION FULL_GIT_SHA`。它在Docker主机上构建CCGateway运行环境镜像（缓存在`~/sup2api-managed/ccgateway-images/<插件版本>/`，每版本只构建一次）和核心（REQUIRE_CCGATEWAY_IMAGES=1，镜像随ccgateway插件包分发），准备签名制品、备份和预检，不创建升级计划或切服务；版本/制品不可覆盖。
-3. 核固定Go编译器、六builtin不可变包、签名/hash、原schema、备份和fresh preflight，再由正常primary-first updater升级。四节点独立核版本/hash/ready，真实服务验收另记。
+1. 本地审查、提交、推送。
+2. 核心与网关的发布包只由 GitHub Actions 按 tag `core-v*`、`gateway-v*` 构建和签名（[github/README.md](../github/README.md)），不在本机或服务器上构建、签名发布包。节点 `trusted_keys` 要有流水线的发布公钥。
+3. 上线用控制台“版本与更新”的一键更新（[网关手册“更新源与一键更新”](../README.md#更新源与一键更新)）；服务器连不上 GitHub 时用 `sub2api-release mirror` 转存成 `url` 来源。发布前照常核对 schema、备份和预检结果；各节点各自核对版本、hash、ready，真实服务验收另记。
 4. 服务端既有`~/sup2api-managed/upgrade_observe.py`节点映射为`sup2api-*`。仓库同名旧脚本映射不同，**不能直接覆盖服务端脚本或不核映射就运行**；不要传故障注入的第二参数。
-5. CCGateway保存未来镜像配置不替换现有账号。#21/#22保留原容器/数据/授权，Worker需显式备份和原子替换程序；Controller更新另走明确步骤。
 
-不要再使用`deploy/single/deploy.sh`，会与管理节点争用3130/3131。也**不要在本目录（或服务器上任何 `release-*/next/deploy/gateway/ovh`）执行 `docker compose up`**：线上节点由 `/home/debian/sup2api-managed/compose.yml` 管理（容器 `sup2api-1..4`/`releases`，卷 `sup2api-managed_sup2api-N-data`，证书挂载路径也不同），本目录的 `compose.yml` 卷名为 `state-N`，起出来是一套用旧状态卷、不心跳、发布服务器缺证书的错误节点（2026-10-09 07:44 发生过）。核心升级只走 `~/sup2api-managed/build-core.sh VERSION` → 主节点 `sub2api-shell import` → `upgrade_observe.py DIGEST`。不要把正常核心升级写成零中断，最近维护窗口约30–38秒。禁止生产DB运行测试fixture；测试使用隔离45432库。
+不要再使用`deploy/single/deploy.sh`，会与管理节点争用3130/3131。也**不要在本目录（或服务器上任何 `release-*/next/deploy/gateway/ovh`）执行 `docker compose up`**：线上节点由 `/home/debian/sup2api-managed/compose.yml` 管理（容器 `sup2api-1..4`/`releases`，卷 `sup2api-managed_sup2api-N-data`，证书挂载路径也不同），本目录的 `compose.yml` 卷名为 `state-N`，起出来是一套用旧状态卷、不心跳、发布服务器缺证书的错误节点（2026-10-09 07:44 发生过）。主节点优先（改库）的核心升级不是零中断，最近维护窗口约30–38秒。禁止生产DB运行测试fixture；测试使用隔离45432库。
 
 `.env`、keys/certs/stage/publish及私有备份仅留服务器；不要提交或打印鉴权、密码、DSN、完整inspect。更详命令和恢复路径见环境指南。此文替代此前自动踢账号换镜像和tools/ccgateway旧路径说明。
 

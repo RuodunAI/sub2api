@@ -48,8 +48,8 @@ var (
 	snapshotStats = statsLimits{timeout: "25s", workMem: "128MB"}
 )
 
-// statsLimitsFor gives the limits of a summary or overview: an operator's
-// (self nil) is cached, the caller's own is not.
+// statsLimitsFor gives the limits of an overview: an operator's or the
+// account side's (self nil) is cached, the caller's own is not.
 func statsLimitsFor(self *int64) statsLimits {
 	if self == nil {
 		return snapshotStats
@@ -192,15 +192,19 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 	}
 	var out Overview
 	if self != nil {
-		out, err = s.loadOverview(ctx, tz, loc, self, false, false)
+		out, err = s.loadOverview(ctx, tz, loc, overviewOf{self: self})
 	} else {
 		var users, accounts, hit bool
 		if users, err = core.Can(ctx, s.Authz, "user:read"); err == nil {
 			accounts, err = s.seesAccounts(ctx, nil)
 		}
 		if err == nil {
+			of := overviewOf{users: users}
+			if accounts {
+				of.accounts = core.AllScope
+			}
 			out, hit, err = s.overviews.get(ctx, fmt.Sprintf("%s|%t|%t", tz, users, accounts), func(ctx context.Context) (Overview, error) {
-				return s.loadOverview(ctx, tz, loc, nil, users, accounts)
+				return s.loadOverview(ctx, tz, loc, of)
 			})
 			c.Header("X-Snapshot-Cache", snapshotHeader(hit))
 		}
@@ -212,15 +216,38 @@ func (s *Service) overview(c *gin.Context, self *int64) {
 	httpapi.OK(c, out)
 }
 
-func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Location, self *int64, users, accounts bool) (Overview, error) {
+// overviewOf is what one overview covers.
+type overviewOf struct {
+	self  *int64 // the caller's own rows, and its API keys
+	users bool   // the users section
+	// accounts is the accounts section, over these accounts; none when it
+	// reaches nothing. scoped keeps the rows they served alone (the account
+	// side, inScope).
+	accounts core.DataScope
+	scoped   bool
+}
+
+// scopeKey identifies the rows of s in a snapshot cache key: callers of
+// different scopes never share an answer. It names the scope, not the rows
+// it reaches: a move of a user or an account between owners shows in a
+// cached answer once that expires (CONTRACTS §103.2).
+func scopeKey(s core.DataScope) string {
+	return fmt.Sprint(s.All, s.Owners, s.Teams, s.Groups, s.IDs, s.PairG, s.PairID)
+}
+
+func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Location, of overviewOf) (Overview, error) {
 	w := overviewWindows(overviewNow(), loc)
 	out := Overview{TZ: tz}
 	var activeToday int64
-	err := s.statsTx(ctx, statsLimitsFor(self), func(tx *gorm.DB) error {
+	err := s.statsTx(ctx, statsLimitsFor(of.self), func(tx *gorm.DB) error {
+		g := store.G(ctx, tx)
 		var f store.Conds
 		f.And("u.created_at >= ?", w.last30d)
-		if self != nil {
-			f.And("u.user_id = ?", *self)
+		if of.self != nil {
+			f.And("u.user_id = ?", *of.self)
+		}
+		if of.scoped {
+			inScope(&f, g, of.accounts)
 		}
 		span, err := rollupSpan(ctx, tx, w.last30d, time.Now(), loc)
 		if err != nil {
@@ -228,7 +255,6 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 		}
 		targets := append(append(append(out.Today.scanTargets(), out.Yesterday.scanTargets()...), out.Last30d.scanTargets()...),
 			&out.Last5m.Requests, &out.Last5m.Tokens, &activeToday)
-		g := store.G(ctx, tx)
 		// Named parameters: each window bound is used several times.
 		if err := g.Table("?", statRows(g, clause.Expr{SQL: `u.created_at AS at, u.user_id`}, ``, f, span)).Select(
 			totalsColumns(`u.at >= @today`, false)+`, `+
@@ -241,7 +267,7 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 			}).Row().Scan(targets...); err != nil {
 			return err
 		}
-		if self != nil {
+		if of.self != nil {
 			out.APIKeys = &struct {
 				Total  int64 `json:"total"`
 				Active int64 `json:"active"`
@@ -249,9 +275,9 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 			// Active ones are also unexpired.
 			return g.Model(&model.APIKey{}).
 				Select(`count(*), count(*) FILTER (WHERE status = 'active' AND (expires_at IS NULL OR expires_at > now()))`).
-				Where("user_id = ? AND deleted_at IS NULL", *self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
+				Where("user_id = ? AND deleted_at IS NULL", *of.self).Row().Scan(&out.APIKeys.Total, &out.APIKeys.Active)
 		}
-		if users {
+		if of.users {
 			out.Users = &struct {
 				Total       int64 `json:"total"`
 				NewToday    int64 `json:"new_today"`
@@ -262,8 +288,8 @@ func (s *Service) loadOverview(ctx context.Context, tz string, loc *time.Locatio
 				return err
 			}
 		}
-		if accounts {
-			counts, err := account.CountAccounts(ctx, tx, core.AllScope)
+		if !of.accounts.Empty() {
+			counts, err := account.CountAccounts(ctx, tx, of.accounts)
 			if err != nil {
 				return err
 			}
@@ -317,24 +343,29 @@ func (s *Service) allRealtime(c *gin.Context) { s.realtime(c, nil) }
 // time range and the status: the numbers are always the last minute's, and
 // they need both outcomes.
 func (s *Service) realtime(c *gin.Context, self *int64) {
+	accounts, err := s.seesAccounts(c.Request.Context(), self)
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	f, err := parseFilter(c, self, trailViewFor(self, accounts))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	s.serveRealtime(c, f)
+}
+
+// serveRealtime answers the realtime figures of the records f keeps.
+func (s *Service) serveRealtime(c *gin.Context, f store.Conds) {
 	ctx := c.Request.Context()
-	accounts, err := s.seesAccounts(ctx, self)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
-	f, err := parseFilter(c, self, accounts)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return
-	}
 	now := time.Now()
 	f.And("u.created_at >= ?", now.Add(-realtimeScan))
 	f.And("u.created_at + u.latency_ms * interval '1 millisecond' >= ?", now.Add(-realtimeWindow))
 	// Token counting is free and takes no part in rate limits (§18).
 	f.And("u.protocol NOT LIKE '%.count_tokens'")
 	var out Realtime
-	err = s.statsTx(ctx, directStats, func(tx *gorm.DB) error {
+	err := s.statsTx(ctx, directStats, func(tx *gorm.DB) error {
 		return store.G(ctx, tx).Table("usage_logs u").Select(`count(*) FILTER (WHERE u.success),
 			COALESCE(sum(`+realtimeTokens+`) FILTER (WHERE u.success), 0),
 			count(*) FILTER (WHERE `+realtimeFailure+`)`).Scopes(f.Scope()).

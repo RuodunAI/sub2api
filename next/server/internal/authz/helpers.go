@@ -171,10 +171,11 @@ func (s *Service) CanActOnUser(ctx context.Context, actorID int64, action core.U
 // the user role is left out so that a role with user:update and no
 // assignable list still serves plain users), and what the targets' roles
 // grant must be within the actor's (SEC-H2). A superuser manages everyone,
-// itself included. The target's side is what its ROLES grant, not what it
-// can do right now: a disabled user can do nothing, and comparing against
-// that would let anyone with user:update re-enable a disabled admin and take
-// the account over. The actor's side is its roles too: an access key narrows
+// itself included. An actor reaching users by a team alone acts only on
+// the users below it (withinTeam, CONTRACTS §103). The target's side is
+// what its ROLES grant, not what it can do right now: a disabled user can
+// do nothing, and comparing against that would let anyone with user:update
+// re-enable a disabled admin and take the account over. The actor's side is its roles too: an access key narrows
 // what the caller may do (the route's permission), not whom. ActOnIdentity
 // on a superuser through an access key needs a step-up proof (期 4 S3, in
 // place of decision 1's session-only rule). ActOnBalance on a target holding
@@ -200,21 +201,19 @@ func (s *Service) canActOnUsers(ctx context.Context, q *gorm.DB, actorID int64, 
 	if err != nil {
 		return err
 	}
+	if err := withinTeam(ctx, q, actorID, actor, ids); err != nil {
+		return err
+	}
 	target, roles, err := s.usersRoles(ctx, q, ids)
 	if err != nil {
 		return err
 	}
-	if err := within(actor, target, cannotActOn(ctx, target)); err != nil {
+	if err := manageDenial(ctx, actor, target, roles); err != nil {
 		return err
 	}
-	for _, key := range roles {
-		switch {
-		case key == RoleUser:
-		case !actor.CanAssign(key):
-			return cannotActOnPeer(ctx, key)
-		case action == core.ActOnBalance && !core.RestrictToAccessKey(ctx, actorID, actor).Has(string(perm.BalanceAdjustAny)):
-			return notPlainUser(ctx, key)
-		}
+	if i := slices.IndexFunc(roles, func(k string) bool { return k != RoleUser }); i >= 0 && action == core.ActOnBalance &&
+		!core.RestrictToAccessKey(ctx, actorID, actor).Has(string(perm.BalanceAdjustAny)) {
+		return notPlainUser(ctx, roles[i])
 	}
 	// Only an actor that manages the superuser gets this far with one: the
 	// super admin itself. Through an access key it needs a step-up proof:
@@ -228,6 +227,21 @@ func (s *Service) canActOnUsers(ctx context.Context, q *gorm.DB, actorID int64, 
 		return nil
 	}
 	return s.auditSelf(ctx, q, actorID)
+}
+
+// manageDenial is why actor, a set of roles, may not manage users holding
+// roles, which grant target (FU6), nil when it may: target is within
+// actor, and every role but the default one is on actor's assignable list.
+func manageDenial(ctx context.Context, actor, target core.PermissionSet, roles []string) error {
+	if err := within(actor, target, cannotActOn(ctx, target)); err != nil {
+		return err
+	}
+	for _, key := range roles {
+		if key != RoleUser && !actor.CanAssign(key) {
+			return cannotActOnPeer(ctx, key)
+		}
+	}
+	return nil
 }
 
 // auditSelf records an action of actorID on itself that CanActOnUsers let

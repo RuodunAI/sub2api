@@ -8,7 +8,9 @@
 // Search. The pickers follow the draft too: the API keys are those of the
 // picked user, the accounts of the picked group come first, and the model
 // picker also offers `modelOptions`. A picker that is set carries data-set,
-// for a layout that gives it the room to show its name.
+// for a layout that gives it the room to show its name. Without `textSearch`
+// an entity is picked only, never searched by name (the account view,
+// CONTRACTS §103.5).
 import { computed } from 'vue'
 import { SInput, SSelect } from '@sub2api/ui'
 import EntityPicker from '@/components/EntityPicker.vue'
@@ -23,8 +25,9 @@ const props = withDefaults(
     protocolOptions?: string[]
     /** The models under the current search. */
     modelOptions?: string[]
+    textSearch?: boolean
   }>(),
-  { mine: false, protocolOptions: () => [], modelOptions: () => [] }
+  { mine: false, protocolOptions: () => [], modelOptions: () => [], textSearch: true }
 )
 const emit = defineEmits<{ update: [patch: Record<string, string>]; pick: [patch: Record<string, string>] }>()
 const { label, options } = useUsageSearchLabels(() => props.protocolOptions, () => props.values.protocol ?? '')
@@ -48,7 +51,7 @@ const extras = computed<Record<string, Array<{ id: string; name: string }>>>(() 
       v-if="entity"
       :id="draft(entity.id)"
       :kind="entity.kind"
-      :text="draft(entity.text)"
+      :text="textSearch ? draft(entity.text) : undefined"
       size="sm"
       :mine="mine"
       :scope="scopes[field]"

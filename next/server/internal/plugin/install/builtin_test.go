@@ -52,7 +52,7 @@ func TestEnsureBuiltinInstallsEnablesAndBlocksUninstall(t *testing.T) {
 			t.Fatalf("grant %s = %+v", hp.ID, g)
 		}
 	}
-	if last := e.perms.syncs[len(e.perms.syncs)-1]; !slices.Equal(last.roles, []string{"operator", "user"}) {
+	if last := e.perms.syncs[len(e.perms.syncs)-1]; !slices.Equal(last.roles, []string{"operator", "supplier_agent", "user"}) {
 		t.Fatalf("permission roles = %v", last.roles)
 	}
 

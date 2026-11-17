@@ -256,27 +256,27 @@ func TestSelfUpdateRequiresConfirmation(t *testing.T) {
 	s, ctx := e.svc, context.Background()
 	root := mustLogin(t, s, adminEmail, adminPassword).User.ID
 	newPassword, email, name := "root-password-2", "root2@example.com", "Root"
-	if _, err := s.UpdateUser(noProof(ctx, root), root, root, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
+	if _, err := s.UpdateUser(noProof(ctx, root), root, root, core.AllScope, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
 		t.Fatalf("own password without a proof: %v", err)
 	}
 	// A proof of another scope does not do.
-	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfEmail), root, root, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
+	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfEmail), root, root, core.AllScope, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
 		t.Fatalf("own password with an email proof: %v", err)
 	}
 	if _, err := s.Login(ctx, adminEmail, newPassword, testIP); err == nil {
 		t.Fatal("the refused change took effect")
 	}
-	if _, err := s.UpdateUser(noProof(ctx, root), root, root, UpdateUserInput{Email: &email}); !isVerificationRequired(err) {
+	if _, err := s.UpdateUser(noProof(ctx, root), root, root, core.AllScope, UpdateUserInput{Email: &email}); !isVerificationRequired(err) {
 		t.Fatalf("own email without a proof: %v", err)
 	}
-	if _, err := s.UpdateUser(noProof(ctx, root), root, root, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(noProof(ctx, root), root, root, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("own display name needs no proof: %v", err)
 	}
-	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfPassword), root, root, UpdateUserInput{Password: &newPassword}); err != nil {
+	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfPassword), root, root, core.AllScope, UpdateUserInput{Password: &newPassword}); err != nil {
 		t.Fatal(err)
 	}
 	mustLogin(t, s, adminEmail, newPassword)
-	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfEmail), root, root, UpdateUserInput{Email: &email}); err != nil {
+	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpSelfEmail), root, root, core.AllScope, UpdateUserInput{Email: &email}); err != nil {
 		t.Fatal(err)
 	}
 	mustLogin(t, s, email, newPassword)
@@ -286,10 +286,10 @@ func TestSelfUpdateRequiresConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateUser(noProof(ctx, root), root, staff.ID, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
+	if _, err := s.UpdateUser(noProof(ctx, root), root, staff.ID, core.AllScope, UpdateUserInput{Password: &newPassword}); !isVerificationRequired(err) {
 		t.Fatalf("operator reset without a proof: %v", err)
 	}
-	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpUserPasswordReset), root, staff.ID, UpdateUserInput{Password: &newPassword}); err != nil {
+	if _, err := s.UpdateUser(withProof(t, s, ctx, root, core.StepUpUserPasswordReset), root, staff.ID, core.AllScope, UpdateUserInput{Password: &newPassword}); err != nil {
 		t.Fatalf("operator reset: %v", err)
 	}
 }
@@ -318,10 +318,10 @@ func TestOthersPasswordNeedsReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	name, pw := "renamed", "taken-over-1"
-	if _, err := s.UpdateUser(ctx, editor.ID, plain.ID, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(ctx, editor.ID, plain.ID, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("editor update: %v", err)
 	}
-	_, err = s.UpdateUser(ctx, editor.ID, plain.ID, UpdateUserInput{Password: &pw})
+	_, err = s.UpdateUser(ctx, editor.ID, plain.ID, core.AllScope, UpdateUserInput{Password: &pw})
 	var ce *core.Error
 	if !errors.As(err, &ce) || ce.Code != "permission_denied" || ce.Details["permission"] != "user:password:reset" {
 		t.Fatalf("editor set a password: %v", err)
@@ -386,17 +386,17 @@ func TestDisabledAdminStaysOutOfReach(t *testing.T) {
 		t.Fatal(err)
 	}
 	pw := "taken-over-1"
-	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
+	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, core.AllScope, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
 		t.Fatalf("operator set an active admin's password: %v", err)
 	}
 	disabled, active := StatusDisabled, StatusActive
-	if _, err := s.UpdateUser(ctx, root, admin.ID, UpdateUserInput{Status: &disabled}); err != nil {
+	if _, err := s.UpdateUser(ctx, root, admin.ID, core.AllScope, UpdateUserInput{Status: &disabled}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
+	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, core.AllScope, UpdateUserInput{Password: &pw}); !isCode(err, "permission_denied") {
 		t.Fatalf("operator set a disabled admin's password: %v", err)
 	}
-	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, UpdateUserInput{Status: &active}); !isCode(err, "permission_denied") {
+	if _, err := s.UpdateUser(ctx, operator.ID, admin.ID, core.AllScope, UpdateUserInput{Status: &active}); !isCode(err, "permission_denied") {
 		t.Fatalf("operator re-enabled a disabled admin: %v", err)
 	}
 	if err := s.ResetSecurity(ctx, operator.ID, admin.ID); !isCode(err, "permission_denied") {
@@ -409,7 +409,7 @@ func TestDisabledAdminStaysOutOfReach(t *testing.T) {
 		t.Fatal("the disabled admin was taken over")
 	}
 	// The superuser, who outranks the admin, still can.
-	if _, err := s.UpdateUser(ctx, root, admin.ID, UpdateUserInput{Status: &active}); err != nil {
+	if _, err := s.UpdateUser(ctx, root, admin.ID, core.AllScope, UpdateUserInput{Status: &active}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -441,10 +441,10 @@ func TestManagedUsersIncludeOneself(t *testing.T) {
 		return isCode(err, "permission_denied") && core.AsError(err).Details["reason"] == "not_manageable"
 	}
 	for _, actor := range []int64{admin, op} {
-		if _, err := s.UpdateUser(ctx, actor, actor, UpdateUserInput{DisplayName: &name}); !notManageable(err) {
+		if _, err := s.UpdateUser(ctx, actor, actor, core.AllScope, UpdateUserInput{DisplayName: &name}); !notManageable(err) {
 			t.Errorf("user %d renames itself through /users/:id: %v", actor, err)
 		}
-		if _, err := s.UpdateUser(withProof(t, s, ctx, actor, core.StepUpSelfPassword), actor, actor, UpdateUserInput{Password: &pw}); !notManageable(err) {
+		if _, err := s.UpdateUser(withProof(t, s, ctx, actor, core.StepUpSelfPassword), actor, actor, core.AllScope, UpdateUserInput{Password: &pw}); !notManageable(err) {
 			t.Errorf("user %d sets its password through /users/:id: %v", actor, err)
 		}
 		if err := s.ResetSecurity(ctx, actor, actor); !notManageable(err) {
@@ -455,16 +455,16 @@ func TestManagedUsersIncludeOneself(t *testing.T) {
 		}
 	}
 	// The operator manages suppliers and users.
-	if _, err := s.UpdateUser(ctx, op, supplier, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(ctx, op, supplier, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("operator renames a supplier: %v", err)
 	}
 	// The super admin manages itself.
-	if _, err := s.UpdateUser(ctx, root, root, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(ctx, root, root, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("super admin renames itself: %v", err)
 	}
 	// Nobody disables or deletes itself, the super admin included.
 	disabled := StatusDisabled
-	if _, err := s.UpdateUser(ctx, root, root, UpdateUserInput{Status: &disabled}); !errors.Is(err, errSelfDisable) {
+	if _, err := s.UpdateUser(ctx, root, root, core.AllScope, UpdateUserInput{Status: &disabled}); !errors.Is(err, errSelfDisable) {
 		t.Fatalf("super admin disables itself: %v", err)
 	}
 	if err := s.DeleteUser(ctx, root, root); !errors.Is(err, errSelfDisable) {
@@ -493,8 +493,8 @@ func TestPeersCannotActOnEachOther(t *testing.T) {
 	// may revoke, so only the target check can refuse it.
 	acts := func(actor, target int64, roles ...string) map[string]error {
 		out := map[string]error{}
-		_, out["rename"] = s.UpdateUser(ctx, actor, target, UpdateUserInput{DisplayName: &name})
-		_, out["password"] = s.UpdateUser(withProof(t, s, ctx, actor, core.StepUpUserPasswordReset), actor, target, UpdateUserInput{Password: &pw})
+		_, out["rename"] = s.UpdateUser(ctx, actor, target, core.AllScope, UpdateUserInput{DisplayName: &name})
+		_, out["password"] = s.UpdateUser(withProof(t, s, ctx, actor, core.StepUpUserPasswordReset), actor, target, core.AllScope, UpdateUserInput{Password: &pw})
 		out["reset security"] = s.ResetSecurity(ctx, actor, target)
 		_, out["roles"] = s.SetUserRoles(ctx, actor, target, roles)
 		out["delete"] = s.DeleteUser(ctx, actor, target)
@@ -512,7 +512,7 @@ func TestPeersCannotActOnEachOther(t *testing.T) {
 	}
 	// Below them: the admin acts on the operator and on a user as before
 	// (the operator has no user:password:reset or user:delete by default).
-	if _, err := s.UpdateUser(ctx, op, plain, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(ctx, op, plain, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("operator renames a user: %v", err)
 	}
 	for target, roles := range map[int64][]string{op2: {authz.RoleOperator}, plain: {authz.RoleUser, authz.RoleOperator}} {
@@ -523,7 +523,7 @@ func TestPeersCannotActOnEachOther(t *testing.T) {
 		}
 	}
 	// The super admin is unaffected.
-	if _, err := s.UpdateUser(ctx, root, admin2, UpdateUserInput{DisplayName: &name}); err != nil {
+	if _, err := s.UpdateUser(ctx, root, admin2, core.AllScope, UpdateUserInput{DisplayName: &name}); err != nil {
 		t.Fatalf("super admin renames an admin: %v", err)
 	}
 }

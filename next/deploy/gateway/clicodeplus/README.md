@@ -21,7 +21,7 @@
   - clicodeplus Caddy 把客户端 IP 写进 `X-Forwarded-For`，3141 跳板原样转发。ovh Caddy 信任 64.186.225.70，取出真实地址后用 `{client_ip}` 传下去。
   - 每个节点的 `trusted_proxies` 只有本机 Docker 网关：sup2api-ccp 是 `10.234.10.1/32`（网络 `sup2api-node` 10.234.10.0/24），sup2api-1 是 `192.168.96.1/32`（`sup2api_default`）。
   - 切换前经 api.prophey.ai 进来的请求，`client_ip` 都记成 clicodeplus 的地址；切换后是真实地址。
-- **主节点** sup2api-1：负责升级协调和插件包存储，发布源 `releases` 也在 ovh。核心发布流程不变（`stage/<版本>/build.sh`、签名、`sub2api-shell import`、`upgrade_observe.py`），从节点 sup2api-ccp 经 7443 从主节点拉取核心和插件包。
+- **主节点** sup2api-1：负责升级协调和插件包存储，发布源 `releases` 也在 ovh。核心与网关的发布与更新见 [网关手册“更新源与一键更新”](../README.md#更新源与一键更新)。从节点 sup2api-ccp 经 7443 从主节点拉取核心和插件包；网关一键更新时它自己经更新源下载网关。
 - **Redis**：在 40.160.152.211（`ssh valkey`，经 ovh 跳板）的 `~/valkey-stack`。Valkey 8 不发布端口，Caddy 四层代理在 6380 做 TLS 终结。
   - 白名单在 Caddy 的 layer4 路由里，按来源 IP 匹配，只放行 64.186.225.70 与 15.204.107.38，其他连接直接关闭。443 只用于 Let's Encrypt 续签证书。
   - redis-cli 测试要加 `--sni valkey.prophey.ai`（不带 SNI 时 Caddy 选不到证书）；go-redis 会自动带上。
@@ -143,7 +143,11 @@
 
 ## 网关 0.1.134：随核心 0.1.290 换上（2026-11-17）
 
-源码 `e3906cc68`，镜像 `sup2api-gateway:0.1.134`（ID `b17f0838…`），在 ovh 的 `~/sup2api/release-0.1.290` 构建（`stage/0.1.290/build.sh`，runtime-contract 与 gateway 的 vet/test 通过），经本机复制到 clicodeplus（gzip 约 44 MB，SHA `51fdc8a6…`，`/root/gateway-images/`）。核心 0.1.290 的升级计划仍在 0.1.133 下执行，计划完成后才换外壳：compose 去掉 `SUB2API_JWT_SECRET`（0.1.290 不再读），`.env` 的 `GATEWAY_IMAGE` 改成 0.1.134；换前的 compose、`.env`、config 备份在 `/root/sup2api-node/backup-0.1.290/`。北京 00:28:06 重建、00:28:42 就绪。这次 new-api 渠道 392 正关着、没有流量，所以没有先让出。外壳 0.1.134 不能运行核心 0.1.288，回退核心时外壳一起回到 0.1.133（见 [0.1.290 发布手册](../../rollback/0.1.290-release.md) 第五节）。
+源码 `e3906cc68`，镜像 `sup2api-gateway:0.1.134`（ID `b17f0838…`），在 ovh 的 `~/sup2api/release-0.1.290` 构建（`stage/0.1.290/build.sh`，runtime-contract 与 gateway 的 vet/test 通过），经本机复制到 clicodeplus（gzip 约 44 MB，SHA `51fdc8a6…`，`/root/gateway-images/`）。核心 0.1.290 的升级计划仍在 0.1.133 下执行，计划完成后才换外壳：compose 去掉 `SUB2API_JWT_SECRET`（0.1.290 不再读），`.env` 的 `GATEWAY_IMAGE` 改成 0.1.134；换前的 compose、`.env`、config 备份在 `/root/sup2api-node/backup-0.1.290/`。北京 00:28:06 重建、00:28:42 就绪。这次 new-api 渠道 392 正关着、没有流量，所以没有先让出。外壳 0.1.134 不能运行核心 0.1.288；升级前的数据库备份已删除，不再回退（0.1.290 发布手册已删除，原文 `git show 91e0c26bc:next/deploy/rollback/0.1.290-release.md`）。
+
+## 网关 0.1.135：版本检测与一键更新（2026-11-17）
+
+源码 `a0eac3c38`，镜像 `sup2api-gateway:0.1.135`（ID `da491cb9…`，`--build-arg VERSION=0.1.135`），在 ovh 的 `~/sup2api/release-0.1.291` 构建（`stage/0.1.291/build.sh`），经本机复制到 clicodeplus（gzip SHA `96d90c19…`，`/root/gateway-images/`）。核心 0.1.291 的 rolling 计划在 0.1.134 下完成后，按下文“网关换版流程”先换本节点：`/root/sup2api-node/gwswap-0.1.135.sh` 让出（北京 03:57:15）、排空（03:57:19，在途 0）、`.env` 备份为 `.env.bak-gw134` 并把 `GATEWAY_IMAGE` 改成 0.1.135、`docker compose up -d --no-deps sup2api-ccp`，03:57:53 `/readyz` 200；期间 Caddy 把 api.prophey.ai 切到 ovh，没有 5xx。之后才换 ovh 的主节点（03:58:10–03:58:27）。本版起各节点向 `updater.nodes` 报告 `gateway_version` 与能否自更新，之后的网关版本可以在控制台一键更新（`gateway-rolling-v1`）。回退：`.env` 换回 `.env.bak-gw134`，同样先让出再重建。
 
 ## 网关换版流程（2026-11-08 起，下一版网关（预计 0.1.133）：节点让出，不再改 Caddy）
 

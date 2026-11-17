@@ -14,15 +14,19 @@ import (
 // key may end in a scope, "<action>:<scope>", that limits the rows it
 // reaches:
 //
-//	scope = "*" | "own" | path
+//	scope = "*" | "own" | "team" | path
 //	path  = account actions: "group/" seg [ "/account/" seg ] | "account/" id
 //	        proxy actions:   "proxy/" id
 //	        plugin actions:  resource "/" value
 //	seg   = id | "*"
 //
-// A missing scope is "*": every row, so every unscoped key keeps its
-// meaning. The last segment of a key is a scope only when it is "*", "own"
-// or holds a "/"; no catalog action ends that way.
+// "team" (CONTRACTS §103) is the caller's rows and those of every user
+// below it (users.owner_id); only core actions take it, and of the user
+// actions it is the only scope besides "*". A missing scope is "*": every
+// row, so every unscoped key keeps its meaning. The last segment of a key
+// is a scope only when it is "*", "own", holds a "/", or is "team" after a
+// core action that takes a scope (so a plugin action ending in ":team"
+// keeps its meaning); no catalog action ends that way.
 
 // Resource is the row kind the scope of an action ranges over.
 type Resource string
@@ -30,6 +34,9 @@ type Resource string
 const (
 	ResourceAccount Resource = "account"
 	ResourceProxy   Resource = "proxy"
+	// ResourceUser ranges over users by their owner (users.owner_id): "*"
+	// or "team", which reaches the users below the holder, not itself.
+	ResourceUser Resource = "user"
 )
 
 // scopable lists the actions that take a scope, with their resource.
@@ -42,6 +49,10 @@ var scopable = map[Key]Resource{
 	AccountCredentialView: ResourceAccount,
 	ProxyRead:             ResourceProxy,
 	ProxyManage:           ResourceProxy,
+	UsageAccountRead:      ResourceAccount,
+	UserRead:              ResourceUser,
+	UserCreate:            ResourceUser,
+	UserUpdate:            ResourceUser,
 }
 
 // PluginPrefix starts the action of every plugin permission
@@ -73,8 +84,8 @@ var ErrInvalidKey = errors.New("invalid permission key")
 // Wildcard is a group segment of "*": any group.
 const Wildcard int64 = -1
 
-// Scope is a parsed, canonical scope. At most one of All and Own is set,
-// and then the rest is zero. A plugin scope sets Res and Value only.
+// Scope is a parsed, canonical scope. At most one of All, Own and Team is
+// set, and then the rest is zero. A plugin scope sets Res and Value only.
 // Otherwise:
 //   - Group > 0: group/<Group>; Group == Wildcard: group/*; 0: no group part.
 //   - ID > 0: the row id, account/<ID> or proxy/<ID> (after a group part,
@@ -83,6 +94,7 @@ const Wildcard int64 = -1
 // Scope stays comparable: PermissionSet compares scopes with ==.
 type Scope struct {
 	All, Own   bool
+	Team       bool // the holder's rows and those of the users below it
 	Group, ID  int64
 	Res, Value string // a plugin scope "<Res>/<Value>"
 }
@@ -104,10 +116,10 @@ func Parse(k string) (Pattern, error) {
 		return Pattern{Action: Key(k), Scope: Scope{All: true}}, nil
 	}
 	action, last := Key(k[:i]), k[i+1:]
-	if last != "*" && last != "own" && !strings.Contains(last, "/") {
+	res := scopable[action]
+	if last != "*" && last != "own" && !strings.Contains(last, "/") && (last != "team" || res == "") {
 		return Pattern{Action: Key(k), Scope: Scope{All: true}}, nil
 	}
-	res := scopable[action]
 	if res == "" && !strings.HasPrefix(string(action), PluginPrefix) {
 		return Pattern{}, ErrInvalidKey
 	}
@@ -129,11 +141,15 @@ func Canonical(k string) (Key, error) {
 }
 
 func parseScope(res Resource, create bool, raw string) (Scope, error) {
-	switch raw {
-	case "*":
+	switch {
+	case raw == "*":
 		return Scope{All: true}, nil
-	case "own":
+	case raw == "team" && !create: // a new row is always the creator's own
+		return Scope{Team: true}, nil
+	case raw == "own" && res != ResourceUser: // a user is owned by another
 		return Scope{Own: true}, nil
+	case res == ResourceUser || raw == "team" || raw == "own":
+		return Scope{}, ErrInvalidKey
 	}
 	if res == "" { // a plugin action: "<resource>/<value>", nothing else
 		r, val, _ := strings.Cut(raw, "/")
@@ -215,6 +231,8 @@ func (p Pattern) Suffix() string {
 		return ""
 	case s.Own:
 		return "own"
+	case s.Team:
+		return "team"
 	case s.Res != "":
 		return s.Res + "/" + s.Value
 	}
@@ -247,7 +265,7 @@ func (p Pattern) Key() Key {
 // Implies reports whether holding have grants want: the same action, and a
 // scope reaching at least what want reaches, judged by the text alone, never
 // by where rows are now (group/12 does not imply account/125 even while
-// account 125 is in group 12).
+// account 125 is in group 12; team implies own, but no group or id).
 func Implies(have, want Pattern) bool {
 	h, w := have.Scope, want.Scope
 	switch {
@@ -256,6 +274,10 @@ func Implies(have, want Pattern) bool {
 	case h.All:
 		return true
 	case w.All:
+		return false
+	case h.Team:
+		return w.Team || w.Own
+	case w.Team:
 		return false
 	case h.Own || w.Own:
 		return h.Own && w.Own

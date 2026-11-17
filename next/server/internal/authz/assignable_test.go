@@ -6,6 +6,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz/casbinrule"
@@ -35,8 +36,9 @@ func assignableOf(t *testing.T, s *Service, roleKeys ...string) ([]string, bool)
 }
 
 // A new database seeds the default lists of decision 5: admin assigns
-// operator, supplier, user and every custom role; operator assigns supplier
-// and user; nobody else anything. Each seeded entry is audited once, as
+// operator, supplier, supplier agent, user and every custom role; operator
+// assigns supplier and user; a supplier agent suppliers and agents
+// (CONTRACTS §103); nobody else anything. Each seeded entry is audited once, as
 // part of a role created now (P4F3).
 func TestBuiltinAssignableDefaults(t *testing.T) {
 	t.Parallel()
@@ -51,9 +53,10 @@ func TestBuiltinAssignableDefaults(t *testing.T) {
 		keys   []string
 		custom bool
 	}{
-		{RoleAdmin, []string{"helper", RoleOperator, RoleSupplier, RoleUser}, true},
+		{RoleAdmin, []string{"helper", RoleOperator, RoleSupplier, RoleSupplierAgent, RoleUser}, true},
 		{RoleOperator, []string{RoleSupplier, RoleUser}, false},
 		{RoleSupplier, []string{}, false},
+		{RoleSupplierAgent, []string{RoleSupplier, RoleSupplierAgent}, false},
 		{RoleUser, []string{}, false},
 		{RoleSuperAdmin, []string{}, false},
 		{"helper", []string{}, false},
@@ -65,7 +68,7 @@ func TestBuiltinAssignableDefaults(t *testing.T) {
 	}
 	var audited, created int
 	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*), count(*) FILTER (WHERE detail->>'role_created' = 'true') FROM audit_logs
-WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable'`).Scan(&audited, &created); err != nil || audited != 5 || created != 5 {
+WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable'`).Scan(&audited, &created); err != nil || audited != 8 || created != 8 {
 		t.Fatalf("seeding audited %d rows (%d as created): %v", audited, created, err)
 	}
 }
@@ -114,8 +117,9 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assi
 
 // An upgrade bringing the supplier role to a database that has the other
 // built-in roles: it is created with its defaults and joins the assignable
-// lists of admin and operator, each audited once; their other entries (here
-// what migration 0097 left on a production operator) stay.
+// lists of admin, operator and supplier agent, each audited once; their
+// other entries (here what migration 0097 left on a production operator)
+// stay.
 func TestSyncCoreAddsSupplierToExistingRoles(t *testing.T) {
 	t.Parallel()
 	db := testutil.DB(t)
@@ -140,7 +144,7 @@ INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT r.id, r.i
 	if keys, custom := assignableOf(t, s, RoleOperator); !slices.Equal(keys, []string{RoleOperator, RoleSupplier, RoleUser}) || !custom {
 		t.Fatalf("operator assignable %v custom %v", keys, custom)
 	}
-	if r, err := s.GetRole(ctx, roleID(t, s, RoleAdmin)); err != nil || !slices.Equal(r.AssignableRoleKeys, []string{RoleOperator, RoleSupplier, RoleUser}) {
+	if r, err := s.GetRole(ctx, roleID(t, s, RoleAdmin)); err != nil || !slices.Equal(r.AssignableRoleKeys, []string{RoleOperator, RoleSupplier, RoleSupplierAgent, RoleUser}) {
 		t.Fatalf("admin assignable %+v, %v", r, err)
 	}
 	if r, err := s.GetRole(ctx, roleID(t, s, RoleSupplier)); err != nil || !r.Builtin || len(r.PermissionKeys) != len(supplierPermissions) {
@@ -151,10 +155,10 @@ INSERT INTO role_assignable_roles (role_id, assignable_role_id) SELECT r.id, r.i
 WHERE action = 'authz.sync.grant' AND user_id IS NULL AND detail->>'via' = 'assignable' AND detail->>'key' = 'supplier'`).Scan(&audited); err != nil {
 		t.Fatal(err)
 	}
-	want := []int64{roleID(t, s, RoleAdmin), roleID(t, s, RoleOperator)}
+	want := []int64{roleID(t, s, RoleAdmin), roleID(t, s, RoleOperator), roleID(t, s, RoleSupplierAgent)}
 	slices.Sort(want)
 	if !slices.Equal(audited, want) {
-		t.Fatalf("audited roles %v, want admin and operator %v", audited, want)
+		t.Fatalf("audited roles %v, want admin, operator and supplier agent %v", audited, want)
 	}
 	// The supplier role's own defaults are audited too, once (P4F3).
 	var keys []string
@@ -165,6 +169,55 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_type = 'role' A
 	}
 	if !slices.Equal(keys, slices.Sorted(slices.Values(supplierPermissions))) {
 		t.Fatalf("supplier grants audited %v, want %v", keys, supplierPermissions)
+	}
+}
+
+// An upgrade creating the supplier agent role hands it the plugin grants
+// users and suppliers hold then (manifest.RoleDefaultsFrom), together and
+// canonical, each audited with via plugin_default: not a manifest default
+// nobody holds (removed at consent or held for review), nothing of a staged
+// version, nothing of other roles.
+func TestSyncCoreGivesNewRolePluginDefaults(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	if err := casbinrule.DeleteRole(db.Gorm, RoleSupplierAgent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL.ExecContext(ctx, `DELETE FROM roles WHERE key = 'supplier_agent';
+INSERT INTO plugins (key, name, status) VALUES ('px', '{"en":"P"}', 'installed');
+INSERT INTO permissions (key, module, label, source, plugin_key, status, scope_type, defaults) VALUES
+	('plugin.px:use', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"supplier": [""], "user": [""]}'),
+	('plugin.px:flow', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": ["own"], "user": [""]}'),
+	('plugin.px:mine', 'plugin.px', '{}', 'plugin', 'px', 'active', 'plugin:flow', '{"supplier": ["own"]}'),
+	('plugin.px:self', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"user": [""]}'),
+	('plugin.px:admin', 'plugin.px', '{}', 'plugin', 'px', 'active', '', '{"admin": [""]}'),
+	('plugin.px:next', 'plugin.px', '{}', 'plugin', 'px', 'staged', '', '{"supplier": [""]}')`); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Grant(t, db, RoleUser, "plugin.px:use")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:use")
+	testutil.Grant(t, db, RoleUser, "plugin.px:flow")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:flow", "own")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:mine", "own")
+	testutil.Grant(t, db, RoleAdmin, "plugin.px:admin")
+	testutil.Grant(t, db, RoleSupplier, "plugin.px:next")
+	if err := s.SyncCore(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := roleID(t, s, RoleSupplierAgent)
+	plain, scoped := grantRows(t, s, id)
+	got := slices.Sorted(slices.Values(slices.DeleteFunc(append(plain, scoped...), func(k string) bool { return !strings.HasPrefix(k, "plugin.") })))
+	want := []string{"plugin.px:flow", "plugin.px:mine:own", "plugin.px:use"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("supplier agent holds %v, want %v", got, want)
+	}
+	var keys []string
+	if err := db.SQL.QueryRowContext(ctx, `SELECT array_agg(detail->>'key' ORDER BY detail->>'key') FROM audit_logs
+WHERE action = 'authz.sync.grant' AND target_id = $1 AND detail->>'via' = 'plugin_default' AND detail->>'role_created' = 'true'`,
+		strconv.FormatInt(id, 10)).Scan(&keys); err != nil || !slices.Equal(keys, want) {
+		t.Fatalf("audited %v, %v", keys, err)
 	}
 }
 
@@ -260,20 +313,22 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND det
 	}
 	def, _ := builtinRoleByKey(RoleAdmin)
 	if !slices.Equal(slices.Sorted(slices.Values(admin.PermissionKeys)), slices.Sorted(slices.Values(canonicalKeys(def.defaultPermissions())))) ||
-		!slices.Equal(admin.AssignableRoleKeys, []string{RoleOperator, RoleSupplier, RoleUser}) || !admin.AssignCustom {
+		!slices.Equal(admin.AssignableRoleKeys, []string{RoleOperator, RoleSupplier, RoleSupplierAgent, RoleUser}) || !admin.AssignCustom {
 		t.Fatalf("admin after the reset: %+v", admin)
 	}
 	if got := filled(adminID); len(got) != 0 {
 		t.Fatalf("admin, reset, also filled with %v", got)
 	}
-	// Supplier and user, held by nobody, are reset as well (to what they
-	// already had).
-	if got := resets(); !slices.Equal(got, []string{"admin 1 before:balance:adjust:any,after:role:define", "supplier 1 ", "user 1 "}) {
+	// Supplier, supplier agent and user, held by nobody, are reset as well
+	// (to what they already had).
+	if got := resets(); !slices.Equal(got, []string{"admin 1 before:balance:adjust:any,after:role:define", "supplier 2 ", "supplier_agent 1 ", "user 1 "}) {
 		t.Fatalf("resets audited: %q", got)
 	}
-	var behind int
-	if err := db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM roles WHERE builtin AND defaults_rev <> 1`).Scan(&behind); err != nil || behind != 0 {
-		t.Fatalf("built-in roles left behind: %d %v", behind, err)
+	for _, r := range builtinRoles {
+		var rev int32
+		if err := db.SQL.QueryRowContext(ctx, `SELECT defaults_rev FROM roles WHERE key = $1`, r.key).Scan(&rev); err != nil || rev != r.rev {
+			t.Fatalf("built-in role %s left at rev %d, %v", r.key, rev, err)
+		}
 	}
 
 	// What is changed afterwards stays changed, and the version stays.
@@ -286,7 +341,7 @@ WHERE action = 'authz.sync.grant' AND user_id IS NULL AND target_id = $1 AND det
 	v, _ := s.currentVersion(ctx)
 	sync()
 	if got, _ := s.currentVersion(ctx); got != v || slices.Contains(rolePermissionKeys(t, s, opID), "task:run") ||
-		slices.Contains(rolePermissionKeys(t, s, adminID), "role:define") || len(resets()) != 3 {
+		slices.Contains(rolePermissionKeys(t, s, adminID), "role:define") || len(resets()) != 4 {
 		t.Fatalf("a later sync: version %d -> %d, operator %v, admin %v, resets %q", v, got, rolePermissionKeys(t, s, opID), rolePermissionKeys(t, s, adminID), resets())
 	}
 
@@ -757,8 +812,8 @@ func TestAssignableRoles(t *testing.T) {
 		actor int64
 		want  []row
 	}{
-		{"root", ctx, root, []row{{RoleAdmin, true}, {RoleOperator, true}, {RoleSupplier, true}, {RoleUser, true}, {"admin_maker", true}}},
-		{"admin", ctx, admin, []row{{RoleOperator, true}, {RoleSupplier, true}, {RoleUser, true}, {"admin_maker", false}}},
+		{"root", ctx, root, []row{{RoleAdmin, true}, {RoleOperator, true}, {RoleSupplier, true}, {RoleSupplierAgent, true}, {RoleUser, true}, {"admin_maker", true}}},
+		{"admin", ctx, admin, []row{{RoleOperator, true}, {RoleSupplier, true}, {RoleSupplierAgent, true}, {RoleUser, true}, {"admin_maker", false}}},
 		{"operator", ctx, operator, []row{{RoleSupplier, true}, {RoleUser, true}}},
 		{"admin key", core.WithAccessKey(ctx, core.AccessKeyIdentity{UserID: admin, Permissions: []string{"role:assign", "user:read"}}), admin, []row{}},
 		{"root key", core.WithAccessKey(ctx, core.AccessKeyIdentity{UserID: root, Permissions: []string{"user:read"}}), root, []row{}},

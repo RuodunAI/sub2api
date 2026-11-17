@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
@@ -53,7 +54,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/sandbox"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/proxy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/ratelimit"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/segment"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
@@ -136,7 +136,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	// the primary and fetched over the node network; market packages are
 	// downloaded by each node. Without a shell only one node is supported.
 	packageStore := blobs.Store(blobs.Dir(filepath.Join(cfg.Plugins.DataDir, "blobs")))
-	if cfg.Managed.Enabled && cfg.Managed.UpdaterSocket != "" {
+	if cfg.Managed.UpdaterSocket != "" {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)
 	}
 	b.marketClient = &http.Client{Timeout: 60 * time.Second}
@@ -193,7 +193,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.settler.Authz = az
 	b.bill.Authz = az
 	b.bill.Users = az
-	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Config: cfg, Events: b.events, Authz: az, Bus: b.cl.Bus,
+	b.idm = iam.New(iam.Deps{DB: b.db, Redis: b.rdb, SessionRedis: b.sessRdb, Config: cfg, Events: b.events, Authz: az, Owners: az, Bus: b.cl.Bus,
 		Cipher: b.cipher, PriceRulesChanged: b.bill.PriceRulesChanged})
 	if b.managed == nil || b.managed.prepare.Bootstrap {
 		if err := b.idm.Bootstrap(b.ctx); err != nil {

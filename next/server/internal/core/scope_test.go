@@ -84,7 +84,7 @@ func TestProxyRefScope(t *testing.T) {
 	}{
 		{[]string{"account:create"}, AllScope},
 		{[]string{"account:create:own", "proxy:read"}, AllScope},
-		{[]string{"account:create:own", "proxy:read:own", "proxy:manage:proxy/5", "proxy:read:proxy/3"}, DataScope{Owner: 7, IDs: []int64{3, 5}}},
+		{[]string{"account:create:own", "proxy:read:own", "proxy:manage:proxy/5", "proxy:read:proxy/3"}, DataScope{Owners: []int64{7}, IDs: []int64{3, 5}}},
 		{[]string{"account:create:group/2"}, DataScope{}},
 	} {
 		got, err := ProxyRefScope(ctx, setAuthorizer{PermissionSetOf(tc.keys...)}, perm.AccountCreate)
