@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -126,6 +127,27 @@ func TestExtendMerge(t *testing.T) {
 	_, err = plain.BuildUpstreamRequest(context.Background(), in)
 	require.NoError(t, err)
 	assert.Nil(t, plugin.got)
+}
+
+// An extending plugin's request signing and response stream format survive
+// the merge; without them the merged request has neither.
+func TestExtendCarriesSigningAndResponseStream(t *testing.T) {
+	const layer = `{"preset":"anthropic","extend":true}`
+	in := buildRequest(account(), "claude-x")
+
+	signing := &pluginv1.RequestSigning{Scheme: "aws-sigv4", Region: "us-east-1", Service: "bedrock",
+		AccessKeyId: "AK", SecretAccessKey: "secret", SessionToken: "token"}
+	built, err := New(profile(t, layer), &extender{out: &pluginv1.BuildUpstreamRequestResponse{
+		Signing: signing, ResponseStream: "aws-eventstream"}}).BuildUpstreamRequest(context.Background(), in)
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(signing, built.GetSigning()), "%v", built.GetSigning())
+	assert.Equal(t, "aws-eventstream", built.GetResponseStream())
+	assert.Equal(t, "https://api.anthropic.com/v1/messages", built.GetUrl())
+
+	plain, err := New(profile(t, layer), &extender{out: &pluginv1.BuildUpstreamRequestResponse{}}).BuildUpstreamRequest(context.Background(), in)
+	require.NoError(t, err)
+	assert.Nil(t, plain.GetSigning())
+	assert.Empty(t, plain.GetResponseStream())
 }
 
 // After the account's override changed the model, the URL is rendered
