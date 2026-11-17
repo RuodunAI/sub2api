@@ -1,7 +1,7 @@
 #!/bin/sh
 # Prepares ~/sup2api-managed on the server: .env from the existing sup2api
-# secrets, cluster CA and certificates, release signing key, gateway image and
-# signed core releases. Re-running keeps existing keys and certificates.
+# secrets, cluster CA and certificates, gateway image and core releases.
+# Re-running keeps existing keys and certificates.
 set -eu
 M=$HOME/sup2api-managed
 SRC=$HOME/sup2api/src/next
@@ -35,19 +35,13 @@ if [ ! -f certs/ca.key ]; then
 fi
 chmod 711 certs
 
-# ---- images and release signing key
+# ---- images and node configuration
 # Core-only releases can reuse the installed gateway tools without retagging it.
 if [ "${SKIP_GATEWAY_BUILD:-0}" = 1 ]; then
   docker image inspect "$GATEWAY_IMAGE" >/dev/null
 else
   docker build -q -f "$SRC/deploy/gateway/Dockerfile" -t "$GATEWAY_IMAGE" "$SRC"
 fi
-if [ ! -f keys/release.key ]; then
-  chmod 777 keys
-  docker run --rm -v "$M/keys:/keys" --entrypoint sub2api-release "$GATEWAY_IMAGE" keygen --out /keys
-  chmod 700 keys
-fi
-pub=$(tr -d ' \r\n' < keys/release.pub)
 for i in 1 2 3 4; do
   cat > config/sup2api-$i.json <<JSON
 {
@@ -63,7 +57,6 @@ for i in 1 2 3 4; do
   "cert_file": "/etc/sub2api/tls/node.crt",
   "key_file": "/etc/sub2api/tls/node.key",
   "ca_file": "/etc/sub2api/tls/ca.crt",
-  "trusted_keys": {"sup2api-ovh-2026": "$pub"},
   "release_origin": "https://releases/sup2api",
   "runtime_abi": "linux-static-v1",
   "core_url": "http://127.0.0.1:18080"
@@ -73,7 +66,7 @@ JSON
 done
 chmod 755 config
 
-# ---- signed core releases (stage = bin/ + builtin/ of the image build stage)
+# ---- core releases (stage = bin/ + builtin/ of the image build stage)
 commit=$(git -C "$HOME/sup2api/src" rev-parse --short HEAD)
 release() {
   ver=$1
@@ -90,9 +83,9 @@ release() {
   docker rm "$cid" >/dev/null
   chmod -R a+rX stage publish
   chmod 777 publish
-  docker run --rm -v "$M/stage/$ver:/stage:ro" -v "$M/publish:/publish" -v "$M/keys/release.key:/release.key:ro" \
+  docker run --rm -v "$M/stage/$ver:/stage:ro" -v "$M/publish:/publish" \
     -v "$SRC/deploy/gateway/package-release.sh:/package-release.sh:ro" --user "$(id -u)" --entrypoint sh "$GATEWAY_IMAGE" \
-    /package-release.sh /stage /publish /release.key sup2api-ovh-2026 "v$ver" "$commit" ${from:+"$(stage/$from/bin/sub2api schema-contract)"} | tee "publish/v$ver.digests"
+    /package-release.sh /stage /publish "v$ver" "$commit" ${from:+"$(stage/$from/bin/sub2api schema-contract)"} | tee "publish/v$ver.digests"
   chmod 755 publish && chmod 644 publish/*
 }
 release 0.1.0
@@ -113,7 +106,7 @@ release 0.1.7 0.1.6
 # 0.1.8 names the managed entry component gateway in the console (same schema).
 # Redis telemetry and upgrade wakeups are installed by updating the gateway image.
 release 0.1.8
-# 0.1.9 adds the topology view and configurable signed GitHub core updates.
+# 0.1.9 adds the topology view and configurable GitHub core updates.
 # Install the matching gateway image before publishing this core release.
 release 0.1.9
 # 0.1.10 replaces the static topology drawing with an interactive node graph.

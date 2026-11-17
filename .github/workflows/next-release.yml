@@ -1,14 +1,17 @@
 name: next release
 
-# Builds, signs and publishes a next/ release from a tag
-# (next/docs/CONTRACTS.md §102.1, §102.2, §102.10):
+# Builds, packages and publishes a next/ release from a tag
+# (next/docs/CONTRACTS.md §102.1, §102.2, §102.10). Release manifests are
+# unsigned: gateways trust the configured update source and check digests.
+#
 #
 #   core-vX.Y.Z     next-core-manifest.json + <bundle_digest>.tar.gz per platform
 #   gateway-vX.Y.Z  next-gateway-manifest.json + sub2api-gateway_X.Y.Z_linux_<arch>.tar.gz,
 #                   image ghcr.io/<owner>/sup2api-gateway:X.Y.Z
 #
 # meta (tag, previous release, CHANGELOG notes) -> gate (next CI) -> build
-# (no secrets) -> sign (environment `release`, the only job with signing keys)
+# (no secrets) -> package (environment `release`: approval, and for the core
+# line the only job with the plugin key, which re-signs the builtin plugins)
 # -> publish (tag the image pushed by digest, draft, upload every asset, then
 # publish, so update checks never see half a release). Operator guide:
 # next/deploy/gateway/github/README.md.
@@ -28,7 +31,7 @@ on:
         required: true
         type: string
       dry_run:
-        description: Build and sign only (no image push, no GitHub Release)
+        description: Build and package only (no image push, no GitHub Release)
         type: boolean
         default: true
       schema_before:
@@ -156,7 +159,7 @@ jobs:
       - name: Console and native plugin UIs
         run: sh next/deploy/docker/build-ui.sh "$PWD/next" "$RUNNER_TEMP/ui"
       # Same script and builtin set as the image build. It signs with a key it
-      # generates here; the sign job re-signs builtin/ with the release key.
+      # generates here; the package job re-signs builtin/ with the plugin key.
       - name: Core, plugin CLI and plugins (linux/amd64)
         env:
           REQUIRE_UI: '1'
@@ -262,8 +265,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  sign:
-    name: sign
+  package:
+    name: package
     needs: [meta, core-build, gateway-build]
     if: ${{ !cancelled() && (needs.core-build.result == 'success' || needs.gateway-build.result == 'success') }}
     runs-on: ubuntu-latest
@@ -288,8 +291,8 @@ jobs:
         with:
           go-version: ${{ needs.meta.outputs.go_version }}
           cache: false
-      # Signing tools are built here from the checked-out commit; nothing from
-      # the build artifact is ever executed next to the keys.
+      # Release tools are built here from the checked-out commit; nothing from
+      # the build artifact is ever executed next to the plugin key.
       - name: sub2api-release
         working-directory: next/gateway
         run: |
@@ -303,19 +306,19 @@ jobs:
         with:
           name: build
           path: ${{ runner.temp }}/build
-      - name: Signing keys
+      - name: Plugin signing key
+        if: env.LINE == 'core'
         env:
-          SUB2API_RELEASE_SIGNING_KEY: ${{ secrets.SUB2API_RELEASE_SIGNING_KEY }}
-          SUB2API_RELEASE_KEY_ID: ${{ vars.SUB2API_RELEASE_KEY_ID }}
           SUB2API_PLUGIN_SIGNING_KEY: ${{ secrets.SUB2API_PLUGIN_SIGNING_KEY }}
           SUB2API_PLUGIN_KEY_ID: ${{ vars.SUB2API_PLUGIN_KEY_ID }}
-        run: |
-          set -- release
-          if [ "$LINE" = core ]; then set -- release plugin; fi
-          sh .github/next-release/signing-keys.sh "$RUNNER_TEMP/keys" "$@"
-      - name: Sign
-        run: sh ".github/next-release/sign-$LINE.sh" "$RUNNER_TEMP/build" "$RUNNER_TEMP/keys" "$RUNNER_TEMP/assets"
-      - name: Remove signing keys
+        run: sh .github/next-release/signing-keys.sh "$RUNNER_TEMP/keys"
+      - name: Package the core
+        if: env.LINE == 'core'
+        run: sh .github/next-release/package-core.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/keys" "$RUNNER_TEMP/assets"
+      - name: Package the gateway
+        if: env.LINE == 'gateway'
+        run: sh .github/next-release/package-gateway.sh "$RUNNER_TEMP/build" "$RUNNER_TEMP/assets"
+      - name: Remove the plugin key
         if: always()
         run: rm -rf "$RUNNER_TEMP/keys"
       - name: Summary
@@ -335,8 +338,8 @@ jobs:
 
   publish:
     name: publish
-    needs: [meta, gateway-build, sign]
-    if: ${{ !cancelled() && needs.sign.result == 'success' && needs.meta.outputs.dry_run != 'true' }}
+    needs: [meta, gateway-build, package]
+    if: ${{ !cancelled() && needs.package.result == 'success' && needs.meta.outputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -366,7 +369,7 @@ jobs:
             [ "$draft" = true ] || { echo "::error::release $TAG is already published"; exit 1; }
             gh api -X DELETE "repos/$GH_REPO/releases/$id"
           done < "$RUNNER_TEMP/existing"
-      # IMAGE is REF:VERSION@DIGEST, as the signed manifest names it.
+      # IMAGE is REF:VERSION@DIGEST, as the gateway manifest names it.
       - name: Tag the image
         if: env.IMAGE != ''
         run: |

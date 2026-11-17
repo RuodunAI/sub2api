@@ -11,7 +11,6 @@
   "cert_file": "/etc/sub2api/tls/node.crt",
   "key_file": "/etc/sub2api/tls/node.key",
   "ca_file": "/etc/sub2api/tls/ca.crt",
-  "trusted_keys": {"release-2026": "REPLACE_WITH_BASE64_ED25519_PUBLIC_KEY"},
   "release_origin": "https://releases.example.com/sup2api",
   "runtime_abi": "linux-static-v1",
   "core_url": "http://127.0.0.1:18080"

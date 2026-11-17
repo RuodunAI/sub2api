@@ -8,7 +8,7 @@
 #   version   X.Y.Z, no prefix, pre-release or build suffix
 #   prev_tag  newest published stable release of the same line ('' if none)
 #   schema_before, prev_trust_sha256
-#             core only: schema_after and the builtin/trust.pub digest signed
+#             core only: schema_after and the builtin/trust.pub digest declared
 #             in prev_tag's next-core-manifest.json. Without a prev_tag,
 #             schema_before must come from SCHEMA_BEFORE (the schema-contract
 #             of the core the first release upgrades) and prev_trust_sha256
@@ -52,9 +52,9 @@ elif [ -n "$schema_before" ]; then
   fail "schema_before is only for the first core-v release"
 elif [ "$line" = core ]; then
   gh release download "$prev_tag" --repo "$GITHUB_REPOSITORY" --pattern next-core-manifest.json --dir "$tmp"
-  payload=$(jq -r .payload "$tmp/next-core-manifest.json" | base64 -d)
-  schema_before=$(printf '%s' "$payload" | jq -r '.schema_after // empty')
-  prev_trust=$(printf '%s' "$payload" | jq -r '[.platforms[].files[] | select(.path == "builtin/trust.pub") | .sha256] | unique | if length == 1 then .[0] else "" end')
+  manifest=$tmp/next-core-manifest.json
+  schema_before=$(jq -r '.schema_after // empty' "$manifest")
+  prev_trust=$(jq -r '[.platforms[].files[] | select(.path == "builtin/trust.pub") | .sha256] | unique | if length == 1 then .[0] else "" end' "$manifest")
   [ -n "$schema_before" ] || fail "$prev_tag's next-core-manifest.json has no schema_after"
 fi
 
