@@ -14,11 +14,21 @@ defineProps<{ compact?: boolean }>()
 const { t } = useI18n()
 const issueText = useIssueText()
 const auth = useAuthStore(), updates = useUpdatesStore(), router = useRouter()
-const open = ref(false), applying = ref<UpdateLine | ''>('')
+const open = ref(false), applying = ref<UpdateLine | ''>(''), refreshing = ref(false)
 const basic = ref<{ version: string; managed: boolean } | null>(null)
 const allowed = computed(() => auth.has('system:update:read') && basic.value?.managed === true)
 const version = computed(() => (basic.value?.version || updates.result?.core.current_version)?.replace(/^v/, ''))
-onMounted(async () => { try { basic.value = await api.get('/system/version') } catch { /* version unavailable remains explicitly unknown */ } })
+async function loadVersion() { try { basic.value = await api.get('/system/version') } catch { /* version unavailable remains explicitly unknown */ } }
+onMounted(loadVersion)
+/** The server may have been updated since the page loaded: refetch before showing or applying. */
+async function refresh() {
+  refreshing.value = true
+  try { await Promise.all([loadVersion(), updates.check()]) } finally { refreshing.value = false }
+}
+function show() {
+  open.value = true
+  void refresh()
+}
 const status = (line: UpdateLine) => lineStatus(updates.result, line, !!updates.error)
 const summary = computed(() => UPDATE_LINES.map(line => `${t(`coreUpdates.lines.${line}`)}: ${t(`coreUpdates.status.${status(line)}`)}`).join(' · '))
 const supported = (line: UpdateLine) => line === 'core' || !!updates.result?.gateway.self_update
@@ -30,10 +40,12 @@ function go(to: RouteLocationRaw) {
 watch(allowed, can => { if (can) void updates.check(); else { open.value = false; updates.invalidate() } }, { immediate: true })
 
 async function apply(line: UpdateLine) {
-  const target = updates.result?.[line].latest_version
-  if (!target || applying.value) return
+  if (applying.value) return
   applying.value = line
   try {
+    await refresh()
+    const target = updates.result?.[line].latest_version
+    if (status(line) !== 'available' || !target) return toast(`${t(`coreUpdates.lines.${line}`)}: ${t(`coreUpdates.status.${status(line)}`)}`)
     let result = await updates.apply(line, target)
     if (result.status === 'needs_confirmation') {
       const reasons = (result.reason_codes || []).map(r => `• ${issueText(r)}`).join('\n')
@@ -62,7 +74,7 @@ function failed(e: unknown) {
       :title="`${t('coreUpdates.currentCore')}: ${version || '—'} · ${summary}`"
       :aria-label="`${t('coreUpdates.title')} · ${summary}`"
       data-testid="version-badge"
-      @click="open = true"
+      @click="show"
     >
       <span class="truncate">{{ version || compact ? versionText : t('coreUpdates.title') }}</span>
       <SStatusDot v-if="updates.available" tone="warning" data-testid="version-badge-dot" />
@@ -77,7 +89,7 @@ function failed(e: unknown) {
           :line="line"
           :check="updates.result?.[line]"
           :status="status(line)"
-          :can-apply="auth.has('system:update:execute') && !updates.busy"
+          :can-apply="auth.has('system:update:execute') && !updates.busy && !refreshing"
           :supported="supported(line)"
           :applying="applying === line"
           @apply="apply(line)"

@@ -130,6 +130,35 @@ describe('version badge', () => {
     expect(w.get('[data-testid="version-badge"]').attributes('title')).toContain('核心: 没有稳定版本')
   })
 
+  it('refetches on open: a server updated since the page loaded is not offered its update again', async () => {
+    check = updateCheck({ core: { has_update: true, latest_version: '0.1.291' } })
+    const w = mount(VersionBadge, { global: { plugins: [i18n], stubs: { teleport: true } }, attachTo: document.body })
+    await flushPromises()
+    expect(w.get('[data-testid="version-badge"]').text()).toBe('v0.1.290')
+    expect(dot(w)).toBe(true)
+    check = updateCheck({ core: { current_version: '0.1.291', latest_version: '0.1.291' } })
+    api.get.mockImplementation((path: string) => Promise.resolve(path === '/system/version' ? { version: '0.1.291', managed: true } : check))
+    await w.get('[data-testid="version-badge"]').trigger('click')
+    expect(section(w, 'core').find('[data-testid="update-apply"]').exists()).toBe(false)
+    await flushPromises()
+    expect(api.get.mock.calls.map(c => c[0])).toEqual(['/system/version', '/system/update-check', '/system/version', '/system/update-check'])
+    expect(section(w, 'core').find('[data-testid="update-apply"]').exists()).toBe(false)
+    expect(section(w, 'core').text()).toContain('已是最新')
+    expect(w.get('[data-testid="version-badge"]').text()).toBe('v0.1.291')
+    expect(dot(w)).toBe(false)
+  })
+
+  it('rechecks before applying and sends nothing when the line is already up to date', async () => {
+    check = updateCheck({ core: { has_update: true, latest_version: '0.1.291' } })
+    const w = await open()
+    check = updateCheck({ core: { current_version: '0.1.291', latest_version: '0.1.291' } })
+    await section(w, 'core').get('[data-testid="update-apply"]').trigger('click')
+    await flushPromises()
+    expect(api.post).not.toHaveBeenCalled()
+    expect(ui.toast).toHaveBeenCalledWith('核心: 已是最新')
+    expect(section(w, 'core').find('[data-testid="update-apply"]').exists()).toBe(false)
+  })
+
   it('lists the gateway versions oldest first and counts unreported nodes apart', async () => {
     const nodes = ['0.1.135', '', '0.1.99', '0.1.135'].map((version, i) => ({ node_id: `n${i}`, version }))
     check = updateCheck({ gateway: { nodes } })
