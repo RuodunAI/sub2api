@@ -8,6 +8,13 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 核心 0.1.293 + 网关 0.1.136：发布清单不再签名，只校验摘要（无核心迁移，滚动；网关手动换镜像）
+
+- **发布清单不再签名，只校验摘要**（用户决定；网关二进制、发布工具与流水线变更，随下一个网关版本生效；CONTRACTS §33、§102.10）：核心与网关清单以普通 JSON 发布，发布摘要是清单原文的 sha256，离线导入（`import -manifest`）用同一格式。网关信任配置的更新源（HTTPS 访问的 GitHub 仓库或配置的 HTTPS 地址；离线导入是 `release_origin`），清单和每个安装物按摘要与大小校验：防得住下载途中或镜像上的损坏与替换，防不住仓库、账号或来源本身被攻破。删除签名信封 `rc.SignedManifest` 与验签、网关配置 `trusted_keys`（写了也不读）、内置公钥目录 `release/trusted/`（含 `sup2api-ovh-2026`）、`sub2api-release keygen` 与 `--key`/`--key-id`；流水线的 `sign` 任务改名 `package`，不再需要 `SUB2API_RELEASE_SIGNING_KEY`、`SUB2API_RELEASE_KEY_ID`（可从环境 `release` 删除）。内置插件包仍用插件密钥签名，核心线仍要 `SUB2API_PLUGIN_SIGNING_KEY`、`SUB2API_PLUGIN_KEY_ID`：内置包导入集群插件库后，各节点（包括回滚到的旧核心）加载时重新验签，信任级别也来自签名。控制台的更新源说明改为“只填信任的仓库或地址”，不再提签名。
+- **网关 schema**：`updater.releases.manifest` 由 `jsonb` 改成清单原文（`bytea`），只转换一次：已登记的签名发布取信封里的 payload（当初算摘要的那份字节），所有摘要不变，基线核心 0.1.291（`5a0fff61…3824`）照常作为基线和回滚目标。`signed_manifest` 改为可空、不再读写，只留给 0.1.135 在换网关期间或回滚后启动以前登记的发布；全部节点换上新网关后，下一个网关版本删除它。
+- **从网关 0.1.135 过渡**：0.1.135 只认签名清单，装不了不签名的发布（核心一键更新也由网关校验，同样装不了），所以第一个不验签的网关要手动换镜像：先从节点 ccp、再主节点 ovh，每个节点先 `sub2api-gateway yield`，等 `/readyz` 503 且在途请求为 0 再重建容器（与 0.1.135 上线时相同）。新网关启动时转换 schema；之后核心与网关都能一键更新。新旧网关混跑期间不要导入或应用更新：新网关导入的发布不带签名，0.1.135 用不了。网关回滚到 0.1.135 仍能启动之前登记的发布（含 0.1.291），但启动不了换网关之后导入的发布。
+- 网关 0.1.136 同时带上 0.1.292 已写的检测原因代码 `reason_code`（控制台按代码显示中文/英文原因）。
+
 ## 2026-11-17
 
 ### 核心 0.1.292：代理供应商、team 范围、账号所属（`e3f5d36aa`，迁移 0103，primary-first 停服；网关保持 0.1.135，内置插件与 0.1.291 相同）
@@ -26,9 +33,6 @@
 - **`sub2api dev` 的内存 Redis 按时过期键**：进程内 miniredis 原来从不推进时钟，带 TTL 的键（冷却、会话、并发槽位、锁）永远不到期，账号冷却后一直不被调度。现在每 100ms 按墙钟推进一次（CONTRACTS §47）。单机 e2e 的 `TestGatewayFailoverAndCooldown` 因此能等到冷却结束；它对 401 之后状态的旧断言（`disabled`/`error`）一并改为 `auto_disabled`（§42）。e2e AC23 去掉供应商建账号时传的分组（供应商没有 `account:group:bind`），own 范围下 `created_by` 的断言改为“在范围内收窄”（§21.0）。
 - **修复**：不是全部范围的人建、改、测账号带 `proxy_id` 时，读不到它可引用的代理范围（授权读库失败）原来当作没有代理，回 400 `proxy_id` `not_found`，现在回 503（CONTRACTS §103.2）。
 - 更新检测结果的原因按代码显示中文/英文：`GET /system/update-check` 每条线新增 `reason_code`（`no_release`、`version_conflict`、`incompatible`，契约 §102），控制台不再直接显示“the update source has no stable … release”之类的英文原文。网关二进制变更，随下一个网关版本生效；网关 0.1.135 不带该字段，控制台照旧显示它的英文原因。
-- **发布清单不再签名，只校验摘要**（用户决定；网关二进制、发布工具与流水线变更，随下一个网关版本生效；CONTRACTS §33、§102.10）：核心与网关清单以普通 JSON 发布，发布摘要是清单原文的 sha256，离线导入（`import -manifest`）用同一格式。网关信任配置的更新源（HTTPS 访问的 GitHub 仓库或配置的 HTTPS 地址；离线导入是 `release_origin`），清单和每个安装物按摘要与大小校验：防得住下载途中或镜像上的损坏与替换，防不住仓库、账号或来源本身被攻破。删除签名信封 `rc.SignedManifest` 与验签、网关配置 `trusted_keys`（写了也不读）、内置公钥目录 `release/trusted/`（含 `sup2api-ovh-2026`）、`sub2api-release keygen` 与 `--key`/`--key-id`；流水线的 `sign` 任务改名 `package`，不再需要 `SUB2API_RELEASE_SIGNING_KEY`、`SUB2API_RELEASE_KEY_ID`（可从环境 `release` 删除）。内置插件包仍用插件密钥签名，核心线仍要 `SUB2API_PLUGIN_SIGNING_KEY`、`SUB2API_PLUGIN_KEY_ID`：内置包导入集群插件库后，各节点（包括回滚到的旧核心）加载时重新验签，信任级别也来自签名。控制台的更新源说明改为“只填信任的仓库或地址”，不再提签名。
-- **网关 schema**：`updater.releases.manifest` 由 `jsonb` 改成清单原文（`bytea`），只转换一次：已登记的签名发布取信封里的 payload（当初算摘要的那份字节），所有摘要不变，基线核心 0.1.291（`5a0fff61…3824`）照常作为基线和回滚目标。`signed_manifest` 改为可空、不再读写，只留给 0.1.135 在换网关期间或回滚后启动以前登记的发布；全部节点换上新网关后，下一个网关版本删除它。
-- **从网关 0.1.135 过渡**：0.1.135 只认签名清单，装不了不签名的发布（核心一键更新也由网关校验，同样装不了），所以第一个不验签的网关要手动换镜像：先从节点 ccp、再主节点 ovh，每个节点先 `sub2api-gateway yield`，等 `/readyz` 503 且在途请求为 0 再重建容器（与 0.1.135 上线时相同）。新网关启动时转换 schema；之后核心与网关都能一键更新。新旧网关混跑期间不要导入或应用更新：新网关导入的发布不带签名，0.1.135 用不了。网关回滚到 0.1.135 仍能启动之前登记的发布（含 0.1.291），但启动不了换网关之后导入的发布。
 
 **迁移 0103**（`0103_user_owner.sql`，可重跑，只加列、约束和索引）：`users.owner_id`（外键、不能指向自己、部分索引）、`users.owner_path`（`bigint[] NOT NULL DEFAULT '{}'`，按 `owner_id` 递归算出已有行的路径，只改不同的行，重跑结果相同；最后一个必须等于 `owner_id` 的约束；GIN 索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
 
