@@ -7,14 +7,13 @@
 // Every core field follows the account type's common controls (hidden, fixed,
 // a default, a required proxy: commonControls.ts); plugin sections declared
 // for the type (account.editor.section) come after the core ones.
-import { computed, onBeforeUnmount, onMounted, provide, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SchemaForm, SChoiceCards, SField, SHint, SIcon, SInput, SLink, SSegmented, SSelect, SSettingRow, SSettingsGroup, SSpinner, SSwitch, toast } from '@sub2api/ui'
 import type { Account, AccountType, ConversionLossPolicy, EnvironmentValues, ProxyProbeResult } from '@/api/types'
 import EnvironmentEditor from '@/components/environment/EnvironmentEditor.vue'
 import { schemaWidgets } from '@/components/schema/widgets'
-import { ACCOUNT_FORM_KEY } from '@/components/schema/accountForm'
 import PluginIframe from '@/components/plugin/PluginIframe.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
 import { forAccountType, slotKey } from '@/components/plugin/slots'
@@ -97,7 +96,6 @@ const formLoading = ref(false)
 const formError = ref('')
 const errors = ref<Record<string, string>>({})
 const credErrors = ref<Record<string, string>>({})
-provide(ACCOUNT_FORM_KEY, { accountType: computed(() => props.accountType), errors: credErrors })
 const saving = ref(false)
 
 const schemaForm = ref<InstanceType<typeof SchemaForm>>()
