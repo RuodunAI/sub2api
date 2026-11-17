@@ -216,3 +216,31 @@ func TestEnvironmentProcessLayer(t *testing.T) {
 		t.Fatalf("out of range: %v", err)
 	}
 }
+
+// A gateway-managed core runs straight from its release bundle, with no image
+// entrypoint: the key that signed the built-in packages comes from
+// builtin/trust.pub + trust.keyid, and SUB2API_BUILTIN_TRUST_KEY overrides it.
+func TestBuiltinTrustKeyFromBundle(t *testing.T) {
+	setRequired(t)
+	dir := t.TempDir()
+	t.Setenv("SUB2API_BUILTIN_PLUGIN_DIR", dir)
+	t.Setenv("SUB2API_PLUGIN_OFFICIAL_KEYS", "")
+	t.Setenv("SUB2API_BUILTIN_TRUST_KEY", "")
+	cfg, err := config.Load("linux")
+	if err != nil || len(cfg.Plugins.OfficialRootKeys) != 0 {
+		t.Fatalf("no trust.pub: %v %v", cfg.Plugins.OfficialRootKeys, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "trust.pub"), []byte("AAAApub\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "trust.keyid"), []byte("sup2api-plugins-2026\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = config.Load("linux"); err != nil || fmt.Sprint(cfg.Plugins.OfficialRootKeys) != "[sup2api-plugins-2026=AAAApub]" {
+		t.Fatalf("bundle key: %v %v", cfg.Plugins.OfficialRootKeys, err)
+	}
+	t.Setenv("SUB2API_BUILTIN_TRUST_KEY", "other=BBBBpub")
+	if cfg, err = config.Load("linux"); err != nil || fmt.Sprint(cfg.Plugins.OfficialRootKeys) != "[other=BBBBpub]" {
+		t.Fatalf("env override: %v %v", cfg.Plugins.OfficialRootKeys, err)
+	}
+}
