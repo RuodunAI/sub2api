@@ -167,56 +167,85 @@ func TestManifestShape(t *testing.T) {
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
-	if !slices.Equal(m.ExternalServices, []string{bedrock.RuntimeHost("*")}) || bedrock.RuntimeHost(bedrock.DefaultRegion) != "bedrock-runtime.us-east-1.amazonaws.com" {
+	// The core takes an entry as a host or the domain above it, never as a
+	// pattern: the one entry is the domain every region's host is under.
+	if !slices.Equal(m.ExternalServices, []string{"amazonaws.com"}) || bedrock.ServiceDomain != "amazonaws.com" {
 		t.Errorf("externalServices = %v", m.ExternalServices)
 	}
-}
-
-// checkPlatforms pins what a type serves: Claude's messages endpoint (the
-// model and the beta header are all the plugin reads of a request) and the
-// two OpenAI-compatible endpoints. count_tokens is left to the core.
-func checkPlatforms(t *testing.T, at manifest.AccountType) {
-	t.Helper()
-	if len(at.Platforms) != 2 {
-		t.Fatalf("%s platforms = %+v", at.ID, at.Platforms)
-	}
-	claude, openai := at.Platforms[0], at.Platforms[1]
-	if claude.Platform != "anthropic" || !slices.Equal(claude.Endpoints, []string{"messages"}) ||
-		!slices.Equal(claude.RequestFields, []string{"model"}) || !slices.Equal(claude.PassHeaders, []string{"anthropic-beta"}) {
-		t.Errorf("%s anthropic platform = %+v", at.ID, claude)
-	}
-	if openai.Platform != "openai" || !slices.Equal(openai.Endpoints, []string{"chat_completions", "responses"}) ||
-		len(openai.RequestFields) != 0 || len(openai.PassHeaders) != 0 {
-		t.Errorf("%s openai platform = %+v", at.ID, openai)
-	}
-	for _, p := range at.Platforms {
-		if len(p.Usage) != 0 || len(p.StreamOnly) != 0 {
-			t.Errorf("%s %s overrides usage or streamOnly", at.ID, p.Platform)
+	for _, region := range []string{bedrock.DefaultRegion, "eu-central-1", "us-gov-west-1"} {
+		host := bedrock.RuntimeHost(region)
+		if host != "bedrock-runtime."+region+".amazonaws.com" || !strings.HasSuffix(host, "."+m.ExternalServices[0]) {
+			t.Errorf("%s: host %s is not under %v", region, host, m.ExternalServices)
 		}
 	}
 }
 
-// checkModels pins the model defaults: clients name Claude models the
-// Anthropic way and the mapping leads to Bedrock model ids without a
-// geography prefix (the account's prefix setting adds it).
+// checkPlatforms pins what a type serves: Claude's messages endpoint only.
+// The model, the body's anthropic_beta and the beta header are all the
+// plugin reads of a request. No type declares the openai platform: a native
+// openai route would take the place of the core's conversion, and a client
+// speaking an OpenAI protocol would be sent to Bedrock's /openai/v1 instead
+// of InvokeModel. count_tokens is left to the core.
+func checkPlatforms(t *testing.T, at manifest.AccountType) {
+	t.Helper()
+	if len(at.Platforms) != 1 {
+		t.Fatalf("%s platforms = %+v", at.ID, at.Platforms)
+	}
+	claude := at.Platforms[0]
+	if claude.Platform != "anthropic" || !slices.Equal(claude.Endpoints, []string{"messages"}) ||
+		!slices.Equal(claude.RequestFields, []string{"model", "anthropic_beta"}) || !slices.Equal(claude.PassHeaders, []string{"anthropic-beta"}) {
+		t.Errorf("%s anthropic platform = %+v", at.ID, claude)
+	}
+	if len(claude.Usage) != 0 || len(claude.StreamOnly) != 0 {
+		t.Errorf("%s overrides usage or streamOnly", at.ID)
+	}
+}
+
+// defaultModelMapping is the mapping every type prefills: Anthropic's model
+// names to Bedrock model ids without a geography prefix (the account's
+// prefix setting adds it). The ids are those of the AWS model cards
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html):
+// models up to Opus 4.6 carry a version suffix, the later ones do not.
+var defaultModelMapping = map[string]string{
+	"claude-fable-5-1":           "anthropic.claude-fable-5-1",
+	"claude-fable-5":             "anthropic.claude-fable-5",
+	"claude-opus-5":              "anthropic.claude-opus-5",
+	"claude-opus-4-8":            "anthropic.claude-opus-4-8",
+	"claude-opus-4-7":            "anthropic.claude-opus-4-7",
+	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
+	"claude-opus-4-5":            "anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
+	"claude-opus-4-1":            "anthropic.claude-opus-4-1-20250805-v1:0",
+	"claude-opus-4-20250514":     "anthropic.claude-opus-4-20250514-v1:0",
+	"claude-sonnet-5":            "anthropic.claude-sonnet-5",
+	"claude-sonnet-4-6":          "anthropic.claude-sonnet-4-6",
+	"claude-sonnet-4-5":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
+	"claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+	"claude-sonnet-4-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
+	"claude-haiku-4-5":           "anthropic.claude-haiku-4-5-20251001-v1:0",
+	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
+}
+
+// checkModels pins the model defaults: the three types prefill the same
+// models and the same mapping, clients name Claude models the Anthropic way
+// and every one of them is mapped.
 func checkModels(t *testing.T, at, first manifest.AccountType) {
 	t.Helper()
 	if !slices.Equal(at.DefaultModels, first.DefaultModels) || !maps.Equal(at.DefaultModelMapping, first.DefaultModelMapping) {
 		t.Errorf("%s model defaults differ from %s's", at.ID, first.ID)
 	}
-	if len(at.DefaultModels) == 0 || len(at.DefaultModelMapping) != len(at.DefaultModels) {
-		t.Fatalf("%s: %d default models, %d mapped", at.ID, len(at.DefaultModels), len(at.DefaultModelMapping))
+	if !maps.Equal(at.DefaultModelMapping, defaultModelMapping) {
+		t.Errorf("%s defaultModelMapping = %v", at.ID, at.DefaultModelMapping)
 	}
-	bedrockID := regexp.MustCompile(`^anthropic\.claude-[a-z0-9-]+(-v\d+(:\d+)?)?$`)
+	if !slices.Equal(slices.Sorted(slices.Values(at.DefaultModels)), slices.Sorted(maps.Keys(defaultModelMapping))) {
+		t.Errorf("%s defaultModels = %v, the mapping has %d", at.ID, at.DefaultModels, len(defaultModelMapping))
+	}
 	targets := map[string]bool{}
 	for _, model := range at.DefaultModels {
-		id, mapped := at.DefaultModelMapping[model]
-		if !strings.HasPrefix(model, "claude-") || !mapped || !bedrockID.MatchString(id) {
-			t.Errorf("%s: default model %q maps to %q", at.ID, model, id)
-		}
+		id := at.DefaultModelMapping[model]
 		// A dated name and its alias lead to the same Bedrock model.
-		if !strings.HasPrefix(id, "anthropic."+model) {
-			t.Errorf("%s: %q maps to another model's id %q", at.ID, model, id)
+		if !strings.HasPrefix(model, "claude-") || !strings.HasPrefix(id, "anthropic."+model) {
+			t.Errorf("%s: default model %q maps to %q", at.ID, model, id)
 		}
 		targets[id] = true
 	}
@@ -261,10 +290,18 @@ func checkForm(t *testing.T, want wantType, schema, ui []byte) {
 	if u.Get("inference_profile_prefix.ui:widget").String() != "select" || len(u.Get("inference_profile_prefix.ui:enumNames").Array()) != len(bedrock.ProfilePrefixes) {
 		t.Errorf("%s: the prefix is a select with a name per value", want.id)
 	}
-	// The known limitation is stated where the administrator reads it.
+	// The known limitations are stated where the administrator reads them:
+	// nothing deep in the body is cleaned, no beta feature is added for
+	// what the body holds, and the China regions are not served.
 	for _, lang := range []string{"en", "zh"} {
-		if note := u.Get("region.ui:section.description." + lang).String(); !strings.Contains(note, "Claude Code") || !strings.Contains(note, "cache_control") {
-			t.Errorf("%s: the %s form does not state the Claude Code limitation", want.id, lang)
+		note := u.Get("region.ui:section.description." + lang).String()
+		for _, part := range []string{"Claude Code", "cache_control", "computer use", "tool search", "output_format", "metadata"} {
+			if !strings.Contains(note, part) {
+				t.Errorf("%s: the %s form does not mention %s among the limitations", want.id, lang, part)
+			}
+		}
+		if help := u.Get("region.ui:help." + lang).String(); !strings.Contains(help, "cn-*") {
+			t.Errorf("%s: the %s region help does not say the China regions are not supported", want.id, lang)
 		}
 	}
 

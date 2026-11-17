@@ -21,3 +21,19 @@ func RequestModel(in *pluginv1.BuildUpstreamRequestRequest) string {
 	}
 	return model
 }
+
+// SetPatch is the body patch setting path to value (encoded as JSON). A
+// value that cannot be encoded sets null.
+func SetPatch(path string, value any) *pluginv1.BodyPatch {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		raw = []byte("null")
+	}
+	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_SET, Path: path, ValueJson: string(raw)}
+}
+
+// DeletePatch is the body patch removing path; removing an absent path
+// changes nothing.
+func DeletePatch(path string) *pluginv1.BodyPatch {
+	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_DELETE, Path: path}
+}

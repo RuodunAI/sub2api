@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"net/url"
+	"slices"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -12,9 +13,22 @@ import (
 // profile, a provisioned throughput, an imported model).
 const arnPrefix = "arn:"
 
-// regionalPrefixes start an inference profile id: a model id that already
-// says which geography serves it.
-var regionalPrefixes = []string{"us.", "eu.", "apac.", "jp.", "au.", "us-gov.", "global."}
+// govPrefix is the inference profile prefix of the GovCloud regions. It is
+// no choice of the prefix setting: an administrator writes such ids whole.
+const govPrefix = "us-gov"
+
+// regionalPrefixes start an inference profile id, a model id that already
+// says which geography serves it: every prefix an account can choose
+// (ProfilePrefixes), and govPrefix.
+var regionalPrefixes = func() []string {
+	out := []string{govPrefix + "."}
+	for _, prefix := range ProfilePrefixes {
+		if prefix != NoProfilePrefix {
+			out = append(out, prefix+".")
+		}
+	}
+	return out
+}()
 
 // modelID is the Bedrock id the account invokes for model: the account's
 // inference profile prefix goes before a plain model id, while an ARN and an
@@ -31,12 +45,7 @@ func (a account) modelID(model string) (string, error) {
 }
 
 func hasRegionalPrefix(id string) bool {
-	for _, p := range regionalPrefixes {
-		if strings.HasPrefix(id, p) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(regionalPrefixes, func(prefix string) bool { return strings.HasPrefix(id, prefix) })
 }
 
 // modelSegment is a model id as one path segment: "/" (in ARNs) becomes

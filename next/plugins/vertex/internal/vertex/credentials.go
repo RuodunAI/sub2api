@@ -1,18 +1,16 @@
 package vertex
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"regexp"
 	"strconv"
-	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 )
 
@@ -45,38 +43,15 @@ var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey}
 // expiry reads expires_at the way the core does.
 var expiry = &manifest.AccountRefresh{}
 
-// object is a decoded JSON object (numbers kept as written).
-type object map[string]any
+// object is a decoded JSON object: credentials or settings. Numbers are kept
+// as written, so re-encoding what ValidateCredentials decoded changes none
+// (the token expiry, large integers).
+type object = accountform.Object
 
-// decodeObject decodes a JSON object; blank input is an empty one. Not
-// apikey.DecodeObject: ValidateCredentials re-encodes what it decodes, and
-// only UseNumber keeps numbers (the token expiry, large integers) as written.
-func decodeObject(raw string) (object, error) {
-	o := object{}
-	if strings.TrimSpace(raw) == "" {
-		return o, nil
-	}
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&o); err != nil {
-		return nil, err
-	}
-	if o == nil {
-		o = object{}
-	}
-	return o, nil
-}
-
-// str is the trimmed string value of k, "" when absent or not a string.
-func (o object) str(k string) string {
-	s, _ := o[k].(string)
-	return strings.TrimSpace(s)
-}
-
-func (o object) json() []byte {
-	b, _ := json.Marshal(o)
-	return b
-}
+var (
+	fieldError = accountform.FieldError
+	invalid    = accountform.Invalid
+)
 
 // target is where an account's requests go.
 type target struct {
@@ -85,7 +60,7 @@ type target struct {
 }
 
 func readTarget(settings object) target {
-	return target{Project: settings.str(fieldProject), Location: settings.str(fieldLocation)}
+	return target{Project: settings.Str(fieldProject), Location: settings.Str(fieldLocation)}
 }
 
 // express reports the address without project and location, which only an
@@ -114,10 +89,6 @@ func (t target) check(expressOK bool) *pluginv1.FieldError {
 	return nil
 }
 
-func fieldError(field, code, msg string) *pluginv1.FieldError {
-	return &pluginv1.FieldError{Field: field, Code: code, Message: msg}
-}
-
 // ---------------------------------------------------------------- validation
 
 // ValidateCredentials implements pluginsdk.Platform. Besides checking the
@@ -130,49 +101,28 @@ func fieldError(field, code, msg string) *pluginv1.FieldError {
 //     expires_at 1, which makes the core fetch a token on its next refresh
 //     pass (bootstrapToken).
 func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
-	creds, err := decodeObject(in.GetCredentialsJson())
-	if err != nil {
-		return invalid(fieldError("", "invalid", "credentials must be a JSON object / 凭证必须是 JSON 对象")), nil
-	}
-	settings, err := decodeObject(in.GetSettingsJson())
-	if err != nil {
-		return invalid(fieldError("", "invalid", "settings must be a JSON object / 设置必须是 JSON 对象")), nil
+	form, refused := accountform.DecodeForm(in)
+	if refused != nil {
+		return refused, nil
 	}
 	typ := in.GetAccountType()
 	if typ == TypeAPIKey {
-		return validateAPIKeyAccount(in, settings), nil
+		return validateAPIKeyAccount(in, form.Settings), nil
 	}
 	kind, keyed := keyKinds[typ]
 	if !keyed {
 		return invalid(fieldError("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型")), nil
 	}
-	credsBefore, settingsBefore := creds.json(), settings.json()
-	if bad := validateKeyAccount(kind, creds, settings); bad != nil {
+	if bad := validateKeyAccount(kind, form.Creds, form.Settings); bad != nil {
 		return invalid(bad), nil
 	}
-	return &pluginv1.ValidateCredentialsResponse{
-		NormalizedCredentialsJson: changed(credsBefore, creds),
-		NormalizedSettingsJson:    changed(settingsBefore, settings),
-	}, nil
-}
-
-func invalid(e *pluginv1.FieldError) *pluginv1.ValidateCredentialsResponse {
-	return &pluginv1.ValidateCredentialsResponse{Errors: []*pluginv1.FieldError{e}}
-}
-
-// changed is o's JSON when it differs from before, else "" (keep the input).
-func changed(before []byte, o object) string {
-	after := o.json()
-	if bytes.Equal(before, after) {
-		return ""
-	}
-	return string(after)
+	return form.Normalized(), nil
 }
 
 // validateKeyAccount checks a key file account and fills in what the file
 // implies: the project, the default location and the token state.
 func validateKeyAccount(kind keyKind, creds, settings object) *pluginv1.FieldError {
-	raw := creds.str(kind.field)
+	raw := creds.Str(kind.field)
 	if raw == "" {
 		return fieldError(kind.field, "required", "paste the JSON key file / 请粘贴 JSON 密钥文件的内容")
 	}
@@ -180,10 +130,10 @@ func validateKeyAccount(kind keyKind, creds, settings object) *pluginv1.FieldErr
 	if err != nil {
 		return fieldError(kind.field, "invalid", err.Error())
 	}
-	if settings.str(fieldProject) == "" && key.project() != "" {
+	if settings.Str(fieldProject) == "" && key.project() != "" {
 		settings[fieldProject] = key.project()
 	}
-	if settings.str(fieldLocation) == "" {
+	if settings.Str(fieldLocation) == "" {
 		settings[fieldLocation] = LocationGlobal
 	}
 	if bad := readTarget(settings).check(false); bad != nil {
@@ -199,7 +149,7 @@ func validateKeyAccount(kind keyKind, creds, settings object) *pluginv1.FieldErr
 // refresh right after the save) fetches one for the submitted key.
 func bootstrapToken(creds object, keyFingerprint string) {
 	_, readable := expiry.ExpiresAt(creds)
-	if readable && creds.str(fieldAccessToken) != "" && creds.str(fieldTokenFor) == keyFingerprint {
+	if readable && creds.Str(fieldAccessToken) != "" && creds.Str(fieldTokenFor) == keyFingerprint {
 		return
 	}
 	delete(creds, fieldAccessToken)
@@ -238,13 +188,9 @@ func readAccount(acc *pluginv1.Account) (account, error) {
 	if !keyed && a.typ != TypeAPIKey {
 		return a, status.Errorf(codes.FailedPrecondition, "account %d: unsupported account type %q", acc.GetId(), a.typ)
 	}
-	creds, err := decodeObject(acc.GetCredentialsJson())
+	creds, settings, err := accountform.DecodeAccount(acc)
 	if err != nil {
-		return a, status.Errorf(codes.InvalidArgument, "account %d: credentials are not a JSON object", acc.GetId())
-	}
-	settings, err := decodeObject(acc.GetSettingsJson())
-	if err != nil {
-		return a, status.Errorf(codes.InvalidArgument, "account %d: settings are not a JSON object", acc.GetId())
+		return a, err
 	}
 	a.creds, a.target = creds, readTarget(settings)
 	if bad := a.target.check(!keyed); bad != nil {
@@ -259,7 +205,7 @@ func (a account) keyFile() (keyFile, error) {
 	if !keyed {
 		return nil, status.Errorf(codes.InvalidArgument, "account type %q has no credentials to refresh", a.typ)
 	}
-	key, err := kind.parse(a.creds.str(kind.field))
+	key, err := kind.parse(a.creds.Str(kind.field))
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, kind.field+": "+err.Error())
 	}

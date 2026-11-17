@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -118,6 +119,48 @@ func TestRouteHeaderTombstone(t *testing.T) {
 		out, err := p.Build(&pluginv1.BuildUpstreamRequestRequest{Meta: &pluginv1.RequestMeta{Protocol: proto}, Account: account("")})
 		if err != nil || out.Headers["content-type"] != want {
 			t.Errorf("%s: content-type %q, want %q (%v)", proto, out.GetHeaders()["content-type"], want, err)
+		}
+	}
+}
+
+// classify names one of the provider policies; azure_openai is the openai
+// policy that also fails a missing deployment over to another account.
+func TestClassifyPolicies(t *testing.T) {
+	at := &manifest.AccountType{ID: "x", Upstream: &manifest.Upstream{}}
+	_ = json.Unmarshal([]byte(`{"preset":"openai","classify":"azure"}`), at.Upstream)
+	_, err := Resolve(at, nil)
+	var probs Problems
+	if !errors.As(err, &probs) || len(probs) != 1 || probs[0].Path != "classify" || probs[0].Code != "invalid" ||
+		probs[0].Message != "classify must be anthropic, azure_openai, gemini or openai" {
+		t.Fatalf("unknown policy: %v", err)
+	}
+
+	const (
+		toClient = pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT
+		failover = pluginv1.ClassifyErrorResponse_ACTION_FAILOVER
+		none     = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_UNSPECIFIED
+		disable  = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE
+	)
+	for _, tc := range []struct {
+		policy string
+		status int32
+		body   string
+		action pluginv1.ClassifyErrorResponse_Action
+		effect pluginv1.ClassifyErrorResponse_AccountEffect
+	}{
+		{"openai", 404, `{"error":{"code":"DeploymentNotFound","message":"no such deployment"}}`, toClient, none},
+		{"azure_openai", 404, `{"error":{"code":"DeploymentNotFound","message":"no such deployment"}}`, failover, none},
+		// Only that code of that status: the rest is the openai policy.
+		{"azure_openai", 404, `{"error":{"code":"model_not_found","message":"no such model"}}`, toClient, none},
+		{"azure_openai", 400, `{"error":{"code":"DeploymentNotFound","message":"no such deployment"}}`, toClient, none},
+		{"azure_openai", 401, `{"error":{"code":"401","message":"bad key"}}`, failover, disable},
+	} {
+		p := resolve(t, `{"preset":"openai","classify":"`+tc.policy+`"}`)
+		out := p.Classify(time.Unix(1_800_000_000, 0), &pluginv1.ClassifyErrorRequest{
+			Meta: &pluginv1.RequestMeta{Protocol: "openai.chat"}, Status: tc.status, BodyPrefix: []byte(tc.body),
+		})
+		if out.GetAction() != tc.action || out.GetAccountEffect() != tc.effect || out.GetCooldownUntilUnix() != 0 {
+			t.Errorf("%s %d %s: %v %v", tc.policy, tc.status, tc.body, out.GetAction(), out.GetAccountEffect())
 		}
 	}
 }

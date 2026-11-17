@@ -32,10 +32,8 @@ func TestClassifyError(t *testing.T) {
 		early    = "Signature not yet current: 20261117T020000Z is still later than 20261117T011500Z (20261117T011000Z + 5 min.)"
 	)
 	for _, tc := range []struct {
-		name string
-		// protocol defaults to anthropic.messages.
-		protocol string
-		status   int32
+		name   string
+		status int32
 		// typ and message make an AWS error answer; body replaces it.
 		typ, message string
 		body         string
@@ -73,6 +71,14 @@ func TestClassifyError(t *testing.T) {
 		{name: "400 without a type", status: 400, body: `{"message":"bad request"}`, wantAction: ret, wantEffect: none, wantType: "invalid_request_error"},
 		{name: "404 ResourceNotFoundException", status: 404, typ: "ResourceNotFoundException", message: "Could not resolve the foundation model",
 			wantAction: ret, wantEffect: none, wantType: "not_found_error"},
+
+		// 400 ServiceQuotaExceededException: another account may have room.
+		{name: "400 ServiceQuotaExceededException", status: 400, typ: "ServiceQuotaExceededException", message: "You have exceeded the service quota for this model.",
+			wantAction: failover, wantEffect: none, wantType: "invalid_request_error", wantReason: "upstream service quota exceeded (400) [ServiceQuotaExceededException]"},
+		{name: "400 ServiceQuotaExceeded in the body", status: 400, body: `{"__type":"com.amazonaws.bedrock#ServiceQuotaExceededException","message":"quota"}`,
+			wantAction: failover, wantEffect: none, wantType: "invalid_request_error", wantReason: "service quota exceeded"},
+		// Only as a 400: a 404 of that name stays the request's own failure.
+		{name: "404 ServiceQuotaExceededException", status: 404, typ: "ServiceQuotaExceededException", message: "quota", wantAction: ret, wantEffect: none, wantType: "not_found_error"},
 
 		// 403 that proves the key bad: disable.
 		{name: "403 UnrecognizedClientException", status: 403, typ: "UnrecognizedClientException", message: "The security token included in the request is invalid.",
@@ -117,23 +123,7 @@ func TestClassifyError(t *testing.T) {
 		{name: "the header wins over the body", status: 403, typ: "AccessDeniedException", body: `{"__type":"ExpiredTokenException","message":"x"}`,
 			wantAction: failover, wantEffect: cooldown, wantCooldown: 60, wantType: "permission_error", wantReason: "[AccessDeniedException]"},
 
-		// The OpenAI-compatible endpoints: same rules, OpenAI's vocabulary.
-		{name: "openai: 429 in AWS shape", protocol: ProtocolChat, status: 429, typ: "ThrottlingException", message: "Too many requests",
-			wantAction: failover, wantEffect: cooldown, wantCooldown: 60, wantType: "rate_limit_error"},
-		{name: "openai: 429 in OpenAI shape", protocol: ProtocolChat, status: 429, body: `{"error":{"message":"Rate limit reached","type":"rate_limit_exceeded","code":"rate_limit_exceeded"}}`,
-			headers: map[string]string{"retry-after-ms": "2500"}, wantAction: failover, wantEffect: cooldown, wantCooldown: 2, wantType: "rate_limit_exceeded", wantReason: "Rate limit reached"},
-		{name: "openai: 400 in OpenAI shape", protocol: ProtocolResponses, status: 400, body: `{"error":{"message":"Unsupported parameter","type":"invalid_request_error","code":"unsupported_parameter"}}`,
-			wantAction: ret, wantEffect: none, wantType: "invalid_request_error"},
-		{name: "openai: 403 AccessDeniedException", protocol: ProtocolChat, status: 403, typ: "AccessDeniedException", message: "no access",
-			wantAction: failover, wantEffect: cooldown, wantCooldown: 60, wantType: "permission_error"},
-		{name: "openai: 403 ExpiredTokenException", protocol: ProtocolResponses, status: 403, typ: "ExpiredTokenException", message: "expired",
-			wantAction: failover, wantEffect: disable, wantType: "permission_error", wantReason: "temporary credentials expired"},
-		{name: "openai: 401 in OpenAI shape", protocol: ProtocolChat, status: 401, body: `{"error":{"message":"Invalid API key","type":"invalid_request_error","code":"invalid_api_key"}}`,
-			wantAction: failover, wantEffect: disable, wantType: "invalid_request_error", wantReason: "[invalid_api_key]"},
-		{name: "openai: 500", protocol: ProtocolChat, status: 500, typ: "InternalServerException", message: "Internal error", wantAction: failover, wantEffect: none, wantType: "server_error"},
-
 		{name: "transport error", transport: "connection reset by peer", wantAction: failover, wantEffect: cooldown, wantCooldown: 10, wantType: "api_error", wantReason: "connection reset"},
-		{name: "openai: transport error", protocol: ProtocolChat, transport: "EOF", wantAction: failover, wantEffect: cooldown, wantCooldown: 10, wantType: "server_error"},
 	} {
 		for _, typ := range []string{TypeAPIKey, TypeAccessKey, TypeSTS} {
 			t.Run(tc.name+"/"+typ, func(t *testing.T) {
@@ -148,12 +138,8 @@ func TestClassifyError(t *testing.T) {
 						body = b
 					}
 				}
-				protocol := tc.protocol
-				if protocol == "" {
-					protocol = ProtocolMessages
-				}
 				resp, err := newTestPlugin(Endpoints{}).ClassifyError(context.Background(), &pluginv1.ClassifyErrorRequest{
-					Meta:    &pluginv1.RequestMeta{Protocol: protocol},
+					Meta:    &pluginv1.RequestMeta{Protocol: ProtocolMessages},
 					Account: &pluginv1.Account{Type: typ},
 					Status:  tc.status, Headers: headers, BodyPrefix: body, TransportError: tc.transport,
 				})

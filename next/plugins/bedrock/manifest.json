@@ -6,8 +6,8 @@
     "zh": "AWS Bedrock"
   },
   "description": {
-    "en": "Models on Amazon Bedrock: Claude through InvokeModel for the built-in anthropic platform, and Bedrock's OpenAI-compatible chat completions and responses endpoints for the built-in openai platform. Accounts authorize with a Bedrock API key, a long-term access key or temporary credentials; requests of the latter two are signed by the core (SigV4). The plugin itself makes no network connection. Model prices are set by administrators in the core.",
-    "zh": "Amazon Bedrock 上的模型：为内置 anthropic 平台通过 InvokeModel 提供 Claude，为内置 openai 平台提供 Bedrock 的 OpenAI 兼容接口（chat completions、responses）。账号可用 Bedrock API Key、长期 Access Key 或临时凭证鉴权，后两种的请求由核心签名（SigV4）。插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
+    "en": "Claude on Amazon Bedrock, through InvokeModel, for the built-in anthropic platform; requests in an OpenAI protocol are converted by the core. Accounts authorize with a Bedrock API key, a long-term access key or temporary credentials; requests of the latter two are signed by the core (SigV4). The plugin itself makes no network connection. Model prices are set by administrators in the core.",
+    "zh": "Amazon Bedrock 上的 Claude：为内置 anthropic 平台通过 InvokeModel 提供，OpenAI 协议的请求由核心转换后走同一条路。账号可用 Bedrock API Key、长期 Access Key 或临时凭证鉴权，后两种的请求由核心签名（SigV4）。插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
   },
   "version": "0.1.0",
   "publisher": "sub2api",
@@ -75,15 +75,15 @@
       "defaultModelMapping": {
         "claude-fable-5-1": "anthropic.claude-fable-5-1",
         "claude-fable-5": "anthropic.claude-fable-5",
-        "claude-opus-5": "anthropic.claude-opus-5-v1",
-        "claude-opus-4-8": "anthropic.claude-opus-4-8-v1",
-        "claude-opus-4-7": "anthropic.claude-opus-4-7-v1",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
         "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
         "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-1": "anthropic.claude-opus-4-1-20250805-v1:0",
         "claude-opus-4-20250514": "anthropic.claude-opus-4-20250514-v1:0",
-        "claude-sonnet-5": "anthropic.claude-sonnet-5-v1",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
         "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
         "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
         "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -98,17 +98,11 @@
             "messages"
           ],
           "requestFields": [
-            "model"
+            "model",
+            "anthropic_beta"
           ],
           "passHeaders": [
             "anthropic-beta"
-          ]
-        },
-        {
-          "platform": "openai",
-          "endpoints": [
-            "chat_completions",
-            "responses"
           ]
         }
       ]
@@ -163,15 +157,15 @@
       "defaultModelMapping": {
         "claude-fable-5-1": "anthropic.claude-fable-5-1",
         "claude-fable-5": "anthropic.claude-fable-5",
-        "claude-opus-5": "anthropic.claude-opus-5-v1",
-        "claude-opus-4-8": "anthropic.claude-opus-4-8-v1",
-        "claude-opus-4-7": "anthropic.claude-opus-4-7-v1",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
         "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
         "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-1": "anthropic.claude-opus-4-1-20250805-v1:0",
         "claude-opus-4-20250514": "anthropic.claude-opus-4-20250514-v1:0",
-        "claude-sonnet-5": "anthropic.claude-sonnet-5-v1",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
         "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
         "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
         "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -186,17 +180,11 @@
             "messages"
           ],
           "requestFields": [
-            "model"
+            "model",
+            "anthropic_beta"
           ],
           "passHeaders": [
             "anthropic-beta"
-          ]
-        },
-        {
-          "platform": "openai",
-          "endpoints": [
-            "chat_completions",
-            "responses"
           ]
         }
       ]
@@ -253,15 +241,15 @@
       "defaultModelMapping": {
         "claude-fable-5-1": "anthropic.claude-fable-5-1",
         "claude-fable-5": "anthropic.claude-fable-5",
-        "claude-opus-5": "anthropic.claude-opus-5-v1",
-        "claude-opus-4-8": "anthropic.claude-opus-4-8-v1",
-        "claude-opus-4-7": "anthropic.claude-opus-4-7-v1",
+        "claude-opus-5": "anthropic.claude-opus-5",
+        "claude-opus-4-8": "anthropic.claude-opus-4-8",
+        "claude-opus-4-7": "anthropic.claude-opus-4-7",
         "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
         "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
         "claude-opus-4-1": "anthropic.claude-opus-4-1-20250805-v1:0",
         "claude-opus-4-20250514": "anthropic.claude-opus-4-20250514-v1:0",
-        "claude-sonnet-5": "anthropic.claude-sonnet-5-v1",
+        "claude-sonnet-5": "anthropic.claude-sonnet-5",
         "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
         "claude-sonnet-4-5": "anthropic.claude-sonnet-4-5-20250929-v1:0",
         "claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
@@ -276,17 +264,11 @@
             "messages"
           ],
           "requestFields": [
-            "model"
+            "model",
+            "anthropic_beta"
           ],
           "passHeaders": [
             "anthropic-beta"
-          ]
-        },
-        {
-          "platform": "openai",
-          "endpoints": [
-            "chat_completions",
-            "responses"
           ]
         }
       ]
@@ -302,8 +284,8 @@
     {
       "id": "platform.register",
       "reason": {
-        "en": "Register the AWS Bedrock account types (API key, access key, temporary credentials) for the built-in anthropic and openai platforms",
-        "zh": "为内置 anthropic 和 openai 平台注册 AWS Bedrock 账号类型（API Key、Access Key、临时凭证）"
+        "en": "Register the AWS Bedrock account types (API key, access key, temporary credentials) for the built-in anthropic platform",
+        "zh": "为内置 anthropic 平台注册 AWS Bedrock 账号类型（API Key、Access Key、临时凭证）"
       }
     },
     {
@@ -318,6 +300,6 @@
     }
   ],
   "externalServices": [
-    "bedrock-runtime.*.amazonaws.com"
+    "amazonaws.com"
   ]
 }

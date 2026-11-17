@@ -28,6 +28,15 @@ var Policy = classify.Policy{
 	},
 }
 
+// AzurePolicy is Policy for Azure OpenAI. A 404 DeploymentNotFound says the
+// resource of this account has no deployment of the requested model, which
+// another account's resource may have: the request fails over and the
+// account is left alone. Every other failure is classified as OpenAI's.
+var AzurePolicy = Policy.With(classify.Rule{
+	When:   classify.All(classify.Status(http.StatusNotFound), classify.CodeIn("DeploymentNotFound")),
+	Reason: "upstream has no such deployment (%d), the account is not at fault",
+})
+
 // ChatPingBody is the body of a minimal chat completion: one user message
 // asking the upstream to answer "ping". BuildTestRequest uses it so every
 // OpenAI-compatible plugin probes the same shape; maxTokens stays a parameter

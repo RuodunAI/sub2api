@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,7 +12,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 )
 
 // errorTypeHeader carries the AWS error type, optionally followed by ":" and
@@ -28,12 +28,16 @@ const accessCooldown = time.Minute
 // own failure and goes back to the client.
 var policy = classify.Policy{
 	Parse:     parseError,
-	ErrorType: clientErrorType,
+	ErrorType: anthropic.Policy.ErrorType,
 	Detail:    detail,
 	Rules: []classify.Rule{
 		classify.EdgeBlock(),
 		// ThrottlingException, ModelNotReadyException.
 		classify.RateLimit(classify.RetryAfter),
+		// A quota of the AWS account (of a model, of a region) is used up:
+		// another account may still have room, and this one is not broken.
+		{When: classify.All(classify.Status(http.StatusBadRequest), awsError("ServiceQuotaExceeded")),
+			Reason: "upstream service quota exceeded (%d)"},
 		// The core signs with the node's clock: a rejected timestamp or a
 		// malformed signature says nothing about the account.
 		{When: classify.Any(awsError("RequestExpired"), classify.All(awsError("InvalidSignature"), clockSkew)),
@@ -51,14 +55,10 @@ var policy = classify.Policy{
 }
 
 // parseError reads an error body of the Bedrock runtime
-// ({"message": ...}, the type in "__type" when the header lacks it). The
-// OpenAI-compatible endpoints may answer in OpenAI's shape instead.
+// ({"message": ...}, the type in "__type" when the header lacks it).
 func parseError(body []byte) classify.Error {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return classify.Error{}
-	}
-	if gjson.GetBytes(body, "error").Exists() {
-		return openai.Policy.Parse(body)
 	}
 	msg := gjson.GetBytes(body, "message")
 	if !msg.Exists() {
@@ -90,13 +90,7 @@ func awsType(in *classify.Input) string {
 // suffix does not count.
 func awsError(names ...string) classify.Match {
 	return func(in *classify.Input) bool {
-		t := strings.TrimSuffix(awsType(in), "Exception")
-		for _, name := range names {
-			if t == name {
-				return true
-			}
-		}
-		return false
+		return slices.Contains(names, strings.TrimSuffix(awsType(in), "Exception"))
 	}
 }
 
@@ -113,15 +107,6 @@ func detail(in *classify.Input) string {
 		s = " [" + t + "]"
 	}
 	return s + classify.DetailMessage(in)
-}
-
-// clientErrorType is the error type in the vocabulary of the upstream
-// protocol's platform.
-func clientErrorType(in *classify.Input) string {
-	if strings.HasPrefix(in.Protocol, "openai.") {
-		return openai.Policy.ErrorType(in)
-	}
-	return anthropic.Policy.ErrorType(in)
 }
 
 // ClassifyError implements pluginsdk.Platform.

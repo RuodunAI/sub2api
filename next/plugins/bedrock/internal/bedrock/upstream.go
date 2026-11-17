@@ -2,7 +2,6 @@ package bedrock
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -11,102 +10,76 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/reqsign"
 )
-
-// route builds the request of one upstream protocol for an account, without
-// its host and its credential: Url holds the path.
-type route func(a account, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error)
-
-var routes = map[string]route{
-	ProtocolMessages:  invokeModel,
-	ProtocolChat:      openAICompatible("/openai/v1/chat/completions", setPatch("stream_options.include_usage", true)),
-	ProtocolResponses: openAICompatible("/openai/v1/responses"),
-}
-
-func setPatch(path string, value any) *pluginv1.BodyPatch {
-	raw, _ := json.Marshal(value)
-	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_SET, Path: path, ValueJson: string(raw)}
-}
-
-func deletePatch(path string) *pluginv1.BodyPatch {
-	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_DELETE, Path: path}
-}
 
 // invokeHeaders are the headers of an InvokeModel request.
 func invokeHeaders() map[string]string {
 	return map[string]string{"content-type": "application/json", "accept": "application/json"}
 }
 
-// invokeModel builds a Claude request for InvokeModel. The path names the
-// model and whether the answer streams, so the body loses both fields; the
+// droppedFields are top-level fields of Anthropic's own API that InvokeModel
+// has no use for. The previous implementation removed output_config and
+// output_format as well; they stay, because InvokeModel now reads the output
+// format and the effort from output_config (AWS user guide: "Get validated
+// JSON results from models", "Adaptive thinking") and output_format is its
+// deprecated spelling.
+var droppedFields = []string{"metadata", "provider"}
+
+// invokePatches turn a Messages body into an InvokeModel one. The path names
+// the model and whether the answer streams, so the body loses both fields;
+// it gains the version Bedrock requires, loses droppedFields, and the
 // client's beta features move from the header into the body.
-func invokeModel(a account, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	meta := in.GetMeta()
-	id, err := a.modelID(meta.GetModel())
-	if err != nil {
-		return nil, err
+func invokePatches(in *pluginv1.BuildUpstreamRequestRequest) []*pluginv1.BodyPatch {
+	patches := []*pluginv1.BodyPatch{
+		pluginsdk.DeletePatch("model"), pluginsdk.DeletePatch("stream"),
+		pluginsdk.SetPatch("anthropic_version", AnthropicVersion),
 	}
-	resp := &pluginv1.BuildUpstreamRequestResponse{
-		Url:           invokePath(id, meta.GetStream()),
-		Headers:       invokeHeaders(),
-		Patches:       []*pluginv1.BodyPatch{deletePatch("model"), deletePatch("stream"), setPatch("anthropic_version", AnthropicVersion)},
-		UpstreamModel: id,
+	for _, field := range droppedFields {
+		patches = append(patches, pluginsdk.DeletePatch(field))
 	}
-	if betas := bedrockBetas(in.GetInboundHeaders()[betaHeader]); len(betas) > 0 {
-		resp.Patches = append(resp.Patches, setPatch("anthropic_beta", betas))
-	}
-	if meta.GetStream() {
-		resp.ResponseStream = ResponseStream
-	}
-	return resp, nil
+	return append(patches, betaPatches(in.GetInboundHeaders()[betaHeader], in.GetFields()[fieldBetas])...)
 }
 
-// openAICompatible builds requests for one of Bedrock's OpenAI-compatible
-// endpoints. The body is the client's (the model stays in it) and the answer
-// is plain SSE or JSON; streamPatches apply to streamed requests only.
-func openAICompatible(path string, streamPatches ...*pluginv1.BodyPatch) route {
-	return func(_ account, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-		resp := &pluginv1.BuildUpstreamRequestResponse{
-			Url:           path,
-			Headers:       map[string]string{"content-type": "application/json"},
-			UpstreamModel: in.GetMeta().GetModel(),
-		}
-		if in.GetMeta().GetStream() {
-			resp.Patches = streamPatches
-		}
-		return resp, nil
+// signing is a directive as the core reads it.
+func signing(d reqsign.Directive) *pluginv1.RequestSigning {
+	return &pluginv1.RequestSigning{
+		Scheme: d.Scheme, Region: d.Region, Service: d.Service,
+		AccessKeyId: d.AccessKeyID, SecretAccessKey: d.SecretAccessKey, SessionToken: d.SessionToken,
 	}
 }
 
-// BuildUpstreamRequest implements pluginsdk.Platform. An API key account
-// sends its key; for the other types the answer carries a signing directive
-// and the core signs the final request.
+// BuildUpstreamRequest implements pluginsdk.Platform: a Claude request for
+// InvokeModel, or InvokeModelWithResponseStream when it streams. An API key
+// account sends its key; for the other types the answer carries a signing
+// directive and the core signs the final request.
 func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	protocol := in.GetMeta().GetProtocol()
-	build, ok := routes[protocol]
-	if !ok {
+	meta := in.GetMeta()
+	if protocol := meta.GetProtocol(); protocol != ProtocolMessages {
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
 	a, err := readAccount(in.GetAccount())
 	if err != nil {
 		return nil, err
 	}
-	resp, err := build(a, in)
+	id, err := a.modelID(meta.GetModel())
 	if err != nil {
 		return nil, err
 	}
-	resp.Method = http.MethodPost
-	resp.Url = p.apiBase(a.region) + resp.Url
-	if !a.auth.signed {
-		resp.Headers["authorization"] = a.bearer()
-		return resp, nil
+	resp := &pluginv1.BuildUpstreamRequestResponse{
+		Method:        http.MethodPost,
+		Url:           p.apiBase(a.region) + invokePath(id, meta.GetStream()),
+		Headers:       invokeHeaders(),
+		Patches:       invokePatches(in),
+		UpstreamModel: id,
 	}
-	d := a.directive()
-	resp.Signing = &pluginv1.RequestSigning{
-		Scheme: d.Scheme, Region: d.Region, Service: d.Service,
-		AccessKeyId: d.AccessKeyID, SecretAccessKey: d.SecretAccessKey, SessionToken: d.SessionToken,
+	if meta.GetStream() {
+		resp.ResponseStream = ResponseStream
+	}
+	if d, signed := a.authorize(resp.Headers); signed {
+		resp.Signing = signing(d)
 	}
 	return resp, nil
 }
@@ -167,12 +140,10 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 		Model:         id,
 		UsageProtocol: ProtocolMessages,
 	}
-	if !a.auth.signed {
-		resp.Headers["authorization"] = a.bearer()
-		return resp, nil
-	}
-	if err := p.sign(resp.Url, resp.Headers, resp.BodyJson, a.directive()); err != nil {
-		return nil, err
+	if d, signed := a.authorize(resp.Headers); signed {
+		if err := p.sign(resp.Url, resp.Headers, resp.BodyJson, d); err != nil {
+			return nil, err
+		}
 	}
 	return resp, nil
 }
