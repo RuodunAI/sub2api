@@ -6,6 +6,8 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-17 核心 **0.1.296**（Release `core-v0.1.296`，`cf4718dcb`）：只装到了 ec2pool（见 [ec2pool 部署记录](../ec2pool/README.md)），本集群仍是核心 0.1.295、网关 0.1.137。
+
 2026-11-17 网关 **0.1.137** + 核心 **0.1.295**（`3c8cbbda9`，上游 develop；第一次由 GitHub Actions 发在 Sub2API-Devs/sup2api 的 Release：`gateway-v0.1.137` 17:44:50、`core-v0.1.295` 17:45:15；用户要求逐个节点手动处理，没有用一键更新；北京时间 18:23–18:26；核心计划 `4d9d574cffbb3aa86a3f7238c1f80b2e` rolling-v1 completed，18:25:31→18:26:37，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `ab35f2f6…187d`）：
 - 一键更新试过但没有开始：控制台接口的二次验证 `system.update` 对超管只提供通行密钥，脚本用密码验证得到 400 `method unavailable`，没有导入、没有建计划（`~/rel295/apply.py`、`gw.out`）。
 - 网关：`stage/gateway-0.1.137/` 从 `~/sup2api/release-0.1.295`（`3c8cbbda9`）按 `deploy/gateway/Dockerfile` 构建（`--build-arg VERSION=0.1.137`，镜像 `sha256:f9abac0d…b0df`），`/usr/local/bin/sub2api-gateway` 的 sha256 `fc74f2f2…2618` 与 Release 归档和网关清单 `binary_digest` 一致（Release 下载在 `stage/gateway-0.1.137/rel/`）；镜像包 gzip `fc73d9d6…b69c`，clicodeplus `/root/gateway-images/`。`gwswap.sh`：ccp 18:23:27 让出、18:23:30 排空、18:24:05 就绪；ovh 18:24:21 让出、18:24:30 就绪（5 秒）；`.env` 备份 `.env.bak-gw136`。之后 `updater.nodes` 两行 0.1.137、`yield-status` 的 `gateway_version`/`bundled_version` 都是 0.1.137（状态卷 `gateway/` 为空，没有 `current`），`updater.releases.signed_manifest` 已删除。

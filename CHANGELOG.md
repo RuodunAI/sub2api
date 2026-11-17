@@ -8,15 +8,19 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（codex 0.1.6、openai 0.4.2；无迁移，滚动）
+## 2026-11-17
+
+### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（`cf4718dcb`，codex 0.1.6、openai 0.4.2；无迁移，滚动）
+
+- **Release**：上游 PR #43 合并为 `cf4718dcb`（代码在 `179142ae6` 已同步），tag `core-v0.1.296` 推送后自动构建（run 44070757390，用户提前批准，release 环境由我代批），北京时间 19:25:10 发布。清单 sha256 `9fbbdae1f86286fa0b72498f74fb61352403805bc9d7ce4aa46d2f13bc7bcf90`（amd64 bundle `5a59c505…2777`、arm64 `b9a5aea7…cac4`），strategy rolling，schema 仍 `ab35f2f6…187d`。
+- **ec2pool 上线**（用户要求把 ec2pool 改成网关托管的 docker compose）：原来是非托管的 `deploy/single`（`/opt/sup2api`，app、app-2 两个核心，已跑 `179142ae6`），改为 `/opt/sup2api-gw` 的两节点网关集群（网关 0.1.137，node-a 主、node-b，同机，沿用原来的 PostgreSQL、Valkey 与开发插件市场），以 Release 0.1.296 为基线 `init`。19:25:47 停旧 app、app-2，复制 11 个插件包到 node-a 的 `plugin-blobs/`，19:26:05 node-a 就绪、19:26:09 node-b 就绪；入口 `127.0.0.1:18080` 不变，宿主机 Caddy 没改。6 个启用插件两节点 active、ready。详见 [ec2pool 部署记录](next/deploy/gateway/ec2pool/README.md)。
+- **ovh 集群（ovh + clicodeplus）仍是核心 0.1.295、网关 0.1.137，没有装 0.1.296**（要装时可在控制台一键更新或按部署记录手动）。
 
 - **修复：Sign in with ChatGPT 账号的流式请求不计费**（用户 11-17 报告，ec2pool 实测）：上游对 `stream:true` 返回 SSE 正文却标 `Content-Type: application/json`，网关按 JSON 处理，token、首字时间都记 0、计费状态 `free`，而且整段缓冲到结束才发给客户端。现在流式请求的 2xx 应答若正文以 SSE 字段开头就按事件流转发与计量（CONTRACTS §104.1）。已有的 0 token 记录不会补算。
 - **OpenAI Responses 缓存写入**：`input_tokens_details.cache_write_tokens` 计为缓存写入，按价格的 `cc` 计；价格没有 `cc` 的模型仍按输入价计（`inclusive` 语义下未计价的缓存写入留在输入里，CONTRACTS §104.3）。TPM 与实时 token 统计不含缓存写入，OpenAI 请求的这两个数会比以前略小。
 - **OpenAI 端点不带 `/v1`**：`POST /responses`、`/chat/completions`、`/embeddings` 与 WebSocket `GET /responses` 自动按 `/v1/...` 处理，适配 base URL 没写 `/v1` 的客户端；只对 openai 平台（CONTRACTS §104.2）。
 - **codex 0.1.6**：两种账号类型的默认模型改为上游实际可用的 `gpt-6.1-sol`、`gpt-6.1-terra`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（Sign in with ChatGPT 账号 `/v1/models` 的结果），测试模型改为 `gpt-6-luna`。已有账号的模型列表不变，要用新列表请在账号上重新获取模型。生图：Sign in with ChatGPT 上游明确拒绝 `image_generation` 工具（`subscription_sharing_unsupported_capability`），所以不加生图模型。
 - **openai 0.4.2**：API Key 账号默认模型补上上述 8 个新模型。
-
-## 2026-11-17
 
 ### 网关 0.1.137：删除只给网关 0.1.135 留的 `signed_manifest` 列（首个由 GitHub Actions 发布的网关，`3c8cbbda9`）
 
