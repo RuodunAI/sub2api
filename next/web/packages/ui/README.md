@@ -429,4 +429,4 @@ const { EntityMultiPicker } = host.components
 
 ## 账号请求头覆盖编辑器（UI SDK 3.19）
 
-`host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm 增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.301（0.1.301 是最后一个带 UI 3.18 的核心）。
+`host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm 增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.302（0.1.302 是最后一个带 UI 3.18 的核心）。

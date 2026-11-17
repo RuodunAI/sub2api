@@ -7871,7 +7871,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 - 通用配置项（§87）新增 `header_override`（kind `header_override`，默认值是对象，清单检查用同一个编译器）。
 - 控制台：账号编辑页“高级 › 请求转发”组，请求头透传与请求参数覆盖之间一行“请求头覆盖”，编辑弹窗为键值表格（值旁有占位符快捷项）和 JSON 文本两种模式，可直接粘贴 new-api 的配置；导航摘要加“请求头覆盖 N 项”。
-- UI 3.19（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.19.0，`HOST_UI_VERSION` 3.19.0，只加不改）：宿主组件 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`）、schema 控件 `header-override`；`ParamOverrideEditor` 另收可选的 `headerOverride`，试运行从它的结果开始。用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.301（最后一个带 UI 3.18 的核心）。
+- UI 3.19（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.19.0，`HOST_UI_VERSION` 3.19.0，只加不改）：宿主组件 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`）、schema 控件 `header-override`；`ParamOverrideEditor` 另收可选的 `headerOverride`，试运行从它的结果开始。用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.302（最后一个带 UI 3.18 的核心）。
 
 ### 108.4 参数覆盖（§84）补齐
 

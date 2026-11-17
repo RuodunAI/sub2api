@@ -51,7 +51,7 @@ manifest `accountTypes[].commonControls`：键 = 通用项名，值 = 声明。
 
 - `@sub2api/host`：`HOST_UI_VERSION` 3.6.0 → 3.7.0；`PluginHost.components`（只读对象）提供 `ParamOverrideEditor`、`RateLimitEditor`（rpm/tpm/spm，2026-11-11 起会话数一行带会话周期 `spm_window_seconds`，只在给过或改过时出现在 v-model 里）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（3.7 另有账号上游编辑器 `UpstreamEditor`，UI 3.18 随内置插件 custom 删除，CONTRACTS §106），props 与 v-model 形状和账号接口字段一致；用到的插件声明 `hostUICompat: "^3.7"`（sdk/manifest check 按 3.7 要求核心下限为本期核心版本）。
 - UI 3.11 起 `PluginHost.components` 另有 `EntityPicker`（按名称或 ID 选用户、分组、API Key、账号、模型、代理），见 §6。
-- UI 3.19 起另有 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`），`ParamOverrideEditor` 另收可选的 `headerOverride`（试运行的初始请求头）；用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.301（CONTRACTS §108.3）。
+- UI 3.19 起另有 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`），`ParamOverrideEditor` 另收可选的 `headerOverride`（试运行的初始请求头）；用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.302（CONTRACTS §108.3）。
 - schema 表单控件（`web/src/components/schema/widgets.ts`）：新增 `param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（`proxy-select` 已有；UI 3.19 另有 `header-override`），插件设置和账号凭证表单都能用；数据格式即核心执行格式，校验在插件自己的设置接口里用 SDK 同一套规则（`sdk/paramoverride` 等）。
 - 规则：组件产出的格式就是核心执行的格式，插件不自己解释；凭证头、逐跳头仍在 §81 禁止列表。
 
