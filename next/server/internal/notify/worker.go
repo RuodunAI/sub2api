@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -276,5 +277,6 @@ func truncate(s string) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	// Cut between runes: an invalid UTF-8 tail is refused by PostgreSQL.
+	return strings.ToValidUTF8(s[:max], "")
 }

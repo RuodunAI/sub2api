@@ -27,7 +27,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
-type fakeTokens struct{ testutil.StepUpPassed }
+// fakeTokens refuses every step-up proof: no API key route asks for one,
+// revealing a key included (user decision 2026-11-17).
+type fakeTokens struct{ testutil.StepUpRefused }
 
 func (fakeTokens) VerifySession(_ context.Context, tok string) (int64, string, error) {
 	return testutil.SessionUser(tok, "u")
@@ -406,8 +408,8 @@ func TestCopyAPIKey(t *testing.T) {
 	if code != 200 || out["data"].(map[string]any)["key"] != raw {
 		t.Fatalf("owner reveal: %d", code)
 	}
-	// The owner's access key reveals too, after the step-up (passed here;
-	// iam tests the proofs).
+	// The owner's access key reveals too; neither call carries a step-up
+	// proof (fakeTokens refuses every one), and both are audited below.
 	code, out = e.call(core.AccessKeyPrefix+strconv.FormatInt(e.user, 10), "POST", path, nil)
 	if code != 200 || out["data"].(map[string]any)["key"] != raw {
 		t.Fatalf("access key reveal: %d %v", code, out)

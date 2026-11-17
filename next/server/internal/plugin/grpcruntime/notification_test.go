@@ -18,12 +18,13 @@ type notifierRPC struct {
 	pluginv1.NotificationServiceClient
 	calls int
 	code  codes.Code
+	msg   string
 }
 
 func (n *notifierRPC) DeliverNotification(context.Context, *pluginv1.DeliverNotificationRequest, ...grpc.CallOption) (*pluginv1.DeliverNotificationResponse, error) {
 	n.calls++
 	if n.code != codes.OK {
-		return nil, status.Error(n.code, "test")
+		return nil, status.Error(n.code, n.msg)
 	}
 	return &pluginv1.DeliverNotificationResponse{}, nil
 }
@@ -40,7 +41,7 @@ func notRunning(err error) bool {
 func TestNotificationAdapterMarksNotRunning(t *testing.T) {
 	i := &Instance{pkg: &registry.Package{Key: "mailer", Version: "1"}, caps: map[string]bool{manifest.CapNotifyChannel: true},
 		sems: newSemaphores(Concurrency{Background: 1})}
-	rpc := &notifierRPC{}
+	rpc := &notifierRPC{msg: "test"}
 	i.proc.Store(&proc{notifier: rpc})
 	n := i.Notifier()
 	in := &pluginv1.DeliverNotificationRequest{Id: 1, Channel: "email"}
@@ -65,5 +66,18 @@ func TestNotificationAdapterMarksNotRunning(t *testing.T) {
 	calls := rpc.calls
 	if _, err := n.DeliverNotification(context.Background(), in); !notRunning(err) || rpc.calls != calls {
 		t.Fatalf("draining: %v %d", err, rpc.calls)
+	}
+}
+
+// An error the plugin returned itself (gRPC Unknown) reads as its own
+// message, still an internal core error underneath.
+func TestNotificationAdapterKeepsPluginMessage(t *testing.T) {
+	i := &Instance{pkg: &registry.Package{Key: "mailer", Version: "1"}, caps: map[string]bool{manifest.CapNotifyChannel: true},
+		sems: newSemaphores(Concurrency{Background: 1})}
+	const msg = "SMTP host mail.example.invalid does not exist / 找不到 SMTP 服务器 mail.example.invalid"
+	i.proc.Store(&proc{notifier: &notifierRPC{code: codes.Unknown, msg: msg}})
+	_, err := i.Notifier().DeliverNotification(context.Background(), &pluginv1.DeliverNotificationRequest{Id: 1, Channel: "email"})
+	if err == nil || err.Error() != msg || notRunning(err) || core.AsError(err).Code != core.ErrInternal.Code {
+		t.Fatalf("plugin error: %v", err)
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 
@@ -521,5 +522,14 @@ func TestRoutes(t *testing.T) {
 	}
 	if _, out = do(1, "GET", "/notifications?status=sent", nil); len(out["data"].([]any)) != 0 {
 		t.Fatalf("filter: %v", out)
+	}
+}
+
+// A long error is cut between runes, so the row stays valid UTF-8.
+func TestTruncateKeepsRunes(t *testing.T) {
+	s := "a" + strings.Repeat("找", 400)
+	got := truncate(s)
+	if len(got) > 1000 || !utf8.ValidString(got) || !strings.HasPrefix(s, got) {
+		t.Fatalf("truncate: %d bytes, valid %v", len(got), utf8.ValidString(got))
 	}
 }

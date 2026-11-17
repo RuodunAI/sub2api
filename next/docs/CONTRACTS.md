@@ -94,7 +94,7 @@
 |---|---|
 | user | `user:read` `user:create` `user:update`（三者可带范围 `:team`，§103） `user:delete`🔐🔑 `user:password:reset`🔐🔑 |
 | role | `role:read` `role:define`🔐 `role:assign`🔐（2026-11-12 由 `role:manage` 拆分：定义角色 / 给用户分配角色。迁移 `0097_authz_hardening.sql` 把存量 `role:manage` 授予改写为两者（内置 operator 只得 `role:assign`，决策 D3），然后删除 `role:manage`） |
-| apikey | `apikey:self:manage`🔐🔑（查看明文每次二次验证 `apikey.reveal`，期 4 收尾 F2） |
+| apikey | `apikey:self:manage`（查看、复制明文不要二次验证，2026-11-17 用户定） |
 | group | `group:read` `group:manage`🔐 |
 | segment | `segment:read` `segment:manage`（用户组，§97.7） |
 | account | `account:read` `account:create` `account:update` `account:delete`🔐 `account:test` `account:credential:view`🔐🔑，均可带范围（`:own`、`:team`、`:group/<g>`、`:group/<g>/account/<a>`、`:account/<a>`；create 不接受 id 与 team，§21.0、§103；旧 key `account:own:<x>` 已由迁移改写为 `account:<x>:own` 并删除，不再接受）；`account:settings:custom`（§21）`account:group:bind` `account:relay`🔐 `account:owner:update`🔐（改账号所属，§103.4） |
@@ -574,7 +574,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 | `key` | 明文 Key（`sk-s2a-` + 40 位 base62），只在创建和显式授权的复制响应中出现，列表不返回 |
 | `copyable` | 是否保存了可解密密钥；旧的仅哈希 Key 为 `false`，无法恢复 |
 
-新建 Key 除认证哈希外使用服务器主密钥 AES-GCM 加密保存，AAD 为 `apikey:{id}`。POST `/me/api-keys/:id/reveal` 要求 `apikey:self:manage` 与每次二次验证 `apikey.reveal`（目录里 `apikey:self:manage` 带 `stepUp`、`sensitive` 标记，期 4 收尾）并校验所有权，管理员也只可操作自己的 Key。响应 `{key}`、`Cache-Control: no-store`，返回前写 `apikey.reveal` 审计（不含密钥）。旧 Key 返回 409，删除或非本人 Key 返回 404。
+新建 Key 除认证哈希外使用服务器主密钥 AES-GCM 加密保存，AAD 为 `apikey:{id}`。POST `/me/api-keys/:id/reveal` 要求 `apikey:self:manage` 并校验所有权，不要二次验证（2026-11-17 用户定：复制 API Key 不需要二次验证；此前期 4 收尾 F2 要求每次 `apikey.reveal` 二次验证，目录标记 `stepUp`、`sensitive` 一并去掉），管理员也只可操作自己的 Key。响应 `{key}`、`Cache-Control: no-store`，返回前写 `apikey.reveal` 审计（不含密钥）。旧 Key 返回 409，删除或非本人 Key 返回 404。
 
 POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理员绕过。原子替换认证哈希、前缀、加密密钥，写 `apikey.rotate` 审计，保留 ID、名称、分组、状态、有效期和历史记录。响应新 `APIKey`（含 `key`），旧密钥立即失效；前端要求用户确认后执行，入口在编辑窗口（2026-11-10 起，见 §92）。
 
@@ -5144,6 +5144,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 渠道 id 和平台 id 一样保留给第一方插件（`email` 只能由 `mailer` 声明），因为渠道的提供方能读到发往该渠道的每条通知。
   - `mailer` 一封邮件发给全部接收人：任一接收人被 SMTP 以 5xx 拒绝，整条通知按最终失败处理。超时上限 25 秒，低于核心投递调用的 30 秒期限。邮件正文已被服务器接受（DATA 结束）后 QUIT 失败不算失败，避免重试造成重复邮件。
   - `mailer` 的接收人只放在信封里（`RCPT TO`）。只有一个接收人时 `To` 头写该地址；多于一个时 `To` 头写 `undisclosed-recipients:;`（RFC 5322 的空组），等同密送，发给多名终端用户时互相看不到邮箱（mailer 0.1.1 起，之前 `To` 列出全部接收人）。
+  - `mailer` 投递失败时，错误先用英文和中文说明哪一步失败、该检查什么，再接底层错误：连接失败时若 SMTP 服务器的域名不存在，报“找不到 SMTP 服务器 <host>（域名不存在）”（出口隧道只回文本，插件在连接失败后再解析一次域名来区分）；其他连接失败、服务器不应答（含 TLS 握手失败）、STARTTLS、登录、发件地址各有说明；端口 465 没选“全程 TLS”或端口 587 选了“全程 TLS”时附上提示（mailer 0.1.4 起）。设置保存时不做网络检查：`Configure` 在插件启动时也会调用，拒绝会让插件起不来。
 - **发送方只认渠道 id**：持有 `notify.send` 授权的插件调用 `ListNotificationChannels` 和 `Notify{channel, recipients 1..20, subject, body 纯文本, severity info|warning|critical, dedupe_key, dedupe_seconds}`，核心自己发通知也走同一条路。
   - 业务插件不需要了解是哪个插件在投递。
   - `notify.send` 风险等级为 High（2026-10-31 由 Medium 提高）：持有者能以本站的发件身份给任意地址发任意内容，限速只能限量。
@@ -5176,6 +5177,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - 插件实例在调用到达插件进程之前就拒绝（`plugin_unavailable`：启动中、崩溃后等待重启、升级或停止时旧实例 draining）也按上一条处理：不计次数，30 秒后再试，排队超过 24 小时才最终失败，所以插件长期起不来时不会无限重试。调用已经到达插件进程之后的错误照常计次数，包括进程中途崩溃和插件自己返回的 Unavailable：那一次可能已经发出，而且一条让插件崩溃的通知也要能耗尽次数。
   - 记录保留 30 天。每小时清理一次（过期删除、把租约耗尽的最后一次投递标为失败），0.1.235 起由全集群任务 `core.notify.purge`（§77）执行，锁 `notify:purge` 不再使用。
   - 控制台的测试通知以 `core:test` 为来源，不占核心通知的限速额度。
+  - `last_error`：插件处理投递时自己返回的错误（gRPC `Unknown`）原样记录插件的消息，不带核心错误码和 gRPC 状态前缀（核心 0.1.302 起；之前是 `internal: internal error: plugin <key>: Unknown: …`）；其他错误仍是核心错误的文本。最多 1000 字节，在字符边界截断。控制台的通知记录完整显示错误（换行，不截断）。
 - **控制台**：`GET /notifications/channels`、`GET /notifications`，以及 `POST /notifications/test`（需要 `settings:manage`）。
 
 ### 74.5 dynweight 插件
@@ -5747,7 +5749,6 @@ node 任务（可工作节点各跑，`RequireWork`）：
 | scope | 接口 | 所需权限 |
 |---|---|---|
 | `credential.reveal` | POST `/accounts/:id/credentials/reveal` | `account:credential:view`（任意范围） |
-| `apikey.reveal` | POST `/me/api-keys/:id/reveal` | `apikey:self:manage` |
 | `proxy.reveal` | POST `/proxies/:id/reveal-url` | `proxy:manage`（任意范围） |
 | `superadmin.transfer` | POST `/system/super-admin/transfer`（密码 + 第二因素） | `self:security`，且是超管本人 |
 | `self.password.change` | PUT `/me/password`、PATCH `/users/:id` 改自己的密码（密码 + 第二因素） | `self:security` / `user:update` |

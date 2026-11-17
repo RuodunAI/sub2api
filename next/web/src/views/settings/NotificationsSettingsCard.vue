@@ -130,7 +130,7 @@ onMounted(loadChannels)
       <template #cell-status="{ row }">
         <SBadge :tone="STATUS_TONE[row.status]">{{ t(`settings.notifications.status.${row.status}`) }}</SBadge>
         <span v-if="row.attempts > 1" class="ml-1 text-xs text-fg-muted">{{ t('settings.notifications.attempts', { n: row.attempts }) }}</span>
-        <div v-if="row.last_error" class="max-w-[20rem] truncate text-xs text-danger-600 dark:text-danger-400" :title="row.last_error">{{ row.last_error }}</div>
+        <div v-if="row.last_error" class="max-w-[28rem] whitespace-normal break-words text-xs text-danger-600 dark:text-danger-400" data-testid="notification-error">{{ row.last_error }}</div>
       </template>
       <template #footer>
         <SPagination v-model:page="records.page.value" v-model:page-size="records.pageSize.value" :total="records.total.value" />

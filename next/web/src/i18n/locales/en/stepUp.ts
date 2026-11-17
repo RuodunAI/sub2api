@@ -18,7 +18,6 @@ export default {
   passkeyUnsupported: 'You only have passkeys, and this browser or address cannot use them (it needs an HTTPS domain). Try another browser, or turn on two-factor authentication first.',
   scope: {
     credential_reveal: 'View account credentials',
-    apikey_reveal: 'View API key',
     proxy_reveal: 'View proxy address',
     superadmin_transfer: 'Transfer super admin',
     self_password_change: 'Change password',

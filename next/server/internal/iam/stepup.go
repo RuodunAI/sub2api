@@ -56,7 +56,6 @@ const (
 // credential itself).
 var stepUpScopes = map[string]bool{
 	core.StepUpCredentialReveal:   false,
-	core.StepUpAPIKeyReveal:       false,
 	core.StepUpProxyReveal:        false,
 	core.StepUpSuperAdminTransfer: true,
 	core.StepUpSelfPassword:       true,
