@@ -484,7 +484,7 @@ describe('RolesView copy from role', () => {
     await flushPromises()
     return w
   }
-  async function copy(w: Awaited<ReturnType<typeof open>>, from: number, mode?: 'union' | 'intersect') {
+  async function copy(w: Awaited<ReturnType<typeof open>>, from: number, mode?: 'merge' | 'overwrite') {
     await w.get('[data-testid="role-copy"]').trigger('click')
     w.getComponent(SSelect).vm.$emit('update:modelValue', from)
     if (mode) w.getComponent(SRadioGroup).vm.$emit('update:modelValue', mode)
@@ -501,7 +501,7 @@ describe('RolesView copy from role', () => {
     expect((w.getComponent(SSelect).props('options') as { value: number }[]).map((o) => o.value)).toEqual([3])
   })
 
-  it('union adds the source role\'s permissions to the ticks, names what it left out, and saves only on Save', async () => {
+  it('merge adds the source role\'s permissions to the ticks, names what it left out, and saves only on Save', async () => {
     mocks.put.mockClear()
     toastState.items.splice(0)
     const w = await open({ superuser: true, permissions: [] })
@@ -529,10 +529,10 @@ describe('RolesView copy from role', () => {
     expect(mocks.put).not.toHaveBeenCalled()
   })
 
-  it('intersect keeps only what both roles grant', async () => {
+  it('overwrite makes the ticks match the source role', async () => {
     const w = await open({ superuser: true, permissions: [] })
-    await copy(w, 3, 'intersect')
-    expect(granted(w)).toEqual(['user:read'])
+    await copy(w, 3, 'overwrite')
+    expect(granted(w)).toEqual(['plugin.d:use', 'user:delete', 'user:read'])
   })
 
   it('says so when the ticks do not change', async () => {
@@ -570,10 +570,10 @@ describe('RolesView copy from role', () => {
     mocks.put.mockRejectedValueOnce(new ApiError(409, { code: 'version_conflict', message: 'changed', details: { revision: 9 } }))
     const w = await open({ superuser: true, permissions: [] })
     lookups.roles = [role({ revision: 9 }), source]
-    await copy(w, 3, 'intersect')
+    await copy(w, 3, 'overwrite')
     await w.get('[data-testid="role-save"]').trigger('click')
     await flushPromises()
     expect(mocks.put).toHaveBeenCalledTimes(2)
-    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', { permission_keys: ['user:read'], revision: 9 })
+    expect(mocks.put).toHaveBeenLastCalledWith('/roles/2/permissions', { permission_keys: ['plugin.d:use', 'user:delete', 'user:read'], revision: 9 })
   })
 })

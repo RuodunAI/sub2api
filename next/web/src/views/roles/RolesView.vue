@@ -300,20 +300,20 @@ function resetEditor() {
 
 // ------------------------------------------------------------------ copy from another role
 
-// Fills the editor's ticks from another role's saved keys (union or
-// intersect, authz/copyGrants); nothing is written until Save, which checks
-// the result like any edit. What a union leaves out (beyond the editor,
-// critical, removed) is named in a note that stays until the editor reloads.
+// Fills the editor's ticks from another role's saved keys (merge or overwrite,
+// authz/copyGrants); nothing is written until Save, which checks the result
+// like any edit. What a copy leaves out (beyond the editor, critical,
+// removed) is named in a note that stays until the editor reloads.
 const copyOpen = ref(false)
 const copyFrom = ref<number | null>(null)
-const copyMode = ref<CopyMode>('union')
+const copyMode = ref<CopyMode>('merge')
 const copySources = computed(() =>
   roles.value.filter((r) => r.id !== selectedId.value && !r.superuser && Array.isArray(r.permission_keys))
 )
 const copySourceOptions = computed<SelectOption[]>(() => copySources.value.map((r) => ({ value: r.id, label: lt(r.name) || r.key, hint: r.key })))
 const copyModeOptions = computed<SelectOption[]>(() => [
-  { value: 'union', label: t('roles.copyUnion') },
-  { value: 'intersect', label: t('roles.copyIntersect') }
+  { value: 'merge', label: t('roles.copyMerge') },
+  { value: 'overwrite', label: t('roles.copyOverwrite') }
 ])
 const copyRules: CopyRules = {
   mayGrant: (key) => editor.mayGrant(key),
@@ -324,7 +324,7 @@ const copyNote = ref<string[]>([])
 
 function openCopy() {
   copyFrom.value = null
-  copyMode.value = 'union'
+  copyMode.value = 'merge'
   copyOpen.value = true
 }
 
@@ -528,7 +528,7 @@ async function restoreDefaults() {
       <SField :label="t('roles.copySource')" required>
         <SSelect v-model="copyFrom" :options="copySourceOptions" searchable :placeholder="t('roles.copySourcePlaceholder')" :aria-label="t('roles.copySource')" data-testid="role-copy-source" />
       </SField>
-      <SField :label="t('roles.copyMode')" :hint="copyMode === 'union' ? t('roles.copyUnionHint') : t('roles.copyIntersectHint')">
+      <SField :label="t('roles.copyMode')" :hint="copyMode === 'merge' ? t('roles.copyMergeHint') : t('roles.copyOverwriteHint')">
         <SRadioGroup v-model="copyMode" :options="copyModeOptions" inline :aria-label="t('roles.copyMode')" data-testid="role-copy-mode" />
       </SField>
       <SHint>{{ t('roles.copyNotSaved') }}</SHint>
