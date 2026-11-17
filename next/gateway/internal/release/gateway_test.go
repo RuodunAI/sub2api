@@ -18,7 +18,7 @@ import (
 
 func TestTrustedKeysMergeBuiltinAndConfigured(t *testing.T) {
 	builtinKeys, err := TrustedKeys(nil)
-	if err != nil || len(builtinKeys) != 0 {
+	if official := builtinKeys["sup2api-ovh-2026"]; err != nil || len(builtinKeys) != 1 || base64.StdEncoding.EncodeToString(official) != "PFYhzfYfPMmfXfMdcjZKv9CvMS1yJn9Y2h1+B71ZxGM=" {
 		t.Fatalf("built-in keys: %v %v", builtinKeys, err)
 	}
 	a, _, _ := ed25519.GenerateKey(rand.Reader)

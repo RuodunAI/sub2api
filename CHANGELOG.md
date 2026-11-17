@@ -23,6 +23,7 @@
 - **`sub2api dev` 的内存 Redis 按时过期键**：进程内 miniredis 原来从不推进时钟，带 TTL 的键（冷却、会话、并发槽位、锁）永远不到期，账号冷却后一直不被调度。现在每 100ms 按墙钟推进一次（CONTRACTS §47）。单机 e2e 的 `TestGatewayFailoverAndCooldown` 因此能等到冷却结束；它对 401 之后状态的旧断言（`disabled`/`error`）一并改为 `auto_disabled`（§42）。e2e AC23 去掉供应商建账号时传的分组（供应商没有 `account:group:bind`），own 范围下 `created_by` 的断言改为“在范围内收窄”（§21.0）。
 - **修复**：不是全部范围的人建、改、测账号带 `proxy_id` 时，读不到它可引用的代理范围（授权读库失败）原来当作没有代理，回 400 `proxy_id` `not_found`，现在回 503（CONTRACTS §103.2）。
 - 更新检测结果的原因按代码显示中文/英文：`GET /system/update-check` 每条线新增 `reason_code`（`no_release`、`version_conflict`、`incompatible`，契约 §102），控制台不再直接显示“the update source has no stable … release”之类的英文原文。网关二进制变更，随下一个网关版本生效；网关 0.1.135 不带该字段，控制台照旧显示它的英文原因。
+- 网关内置官方发布公钥 `sup2api-ovh-2026`（`next/gateway/internal/release/trusted/sup2api-ovh-2026.pub`，线上核心清单一直用它签名、节点 `trusted_keys` 已信任它）：GitHub Actions 发布的核心与网关 Release 用同一把密钥签名，带这个文件的网关不配置 `trusted_keys` 也能验签。
 
 **迁移 0103**（`0103_user_owner.sql`，可重跑，只加列、约束和索引）：`users.owner_id`（外键、不能指向自己、部分索引）、`users.owner_path`（`bigint[] NOT NULL DEFAULT '{}'`，按 `owner_id` 递归算出已有行的路径，只改不同的行，重跑结果相同；最后一个必须等于 `owner_id` 的约束；GIN 索引）与 `accounts.owner_id`（外键、部分索引），`accounts.owner_id` 按 `created_by` 回填，重跑只补仍为空的行，不改已改过的所属。
 
