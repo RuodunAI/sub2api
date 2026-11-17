@@ -39,7 +39,10 @@ const zh = {
     failed: '授权失败',
     retry: '重新开始',
     cancel: '取消',
-    notEnabled: '如提示未开启：在 ChatGPT 设置 → 安全 中开启“设备码授权”（企业工作区需管理员开启）。'
+    copyLink: '复制链接',
+    guideTitle: '先在 ChatGPT 开启设备代码登录',
+    guidePath: '打开 ChatGPT 设置 → 账户安全与登录 → 应用安全，打开“为 Codex、Excel、PowerPoint 和 Word 启用设备代码登录”。企业工作区需管理员允许。',
+    guideOpen: '打开 ChatGPT 安全设置'
   },
   oauth: {
     generate: '生成授权链接',
@@ -153,7 +156,10 @@ const en: Messages = {
     failed: 'Authorization failed',
     retry: 'Start again',
     cancel: 'Cancel',
-    notEnabled: 'If it says device codes are not enabled: turn on "Device code authorization" in ChatGPT Settings → Security (a workspace admin has to allow it for business workspaces).'
+    copyLink: 'Copy link',
+    guideTitle: 'Turn on device code sign-in in ChatGPT first',
+    guidePath: 'Open ChatGPT Settings → Security and login → App security and turn on "Enable device code sign-in for Codex, Excel, PowerPoint, and Word". A workspace admin has to allow it for business workspaces.',
+    guideOpen: 'Open ChatGPT security settings'
   },
   oauth: {
     generate: 'Generate sign-in link',

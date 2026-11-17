@@ -18,6 +18,12 @@
 - **codex 0.1.8：登录方式改名**：新建账号表单的“认证方式”选项卡与账号类型的认证方式改为中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为。
 - **网关托管的核心自动信任内置插件签名密钥**：未设 `SUB2API_BUILTIN_TRUST_KEY` 时，核心从内置插件目录的 `builtin/trust.pub` + `trust.keyid`（镜像和 Release 包都带）读取签内置包的密钥并始终信任，镜像入口脚本里同样的推导删除。此前网关托管的核心不走镜像入口脚本，compose 不手动配这个变量就会拒绝 Release 内置包（`unknown signing key sup2api-plugins-2026`），内置插件停在旧版本：ec2pool 升到 0.1.297 时 codex 停在 0.1.6，当时是手动在 compose 里补的变量，升级到本版后可以去掉。
 
+### codex 0.1.9：设备码授权引导、验证页链接一键复制（只改界面；需要核心 0.1.297 及以上）
+
+- **设备码授权引导**：设备码登录表单顶部说明去哪里开启设备代码登录：ChatGPT 设置 → 账户安全与登录 → 应用安全 → “为 Codex、Excel、PowerPoint 和 Word 启用设备代码登录”，附“打开 ChatGPT 安全设置”链接（`https://chatgpt.com/settings/security`），授权前就能看到，不再只在授权失败时提示（旧提示的“设置 → 安全 → 设备码授权”路径也已过时）。
+- **验证页面链接旁加复制按钮**，在别的设备上打开验证页时不用手动选中链接。
+- 中文界面的账号类型名称改为“ChatGPT（Codex） · 设备码”“ChatGPT（Codex） · Codex”：0.1.8 的中文名在“·”前少一个空格，控制台没识别出插件名前缀，新建账号标题显示成“ChatGPT（Codex） · ChatGPT（Codex）· 设备码”。
+
 ## 2026-11-17
 
 ### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（`f40c7831d`，codex 0.1.7；无迁移，滚动）

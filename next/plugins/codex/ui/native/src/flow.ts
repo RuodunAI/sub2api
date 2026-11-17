@@ -114,6 +114,9 @@ export function callbackShape(raw: string): CallbackShape {
   return params.get('code')?.trim() ? 'ok' : 'no_code'
 }
 
+/** ChatGPT's security settings, where the account owner turns on device code sign-in (Security and login → App security) before a device code works. */
+export const CHATGPT_SECURITY_URL = 'https://chatgpt.com/settings/security'
+
 /** Device code polling: the delay when the plugin gives no usable interval, and the shortest one. */
 export const DEFAULT_POLL_MS = 5000
 export const MIN_POLL_SECONDS = 2

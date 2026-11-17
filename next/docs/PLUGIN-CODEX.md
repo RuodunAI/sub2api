@@ -263,3 +263,10 @@
 ### 14.4 测试
 
 - `oauth_test.go`：start 的授权地址参数与 KV 会话（verifier 对得上 challenge、绑定用户 1）、exchange 成功（换令牌表单、凭证与设备码相同）、会话用后即删、只粘查询串、state 不符 / access_denied / 其他错误 / 无 code / 空、错误后会话保留与拒绝后删除、令牌端点拒绝 / 无 access_token / 连不上；他人会话。`upstream_test.go`、`refresh_test.go`、`resetcredits_test.go`：`codex_oauth` 与 `codex_device` 的上游请求、刷新、重置次数相同；无模型列表。`manifest_test.go`：两个类型、标签、`codex_oauth` 的额度头、路由、插槽与行操作覆盖两种类型、`externalServices`。UI：`CodexAuthForm.spec.ts`（Sign in with Codex 流程、编辑与重新授权）、`flow.spec.ts`、`messages.spec.ts`。
+
+## 15. 0.1.9：设备码授权引导与复制验证页链接（2026-11-17，用户要求）
+
+- 设备码流程（`DeviceFlow.vue`）在说明下方常驻一条提示：设备码要先在 ChatGPT 设置 → 账户安全与登录（Security and login）→ 应用安全（App security）里打开“为 Codex、Excel、PowerPoint 和 Word 启用设备代码登录”（Enable device code sign-in for Codex, Excel, PowerPoint, and Word），企业工作区需管理员允许；链接 `CHATGPT_SECURITY_URL`（`flow.ts`，`https://chatgpt.com/settings/security`）只是页面上的外链，插件不请求它，不进 `externalServices`。原先只在失败时出现的 `device.notEnabled` 提示删除。
+- 验证页面链接旁加图标复制按钮（`SCopyButton`，与 Sign in with Codex 的授权链接同样式）。
+- 中文账号类型名称在“·”前补空格，与控制台去重插件名前缀的规则（`插件名 + ' · '`）一致。
+

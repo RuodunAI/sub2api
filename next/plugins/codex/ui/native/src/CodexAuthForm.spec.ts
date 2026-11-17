@@ -59,6 +59,8 @@ describe('CodexAuthForm: flows by account type', () => {
   it('shows only the device flow for codex_device, without a tab bar', () => {
     const w = mountForm({ accountType: { type: 'codex_device' } })
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(true)
+    // Where to turn device code sign-in on, shown before the flow starts.
+    expect(w.get('[data-testid="codex-device-guide-link"]').attributes('href')).toBe('https://chatgpt.com/settings/security')
     expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(false)
     expect(w.find('[role="tablist"]').exists()).toBe(false)
   })
@@ -93,6 +95,7 @@ describe('CodexAuthForm: device code', () => {
     expect(w.get('[data-testid="codex-device-code"]').text()).toBe('ABCD-1234')
     expect(w.get('[data-testid="codex-device-url"]').attributes('href')).toBe('https://auth.openai.com/codex/device')
     expect(w.get('[data-testid="codex-device-url"]').attributes('target')).toBe('_blank')
+    expect(w.find('[data-testid="codex-device-url-copy"]').exists()).toBe(true)
     expect(w.get('[data-testid="codex-device-countdown"]').text()).toBe('device.expiresIn')
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
 

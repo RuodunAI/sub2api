@@ -6,7 +6,7 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { SAlert, SButton, SCopyButton, SHint, SIcon, SLink, SSpinner, SSteps, useNow } from '@sub2api/ui'
 import { errorMessage, pollDevice, startDevice, useCodexHost, type CodexCredentials, type DeviceStart } from './host'
-import { COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay } from './flow'
+import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay } from './flow'
 
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
@@ -119,6 +119,13 @@ const steps = computed(() => [
   <div class="cx-flow" data-testid="codex-device-flow" :data-phase="phase">
     <SHint size="xs">{{ t('intro.device') }}</SHint>
 
+    <SAlert tone="info" dense :title="t('device.guideTitle')" data-testid="codex-device-guide">
+      <p>{{ t('device.guidePath') }}</p>
+      <SLink :href="CHATGPT_SECURITY_URL" external class="cx-link" data-testid="codex-device-guide-link">
+        <SIcon name="external" class="cx-icon" />{{ t('device.guideOpen') }}
+      </SLink>
+    </SAlert>
+
     <div v-if="phase === 'idle' || phase === 'starting'" class="cx-actions">
       <SButton variant="primary" icon="play" :loading="phase === 'starting'" data-testid="codex-device-start" @click="start">{{ t('device.start') }}</SButton>
     </div>
@@ -127,10 +134,13 @@ const steps = computed(() => [
       <SSteps :steps="steps" direction="vertical" current="code">
         <template #step-open>
           <div class="cx-step-body">
-            <SLink :href="session.verification_url" external class="cx-link" data-testid="codex-device-url">
-              <SIcon name="external" class="cx-icon" />
-              <span class="cx-break">{{ session.verification_url }}</span>
-            </SLink>
+            <div class="cx-link-row">
+              <SLink :href="session.verification_url" external class="cx-link" data-testid="codex-device-url">
+                <SIcon name="external" class="cx-icon" />
+                <span class="cx-break">{{ session.verification_url }}</span>
+              </SLink>
+              <SCopyButton :text="session.verification_url" :label="t('device.copyLink')" icon-only variant="secondary" size="sm" data-testid="codex-device-url-copy" />
+            </div>
           </div>
         </template>
         <template #step-code>
@@ -159,7 +169,6 @@ const steps = computed(() => [
 
     <SAlert v-else-if="phase === 'error'" tone="danger" dense :title="t('device.failed')" data-testid="codex-device-error">
       <span class="cx-break">{{ failure }}</span>
-      <p class="cx-sub">{{ t('device.notEnabled') }}</p>
       <template #actions>
         <SButton size="sm" icon="refresh" data-testid="codex-device-retry" @click="start">{{ t('device.retry') }}</SButton>
       </template>
