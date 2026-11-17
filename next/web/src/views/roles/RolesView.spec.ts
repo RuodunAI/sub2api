@@ -529,10 +529,31 @@ describe('RolesView copy from role', () => {
     expect(mocks.put).not.toHaveBeenCalled()
   })
 
-  it('overwrite makes the ticks match the source role', async () => {
+  it('overwrite makes the ticks match the source role, naming what it could not tick', async () => {
     const w = await open({ superuser: true, permissions: [] })
     await copy(w, 3, 'overwrite')
     expect(granted(w)).toEqual(['plugin.d:use', 'user:delete', 'user:read'])
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftCritical', { n: 1, list: 'plugin.g:bypass' }, 1))
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftGone', { n: 1, list: 'plugin.g:old' }, 1))
+  })
+
+  it('overwrite by an editor without full rights keeps what it cannot take and drops the rest', async () => {
+    const w = await open({ superuser: false, permissions: ['role:define', 'user:read', 'plugin.g:read'] })
+    await copy(w, 3, 'overwrite')
+    expect(granted(w)).toEqual(['user:read'])
+    expect(note(w)).toContain(i18n.global.t('roles.copyLeftNotGrantable', { n: 3, list: ['plugin.d:use', 'plugin.g:bypass', 'user:delete'].join(i18n.global.t('roles.listSep')) }, 3))
+  })
+
+  it('a save some holder\'s owner could no longer manage after stays on the page, naming the user', async () => {
+    mocks.put.mockClear()
+    toastState.items.splice(0)
+    mocks.put.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'owner cannot manage', details: { user_id: 42, fields: [{ field: 'permission_keys', code: 'owner_cannot_manage', message: 'owner cannot manage' }] } }))
+    const w = await open({ superuser: true, permissions: [] })
+    await copy(w, 3, 'overwrite')
+    await w.get('[data-testid="role-save"]').trigger('click')
+    await flushPromises()
+    expect(w.get('[data-testid="role-save-missing"]').text()).toBe(i18n.global.t('roles.ownerCannotManage', { id: '42' }))
+    expect(toastState.items.map((x) => x.kind)).not.toContain('error')
   })
 
   it('says so when the ticks do not change', async () => {

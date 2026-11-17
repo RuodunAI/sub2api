@@ -3,7 +3,7 @@
 // adds the source's; overwrite ticks exactly what the source has. Both work
 // per action on scopes, so "account:read:team" meets "account:read:own" as
 // scopes, not as unrelated strings. Pure.
-import { parsePermission, patternKey, permissionIndex, type Scope } from './implies'
+import { parsePermission, patternKey, permissionIndex, scopeImplies, type Scope } from './implies'
 import { actionOf, cellOfScopes, scopesOfCell } from './pluginGrants'
 
 export type CopyMode = 'merge' | 'overwrite'
@@ -33,8 +33,10 @@ export interface CopyResult {
  * "account:read:own"); any other is taken when the action is not gone, the
  * editor may grant it and it is not critical, and named otherwise. merge keeps
  * every scope of current as well (a narrower one gives way to a wider one);
- * overwrite keeps none of them, except a gone action's, which the editor can
- * neither see nor tick. A key of current that does not parse is kept as it
+ * overwrite keeps only the scopes of current a left-out source scope implies
+ * (as near the source as the editor gets: current "account:read:own" stays
+ * when "account:read" cannot be granted) and every scope of a gone action,
+ * which the editor can neither see nor tick. A key of current that does not parse is kept as it
  * is; one of source is ignored.
  */
 export function copyGrants(current: readonly string[], source: readonly string[], mode: CopyMode, rules: CopyRules): CopyResult {
@@ -42,12 +44,16 @@ export function copyGrants(current: readonly string[], source: readonly string[]
   const out: CopyResult = { keys: current.filter((k) => !parsePermission(k)), notGrantable: [], critical: [], gone: [] }
   for (const action of new Set([...current, ...source].map(actionOf))) {
     const gone = rules.gone(action)
-    const taken: Scope[] = mode === 'merge' || gone ? scopesOfCell(current, action) : []
+    const cur = scopesOfCell(current, action)
+    const taken: Scope[] = mode === 'merge' || gone ? [...cur] : []
     for (const scope of scopesOfCell(source, action)) {
       const key = patternKey({ action, scope })
       const left = have.has(key) ? null : gone ? out.gone : !rules.mayGrant(key) ? out.notGrantable : rules.critical(action) ? out.critical : null
-      if (left) left.push(key)
-      else if (!gone) taken.push(scope)
+      if (!left) taken.push(scope)
+      else {
+        left.push(key)
+        taken.push(...cur.filter((c) => scopeImplies(scope, c)))
+      }
     }
     out.keys.push(...cellOfScopes(action, taken))
   }

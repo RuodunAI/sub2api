@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
+import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SChip, SDropdown, SEmpty, SField, SGrid, SHint, SIcon, SInput, SLink, SFormModal, SPageHeader, SRadioGroup, SSelect, SSpinner, STextarea, confirm, toast, type SelectOption } from '@sub2api/ui'
 import type { PermissionModule, User } from '@/api/types'
 import { roleMemberCount, type RoleRow } from '@/api/admin'
@@ -175,7 +175,7 @@ async function persist(resent: boolean): Promise<void> {
       saving.value = false
       return rebase(r, resent).catch(notifyError)
     }
-    missing = missingText(e, t)
+    missing = missingText(e, t) || ownerLostText(e)
     showSaveError(e)
   }
   // Something was written (all of it, or the parts before a refusal): show what the role now is.
@@ -291,7 +291,13 @@ const EDITOR_FIELDS = ['key', 'name']
 function showSaveError(e: unknown) {
   const fields = Object.entries(fieldErrors(e, undefined, ROLE_FIELD_CODES)).filter(([k]) => EDITOR_FIELDS.includes(k))
   editErrors.value = Object.fromEntries(fields)
-  if (!fields.length) notifyError(e)
+  if (!fields.length && !ownerLostText(e)) notifyError(e)
+}
+
+/** A change some holder's owner could no longer manage (owner_cannot_manage, CONTRACTS §103.3), shown on the page like a missing grant; '' for any other error. */
+function ownerLostText(e: unknown): string {
+  if (!isApiError(e) || !Object.values(e.fieldCodes).includes('owner_cannot_manage')) return ''
+  return t('roles.ownerCannotManage', { id: String(e.details.user_id ?? '') })
 }
 
 function resetEditor() {

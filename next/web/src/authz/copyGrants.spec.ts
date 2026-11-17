@@ -59,8 +59,9 @@ describe('copyGrants overwrite', () => {
   })
 
   it('takes a scope the role implies without a grant, so it may narrow', () => {
+    // proxy:read:own stays: the source's team scope cannot be granted but covers it.
     expect(copyGrants(['account:read', 'proxy:read:own'], ['account:read:own', 'proxy:read:team'], 'overwrite', rules({ mayGrant: () => false }))).toEqual({
-      keys: ['account:read:own'],
+      keys: ['account:read:own', 'proxy:read:own'],
       notGrantable: ['proxy:read:team'],
       critical: [],
       gone: []
@@ -73,6 +74,17 @@ describe('copyGrants overwrite', () => {
       critical: (a) => a === 'plugin.g:bypass' || a === 'plugin.g:root'
     }))
     expect(res).toEqual({ keys: ['plugin.g:bypass', 'plugin.g:old:own'], notGrantable: [], critical: ['plugin.g:root'], gone: ['plugin.g:old'] })
+  })
+
+  it('keeps what the role has of a source scope it cannot take, as near the source as it gets', () => {
+    expect(copyGrants(['account:read:own'], ['account:read'], 'overwrite', rules({ mayGrant: () => false }))).toEqual({
+      keys: ['account:read:own'],
+      notGrantable: ['account:read'],
+      critical: [],
+      gone: []
+    })
+    expect(copyGrants(['plugin.g:bypass:own', 'plugin.g:read'], ['plugin.g:bypass'], 'overwrite', rules({ critical: (a) => a === 'plugin.g:bypass' })).keys).toEqual(['plugin.g:bypass:own'])
+    expect(copyGrants(['account:read:group/12', 'account:read:account/7'], ['account:read:group/*'], 'overwrite', rules({ mayGrant: () => false })).keys).toEqual(['account:read:group/12'])
   })
 
   it('with a role granting nothing clears the role', () => {
