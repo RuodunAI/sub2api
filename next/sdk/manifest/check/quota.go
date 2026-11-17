@@ -63,6 +63,7 @@ func (v *validator) quota(f string, q *manifest.AccountQuota) {
 		case h.Key != "" && h.WindowMinutes != "":
 			v.add(hf+".windowMinutes", "unexpected", "windowMinutes names the window; leave key out")
 		case h.WindowMinutes != "":
+			// Named by the length header on each response: no key to check.
 		case h.Key == "":
 			v.add(hf+".key", "required", "key or windowMinutes is required")
 		case !quotaKeyRe.MatchString(h.Key):

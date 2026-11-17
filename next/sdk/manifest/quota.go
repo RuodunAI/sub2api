@@ -89,17 +89,26 @@ func QuotaWindowKey(minutes string) string {
 }
 
 // keepMoreUsed adds r to out, or replaces the window of the same key when r
-// is the more used one.
+// is the more used one (moreUsed).
 func keepMoreUsed(out []QuotaReading, r QuotaReading) []QuotaReading {
 	for i := range out {
 		if out[i].Key == r.Key {
-			if r.Utilization > out[i].Utilization {
+			if moreUsed(r, out[i]) {
 				out[i] = r
 			}
 			return out
 		}
 	}
 	return append(out, r)
+}
+
+// moreUsed reports whether a is more used than b: a higher utilization or,
+// at equal utilization, a later reset (a known one beats an unknown one).
+func moreUsed(a, b QuotaReading) bool {
+	if a.Utilization != b.Utilization {
+		return a.Utilization > b.Utilization
+	}
+	return a.ResetsAt != nil && (b.ResetsAt == nil || a.ResetsAt.After(*b.ResetsAt))
 }
 
 func parseUtilization(raw, unit string) (float64, bool) {
