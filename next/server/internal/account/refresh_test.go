@@ -1,9 +1,11 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // tokenUpstream is an OAuth token endpoint that rotates refresh tokens:
@@ -384,5 +387,56 @@ func TestRefreshAfterSave(t *testing.T) {
 	})
 	if e.creds(refused)["access_token"] != "at-old" {
 		t.Fatal("a refused refresh changed the credentials")
+	}
+}
+
+// lockedBuffer is a log sink written by a background goroutine.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// The renewal a save starts runs outside every request's recovery: a panic
+// in it is recovered and logged, and does not take the process (here, the
+// test binary) down.
+func TestRefreshAfterSaveRecoversPanic(t *testing.T) {
+	var logs lockedBuffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := &Service{} // no database: the renewal panics at its first read
+	bt := core.AccountTypeBinding{Type: manifest.AccountType{Refresh: &manifest.AccountRefresh{}}, Client: &fakePlatform{}}
+	s.refreshSaved(context.Background(), 1, bt, []byte(`{"refresh_token":"rt-1","expires_at":1}`))
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(logs.String(), "panicked") {
+		if time.Now().After(deadline) {
+			t.Fatalf("no recovered panic was logged: %q", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "refreshAccount") {
+		t.Fatalf("the log does not show where it panicked: %q", logs.String())
+	}
+
+	// Credentials that are not due start nothing.
+	logs.b.Reset()
+	s.refreshSaved(context.Background(), 1, bt, []byte(`{"refresh_token":"rt-1"}`))
+	time.Sleep(50 * time.Millisecond)
+	if logs.String() != "" {
+		t.Fatalf("a save that is not due started a renewal: %q", logs.String())
 	}
 }
