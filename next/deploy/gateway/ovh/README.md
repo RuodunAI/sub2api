@@ -944,7 +944,7 @@
 ## 更新原则
 
 1. 本地审查、提交、推送。
-2. 核心与网关的发布包只由 GitHub Actions 按 tag `core-v*`、`gateway-v*` 构建和签名（[github/README.md](../github/README.md)），不在本机或服务器上构建、签名发布包。节点 `trusted_keys` 要有流水线的发布公钥。
+2. 核心与网关的发布包只由 GitHub Actions 按 tag `core-v*`、`gateway-v*` 构建和打包（[github/README.md](../github/README.md)），不在本机或服务器上构建发布包。清单不签名，节点信任配置的更新源并按摘要校验。
 3. 上线用控制台“版本与更新”的一键更新（[网关手册“更新源与一键更新”](../README.md#更新源与一键更新)）；服务器连不上 GitHub 时用 `sub2api-release mirror` 转存成 `url` 来源。发布前照常核对 schema、备份和预检结果；各节点各自核对版本、hash、ready，真实服务验收另记。
 4. 服务端既有`~/sup2api-managed/upgrade_observe.py`节点映射为`sup2api-*`。仓库同名旧脚本映射不同，**不能直接覆盖服务端脚本或不核映射就运行**；不要传故障注入的第二参数。
 

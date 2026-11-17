@@ -8,11 +8,11 @@ export default {
   incompatible: 'This release is not compatible with the cluster',
   reasons: {
     no_release: 'The update source has no stable release of this line yet (a Release tagged core-v* / gateway-v*)',
-    version_conflict: 'The latest release has the installed version number but a different signed identity; check the release source',
+    version_conflict: 'The latest release has the installed version number but a different manifest digest; check the release source',
     incompatible: 'This release is not compatible with the cluster: {details}'
   },
   apply: 'Update now',
-  applyHint: 'Update now imports the verified release, runs the preflight and creates an upgrade plan; follow it on the upgrades page. Nothing updates automatically.',
+  applyHint: 'Update now imports the release and checks its digests, runs the preflight and creates an upgrade plan; follow it on the upgrades page. Nothing updates automatically.',
   applyConfirmTitle: 'Confirm update',
   applyConfirm: 'Before updating the {line} to {version}, please confirm:\n{reasons}',
   applyAnyway: 'Update anyway',
@@ -31,7 +31,7 @@ export default {
     url: 'Turn on when the release URL requires Bearer authentication.'
   },
   secret: { github: 'Access token', url: 'Access key' },
-  secretDetails: 'Write-only: it is never shown after saving, and leaving the field empty keeps it; turning the switch above off clears it. It goes only to the GitHub API or the release URL itself, never along a redirect. Releases must still be signed by a key the gateway trusts; changing the source changes no trusted key and upgrades nothing by itself.',
+  secretDetails: 'Write-only: it is never shown after saving, and leaving the field empty keeps it; turning the switch above off clears it. It goes only to the GitHub API or the release URL itself, never along a redirect. The gateway installs whatever release the source publishes and only checks downloads against the manifest digests, so enter only a repository or URL you trust; changing the source upgrades nothing by itself.',
   secretWillClear: 'The saved secret is cleared on save',
   secretKeep: 'Set; leave empty to keep it', secretNone: 'Required', secretRequired: 'Enter the secret, or turn the switch above off',
   secretDropped: 'Changing the source clears the saved token. Enter it again if it is still needed.',

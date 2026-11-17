@@ -74,19 +74,19 @@ func (m *Manager) GatewayPlatform(v rc.GatewayManifest) (rc.GatewayPlatform, err
 	return rc.GatewayPlatform{}, fmt.Errorf("the gateway release has no archive for %s/%s", m.OS, m.Arch)
 }
 
-// ArchiveOpener opens a gateway archive by its asset name and signed size.
+// ArchiveOpener opens a gateway archive by its asset name and declared size.
 type ArchiveOpener func(ctx context.Context, archive string, size int64) (io.ReadCloser, error)
 
-// InstallGateway verifies the signed gateway release s, downloads this
+// InstallGateway verifies the gateway release manifest raw, downloads this
 // platform's archive through open, checks its size and digest, extracts its
 // single regular file sub2api-gateway, checks the binary's digest and that it
-// reports the signed version, and installs it as <root>/gateway/<version>
-// with one rename. An intact installation is kept. It returns the payload
+// reports the declared version, and installs it as <root>/gateway/<version>
+// with one rename. An intact installation is kept. It returns the manifest
 // digest and the manifest.
-func (m *Manager) InstallGateway(ctx context.Context, s rc.SignedManifest, open ArchiveOpener) (string, rc.GatewayManifest, error) {
+func (m *Manager) InstallGateway(ctx context.Context, raw []byte, open ArchiveOpener) (string, rc.GatewayManifest, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	v, digest, err := VerifyGateway(s, m.TrustedKeys)
+	v, digest, err := VerifyGateway(raw)
 	if err != nil {
 		return "", v, err
 	}
@@ -144,7 +144,7 @@ var errOneBinary = errors.New("gateway archive must hold only the executable reg
 // CopyGatewayBinary copies the binary of a gateway archive (tar.gz) to dst.
 // The archive must hold one entry, the executable regular file
 // sub2api-gateway of at most MaxGatewayBinaryBytes. pack-gateway applies the
-// same check, so a release it signs installs.
+// same check, so a release it packs installs.
 func CopyGatewayBinary(archive io.Reader, dst io.Writer) error {
 	gz, err := gzip.NewReader(archive)
 	if err != nil {
@@ -217,7 +217,7 @@ func verifyBinary(path, digest string) error {
 		return err
 	}
 	if hex.EncodeToString(h.Sum(nil)) != digest {
-		return errors.New("installed gateway binary differs from its signed digest")
+		return errors.New("installed gateway binary differs from its declared digest")
 	}
 	return nil
 }
@@ -235,7 +235,7 @@ func probeVersion(ctx context.Context, bin, version string) error {
 		return fmt.Errorf("the gateway binary does not run on this node: %w", err)
 	}
 	if got := strings.TrimSpace(string(out)); got != version {
-		return fmt.Errorf("the gateway binary reports version %.64q, signed %s", got, version)
+		return fmt.Errorf("the gateway binary reports version %.64q, the release %s", got, version)
 	}
 	return nil
 }
@@ -261,7 +261,7 @@ func validPointer(p GatewayPointer) bool {
 }
 
 // SwitchGateway points current at the installed version, whose binary must
-// still have its signed digest, and records what runs now (running, from
+// still have its declared digest, and records what runs now (running, from
 // the pointer when it names it, else the bundled binary) as previous.
 func (m *Manager) SwitchGateway(version, digest, running string) error {
 	m.mu.Lock()

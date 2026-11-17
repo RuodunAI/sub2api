@@ -18,7 +18,7 @@
 | 路径 | 是什么 |
 |---|---|
 | `next/server` | 核心服务（模块化单体）：控制台 API、网关流水线、计费、插件运行时，二进制 `sub2api` |
-| `next/gateway` | 节点外壳 `sub2api-gateway`：公网入口、管理本机核心进程（supervisor）、托管升级；另有发布签名工具 `sub2api-release` |
+| `next/gateway` | 节点外壳 `sub2api-gateway`：公网入口、管理本机核心进程（supervisor）、托管升级；另有发布打包工具 `sub2api-release` |
 | `next/runtime-contract` | 外壳与核心的协议，以及核心、网关、SDK 共用的数据库层 `gormpg`（打开连接、组合器、SQL 检查器 `gormpg/sqlcheck`） |
 | `next/sdk` | 插件契约：`proto`/`gen`（gRPC）、`manifest`、`pluginsdk`（插件开发包）、`pgdb`（插件的 GORM 句柄）、`hierarchy`（表里的树：物化路径，核心的用户上级也用它）、`testpg`（测试用 PostgreSQL） |
 | `next/plugins/*` | 官方插件，每个是独立 Go 模块；`plugins/released.json` 记录线上版本 |
@@ -85,7 +85,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 网关与托管升级（CONTRACTS §33、§34、§39、§82、§102）
 
 - 每个节点由 `sub2api-gateway` 监听公网入口，核心只监听回环地址；外壳的 supervisor 启停本机核心。节点之间用 HTTPS 和 Redis 里每节点一份的密钥鉴权。
-- 核心以签名发布包分发，升级计划持久化在 PG 的 `updater` schema。改库的版本走 `primary-first-v1`：从节点先转发到主节点并停止，主节点最后停机、迁移、启动，再逐个恢复从节点。不改库的版本可走 `rolling-v1`。
+- 核心以发布包分发（清单不签名，按摘要校验，CONTRACTS §102.10），升级计划持久化在 PG 的 `updater` schema。改库的版本走 `primary-first-v1`：从节点先转发到主节点并停止，主节点最后停机、迁移、启动，再逐个恢复从节点。不改库的版本可走 `rolling-v1`。
 - 网关二进制的变更要单独更新网关，单发核心安装包不会生效。每个节点都运行能自更新的网关（0.1.135 起）后，控制台可以一键更新网关（`gateway-rolling-v1`，CONTRACTS §102）；第一次换上这样的网关仍要手动换镜像。注意 `next/gateway`（外壳）与 `server/internal/gateway`（核心的业务网关流水线）是两回事。
 
 ### 前端（`next/web`）

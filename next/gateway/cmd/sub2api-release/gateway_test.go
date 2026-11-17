@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -15,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/control"
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/release"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
@@ -49,20 +49,16 @@ func writeArchive(t *testing.T, path string, entries ...[2]string) string {
 	return path
 }
 
-// verifyGateway checks what pack-gateway signs (CONTRACTS §102.2): the
-// signature over the exact payload and the manifest kind, with a strict
-// decode, so that pack-gateway writes no field this gateway does not know.
-func verifyGateway(t *testing.T, raw []byte, keys map[string]ed25519.PublicKey) rc.GatewayManifest {
+// verifyGateway checks what pack-gateway writes (CONTRACTS §102.2): a
+// manifest the gateway verifies, of the gateway kind, with a strict decode,
+// so that pack-gateway writes no field this gateway does not know.
+func verifyGateway(t *testing.T, raw []byte) rc.GatewayManifest {
 	t.Helper()
-	var signed rc.SignedManifest
-	if err := json.Unmarshal(raw, &signed); err != nil {
+	if _, _, err := release.VerifyGateway(raw); err != nil {
 		t.Fatal(err)
 	}
-	if !ed25519.Verify(keys[signed.KeyID], signed.Payload, signed.Signature) {
-		t.Fatal("gateway manifest signature does not verify")
-	}
 	var m rc.GatewayManifest
-	dec := json.NewDecoder(bytes.NewReader(signed.Payload))
+	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&m); err != nil {
 		t.Fatal(err)
@@ -73,14 +69,10 @@ func verifyGateway(t *testing.T, raw []byte, keys map[string]ed25519.PublicKey) 
 	return m
 }
 
-func TestPackGatewaySignsArchivesAndImages(t *testing.T) {
+func TestPackGatewayDeclaresArchivesAndImages(t *testing.T) {
 	root := t.TempDir()
-	keys := filepath.Join(root, "keys")
-	if err := run([]string{"keygen", "--out", keys}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
 	bins := map[string]string{"amd64": "gateway amd64", "arm64": "gateway arm64"}
-	args := []string{"pack-gateway", "--out", filepath.Join(root, "out"), "--key", filepath.Join(keys, "release.key"), "--key-id", "test",
+	args := []string{"pack-gateway", "--out", filepath.Join(root, "out"),
 		"--version", "0.1.136", "--source-commit", "abc", "--build-id", "gh-1-1",
 		"--image", "ghcr.io/owner/sup2api-gateway:0.1.136@sha256:" + strings.Repeat("a", 64)}
 	for arch, bin := range bins {
@@ -95,7 +87,7 @@ func TestPackGatewaySignsArchivesAndImages(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := verifyGateway(t, raw, map[string]ed25519.PublicKey{"test": readPub(t, filepath.Join(keys, "release.pub"))})
+	m := verifyGateway(t, raw)
 	if m.GatewayVersion != "0.1.136" || m.ReleaseID != "gateway-v0.1.136" || m.BuildID != "gh-1-1" || m.SourceCommit != "abc" || m.CreatedAt.IsZero() ||
 		m.PeerProtocol != control.PeerProtocol || m.RuntimeProtocol != rc.Protocol || len(m.Platforms) != 2 {
 		t.Fatalf("manifest %+v", m)
@@ -110,8 +102,8 @@ func TestPackGatewaySignsArchivesAndImages(t *testing.T) {
 			t.Fatalf("platform %+v: %v", p, err)
 		}
 	}
-	if !strings.HasPrefix(out.String(), "manifest_digest=") {
-		t.Fatalf("output %q", out.String())
+	if sum := sha256.Sum256(raw); out.String() != "manifest_digest="+hex.EncodeToString(sum[:])+"\n" {
+		t.Fatalf("output %q is not the manifest file's digest", out.String())
 	}
 	if err := run(args, io.Discard); err == nil {
 		t.Fatal("overwrote an existing manifest")
@@ -120,10 +112,6 @@ func TestPackGatewaySignsArchivesAndImages(t *testing.T) {
 
 func TestPackGatewayRejectsBadInputs(t *testing.T) {
 	root := t.TempDir()
-	keys := filepath.Join(root, "keys")
-	if err := run([]string{"keygen", "--out", keys}, io.Discard); err != nil {
-		t.Fatal(err)
-	}
 	name := filepath.Join(root, "sub2api-gateway_0.1.136_linux_amd64.tar.gz")
 	cases := map[string]struct {
 		archive []string
@@ -144,7 +132,7 @@ func TestPackGatewayRejectsBadInputs(t *testing.T) {
 			entries = append(entries, [2]string{c.archive[i], c.archive[i+1]})
 		}
 		writeArchive(t, name, entries...)
-		args := []string{"pack-gateway", "--out", filepath.Join(root, "out-"+strings.ReplaceAll(label, " ", "-")), "--key", filepath.Join(keys, "release.key"), "--key-id", "test",
+		args := []string{"pack-gateway", "--out", filepath.Join(root, "out-"+strings.ReplaceAll(label, " ", "-")),
 			"--version", "0.1.136", "--source-commit", "abc", "--archive", "linux/amd64=" + name}
 		if err := run(append(args, c.extra...), io.Discard); err == nil {
 			t.Errorf("%s: accepted", label)

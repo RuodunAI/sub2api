@@ -112,8 +112,9 @@ type Platform struct {
 	Files        []File `json:"files"`
 }
 
-// Manifest is serialized with encoding/json. Signatures cover the exact Payload
-// bytes, not a reserialization, allowing independently implemented publishers.
+// Manifest is a core release manifest, published as a plain JSON document.
+// The release digest is the SHA-256 of the exact published bytes, not of a
+// reserialization, allowing independently implemented publishers.
 type Manifest struct {
 	CoreVersion         string     `json:"core_version"`
 	ManifestVersion     int        `json:"manifest_version"`
@@ -131,9 +132,4 @@ type Manifest struct {
 	Strategy            string     `json:"strategy"`
 	HostAPIVersion      int        `json:"host_api_version"`
 	PluginCapabilities  []string   `json:"plugin_capabilities,omitempty"`
-}
-type SignedManifest struct {
-	KeyID     string `json:"key_id"`
-	Payload   []byte `json:"payload"`
-	Signature []byte `json:"signature"`
 }

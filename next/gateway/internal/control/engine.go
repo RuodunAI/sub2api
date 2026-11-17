@@ -813,13 +813,13 @@ func (e *Engine) Admit(ctx context.Context, digest string) error {
 		return err
 	}
 	if st.SchemaContract == "" || st.SchemaContract != rel.Manifest.SchemaAfter {
-		return errors.New("candidate embedded schema contract differs from the signed release")
+		return errors.New("candidate embedded schema contract differs from the release manifest")
 	}
 	if st.Protocol != rc.Protocol || st.ClusterProtocol != rel.Manifest.ClusterProtocol || st.TaskProtocol != rel.Manifest.TaskProtocol || st.HostAPIVersion != rel.Manifest.HostAPIVersion {
-		return errors.New("candidate runtime protocols differ from signed release")
+		return errors.New("candidate runtime protocols differ from the release manifest")
 	}
 	if st.CoreVersion == "" || st.CoreVersion != rel.Manifest.CoreVersion {
-		return errors.New("candidate core version differs from the signed release")
+		return errors.New("candidate core version differs from the release manifest")
 	}
 	var rev int64
 	err = e.Store.withTx(ctx, func(tx *gorm.DB) error {

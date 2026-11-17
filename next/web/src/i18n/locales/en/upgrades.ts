@@ -12,7 +12,7 @@ export default {
   nodes: 'Cluster status', node: 'Node', version: 'Core version', mode: 'Traffic mode', ready: 'Readiness', lastSeen: 'Last report', reason: 'Reason', primary: 'Primary node',
   serving: 'Ready', waiting: 'Not ready', stale: 'Connection interrupted. Showing the last known state; refreshing will resume when connected.', unavailable: 'Cannot reach the update service. Check that this node runs under the gateway with an update control socket configured.',
   newPlan: 'Create update', independentPlugins: 'After the core plan finishes, enabled bundled plugins upgrade automatically. Nodes switch independently; disabled plugins and newer manually installed versions are preserved.', target: 'Target version', choose: 'Choose a verified release',
-  noReleases: 'No releases available. Import a signed release from a trusted source first.', activePlan: 'The cluster has an unfinished update. Resolve it before creating another.', preflight: 'Check compatibility', start: 'Start update', order: 'Node order', preflightOK: 'Current checks passed. Cluster state will be checked again when starting.',
+  noReleases: 'No releases available. Import a release from the update source first.', activePlan: 'The cluster has an unfinished update. Resolve it before creating another.', preflight: 'Check compatibility', start: 'Start update', order: 'Node order', preflightOK: 'Current checks passed. Cluster state will be checked again when starting.',
   history: 'Update history', noPlans: 'No updates yet.', status: 'Status', step: 'Step', pause: 'Pause', resume: 'Resume', rollback: 'Restore previous release', cancel: 'Cancel unstarted update',
   states: { running: 'Running', paused: 'Paused', failed: 'Failed', completed: 'Completed', cancelled: 'Cancelled', superseded: 'Replaced by recovery', pending: 'Pending', done: 'Completed' },
   actions: { prepare: 'Download and verify', redirect: 'Forward to primary', stop: 'Drain and stop core', maintenance: 'Enter cluster maintenance', 'start-primary': 'Update primary and migrate database', start: 'Start target follower core', admit: 'Check plugins and admission', local: 'Resume local service' },
@@ -29,7 +29,7 @@ export default {
     node_not_ready: 'Node {node} is not serving locally',
     node_off_baseline: 'Node {node} does not run the approved baseline',
     node_unsupported: 'Node {node} cannot run this upgrade: {message}',
-    maintenance_release: 'The release is signed for a maintenance update, so it cannot roll',
+    maintenance_release: 'The release is declared as a maintenance update, so it cannot roll',
     schema_change: 'The release changes the database schema, so it cannot roll',
     too_few_serving: 'Fewer than {min} nodes serve, so none can take over another node\'s traffic and the update cannot roll',
     single_node: 'Only one node: nobody takes its traffic while its gateway restarts, an interruption of about {seconds} s'

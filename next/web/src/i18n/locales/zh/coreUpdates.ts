@@ -8,11 +8,11 @@ export default {
   incompatible: '此版本与当前集群不兼容',
   reasons: {
     no_release: '更新源还没有这条线的稳定版本（core-v* / gateway-v* 标签的 Release）',
-    version_conflict: '最新版本与已安装的版本号相同，但签名身份不同，请核对发布来源',
+    version_conflict: '最新版本与已安装的版本号相同，但清单摘要不同，请核对发布来源',
     incompatible: '此版本与当前集群不兼容：{details}'
   },
   apply: '一键更新',
-  applyHint: '一键更新会导入经过验签的版本、完成预检并创建升级计划，进度在升级页查看。不会自动更新。',
+  applyHint: '一键更新会导入版本并校验摘要、完成预检并创建升级计划，进度在升级页查看。不会自动更新。',
   applyConfirmTitle: '确认更新',
   applyConfirm: '将{line}更新到 {version} 前请确认：\n{reasons}',
   applyAnyway: '仍然更新',
@@ -31,7 +31,7 @@ export default {
     url: '发布地址需要 Bearer 鉴权时打开。'
   },
   secret: { github: '访问令牌', url: '访问密钥' },
-  secretDetails: '令牌只写不读：保存后不会再显示，留空表示不变，关闭上方开关会清除它。只对 GitHub API 或发布地址本身发送，不随跳转转发。发布资产仍须带有网关信任的签名，更换更新源不会改变信任的密钥，也不会自动升级。',
+  secretDetails: '令牌只写不读：保存后不会再显示，留空表示不变，关闭上方开关会清除它。只对 GitHub API 或发布地址本身发送，不随跳转转发。网关安装更新源发布的任何版本，只校验下载内容与清单摘要一致，所以只填写你信任的仓库或地址；更换更新源本身不会升级任何节点。',
   secretWillClear: '保存后将清除已保存的密钥',
   secretKeep: '已设置，留空保持不变', secretNone: '必填', secretRequired: '请填写密钥，或关闭上方开关',
   secretDropped: '更改更新源后，已保存的令牌会被清除。如仍需要，请重新填写。',

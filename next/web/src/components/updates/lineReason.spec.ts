@@ -15,7 +15,7 @@ function reasonOf(check: Partial<LineCheck>, locale = 'zh') {
 describe('useLineReason', () => {
   it('words coded reasons in the console language', () => {
     expect(reasonOf({ reason_code: 'no_release', reason: 'the update source has no stable core release' })).toContain('更新源还没有这条线的稳定版本')
-    expect(reasonOf({ reason_code: 'version_conflict', reason: 'same version' })).toContain('签名身份不同')
+    expect(reasonOf({ reason_code: 'version_conflict', reason: 'same version' })).toContain('清单摘要不同')
     expect(reasonOf({ reason_code: 'no_release' }, 'en')).toContain('no stable release of this line')
   })
 

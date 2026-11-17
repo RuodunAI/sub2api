@@ -94,7 +94,6 @@ type realCluster struct {
 	ca             *x509.CertPool
 	clientTLS      *tls.Config
 	artifactClient *http.Client
-	pub            ed25519.PublicKey
 	s1, s2         string
 	old, target    Release
 	broken         Release
@@ -112,7 +111,7 @@ type realCluster struct {
 	boots map[string]int
 }
 
-// newRealCluster prepares PG, Redis, signed releases R1/R2 and a broken
+// newRealCluster prepares PG, Redis, releases R1/R2 and a broken
 // candidate. It skips unless the real-core environment is configured.
 func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *realCluster {
 	t.Helper()
@@ -203,11 +202,6 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 	transport := &http.Transport{TLSClientConfig: c.clientTLS}
 	t.Cleanup(transport.CloseIdleConnections)
 	c.artifactClient = &http.Client{Transport: transport, Timeout: time.Minute}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.pub = pub
 	var blobsMu sync.Mutex
 	blobs := map[string][]byte{}
 	source := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -297,15 +291,14 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 			before = c.s2
 		}
 		m := rc.Manifest{CoreVersion: version, ManifestVersion: 1, ReleaseID: id, BuildID: release.Digest(core), SourceCommit: id, CreatedAt: time.Now(), Platforms: []rc.Platform{{OS: "linux", Arch: runtime.GOARCH, RuntimeABI: "test", BundleDigest: digest, BundleBytes: int64(len(bundle)), Files: files}}, ShellProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, CoreControlProtocol: rc.Range{Min: rc.Protocol, Max: rc.Protocol}, ClusterProtocol: rc.Range{Min: 1, Max: 1}, TaskProtocol: rc.Range{Min: 1, Max: 1}, SchemaBefore: before, SchemaAfter: after, Strategy: "maintenance", HostAPIVersion: rc.HostAPIVersion}
-		payload, e := json.Marshal(m)
+		raw, e := json.Marshal(m)
 		if e != nil {
 			t.Fatal(e)
 		}
-		signed := rc.SignedManifest{KeyID: "test", Payload: payload, Signature: ed25519.Sign(priv, payload)}
 		blobsMu.Lock()
 		blobs["/blobs/"+digest+".tar.gz"] = bundle
 		blobsMu.Unlock()
-		return Release{Digest: release.Digest(payload), Manifest: m, Signed: signed, BundleBase: source.URL + "/blobs"}
+		return Release{Digest: release.Digest(raw), Manifest: m, Raw: raw, BundleBase: source.URL + "/blobs"}
 	}
 	c.old, c.target = makeRelease("r1", version1, b1), makeRelease("r2", version2, b2)
 	c.broken = makeRelease("broken-candidate", version2, []byte("#!/bin/sh\nexit 23\n"))
@@ -371,7 +364,7 @@ func (c *realCluster) startShell(id string) *realNode {
 	}
 	store := c.store
 	coreAddr := freeAddress(t)
-	rm := &release.Manager{Root: root, TrustedKeys: map[string]ed25519.PublicKey{"test": c.pub}, OS: "linux", Arch: runtime.GOARCH, RuntimeABI: "test", Client: c.artifactClient}
+	rm := &release.Manager{Root: root, OS: "linux", Arch: runtime.GOARCH, RuntimeABI: "test", Client: c.artifactClient}
 	env := []string{
 		"DATABASE_URL=" + c.coreDSN, "REDIS_URL=" + c.redisURL, "SUB2API_MASTER_KEY=" + base64.StdEncoding.EncodeToString(make([]byte, 32)), "SUB2API_PLUGIN_DIR=" + filepath.Join(root, "plugins"), "SUB2API_LOG_LEVEL=error",
 	}
