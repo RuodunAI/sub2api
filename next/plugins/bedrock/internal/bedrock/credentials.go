@@ -69,8 +69,16 @@ const unsupportedPartitionMessage = "the AWS China regions (cn-*) are not suppor
 	" / 不支持 AWS 中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）：其接入地址不在 amazonaws.com 下"
 
 // NoProfilePrefix is the inference_profile_prefix of an account that sends
-// model ids as they are; an absent value means the same.
+// model ids as they are.
 const NoProfilePrefix = "none"
+
+// DefaultProfilePrefix is the inference_profile_prefix of an account that
+// names none: the global cross-region inference profile. On bedrock-runtime
+// the current Claude models are invoked through an inference profile (their
+// AWS model cards list no in-Region endpoint, or one in a handful of
+// regions), and global is the one profile every model of the default mapping
+// but Opus 4.1 has, from every commercial region.
+const DefaultProfilePrefix = "global"
 
 // ProfilePrefixes are the values of inference_profile_prefix: NoProfilePrefix
 // or the cross-region inference prefix put before model ids.
@@ -124,9 +132,9 @@ func (a auth) checkCredentials(creds object) *pluginv1.FieldError {
 }
 
 // checkSettings checks the settings every type shares and fills in the
-// defaults: DefaultRegion and NoProfilePrefix.
+// defaults: DefaultRegion and DefaultProfilePrefix.
 func checkSettings(settings object) *pluginv1.FieldError {
-	for field, def := range map[string]string{fieldRegion: DefaultRegion, fieldProfilePrefix: NoProfilePrefix} {
+	for field, def := range map[string]string{fieldRegion: DefaultRegion, fieldProfilePrefix: DefaultProfilePrefix} {
 		if settings.Str(field) == "" {
 			settings[field] = def
 		}

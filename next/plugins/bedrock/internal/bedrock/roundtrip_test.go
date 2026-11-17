@@ -383,7 +383,7 @@ func TestTestRequestRoundTrip(t *testing.T) {
 			if a.Status != http.StatusOK || gjson.GetBytes(a.Body, "usage.input_tokens").Int() != 9 {
 				t.Fatalf("test request: %d %s", a.Status, a.Body)
 			}
-			if got := f.requests(); len(got) != 1 || got[0].Model != "global."+DefaultTestModel || got[0].Signed != (typ != TypeAPIKey) {
+			if got := f.requests(); len(got) != 1 || got[0].Model != DefaultTestModel || got[0].Signed != (typ != TypeAPIKey) {
 				t.Fatalf("served = %+v", got)
 			}
 		})
@@ -419,7 +419,7 @@ func TestFailureRoundTrip(t *testing.T) {
 			f := newFakeBedrock(t)
 			f.expired = tc.expired
 			h := startPlugin(t, f)
-			acc := save(t, h, tc.typ, tc.creds, settingsOf("us-west-2", ""))
+			acc := save(t, h, tc.typ, tc.creds, settingsOf("us-west-2", NoProfilePrefix))
 			a := forward(t, h, buildRequest(acc, ProtocolMessages, tc.model, true), withStream(messagesBody, true))
 			// A refused request is not an event stream: it stays as it is.
 			if a.Status != http.StatusForbidden || a.ContentType != "application/json" || !strings.HasPrefix(a.Headers["x-amzn-errortype"], tc.wantType+":") {

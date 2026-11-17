@@ -62,8 +62,14 @@ const (
 	ResponseStream = awseventstream.FormatChunk
 
 	// DefaultTestModel is the Bedrock model id BuildTestRequest invokes when
-	// no model is given. The manifest's default mapping leads to it.
-	DefaultTestModel = "anthropic.claude-haiku-4-5-20251001-v1:0"
+	// no model is given: the global inference profile of Claude Haiku 4.5,
+	// which is the default mapping's Haiku 4.5 id behind "global.". Haiku 4.5
+	// has no bare model id on bedrock-runtime ("requires a geo or global
+	// inference profile ID",
+	// https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-haiku-4-5.html),
+	// so the id names its profile itself and is sent as it is whatever the
+	// account's prefix, "none" included.
+	DefaultTestModel = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 )
 
 // Endpoints are the addresses the plugin builds requests for. The zero value

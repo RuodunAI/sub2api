@@ -98,8 +98,8 @@
       "global"
     ],
     "ui:help": {
-      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0. Many newer models can only be invoked through one. A model ID that already has a prefix (us., eu., apac., jp., au., in., us-gov., global.) and an ARN are sent as they are. Pick the prefix that matches the region.",
-      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 us.anthropic.claude-sonnet-4-5-20250929-v1:0。很多较新的模型只能通过它调用。已经带前缀（us.、eu.、apac.、jp.、au.、in.、us-gov.、global.）的模型 ID 和 ARN 原样发送。请选择与区域相符的前缀。"
+      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. global.anthropic.claude-sonnet-5-5. On AWS nearly every current Claude model can only be invoked through one, so the default is global: every prefilled model has a global profile, callable from every region except GovCloud. The one exception is Opus 4.1, which only has a us. profile; its prefilled mapping names that profile itself. A geography prefix (us, eu, apac, jp, au, in) keeps requests inside that geography, but not every model has every geography: check the model's card. None sends model IDs as they are; pick it only when the mapping holds complete inference profile IDs or ARNs (GovCloud: us-gov. IDs), or for a model with in-Region availability in this region. A model ID that already has a prefix (us., eu., apac., jp., au., in., us-gov., global.) and an ARN are always sent as they are.",
+      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 global.anthropic.claude-sonnet-5-5。AWS 上现行的 Claude 模型几乎都只能通过推理配置调用，所以默认是 global：预填的模型都有 global 配置，除 GovCloud 外的区域都能调用。唯一的例外是 Opus 4.1，它只有 us. 配置，预填的映射里已经直接写了这个配置的 ID。地域前缀（us、eu、apac、jp、au、in）把请求留在该地域内，但不是每个模型都有每个地域的配置，请对照模型卡片。“不加”按原样发送模型 ID，只在映射里写的是完整的推理配置 ID 或 ARN（GovCloud 用 us-gov. 开头的 ID），或者模型在本区域有区域内（In-Region）可用性时选它。已经带前缀（us.、eu.、apac.、jp.、au.、in.、us-gov.、global.）的模型 ID 和 ARN 始终原样发送。"
     }
   }
 }

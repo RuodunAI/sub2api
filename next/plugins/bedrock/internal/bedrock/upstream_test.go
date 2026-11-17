@@ -35,16 +35,19 @@ func TestInvokeModelURLs(t *testing.T) {
 		wantURL        string
 		wantModel      string
 	}{
-		{"base id with a colon", "us-east-1", "", testHaiku, false, useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
-		{"base id, streamed", "us-east-1", "", testHaiku, true, useast1 + "/model/" + haikuSegment + "/invoke-with-response-stream", testHaiku},
-		{"base id without a colon", "us-east-1", "", "anthropic.claude-sonnet-4-6", false, useast1 + "/model/anthropic.claude-sonnet-4-6/invoke", "anthropic.claude-sonnet-4-6"},
-		{"no region means us-east-1", "", "", testHaiku, false, useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
-		{"another region", "ap-northeast-1", "", testHaiku, true,
+		{"base id with a colon", "us-east-1", NoProfilePrefix, testHaiku, false, useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
+		{"base id, streamed", "us-east-1", NoProfilePrefix, testHaiku, true, useast1 + "/model/" + haikuSegment + "/invoke-with-response-stream", testHaiku},
+		{"base id without a colon", "us-east-1", NoProfilePrefix, "anthropic.claude-sonnet-4-6", false, useast1 + "/model/anthropic.claude-sonnet-4-6/invoke", "anthropic.claude-sonnet-4-6"},
+		{"no region means us-east-1", "", NoProfilePrefix, testHaiku, false, useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
+		{"another region", "ap-northeast-1", NoProfilePrefix, testHaiku, true,
 			"https://bedrock-runtime.ap-northeast-1.amazonaws.com/model/" + haikuSegment + "/invoke-with-response-stream", testHaiku},
-		{"govcloud region", "us-gov-west-1", "", testHaiku, false,
+		{"govcloud region", "us-gov-west-1", NoProfilePrefix, testHaiku, false,
 			"https://bedrock-runtime.us-gov-west-1.amazonaws.com/model/" + haikuSegment + "/invoke", testHaiku},
-		{"inference profile id", "us-east-1", "", "us." + testHaiku, false, useast1 + "/model/us." + haikuSegment + "/invoke", "us." + testHaiku},
-		{"prefix none", "us-east-1", NoProfilePrefix, testHaiku, false, useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
+		{"inference profile id", "us-east-1", NoProfilePrefix, "us." + testHaiku, false, useast1 + "/model/us." + haikuSegment + "/invoke", "us." + testHaiku},
+		{"no prefix choice means global", "us-east-1", "", testHaiku, false, useast1 + "/model/global." + haikuSegment + "/invoke", "global." + testHaiku},
+		{"no prefix choice keeps an id that has one", "us-east-1", "", "us.anthropic.claude-opus-4-1-20250805-v1:0", false,
+			useast1 + "/model/us.anthropic.claude-opus-4-1-20250805-v1%3A0/invoke", "us.anthropic.claude-opus-4-1-20250805-v1:0"},
+		{"prefix none keeps a global id", "us-east-1", NoProfilePrefix, "global." + testHaiku, false, useast1 + "/model/global." + haikuSegment + "/invoke", "global." + testHaiku},
 		{"prefix setting us", "us-east-1", "us", testHaiku, false, useast1 + "/model/us." + haikuSegment + "/invoke", "us." + testHaiku},
 		{"prefix setting eu, streamed", "eu-central-1", "eu", testHaiku, true,
 			"https://bedrock-runtime.eu-central-1.amazonaws.com/model/eu." + haikuSegment + "/invoke-with-response-stream", "eu." + testHaiku},
@@ -57,10 +60,10 @@ func TestInvokeModelURLs(t *testing.T) {
 			useast1 + "/model/in.anthropic.claude-sonnet-5/invoke", "in.anthropic.claude-sonnet-5"},
 		{"prefix setting keeps a us-gov id", "us-gov-west-1", "us", "us-gov." + testHaiku, false,
 			"https://bedrock-runtime.us-gov-west-1.amazonaws.com/model/us-gov." + haikuSegment + "/invoke", "us-gov." + testHaiku},
-		{"ARN with a slash", "us-east-1", "", testARN, false, useast1 + "/model/" + arnSegment + "/invoke", testARN},
-		{"ARN, streamed", "us-east-1", "", testARN, true, useast1 + "/model/" + arnSegment + "/invoke-with-response-stream", testARN},
+		{"ARN with a slash", "us-east-1", NoProfilePrefix, testARN, false, useast1 + "/model/" + arnSegment + "/invoke", testARN},
+		{"ARN, streamed", "us-east-1", NoProfilePrefix, testARN, true, useast1 + "/model/" + arnSegment + "/invoke-with-response-stream", testARN},
 		{"prefix setting keeps an ARN", "us-east-1", "us", testARN, false, useast1 + "/model/" + arnSegment + "/invoke", testARN},
-		{"id is one segment whatever it holds", "us-east-1", "", "my model/v1?x#y", false, useast1 + "/model/my%20model%2Fv1%3Fx%23y/invoke", "my model/v1?x#y"},
+		{"id is one segment whatever it holds", "us-east-1", NoProfilePrefix, "my model/v1?x#y", false, useast1 + "/model/my%20model%2Fv1%3Fx%23y/invoke", "my model/v1?x#y"},
 		{"surrounding space trimmed", "us-east-1", "apac", "  " + testHaiku + " ", false, useast1 + "/model/apac." + haikuSegment + "/invoke", "apac." + testHaiku},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -361,14 +364,20 @@ func TestBuildTestRequest(t *testing.T) {
 		wantURL        string
 		wantModel      string
 	}{
-		{"api key, default model", TypeAPIKey, "", "", "", useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
-		{"api key, prefix", TypeAPIKey, "eu-west-1", "eu", "", "https://bedrock-runtime.eu-west-1.amazonaws.com/model/eu." + haikuSegment + "/invoke", "eu." + testHaiku},
-		{"access key, default model", TypeAccessKey, "", "", "", useast1 + "/model/" + haikuSegment + "/invoke", testHaiku},
+		// The default model is a global inference profile id (Haiku 4.5 has
+		// no bare id on bedrock-runtime): sent as it is whatever the prefix.
+		{"api key, default model", TypeAPIKey, "", "", "", useast1 + "/model/global." + haikuSegment + "/invoke", DefaultTestModel},
+		{"api key, default model, prefix none", TypeAPIKey, "", NoProfilePrefix, "", useast1 + "/model/global." + haikuSegment + "/invoke", DefaultTestModel},
+		{"api key, default model, prefix global", TypeAPIKey, "", "global", "", useast1 + "/model/global." + haikuSegment + "/invoke", DefaultTestModel},
+		{"api key, default model, prefix us", TypeAPIKey, "", "us", "", useast1 + "/model/global." + haikuSegment + "/invoke", DefaultTestModel},
+		{"api key, prefix and a plain model", TypeAPIKey, "eu-west-1", "eu", testHaiku, "https://bedrock-runtime.eu-west-1.amazonaws.com/model/eu." + haikuSegment + "/invoke", "eu." + testHaiku},
+		{"api key, prefix none and a plain model", TypeAPIKey, "eu-west-2", NoProfilePrefix, "anthropic.claude-sonnet-5", "https://bedrock-runtime.eu-west-2.amazonaws.com/model/anthropic.claude-sonnet-5/invoke", "anthropic.claude-sonnet-5"},
+		{"access key, default model", TypeAccessKey, "", "", "", useast1 + "/model/global." + haikuSegment + "/invoke", DefaultTestModel},
 		{"access key, prefix and model", TypeAccessKey, "us-west-2", "us", "anthropic.claude-sonnet-4-5-20250929-v1:0",
 			"https://bedrock-runtime.us-west-2.amazonaws.com/model/us.anthropic.claude-sonnet-4-5-20250929-v1%3A0/invoke", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
 		{"access key, ARN", TypeAccessKey, "us-east-1", "us", testARN, useast1 + "/model/" + arnSegment + "/invoke", testARN},
 		{"temporary credentials, default model", TypeSTS, "ap-southeast-2", "au", "",
-			"https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/au." + haikuSegment + "/invoke", "au." + testHaiku},
+			"https://bedrock-runtime.ap-southeast-2.amazonaws.com/model/global." + haikuSegment + "/invoke", DefaultTestModel},
 		{"temporary credentials, ARN", TypeSTS, "us-east-1", "", testARN, useast1 + "/model/" + arnSegment + "/invoke", testARN},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

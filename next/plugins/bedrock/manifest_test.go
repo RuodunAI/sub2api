@@ -203,28 +203,42 @@ func checkPlatforms(t *testing.T, at manifest.AccountType) {
 
 // defaultModelMapping is the mapping every type prefills: Anthropic's model
 // names to Bedrock model ids without a geography prefix (the account's
-// prefix setting adds it). The ids are those of the AWS model cards
-// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html):
-// models up to Opus 4.6 carry a version suffix, the later ones do not.
+// prefix setting adds it; geoOnly is the exception). The ids are the
+// bedrock-runtime model ids of the AWS model cards
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards-anthropic.html,
+// read 2026-11-17): models up to Opus 4.6 carry a version suffix, the later
+// ones do not. Models AWS retired or no longer lists are not prefilled:
+// Sonnet 4 (end of life 2026-10-14) and Opus 4 (no model card).
 var defaultModelMapping = map[string]string{
+	"claude-fable-5-2":           "anthropic.claude-fable-5-2",
 	"claude-fable-5-1":           "anthropic.claude-fable-5-1",
 	"claude-fable-5":             "anthropic.claude-fable-5",
+	"claude-opus-5-5":            "anthropic.claude-opus-5-5",
 	"claude-opus-5":              "anthropic.claude-opus-5",
 	"claude-opus-4-8":            "anthropic.claude-opus-4-8",
 	"claude-opus-4-7":            "anthropic.claude-opus-4-7",
 	"claude-opus-4-6":            "anthropic.claude-opus-4-6-v1",
 	"claude-opus-4-5":            "anthropic.claude-opus-4-5-20251101-v1:0",
 	"claude-opus-4-5-20251101":   "anthropic.claude-opus-4-5-20251101-v1:0",
-	"claude-opus-4-1":            "anthropic.claude-opus-4-1-20250805-v1:0",
-	"claude-opus-4-20250514":     "anthropic.claude-opus-4-20250514-v1:0",
+	"claude-opus-4-1":            "us.anthropic.claude-opus-4-1-20250805-v1:0",
+	"claude-sonnet-5-5":          "anthropic.claude-sonnet-5-5",
 	"claude-sonnet-5":            "anthropic.claude-sonnet-5",
 	"claude-sonnet-4-6":          "anthropic.claude-sonnet-4-6",
 	"claude-sonnet-4-5":          "anthropic.claude-sonnet-4-5-20250929-v1:0",
 	"claude-sonnet-4-5-20250929": "anthropic.claude-sonnet-4-5-20250929-v1:0",
-	"claude-sonnet-4-20250514":   "anthropic.claude-sonnet-4-20250514-v1:0",
+	"claude-haiku-5-5":           "anthropic.claude-haiku-5-5",
 	"claude-haiku-4-5":           "anthropic.claude-haiku-4-5-20251001-v1:0",
 	"claude-haiku-4-5-20251001":  "anthropic.claude-haiku-4-5-20251001-v1:0",
 }
+
+// geoOnly are the default models without a global inference profile, with
+// the prefix their mapping names instead (an id that has one is sent as it
+// is). Opus 4.1 has the US profile only
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-1.html).
+var geoOnly = map[string]string{"claude-opus-4-1": "us."}
+
+// retiredModels are names the mapping must not bring back.
+var retiredModels = []string{"claude-sonnet-4-20250514", "claude-opus-4-20250514"}
 
 // checkModels pins the model defaults: the three types prefill the same
 // models and the same mapping, clients name Claude models the Anthropic way
@@ -240,17 +254,25 @@ func checkModels(t *testing.T, at, first manifest.AccountType) {
 	if !slices.Equal(slices.Sorted(slices.Values(at.DefaultModels)), slices.Sorted(maps.Keys(defaultModelMapping))) {
 		t.Errorf("%s defaultModels = %v, the mapping has %d", at.ID, at.DefaultModels, len(defaultModelMapping))
 	}
-	targets := map[string]bool{}
 	for _, model := range at.DefaultModels {
+		// A dated name and its alias lead to the same Bedrock model. The id
+		// is plain, so that the account's prefix (global by default) picks
+		// the inference profile, unless the model has no global profile.
 		id := at.DefaultModelMapping[model]
-		// A dated name and its alias lead to the same Bedrock model.
-		if !strings.HasPrefix(model, "claude-") || !strings.HasPrefix(id, "anthropic."+model) {
+		if !strings.HasPrefix(model, "claude-") || !strings.HasPrefix(id, geoOnly[model]+"anthropic."+model) {
 			t.Errorf("%s: default model %q maps to %q", at.ID, model, id)
 		}
-		targets[id] = true
 	}
-	if !targets[bedrock.DefaultTestModel] {
-		t.Errorf("%s: the default test model %s is no target of the default mapping", at.ID, bedrock.DefaultTestModel)
+	for _, model := range retiredModels {
+		if _, ok := at.DefaultModelMapping[model]; ok || slices.Contains(at.DefaultModels, model) {
+			t.Errorf("%s prefills %s, which AWS no longer serves", at.ID, model)
+		}
+	}
+	// The account test invokes what a new account's claude-haiku-4-5 request
+	// does: the mapping's id behind the default prefix. It names the profile
+	// itself, so an account with another prefix, or none, tests the same id.
+	if want := bedrock.DefaultProfilePrefix + "." + at.DefaultModelMapping["claude-haiku-4-5"]; bedrock.DefaultTestModel != want {
+		t.Errorf("%s: the default test model is %s, the default mapping and prefix lead to %s", at.ID, bedrock.DefaultTestModel, want)
 	}
 }
 
@@ -284,8 +306,21 @@ func checkForm(t *testing.T, want wantType, schema, ui []byte) {
 		t.Errorf("%s region = %s", want.id, region.Raw)
 	}
 	prefix := s.Get("properties.inference_profile_prefix")
-	if !slices.Equal(stringsOf(prefix.Get("enum")), bedrock.ProfilePrefixes) || prefix.Get("default").String() != bedrock.NoProfilePrefix {
+	if !slices.Equal(stringsOf(prefix.Get("enum")), bedrock.ProfilePrefixes) || prefix.Get("default").String() != bedrock.DefaultProfilePrefix {
 		t.Errorf("%s inference_profile_prefix = %s", want.id, prefix.Raw)
+	}
+	// A new account works with the prefilled models: the form's default is
+	// the global profile, and the help says when to pick none instead.
+	if bedrock.DefaultProfilePrefix != "global" || !slices.Contains(bedrock.ProfilePrefixes, bedrock.DefaultProfilePrefix) {
+		t.Errorf("the default prefix %q is not the global profile", bedrock.DefaultProfilePrefix)
+	}
+	for _, lang := range []string{"en", "zh"} {
+		help := u.Get("inference_profile_prefix.ui:help." + lang).String()
+		for _, part := range []string{"global", "Opus 4.1", "us-gov.", "ARN"} {
+			if !strings.Contains(help, part) {
+				t.Errorf("%s: the %s prefix help does not mention %s", want.id, lang, part)
+			}
+		}
 	}
 	if !slices.Contains(bedrock.ProfilePrefixes, "in") {
 		t.Errorf("the India geography (in.) is not a prefix: %v", bedrock.ProfilePrefixes)

@@ -50,7 +50,7 @@ func TestValidateCredentialsAccepts(t *testing.T) {
 			if len(resp.GetErrors()) != 0 {
 				t.Fatalf("errors = %v", fieldErrors(resp))
 			}
-			if settings[fieldRegion] != DefaultRegion || settings[fieldProfilePrefix] != NoProfilePrefix || len(settings) != 2 {
+			if settings[fieldRegion] != DefaultRegion || settings[fieldProfilePrefix] != DefaultProfilePrefix || DefaultProfilePrefix != "global" || len(settings) != 2 {
 				t.Fatalf("stored settings = %v", settings)
 			}
 			// Complete settings are kept as submitted.

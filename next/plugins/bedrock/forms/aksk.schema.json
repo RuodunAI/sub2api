@@ -39,7 +39,7 @@
         "in",
         "global"
       ],
-      "default": "none"
+      "default": "global"
     }
   }
 }
