@@ -51,6 +51,10 @@ func TestInvokeModelURLs(t *testing.T) {
 		{"prefix setting global", "us-east-1", "global", "anthropic.claude-sonnet-4-6", false,
 			useast1 + "/model/global.anthropic.claude-sonnet-4-6/invoke", "global.anthropic.claude-sonnet-4-6"},
 		{"prefix setting keeps an id that has one", "us-east-1", "eu", "us." + testHaiku, false, useast1 + "/model/us." + haikuSegment + "/invoke", "us." + testHaiku},
+		{"prefix setting in", "ap-south-1", "in", "anthropic.claude-sonnet-5", false,
+			"https://bedrock-runtime.ap-south-1.amazonaws.com/model/in.anthropic.claude-sonnet-5/invoke", "in.anthropic.claude-sonnet-5"},
+		{"prefix setting keeps an in. id", "us-east-1", "us", "in.anthropic.claude-sonnet-5", false,
+			useast1 + "/model/in.anthropic.claude-sonnet-5/invoke", "in.anthropic.claude-sonnet-5"},
 		{"prefix setting keeps a us-gov id", "us-gov-west-1", "us", "us-gov." + testHaiku, false,
 			"https://bedrock-runtime.us-gov-west-1.amazonaws.com/model/us-gov." + haikuSegment + "/invoke", "us-gov." + testHaiku},
 		{"ARN with a slash", "us-east-1", "", testARN, false, useast1 + "/model/" + arnSegment + "/invoke", testARN},
@@ -137,6 +141,8 @@ func TestInvokeModelPatches(t *testing.T) {
 			want: []string{`set anthropic_beta=["tool-examples-2025-10-29","tool-search-tool-2025-10-19"]`, noContextManagement}},
 
 		// The body only: filtered like the header, never sent on as it came.
+		{name: "features of the AWS model cards", header: "compact-2026-09-04,fallback-credit-2026-07-01,thinking-display-updates-2026-08-18,per-turn-control-2026-07-01",
+			want: []string{`set anthropic_beta=["compact-2026-09-04","fallback-credit-2026-07-01","thinking-display-updates-2026-08-18","per-turn-control-2026-07-01"]`, noContextManagement}},
 		{name: "body, supported", absent: true, body: `["context-1m-2025-08-07"]`, want: []string{`set anthropic_beta=["context-1m-2025-08-07"]`, noContextManagement}},
 		{name: "body, unsupported ones dropped", absent: true, body: `["claude-code-20250219","compact-2026-01-12","advanced-tool-use-2025-11-20"]`,
 			want: []string{`set anthropic_beta=["compact-2026-01-12","tool-search-tool-2025-10-19","tool-examples-2025-10-29"]`, noContextManagement}},
@@ -231,7 +237,7 @@ func TestSupportedBetasPass(t *testing.T) {
 	if got := bedrockBetas(bodyBetas(mustJSON(supportedBetas))...); !slices.Equal(got, supportedBetas) {
 		t.Fatalf("betas = %v", got)
 	}
-	if len(supportedBetas) != 8 || !slices.Contains(supportedBetas, betaAliases["advanced-tool-use-2025-11-20"]) || !slices.Contains(supportedBetas, betaContextManagement) {
+	if len(supportedBetas) != 15 || !slices.Contains(supportedBetas, betaAliases["advanced-tool-use-2025-11-20"]) || !slices.Contains(supportedBetas, betaContextManagement) {
 		t.Fatalf("supported = %v, aliases = %v", supportedBetas, betaAliases)
 	}
 }

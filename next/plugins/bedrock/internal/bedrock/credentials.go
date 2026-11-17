@@ -54,11 +54,19 @@ var (
 	validSessionToken = visible(1, 8192)
 )
 
-// chinaRegionPrefix starts the regions of the AWS China partition, whose
-// endpoints are under amazonaws.com.cn and whose accounts are separate from
-// the global ones. RuntimeHost only knows amazonaws.com (which also serves
-// the GovCloud regions), so those regions are refused.
-const chinaRegionPrefix = "cn-"
+// unsupportedPartition reports a region outside the partitions RuntimeHost
+// can address. It only knows amazonaws.com, which serves the commercial and
+// the GovCloud regions; the China regions (cn-*) are under amazonaws.com.cn
+// and the isolated ones (us-iso-*, us-isob-*, us-isof-*, eu-isoe-*) under
+// domains of their own, all with accounts separate from the global ones.
+func unsupportedPartition(region string) bool {
+	geography, rest, _ := strings.Cut(region, "-")
+	return geography == "cn" || strings.HasPrefix(rest, "iso")
+}
+
+// unsupportedPartitionMessage is what an account in such a region is told.
+const unsupportedPartitionMessage = "the AWS China regions (cn-*) are not supported, nor are the isolated regions (us-iso-*, us-isob-* and the like): their endpoints are not under amazonaws.com" +
+	" / 不支持 AWS 中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）：其接入地址不在 amazonaws.com 下"
 
 // NoProfilePrefix is the inference_profile_prefix of an account that sends
 // model ids as they are; an absent value means the same.
@@ -66,7 +74,7 @@ const NoProfilePrefix = "none"
 
 // ProfilePrefixes are the values of inference_profile_prefix: NoProfilePrefix
 // or the cross-region inference prefix put before model ids.
-var ProfilePrefixes = []string{NoProfilePrefix, "us", "eu", "apac", "jp", "au", "global"}
+var ProfilePrefixes = []string{NoProfilePrefix, "us", "eu", "apac", "jp", "au", "in", "global"}
 
 // auth is how the accounts of a type authorize their requests.
 type auth struct {
@@ -126,8 +134,8 @@ func checkSettings(settings object) *pluginv1.FieldError {
 	switch region := settings.Str(fieldRegion); {
 	case !regionPattern.MatchString(region):
 		return fieldError(fieldRegion, "pattern", "not an AWS region, e.g. us-east-1 / 不是合法的 AWS 区域，例如 us-east-1")
-	case strings.HasPrefix(region, chinaRegionPrefix):
-		return fieldError(fieldRegion, "unsupported", "the AWS China regions (cn-*) are not supported: their endpoints are under amazonaws.com.cn / 不支持 AWS 中国区（cn-*）：其接入地址在 amazonaws.com.cn 下")
+	case unsupportedPartition(region):
+		return fieldError(fieldRegion, "unsupported", unsupportedPartitionMessage)
 	case !slices.Contains(ProfilePrefixes, settings.Str(fieldProfilePrefix)):
 		return fieldError(fieldProfilePrefix, "enum", "unknown inference profile prefix / 未知的跨区域推理前缀")
 	}

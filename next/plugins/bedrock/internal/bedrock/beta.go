@@ -13,7 +13,19 @@ import (
 // InvokeModel takes beta features in the body (anthropic_beta), not in the
 // anthropic-beta header, and refuses the ones it does not know. The lists
 // below are those of the previous implementation
-// (backend/internal/service/bedrock_request.go). Unlike it, the plugin never
+// (backend/internal/service/bedrock_request.go) plus the anthropic_beta
+// values the AWS user guide names for InvokeModel on the bedrock-runtime
+// endpoint (https://docs.aws.amazon.com/bedrock/latest/userguide/):
+//
+//   - compact-2026-09-04: the model cards of Opus 4.6 to Fable 5.1
+//     (model-card-anthropic-claude-*.html, "Compaction");
+//   - fallback-credit-2026-07-01: the model cards of Fable 5, Opus 5 and
+//     Fable 5.1 ("Fallback credit for refused requests");
+//   - thinking-display-updates-2026-08-18 and the four per-turn effort
+//     values: claude-messages-adaptive-thinking.html.
+//
+// The list is not per model: a feature a model does not have is the
+// upstream's to refuse. Unlike the previous implementation, the plugin never
 // sees the body beyond its declared request fields, so it cannot add the
 // features a body needs without naming them (computer use, tool search).
 
@@ -43,6 +55,13 @@ var supportedBetas = []string{
 	"context-1m-2025-08-07",
 	betaContextManagement,
 	"compact-2026-01-12",
+	"compact-2026-09-04",
+	"fallback-credit-2026-07-01",
+	"thinking-display-updates-2026-08-18",
+	"mid-conversation-output-config-2026-07-01",
+	"mid-conversation-effort-2026-08-01",
+	"per-turn-control-2026-07-01",
+	"per-message-effort-2026-07-01",
 	"fine-grained-tool-streaming-2025-05-14",
 	betaToolSearch,
 	betaToolExamples,

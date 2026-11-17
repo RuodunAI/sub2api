@@ -107,6 +107,11 @@ func TestValidateCredentialsRejects(t *testing.T) {
 		{"region with a path", TypeAPIKey, apiKeyCreds, settingsOf("us-east-1/x", ""), "region:pattern"},
 		{"China region", TypeAPIKey, apiKeyCreds, settingsOf("cn-north-1", ""), "region:unsupported"},
 		{"China region, access key", TypeAccessKey, akskCreds, settingsOf("cn-northwest-1", "global"), "region:unsupported"},
+		{"isolated region", TypeAPIKey, apiKeyCreds, settingsOf("us-iso-east-1", ""), "region:unsupported"},
+		{"isolated region b, access key", TypeAccessKey, akskCreds, settingsOf("us-isob-east-1", "us"), "region:unsupported"},
+		{"isolated region f, temporary credentials", TypeSTS, stsCreds, settingsOf("us-isof-south-1", ""), "region:unsupported"},
+		{"isolated region in Europe", TypeAPIKey, apiKeyCreds, settingsOf("eu-isoe-west-1", ""), "region:unsupported"},
+		{"European sovereign cloud region", TypeAPIKey, apiKeyCreds, settingsOf("eusc-de-east-1", ""), "region:pattern"},
 		{"unknown prefix", TypeAPIKey, apiKeyCreds, settingsOf("us-east-1", "cn"), "inference_profile_prefix:enum"},
 		{"prefix with the dot", TypeAccessKey, akskCreds, settingsOf("us-east-1", "us."), "inference_profile_prefix:enum"},
 	} {
@@ -144,15 +149,29 @@ func TestValidateCredentialsMalformedJSON(t *testing.T) {
 	}
 }
 
-// The China partition is refused in both languages; GovCloud, which is
-// served under amazonaws.com like the commercial regions, is not.
+// The partitions whose endpoints are not under amazonaws.com (China and the
+// isolated ones) are refused with one message in both languages; GovCloud,
+// which is served under amazonaws.com like the commercial regions, is not.
 func TestPartitions(t *testing.T) {
-	resp, _ := validate(t, TypeAPIKey, apiKeyCreds, settingsOf("cn-north-1", ""))
-	if len(resp.GetErrors()) != 1 {
-		t.Fatalf("errors = %v", fieldErrors(resp))
+	for _, region := range []string{"cn-north-1", "cn-northwest-1", "us-iso-east-1", "us-iso-west-1", "us-isob-east-1", "us-isof-east-1", "eu-isoe-west-1"} {
+		if !unsupportedPartition(region) {
+			t.Errorf("%s is not refused", region)
+		}
+		resp, _ := validate(t, TypeAPIKey, apiKeyCreds, settingsOf(region, ""))
+		if len(resp.GetErrors()) != 1 {
+			t.Fatalf("%s: errors = %v", region, fieldErrors(resp))
+		}
+		msg := resp.GetErrors()[0].GetMessage()
+		for _, part := range []string{"China regions (cn-*) are not supported", "isolated regions (us-iso-*, us-isob-*", "不支持 AWS 中国区（cn-*）和隔离分区"} {
+			if !strings.Contains(msg, part) {
+				t.Errorf("%s: message = %q, want %q in it", region, msg, part)
+			}
+		}
 	}
-	if msg := resp.GetErrors()[0].GetMessage(); !strings.Contains(msg, "China regions (cn-*) are not supported") || !strings.Contains(msg, "不支持 AWS 中国区") {
-		t.Errorf("message = %q", msg)
+	for _, region := range []string{"us-gov-west-1", "us-gov-east-1", "ca-central-1", "us-east-1", "il-central-1", "ap-southeast-7"} {
+		if unsupportedPartition(region) {
+			t.Errorf("%s is refused", region)
+		}
 	}
 	for _, region := range []string{"us-gov-west-1", "us-gov-east-1", "ca-central-1"} {
 		if resp, _ := validate(t, TypeAccessKey, akskCreds, settingsOf(region, "")); len(resp.GetErrors()) != 0 {

@@ -49,6 +49,7 @@
         "apac",
         "jp",
         "au",
+        "in",
         "global"
       ],
       "default": "none"

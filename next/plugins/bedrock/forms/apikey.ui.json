@@ -32,8 +32,8 @@
     },
     "ui:placeholder": "us-east-1",
     "ui:help": {
-      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com; the China regions (cn-*) are not supported. Leave empty for us-east-1.",
-      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com；不支持中国区（cn-*）。留空使用 us-east-1。"
+      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com; the China regions (cn-*) and the isolated regions (us-iso-*, us-isob-* and the like) are not supported. Leave empty for us-east-1.",
+      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com；不支持中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）。留空使用 us-east-1。"
     },
     "ui:options": {
       "mono": true
@@ -55,11 +55,12 @@
       "apac",
       "jp",
       "au",
+      "in",
       "global"
     ],
     "ui:help": {
-      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0. Many newer models can only be invoked through one. A model ID that already has a prefix (us., eu., apac., jp., au., us-gov., global.) and an ARN are sent as they are. Pick the prefix that matches the region.",
-      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 us.anthropic.claude-sonnet-4-5-20250929-v1:0。很多较新的模型只能通过它调用。已经带前缀（us.、eu.、apac.、jp.、au.、us-gov.、global.）的模型 ID 和 ARN 原样发送。请选择与区域相符的前缀。"
+      "en": "Put before the model ID of Claude requests to call a cross-region inference profile, e.g. us.anthropic.claude-sonnet-4-5-20250929-v1:0. Many newer models can only be invoked through one. A model ID that already has a prefix (us., eu., apac., jp., au., in., us-gov., global.) and an ARN are sent as they are. Pick the prefix that matches the region.",
+      "zh": "加在 Claude 请求的模型 ID 前面，用来调用跨区域推理配置，例如 us.anthropic.claude-sonnet-4-5-20250929-v1:0。很多较新的模型只能通过它调用。已经带前缀（us.、eu.、apac.、jp.、au.、in.、us-gov.、global.）的模型 ID 和 ARN 原样发送。请选择与区域相符的前缀。"
     }
   }
 }

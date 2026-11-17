@@ -287,6 +287,9 @@ func checkForm(t *testing.T, want wantType, schema, ui []byte) {
 	if !slices.Equal(stringsOf(prefix.Get("enum")), bedrock.ProfilePrefixes) || prefix.Get("default").String() != bedrock.NoProfilePrefix {
 		t.Errorf("%s inference_profile_prefix = %s", want.id, prefix.Raw)
 	}
+	if !slices.Contains(bedrock.ProfilePrefixes, "in") {
+		t.Errorf("the India geography (in.) is not a prefix: %v", bedrock.ProfilePrefixes)
+	}
 	if u.Get("inference_profile_prefix.ui:widget").String() != "select" || len(u.Get("inference_profile_prefix.ui:enumNames").Array()) != len(bedrock.ProfilePrefixes) {
 		t.Errorf("%s: the prefix is a select with a name per value", want.id)
 	}
@@ -300,8 +303,10 @@ func checkForm(t *testing.T, want wantType, schema, ui []byte) {
 				t.Errorf("%s: the %s form does not mention %s among the limitations", want.id, lang, part)
 			}
 		}
-		if help := u.Get("region.ui:help." + lang).String(); !strings.Contains(help, "cn-*") {
-			t.Errorf("%s: the %s region help does not say the China regions are not supported", want.id, lang)
+		for _, part := range []string{"cn-*", "us-iso-*"} {
+			if help := u.Get("region.ui:help." + lang).String(); !strings.Contains(help, part) {
+				t.Errorf("%s: the %s region help does not say the %s regions are not supported", want.id, lang, part)
+			}
 		}
 	}
 
