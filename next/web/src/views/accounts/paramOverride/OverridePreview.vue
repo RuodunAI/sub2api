@@ -9,7 +9,9 @@ import type { Override } from './model'
 // Dry run: the server applies the draft to a sample request with the same
 // engine the gateway uses (POST /accounts/param-override/preview) and shows
 // the body and headers that would go upstream, or the error it would return.
-const props = defineProps<{ override: Override | null; model: string }>()
+// The account's header override (CONTRACTS §108) goes along: the headers
+// start from what it decides, as at the gateway.
+const props = defineProps<{ override: Override | null; headerOverride?: Record<string, string> | null; model: string }>()
 const { t } = useI18n()
 const P = 'accounts.paramOverride.preview'
 
@@ -52,6 +54,7 @@ async function run() {
   try {
     result.value = await api.post<PreviewResult>('/accounts/param-override/preview', {
       param_override: props.override,
+      header_override: props.headerOverride ?? undefined,
       body: JSON.parse(sample.value),
       model: model.value.trim(),
       headers: headers.value

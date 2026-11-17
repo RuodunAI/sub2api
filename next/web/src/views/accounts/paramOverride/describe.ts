@@ -38,7 +38,7 @@ export function describeAction(d: OperationDraft, t: T): string {
           ? t(`${P}.say.tokenMap`)
           : d.valueText
   return t(`${P}.say.${d.mode}`, {
-    path: d.path || '?',
+    path: d.path || (meta.pathOptional ? t(`${P}.say.wholeBody`) : '?'),
     from: shown(d.from),
     to: shown(d.to),
     value: shown(value),

@@ -426,3 +426,7 @@ const { EntityMultiPicker } = host.components
 ## 去掉账号上游编辑器（UI SDK 3.18）
 
 内置插件 custom（自定义上游）删除后，账号上游层（账号设置字段 `upstream`）也一起删除：`host.components` 不再有账号上游编辑器，控制台的 SchemaForm 也不再有对应的部件。本包的组件没有变化，其他宿主组件和部件与 3.17 相同；没用到这两项的插件不用改，`hostUICompat` 照旧。UI 3.18 随核心 0.1.301 发布，0.1.298 是最后一个带 UI 3.17 的核心。
+
+## 账号请求头覆盖编辑器（UI SDK 3.19）
+
+`host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm 增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.301（0.1.301 是最后一个带 UI 3.18 的核心）。

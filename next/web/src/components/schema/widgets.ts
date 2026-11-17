@@ -50,6 +50,7 @@ export const schemaWidgets: Record<string, Component> = {
   'entity-select': EntitySelect,
   'param-override': widget(hostComponents.ParamOverrideEditor),
   'header-passthrough': widget(hostComponents.HeaderPassthroughEditor),
+  'header-override': widget(hostComponents.HeaderOverrideEditor),
   'rate-limits': widget(hostComponents.RateLimitEditor),
   'model-limits': widget(hostComponents.ModelLimitsEditor),
   'model-mapping': widget(hostComponents.ModelMappingEditor)

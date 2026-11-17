@@ -18,5 +18,6 @@ export const hostComponents: HostComponents = Object.freeze({
   ProxyPicker,
   ModelMappingEditor: defineAsyncComponent(() => import('@/views/accounts/ModelMappingEditor.vue')),
   EntityPicker: defineAsyncComponent(() => import('@/components/EntityPicker.vue')),
-  EntityMultiPicker: defineAsyncComponent(() => import('@/components/EntityMultiPicker.vue'))
+  EntityMultiPicker: defineAsyncComponent(() => import('@/components/EntityMultiPicker.vue')),
+  HeaderOverrideEditor: defineAsyncComponent(() => import('@/views/accounts/headerOverride/HeaderOverrideInput.vue'))
 })

@@ -14,7 +14,7 @@ describe('host UI 3 contract', () => {
     expect('TabBar' in ui).toBe(false)
   })
   it('rejects unported UI 1 plugins and accepts the migrated compatibility range', () => {
-    expect(HOST_UI_VERSION).toBe('3.18.0')
+    expect(HOST_UI_VERSION).toBe('3.19.0')
     expect(satisfiesRange(HOST_UI_VERSION, '^1.0')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^2.0')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^3.0')).toBe(true)
@@ -53,13 +53,15 @@ describe('host UI 3 contract', () => {
     expect(satisfiesRange('3.16.0', '^3.17')).toBe(false)
     expect(satisfiesRange(HOST_UI_VERSION, '^3.18')).toBe(true)
     expect(satisfiesRange('3.17.0', '^3.18')).toBe(false)
+    expect(satisfiesRange(HOST_UI_VERSION, '^3.19')).toBe(true)
+    expect(satisfiesRange('3.18.0', '^3.19')).toBe(false)
   })
   it('declares in each README section of UI 3.N the range ^3.N and the UI it follows', () => {
     const sections = readme.split(/^## /m).flatMap((body) => {
       const minor = /^[^\n]*（UI SDK 3\.(\d+)）/.exec(body)?.[1]
       return minor ? [{ minor: Number(minor), body }] : []
     })
-    expect(sections.map((s) => s.minor)).toContain(18)
+    expect(sections.map((s) => s.minor)).toContain(19)
     for (const { minor, body } of sections) {
       for (const m of body.matchAll(/hostUICompat: "\^3\.(\d+)"/g)) expect(Number(m[1]), `UI 3.${minor}`).toBe(minor)
       for (const m of body.matchAll(/(?:与 3\.(\d+) 相同|最后一个带 UI 3\.(\d+) 的核心)/g)) expect(Number(m[1] ?? m[2]), `UI 3.${minor}`).toBe(minor - 1)
@@ -79,7 +81,7 @@ describe('host UI 3 contract', () => {
     expectTypeOf<ui.FilterChipItem>().toEqualTypeOf<{ key: string; label: string; value: string }>()
     expectTypeOf<ui.TableColumn['grow']>().toEqualTypeOf<boolean | undefined>()
   })
-  it('names the core editors (UI 3.7) and the entity pickers (UI 3.11, the multiple one 3.12) handed to plugins', () => {
+  it('names the core editors (UI 3.7, the header override 3.19) and the entity pickers (UI 3.11, the multiple one 3.12) handed to plugins', () => {
     expect(HOST_COMPONENT_NAMES).toEqual([
       'ParamOverrideEditor',
       'RateLimitEditor',
@@ -88,7 +90,8 @@ describe('host UI 3 contract', () => {
       'ProxyPicker',
       'ModelMappingEditor',
       'EntityPicker',
-      'EntityMultiPicker'
+      'EntityMultiPicker',
+      'HeaderOverrideEditor'
     ])
   })
   it('locks the account batch size shared with the core (UI 3.6)', () => {

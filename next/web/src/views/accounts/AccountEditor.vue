@@ -30,6 +30,8 @@ import { groupPolicies, policyLabel, policyOptions, policySourceHint } from '@/u
 import AccountEditorNav from './AccountEditorNav.vue'
 import ParamOverrideField from './paramOverride/ParamOverrideField.vue'
 import { operationCount, type Override as ParamOverride } from './paramOverride/model'
+import HeaderOverrideField from './headerOverride/HeaderOverrideField.vue'
+import { entryCount, type HeaderOverride } from './headerOverride/model'
 import AccountModelsCard from './AccountModelsCard.vue'
 import FetchedModelsModal from './FetchedModelsModal.vue'
 import { sameCreationGroup } from './accountTypeChoices'
@@ -84,6 +86,7 @@ const basic = reactive({
   spm_window_seconds: SPM_WINDOW_DEFAULT as number | null,
   environment: {} as EnvironmentValues,
   header_passthrough: [] as string[],
+  header_override: null as HeaderOverride | null,
   param_override: null as ParamOverride | null,
   conversion_loss_policy: null as ConversionLossPolicy | null
 })
@@ -174,17 +177,19 @@ const mappingCount = computed(() => Object.keys(mapping.value).length)
 /** Summary parts of the shown controls (falsy parts dropped). */
 const summaryOf = (parts: Array<[CommonControlName, string | number | false]>) => parts.filter(([n, v]) => v && controls.value[n].visible).map(([, v]) => v)
 
-/** The advanced section's summary: header passthrough, parameter override, the account's own conversion loss policy and environment values. */
+/** The advanced section's summary: header passthrough, header override, parameter override, the account's own conversion loss policy and environment values. */
 const forwardingSummary = computed(() => {
   const rules = basic.header_passthrough
+  const headers = entryCount(basic.header_override)
   const overrides = operationCount(basic.param_override)
   const custom = Object.keys(basic.environment).length
   const policy = basic.conversion_loss_policy
   const policyPart = policy ? [t('accounts.forwarding.conversion', { policy: policyLabel(t, policy) })] : []
-  if (!summaryOf([['header_passthrough', rules.length], ['param_override', overrides], ['environment', custom]]).length && !policy) return t('accounts.forwarding.allDefault')
+  if (!summaryOf([['header_passthrough', rules.length], ['header_override', headers], ['param_override', overrides], ['environment', custom]]).length && !policy) return t('accounts.forwarding.allDefault')
   return [
     ...summaryOf([
       ['header_passthrough', rules.includes('*') ? t('accounts.forwarding.passAll') : rules.length ? t('accounts.forwarding.passRules', { n: rules.length }) : t('accounts.forwarding.passNone')],
+      ['header_override', headers && t('accounts.forwarding.headerOverride', { n: headers })],
       ['param_override', overrides && t('accounts.forwarding.override', { n: overrides })]
     ]),
     ...policyPart,
@@ -406,7 +411,7 @@ const ownCaller = () => scope.level(ACCOUNT_ACTIONS.create) === 'own'
 /** The core's values of the controls (before the plugin's defaults). */
 const coreValues = (): ControlValues => ({
   priority: 10, weight: 1, max_concurrency: newAccountConcurrency(scope.level(ACCOUNT_ACTIONS.create)), schedulable: true, auto_disable: true,
-  rpm_limit: 0, tpm_limit: 0, spm_limit: 0, spm_window_seconds: SPM_WINDOW_DEFAULT, environment: {}, header_passthrough: [], param_override: null, model_limits: []
+  rpm_limit: 0, tpm_limit: 0, spm_limit: 0, spm_window_seconds: SPM_WINDOW_DEFAULT, environment: {}, header_passthrough: [], header_override: null, param_override: null, model_limits: []
 })
 /** Controls kept outside `basic`. */
 const setControl: Partial<Record<CommonControlName, (v: any) => void>> = {
@@ -670,7 +675,8 @@ const { save } = useAccountSave({
             <SSettingRow v-if="controls.header_passthrough.visible" :label="t('accounts.headerPassthrough.title')" :description="controls.header_passthrough.reason || t('accounts.headerPassthrough.hint')" :error="errors.header_passthrough" data-testid="account-header-passthrough">
               <HeaderPassthroughEditor v-model="basic.header_passthrough" :disabled="controls.header_passthrough.disabled || saving" class="w-full sm:w-96" data-testid="account-header-passthrough-rules" />
             </SSettingRow>
-            <ParamOverrideField v-if="controls.param_override.visible" v-model="basic.param_override" :models="models" :error="errors.param_override" :disabled="controls.param_override.disabled || saving" :reason="controls.param_override.reason" />
+            <HeaderOverrideField v-if="controls.header_override.visible" v-model="basic.header_override" :error="errors.header_override" :disabled="controls.header_override.disabled || saving" :reason="controls.header_override.reason" />
+            <ParamOverrideField v-if="controls.param_override.visible" v-model="basic.param_override" :models="models" :error="errors.param_override" :disabled="controls.param_override.disabled || saving" :reason="controls.param_override.reason" :header-override="basic.header_override" />
             <SSettingRow :label="t('accounts.conversion.title')" :description="t('accounts.conversion.hint')" :error="errors.conversion_loss_policy" data-testid="account-conversion-policy">
               <div class="w-full space-y-1 sm:w-64">
                 <SSelect v-model="basic.conversion_loss_policy" :options="conversionOptions" :disabled="saving" data-testid="account-conversion-policy-select" />

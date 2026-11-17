@@ -6,6 +6,7 @@ import { resolveProxyURL, validateProxyURL } from './resources'
 import { nextPath } from './paths'
 import { codexAccountTypes, codexCredentialErrors } from './codex'
 import { checkControls, controlsAccountTypes, controlsForm } from './controls'
+import { placeholderProblem, rowMeaning } from '../src/views/accounts/headerOverride/model'
 
 // Mock handlers: accounts, account types (form modes schema + iframe) and
 // GET /me/platforms (CONTRACTS §14.1). Scopes (CONTRACTS §21): a narrower
@@ -326,7 +327,7 @@ const typeLabel = (pluginKey: string, type: string) => accountTypeDecls.find((x)
 // claude-main is in three groups (the list shows two and "+1"); with claude-bak
 // it makes haiku-only a group of one platform, whose badge takes the vendor tint.
 export const accounts: any[] = [
-  { id: 12, name: 'claude-main', param_override: { operations: [
+  { id: 12, name: 'claude-main', header_override: { 'User-Agent': 'claude-cli/2.1.90 (external, cli)', 'anthropic-beta': '{client_header:anthropic-beta:context-1m-2025-08-07}', 'x-trace-id': '{client_header:x-request-id}', 'x-stainless-retry-count': '{unset}' }, param_override: { operations: [
     { description: '固定 temperature', mode: 'set', path: 'temperature', value: 0.7 },
     { mode: 'delete', path: 'top_p' },
     { description: 'claude- 模型设置 max_tokens', mode: 'set', path: 'max_tokens', value: 8192, keep_origin: true, logic: 'OR', conditions: [{ path: 'model', mode: 'prefix', value: 'claude-' }] },
@@ -534,6 +535,7 @@ const withGroups = (a: any) => ({
   spm_limit: a.spm_limit ?? 0,
   spm_window_seconds: a.spm_window_seconds ?? 60,
   header_passthrough: a.header_passthrough ?? [],
+  header_override: a.header_override ?? null,
   param_override: a.param_override ?? null,
   weight: a.weight ?? 1,
   owner_id: a.owner_id ?? null,
@@ -738,15 +740,60 @@ function scopedAccount(req: MockRequest, action: 'read' | 'update' | 'delete' | 
   const a = accounts.find((x) => x.id === Number(req.params.id))
   return a && inScope(scope, who, a) ? { a } : fail(404, 'not_found', 'account not found')
 }
-// Dry run of a parameter override (CONTRACTS §84). The mock only knows the
-// common modes (set, delete, set_header, delete_header, return_error) and
-// conditions on top-level fields; the server runs the real engine.
-on('POST', '/accounts/param-override/preview', (req) => {
-  const { param_override: po, body = {}, model = '', headers = {} } = req.body || {}
-  const out: Record<string, any> = JSON.parse(JSON.stringify(body))
-  const ctx: Record<string, any> = { model, original_model: model, request_headers: headers }
+// The request header override (CONTRACTS §108), read as the console's editor
+// reads it (rowMeaning). The mock refuses credentials, client addresses,
+// gateway headers, {api_key} and placeholders it would not read (placeholderProblem); the server checks the rest.
+const HEADER_BLOCKED = /^(authorization|proxy-authorization|x-api-key|cookie|host|x-forwarded-for|x-real-ip|x-sub2api-.*|x-kin-.*)$/i
+const PLACEHOLDER_PROBLEMS: Record<string, { code: string; message: string }> = {
+  noSource: { code: 'required', message: 'client_header needs a header name' },
+  emptySuffix: { code: 'invalid', message: 'the client_header append value must not be empty' },
+  partialPlaceholder: { code: 'invalid', message: 'a placeholder must be the whole value' }
+}
+function headerEntryProblem(k: string, val: unknown): { code: string; message: string } | null {
+  if (typeof val !== 'string') return { code: 'invalid', message: `${k}: the value must be a string` }
+  if (val.includes('{api_key}')) return { code: 'unsupported', message: `${k}: {api_key} is not supported, the credential comes from the account type's auth` }
+  const m = rowMeaning(k, val)
+  const placeholder = m.kind === 'client' || m.kind === 'clientAppend'
+  if (HEADER_BLOCKED.test(k.trim()) || (placeholder && HEADER_BLOCKED.test(m.name ?? ''))) return { code: 'blocked', message: `${k}: this header cannot be overridden` }
+  const problem = PLACEHOLDER_PROBLEMS[placeholderProblem(k, val) ?? '']
+  return problem ? { code: problem.code, message: `${k}: ${problem.message}` } : null
+}
+/** Validates the header override of a create or patch body; {} is stored as null. */
+function validateHeaderOverride(b: Record<string, any>) {
+  const v = b.header_override
+  if (v == null) return null
+  const problem = typeof v !== 'object' || Array.isArray(v) ? { code: 'invalid', message: 'header_override must be an object' } : Object.entries(v).map(([k, val]) => headerEntryProblem(k, val)).find(Boolean)
+  if (problem) return fail(400, 'invalid_argument', 'invalid argument', { fields: [{ field: 'header_override', ...problem }] })
+  if (!Object.keys(v).length) b.header_override = null
+  return null
+}
+/** What the header override sets and deletes (lower-case names) for these client headers; its passthrough keys are not resolved here. */
+function resolveHeaderOverride(ho: Record<string, string> | null | undefined, headers: Record<string, string>) {
   const set: Record<string, string> = {}
   const del: string[] = []
+  const client = (name: string) => Object.entries(headers).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1]
+  for (const [k, v] of Object.entries(ho || {})) {
+    const name = k.trim().toLowerCase()
+    const m = rowMeaning(k, v)
+    if (m.kind === 'unset') del.push(name)
+    else if (m.kind === 'static') set[name] = v.trim()
+    else if (m.kind === 'client' || m.kind === 'clientAppend') {
+      const value = [client(m.name ?? '')?.trim(), m.suffix].filter(Boolean).join(',')
+      if (value) set[name] = value
+    }
+  }
+  return { set, del }
+}
+
+// Dry run of a parameter override (CONTRACTS §84), the headers starting from
+// the header override's (§108). The mock only knows the common modes (set,
+// delete, set_header, delete_header, return_error) and conditions on
+// top-level fields; the server runs the real engine.
+on('POST', '/accounts/param-override/preview', (req) => {
+  const { param_override: po, header_override: ho, body = {}, model = '', headers = {} } = req.body || {}
+  const out: Record<string, any> = JSON.parse(JSON.stringify(body))
+  const ctx: Record<string, any> = { model, original_model: model, request_headers: headers }
+  const { set, del } = resolveHeaderOverride(ho, headers)
   const compare = (v: any, mode: string, want: any) => {
     const s = String(v ?? ''), w = String(want ?? '')
     return ({ full: s === w, prefix: s.startsWith(w), suffix: s.endsWith(w), contains: s.includes(w), gt: +s > +w, gte: +s >= +w, lt: +s < +w, lte: +s <= +w } as Record<string, boolean>)[mode] ?? false
@@ -765,8 +812,8 @@ on('POST', '/accounts/param-override/preview', (req) => {
     if (!holds(op)) continue
     if (op.mode === 'set' && !(op.keep_origin && op.path in out)) out[op.path] = op.value
     else if (op.mode === 'delete') delete out[op.path]
-    else if (op.mode === 'set_header') set[op.path] = typeof op.value === 'string' ? op.value : JSON.stringify(op.value)
-    else if (op.mode === 'delete_header') del.push(op.path)
+    else if (op.mode === 'set_header') set[String(op.path).toLowerCase()] = typeof op.value === 'string' ? op.value : JSON.stringify(op.value)
+    else if (op.mode === 'delete_header') del.push(String(op.path).toLowerCase())
     else if (op.mode === 'return_error') {
       const v = typeof op.value === 'string' ? { message: op.value } : op.value || {}
       return { body: out, set_headers: set, delete_headers: del, error: null, return_error: { status: v.status_code ?? 400, code: v.code ?? 'invalid_request', type: v.type ?? 'invalid_request_error', message: v.message, skip_retry: v.skip_retry !== false } }
@@ -791,7 +838,7 @@ on('POST', '/accounts', (req) => {
   if ('platform' in b) return fail(400, 'invalid_argument', 'unknown field "platform"')
   const at = accountTypeDecls.find((x) => x.plugin_key === b.plugin_key && x.type === b.type)
   if (!at) return fail(400, 'invalid_argument', 'unknown account type', { fields: [{ field: 'type', code: 'not_found', message: 'Unknown account type' }] })
-  const bad = validateScheduling(b) || applyCommonControls(at.plugin_key, at.type, b)
+  const bad = validateScheduling(b) || validateHeaderOverride(b) || applyCommonControls(at.plugin_key, at.type, b)
   if (bad) return bad
   if (b.plugin_key === 'codex') {
     const invalid = codexCredentialErrors(b.type, creds)
@@ -839,7 +886,8 @@ on('PATCH', '/accounts/:id', (req) => {
   const r = scopedAccount(req, 'update')
   if (!('a' in r)) return r
   const a = r.a
-  const bad = validateScheduling(req.body || {}) || applyCommonControls(a.plugin_key, a.type, req.body || {}, a)
+  const body = req.body || {}
+  const bad = validateScheduling(body) || validateHeaderOverride(body) || applyCommonControls(a.plugin_key, a.type, body, a)
   if (bad) return bad
   const { credentials, platform: _p, plugin_key: _k, type: _t, proxy_id: _pid, proxy_url: _purl, ...rest } = req.body || {}
   const guarded = checkGuarded(caller(req), a.plugin_key, credentials, a.credentials)

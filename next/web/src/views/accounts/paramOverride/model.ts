@@ -4,17 +4,25 @@
 // one per operation, with the value as text where it is typed as JSON — and
 // writes the operations format back; legacy keys become `set` operations.
 
+import { isJsonObject as isObject, parseJsonObject, type JsonParse } from '../controls/jsonObject'
+
 export type ModeGroup = 'body' | 'string' | 'header' | 'control'
 /** How an operation's value is edited: JSON text, plain text, a header list, or the error form. */
 export type ValueKind = 'json' | 'text' | 'header' | 'list' | 'error'
 
 interface ModeMeta {
   group: ModeGroup
-  /** path: a JSON path ('path'), a header name ('header'), or none. */
+  /** path: a JSON path ('path'), a header name ('header'), or none; `pathOptional` when empty means the whole body. */
   path?: 'path' | 'header'
+  pathOptional?: boolean
   value?: ValueKind
-  /** from/to: 'path' or 'header'; `toOptional` for the replacement of replace / regex_replace. */
-  fromTo?: 'path' | 'header' | 'text'
+  valueRequired?: boolean
+  /**
+   * from/to: 'path', 'header', search / replacement 'text', or a 'sync' side
+   * (`json:path`, `body:path`, `header:name` or a bare path); `toOptional`
+   * for the replacement of replace / regex_replace.
+   */
+  fromTo?: 'path' | 'header' | 'text' | 'sync'
   toOptional?: boolean
   keepOrigin?: boolean
 }
@@ -26,16 +34,18 @@ export const MODES: Record<string, ModeMeta> = {
   prepend: { group: 'body', path: 'path', value: 'json', keepOrigin: true },
   copy: { group: 'body', fromTo: 'path' },
   move: { group: 'body', fromTo: 'path' },
+  sync_fields: { group: 'body', fromTo: 'sync' },
+  prune_objects: { group: 'body', path: 'path', pathOptional: true, value: 'json', valueRequired: true },
   replace: { group: 'string', path: 'path', fromTo: 'text', toOptional: true },
   regex_replace: { group: 'string', path: 'path', fromTo: 'text', toOptional: true },
-  trim_prefix: { group: 'string', path: 'path', value: 'text' },
-  trim_suffix: { group: 'string', path: 'path', value: 'text' },
-  ensure_prefix: { group: 'string', path: 'path', value: 'text' },
-  ensure_suffix: { group: 'string', path: 'path', value: 'text' },
+  trim_prefix: { group: 'string', path: 'path', value: 'text', valueRequired: true },
+  trim_suffix: { group: 'string', path: 'path', value: 'text', valueRequired: true },
+  ensure_prefix: { group: 'string', path: 'path', value: 'text', valueRequired: true },
+  ensure_suffix: { group: 'string', path: 'path', value: 'text', valueRequired: true },
   trim_space: { group: 'string', path: 'path' },
   to_lower: { group: 'string', path: 'path' },
   to_upper: { group: 'string', path: 'path' },
-  set_header: { group: 'header', path: 'header', value: 'header', keepOrigin: true },
+  set_header: { group: 'header', path: 'header', value: 'header', valueRequired: true, keepOrigin: true },
   delete_header: { group: 'header', path: 'header' },
   copy_header: { group: 'header', fromTo: 'header', keepOrigin: true },
   move_header: { group: 'header', fromTo: 'header', keepOrigin: true },
@@ -43,20 +53,23 @@ export const MODES: Record<string, ModeMeta> = {
   return_error: { group: 'control', value: 'error' }
 }
 export const MODE_GROUPS: ModeGroup[] = ['body', 'string', 'header', 'control']
-export const CONDITION_MODES = ['full', 'prefix', 'suffix', 'contains', 'gt', 'gte', 'lt', 'lte'] as const
+export const CONDITION_MODES = ['full', 'prefix', 'suffix', 'contains', 'regex', 'gt', 'gte', 'lt', 'lte'] as const
 export type ConditionMode = (typeof CONDITION_MODES)[number]
 
 /** Keys the request context offers to conditions besides the request body. */
 export const CONTEXT_KEYS = [
   'model',
+  'upstream_model',
   'original_model',
   'request_path',
   'request_headers.',
+  'header_override.',
   'retry_index',
   'is_retry',
   'stream',
   'user_id',
   'group',
+  'using_group',
   'account_id'
 ]
 
@@ -104,7 +117,6 @@ export interface OperationDraft {
 let seq = 0
 const nextId = () => ++seq
 
-const isObject = (x: unknown): x is Record<string, Json> => !!x && typeof x === 'object' && !Array.isArray(x)
 const str = (x: unknown) => (typeof x === 'string' ? x : '')
 
 const DEFAULT_ERROR: ErrorValue = { message: '', status_code: 400, code: '', type: '', skip_retry: true }
@@ -176,14 +188,17 @@ function writeError(e: ErrorValue): Record<string, Json> {
   return out
 }
 
+/** The names of a pass_headers value: an array, a comma list, either as JSON text, or an object of headers / names / header. */
 function readList(v: Json): string[] {
   if (Array.isArray(v)) return v.map(String)
-  return typeof v === 'string'
-    ? v
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-    : []
+  if (isObject(v)) return ['headers', 'names', 'header'].flatMap(k => readList(v[k]))
+  if (typeof v !== 'string') return []
+  const s = v.trim()
+  if (/^[[{]/.test(s) && parsesAsJson(s)) return readList(JSON.parse(s))
+  return s
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean)
 }
 
 function readCondition(c: Json): ConditionDraft {
@@ -196,6 +211,17 @@ function readCondition(c: Json): ConditionDraft {
     invert: o.invert === true,
     passMissing: o.pass_missing_key === true
   }
+}
+
+/**
+ * An operation's conditions: an array, or an object of path → value (each an `equals` condition), as the server reads both.
+ * The server keeps an object's keys as written, a blank one included, so a blank key stays a condition here too, with an
+ * empty path that the checks below flag rather than one dropped on the next save.
+ */
+function readConditions(v: Json): ConditionDraft[] {
+  if (Array.isArray(v)) return v.map(readCondition)
+  if (!isObject(v)) return []
+  return Object.entries(v).map(([path, value]) => readCondition({ path: path.trim() ? path : '', mode: 'full', value }))
 }
 
 const KNOWN_KEYS = new Set(['description', 'mode', 'path', 'from', 'to', 'value', 'keep_origin', 'logic', 'conditions'])
@@ -221,7 +247,7 @@ export function readOperation(raw: Json): OperationDraft {
     error: readError(o.value),
     keepOrigin: o.keep_origin === true,
     logic: str(o.logic).toUpperCase() === 'AND' ? 'AND' : 'OR',
-    conditions: Array.isArray(o.conditions) ? o.conditions.map(readCondition) : [],
+    conditions: readConditions(o.conditions),
     extra
   }
 }
@@ -260,7 +286,7 @@ export function writeOperation(d: OperationDraft): Record<string, Json> {
   const out: Record<string, Json> = {}
   if (d.description.trim()) out.description = d.description.trim()
   out.mode = d.mode
-  if (meta?.path) out.path = d.path.trim()
+  if (meta?.path && (d.path.trim() || !meta.pathOptional)) out.path = d.path.trim()
   if (meta?.fromTo) {
     out.from = meta.fromTo === 'text' ? d.from : d.from.trim()
     if (d.to || !meta.toOptional) out.to = meta.fromTo === 'text' ? d.to : d.to.trim()
@@ -295,19 +321,11 @@ export function writeOverride(drafts: OperationDraft[]): Override | null {
   return drafts.length ? { operations: drafts.map(writeOperation) } : null
 }
 
-/** Parses JSON text of an override: the value, or the error that keeps it out. */
-export function parseOverride(text: string): { value?: Override | null; error?: string } {
-  if (!text.trim()) return { value: null }
-  let v: unknown
-  try {
-    v = JSON.parse(text)
-  } catch (e) {
-    return { error: (e as Error).message }
-  }
-  if (v === null) return { value: null }
-  if (!isObject(v)) return { error: 'object' }
-  if (v.operations !== undefined && !(Array.isArray(v.operations) && v.operations.every(isObject))) return { error: 'operations' }
-  return { value: Object.keys(v).length ? v : null }
+/** Parses JSON text of an override: the value, or why it is not one (`object`, `operations`). */
+export function parseOverride(text: string): JsonParse<Override> {
+  const parsed = parseJsonObject(text)
+  const ops = 'value' in parsed ? parsed.value?.operations : undefined
+  return ops === undefined || (Array.isArray(ops) && ops.every(isObject)) ? parsed : { error: 'operations' }
 }
 
 export const operationCount = (v: Override | null | undefined) => readOverride(v).length
@@ -317,7 +335,17 @@ export const operationCount = (v: Override | null | undefined) => readOverride(v
 export interface Problem {
   /** The draft field: mode, path, from, to, value, description, or `conditions.<i>.<field>`. */
   field: string
-  code: 'required' | 'unsupported' | 'invalid_json' | 'invalid_regex' | 'invalid_header' | 'status' | 'too_long'
+  code:
+    | 'required'
+    | 'unsupported'
+    | 'invalid_json'
+    | 'invalid_regex'
+    | 'regex_string'
+    | 'invalid_header'
+    | 'invalid_prefix'
+    | 'invalid_prune'
+    | 'status'
+    | 'too_long'
   detail?: string
 }
 
@@ -333,6 +361,32 @@ function regexError(pattern: string): string {
   }
 }
 
+/** A regex must be a string that compiles (here JavaScript's syntax; the server compiles Go's). */
+function regexProblems(field: string, pattern: Json): Problem[] {
+  if (typeof pattern !== 'string') return [{ field, code: 'regex_string' }]
+  const detail = regexError(pattern)
+  return detail ? [{ field, code: 'invalid_regex', detail }] : []
+}
+
+/** A side of sync_fields: `json:` or `body:` and a path, `header:` and a name, or a bare path. */
+function syncProblems(field: string, spec: string): Problem[] {
+  const s = spec.trim()
+  const at = s.indexOf(':')
+  if (at < 0) return []
+  const kind = s.slice(0, at).trim().toLowerCase()
+  const key = s.slice(at + 1).trim()
+  if (!['json', 'body', 'header'].includes(kind)) return [{ field, code: 'invalid_prefix', detail: kind }]
+  if (!key) return [{ field, code: 'required' }]
+  return kind === 'header' && !HEADER_NAME.test(key) ? [{ field, code: 'invalid_header', detail: key }] : []
+}
+
+function conditionProblems(c: ConditionDraft, at: string): Problem[] {
+  const out: Problem[] = c.path.trim() ? [] : [{ field: `${at}.path`, code: 'required' }]
+  if (c.mode === 'regex') return [...out, ...regexProblems(`${at}.value`, textToValue(c.valueText))]
+  const detail = brokenJson(c.valueText)
+  return detail ? [...out, { field: `${at}.value`, code: 'invalid_json', detail }] : out
+}
+
 /** What the server would refuse in a draft (the server's check stays the authority). */
 export function validateOperation(d: OperationDraft): Problem[] {
   const meta = MODES[d.mode]
@@ -342,7 +396,7 @@ export function validateOperation(d: OperationDraft): Problem[] {
   const header = (field: string, value: string) =>
     value.trim() && !HEADER_NAME.test(value.trim()) && out.push({ field, code: 'invalid_header', detail: value })
   if (d.description.length > MAX_DESCRIPTION) out.push({ field: 'description', code: 'too_long' })
-  if (meta.path) need('path', d.path)
+  if (meta.path && !meta.pathOptional) need('path', d.path)
   if (meta.path === 'header') header('path', d.path)
   if (meta.fromTo) {
     need('from', d.from)
@@ -352,31 +406,23 @@ export function validateOperation(d: OperationDraft): Problem[] {
     header('from', d.from)
     header('to', d.to)
   }
-  if (d.mode === 'regex_replace' && d.from) {
-    const detail = regexError(d.from)
-    if (detail) out.push({ field: 'from', code: 'invalid_regex', detail })
-  }
-  out.push(...validateValue(d, meta.value))
-  d.conditions.forEach((c, i) => {
-    if (!c.path.trim()) out.push({ field: `conditions.${i}.path`, code: 'required' })
-    const detail = brokenJson(c.valueText)
-    if (detail) out.push({ field: `conditions.${i}.value`, code: 'invalid_json', detail })
-  })
+  if (meta.fromTo === 'sync') out.push(...syncProblems('from', d.from), ...syncProblems('to', d.to))
+  if (d.mode === 'regex_replace' && d.from) out.push(...regexProblems('from', d.from))
+  out.push(...validateValue(d, meta))
+  d.conditions.forEach((c, i) => out.push(...conditionProblems(c, `conditions.${i}`)))
   return out
 }
 
-function validateValue(d: OperationDraft, kind: ValueKind | undefined): Problem[] {
-  switch (kind) {
-    case 'json': {
-      const detail = brokenJson(d.valueText)
-      return detail ? [{ field: 'value', code: 'invalid_json', detail }] : []
-    }
-    case 'text':
+function validateValue(d: OperationDraft, meta: ModeMeta): Problem[] {
+  if (meta.valueRequired && !d.valueText.trim()) return [{ field: 'value', code: 'required' }]
+  switch (meta.value) {
+    case 'json':
     case 'header': {
-      if (!d.valueText.trim())
-        return kind === 'header' || d.mode.startsWith('ensure_') || d.mode.startsWith('trim_') ? [{ field: 'value', code: 'required' }] : []
-      const detail = kind === 'header' ? brokenJson(d.valueText) : ''
-      return detail ? [{ field: 'value', code: 'invalid_json', detail }] : []
+      const detail = brokenJson(d.valueText)
+      if (detail) return [{ field: 'value', code: 'invalid_json', detail }]
+      // prune_objects takes a type or an object {logic, recursive, conditions, where, type}.
+      const v = textToValue(d.valueText)
+      return d.mode === 'prune_objects' && typeof v !== 'string' && !isObject(v) ? [{ field: 'value', code: 'invalid_prune' }] : []
     }
     case 'list':
       return d.list.length
@@ -425,6 +471,8 @@ export const TEMPLATES: Template[] = [
     key: 'byModel',
     op: { mode: 'set', path: 'max_tokens', value: 8192, logic: 'OR', conditions: [{ path: 'model', mode: 'prefix', value: 'claude-' }] }
   },
+  { key: 'syncSession', op: { mode: 'sync_fields', from: 'header:session_id', to: 'json:prompt_cache_key' } },
+  { key: 'pruneTools', op: { mode: 'prune_objects', path: 'tools', value: { type: 'web_search_20250305' } } },
   { key: 'betaToken', op: { mode: 'set_header', path: 'anthropic-beta', value: { 'context-1m-2025-08-07': null } } },
   { key: 'setHeader', op: { mode: 'set_header', path: 'x-custom-header', value: 'value' } },
   {

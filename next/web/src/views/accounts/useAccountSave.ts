@@ -39,6 +39,8 @@ export interface AccountBasics {
   environment: EnvironmentValues
   /** Header passthrough rules (CONTRACTS §81). */
   header_passthrough: string[]
+  /** Request header override, new-api's header_override format (CONTRACTS §108); null clears it. */
+  header_override: Record<string, string> | null
   /** Request parameter override, new-api's param_override format (CONTRACTS §84); null clears it. */
   param_override: Record<string, unknown> | null
   /** Loss policy of converted requests (CONVERT-MATRIX §2.4); null inherits the groups'. */
@@ -129,6 +131,7 @@ export function useAccountSave(deps: AccountSaveDeps) {
       model_limits: fromCards(deps.modelLimits.value),
       environment: basic.environment,
       header_passthrough: basic.header_passthrough,
+      header_override: basic.header_override,
       param_override: basic.param_override,
       conversion_loss_policy: basic.conversion_loss_policy,
       schedulable: basic.schedulable

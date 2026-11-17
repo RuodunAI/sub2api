@@ -12,6 +12,7 @@ import PluginSlot from '@/components/plugin/PluginSlot.vue'
 import { SSpinner, STagInput } from '@sub2api/ui'
 import AccountEditorNav from './AccountEditorNav.vue'
 import ParamOverrideField from './paramOverride/ParamOverrideField.vue'
+import HeaderOverrideField from './headerOverride/HeaderOverrideField.vue'
 import AccountUsageLimitCard from './AccountUsageLimitCard.vue'
 import RateLimitEditor from './controls/RateLimitEditor.vue'
 
@@ -99,6 +100,29 @@ describe('account forwarding and proxy', () => {
     await flushPromises()
     await w.get('form').trigger('submit'); await flushPromises()
     expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ param_override: null }))
+  })
+
+  it('loads, summarizes and saves the header override, handing it to the parameter override dry run (CONTRACTS §108)', async () => {
+    const headers = { 'User-Agent': 'my-client/1.0', 'x-foo': '{unset}' }
+    const w = render({ ...savedAccount(), header_override: headers } as Account)
+    await flushPromises()
+    const field = w.getComponent(HeaderOverrideField)
+    expect(field.props('modelValue')).toEqual(headers)
+    expect(field.element.closest('[data-editor-section]')?.getAttribute('data-editor-section')).toBe('advanced')
+    expect(w.getComponent(ParamOverrideField).props('headerOverride')).toEqual(headers)
+    const advanced = () => w.getComponent(AccountEditorNav).props('sections').find(s => s.key === 'advanced')
+    expect(advanced()?.summary).toBe('不透传 · 请求头覆盖 2 项 · 超时跟随')
+    mocks.patch.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [{ field: 'header_override', code: 'blocked', message: 'Authorization: blocked' }] } }))
+    field.vm.$emit('update:modelValue', { Authorization: 'x' })
+    await flushPromises()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ header_override: { Authorization: 'x' } }))
+    expect(field.props('error')).toBe('Authorization: blocked')
+    expect(w.getComponent(AccountEditorNav).props('errors')).toMatchObject({ advanced: true })
+    field.vm.$emit('update:modelValue', null)
+    await flushPromises()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenLastCalledWith('/accounts/1', expect.objectContaining({ header_override: null }))
   })
 
   it('loads, explains and saves the conversion loss policy (CONVERT-MATRIX §6.3)', async () => {
@@ -484,7 +508,7 @@ describe('common controls of the account type (docs/COMMON-CONTROLS.md §2)', ()
       priority: { visible: false },
       weight: { locked: true, default: 5 },
       rpm_limit: { configurable: false, default: 7 },
-      header_passthrough: { visible: false }, param_override: { visible: false }, environment: { visible: false },
+      header_passthrough: { visible: false }, header_override: { visible: false }, param_override: { visible: false }, environment: { visible: false },
       model_mapping: { default: { a: 'b' } },
       proxy: { required: true }
     }
@@ -513,6 +537,7 @@ describe('common controls of the account type (docs/COMMON-CONTROLS.md §2)', ()
     expect(input(w, 'tpm_limit').attributes('disabled')).toBeUndefined()
     expect(w.get('[data-testid="account-scheduling"]').html()).toContain('插件将此项固定为预设值')
     expect(w.find('[data-testid="account-header-passthrough"]').exists()).toBe(false)
+    expect(w.findComponent(HeaderOverrideField).exists()).toBe(false)
     // The advanced section keeps the conversion loss policy, which is no common control.
     expect(sections(w).map(s => s.key)).toEqual(['connection', 'models', 'scheduling', 'advanced'])
     expect(w.find('[data-testid="account-conversion-policy"]').exists()).toBe(true)

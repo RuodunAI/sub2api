@@ -12,7 +12,7 @@ export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
-export const HOST_UI_VERSION = '3.18.0'
+export const HOST_UI_VERSION = '3.19.0'
 
 /**
  * Accounts per plugin account action request and per `GET /accounts?ids=`
@@ -77,10 +77,12 @@ export interface HostPermissions {
  * editors (UI 3.7) and the entity pickers (UI 3.11; `exclude` and the multiple
  * one UI 3.12). An editor's v-model is the
  * account API field as the core executes it; all take `disabled`:
- * - ParamOverrideEditor: `param_override` object | null; `models?: string[]` (preview suggestions)
+ * - ParamOverrideEditor: `param_override` object | null; `models?: string[]` (preview suggestions);
+ *   `headerOverride?` (the account's `header_override`, the dry run's starting headers; UI 3.19)
  * - RateLimitEditor: `{ rpm_limit, tpm_limit, spm_limit, spm_window_seconds? }` (the window only once given or changed); `errors?: Record<string, string>`
  * - ModelLimitsEditor: `model_limits` array; `options?: string[]` (model suggestions), `errors?`
  * - HeaderPassthroughEditor: `header_passthrough` string[]
+ * - HeaderOverrideEditor: `header_override` object of strings | null (UI 3.19)
  * - ProxyPicker: `proxy_id` number | null
  * - ModelMappingEditor: `model_mapping` object; `models?: string[]` (the account's model list)
  * - EntityPicker: picks a user / group / api_key / account / model / proxy (`kind`) by name or id from
@@ -103,7 +105,8 @@ export const HOST_COMPONENT_NAMES = [
   'ProxyPicker',
   'ModelMappingEditor',
   'EntityPicker',
-  'EntityMultiPicker'
+  'EntityMultiPicker',
+  'HeaderOverrideEditor'
 ] as const
 export type HostComponentName = (typeof HOST_COMPONENT_NAMES)[number]
 export type HostComponents = Readonly<Record<HostComponentName, Component>>

@@ -1,7 +1,7 @@
 // Mock of a plugin that declares common controls (docs/COMMON-CONTROLS.md):
 // one account type whose editor hides the priority and the parameter
 // override, locks the weight, fixes the RPM limit, prefills header
-// passthrough and a model mapping and needs a proxy; and an editor section
+// passthrough, a header override and a model mapping and needs a proxy; and an editor section
 // (account.editor.section) whose native component edits a value of its own
 // with the host's HeaderPassthroughEditor (host.components, UI 3.7). Its
 // credential form also picks entities with the console's schema widgets
@@ -28,6 +28,7 @@ export const controlsAccountTypes = [
       rpm_limit: { configurable: false, default: 60 },
       param_override: { visible: false },
       header_passthrough: { default: ['regex:^x-demo-'] },
+      header_override: { default: { 'x-demo-client': 'sub2api' } },
       model_mapping: { default: { 'gpt-demo': 'gpt-4.1-mini' } },
       proxy: { required: true }
     }
