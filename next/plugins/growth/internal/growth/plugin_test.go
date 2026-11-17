@@ -105,7 +105,8 @@ func TestManifestValid(t *testing.T) {
 		perms[up.Key] = up
 	}
 	use, stats := perms["growth:use"], perms["growth:stats:read"]
-	everyone := map[string][]string{"user": {""}, "supplier": {""}, "operator": {""}, "admin": {""}}
+	// supplier_agent takes the user and supplier defaults (manifest.RoleDefaultsFrom).
+	everyone := map[string][]string{"user": {""}, "supplier": {""}, "supplier_agent": {""}, "operator": {""}, "admin": {""}}
 	if len(perms) != 2 || !slices.Equal(use.InheritFrom, []string{"growth:read"}) || use.RiskLevel() != manifest.RiskLow || !reflect.DeepEqual(use.DefaultGrants(), everyone) ||
 		!slices.Equal(stats.InheritFrom, []string{"growth:manage"}) || stats.RiskLevel() != manifest.RiskSensitive || !reflect.DeepEqual(stats.DefaultGrants(), map[string][]string{"admin": {""}}) {
 		t.Fatalf("user permissions = %+v", perms)
