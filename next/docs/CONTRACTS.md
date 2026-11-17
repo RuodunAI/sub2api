@@ -6085,7 +6085,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
-- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`，v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
+- `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（另有 `UpstreamEditor`，UI 3.18 删除，§106.4），v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
 - schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
 - `SModal` / `SFormModal` 新增 `fixed`（只是新增属性，更早的核心忽略、平稳降级，见 §23 组件表）。
 
