@@ -13,7 +13,7 @@
 ### 核心 0.1.296：codex/OpenAI 流式应答正确计费、OpenAI 端点可不带 `/v1`、新模型列表（`cf4718dcb`，codex 0.1.6、openai 0.4.2；无迁移，滚动）
 
 - **Release**：上游 PR #43 合并为 `cf4718dcb`（代码在 `179142ae6` 已同步），tag `core-v0.1.296` 推送后自动构建（run 44070757390，用户提前批准，release 环境由我代批），北京时间 19:25:10 发布。清单 sha256 `9fbbdae1f86286fa0b72498f74fb61352403805bc9d7ce4aa46d2f13bc7bcf90`（amd64 bundle `5a59c505…2777`、arm64 `b9a5aea7…cac4`），strategy rolling，schema 仍 `ab35f2f6…187d`。
-- **ec2pool 上线**（用户要求把 ec2pool 改成网关托管的 docker compose）：原来是非托管的 `deploy/single`（`/opt/sup2api`，app、app-2 两个核心，已跑 `179142ae6`），改为 `/opt/sup2api-gw` 的两节点网关集群（网关 0.1.137，node-a 主、node-b，同机，沿用原来的 PostgreSQL、Valkey 与开发插件市场），以 Release 0.1.296 为基线 `init`。19:25:47 停旧 app、app-2，复制 11 个插件包到 node-a 的 `plugin-blobs/`，19:26:05 node-a 就绪、19:26:09 node-b 就绪；入口 `127.0.0.1:18080` 不变，宿主机 Caddy 没改。6 个启用插件两节点 active、ready。详见 [ec2pool 部署记录](next/deploy/gateway/ec2pool/README.md)。
+- **ec2pool 上线**（用户要求把 ec2pool 改成网关托管的 docker compose）：原来是非托管的 `deploy/single`（`/opt/sup2api`，app、app-2 两个核心，已跑 `179142ae6`），改为 `/opt/sup2api-gw` 的网关集群（网关 0.1.137，沿用原来的 PostgreSQL、Valkey 与开发插件市场；先按两节点同机运行，随后按用户要求改为单节点 node-a），以 Release 0.1.296 为基线 `init`。19:25:47 停旧 app、app-2，复制 11 个插件包到 node-a 的 `plugin-blobs/`，19:26:05 node-a 就绪、19:26:09 node-b 就绪；入口 `127.0.0.1:18080` 不变，宿主机 Caddy 没改。6 个启用插件两节点 active、ready。详见 [ec2pool 部署记录](next/deploy/gateway/ec2pool/README.md)。
 - **ovh 集群（ovh + clicodeplus）仍是核心 0.1.295、网关 0.1.137，没有装 0.1.296**（要装时可在控制台一键更新或按部署记录手动）。
 
 - **修复：Sign in with ChatGPT 账号的流式请求不计费**（用户 11-17 报告，ec2pool 实测）：上游对 `stream:true` 返回 SSE 正文却标 `Content-Type: application/json`，网关按 JSON 处理，token、首字时间都记 0、计费状态 `free`，而且整段缓冲到结束才发给客户端。现在流式请求的 2xx 应答若正文以 SSE 字段开头就按事件流转发与计量（CONTRACTS §104.1）。已有的 0 token 记录不会补算。
