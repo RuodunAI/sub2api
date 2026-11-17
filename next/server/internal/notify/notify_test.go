@@ -512,7 +512,11 @@ func TestRoutes(t *testing.T) {
 	if code, out := do(1, "POST", "/notifications/test", map[string]any{"channel": "email", "recipients": []string{"bad"}}); code != 400 {
 		t.Fatalf("test validation: %d %v", code, out)
 	}
-	if code, out := do(1, "POST", "/notifications/test", map[string]any{"channel": "email", "recipients": []string{"ops@example.com"}}); code != 200 {
+	// No worker runs: the test send answers with the row still queued once
+	// TestWait passes.
+	s.opts.TestWait = 50 * time.Millisecond
+	if code, out := do(1, "POST", "/notifications/test", map[string]any{"channel": "email", "recipients": []string{"ops@example.com"}}); code != 200 ||
+		out["data"].(map[string]any)["status"] != "pending" {
 		t.Fatalf("test: %d %v", code, out)
 	}
 	_, out = do(1, "GET", "/notifications?status=pending", nil)
@@ -522,6 +526,41 @@ func TestRoutes(t *testing.T) {
 	}
 	if _, out = do(1, "GET", "/notifications?status=sent", nil); len(out["data"].([]any)) != 0 {
 		t.Fatalf("filter: %v", out)
+	}
+}
+
+// The test send answers once the first attempt is recorded: sent, or
+// waiting for a retry with the attempt's error.
+func TestTestSendWaitsForAttempt(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	s, p, _ := setup(t)
+	// Only the poke after queuing claims, and a failed row is not tried again.
+	s.opts.PollInterval, s.opts.BackoffMin, s.opts.BackoffMax = time.Hour, time.Hour, time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	defer s.Stop(context.Background())
+	defer cancel()
+	s.Start(ctx)
+	engine := gin.New()
+	s.RegisterRoutes(httpapi.NewRouter(engine, fakeTokens{}, fakeAuthz{}))
+	send := func() map[string]any {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/api/v1/notifications/test", strings.NewReader(`{"channel":"email","recipients":["ops@example.com"]}`))
+		req.Header.Set("Authorization", "Bearer u1")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		var out struct{ Data map[string]any }
+		if err := json.Unmarshal(w.Body.Bytes(), &out); w.Code != 200 || err != nil {
+			t.Fatalf("test send: %d %s", w.Code, w.Body)
+		}
+		return out.Data
+	}
+	p.outcomes = []error{nil, errors.New("SMTP host mail.example.invalid does not exist / 找不到 SMTP 服务器")}
+	if rec := send(); rec["status"] != "sent" || rec["attempts"] != 1.0 || rec["last_error"] != "" {
+		t.Fatalf("sent: %v", rec)
+	}
+	if rec := send(); rec["status"] != "pending" || rec["attempts"] != 1.0 || rec["last_error"] != "SMTP host mail.example.invalid does not exist / 找不到 SMTP 服务器" {
+		t.Fatalf("retry: %v", rec)
 	}
 }
 

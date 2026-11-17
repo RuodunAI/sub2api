@@ -54,6 +54,10 @@ type Options struct {
 	// recording its outcome). The app's teardown shares a 90s budget
 	// (app.run); the plugin instances are stopped after this service.
 	DrainTimeout time.Duration
+	// TestWait is how long POST /notifications/test waits for the first
+	// attempt to be recorded (35s, like DrainTimeout: the 30s deadline of a
+	// delivery call plus recording its outcome).
+	TestWait time.Duration
 }
 
 func (o *Options) defaults() {
@@ -70,6 +74,7 @@ func (o *Options) defaults() {
 	def(&o.Retention, 30*24*time.Hour)
 	def(&o.UnboundFor, 24*time.Hour)
 	def(&o.DrainTimeout, 35*time.Second)
+	def(&o.TestWait, 35*time.Second)
 	if o.MaxAttempts <= 0 {
 		o.MaxAttempts = 8
 	}
