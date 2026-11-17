@@ -276,3 +276,9 @@
 - 做法：manifest 两个账号类型的 `requestFields` 加 `prompt_cache_key`。`BuildUpstreamRequest`（HTTP 与 WebSocket 握手）在它是非空字符串时加头 `session_id` 和 `conversation_id`，值相同：`sha256("<api_key_id>:<prompt_cache_key>")` 取前 16 字节排成 UUID（version 8）。同一 Key 的同一会话每轮相同；不同 Key 即使 `prompt_cache_key` 相同也不同；不回显客户端原值。没有该字段、空串或非字符串时不发。客户端自己的 `session_id` 等头仍不转发。
 - 会话键与核心内置粘性规则 `openai-prompt-cache-key` 同源，所以同一会话既固定账号，也固定上游缓存。这两个头只是缓存路由，不是客户端标识：`originator`、`user-agent` 仍如实写 sup2api，不发 `x-codex-*`。
 - 测试：`upstream_test.go` 的 `TestBuildUpstreamRequestSession`（HTTP/WS 同值、同 Key 同会话稳定、换 Key 或换会话不同、不含原值、不用客户端头、缺失/空串/非字符串不发）；`manifest_test.go` 的 `requestFields` 与 gjson 查询。
+
+## 17. 0.1.11：默认模型加上 gpt-6.2（2026-11-18，用户要求）
+
+- 两种账号类型的 `defaultModels` 最前面加 `gpt-6.2-astra`、`gpt-6.2-sol`（新到旧，排在 `gpt-6.1-sol` 前），其余不变；openai 0.4.3 的 API Key 账号默认模型同样加在最前。价格不在插件里，未改动。
+- 依据：ec2pool 测试实例上两个 `codex_device` 账号（id 2、3）已由管理员手动加上这两个模型；经临时 Key 各发一次流式 `/v1/responses`，上游都正常完成（`response.completed`，`model` 分别为 `gpt-6.2-astra`、`gpt-6.2-sol`）。设备码账号没有在线模型列表，`gpt-6.2` 其他后缀（如 luna、terra）在测试实例与线上都没有价格、也没有账号用到，未加。
+- 已有账号的模型列表不变，要用新模型请在账号上手动添加。`DefaultTestModel` 仍为 `gpt-6-luna`。
