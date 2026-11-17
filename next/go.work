@@ -16,6 +16,7 @@ use (
 	./plugins/openai
 	./plugins/payment
 	./plugins/relay
+	./plugins/vertex
 	./plugins/volcengine
 	./protocol-codec
 	./runtime-contract
