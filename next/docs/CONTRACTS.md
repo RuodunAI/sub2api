@@ -7489,7 +7489,7 @@ type GatewayManifest struct {
 - `updater.update_checks`：每集群每条线一行，主键 `(cluster_id, line)`，`source_revision`、`baseline`（检测时的集群基线摘要）、`result jsonb`、`checked_at`、`last_success_at`。
 - `updater.nodes`：`gateway_version text NOT NULL DEFAULT ''`、`self_update boolean NOT NULL DEFAULT false`，节点登记时写入（心跳不写）；节点 JSON 带同名字段。
 - `updater.releases`：`line text NOT NULL DEFAULT 'core'`、`source_assets jsonb`（资产名 → `{name, size, ref}`，`ref` 是 GitHub 资产 id 或索引里的相对路径）、`source_locator text NOT NULL DEFAULT ''`（导入时的来源定位 `<kind>:<repository 或 url>`，与密钥 AAD 用同一个定位）。下载资产时来源定位必须仍等于它，否则失败并提示重新 apply：改 `kind`、`repository` 或 `url` 后，之前导入的发布不能再经来源下载；开关检测、设置新密钥或重存同一个密钥不影响进行中的计划。经更新源导入的发布 `bundle_base` 为空，安装物经来源下载；`bundle_base` 只给 `release_origin` 导入的发布用。`GET /system/releases` 只列核心发布。
-- `updater.releases.manifest` 是 `bytea`，存清单原文，`Digest(manifest)` 必须等于主键 `digest`，每次准备与切换前都核对（2026-11-18；之前是 `jsonb` 加签名信封 `signed_manifest`）。schema.sql 的 DO 块只在该列仍是 `jsonb` 时转换一次：签名发布的行取信封里的 payload，也就是当初计算摘要的那份字节，所以全部摘要不变，签名时代登记的线上基线（核心 0.1.292）照常作为基线（`TestSchemaKeepsSignedReleasesAsBaseline`）；没有 payload 的行（从未验签通过）存 jsonb 文本，其 sha256 不等于摘要，装不上。`signed_manifest` 不再写也不读，改为可空，只为让换网关期间或回滚后的网关 0.1.135（仍要验签）还能启动之前登记的发布；全部节点都运行不验签的网关之后，下一个网关版本删除它。
+- `updater.releases.manifest` 是 `bytea`，存清单原文，`Digest(manifest)` 必须等于主键 `digest`，每次准备与切换前都核对（2026-11-18；之前是 `jsonb` 加签名信封 `signed_manifest`）。网关 0.1.136 启动时把签名发布的行一次转换成信封里的 payload（当初计算摘要的那份字节），所有摘要不变；网关 0.1.137 删除 `signed_manifest` 列和这段转换，所以还在 0.1.135 或更早的网关要先手动换到 0.1.136，再一键更新到之后的版本。
 - 同一集群任何时刻最多一个 running/paused 计划（`updater_one_active_upgrade`），核心计划和网关计划共用这条约束。
 
 ### 102.6 接口（网关管理 socket；核心经 `server/internal/updater` 原样转发，前缀 `/api/v1`）

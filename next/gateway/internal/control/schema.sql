@@ -5,8 +5,8 @@ CREATE TABLE IF NOT EXISTS updater.clusters (
  revision bigint NOT NULL DEFAULT 1, created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS updater.releases (
- digest text PRIMARY KEY, release_id text NOT NULL UNIQUE, manifest jsonb NOT NULL,
- signed_manifest jsonb NOT NULL, bundle_base text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
+ digest text PRIMARY KEY, release_id text NOT NULL UNIQUE, manifest bytea NOT NULL,
+ bundle_base text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
 );
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_repository text NOT NULL DEFAULT '';
 ALTER TABLE updater.clusters ADD COLUMN IF NOT EXISTS update_source_revision bigint NOT NULL DEFAULT 0;
@@ -104,21 +104,8 @@ ALTER TABLE updater.releases ADD COLUMN IF NOT EXISTS source_locator text NOT NU
 -- gateway binaries under <root>/gateway and exec them registers
 -- self_update=true; gateway releases are stored with line='gateway'.
 ALTER TABLE updater.nodes ADD COLUMN IF NOT EXISTS self_update boolean NOT NULL DEFAULT false;
--- Unsigned releases (2026-11-18): a release is its manifest as published and
--- its digest is the SHA-256 of those bytes, which manifest now holds. A row of
--- a signed release takes them from its envelope's payload, the bytes its
--- digest was computed over, so every digest stays the same. signed_manifest
--- is no longer written or read; it stays, nullable, only so that gateway
--- 0.1.135 (which verifies signatures) can still start the releases recorded
--- before, while the gateways are replaced or after rolling one back to it.
--- The first gateway release after every node runs a gateway of this version
--- drops it. A row without a payload (never a verified release) keeps the text
--- of its jsonb manifest, whose SHA-256 is not its digest: it never installs.
-DO $$ BEGIN
- IF (SELECT data_type FROM information_schema.columns
-     WHERE table_schema='updater' AND table_name='releases' AND column_name='manifest')='jsonb' THEN
-  ALTER TABLE updater.releases ALTER COLUMN manifest TYPE bytea
-   USING COALESCE(decode(signed_manifest->>'payload','base64'), convert_to(manifest::text,'UTF8'));
-  ALTER TABLE updater.releases ALTER COLUMN signed_manifest DROP NOT NULL;
- END IF;
-END $$;
+-- Unsigned releases: a release is its manifest as published (manifest, bytea)
+-- and its digest is the SHA-256 of those bytes. Gateway 0.1.136 converted the
+-- signed rows once and kept signed_manifest only for gateway 0.1.135; every
+-- node now runs 0.1.136 or later, so the column goes.
+ALTER TABLE updater.releases DROP COLUMN IF EXISTS signed_manifest;
