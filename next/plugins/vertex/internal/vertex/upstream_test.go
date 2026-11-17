@@ -80,8 +80,17 @@ func TestUpstreamHeaders(t *testing.T) {
 		want map[string]string
 	}{
 		{"service account", saAccount(fullTarget), map[string]string{"content-type": "application/json", "authorization": "Bearer ya29.token"}},
+		// A token that has not expired yet is sent.
+		{"service account, token still valid", stored(TypeServiceAccount, map[string]any{
+			"service_account_json": saJSON(nil), fieldAccessToken: "ya29.token", fieldExpiresAt: testNow.Unix() + 1}, fullTarget),
+			map[string]string{"content-type": "application/json", "authorization": "Bearer ya29.token"}},
+		// User credentials belong to no project: the account's project is
+		// named as the quota project, or aiplatform answers 403.
 		{"user credentials", stored(TypeAuthorizedUser, map[string]any{"authorized_user_json": userJSON(nil), fieldAccessToken: " ya29.user "}, fullTarget),
-			map[string]string{"content-type": "application/json", "authorization": "Bearer ya29.user"}},
+			map[string]string{"content-type": "application/json", "authorization": "Bearer ya29.user", "x-goog-user-project": testProject}},
+		{"user credentials, the account's own project", stored(TypeAuthorizedUser, map[string]any{"authorized_user_json": userJSON(nil), fieldAccessToken: "ya29.user"},
+			map[string]any{fieldProject: "another-project-9", fieldLocation: "global"}),
+			map[string]string{"content-type": "application/json", "authorization": "Bearer ya29.user", "x-goog-user-project": "another-project-9"}},
 		{"api key", stored(TypeAPIKey, map[string]any{fieldAPIKey: "AQ.Ab8RN6-example"}, nil),
 			map[string]string{"content-type": "application/json", "x-goog-api-key": "AQ.Ab8RN6-example"}},
 		// A token left in an API key account is not sent.
@@ -109,6 +118,14 @@ func TestUpstreamRefusals(t *testing.T) {
 		// account and does not penalize this one.
 		{"no token yet", newSA, ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
 		{"user without token", stored(TypeAuthorizedUser, map[string]any{"authorized_user_json": userJSON(nil)}, fullTarget), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
+		// An expired token is not sent either: the account waits for the
+		// refresh like one that has no token yet.
+		{"token expired", stored(TypeServiceAccount, map[string]any{
+			"service_account_json": saJSON(nil), fieldAccessToken: "ya29.old", fieldExpiresAt: testNow.Unix() - 1}, fullTarget), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
+		{"token expiring now", stored(TypeAuthorizedUser, map[string]any{
+			"authorized_user_json": userJSON(nil), fieldAccessToken: "ya29.old", fieldExpiresAt: testNow.Unix()}, fullTarget), ProtocolStreamGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
+		{"token expired, expiry as a string", stored(TypeServiceAccount, map[string]any{
+			"service_account_json": saJSON(nil), fieldAccessToken: "ya29.old", fieldExpiresAt: "1700000000"}, fullTarget), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
 		{"api key missing", stored(TypeAPIKey, map[string]any{}, nil), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
 		{"service account without project", saAccount(nil), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
 		{"service account without location", saAccount(map[string]any{fieldProject: testProject}), ProtocolGenerate, "gemini-2.5-flash", codes.FailedPrecondition},
@@ -158,5 +175,12 @@ func TestBuildTestRequest(t *testing.T) {
 	})
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("test without token: %v", err)
+	}
+	// The same for an expired one.
+	_, err = p.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{
+		Account: stored(TypeServiceAccount, map[string]any{"service_account_json": saJSON(nil), fieldAccessToken: "ya29.old", fieldExpiresAt: testNow.Unix() - 60}, fullTarget),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("test with an expired token: %v", err)
 	}
 }

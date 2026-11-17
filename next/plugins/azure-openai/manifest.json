@@ -34,7 +34,11 @@
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
       "platforms": [
-        { "platform": "openai", "endpoints": ["chat_completions", "responses", "embeddings"] }
+        {
+          "platform": "openai",
+          "endpoints": ["chat_completions", "responses", "embeddings"],
+          "passHeaders": ["openai-beta", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"]
+        }
       ],
       "upstream": {
         "preset": "openai",
@@ -50,7 +54,6 @@
           "openai.embeddings": { "path": "/openai/v1/embeddings" },
           "openai.responses_ws": null
         },
-        "filterFields": [],
         "models": null
       }
     },
@@ -71,7 +74,11 @@
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url", "api_version"],
       "platforms": [
-        { "platform": "openai", "endpoints": ["chat_completions", "embeddings"] }
+        {
+          "platform": "openai",
+          "endpoints": ["chat_completions", "embeddings"],
+          "passHeaders": ["openai-beta", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"]
+        }
       ],
       "upstream": {
         "preset": "openai",
@@ -94,7 +101,6 @@
           "openai.responses": null,
           "openai.responses_ws": null
         },
-        "filterFields": [],
         "models": null
       }
     }

@@ -30,6 +30,9 @@ type fakeGoogle struct {
 	t      *testing.T
 	srv    *httptest.Server
 	issued atomic.Int64
+	// userToken says the last token was issued for user credentials, which
+	// the model endpoints serve only with a quota project.
+	userToken atomic.Bool
 	// apiStatus, when not 0, is what the model endpoints answer.
 	apiStatus atomic.Int32
 	// served are the model requests answered, in order.
@@ -83,6 +86,7 @@ func (g *fakeGoogle) token(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"error":"unsupported_grant_type"}`)
 		return
 	}
+	g.userToken.Store(r.PostForm.Get("grant_type") == grantRefreshToken)
 	g.issued.Add(1)
 	_, _ = fmt.Fprintf(w, `{"access_token":%q,"expires_in":3599,"token_type":"Bearer"}`, g.currentToken())
 }
@@ -94,6 +98,10 @@ func (g *fakeGoogle) model(w http.ResponseWriter, r *http.Request) {
 	case !authorized:
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write(googleError(401, "UNAUTHENTICATED", "Request had invalid authentication credentials."))
+		return
+	case g.userToken.Load() && r.Header.Get("x-goog-user-project") != testProject:
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(googleError(403, "PERMISSION_DENIED", "The aiplatform.googleapis.com API requires a quota project, which is not set by default."))
 		return
 	case g.apiStatus.Load() != 0:
 		w.WriteHeader(int(g.apiStatus.Load()))

@@ -79,7 +79,9 @@ func TestServiceAccountRefreshRequest(t *testing.T) {
 	if len(header) != 3 || header["alg"] != "RS256" || header["typ"] != "JWT" || header["kid"] != testKeyID {
 		t.Fatalf("header = %v", header)
 	}
-	iat := float64(testNow.Unix())
+	// Issued ten seconds ago, so a clock running fast is not refused, and
+	// valid for Google's maximum of one hour from then.
+	iat := float64(testNow.Unix() - 10)
 	if len(claims) != 5 || claims["iss"] != testEmail || claims["scope"] != "https://www.googleapis.com/auth/cloud-platform" ||
 		claims["aud"] != "https://oauth2.googleapis.com/token" || claims["iat"] != iat || claims["exp"] != iat+3600 {
 		t.Fatalf("claims = %v", claims)

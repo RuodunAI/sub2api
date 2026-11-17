@@ -26,12 +26,14 @@ var tokenPolicy = gemini.Policy.With(classify.Rule{
 })
 
 // policyOf is the policy of an account type: API keys have nothing to renew
-// and follow the Gemini policy as it is (401 and 403 disable).
+// and follow the Gemini policy as it is (401 and 403 disable). Every other
+// type, a missing or unknown one included, is classified as a token account,
+// so a 401 never disables an account this function does not know.
 func policyOf(typ string) classify.Policy {
-	if _, keyed := keyKinds[typ]; keyed {
-		return tokenPolicy
+	if typ == TypeAPIKey {
+		return gemini.Policy
 	}
-	return gemini.Policy
+	return tokenPolicy
 }
 
 // ClassifyError implements pluginsdk.Platform.

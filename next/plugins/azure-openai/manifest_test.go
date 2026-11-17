@@ -15,6 +15,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/paramoverride"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/upstream"
 )
@@ -29,13 +30,26 @@ const (
 )
 
 // shared is what both declarations put over the openai preset: a required
-// resource endpoint, any key, the api-key header, no model listing.
+// resource endpoint, any key, the api-key header, no model listing. The
+// preset's filterFields stay (TestBodyFilter).
 const shared = `
 	"preset": "openai",
 	"baseURL": {"default": null, "required": true, "stripSuffixes": ["/openai/v1", "/openai"]},
 	"auth": {"type": "header", "name": "api-key", "value": "{api_key}"},
-	"filterFields": [],
 	"models": null,`
+
+// notForwarded are the client headers of the openai platform that name an
+// organization and a project at OpenAI itself; they mean nothing to Azure
+// and are not sent there.
+var notForwarded = []string{"openai-organization", "openai-project"}
+
+// passHeaders are the client headers both types forward: the openai
+// platform's without notForwarded.
+var passHeaders = []string{
+	"openai-beta", "user-agent",
+	"x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version",
+	"x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout",
+}
 
 // declarations are the upstreams of the two types.
 var declarations = map[string]string{
@@ -85,12 +99,21 @@ func TestManifest(t *testing.T) {
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != 2 || m.AccountTypes[0].ID != typeV1 || m.AccountTypes[1].ID != typeDeployment {
 		t.Fatalf("platforms = %+v accountTypes = %+v, want %s then %s only", m.Platforms, m.AccountTypes, typeV1, typeDeployment)
 	}
+	// The list is the platform's own minus notForwarded, so a header the
+	// platform gains later is noticed here.
+	fromPlatform := slices.DeleteFunc(slices.Clone(builtinPlatform("openai").PassHeaders), func(h string) bool { return slices.Contains(notForwarded, h) })
+	if !slices.Equal(passHeaders, fromPlatform) {
+		t.Errorf("passHeaders = %v, the openai platform passes %v", passHeaders, fromPlatform)
+	}
 	for _, at := range m.AccountTypes {
 		if at.CreationGroup != "azure-openai" || at.AuthMethodLabel["en"] == "" || at.AuthMethodLabel["zh"] == "" {
 			t.Errorf("%s: creationGroup %q authMethodLabel %v", at.ID, at.CreationGroup, at.AuthMethodLabel)
 		}
 		if len(at.Platforms) != 1 || at.Platforms[0].Platform != "openai" || !slices.Equal(at.Platforms[0].Endpoints, endpoints[at.ID]) {
 			t.Errorf("%s: platforms = %+v, want openai %v", at.ID, at.Platforms, endpoints[at.ID])
+		}
+		if !slices.Equal(at.Platforms[0].PassHeaders, passHeaders) {
+			t.Errorf("%s: passHeaders = %v, want %v", at.ID, at.Platforms[0].PassHeaders, passHeaders)
 		}
 		if !slices.Equal(at.SensitiveFields, []string{"api_key"}) || len(at.GuardedSettings) != 0 || !at.CustomUpstream() || len(at.DefaultModels) != 0 {
 			t.Errorf("%s: sensitiveFields %v guardedSettings %v defaultModels %v", at.ID, at.SensitiveFields, at.GuardedSettings, at.DefaultModels)
@@ -100,8 +123,9 @@ func TestManifest(t *testing.T) {
 }
 
 // TestRequests covers every route of both types: the URL on the account's
-// resource endpoint, the key in api-key (never Authorization), the stream
-// usage patch of chat, and the protocols a type does not serve.
+// resource endpoint, the key in api-key (never Authorization), the client
+// headers that are forwarded (never OpenAI-Organization / OpenAI-Project),
+// the stream usage patch of chat, and the protocols a type does not serve.
 func TestRequests(t *testing.T) {
 	profiles := resolveAll(t)
 	const deployment = "prod/gpt 4o" // a deployment name is escaped as one path segment
@@ -120,9 +144,12 @@ func TestRequests(t *testing.T) {
 	} {
 		for _, stream := range []bool{false, true} {
 			out, err := profiles[tc.accountType].Build(&pluginv1.BuildUpstreamRequestRequest{
-				Meta:           &pluginv1.RequestMeta{Protocol: tc.protocol, Model: deployment, Stream: stream},
-				Account:        account(tc.accountType, resource, `"api_version":"2025-04-01-preview"`),
-				InboundHeaders: map[string]string{"user-agent": "cli/1"},
+				Meta:    &pluginv1.RequestMeta{Protocol: tc.protocol, Model: deployment, Stream: stream},
+				Account: account(tc.accountType, resource, `"api_version":"2025-04-01-preview"`),
+				InboundHeaders: map[string]string{
+					"user-agent": "cli/1", "openai-beta": "assistants=v2", "x-stainless-lang": "python",
+					"openai-organization": "org-client", "openai-project": "proj_client", "authorization": "Bearer sk-client",
+				},
 			})
 			if tc.url == "" {
 				if err == nil {
@@ -137,7 +164,10 @@ func TestRequests(t *testing.T) {
 			if out.Method != "POST" || out.Url != tc.url || out.UpstreamModel != deployment {
 				t.Errorf("%s %s: %s %s model %q, want POST %s", tc.accountType, tc.protocol, out.Method, out.Url, out.UpstreamModel, tc.url)
 			}
-			wantHeaders := map[string]string{"api-key": apiKey, "content-type": "application/json", "user-agent": "cli/1"}
+			wantHeaders := map[string]string{
+				"api-key": apiKey, "content-type": "application/json",
+				"user-agent": "cli/1", "openai-beta": "assistants=v2", "x-stainless-lang": "python",
+			}
 			if !reflect.DeepEqual(out.Headers, wantHeaders) {
 				t.Errorf("%s %s: headers %v, want %v", tc.accountType, tc.protocol, out.Headers, wantHeaders)
 			}
@@ -145,6 +175,19 @@ func TestRequests(t *testing.T) {
 			if got := len(out.Patches) == 1 && out.Patches[0].Path == "stream_options.include_usage" && out.Patches[0].ValueJson == "true"; got != wantPatch || len(out.Patches) > 1 {
 				t.Errorf("%s %s stream=%v: patches %v", tc.accountType, tc.protocol, stream, out.Patches)
 			}
+		}
+	}
+}
+
+// TestBodyFilter pins the request fields removed before a request is sent:
+// the openai preset's (service_tier and safety_identifier, which belong to
+// the client's own OpenAI account), since the types declare no filterFields
+// of their own. Everything else passes.
+func TestBodyFilter(t *testing.T) {
+	for accountType, p := range resolveAll(t) {
+		res, err := p.PrepareBody([]byte(`{"model":"d","service_tier":"priority","safety_identifier":"u1","user":"u1","messages":[]}`), &paramoverride.Context{})
+		if err != nil || string(res.Body) != `{"model":"d","user":"u1","messages":[]}` {
+			t.Errorf("%s: body %s, %v", accountType, res.Body, err)
 		}
 	}
 }
@@ -190,6 +233,128 @@ func TestResourceEndpoint(t *testing.T) {
 		if _, err := p.Build(&pluginv1.BuildUpstreamRequestRequest{Meta: &pluginv1.RequestMeta{Protocol: "openai.chat", Model: "d"}, Account: acc}); err == nil {
 			t.Errorf("%s without base_url: built a request", accountType)
 		}
+	}
+}
+
+// TestResourceEndpointForm is the base_url rule of both forms: the address
+// of the resource and nothing else, optionally with the /openai or
+// /openai/v1 suffix the declarations remove, or a Foundry project path. A
+// pasted request URL (a deployment, an operation, an api-version) is refused
+// with a message that says what to enter, instead of being saved and
+// answering 404 on every request. The suffixes are matched in the case the
+// declarations remove them in (stripSuffixes is case-sensitive), so another
+// casing is refused too rather than accepted and left in the address.
+func TestResourceEndpointForm(t *testing.T) {
+	const (
+		cognitive = "https://res.cognitiveservices.azure.com"
+		project   = "https://res.services.ai.azure.com/api/projects/p"
+	)
+	accepted := map[string]string{ // input -> the address requests are built on
+		resource:                           resource,
+		resource + "/":                     resource,
+		resource + "/openai":               resource,
+		resource + "/openai/":              resource,
+		resource + "/openai/v1":            resource,
+		resource + "/openai/v1/":           resource,
+		cognitive:                          cognitive,
+		cognitive + "/openai/v1":           cognitive,
+		project:                            project,
+		project + "/":                      project,
+		"https://RES.OpenAI.Azure.com":     "https://RES.OpenAI.Azure.com",
+		"http://mock-upstream:8080":        "http://mock-upstream:8080",
+		"http://mock-upstream:8080/openai": "http://mock-upstream:8080",
+	}
+	rejected := []string{
+		"",
+		resource + "/openai/deployments/gpt-4o",
+		resource + "/openai/deployments/gpt-4o/chat/completions",
+		resource + "/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21",
+		resource + "/openai/v1/chat/completions",
+		resource + "/openai/v1/responses",
+		resource + "/models",
+		resource + "/OpenAI/V1",
+		resource + "/Openai",
+		resource + "/openai/v1//",
+		resource + "/openai/v1/openai",
+		resource + "?api-version=2024-10-21",
+		resource + "/?api-version=2024-10-21",
+		resource + "/openai?api-version=2024-10-21",
+		resource + "/openai/v1?x=1",
+		resource + "#keys",
+		resource + "/api/projects",
+		resource + "/api/projects/",
+		resource + "/api/projects/p/openai/v1",
+		resource + "/api/Projects/p",
+		"https://key@res.openai.azure.com",
+		"https://",
+		"HTTPS://res.openai.azure.com",
+		"res.openai.azure.com",
+		"ftp://res.openai.azure.com",
+		" " + resource,
+		resource + " ",
+	}
+	profiles := resolveAll(t)
+	var patterns []string
+	for _, accountType := range []string{typeV1, typeDeployment} {
+		var schema struct {
+			Properties map[string]struct {
+				Pattern string `json:"pattern"`
+			} `json:"properties"`
+		}
+		readJSON(t, path.Join("forms", accountType+".schema.json"), &schema)
+		pattern := schema.Properties["base_url"].Pattern
+		patterns = append(patterns, pattern)
+		re := regexp.MustCompile(pattern) // RE2, as the core compiles it
+		for _, in := range rejected {
+			if re.MatchString(in) {
+				t.Errorf("%s: %q is accepted", accountType, in)
+			}
+		}
+		for in, base := range accepted {
+			if !re.MatchString(in) {
+				t.Errorf("%s: %q is refused", accountType, in)
+				continue
+			}
+			// What the form accepts is saved as the bare address and gives
+			// working request URLs.
+			acc := account(accountType, in, `"api_version":"2024-10-21"`)
+			res := profiles[accountType].Validate(&pluginv1.ValidateCredentialsRequest{AccountType: accountType, CredentialsJson: acc.CredentialsJson, SettingsJson: acc.SettingsJson})
+			var saved struct {
+				BaseURL string `json:"base_url"`
+			}
+			_ = json.Unmarshal([]byte(res.NormalizedSettingsJson), &saved)
+			out, err := profiles[accountType].Test(&pluginv1.BuildTestRequestRequest{Account: acc})
+			if len(res.Errors) != 0 || saved.BaseURL != base || err != nil || !strings.HasPrefix(out.Url, base+"/openai/") {
+				t.Errorf("%s %q: errors %v, saved %q, test request %s (%v), want requests on %s", accountType, in, res.Errors, saved.BaseURL, out.GetUrl(), err, base)
+			}
+		}
+
+		// The refusal says what to enter, in both languages.
+		var ui struct {
+			BaseURL struct {
+				Messages map[string]map[string]string `json:"ui:errorMessages"`
+			} `json:"base_url"`
+		}
+		readJSON(t, path.Join("forms", accountType+".ui.json"), &ui)
+		msg := ui.BaseURL.Messages["pattern"]
+		if !strings.Contains(msg["en"], "resource endpoint only") || msg["zh"] != "只填资源地址，不要带 deployments、chat/completions 或 api-version" {
+			t.Errorf("%s: base_url pattern message = %v", accountType, msg)
+		}
+	}
+	if patterns[0] != patterns[1] {
+		t.Errorf("the two forms check base_url differently: %q, %q", patterns[0], patterns[1])
+	}
+}
+
+// readJSON decodes a package file into v.
+func readJSON(t *testing.T, name string, v any) {
+	t.Helper()
+	raw, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatalf("%s: %v", name, err)
 	}
 }
 

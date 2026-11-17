@@ -9,7 +9,7 @@
       "type": "string",
       "title": "Resource endpoint",
       "minLength": 1,
-      "pattern": "^https?://[^\\s?#]+$"
+      "pattern": "^https?://[^\\s/?#@]+(/|/openai/?|/openai/v1/?|/api/projects/[^\\s/?#]+/?)?$"
     },
     "api_key": {
       "type": "string",

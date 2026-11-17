@@ -253,6 +253,6 @@
   "externalServices": [
     "oauth2.googleapis.com",
     "aiplatform.googleapis.com",
-    "*-aiplatform.googleapis.com"
+    "googleapis.com"
   ]
 }

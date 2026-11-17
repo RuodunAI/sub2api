@@ -141,11 +141,26 @@ func TestManifestShape(t *testing.T) {
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
-	if !slices.Equal(m.ExternalServices, []string{"oauth2.googleapis.com", "aiplatform.googleapis.com", "*-aiplatform.googleapis.com"}) {
+	// The token host, the global API host and, for the regional hosts
+	// ("<region>-aiplatform.googleapis.com"), their common parent: the core
+	// matches an entry as the host itself or as a parent domain
+	// (grpcruntime requireExternalService), never as a pattern, and a
+	// regional host has no narrower parent than googleapis.com.
+	if !slices.Equal(m.ExternalServices, []string{"oauth2.googleapis.com", "aiplatform.googleapis.com", "googleapis.com"}) {
 		t.Errorf("externalServices = %v", m.ExternalServices)
 	}
 	if !strings.HasPrefix(vertex.TokenURL, "https://"+m.ExternalServices[0]+"/") || vertex.APIHost != m.ExternalServices[1] {
 		t.Errorf("externalServices do not name the hosts the code uses")
+	}
+	for _, host := range []string{"oauth2.googleapis.com", vertex.APIHost, "us-central1-" + vertex.APIHost, "europe-west4-" + vertex.APIHost} {
+		if !slices.ContainsFunc(m.ExternalServices, func(svc string) bool { return host == svc || strings.HasSuffix(host, "."+svc) }) {
+			t.Errorf("externalServices %v do not cover %s", m.ExternalServices, host)
+		}
+	}
+	for _, svc := range m.ExternalServices {
+		if strings.ContainsAny(svc, "*/:") {
+			t.Errorf("externalServices entry %q is not a plain host name", svc)
+		}
 	}
 }
 
