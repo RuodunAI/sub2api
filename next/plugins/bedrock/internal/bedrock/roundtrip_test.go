@@ -25,11 +25,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/reqsign"
 )
 
-// fakeBedrock is a Bedrock runtime: InvokeModel for Claude and the
-// OpenAI-compatible endpoints. It accepts the test API key and SigV4
-// requests whose signature it recomputes itself (verifySigV4), and refuses
-// what the real service refuses: a body with "model" or "stream", or without
-// anthropic_version.
+// fakeBedrock is a Bedrock runtime: InvokeModel for Claude. It accepts the
+// test API key and SigV4 requests whose signature it recomputes itself
+// (verifySigV4), and refuses what the real service refuses: a body with
+// "model", "stream" or another field InvokeModel does not know, without
+// anthropic_version, or with context_management and no beta feature for it.
 type fakeBedrock struct {
 	srv *httptest.Server
 	// expired makes the fake treat every session token as expired.
@@ -55,8 +55,6 @@ func newFakeBedrock(t *testing.T) *fakeBedrock {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /model/{model}/invoke", f.invoke)
 	mux.HandleFunc("POST /model/{model}/invoke-with-response-stream", f.invoke)
-	mux.HandleFunc("POST /openai/v1/chat/completions", f.openAI)
-	mux.HandleFunc("POST /openai/v1/responses", f.openAI)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -129,8 +127,17 @@ func (f *fakeBedrock) invoke(w http.ResponseWriter, r *http.Request) {
 	case !gjson.ValidBytes(body):
 		awsFailure(w, http.StatusBadRequest, "ValidationException", "Malformed input request")
 		return
-	case fields.Get("model").Exists(), fields.Get("stream").Exists():
+	case fields.Get("model").Exists(), fields.Get("stream").Exists(), fields.Get("metadata").Exists(), fields.Get("provider").Exists():
 		awsFailure(w, http.StatusBadRequest, "ValidationException", "Malformed input request: #: extraneous key is not permitted")
+		return
+	case fields.Get("context_management").Exists() && !strings.Contains(fields.Get("anthropic_beta").Raw, betaContextManagement):
+		awsFailure(w, http.StatusBadRequest, "ValidationException", "context_management: Extra inputs are not permitted")
+		return
+	case strings.Contains(fields.Get("anthropic_beta").Raw, "claude-code-20250219"):
+		awsFailure(w, http.StatusBadRequest, "ValidationException", "invalid beta flag")
+		return
+	case fields.Get("tools.0.custom").Exists():
+		awsFailure(w, http.StatusBadRequest, "ValidationException", "tools.0.custom: Extra inputs are not permitted")
 		return
 	case fields.Get("anthropic_version").String() != AnthropicVersion:
 		awsFailure(w, http.StatusBadRequest, "ValidationException", "anthropic_version must be "+AnthropicVersion)
@@ -162,36 +169,6 @@ func (f *fakeBedrock) invoke(w http.ResponseWriter, r *http.Request) {
 		}
 		_, _ = w.Write(frame)
 	}
-}
-
-func (f *fakeBedrock) openAI(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	ok, signed := f.authorize(w, r, body)
-	if !ok {
-		return
-	}
-	fields := gjson.ParseBytes(body)
-	model := fields.Get("model").String()
-	if model == "" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = io.WriteString(w, `{"error":{"message":"you must provide a model parameter","type":"invalid_request_error","code":null}}`)
-		return
-	}
-	f.record(r, model, signed, body)
-	usage := `"usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}`
-	if !fields.Get("stream").Bool() {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"chatcmpl-1","model":"`+model+`","choices":[{"index":0,"message":{"role":"assistant","content":"pong"},"finish_reason":"stop"}],`+usage+`}`)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	_, _ = io.WriteString(w, `data: {"id":"chatcmpl-1","model":"`+model+`","choices":[{"index":0,"delta":{"content":"pong"}}]}`+"\n\n")
-	// Like OpenAI, usage is only streamed when the request asks for it.
-	if fields.Get("stream_options.include_usage").Bool() {
-		_, _ = io.WriteString(w, `data: {"id":"chatcmpl-1","model":"`+model+`","choices":[],`+usage+`}`+"\n\n")
-	}
-	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 }
 
 // ---------------------------------------------------------------- the core's part
@@ -291,9 +268,13 @@ func save(t *testing.T, h *pluginsdktest.Harness, typ string, creds, settings ma
 }
 
 // forward is one gateway request for the account: the plugin describes it,
-// the core's part sends it.
+// having been shown the body's anthropic_beta (a declared request field),
+// and the core's part sends it.
 func forward(t *testing.T, h *pluginsdktest.Harness, in *pluginv1.BuildUpstreamRequestRequest, clientBody string) answer {
 	t.Helper()
+	if betas := gjson.Get(clientBody, fieldBetas); betas.Exists() {
+		in.Fields[fieldBetas] = betas.Raw
+	}
 	built, err := h.Platform.BuildUpstreamRequest(context.Background(), in)
 	if err != nil {
 		t.Fatalf("BuildUpstreamRequest: %v", err)
@@ -313,18 +294,19 @@ func classifyAnswer(t *testing.T, h *pluginsdktest.Harness, acc *pluginv1.Accoun
 	return cls
 }
 
-const (
-	messagesBody = `{"model":"claude-haiku-4-5","max_tokens":64,"stream":%s,"messages":[{"role":"user","content":"ping"}]}`
-	chatBody     = `{"model":"openai.gpt-oss-120b-1:0","stream":%s,"messages":[{"role":"user","content":"ping"}]}`
-)
+// messagesBody is a Messages request as Claude Code sends it to Anthropic:
+// with the top-level fields InvokeModel refuses.
+const messagesBody = `{"model":"claude-haiku-4-5","max_tokens":64,"stream":%s,"messages":[{"role":"user","content":"ping"}],` +
+	`"metadata":{"user_id":"u-1"},"provider":{"order":["bedrock"]},"context_management":{"edits":[]},"output_config":{"effort":"low"},` +
+	`"anthropic_beta":["claude-code-20250219","compact-2026-01-12"]}`
 
 func withStream(body string, stream bool) string {
 	return strings.Replace(body, "%s", map[bool]string{false: "false", true: "true"}[stream], 1)
 }
 
 // TestRoundTrip follows an account of every type from the form to answered
-// requests on every route: InvokeModel plain and streamed (the event stream
-// arrives as SSE), an ARN, and the OpenAI-compatible endpoints.
+// requests: InvokeModel plain and streamed (the event stream arrives as
+// SSE), and an ARN.
 func TestRoundTrip(t *testing.T) {
 	for typ, creds := range typeCreds {
 		t.Run(typ, func(t *testing.T) {
@@ -356,28 +338,11 @@ func TestRoundTrip(t *testing.T) {
 				t.Fatalf("ARN: %d %s", a.Status, a.Body)
 			}
 
-			// The OpenAI-compatible endpoints.
-			a = forward(t, h, buildRequest(acc, ProtocolChat, "openai.gpt-oss-120b-1:0", true), withStream(chatBody, true))
-			if a.Status != http.StatusOK || a.ContentType != "text/event-stream" || !bytes.Contains(a.Body, []byte(`"completion_tokens":3`)) {
-				t.Fatalf("chat stream: %d %s\n%s", a.Status, a.ContentType, a.Body)
-			}
-			a = forward(t, h, buildRequest(acc, ProtocolChat, "openai.gpt-oss-120b-1:0", false), withStream(chatBody, false))
-			if a.Status != http.StatusOK || gjson.GetBytes(a.Body, "usage.completion_tokens").Int() != 3 {
-				t.Fatalf("chat: %d %s", a.Status, a.Body)
-			}
-			a = forward(t, h, buildRequest(acc, ProtocolResponses, "openai.gpt-oss-120b-1:0", false), `{"model":"openai.gpt-oss-120b-1:0","input":"ping"}`)
-			if a.Status != http.StatusOK {
-				t.Fatalf("responses: %d %s", a.Status, a.Body)
-			}
-
 			got := f.requests()
 			want := []servedRequest{
 				{Path: "/model/us." + haikuSegment + "/invoke", Model: "us." + testHaiku, Signed: signed},
 				{Path: "/model/us." + haikuSegment + "/invoke-with-response-stream", Model: "us." + testHaiku, Signed: signed},
 				{Path: "/model/" + arnSegment + "/invoke", Model: testARN, Signed: signed},
-				{Path: "/openai/v1/chat/completions", Model: "openai.gpt-oss-120b-1:0", Signed: signed},
-				{Path: "/openai/v1/chat/completions", Model: "openai.gpt-oss-120b-1:0", Signed: signed},
-				{Path: "/openai/v1/responses", Model: "openai.gpt-oss-120b-1:0", Signed: signed},
 			}
 			if len(got) != len(want) {
 				t.Fatalf("served %d requests: %+v", len(got), got)
@@ -393,12 +358,10 @@ func TestRoundTrip(t *testing.T) {
 			if err := json.Unmarshal([]byte(got[0].Body), &invoked); err != nil {
 				t.Fatal(err)
 			}
-			if string(invoked["anthropic_beta"]) != `["context-1m-2025-08-07"]` || string(invoked["max_tokens"]) != "64" || len(invoked) != 4 {
+			// The header's features, then the body's; output_config stays.
+			if string(invoked["anthropic_beta"]) != `["context-1m-2025-08-07","compact-2026-01-12"]` || string(invoked["max_tokens"]) != "64" ||
+				string(invoked["output_config"]) != `{"effort":"low"}` || len(invoked) != 5 {
 				t.Errorf("InvokeModel body = %s", got[0].Body)
-			}
-			// The streamed chat request asked for usage; the plain one did not.
-			if !gjson.Get(got[3].Body, "stream_options.include_usage").Bool() || gjson.Get(got[4].Body, "stream_options").Exists() {
-				t.Errorf("chat bodies = %s / %s", got[3].Body, got[4].Body)
 			}
 		})
 	}
@@ -476,10 +439,13 @@ func TestFailureRoundTrip(t *testing.T) {
 	f := newFakeBedrock(t)
 	h := startPlugin(t, f)
 	acc := save(t, h, TypeAccessKey, akskCreds, settingsOf("us-west-2", ""))
-	a := forward(t, h, buildRequest(acc, ProtocolResponses, "", false), `{"input":"ping"}`)
-	cls := classifyAnswer(t, h, acc, ProtocolResponses, a)
+	// It is the known limitation: a field deep inside the body, which the
+	// plugin never sees.
+	a := forward(t, h, buildRequest(acc, ProtocolMessages, testHaiku, false),
+		`{"model":"claude-haiku-4-5","max_tokens":64,"messages":[],"tools":[{"name":"t","input_schema":{},"custom":{"defer_loading":true}}]}`)
+	cls := classifyAnswer(t, h, acc, ProtocolMessages, a)
 	if a.Status != http.StatusBadRequest || cls.GetAction() != pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT || cls.GetAccountEffect() != none ||
-		cls.GetClientErrorType() != "invalid_request_error" || cls.GetClientMessage() != "you must provide a model parameter" {
+		cls.GetClientErrorType() != "invalid_request_error" || cls.GetClientMessage() != "tools.0.custom: Extra inputs are not permitted" {
 		t.Fatalf("400: %d %+v", a.Status, cls)
 	}
 }

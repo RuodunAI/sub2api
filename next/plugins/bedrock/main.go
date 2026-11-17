@@ -1,6 +1,6 @@
 // Command bedrock is the sub2api-next AWS Bedrock plugin: account types for
-// the built-in anthropic and openai platforms that reach the models through
-// the Bedrock runtime (Bedrock API key, access key, temporary credentials).
+// the built-in anthropic platform that reach Claude through the Bedrock
+// runtime (Bedrock API key, access key, temporary credentials).
 package main
 
 import (

@@ -37,8 +37,8 @@
         "zh": "区域与模型"
       },
       "description": {
-        "en": "Claude requests go to InvokeModel with the body as the client sent it; only model, stream, anthropic_version and anthropic_beta are rewritten. Known limitation: fields Bedrock rejects that Claude Code puts inside the body (custom in tool definitions, scope and ttl in cache_control) are not removed. If the account serves Claude Code, remove them with the account's parameter override.",
-        "zh": "Claude 请求发往 InvokeModel，请求体按客户端原样转发，只改写 model、stream、anthropic_version 和 anthropic_beta。已知限制：不会清理 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义里的 custom，cache_control 里的 scope 和 ttl）。账号要给 Claude Code 用时，请在账号的参数覆盖里删除这些字段。"
+        "en": "Claude requests go to InvokeModel with the body as the client sent it, except for a few top-level fields: model and stream move into the address, anthropic_version is set, anthropic_beta becomes the beta features of the anthropic-beta header and of the body that Bedrock accepts, metadata and provider are removed, and context_management is removed unless its beta feature is requested. Requests in an OpenAI protocol are converted to Claude requests first. Known limitations: the plugin sees only those fields, never the whole body. It does not add the beta features a body needs without naming them (computer use, tool search): the client has to send them. It does not remove the fields Bedrock rejects that Claude Code puts deep inside the body (custom in tool definitions, scope and ttl in cache_control), nor convert the deprecated output_format. If the account serves Claude Code, remove those fields with the account's parameter override.",
+        "zh": "Claude 请求发往 InvokeModel，请求体按客户端原样转发，只处理几个顶层字段：model 和 stream 移到地址里，写入 anthropic_version，anthropic_beta 改为 anthropic-beta 请求头和请求体里 Bedrock 接受的 beta 特性，删除 metadata 和 provider，没有请求对应 beta 特性时删除 context_management。OpenAI 协议的请求先转换成 Claude 请求。已知限制：插件只看得到这几个字段，看不到整个请求体。不会根据请求体内容补 beta 特性（computer use、tool search），需要客户端自己带上；不会清理 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义里的 custom，cache_control 里的 scope 和 ttl），也不会转换已废弃的 output_format。账号要给 Claude Code 用时，请在账号的参数覆盖里删除这些字段。"
       }
     },
     "ui:title": {
@@ -47,8 +47,8 @@
     },
     "ui:placeholder": "us-east-1",
     "ui:help": {
-      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com. Leave empty for us-east-1.",
-      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com。留空使用 us-east-1。"
+      "en": "The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com; the China regions (cn-*) are not supported. Leave empty for us-east-1.",
+      "zh": "Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com；不支持中国区（cn-*）。留空使用 us-east-1。"
     },
     "ui:options": {
       "mono": true

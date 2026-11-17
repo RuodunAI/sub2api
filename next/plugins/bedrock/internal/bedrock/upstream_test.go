@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -87,48 +88,11 @@ func TestInvokeModelWithoutModel(t *testing.T) {
 	}
 }
 
-// The OpenAI-compatible routes: the body, and the model in it, stay as the
-// client sent them, so neither the prefix setting nor the framing applies.
-func TestOpenAIRoutes(t *testing.T) {
-	const model = "openai.gpt-oss-120b-1:0"
-	for _, tc := range []struct {
-		name        string
-		protocol    string
-		stream      bool
-		wantPath    string
-		wantPatches []string
-	}{
-		{"chat", ProtocolChat, false, "/openai/v1/chat/completions", nil},
-		{"chat, streamed", ProtocolChat, true, "/openai/v1/chat/completions", []string{"set stream_options.include_usage=true"}},
-		{"responses", ProtocolResponses, false, "/openai/v1/responses", nil},
-		{"responses, streamed", ProtocolResponses, true, "/openai/v1/responses", nil},
-	} {
-		for typ, creds := range typeCreds {
-			t.Run(tc.name+"/"+typ, func(t *testing.T) {
-				resp := build(t, buildRequest(stored(typ, creds, settingsOf("us-west-2", "us")), tc.protocol, model, tc.stream))
-				if resp.GetMethod() != http.MethodPost || resp.GetUrl() != "https://bedrock-runtime.us-west-2.amazonaws.com"+tc.wantPath || resp.GetUpstreamModel() != model {
-					t.Fatalf("request = %s %s (model %s)", resp.GetMethod(), resp.GetUrl(), resp.GetUpstreamModel())
-				}
-				if got := patchList(resp.GetPatches()); !slices.Equal(got, tc.wantPatches) {
-					t.Fatalf("patches = %v, want %v", got, tc.wantPatches)
-				}
-				if resp.GetResponseStream() != "" {
-					t.Fatalf("response_stream = %q: the endpoint answers in SSE", resp.GetResponseStream())
-				}
-				wantHeaders := map[string]string{"content-type": "application/json"}
-				if typ == TypeAPIKey {
-					wantHeaders["authorization"] = "Bearer " + testAPIKey
-				}
-				if !maps.Equal(resp.GetHeaders(), wantHeaders) || (resp.GetSigning() != nil) != (typ != TypeAPIKey) {
-					t.Fatalf("headers = %v, signing set = %v", resp.GetHeaders(), resp.GetSigning() != nil)
-				}
-			})
-		}
-	}
-}
-
+// Only the messages endpoint is served. The OpenAI protocols are not: no
+// type declares the openai platform, so the core converts such a request
+// into a Messages one instead of asking for an OpenAI route.
 func TestUnsupportedProtocol(t *testing.T) {
-	for _, protocol := range []string{"", "anthropic.count_tokens", "openai.embeddings", "openai.responses_ws", "gemini.generate"} {
+	for _, protocol := range []string{"", "anthropic.count_tokens", "openai.chat", "openai.responses", "openai.embeddings", "openai.responses_ws", "gemini.generate"} {
 		_, err := newTestPlugin(Endpoints{}).BuildUpstreamRequest(context.Background(),
 			buildRequest(stored(TypeAPIKey, apiKeyCreds, nil), protocol, testHaiku, false))
 		if status.Code(err) != codes.InvalidArgument {
@@ -138,38 +102,66 @@ func TestUnsupportedProtocol(t *testing.T) {
 }
 
 // The InvokeModel body: the path carries model and stream, so both leave the
-// body; anthropic_version is always set.
+// body; anthropic_version is always set, and the top-level fields InvokeModel
+// has no use for leave. The beta features of the header and of the body's
+// own anthropic_beta are settled together.
 func TestInvokeModelPatches(t *testing.T) {
-	base := []string{"delete model", "delete stream", `set anthropic_version="bedrock-2023-05-31"`}
+	const noContextManagement = "delete context_management"
+	base := []string{"delete model", "delete stream", `set anthropic_version="bedrock-2023-05-31"`, "delete metadata", "delete provider"}
 	for _, tc := range []struct {
-		name   string
-		header string
-		// present tells whether the client sent the header at all.
-		present bool
-		want    []string
+		name string
+		// header and body are the anthropic-beta header and the body's
+		// anthropic_beta as raw JSON; absent tells that the client sent none.
+		header, body string
+		absent       bool
+		want         []string
 	}{
-		{"no beta header", "", false, nil},
-		{"empty beta header", "  ", true, nil},
-		{"supported feature", "context-1m-2025-08-07", true, []string{`set anthropic_beta=["context-1m-2025-08-07"]`}},
-		{"several, spaced", " context-1m-2025-08-07 ,computer-use-2025-01-24,  compact-2026-01-12", true,
-			[]string{`set anthropic_beta=["context-1m-2025-08-07","computer-use-2025-01-24","compact-2026-01-12"]`}},
-		{"unsupported ones dropped", "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,oauth-2025-04-20", true,
-			[]string{`set anthropic_beta=["context-management-2025-06-27"]`}},
-		{"only unsupported ones", "claude-code-20250219,oauth-2025-04-20,prompt-caching-2024-07-31", true, nil},
-		{"duplicates once", "context-1m-2025-08-07,context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14", true,
-			[]string{`set anthropic_beta=["context-1m-2025-08-07","fine-grained-tool-streaming-2025-05-14"]`}},
-		{"advanced tool use is tool search on Bedrock, with tool examples", "advanced-tool-use-2025-11-20", true,
-			[]string{`set anthropic_beta=["tool-search-tool-2025-10-19","tool-examples-2025-10-29"]`}},
-		{"tool search brings tool examples", "tool-search-tool-2025-10-19,computer-use-2025-11-24", true,
-			[]string{`set anthropic_beta=["tool-search-tool-2025-10-19","computer-use-2025-11-24","tool-examples-2025-10-29"]`}},
-		{"tool examples not repeated", "tool-examples-2025-10-29,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19", true,
-			[]string{`set anthropic_beta=["tool-examples-2025-10-29","tool-search-tool-2025-10-19"]`}},
+		// Neither the header nor the body.
+		{name: "no beta header", absent: true, want: []string{noContextManagement}},
+		{name: "empty beta header", header: "  ", want: []string{noContextManagement}},
+
+		// The header only.
+		{name: "supported feature", header: "context-1m-2025-08-07", want: []string{`set anthropic_beta=["context-1m-2025-08-07"]`, noContextManagement}},
+		{name: "several, spaced", header: " context-1m-2025-08-07 ,computer-use-2025-01-24,  compact-2026-01-12",
+			want: []string{`set anthropic_beta=["context-1m-2025-08-07","computer-use-2025-01-24","compact-2026-01-12"]`, noContextManagement}},
+		{name: "unsupported ones dropped; context management keeps its field", header: "claude-code-20250219,interleaved-thinking-2025-05-14,context-management-2025-06-27,oauth-2025-04-20",
+			want: []string{`set anthropic_beta=["context-management-2025-06-27"]`}},
+		{name: "only unsupported ones", header: "claude-code-20250219,oauth-2025-04-20,prompt-caching-2024-07-31", want: []string{noContextManagement}},
+		{name: "duplicates once", header: "context-1m-2025-08-07,context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14",
+			want: []string{`set anthropic_beta=["context-1m-2025-08-07","fine-grained-tool-streaming-2025-05-14"]`, noContextManagement}},
+		{name: "advanced tool use is tool search on Bedrock, with tool examples", header: "advanced-tool-use-2025-11-20",
+			want: []string{`set anthropic_beta=["tool-search-tool-2025-10-19","tool-examples-2025-10-29"]`, noContextManagement}},
+		{name: "tool search brings tool examples", header: "tool-search-tool-2025-10-19,computer-use-2025-11-24",
+			want: []string{`set anthropic_beta=["tool-search-tool-2025-10-19","computer-use-2025-11-24","tool-examples-2025-10-29"]`, noContextManagement}},
+		{name: "tool examples not repeated", header: "tool-examples-2025-10-29,advanced-tool-use-2025-11-20,tool-search-tool-2025-10-19",
+			want: []string{`set anthropic_beta=["tool-examples-2025-10-29","tool-search-tool-2025-10-19"]`, noContextManagement}},
+
+		// The body only: filtered like the header, never sent on as it came.
+		{name: "body, supported", absent: true, body: `["context-1m-2025-08-07"]`, want: []string{`set anthropic_beta=["context-1m-2025-08-07"]`, noContextManagement}},
+		{name: "body, unsupported ones dropped", absent: true, body: `["claude-code-20250219","compact-2026-01-12","advanced-tool-use-2025-11-20"]`,
+			want: []string{`set anthropic_beta=["compact-2026-01-12","tool-search-tool-2025-10-19","tool-examples-2025-10-29"]`, noContextManagement}},
+		{name: "body, only unsupported ones: the field leaves", absent: true, body: `["claude-code-20250219"]`, want: []string{"delete anthropic_beta", noContextManagement}},
+		{name: "body, empty array: the field leaves", absent: true, body: `[]`, want: []string{"delete anthropic_beta", noContextManagement}},
+		{name: "body, one string in the header's format", absent: true, body: `"context-1m-2025-08-07, compact-2026-01-12"`,
+			want: []string{`set anthropic_beta=["context-1m-2025-08-07","compact-2026-01-12"]`, noContextManagement}},
+		{name: "body, not a list of names: the field leaves", absent: true, body: `{"context-1m-2025-08-07":true}`, want: []string{"delete anthropic_beta", noContextManagement}},
+		{name: "body, names among other values", absent: true, body: `[1,"context-management-2025-06-27",null]`, want: []string{`set anthropic_beta=["context-management-2025-06-27"]`}},
+
+		// Both: the header's features first, then the body's, each once.
+		{name: "header and body merged", header: "context-1m-2025-08-07,claude-code-20250219", body: `["compact-2026-01-12","context-1m-2025-08-07"]`,
+			want: []string{`set anthropic_beta=["context-1m-2025-08-07","compact-2026-01-12"]`, noContextManagement}},
+		{name: "header and body, nothing usable in either", header: "oauth-2025-04-20", body: `["claude-code-20250219"]`, want: []string{"delete anthropic_beta", noContextManagement}},
+		{name: "header unusable, body usable", header: "oauth-2025-04-20", body: `["context-management-2025-06-27"]`, want: []string{`set anthropic_beta=["context-management-2025-06-27"]`}},
+		{name: "empty header does not hide the body", header: "", body: `["computer-use-2025-11-24"]`, want: []string{`set anthropic_beta=["computer-use-2025-11-24"]`, noContextManagement}},
 	} {
 		for _, stream := range []bool{false, true} {
 			t.Run(tc.name, func(t *testing.T) {
 				in := buildRequest(stored(TypeAccessKey, akskCreds, nil), ProtocolMessages, testHaiku, stream)
-				if tc.present {
+				if !tc.absent {
 					in.InboundHeaders = map[string]string{"anthropic-beta": tc.header, "user-agent": "claude-cli/2.1.90"}
+				}
+				if tc.body != "" {
+					in.Fields[fieldBetas] = tc.body
 				}
 				resp := build(t, in)
 				if got, want := patchList(resp.GetPatches()), append(slices.Clone(base), tc.want...); !slices.Equal(got, want) {
@@ -184,13 +176,83 @@ func TestInvokeModelPatches(t *testing.T) {
 	}
 }
 
-// Every beta feature InvokeModel accepts passes, in the list's own order.
+// The patches applied the way the core applies them (sjson): removing a
+// field the body does not have changes nothing, output_config stays, and
+// the fallbacks the core guards are never touched.
+func TestInvokeModelBody(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, body, want string
+	}{
+		{"a plain request", "",
+			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[]}`,
+			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
+		{"what Claude Code sends Anthropic", "claude-code-20250219,context-1m-2025-08-07",
+			`{"model":"claude-haiku-4-5","stream":true,"max_tokens":8,"messages":[],"metadata":{"user_id":"u"},"provider":{"only":["x"]},` +
+				`"context_management":{"edits":[]},"output_config":{"effort":"high"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["oauth-2025-04-20"]}`,
+			`{"max_tokens":8,"messages":[],"output_config":{"effort":"high"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["context-1m-2025-08-07"],"anthropic_version":"bedrock-2023-05-31"}`},
+		{"context management with its feature", "context-management-2025-06-27",
+			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[],"context_management":{"edits":[]}}`,
+			`{"max_tokens":8,"messages":[],"context_management":{"edits":[]},"anthropic_version":"bedrock-2023-05-31","anthropic_beta":["context-management-2025-06-27"]}`},
+		{"a body feature nobody supports", "",
+			`{"model":"claude-haiku-4-5","max_tokens":8,"anthropic_beta":["claude-code-20250219"],"messages":[]}`,
+			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := buildRequest(stored(TypeAPIKey, apiKeyCreds, nil), ProtocolMessages, testHaiku, false)
+			in.InboundHeaders = map[string]string{"anthropic-beta": tc.header}
+			if betas := gjson.Get(tc.body, fieldBetas); betas.Exists() {
+				in.Fields[fieldBetas] = betas.Raw
+			}
+			body := []byte(tc.body)
+			var err error
+			for _, p := range build(t, in).GetPatches() {
+				if p.GetOp() == pluginv1.BodyPatch_OP_DELETE {
+					body, err = sjson.DeleteBytes(body, p.GetPath())
+				} else {
+					body, err = sjson.SetRawBytes(body, p.GetPath(), []byte(p.GetValueJson()))
+				}
+				if err != nil {
+					t.Fatalf("patch %s: %v", p.GetPath(), err)
+				}
+			}
+			if string(body) != tc.want {
+				t.Fatalf("body = %s\nwant   %s", body, tc.want)
+			}
+		})
+	}
+}
+
+// Every beta feature InvokeModel accepts passes, in the list's own order,
+// from the header as from the body.
 func TestSupportedBetasPass(t *testing.T) {
-	if got := bedrockBetas(strings.Join(supportedBetas, ",")); !slices.Equal(got, supportedBetas) {
+	if got := bedrockBetas(headerBetas(strings.Join(supportedBetas, ","))...); !slices.Equal(got, supportedBetas) {
 		t.Fatalf("betas = %v", got)
 	}
-	if len(supportedBetas) != 8 || !slices.Contains(supportedBetas, betaAliases["advanced-tool-use-2025-11-20"]) {
+	if got := bedrockBetas(bodyBetas(mustJSON(supportedBetas))...); !slices.Equal(got, supportedBetas) {
+		t.Fatalf("betas = %v", got)
+	}
+	if len(supportedBetas) != 8 || !slices.Contains(supportedBetas, betaAliases["advanced-tool-use-2025-11-20"]) || !slices.Contains(supportedBetas, betaContextManagement) {
 		t.Fatalf("supported = %v, aliases = %v", supportedBetas, betaAliases)
+	}
+}
+
+// An id that already names its geography keeps it whatever the account's
+// prefix: the prefixes an account can choose, and us-gov.
+func TestRegionalPrefixes(t *testing.T) {
+	want := []string{"us-gov."}
+	for _, prefix := range ProfilePrefixes[1:] {
+		want = append(want, prefix+".")
+	}
+	if ProfilePrefixes[0] != NoProfilePrefix || !slices.Equal(regionalPrefixes, want) || len(regionalPrefixes) != len(ProfilePrefixes) {
+		t.Fatalf("regional prefixes = %v, profile prefixes = %v", regionalPrefixes, ProfilePrefixes)
+	}
+	for _, prefix := range regionalPrefixes {
+		if !hasRegionalPrefix(prefix+testHaiku) || hasRegionalPrefix(strings.TrimSuffix(prefix, ".")+testHaiku) {
+			t.Errorf("prefix %q is not recognized as one", prefix)
+		}
+	}
+	if hasRegionalPrefix(testHaiku) || hasRegionalPrefix(NoProfilePrefix+"."+testHaiku) {
+		t.Error("a plain id counts as an inference profile id")
 	}
 }
 
@@ -217,36 +279,34 @@ func TestAuthorization(t *testing.T) {
 			"us-west-2", "", &pluginv1.RequestSigning{
 				Scheme: "aws-sigv4", Region: "us-west-2", Service: "bedrock", AccessKeyId: testSTSKeyID, SecretAccessKey: mockSecret(testSTSKeyID), SessionToken: testSessionToken}},
 	} {
-		for _, protocol := range []string{ProtocolMessages, ProtocolChat, ProtocolResponses} {
-			for _, stream := range []bool{false, true} {
-				t.Run(tc.name+"/"+protocol, func(t *testing.T) {
-					resp := build(t, buildRequest(stored(tc.typ, tc.creds, settingsOf(tc.region, "")), protocol, testHaiku, stream))
-					if got := resp.GetHeaders()["authorization"]; got != tc.wantAuth {
-						t.Fatalf("authorization = %q, want %q", got, tc.wantAuth)
+		for _, stream := range []bool{false, true} {
+			t.Run(tc.name, func(t *testing.T) {
+				resp := build(t, buildRequest(stored(tc.typ, tc.creds, settingsOf(tc.region, "")), ProtocolMessages, testHaiku, stream))
+				if got := resp.GetHeaders()["authorization"]; got != tc.wantAuth {
+					t.Fatalf("authorization = %q, want %q", got, tc.wantAuth)
+				}
+				for name := range resp.GetHeaders() {
+					if strings.HasPrefix(name, "x-amz-") {
+						t.Fatalf("the plugin does not sign gateway requests itself: header %s", name)
 					}
-					for name := range resp.GetHeaders() {
-						if strings.HasPrefix(name, "x-amz-") {
-							t.Fatalf("the plugin does not sign gateway requests itself: header %s", name)
-						}
-					}
-					got := resp.GetSigning()
-					if (got == nil) != (tc.want == nil) {
-						t.Fatalf("signing = %v, want %v", got != nil, tc.want != nil)
-					}
-					if got == nil {
-						return
-					}
-					if got.GetScheme() != tc.want.GetScheme() || got.GetRegion() != tc.want.GetRegion() || got.GetService() != tc.want.GetService() ||
-						got.GetAccessKeyId() != tc.want.GetAccessKeyId() || got.GetSecretAccessKey() != tc.want.GetSecretAccessKey() || got.GetSessionToken() != tc.want.GetSessionToken() {
-						t.Fatalf("signing = scheme %s region %s service %s key %s, session token set: %v",
-							got.GetScheme(), got.GetRegion(), got.GetService(), got.GetAccessKeyId(), got.GetSessionToken() != "")
-					}
-					// The scheme is one the core's signer knows.
-					if !reqsign.Known(got.GetScheme()) || got.GetScheme() != reqsign.SchemeAWSSigV4 || got.GetService() != SigningService {
-						t.Fatalf("scheme %q / service %q", got.GetScheme(), got.GetService())
-					}
-				})
-			}
+				}
+				got := resp.GetSigning()
+				if (got == nil) != (tc.want == nil) {
+					t.Fatalf("signing = %v, want %v", got != nil, tc.want != nil)
+				}
+				if got == nil {
+					return
+				}
+				if got.GetScheme() != tc.want.GetScheme() || got.GetRegion() != tc.want.GetRegion() || got.GetService() != tc.want.GetService() ||
+					got.GetAccessKeyId() != tc.want.GetAccessKeyId() || got.GetSecretAccessKey() != tc.want.GetSecretAccessKey() || got.GetSessionToken() != tc.want.GetSessionToken() {
+					t.Fatalf("signing = scheme %s region %s service %s key %s, session token set: %v",
+						got.GetScheme(), got.GetRegion(), got.GetService(), got.GetAccessKeyId(), got.GetSessionToken() != "")
+				}
+				// The scheme is one the core's signer knows.
+				if !reqsign.Known(got.GetScheme()) || got.GetScheme() != reqsign.SchemeAWSSigV4 || got.GetService() != SigningService {
+					t.Fatalf("scheme %q / service %q", got.GetScheme(), got.GetService())
+				}
+			})
 		}
 	}
 }

@@ -1,14 +1,14 @@
 // Package bedrock implements the bedrock plugin: three account types that
-// reach models through the AWS Bedrock runtime
-// (docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md §9). They serve two built-in
-// platforms:
+// reach Claude through the AWS Bedrock runtime
+// (docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md §9). They serve the messages
+// endpoint of the built-in anthropic platform with InvokeModel and
+// InvokeModelWithResponseStream: the model goes into the path, the body
+// loses "model" and "stream" and gains anthropic_version, and a streamed
+// answer comes back as an AWS event stream the core decodes into SSE.
 //
-//   - anthropic (messages): Claude through InvokeModel and
-//     InvokeModelWithResponseStream. The model goes into the path, the body
-//     loses "model" and "stream" and gains anthropic_version, and a streamed
-//     answer comes back as an AWS event stream the core decodes into SSE;
-//   - openai (chat completions, responses): Bedrock's OpenAI-compatible
-//     endpoints under /openai/v1, forwarded as they are.
+// No type declares the openai platform: a request in an OpenAI protocol is
+// converted by the core into a Messages request and takes the same route.
+// Bedrock's OpenAI-compatible endpoints (/openai/v1) are not used.
 //
 // The types differ only in how a request is authorized:
 //
@@ -20,9 +20,11 @@
 //     and an administrator replaces them.
 //
 // The plugin does no network I/O: it describes the request and the core
-// sends it. It never sees the whole request body, so it cannot remove the
-// fields Claude Code adds deep inside it (tool "custom", cache_control
-// "scope" / "ttl"); the account's parameter override is the place for that.
+// sends it. It never sees the whole request body, only the fields its
+// manifest declares, so it cannot remove the fields Claude Code adds deep
+// inside it (tool "custom", cache_control "scope" / "ttl") nor add the beta
+// features a body needs without naming them; the account's parameter
+// override is the place for that.
 //
 // Never log an API key, a secret access key or a session token.
 package bedrock
@@ -44,11 +46,9 @@ const (
 	TypeAccessKey = "bedrock_aksk"
 	TypeSTS       = "bedrock_sts"
 
-	// Upstream protocols BuildUpstreamRequest speaks: endpoints of the
-	// built-in anthropic and openai platforms (sdk/platforms).
-	ProtocolMessages  = anthropic.ProtocolMessages
-	ProtocolChat      = "openai.chat"
-	ProtocolResponses = "openai.responses"
+	// ProtocolMessages is the upstream protocol BuildUpstreamRequest speaks:
+	// the messages endpoint of the built-in anthropic platform.
+	ProtocolMessages = anthropic.ProtocolMessages
 
 	// DefaultRegion is the region of an account that names none.
 	DefaultRegion = "us-east-1"
@@ -90,8 +90,13 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 	return &Plugin{ep: ep, now: time.Now}
 }
 
+// ServiceDomain is the domain of every host the plugin builds requests for
+// (manifest externalServices: the core matches a host equal to an entry or
+// under it).
+const ServiceDomain = "amazonaws.com"
+
 // RuntimeHost is the Bedrock runtime host of a region.
-func RuntimeHost(region string) string { return "bedrock-runtime." + region + ".amazonaws.com" }
+func RuntimeHost(region string) string { return "bedrock-runtime." + region + "." + ServiceDomain }
 
 // apiBase is the scheme and host serving region.
 func (p *Plugin) apiBase(region string) string {

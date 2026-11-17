@@ -105,6 +105,8 @@ func TestValidateCredentialsRejects(t *testing.T) {
 		{"region upper case", TypeAccessKey, akskCreds, settingsOf("US-EAST-1", ""), "region:pattern"},
 		{"region smuggling a host", TypeSTS, stsCreds, settingsOf("us-east-1.evil.example", ""), "region:pattern"},
 		{"region with a path", TypeAPIKey, apiKeyCreds, settingsOf("us-east-1/x", ""), "region:pattern"},
+		{"China region", TypeAPIKey, apiKeyCreds, settingsOf("cn-north-1", ""), "region:unsupported"},
+		{"China region, access key", TypeAccessKey, akskCreds, settingsOf("cn-northwest-1", "global"), "region:unsupported"},
 		{"unknown prefix", TypeAPIKey, apiKeyCreds, settingsOf("us-east-1", "cn"), "inference_profile_prefix:enum"},
 		{"prefix with the dot", TypeAccessKey, akskCreds, settingsOf("us-east-1", "us."), "inference_profile_prefix:enum"},
 	} {
@@ -138,6 +140,26 @@ func TestValidateCredentialsMalformedJSON(t *testing.T) {
 		resp, err := p.ValidateCredentials(context.Background(), in)
 		if err != nil || !slices.Equal(fieldErrors(resp), []string{":invalid"}) {
 			t.Fatalf("%v %v", fieldErrors(resp), err)
+		}
+	}
+}
+
+// The China partition is refused in both languages; GovCloud, which is
+// served under amazonaws.com like the commercial regions, is not.
+func TestPartitions(t *testing.T) {
+	resp, _ := validate(t, TypeAPIKey, apiKeyCreds, settingsOf("cn-north-1", ""))
+	if len(resp.GetErrors()) != 1 {
+		t.Fatalf("errors = %v", fieldErrors(resp))
+	}
+	if msg := resp.GetErrors()[0].GetMessage(); !strings.Contains(msg, "China regions (cn-*) are not supported") || !strings.Contains(msg, "不支持 AWS 中国区") {
+		t.Errorf("message = %q", msg)
+	}
+	for _, region := range []string{"us-gov-west-1", "us-gov-east-1", "ca-central-1"} {
+		if resp, _ := validate(t, TypeAccessKey, akskCreds, settingsOf(region, "")); len(resp.GetErrors()) != 0 {
+			t.Errorf("%s: %v", region, fieldErrors(resp))
+		}
+		if RuntimeHost(region) != "bedrock-runtime."+region+".amazonaws.com" {
+			t.Errorf("%s: host %s", region, RuntimeHost(region))
 		}
 	}
 }

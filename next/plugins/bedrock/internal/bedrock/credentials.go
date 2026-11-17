@@ -1,9 +1,7 @@
 package bedrock
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"regexp"
 	"slices"
 	"strconv"
@@ -14,8 +12,14 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/reqsign"
 )
+
+// object is a decoded JSON object: credentials or settings.
+type object = accountform.Object
+
+var fieldError = accountform.FieldError
 
 // Credential and settings fields (forms/*.schema.json).
 const (
@@ -50,6 +54,12 @@ var (
 	validSessionToken = visible(1, 8192)
 )
 
+// chinaRegionPrefix starts the regions of the AWS China partition, whose
+// endpoints are under amazonaws.com.cn and whose accounts are separate from
+// the global ones. RuntimeHost only knows amazonaws.com (which also serves
+// the GovCloud regions), so those regions are refused.
+const chinaRegionPrefix = "cn-"
+
 // NoProfilePrefix is the inference_profile_prefix of an account that sends
 // model ids as they are; an absent value means the same.
 const NoProfilePrefix = "none"
@@ -73,42 +83,9 @@ var auths = map[string]auth{
 	TypeSTS:       {signed: true, session: true},
 }
 
-// object is a decoded JSON object.
-type object map[string]any
-
-// decodeObject decodes a JSON object; blank input is an empty one.
-func decodeObject(raw string) (object, error) {
-	o := object{}
-	if strings.TrimSpace(raw) == "" {
-		return o, nil
-	}
-	if err := json.Unmarshal([]byte(raw), &o); err != nil {
-		return nil, err
-	}
-	if o == nil {
-		o = object{}
-	}
-	return o, nil
-}
-
-// str is the trimmed string value of k, "" when absent or not a string.
-func (o object) str(k string) string {
-	s, _ := o[k].(string)
-	return strings.TrimSpace(s)
-}
-
-func (o object) json() []byte {
-	b, _ := json.Marshal(o)
-	return b
-}
-
-func fieldError(field, code, msg string) *pluginv1.FieldError {
-	return &pluginv1.FieldError{Field: field, Code: code, Message: msg}
-}
-
 // credential checks a credential field that must be present and valid.
 func credential(creds object, field string, valid func(string) bool, required, malformed string) *pluginv1.FieldError {
-	switch v := creds.str(field); {
+	switch v := creds.Str(field); {
 	case v == "":
 		return fieldError(field, "required", required)
 	case !valid(v):
@@ -142,14 +119,16 @@ func (a auth) checkCredentials(creds object) *pluginv1.FieldError {
 // defaults: DefaultRegion and NoProfilePrefix.
 func checkSettings(settings object) *pluginv1.FieldError {
 	for field, def := range map[string]string{fieldRegion: DefaultRegion, fieldProfilePrefix: NoProfilePrefix} {
-		if settings.str(field) == "" {
+		if settings.Str(field) == "" {
 			settings[field] = def
 		}
 	}
-	switch {
-	case !regionPattern.MatchString(settings.str(fieldRegion)):
+	switch region := settings.Str(fieldRegion); {
+	case !regionPattern.MatchString(region):
 		return fieldError(fieldRegion, "pattern", "not an AWS region, e.g. us-east-1 / 不是合法的 AWS 区域，例如 us-east-1")
-	case !slices.Contains(ProfilePrefixes, settings.str(fieldProfilePrefix)):
+	case strings.HasPrefix(region, chinaRegionPrefix):
+		return fieldError(fieldRegion, "unsupported", "the AWS China regions (cn-*) are not supported: their endpoints are under amazonaws.com.cn / 不支持 AWS 中国区（cn-*）：其接入地址在 amazonaws.com.cn 下")
+	case !slices.Contains(ProfilePrefixes, settings.Str(fieldProfilePrefix)):
 		return fieldError(fieldProfilePrefix, "enum", "unknown inference profile prefix / 未知的跨区域推理前缀")
 	}
 	return nil
@@ -159,7 +138,7 @@ func checkSettings(settings object) *pluginv1.FieldError {
 // credentials. Only a submitted form is held to it: a stored account serves
 // requests whatever the hint says.
 func checkExpiryHint(settings object) *pluginv1.FieldError {
-	at := settings.str(fieldSessionExpiresAt)
+	at := settings.Str(fieldSessionExpiresAt)
 	if at == "" {
 		return nil
 	}
@@ -186,31 +165,18 @@ func check(typ string, creds, settings object) (auth, *pluginv1.FieldError) {
 // ValidateCredentials implements pluginsdk.Platform. An account without a
 // region or a prefix choice is stored with the defaults.
 func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
-	creds, err := decodeObject(in.GetCredentialsJson())
-	if err != nil {
-		return invalid(fieldError("", "invalid", "credentials must be a JSON object / 凭证必须是 JSON 对象")), nil
+	form, refused := accountform.DecodeForm(in)
+	if refused != nil {
+		return refused, nil
 	}
-	settings, err := decodeObject(in.GetSettingsJson())
-	if err != nil {
-		return invalid(fieldError("", "invalid", "settings must be a JSON object / 设置必须是 JSON 对象")), nil
-	}
-	before := settings.json()
-	_, bad := check(in.GetAccountType(), creds, settings)
+	_, bad := check(in.GetAccountType(), form.Creds, form.Settings)
 	if bad == nil {
-		bad = checkExpiryHint(settings)
+		bad = checkExpiryHint(form.Settings)
 	}
 	if bad != nil {
-		return invalid(bad), nil
+		return accountform.Invalid(bad), nil
 	}
-	resp := &pluginv1.ValidateCredentialsResponse{}
-	if after := settings.json(); !bytes.Equal(before, after) {
-		resp.NormalizedSettingsJson = string(after)
-	}
-	return resp, nil
-}
-
-func invalid(e *pluginv1.FieldError) *pluginv1.ValidateCredentialsResponse {
-	return &pluginv1.ValidateCredentialsResponse{Errors: []*pluginv1.FieldError{e}}
+	return form.Normalized(), nil
 }
 
 // account is what a request needs of a stored account.
@@ -223,36 +189,38 @@ type account struct {
 	prefix string
 }
 
-// readAccount decodes an account of one of the plugin's types. An account
-// requests cannot be built for answers FAILED_PRECONDITION: the gateway moves
-// on to another account without penalizing this one.
+// readAccount decodes an account of one of the plugin's types, with the
+// status codes vertex answers: INVALID_ARGUMENT when the credentials or the
+// settings are not a JSON object, FAILED_PRECONDITION when requests cannot
+// be built for the account (a type that is not the plugin's, a missing or
+// malformed credential, region or prefix). Either way the gateway moves on
+// to another account.
 func readAccount(acc *pluginv1.Account) (account, error) {
-	creds, err := decodeObject(acc.GetCredentialsJson())
+	creds, settings, err := accountform.DecodeAccount(acc)
 	if err != nil {
-		return account{}, status.Errorf(codes.InvalidArgument, "account %d: credentials are not a JSON object", acc.GetId())
-	}
-	settings, err := decodeObject(acc.GetSettingsJson())
-	if err != nil {
-		return account{}, status.Errorf(codes.InvalidArgument, "account %d: settings are not a JSON object", acc.GetId())
+		return account{}, err
 	}
 	a, bad := check(acc.GetType(), creds, settings)
 	if bad != nil {
 		return account{}, status.Errorf(codes.FailedPrecondition, "account %d: %s: %s", acc.GetId(), bad.GetField(), bad.GetMessage())
 	}
-	return account{auth: a, creds: creds, region: settings.str(fieldRegion), prefix: settings.str(fieldProfilePrefix)}, nil
+	return account{auth: a, creds: creds, region: settings.Str(fieldRegion), prefix: settings.Str(fieldProfilePrefix)}, nil
 }
 
-// bearer is the Authorization value of an API key account.
-func (a account) bearer() string { return "Bearer " + a.creds.str(fieldAPIKey) }
-
-// directive is how the requests of an access key account are signed.
-func (a account) directive() reqsign.Directive {
-	d := reqsign.Directive{
+// authorize says how a request of the account is authorized: an API key
+// goes into headers as a bearer token, and the other types return the
+// directive the request is to be signed with (signed).
+func (a account) authorize(headers map[string]string) (d reqsign.Directive, signed bool) {
+	if !a.auth.signed {
+		headers["authorization"] = "Bearer " + a.creds.Str(fieldAPIKey)
+		return d, false
+	}
+	d = reqsign.Directive{
 		Scheme: reqsign.SchemeAWSSigV4, Region: a.region, Service: SigningService,
-		AccessKeyID: a.creds.str(fieldAccessKeyID), SecretAccessKey: a.creds.str(fieldSecretAccessKey),
+		AccessKeyID: a.creds.Str(fieldAccessKeyID), SecretAccessKey: a.creds.Str(fieldSecretAccessKey),
 	}
 	if a.auth.session {
-		d.SessionToken = a.creds.str(fieldSessionToken)
+		d.SessionToken = a.creds.Str(fieldSessionToken)
 	}
-	return d
+	return d, true
 }
