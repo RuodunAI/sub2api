@@ -5113,7 +5113,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
   - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；Anthropic 官方 Messages API 仍限 32 MB）。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
-  - 三个超时只作用于 HTTP 转发；WebSocket 会话是长连接，只用请求体上限（作为单条消息的上限）。
+  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限。
   - 资源请求（Files API 等，`resource_http.go`）不受 `max_request_body_mb` 和三个超时约束，用自己的上限（文件 512 MB、JSON 16 KB）和期限。
   - `relay_timeout_seconds` 从发出上游请求时起算，与 `response_header_timeout_seconds` 同时开始；之前的本地准备（资源与额度请求头、辅助历史包装、可用性检查、任务登记）不计入。`streaming_idle_timeout_seconds` 只在核心等待上游数据（读响应体）时计时，客户端读得慢不算上游空闲。
   - 账号层取本次尝试重新加载的账号，不取挑选候选时的快照。
