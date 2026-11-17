@@ -429,14 +429,19 @@ const (
 // an affinity_cleared event; one that fails or runs out of time is handed
 // back to the next run. A clear is retried at least until it succeeds or is
 // given up; retrying selects the same bindings (same salt), so it does not
-// clear more than its share.
+// clear more than its share. While the core's sticky sessions are off the
+// clears are given up (stickyEnabled).
 func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 	budget := stickyBudget
 	if deadline, ok := ctx.Deadline(); ok {
 		budget = min(budget, time.Until(deadline)-stickyMargin)
 	}
-	if budget < time.Second || !p.stickyEnabled(ctx) {
+	if budget < time.Second {
 		return
+	}
+	run := p.clearSticky
+	if !p.stickyEnabled(ctx) {
+		run = skipSticky
 	}
 	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
@@ -458,7 +463,7 @@ func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 			}
 			break
 		}
-		if ev, done := p.clearSticky(cctx, c); done {
+		if ev, done := run(cctx, c); done {
 			if err := s.finishClear(after, c); err != nil {
 				p.log.Warn("dynweight: drop pending sticky clear failed", "account_id", c.AccountID, "error", err.Error())
 			}
@@ -471,10 +476,14 @@ func (p *Plugin) runStickyClears(ctx context.Context, s store) {
 }
 
 // stickyEnabled reports whether the core's sticky sessions are on (CONTRACTS
-// §106). While they are off no binding is read, so a clear would only walk
-// the binding keyspace for nothing: the queued clears wait, and run if
-// sticky sessions come back on before cleanup gives them up. When the
-// settings cannot be read the clears run as before.
+// §106). While they are off a new request neither binds a session nor reads
+// a binding, and the bindings left behind expire with their TTL; only a
+// WebSocket connection opened before keeps using its own until it closes.
+// A clear then mostly walks the binding keyspace for nothing, and kept
+// queued it would run late, after sticky sessions came back on, against
+// bindings made since on an account that may have recovered. So the clears
+// are given up instead (skipSticky). When the settings cannot be read the
+// clears run as before.
 func (p *Plugin) stickyEnabled(ctx context.Context) bool {
 	sticky, err := pluginsdk.Settings[protocol.StickySettings](ctx, p.host)
 	if err != nil {
@@ -484,14 +493,28 @@ func (p *Plugin) stickyEnabled(ctx context.Context) bool {
 	return sticky.Enabled
 }
 
-// clearSticky runs one clear: done when it succeeded or is given up, with
-// its event.
-func (p *Plugin) clearSticky(ctx context.Context, c pendingClear) (eventRow, bool) {
+// clearEvent is the affinity_cleared event of a clear.
+func clearEvent(c pendingClear) eventRow {
 	ev := eventRow{key: c.key, Event: rules.Event{Kind: rules.EventAffinityClear, From: c.Weight, To: c.Weight},
 		Detail: map[string]any{"strategy": c.Strategies, "percent": c.Percent}}
 	if c.Zero {
 		ev.Detail["zero"] = true
 	}
+	return ev
+}
+
+// skipSticky gives a clear up while sticky sessions are off, with its event
+// (detail.skipped).
+func skipSticky(_ context.Context, c pendingClear) (eventRow, bool) {
+	ev := clearEvent(c)
+	ev.Detail["skipped"] = "sticky_disabled"
+	return ev, true
+}
+
+// clearSticky runs one clear: done when it succeeded or is given up, with
+// its event.
+func (p *Plugin) clearSticky(ctx context.Context, c pendingClear) (eventRow, bool) {
+	ev := clearEvent(c)
 	resp, err := pluginsdk.ClearStickyBindings(ctx, p.host, &pluginv1.ClearStickyBindingsRequest{AccountId: c.AccountID, GroupId: c.GroupID,
 		Model: c.Model, Percent: int32(c.Percent), Salt: c.Salt})
 	if err == nil {
