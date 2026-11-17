@@ -8,6 +8,13 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 预设模型补上 Claude Fable 5.2 与 Gemini 3.5 / 3.8 / 4（anthropic 0.3.4、claude-oauth 0.2.5、relay 0.3.2、gemini 0.3.2）
+
+- **Claude**：Anthropic（API Key）、Claude OAuth、Claude Setup Token、中转 Key 四种账号类型的“填入预设模型”在最前面加上 `claude-fable-5-2`。
+- **Gemini**：API Key 账号的“填入预设模型”加上 `gemini-4-carbon`、`gemini-4-argon`、`gemini-4-hydrogen`、`gemini-3.8-flash`、`gemini-3.5-flash`、`gemini-3.5-flash-lite`（Google 模型页与弃用表列出的 ID；`gemini-3.5-flash` 上游已自动转到 `gemini-3.6-flash`，但端点仍可用）。
+- 只改预设列表，不含价格；已有账号的模型列表不变，要用新列表请在账号上重新填入或从上游获取。
+- anthropic 的升级测试夹具随之由 0.3.4-test 改为 0.3.5-test（`deploy/ci/check.sh`、e2e AC05、`tools/sub2api-plugin` 测试和 `build-demo.sh`）。anthropic 插件自带的模型目录（`GET /models`）没有加 Fable 5.2，那需要新迁移。
+
 ### 账号请求头覆盖（兼容 new-api）与参数覆盖补齐（迁移 0105）
 
 - **请求头覆盖**（CONTRACTS §108）：账号新增“请求头覆盖”（接口字段 `header_override`），格式与 new-api 渠道的请求头覆盖相同，new-api 的配置可以直接粘贴。键是请求头名，值是固定文本或占位符：`{client_header:名}` 取客户端的这个头（没带就不设），`{client_header:名:追加值}` 在客户端的值后面追加（没带时只发追加值），`{unset}` 删除这个头，空值忽略；键 `*` 透传全部客户端请求头，键 `re:正则` / `regex:正则` 透传名称匹配的头。它在请求头透传之后、参数覆盖之前生效，参数覆盖从它的结果开始（条件可读 `header_override.名`，`keep_origin` 不覆盖它设的头），插件的头和鉴权头仍在最后。WebSocket 握手同样生效（透传键除外）。
