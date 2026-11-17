@@ -25,14 +25,14 @@
     {
       "id": "codex_device",
       "upstreamFields": [],
-      "label": { "en": "ChatGPT (Codex) · Device Code", "zh": "ChatGPT（Codex）· 设备码登录" },
+      "label": { "en": "ChatGPT (Codex) · Device Code", "zh": "ChatGPT（Codex）· 设备码" },
       "description": {
         "en": "Your own ChatGPT subscription, authorized with the Codex device code login. Requests go to the ChatGPT Codex backend and use your plan's Codex usage. Own use only; pooling or reselling accounts is not allowed.",
         "zh": "你自己的 ChatGPT 订阅，用 Codex 设备码登录授权。请求发往 ChatGPT 的 Codex 后端，消耗你套餐的 Codex 用量。仅限自用，不得做成号池或转售。"
       },
       "form": { "mode": "native", "component": "CodexAuthForm" },
       "creationGroup": "codex",
-      "authMethodLabel": { "en": "Device Code", "zh": "设备码登录" },
+      "authMethodLabel": { "en": "Device Code", "zh": "设备码" },
       "sensitiveFields": ["access_token", "refresh_token", "id_token"],
       "settingsFields": ["proxy_id"],
       "refresh": {},
@@ -68,14 +68,14 @@
     {
       "id": "codex_oauth",
       "upstreamFields": [],
-      "label": { "en": "ChatGPT (Codex) · Sign in with Codex", "zh": "ChatGPT（Codex）· Sign in with Codex" },
+      "label": { "en": "ChatGPT (Codex) · Codex", "zh": "ChatGPT（Codex）· Codex" },
       "description": {
         "en": "Your own ChatGPT subscription, authorized with the Codex CLI's browser sign-in (Sign in with Codex). Requests go to the ChatGPT Codex backend and use your plan's Codex usage. Own use only; pooling or reselling accounts is not allowed.",
         "zh": "你自己的 ChatGPT 订阅，用 Codex CLI 的浏览器登录（Sign in with Codex）授权。请求发往 ChatGPT 的 Codex 后端，消耗你套餐的 Codex 用量。仅限自用，不得做成号池或转售。"
       },
       "form": { "mode": "native", "component": "CodexAuthForm" },
       "creationGroup": "codex",
-      "authMethodLabel": { "en": "Sign in with Codex", "zh": "Sign in with Codex" },
+      "authMethodLabel": { "en": "Codex", "zh": "Codex" },
       "sensitiveFields": ["access_token", "refresh_token", "id_token"],
       "settingsFields": ["proxy_id"],
       "refresh": {},

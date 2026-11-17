@@ -53,8 +53,8 @@ const declared = (id: string): any => (manifest.accountTypes || []).find((a: any
 const NAME = manifest.name || { en: 'ChatGPT (Codex)', zh: 'ChatGPT（Codex）' }
 const VERSION = manifest.version || '0.1.0'
 const FALLBACK = {
-  codex_device: { authMethodLabel: { en: 'Device Code', zh: '设备码登录' }, description: { en: 'Your own ChatGPT subscription, authorized with the Codex device code login', zh: '你自己的 ChatGPT 订阅，用 Codex 设备码登录授权' } },
-  codex_oauth: { authMethodLabel: { en: 'Sign in with Codex', zh: 'Sign in with Codex' }, description: { en: "Your own ChatGPT subscription, authorized with the Codex CLI's browser sign-in", zh: '你自己的 ChatGPT 订阅，用 Codex CLI 的浏览器登录授权' } }
+  codex_device: { authMethodLabel: { en: 'Device Code', zh: '设备码' }, description: { en: 'Your own ChatGPT subscription, authorized with the Codex device code login', zh: '你自己的 ChatGPT 订阅，用 Codex 设备码登录授权' } },
+  codex_oauth: { authMethodLabel: { en: 'Codex', zh: 'Codex' }, description: { en: "Your own ChatGPT subscription, authorized with the Codex CLI's browser sign-in", zh: '你自己的 ChatGPT 订阅，用 Codex CLI 的浏览器登录授权' } }
 }
 export const codexAccountTypes = (['codex_device', 'codex_oauth'] as const).map((type) => {
   const d = declared(type)

@@ -17,9 +17,9 @@
 
 - 未设 `SUB2API_BUILTIN_TRUST_KEY` 时，核心从内置插件目录的 `builtin/trust.pub` + `trust.keyid`（镜像和 Release 包都带）读取签内置包的密钥并始终信任，镜像入口脚本里同样的推导删除。此前网关托管的核心不走镜像入口脚本，compose 不手动配这个变量就会拒绝 Release 内置包（`unknown signing key sup2api-plugins-2026`），内置插件停在旧版本：ec2pool 升到 0.1.297 时 codex 停在 0.1.6，当时是手动在 compose 里补的变量。
 
-### codex 0.1.8：两种登录的账号类型名称分开（只改清单文字）
+### codex 0.1.8：两种登录方式改名为“设备码”和“Codex”（只改文字）
 
-- 账号类型名称改为“ChatGPT（Codex）· 设备码登录”和“ChatGPT（Codex）· Sign in with Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Sign in with Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改清单文字，不改行为，可单独滚动发布或随下个核心内置。
+- 登录方式（新建账号表单的“认证方式”选项卡与账号类型的认证方式）改名：中文“设备码”“Codex”，英文 “Device Code”、“Codex”（此前是“设备码登录”“Sign in with Codex”）。账号类型名称随之改为“ChatGPT（Codex）· 设备码”和“ChatGPT（Codex）· Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改文字，不改行为，可单独滚动发布或随下个核心内置。
 
 ## 2026-11-17
 
