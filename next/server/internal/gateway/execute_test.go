@@ -98,20 +98,28 @@ func executeFixture(t *testing.T, svc core.Settler) (*env, *executeTestPlatform)
 	return e, p
 }
 
-func TestFailurePolicyExecuteNeverInvokesPluginClassifier(t *testing.T) {
+// Under a failure policy the HTTP error of an executed request is classified
+// by the plugin inside Execute, as ClassifyError is on the forwarding path:
+// the policy still decides retry and failover, and takes the plugin's timed
+// disable (CONTRACTS §69).
+func TestFailurePolicyExecuteTakesPluginClassification(t *testing.T) {
 	db := testutil.DB(t)
 	bill := billing.New(db, nil, nil, nil, nil)
 	svc := usage.New(db, bill, bill, nil, usage.Options{})
 	e, p := executeFixture(t, svc)
 	e.setFailurePolicy(testFailurePolicy())
 	e.up.set("acc-1", &upstreamRule{status: 503})
-	e.plat.classifyHook = func(*pluginv1.ClassifyErrorRequest, *pluginv1.ClassifyErrorResponse) {
-		t.Error("plugin classifier must not run with core policy")
+	reset := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	e.plat.classifyHook = func(_ *pluginv1.ClassifyErrorRequest, out *pluginv1.ClassifyErrorResponse) {
+		out.Action = pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT // not the plugin's to decide
+		out.AutomaticState = &pluginv1.AccountAutomaticState{Action: pluginv1.AccountAutomaticState_ACTION_DISABLE,
+			Reason: "quota window full", Release: &pluginv1.AccountAutomaticState_UntilUnix{UntilUnix: reset.Unix()}}
 	}
 	require.Equal(t, 200, e.messages(body(testModel, false)).status)
 	require.Equal(t, int64(2), p.calls.Load())
 	require.Equal(t, []string{"acc-1", "acc-2"}, e.up.keys())
-	require.Empty(t, e.plat.classify)
+	require.Len(t, e.plat.classify, 1)
+	require.Equal(t, "quota window full", e.accounts.disabled[1])
 }
 
 // The Execute RPC outlives the longest relay_timeout_seconds an attempt may use.

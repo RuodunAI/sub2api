@@ -179,9 +179,12 @@ func (x *gatewayExecution) forwardCallback(ctx context.Context, in *pluginv1.For
 		return nil, err
 	}
 	x.result = c.forwardBuilt(nctx, x.rt, x.account, x.request, x.body, in.Request, x)
-	// Keep the network facts in x for the core. Returning an error terminates
-	// the default Execute flow before it invokes the plugin's ClassifyError.
-	if c.failurePolicy != nil && x.response.GetError() != nil {
+	// Keep the network facts in x for the core. Under a failure policy a
+	// transport error (no status) is the policy's alone, as in classify:
+	// returning an error terminates the default Execute flow before it
+	// invokes the plugin's ClassifyError. An HTTP error is still classified
+	// by the plugin, whose quota and timed disable the policy takes (§69).
+	if c.failurePolicy != nil && x.response.GetError() != nil && x.response.GetError().GetStatus() == 0 {
 		return nil, errors.New("upstream failure handled by core policy")
 	}
 	if x.response == nil {

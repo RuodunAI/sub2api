@@ -3984,7 +3984,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 问题：线上发布了故障策略（§ 自动重试与禁用的 `failure_policy`）。原先有策略时核心完全不调用插件 `ClassifyError`，插件给 429 设的"禁用到重置时刻"根本没执行；策略里 429 的冷却为 0，额度用满的账号每个请求都会被先试一次。
 
 规则：
-- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类），并执行其中两项：
+- 上游返回 HTTP 错误（`status > 0`，不含传输错误）时，即使发布了故障策略，核心也调用插件 `ClassifyError`（`platform.execute` 插件则用 Execute 返回的分类；核心 0.1.299 前代码没有做到：发布故障策略后 `forwardCallback` 对任何上游失败都向插件返回错误，插件的 `ClassifyError` 不运行，下面两项对 codex、volcengine 等插件执行的请求都不生效。现在只有传输错误这样处理，与 `classify` 一致），并执行其中两项：
   1. `quota`：配额观测照常保存（§44）。
   2. `automatic_state` 为 `DISABLE` 且带解除时间（`until_unix` 在未来，或 `duration_seconds` > 0，最长 366 天）：账号立即设为 `auto_disabled`，`auto_disabled_until` = 解除时间，原因用插件给的 `reason`。解除时间一过调度即可再选中它（惰性过期），核心的低频巡检随后把状态写回 `active`。
 - 其余仍由策略决定：是否重试、同账号重试次数、换号、冷却、返回给客户端的内容。插件的 `action`、`account_effect`、`cooldown_until_unix` 不采用。
