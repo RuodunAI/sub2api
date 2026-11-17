@@ -49,11 +49,19 @@ type Settings struct {
 // Plugin implements pluginsdk.NotificationChannel and pluginsdk.Configurer.
 type Plugin struct {
 	cfg atomic.Pointer[Settings]
-	// dial opens the TCP connection; tests replace it.
-	dial func(ctx context.Context, address string) (net.Conn, error)
+	// dial opens the TCP connection and lookup resolves a host name (through
+	// the tunnel once it is installed); tests replace them.
+	dial   func(ctx context.Context, address string) (net.Conn, error)
+	lookup func(ctx context.Context, host string) ([]string, error)
 }
 
-func New() *Plugin { return &Plugin{dial: dialEgress} }
+func New() *Plugin { return &Plugin{dial: dialEgress, lookup: lookupHost} }
+
+// lookupHost reads net.DefaultResolver at call time: egress.Install replaces
+// it after New.
+func lookupHost(ctx context.Context, host string) ([]string, error) {
+	return net.DefaultResolver.LookupHost(ctx, host)
+}
 
 // dialEgress dials through the host tunnel when it is installed (strict
 // network mode), directly otherwise.
@@ -124,10 +132,14 @@ func (p *Plugin) DeliverNotification(ctx context.Context, in *pluginv1.DeliverNo
 	return &pluginv1.DeliverNotificationResponse{}, nil
 }
 
+// send runs one SMTP session. The errors of the setup steps say which step
+// failed and what to check, in English and Chinese, ahead of the underlying
+// error: the core shows them in the delivery record.
 func (p *Plugin) send(ctx context.Context, s *Settings, to []string, msg []byte) error {
-	conn, err := p.dial(ctx, net.JoinHostPort(s.Host, strconv.Itoa(s.Port)))
+	address := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
+	conn, err := p.dial(ctx, address)
 	if err != nil {
-		return err
+		return p.connectError(ctx, s.Host, address, err)
 	}
 	defer conn.Close()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -137,28 +149,29 @@ func (p *Plugin) send(ctx context.Context, s *Settings, to []string, msg []byte)
 	if s.Security == SecurityTLS {
 		conn = tls.Client(conn, tlsConfig)
 	}
+	// The greeting is the first read, so it also runs the TLS handshake.
 	c, err := smtp.NewClient(conn, s.Host)
 	if err != nil {
-		return err
+		return fmt.Errorf("no SMTP greeting from %s / SMTP 服务器 %s 没有正常应答%s: %w", address, address, portHint(s), err)
 	}
 	defer c.Close()
 	if s.Security == SecuritySTARTTLS {
 		if ok, _ := c.Extension("STARTTLS"); !ok {
-			return errors.New("the SMTP server does not offer STARTTLS")
+			return errors.New("the SMTP server does not offer STARTTLS / SMTP 服务器不支持 STARTTLS")
 		}
 		if err := c.StartTLS(tlsConfig); err != nil {
-			return err
+			return fmt.Errorf("STARTTLS failed / STARTTLS 失败: %w", err)
 		}
 	}
 	if s.Username != "" {
 		// PlainAuth refuses to send the password without TLS (except to
 		// localhost).
 		if err := c.Auth(smtp.PlainAuth("", s.Username, s.Password, s.Host)); err != nil {
-			return err
+			return fmt.Errorf("SMTP login failed, check the username and password / SMTP 登录失败，请检查用户名和密码: %w", err)
 		}
 	}
 	if err := c.Mail(s.FromAddress); err != nil {
-		return err
+		return fmt.Errorf("the SMTP server refused the from address %s / SMTP 服务器拒绝了发件地址 %s: %w", s.FromAddress, s.FromAddress, err)
 	}
 	for _, r := range to {
 		if err := c.Rcpt(r); err != nil {
@@ -179,6 +192,29 @@ func (p *Plugin) send(ctx context.Context, s *Settings, to []string, msg []byte)
 	// send it again.
 	_ = c.Quit()
 	return nil
+}
+
+// connectError explains a failed connection. A host name that does not exist
+// (the usual cause: a mistyped SMTP host) is told apart by looking it up
+// again, because the egress tunnel reports the failure as text only.
+func (p *Plugin) connectError(ctx context.Context, host, address string, err error) error {
+	var dnsErr *net.DNSError
+	if _, lerr := p.lookup(ctx, host); errors.As(lerr, &dnsErr) && dnsErr.IsNotFound {
+		return fmt.Errorf("SMTP host %s does not exist, correct it in the mailer settings / 找不到 SMTP 服务器 %s（域名不存在），请在邮件插件设置里改正: %w", host, host, err)
+	}
+	return fmt.Errorf("cannot connect to SMTP server %s / 连不上 SMTP 服务器 %s: %w", address, address, err)
+}
+
+// portHint names the security mode a well-known port expects when the
+// settings choose another, the usual cause of a server that does not answer.
+func portHint(s *Settings) string {
+	switch {
+	case s.Port == 465 && s.Security != SecurityTLS:
+		return "; port 465 expects TLS from the start / 端口 465 一般选“全程 TLS”"
+	case s.Port == 587 && s.Security == SecurityTLS:
+		return "; port 587 expects STARTTLS / 端口 587 一般选 STARTTLS"
+	}
+	return ""
 }
 
 // messageRefused is a 5xx reply to the message itself (its recipients or

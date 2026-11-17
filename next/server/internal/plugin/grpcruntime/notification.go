@@ -37,20 +37,38 @@ type notificationAdapter struct{ i *Instance }
 // so notify does not count it as a delivery attempt (CONTRACTS §74.4). An
 // error after the call reached the process, a crash in the middle included,
 // stays an ordinary failure: it may have been delivered, and a notification
-// that crashes the plugin must still run out of attempts.
+// that crashes the plugin must still run out of attempts. An error the plugin
+// returned itself reads as its own message (pluginError).
 func (a notificationAdapter) DeliverNotification(ctx context.Context, in *pluginv1.DeliverNotificationRequest) (*pluginv1.DeliverNotificationResponse, error) {
 	reached := false
+	var replied error
 	out, err := invoke(a.i, ctx, classBackground, TimeoutNotification, notifierOf,
 		func(c pluginv1.NotificationServiceClient, ctx context.Context, in *pluginv1.DeliverNotificationRequest, opts ...grpc.CallOption) (*pluginv1.DeliverNotificationResponse, error) {
 			reached = true
-			return c.DeliverNotification(ctx, in, opts...)
+			resp, e := c.DeliverNotification(ctx, in, opts...)
+			replied = e
+			return resp, e
 		}, in)
 	var ce *core.Error
 	if err != nil && !reached && errors.As(err, &ce) && ce.Code == core.ErrPluginUnavailable.Code {
 		return nil, notRunningError{err}
 	}
+	if st, ok := status.FromError(replied); ok && st.Code() == codes.Unknown {
+		return nil, pluginError{st.Message(), err}
+	}
 	return out, err
 }
+
+// pluginError is an error the plugin returned from its handler (gRPC
+// Unknown). It reads as the plugin's own message, without the core error
+// code and the gRPC status in front, so the delivery record shows the cause.
+type pluginError struct {
+	msg string
+	err error
+}
+
+func (e pluginError) Error() string { return e.msg }
+func (e pluginError) Unwrap() error { return e.err }
 
 // notRunningError wraps core.ErrPluginUnavailable for a call the instance
 // refused before it reached the plugin process. Notify recognizes it by the
