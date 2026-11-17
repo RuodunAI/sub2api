@@ -6,6 +6,11 @@
 >
 > 2026-10-27 清理：文中引用的本机 `artifacts/` 与 ovh 上 `~/sup2api/checks/`、旧 `release-*`、`~/sup2api-managed/{stage,backups,publish,ccgateway-images}/` 下的旧版本原始记录已删除，路径仅作出处；现存位置见 [CLI-TEST-PLAN](../../../plugins/ccgateway/docs/CLI-TEST-PLAN.md)。
 
+2026-11-17 核心 **0.1.297**（Release `core-v0.1.297`，`f40c7831d`，内置 codex 0.1.7；北京时间 21:02–21:03；计划 `d3602f6e87e5df4a901786b57ab988e0` rolling-v1 completed，21:02:05→21:03:14，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移；网关仍 0.1.137）：
+- Release 的 `next-core-manifest.json`（sha256 `64bc544f5b13d683d4565cb4fb5a0fefc60369ed6f0e434457285e857710c431`）与两个 bundle 核对摘要后放进 `publish/sup2api/`（`stage/0.1.297/`），主节点 import，`--preflight-only` 选中 rolling-v1、无 blocker（expected_revision 562）后执行（`~/rel297/observe.py`）。基线 `b62f6c8b…`（0.1.295）→ `64bc544f…`。
+- 核验：两节点核心 0.1.297，9 个插件 active、ready、restarts 0，codex 0.1.7；codex 账号类型只剩 `codex_device`、`codex_oauth`（`chatgpt_siwc` 已删除，本集群原本没有 codex 账号，被动用量快照未实测）；强制检测无更新、无错误；两节点日志无 ERROR，5xx 0。392 仍是关闭状态，没有动。
+- 回滚：0.1.295 清单 `b62f6c8b04628ff00a155506737ce5103a7ff8b3d5f555222b224636a3720721` 建 rolling 计划（插件只升不降，codex 留在 0.1.7）。
+
 2026-11-17 核心 **0.1.296**（Release `core-v0.1.296`，`cf4718dcb`）：只装到了 ec2pool（见 [ec2pool 部署记录](../ec2pool/README.md)），本集群仍是核心 0.1.295、网关 0.1.137。
 
 2026-11-17 网关 **0.1.137** + 核心 **0.1.295**（`3c8cbbda9`，上游 develop；第一次由 GitHub Actions 发在 Sub2API-Devs/sup2api 的 Release：`gateway-v0.1.137` 17:44:50、`core-v0.1.295` 17:45:15；用户要求逐个节点手动处理，没有用一键更新；北京时间 18:23–18:26；核心计划 `4d9d574cffbb3aa86a3f7238c1f80b2e` rolling-v1 completed，18:25:31→18:26:37，先 ccp 后 ovh，`/readyz`（ovh 3130 与 api.prophey.ai）全程 200；无核心迁移，schema 仍 `ab35f2f6…187d`）：

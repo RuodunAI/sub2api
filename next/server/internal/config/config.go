@@ -225,10 +225,12 @@ func Load(goos string) (*Config, error) {
 			}
 		}
 	}
-	// The key that signed the built-in packages of this image is always
-	// trusted as official (SUB2API_BUILTIN_TRUST_KEY "keyId=base64pub", set by
-	// the image entrypoint).
-	if k := strings.TrimSpace(os.Getenv("SUB2API_BUILTIN_TRUST_KEY")); k != "" {
+	// The key that signed the built-in packages of this core is always
+	// trusted as official: SUB2API_BUILTIN_TRUST_KEY ("keyId=base64pub") when
+	// set, otherwise builtin/trust.pub + trust.keyid shipped next to the
+	// packages (every image and release bundle carries them, so gateway-managed
+	// cores need no extra configuration).
+	if k := builtinTrustKey(p.BuiltinDir); k != "" {
 		id, _, _ := strings.Cut(k, "=")
 		dup := false
 		for _, have := range p.OfficialRootKeys {
@@ -316,4 +318,28 @@ func int64Env(k string, def int64) (int64, error) {
 		return 0, fmt.Errorf("%s: %w", k, err)
 	}
 	return n, nil
+}
+
+// builtinTrustKey returns "keyId=base64pub" for the key that signed the
+// built-in plugin packages in dir, or "" when neither the environment nor the
+// directory names one.
+func builtinTrustKey(dir string) string {
+	if k := strings.TrimSpace(os.Getenv("SUB2API_BUILTIN_TRUST_KEY")); k != "" {
+		return k
+	}
+	pub, err := os.ReadFile(filepath.Join(dir, "trust.pub"))
+	if err != nil {
+		return ""
+	}
+	key := strings.Join(strings.Fields(string(pub)), "")
+	if key == "" {
+		return ""
+	}
+	id := "sub2api-dev"
+	if b, err := os.ReadFile(filepath.Join(dir, "trust.keyid")); err == nil {
+		if v := strings.Join(strings.Fields(string(b)), ""); v != "" {
+			id = v
+		}
+	}
+	return id + "=" + key
 }

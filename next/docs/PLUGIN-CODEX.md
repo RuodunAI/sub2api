@@ -251,7 +251,7 @@
 
 ### 14.2 插件改动
 
-- manifest：新账号类型 `codex_oauth`（`authMethodLabel` “Sign in with Codex”，表单、敏感字段、设置字段、`refresh`、默认模型、`requestFields`、`streamOnly` 与 `codex_device` 相同）；额度用 `quota.headers` 按 `windowMinutes` 从每次应答的 `x-codex-primary-*` / `x-codex-secondary-*` 头命名窗口（CONTRACTS §105），窗口标签与 `codex_device` 相同；`codex_device` 的 `authMethodLabel` 改为 “Device Code”。路由 `POST /auth/codex/start`、`POST /auth/codex/exchange`（`scope: admin`，`codex:manage`）。重置次数的两个 UI 插槽与行操作的 `accountTypes` 加上 `codex_oauth`。宿主权限说明改为设备码与 Sign in with Codex。
+- manifest：新账号类型 `codex_oauth`（`authMethodLabel` “Codex”（0.1.8 起，原 “Sign in with Codex”），表单、敏感字段、设置字段、`refresh`、默认模型、`requestFields`、`streamOnly` 与 `codex_device` 相同）；额度用 `quota.headers` 按 `windowMinutes` 从每次应答的 `x-codex-primary-*` / `x-codex-secondary-*` 头命名窗口（CONTRACTS §105），窗口标签与 `codex_device` 相同；`codex_device` 的 `authMethodLabel` 改为 “Device Code”（中文 0.1.8 起为“设备码”）。路由 `POST /auth/codex/start`、`POST /auth/codex/exchange`（`scope: admin`，`codex:manage`）。重置次数的两个 UI 插槽与行操作的 `accountTypes` 加上 `codex_oauth`。宿主权限说明改为设备码与 Sign in with Codex。
 - 会话：KV namespace `codex_session`，`{state, code_verifier}`，30 分钟，绑定发起人（`SaveCallerSession`，他人或过期都回 404 `session_expired`）。exchange 的错误码沿用原 SIWC：`invalid_callback`、`state_mismatch`、`access_denied`（结束会话）、`authorization_failed`（400），`session_expired`（404），`upstream_unavailable`、`token_exchange_failed`（502）。
 - 表单：`SiwcFlow.vue` 改为 `OAuthFlow.vue`（生成链接 → 新窗口打开 → 粘贴 `localhost:1455` 回调网址 → 换取），重新授权走同一流程；文案 `oauth.*`。
 
