@@ -77,6 +77,9 @@ func TestManifestShape(t *testing.T) {
 	}
 	labels := map[string]string{codex.TypeDevice: "Device Code", codex.TypeOAuth: "Sign in with Codex"}
 	zhLabels := map[string]string{codex.TypeDevice: "设备码登录", codex.TypeOAuth: "Sign in with Codex"}
+	if m.AccountTypes[0].Label["en"] == m.AccountTypes[1].Label["en"] || m.AccountTypes[0].Label["zh"] == m.AccountTypes[1].Label["zh"] {
+		t.Errorf("account type labels must tell the two logins apart: %v %v", m.AccountTypes[0].Label, m.AccountTypes[1].Label)
+	}
 	for _, at := range m.AccountTypes {
 		if at.Form.Mode != "native" || at.Form.Component != "CodexAuthForm" || at.Form.Schema != "" {
 			t.Errorf("%s form = %+v", at.ID, at.Form)

@@ -13,6 +13,10 @@
 - **预检跳过停用节点**：手动停用的节点（例如两节点集群改成单节点后留下的那一台）不再列入核心升级计划，此前它会进入计划并让计划在它的第一步暂停（`planned node is disabled`）。没有任何启用节点时预检报 `no_nodes`。
 - **`remove-node` 不再要求 `stopped`**：只要节点已停用且 5 分钟内没有心跳就能删除。`stopped` 只由升级计划的停止步骤写入，手动停容器或停用都不写，所以 ec2pool 的 node-b 这类节点以前删不掉。
 
+### codex 0.1.8：两种登录的账号类型名称分开（只改清单文字）
+
+- 账号类型名称改为“ChatGPT（Codex）· 设备码登录”和“ChatGPT（Codex）· Sign in with Codex”（英文 “ChatGPT (Codex) · Device Code”、“ChatGPT (Codex) · Sign in with Codex”），账号列表、筛选和详情里能分清两种登录；此前两者都显示“ChatGPT（Codex）”。只改清单文字，不改行为，可单独滚动发布或随下个核心内置。
+
 ## 2026-11-17
 
 ### 核心 0.1.297：codex 用量窗口以响应头为准、新增 Sign in with Codex、删除 Sign in with ChatGPT（codex 0.1.7；无迁移，滚动）
