@@ -2902,13 +2902,13 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 | 字段 | 说明 |
 |---|---|
-| `headers[]` | 被动采样声明，最多 `manifest.MaxQuotaHeaders`（16）个窗口。`key` 必填且不重复；`utilization` / `reset` / `status` 是响应头名（大小写不敏感），至少给一个。`key` 与 `windowMinutes` 二选一（§105） |
+| `headers[]` | 被动采样声明，最多 `manifest.MaxQuotaHeaders`（16）个窗口。`key`（不重复）与 `windowMinutes` 二选一（§105）；`utilization` / `reset` / `status` 是响应头名（大小写不敏感），至少给一个 |
 | `headers[].windowMinutes` | 携带窗口时长（分钟）的响应头名；给了它就不写 `key`，窗口名按该头的值生成（§105） |
 | `headers[].utilizationUnit` | `ratio`（默认，0–1，乘 100 存储；Anthropic 即此）或 `percent` |
 | `headers[].resetFormat` | `unix`（默认，Unix 秒；大于 1e11 视为毫秒）、`rfc3339`、`delta`（距现在的秒数） |
 | `query` | 插件实现 `BuildQuotaRequest` / `ParseQuotaResponse`（§44.4） |
 
-未声明 `quota`（或两者皆空，校验拒绝）的类型 = 不支持额度（API Key 类），账号视图 `quota` 为 null。状态头取值只认 `allowed` / `allowed_warning` / `rejected`（转小写），其他记为空。校验字段错误：`accountTypes[i].quota`（`required`）、`.quota.headers`（`too_many`）、`.quota.headers[j].key`（`required` / `invalid_format` / `duplicate`）、`.quota.headers[j]`（`required`）、`.quota.headers[j].utilization|reset|status`（`invalid_format`）、`.quota.headers[j].utilizationUnit|resetFormat`（`invalid`；对应头未声明时 `unexpected`）。头解析实现在 `sdk/manifest.ReadQuotaHeaders`，插件可在单测中直接用它验证声明。旧宿主忽略该字段，`hostCompat` 不需要提高。
+未声明 `quota`（或两者皆空，校验拒绝）的类型 = 不支持额度（API Key 类），账号视图 `quota` 为 null。状态头取值只认 `allowed` / `allowed_warning` / `rejected`（转小写），其他记为空。校验字段错误：`accountTypes[i].quota`（`required`）、`.quota.headers`（`too_many`）、`.quota.headers[j].key`（`required` / `invalid_format` / `duplicate`）、`.quota.headers[j]`（`required`）、`.quota.headers[j].utilization|reset|status`（`invalid_format`）、`.quota.headers[j].utilizationUnit|resetFormat`（`invalid`；对应头未声明时 `unexpected`）。头解析实现在 `sdk/manifest.ReadQuotaHeaders`，插件可在单测中直接用它验证声明。旧宿主忽略该字段，`hostCompat` 不需要提高（`windowMinutes` 除外，见 §105）。
 
 ### 44.3 被动采样（主要数据来源，零额外上游请求）
 
@@ -5943,7 +5943,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 **codex 插件 0.1.1**：
 
-- WebSocket 协议返回与 HTTP 相同的 body patch：`store=false`；字符串 `input` 转成一条 user 消息的数组（空白字符串，即空串或只含空白字符的串，转 `[]`）；`role:"system"` 的 input 项改成 `role:"developer"`（见下）；`codex_device` 缺 `instructions` 时补 `""`；删除上游不接受的字段。WebSocket 下不包含 stream 相关字段（不删 `stream_options`，也从不设置 `stream`），`chatgpt_siwc` 不删 `previous_response_id`（同一上游连接内可续接；该账号类型已于 2026-11-17 删除，见 PLUGIN-CODEX.md §13）。
+- WebSocket 协议返回与 HTTP 相同的 body patch：`store=false`；字符串 `input` 转成一条 user 消息的数组（空白字符串，即空串或只含空白字符的串，转 `[]`）；`role:"system"` 的 input 项改成 `role:"developer"`（见下）；`codex_device` 缺 `instructions` 时补 `""`；删除上游不接受的字段。WebSocket 下不包含 stream 相关字段（不删 `stream_options`，也从不设置 `stream`），`chatgpt_siwc` 不删 `previous_response_id`（同一上游连接内可续接；该账号类型已于 2026-11-17 删除，见 PLUGIN-CODEX.md §14）。
 - system → developer（两种账号类型、HTTP 与 WebSocket）：Sign in with ChatGPT 上游拒绝 `role:"system"` 的 input 项。manifest `requestFields` 增加查询 `input.#.[role].#(=="system")#`：`input` 是数组时按项序返回 `["system"]`（角色恰为 `"system"`）或 `[]`（其他角色、无角色、非对象），每项约 3 字节，从不回显其他内容；`input` 是字符串或缺失时字段不存在（字符串由上一条转换成 user 消息，无需改角色）；`input` 是对象时为 `[]`。插件据此为每个 system 项生成 `input.<i>.role` = `"developer"` 的 `OP_SET`，每个请求最多 256 个（每个 patch 在核心是一次整体复制），超出的项保持原样由上游报错。
 - 已知限制：字符串 `input` 的字段 `[input]|#(%"*")` 会回显整段字符串，超过插件 gRPC 接收上限（4 MiB）的字符串输入会使调用失败。
 
@@ -7728,6 +7728,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 - `accountTypes[].quota.headers[]` 新增 `windowMinutes`：携带窗口时长（分钟）的响应头名。给了它就不写 `key`（两者都给 → `.windowMinutes` `unexpected`；都不给 → `.key` `required`；头名不合法 → `.windowMinutes` `invalid_format`）。
 - 窗口名由 `manifest.QuotaWindowKey` 按分钟数生成：整天 `<n>d`、整小时 `<n>h`、否则 `<n>m`，所以 300 是 `5h`、10080 是 `7d`，没有容差。值不是 1 到一年之间的整数分钟时，这条声明对该响应不报窗口。
-- 同一响应里两条声明得到同一个窗口名时，保留用量较大的一条（`ReadQuotaHeaders`）。显式 `key` 仍不许重复。
+- 同一响应里两条声明得到同一个窗口名时，保留用量较大的一条；用量相同时保留重置较晚的一条，有重置时刻的优先（`ReadQuotaHeaders`）。显式 `key` 仍不许重复。
 - 采样、限频、写库（§44.3）不变：网关对每个 2xx、429、101 响应读取声明的头。
-- 旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到支持它的核心版本。
+- WebSocket 会话中的错误事件（`type: "error"`，`status` ≥ 400）带顶层 `headers` 对象时（Codex 后端：`{"type":"error","status":429,"error":{...},"headers":{"x-codex-primary-used-percent":"100.0",...}}`），核心把它当作这次错误的响应头：头名转小写，字符串与数字值转成文本（其他类型忽略），交给插件 `ClassifyError` 的 `headers`，并按上一条采样（429 被接受）。没有 `headers` 对象的错误事件照旧不带头分类、不采样。
+- 随核心 0.1.297 发布。旧核心不认识该字段，会因缺 `key` 拒绝安装，用到它的插件须把 `hostCompat` 下限提到 0.1.297。
