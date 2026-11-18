@@ -54,7 +54,8 @@
       ],
       "platforms": [
         {
-          "platform": "anthropic"
+          "platform": "anthropic",
+          "passHeaders": []
         }
       ],
       "defaultModels": [
@@ -130,7 +131,8 @@
       ],
       "platforms": [
         {
-          "platform": "anthropic"
+          "platform": "anthropic",
+          "passHeaders": []
         }
       ],
       "defaultModels": [

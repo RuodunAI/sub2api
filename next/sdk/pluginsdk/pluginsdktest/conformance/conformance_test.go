@@ -197,7 +197,7 @@ func (f *fake) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestReque
 }
 
 const fakeManifest = `{
-  "key": "conformance-fake", "version": "1.0.0",
+  "key": "conformance-fake", "version": "1.0.0", "externalServices": ["auth.conformance.invalid"],
   "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.websocket.v1"}],
   "platforms": [{"id": "conformance", "passHeaders": ["x-conformance-beta"], "endpoints": [
     {"id": "chat", "method": "POST", "path": "/v1/chat", "protocol": "conformance.chat", "kind": "proxy",
@@ -381,6 +381,37 @@ func TestClientHeadersFromTheManifest(t *testing.T) {
 	setup := runItem(t, "setup", "", true, func(tb testing.TB) { run(tb, fakePlugin(""), cases, func(string, func(testing.TB)) {}) })
 	if got := strings.Join(setup.failures, "\n"); !strings.Contains(got, `no account type "undeclared"`) {
 		t.Errorf("undeclared account type: %q", got)
+	}
+}
+
+// An account type whose manifest entry says "passHeaders": [] is handed no
+// client header, so a plugin that forwards none passes rule 4 and the suite
+// invents none; without the entry the platform's list is handed over and the
+// same plugin fails.
+func TestNoClientHeaders(t *testing.T) {
+	none := strings.NewReplacer(
+		`{"platform": "conformance"}`, `{"platform": "conformance", "passHeaders": []}`,
+		`"passHeaders": ["x-conformance-beta", "x-conformance-oauth"]`, `"passHeaders": []`,
+	).Replace(fakeManifest)
+	if none == fakeManifest {
+		t.Fatal("the replacement did not apply")
+	}
+	p := fakePlugin("drops a client header")
+	p.Manifest = []byte(none)
+	if got := record(t, p, "04_headers"); len(got["setup"])+len(got["04_headers"]) != 0 {
+		t.Errorf("no client headers declared: %v", got)
+	}
+	s, err := newSuite(p, fakeCases())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range s.cases {
+		if len(c.inbound) != 0 {
+			t.Errorf("%s: client headers %v handed over", c.Name, c.inbound)
+		}
+	}
+	if got := record(t, fakePlugin("drops a client header"), "04_headers")["04_headers"]; len(got) == 0 {
+		t.Error("the platform's client headers dropped without a failure")
 	}
 }
 

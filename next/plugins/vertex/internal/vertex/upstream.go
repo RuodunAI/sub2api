@@ -123,8 +123,9 @@ func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*plu
 // BuildUpstream implements pluginsdk.UpstreamBuilder. Vertex AI takes the
 // Gemini API's body as it is, so the body goes upstream byte for byte; the
 // model (after the account's mapping) goes into the path. Only the
-// credential is authoritative; the content type is a default the operator
-// may override.
+// credential is authoritative; the content type and the client headers the
+// core hands over (the gemini platform's passHeaders, already filtered) are
+// defaults the operator may override.
 func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	protocol := in.GetMeta().GetProtocol()
 	action, ok := actions[protocol]
@@ -136,6 +137,7 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		return nil, err
 	}
 	return pluginsdk.NewUpstream(http.MethodPost, req.url).
+		DefaultHeaderMap(in.GetInboundHeaders()).
 		DefaultHeader("content-type", contentType).
 		HeaderMap(req.auth).
 		Body(in.GetBody()).

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *plug
 	})
 	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
 	h := pluginsdktest.Start(t, p, pluginsdktest.Options{
-		Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithInfo("volcengine", "0.13.0")},
+		Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestFile(t)), pluginsdk.WithInfo("volcengine", "0.13.0")},
 	})
 	t.Cleanup(func() {
 		if dials := fh.Dials(); len(dials) != 0 {
@@ -51,6 +52,18 @@ func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *plug
 		}
 	})
 	return h
+}
+
+// manifestFile is the plugin's manifest.json, which the fake host needs to
+// know the hosts a fetch may reach (externalServices and the account's
+// upstreamFields) as the core does.
+func manifestFile(t *testing.T) []byte {
+	t.Helper()
+	b, err := os.ReadFile("../../manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

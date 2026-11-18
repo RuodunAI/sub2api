@@ -539,8 +539,13 @@ type AccountPlatform struct {
 	Platform string `json:"platform"`
 	// Endpoints selects endpoint IDs within Platform. Omitted means all endpoints
 	// for compatibility; an explicit empty list is invalid.
-	Endpoints   []string `json:"endpoints,omitempty"`
-	PassHeaders []string `json:"passHeaders,omitempty"`
+	Endpoints []string `json:"endpoints,omitempty"`
+	// PassHeaders are the client headers the core hands the plugin for this
+	// account type on Platform (ClientHeaders). Absent means the platform's
+	// list; an explicit empty list means none. omitzero keeps that
+	// difference when the struct is encoded again: a nil list is left out,
+	// an empty one is written as [].
+	PassHeaders []string `json:"passHeaders,omitzero"`
 	// Usage overrides the usage rules per protocol of the platform.
 	Usage map[string]UsageRules `json:"usage,omitempty"`
 	// StreamOnly lists the upstream protocols of Platform whose upstream
@@ -561,10 +566,11 @@ func (a AccountPlatform) StreamsOnly(protocol string) bool {
 }
 
 // ClientHeaders are the client headers the account type receives on p, the
-// platform of a: its own passHeaders, else p's (nil p: its own only), as the
-// gateway forwards them.
+// platform of a, as the gateway hands them to the plugin: its own
+// passHeaders when the manifest writes the field (an empty list: none),
+// else p's (nil p: none).
 func (a AccountPlatform) ClientHeaders(p *Platform) []string {
-	if len(a.PassHeaders) == 0 && p != nil {
+	if a.PassHeaders == nil && p != nil {
 		return p.PassHeaders
 	}
 	return a.PassHeaders

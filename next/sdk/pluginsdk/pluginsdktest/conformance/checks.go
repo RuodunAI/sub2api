@@ -349,8 +349,9 @@ func checkLargeBody(s *suite, t testing.TB, c *Case) {
 	}
 	large := *c
 	large.Body = body
-	// The host accepts back the larger of the body and the limit plus 1 MiB (§8.2).
-	u := upstream{maxBody: max(len(body), s.p.BodyLimit) + 1<<20}
+	// The fake host accepts back the larger of the body and the limit plus
+	// 1 MiB (§8.2), as the core does.
+	u := upstream{maxBody: s.p.BodyLimit}
 	got, ex := allocated(s, s.start(t, &large, u), &large)
 	ex.Relayed(t)
 	base, _ := allocated(s, s.serve(t, reference{}, []pluginsdk.Option{pluginsdk.WithInfo("conformance-reference", "0.0.0")}, nil, upstream{relay: observe(&large), maxBody: u.maxBody}), &large)

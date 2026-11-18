@@ -20,7 +20,8 @@ import (
 const geminiBody = "{\"contents\": [{\"role\":\"user\",\"parts\":[{\"text\":\"ping \\u00e9\"}]}],\n \"generationConfig\":{\"temperature\":0.2}}"
 
 // executeRequest is one attempt of a gateway request for acc. It carries a
-// client header no endpoint passes, which must not reach the upstream.
+// client header the gemini platform passes, which reaches the upstream as a
+// default header.
 func executeRequest(acc *pluginv1.Account, protocol, model string) *pluginv1.ExecuteRequest {
 	return &pluginv1.ExecuteRequest{
 		Account:        acc,
@@ -41,13 +42,13 @@ type executeCase struct {
 }
 
 // want is the request tc must relay: the body unchanged, the credential
-// authoritative, the content type a default.
+// authoritative, the content type and the client header defaults.
 func (tc executeCase) want() *pluginv1.UpstreamRequest {
 	return &pluginv1.UpstreamRequest{
 		Method:         http.MethodPost,
 		Url:            tc.url,
 		Headers:        tc.auth,
-		DefaultHeaders: map[string]string{"content-type": contentType},
+		DefaultHeaders: map[string]string{"content-type": contentType, "user-agent": "client/1.0"},
 		Body:           []byte(geminiBody),
 		UpstreamModel:  tc.model,
 	}

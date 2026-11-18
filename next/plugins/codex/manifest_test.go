@@ -118,8 +118,11 @@ func TestManifestShape(t *testing.T) {
 			t.Fatalf("%s platforms = %+v", at.ID, at.Platforms)
 		}
 		ap := at.Platforms[0]
+		// The plugin forwards no client header: it identifies itself and
+		// writes every header it sends. "passHeaders": [] tells the core to
+		// hand it none (absent would mean the openai platform's list).
 		if ap.Platform != codex.PlatformID || !slices.Equal(ap.Endpoints, []string{"responses", "responses_websocket"}) ||
-			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || len(ap.PassHeaders) != 0 {
+			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || ap.PassHeaders == nil || len(ap.PassHeaders) != 0 {
 			t.Errorf("%s platform = %+v", at.ID, ap)
 		}
 	}
