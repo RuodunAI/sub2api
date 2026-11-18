@@ -1017,6 +1017,13 @@ type AccountDirectory interface {
 	// whatever its status) of one of types: without one the group cannot serve
 	// the endpoint at all, which is not a passing shortage.
 	GroupHasType(ctx context.Context, groupID int64, types []AccountTypeKey) (bool, error)
+	// Resting returns the accounts of the group, of types, that Candidates
+	// leaves out for a while only: cooling down, or automatically disabled
+	// until a time that has not come. They are read from the snapshot
+	// Candidates is served from, not the database. Only a dispatch whose
+	// every candidate is closed by its protocol binding asks, to tell whether
+	// an account that serves the request will be back.
+	Resting(ctx context.Context, groupID int64, types []AccountTypeKey) ([]AccountRef, error)
 	// Unschedulable lists the accounts of the group (not deleted) that
 	// Candidates does not offer now, with why: disabled, unschedulable,
 	// automatically disabled or cooling down. Only failed dispatches ask.

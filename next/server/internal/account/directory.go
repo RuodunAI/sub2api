@@ -29,38 +29,93 @@ func (s *Service) Candidates(ctx context.Context, groupID int64, types []core.Ac
 	}
 	now := time.Now()
 	out := make([]core.AccountRef, 0, len(snap.refs))
-	for _, r := range snap.refs {
+	for i := range snap.refs {
 		// A timed automatic disable expires by itself (lazy expiry): the
 		// account serves again once its release time passes, whether or not
 		// the recovery sweep has written it back to active yet.
-		if until, ok := snap.releases[r.ID]; ok && now.Before(until) {
-			continue
-		}
-		if len(types) == 0 || slices.Contains(types, core.AccountTypeKey{PluginKey: r.PluginKey, Type: r.Type}) {
-			out = append(out, r)
+		if r := &snap.refs[i]; !snap.disabledAt(r.ID, now) && ofTypes(r, types) {
+			out = append(out, *r)
 		}
 	}
-	if len(out) == 0 || s.d.Redis == nil {
-		return out, nil
-	}
-	pipe := s.d.Redis.Pipeline()
-	cmds := make([]*redis.IntCmd, len(out))
-	for i, r := range out {
-		cmds[i] = pipe.Exists(ctx, cooldownKey(r.ID))
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
+	cooling, err := s.coolingDown(ctx, out)
+	if err != nil {
 		// Serving a cooling account is better than serving nothing; the
 		// gateway will classify the upstream error again.
 		slog.WarnContext(ctx, "account: read cooldowns", "err", err)
 		return out, nil
 	}
+	if cooling == nil {
+		return out, nil
+	}
 	kept := out[:0]
 	for i, r := range out {
-		if cmds[i].Val() == 0 {
+		if cooling[i].Val() == 0 {
 			kept = append(kept, r)
 		}
 	}
 	return kept, nil
+}
+
+// Resting returns the accounts of the group's snapshot, of types (all types
+// when empty), that Candidates leaves out now: those under a timed automatic
+// disable that has not run out, and those cooling down. Unlike Candidates it
+// fails when the cooldowns cannot be read.
+func (s *Service) Resting(ctx context.Context, groupID int64, types []core.AccountTypeKey) ([]core.AccountRef, error) {
+	snap, err := s.groupSnapshot(ctx, groupID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	var out, live []core.AccountRef
+	for i := range snap.refs {
+		switch r := &snap.refs[i]; {
+		case !ofTypes(r, types):
+		case snap.disabledAt(r.ID, now):
+			out = append(out, *r)
+		default:
+			live = append(live, *r)
+		}
+	}
+	cooling, err := s.coolingDown(ctx, live)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cooling {
+		if cooling[i].Val() != 0 {
+			out = append(out, live[i])
+		}
+	}
+	return out, nil
+}
+
+// disabledAt reports an account of the snapshot under a timed automatic
+// disable that has not run out at now.
+func (g groupSnap) disabledAt(id int64, now time.Time) bool {
+	until, ok := g.releases[id]
+	return ok && now.Before(until)
+}
+
+// ofTypes reports whether the account type of r is in types; every type is
+// in an empty types.
+func ofTypes(r *core.AccountRef, types []core.AccountTypeKey) bool {
+	return len(types) == 0 || slices.Contains(types, core.AccountTypeKey{PluginKey: r.PluginKey, Type: r.Type})
+}
+
+// coolingDown reads in one pipeline whether each of refs has a cooldown
+// (Val() != 0); nil when there is nothing to read.
+func (s *Service) coolingDown(ctx context.Context, refs []core.AccountRef) ([]*redis.IntCmd, error) {
+	if len(refs) == 0 || s.d.Redis == nil {
+		return nil, nil
+	}
+	pipe := s.d.Redis.Pipeline()
+	cmds := make([]*redis.IntCmd, len(refs))
+	for i := range refs {
+		cmds[i] = pipe.Exists(ctx, cooldownKey(refs[i].ID))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil, err
+	}
+	return cmds, nil
 }
 
 // GroupHasType reports whether the group holds an account of one of types,

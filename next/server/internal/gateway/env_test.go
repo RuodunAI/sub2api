@@ -629,22 +629,32 @@ func (a *fakeAccounts) Candidates(_ context.Context, group int64, types []core.A
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.lastTypes = append([]core.AccountTypeKey(nil), types...)
+	return a.members(group, types, false), nil
+}
+
+// Resting is the accounts of types Candidates leaves out while they cool
+// down.
+func (a *fakeAccounts) Resting(_ context.Context, group int64, types []core.AccountTypeKey) ([]core.AccountRef, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.members(group, types, true), nil
+}
+
+// members is the enabled accounts of the group, of types, that are cooling
+// down or not, highest priority first. Callers hold a.mu.
+func (a *fakeAccounts) members(group int64, types []core.AccountTypeKey, cooling bool) []core.AccountRef {
 	var out []core.AccountRef
 	for _, id := range a.groups[group] {
 		acc := a.accounts[id]
-		if _, dis := a.disabled[id]; dis || time.Now().Before(a.cooldown[id]) {
+		if _, dis := a.disabled[id]; dis || time.Now().Before(a.cooldown[id]) != cooling {
 			continue
 		}
-		ok := false
-		for _, k := range types {
-			ok = ok || (k.PluginKey == acc.PluginKey && k.Type == acc.Type)
-		}
-		if ok {
+		if slices.Contains(types, core.AccountTypeKey{PluginKey: acc.PluginKey, Type: acc.Type}) {
 			out = append(out, acc.AccountRef)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
-	return out, nil
+	return out
 }
 
 func (a *fakeAccounts) Load(_ context.Context, id int64) (*core.Account, error) {

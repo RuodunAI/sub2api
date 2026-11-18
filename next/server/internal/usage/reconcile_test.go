@@ -158,6 +158,9 @@ func (a recAccounts) Candidates(context.Context, int64, []core.AccountTypeKey) (
 func (a recAccounts) GroupHasType(context.Context, int64, []core.AccountTypeKey) (bool, error) {
 	return a.acc != nil, nil
 }
+func (a recAccounts) Resting(context.Context, int64, []core.AccountTypeKey) ([]core.AccountRef, error) {
+	return nil, nil
+}
 func (a recAccounts) Unschedulable(context.Context, int64) ([]core.UnschedulableAccount, error) {
 	return nil, nil
 }

@@ -32,11 +32,8 @@ type schedTrace struct {
 	// which is worth a record even when another account served.
 	passing bool
 	// unschedulable: the accounts of the group that were never offered, read
-	// once (unoffered) when no account could be picked; unofferedErr is why
-	// that read failed.
+	// once when no account could be picked.
 	unschedulable []core.UnschedulableAccount
-	unofferedRead bool
-	unofferedErr  error
 	concluded     bool
 }
 
@@ -162,34 +159,26 @@ func (c *call) eligibleAccounts(all []core.AccountRef) (cands []core.AccountRef,
 // protocolNotServed is the answer to a request every account offered is
 // closed to by its protocol binding (closed, from eligibleAccounts): a 404,
 // which clients do not retry, since no account serves the model on the
-// endpoint until one is configured to. nil when the group also holds an
-// account that is only out for a while (cooling down, or disabled until a
-// time) or when what it holds cannot be read: that account may serve the
-// request once back, so the request ends as any passing shortage does.
+// endpoint until one is configured to. The accounts of the group that are
+// only out for a while (cooling down, or disabled until a time) are judged
+// like the offered ones, from the same snapshot: nil when one of them is not
+// closed by its binding, since it may serve the request once back, or when
+// they cannot be read. The request then ends as any passing shortage does.
 func (c *call) protocolNotServed(ctx context.Context, closed bool) *gwError {
 	if !closed {
 		return nil
 	}
-	off, err := c.unoffered(ctx)
-	if err != nil || slices.ContainsFunc(off, func(u core.UnschedulableAccount) bool { return !u.Until.IsZero() }) {
+	resting, err := c.g.d.Accounts.Resting(ctx, c.principal.Group.ID, c.routeKeys)
+	if err != nil {
+		slog.WarnContext(ctx, "gateway: read resting accounts", "err", err)
 		return nil
 	}
-	return errProtocolNotServed
-}
-
-// unoffered is the accounts of the group Candidates does not offer, read
-// once per request, failed or not. Only a request that found no account
-// asks.
-func (c *call) unoffered(ctx context.Context) ([]core.UnschedulableAccount, error) {
-	t := &c.sched
-	if t.unofferedRead || c.principal == nil || c.g.d.Accounts == nil {
-		return t.unschedulable, t.unofferedErr
+	for i := range resting {
+		if reason, _, ok := c.ineligibleReason(&resting[i]); ok || !protocolSchedReason(reason) {
+			return nil
+		}
 	}
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stickyRedisTimeout)
-	defer cancel()
-	t.unofferedRead = true
-	t.unschedulable, t.unofferedErr = c.g.d.Accounts.Unschedulable(rctx, c.principal.Group.ID)
-	return t.unschedulable, t.unofferedErr
+	return errProtocolNotServed
 }
 
 // noteDropped notes the accounts of before that are not in after.
@@ -212,8 +201,14 @@ func (c *call) concludeScheduling(ctx context.Context) {
 		return
 	}
 	t.concluded = true
-	if _, err := c.unoffered(ctx); err != nil {
-		slog.WarnContext(ctx, "gateway: read unschedulable accounts", "err", err)
+	if c.principal != nil && c.g.d.Accounts != nil {
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), stickyRedisTimeout)
+		off, err := c.g.d.Accounts.Unschedulable(rctx, c.principal.Group.ID)
+		cancel()
+		if err != nil {
+			slog.WarnContext(ctx, "gateway: read unschedulable accounts", "err", err)
+		}
+		t.unschedulable = off
 	}
 	tr := c.schedulingTrace()
 	reasons := make([]string, 0, len(tr.Skipped))

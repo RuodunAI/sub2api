@@ -191,19 +191,25 @@ func TestIneligibleReasonProtocolBinding(t *testing.T) {
 	}
 }
 
-// readsAccounts counts the reads of the accounts a group does not offer,
-// and fails them with err.
+// readsAccounts counts the reads of the accounts a group does not offer:
+// those resting, which decide a 404 and fail with err, and those the record
+// lists.
 type readsAccounts struct {
 	*fakeAccounts
-	reads int
-	err   error
+	resting, unschedulable int
+	err                    error
 }
 
-func (a *readsAccounts) Unschedulable(ctx context.Context, group int64) ([]core.UnschedulableAccount, error) {
-	a.reads++
+func (a *readsAccounts) Resting(ctx context.Context, group int64, types []core.AccountTypeKey) ([]core.AccountRef, error) {
+	a.resting++
 	if a.err != nil {
 		return nil, a.err
 	}
+	return a.fakeAccounts.Resting(ctx, group, types)
+}
+
+func (a *readsAccounts) Unschedulable(ctx context.Context, group int64) ([]core.UnschedulableAccount, error) {
+	a.unschedulable++
 	return a.fakeAccounts.Unschedulable(ctx, group)
 }
 
@@ -239,41 +245,60 @@ func TestProtocolNotServedOnlyWhenEveryAccountIsClosed(t *testing.T) {
 		}
 	}
 
-	until := time.Now().Add(time.Minute)
+	// The accounts of the group that are out for a while are judged like the
+	// offered ones: account 7 is of ownType, account 8 of crossType.
+	cooling := func(id int64) func(a *readsAccounts) {
+		return func(a *readsAccounts) { a.cooldown[id] = time.Now().Add(time.Minute) }
+	}
 	for _, tc := range []struct {
 		name   string
 		closed bool
 		setup  func(a *readsAccounts)
 		status int // 0: the request goes on
 	}{
-		{name: "an account can serve", closed: false},
+		{name: "an account can serve", closed: false, setup: cooling(7)},
 		{name: "every account closed", closed: true, status: 404},
 		{name: "the rest of the group is disabled", closed: true, status: 404,
 			setup: func(a *readsAccounts) { a.disabled[7] = "admin" }},
-		{name: "an account of the group is cooling down", closed: true,
-			setup: func(a *readsAccounts) { a.cooldown[7] = until }},
-		{name: "the group cannot be read", closed: true,
-			setup: func(a *readsAccounts) { a.err = errors.New("database down") }},
+		{name: "an account that serves the request is cooling down", closed: true, setup: cooling(7)},
+		{name: "a cooling account is closed by its binding too", closed: true, status: 404, setup: cooling(8)},
+		{name: "a cooling account is closed, another serves", closed: true,
+			setup: func(a *readsAccounts) { cooling(7)(a); cooling(8)(a) }},
+		{name: "a cooling account is out for its model list", closed: true,
+			setup: func(a *readsAccounts) {
+				cooling(7)(a)
+				a.set(7, func(acc *core.Account) { acc.Models = []string{"x"} })
+			}},
+		{name: "a cooling account closed the protocol", closed: true, status: 404,
+			setup: func(a *readsAccounts) {
+				cooling(7)(a)
+				a.bind(7, []string{"openai.chat"})
+			}},
+		{name: "the resting accounts cannot be read", closed: true,
+			setup: func(a *readsAccounts) { a.err = errors.New("redis down") }},
 	} {
 		dir := &readsAccounts{fakeAccounts: newFakeAccounts()}
-		dir.add(testGroup, 7, 1, "k")
+		dir.addTyped(testGroup, 7, 1, "k7", ownType.PluginKey, ownType.Type)
+		dir.addTyped(testGroup, 8, 1, "k8", crossType.PluginKey, crossType.Type)
 		if tc.setup != nil {
 			tc.setup(dir)
 		}
 		c := boundCall(messagesProtocol)
+		c.routeKeys = []core.AccountTypeKey{ownType, crossType}
 		c.g, c.principal = &Gateway{d: Deps{Accounts: dir}}, &core.APIKeyPrincipal{Group: core.GroupInfo{ID: testGroup}}
 		e := c.protocolNotServed(context.Background(), tc.closed)
-		if dir.reads != 0 && !tc.closed {
-			t.Errorf("%s: the group was read for a request an account can serve", tc.name)
+		if want := map[bool]int{true: 1}[tc.closed]; dir.resting != want || dir.unschedulable != 0 {
+			t.Errorf("%s: %d reads of the resting accounts, %d of the unschedulable", tc.name, dir.resting, dir.unschedulable)
 		}
 		if (e == nil) != (tc.status == 0) || e != nil && (e.Status != tc.status || e.Message != notServedMessage || e.RecordType != errTypeNoAccount) {
 			t.Errorf("%s: %+v", tc.name, e)
 		}
-		// The record's trace reads the group once, or reuses that read.
+		// Only the record of a request that found no account reads what the
+		// group holds from the database.
 		c.rec = &core.UsageRecord{ErrorType: errTypeNoAccount, StatusCode: 404}
 		c.concludeScheduling(context.Background())
-		if dir.reads != 1 {
-			t.Errorf("%s: the group was read %d times", tc.name, dir.reads)
+		if dir.unschedulable != 1 {
+			t.Errorf("%s: the group was read %d times for the record", tc.name, dir.unschedulable)
 		}
 	}
 }
@@ -674,7 +699,7 @@ func TestProtocolBindingNotFoundOnlyWhenNoAccountServes(t *testing.T) {
 			t.Fatalf("trace %+v", rec.Scheduling)
 		}
 	})
-	t.Run("an account is cooling down", func(t *testing.T) {
+	t.Run("an account that serves is cooling down", func(t *testing.T) {
 		b := withNative()
 		b.accounts.cooldown[1] = time.Now().Add(time.Minute)
 		if rec := overloaded(b, 529); skipOf(rec.Scheduling, 1, core.SchedNotSchedulable) == nil {
@@ -687,6 +712,20 @@ func TestProtocolBindingNotFoundOnlyWhenNoAccountServes(t *testing.T) {
 		if s := skipOf(rec.Scheduling, 1, core.SchedNotSchedulable); s == nil || s.Detail != "disabled" {
 			t.Fatalf("trace %+v", rec.Scheduling)
 		}
+	})
+	// A cooling account that is not converted for either will not serve the
+	// request once back: the answer is the 404 it is without the cooldown.
+	t.Run("an account closed by its binding is cooling down", func(t *testing.T) {
+		b := newBindingEnv(t)
+		b.accounts.addTyped(testGroup, 12, 98, "oai-12", "openai", "apikey")
+		b.accounts.cooldown[12] = time.Now().Add(time.Minute)
+		rec := b.notServed(func() result { return b.messagesFor(testModel) }, 11, core.SchedConversionNotEnabled, testModel)
+		if s := skipOf(rec.Scheduling, 12, core.SchedNotSchedulable); s == nil || s.Detail != "cooldown" {
+			t.Fatalf("trace %+v", rec.Scheduling)
+		}
+		// Converted for, it will serve once back: a passing shortage.
+		b.accounts.serveOn(12, messagesProtocol)
+		overloaded(b, 529)
 	})
 }
 
