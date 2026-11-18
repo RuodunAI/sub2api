@@ -242,13 +242,15 @@ type fakePlatform struct {
 	taskSubmission func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error)
 	mu             sync.Mutex
 	base           string
-	buildHook      func(ctx context.Context, in *pluginv1.BuildUpstreamRequestRequest) error
-	patches        []*pluginv1.BodyPatch
-	builds         []*pluginv1.BuildUpstreamRequestRequest
+	buildHook      func(ctx context.Context, in *pluginv1.ExecuteRequest) error
+	// patches are applied to the body the plugin is handed, as a plugin
+	// rewriting its request would.
+	patches []*pluginv1.BodyPatch
+	builds  []*pluginv1.ExecuteRequest
 	classify       []*pluginv1.ClassifyErrorRequest
 	urlFor         func(acct *pluginv1.Account) string
 	// route overrides the upstream URL from the whole request.
-	route func(in *pluginv1.BuildUpstreamRequestRequest) string
+	route func(in *pluginv1.ExecuteRequest) string
 	// resolve answers ResolveModel; nil = UNIMPLEMENTED, like a plugin that
 	// never wrote the optional method. resolves counts every call, so a test
 	// can prove an endpoint without request.modelSource never triggers one.
@@ -305,17 +307,6 @@ func (p *fakePlatform) extractCount() int {
 	return len(p.extracts)
 }
 
-// The reconcile half of PlatformService is never reached from the gateway:
-// the loop that calls it lives in the usage module. Answering UNIMPLEMENTED
-// is what a plugin with no asynchronous work does.
-func (p *fakePlatform) BuildReconcileRequest(context.Context, *pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "no")
-}
-
-func (p *fakePlatform) ParseReconcileResponse(context.Context, *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
-	return nil, status.Error(codes.Unimplemented, "no")
-}
-
 // lastExtract returns the request of the last ExtractUsage call.
 func (p *fakePlatform) lastExtract() *pluginv1.ExtractUsageRequest {
 	p.mu.Lock()
@@ -330,7 +321,15 @@ func (p *fakePlatform) ValidateCredentials(context.Context, *pluginv1.ValidateCr
 	return &pluginv1.ValidateCredentialsResponse{}, nil
 }
 
-func (p *fakePlatform) BuildUpstreamRequest(ctx context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
+// Execute serves an attempt as the SDK's ExecuteDefault does (fakeExecute).
+func (p *fakePlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+	return fakeExecute(ctx, p, in, client)
+}
+
+// buildUpstream is the plugin's request: POST to the mock upstream with the
+// account's key and the client headers it was handed, all authoritative,
+// and the body it was handed with p.patches applied.
+func (p *fakePlatform) buildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	p.mu.Lock()
 	p.builds = append(p.builds, in)
 	hook, base, urlFor, patches, route := p.buildHook, p.base, p.urlFor, p.patches, p.route
@@ -355,7 +354,11 @@ func (p *fakePlatform) BuildUpstreamRequest(ctx context.Context, in *pluginv1.Bu
 	for k, v := range in.GetInboundHeaders() {
 		h[k] = v
 	}
-	return &pluginv1.BuildUpstreamRequestResponse{Method: "POST", Url: u, Headers: h, Patches: patches}, nil
+	body, err := applyPatches(in.GetBody(), patches)
+	if err != nil {
+		return nil, err
+	}
+	return &pluginv1.UpstreamRequest{Method: "POST", Url: u, Headers: h, Body: body}, nil
 }
 
 // ClassifyError mimics the anthropic plugin: 429/5xx cool down and fail
@@ -722,11 +725,119 @@ func (fakeProxies) HTTPClientFor(context.Context, core.ProxySpec) (*http.Client,
 	return &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}, nil
 }
 
+// fakeSettler takes the usage records the gateway submits and keeps the
+// execution records of a relay that waits (core.ExecutionRecords) as the
+// usage module does: a committed execution's record, and the free record of
+// one closed unreported, land on ch like a submitted one.
 type fakeSettler struct {
 	ch chan *core.UsageRecord
+
+	mu         sync.Mutex
+	executions map[string]*fakeExecution
+	// commitErr, when set, answers CommitExecution before anything is
+	// stored (an outage); nil lets it through.
+	commitErr func(core.ExecutionCommit) error
+}
+
+// fakeExecution is one plugin_executions row.
+type fakeExecution struct {
+	intent  core.ExecutionIntent
+	state   string
+	reading *core.UsageRecord
+	commit  core.ExecutionCommit
+	reason  string
 }
 
 func (s *fakeSettler) Submit(rec *core.UsageRecord) { s.ch <- rec }
+
+func (s *fakeSettler) BeginExecution(_ context.Context, in core.ExecutionIntent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executions == nil {
+		s.executions = map[string]*fakeExecution{}
+	}
+	if _, dup := s.executions[in.ID]; dup {
+		return errors.New("execution exists")
+	}
+	s.executions[in.ID] = &fakeExecution{intent: in, state: core.ExecutionStateIntent}
+	return nil
+}
+
+func (s *fakeSettler) ObserveExecution(_ context.Context, id string, rec *core.UsageRecord, _ []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	x := s.executions[id]
+	if x == nil || x.state != core.ExecutionStateIntent {
+		return errors.New("execution not in intent")
+	}
+	x.state, x.reading = core.ExecutionStateObserved, rec
+	return nil
+}
+
+func (s *fakeSettler) CommitExecution(_ context.Context, in core.ExecutionCommit) error {
+	s.mu.Lock()
+	x := s.executions[in.ID]
+	commitErr := s.commitErr
+	switch {
+	case x == nil:
+		s.mu.Unlock()
+		return errors.New("no such execution")
+	case x.state == core.ExecutionStateCommitted && x.commit.Operation == in.Operation && x.commit.Digest == in.Digest:
+		s.mu.Unlock()
+		return nil
+	case x.state == core.ExecutionStateCommitted || x.state == core.ExecutionStateUnreported:
+		s.mu.Unlock()
+		return core.ErrConflict
+	case x.state != core.ExecutionStateObserved:
+		s.mu.Unlock()
+		return errors.New("execution not observed")
+	}
+	if commitErr != nil {
+		if err := commitErr(in); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	x.state, x.commit = core.ExecutionStateCommitted, in
+	s.mu.Unlock()
+	s.ch <- in.Record
+	return nil
+}
+
+func (s *fakeSettler) CloseExecutionUnreported(_ context.Context, in core.ExecutionUnreported) error {
+	s.mu.Lock()
+	x := s.executions[in.ID]
+	switch {
+	case x == nil || x.state == core.ExecutionStateIntent:
+		s.mu.Unlock()
+		return errors.New("execution not observed")
+	case x.state == core.ExecutionStateUnreported:
+		s.mu.Unlock()
+		return nil
+	case x.state == core.ExecutionStateCommitted:
+		s.mu.Unlock()
+		return core.ErrConflict
+	}
+	free := *x.reading
+	free.Success, free.ErrorType, free.Tokens, free.Metrics = false, core.UsageErrorUnreported, core.UsageTokens{}, nil
+	free.Billable, free.UsageExtract = false, core.UsageExtractUnreported
+	x.state, x.reason = core.ExecutionStateUnreported, in.Reason
+	s.mu.Unlock()
+	s.ch <- &free
+	return nil
+}
+
+// executionStates are the states of the execution rows, in no order.
+func (s *fakeSettler) executionStates() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, x := range s.executions {
+		out = append(out, x.state)
+	}
+	sort.Strings(out)
+	return out
+}
 
 type fakeNode struct{}
 

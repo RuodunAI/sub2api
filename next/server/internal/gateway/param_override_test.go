@@ -1,3 +1,5 @@
+//go:build fv2_parked
+
 package gateway
 
 import (
