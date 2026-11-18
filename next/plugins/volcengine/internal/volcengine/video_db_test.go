@@ -79,7 +79,6 @@ func TestLegacyVideoResolveModelChecksOwner(t *testing.T) {
 // old plugin estimate cannot change the decision or refund delivered work.
 func TestVideoReconcileEstimateFallback(t *testing.T) {
 	p, h, _ := startRoutes(t)
-	ctx := context.Background()
 	rv := submitTask(t, p, 1, 1, "doubao-seedance-1-0-pro-250528", "cgt-nousage", requested(Res720, Ratio169, 5))
 	if rv.GetTokens().GetOutputTokens() <= 0 {
 		t.Fatal("no estimate to retain")
@@ -92,23 +91,19 @@ func TestVideoReconcileEstimateFallback(t *testing.T) {
 		if err := h.db.Exec(`UPDATE video_tasks SET est_tokens=? WHERE task_id='cgt-nousage'`, estimate).Error; err != nil {
 			t.Fatal(err)
 		}
-		r, err := p.ParseReconcileResponse(ctx, &pluginv1.ParseReconcileResponseRequest{
-			Entry: &pluginv1.ReconcileEntry{RefId: "cgt-nousage", TaskKind: "video", Model: "m"}, Status: 200,
-			Body: []byte(`{"status":"succeeded","content":{"video_url":"https://x/v.mp4"}}`),
-		})
-		if err != nil || r.GetState() != pluginv1.ReconcileResult_SETTLED_ESTIMATE || r.GetTokens() != nil || len(r.GetFacts()) != 0 || r.GetReason() == "" || r.GetTaskSnapshotJson() == "" {
-			t.Fatalf("estimate=%d: %v %v", estimate, r, err)
+		r := p.readTaskQuery(&pluginv1.ReconcileEntry{RefId: "cgt-nousage", TaskKind: "video", Model: "m"},
+			&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","content":{"video_url":"https://x/v.mp4"}}`)})
+		if r.GetState() != pluginv1.ReconcileResult_SETTLED_ESTIMATE || r.GetTokens() != nil || len(r.GetFacts()) != 0 || r.GetReason() == "" || r.GetTaskSnapshotJson() == "" {
+			t.Fatalf("estimate=%d: %v", estimate, r)
 		}
 	}
 	var state string
 	if err := h.db.Raw(`SELECT state FROM video_tasks WHERE task_id='cgt-nousage'`).Scan(&state).Error; err != nil || state != "running" {
 		t.Fatalf("parser mutated the legacy mirror: %q %v", state, err)
 	}
-	r, err := p.ParseReconcileResponse(ctx, &pluginv1.ParseReconcileResponseRequest{
-		Entry: &pluginv1.ReconcileEntry{RefId: "cgt-nousage", TaskKind: "video"}, Status: 200,
-		Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":5},"content":{"resolution":"480p"}}`),
-	})
-	if err != nil || r.GetState() != pluginv1.ReconcileResult_SETTLED || r.GetTokens().GetOutputTokens() != 5 || r.GetFacts()[FactResolution] != Res480 {
-		t.Fatalf("real usage must win: %v %v", r, err)
+	r := p.readTaskQuery(&pluginv1.ReconcileEntry{RefId: "cgt-nousage", TaskKind: "video"},
+		&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":5},"content":{"resolution":"480p"}}`)})
+	if r.GetState() != pluginv1.ReconcileResult_SETTLED || r.GetTokens().GetOutputTokens() != 5 || r.GetFacts()[FactResolution] != Res480 {
+		t.Fatalf("real usage must win: %v", r)
 	}
 }

@@ -13,9 +13,11 @@ package volcengine
 // upstream's traffic.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -40,13 +42,15 @@ func jsonStr(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
 }
 
-func buildFor(t *testing.T, acc *pluginv1.Account, meta *pluginv1.RequestMeta) (*pluginv1.BuildUpstreamRequestResponse, error) {
+func buildFor(t *testing.T, acc *pluginv1.Account, meta *pluginv1.RequestMeta) (*pluginv1.UpstreamRequest, error) {
 	t.Helper()
-	return New().BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
-		Meta: meta, Account: acc,
-		Fields: map[string]string{"model": `"` + meta.GetModel() + `"`},
+	return New().BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
+		Meta: meta, Account: acc, Body: modelBody(meta.GetModel()),
 	})
 }
+
+// modelBody is the smallest request body naming model.
+func modelBody(model string) []byte { return []byte(`{"model":` + jsonStr(model) + `}`) }
 
 // TestPrefixCannotLeaveTheHost is the point of upstreamURL. Each of these
 // values, appended to a base URL, parses as a DIFFERENT origin - "@evil.com"
@@ -126,9 +130,11 @@ func TestLayoutFollowsTheAccountType(t *testing.T) {
 
 func TestOfficialNativeAnthropicMessages(t *testing.T) {
 	for _, stream := range []bool{false, true} {
-		r, err := New().BuildUpstreamRequest(context.Background(), &pluginv1.BuildUpstreamRequestRequest{
+		body := []byte(`{"model":"m","stream":` + strconv.FormatBool(stream) + `,"max_tokens":8,"messages":[]}`)
+		r, err := New().BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Account: account(testKey, `{}`), Meta: &pluginv1.RequestMeta{Protocol: ProtocolMessages, Model: "m", Stream: stream},
 			InboundHeaders: map[string]string{"anthropic-version": "2023-06-01", "anthropic-beta": "test-beta", "x-api-key": "caller-key", "authorization": "Bearer caller"},
+			Body:           body,
 		})
 		if err != nil || r.GetUrl() != DefaultBaseURL+"/api/compatible/v1/messages" {
 			t.Fatalf("stream=%v: %v %v", stream, r, err)
@@ -136,10 +142,10 @@ func TestOfficialNativeAnthropicMessages(t *testing.T) {
 		if r.Headers["x-api-key"] != "11111111-2222-3333-4444-555555555555" {
 			t.Fatal("wrong upstream API key")
 		}
-		if r.Headers["x-api-key"] == "caller-key" || r.Headers["authorization"] != "" {
+		if r.Headers["x-api-key"] == "caller-key" || r.Headers["authorization"] != "" || r.DefaultHeaders["authorization"] != "" || len(r.Headers) != 1 {
 			t.Fatal("caller credential leaked or wrong auth scheme")
 		}
-		if r.Headers["anthropic-version"] != "2023-06-01" || r.Headers["anthropic-beta"] != "test-beta" || len(r.Patches) != 0 {
+		if r.DefaultHeaders["anthropic-version"] != "2023-06-01" || r.DefaultHeaders["anthropic-beta"] != "test-beta" || !bytes.Equal(r.Body, body) {
 			t.Fatalf("Anthropic wire was altered: %+v", r)
 		}
 	}
@@ -239,9 +245,7 @@ func TestVideoPrefixIsIndependent(t *testing.T) {
 	// answers 404 for every entry, which the core reads as "still pending"
 	// until the deadline and then keeps the estimate - the account is charged
 	// its pre-charge for work that really finished and reported real usage.
-	rr, err := New().BuildReconcileRequest(context.Background(), &pluginv1.BuildReconcileRequestRequest{
-		Account: acc, Entry: &pluginv1.ReconcileEntry{RefId: "task_1"},
-	})
+	rr, err := taskQuery(&pluginv1.ReconcileEntry{RefId: "task_1"}, acc)
 	if err != nil || rr.GetUrl() != "https://relay.test/doubao/api/v3/contents/generations/tasks/task_1" {
 		t.Fatalf("reconcile: %q %v", rr.GetUrl(), err)
 	}
@@ -253,9 +257,7 @@ func TestVideoPrefixIsIndependent(t *testing.T) {
 	}
 	// And an official account's reconcile poll uses Ark's own path, reading no
 	// setting at all.
-	rr, err = New().BuildReconcileRequest(context.Background(), &pluginv1.BuildReconcileRequestRequest{
-		Account: account(testKey, `{}`), Entry: &pluginv1.ReconcileEntry{RefId: "task_1"},
-	})
+	rr, err = taskQuery(&pluginv1.ReconcileEntry{RefId: "task_1"}, account(testKey, `{}`))
 	if err != nil || rr.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks/task_1" {
 		t.Fatalf("official reconcile: %q %v", rr.GetUrl(), err)
 	}
@@ -279,7 +281,7 @@ func TestVideoEndpointUsedBySubmissionQueryAndPoll(t *testing.T) {
 		if err != nil || query.Url != want+"/"+url.PathEscape(id) || query.Method != "GET" {
 			t.Fatalf("query: %+v %v", query, err)
 		}
-		poll, err := New().BuildReconcileRequest(context.Background(), &pluginv1.BuildReconcileRequestRequest{Account: acc, Entry: &pluginv1.ReconcileEntry{RefId: id}})
+		poll, err := taskQuery(&pluginv1.ReconcileEntry{RefId: id}, acc)
 		if err != nil || poll.Url != query.Url || poll.Method != "GET" {
 			t.Fatalf("poll disagrees with query: %+v %v", poll, err)
 		}
@@ -353,11 +355,11 @@ func TestUnknownAccountTypeIsRefused(t *testing.T) {
 // one is supplied - but never in place of the client's own, which tells the
 // upstream which shape the body is in.
 func TestAnthropicHeaders(t *testing.T) {
-	h := upstreamHeaders(ProtocolMessages, "k", nil)
+	h := defaultHeaders(ProtocolMessages, nil)
 	if h["anthropic-version"] != DefaultAnthropicVersion {
 		t.Errorf("version = %q, want the default %q", h["anthropic-version"], DefaultAnthropicVersion)
 	}
-	h = upstreamHeaders(ProtocolMessages, "k", map[string]string{
+	h = defaultHeaders(ProtocolMessages, map[string]string{
 		"anthropic-version": "2026-01-01", "anthropic-beta": "x-1", "user-agent": "ua", "x-stainless-lang": "go"})
 	if h["anthropic-version"] != "2026-01-01" {
 		t.Errorf("the client's version must win: %q", h["anthropic-version"])
@@ -369,7 +371,7 @@ func TestAnthropicHeaders(t *testing.T) {
 		t.Error("only the declared headers are forwarded")
 	}
 	// The OpenAI surface is unchanged: no version header appears there.
-	if _, ok := upstreamHeaders(ProtocolChat, "k", nil)["anthropic-version"]; ok {
+	if _, ok := defaultHeaders(ProtocolChat, nil)["anthropic-version"]; ok {
 		t.Error("the openai surface must not grow an anthropic header")
 	}
 }
