@@ -32,8 +32,7 @@ type PluginServiceClient interface {
 	// SettingsChanged tells the process that sections of the system settings
 	// changed (CONTRACTS §107). The host of every node calls it on the plugins
 	// it serves, best effort, so values cached from HostService.GetSettings
-	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
-	// which the host ignores.
+	// are read again.
 	SettingsChanged(ctx context.Context, in *SettingsChangedRequest, opts ...grpc.CallOption) (*SettingsChangedResponse, error)
 }
 
@@ -113,8 +112,7 @@ type PluginServiceServer interface {
 	// SettingsChanged tells the process that sections of the system settings
 	// changed (CONTRACTS §107). The host of every node calls it on the plugins
 	// it serves, best effort, so values cached from HostService.GetSettings
-	// are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
-	// which the host ignores.
+	// are read again.
 	SettingsChanged(context.Context, *SettingsChangedRequest) (*SettingsChangedResponse, error)
 	mustEmbedUnimplementedPluginServiceServer()
 }

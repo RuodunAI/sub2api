@@ -8,8 +8,10 @@ option go_package = "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1;plugi
 //  - every RPC except EgressService.Dial is unary;
 //  - no google.protobuf.Any;
 //  - free-form JSON travels as a string field whose name ends in `_json`;
-//  - request bodies are never shipped whole on the gateway hot path: plugins
-//    declare the fields they need and answer with BodyPatch instructions.
+//  - a platform plugin receives the request body whole, already rewritten
+//    by the host, in PlatformService.Execute, and hands back the final
+//    upstream request through HostService.RelayUpstream; gateway hooks still
+//    see only the fields they declare and answer with BodyPatch instructions.
 
 // BodyPatch is a single JSON edit the host applies to a request body (sjson).
 message BodyPatch {
@@ -23,32 +25,6 @@ message BodyPatch {
   string path = 2;
   // JSON-encoded value for OP_SET, e.g. "\"claude-x\"" or "1024".
   string value_json = 3;
-}
-
-// RequestSigning asks the host to sign the final upstream request: after the
-// body patches, the forced stream flag and every header layer, right before
-// it is sent, and again for every attempt. The plugin cannot do it itself
-// when the signature covers the body, which it never sees whole. The message
-// carries the signing secret: the host uses it for this one request and
-// neither stores nor logs it.
-//
-// Only the scheme name is generic. The other fields are the inputs of the
-// access-key HMAC family of schemes (AWS SigV4 and those shaped after it): a
-// key id and a secret scoped to a region and a service, optionally a session
-// token. They are typed rather than an open map so that the host knows which
-// ones are secret; a scheme of another family needs new fields, not a
-// reinterpretation of these.
-message RequestSigning {
-  // Signing scheme, looked up by name (sdk/reqsign). "aws-sigv4": AWS
-  // Signature Version 4 with header authentication; signs host, x-amz-date
-  // and, when present, content-type and x-amz-security-token.
-  string scheme = 1;
-  string region = 2;
-  string service = 3;
-  string access_key_id = 4;
-  string secret_access_key = 5;
-  // Temporary credentials only; sent as x-amz-security-token and signed.
-  string session_token = 6;
 }
 
 // Account is what a platform plugin sees of one core account row.
@@ -126,8 +102,8 @@ message RequestMeta {
   // and values to 512 bytes on a UTF-8 boundary.
   map<string, string> path_params = 10;
   // Query parameters the endpoint declared in request.queryParams, and only
-  // those - the same "the plugin states what it needs and the host hands over
-  // nothing else" rule request.requestFields follows. The endpoint's
+  // those: the plugin states what it needs and the host hands over nothing
+  // else. The endpoint's
   // auth.query parameter is always excluded (case-insensitively) because it
   // carries the API key, and the host never ships the whole query string:
   // that would leak credentials in parameters nobody declared.
@@ -142,8 +118,8 @@ message RequestMeta {
   // Resolved environment variables (CONTRACTS §74.3): the nearest of
   // account, group, global and process layers for every key some layer
   // sets; a missing key means the plugin's own default. Set on every call
-  // that carries RequestMeta. Calls of an attempt on an account (build,
-  // execute, classify, usage extraction) include the account layer; calls
+  // that carries RequestMeta. Calls of an attempt on an account (execute,
+  // classify) include the account layer; calls
   // made before an account is chosen (gateway.request hooks, model
   // resolution, usage estimation, scheduler.rank) resolve without it.
   map<string, int64> environment = 12;
@@ -160,8 +136,8 @@ message RequestMeta {
   // hooks run. Empty when no rule yields a session value.
   string session_fingerprint = 14;
   // Account of the attempt (CONTRACTS §85): set on gateway.attempt hook
-  // calls and on every call of an attempt on an account (build, execute,
-  // classify, usage extraction); 0 on calls made before an account is
+  // calls and on every call of an attempt on an account (execute,
+  // classify); 0 on calls made before an account is
   // chosen (gateway.request hooks, model resolution, usage estimation,
   // scheduler.rank).
   int64 account_id = 15;
