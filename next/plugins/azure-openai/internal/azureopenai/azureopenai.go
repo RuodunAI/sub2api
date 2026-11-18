@@ -18,15 +18,6 @@ const (
 	TypeDeployment = "azure_deployment"
 )
 
-// PassHeaders are the client headers both types forward: the openai
-// platform's without openai-organization and openai-project, which name an
-// organization and a project at OpenAI itself and mean nothing to Azure.
-var PassHeaders = []string{
-	"openai-beta", "user-agent",
-	"x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version",
-	"x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout",
-}
-
 // New returns the platform of both account types.
 func New() *standard.Platform { return standard.New(V1(), Deployment()) }
 
@@ -58,7 +49,6 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 	t.Spec.KeyValidator = nil
 	t.Spec.Texts.BaseURLRequired = "Resource endpoint is required / 请填写资源地址"
 	t.Auth = standard.Auth{Header: "api-key"}
-	t.PassHeaders = PassHeaders
 	t.Routes = routes
 	t.Models = nil
 	// service_tier and safety_identifier belong to a client's own OpenAI

@@ -5,7 +5,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/relay/internal/relay"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 )
@@ -13,9 +12,8 @@ import (
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    relay.New(),
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   []string{anthropic.ProtocolMessages, anthropic.ProtocolCountTokens},
-		PassHeaders: relay.RelayKey().PassHeaders,
 		Credentials: []string{"x-api-key"},
 	}, conformanceCases()...)
 }

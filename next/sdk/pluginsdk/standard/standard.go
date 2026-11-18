@@ -17,9 +17,6 @@
 package standard
 
 import (
-	"slices"
-
-	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
@@ -35,10 +32,6 @@ type Type struct {
 	// format, default base URL, whether it is required, the suffixes a
 	// pasted URL loses, the wording of the errors.
 	Spec apikey.Spec
-	// PassHeaders are the client headers the type forwards: the
-	// passHeaders of the manifest's accountTypes[].platforms, else the
-	// platform's (PlatformPassHeaders). Any other client header is dropped.
-	PassHeaders []string
 	// Auth is where the API key goes.
 	Auth Auth
 	// Headers are written on every request of the type, in order, before
@@ -153,16 +146,4 @@ type Test struct {
 	Model string
 	// Body is the request body for model.
 	Body func(model string) string
-}
-
-// PlatformPassHeaders are the client headers the built-in platform id
-// passes (sdk/platforms), nil for an unknown id: the PassHeaders of a type
-// whose manifest does not list its own.
-func PlatformPassHeaders(id string) []string {
-	for _, p := range platforms.Builtin() {
-		if p.ID == id {
-			return slices.Clone(p.PassHeaders)
-		}
-	}
-	return nil
 }

@@ -33,9 +33,8 @@ func APIKey(id string) standard.Type {
 				KeyNotStringCode:       "pattern",
 			},
 		},
-		PassHeaders: standard.PlatformPassHeaders("openai"),
-		Auth:        standard.Auth{Header: "authorization", Prefix: "Bearer "},
-		Headers:     []standard.Header{standard.Set("content-type", standard.Fixed("application/json"))},
+		Auth:    standard.Auth{Header: "authorization", Prefix: "Bearer "},
+		Headers: []standard.Header{standard.Set("content-type", standard.Fixed("application/json"))},
 		Routes: map[string]standard.Route{
 			ProtocolChat:      {Path: standard.Path("/v1/chat/completions"), Edit: IncludeStreamUsage},
 			ProtocolResponses: {Path: standard.Path("/v1/responses")},

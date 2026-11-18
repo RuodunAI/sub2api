@@ -17,7 +17,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	preset "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
 const (
@@ -97,9 +96,8 @@ func TestManifestServes(t *testing.T) {
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    openai.New(),
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   httpProtocols,
-		PassHeaders: standard.PlatformPassHeaders(platform),
 		Credentials: []string{"authorization"},
 		Exceptions: []conformance.Exception{{
 			Check:  "01_one_relay",

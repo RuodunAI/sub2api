@@ -14,7 +14,6 @@ package standard
 type Type struct {
 	ID              string            // 账号类型 ID；New 把它抄进 Spec.AccountType
 	Spec            apikey.Spec       // 密钥校验、默认/必填基础地址、去掉的后缀、错误文案
-	PassHeaders     []string          // 转发的客户端请求头；清单没写自己的就用 PlatformPassHeaders(平台)
 	Auth            Auth              // Key 放在哪
 	Headers         []Header          // 每个请求都写的头，按顺序，先于路由的
 	Routes          map[string]Route  // 键是上游协议 ID
@@ -64,13 +63,12 @@ type Request struct {
 	APIKey, BaseURL string                // 规范化之后的
 	Model           string                // 上游模型；模型列表时为 ""
 	Stream          bool                  // 回答是否流式（pluginsdk.RequestStream：meta.stream 或请求体 "stream" 为 true）；账号测试、模型列表时为 false
-	Client          map[string]string     // 转发的客户端请求头（小写名、去空白）
+	Client          map[string]string     // 核心交来的客户端请求头（核心已按清单的 passHeaders 过滤；小写名、去空白、丢掉空值）
 }
 func (r *Request) Field(name string) string // 先凭证后设置；字符串原样，数字和布尔取 JSON 文本，其余 ""
 
 func New(types ...Type) *Platform   // 配置不一致时 panic（Check 的结果）
 func Check(types ...Type) error     // 插件测试里也可以直接调
-func PlatformPassHeaders(id string) []string
 
 // *Platform 实现 pluginsdk.Platform、pluginsdk.UpstreamBuilder、pluginsdk.ModelLister：
 func (p *Platform) Execute(ctx, *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) // = pluginsdk.ExecuteDefault
@@ -102,7 +100,7 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
 4. 按 `Route.Model` 取上游模型。
 5. 请求体：一次 `jsonedit` 里先删 `FilterFields`，再 `Route.Edit`；两者都没有就不读请求体。
 6. 请求头：
-   - **默认头**（运营方的透传、覆盖能改）：转发的客户端请求头（只有 `PassHeaders` 里的），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
+   - **默认头**（运营方的透传、覆盖能改）：核心交来的全部客户端请求头（核心已按清单的 `passHeaders` 过滤，库不再筛），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
 7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss。
 
@@ -178,7 +176,7 @@ func main() {
 
 ```go
 func TestGolden(t *testing.T) {
-	goldentest.Run(t, "openai", standardtest.Golden(New()))
+	standardtest.Run(t, "openai", New())
 }
 ```
 
@@ -227,7 +225,7 @@ import (
 func New() *standard.Platform { return standard.New(gemini.APIKey("apikey")) }
 ```
 
-`main.go` 与 openai 的相同，只换 import；测试是 `goldentest.Run(t, "gemini", standardtest.Golden(New()))`。
+`main.go` 与 openai 的相同，只换 import；测试是 `standardtest.Run(t, "gemini", New())`。
 
 预设怎么把模型写进路径，可以照着写别的“模型在路径里”的路由：
 
@@ -281,7 +279,7 @@ func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 
 `main.go` 不变（`pluginsdk.Serve(anthropic.New(), pluginsdk.WithManifest(manifestJSON))`）。
 
-relay 是同一个预设加三处差异：
+relay 是同一个预设加三处差异（它收到哪两个客户端请求头由清单的 `passHeaders` 决定，核心过滤）：
 
 ```go
 // Package relay is the platform of Anthropic-compatible relays.
@@ -296,26 +294,24 @@ import (
 func New() *standard.Platform { return standard.New(RelayKey()) }
 
 // RelayKey is the anthropic preset on the relay's own address: the base URL
-// is required and has no default, a request must name its protocol, the
-// plugin forwards every field, and only the two headers the manifest passes
-// reach the relay.
+// is required and has no default, a request must name its protocol, and the
+// plugin forwards every field.
 func RelayKey() standard.Type {
 	t := anthropic.APIKey("relay_key")
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = "Base URL of the relay is required / 请填写中转站的 Base URL"
 	t.DefaultProtocol = ""
-	t.PassHeaders = []string{"anthropic-version", "anthropic-beta"}
 	return t
 }
 ```
 
-测试：`goldentest.Run(t, "anthropic", standardtest.Golden(standard.New(APIKey())))`、`goldentest.Run(t, "relay", standardtest.Golden(New()))`。
+测试：`standardtest.Run(t, "anthropic", New().Platform)`、`standardtest.Run(t, "relay", New())`。
 
 azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
 ## 测试
 
-- `standardtest.Golden(p)` 把一个 `*standard.Platform` 接到 `goldentest.Run`：`Execute` 是 `BuildUpstream`（`ExecuteDefault` 中继的就是它），其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
+- `standardtest.Run(t, plugin, p)` 用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(t)`：类型配置能通过检查。
 

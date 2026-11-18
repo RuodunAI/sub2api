@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 
@@ -32,8 +33,9 @@ var platform = azureopenai.New()
 
 // TestRequests covers every route of both types: the URL on the account's
 // resource endpoint, the key in api-key (never Authorization), the client
-// headers that are forwarded (never OpenAI-Organization / OpenAI-Project),
-// the stream usage of chat, and the protocols a type does not serve.
+// headers that are forwarded (never OpenAI-Organization / OpenAI-Project,
+// which the manifest does not pass), the stream usage of chat, and the
+// protocols a type does not serve.
 func TestRequests(t *testing.T) {
 	const deployment = "prod/gpt 4o" // a deployment name is escaped as one path segment
 	for _, tc := range []struct {
@@ -54,10 +56,10 @@ func TestRequests(t *testing.T) {
 			out, err := platform.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 				Meta:    &pluginv1.RequestMeta{Protocol: tc.protocol, Model: deployment, Stream: stream},
 				Account: account(tc.accountType, resource, `"api_version":"2025-04-01-preview"`),
-				InboundHeaders: map[string]string{
+				InboundHeaders: coreFiltered(t, tc.accountType, map[string]string{
 					"user-agent": "cli/1", "openai-beta": "assistants=v2", "x-stainless-lang": "python",
 					"openai-organization": "org-client", "openai-project": "proj_client", "authorization": "Bearer sk-client",
-				},
+				}),
 				Body: []byte(body),
 			})
 			if tc.url == "" {
@@ -288,11 +290,25 @@ func TestConformance(t *testing.T) {
 	}
 	conformance.Run(t, conformance.Plugin{
 		Platform:    platform,
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   []string{openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolEmbeddings},
-		PassHeaders: azureopenai.PassHeaders,
 		Credentials: []string{"api-key"},
 	}, cases...)
+}
+
+// coreFiltered is what the core hands the plugin of the client's headers:
+// those the manifest passes for accountType.
+func coreFiltered(t *testing.T, accountType string, client map[string]string) map[string]string {
+	t.Helper()
+	m := load(t)
+	i := slices.IndexFunc(m.AccountTypes, func(at manifest.AccountType) bool { return at.ID == accountType })
+	out := map[string]string{}
+	for _, name := range m.AccountTypes[i].Platforms[0].PassHeaders {
+		if value, ok := client[name]; ok {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 // account is an account of accountType on baseURL ("" = not set) with

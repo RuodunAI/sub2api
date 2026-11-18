@@ -5,10 +5,8 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/gemini/internal/gemini"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	providers "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/gemini"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
 // TestConformance runs the platform plugin rules (design §14.1) over every
@@ -16,9 +14,8 @@ import (
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    gemini.New(),
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   []string{providers.ProtocolGenerate, providers.ProtocolStreamGenerate, providers.ProtocolCountTokens},
-		PassHeaders: standard.PlatformPassHeaders(platform),
 		Credentials: []string{"x-goog-api-key"},
 	}, conformanceCases()...)
 }

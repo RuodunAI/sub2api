@@ -39,9 +39,9 @@ func TestManifest(t *testing.T) {
 	if at.ID != relay.TypeRelayKey || len(at.Platforms) != 1 || at.Platforms[0].Platform != "anthropic" {
 		t.Fatalf("account type %s platforms = %+v, want relay_key on anthropic", at.ID, at.Platforms)
 	}
-	if passHeaders := at.Platforms[0].PassHeaders; !slices.Equal(passHeaders, []string{"anthropic-version", "anthropic-beta"}) ||
-		!slices.Equal(passHeaders, relay.RelayKey().PassHeaders) {
-		t.Fatalf("passHeaders = %v, code forwards %v", passHeaders, relay.RelayKey().PassHeaders)
+	// The core hands the plugin only these two client headers.
+	if passHeaders := at.Platforms[0].PassHeaders; !slices.Equal(passHeaders, []string{"anthropic-version", "anthropic-beta"}) {
+		t.Fatalf("passHeaders = %v", passHeaders)
 	}
 	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) || !at.CustomUpstream() {
 		t.Fatalf("upstreamFields = %v custom = %v, want [base_url] and a custom upstream", at.UpstreamFields, at.CustomUpstream())

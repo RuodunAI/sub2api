@@ -25,7 +25,6 @@ import (
 func custom() standard.Type {
 	t := gemini.APIKey("custom")
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
-	t.PassHeaders = []string{"user-agent", "x-missing"}
 	t.Headers = append(t.Headers,
 		standard.Set("x-org", standard.Field("org")),
 		standard.Set("x-n", standard.Field("n")),
@@ -51,12 +50,15 @@ func TestFields(t *testing.T) {
 	} {
 		out, err := p.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Meta: &pluginv1.RequestMeta{Protocol: protocol, Model: "models/a b"}, Account: acc,
-			Body: []byte(`{"model":"a b"}`), InboundHeaders: map[string]string{"user-agent": " cli/1 ", "cookie": "c"},
+			// What the core hands over goes on as default headers: every
+			// header (the core filtered them), lower-case, trimmed, blank
+			// ones dropped.
+			Body: []byte(`{"model":"a b"}`), InboundHeaders: map[string]string{"user-agent": " cli/1 ", "X-Client": "c", "x-blank": " "},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
-		wantHeaders := map[string]string{"content-type": "application/json", "x-org": "o-1", "x-n": "3", "x-flag": "true", "user-agent": "cli/1", "x-ua": "s2a/cli/1"}
+		wantHeaders := map[string]string{"content-type": "application/json", "x-org": "o-1", "x-n": "3", "x-flag": "true", "user-agent": "cli/1", "x-client": "c", "x-ua": "s2a/cli/1"}
 		if out.Url != want || !reflect.DeepEqual(out.Headers, map[string]string{"x-goog-api-key": "k-123456789"}) || !reflect.DeepEqual(out.DefaultHeaders, wantHeaders) {
 			t.Errorf("%s: %s %v %v, want %s %v", protocol, out.Url, out.Headers, out.DefaultHeaders, want, wantHeaders)
 		}

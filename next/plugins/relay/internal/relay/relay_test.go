@@ -9,18 +9,16 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
 // TestGolden replays the frozen answers of the released plugin, all of them.
 func TestGolden(t *testing.T) {
-	goldentest.Run(t, "relay", standardtest.Golden(New()))
+	standardtest.Run(t, "relay", New())
 }
 
-// TestDifferences pins, on the plugin's own output, the four ways relay_key
-// differs from the anthropic preset (the removed upstream declaration) and
-// its two client headers.
+// TestDifferences pins, on the plugin's own output, the ways relay_key
+// differs from the anthropic preset (the removed upstream declaration).
 func TestDifferences(t *testing.T) {
 	if err := standard.Check(RelayKey()); err != nil {
 		t.Fatal(err)
@@ -31,7 +29,7 @@ func TestDifferences(t *testing.T) {
 		return New().BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Account:        &pluginv1.Account{Id: 1, Type: TypeRelayKey, CredentialsJson: `{"api_key":"` + key + `"}`, SettingsJson: settings},
 			Meta:           &pluginv1.RequestMeta{Protocol: protocol, Model: "m"},
-			InboundHeaders: map[string]string{"anthropic-beta": "b", "anthropic-version": "v", "x-stainless-lang": "go"},
+			InboundHeaders: map[string]string{"anthropic-beta": "b", "anthropic-version": "v"}, // the manifest's passHeaders
 			Body:           []byte(body),
 		})
 	}
@@ -50,7 +48,7 @@ func TestDifferences(t *testing.T) {
 	if _, err := build(`{"base_url":"`+base+`"}`, ""); err == nil || !strings.Contains(err.Error(), `unsupported upstream protocol ""`) {
 		t.Errorf("no protocol: err = %v", err)
 	}
-	// Every field forwarded, only the two passed client headers.
+	// Every field forwarded, the client headers the core hands over too.
 	got, err := build(`{"base_url":"`+base+`/v1"}`, anthropic.ProtocolMessages)
 	if err != nil {
 		t.Fatal(err)

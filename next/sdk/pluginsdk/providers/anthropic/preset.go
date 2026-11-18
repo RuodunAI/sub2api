@@ -23,8 +23,7 @@ func APIKey(id string) standard.Type {
 				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
 			},
 		},
-		PassHeaders: standard.PlatformPassHeaders("anthropic"),
-		Auth:        standard.Auth{Header: "x-api-key"},
+		Auth: standard.Auth{Header: "x-api-key"},
 		Headers: []standard.Header{
 			standard.Default("anthropic-version", standard.Fixed(DefaultAPIVersion)),
 			standard.Set("content-type", standard.Fixed("application/json")),

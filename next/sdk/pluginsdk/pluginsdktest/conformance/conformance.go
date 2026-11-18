@@ -24,18 +24,18 @@ type Plugin struct {
 	// Platform is the implementation under test. The SDK finds TaskMonitor,
 	// UsageExtractor and the rest on it by type assertion, as in production.
 	Platform pluginsdk.Platform
-	// SDK are the options of pluginsdk.Register: WithManifest (or WithInfo).
-	// The declared capabilities decide whether the WebSocket rule applies.
+	// Manifest is the plugin's manifest.json. The suite serves the plugin
+	// with it (pluginsdk.WithManifest): the declared capabilities decide
+	// whether the WebSocket rule applies. It also reads from it the client
+	// headers the core hands over (rule 4).
+	Manifest []byte
+	// SDK are further options of pluginsdk.Register.
 	SDK []pluginsdk.Option
 	// Config is the plugin settings sent with Configure (nil = "{}").
 	Config any
 	// Protocols are the upstream protocols the plugin declares. Each needs a
 	// stream and a non-stream HTTP case.
 	Protocols []string
-	// PassHeaders is the client header allow-list (the manifest's
-	// passHeaders). The suite hands the plugin each of them plus one header
-	// outside the list, which must not reach the upstream request.
-	PassHeaders []string
 	// Credentials are the credential and signed header names (lower-case):
 	// they must be authoritative, never default headers.
 	Credentials []string
@@ -101,6 +101,11 @@ type Case struct {
 	// Account (other id, every top-level credential string suffixed). Set it when
 	// the credentials have structure a suffix breaks.
 	Failover *pluginv1.Account
+
+	// inbound are the client headers the core hands over with the case:
+	// each the manifest passes for the account type and the protocol's
+	// platform.
+	inbound map[string]string
 }
 
 // Exception excuses one case (or suite item) from one rule. It needs a
@@ -151,8 +156,9 @@ func run(t testing.TB, p Plugin, cases []Case, sub func(name string, fn func(tes
 // suite is one Run: the input, completed with defaults and checked.
 type suite struct {
 	p          Plugin
+	sdk        []pluginsdk.Option // WithManifest, then Plugin.SDK
+	declared   *declared
 	cases      []*Case
-	inbound    map[string]string
 	exceptions map[itemKey]Exception
 	sockets    *sockets
 }
@@ -160,7 +166,12 @@ type suite struct {
 type itemKey struct{ check, item string }
 
 func newSuite(p Plugin, cases []Case) (*suite, error) {
-	s := &suite{p: p, inbound: inboundHeaders(p.PassHeaders), exceptions: map[itemKey]Exception{}, sockets: &sockets{}}
+	s := &suite{p: p, sdk: append([]pluginsdk.Option{pluginsdk.WithManifest(p.Manifest)}, p.SDK...), exceptions: map[itemKey]Exception{}, sockets: &sockets{}}
+	d, err := readManifest(p.Manifest)
+	if err != nil {
+		return nil, err
+	}
+	s.declared = d
 	if s.p.BodyLimit <= 0 {
 		s.p.BodyLimit = defaultBodyLimit
 	}
@@ -178,7 +189,7 @@ func newSuite(p Plugin, cases []Case) (*suite, error) {
 			errs = append(errs, fmt.Errorf("two cases are named %q", c.Name))
 		}
 		names[c.Name] = true
-		errs = append(errs, checkCase(&c))
+		errs = append(errs, checkCase(&c), s.passHeaders(&c))
 		s.cases = append(s.cases, &c)
 	}
 	errs = append(errs, s.indexExceptions())
@@ -252,19 +263,19 @@ func (e Endpoint) String() string {
 	return [...]string{"ordinary", "plugin-usage", "task-submission"}[e]
 }
 
-// foreignHeader is the client header outside passHeaders the suite hands
-// over; it must not reach the upstream request.
-const foreignHeader, foreignValue = "x-conformance-not-passed", "conformance-not-passed-value"
-
-func inboundHeaders(pass []string) map[string]string {
-	h := map[string]string{foreignHeader: foreignValue}
-	for _, name := range pass {
-		h[name] = passValue(name)
+// passHeaders sets the client headers of c: each header the manifest
+// passes for its account type on its protocol, as the core filters them.
+func (s *suite) passHeaders(c *Case) error {
+	names, err := s.declared.clientHeaders(c.Account.GetType(), c.Meta.GetProtocol())
+	if err != nil {
+		return fmt.Errorf("case %q: %w", c.Name, err)
 	}
-	return h
+	c.inbound = map[string]string{}
+	for _, name := range names {
+		c.inbound[name] = "conformance-client-" + name
+	}
+	return nil
 }
-
-func passValue(name string) string { return "conformance-client-" + name }
 
 // request is the ExecuteRequest of c as the host builds it.
 func (s *suite) request(c *Case) *pluginv1.ExecuteRequest {
@@ -272,7 +283,7 @@ func (s *suite) request(c *Case) *pluginv1.ExecuteRequest {
 		Meta:           proto.Clone(c.Meta).(*pluginv1.RequestMeta),
 		Account:        c.Account,
 		Body:           c.Body,
-		InboundHeaders: s.inbound,
+		InboundHeaders: c.inbound,
 		ExtractUsage:   c.Endpoint == PluginUsage,
 		TaskSubmission: c.Endpoint == TaskSubmission,
 	}

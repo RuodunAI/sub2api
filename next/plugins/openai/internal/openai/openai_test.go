@@ -9,14 +9,13 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
 // TestGolden replays the frozen answers of the released plugin against the
 // platform the plugin serves, with no exceptions.
 func TestGolden(t *testing.T) {
-	goldentest.Run(t, "openai", standardtest.Golden(New()))
+	standardtest.Run(t, "openai", New())
 }
 
 func TestCheck(t *testing.T) {

@@ -5,10 +5,8 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/anthropic/internal/anthropic"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	provider "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
 // TestConformance runs the platform conformance suite against the plugin as
@@ -18,9 +16,8 @@ import (
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    anthropic.New(),
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   []string{provider.ProtocolMessages, provider.ProtocolCountTokens},
-		PassHeaders: standard.PlatformPassHeaders("anthropic"),
 		Credentials: []string{"x-api-key"},
 		Exceptions: []conformance.Exception{{
 			Check:  "01_one_relay",

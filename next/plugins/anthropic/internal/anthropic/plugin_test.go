@@ -8,7 +8,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
@@ -30,7 +29,7 @@ func TestCapabilities(t *testing.T) {
 // TestGolden replays the frozen golden cases of the anthropic plugin
 // against the platform the plugin serves.
 func TestGolden(t *testing.T) {
-	goldentest.Run(t, "anthropic", standardtest.Golden(New().Platform))
+	standardtest.Run(t, "anthropic", New().Platform)
 }
 
 // TestAPIKey: the type passes the library's checks and keeps what the

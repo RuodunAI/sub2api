@@ -91,8 +91,12 @@ func (f *fake) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (
 	}
 	u.Header("x-conformance-date", f.clock().Format(time.RFC3339)).
 		DefaultHeader("content-type", "application/json").
-		DefaultHeader("x-conformance-beta", in.GetInboundHeaders()["x-conformance-beta"]).
 		Body(body).Model(pluginsdk.RequestModel(in))
+	if f.violate != "drops a client header" {
+		for name, value := range in.GetInboundHeaders() {
+			u.DefaultHeader(name, value)
+		}
+	}
 	f.headerViolations(u, credential, in)
 	request, err := u.Build()
 	f.remember(in, request)
@@ -191,15 +195,25 @@ func (f *fake) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestReque
 	return &pluginv1.BuildTestRequestResponse{}, nil
 }
 
-const fakeManifest = `{"key":"conformance-fake","version":"1.0.0","capabilities":[{"id":"platform.adapter.v1"},{"id":"platform.websocket.v1"}]}`
+const fakeManifest = `{
+  "key": "conformance-fake", "version": "1.0.0",
+  "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.websocket.v1"}],
+  "platforms": [{"id": "conformance", "passHeaders": ["x-conformance-beta"], "endpoints": [
+    {"id": "chat", "method": "POST", "path": "/v1/chat", "protocol": "conformance.chat", "kind": "proxy",
+     "request": {"modelPath": "model", "streamPath": "stream"}, "response": {"stream": "sse", "nonStream": "json"}}
+  ]}],
+  "accountTypes": [
+    {"id": "apikey", "platforms": [{"platform": "conformance"}]},
+    {"id": "oauth", "platforms": [{"platform": "conformance", "passHeaders": ["x-conformance-beta", "x-conformance-oauth"]}]}
+  ]
+}`
 
 func fakePlugin(violate string) Plugin {
 	f := &fake{violate: violate}
 	return Plugin{
 		Platform:    f,
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest([]byte(fakeManifest))},
+		Manifest:    []byte(fakeManifest),
 		Protocols:   []string{"conformance.chat"},
-		PassHeaders: []string{"x-conformance-beta"},
 		Credentials: []string{"authorization", "x-conformance-date"},
 		Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 			token := "at-" + gjson.GetBytes(in.GetBody(), "refresh_token").String()
@@ -258,8 +272,8 @@ func TestConformingPluginPasses(t *testing.T) {
 	}
 }
 
-// Every rule catches the violation of it: one violation per rule (two for
-// the headers).
+// Every rule catches the violation of it: one violation per rule (three
+// for the headers).
 func TestEveryRuleCatchesItsViolation(t *testing.T) {
 	for _, v := range []struct{ violate, rule string }{
 		{"no relay", "01_one_relay"},
@@ -267,6 +281,7 @@ func TestEveryRuleCatchesItsViolation(t *testing.T) {
 		{"drops stream", "03_body"},
 		{"undeclared authoritative", "04_headers"},
 		{"credential default", "04_headers"},
+		{"drops a client header", "04_headers"},
 		{"refetches", "05_no_retry"},
 		{"nonce", "06_deterministic"},
 		{"reuses", "07_failover"},
@@ -306,6 +321,23 @@ func TestExceptions(t *testing.T) {
 	got := strings.Join(record(t, conforming, "03_body")["setup"], "\n")
 	if !strings.Contains(got, "has no reason") || !strings.Contains(got, "names no rule and case") {
 		t.Errorf("bad exceptions were accepted: %q", got)
+	}
+}
+
+// The client headers come from the manifest: without one, or with a case
+// on an account type it does not declare, the suite cannot tell what the
+// core hands over and refuses to start.
+func TestClientHeadersFromTheManifest(t *testing.T) {
+	p := fakePlugin("")
+	p.Manifest = nil
+	if got := strings.Join(record(t, p, "04_headers")["setup"], "\n"); !strings.Contains(got, "Plugin.Manifest is required") {
+		t.Errorf("no manifest: %q", got)
+	}
+	cases := fakeCases()
+	cases[0].Account = &pluginv1.Account{Id: 9, Type: "undeclared", CredentialsJson: `{"api_key":"k"}`}
+	setup := runItem(t, "setup", "", true, func(tb testing.TB) { run(tb, fakePlugin(""), cases, func(string, func(testing.TB)) {}) })
+	if got := strings.Join(setup.failures, "\n"); !strings.Contains(got, `no account type "undeclared"`) {
+		t.Errorf("undeclared account type: %q", got)
 	}
 }
 

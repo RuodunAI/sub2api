@@ -24,8 +24,9 @@ type Request struct {
 	// sets for a stream-only account type while meta.stream keeps the
 	// client's value. false for the account test and the listing.
 	Stream bool
-	// Client are the forwarded client headers (Type.PassHeaders), lower-case
-	// names, trimmed values; none for the account test and the listing.
+	// Client are the client headers the core handed over (it has filtered
+	// them by the manifest's passHeaders), lower-case names, trimmed values,
+	// blank ones dropped; none for the account test and the listing.
 	Client map[string]string
 
 	fields []map[string]any
@@ -114,11 +115,16 @@ func hasToken(cur, value string) bool {
 	return false
 }
 
-// forward are the client headers of inbound the type passes, trimmed,
-// blank ones dropped.
-func (t *Type) forward(inbound map[string]string) map[string]string {
-	out := map[string]string{}
-	apikey.ForwardHeaders(out, inbound, t.PassHeaders)
+// forward are the client headers of inbound: every one the core handed
+// over, lower-case, trimmed, blank ones dropped. The core passes only the
+// manifest's passHeaders, so the library filters nothing more.
+func forward(inbound map[string]string) map[string]string {
+	out := make(map[string]string, len(inbound))
+	for name, value := range inbound {
+		if value = strings.TrimSpace(value); value != "" {
+			out[strings.ToLower(name)] = value
+		}
+	}
 	return out
 }
 
