@@ -239,11 +239,11 @@ func TestFetchLimits(t *testing.T) {
 			t.Errorf("refused requests were sent: %d", fetches.Load())
 		}
 		out, err := fetch(ctx, h, token, "https://sub.API.example.com:8443/big", 3*mib)
-		if err != nil || out.GetTruncated() || len(out.GetBody()) != 20*mib {
-			t.Errorf("large answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
+		if err != nil || len(out.GetBody()) != 20*mib {
+			t.Errorf("large answer: bytes=%d err=%v", len(out.GetBody()), err)
 		}
 		for n := 2; n <= 12; n++ { // no count limit
-			if out, err := fetch(ctx, h, token, "https://api.example.com/x", 0); err != nil || out.GetTruncated() || out.GetStatus() != 200 {
+			if out, err := fetch(ctx, h, token, "https://api.example.com/x", 0); err != nil || out.GetStatus() != 200 {
 				t.Errorf("fetch %d: %v %v", n, out, err)
 			}
 		}

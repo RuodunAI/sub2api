@@ -84,8 +84,8 @@ func TestFetchLimits(t *testing.T) {
 		t.Fatalf("transport failure text %q", failed.GetTransportError())
 	}
 	for i, out := range got[len(refused)+1:] {
-		if out.GetStatus() != 200 || string(out.GetBody()) != "ok" || out.GetTruncated() || len(out.GetHeaders()) < 100 {
-			t.Errorf("request %d: status %d truncated %v headers %d %q", i, out.GetStatus(), out.GetTruncated(), len(out.GetHeaders()), out.GetTransportError())
+		if out.GetStatus() != 200 || string(out.GetBody()) != "ok" || len(out.GetHeaders()) < 100 {
+			t.Errorf("request %d: status %d headers %d %q", i, out.GetStatus(), len(out.GetHeaders()), out.GetTransportError())
 		}
 	}
 	if hits.Load() != int32(len(passed)) {

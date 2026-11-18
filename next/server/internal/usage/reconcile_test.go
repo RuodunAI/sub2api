@@ -74,7 +74,7 @@ func (p *recPlugin) Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch
 // state needs a complete, successful fetch of the call.
 func checkedResult(res *pluginv1.ReconcileResult, fetch *pluginv1.ExecutionHTTPResponse) (*pluginv1.ReconcileResult, error) {
 	state := res.GetState()
-	complete := fetch.GetTransportError() == "" && !fetch.GetTruncated() && fetch.GetStatus() >= 200 && fetch.GetStatus() < 300
+	complete := fetch.GetTransportError() == "" && fetch.GetStatus() >= 200 && fetch.GetStatus() < 300
 	if res != nil && state != pluginv1.ReconcileResult_PENDING && state != pluginv1.ReconcileResult_POLL_FAILED && !complete {
 		return nil, errors.New("a terminal result needs a complete fetch")
 	}

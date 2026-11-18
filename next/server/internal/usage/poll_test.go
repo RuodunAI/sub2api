@@ -61,8 +61,8 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 		t.Fatal("shared redirect policy changed")
 	}
 	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL + "/large"}, &id, admit)
-	if err != nil || out.GetTruncated() || len(out.GetBody()) != 20<<20 { // no size limit: whole
-		t.Fatalf("large answer: %d %v %v", len(out.GetBody()), out.GetTruncated(), err)
+	if err != nil || len(out.GetBody()) != 20<<20 { // no size limit: whole
+		t.Fatalf("large answer: %d %v", len(out.GetBody()), err)
 	}
 	for _, req := range []*pluginv1.ExecutionHTTPRequest{
 		{Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
