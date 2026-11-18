@@ -8,6 +8,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 // environment resolves the environment variables (CONTRACTS §74.3) of an
@@ -66,16 +67,7 @@ func (c *call) upstreamTimeouts(opts *pluginv1.UpstreamOptions, stream bool) (he
 		header = d
 	}
 	total = c.env.Duration(core.EnvVarRelayTimeoutSeconds)
-	return tighten(header, opts.GetResponseHeaderTimeoutMs()), tighten(total, opts.GetTotalTimeoutMs())
-}
-
-// tighten is d, or ms when that is shorter (or d is none); ms <= 0 asks
-// nothing.
-func tighten(d time.Duration, ms int32) time.Duration {
-	if t := time.Duration(ms) * time.Millisecond; ms > 0 && (d <= 0 || t < d) {
-		return t
-	}
-	return d
+	return execfetch.Tighten(header, opts.GetResponseHeaderTimeoutMs()), execfetch.Tighten(total, opts.GetTotalTimeoutMs())
 }
 
 func newIdleBody(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *idleBody {
