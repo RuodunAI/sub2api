@@ -123,32 +123,6 @@ func TestVideoUsageReservation(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------- ResolveModel (no DB)
-
-func TestResolveModelEdges(t *testing.T) {
-	p := New() // no host
-	ctx := context.Background()
-
-	// The wrong protocol resolves to an empty model (400), never a guess.
-	r, err := p.ResolveModel(ctx, &pluginv1.ResolveModelRequest{Meta: &pluginv1.RequestMeta{Protocol: ProtocolImages}})
-	if err != nil || r.GetModel() != "" {
-		t.Fatalf("wrong protocol: %q %v", r.GetModel(), err)
-	}
-	// A query with no task id is a 400.
-	r, err = p.ResolveModel(ctx, &pluginv1.ResolveModelRequest{Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}})
-	if err != nil || r.GetModel() != "" {
-		t.Fatalf("no task id: %q %v", r.GetModel(), err)
-	}
-	// A database that is down resolves to an empty model (400), not a free,
-	// unlimited request.
-	r, err = p.ResolveModel(ctx, &pluginv1.ResolveModelRequest{
-		Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "cgt-1"}},
-	})
-	if err != nil || r.GetModel() != "" {
-		t.Fatalf("db down: %q %v", r.GetModel(), err)
-	}
-}
-
 // ---------------------------------------------------------------- reconcile (no DB)
 
 func TestTaskQuery(t *testing.T) {

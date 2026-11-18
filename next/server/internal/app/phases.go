@@ -229,8 +229,6 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	})
 	// The group page lists the protocols the accounts of a group serve.
 	b.grp.Protocols = b.acc
-	// Register balance providers (CONTRACTS §51).
-	b.acc.RegisterClaudeOAuthBalanceProvider()
 	// Price sync sources (upstream API keys encrypted) and GET /key/prices for
 	// downstream sup2api instances (CONTRACTS §17).
 	b.bill.SetSyncDeps(billing.SyncDeps{Cipher: b.cipher, Keys: b.keys})

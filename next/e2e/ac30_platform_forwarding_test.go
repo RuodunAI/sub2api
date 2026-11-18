@@ -165,15 +165,6 @@ func platformCases() []platformCase {
 					t.Fatalf("bedrock body: %s", r.Body)
 				}
 			}},
-		{name: "claude_oauth", plugin: "claude_oauth", typ: "claude_setup_token", family: "claude", usage: usageAnthropic,
-			creds: func(_ *Env, k string) map[string]any { return map[string]any{"access_token": k} }, call: messagesCall,
-			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
-				expectPath(t, r, "api.anthropic.com", "/v1/messages")
-				if r.Header("authorization") != "Bearer "+k || r.Header("x-api-key") != "" || !r.TLS {
-					t.Fatalf("claude_oauth headers: %s", r.Headers.Raw)
-				}
-				validJSONBody(t, r, model, "", "claude_oauth")
-			}},
 		// The Codex backend only streams: a non-stream request is sent as a
 		// stream and answered as JSON.
 		{name: "codex", plugin: "codex", typ: "codex_oauth", family: "gpt", usage: usageOpenAI, streamOnly: true,
@@ -192,7 +183,7 @@ func platformCases() []platformCase {
 }
 
 // AC 30: every platform plugin forwards through Execute (forwarding v2).
-// For each of the ten plugins, a non-stream and a stream request reach the
+// For each of the nine plugins, a non-stream and a stream request reach the
 // mock as the request the plugin built (address, credential header, body),
 // the client gets a complete answer, and the request is billed once from
 // the usage the core read under the facts the plugin returned (host_usage).

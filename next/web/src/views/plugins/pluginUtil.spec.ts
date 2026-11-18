@@ -99,7 +99,7 @@ describe('isPluginKey', () => {
   it('is the key rule of sdk/manifest/check', () => {
     const rule = readFileSync('../sdk/manifest/check/validate.go', 'utf8').match(/\bkeyRe\s*=\s*regexp\.MustCompile\(`([^`]+)`\)/)?.[1]
     expect(rule).toBe('^[a-z][a-z0-9_]{1,29}$')
-    for (const key of ['mailer', 'claude_oauth', 'a1']) expect([key, isPluginKey(key)]).toEqual([key, true])
+    for (const key of ['mailer', 'azure_openai', 'a1']) expect([key, isPluginKey(key)]).toEqual([key, true])
     for (const key of ['', 'a', '..', 'a/b', 'Mailer', 'guard-on', '1st', 'x'.repeat(31)]) expect([key, isPluginKey(key)]).toEqual([key, false])
   })
 })

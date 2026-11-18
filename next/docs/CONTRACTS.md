@@ -1958,7 +1958,7 @@ message RankedAccount {
 
 `SETTLED` 强制带 tokens。上游 succeeded 却没返回 `usage` 时，返回 0 会把预扣**全额退掉**——等于白送一次视频。
 
-火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**
+火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**（后来由 `ReconcileResult_SETTLED_ESTIMATE` 解决；`video_tasks` 表在火山插件 0.13.0 删除，插件迁移 `0003_drop_video_tasks.sql`。）
 
 **建议**：`ReconcileResult` 加一个「保留预扣」的表达（如 `keep_estimate bool`）。
 
@@ -2108,7 +2108,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 `store/migrate.go` 对每个迁移文件算 sha256 并与 `plugin_migrations.checksum` 比对，**改动已应用的迁移文件会让整个安装/升级中止**。所以：
 
 - 列的增删一律新写迁移文件，已应用的一个字节都不能动
-- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是现存的一处。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
+- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是一处（那张表在火山插件 0.13.0 由 `0003_drop_video_tasks.sql` 删除）。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
 
 ### 25.8 并发透支防护：输出费用预留与插件 EstimateUsage Unimplemented 处理（2026-10-04）
 
@@ -2645,7 +2645,6 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 | 插件（版本） | 账号类型 | 预设模型 | 预设映射 |
 |---|---|---|---|
 | anthropic 0.2.5 | `apikey` | Claude 现行与仍可用的模型（别名与带日期 ID），不含已退役模型 | 无 |
-| claude-oauth 0.2.1 | `claude_oauth`、`claude_setup_token` | 同 anthropic | 无 |
 | relay 0.2.2 | `relay_key` | 同 anthropic | 无（由中转站自己决定模型） |
 | openai 0.3.4 | `apikey` | new-api OpenAI 列表中走 chat / responses / embeddings 的模型（不含本平台没有端点的音频、图片、实时、视频模型，也不含 `gpt-4.5-preview*`、`o1-preview`、`o1-mini` 等已退役模型） | 无 |
 | gemini 0.2.4 | `apikey` | new-api Gemini 列表中走 generateContent 的模型（不含 imagen、veo、TTS、原生音频，也不含 `gemini-1.5-*` 与旧 2.5 预览版） | 无 |
@@ -2768,7 +2767,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 把账号绑定到分组需要 `group:manage` 或 `account:group:bind`；
 - `priority` 只能 0–100，`weight` 只能 1–100，`max_concurrency` 只能 1–1000，超出返回字段错误 `restricted`；
 - 管理员禁用的账号（`admin_locked`，§15.9、§21.3.1）不能自行启用或重置状态，403 `account_locked_by_admin`；
-- 账号类型**没有声明 `guardedSettings`** 时（relay 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 `claude_oauth`）目前也要求这个权限。
+- 账号类型**没有声明 `guardedSettings`** 时（relay 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 codex 的 `codex_oauth`）目前也要求这个权限。
 
 ### 43.6 授予与操作他人的权限检查
 
@@ -2911,12 +2910,9 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 旧路由 `GET /accounts/:id/subscription/limits`、`POST /accounts/:id/subscription/limits/reset` 删除（从未发布）。
 
-### 44.6 claude-oauth 插件（0.1.1）
+### 44.6 claude-oauth 插件（已删除）
 
-- `claude_oauth` 与 `claude_setup_token` 都声明被动采样：`5h` / `7d` / `7d_fable` ← `anthropic-ratelimit-unified-{5h,7d,7d_oi}-{utilization,reset,status}`（utilization 为 0–1 小数、reset 为 Unix 秒，见 sub2api `ratelimit_service.go` `samplePassiveUsageFromHeaders` 与 `account_usage_service.go` `buildPassiveUsageWindow` 的 `util * 100`）。
-- `claude_oauth` 声明 `query: true`：`GET https://api.anthropic.com/api/oauth/usage`，头部 `Accept: application/json, text/plain, */*`、`Content-Type: application/json`、`Authorization: Bearer <access_token>`、`anthropic-beta: oauth-2025-04-20`、`User-Agent: claude-code/2.1.7`（同 sub2api `claude_usage_service.go`）。响应 `five_hour` → `5h`（总是返回），`seven_day` → `7d`、`seven_day_sonnet` → `7d_sonnet`、`seven_day_overage_included`（缺失时取 `limits[]` 中 Fable 的 `weekly_scoped`）→ `7d_fable`（仅当带 `resets_at` 时返回，同 sub2api `buildUsageInfo`）；`utilization` 已是百分比。401/403 → `auth_rejected`，其他失败 → `transient`。
-- `claude_setup_token` 没有 profile 权限，`BuildQuotaRequest` 回 `Unimplemented`，只靠响应头（同 sub2api `estimateSetupTokenUsage`）。
-- manifest 同时补齐安装校验要求的 `platform.register` 权限与 `accounts.credentials` 的 `{"types": "own"}` scope。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ### 44.7 插件模型可用性与自动配额查询
 
@@ -3219,7 +3215,7 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
 ### 48.1 manifest
 
 ```json
-"accountTypes": [{ "id": "claude_oauth", "refresh": { "expiresAtField": "expires_at", "beforeExpirySec": 1800 } }]
+"accountTypes": [{ "id": "codex_oauth", "refresh": { "expiresAtField": "expires_at", "beforeExpirySec": 1800 } }]
 ```
 
 - `refresh` 存在即表示这个类型的凭证会过期，插件实现了下面两个 RPC。`{}` 使用默认值。
@@ -3273,19 +3269,9 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
   - 类型不支持时返回 400。
 - 控制台：账号详情新增"令牌"一行，显示过期时间、上次刷新时间和错误（`auth_rejected` 提示重新授权），旁边有"立即刷新令牌"；行操作菜单里也有同一个入口。
 
-### 48.5 claude-oauth 0.2.0
+### 48.5 claude-oauth 0.2.0（已删除）
 
-- `claude_oauth` 与 `claude_setup_token` 都声明 `"refresh": {}`。
-- **请求**（同 sub2api `claude_oauth_service.go` `RefreshToken`）：
-  - `POST https://platform.claude.com/v1/oauth/token`；
-  - body `{"grant_type":"refresh_token","refresh_token":…,"client_id":"9d1c250a-…"}`；
-  - `User-Agent: axios/1.13.6`。
-- **保存的字段**：`access_token`、`expires_at`（现在 + `expires_in`）。回包带了 `refresh_token`（轮换）或 `scope` 时一并保存，没带就保留原值。
-- **错误判断**：400 且包含 `invalid_grant`、401、403 记为 `auth_rejected`，其他记为 `transient`。没有 refresh token 的 setup token 返回 `FAILED_PRECONDITION`。
-- **删掉的东西**：空壳任务 `refresh_tokens`、`app.jobs.v1` 能力、`jobs` 权限。插件构造请求时只打日志的"即将过期"检查也删了。
-- **兼容**：`credentials.expires_at` 改用 `json.Number`，数字字符串也能解析。
-- 网关请求路径上不做同步续期。sub2api 在请求时剩余不到 3 分钟会先刷新再转发；这里靠 30 分钟提前量的定时扫描兜住，未做同步续期。
-- `net` 权限保留，只用于授权时用授权码换令牌。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ## 49. CCGateway 账号（已删除）
 
@@ -3315,6 +3301,8 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 ## 52. 账号余额展示与刷新（2026-10-05）
 
 与 §44 订阅配额并行，账号类型可以声明 `balance`（账号余额），插件实现余额查询，核心定期或按需查询并缓存结果（PG + Redis），前端显示余额和"刷新余额"按钮。
+
+> **现状（0.1.304，§116）**：唯一的使用者 claude-oauth 已删除。核心从来没有调用下文的 `BuildBalanceRequest` / `ParseBalanceResponse`，余额只由核心里按账号类型注册的查询器（`account.RegisterBalanceProvider`）取得，而唯一的查询器（写死的 `balance_claudeoauth.go`）随插件删除。现在没有账号类型声明 `balance`，也没有注册任何查询器：声明了 `balance` 的类型只会显示“支持余额”而永远查不到数据。清单字段、两个 RPC、`account_balances` 表、接口和控制台暂时保留，是否删除由所有者决定（§116.3）。
 
 ### 52.1 manifest 账号类型声明 `balance`
 
@@ -3457,46 +3445,14 @@ CREATE INDEX IF NOT EXISTS idx_account_balances_updated_at ON account_balances(u
 3. i18n（zh/en）：余额标签、货币格式化。
 4. types.ts：`Account.balance?: Money`（移除 `// assumed` 注释）。
 
-### 52.6 claude-oauth 插件实现（版本 0.2.1）
+### 52.6 claude-oauth 插件实现（已删除）
 
-**manifest 变更**（`next/plugins/claude-oauth/manifest.json`）：
-
-```json
-{
-  "version": "0.2.1",
-  "accountTypes": [{
-    "id": "oauth",
-    "balance": {
-      "currency": "USD"
-    },
-    "quota": { ... }
-  }]
-}
-```
-
-**实现**（`next/plugins/claude-oauth/balance.go`）：
-
-- `BuildBalanceRequest`：返回与 quota 查询相同的请求（`GET https://api.anthropic.com/v1/organization/usage/subscription`，带 OAuth access token）。
-- `ParseBalanceResponse`：解析响应 JSON 的 `account_balance` 字段（与 `usage_windows` 并列）：
-  ```json
-  {
-    "account_balance": {
-      "amount_micros": 12345678,
-      "currency": "USD"
-    },
-    "usage_windows": [...]
-  }
-  ```
-  - `amount_micros` 已经是微单位，直接返回。
-  - 上游未返回 `account_balance` → `unsupported`（旧 API 版本或账号类型不支持）。
-
-**测试**（`balance_test.go`）：解析成功、解析失败、账号余额字段缺失。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ### 52.7 测试覆盖
 
 - **SDK**：`manifest/check/balance_test.go`（manifest 校验、货币代码格式）。
 - **核心**：`account/balance_test.go`（查询流程、错误处理、新鲜度）、`account/balance_cache_test.go`（Redis 缓存）。
-- **claude-oauth**：`balance_test.go`（解析响应、错误情况）。
 - **集成**：PG 表迁移幂等性（`0034_account_balances.sql`）、账号列表/详情返回 balance。
 
 ### 49.17 CCGateway 容器地址池（已删除）
@@ -8208,7 +8164,7 @@ message UpstreamRequest {
 
 - 两个 map 的键都小写；`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝；同名时权威头生效；名或值不合法拒绝。
 - 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
-- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（claude_oauth、codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
+- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
 - 插件交回的权威头能盖掉运营方设置的同名头，这是代码插件一直以来的行为，签名需要它。
 
 ### 112.5 发送前的检查
@@ -8286,7 +8242,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 112.12 清单
 
 - `runtime` 只有 `grpc`（`js` 仍是保留值）；`manifest.RuntimeGRPC` 在 `manifest.go`（没有使用者的 `TransportHTTP`、`TransportWebSocket` 已删除）。
-- 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。claude_oauth 的两个类型和 codex 的两个类型写的是 `[]`。
+- 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。codex 的两个类型写的是 `[]`。
 - 声明了账号类型就必须有 `accounts.credentials {"types": "own"}`（原来声明式类型可以没有）。
 - `AccountType.AddressFields()` 只认 `upstreamFields`：原来声明了 `upstream` 的类型自动得到 `["base_url"]`，现在要在清单里写出（五个改写的插件都写了）。它决定账号的自定义上游判断（§21）和取回允许的账号地址（§112.6）。
 - `usageSource: "plugin"`、`usageStreamEvents`、`usageMaxBytes`、`usageRequestFields`（`EstimateUsage` 的入参，预扣不变，§25.8）、`endpoint.task` 不变：`extract_usage` 来自端点的 `PluginUsage()`，`task_submission` 来自 `TaskSubmit()`。
@@ -8300,7 +8256,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
 | `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（启动时取 `WithManifest`，按 `manifest.FetchHostAllowed` 决定取回能到的主机）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
-| `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，十个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
+| `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，九个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
 | `sdk/pluginsdk/standard/goldentest` | 原声明式引擎的 1498 条录制样例，转换后冻结 |
 
 插件和核心不用厂商的 SDK 客户端，只用 AWS 的 `aws/signer/v4`、`aws/protocol/eventstream` 和 Vertex 断言用的 `golang-jwt/jwt/v5`；OpenAI、Anthropic 的官方 SDK 只允许用作 e2e 测试的客户端（e2e 的 AC36 用 openai-go 和 anthropic-sdk-go 驱动网关）。
@@ -8409,3 +8365,35 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
 - **单向**：0111 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
 
+## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0113，核心 0.1.304）
+
+插件 `claude_oauth`（目录 `next/plugins/claude-oauth`，账号类型 `claude_oauth`、`claude_setup_token`）整体删除，不留兼容。线上没有安装它，也没有这两种类型的账号。最后的源码是 `77158211c`（`git show 77158211c:next/plugins/claude-oauth/manifest.json`）。§44.6、§48.5、§52.6 只留标题。
+
+### 116.1 删除了什么
+
+- 插件目录、`plugins/released.json` 里它那一条、`go.work` 的模块。CI、镜像构建和市场打包都按 `plugins/*` 发现插件，不用改。
+- 核心里只为它存在的代码：写死在核心的余额查询器 `account/balance_claudeoauth.go`（向 `api.anthropic.com/api/oauth/usage` 读 `account_balance`）和它在 `app` 里的注册。
+- 插件键 `claude_oauth` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.304）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.304。已签名的 claude-oauth 0.3.0 包的 `hostCompat` 落在 0.1.304 范围内，没有这一条就能装上。
+- e2e：AC30 的平台插件矩阵去掉它那一行，变成九个插件；e2e 栈里只为它存在的 mock 主机别名 `api.anthropic.com` 删除。
+- 控制台：mock 里的两种类型和四个示例账号（示例账号改成 Anthropic API Key）、请求头覆盖提示里点它名字的句子。
+
+### 116.2 数据库：迁移 0113
+
+`0113_drop_claude_oauth_plugin.sql` 照 0102（§101.5）、0104（§106）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障：发布迁移时所有节点都已停下），可以重跑：
+
+- 它任务的 `scheduled_tasks` 行（这张表没有到 `plugins` 的外键）；
+- 它的权限 `plugin.claude_oauth:claude_oauth:manage` 和这条权限的授予（`casbin_rule` 按键引用权限，没有外键级联；持有它的角色升 `revision`），插件存在时 `authz_meta` 的两个版本各加一；
+- 键记入 `plugin_key_retirements`（归原发布者）；
+- 插件行，级联删除版本（含暂存的授予）、宿主权限授予、事件游标与死信、任务运行、发布状态（`plugin_rollouts`，连同节点结果和清理屏障）、运行节点、卸载屏障、插件迁移记录和粘性规则；`plugin_egress_domains` 没有外键，单独删除；
+- 它没有申请数据库权限，所以没有 `plg_claude_oauth` schema 和角色；迁移仍然 `DROP SCHEMA IF EXISTS plg_claude_oauth CASCADE`，角色只在带着核心的标记时删除（同 `dbschema.DropTx`），只为手工建过的情况。
+
+保留：`plugin_key = 'claude_oauth'` 的账号（连同分组关系、使用记录、账本、余额快照），在控制台显示为插件已卸载，由管理员删除；`usage_logs`、`balance_ledger`、`audit_logs`；`plugin_executions`、`plugin_history`、`plugin_egress_logs`。它在 Valkey 里的 KV（OAuth 授权会话）不在数据库里，30 分钟内自己过期。
+
+### 116.3 删掉它以后没有使用者、暂时保留的能力
+
+下面这些是给第三方插件作者的通用契约，删掉它们会改清单格式或插件协议，所以保留，由所有者决定是否删除：
+
+- **账号余额（§52）**：清单 `accountTypes[].balance`（`manifest.AccountBalance`，`check/balance.go`）、`PlatformService.BuildBalanceRequest` / `ParseBalanceResponse` 与它们的消息、核心 `account/balance.go` 的 `BalanceProvider` 注册表、`balance_cache.go`、表 `account_balances`、`GET /accounts/:id/balance`、账号视图的 `balance`、控制台的余额显示。核心从来没有调用那两个 RPC，余额只来自核心里注册的查询器，而唯一的查询器随本次删除；现在没有类型声明 `balance`，声明了也只显示“支持余额”而查不到数据。
+- **额度主动查询（§44）**：清单 `quota.query`、`quota.autoRefresh`，`PlatformService.BuildQuotaRequest` / `ParseQuotaResponse`（`pluginsdk.QuotaReader`），核心的主动查询与自动复查。现在没有第一方插件声明 `query`（codex 只用响应头被动采样），机制本身完整可用。
+
+仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex、volcengine 等）。

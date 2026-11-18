@@ -8,7 +8,7 @@
 
 ## 1. 背景与目标
 
-现在能接的上游是 OpenAI、Anthropic、Gemini 三家的官方接口和它们的兼容中转（openai、anthropic、gemini、relay 四个声明式插件），加上 codex、claude-oauth、volcengine 三个代码插件。三大云上的同一批模型接不进来：
+现在能接的上游是 OpenAI、Anthropic、Gemini 三家的官方接口和它们的兼容中转（openai、anthropic、gemini、relay 四个声明式插件），加上 codex、volcengine 等代码插件。三大云上的同一批模型接不进来：
 
 - Vertex AI 上的 Gemini：地址带项目和区域，鉴权是服务账号换来的 1 小时令牌。
 - Azure OpenAI：资源自己的域名，密钥放在 `api-key` 头，模型名是部署名。
@@ -233,12 +233,12 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 `token_uri` 钉死为 Google 官方地址：这个请求由核心替插件发，不能让粘贴进来的 JSON 指到别处。
 
-**第一枚令牌**。codex、claude-oauth 的第一枚令牌是授权流程里插件自己换来的；Vertex 用 schema 表单，没有授权流程。做法：
+**第一枚令牌**。codex 的第一枚令牌是授权流程里插件自己换来的；Vertex 用 schema 表单，没有授权流程。做法：
 
 1. `ValidateCredentials` 算出密钥指纹（`client_email` + `private_key_id` 的 SHA-256；用户凭证是 `client_id` + `refresh_token`）。提交的凭证里没有令牌，或者 `token_for` 和指纹不同（换了密钥），就在归一化结果里去掉旧令牌并写 `expires_at: 1`。
 2. `expires_at: 1` 是一个读得出来的、已经过期的时间，下一轮扫描（最多 5 分钟）就会刷新。不依赖任何核心改动。
 3. 等不及可以在账号详情点“立即刷新令牌”（`POST /accounts/:id/refresh-credentials`，现有功能）。
-4. 核心 0.1.N 顺带加一个小改进（任务包 C2，Vertex 不依赖它）：保存账号后，类型声明了 `refresh` 就异步调一次 `refreshAccount(id, false)`。非强制调用只刷新已到期的，所以对 codex、claude-oauth 没有影响，Vertex 账号则保存后几秒内就有令牌。
+4. 核心 0.1.N 顺带加一个小改进（任务包 C2，Vertex 不依赖它）：保存账号后，类型声明了 `refresh` 就异步调一次 `refreshAccount(id, false)`。非强制调用只刷新已到期的，所以对 codex 没有影响，Vertex 账号则保存后几秒内就有令牌。
 
 没有采用的做法：插件在校验时自己联网换令牌（要给插件 `net` 权限，而且走不了账号代理）。
 

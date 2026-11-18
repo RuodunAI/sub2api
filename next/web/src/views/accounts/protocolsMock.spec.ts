@@ -57,7 +57,7 @@ describe('protocol binding in the mock', () => {
   it('counts for a group the member accounts serving each protocol', async () => {
     const g = await data('GET', '/groups/2')
     const count = Object.fromEntries((g.served_protocols as Array<{ protocol: string; accounts: number }>).map(s => [s.protocol, s.accounts]))
-    // vip: claude-main, claude-max-1, claude-pro-3 natively and openai-main through its one converted model.
+    // vip: claude-main, claude-key-1, claude-key-3 natively and openai-main through its one converted model.
     expect(count['anthropic.messages']).toBe(4)
     expect(count['openai.chat']).toBe(1)
     expect(count['gemini.generate']).toBe(1)

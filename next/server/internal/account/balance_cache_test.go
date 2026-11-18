@@ -19,7 +19,7 @@ func testAccountForBalanceCache(t *testing.T, db *store.DB) int64 {
 	t.Helper()
 	var id int64
 	err := db.SQL.QueryRowContext(context.Background(), `INSERT INTO accounts (name, plugin_key, type, credentials_enc)
-		VALUES ($1, 'claude-oauth', 'oauth', $2) RETURNING id`,
+		VALUES ($1, 'codex', 'codex_oauth', $2) RETURNING id`,
 		"balance-cache-test-"+time.Now().Format("150405.000000"), []byte("x")).Scan(&id)
 	require.NoError(t, err)
 	return id

@@ -20,7 +20,7 @@ import (
 )
 
 // TLS mode for vendor hosts the platform plugins address directly (Bedrock,
-// Vertex AI, the Codex backend, Anthropic for OAuth accounts): the E2E
+// Vertex AI, the Codex backend): the E2E
 // network gives the mock those host names as aliases, and the nodes trust
 // the mock's CA, so the real plugins reach the mock without a test endpoint.
 //
