@@ -32,9 +32,12 @@ const DEVICE_CREDS = { access_token: 'at', refresh_token: 'rt', id_token: 'it', 
 const OAUTH_CREDS = { access_token: 'at2', refresh_token: 'rt2', id_token: 'it2', expires_at: 1800000000, email: 'me@example.com', chatgpt_account_id: 'acc-2', plan_type: 'pro' }
 const CALLBACK = 'http://localhost:1455/auth/callback'
 
+/** The editor's proxyTicket (UI 3.20): a ticket of its current proxy choice. */
+let proxyTicket: ReturnType<typeof vi.fn<() => Promise<string>>>
+
 let wrapper: VueWrapper | null = null
 function mountForm(props: Record<string, unknown>) {
-  wrapper = mount(CodexAuthForm, { props: { modelValue: {}, mode: 'create', ...props }, attachTo: document.body })
+  wrapper = mount(CodexAuthForm, { props: { modelValue: {}, mode: 'create', proxyTicket, ...props }, attachTo: document.body })
   return wrapper
 }
 /** The last v-model value the form emitted. */
@@ -42,6 +45,7 @@ const lastValue = (w: VueWrapper) => (w.emitted('update:modelValue') as unknown[
 
 beforeEach(() => {
   vi.useFakeTimers()
+  proxyTicket = vi.fn(async () => 'sealed-ticket')
   calls = []
   answer = () => {
     throw new Error('unexpected call')
@@ -98,6 +102,9 @@ describe('CodexAuthForm: device code', () => {
     expect(w.find('[data-testid="codex-device-url-copy"]').exists()).toBe(true)
     expect(w.get('[data-testid="codex-device-countdown"]').text()).toBe('device.expiresIn')
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
+    // The login starts with the editor's proxy choice; the polls use the session's.
+    expect(calls[0]).toEqual({ path: '/auth/device/start', body: { proxy_ticket: 'sealed-ticket' } })
+    expect(proxyTicket).toHaveBeenCalledTimes(1)
 
     await vi.advanceTimersByTimeAsync(5000)
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1' } }])
@@ -174,7 +181,7 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     const w = mountForm({ accountType: { type: 'codex_oauth' } })
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: {} })
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket' } })
     expect((w.get('[data-testid="codex-oauth-url"]').element as HTMLInputElement).value).toBe('https://auth.openai.com/oauth/authorize?x=1')
     expect(w.get('[data-testid="codex-oauth-open"]').attributes('target')).toBe('_blank')
     expect(w.find('[data-testid="codex-oauth-note"]').exists()).toBe(true)
@@ -273,7 +280,7 @@ describe('CodexAuthForm: editing', () => {
     await w.get('[data-testid="codex-reauth"]').trigger('click')
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: {} })
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket' } })
     await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
     await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
@@ -321,5 +328,28 @@ describe('CodexAuthForm: validate()', () => {
   it('shows server field errors', () => {
     const w = mountForm({ accountType: { type: 'codex_device' }, errors: { access_token: 'token rejected' } })
     expect(w.get('[data-testid="codex-server-errors"]').text()).toContain('token rejected')
+  })
+})
+
+// The editor's proxy choice reaches the plugin as a proxy ticket asked for
+// when a login starts (CONTRACTS §117); a refused choice stops the start.
+describe('CodexAuthForm: proxy ticket', () => {
+  it('asks for a ticket at every start and shows why it was refused', async () => {
+    answer = (path) => {
+      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/a' }
+      throw new Error(`unexpected ${path}`)
+    }
+    proxyTicket.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [{ field: 'proxy_url', code: 'invalid', message: 'invalid proxy URL: missing port' }] } }))
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+    await flushPromises()
+    expect(calls).toHaveLength(0)
+    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('invalid proxy URL: missing port')
+
+    proxyTicket.mockResolvedValueOnce('another-ticket')
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+    await flushPromises()
+    expect(calls).toEqual([{ path: '/auth/codex/start', body: { proxy_ticket: 'another-ticket' } }])
+    expect(proxyTicket).toHaveBeenCalledTimes(2)
   })
 })

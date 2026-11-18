@@ -60,7 +60,8 @@ export interface DevicePoll {
   interval?: number
 }
 
-export const startDevice = () => api().post<DeviceStart>('/auth/device/start', {})
+/** Both logins start with the proxy ticket of the account form (CONTRACTS §117): every request of the login leaves through that proxy. */
+export const startDevice = (proxyTicket: string) => api().post<DeviceStart>('/auth/device/start', { proxy_ticket: proxyTicket })
 export const pollDevice = (sessionId: string) => api().post<DevicePoll>('/auth/device/poll', { session_id: sessionId })
 
 // ------------------------------------------------------------------ Sign in with Codex (codex_oauth)
@@ -70,7 +71,7 @@ export interface OAuthStart {
   authorize_url: string
 }
 
-export const startOAuth = () => api().post<OAuthStart>('/auth/codex/start', {})
+export const startOAuth = (proxyTicket: string) => api().post<OAuthStart>('/auth/codex/start', { proxy_ticket: proxyTicket })
 export const exchangeOAuth = (sessionId: string, callbackUrl: string) =>
   api().post<{ credentials: CodexCredentials }>('/auth/codex/exchange', { session_id: sessionId, callback_url: callbackUrl })
 

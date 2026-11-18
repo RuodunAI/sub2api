@@ -5,11 +5,15 @@
 // /auth/codex/exchange → credentials. Re-authorizing runs the same flow.
 // Not a <form>: the panel sits inside the account editor's form.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { isApiError } from '@sub2api/host'
+import { isApiError, type ProxyTicketSource } from '@sub2api/host'
 import { SAlert, SButton, SCopyButton, SField, SHint, SIcon, SInput, SLink, SSteps } from '@sub2api/ui'
 import { errorMessage, exchangeOAuth, startOAuth, useCodexHost, type CodexCredentials, type OAuthStart } from './host'
 import { callbackShape } from './flow'
 
+const props = defineProps<{
+  /** The account form's proxy choice as a proxy ticket (UI 3.20): the exchange goes through it. */
+  proxyTicket: ProxyTicketSource
+}>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
 const t = host.t
@@ -22,7 +26,7 @@ const failure = ref('')
 // the consent was denied); only a new link helps.
 const failedStep = ref<'' | 'start' | 'exchange' | 'session'>('')
 /** Exchange refusals that end the session (the plugin's error codes). */
-const SESSION_GONE = new Set(['session_expired', 'access_denied'])
+const SESSION_GONE = new Set(['session_expired', 'access_denied', 'proxy_refused'])
 const shape = computed(() => callbackShape(callback.value))
 const shapeHint = computed(() => (shape.value === 'invalid' || shape.value === 'denied' || shape.value === 'no_code' ? t(`oauth.shape.${shape.value}`) : ''))
 // A failed exchange is stale once the operator pastes another address.
@@ -51,7 +55,7 @@ async function generate() {
   failedStep.value = ''
   setBusy('start')
   try {
-    const s = await startOAuth()
+    const s = await startOAuth(await props.proxyTicket())
     if (!alive || gen !== generation) return
     session.value = s
     callback.value = ''
