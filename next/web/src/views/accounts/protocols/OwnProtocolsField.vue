@@ -9,9 +9,10 @@
 // bulk edit.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SAlert, SBadge, SCheckbox, SChip, SHint, SSegmented } from '@sub2api/ui'
+import { SAlert, SBadge, SCheckbox, SHint, SSegmented } from '@sub2api/ui'
 import { columnState, openColumns, unknownOwnProtocols } from './protocolBinding'
 import { useProtocolLabels } from './protocolLabels'
+import UnknownProtocolChips from './UnknownProtocolChips.vue'
 import type { ProtocolEditor, ProtocolMode } from './useProtocolEdit'
 
 const props = defineProps<{
@@ -55,9 +56,7 @@ const unknown = computed(() => unknownOwnProtocols(protocols.value, columns.valu
     <SAlert v-if="unknown.length" tone="warning" dense data-testid="own-protocols-unknown">
       <span class="flex flex-wrap items-center gap-1.5">
         {{ t('accounts.protocols.own.unknown') }}
-        <SChip v-for="id in unknown" :key="id" tone="warning" closable :disabled="disabled" :close-label="t('common.remove')" :data-protocol="id" @close="editor.removeOwn(id)">
-          <span class="font-mono">{{ id }}</span>
-        </SChip>
+        <UnknownProtocolChips :ids="unknown" :disabled="disabled" @remove="editor.removeOwn" />
       </span>
     </SAlert>
     <SHint v-for="line in errors" :key="line" tone="danger" size="xs" data-testid="own-protocols-error">{{ line }}</SHint>
