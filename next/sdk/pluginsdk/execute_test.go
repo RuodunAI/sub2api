@@ -19,7 +19,8 @@ import (
 
 const taskManifest = `{
   "apiVersion": 1, "key": "plat", "version": "0.1.0", "publisher": "test", "runtime": "grpc",
-  "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.monitor.v1"}, {"id": "platform.tasks.v1"}]
+  "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.monitor.v1"}, {"id": "platform.tasks.v1"}],
+  "externalServices": ["up.example.com"]
 }`
 
 // scripted is a platform whose every step a test can replace. Its Execute is
@@ -391,6 +392,23 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 	if ex = h.Monitor(context.Background(), in); ex.MonitorResponse.GetResult().GetState() != pluginv1.ReconcileResult_POLL_FAILED {
 		t.Fatalf("truncated answer settled the task: %v", ex.MonitorResponse)
 	}
+	// A terminal result needs a complete, successful answer in the call,
+	// as the host requires.
+	p.monitor = func(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) { return result, nil }
+	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
+		t.Fatalf("terminal result without a fetch: %v", ex.Err)
+	}
+	p.monitor = func(ctx context.Context, in *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) {
+		_, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://up.example.com/tasks/1"})
+		return result, err
+	}
+	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
+		t.Fatalf("terminal result after a truncated answer: %v", ex.Err)
+	}
+	answer.Truncated = false
+	if ex = h.Monitor(context.Background(), in); ex.Err != nil {
+		t.Fatalf("terminal result after a complete answer: %v", ex.Err)
+	}
 	// No result is one failed query, not an error.
 	p.monitor = func(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) { return nil, nil }
 	if ex = h.Monitor(context.Background(), in); ex.Err != nil || ex.MonitorResponse.GetResult() != nil {
@@ -465,7 +483,6 @@ func TestFetchLimitsAndExpiry(t *testing.T) {
 		return pluginsdk.ReportClassification(nil), nil
 	}}
 	h := startScripted(t, p)
-	h.Host.ExternalServices = []string{"up.example.com"}
 	h.Host.ExecuteHTTPFunc = func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		if strings.HasSuffix(in.GetUrl(), "/big") {
 			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: bytes.Repeat([]byte("x"), pluginsdk.FetchResponseLimit+1)}, nil
@@ -514,6 +531,18 @@ func TestPlatformCarriesLargeBodies(t *testing.T) {
 	if relay := ex.Relayed(t); !bytes.Equal(relay.Request.GetBody(), body) {
 		t.Fatalf("relayed %d bytes", len(relay.Request.GetBody()))
 	}
+	// What the plugin was handed it may hand back, whatever the limit; a
+	// body grown by more than 1 MiB beyond both is refused.
+	h.Host.MaxBodyBytes = 1 << 20
+	if ex = h.Execute(context.Background(), in); ex.Err != nil || len(ex.Relays()) != 1 {
+		t.Fatalf("handed-back body over the limit: err=%v relays=%d", ex.Err, len(ex.Relays()))
+	}
+	grown := &scripted{build: func(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
+		r, err := upstreamOf(in)
+		r.Body = append(bytes.Clone(r.GetBody()), bytes.Repeat([]byte(" "), 1<<20+1)...)
+		return r, err
+	}}
+	h = startScripted(t, grown)
 	h.Host.MaxBodyBytes = 1 << 20
 	if ex = h.Execute(context.Background(), in); status.Code(ex.Err) != codes.InvalidArgument || len(ex.Relays()) != 0 {
 		t.Fatalf("body over the host's limit: err=%v relays=%d", ex.Err, len(ex.Relays()))

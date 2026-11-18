@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -109,6 +110,12 @@ func startHost(t testing.TB, opts Options) (*FakeHost, *grpc.Server, func(uint32
 	fh := opts.Host
 	if fh == nil {
 		fh = NewFakeHost()
+	}
+	if raw := pluginsdk.ManifestOf(opts.SDK...); fh.Manifest == nil && raw != nil {
+		var m manifest.Manifest
+		if json.Unmarshal(raw, &m) == nil { // an invalid one fails Register
+			fh.Manifest = &m
+		}
 	}
 	hostLis := bufconn.Listen(1 << 20)
 	// Like the core, the host accepts whole request bodies back from a

@@ -51,7 +51,8 @@
 //     it turns into ReportClassification.
 //   - Fetch: a bounded exchange whose answer comes back to the plugin, for
 //     auxiliary requests before the relay and for the upstream query of
-//     Monitor. Hosts are limited to the manifest's externalServices.
+//     Monitor. Hosts are limited to the manifest's externalServices and the
+//     hosts of the account's own upstream addresses (upstreamFields).
 //
 // An execution relays at most once. Usage and task facts travel only in the
 // value Execute returns; there is no reporting callback and the host does

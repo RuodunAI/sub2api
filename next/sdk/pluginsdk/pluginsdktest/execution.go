@@ -14,6 +14,8 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -38,22 +40,36 @@ type Execution struct {
 	host      *FakeHost
 	token     string
 	request   *pluginv1.ExecuteRequest // nil for Monitor
+	account   *pluginv1.Account        // the account of the call
 	ended     bool
 	relays    []RelayCall
 	relayErrs []error
 	fetches   []*pluginv1.ExecutionHTTPRequest
+	// evidence: a fetch of the call was answered completely and with an
+	// HTTP status, which a terminal Monitor result needs.
+	evidence bool
 }
 
 // Begin issues the token of one Execute call (in non-nil; its two flags
-// decide whether a relay may wait) or one Monitor call (in nil). The token
-// is live until End.
+// decide whether a relay may wait, its account which hosts a fetch may
+// reach). The token is live until End.
 func (f *FakeHost) Begin(in *pluginv1.ExecuteRequest) *Execution {
+	return f.begin(in, in.GetAccount())
+}
+
+// BeginMonitor issues the token of one Monitor call for in, whose account
+// decides which hosts a fetch may reach. The token is live until End.
+func (f *FakeHost) BeginMonitor(in *pluginv1.PollRequest) *Execution {
+	return f.begin(nil, in.GetAccount())
+}
+
+func (f *FakeHost) begin(in *pluginv1.ExecuteRequest, account *pluginv1.Account) *Execution {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.executions == nil {
 		f.executions = map[string]*Execution{}
 	}
-	e := &Execution{host: f, token: fmt.Sprintf("execution-%d", len(f.executions)+1), request: in}
+	e := &Execution{host: f, token: fmt.Sprintf("execution-%d", len(f.executions)+1), request: in, account: account}
 	f.executions[e.token] = e
 	return e
 }
@@ -196,19 +212,29 @@ func (f *FakeHost) relay(ctx context.Context, e *Execution, in *pluginv1.RelayUp
 	return out, nil
 }
 
+// relayBodyMargin is what a relayed body may exceed its bound by, as on
+// the host: room for the plugin's envelope and added fields.
+const relayBodyMargin = 1 << 20
+
 // admitRelay applies the host's checks of a relay and records it.
 func (f *FakeHost) admitRelay(e *Execution, in *pluginv1.RelayUpstreamRequest) error {
+	if e.request == nil {
+		return status.Error(codes.PermissionDenied, "RelayUpstream is for Execute calls, this is a Monitor call")
+	}
 	if err := pluginsdk.ValidateUpstreamRequest(in.GetRequest()); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
-	if f.MaxBodyBytes > 0 && len(in.GetRequest().GetBody()) > f.MaxBodyBytes {
-		return status.Error(codes.InvalidArgument, "upstream body exceeds the request body limit")
+	// The bound is the larger of the limit and the body the plugin was
+	// handed, plus a margin: what the plugin got it may hand back.
+	if limit := max(f.MaxBodyBytes, len(e.request.GetBody())) + relayBodyMargin; f.MaxBodyBytes > 0 && len(in.GetRequest().GetBody()) > limit {
+		return status.Errorf(codes.InvalidArgument, "upstream body of %d bytes exceeds the limit of %d bytes", len(in.GetRequest().GetBody()), limit)
+	}
+	if webSocketURL(in.GetRequest().GetUrl()) && f.httpProtocol(e.request.GetMeta().GetProtocol()) {
+		return status.Errorf(codes.InvalidArgument, "a ws(s) url on an HTTP route (protocol %s)", e.request.GetMeta().GetProtocol())
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	switch {
-	case e.request == nil:
-		return status.Error(codes.FailedPrecondition, "only Execute relays, this is a Monitor call")
 	case in.GetWait() && !e.request.GetExtractUsage() && !e.request.GetTaskSubmission():
 		return status.Error(codes.FailedPrecondition, "a relay may wait only when the execution sets extract_usage or task_submission")
 	case len(e.relays) > 0:
@@ -230,20 +256,30 @@ func (f *FakeHost) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRe
 		return nil, status.Error(codes.Unimplemented, "set FakeHost.ExecuteHTTPFunc to answer a fetch")
 	}
 	out, err := f.ExecuteHTTPFunc(ctx, in)
-	if err == nil && len(out.GetBody()) > pluginsdk.FetchResponseLimit {
+	if err != nil {
+		return out, err
+	}
+	if len(out.GetBody()) > pluginsdk.FetchResponseLimit {
 		out.Body, out.Truncated = out.Body[:pluginsdk.FetchResponseLimit], true
 	}
-	return out, err
+	if ctx.Err() == nil && out.GetStatus() >= 200 && out.GetStatus() <= 599 && out.GetTransportError() == "" && !out.GetTruncated() {
+		f.mu.Lock()
+		e.evidence = true
+		f.mu.Unlock()
+	}
+	return out, nil
 }
 
 // admitFetch applies the host's checks of a fetch and records it.
 func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) error {
 	u, err := url.Parse(in.GetUrl())
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
-		return status.Errorf(codes.InvalidArgument, "fetch url %q is not an absolute http(s) URL", in.GetUrl())
-	}
-	if f.ExternalServices != nil && !hostAllowed(u.Hostname(), f.ExternalServices) {
-		return status.Errorf(codes.PermissionDenied, "fetch host %q is not one of the manifest's externalServices", u.Hostname())
+	switch {
+	case err != nil:
+		return status.Errorf(codes.InvalidArgument, "fetch url %q is invalid", in.GetUrl())
+	case (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "":
+		return status.Errorf(codes.PermissionDenied, "fetch url %q is not an http(s) URL with a host", in.GetUrl())
+	case !f.fetchHostAllowed(strings.ToLower(u.Hostname()), e.account):
+		return status.Errorf(codes.PermissionDenied, "fetch host %q is neither one of the manifest's externalServices nor of the account's upstream addresses", u.Hostname())
 	}
 	if f.MaxBodyBytes > 0 && len(in.GetBody()) > f.MaxBodyBytes {
 		return status.Error(codes.InvalidArgument, "fetch body exceeds the request body limit")
@@ -257,15 +293,52 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 	return nil
 }
 
-func hostAllowed(host string, services []string) bool {
-	host = strings.ToLower(host)
-	for _, s := range services {
-		s = strings.ToLower(s)
-		if host == s || strings.HasSuffix(host, "."+s) {
-			return true
+// fetchHostAllowed is the host's decision (manifest.FetchHostAllowed) on
+// the manifest the fake knows, with ExternalServices in place of its
+// externalServices when set.
+func (f *FakeHost) fetchHostAllowed(host string, account *pluginv1.Account) bool {
+	var m manifest.Manifest
+	if f.Manifest != nil {
+		m = *f.Manifest
+	}
+	if f.ExternalServices != nil {
+		m.ExternalServices = f.ExternalServices
+	}
+	return m.FetchHostAllowed(host, account.GetType(), account.GetSettingsJson(), account.GetCredentialsJson())
+}
+
+// webSocketURL reports a ws(s) URL.
+func webSocketURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && (u.Scheme == "ws" || u.Scheme == "wss")
+}
+
+// httpProtocol reports whether the fake knows protocol (from the manifest's
+// platforms or the built-in ones) and none of its endpoints is a WebSocket
+// one: a request of it is an HTTP request, never a WebSocket turn.
+func (f *FakeHost) httpProtocol(protocol string) bool {
+	known := platforms.Builtin()
+	if f.Manifest != nil {
+		known = append(known, f.Manifest.Platforms...)
+	}
+	found := false
+	for _, p := range known {
+		for _, ep := range p.Endpoints {
+			if ep.Protocol == protocol {
+				if ep.WebSocket() {
+					return false
+				}
+				found = true
+			}
 		}
 	}
-	return false
+	return found
+}
+
+// terminal reports whether a Monitor result ends the observation of its
+// task.
+func terminal(r *pluginv1.ReconcileResult) bool {
+	return r != nil && r.GetState() != pluginv1.ReconcileResult_PENDING && r.GetState() != pluginv1.ReconcileResult_POLL_FAILED
 }
 
 // largeMessages lets the harness carry the answers the host's client may
@@ -287,12 +360,21 @@ func (h *Harness) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) *Exe
 }
 
 // Monitor makes one PlatformService.Monitor call the way the host does; see
-// Execute.
+// Execute. As the host does, it refuses a terminal result (not PENDING or
+// POLL_FAILED) unless a fetch of the call was answered completely, with an
+// HTTP status and no transport error: Err is then FAILED_PRECONDITION and
+// MonitorResponse keeps what the plugin returned.
 func (h *Harness) Monitor(ctx context.Context, in *pluginv1.PollRequest) *Execution {
 	in = proto.Clone(in).(*pluginv1.PollRequest)
-	e := h.Host.Begin(nil)
-	defer e.End()
+	e := h.Host.BeginMonitor(in)
 	in.ExecutionToken = e.token
 	e.MonitorResponse, e.Err = h.Platform.Monitor(ctx, in, largeMessages)
+	e.End()
+	h.Host.mu.Lock()
+	evidence := e.evidence
+	h.Host.mu.Unlock()
+	if e.Err == nil && terminal(e.MonitorResponse.GetResult()) && !evidence {
+		e.Err = status.Error(codes.FailedPrecondition, "Monitor returned a terminal result without a complete, successful execution HTTP response")
+	}
 	return e
 }

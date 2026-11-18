@@ -658,7 +658,7 @@ func (h *hostServer) requireExternalService(raw string) error {
 	if err != nil {
 		return err
 	}
-	if !h.externalService(host) {
+	if !manifest.ExternalServiceHost(h.i.pkg.Manifest.ExternalServices, host) {
 		return status.Errorf(codes.PermissionDenied, "plugin %s: url must be http(s) on a host of the manifest's externalServices", h.key())
 	}
 	return nil
@@ -676,16 +676,6 @@ func httpHost(raw string) (string, error) {
 		return "", status.Error(codes.PermissionDenied, "url must be http(s) with a host")
 	}
 	return host, nil
-}
-
-// externalService reports whether host is one of the manifest's
-// externalServices or a subdomain of one.
-func (h *hostServer) externalService(host string) bool {
-	return slices.ContainsFunc(h.i.pkg.Manifest.ExternalServices, func(svc string) bool {
-		// An entry written with a port matches its host on any port.
-		svc = strings.ToLower((&url.URL{Host: strings.TrimSpace(svc)}).Hostname())
-		return svc != "" && (host == svc || strings.HasSuffix(host, "."+svc))
-	})
 }
 
 func (h *hostServer) SetAccountAutomaticState(ctx context.Context, in *pluginv1.SetAccountAutomaticStateRequest) (*pluginv1.SetAccountAutomaticStateResponse, error) {
