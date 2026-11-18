@@ -178,18 +178,20 @@ export default {
       native: 'Native', adapted: 'Adapted → {target}', adaptedShort: 'Adapted',
       closed: 'Chosen: {n} own protocol(s) are closed. Protocols the account type adds later will not open by themselves either.',
       crossHint: 'Protocols of other platforms are not served by default. To convert, choose models under "Protocols per model" below and tick the conversion.',
-      none: 'This account type serves no protocol of its own platforms right now.'
+      none: 'This account type serves no protocol of its own platforms right now.',
+      unknown: 'These are no own protocols of this account type, and saving will be refused; remove them:'
     },
     rules: {
       title: 'Protocols per model', subtitle: 'Choose models and the protocols they are served on',
       views: { matrix: 'Matrix', list: 'List', json: 'JSON' },
       model: 'Model', rest: 'Other models', restHint: 'every model not listed on its own',
       groupOwn: 'Own platform ({platforms})', groupCross: 'Conversion (off by default)',
-      default: 'Default', reset: 'Restore default', resetAll: 'Restore all defaults',
+      default: 'Default', followsRest: 'Follows other models', reset: 'Restore default', resetAll: 'Restore all defaults',
       selectAll: 'Select all models', selectModel: 'Select {model}', cell: '{model} · {protocol}',
       selected: '{n} model(s) selected', assign: 'Protocols:', apply: 'Apply to the selected models', clearSelection: 'Clear selection',
       conversionChip: '{name} · conversion',
       legendDefault: 'Light = default: not limited, forwarded on the protocol the client used, never converted', legendExplicit: 'Dark = set: served only on the ticked protocols',
+      legendFollowsRest: 'Light = not set on its own: follows the "Other models" row, served only on the protocols ticked there',
       empty: 'Nothing limited: every model is served on the own protocols the account opens, without conversion.',
       models: 'Models', protocols: 'Served on', removeEntry: 'Remove this set (restore default)',
       add: 'New set', addPlaceholder: 'Pick or type a model, Enter starts a set', addRest: 'Set protocols for the other models',
@@ -207,6 +209,7 @@ export default {
       no_protocol: 'The account opens no protocol. To take it out of service use the "Schedulable" switch.',
       closed_protocol: '{model} lists {protocol}, which the account does not open: it has no effect.',
       unknown_protocol: '{model} lists {protocol}, which this account type cannot serve: saving will be refused.',
+      unknown_own_protocol: '{protocol} under "Own protocols" is no own protocol of this account type: saving will be refused. Remove it in the "Own protocols" card.',
       rest_conversion: 'The other models are converted: every model not listed on its own accepts the conversion, and a model name the upstream does not know may trigger the failure policy. Convert only models that have a mapping.',
       two_hop: '{model} → {protocol}: converted twice, with poorer results.'
     },

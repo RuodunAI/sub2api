@@ -2,16 +2,18 @@
 // Matrix view of 模型的协议限定 (DESIGN-2026-11-17-PROTOCOL-BINDING §5.1):
 // a row per model of the account (and per model that only has a rule), then
 // the other models; a column per own protocol the account opens and per
-// protocol the type reaches through a conversion. A row without a rule shows
-// the default, greyed: the open own protocols ticked, no conversion. Ticking
-// a cell makes the row explicit; "restore default" drops its rule. Selected
-// rows take one protocol set at once ("choose models, set their protocols").
+// protocol the type reaches through a conversion. A row without a rule shows,
+// greyed, what the model is served on: the protocols of the other models'
+// row once that has a rule, else the default (the open own protocols, no
+// conversion). Ticking a cell makes the row explicit, from what it showed;
+// "restore default" drops its rule. Selected rows take one protocol set at
+// once ("choose models, set their protocols").
 // The table scrolls sideways under its first columns, like PermissionMatrix.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SButton, SCheckbox, SHint, useScrollClip } from '@sub2api/ui'
 import ConversionGradeBadge from '@/components/ConversionGradeBadge.vue'
-import { columnState, matrixModels, openColumns, REST, toggleCell, toggleColumn, withModels, withoutModels, type ProtocolColumn } from './protocolBinding'
+import { columnState, matrixModels, openColumns, protocolsOf, REST, toggleCell, toggleColumn, withModels, withoutModels, type ProtocolColumn } from './protocolBinding'
 import { useProtocolLabels } from './protocolLabels'
 import ProtocolChips from './ProtocolChips.vue'
 import type { ProtocolEditor } from './useProtocolEdit'
@@ -25,8 +27,10 @@ const own = computed(() => openColumns(columns.value, protocols.value))
 const shown = computed(() => [...own.value, ...columns.value.cross])
 const rows = computed(() => matrixModels(props.models, rules.value))
 const ownPlatforms = computed(() => [...new Set(own.value.map(c => c.platform))].map(id => labels.platformLabel(id)).join(' / '))
-/** The protocols of a row: its rule, or the default. */
-const idsOf = (model: string) => rules.value[model] ?? defaults.value
+/** The protocols of a row: its rule, else what a model without one is served on. */
+const idsOf = (model: string) => protocolsOf(rules.value, model, defaults.value)
+/** A row without a rule goes by the other models' row once that has one. */
+const followsRest = (model: string) => !(model in rules.value) && REST in rules.value
 
 function toggle(model: string, c: ProtocolColumn) {
   rules.value = toggleCell(rules.value, model, c, defaults.value)
@@ -111,7 +115,7 @@ const clipped = useScrollClip(scroller, table)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="model in [...rows, REST]" :key="model" class="group border-t border-line first:border-t-0" :class="model === REST ? 'bg-surface-2' : ''" :data-model="model" :data-default="!(model in rules) || undefined">
+            <tr v-for="model in [...rows, REST]" :key="model" class="group border-t border-line first:border-t-0" :class="model === REST ? 'bg-surface-2' : ''" :data-model="model" :data-default="!(model in rules) || undefined" :data-follows-rest="followsRest(model) || undefined">
               <td class="w-8 py-2 pl-3">
                 <SCheckbox v-if="model !== REST" bare size="xs" :model-value="selected.includes(model)" :disabled="disabled" :aria-label="t('accounts.protocols.rules.selectModel', { model })" data-testid="protocol-matrix-select" @update:model-value="select(model, $event)" />
               </td>
@@ -133,7 +137,7 @@ const clipped = useScrollClip(scroller, table)
               </td>
               <td class="whitespace-nowrap px-3 py-2 text-right text-xs text-fg-subtle">
                 <SButton v-if="model in rules" size="xs" variant="ghost" :disabled="disabled" data-testid="protocol-matrix-reset-row" @click="reset([model])">{{ t('accounts.protocols.rules.reset') }}</SButton>
-                <template v-else>{{ t('accounts.protocols.rules.default') }}</template>
+                <template v-else>{{ t(followsRest(model) ? 'accounts.protocols.rules.followsRest' : 'accounts.protocols.rules.default') }}</template>
               </td>
             </tr>
           </tbody>
@@ -144,7 +148,7 @@ const clipped = useScrollClip(scroller, table)
 
     <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
       <SHint size="xs" class="flex min-w-0 flex-1 flex-wrap items-center gap-x-4 gap-y-1">
-        <span>{{ t('accounts.protocols.rules.legendDefault') }}</span>
+        <span>{{ t(REST in rules ? 'accounts.protocols.rules.legendFollowsRest' : 'accounts.protocols.rules.legendDefault') }}</span>
         <span>{{ t('accounts.protocols.rules.legendExplicit') }}</span>
       </SHint>
       <SButton size="xs" variant="ghost" :disabled="disabled || !Object.keys(rules).length" data-testid="protocol-matrix-reset-all" @click="reset(Object.keys(rules))">{{ t('accounts.protocols.rules.resetAll') }}</SButton>

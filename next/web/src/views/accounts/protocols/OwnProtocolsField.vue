@@ -3,11 +3,14 @@
 // account type's own platforms the account serves. "All" ticks every row and
 // greys them (saved as null); "chosen" lets each one be unticked, and says how
 // many stay closed. A protocol the type adapts to another endpoint of the
-// platform names the target. Used by the account editor and the bulk edit.
+// platform names the target. A chosen id that is no own protocol of the type
+// (its endpoint is gone) has no row: it shows as a warning chip that can only
+// be removed, since the server refuses it. Used by the account editor and the
+// bulk edit.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SAlert, SBadge, SCheckbox, SHint, SSegmented } from '@sub2api/ui'
-import { columnState, openColumns } from './protocolBinding'
+import { SAlert, SBadge, SCheckbox, SChip, SHint, SSegmented } from '@sub2api/ui'
+import { columnState, openColumns, unknownOwnProtocols } from './protocolBinding'
 import { useProtocolLabels } from './protocolLabels'
 import type { ProtocolEditor, ProtocolMode } from './useProtocolEdit'
 
@@ -24,6 +27,7 @@ const { columns, mode, protocols } = props.editor
 const modes = computed(() => (['all', 'custom'] as ProtocolMode[]).map(m => ({ value: m, label: t(`accounts.protocols.own.${m}`) })))
 const fixed = computed(() => props.disabled || mode.value === 'all')
 const closed = computed(() => columns.value.own.length - openColumns(columns.value, protocols.value).length)
+const unknown = computed(() => unknownOwnProtocols(protocols.value, columns.value))
 </script>
 
 <template>
@@ -48,6 +52,14 @@ const closed = computed(() => columns.value.own.length - openColumns(columns.val
         <code class="min-w-0 truncate font-mono text-xs text-fg-subtle">{{ c.method }} {{ c.path }}</code>
       </li>
     </ul>
+    <SAlert v-if="unknown.length" tone="warning" dense data-testid="own-protocols-unknown">
+      <span class="flex flex-wrap items-center gap-1.5">
+        {{ t('accounts.protocols.own.unknown') }}
+        <SChip v-for="id in unknown" :key="id" tone="warning" closable :disabled="disabled" :close-label="t('common.remove')" :data-protocol="id" @close="editor.removeOwn(id)">
+          <span class="font-mono">{{ id }}</span>
+        </SChip>
+      </span>
+    </SAlert>
     <SHint v-for="line in errors" :key="line" tone="danger" size="xs" data-testid="own-protocols-error">{{ line }}</SHint>
     <SAlert v-if="mode === 'custom' && closed > 0" tone="warning" dense data-testid="own-protocols-closed">{{ t('accounts.protocols.own.closed', { n: closed }) }}</SAlert>
   </div>

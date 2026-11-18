@@ -50,6 +50,27 @@ describe('model protocol matrix', () => {
     expect(ticked(row(w, '*'))).toEqual(['openai.chat', 'openai.responses'])
   })
 
+  it('shows a row without a rule on the protocols of the other models once those have a rule', async () => {
+    // As the gateway judges: gpt-5.6-mini has no rule, so it goes by "*": chat and the Messages conversion, not Responses.
+    const { w, editor } = render({ model_protocols: [{ models: ['*'], protocols: ['openai.chat', 'anthropic.messages'] }, { models: ['gpt-5.6'], protocols: ['openai.responses'] }] })
+    const follows = row(w, 'gpt-5.6-mini')
+    expect(follows.attributes('data-default')).toBe('true')
+    expect(follows.attributes('data-follows-rest')).toBe('true')
+    expect(ticked(follows)).toEqual(['openai.chat', 'anthropic.messages'])
+    expect(follows.get('td:last-child').text()).toBe('跟随其余模型')
+    expect(ticked(row(w, 'gpt-5.6'))).toEqual(['openai.responses'])
+    expect(row(w, 'gpt-5.6').attributes('data-follows-rest')).toBeUndefined()
+    expect(row(w, '*').attributes('data-follows-rest')).toBeUndefined()
+    expect(w.text()).toContain('浅色 = 未单独指定：跟随“其余模型”一行，只在它勾选的协议下提供')
+    // A cell ticked on it starts from what it showed.
+    await cell(follows, 'openai.responses').setValue(true)
+    expect(editor.rules.value['gpt-5.6-mini']).toEqual(['openai.chat', 'anthropic.messages', 'openai.responses'])
+    // Restored, gpt-5.6 follows the other models too.
+    await row(w, 'gpt-5.6').get('[data-testid="protocol-matrix-reset-row"]').trigger('click')
+    expect(ticked(row(w, 'gpt-5.6'))).toEqual(['openai.chat', 'anthropic.messages'])
+    expect(row(w, 'gpt-5.6').get('td:last-child').text()).toBe('跟随其余模型')
+  })
+
   it('makes a row explicit when a cell is ticked, keeping the defaults, and default again from its end', async () => {
     const { w, editor } = render()
     await cell(row(w, 'gpt-5.6'), 'anthropic.messages').setValue(true)

@@ -66,8 +66,9 @@ export function useProtocolEdit(accountType: () => AccountType | null | undefine
   }
 
   // The JSON view holds both fields: what the own-protocols card changes while it is open is written into its text
-  // (a text that parsed is rewritten in the saved form; one that did not is kept for the user to correct).
-  watch([protocols, rules], () => view.value === 'json' && (text.value = bindingJSON(binding())), { flush: 'sync' })
+  // (a text that parsed is rewritten in the saved form). A text that did not parse is kept for the user to correct,
+  // and replaces the state once it does.
+  watch([protocols, rules], () => view.value === 'json' && !textProblem.value && (text.value = bindingJSON(binding())), { flush: 'sync' })
 
   /** Commits the JSON view before a save; false when its text is invalid. */
   const commitPending = () => view.value !== 'json' || syncText()
@@ -92,9 +93,14 @@ export function useProtocolEdit(accountType: () => AccountType | null | undefine
     if (mode.value === 'custom') chosen.value = toggleColumn(chosen.value ?? [], c)
   }
 
+  /** Drops a chosen id that is no own protocol of the type (it has no row to untick). */
+  function removeOwn(protocol: string) {
+    if (mode.value === 'custom') chosen.value = (chosen.value ?? []).filter(id => id !== protocol)
+  }
+
   return {
     columns, mode, protocols, rules, defaults, issues, summary, conversionUsed, view, text, textProblem,
-    binding, setSaved, setMode, toggleOwn, setView, syncText, commitPending
+    binding, setSaved, setMode, toggleOwn, removeOwn, setView, syncText, commitPending
   }
 }
 

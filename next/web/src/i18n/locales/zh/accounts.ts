@@ -177,18 +177,20 @@ export default {
       native: '原生', adapted: '适配 → {target}', adaptedShort: '适配',
       closed: '已指定：有 {n} 个本平台协议未开放。账号类型以后新增的协议也不会自动开放。',
       crossHint: '其他平台的协议默认不提供。需要协议转换时，在下面“模型的协议限定”里选中模型、勾上对应的转换协议。',
-      none: '此账号类型当前没有可服务的本平台协议。'
+      none: '此账号类型当前没有可服务的本平台协议。',
+      unknown: '以下协议不是此账号类型的本平台协议，保存时会被拒绝，请移除：'
     },
     rules: {
       title: '模型的协议限定', subtitle: '选中模型，指定它在哪些协议下提供',
       views: { matrix: '矩阵', list: '列表', json: 'JSON' },
       model: '模型', rest: '其余模型', restHint: '没有单独列出的全部模型',
       groupOwn: '本平台（{platforms}）', groupCross: '协议转换（默认不提供）',
-      default: '默认', reset: '恢复默认', resetAll: '全部恢复默认',
+      default: '默认', followsRest: '跟随其余模型', reset: '恢复默认', resetAll: '全部恢复默认',
       selectAll: '选择全部模型', selectModel: '选择 {model}', cell: '{model} · {protocol}',
       selected: '已选 {n} 个模型', assign: '指定协议：', apply: '应用到选中的模型', clearSelection: '取消选择',
       conversionChip: '{name} · 转换',
       legendDefault: '浅色 = 默认：不限定，按客户的协议原样转发，不做协议转换', legendExplicit: '深色 = 已指定：只在勾选的协议下提供',
+      legendFollowsRest: '浅色 = 未单独指定：跟随“其余模型”一行，只在它勾选的协议下提供',
       empty: '没有限定：所有模型在账号开放的本平台协议下提供，不做协议转换。',
       models: '模型', protocols: '提供的协议', removeEntry: '删除这一组（恢复默认）',
       add: '新增一组', addPlaceholder: '选择或输入模型，回车新建一组', addRest: '为“其余模型”指定协议',
@@ -206,6 +208,7 @@ export default {
       no_protocol: '账号没有开放任何协议。要停用账号请用“参与调度”开关。',
       closed_protocol: '{model} 指定了账号未开放的协议 {protocol}，这一项不生效。',
       unknown_protocol: '{model} 指定了此账号类型不能服务的协议 {protocol}，保存时会被拒绝。',
+      unknown_own_protocol: '“本平台协议”里的 {protocol} 不是此账号类型的本平台协议，保存时会被拒绝；请在“本平台协议”卡片里移除。',
       rest_conversion: '“其余模型”开了协议转换：所有没有单独列出的模型都会接受转换，上游不认识的模型名可能触发故障策略。建议只给有映射的模型开。',
       two_hop: '{model} → {protocol}：要经过两次转换，质量较差。'
     },

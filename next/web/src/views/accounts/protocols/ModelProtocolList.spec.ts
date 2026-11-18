@@ -41,14 +41,43 @@ describe('model protocol list', () => {
     expect(w.find('[data-testid="protocol-entry-add-rest"]').exists()).toBe(false)
   })
 
-  it('toggles a protocol for every model of the card; cards ticked alike become one', async () => {
+  it('toggles a protocol for every model of the card; cards ticked alike stay apart and are saved as one entry', async () => {
     const { w, editor } = render({ model_protocols: [{ models: ['a', 'b'], protocols: ['openai.chat'] }, { models: ['c'], protocols: ['openai.chat', 'anthropic.messages'] }] })
     await chip(w, 0, 'anthropic.messages').trigger('click')
     expect(editor.binding().model_protocols).toEqual([{ models: ['a', 'b', 'c'], protocols: ['openai.chat', 'anthropic.messages'] }])
-    expect(entries(w)).toHaveLength(1)
-    // The Gemini chip presses both protocols.
+    expect(entries(w)).toHaveLength(2)
+    // The Gemini chip presses both protocols, of this card only.
     await chip(w, 0, 'gemini.generate').trigger('click')
     expect(editor.rules.value.a).toEqual(['openai.chat', 'anthropic.messages', 'gemini.generate', 'gemini.stream_generate'])
+    expect(editor.rules.value.c).toEqual(['openai.chat', 'anthropic.messages'])
+  })
+
+  it('changes one card chip by chip without touching a card it passes through', async () => {
+    // m2 goes from chat to Responses; half way it has the protocols of m1.
+    const { w, editor } = render({ model_protocols: [{ models: ['m1'], protocols: ['openai.chat', 'openai.responses'] }, { models: ['m2'], protocols: ['openai.chat'] }] })
+    await chip(w, 1, 'openai.responses').trigger('click')
+    await chip(w, 1, 'openai.chat').trigger('click')
+    expect(editor.rules.value).toEqual({ m1: ['openai.chat', 'openai.responses'], m2: ['openai.responses'] })
+  })
+
+  it('keeps the card, and the focus in its model input, while its models change', async () => {
+    const { w, editor } = render({ model_protocols: [{ models: ['a'], protocols: ['openai.chat'] }] })
+    const card = entries(w)[0].element
+    const input = entries(w)[0].getComponent(ModelTagSelect).get('input')
+    ;(input.element as HTMLInputElement).focus()
+    entries(w)[0].getComponent(ModelTagSelect).vm.$emit('update:modelValue', ['a', 'b'])
+    await w.vm.$nextTick()
+    expect(entries(w)[0].element).toBe(card)
+    expect(document.activeElement).toBe(input.element)
+    expect(editor.rules.value).toEqual({ a: ['openai.chat'], b: ['openai.chat'] })
+  })
+
+  it('starts the cards over when the rules are set elsewhere', async () => {
+    const { w, editor } = render({ model_protocols: [{ models: ['a'], protocols: ['openai.chat'] }] })
+    editor.setSaved({ model_protocols: [{ models: ['x'], protocols: ['openai.responses'] }, { models: ['*'], protocols: ['openai.chat'] }] })
+    await w.vm.$nextTick()
+    expect(entries(w)).toHaveLength(2)
+    expect(entries(w)[0].getComponent(ModelTagSelect).props('modelValue')).toEqual(['x'])
   })
 
   it('starts a card from the default protocols, moves a model between cards and drops a card', async () => {

@@ -3,8 +3,8 @@ import type { AccountType } from '@/api/types'
 import { claude, codex, ep, openai, type } from './fixtures'
 import {
   bindingIssues, bindingJSON, bindingSummary, columnState, conversionInUse, defaultProtocols, matrixModels, modelProtocolRules, openColumns, parseBinding,
-  platformMarks, protocolColumns, REST, rulesByModel, sameModelProtocols, sameProtocolColumns, sameProtocols, toggleCell, toggleColumn, withEntryModels, withModels,
-  withoutModels, type ModelRules
+  cardRules, platformMarks, protocolColumns, protocolsOf, REST, ruleCards, rulesByModel, sameModelProtocols, sameProtocolColumns, sameProtocols, toggleCell, toggleColumn,
+  unknownOwnProtocols, withCardModels, withModels, withNewCard, withoutModels, type ModelRules
 } from './protocolBinding'
 
 const columns = protocolColumns(openai)
@@ -132,12 +132,45 @@ describe('rules: the protocols of chosen models', () => {
     expect(matrixModels([], {})).toEqual([])
   })
 
-  it('moves a model into the entry it is added to and back to the default when taken out', () => {
-    const rules: ModelRules = { a: ['openai.chat'], b: ['openai.chat'], c: ['anthropic.messages'] }
-    const [first] = modelProtocolRules(rules, columns)
-    expect(first.models).toEqual(['a', 'b'])
-    // c joins the first entry and takes its protocols; b leaves it; "*" cannot be added to a list.
-    expect(withEntryModels(rules, first, ['a', 'c', '*'])).toEqual({ a: ['openai.chat'], c: ['openai.chat'] })
+  it('serves a model without a rule on the protocols of the other models once they have a rule, else on the default', () => {
+    const defaults = defaultProtocols(columns, null)
+    expect(protocolsOf({}, 'a', defaults)).toEqual(defaults)
+    expect(protocolsOf({ a: ['openai.chat'], '*': ['anthropic.messages'] }, 'a', defaults)).toEqual(['openai.chat'])
+    expect(protocolsOf({ '*': ['openai.chat', 'anthropic.messages'] }, 'a', defaults)).toEqual(['openai.chat', 'anthropic.messages'])
+    // A cell ticked on such a row starts from what the row is served on.
+    expect(toggleCell({ '*': ['openai.chat', 'anthropic.messages'] }, 'a', column('openai.chat'), defaults).a).toEqual(['anthropic.messages'])
+  })
+})
+
+describe('cards of the list view', () => {
+  const rules: ModelRules = { a: ['openai.chat'], b: ['openai.chat'], c: ['anthropic.messages'], '*': ['openai.responses'] }
+
+  it('makes a card per entry and the rules back from the cards', () => {
+    const cards = ruleCards(rules, columns)
+    expect(cards.map(c => [c.id, c.models])).toEqual([[1, ['a', 'b']], [2, ['c']], [3, ['*']]])
+    expect(cardRules(cards)).toEqual(rules)
+    expect(ruleCards({}, columns, 7)).toEqual([])
+    expect(ruleCards({ a: [] }, columns, 7)[0].id).toBe(7)
+  })
+
+  it('moves a model into the card it is added to, and drops a card left without a model', () => {
+    const cards = ruleCards(rules, columns)
+    // c joins the first card and leaves its own, which goes; b leaves; "*" cannot be added to a list.
+    const next = withCardModels(cards, 1, ['a', 'c', '*'])
+    expect(next.map(c => [c.id, c.models, c.protocols])).toEqual([[1, ['a', 'c'], ['openai.chat']], [3, ['*'], ['openai.responses']]])
+    expect(withCardModels(cards, 2, []).map(c => c.id)).toEqual([1, 3])
+  })
+
+  it('keeps two cards apart when their protocols become the same: only the saved entries join', () => {
+    const cards = ruleCards(rules, columns).map(c => (c.id === 2 ? { ...c, protocols: ['openai.chat'] } : c))
+    expect(cards.map(c => c.id)).toEqual([1, 2, 3])
+    expect(modelProtocolRules(cardRules(cards), columns)).toEqual([{ models: ['a', 'b', 'c'], protocols: ['openai.chat'] }, { models: ['*'], protocols: ['openai.responses'] }])
+  })
+
+  it('adds a card with a new id before the card of the other models, taking its models out of the others', () => {
+    const next = withNewCard(ruleCards(rules, columns), ['b', 'd'], ['openai.embeddings'])
+    expect(next.map(c => [c.id, c.models])).toEqual([[1, ['a']], [2, ['c']], [4, ['b', 'd']], [3, ['*']]])
+    expect(withNewCard([], ['*'], ['openai.chat'])).toEqual([{ id: 1, models: ['*'], protocols: ['openai.chat'] }])
   })
 })
 
@@ -162,6 +195,12 @@ describe('checks of the binding', () => {
     expect(codes(['openai.chat'], { a: ['openai.chat', 'openai.embeddings'] })).toEqual([['warning', 'closed_protocol', 'a', 'openai.embeddings']])
     expect(codes(null, { a: ['openai.chat', 'volcengine.images'] })).toEqual([['warning', 'unknown_protocol', 'a', 'volcengine.images']])
     expect(codes(null, { '*': ['openai.chat', 'anthropic.messages'], a: ['anthropic.messages'] })).toEqual([['warning', 'rest_conversion', '*']])
+  })
+
+  it('warns about an id under protocols that is no own protocol of the type', () => {
+    expect(unknownOwnProtocols(null, columns)).toEqual([])
+    expect(unknownOwnProtocols(['openai.chat', 'openai.legacy', 'anthropic.messages'], columns)).toEqual(['openai.legacy', 'anthropic.messages'])
+    expect(codes(['openai.chat', 'openai.legacy'], {})).toEqual([['warning', 'unknown_own_protocol', 'openai.legacy']])
   })
 
   it('notes a conversion through two converters, errors first', () => {

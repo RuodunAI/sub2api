@@ -158,9 +158,16 @@ export function matrixModels(models: readonly string[], rules: ModelRules): stri
   return [...new Set([...models, ...Object.keys(rules).filter(m => m !== REST)])]
 }
 
-/** The rules with a cell switched; a default row first takes the default protocols. */
+/**
+ * The protocols a model is served on, as the server judges it (CONTRACTS
+ * §110.3): those of its own rule, else of the rule of the other models, else
+ * the default.
+ */
+export const protocolsOf = (rules: ModelRules, model: string, defaults: readonly string[]): readonly string[] => rules[model] ?? rules[REST] ?? defaults
+
+/** The rules with a cell switched; a row without a rule first takes the protocols it is served on. */
 export function toggleCell(rules: ModelRules, model: string, c: ProtocolColumn, defaults: readonly string[]): ModelRules {
-  return { ...rules, [model]: toggleColumn(rules[model] ?? defaults, c) }
+  return { ...rules, [model]: toggleColumn(protocolsOf(rules, model, defaults), c) }
 }
 
 /** The rules without these models (back to the default). */
@@ -173,14 +180,44 @@ export function withModels(rules: ModelRules, models: readonly string[], protoco
   return { ...rules, ...Object.fromEntries(models.map(m => [m, [...protocols]])) }
 }
 
+// ---------------------------------------------------------------- cards of the list view
+
 /**
- * The rules after an entry's model list was edited: models taken out go back
- * to the default, models put in take the entry's protocols (leaving the entry
- * they were in).
+ * An entry while it is edited in the list view. A card keeps its identity
+ * (`id`) whatever its models and protocols become: two cards given the same
+ * protocols stay two cards, and are one entry only in what is saved
+ * (modelProtocolRules).
  */
-export function withEntryModels(rules: ModelRules, entry: ModelProtocolRule, models: readonly string[]): ModelRules {
+export interface RuleCard extends ModelProtocolRule {
+  id: number
+}
+
+const isRestCard = (c: ModelProtocolRule) => c.models[0] === REST
+
+/** The cards of the rules: one per entry, numbered from `nextId`. */
+export function ruleCards(rules: ModelRules, c: ProtocolColumns, nextId = 1): RuleCard[] {
+  return modelProtocolRules(rules, c).map((e, i) => ({ ...e, id: nextId + i }))
+}
+
+/** The rules the cards stand for. */
+export function cardRules(cards: readonly ModelProtocolRule[]): ModelRules {
+  return Object.fromEntries(cards.flatMap(c => c.models.map(m => [m, [...c.protocols]])))
+}
+
+/**
+ * The cards with card `id` holding `models`: a model is in one card only, so
+ * the others lose those it takes, and a card left without a model goes.
+ */
+export function withCardModels(cards: readonly RuleCard[], id: number, models: readonly string[]): RuleCard[] {
   const kept = models.filter(m => m !== REST)
-  return withModels(withoutModels(rules, entry.models.filter(m => !kept.includes(m))), kept, entry.protocols)
+  return cards.map(c => ({ ...c, models: c.id === id ? kept : c.models.filter(m => !kept.includes(m)) })).filter(c => c.models.length)
+}
+
+/** The cards with a new one for `models` (taken out of the cards they were in), before the card of the other models. */
+export function withNewCard(cards: readonly RuleCard[], models: readonly string[], protocols: readonly string[]): RuleCard[] {
+  const fresh: RuleCard = { id: Math.max(0, ...cards.map(c => c.id)) + 1, models: [...models], protocols: [...protocols] }
+  const others = cards.map(c => ({ ...c, models: c.models.filter(m => !models.includes(m)) })).filter(c => c.models.length)
+  return isRestCard(fresh) ? [...others, fresh] : [...others.filter(c => !isRestCard(c)), fresh, ...others.filter(isRestCard)]
 }
 
 // ---------------------------------------------------------------- what is edited and saved
@@ -252,7 +289,7 @@ export function bindingJSON(b: ProtocolBinding): string {
 
 // ---------------------------------------------------------------- checks and summaries
 
-export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'rest_conversion' | 'two_hop'
+export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'unknown_own_protocol' | 'rest_conversion' | 'two_hop'
 
 /** A finding of the editor: errors block saving, warnings and notes do not. */
 export interface BindingIssue {
@@ -276,13 +313,23 @@ const columnsOf = (columns: ProtocolColumn[], ids: readonly string[]) => columns
 const converts = (c: ProtocolColumns, ids: readonly string[]) => columnsOf(c.cross, ids).length > 0
 
 /**
+ * The ids of `protocols` that are no own protocol of the type (its endpoint
+ * is gone, or it was written by hand): the server refuses them.
+ */
+export function unknownOwnProtocols(protocols: readonly string[] | null, c: ProtocolColumns): string[] {
+  const own = idsOf(c.own)
+  return (protocols ?? []).filter(id => !own.includes(id))
+}
+
+/**
  * Checks the binding (design §3.1, §3.2, §5.1): a rule without protocols and
  * an account that serves nothing are errors; an own protocol the account does
- * not open, a protocol the type cannot serve and a conversion for every other
- * model are warnings; a two-hop conversion is a note.
+ * not open, a protocol the type cannot serve (in `protocols` or in a rule)
+ * and a conversion for every other model are warnings; a two-hop conversion
+ * is a note.
  */
 export function bindingIssues(protocols: readonly string[] | null, rules: ModelRules, c: ProtocolColumns): BindingIssue[] {
-  const out: BindingIssue[] = []
+  const out: BindingIssue[] = unknownOwnProtocols(protocols, c).map(protocol => ({ level: 'warning', code: 'unknown_own_protocol', protocol }))
   const known = new Set(idsOf(allColumns(c)))
   const open = openColumns(c, protocols)
   for (const [model, ids] of Object.entries(rules)) {

@@ -105,6 +105,24 @@ describe('protocol editor state', () => {
     expect(editor.text.value).toContain('{"models": ["a", "b"], "protocols": ["openai.chat"]}')
   })
 
+  it('keeps a JSON text that does not parse while the own protocols change, until it is corrected', () => {
+    const { editor } = editorOf(['gpt-5.6'])
+    editor.setView('json')
+    const broken = '{"protocols": null, "model_protocols": [],}'
+    editor.text.value = broken
+    expect(editor.syncText()).toBe(false)
+    editor.setMode('custom')
+    editor.toggleOwn(column(editor, 'openai.embeddings'))
+    expect(editor.text.value).toBe(broken)
+    expect(editor.textProblem.value).toEqual({ problem: 'json' })
+    expect(editor.commitPending()).toBe(false)
+    // Corrected, the text is the state again and is rewritten in the saved form.
+    editor.text.value = '{"protocols": ["openai.chat"]}'
+    expect(editor.syncText()).toBe(true)
+    expect(editor.binding().protocols).toEqual(['openai.chat'])
+    expect(editor.text.value).toBe('{\n  "protocols": ["openai.chat"],\n  "model_protocols": []\n}')
+  })
+
   it('follows the account type: other columns, and nothing checked for a type that is gone', () => {
     const { editor, type } = editorOf()
     editor.setSaved({ protocols: [] })

@@ -53,6 +53,18 @@ describe('own protocols of an account', () => {
     expect(w.get('[data-testid="own-protocols-closed"]').text()).toContain('有 3 个')
   })
 
+  it('shows a chosen id the type no longer serves as a warning chip that can only be removed', async () => {
+    const { w, editor } = render({ protocols: ['openai.chat', 'openai.legacy'] })
+    expect(rows(w)).toHaveLength(4)
+    const unknown = w.get('[data-testid="own-protocols-unknown"]')
+    expect(unknown.text()).toContain('以下协议不是此账号类型的本平台协议，保存时会被拒绝，请移除：')
+    expect(editor.issues.value.map(i => [i.code, i.protocol])).toEqual([['unknown_own_protocol', 'openai.legacy']])
+    await unknown.get('[data-protocol="openai.legacy"] button').trigger('click')
+    expect(editor.binding().protocols).toEqual(['openai.chat'])
+    expect(w.find('[data-testid="own-protocols-unknown"]').exists()).toBe(false)
+    expect(editor.issues.value).toEqual([])
+  })
+
   it('names what an adapted protocol is sent as', () => {
     const { w } = render(null, codex)
     expect(rows(w).map(r => r.text())).toEqual(['Responses原生POST /openai.responses', 'Chat Completions适配 → ResponsesPOST /openai.chat'])
