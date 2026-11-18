@@ -163,21 +163,15 @@ func (v *validator) accountEndpoints(field string, ap manifest.AccountPlatform, 
 }
 
 // foreignFacts rejects an account type serving, on another plugin's
-// platform, an endpoint whose usage or task facts that plugin states: the
-// facts come back from the Execute of the plugin serving the account, which
-// cannot read another platform's answers.
+// platform, an endpoint whose usage or task facts that plugin states
+// (manifest.AccountPlatform.ServesPluginFacts). A built-in platform is no
+// plugin's: the registry binds it to every type, and so does the check.
 func (v *validator) foreignFacts(pf string, ap manifest.AccountPlatform, own *manifest.Platform) {
-	if own != nil {
+	if own != nil || platforms.IsBuiltin(ap.Platform) {
 		return
 	}
-	p := v.referencedPlatform(ap.Platform, nil)
-	if p == nil {
-		return
-	}
-	for _, e := range p.Endpoints {
-		if ap.SupportsEndpoint(e.ID) && (e.PluginUsage() || e.TaskSubmit()) {
-			v.add(pf+".platform", "foreign_facts", "endpoint %q of platform %q has its usage or task read by the plugin declaring the platform; only that plugin's account types may serve it", e.ID, ap.Platform)
-		}
+	if p := v.referencedPlatform(ap.Platform, nil); p != nil && ap.ServesPluginFacts(*p) {
+		v.add(pf+".platform", "foreign_facts", "platform %q has endpoints whose usage or task the plugin declaring it reads; only that plugin's account types may serve them", ap.Platform)
 	}
 }
 

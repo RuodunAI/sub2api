@@ -560,7 +560,8 @@ func (g *generation) finish() {
 }
 
 // withoutForeignFacts drops from the type's platforms each one whose usage
-// or task facts another plugin states (foreignFacts): the binding is then
+// or task facts another plugin states (manifest.AccountPlatform.
+// ServesPluginFacts; a built-in platform is no plugin's): the binding is then
 // the one definition of the platforms the type serves, so routing, the
 // cross-platform judgement of a protocol binding and the served protocols
 // all read the platforms the registry binds (forwarding v2, design 4.3).
@@ -568,7 +569,7 @@ func (g *generation) withoutForeignFacts(atb core.AccountTypeBinding) core.Accou
 	kept := make([]manifest.AccountPlatform, 0, len(atb.Type.Platforms))
 	for _, ap := range atb.Type.Platforms {
 		pb, ok := g.platByID[ap.Platform]
-		if ok && !pb.Builtin && pb.Plugin.Key != atb.Plugin.Key && foreignFacts(pb.Platform, ap) {
+		if ok && !pb.Builtin && pb.Plugin.Key != atb.Plugin.Key && ap.ServesPluginFacts(pb.Platform) {
 			slog.Error("plugin registry: account type skipped on a platform whose usage or task facts another plugin states",
 				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform, "platformPlugin", pb.Plugin.Key)
 			continue
@@ -604,17 +605,6 @@ func (g *generation) indexAccountType(atb core.AccountTypeBinding) {
 		}
 		g.atByPlat[ap.Platform] = append(g.atByPlat[ap.Platform], atb)
 	}
-}
-
-// foreignFacts reports whether ap serves an endpoint of p whose usage or
-// task facts the plugin declaring p states (usageSource "plugin", a task
-// submission). The facts come back from the Execute of the plugin serving
-// the account, so another plugin's account type cannot serve the platform
-// (forwarding v2, design 4.3; the manifest check's foreign_facts).
-func foreignFacts(p manifest.Platform, ap manifest.AccountPlatform) bool {
-	return slices.ContainsFunc(p.Endpoints, func(e manifest.Endpoint) bool {
-		return ap.SupportsEndpoint(e.ID) && (e.PluginUsage() || e.TaskSubmit())
-	})
 }
 
 func (g *generation) Number() uint64                            { return g.number }

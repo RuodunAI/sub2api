@@ -599,6 +599,20 @@ func (a AccountPlatform) SupportsEndpoint(id string) bool {
 	return false
 }
 
+// ServesPluginFacts reports whether a serves an endpoint of p whose usage or
+// task facts the plugin declaring p states (usageSource "plugin", a task
+// submission). Those facts come back from the Execute of the plugin serving
+// the account, so an account type of another plugin cannot serve such an
+// endpoint (forwarding v2, design 4.3): the manifest check refuses it and
+// the registry does not bind it. A built-in platform is declared by no
+// plugin and is nobody's to keep: callers ask only for another plugin's
+// platform.
+func (a AccountPlatform) ServesPluginFacts(p Platform) bool {
+	return slices.ContainsFunc(p.Endpoints, func(e Endpoint) bool {
+		return a.SupportsEndpoint(e.ID) && (e.PluginUsage() || e.TaskSubmit())
+	})
+}
+
 // Form describes a console form contributed by a plugin.
 type Form struct {
 	Mode      string `json:"mode"`               // schema | iframe | native
