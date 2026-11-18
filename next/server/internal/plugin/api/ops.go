@@ -78,20 +78,22 @@ type Refusal struct {
 }
 
 // refusal finds a node whose instance of the plugin failed to load with the
-// runtime's refusal of an older plugin contract; nil when none did.
+// runtime's refusal of an older plugin contract, which the node records as
+// the instance's code; nil when none did.
 func refusal(nodes []core.NodeStatus, key string) *Refusal {
 	for _, n := range nodes {
 		var st struct {
 			Instances []struct {
 				Version string `json:"version"`
 				Error   string `json:"error"`
+				Code    string `json:"code"`
 			} `json:"instances"`
 		}
 		if json.Unmarshal([]byte(n.Plugins[key]), &st) != nil {
 			continue
 		}
 		for _, in := range st.Instances {
-			if in.Error == protocol.OutdatedContractMessage(key, in.Version, n.HostVersion) {
+			if in.Code == check.CodeOutdatedContract {
 				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
 					ProtocolVersion: protocol.ProtocolVersion, Message: in.Error}
 			}
