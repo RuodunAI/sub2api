@@ -33,6 +33,67 @@ type RolloutNodeState struct {
 	Error  string `json:"error"`
 }
 
+// PluginNodeState is the JSON document each node reports per plugin through
+// NodeRegistry.ReportPlugin (NodeStatus.Plugins), written by the rollout
+// reconciler and read by the rollout coordinator and the plugin console.
+type PluginNodeState struct {
+	// State summarizes this node for the console (CONTRACTS §5.7): the
+	// rollout state while a rollout is open, else the serving instance as
+	// active | pending | failed, or "stopped" when nothing is served.
+	State     string `json:"state"`
+	Serving   string `json:"serving,omitempty"`
+	Standby   string `json:"standby,omitempty"`
+	RolloutID int64  `json:"rollout_id,omitempty"`
+	Rollout   string `json:"rollout,omitempty"` // pending | ready | active | failed
+	// Fallback is the version this node still serves because the one it
+	// should serve is not ready here yet (starting, or failed and retried).
+	Fallback  string                `json:"fallback,omitempty"`
+	Error     string                `json:"error,omitempty"`
+	Instances []PluginInstanceState `json:"instances,omitempty"`
+}
+
+type PluginInstanceState struct {
+	Version string `json:"version"`
+	State   string `json:"state"`
+	Error   string `json:"error,omitempty"`
+	// Code classifies a failed load where the console acts on it:
+	// check.CodeOutdatedContract when the runtime refused a package built
+	// for an older plugin contract. Error is the text to show.
+	Code     string `json:"code,omitempty"`
+	Restarts int    `json:"restarts"`
+}
+
+// InstanceCode is the code of the failed load of version reported among the
+// instances, "" when none.
+func (s PluginNodeState) InstanceCode(version string) string {
+	for _, in := range s.Instances {
+		if in.Version == version {
+			return in.Code
+		}
+	}
+	return ""
+}
+
+// ParsePluginNodeState decodes one NodeStatus.Plugins document; false when
+// it is empty or not one.
+func ParsePluginNodeState(s string) (PluginNodeState, bool) {
+	var st PluginNodeState
+	if s == "" || json.Unmarshal([]byte(s), &st) != nil {
+		return PluginNodeState{}, false
+	}
+	return st, true
+}
+
+// EffectiveMemoryMB is a plugin's memory limit in MB, 0 for none: the
+// operator's per-plugin override when set (> 0), else the node's cap; an
+// override above a set cap is the cap.
+func EffectiveMemoryMB(override, capMB int) int {
+	if capMB > 0 && (override <= 0 || override > capMB) {
+		return capMB
+	}
+	return max(override, 0)
+}
+
 // RolloutController (C2) starts and tracks two-phase rollouts.
 type RolloutController interface {
 	Enable(ctx context.Context, pluginKey string, actorID int64) (*Rollout, error)

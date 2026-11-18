@@ -6,7 +6,6 @@ package rollout
 
 import (
 	"context"
-	"encoding/json"
 	"io/fs"
 	"time"
 
@@ -80,35 +79,6 @@ const (
 	NodeFailed  = "failed"
 )
 
-// NodePluginState is the JSON document each node reports per plugin through
-// core.NodeRegistry.ReportPlugin.
-type NodePluginState struct {
-	// State summarizes this node for the console (CONTRACTS §5.7): the
-	// rollout state while a rollout is open, else the serving instance as
-	// active | pending | failed, or "stopped" when nothing is served.
-	State     string `json:"state"`
-	Serving   string `json:"serving,omitempty"`
-	Standby   string `json:"standby,omitempty"`
-	RolloutID int64  `json:"rollout_id,omitempty"`
-	Rollout   string `json:"rollout,omitempty"` // pending | ready | active | failed
-	// Fallback is the version this node still serves because the one it
-	// should serve is not ready here yet (starting, or failed and retried).
-	Fallback  string          `json:"fallback,omitempty"`
-	Error     string          `json:"error,omitempty"`
-	Instances []InstanceState `json:"instances,omitempty"`
-}
-
-type InstanceState struct {
-	Version string `json:"version"`
-	State   string `json:"state"`
-	Error   string `json:"error,omitempty"`
-	// Code classifies a failed load where the console acts on it:
-	// check.CodeOutdatedContract when the runtime refused a package built
-	// for an older plugin contract. Error is the text to show.
-	Code     string `json:"code,omitempty"`
-	Restarts int    `json:"restarts"`
-}
-
 // Message is published on core.ChannelPluginEvents.
 type Message struct {
 	Type      string `json:"type"` // rollout | config | resources
@@ -131,23 +101,4 @@ type limitsAware interface {
 type broadcastReceiver interface {
 	HandlesBroadcast() bool
 	OnBroadcast(ctx context.Context, msg grpcruntime.BroadcastMessage) error
-}
-
-// code is the code of the failed load of version reported among the
-// instances, "" when none.
-func (s NodePluginState) code(version string) string {
-	for _, in := range s.Instances {
-		if in.Version == version {
-			return in.Code
-		}
-	}
-	return ""
-}
-
-func parseState(s string) (NodePluginState, bool) {
-	var st NodePluginState
-	if s == "" || json.Unmarshal([]byte(s), &st) != nil {
-		return st, false
-	}
-	return st, true
 }

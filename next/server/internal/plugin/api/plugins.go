@@ -124,16 +124,27 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	return nil
 }
 
-// setNodes adds what the live nodes report of the plugin and, when no node
-// refuses it now, the refusal its latest rollout recorded.
-func (a *API) setNodes(ctx context.Context, s *PluginSummary, nodes []core.NodeStatus) error {
-	s.Nodes = summarizeNodes(nodes, s.Key)
-	if s.Refusal = refusal(nodes, s.Key); s.Refusal != nil {
-		return nil
+// setNodes adds what the live nodes report of each plugin and, for those no
+// node currently refuses, the refusal recorded by their latest rollout
+// (recordedRefusals: one query for all of them).
+func (a *API) setNodes(ctx context.Context, items []*PluginSummary, nodes []core.NodeStatus) error {
+	var unrefused []string
+	for _, s := range items {
+		s.Nodes = summarizeNodes(nodes, s.Key)
+		if s.Refusal = refusal(nodes, s.Key); s.Refusal == nil {
+			unrefused = append(unrefused, s.Key)
+		}
 	}
-	var err error
-	s.Refusal, err = recordedRefusal(ctx, a.d.DB.Gorm, s.Key, a.d.Install.HostVersion())
-	return err
+	recorded, err := recordedRefusals(ctx, a.d.DB.Gorm, unrefused, a.d.Install.HostVersion())
+	if err != nil {
+		return err
+	}
+	for _, s := range items {
+		if r, ok := recorded[s.Key]; ok {
+			s.Refusal = r
+		}
+	}
+	return nil
 }
 
 func (a *API) listPlugins(c *gin.Context) {
@@ -151,20 +162,17 @@ func (a *API) listPlugins(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	nodes := a.liveNodes(rc)
-	out := make([]*PluginSummary, 0, len(items))
 	for _, s := range items {
 		if err := a.fillSummary(rc, s); err != nil {
 			httpapi.Fail(c, err)
 			return
 		}
-		if err := a.setNodes(rc, s, nodes); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		out = append(out, s)
 	}
-	httpapi.List(c, out, httpapi.Page{Page: page, PageSize: size, Total: total})
+	if err := a.setNodes(rc, items, a.liveNodes(rc)); err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.List(c, items, httpapi.Page{Page: page, PageSize: size, Total: total})
 }
 
 // PluginDetail is GET /plugins/:key.
@@ -245,7 +253,7 @@ func (a *API) getPlugin(c *gin.Context) {
 		return
 	}
 	nodes := a.liveNodes(rc)
-	if err := a.setNodes(rc, s, nodes); err != nil {
+	if err := a.setNodes(rc, []*PluginSummary{s}, nodes); err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
