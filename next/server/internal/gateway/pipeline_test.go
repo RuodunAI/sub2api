@@ -537,9 +537,8 @@ func TestInvalidBodyAndLimits(t *testing.T) {
 		t.Fatalf("missing model: %d", r.status)
 	}
 	e.record()
-	e.gen.endpoints[0].Endpoint.Request.MaxBodyBytes = 64
-	e.gw.table.Store(buildRouteTable(e.gen))
-	r = e.messages(body(testModel, false, "pad", strings.Repeat("x", 200)))
+	e.setSettings(GatewaySettings{MaxRequestBodyMB: 1}, defaultStickySettings())
+	r = e.messages(body(testModel, false, "pad", strings.Repeat("x", 1<<20)))
 	if r.status != 413 {
 		t.Fatalf("too large: %d %s", r.status, r.body)
 	}

@@ -71,6 +71,7 @@ type gatewaySettingsInput struct {
 	// ClaudeMaxTokens replaces the rule as a whole.
 	ClaudeMaxTokens    *ClaudeMaxTokensRule `json:"claude_max_tokens"`
 	MediaDownloadMaxMB *int                 `json:"media_download_max_mb"`
+	MaxRequestBodyMB   *int                 `json:"max_request_body_mb"`
 }
 
 // validate checks the provided fields against the accepted ranges
@@ -97,6 +98,7 @@ func (in *gatewaySettingsInput) validate(ctx context.Context) []core.FieldError 
 	check("queue_fallback_max_waiting", in.QueueFallbackMaxWaiting, 0, maxQueueWaiting)
 	check("queue_fallback_wait_seconds", in.QueueFallbackWaitSecond, 0, maxQueueWaitSeconds)
 	check("media_download_max_mb", in.MediaDownloadMaxMB, minMediaDownloadMaxMB, maxMediaDownloadMaxMB)
+	check("max_request_body_mb", in.MaxRequestBodyMB, minMaxRequestBodyMB, maxMaxRequestBodyMB)
 	if in.ClaudeMaxTokens != nil {
 		fe = append(fe, in.ClaudeMaxTokens.validate(zh)...)
 	}
@@ -133,6 +135,9 @@ func (in *gatewaySettingsInput) applyTo(v *GatewaySettings) {
 	}
 	if in.MediaDownloadMaxMB != nil {
 		v.MediaDownloadMaxMB = *in.MediaDownloadMaxMB
+	}
+	if in.MaxRequestBodyMB != nil {
+		v.MaxRequestBodyMB = *in.MaxRequestBodyMB
 	}
 }
 

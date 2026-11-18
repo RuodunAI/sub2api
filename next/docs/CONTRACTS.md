@@ -343,7 +343,7 @@
 |---|---|---|
 | `billing` | `{missing_price_policy, min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除，已存的值忽略） | `reject`、`"0"`、`"10"`、`continue` |
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
-| `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}` | 3、2000、300 |
+| `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`；后来加的字段见 §78、§84.1、§88、§110（`max_request_body_mb`，默认 128） | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
 
 上表只列最初的字段，后加的字段见各节。插件经 `HostService.GetSettings` 只读地读取的分组与完整字段见 §107.2。
@@ -542,7 +542,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 ### 14.4 接口收尾
 
 - **客户端请求 ID**：网关把客户端 `X-Request-Id`（截断到 128 字符）写入 `UsageRecord.ClientRequestID`；`usage_logs.client_request_id`；管理员使用记录列表/详情返回 `client_request_id`，支持 `?client_request_id=` 精确筛选（只比客户端请求 ID）。`?request_id=` 同时匹配我方请求 ID 和客户端请求 ID（`u.request_id = v OR u.client_request_id = v`，核心 0.1.277 起，§95.4；此前只比我方请求 ID）：使用记录列表、汇总、导出都经 `usage/api.go` 的 `parseFilter`，`/usage` 与 `/me/usage` 相同，自助视图仍限定本人。`client_request_id` 不唯一，一个值可以匹配多行；该列没有索引，所以 `request_id` 只在带 `from` 时才加上客户端请求 ID 那一半（按时间范围扫描，与其它无索引筛选相同）；不带 `from` 时只比我方请求 ID（走唯一索引）。控制台的时间范围总会带 `from`。
-- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
+- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。`max_request_body_mb`（请求体上限，1–1024，默认 128）与“平台调用超时”的含义见 §110。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
 - 前端此前提出的缺失接口说明见 §15（按后端现状整理）。
 
 ## 15. 接口细节补充（按 2026-09-25 代码现状）
@@ -5120,10 +5120,9 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **值的来源**：按 账号 → 分组 → 全局设置 → 进程环境变量 的顺序取，0 或没设置就看下一层。
 - **已声明的变量**（定义见 `core/environment.go`）：
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
-  - `max_request_body_mb`：没有账号层，因为选账号之前就要用到。端点声明了 `request.maxBodyBytes` 时，生效值取两者中较大的那个（只放宽，不收紧端点自己要的上限）；端点没有声明时直接用它，所以运营方仍可把默认的 128 MB 调小。未设置：端点声明的值，否则 128 MB（2026-11-08 起，原为 32 MB；Anthropic 官方 Messages API 仍限 32 MB）。
+  - 请求体上限不是环境变量：它是网关设置 `max_request_body_mb`（§110），没有分组层、账号层和进程环境变量。同名的环境变量 2026-11-18 删除。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
-  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限。
-  - 资源请求（Files API 等，`resource_http.go`）不受 `max_request_body_mb` 和三个超时约束，用自己的上限（文件 512 MB、JSON 16 KB）和期限。
+  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限（§110）。
   - `relay_timeout_seconds` 从发出上游请求时起算，与 `response_header_timeout_seconds` 同时开始；之前的本地准备（资源与额度请求头、辅助历史包装、可用性检查、任务登记）不计入。`streaming_idle_timeout_seconds` 只在核心等待上游数据（读响应体）时计时，客户端读得慢不算上游空闲。
   - 账号层取本次尝试重新加载的账号，不取挑选候选时的快照。
   - `relay_timeout_seconds` 或 `streaming_idle_timeout_seconds` 中途切断流式响应时，使用记录的错误信息写明是哪一个（`upstream stream interrupted: upstream request exceeded relay_timeout_seconds` / `… upstream stream exceeded streaming_idle_timeout_seconds`），不再只是 `context canceled`。
@@ -5954,7 +5953,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **失败**：后续轮调用失败（gRPC 错误、空响应）或任一轮的 patch 无法应用（`value_json` 非法、路径非法等，全部或全不）时，本轮回一条错误事件（503 `plugin_unavailable`，记录 `error_type = plugin_unavailable`），释放该轮的并发位与预占，连接保持，下一轮照常；首轮在建连成功之后才失败的，上游连接同样保留给下一轮。patch 改动了模型引用（端点与路由的 `modelReferences`，与 HTTP `validatePatches` 相同的检查）时本轮以模型引用错误失败。调用受 `platform_call_timeout_ms` 约束。
 - **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，随核心 0.1.257 发布。
 
-**`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（`maxBodyBytes`，默认 128 MiB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
+**`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（网关设置 `max_request_body_mb`，§110，默认 128 MB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
 
 **codex 插件 0.1.1**：
 
@@ -7803,7 +7802,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 分组 | 类型 | 字段 |
 | --- | --- | --- |
 | `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
-| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
+| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`max_request_body_mb`（§110）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
 | `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
 | `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
 | `auto_disable` | `AutoDisableSettings` | `enabled`、`status_codes`、`keywords`（§42.2）；发布了故障策略时由策略的账号规则决定，开关看 `failure_policy.account_enabled` |
@@ -7963,3 +7962,30 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；密钥文件由插件用 `encoding/json` 解析一次，检查和使用读同一份值；服务账号的断言用 `github.com/golang-jwt/jwt/v5` 以 RS256 签名（没有用 Google 的库：它没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated；见设计文档 16.10）。`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）：按解析后生效的值判断（键名不分大小写、重复的键取最后一个），这个值只检查，请求和断言的 `aud` 用常量。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstreamRequest` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
 - **bedrock**：插件不联网。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型的构造结果带 `signing{scheme: aws-sigv4, service: bedrock}`。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`，请求体补丁只动顶层字段：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta`（清单声明的请求字段）里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstreamRequest` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用），补丁用 `pluginsdk.SetPatch` / `DeletePatch` 构造。
 
+## 110. 请求体上限是网关设置，“平台调用超时”的新含义（2026-11-18，用户要求“系统设置-网关设置里面配置就行了，其他地方不要限制”；迁移 0107；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md) 第 8 节）
+
+项目在开发期，不做兼容：旧的做法在同一次改动里删除，已存的旧值不迁移。
+
+### 110.1 设置
+
+- **字段**：`settings` 表 `gateway` 行的 `max_request_body_mb`（`gateway.GatewaySettings.MaxRequestBodyMB`），单位 MB，整数，默认 128，范围 1–1024。接口仍是 `GET/PUT /settings/gateway`（§14.4）：`PUT` 里不带这个字段就保持原值，超出范围回 400、字段错误 `max_request_body_mb` / `out_of_range`。已存的行里没有这个字段时读作 128，超出范围的值读取时收进范围。
+- **生效**：保存的节点立即丢弃设置缓存并广播 `config:changed`（`settings.gateway`），其他节点收到后重读；没收到广播的节点最迟 10 秒后（设置缓存的有效期）读到新值。只影响之后到达的请求和之后建立的 WebSocket 连接。
+- **控制台**：系统设置 → 网关设置里的“请求体上限”一行（`GatewaySettingsCard.vue`）。“环境变量”页和分组编辑器里不再有它。
+- **插件**：`GetSettings("gateway")` 的 `protocol.GatewaySettings` 多了 `MaxRequestBodyMB`（§107.2），变更通知沿用 `gateway` 分组。
+
+### 110.2 它是唯一的请求大小上限
+
+- 网关请求路径上限制客户端请求大小的地方只有两处，都读这个设置（`gateway/pipeline.go` 的 `bodyLimit`）：读 HTTP 请求体时的 `http.MaxBytesReader`（超出回 413 `request_too_large`），和 WebSocket 连接的单条消息上限（超出以 1009 关闭连接）。
+- **删除**：
+  - 环境变量 `max_request_body_mb`（§74.3）连同它的全局层、分组层和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB`；`sdk/protocol` 的常量 `EnvVarMaxRequestBodyMB`、`core.Environment.Bytes` 和变量单位 `mb` 一并删除。带这个键的 `PUT /settings/environment`、分组或账号的 `environment` 现在按未知变量拒绝（400）。启动时仍设置了 `SUB2API_MAX_REQUEST_BODY_MB` 的进程不报错，这个变量不再被读取。
+  - 端点清单的 `request.maxBodyBytes`：核心不再读它（字段本身由 `sdk/manifest` 的改动删除，没有清单用过它）。
+- **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限、插件进程的内存下限（“64 MB + 3 × 请求体上限”）按设计第 8.2、8.3 节由运行时用这个值推出，不另设配置项。
+- **不属于请求大小上限、保持原样的常量**：到 Gemini 的媒体下载上限 `media_download_max_mb`（核心主动下载的文件，§88）；预扣时本地分词统计的提示文本 32 MiB（`tokenizer.MaxTextBytes`，只截断统计，不拒绝请求，§25.8）和传给插件估算的 1 MiB；钩子插件的 gRPC 接收上限（插件自己用 `WithMaxRecvMsgSize` 定，超出时这次钩子调用不计入熔断）；上游一侧的读取上限（WebSocket 上游消息 64 MiB、SSE 单行 16 MiB、非流式回答的缓冲）；插件路由 `/api/v1/p/:key/*` 的 1 MiB 和控制台接口各自的上限（不是网关请求）。
+
+### 110.3 迁移 0107
+
+`0107_drop_max_request_body_env.sql`：从 `settings` 的 `environment` 行、`groups.environment`、`accounts.environment` 里删掉键 `max_request_body_mb`，其他键不动；`gateway` 行不动。只改数据，不改表结构，可重复执行。旧值不带到新设置里：升级后上限回到默认 128 MB，调过的实例要在网关设置里重新填。不删的话，带着这个键的分组再保存时会因“未知的环境变量”被拒绝。
+
+### 110.4 “平台调用超时”的含义
+
+`platform_call_timeout_ms`（默认 2000，范围 100–30000，都不变）的定义改为：**一次请求里，插件每一段自己的处理时间的上限，不含等待上游的时间**（设计第 8.4 节列出各段：`Execute` 开始到第一次调客户端、两次客户端调用之间、最后一次客户端调用返回到 `Execute` 返回、`ClassifyError` 整个调用、WebSocket 每一轮的 `Execute`）。控制台提示（`web/src/i18n/locales/{zh,en}/settings.ts`）和接口类型注释已按新含义改写；网关按段计时的实现属于转发 V2 的网关改造，不在本节的改动里。

@@ -211,8 +211,8 @@ func TestEnvironmentProcessLayer(t *testing.T) {
 	if fmt.Sprint(cfg.Environment) != "map[relay_timeout_seconds:300]" {
 		t.Fatalf("environment: %v", cfg.Environment)
 	}
-	t.Setenv("SUB2API_MAX_REQUEST_BODY_MB", "4096")
-	if _, err := config.Load("linux"); err == nil || !strings.Contains(err.Error(), "SUB2API_MAX_REQUEST_BODY_MB") {
+	t.Setenv("SUB2API_STREAMING_IDLE_TIMEOUT_SECONDS", "86401")
+	if _, err := config.Load("linux"); err == nil || !strings.Contains(err.Error(), "SUB2API_STREAMING_IDLE_TIMEOUT_SECONDS") {
 		t.Fatalf("out of range: %v", err)
 	}
 }
