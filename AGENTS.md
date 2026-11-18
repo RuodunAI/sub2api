@@ -76,12 +76,13 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 
 ### 插件系统（ARCHITECTURE §5，CONTRACTS §26、§36）
 
-- 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 seccomp、rlimit、内存看门狗和出口隧道（插件的对外连接经核心转发）。
+- 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 seccomp、rlimit、内存看门狗（只在管理员给插件设了内存上限或节点封顶时生效，默认不限，CONTRACTS §111.5）和出口隧道（插件的对外连接经核心转发）。
 - 插件包：`manifest.json`、`migrations/*.sql`、`forms/`、`i18n/`、`assets/`、`ui/`（schema、iframe 或原生微前端）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
 - 每个插件有自己的 schema `plg_<key>`，有权限时还有同名的受限数据库角色。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
-- 平台插件必须遵守全部系统设置：每项设置在普通转发、插件执行、WebSocket 三条路径上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md`，改动相关行为时同步它。
+- 平台插件（声明账号类型的插件）都是有进程的代码插件，没有只有清单的插件。每个网关请求只有一条路径（CONTRACTS §112）：核心做完协议转换和运营方的改写，把完整请求体交给账号类型插件的 `PlatformService.Execute`；插件构造最终请求，经 `HostService.RelayUpstream` 交给核心的 HTTP 客户端发出（插件不开套接字，账号代理、SSRF、超时、运营方的请求头设置由核心强制）；用量与任务事实只在 `Execute` / `Monitor` 的返回值里。插件写法、`sdk/pluginsdk/standard` 库、`jsonedit`、一致性套件见 `next/docs/PLUGIN-DEVELOPMENT.md`。
+- 平台插件必须遵守全部系统设置：每项设置在 HTTP 与 WebSocket 两种传输上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md` 第 5 节，改动相关行为时同步它。
 - 内置插件随核心升级（CONTRACTS §37）。**插件内容变了必须升版本号**：`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`，内容变了而版本没升就失败；每次发布后按该测试的说明重写这个文件。
-- Host API 版本在 `runtime-contract.HostAPIVersion` 与 `sdk/protocol.HostAPIVersion`，两者必须相等。
+- Host API 版本在 `runtime-contract.HostAPIVersion`（现为 10），`sdk/protocol.HostAPIVersion` 就定义为它。插件线协议是 `sdk/protocol.ProtocolVersion`（现为 2）：改了不兼容的插件契约就升它，旧插件包在握手和清单检查时以同一条信息被拒绝（CONTRACTS §112.10）。
 
 ### 网关与托管升级（CONTRACTS §33、§34、§39、§82、§102）
 
@@ -149,8 +150,10 @@ cd next/tools/sub2api-plugin && go test -count=1 ./...   # 含 TestReleasedPlugi
 cd next/plugins/<name> && go test -count=1 ./...
 ```
 
+- 平台插件的测试里调一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（`conformance.Run`）；它在运行期间替换进程的默认传输和解析器，不要和用网络的测试并行。用 `standard` 库写的插件另跑黄金样例（`sdk/pluginsdk/standard/goldentest`）。
+
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
-- 重新生成 proto：`cd next/sdk && buf generate`。
+- 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
 - e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`。
 
 ### 控制台（`next/web`，Node 24，npm）
@@ -177,10 +180,10 @@ CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。插件的�
 
 ## 读代码从哪里开始
 
-- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
+- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
 - 架构与数据模型：`next/docs/ARCHITECTURE.md` §2–§5、§13、§16。
 - 最近发生了什么：`CHANGELOG.md` 的“未发布”与最新几节。
 - 组装入口：`next/server/cmd/sub2api/main.go`、`next/server/internal/app`。
-- 插件开发：`next/sdk/pluginsdk/doc.go`、`next/plugins/guard`（演示插件）、CONTRACTS §26、§47.2。
+- 插件开发：`next/docs/PLUGIN-DEVELOPMENT.md`（平台插件）、`next/sdk/pluginsdk/doc.go`、`next/sdk/pluginsdk/standard/README.md`、`next/plugins/guard`（演示插件）、CONTRACTS §26、§47.2、§112。
 - 多节点与升级：`next/docs/MULTINODE-SYNC-PROTOCOL.md`、`next/docs/GATEWAY-MANAGED-UPDATES.md`、`next/deploy/gateway/README.md`。
 - 交接与审计记录（`HANDOVER*.md`、`HANDOFF-*.md`、`audits/`）是当时的快照，不能代替当前状态。
