@@ -13,10 +13,8 @@
 // Capability interfaces mirror the generated pluginv1.XxxServiceServer
 // interfaces (without the mustEmbed method):
 //
-//	Platform   -> PlatformService   ("platform.adapter.v1")
-//	Executor   -> PlatformService.Execute ("platform.execute.v1")
+//	Platform   -> PlatformService   ("platform.adapter.v1", Execute included)
 //	TaskMonitor -> PlatformService.Monitor ("platform.monitor.v1")
-//	Poller     -> PlatformService.Poll ("platform.poll.v1")
 //	Hook       -> HookService       ("gateway.hook.v1")
 //	JobRunner  -> AppService.RunJob ("app.jobs.v1", see JobMux)
 //	EventHandler -> AppService.OnEvents ("app.events.v1")
@@ -25,6 +23,45 @@
 //	AccountRanker -> SchedulerService.RankAccounts ("scheduler.rank.v1")
 //	NotificationChannel -> NotificationService.DeliverNotification ("notify.channel.v1")
 //	Migration  -> MigrationService  ("migration.data.v1")
+//
+// "platform.tasks.v1" and "platform.websocket.v1" name no interface: they say
+// what Execute does on the endpoints of the manifest and are reported when
+// the manifest declares them.
+//
+// # The request path
+//
+// A gateway request has one path. For every attempt on an account the host
+// calls Execute with the whole request body, already rewritten by the host
+// (protocol conversion, model mapping, forced streaming, the operator's
+// parameter overrides), the allow-listed client headers, the account with
+// its credentials and the attempt number. The plugin builds the final
+// upstream request (Upstream; it signs it itself with package reqsign when
+// the upstream needs that) and hands it to the host's HTTP client. It opens
+// no socket, sets no size limit, never retries and never picks another
+// account. The client has three calls, all bound to the context of the call
+// they are made in:
+//
+//   - Relay: the answer goes to the client. The host only validates the
+//     request and sends it after Execute returned ReportHostUsage, so the plugin is
+//     not part of the exchange.
+//   - RelayAndWait: for endpoints whose usage the plugin reads (request flag
+//     extract_usage) and task submissions (task_submission). The host sends
+//     now and returns a bounded observation, which the plugin turns into
+//     ReportUsage or ReportTask, or the facts of a failed exchange, which
+//     it turns into ReportClassification.
+//   - Fetch: a bounded exchange whose answer comes back to the plugin, for
+//     auxiliary requests before the relay and for the upstream query of
+//     Monitor. Hosts are limited to the manifest's externalServices.
+//
+// An execution relays at most once. Usage and task facts travel only in the
+// value Execute returns; there is no reporting callback and the host does
+// not make up for a response that states nothing. ExecuteDefault does all of
+// this for a platform that implements UpstreamBuilder: it picks the form
+// from the two flags and cannot forget the report.
+//
+// A platform plugin's gRPC server accepts messages up to gRPC's maximum
+// without an option (ServerOptions); the gateway's request body limit is a
+// system setting the host enforces.
 //
 // The SDK implements PluginService itself. Optional lifecycle interfaces
 // (Initializer, Configurer, HealthChecker, Shutdowner) let the plugin hook
@@ -44,17 +81,16 @@
 //   - Init runs once per process, i.e. on every node, and so does any
 //     goroutine it starts. Declare periodic work as manifest jobs[]: each
 //     trigger runs on one node for the whole cluster.
-//   - Request execution uses Executor and ExecuteDefault: build, forward
-//     through the host, then RecordUsage or ReserveAndWatch before returning.
-//     Prices, attribution and all ledger writes remain host-owned.
-//   - Upstream async work uses endpoint.task + TaskSubmissionParser +
-//     TaskMonitor. The host records owner and original account before success,
-//     coordinates polling and serves shared snapshots on every node. Do not
-//     poll the same task from jobs[], Init or client query handlers.
-//     In Monitor, call ExecuteHTTP and ReportTaskProgress with its context;
-//     the host atomically records progress and settlement, and binds the request
-//     to the account proxy and limits. Generic Egress is a separate permission
-//     and does not inherit the polling execution's account limits.
+//   - Prices, attribution and all ledger writes are the host's: Execute
+//     states upstream facts in its return value and nothing else.
+//   - Upstream async work uses endpoint.task: Execute returns the accepted
+//     Task and TaskMonitor observes it. The host records owner and original
+//     account before success, coordinates the observations and serves shared
+//     snapshots on every node. Do not poll the same task from jobs[], Init
+//     or client query handlers. In Monitor, query the upstream once with
+//     Fetch and return the result; the host records progress and settlement
+//     atomically and binds the request to the account's proxy and limits.
+//     Generic Egress is a separate permission and does not inherit them.
 //   - Host.Locks gives cross-node mutual exclusion for other work. The locks
 //     are not fenced, so the guarded work must still be idempotent.
 //   - KV has no compare-and-set: two nodes doing read-modify-write on one key
@@ -179,5 +215,7 @@
 // Tests run the real migrations: pluginsdktest.NewSchema and ApplyMigrations.
 //
 // The pluginsdktest sub-package runs a plugin in-process over bufconn with a
-// fake host, for unit tests.
+// fake host, for unit tests: Harness.Execute and Harness.Monitor make the
+// calls the way the host does and return the relays and fetches the plugin
+// made.
 package pluginsdk

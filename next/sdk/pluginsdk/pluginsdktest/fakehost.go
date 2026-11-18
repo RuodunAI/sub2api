@@ -59,17 +59,28 @@ type FakeHost struct {
 	AccountScope func(userID int64, action string, ids []int64) (all bool, allowed []int64, err error)
 	// DialFunc is used by EgressService.Dial (default net.Dialer).
 	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
-	// ExecuteHTTPFunc handles scoped Poll requests. Set it before Start.
-	// No real network is used by default; nil returns UNIMPLEMENTED. The fake
-	// forwards the SDK-injected token so tests can assert invocation isolation;
-	// real token admission, proxy and lease enforcement belong to host tests.
+	// The host's HTTP client (execution.go). A relay or fetch is accepted
+	// only with the token of a live Execution, as Harness.Execute and
+	// Harness.Monitor issue them; the fake applies the checks of the host
+	// that need no network and records what it accepted. No real network is
+	// used. Set these before Start.
+	//
+	// RelayFunc scripts the upstream for an accepted relay. For one that
+	// waits it returns the answer: Observed, UpstreamFailed or anything else
+	// a test wants the plugin to cope with; nil answers UNIMPLEMENTED. For one
+	// that does not wait only its error matters (nil accepts). An
+	// INVALID_ARGUMENT error is a refusal: the request counts as not relayed.
+	RelayFunc func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
+	// ExecuteHTTPFunc answers a fetch; nil answers UNIMPLEMENTED. A body over
+	// pluginsdk.FetchResponseLimit is cut and marked truncated, as the host
+	// does; a test may also set truncated or transport_error itself.
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
-	// Execution callbacks do not simulate real host authority or transactions.
-	// Set before Start; nil returns UNIMPLEMENTED.
-	ForwardUpstreamFunc    func(context.Context, *pluginv1.ForwardUpstreamRequest) (*pluginv1.ForwardUpstreamResponse, error)
-	RecordUsageFunc        func(context.Context, *pluginv1.RecordUsageRequest) (*pluginv1.ExecutionReceipt, error)
-	ReserveAndWatchFunc    func(context.Context, *pluginv1.ReserveAndWatchRequest) (*pluginv1.ExecutionReceipt, error)
-	ReportTaskProgressFunc func(context.Context, *pluginv1.ReportTaskProgressRequest) (*pluginv1.ExecutionReceipt, error)
+	// ExternalServices are the hosts a fetch may reach (the manifest's
+	// externalServices; a subdomain of one matches). nil allows every host.
+	ExternalServices []string
+	// MaxBodyBytes is the gateway's request body limit applied to relayed
+	// and fetched bodies; 0 is no limit.
+	MaxBodyBytes int
 	// PriceUsageFunc answers PriceUsage; nil answers every model as not
 	// priced ("no_price"). Set it before Start.
 	PriceUsageFunc func(context.Context, *pluginv1.PriceUsageRequest) (*pluginv1.PriceUsageResponse, error)
@@ -117,6 +128,8 @@ type FakeHost struct {
 	// settings: section -> values JSON (SetSettings).
 	settings      map[string]string
 	settingsReads int
+	// executions: token -> the call it was issued for (execution.go).
+	executions map[string]*Execution
 }
 
 // PublishedMessage is one broadcast received through HostService.Publish.
@@ -133,13 +146,6 @@ type kvItem struct {
 // NewFakeHost returns an empty fake host.
 func NewFakeHost() *FakeHost {
 	return &FakeHost{kv: map[string]kvItem{}, kvCalls: map[string]int{}, ledgerBy: map[string]LedgerEntry{}, Locks: NewLockTable()}
-}
-
-func (f *FakeHost) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
-	if f.ExecuteHTTPFunc == nil {
-		return nil, status.Error(codes.Unimplemented, "set FakeHost.ExecuteHTTPFunc for polling HTTP")
-	}
-	return f.ExecuteHTTPFunc(ctx, in)
 }
 
 // Logs returns a copy of the received log records.

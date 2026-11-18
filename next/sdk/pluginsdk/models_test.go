@@ -26,8 +26,11 @@ type minimalPlatform struct{}
 func (minimalPlatform) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	return &pluginv1.ValidateCredentialsResponse{}, nil
 }
-func (minimalPlatform) BuildUpstreamRequest(context.Context, *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	return &pluginv1.BuildUpstreamRequestResponse{Url: "https://up.example.com/v1/messages"}, nil
+func (p minimalPlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
+	return pluginsdk.ExecuteDefault(ctx, p, in)
+}
+func (minimalPlatform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
+	return pluginsdk.NewUpstream("", "https://up.example.com/v1/messages").Body(in.GetBody()).Build()
 }
 func (minimalPlatform) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
 	return &pluginv1.ClassifyErrorResponse{}, nil

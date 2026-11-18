@@ -200,7 +200,7 @@ type AccountSummary struct {
 type AccountCredentials struct {
 	AccountSummary
 	// CredentialsJSON is the same JSON the plugin gets as
-	// Account.credentials_json in BuildUpstreamRequest.
+	// ExecuteRequest.account.credentials_json.
 	CredentialsJSON string
 }
 
