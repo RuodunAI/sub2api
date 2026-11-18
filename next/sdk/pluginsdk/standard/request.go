@@ -2,7 +2,6 @@ package standard
 
 import (
 	"encoding/json"
-	"net/url"
 	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -48,17 +47,9 @@ func (r *Request) Field(name string) string {
 	return ""
 }
 
-// url is the URL of route on the base URL: path, the key in the query when
-// the type puts it there, the ws(s) scheme of a websocket route.
-func (t *Type) url(path string, websocket bool, r *Request) string {
+// upstreamURL is path on the base URL, with the ws(s) scheme for a websocket route.
+func upstreamURL(path string, websocket bool, r *Request) string {
 	u := r.BaseURL + path
-	if t.Auth.Query != "" {
-		sep := "?"
-		if strings.Contains(path, "?") {
-			sep = "&"
-		}
-		u += sep + url.QueryEscape(t.Auth.Query) + "=" + url.QueryEscape(t.Auth.Prefix+r.APIKey)
-	}
 	if websocket {
 		u = "ws" + strings.TrimPrefix(u, "http") // the base URL is http(s) (apikey.NormalizeBaseURL)
 	}
@@ -82,8 +73,8 @@ func (t *Type) headers(route []Header, r *Request) map[string]string {
 	return h
 }
 
-// credential is the authoritative header of the request: the key, when the
-// type sends it in a header.
+// credential is the authoritative header of the request: the key, unless
+// the type sends no credential.
 func (t *Type) credential(r *Request) map[string]string {
 	if t.Auth.Header == "" {
 		return map[string]string{}

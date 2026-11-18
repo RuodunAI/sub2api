@@ -1,6 +1,6 @@
 // Package standard implements the platform of "API key" account types: an
 // account holds an API key and a base URL, and a request is a route per
-// upstream protocol on that base URL with the key in a header or the query.
+// upstream protocol on that base URL with the key in a header.
 // openai, gemini, relay, azure_openai and the apikey type of anthropic are
 // such types (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md §7.3).
 //
@@ -62,25 +62,22 @@ type Type struct {
 	Models *apikey.ModelList
 }
 
-// Auth is where a request carries the API key: a header (Header, the
-// authoritative header of the request) or a query parameter (Query), with
-// Prefix before the key ("Bearer "). Both empty sends no credential.
+// Auth is the header that carries the API key, the authoritative header of
+// the request, with Prefix before the key ("Bearer "). An empty Header
+// sends no credential.
 type Auth struct {
 	Header string
-	Query  string
 	Prefix string
 }
 
 // Route is the request of one upstream protocol.
 type Route struct {
-	// Method defaults to POST; a websocket route is opened with GET.
-	Method string
 	// Path is appended to the base URL: the path, written the way it goes
 	// on the wire (escape what the request supplies with url.PathEscape),
 	// and an optional query. Path fixes a constant one.
 	Path func(*Request) string
-	// WebSocket makes the route a websocket turn: the URL is the
-	// handshake's (ws, wss), the headers the handshake's (no
+	// WebSocket makes the route a websocket turn, opened with GET (any other
+	// route is a POST): the URL is the handshake's (ws, wss), the headers the handshake's (no
 	// content-type), the body the turn's message.
 	WebSocket bool
 	// Model says where the upstream model comes from.

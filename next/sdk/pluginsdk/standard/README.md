@@ -1,6 +1,6 @@
 # standard：API Key 账号类型的公共库
 
-“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 放在请求头或查询串里”这一类账号类型，用这个包实现全部平台接口。openai、gemini、relay、azure_openai 四个插件和 anthropic 插件的 `apikey` 类型都是这一类（设计稿 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` 7.3 节）。
+“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 放在请求头里”这一类账号类型，用这个包实现全部平台接口。openai、gemini、relay、azure_openai 四个插件和 anthropic 插件的 `apikey` 类型都是这一类（设计稿 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` 7.3 节）。
 
 它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `Type`（通常从厂商预设出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 就是 `pluginsdk.Platform`。
 
@@ -25,12 +25,11 @@ type Type struct {
 	Models          *apikey.ModelList // 模型列表；nil 回 UNIMPLEMENTED
 }
 
-type Auth struct{ Header, Query, Prefix string } // 头名或查询参数名二选一，Prefix 在 Key 前（"Bearer "）；都空 = 不带凭证
+type Auth struct{ Header, Prefix string } // Key 放在哪个头，Prefix 在 Key 前（"Bearer "）；Header 空 = 不带凭证
 
 type Route struct {
-	Method    string                                         // 默认 POST；WebSocket 固定 GET
 	Path      func(*Request) string                          // 接在基础地址后的路径（已转义）和可选的查询串
-	WebSocket bool                                           // ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息
+	WebSocket bool                                           // GET 的 ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息；其余路由都是 POST
 	Model     Model                                          // 上游模型从哪来
 	Headers   []Header                                       // 写在类型的头之后
 	Edit      func(body []byte, r *Request) ([]byte, error)  // 在 FilterFields 之后改请求体（用 jsonedit）；没有 gRPC 状态的错误按 INVALID_ARGUMENT 返回；WebSocket 路由不能有
@@ -104,7 +103,7 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
 6. 请求头：
    - **默认头**（运营方的透传、覆盖能改）：转发的客户端请求头（只有 `PassHeaders` 里的），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
-7. URL：基础地址 + `Path`，查询鉴权时追加 `<Auth.Query>=<Key>`，WebSocket 路由换成 ws/wss。
+7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss。
 
 账号测试走 `Test.Protocol` 的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表只带类型的头和鉴权，不带 `content-type`。
 

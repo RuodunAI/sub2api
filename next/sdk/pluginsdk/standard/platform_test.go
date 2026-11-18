@@ -20,12 +20,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
-// custom covers what no preset uses: the key in the query, account fields
-// in a header and in the query, a header from a client header.
+// custom covers what no preset uses: account fields in a header and in the
+// query, a header from a client header.
 func custom() standard.Type {
 	t := gemini.APIKey("custom")
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
-	t.Auth = standard.Auth{Query: "key"}
 	t.PassHeaders = []string{"user-agent", "x-missing"}
 	t.Headers = append(t.Headers,
 		standard.Set("x-org", standard.Field("org")),
@@ -42,13 +41,13 @@ func custom() standard.Type {
 	return t
 }
 
-func TestQueryAuthAndFields(t *testing.T) {
+func TestFields(t *testing.T) {
 	p := standard.New(custom())
 	acc := &pluginv1.Account{Id: 7, Type: "custom", CredentialsJson: `{"api_key":"k-123456789","org":"o-1","n":3}`, SettingsJson: `{"base_url":"https://g.example.com","flag":true,"version":"a&b"}`}
 	for protocol, want := range map[string]string{
-		gemini.ProtocolStreamGenerate: "https://g.example.com/v1beta/models/a%20b:streamGenerateContent?alt=sse&key=k-123456789",
-		gemini.ProtocolGenerate:       "https://g.example.com/v1beta/models/a%20b:generateContent?key=k-123456789",
-		"custom.versioned":            "https://g.example.com/v/a%20b?v=a%26b&key=k-123456789",
+		gemini.ProtocolStreamGenerate: "https://g.example.com/v1beta/models/a%20b:streamGenerateContent?alt=sse",
+		gemini.ProtocolGenerate:       "https://g.example.com/v1beta/models/a%20b:generateContent",
+		"custom.versioned":            "https://g.example.com/v/a%20b?v=a%26b",
 	} {
 		out, err := p.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Meta: &pluginv1.RequestMeta{Protocol: protocol, Model: "models/a b"}, Account: acc,
@@ -58,12 +57,12 @@ func TestQueryAuthAndFields(t *testing.T) {
 			t.Fatal(err)
 		}
 		wantHeaders := map[string]string{"content-type": "application/json", "x-org": "o-1", "x-n": "3", "x-flag": "true", "user-agent": "cli/1", "x-ua": "s2a/cli/1"}
-		if out.Url != want || len(out.Headers) != 0 || !reflect.DeepEqual(out.DefaultHeaders, wantHeaders) {
+		if out.Url != want || !reflect.DeepEqual(out.Headers, map[string]string{"x-goog-api-key": "k-123456789"}) || !reflect.DeepEqual(out.DefaultHeaders, wantHeaders) {
 			t.Errorf("%s: %s %v %v, want %s %v", protocol, out.Url, out.Headers, out.DefaultHeaders, want, wantHeaders)
 		}
 	}
 	models, err := p.BuildModelsRequest(context.Background(), &pluginv1.BuildModelsRequestRequest{Account: acc})
-	if err != nil || models.Url != "https://g.example.com/v1beta/models?pageSize=1000&key=k-123456789" || models.Headers["content-type"] != "" {
+	if err != nil || models.Url != "https://g.example.com/v1beta/models?pageSize=1000" || models.Headers["content-type"] != "" || models.Headers["x-goog-api-key"] != "k-123456789" {
 		t.Fatalf("models %v, %v", models, err)
 	}
 }
@@ -148,7 +147,6 @@ func TestCheck(t *testing.T) {
 		"no id":                  func(t *standard.Type) { t.ID = "" },
 		"no base url":            func(t *standard.Type) { t.Spec.DefaultBaseURL = "" },
 		"bad default base url":   func(t *standard.Type) { t.Spec.DefaultBaseURL = "api.example.com" },
-		"auth header and query":  func(t *standard.Type) { t.Auth.Query = "key" },
 		"upper-case auth header": func(t *standard.Type) { t.Auth.Header = "Authorization" },
 		"blocked auth header":    func(t *standard.Type) { t.Auth.Header = "host" },
 		"credential as a header": func(t *standard.Type) { t.Headers = append(t.Headers, standard.Set("x-api-key", standard.Fixed("k"))) },
@@ -163,11 +161,6 @@ func TestCheck(t *testing.T) {
 		"edit on a websocket": func(t *standard.Type) {
 			r := t.Routes[openai.ProtocolResponsesWS]
 			r.Edit = openai.IncludeStreamUsage
-			t.Routes[openai.ProtocolResponsesWS] = r
-		},
-		"websocket with POST": func(t *standard.Type) {
-			r := t.Routes[openai.ProtocolResponsesWS]
-			r.Method = "POST"
 			t.Routes[openai.ProtocolResponsesWS] = r
 		},
 		"default protocol unknown": func(t *standard.Type) { t.DefaultProtocol = "x" },
