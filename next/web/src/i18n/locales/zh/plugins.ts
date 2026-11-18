@@ -558,7 +558,7 @@ export default {
     }
   },
   refusal: {
-    outdated_contract: "插件 {key}{'@'}{version} 是按旧的插件协议构建的，本核心（{host}，插件协议 {protocol}）不能加载它。请安装为核心 {host} 及以上构建的版本。"
+    outdated_contract: "插件 {key}{'@'}{version} 是按旧的插件协议构建的，本核心（{host}，插件协议 {protocol}）不能加载它。请安装为核心 {first} 及以上构建的版本。"
   },
   conflicts: {
     short: '{n} 项资源未分配',

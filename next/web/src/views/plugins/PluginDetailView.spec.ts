@@ -18,12 +18,12 @@ const matrixOf = (key: string) => ({
   roles: [{ id: 2, key: 'admin', name: 'Admin', builtin: true, superuser: false, editable: true, permission_keys: [] }]
 })
 
-async function render(query = '') {
+async function render(query = '', extra: Record<string, unknown> = {}) {
   mocks.get.mockImplementation(async (path: string) => {
     const matrix = path.match(/^\/permissions\/plugins\/(\w+)$/)?.[1]
     if (matrix) return matrixOf(matrix)
     const key = path.match(/^\/plugins\/(\w+)$/)?.[1]
-    return key ? { key, name: key, status: 'enabled', grants: [], versions: [] } : []
+    return key ? { key, name: key, status: 'enabled', grants: [], versions: [], ...extra } : []
   })
   const router = createRouter({
     history: createMemoryHistory(),
@@ -109,5 +109,13 @@ describe('plugin detail view', () => {
     await flushPromises()
     expect(mocks.confirm).toHaveBeenCalledTimes(2)
     expect(router.currentRoute.value.path).toBe('/plugins')
+  })
+
+  it('names the first core of the plugin protocol when the nodes refuse the plugin', async () => {
+    const refusal = { code: 'outdated_contract', version: '0.1.0', host_version: '0.9.4', protocol_version: 2, first_core_version: '0.9.0', message: 'runtime text' }
+    const { w } = await render('', { refusal })
+    expect(w.get('[data-testid="plugin-refusal"]').text()).toBe(
+      'Plugin guard@0.1.0 was built for an older plugin protocol and cannot be loaded by this core (0.9.4, plugin protocol 2). Install a version built for core 0.9.0 or later.'
+    )
   })
 })

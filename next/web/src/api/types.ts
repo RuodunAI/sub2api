@@ -1282,6 +1282,8 @@ export interface PluginRefusal {
   version: string
   host_version: string
   protocol_version: number
+  /** The first core release of the current plugin protocol: a version built for it loads on this core. */
+  first_core_version: string
   message: string
 }
 

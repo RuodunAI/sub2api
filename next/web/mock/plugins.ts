@@ -12,6 +12,8 @@ type Any = Record<string, any>
 
 /** Version of the mock core, reported as host_version by GET /market/plugins. */
 export const HOST_VERSION = '0.1.5'
+/** First mock core of the current plugin protocol (the refusal's first_core_version). */
+const FIRST_CORE_VERSION = '0.1.4'
 
 interface MockPlugin {
   key: string
@@ -33,6 +35,8 @@ interface MockPlugin {
   settings: Any | null
   /** Exclusive resources the generation did not give the plugin (audit 2026-10-09 P2-2). */
   resource_conflicts?: Array<{ resource: string; id: string; reason: string }>
+  /** Version the nodes refuse to load: built for an older plugin contract. */
+  refused_version?: string
 }
 
 interface MockRollout {
@@ -237,6 +241,8 @@ plugins.set('relay', {
   egress_policy: 'allow_all',
   resources: { memory_mb: 64, cpu: 0.1 },
   versions: [{ version: '0.3.0', consent_status: 'approved' }],
+  // Built for the older plugin contract: the nodes refuse to load it.
+  refused_version: '0.3.0',
   grants: [grant('kv', null, '0.3.0'), grant('platform.register', null, '0.3.0'), grant('accounts.credentials', { types: 'own' }, '0.3.0'), grant('net', null, '0.3.0')],
   manifest: {
     key: 'relay',
@@ -823,8 +829,21 @@ function summary(p: MockPlugin): Any {
     trust: p.trust,
     node_summary: {
       total: NODES.length,
-      states: running ? { active: NODES.length } : { stopped: NODES.length }
-    }
+      states: p.refused_version ? { failed: NODES.length } : running ? { active: NODES.length } : { stopped: NODES.length }
+    },
+    refusal: p.refused_version ? refusalOf(p.key, p.refused_version) : null
+  }
+}
+
+/** The nodes' refusal of a plugin version built for the older plugin contract. */
+function refusalOf(key: string, version: string): Any {
+  return {
+    code: 'outdated_contract',
+    version,
+    host_version: HOST_VERSION,
+    protocol_version: 2,
+    first_core_version: FIRST_CORE_VERSION,
+    message: `plugin ${key}@${version} was built for an older plugin protocol and cannot be loaded by this core (${HOST_VERSION}, plugin protocol 2); install a version built for core ${FIRST_CORE_VERSION} or later`
   }
 }
 

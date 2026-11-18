@@ -558,7 +558,7 @@ export default {
     }
   },
   refusal: {
-    outdated_contract: "Plugin {key}{'@'}{version} was built for an older plugin protocol and cannot be loaded by this core ({host}, plugin protocol {protocol}). Install a version built for core {host} or later."
+    outdated_contract: "Plugin {key}{'@'}{version} was built for an older plugin protocol and cannot be loaded by this core ({host}, plugin protocol {protocol}). Install a version built for core {first} or later."
   },
   conflicts: {
     short: '{n} resource(s) not granted',

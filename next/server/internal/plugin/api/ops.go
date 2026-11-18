@@ -69,13 +69,15 @@ func summarizeNodes(nodes []core.NodeStatus, key string) NodeSummary {
 
 // Refusal is why the nodes refuse to load a plugin version: it was built
 // for an older plugin contract (Code check.CodeOutdatedContract). Message
-// is the runtime's refusal, protocol.OutdatedContractMessage.
+// is the runtime's refusal, protocol.OutdatedContractMessage;
+// FirstCoreVersion is the oldest core a replacement may be built for.
 type Refusal struct {
-	Code            string `json:"code"`
-	Version         string `json:"version"`
-	HostVersion     string `json:"host_version"`
-	ProtocolVersion int    `json:"protocol_version"`
-	Message         string `json:"message"`
+	Code             string `json:"code"`
+	Version          string `json:"version"`
+	HostVersion      string `json:"host_version"`
+	ProtocolVersion  int    `json:"protocol_version"`
+	FirstCoreVersion string `json:"first_core_version"`
+	Message          string `json:"message"`
 }
 
 // refusal finds a node whose instance of the plugin failed to load with the
@@ -96,7 +98,7 @@ func refusal(nodes []core.NodeStatus, key string) *Refusal {
 		for _, in := range st.Instances {
 			if in.Code == check.CodeOutdatedContract {
 				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
-					ProtocolVersion: protocol.ProtocolVersion, Message: in.Error}
+					ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: in.Error}
 			}
 		}
 	}

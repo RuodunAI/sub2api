@@ -87,7 +87,7 @@ func TestListShowsOutdatedContractRefusal(t *testing.T) {
 	}}
 
 	want := map[string]any{"code": check.CodeOutdatedContract, "version": "0.1.0", "host_version": testHostVersion,
-		"protocol_version": float64(protocol.ProtocolVersion), "message": msg}
+		"protocol_version": float64(protocol.ProtocolVersion), "first_core_version": protocol.FirstCoreVersion, "message": msg}
 	if got := listRefusals(h); !equalJSON(got["video"], want) || got["other"] != nil {
 		t.Fatalf("list refusals = %v", got)
 	}

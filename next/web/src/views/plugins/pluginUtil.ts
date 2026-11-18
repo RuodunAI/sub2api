@@ -85,7 +85,7 @@ export function conflictLines(p: { resource_conflicts?: ResourceConflict[] | nul
 /** The refusal to load a plugin, localised when its code is known (the runtime's text otherwise). */
 export function refusalText(t: (key: string, named: Record<string, unknown>) => string, key: string, r: PluginRefusal): string {
   if (r.code !== 'outdated_contract') return r.message
-  return t('plugins.refusal.outdated_contract', { key, version: r.version, host: r.host_version, protocol: r.protocol_version })
+  return t('plugins.refusal.outdated_contract', { key, version: r.version, host: r.host_version, protocol: r.protocol_version, first: r.first_core_version })
 }
 
 /**
