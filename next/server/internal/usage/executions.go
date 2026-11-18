@@ -136,7 +136,8 @@ func (s *Service) CloseExecutionUnreported(ctx context.Context, in core.Executio
 	// A request that already has its usage record is closed without another:
 	// the gateway submitted the free record itself when it could not confirm
 	// the observation (stored, but its acknowledgement lost).
-	free := unreportedRecord(&rec, in.Reason)
+	rec.SetUnreported(in.Reason)
+	free := &rec
 	_, err := s.insertAtomic(ctx, []*core.UsageRecord{free}, before, func(tx *gorm.DB, _ map[string]int64) error { return after(tx) }, true)
 	if err != nil {
 		return ignoreDone(err)
@@ -171,17 +172,6 @@ func ignoreDone(err error) error {
 		return nil
 	}
 	return err
-}
-
-// unreportedRecord is the free usage record of an execution the plugin
-// stated no facts for: the host's reading with nothing to bill.
-func unreportedRecord(rec *core.UsageRecord, reason string) *core.UsageRecord {
-	r := *rec
-	r.Success, r.ErrorType, r.ErrorMessage = false, core.UsageErrorUnreported, trunc(reason, 1000)
-	r.Tokens, r.Metrics, r.Additional, r.Replacement = core.UsageTokens{}, nil, nil, nil
-	r.Billable, r.Price, r.BillingError, r.Reservation, r.ReservationDropped = false, nil, "", nil, ""
-	r.UsageExtract = core.UsageExtractUnreported
-	return &r
 }
 
 // insertExecutionRecord writes the usage record of an execution in one

@@ -477,7 +477,7 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 	switch {
 	case !w.observed:
 		recordType = core.UsageErrorUnreported
-		unreportedUsage(c.rec, reason)
+		c.rec.SetUnreported(reason)
 	case w.closed(ctx, reason):
 		// Committed meanwhile by a retry that timed out here: the facts stand.
 		c.taskPersisted = true
@@ -489,16 +489,6 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 		panic(http.ErrAbortHandler)
 	}
 	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), recordType)}
-}
-
-// unreportedUsage makes rec the free record of a request whose execution
-// stated no facts, as CloseExecutionUnreported writes it: the host's reading
-// without anything to bill.
-func unreportedUsage(rec *core.UsageRecord, reason string) {
-	rec.Success, rec.ErrorType, rec.ErrorMessage = false, core.UsageErrorUnreported, truncateUTF8(reason, 1000)
-	rec.Tokens, rec.Metrics, rec.Additional, rec.Replacement = core.UsageTokens{}, nil, nil, nil
-	rec.Price, rec.BillingError, rec.Reservation = nil, "", nil
-	rec.UsageExtract = core.UsageExtractUnreported
 }
 
 // close closes the execution unreported; it reports whether it turned out

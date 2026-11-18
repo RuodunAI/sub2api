@@ -135,7 +135,7 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 	if c.usage != nil {
 		c.usage = nil
 		if err := c.hostUsageChosen(); err != nil {
-			unreportedUsage(c.rec, err.Error())
+			c.rec.SetUnreported(err.Error())
 			slog.ErrorContext(ctx, "gateway: plugin execution unreported, not billed", "request_id", c.rid,
 				"plugin", x.rt.binding.Plugin.Key, "account_id", x.acc.ID, "endpoint", c.ep.Path, "reason", err.Error())
 		}
