@@ -164,6 +164,23 @@ func (s *server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	w.Header().Set("x-request-id", fmt.Sprintf("req_mock_%d", id))
 	w.Header().Set("x-mock-request-id", strconv.FormatInt(id, 10))
+	tool, isTool := toolTurnOf(body)
+	if isTool && tool.resultSeen {
+		b.text = "TOOL-RESULT-SEEN " + b.text
+	}
+	callID := fmt.Sprintf("call_mock_%d", id)
+	if !req.Stream && isTool && !tool.resultSeen {
+		writeJSON(w, 200, map[string]any{
+			"id": chatID, "object": "chat.completion", "created": created, "model": req.Model,
+			"choices": []any{map[string]any{
+				"index": 0, "finish_reason": "tool_calls", "logprobs": nil,
+				"message": map[string]any{"role": "assistant", "content": nil, "refusal": nil,
+					"tool_calls": []any{chatToolCall(callID, tool.name, toolInput())}},
+			}},
+			"usage": openaiChatUsage(b.usage),
+		})
+		return
+	}
 	if !req.Stream {
 		if rep, ok := moderationFor(body); ok {
 			writeModeration(w, id, chatID, created, req.Model, rep, b.usage)
@@ -189,6 +206,32 @@ func (s *server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			c["usage"] = nil
 		}
 		return c
+	}
+	if isTool && !tool.resultSeen {
+		deltas := []map[string]any{
+			{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function",
+				"function": map[string]any{"name": tool.name, "arguments": ""}}}},
+		}
+		for _, frag := range toolArguments {
+			deltas = append(deltas, map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": frag}}}})
+		}
+		for _, d := range deltas {
+			if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": d, "finish_reason": nil}})) {
+				return
+			}
+		}
+		if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}})) {
+			return
+		}
+		if includeUsage {
+			last := chunk([]any{})
+			last["usage"] = openaiChatUsage(b.usage)
+			if !sw.send("", last) {
+				return
+			}
+		}
+		sw.send("", "[DONE]")
+		return
 	}
 	if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": ""}, "finish_reason": nil}})) {
 		return
