@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,9 +29,6 @@ type stub struct{}
 
 func (stub) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	return &pluginv1.ValidateCredentialsResponse{}, nil
-}
-func (stub) BuildUpstreamRequest(context.Context, *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	return nil, nil
 }
 func (stub) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
 	return nil, nil
@@ -59,26 +57,11 @@ func (stub) RankAccounts(context.Context, *pluginv1.RankAccountsRequest) (*plugi
 func (stub) ResolveModel(context.Context, *pluginv1.ResolveModelRequest) (*pluginv1.ResolveModelResponse, error) {
 	return nil, nil
 }
-func (stub) ParseTaskSubmission(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
-	return nil, nil
-}
-func (stub) ExtractUsage(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-	return nil, nil
-}
-
-func (stub) BuildReconcileRequest(context.Context, *pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error) {
-	return nil, nil
-}
-
 func (stub) BuildQuotaRequest(context.Context, *pluginv1.BuildQuotaRequestRequest) (*pluginv1.BuildQuotaRequestResponse, error) {
 	return nil, nil
 }
 
 func (stub) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
-	return nil, nil
-}
-
-func (stub) ParseReconcileResponse(context.Context, *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
 	return nil, nil
 }
 
@@ -648,48 +631,29 @@ func (stub) ParseRefreshResponse(context.Context, *pluginv1.ParseRefreshResponse
 	return nil, nil
 }
 
-// An account type declaring its upstream is served by the core: it needs
-// neither platform.adapter.v1 nor the accounts.credentials grant, unless it
-// extends (the plugin then amends each request and sees credentials). A
-// declaration that does not resolve drops the type.
-func TestDeclaredAccountTypes(t *testing.T) {
-	declared := func(key string) *manifest.Manifest {
-		m := registrytest.Manifest(key, "1.0.0")
-		m.Platforms = nil
-		m.AccountTypes = nil
-		for _, at := range []struct {
-			id string
-			up *manifest.Upstream
-		}{
-			{"plain", &manifest.Upstream{Preset: "openai"}},
-			{"extended", &manifest.Upstream{Preset: "openai", Extend: true}},
-			{"broken", &manifest.Upstream{Preset: "nope"}},
-		} {
-			m.AccountTypes = append(m.AccountTypes, manifest.AccountType{ID: at.id, Label: manifest.LocalizedText{"en": at.id},
-				Form: manifest.Form{Mode: "native", Component: "X"}, Upstream: at.up,
-				Platforms: []manifest.AccountPlatform{{Platform: manifest.PlatformOpenAI}}})
-		}
-		return m
-	}
+// Another plugin's account type does not serve a platform whose usage or
+// task facts the declaring plugin states (usageSource "plugin", a task
+// submission): only that plugin's Execute can read them (forwarding v2,
+// design 4.3). Its own types and the other platforms it serves stay.
+func TestForeignFactsAccountTypeSkipped(t *testing.T) {
+	video := registrytest.Manifest("video", "1.0.0")
+	video.Platforms[0].Endpoints[0].UsageSource = manifest.UsageSourcePlugin
+	relay := registrytest.Manifest("relay", "1.0.0")
+	relay.AccountTypes[0].Platforms = append(relay.AccountTypes[0].Platforms, manifest.AccountPlatform{Platform: "p_video"})
 	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
 	g := registry.New().Publish([]registry.Extension{
-		ext{pkg: load(t, declared("bare")), noPlatform: true},
-		ext{pkg: load(t, declared("full")), grants: creds},
+		ext{pkg: load(t, video), grants: creds}, ext{pkg: load(t, relay), grants: creds},
 	})
-	var keys []string
-	for _, b := range g.AccountTypes() {
-		keys = append(keys, b.Plugin.Key+"/"+b.Type.ID)
-		if _, ok := b.Client.(core.DeclaredUpstream); !ok {
-			t.Fatalf("%v: client %T is not the declarative client", b.Key(), b.Client)
+	typesFor := func(platformID string) (out []string) {
+		for _, b := range g.AccountTypesForPlatform(platformID) {
+			out = append(out, b.Plugin.Key+"/"+b.Type.ID)
 		}
-		if _, ok := b.Client.(core.ExecutePlugin); ok {
-			t.Fatalf("%v: the declarative client must not execute requests", b.Key())
-		}
+		return out
 	}
-	if want := "bare/plain full/plain full/extended"; strings.Join(keys, " ") != want {
-		t.Fatalf("account types = %v, want %s", keys, want)
+	if got := typesFor("p_video"); !slices.Equal(got, []string{"video/apikey"}) {
+		t.Fatalf("p_video types = %v", got)
 	}
-	if b, ok := g.AccountType("full", "plain"); !ok || len(g.AccountTypesForPlatform(manifest.PlatformOpenAI)) != 3 || b.Client.(core.DeclaredUpstream).AuthHeader() != "authorization" {
-		t.Fatalf("full/plain = %+v %v", b, ok)
+	if got := typesFor("p_relay"); !slices.Equal(got, []string{"relay/apikey"}) {
+		t.Fatalf("p_relay types = %v", got)
 	}
 }

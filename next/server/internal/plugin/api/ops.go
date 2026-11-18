@@ -12,6 +12,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
@@ -62,6 +64,40 @@ func summarizeNodes(nodes []core.NodeStatus, key string) NodeSummary {
 		out.States[st.State]++
 	}
 	return out
+}
+
+// Refusal is why the nodes refuse to load a plugin version: it was built
+// for an older plugin contract (Code check.CodeOutdatedContract). Message
+// is the runtime's refusal, protocol.OutdatedContractMessage.
+type Refusal struct {
+	Code            string `json:"code"`
+	Version         string `json:"version"`
+	HostVersion     string `json:"host_version"`
+	ProtocolVersion int    `json:"protocol_version"`
+	Message         string `json:"message"`
+}
+
+// refusal finds a node whose instance of the plugin failed to load with the
+// runtime's refusal of an older plugin contract; nil when none did.
+func refusal(nodes []core.NodeStatus, key string) *Refusal {
+	for _, n := range nodes {
+		var st struct {
+			Instances []struct {
+				Version string `json:"version"`
+				Error   string `json:"error"`
+			} `json:"instances"`
+		}
+		if json.Unmarshal([]byte(n.Plugins[key]), &st) != nil {
+			continue
+		}
+		for _, in := range st.Instances {
+			if in.Error == protocol.OutdatedContractMessage(key, in.Version, n.HostVersion) {
+				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
+					ProtocolVersion: protocol.ProtocolVersion, Message: in.Error}
+			}
+		}
+	}
+	return nil
 }
 
 func nodeStates(nodes []core.NodeStatus, key string) []NodeState {
@@ -378,6 +414,8 @@ type Resources struct {
 }
 
 // ResourcesInfo shows manifest requests, admin overrides and the result.
+// Requested.MemoryMB is the plugin's suggestion; Effective.MemoryMB 0 is
+// unlimited.
 type ResourcesInfo struct {
 	Requested Resources `json:"requested"`
 	Overrides Resources `json:"overrides"`
@@ -396,9 +434,13 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 		return ri, err
 	}
 	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
+	// As the runtime launches it (grpcruntime launchSpec): the manifest's
+	// memory figure is what the plugin says it needs, not a limit. Memory is
+	// limited by the operator's override, else the node cap; 0 is unlimited.
 	ri.Effective = ri.Requested
-	if ri.Overrides.MemoryMB > 0 {
-		ri.Effective.MemoryMB = ri.Overrides.MemoryMB
+	ri.Effective.MemoryMB = ri.Overrides.MemoryMB
+	if ri.MaxMemory > 0 && (ri.Effective.MemoryMB == 0 || ri.Effective.MemoryMB > ri.MaxMemory) {
+		ri.Effective.MemoryMB = ri.MaxMemory
 	}
 	if ri.Overrides.CPU > 0 {
 		ri.Effective.CPU = ri.Overrides.CPU
@@ -437,11 +479,6 @@ func (a *API) putResources(c *gin.Context) {
 	}
 	m, _, ok := a.currentManifest(c, key)
 	if !ok {
-		return
-	}
-	if m.Runtime == manifest.RuntimeNone {
-		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "runtime", Code: "unsupported",
-			Message: "the plugin has runtime \"none\": it runs no process, so resource limits do not apply"}))
 		return
 	}
 	b, _ := json.Marshal(in)

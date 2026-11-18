@@ -69,8 +69,22 @@ type Review struct {
 	// NeedsDBSchemaUnconfined: granting the db.schema this version asks for
 	// takes plugin:grant:db_schema_unconfined (dbSchemaUnconfined), so the
 	// console can tell before the consent is sent.
-	NeedsDBSchemaUnconfined bool      `json:"needs_db_schema_unconfined"`
-	UploadedAt              time.Time `json:"uploaded_at"`
+	NeedsDBSchemaUnconfined bool `json:"needs_db_schema_unconfined"`
+	// RequestAccess is the fixed statement shown for a plugin declaring
+	// account types: it receives the whole of every request its accounts
+	// serve. It is how a platform plugin works, not a permission to grant
+	// or deny (forwarding v2, D15).
+	RequestAccess core.LocalizedText `json:"request_access,omitempty"`
+	UploadedAt    time.Time          `json:"uploaded_at"`
+}
+
+// requestAccessStatement is Review.RequestAccess.
+var requestAccessStatement = core.LocalizedText{
+	"en": "This plugin receives the full content of every request sent through its accounts and the data relevant to their " +
+		"responses, and it decides where each request is sent. This is how every platform plugin works; it is not a " +
+		"permission and cannot be turned off.",
+	"zh": "此插件会收到经它的账号发出的每个请求的完整内容，以及与响应有关的数据，并决定请求发往哪个地址。" +
+		"所有平台插件都是这样工作的：这不是一项权限，不能取消。",
 }
 
 // ReviewEndpoint is a gateway endpoint of a declared platform. In
@@ -366,6 +380,9 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 		HostPermissions:        []ReviewHostPerm{},
 	}
 	r.HostCompatOK, _ = pkg.HostCompatible(m.HostCompat, hostVersion)
+	if len(m.AccountTypes) > 0 {
+		r.RequestAccess = requestAccessStatement
+	}
 	for _, c := range m.Capabilities {
 		r.Capabilities = append(r.Capabilities, c.ID)
 	}
