@@ -81,7 +81,8 @@ func (c *call) overrideBuiltin(ctx context.Context, acc *core.Account, rt *typeR
 
 // overrideAccount runs the account's override on body, from what its header
 // override decided for the client's headers; the header decisions of both
-// are kept for forwardBuilt.
+// are kept for the upstream request (upstreamRequest, and the WebSocket
+// handshake).
 func (c *call) overrideAccount(ctx context.Context, acc *core.Account, rt *typeRoute, body []byte, upModel string, n int) ([]byte, string, *attemptResult) {
 	if acc == nil || (acc.ParamOverride == nil && acc.HeaderOverride == nil) {
 		return body, upModel, nil
