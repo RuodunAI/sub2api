@@ -51,9 +51,8 @@ func executeRequest(accountType, protocol string, stream bool, body string) *plu
 }
 
 // executeCases covers both account types and both protocols of the
-// anthropic platform, streaming and not. Every header the plugin writes is
-// authoritative (see BuildUpstream); the inbound headers the core handed over
-// go out as default headers, below them.
+// anthropic platform, streaming and not. Every header is authoritative (see
+// BuildUpstream); the inbound headers are not forwarded by the plugin.
 func executeCases() []executeCase {
 	headers := map[string]string{
 		"authorization":     "Bearer sk-ant-test123",
@@ -61,18 +60,17 @@ func executeCases() []executeCase {
 		"anthropic-beta":    "oauth-2025-04-20",
 		"content-type":      "application/json",
 	}
-	inbound := map[string]string{"anthropic-beta": "client-beta", "user-agent": "claude-cli/2.1.90"}
 	var cases []executeCase
 	for _, typ := range []string{"claude_oauth", "claude_setup_token"} {
 		cases = append(cases,
 			executeCase{typ + "/messages stream", executeRequest(typ, "anthropic.messages", true, messagesBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, DefaultHeaders: inbound, Body: []byte(messagesBody)}},
+				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, Body: []byte(messagesBody)}},
 			executeCase{typ + "/messages", executeRequest(typ, "anthropic.messages", false, plainBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, DefaultHeaders: inbound, Body: []byte(plainBody)}},
+				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, Body: []byte(plainBody)}},
 			// count_tokens goes to its own endpoint with the same OAuth
 			// headers: an OAuth bearer without the oauth beta is a 401.
 			executeCase{typ + "/count_tokens", executeRequest(typ, "anthropic.count_tokens", false, plainBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: CountTokensURL, Headers: headers, DefaultHeaders: inbound, Body: []byte(plainBody)}},
+				&pluginv1.UpstreamRequest{Method: "POST", Url: CountTokensURL, Headers: headers, Body: []byte(plainBody)}},
 		)
 	}
 	return cases
