@@ -42,8 +42,8 @@ var checks = []check{
 	{"05_no_retry", "after a failed relay or fetch the plugin neither relays nor fetches again and returns an error or a classification (" + design + "§14.1.5, §4.7, §5.4)", perCase(checkNoRetry)},
 	{"06_deterministic", "the same input with a fixed clock builds the same request (" + design + "§14.1.6, §4.6)", perCase(checkDeterministic)},
 	{"07_failover", "an attempt > 0 is built from scratch for its account, never reused (" + design + "§14.1.7, §4.2)", perCase(checkFailover)},
-	{"09_cancellation", "after its context is cancelled Execute returns within the platform call timeout (" + design + "§14.1.9, §8.4)", perCase(checkCancellation)},
-	{"10_large_body", "a body at the request body limit completes with plugin-side allocation within 4x the body (" + design + "§14.1.10, §8.3, §10.1)", perCase(checkLargeBody)},
+	{"09_cancellation", "after its context is cancelled Execute returns promptly, within the suite's CallTimeout (" + design + "§14.1.9, §8.4)", perCase(checkCancellation)},
+	{"10_large_body", "a large body (BodyLimit) completes with plugin-side allocation within 4x the body (" + design + "§14.1.10, §8.3, §10.1)", perCase(checkLargeBody)},
 	{"11_websocket", "a plugin declaring platform.websocket.v1 relays a turn once without waiting, with the handshake URL, handshake headers and the final message, and no response_stream (" + design + "§14.1.11, §4.8)", webSocketItems},
 	{"08_no_sockets", "the plugin opens no socket: every exchange goes through Relay, RelayAndWait or Fetch (" + design + "§14.1.8, §5.1, §5.4)", noSocketItems},
 }
@@ -349,12 +349,12 @@ func checkLargeBody(s *suite, t testing.TB, c *Case) {
 	}
 	large := *c
 	large.Body = body
-	// The fake host accepts back the larger of the body and the limit plus
-	// 1 MiB (§8.2), as the core does.
-	u := upstream{maxBody: s.p.BodyLimit}
-	got, ex := allocated(s, s.start(t, &large, u), &large)
+	// The rule measures what the plugin allocates for the body against a
+	// pass-through plugin; neither the fake host nor the core bounds the
+	// relayed body.
+	got, ex := allocated(s, s.start(t, &large, upstream{}), &large)
 	ex.Relayed(t)
-	base, _ := allocated(s, s.serve(t, reference{}, []pluginsdk.Option{pluginsdk.WithInfo("conformance-reference", "0.0.0")}, nil, upstream{relay: observe(&large), maxBody: u.maxBody}), &large)
+	base, _ := allocated(s, s.serve(t, reference{}, []pluginsdk.Option{pluginsdk.WithInfo("conformance-reference", "0.0.0")}, nil, upstream{relay: observe(&large)}), &large)
 	extra := got - base
 	t.Logf("%.1f MiB body: %.1f MiB per Execute, %.1f MiB for a pass-through plugin", mib(len(body)), mib(int(got)), mib(int(base)))
 	if extra > int64(4*len(body)) {

@@ -19,10 +19,9 @@ import (
 // upstream scripts the fake host of one harness. Zero fields take the
 // defaults: a waited relay answers the case's Observed, a fetch Plugin.Fetch.
 type upstream struct {
-	relay   func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
-	fetch   func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
-	maxBody int
-	server  []grpc.ServerOption
+	relay  func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
+	fetch  func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
+	server []grpc.ServerOption
 }
 
 // start serves the plugin under test with a fake host scripted by u for c.
@@ -40,7 +39,7 @@ func (s *suite) start(t testing.TB, c *Case, u upstream) *pluginsdktest.Harness 
 func (s *suite) serve(t testing.TB, p any, sdk []pluginsdk.Option, config any, u upstream) *pluginsdktest.Harness {
 	t.Helper()
 	fh := pluginsdktest.NewFakeHost()
-	fh.RelayFunc, fh.ExecuteHTTPFunc, fh.MaxBodyBytes = u.relay, u.fetch, u.maxBody
+	fh.RelayFunc, fh.ExecuteHTTPFunc = u.relay, u.fetch
 	fh.DialFunc = refuseDial // the fake host records the address (Dials)
 	s.sockets.watch(fh)
 	return pluginsdktest.Start(t, p, pluginsdktest.Options{Host: fh, Config: config, SDK: sdk, PluginServer: u.server})

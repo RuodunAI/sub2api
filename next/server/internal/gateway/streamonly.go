@@ -56,8 +56,6 @@ type streamOnlyAnswer struct {
 	errBody []byte
 	// broken is a stream that failed or ended without a terminal event.
 	broken error
-	// tooLarge is an answer beyond what the gateway keeps in memory.
-	tooLarge bool
 }
 
 var errStreamOnlyUnfinished = errors.New("upstream stream ended before response.completed")
@@ -70,14 +68,13 @@ func readStreamOnly(r io.Reader) streamOnlyAnswer {
 	var event string
 	var data []byte
 	items := map[int64][]byte{}
-	kept := 0
 	var ans streamOnlyAnswer
 	for {
-		line, rerr := readLine(br, maxSSELine)
+		line, rerr := readLine(br)
 		t := bytes.TrimRight(line, "\r\n")
 		switch {
 		case len(line) > 0 && len(t) == 0:
-			if streamOnlyEvent(event, data, items, &kept, &ans) {
+			if streamOnlyEvent(event, data, items, &ans) {
 				return finishStreamOnly(ans, items)
 			}
 			event, data = "", data[:0]
@@ -95,7 +92,7 @@ func readStreamOnly(r io.Reader) streamOnlyAnswer {
 		}
 		if rerr != nil {
 			// The last event may lack its blank line.
-			if rerr == io.EOF && streamOnlyEvent(event, data, items, &kept, &ans) {
+			if rerr == io.EOF && streamOnlyEvent(event, data, items, &ans) {
 				return finishStreamOnly(ans, items)
 			}
 			if rerr == io.EOF {
@@ -114,7 +111,7 @@ func finishStreamOnly(ans streamOnlyAnswer, items map[int64][]byte) streamOnlyAn
 }
 
 // streamOnlyEvent records one event and reports whether it ends the answer.
-func streamOnlyEvent(event string, data []byte, items map[int64][]byte, kept *int, ans *streamOnlyAnswer) bool {
+func streamOnlyEvent(event string, data []byte, items map[int64][]byte, ans *streamOnlyAnswer) bool {
 	if event == "" && len(data) == 0 {
 		return false
 	}
@@ -125,19 +122,11 @@ func streamOnlyEvent(event string, data []byte, items map[int64][]byte, kept *in
 		if idx.Type != gjson.Number || !item.IsObject() {
 			return false
 		}
-		if *kept += len(item.Raw); *kept > maxUsageJSONBuf {
-			ans.tooLarge = true
-			return true
-		}
 		items[idx.Int()] = []byte(item.Raw)
 	case streamOnlyTerminal[name]:
 		resp := gjson.GetBytes(data, "response")
 		if !resp.IsObject() {
 			ans.status, ans.errBody = http.StatusBadGateway, []byte(`{"error":{"message":"upstream terminal event carries no response object"}}`)
-			return true
-		}
-		if *kept += len(resp.Raw); *kept > maxUsageJSONBuf {
-			ans.tooLarge = true
 			return true
 		}
 		ans.body = []byte(resp.Raw)
@@ -235,9 +224,6 @@ func (c *call) collectStreamOnly(ctx, uctx context.Context, x *execution, resp *
 			msg = cause.Error()
 		}
 		return c.classifyUpstream(ctx, x, 0, nil, nil, msg), true
-	case ans.tooLarge:
-		return attemptResult{kind: attemptReturn, err: &gwError{Status: http.StatusBadGateway, Code: codeUpstreamError, RecordType: errTypeUpstream,
-			Message: "upstream response too large"}}, true
 	case ans.errBody != nil:
 		h := resp.Header.Clone()
 		h.Set("Content-Type", "application/json")

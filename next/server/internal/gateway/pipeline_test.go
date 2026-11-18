@@ -609,3 +609,26 @@ func TestModelBlacklist(t *testing.T) {
 		t.Fatalf("unmatched model: %d %s", r.status, r.body)
 	}
 }
+
+// A non-streaming JSON answer larger than the 32 MiB the usage buffer once
+// held, with its usage block at the end: the client gets the whole answer
+// and the request is billed from that usage block.
+func TestLargeJSONAnswerBilledFromItsUsage(t *testing.T) {
+	if testing.Short() {
+		t.Skip("relays a 33 MiB answer")
+	}
+	e := newEnv(t)
+	usage, err := json.Marshal(usageJSON(upOutput))
+	require.NoError(t, err)
+	answer := `{"id":"msg_1","type":"message","role":"assistant","model":"` + upModel +
+		`","content":[{"type":"text","text":"` + strings.Repeat("x", 33<<20) + `"}],"usage":` + string(usage) + `}`
+	e.up.set("acc-1", &upstreamRule{status: 200, body: answer})
+	r := e.messages(body(testModel, false))
+	require.Equal(t, 200, r.status)
+	require.Equal(t, len(answer), len(r.body), "the whole answer reaches the client")
+	rec := e.record()
+	require.True(t, rec.Success)
+	require.EqualValues(t, upInput, rec.Tokens.Input)
+	require.EqualValues(t, upOutput, rec.Tokens.Output)
+	require.True(t, rec.Billable)
+}

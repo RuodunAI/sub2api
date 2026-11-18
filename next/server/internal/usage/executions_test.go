@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -71,6 +72,28 @@ func syncRecord(f *fixture, id string) *core.UsageRecord {
 }
 
 func isConflict(err error) bool { return err != nil && core.AsError(err).Code == core.ErrConflict.Code }
+
+// An observation and a reading far over the 512 KiB they were once limited
+// to are stored whole.
+func TestObserveExecutionStoresAnySize(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	r := syncRecord(f, "large-observation")
+	r.PluginDetail = core.RawJSON(`{"pad":"` + strings.Repeat("x", 600<<10) + `"}`)
+	id := uuid.NewString()
+	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: id, RequestID: r.RequestID, PluginKey: r.PluginKey,
+		AccountID: *r.AccountID, Attempt: int(executionAttempt.Add(1)), Record: r}); err != nil {
+		t.Fatal(err)
+	}
+	observation := []byte(`{"pad":"` + strings.Repeat("y", 600<<10) + `"}`)
+	if err := f.svc.ObserveExecution(ctx, id, r, observation); err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	var stored []byte
+	if err := f.db.SQL.QueryRowContext(ctx, `SELECT observation FROM plugin_executions WHERE id=$1`, id).Scan(&stored); err != nil || len(stored) != len(observation) {
+		t.Fatalf("stored %d of %d bytes: %v", len(stored), len(observation), err)
+	}
+}
 
 func TestExecutionCommitsTheReturnedUsage(t *testing.T) {
 	f := newFixture(t)

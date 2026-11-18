@@ -24,14 +24,14 @@
 
 | 端点 | 标志 | 插件调用 | 返回 | 核心何时发请求 |
 |---|---|---|---|---|
-| 用量由核心按清单规则读（绝大多数） | 都不置 | `Relay` | `host_usage` | `Execute` **返回之后**。插件在返回前出任何问题（报错、超时、崩溃），请求都没发出，核心按插件不可用换号，账号不受罚。流式回答期间插件不在调用里，插件重启不影响在途的流 |
-| 端点声明 `usageSource: "plugin"` | `extract_usage` | `RelayAndWait` | `usage`；读不出时 `host_usage`（核心记 `usage_extract=fallback`）；上游出错时 `classification` | 中继调用里立即发送；调用返回有界的观察（2xx）或错误事实 |
+| 用量由核心按清单规则读（绝大多数） | 都不置 | `Relay` | `host_usage` | `Execute` **返回之后**。插件在返回前出任何问题（报错、崩溃），请求都没发出，核心按插件不可用换号，账号不受罚。流式回答期间插件不在调用里，插件重启不影响在途的流 |
+| 端点声明 `usageSource: "plugin"` | `extract_usage` | `RelayAndWait` | `usage`；读不出时 `host_usage`（核心记 `usage_extract=fallback`）；上游出错时 `classification` | 中继调用里立即发送；调用返回观察（2xx）或错误事实 |
 | 任务提交（`endpoint.task.action: "submit"`） | `task_submission` | `RelayAndWait` | `task`；上游出错时 `classification` | 同上 |
 
-- 等待形式下什么都没返回（或 `Execute` 报错、超时、插件崩溃）：同步请求记一条零费用的“未上报”记录（`error_type=usage_unreported`，预扣释放，ERROR 日志），已缓冲的非流式回答不发出、回 503，已开始的流异常结束；任务提交没有 `task` 时任务不登记、客户端报错、预扣释放（任务失败的路径，不是“未上报”）。等待期间插件崩溃或放弃调用，核心切断上游、这个请求不计费。核心不替插件补记用量。
+- 等待形式下什么都没返回（或 `Execute` 报错、插件崩溃，或返回了 `host_usage` 而核心的读数完全为空）：同步请求记一条零费用的“未上报”记录（`error_type=usage_unreported`，预扣释放，ERROR 日志），已缓冲的非流式回答不发出、回 503，已开始的流异常结束；任务提交没有 `task` 时任务不登记、客户端报错、预扣释放（任务失败的路径，不是“未上报”）。等待期间插件崩溃或放弃调用，核心切断上游、这个请求不计费。核心不替插件补记用量。不等待形式下插件返回 `host_usage` 而核心的读数完全为空时，客户端已经拿到回答，记录同样是零费用的“未上报”（CONTRACTS §112.2）。
 - WebSocket（`platform.websocket.v1`）：会话的每一轮消息调一次 `Execute`，请求体是这一轮的消息。插件照常 `Relay` + `host_usage`，给出握手地址（`ws(s)://` 或 `http(s)://`）、握手头和最终消息；核心在会话还没有上游连接时用第一轮的 URL 和握手头建连，以后每轮只发消息。WebSocket 端点没有等待形式，不能给 `response_stream`（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)）。
 - 插件只描述请求、不开套接字：上游请求、辅助请求都经核心的客户端发出，核心套上账号的代理、SSRF 规则、超时和运营方的请求头设置。插件不重试、不换号，一次执行最多一个中继。
-- 平台调用超时（网关设置 `platform_call_timeout_ms`）管插件自己的每一段处理：`Execute` 开始到第一次宿主调用、两次宿主调用之间、最后一次宿主调用返回到 `Execute` 返回；等待上游的时间不计（CONTRACTS §111.4）。
+- `Execute` 不计时：插件在 `Execute` 里自己的工作没有时限，等待形式的交换也没有总时限（所有者决定“超时、限制都去掉”，CONTRACTS §112.16）。挂住的插件由客户端离开、上游超时（管理员配置）或它的进程结束收场，期间这次尝试占着账号和 API Key 的槽位，所以插件要自己保证每一步都会结束、把 `ctx` 传到底。平台调用超时（网关设置 `platform_call_timeout_ms`）只管不等待形式下的 `ClassifyError` 和读断开策略（CONTRACTS §111.4）。
 
 ## 2. 写一个平台插件
 
@@ -61,7 +61,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 `ExecuteDefault` 按两个标志选形式（第 1 节的表）：普通端点 `Relay` 后返回 `ReportHostUsage()`；`extract_usage` 时 `RelayAndWait` 后调插件的 `UsageExtractor`（没有实现、出错或返回空时回落到 `host_usage`）；`task_submission` 时 `RelayAndWait` 后调 `TaskSubmissionParser`（没有实现时在构造之前就报错）；等待形式的上游错误用插件的 `ClassifyError` 分类。`BuildUpstream` 返回 `pluginsdk.Classified(c)` 时（例如 `Fetch` 被上游拒绝），`ExecuteDefault` 回 `ReportClassification(c)`，核心按分类裁决而不是当成插件故障。
 
-自己写 `Execute` 也可以，返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。
+自己写 `Execute` 也可以，返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
 
 可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform` 就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
 
@@ -73,7 +73,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 - 头名一律小写（构造器替你转）；`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，不许出现；空值不写入；同名时权威头生效。
 - `Body(b)` 是最终发出的字节，核心不再改；`Model(m)` 是记进使用记录的上游模型（类型声明了模型可用性时，核心核对它与自己算的上游模型一致，不一致按插件不可用换号）；`ResponseStream(f)` 见 2.5；`ResponseHeaderTimeout(d)`、`TotalTimeout(d)` 只能比账号的生效值更短。代理、TLS、重定向、重试不归插件。
 - `pluginsdk.RequestModel(in)`：请求体的 `model`，没有则 `meta.model`（都已经过账号的模型映射）。`pluginsdk.RequestStream(in)`：`meta.stream` 或请求体的 `"stream": true` 任一为真。
-- 交给插件的请求体在上限之内（网关设置 `max_request_body_mb`，CONTRACTS §111）；中继的请求体最多比“交入的请求体”与“上限”中较大的一个多 1 MiB，够插件加信封、补字段。插件不设自己的大小上限。
+- 请求体上限（网关设置 `max_request_body_mb`，CONTRACTS §111）只管网关读客户端的请求。核心交给插件的请求体可能因为自己的改写比它大，插件交回的中继请求体、取回的请求体也都不检查大小（CONTRACTS §112.16）。插件不设自己的大小上限。
 
 核心不检查插件交回的请求体（不再比对模型、流式标志），这是插件的责任，由一致性套件（第 4 节）检查：模型引用与交入的一致，交入时流式为真交回仍为真，合法 JSON，没有重复键。
 
@@ -83,6 +83,8 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 |---|---|---|
 | 写入时机 | 运营方的透传和覆盖**之后**，运营方改不掉 | 运营方设置**之前** |
 | 运营方能做什么 | 不能改 | 客户端头透传**只补没有的**（不替换默认头）；请求头覆盖（`header_override`）和参数覆盖的请求头部分可以设值或删除 |
+
+核心交给插件的客户端请求头（`inbound_headers`）已经按清单过滤过：账号类型在这个平台上写了 `passHeaders` 就用它，写成 `[]` 就一个都不交，没写才用平台的列表（`AccountPlatform.ClientHeaders`）。交来的头插件要作为默认头转发（一致性第 4 条），不想转发任何客户端头的类型在清单里写 `"passHeaders": []`（claude_oauth、codex 就这样）。
 
 发送时自下而上：插件的默认头 → 透传（账号 `header_passthrough`、`header_override` 的透传键、粘性规则，只补没有的）→ `header_override` 与 `param_override` 的设值和删除 → 插件的权威头 → 没有 Content-Type 时补 `application/json`（CONTRACTS §86.5）。WebSocket 握手同样分层，但不套透传。
 
@@ -122,6 +124,7 @@ if err != nil {
 - 非法 JSON：`Parse` / `Edit` 返回 `jsonedit.ErrInvalid`；交给改写的值也必须是合法 JSON。
 - 重复键：`Delete`、`DeleteFunc` 删掉每一个匹配的成员；`Set` 路径上的某个键在所在对象里出现两次是 `jsonedit.ErrDuplicateKey`，整批不出结果。改写之外的重复键不管（核心本来就以 400 拒绝带重复键的请求体）。
 - 改写的字节重叠（删了一个成员又改它里面的值）是 `jsonedit.ErrConflict`。
+- 同一个成员上的几次改写按调用顺序生效：先 `Set` 后 `Delete` 结果是删掉，先 `Delete` 后 `Set` 结果是设上。
 - 路径是点分隔的普通键，没有下标和通配：数组元素先读（`EachElement`）再按值改（`Replace`、`Object`）。
 
 ### 2.5 签名与响应流格式
@@ -150,11 +153,11 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 
 ### 2.6 取回：`Fetch`
 
-`pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{...})` 发一个有界、非流式的请求，回答交还插件。用于 `Execute` 里的辅助请求和 `Monitor` 里的任务查询。
+`pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{...})` 发一个非流式的请求，回答整份交还插件。用于 `Execute` 里的辅助请求和 `Monitor` 里的任务查询。
 
-- 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读，只比主机名，不含子域）。别的主机 `PERMISSION_DENIED`。
-- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；`Options` 只能收紧超时。
-- 每次 `Execute` 或 `Monitor` 最多 `FetchLimit`（8）次，回答最多 `FetchResponseLimit`（8 MiB，超出截断并置 `truncated`），请求体不超过请求体上限。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值。
+- 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读，只比主机名，不含子域）。别的主机 `PERMISSION_DENIED`。规则是 `manifest.Manifest.FetchHostAllowed`，核心和假宿主共用。
+- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；拒绝 `Host`、hop-by-hop 和代理认证头。超时：`Execute` 里是账号的响应头超时和 `relay_timeout_seconds`（没设就没有整体超时），`Monitor` 里 20 秒；`Options` 只能收紧。
+- 不限次数、不限大小：一次调用取回多少次都行，回答整份交还，核心不置 `truncated`（读不完整是传输错误）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 
 ### 2.7 插件自己解析用量的端点
@@ -171,7 +174,7 @@ func (p *Plugin) ExtractUsage(_ context.Context, in *pluginv1.ExtractUsageReques
 }
 ```
 
-观察是有界的：非流式是整个回答体（超过 `usageMaxBytes` 时为空），流式只有 `usageStreamEvents` 列出的事件；回答本身已经由核心中继给客户端。只有声明端点的插件自己的账号类型能服务这类端点：别的插件的账号类型声明了这样的平台，注册表绑定时把那个平台从它的平台里去掉（CONTRACTS §112.8）。WebSocket 端点不能声明 `usageSource: "plugin"`。
+观察：非流式是整个回答体，流式是 `usageStreamEvents` 列出的每一条事件，默认都不限大小；端点自己声明了 `usageMaxBytes`（不小于 1 KiB）时，非流式超过它就为空、流式超过它就停止收集并置 `truncated`。`usageRequestFields` 声明的请求字段整个交给插件（`fields_omitted` 不再填）。回答本身已经由核心中继给客户端。只有声明端点的插件自己的账号类型能服务这类端点：别的插件的账号类型声明了这样的平台，注册表绑定时把那个平台从它的平台里去掉（CONTRACTS §112.8）。WebSocket 端点不能声明 `usageSource: "plugin"`。
 
 ### 2.8 任务：提交与 `Monitor`
 
@@ -195,14 +198,14 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 		return nil, err
 	}
 	if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); early != nil {
-		return early, nil // transport error, truncated, 404/410, non-2xx
+		return early, nil // transport error, 404/410, non-2xx
 	}
 	return parseTaskState(answer.GetBody()), nil // PENDING or a terminal state
 }
 ```
 
 - 提交：`ExecuteDefault` 做 `RelayAndWait` → `ParseTaskSubmission` → `ReportTask(task)`。解析失败时返回错误：任务不登记，客户端报错，预扣释放。`task.usage.reserve` 是更准的第二次预估，核心登记任务时原子地替换请求前的预扣。插件拿不到任务 ID 和回执。
-- 观察：核心认领到期任务后调 `Monitor`（租约、调度、原账号都归核心）。`Monitor` 只能 `Fetch`、不能中继；结果在返回值里，返回 `nil` 或报错算一次查询失败。终态只在这次调用里有一次完整、成功、未截断的 `Fetch` 时才被接受（`ClassifyPollResponse` 已把截断当成查询失败）。`PollFailure`、`TaskNotFound` 构造对应的结果。
+- 观察：核心认领到期任务后调 `Monitor`（租约、调度、原账号都归核心）。`Monitor` 只能 `Fetch`、不能中继；结果在返回值里，返回 `nil` 或报错算一次查询失败。终态只在这次调用里有一次完整、成功的 `Fetch`（拿到 HTTP 状态、没有传输错误）时才被接受。结果不限大小。`PollFailure`、`TaskNotFound` 构造对应的结果。
 
 ### 2.9 不要做的事
 
@@ -222,23 +225,23 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 |---|---|
 | `preset` | 从 `openai.APIKey`、`anthropic.APIKey`、`gemini.APIKey` 出发 |
 | `baseURL`（`default`、`required`、`stripSuffixes`）、`credentials.keyValidator`、`credentials.texts` | `Spec`（`apikey.Spec`：`DefaultBaseURL`、`RequireBaseURL`、`StripSuffixes`、`KeyValidator`、`Texts`） |
-| `auth`（header / query / none） | `Auth{Header, Query, Prefix}`；都空 = 不带凭证。鉴权头是唯一的权威头 |
+| `auth`（header / none） | `Auth{Header, Prefix}`；`Header` 空 = 不带凭证。鉴权头是唯一的权威头。查询串里的 Key（`Auth.Query`）已删除：没有使用者 |
 | `headers` 的 `set` / `default` / `append` | `Headers []Header`：`standard.Set`、`standard.Default`、`standard.AppendTo`；值是 `standard.Fixed`、`standard.Field(账号字段)` 或自己的函数，空串不写 |
 | 模板 `{credentials.<k>}` | `standard.Field("k")`（先凭证后设置）；`Request.APIKey`、`Request.BaseURL` |
-| `routes`（`path`、`method`、`transport`、`model`、路由 `headers`、`patches`） | `Routes map[string]Route`：`Path`（函数，路径已转义）、`Method`、`WebSocket`、`Model{FromMeta, TrimPrefix, Required, Missing}`、`Headers`、`Edit`（用 `jsonedit`） |
+| `routes`（`path`、`transport`、`model`、路由 `headers`、`patches`） | `Routes map[string]Route`：`Path`（函数，路径已转义）、`WebSocket`、`Model{FromMeta, TrimPrefix, Required, Missing}`、`Headers`、`Edit func(*jsonedit.Doc, *Request)`（在删掉 `FilterFields` 的同一次 `jsonedit` 里接着改）。HTTP 路由一律 POST、WebSocket 路由一律 GET（`Route.Method` 已删除） |
 | `defaultProtocol` | `DefaultProtocol` |
-| `filterFields` | `FilterFields`（每个请求体删掉的路径） |
+| `filterFields` | `FilterFields`（每个请求体删掉的路径）；预设不带，要过滤的类型自己写 |
 | `paramOverride`（清单里的固定改写） | 没有对应：写进 `Edit`。三个预设和五份清单里都没有用过它 |
 | `classify` | `Classify`（`classify.Policy`） |
 | `test`、`models` | `Test`、`Models`（nil 回 `UNIMPLEMENTED`） |
-| 类型的 `passHeaders` | `PassHeaders`；不写就用 `standard.PlatformPassHeaders(平台)` |
+| 类型的 `passHeaders` | 没有对应：只在清单里写。核心按清单过滤后才交给插件，`standard` 把交来的每个客户端头（小写、去空白、空值不写）都作为默认头写出（`Type.PassHeaders`、`PlatformPassHeaders` 已删除） |
 
 两个例子：
 
-- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发，改了这几处：`Spec` 去掉默认地址、必填、去掉 `/openai/v1` 和 `/openai` 后缀、不校验 Key 前缀；`Auth{Header: "api-key"}`；`PassHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；路由逐条给出（v1 类型 `/openai/v1/...`，经典类型 `/openai/deployments/<部署名>/...?api-version=<设置>`，模型必填）；`Models = nil`；保留预设的过滤字段 `service_tier`、`safety_identifier`。两个类型是因为路由不能按账号设置分支。全部验收断言在 `sdk/pluginsdk/providers/openai/azure_test.go`。
+- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发，改了这几处：`Spec` 去掉默认地址、必填、去掉 `/openai/v1` 和 `/openai` 后缀、不校验 Key 前缀；`Auth{Header: "api-key"}`；路由逐条给出（v1 类型 `/openai/v1/...`，经典类型 `/openai/deployments/<部署名>/...?api-version=<设置>`，模型必填）；`Models = nil`；自己写过滤字段 `service_tier`、`safety_identifier`（预设不带）。客户端请求头的名单在清单里：openai 平台的列表去掉 `openai-organization`、`openai-project`。两个类型是因为路由不能按账号设置分支。验收断言在插件自己的 `platform_test.go`、`manifest_test.go`（SDK 里原来那份抄写的测试已删除）。
 - **openai** 的组织与项目：`standard.Set("openai-organization", standard.Field("organization"))`、`project` 同样。账号没填时值为空、不写，客户端经透传带来的头保持原样；填了就以默认头覆盖客户端的（运营方的请求头覆盖仍可改它）。
 
-**顺序变化（与改写前不同的一处）**：过滤字段和路由改写现在在插件里，排在核心的改写（`claude_max_tokens`、账号参数覆盖）**之后**；以前声明式类型的过滤字段在核心里、排在账号参数覆盖之前。运营方在账号的参数覆盖里写了一个被过滤的字段时，以前发给上游，现在被插件删掉。目前只有 azure_openai 的两个类型保留了过滤字段（`service_tier`、`safety_identifier`），所以只在 azure_openai 上可见（CONTRACTS §112.14）。
+**顺序变化（与改写前不同的一处）**：过滤字段和路由改写现在在插件里，排在核心的改写（`claude_max_tokens`、账号参数覆盖）**之后**；以前声明式类型的过滤字段在核心里、排在账号参数覆盖之前。运营方在账号的参数覆盖里写了一个被过滤的字段时，以前发给上游，现在被插件删掉。目前只有 azure_openai 的两个类型写了过滤字段（`service_tier`、`safety_identifier`），所以只在 azure_openai 上可见（CONTRACTS §112.14）。
 
 ## 4. 测试
 
@@ -256,12 +259,12 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 ```
 
 - `Harness.Execute` / `Harness.Monitor` 像核心一样发执行令牌、调用、调用返回后作废令牌；返回 `*Execution`（`Response`、`MonitorResponse`、`Err`、`Relays()`、`RelayErrors()`、`Fetches()`、`Relayed(t)`）。
-- `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`h.Host.ExternalServices`、`h.Host.MaxBodyBytes` 设主机和请求体上限；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、头名、取回次数）。
+- `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`h.Host.Manifest` 是宿主知道的清单（`Start` 时取 `WithManifest`），取回能到哪些主机按它和这次调用的账号决定（`manifest.FetchHostAllowed`），没有清单时只有 `h.Host.ExternalServices` 放行的主机；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、方法和头名按 `httpguts`、HTTP 协议上不许 ws(s) 地址、`Monitor` 的终态要有一次完整成功的取回）；和宿主一样不限请求体、不数取回、不截回答。不经 `Harness` 时用 `h.Host.Begin(in)` / `BeginMonitor(in)` 发令牌。仍与宿主不同的地方写在 `FakeHost` 的注释里。
 - 只测构造时直接调 `p.BuildUpstream(ctx, in)` 比较结果。
 
-**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。现在调用它的是 anthropic、openai、gemini、relay、azure_openai；claude_oauth、codex、vertex、bedrock、volcengine 的测试里已经准备了同样的输入表，还没有接上套件。
+**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。十个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
 
-**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：原声明式引擎的 1498 条录制样例（openai 441、anthropic 343、gemini 371、relay 343）转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Golden(p)` 接到 `goldentest.Run`。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
+**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：原声明式引擎的 1498 条录制样例（openai 441、anthropic 343、gemini 371、relay 343）转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, p)` 回放（它像核心一样先按文件的 `pass_headers` 过滤样例里故意多给的客户端请求头）。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
 
 ## 5. 设置对照表
 
@@ -273,7 +276,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 |---|---|---|---|
 | 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
-| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致（等待形式同样） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（三种策略都一样）；等待形式下插件放弃中继调用（被终止、超时）记为上游中断，不算客户端断开 |
+| 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致（等待形式同样） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（三种策略都一样）；等待形式下插件放弃中继调用（被终止、进程退出）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`（第 2.7 节） | 一致 / WebSocket 不支持 `usageSource: "plugin"`（清单检查拒绝） | `forward.go`、`waited.go`、`sdk/manifest/check/websocket.go` |
 
 流式用量规则的写法会影响断开判定：**输出 token 数要映射在一个指名的终止事件上**（例如 Anthropic 的 `message_delta`、Responses 的 `response.completed`），核心据此判断“最终用量已经送达客户端”（`usagerules.Acc.Final`）。映射在任意事件（`"event": ""`）上的规则不会被当成终止，只能以读到流结束为准。
@@ -285,9 +288,9 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 | 协议转换、账号参数覆盖（请求体）、Claude 默认 max_tokens 内置覆盖、强制流式 | 核心统一，在交给插件**之前**执行；插件拿到的是改写完的请求体 | 一致 / 每轮 | `upstreamBody`、`rewriteBody`；CONTRACTS §84、§84.1、§88。插件在其后的改写（过滤字段、厂商清洗）可以改掉覆盖的结果，见第 3 节的顺序变化 |
 | 账号参数覆盖（请求头）、请求头覆盖 `header_override`、请求头透传 | 核心统一；**插件配合**：按 2.3 把头分成权威头和默认头 | 默认头可被覆盖设值或删除，透传只补没有的；权威头不受影响 / 握手只套覆盖，透传不生效（有意如此，`websocket.go` `dial`）；请求头覆盖与首条消息的改写分开解析，改写失败时握手仍带它，已存的值编译不过时换号 | `upstreamRequest`；CONTRACTS §84、§86.5、§108 |
 | 上游只接受流式（`streamOnly`） | **插件配合**：在账号类型路由上声明；核心在交给插件前把流式写进请求体，插件交回时保持 | 一致 / 不适用 | `streamonly.go`，CONTRACTS §83 |
-| 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限；插件和清单都不能另设 | 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §111 |
-| 平台调用超时（网关设置 `platform_call_timeout_ms`） | 核心统一，按段计时 | 一致 / 每轮的 `Execute` 同样 | `grpcruntime/execute.go`；CONTRACTS §111.4 |
-| 上游整体超时、流式空闲超时（环境变量） | 核心统一；插件只能经 `UpstreamOptions` 收紧 | 一致（等待形式的 `Execute` 另有 6 小时 + 整体超时的总时限）/ 握手固定 30 秒，每轮受流式空闲超时约束 | `upstreamTimeouts`、`newIdleBody` |
+| 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限，只管网关读客户端的请求；插件和清单都不能另设，核心与插件之间也不由它推出任何上限 | 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §111 |
+| 平台调用超时（网关设置 `platform_call_timeout_ms`） | 核心统一，只管不等待形式的 `ClassifyError` 和读断开策略；`Execute` 不计时 | 一致 / 每轮的 `Execute` 同样不计时 | `gateway/settings.go` `platformTimeout`；CONTRACTS §111.4 |
+| 上游整体超时、响应头超时、流式空闲超时（环境变量） | 核心统一；插件只能经 `UpstreamOptions` 收紧；`Fetch` 在 `Execute` 里用同样的响应头超时和整体超时 | 一致（`Execute` 没有另外的总时限）/ 握手没有固定时限（随客户端离开结束），每轮受流式空闲超时约束，不读的一方由心跳 ping 结束 | `upstreamTimeouts`、`newIdleBody`；CONTRACTS §112.16 |
 
 ### 5.3 调度、限流与保护
 
@@ -344,11 +347,11 @@ if !sticky.Enabled { ... }
 | openai、gemini、relay | `standard` 库加预设；openai 另有 WebSocket（`openai.responses_ws`） | 全部在库和预设里；鉴权头之外都是默认头 |
 | anthropic | 在已有进程（模型目录路由）里嵌入 `standard` 的 `apikey` 类型 | 同上 |
 | azure_openai（目录 `plugins/azure-openai`，市场） | `standard` 库，两个类型（v1 与按部署） | 同上；错误分类用 openai 预设的策略 |
-| claude_oauth | 自己的 `BuildUpstream` | 额度头；全部头保持权威 |
-| vertex（市场） | 自己的 `BuildUpstream` | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6） |
-| bedrock（市场；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 自己的 `BuildUpstream`：把 Messages 请求装进 InvokeModel 信封，清洗 Bedrock 不接受的字段（`tools[].custom`、`cache_control.scope` 等），AK/SK 与临时凭证类型自己做 SigV4 签名，流式请求给 `response_stream` | `ClassifyError`；账号测试请求同样自己签 |
-| codex | 自己的 `BuildUpstream`，HTTP 与 WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16）；全部头保持权威 |
-| volcengine | `ExecuteDefault`：普通端点不等待；两个视频提交端点是任务提交，等待并返回 `task`；任务观察用 `Monitor` | `ClassifyError`、`EstimateUsage`（视频任务）、`TaskSubmissionParser`、`TaskMonitor` |
+| claude_oauth | 自己的 `BuildUpstream`；`messages` 发到 `/v1/messages`，`count_tokens` 发到 `/v1/messages/count_tokens`，两者都带 OAuth 的 `anthropic-beta` | `ClassifyError` 用 Anthropic 的策略（`providers/anthropic.Policy`，读 `error.type`），前面加一条：401 按“OAuth 令牌过期或无效”禁用；额度头；全部头保持权威；两个类型 `passHeaders: []`，不转发任何客户端头（与已发布的 0.2.5 相同） |
+| vertex（市场） | 自己的 `BuildUpstream`；把核心交来的 `user-agent`、`x-goog-api-client` 作为默认头转发；没有 `externalServices`（不取回） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6） |
+| bedrock（市场；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 自己的 `BuildUpstream`：把 Messages 请求装进 InvokeModel 信封，清洗 Bedrock 不接受的字段（顶层的 `model`、`stream`、`metadata`、`service_tier`、`inference_geo`、`speed`、`provider`，以及 `tools[].custom`、`cache_control.scope` 等），AK/SK 与临时凭证类型自己做 SigV4 签名，流式请求给 `response_stream`；没有 `externalServices` | `ClassifyError`；账号测试请求同样自己签；一致性套件的两处例外见第 4 节 |
+| codex | 自己的 `BuildUpstream`，HTTP 与 WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16）；全部头保持权威；两个类型 `passHeaders: []`，插件自己写出它发的每个头 |
+| volcengine | `ExecuteDefault`：普通端点不等待；两个视频提交端点是任务提交，等待并返回 `task`；任务观察用 `Monitor`（任务查询由核心从自己的快照回答，不调 `Execute`）。anthropic 平台只服务 `messages`（`endpoints: ["messages"]`），`count_tokens` 是核心的本地估算 | `ClassifyError`、`EstimateUsage`（视频任务）、`TaskSubmissionParser`、`TaskMonitor` |
 
 ## 8. 新插件自查
 

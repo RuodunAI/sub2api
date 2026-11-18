@@ -91,19 +91,18 @@ func TestFailurePolicyWaitedTakesPluginClassification(t *testing.T) {
 	require.Equal(t, "quota window full", e.accounts.disabled[1])
 }
 
-// A waited execution may span the upstream exchange: its context outlives
-// the longest relay_timeout_seconds by 6 h, and the platform call timeout
-// plays no part in it.
-func TestExecuteWaitedTimeLimits(t *testing.T) {
+// A waited execution may span the upstream exchange: its context has no
+// deadline at all, whatever relay_timeout_seconds and the platform call
+// timeout say.
+func TestExecuteWaitedHasNoTimeLimit(t *testing.T) {
 	e, p := waitedEnv(t, core.DisconnectPrecharge, &upstreamRule{delay: 300 * time.Millisecond})
 	e.gw.d.Environment = fakeEnvironment{global: core.EnvironmentValues{core.EnvVarRelayTimeoutSeconds: 86400}}
 	gw := noQueueSettings()
 	gw.PlatformCallTimeoutMs = 100
 	e.setSettings(gw, StickySettings{})
-	start := time.Now()
 	r := e.messages(body(testModel, false))
 	require.Equal(t, 200, r.status, string(r.body))
-	require.WithinDuration(t, start.Add(30*time.Hour), p.deadline.Load().(time.Time), time.Minute)
+	require.Nil(t, p.deadline.Load(), "the waited Execute has a deadline")
 	require.True(t, e.record().Success)
 }
 

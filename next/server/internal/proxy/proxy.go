@@ -90,14 +90,13 @@ func New(db *store.DB, cipher *secret.Cipher, bus core.Bus, opts Options) *Servi
 	if opts.RecheckInterval <= 0 {
 		opts.RecheckInterval = 30 * time.Second
 	}
-	dialer := netguard.Dialer(15*time.Second, opts.AllowPrivate)
+	dialer := netguard.Dialer(0, opts.AllowPrivate)
 	direct := &http.Client{Transport: &http.Transport{
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}}
 	return &Service{
@@ -170,19 +169,22 @@ func (s *Service) changed(ctx context.Context, id int64) {
 
 // ---------------------------------------------------------------- directory
 
-// newTransport builds an upstream transport for the given proxy URL. Unless
+// newTransport builds an upstream transport for the given proxy URL. It sets
+// no dial or TLS handshake timeout of its own: the operating system's
+// connect timeout applies, and the caller's timers (the gateway's response
+// header and relay timeouts, which start before the dial) bound the rest.
+// Unless
 // allowPrivate, the dial to the proxy (socks5 included: it goes through
 // DialContext too) is refused when the resolved address is not public, so a
 // host name pointing inside the deployment's network is caught as well.
 func newTransport(proxyURL *url.URL, allowPrivate bool) *http.Transport {
-	dialer := netguard.Dialer(15*time.Second, allowPrivate)
+	dialer := netguard.Dialer(0, allowPrivate)
 	tr := &http.Transport{
 		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          256,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
 	if proxyURL != nil {

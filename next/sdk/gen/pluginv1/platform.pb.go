@@ -473,11 +473,12 @@ type EstimateUsageRequest struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Meta             *RequestMeta      `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
-	Fields           map[string]string `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
-	FieldsOmitted    []string          `protobuf:"bytes,3,rep,name=fields_omitted,json=fieldsOmitted,proto3" json:"fields_omitted,omitempty"`
-	PreConsumeTokens int64             `protobuf:"varint,4,opt,name=pre_consume_tokens,json=preConsumeTokens,proto3" json:"pre_consume_tokens,omitempty"`
-	Prompt           string            `protobuf:"bytes,5,opt,name=prompt,proto3" json:"prompt,omitempty"`
+	Meta   *RequestMeta      `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
+	Fields map[string]string `protobuf:"bytes,2,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	// No longer filled: the host leaves no declared value out.
+	FieldsOmitted    []string `protobuf:"bytes,3,rep,name=fields_omitted,json=fieldsOmitted,proto3" json:"fields_omitted,omitempty"`
+	PreConsumeTokens int64    `protobuf:"varint,4,opt,name=pre_consume_tokens,json=preConsumeTokens,proto3" json:"pre_consume_tokens,omitempty"`
+	Prompt           string   `protobuf:"bytes,5,opt,name=prompt,proto3" json:"prompt,omitempty"`
 }
 
 func (x *EstimateUsageRequest) Reset() {
@@ -780,7 +781,10 @@ func (*ExecuteResponse_HostUsage) isExecuteResponse_Report() {}
 func (*ExecuteResponse_Task) isExecuteResponse_Report() {}
 
 // HostUsage is the explicit "use the host's reading", so that it cannot be
-// confused with a response that states nothing.
+// confused with a response that states nothing. On an endpoint whose usage
+// the plugin reads (usage.source plugin), a reading of a served answer that
+// holds no usage at all is no fact either: the request is unreported (a
+// free usage_unreported record), never billed as zero.
 type HostUsage struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -1853,16 +1857,17 @@ func (x *StreamEvent) GetData() []byte {
 	return nil
 }
 
-// ExtractUsageRequest is the bounded observation of one successful upstream
-// answer, handed to the plugin by a HostService.RelayUpstream that waited
+// ExtractUsageRequest is the observation of one successful upstream answer,
+// handed to the plugin by a HostService.RelayUpstream that waited
 // (RelayUpstreamResponse.observation). It is never the whole stream:
-//   - non-streaming: the whole body, but only while the body fits in
-//     usageMaxBytes; a larger body is not handed over at all (half a JSON
-//     document parses into wrong numbers, which is worse than none);
-//   - streaming: only the events whose name the endpoint listed in
-//     usageStreamEvents, in arrival order, bounded by a host event count
-//     cap and by usageMaxBytes. Collection stops at the cap and `truncated`
-//     says so; the host never buffers the whole stream.
+//   - non-streaming: the whole body, of any size. Only when the endpoint
+//     sets its own usageMaxBytes is a larger body not handed over at all
+//     (half a JSON document parses into wrong numbers, which is worse than
+//     none);
+//   - streaming: every event whose name the endpoint listed in
+//     usageStreamEvents, in arrival order, of any number and size. Only
+//     when the endpoint sets usageMaxBytes does collection stop at it, and
+//     `truncated` says so; the host never buffers the whole stream.
 type ExtractUsageRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -1878,13 +1883,13 @@ type ExtractUsageRequest struct {
 	// Upstream response headers, lower-cased.
 	Headers map[string]string `protobuf:"bytes,4,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	// Non-streaming: the whole response body. Empty when the body was larger
-	// than usageMaxBytes and when the response streamed.
+	// than the endpoint's own usageMaxBytes and when the response streamed.
 	Body []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 	// Streaming: the events matching usageStreamEvents, in arrival order.
 	// Empty for a non-streaming response.
 	Events []*StreamEvent `protobuf:"bytes,6,rep,name=events,proto3" json:"events,omitempty"`
 	// True when the host stopped collecting events before the stream ended
-	// (the event count cap or usageMaxBytes was reached), so the plugin knows
+	// (the endpoint's own usageMaxBytes was reached), so the plugin knows
 	// it is looking at a prefix. Never set for a non-streaming response: an
 	// oversized body is not handed over at all.
 	Truncated bool `protobuf:"varint,7,opt,name=truncated,proto3" json:"truncated,omitempty"`
@@ -1895,15 +1900,11 @@ type ExtractUsageRequest struct {
 	// nothing about the size of the job, while the request carries the
 	// resolution and the duration an estimate has to be made from.
 	//
-	// Only declared paths travel, a value over the per-value cap is left out, and once the total
-	// budget is spent the remaining declared paths are left out too (both caps
-	// are constants of the SDK, manifest/check). A left-out path is named in
-	// fields_omitted so the plugin can tell "the client did not send it" from
-	// "the host would not carry it" - without that a whitelisted field that
-	// happens to be huge would read as absent and be estimated as the default.
+	// Only declared paths travel, each value whole whatever its size.
 	// Empty for endpoints that declare no usageRequestFields.
-	Fields        map[string]string `protobuf:"bytes,8,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
-	FieldsOmitted []string          `protobuf:"bytes,9,rep,name=fields_omitted,json=fieldsOmitted,proto3" json:"fields_omitted,omitempty"`
+	Fields map[string]string `protobuf:"bytes,8,rep,name=fields,proto3" json:"fields,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	// No longer filled: the host leaves no declared value out.
+	FieldsOmitted []string `protobuf:"bytes,9,rep,name=fields_omitted,json=fieldsOmitted,proto3" json:"fields_omitted,omitempty"`
 }
 
 func (x *ExtractUsageRequest) Reset() {
@@ -2030,13 +2031,8 @@ type UsageReport struct {
 	ErrorType    string `protobuf:"bytes,4,opt,name=error_type,json=errorType,proto3" json:"error_type,omitempty"`
 	ErrorMessage string `protobuf:"bytes,5,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
 	// Free-form JSON object stored in usage_logs.plugin_detail and shown in
-	// the console's usage detail. At most 4 KiB.
-	//
-	// The column is jsonb, so an over-long document cannot be stored as a
-	// prefix - half a JSON document is not a JSON document. The host therefore
-	// replaces it with {"_truncated":true,"_bytes":N} and warns; a document
-	// that is not a JSON object at all becomes {} and warns. Keep it small and
-	// keep it an object.
+	// the console's usage detail, of any size (the column is jsonb). A
+	// document that is not a JSON object becomes {} and warns.
 	DetailJson string `protobuf:"bytes,6,opt,name=detail_json,json=detailJson,proto3" json:"detail_json,omitempty"`
 	// Set when this request only STARTED work upstream whose real usage is not
 	// known yet - a video generation job, say. The host prices the estimate,

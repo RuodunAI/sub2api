@@ -295,6 +295,8 @@ type qUpstream struct {
 	mu     sync.Mutex
 	bodies [][]byte
 	status int
+	// text replaces "hello" in a non-streaming answer.
+	text string
 }
 
 func newQUpstream(t *testing.T) *qUpstream {
@@ -303,8 +305,11 @@ func newQUpstream(t *testing.T) *qUpstream {
 		b, _ := io.ReadAll(r.Body)
 		q.mu.Lock()
 		q.bodies = append(q.bodies, b)
-		status := q.status
+		status, text := q.status, q.text
 		q.mu.Unlock()
+		if text == "" {
+			text = "hello"
+		}
 		if status != 0 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -313,7 +318,7 @@ func newQUpstream(t *testing.T) *qUpstream {
 		}
 		if !gjson.GetBytes(b, "q_stream").Bool() {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"q_model":"q-up","q_text":"hello","q_usage":{"in":13,"out":17}}`))
+			_, _ = w.Write([]byte(`{"q_model":"q-up","q_text":"` + text + `","q_usage":{"in":13,"out":17}}`))
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -399,6 +404,20 @@ func TestConvertedNonStream(t *testing.T) {
 	}
 	if e.pricer.calls != 1 {
 		t.Fatalf("price resolved %d times", e.pricer.calls)
+	}
+}
+
+// A converted non-streaming answer over 32 MiB (the read cap it once had)
+// is converted whole and billed from its usage.
+func TestConvertedLargeNonStream(t *testing.T) {
+	e, q, _ := convEnv(t, nil)
+	q.text = strings.Repeat("x", 33<<20)
+	r := e.messages(body(testModel, false))
+	if r.status != 200 || len(r.json().Get("content.0.text").String()) != 33<<20 {
+		t.Fatalf("converted response %d, %d bytes", r.status, len(r.body))
+	}
+	if rec := e.record(); !rec.Success || rec.Tokens != (core.UsageTokens{Input: 13, Output: 17}) {
+		t.Fatalf("record %+v", rec)
 	}
 }
 

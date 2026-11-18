@@ -16,20 +16,6 @@ import (
 // plugin's request naming one is refused.
 var transportHeaders = map[string]bool{"content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
 
-// maxRequestBody is the request body limit of the moment.
-func (h *hostServer) maxRequestBody() int64 {
-	return core.MaxRequestBodyBytes(h.i.rt.o.RequestBodyLimit)
-}
-
-// checkBody refuses a body above limit bytes: the request body of a fetch,
-// against the request body limit of the moment.
-func checkBody(body []byte, limit int64) error {
-	if int64(len(body)) > limit {
-		return status.Errorf(codes.InvalidArgument, "body of %d bytes exceeds the limit of %d bytes", len(body), limit)
-	}
-	return nil
-}
-
 // checkUpstreamRequest is the part of validating a relay that needs nothing
 // of the gateway: the request is there and leaves the transport's headers
 // alone. Its body has no bound here: the client's body was admitted by the
@@ -123,9 +109,6 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 	}()
 	if sc.client.Fetch == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this call has no fetch capability")
-	}
-	if err := checkBody(in.GetBody(), h.maxRequestBody()); err != nil {
-		return nil, err
 	}
 	if err := h.requireFetchHost(sc, in.GetUrl()); err != nil {
 		return nil, err

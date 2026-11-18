@@ -29,15 +29,14 @@ func (s *Service) BeginExecution(ctx context.Context, in core.ExecutionIntent) e
 }
 
 func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.UsageRecord, observation []byte) error {
-	if rec == nil || len(observation) > 512<<10 {
+	if rec == nil {
 		return errors.New("invalid execution observation")
 	}
+	// Any size is stored: record is jsonb and observation bytea, both
+	// TOASTed (compressed, out of line) when large.
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		return err
-	}
-	if len(raw) > 512<<10 {
-		return errors.New("execution facts exceed limit")
 	}
 	res := execution(store.G(ctx, s.db.Gorm), id).Where("state=? AND request_id=? AND account_id=?", core.ExecutionStateIntent, rec.RequestID, rec.AccountID).
 		Updates(map[string]any{"state": core.ExecutionStateObserved, "record": store.Bytes(raw), "observation": store.Bytes(observation),

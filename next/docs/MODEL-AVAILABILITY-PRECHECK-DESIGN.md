@@ -133,7 +133,7 @@ AccountQuotaView(ctx context.Context, ids []int64) (core.QuotaView, error)
 
 - 全部候选被拦只可能是全部 `UNAVAILABLE`，返回 429 `model_quota_exhausted`。所有被拦账号都有未来 retry_at 时带 `Retry-After`（沿用 `:128-131`）。预检本身不再产生 503。
 - `UNKNOWN` 放行的理由：0.1.112 后它只表示核心与插件之间的契约不一致，不反映账号状态。拦下来会让一个 bug 把整个账号类型变成 503。插件要拦必须明确返回 `UNAVAILABLE`。已核对：没有其他插件声明 `modelAvailability`，不存在依赖 `UNKNOWN` 拦截的插件。
-- 模型名校验前移到核心：现在核心对模型名只检查非空（`gateway/pipeline.go:427-434`，参数来源 TrimSpace，JSON 路径来源原样），ccgateway 的 `invalid_candidate` 实际上是唯一拦截空白和控制字符的地方。`UNKNOWN` 放行后，核心在解析请求时对含空白或控制字符、超过 256 字节或非法 UTF-8 的模型名直接回 400 `invalid_request_error`，不进入选号。
+- 模型名校验前移到核心：现在核心对模型名只检查非空（`gateway/pipeline.go:427-434`，参数来源 TrimSpace，JSON 路径来源原样），ccgateway 的 `invalid_candidate` 实际上是唯一拦截空白和控制字符的地方。`UNKNOWN` 放行后，核心在解析请求时对含空白或控制字符、超过 256 字节或非法 UTF-8 的模型名直接回 400 `invalid_request_error`，不进入选号。（256 字节的长度限制在 2026-11-18 转发 V2 收尾时删除，模型名不限长度，CONTRACTS §15.2、§112.16；字符规则照旧。）
 - 客户端断开（父 ctx 结束）时不放行，直接以 canceled 结束，不再走 `admitRate` 占用限速名额。
 
 ### 5.2 时限

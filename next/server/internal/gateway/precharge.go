@@ -16,7 +16,8 @@ import (
 )
 
 // pluginPromptBytes caps the prompt text a plugin estimator is given (CONTRACTS
-// §63): a gRPC message stays far below its 4 MiB limit.
+// §63): an estimate needs no more, and it keeps the EstimateUsage call small. It
+// cuts a derived copy only; the request itself is not refused.
 const pluginPromptBytes = 1 << 20
 
 // localTokenizerEstimate is the fallback estimate when the plugin does not

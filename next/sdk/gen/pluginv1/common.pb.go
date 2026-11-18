@@ -555,8 +555,7 @@ type RequestMeta struct {
 	ClientProtocol string `protobuf:"bytes,9,opt,name=client_protocol,json=clientProtocol,proto3" json:"client_protocol,omitempty"`
 	// Path parameters of the matched endpoint pattern, e.g. "model" for
 	// /v1beta/models/:model:generateContent. Empty when the pattern has none.
-	// At most 32 entries (lowest keys by name when more), keys cut to 64 bytes
-	// and values to 512 bytes on a UTF-8 boundary.
+	// Every entry as the client sent it, of any size; invalid UTF-8 dropped.
 	PathParams map[string]string `protobuf:"bytes,10,rep,name=path_params,json=pathParams,proto3" json:"path_params,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	// Query parameters the endpoint declared in request.queryParams, and only
 	// those: the plugin states what it needs and the host hands over nothing
@@ -568,9 +567,7 @@ type RequestMeta struct {
 	// Names are matched case-insensitively, so a declared "alt" also picks up
 	// "?Alt=sse"; the key is the name as the client sent it. Only the first
 	// value of a repeated parameter is passed. Empty when the endpoint declared
-	// none. Bounded exactly like path_params: at most 32 entries (lowest keys
-	// by name when more), keys cut to 64 bytes and values to 512 bytes on a
-	// UTF-8 boundary, invalid UTF-8 dropped.
+	// none. Every declared entry of any size, invalid UTF-8 dropped.
 	Query map[string]string `protobuf:"bytes,11,rep,name=query,proto3" json:"query,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	// Resolved environment variables (CONTRACTS §74.3): the nearest of
 	// account, group, global and process layers for every key some layer

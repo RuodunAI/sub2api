@@ -41,7 +41,7 @@ func hostEnv(t *testing.T, o Options, grants registry.Grants) *hostServer {
 	}
 	t.Cleanup(func() { _ = pkg.Close() })
 	o.Node, o.DataDir = staticNode{"n", "b"}, t.TempDir()
-	o.Concurrency = Concurrency{Hot: 4, Console: 4, Background: 4, Execute: 4}
+	o.Concurrency = Concurrency{Hot: 4, Console: 4, Background: 4}
 	rt := &Runtime{o: o, log: slog.Default()}
 	return &hostServer{i: newInstance(rt, pkg, "", "", &settings{configJSON: "{}", grants: grants})}
 }

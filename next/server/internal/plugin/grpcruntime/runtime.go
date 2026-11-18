@@ -80,10 +80,6 @@ type Options struct {
 	Notifier core.Notifier
 	// Users serves HostService.GetUsers; nil makes it fail with UNAVAILABLE.
 	Users core.UserDirectory
-	// RequestBodyLimit is the gateway's request body limit of the moment
-	// (the gateway settings). It bounds the bodies of RelayUpstream and
-	// ExecuteHTTP. Nil: core.DefaultMaxRequestBodyBytes.
-	RequestBodyLimit core.RequestBodyLimit
 
 	HostVersion   string
 	DataDir       string // plugin work directories live under DataDir/<key>/work
@@ -127,11 +123,9 @@ type Concurrency struct {
 	// Background: jobs, events, broadcasts, monitors, refresh and data
 	// migrations. Default 8.
 	Background int
-	// Execute: platform Execute, held while the plugin builds the request
-	// and, for a relay that waits, for the whole upstream exchange. The
-	// account and API key slots of the core bound real concurrency; this is
-	// only a safety cap. Default 1024.
-	Execute int
+	// Platform Execute calls have no class limit: the account and API key
+	// slots of the core bound their concurrency. They are still counted in
+	// flight, so a drain waits for them.
 }
 
 func (c Concurrency) withDefaults() Concurrency {
@@ -143,7 +137,6 @@ func (c Concurrency) withDefaults() Concurrency {
 	def(&c.Hot, 64)
 	def(&c.Console, 16)
 	def(&c.Background, 8)
-	def(&c.Execute, 1024)
 	return c
 }
 

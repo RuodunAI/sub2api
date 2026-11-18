@@ -12,15 +12,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
-// Limits of the fetch form, constants of the host (host.proto, ExecuteHTTP).
-const (
-	// FetchLimit is the number of Fetch calls one Execute or Monitor may make.
-	FetchLimit = 8
-	// FetchResponseLimit caps the answer body of one Fetch; a longer answer
-	// comes back cut, with truncated set.
-	FetchResponseLimit = 8 << 20
-)
-
 // maxMessageBytes is gRPC's hard limit of one message, the receive limit of
 // every plugin server and of the calls back to the host. Plugins set no
 // size limit: the gateway's request body limit is the host's to enforce,
@@ -127,7 +118,7 @@ func relay(ctx context.Context, operation string, request *pluginv1.UpstreamRequ
 	return out, nil
 }
 
-// Fetch makes one bounded, non-streaming HTTP exchange through the host and
+// Fetch makes one non-streaming HTTP exchange through the host and
 // returns the answer to the plugin: the auxiliary requests of an Execute
 // (token exchange, upload, preflight) and the upstream query of a Monitor.
 // The host sends it through the account's proxy behind its SSRF guard,
@@ -135,9 +126,9 @@ func relay(ctx context.Context, operation string, request *pluginv1.UpstreamRequ
 // The URL's host must be one of the manifest's externalServices (or a
 // subdomain of one) or the host of one of the call's account's own upstream
 // addresses, the values of its type's upstreamFields
-// (manifest.Manifest.FetchHostAllowed). At most FetchLimit per call; the
-// answer body is cut at FetchResponseLimit (truncated set). A transport
-// failure is not an error: it comes back in
+// (manifest.Manifest.FetchHostAllowed). The host neither counts the fetches
+// of a call nor cuts their answers: the answer body comes back whole. A
+// transport failure is not an error: it comes back in
 // transport_error with status 0. No net permission is needed.
 //
 // ctx is the context of the Execute or Monitor call or a child of it. The

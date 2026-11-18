@@ -970,3 +970,39 @@ func TestMigration0107RequestBodyLimitSetting(t *testing.T) {
 		})
 	}
 }
+
+// 0108 makes every column that stores a model name text (no length), keeps
+// the character set of a price's model id, and recreates the rollup trigger
+// that names the model columns. A rerun changes nothing.
+func TestMigration0108ModelNameText(t *testing.T) {
+	const id = "0108_model_name_text.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	state := func() string {
+		return read(`SELECT string_agg(table_name || '.' || column_name || '=' || data_type, ' ' ORDER BY table_name, column_name)
+			FROM information_schema.columns WHERE table_schema = current_schema()
+			AND (table_name, column_name) IN (('usage_logs', 'model'), ('usage_logs', 'upstream_model'), ('usage_hourly', 'model'),
+				('usage_hourly', 'upstream_model'), ('price_rules', 'model'), ('model_prices', 'model'))`) + " | " +
+			read(`SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = 'model_prices_model_id_chk'`) + " | " +
+			read(`SELECT count(*)::text FROM pg_trigger WHERE tgname = 'usage_hourly_mark_update'`)
+	}
+	const want = "model_prices.model=text price_rules.model=text usage_hourly.model=text usage_hourly.upstream_model=text" +
+		" usage_logs.model=text usage_logs.upstream_model=text | CHECK ((model ~ '^[A-Za-z0-9._:/@+-]+$'::text)) | 1"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	_, err := db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+}

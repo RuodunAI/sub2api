@@ -1,6 +1,6 @@
 # 平台插件转发 V2：一条请求路径、核心提供网络客户端、用量只走返回值（合并设计稿）
 
-2026-11-18。分支 `feat/forwarding-v2`（从本地 develop `9361c0417` 开出）。**已实现**（与协议绑定合并后的分支头 `26950a969`）。实现期间所有者又做了几项决定（第 2 节 D24–D33），正文相关各节已按它们改写；改写处的旧说法不再成立。现行契约以 CONTRACTS §111、§112 为准，插件写法见 PLUGIN-DEVELOPMENT.md；代码与本文不一致而所有者没有决定的地方列在第 17 节。
+2026-11-18。分支 `feat/forwarding-v2`（从本地 develop `9361c0417` 开出）。**已实现**（与协议绑定合并后的分支头 `26950a969`）。实现期间所有者又做了几项决定（第 2 节 D24–D33），之后一轮审查修正中又定了 D34（写死的超时与限制全部去掉），正文相关各节已按它们改写；改写处的旧说法不再成立（第 8.2、8.4 节保留了原设计，并注明 D34 怎样改了它）。现行契约以 CONTRACTS §111、§112 为准，插件写法见 PLUGIN-DEVELOPMENT.md；代码与本文不一致而所有者没有决定的地方列在第 17 节。
 
 本文取代两份草稿。草稿在实现完成、CONTRACTS §112 写好后已从目录删除（第 11.6 节），原文在 `26950a969` 里（`git show 26950a969:next/docs/<文件名>`）；下文引用它们的章节号指那份原文，其中的结论凡与 CONTRACTS §112 不同的以 CONTRACTS 为准：
 
@@ -47,7 +47,7 @@
 | D9 | A6：提交失败不落库重试；A7：插件拿不到任务 ID 和回执 | 用量 | 已定 |
 | D10 | 主架构是“核心提供网络客户端”：插件不开套接字，核心的客户端默认套上**账号**的配置（代理、传输设置、SSRF、允许的主机（取回的主机规则见 D27）、限流与并发、运营方的请求头设置），插件的显式选项只能在账号配置允许的范围内，不能绕过代理 | 转发、主控 1 | 已定 |
 | D11 | 客户端分两级：(a) HTTP，第一阶段，即本次改动；(b) 经核心、套账号代理的 TCP 连接（裸套接字、WebSocket、gRPC），以后的阶段，不在本次改动里。**UDP 不做**：没有需求，现有隧道只有 TCP（5.6） | 主控 2；最终答复 3 | 已定 |
-| D12 | B7：插件不设大小上限。请求体上限**只有一处**：系统设置 → 网关设置里的 `max_request_body_mb`。同名的环境变量（全局层、分组层、进程环境变量）和清单的 `request.maxBodyBytes` 删除，这条路径上没有别的请求体大小限制；核心据它推出内部传输上限（8.1、8.2） | 主控 3；最终答复 1（“系统设置-网关设置里面配置就行了，其他地方不要限制”） | 已定 |
+| D12 | B7：插件不设大小上限。请求体上限**只有一处**：系统设置 → 网关设置里的 `max_request_body_mb`。同名的环境变量（全局层、分组层、进程环境变量）和清单的 `request.maxBodyBytes` 删除，这条路径上没有别的请求体大小限制。原设计让核心据它推出内部传输上限（8.1、8.2），D34 取消了这一步：它只管网关读客户端请求的地方 | 主控 3；最终答复 1（“系统设置-网关设置里面配置就行了，其他地方不要限制”） | 已定；D34 修订 |
 | D13 | B8：不用厂商 SDK 客户端，不做 RoundTripper 适配器。只用 AWS 的 `aws/signer/v4`、`aws/protocol/eventstream` 和 Vertex 断言用的 golang-jwt（官方 SDK 只作 e2e 测试客户端，D29） | 主控 4 | 已定 |
 | D14 | B10：“声明字段加 `BodyPatch`”模式删除，所有平台插件改完，不留双路径；`common.proto` 的“请求体从不整个发给插件”删除 | 主控 5 | 已定 |
 | D15 | B9、B11：收完整请求体不需要权限；安装审查页加一句固定说明 | 主控 6 | 已定 |
@@ -64,11 +64,12 @@
 | D26 | 插件内存（D23 的细化）：默认不限；只有管理员给插件设 `memory_mb` 或设节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB`（默认不封顶）时才有上限；清单 `resources.memoryMB` 只是插件的自述。没有在途字节准入，没有 `max_request_body_safe_mb` 警告 | 所有者，实现期间 | 已定、已实现 |
 | D27 | 取回的主机：清单 `externalServices` 之一（或子域），**或者是本账号自己的上游地址字段（`upstreamFields`）里的主机**；照样过 SSRF 规则和账号代理 | 所有者，实现期间 | 已定、已实现 |
 | D28 | SDK 里只有一个 JSON 改写工具 `sdk/pluginsdk/jsonedit`，插件不写自己的编辑器 | 所有者，实现期间 | 已定、已实现 |
-| D29 | 插件和核心都不用厂商的 SDK 客户端（只用 AWS 的签名、event stream 库和 golang-jwt）；OpenAI、Anthropic 的官方 SDK 只允许用作 e2e 测试的客户端（D13 的补充；`26950a969` 的 e2e 还没有用它们） | 所有者，实现期间 | 已定、已实现 |
+| D29 | 插件和核心都不用厂商的 SDK 客户端（只用 AWS 的签名、event stream 库和 golang-jwt）；OpenAI、Anthropic 的官方 SDK 只允许用作 e2e 测试的客户端（D13 的补充；`26950a969` 的 e2e 还没有用它们，之后的 AC36 用 openai-go 和 anthropic-sdk-go 作客户端） | 所有者，实现期间 | 已定、已实现 |
 | D30 | 不做“每个插件 10 分钟内 20 次未上报就通知运营方”（核心没有运营方告警渠道的设置），推迟；每次未上报写一条 ERROR 日志。TCP 级（5.5）是以后的阶段，UDP 不做 | 所有者，实现期间 | 已定：推迟 |
 | D31 | 任务提交没有返回 `task`：走任务失败的路径（零费用记录、释放预扣、客户端报错），不算“未上报” | 所有者，实现期间 | 已定、已实现 |
 | D32 | 协议转换留在核心网关（`internal/gateway/convert`），插件收到的是转换后的请求体（D18 的确认） | 所有者，实现期间 | 已定、已实现 |
 | D33 | 跨插件规则（4.3）只在注册表绑定时执行一次：被跳过的平台从绑定的账号类型的平台里去掉（记 ERROR 日志），清单检查另报 `foreign_facts` | 所有者，实现期间 | 已定、已实现 |
+| D34 | **写死的超时与限制全部去掉**：一次请求上留下的界限只有管理员配置的，加上安全、钱算对和防止进程崩溃的检查。删除：插件在 `Execute` 里的分段计时（`segment_timeout`，8.4）、等待形式的总时限（6 小时加整体超时）和网关在观察后约 44.5 分钟的切断、等待形式缓冲的 64 MiB、取回的次数（8）与大小（回答 8 MiB、URL、请求头、方法名单、请求体）和未设置整体超时时的 5 分钟默认、`Monitor` 结果与执行观察的 512 KiB、宿主小调用的 4 MiB 与中继请求体的界限（8.2）、WebSocket 的上游消息 64 MiB / 每 Key 64 个会话 / 握手 30 秒 / 写 1 分钟、写客户端 60 秒、代理拨号与 TLS 的 15 秒、每实例 1024 个并发 `Execute`、`path_params` / `query` 的截断、SSE 单行 16 MiB、协议转换与只流式上游的 32 MiB、读用量的 32 MiB 缓冲（超出按 0 计费）、读用量插件看到的默认预算、模型名长度。代价是以前带着明确错误被拒绝的东西，现在表现为内存占用、存储增长或一个一直等着的请求；逐项的代价和仍然有效的界限见 CONTRACTS §112.16 | 所有者（“超时、限制都去掉”），审查修正期间 | 已定、已实现 |
 
 ## 3. 现状
 
@@ -183,7 +184,9 @@
 
 这条支路保留今天执行路径的机制，因为它们正是为“事实由插件给出”服务的：执行记录三次写入（意图、观察、提交）、非 SSE 回答先缓冲后发布、任务登记的原子性。它与今天的差别只有 D1 到 D3：事实从返回值来，没有回调，没有兜底。
 
-- 没有合法的返回（没填、填错种类、`Execute` 报错、超时、插件崩溃）且观察已落库：**未上报**。同步请求写一条零费用记录（`success=false`、`error_type=usage_unreported`、`billing_status=free`、`anomalies.usage_extract="unreported"`），同一事务里释放预扣，执行行改 `unreported`；非流式回答不发、回 503，流式内容已发出、连接异常结束。任务提交没有 `task`：任务不登记，客户端报错，预扣释放。细节照用量草稿第 4 节。
+**实现（审查修正后）**：恢复按存活判断。网关从观察落库起每 15 秒续一次执行行（`ExecutionRecords.RenewExecution`），恢复扫描只关闭 2 分钟没有续期的 `observed` 行（`core.ExecutionRenewInterval`、`ExecutionStaleAfter`）：活着的执行没有时长上限，崩溃节点的预扣约 3 分钟内释放。缓冲的回答是否发布只看转发本身是否完成，不看插件在 2xx 回答里读出的业务错误；观察没能落库时请求自己的零费用记录照常写、预扣立即释放；任务提交报失败前先确认提交是否已落库；插件选了 `host_usage` 而核心读数完全为空时按未上报处理（不等待形式下客户端已有回答，同样记零费用）。细节见 CONTRACTS §112.7。
+
+- 没有合法的返回（没填、填错种类、`Execute` 报错、插件崩溃）且观察已落库：**未上报**。同步请求写一条零费用记录（`success=false`、`error_type=usage_unreported`、`billing_status=free`、`anomalies.usage_extract="unreported"`），同一事务里释放预扣，执行行改 `unreported`；非流式回答不发、回 503，流式内容已发出、连接异常结束。任务提交没有 `task`：任务不登记，客户端报错，预扣释放。细节照用量草稿第 4 节。
 - 提交失败：核心拿着返回的事实在收尾时限内重试（同一执行 ID、同一摘要，重复提交是无操作）；仍失败则同步请求按未上报处理，任务提交报错。不落库重试（D9）。
 - 插件在等待期间崩溃或放弃调用：**切断上游交换，这个请求不计费**（今天的做法，`dispatch.go:802-805`；用户已确认）。同步请求按上一条的未上报处理，任务提交报错、不登记。理由和与 D21 的关系见 12.4。
 - 今天走这条支路的只有 volcengine 的视频端点和任务提交。codex 的端点由核心按规则读用量（它服务的是内置 openai 平台，没有 `usageSource: "plugin"`），改完后走 4.2 的不等待形式，不再写执行记录、不再被插件崩溃切流。
@@ -302,7 +305,7 @@ message RelayUpstreamResponse {
 | 项 | 默认 | 位置（今天的代码） |
 |---|---|---|
 | 代理 | 账号的代理；没有代理则直连，直连时拨号拒绝私网地址 | `dispatch.go:784`、`proxy.go:177-193`、`:289` |
-| 传输 | 每个代理一个连接池，TLS 握手 15 秒，HTTP/2 | `proxy.go:177-192` |
+| 传输 | 每个代理一个连接池，HTTP/2；拨号与 TLS 握手原有的 15 秒按 D34 删除，由操作系统的连接超时和网关的响应头计时约束 | `proxy.go:177-192` |
 | SSRF | 直连检查解析出的地址；经代理检查名字 | `dispatch.go:764`、`gateway/ssrf.go:15-20` |
 | 重定向 | 不跟随 | `dispatch.go:852-853` |
 | 超时 | 响应头超时、整体超时、流式空闲超时，取账号、分组、全局三层环境变量 | `dispatch.go:861-871`、`:900-902` |
@@ -326,7 +329,7 @@ message RelayUpstreamResponse {
 | TLS | — | 不能关校验、不能换根证书 |
 | 重定向 | — | 不能打开 |
 | 重试 | — | 客户端不重试；重试和换号归核心 |
-| 取回的次数和大小 | 每次执行最多 8 个请求；请求体受请求体上限约束；回答最多 8 MiB，超出带 `truncated` | 这三个数是核心常量，插件不能调 |
+| 取回的次数和大小 | 不限（D34；原设计是每次执行最多 8 个请求、请求体受请求体上限约束、回答最多 8 MiB 超出带 `truncated`） | — |
 
 有一条现有行为要明说：权威头写在运营方的请求头覆盖之后，所以插件**能**盖掉运营方设置的头。这是今天代码插件的行为（`dispatch.go:829`，CONTRACTS §86.5），签名需要它。约束靠约定和一致性测试：新插件的权威头里只放鉴权头和被签名的头，其余放默认头；已发布过的代码插件保持原样（D25），一致性第 4 条只检查权威头是否在插件声明的集合里。
 
@@ -537,18 +540,20 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 | 核心的 HTTP 服务（`server/internal/app/phases.go:589`）与 Gin | 不限制请求体；请求头同上（读取超时 10 秒）。Gin 的 `MaxMultipartMemory` 没有设置，网关也不解析表单 | 不变 |
 | 插件服务端的 gRPC 接收上限（`sdk/pluginsdk/serve.go:80-113`） | 默认 4 MiB；插件用 `WithMaxRecvMsgSize` 调大，只有 moderation 用了（64 MiB，`plugins/moderation/main.go:15`）。钩子收到的请求字段超过它时这次钩子调用失败，按钩子的 `failure` 处理：`closed` 的钩子就等于按大小拒绝了请求 | **由设置推出**（8.2）：SDK 把所有插件的接收上限固定为传输层的最大值，`WithMaxRecvMsgSize` 和 moderation 的 64 MiB 常量删除。核心在读请求体时已经保证不超上限 |
 | `gateway/hooks.go:176-195` 的 `grpcDefaultMaxRecv`、`requestTooLarge` | 识别“请求超过插件接收上限”的失败，不计入熔断 | **删除**：上一行之后这种失败不再发生 |
-| 核心侧宿主服务端的接收上限（`grpcruntime/instance.go:459`） | 4 MiB（插件回调核心） | **由设置推出**（8.2） |
+| 核心侧宿主服务端的接收上限（`grpcruntime/instance.go:459`） | 4 MiB（插件回调核心） | 原设计“由设置推出”（8.2）；按 D34 是 gRPC 自己的 `MaxInt32`，不检查 |
 | 核心发给上游的请求体（`dispatch.go:812-814`） | 不限制 | 不变 |
 | 请求体的结构检查（`gateway/jsonscan.go:15` 嵌套深度 10000；合法 UTF-8、合法 JSON、没有重复键，`pipeline.go:433-451`） | 400 | 保留：是结构限制，不是大小限制 |
 | 钩子的 `prompt_text` 截断（默认 32 KiB，清单最多 1 MiB，`hooks.go:35`）、`EstimateUsage` 的提示文本截断（1 MiB，`precharge.go:20`）、用量估算字段的大小（4 KiB/32 KiB，`sdk/manifest/check/usage.go:64-65`）、本地计数的文本上限（32 MiB，`tokenizer.go:19`） | 截断或省略交给插件、交给计数器的**派生文本**，请求照常进行 | 保留：不拒绝请求，也不改发给上游的请求体 |
 | 媒体下载上限 `media_download_max_mb`（`convert_media.go:110-120`） | 协议转换时核心下载一个媒体文件的上限 | 保留：限制的是核心去下载的文件，不是客户端的请求体；同在网关设置卡片里 |
 | moderation 的 `max_inflight_mb`（`plugins/moderation/internal/moderation/hook.go:135-140`、`:244-250`） | 插件里在途请求字节的并发预算；单个请求不论多大都接收 | 保留：是并发与内存的预算，不按大小拒绝单个请求 |
-| 响应一侧：WebSocket 上游消息 64 MiB（`websocket.go:61`、`:807`）、SSE 单行 16 MiB、用量 JSON 32 MiB（`forward.go:25-26`）、等待形式的缓冲 64 MiB（`spool.go:14-15`）、错误体 64 KiB | 限制上游的回答 | 保留：与请求体无关 |
+| 响应一侧：WebSocket 上游消息 64 MiB（`websocket.go:61`、`:807`）、SSE 单行 16 MiB、用量 JSON 32 MiB（`forward.go:25-26`）、等待形式的缓冲 64 MiB（`spool.go:14-15`）、错误体 64 KiB | 限制上游的回答 | 原设计保留；按 D34 除交给 `ClassifyError` 的错误体前 64 KiB 外都已删除 |
 | 控制面：插件路由 1 MiB（`plugin/routes/routes.go:25`）、托管与升级接口 16/32 KiB、插件包上传 | 控制台和管理接口 | 保留：不在网关请求的路径上 |
 
 有一点要说明：客户端的请求体通过上限之后，核心自己还可能把它变大——协议转换内联下载的媒体（每个文件最多“媒体下载上限”）、钩子的补丁、参数覆盖。今天这些之后不再检查大小，以后也不检查；8.2 里由设置推出的内部上限按“交给插件的那份请求体”算，不能反过来把核心自己变大的请求拒掉。
 
 ### 8.2 由它推出的内部上限
+
+> **D34 取消了本节**：核心与插件之间不由请求体上限推出任何界限。宿主的 broker 对所有宿主调用的接收上限是 `MaxInt32`，中继和取回的请求体不检查大小，取回的回答不截断。下表是原设计，留作记录；SDK 一侧（插件服务端固定 `MaxInt32`、`WithMaxRecvMsgSize` 删除）照原设计实现。
 
 | 内部上限 | 今天 | 之后 |
 |---|---|---|
@@ -577,6 +582,8 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 
 ### 8.4 “平台调用超时”的新含义
 
+> **D34 取消了分段计时**：实现过一版（`core.ExecutionClient.SegmentTimeout`，超时以 `plugin_unavailable` / `segment_timeout` 换号；为大请求体还加过按 8 MiB/s 的搬运余量），后来与 6 小时的总时限一起删除。现在 `Execute` 不计时，平台调用超时只管不等待形式下的 `ClassifyError` 和读断开策略（CONTRACTS §111.4）。挂住的插件由客户端离开、上游超时或进程结束收场。下面是原设计，留作记录。
+
 今天它管的是一次短的 RPC。之后一次 `Execute` 可以跨越整个上游交换（等待形式），所以要改定义：
 
 > **平台调用超时**（`platform_call_timeout_ms`，默认 2000，范围 100 到 30000，不变）：一次请求里，插件每一段**自己的处理时间**的上限，不含等待上游的时间。
@@ -602,7 +609,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 
 - 安装与升级的审查页（`server/internal/plugin/install/review.go` 的 `Review`，`:20-21`、`:339-`）：声明了账号类型的插件固定显示一句“此插件会收到经它的账号发出的每个请求的完整内容，并决定请求发往哪个地址”。不是权限，不能取消勾选（D15）。
 - 插件列表：加载被拒绝的插件显示拒绝的原因（第 9 节的那一条信息）。
-- 使用记录：详情与筛选显示“未上报”。**没有实现**（第 17 节）：未上报的记录 `error_type = usage_unreported`、`anomalies.usage_extract = "unreported"`，控制台没有专门的显示和筛选。
+- 使用记录：详情与筛选显示“未上报”。**已实现**：`error_type = usage_unreported` 的记录在列表里叫“未上报用量（未计费）”，详情说明插件没有返回用量、这次请求没有计费；失败请求的错误类型筛选能选它（`web/src/views/usage/usageFilters.ts`）。
 - 账号编辑器里的请求头覆盖、参数覆盖、透传：界面和存储不变。
 - 数据库：表结构不变，只有一个改数据的迁移 `0107`（与协议绑定合并时由 0106 改号）（8.1：请求体上限从环境变量搬到网关设置）。`plugin_executions.state` 是没有 CHECK 的文本列，新状态 `unreported` 不需要改表（`server/internal/migrations/0019_plugin_executions.sql:8`）。
 
@@ -629,7 +636,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 
 > 插件 `<key>@<version>` 是按旧的插件协议构建的，本核心（<V>，插件协议 2）不能加载它。请安装为核心 <V> 及以上构建的版本。
 
-实现的文字是英文（`protocol.OutdatedContractMessage`）：`plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<V>, plugin protocol 2); install a version built for core <V> or later`；插件列表（`GET /plugins` 的 `refusal`）在控制台按语言显示。
+实现的文字是英文（`protocol.OutdatedContractMessage`）：`plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<当前核心>, plugin protocol 2); install a version built for core <V> or later`，其中 `<V>` 固定是本协议的第一个核心 `protocol.FirstCoreVersion`（0.1.304），不是当前核心；插件列表（`GET /plugins` 的 `refusal`）在控制台按语言显示。
 
 上传和安装时做同样的检查、给同样的信息。没有降级服务，没有“加载但不执行”，没有切回旧版本的安排。
 
@@ -671,7 +678,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 ### 10.3 进程数与并发类
 
 - 进程数见 7.7。
-- 并发类：`Execute` 用执行类，上限 1024（`grpcruntime/runtime.go:124-128`）。不等待形式下每次占用几毫秒，等待形式下占到交换结束。热路径类（64）不再被“构造请求”占用，只剩模型解析、估算、钩子、分类。
+- 并发类：原设计 `Execute` 用执行类，上限 1024（`grpcruntime/runtime.go:124-128`）；按 D34 删除，`Execute` 不限并发，只计入在途调用（排空时照旧等它们）。热路径类（64）不再被“构造请求”占用，只剩模型解析、估算、钩子、分类。
 - CPU：`GOMAXPROCS` 是 `ceil(cpu)`，申请 0.1 到 0.25 的插件只有 1 个 P，进程 nice +10（`sandbox/exec.go:26-30`）。现在每个请求都要在这个 P 上做一次请求体的解码和编码。高流量的插件（anthropic、openai）在大请求体多的时候会成为瓶颈，申请值要按 10.1 的实测调。
 
 ### 10.4 崩溃的影响范围
@@ -693,7 +700,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 3. **核心在插件之后对请求体的强制没有了。** 今天核心在插件的补丁之后还会再强制一次流式标志；之后插件交回的字节是最终的。替代：一致性套件第 3 条（模型引用、流式标志、合法 JSON、没有重复键）；核心在运行时不再校验请求体（D24）。套件也校验不了“运营方的参数覆盖写进去的某个字段有没有被插件删掉”。也就是说，运营方的请求体设置由核心先执行，但插件在其后可以改掉结果。今天的代码插件用补丁也能做到同样的事，声明式的五个类型以前做不到，现在能了。
 4. **等待形式下“插件没上报也照常计费”没有了**（D3）。范围是今天的 volcengine。替代：ERROR 日志（筛选、人工补记、阈值通知都还没有做，D30）。
 5. **进程更多，故障点更多**（10.4 第三行）。替代：没有。这是 D17 的直接代价。
-6. **一次调用不再有短的固定时限。** 等待形式的 `Execute` 可以长达数小时。替代：8.4 的分段计时保证插件自己的每一段处理不超过平台调用超时。
+6. **一次调用不再有任何固定时限。** 等待形式的 `Execute` 可以任意长。原设计用 8.4 的分段计时替代，D34 把它也删了：替代只剩上游超时（管理员配置）、客户端离开和插件进程本身；挂住的插件占着账号和 API Key 的槽位直到其中之一发生。
 
 ### 10.6 没有采纳的进一步简化
 
@@ -927,7 +934,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 
 ### 14.1 一致性套件：每个转换后的插件都必须通过
 
-放在 `sdk/pluginsdk/pluginsdktest/conformance`，一个函数加一张输入表，每个平台插件在自己的测试里调用。**实现**：套件做了第 1 到第 11 条（第 12、13 条不在套件里）；第 4 条检查的是“声明的集合”（D25）；anthropic、openai、gemini、relay、azure_openai 调用了它，claude_oauth、codex、vertex、bedrock、volcengine 只准备了输入表（第 17 节）。检查项：
+放在 `sdk/pluginsdk/pluginsdktest/conformance`，一个函数加一张输入表，每个平台插件在自己的测试里调用。**实现**：套件做了第 1 到第 11 条（第 12、13 条不在套件里）；第 4 条检查的是“声明的集合”（D25）；十个平台插件都调用了它（第 17 节）；第 1 条的形式从端点定义读出，WebSocket 协议只归第 11 条。检查项：
 
 1. 每个声明的上游协议、流式与非流式，`Execute` 都能完成，并且恰好发出一次中继。
 2. 普通端点返回 `host_usage` 并用不等待形式；声明了插件解析用量的端点用等待形式并返回 `usage`；任务提交端点返回 `task`。什么都不返回的插件不过。
@@ -937,7 +944,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 6. 确定性：同样的输入（固定时钟）产生同样的请求。
 7. 换号：尝试序号大于 0 时重新构造，不复用上一次的结果。
 8. 不开套接字：测试进程里把默认传输换成一遇到拨号就失败的实现，整个套件期间不能触发。
-9. 取消：context 取消后在平台调用超时内返回。
+9. 取消：context 取消后在套件自己的时限（`CallTimeout`，默认 2 秒）内返回。宿主不给插件计时（D34），这是套件的界限。
 10. 大请求体：请求体取上限时能完成，插件一侧的额外分配不超过请求体的 4 倍（`testing.AllocsPerRun` 加内存统计）。
 11. 声明了 WebSocket 能力的：一轮消息的 `Execute` 给出握手地址、握手头和最终消息。
 12. `ValidateCredentials`、`ClassifyError`、`BuildTestRequest`、`BuildModelsRequest` 对套件给的标准输入有回答。
@@ -963,7 +970,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 | 换号 | 第二次尝试拿到按新账号改写的请求体 |
 | 取回 | 经账号代理发出；不套透传和覆盖；失败后可以安全换号 |
 | 大小 | 超过网关设置里请求体上限的客户端请求 413，分组的环境变量不再影响它；钩子收到上限以内的任何请求都不因 gRPC 接收上限失败；插件交回的请求体超过 8.2 的界限被拒，原样交回核心自己变大的请求体不被拒（在途字节准入按 D23/D26 没有做） |
-| 时限 | 插件在任一段自身处理超过平台调用超时：这次尝试失败；等待上游的时间不计入 |
+| 时限 | （原设计：插件在任一段自身处理超过平台调用超时，这次尝试失败。D34 删除，`TestExecuteWaitedHasNoTimeLimit` 固定“没有时限”） |
 | WebSocket | 第一轮建连、之后每轮只发消息；每轮按规则计费；握手只套请求头覆盖 |
 | 断开 | 三种断开策略在不等待形式下与今天的普通转发行为相同 |
 | 故障策略 | 传输错误不问插件；“请求是否已写出”影响能否重试 |
@@ -991,6 +998,8 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 - 1、8、32、128 MiB 四档请求体的延迟和内存，写回本文第 10 节。
 
 报告“测试通过”前确认数据库测试真的跑了，没有成片跳过。
+
+**实现**：e2e 栈上的验收用例 AC30–AC36 覆盖了上面除性能实测外的各项：十个平台插件经 `Execute` 的流式与非流式（AC30，不能配地址的插件访问的厂商主机由 mock 以别名和自建 CA 的 TLS 扮演）、运营方的请求头设置与账号代理（AC31）、换号与未上报（AC32）、旧契约的包被拒（AC33）、Responses WebSocket 逐轮与请求体上限设置（AC34、AC35）、以官方 OpenAI 和 Anthropic Go SDK 为客户端（AC36）。运行方法见 `deploy/e2e/README.md`。1、8、32、128 MiB 的实测和 ec2pool 上的真实上游没有做。
 
 ## 15. 未验证事项
 
@@ -1026,8 +1035,8 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 
 ## 17. 实现与本文的差异（没有所有者决定的）
 
-按分支 `feat/forwarding-v2`（`26950a969`）的代码核对。所有者已经决定的差异写在 D24–D33 和对应各节，这里只列没有决定的：
+按分支 `feat/forwarding-v2`（`26950a969`）的代码核对时列出的三条，在其后的审查修正（至 `dc5c306e9`）中处理如下。所有者已经决定的差异写在 D24–D34 和对应各节。
 
-1. **一致性套件没有接到五个代码插件上**（14.1 要求“每个转换后的插件都必须通过”）：`plugins/claude-oauth/upstream_test.go`、`plugins/codex/internal/codex/execute_test.go`、`plugins/vertex/internal/vertex/upstream_test.go`、`plugins/bedrock/internal/bedrock/roundtrip_test.go`、`plugins/volcengine/internal/volcengine/execute_test.go` 的注释写着“输入表也给套件用”，但没有调用 `conformance.Run`。调用它的只有 anthropic、openai、gemini、relay、azure_openai。
-2. **使用记录没有“未上报”的显示和筛选**（8.5）：`web/src` 里没有 `usage_unreported` 的文案或筛选项。
-3. **拒绝信息是英文**（9.2 写的是中文句子）：`sdk/protocol/protocol.go` 的 `outdatedContractFormat`；控制台按 `refusal` 的字段另行组织文字。
+1. **一致性套件接到了全部十个平台插件上**（原差异：只有 anthropic、openai、gemini、relay、azure_openai 调用）。claude_oauth、codex、vertex、bedrock、volcengine 现在都调 `conformance.Run`；只有 bedrock 声明了两处例外（流式用例的 `03_body`、全部用例的 `04_headers`，都是 InvokeModel 本身的性质，见 PLUGIN-DEVELOPMENT.md 第 4 节）。接套件的过程中改了这些插件：vertex 把核心交来的 `user-agent`、`x-goog-api-client` 作为默认头转发；claude_oauth、codex 在清单里写 `passHeaders: []`（为此清单的 `passHeaders` 区分“没写”和“空”）；套件改为从端点定义读出每个协议的形式，WebSocket 协议只归第 11 条。
+2. **使用记录有了“未上报”的显示和筛选**（8.5）。
+3. **拒绝信息仍是英文**（9.2 写的是中文句子）：`sdk/protocol/protocol.go` 的 `outdatedContractFormat`；控制台按 `refusal` 的字段另行组织文字。信息里要求的版本从“当前核心”改成本插件协议的第一个核心 `protocol.FirstCoreVersion`（0.1.304），`refusal` 多了 `first_core_version`；节点按结构化的 `code` 记录拒绝，不再靠比较文字。首次启用就被拒、发布在准备阶段失败、节点已经删掉失败的实例时，拒绝也照样给出：发布结束时把每个节点的代码记在 `plugin_rollout_nodes.code`（迁移 0109），`refusal` 从该插件最近一次发布的节点结果取（CONTRACTS §112.10）。

@@ -22,8 +22,8 @@ type UsageLog struct {
 	Platform              string           `gorm:"column:platform;default:(-)"`                        // character varying(50) default ''::character varying
 	Protocol              string           `gorm:"column:protocol"`                                    // character varying(100)
 	Endpoint              string           `gorm:"column:endpoint"`                                    // character varying(200)
-	Model                 string           `gorm:"column:model;default:(-)"`                           // character varying(200) default ''::character varying
-	UpstreamModel         string           `gorm:"column:upstream_model;default:(-)"`                  // character varying(200) default ''::character varying
+	Model                 string           `gorm:"column:model;default:(-)"`                           // text default ''::character varying
+	UpstreamModel         string           `gorm:"column:upstream_model;default:(-)"`                  // text default ''::character varying
 	Stream                bool             `gorm:"column:stream;default:(-)"`                          // boolean default false
 	StatusCode            int              `gorm:"column:status_code"`                                 // integer
 	Success               bool             `gorm:"column:success"`                                     // boolean

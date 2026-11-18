@@ -9,22 +9,21 @@ const props = defineProps<{ modelValue: string[]; mode: 'whitelist' | 'blacklist
 const emit = defineEmits<{ (e: 'update:modelValue', value: string[]): void; (e: 'update:mode', value: 'whitelist' | 'blacklist'): void }>()
 const { t } = useI18n()
 const draft = ref('')
-const error = ref('')
 const modeOptions = computed<ChoiceOption[]>(() =>
   (['whitelist', 'blacklist'] as const).map((value) => ({ value, label: t(`groups.${value}`), description: t(`groups.${value}Hint`) }))
 )
 const suggestions = computed(() => [...new Set(props.options)])
 function fillGroupModels() {
   const pending = draftPatterns(draft.value)
-  if (!commit()) return
+  commit()
   emit('update:modelValue', [...new Set([...props.modelValue, ...pending, ...suggestions.value])])
 }
+// commit adds the drafted patterns. A pattern of any length is accepted:
+// the core no longer bounds a model name (CONTRACTS §112.16). It returns
+// true for the edit modal's save step, which nothing here can fail.
 function commit(): boolean {
-  const parts = draftPatterns(draft.value)
-  if (parts.some(m => m.length > 200)) { error.value = t('groups.patternInvalid'); return false }
-  if (parts.length) emit('update:modelValue', mergeDraftPatterns(props.modelValue, draft.value))
+  if (draftPatterns(draft.value).length) emit('update:modelValue', mergeDraftPatterns(props.modelValue, draft.value))
   draft.value = ''
-  error.value = ''
   return true
 }
 function paste(event: ClipboardEvent) {
@@ -53,6 +52,5 @@ defineExpose({ commit })
       <SInput v-model="draft" size="sm" class="min-w-0 flex-1" :aria-label="t('groups.allowlistPlaceholder')" :placeholder="t('groups.allowlistPlaceholder')" data-testid="policy-draft" @keydown.enter.prevent="commit" @paste="paste" @blur="commit" />
       <SButton size="sm" :disabled="!draft.trim()" @click="commit">{{ t('accounts.editorUi.addModels') }}</SButton>
     </div>
-    <SHint v-if="error" tone="danger" size="xs">{{ error }}</SHint>
   </div>
 </template>

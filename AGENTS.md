@@ -48,7 +48,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 数据库：PostgreSQL 16 + GORM
 
 - 驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`，GORM 跑在上面。连接由 `runtime-contract/gormpg` 一处打开，核心、网关、插件 SDK 共用；连接池大小只由环境变量（核心 `SUB2API_PG_MAX_CONNS`、网关 `SUB2API_GATEWAY_POOL_MAX_CONNS`）或默认值决定，DSN 里不写 `pool_*` 参数。PostgreSQL 错误的 SQLSTATE、约束名也只经 `gormpg`（核心经 `store` 的同名函数）读取。
-- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0108），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
+- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0109），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
 - **只用 GORM 的模型和查询构造器写语句**（`Create`、`Updates`、`Where`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()` 等；子查询和 `UNION ALL` 用 `(?)` 组合）。整条手写的 SQL 只允许出现在允许列表登记过的地方：账本的 4 条 data-modifying CTE（`billing` 的 precharge、apply、release、settle）、`store` 里非数据语句的小助手（事务级 advisory 锁、`SetLocal`、`ClockTimestamp` 等）、`DDL`、迁移执行器、`modelgen`，以及 `gormpg` 的薄组合器（`Exists`、`InsertSelect`、`NextIDs`、`RelationExists`、`TryXactLock`）。
 - 交给 GORM 的 SQL 文本必须由常量构成，**值只走 `?` 参数**；运行时选的列名经固定白名单变成 `clause.Column`/`clause.OrderByColumn`。
 - 这些规则由源码检查强制执行，检查器是 `runtime-contract/gormpg/sqlcheck`，各模块只保留自己的允许列表：核心是 `server/internal/store/gormguard`（`[raw-sql]`、`[sql-const]`、`[tx-lock]`、`[gorm-tx]`、`[pgx-import]`、`[casbin-api]` 等，说明见 `gormguard/doc.go`，允许列表在 `rawsql_test.go`），网关是 `gateway/internal/sqlguard`，SDK 与插件是 `sdk/pgdb` 的 `TestNoRawSQL`、`TestNoPgxImports`。允许列表里没有命中的条目也算失败。
@@ -79,6 +79,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 - 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 seccomp、rlimit、内存看门狗（只在管理员给插件设了内存上限或节点封顶时生效，默认不限，CONTRACTS §111.5）和出口隧道（插件的对外连接经核心转发）。
 - 插件包：`manifest.json`、`migrations/*.sql`、`forms/`、`i18n/`、`assets/`、`ui/`（schema、iframe 或原生微前端）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
 - 每个插件有自己的 schema `plg_<key>`，有权限时还有同名的受限数据库角色。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
+- 一次请求上的超时和大小上限只有管理员配置的（请求体上限、上游超时、钩子和热路径超时等），加上安全、钱算对和防止崩溃的检查；不要在请求路径上加写死的超时、大小或次数上限（所有者决定，完整列表见 CONTRACTS §112.16）。
 - 平台插件（声明账号类型的插件）都是有进程的代码插件，没有只有清单的插件。每个网关请求只有一条路径（CONTRACTS §112）：核心做完协议转换和运营方的改写，把完整请求体交给账号类型插件的 `PlatformService.Execute`；插件构造最终请求，经 `HostService.RelayUpstream` 交给核心的 HTTP 客户端发出（插件不开套接字，账号代理、SSRF、超时、运营方的请求头设置由核心强制）；用量与任务事实只在 `Execute` / `Monitor` 的返回值里。插件写法、`sdk/pluginsdk/standard` 库、`jsonedit`、一致性套件见 `next/docs/PLUGIN-DEVELOPMENT.md`。
 - 平台插件必须遵守全部系统设置：每项设置在 HTTP 与 WebSocket 两种传输上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md` 第 5 节，改动相关行为时同步它。
 - 内置插件随核心升级（CONTRACTS §37）。**插件内容变了必须升版本号**：`tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` 对照 `next/plugins/released.json`，内容变了而版本没升就失败；每次发布后按该测试的说明重写这个文件。
@@ -154,7 +155,7 @@ cd next/plugins/<name> && go test -count=1 ./...
 
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
 - 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
-- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`。
+- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh -timeout=150m`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认的 `-timeout=30m` 不够，要带 `-timeout=150m`。AC30–AC36 是转发 V2 的用例（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端）。
 
 ### 控制台（`next/web`，Node 24，npm）
 
