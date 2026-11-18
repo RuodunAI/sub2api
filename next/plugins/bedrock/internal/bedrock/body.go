@@ -7,6 +7,8 @@ import (
 	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // droppedFields are top-level fields InvokeModel refuses: the path names
@@ -30,19 +32,16 @@ var anthropicVersion = []byte(`"` + AnthropicVersion + `"`)
 // InvokeModel refuses is cleaned (sanitize). Everything else is the
 // client's bytes as they came.
 func invokeBody(body []byte, header, id string) ([]byte, error) {
-	doc, e, err := parseObject(body)
-	if err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
+	d, err := jsonedit.Parse(body)
+	if err != nil || !d.Root().IsObject() {
+		return nil, status.Error(codes.InvalidArgument, "the request body is not a JSON object")
 	}
+	doc := d.Root()
 	m := parseClaude(id)
 	betas := bedrockBetas(slices.Concat(headerBetas(header), bodyBetas(doc.Get(fieldBetas)), toolBetas(doc.Get("tools"), m))...)
-	sanitize(e, doc, m)
-	set := []member{{"anthropic_version", anthropicVersion}}
-	if len(betas) > 0 {
-		raw, _ := json.Marshal(betas) // strings always marshal
-		set = append(set, member{fieldBetas, raw})
-	}
-	e.object(doc, func(key string, _ gjson.Result) bool {
+	sanitize(d, m)
+	root := d.Object(doc)
+	root.DeleteFunc(func(key string, _ gjson.Result) bool {
 		switch key {
 		case fieldBetas:
 			return len(betas) == 0
@@ -50,10 +49,15 @@ func invokeBody(body []byte, header, id string) ([]byte, error) {
 			return !slices.Contains(betas, betaContextManagement)
 		}
 		return slices.Contains(droppedFields, key)
-	}, set...)
-	out, err := e.bytes()
+	})
+	root.Set("anthropic_version", anthropicVersion)
+	if len(betas) > 0 {
+		raw, _ := json.Marshal(betas) // strings always marshal
+		root.Set(fieldBetas, raw)
+	}
+	out, err := d.Bytes()
 	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return out, nil
 }
