@@ -193,6 +193,7 @@ export default {
     hostCompat: 'Host compat',
     incompatibleTitle: 'This plugin is not compatible with this host',
     incompatibleBody: 'It requires host version {range}. Installation is disabled.',
+    requestAccessTitle: 'What this plugin receives',
     signatureWarnTitle: 'Signature: {status}',
     signatureWarnBody: 'The package could not be verified against a trusted publisher key. Only continue if you trust where this package came from.',
     diffTitle: 'Permission changes in this version',
@@ -551,6 +552,9 @@ export default {
       cancelled: 'Rollout cancelled. Nodes keep running v{version}.',
       rolled_back: 'Rollout rolled back to v{version}.'
     }
+  },
+  refusal: {
+    outdated_contract: "Plugin {key}{'@'}{version} was built for an older plugin protocol and cannot be loaded by this core ({host}, plugin protocol {protocol}). Install a version built for core {host} or later."
   },
   conflicts: {
     short: '{n} resource(s) not granted',

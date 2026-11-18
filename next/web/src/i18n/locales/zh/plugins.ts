@@ -193,6 +193,7 @@ export default {
     hostCompat: '兼容核心',
     incompatibleTitle: '该插件与当前核心版本不兼容',
     incompatibleBody: '插件要求核心版本 {range}，无法安装。',
+    requestAccessTitle: '此插件会收到的内容',
     signatureWarnTitle: '签名：{status}',
     signatureWarnBody: '无法用受信任的发布者密钥验证该插件包。只有在确认来源可信时才继续。',
     diffTitle: '本版本的权限变化',
@@ -551,6 +552,9 @@ export default {
       cancelled: '发布已取消，各节点继续运行 v{version}。',
       rolled_back: '发布已回滚到 v{version}。'
     }
+  },
+  refusal: {
+    outdated_contract: "插件 {key}{'@'}{version} 是按旧的插件协议构建的，本核心（{host}，插件协议 {protocol}）不能加载它。请安装为核心 {host} 及以上构建的版本。"
   },
   conflicts: {
     short: '{n} 项资源未分配',

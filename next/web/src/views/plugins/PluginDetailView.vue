@@ -12,7 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 import { refreshShell } from '@/stores/app'
 import { consentPath } from './reviewCache'
 import RoleGrantsReview from './parts/RoleGrantsReview.vue'
-import { compareVersions, conflictLines, consoleSettings, isPendingConsent, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
+import { compareVersions, conflictLines, consoleSettings, isPendingConsent, refusalText, shownStatus, tabOf, type PluginDetail, type PluginSettings } from './pluginUtil'
 import TrustBadge from './parts/TrustBadge.vue'
 import OverviewTab from './detail/OverviewTab.vue'
 import PermissionsTab from './detail/PermissionsTab.vue'
@@ -230,6 +230,7 @@ onMounted(load)
       </SPageHeader>
 
       <SHint v-if="detail.status_reason" tone="danger" class="-mt-3 mb-4">{{ detail.status_reason }}</SHint>
+      <SAlert v-if="detail.refusal" tone="danger" icon="x" class="mb-4" data-testid="plugin-refusal">{{ refusalText(t, detail.key, detail.refusal) }}</SAlert>
 
       <!-- exclusive resources this node's generation could not give the plugin (audit 2026-10-09 P2-2) -->
       <SAlert v-if="detail.resource_conflicts?.length" tone="danger" :title="t('plugins.conflicts.title')" class="mb-4" data-testid="plugin-conflicts">
