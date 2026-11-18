@@ -201,18 +201,25 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 		return
 	}
 	k := b.Key()
-	_, own := b.Supports(c.platform)
 	c.routes[k] = &typeRoute{binding: b, platform: c.platform, upstream: upstreamLocal, grade: convert.GradeLocal,
-		hops: []string{c.ep.Protocol}, local: true, cross: !own}
+		hops: []string{c.ep.Protocol}, local: true, cross: c.crossPlatform(b)}
 	c.routeKeys = append(c.routeKeys, k)
+}
+
+// crossPlatform reports whether account type b does not declare the platform
+// of the client endpoint: the one definition of a cross-platform route
+// (typeRoute.cross), the same the account module judges a protocol binding
+// by (CONTRACTS §110.1).
+func (c *call) crossPlatform(b core.AccountTypeBinding) bool {
+	_, own := b.Supports(c.platform)
+	return !own
 }
 
 // addRoute records the route of b to upstream protocol y of platform q:
 // request fields and pass headers come from the account type's entry for q,
 // else the platform; usage rules from the account type (per protocol), else
 // the endpoint speaking y, else the platform. q is the client endpoint's
-// platform unless b does not declare it (planRoutes), which makes the route
-// a cross-platform one.
+// platform unless b does not declare it (planRoutes).
 func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, q, y string,
 	ep manifest.Endpoint, pf manifest.Platform, conv convert.Converter) {
 	if !ap.SupportsEndpoint(ep.ID) {
@@ -222,7 +229,7 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	if _, dup := c.routes[k]; dup {
 		return
 	}
-	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative, cross: q != c.platform,
+	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative, cross: c.crossPlatform(b),
 		requestFields: ap.RequestFields, passHeaders: ap.ClientHeaders(&pf),
 		usage:              usagerules.For(ap, &ep, &pf, y),
 		pluginUsage:        ep.PluginUsage(),
