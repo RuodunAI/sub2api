@@ -62,7 +62,7 @@ sh next/deploy/e2e/test.sh
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
 
-用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36：
+用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC38 是同批的授权代理票据：
 
 | 用例 | 内容 |
 |---|---|
@@ -72,6 +72,7 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 | AC33 | 旧契约的清单在上传时以固定信息被拒、不留版本行；旧协议的二进制在首次启用时加载被拒，发布在准备阶段失败后插件列表的 `refusal` 仍给出代码、版本、核心版本和信息 |
 | AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
 | AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
+| AC38 | codex 授权走账号表单选的代理（CONTRACTS §117）：已有代理、粘贴的代理串、不用代理三种选择下，设备码登录的全部请求（申请、一次待批准的轮询、批准的轮询、换令牌）到达 `auth.openai.com` 时全部经过代理或全部直连，粘贴的代理串不留代理记录；令牌经 `POST /accounts` 建成账号后经网关发一条请求到 Codex 后端并计费；Sign in with Codex 的换令牌经已有代理 |
 
 插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 
@@ -108,7 +109,7 @@ export E2E_LONG=1
 - 镜像版本默认 `0.1.999`（`E2E_VERSION`），必须满足全部内置插件的 `hostCompat`（目前 `>=0.1.304 <0.2.0`），否则节点拒绝安装内置插件。
 - 两个节点直接运行核心（没有网关外壳），核心的插件包目录 `plugins/blobs` 只服务一个节点；这里两个节点挂同一个卷 `pkgblobs`，上传的插件包两边都能取到。
 - 没有可配置地址的平台插件（bedrock、vertex、codex）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口提供 TLS，证书按客户端请求的主机名（SNI）用自建 CA 现签（`MOCK_TLS_ADDR`、`MOCK_TLS_DIR`，mock-upstream 的 `tls.go`），所以主机名只列在 `aliases` 一处，CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
-- mock 同时是 HTTP 正向代理（账号的 `proxy_url` 指向它时记 `proxied`），并能按提示里的 `MOCK-TOOL-CALL` 返回工具调用（官方 SDK 用例）。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
+- mock 同时是 HTTP 正向代理（账号的 `proxy_url` 指向它时记 `proxied`）：http 地址是绝对 URI 的请求；https 地址经 `CONNECT`，mock 自己用 TLS 监听的证书和处理器接管隧道，隧道里的请求记 `tls` 和 `proxied`（mock-upstream 的 `connect.go`）。mock 还扮演 OpenAI 授权服务器 `auth.openai.com`（codex 两种登录的设备码与换令牌，`openaiauth.go`；同一设备码第一次轮询答“未批准”，之后批准，轮询间隔 1 秒），并能按提示里的 `MOCK-TOOL-CALL` 返回工具调用（官方 SDK 用例）。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
 
 ## 保留现场与清理
 

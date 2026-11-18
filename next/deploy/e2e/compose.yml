@@ -156,9 +156,11 @@ services:
         # Platform plugins without a configurable base URL (bedrock, vertex,
         # codex) address these hosts in the tests; inside the isolated
         # network they are the mock, over TLS with a certificate the mock
-        # issues per host name from the CA above.
+        # issues per host name from the CA above. auth.openai.com is the
+        # codex logins' authorization server (AC38).
         aliases:
           - chatgpt.com
+          - auth.openai.com
           - aiplatform.googleapis.com
           - oauth2.googleapis.com
           - bedrock-runtime.us-east-1.amazonaws.com

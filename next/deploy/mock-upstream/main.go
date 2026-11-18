@@ -29,6 +29,9 @@
 //	POST /v1/publishers/google/models/{m}:{action}
 //	                                Vertex AI: the Gemini actions above
 //	POST /backend-api/codex/responses  the Codex backend: OpenAI Responses (GET = WebSocket mode)
+//	POST /api/accounts/deviceauth/{usercode,token}, POST /oauth/token
+//	                                the OpenAI authorization server of the codex logins (openaiauth.go)
+//	CONNECT host:port               HTTPS through the mock as a forward proxy (connect.go)
 //	GET  /v1/models                 Anthropic/OpenAI style list {"data":[{"id":...}]}
 //	GET  /v1beta/models             Gemini style list {"models":[{"name":"models/..."}]}
 //	GET  /__requests[?since=ID]     last 100 recorded requests (newest last)
@@ -40,7 +43,8 @@
 // MOCK_TLS_ADDR adds a TLS listener for vendor host names (tls.go); a
 // request offering tools with the marker MOCK-TOOL-CALL gets a tool call
 // (tools.go); the request log records the Host, TLS, and whether the request
-// came as a forward proxy (an account's proxy pointing at the mock).
+// came as a forward proxy (an account's proxy pointing at the mock: an
+// absolute URI, or inside a CONNECT tunnel).
 //
 // The upstream API key is read from x-api-key, api-key, Authorization (Bearer,
 // or the access key id of a SigV4 credential), x-goog-api-key or ?key= (in
@@ -132,9 +136,10 @@ type recorded struct {
 	Body           string            `json:"body"`
 	BodyTruncated  bool              `json:"body_truncated,omitempty"`
 	Status         int               `json:"status"`
-	// Host is the Host the request was sent to; TLS whether it came over the
-	// TLS listener; Proxied whether it reached the mock as an HTTP forward
-	// proxy (absolute request URI), i.e. through an account's proxy.
+	// Host is the Host the request was sent to; TLS whether it came over TLS
+	// (the TLS listener or a CONNECT tunnel); Proxied whether it reached the
+	// mock as an HTTP forward proxy (absolute request URI, or inside a
+	// CONNECT tunnel), i.e. through an account's proxy.
 	Host    string `json:"host"`
 	TLS     bool   `json:"tls,omitempty"`
 	Proxied bool   `json:"proxied,omitempty"`
@@ -146,6 +151,10 @@ type server struct {
 	log    []recorded
 	rules  map[string]*controlRule
 	video  *videoStore
+	// devicePolled holds the device codes polled once (openaiauth.go).
+	devicePolled map[string]bool
+	// tunnels is where CONNECT hands its connections (connect.go).
+	tunnels *tunnelListener
 }
 
 func main() {
@@ -154,9 +163,13 @@ func main() {
 		addr = ":8080"
 	}
 	log.Printf("mock-upstream listening on %s", addr)
-	h := newServer().handler()
+	s := newServer()
+	if os.Getenv("MOCK_TLS_ADDR") != "" {
+		s.tunnels = newTunnelListener()
+	}
+	h := s.handler()
 	go func() {
-		if err := serveTLS(h); err != nil {
+		if err := serveTLS(h, s.tunnels); err != nil {
 			log.Fatalf("mock-upstream TLS: %v", err)
 		}
 	}()
@@ -165,7 +178,7 @@ func main() {
 }
 
 func newServer() *server {
-	return &server{rules: map[string]*controlRule{}, video: newVideoStore()}
+	return &server{rules: map[string]*controlRule{}, video: newVideoStore(), devicePolled: map[string]bool{}}
 }
 
 func (s *server) handler() http.Handler {
@@ -199,7 +212,14 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /__control", s.setRule)
 	mux.HandleFunc("DELETE /__control", s.clearRules)
 	mux.HandleFunc("/__webhook/", s.webhook)
-	return mux
+	s.openAIAuthRoutes(mux)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodConnect {
+			s.connect(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // requestKey returns the upstream API key of r: x-api-key (Anthropic),
@@ -243,7 +263,7 @@ func (s *server) record(r *http.Request, body []byte, model string, stream bool,
 		ID: s.nextID, Time: time.Now().UTC(), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
 		XAPIKey: r.Header.Get("x-api-key"), Authorization: r.Header.Get("Authorization"), APIKey: requestKey(r), Headers: h,
 		Model: model, Stream: stream, MetadataUserID: userID, Body: string(b), BodyTruncated: trunc,
-		Host: r.Host, TLS: r.TLS != nil, Proxied: strings.HasPrefix(r.RequestURI, "http://") || strings.HasPrefix(r.RequestURI, "https://"),
+		Host: r.Host, TLS: r.TLS != nil, Proxied: tunneled(r) || strings.HasPrefix(r.RequestURI, "http://") || strings.HasPrefix(r.RequestURI, "https://"),
 	})
 	if len(s.log) > maxLog {
 		s.log = s.log[len(s.log)-maxLog:]
