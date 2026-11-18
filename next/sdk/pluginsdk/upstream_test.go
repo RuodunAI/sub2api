@@ -1,11 +1,14 @@
 package pluginsdk
 
 import (
+	"maps"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -63,7 +66,7 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 			}
 			continue
 		}
-		if err == nil || got != nil || !strings.Contains(err.Error(), tc.want) {
+		if status.Code(err) != codes.InvalidArgument || got != nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: got %v, want an error with %q", name, err, tc.want)
 		}
 	}
@@ -109,5 +112,42 @@ func TestRequestModel(t *testing.T) {
 	}
 	if got := RequestModel(nil); got != "" {
 		t.Errorf("nil request = %q", got)
+	}
+}
+
+func TestRequestStream(t *testing.T) {
+	for _, tc := range []struct {
+		meta bool
+		body string
+		want bool
+	}{
+		{false, `{"stream":true}`, true},
+		{true, `{"stream":false}`, true},
+		{true, ``, true},
+		{false, `{"stream":false}`, false},
+		{false, `{"stream":"true"}`, false},
+		{false, `{"model":"m"}`, false},
+	} {
+		in := &pluginv1.ExecuteRequest{Meta: &pluginv1.RequestMeta{Stream: tc.meta}, Body: []byte(tc.body)}
+		if got := RequestStream(in); got != tc.want {
+			t.Errorf("meta %v, body %s: %v", tc.meta, tc.body, got)
+		}
+	}
+	if RequestStream(nil) {
+		t.Error("nil request streams")
+	}
+}
+
+func TestUpstreamHeaderMaps(t *testing.T) {
+	got, err := NewUpstream("", "https://example.com").
+		HeaderMap(map[string]string{"Authorization": "Bearer k", "x-empty": ""}).
+		DefaultHeaderMap(map[string]string{"Accept": "a", "authorization": "default"}).
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !maps.Equal(got.GetHeaders(), map[string]string{"authorization": "Bearer k"}) ||
+		!maps.Equal(got.GetDefaultHeaders(), map[string]string{"accept": "a", "authorization": "default"}) {
+		t.Fatalf("headers %v, defaults %v", got.GetHeaders(), got.GetDefaultHeaders())
 	}
 }

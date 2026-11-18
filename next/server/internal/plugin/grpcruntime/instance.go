@@ -47,7 +47,6 @@ type Instance struct {
 
 	sems     [numClasses]chan struct{}
 	inflight atomic.Int64
-	bodies   byteBudget    // request body bytes handed to Execute calls in flight
 	callers  callerSet     // console users of the HTTP requests in flight
 	draining atomic.Bool   // no new calls are admitted
 	idle     chan struct{} // closed once draining and no call in flight
@@ -197,18 +196,15 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		StrictNetwork: i.rt.o.StrictNetwork,
 		Seccomp:       i.rt.o.Seccomp,
 	}
+	// The manifest's memory figure is what the plugin says it needs, not a
+	// limit: memory is limited only by the operator, per plugin
+	// (mergeLimits) or by the node's cap.
 	if m.Resources != nil {
-		spec.MemoryMB = m.Resources.MemoryMB
 		spec.CPU = m.Resources.CPU
 		spec.MaxThreads = m.Resources.MaxThreads
 		spec.MaxOpenFiles = m.Resources.MaxOpenFiles
 	}
 	mergeLimits(&spec, st.limits)
-	// A platform plugin holds whole request bodies, a few copies of each:
-	// its memory limit is never below what the request body limit needs.
-	if floor := platformMemoryFloorMB(i.rt.o.RequestBodyLimit); i.has(manifest.CapPlatformAdapter) && spec.MemoryMB > 0 && spec.MemoryMB < floor {
-		spec.MemoryMB = floor
-	}
 	if max := i.rt.o.MaxMemoryMB; max > 0 && (spec.MemoryMB == 0 || spec.MemoryMB > max) {
 		spec.MemoryMB = max
 	}
@@ -225,17 +221,9 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 	return spec
 }
 
-// platformMemoryFloorMB is the least memory limit of a platform plugin
-// process: 64 MB plus three times the request body limit (docs DESIGN
-// forwarding v2 §8.3). The limit is read when a process starts; a process
-// started under another one is stale (LimitsStale) and gets replaced.
-func platformMemoryFloorMB(limit core.RequestBodyLimit) int {
-	const mb = 1 << 20
-	return 64 + 3*int((core.MaxRequestBodyBytes(limit)+mb-1)/mb)
-}
-
 // mergeLimits applies the operator's per-plugin overrides on top of the
-// manifest limits; zero means "keep the manifest value".
+// manifest limits; zero means "keep the manifest value" (for memory: no
+// per-plugin limit).
 func mergeLimits(spec *core.LaunchSpec, l resourceLimits) {
 	if l.MemoryMB > 0 {
 		spec.MemoryMB = l.MemoryMB

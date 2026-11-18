@@ -129,10 +129,3 @@ func TestBodyAmbiguous(t *testing.T) {
 		}
 	}
 }
-
-func TestDeleteJSONAbsent(t *testing.T) {
-	in := []byte(`{"a":1}`)
-	if out, err := standard.DeleteJSON(in, "b"); err != nil || &out[0] != &in[0] {
-		t.Fatalf("absent path: %s %v, want the same slice", out, err)
-	}
-}

@@ -295,33 +295,42 @@ func TestPackAccountTypes(t *testing.T) {
 	}
 }
 
-// A runtime "none" package (declared upstreams only) builds nothing, packs
-// without runtimes and verifies like any other package; runtimes it would
-// carry are refused.
-func TestRuntimeNone(t *testing.T) {
-	const m = `{
-  "apiVersion": 1, "key": "decl", "name": {"en": "Declared"}, "version": "0.1.0",
-  "publisher": "tester", "runtime": "none", "hostCompat": ">=0.1.262 <0.2.0",
-  "capabilities": [{"id": "platform.adapter.v1"}],
-  "accountTypes": [{"id": "apikey", "label": {"en": "Key"}, "form": {"mode": "schema", "schema": "forms/k.json"},
-    "sensitiveFields": ["api_key"], "settingsFields": ["base_url"], "platforms": [{"platform": "anthropic"}],
-    "upstream": {"preset": "anthropic", "filterFields": []}}],
-  "hostPermissions": [{"id": "platform.register"}]
-}`
-	dir, out, keys := t.TempDir(), t.TempDir(), t.TempDir()
-	writeFile(t, filepath.Join(dir, "manifest.json"), m)
-	writeFile(t, filepath.Join(dir, "forms", "k.json"), `{}`)
-	if got := runOK(t, "build", "--dir", dir); got != "" {
-		t.Fatalf("build printed binaries: %s", got)
-	}
-	pkg := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--out-dir", out))
-	runOK(t, "keygen", "--key-id", "k1", "--out", keys)
-	runOK(t, "sign", "--key", filepath.Join(keys, "k1.key"), "--key-id", "k1", pkg)
-	runOK(t, "verify", "--pub", filepath.Join(keys, "k1.pub"), pkg)
-
-	writeFile(t, filepath.Join(dir, "runtimes", "linux-amd64", "plugin"), "ELF")
-	if msg := runFail(t, "pack", "--dir", dir, "--out", filepath.Join(out, "x.s2plugin")); !strings.Contains(msg, "carry no runtimes") {
-		t.Fatalf("msg = %s", msg)
+// A manifest of the plugin contract before the single Execute path - runtime
+// "none", a declared upstream, request fields, an endpoint body limit or a
+// removed capability - gets the host's one outdated-contract message from
+// every command that reads it, not a field or decode error.
+func TestOutdatedContract(t *testing.T) {
+	want := protocol.OutdatedContractMessage("demo", "0.1.0", contractCore)
+	grpc := `"runtime": "grpc"`
+	for name, old := range map[string]string{
+		"runtime none":       strings.Replace(demoManifest, grpc, `"runtime": "none"`, 1),
+		"upstream":           strings.Replace(demoManifest, `"database"`, `"accountTypes": [{"id": "k", "upstream": {"preset": "anthropic"}}], "database"`, 1),
+		"request fields":     strings.Replace(demoManifest, `"database"`, `"platforms": [{"id": "p", "requestFields": ["model"]}], "database"`, 1),
+		"max body bytes":     strings.Replace(demoManifest, `"database"`, `"platforms": [{"id": "p", "endpoints": [{"id": "e", "request": {"maxBodyBytes": 1}}]}], "database"`, 1),
+		"execute capability": strings.Replace(demoManifest, `{"id": "http.routes.v1"}`, `{"id": "platform.execute.v1"}`, 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := demoPlugin(t)
+			writeFile(t, filepath.Join(dir, "manifest.json"), old)
+			for _, args := range [][]string{
+				{"build", "--dir", dir},
+				{"pack", "--dir", dir, "--out-dir", t.TempDir()},
+			} {
+				if msg := runFail(t, args...); !strings.Contains(msg, want) {
+					t.Errorf("%s: %s", args[0], msg)
+				}
+			}
+			// A package packed by an older CLI.
+			pkg := filepath.Join(t.TempDir(), "old.s2plugin")
+			if err := writePackage(pkg, map[string][]byte{"manifest.json": []byte(old)}); err != nil {
+				t.Fatal(err)
+			}
+			keys := t.TempDir()
+			runOK(t, "keygen", "--key-id", "k1", "--out", keys)
+			if msg := runFail(t, "sign", "--key", filepath.Join(keys, "k1.key"), "--key-id", "k1", pkg); !strings.Contains(msg, want) {
+				t.Errorf("sign: %s", msg)
+			}
+		})
 	}
 }
 
@@ -438,7 +447,7 @@ func TestBuildRealPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := pluginv1.NewPluginServiceClient(raw.(*protocol.Client).Conn).GetInfo(context.Background(), &pluginv1.GetInfoRequest{})
-	if err != nil || info.GetPluginKey() != "anthropic" || info.GetVersion() != "0.3.5-test" {
+	if err != nil || info.GetPluginKey() != "anthropic" || info.GetVersion() != "0.4.1-test" {
 		t.Fatalf("GetInfo = %v %v", info, err)
 	}
 }

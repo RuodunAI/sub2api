@@ -144,9 +144,7 @@ export default {
       }
     },
     range: 'Range {min}–{max}.',
-    notInteger: 'Enter a whole number',
-    bodyOverPluginMemory:
-      'Note: above {safe} MB a single request of the largest size may exceed the memory cap of a plugin process; raise the core\'s process environment variable SUB2API_PLUGIN_MAX_MEMORY_MB as well.'
+    notInteger: 'Enter a whole number'
   },
   billing: {
     preConsumeTokens: 'Request reservation tokens',

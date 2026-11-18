@@ -82,15 +82,14 @@ type Options struct {
 	Users core.UserDirectory
 	// RequestBodyLimit is the gateway's request body limit of the moment
 	// (the gateway settings). It bounds the bodies of RelayUpstream and
-	// ExecuteHTTP and gives every platform plugin its memory floor and
-	// in-flight byte budget. Nil: core.DefaultMaxRequestBodyBytes.
+	// ExecuteHTTP. Nil: core.DefaultMaxRequestBodyBytes.
 	RequestBodyLimit core.RequestBodyLimit
 
 	HostVersion   string
 	DataDir       string // plugin work directories live under DataDir/<key>/work
 	StrictNetwork bool
 	Seccomp       bool
-	MaxMemoryMB   int // global cap on per-plugin memory (0 = none)
+	MaxMemoryMB   int // node cap on per-plugin memory (0 = none, the default)
 	// RunDir holds one private 0700 directory per plugin process (go-plugin
 	// sockets, the plugin's TMPDIR); default DataDir/.run. Keep it short:
 	// unix socket paths are limited to ~107 bytes.

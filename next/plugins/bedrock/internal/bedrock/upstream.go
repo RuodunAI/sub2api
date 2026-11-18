@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -46,13 +45,7 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	return p.invoke(a, id, streams(in), body)
-}
-
-// streams reports a request whose answer streams: the core's flag, or the
-// body's when the core forced streaming into it.
-func streams(in *pluginv1.ExecuteRequest) bool {
-	return in.GetMeta().GetStream() || gjson.GetBytes(in.GetBody(), "stream").Bool()
+	return p.invoke(a, id, pluginsdk.RequestStream(in), body)
 }
 
 // invoke is the InvokeModel request of the account for model id with the

@@ -49,12 +49,16 @@ type Directive struct {
 	SessionToken    string // optional
 }
 
-// signer signs req in place for one scheme. payload is the exact body req
-// sends.
-type signer func(req *http.Request, payload []byte, d Directive, now time.Time) error
+// scheme is one signing scheme: sign signs req in place (payload is the
+// exact body req sends), headers are the headers a signature writes or
+// covers, besides the host.
+type scheme struct {
+	sign    func(req *http.Request, payload []byte, d Directive, now time.Time) error
+	headers []string
+}
 
-var schemes = map[string]signer{
-	SchemeAWSSigV4: signAWSSigV4,
+var schemes = map[string]scheme{
+	SchemeAWSSigV4: {signAWSSigV4, sigV4SignedHeaders},
 }
 
 // Known reports whether Sign implements scheme.
@@ -73,14 +77,31 @@ func Known(scheme string) bool {
 // and leaves the request unsigned: the caller must not send it. Errors never
 // contain the secret or the session token.
 func Sign(req *http.Request, payload []byte, d Directive, now time.Time) error {
-	sign, ok := schemes[d.Scheme]
+	s, ok := schemes[d.Scheme]
 	if !ok {
 		return fmt.Errorf("%w: %q", ErrUnknownScheme, d.Scheme)
 	}
 	if req == nil || req.URL == nil {
 		return errors.New("reqsign: no request to sign")
 	}
-	return sign(req, payload, d, now)
+	return s.sign(req, payload, d, now)
+}
+
+// SignedHeaders returns the headers of req, signed by Sign with scheme,
+// that the signature wrote or covers, those present: what a plugin hands
+// to the host as authoritative headers so that no later layer changes
+// them. The host is not among them (the URL carries it); every other
+// header of req stays the plugin's to classify. For aws-sigv4:
+// Authorization, X-Amz-Date, X-Amz-Security-Token and Content-Type. An
+// unknown scheme has none.
+func SignedHeaders(req *http.Request, scheme string) http.Header {
+	out := http.Header{}
+	for _, name := range schemes[scheme].headers {
+		if values := req.Header.Values(name); len(values) > 0 {
+			out[http.CanonicalHeaderKey(name)] = values
+		}
+	}
+	return out
 }
 
 // String describes the directive without its secrets.

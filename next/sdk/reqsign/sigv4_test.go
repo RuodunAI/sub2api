@@ -354,6 +354,35 @@ func TestSignReplacesCredentialHeaders(t *testing.T) {
 	}
 }
 
+// SignedHeaders returns what the signature wrote or covers, nothing else
+// the request carries.
+func TestSignedHeaders(t *testing.T) {
+	v := sdkVectors(t)[0]
+	d := v.directive()
+	d.SessionToken = "session"
+	req := v.request(t)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Client", "c")
+	if err := Sign(req, []byte(v.Body), d, v.Time); err != nil {
+		t.Fatal(err)
+	}
+	got := SignedHeaders(req, SchemeAWSSigV4)
+	want := http.Header{"Content-Type": {"application/json"}, "Authorization": req.Header.Values("Authorization"),
+		"X-Amz-Date": req.Header.Values("X-Amz-Date"), "X-Amz-Security-Token": {"session"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) || len(got["Authorization"]) != 1 {
+		t.Fatalf("SignedHeaders = %v\nwant %v", got, want)
+	}
+	req.Header.Del("Content-Type")
+	req.Header.Del("X-Amz-Security-Token")
+	if got := SignedHeaders(req, SchemeAWSSigV4); len(got) != 2 {
+		t.Fatalf("without content type and token: %v", got)
+	}
+	if got := SignedHeaders(req, "hmac-v9"); len(got) != 0 {
+		t.Fatalf("unknown scheme: %v", got)
+	}
+}
+
 func TestSignErrors(t *testing.T) {
 	v := sdkVectors(t)[0]
 	const secret, token = "s3cr3t-value", "t0ken-value"

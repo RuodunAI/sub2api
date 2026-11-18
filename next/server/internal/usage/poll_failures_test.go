@@ -2,7 +2,6 @@ package usage
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -34,7 +33,7 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	if err = f.svc.ReceiveTask(ctx, r.RequestID, 200, body, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err = f.svc.RegisterTask(ctx, core.TaskRegistration{PublicID: id, UpstreamID: "raw-poll", Kind: "video", Snapshot: body, IDPaths: []string{"id"}, Deadline: time.Hour, Record: r}); err != nil {
+	if err = commitTask(f.svc, core.TaskRegistration{PublicID: id, UpstreamID: "raw-poll", Kind: "video", Snapshot: body, IDPaths: []string{"id"}, Deadline: time.Hour, Record: r}); err != nil {
 		t.Fatal(err)
 	}
 	exec := func(sql string, args ...any) {
@@ -52,7 +51,7 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 		}
 		return es[0]
 	}
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_POLL_FAILED, Reason: "HTTP 503"}, nil
 	}
 	f.svc.reconcileTask(ctx, claim(f.svc))
@@ -77,35 +76,31 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	}
 	// More than the old total-attempt limit still permits a valid pending observation.
 	exec(`UPDATE async_tasks SET attempts=1000 WHERE public_id=$1`, id)
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_PENDING, TaskSnapshotJson: `{"id":"raw-poll","status":"running"}`}, nil
 	}
 	nodeB.reconcileTask(ctx, claim(nodeB))
 	if f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id) != "0" || f.scalar(`SELECT observation_status FROM async_tasks WHERE public_id=$1`, id) != "pending" {
 		t.Fatal("valid progress failed to reset")
 	}
+	// The failure that reaches the cutoff refunds in the transaction that
+	// closes the task. When that transaction fails nothing changes, and the
+	// next round after the lease lapses asks again and refunds once.
 	exec(`UPDATE async_tasks SET poll_failures=19 WHERE public_id=$1`, id)
-	e = claim(nodeB)
-	row, err = nodeB.loadReserved(ctx, e.usageLogID)
-	if err != nil {
-		t.Fatal(err)
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
+		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_POLL_FAILED, Reason: "HTTP 503"}, nil
 	}
-	e.monitor = &monitorOutcome{ctx: ctx, id: "failure-claim", digest: strings.Repeat("a", 64), taskID: id}
-	result := &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_POLL_FAILED, Reason: "HTTP 503"}
 	reserved := f.balance()
 	f.ledger.fail.Store(1)
-	if err = nodeB.applyMonitorResult(ctx, e, row, result); err == nil {
-		t.Fatal("failed refund acknowledged")
-	}
+	nodeB.reconcileTask(ctx, claim(nodeB))
 	if !f.balance().Equal(reserved) || f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id) != "19" || f.scalar(`SELECT observation_status FROM async_tasks WHERE public_id=$1`, id) != "pending" {
 		t.Fatal("failed transaction leaked state")
 	}
-	if err = nodeB.applyMonitorResult(ctx, e, row, result); err != nil {
-		t.Fatal(err)
+	if es, err := nodeB.claimTasks(ctx, 1); err != nil || len(es) != 0 {
+		t.Fatal("a leased task was claimed again", err)
 	}
-	if err = nodeB.applyMonitorResult(ctx, e, row, result); err != nil {
-		t.Fatal("receipt retry", err)
-	}
+	exec(`UPDATE async_tasks SET lease_until=now()-interval '1 second' WHERE public_id=$1`, id)
+	nodeB.reconcileTask(ctx, claim(nodeB))
 	if !f.balance().Equal(before) || f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id) != "20" || f.scalar(`SELECT failure_code FROM async_tasks WHERE public_id=$1`, id) != "task_poll_failed" {
 		t.Fatal("cutoff/refund incorrect")
 	}
@@ -114,37 +109,29 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	}
 }
 
-func TestPollFailurePolicyAndLegacyMonitorReceipt(t *testing.T) {
+func TestPollFailurePolicyThroughMonitor(t *testing.T) {
 	for _, state := range []pluginv1.ReconcileResult_State{pluginv1.ReconcileResult_NOT_FOUND, pluginv1.ReconcileResult_POLL_FAILED} {
 		t.Run(state.String(), func(t *testing.T) {
 			rf := reconcileFixtureWith(t, &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"})
 			f, ctx := rf.fixture, context.Background()
 			before := f.balance()
-			f.svc.process(ctx, []*core.UsageRecord{f.reserved("legacy-poll", "raw", core.UsageTokens{Input: 1000, Output: 100})})
+			f.svc.process(ctx, []*core.UsageRecord{f.reserved("policy-poll", "raw", core.UsageTokens{Input: 1000, Output: 100})})
+			rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
+				return &pluginv1.ReconcileResult{State: state, Reason: "query failed"}, nil
+			}
 			f.due()
-			es, err := f.svc.claimDue(ctx, 1)
-			if err != nil || len(es) != 1 {
-				t.Fatal(err, len(es))
-			}
-			e := es[0]
-			row, err := f.svc.loadReserved(ctx, e.usageLogID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			e.monitor = &monitorOutcome{ctx: ctx, id: "legacy-poll", digest: strings.Repeat("b", 64)}
-			result := &pluginv1.ReconcileResult{State: state, Reason: "query failed"}
-			if err = f.svc.applyMonitorResult(ctx, e, row, result); err != nil {
-				t.Fatal(err)
-			}
-			if err = f.svc.applyMonitorResult(ctx, e, row, result); err != nil {
-				t.Fatal("retry", err)
+			if n := f.svc.ReconcileDue(ctx); n != 1 {
+				t.Fatalf("claimed %d", n)
 			}
 			if state == pluginv1.ReconcileResult_NOT_FOUND {
 				if !f.balance().Equal(before) {
 					t.Fatal("missing refund")
 				}
 			} else if f.scalar(`SELECT poll_failures FROM pending_settlements`) != "1" {
-				t.Fatal("receipt did not deduplicate failure count")
+				t.Fatal("failure not counted")
+			}
+			if f.scalar(`SELECT count(*) FROM plugin_monitor_receipts`) != "1" {
+				t.Fatal("the outcome committed without its claim's receipt")
 			}
 		})
 	}
@@ -176,7 +163,7 @@ func TestManagedObservationTerminationPolicy(t *testing.T) {
 			if err = f.svc.ReceiveTask(ctx, r.RequestID, 200, body, ""); err != nil {
 				t.Fatal(err)
 			}
-			if err = f.svc.RegisterTask(ctx, core.TaskRegistration{PublicID: id, UpstreamID: "raw-policy", Kind: "video", Snapshot: body, IDPaths: []string{"id"}, Deadline: time.Hour, Record: r}); err != nil {
+			if err = commitTask(f.svc, core.TaskRegistration{PublicID: id, UpstreamID: "raw-policy", Kind: "video", Snapshot: body, IDPaths: []string{"id"}, Deadline: time.Hour, Record: r}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err = f.db.SQL.ExecContext(ctx, `UPDATE async_tasks SET next_check_at=now() WHERE public_id=$1`, id); err != nil {

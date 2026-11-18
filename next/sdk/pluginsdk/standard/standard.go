@@ -87,9 +87,10 @@ type Route struct {
 	Model Model
 	// Headers are written after the type's.
 	Headers []Header
-	// Edit changes the body after FilterFields (nil: none). It edits by
-	// path (SetJSON, DeleteJSON) and returns body unchanged when it has
-	// nothing to do. Not on a websocket route.
+	// Edit changes the body after FilterFields (nil: none). It edits with
+	// jsonedit (jsonedit.Edit) and returns body unchanged when it has
+	// nothing to do; an error without a gRPC status is returned as
+	// INVALID_ARGUMENT. Not on a websocket route.
 	Edit func(body []byte, r *Request) ([]byte, error)
 }
 

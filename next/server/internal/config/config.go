@@ -118,7 +118,7 @@ type PluginConfig struct {
 	StrictNetwork     bool     // SUB2API_PLUGIN_STRICT_NETWORK, default true on linux
 	Seccomp           bool     // SUB2API_PLUGIN_SECCOMP, default true on linux
 	MaxPackageBytes   int64    // SUB2API_PLUGIN_MAX_PACKAGE_BYTES, default rc.PluginPackageMaxBytes (64 MiB)
-	MaxMemoryMB       int      // SUB2API_PLUGIN_MAX_MEMORY_MB, global cap, default 1024
+	MaxMemoryMB       int      // SUB2API_PLUGIN_MAX_MEMORY_MB, node cap on per-plugin memory; default 0 = no cap
 	DBRoleIsolation   bool     // SUB2API_PLUGIN_DB_ROLE_ISOLATION, default true
 	Landlock          bool     // SUB2API_PLUGIN_LANDLOCK: Landlock file system restriction, default false (CONTRACTS §43.8)
 	MarketSourcesJSON string   // SUB2API_MARKET_SOURCES: JSON [{name,url,public_key}] seeded at start
@@ -245,7 +245,7 @@ func Load(goos string) (*Config, error) {
 	if p.MaxPackageBytes, err = int64Env("SUB2API_PLUGIN_MAX_PACKAGE_BYTES", rc.PluginPackageMaxBytes); err != nil {
 		return nil, err
 	}
-	mm, err := int64Env("SUB2API_PLUGIN_MAX_MEMORY_MB", 1024)
+	mm, err := int64Env("SUB2API_PLUGIN_MAX_MEMORY_MB", 0)
 	if err != nil {
 		return nil, err
 	}

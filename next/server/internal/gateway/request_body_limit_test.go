@@ -9,7 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -126,20 +125,4 @@ func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 	require.EqualValues(t, 64<<20, e.gw.MaxRequestBodyBytes(ctx))
 	e.gw.onConfigChanged([]byte(`{"key":"settings.gateway"}`))
 	require.EqualValues(t, 256<<20, e.gw.MaxRequestBodyBytes(ctx))
-}
-
-// The answer carries the largest limit a plugin process still has memory
-// for under the node's cap (64 MB + 3 x the limit), so the console can warn;
-// a limit above it is still saved.
-func TestGatewaySettingsAnswerTheSafeRequestBodyLimit(t *testing.T) {
-	for capMB, want := range map[int]int64{0: 0, 1024: 320, 4096: 1344, 64: 1} {
-		e := newDBEnv(t, func(d *Deps) { d.Config = &config.Config{Plugins: config.PluginConfig{MaxMemoryMB: capMB}} })
-		code, res := e.api("GET", "/settings/gateway", nil)
-		require.Equal(t, 200, code, res.Raw)
-		require.Equal(t, want, res.Get("data.max_request_body_safe_mb").Int(), "cap %d", capMB)
-		code, res = e.api("PUT", "/settings/gateway", map[string]any{"max_request_body_mb": 1024})
-		require.Equal(t, 200, code, res.Raw)
-		require.EqualValues(t, 1024, res.Get("data.max_request_body_mb").Int())
-		require.Equal(t, want, res.Get("data.max_request_body_safe_mb").Int(), "cap %d", capMB)
-	}
 }
