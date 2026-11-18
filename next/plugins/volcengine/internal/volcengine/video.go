@@ -283,7 +283,7 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 		return &pluginv1.UsageReport{}
 	}
 	model := in.GetMeta().GetModel()
-	spec := readVideoSpec(in.GetFields(), in.GetFieldsOmitted())
+	spec := readVideoSpec(in.GetFields())
 	est := estimateVideo(model, spec)
 	if len(est.Assumed) > 0 {
 		// The one line that explains an unexpectedly large pre-charge. An
@@ -295,7 +295,7 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 		p.log.Info("volcengine: video estimate had to assume part of the request",
 			"request_id", in.GetMeta().GetRequestId(), "task_id", taskID, "model", model,
 			"assumed", strings.Join(est.Assumed, ","), "resolution", est.Resolution,
-			"est_output_tokens", est.Tokens, "fields_omitted", strings.Join(in.GetFieldsOmitted(), ","))
+			"est_output_tokens", est.Tokens)
 	}
 	tokens := &pluginv1.UsageTokens{OutputTokens: est.Tokens}
 	facts := estimatedVideoFacts(est, in.GetFields())
