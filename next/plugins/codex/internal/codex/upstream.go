@@ -150,11 +150,9 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	for name, value := range accountHeaders(c) {
-		u.Header(name, value)
-	}
 	session := upstreamSession(in.GetMeta().GetApiKeyId(), body)
-	return u.Header("session_id", session).
+	return u.HeaderMap(accountHeaders(c)).
+		Header("session_id", session).
 		Header("conversation_id", session).
 		Body(body).
 		Model(pluginsdk.RequestModel(in)).
@@ -166,11 +164,7 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err error) {
 	switch protocol {
 	case ProtocolResponses:
-		u = pluginsdk.NewUpstream(http.MethodPost, p.responsesURL())
-		for name, value := range httpHeaders {
-			u.Header(name, value)
-		}
-		return u, false, nil
+		return pluginsdk.NewUpstream(http.MethodPost, p.responsesURL()).HeaderMap(httpHeaders), false, nil
 	case ProtocolResponsesWS:
 		wsURL, err := webSocketURL(p.responsesURL())
 		if err != nil {

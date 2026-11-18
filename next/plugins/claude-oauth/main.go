@@ -126,21 +126,27 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		return nil, status.Errorf(codes.InvalidArgument, "unsupported protocol %q", in.GetMeta().GetProtocol())
 	}
 	// The host renews the access token before it expires (refresh.go).
-	var creds struct {
-		AccessToken string `json:"access_token"`
-	}
+	var creds credentials
 	if err := json.Unmarshal([]byte(in.GetAccount().GetCredentialsJson()), &creds); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "parse credentials: "+err.Error())
 	}
-	// Only the oauth beta, as sub2api's gateway_claude_oauth_body.go adds it;
-	// count_tokens is GA and needs no beta of its own.
 	return pluginsdk.NewUpstream(http.MethodPost, target).
-		Header("authorization", "Bearer "+creds.AccessToken).
-		Header("anthropic-version", AnthropicAPIVersion).
-		Header("anthropic-beta", OAuthBeta).
-		Header("content-type", "application/json").
+		HeaderMap(oauthHeaders(creds.AccessToken)).
 		Body(in.GetBody()).
 		Build()
+}
+
+// oauthHeaders are the headers of every request made with an OAuth access
+// token: a bearer token plus the oauth beta, never an x-api-key. Only the
+// oauth beta, as sub2api's gateway_claude_oauth_body.go adds it; count_tokens
+// is GA and needs no beta of its own.
+func oauthHeaders(accessToken string) map[string]string {
+	return map[string]string{
+		"authorization":     "Bearer " + accessToken,
+		"anthropic-version": AnthropicAPIVersion,
+		"anthropic-beta":    OAuthBeta,
+		"content-type":      "application/json",
+	}
 }
 
 // classifyPolicy is Anthropic's policy (error.type and error.message,
@@ -179,17 +185,10 @@ func (p *Plugin) BuildTestRequest(ctx context.Context, req *pluginv1.BuildTestRe
 	}
 	bodyBytes, _ := json.Marshal(testBody)
 
-	// Same credentials as BuildUpstream: an OAuth access token is a
-	// bearer token plus the oauth beta, never an x-api-key.
 	return &pluginv1.BuildTestRequestResponse{
-		Method: "POST",
-		Url:    MessagesURL,
-		Headers: map[string]string{
-			"authorization":     "Bearer " + creds.AccessToken,
-			"anthropic-version": AnthropicAPIVersion,
-			"anthropic-beta":    OAuthBeta,
-			"content-type":      "application/json",
-		},
+		Method:        "POST",
+		Url:           MessagesURL,
+		Headers:       oauthHeaders(creds.AccessToken),
 		BodyJson:      string(bodyBytes),
 		Model:         model,
 		UsageProtocol: anthropic.ProtocolMessages,

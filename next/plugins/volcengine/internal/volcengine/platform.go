@@ -454,11 +454,11 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	up := pluginsdk.NewUpstream(http.MethodPost, target).Body(body).Model(model)
-	for name, value := range upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()) {
-		up.Header(name, value)
-	}
-	return up.Build()
+	return pluginsdk.NewUpstream(http.MethodPost, target).
+		HeaderMap(upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders())).
+		Body(body).
+		Model(model).
+		Build()
 }
 
 // BuildTestRequest implements pluginsdk.Platform: a minimal chat completion.

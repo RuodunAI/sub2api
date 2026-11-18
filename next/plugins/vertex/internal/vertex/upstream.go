@@ -135,14 +135,12 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	u := pluginsdk.NewUpstream(http.MethodPost, req.url).
+	return pluginsdk.NewUpstream(http.MethodPost, req.url).
 		DefaultHeader("content-type", contentType).
+		HeaderMap(req.auth).
 		Body(in.GetBody()).
-		Model(req.model)
-	for name, value := range req.auth {
-		u.Header(name, value)
-	}
-	return u.Build()
+		Model(req.model).
+		Build()
 }
 
 // BuildTestRequest implements pluginsdk.Platform: the smallest
