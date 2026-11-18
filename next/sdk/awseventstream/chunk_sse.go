@@ -7,8 +7,9 @@ import (
 )
 
 // FormatChunk names the response stream ChunkSSEReader decodes. It is the
-// value a plugin puts in BuildUpstreamRequestResponse.response_stream to have
-// the host run an upstream answer through ChunkSSEReader.
+// value a plugin puts in UpstreamRequest.response_stream (pluginsdk
+// Upstream.ResponseStream) to have the host run an upstream answer through
+// ChunkSSEReader.
 const FormatChunk = "aws-eventstream-chunk"
 
 // MaxChunkMessageSize is the largest message ChunkSSEReader accepts. One
