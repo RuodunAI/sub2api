@@ -116,8 +116,12 @@ type HostServiceClient interface {
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(ctx context.Context, in *PriceUsageRequest, opts ...grpc.CallOption) (*PriceUsageResponse, error)
-	// db.schema: restricted DSN for the plugin schema. The connection must go
-	// through EgressService (the SDK dialer does this automatically).
+	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
+	// egress tunnel it is the virtual address db.sub2api:5432 without
+	// credentials, which the core logs in to as its own database user with
+	// search_path on the schema; without the tunnel (development) it is the
+	// core's DSN with search_path pinned. The SDK dialer goes through
+	// EgressService automatically.
 	GetDSN(ctx context.Context, in *GetDSNRequest, opts ...grpc.CallOption) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
@@ -711,8 +715,12 @@ type HostServiceServer interface {
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(context.Context, *PriceUsageRequest) (*PriceUsageResponse, error)
-	// db.schema: restricted DSN for the plugin schema. The connection must go
-	// through EgressService (the SDK dialer does this automatically).
+	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
+	// egress tunnel it is the virtual address db.sub2api:5432 without
+	// credentials, which the core logs in to as its own database user with
+	// search_path on the schema; without the tunnel (development) it is the
+	// core's DSN with search_path pinned. The SDK dialer goes through
+	// EgressService automatically.
 	GetDSN(context.Context, *GetDSNRequest) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.

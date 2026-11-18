@@ -14,6 +14,7 @@
 
 - **proto**：`EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
 - **proto**：`UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。SDK 设置它的方法此前已删除；它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
+- **proto**：`GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：没有插件数据库角色以后它恒为 false。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 执行迁移；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（以前靠临时角色的属主判断，现在看本事务写过的系统目录行）。以前在工具里因为“临时角色没有权限”失败、而宿主能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
 - **清单**：端点的 `usageMaxBytes`（读用量的观察的字节预算）删除，没有插件声明过它；观察总是整份，`ExtractUsageRequest.truncated`（7）随之删除（只有它会置这个字段）。旧清单里还写着它时，核心忽略这个未知字段（上传、安装、加载照常，等于不设预算）；`sub2api-plugin` 严格解码，`build`、`pack`、`sign`、`verify`、`index`、`dev` 报 `unknown field "usageMaxBytes"`，删掉这一行即可。volcengine 的任务提交不再检查这个字段。
 
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移，随转发 V2 发布）
@@ -64,7 +65,7 @@
 - **连接数**：插件的连接（每节点每个用数据库的插件默认 4 个，现有 7 个官方插件用数据库）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；规划 `max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”。
 - **隔离（直说）**：持有 `db.schema` 的插件现在能读写核心的用户能访问的所有表，包括核心自己的表和其他插件的表；分隔只靠约定和安装时对 `db.schema` 的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、可还原的 API Key、TOTP、插件加密设置）读不出明文，API Key 与用户密码只存哈希，但余额、授权等都能被改写。因此非官方插件授予 `db.schema` 一律要求超管专属的 `plugin:grant:db_schema_unconfined`（以前只在关闭角色隔离时要求），官方插件不变。
 - **迁移 0111** 删除旧插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；插件迁移由核心以自己的用户执行并直接记录。之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
-- **核心代理插件的数据库连接，凭据不进插件**（所有者补充“数据库直接委托给核心来代理就行了”）：沙箱里的插件（严格网络，Linux 默认）从 `GetDSN` 拿到不带密码的虚拟地址 `db.sub2api:5432`，经出口隧道连到核心，核心用自己的数据库配置（含 TLS、SCRAM）代为登录、把 `search_path` 设为插件的 schema 后原样转发协议，取消请求也转给服务器。在 `pg_stat_activity` 里这些连接的 `application_name` 是 `sub2api plugin <key>`。严格网络关闭时（开发、非 Linux）插件仍拿到核心的 DSN 直连。插件代码和 SDK 不用改；`role_isolated` 不再填写（恒为 false）。所以隔离的准确说法是：插件拿不到数据库密码，但能执行核心的数据库用户能执行的任何 SQL。
+- **核心代理插件的数据库连接，凭据不进插件**（所有者补充“数据库直接委托给核心来代理就行了”）：沙箱里的插件（严格网络，Linux 默认）从 `GetDSN` 拿到不带密码的虚拟地址 `db.sub2api:5432`，经出口隧道连到核心，核心用自己的数据库配置（含 TLS、SCRAM）代为登录、把 `search_path` 设为插件的 schema 后原样转发协议，取消请求也转给服务器。在 `pg_stat_activity` 里这些连接的 `application_name` 是 `sub2api plugin <key>`。严格网络关闭时（开发、非 Linux）插件仍拿到核心的 DSN 直连。插件代码和 SDK 不用改；`role_isolated` 不再填写（随后从协议删除，见“转发 V2 收尾的协议清理”）。所以隔离的准确说法是：插件拿不到数据库密码，但能执行核心的数据库用户能执行的任何 SQL。
 
 ### 账号协议绑定与模型的协议限定，跨平台协议转换改为默认关闭（核心；迁移 0106，主节点优先；**升级后依赖协议转换的客户端会收到 404，要在账号上为模型开启**）
 

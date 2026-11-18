@@ -13,7 +13,7 @@
 - 只有一个数据库用户：核心的（`DATABASE_URL` 里的）。核心不再建、改任何角色，也不再需要 `CREATEROLE`。
 - 持有 `db.schema` 的插件仍有自己的 schema `plg_<key>`，属主是核心的用户。核心在插件第一次需要时（迁移、`GetDSN`）`CREATE SCHEMA IF NOT EXISTS`。
 - 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0111 删除两个 SECURITY DEFINER 函数。
-- `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写（恒为 false，字段待 proto 的所有者删除）。
+- `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写，随后从协议删除（`GetDSNResponse` 字段 3 `reserved`，SDK 的 `DSNInfo.RoleIsolated` 一并删除）。
 - 卸载并清除数据：`DROP SCHEMA plg_<key> CASCADE`，删除迁移记录。
 - 删除的东西：角色的创建与修改、密码派生、归属标记的写入、成员授予、schema 移交、角色的 `search_path`、`rewriteDSN` 换凭据的分支、`Tracker.AsPluginRole`、`Status.Role`/`RoleIsolated`、错误 `plugin_db_isolation_unavailable` 与 `plugin_db_role_conflict`、配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`，以及它们的测试。
 
@@ -66,5 +66,5 @@
 - **连接数**：每条插件连接是核心向 PostgreSQL 开的一条连接，不在核心的连接池里，不另设上限（所有者规则）。数量 = 插件自己的池：SDK 默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，插件可用 `pluginsdk.WithDBPoolSize` 改），连接空闲 30 分钟、存活 1 小时后由插件侧关闭；每次取消另有一条瞬时连接。规划 `max_connections`：节点数 ×（核心池 `SUB2API_PG_MAX_CONNS`，默认 20 + 每个用数据库的插件 4 个）。现在 7 个官方插件用数据库（anthropic、dynweight、growth、guard、moderation、payment、volcengine），全部启用时每节点最多 20 + 28 个。
 - **没有隧道时**（`SUB2API_PLUGIN_STRICT_NETWORK=false`、非 Linux、`sub2api dev`，插件不在沙箱里，SDK 的 `installed` 为 false 时直连）：`GetDSN` 仍返回核心的 DSN 加 `search_path`（第一部分的做法），插件拿得到密码。这种模式下插件进程本来就不受网络与文件限制，只用于开发和测试。插件单元测试（`pluginsdktest`）不经核心，不受影响。
 - **隔离的说法换成**：插件拿不到数据库密码；它仍能执行核心的数据库用户能执行的任何 SQL，schema 之间的隔离仍只靠约定（§3）。不多说。
-- **遗留给别的包**：隧道对真实数据库地址的例外（`egress.Options.DatabaseAddrs`）在严格网络下已用不到（插件只拿到虚拟地址，也没有凭据），留给出口隧道的负责人删除；proto 的 `GetDSNResponse.role_isolated` 和 SDK 的 `DSNInfo.RoleIsolated` 待 proto/SDK 的负责人删除，`host.proto` 对 GetDSN 的注释（“restricted DSN”“plg_<key> role”）也要改。
+- **遗留给别的包**：隧道对真实数据库地址的例外（`egress.Options.DatabaseAddrs`）在严格网络下已用不到（插件只拿到虚拟地址，也没有凭据），留给出口隧道的负责人删除；proto 的 `GetDSNResponse.role_isolated` 和 SDK 的 `DSNInfo.RoleIsolated` 已在转发 V2 收尾的协议清理中删除（字段 3 `reserved`），`host.proto` 对 GetDSN 的注释一并改写；`sub2api-plugin db check` 的比对工具也不再用临时角色。
 
