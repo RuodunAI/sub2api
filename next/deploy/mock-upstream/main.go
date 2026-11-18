@@ -477,7 +477,7 @@ func (s *server) messages(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{
 			"id": msgID, "type": "message", "role": "assistant", "model": req.Model,
-			"content":     []any{anthropicToolUse("toolu_"+msgID, tool.name, map[string]any{"query": "mock"})},
+			"content":     []any{anthropicToolUse("toolu_"+msgID, tool.name, json.RawMessage(toolInput()))},
 			"stop_reason": "tool_use", "stop_sequence": nil,
 			"usage": usageJSON(b.usage, b.usage.OutputTokens),
 		})

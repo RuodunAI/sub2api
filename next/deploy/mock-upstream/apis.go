@@ -207,41 +207,28 @@ func (s *server) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		return c
 	}
+	// The choice's deltas (the tool call or the text), then one tail.
+	var deltas []map[string]any
+	reason := "stop"
 	if isTool && !tool.resultSeen {
-		deltas := []map[string]any{
-			{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function",
-				"function": map[string]any{"name": tool.name, "arguments": ""}}}},
-		}
+		deltas = append(deltas, map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{map[string]any{"index": 0, "id": callID, "type": "function",
+			"function": map[string]any{"name": tool.name, "arguments": ""}}}})
 		for _, frag := range toolArguments {
 			deltas = append(deltas, map[string]any{"tool_calls": []any{map[string]any{"index": 0, "function": map[string]any{"arguments": frag}}}})
 		}
-		for _, d := range deltas {
-			if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": d, "finish_reason": nil}})) {
-				return
-			}
+		reason = "tool_calls"
+	} else {
+		deltas = append(deltas, map[string]any{"role": "assistant", "content": ""})
+		for _, part := range chunks(b.text) {
+			deltas = append(deltas, map[string]any{"content": part})
 		}
-		if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}})) {
-			return
-		}
-		if includeUsage {
-			last := chunk([]any{})
-			last["usage"] = openaiChatUsage(b.usage)
-			if !sw.send("", last) {
-				return
-			}
-		}
-		sw.send("", "[DONE]")
-		return
 	}
-	if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": ""}, "finish_reason": nil}})) {
-		return
-	}
-	for _, part := range chunks(b.text) {
-		if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{"content": part}, "finish_reason": nil}})) {
+	for _, d := range deltas {
+		if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": d, "finish_reason": nil}})) {
 			return
 		}
 	}
-	if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}})) {
+	if !sw.send("", chunk([]any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": reason}})) {
 		return
 	}
 	if includeUsage {
