@@ -61,7 +61,7 @@
         {
           "platform": "openai",
           "endpoints": ["responses", "responses_websocket"],
-          "passHeaders": ["user-agent"],
+          "passHeaders": [],
           "streamOnly": ["openai.responses"]
         }
       ]
@@ -106,7 +106,7 @@
         {
           "platform": "openai",
           "endpoints": ["responses", "responses_websocket"],
-          "passHeaders": ["user-agent"],
+          "passHeaders": [],
           "streamOnly": ["openai.responses"]
         }
       ]
