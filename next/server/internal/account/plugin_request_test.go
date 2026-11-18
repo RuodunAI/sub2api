@@ -107,6 +107,28 @@ func TestSendPluginAccountRequest(t *testing.T) {
 	}
 }
 
+// An answer cut short (the connection closes before the declared length) is
+// a transport failure, not a shorter answer: the plugin gets neither its
+// status nor its part of the body.
+func TestSendPluginAccountRequestCutShort(t *testing.T) {
+	e := setup(t)
+	id := e.mkRawAccount("anthropic", "apikey", "mine", "sk-mine", false)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte(`{"ok":`))
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	defer srv.Close()
+	out, err := e.svc.SendPluginAccountRequest(context.Background(), "anthropic", testServers,
+		&pluginv1.SendAccountRequestRequest{AccountId: id, Url: srv.URL + "/x"})
+	if err != nil || out.GetTransportError() == "" || out.GetStatus() != 0 || len(out.GetBody()) != 0 {
+		t.Fatalf("cut short: %v %v", out, err)
+	}
+}
+
 // SendPluginAccountRequest reaches the hosts a relay of the account may
 // (manifest.UpstreamHostAllowed): the plugin's externalServices and their
 // subdomains, and the account's own upstream addresses, read from its
