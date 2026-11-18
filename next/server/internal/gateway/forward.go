@@ -33,20 +33,20 @@ func (e *convertError) Unwrap() error { return e.err }
 // route the response is converted to the endpoint protocol; usage is always
 // read from the upstream response with the upstream protocol's rules.
 //
-// The declarative rules run here in every case. When the endpoint declares
-// usage.source "plugin" they are joined by a capture (see usageplugin.go)
-// that keeps what the observation of a relay that waits shows the plugin;
-// the plugin reads it in the answer to its RelayUpstream call once forward
-// has returned (waited.go) - never before. upBody is the request as it went
-// upstream; only its declared usageRequestFields are read from it, at the
-// end, and the body itself is not kept.
-func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Account, resp *http.Response, upBody []byte) attemptResult {
+// The declarative rules run here in every case. A relay that waits passes
+// a capture (newUsageCapture; nil when the endpoint's usage is the core's)
+// that keeps what its observation shows the plugin; the plugin reads it in
+// the answer to its RelayUpstream call once forward has returned
+// (waited.go) - never before. A relay that does not wait passes nil: no
+// plugin reads its answer. upBody is the request as it went upstream; only
+// its declared usageRequestFields are read from it, at the end, and the
+// body itself is not kept.
+func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Account, resp *http.Response, upBody []byte, cap *usageCapture) attemptResult {
 	core.ApplyProviderHeaders(c.c.Writer.Header(), resp.Header)
 	u := newUsageAcc(rt.usage).WithLog("request_id", c.rid, "plugin", rt.binding.Plugin.Key,
 		"platform", rt.platform, "protocol", rt.upstream)
 	u.WithPrimaryModel(c.upstreamPrimaryModel)
 	u.WithAttemptAccounting(c.hasRequestedAttemptUsage(rt, upBody))
-	cap := newUsageCapture(rt)
 	c.upstreamResponded = true
 	c.rec.StatusCode = resp.StatusCode
 	c.rec.Success = true

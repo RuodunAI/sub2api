@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1567,4 +1568,12 @@ func TestAccountConversionLossPolicy(t *testing.T) {
 	acc, err := e.svc.Load(ctx, id)
 	require.NoError(t, err)
 	require.Equal(t, "", acc.ConversionLossPolicy)
+}
+
+func (*fakePlatform) Execute(context.Context, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error) {
+	return core.ExecutionResult{}, errors.New("the fake platform does not execute requests")
+}
+
+func (*fakePlatform) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+	return nil, errors.New("the fake platform does not monitor tasks")
 }

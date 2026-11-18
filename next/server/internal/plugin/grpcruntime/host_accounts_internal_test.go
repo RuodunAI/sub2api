@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
@@ -25,6 +26,8 @@ type fakeAccounts struct {
 	creds map[int64]string
 	// calls records "<method>:<pluginKey>" in order.
 	calls []string
+	// manifest is the manifest the last SendPluginAccountRequest was given.
+	manifest *manifest.Manifest
 	// lastQuery is the query of the last ListPluginAccounts call.
 	lastQuery core.PluginAccountQuery
 	// audits counts ReadPluginAccountCredentials calls that returned a

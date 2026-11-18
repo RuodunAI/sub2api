@@ -1080,3 +1080,7 @@ func TestSettlementHidesAccountWithoutAccountRead(t *testing.T) {
 	out := rf.post(rf.user, "/usage/"+id+"/reconcile", 200)["data"].(map[string]any)
 	require.Nil(t, out["account_id"])
 }
+
+func (*recPlugin) Execute(context.Context, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error) {
+	return core.ExecutionResult{}, errors.New("recPlugin does not execute requests")
+}

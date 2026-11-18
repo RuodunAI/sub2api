@@ -176,7 +176,7 @@ func BenchmarkHotExecution(b *testing.B) {
 	}
 	begin := func(rec *core.UsageRecord) error {
 		return s.svc.BeginExecution(ctx, core.ExecutionIntent{ID: rec.RequestID, RequestID: rec.RequestID,
-			PluginKey: rec.PluginKey, AccountID: *rec.AccountID, Attempt: 1, Record: rec})
+			PluginKey: rec.PluginKey, AccountID: *rec.AccountID, Attempt: 1})
 	}
 	observe := func(rec *core.UsageRecord) error {
 		return s.svc.ObserveExecution(ctx, rec.RequestID, rec, []byte("bounded observation"))

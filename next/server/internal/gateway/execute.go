@@ -99,10 +99,6 @@ func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, ac
 // administrator's upstream timeouts, the policy) or the plugin process.
 func (x *execution) run(ctx context.Context, upModel string, n int) (core.ExecutionResult, error) {
 	c, rt := x.c, x.rt
-	plugin, ok := rt.binding.Client.(core.ExecutePlugin)
-	if !ok {
-		return core.ExecutionResult{}, errors.New("the account type's plugin does not execute requests")
-	}
 	meta := c.metaFor(rt)
 	meta.Model = upModel
 	in := &pluginv1.ExecuteRequest{Meta: meta, Account: x.acct, Body: x.body, InboundHeaders: c.passHeaders(rt.passHeaders),
@@ -115,7 +111,7 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 		x.detach = context.AfterFunc(ctx, cancel)
 		ctx = detached
 	}
-	return plugin.Execute(ctx, in, client)
+	return rt.binding.Client.Execute(ctx, in, client)
 }
 
 // sendParked sends the relay the plugin confirmed with host_usage. A task

@@ -16,7 +16,6 @@ import (
 // (netguard.CheckHostVia). It performs one HTTP exchange, without redirects or retries; the
 // runtime has already checked the token and the host (neither the number of
 // fetches nor their size is bounded).
-// in.Options may only shorten reconcileHTTPTimeout.
 func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, proxyID *int64, admit func(context.Context) error) (*pluginv1.ExecutionHTTPResponse, error) {
 	return execfetch.Do(ctx, in, execfetch.Binding{
 		CheckURL: func(ctx context.Context, raw string) (*url.URL, error) {

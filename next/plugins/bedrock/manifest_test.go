@@ -166,12 +166,11 @@ func TestManifestShape(t *testing.T) {
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
-	// No externalServices: they are the hosts the plugin's own Fetch and
-	// SendAccountRequest may reach, and it makes neither call. The core
-	// sends the upstream and test requests the plugin builds; neither is
-	// checked against externalServices.
-	if len(m.ExternalServices) != 0 {
-		t.Errorf("externalServices = %v, want none", m.ExternalServices)
+	// externalServices is amazonaws.com, the domain of every runtime host:
+	// the core relays only to a host the manifest declares or the account
+	// names (CONTRACTS §112.17), and an account names none.
+	if !slices.Equal(m.ExternalServices, []string{bedrock.ServiceDomain}) {
+		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, bedrock.ServiceDomain)
 	}
 	for _, region := range []string{bedrock.DefaultRegion, "eu-central-1", "us-gov-west-1"} {
 		if host := bedrock.RuntimeHost(region); host != "bedrock-runtime."+region+".amazonaws.com" {

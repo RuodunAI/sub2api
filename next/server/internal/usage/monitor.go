@@ -58,10 +58,6 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.D
 // refused is errTaskDeferred, whatever the plugin made of it. A result
 // arms e.monitor for the outcome written from it.
 func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observationCall) (*pluginv1.ReconcileResult, error) {
-	monitor, ok := call.client.(core.MonitorPlugin)
-	if !ok {
-		return nil, errors.New("plugin has no Monitor implementation")
-	}
 	var deferred atomic.Bool
 	fetch := func(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		return s.fetchExecutionHTTP(ctx, in, call.proxyID, func(ctx context.Context) error {
@@ -75,7 +71,7 @@ func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observati
 			return nil
 		})
 	}
-	res, err := monitor.Monitor(ctx, &pluginv1.PollRequest{Entry: call.entry, Account: call.acct}, fetch)
+	res, err := call.client.Monitor(ctx, &pluginv1.PollRequest{Entry: call.entry, Account: call.acct}, fetch)
 	switch {
 	case deferred.Load():
 		return nil, errTaskDeferred

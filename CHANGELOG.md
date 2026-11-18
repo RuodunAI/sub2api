@@ -134,7 +134,14 @@
 - 钩子调用因请求超过插件 gRPC 接收上限而失败的情况不再发生（插件的接收上限固定为传输层最大值），`requestTooLarge` 的熔断例外删除。
 - bedrock：删掉请求体里的 `inference_geo`、`speed`（以前删的是拼错的 `interface_geo`，真正的字段会作为未知字段发给 Bedrock）。
 - volcengine：在 anthropic 平台上只服务 Messages，`count_tokens` 改由核心本地估算（以前只有 Ark 账号的分组对 `count_tokens` 一律回 503）。
-- vertex：把客户端的 `user-agent`、`x-goog-api-client` 作为默认头转发。vertex、bedrock 不再声明用不到的 `externalServices`。
+- vertex：把客户端的 `user-agent`、`x-goog-api-client` 作为默认头转发。vertex 声明 `externalServices: ["googleapis.com"]`、bedrock 声明 `["amazonaws.com"]`：核心只把请求发往声明过的或账号配置的主机（下面“安全”一项），这是它们的上游所在的域，安装审查时列给管理员看。
+- bedrock：Access Key、API Key 账号上，运营方经请求头覆盖加的 `x-amz-security-token` 不再发给 AWS（以前会让签名校验失败）。
+
+**安全**（收尾审查发现，所有者决定“修”，CONTRACTS §112.17）
+
+- 核心代发的请求只发往插件清单里声明过的主机（`externalServices`，含子域，安装时管理员审查过）或这个账号自己配置的上游地址（`base_url` 这类在清单 `upstreamFields` 里声明的字段）。以前插件能把带着账号凭证的主请求发到任意公网主机，只受 SSRF 检查约束。主请求（HTTP、WebSocket 握手）发往别的主机时什么都不发出，这次尝试换号、不冷却也不禁用账号，日志 `gateway: upstream host not allowed` 写明插件和主机；插件的辅助请求、`SendAccountRequest` 回 `PERMISSION_DENIED`。九个官方平台插件的正常请求都在范围内。
+- 插件交回的 `Host` 请求头不再生效（以前会写进请求的 `Host`，把请求指向 URL 之外的虚拟主机，而 SSRF 检查和代理选择只看 URL）：中继里出现即拒绝，请求的 `Host` 永远是 URL 的主机。运营方的请求头设置本来就改不了 `Host`。
+- 配额查询、凭证续期、账号测试与模型列表请求不在这条规则里，仍只受 SSRF 约束。
 
 **修正**（审查轮发现，都在发布前修好）
 
@@ -152,7 +159,7 @@
 **插件作者**
 
 - 删除：`PlatformService.BuildUpstreamRequest`（声明字段加补丁）、`ExtractUsage`、`ParseTaskSubmission` 作为核心调用、`Poll`、`BuildReconcileRequest` / `ParseReconcileResponse`；`HostService.ForwardUpstream`、`RecordUsage`、`ReserveAndWatch`、`ReportTaskProgress`；`RequestSigning`（核心签名）；清单的 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`，能力 `platform.execute.v1`、`platform.poll.v1`；SDK 的 `SetPatch` / `DeletePatch`、`WithMaxRecvMsgSize`；`sdk/upstream`、`sdk/platforms/upstream`。
-- 新的写法：实现 `UpstreamBuilder.BuildUpstream`，让 `Execute` 是 `pluginsdk.ExecuteDefault`。插件拿到完整请求体（转换、模型映射、参数覆盖之后），用 `NewUpstream` 构造最终请求（`Header` 权威、`DefaultHeader` 默认），经 `Relay` / `RelayAndWait` 交给核心；辅助请求用 `Fetch`（主机是清单 `externalServices` 或本账号的上游地址，规则是 `manifest.FetchHostAllowed`；不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除，核心不置 `truncated`）；用量与任务只在返回值里（`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`）；任务观察实现 `TaskMonitor.Monitor`，结果是返回值。签名用 `sdk/reqsign` 自己签；改请求体只用 `sdk/pluginsdk/jsonedit`；不开套接字、不用厂商 SDK 客户端、不重试。
+- 新的写法：实现 `UpstreamBuilder.BuildUpstream`，让 `Execute` 是 `pluginsdk.ExecuteDefault`。插件拿到完整请求体（转换、模型映射、参数覆盖之后），用 `NewUpstream` 构造最终请求（`Header` 权威、`DefaultHeader` 默认），经 `Relay` / `RelayAndWait` 交给核心（主机必须是清单 `externalServices` 或本账号的上游地址，不许设 `Host`；`RemoveHeader` 表示不发某个头，CONTRACTS §112.17）；辅助请求用 `Fetch`（主机规则同上，`manifest.UpstreamHostAllowed`；不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除，核心不置 `truncated`）；用量与任务只在返回值里（`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`）；任务观察实现 `TaskMonitor.Monitor`，结果是返回值。签名用 `sdk/reqsign` 自己签；改请求体只用 `sdk/pluginsdk/jsonedit`；不开套接字、不用厂商 SDK 客户端、不重试。
 - API Key 加基础地址的账号类型用新库 `sdk/pluginsdk/standard` 和预设 `providers/{openai,anthropic,gemini}.APIKey`；原声明式引擎的 1498 条黄金样例冻结在 `standard/goldentest`。
 - 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查），九个平台插件都调用它；`Plugin.Manifest` 必填（交给插件的客户端请求头从清单读），`Plugin.PassHeaders` 删除；每个协议的流式 / 非流式形式由套件从端点定义读出，插件不能声明自己不服务某种形式；WebSocket 协议只归第 11 条。只有 bedrock 有两处例外（InvokeModel 按地址选流式、不收 `anthropic-beta` 头）。
 - 假宿主 `pluginsdktest`：`Harness.Execute` / `Harness.Monitor`，`FakeHost.Begin` / `BeginMonitor`；取回的主机按 `FakeHost.Manifest`（启动时取 `WithManifest`，`pluginsdk.ManifestOf`）判断，不再默认放行所有主机；和宿主一样不限请求体、不数取回、不截回答，`Monitor` 的终态要有一次完整成功的取回。`MaxBodyBytes` 删除。
@@ -160,6 +167,7 @@
 - `standard` 库：`Type.PassHeaders`、`PlatformPassHeaders`、`Auth.Query`、`Route.Method` 删除（核心已按清单过滤客户端头，库把交来的都写成默认头；HTTP 路由一律 POST）；`Route.Edit` 改为 `func(*jsonedit.Doc, *Request)`，和过滤字段在同一次改写里；预设不再带过滤字段（azure_openai 自己写）；流式判断用 `Request.Stream`（`meta.stream` 或请求体的 `stream` 为真），只流式类型的非流式请求也会加 `include_usage`；黄金样例用 `standardtest.Run(t, plugin, p)` 回放。
 - `jsonedit`：同一成员上的改写按调用顺序生效（以前先 `Set` 后 `Delete` 会留下这个键）。`ValidateUpstreamRequest` 与宿主用同一套方法和请求头检查。
 - 声明了账号类型就必须申请 `accounts.credentials`；类型的地址字段只认清单的 `upstreamFields`（原来声明式类型自动得到 `base_url`）。
+- `SendAccountRequest` 能发往账号自己的上游地址（以前只认 `externalServices`），请求体、URL、方法不限大小，回答整份交还（以前截到 64 KiB）；配额查询、凭证续期的回答同样不再截断，核心不再置 `truncated`。假宿主对中继也执行主机规则（以前只管取回），测试里没给清单或指向 `127.0.0.1` 的假上游要设 `FakeHost.Manifest` / `ExternalServices`；`standardtest.Run` 回放黄金样例时同样检查主机。
 
 **插件版本**（全部 `hostCompat >=0.1.304 <0.2.0`）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.1.12、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。
 

@@ -140,12 +140,13 @@ func TestManifestShape(t *testing.T) {
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
-	// No externalServices: they are the hosts the plugin's own Fetch and
-	// SendAccountRequest may reach, and it makes neither call. The core
-	// sends the upstream, token, test and model requests the plugin builds;
-	// none of those is checked against externalServices.
-	if len(m.ExternalServices) != 0 {
-		t.Errorf("externalServices = %v, want none", m.ExternalServices)
+	// externalServices is googleapis.com: the global and the regional
+	// Vertex AI hosts (aiplatform.googleapis.com, <region>-aiplatform...)
+	// are all under it, and the core relays only to a host the manifest
+	// declares or the account names (CONTRACTS §112.17); an account names
+	// none.
+	if !slices.Equal(m.ExternalServices, []string{"googleapis.com"}) {
+		t.Errorf("externalServices = %v, want [googleapis.com]", m.ExternalServices)
 	}
 }
 

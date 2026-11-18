@@ -372,7 +372,85 @@ func TestAuthoritativeHeadersCannotBeOverridden(t *testing.T) {
 	assert.True(t, x.record().Success)
 }
 
+// An authoritative header with an empty value is not sent at all: it
+// removes what a lower layer set - a default header, a passed-through client
+// header, the operator's header override (CONTRACTS §112.17).
+func TestEmptyAuthoritativeHeaderRemovesIt(t *testing.T) {
+	x := newExtEnv(t)
+	x.plat.amend = func(_ *pluginv1.ExecuteRequest, out *pluginv1.UpstreamRequest) {
+		out.DefaultHeaders["x-default-z"] = "plugin-z"
+		for _, name := range []string{"x-amz-security-token", "x-default-z", "x-client-z", "x-never-set"} {
+			out.Headers[name] = ""
+		}
+	}
+	withHeaderOverride(t, x.env, 1, `{"x-amz-security-token":"op-token","x-extra":"op-extra"}`)
+	editAccount(x.env, 1, func(a *core.Account) { a.HeaderPassthrough = []string{"*"} })
+
+	r := x.do("/v1/messages", body(testModel, false), map[string]string{"X-Client-Z": "client-z"})
+	require.Equal(t, 200, r.status, string(r.body))
+	got := x.up.last(t)
+	for _, name := range []string{"X-Amz-Security-Token", "X-Default-Z", "X-Client-Z", "X-Never-Set"} {
+		_, sent := got.header[name]
+		assert.False(t, sent, "%s was sent: %q", name, got.header.Values(name))
+	}
+	assert.Equal(t, "op-extra", got.header.Get("X-Extra"), "the override still applies to other headers")
+}
+
 // ---------------------------------------------------------------- refused relays
+
+// The core relays only to a host the plugin declared (externalServices) or
+// the account names among its upstream addresses (CONTRACTS §112.17). A
+// relay elsewhere sends nothing: the attempt fails over as the plugin's
+// failure, the account untouched, and the log names the plugin and the
+// host. The test manifest declares 127.0.0.1; localhost reaches the same
+// server under a name it does not declare.
+func TestRelayToUndeclaredHostSendsNothing(t *testing.T) {
+	toLocalhost := func(raw string) string { return strings.Replace(raw, "127.0.0.1", "localhost", 1) }
+	t.Run("neither declared nor configured", func(t *testing.T) {
+		logs := captureWarnings(t)
+		x := newExtEnv(t)
+		x.plat.amend = func(in *pluginv1.ExecuteRequest, out *pluginv1.UpstreamRequest) {
+			if in.GetAccount().GetId() == 1 {
+				out.Url = toLocalhost(out.Url)
+			}
+		}
+		r := x.messages(body(testModel, false))
+		require.Equal(t, 200, r.status, string(r.body))
+		calls := x.up.all()
+		require.Len(t, calls, 1, "the refused relay sent nothing")
+		assert.Equal(t, "AK2", calls[0].accessKey)
+		rec := x.record()
+		assert.EqualValues(t, 2, *rec.AccountID)
+		require.NotNil(t, rec.AttemptTrail)
+		assert.Equal(t, errTypePluginUnavailable, rec.AttemptTrail.Steps[0].ErrorType)
+		assert.Empty(t, x.accounts.cooldowns)
+		assert.Empty(t, x.accounts.disabled)
+		assert.Contains(t, logs.String(), "upstream host not allowed")
+		assert.Contains(t, logs.String(), "plugin=anthropic")
+		assert.Contains(t, logs.String(), "host=localhost")
+	})
+	t.Run("the account's upstream address", func(t *testing.T) {
+		x := newExtEnv(t)
+		x.man.AccountTypes[0].UpstreamFields = []string{"base_url"}
+		x.plat.amend = func(_ *pluginv1.ExecuteRequest, out *pluginv1.UpstreamRequest) { out.Url = toLocalhost(out.Url) }
+		editAccount(x.env, 1, func(a *core.Account) {
+			a.Settings = json.RawMessage(`{"base_url":` + strconvQuote(toLocalhost(x.up.srv.URL)) + `}`)
+		})
+		r := x.messages(body(testModel, false))
+		require.Equal(t, 200, r.status, string(r.body))
+		calls := x.up.all()
+		require.Len(t, calls, 1)
+		assert.Equal(t, "AK1", calls[0].accessKey, "the account naming the host is served")
+		assert.EqualValues(t, 1, *x.record().AccountID)
+
+		// Another account's address does not open the host to this one.
+		x.accounts.groups[testGroup] = []int64{2}
+		r = x.messages(body(testModel, false))
+		assert.GreaterOrEqual(t, r.status, 500, string(r.body))
+		assert.Len(t, x.up.all(), 1, "nothing more sent")
+		assert.Empty(t, x.accounts.cooldowns)
+	})
+}
 
 // A relay to an address the SSRF guard refuses sends nothing: the attempt
 // fails over as the plugin's failure, and no account is cooled down or

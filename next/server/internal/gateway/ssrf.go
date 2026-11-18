@@ -27,10 +27,3 @@ func (g *Gateway) checkUpstream(ctx context.Context, raw string, proxied bool) (
 func (x *execution) checkURL(ctx context.Context, raw string) (*url.URL, error) {
 	return x.c.g.checkUpstream(ctx, raw, x.acc.ProxyID != nil)
 }
-
-// checkUpstreamURL is checkUpstream for a direct request. Its one caller,
-// the fetch binding (fetch.go), is to pass x.checkURL instead; then this
-// goes.
-func (g *Gateway) checkUpstreamURL(ctx context.Context, raw string) (*url.URL, error) {
-	return g.checkUpstream(ctx, raw, false)
-}

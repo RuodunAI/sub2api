@@ -6,10 +6,14 @@
 package standardtest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,7 +28,9 @@ import (
 // Golden). The cases are replayed on the frozen file's passHeaders, so Run
 // first requires the plugin's manifest.json (at manifestPath) to hand the
 // file's account type exactly those client headers: a manifest that
-// changes them fails here instead of passing the replay unnoticed.
+// changes them fails here instead of passing the replay unnoticed. Every
+// request built must also go to a host the core relays to for the manifest
+// (hostChecked).
 func Run(t *testing.T, plugin, manifestPath string, p *standard.Platform, opts ...goldentest.Option) {
 	t.Helper()
 	f, err := goldentest.Load(plugin)
@@ -35,21 +41,45 @@ func Run(t *testing.T, plugin, manifestPath string, p *standard.Platform, opts .
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := manifestPassHeaders(t, rawManifest, f.AccountType); !slices.Equal(got, f.PassHeaders) {
+	var m manifest.Manifest
+	if err := json.Unmarshal(rawManifest, &m); err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	if got := manifestPassHeaders(t, &m, f.AccountType); !slices.Equal(got, f.PassHeaders) {
 		t.Fatalf("the manifest hands account type %q the client headers %v, the golden cases were recorded with %v", f.AccountType, got, f.PassHeaders)
 	}
-	goldentest.Run(t, plugin, Golden(p, f.PassHeaders), opts...)
+	goldentest.Run(t, plugin, hostChecked(&m, f.AccountType, Golden(p, f.PassHeaders)), opts...)
+}
+
+// hostChecked is s whose Execute fails a request the core would refuse to
+// relay: one to a host m allows neither as an external service nor as an
+// upstream address of the case's account, of type accountType unless the
+// case names one (manifest.UpstreamHostAllowed, CONTRACTS §112.17).
+func hostChecked(m *manifest.Manifest, accountType string, s goldentest.Subject) goldentest.Subject {
+	execute := s.Execute
+	s.Execute = func(ctx context.Context, in *goldentest.ExecuteInput) (*goldentest.UpstreamRequest, error) {
+		out, err := execute(ctx, in)
+		if err != nil {
+			return out, err
+		}
+		a := in.Account.Proto()
+		var host string
+		if u, err := url.Parse(out.URL); err == nil {
+			host = strings.ToLower(u.Hostname())
+		}
+		if !m.UpstreamHostAllowed(host, cmp.Or(a.GetType(), accountType), a.GetSettingsJson(), a.GetCredentialsJson()) {
+			return nil, fmt.Errorf("the core would refuse to relay to %q: neither in the manifest's externalServices nor an upstream address of the account", host)
+		}
+		return out, nil
+	}
+	return s
 }
 
 // manifestPassHeaders are the client headers the core hands accountType of
 // the manifest, over all the platforms it serves (built-in or the
 // manifest's own).
-func manifestPassHeaders(t *testing.T, rawManifest []byte, accountType string) []string {
+func manifestPassHeaders(t *testing.T, m *manifest.Manifest, accountType string) []string {
 	t.Helper()
-	var m manifest.Manifest
-	if err := json.Unmarshal(rawManifest, &m); err != nil {
-		t.Fatalf("manifest: %v", err)
-	}
 	known := append(platforms.Builtin(), m.Platforms...)
 	lookup := func(id string) *manifest.Platform {
 		for i := range known {

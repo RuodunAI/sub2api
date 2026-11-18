@@ -17,6 +17,7 @@ const platformManifest = `{
   "apiVersion": 1, "key": "plat", "version": "0.1.0", "publisher": "test", "runtime": "grpc",
   "capabilities": [{"id": "platform.adapter.v1"}],
   "hostPermissions": [{"id": "platform.register"}],
+  "externalServices": ["up.example.com"],
   "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "schema"}, "platforms": [{"platform": "anthropic"}]}]
 }`
 

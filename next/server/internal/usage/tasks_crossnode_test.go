@@ -2,6 +2,7 @@ package usage
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -77,8 +78,9 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 	}
 
 	chargedBalance := f.balance()
-	if err := commitTask(nodeB, first); err == nil {
-		t.Fatal("duplicate request unexpectedly registered twice")
+	// Deterministic refusals are marked so that the commit is not retried.
+	if err := commitTask(nodeB, first); !errors.Is(err, core.ErrExecutionRefused) {
+		t.Fatalf("duplicate request registered twice or not refused: %v", err)
 	}
 	if !f.balance().Equal(chargedBalance) || f.scalar(`SELECT count(*) FROM async_tasks`) != "1" ||
 		f.scalar(`SELECT count(*) FROM pending_settlements`) != "1" ||
@@ -94,8 +96,8 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 	mismatch := prepare("managed-mismatch", "another-upstream-id", 7)
 	wrongAccount := int64(8)
 	mismatch.Record.AccountID = &wrongAccount
-	if err := commitTask(f.svc, mismatch); err == nil {
-		t.Fatal("changed dispatch account accepted")
+	if err := commitTask(f.svc, mismatch); !errors.Is(err, core.ErrExecutionRefused) {
+		t.Fatalf("changed dispatch account accepted or not refused: %v", err)
 	}
 	assertAbsent(query(mismatch.PublicID))
 	if !f.balance().Equal(chargedBalance) || f.scalar(`SELECT count(*) FROM usage_logs`) != "1" {

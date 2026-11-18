@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -243,7 +244,13 @@ func sseEvents(body []byte) []string {
 // checks of a relay).
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("bedrock", Version)}})
+	m, err := os.ReadFile("../../manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake host knows the manifest: it relays only to the hosts the
+	// core would.
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: m, SDK: []pluginsdk.Option{pluginsdk.WithInfo("bedrock", Version)}})
 }
 
 // save runs a submitted form through ValidateCredentials and returns the
@@ -377,8 +384,10 @@ func TestExecuteHeaders(t *testing.T) {
 		headers, defaults   []string
 		signedHeaders, akid string
 	}{
-		{TypeAPIKey, []string{"authorization"}, []string{"accept", "content-type"}, "", ""},
-		{TypeAccessKey, []string{"authorization", "content-type", "x-amz-date"}, []string{"accept", "content-type"}, "content-type;host;x-amz-date", testAccessKeyID},
+		// Without a session token the plugin removes X-Amz-Security-Token
+		// (an authoritative empty value).
+		{TypeAPIKey, []string{"authorization", "x-amz-security-token"}, []string{"accept", "content-type"}, "", ""},
+		{TypeAccessKey, []string{"authorization", "content-type", "x-amz-date", "x-amz-security-token"}, []string{"accept", "content-type"}, "content-type;host;x-amz-date", testAccessKeyID},
 		{TypeSTS, []string{"authorization", "content-type", "x-amz-date", "x-amz-security-token"}, []string{"accept", "content-type"},
 			"content-type;host;x-amz-date;x-amz-security-token", testSTSKeyID},
 	} {
@@ -404,7 +413,9 @@ func TestExecuteHeaders(t *testing.T) {
 			} else {
 				req := httptest.NewRequest(up.GetMethod(), up.GetUrl(), nil)
 				for name, value := range up.GetHeaders() {
-					req.Header.Set(name, value)
+					if value != "" {
+						req.Header.Set(name, value)
+					}
 				}
 				sig, err := verifySigV4(req, up.GetBody(), testNow)
 				if err != nil || sig.SignedHeaders != tc.signedHeaders || sig.AccessKeyID != tc.akid || sig.Region != "us-west-2" || sig.Service != "bedrock" {
@@ -412,8 +423,11 @@ func TestExecuteHeaders(t *testing.T) {
 				}
 			}
 			// The operator replaces or removes what it may; the
-			// authorization and what the signature covers stay.
-			operator := map[string]string{"accept": "*/*", "user-agent": "operator", "content-type": "text/plain", "authorization": "Bearer other", "x-amz-date": ""}
+			// authorization and what the signature covers stay, and a
+			// session token the operator adds reaches AWS only where the
+			// signature carries one (it would fail any other signature).
+			operator := map[string]string{"accept": "*/*", "user-agent": "operator", "content-type": "text/plain", "authorization": "Bearer other", "x-amz-date": "",
+				"x-amz-security-token": "operator-token"}
 			if a := coreSend(t, f, up, operator); a.Status != http.StatusOK {
 				t.Fatalf("with the operator's settings: %d %s", a.Status, a.Body)
 			}

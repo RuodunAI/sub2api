@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -145,26 +147,47 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 // SendPluginAccountRequest sends one request a plugin described for one
 // account of pluginKey's own account types through that account's proxy, as
 // the quota and refresh requests are sent (sendPluginCall), except that a
-// redirect is answered as it is. It is bounded by refreshTimeout.
+// redirect is answered as it is. It is bounded by refreshTimeout. The URL's
+// host must be one m allows for the account (manifest.UpstreamHostAllowed:
+// the plugin's externalServices or the account's own upstream addresses,
+// read from its settings and credentials); another is refused before
+// anything is sent or audited.
 //
 // Unlike a credential read, the audit row is written after the request: it
 // records the answer's status, and nothing secret is handed out here that the
 // plugin did not already hold, so an audit failure is logged and the answer
 // still returned. The row names the method, host and path only - never the
 // query, the headers or a body, which carry the plugin's credentials.
-func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string, m *manifest.Manifest, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 	if pluginKey == "" {
 		return nil, core.ErrInvalidArgument.WithMessage("plugin key is required")
 	}
 	id := in.GetAccountId()
-	var proxyID *int64
-	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id").Row().Scan(&proxyID)
+	var (
+		proxyID       *int64
+		typ           string
+		settings, enc []byte
+	)
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id, type, settings, credentials_enc").Row().
+		Scan(&proxyID, &typ, &settings, &enc)
 	if store.IsNoRows(err) {
 		// The same answer as for a missing id (ReadPluginAccountCredentials).
 		return nil, notFound(ctx)
 	}
 	if err != nil {
 		return nil, err
+	}
+	plain, err := s.decrypt(pluginKey, enc)
+	if err != nil {
+		return nil, err
+	}
+	var host string
+	if u, err := url.Parse(in.GetUrl()); err == nil {
+		host = strings.ToLower(u.Hostname())
+	}
+	if !m.UpstreamHostAllowed(host, typ, string(settings), string(plain)) {
+		return nil, core.ErrPermissionDenied.WithMessage("plugin " + pluginKey + ": host " + strconv.Quote(host) +
+			" is neither in the manifest's externalServices nor an upstream address of the account")
 	}
 	method := cmp.Or(strings.ToUpper(in.GetMethod()), http.MethodGet)
 	sendCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
@@ -181,7 +204,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 		slog.WarnContext(ctx, "account: audit plugin account request", "plugin", pluginKey, "account", id, "err", err)
 	}
 	return &pluginv1.ExecutionHTTPResponse{Status: ans.status, Headers: ans.headers, Body: ans.body,
-		TransportError: ans.transportError, Truncated: ans.truncated}, nil
+		TransportError: ans.transportError}, nil
 }
 
 // pluginAccountByID is live account id if it is of pluginKey's own types.

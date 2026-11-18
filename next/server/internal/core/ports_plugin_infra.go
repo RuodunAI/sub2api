@@ -260,12 +260,16 @@ type PluginAccountReader interface {
 // serves HostService.SendAccountRequest: one HTTP request a plugin describes
 // for one of its OWN accounts, sent through that account's proxy the way the
 // quota and refresh requests are (CONTRACTS §91). The caller has checked the
-// grant and the URL's host. An account of another plugin's account type is
-// ErrNotFound, as in ReadPluginAccountCredentials. A transport failure is not
-// an error: it is the answer's transport_error with status 0. Every request
+// grant and that the URL is http(s) with a host. The host must be one the
+// plugin's manifest m allows for the account (manifest.UpstreamHostAllowed
+// with the account's type, settings and credentials, CONTRACTS §112.17);
+// another is ErrPermissionDenied and nothing is sent. An account of another
+// plugin's account type is ErrNotFound, as in ReadPluginAccountCredentials.
+// A transport failure is not an error: it is the answer's transport_error
+// with status 0. Neither the body nor the answer is bounded. Every request
 // sent is audited (never its headers or bodies).
 type PluginAccountRequester interface {
-	SendPluginAccountRequest(ctx context.Context, pluginKey string, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error)
+	SendPluginAccountRequest(ctx context.Context, pluginKey string, m *manifest.Manifest, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error)
 }
 
 // ProxyTicketFetcher (owner: account, optional on the PluginAccountReader)

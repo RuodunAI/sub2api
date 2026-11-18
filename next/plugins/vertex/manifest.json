@@ -249,5 +249,6 @@
         "zh": "读取本插件账号的密钥文件、访问令牌或 API Key，用于构造上游请求和令牌请求（均由核心发送）"
       }
     }
-  ]
+  ],
+  "externalServices": ["googleapis.com"]
 }
