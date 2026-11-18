@@ -65,11 +65,6 @@ type options struct {
 // and declared capabilities are read from it.
 func WithManifest(raw []byte) Option { return func(o *options) { o.manifestRaw = raw } }
 
-// ManifestOf returns the manifest.json opts supply (WithManifest), nil when
-// none does. pluginsdktest reads it to stand in for the host, which knows
-// the package's manifest.
-func ManifestOf(opts ...Option) []byte { return buildOptions(opts).manifestRaw }
-
 // WithInfo sets the plugin key and version explicitly.
 func WithInfo(key, version string) Option {
 	return func(o *options) { o.key, o.version = key, version }

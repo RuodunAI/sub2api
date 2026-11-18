@@ -354,7 +354,7 @@ func checkLargeBody(s *suite, t testing.TB, c *Case) {
 	// relayed body.
 	got, ex := allocated(s, s.start(t, &large, upstream{}), &large)
 	ex.Relayed(t)
-	base, _ := allocated(s, s.serve(t, reference{}, []pluginsdk.Option{pluginsdk.WithInfo("conformance-reference", "0.0.0")}, nil, upstream{relay: observe(&large)}), &large)
+	base, _ := allocated(s, s.serve(t, reference{}, nil, []pluginsdk.Option{pluginsdk.WithInfo("conformance-reference", "0.0.0")}, nil, upstream{relay: observe(&large)}), &large)
 	extra := got - base
 	t.Logf("%.1f MiB body: %.1f MiB per Execute, %.1f MiB for a pass-through plugin", mib(len(body)), mib(int(got)), mib(int(base)))
 	if extra > int64(4*len(body)) {

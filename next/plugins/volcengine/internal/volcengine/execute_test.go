@@ -44,7 +44,7 @@ func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *plug
 	})
 	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
 	h := pluginsdktest.Start(t, p, pluginsdktest.Options{
-		Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestFile(t)), pluginsdk.WithInfo("volcengine", "0.13.0")},
+		Host: fh, Manifest: manifestFile(t), SDK: []pluginsdk.Option{pluginsdk.WithInfo("volcengine", "0.13.0")},
 	})
 	t.Cleanup(func() {
 		if dials := fh.Dials(); len(dials) != 0 {

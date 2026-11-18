@@ -33,16 +33,16 @@ func (s *suite) start(t testing.TB, c *Case, u upstream) *pluginsdktest.Harness 
 	if u.fetch == nil {
 		u.fetch = s.p.Fetch
 	}
-	return s.serve(t, s.p.Platform, s.sdk, s.p.Config, u)
+	return s.serve(t, s.p.Platform, s.p.Manifest, s.p.SDK, s.p.Config, u)
 }
 
-func (s *suite) serve(t testing.TB, p any, sdk []pluginsdk.Option, config any, u upstream) *pluginsdktest.Harness {
+func (s *suite) serve(t testing.TB, p any, manifest []byte, sdk []pluginsdk.Option, config any, u upstream) *pluginsdktest.Harness {
 	t.Helper()
 	fh := pluginsdktest.NewFakeHost()
 	fh.RelayFunc, fh.ExecuteHTTPFunc = u.relay, u.fetch
 	fh.DialFunc = refuseDial // the fake host records the address (Dials)
 	s.sockets.watch(fh)
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{Host: fh, Config: config, SDK: sdk, PluginServer: u.server})
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Host: fh, Config: config, Manifest: manifest, SDK: sdk, PluginServer: u.server})
 }
 
 // observe answers a relay with the case's observation: the fake host fills

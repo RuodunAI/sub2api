@@ -18,7 +18,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -582,7 +581,7 @@ func TestAssetRoutesAndPages(t *testing.T) {
 
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, volcengine.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, volcengine.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	want := []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks, manifest.CapPlatformMonitor, manifest.CapHTTPRoutes}
 	got := h.Info.GetCapabilities()
 	slices.Sort(got)

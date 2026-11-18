@@ -73,9 +73,9 @@ func (d *demo) Shutdown(context.Context) error { d.shutdowns++; return nil }
 func TestHarnessLifecycle(t *testing.T) {
 	d := newDemo()
 	h := pluginsdktest.Start(t, d, pluginsdktest.Options{
-		Config: map[string]string{"name": "world"},
-		Grants: []*pluginv1.Grant{{Permission: "kv", ScopeJson: ""}},
-		SDK:    []pluginsdk.Option{pluginsdk.WithManifest([]byte(testManifest))},
+		Config:   map[string]string{"name": "world"},
+		Grants:   []*pluginv1.Grant{{Permission: "kv", ScopeJson: ""}},
+		Manifest: []byte(testManifest),
 	})
 	if h.Info.GetPluginKey() != "demo" || h.Info.GetVersion() != "1.2.3" {
 		t.Fatalf("info = %v", h.Info)
@@ -131,7 +131,7 @@ func TestHarnessLifecycle(t *testing.T) {
 
 func TestWithInfoOverridesManifest(t *testing.T) {
 	h := pluginsdktest.Start(t, newDemo(), pluginsdktest.Options{
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(testManifest)), pluginsdk.WithInfo("demo", "2.0.0")},
+		Manifest: []byte(testManifest), SDK: []pluginsdk.Option{pluginsdk.WithInfo("demo", "2.0.0")},
 	})
 	if h.Info.GetVersion() != "2.0.0" {
 		t.Fatalf("version = %s", h.Info.GetVersion())

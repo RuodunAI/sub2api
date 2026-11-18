@@ -201,7 +201,7 @@ const manifest = `{
 // builds, answered with host_usage.
 func TestExecute(t *testing.T) {
 	p := standard.New(openai.APIKey("apikey"))
-	h := pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(manifest))}})
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: []byte(manifest)})
 	in := &pluginv1.ExecuteRequest{
 		Meta:    &pluginv1.RequestMeta{Protocol: openai.ProtocolChat, Model: "gpt-x", Stream: true},
 		Account: &pluginv1.Account{Id: 1, Type: "apikey", CredentialsJson: `{"api_key":"sk-0123456789"}`},

@@ -13,7 +13,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/moderation"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -21,7 +20,7 @@ import (
 // checks the declared capabilities (app.broadcast.v1 needs OnBroadcast and
 // the host permission "broadcast") and reports them.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, moderation.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, moderation.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	caps := h.Info.GetCapabilities()
 	for _, c := range []string{manifest.CapGatewayHook, manifest.CapAppJobs, manifest.CapAppBroadcast, manifest.CapHTTPRoutes} {
 		if !slices.Contains(caps, c) {

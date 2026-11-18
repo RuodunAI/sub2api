@@ -163,7 +163,6 @@ func run(t testing.TB, p Plugin, cases []Case, sub func(name string, fn func(tes
 // suite is one Run: the input, completed with defaults and checked.
 type suite struct {
 	p          Plugin
-	sdk        []pluginsdk.Option // WithManifest, then Plugin.SDK
 	declared   *declared
 	cases      []*Case
 	exceptions map[itemKey]Exception
@@ -173,7 +172,7 @@ type suite struct {
 type itemKey struct{ check, item string }
 
 func newSuite(p Plugin, cases []Case) (*suite, error) {
-	s := &suite{p: p, sdk: append([]pluginsdk.Option{pluginsdk.WithManifest(p.Manifest)}, p.SDK...), exceptions: map[itemKey]Exception{}, sockets: &sockets{}}
+	s := &suite{p: p, exceptions: map[itemKey]Exception{}, sockets: &sockets{}}
 	d, err := readManifest(p.Manifest)
 	if err != nil {
 		return nil, err

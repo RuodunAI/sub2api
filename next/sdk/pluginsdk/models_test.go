@@ -47,11 +47,11 @@ func (listingPlatform) BuildModelsRequest(context.Context, *pluginv1.BuildModels
 func TestBuildModelsRequestOptional(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	h := pluginsdktest.Start(t, minimalPlatform{}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h := pluginsdktest.Start(t, minimalPlatform{}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	if _, err := h.Platform.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("without ModelLister: %v", err)
 	}
-	h2 := pluginsdktest.Start(t, listingPlatform{}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h2 := pluginsdktest.Start(t, listingPlatform{}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	r, err := h2.Platform.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{})
 	if err != nil || r.GetIdsPath() != "data.#.id" {
 		t.Fatalf("with ModelLister: %v %v", r, err)

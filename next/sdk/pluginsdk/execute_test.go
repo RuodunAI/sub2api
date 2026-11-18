@@ -75,7 +75,7 @@ func upstreamOf(in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) 
 
 func startScripted(t *testing.T, p *scripted) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(taskManifest))}})
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: []byte(taskManifest)})
 }
 
 func executeRequest() *pluginv1.ExecuteRequest {
@@ -218,7 +218,7 @@ func TestExecuteDefaultSendsNothingWhenBuildingFails(t *testing.T) {
 // A task submission needs its parser before anything is built or sent.
 func TestExecuteDefaultTaskNeedsParser(t *testing.T) {
 	built := false
-	h := pluginsdktest.Start(t, builderOnly{&built}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h := pluginsdktest.Start(t, builderOnly{&built}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	in := executeRequest()
 	in.TaskSubmission = true
 	ex := h.Execute(context.Background(), in)

@@ -93,7 +93,7 @@ func startPlatform(t *testing.T) *pluginsdktest.Harness {
 			t.Errorf("%d dials on the request path", n)
 		}
 	})
-	return pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)}})
+	return pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{Manifest: manifestRaw})
 }
 
 // relayed asserts the form of a plain endpoint, exactly one relay that does
