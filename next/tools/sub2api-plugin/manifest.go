@@ -14,11 +14,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// contractCore is the first core release of plugin protocol
-// protocol.ProtocolVersion. The CLI has no core version of its own, so the
-// outdated-contract message names this one.
-const contractCore = "0.1.304"
-
 // Overlay files that change the manifest instead of being packaged.
 const (
 	overlayManifest = "manifest.json"       // full replacement
@@ -106,7 +101,9 @@ func outdatedContract(raw []byte) error {
 	if !check.OutdatedContract(check.Validate(&m, files, check.ValidateOptions{Tooling: true})) {
 		return nil
 	}
-	return errors.New(protocol.OutdatedContractMessage(m.Key, m.Version, contractCore))
+	// The CLI has no core version of its own: it names the first core of
+	// the protocol.
+	return errors.New(protocol.OutdatedContractMessage(m.Key, m.Version, protocol.FirstCoreVersion))
 }
 
 // applyMergePatch applies an RFC 7386 JSON merge patch and re-encodes the

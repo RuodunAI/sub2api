@@ -20,6 +20,11 @@ import (
 // is the single Execute path (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2).
 const ProtocolVersion = 2
 
+// FirstCoreVersion is the first core release that speaks ProtocolVersion: a
+// plugin built for it (hostCompat ">=FirstCoreVersion") loads on every core
+// of this protocol. It moves with ProtocolVersion.
+const FirstCoreVersion = "0.1.304"
+
 // HostAPIVersion is sent in InitHostRequest.host_api_version (HostInfo). It
 // is the runtime contract's, which the shell compares between core releases.
 const HostAPIVersion = runtimecontract.HostAPIVersion
@@ -27,10 +32,11 @@ const HostAPIVersion = runtimecontract.HostAPIVersion
 // OutdatedContractMessage is the one answer to a plugin package built for an
 // older plugin contract, whatever gave it away: a handshake with another
 // ProtocolVersion, or a manifest the check rejects with
-// check.CodeOutdatedContract. hostVersion is the core's own version. Upload,
-// install and load all report exactly this.
+// check.CodeOutdatedContract. hostVersion is the core's own version; the
+// version to look for is FirstCoreVersion, whatever core of the protocol
+// refuses. Upload, install and load all report exactly this.
 func OutdatedContractMessage(pluginKey, pluginVersion, hostVersion string) string {
-	return fmt.Sprintf(outdatedContractFormat, pluginKey, pluginVersion, hostVersion, ProtocolVersion, hostVersion)
+	return fmt.Sprintf(outdatedContractFormat, pluginKey, pluginVersion, hostVersion, ProtocolVersion, FirstCoreVersion)
 }
 
 const outdatedContractFormat = "plugin %s@%s was built for an older plugin protocol and cannot be loaded by this core (%s, plugin protocol %d); install a version built for core %s or later"
