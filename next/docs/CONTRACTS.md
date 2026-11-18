@@ -194,6 +194,7 @@
 | DELETE `/accounts/:id` | `account:delete` | |
 | POST `/accounts/:id/test` | `account:test` | `{model?}` → TestResult `{ok, status, latency_ms, message, model, requested_model, upstream, body, usage, reason, effect}`（§15.9、§50）；结果记入账号的 `last_test` |
 | POST `/accounts/:id/models/fetch`、POST `/account-types/:plugin_key/:type/models/fetch` | `account:test` / `account:create` | 从上游拉取模型列表（§19） |
+| POST `/account-types/:plugin_key/:type/proxy-ticket` | `account:create` / `account:update`（任意范围） | 账号表单的代理选择（`proxy_id` / `proxy_url` / 都不给）按上一行同样检查后加密成代理票据，给建账号之前的授权流程用（§117） |
 | POST `/accounts/:id/credentials/reveal` | `account:credential:view` | 明文凭证 |
 
 ### 5.5 计费（B）
@@ -1308,7 +1309,7 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.19.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.20.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
 - 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
@@ -1518,6 +1519,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 | `mode` | `'create'` \| `'edit'` |
 | `account` | 编辑时为账号对象（含 `id`、`type`、`credentials` 等）；新建时为 `null` / 未传 |
 | `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分 |
+| `proxyTicket` | `ProxyTicketSource`（`() => Promise<string>`，UI 3.20，§117）：按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据。在账号建好之前要访问外部服务的授权流程，在开始时调用它，把票据交给自己插件的路由；插件的取回带上它，核心从这个代理发出。要不到时以核心的 `ApiError` 拒绝，编辑器同时把字段错误显示在代理输入下。对所有原生表单都传 |
 | `errors` | `Record<string, string>`：保存或拉取模型被服务端拒绝时，`invalid_argument` 的 `details.fields[]`（§3.1）中 `credentials.<字段>` 的那些，键去掉 `credentials.` 前缀（`web/src/views/accounts/editorErrors.ts` `splitFieldErrors`）；用户再改凭证即清空。组件应显示在对应输入旁 |
 
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
@@ -8181,7 +8183,7 @@ message UpstreamRequest {
 
 ### 112.6 `HostService.ExecuteHTTP`：取回
 
-SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插件；在 `Execute`（辅助请求：换令牌、上传、预检）和 `Monitor`（任务查询）期间可用。
+SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插件；在 `Execute`（辅助请求：换令牌、上传、预检）和 `Monitor`（任务查询）期间可用。控制台路由调用里也可用，但必须带账号表单的代理票据，见 §117。
 
 - 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读；只比主机名，不比端口，不含子域）。其他主机 `PERMISSION_DENIED`。
 - 主机规则是 `manifest.Manifest.FetchHostAllowed`，核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
@@ -8397,3 +8399,37 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **额度主动查询（§44）**：清单 `quota.query`、`quota.autoRefresh`，`PlatformService.BuildQuotaRequest` / `ParseQuotaResponse`（`pluginsdk.QuotaReader`），核心的主动查询与自动复查。现在没有第一方插件声明 `query`（codex 只用响应头被动采样），机制本身完整可用。
 
 仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex、volcengine 等）。
+
+## 117. 代理票据：建账号之前的授权流程走账号表单选的代理（2026-11-18，所有者要求“账号授权时的第一次换令牌不走代理：修复bug”“在创建账号的时候通过代理获取授权”“如果是粘贴的代理串呢？”；无迁移；Host API 仍是 10；UI 3.20；设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)）
+
+账号建好以后，上游请求、令牌刷新、额度和 `SendAccountRequest` 都由核心经账号代理发出。建账号**之前**的授权（设备码、OAuth 换令牌）此前由插件在管理路由里自己联网，账号表单上选的代理用不上。本节让核心按账号表单的代理选择替插件发这些请求，插件看不到代理地址和密码，也换不了代理。通用能力，不限于 codex。
+
+### 117.1 发票据：`POST /account-types/:plugin_key/:type/proxy-ticket`
+
+- 权限：`account:create` 或 `account:update` 的任意范围（新建与重新授权）。请求体就是“拉取模型列表”的代理部分：`proxy_id`（`null` 或不给为不用代理）、`proxy_url`（去首尾空白后为空视同不给）；两者同时给出 400 `fields[{proxy_url, conflict}]`。
+- 校验与 `POST /account-types/:p/:t/models/fetch` **同一段代码**（`account.ProxyChoice` 的 `checkChoice`）：`proxy_id` 按 §21.2 的可见范围（`core.ProxyRefScope`，账号动作取调用者持有的 `account:create`，没有则 `account:update`），看不到为 `proxy_id/not_found`；`proxy_url` 要 `proxy:manage` 的任意范围（否则 403，`details.permission = proxy:manage:own`），解析规则与错误同 §21.4（不回显原串）。粘贴的代理串只解析，**不查找也不建代理记录**。账号类型不存在或插件未启用 400 `fields[{type, unknown}]`。
+- 回答 `{"ticket": "<不透明字符串>"}`：`base64url(AES-256-GCM(主密钥, {"u": 用户, "proxy_id"?, "proxy_url"?}, AAD = "proxy-ticket:<插件键>"))`，与账号凭据、代理密码同一套加密（`runtime-contract/secret`）。核心不存票据；票据没有过期时间，每次使用都按当时的权限重新检查（117.3）。
+
+### 117.2 交给插件：路由调用的取回
+
+- `HTTPRequest.execution_token`（字段 10）：核心给每个**有登录用户**的插件路由调用（`scope` 为 `admin` / `user`）登记一个调用范围（与 `Execute`、`Monitor` 的执行令牌同一套），调用返回即失效。公开路由和 Webhook 没有。SDK 把它绑在路由处理函数的 context 上，`pluginsdk.Fetch` 在路由里可用。
+- `ExecutionHTTPRequest.proxy_ticket`（字段 7）：路由调用里的取回**必须**带票据，`Execute`、`Monitor` 里的取回**不能**带（它们走账号自己的代理）；不符 `PERMISSION_DENIED`。路由调用里不能中继（`RelayUpstream` 仍只属于 `Execute`）。
+- 主机：与取回相同的规则 `manifest.Manifest.FetchHostAllowed`（`grpcruntime.requireFetchHost`）。路由调用没有账号，所以只能到清单 `externalServices` 之一或其子域，否则 `PERMISSION_DENIED`。
+- 控制台把票据交给插件的原生界面（§23.5 的 `proxyTicket`），插件界面在开始授权时把它交给插件自己的路由（约定字段名 `proxy_ticket`），插件存进自己的授权会话（`pluginsdk.SaveCallerSession`），此后这次授权的每个请求都带同一张票据，所以设备码的多次轮询都走同一个代理。
+
+### 117.3 核心发送（`account.FetchWithProxyTicket`，`core.ProxyTicketFetcher`）
+
+- 用插件键解开票据（别的插件的票据、改过的、编造的都解不开），票据里的用户必须等于**这次路由调用的用户**（核心从调用的上下文读，不信插件）；否则 `PERMISSION_DENIED`。所以别的管理员拿到会话 id 或票据也用不了。
+- 按这个用户**此刻**的权限（含访问密钥的收窄）重新做 117.1 的检查：不再能新建或修改账号、不再有 `proxy:manage`（粘贴的代理串）、代理已删或已不可见，这张票据随即不能用，错误照常交给插件（`PERMISSION_DENIED` 或 `INVALID_ARGUMENT`）。
+- 发送用取回的同一份实现 `execfetch.Do`：已有代理用代理服务缓存的客户端，粘贴的代理串用临时客户端（用完关闭空闲连接），不用代理时直连；直连过 SSRF 检查，经代理检查名字（`netguard.CheckURLVia`，“允许私网”同 `AllowPrivateUpstream`）。不跟随重定向、不重试、回答整份交还；**没有自己的超时**，由路由调用的期限（`TimeoutHTTP`）约束。传输失败是回答的 `transport_error`，不是 RPC 错误。不写审计行（路由调用本身已有 `plugin.route.write`，取回从来不审计）；粘贴的代理串不进日志、审计和代理表。
+
+### 117.4 版本与兼容
+
+- Host API 不升，仍是 10（照 §91.3：只加字段和形式，升版会让 rolling-v1 不可用）。旧核心不给路由调用发执行令牌，插件在路由里 `Fetch` 得到 `FAILED_PRECONDITION`；依赖本节的插件靠 `hostCompat` 要求核心 ≥0.1.304（与转发 V2 同批）。
+- UI 3.20（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20.0，`HOST_UI_VERSION` 3.20.0，只加不改）：`@sub2api/host` 导出类型 `ProxyTicketSource`，原生账号表单多一个 prop `proxyTicket`。用到的插件声明 `hostUICompat: "^3.20"`，`hostCompat` 高于 0.1.303（最后一个带 UI 3.19 的核心）。
+- codex 0.2.0：四类授权请求（申请设备码、轮询、两种换令牌）改为带票据的取回，清单去掉 `net`，开始路由要 `proxy_ticket`（PLUGIN-CODEX.md 第 19 节）。没有别的插件在建账号前联网。
+
+### 117.5 测试
+
+核心：`account/proxyticket_test.go`（已有代理、粘贴的代理串、不用代理三种选择分别经哪个测试代理到达授权服务器；无代理权限、看不到的代理、冲突、解析错误、既不能新建也不能修改账号的用户；别的用户、没有用户、别的插件、篡改、编造、缺票据都 `PERMISSION_DENIED`；权限收回后票据失效；粘贴的代理串不落代理表、不进审计和日志）、`plugin/grpcruntime/route_fetch_internal_test.go`（路由调用的令牌、带票据才能取回、清单以外的主机、不能中继、调用返回后失效、没有用户没有令牌、`Execute` 的取回不能带票据）。SDK：`pluginsdk/route_fetch_test.go`、假宿主（`Harness.DoAs` 发令牌，`FakeHost.BeginRoute`，路由取回必须带票据）。控制台：`AccountEditor.spec.ts`（三种选择交给原生表单，拒绝时显示在代理输入下）。
+
