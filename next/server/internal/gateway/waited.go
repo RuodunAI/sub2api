@@ -366,26 +366,45 @@ func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.Execution
 // unreported ends an execution whose answer reached the upstream but whose
 // facts did not come (or could not be committed). A task is not registered:
 // taskFailure leaves the free record for submit (the records' recovery
-// never touches a task submission). Any other request is closed without
-// facts - a free record, the precharge released, nothing billed - and its
-// records own the request's usage; an answer held back is not published
-// (503), one already streamed ends abruptly.
+// never touches a task submission). Any other request whose observation is
+// stored is closed without facts - a free record, the precharge released,
+// nothing billed - and its records own the request's usage; one whose
+// observation could not be confirmed has no execution record to own it, so
+// submit writes the same free record (the settler retries it) and releases
+// the precharge at once. An answer held back is not published (503), one
+// already streamed ends abruptly.
 func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error) attemptResult {
 	c := w.x.c
 	c.usage = nil
 	if c.ep.TaskSubmit() {
 		return c.taskFailure(ctx, "task execution could not be confirmed", cause)
 	}
-	if w.observed && w.close(ctx, reason) {
+	recordType := errTypeInternal
+	switch {
+	case !w.observed:
+		recordType = core.UsageErrorUnreported
+		unreportedUsage(c.rec, reason)
+	case w.close(ctx, reason):
 		// Committed meanwhile by a retry that timed out here: the facts stand.
 		c.taskPersisted = true
 		return w.deliver(ctx)
+	default:
+		c.taskPersisted = true
 	}
-	c.taskPersisted = true
 	if c.c.Writer.Written() {
 		panic(http.ErrAbortHandler)
 	}
-	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), errTypeInternal)}
+	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), recordType)}
+}
+
+// unreportedUsage makes rec the free record of a request whose execution
+// stated no facts, as CloseExecutionUnreported writes it: the host's reading
+// without anything to bill.
+func unreportedUsage(rec *core.UsageRecord, reason string) {
+	rec.Success, rec.ErrorType, rec.ErrorMessage = false, core.UsageErrorUnreported, truncateUTF8(reason, 1000)
+	rec.Tokens, rec.Metrics, rec.Additional, rec.Replacement = core.UsageTokens{}, nil, nil, nil
+	rec.Price, rec.BillingError, rec.Reservation = nil, "", nil
+	rec.UsageExtract = core.UsageExtractUnreported
 }
 
 // close closes the execution unreported; it reports whether it turned out

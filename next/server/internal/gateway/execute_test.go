@@ -172,15 +172,32 @@ func TestExecuteWaitedCommitFailureIsUnreported(t *testing.T) {
 	}
 }
 
-// An observation that cannot be stored leaves nothing to settle: the answer
-// is not published, nothing is billed and no record is written.
+// An observation that cannot be stored leaves no execution record to own
+// the usage: the answer is not published, and the request's own free record
+// is submitted - nothing billed, and as a free record it releases the
+// precharge at once instead of at its expiry.
 func TestExecuteWaitedObservationNotStored(t *testing.T) {
-	e, _ := waitedEnv(t, core.DisconnectPrecharge, nil)
-	e.settler.observeErr = errors.New("database down")
-	r := e.messages(body(testModel, false))
-	require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
-	require.Equal(t, []string{core.ExecutionStateIntent}, e.settler.executionStates())
-	e.noRecord()
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			e, _ := waitedEnv(t, core.DisconnectPrecharge, nil)
+			e.settler.observeErr = errors.New("database down")
+			r := e.messages(body(testModel, stream))
+			if !stream {
+				require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
+				require.NotContains(t, string(r.body), "hello", "the held-back answer was published")
+			}
+			require.Equal(t, []string{core.ExecutionStateIntent}, e.settler.executionStates())
+			rec := e.record()
+			require.False(t, rec.Success)
+			require.False(t, rec.Billable, "a free record releases the precharge")
+			require.Nil(t, rec.Price)
+			require.Nil(t, rec.Reservation)
+			require.Equal(t, core.UsageTokens{}, rec.Tokens)
+			require.Equal(t, core.UsageErrorUnreported, rec.ErrorType)
+			require.Equal(t, core.UsageExtractUnreported, rec.UsageExtract)
+			e.noRecord()
+		})
+	}
 }
 
 // A waited upstream error is classified by the plugin and fails over like

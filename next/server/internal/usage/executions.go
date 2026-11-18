@@ -124,7 +124,12 @@ func (s *Service) CloseExecutionUnreported(ctx context.Context, in core.Executio
 		return execution(store.G(ctx, tx), in.ID).Updates(map[string]any{"state": core.ExecutionStateUnreported,
 			"updated_at": gorm.Expr("clock_timestamp()")}).Error
 	}
-	if err := s.insertExecutionRecord(ctx, unreportedRecord(&rec, in.Reason), before, after); err != nil {
+	// A request that already has its usage record is closed without another:
+	// the gateway submitted the free record itself when it could not confirm
+	// the observation (stored, but its acknowledgement lost).
+	free := unreportedRecord(&rec, in.Reason)
+	_, err := s.insertAtomic(ctx, []*core.UsageRecord{free}, before, func(tx *gorm.DB, _ map[string]int64) error { return after(tx) }, true)
+	if err != nil {
 		return ignoreDone(err)
 	}
 	slog.ErrorContext(ctx, "usage: plugin execution closed as unreported, not billed", "request_id", x.RequestID,

@@ -206,6 +206,36 @@ func TestExecutionWithoutFactsClosesUnreported(t *testing.T) {
 	}
 }
 
+// An observation stored while its acknowledgement was lost: the gateway
+// submitted the request's free record itself. Closing the execution (the
+// recovery sweep) finds that record and closes it without another, instead
+// of failing on every round.
+func TestExecutionCloseAfterTheGatewaysFreeRecord(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	before := f.balance()
+	r := syncRecord(f, "ack-lost")
+	if err := f.bill.Precharge(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	id := observe(t, f.svc, r, false)
+	free := *r
+	free.Success, free.Billable, free.Price, free.Tokens, free.ErrorType = false, false, nil, core.UsageTokens{}, core.UsageErrorUnreported
+	if _, err := f.svc.insert(ctx, []*core.UsageRecord{&free}); err != nil {
+		t.Fatal(err)
+	}
+	if !f.balance().Equal(before) || f.scalar(`SELECT count(*) FROM request_precharges`) != "0" {
+		t.Fatal("the gateway's free record did not release the precharge")
+	}
+	if err := f.svc.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: id, Reason: "sweep"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.scalar(`SELECT state FROM plugin_executions WHERE id=$1`, id) != core.ExecutionStateUnreported ||
+		f.scalar(`SELECT count(*) FROM usage_logs WHERE request_id='ack-lost'`) != "1" || !f.balance().Equal(before) {
+		t.Fatal("the execution was not closed with the existing record alone")
+	}
+}
+
 // The recovery sweep never bills the host's reading: a synchronous
 // execution still observed after a minute is closed as unreported. Task
 // submissions are left to their receipt, and everything goes after 7 days.

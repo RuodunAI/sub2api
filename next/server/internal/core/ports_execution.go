@@ -256,7 +256,10 @@ type ExecutionRecords interface {
 	// Closing an execution already unreported is a no-op returning nil. A
 	// committed one is ErrConflict (its facts stand). One still in state
 	// intent has no durable observation and is an error: nothing is written
-	// and the request's precharge is released by the expiry sweep.
+	// (the gateway submits the request's free record itself, which releases
+	// the precharge). When the request already has its usage record - that
+	// free record, for an observation stored although its acknowledgement
+	// was lost - the row moves to unreported without writing another.
 	CloseExecutionUnreported(context.Context, ExecutionUnreported) error
 }
 
