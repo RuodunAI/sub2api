@@ -50,15 +50,13 @@ type wsLimits struct {
 	slotWait     time.Duration // later turns wait this long for the account
 	auth         time.Duration // re-authenticating the key before a turn
 	drainGrace   time.Duration // a turn in progress when draining starts
-	handshake    time.Duration // upstream dial and handshake
-	writeTimeout time.Duration // one message to a slow peer
 	drainPoll    time.Duration
 }
 
 func defaultWSLimits() wsLimits {
 	return wsLimits{ping: 30 * time.Second, pingTimeout: 30 * time.Second, slotWait: 10 * time.Second, auth: 10 * time.Second,
-		drainGrace: 30 * time.Second, handshake: 30 * time.Second, writeTimeout: time.Minute,
-		drainPoll: 500 * time.Millisecond}
+		drainGrace: 30 * time.Second,
+		drainPoll:  500 * time.Millisecond}
 }
 
 // Close codes of the client connection.
@@ -360,9 +358,7 @@ func (s *wsSession) keepalive(ctx context.Context, c *websocket.Conn, inFlight *
 }
 
 func (s *wsSession) write(ctx context.Context, typ websocket.MessageType, data []byte) error {
-	wctx, cancel := context.WithTimeout(ctx, s.g.ws.writeTimeout)
-	defer cancel()
-	return s.client.Write(wctx, typ, data)
+	return s.client.Write(ctx, typ, data)
 }
 
 // sendError tells the client that a turn could not run, in the Responses
@@ -538,9 +534,7 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 		}
 		payload = req.GetBody()
 	}
-	wctx, cancel := context.WithTimeout(ctx, s.g.ws.writeTimeout)
-	err := s.up.Write(wctx, websocket.MessageText, payload)
-	cancel()
+	err := s.up.Write(ctx, websocket.MessageText, payload)
 	if err != nil {
 		s.finish(ctx, t, wsOutcome{status: http.StatusBadGateway, errType: errTypeUpstream, msg: "upstream write failed: " + err.Error()})
 		s.sendError(ctx, &gwError{Status: http.StatusBadGateway, Code: codeUpstreamError, Message: "upstream connection failed"})
@@ -682,13 +676,14 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	// The handshake's headers in the layers of an HTTP request
 	// (upstreamRequest) without the passthrough: the plugin's defaults, the
 	// account's header override (§108) and parameter override, the plugin's
-	// authoritative headers. The handshake gets its own deadline; the
-	// connection itself lives as long as the session.
+	// authoritative headers. The handshake ends with ctx (the client
+	// leaving) and has no deadline of its own; its dial context is released
+	// once it is done, so the connection itself lives as long as the session.
 	header := http.Header{}
 	setHandshakeHeaders(header, req.GetDefaultHeaders())
 	cl.paramOverride.headers.Apply(header)
 	setHandshakeHeaders(header, req.GetHeaders())
-	dctx, dcancel := context.WithTimeout(context.WithoutCancel(ctx), s.g.ws.handshake)
+	dctx, dcancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(ctx, dcancel)
 	up, resp, err := websocket.Dial(dctx, target.String(), &websocket.DialOptions{HTTPClient: noRedirects(client), HTTPHeader: header,
 		CompressionMode: websocket.CompressionContextTakeover})

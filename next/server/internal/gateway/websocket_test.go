@@ -611,11 +611,10 @@ func waitFor(t *testing.T, fn func() bool) {
 	}
 }
 
-// The upstream connection outlives its handshake deadline, and the account's
-// model mapping applies to every turn sent on it.
+// The upstream connection outlives its handshake's context, and the
+// account's model mapping applies to every turn sent on it.
 func TestWebSocketUpstreamOutlivesTheHandshakeAndMapsModels(t *testing.T) {
 	e := newWSEnv(t)
-	e.gw.ws.handshake = 100 * time.Millisecond
 	e.accounts.mu.Lock()
 	e.accounts.accounts[11].ModelMapping = map[string]string{wsModel: "gpt-5-upstream"}
 	e.accounts.mu.Unlock()

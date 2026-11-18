@@ -24,9 +24,6 @@ import (
 
 // Host bounds around plugin execution that more than one module names.
 const (
-	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
-	// environment sets no relay timeout.
-	ExecutionHTTPDefaultTimeout = 5 * time.Minute
 	// ExecutionFinishTimeout bounds each write that ends an execution on the
 	// gateway: the commit with its retries, then a close.
 	ExecutionFinishTimeout = 15 * time.Second
