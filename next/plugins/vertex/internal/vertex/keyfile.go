@@ -1,18 +1,17 @@
 package vertex
 
 import (
-	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const (
@@ -23,7 +22,7 @@ const (
 	assertionLifetime = time.Hour
 	// assertionBackdate is how far before now an assertion is issued, so a
 	// node whose clock runs a few seconds fast is not refused for an iat in
-	// the future (golang.org/x/oauth2/jwt does the same).
+	// the future.
 	assertionBackdate = 10 * time.Second
 
 	grantJWTBearer    = "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -63,6 +62,30 @@ var keyKinds = map[string]keyKind{
 // may quote part of a secret.
 var errNotJSON = errors.New("not a JSON object / 不是合法的 JSON 对象")
 
+// decodeKeyFile reads raw, the JSON text of a credential file, into dst and
+// checks that the file is of type typ. This one decoding is the only reading
+// of the file: every check and every later use sees the same values.
+// encoding/json matches key names without regard to case and keeps the last
+// of repeated keys, so dst holds the file's effective values whatever its
+// layout. Errors name a field at most, never a value.
+func decodeKeyFile(raw, typ string, dst interface{ fileType() string }) error {
+	var mismatch *json.UnmarshalTypeError
+	switch err := json.Unmarshal([]byte(raw), dst); {
+	case errors.As(err, &mismatch) && mismatch.Field != "":
+		return fmt.Errorf(`%q must be a string / %q 必须是字符串`, mismatch.Field, mismatch.Field)
+	case err != nil:
+		return errNotJSON
+	case dst.fileType() != typ:
+		return fmt.Errorf(`"type" must be %q / "type" 必须是 %q`, typ, typ)
+	}
+	return nil
+}
+
+// errMissing reports a field the file must have.
+func errMissing(field string) error {
+	return fmt.Errorf(`%q is missing / 缺少 %q`, field, field)
+}
+
 // fingerprint is the SHA-256 of the parts that identify a key.
 func fingerprint(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
@@ -79,33 +102,38 @@ type serviceAccountKey struct {
 	PrivateKeyID string `json:"private_key_id"`
 	PrivateKey   string `json:"private_key"`
 	ClientEmail  string `json:"client_email"`
-	TokenURI     string `json:"token_uri"`
+	// TokenURI is only checked: token requests always go to TokenURL.
+	TokenURI string `json:"token_uri"`
 
 	signer *rsa.PrivateKey
 }
 
+func (k *serviceAccountKey) fileType() string { return k.Type }
+
 func parseServiceAccount(raw string) (keyFile, error) {
 	var k serviceAccountKey
-	if json.Unmarshal([]byte(raw), &k) != nil {
-		return nil, errNotJSON
+	if err := decodeKeyFile(raw, "service_account", &k); err != nil {
+		return nil, err
 	}
 	switch {
-	case k.Type != "service_account":
-		return nil, errors.New(`"type" must be "service_account" / "type" 必须是 "service_account"`)
 	case strings.TrimSpace(k.ClientEmail) == "":
-		return nil, errors.New(`"client_email" is missing / 缺少 "client_email"`)
+		return nil, errMissing("client_email")
 	case strings.TrimSpace(k.PrivateKey) == "":
-		return nil, errors.New(`"private_key" is missing / 缺少 "private_key"`)
+		return nil, errMissing("private_key")
 	case k.TokenURI != TokenURL:
 		return nil, errors.New(`"token_uri" must be ` + TokenURL + ` / "token_uri" 必须是 ` + TokenURL)
 	}
-	signer, err := parseRSAPrivateKey(k.PrivateKey)
+	// PKCS #8 (what Google issues) and PKCS #1 are both read.
+	signer, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(k.PrivateKey))
 	if err != nil {
-		return nil, err
+		return nil, errPrivateKey
 	}
 	k.signer = signer
 	return &k, nil
 }
+
+// errPrivateKey carries no detail either: the input is the private key.
+var errPrivateKey = errors.New(`"private_key" is not a PEM-encoded RSA private key / "private_key" 不是 PEM 格式的 RSA 私钥`)
 
 func (k *serviceAccountKey) fingerprint() string { return fingerprint(k.ClientEmail, k.PrivateKeyID) }
 
@@ -113,66 +141,27 @@ func (k *serviceAccountKey) project() string { return strings.TrimSpace(k.Projec
 
 // grant signs the assertion Google exchanges for an access token (RFC 7523):
 // issued by the service account for the token endpoint assertionBackdate
-// ago, valid one hour from then.
+// ago, valid one hour from then. The JWT is encoded and signed (RS256) by
+// github.com/golang-jwt/jwt/v5, which checks no claim when signing: the
+// times are whole seconds because they are set as such here. kid names the
+// key when the file has one.
 func (k *serviceAccountKey) grant(now time.Time) (url.Values, error) {
 	issued := now.Add(-assertionBackdate)
-	assertion, err := signRS256(k.signer, k.PrivateKeyID, map[string]any{
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
 		"iss":   k.ClientEmail,
 		"scope": CloudPlatformScope,
 		"aud":   TokenURL,
 		"iat":   issued.Unix(),
 		"exp":   issued.Add(assertionLifetime).Unix(),
 	})
+	if k.PrivateKeyID != "" {
+		token.Header["kid"] = k.PrivateKeyID
+	}
+	assertion, err := token.SignedString(k.signer)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("cannot sign with the private key / 无法用私钥签名")
 	}
 	return url.Values{"grant_type": {grantJWTBearer}, "assertion": {assertion}}, nil
-}
-
-// errPrivateKey carries no detail either: the input is the private key.
-var errPrivateKey = errors.New(`"private_key" is not a PEM-encoded RSA private key / "private_key" 不是 PEM 格式的 RSA 私钥`)
-
-// parseRSAPrivateKey reads a PEM block holding a PKCS #8 (what Google
-// issues) or PKCS #1 RSA private key.
-func parseRSAPrivateKey(pemText string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemText))
-	if block == nil {
-		return nil, errPrivateKey
-	}
-	if key, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errPrivateKey
-	}
-	key, ok := parsed.(*rsa.PrivateKey)
-	if !ok {
-		return nil, errPrivateKey
-	}
-	return key, nil
-}
-
-// signRS256 returns a compact JWT signed with RSASSA-PKCS1-v1_5 and SHA-256.
-// kid, when not empty, names the key in the header.
-func signRS256(key *rsa.PrivateKey, kid string, claims map[string]any) (string, error) {
-	header := map[string]string{"alg": "RS256", "typ": "JWT"}
-	if kid != "" {
-		header["kid"] = kid
-	}
-	h, _ := json.Marshal(header)
-	c, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	enc := base64.RawURLEncoding
-	signed := enc.EncodeToString(h) + "." + enc.EncodeToString(c)
-	sum := sha256.Sum256([]byte(signed))
-	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, sum[:])
-	if err != nil {
-		return "", errors.New("cannot sign with the private key / 无法用私钥签名")
-	}
-	return signed + "." + enc.EncodeToString(sig), nil
 }
 
 // ---------------------------------------------------------------- authorized user
@@ -187,17 +176,16 @@ type authorizedUserKey struct {
 	QuotaProjectID string `json:"quota_project_id"`
 }
 
+func (k *authorizedUserKey) fileType() string { return k.Type }
+
 func parseAuthorizedUser(raw string) (keyFile, error) {
 	var k authorizedUserKey
-	if json.Unmarshal([]byte(raw), &k) != nil {
-		return nil, errNotJSON
-	}
-	if k.Type != "authorized_user" {
-		return nil, errors.New(`"type" must be "authorized_user" / "type" 必须是 "authorized_user"`)
+	if err := decodeKeyFile(raw, "authorized_user", &k); err != nil {
+		return nil, err
 	}
 	for _, f := range [][2]string{{"client_id", k.ClientID}, {"client_secret", k.ClientSecret}, {"refresh_token", k.RefreshToken}} {
 		if strings.TrimSpace(f[1]) == "" {
-			return nil, errors.New(`"` + f[0] + `" is missing / 缺少 "` + f[0] + `"`)
+			return nil, errMissing(f[0])
 		}
 	}
 	return &k, nil

@@ -4,6 +4,7 @@ go 1.27
 
 require (
 	github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/tidwall/gjson v1.19.0
 	google.golang.org/grpc v1.84.0
 )

@@ -65,7 +65,7 @@
 | anthropic、claude-oauth | 普通转发（gRPC，`BuildUpstreamRequest`） | claude-oauth 声明额度头 |
 | openai、gemini、relay | 普通转发（只有清单）；openai 另有 WebSocket | 无，全部由清单和核心完成 |
 | azure_openai（目录 `plugins/azure-openai`，市场） | 普通转发（只有清单），不提供 WebSocket | 无；清单里覆盖鉴权头（`api-key`）、路由和类型自己的 `passHeaders`，错误分类用预设的 `openai` 策略（[UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) §6.1） |
-| vertex（市场） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；插件不联网 |
+| vertex（市场） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6）；插件不联网 |
 | bedrock（市场，核心 0.1.304 起；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
 | codex | 插件执行 + WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16） |
 | volcengine | 插件执行（含异步任务） | `ClassifyError`、`EstimateUsage`（视频任务）、`ReserveAndWatch` |
@@ -119,7 +119,7 @@ if !sticky.Enabled { ... }
 - 核心不认识的方案名或格式名：这次尝试在发送前失败（插件不可用，换号），没有请求发出。
 - 更早的核心会忽略这两个字段：请求不签名就发出去，二进制流原样转给客户端。用到它们的插件必须在 `hostCompat` 里要求带 §109 的核心（bedrock 是 `>=0.1.304`）。
 - 账号测试请求（`BuildTestRequest`）核心原样发送、不签名：请求体是插件自己写的，插件调 `sdk/reqsign` 的 `Sign` 自己签（bedrock 的 `sign`）。
-- 两个库都在 SDK 里、只用标准库：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
+- 两个库都在 SDK 里，底下是 AWS 的官方库（`aws-sdk-go-v2` 的 `aws/signer/v4` 和 `aws/protocol/eventstream`，只用这两个包，不用服务客户端）：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
 
 ## 7. SDK 里的账号表单与请求体补丁辅助（2026-11-17）
