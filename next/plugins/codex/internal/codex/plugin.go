@@ -32,7 +32,7 @@ import (
 const (
 	// Version is the plugin version (manifest.json "version"); it is part of
 	// the User-Agent every request sends.
-	Version = "0.1.11"
+	Version = "0.1.12"
 	// UserAgent and Originator name sup2api as the client, truthfully.
 	UserAgent  = "sup2api-codex/" + Version
 	Originator = "sup2api"
@@ -43,7 +43,7 @@ const (
 
 	// PlatformID is the built-in platform both types serve.
 	PlatformID = "openai"
-	// Upstream protocols BuildUpstreamRequest speaks (manifest endpoints
+	// Upstream protocols BuildUpstream speaks (manifest endpoints
 	// "responses" and "responses_websocket"; chat completions reach the
 	// plugin converted to Responses by the core).
 	ProtocolResponses   = "openai.responses"
@@ -84,11 +84,11 @@ type Endpoints struct {
 // DefaultEndpoints are the production roots.
 var DefaultEndpoints = Endpoints{Auth: DefaultAuthBase, ChatGPT: DefaultChatGPTBase}
 
-// Plugin is the codex plugin. It implements pluginsdk.Platform, Executor,
-// CredentialRefresher, HTTP (authorization and usage reset routes) and
-// Initializer. It lists no models: the Codex backend's model list is an
-// internal endpoint of the Codex CLI, so the console keeps the manifest
-// defaults.
+// Plugin is the codex plugin. It implements pluginsdk.Platform (Execute
+// through UpstreamBuilder), CredentialRefresher, HTTP (authorization and
+// usage reset routes) and Initializer. It lists no models: the Codex
+// backend's model list is an internal endpoint of the Codex CLI, so the
+// console keeps the manifest defaults.
 type Plugin struct {
 	*pluginsdk.Router
 	host pluginsdk.Host
@@ -151,7 +151,7 @@ func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 
 // ---------------------------------------------------------------- credentials
 
-// credentials are the stored fields BuildUpstreamRequest and the refresh
+// credentials are the stored fields BuildUpstream and the refresh
 // need. The full set is documented in docs/PLUGIN-CODEX.md §4.
 type credentials struct {
 	AccessToken      string `json:"access_token"`

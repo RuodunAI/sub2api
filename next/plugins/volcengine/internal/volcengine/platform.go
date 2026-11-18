@@ -28,9 +28,11 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/tidwall/sjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -75,7 +77,7 @@ const (
 	// ProtocolCountTokens is declared by the platform and therefore routed to
 	// this account type whether we want it or not: AccountPlatform has no
 	// per-endpoint filter, so declaring the platform accepts both endpoints.
-	// Ark documents no token-counting endpoint, so BuildUpstreamRequest
+	// Ark documents no token-counting endpoint, so BuildUpstream
 	// refuses it by name rather than inventing a path that 404s.
 	ProtocolCountTokens = sdkvolcengine.ProtocolCountTokens
 )
@@ -90,7 +92,7 @@ const (
 )
 
 // Protocols lists the protocols of the built-in openai platform that
-// BuildUpstreamRequest supports, in that platform's endpoint order.
+// BuildUpstream supports, in that platform's endpoint order.
 var Protocols = []string{ProtocolChat, ProtocolResponses, ProtocolEmbeddings}
 
 // OwnProtocols lists the protocols of the plugin's own volcengine platform,
@@ -387,34 +389,53 @@ func upstreamPath(px prefixes, protocol, model string) (string, error) {
 }
 
 // upstreamTarget maps the upstream protocol and model to the Ark method and
-// path. Everything but the video line is a POST; video_query is a GET whose
-// task id comes from the matched path parameter, which is why this takes the
-// whole meta rather than just the protocol.
-func upstreamTarget(px prefixes, meta *pluginv1.RequestMeta, model string) (method, path string, err error) {
-	if m, p, ok, err := videoUpstream(px.video, meta); ok {
-		return m, p, err
+// URL. Everything but the video line is a POST to the account's prefix;
+// video_query is a GET whose task id comes from the matched path parameter,
+// which is why this takes the whole meta rather than just the protocol. Both
+// video protocols use the account's task collection (videoTaskURL), the same
+// one Monitor polls.
+func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model string) (method, target string, err error) {
+	switch meta.GetProtocol() {
+	case ProtocolVideoSubmit:
+		target, err = videoTaskURL(base, px, "")
+		return http.MethodPost, target, err
+	case ProtocolVideoQuery:
+		// The task id is client input, the one place on the video line where
+		// it becomes part of an upstream address: videoTaskURL escapes it.
+		id := taskIDOf(meta)
+		if id == "" {
+			return "", "", status.Error(codes.InvalidArgument, "task_id path parameter is required")
+		}
+		target, err = videoTaskURL(base, px, id)
+		return http.MethodGet, target, err
 	}
-	p, err := upstreamPath(px, meta.GetProtocol(), model)
+	path, err := upstreamPath(px, meta.GetProtocol(), model)
 	if err != nil {
 		return "", "", err
 	}
-	return "POST", p, nil
+	target, err = upstreamURL(base, path)
+	return http.MethodPost, target, err
 }
 
-// upstreamHeaders builds the upstream request headers for one protocol.
-//
-// Bearer remains the compatible relay/default authentication form. The
-// official native Messages surface selects x-api-key at request construction.
+// credentialHeader is the header carrying the account key. Bearer remains the compatible relay/default authentication form; the
+// official native Messages surface takes x-api-key.
+func credentialHeader(accountType, protocol, apiKey string) (name, value string) {
+	if protocol == ProtocolMessages && accountType != AccountTypeRelay {
+		return "x-api-key", apiKey
+	}
+	return "authorization", "Bearer " + apiKey
+}
+
+// upstreamHeaders are all headers of one request: the account key, the
+// content type and the client headers this protocol forwards.
 //
 // Anthropic requires a version header and rejects a request without one, so an
 // Anthropic-protocol request that the client sent none for gets the default.
 // The client's own value wins when it sent one: it knows which beta shape its
 // body is in, and we must not silently downgrade it.
-func upstreamHeaders(protocol, apiKey string, inbound map[string]string) map[string]string {
-	h := map[string]string{
-		"authorization": "Bearer " + apiKey,
-		"content-type":  "application/json",
-	}
+func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]string) map[string]string {
+	name, value := credentialHeader(accountType, protocol, apiKey)
+	h := map[string]string{name: value, "content-type": "application/json"}
 	names := forwardHeaders
 	if protocol == ProtocolMessages || protocol == ProtocolCountTokens {
 		names = anthropicForwardHeaders
@@ -426,47 +447,50 @@ func upstreamHeaders(protocol, apiKey string, inbound map[string]string) map[str
 	return h
 }
 
-// BuildUpstreamRequest implements pluginsdk.Platform: POST
-// {base_url}{api_prefix}/... following meta.protocol and, for chat
-// completions, the model (bots have their own path). Streaming chat
-// completions get stream_options.include_usage=true so the upstream reports
-// usage in the last chunk (CONTRACTS 14.1); Ark is OpenAI-compatible here.
-func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	cfg, px, err := accountConfig(in.GetAccount())
+// upstreamBody is the body relayed upstream: the one handed in, final, with at
+// most one targeted edit. Streaming chat completions get
+// stream_options.include_usage=true so the upstream reports usage in the last
+// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here). The task query is a
+// GET and carries no body.
+func upstreamBody(meta *pluginv1.RequestMeta, method string, body []byte) ([]byte, error) {
+	if method == http.MethodGet {
+		return nil, nil
+	}
+	if !meta.GetStream() || (meta.GetProtocol() != ProtocolChat && meta.GetProtocol() != "") {
+		return body, nil
+	}
+	out, err := sjson.SetBytes(body, "stream_options.include_usage", true)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "request body: %v", err)
+	}
+	return out, nil
+}
+
+// BuildUpstream implements pluginsdk.UpstreamBuilder: {base_url}{prefix}/...
+// following meta.protocol and, for chat completions, the model (bots have
+// their own path). Every header is authoritative: before forwarding v2 this
+// plugin's headers were written above the operator's passthrough and
+// override, and that behaviour is kept.
+func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
+	acc, meta := in.GetAccount(), in.GetMeta()
+	cfg, px, err := accountConfig(acc)
 	if err != nil {
 		return nil, err
 	}
-	meta := in.GetMeta()
 	model := pluginsdk.RequestModel(in)
-	method, ep, err := upstreamTarget(px, meta, model)
+	method, target, err := upstreamTarget(cfg.BaseURL, px, meta, model)
 	if err != nil {
 		return nil, err
 	}
-	u, err := upstreamURL(cfg.BaseURL, ep)
-	if meta.GetProtocol() == ProtocolVideoSubmit || meta.GetProtocol() == ProtocolVideoQuery {
-		id := ""
-		if meta.GetProtocol() == ProtocolVideoQuery {
-			id = taskIDOf(meta)
-		}
-		u, err = videoTaskURL(cfg.BaseURL, px, id)
-	}
+	body, err := upstreamBody(meta, method, in.GetBody())
 	if err != nil {
 		return nil, err
 	}
-	resp := &pluginv1.BuildUpstreamRequestResponse{
-		Method:        method,
-		Url:           u,
-		Headers:       upstreamHeaders(meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()),
-		UpstreamModel: model,
+	up := pluginsdk.NewUpstream(method, target).Body(body).Model(model)
+	for name, value := range upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()) {
+		up.Header(name, value)
 	}
-	if meta.GetProtocol() == ProtocolMessages && in.GetAccount().GetType() != AccountTypeRelay {
-		delete(resp.Headers, "authorization")
-		resp.Headers["x-api-key"] = cfg.APIKey
-	}
-	if meta.GetStream() && (meta.GetProtocol() == ProtocolChat || meta.GetProtocol() == "") {
-		resp.Patches = append(resp.Patches, &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_SET, Path: "stream_options.include_usage", ValueJson: "true"})
-	}
-	return resp, nil
+	return up.Build()
 }
 
 // BuildTestRequest implements pluginsdk.Platform: a minimal chat completion.
@@ -492,7 +516,7 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        "POST",
 		Url:           u,
-		Headers:       upstreamHeaders(ProtocolChat, cfg.APIKey, nil),
+		Headers:       upstreamHeaders(in.GetAccount().GetType(), ProtocolChat, cfg.APIKey, nil),
 		BodyJson:      body,
 		Model:         model,
 		UsageProtocol: ProtocolChat,

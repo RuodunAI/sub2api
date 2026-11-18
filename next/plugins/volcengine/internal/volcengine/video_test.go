@@ -1,6 +1,7 @@
 package volcengine
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -14,17 +15,18 @@ import (
 // highest tier is assumed and that 10 seconds is the assumed duration - tested
 // a guess that no longer exists.
 
-// ---------------------------------------------------------------- BuildUpstreamRequest (video)
+// ---------------------------------------------------------------- BuildUpstream (video)
 
-func TestBuildUpstreamRequestVideo(t *testing.T) {
+func TestBuildUpstreamVideo(t *testing.T) {
 	p := New()
 	ctx := context.Background()
-	build := func(meta *pluginv1.RequestMeta) (*pluginv1.BuildUpstreamRequestResponse, error) {
-		return p.BuildUpstreamRequest(ctx, &pluginv1.BuildUpstreamRequestRequest{Meta: meta, Account: account(testKey, "")})
+	submitBody := []byte(`{"model":"doubao-seedance-1-0-pro-250528","content":[{"type":"text","text":"a cat"}],"ratio":"16:9"}`)
+	build := func(meta *pluginv1.RequestMeta, body []byte) (*pluginv1.UpstreamRequest, error) {
+		return p.BuildUpstream(ctx, &pluginv1.ExecuteRequest{Meta: meta, Account: account(testKey, ""), Body: body})
 	}
 
 	// Submit: POST to Ark's own /api/v3 task collection.
-	r, err := build(&pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-1-0-pro-250528"})
+	r, err := build(&pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-1-0-pro-250528"}, submitBody)
 	if err != nil || r.GetMethod() != "POST" ||
 		r.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks" {
 		t.Fatalf("submit = %s %s (%v)", r.GetMethod(), r.GetUrl(), err)
@@ -32,35 +34,29 @@ func TestBuildUpstreamRequestVideo(t *testing.T) {
 	if r.GetHeaders()["authorization"] != "Bearer 11111111-2222-3333-4444-555555555555" {
 		t.Fatalf("submit auth = %v", r.GetHeaders())
 	}
-	// No stream_options patch: that is a chat field.
-	if len(r.GetPatches()) != 0 {
-		t.Fatalf("submit patches = %v", r.GetPatches())
+	// The body goes up byte for byte: no stream_options edit, that is a chat
+	// field, and the model is the submitted one.
+	if !bytes.Equal(r.GetBody(), submitBody) || r.GetUpstreamModel() != "doubao-seedance-1-0-pro-250528" {
+		t.Fatalf("submit body = %s model = %q", r.GetBody(), r.GetUpstreamModel())
 	}
 
-	// Query: GET with the task id from the matched path parameter.
-	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "cgt-20260101-abcde"}})
-	if err != nil || r.GetMethod() != "GET" ||
+	// Query: GET with the task id from the matched path parameter, and no body.
+	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "cgt-20260101-abcde"}}, []byte(`{}`))
+	if err != nil || r.GetMethod() != "GET" || r.GetBody() != nil ||
 		r.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks/cgt-20260101-abcde" {
-		t.Fatalf("query = %s %s (%v)", r.GetMethod(), r.GetUrl(), err)
+		t.Fatalf("query = %s %s %q (%v)", r.GetMethod(), r.GetUrl(), r.GetBody(), err)
 	}
 
 	// The task id is client input and is escaped into the path.
-	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "a/b?c"}})
+	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "a/b?c"}}, nil)
 	if err != nil || r.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks/a%2Fb%3Fc" {
 		t.Fatalf("query escaping = %s (%v)", r.GetUrl(), err)
 	}
 
 	// A query with no task id is a 400-worthy error, not a request to Ark's
 	// task collection (which would list, not poll).
-	if _, err := build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}); err == nil {
+	if _, err := build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}, nil); err == nil {
 		t.Fatal("expected an error for a query with no task_id")
-	}
-
-	// A custom base URL keeps the /api/v3 task path.
-	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "m"})
-	_ = r
-	if err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -194,14 +190,8 @@ func TestResolveModelEdges(t *testing.T) {
 
 // ---------------------------------------------------------------- reconcile (no DB)
 
-func TestBuildReconcileRequest(t *testing.T) {
-	p := New()
-	ctx := context.Background()
-
-	r, err := p.BuildReconcileRequest(ctx, &pluginv1.BuildReconcileRequestRequest{
-		Entry:   &pluginv1.ReconcileEntry{RefId: "cgt-abc"},
-		Account: account(testKey, `{"base_url":"`+BytePlusBaseURL+`"}`),
-	})
+func TestTaskQuery(t *testing.T) {
+	r, err := taskQuery(&pluginv1.ReconcileEntry{RefId: "cgt-abc"}, account(testKey, `{"base_url":"`+BytePlusBaseURL+`"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,26 +202,17 @@ func TestBuildReconcileRequest(t *testing.T) {
 		t.Fatalf("reconcile auth = %v", r.GetHeaders())
 	}
 	// No ref id is a hard error (the entry is unusable).
-	if _, err := p.BuildReconcileRequest(ctx, &pluginv1.BuildReconcileRequestRequest{
-		Entry: &pluginv1.ReconcileEntry{}, Account: account(testKey, ""),
-	}); err == nil {
+	if _, err := taskQuery(&pluginv1.ReconcileEntry{}, account(testKey, "")); err == nil {
 		t.Fatal("expected an error for an entry with no ref_id")
 	}
 }
 
-func TestParseReconcileResponse(t *testing.T) {
+func TestReadTaskQuery(t *testing.T) {
 	p := New() // no host at all: not one answer below may depend on the plugin's own table
-	ctx := context.Background()
 	entry := &pluginv1.ReconcileEntry{RefId: "cgt-1"}
 
 	parse := func(status int32, transportErr, body string) *pluginv1.ReconcileResult {
-		r, err := p.ParseReconcileResponse(ctx, &pluginv1.ParseReconcileResponseRequest{
-			Entry: entry, Status: status, TransportError: transportErr, Body: []byte(body),
-		})
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		return r
+		return p.readTaskQuery(entry, &pluginv1.ExecutionHTTPResponse{Status: status, TransportError: transportErr, Body: []byte(body)})
 	}
 
 	// Running / queued -> PENDING, with the plugin's own cadence.

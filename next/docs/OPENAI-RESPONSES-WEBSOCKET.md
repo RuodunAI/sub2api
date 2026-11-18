@@ -39,7 +39,7 @@
 ## 4. 会话流程
 
 1. **升级前**：节点健康检查、API Key 鉴权、每个 API Key 的连接数（集群范围，Redis 并发位 `ws:<key id>`，上限 64，随连接释放）。失败直接返回 HTTP 错误（OpenAI 错误格式），不升级。
-2. **升级**：接受 WebSocket（支持 permessage-deflate），客户端单条消息上限取端点 `maxBodyBytes`（默认 32 MiB）。不限制首条消息的等待时间（2026-11-08 前为 30 s）。
+2. **升级**：接受 WebSocket（支持 permessage-deflate），客户端单条消息上限取网关设置的请求体上限 `max_request_body_mb`（默认 128 MB，CONTRACTS §110）。不限制首条消息的等待时间（2026-11-08 前为 30 s）。
 3. **每一轮**：客户端发送 `{"type":"response.create", ...}`。其他类型、非法 JSON 或缺少模型时回一条错误事件，连接保持。一轮进行中再次发送 `response.create` 时回错误事件（上游同一连接一次只处理一个响应）。每轮依次执行：
    - 新的请求 ID（使用记录与账本的幂等键），读模型，校验分组模型白名单；
    - 占 API Key 并发位并检查 RPM/TPM（CONTRACTS §60）；

@@ -380,19 +380,9 @@ func (c *call) priceQuery(model string) core.PriceQuery {
 	return core.PriceQuery{Model: model, GroupID: c.principal.Group.ID, SegmentID: c.principal.SegmentID}
 }
 
-// bodyLimit is the largest client request body (or WebSocket message).
-// max_request_body_mb may raise what the endpoint declares but not lower it;
-// for an endpoint that declares nothing it replaces the default.
-func (c *call) bodyLimit() int64 {
-	env := c.environment(nil).Bytes(core.EnvVarMaxRequestBodyMB)
-	if c.ep.Request.MaxBodyBytes > 0 {
-		return max(c.ep.Request.MaxBodyBytes, env)
-	}
-	if env > 0 {
-		return env
-	}
-	return defaultMaxBodyBytes
-}
+// bodyLimit is the largest client request body (or WebSocket message): the
+// request body limit of the gateway settings and nothing else.
+func (c *call) bodyLimit() int64 { return c.gw.MaxRequestBodyBytes() }
 
 func (c *call) readBody() *gwError {
 	if c.c.Request.Body != nil {

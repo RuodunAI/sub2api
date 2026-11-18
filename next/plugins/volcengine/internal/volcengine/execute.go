@@ -7,19 +7,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
-// Execute uses the shared SDK flow: build the upstream request, forward it
-// through the scoped host transport and report usage for the host to record.
+// Execute is the one request path. The SDK flow builds the request
+// (BuildUpstream) and picks the form from the request's flags: the video
+// submission relays, waits and answers the task (ParseTaskSubmission, with
+// the refined estimate); every other endpoint relays without waiting and
+// answers host_usage.
 func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
 	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
-// Monitor performs one observation and reports it through the current claim.
-// The host owns the next run, the shared snapshot and the billing transaction.
-func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) error {
-	result, err := p.Poll(ctx, in)
-	if err != nil {
-		return err
-	}
-	_, err = pluginsdk.ReportTaskProgress(ctx, result)
-	return err
 }

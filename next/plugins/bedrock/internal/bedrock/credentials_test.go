@@ -127,10 +127,10 @@ func TestValidateCredentialsRejects(t *testing.T) {
 				return // the hint is never read once the account is stored
 			}
 			// The same account, had it been stored, serves no request.
-			_, err := newTestPlugin(Endpoints{}).BuildUpstreamRequest(context.Background(),
-				buildRequest(stored(tc.typ, tc.creds, tc.settings), ProtocolMessages, testHaiku, false))
+			_, err := newTestPlugin(Endpoints{}).BuildUpstream(context.Background(),
+				executeRequest(stored(tc.typ, tc.creds, tc.settings), testHaiku, false, claudeBody(testHaiku, false)))
 			if status.Code(err) != codes.FailedPrecondition {
-				t.Fatalf("BuildUpstreamRequest for the refused account: %v", err)
+				t.Fatalf("BuildUpstream for the refused account: %v", err)
 			}
 		})
 	}
@@ -187,8 +187,8 @@ func TestPartitions(t *testing.T) {
 func TestExpiryHintIsOnlyAHint(t *testing.T) {
 	for _, hint := range []string{"tomorrow", "2020-01-01T00:00:00Z", "2999-01-01T00:00:00Z"} {
 		acc := stored(TypeSTS, stsCreds, map[string]any{fieldRegion: "us-west-2", fieldSessionExpiresAt: hint})
-		resp := build(t, buildRequest(acc, ProtocolMessages, testHaiku, false))
-		if resp.GetSigning().GetSessionToken() != testSessionToken {
+		up := build(t, executeRequest(acc, testHaiku, false, claudeBody(testHaiku, false)))
+		if up.GetHeaders()["x-amz-security-token"] != testSessionToken {
 			t.Errorf("hint %q: the request is not signed with the session token", hint)
 		}
 	}

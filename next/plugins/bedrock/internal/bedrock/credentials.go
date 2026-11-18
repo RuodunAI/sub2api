@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -86,7 +87,7 @@ var ProfilePrefixes = []string{NoProfilePrefix, "us", "eu", "apac", "jp", "au", 
 
 // auth is how the accounts of a type authorize their requests.
 type auth struct {
-	// signed: the core signs the request with the account's access key
+	// signed: the plugin signs the request with the account's access key
 	// (SigV4). Otherwise the account's API key is sent as a bearer token.
 	signed bool
 	// session: the access key is temporary and comes with a session token.
@@ -223,20 +224,34 @@ func readAccount(acc *pluginv1.Account) (account, error) {
 	return account{auth: a, creds: creds, region: settings.Str(fieldRegion), prefix: settings.Str(fieldProfilePrefix)}, nil
 }
 
-// authorize says how a request of the account is authorized: an API key
-// goes into headers as a bearer token, and the other types return the
-// directive the request is to be signed with (signed).
-func (a account) authorize(headers map[string]string) (d reqsign.Directive, signed bool) {
+// signedHeaders are the headers a SigV4 signature covers or adds, besides
+// the host: they go to the core as authoritative headers.
+var signedHeaders = []string{"Content-Type", "Authorization", "X-Amz-Date", "X-Amz-Security-Token"}
+
+// authorize returns the headers that authorize req, a request of the
+// account that will send exactly body: the API key as a bearer token, or
+// the SigV4 signature of req made at now (req's Content-Type included,
+// since it is signed). Signing settles req's URL and host; they must not
+// change afterwards.
+func (a account) authorize(req *http.Request, body []byte, now time.Time) (http.Header, error) {
 	if !a.auth.signed {
-		headers["authorization"] = "Bearer " + a.creds.Str(fieldAPIKey)
-		return d, false
+		return http.Header{"Authorization": {"Bearer " + a.creds.Str(fieldAPIKey)}}, nil
 	}
-	d = reqsign.Directive{
+	d := reqsign.Directive{
 		Scheme: reqsign.SchemeAWSSigV4, Region: a.region, Service: SigningService,
 		AccessKeyID: a.creds.Str(fieldAccessKeyID), SecretAccessKey: a.creds.Str(fieldSecretAccessKey),
 	}
 	if a.auth.session {
 		d.SessionToken = a.creds.Str(fieldSessionToken)
 	}
-	return d, true
+	if err := reqsign.Sign(req, body, d, now); err != nil {
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	}
+	auth := http.Header{}
+	for _, name := range signedHeaders {
+		if value := req.Header.Get(name); value != "" {
+			auth.Set(name, value)
+		}
+	}
+	return auth, nil
 }

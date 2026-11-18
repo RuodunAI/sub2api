@@ -8,6 +8,18 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 请求体上限改到“系统设置 → 网关设置”，同名环境变量删除（转发 V2 的 W8；迁移 0106，只改数据；改契约）
+
+分支 `feat/fv2-settings`，未合并。约定见 CONTRACTS §110。
+
+- **新设置“请求体上限”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭）。它是唯一的请求大小上限，保存后各节点对新请求生效。
+- **升级前必读。** 环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0106 把全局层存着的值搬进网关设置，升级后不变；**分组层的值丢弃，没有分组级的上限了**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是默认 128 MB，要在网关设置里填；仍带着这个变量启动不报错，但它不再起作用。
+- 上限超过“(插件内存封顶 − 64) / 3”（默认封顶 1024 MB 时是 320 MB）时，网关设置里该行提示需要同时调高 `SUB2API_PLUGIN_MAX_MEMORY_MB`；值照常保存。
+- 钩子调用因请求超过插件 gRPC 接收上限而失败时，不再被排除在熔断之外（`requestTooLarge` 删除）。
+- 端点清单的 `request.maxBodyBytes` 核心不再读取（没有清单用过）。
+- “平台调用超时”的说明改为新含义：插件在一次请求中每段自身处理时间的上限（构造上游请求、解析用量、错误分类），不含等待上游的时间；默认值和范围不变。
+- SDK：`protocol.GatewaySettings` 加 `MaxRequestBodyMB`，`protocol.EnvVarMaxRequestBodyMB` 删除。
+
 ### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（openai 0.4.4、azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0；核心加请求签名与响应流格式；无迁移）
 
 分支 `feat/cloud-providers`，未合并。**没有真实云账号，三家的行为都只对文档、黄金样例和模拟上游验证过**；没验证的事项见 [设计文档](next/docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节，验证之前不要对外说“已支持”。填法见 [PLUGIN-CLOUD-PROVIDERS.md](next/docs/PLUGIN-CLOUD-PROVIDERS.md)。

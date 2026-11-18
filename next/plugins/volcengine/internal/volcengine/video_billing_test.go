@@ -24,10 +24,8 @@ func TestVideoBillingFacts(t *testing.T) {
 			t.Fatalf("%s = %s want %s", k, r.GetFacts()[k], want)
 		}
 	}
-	final, err := p.ParseReconcileResponse(context.Background(), &pluginv1.ParseReconcileResponseRequest{Status: 200, Entry: &pluginv1.ReconcileEntry{Model: "doubao-seedance-2-5"}, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":100000},"resolution":"1080p","ratio":"9:16","duration":4}`)})
-	if err != nil {
-		t.Fatal(err)
-	}
+	final := p.readTaskQuery(&pluginv1.ReconcileEntry{Model: "doubao-seedance-2-5"},
+		&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":100000},"resolution":"1080p","ratio":"9:16","duration":4}`)})
 	if final.GetFacts()["video_estimated"] != "false" || final.GetFacts()["video_width"] != "1080" || final.GetFacts()["video_height"] != "1920" || final.GetFacts()["video_seconds"] != "4" {
 		t.Fatalf("final: %v", final.GetFacts())
 	}
