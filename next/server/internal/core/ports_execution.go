@@ -149,10 +149,17 @@ type ExecutePlugin interface {
 	//     returns an error: the execution is unreported and not billed.
 	//   - ctx bounds the whole call. Cancelling it cancels the plugin's
 	//     call and every host call in progress. The caller decides whether a
-	//     client disconnect reaches ctx.
+	//     client disconnect reaches ctx; the gateway's rule: it does as long
+	//     as nothing was sent upstream for this execution - always for the
+	//     form that does not wait, and for the waiting form until client.Relay
+	//     starts sending. From then on the client's departure only affects
+	//     the upstream exchange, as the disconnect policy decides, and never
+	//     the plugin's work after the observation, whose facts must still be
+	//     committed.
 	//
 	// Nothing times the plugin's own work: a hung plugin ends with ctx or
-	// with its process.
+	// with its process. One that hangs after the observation of a relay that
+	// waited ends only with its process.
 	//
 	// Errors: ErrPluginUnavailable when the instance is down, draining or
 	// crashed; the context's

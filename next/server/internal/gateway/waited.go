@@ -67,10 +67,19 @@ type waitedRelay struct {
 	alive heartbeat
 }
 
+// errClientLeft is a relay that waits asked for after the client left: it
+// is not sent.
+var errClientLeft = errors.New("the client left before the relay was sent")
+
 // relay is ExecutionClient.Relay: send req now and hand the plugin exactly
 // one of the observation and the upstream's error, or an error when the
-// exchange ended without either.
+// exchange ended without either. From here on the client leaving no longer
+// cancels the Execute call (execution.run).
 func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
+	if !x.detach() {
+		// The client left before anything was sent: the call is cancelled.
+		return nil, errClientLeft
+	}
 	c := x.c
 	w := &waitedRelay{x: x, ctx: ctx, id: uuid.NewString()}
 	x.waited = w

@@ -56,6 +56,10 @@ type execution struct {
 	refused *gwError
 	// waited is the exchange of a relay that waits (waited.go).
 	waited *waitedRelay
+	// detach stops the client's departure from cancelling the Execute call
+	// of a relay that waits; it reports false when the client has already
+	// left (run).
+	detach func() bool
 }
 
 // errExecutionAborted cuts the upstream exchange of a relay that waits when
@@ -85,11 +89,14 @@ func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, ac
 	return x.unrelayed(ctx, res, err)
 }
 
-// run calls Execute. A request that waits keeps going when the client
-// leaves (its answer may be read on for billing, disconnect.go): the call
-// outlives ctx and has no time limit of its own. It ends with the plugin's
-// return, the upstream exchange (the client leaving, the administrator's
-// upstream timeouts) or the plugin process.
+// run calls Execute under ctx, the client's: the call has no time limit of
+// its own. A request that waits is cancelled by the client leaving only
+// until its relay starts sending (detach): from then on the exchange
+// follows the disconnect policy (its answer may be read on for billing,
+// disconnect.go) and the plugin's work after the observation is not
+// cancelled by the client, since its facts must still be committed. It
+// then ends with the plugin's return, the upstream exchange (the
+// administrator's upstream timeouts, the policy) or the plugin process.
 func (x *execution) run(ctx context.Context, upModel string, n int) (core.ExecutionResult, error) {
 	c, rt := x.c, x.rt
 	plugin, ok := rt.binding.Client.(core.ExecutePlugin)
@@ -103,7 +110,10 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 	client := core.ExecutionClient{Check: x.check, Fetch: x.fetch}
 	if in.ExtractUsage || in.TaskSubmission {
 		client.Relay = x.relay
-		ctx = context.WithoutCancel(ctx)
+		detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		x.detach = context.AfterFunc(ctx, cancel)
+		ctx = detached
 	}
 	return plugin.Execute(ctx, in, client)
 }

@@ -488,3 +488,63 @@ func TestHeartbeatStopsOnceNotObserved(t *testing.T) {
 		t.Fatal("heartbeat still armed")
 	}
 }
+
+// A plugin that hangs before it relays is cancelled by the client leaving:
+// nothing was sent upstream, so its Execute call ends with the client, the
+// attempt is canceled, nothing is billed, no execution is recorded and the
+// slots are released. (Once the relay sends, the client's departure no
+// longer reaches the call: TestClientDisconnectWaitedRelay.)
+func TestWaitedRelayClientLeavesBeforeTheRelay(t *testing.T) {
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	e, _ := scriptedUsageEnv(t, func(ctx context.Context, _ *fakePlatform, _ *pluginv1.ExecuteRequest, _ core.ExecutionClient) (core.ExecutionResult, error) {
+		close(entered)
+		<-ctx.Done() // hangs until its call is cancelled
+		close(canceled)
+		return core.ExecutionResult{}, ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw, _ := json.Marshal(body(testModel, false))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.srv.URL+"/pu/v1/chat", bytes.NewReader(raw))
+	req.Header.Set("x-api-key", testKey)
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute was not called")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client leaving did not cancel the Execute call")
+	}
+	rec := e.record()
+	if rec.Billable || rec.ErrorType != errTypeClientCanceled || rec.Tokens != (core.UsageTokens{}) {
+		t.Fatalf("record %+v", rec)
+	}
+	if len(e.up.keys()) != 0 || len(e.settler.executionStates()) != 0 {
+		t.Fatalf("sent %v, executions %v", e.up.keys(), e.settler.executionStates())
+	}
+	e.noRecord()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		held := 0
+		for _, n := range e.slots.inUse {
+			held += n
+		}
+		e.slots.mu.Unlock()
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slots still held: %d", held)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
