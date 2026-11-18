@@ -140,7 +140,7 @@ func Register(s grpc.ServiceRegistrar, p any, dial HostDialer, opts ...Option) e
 	}
 	pluginv1.RegisterPluginServiceServer(s, rt)
 	if v, ok := p.(Platform); ok {
-		pluginv1.RegisterPlatformServiceServer(s, platformServer{impl: v, runtime: rt})
+		pluginv1.RegisterPlatformServiceServer(s, platformServer{impl: v, execute: rt.execute, runtime: rt})
 	}
 	if v, ok := p.(Hook); ok {
 		pluginv1.RegisterHookServiceServer(s, hookServer{impl: v})
@@ -225,6 +225,7 @@ type runtime struct {
 	pluginv1.UnimplementedPluginServiceServer
 
 	p            any
+	execute      Executor // of a Platform
 	opts         options
 	dial         HostDialer
 	key, version string
@@ -241,6 +242,13 @@ func newRuntime(p any, o options, dial HostDialer) (*runtime, error) {
 		return nil, errors.New("plugin is nil")
 	}
 	rt := &runtime{p: p, opts: o, dial: dial}
+	if platform, ok := p.(Platform); ok {
+		execute, err := executorOf(platform)
+		if err != nil {
+			return nil, err
+		}
+		rt.execute = execute
+	}
 	declared, err := rt.parseManifest()
 	if err != nil {
 		return nil, err
@@ -435,6 +443,7 @@ func (rt *runtime) Shutdown(ctx context.Context, _ *pluginv1.ShutdownRequest) (*
 type platformServer struct {
 	pluginv1.UnimplementedPlatformServiceServer
 	impl    Platform
+	execute Executor
 	runtime *runtime
 }
 

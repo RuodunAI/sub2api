@@ -7,9 +7,12 @@ import (
 )
 
 // Platform is PlatformService ("platform.adapter.v1"): the behaviour of the
-// account types a plugin declares that needs code. Execute is the one path
-// of a gateway request (see Executor); the rest validates credentials,
-// classifies upstream errors and describes the console's test request.
+// account types a plugin declares that needs code. Besides it a platform
+// plugin implements the one path of a gateway request, Execute: an
+// UpstreamBuilder, which the SDK runs with ExecuteDefault, or an Executor of
+// its own, which takes precedence; Serve refuses a Platform with neither.
+// Platform itself validates credentials, classifies upstream errors and
+// describes the console's test request.
 //
 // A plugin implements it for the account types it declares in the
 // top-level manifest accountTypes (ARCHITECTURE 6.6). Platforms own the
@@ -32,7 +35,6 @@ import (
 // ClassifyError is called by the host for the upstream error of a relay
 // that did not wait; ExecuteDefault calls it in process for one that did.
 type Platform interface {
-	Executor
 	ErrorClassifier
 	ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error)
 	BuildTestRequest(context.Context, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error)

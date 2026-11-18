@@ -118,13 +118,6 @@ func userMessage(text string) []byte {
 	return b
 }
 
-// Execute implements pluginsdk.Executor: build the request (BuildUpstream)
-// and hand it to the host without waiting; the host sends it after Execute
-// returned and reads the usage by the openai platform's rules (host_usage).
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // BuildUpstream implements pluginsdk.UpstreamBuilder.
 //
 // HTTP (openai.responses): POST to the Codex backend's Responses endpoint

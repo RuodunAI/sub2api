@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -235,6 +236,28 @@ func TestExecuteDefaultTaskNeedsParser(t *testing.T) {
 	}
 }
 
+// A Platform needs a way to execute: an UpstreamBuilder (run with
+// ExecuteDefault) or an Executor of its own. One with neither is refused
+// before it serves.
+func TestPlatformWithoutBuilderOrExecutorIsRefused(t *testing.T) {
+	err := pluginsdk.Register(grpc.NewServer(), neitherPlatform{}, nil, pluginsdk.WithInfo("neither", "1.0.0"))
+	if err == nil || !strings.Contains(err.Error(), "UpstreamBuilder or Executor") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type neitherPlatform struct{}
+
+func (neitherPlatform) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
+	return &pluginv1.ValidateCredentialsResponse{}, nil
+}
+func (neitherPlatform) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
+	return &pluginv1.ClassifyErrorResponse{}, nil
+}
+func (neitherPlatform) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
+	return &pluginv1.BuildTestRequestResponse{}, nil
+}
+
 type builderOnly struct{ built *bool }
 
 func (builderOnly) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
@@ -245,9 +268,6 @@ func (builderOnly) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest
 }
 func (builderOnly) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
 	return &pluginv1.BuildTestRequestResponse{}, nil
-}
-func (b builderOnly) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, b, in)
 }
 func (b builderOnly) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	*b.built = true

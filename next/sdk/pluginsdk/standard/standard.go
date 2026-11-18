@@ -6,8 +6,8 @@
 //
 // A plugin describes each type as a Type, usually starting from a provider
 // preset (sdk/pluginsdk/providers/{openai,anthropic,gemini}), and serves
-// New(types...): the result is a pluginsdk.Platform whose Execute is
-// pluginsdk.ExecuteDefault, plus BuildModelsRequest. README.md has complete
+// New(types...): the result is a pluginsdk.Platform and UpstreamBuilder, run
+// with pluginsdk.ExecuteDefault, plus BuildModelsRequest. README.md has complete
 // plugin main packages.
 //
 // The library holds only what every such type does the same way. What

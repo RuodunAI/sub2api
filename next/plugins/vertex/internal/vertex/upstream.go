@@ -113,13 +113,6 @@ func (p *Plugin) request(acc *pluginv1.Account, model, action string) (upstreamR
 	return upstreamRequest{url: address, model: id, auth: auth}, err
 }
 
-// Execute implements pluginsdk.Platform: build the request and relay it
-// without waiting; the core sends it and reads the usage by the gemini
-// platform's rules.
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // BuildUpstream implements pluginsdk.UpstreamBuilder. Vertex AI takes the
 // Gemini API's body as it is, so the body goes upstream byte for byte; the
 // model (after the account's mapping) goes into the path. Only the

@@ -19,13 +19,6 @@ import (
 // says).
 const contentJSON = "application/json"
 
-// Execute implements pluginsdk.Platform: build the request, relay it
-// without waiting, and leave the usage to the core's anthropic.messages
-// rules.
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // BuildUpstream implements pluginsdk.UpstreamBuilder: a Claude request for
 // InvokeModel, or InvokeModelWithResponseStream when it streams, with the
 // final InvokeModel body (invokeBody), authorized by the account.
