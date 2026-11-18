@@ -68,14 +68,6 @@ func ok200(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.Execution
 	return &pluginv1.ExecutionHTTPResponse{Status: 200}, nil
 }
 
-// reason is the reason detail of a plugin-unavailable error.
-func reason(err error) any {
-	if err == nil {
-		return nil
-	}
-	return core.AsError(err).Details["reason"]
-}
-
 // A relay that does not wait is checked and kept, nothing more: the request
 // leaves the runtime only when Execute has returned, and only with
 // host_usage.
