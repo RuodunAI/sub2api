@@ -59,9 +59,9 @@
 // this for a platform that implements UpstreamBuilder: it picks the form
 // from the two flags and cannot forget the report.
 //
-// A platform plugin's gRPC server accepts messages up to gRPC's maximum
-// without an option (ServerOptions); the gateway's request body limit is a
-// system setting the host enforces.
+// A plugin sets no size limit: its gRPC server accepts messages up to gRPC's
+// maximum, and the gateway's request body limit is a system setting the
+// host enforces.
 //
 // The SDK implements PluginService itself. Optional lifecycle interfaces
 // (Initializer, Configurer, HealthChecker, Shutdowner) let the plugin hook

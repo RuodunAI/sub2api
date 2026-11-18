@@ -503,9 +503,8 @@ func TestFetchLimitsAndExpiry(t *testing.T) {
 	}
 }
 
-// A platform plugin takes a body far over gRPC's default 4 MiB and hands it
-// back to the host without an option; a plugin that is no platform keeps the
-// default.
+// A plugin takes a body far over gRPC's default 4 MiB and hands it back to
+// the host; the limit is the host's.
 func TestPlatformCarriesLargeBodies(t *testing.T) {
 	body := bytes.Repeat([]byte("a"), 9<<20)
 	h := startScripted(t, &scripted{})

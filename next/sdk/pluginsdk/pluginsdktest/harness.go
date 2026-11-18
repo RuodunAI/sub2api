@@ -124,11 +124,7 @@ func startPlugin(t testing.TB, p any, opts Options, fh *FakeHost, dialHost func(
 	t.Helper()
 	sdkOpts := append([]pluginsdk.Option{pluginsdk.WithStrictNetwork(pluginsdk.StrictNever)}, opts.SDK...)
 	plugLis := bufconn.Listen(1 << 20)
-	limits, err := pluginsdk.ServerOptions(p, sdkOpts...)
-	if err != nil {
-		t.Fatalf("pluginsdktest: %v", err)
-	}
-	plugSrv := pluginsdk.NewGRPCServer(limits)
+	plugSrv := pluginsdk.NewGRPCServer(nil)
 	if err := pluginsdk.Register(plugSrv, p, dialHost, sdkOpts...); err != nil {
 		t.Fatalf("pluginsdktest: register: %v", err)
 	}

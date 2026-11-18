@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"runtime/debug"
-	"slices"
 	"sync"
 
 	"github.com/hashicorp/go-hclog"
@@ -59,7 +58,6 @@ type options struct {
 	version     string
 	strict      StrictMode
 	poolSize    int32
-	maxRecv     int
 	logger      hclog.Logger
 }
 
@@ -78,15 +76,6 @@ func WithStrictNetwork(m StrictMode) Option { return func(o *options) { o.strict
 // WithDBPoolSize sets the maximum number of Host.DB connections (default 4).
 func WithDBPoolSize(n int32) Option { return func(o *options) { o.poolSize = n } }
 
-// WithMaxRecvMsgSize raises the largest host call the plugin accepts (gRPC
-// default 4 MiB), e.g. for a gateway hook that receives request images
-// (CONTRACTS §72.2). A larger call fails with RESOURCE_EXHAUSTED, which the
-// host treats like any other failed call (hook failure policy). A platform
-// plugin does not set it: it receives whole request bodies, so the SDK opens
-// its server to gRPC's maximum and the host enforces the gateway's request
-// body limit (see ServerOptions).
-func WithMaxRecvMsgSize(n int) Option { return func(o *options) { o.maxRecv = n } }
-
 // WithLogger sets the go-plugin logger (stderr JSON by default).
 func WithLogger(l hclog.Logger) Option { return func(o *options) { o.logger = l } }
 
@@ -101,8 +90,7 @@ func Serve(p any, opts ...Option) {
 	if logger == nil {
 		logger = hclog.New(&hclog.LoggerOptions{Output: os.Stderr, JSONFormat: true, Level: hclog.Info})
 	}
-	limits, err := ServerOptions(p, opts...)
-	if err != nil {
+	if _, err := newRuntime(p, o, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "pluginsdk:", err)
 		os.Exit(1)
 	}
@@ -112,39 +100,18 @@ func Serve(p any, opts ...Option) {
 	plugin.Serve(&plugin.ServeConfig{
 		HandshakeConfig: protocol.Handshake,
 		Plugins:         protocol.PluginMap(gp),
-		GRPCServer: func(sopts []grpc.ServerOption) *grpc.Server {
-			return NewGRPCServer(append(sopts, limits...))
-		},
-		Logger: logger,
+		GRPCServer:      NewGRPCServer,
+		Logger:          logger,
 	})
 }
 
-// ServerOptions validates p against the options, as Serve does, and returns
-// the gRPC server options its services need: the receive limit. A plugin
-// serving platform.adapter.v1 is handed whole request bodies in Execute, so
-// its limit is gRPC's maximum; the configured request body limit is the
-// host's to enforce before it calls. Any other plugin gets
-// WithMaxRecvMsgSize, or gRPC's default.
-func ServerOptions(p any, opts ...Option) ([]grpc.ServerOption, error) {
-	o := buildOptions(opts)
-	rt, err := newRuntime(p, o, nil)
-	if err != nil {
-		return nil, err
-	}
-	limit := o.maxRecv
-	if slices.Contains(rt.capabilities, manifest.CapPlatformAdapter) {
-		limit = maxMessageBytes
-	}
-	if limit <= 0 {
-		return nil, nil
-	}
-	return []grpc.ServerOption{grpc.MaxRecvMsgSize(limit)}, nil
-}
-
 // NewGRPCServer builds a gRPC server with the SDK interceptors (panic
-// recovery). Serve uses it; tests and custom hosts may too.
+// recovery) and the receive limit of every plugin: gRPC's maximum. A plugin
+// states no size limit of its own. The one limit on what the host hands
+// over is the gateway's request body limit, a system setting the host
+// enforces before it calls. Serve uses it; tests and custom hosts may too.
 func NewGRPCServer(opts []grpc.ServerOption) *grpc.Server {
-	opts = append(opts, grpc.ChainUnaryInterceptor(recoverUnary))
+	opts = append(opts, grpc.ChainUnaryInterceptor(recoverUnary), grpc.MaxRecvMsgSize(maxMessageBytes))
 	return grpc.NewServer(opts...)
 }
 

@@ -21,10 +21,10 @@ const (
 	FetchResponseLimit = 8 << 20
 )
 
-// maxMessageBytes is gRPC's hard limit of one message. A platform plugin
-// receives whole request bodies and the host accepts them back, so both
-// directions are opened to it; the gateway's request body limit is the
-// host's to enforce, it can change while the plugin runs (design §8.2).
+// maxMessageBytes is gRPC's hard limit of one message, the receive limit of
+// every plugin server and of the calls back to the host. Plugins set no
+// size limit: the gateway's request body limit is the host's to enforce,
+// and it can change while the plugin runs (design §8.2).
 const maxMessageBytes = math.MaxInt32
 
 const (
