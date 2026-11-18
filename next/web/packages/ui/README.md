@@ -430,3 +430,7 @@ const { EntityMultiPicker } = host.components
 ## 账号请求头覆盖编辑器（UI SDK 3.19）
 
 `host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm 增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.302（0.1.302 是最后一个带 UI 3.18 的核心）。
+
+## 原生账号表单的代理票据（UI SDK 3.20）
+
+原生账号表单（CONTRACTS §23.5）多一个 prop `proxyTicket`，类型 `ProxyTicketSource`（`() => Promise<string>`，从 `@sub2api/host` 导出）。调用时控制台按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据（`POST /account-types/:plugin_key/:type/proxy-ticket`，CONTRACTS §117）：核心按调用者的权限检查这个选择，把它加密成只有核心能解开的不透明字符串。在账号建好之前要访问外部服务的授权流程（设备码、OAuth 换令牌）在开始时把票据交给自己插件的路由，插件用 `pluginsdk.Fetch` 带上它，核心就从这个代理把请求发出去；插件界面和插件都看不到代理地址和密码。要不到票据时 Promise 以核心的 `ApiError` 拒绝，控制台同时把字段错误显示在代理输入下。本包的组件没有变化；用到它的插件声明 `hostUICompat: "^3.20"`，`hostCompat` 要求高于 0.1.303（0.1.303 是最后一个带 UI 3.19 的核心）。

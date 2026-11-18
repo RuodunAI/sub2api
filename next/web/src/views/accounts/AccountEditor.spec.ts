@@ -226,6 +226,35 @@ describe('native plugin account form', () => {
     await flushPromises()
     expect(w.text()).toContain('entry does not export register(host)')
   })
+
+  // The form's proxy choice reaches an authorization flow as a proxy ticket
+  // (CONTRACTS §117): whatever the proxy field holds when the flow asks.
+  it('hands the native form a proxy ticket of the current proxy choice: an existing proxy, a pasted one or none', async () => {
+    const Form = { name: 'NativeForm', props: ['proxyTicket'], template: '<div />' }
+    pluginStore.component = () => Form
+    const w = render(undefined, false, nativeType)
+    await flushPromises()
+    const ticket = () => (w.getComponent(Form).props('proxyTicket') as () => Promise<string>)()
+    const url = '/account-types/codex/codex_device/proxy-ticket'
+    mocks.post.mockResolvedValue({ ticket: 'sealed' })
+
+    expect(await ticket()).toBe('sealed')
+    expect(mocks.post).toHaveBeenLastCalledWith(url, { proxy_id: null })
+    await chooseProxy(w, 7)
+    await ticket()
+    expect(mocks.post).toHaveBeenLastCalledWith(url, { proxy_id: 7 })
+    await w.get('[data-testid="proxy-mode"] input[value="url"]').setValue(true)
+    await w.get('[data-testid="proxy-url"]').setValue(' socks5://u:p@h:1080 ')
+    await ticket()
+    expect(mocks.post).toHaveBeenLastCalledWith(url, { proxy_url: 'socks5://u:p@h:1080' })
+
+    // A refused choice shows under the proxy field and goes back to the form.
+    const refused = new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [{ field: 'proxy_url', code: 'invalid', message: 'invalid proxy URL: missing port' }] } })
+    mocks.post.mockRejectedValueOnce(refused)
+    await expect(ticket()).rejects.toBe(refused)
+    await flushPromises()
+    expect(w.get('[data-testid="proxy-field"]').text()).toContain('invalid proxy URL: missing port')
+  })
 })
 
 describe('account model limits', () => {

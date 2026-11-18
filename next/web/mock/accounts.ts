@@ -957,6 +957,21 @@ on('POST', '/account-types/:plugin_key/:type/models/fetch', (req) => {
   }
   return fetchUpstreamModels(req.params.plugin_key, b.credentials)
 })
+// The proxy of a native authorization flow (CONTRACTS §117): checked like
+// models/fetch, sealed by the core; the mock's ticket is opaque base64.
+on('POST', '/account-types/:plugin_key/:type/proxy-ticket', (req) => {
+  const b = req.body || {}
+  const url = typeof b.proxy_url === 'string' ? b.proxy_url.trim() : ''
+  if (url && b.proxy_id != null) {
+    return fail(400, 'invalid_argument', 'proxy_id and proxy_url are exclusive', { fields: [{ field: 'proxy_url', code: 'conflict', message: 'Give proxy_id or proxy_url, not both' }] })
+  }
+  if (url) {
+    const err = validateProxyURL(url)
+    if (err) return err
+  }
+  const choice = url ? { proxy_url: url } : b.proxy_id != null ? { proxy_id: b.proxy_id } : {}
+  return { ticket: Buffer.from(JSON.stringify({ plugin: req.params.plugin_key, ...choice })).toString('base64url') }
+})
 on('POST', '/accounts/:id/models/fetch', (req) => {
   const r = scopedAccount(req, 'test')
   if (!('a' in r)) return r
