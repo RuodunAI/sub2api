@@ -82,6 +82,9 @@ type waitedRelay struct {
 	base        *core.UsageRecord
 	spool       *bufferedResponse
 	taskBody    []byte
+	// committing is the record of the facts handed to CommitExecution: the
+	// request's once the commit is found to have landed.
+	committing *core.UsageRecord
 	// alive renews the observed execution until it ends (heartbeat).
 	alive heartbeat
 }
@@ -332,6 +335,7 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	previous := c.rec
 	commit, body, err := w.facts(ctx, out)
 	if err == nil {
+		w.committing = commit.Record
 		err = w.commitWithRetry(ctx, commit)
 		if err != nil && c.ep.TaskSubmit() {
 			err = w.confirmTask(ctx, err)
@@ -518,8 +522,9 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 		recordType = core.UsageErrorUnreported
 		c.rec.SetUnreported(reason)
 	case w.closed(ctx, reason):
-		// Committed meanwhile by a retry that timed out here: the facts stand.
-		c.taskPersisted = true
+		// Committed meanwhile by a retry that timed out here: the facts
+		// stand, and so does their record (the rate limits count it).
+		c.rec, c.taskPersisted = w.committing, true
 		return w.deliver(ctx)
 	default:
 		c.taskPersisted = true

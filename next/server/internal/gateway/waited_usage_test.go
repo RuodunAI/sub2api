@@ -558,3 +558,45 @@ func TestWaitedRelayClientLeavesBeforeTheRelay(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A commit whose acknowledgement was lost and whose retries then fail is
+// found committed when the execution is closed: the answer is delivered,
+// the facts are billed once, and the rate limits count the committed facts,
+// not the core's reading taken before the report.
+func TestWaitedRelayCommitLandedCountsTheFacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the commit deadline")
+	}
+	e, pp := usageEnv(t, pluginUsageRules())
+	lim := newFakeLimiter()
+	e.gw.d.Limiter = lim
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		return report(3, 4), nil
+	}
+	var calls atomic.Int32
+	e.settler.commitErr = func(core.ExecutionCommit) error {
+		if calls.Add(1) == 1 {
+			return nil
+		}
+		return errors.New("database outage")
+	}
+	e.settler.commitAckLost = func(core.ExecutionCommit) error { return context.DeadlineExceeded }
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || !strings.Contains(string(res.body), "hello") {
+		t.Fatalf("status %d %s", res.status, res.body)
+	}
+	rec := e.record()
+	if !rec.Success || !rec.Billable || rec.Tokens.Input != 3 || rec.Tokens.Output != 4 {
+		t.Fatalf("committed record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	e.noRecord()
+	want := rec.Tokens.Throughput(rec.UsageSemantics)
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	if got := lim.modelTkns["9:"+testModel]; got != want {
+		t.Fatalf("rate limits counted %d tokens, the committed facts are %d", got, want)
+	}
+}
