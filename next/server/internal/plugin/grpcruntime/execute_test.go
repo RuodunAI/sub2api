@@ -251,39 +251,6 @@ func TestMonitorAcrossProcess(t *testing.T) {
 	}
 }
 
-// Moving a body between the processes is no work of the plugin's: a large
-// body, delivered with Execute and relayed back, passes a segment timeout
-// far shorter than its transfer. A hung plugin with a small body still
-// times out after the bare segment timeout.
-func TestSegmentTimeoutAllowsBodyTransfer(t *testing.T) {
-	e := setup(t, registrytest.DefaultGrants())
-	inst := e.load(t, e.runtime(t, nil))
-	const segment = 150 * time.Millisecond
-	client := core.ExecutionClient{SegmentTimeout: segment}
-	padded := func(size int, steps ...scriptStep) []byte {
-		raw := script("host_usage", steps...)
-		return append(raw, make([]byte, size-len(raw))...)
-	}
-
-	const size = 64 * mib
-	res, err := execute(inst, &pluginv1.ExecuteRequest{Body: padded(size, relayStep(false, size))}, client)
-	if err != nil {
-		t.Fatalf("large body: %v", err)
-	}
-	if len(res.Relay.GetBody()) != size {
-		t.Fatalf("relayed %d bytes", len(res.Relay.GetBody()))
-	}
-
-	start := time.Now()
-	res, err = execute(inst, &pluginv1.ExecuteRequest{Body: padded(1024, scriptStep{Op: "sleep", Ms: 3000}, relayStep(false, 1))}, client)
-	if core.AsError(err).Code != core.ErrPluginUnavailable.Code || core.AsError(err).Details["reason"] != core.PluginUnavailableSegmentTimeout || res.Response != nil {
-		t.Fatalf("hung plugin: %v %v", res, err)
-	}
-	if took := time.Since(start); took < segment || took > segment+time.Second {
-		t.Fatalf("hung plugin timed out after %s", took)
-	}
-}
-
 // testPluginVariant builds the test plugin with ldflags, as a binary of
 // another plugin protocol.
 func testPluginVariant(t testing.TB, ldflags string) []byte {

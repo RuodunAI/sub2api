@@ -483,8 +483,8 @@ func TestPluginUsageDetailJSONLimits(t *testing.T) {
 // request keeps its 200, the record is committed and billed from whatever the
 // declarative rules found, and the fallback is recorded so it can be found
 // later - for this endpoint the rules find nothing, which is exactly the case
-// worth alerting on. A plugin that overruns its segment instead fails
-// Execute: that execution is unreported (zz_b_waited_test.go).
+// worth alerting on. A plugin whose Execute fails instead leaves the
+// execution unreported (waited_usage_test.go).
 func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 	cases := map[string]func(*fakePlatform){
 		"unimplemented": func(p *fakePlatform) { p.extract = nil },

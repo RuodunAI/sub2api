@@ -1142,7 +1142,7 @@ export interface BillingSettings {
 export interface GatewaySettings {
   /** Attempts per request incl. failover, 1–10 (default 3). */
   max_attempts: number
-  /** Upper bound of each stretch of a plugin's own processing within one request, not counting the wait for the upstream, 100–30000 ms (default 2000). */
+  /** Timeout of one plugin ClassifyError call for a failed upstream request (and of the core's client-disconnect policy lookup); a plugin's work while forwarding is not timed. 100–30000 ms (default 2000). */
   platform_call_timeout_ms: number
   /** Default hook timeout when the manifest sets none, 50–2000 ms (default 300). */
   default_hook_timeout_ms: number

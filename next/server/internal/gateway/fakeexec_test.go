@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -23,23 +22,12 @@ type fakeBuilder interface {
 // fakeExecute plays both sides of Execute for an in-process fake plugin:
 // the SDK's ExecuteDefault (relay once, wait when a flag asks, answer
 // host_usage, usage or task, classify a waited error) and the runtime's
-// guarantees the gateway relies on (core ExecutePlugin): build runs within
-// client.SegmentTimeout (ErrPluginUnavailable with reason segment_timeout
-// past it), every relay passes client.Check first, a relay without waiting
+// guarantees the gateway relies on (core ExecutePlugin): every relay passes
+// client.Check first, a relay without waiting
 // is only kept and reaches the caller as ExecutionResult.Relay with
 // host_usage, a waiting one runs in client.Relay.
 func fakeExecute(ctx context.Context, b fakeBuilder, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
-	segment := client.SegmentTimeout
-	if segment <= 0 {
-		segment = 2 * time.Second
-	}
-	bctx, cancel := context.WithTimeout(ctx, segment)
-	req, err := b.buildUpstream(bctx, in)
-	timedOut := errors.Is(bctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-	cancel()
-	if timedOut {
-		return core.ExecutionResult{}, core.ErrPluginUnavailable.WithDetails(map[string]any{"reason": core.PluginUnavailableSegmentTimeout})
-	}
+	req, err := b.buildUpstream(ctx, in)
 	if err != nil {
 		return core.ExecutionResult{}, err
 	}

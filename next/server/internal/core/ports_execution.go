@@ -36,9 +36,6 @@ const (
 
 // Host bounds around plugin execution that more than one module names.
 const (
-	// ExecutionSegmentTimeoutMax is the longest SegmentTimeout the gateway
-	// sets: the maximum of its platform_call_timeout_ms setting.
-	ExecutionSegmentTimeoutMax = 30 * time.Second
 	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
 	// environment sets no relay timeout.
 	ExecutionHTTPDefaultTimeout = 5 * time.Minute
@@ -53,8 +50,8 @@ const (
 // committed or closed; the usage module's recovery sweep closes, as
 // unreported, only an observed execution whose last renewal is older than
 // ExecutionStaleAfter - its gateway is gone. A live execution has no other
-// bound than the existing timeouts (the segment timeout, the upstream and
-// fetch timeouts, a client disconnect). The stale bound is eight intervals:
+// bound than the existing ones (the upstream and fetch timeouts, a client
+// disconnect, the end of the plugin's process). The stale bound is eight intervals:
 // a database hiccup that fails a renewal or two (each renewal is one
 // statement, bounded by the interval) never closes a live execution;
 // only an outage of about two minutes does, and then the gateway's commit
@@ -132,13 +129,6 @@ type ExecutionHTTP func(context.Context, *pluginv1.ExecutionHTTPRequest) (*plugi
 // relay per execution, and never calls any of these functions after Execute
 // returned.
 type ExecutionClient struct {
-	// SegmentTimeout is the platform call timeout: the longest any stretch
-	// of the plugin's own work may take - from the start of Execute to its
-	// first host call (or its return), between two host calls, and from the
-	// last host call to the return. Time spent inside Check, Relay and Fetch
-	// is not counted. A stretch that runs over cancels the call and Execute
-	// fails with ErrPluginUnavailable. <= 0 means 2 s.
-	SegmentTimeout time.Duration
 	// Check validates the request of a relay locally, without sending
 	// anything: the URL, the SSRF name check, the headers, response_stream
 	// and, for a type declaring model availability, the upstream model the
@@ -202,19 +192,16 @@ type ExecutePlugin interface {
 	//     call and every host call in progress. The caller decides whether a
 	//     client disconnect reaches ctx.
 	//
+	// Nothing times the plugin's own work: a hung plugin ends with ctx or
+	// with its process.
+	//
 	// Errors: ErrPluginUnavailable when the instance is down, draining or
-	// crashed, and when a stretch of the plugin's own work ran over
-	// SegmentTimeout (Details["reason"] is "segment_timeout"); the context's
+	// crashed; the context's
 	// error when ctx ended; the mapped status of the plugin's own error
 	// otherwise. All of them are failures of the plugin, never of the
 	// account.
 	Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client ExecutionClient) (ExecutionResult, error)
 }
-
-// Reasons in the Details of an ErrPluginUnavailable returned by Execute.
-const (
-	PluginUnavailableSegmentTimeout = "segment_timeout"
-)
 
 // MonitorPlugin is implemented by the PlatformPlugin of a plugin declaring
 // platform.monitor.v1: one scheduled observation of a host-managed task.

@@ -118,7 +118,7 @@ export default {
       queue_fallback_max_waiting: 'How many requests per account may queue when every candidate is full. 0 answers 429 at once.',
       queue_fallback_wait_seconds: 'Longest wait when every candidate is full; after it the request gets 429. 0 turns this queue off.',
       platform_call_timeout_ms:
-        'Upper bound of each stretch of a plugin\'s own processing within one request (building the upstream request, parsing usage, classifying an error), not counting the wait for the upstream.',
+        'Timeout of one call in which a plugin classifies a failed upstream request. A plugin\'s own processing while forwarding a request has no time limit.',
       default_hook_timeout_ms: 'Used by hooks whose manifest sets no timeout.',
       platform_hotpath_timeout_ms:
         'Timeout of the per-request platform calls before scheduling that are not hooks: resolving the model, and estimating usage for the pre-charge.',

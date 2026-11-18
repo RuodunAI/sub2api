@@ -97,7 +97,7 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 	meta.Model = upModel
 	in := &pluginv1.ExecuteRequest{Meta: meta, Account: x.acct, Body: x.body, InboundHeaders: c.passHeaders(rt.passHeaders),
 		Attempt: int32(n), ExtractUsage: rt.pluginUsage && !x.turn, TaskSubmission: c.ep.TaskSubmit()}
-	client := core.ExecutionClient{SegmentTimeout: c.gw.platformTimeout(), Check: x.check, Fetch: x.fetch}
+	client := core.ExecutionClient{Check: x.check, Fetch: x.fetch}
 	if in.ExtractUsage || in.TaskSubmission {
 		client.Relay = x.relay
 		var cancel context.CancelFunc

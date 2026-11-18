@@ -316,26 +316,14 @@ func TestNoAccountOtherFormats(t *testing.T) {
 	}
 }
 
-func TestPluginTimeoutTreatsAccountUnavailable(t *testing.T) {
+// A plugin down for every account answers 529 no_available_account. (A
+// plugin's own work is not timed: a hung one ends with the client.)
+func TestPluginDownForEveryAccountIsNoAccount(t *testing.T) {
 	e := newEnv(t)
-	e.setSettings(GatewaySettings{MaxAttempts: 3, PlatformCallTimeoutMs: 100}, StickySettings{})
-	e.plat.buildHook = func(ctx context.Context, in *pluginv1.ExecuteRequest) error {
-		if in.GetAccount().GetId() == 1 {
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		return nil
-	}
-	r := e.messages(body(testModel, false))
-	if r.status != 200 || strings.Join(e.up.keys(), ",") != "acc-2" {
-		t.Fatalf("plugin timeout: %d %v", r.status, e.up.keys())
-	}
-	// Plugin down for every account -> 529 no_available_account.
 	e.plat.buildHook = func(context.Context, *pluginv1.ExecuteRequest) error {
 		return core.ErrPluginUnavailable
 	}
-	e.record()
-	r = e.messages(body(testModel, false))
+	r := e.messages(body(testModel, false))
 	if r.status != 529 || r.json().Get("error.code").String() != "no_available_account" {
 		t.Fatalf("plugin down: %d %s", r.status, r.body)
 	}

@@ -3,13 +3,10 @@ package grpcruntime
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -82,7 +79,7 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "relay failed internally")
 		}
-		sc.leave(proto.Size(out))
+		sc.leave()
 	}()
 	switch {
 	case !sc.relay:
@@ -139,7 +136,7 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "execution HTTP failed internally")
 		}
-		sc.leave(proto.Size(out))
+		sc.leave()
 	}()
 	if sc.client.Fetch == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this call has no fetch capability")
@@ -193,24 +190,19 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	if in == nil {
 		return res, errors.New("Execute requires a request")
 	}
-	segment := client.SegmentTimeout
-	if segment <= 0 {
-		segment = TimeoutPlatformHot
-	}
-	ctx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// Execute may span a whole upstream exchange (a relay that waits), so
-	// it has its own class and no overall timeout: long streams never hold
-	// the slots of the request-path RPCs (CONTRACTS §43.1). What is bounded
-	// is each stretch of the plugin's own work.
+	// it has its own class and no timeout at all: long streams never hold
+	// the slots of the request-path RPCs (CONTRACTS §43.1), and the
+	// plugin's own work is not timed either. A hung plugin ends with ctx
+	// (the client leaving, the upstream's timeouts on a relay) or with its
+	// process.
 	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
 		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission(),
-			bodyBytes: int64(len(in.GetBody())), segmentTimeout: segment}
-		// The first stretch also delivers the request, body and all.
-		sc.segment = time.AfterFunc(sc.segmentLimit(int64(proto.Size(in))), func() { cancel(errSegmentTimeout) })
+			bodyBytes: int64(len(in.GetBody()))}
 		token, err := p.scopes.open(sc)
 		if err != nil {
-			sc.segment.Stop()
 			return err
 		}
 		req := shallowClone(in)
@@ -218,7 +210,7 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 		out, err := p.platform.Execute(ctx, req)
 		// Whatever the plugin left running ends here: a host call still in
 		// progress is cancelled and joined before the result is read.
-		cancel(nil)
+		cancel()
 		p.scopes.close(token, sc)
 		if err != nil {
 			return err
@@ -234,17 +226,7 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 		}
 		return nil
 	})
-	if errors.Is(context.Cause(ctx), errSegmentTimeout) {
-		return core.ExecutionResult{}, a.i.unavailableFor(core.PluginUnavailableSegmentTimeout, fmt.Errorf("%w (%s)", errSegmentTimeout, segment))
-	}
 	return res, err
-}
-
-// unavailableFor is unavailable with the reason in the error's details, for
-// failures the gateway answers by moving to another account.
-func (i *Instance) unavailableFor(reason string, cause error) error {
-	return core.ErrPluginUnavailable.WithDetails(map[string]any{"plugin_key": i.pkg.Key, "reason": reason}).
-		WithCause(fmt.Errorf("plugin %s@%s: %w", i.pkg.Key, i.pkg.Version, cause))
 }
 
 var _ core.ExecutePlugin = platformAdapter{}

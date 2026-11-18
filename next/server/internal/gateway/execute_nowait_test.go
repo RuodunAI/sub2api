@@ -53,8 +53,8 @@ func TestNoWaitSendsOnlyAfterExecuteReturned(t *testing.T) {
 	}
 }
 
-// A plugin that fails before its relay was sent - an error, a segment
-// overrun, an Execute without a relay - fails over to the next account
+// A plugin that fails before its relay was sent - an error, an Execute
+// without a relay - fails over to the next account
 // without blaming the account: nothing was sent for it and it is not cooled
 // down.
 func TestNoWaitPluginFailureFailsOverWithoutBlame(t *testing.T) {
@@ -63,20 +63,6 @@ func TestNoWaitPluginFailureFailsOverWithoutBlame(t *testing.T) {
 			e.plat.buildHook = func(_ context.Context, in *pluginv1.ExecuteRequest) error {
 				if in.GetAccount().GetId() == 1 {
 					return errors.New("plugin broke")
-				}
-				return nil
-			}
-		},
-		"segment_timeout": func(e *env) {
-			gw := noQueueSettings()
-			gw.PlatformCallTimeoutMs = 50
-			e.setSettings(gw, StickySettings{})
-			e.plat.buildHook = func(ctx context.Context, in *pluginv1.ExecuteRequest) error {
-				if in.GetAccount().GetId() == 1 {
-					select {
-					case <-ctx.Done():
-					case <-time.After(time.Second):
-					}
 				}
 				return nil
 			}

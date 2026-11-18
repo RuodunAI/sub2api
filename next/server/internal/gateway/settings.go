@@ -82,7 +82,7 @@ const (
 	minMaxAttempts           = 1
 	maxMaxAttempts           = 10
 	minPlatformCallTimeoutMs = 100
-	maxPlatformCallTimeoutMs = int(core.ExecutionSegmentTimeoutMax / time.Millisecond)
+	maxPlatformCallTimeoutMs = 30000
 	minDefaultHookTimeoutMs  = 50
 	maxDefaultHookTimeoutMs  = 2000
 	// The hot-path RPCs share the hook default's range: one of them delays
@@ -171,9 +171,9 @@ func (g *Gateway) MaxRequestBodyBytes(ctx context.Context) int64 {
 	return g.settings.get(ctx).gateway.MaxRequestBodyBytes()
 }
 
-// platformTimeout bounds each stretch of a plugin's own work in one Execute
-// (core.ExecutionClient.SegmentTimeout, design §8.4) and a ClassifyError
-// call; the wait for the upstream is not counted.
+// platformTimeout bounds one PlatformService.ClassifyError call (an upstream
+// failure of a relay that did not wait) and the lookup of the client
+// disconnect policy. It does not time Execute: nothing does.
 func (s GatewaySettings) platformTimeout() time.Duration {
 	return time.Duration(s.PlatformCallTimeoutMs) * time.Millisecond
 }
