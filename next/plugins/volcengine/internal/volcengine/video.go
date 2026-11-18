@@ -364,7 +364,7 @@ func taskQuery(entry *pluginv1.ReconcileEntry, acc *pluginv1.Account) (*pluginv1
 //	404 / 410                 -> NOT_FOUND
 //	query / parse error       -> POLL_FAILED; host owns retries and the cutoff
 func (p *Plugin) readTaskQuery(entry *pluginv1.ReconcileEntry, answer *pluginv1.ExecutionHTTPResponse) *pluginv1.ReconcileResult {
-	if result := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); result != nil {
+	if result := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError()); result != nil {
 		return result
 	}
 	ref, body := strings.TrimSpace(entry.GetRefId()), answer.GetBody()

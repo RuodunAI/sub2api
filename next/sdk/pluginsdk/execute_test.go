@@ -365,7 +365,7 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); early != nil {
+		if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError()); early != nil {
 			return early, nil
 		}
 		return result, nil
@@ -387,18 +387,12 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 	if len(fetches) != 1 || fetches[0].GetUrl() != "https://up.example.com/tasks/job-1" || fetches[0].GetExecutionToken() != ex.Token() {
 		t.Fatalf("fetches: %v", fetches)
 	}
-	// A truncated answer is an observation, never a terminal state.
-	answer.Truncated = true
-	if ex = h.Monitor(context.Background(), in); ex.MonitorResponse.GetResult().GetState() != pluginv1.ReconcileResult_POLL_FAILED {
-		t.Fatalf("truncated answer settled the task: %v", ex.MonitorResponse)
-	}
 	// A terminal result needs a complete, successful answer in the call,
 	// as the host requires.
 	p.monitor = func(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) { return result, nil }
 	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
 		t.Fatalf("terminal result without a fetch: %v", ex.Err)
 	}
-	answer.Truncated = false
 	p.monitor = func(ctx context.Context, in *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) {
 		_, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://up.example.com/tasks/1"})
 		return result, err

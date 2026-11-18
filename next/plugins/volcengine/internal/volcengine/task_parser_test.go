@@ -84,19 +84,15 @@ func TestManagedVideoReconcileSnapshot(t *testing.T) {
 	}
 }
 
-func TestVideoTruncatedResultCannotSettleOrReplaceSnapshot(t *testing.T) {
-	for _, tc := range []struct {
-		body      string
-		truncated bool
-	}{
-		{`{"status":"succeeded","usage":{"completion_tokens":10}}`, true},
-		{`{"status":"succeeded","usage":{"completion_tokens":10}`, false},
-		{`{"status":"failed"`, false}, {`[]`, false},
+func TestVideoMalformedResultCannotSettleOrReplaceSnapshot(t *testing.T) {
+	for _, body := range []string{
+		`{"status":"succeeded","usage":{"completion_tokens":10}`,
+		`{"status":"failed"`, `[]`,
 	} {
 		r := New().readTaskQuery(&pluginv1.ReconcileEntry{RefId: "ark-1", TaskKind: "video"},
-			&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(tc.body), Truncated: tc.truncated})
+			&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(body)})
 		if r.GetState() != pluginv1.ReconcileResult_POLL_FAILED || r.GetTaskSnapshotJson() != "" {
-			t.Fatalf("incomplete response became authoritative: %+v -> %v", tc, r)
+			t.Fatalf("malformed response became authoritative: %q -> %v", body, r)
 		}
 	}
 }
