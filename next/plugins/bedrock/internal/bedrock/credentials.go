@@ -224,10 +224,6 @@ func readAccount(acc *pluginv1.Account) (account, error) {
 	return account{auth: a, creds: creds, region: settings.Str(fieldRegion), prefix: settings.Str(fieldProfilePrefix)}, nil
 }
 
-// signedHeaders are the headers a SigV4 signature covers or adds, besides
-// the host: they go to the core as authoritative headers.
-var signedHeaders = []string{"Content-Type", "Authorization", "X-Amz-Date", "X-Amz-Security-Token"}
-
 // authorize returns the headers that authorize req, a request of the
 // account that will send exactly body: the API key as a bearer token, or
 // the SigV4 signature of req made at now (req's Content-Type included,
@@ -247,11 +243,5 @@ func (a account) authorize(req *http.Request, body []byte, now time.Time) (http.
 	if err := reqsign.Sign(req, body, d, now); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	auth := http.Header{}
-	for _, name := range signedHeaders {
-		if value := req.Header.Get(name); value != "" {
-			auth.Set(name, value)
-		}
-	}
-	return auth, nil
+	return reqsign.SignedHeaders(req, d.Scheme), nil
 }
