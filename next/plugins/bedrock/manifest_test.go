@@ -22,10 +22,10 @@ import (
 )
 
 // hostCompat is the range of cores the plugin installs on. Its lower bound
-// is the first core release that signs a built request and decodes the
-// event stream (BuildUpstreamRequestResponse.signing / response_stream): an
-// older core ignores both fields and would send access key requests
-// unsigned.
+// is the first core release with the forwarding V2 contract (Execute and
+// RelayUpstream with UpstreamRequest.response_stream,
+// docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md "core V"); an older core
+// speaks another plugin protocol version and refuses the package anyway.
 const hostCompat = ">=0.1.304 <0.2.0"
 
 // TestManifestPassesCoreChecks runs manifest.json through the checks the
@@ -42,7 +42,7 @@ func TestManifestPassesCoreChecks(t *testing.T) {
 	}
 }
 
-// The plugin refuses cores without the signing fields.
+// The plugin refuses cores before the forwarding V2 contract.
 func TestHostCompat(t *testing.T) {
 	for version, want := range map[string]bool{
 		"0.1.290": false, "0.1.302": false, "0.1.303": false,
@@ -130,8 +130,8 @@ func TestManifestShape(t *testing.T) {
 			t.Errorf("%s needs en and zh label and description", at.ID)
 		}
 		// The host comes from the region: no address field, nothing guarded.
-		if at.UpstreamFields == nil || len(at.UpstreamFields) != 0 || len(at.GuardedSettings) != 0 || at.Upstream != nil {
-			t.Errorf("%s upstreamFields/guardedSettings/upstream = %v %v %v", at.ID, at.UpstreamFields, at.GuardedSettings, at.Upstream)
+		if at.UpstreamFields == nil || len(at.UpstreamFields) != 0 || len(at.GuardedSettings) != 0 {
+			t.Errorf("%s upstreamFields/guardedSettings = %v %v", at.ID, at.UpstreamFields, at.GuardedSettings)
 		}
 		if !slices.Equal(at.SensitiveFields, want.sensitive) || !slices.Equal(at.SettingsFields, want.settings) {
 			t.Errorf("%s sensitive/settings = %v %v", at.ID, at.SensitiveFields, at.SettingsFields)
@@ -163,7 +163,7 @@ func TestManifestShape(t *testing.T) {
 		}
 		perms[perm.ID] = perm
 	}
-	// No "net": the core signs and sends the upstream requests.
+	// No "net": the core sends the upstream requests.
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
@@ -180,9 +180,9 @@ func TestManifestShape(t *testing.T) {
 	}
 }
 
-// checkPlatforms pins what a type serves: Claude's messages endpoint only.
-// The model, the body's anthropic_beta and the beta header are all the
-// plugin reads of a request. No type declares the openai platform: a native
+// checkPlatforms pins what a type serves: Claude's messages endpoint only,
+// with the beta header passed to the plugin (it moves into the body). No
+// type declares the openai platform: a native
 // openai route would take the place of the core's conversion, and a client
 // speaking an OpenAI protocol would be sent to Bedrock's /openai/v1 instead
 // of InvokeModel. count_tokens is left to the core.
@@ -192,8 +192,7 @@ func checkPlatforms(t *testing.T, at manifest.AccountType) {
 		t.Fatalf("%s platforms = %+v", at.ID, at.Platforms)
 	}
 	claude := at.Platforms[0]
-	if claude.Platform != "anthropic" || !slices.Equal(claude.Endpoints, []string{"messages"}) ||
-		!slices.Equal(claude.RequestFields, []string{"model", "anthropic_beta"}) || !slices.Equal(claude.PassHeaders, []string{"anthropic-beta"}) {
+	if claude.Platform != "anthropic" || !slices.Equal(claude.Endpoints, []string{"messages"}) || !slices.Equal(claude.PassHeaders, []string{"anthropic-beta"}) {
 		t.Errorf("%s anthropic platform = %+v", at.ID, claude)
 	}
 	if len(claude.Usage) != 0 || len(claude.StreamOnly) != 0 {
@@ -328,14 +327,19 @@ func checkForm(t *testing.T, want wantType, schema, ui []byte) {
 	if u.Get("inference_profile_prefix.ui:widget").String() != "select" || len(u.Get("inference_profile_prefix.ui:enumNames").Array()) != len(bedrock.ProfilePrefixes) {
 		t.Errorf("%s: the prefix is a select with a name per value", want.id)
 	}
-	// The known limitations are stated where the administrator reads them:
-	// nothing deep in the body is cleaned, no beta feature is added for
-	// what the body holds, and the China regions are not served.
+	// What happens to a request body is stated where the administrator
+	// reads it, with no known limitation left, and the China regions are
+	// not served.
 	for _, lang := range []string{"en", "zh"} {
 		note := u.Get("region.ui:section.description." + lang).String()
-		for _, part := range []string{"Claude Code", "cache_control", "computer use", "tool search", "output_format", "metadata"} {
+		for _, part := range []string{"Claude Code", "custom", "cache_control", "thinking", "computer use", "tool search", "output_format", "metadata"} {
 			if !strings.Contains(note, part) {
-				t.Errorf("%s: the %s form does not mention %s among the limitations", want.id, lang, part)
+				t.Errorf("%s: the %s form does not say what happens to %s", want.id, lang, part)
+			}
+		}
+		for _, part := range []string{"limitation", "限制", "parameter override", "参数覆盖"} {
+			if strings.Contains(note, part) {
+				t.Errorf("%s: the %s form still states a limitation (%s)", want.id, lang, part)
 			}
 		}
 		for _, part := range []string{"cn-*", "us-iso-*"} {
