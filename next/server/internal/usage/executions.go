@@ -26,7 +26,7 @@ func (s *Service) BeginExecution(ctx context.Context, in core.ExecutionIntent) e
 		return errors.New("invalid execution identity")
 	}
 	return store.G(ctx, s.db.Gorm).Create(&model.PluginExecution{ID: in.ID, RequestID: in.RequestID, PluginKey: in.PluginKey,
-		AccountID: in.AccountID, Attempt: in.Attempt, Record: jsonOr(in.Record, "{}"), TaskSubmit: in.TaskSubmit}).Error
+		AccountID: in.AccountID, Attempt: in.Attempt, TaskSubmit: in.TaskSubmit}).Error
 }
 
 func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.UsageRecord, observation []byte) error {

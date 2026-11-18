@@ -276,7 +276,6 @@ type ExecutionRecords interface {
 // ExecutionIntent identifies one execution before it sends anything.
 type ExecutionIntent struct {
 	TaskSubmit               bool
-	Record                   *UsageRecord
 	ID, RequestID, PluginKey string
 	AccountID                int64
 	Attempt                  int

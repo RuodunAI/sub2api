@@ -113,7 +113,7 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 	}
 	w.records = records
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
-	err := records.BeginExecution(bctx, core.ExecutionIntent{TaskSubmit: c.ep.TaskSubmit(), Record: c.rec, ID: w.id, RequestID: c.rid,
+	err := records.BeginExecution(bctx, core.ExecutionIntent{TaskSubmit: c.ep.TaskSubmit(), ID: w.id, RequestID: c.rid,
 		PluginKey: x.rt.binding.Plugin.Key, AccountID: x.acc.ID, Attempt: c.rec.Attempts})
 	cancel()
 	if err != nil {
