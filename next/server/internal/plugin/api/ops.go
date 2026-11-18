@@ -12,6 +12,8 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
@@ -62,6 +64,40 @@ func summarizeNodes(nodes []core.NodeStatus, key string) NodeSummary {
 		out.States[st.State]++
 	}
 	return out
+}
+
+// Refusal is why the nodes refuse to load a plugin version: it was built
+// for an older plugin contract (Code check.CodeOutdatedContract). Message
+// is the runtime's refusal, protocol.OutdatedContractMessage.
+type Refusal struct {
+	Code            string `json:"code"`
+	Version         string `json:"version"`
+	HostVersion     string `json:"host_version"`
+	ProtocolVersion int    `json:"protocol_version"`
+	Message         string `json:"message"`
+}
+
+// refusal finds a node whose instance of the plugin failed to load with the
+// runtime's refusal of an older plugin contract; nil when none did.
+func refusal(nodes []core.NodeStatus, key string) *Refusal {
+	for _, n := range nodes {
+		var st struct {
+			Instances []struct {
+				Version string `json:"version"`
+				Error   string `json:"error"`
+			} `json:"instances"`
+		}
+		if json.Unmarshal([]byte(n.Plugins[key]), &st) != nil {
+			continue
+		}
+		for _, in := range st.Instances {
+			if in.Error == protocol.OutdatedContractMessage(key, in.Version, n.HostVersion) {
+				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
+					ProtocolVersion: protocol.ProtocolVersion, Message: in.Error}
+			}
+		}
+	}
+	return nil
 }
 
 func nodeStates(nodes []core.NodeStatus, key string) []NodeState {
