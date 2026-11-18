@@ -18,8 +18,8 @@ const (
 	azureAPIVersion     = "2024-10-21"
 )
 
-// AC 29: Azure OpenAI accounts. azure_openai is a manifest-only market
-// plugin adding two account types to the built-in openai platform: the same
+// AC 29: Azure OpenAI accounts. azure_openai is a market code plugin
+// (its own process, forwarding through Execute) adding two account types to the built-in openai platform: the same
 // resource endpoint and key, served through the v1 API (azure_v1) or the
 // classic per-deployment API (azure_deployment). With the mock upstream as
 // the resource, /v1/chat/completions is answered through both, streaming

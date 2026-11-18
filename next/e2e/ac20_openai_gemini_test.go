@@ -21,7 +21,8 @@ import (
 // stream_options.include_usage so streamed chat completions are billed, and
 // Gemini output tokens include the thinking tokens (candidatesTokenCount +
 // thoughtsTokenCount). A key whose group only has anthropic accounts gets
-// 503 from the openai endpoints.
+// 404 from the openai endpoints: protocol conversion is off until an
+// account enables it for the model (CONTRACTS 110).
 func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -68,10 +69,7 @@ func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 	// exist (built in) but nothing can serve them.
 	tn := e.NewTenant(admin, TenantOpts{Balance: "20"})
 	mark := m.Mark(t)
-	if g := e.OpenAI(tn.APIKey, "/v1/chat/completions", ChatBody(tn.Model, "anthropic only", false)); g.Status != http.StatusServiceUnavailable ||
-		g.JSON().Get("error.code").String() != "no_available_account" {
-		t.Fatalf("/v1/chat/completions with only anthropic accounts: HTTP %d %s (want 503 no_available_account)", g.Status, g.Body)
-	}
+	expectNotServed(t, e.OpenAI(tn.APIKey, "/v1/chat/completions", ChatBody(tn.Model, "anthropic only", false)), "openai")
 	for _, k := range KeysUsed(m.Since(t, mark), "") {
 		if tn.AccountKeys()[k] {
 			t.Fatalf("an upstream was called with anthropic account key %s", k)
@@ -261,9 +259,7 @@ func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 	}
 
 	// 11. The anthropic endpoint is not served by this group.
-	if g := e.Messages(key, MessagesBody(tn.Model, "no anthropic here", false), nil); g.Status != http.StatusServiceUnavailable {
-		t.Fatalf("/v1/messages on an openai+gemini group: HTTP %d %s (want 503)", g.Status, g.Body)
-	}
+	expectNotServed(t, e.Messages(key, MessagesBody(tn.Model, "no anthropic here", false), nil), "anthropic")
 
 	// 12. Upstream errors in each API's format: an OpenAI 400 is returned
 	// as-is; a Gemini 429 cools the account down and, with no other

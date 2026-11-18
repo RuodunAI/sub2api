@@ -177,24 +177,22 @@ func (e *Env) assertVideoAccounting(admin *Session, tn *Tenant, v submittedVideo
 	}
 	AssertMoney(e.T, "final video cost", u.Get("total_cost").String(), want)
 	AssertMoney(e.T, "final video balance", e.Balance(tn.User), new(big.Rat).Sub(big.NewRat(20, 1), want))
+	// The request's pre-charge (ref_type precharge, debit and release) is
+	// replaced by the task's reservation when the task is registered; the
+	// reservation (ref_type usage) is settled by one refund adjustment.
 	var entries []gjson.Result
 	net := new(big.Rat)
-	debits, refunds := 0, 0
+	count := map[string]int{}
 	for _, l := range e.Ledger(admin, tn.User.UserID, "") {
 		if l.Get("ref_id").String() != v.RequestID {
 			continue
 		}
 		entries = append(entries, l)
 		net.Add(net, Money(e.T, l.Get("delta").String()))
-		switch l.Get("kind").String() {
-		case "usage":
-			debits++
-		case "refund":
-			refunds++
-		}
+		count[l.Get("ref_type").String()+"/"+l.Get("kind").String()]++
 	}
-	if len(entries) != 2 || debits != 1 || refunds != 1 {
-		e.T.Fatalf("expected one reservation and one refund adjustment: %v", entries)
+	if len(entries) != 4 || count["usage/usage"] != 1 || count["usage/refund"] != 1 || count["precharge/usage"] != 1 || count["precharge/refund"] != 1 {
+		e.T.Fatalf("expected the released pre-charge, one reservation and one refund adjustment: %v", entries)
 	}
 	if net.Cmp(new(big.Rat).Neg(want)) != 0 {
 		e.T.Fatalf("net ledger=%s, final cost=%s", net, want)

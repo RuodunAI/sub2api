@@ -85,9 +85,16 @@ export E2E_LONG=1
 
 如果 Docker 位于远端，在本机建立 `ssh -N -L 3120:127.0.0.1:3120 <测试主机>`，将 `E2E_DOCKER_HOST` 改为该 SSH 主机名，并给测试进程提供**这套 E2E 环境**的管理员凭据及 `E2E_PROJECT`。`E2E_NODE_URLS`、`E2E_MOCK_URL` 默认从 `E2E_BASE_URL` 推导，不需要逐项指定。不要把单测的 `TEST_DATABASE_URL` / `TEST_REDIS_URL` 指向这里；E2E 自己创建完整业务状态。
 
-节点采用 `restart: "no"`，保证 SIGKILL 后不会自动复活干扰接管断言；测试负责重启，测试异常退出后可重新 `up -d`。节点内存固定为 1 GiB，匹配 AC14 的 1500 MiB OOM 场景，插件内存上限为 1024 MiB。节点停止宽限为 180 秒，允许 HTTP、后台工作和账务完成排空。
+节点采用 `restart: "no"`，保证 SIGKILL 后不会自动复活干扰接管断言；测试负责重启，测试异常退出后可重新 `up -d`。节点内存固定为 1 GiB，匹配 AC14 的 1500 MiB OOM 场景。插件内存默认不限（不设 `SUB2API_PLUGIN_MAX_MEMORY_MB`），需要上限的用例（AC14）自己经 `PUT /plugins/:key/resources` 设插件上限。节点停止宽限为 180 秒，允许 HTTP、后台工作和账务完成排空。
 
-插件的 strict network、seccomp、数据库角色隔离和签名校验全部开启，开发模式及未签名包关闭。唯一网络策略例外是 `SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true`：mock 位于专用容器私网；该设置只适合隔离测试，不应复制到生产。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
+插件的 strict network、seccomp、数据库角色隔离和签名校验全部开启，开发模式及未签名包关闭。网络策略例外只有两项：`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 与 `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true`（插件自己的出口，如 guard 的 webhook、moderation 的审核模型调用），因为 mock 位于专用容器私网；这两项只适合隔离测试，不应复制到生产。
+
+其他与生产不同、只为这套环境存在的安排：
+
+- 镜像版本默认 `0.1.999`（`E2E_VERSION`），必须满足全部内置插件的 `hostCompat`（目前 `>=0.1.304 <0.2.0`），否则节点拒绝安装内置插件。
+- 两个节点直接运行核心（没有网关外壳），核心的插件包目录 `plugins/blobs` 只服务一个节点；这里两个节点挂同一个卷 `pkgblobs`，上传的插件包两边都能取到。
+- 没有可配置地址的平台插件（bedrock、vertex、codex、claude_oauth）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口用自建 CA 签的证书提供 TLS（`MOCK_TLS_*`，mock-upstream 的 `tls.go`），CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
+- mock 同时是 HTTP 正向代理（账号的 `proxy_url` 指向它时记 `proxied`），并能按提示里的 `MOCK-TOOL-CALL` 返回工具调用（官方 SDK 用例）。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
 
 ## 保留现场与清理
 

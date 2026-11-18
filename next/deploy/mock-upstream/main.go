@@ -28,6 +28,7 @@
 //	POST /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:{action}
 //	POST /v1/publishers/google/models/{m}:{action}
 //	                                Vertex AI: the Gemini actions above
+//	POST /backend-api/codex/responses  the Codex backend: OpenAI Responses (GET = WebSocket mode)
 //	GET  /v1/models                 Anthropic/OpenAI style list {"data":[{"id":...}]}
 //	GET  /v1beta/models             Gemini style list {"models":[{"name":"models/..."}]}
 //	GET  /__requests[?since=ID]     last 100 recorded requests (newest last)
@@ -35,6 +36,11 @@
 //	GET/POST/DELETE /__control      per-API-key behaviour rules (see controlRule)
 //	ANY  /__webhook/*               accepts and records anything (plugin webhook target)
 //	GET  /healthz
+//
+// MOCK_TLS_ADDR adds a TLS listener for vendor host names (tls.go); a
+// request offering tools with the marker MOCK-TOOL-CALL gets a tool call
+// (tools.go); the request log records the Host, TLS, and whether the request
+// came as a forward proxy (an account's proxy pointing at the mock).
 //
 // The upstream API key is read from x-api-key, api-key, Authorization (Bearer,
 // or the access key id of a SigV4 credential), x-goog-api-key or ?key= (in
@@ -67,6 +73,9 @@ import (
 )
 
 const maxLog = 100
+
+// maxRecordedBody is how much of a request body the log keeps.
+const maxRecordedBody = 64 << 10
 
 // Usage is the token usage reported by the mock. The same numbers are
 // reported in each API's own shape:
@@ -123,6 +132,12 @@ type recorded struct {
 	Body           string            `json:"body"`
 	BodyTruncated  bool              `json:"body_truncated,omitempty"`
 	Status         int               `json:"status"`
+	// Host is the Host the request was sent to; TLS whether it came over the
+	// TLS listener; Proxied whether it reached the mock as an HTTP forward
+	// proxy (absolute request URI), i.e. through an account's proxy.
+	Host    string `json:"host"`
+	TLS     bool   `json:"tls,omitempty"`
+	Proxied bool   `json:"proxied,omitempty"`
 }
 
 type server struct {
@@ -139,7 +154,13 @@ func main() {
 		addr = ":8080"
 	}
 	log.Printf("mock-upstream listening on %s", addr)
-	srv := &http.Server{Addr: addr, Handler: newServer().handler(), ReadHeaderTimeout: 10 * time.Second}
+	h := newServer().handler()
+	go func() {
+		if err := serveTLS(h); err != nil {
+			log.Fatalf("mock-upstream TLS: %v", err)
+		}
+	}()
+	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
 
@@ -161,6 +182,10 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/moderations", s.moderations)
 	mux.HandleFunc("POST /v1/systemone", s.systemOne)
 	mux.HandleFunc("POST /v1beta/models/{spec}", s.gemini)
+	// The Codex backend (ChatGPT subscription accounts): the Responses API,
+	// streamed only, and its WebSocket mode.
+	mux.HandleFunc("POST /backend-api/codex/responses", s.responses)
+	mux.HandleFunc("GET /backend-api/codex/responses", s.responsesWebSocket)
 	s.cloudRoutes(mux)
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("GET /v1beta/models", s.listGeminiModels)
@@ -208,8 +233,8 @@ func (s *server) record(r *http.Request, body []byte, model string, stream bool,
 	}
 	b := body
 	trunc := false
-	if len(b) > 4096 {
-		b, trunc = b[:4096], true
+	if len(b) > maxRecordedBody {
+		b, trunc = b[:maxRecordedBody], true
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -218,6 +243,7 @@ func (s *server) record(r *http.Request, body []byte, model string, stream bool,
 		ID: s.nextID, Time: time.Now().UTC(), Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery,
 		XAPIKey: r.Header.Get("x-api-key"), Authorization: r.Header.Get("Authorization"), APIKey: requestKey(r), Headers: h,
 		Model: model, Stream: stream, MetadataUserID: userID, Body: string(b), BodyTruncated: trunc,
+		Host: r.Host, TLS: r.TLS != nil, Proxied: strings.HasPrefix(r.RequestURI, "http://") || strings.HasPrefix(r.RequestURI, "https://"),
 	})
 	if len(s.log) > maxLog {
 		s.log = s.log[len(s.log)-maxLog:]
@@ -440,6 +466,23 @@ func (s *server) messages(w http.ResponseWriter, r *http.Request) {
 	msgID := fmt.Sprintf("msg_mock_%d_%06d", id, rand.IntN(1000000))
 	w.Header().Set("request-id", fmt.Sprintf("req_mock_%d", id))
 	w.Header().Set("x-mock-request-id", strconv.FormatInt(id, 10))
+	tool, isTool := toolTurnOf(body)
+	if isTool && tool.resultSeen {
+		b.text = "TOOL-RESULT-SEEN " + b.text
+	}
+	if isTool && !tool.resultSeen {
+		if req.Stream {
+			messageToolEvents(startSSE(w, r, b.chunkDelay).send, req.Model, msgID, b, tool)
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"id": msgID, "type": "message", "role": "assistant", "model": req.Model,
+			"content":     []any{anthropicToolUse("toolu_"+msgID, tool.name, map[string]any{"query": "mock"})},
+			"stop_reason": "tool_use", "stop_sequence": nil,
+			"usage": usageJSON(b.usage, b.usage.OutputTokens),
+		})
+		return
+	}
 	if req.Stream {
 		s.stream(w, r, req.Model, msgID, b)
 		return

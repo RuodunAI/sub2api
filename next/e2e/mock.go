@@ -33,6 +33,10 @@ type MockRequest struct {
 	Status         int
 	Headers        gjson.Result
 	Body           string
+	Method         string
+	Host           string // Host the request was sent to
+	TLS            bool   // arrived on the mock's TLS listener (vendor host names)
+	Proxied        bool   // arrived as a forward-proxy request (an account proxy)
 }
 
 // Mock controls mock-upstream through Caddy (/__mock).
@@ -68,6 +72,8 @@ func (m *Mock) Since(t testing.TB, id int64) []MockRequest {
 			Model: x.Get("model").String(), Stream: x.Get("stream").Bool(),
 			MetadataUserID: x.Get("metadata_user_id").String(), Status: int(x.Get("status").Int()),
 			Headers: x.Get("headers"), Body: x.Get("body").String(),
+			Method: x.Get("method").String(), Host: x.Get("host").String(),
+			TLS: x.Get("tls").Bool(), Proxied: x.Get("proxied").Bool(),
 		})
 	}
 	return out
@@ -100,6 +106,21 @@ func (m *Mock) ClearRule(t testing.TB, apiKey string) {
 		opts = append(opts, Query("api_key", apiKey))
 	}
 	m.c.Do(t, http.MethodDelete, "/__control", nil, opts...)
+}
+
+// Header returns the recorded request header name (lower case).
+func (r MockRequest) Header(name string) string { return r.Headers.Get(gjsonEscape(name)).String() }
+
+// gjsonEscape escapes the gjson path characters of a header name.
+func gjsonEscape(s string) string {
+	out := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c == '.' || c == '*' || c == '?' {
+			out = append(out, '\\')
+		}
+		out = append(out, s[i])
+	}
+	return string(out)
 }
 
 // Key is the upstream API key of the request, whichever header carried it

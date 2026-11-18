@@ -98,6 +98,24 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 	g, keysUsed := chat()
 	j := g.JSON()
 
+	// servedBy is how many accounts of the group serve protocol per the
+	// group's served_protocols (0 when it is not listed).
+	servedBy := func(protocol string) int64 {
+		t.Helper()
+		g := admin.OK(t, http.MethodGet, fmt.Sprintf("/groups/%d", tn.GroupID), nil)
+		if !g.Get("served_protocols").IsArray() {
+			t.Fatalf("GET /groups/%d has no served_protocols: %s", tn.GroupID, g.Raw)
+		}
+		p, _ := Find(g.Get("served_protocols").Array(), "protocol", protocol)
+		return p.Get("accounts").Int()
+	}
+	if n := servedBy("anthropic.messages"); n != int64(len(tn.Accounts)) {
+		t.Fatalf("group served_protocols anthropic.messages = %d accounts, want %d", n, len(tn.Accounts))
+	}
+	if n := servedBy("openai.chat"); n != 0 {
+		t.Fatalf("group served_protocols lists openai.chat (%d accounts) before any account enables the conversion", n)
+	}
+
 	if converted {
 		// The conversion is off until an account enables it for the model:
 		// no account of the group serves the model on this endpoint, which
@@ -111,12 +129,27 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 				t.Fatalf("an upstream was called with account key %s before the conversion was enabled", k)
 			}
 		}
+		// Zero attempts: a usage record of the 404, if any, names none.
+		if g.RequestID != "" {
+			if u, ok := Find(admin.ListAll(t, "/usage", "user_id", fmt.Sprint(tn.User.UserID)), "request_id", g.RequestID); ok && u.Get("attempts").Int() != 0 {
+				t.Fatalf("the 404 made %d attempts: %s", u.Get("attempts").Int(), u.Raw)
+			}
+		}
 		// Enabled for the model, next to the account's own protocol: the
 		// request is served by an anthropic account and answered in the
 		// OpenAI chat-completion shape.
 		for _, a := range tn.Accounts {
 			admin.OK(t, http.MethodPatch, fmt.Sprintf("/accounts/%d", a.ID), map[string]any{"model_protocols": []any{
 				map[string]any{"models": []string{tn.Model}, "protocols": []string{"anthropic.messages", "openai.chat"}}}})
+		}
+		// The group and the account report the protocol they now serve.
+		if n := servedBy("openai.chat"); n != int64(len(tn.Accounts)) {
+			t.Fatalf("group served_protocols openai.chat = %d accounts after enabling, want %d", n, len(tn.Accounts))
+		}
+		acct := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", tn.Accounts[0].ID), nil)
+		if sp, ok := Find(acct.Get("served_protocols").Array(), "protocol", "openai.chat"); !ok || sp.Get("via").String() != "converted" ||
+			!slices.Equal(Strings(sp.Get("models")), []string{tn.Model}) {
+			t.Fatalf("account served_protocols openai.chat: %s", acct.Get("served_protocols").Raw)
 		}
 		g, keysUsed = chat()
 		j = g.JSON()
