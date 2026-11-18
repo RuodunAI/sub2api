@@ -33,7 +33,7 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 	defer dst.Close()
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/large" {
-			_, _ = w.Write([]byte(strings.Repeat("x", core.ExecutionHTTPMaxResponseBytes+1)))
+			_, _ = w.Write([]byte(strings.Repeat("x", 20<<20)))
 			return
 		}
 		if r.URL.Path == "/slow" {
@@ -61,11 +61,11 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 		t.Fatal("shared redirect policy changed")
 	}
 	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL + "/large"}, &id, admit)
-	if err != nil || !out.GetTruncated() || len(out.GetBody()) != core.ExecutionHTTPMaxResponseBytes {
-		t.Fatalf("body bound: %d %v %v", len(out.GetBody()), out.GetTruncated(), err)
+	if err != nil || out.GetTruncated() || len(out.GetBody()) != 20<<20 { // no size limit: whole
+		t.Fatalf("large answer: %d %v %v", len(out.GetBody()), out.GetTruncated(), err)
 	}
 	for _, req := range []*pluginv1.ExecutionHTTPRequest{
-		{Url: up.URL, Method: "CONNECT"}, {Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
+		{Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
 		{Url: up.URL, Headers: map[string]string{"Proxy-Authorization": "secret"}},
 	} {
 		out, err := s.fetchExecutionHTTP(context.Background(), req, &id, admit)

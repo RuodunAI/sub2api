@@ -116,7 +116,7 @@ export default {
       queue_sticky_wait_seconds: '等绑定账号的最长时间，超时后按粘性规则换号或返回 429。0 表示不排队。',
       queue_fallback_max_waiting: '所有候选账号都满时，每个账号最多几个请求排队。0 表示不排队，直接返回 429。',
       queue_fallback_wait_seconds: '所有候选账号都满时的最长等待，超时返回 429。0 表示不排队。',
-      platform_call_timeout_ms: '插件在一次请求中每段自身处理时间的上限（构造上游请求、解析用量、错误分类），不含等待上游的时间。',
+      platform_call_timeout_ms: '插件对上游失败做错误分类的单次调用超时。插件转发请求时自身的处理不限时间。',
       default_hook_timeout_ms: 'manifest 未设置超时的钩子使用此值。',
       platform_hotpath_timeout_ms: '每个请求在调度前不属于钩子的平台调用超时：解析模型、为预扣估算用量。',
       max_request_body_mb:

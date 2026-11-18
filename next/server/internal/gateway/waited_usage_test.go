@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -385,19 +387,47 @@ func TestWaitedRelayReportedErrorDeliversTheAnswer(t *testing.T) {
 	e.noRecord()
 }
 
-// A non-streamed answer over the spool's cap cannot be delivered: the
-// execution is closed unreported before anything is committed, the client
-// gets 503 and nothing is billed, whatever the plugin reported.
-func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
+// A non-streamed answer of any size is held back on disk and delivered
+// whole once committed; the temp file is gone afterwards.
+func TestWaitedRelayLargeAnswerIsDeliveredWhole(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
 		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(100, 50)}}, nil
 	}))
-	e.up.set("pu-9", &upstreamRule{status: 200, body: `{"text":"` + strings.Repeat("x", spoolTotalLimit) + `"}`})
+	big := `{"text":"` + strings.Repeat("x", 65<<20) + `"}`
+	e.up.set("pu-9", &upstreamRule{status: 200, body: big})
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || len(res.body) != len(big) {
+		t.Fatalf("large answer: %d, %d of %d bytes", res.status, len(res.body), len(big))
+	}
+	// The observation is over usage.maxBytes, so the plugin's report is
+	// not read; the answer is delivered all the same.
+	if rec := e.record(); !rec.Success || rec.UsageExtract != core.UsageExtractFallback {
+		t.Fatalf("record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+}
+
+// A spool that fails for real (its temp file cannot be created) is known
+// before the commit: the execution is closed unreported, the client gets
+// 503 and nothing is billed, whatever the plugin reported.
+func TestWaitedRelaySpoolFailureIsUnreported(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(100, 50)}}, nil
+	}))
+	e.up.set("pu-9", &upstreamRule{status: 200, body: `{"text":"` + strings.Repeat("x", 2<<20) + `"}`})
 	var commits atomic.Int32
 	e.settler.commitErr = func(core.ExecutionCommit) error { commits.Add(1); return nil }
 	res := e.do("/pu/v1/chat", body(testModel, false), nil)
 	if res.status != 503 || len(res.body) > 4096 {
-		t.Fatalf("overflowing answer: %d %d bytes", res.status, len(res.body))
+		t.Fatalf("failed spool: %d %d bytes", res.status, len(res.body))
 	}
 	if commits.Load() != 0 {
 		t.Fatalf("committed %d times", commits.Load())
@@ -405,25 +435,56 @@ func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
 	assertUnreported(t, e)
 }
 
-// Facts that do not come within core.ExecutionFactsTimeout of the stored
-// observation: the gateway cancels Execute itself and closes the execution
-// unreported, the bound the recovery sweep counts on.
-func TestWaitedRelayFactsTimeoutClosesUnreported(t *testing.T) {
-	e, _ := scriptedUsageEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
-		req, err := p.buildUpstream(ctx, in)
-		if err != nil {
-			return core.ExecutionResult{}, err
-		}
-		if _, err := client.Relay(ctx, req); err != nil {
-			return core.ExecutionResult{}, err
-		}
-		<-ctx.Done() // a plugin that never states its facts
-		return core.ExecutionResult{}, ctx.Err()
-	})
-	e.gw.factsTimeout = 100 * time.Millisecond
-	res := e.do("/pu/v1/chat", body(testModel, false), nil)
-	if res.status != 503 || strings.Contains(string(res.body), "hello") {
-		t.Fatalf("held-back answer published: %d %s", res.status, res.body)
+// An observed execution is renewed for as long as Execute runs, however
+// long that is, and only that long: the facts commit once and the renewals
+// stop with the attempt.
+func TestWaitedRelayRenewsWhileAlive(t *testing.T) {
+	release := make(chan struct{})
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		<-release // the plugin still working after the answer
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(3, 4)}}, nil
+	}))
+	e.gw.renewInterval = 10 * time.Millisecond
+	done := make(chan result, 1)
+	go func() { done <- e.do("/pu/v1/chat", body(testModel, false), nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for e.settler.renewals.Load() < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
-	assertUnreported(t, e)
+	close(release)
+	res := <-done
+	if res.status != 200 || e.settler.renewals.Load() < 5 {
+		t.Fatalf("status %d, renewals %d", res.status, e.settler.renewals.Load())
+	}
+	if rec := e.record(); !rec.Billable || rec.Tokens.Input != 3 {
+		t.Fatalf("record %+v", rec)
+	}
+	e.noRecord()
+	settled := e.settler.renewals.Load()
+	time.Sleep(10 * e.gw.renewInterval)
+	if n := e.settler.renewals.Load(); n > settled+1 { // one may have been running at the stop
+		t.Fatalf("renewals went on after the attempt: %d -> %d", settled, n)
+	}
+}
+
+// A renewal that finds the execution no longer observed (committed or
+// closed elsewhere) ends the heartbeat without a stop.
+func TestHeartbeatStopsOnceNotObserved(t *testing.T) {
+	s := &fakeSettler{ch: make(chan *core.UsageRecord, 1)}
+	var h heartbeat
+	h.start(context.Background(), s, "gone", 5*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for s.renewals.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := s.renewals.Load(); n != 1 {
+		t.Fatalf("renewals %d, want exactly 1", n)
+	}
+	h.mu.Lock()
+	stopped := h.stopped
+	h.mu.Unlock()
+	if !stopped {
+		t.Fatal("heartbeat still armed")
+	}
 }

@@ -4,9 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"sync"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -16,28 +14,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
-
-// errSegmentTimeout cancels an Execute call whose plugin spent longer than
-// the platform call timeout on one stretch of its own work.
-var errSegmentTimeout = errors.New("plugin exceeded the platform call timeout")
-
-// transferBytesPerSecond is the rate at which a segment's bound assumes a
-// message crosses between the core and the plugin process: serialised,
-// written to the unix socket, read and decoded on the other side. Measured
-// on a loaded host, one direction took 0.2-0.3 s for 16 MiB (about
-// 55-80 MiB/s), 1.0-1.1 s for 128 MiB and 3.7-5.0 s for 512 MiB (about
-// 100-120 MiB/s); with the host at a load of 65 on 8 cores, a 64 MiB body
-// there and back took 3.6 s (about 36 MiB/s). 8 MiB/s is a quarter of the
-// slowest of these: the segment timeout is there to catch a hung plugin,
-// not to police throughput, so the allowance errs on the generous side (a
-// hung plugin with a 128 MiB body is caught after 2 s + 32 s).
-const transferBytesPerSecond = 8 << 20
-
-// transferAllowance is the time n bytes may take to cross the process
-// boundary at transferBytesPerSecond.
-func transferAllowance(n int64) time.Duration {
-	return time.Duration(n) * time.Second / transferBytesPerSecond
-}
 
 // callScopes are the host-client authorities of the Execute and Monitor
 // calls in flight on one process, by execution token.
@@ -58,14 +34,6 @@ type callScope struct {
 	// relay: an Execute call (a Monitor call only fetches); wait: its
 	// request allows the waiting form.
 	relay, wait bool
-	// bodyBytes is the size of the request body the call handed to the
-	// plugin: a relayed body may be that large whatever the limit says.
-	bodyBytes int64
-	// segment bounds each stretch of the plugin's own work (nil: the call
-	// has one overall timeout). It runs whenever no host call is active,
-	// for segmentLimit.
-	segment        *time.Timer
-	segmentTimeout time.Duration
 
 	mu           sync.Mutex
 	closed, busy bool
@@ -74,9 +42,9 @@ type callScope struct {
 	// the call's owner after close joined it.
 	relayed bool
 	parked  *pluginv1.UpstreamRequest // a relay that did not wait
-	fetches int
 	// evidence: a fetch of this call completed with an HTTP status, without
-	// a transport error and untruncated. A terminal Monitor result needs it.
+	// a transport error, while the call was alive. A terminal Monitor result
+	// needs it.
 	evidence bool
 }
 
@@ -105,9 +73,6 @@ func (s *callScopes) close(token string, scope *callScope) {
 	s.mu.Unlock()
 	scope.mu.Lock()
 	scope.closed = true
-	if scope.segment != nil {
-		scope.segment.Stop()
-	}
 	done := scope.done
 	scope.mu.Unlock()
 	if done != nil {
@@ -137,37 +102,15 @@ func (h *hostServer) enter(token string) (*callScope, error) {
 	}
 	sc.busy = true
 	sc.done = make(chan struct{})
-	if sc.segment != nil {
-		sc.segment.Stop()
-	}
 	return sc, nil
 }
 
-// leave ends the host call enter started, whose answer of answerBytes is
-// still to reach the plugin; the plugin's next stretch of work begins.
-func (sc *callScope) leave(answerBytes int) {
+// leave ends the host call enter started.
+func (sc *callScope) leave() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.busy = false
-	if sc.segment != nil && !sc.closed {
-		sc.segment.Reset(sc.segmentLimit(int64(answerBytes)))
-	}
 	close(sc.done)
-}
-
-// segmentLimit bounds the plugin's next stretch of work: the platform call
-// timeout plus the time to move what the stretch carries across the
-// process boundary, which is no work of the plugin's. A stretch carries
-// what the host hands the plugin as it begins (sent: the Execute request,
-// the answer of a host call) and, until the plugin has relayed, the request
-// body it is to hand back in its relay: the host cannot know the size of a
-// host call before it has received it, so it counts on the body it handed
-// out. Small bodies keep the bare timeout.
-func (sc *callScope) segmentLimit(sent int64) time.Duration {
-	if sc.relay && !sc.relayed {
-		sent += sc.bodyBytes
-	}
-	return sc.segmentTimeout + transferAllowance(sent)
 }
 
 // hostContext is the context of the client's work for one host call: it

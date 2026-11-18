@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -196,15 +195,12 @@ func TestRelayWaitReturnsObservation(t *testing.T) {
 	}
 }
 
-// The body of a relay may be as large as the larger of the request body
-// limit and the body the plugin was handed, plus 1 MiB; the transport's
-// headers are not the plugin's.
-func TestRelayBodyBoundAndHeaders(t *testing.T) {
+// The body of a relay has no bound of the runtime's, whatever the request
+// body limit and the body the plugin was handed; the transport's headers
+// are not the plugin's.
+func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 	side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-		bound := max(mib, len(in.GetBody())) + mib
-		if _, err := relay(ctx, h, in.GetExecutionToken(), false, bound+1); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), bound+1, err)
-		}
+		large := max(mib, len(in.GetBody())) + 2*mib
 		for _, name := range []string{"content-length", "Accept-Encoding", "connection", "transfer-encoding"} {
 			for _, req := range []*pluginv1.UpstreamRequest{{Url: "https://u.example.com", Headers: map[string]string{name: "x"}}, {Url: "https://u.example.com", DefaultHeaders: map[string]string{name: "x"}}} {
 				if _, err := h.RelayUpstream(ctx, &pluginv1.RelayUpstreamRequest{ExecutionToken: in.GetExecutionToken(), Request: req}); status.Code(err) != codes.InvalidArgument {
@@ -217,8 +213,8 @@ func TestRelayBodyBoundAndHeaders(t *testing.T) {
 				t.Errorf("request %v: %v", req, err)
 			}
 		}
-		if _, err := relay(ctx, h, in.GetExecutionToken(), false, bound); err != nil {
-			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), bound, err)
+		if _, err := relay(ctx, h, in.GetExecutionToken(), false, large); err != nil {
+			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), large, err)
 		}
 		return hostUsage, nil
 	}}
@@ -255,16 +251,13 @@ func TestFetchLimits(t *testing.T) {
 			t.Errorf("refused requests were sent: %d", fetches.Load())
 		}
 		out, err := fetch(ctx, h, token, "https://sub.API.example.com:8443/big", mib)
-		if err != nil || !out.GetTruncated() || len(out.GetBody()) != core.ExecutionHTTPMaxResponseBytes {
-			t.Errorf("oversized answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
+		if err != nil || out.GetTruncated() || len(out.GetBody()) != 20*mib {
+			t.Errorf("large answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
 		}
-		for n := 2; n <= core.ExecutionHTTPMaxRequests; n++ {
+		for n := 2; n <= 12; n++ { // no count limit
 			if out, err := fetch(ctx, h, token, "https://api.example.com/x", 0); err != nil || out.GetTruncated() || out.GetStatus() != 200 {
 				t.Errorf("fetch %d: %v %v", n, out, err)
 			}
-		}
-		if _, err := fetch(ctx, h, token, "https://api.example.com/x", 0); status.Code(err) != codes.ResourceExhausted {
-			t.Errorf("fetch 9: %v", err)
 		}
 		return hostUsage, nil
 	}}
@@ -273,14 +266,14 @@ func TestFetchLimits(t *testing.T) {
 	client := core.ExecutionClient{Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		fetches.Add(1)
 		if len(in.GetBody()) > 0 {
-			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, core.ExecutionHTTPMaxResponseBytes+1)}, nil
+			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, 20*mib)}, nil
 		}
 		return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte("ok")}, nil
 	}}
 	if _, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{}, client); err != nil {
 		t.Fatal(err)
 	}
-	if fetches.Load() != core.ExecutionHTTPMaxRequests {
+	if fetches.Load() != 12 {
 		t.Fatalf("fetches sent: %d", fetches.Load())
 	}
 	if _, err := fetch(context.Background(), side.h, token, "https://api.example.com/x", 0); status.Code(err) != codes.PermissionDenied {
@@ -379,77 +372,6 @@ func TestFetchAccountAddressHosts(t *testing.T) {
 	}
 }
 
-// The platform call timeout bounds each stretch of the plugin's own work and
-// never the time inside a host call.
-func TestSegmentTimeout(t *testing.T) {
-	const segment = 60 * time.Millisecond
-	slowRelay := core.ExecutionClient{SegmentTimeout: segment, Relay: func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
-		time.Sleep(4 * segment) // the upstream exchange
-		return &pluginv1.RelayUpstreamResponse{Observation: &pluginv1.ExtractUsageRequest{Status: 200}}, nil
-	}}
-	wait := func(ctx context.Context, d time.Duration) error {
-		select {
-		case <-time.After(d):
-			return nil
-		case <-ctx.Done():
-			return status.FromContextError(ctx.Err()).Err()
-		}
-	}
-	for _, tc := range []struct {
-		name          string
-		before, after time.Duration
-		timeout       bool
-	}{
-		{"within", segment / 4, segment / 4, false},
-		{"slow before the first host call", 4 * segment, 0, true},
-		{"slow after the last host call", 0, 4 * segment, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-				if err := wait(ctx, tc.before); err != nil {
-					return nil, err
-				}
-				if _, err := relay(ctx, h, in.GetExecutionToken(), true, 0); err != nil {
-					return nil, err
-				}
-				if err := wait(ctx, tc.after); err != nil {
-					return nil, err
-				}
-				return usage, nil
-			}}
-			_, a := executionInstance(t, side)
-			res, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{ExtractUsage: true}, slowRelay)
-			if !tc.timeout {
-				if err != nil || res.Response.GetUsage() == nil {
-					t.Fatalf("%v %v", res, err)
-				}
-				return
-			}
-			if core.AsError(err).Code != core.ErrPluginUnavailable.Code || reason(err) != core.PluginUnavailableSegmentTimeout || res.Response != nil {
-				t.Fatalf("%v %v", res, err)
-			}
-		})
-	}
-}
-
-// A stretch is bounded by the timeout plus the transfer of what it carries:
-// what the host sent as it began and, until the relay, the body the plugin
-// is to hand back.
-func TestSegmentLimit(t *testing.T) {
-	sc := &callScope{relay: true, bodyBytes: 32 * mib, segmentTimeout: time.Second}
-	if got := sc.segmentLimit(32 * mib); got != time.Second+2*transferAllowance(32*mib) {
-		t.Fatalf("first stretch: %s", got)
-	}
-	sc.relayed = true
-	if got := sc.segmentLimit(8 * mib); got != time.Second+transferAllowance(8*mib) {
-		t.Fatalf("after the relay: %s", got)
-	}
-	small := &callScope{relay: true, bodyBytes: 1024, segmentTimeout: time.Second}
-	if got := small.segmentLimit(1100); got > time.Second+time.Millisecond {
-		t.Fatalf("small body: %s", got)
-	}
-}
-
 // When the plugin gives up a waiting relay - its Execute returns or fails,
 // or its host call is cancelled as for a crashed process - the exchange's
 // context ends, and Execute returns only after the relay has ended.
@@ -512,7 +434,6 @@ func TestMonitorResult(t *testing.T) {
 	}{
 		{"terminal with evidence", &pluginv1.ExecutionHTTPResponse{Status: 200}, true, &settled, true},
 		{"terminal on an http error status", &pluginv1.ExecutionHTTPResponse{Status: 404}, true, &settled, true},
-		{"terminal on a truncated answer", &pluginv1.ExecutionHTTPResponse{Status: 200, Truncated: true}, true, &settled, false},
 		{"terminal on a transport error", &pluginv1.ExecutionHTTPResponse{TransportError: "offline"}, true, &settled, false},
 		{"terminal without a fetch", nil, false, &settled, false},
 		{"pending without a fetch", nil, false, &pending, true},
@@ -631,27 +552,6 @@ func TestMemoryLimitOnlyByOperator(t *testing.T) {
 		i.rt.o.RequestBodyLimit = func() int64 { return 4 * body }
 		if i.LimitsStale() {
 			t.Fatalf("stale after the body limit changed from %d", body)
-		}
-	}
-}
-
-// Only the two calls that carry a request body may exceed 4 MiB.
-func TestHostReceiveLimit(t *testing.T) {
-	handled := func(context.Context, any) (any, error) { return "ok", nil }
-	big := make([]byte, hostMaxRecvBytes+1)
-	service := "/" + pluginv1.HostService_ServiceDesc.ServiceName + "/"
-	for _, tc := range []struct {
-		method string
-		req    any
-		code   codes.Code
-	}{
-		{"RelayUpstream", &pluginv1.RelayUpstreamRequest{Request: &pluginv1.UpstreamRequest{Body: big}}, codes.OK},
-		{"ExecuteHTTP", &pluginv1.ExecutionHTTPRequest{Body: big}, codes.OK},
-		{"Publish", &pluginv1.PublishRequest{Payload: big}, codes.ResourceExhausted},
-		{"Publish", &pluginv1.PublishRequest{Payload: big[:mib]}, codes.OK},
-	} {
-		if _, err := limitHostRecv(context.Background(), tc.req, &grpc.UnaryServerInfo{FullMethod: service + tc.method}, handled); status.Code(err) != tc.code {
-			t.Errorf("%s: %v", tc.method, err)
 		}
 	}
 }

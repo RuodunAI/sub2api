@@ -93,7 +93,7 @@ func TestFailurePolicyWaitedTakesPluginClassification(t *testing.T) {
 
 // A waited execution may span the upstream exchange: its context outlives
 // the longest relay_timeout_seconds by 6 h, and the platform call timeout
-// bounds only the plugin's own work, never the wait for the upstream.
+// plays no part in it.
 func TestExecuteWaitedTimeLimits(t *testing.T) {
 	e, p := waitedEnv(t, core.DisconnectPrecharge, &upstreamRule{delay: 300 * time.Millisecond})
 	e.gw.d.Environment = fakeEnvironment{global: core.EnvironmentValues{core.EnvVarRelayTimeoutSeconds: 86400}}

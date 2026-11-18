@@ -24,7 +24,7 @@ import (
 
 // Default call timeouts. The caller's context deadline applies when shorter.
 const (
-	TimeoutPlatformHot     = 2 * time.Second  // ClassifyError, ResolveModel, EstimateUsage; a stretch of Execute
+	TimeoutPlatformHot     = 2 * time.Second  // ClassifyError, ResolveModel, EstimateUsage
 	TimeoutPlatformConsole = 10 * time.Second // ValidateCredentials, BuildTestRequest
 	TimeoutHookDefault     = 300 * time.Millisecond
 	TimeoutHookMax         = 30 * time.Second // CONTRACTS §20.1

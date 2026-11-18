@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -237,10 +238,12 @@ func TestExecutionCloseAfterTheGatewaysFreeRecord(t *testing.T) {
 	}
 }
 
-// The recovery sweep never bills the host's reading: a synchronous
-// execution still observed after executionRecoveryAge is closed as
-// unreported; one younger is left to its gateway. Task
-// submissions are left to their receipt, and everything goes after 7 days.
+// The recovery sweep closes only executions whose gateway stopped renewing
+// them, and never bills the host's reading: one not renewed for
+// core.ExecutionStaleAfter is closed as unreported (its precharge
+// released); one that is old but still renewed is left to its gateway,
+// which then commits it once. Task submissions are left to their receipt,
+// and everything goes after 7 days.
 func TestExecutionRecoveryMarksAndNeverBills(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -251,25 +254,52 @@ func TestExecutionRecoveryMarksAndNeverBills(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := fmt.Sprintf("%d seconds", int((executionRecoveryAge + time.Minute).Seconds()))
-	alive := fmt.Sprintf("%d seconds", int((executionRecoveryAge - time.Minute).Seconds()))
-	stale := observe(t, f.svc, syncRecord(f, "stale"), false)
+	past := fmt.Sprintf("%d seconds", int((core.ExecutionStaleAfter + time.Minute).Seconds()))
+	staleRec := syncRecord(f, "stale")
+	if err := f.bill.Precharge(ctx, staleRec); err != nil {
+		t.Fatal(err)
+	}
+	stale := observe(t, f.svc, staleRec, false)
 	age(stale, past)
-	fresh := observe(t, f.svc, syncRecord(f, "fresh"), false)
-	age(fresh, alive) // a plugin still fetching after the stream ended
+	// A live execution an hour old whose gateway keeps renewing it.
+	liveRec := syncRecord(f, "live")
+	live := observe(t, f.svc, liveRec, false)
+	age(live, "1 hour")
+	if err := f.svc.RenewExecution(ctx, live); err != nil {
+		t.Fatal(err)
+	}
 	task := observe(t, f.svc, syncRecord(f, "stale-task"), true)
 	age(task, past)
 	if err := f.svc.recoverExecutions(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if f.scalar(`SELECT state FROM plugin_executions WHERE id=$1`, stale) != core.ExecutionStateUnreported ||
-		f.scalar(`SELECT billing_status || ' ' || error_type FROM usage_logs WHERE request_id='stale'`) != "free usage_unreported" {
-		t.Fatal("stale observation not closed as unreported")
+		f.scalar(`SELECT billing_status || ' ' || error_type FROM usage_logs WHERE request_id='stale'`) != "free usage_unreported" ||
+		f.scalar(`SELECT count(*) FROM request_precharges`) != "0" {
+		t.Fatal("stale observation not closed as unreported with its precharge released")
 	}
-	if f.scalar(`SELECT state FROM plugin_executions WHERE id=$1`, fresh) != core.ExecutionStateObserved ||
+	if f.scalar(`SELECT state FROM plugin_executions WHERE id=$1`, live) != core.ExecutionStateObserved ||
 		f.scalar(`SELECT state FROM plugin_executions WHERE id=$1`, task) != core.ExecutionStateObserved ||
 		f.scalar(`SELECT count(*) FROM usage_logs`) != "1" || !f.balance().Equal(before) {
-		t.Fatal("recovery touched a fresh observation or a task submission, or billed")
+		t.Fatal("recovery touched a renewed observation or a task submission, or billed")
+	}
+	// The live one commits normally, billed once; renewing it afterwards
+	// changes nothing and tells the gateway to stop.
+	commit := core.ExecutionCommit{ID: live, Operation: core.ExecutionOpUsage, Digest: core.FactDigest(nil), Record: liveRec}
+	if err := f.svc.CommitExecution(ctx, commit); err != nil {
+		t.Fatal(err)
+	}
+	if f.scalar(`SELECT billing_status FROM usage_logs WHERE request_id='live'`) != StatusBilled || !before.Sub(f.balance()).Equal(f.cost("live")) {
+		t.Fatal("the renewed execution was not billed once")
+	}
+	for _, id := range []string{live, stale, "no-such-execution"} {
+		was := f.scalar(`SELECT coalesce(max(state || ' ' || updated_at::text), '') FROM plugin_executions WHERE id=$1`, id)
+		if err := f.svc.RenewExecution(ctx, id); !errors.Is(err, core.ErrExecutionNotObserved) {
+			t.Fatalf("renewal of %s: %v", id, err)
+		}
+		if f.scalar(`SELECT coalesce(max(state || ' ' || updated_at::text), '') FROM plugin_executions WHERE id=$1`, id) != was {
+			t.Fatalf("a renewal changed the ended execution %s", id)
+		}
 	}
 	// Seven days of evidence, then the sweep removes it.
 	age(stale, "8 days")

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -21,45 +22,39 @@ import (
 // gateway supplies the ExecutionClient and acts on the ExecutionResult, the
 // usage module implements ExecutionRecords and calls Monitor.
 
-// Limits of the fetch form (HostService.ExecuteHTTP), fixed by the host.
+// Host bounds around plugin execution that more than one module names.
 const (
-	// ExecutionHTTPMaxRequests caps the fetches of one Execute or Monitor
-	// call. The runtime refuses the next one without calling Fetch.
-	ExecutionHTTPMaxRequests = 8
-	// ExecutionHTTPMaxResponseBytes caps the answer body of one fetch. An
-	// ExecutionHTTP implementation reads at most this many bytes (plus one to
-	// know there was more) and sets Truncated; the runtime cuts a longer body
-	// and sets Truncated itself, so the plugin never sees more.
-	ExecutionHTTPMaxResponseBytes = 8 << 20
-)
-
-// Bounds of the waiting form once its observation is stored, shared by the
-// gateway (which enforces them) and the usage module's recovery sweep (which
-// must never close an execution a live gateway may still commit).
-const (
-	// ExecutionSegmentTimeoutMax is the longest SegmentTimeout the gateway
-	// sets: the maximum of its platform_call_timeout_ms setting.
-	ExecutionSegmentTimeoutMax = 30 * time.Second
 	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
 	// environment sets no relay timeout.
 	ExecutionHTTPDefaultTimeout = 5 * time.Minute
-	// ExecutionFactsTimeout is how long the gateway lets Execute run on
-	// after the observation is stored before it cancels the call (the
-	// execution then closes unreported): the plugin's own work around every
-	// fetch it may still make (ExecutionHTTPMaxRequests+1 stretches of at
-	// most ExecutionSegmentTimeoutMax) and those fetches at their default
-	// timeout. An environment whose relay timeout makes fetches longer gets
-	// no more than this in total.
-	ExecutionFactsTimeout = (ExecutionHTTPMaxRequests+1)*ExecutionSegmentTimeoutMax + ExecutionHTTPMaxRequests*ExecutionHTTPDefaultTimeout
 	// ExecutionFinishTimeout bounds each write that ends an execution on the
 	// gateway: the commit with its retries, then a close.
 	ExecutionFinishTimeout = 15 * time.Second
-	// ExecutionRecoveryAge is how long an execution may stay observed before
-	// the recovery sweep takes its gateway for gone and closes it
-	// unreported: longer than a live gateway can keep it there
-	// (ExecutionFactsTimeout, a commit and a close), plus a minute.
-	ExecutionRecoveryAge = ExecutionFactsTimeout + 2*ExecutionFinishTimeout + time.Minute
 )
+
+// Liveness of an observed execution. While the gateway that owns it is
+// alive, it renews the row every ExecutionRenewInterval
+// (RenewExecution), from the stored observation until the execution is
+// committed or closed; the usage module's recovery sweep closes, as
+// unreported, only an observed execution whose last renewal is older than
+// ExecutionStaleAfter - its gateway is gone. A live execution has no other
+// bound than the existing ones (the upstream and fetch timeouts, a client
+// disconnect, the end of the plugin's process). The stale bound is eight intervals:
+// a database hiccup that fails a renewal or two (each renewal is one
+// statement, bounded by the interval) never closes a live execution;
+// only an outage of about two minutes does, and then the gateway's commit
+// meets ErrConflict like any execution closed meanwhile. Waited executions
+// are rare (endpoints whose usage the plugin reads, task submissions), so
+// one timer per execution is cheap enough; nothing is batched.
+const (
+	ExecutionRenewInterval = 15 * time.Second
+	ExecutionStaleAfter    = 2 * time.Minute
+)
+
+// ErrExecutionNotObserved is RenewExecution's answer for an execution that
+// is no longer observed (committed, unreported) or does not exist: there is
+// nothing left to keep alive.
+var ErrExecutionNotObserved = errors.New("execution is not observed")
 
 // DefaultMaxRequestBodyBytes is the request body limit when nothing else is
 // configured (128 MiB).
@@ -68,10 +63,8 @@ const DefaultMaxRequestBodyBytes = 128 << 20
 // RequestBodyLimit reports the gateway's request body limit in bytes as it
 // is right now: the gateway setting max_request_body_mb
 // (GatewaySettings.MaxRequestBodyMB), the only limit on a client request
-// body. The plugin runtime derives its internal bounds from it: the body of
-// a relay may be as large as the larger of this limit and the body the
-// execution handed to the plugin (the core may have enlarged it), plus
-// 1 MiB; the request body of a fetch at most this limit. It plays no part
+// body. The plugin runtime bounds only the request body of a fetch by it; a
+// relayed body has no bound of the runtime's. It plays no part
 // in a plugin's memory limit, which only an administrator sets. It is read
 // on every check, so a saved change applies at once: it must be cheap (the
 // gateway's cached settings; app wires it to Gateway.MaxRequestBodyBytes).
@@ -96,8 +89,9 @@ func MaxRequestBodyBytes(limit RequestBodyLimit) int64 {
 // overrides and follows no redirect. in.Options may only shorten the
 // effective timeouts.
 //
-// The runtime calls it only after it checked the execution token, the count
-// (ExecutionHTTPMaxRequests), the request body against RequestBodyLimit and
+// The fetches of one call are not counted and their answers are whole: the
+// core never sets Truncated. The runtime calls it only after it checked the
+// execution token, the request body against RequestBodyLimit and
 // the URL's host: one of the plugin manifest's externalServices (or a
 // subdomain of one), or the host of one of the account's own upstream
 // addresses (the values of the address fields its type declares, manifest
@@ -122,19 +116,12 @@ type ExecutionHTTP func(context.Context, *pluginv1.ExecutionHTTPRequest) (*plugi
 // relay per execution, and never calls any of these functions after Execute
 // returned.
 type ExecutionClient struct {
-	// SegmentTimeout is the platform call timeout: the longest any stretch
-	// of the plugin's own work may take - from the start of Execute to its
-	// first host call (or its return), between two host calls, and from the
-	// last host call to the return. Time spent inside Check, Relay and Fetch
-	// is not counted. A stretch that runs over cancels the call and Execute
-	// fails with ErrPluginUnavailable. <= 0 means 2 s.
-	SegmentTimeout time.Duration
 	// Check validates the request of a relay locally, without sending
 	// anything: the URL, the SSRF name check, the headers, response_stream
 	// and, for a type declaring model availability, the upstream model the
 	// plugin names. The body is not inspected (the conformance suite holds
-	// plugins to it). The runtime has already refused a nil request, an empty URL, a body above
-	// its bound (see RequestBodyLimit) and the transport's header names. An error refuses
+	// plugins to it). The runtime has already refused a nil request, an
+	// empty URL and the transport's header names. An error refuses
 	// the request: the plugin gets INVALID_ARGUMENT with the error's text
 	// and the relay counts as not made. Called for both forms, before the
 	// request is parked or Relay is called. Nil accepts.
@@ -192,30 +179,27 @@ type ExecutePlugin interface {
 	//     call and every host call in progress. The caller decides whether a
 	//     client disconnect reaches ctx.
 	//
+	// Nothing times the plugin's own work: a hung plugin ends with ctx or
+	// with its process.
+	//
 	// Errors: ErrPluginUnavailable when the instance is down, draining or
-	// crashed, and when a stretch of the plugin's own work ran over
-	// SegmentTimeout (Details["reason"] is "segment_timeout"); the context's
+	// crashed; the context's
 	// error when ctx ended; the mapped status of the plugin's own error
 	// otherwise. All of them are failures of the plugin, never of the
 	// account.
 	Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client ExecutionClient) (ExecutionResult, error)
 }
 
-// Reasons in the Details of an ErrPluginUnavailable returned by Execute.
-const (
-	PluginUnavailableSegmentTimeout = "segment_timeout"
-)
-
 // MonitorPlugin is implemented by the PlatformPlugin of a plugin declaring
 // platform.monitor.v1: one scheduled observation of a host-managed task.
 type MonitorPlugin interface {
 	// Monitor runs PlatformService.Monitor once. The plugin queries the
-	// upstream through fetch (at most ExecutionHTTPMaxRequests times, its
-	// execution token void once the call returns) and states what it read
+	// upstream through fetch (as often as it needs, its execution token
+	// void once the call returns) and states what it read
 	// in the result. A nil error comes with a non-nil result: a response
 	// without one is an error, and so is a terminal state (anything but
-	// PENDING and POLL_FAILED) that no complete, successful, untruncated
-	// fetch of this call backs. The caller treats every error as one failed
+	// PENDING and POLL_FAILED) that no complete, successful fetch of this
+	// call backs. The caller treats every error as one failed
 	// query. The call is bounded by the runtime's poll timeout (30 s) and
 	// by ctx.
 	Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch ExecutionHTTP) (*pluginv1.ReconcileResult, error)
@@ -251,8 +235,8 @@ const (
 // CommitExecution (Execute returned valid facts) and
 // CloseExecutionUnreported (it did not). Nothing here falls back to the
 // host's reading on its own: an observed execution that is never committed
-// is closed as unreported by the caller or, after ExecutionRecoveryAge, by
-// the usage module's recovery sweep, and is not billed.
+// is closed as unreported by the caller or, once its gateway is gone, by the
+// usage module's recovery sweep, and is not billed.
 type ExecutionRecords interface {
 	// BeginExecution stores the trusted identity of the execution before
 	// any network side effect. A second call with the same ID fails.
@@ -263,6 +247,13 @@ type ExecutionRecords interface {
 	// CloseExecutionUnreported turns into the free record; it is not billed
 	// by itself. The request and account of rec must be the execution's.
 	ObserveExecution(ctx context.Context, id string, rec *UsageRecord, observation []byte) error
+	// RenewExecution marks an observed execution alive now, in one
+	// statement that changes nothing else and touches only a row still in
+	// state observed: a committed or unreported row is never resurrected or
+	// modified. Such a row, or none, is ErrExecutionNotObserved, which ends
+	// the renewals. Any other error is a failed renewal; the next one tries
+	// again (see ExecutionRenewInterval).
+	RenewExecution(ctx context.Context, id string) error
 	// CommitExecution accepts the facts Execute returned, in one
 	// transaction with the execution row locked: the usage record with its
 	// charge and the release of the request's precharge, for ExecutionOpWatch

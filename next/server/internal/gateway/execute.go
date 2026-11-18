@@ -55,12 +55,8 @@ type execution struct {
 	checked *pluginv1.UpstreamRequest
 	target  *url.URL
 	refused *gwError
-	// waited is the exchange of a relay that waits (waited.go); cutExecute
-	// cancels its Execute call, which factsTimer does once the observation
-	// was stored and the facts take too long.
-	waited     *waitedRelay
-	cutExecute context.CancelFunc
-	factsTimer *time.Timer
+	// waited is the exchange of a relay that waits (waited.go).
+	waited *waitedRelay
 }
 
 // errExecutionAborted cuts the upstream exchange of a relay that waits when
@@ -72,9 +68,16 @@ var errExecutionAborted = errors.New("plugin execution aborted")
 // rewrote for it, and upModel, the model it goes upstream with.
 func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte, upModel string, n int) attemptResult {
 	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
+	// Whatever happens below - a commit, a close, an error, a panic - the
+	// waited relay's heartbeat stops and its held-back answer is removed.
+	defer func() {
+		if w := x.waited; w != nil {
+			w.alive.stop()
+			w.release()
+		}
+	}()
 	res, err := x.run(ctx, upModel, n)
 	if w := x.waited; w != nil {
-		defer w.release()
 		return w.settle(ctx, res, err)
 	}
 	if err == nil && res.Relay != nil {
@@ -96,18 +99,12 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 	meta.Model = upModel
 	in := &pluginv1.ExecuteRequest{Meta: meta, Account: x.acct, Body: x.body, InboundHeaders: c.passHeaders(rt.passHeaders),
 		Attempt: int32(n), ExtractUsage: rt.pluginUsage && !x.turn, TaskSubmission: c.ep.TaskSubmit()}
-	client := core.ExecutionClient{SegmentTimeout: c.gw.platformTimeout(), Check: x.check, Fetch: x.fetch}
+	client := core.ExecutionClient{Check: x.check, Fetch: x.fetch}
 	if in.ExtractUsage || in.TaskSubmission {
 		client.Relay = x.relay
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 6*time.Hour+c.env.Duration(core.EnvVarRelayTimeoutSeconds))
 		defer cancel()
-		x.cutExecute = cancel
-		defer func() {
-			if x.factsTimer != nil {
-				x.factsTimer.Stop()
-			}
-		}()
 	}
 	return plugin.Execute(ctx, in, client)
 }

@@ -39,15 +39,16 @@ func fetchDuringExecute(t *testing.T, reqs []*pluginv1.ExecutionHTTPRequest) []*
 	return got
 }
 
-// The gateway's fetches are held to the limits Monitor's are (execfetch):
-// the host refuses Host, hop-by-hop and proxy headers, methods outside the
-// list, oversized URLs and header sets, without sending anything; a failed
-// exchange is a fixed text, and the answer's headers are capped.
+// The gateway's fetches are held to the rules Monitor's are (execfetch):
+// the host refuses Host, hop-by-hop and proxy headers and headers that are
+// not HTTP, without sending anything; a failed exchange is a fixed text.
+// Long URLs, many or large headers and many answer headers pass: the host
+// sets no size limits of its own.
 func TestFetchLimits(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		for i := range execfetch.MaxHeaders + 10 {
+		for i := range 100 {
 			w.Header().Set(fmt.Sprintf("X-H%d", i), "v")
 		}
 		_, _ = w.Write([]byte("ok"))
@@ -57,7 +58,7 @@ func TestFetchLimits(t *testing.T) {
 	dead := "http://" + closed.Addr().String()
 	_ = closed.Close()
 	many := map[string]string{}
-	for i := range execfetch.MaxHeaders + 1 {
+	for i := range 100 {
 		many[fmt.Sprintf("x-%d", i)] = "v"
 	}
 	refused := []*pluginv1.ExecutionHTTPRequest{
@@ -65,25 +66,29 @@ func TestFetchLimits(t *testing.T) {
 		{Url: srv.URL, Headers: map[string]string{"Upgrade": "websocket"}},
 		{Url: srv.URL, Headers: map[string]string{"Proxy-Authorization": "secret"}},
 		{Url: srv.URL, Headers: map[string]string{"TE": "trailers"}},
-		{Url: srv.URL, Method: "CONNECT"},
-		{Url: srv.URL + "/" + strings.Repeat("a", execfetch.MaxURLBytes)},
-		{Url: srv.URL, Headers: many},
-		{Url: srv.URL, Headers: map[string]string{"X-Big": strings.Repeat("v", execfetch.MaxHeaderBytes)}},
+		{Url: srv.URL, Headers: map[string]string{"Bad Name": "v"}},
 	}
-	got := fetchDuringExecute(t, append(refused, &pluginv1.ExecutionHTTPRequest{Url: dead}, &pluginv1.ExecutionHTTPRequest{Url: srv.URL}))
+	passed := []*pluginv1.ExecutionHTTPRequest{
+		{Url: srv.URL + "/" + strings.Repeat("a", 10000)},
+		{Url: srv.URL, Headers: many},
+		{Url: srv.URL, Headers: map[string]string{"X-Big": strings.Repeat("v", 40<<10)}},
+		{Url: srv.URL},
+	}
+	got := fetchDuringExecute(t, append(append(refused, &pluginv1.ExecutionHTTPRequest{Url: dead}), passed...))
 	for i := range refused {
 		if got[i].GetTransportError() == "" || got[i].GetStatus() != 0 {
 			t.Errorf("refused request %d answered: %+v", i, got[i])
 		}
 	}
-	if hits.Load() != 1 {
-		t.Fatalf("refused requests reached the server: %d hits", hits.Load())
-	}
 	if failed := got[len(refused)]; failed.GetTransportError() != execfetch.TransportFailure {
 		t.Fatalf("transport failure text %q", failed.GetTransportError())
 	}
-	ok := got[len(refused)+1]
-	if ok.GetStatus() != 200 || string(ok.GetBody()) != "ok" || !ok.GetTruncated() || len(ok.GetHeaders()) > execfetch.MaxHeaders {
-		t.Fatalf("answer headers not capped: status %d truncated %v headers %d", ok.GetStatus(), ok.GetTruncated(), len(ok.GetHeaders()))
+	for i, out := range got[len(refused)+1:] {
+		if out.GetStatus() != 200 || string(out.GetBody()) != "ok" || out.GetTruncated() || len(out.GetHeaders()) < 100 {
+			t.Errorf("request %d: status %d truncated %v headers %d %q", i, out.GetStatus(), out.GetTruncated(), len(out.GetHeaders()), out.GetTransportError())
+		}
+	}
+	if hits.Load() != int32(len(passed)) {
+		t.Fatalf("server hits %d, want %d", hits.Load(), len(passed))
 	}
 }

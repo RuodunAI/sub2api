@@ -48,6 +48,15 @@ func (s *Service) ObserveExecution(ctx context.Context, id string, rec *core.Usa
 	return res.Error
 }
 
+func (s *Service) RenewExecution(ctx context.Context, id string) error {
+	res := execution(store.G(ctx, s.db.Gorm), id).Where("state=?", core.ExecutionStateObserved).
+		Update("updated_at", gorm.Expr("clock_timestamp()"))
+	if res.Error == nil && res.RowsAffected == 0 {
+		return core.ErrExecutionNotObserved
+	}
+	return res.Error
+}
+
 func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) error {
 	task := in.Operation == core.ExecutionOpWatch
 	if in.Record == nil || in.Record.AccountID == nil || len(in.Digest) != 64 || (in.Task != nil) != task ||
@@ -194,27 +203,21 @@ func lockExecution(ctx context.Context, tx *gorm.DB, id string) (model.PluginExe
 	return x, err
 }
 
-// executionRecoveryAge is how long an observed execution may wait for its
-// facts before the recovery sweep closes it as unreported. The sweep is for
-// executions whose gateway is gone, so it outlasts the longest a live one
-// keeps an execution observed (core.ExecutionRecoveryAge, about 46 minutes);
-// until then a crashed gateway's precharge stays reserved.
-const executionRecoveryAge = core.ExecutionRecoveryAge
-
-// recoverExecutions closes the observed synchronous executions that neither
-// committed nor were closed within executionRecoveryAge as unreported: the
-// host's reading stays as evidence and is never billed. A task submission
-// is left alone; its receipt keeps the upstream answer.
+// recoverExecutions closes, as unreported, the observed synchronous
+// executions whose gateway is gone: not renewed (RenewExecution, which sets
+// updated_at like ObserveExecution) for core.ExecutionStaleAfter. The host's
+// reading stays as evidence and is never billed. A task submission is left
+// alone; its receipt keeps the upstream answer.
 func (s *Service) recoverExecutions(ctx context.Context) error {
 	var ids []string
 	if err := store.G(ctx, s.db.Gorm).Model(&model.PluginExecution{}).
-		Where("state=? AND NOT task_submit AND updated_at<clock_timestamp()-make_interval(secs=>?)", core.ExecutionStateObserved, executionRecoveryAge.Seconds()).
+		Where("state=? AND NOT task_submit AND updated_at<clock_timestamp()-make_interval(secs=>?)", core.ExecutionStateObserved, core.ExecutionStaleAfter.Seconds()).
 		Order("updated_at").Limit(100).Pluck("id", &ids).Error; err != nil {
 		return err
 	}
 	for _, id := range ids {
 		// A conflict is an execution committed meanwhile: its facts stand.
-		err := s.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: id, Reason: "no facts within the recovery age of the observation"})
+		err := s.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: id, Reason: "its gateway stopped renewing the observed execution"})
 		if err != nil && core.AsError(err).Code != core.ErrConflict.Code {
 			s.deferExecutionRecovery(ctx, id, err)
 		}

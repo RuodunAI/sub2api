@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -785,6 +786,9 @@ type fakeSettler struct {
 	// commitAckLost, when set, answers a CommitExecution that was stored
 	// (the commit landed, its answer did not).
 	commitAckLost func(core.ExecutionCommit) error
+	// renewals counts the RenewExecution calls; renewed is called on each.
+	renewals atomic.Int64
+	renewed  func(id string)
 }
 
 // fakeExecution is one plugin_executions row.
@@ -822,6 +826,21 @@ func (s *fakeSettler) ObserveExecution(_ context.Context, id string, rec *core.U
 		return errors.New("execution not in intent")
 	}
 	x.state, x.reading = core.ExecutionStateObserved, rec
+	return nil
+}
+
+func (s *fakeSettler) RenewExecution(_ context.Context, id string) error {
+	s.renewals.Add(1)
+	s.mu.Lock()
+	x, hook := s.executions[id], s.renewed
+	alive := x != nil && x.state == core.ExecutionStateObserved
+	s.mu.Unlock()
+	if hook != nil {
+		hook(id)
+	}
+	if !alive {
+		return core.ErrExecutionNotObserved
+	}
 	return nil
 }
 

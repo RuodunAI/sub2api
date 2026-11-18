@@ -170,13 +170,13 @@ describe('request body limit and platform call timeout (forwarding v2 §8.1, §8
     expect(field(w, 'max_request_body_mb').text()).toContain('取值范围为 1 到 1024')
   })
 
-  it('describes the platform call timeout as the plugin\'s own processing time, in both languages', async () => {
+  it('describes the platform call timeout as the error classification call, in both languages', async () => {
     const zh = field(await render(), 'platform_call_timeout_ms').text()
-    expect(zh).toContain('每段自身处理时间的上限')
-    expect(zh).toContain('不含等待上游的时间')
+    expect(zh).toContain('错误分类的单次调用超时')
+    expect(zh).toContain('不限时间')
     i18n.global.locale.value = 'en'
     const en = await render()
-    expect(field(en, 'platform_call_timeout_ms').text()).toContain('not counting the wait for the upstream')
+    expect(field(en, 'platform_call_timeout_ms').text()).toContain('has no time limit')
     expect(field(en, 'max_request_body_mb').text()).toContain('Request body limit')
   })
 })

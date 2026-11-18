@@ -19,14 +19,6 @@ import (
 	"golang.org/x/net/http/httpguts"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-)
-
-// Limits of a fetch request and of the headers of its answer.
-const (
-	MaxURLBytes    = 8192
-	MaxHeaders     = 64
-	MaxHeaderBytes = 32 << 10
 )
 
 // TransportFailure is the plugin's text for an exchange that failed in
@@ -49,9 +41,9 @@ type Binding struct {
 	Admit func(context.Context) error
 }
 
-// Do performs one fetch: no redirects, no retries, the answer body capped at
-// core.ExecutionHTTPMaxResponseBytes and its headers at MaxHeaders and
-// MaxHeaderBytes (Truncated set when cut). A request the host refuses or an
+// Do performs one fetch: no redirects, no retries, the answer whole. A
+// request the host refuses (a header that is not HTTP, Host, a hop-by-hop
+// or proxy header) or an
 // exchange that fails is an answer with TransportError set; an error is the
 // context's or Admit's.
 func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*pluginv1.ExecutionHTTPResponse, error) {
@@ -112,23 +104,20 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	return answer(ctx, u, resp, err)
 }
 
-// checkRequest is the request's method, or why the host refuses it.
+// checkRequest is the request's method, or why the host refuses it: a
+// header that is not HTTP, or one that would change where or how the
+// request travels (Host against the checked URL, hop-by-hop and proxy
+// headers). The method is net/http's to judge.
 func checkRequest(in *pluginv1.ExecutionHTTPRequest) (method, refused string) {
-	if in == nil || len(in.GetUrl()) > MaxURLBytes || len(in.GetHeaders()) > MaxHeaders {
-		return "", "execution request exceeds host limits"
+	if in == nil {
+		return "", "execution request is missing"
 	}
 	method = strings.ToUpper(strings.TrimSpace(in.GetMethod()))
-	switch method {
-	case "":
+	if method == "" {
 		method = http.MethodGet
-	case http.MethodGet, http.MethodPost, http.MethodHead, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
-	default:
-		return "", "execution HTTP method is not allowed"
 	}
-	size := 0
 	for k, v := range in.GetHeaders() {
-		size += len(k) + len(v)
-		if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) || size > MaxHeaderBytes {
+		if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) {
 			return "", "invalid execution request headers"
 		}
 		switch strings.ToLower(k) {
@@ -139,31 +128,19 @@ func checkRequest(in *pluginv1.ExecutionHTTPRequest) (method, refused string) {
 	return method, ""
 }
 
-// answer reads the exchange's answer within the limits.
+// answer reads the exchange's answer.
 func answer(ctx context.Context, u *url.URL, resp *http.Response, err error) (*pluginv1.ExecutionHTTPResponse, error) {
 	if err != nil {
 		slog.InfoContext(ctx, "execfetch: exchange failed", "host", u.Host, "err", err)
 		return &pluginv1.ExecutionHTTPResponse{TransportError: TransportFailure}, nil
 	}
 	defer resp.Body.Close()
-	const limit = core.ExecutionHTTPMaxResponseBytes
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw,
-		Truncated: len(raw) > limit || readErr != nil}
-	if len(raw) > limit {
-		out.Body = raw[:limit]
-	}
-	size := 0
+	raw, readErr := io.ReadAll(resp.Body)
+	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw}
 	for k, v := range resp.Header {
-		if len(v) == 0 {
-			continue
+		if len(v) > 0 {
+			out.Headers[strings.ToLower(k)] = v[0]
 		}
-		size += len(k) + len(v[0])
-		if len(out.Headers) >= MaxHeaders || size > MaxHeaderBytes {
-			out.Truncated = true
-			break
-		}
-		out.Headers[strings.ToLower(k)] = v[0]
 	}
 	if readErr != nil {
 		out.TransportError = "incomplete execution HTTP response"
