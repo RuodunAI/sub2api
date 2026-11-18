@@ -732,7 +732,7 @@ type rolloutNode struct {
 func (rolloutNode) TableName() string { return model.PluginRolloutNode{}.TableName() }
 
 // nodeState is one live node's report for a rollout, with the code of its
-// failed load of the target version (InstanceState.Code), which the node's
+// failed load of the target version (core.PluginInstanceState.Code), which the node's
 // outcome row keeps once the rollout ends and the instance is gone.
 type nodeState struct {
 	core.RolloutNodeState
@@ -754,10 +754,10 @@ func (c *Controller) nodeStates(ctx context.Context, r *rolloutRow) ([]nodeState
 			selfSeen = true
 		}
 		ns := nodeState{RolloutNodeState: core.RolloutNodeState{NodeID: n.NodeID, BootID: n.BootID, State: NodePending}}
-		if st, ok := parseState(n.Plugins[r.key]); ok && st.RolloutID == r.id && st.Rollout != "" {
+		if st, ok := core.ParsePluginNodeState(n.Plugins[r.key]); ok && st.RolloutID == r.id && st.Rollout != "" {
 			ns.State = st.Rollout
 			ns.Error = st.Error
-			ns.code = st.code(deref(r.target))
+			ns.code = st.InstanceCode(deref(r.target))
 		}
 		out = append(out, ns)
 	}

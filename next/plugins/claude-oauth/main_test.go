@@ -12,7 +12,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -48,7 +47,7 @@ func TestManifest(t *testing.T) {
 
 func TestValidateCredentials(t *testing.T) {
 	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
+		Manifest: manifestRaw,
 	})
 
 	tests := []struct {
@@ -99,7 +98,7 @@ func TestValidateCredentials(t *testing.T) {
 // error.type, the top-level type is always "error".
 func TestClassifyError(t *testing.T) {
 	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
+		Manifest: manifestRaw,
 	})
 	body := func(typ, msg string) string {
 		return `{"type":"error","error":{"type":"` + typ + `","message":"` + msg + `"},"request_id":"req_011"}`
@@ -161,7 +160,7 @@ func TestClassifyError(t *testing.T) {
 
 func TestAuthStartFlow(t *testing.T) {
 	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
+		Manifest: manifestRaw,
 		Grants: []*pluginv1.Grant{
 			{Permission: "kv"},
 			{Permission: "routes.admin"},
@@ -272,8 +271,8 @@ func authHarnessWithIssuer(t *testing.T) (*pluginsdktest.Harness, <-chan map[str
 	p := newPlugin()
 	p.tokenURL = issuer.URL
 	return pluginsdktest.Start(t, p, pluginsdktest.Options{
-		SDK:    []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
-		Grants: []*pluginv1.Grant{{Permission: "kv"}, {Permission: "routes.admin"}},
+		Manifest: manifestRaw,
+		Grants:   []*pluginv1.Grant{{Permission: "kv"}, {Permission: "routes.admin"}},
 	}), exchanged
 }
 

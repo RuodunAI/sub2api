@@ -125,6 +125,25 @@ func (sc *callScope) hostContext(rpc context.Context) (context.Context, context.
 // shallowClone copies the fields of in without copying what they refer to:
 // the runtime adds the execution token to a request without changing the
 // caller's message or copying its body.
+// withScope runs one Execute or Monitor call of the plugin under sc: it
+// registers sc under a fresh execution token and hands rpc that token. Once
+// rpc returned, whatever the plugin left running ends: a host call still in
+// progress is cancelled and joined before the result is read.
+func withScope[T any](ctx context.Context, p *proc, sc *callScope, rpc func(ctx context.Context, token string) (T, error)) (T, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sc.ctx = ctx
+	token, err := p.scopes.open(sc)
+	if err != nil {
+		var zero T
+		return zero, err
+	}
+	out, err := rpc(ctx, token)
+	cancel()
+	p.scopes.close(token, sc)
+	return out, err
+}
+
 func shallowClone[M proto.Message](in M) M {
 	out := in.ProtoReflect().New()
 	in.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {

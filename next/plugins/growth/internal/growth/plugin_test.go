@@ -20,7 +20,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -52,7 +51,7 @@ func startDB(t *testing.T, config any) (*Plugin, *pluginsdktest.Harness, *plugin
 		Grants: []*pluginv1.Grant{
 			{Permission: "ledger.credit", ScopeJson: `{"maxPerTx":"10","maxPerDay":"100"}`},
 		},
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest: manifestJSON,
 	})
 	return p, h, fh
 }
@@ -60,7 +59,7 @@ func startDB(t *testing.T, config any) (*Plugin, *pluginsdktest.Harness, *plugin
 func TestManifestServes(t *testing.T) {
 	p := New()
 	h := pluginsdktest.Start(t, p, pluginsdktest.Options{
-		SDK:           []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:      manifestJSON,
 		SkipHandshake: true,
 	})
 	caps := h.Info.GetCapabilities()

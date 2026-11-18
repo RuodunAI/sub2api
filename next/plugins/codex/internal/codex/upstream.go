@@ -118,13 +118,6 @@ func userMessage(text string) []byte {
 	return b
 }
 
-// Execute implements pluginsdk.Executor: build the request (BuildUpstream)
-// and hand it to the host without waiting; the host sends it after Execute
-// returned and reads the usage by the openai platform's rules (host_usage).
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // BuildUpstream implements pluginsdk.UpstreamBuilder.
 //
 // HTTP (openai.responses): POST to the Codex backend's Responses endpoint
@@ -166,25 +159,10 @@ func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err
 	case ProtocolResponses:
 		return pluginsdk.NewUpstream(http.MethodPost, p.responsesURL()).HeaderMap(httpHeaders), false, nil
 	case ProtocolResponsesWS:
-		wsURL, err := webSocketURL(p.responsesURL())
-		if err != nil {
-			return nil, false, err
-		}
-		return pluginsdk.NewUpstream(http.MethodGet, wsURL).Header("openai-beta", WebSocketBeta), true, nil
+		return pluginsdk.NewUpstream(http.MethodGet, pluginsdk.WebSocketURL(p.responsesURL())).Header("openai-beta", WebSocketBeta), true, nil
 	default:
 		return nil, false, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
-}
-
-// webSocketURL is the ws(s) URL of an http(s) one.
-func webSocketURL(httpURL string) (string, error) {
-	if rest, ok := strings.CutPrefix(httpURL, "https://"); ok {
-		return "wss://" + rest, nil
-	}
-	if rest, ok := strings.CutPrefix(httpURL, "http://"); ok {
-		return "ws://" + rest, nil
-	}
-	return "", status.Errorf(codes.Internal, "upstream URL %q has no http(s) scheme", httpURL)
 }
 
 // codexBody makes a Responses body (an HTTP request or a WebSocket

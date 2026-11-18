@@ -46,10 +46,10 @@
 //     not part of the exchange.
 //   - RelayAndWait: for endpoints whose usage the plugin reads (request flag
 //     extract_usage) and task submissions (task_submission). The host sends
-//     now and returns a bounded observation, which the plugin turns into
+//     now and returns the observation of the answer, which the plugin turns into
 //     ReportUsage or ReportTask, or the facts of a failed exchange, which
 //     it turns into ReportClassification.
-//   - Fetch: a bounded exchange whose answer comes back to the plugin, for
+//   - Fetch: a non-streaming exchange whose whole answer comes back to the plugin, for
 //     auxiliary requests before the relay and for the upstream query of
 //     Monitor. Hosts are limited to the manifest's externalServices and the
 //     hosts of the account's own upstream addresses (upstreamFields).

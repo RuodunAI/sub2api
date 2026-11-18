@@ -13,6 +13,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
 
@@ -40,7 +41,6 @@ type usageCapture struct {
 	limited  bool
 	budget   int
 	events   []*pluginv1.StreamEvent
-	stream   bool
 	stopped  bool // the cap was reached; collection has ended
 	body     []byte
 	tooLarge bool // non-streaming body over usage.maxBytes: not handed over
@@ -67,11 +67,7 @@ func newUsageCapture(rt *typeRoute) *usageCapture {
 // addEvent keeps one upstream SSE event when the endpoint asked for it. data
 // belongs to the forwarding loop's reusable buffer, so it is copied.
 func (u *usageCapture) addEvent(name string, data []byte) {
-	if u == nil {
-		return
-	}
-	u.stream = true
-	if u.stopped || !u.want[name] || len(data) == 0 {
+	if u == nil || u.stopped || !u.want[name] || len(data) == 0 {
 		return
 	}
 	if u.limited {
@@ -103,7 +99,6 @@ func (u *usageCapture) setBody(body []byte) {
 // pendingExtract is what the observation of a waited relay is built from:
 // everything it needs, copied out of the request and the answer.
 type pendingExtract struct {
-	rt      *typeRoute
 	cap     *usageCapture
 	meta    *pluginv1.RequestMeta
 	account *pluginv1.Account
@@ -126,7 +121,7 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 	if cap == nil || c.rec == nil {
 		return
 	}
-	headers := firstHeaderValues(resp.Header)
+	headers := execfetch.FirstHeaderValues(resp.Header)
 	// The response is read, not built: credentials are never sent. Settings
 	// travel only to the plugin that owns the account type, which is the one
 	// that already sees them on every upstream attempt.
@@ -137,7 +132,7 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 		small.Properties = acct.GetProperties()
 	}
 	fields, omitted := usageRequestFields(rt.usageRequestFields, upBody)
-	c.usage = &pendingExtract{rt: rt, cap: cap, meta: c.metaFor(rt), account: small,
+	c.usage = &pendingExtract{cap: cap, meta: c.metaFor(rt), account: small,
 		headers: headers, status: resp.StatusCode, fields: fields, fieldsOmitted: omitted}
 }
 

@@ -35,10 +35,11 @@ func (e *convertError) Unwrap() error { return e.err }
 //
 // The declarative rules run here in every case. When the endpoint declares
 // usage.source "plugin" they are joined by a capture (see usageplugin.go)
-// that keeps the few bytes PlatformService.ExtractUsage will be shown, and
-// the plugin is asked once the last byte has left - never before. upBody is
-// the request as it went upstream; only its declared usageRequestFields are
-// read from it, at the end, and the body itself is not kept.
+// that keeps what the observation of a relay that waits shows the plugin;
+// the plugin reads it in the answer to its RelayUpstream call once forward
+// has returned (waited.go) - never before. upBody is the request as it went
+// upstream; only its declared usageRequestFields are read from it, at the
+// end, and the body itself is not kept.
 func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Account, resp *http.Response, upBody []byte) attemptResult {
 	core.ApplyProviderHeaders(c.c.Writer.Header(), resp.Header)
 	u := newUsageAcc(rt.usage).WithLog("request_id", c.rid, "plugin", rt.binding.Plugin.Key,
@@ -129,8 +130,9 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		c.rec.ErrorMessage = truncateUTF8("upstream stream interrupted: "+err.Error(), 1000)
 		slog.WarnContext(ctx, "gateway: upstream response interrupted", "request_id", c.rid, "err", err)
 	}
-	// The client has its bytes. The plugin, if any, is asked in submit -
-	// after the handler returns, so the response is terminated first.
+	// The answer is written (or, for a relay that waits, held back until
+	// its facts commit: waited.go). The plugin reading the usage is handed
+	// the observation armed below only after forward returned.
 	if u.StreamError != "" {
 		c.recordStreamFailure(ctx, acct.GetId(), u.StreamError)
 	}

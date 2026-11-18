@@ -279,7 +279,8 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		b.log.Warn("plugins may reach private network addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true); tests and development only")
 	}
 	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, CoreAddrs: coreAddrs,
-		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Logger: b.log})
+		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Bus: b.cl.Bus, Logger: b.log})
+	b.egress = egress
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
 	if err := b.tasks.Register(egress.LogsPruneTaskSpec()); err != nil {
 		return fmt.Errorf("egress log prune task: %w", err)
@@ -527,6 +528,7 @@ func (b *boot) registerRoutes(r *httpapi.Router) {
 	pr.RegisterRoutes(r)
 	pr.RegisterAssets(b.engine)
 	b.gw.RegisterRoutes(r)
+	b.egress.RegisterRoutes(r)
 }
 
 // buildEngine creates the gin engine with the shared middleware and the health

@@ -207,7 +207,8 @@ func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequ
 // taskIDPaths are the response fields a task id may arrive in, in order. Ark
 // documents "id"; the others are cheap insurance against a relay that wraps
 // the answer, and cost one gjson probe on a path that only runs once per
-// submit.
+// submit. It equals every task endpoint's task.idPaths in manifest.json, by
+// which the core rewrites public ids (TestTaskIDPathsMatchTheManifest).
 var taskIDPaths = []string{"id", "task_id", "data.id", "result.id"}
 
 var _ pluginsdk.TaskSubmissionParser = (*Plugin)(nil)
@@ -283,7 +284,7 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 		return &pluginv1.UsageReport{}
 	}
 	model := in.GetMeta().GetModel()
-	spec := readVideoSpec(in.GetFields(), in.GetFieldsOmitted())
+	spec := readVideoSpec(in.GetFields())
 	est := estimateVideo(model, spec)
 	if len(est.Assumed) > 0 {
 		// The one line that explains an unexpectedly large pre-charge. An
@@ -295,7 +296,7 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 		p.log.Info("volcengine: video estimate had to assume part of the request",
 			"request_id", in.GetMeta().GetRequestId(), "task_id", taskID, "model", model,
 			"assumed", strings.Join(est.Assumed, ","), "resolution", est.Resolution,
-			"est_output_tokens", est.Tokens, "fields_omitted", strings.Join(in.GetFieldsOmitted(), ","))
+			"est_output_tokens", est.Tokens)
 	}
 	tokens := &pluginv1.UsageTokens{OutputTokens: est.Tokens}
 	facts := estimatedVideoFacts(est, in.GetFields())
@@ -364,7 +365,7 @@ func taskQuery(entry *pluginv1.ReconcileEntry, acc *pluginv1.Account) (*pluginv1
 //	404 / 410                 -> NOT_FOUND
 //	query / parse error       -> POLL_FAILED; host owns retries and the cutoff
 func (p *Plugin) readTaskQuery(entry *pluginv1.ReconcileEntry, answer *pluginv1.ExecutionHTTPResponse) *pluginv1.ReconcileResult {
-	if result := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); result != nil {
+	if result := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError()); result != nil {
 		return result
 	}
 	ref, body := strings.TrimSpace(entry.GetRefId()), answer.GetBody()

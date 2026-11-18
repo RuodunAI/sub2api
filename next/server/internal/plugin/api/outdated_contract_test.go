@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
@@ -228,4 +230,30 @@ func equalJSON(a, b map[string]any) bool {
 	x, _ := json.Marshal(a)
 	y, _ := json.Marshal(b)
 	return string(x) == string(y)
+}
+
+// The plugin list reads the refusals its rollouts recorded with one query
+// for the whole page, however many plugins it shows.
+func TestListReadsRecordedRefusalsOnce(t *testing.T) {
+	h, root := newHarness(t)
+	for _, key := range []string{"video", "audio", "image"} {
+		if code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(pkgtest.Platform(key, "0.1.0", "sub2api"), root))); code != http.StatusOK {
+			t.Fatalf("upload %s = %d %v", key, code, out)
+		}
+	}
+	var reads atomic.Int32
+	count := func(db *gorm.DB) {
+		if strings.Contains(db.Statement.SQL.String(), "plugin_rollout_nodes") {
+			reads.Add(1)
+		}
+	}
+	if err := h.db.Gorm.Callback().Row().After("gorm:row").Register("test:count_refusal_reads", count); err != nil {
+		t.Fatal(err)
+	}
+	if got := listRefusals(h); len(got) != 3 {
+		t.Fatalf("list = %v", got)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Fatalf("the list read the recorded refusals in %d queries, want 1", n)
+	}
 }

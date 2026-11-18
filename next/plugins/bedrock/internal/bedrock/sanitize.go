@@ -15,7 +15,7 @@ import (
 //
 //   - "custom" in a tool definition ({"defer_loading": true}): "Extra
 //     inputs are not permitted";
-//   - "scope" in a cache_control, and "ttl" unless the model takes it;
+//   - "scope" in a cache_control, and "ttl" on a model known not to take it;
 //   - a tool use id with characters outside [a-zA-Z0-9_-];
 //   - a thinking setting the model does not take.
 
@@ -53,10 +53,13 @@ func sanitize(d *jsonedit.Doc, m claudeModel) {
 }
 
 // cacheControl removes from the cache_control of block what InvokeModel
-// refuses: scope always, ttl unless the model takes it with that value.
+// refuses: scope always; ttl when the model is known and does not take it
+// with that value. On a model the id does not name the ttl stays as the
+// client sent it: Claude 4.5 and later take it, and removing it would turn
+// a one-hour cache into a five-minute one without a word.
 func cacheControl(d *jsonedit.Doc, block gjson.Result, m claudeModel) {
 	d.Object(block.Get("cache_control")).DeleteFunc(func(key string, value gjson.Result) bool {
-		return key == "scope" || key == "ttl" && !(m.hasCacheTTL() && value.Type == gjson.String && slices.Contains(cacheTTLs, value.Str))
+		return key == "scope" || key == "ttl" && m.known() && !(m.hasCacheTTL() && value.Type == gjson.String && slices.Contains(cacheTTLs, value.Str))
 	})
 }
 

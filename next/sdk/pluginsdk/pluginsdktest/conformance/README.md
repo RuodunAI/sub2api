@@ -27,8 +27,6 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `Authoritative` | 其余要保留为权威头的头，名字 → 理由（例如改写前代码插件的头都在运营方设置之上，转换后要保持）。理由不能为空 |
 | `Fetch` | 插件辅助请求（换令牌、上传）的回答。nil 时取回回 `UNIMPLEMENTED` |
 | `FixClock` | 把插件的时钟设成给定时间；套件在每次 `Execute` 前调用。请求依赖时间（签名）时必填，否则第 6、7 条失败 |
-| `BodyLimit` | 第 10 条把请求体补到的大小，默认 8 MiB。只决定计量用多大的请求体：宿主不限制交给插件或插件交回的请求体，网关的 `max_request_body_mb` 只管客户端请求 |
-| `CallTimeout` | 第 9 条取消后等 `Execute` 返回的时长，默认 2 秒。宿主不给插件在 `Execute` 里的工作计时，这是套件自己的界限 |
 | `Exceptions` | 有理由的例外，见下文 |
 
 `Case`（一个样例请求）：
@@ -61,8 +59,8 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `06_deterministic` | 固定时钟下同一输入构造 5 次，逐字段比较 |
 | `07_failover` | 先给换号账号做一次全新构造（尝试 0、另一个请求 ID）作参照；再按原账号尝试 0、换号账号尝试 1（同一请求 ID）。尝试 1 必须等于参照。两个账号构造出相同请求时无法区分复用，项失败并要求设置 `Failover` |
 | `08_no_sockets` | 整个 `Run` 期间默认传输、默认解析器、假宿主的出口隧道都在拨号时失败并记下地址；这一项再把每个用例执行一次，然后要求一次拨号都没有 |
-| `09_cancellation` | 假宿主让第一次中继或取回阻塞到它的 context 结束；插件进入后取消 `Execute` 的 context，用插件侧 gRPC 服务端的拦截器看 `Execute` 在插件一侧何时返回，必须在 `CallTimeout` 内 |
-| `10_large_body` | 在请求体里加顶层字段 `conformance_padding` 把它补到 `BodyLimit`；`Execute` 要完成且恰好一次中继。用 `testing.AllocsPerRun` 驱动、`runtime.MemStats.TotalAlloc` 计量每次 `Execute` 的分配，减去同样输入下一个原样转交请求体的参照插件的分配，差值不超过请求体的 4 倍。`-race` 下跳过：竞态检测会改变分配，4 倍的界限在不带它的构建里测 |
+| `09_cancellation` | 假宿主让第一次中继或取回阻塞到它的 context 结束；插件进入后取消 `Execute` 的 context，用插件侧 gRPC 服务端的拦截器看 `Execute` 在插件一侧何时返回，必须在 2 秒内（套件自己的界限，宿主不给插件在 `Execute` 里的工作计时） |
+| `10_large_body` | 在请求体里加顶层字段 `conformance_padding` 把它补到 8 MiB（只决定计量用多大的请求体，宿主不限制请求体）；`Execute` 要完成且恰好一次中继。用 `testing.AllocsPerRun` 驱动、`runtime.MemStats.TotalAlloc` 计量每次 `Execute` 的分配，减去同样输入下一个原样转交请求体的参照插件的分配，差值不超过请求体的 4 倍。`-race` 下跳过：竞态检测会改变分配，4 倍的界限在不带它的构建里测 |
 | `11_websocket` | 声明了 `platform.websocket.v1` 就必须有 WebSocket 用例（反之亦然，`declaration` 项）。每一轮：恰好一次中继、不等待、返回 `host_usage`；URL 是 ws(s) 或 http(s) 的绝对地址；至少一个握手头；消息是合法 JSON；没有 `response_stream` |
 
 ## 例外

@@ -17,13 +17,12 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
 func startQuotaPlugin(t *testing.T) pluginv1.PlatformServiceClient {
 	t.Helper()
-	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)}})
+	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{Manifest: manifestRaw})
 	return h.Platform
 }
 

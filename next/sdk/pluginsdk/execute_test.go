@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -74,7 +75,7 @@ func upstreamOf(in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) 
 
 func startScripted(t *testing.T, p *scripted) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(taskManifest))}})
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: []byte(taskManifest)})
 }
 
 func executeRequest() *pluginv1.ExecuteRequest {
@@ -217,7 +218,7 @@ func TestExecuteDefaultSendsNothingWhenBuildingFails(t *testing.T) {
 // A task submission needs its parser before anything is built or sent.
 func TestExecuteDefaultTaskNeedsParser(t *testing.T) {
 	built := false
-	h := pluginsdktest.Start(t, builderOnly{&built}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h := pluginsdktest.Start(t, builderOnly{&built}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	in := executeRequest()
 	in.TaskSubmission = true
 	ex := h.Execute(context.Background(), in)
@@ -235,6 +236,28 @@ func TestExecuteDefaultTaskNeedsParser(t *testing.T) {
 	}
 }
 
+// A Platform needs a way to execute: an UpstreamBuilder (run with
+// ExecuteDefault) or an Executor of its own. One with neither is refused
+// before it serves.
+func TestPlatformWithoutBuilderOrExecutorIsRefused(t *testing.T) {
+	err := pluginsdk.Register(grpc.NewServer(), neitherPlatform{}, nil, pluginsdk.WithInfo("neither", "1.0.0"))
+	if err == nil || !strings.Contains(err.Error(), "UpstreamBuilder or Executor") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+type neitherPlatform struct{}
+
+func (neitherPlatform) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
+	return &pluginv1.ValidateCredentialsResponse{}, nil
+}
+func (neitherPlatform) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
+	return &pluginv1.ClassifyErrorResponse{}, nil
+}
+func (neitherPlatform) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
+	return &pluginv1.BuildTestRequestResponse{}, nil
+}
+
 type builderOnly struct{ built *bool }
 
 func (builderOnly) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
@@ -245,9 +268,6 @@ func (builderOnly) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest
 }
 func (builderOnly) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
 	return &pluginv1.BuildTestRequestResponse{}, nil
-}
-func (b builderOnly) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, b, in)
 }
 func (b builderOnly) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	*b.built = true
@@ -365,7 +385,7 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 		if err != nil {
 			return nil, err
 		}
-		if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); early != nil {
+		if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError()); early != nil {
 			return early, nil
 		}
 		return result, nil
@@ -387,18 +407,12 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 	if len(fetches) != 1 || fetches[0].GetUrl() != "https://up.example.com/tasks/job-1" || fetches[0].GetExecutionToken() != ex.Token() {
 		t.Fatalf("fetches: %v", fetches)
 	}
-	// A truncated answer is an observation, never a terminal state.
-	answer.Truncated = true
-	if ex = h.Monitor(context.Background(), in); ex.MonitorResponse.GetResult().GetState() != pluginv1.ReconcileResult_POLL_FAILED {
-		t.Fatalf("truncated answer settled the task: %v", ex.MonitorResponse)
-	}
 	// A terminal result needs a complete, successful answer in the call,
 	// as the host requires.
 	p.monitor = func(context.Context, *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) { return result, nil }
 	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
 		t.Fatalf("terminal result without a fetch: %v", ex.Err)
 	}
-	answer.Truncated = false
 	p.monitor = func(ctx context.Context, in *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) {
 		_, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://up.example.com/tasks/1"})
 		return result, err

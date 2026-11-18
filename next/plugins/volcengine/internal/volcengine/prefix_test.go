@@ -133,7 +133,7 @@ func TestOfficialNativeAnthropicMessages(t *testing.T) {
 		body := []byte(`{"model":"m","stream":` + strconv.FormatBool(stream) + `,"max_tokens":8,"messages":[]}`)
 		r, err := New().BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Account: account(testKey, `{}`), Meta: &pluginv1.RequestMeta{Protocol: ProtocolMessages, Model: "m", Stream: stream},
-			InboundHeaders: map[string]string{"anthropic-version": "2023-06-01", "anthropic-beta": "test-beta", "x-api-key": "caller-key", "authorization": "Bearer caller"},
+			InboundHeaders: map[string]string{"anthropic-version": "2023-06-01", "anthropic-beta": "test-beta"},
 			Body:           body,
 		})
 		if err != nil || r.GetUrl() != DefaultBaseURL+"/api/compatible/v1/messages" {
@@ -142,8 +142,8 @@ func TestOfficialNativeAnthropicMessages(t *testing.T) {
 		if r.Headers["x-api-key"] != "11111111-2222-3333-4444-555555555555" {
 			t.Fatal("wrong upstream API key")
 		}
-		if r.Headers["x-api-key"] == "caller-key" || r.Headers["authorization"] != "" || len(r.DefaultHeaders) != 0 {
-			t.Fatal("caller credential leaked or wrong auth scheme")
+		if r.Headers["authorization"] != "" || len(r.DefaultHeaders) != 0 {
+			t.Fatal("wrong auth scheme")
 		}
 		if r.Headers["anthropic-version"] != "2023-06-01" || r.Headers["anthropic-beta"] != "test-beta" || !bytes.Equal(r.Body, body) {
 			t.Fatalf("Anthropic wire was altered: %+v", r)
@@ -337,15 +337,12 @@ func TestAnthropicHeaders(t *testing.T) {
 		t.Errorf("version = %q, want the default %q", h["anthropic-version"], DefaultAnthropicVersion)
 	}
 	h = upstreamHeaders(AccountTypeRelay, ProtocolMessages, "k", map[string]string{
-		"anthropic-version": "2026-01-01", "anthropic-beta": "x-1", "user-agent": "ua", "x-stainless-lang": "go"})
+		"anthropic-version": "2026-01-01", "anthropic-beta": "x-1", "user-agent": "ua"})
 	if h["anthropic-version"] != "2026-01-01" {
 		t.Errorf("the client's version must win: %q", h["anthropic-version"])
 	}
 	if h["anthropic-beta"] != "x-1" {
 		t.Errorf("anthropic-beta must be forwarded: %q", h["anthropic-beta"])
-	}
-	if _, ok := h["x-stainless-lang"]; ok {
-		t.Error("only the declared headers are forwarded")
 	}
 	// The OpenAI surface is unchanged: no version header appears there.
 	if _, ok := upstreamHeaders(AccountTypeRelay, ProtocolChat, "k", nil)["anthropic-version"]; ok {

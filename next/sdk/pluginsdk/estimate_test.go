@@ -11,7 +11,10 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
-type ordinaryTestPlatform struct{ Platform }
+type ordinaryTestPlatform struct {
+	Platform
+	UpstreamBuilder
+}
 
 type countClient struct {
 	pluginv1.HostServiceClient

@@ -218,7 +218,7 @@ type UsageRecord struct {
 	// PluginDetail is the free-form JSON object a plugin returned in the
 	// UsageReport of its Execute call (usage_logs.plugin_detail). It is the only
 	// part of a usage record a plugin writes verbatim, billing never reads
-	// it, and it is capped at 4 KiB. nil = "{}".
+	// it, and it must be a JSON object, of any size. nil = "{}".
 	PluginDetail RawJSON
 	// UsageExtract records how this request's usage was obtained, when that
 	// is worth knowing: empty for the declarative rules (the normal case, and

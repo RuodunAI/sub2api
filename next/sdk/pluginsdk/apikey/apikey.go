@@ -363,12 +363,14 @@ func ModelListRequest(cfg *Config, list ModelList, headers map[string]string) *p
 	}
 }
 
-// ForwardHeaders copies the specified headers from inbound to out.
-// Header names are case-insensitive (normalized to lower-case).
-func ForwardHeaders(out, inbound map[string]string, headers []string) {
-	for _, key := range headers {
-		if value := strings.TrimSpace(inbound[key]); value != "" {
-			out[key] = value
+// ForwardHeaders copies the client headers the core handed over
+// (ExecuteRequest.inbound_headers) into out: lower-case, trimmed, blank ones
+// dropped. The core passes only the manifest's passHeaders, so nothing more
+// is filtered.
+func ForwardHeaders(out, inbound map[string]string) {
+	for name, value := range inbound {
+		if value = strings.TrimSpace(value); value != "" {
+			out[strings.ToLower(name)] = value
 		}
 	}
 }

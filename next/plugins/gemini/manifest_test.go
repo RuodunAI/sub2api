@@ -11,7 +11,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/gemini/internal/gemini"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -62,7 +61,7 @@ func TestManifest(t *testing.T) {
 
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, gemini.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, gemini.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	if h.Info.GetPluginKey() != key || h.Info.GetVersion() != version {
 		t.Fatalf("info = %v", h.Info)
 	}

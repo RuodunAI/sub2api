@@ -13,6 +13,7 @@ import (
 
 type monitorTestPlatform struct {
 	Platform
+	UpstreamBuilder
 	TaskMonitor
 }
 

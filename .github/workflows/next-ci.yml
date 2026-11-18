@@ -77,6 +77,10 @@ jobs:
         run: sh .github/next-ci/next-check-module.sh next/sdk
       - name: gateway/core runtime contract
         run: sh .github/next-ci/next-check-module.sh next/runtime-contract
+      # Imported by no next/ module, only by the legacy root backend/ (via
+      # replace), so it is checked here rather than through a dependent.
+      - name: protocol-codec
+        run: sh .github/next-ci/next-check-module.sh next/protocol-codec
       - name: plugin CLI
         run: sh .github/next-ci/next-check-module.sh next/tools/sub2api-plugin
       - name: mock-upstream

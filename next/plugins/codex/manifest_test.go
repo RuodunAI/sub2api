@@ -18,7 +18,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -236,7 +235,7 @@ func TestManifestServes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: manifestJSON})
 	if h.Info.GetPluginKey() != "codex" {
 		t.Fatalf("info = %v", h.Info)
 	}

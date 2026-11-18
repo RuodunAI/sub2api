@@ -17,7 +17,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/bedrock/internal/bedrock"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -403,7 +402,7 @@ func compact(raw string) string {
 
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, bedrock.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, bedrock.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	if h.Info.GetPluginKey() != "bedrock" || h.Info.GetVersion() != bedrock.Version {
 		t.Fatalf("info = %v", h.Info)
 	}

@@ -15,6 +15,19 @@ import (
 // Implementations apply per-plugin concurrency limits and call timeouts, and
 // return ErrPluginUnavailable when the plugin instance is down.
 
+// ClassifyPrefixBytes is how much of an upstream error body the failure
+// rules read: the prefix handed to ClassifyError, and the text the
+// administrator's failure policy and auto-disable keywords match.
+const ClassifyPrefixBytes = 4 << 10
+
+// ClassifyPrefix is body cut to ClassifyPrefixBytes.
+func ClassifyPrefix(body []byte) []byte {
+	if len(body) > ClassifyPrefixBytes {
+		return body[:ClassifyPrefixBytes]
+	}
+	return body
+}
+
 // PlatformPlugin is the PlatformService of a plugin declaring
 // platform.adapter.v1, minus the two calls that carry a host client:
 // Execute, the one path of a gateway request (ExecutePlugin), and Monitor

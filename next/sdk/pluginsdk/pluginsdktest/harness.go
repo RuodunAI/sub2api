@@ -35,8 +35,12 @@ type Options struct {
 	Config any
 	// Grants passed to Configure.
 	Grants []*pluginv1.Grant
+	// Manifest is the plugin's manifest.json. The plugin is served with it
+	// (pluginsdk.WithManifest) and the fake host knows it (FakeHost.Manifest,
+	// unless already set), as the core knows the package's manifest.
+	Manifest []byte
 	// SDK options passed to pluginsdk.Register, after a default
-	// WithStrictNetwork(StrictNever). Pass WithManifest or WithInfo.
+	// WithStrictNetwork(StrictNever) and WithManifest(Manifest), e.g. WithInfo.
 	SDK []pluginsdk.Option
 	// SkipHandshake leaves InitHost/Configure to the test.
 	SkipHandshake bool
@@ -111,9 +115,9 @@ func startHost(t testing.TB, opts Options) (*FakeHost, *grpc.Server, func(uint32
 	if fh == nil {
 		fh = NewFakeHost()
 	}
-	if raw := pluginsdk.ManifestOf(opts.SDK...); fh.Manifest == nil && raw != nil {
+	if fh.Manifest == nil && opts.Manifest != nil {
 		var m manifest.Manifest
-		if json.Unmarshal(raw, &m) == nil { // an invalid one fails Register
+		if json.Unmarshal(opts.Manifest, &m) == nil { // an invalid one fails Register
 			fh.Manifest = &m
 		}
 	}
@@ -132,7 +136,11 @@ func startHost(t testing.TB, opts Options) (*FakeHost, *grpc.Server, func(uint32
 // Start so both servers are stopped in one place.
 func startPlugin(t testing.TB, p any, opts Options, fh *FakeHost, dialHost func(uint32) (*grpc.ClientConn, error)) (*grpc.Server, *grpc.ClientConn, *Harness) {
 	t.Helper()
-	sdkOpts := append([]pluginsdk.Option{pluginsdk.WithStrictNetwork(pluginsdk.StrictNever)}, opts.SDK...)
+	sdkOpts := []pluginsdk.Option{pluginsdk.WithStrictNetwork(pluginsdk.StrictNever)}
+	if opts.Manifest != nil {
+		sdkOpts = append(sdkOpts, pluginsdk.WithManifest(opts.Manifest))
+	}
+	sdkOpts = append(sdkOpts, opts.SDK...)
 	plugLis := bufconn.Listen(1 << 20)
 	plugSrv := pluginsdk.NewGRPCServer(opts.PluginServer)
 	if err := pluginsdk.Register(plugSrv, p, dialHost, sdkOpts...); err != nil {

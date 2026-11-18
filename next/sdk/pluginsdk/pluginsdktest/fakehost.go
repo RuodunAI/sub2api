@@ -97,7 +97,7 @@ type FakeHost struct {
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
 	// Manifest is the plugin's manifest as the host knows it, which decides
 	// the hosts a fetch may reach and the protocols that are HTTP routes.
-	// Start sets it from the pluginsdk.WithManifest option when it is nil.
+	// Start sets it from Options.Manifest when it is nil.
 	// Without a manifest no fetch is allowed unless ExternalServices says
 	// so, and no account has upstream addresses.
 	Manifest *manifest.Manifest

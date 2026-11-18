@@ -29,6 +29,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/notify"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/blobs"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/egress"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/market"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
@@ -98,6 +99,8 @@ type boot struct {
 	mkt  *market.Service
 	jobs *job.Bridge
 	dlv  *delivery.Service
+	// egress serves the plugin network access routes (CONTRACTS §113)
+	egress *egress.Provider
 
 	// HTTP
 	sharedAssets *webui.SharedAssets

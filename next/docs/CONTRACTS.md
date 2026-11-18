@@ -251,7 +251,8 @@
 | PUT `/plugins/:key/grants/:permission` `{scope?}` | `plugin:manage`，每次二次验证 `plugin.grant`（与同意相同）；重新授予另须 `plugin:install`（与同意相同，二审 security #2；否则 403 `details.permission`），并按同意的检查（`checkGrantRights`：按风险 `plugin:grant:high`/`plugin:grant:critical`，db.schema 可能还要 `plugin:grant:db_schema_unconfined`） | 设置激活版本对一个宿主权限的授予，返回该授予（`Grant`）（0.1.290，A7）。`scope` 省略为清单申请的范围（请求体总是读取，不看 `Content-Length`，分块传输的收窄请求不会被当成省略）；比申请的宽 400 `invalid_argument` `details.fields[{field:"scope", code:"scope_too_wide"}]`；当前版本清单不申请该权限 404；插件还在 `awaiting_consent` 409。当前已授予且新范围在现有范围之内是**收窄**：只要 `plugin:manage`，各版本待生效授予里更宽的同一权限一并收窄，审计 `plugin.grant.narrow`；其余（已撤销、被拒、放宽）是**重新授予**：各版本待生效授予里该权限的撤销在其版本申请的范围不窄于它时解除，审计 `plugin.grant.regrant`。审计 `detail {permission, version, scope, previous?: {status, scope}}`。控制台只对数组型范围提供收窄 |
 | GET `/plugins/:key/scope-options?permission=<本地 key>&q=&ids=&limit=` | `role:read` 或 `plugin:read`（A1） | 带范围的插件权限的候选（角色编辑器、矩阵选范围用，0.1.290）：形状同 GET `/lookup`（§96，参数与上限相同）但 id 为字符串，`{items:[{id, name, hint?, status?}], more}`；只列调用者自己在该权限上能达到的（全部、列出的值；own 时由插件按自己的 `created_by` 过滤）。枚举（`scope.values`）由核心按当前版本清单回答，插件没运行也可用，`name` 为当前语言的 label；资源（`scope.options`）转发给运行中插件的 options 路由（§21.0），插件没运行、路由不存在、回非 200 或格式不对 503 `plugin_unavailable`，核心再过滤一遍（id 须是合法范围值且在调用者范围内、`name` 非空，文本截断）。权限未声明 404，不带范围 400 |
 | PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | `memory_mb` 是插件内存的唯一上限来源之一（另一个是节点封顶），0 为不设；默认不限，见 §111.5 |
-| PUT `/plugins/:key/egress-policy` `{policy}` | `plugin:manage` | |
+| PUT `/plugins/:key/egress-policy` `{policy}` | `plugin:manage` | 本插件的出口策略 `allow_all` \| `allowlist`；与全局的“插件联网”同时生效，见 §113 |
+| GET/PUT `/settings/plugin-egress` `{mode?, blocked_domains?, allowed_domains?}` | `settings:read` / `settings:manage` | 插件联网（全局），见 §113 |
 | GET `/plugins/:key/egress`（`?from=&to=`） | `plugin:egress:read` | 按域名汇总 + 明细 |
 | GET `/plugins/:key/jobs`，POST `/plugins/:key/jobs/:job_id/run` | `plugin:read` / `task:run`🔐 | 手动运行与 POST `/system/tasks/:name/run` 同口径（2026-11-12 权限加固 W4-A4，此前为 `plugin:manage`）；审计动作仍是 `plugin.job.run` |
 | GET `/plugins/:key/events` | `plugin:read` | 游标、积压、死信 |
@@ -2755,7 +2756,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 插件出站隧道（`plugin/egress`）的规则：
 
-- 先按插件的出站策略过滤域名，再解析主机名，检查每个解析结果。
+- 先按插件的出站策略过滤域名，再按管理员的“插件联网”设置过滤（§113），再解析主机名，检查每个解析结果。
 - 解析结果是私网地址时拒绝。例外：策略为 `allow_all`；目标是插件数据库地址（`PGAddrs`）；目标在 `AlwaysAllow` 里（核心把自己的 PG 地址放在这里）。
 - 注意：`allowlist` 里明确列出的域名如果解析到私网，同样会被拒绝，只有 `allow_all` 能连私网。
 - 2026-10-05 修正：检查通过后**直接连检查过的那几个地址**（按解析顺序，按 `tcp4`/`tcp6` 过滤），不再用主机名重新解析。之前两次解析之间 DNS 答案可以变（DNS rebinding），第二次解析到私网也会连上。例外目标仍按名字连接。
@@ -8362,6 +8363,27 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、交给 `ClassifyError` 的错误体前 64 KiB。另有一处会切断上游流的：`sdk/awseventstream` 的单条消息上限 4 MiB（`MaxChunkMessageSize`，Bedrock 的响应流格式），这次没有改。
 
 **同批的修正**（钱与正确性，各节已写）：等待形式的发布只看转发本身是否完成（§112.7）；观察没能落库时写零费用记录并立即释放预扣，`CloseExecutionUnreported` 对已有记录的请求幂等（§112.7）；任务提交报失败之前先确认提交是否已落库（§112.7）；原账号永远问不了的任务消耗失败次数而不是延后到期限（§112.9）；`usage.source: plugin` 的端点上插件选了核心读数而读数完全为空时按未上报处理（§112.2、§112.7）；WebSocket 第一轮可重试的 `return_error` 和 HTTP 一样转给客户端（此前变成 503 `no_available_account`）；网关和用量的取回是同一份实现（§112.6）；执行按存活恢复（§112.7）。
+
+## 113. 插件联网：管理员指定插件可访问、不可访问的域名（2026-11-18，所有者决定“默认放行，可以指定域名就行了”；无迁移；设计见 [DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md](DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md)）
+
+### 113.1 设置
+
+- 一项全局系统设置，`settings` 表 `plugin_egress` 行：`{mode, blocked_domains, allowed_domains}`。`mode` 为 `allow_all`（默认：允许所有域名，`blocked_domains` 里的除外）或 `block_all`（屏蔽所有域名，只允许 `allowed_domains` 里的）。两个列表分开保存，切换模式不清空另一个。没有这一行时为默认值（`allow_all`、两个列表为空），与之前的行为相同。
+- `GET /settings/plugin-egress`（`settings:read`）→ 整份设置。`PUT /settings/plugin-egress`（`settings:manage`）：字段都可省略，省略的保持原值，列表整体替换；返回保存后的整份设置。`mode` 只能是两个取值之一（字段错误 `mode` `invalid`）。列表项按 `egress.NormalizeDomain` 规范化：去首尾空白和末尾的点、小写、国际化域名转 punycode、IPv6 写成 `[addr]`；必须是主机名（每段 1–63 个字母数字或连字符，不以连字符开头结尾，总长 ≤253）或 IP 字面量；带协议、路径、端口、通配符、空白的报字段错误 `blocked_domains.<序号>` / `allowed_domains.<序号>` `invalid`，整次不保存。重复项去掉。不限条数。
+- 写入与审计 `settings.plugin_egress.update`（`target_type = settings`，`target_id = plugin_egress`，`detail` 为保存后的整份设置）在同一事务；提交后本节点缓存失效并广播 `config:changed {"key":"settings.plugin_egress"}`。不是插件可读的设置段（§107），不发 `settings.changed`。
+
+### 113.2 出口隧道的判断
+
+- 每个节点缓存设置 10 秒（与网关设置相同）；收到上述广播立即失效，过期时先用旧值、后台重读。读失败沿用上次的值；本节点从未读成功时拒绝连接（`plugin network access settings could not be read`），不按默认放行。
+- 新连接的检查顺序（`Provider.check`）：数据库例外 → `net` 授权 → 本插件的出口策略（`allowlist` 时只能去 `net` 授权的域名）→ **插件联网** → 核心服务地址 → 解析结果必须是公网地址。目标要同时通过插件自己的授权、策略和管理员的设置；管理员的允许列表不放宽任何插件的授权。数据库例外不受插件联网影响。
+- 插件的 DNS 查询（`dns.sub2api`）同样过插件联网，被拒回 REFUSED。
+- 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。
+- 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
+- 只管出口隧道。核心替插件发的上游请求（`RelayUpstream`、`SendAccountRequest`）与取回（Fetch）不受影响。
+
+### 113.3 控制台
+
+“系统设置 → 运行环境 → 插件联网”（`/settings?tab=plugin-egress`）：默认设置下拉框（允许所有域名 / 屏蔽所有域名），随模式变化的提示与一张列表（已屏蔽的域名 / 已允许的域名），添加对话框支持多行与批量（每行一个，逐行报错），每项可移除；每次改动立即保存。插件详情“外部访问”页有一行链接到这里。
 
 ## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
 

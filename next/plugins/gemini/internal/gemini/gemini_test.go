@@ -9,5 +9,5 @@ import (
 // TestGolden replays the frozen answers of the plugin as it was released
 // (all cases, no exceptions) against the platform main serves.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "gemini", New())
+	standardtest.Run(t, "gemini", "../../manifest.json", New())
 }

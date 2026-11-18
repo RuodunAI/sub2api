@@ -17,12 +17,11 @@ import (
 // inference_geo and speed choose Anthropic's own service (priority tier,
 // data residency, fast mode), which Bedrock does not offer: it picks the
 // geography by inference profile (Claude docs: "Claude on Amazon Bedrock
-// (bedrock-runtime)", "Global versus regional endpoints"). They are the
-// fields the SDK's anthropic preset filters too. output_config and output_format stay (the previous
-// implementation removed them): InvokeModel reads the output format and the
-// effort from output_config (AWS user guide: "Get validated JSON results
-// from models", "Adaptive thinking") and output_format is its deprecated
-// spelling.
+// (bedrock-runtime)", "Global versus regional endpoints"). output_config
+// and output_format stay (the previous implementation removed them):
+// InvokeModel reads the output format and the effort from output_config
+// (AWS user guide: "Get validated JSON results from models", "Adaptive
+// thinking") and output_format is its deprecated spelling.
 var droppedFields = []string{"model", "stream", "metadata", "provider", "service_tier", "inference_geo", "speed"}
 
 // anthropicVersion is AnthropicVersion as a JSON value.
