@@ -10,23 +10,20 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
-
-// transportHeaders are the request headers the host's transport decides; a
-// plugin's request naming one is refused.
-var transportHeaders = map[string]bool{"content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
 
 // checkUpstreamRequest is the part of validating a relay that needs nothing
 // of the gateway: the request is there and leaves the transport's headers
 // alone. Its body has no bound here: the client's body was admitted by the
 // gateway's request body limit, and what the plugin makes of it is its own.
-func (h *hostServer) checkUpstreamRequest(sc *callScope, req *pluginv1.UpstreamRequest) error {
+func checkUpstreamRequest(req *pluginv1.UpstreamRequest) error {
 	if req == nil || req.GetUrl() == "" {
 		return status.Error(codes.InvalidArgument, "request with a url is required")
 	}
 	for _, headers := range []map[string]string{req.GetHeaders(), req.GetDefaultHeaders()} {
 		for name := range headers {
-			if transportHeaders[strings.ToLower(name)] {
+			if execfetch.RelayTransportHeaders[strings.ToLower(name)] {
 				return status.Errorf(codes.InvalidArgument, "header %q is set by the host's transport", name)
 			}
 		}
@@ -59,7 +56,7 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		return nil, status.Error(codes.FailedPrecondition, "a waiting relay needs extract_usage or task_submission")
 	}
 	req := in.GetRequest()
-	if err := h.checkUpstreamRequest(sc, req); err != nil {
+	if err := checkUpstreamRequest(req); err != nil {
 		return nil, err
 	}
 	cctx, cancel := sc.hostContext(ctx)
@@ -149,27 +146,19 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	if in == nil {
 		return res, errors.New("Execute requires a request")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	// Execute may span a whole upstream exchange (a relay that waits), so
-	// it has its own class and no timeout at all: long streams never hold
-	// the slots of the request-path RPCs (CONTRACTS §43.1), and the
+	// it takes no call slot and has no timeout at all: long streams never
+	// hold the slots of the request-path RPCs (CONTRACTS §43.1), and the
 	// plugin's own work is not timed either. A hung plugin ends with ctx
 	// (the client leaving, the upstream's timeouts on a relay) or with its
 	// process.
-	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
-		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission()}
-		token, err := p.scopes.open(sc)
-		if err != nil {
-			return err
-		}
-		req := shallowClone(in)
-		req.ExecutionToken = token
-		out, err := p.platform.Execute(ctx, req)
-		// Whatever the plugin left running ends here: a host call still in
-		// progress is cancelled and joined before the result is read.
-		cancel()
-		p.scopes.close(token, sc)
+	err = a.i.call(ctx, classNoSlot, 0, func(ctx context.Context, p *proc) error {
+		sc := &callScope{client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission()}
+		out, err := withScope(ctx, p, sc, func(ctx context.Context, token string) (*pluginv1.ExecuteResponse, error) {
+			req := shallowClone(in)
+			req.ExecutionToken = token
+			return p.platform.Execute(ctx, req)
+		})
 		if err != nil {
 			return err
 		}

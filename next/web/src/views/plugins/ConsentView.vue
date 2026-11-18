@@ -38,7 +38,7 @@ const version = computed(() => String(route.params.version))
 const review = ref<PluginReview | null>(null)
 const loading = ref(true)
 const loadError = ref('')
-/** The version's package is no longer on any node (410 package_gone): nothing to review or approve. */
+/** No online node holds the version's package (410 package_gone): nothing to review or approve. */
 const packageGone = ref(false)
 const fromCache = ref(false)
 const submitting = ref(false)

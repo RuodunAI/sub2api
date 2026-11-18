@@ -5,6 +5,7 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -80,7 +81,13 @@ type Options struct {
 	// Events receives plugin.egress_new_domain when a plugin connects to a
 	// host for the first time (optional; without it only a WARN is logged).
 	Events core.EventPublisher
-	Logger *slog.Logger
+	// Bus carries config:changed: a save of plugin network access on any
+	// node drops this node's cached copy (optional; single node, tests).
+	Bus core.Bus
+	// LoadHostPolicy overrides how plugin network access is read (tests).
+	// Without it and without a database every host passes it.
+	LoadHostPolicy func(context.Context) (HostPolicy, error)
+	Logger         *slog.Logger
 }
 
 // Provider implements core.EgressProvider.
@@ -90,6 +97,9 @@ type Provider struct {
 	logs     *logWriter
 	database map[string]bool // normalized host:port
 	core     *coreAddrs
+	db       *store.DB     // plugin network access API; nil in unit tests
+	hosts    *hostPolicies // plugin network access, cached
+	unsub    func()
 }
 
 var _ core.EgressProvider = (*Provider)(nil)
@@ -100,8 +110,13 @@ func New(db *store.DB, opts Options) *Provider {
 	var st logStore
 	if db != nil {
 		st = pgStore{db: db}
+		if opts.LoadHostPolicy == nil {
+			opts.LoadHostPolicy = func(ctx context.Context) (HostPolicy, error) { return loadHostPolicy(ctx, db.Gorm) }
+		}
 	}
-	return newProvider(st, opts)
+	p := newProvider(st, opts)
+	p.db = db
+	return p
 }
 
 func newProvider(st logStore, opts Options) *Provider {
@@ -140,6 +155,19 @@ func newProvider(st logStore, opts Options) *Provider {
 	// Database exception, by its configured name.
 	p.core = newCoreAddrs(append(append([]string(nil), opts.CoreAddrs...), opts.DatabaseAddrs...), opts.LookupIP)
 	p.logs = newLogWriter(st, opts)
+	load := opts.LoadHostPolicy
+	if load == nil {
+		load = func(context.Context) (HostPolicy, error) { return DefaultHostPolicy(), nil }
+	}
+	p.hosts = newHostPolicies(load, opts.Logger)
+	if opts.Bus != nil {
+		p.unsub = opts.Bus.Subscribe(core.ChannelConfigChanged, func(payload []byte) {
+			var msg struct{ Key string }
+			if json.Unmarshal(payload, &msg) == nil && msg.Key == hostConfigKey {
+				p.hosts.invalidate()
+			}
+		})
+	}
 	return p
 }
 
@@ -176,7 +204,12 @@ func addrKey(a string) (string, bool) {
 
 // Close stops the log writer after flushing pending entries; rows of
 // connections still open are marked reset.
-func (p *Provider) Close() { p.logs.shutdown() }
+func (p *Provider) Close() {
+	if p.unsub != nil {
+		p.unsub()
+	}
+	p.logs.shutdown()
+}
 
 // Flush writes pending log entries now.
 func (p *Provider) Flush(ctx context.Context) error { return p.logs.flushNow(ctx) }
@@ -422,7 +455,8 @@ func truncate(s string, n int) string { return x.Truncate(s, n) }
 // or a reason ("denied" or "resolve") and a message.
 //
 // Order: the database exception (Database policy, exact configured name);
-// the net grant; the domain policy; then the resolved addresses - every one
+// the net grant; the plugin's domain policy; the administrator's plugin
+// network access (both must pass); then the resolved addresses - every one
 // must be public (unless AllowPrivate) and none may be a core service. The
 // addresses that were checked are the ones dialled: resolving the name again
 // at dial time would let a DNS answer that changes in between (rebinding)
@@ -437,6 +471,9 @@ func (p *Provider) check(ctx context.Context, pol core.EgressPolicy, host string
 	}
 	if !AllowedHost(pol, host) {
 		return nil, ResultDenied, host + " is not allowed by the plugin egress policy"
+	}
+	if msg := p.hostRefusal(ctx, host); msg != "" {
+		return nil, ResultDenied, msg
 	}
 	if p.core.matchName(hp) {
 		return nil, ResultDenied, hp + " is a core service address"
@@ -462,6 +499,16 @@ func (p *Provider) check(ctx context.Context, pol core.EgressPolicy, host string
 		}
 	}
 	return resolved, "", ""
+}
+
+// hostRefusal is why the administrator's plugin network access refuses
+// host, "" when it allows it.
+func (p *Provider) hostRefusal(ctx context.Context, host string) string {
+	h, err := p.hosts.get(ctx)
+	if err != nil {
+		return err.Error()
+	}
+	return h.refusal(host)
 }
 
 // AllowedHost reports whether host may be reached under pol. In allowlist

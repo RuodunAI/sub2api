@@ -439,3 +439,43 @@ func TestUpstreamAddrStripsCredentials(t *testing.T) {
 		}
 	}
 }
+
+// TestAccountTestDefaultModel checks the model of a test that names none:
+// the account's own list first, then its mapping, the plugin's default only
+// when the account lists neither.
+func TestAccountTestDefaultModel(t *testing.T) {
+	e := setup(t)
+	up := testUpstream(t)
+	e.plat.testURL = up.URL + "/v1/messages"
+	id := e.mkAccount("sk-good-key-123")
+	asked := func() string {
+		t.Helper()
+		e.plat.mu.Lock()
+		e.plat.tests = nil
+		e.plat.mu.Unlock()
+		if code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), nil); code != 200 ||
+			gjson.GetBytes(raw, "data.requested_model").String() != "" {
+			t.Fatalf("test: %d %s", code, raw)
+		}
+		e.plat.mu.Lock()
+		defer e.plat.mu.Unlock()
+		return e.plat.tests[len(e.plat.tests)-1].GetModel()
+	}
+	patch := func(body map[string]any) {
+		t.Helper()
+		if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), body); code != 200 {
+			t.Fatalf("patch: %d %v", code, out)
+		}
+	}
+	if got := asked(); got != "" {
+		t.Fatalf("no list: plugin default expected, got %q", got)
+	}
+	patch(map[string]any{"model_mapping": map[string]string{"claude-z": "up-z", "claude-b": "up-b"}})
+	if got := asked(); got != "up-b" {
+		t.Fatalf("mapping only: %q", got)
+	}
+	patch(map[string]any{"models": []string{"claude-sonnet-4-5", "claude-b"}})
+	if got := asked(); got != "claude-sonnet-4-5" {
+		t.Fatalf("model list: %q", got)
+	}
+}

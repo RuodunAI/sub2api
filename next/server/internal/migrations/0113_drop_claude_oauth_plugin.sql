@@ -1,5 +1,5 @@
 -- The first-party plugin claude_oauth (account types claude_oauth and
--- claude_setup_token) is removed (core 0.1.304, CONTRACTS §113): no
+-- claude_setup_token) is removed (core 0.1.304, CONTRACTS §115): no
 -- production deployment installed it. Its last source is commit 77158211c.
 -- This uninstalls it the way plugin/install.Uninstall does with purge
 -- (without the node barrier: every node is stopped while this release

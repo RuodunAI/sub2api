@@ -659,8 +659,7 @@ func (c *call) setBody(b []byte) {
 	// the new one, so the next checkModel asks again (endpoints with
 	// request.modelSource "plugin" only).
 	c.modelResolved = false
-	// The reference scans and the SHA-256 belong to the old bytes (body_state.go).
+	// The reference scans belong to the old bytes (body_state.go).
 	c.bodyVersion++
 	c.doc, c.docValid = gjson.Result{}, false
-	c.digestValid = false
 }

@@ -1007,7 +1007,7 @@ func TestMigration0108ModelNameText(t *testing.T) {
 	require.Equal(t, want, state())
 }
 
-// 0113 removes the claude_oauth plugin (CONTRACTS §113) as an uninstall
+// 0113 removes the claude_oauth plugin (CONTRACTS §115) as an uninstall
 // with purge would: its row (cascading the versions and rollouts), its
 // permission and the grants of it, its egress domains, job tasks and a
 // hand-made schema. Its accounts and the other plugins stay; a rerun

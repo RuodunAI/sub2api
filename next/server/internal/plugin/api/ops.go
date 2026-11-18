@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -17,7 +18,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
@@ -56,13 +56,8 @@ func summarizeNodes(nodes []core.NodeStatus, key string) NodeSummary {
 			out.States["absent"]++
 			continue
 		}
-		var st struct {
-			State string `json:"state"`
-		}
-		if json.Unmarshal([]byte(raw), &st) != nil || st.State == "" {
-			st.State = "unknown"
-		}
-		out.States[st.State]++
+		st, _ := core.ParsePluginNodeState(raw)
+		out.States[cmp.Or(st.State, "unknown")]++
 	}
 	return out
 }
@@ -80,52 +75,59 @@ type Refusal struct {
 	Message          string `json:"message"`
 }
 
+// outdatedContract is the refusal of version on a core at hostVersion, with
+// the runtime's message.
+func outdatedContract(version, hostVersion, message string) *Refusal {
+	return &Refusal{Code: check.CodeOutdatedContract, Version: version, HostVersion: hostVersion,
+		ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: message}
+}
+
 // refusal finds a node whose instance of the plugin failed to load with the
 // runtime's refusal of an older plugin contract, which the node records as
 // the instance's code; nil when none did.
 func refusal(nodes []core.NodeStatus, key string) *Refusal {
 	for _, n := range nodes {
-		var st struct {
-			Instances []struct {
-				Version string `json:"version"`
-				Error   string `json:"error"`
-				Code    string `json:"code"`
-			} `json:"instances"`
-		}
-		if json.Unmarshal([]byte(n.Plugins[key]), &st) != nil {
-			continue
-		}
+		st, _ := core.ParsePluginNodeState(n.Plugins[key])
 		for _, in := range st.Instances {
 			if in.Code == check.CodeOutdatedContract {
-				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
-					ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: in.Error}
+				return outdatedContract(in.Version, n.HostVersion, in.Error)
 			}
 		}
 	}
 	return nil
 }
 
-// recordedRefusal is the refusal kept with the outcome of the plugin's latest
-// rollout: a node whose load of the target version was refused records the
-// code there (plugin_rollout_nodes.code), which outlives the instance a
-// rollout failing in preparation removes. hostVersion is this core's; nil
-// when no node of that rollout was refused.
-func recordedRefusal(ctx context.Context, db *gorm.DB, key, hostVersion string) (*Refusal, error) {
-	g := store.G(ctx, db)
-	latest := g.Model(&model.PluginRollout{}).Select("max(id)").Where("plugin_key = ?", key)
-	var version, msg string
-	err := g.Table("plugin_rollout_nodes AS n").Select("COALESCE(r.target_version, ''), n.error").
+// recordedRefusals are the refusals kept with the outcome of each plugin's
+// latest rollout, by plugin key: a node whose load of the target version was
+// refused records the code there (plugin_rollout_nodes.code), which outlives
+// the instance a rollout failing in preparation removes. hostVersion is this
+// core's; a plugin none of whose nodes was refused has no entry. One query
+// for all the keys.
+func recordedRefusals(ctx context.Context, db *gorm.DB, keys []string, hostVersion string) (map[string]*Refusal, error) {
+	out := map[string]*Refusal{}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	err := store.EachRow(recordedRefusalRows(store.G(ctx, db), keys), func(rows *sql.Rows) error {
+		var key, version, msg string
+		if err := rows.Scan(&key, &version, &msg); err != nil {
+			return err
+		}
+		out[key] = outdatedContract(version, hostVersion, msg)
+		return nil
+	})
+	return out, err
+}
+
+// recordedRefusalRows is the first refused node (by node and boot id) of
+// the latest rollout of each of keys: key, target version, error.
+func recordedRefusalRows(g *gorm.DB, keys []string) *gorm.DB {
+	latest := g.Model(&model.PluginRollout{}).Select("max(id)").Where("plugin_key = ANY(?)", store.Strings(keys)).Group("plugin_key")
+	return g.Table("plugin_rollout_nodes AS n").
+		Select("DISTINCT ON (r.plugin_key) r.plugin_key, COALESCE(r.target_version, ''), n.error").
 		Joins("JOIN plugin_rollouts AS r ON r.id = n.rollout_id").
-		Where("n.rollout_id = (?) AND n.code = ?", latest, check.CodeOutdatedContract).
-		Order("n.node_id, n.boot_id").Limit(1).Row().Scan(&version, &msg)
-	if store.IsNoRows(err) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &Refusal{Code: check.CodeOutdatedContract, Version: version, HostVersion: hostVersion,
-		ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: msg}, nil
+		Where("n.rollout_id IN (?) AND n.code = ?", latest, check.CodeOutdatedContract).
+		Order("r.plugin_key, n.node_id, n.boot_id")
 }
 
 func nodeStates(nodes []core.NodeStatus, key string) []NodeState {
@@ -465,7 +467,7 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 	// As the runtime launches it: the manifest's memory figure is what the
 	// plugin says it needs, not a limit.
 	ri.Effective = ri.Requested
-	ri.Effective.MemoryMB = grpcruntime.EffectiveMemoryMB(ri.Overrides.MemoryMB, ri.MaxMemory)
+	ri.Effective.MemoryMB = core.EffectiveMemoryMB(ri.Overrides.MemoryMB, ri.MaxMemory)
 	if ri.Overrides.CPU > 0 {
 		ri.Effective.CPU = ri.Overrides.CPU
 	}

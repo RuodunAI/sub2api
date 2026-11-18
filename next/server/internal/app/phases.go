@@ -132,9 +132,10 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		trust.SetVerifySignatures(false)
 		b.log.Warn("plugin signature verification is disabled (SUB2API_PLUGIN_VERIFY_SIGNATURES=false)")
 	}
-	// Package bytes are not in PostgreSQL. Under the shell they are kept by
-	// the primary and fetched over the node network; market packages are
-	// downloaded by each node. Without a shell only one node is supported.
+	// Package bytes are not in PostgreSQL. Under the shell every node keeps
+	// the packages it stored or used and fetches a missing one from any online
+	// node over the node network; market packages are downloaded by each
+	// node. Without a shell only one node is supported.
 	packageStore := blobs.Store(blobs.Dir(filepath.Join(cfg.Plugins.DataDir, "blobs")))
 	if cfg.Managed.UpdaterSocket != "" {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)
@@ -276,7 +277,8 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		b.log.Warn("plugins may reach private network addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true); tests and development only")
 	}
 	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, CoreAddrs: coreAddrs,
-		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Logger: b.log})
+		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Bus: b.cl.Bus, Logger: b.log})
+	b.egress = egress
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
 	if err := b.tasks.Register(egress.LogsPruneTaskSpec()); err != nil {
 		return fmt.Errorf("egress log prune task: %w", err)
@@ -524,6 +526,7 @@ func (b *boot) registerRoutes(r *httpapi.Router) {
 	pr.RegisterRoutes(r)
 	pr.RegisterAssets(b.engine)
 	b.gw.RegisterRoutes(r)
+	b.egress.RegisterRoutes(r)
 }
 
 // buildEngine creates the gin engine with the shared middleware and the health

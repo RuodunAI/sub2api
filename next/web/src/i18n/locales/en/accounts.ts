@@ -547,7 +547,7 @@ export default {
     diagnosisOnly: "Tests only diagnose: they never cool down or disable the account; the plugin's failure reason and suggestion (cooldown / disable) are informational. At most 3 models are tested at a time.",
     search: 'Search models', customPlaceholder: 'Add model ids to test (comma separated)', add: 'Add',
     fetch: 'Fetch models from upstream', fetchHint: "Asks the upstream which models the account's saved credentials can use and adds them as candidates (the account is not changed)", fetchAdded: '{n} upstream models added', fetchNothing: 'The upstream returned no new model',
-    probe: 'Test with the plugin default model', probeHint: 'No model is sent; the plugin picks its default test model', probeRow: 'Plugin default model',
+    probe: 'Test with the default model', probeHint: 'No model is sent: the first model of the account\'s list is tested, or one of its mapping; with neither, the plugin picks its default test model', probeRow: 'Default model',
     selectVisible: 'Select all ({n} shown)', selectFailed: 'Select failed', selected: '{n} selected',
     noCandidates: 'The account has no model list and the plugin has no preset: add model ids, fetch them from the upstream, or test with the plugin default model.', noMatch: 'No model matches',
     notRun: 'Not tested yet', requested: 'Requested model',

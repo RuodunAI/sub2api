@@ -585,8 +585,11 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 // hooks saw the client model), the referenced models' mapping, stream: true
 // for an upstream that only streams (§83), then the built-in override
 // (claude_max_tokens, §84.1) and the account's parameter override (§84),
-// which also decide the headers (param_override.go). It returns the body
-// and the model it goes upstream with, or the attempt's end.
+// which also decide the headers (param_override.go). A body the overrides
+// changed gets the forced stream again and is checked again against the
+// account's usage rules (meterable).
+// It returns the body and the model it goes upstream with, or the
+// attempt's end.
 func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.AccountRef, rt *typeRoute, body []byte, n int) ([]byte, string, *attemptResult) {
 	var err error
 	upModel := ref.MapModel(c.model)
@@ -601,25 +604,61 @@ func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.Ac
 	if body, err = c.mapReferencedModels(body, ref, rt); err != nil {
 		return nil, "", &attemptResult{kind: attemptFailover, err: invalidModelReference(err.Error())}
 	}
-	if c.forcesStream(rt) {
-		if body, err = forceStreamPath(body, rt.streamPath); err != nil {
-			return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
-		}
+	if body, err = c.forceStream(rt, body); err != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
 	}
-	return c.rewriteBody(ctx, acc, rt, body, upModel, n)
+	rewritten, upModel, failure := c.rewriteBody(ctx, acc, rt, body, upModel, n)
+	if failure != nil {
+		return nil, "", failure
+	}
+	if bytes.Equal(rewritten, body) {
+		return body, upModel, nil
+	}
+	// An override may not undo the forced stream; set it again on what the
+	// overrides made of the body.
+	if rewritten, err = c.forceStream(rt, rewritten); err != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
+	}
+	if e := c.meterable(rt, rewritten); e != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: e}
+	}
+	return rewritten, upModel, nil
 }
 
-// setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host
-// and the framing headers stay the transport's (transparent gzip, framing).
+// forceStream sets stream: true on body for an upstream that only streams
+// (forcesStream); any other body is returned as it is.
+func (c *call) forceStream(rt *typeRoute, body []byte) ([]byte, error) {
+	if !c.forcesStream(rt) {
+		return body, nil
+	}
+	return forceStreamPath(body, rt.streamPath)
+}
+
+// meterable refuses a body the overrides rewrote into an operation or
+// attempts the account's usage rules cannot meter, as scheduling refuses
+// the client's (ineligibleReason): the attempt moves to another account.
+// It reads the body the core hands to the plugin, never the plugin's.
+func (c *call) meterable(rt *typeRoute, body []byte) *gwError {
+	switch {
+	case c.ep.Billing == "free":
+	case !c.routeHasRequiredPrimaryUsageFor(rt, body):
+		return invalidModelReference("account usage rules cannot meter the requested operation")
+	case !c.routeHasRequiredAttempts(rt, body):
+		return invalidModelReference("account usage rules cannot meter the requested attempts")
+	}
+	return nil
+}
+
+// setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host.
+// The transport's own headers (framing, transparent gzip) never get here:
+// the runtime refuses a relay naming them.
 func setBuiltHeaders(req *http.Request, h map[string]string) {
 	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "host":
+		if strings.EqualFold(k, "host") {
 			req.Host = v
-		case "content-length", "accept-encoding", "connection", "transfer-encoding":
-		default:
-			req.Header.Set(k, v)
+			continue
 		}
+		req.Header.Set(k, v)
 	}
 }
 

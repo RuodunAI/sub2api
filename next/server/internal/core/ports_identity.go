@@ -1027,6 +1027,15 @@ type AccountDirectory interface {
 	// Unschedulable lists the accounts of the group (not deleted) that
 	// Candidates does not offer now, with why: disabled, unschedulable,
 	// automatically disabled or cooling down. Only failed dispatches ask.
+	//
+	// Resting and Unschedulable overlap (both name accounts Candidates
+	// leaves out) but answer different questions from different sources.
+	// Resting decides a dispatch: it must agree with the snapshot Candidates
+	// was served from, so it reads that snapshot, keeps the full AccountRef
+	// the gateway judges against the request, and only the accounts that
+	// come back on their own. Unschedulable explains a failed request in its
+	// record: it reads the database, every account type and every reason,
+	// and returns ids with reasons, not refs.
 	Unschedulable(ctx context.Context, groupID int64) ([]UnschedulableAccount, error)
 	// Load returns one account with decrypted credentials.
 	Load(ctx context.Context, id int64) (*Account, error)

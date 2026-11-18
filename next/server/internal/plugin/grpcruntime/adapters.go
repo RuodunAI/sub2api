@@ -38,19 +38,18 @@ const (
 	TimeoutMigrateData     = 10 * time.Minute
 )
 
-// callClass selects the semaphore a call waits for (Options.Concurrency);
-// classExecute has none.
+// callClass selects the semaphore a call waits for (Options.Concurrency).
 type callClass int
 
 const (
 	classHot callClass = iota
 	classConsole
 	classBackground
-	classExecute
-	// classControl is for calls the SDK answers itself without plugin code
-	// (SettingsChanged): they take no slot, so plugin work filling the other
-	// classes never holds them up.
-	classControl
+	// classNoSlot takes no slot: Execute, whose calls are not limited, and
+	// the calls the SDK answers itself without plugin code
+	// (SettingsChanged), which plugin work filling the other classes must
+	// never hold up.
+	classNoSlot
 	numClasses
 )
 

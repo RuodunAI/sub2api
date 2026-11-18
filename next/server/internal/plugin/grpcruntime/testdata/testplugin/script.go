@@ -40,7 +40,6 @@ type stepResult struct {
 	Message     string `json:"message,omitempty"`
 	Status      int32  `json:"status,omitempty"`
 	BodyBytes   int    `json:"body_bytes,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
 	Observation bool   `json:"observation,omitempty"`
 	Error       bool   `json:"error,omitempty"`
 }
@@ -78,7 +77,7 @@ func (s *server) run(ctx context.Context, token string, steps []step) (log strin
 		case "fetch":
 			out, err := h.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{ExecutionToken: token, Url: st.URL, Body: make([]byte, st.BodySize)})
 			r := result(err)
-			r.Status, r.BodyBytes, r.Truncated = out.GetStatus(), len(out.GetBody()), out.GetTruncated()
+			r.Status, r.BodyBytes = out.GetStatus(), len(out.GetBody())
 			results = append(results, r)
 		}
 	}

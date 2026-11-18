@@ -61,7 +61,7 @@ next 里限流、过载、失败冷却都落在同一个 Redis 键 `cooldown:acc
 
 ### 3.6 claude-oauth（已删除）
 
-插件在 0.1.304 删除（CONTRACTS §113），本节原文见 `git show 77158211c:next/docs/SUBSCRIPTION_LIMITS_DESIGN.md`。现在没有第一方插件声明 `query`，codex 只用响应头被动采样。
+插件在 0.1.304 删除（CONTRACTS §115），本节原文见 `git show 77158211c:next/docs/SUBSCRIPTION_LIMITS_DESIGN.md`。现在没有第一方插件声明 `query`，codex 只用响应头被动采样。
 
 ## 4. 已知限制
 

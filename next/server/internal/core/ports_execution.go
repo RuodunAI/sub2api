@@ -53,6 +53,12 @@ const (
 // nothing left to keep alive.
 var ErrExecutionNotObserved = errors.New("execution is not observed")
 
+// ErrExecutionRefused marks a refusal of ExecutionRecords that no retry
+// changes: facts that do not fit the execution (an invalid commit, another
+// identity, no durable observation, a usage record already written). A
+// caller retrying failed writes stops at once on it, as on ErrConflict.
+var ErrExecutionRefused = errors.New("execution write refused")
+
 // ExecutionHTTP is the fetch form of the host's HTTP client for one Execute
 // or Monitor call: one bounded, non-streaming exchange whose answer goes back
 // to the plugin. The closure binds the account, its proxy, the SSRF guard
@@ -149,10 +155,17 @@ type ExecutePlugin interface {
 	//     returns an error: the execution is unreported and not billed.
 	//   - ctx bounds the whole call. Cancelling it cancels the plugin's
 	//     call and every host call in progress. The caller decides whether a
-	//     client disconnect reaches ctx.
+	//     client disconnect reaches ctx; the gateway's rule: it does as long
+	//     as nothing was sent upstream for this execution - always for the
+	//     form that does not wait, and for the waiting form until client.Relay
+	//     starts sending. From then on the client's departure only affects
+	//     the upstream exchange, as the disconnect policy decides, and never
+	//     the plugin's work after the observation, whose facts must still be
+	//     committed.
 	//
 	// Nothing times the plugin's own work: a hung plugin ends with ctx or
-	// with its process.
+	// with its process. One that hangs after the observation of a relay that
+	// waited ends only with its process.
 	//
 	// Errors: ErrPluginUnavailable when the instance is down, draining or
 	// crashed; the context's
@@ -236,7 +249,8 @@ type ExecutionRecords interface {
 	// is a no-op returning nil, so the caller may retry a failed commit with
 	// the same facts (it does, within ExecutionFinishTimeout). Other facts
 	// for a committed execution are ErrConflict and change nothing. An
-	// execution closed as unreported is ErrConflict too.
+	// execution closed as unreported is ErrConflict too. A commit that does
+	// not fit the execution wraps ErrExecutionRefused; neither is retried.
 	CommitExecution(context.Context, ExecutionCommit) error
 	// CloseExecutionUnreported ends an observed execution for which Execute
 	// gave no valid facts (nothing stated, the wrong kind, an error, a

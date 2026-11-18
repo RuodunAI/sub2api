@@ -42,11 +42,17 @@ func DefaultLookup(ctx context.Context, host string) ([]net.IP, error) {
 	return out, nil
 }
 
-// CheckURL validates a URL a plugin returned: http(s), a host, no embedded
-// credentials, and - unless allowPrivate - only public addresses. A proxied
-// request is resolved by the proxy, so the check still applies to the name:
-// it is the plugin's claim about where it wants to go that is being judged.
+// CheckURL validates a URL the server connects to directly: CheckURLVia
+// without a proxy.
 func CheckURL(ctx context.Context, raw string, allowPrivate bool, lookup Lookup) (*url.URL, error) {
+	return CheckURLVia(ctx, raw, allowPrivate, false, lookup)
+}
+
+// CheckURLVia validates a URL a plugin returned: http(s), a host, no
+// embedded credentials, and - unless allowPrivate - a public target as
+// CheckHostVia judges it for a connection made directly or, when proxied,
+// through a proxy.
+func CheckURLVia(ctx context.Context, raw string, allowPrivate, proxied bool, lookup Lookup) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Hostname() == "" {
 		return nil, ErrBadURL
@@ -57,10 +63,25 @@ func CheckURL(ctx context.Context, raw string, allowPrivate bool, lookup Lookup)
 	if allowPrivate {
 		return u, nil
 	}
-	if err := CheckHost(ctx, u.Hostname(), lookup); err != nil {
+	if err := CheckHostVia(ctx, u.Hostname(), proxied, lookup); err != nil {
 		return nil, err
 	}
 	return u, nil
+}
+
+// CheckHostVia is the one rule for an upstream host: a direct connection
+// checks the addresses the name resolves to (CheckHost); a proxied one is
+// resolved by the proxy, which receives the name, so only a literal private
+// address or a localhost name is refused and nothing is resolved locally
+// (the local resolver neither decides nor learns the name).
+func CheckHostVia(ctx context.Context, host string, proxied bool, lookup Lookup) error {
+	if !proxied {
+		return CheckHost(ctx, host, lookup)
+	}
+	if LiteralPrivate(host) {
+		return ErrPrivate
+	}
+	return nil
 }
 
 // CheckHost reports ErrPrivate when host (an IP literal or a name) is or

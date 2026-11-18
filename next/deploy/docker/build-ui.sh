@@ -10,8 +10,9 @@ OUT=$2
 mkdir -p "$OUT/server/web"
 if [ -n "${NPM_CONFIG_REGISTRY:-}" ]; then npm config set registry "$NPM_CONFIG_REGISTRY"; fi
 
+# Every UI project commits its package-lock.json; npm ci fails without one.
 npm_install() {
-  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+  npm ci --no-audit --no-fund
 }
 
 if [ -f "$SRC/web/package.json" ]; then

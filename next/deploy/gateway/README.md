@@ -50,7 +50,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish v1.1.0 SOURCE_COMMIT SOUR
 - `peer_url` 必须能被另一节点访问，服务器证书DNS SAN必须包含相应主机名并允许ServerAuth。客户端验证CA及主机名，不再要求客户端证书或`allowed_peers`列表。
 - `peer_auth_key` 留空时自动生成节点密钥；也可在配置中指定至少32字节的独立随机密钥。非空的`SUB2API_PEER_AUTH_KEY`环境变量覆盖配置文件，空值视为未设置；Compose分别使用`NODE_A_PEER_AUTH_KEY`与`NODE_B_PEER_AUTH_KEY`，不要给两个节点填写同一个密钥。
 - 心跳只续期Redis登记，不更换密钥。登记丢失时自动模式生成新值，配置模式登记原值，其他节点直接读取新登记。普通缓存过期不重启核心；Redis不可用时拒绝新的节点间请求，已通过鉴权的流式请求按原有生命周期收尾。登记失败（节点被停用、同 ID 实例仍在线或 Redis 不可用）时网关不退出，保持维护态并持续重试。
-- `plugin_max_bytes`（可选，默认 64 MiB，与核心的插件包上限同一常量 `runtimecontract.PluginPackageMaxBytes`）限制网关保存的单个插件包；`plugin_store_max_bytes`（可选，默认 16 GiB）限制整个 `plugin-blobs/` 目录，满了以后上传返回 507，直到 GC 清掉未引用的包。插件包保存在状态卷的 `plugin-blobs/`，主节点保存全部非市场插件包，从节点只缓存自己拉取过的包；节点间上传必须声明 `Content-Length`，每个来源节点最多 2 个并发上传。
+- `plugin_max_bytes`（可选，默认 64 MiB，与核心的插件包上限同一常量 `runtimecontract.PluginPackageMaxBytes`）限制网关保存的单个插件包；`plugin_store_max_bytes`（可选，默认 16 GiB）限制整个 `plugin-blobs/` 目录，满了以后存包失败，直到 GC 清掉未引用的包。插件包保存在状态卷的 `plugin-blobs/`：每个节点保存自己接到的上传和自己用过的包，缺包时向任一在线的持有节点取，节点之间不推送；插件包与主节点无关，`set-primary` 不影响插件的安装与升级。持有某个包的节点都离线时，需要它的节点装不上，控制台显示 `package_gone` 与问过哪些节点（CONTRACTS §114）。
 - Redis 登记只保存节点密钥的 SHA-256（peer 协议 2，2026-11-05 起）。更换网关版本时集群内所有网关必须一起换，期间不要创建核心升级计划；旧网关与新网关互不接受。`REDIS_URL` 走 TCP 时必须带密码，否则网关拒绝启动（`allow_unauthenticated_redis: true` 仅供隔离测试）。
 - 网关默认为其核心设置 `SUB2API_PLUGIN_LANDLOCK=true`（Linux）：管理 socket 令牌文件对同 UID 的插件没有隔离作用，隔离来自 Landlock。`core_env` 里显式给出的值优先；`plugin_landlock_disabled: true` 关闭默认值。
 - `release_origin` 下载使用系统根证书及 `ca.crt`，可用公开证书；内容由清单摘要约束，节点密钥不会发往发布源。
@@ -88,7 +88,7 @@ docker compose exec node-a sub2api-gateway status
 docker compose up -d node-b
 ```
 
-先确认主节点完成首装，再启动从节点。从节点从主节点拉取已校验制品；插件依据共享数据库中的安装状态自行同步，全部就绪后才能准入。
+先确认主节点完成首装，再启动从节点。从节点从主节点拉取已校验的核心制品；插件依据共享数据库中的安装状态自行同步（插件包向持有它的任一在线节点取），全部就绪后才能准入。
 
 ## 更新源与一键更新
 

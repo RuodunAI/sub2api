@@ -545,7 +545,7 @@ export default {
     diagnosisOnly: '测试只做诊断：不会冷却或禁用账号；插件给出的失败原因与建议（冷却 / 禁用）仅供参考。最多同时测试 3 个模型。',
     search: '搜索模型', customPlaceholder: '添加要测试的模型 ID（可用逗号分隔多个）', add: '添加',
     fetch: '从上游获取模型', fetchHint: '用账号已保存的凭证向上游查询可用模型，加入候选列表（不修改账号）', fetchAdded: '已加入 {n} 个上游模型', fetchNothing: '上游没有返回新的模型',
-    probe: '用插件默认模型测试', probeHint: '不指定模型，由插件选择默认测试模型', probeRow: '插件默认模型',
+    probe: '用默认模型测试', probeHint: '不指定模型：账号有模型列表时用列表里第一个，只有模型映射时用映射里的一个，都没有时由插件选择默认测试模型', probeRow: '默认模型',
     selectVisible: '全选（当前 {n} 个）', selectFailed: '选中失败的', selected: '已选 {n} 个',
     noCandidates: '账号没有模型列表，插件也没有预设模型：可添加模型 ID、从上游获取，或用插件默认模型测试。', noMatch: '没有匹配的模型',
     notRun: '尚未测试', requested: '请求模型',

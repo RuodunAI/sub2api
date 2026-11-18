@@ -102,13 +102,13 @@ func (c *call) recordTaskFailure(ctx context.Context, status int, body []byte, r
 	}
 }
 
+// taskFailure ends a task submission that could not be registered: its
+// record is the free unreported one (nothing billed, the precharge
+// released), the receipt keeps why.
 func (c *call) taskFailure(ctx context.Context, reason string, err error) attemptResult {
 	c.recordTaskFailure(ctx, c.rec.StatusCode, nil, reason)
 	c.usage = nil
-	c.rec.Reservation = nil
-	c.rec.Price = nil
-	c.rec.Tokens = core.UsageTokens{}
-	c.rec.Metrics = nil
+	c.rec.SetUnreported(reason)
 	slog.WarnContext(ctx, "task submission could not be registered", "request_id", c.rid, "reason", reason, "err", err)
 	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage(reason).WithCause(err), errTypeUpstream)}
 }
