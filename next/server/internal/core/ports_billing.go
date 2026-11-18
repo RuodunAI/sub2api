@@ -215,18 +215,20 @@ type UsageRecord struct {
 	UsageSemantics string // exclusive | inclusive
 	Tokens         UsageTokens
 	Metrics        map[string]any // plugin usage facts for u("key")
-	// PluginDetail is the free-form JSON object a plugin returned from
-	// PlatformService.ExtractUsage (usage_logs.plugin_detail). It is the only
+	// PluginDetail is the free-form JSON object a plugin returned in the
+	// UsageReport of its Execute call (usage_logs.plugin_detail). It is the only
 	// part of a usage record a plugin writes verbatim, billing never reads
 	// it, and it is capped at 4 KiB. nil = "{}".
 	PluginDetail RawJSON
 	// UsageExtract records how this request's usage was obtained, when that
 	// is worth knowing: empty for the declarative rules (the normal case, and
-	// nothing is stored), UsageExtractPlugin when a plugin's ExtractUsage
-	// answer was used, UsageExtractFallback when the plugin was asked and
-	// could not answer, so the request is billed from whatever the
-	// declarative rules found - possibly nothing at all. The gateway also
-	// warns; this is the part that survives into usage_logs.
+	// nothing is stored), UsageExtractPlugin when the usage the plugin
+	// returned from Execute was used, UsageExtractFallback when the plugin
+	// returned host_usage instead, so the request is billed from whatever
+	// the declarative rules found - possibly nothing at all -, and
+	// UsageExtractUnreported when the plugin stated nothing and the request
+	// is not billed. The gateway also warns; this is the part that survives
+	// into usage_logs.
 	UsageExtract  string
 	StickyRule    string
 	StickyHit     bool
@@ -330,12 +332,13 @@ const (
 // usage.source "plugin". Endpoints using the declarative rules - every
 // endpoint in the tree today - record nothing.
 const (
-	// UsageExtractPlugin: PlatformService.ExtractUsage answered and its
+	// UsageExtractPlugin: the plugin returned ExecuteResponse.usage and that
 	// report is what was billed.
 	UsageExtractPlugin = "plugin"
-	// UsageExtractFallback: the endpoint asked a plugin for its usage and the
-	// plugin could not answer (error, timeout, UNIMPLEMENTED, nil, or a
-	// response the host would not hand over). The request was billed from
+	// UsageExtractFallback: the endpoint's usage is the plugin's to read and
+	// the plugin returned ExecuteResponse.host_usage instead (it could not
+	// read the observation, or the host would not hand one over). The
+	// request was billed from
 	// whatever the declarative rules produced while forwarding, which for an
 	// endpoint that chose usage.source "plugin" is often nothing - it chose
 	// that source precisely because the rules cannot express its usage. This
@@ -348,7 +351,17 @@ const (
 	// by then). The upstream did the work; without this the hold would have
 	// been released and the output given away (CONTRACTS §25.8).
 	UsageExtractPrecharge = "precharge"
+	// UsageExtractUnreported: the upstream answered a relay that waited and
+	// the plugin's Execute returned no valid usage, host_usage or task (it
+	// stated nothing or the wrong kind, failed, timed out or crashed, or the
+	// commit of its facts kept failing). The record is free: nothing falls
+	// back to the host's reading (ExecutionRecords.CloseExecutionUnreported).
+	UsageExtractUnreported = "unreported"
 )
+
+// UsageErrorUnreported is the ErrorType (usage_logs.error_type) of the free
+// record of an unreported execution.
+const UsageErrorUnreported = "usage_unreported"
 
 // MaxPluginDetailBytes caps UsageReport.detail_json.
 const MaxPluginDetailBytes = 4 << 10
@@ -628,8 +641,9 @@ func (r *UsageRecord) Anomalies() map[string]string {
 // the core ever gives up asking.
 type UsageReservation struct {
 	// PluginKey is the plugin the core will ask to reconcile this entry: the
-	// one declaring the platform of the response, i.e. the one that answered
-	// ExtractUsage. Filled by the gateway, never by the plugin.
+	// one whose Execute returned the reservation (the plugin of the account
+	// type, which also declares the platform). Filled by the gateway, never
+	// by the plugin.
 	PluginKey string
 	// RefID is the plugin's own id for the work (a task id). It is unique
 	// per plugin: (plugin_key, ref_id) is the key of pending_settlements.
