@@ -284,7 +284,10 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		return fmt.Errorf("egress log prune task: %w", err)
 	}
 	launcher := sandbox.NewLauncher(sandbox.LauncherOptions{DisableWrap: cfg.Plugins.DevMode, Landlock: cfg.Plugins.Landlock, Logger: b.log})
-	schemas := dbschema.New(b.db, cfg.DatabaseURL, cfg.MasterKey, cfg.Plugins.DBRoleIsolation)
+	schemas := dbschema.New(b.db, cfg.DatabaseURL, b.log)
+	// Roles of the per-plugin database user model (removed) are taken back once
+	// at start; Ensure retries the ones left (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
+	schemas.ConvertLegacyRoles(b.ctx)
 	settings, err := settingsReaders(b.bill.SettingsReaders(), gateway.SettingsReaders(b.db), b.env.SettingsReaders())
 	if err != nil {
 		return err
