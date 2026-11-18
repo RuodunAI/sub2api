@@ -29,7 +29,7 @@ func TestPluginMutationsPersistedPlansAndSharedLock(t *testing.T) {
 	if rdb.Exists(ctx, "lock:"+rc.ClusterChangeLock).Val() != 1 {
 		t.Fatal("nested release dropped shared lock")
 	}
-	if _, other, err := g.Begin(ctx); !errors.Is(err, ErrChangeBusy) {
+	if _, other, err := g.Begin(ctx); !errors.Is(err, core.ErrClusterChangeBusy) {
 		other()
 		t.Fatalf("parallel mutation: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestPluginMutationsPersistedPlansAndSharedLock(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if _, release, err := g.Begin(ctx); !errors.Is(err, ErrChangeBusy) {
+	if _, release, err := g.Begin(ctx); !errors.Is(err, core.ErrClusterChangeBusy) {
 		release()
 		t.Fatalf("shell submission lock ignored: %v", err)
 	}

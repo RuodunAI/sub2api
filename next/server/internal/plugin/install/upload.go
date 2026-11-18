@@ -66,7 +66,11 @@ func (s *Service) Upload(ctx context.Context, data []byte, actorID int64, opt Up
 
 	rec, err := s.recordUpload(ctx, p, actorID, opt)
 	if store.IsUniqueViolation(err, "") {
-		return nil, core.ErrConflict.WithMessage("the plugin is being uploaded concurrently; retry").WithCause(err)
+		// Another first upload of the plugin created its row meanwhile: one
+		// that does not take the change lock (a node's first install of a
+		// built-in plugin). It is another cluster change being submitted, and
+		// the same retry succeeds.
+		return nil, core.ErrClusterChangeBusy.WithMessage("the plugin is being uploaded concurrently; retry").WithCause(err)
 	}
 	if err != nil {
 		return nil, err

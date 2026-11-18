@@ -2,7 +2,6 @@ package cluster
 
 import (
 	"context"
-	"net/http"
 	"time"
 
 	"gorm.io/gorm"
@@ -12,11 +11,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
-
-// ErrChangeBusy: another cluster change holds the change lock while it is
-// being submitted. It passes soon, so callers may simply retry.
-var ErrChangeBusy = core.NewError(http.StatusConflict, "cluster_change_busy",
-	"another cluster change is being submitted; retry")
 
 type PluginMutations struct {
 	DB     *store.DB
@@ -44,7 +38,7 @@ func (g *PluginMutations) Begin(ctx context.Context) (context.Context, func(), e
 		if err != nil {
 			return ctx, noop, err
 		}
-		return ctx, noop, ErrChangeBusy
+		return ctx, noop, core.ErrClusterChangeBusy
 	}
 	work, stop := core.KeepLock(work, lk)
 	done := func() { stop(); cancel(); lk.Release() }
