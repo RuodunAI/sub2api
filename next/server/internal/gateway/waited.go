@@ -187,7 +187,7 @@ func (w *waitedRelay) forward(ctx context.Context, resp *http.Response) {
 		c.c.Writer = w.spool
 	}
 	defer func() { c.c.Writer = original }()
-	c.forward(ctx, x.rt, x.acct, resp, x.body)
+	c.forward(ctx, x.rt, x.acct, resp, x.body, newUsageCapture(x.rt))
 }
 
 // read builds the observation the plugin reads from the answer and stores

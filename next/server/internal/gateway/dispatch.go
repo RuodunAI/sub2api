@@ -819,7 +819,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if w := x.waited; w != nil {
 		return w.answer(ctx, resp)
 	}
-	return c.forward(ctx, rt, x.acct, resp, x.body)
+	return c.forward(ctx, rt, x.acct, resp, x.body, nil)
 }
 
 // classifyUpstream decides what an upstream failure of x means: the
