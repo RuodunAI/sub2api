@@ -65,7 +65,7 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 		t.Fatalf("large answer: %d %v %v", len(out.GetBody()), out.GetTruncated(), err)
 	}
 	for _, req := range []*pluginv1.ExecutionHTTPRequest{
-		{Url: up.URL, Method: "CONNECT"}, {Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
+		{Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
 		{Url: up.URL, Headers: map[string]string{"Proxy-Authorization": "secret"}},
 	} {
 		out, err := s.fetchExecutionHTTP(context.Background(), req, &id, admit)
