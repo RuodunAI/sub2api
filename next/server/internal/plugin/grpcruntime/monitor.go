@@ -16,20 +16,14 @@ func (a platformAdapter) Monitor(ctx context.Context, in *pluginv1.PollRequest, 
 		return nil, errors.New("Monitor requires platform.monitor.v1, an input and a fetch capability")
 	}
 	err = a.i.call(ctx, classBackground, TimeoutPoll, func(ctx context.Context, p *proc) error {
-		ctx, cancel := context.WithCancel(ctx)
-		defer cancel()
-		sc := &callScope{ctx: ctx, client: core.ExecutionClient{Fetch: fetch}, account: in.GetAccount()}
-		token, err := p.scopes.open(sc)
-		if err != nil {
-			return err
-		}
-		req := shallowClone(in)
-		req.ExecutionToken = token
-		out, err := p.platform.Monitor(ctx, req)
+		sc := &callScope{client: core.ExecutionClient{Fetch: fetch}, account: in.GetAccount()}
 		// A fetch finishing after Monitor returned cannot back its result:
-		// that result was produced before its network evidence.
-		cancel()
-		p.scopes.close(token, sc)
+		// that result was produced before its network evidence (withScope).
+		out, err := withScope(ctx, p, sc, func(ctx context.Context, token string) (*pluginv1.MonitorResponse, error) {
+			req := shallowClone(in)
+			req.ExecutionToken = token
+			return p.platform.Monitor(ctx, req)
+		})
 		if err != nil {
 			return err
 		}

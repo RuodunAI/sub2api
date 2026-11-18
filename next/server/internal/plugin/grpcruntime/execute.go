@@ -146,27 +146,19 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	if in == nil {
 		return res, errors.New("Execute requires a request")
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	// Execute may span a whole upstream exchange (a relay that waits), so
-	// it has its own class and no timeout at all: long streams never hold
-	// the slots of the request-path RPCs (CONTRACTS §43.1), and the
+	// it takes no call slot and has no timeout at all: long streams never
+	// hold the slots of the request-path RPCs (CONTRACTS §43.1), and the
 	// plugin's own work is not timed either. A hung plugin ends with ctx
 	// (the client leaving, the upstream's timeouts on a relay) or with its
 	// process.
-	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
-		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission()}
-		token, err := p.scopes.open(sc)
-		if err != nil {
-			return err
-		}
-		req := shallowClone(in)
-		req.ExecutionToken = token
-		out, err := p.platform.Execute(ctx, req)
-		// Whatever the plugin left running ends here: a host call still in
-		// progress is cancelled and joined before the result is read.
-		cancel()
-		p.scopes.close(token, sc)
+	err = a.i.call(ctx, classNoSlot, 0, func(ctx context.Context, p *proc) error {
+		sc := &callScope{client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission()}
+		out, err := withScope(ctx, p, sc, func(ctx context.Context, token string) (*pluginv1.ExecuteResponse, error) {
+			req := shallowClone(in)
+			req.ExecutionToken = token
+			return p.platform.Execute(ctx, req)
+		})
 		if err != nil {
 			return err
 		}
