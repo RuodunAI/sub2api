@@ -780,7 +780,10 @@ func (*ExecuteResponse_HostUsage) isExecuteResponse_Report() {}
 func (*ExecuteResponse_Task) isExecuteResponse_Report() {}
 
 // HostUsage is the explicit "use the host's reading", so that it cannot be
-// confused with a response that states nothing.
+// confused with a response that states nothing. On an endpoint whose usage
+// the plugin reads (usage.source plugin), a reading of a served answer that
+// holds no usage at all is no fact either: the request is unreported (a
+// free usage_unreported record), never billed as zero.
 type HostUsage struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache

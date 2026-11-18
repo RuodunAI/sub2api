@@ -224,10 +224,10 @@ type UsageRecord struct {
 	// is worth knowing: empty for the declarative rules (the normal case, and
 	// nothing is stored), UsageExtractPlugin when the usage the plugin
 	// returned from Execute was used, UsageExtractFallback when the plugin
-	// returned host_usage instead, so the request is billed from whatever
-	// the declarative rules found - possibly nothing at all -, and
-	// UsageExtractUnreported when the plugin stated nothing and the request
-	// is not billed. The gateway also warns; this is the part that survives
+	// returned host_usage instead, so the request is billed from what the
+	// declarative rules found, and UsageExtractUnreported when the plugin
+	// stated nothing, or took a host reading that holds no usage, and the
+	// request is not billed. The gateway also warns; this is the part that survives
 	// into usage_logs.
 	UsageExtract  string
 	StickyRule    string
@@ -354,8 +354,12 @@ const (
 	// UsageExtractUnreported: the upstream answered a relay that waited and
 	// the plugin's Execute returned no valid usage, host_usage or task (it
 	// stated nothing or the wrong kind, failed, timed out or crashed, or the
-	// commit of its facts kept failing). The record is free: nothing falls
-	// back to the host's reading (ExecutionRecords.CloseExecutionUnreported).
+	// commit of its facts kept failing); or, on an endpoint whose usage the
+	// plugin reads, it returned host_usage (waited or not) and the host's
+	// reading of the served answer holds no usage. The record is free:
+	// nothing falls back to the host's reading
+	// (ExecutionRecords.CloseExecutionUnreported; the gateway writes the same
+	// record itself for a relay that did not wait).
 	UsageExtractUnreported = "unreported"
 )
 

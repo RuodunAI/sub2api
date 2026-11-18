@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -198,20 +199,24 @@ func usageRequestFields(paths []string, body []byte) (fields map[string]string, 
 	return fields, omitted
 }
 
+// errHostReadingEmpty is why a request is unreported whose plugin chose the
+// host's reading when that reading holds no usage.
+var errHostReadingEmpty = errors.New("the plugin took the host's reading, which holds no usage")
+
 // hostUsageChosen marks the record of an endpoint whose usage the plugin
 // reads when the plugin chose the host's reading instead (host_usage, or a
 // relay that did not wait): the marker stays for the usage report
-// (usage_logs.anomalies), but a deliberate choice is no failure and is not
-// warned about - unless the declarative rules found nothing, which bills
-// the request as nothing and must not be silent.
-func (c *call) hostUsageChosen(ctx context.Context, rt *typeRoute, how string) {
+// (usage_logs.anomalies), but a deliberate choice is no failure. When the
+// declarative rules found nothing in an answer that was served (no tokens,
+// metrics or other usage) there are no facts, and the core makes none up:
+// errHostReadingEmpty, and the caller ends the request as unreported.
+func (c *call) hostUsageChosen() error {
 	c.rec.UsageExtract = core.UsageExtractFallback
-	if c.rec.Tokens != (core.UsageTokens{}) || len(c.rec.Metrics) > 0 || len(c.rec.Additional) > 0 {
-		return
+	r := c.rec
+	if !r.Success || r.Tokens != (core.UsageTokens{}) || len(r.Metrics) > 0 || len(r.Additional) > 0 || len(r.Replacement) > 0 {
+		return nil
 	}
-	slog.WarnContext(ctx, "gateway: the plugin took the host's reading, which holds no usage",
-		"request_id", c.rid, "plugin", rt.binding.Plugin.Key, "platform", rt.platform,
-		"protocol", rt.upstream, "endpoint", c.ep.Path, "how", how)
+	return errHostReadingEmpty
 }
 
 func (c *call) usageFallback(ctx context.Context, rt *typeRoute, why string, err error) {

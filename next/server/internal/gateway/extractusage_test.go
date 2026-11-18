@@ -479,12 +479,12 @@ func TestPluginUsageDetailJSONLimits(t *testing.T) {
 // ---------------------------------------------------------------- failure
 
 // A plugin that cannot read the usage answers host_usage (the SDK's
-// ExecuteDefault does so when ExtractUsage fails or reports nothing): the
-// request keeps its 200, the record is committed and billed from whatever the
-// declarative rules found, and the fallback is recorded so it can be found
-// later - for this endpoint the rules find nothing, which is exactly the case
-// worth alerting on. A plugin whose Execute fails instead leaves the
-// execution unreported (waited_usage_test.go).
+// ExecuteDefault does so when ExtractUsage fails or reports nothing). When
+// the host's reading holds no usage either - these rules declare no json
+// map - there are no facts and the core makes none up: the execution is
+// closed unreported like one that stated nothing (a free usage_unreported
+// record, nothing billed, the held-back answer not published). A reading
+// that holds usage is billed (TestPluginUsageFallbackUsesTheDeclarativeRules).
 func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 	cases := map[string]func(*fakePlatform){
 		"unimplemented": func(p *fakePlatform) { p.extract = nil },
@@ -501,35 +501,48 @@ func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
-			logs := captureWarnings(t)
 			e, pp := usageEnv(t, pluginUsageRules())
 			setup(pp)
 			res := e.do("/pu/v1/chat", body(testModel, false), nil)
-			if res.status != 200 {
-				t.Fatalf("status %d %s", res.status, res.body)
+			if res.status != 503 || strings.Contains(string(res.body), "hello") {
+				t.Fatalf("held-back answer published: %d %s", res.status, res.body)
 			}
-			rec := e.record()
-			if rec.UsageExtract != core.UsageExtractFallback {
-				t.Fatalf("usage extract %q", rec.UsageExtract)
-			}
-			if !rec.Success {
-				t.Fatalf("a delivered response must stay a success: %+v", rec)
-			}
-			// These rules declare no json map, so the fallback counts zero -
-			// the trade the marker exists to make visible.
-			if rec.Tokens != (core.UsageTokens{}) {
-				t.Fatalf("tokens %+v", rec.Tokens)
-			}
-			// ... and a per-token price bills nothing: the one case that
-			// still warns.
-			if rec.Billable || !strings.Contains(logs.String(), "holds no usage") {
-				t.Fatalf("an empty host reading: billable %v, logs %s", rec.Billable, logs)
-			}
-			// host_usage is a fact like any other: committed.
-			if st := e.settler.executionStates(); len(st) != 1 || st[0] != core.ExecutionStateCommitted {
-				t.Fatalf("execution states %v", st)
-			}
+			assertUnreported(t, e)
 		})
+	}
+}
+
+// A relay that did not wait, on an endpoint whose usage the plugin reads,
+// whose host reading holds no usage: the client keeps the answer it was
+// sent, and the record is the free unreported one, logged at ERROR.
+func TestNoWaitEmptyHostReadingIsUnreported(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		logs := captureWarnings(t)
+		e, _ := scriptedUsageEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+			req, err := p.buildUpstream(ctx, in)
+			if err != nil {
+				return core.ExecutionResult{}, err
+			}
+			if err := client.Check(ctx, req); err != nil {
+				return core.ExecutionResult{}, err
+			}
+			return core.ExecutionResult{Response: &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_HostUsage{HostUsage: &pluginv1.HostUsage{}}}, Relay: req}, nil
+		})
+		res := e.do("/pu/v1/chat", body(testModel, stream), nil)
+		if res.status != 200 || len(res.body) == 0 {
+			t.Fatalf("stream %v: the answer did not reach the client: %d %s", stream, res.status, res.body)
+		}
+		rec := e.record()
+		if rec.Success || rec.Billable || rec.ErrorType != core.UsageErrorUnreported || rec.UsageExtract != core.UsageExtractUnreported ||
+			rec.Tokens != (core.UsageTokens{}) || rec.StatusCode != 200 {
+			t.Fatalf("stream %v: free record %+v", stream, rec)
+		}
+		if st := e.settler.executionStates(); len(st) != 0 {
+			t.Fatalf("stream %v: execution states %v", stream, st)
+		}
+		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "holds no usage") {
+			t.Fatalf("stream %v: logs %s", stream, logs)
+		}
 	}
 }
 
