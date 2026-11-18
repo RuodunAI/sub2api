@@ -16,6 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
@@ -90,42 +93,40 @@ func (p *Plugin) ValidateCredentials(ctx context.Context, req *pluginv1.Validate
 	return &pluginv1.ValidateCredentialsResponse{}, nil
 }
 
-func (p *Plugin) BuildUpstreamRequest(ctx context.Context, req *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	meta := req.GetMeta()
-	if meta == nil {
-		return nil, errors.New("missing meta")
-	}
-	account := req.GetAccount()
-	if account == nil {
-		return nil, errors.New("missing account")
-	}
+// Execute is the request path: ExecuteDefault builds the request with
+// BuildUpstream, relays it without waiting and answers host_usage, so the
+// host sends it, relays the answer and reads the usage.
+func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
+	return pluginsdk.ExecuteDefault(ctx, p, in)
+}
 
+// BuildUpstream builds the final Messages request of one attempt. The body
+// goes out as the host handed it over. Every header is authoritative, written
+// over the operator's passthrough and overrides, as a code plugin's headers
+// always were: the bearer token and the oauth beta are what an OAuth token
+// is accepted with, and the version and content type stay as the request
+// was built.
+func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
+	if in.GetMeta() == nil || in.GetAccount() == nil {
+		return nil, status.Error(codes.InvalidArgument, "missing meta or account")
+	}
 	// The host renews the access token before it expires (refresh.go).
 	var creds struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := json.Unmarshal([]byte(account.GetCredentialsJson()), &creds); err != nil {
-		return nil, fmt.Errorf("parse credentials: %w", err)
+	if err := json.Unmarshal([]byte(in.GetAccount().GetCredentialsJson()), &creds); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "parse credentials: "+err.Error())
 	}
-
-	// 构造 Authorization header
-	headers := map[string]string{
-		"authorization":     "Bearer " + creds.AccessToken,
-		"anthropic-version": AnthropicAPIVersion,
-		"content-type":      "application/json",
+	u := pluginsdk.NewUpstream(http.MethodPost, MessagesURL).
+		Header("authorization", "Bearer "+creds.AccessToken).
+		Header("anthropic-version", AnthropicAPIVersion).
+		Header("content-type", "application/json").
+		Body(in.GetBody())
+	// Only the oauth beta, as sub2api's gateway_claude_oauth_body.go adds it.
+	if in.GetMeta().GetProtocol() == anthropic.ProtocolMessages {
+		u.Header("anthropic-beta", OAuthBeta)
 	}
-
-	// 添加 anthropic-beta header（对齐 backend gateway_claude_oauth_body.go）
-	if protocol := meta.GetProtocol(); protocol == anthropic.ProtocolMessages {
-		// 简化版：仅添加 oauth beta（完整伪装由核心的 gateway 层实现）
-		headers["anthropic-beta"] = OAuthBeta
-	}
-
-	return &pluginv1.BuildUpstreamRequestResponse{
-		Url:     MessagesURL,
-		Method:  "POST",
-		Headers: headers,
-	}, nil
+	return u.Build()
 }
 
 func (p *Plugin) ClassifyError(ctx context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
@@ -207,7 +208,7 @@ func (p *Plugin) BuildTestRequest(ctx context.Context, req *pluginv1.BuildTestRe
 	}
 	bodyBytes, _ := json.Marshal(testBody)
 
-	// Same credentials as BuildUpstreamRequest: an OAuth access token is a
+	// Same credentials as BuildUpstream: an OAuth access token is a
 	// bearer token plus the oauth beta, never an x-api-key.
 	return &pluginv1.BuildTestRequestResponse{
 		Method: "POST",

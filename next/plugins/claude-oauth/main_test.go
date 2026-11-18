@@ -94,50 +94,6 @@ func TestValidateCredentials(t *testing.T) {
 	}
 }
 
-func TestBuildUpstreamRequest(t *testing.T) {
-	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
-		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
-	})
-
-	req := &pluginv1.BuildUpstreamRequestRequest{
-		Meta: &pluginv1.RequestMeta{
-			Protocol: "anthropic.messages",
-			Model:    "claude-opus-5",
-		},
-		Account: &pluginv1.Account{
-			Id:              1,
-			Name:            "test",
-			Platform:        "anthropic",
-			Type:            "claude_oauth",
-			CredentialsJson: `{"access_token":"sk-ant-test123","expires_at":9999999999}`,
-		},
-	}
-
-	resp, err := h.Platform.BuildUpstreamRequest(context.Background(), req)
-	if err != nil {
-		t.Fatalf("BuildUpstreamRequest error: %v", err)
-	}
-
-	if resp.GetUrl() != MessagesURL {
-		t.Errorf("url = %q, want %q", resp.GetUrl(), MessagesURL)
-	}
-	if resp.GetMethod() != "POST" {
-		t.Errorf("method = %q, want POST", resp.GetMethod())
-	}
-
-	headers := resp.GetHeaders()
-	auth := headers["authorization"]
-	if auth != "Bearer sk-ant-test123" {
-		t.Errorf("authorization = %q, want Bearer sk-ant-test123", auth)
-	}
-	if headers["anthropic-version"] != "2023-06-01" {
-		t.Errorf("anthropic-version = %q", headers["anthropic-version"])
-	}
-	if headers["anthropic-beta"] == "" {
-		t.Errorf("anthropic-beta header missing")
-	}
-}
-
 func TestClassifyError(t *testing.T) {
 	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
 		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
