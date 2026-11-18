@@ -73,7 +73,7 @@ func readStreamOnly(r io.Reader) streamOnlyAnswer {
 	kept := 0
 	var ans streamOnlyAnswer
 	for {
-		line, rerr := readLine(br, maxSSELine)
+		line, rerr := readLine(br)
 		t := bytes.TrimRight(line, "\r\n")
 		switch {
 		case len(line) > 0 && len(t) == 0:

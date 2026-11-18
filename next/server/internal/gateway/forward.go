@@ -21,12 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
 
-const (
-	maxSSELine      = 16 << 20
-	maxUsageJSONBuf = 32 << 20
-)
-
-var errLineTooLong = errors.New("sse line too long")
+const maxUsageJSONBuf = 32 << 20
 
 // convertError is a failure converting the upstream response to the client
 // protocol.
@@ -426,7 +421,7 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 		return err
 	}
 	for {
-		line, rerr := readLine(br, maxSSELine)
+		line, rerr := readLine(br)
 		if len(line) > 0 {
 			if passthrough {
 				if _, werr := w.Write(line); werr != nil {
@@ -514,8 +509,9 @@ func (c *call) jsonArrayStream() bool {
 const protocolGeminiStream = manifest.PlatformGemini + ".stream_generate"
 
 // readLine returns the next line including its '\n' (the last line may lack
-// it). The slice is only valid until the next read.
-func readLine(br *bufio.Reader, limit int) ([]byte, error) {
+// it), of any length: one longer than br's buffer is gathered into a slice
+// that grows. The slice is only valid until the next read.
+func readLine(br *bufio.Reader) ([]byte, error) {
 	line, err := br.ReadSlice('\n')
 	if !errors.Is(err, bufio.ErrBufferFull) {
 		return line, err
@@ -524,9 +520,6 @@ func readLine(br *bufio.Reader, limit int) ([]byte, error) {
 	for {
 		line, err = br.ReadSlice('\n')
 		buf = append(buf, line...)
-		if len(buf) > limit {
-			return buf, errLineTooLong
-		}
 		if !errors.Is(err, bufio.ErrBufferFull) {
 			return buf, err
 		}

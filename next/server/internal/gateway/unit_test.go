@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -514,5 +515,18 @@ func TestMetaQueryWhole(t *testing.T) {
 	q = metaCall(ep2, nil, "alt="+url.QueryEscape(longVal)).meta().GetQuery()
 	if len(q) != 1 || q["alt"] != longVal {
 		t.Fatalf("value %d bytes", len(q["alt"]))
+	}
+}
+
+// An SSE line of any length is read whole, far beyond the reader's buffer.
+func TestReadLineAnyLength(t *testing.T) {
+	long := strings.Repeat("x", 17<<20)
+	br := bufio.NewReaderSize(strings.NewReader("data: "+long+"\nnext\n"), 64<<10)
+	line, err := readLine(br)
+	if err != nil || string(line) != "data: "+long+"\n" {
+		t.Fatalf("long line: %d bytes, %v", len(line), err)
+	}
+	if line, err = readLine(br); err != nil || string(line) != "next\n" {
+		t.Fatalf("next line: %q %v", line, err)
 	}
 }
