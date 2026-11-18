@@ -172,31 +172,42 @@ func (s *Service) groupSnapshot(ctx context.Context, groupID int64) (groupSnap, 
 // runs it on a gateway request: its rows are scanned by position.
 func readGroupSnap(db *gorm.DB, groupID int64, now time.Time) (groupSnap, error) {
 	snap := groupSnap{at: now, refs: []core.AccountRef{}}
+	// The columns that are no field of an AccountRef. Every row replaces
+	// them, so one set serves the whole read instead of one per row.
+	var col struct {
+		mapping, limits []byte
+		env             store.JSON[core.EnvironmentValues]
+		until           *time.Time
+		// The protocol binding: NULL, NULL for an account without one, which
+		// is then neither transferred nor parsed.
+		protocols      []string
+		modelProtocols []byte
+	}
 	err := store.EachRow(db.Table("accounts a").Select(`a.id, a.name, a.plugin_key, a.type, a.priority, a.weight,
 			a.max_concurrency, a.proxy_id, a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment,
-			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END`).
+			COALESCE(a.conversion_loss_policy, ''), CASE WHEN a.status = 'auto_disabled' THEN a.auto_disabled_until END,
+			a.protocols, NULLIF(a.model_protocols, '[]'::jsonb)`).
 		Joins("JOIN account_groups ag ON ag.account_id = a.id").
 		Where(`ag.group_id = ? AND a.deleted_at IS NULL AND a.schedulable
 			AND (a.status = 'active' OR a.status = 'auto_disabled' AND a.auto_disabled_until IS NOT NULL)`, groupID).
 		Order("a.priority DESC, a.id"), func(rows *sql.Rows) error {
 		var a core.AccountRef
-		var mapping, limits []byte
-		var env store.JSON[core.EnvironmentValues]
-		var until *time.Time
 		if err := rows.Scan(&a.ID, &a.Name, &a.PluginKey, &a.Type, &a.Priority, &a.Weight, &a.MaxConcurrency, &a.ProxyID,
-			(*store.Strings)(&a.Models), &mapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &limits, &env, &a.ConversionLossPolicy, &until); err != nil {
+			(*store.Strings)(&a.Models), &col.mapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &col.limits, &col.env, &a.ConversionLossPolicy, &col.until,
+			(*store.Strings)(&col.protocols), &col.modelProtocols); err != nil {
 			return err
 		}
-		if len(mapping) > 0 {
-			_ = json.Unmarshal(mapping, &a.ModelMapping)
+		if len(col.mapping) > 0 {
+			_ = json.Unmarshal(col.mapping, &a.ModelMapping)
 		}
-		if until != nil {
+		if col.until != nil {
 			if snap.releases == nil {
 				snap.releases = map[int64]time.Time{}
 			}
-			snap.releases[a.ID] = *until
+			snap.releases[a.ID] = *col.until
 		}
-		a.ModelLimits, a.Environment = parseModelLimits(limits), env.V
+		a.ModelLimits, a.Environment = parseModelLimits(col.limits), col.env.V
+		a.ProtocolRules = core.NewProtocolRules(col.protocols, parseModelProtocols(col.modelProtocols))
 		snap.refs = append(snap.refs, a)
 		return nil
 	})
