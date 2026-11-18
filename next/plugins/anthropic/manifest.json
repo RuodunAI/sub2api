@@ -3,15 +3,15 @@
   "key": "anthropic",
   "name": { "en": "Anthropic", "zh": "Anthropic" },
   "description": {
-    "en": "Anthropic API key account type and a model catalog. The anthropic platform and its endpoints are built into the core; model prices are set by administrators in the core.",
-    "zh": "Anthropic API Key 账号类型与模型目录（anthropic 平台及其端点由核心内置；模型价格由管理员在核心中配置）。"
+    "en": "Anthropic API key account type and a model catalog. The anthropic platform and its endpoints are built into the core; the plugin builds the upstream requests of its accounts and the core sends them. Model prices are set by administrators in the core.",
+    "zh": "Anthropic API Key 账号类型与模型目录（anthropic 平台及其端点由核心内置；插件构造本类型账号的上游请求，由核心发送；模型价格由管理员在核心中配置）。"
   },
-  "version": "0.3.4",
+  "version": "0.4.0",
   "publisher": "sub2api",
   "icon": "assets/anthropic.svg",
   "runtime": "grpc",
   "entry": { "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" } },
-  "hostCompat": ">=0.1.290 <0.2.0",
+  "hostCompat": ">=0.1.304 <0.2.0",
 
   "capabilities": [
     { "id": "platform.adapter.v1" },
@@ -33,6 +33,7 @@
       },
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
+      "upstreamFields": ["base_url"],
       "guardedSettings": [
         { "field": "base_url", "allowed": ["https://api.anthropic.com"] }
       ],
@@ -59,8 +60,7 @@
       ],
       "platforms": [
         { "platform": "anthropic" }
-      ],
-      "upstream": { "preset": "anthropic", "filterFields": [] }
+      ]
     }
   ],
 
@@ -84,6 +84,8 @@
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the Anthropic API key account type for the built-in anthropic platform", "zh": "为内置 anthropic 平台注册 Anthropic API Key 账号类型" } },
+    { "id": "accounts.credentials", "scope": { "types": "own" },
+      "reason": { "en": "Read the API key and Base URL of its own accounts to build their upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key 与 Base URL，用于构造上游请求（由核心发送）" } },
     { "id": "db.schema",
       "reason": { "en": "Store the model catalog", "zh": "保存模型目录" } },
     { "id": "routes.admin",

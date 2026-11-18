@@ -6,31 +6,25 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/anthropic/internal/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/upstream"
 )
 
-// declaration is the upstream of the apikey account type. sdk/upstream's
-// golden replay (TestGolden) proves it answers exactly like the plugin code
-// it replaced, so keep the two in step.
-const declaration = `{"preset":"anthropic","filterFields":[]}`
-
 // TestManifest runs manifest.json through the checks the core runs before
-// it installs a package (sdk/manifest/check in tooling mode, which also
-// resolves the upstream declaration with the core's engine) and checks what
-// the plugin keeps: the declared apikey account type of the built-in
-// anthropic platform, the model catalog and its upgrade fixture.
+// it installs a package (sdk/manifest/check in tooling mode) and checks what
+// the plugin keeps: the apikey account type of the built-in anthropic
+// platform, served by the plugin's own platform (anthropic.APIKey), the
+// model catalog and its upgrade fixture.
 func TestManifest(t *testing.T) {
 	m := load(t)
-	if m.Key != "anthropic" || m.Version != "0.3.4" || m.APIVersion != manifest.APIVersion {
+	if m.Key != "anthropic" || m.Version != "0.4.0" || m.APIVersion != manifest.APIVersion {
 		t.Fatalf("key/version = %s %s", m.Key, m.Version)
 	}
 	if m.Database == nil || m.Database.Schema != "plg_"+m.Key {
@@ -45,12 +39,12 @@ func TestManifest(t *testing.T) {
 	if len(m.AccountTypes) != 1 {
 		t.Fatalf("accountTypes = %+v", m.AccountTypes)
 	}
-	at := m.AccountTypes[0]
-	if at.ID != "apikey" || len(at.Platforms) != 1 || at.Platforms[0].Platform != "anthropic" {
+	at, typ := m.AccountTypes[0], anthropic.APIKey()
+	if at.ID != typ.ID || len(at.Platforms) != 1 || at.Platforms[0].Platform != "anthropic" {
 		t.Fatalf("account type %s platforms = %+v, want apikey on anthropic", at.ID, at.Platforms)
 	}
 	// No overrides: the built-in platform defaults apply.
-	if ap := at.Platforms[0]; len(ap.RequestFields)+len(ap.PassHeaders)+len(ap.Usage) != 0 {
+	if ap := at.Platforms[0]; len(ap.Endpoints)+len(ap.PassHeaders)+len(ap.Usage)+len(ap.StreamOnly) != 0 {
 		t.Fatalf("account type %s overrides the platform defaults: %+v", at.ID, ap)
 	}
 	if !slices.Contains(at.SensitiveFields, "api_key") {
@@ -65,25 +59,28 @@ func TestManifest(t *testing.T) {
 	if _, bad := schema.Properties["model_mapping"]; bad || slices.Contains(at.SettingsFields, "model_mapping") {
 		t.Fatal("model_mapping must be neither a settings field nor a form property")
 	}
-	assertJSON(t, at.Upstream.Layer(), declaration)
-	p, err := upstream.Resolve(&at, nil)
-	if err != nil {
-		t.Fatal(err)
+	// The released plugin declared the anthropic preset with no filter
+	// fields; the type keeps that (TestAPIKey, TestGolden in the package).
+	if len(typ.FilterFields) != 0 {
+		t.Fatalf("apikey filters %v; the plugin forwards every field", typ.FilterFields)
 	}
-	// base_url is guarded (CONTRACTS §21.3): without account:settings:custom
-	// only the default upstream may be used.
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != p.Upstream().BaseURL.Default {
-		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, p.Upstream().BaseURL.Default)
+	// base_url says where requests go and is guarded (CONTRACTS §21.3):
+	// without account:settings:custom only the default upstream may be used.
+	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) {
+		t.Fatalf("upstreamFields = %v, want [base_url]", at.UpstreamFields)
+	}
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != typ.Spec.DefaultBaseURL {
+		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, typ.Spec.DefaultBaseURL)
 	}
 
 	caps := map[string]bool{}
 	for _, c := range m.Capabilities {
 		caps[c.ID] = true
 	}
-	// The process serves the catalog route only: platform.adapter.v1 is the
-	// account type's (manifest/check), platform.execute.v1 would promise a
-	// Platform the plugin no longer implements.
-	if !caps[manifest.CapPlatformAdapter] || !caps[manifest.CapHTTPRoutes] || caps[manifest.CapPlatformExecute] {
+	// One process serves the account type's platform (platform.adapter.v1,
+	// which includes Execute) and the catalog route; TestConformance serves
+	// the plugin with this manifest.
+	if len(caps) != 2 || !caps[manifest.CapPlatformAdapter] || !caps[manifest.CapHTTPRoutes] {
 		t.Fatalf("capabilities = %v, want platform.adapter.v1 and http.routes.v1", m.Capabilities)
 	}
 	perms := map[string]manifest.HostPermission{}
@@ -102,9 +99,10 @@ func TestManifest(t *testing.T) {
 	if _, ok := perms["gateway.endpoint"]; ok {
 		t.Error("gateway.endpoint is only for plugins that declare platforms")
 	}
-	// The credentials stay inside the core, which builds the requests.
-	if _, ok := perms["accounts.credentials"]; ok {
-		t.Error("a declared account type needs no accounts.credentials")
+	// The plugin builds the requests, so it reads the credentials of its
+	// own accounts, and only those.
+	if perm, ok := perms["accounts.credentials"]; !ok || perm.Scope["types"] != "own" || len(perm.Scope) != 1 {
+		t.Errorf("accounts.credentials = %+v, want scope {types: own}", perm)
 	}
 	// The catalog is an admin route only: the console has no menu or page for it.
 	if _, ok := perms["ui.menu"]; ok || m.UI != nil {
@@ -177,18 +175,10 @@ func load(t *testing.T) manifest.Manifest {
 	if err := check.Validate(&m, files, check.ValidateOptions{Tooling: true}); err != nil {
 		t.Fatal(err)
 	}
-	return m
-}
-
-// assertJSON compares two JSON documents by value.
-func assertJSON(t *testing.T, got json.RawMessage, want string) {
-	t.Helper()
-	var g, w any
-	_ = json.Unmarshal(got, &g)
-	_ = json.Unmarshal([]byte(want), &w)
-	if g == nil || !reflect.DeepEqual(g, w) {
-		t.Fatalf("upstream = %s, want %s", got, want)
+	if w := check.Warnings(&m, files); len(w) != 0 {
+		t.Fatalf("warnings: %v", w)
 	}
+	return m
 }
 
 func mustJSONFile(t *testing.T, p string) []byte {
