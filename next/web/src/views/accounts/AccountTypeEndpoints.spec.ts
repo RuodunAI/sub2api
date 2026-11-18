@@ -47,8 +47,8 @@ describe('endpoints of an account type', () => {
       'POST /openai.embeddingsopenai.embeddings1 个模型：text-embedding-3-large'
     ])
     // count_tokens follows the generation protocol of its family: open with Messages, closed with Gemini.
-    expect(lines(w, 'anthropic')).toEqual(['POST /anthropic.count_tokensanthropic.count_tokens本地估算4 个模型：a, b, c …', 'POST /anthropic.messagesanthropic.messages一般4 个模型：a, b, c …'])
-    expect(group(w, 'anthropic').get('[data-testid="endpoint-models"]').attributes('title')).toBe('a, b, c, 其余模型')
+    expect(lines(w, 'anthropic')).toEqual(['POST /anthropic.count_tokensanthropic.count_tokens本地估算4 个模型：a、b、c …', 'POST /anthropic.messagesanthropic.messages一般4 个模型：a、b、c …'])
+    expect(group(w, 'anthropic').get('[data-testid="endpoint-models"]').attributes('title')).toBe('a、b、c、其余模型')
     expect(group(w, 'gemini').findAll('[data-closed]')).toHaveLength(3)
     expect(group(w, 'openai').findAll('[data-testid="endpoint-closed"]')).toHaveLength(2)
   })

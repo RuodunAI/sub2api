@@ -93,19 +93,18 @@ func TestAC33_OldContractPackagesRefused(t *testing.T) {
 		})
 		admin.API(t, http.MethodPost, "/plugins/"+dp.Key+"/enable", nil)
 		want := protocol.OutdatedContractMessage(dp.Key, version, hostVersion)
-		// Every node refuses to prepare the version, with the one message,
-		// and the plugin list says so.
+		// The nodes refuse to prepare the version, with the one message, and
+		// the plugin list says so; the refusal the console shows outlives
+		// the failed rollout: the rollout kept the code with each node's
+		// outcome.
 		var listed gjson.Result
 		Eventually(t, 90*time.Second, time.Second, func() string { return "refusal in the plugin list: " + listed.Raw }, func() bool {
 			listed, _ = Find(admin.ListAll(t, "/plugins"), "key", dp.Key)
-			reason := listed.Get("status_reason").String()
-			return strings.Contains(reason, "node-1") && strings.Contains(reason, "node-2") && strings.Count(reason, want) == len(e.NodeURLs)
+			return listed.Get("refusal.code").String() == "outdated_contract"
 		})
 		if listed.Get("status").String() == "enabled" {
 			t.Fatalf("the refused plugin is enabled: %s", listed.Raw)
 		}
-		// The refusal the console shows outlives the failed rollout: the
-		// rollout kept the code with each node's outcome.
 		if r := listed.Get("refusal"); r.Get("code").String() != "outdated_contract" || r.Get("version").String() != version ||
 			r.Get("host_version").String() != hostVersion || r.Get("message").String() != want ||
 			r.Get("protocol_version").Int() != protocol.ProtocolVersion || r.Get("first_core_version").String() != protocol.FirstCoreVersion {

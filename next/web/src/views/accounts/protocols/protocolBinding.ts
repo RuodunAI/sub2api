@@ -41,7 +41,8 @@ export interface ProtocolColumns {
 
 type TypeProtocols = Pick<AccountType, 'platforms' | 'endpoints'> | null | undefined
 
-const viaOf = (e: AccountTypeEndpoint, declared: Set<string>): ServedVia => (e.native ? 'native' : declared.has(e.platform) ? 'adapted' : 'converted')
+/** How a type serves an endpoint, given the platforms it declares. */
+export const viaOf = (e: AccountTypeEndpoint, declared: Set<string>): ServedVia => (e.native ? 'native' : declared.has(e.platform) ? 'adapted' : 'converted')
 
 /** Folds the columns of a merged set into the first of them. */
 function merged(columns: ProtocolColumn[]): ProtocolColumn[] {
@@ -86,9 +87,9 @@ export function sameProtocolColumns(a: TypeProtocols, b: TypeProtocols): boolean
 }
 
 /** A conversion through two converters. */
-export const isTwoHop = (c: Pick<ProtocolColumn, 'hops'>) => (c.hops?.length ?? 0) > 2
+const isTwoHop = (c: Pick<ProtocolColumn, 'hops'>) => (c.hops?.length ?? 0) > 2
 
-export type ColumnState = 'on' | 'partial' | 'off'
+type ColumnState = 'on' | 'partial' | 'off'
 
 /** Whether the ids hold the column: all of its ids, some (hand-written data) or none. */
 export function columnState(ids: readonly string[] | null, c: ProtocolColumn): ColumnState {
@@ -105,6 +106,12 @@ export function toggleColumn(ids: readonly string[], c: ProtocolColumn): string[
 
 /** The own columns the account opens (in part counts). */
 export const openColumns = (c: ProtocolColumns, protocols: readonly string[] | null) => c.own.filter(x => columnState(protocols, x) !== 'off')
+
+/** The own protocols every account opens, from their `protocols` (null or absent: all of them); null when every one opens all. */
+export function sharedOwnProtocols(lists: ReadonlyArray<readonly string[] | null | undefined>): string[] | null {
+  const chosen = lists.filter((l): l is readonly string[] => Array.isArray(l))
+  return chosen.length ? chosen[0].filter(id => chosen.every(l => l.includes(id))) : null
+}
 
 /** The protocols of a model without a rule: the own protocols the account opens, no conversion. */
 export function defaultProtocols(c: ProtocolColumns, protocols: readonly string[] | null): string[] {
@@ -289,7 +296,7 @@ export function bindingJSON(b: ProtocolBinding): string {
 
 // ---------------------------------------------------------------- checks and summaries
 
-export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'unknown_own_protocol' | 'rest_conversion' | 'two_hop'
+type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'rest_conversion' | 'two_hop'
 
 /** A finding of the editor: errors block saving, warnings and notes do not. */
 export interface BindingIssue {
@@ -314,7 +321,8 @@ const converts = (c: ProtocolColumns, ids: readonly string[]) => columnsOf(c.cro
 
 /**
  * The ids of `protocols` that are no own protocol of the type (its endpoint
- * is gone, or it was written by hand): the server refuses them.
+ * is gone, or it was written by hand): the server refuses them. The own
+ * protocols field shows them; they are no binding issue.
  */
 export function unknownOwnProtocols(protocols: readonly string[] | null, c: ProtocolColumns): string[] {
   const own = idsOf(c.own)
@@ -329,7 +337,7 @@ export function unknownOwnProtocols(protocols: readonly string[] | null, c: Prot
  * is a note.
  */
 export function bindingIssues(protocols: readonly string[] | null, rules: ModelRules, c: ProtocolColumns): BindingIssue[] {
-  const out: BindingIssue[] = unknownOwnProtocols(protocols, c).map(protocol => ({ level: 'warning', code: 'unknown_own_protocol', protocol }))
+  const out: BindingIssue[] = []
   const known = new Set(idsOf(allColumns(c)))
   const open = openColumns(c, protocols)
   for (const [model, ids] of Object.entries(rules)) {

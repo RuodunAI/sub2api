@@ -100,6 +100,9 @@ func TestAC14_ResourceLimits(t *testing.T) {
 		// Raise the plugin's own limit so the watchdog does not act first,
 		// then allocate more than the node container's mem_limit (1g).
 		admin.OK(t, http.MethodPut, "/plugins/guard/resources", map[string]any{"memory_mb": 1024, "cpu": 0.25, "max_threads": 64, "max_open_files": 256})
+		t.Cleanup(func() {
+			admin.OK(t, http.MethodPut, "/plugins/guard/resources", map[string]any{"memory_mb": 0, "cpu": 0.25, "max_threads": 64, "max_open_files": 256})
+		})
 		c := &Client{Base: e.NodeURLs[0], HTTP: &http.Client{Timeout: 30 * time.Second}, Token: admin.Token}
 		c.API(t, http.MethodPost, "/p/guard/debug/alloc", nil, Query("mb", "1500"))
 		time.Sleep(5 * time.Second)
@@ -110,7 +113,6 @@ func TestAC14_ResourceLimits(t *testing.T) {
 		if bootAfter := e.NodeExec(1, "cat /proc/1/stat | cut -d' ' -f22"); bootAfter != bootBefore {
 			t.Fatalf("core process restarted (start time %s -> %s)", bootBefore, bootAfter)
 		}
-		admin.OK(t, http.MethodPut, "/plugins/guard/resources", map[string]any{"memory_mb": 0, "cpu": 0.25, "max_threads": 64, "max_open_files": 256})
 	})
 
 	t.Run("a large memory request is no limit and is accepted without a node cap", func(t *testing.T) {

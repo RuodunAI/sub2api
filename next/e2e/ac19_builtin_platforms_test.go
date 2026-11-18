@@ -120,10 +120,7 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 		// The conversion is off until an account enables it for the model:
 		// no account of the group serves the model on this endpoint, which
 		// is a 404 clients do not retry, in the OpenAI error format.
-		if g.Status != http.StatusNotFound || j.Get("error.message").String() != "no account in this group serves this model on this endpoint" ||
-			j.Get("error.type").String() == "" || j.Get("type").Exists() {
-			t.Fatalf("/v1/chat/completions before the conversion is enabled: HTTP %d %s (want 404 in openai format)", g.Status, g.Body)
-		}
+		expectNotServed(t, g, "openai")
 		for _, k := range keysUsed {
 			if tn.AccountKeys()[k] {
 				t.Fatalf("an upstream was called with account key %s before the conversion was enabled", k)
@@ -139,8 +136,7 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 		// request is served by an anthropic account and answered in the
 		// OpenAI chat-completion shape.
 		for _, a := range tn.Accounts {
-			admin.OK(t, http.MethodPatch, fmt.Sprintf("/accounts/%d", a.ID), map[string]any{"model_protocols": []any{
-				map[string]any{"models": []string{tn.Model}, "protocols": []string{"anthropic.messages", "openai.chat"}}}})
+			e.enableProtocols(admin, a.ID, tn.Model, "anthropic.messages", "openai.chat")
 		}
 		// The group and the account report the protocol they now serve.
 		if n := servedBy("openai.chat"); n != int64(len(tn.Accounts)) {

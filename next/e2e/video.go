@@ -66,19 +66,14 @@ func (e *Env) videoTaskStats(id string) videoStats {
 
 func (e *Env) newVideoTenant(admin *Session) *Tenant {
 	e.T.Helper()
-	tn := &Tenant{Model: e.RunModelOf(admin, "doubao-seedance-2-0-mini", e.Name("video"))}
-	tn.GroupID = e.CreateGroup(admin, e.Name("video-group"), "restricted", 1, nil)
+	tn := e.newTenantShell(admin, e.Name("video-group"), 1, "20")
+	tn.Model = e.RunModelOf(admin, "doubao-seedance-2-0-mini", e.Name("video"))
 	for i := 0; i < 2; i++ {
 		key := e.Name("video-account")
-		id := e.CreateAccount(admin, AccountSpec{PluginKey: "volcengine", Type: "relay", GroupIDs: []int64{tn.GroupID}, APIKey: key, MaxConcurrency: 4,
-			Settings: map[string]any{"video_api_prefix": "/api/v3"}})
-		tn.Accounts = append(tn.Accounts, TenantAccount{ID: id, Key: key})
+		tn.addAccount(e, admin, AccountSpec{PluginKey: "volcengine", Type: "relay", APIKey: key, MaxConcurrency: 4,
+			Settings: map[string]any{"video_api_prefix": "/api/v3"}}, key)
 		e.controlVideo(key, "running", true)
 	}
-	tn.User = e.CreateUser(admin, UserSpec{})
-	e.GrantGroups(admin, tn.User.UserID, []int64{tn.GroupID})
-	e.AdjustBalance(admin, tn.User.UserID, "20", true, "video E2E initial credit")
-	tn.KeyID, tn.APIKey = e.CreateAPIKey(tn.User, tn.GroupID)
 	return tn
 }
 

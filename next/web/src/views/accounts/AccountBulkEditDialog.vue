@@ -27,7 +27,7 @@ import { typeKey } from './accountTypes'
 import ModelProtocolList from './protocols/ModelProtocolList.vue'
 import OwnProtocolsField from './protocols/OwnProtocolsField.vue'
 import ProtocolIssues from './protocols/ProtocolIssues.vue'
-import type { ProtocolBinding } from './protocols/protocolBinding'
+import { bindingIssues, sharedOwnProtocols, type ProtocolBinding } from './protocols/protocolBinding'
 import { useProtocolEdit } from './protocols/useProtocolEdit'
 import { SPM_WINDOW_DEFAULT, validWindow } from './spmWindow'
 import SessionLimitInput from './controls/SessionLimitInput.vue'
@@ -64,11 +64,15 @@ watch(sharedType, (at) => !at && (on.protocols = on.model_protocols = false))
 /**
  * Findings of the ticked protocol fields. Whether an account still serves a
  * protocol takes both fields: with one ticked the other is each account's
- * own, and the server decides.
+ * own, and the server decides. The rules meet the own protocols set here
+ * when that field is ticked, else each account's: a rule's own protocol is
+ * closed where some selected account does not open it.
  */
-const protocolIssues = computed(() =>
-  protocolEdit.issues.value.filter((i) => (i.code === 'no_protocol' ? on.protocols && on.model_protocols : on.model_protocols))
-)
+const protocolIssues = computed(() => {
+  if (!on.model_protocols || !sharedType.value) return []
+  const own = on.protocols ? protocolEdit.protocols.value : sharedOwnProtocols(props.accounts.map((a) => a.protocols))
+  return bindingIssues(own, protocolEdit.rules.value, protocolEdit.columns.value).filter((i) => i.code !== 'no_protocol' || on.protocols)
+})
 const protocolsInvalid = computed(() => protocolIssues.value.some((i) => i.level === 'error'))
 
 watch(() => props.open, (open) => {

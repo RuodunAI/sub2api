@@ -72,7 +72,6 @@ func TestTLSAndProxyRecording(t *testing.T) {
 	addr := l.Addr().String()
 	l.Close()
 	t.Setenv("MOCK_TLS_ADDR", addr)
-	t.Setenv("MOCK_TLS_HOSTS", "vendor.example.com")
 	t.Setenv("MOCK_TLS_DIR", dir)
 	s := newServer()
 	go func() { _ = serveTLS(s.handler()) }()

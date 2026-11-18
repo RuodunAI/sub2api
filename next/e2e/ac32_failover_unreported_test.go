@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -51,16 +50,16 @@ func TestAC32_FailoverAndUnreported(t *testing.T) {
 
 	t.Run("plugin failure before sending fails over, account not penalized", func(t *testing.T) {
 		e := e.With(t)
-		e.EnsurePlugin(admin, "vertex", "")
-		st := e.newSingleTenant(admin, "grp-plugin-fail")
-		vertexID := e.CreateAccount(admin, AccountSpec{PluginKey: "vertex", Type: "vertex_sa", GroupIDs: []int64{st.GroupID}, Priority: 50,
-			Credentials: map[string]any{"service_account_json": serviceAccountJSON(t, "e2e-"+e.RunID), "project_id": "e2e-project", "location": "global"}})
 		k := fmt.Sprintf("AIza-fail-%s-%d", e.RunID, nextSeq())
-		geminiID := e.CreateAccount(admin, AccountSpec{PluginKey: GeminiPlugin, Type: APIKeyType, GroupIDs: []int64{st.GroupID}, APIKey: k, Priority: 1})
-		model := e.RunModelOf(admin, "gemini", "plugin-fail")
+		tn := e.singleAccount(admin, "grp-plugin-fail", AccountSpec{PluginKey: GeminiPlugin, Type: APIKeyType, APIKey: k, Priority: 1}, k, "gemini", "plugin-fail")
+		geminiID := tn.Accounts[0].ID
+		// Tried first (priority 50): a Vertex account whose Execute fails.
+		e.EnsurePlugin(admin, "vertex", "")
+		vertexID := tn.addAccount(e, admin, AccountSpec{PluginKey: "vertex", Type: "vertex_sa", Priority: 50,
+			Credentials: map[string]any{"service_account_json": serviceAccountJSON(t, "e2e-"+e.RunID), "project_id": "e2e-project", "location": "global"}}, "").ID
 		for i := 0; i < 2; i++ {
 			mark := m.Mark(t)
-			g := e.Gemini(st.APIKey, model, "generateContent", "", GeminiBody("plugin failure"))
+			g := e.Gemini(tn.APIKey, tn.Model, "generateContent", "", GeminiBody("plugin failure"))
 			if g.Status != 200 {
 				t.Fatalf("request %d: HTTP %d %s", i, g.Status, g.Body)
 			}
@@ -70,7 +69,7 @@ func TestAC32_FailoverAndUnreported(t *testing.T) {
 				}
 			}
 			oneMockCall(t, m, mark, k, "gemini fallback")
-			u := e.expectBilled(admin, st.User.UserID, g.RequestID, geminiID, usageGemini, false)
+			u := e.expectBilled(admin, tn.User.UserID, g.RequestID, geminiID, usageGemini, false)
 			// The Vertex account was tried first both times: a plugin failure
 			// does not cool the account down.
 			steps := u.Get("attempt_trail.steps").Array()
@@ -83,34 +82,36 @@ func TestAC32_FailoverAndUnreported(t *testing.T) {
 	t.Run("plugin killed while waiting for a task submission", func(t *testing.T) {
 		e := e.With(t)
 		e.RequireDocker()
-		e.EnsurePlugin(admin, "volcengine", "")
-		st := e.newSingleTenant(admin, "grp-task-crash")
 		k := e.Name("video-crash")
-		e.CreateAccount(admin, AccountSpec{PluginKey: "volcengine", Type: "relay", GroupIDs: []int64{st.GroupID}, APIKey: k, MaxConcurrency: 4,
-			Settings: map[string]any{"video_api_prefix": "/api/v3"}})
-		model := e.RunModelOf(admin, "doubao-seedance-2-0-mini", e.Name("crash"))
+		st := e.singleAccount(admin, "grp-task-crash", AccountSpec{PluginKey: "volcengine", Type: "relay", APIKey: k, MaxConcurrency: 4,
+			Settings: map[string]any{"video_api_prefix": "/api/v3"}}, k, "doubao-seedance-2-0-mini", e.Name("crash"))
 		// The upstream holds the submission long enough to kill the plugin.
 		m.SetRule(t, MockRule{APIKey: k, DelayMS: 6000})
 		defer m.ClearRule(t, k)
 		before := Money(t, e.Balance(st.User))
 		mark := m.Mark(t)
-		var (
-			wg  sync.WaitGroup
+		// The goroutine only sends: the test fails on this goroutine.
+		type submitted struct {
 			res *Resp
-		)
-		wg.Add(1)
+			err error
+		}
+		done := make(chan submitted, 1)
 		go func() {
-			defer wg.Done()
-			res = NewClient(e.NodeURLs[0]).Do(t, http.MethodPost, videoPath, map[string]any{
-				"model": model, "content": []map[string]string{{"type": "text", "text": "crash"}},
+			res, err := NewClient(e.NodeURLs[0]).Try(http.MethodPost, videoPath, map[string]any{
+				"model": st.Model, "content": []map[string]string{{"type": "text", "text": "crash"}},
 				"resolution": "480p", "ratio": "16:9", "duration": 4,
 			}, Header("Authorization", "Bearer "+st.APIKey))
+			done <- submitted{res, err}
 		}()
 		Eventually(t, 20*time.Second, 100*time.Millisecond, "the submission reached the upstream", func() bool {
 			return len(mockCallsOf(t, m, mark, k)) > 0
 		})
 		e.KillPluginProcesses(1, "volcengine")
-		wg.Wait()
+		sub := <-done
+		if sub.err != nil {
+			t.Fatalf("submission whose plugin died while waiting: %v", sub.err)
+		}
+		res := sub.res
 		if res.Status < 500 {
 			t.Fatalf("submission whose plugin died while waiting: %s (want 5xx)", res)
 		}

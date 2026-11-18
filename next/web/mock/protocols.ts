@@ -5,33 +5,9 @@
 // errors of the two. The rules, the field paths and the error codes mirror
 // the core's (CONTRACTS §110.3, §110.6, §110.7); model ids are not checked
 // and the grades are made up.
+import type { AccountServedProtocol as Served, AccountTypeEndpoint as TypeEndpoint, ModelProtocolRule as Rule, ServedVia } from '../src/api/types'
+import { COUNT_TOKENS_FAMILY, REST, viaOf } from '../src/views/accounts/protocols/protocolBinding'
 import { activePlatforms } from './platforms'
-
-interface TypeEndpoint {
-  method: string
-  path: string
-  protocol: string
-  platform: string
-  native: boolean
-  grade: string
-  via?: string[]
-}
-interface Rule {
-  models: string[]
-  protocols: string[]
-}
-interface Served {
-  protocol: string
-  via: 'native' | 'adapted' | 'converted'
-  grade: string
-  hops?: string[]
-  /** null: every model the rules do not bind to other protocols. */
-  models: string[] | null
-}
-
-const REST = '*'
-/** A count_tokens protocol follows its family's generation protocol. */
-const COUNT_TOKENS_FAMILY: Record<string, string> = { 'anthropic.count_tokens': 'anthropic.messages', 'gemini.count_tokens': 'gemini.generate' }
 
 /** Protocols the core converts between. */
 const TEXT = ['anthropic.messages', 'openai.chat', 'openai.responses', 'gemini.generate', 'gemini.stream_generate']
@@ -68,12 +44,12 @@ interface Binding {
 type TypeView = { platforms: Array<{ id: string }>; endpoints: TypeEndpoint[] }
 
 /** The protocols of a type, each once, with how the type serves it. */
-function typeProtocols(at: TypeView): Array<TypeEndpoint & { how: Served['via'] }> {
+function typeProtocols(at: TypeView): Array<TypeEndpoint & { how: ServedVia }> {
   const declared = new Set(at.platforms.map((p) => p.id))
   const seen = new Set<string>()
   return at.endpoints
     .filter((e) => !seen.has(e.protocol) && !!seen.add(e.protocol))
-    .map((e) => ({ ...e, how: e.native ? 'native' : declared.has(e.platform) ? 'adapted' : 'converted' }))
+    .map((e) => ({ ...e, how: viaOf(e, declared) }))
 }
 
 /** The protocols an account can be bound to: no count_tokens, no local estimate. */

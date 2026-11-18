@@ -118,12 +118,12 @@ export default {
       queue_fallback_max_waiting: 'How many requests per account may queue when every candidate is full. 0 answers 429 at once.',
       queue_fallback_wait_seconds: 'Longest wait when every candidate is full; after it the request gets 429. 0 turns this queue off.',
       platform_call_timeout_ms:
-        'Timeout of one call in which a plugin classifies a failed upstream request. A plugin\'s own processing while forwarding a request has no time limit.',
+        'Timeout of two kinds of single call: a plugin classifying a failed upstream request, and the gateway reading the billing policy "When the client disconnects mid-response" for a request (if it cannot be read in time, the request is billed from the pre-charge). A plugin\'s own processing while forwarding a request has no time limit.',
       default_hook_timeout_ms: 'Used by hooks whose manifest sets no timeout.',
       platform_hotpath_timeout_ms:
         'Timeout of the per-request platform calls before scheduling that are not hooks: resolving the model, and estimating usage for the pre-charge.',
       max_request_body_mb:
-        'Largest body of any gateway request (MB); a larger one gets 413, and one WebSocket message is bounded by it too. It is the only request size limit: endpoints, groups and plugins cannot set another, and the internal limits between the core and plugins derive from it.',
+        'Largest body of any gateway request (MB); a larger one gets 413, and one WebSocket message is bounded by it too. It is the only request size limit: endpoints, groups and plugins cannot set another.',
       media_download_max_mb: 'Size cap of one http(s) image or other media file downloaded for a request converted to Gemini (MB).',
       claude_max_tokens:
         'On, a request to an Anthropic account without max_tokens gets it from the table below; one that sets it is left as is. Parameter overrides of the account run after it and may change it. Off, only a request converted to Anthropic gets {fallback}, as the protocol requires.'

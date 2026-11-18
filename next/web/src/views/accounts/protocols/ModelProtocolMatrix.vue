@@ -26,7 +26,7 @@ const { columns, protocols, rules, defaults } = props.editor
 const own = computed(() => openColumns(columns.value, protocols.value))
 const shown = computed(() => [...own.value, ...columns.value.cross])
 const rows = computed(() => matrixModels(props.models, rules.value))
-const ownPlatforms = computed(() => [...new Set(own.value.map(c => c.platform))].map(id => labels.platformLabel(id)).join(' / '))
+const ownPlatforms = computed(() => labels.platformsName([...new Set(own.value.map(c => c.platform))].map(id => ({ id }))))
 /** The protocols of a row: its rule, else what a model without one is served on. */
 const idsOf = (model: string) => protocolsOf(rules.value, model, defaults.value)
 /** A row without a rule goes by the other models' row once that has one. */

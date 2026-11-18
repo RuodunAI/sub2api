@@ -14,7 +14,7 @@ type platformCase struct {
 	name, plugin, typ string
 	family            string      // model family of the run price ("claude", "gpt", "gemini")
 	usage             usageFamily // how the mock's usage is billed
-	streams           []bool      // the request forms the protocol has
+	streamOnly        bool        // the upstream only streams: a non-stream request is sent as a stream
 	keyPrefix         string      // a vendor prefix the key must start with
 	// creds is the account's credentials for upstream key k.
 	creds func(e *Env, k string) map[string]any
@@ -51,13 +51,29 @@ func expectPath(t *testing.T, r MockRequest, host, path string) {
 	}
 }
 
+// account is the account of the case on upstream key k.
+func (pc platformCase) account(e *Env, k string) AccountSpec {
+	return AccountSpec{PluginKey: pc.plugin, Type: pc.typ, Credentials: pc.creds(e, k)}
+}
+
+// platformCaseNamed returns the case of platformCases named name.
+func platformCaseNamed(t testing.TB, name string) platformCase {
+	t.Helper()
+	for _, pc := range platformCases() {
+		if pc.name == name {
+			return pc
+		}
+	}
+	t.Fatalf("no platform case %q", name)
+	return platformCase{}
+}
+
 func platformCases() []platformCase {
 	keyURL := func(e *Env, k string) map[string]any {
 		return map[string]any{"api_key": k, "base_url": e.MockInternalURL}
 	}
-	both := []bool{false, true}
 	return []platformCase{
-		{name: "anthropic", plugin: AnthropicPlugin, typ: AnthropicAPIKey, family: "claude", usage: usageAnthropic, streams: both,
+		{name: "anthropic", plugin: AnthropicPlugin, typ: AnthropicAPIKey, family: "claude", usage: usageAnthropic,
 			creds: keyURL, call: messagesCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "", "/v1/messages")
@@ -66,7 +82,7 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, model, prompt, "anthropic")
 			}},
-		{name: "relay", plugin: RelayPlugin, typ: RelayKey, family: "claude", usage: usageAnthropic, streams: both,
+		{name: "relay", plugin: RelayPlugin, typ: RelayKey, family: "claude", usage: usageAnthropic,
 			creds: keyURL, call: messagesCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "", "/v1/messages")
@@ -75,7 +91,7 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, model, prompt, "relay")
 			}},
-		{name: "openai", plugin: OpenAIPlugin, typ: APIKeyType, family: "gpt", usage: usageOpenAI, streams: both, keyPrefix: "sk-",
+		{name: "openai", plugin: OpenAIPlugin, typ: APIKeyType, family: "gpt", usage: usageOpenAI, keyPrefix: "sk-",
 			creds: keyURL, call: chatCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "", "/v1/chat/completions")
@@ -87,7 +103,7 @@ func platformCases() []platformCase {
 					t.Fatalf("openai stream without include_usage: %s", r.Body)
 				}
 			}},
-		{name: "gemini", plugin: GeminiPlugin, typ: APIKeyType, family: "gemini", usage: usageGemini, streams: both,
+		{name: "gemini", plugin: GeminiPlugin, typ: APIKeyType, family: "gemini", usage: usageGemini,
 			creds: keyURL, call: geminiCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				action := "generateContent"
@@ -100,7 +116,7 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, "", prompt, "gemini")
 			}},
-		{name: "azure_openai", plugin: AzurePlugin, typ: AzureV1Type, family: "gpt", usage: usageOpenAI, streams: both,
+		{name: "azure_openai", plugin: AzurePlugin, typ: AzureV1Type, family: "gpt", usage: usageOpenAI,
 			creds: keyURL, call: chatCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "", "/openai/v1/chat/completions")
@@ -109,7 +125,7 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, model, prompt, "azure")
 			}},
-		{name: "volcengine", plugin: "volcengine", typ: "relay", family: "gpt", usage: usageOpenAI, streams: both,
+		{name: "volcengine", plugin: "volcengine", typ: "relay", family: "gpt", usage: usageOpenAI,
 			creds: keyURL, call: chatCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "", "/v1/chat/completions")
@@ -120,7 +136,7 @@ func platformCases() []platformCase {
 			}},
 		// No configurable address: the plugins call the vendor hosts, which
 		// the e2e network resolves to the mock (TLS, the mock's CA).
-		{name: "vertex", plugin: "vertex", typ: "vertex_apikey", family: "gemini", usage: usageGemini, streams: both,
+		{name: "vertex", plugin: "vertex", typ: "vertex_apikey", family: "gemini", usage: usageGemini,
 			creds: func(_ *Env, k string) map[string]any { return map[string]any{"api_key": k} }, call: geminiCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				action := "generateContent"
@@ -133,12 +149,8 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, "", prompt, "vertex")
 			}},
-		{name: "bedrock", plugin: "bedrock", typ: "bedrock_aksk", family: "claude", usage: usageAnthropic, streams: both,
-			creds: func(_ *Env, k string) map[string]any {
-				// The mock checks SigV4 with the secret mock-secret-<access key id>.
-				return map[string]any{"access_key_id": k, "secret_access_key": "mock-secret-" + k, "region": "us-east-1", "inference_profile_prefix": "none"}
-			},
-			call: messagesCall,
+		{name: "bedrock", plugin: "bedrock", typ: "bedrock_aksk", family: "claude", usage: usageAnthropic,
+			creds: func(_ *Env, k string) map[string]any { return bedrockCreds(k) }, call: messagesCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				action := "invoke"
 				if stream {
@@ -153,7 +165,7 @@ func platformCases() []platformCase {
 					t.Fatalf("bedrock body: %s", r.Body)
 				}
 			}},
-		{name: "claude_oauth", plugin: "claude_oauth", typ: "claude_setup_token", family: "claude", usage: usageAnthropic, streams: both,
+		{name: "claude_oauth", plugin: "claude_oauth", typ: "claude_setup_token", family: "claude", usage: usageAnthropic,
 			creds: func(_ *Env, k string) map[string]any { return map[string]any{"access_token": k} }, call: messagesCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "api.anthropic.com", "/v1/messages")
@@ -163,12 +175,9 @@ func platformCases() []platformCase {
 				validJSONBody(t, r, model, "", "claude_oauth")
 			}},
 		// The Codex backend only streams: a non-stream request is sent as a
-		// stream (streamOnly) and answered as JSON.
-		{name: "codex", plugin: "codex", typ: "codex_oauth", family: "gpt", usage: usageOpenAI, streams: both,
-			creds: func(_ *Env, k string) map[string]any {
-				return map[string]any{"access_token": k, "chatgpt_account_id": "acct-e2e"}
-			},
-			call: responsesCall,
+		// stream and answered as JSON.
+		{name: "codex", plugin: "codex", typ: "codex_oauth", family: "gpt", usage: usageOpenAI, streamOnly: true,
+			creds: func(_ *Env, k string) map[string]any { return codexCreds(k) }, call: responsesCall,
 			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
 				expectPath(t, r, "chatgpt.com", "/backend-api/codex/responses")
 				if r.Header("authorization") != "Bearer "+k || r.Header("chatgpt-account-id") != "acct-e2e" || !r.TLS {
@@ -194,16 +203,14 @@ func TestAC30_PlatformPluginsForwardThroughExecute(t *testing.T) {
 	for _, pc := range platformCases() {
 		t.Run(pc.name, func(t *testing.T) {
 			e := e.With(t)
-			e.EnsurePlugin(admin, pc.plugin, "")
-			st := e.newSingleTenant(admin, "grp-fwd-"+pc.name)
 			k := pc.keyPrefix + fmt.Sprintf("AKIAE2E%s%d%s", strings.ToUpper(e.RunID), nextSeq(), "MOCKKEY")
-			accountID := e.CreateAccount(admin, AccountSpec{PluginKey: pc.plugin, Type: pc.typ, GroupIDs: []int64{st.GroupID}, Credentials: pc.creds(e, k)})
-			model := e.RunModelOf(admin, pc.family, "fwd-"+strings.ReplaceAll(pc.name, "_", "-"))
-			for _, stream := range pc.streams {
+			tn := e.singleAccount(admin, "grp-fwd-"+pc.name, pc.account(e, k), k, pc.family, "fwd-"+strings.ReplaceAll(pc.name, "_", "-"))
+			model, accountID := tn.Model, tn.Accounts[0].ID
+			for _, stream := range []bool{false, true} {
 				what := fmt.Sprintf("%s stream=%v", pc.name, stream)
 				prompt := "fwd-" + e.Name(pc.name)
 				mark := m.Mark(t)
-				g := pc.call(e, st.APIKey, model, prompt, stream)
+				g := pc.call(e, tn.APIKey, model, prompt, stream)
 				if g.Status != 200 {
 					t.Fatalf("%s: HTTP %d %s", what, g.Status, g.Body)
 				}
@@ -213,10 +220,9 @@ func TestAC30_PlatformPluginsForwardThroughExecute(t *testing.T) {
 				if !stream && (len(g.Events) != 0 || !g.JSON().IsObject()) {
 					t.Fatalf("%s: want a JSON answer, got %d events %s", what, len(g.Events), g.Body)
 				}
-				upstreamStream := stream || pc.name == "codex"
 				r := oneMockCall(t, m, mark, k, what)
-				pc.check(t, r, k, model, prompt, upstreamStream)
-				e.expectBilled(admin, st.User.UserID, g.RequestID, accountID, pc.usage, stream)
+				pc.check(t, r, k, model, prompt, stream || pc.streamOnly)
+				e.expectBilled(admin, tn.User.UserID, g.RequestID, accountID, pc.usage, stream)
 			}
 		})
 	}

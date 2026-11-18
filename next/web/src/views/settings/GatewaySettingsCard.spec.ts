@@ -139,7 +139,8 @@ describe('request body limit and platform call timeout (forwarding v2 §8.1, §8
     const row = field(w, 'max_request_body_mb').text()
     expect(row).toContain('请求体上限')
     expect(row).toContain('每个网关请求')
-    expect(row).toContain('内部上限由它推出')
+    expect(row).toContain('端点、分组和插件都不能另设')
+    expect(row).not.toContain('内部上限')
     expect(row).toContain('MB')
 
     await input.setValue('512')
@@ -170,13 +171,17 @@ describe('request body limit and platform call timeout (forwarding v2 §8.1, §8
     expect(field(w, 'max_request_body_mb').text()).toContain('取值范围为 1 到 1024')
   })
 
-  it('describes the platform call timeout as the error classification call, in both languages', async () => {
+  it('describes the platform call timeout as the error classification and disconnect policy calls, in both languages', async () => {
     const zh = field(await render(), 'platform_call_timeout_ms').text()
-    expect(zh).toContain('错误分类的单次调用超时')
+    expect(zh).toContain('错误分类')
+    expect(zh).toContain('客户端中途断开时')
     expect(zh).toContain('不限时间')
     i18n.global.locale.value = 'en'
     const en = await render()
-    expect(field(en, 'platform_call_timeout_ms').text()).toContain('has no time limit')
+    const timeout = field(en, 'platform_call_timeout_ms').text()
+    expect(timeout).toContain('classifying a failed upstream request')
+    expect(timeout).toContain('When the client disconnects mid-response')
+    expect(timeout).toContain('has no time limit')
     expect(field(en, 'max_request_body_mb').text()).toContain('Request body limit')
   })
 })

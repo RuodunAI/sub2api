@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { SChip } from '@sub2api/ui'
 import { allColumns, columnState, type ProtocolColumn, type ProtocolColumns } from './protocolBinding'
 import { useProtocolLabels } from './protocolLabels'
+import UnknownProtocolChips from './UnknownProtocolChips.vue'
 
 const props = defineProps<{ columns: ProtocolColumns; ids: string[]; disabled?: boolean }>()
 const emit = defineEmits<{ (e: 'toggle', c: ProtocolColumn): void; (e: 'remove', protocol: string): void }>()
@@ -33,8 +34,6 @@ const label = (c: ProtocolColumn) => (c.via === 'converted' ? t('accounts.protoc
       :data-protocol="c.key"
       @update:pressed="emit('toggle', c)"
     >{{ label(c) }}</SChip>
-    <SChip v-for="id in unknown" :key="id" tone="warning" closable :disabled="disabled" :close-label="t('common.remove')" :data-protocol="id" @close="emit('remove', id)">
-      <span class="font-mono">{{ id }}</span>
-    </SChip>
+    <UnknownProtocolChips :ids="unknown" :disabled="disabled" @remove="emit('remove', $event)" />
   </div>
 </template>

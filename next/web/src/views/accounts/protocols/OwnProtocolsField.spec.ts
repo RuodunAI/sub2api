@@ -58,11 +58,10 @@ describe('own protocols of an account', () => {
     expect(rows(w)).toHaveLength(4)
     const unknown = w.get('[data-testid="own-protocols-unknown"]')
     expect(unknown.text()).toContain('以下协议不是此账号类型的本平台协议，保存时会被拒绝，请移除：')
-    expect(editor.issues.value.map(i => [i.code, i.protocol])).toEqual([['unknown_own_protocol', 'openai.legacy']])
+    expect(editor.issues.value).toEqual([])
     await unknown.get('[data-protocol="openai.legacy"] button').trigger('click')
     expect(editor.binding().protocols).toEqual(['openai.chat'])
     expect(w.find('[data-testid="own-protocols-unknown"]').exists()).toBe(false)
-    expect(editor.issues.value).toEqual([])
   })
 
   it('names what an adapted protocol is sent as', () => {

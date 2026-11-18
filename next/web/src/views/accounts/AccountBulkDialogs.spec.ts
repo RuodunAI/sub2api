@@ -202,6 +202,28 @@ describe('bulk account dialogs', () => {
     expect(apply()).toBeUndefined()
   })
 
+  it('checks the rules against each account\'s own protocols while the own protocols are not ticked', async () => {
+    const w = mount(AccountBulkEditDialog, {
+      props: { open: false, accounts: [acc(1, { protocols: null }), acc(2, { protocols: ['openai.chat', 'openai.responses'] })], typeOf: () => openai },
+      global: { plugins: [i18n], stubs: { SModal } }
+    })
+    await w.setProps({ open: true })
+    const editor = w.getComponent(OwnProtocolsField).props('editor')
+    const issues = () => w.findAll('[data-issue]').map(i => i.attributes('data-issue'))
+    // Closed here, then left unticked: the dialog's own protocols do not apply.
+    editor.setMode('custom')
+    editor.toggleOwn(editor.columns.value.own[0])
+    await flushPromises()
+    await w.get('[data-testid="bulk-field-protocols"] input[type="checkbox"]').setValue(false)
+    editor.rules.value = { a: ['openai.chat'] }
+    await flushPromises()
+    expect(issues()).toEqual([])
+    // Account 2 does not open embeddings: the rule's protocol is closed there.
+    editor.rules.value = { a: ['openai.embeddings'] }
+    await flushPromises()
+    expect(issues()).toEqual(['closed_protocol'])
+  })
+
   it('offers the protocol fields only for accounts of one known type, and starts them over each time it opens', async () => {
     const mixed = mount(AccountBulkEditDialog, { props: { open: true, accounts: [acc(1), acc(2, { type: 'other' })], typeOf: () => openai }, global: { plugins: [i18n], stubs: { SModal } } })
     expect(mixed.get('[data-testid="bulk-protocols-mixed"]').text()).toContain('只能对同一类型的账号批量修改')

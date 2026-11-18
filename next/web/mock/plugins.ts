@@ -493,7 +493,7 @@ function genericReview(key: string, version: string, name: Any, publisher: strin
     ],
     account_types: [
       // manifest-shaped platform entries are accepted too
-      { id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'schema', platforms: [{ platform: pid, requestFields: ['model'] }, 'openai'] }
+      { id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'schema', platforms: [{ platform: pid }, 'openai'] }
     ],
     hooks: [],
     jobs: [],

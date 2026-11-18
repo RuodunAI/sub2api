@@ -167,7 +167,7 @@ export default {
   },
   protocols: {
     names: {
-      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images' },
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings' },
       anthropic: { messages: 'Messages' },
       gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
     },
@@ -208,7 +208,6 @@ export default {
       no_protocol: '账号没有开放任何协议。要停用账号请用“参与调度”开关。',
       closed_protocol: '{model} 指定了账号未开放的协议 {protocol}，这一项不生效。',
       unknown_protocol: '{model} 指定了此账号类型不能服务的协议 {protocol}，保存时会被拒绝。',
-      unknown_own_protocol: '“本平台协议”里的 {protocol} 不是此账号类型的本平台协议，保存时会被拒绝；请在“本平台协议”卡片里移除。',
       rest_conversion: '“其余模型”开了协议转换：所有没有单独列出的模型都会接受转换，上游不认识的模型名可能触发故障策略。建议只给有映射的模型开。',
       two_hop: '{model} → {protocol}：要经过两次转换，质量较差。'
     },
@@ -232,7 +231,7 @@ export default {
   },
   headerOverride: {
     title: '请求头覆盖',
-    hint: "按请求头名设置发往上游的值，格式兼容 new-api 渠道的请求头覆盖，可直接粘贴。值可写固定文本、{'{client_header:名}'}（取客户端的值）、{'{client_header:名:追加值}'}（客户端的值后追加）、{'{unset}'}（删除）；键 * 或 regex:正则 表示透传。在请求头透传之后、请求参数覆盖之前生效。凭证、逐跳、客户端地址和网关控制头不能覆盖，不支持 {'{api_key}'}",
+    hint: "按请求头名设置发往上游的值，格式兼容 new-api 渠道的请求头覆盖，可直接粘贴。值可写固定文本、{'{client_header:名}'}（取客户端的值）、{'{client_header:名:追加值}'}（客户端的值后追加）、{'{unset}'}（删除）；键 * 或 regex:正则 表示透传。在请求头透传之后、请求参数覆盖之前生效。凭证、逐跳、客户端地址和网关控制头不能覆盖，不支持 {'{api_key}'}；插件声明为权威的请求头也不受覆盖影响：Claude OAuth、Codex 和火山引擎账号是插件设置的全部请求头，其他账号是凭证头（AWS 签名的请求还有签名覆盖的头）",
     none: '未设置',
     count: '{n} 项',
     edit: '编辑',
