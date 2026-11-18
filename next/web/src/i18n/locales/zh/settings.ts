@@ -141,9 +141,7 @@ export default {
       }
     },
     range: '范围 {min}–{max}。',
-    notInteger: '请输入整数',
-    bodyOverPluginMemory:
-      '注意：超过 {safe} MB 后，单个最大的请求可能超出插件进程的内存封顶，需要同时调高核心的进程环境变量 SUB2API_PLUGIN_MAX_MEMORY_MB。'
+    notInteger: '请输入整数'
   },
   billing: {
     preConsumeTokens: '请求预扣 Token 数',
