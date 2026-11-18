@@ -67,7 +67,7 @@ func (u *Upstream) DefaultHeader(name, value string) *Upstream {
 
 // Headers sets every header of h as authoritative; several values of one
 // name are joined with ", ". For a signed request pass only what the
-// signature produced or covers (reqsign.SignedHeaders), not req.Header:
+// signature produced or covers (reqsign.AWSSigV4Headers), not req.Header:
 // every other header there would become authoritative too.
 func (u *Upstream) Headers(h http.Header) *Upstream {
 	for name, values := range h {
