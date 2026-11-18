@@ -14,8 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-
 	"github.com/Sub2API-Devs/sup2api/next/plugins/codex/internal/codex"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -50,6 +48,11 @@ func TestManifestShape(t *testing.T) {
 	if m.Key != "codex" || m.Version != codex.Version || m.Runtime != "grpc" || m.APIVersion != manifest.APIVersion {
 		t.Fatalf("key/version/runtime = %s %s %s (plugin version %s)", m.Key, m.Version, m.Runtime, codex.Version)
 	}
+	// The single request path (Execute relaying without waiting) needs the
+	// core that carries forwarding v2.
+	if m.HostCompat != ">=0.1.304 <0.2.0" {
+		t.Fatalf("hostCompat = %s", m.HostCompat)
+	}
 	// The compliance boundary is stated in both languages.
 	if !strings.Contains(m.Description["en"], "own use with their own ChatGPT subscription") ||
 		!strings.Contains(m.Description["en"], "do not pool several people's accounts or resell") ||
@@ -63,7 +66,7 @@ func TestManifestShape(t *testing.T) {
 	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" {
 		t.Fatalf("ui.native = %+v", m.UI)
 	}
-	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformExecute, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes}
+	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes}
 	var caps []string
 	for _, c := range m.Capabilities {
 		caps = append(caps, c.ID)
@@ -118,33 +121,6 @@ func TestManifestShape(t *testing.T) {
 		if ap.Platform != codex.PlatformID || !slices.Equal(ap.Endpoints, []string{"responses", "responses_websocket"}) ||
 			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || len(ap.PassHeaders) != 0 {
 			t.Errorf("%s platform = %+v", at.ID, ap)
-		}
-		wantFields := []string{"model", codex.FieldHasInstructions, codex.FieldStringInput, codex.FieldSystemRoles, codex.FieldPromptCacheKey}
-		if !slices.Equal(ap.RequestFields, wantFields) {
-			t.Errorf("%s requestFields = %v, want %v", at.ID, ap.RequestFields, wantFields)
-		}
-	}
-
-	// The request field queries tell the plugin what it needs (the core
-	// reads them with gjson, as here).
-	for _, tc := range []struct {
-		body, query, want string
-	}{
-		{`{"instructions":"x","input":[]}`, codex.FieldHasInstructions, "1"},
-		{`{"input":[]}`, codex.FieldHasInstructions, "0"},
-		{`{"input":"hello"}`, codex.FieldStringInput, `"hello"`},
-		{`{"input":[{"role":"user","content":"hello"}]}`, codex.FieldStringInput, ""},
-		{`{}`, codex.FieldStringInput, ""},
-		{`{"input":[{"role":"system","content":"s"},{"type":"function_call"},{"role":"user","content":"u"}]}`, codex.FieldSystemRoles, `[["system"],[],[]]`},
-		{`{"input":[{"role":"user","content":"` + strings.Repeat("x", 1000) + `"}]}`, codex.FieldSystemRoles, `[[]]`},
-		{`{"input":"system"}`, codex.FieldSystemRoles, ""},
-		{`{"input":{"role":"system"}}`, codex.FieldSystemRoles, `[]`}, // not an array: no item to patch
-		{`{}`, codex.FieldSystemRoles, ""},
-		{`{"prompt_cache_key":"conv-1"}`, codex.FieldPromptCacheKey, `"conv-1"`},
-		{`{}`, codex.FieldPromptCacheKey, ""},
-	} {
-		if got := gjson.Get(tc.body, tc.query).Raw; got != tc.want {
-			t.Errorf("gjson(%s, %s) = %q, want %q", tc.body, tc.query, got, tc.want)
 		}
 	}
 
@@ -261,7 +237,7 @@ func TestManifestServes(t *testing.T) {
 	if h.Info.GetPluginKey() != "codex" {
 		t.Fatalf("info = %v", h.Info)
 	}
-	for _, c := range []string{manifest.CapPlatformAdapter, manifest.CapPlatformExecute, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes} {
+	for _, c := range []string{manifest.CapPlatformAdapter, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes} {
 		if !slices.Contains(h.Info.GetCapabilities(), c) {
 			t.Errorf("capability %s missing from %v", c, h.Info.GetCapabilities())
 		}
