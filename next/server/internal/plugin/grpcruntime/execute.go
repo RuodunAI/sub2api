@@ -32,9 +32,10 @@ func (h *hostServer) maxRequestBody() int64 {
 // the plugin's envelope and added fields.
 const relayBodyMargin = 1 << 20
 
-// checkBody refuses a body above limit bytes. The broker accepts messages of
-// any size (the setting can change while it runs), so every handler taking a
-// body checks it here.
+// checkBody refuses a body above limit bytes. The broker admits messages up
+// to what the largest body setting allows (brokerMaxRecvBytes; the setting
+// can change while it runs), so every handler taking a body checks it here
+// against the limit of the moment.
 func checkBody(body []byte, limit int64) error {
 	if int64(len(body)) > limit {
 		return status.Errorf(codes.InvalidArgument, "body of %d bytes exceeds the limit of %d bytes", len(body), limit)

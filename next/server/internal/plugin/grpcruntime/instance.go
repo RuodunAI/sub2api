@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,20 +475,38 @@ func (i *Instance) serveHostBroker(ctx context.Context, p *proc) error {
 // sdk/protocol count on).
 const hostMaxRecvBytes = 4 << 20
 
+// maxRequestBodySetting is the largest request body limit the gateway
+// setting max_request_body_mb can ever take (its maximum, 1024 MiB).
+const maxRequestBodySetting = 1024 << 20
+
+// brokerMaxRecvBytes is the broker server's receive limit, for every call
+// and every stream frame: the largest relay body the body setting can ever
+// allow (maxRequestBodySetting + relayBodyMargin) plus 1 MiB for the rest
+// of the message. gRPC checks it from a message's length prefix, before
+// the message is read.
+const brokerMaxRecvBytes = maxRequestBodySetting + relayBodyMargin + 1<<20
+
 // bodyCalls are the HostService calls whose request holds a body up to the
 // request body limit. That limit can change while the broker runs and a gRPC
-// server's receive limit cannot, so the transport accepts any size and the
-// handlers of these calls check the body (hostServer.checkBody).
+// server's receive limit cannot, so the transport admits up to
+// brokerMaxRecvBytes and the handlers of these calls check the body against
+// the limit of the moment (checkBody).
 var bodyCalls = map[string]bool{
 	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/RelayUpstream": true,
 	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/ExecuteHTTP":   true,
 }
 
 // hostServerOptions are the options of the broker server besides go-plugin's
-// own: the transport's maximum as the receive limit, and the usual 4 MiB
-// for every call but bodyCalls.
+// own. The transport refuses any message above brokerMaxRecvBytes before
+// reading it. The 4 MiB of hostMaxRecvBytes for the unary HostService calls
+// other than bodyCalls is checked by limitHostRecv only once such a message
+// has been received and decoded, so it refuses the call but does not keep
+// the core from reading up to brokerMaxRecvBytes; EgressService's stream
+// frames have only the transport's limit. Bounding those at receipt needs a
+// broker server of their own with the 4 MiB limit, which the plugin would
+// have to dial: InitHost hands it one broker id for both services.
 func hostServerOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{grpc.MaxRecvMsgSize(math.MaxInt32), grpc.ChainUnaryInterceptor(limitHostRecv)}
+	return []grpc.ServerOption{grpc.MaxRecvMsgSize(brokerMaxRecvBytes), grpc.ChainUnaryInterceptor(limitHostRecv)}
 }
 
 func limitHostRecv(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
