@@ -48,7 +48,8 @@ function modelsOf(e: AccountTypeEndpoint) {
   const models = entryOf(e)?.models
   if (!models) return null
   const names = models.map(labels.modelName)
-  return { text: t('accounts.protocols.served.models', { n: names.length, models: names.slice(0, 3).join(', ') + (names.length > 3 ? ' …' : '') }), all: names.join(', ') }
+  const sep = t('common.listSeparator')
+  return { text: t('accounts.protocols.served.models', { n: names.length, models: names.slice(0, 3).join(sep) + (names.length > 3 ? ' …' : '') }), all: names.join(sep) }
 }
 </script>
 

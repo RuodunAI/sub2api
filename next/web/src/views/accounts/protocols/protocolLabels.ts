@@ -3,6 +3,7 @@
 // other the part of its id after the platform.
 import { useI18n } from 'vue-i18n'
 import { useOptionalT } from '@/composables/optionalText'
+import type { LText } from '@/api/types'
 import { usePlatforms } from '@/composables/platforms'
 import { REST, type ProtocolColumn } from './protocolBinding'
 
@@ -20,6 +21,8 @@ export function useProtocolLabels() {
   const targetName = (c: ProtocolColumn) => (c.hops?.length ? protocolName(c.hops[c.hops.length - 1]) : '')
   /** A model id, or "other models" for the catch-all entry. */
   const modelName = (m: string) => (m === REST ? t('accounts.protocols.rules.rest') : m)
+  /** Platforms named together ("Anthropic / OpenAI"); `label` names one the catalog lacks. */
+  const platformsName = (list: ReadonlyArray<{ id: string; label?: LText | null }>) => list.map(p => platforms.label(p.id, p.label)).join(' / ')
 
-  return { protocolName, columnName, targetName, modelName, platformLabel: platforms.label }
+  return { protocolName, columnName, targetName, modelName, platformLabel: platforms.label, platformsName }
 }

@@ -87,9 +87,9 @@ export function sameProtocolColumns(a: TypeProtocols, b: TypeProtocols): boolean
 }
 
 /** A conversion through two converters. */
-export const isTwoHop = (c: Pick<ProtocolColumn, 'hops'>) => (c.hops?.length ?? 0) > 2
+const isTwoHop = (c: Pick<ProtocolColumn, 'hops'>) => (c.hops?.length ?? 0) > 2
 
-export type ColumnState = 'on' | 'partial' | 'off'
+type ColumnState = 'on' | 'partial' | 'off'
 
 /** Whether the ids hold the column: all of its ids, some (hand-written data) or none. */
 export function columnState(ids: readonly string[] | null, c: ProtocolColumn): ColumnState {
@@ -296,7 +296,7 @@ export function bindingJSON(b: ProtocolBinding): string {
 
 // ---------------------------------------------------------------- checks and summaries
 
-export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'rest_conversion' | 'two_hop'
+type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'rest_conversion' | 'two_hop'
 
 /** A finding of the editor: errors block saving, warnings and notes do not. */
 export interface BindingIssue {

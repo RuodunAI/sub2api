@@ -23,7 +23,6 @@ import ProxyPicker from '@/components/ProxyPicker.vue'
 import { lt } from '@/i18n'
 import { assetURL, usePluginStore } from '@/stores/plugins'
 import { useEnvironmentLayer, useGroupsWith, useProxiesLookup } from '@/composables/lookups'
-import { usePlatforms } from '@/composables/platforms'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { useAccountCaps } from '@/composables/useAccountCaps'
 import { errorMessage, fieldErrors, notifyError } from '@/utils/errors'
@@ -53,6 +52,7 @@ import { CONNECTION_FIELDS, isAdvancedField, isProtocolField, isSchedulingField,
 import ModelProtocolsCard from './protocols/ModelProtocolsCard.vue'
 import OwnProtocolsField from './protocols/OwnProtocolsField.vue'
 import { sameProtocolColumns } from './protocols/protocolBinding'
+import { useProtocolLabels } from './protocols/protocolLabels'
 import { useProtocolEdit } from './protocols/useProtocolEdit'
 
 const props = defineProps<{ accountType: AccountType | null; accountTypeOptions?: AccountType[]; account?: Account | null }>()
@@ -182,9 +182,9 @@ const mappingCount = computed(() => Object.keys(mapping.value).length)
 
 // Protocol binding (DESIGN-2026-11-17-PROTOCOL-BINDING §5.1): the own protocols the account opens, the protocols of chosen models.
 const protocolEdit = useProtocolEdit(() => props.accountType, () => models.value)
-const platformLabels = usePlatforms()
+const protocolLabels = useProtocolLabels()
 const ownProtocolsTitle = computed(() => {
-  const names = (props.accountType?.platforms ?? []).map(p => platformLabels.label(p.id, p.label)).join(' / ')
+  const names = protocolLabels.platformsName(props.accountType?.platforms ?? [])
   return names ? t('accounts.protocols.own.titleOf', { platforms: names }) : t('accounts.protocols.own.title')
 })
 /** "Protocols 4/4 · 2 models limited · 1 converted", ahead of the models of the section summary. */
