@@ -414,12 +414,12 @@ func New() *standard.Platform {
 
 **行为必须与今天逐字节相同**，验收办法：
 
-1. 黄金样例是验收依据。四个文件共 1498 条（3.3），在删除之前移植成新库的测试（`sdk/pluginsdk/standard/testdata/golden`）。旧样例的输入是声明的字段、期望是 `BuildUpstreamRequestResponse`（URL、请求头、补丁）。移植时用一个一次性的转换程序：从字段合成请求体，把期望的补丁应用上去得到期望的最终请求体，再把请求头按“声明的/鉴权的”分成默认头和权威头。转换程序在旧引擎还在的那个提交里运行一次，输出冻结，之后与旧引擎一起删。
-2. 新旧对照测试：在删除之前的提交里，同一组输入分别过旧引擎和新库，比较“最终发给上游的方法、URL、请求头、请求体”，全部相等才允许进入删除。这是防转换程序自己出错的第二道检查。
+1. 黄金样例是验收依据。四个文件共 1498 条（3.3），在删除之前转换成不依赖引擎、也不依赖 `BuildUpstreamRequest` 消息的样例，连同回放辅助放在 `sdk/pluginsdk/standard/goldentest`（W2，已完成；结构、用法、例外都写在该目录的 `README.md`）。旧样例的输入是声明的字段、期望是 `BuildUpstreamRequestResponse`（URL、请求头、补丁）；转换后的 `execute` 样例输入是账号、元信息、客户端请求头和完整请求体，期望是最终的上游请求：从字段合成请求体，把期望的补丁应用上去得到期望的最终请求体，再把请求头分成权威头（携带凭证的那一个）和默认头（其余）。`test`、`models`、`validate`、`classify` 四类的消息不变。转换程序是 `sdk/upstream/golden_convert_test.go`，输出已冻结，它与旧引擎一起删。1498 条全部转换、没有跳过；其中 49 条的期望值是今天的行为而不是当年的录制（relay 的 40 条账号测试；openai、gemini 对别的类型的账号照常作答的 9 条），逐条带说明。
+2. 新旧对照：同一组输入分别过旧引擎和新库，比较“最终发给上游的方法、URL、请求头、请求体”。旧引擎这一半已经在 W2 做完（`TestConvertedGoldenReplay`：转换后的每一条按核心的用法经今天的引擎回放，全部一致；它与 `TestGoldenConversion` 一个出自引擎、一个出自录制，是防转换程序自己出错的第二道检查）。新库这一半是 W4 用同一批样例调 `goldentest.Run`，全部通过才允许进入删除。
 3. azure_openai 没有黄金文件，把 `plugins/azure-openai/manifest_test.go` 里对路由、鉴权头、`api-version`、三种资源地址的断言移植成对新插件的断言。
-4. anthropic、openai、gemini、relay 各自的 `manifest_test.go` 里依赖 `sdk/upstream` 的断言同样移植。
+4. anthropic、openai、gemini、relay 各自的 `manifest_test.go` 里依赖 `sdk/upstream` 的断言同样移植。这五份文件里要移植的断言已逐条导出在 `sdk/pluginsdk/standard/goldentest/MANIFEST-ASSERTIONS.md`。
 
-有一处行为**做不到完全相同**，要事先说明：今天声明的过滤字段和声明的 `paramOverride` 在核心里先于 `claude_max_tokens` 和账号的 `param_override` 执行（`param_override.go:82-91`）。改成代码插件后，这一层在插件里、排在运营方的改写**之后**。运营方的参数覆盖恰好写了一个被声明过滤的字段时：今天这个值保留，以后被插件删掉。黄金样例不覆盖这种组合（它们只测构造）。实现时要列出三个预设和四份清单里实际声明的过滤字段与 `paramOverride`，逐个判断有没有运营方会去覆盖的字段，写进 CONTRACTS 新章节和 CHANGELOG（第 15 节）。
+有一处行为**做不到完全相同**，要事先说明：今天声明的过滤字段和声明的 `paramOverride` 在核心里先于 `claude_max_tokens` 和账号的 `param_override` 执行（`param_override.go:82-91`）。改成代码插件后，这一层在插件里、排在运营方的改写**之后**。运营方的参数覆盖恰好写了一个被声明过滤的字段时：今天这个值保留，以后被插件删掉。黄金样例不覆盖这种组合（它们只测构造），所以没有一条样例会因此不同。W2 已经列出三个预设和五份清单里实际声明的内容（goldentest 的 README）：没有任何一处声明 `paramOverride`；anthropic、openai、gemini、relay 的清单把过滤字段清空了；只有 azure_openai 的两个类型沿用 openai 预设的 `service_tier`、`safety_identifier`。所以这处变化今天只在 azure_openai 上可见：运营方在账号的参数覆盖里设置这两个字段之一时，今天发给上游，以后被插件删掉。写进 CONTRACTS 新章节和 CHANGELOG。
 
 ### 7.4 从声明式世界来的 SDK 库，哪些留下
 
@@ -865,9 +865,9 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 | 包 | 内容 | 文件范围 | 验收 | 依赖 | 大小 |
 |---|---|---|---|---|---|
 | W1 | 契约：proto 删旧加新（11.1、5.2）；清单删 `upstream`、`runtime none`、`requestFields`、`maxBodyBytes`、两个能力 ID（11.2）；`ProtocolVersion` 2、`HostAPIVersion` 10；重新生成 | `sdk/proto/**`、`sdk/gen/**`、`sdk/manifest/**`、`sdk/protocol/**`、`runtime-contract/contract.go`、`sdk/platforms/*.json` | `buf generate` 后没有未提交的差异；`sdk/manifest` 的测试：`runtime none`、`upstream` 块、已删的能力各有一条拒绝用例；两个 `HostAPIVersion` 相等 | 无 | M |
-| W2 | 黄金样例转换：在 W1 **之前**的提交上运行一次转换程序，把四个黄金文件转成新格式并冻结；同时导出 azure 与五份 `manifest_test.go` 的断言清单 | `sdk/pluginsdk/standard/testdata/**`（新） | 转换结果条数为 441、343、371、343；转换程序自带的往返检查通过（7.3 第 1 条） | 无（必须最先做，旧引擎一删就做不了） | S |
+| W2 | 黄金样例转换（**已完成**）：在 W1 **之前**的提交上把四个黄金文件转成不依赖引擎的样例并冻结，带回放辅助 `goldentest.Run`；同时导出 azure 与五份 `manifest_test.go` 的断言清单 | `sdk/pluginsdk/standard/goldentest/**`（新；样例在它的 `testdata/golden` 下，随包内嵌，这样插件模块 import 就能用）、`sdk/upstream/golden_convert_test.go`（新，随引擎删除） | 转换结果条数为 441、343、371、343；`TestGoldenConversion`（提交的文件就是录制的转换输出，输入转回去不丢东西）和 `TestConvertedGoldenReplay`（每一条经今天的引擎回放一致）通过（7.3 第 1、2 条） | 无（必须最先做，旧引擎一删就做不了） | S |
 | W3 | SDK：`Relay`、`Fetch`、新的 `ExecuteDefault`、`Monitor` 返回值、能力推断、所有插件的接收上限固定为 `MaxInt32`、假宿主；删回调、`Poller`、`Reconciler`、补丁辅助、`WithMaxRecvMsgSize` | `sdk/pluginsdk/*.go`、`sdk/pluginsdk/pluginsdktest/**`、`sdk/reqsign`（注释） | 单测：三种返回各一例；标志决定等待与否；解析失败返回 `host_usage`；`Monitor` 返回结果；包里不再有三个回调函数 | W1 | M |
-| W4 | 公共库与预设：`sdk/pluginsdk/standard`，`providers/{openai,anthropic,gemini}` 的预设构造函数；删 `sdk/upstream`、`sdk/platforms/upstream` | `sdk/pluginsdk/standard/**`、`sdk/pluginsdk/providers/**`、`sdk/upstream/**`、`sdk/platforms/upstream/**` | W2 冻结的 1498 条样例全过；`sdk` 模块里搜不到 `sdk/upstream` | W2、W3 | L |
+| W4 | 公共库与预设：`sdk/pluginsdk/standard`，`providers/{openai,anthropic,gemini}` 的预设构造函数；删 `sdk/upstream`（含 W2 的 `golden_convert_test.go`）、`sdk/platforms/upstream`。`standard/goldentest` 的样例是冻结的，不改 | `sdk/pluginsdk/standard/**`、`sdk/pluginsdk/providers/**`、`sdk/upstream/**`、`sdk/platforms/upstream/**` | W2 冻结的 1498 条样例全过；`sdk` 模块里搜不到 `sdk/upstream` | W2、W3 | L |
 | W5 | 运行时：中继、取回的宿主服务端，执行作用域（不等待时挂起请求、返回后交给网关），`Monitor` 取返回值，宿主服务端接收上限，在途字节准入，内存下限；删回调服务端、`Poll` 适配、`StaticInstance`；握手协议不符时给出 9.2 的信息 | `server/internal/core/ports_execution.go`、`ports_plugin.go`、`server/internal/plugin/grpcruntime/**`、`server/internal/plugin/rollout/**` | 运行时测试：不等待的中继在 `Execute` 返回前不触发发送；等待的中继返回观察；取回第 9 次被拒、清单外主机被拒、回答超限带 `truncated`、令牌过期被拒；超过请求体上限的中继被拒；准入预算不被突破；旧协议的测试插件二进制被拒且信息正确 | W1 | M |
 | W6 | 网关单一路径：`attempt` 调新 `Execute`；不等待与等待两种形式；请求头的默认头与权威头；守卫；WebSocket 逐轮；跨插件规则；删 11.4 里网关的全部条目 | `server/internal/gateway/{dispatch,execute,websocket,param_override,upstream_ext,routing,tasks,usageplugin,util}.go` 及同目录测试 | 第 14.2 节的网关测试矩阵；断开测试在新路径上通过；热路径基准前后对比写进交付说明 | W1、W5 | L |
 | W7 | 用量：从返回值提交、未上报关闭、恢复扫描改标记、监控结算走返回值、任务观察只调 `Monitor` | `server/internal/usage/**`、`server/internal/core/ports_billing.go` | 用量草稿第 11 节的矩阵（同步、任务、监控各行）；数据库测试确认真的跑了 | W1 | M |
@@ -980,8 +980,8 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 2. 完整请求体往返的延迟和两侧内存峰值没有测量（10.1 是估算）。
 3. 插件进程空闲时的常驻内存、启动时间没有测量（7.7）。
 4. 不等待形式“请求在 `Execute` 返回后才发出”在运行时里的实现方式（作用域如何把挂起的请求交给网关）只做了纸面设计。
-5. 声明式那一层从运营方改写之前变到之后（7.3、12.5），实际影响哪些字段没有逐个核对预设和四份清单。
-6. 黄金样例转换程序能否无损地从“字段加补丁”还原出“完整请求体”：样例里的字段是否覆盖了补丁涉及的全部路径，没有核对。
+5. 声明式那一层从运营方改写之前变到之后（7.3、12.5）：W2 已逐个核对三个预设和五份清单，只涉及 azure_openai 的 `service_tier`、`safety_identifier`（7.3 末尾）。线上有没有账号的参数覆盖真的写了这两个字段，没有查。
+6. 黄金样例的转换（W2 已做）：旧样例没有请求体，转换后的请求体是按字段和流式标志合成的最小请求体（只有 `model`、`stream`），补丁只出现过 `stream_options.include_usage` 一种。所以样例固定的是请求的构造，不能证明新库对真实的、带几十个字段的请求体逐字节原样交回；这一点要靠 W4 自己的测试和一致性套件（14.1 第 3 条）。
 7. 插件给的 URL 经核心重新解析再发出后是否逐字节不变（路径里的 `%3A`、`%2F`，查询串顺序）。
 8. 已部署实例的升级步骤（9.4）没有设计也没有验证：停机后用核心 V 和新插件集重新部署时，内置同步、节点就绪检查、非内置插件的重新安装各自的实际表现只读了 `managed_checks.go:236-254` 和 CONTRACTS §36、§37 的文字。
 9. 握手协议版本不符时 go-plugin 给出的错误能否被运行时可靠地识别并换成 9.2 的那条信息，没有试过。
