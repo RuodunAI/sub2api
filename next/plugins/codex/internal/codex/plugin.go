@@ -93,10 +93,6 @@ type Plugin struct {
 	*pluginsdk.Router
 	host pluginsdk.Host
 	ep   Endpoints
-	// client sends the plugin's own requests (authorization routes only).
-	// Its transport is the default one, which the SDK routes through the
-	// host's egress tunnel in strict network mode.
-	client *http.Client
 	// quota are the quota headers ClassifyError reads (quota.go).
 	quota []manifest.QuotaHeader
 	now   func() time.Time
@@ -125,10 +121,9 @@ func NewWithEndpoints(ep Endpoints, manifestJSON []byte) (*Plugin, error) {
 			Auth:    strings.TrimRight(ep.Auth, "/"),
 			ChatGPT: strings.TrimRight(ep.ChatGPT, "/"),
 		},
-		client: &http.Client{Timeout: authTimeout},
-		quota:  quota,
-		now:    time.Now,
-		log:    slog.New(slog.DiscardHandler),
+		quota: quota,
+		now:   time.Now,
+		log:   slog.New(slog.DiscardHandler),
 	}
 	p.Handle(http.MethodPost, "/auth/device/start", p.handleDeviceStart)
 	p.Handle(http.MethodPost, "/auth/device/poll", p.handleDevicePoll)

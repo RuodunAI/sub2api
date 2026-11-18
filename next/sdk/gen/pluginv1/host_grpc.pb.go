@@ -234,6 +234,12 @@ type HostServiceClient interface {
 	// applies to the client's request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
+	//
+	// A console route call (HTTPRequest.execution_token) may fetch too, for
+	// the authorization of an account not saved yet: it has no account, so
+	// only externalServices are reachable, and every fetch names the proxy
+	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
+	// §117).
 	ExecuteHTTP(ctx context.Context, in *ExecutionHTTPRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through
@@ -823,6 +829,12 @@ type HostServiceServer interface {
 	// applies to the client's request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
+	//
+	// A console route call (HTTPRequest.execution_token) may fetch too, for
+	// the authorization of an account not saved yet: it has no account, so
+	// only externalServices are reachable, and every fetch names the proxy
+	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
+	// §117).
 	ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through

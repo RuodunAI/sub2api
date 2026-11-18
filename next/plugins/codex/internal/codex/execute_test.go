@@ -91,12 +91,11 @@ func (f failDial) RoundTrip(r *http.Request) (*http.Response, error) {
 	return nil, errors.New("no connections on the request path")
 }
 
-// startExecuting runs the plugin in the fake host with every HTTP client
-// of the process made to fail the test when it dials.
+// startExecuting runs the plugin in the fake host with the HTTP client of
+// the process made to fail the test when it dials (the plugin has no other).
 func startExecuting(t *testing.T, ep Endpoints) *pluginsdktest.Harness {
 	t.Helper()
 	p := mustPlugin(ep)
-	p.client.Transport = failDial{t}
 	saved := http.DefaultTransport
 	http.DefaultTransport = failDial{t}
 	t.Cleanup(func() { http.DefaultTransport = saved })

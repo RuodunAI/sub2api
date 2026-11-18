@@ -41,10 +41,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	var in struct {
 		Credentials json.RawMessage `json:"credentials"`
-		ProxyID     *int64          `json:"proxy_id"`
-		// ProxyURL is only parsed and used for this request: no proxy row is
-		// looked up or created (CONTRACTS §21.4).
-		ProxyURL *string `json:"proxy_url"`
+		ProxyChoice
 	}
 	if !httpapi.BindJSON(c, &in) {
 		return
@@ -59,51 +56,29 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 	if err == nil {
 		err = s.checkCustomUpstream(ctx, scope, bt)
 	}
+	var e egress
+	if err == nil {
+		// Same visibility rule as POST /accounts (§21.2); a pasted proxy_url
+		// is only parsed and used for this request.
+		e, err = s.checkChoice(ctx, in.ProxyChoice, perm.AccountCreate)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	proxyURL := ""
-	if in.ProxyURL != nil {
-		proxyURL = strings.TrimSpace(*in.ProxyURL)
-	}
-	if proxyURL != "" && in.ProxyID != nil {
-		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "proxy_url", Code: "conflict",
-			Message: t(ctx, "proxy_url and proxy_id cannot both be given", "proxy_url 与 proxy_id 不能同时给出")}))
+	hc, release, err := s.egressClient(ctx, e)
+	if err != nil {
+		httpapi.Fail(c, err)
 		return
 	}
-	var hc *http.Client
-	switch {
-	case proxyURL != "":
-		// Reaching a proxy by address takes a proxy write key, as when saving.
-		byURL, err := s.parseProxyURL(ctx, proxyURL)
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		if hc, err = s.d.Proxies.HTTPClientFor(ctx, byURL.spec); err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-		defer hc.CloseIdleConnections()
-	default:
-		// Same visibility rule as POST /accounts (§21.2).
-		err := s.checkProxyRef(ctx, in.ProxyID, perm.AccountCreate)
-		if err == nil {
-			hc, err = s.d.Proxies.HTTPClient(ctx, in.ProxyID)
-		}
-		if err != nil {
-			httpapi.Fail(c, err)
-			return
-		}
-	}
+	defer release()
 	p, err := s.prepare(ctx, bt, in.Credentials, nil)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	res, err := s.fetchModels(ctx, bt, &pluginv1.Account{Type: bt.Type.ID,
-		CredentialsJson: string(p.secret), SettingsJson: string(p.settings)}, hc, in.ProxyID != nil || proxyURL != "")
+		CredentialsJson: string(p.secret), SettingsJson: string(p.settings)}, hc, e.proxied())
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -136,12 +136,12 @@ func TestManifestShape(t *testing.T) {
 		}
 		perms[perm.ID] = perm
 	}
-	for _, id := range []string{"platform.register", "accounts.credentials", "accounts.auto_state", "kv", "lock", "routes.admin", "net", "ui.native"} {
+	for _, id := range []string{"platform.register", "accounts.credentials", "accounts.auto_state", "kv", "lock", "routes.admin", "ui.native"} {
 		if _, ok := perms[id]; !ok {
 			t.Errorf("host permission %s missing", id)
 		}
 	}
-	if len(perms) != 8 {
+	if len(perms) != 7 {
 		t.Errorf("host permissions = %v", perms)
 	}
 	for _, id := range []string{"accounts.credentials", "accounts.auto_state"} {
@@ -149,11 +149,9 @@ func TestManifestShape(t *testing.T) {
 			t.Errorf("%s scope = %v", id, c.Scope)
 		}
 	}
-	// The plugin itself only talks to the authorization server; upstream
-	// requests and refreshes are sent by the core.
-	if d, _ := perms["net"].Scope["domains"].([]any); len(d) != 1 || d[0] != "auth.openai.com" {
-		t.Errorf("net domains = %v", perms["net"].Scope)
-	}
+	// The plugin opens no connection: the core sends the authorization
+	// requests (through the account form's proxy, CONTRACTS §117), the
+	// upstream requests and the refreshes; so no net permission.
 	if !slices.Equal(m.ExternalServices, []string{"auth.openai.com", "chatgpt.com"}) {
 		t.Errorf("externalServices = %v", m.ExternalServices)
 	}

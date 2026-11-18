@@ -235,16 +235,18 @@ func (ex *execution) checkReport(out *pluginv1.ExecuteResponse) error {
 	return nil
 }
 
-func (s platformServer) bindExecution(ctx context.Context, ex *execution) (context.Context, context.CancelFunc, error) {
+// bindExecution puts ex, with the host's client, on a context of the call
+// that ends with the returned cancel.
+func (rt *runtime) bindExecution(ctx context.Context, ex *execution) (context.Context, context.CancelFunc, error) {
 	if ex.token == "" {
 		return nil, nil, status.Errorf(codes.InvalidArgument, "%s execution token is required", ex.kind)
 	}
-	if s.runtime == nil {
+	if rt == nil {
 		return nil, nil, status.Error(codes.FailedPrecondition, "host is not initialised")
 	}
-	s.runtime.mu.Lock()
-	h := s.runtime.host
-	s.runtime.mu.Unlock()
+	rt.mu.Lock()
+	h := rt.host
+	rt.mu.Unlock()
 	if h == nil {
 		return nil, nil, status.Error(codes.FailedPrecondition, "host is not initialised")
 	}
@@ -255,7 +257,7 @@ func (s platformServer) bindExecution(ctx context.Context, ex *execution) (conte
 
 func (s platformServer) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
 	ex := &execution{token: in.GetExecutionToken(), kind: kindExecute, mayWait: in.GetExtractUsage() || in.GetTaskSubmission()}
-	ctx, cancel, err := s.bindExecution(ctx, ex)
+	ctx, cancel, err := s.runtime.bindExecution(ctx, ex)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +280,7 @@ func (s platformServer) Monitor(ctx context.Context, in *pluginv1.PollRequest) (
 	if !ok {
 		return nil, status.Error(codes.Unimplemented, "this platform does not implement Monitor")
 	}
-	ctx, cancel, err := s.bindExecution(ctx, &execution{token: in.GetExecutionToken(), kind: kindMonitor})
+	ctx, cancel, err := s.runtime.bindExecution(ctx, &execution{token: in.GetExecutionToken(), kind: kindMonitor})
 	if err != nil {
 		return nil, err
 	}

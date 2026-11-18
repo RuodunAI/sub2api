@@ -268,6 +268,20 @@ type PluginAccountRequester interface {
 	SendPluginAccountRequest(ctx context.Context, pluginKey string, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error)
 }
 
+// ProxyTicketFetcher (owner: account, optional on the PluginAccountReader)
+// serves the fetches of a plugin's console route calls (HostService.
+// ExecuteHTTP with a proxy ticket, CONTRACTS §117): the authorization of an
+// account not saved yet, sent through the proxy the operator chose in the
+// account form. ctx is the route call's (its user, access key and request);
+// the caller has checked the execution token and the URL's host. The ticket
+// must be one the account module issued for pluginKey to the user of ctx,
+// who must still be allowed to use its proxy; anything else is
+// ErrPermissionDenied (or the error of that check). A transport failure is
+// not an error: it is the answer's transport_error with status 0.
+type ProxyTicketFetcher interface {
+	FetchWithProxyTicket(ctx context.Context, pluginKey string, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
+}
+
 // StickyClearRequest selects the sticky session bindings HostService.
 // ClearStickyBindings deletes (CONTRACTS §74.2).
 type StickyClearRequest struct {

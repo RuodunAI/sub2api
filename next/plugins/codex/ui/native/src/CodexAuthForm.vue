@@ -2,7 +2,9 @@
 // Native account form of the codex plugin (manifest accountTypes[].form
 // {mode: "native", component: "CodexAuthForm"}). The account editor mounts it
 // as <component v-model="credentials" :mode :account :errors> (plus
-// :account-type) and calls validate() before saving.
+// :account-type and, UI 3.20, :proxy-ticket) and calls validate() before
+// saving. Each login asks proxyTicket for the form's current proxy choice
+// when it starts, so the requests to OpenAI leave through that proxy.
 //
 // - Only the flow of the account type is shown (codex_device: device code,
 //   codex_oauth: Sign in with Codex); both, as tabs, when the type is not known.
@@ -12,6 +14,7 @@
 //   sensitive fields go back as "******" and the core keeps the stored tokens.
 import { computed, nextTick, ref, watch } from 'vue'
 import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SHint, STabs } from '@sub2api/ui'
+import type { ProxyTicketSource } from '@sub2api/host'
 import { useCodexHost, type CodexCredentials } from './host'
 import { flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, type Flow } from './flow'
 import DeviceFlow from './DeviceFlow.vue'
@@ -25,6 +28,8 @@ const props = withDefaults(
     errors?: Record<string, string>
     /** The editor's account type (the auth method picked when creating). */
     accountType?: { type?: string } | null
+    /** A proxy ticket of the editor's current proxy choice (UI 3.20, CONTRACTS §117). */
+    proxyTicket: ProxyTicketSource
   }>(),
   { mode: 'create', account: null, errors: () => ({}), accountType: null }
 )
@@ -165,8 +170,8 @@ defineExpose({ validate })
     <!-- The flows: creating, or re-authorizing -->
     <STabs v-if="showFlows" v-model="tab" :tabs="tabs" size="sm" :aria-label="t('tabsLabel')" data-testid="codex-flows">
       <template #default="{ active }">
-        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" @authorized="onAuthorized" @busy="onBusy" />
-        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" @authorized="onAuthorized" @busy="onBusy" />
+        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
+        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
       </template>
     </STabs>
 

@@ -5,9 +5,14 @@
 // Polling stops when the component unmounts or reset() is called.
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { SAlert, SButton, SCopyButton, SHint, SIcon, SLink, SSpinner, SSteps, useNow } from '@sub2api/ui'
+import type { ProxyTicketSource } from '@sub2api/host'
 import { errorMessage, pollDevice, startDevice, useCodexHost, type CodexCredentials, type DeviceStart } from './host'
 import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay } from './flow'
 
+const props = defineProps<{
+  /** The account form's proxy choice as a proxy ticket (UI 3.20): every request of the login goes through it. */
+  proxyTicket: ProxyTicketSource
+}>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
 const t = host.t
@@ -45,7 +50,7 @@ async function start() {
   session.value = null
   setPhase('starting')
   try {
-    const s = await startDevice()
+    const s = await startDevice(await props.proxyTicket())
     if (gen !== generation) return
     session.value = s
     expiresAt.value = Date.now() + (Number(s.expires_in) > 0 ? Number(s.expires_in) : DEFAULT_CODE_TTL_SECONDS) * 1000

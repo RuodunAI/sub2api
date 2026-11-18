@@ -134,7 +134,7 @@ func TestDeviceFlow(t *testing.T) {
 		}
 		reply(200, `{"device_auth_id":"dev-1","usercode":"ABCD-1234","interval":"5"}`)(w, body)
 	})
-	r := h.Do("POST", "/auth/device/start", nil, map[string]any{})
+	r := h.Do("POST", "/auth/device/start", nil, startBody)
 	if r.GetStatus() != 200 {
 		t.Fatalf("start = %d %s", r.GetStatus(), r.GetBody())
 	}
@@ -227,21 +227,21 @@ func TestDeviceStartErrors(t *testing.T) {
 	iss := newFakeIssuer(t)
 	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
 	iss.on(pathUserCode, reply(404, `{"detail":"Not Found"}`))
-	r := h.Do("POST", "/auth/device/start", nil, nil)
+	r := h.Do("POST", "/auth/device/start", nil, startBody)
 	if r.GetStatus() != 400 || decodeError(t, r).Error.Code != "device_auth_disabled" || !strings.Contains(string(r.GetBody()), "Device code authorization") {
 		t.Fatalf("404 = %d %s", r.GetStatus(), r.GetBody())
 	}
 	iss.on(pathUserCode, reply(500, `{"error":{"message":"boom"}}`))
-	if r := h.Do("POST", "/auth/device/start", nil, nil); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "upstream_error" {
+	if r := h.Do("POST", "/auth/device/start", nil, startBody); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "upstream_error" {
 		t.Fatalf("500 = %d %s", r.GetStatus(), r.GetBody())
 	}
 	iss.on(pathUserCode, reply(200, `{"interval":"5"}`))
-	if r := h.Do("POST", "/auth/device/start", nil, nil); r.GetStatus() != 502 {
+	if r := h.Do("POST", "/auth/device/start", nil, startBody); r.GetStatus() != 502 {
 		t.Fatalf("incomplete = %d %s", r.GetStatus(), r.GetBody())
 	}
 	// A numeric interval and user_code are read too, and clamped.
 	iss.on(pathUserCode, reply(200, `{"device_auth_id":"d","user_code":"WXYZ","interval":600}`))
-	r = h.Do("POST", "/auth/device/start", nil, nil)
+	r = h.Do("POST", "/auth/device/start", nil, startBody)
 	var start DeviceStartResponse
 	mustData(t, r.GetBody(), &start)
 	if start.UserCode != "WXYZ" || start.Interval != maxInterval {
@@ -249,7 +249,7 @@ func TestDeviceStartErrors(t *testing.T) {
 	}
 	// The issuer cannot be reached.
 	iss.srv.Close()
-	if r := h.Do("POST", "/auth/device/start", nil, nil); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "upstream_unavailable" {
+	if r := h.Do("POST", "/auth/device/start", nil, startBody); r.GetStatus() != 502 || decodeError(t, r).Error.Code != "upstream_unavailable" {
 		t.Fatalf("down = %d %s", r.GetStatus(), r.GetBody())
 	}
 }
@@ -262,7 +262,7 @@ func TestDevicePollStates(t *testing.T) {
 	h := startPlugin(t, p)
 	iss.on(pathUserCode, reply(200, `{"device_auth_id":"dev-1","user_code":"ABCD","interval":"5"}`))
 	start := func() string {
-		r := h.Do("POST", "/auth/device/start", nil, nil)
+		r := h.Do("POST", "/auth/device/start", nil, startBody)
 		var s DeviceStartResponse
 		mustData(t, r.GetBody(), &s)
 		return s.SessionID
@@ -368,7 +368,7 @@ func TestDevicePollLocked(t *testing.T) {
 	iss.on(pathDeviceToken, reply(200, `{"authorization_code":"code-1","code_verifier":"ver-1"}`))
 	iss.on(pathOAuthToken, reply(200, `{"access_token":"at-1","refresh_token":"rt-1","expires_in":60}`))
 	var start DeviceStartResponse
-	mustData(t, h.Do("POST", "/auth/device/start", nil, nil).GetBody(), &start)
+	mustData(t, h.Do("POST", "/auth/device/start", nil, startBody).GetBody(), &start)
 	poll := func() DevicePollResponse {
 		t.Helper()
 		var out DevicePollResponse
@@ -402,7 +402,7 @@ func TestDevicePollLocked(t *testing.T) {
 
 func TestCodexStart(t *testing.T) {
 	h := startPlugin(t, newTestPlugin(testEndpoints("https://auth.example")))
-	r := h.Do("POST", "/auth/codex/start", nil, nil)
+	r := h.Do("POST", "/auth/codex/start", nil, startBody)
 	if r.GetStatus() != 200 {
 		t.Fatalf("start = %d %s", r.GetStatus(), r.GetBody())
 	}
@@ -450,7 +450,7 @@ func TestCodexExchange(t *testing.T) {
 	start := func() (string, url.Values) {
 		t.Helper()
 		var s CodexStartResponse
-		mustData(t, h.Do("POST", "/auth/codex/start", nil, nil).GetBody(), &s)
+		mustData(t, h.Do("POST", "/auth/codex/start", nil, startBody).GetBody(), &s)
 		u, _ := url.Parse(s.AuthorizeURL)
 		return s.SessionID, u.Query()
 	}
@@ -613,9 +613,9 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 		reply(403, `{}`)(w, body)
 	})
 	var device DeviceStartResponse
-	mustData(t, h.Do("POST", "/auth/device/start", nil, map[string]any{}).GetBody(), &device)
+	mustData(t, h.Do("POST", "/auth/device/start", nil, startBody).GetBody(), &device)
 	var codex CodexStartResponse
-	mustData(t, h.Do("POST", "/auth/codex/start", nil, nil).GetBody(), &codex)
+	mustData(t, h.Do("POST", "/auth/codex/start", nil, startBody).GetBody(), &codex)
 	stored := func(ns, id string) bool {
 		kv, _ := h.Host.KVGet(context.Background(), &pluginv1.KVGetRequest{Namespace: ns, Key: id})
 		return kv.GetFound()
@@ -660,7 +660,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 
 	// A flow cannot be started without a caller.
 	for _, path := range []string{"/auth/device/start", "/auth/codex/start"} {
-		if r := h.DoAs(0, "POST", path, nil, map[string]any{}); r.GetStatus() != 401 {
+		if r := h.DoAs(0, "POST", path, nil, startBody); r.GetStatus() != 401 {
 			t.Fatalf("%s without a caller = %d %s", path, r.GetStatus(), r.GetBody())
 		}
 	}

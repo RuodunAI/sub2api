@@ -304,6 +304,31 @@ watch(caps.proxyByURL, (ok) => {
 })
 /** The proxy_url that will be sent, or '' (existing mode / empty input). */
 const proxyUrlToSend = computed(() => (proxyMode.value === 'url' ? proxyUrl.value.trim() : ''))
+/**
+ * The form's proxy choice as the core takes it for an account not saved yet
+ * (models/fetch, proxy-ticket): a pasted proxy_url is only parsed and used,
+ * no proxy is looked up or created (CONTRACTS §21.2); proxy_id null is none.
+ */
+const proxyChoice = () => (proxyUrlToSend.value ? { proxy_url: proxyUrlToSend.value } : { proxy_id: basic.proxy_id })
+
+/**
+ * The native form's `proxyTicket` (CONTRACTS §23.5, §117): a proxy ticket of
+ * the form's current proxy choice, for an authorization flow that runs
+ * before the account exists. A refused choice is shown under the proxy field
+ * too, and the error goes back to the form.
+ */
+async function proxyTicket(): Promise<string> {
+  const at = props.accountType!
+  try {
+    const r = await api.post<{ ticket: string }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/proxy-ticket`, proxyChoice())
+    return r.ticket
+  } catch (e) {
+    const fe = fieldErrors(e)
+    const field = fe.proxy_url ? 'proxy_url' : fe.proxy_id ? 'proxy_id' : ''
+    if (field) errors.value = { ...errors.value, [field]: fe[field] }
+    throw e
+  }
+}
 const proxyError = computed(() => (proxyMode.value === 'url' ? errors.value.proxy_url : errors.value.proxy_id))
 /** Shape hint only (the server validates): shown while the pasted text does not look like scheme://host:port. */
 const proxyUrlHint = computed(() => {
@@ -384,12 +409,9 @@ async function fetchModels() {
   }
   fetching.value = true
   try {
-    // New account: the pasted proxy_url is only parsed and used for this
-    // request (CONTRACTS §21.2), no proxy is looked up or created.
-    const proxy = proxyUrlToSend.value ? { proxy_url: proxyUrlToSend.value } : { proxy_id: basic.proxy_id }
     const r = editing.value
       ? await api.post<{ models: string[]; skipped: number }>(`/accounts/${props.account!.id}/models/fetch`, { credentials: creds })
-      : await api.post<{ models: string[]; skipped: number }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/models/fetch`, { credentials: creds, ...proxy })
+      : await api.post<{ models: string[]; skipped: number }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/models/fetch`, { credentials: creds, ...proxyChoice() })
     fetched.value = { models: r.models || [], skipped: r.skipped || 0 }
     if (fetched.value.models.length) fetchOpen.value = true
     else toast(t('accounts.fetchEmpty'), 'warning')
@@ -636,7 +658,7 @@ const { save } = useAccountSave({
               <SHint v-else tone="danger">{{ t('accounts.formUnavailable') }}</SHint>
             </template>
             <template v-else-if="mode === 'native'">
-              <component :is="nativeComponent" v-if="nativeComponent" ref="nativeRef" v-model="credentials" :mode="editing ? 'edit' : 'create'" :account="account" :account-type="accountType" :errors="credErrors" />
+              <component :is="nativeComponent" v-if="nativeComponent" ref="nativeRef" v-model="credentials" :mode="editing ? 'edit' : 'create'" :account="account" :account-type="accountType" :errors="credErrors" :proxy-ticket="proxyTicket" />
               <div v-else-if="pluginFormWaiting" class="flex justify-center py-6"><SSpinner /></div>
               <SHint v-else tone="danger">{{ plugins.errors[accountType.plugin_key] || t('accounts.formUnavailable') }}</SHint>
             </template>

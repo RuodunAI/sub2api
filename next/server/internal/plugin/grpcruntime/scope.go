@@ -15,16 +15,16 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// callScopes are the host-client authorities of the Execute and Monitor
-// calls in flight on one process, by execution token.
+// callScopes are the host-client authorities of the Execute, Monitor and
+// console HandleHTTP calls in flight on one process, by execution token.
 type callScopes struct {
 	mu      sync.Mutex
 	byToken map[string]*callScope
 }
 
-// callScope is the authority of one Execute or Monitor call: what its
-// execution token lets the plugin's RelayUpstream and ExecuteHTTP calls do.
-// It lives exactly as long as the call.
+// callScope is the authority of one Execute, Monitor or console HandleHTTP
+// call: what its execution token lets the plugin's RelayUpstream and
+// ExecuteHTTP calls do. It lives exactly as long as the call.
 type callScope struct {
 	ctx    context.Context // the call's; ends when it returns
 	client core.ExecutionClient
@@ -34,6 +34,9 @@ type callScope struct {
 	// relay: an Execute call (a Monitor call only fetches); wait: its
 	// request allows the waiting form.
 	relay, wait bool
+	// route: a console HandleHTTP call, whose fetches carry a proxy ticket
+	// (CONTRACTS §117); the others' may not.
+	route bool
 
 	mu           sync.Mutex
 	closed, busy bool

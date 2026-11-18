@@ -12,13 +12,23 @@ export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
-export const HOST_UI_VERSION = '3.19.0'
+export const HOST_UI_VERSION = '3.20.0'
 
 /**
  * Accounts per plugin account action request and per `GET /accounts?ids=`
  * (CONTRACTS §23.3 UI 3.6); the Go side is `manifest.MaxAccountBatch`.
  */
 export const MAX_ACCOUNT_BATCH = 500
+
+/**
+ * Prop `proxyTicket` of a native account form (UI 3.20, CONTRACTS §23.5,
+ * §117): asks the core for a proxy ticket of the form's CURRENT proxy choice
+ * (an existing proxy, a pasted proxy URL or none). A form that runs an
+ * authorization flow before the account exists hands the opaque ticket to
+ * its plugin's start route; the plugin's fetches with it then leave through
+ * that proxy. Rejects with the core's ApiError (the proxy field shows it too).
+ */
+export type ProxyTicketSource = () => Promise<string>
 
 /** {"en": "...", "zh": "..."} or a bare string. */
 export type LocalizedText = string | Record<string, string> | null | undefined
