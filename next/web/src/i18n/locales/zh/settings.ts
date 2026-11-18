@@ -118,7 +118,7 @@ export default {
       queue_fallback_wait_seconds: '所有候选账号都满时的最长等待，超时返回 429。0 表示不排队。',
       platform_call_timeout_ms: '插件在一次请求中每段自身处理时间的上限（构造上游请求、解析用量、错误分类），不含等待上游的时间。',
       default_hook_timeout_ms: 'manifest 未设置超时的钩子使用此值。',
-      platform_hotpath_timeout_ms: '每个请求中不属于钩子的平台调用超时：调度前解析模型、响应发完后提取用量。',
+      platform_hotpath_timeout_ms: '每个请求在调度前不属于钩子的平台调用超时：解析模型、为预扣估算用量。',
       max_request_body_mb:
         '每个网关请求的请求体大小上限（MB），超出返回 413；WebSocket 的单条消息也按它限制。这是唯一的请求大小上限，端点、分组和插件都不能另设；核心与插件之间的内部上限由它推出。',
       media_download_max_mb: '请求转换到 Gemini 时下载 http(s) 图片等媒体，单个文件的大小上限（MB）。',
