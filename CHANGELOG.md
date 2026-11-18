@@ -112,6 +112,7 @@
 
 - **网关设置读出来原样保存不再 409**：发布了失败策略后，`PUT /settings/gateway` 带着与当前值相同的 `max_attempts`（例如把 GET 的结果原样写回）照常保存；改成别的值仍返回 409 `managed by settings/failure-policy`（CONTRACTS §58、§14.4）。控制台的网关设置页本来就不提交这个字段，不受影响。
 - **账号测试不指定模型时用账号自己的模型**：以前一律交给插件选默认模型（Anthropic API Key 是 `claude-haiku-4-5`），账号的模型列表里没有它时测试必然失败。现在账号有模型列表时测列表里第一个，没有列表但有模型映射时测映射里按字典序最小的请求模型（再经映射），两者都没有才由插件选（CONTRACTS §15.9）。账号列表的“测试”、批量测试和模型测试对话框里的“用默认模型测试”都按这个规则；对话框里这个按钮改名“用默认模型测试”。
+- **用 http 打开控制台时“系统 → 升级”页不再空白**：页面用了只在 HTTPS / localhost 下才有的 `crypto.randomUUID`。升级页和余额调整的幂等键改用 `@sub2api/ui` 已有的 `createItemId`（`crypto.getRandomValues`，非安全上下文可用），eslint 禁止再直接用 `crypto.randomUUID`。
 
 ### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0，openai 的改动随 0.5.0 发布；核心加响应流格式；无迁移）
 
