@@ -40,12 +40,19 @@ func init() { gin.SetMode(gin.TestMode) }
 // ---------------------------------------------------------------- test manifest
 
 // testManifestJSON is the anthropic plugin: it declares the "apikey" account
-// type serving the built-in anthropic platform.
+// type serving the built-in anthropic platform. Its relays go to the test
+// servers (testUpstreamHost).
 const testManifestJSON = `{
   "apiVersion": 1, "key": "anthropic", "version": "0.1.0", "publisher": "sub2api", "runtime": "grpc",
+  "externalServices": ["127.0.0.1"],
   "accountTypes": [ { "id": "apikey", "label": { "en": "API key" }, "form": { "mode": "schema" },
     "platforms": [ { "platform": "anthropic" } ] } ]
 }`
+
+// testUpstreamHost is the host of every httptest server: the test plugins
+// declare it in externalServices, so the core may relay to them
+// (manifest.UpstreamHostAllowed).
+const testUpstreamHost = "127.0.0.1"
 
 func testManifest(t testing.TB) *manifest.Manifest {
 	t.Helper()
@@ -1275,4 +1282,8 @@ func (p *fakePlatform) BuildRefreshRequest(context.Context, *pluginv1.BuildRefre
 
 func (p *fakePlatform) ParseRefreshResponse(context.Context, *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
 	return nil, status.Error(codes.Unimplemented, "no")
+}
+
+func (*fakePlatform) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+	return nil, errors.New("the fake platform does not monitor tasks")
 }

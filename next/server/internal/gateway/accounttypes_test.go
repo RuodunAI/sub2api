@@ -26,7 +26,7 @@ import (
 func (e *env) addAccountType(pluginKey, typeID string, client core.PlatformPlugin, platforms ...manifest.AccountPlatform) core.PluginInfo {
 	t := manifest.AccountType{ID: typeID, Label: manifest.LocalizedText{"en": typeID}, Platforms: platforms}
 	info := core.PluginInfo{Key: pluginKey, Version: "1.2.3",
-		Manifest: &manifest.Manifest{Key: pluginKey, AccountTypes: []manifest.AccountType{t}}}
+		Manifest: &manifest.Manifest{Key: pluginKey, ExternalServices: []string{testUpstreamHost}, AccountTypes: []manifest.AccountType{t}}}
 	e.gen.plugins = append(e.gen.plugins, info)
 	e.gen.accountTypes = append(e.gen.accountTypes, core.AccountTypeBinding{Plugin: info, Type: t, Client: client})
 	return info

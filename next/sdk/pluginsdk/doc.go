@@ -54,6 +54,11 @@
 //     Monitor. Hosts are limited to the manifest's externalServices and the
 //     hosts of the account's own upstream addresses (upstreamFields).
 //
+// Every request the host sends for the plugin goes to a host the manifest
+// declares in externalServices (or a subdomain of one) or that the account
+// names among its upstream addresses (upstreamFields); its Host header is
+// the URL's (manifest.Manifest.UpstreamHostAllowed, CONTRACTS §112.17).
+//
 // An execution relays at most once. Usage and task facts travel only in the
 // value Execute returns; there is no reporting callback and the host does
 // not make up for a response that states nothing. ExecuteDefault does all of

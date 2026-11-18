@@ -68,7 +68,7 @@
 
 - `HTTPRequest.execution_token`（新字段 10）：核心把每个**有登录用户**的路由调用登记成一个调用范围（与 `Execute`、`Monitor` 同一套 `callScopes`），令牌只在这次调用期间有效。SDK 把它绑在路由处理函数的 context 上，`pluginsdk.Fetch` 在路由里就能用。
 - `ExecutionHTTPRequest.proxy_ticket`（新字段 7）：路由调用里的取回**必须**带票据（运营方没有选择就没有代理决定，核心不替他决定直连）；`Execute`、`Monitor` 里的取回**不能**带（它们走账号自己的代理）。
-- 主机规则不变，复用 `requireFetchHost`（`manifest.FetchHostAllowed`）：路由调用没有账号，只能到清单 `externalServices` 之一或其子域。codex 的 `auth.openai.com` 本来就在。另一个任务给核心代发的请求加“清单声明或账号配置里的主机”的统一规则时，这条路径已经走在取回的主机判断上，不用另接。
+- 主机规则不变，复用 `requireFetchHost`（`manifest.UpstreamHostAllowed`，原名 `FetchHostAllowed`）：路由调用没有账号，只能到清单 `externalServices` 之一或其子域。codex 的 `auth.openai.com` 本来就在。另一个任务给核心代发的请求加“清单声明或账号配置里的主机”的统一规则时，这条路径已经走在取回的主机判断上，不用另接。
 - 发送：`execfetch.Do`，`CheckURL` 按“经代理与否”过 SSRF，`Client` 是票据的代理客户端；`HeaderTimeout`、`TotalTimeout` 都是 0（不新加超时），由路由调用的 context 约束。粘贴的代理串用完 `CloseIdleConnections`。
 - 不写审计行：路由调用本身已有 `plugin.route.write` 审计，取回也从来不审计；`execfetch` 失败时只记主机。
 

@@ -40,7 +40,7 @@ func observeExecution(s *Service, rec *core.UsageRecord, task bool) (string, err
 	ctx := context.Background()
 	id := uuid.NewString()
 	err := s.BeginExecution(ctx, core.ExecutionIntent{TaskSubmit: task, ID: id, RequestID: rec.RequestID, PluginKey: rec.PluginKey,
-		AccountID: *rec.AccountID, Attempt: int(executionAttempt.Add(1)), Record: rec})
+		AccountID: *rec.AccountID, Attempt: int(executionAttempt.Add(1))})
 	if err == nil {
 		err = s.ObserveExecution(ctx, id, rec, []byte(`{"status":200}`))
 	}
@@ -82,7 +82,7 @@ func TestObserveExecutionStoresAnySize(t *testing.T) {
 	r.PluginDetail = core.RawJSON(`{"pad":"` + strings.Repeat("x", 600<<10) + `"}`)
 	id := uuid.NewString()
 	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: id, RequestID: r.RequestID, PluginKey: r.PluginKey,
-		AccountID: *r.AccountID, Attempt: int(executionAttempt.Add(1)), Record: r}); err != nil {
+		AccountID: *r.AccountID, Attempt: int(executionAttempt.Add(1))}); err != nil {
 		t.Fatal(err)
 	}
 	observation := []byte(`{"pad":"` + strings.Repeat("y", 600<<10) + `"}`)
@@ -171,7 +171,7 @@ func TestExecutionCommitsTheReturnedUsage(t *testing.T) {
 	// An execution without an observation has nothing to commit.
 	intent := syncRecord(f, "intent-only")
 	iid := uuid.NewString()
-	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: iid, RequestID: intent.RequestID, PluginKey: intent.PluginKey, AccountID: 7, Attempt: 1, Record: intent}); err != nil {
+	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: iid, RequestID: intent.RequestID, PluginKey: intent.PluginKey, AccountID: 7, Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.svc.CommitExecution(ctx, core.ExecutionCommit{ID: iid, Operation: core.ExecutionOpUsage, Digest: commit.Digest, Record: intent}); err == nil {
@@ -220,7 +220,7 @@ func TestExecutionWithoutFactsClosesUnreported(t *testing.T) {
 	// Without a durable observation there is nothing to close.
 	intent := syncRecord(f, "close-intent")
 	iid := uuid.NewString()
-	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: iid, RequestID: intent.RequestID, PluginKey: intent.PluginKey, AccountID: 7, Attempt: 1, Record: intent}); err != nil {
+	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: iid, RequestID: intent.RequestID, PluginKey: intent.PluginKey, AccountID: 7, Attempt: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.svc.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: iid, Reason: "no report"}); !errors.Is(err, core.ErrExecutionRefused) {

@@ -67,9 +67,11 @@ type FakeHost struct {
 	// that need no network and records what it accepted. No real network is
 	// used. Set these before Start.
 	//
-	// The checks are the host's: a fetch may reach the hosts the manifest
-	// allows for the call's account (manifest.Manifest.FetchHostAllowed:
-	// externalServices, or the hosts of the account's upstreamFields), a
+	// The checks are the host's: a relay or a fetch may reach the hosts the
+	// manifest allows for the call's account (manifest.Manifest.
+	// UpstreamHostAllowed: externalServices, or the hosts of the account's
+	// upstreamFields; a relay to another host is refused with
+	// INVALID_ARGUMENT, a fetch with PERMISSION_DENIED, as the host does), a
 	// relay's method and headers are judged as the gateway judges them, and
 	// Harness.Monitor refuses a terminal result without one complete,
 	// successful fetch in the call (an HTTP status, no transport error).
@@ -99,10 +101,10 @@ type FakeHost struct {
 	// (the core seals it), so it takes any and the test sees it here.
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
 	// Manifest is the plugin's manifest as the host knows it, which decides
-	// the hosts a fetch may reach and the protocols that are HTTP routes.
-	// Start sets it from Options.Manifest when it is nil.
-	// Without a manifest no fetch is allowed unless ExternalServices says
-	// so, and no account has upstream addresses.
+	// the hosts a relay or a fetch may reach and the protocols that are HTTP
+	// routes. Start sets it from Options.Manifest when it is nil.
+	// Without a manifest no relay or fetch is allowed unless
+	// ExternalServices says so, and no account has upstream addresses.
 	Manifest *manifest.Manifest
 	// ExternalServices, when not nil, replaces the manifest's
 	// externalServices (a subdomain of one matches), e.g. for a test that

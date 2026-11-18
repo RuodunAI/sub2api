@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"slices"
 	"strings"
@@ -670,4 +671,12 @@ func TestForeignFactsAccountTypeSkipped(t *testing.T) {
 	if len(relay.AccountTypes[0].Platforms) != 2 {
 		t.Fatal("the manifest was changed")
 	}
+}
+
+func (stub) Execute(context.Context, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error) {
+	return core.ExecutionResult{}, errors.New("stub does not execute requests")
+}
+
+func (stub) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+	return nil, errors.New("stub does not monitor tasks")
 }

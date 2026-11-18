@@ -48,7 +48,7 @@ func (p *availabilityPlugin) CheckModelAvailability(ctx context.Context, in *plu
 // Execute is the wrapped plugin's: the availability methods are the only
 // ones this fake adds.
 func (p *availabilityPlugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
-	return p.PlatformPlugin.(core.ExecutePlugin).Execute(ctx, in, client)
+	return p.PlatformPlugin.Execute(ctx, in, client)
 }
 
 type availabilitySource struct {

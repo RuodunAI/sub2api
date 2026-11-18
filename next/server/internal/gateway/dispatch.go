@@ -21,6 +21,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 )
 
@@ -649,16 +650,29 @@ func (c *call) meterable(rt *typeRoute, body []byte) *gwError {
 	return nil
 }
 
-// setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host.
-// The transport's own headers (framing, transparent gzip) never get here:
-// the runtime refuses a relay naming them.
-func setBuiltHeaders(req *http.Request, h map[string]string) {
-	for k, v := range h {
-		if strings.EqualFold(k, "host") {
-			req.Host = v
-			continue
+// layerHeaders writes the headers of a plugin's relay onto h in the layers
+// of CONTRACTS §112.4, each over the one before: the plugin's default
+// headers, then operator (the operator's layers), then its authoritative
+// headers, where an empty value removes the header so that it is not sent
+// at all (§112.17). Names owned reports are left to the transport (nil:
+// none). The transport's own headers, Host among them, never get here: the
+// runtime refuses a relay naming them, so a request always goes to, and
+// names, the host of its checked URL.
+func layerHeaders(h http.Header, req *pluginv1.UpstreamRequest, operator func(http.Header), owned func(name string) bool) {
+	for k, v := range req.GetDefaultHeaders() {
+		if owned == nil || !owned(k) {
+			h.Set(k, v)
 		}
-		req.Header.Set(k, v)
+	}
+	operator(h)
+	for k, v := range req.GetHeaders() {
+		switch {
+		case owned != nil && owned(k):
+		case v == "":
+			h.Del(k)
+		default:
+			h.Set(k, v)
+		}
 	}
 }
 
@@ -687,11 +701,12 @@ func (c *call) passthroughHeaders(h http.Header, acc *core.Account) {
 }
 
 // upstreamRequest is the plugin's relay as it goes upstream, the body its
-// bytes as they are. Headers in layers (CONTRACTS §86.5), each over the one
-// before: the plugin's default headers; the client headers passed through,
-// which only fill what is unset; the account's header override (§108) and
+// bytes as they are. Headers in layers (CONTRACTS §86.5, layerHeaders):
+// the plugin's default headers; the client headers passed through, which
+// only fill what is unset; the account's header override (§108) and
 // parameter override (§84), which may replace or remove; the plugin's
-// authoritative headers, which always win; then a Content-Type when none.
+// authoritative headers, which always win (an empty one removes); then a
+// Content-Type when none.
 func (c *call) upstreamRequest(ctx context.Context, req *pluginv1.UpstreamRequest, target *url.URL, acc *core.Account) (*http.Request, error) {
 	method := cmp.Or(strings.ToUpper(req.GetMethod()), http.MethodPost)
 	var body io.Reader
@@ -702,10 +717,10 @@ func (c *call) upstreamRequest(ctx context.Context, req *pluginv1.UpstreamReques
 	if err != nil {
 		return nil, err
 	}
-	setBuiltHeaders(r, req.GetDefaultHeaders())
-	c.passthroughHeaders(r.Header, acc)
-	c.paramOverride.headers.Apply(r.Header)
-	setBuiltHeaders(r, req.GetHeaders())
+	layerHeaders(r.Header, req, func(h http.Header) {
+		c.passthroughHeaders(h, acc)
+		c.paramOverride.headers.Apply(h)
+	}, nil)
 	if r.Header.Get("Content-Type") == "" && body != nil {
 		r.Header.Set("Content-Type", "application/json")
 	}
@@ -766,7 +781,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if c.failurePolicy != nil {
 		hreq = hreq.WithContext(httptrace.WithClientTrace(hreq.Context(), &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { requestWritten.Store(true) }}))
 	}
-	resp, err := noRedirects(client).Do(hreq)
+	resp, err := execfetch.NoRedirects(client).Do(hreq)
 	timer.Stop()
 	if err != nil {
 		if c.failurePolicy != nil {
@@ -818,7 +833,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if w := x.waited; w != nil {
 		return w.answer(ctx, resp)
 	}
-	return c.forward(ctx, rt, x.acct, resp, x.body)
+	return c.forward(ctx, rt, x.acct, resp, x.body, nil)
 }
 
 // classifyUpstream decides what an upstream failure of x means: the
@@ -875,7 +890,6 @@ func canceledErr() *gwError {
 
 const (
 	maxErrorBody    = 64 << 10
-	classifyPrefix  = 4 << 10
 	defaultCooldown = 60 * time.Second
 )
 
@@ -895,11 +909,8 @@ func (c *call) classify(ctx context.Context, rt *typeRoute, acct *pluginv1.Accou
 // means; defaults when the call fails.
 func (c *call) classifyWithPlugin(ctx context.Context, rt *typeRoute, acct *pluginv1.Account,
 	status int, header http.Header, body []byte, transportErr string) *pluginv1.ClassifyErrorResponse {
-	headers := firstHeaderValues(header)
-	prefix := body
-	if len(prefix) > classifyPrefix {
-		prefix = prefix[:classifyPrefix]
-	}
+	headers := execfetch.FirstHeaderValues(header)
+	prefix := core.ClassifyPrefix(body)
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.gw.platformTimeout())
 	cls, err := rt.binding.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
 		Meta: c.metaFor(rt), Account: acct, Status: int32(status), Headers: headers, BodyPrefix: prefix, TransportError: transportErr,

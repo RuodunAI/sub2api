@@ -54,7 +54,7 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 		if !ok {
 			return nil
 		}
-		res, err := b.Client.(core.ExecutePlugin).Execute(ctx, &pluginv1.ExecuteRequest{}, core.ExecutionClient{})
+		res, err := b.Client.Execute(ctx, &pluginv1.ExecuteRequest{}, core.ExecutionClient{})
 		if err != nil {
 			t.Fatalf("account type call: %v", err)
 		}

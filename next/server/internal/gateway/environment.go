@@ -59,8 +59,9 @@ func (c *call) streamIdle() time.Duration {
 
 // upstreamTimeouts are the response header and total timeouts of an
 // upstream exchange (0 = none): the environment's, the header one else the
-// gateway's wait for a stream or not, each shortened by the plugin's
-// options, which may only tighten them.
+// gateway's wait for a stream or not. opts (UpstreamRequest.options) is set
+// by no SDK helper any more and is to leave the protocol; while it is there,
+// a value in it can only shorten a timeout.
 func (c *call) upstreamTimeouts(opts *pluginv1.UpstreamOptions, stream bool) (header, total time.Duration) {
 	header = c.g.headerWait(stream)
 	if d := c.env.Duration(core.EnvVarResponseHeaderTimeoutSeconds); d > 0 {

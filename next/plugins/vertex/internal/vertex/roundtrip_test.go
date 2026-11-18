@@ -211,7 +211,9 @@ func (a *coreAccount) call(t *testing.T, h *pluginsdktest.Harness, protocol, mod
 // startFakeGoogle runs the plugin in the SDK harness against the fake Google.
 func startFakeGoogle(t *testing.T, g *fakeGoogle) *pluginsdktest.Harness {
 	t.Helper()
-	return startPlugin(t, newTestPlugin(Endpoints{Token: g.srv.URL + "/token", API: g.srv.URL}))
+	h := startPlugin(t, newTestPlugin(Endpoints{Token: g.srv.URL + "/token", API: g.srv.URL}))
+	h.Host.ExternalServices = []string{"127.0.0.1"} // the fake Google stands in for googleapis.com
+	return h
 }
 
 // TestKeyFileAccountRoundTrip follows a key file account from the form to an

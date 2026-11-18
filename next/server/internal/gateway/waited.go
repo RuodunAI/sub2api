@@ -17,6 +17,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 // The relay that waits (design §4.3): an endpoint whose usage the plugin
@@ -112,7 +113,7 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 	}
 	w.records = records
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
-	err := records.BeginExecution(bctx, core.ExecutionIntent{TaskSubmit: c.ep.TaskSubmit(), Record: c.rec, ID: w.id, RequestID: c.rid,
+	err := records.BeginExecution(bctx, core.ExecutionIntent{TaskSubmit: c.ep.TaskSubmit(), ID: w.id, RequestID: c.rid,
 		PluginKey: x.rt.binding.Plugin.Key, AccountID: x.acc.ID, Attempt: c.rec.Attempts})
 	cancel()
 	if err != nil {
@@ -135,13 +136,9 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 // result waits for its classification (settle).
 func (w *waitedRelay) fail(status int, header http.Header, raw []byte, transportErr string) attemptResult {
 	x := w.x
-	prefix := raw
-	if len(prefix) > classifyPrefix {
-		prefix = prefix[:classifyPrefix]
-	}
 	w.state, w.header, w.raw = relayFailed, header, raw
 	w.failure = &pluginv1.ClassifyErrorRequest{Meta: x.c.metaFor(x.rt), Account: x.acct, Status: int32(status),
-		Headers: firstHeaderValues(header), BodyPrefix: prefix, TransportError: transportErr}
+		Headers: execfetch.FirstHeaderValues(header), BodyPrefix: core.ClassifyPrefix(raw), TransportError: transportErr}
 	return attemptResult{kind: attemptReturn}
 }
 
@@ -190,7 +187,7 @@ func (w *waitedRelay) forward(ctx context.Context, resp *http.Response) {
 		c.c.Writer = w.spool
 	}
 	defer func() { c.c.Writer = original }()
-	c.forward(ctx, x.rt, x.acct, resp, x.body)
+	c.forward(ctx, x.rt, x.acct, resp, x.body, newUsageCapture(x.rt))
 }
 
 // read builds the observation the plugin reads from the answer and stores

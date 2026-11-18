@@ -49,8 +49,7 @@ const (
 	reconcileSweepBudget = 2 * time.Minute
 	// reconcileEntryBudget bounds one observation including network and accounting.
 	reconcileEntryBudget = 30 * time.Second
-	// reconcileHTTPTimeout bounds one fetch of a Monitor call; the
-	// plugin's options may only shorten it.
+	// reconcileHTTPTimeout bounds one fetch of a Monitor call.
 	reconcileHTTPTimeout = 20 * time.Second
 )
 

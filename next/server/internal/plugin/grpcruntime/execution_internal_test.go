@@ -188,12 +188,12 @@ func TestRelayWaitReturnsObservation(t *testing.T) {
 }
 
 // The body of a relay has no bound of the runtime's, whatever the body the
-// plugin was handed; the transport's headers
-// are not the plugin's.
+// plugin was handed; the transport's headers, Host among them (a request
+// names the host of its URL), are not the plugin's.
 func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 	side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
 		large := max(mib, len(in.GetBody())) + 2*mib
-		for _, name := range []string{"content-length", "Accept-Encoding", "connection", "transfer-encoding"} {
+		for _, name := range []string{"Host", "content-length", "Accept-Encoding", "connection", "transfer-encoding"} {
 			for _, req := range []*pluginv1.UpstreamRequest{{Url: "https://u.example.com", Headers: map[string]string{name: "x"}}, {Url: "https://u.example.com", DefaultHeaders: map[string]string{name: "x"}}} {
 				if _, err := h.RelayUpstream(ctx, &pluginv1.RelayUpstreamRequest{ExecutionToken: in.GetExecutionToken(), Request: req}); status.Code(err) != codes.InvalidArgument {
 					t.Errorf("header %s: %v", name, err)

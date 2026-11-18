@@ -3,7 +3,6 @@ package usage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,14 +48,17 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 
 // registerTask writes a submitted task with its usage record in one
 // transaction between before and after (CommitExecution's): the usage row,
-// its reserve or settlement, the task and its monitoring.
+// its reserve or settlement, the task and its monitoring. A registration
+// that cannot be written as it is (malformed, its request already
+// registered, its receipt not matching) is refused
+// (core.ErrExecutionRefused): retrying the same commit changes nothing.
 func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, before func(*gorm.DB) error, after func(*gorm.DB) error) error {
 	r := in.Record
 	if r == nil || r.AccountID == nil || in.PublicID == "" || in.UpstreamID == "" {
-		return errors.New("invalid task registration")
+		return refused("invalid task registration")
 	}
 	if _, err := protocol.RewriteTaskID(in.Snapshot, in.IDPaths, in.UpstreamID, in.PublicID); err != nil {
-		return err
+		return refused("task snapshot: " + err.Error())
 	}
 	cfg := s.withEnvironment(ctx, s.reconcileSettings(ctx), r.GroupID, r.AccountID)
 	now := time.Now()
@@ -71,7 +73,7 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 	_, err := s.insertAtomic(ctx, []*core.UsageRecord{r}, before, func(tx *gorm.DB, ids map[string]int64) error {
 		uid, ok := ids[r.RequestID]
 		if !ok {
-			return errors.New("task request ID already registered")
+			return refused("task request ID already registered")
 		}
 		if err := recordTask(ctx, tx, in, uid, next, deadline); err != nil {
 			return err
@@ -99,7 +101,7 @@ func recordTask(ctx context.Context, tx *gorm.DB, in core.TaskRegistration, uid 
 		return err
 	}
 	if !valid {
-		return errors.New("task receipt identity mismatch")
+		return refused("task receipt identity mismatch")
 	}
 	err := g.Create(&model.AsyncTask{PublicID: in.PublicID, PluginKey: r.PluginKey, Kind: in.Kind, UpstreamRefID: in.UpstreamID,
 		UserID: r.UserID, APIKeyID: r.APIKeyID, GroupID: r.GroupID, AccountID: *r.AccountID, Model: r.Model, Protocol: r.Protocol,

@@ -179,7 +179,7 @@ func newWSEnv(t *testing.T, caps ...string) *wsEnv {
 	}
 	e := &wsEnv{env: newEnv(t)}
 	e.wsUp = newWSUpstream(t)
-	m := &manifest.Manifest{Key: "openai", Version: "0.3.0", AccountTypes: []manifest.AccountType{{ID: "apikey",
+	m := &manifest.Manifest{Key: "openai", Version: "0.3.0", ExternalServices: []string{testUpstreamHost}, AccountTypes: []manifest.AccountType{{ID: "apikey",
 		Platforms: []manifest.AccountPlatform{{Platform: manifest.PlatformOpenAI}}}}}
 	for _, c := range caps {
 		m.Capabilities = append(m.Capabilities, manifest.Capability{ID: c})
@@ -782,6 +782,11 @@ func TestWebSocketRefusedHandshakeFailsOver(t *testing.T) {
 		"response stream": func(out *pluginv1.UpstreamRequest) { out.ResponseStream = awseventstream.FormatChunk },
 		"method":          func(out *pluginv1.UpstreamRequest) { out.Method = "POST" },
 		"scheme":          func(out *pluginv1.UpstreamRequest) { out.Url = "ftp" + strings.TrimPrefix(out.Url, "ws") },
+		// A host the plugin did not declare and the account does not name
+		// (CONTRACTS §112.17): the same server under another name.
+		"undeclared host": func(out *pluginv1.UpstreamRequest) {
+			out.Url = strings.Replace(out.Url, testUpstreamHost, "localhost", 1)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newWSEnv(t)
@@ -811,8 +816,8 @@ func TestWebSocketRefusedHandshakeFailsOver(t *testing.T) {
 // The first turn's relay opens the upstream connection at a ws:// or an
 // http:// address alike, with the handshake headers in layers: the plugin's
 // default headers, the account's header override and parameter override
-// over them, the plugin's authoritative headers last; no client header is
-// passed through.
+// over them, the plugin's authoritative headers last (an empty one removes
+// the header); no client header is passed through.
 func TestWebSocketHandshakeHeaderLayers(t *testing.T) {
 	for name, scheme := range map[string]string{"ws url": "ws", "http url": "http"} {
 		t.Run(name, func(t *testing.T) {
@@ -822,9 +827,10 @@ func TestWebSocketHandshakeHeaderLayers(t *testing.T) {
 				out.DefaultHeaders = map[string]string{"x-default-a": "plugin-a", "x-default-b": "plugin-b", "x-default-c": "plugin-c",
 					"x-plugin-sig": "default-sig"}
 				out.Headers["x-plugin-sig"] = "sig-1"
+				out.Headers["x-op-token"] = ""
 				return nil
 			}
-			withHeaderOverride(t, e.env, 11, `{"x-default-a":"op-a","x-default-b":"{unset}","x-plugin-sig":"op-sig","openai-beta":"op-beta","x-extra":"op-extra"}`)
+			withHeaderOverride(t, e.env, 11, `{"x-default-a":"op-a","x-default-b":"{unset}","x-plugin-sig":"op-sig","openai-beta":"op-beta","x-extra":"op-extra","x-op-token":"op-token"}`)
 			withParamOverride(t, e.env, 11, `{"operations":[{"mode":"set_header","path":"x-default-c","value":"param-c"},
 				{"mode":"delete_header","path":"openai-beta"}]}`)
 			editAccount(e.env, 11, func(a *core.Account) { a.HeaderPassthrough = []string{"*"} })
@@ -843,7 +849,7 @@ func TestWebSocketHandshakeHeaderLayers(t *testing.T) {
 			for k, want := range map[string]string{
 				"Authorization": "Bearer oa-11", "Openai-Beta": "responses_websockets=2026-02-06", "X-Plugin-Sig": "sig-1",
 				"X-Default-A": "op-a", "X-Default-C": "param-c", "X-Extra": "op-extra",
-				"X-Default-B": "", "X-Client-Only": "",
+				"X-Default-B": "", "X-Client-Only": "", "X-Op-Token": "",
 			} {
 				if got := strings.Join(h.Values(k), ","); got != want {
 					t.Errorf("%s = %q, want %q", k, got, want)

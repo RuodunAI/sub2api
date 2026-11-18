@@ -55,7 +55,7 @@ type Manifest struct {
 	Resources        *Resources        `json:"resources,omitempty"`
 
 	HostPermissions  []HostPermission `json:"hostPermissions,omitempty"`
-	ExternalServices []string         `json:"externalServices,omitempty"` // shown at review; the hosts SendAccountRequest may reach (CONTRACTS §91)
+	ExternalServices []string         `json:"externalServices,omitempty"` // shown at review; with the account's upstream addresses, the hosts the core sends to for the plugin (UpstreamHostAllowed, CONTRACTS §112.17)
 }
 
 // Entry locates the runtime artifact inside the package.

@@ -29,7 +29,9 @@ const TransportFailure = "execution HTTP request failed"
 
 // RelayTransportHeaders are the request headers the host's transport decides
 // for a relayed request (UpstreamRequest); a relay naming one is refused.
-var RelayTransportHeaders = map[string]bool{"content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
+// Host is the URL's: a request goes to, and names, the host that was checked
+// (the SSRF policy, the account's proxy, the allowed upstream hosts).
+var RelayTransportHeaders = map[string]bool{"host": true, "content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
 
 // FetchTransportHeaders are the headers a fetch may not set: they would
 // change where or how the request travels (Host against the checked URL,
@@ -78,7 +80,8 @@ type Binding struct {
 	// a copy that follows no redirect and has no client-wide timeout.
 	Client func(ctx context.Context) (*http.Client, error)
 	// HeaderTimeout and TotalTimeout are the host's; the request's options
-	// may only shorten them. <= 0 is none.
+	// (set by no SDK helper any more, the field is to leave the protocol)
+	// can only shorten them. <= 0 is none.
 	HeaderTimeout, TotalTimeout time.Duration
 	// Admit, when set, is asked right before the exchange; its error is
 	// returned as the fetch's error and nothing is sent.

@@ -197,7 +197,7 @@ func (f *fake) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestReque
 }
 
 const fakeManifest = `{
-  "key": "conformance-fake", "version": "1.0.0", "externalServices": ["auth.conformance.invalid"],
+  "key": "conformance-fake", "version": "1.0.0", "externalServices": ["auth.conformance.invalid", "upstream.conformance.invalid"],
   "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.websocket.v1"}],
   "platforms": [{"id": "conformance", "passHeaders": ["x-conformance-beta"], "endpoints": [
     {"id": "chat", "method": "POST", "path": "/v1/chat", "protocol": "conformance.chat", "kind": "proxy",

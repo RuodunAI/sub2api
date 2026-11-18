@@ -21,6 +21,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
@@ -394,22 +395,12 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 // both values empty.
 func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	model string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
-	headers := map[string]string{}
-	for k, v := range header {
-		if len(v) > 0 {
-			headers[strings.ToLower(k)] = v[0]
-		}
-	}
-	prefix := body
-	if len(prefix) > classifyPrefix {
-		prefix = prefix[:classifyPrefix]
-	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), classifyTimeout)
 	defer cancel()
 	cls, err := bt.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
 		Meta:    &pluginv1.RequestMeta{Model: model},
-		Account: acct, Status: int32(status), Headers: headers,
-		BodyPrefix: prefix, TransportError: transportErr,
+		Account: acct, Status: int32(status), Headers: execfetch.FirstHeaderValues(header),
+		BodyPrefix: core.ClassifyPrefix(body), TransportError: transportErr,
 	})
 	if err != nil || cls == nil {
 		slog.DebugContext(ctx, "account: test classification unavailable", "plugin", bt.Plugin.Key, "err", err)
@@ -423,10 +414,6 @@ func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, 
 	}
 	return truncate(cls.GetReason(), 512), effect, cls.GetLocalFailure()
 }
-
-// classifyPrefix is the body prefix given to ClassifyError, as in the
-// gateway.
-const classifyPrefix = 4 << 10
 
 func truncate(s string, n int) string { return x.TruncateEllipsis(s, n) }
 

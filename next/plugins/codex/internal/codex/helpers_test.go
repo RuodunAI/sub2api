@@ -42,12 +42,14 @@ func idToken(email, accountID, plan string) string {
 func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base} }
 
 // startPlugin runs p in the SDK harness with a fake host (in-memory KV)
-// that sends the fetches of route calls to their URL itself, as the core
-// does through the proxy of their ticket (sendFetches).
+// that knows the plugin's manifest, so it relays and fetches only to the
+// hosts the core would, plus the tests' own authorization servers; it sends
+// the fetches of route calls to their URL itself, as the core does through
+// the proxy of their ticket (sendFetch).
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	t.Helper()
-	h := pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
-	h.Host.ExternalServices = []string{"127.0.0.1", "auth.example"}
+	h := pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: testManifest, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
+	h.Host.ExternalServices = []string{"auth.openai.com", "chatgpt.com", "127.0.0.1", "auth.example"}
 	h.Host.ExecuteHTTPFunc = sendFetch
 	return h
 }

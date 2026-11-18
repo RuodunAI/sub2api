@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -534,6 +537,35 @@ func TestNoWaitEmptyHostReadingIsUnreported(t *testing.T) {
 		}
 		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "holds no usage") {
 			t.Fatalf("stream %v: logs %s", stream, logs)
+		}
+	}
+}
+
+// Only a relay that waits keeps a copy of the answer for the plugin's
+// observation: one that does not wait is read by no plugin, so forward
+// captures nothing for it even on an endpoint whose usage the plugin reads.
+func TestForwardCapturesOnlyForAWaitingRelay(t *testing.T) {
+	const answer = `{"ok":true}`
+	rt := &typeRoute{platform: "pu", pluginUsage: true}
+	for _, waits := range []bool{false, true} {
+		w := httptest.NewRecorder()
+		gc, _ := gin.CreateTestContext(w)
+		gc.Request = httptest.NewRequest(http.MethodPost, "/pu/v1/chat", nil)
+		c := &call{g: &Gateway{}, c: gc, gen: newFakeGen(), rec: &core.UsageRecord{}}
+		var capture *usageCapture
+		if waits {
+			capture = newUsageCapture(rt)
+		}
+		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(answer)), Request: httptest.NewRequest(http.MethodPost, "/", nil)}
+		if res := c.forward(context.Background(), rt, &pluginv1.Account{Id: 1}, resp, nil, capture); res.kind != attemptDone || w.Body.String() != answer {
+			t.Fatalf("waits %v: forward %+v, client got %q", waits, res, w.Body.String())
+		}
+		switch {
+		case !waits && c.usage != nil:
+			t.Fatalf("a relay that does not wait captured its answer: %+v", c.usage)
+		case waits && (c.usage == nil || string(c.usage.cap.body) != answer):
+			t.Fatalf("a relay that waits kept no observation: %+v", c.usage)
 		}
 	}
 }
