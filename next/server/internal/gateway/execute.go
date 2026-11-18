@@ -151,10 +151,12 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 func (x *execution) unrelayed(ctx context.Context, res core.ExecutionResult, err error) attemptResult {
 	c := x.c
 	switch cls := res.Response.GetClassification(); {
+	case ctx.Err() != nil:
+		// The client left: whatever the plugin made of it (a fetch it cut,
+		// classified) says nothing about the account.
+		return attemptResult{kind: attemptCanceled, err: canceledErr()}
 	case err == nil && cls != nil:
 		return c.applyClassification(ctx, x.rt, x.acct, 0, nil, nil, firstNonEmpty(cls.GetReason(), "upstream request failed before the relay"), cls)
-	case ctx.Err() != nil:
-		return attemptResult{kind: attemptCanceled, err: canceledErr()}
 	case x.refused != nil:
 		return attemptResult{kind: attemptFailover, err: x.refused}
 	case err == nil:

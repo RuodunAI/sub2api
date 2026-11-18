@@ -1,9 +1,13 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -95,4 +99,40 @@ func TestPluginDownForEveryAccountUnderFailurePolicy(t *testing.T) {
 	require.Equal(t, "no_available_account", r.json().Get("error.code").String())
 	require.Empty(t, e.up.keys())
 	require.Empty(t, e.accounts.cooldowns)
+}
+
+// A classification the plugin returns without a relay after the client left
+// (its fetch cut by the departure) is not applied: the attempt is canceled
+// and the account not cooled down.
+func TestPluginClassificationAfterClientLeftIsIgnored(t *testing.T) {
+	e := newEnv(t)
+	entered := make(chan struct{})
+	e.gen.accountTypes[0].Client = &waitedPlugin{fakePlatform: e.plat, exec: func(ctx context.Context, _ *fakePlatform, _ *pluginv1.ExecuteRequest, _ core.ExecutionClient) (core.ExecutionResult, error) {
+		close(entered)
+		<-ctx.Done()
+		return core.ExecutionResult{Response: &pluginv1.ExecuteResponse{Classification: &pluginv1.ClassifyErrorResponse{
+			Action: pluginv1.ClassifyErrorResponse_ACTION_FAILOVER, AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN,
+			Reason: "fetch failed"}}}, nil
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw, _ := json.Marshal(body(testModel, false))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.srv.URL+"/v1/messages", bytes.NewReader(raw))
+	req.Header.Set("x-api-key", testKey)
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute was not called")
+	}
+	cancel()
+	rec := e.record()
+	require.Equal(t, errTypeClientCanceled, rec.ErrorType)
+	require.Equal(t, 1, rec.Attempts)
+	require.Empty(t, e.accounts.cooldowns)
+	require.Empty(t, e.up.keys())
 }
