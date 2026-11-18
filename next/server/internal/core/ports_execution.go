@@ -33,9 +33,7 @@ const (
 	ExecutionHTTPMaxResponseBytes = 8 << 20
 )
 
-// Bounds of the waiting form once its observation is stored, shared by the
-// gateway (which enforces them) and the usage module's recovery sweep (which
-// must never close an execution a live gateway may still commit).
+// Host bounds around plugin execution that more than one module names.
 const (
 	// ExecutionSegmentTimeoutMax is the longest SegmentTimeout the gateway
 	// sets: the maximum of its platform_call_timeout_ms setting.
@@ -43,22 +41,9 @@ const (
 	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
 	// environment sets no relay timeout.
 	ExecutionHTTPDefaultTimeout = 5 * time.Minute
-	// ExecutionFactsTimeout is how long the gateway lets Execute run on
-	// after the observation is stored before it cancels the call (the
-	// execution then closes unreported): the plugin's own work around every
-	// fetch it may still make (ExecutionHTTPMaxRequests+1 stretches of at
-	// most ExecutionSegmentTimeoutMax) and those fetches at their default
-	// timeout. An environment whose relay timeout makes fetches longer gets
-	// no more than this in total.
-	ExecutionFactsTimeout = (ExecutionHTTPMaxRequests+1)*ExecutionSegmentTimeoutMax + ExecutionHTTPMaxRequests*ExecutionHTTPDefaultTimeout
 	// ExecutionFinishTimeout bounds each write that ends an execution on the
 	// gateway: the commit with its retries, then a close.
 	ExecutionFinishTimeout = 15 * time.Second
-	// ExecutionRecoveryAge is how long an execution may stay observed before
-	// the recovery sweep takes its gateway for gone and closes it
-	// unreported: longer than a live gateway can keep it there
-	// (ExecutionFactsTimeout, a commit and a close), plus a minute.
-	ExecutionRecoveryAge = ExecutionFactsTimeout + 2*ExecutionFinishTimeout + time.Minute
 )
 
 // DefaultMaxRequestBodyBytes is the request body limit when nothing else is
@@ -251,8 +236,8 @@ const (
 // CommitExecution (Execute returned valid facts) and
 // CloseExecutionUnreported (it did not). Nothing here falls back to the
 // host's reading on its own: an observed execution that is never committed
-// is closed as unreported by the caller or, after ExecutionRecoveryAge, by
-// the usage module's recovery sweep, and is not billed.
+// is closed as unreported by the caller or, once its gateway is gone, by the
+// usage module's recovery sweep, and is not billed.
 type ExecutionRecords interface {
 	// BeginExecution stores the trusted identity of the execution before
 	// any network side effect. A second call with the same ID fails.

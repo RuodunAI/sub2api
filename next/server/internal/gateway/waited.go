@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -86,10 +85,6 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 		return nil, err
 	}
 	w.result = c.send(x.network, x, req)
-	if w.observed {
-		// The recovery sweep counts on this bound (core.ExecutionRecoveryAge).
-		x.factsTimer = time.AfterFunc(cmp.Or(c.g.factsTimeout, core.ExecutionFactsTimeout), x.cutExecute)
-	}
 	switch {
 	case w.failure != nil:
 		return &pluginv1.RelayUpstreamResponse{Error: w.failure}, nil

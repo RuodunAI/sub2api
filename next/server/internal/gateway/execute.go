@@ -55,12 +55,8 @@ type execution struct {
 	checked *pluginv1.UpstreamRequest
 	target  *url.URL
 	refused *gwError
-	// waited is the exchange of a relay that waits (waited.go); cutExecute
-	// cancels its Execute call, which factsTimer does once the observation
-	// was stored and the facts take too long.
-	waited     *waitedRelay
-	cutExecute context.CancelFunc
-	factsTimer *time.Timer
+	// waited is the exchange of a relay that waits (waited.go).
+	waited *waitedRelay
 }
 
 // errExecutionAborted cuts the upstream exchange of a relay that waits when
@@ -102,12 +98,6 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 6*time.Hour+c.env.Duration(core.EnvVarRelayTimeoutSeconds))
 		defer cancel()
-		x.cutExecute = cancel
-		defer func() {
-			if x.factsTimer != nil {
-				x.factsTimer.Stop()
-			}
-		}()
 	}
 	return plugin.Execute(ctx, in, client)
 }

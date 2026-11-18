@@ -196,10 +196,9 @@ func lockExecution(ctx context.Context, tx *gorm.DB, id string) (model.PluginExe
 
 // executionRecoveryAge is how long an observed execution may wait for its
 // facts before the recovery sweep closes it as unreported. The sweep is for
-// executions whose gateway is gone, so it outlasts the longest a live one
-// keeps an execution observed (core.ExecutionRecoveryAge, about 46 minutes);
-// until then a crashed gateway's precharge stays reserved.
-const executionRecoveryAge = core.ExecutionRecoveryAge
+// executions whose gateway is gone; a live one has no bound of its own, so
+// this stays long until executions report their liveness.
+const executionRecoveryAge = time.Hour
 
 // recoverExecutions closes the observed synchronous executions that neither
 // committed nor were closed within executionRecoveryAge as unreported: the
