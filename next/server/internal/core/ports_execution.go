@@ -33,6 +33,34 @@ const (
 	ExecutionHTTPMaxResponseBytes = 8 << 20
 )
 
+// Bounds of the waiting form once its observation is stored, shared by the
+// gateway (which enforces them) and the usage module's recovery sweep (which
+// must never close an execution a live gateway may still commit).
+const (
+	// ExecutionSegmentTimeoutMax is the longest SegmentTimeout the gateway
+	// sets: the maximum of its platform_call_timeout_ms setting.
+	ExecutionSegmentTimeoutMax = 30 * time.Second
+	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
+	// environment sets no relay timeout.
+	ExecutionHTTPDefaultTimeout = 5 * time.Minute
+	// ExecutionFactsTimeout is how long the gateway lets Execute run on
+	// after the observation is stored before it cancels the call (the
+	// execution then closes unreported): the plugin's own work around every
+	// fetch it may still make (ExecutionHTTPMaxRequests+1 stretches of at
+	// most ExecutionSegmentTimeoutMax) and those fetches at their default
+	// timeout. An environment whose relay timeout makes fetches longer gets
+	// no more than this in total.
+	ExecutionFactsTimeout = (ExecutionHTTPMaxRequests+1)*ExecutionSegmentTimeoutMax + ExecutionHTTPMaxRequests*ExecutionHTTPDefaultTimeout
+	// ExecutionFinishTimeout bounds each write that ends an execution on the
+	// gateway: the commit with its retries, then a close.
+	ExecutionFinishTimeout = 15 * time.Second
+	// ExecutionRecoveryAge is how long an execution may stay observed before
+	// the recovery sweep takes its gateway for gone and closes it
+	// unreported: longer than a live gateway can keep it there
+	// (ExecutionFactsTimeout, a commit and a close), plus a minute.
+	ExecutionRecoveryAge = ExecutionFactsTimeout + 2*ExecutionFinishTimeout + time.Minute
+)
+
 // DefaultMaxRequestBodyBytes is the request body limit when nothing else is
 // configured (128 MiB).
 const DefaultMaxRequestBodyBytes = 128 << 20
@@ -197,7 +225,11 @@ type MonitorPlugin interface {
 
 // States of a plugin_executions row.
 const (
-	ExecutionStateIntent     = "intent"     // BeginExecution: identity stored, nothing sent yet
+	// BeginExecution: identity stored, no durable observation. The request
+	// may have been sent: an upstream error answer, a transport or client
+	// failure, a refused target or an observation that could not be stored
+	// all leave the row here; none of them is billed through it.
+	ExecutionStateIntent     = "intent"
 	ExecutionStateObserved   = "observed"   // ObserveExecution: the host's reading is durable
 	ExecutionStateCommitted  = "committed"  // CommitExecution: the plugin's facts are billed
 	ExecutionStateUnreported = "unreported" // CloseExecutionUnreported: no facts, not billed
@@ -219,8 +251,8 @@ const (
 // CommitExecution (Execute returned valid facts) and
 // CloseExecutionUnreported (it did not). Nothing here falls back to the
 // host's reading on its own: an observed execution that is never committed
-// is closed as unreported by the caller or, after a minute, by the usage
-// module's recovery sweep, and is not billed.
+// is closed as unreported by the caller or, after ExecutionRecoveryAge, by
+// the usage module's recovery sweep, and is not billed.
 type ExecutionRecords interface {
 	// BeginExecution stores the trusted identity of the execution before
 	// any network side effect. A second call with the same ID fails.
@@ -239,7 +271,7 @@ type ExecutionRecords interface {
 	//
 	// It is idempotent per execution: the same Operation and Digest again
 	// is a no-op returning nil, so the caller may retry a failed commit with
-	// the same facts (it does, within its 15 s finishing time). Other facts
+	// the same facts (it does, within ExecutionFinishTimeout). Other facts
 	// for a committed execution are ErrConflict and change nothing. An
 	// execution closed as unreported is ErrConflict too.
 	CommitExecution(context.Context, ExecutionCommit) error
@@ -257,7 +289,10 @@ type ExecutionRecords interface {
 	// Closing an execution already unreported is a no-op returning nil. A
 	// committed one is ErrConflict (its facts stand). One still in state
 	// intent has no durable observation and is an error: nothing is written
-	// and the request's precharge is released by the expiry sweep.
+	// (the gateway submits the request's free record itself, which releases
+	// the precharge). When the request already has its usage record - that
+	// free record, for an observation stored although its acknowledgement
+	// was lost - the row moves to unreported without writing another.
 	CloseExecutionUnreported(context.Context, ExecutionUnreported) error
 }
 

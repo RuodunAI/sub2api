@@ -945,7 +945,9 @@ func TestReconcileCredentialBoundary(t *testing.T) {
 	if rf2.plugin.asks.Load() != 0 || rf2.plugin.lastAccount != nil {
 		t.Fatalf("another plugin's account was handed over: %+v", rf2.plugin.lastAccount)
 	}
-	if s := rf2.scalar(`SELECT state || ' ' || attempts::text FROM pending_settlements`); s != "pending 0" {
+	// An account of another plugin can never be asked: a failed query that
+	// spends the failure budget (TestUnaskableTaskAccount), not a deferral.
+	if s := rf2.scalar(`SELECT state || ' ' || poll_failures::text FROM pending_settlements`); s != "pending 1" {
 		t.Fatalf("entry = %q", s)
 	}
 }

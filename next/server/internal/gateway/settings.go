@@ -82,7 +82,7 @@ const (
 	minMaxAttempts           = 1
 	maxMaxAttempts           = 10
 	minPlatformCallTimeoutMs = 100
-	maxPlatformCallTimeoutMs = 30000
+	maxPlatformCallTimeoutMs = int(core.ExecutionSegmentTimeoutMax / time.Millisecond)
 	minDefaultHookTimeoutMs  = 50
 	maxDefaultHookTimeoutMs  = 2000
 	// The hot-path RPCs share the hook default's range: one of them delays

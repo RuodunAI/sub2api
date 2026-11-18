@@ -24,7 +24,16 @@ type taskClaim struct {
 	groupID                    int64
 }
 
+// errTaskDeferred is an account that cannot be asked now (cooling down,
+// its slots full, rate limited, a lookup that failed): the query waits
+// without spending the failure budget.
 var errTaskDeferred = errors.New("original task account is unavailable or busy")
+
+// errTaskAccountGone is an account that can never be asked again: none
+// recorded, deleted, or no longer of the reserving plugin. It is a failed
+// query like any other, so the failure budget ends it (a refund) instead of
+// deferring it to the deadline (the estimate kept).
+var errTaskAccountGone = errors.New("original task account no longer exists for its plugin")
 
 func (s *Service) claimTasks(ctx context.Context, limit int) ([]*settleEntry, error) {
 	// The due task observations are leased to a new token (leaving
@@ -66,12 +75,15 @@ var claimedColumns = clause.Returning{Columns: []clause.Column{{Name: "public_id
 
 func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
 	if e.accountID == nil {
-		return ctx, nil, nil, nil, errTaskDeferred
+		return ctx, nil, nil, nil, errTaskAccountGone
 	}
 	a, err := s.rec.Accounts.Load(ctx, *e.accountID)
 	// A disabled account is only kept out of scheduling: its tasks still settle.
-	if err != nil || a == nil || a.PluginKey != e.pluginKey {
+	switch {
+	case err != nil && core.AsError(err).Code != core.ErrNotFound.Code:
 		return ctx, nil, nil, nil, errTaskDeferred
+	case err != nil || a == nil || a.PluginKey != e.pluginKey:
+		return ctx, nil, nil, nil, errTaskAccountGone
 	}
 	cooling, err := s.rec.Accounts.IsCoolingDown(ctx, a.ID)
 	if err != nil || cooling {

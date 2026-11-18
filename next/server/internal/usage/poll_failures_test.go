@@ -222,3 +222,55 @@ func TestManagedObservationTerminationPolicy(t *testing.T) {
 		})
 	}
 }
+
+// coolingAccounts is recAccounts whose account is cooling down.
+type coolingAccounts struct{ recAccounts }
+
+func (coolingAccounts) IsCoolingDown(context.Context, int64) (bool, error) { return true, nil }
+
+// An account that cannot be asked now (cooling down) defers the query
+// without spending the failure budget; one that can never be asked again
+// (deleted, or of another plugin) is a failed query, and the budget's end
+// refunds the reserve instead of keeping the estimate at the deadline.
+func TestUnaskableTaskAccount(t *testing.T) {
+	for name, acc := range map[string]*core.Account{
+		"cooling":      {AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
+		"deleted":      {AccountRef: core.AccountRef{ID: 8, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
+		"other plugin": {AccountRef: core.AccountRef{ID: 7, PluginKey: "img", Type: "img_key"}, Status: "active"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rf := reconcileFixtureWith(t, acc)
+			f, ctx := rf.fixture, context.Background()
+			if name == "cooling" {
+				f.svc.rec.Accounts = coolingAccounts{recAccounts{acc: acc}}
+			}
+			before := f.balance()
+			f.svc.process(ctx, []*core.UsageRecord{f.reserved("unaskable", "raw", core.UsageTokens{Input: 1000, Output: 100})})
+			reserved := f.balance()
+			f.due()
+			if n := f.svc.ReconcileDue(ctx); n != 1 {
+				t.Fatalf("claimed %d", n)
+			}
+			if rf.plugin.asks.Load() != 0 {
+				t.Fatal("the plugin was asked")
+			}
+			if name == "cooling" {
+				if f.scalar(`SELECT poll_failures FROM pending_settlements`) != "0" || !f.balance().Equal(reserved) {
+					t.Fatal("a transient reason spent the failure budget")
+				}
+				return
+			}
+			if f.scalar(`SELECT poll_failures FROM pending_settlements`) != "1" {
+				t.Fatal("a permanent reason was not counted as a failed query")
+			}
+			if _, err := f.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET poll_failures=19`); err != nil {
+				t.Fatal(err)
+			}
+			f.due()
+			f.svc.ReconcileDue(ctx)
+			if !f.balance().Equal(before) || f.scalar(`SELECT billing_status FROM usage_logs WHERE request_id='unaskable'`) == StatusReserved {
+				t.Fatal("the failure budget's end did not refund the reserve")
+			}
+		})
+	}
+}

@@ -501,6 +501,7 @@ func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
+			logs := captureWarnings(t)
 			e, pp := usageEnv(t, pluginUsageRules())
 			setup(pp)
 			res := e.do("/pu/v1/chat", body(testModel, false), nil)
@@ -519,6 +520,11 @@ func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 			if rec.Tokens != (core.UsageTokens{}) {
 				t.Fatalf("tokens %+v", rec.Tokens)
 			}
+			// ... and a per-token price bills nothing: the one case that
+			// still warns.
+			if rec.Billable || !strings.Contains(logs.String(), "holds no usage") {
+				t.Fatalf("an empty host reading: billable %v, logs %s", rec.Billable, logs)
+			}
 			// host_usage is a fact like any other: committed.
 			if st := e.settler.executionStates(); len(st) != 1 || st[0] != core.ExecutionStateCommitted {
 				t.Fatalf("execution states %v", st)
@@ -535,14 +541,19 @@ func TestPluginUsageFallbackUsesTheDeclarativeRules(t *testing.T) {
 		manifest.UsageInputTokens:  "usage.input_tokens",
 		manifest.UsageOutputTokens: "usage.output_tokens",
 	}}
+	logs := captureWarnings(t)
 	e, _ := usageEnv(t, rules)
 	e.do("/pu/v1/chat", body(testModel, false), nil)
 	rec := e.record()
 	if rec.UsageExtract != core.UsageExtractFallback {
 		t.Fatalf("usage extract %q", rec.UsageExtract)
 	}
-	if rec.Tokens.Input != upInput || rec.Tokens.Output != upOutput {
-		t.Fatalf("tokens %+v", rec.Tokens)
+	if rec.Tokens.Input != upInput || rec.Tokens.Output != upOutput || !rec.Billable {
+		t.Fatalf("tokens %+v billable %v", rec.Tokens, rec.Billable)
+	}
+	// The plugin's choice of the host's reading is no failure: no warning.
+	if strings.Contains(logs.String(), "host's reading") || strings.Contains(logs.String(), "usage extraction failed") {
+		t.Fatalf("a deliberate host_usage warned: %s", logs)
 	}
 }
 

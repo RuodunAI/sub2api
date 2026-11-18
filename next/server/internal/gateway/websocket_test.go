@@ -1094,3 +1094,25 @@ func TestWebSocketInvalidMessageSkipsAuthentication(t *testing.T) {
 		t.Fatalf("turn after the invalid message: %+v", r)
 	}
 }
+
+// A return_error that lets the attempt move on, on every account, answers
+// the first turn with the operator's error as on HTTP, not with "no
+// available account".
+func TestWebSocketRetryableReturnErrorReachesTheClient(t *testing.T) {
+	e := newWSEnv(t)
+	for _, id := range []int64{11, 12} {
+		setParamOverride(t, e.env, id, `{"operations":[{"mode":"return_error","value":{"message":"not here","status_code":400,"skip_retry":false}}]}`)
+	}
+	c := e.mustDial()
+	c.send(create(wsModel, "hello"))
+	ev := c.until("error")
+	if ev[0].Get("status").Int() != http.StatusBadRequest || ev[0].Get("error.message").String() != "not here" {
+		t.Fatalf("retryable return_error on every account: %v", ev)
+	}
+	if r := e.record(); r.Success || r.ErrorType != errTypeInvalidRequest || r.Attempts != 2 {
+		t.Fatalf("record: %+v", r)
+	}
+	if keys, _ := e.wsUp.snapshot(); len(keys) != 0 {
+		t.Fatalf("handshakes: %v", keys)
+	}
+}
