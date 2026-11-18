@@ -171,9 +171,9 @@ func TestExecutePluginCrashCutsWaitingRelay(t *testing.T) {
 	}
 }
 
-func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
+func TestExecuteFetchAndBodiesAcrossProcess(t *testing.T) {
 	e := setupPackage(t, registrytest.DefaultGrants(), registrytest.TestPlugin(t), externalService)
-	inst := e.load(t, e.runtime(t, func(o *grpcruntime.Options) { o.RequestBodyLimit = func() int64 { return 2 * mib } }))
+	inst := e.load(t, e.runtime(t, nil))
 	var fetched atomic.Int32
 	client := core.ExecutionClient{Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		fetched.Add(1)
@@ -185,19 +185,19 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 	const ok = "https://api.example.com/v1/files"
 	plan := []scriptStep{
 		{Op: "fetch", URL: "https://elsewhere.example.org/x"}, // not in externalServices
-		{Op: "fetch", URL: ok, BodySize: 2*mib + 1},           // above the request body limit
+		{Op: "fetch", URL: ok, BodySize: 3 * mib},             // no bound on a fetch's request body
 		{Op: "fetch", URL: ok, BodySize: 2 * mib},             // answered with 20 MiB, whole
 	}
 	for range 9 { // no count limit: the ninth and later fetches go out too
 		plan = append(plan, scriptStep{Op: "fetch", URL: ok})
 	}
-	plan = append(plan, relayStep(false, 3*mib+1)) // above limit + 1 MiB: no bound on a relayed body
+	plan = append(plan, relayStep(false, 3*mib+1)) // no bound on a relayed body
 	res, err := execute(inst, &pluginv1.ExecuteRequest{Body: script("host_usage", plan...)}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := steps(t, res.Response.GetClassification().GetReason())
-	want := []string{"PermissionDenied", "InvalidArgument", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK"}
+	want := []string{"PermissionDenied", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK"}
 	if len(log) != len(want) {
 		t.Fatalf("steps: %+v", log)
 	}
@@ -206,16 +206,16 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 			t.Errorf("step %d: %s (%s), want %s", n, log[n].Code, log[n].Message, code)
 		}
 	}
-	if log[2].Truncated || log[2].BodyBytes != 20*mib || log[3].Truncated || log[3].BodyBytes != 2 {
-		t.Errorf("answers: %+v %+v", log[2], log[3])
+	if log[1].Truncated || log[1].BodyBytes != 20*mib || log[2].Truncated || log[2].BodyBytes != 20*mib || log[3].Truncated || log[3].BodyBytes != 2 {
+		t.Errorf("answers: %+v %+v %+v", log[1], log[2], log[3])
 	}
-	if fetched.Load() != 10 || len(res.Relay.GetBody()) != 3*mib+1 {
+	if fetched.Load() != 11 || len(res.Relay.GetBody()) != 3*mib+1 {
 		t.Errorf("fetches sent %d, relayed %d bytes", fetched.Load(), len(res.Relay.GetBody()))
 	}
 
 	// The token of that call is void now.
 	out, err := httpCall(t, inst, &pluginv1.HTTPRequest{Method: "POST", Path: "/replay", Body: []byte(ok)})
-	if err != nil || out["code"] != "PermissionDenied" || fetched.Load() != 10 {
+	if err != nil || out["code"] != "PermissionDenied" || fetched.Load() != 11 {
 		t.Fatalf("expired token: %v %v, fetches %d", out, err, fetched.Load())
 	}
 }

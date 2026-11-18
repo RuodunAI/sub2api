@@ -38,7 +38,8 @@ const (
 	TimeoutMigrateData     = 10 * time.Minute
 )
 
-// callClass selects the semaphore a call waits for (Options.Concurrency).
+// callClass selects the semaphore a call waits for (Options.Concurrency);
+// classExecute has none.
 type callClass int
 
 const (
@@ -58,7 +59,6 @@ func newSemaphores(c Concurrency) [numClasses]chan struct{} {
 		classHot:        make(chan struct{}, c.Hot),
 		classConsole:    make(chan struct{}, c.Console),
 		classBackground: make(chan struct{}, c.Background),
-		classExecute:    make(chan struct{}, c.Execute),
 	}
 }
 

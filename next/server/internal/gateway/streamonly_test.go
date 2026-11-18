@@ -485,6 +485,19 @@ func (p *fakePlatform) buildCalls() []*pluginv1.ExecuteRequest {
 	return append([]*pluginv1.ExecuteRequest(nil), p.builds...)
 }
 
+// A stream-only answer whose items and response together pass 32 MiB (the
+// accumulation cap it once had) is kept whole.
+func TestReadStreamOnlyLarge(t *testing.T) {
+	big := strings.Repeat("x", 17<<20)
+	in := "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"a\",\"t\":\"" + big + "\"}}\n\n" +
+		"data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"id\":\"b\",\"t\":\"" + big + "\"}}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r\",\"output\":[]}}\n\n"
+	ans := readStreamOnly(strings.NewReader(in))
+	if ans.broken != nil || ans.errBody != nil || gjson.GetBytes(ans.body, "output.#").Int() != 2 || len(gjson.GetBytes(ans.body, "output.1.t").String()) != len(big) {
+		t.Fatalf("answer: broken=%v status=%d %d bytes", ans.broken, ans.status, len(ans.body))
+	}
+}
+
 func TestReadStreamOnlyFraming(t *testing.T) {
 	// Events named only by their "type", CRLF lines, a split data field and
 	// a terminal event without its blank line.

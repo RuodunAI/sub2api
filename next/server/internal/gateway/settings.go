@@ -58,8 +58,8 @@ type GatewaySettings struct {
 	MediaDownloadMaxMB int `json:"media_download_max_mb"`
 	// MaxRequestBodyMB is the one limit on a client request: the body of an
 	// HTTP request and one WebSocket message. No endpoint, group or process
-	// environment variable sets another; what the core allows between itself
-	// and a plugin derives from it (MaxRequestBodyBytes).
+	// environment variable sets another, and it bounds nothing between the
+	// core and a plugin (MaxRequestBodyBytes).
 	MaxRequestBodyMB int `json:"max_request_body_mb"`
 }
 
@@ -154,21 +154,14 @@ func (s GatewaySettings) mediaDownloadMaxBytes() int64 {
 }
 
 // MaxRequestBodyBytes is the request body limit in bytes: the largest client
-// request body and WebSocket message, and what every internal limit on a
-// request body derives from. An unnormalised setting reads as the default.
+// request body and WebSocket message the gateway reads. An unnormalised
+// setting reads as the default.
 func (s GatewaySettings) MaxRequestBodyBytes() int64 {
 	mb := s.MaxRequestBodyMB
 	if mb <= 0 {
 		mb = defaultGatewaySettings().MaxRequestBodyMB
 	}
 	return int64(mb) << 20
-}
-
-// MaxRequestBodyBytes is the request body limit now in force on this node
-// (the cached gateway settings, refreshed on config:changed), for the
-// components outside the gateway that bound a request body by it.
-func (g *Gateway) MaxRequestBodyBytes(ctx context.Context) int64 {
-	return g.settings.get(ctx).gateway.MaxRequestBodyBytes()
 }
 
 // platformTimeout bounds one PlatformService.ClassifyError call (an upstream

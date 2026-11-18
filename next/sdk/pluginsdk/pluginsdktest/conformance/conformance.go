@@ -54,11 +54,14 @@ type Plugin struct {
 	// every Execute. Required when the request depends on the time (a
 	// signature), or the determinism and failover rules fail.
 	FixClock func(now time.Time)
-	// BodyLimit is the request body size of the large-body rule
-	// (default 8 MiB).
+	// BodyLimit is the size the large-body rule pads a case's body to
+	// (default 8 MiB). It only sets the size measured: the host bounds no
+	// body a plugin is handed or relays; the gateway's max_request_body_mb
+	// applies to the client's request alone.
 	BodyLimit int
-	// CallTimeout is the platform call timeout of the cancellation rule
-	// (default 2s, the setting's default).
+	// CallTimeout is how long the cancellation rule waits for Execute to
+	// return once its context is cancelled (default 2s). The host does not
+	// time a plugin's own work during Execute; this is the suite's bound.
 	CallTimeout time.Duration
 	// Exceptions are the rule violations the plugin justifies.
 	Exceptions []Exception

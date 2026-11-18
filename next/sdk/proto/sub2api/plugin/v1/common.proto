@@ -98,8 +98,7 @@ message RequestMeta {
   string client_protocol = 9;
   // Path parameters of the matched endpoint pattern, e.g. "model" for
   // /v1beta/models/:model:generateContent. Empty when the pattern has none.
-  // At most 32 entries (lowest keys by name when more), keys cut to 64 bytes
-  // and values to 512 bytes on a UTF-8 boundary.
+  // Every entry as the client sent it, of any size; invalid UTF-8 dropped.
   map<string, string> path_params = 10;
   // Query parameters the endpoint declared in request.queryParams, and only
   // those: the plugin states what it needs and the host hands over nothing
@@ -111,9 +110,7 @@ message RequestMeta {
   // Names are matched case-insensitively, so a declared "alt" also picks up
   // "?Alt=sse"; the key is the name as the client sent it. Only the first
   // value of a repeated parameter is passed. Empty when the endpoint declared
-  // none. Bounded exactly like path_params: at most 32 entries (lowest keys
-  // by name when more), keys cut to 64 bytes and values to 512 bytes on a
-  // UTF-8 boundary, invalid UTF-8 dropped.
+  // none. Every declared entry of any size, invalid UTF-8 dropped.
   map<string, string> query = 11;
   // Resolved environment variables (CONTRACTS §74.3): the nearest of
   // account, group, global and process layers for every key some layer

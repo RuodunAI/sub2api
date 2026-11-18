@@ -54,8 +54,8 @@ type HostServiceClient interface {
 	// The host's HTTP client for one PlatformService.Execute call (relay) and
 	// for Execute and Monitor calls (ExecuteHTTP, the fetch form). A plugin
 	// opens no socket: it describes the request and the host sends it under
-	// the account of the call - its proxy, transport, SSRF guard, timeouts,
-	// limits and the operator's header settings. Authority is the call's
+	// the account of the call - its proxy, transport, SSRF guard, timeouts
+	// and the operator's header settings. Authority is the call's
 	// execution token, bound to the calling process, the selected account and
 	// immutable attribution, and void once the call returns. No monetary
 	// amount, user identity or account selector is accepted, and the host
@@ -65,7 +65,7 @@ type HostServiceClient interface {
 	// the upstream's answer goes to the client, never to the plugin. At most
 	// one per execution, in one of two forms:
 	//   - wait = false: the host validates the request (URL, SSRF name check,
-	//     body within the request body limit, headers) and answers at once
+	//     headers) and answers at once
 	//     with an empty response. Nothing is sent until Execute returns
 	//     host_usage; the host then sends, relays and reads the usage by the
 	//     declared rules. An Execute that fails or returns anything else
@@ -212,7 +212,7 @@ type HostServiceClient interface {
 	// accounts.credentials {"types":"own"} (Critical): the decrypted credentials
 	// of ONE account of this plugin's account types. Audited on every call.
 	GetAccountCredentials(ctx context.Context, in *GetAccountCredentialsRequest, opts ...grpc.CallOption) (*GetAccountCredentialsResponse, error)
-	// The fetch form of the host's HTTP client: one bounded, non-streaming
+	// The fetch form of the host's HTTP client: one non-streaming
 	// HTTP exchange whose answer goes back to the plugin. For the auxiliary
 	// requests of an Execute call (token exchange, upload, preflight) and the
 	// upstream query of a Monitor call. Authority comes from the call's
@@ -228,10 +228,12 @@ type HostServiceClient interface {
 	// private target is refused like any other unless the account's scope
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
-	// follow redirects. At most 8 requests per
-	// execution; the request body is bounded by the request body limit and
-	// the answer body by 8 MiB (truncated set). A transport failure is not an
-	// RPC error: it comes back in transport_error with status 0.
+	// follow redirects. The host neither counts the requests of a call nor
+	// cuts their answers: the answer body comes back whole and truncated is
+	// never set; nor does it bound the request body (the request body limit
+	// applies to the client's request in the gateway only). A transport
+	// failure is not an RPC error: it comes back in transport_error with
+	// status 0.
 	ExecuteHTTP(ctx context.Context, in *ExecutionHTTPRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through
@@ -641,8 +643,8 @@ type HostServiceServer interface {
 	// The host's HTTP client for one PlatformService.Execute call (relay) and
 	// for Execute and Monitor calls (ExecuteHTTP, the fetch form). A plugin
 	// opens no socket: it describes the request and the host sends it under
-	// the account of the call - its proxy, transport, SSRF guard, timeouts,
-	// limits and the operator's header settings. Authority is the call's
+	// the account of the call - its proxy, transport, SSRF guard, timeouts
+	// and the operator's header settings. Authority is the call's
 	// execution token, bound to the calling process, the selected account and
 	// immutable attribution, and void once the call returns. No monetary
 	// amount, user identity or account selector is accepted, and the host
@@ -652,7 +654,7 @@ type HostServiceServer interface {
 	// the upstream's answer goes to the client, never to the plugin. At most
 	// one per execution, in one of two forms:
 	//   - wait = false: the host validates the request (URL, SSRF name check,
-	//     body within the request body limit, headers) and answers at once
+	//     headers) and answers at once
 	//     with an empty response. Nothing is sent until Execute returns
 	//     host_usage; the host then sends, relays and reads the usage by the
 	//     declared rules. An Execute that fails or returns anything else
@@ -799,7 +801,7 @@ type HostServiceServer interface {
 	// accounts.credentials {"types":"own"} (Critical): the decrypted credentials
 	// of ONE account of this plugin's account types. Audited on every call.
 	GetAccountCredentials(context.Context, *GetAccountCredentialsRequest) (*GetAccountCredentialsResponse, error)
-	// The fetch form of the host's HTTP client: one bounded, non-streaming
+	// The fetch form of the host's HTTP client: one non-streaming
 	// HTTP exchange whose answer goes back to the plugin. For the auxiliary
 	// requests of an Execute call (token exchange, upload, preflight) and the
 	// upstream query of a Monitor call. Authority comes from the call's
@@ -815,10 +817,12 @@ type HostServiceServer interface {
 	// private target is refused like any other unless the account's scope
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
-	// follow redirects. At most 8 requests per
-	// execution; the request body is bounded by the request body limit and
-	// the answer body by 8 MiB (truncated set). A transport failure is not an
-	// RPC error: it comes back in transport_error with status 0.
+	// follow redirects. The host neither counts the requests of a call nor
+	// cuts their answers: the answer body comes back whole and truncated is
+	// never set; nor does it bound the request body (the request body limit
+	// applies to the client's request in the gateway only). A transport
+	// failure is not an RPC error: it comes back in transport_error with
+	// status 0.
 	ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through

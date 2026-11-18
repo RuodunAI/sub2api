@@ -119,7 +119,7 @@ func startHost(t testing.TB, opts Options) (*FakeHost, *grpc.Server, func(uint32
 	}
 	hostLis := bufconn.Listen(1 << 20)
 	// Like the core, the host accepts whole request bodies back from a
-	// platform plugin and checks the configured limit itself (MaxBodyBytes).
+	// platform plugin and bounds none of them.
 	hostSrv := grpc.NewServer(grpc.MaxRecvMsgSize(math.MaxInt32))
 	pluginv1.RegisterHostServiceServer(hostSrv, fh)
 	pluginv1.RegisterEgressServiceServer(hostSrv, fh)

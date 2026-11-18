@@ -195,8 +195,8 @@ func TestRelayWaitReturnsObservation(t *testing.T) {
 	}
 }
 
-// The body of a relay has no bound of the runtime's, whatever the request
-// body limit and the body the plugin was handed; the transport's headers
+// The body of a relay has no bound of the runtime's, whatever the body the
+// plugin was handed; the transport's headers
 // are not the plugin's.
 func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 	side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
@@ -218,8 +218,7 @@ func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 		}
 		return hostUsage, nil
 	}}
-	i, a := executionInstance(t, side)
-	i.rt.o.RequestBodyLimit = func() int64 { return mib }
+	_, a := executionInstance(t, side)
 	for _, handed := range []int{0, mib, 3 * mib} {
 		res, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{Body: make([]byte, handed)}, core.ExecutionClient{})
 		if err != nil || res.Relay == nil {
@@ -228,9 +227,9 @@ func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 	}
 }
 
-// Fetch: at most 8 per execution, only to the manifest's external services,
-// a request body within the limit, an answer of at most 8 MiB, and no token
-// outside its call or its process.
+// Fetch: only to the manifest's external services, with no count, no bound
+// on the request body and the answer whole, and no token outside its call
+// or its process.
 func TestFetchLimits(t *testing.T) {
 	var fetches atomic.Int32
 	var token string
@@ -241,16 +240,13 @@ func TestFetchLimits(t *testing.T) {
 				t.Errorf("%s: %v", url, err)
 			}
 		}
-		if _, err := fetch(ctx, h, token, "https://api.example.com/x", mib+1); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("body above the limit: %v", err)
-		}
 		if _, err := fetch(ctx, (&hostServer{i: h.i, p: &proc{}}), token, "https://api.example.com/x", 0); status.Code(err) != codes.PermissionDenied {
 			t.Errorf("another process: %v", err)
 		}
 		if fetches.Load() != 0 {
 			t.Errorf("refused requests were sent: %d", fetches.Load())
 		}
-		out, err := fetch(ctx, h, token, "https://sub.API.example.com:8443/big", mib)
+		out, err := fetch(ctx, h, token, "https://sub.API.example.com:8443/big", 3*mib)
 		if err != nil || out.GetTruncated() || len(out.GetBody()) != 20*mib {
 			t.Errorf("large answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
 		}
@@ -262,7 +258,6 @@ func TestFetchLimits(t *testing.T) {
 		return hostUsage, nil
 	}}
 	i, a := executionInstance(t, side)
-	i.rt.o.RequestBodyLimit = func() int64 { return mib }
 	client := core.ExecutionClient{Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		fetches.Add(1)
 		if len(in.GetBody()) > 0 {
@@ -518,8 +513,7 @@ func TestShallowCloneSharesFields(t *testing.T) {
 
 // Memory is limited only by the operator: the plugin's own limit when one is
 // set, exactly, else the node's cap when one is set, else nothing. The
-// manifest's figure and the request body limit play no part, so changing the
-// body limit never makes a process stale.
+// manifest's figure plays no part.
 func TestMemoryLimitOnlyByOperator(t *testing.T) {
 	i, _ := executionInstance(t, &pluginSide{})
 	spec := func(declared, operator, cap int) int {
@@ -541,17 +535,6 @@ func TestMemoryLimitOnlyByOperator(t *testing.T) {
 	} {
 		if got := spec(tc.declared, tc.operator, tc.cap); got != tc.want {
 			t.Errorf("declared %d, operator %d, cap %d: %d MB, want %d", tc.declared, tc.operator, tc.cap, got, tc.want)
-		}
-	}
-	for _, body := range []int64{mib, 1024 * mib} {
-		i.rt.o.RequestBodyLimit = func() int64 { return body }
-		if got := spec(64, 48, 0); got != 48 {
-			t.Fatalf("body limit %d: %d MB", body, got)
-		}
-		i.proc.Load().limits = limitsOf(i.launchSpec())
-		i.rt.o.RequestBodyLimit = func() int64 { return 4 * body }
-		if i.LimitsStale() {
-			t.Fatalf("stale after the body limit changed from %d", body)
 		}
 	}
 }

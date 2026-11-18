@@ -398,14 +398,11 @@ func TestMonitorReturnsTheResult(t *testing.T) {
 	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
 		t.Fatalf("terminal result without a fetch: %v", ex.Err)
 	}
+	answer.Truncated = false
 	p.monitor = func(ctx context.Context, in *pluginv1.PollRequest) (*pluginv1.ReconcileResult, error) {
 		_, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://up.example.com/tasks/1"})
 		return result, err
 	}
-	if ex = h.Monitor(context.Background(), in); status.Code(ex.Err) != codes.FailedPrecondition {
-		t.Fatalf("terminal result after a truncated answer: %v", ex.Err)
-	}
-	answer.Truncated = false
 	if ex = h.Monitor(context.Background(), in); ex.Err != nil {
 		t.Fatalf("terminal result after a complete answer: %v", ex.Err)
 	}
@@ -468,15 +465,19 @@ func TestExecutionAuthorityIsScopedToTheCall(t *testing.T) {
 	}
 }
 
-// The host's limits of the fetch form, and a token it has voided.
-func TestFetchLimitsAndExpiry(t *testing.T) {
+// The fetch form: hosts outside the manifest are refused, the host neither
+// counts fetches nor cuts their answers, and a token it has voided ends the
+// call's access.
+func TestFetchHostsAndExpiry(t *testing.T) {
+	const fetches = 9
+	const answerBytes = 9 << 20
 	var errs []error
-	var truncated *pluginv1.ExecutionHTTPResponse
+	var large *pluginv1.ExecutionHTTPResponse
 	p := &scripted{execute: func(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
 		_, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://evil.example.net/x"})
 		errs = append(errs, err)
-		truncated, _ = pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://auth.up.example.com/big"})
-		for range pluginsdk.FetchLimit {
+		large, _ = pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: "https://auth.up.example.com/big"})
+		for range fetches - 1 {
 			_, err = pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{Method: "POST", Url: "https://up.example.com/token"})
 		}
 		errs = append(errs, err)
@@ -485,22 +486,22 @@ func TestFetchLimitsAndExpiry(t *testing.T) {
 	h := startScripted(t, p)
 	h.Host.ExecuteHTTPFunc = func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		if strings.HasSuffix(in.GetUrl(), "/big") {
-			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: bytes.Repeat([]byte("x"), pluginsdk.FetchResponseLimit+1)}, nil
+			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: bytes.Repeat([]byte("x"), answerBytes)}, nil
 		}
 		return &pluginv1.ExecutionHTTPResponse{Status: 200}, nil
 	}
 	ex := h.Execute(context.Background(), executeRequest())
-	if ex.Err != nil || len(ex.Fetches()) != pluginsdk.FetchLimit {
+	if ex.Err != nil || len(ex.Fetches()) != fetches {
 		t.Fatalf("err=%v fetches=%d", ex.Err, len(ex.Fetches()))
 	}
 	if status.Code(errs[0]) != codes.PermissionDenied {
 		t.Errorf("host outside externalServices: %v", errs[0])
 	}
-	if !truncated.GetTruncated() || len(truncated.GetBody()) != pluginsdk.FetchResponseLimit {
-		t.Errorf("oversized answer: truncated=%v len=%d", truncated.GetTruncated(), len(truncated.GetBody()))
+	if large.GetTruncated() || len(large.GetBody()) != answerBytes {
+		t.Errorf("large answer: truncated=%v len=%d", large.GetTruncated(), len(large.GetBody()))
 	}
-	if status.Code(errs[1]) != codes.ResourceExhausted {
-		t.Errorf("fetch %d: %v", pluginsdk.FetchLimit+1, errs[1])
+	if errs[1] != nil {
+		t.Errorf("fetch %d: %v", fetches, errs[1])
 	}
 
 	// The host gives up on the call while the plugin still works.
@@ -521,7 +522,7 @@ func TestFetchLimitsAndExpiry(t *testing.T) {
 }
 
 // A plugin takes a body far over gRPC's default 4 MiB and hands it back to
-// the host; the limit is the host's.
+// the host, which bounds neither.
 func TestPlatformCarriesLargeBodies(t *testing.T) {
 	body := bytes.Repeat([]byte("a"), 9<<20)
 	h := startScripted(t, &scripted{})
@@ -531,20 +532,15 @@ func TestPlatformCarriesLargeBodies(t *testing.T) {
 	if relay := ex.Relayed(t); !bytes.Equal(relay.Request.GetBody(), body) {
 		t.Fatalf("relayed %d bytes", len(relay.Request.GetBody()))
 	}
-	// What the plugin was handed it may hand back, whatever the limit; a
-	// body grown by more than 1 MiB beyond both is refused.
-	h.Host.MaxBodyBytes = 1 << 20
-	if ex = h.Execute(context.Background(), in); ex.Err != nil || len(ex.Relays()) != 1 {
-		t.Fatalf("handed-back body over the limit: err=%v relays=%d", ex.Err, len(ex.Relays()))
-	}
+	// The host does not bound a relayed body: one grown beyond what the
+	// plugin was handed goes through too.
 	grown := &scripted{build: func(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 		r, err := upstreamOf(in)
-		r.Body = append(bytes.Clone(r.GetBody()), bytes.Repeat([]byte(" "), 1<<20+1)...)
+		r.Body = append(bytes.Clone(r.GetBody()), bytes.Repeat([]byte(" "), 2<<20)...)
 		return r, err
 	}}
 	h = startScripted(t, grown)
-	h.Host.MaxBodyBytes = 1 << 20
-	if ex = h.Execute(context.Background(), in); status.Code(ex.Err) != codes.InvalidArgument || len(ex.Relays()) != 0 {
-		t.Fatalf("body over the host's limit: err=%v relays=%d", ex.Err, len(ex.Relays()))
+	if ex = h.Execute(context.Background(), in); ex.Err != nil || len(ex.Relays()) != 1 || len(ex.Relays()[0].Request.GetBody()) != len(body)+2<<20 {
+		t.Fatalf("grown body: err=%v relays=%d", ex.Err, len(ex.Relays()))
 	}
 }

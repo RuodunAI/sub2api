@@ -230,9 +230,11 @@ type Endpoint struct {
 	// stream is never buffered. Only read with UsageSource
 	// UsageSourcePlugin.
 	UsageStreamEvents []string `json:"usageStreamEvents,omitempty"`
-	// UsageMaxBytes caps what the observation carries: the non-streaming body,
-	// and the total size of the collected stream events. 0 uses the host
-	// default. Also bounds the synchronous parser on task submissions.
+	// UsageMaxBytes is the plugin's own budget for what the observation
+	// carries: the non-streaming body, and the total size of the collected
+	// stream events. 0 (the default) is no budget: the whole body and every
+	// listed event are carried. Also bounds the synchronous parser on task
+	// submissions.
 	UsageMaxBytes int64 `json:"usageMaxBytes,omitempty"`
 	// UsageRequestFields are request body paths (gjson) whose values the host
 	// hands to PlatformService.EstimateUsage before an account is chosen, and
@@ -240,8 +242,7 @@ type Endpoint struct {
 	// ones. They are for endpoints that only START work: the response is
 	// {"id": ...} and the request is where the resolution and the duration
 	// of the job are, which is what a pre-charge estimate has to be made
-	// from. Values are capped per field and in total
-	// (check.MaxUsageRequestField*). Only read with UsageSource
+	// from. Values travel whole, of any size. Only read with UsageSource
 	// UsageSourcePlugin or TaskSubmit().
 	UsageRequestFields []string `json:"usageRequestFields,omitempty"`
 }

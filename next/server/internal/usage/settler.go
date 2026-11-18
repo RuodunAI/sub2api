@@ -381,12 +381,12 @@ type pendingDetail struct {
 }
 
 // pluginDetailJSON is what goes into usage_logs.plugin_detail: the plugin's
-// own document when it is a JSON object within the cap, "{}" otherwise. The
-// gateway already applies the cap and warns; this is the last guard, because
-// a non-object (or invalid) document would fail the whole batch insert and
+// own document when it is a JSON object, of any size, "{}" otherwise. The
+// gateway already checks it and warns; this is the last guard, because a
+// non-object (or invalid) document would fail the whole batch insert and
 // take unrelated records down with it.
 func pluginDetailJSON(raw core.RawJSON) []byte {
-	if len(raw) == 0 || len(raw) > core.MaxPluginDetailBytes {
+	if len(raw) == 0 {
 		return []byte("{}")
 	}
 	if !gjson.ValidBytes(raw) || !gjson.ParseBytes(raw).IsObject() {
@@ -679,7 +679,7 @@ func newUsageLogRow(rec *core.UsageRecord) usageLogRow {
 	return usageLogRow{
 		RequestID: trunc(rec.RequestID, 64), UserID: rec.UserID, APIKeyID: rec.APIKeyID, GroupID: rec.GroupID, AccountID: rec.AccountID,
 		PluginKey: trunc(rec.PluginKey, 30), PluginVersion: trunc(rec.PluginVersion, 50), Platform: trunc(rec.Platform, 50),
-		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: trunc(rec.Model, 200), UpstreamModel: trunc(rec.UpstreamModel, 200),
+		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: rec.Model, UpstreamModel: rec.UpstreamModel,
 		Stream: rec.Stream, StatusCode: rec.StatusCode, Success: rec.Success, ErrorType: trunc(rec.ErrorType, 50), ErrorMessage: rec.ErrorMessage, Attempts: attempts,
 		InputTokens: t.Input, OutputTokens: t.Output, CacheReadTokens: t.CacheRead, CacheCreationTokens: t.CacheCreation, CacheCreation1hTokens: t.CacheCreation1h,
 		Metrics: jsonOr(rec.Metrics, "{}"), StickyRule: trunc(rec.StickyRule, 100), StickyHit: rec.StickyHit, HookDecisions: jsonOr(rec.HookDecisions, "[]"),

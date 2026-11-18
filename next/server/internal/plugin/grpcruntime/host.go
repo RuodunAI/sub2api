@@ -38,9 +38,8 @@ const (
 	// uses AccountsDefaultListLimit.
 	AccountsMaxListLimit     = 200
 	AccountsDefaultListLimit = 100
-	// ClearStickyBindings bounds its model and salt.
-	ClearStickyBindingsMaxModel = 256
-	ClearStickyBindingsMaxSalt  = 128
+	// ClearStickyBindings bounds its salt; its model has any length.
+	ClearStickyBindingsMaxSalt = 128
 	// GetUsersMaxIDs caps the ids of one GetUsers call.
 	GetUsersMaxIDs = protocol.GetUsersMaxIDs
 	// SendAccountRequest bounds its body, URL and method.
@@ -704,10 +703,10 @@ func (h *hostServer) ClearStickyBindings(ctx context.Context, in *pluginv1.Clear
 	if err := h.require(ctx, "sticky.clear"); err != nil {
 		return nil, err
 	}
-	if in.GetAccountId() <= 0 || in.GetGroupId() <= 0 || in.GetModel() == "" || len(in.GetModel()) > ClearStickyBindingsMaxModel ||
+	if in.GetAccountId() <= 0 || in.GetGroupId() <= 0 || in.GetModel() == "" ||
 		in.GetPercent() < 1 || in.GetPercent() > 100 || len(in.GetSalt()) > ClearStickyBindingsMaxSalt {
-		return nil, status.Errorf(codes.InvalidArgument, "account_id, group_id, model (1..%d bytes) and percent (1..100) are required; salt is at most %d bytes",
-			ClearStickyBindingsMaxModel, ClearStickyBindingsMaxSalt)
+		return nil, status.Errorf(codes.InvalidArgument, "account_id, group_id, model and percent (1..100) are required; salt is at most %d bytes",
+			ClearStickyBindingsMaxSalt)
 	}
 	if h.i.rt.o.Sticky == nil {
 		return nil, status.Error(codes.Unavailable, "sticky bindings unavailable")

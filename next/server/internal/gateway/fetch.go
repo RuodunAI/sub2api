@@ -9,22 +9,18 @@ import (
 	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
-// fetchTimeout bounds a fetch when the environment sets no relay timeout:
-// its answer is bounded and never streamed to the client.
-const fetchTimeout = core.ExecutionHTTPDefaultTimeout
-
-// fetch is ExecutionClient.Fetch: one bounded exchange whose answer goes
+// fetch is ExecutionClient.Fetch: one exchange whose answer goes
 // back to the plugin (a token exchange, an upload, a preflight). It is the
 // attempt's account's request like the relay - its proxy, the SSRF guard,
-// no redirect, the environment's timeouts, which the plugin may only
-// shorten - but not the client's request: the operator's passthrough and
-// overrides do not apply. The runtime has already checked the token, the
-// count, the body size and the host; execfetch holds it to the limits every
-// fetch shares with Monitor's. A transport failure is an answer with status
+// no redirect, the environment's timeouts (no total timeout when
+// relay_timeout_seconds is unset, as for the relayed request), which the
+// plugin may only shorten - but not the client's request: the operator's
+// passthrough and overrides do not apply. The runtime has already checked
+// the token and the host; execfetch applies what every fetch shares with
+// Monitor's. A transport failure is an answer with status
 // 0, so the plugin can classify it.
 func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 	c := x.c
@@ -32,7 +28,7 @@ func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest
 	out, err := execfetch.Do(ctx, in, execfetch.Binding{
 		CheckURL:      c.g.checkUpstreamURL,
 		Client:        func(ctx context.Context) (*http.Client, error) { return c.g.d.Proxies.HTTPClient(ctx, x.acc.ProxyID) },
-		HeaderTimeout: header, TotalTimeout: cmp.Or(total, fetchTimeout),
+		HeaderTimeout: header, TotalTimeout: total,
 	})
 	if err == nil && out.GetTransportError() == "" {
 		u, _ := url.Parse(in.GetUrl())

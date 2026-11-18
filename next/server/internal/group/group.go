@@ -337,8 +337,8 @@ func (in *groupInput) validate(ctx context.Context, create bool) error {
 		clean := make([]string, 0, len(*in.ModelAllowlist))
 		for _, m := range *in.ModelAllowlist {
 			m = strings.TrimSpace(m)
-			if m == "" || len(m) > 200 {
-				add("model_allowlist", "invalid", "model patterns must be 1-200 characters", "模型模式长度须为 1-200 个字符")
+			if m == "" {
+				add("model_allowlist", "invalid", "model patterns must not be empty", "模型模式不能为空")
 				break
 			}
 			clean = append(clean, m)

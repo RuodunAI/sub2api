@@ -319,7 +319,6 @@ func TestModelNameValidation(t *testing.T) {
 		"tab":     "claude\tbad",
 		"control": "claude\u0007bad",
 		"nbsp":    "claude bad",
-		"long":    strings.Repeat("m", maxModelNameBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			e := newEnv(t)
@@ -333,7 +332,7 @@ func TestModelNameValidation(t *testing.T) {
 			require.Equal(t, errTypeInvalidRequest, rec.ErrorType)
 		})
 	}
-	require.True(t, validModelName(strings.Repeat("m", maxModelNameBytes)))
+	require.True(t, validModelName(strings.Repeat("m", 64<<10)), "a model name has no length limit")
 	require.True(t, validModelName("claude-opus-4.5[1m]"))
 	require.True(t, validModelName("模型-1"))
 	require.False(t, validModelName("bad\xffutf8"))

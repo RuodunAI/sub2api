@@ -329,7 +329,8 @@ func (w *waitedRelay) deliver(ctx context.Context) attemptResult {
 // facts turns the report Execute returned into the commit, leaving the
 // priced record in c.rec, and the answer to publish for a task (its
 // upstream id replaced by the public one). A report of the wrong kind, or
-// none, is no fact.
+// none, is no fact; nor is host_usage on an endpoint whose usage the plugin
+// reads when the host's reading holds no usage (hostUsageChosen).
 func (w *waitedRelay) facts(ctx context.Context, out *pluginv1.ExecuteResponse) (core.ExecutionCommit, []byte, error) {
 	c, rt := w.x.c, w.x.rt
 	c.rec = cloneUsage(w.base)
@@ -351,7 +352,9 @@ func (w *waitedRelay) facts(ctx context.Context, out *pluginv1.ExecuteResponse) 
 			return commit, nil, errors.New("host_usage reported for a task submission")
 		}
 		if rt.pluginUsage {
-			c.hostUsageChosen(ctx, rt, "host_usage")
+			if err := c.hostUsageChosen(); err != nil {
+				return commit, nil, err
+			}
 		}
 		commit.Digest = core.FactDigest(nil)
 	case *pluginv1.ExecuteResponse_Task:

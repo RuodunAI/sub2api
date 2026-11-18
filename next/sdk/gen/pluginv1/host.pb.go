@@ -980,8 +980,9 @@ type UpstreamRequest struct {
 	// connection and transfer-encoding are the transport's: a request naming
 	// one is refused. A name in both maps takes the authoritative value.
 	DefaultHeaders map[string]string `protobuf:"bytes,4,rep,name=default_headers,json=defaultHeaders,proto3" json:"default_headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
-	// The final body bytes; for a websocket turn the message of this turn. At
-	// most the request body limit.
+	// The final body bytes; for a websocket turn the message of this turn.
+	// The host does not bound it (the request body limit applies to the
+	// client's request in the gateway only).
 	Body []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 	// Upstream model after the plugin's own mapping, recorded in usage logs
 	// (optional).
@@ -1378,6 +1379,8 @@ type ExecutionHTTPResponse struct {
 	Headers        map[string]string `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	Body           []byte            `protobuf:"bytes,3,opt,name=body,proto3" json:"body,omitempty"`
 	TransportError string            `protobuf:"bytes,4,opt,name=transport_error,json=transportError,proto3" json:"transport_error,omitempty"`
+	// Set only on a SendAccountRequest answer cut at its 64 KiB cap; the core
+	// never sets it on an ExecuteHTTP answer, which comes back whole.
 	// Truncated or incomplete responses must never confirm a terminal state.
 	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
 }
