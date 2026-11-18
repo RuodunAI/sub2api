@@ -14,6 +14,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
+	"github.com/tidwall/gjson"
 )
 
 // The protocol binding of an account (DESIGN-2026-11-17-PROTOCOL-BINDING):
@@ -481,6 +482,12 @@ func TestProtocolBindingConversionEnabledPerModel(t *testing.T) {
 	if m := b.plat.builds[0].GetMeta(); m.GetProtocol() != "openai.chat" || m.GetClientProtocol() != messagesProtocol {
 		t.Fatalf("build meta %+v", m)
 	}
+	// The plugin's Execute is handed the converted body, not the client's:
+	// the converter writes the chat request without the Messages "stream".
+	if in := gjson.ParseBytes(b.plat.builds[0].GetBody()); in.Get("stream").Exists() || in.Get("model").String() != testModel ||
+		in.Get("messages.0.content").String() != "hello there" {
+		t.Fatalf("body handed to the plugin %s", b.plat.builds[0].GetBody())
+	}
 
 	// The same account, a model the rule does not list.
 	b.notServed(func() result { return b.messagesFor(otherModel) }, 11, core.SchedConversionNotEnabled, otherModel)
@@ -790,6 +797,10 @@ func TestProtocolBindingWebSocket(t *testing.T) {
 	if rec := e.record(); !rec.Success || *rec.AccountID != 12 || rec.Protocol != ws {
 		t.Fatalf("record %+v", rec)
 	}
+	turns := e.wsPlat.buildCalls()
+	if n := len(turns); n == 0 || turns[n-1].GetAccount().GetId() != 12 {
+		t.Fatalf("the served turn was not executed for account 12: %d calls", n)
+	}
 	c.send(create(chatOnly, "hi"))
 	if ev := c.until("error"); ev[0].Get("status").Int() != 400 || !strings.Contains(ev[0].Get("error.message").String(), "does not serve model") {
 		t.Fatalf("model closed on the endpoint: %v", ev)
@@ -799,6 +810,9 @@ func TestProtocolBindingWebSocket(t *testing.T) {
 	}
 	if _, msgs := e.wsUp.snapshot(); len(msgs) != 1 {
 		t.Fatalf("the refused turn reached the upstream: %v", msgs)
+	}
+	if n := len(e.wsPlat.buildCalls()); n != len(turns) {
+		t.Fatalf("the refused turn was handed to the plugin: %d calls, want %d", n, len(turns))
 	}
 	// A new connection for that model finds no account.
 	c = e.mustDial()
