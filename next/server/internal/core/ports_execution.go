@@ -2,38 +2,271 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"time"
+
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
-// ExecutionCallbacks are capabilities of one selected account and request.
-// The runtime binds them to the exact process chosen for Execute.
-type ExecutionCallbacks struct {
-	PrepareTimeout time.Duration
-	FinishTimeout  time.Duration
-	Forward        func(context.Context, *pluginv1.ForwardUpstreamRequest) (*pluginv1.ForwardUpstreamResponse, error)
-	Record         func(context.Context, *pluginv1.RecordUsageRequest) (*pluginv1.ExecutionReceipt, error)
-	Watch          func(context.Context, *pluginv1.ReserveAndWatchRequest) (*pluginv1.ExecutionReceipt, error)
+// ============================================================ plugin execution: the one path of a gateway request
+//
+// Every gateway request goes through PlatformService.Execute of the plugin
+// declaring the account type, once per attempt. The plugin receives the whole
+// request body, builds the final upstream request and hands it to the host's
+// HTTP client; usage and task facts travel only in Execute's return value.
+// Owners: the plugin runtime implements ExecutePlugin and MonitorPlugin, the
+// gateway supplies the ExecutionClient and acts on the ExecutionResult, the
+// usage module implements ExecutionRecords and calls Monitor.
+
+// Limits of the fetch form (HostService.ExecuteHTTP), fixed by the host.
+const (
+	// ExecutionHTTPMaxRequests caps the fetches of one Execute or Monitor
+	// call. The runtime refuses the next one without calling Fetch.
+	ExecutionHTTPMaxRequests = 8
+	// ExecutionHTTPMaxResponseBytes caps the answer body of one fetch. An
+	// ExecutionHTTP implementation reads at most this many bytes (plus one to
+	// know there was more) and sets Truncated; the runtime cuts a longer body
+	// and sets Truncated itself, so the plugin never sees more.
+	ExecutionHTTPMaxResponseBytes = 8 << 20
+)
+
+// DefaultMaxRequestBodyBytes is the request body limit when nothing else is
+// configured (128 MiB).
+const DefaultMaxRequestBodyBytes = 128 << 20
+
+// RequestBodyLimit reports the gateway's request body limit in bytes as it
+// is right now: the gateway setting max_request_body_mb
+// (GatewaySettings.MaxRequestBodyMB), the only limit on a client request
+// body. The plugin runtime derives its internal bounds from it: the body of
+// a relay may be as large as the larger of this limit and the body the
+// execution handed to the plugin (the core may have enlarged it), plus
+// 1 MiB; the request body of a fetch at most this limit; and each platform
+// plugin's memory floor and in-flight byte budget. It is read on every
+// check, so a saved change applies at once: it must be cheap (the gateway's
+// cached settings; app wires it to Gateway.MaxRequestBodyBytes). A nil func
+// or a result <= 0 means DefaultMaxRequestBodyBytes (MaxRequestBodyBytes).
+type RequestBodyLimit func() int64
+
+// MaxRequestBodyBytes is limit's value with the default applied.
+func MaxRequestBodyBytes(limit RequestBodyLimit) int64 {
+	if limit != nil {
+		if n := limit(); n > 0 {
+			return n
+		}
+	}
+	return DefaultMaxRequestBodyBytes
 }
 
+// ExecutionHTTP is the fetch form of the host's HTTP client for one Execute
+// or Monitor call: one bounded, non-streaming exchange whose answer goes back
+// to the plugin. The closure binds the account, its proxy, the SSRF guard
+// and the timeouts; it applies neither the operator's header passthrough nor
+// overrides and follows no redirect. in.Options may only shorten the
+// effective timeouts.
+//
+// The runtime calls it only after it checked the execution token, the count
+// (ExecutionHTTPMaxRequests), the request body against RequestBodyLimit and
+// the URL's host: one of the plugin manifest's externalServices (or a
+// subdomain of one), or the host of one of the account's own upstream
+// addresses (the values of the address fields its type declares, manifest
+// upstreamFields). The implementation need not repeat those. The SSRF policy
+// is the implementation's alone: an account address is the operator's entry
+// and may name a private target, so every URL goes through the guard
+// (netguard, with the allow-private setting of the account's scope) and the
+// account's proxy exactly like any other upstream request. A transport failure is not an error:
+// it is an answer with Status 0 and TransportError set. An error is for a
+// request the host would not send at all. ctx ends when the plugin gives up
+// the host call or the Execute/Monitor call ends.
+type ExecutionHTTP func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
+
+// ExecutionClient is the host's HTTP client for one Execute call: what the
+// plugin's HostService.RelayUpstream and ExecuteHTTP calls reach while that
+// call runs. The gateway builds one per attempt, bound to the selected
+// account. The runtime binds it to the exact process serving the call and
+// drops it when the call returns; a token used afterwards is refused.
+//
+// The runtime serialises the plugin's host calls of one execution (a second
+// one while another is active is FAILED_PRECONDITION), accepts at most one
+// relay per execution, and never calls any of these functions after Execute
+// returned.
+type ExecutionClient struct {
+	// SegmentTimeout is the platform call timeout: the longest any stretch
+	// of the plugin's own work may take - from the start of Execute to its
+	// first host call (or its return), between two host calls, and from the
+	// last host call to the return. Time spent inside Check, Relay and Fetch
+	// is not counted. A stretch that runs over cancels the call and Execute
+	// fails with ErrPluginUnavailable. It also bounds the wait for the
+	// plugin's in-flight byte budget before the call starts. <= 0 means 2 s.
+	SegmentTimeout time.Duration
+	// Check validates the request of a relay locally, without sending
+	// anything: the URL, the SSRF name check, the headers, response_stream,
+	// and the gateway's guard on what the plugin did to the body. The
+	// runtime has already refused a nil request, an empty URL, a body above
+	// its bound (see RequestBodyLimit) and the transport's header names. An error refuses
+	// the request: the plugin gets INVALID_ARGUMENT with the error's text
+	// and the relay counts as not made. Called for both forms, before the
+	// request is parked or Relay is called. Nil accepts.
+	Check func(context.Context, *pluginv1.UpstreamRequest) error
+	// Relay is the waiting form: send the request now, relay the answer to
+	// the client and return when the exchange has ended, with exactly one of
+	// Observation (2xx) and Error (non-2xx or transport failure) set. The
+	// runtime calls it only for an execution whose ExecuteRequest sets
+	// extract_usage or task_submission (otherwise the plugin gets
+	// FAILED_PRECONDITION and nothing is called), at most once, after Check
+	// passed. ctx ends when the plugin abandons the host call (crash, kill,
+	// drain) or the Execute call ends: the implementation must then cut the
+	// upstream exchange. An error is passed to the plugin as UNAVAILABLE.
+	// Nil means the execution has no waiting form (a websocket turn).
+	Relay func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
+	// Fetch serves ExecuteHTTP. Nil refuses every fetch.
+	Fetch ExecutionHTTP
+}
+
+// ExecutionResult is what one Execute call left behind.
+type ExecutionResult struct {
+	// Response is the plugin's answer; never nil when Execute returned no
+	// error.
+	Response *pluginv1.ExecuteResponse
+	// Relay is the request of a relay that did not wait, for the gateway to
+	// send now. It is set only when the plugin made such a relay, Check
+	// accepted it and Response reports host_usage; in every other case - no
+	// relay, a waited relay, a parked request the plugin did not confirm
+	// with host_usage - it is nil and nothing may be sent for the plugin.
+	// The message is the gateway's from here on.
+	Relay *pluginv1.UpstreamRequest
+}
+
+// ExecutePlugin is implemented by the PlatformPlugin of every account type
+// served by a plugin process (the Client of an AccountTypeBinding): it is how
+// the gateway serves a request with an account of that type.
 type ExecutePlugin interface {
-	Execute(context.Context, *pluginv1.ExecuteRequest, ExecutionCallbacks) (*pluginv1.ExecuteResponse, error)
+	// Execute runs PlatformService.Execute for one attempt on one account.
+	// in carries the meta, the account, the whole body, the allowed client
+	// headers, the attempt number and the two flags; execution_token is the
+	// runtime's to fill (it does not change in).
+	//
+	// What the runtime guarantees:
+	//   - Nothing is sent for a relay that did not wait before Execute has
+	//     returned: the request is only checked and kept, and reaches the
+	//     caller as ExecutionResult.Relay, and only together with
+	//     host_usage. An error, a timeout or a crash of the plugin before
+	//     the return leaves nothing sent and nothing to bill; the caller
+	//     moves to another account without penalising this one.
+	//   - A relay that waited ran inside client.Relay; its facts are the
+	//     caller's own. When the plugin crashes or gives up meanwhile,
+	//     Relay's ctx ends (the caller cuts the upstream) and Execute
+	//     returns an error: the execution is unreported and not billed.
+	//   - ctx bounds the whole call. Cancelling it cancels the plugin's
+	//     call and every host call in progress. The caller decides whether a
+	//     client disconnect reaches ctx.
+	//   - Before the call starts the body's bytes are admitted against the
+	//     plugin instance's in-flight budget (a third of its memory limit),
+	//     waiting at most SegmentTimeout. A body arriving while nothing is
+	//     in flight is admitted whatever its size.
+	//
+	// Errors: ErrPluginUnavailable when the instance is down, draining or
+	// crashed, when a stretch of the plugin's own work ran over
+	// SegmentTimeout, and when the in-flight budget had no room in time
+	// (Details["reason"] is "segment_timeout" or "inflight_bytes" for the
+	// last two); the context's error when ctx ended; the mapped status of
+	// the plugin's own error otherwise. All of them are failures of the
+	// plugin, never of the account.
+	Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client ExecutionClient) (ExecutionResult, error)
 }
 
+// Reasons in the Details of an ErrPluginUnavailable returned by Execute.
+const (
+	PluginUnavailableSegmentTimeout = "segment_timeout"
+	PluginUnavailableInflightBytes  = "inflight_bytes"
+)
+
+// MonitorPlugin is implemented by the PlatformPlugin of a plugin declaring
+// platform.monitor.v1: one scheduled observation of a host-managed task.
 type MonitorPlugin interface {
-	Monitor(context.Context, *pluginv1.PollRequest, ExecutionHTTP, func(context.Context, *pluginv1.ReportTaskProgressRequest) (*pluginv1.ExecutionReceipt, error)) error
+	// Monitor runs PlatformService.Monitor once. The plugin queries the
+	// upstream through fetch (at most ExecutionHTTPMaxRequests times, its
+	// execution token void once the call returns) and states what it read
+	// in the result. A nil error comes with a non-nil result: a response
+	// without one is an error, and so is a terminal state (anything but
+	// PENDING and POLL_FAILED) that no complete, successful, untruncated
+	// fetch of this call backs. The caller treats every error as one failed
+	// query. The call is bounded by the runtime's poll timeout (30 s) and
+	// by ctx.
+	Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch ExecutionHTTP) (*pluginv1.ReconcileResult, error)
 }
 
-// ExecutionRecords persists the trusted identity before network side effects,
-// recoverable host observations afterwards, and the accepted fact digest in
-// the same transaction as usage, billing and task registration.
+// ============================================================ execution records (owner: usage)
+
+// States of a plugin_executions row.
+const (
+	ExecutionStateIntent     = "intent"     // BeginExecution: identity stored, nothing sent yet
+	ExecutionStateObserved   = "observed"   // ObserveExecution: the host's reading is durable
+	ExecutionStateCommitted  = "committed"  // CommitExecution: the plugin's facts are billed
+	ExecutionStateUnreported = "unreported" // CloseExecutionUnreported: no facts, not billed
+)
+
+// Operations of an ExecutionCommit (plugin_executions.operation).
+const (
+	ExecutionOpUsage = "usage" // ExecuteResponse.usage or .host_usage
+	ExecutionOpWatch = "watch" // ExecuteResponse.task
+)
+
+// ExecutionRecords are the durable records of the waiting form of plugin
+// execution (an endpoint whose usage the plugin reads, or a task
+// submission). A relay that does not wait writes none: its usage goes
+// through Settler.Submit like any forwarded request.
+//
+// The order per execution is BeginExecution before the request is sent,
+// ObserveExecution once the exchange has ended, then exactly one of
+// CommitExecution (Execute returned valid facts) and
+// CloseExecutionUnreported (it did not). Nothing here falls back to the
+// host's reading on its own: an observed execution that is never committed
+// is closed as unreported by the caller or, after a minute, by the usage
+// module's recovery sweep, and is not billed.
 type ExecutionRecords interface {
+	// BeginExecution stores the trusted identity of the execution before
+	// any network side effect. A second call with the same ID fails.
 	BeginExecution(context.Context, ExecutionIntent) error
-	ObserveExecution(context.Context, string, *UsageRecord, []byte) error
-	CommitExecution(context.Context, ExecutionCommit) (*pluginv1.ExecutionReceipt, error)
+	// ObserveExecution stores, for an execution in state intent, the usage
+	// record as the host read it (rec, at most 512 KiB as JSON) and a
+	// diagnostic summary of the observation (at most 512 KiB). rec is what
+	// CloseExecutionUnreported turns into the free record; it is not billed
+	// by itself. The request and account of rec must be the execution's.
+	ObserveExecution(ctx context.Context, id string, rec *UsageRecord, observation []byte) error
+	// CommitExecution accepts the facts Execute returned, in one
+	// transaction with the execution row locked: the usage record with its
+	// charge and the release of the request's precharge, for ExecutionOpWatch
+	// also the task registration with its reserve and monitor, and the row's
+	// move to committed. The execution must be observed.
+	//
+	// It is idempotent per execution: the same Operation and Digest again
+	// is a no-op returning nil, so the caller may retry a failed commit with
+	// the same facts (it does, within its 15 s finishing time). Other facts
+	// for a committed execution are ErrConflict and change nothing. An
+	// execution closed as unreported is ErrConflict too.
+	CommitExecution(context.Context, ExecutionCommit) error
+	// CloseExecutionUnreported ends an observed execution for which Execute
+	// gave no valid facts (nothing stated, the wrong kind, an error, a
+	// timeout, a crash, or a commit that kept failing). In one transaction
+	// with the row locked it writes the free usage record from the stored
+	// observation - success false, ErrorType UsageErrorUnreported, tokens
+	// and metrics cleared, billing status free, UsageExtract
+	// UsageExtractUnreported - which releases the request's precharge, and
+	// moves the row to unreported keeping its record and observation. The
+	// account is not penalised; the implementation logs at ERROR with
+	// in.Reason.
+	//
+	// Closing an execution already unreported is a no-op returning nil. A
+	// committed one is ErrConflict (its facts stand). One still in state
+	// intent has no durable observation and is an error: nothing is written
+	// and the request's precharge is released by the expiry sweep.
+	CloseExecutionUnreported(context.Context, ExecutionUnreported) error
 }
 
+// ExecutionIntent identifies one execution before it sends anything.
 type ExecutionIntent struct {
 	TaskSubmit               bool
 	Record                   *UsageRecord
@@ -42,8 +275,36 @@ type ExecutionIntent struct {
 	Attempt                  int
 }
 
+// ExecutionCommit is the facts of one execution as the gateway validated
+// and priced them.
 type ExecutionCommit struct {
+	// ID is the execution; Operation one of ExecutionOp*; Digest the
+	// FactDigest of what the plugin returned (the UsageReport, nil for
+	// host_usage, or the TaskSubmission).
 	ID, Operation, Digest string
-	Record                *UsageRecord
-	Task                  *TaskRegistration
+	// Record is the final usage record; its request, plugin and account
+	// must be the execution's.
+	Record *UsageRecord
+	// Task is set for ExecutionOpWatch and only then.
+	Task *TaskRegistration
+}
+
+// ExecutionUnreported closes one execution without facts.
+type ExecutionUnreported struct {
+	ID string
+	// Reason says why, for the log: "no report", "wrong report kind",
+	// "execute failed: ...", "commit failed: ...".
+	Reason string
+}
+
+// FactDigest is the digest of the facts a plugin returned for an execution
+// or a monitor claim: the hex SHA-256 of the message's deterministic
+// encoding, and of nothing for a nil message (host_usage).
+func FactDigest(m proto.Message) string {
+	var raw []byte
+	if m != nil && m.ProtoReflect().IsValid() {
+		raw, _ = (proto.MarshalOptions{Deterministic: true}).Marshal(m)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }

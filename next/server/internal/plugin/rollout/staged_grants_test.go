@@ -1,3 +1,13 @@
+//go:build fv2_parked
+
+// Parked by the forwarding v2 runtime package (W5): these tests build their
+// plugin from pkgtest.Declared, the runtime "none" fixture, and start it with
+// Runtime.LoadStatic. Both are gone with plugins that have no process, and
+// pkgtest (package W9) does not compile until its fixture is replaced. W9
+// brings the file back: build the versions from a fixture with a process
+// (the registrytest test plugin as the package binary), read the grants from
+// Runtime.Load, and remove this tag.
+
 package rollout_test
 
 import (

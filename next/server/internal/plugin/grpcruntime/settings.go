@@ -60,14 +60,9 @@ func (h *hostServer) GetSettings(ctx context.Context, in *pluginv1.GetSettingsRe
 
 // SettingsChanged tells the plugin process that sections changed. The SDK
 // answers it without plugin code, so it takes no call slot (classControl).
-// A plugin built with an SDK that predates the call answers UNIMPLEMENTED:
-// it caches nothing, so that is not an error.
 func (i *Instance) SettingsChanged(ctx context.Context, sections []string) error {
 	return i.call(ctx, classControl, SettingsChangedTimeout, func(ctx context.Context, p *proc) error {
 		_, err := p.plugin.SettingsChanged(ctx, &pluginv1.SettingsChangedRequest{Sections: sections})
-		if status.Code(err) == codes.Unimplemented {
-			return nil
-		}
 		return err
 	})
 }

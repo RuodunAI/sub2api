@@ -24,7 +24,7 @@ import (
 
 // Default call timeouts. The caller's context deadline applies when shorter.
 const (
-	TimeoutPlatformHot     = 2 * time.Second  // BuildUpstreamRequest, ClassifyError
+	TimeoutPlatformHot     = 2 * time.Second  // ClassifyError, ResolveModel, EstimateUsage; a stretch of Execute
 	TimeoutPlatformConsole = 10 * time.Second // ValidateCredentials, BuildTestRequest
 	TimeoutHookDefault     = 300 * time.Millisecond
 	TimeoutHookMax         = 30 * time.Second // CONTRACTS §20.1
@@ -206,10 +206,6 @@ func (a platformAdapter) ValidateCredentials(ctx context.Context, in *pluginv1.V
 	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.ValidateCredentials, in)
 }
 
-func (a platformAdapter) BuildUpstreamRequest(ctx context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.BuildUpstreamRequest, in)
-}
-
 func (a platformAdapter) ClassifyError(ctx context.Context, in *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
 	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.ClassifyError, in)
 }
@@ -223,38 +219,15 @@ func (a platformAdapter) BuildModelsRequest(ctx context.Context, in *pluginv1.Bu
 }
 
 // ResolveModel runs on the gateway hot path (before scheduling), so it uses
-// the hot-path timeout like BuildUpstreamRequest; the gateway applies its own,
+// the hot-path timeout like ClassifyError; the gateway applies its own,
 // shorter deadline on top.
 func (a platformAdapter) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequest) (*pluginv1.ResolveModelResponse, error) {
 	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.ResolveModel, in)
 }
 
-// ExtractUsage runs after the response reached the client, so it is off the
-// latency path; it still uses the hot-path timeout because it holds a usage
-// record open, and the gateway applies its own, shorter deadline on top.
-func (a platformAdapter) ExtractUsage(ctx context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.ExtractUsage, in)
-}
-
-func (a platformAdapter) ParseTaskSubmission(ctx context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
-	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.ParseTaskSubmission, in)
-}
-
 // EstimateUsage runs before the pre-charge of every priced request.
 func (a platformAdapter) EstimateUsage(ctx context.Context, in *pluginv1.EstimateUsageRequest) (*pluginv1.UsageReport, error) {
 	return invoke(a.i, ctx, classHot, TimeoutPlatformHot, platformOf, pluginv1.PlatformServiceClient.EstimateUsage, in)
-}
-
-// BuildReconcileRequest and ParseReconcileResponse run in the core's offline
-// reconcile loop, not in a request, so they get the console budget rather
-// than the hot-path one: nobody is waiting, and being stingy here only
-// burns an attempt of an entry's limited allowance.
-func (a platformAdapter) BuildReconcileRequest(ctx context.Context, in *pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error) {
-	return invoke(a.i, ctx, classBackground, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.BuildReconcileRequest, in)
-}
-
-func (a platformAdapter) ParseReconcileResponse(ctx context.Context, in *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
-	return invoke(a.i, ctx, classBackground, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.ParseReconcileResponse, in)
 }
 
 // BuildQuotaRequest and ParseQuotaResponse run in the account module when
