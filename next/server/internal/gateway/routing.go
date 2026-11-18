@@ -41,8 +41,8 @@ type typeRoute struct {
 
 	passHeaders []string
 	usage       manifest.UsageRules
-	// pluginUsage, usageEvents and usageMaxBytes are the upstream endpoint's
-	// usageSource / usageStreamEvents / usageMaxBytes (CONTRACTS §25.3).
+	// pluginUsage and usageEvents are the upstream endpoint's usageSource /
+	// usageStreamEvents (CONTRACTS §25.3).
 	//
 	// They come off the endpoint and NOT off `usage` above, which is the
 	// result of the §13 override chain: its last link,
@@ -51,9 +51,8 @@ type typeRoute struct {
 	// platform's plugin, and that (because an override replaces the whole
 	// block) used to be able to switch the source off just by not mentioning
 	// it. On the endpoint there is one reading and one writer.
-	pluginUsage   bool
-	usageEvents   []string
-	usageMaxBytes int64
+	pluginUsage bool
+	usageEvents []string
 	// usageRequestFields are the request body paths the observation of a
 	// relay that waits carries
 	// (endpoint.usageRequestFields); nil for every endpoint that declares
@@ -237,7 +236,6 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 		usage:              usagerules.For(ap, &ep, &pf, y),
 		pluginUsage:        ep.PluginUsage(),
 		usageEvents:        ep.UsageStreamEvents,
-		usageMaxBytes:      ep.UsageMaxBytes,
 		usageRequestFields: ep.UsageRequestFields,
 		resp:               ep.Response,
 		respDeclared:       ep.Protocol != "",

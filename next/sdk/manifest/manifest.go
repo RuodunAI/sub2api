@@ -213,7 +213,7 @@ type Endpoint struct {
 	// upstream responses: UsageSourceRules (the default, and what "" means)
 	// applies the declarative sse/json maps of the usage rules in effect,
 	// UsageSourcePlugin has the plugin declaring the endpoint's platform read
-	// it from the bounded observation of a waited relay and return it from
+	// it from the observation of a waited relay and return it from
 	// PlatformService.Execute.
 	//
 	// It sits on the endpoint, beside Request.ModelSource, and deliberately
@@ -230,12 +230,6 @@ type Endpoint struct {
 	// stream is never buffered. Only read with UsageSource
 	// UsageSourcePlugin.
 	UsageStreamEvents []string `json:"usageStreamEvents,omitempty"`
-	// UsageMaxBytes is the plugin's own budget for what the observation
-	// carries: the non-streaming body, and the total size of the collected
-	// stream events. 0 (the default) is no budget: the whole body and every
-	// listed event are carried. Also bounds the synchronous parser on task
-	// submissions.
-	UsageMaxBytes int64 `json:"usageMaxBytes,omitempty"`
 	// UsageRequestFields are request body paths (gjson) whose values the host
 	// hands to PlatformService.EstimateUsage before an account is chosen, and
 	// repeats in the observation (ExtractUsageRequest.fields) - and the only

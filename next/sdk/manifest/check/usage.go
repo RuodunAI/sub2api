@@ -49,10 +49,6 @@ var UsageSources = []string{manifest.UsageSourceRules, manifest.UsageSourcePlugi
 // not do.
 const (
 	MaxUsageStreamEvents = 8
-	// MinUsageMaxBytes is the smallest usageMaxBytes an endpoint may set:
-	// a budget below it cannot hold one usage event. There is no upper
-	// bound, and 0 (the default) is no budget at all.
-	MinUsageMaxBytes = 1 << 10 // 1 KiB
 	// MaxUsageRequestFields is how many request body paths an endpoint may
 	// list in usageRequestFields. The list names the few scalars an estimate
 	// is made from; a long one is asking for the request body.
@@ -110,11 +106,11 @@ func (v *validator) usageRules(field string, u manifest.UsageRules, owner usageO
 	}
 }
 
-// usageSource validates endpoint.usageSource and the three knobs that only
-// mean anything with it, source "plugin": usageStreamEvents, usageMaxBytes
-// and usageRequestFields.
+// usageSource validates endpoint.usageSource and the two knobs that only
+// mean anything with it, source "plugin": usageStreamEvents and
+// usageRequestFields.
 //
-// All three are rejected outside that source rather than ignored. An
+// Both are rejected outside that source rather than ignored. An
 // endpoint that lists usageStreamEvents while the host reads its usage from
 // the declarative rules is a manifest whose author believes something the
 // host does not do - and the symptom (usage counted from the gjson rules, as
@@ -137,10 +133,6 @@ func (v *validator) usageSource(f string, e manifest.Endpoint) {
 			v.add(f+".usageStreamEvents", "unsupported",
 				"usageStreamEvents is only read when usageSource is %q; the declarative sse rules decide which events are read otherwise",
 				manifest.UsageSourcePlugin)
-		}
-		if e.UsageMaxBytes != 0 && !e.TaskSubmit() {
-			v.add(f+".usageMaxBytes", "unsupported",
-				"usageMaxBytes is only read when usageSource is %q", manifest.UsageSourcePlugin)
 		}
 		if len(e.UsageRequestFields) > 0 && !e.TaskSubmit() {
 			v.add(f+".usageRequestFields", "unsupported",
@@ -191,9 +183,6 @@ func (v *validator) usageSource(f string, e manifest.Endpoint) {
 			v.add(ef, "duplicate", "event name %q is declared twice", name)
 		}
 		seen[name] = true
-	}
-	if e.UsageMaxBytes != 0 && e.UsageMaxBytes < MinUsageMaxBytes {
-		v.add(f+".usageMaxBytes", "out_of_range", "usageMaxBytes must be at least %d (0 sets no budget)", MinUsageMaxBytes)
 	}
 	v.usageRequestFields(f, e)
 }

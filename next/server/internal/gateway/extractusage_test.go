@@ -63,7 +63,7 @@ func pluginUsageEndpoint() manifest.Endpoint {
 func pluginUsageRoute() *typeRoute {
 	ep := pluginUsageEndpoint()
 	return &typeRoute{usage: pluginUsageRules(), pluginUsage: ep.PluginUsage(),
-		usageEvents: ep.UsageStreamEvents, usageMaxBytes: ep.UsageMaxBytes}
+		usageEvents: ep.UsageStreamEvents}
 }
 
 // usageEnv adds a plugin "pu" declaring platform "pu" with one endpoint at
@@ -125,7 +125,7 @@ func TestPluginUsageNonStream(t *testing.T) {
 		t.Fatalf("ExtractUsage called %d times", pp.extractCount())
 	}
 	in := pp.lastExtract()
-	if in.GetStatus() != 200 || len(in.GetEvents()) != 0 || in.GetTruncated() {
+	if in.GetStatus() != 200 || len(in.GetEvents()) != 0 {
 		t.Fatalf("request %+v", in)
 	}
 	if !strings.Contains(string(in.GetBody()), upModel) {
@@ -199,77 +199,34 @@ func TestPluginUsageStreamCollectsOnlyDeclaredEvents(t *testing.T) {
 	if ev.GetName() != "message_delta" || !strings.Contains(string(ev.GetData()), `"output_tokens":22`) {
 		t.Fatalf("event %s %s", ev.GetName(), ev.GetData())
 	}
-	if len(in.GetBody()) != 0 || in.GetTruncated() {
-		t.Fatalf("body %q truncated %v", in.GetBody(), in.GetTruncated())
+	if len(in.GetBody()) != 0 {
+		t.Fatalf("body %q", in.GetBody())
 	}
 	if rec.Tokens.Input != 1 || rec.Tokens.Output != 77 {
 		t.Fatalf("tokens %+v", rec.Tokens)
 	}
 }
 
-// fatStream answers with n SSE events of roughly size bytes each, all named
-// "message_delta".
-func fatStream(t *testing.T, n, size int) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		fl := w.(http.Flusher)
-		pad := strings.Repeat("x", size)
-		for i := range n {
-			fmt.Fprintf(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"i\":%d,\"pad\":%q}\n\n", i, pad)
-			fl.Flush()
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-// Collection stops at the byte budget: the plugin is told the events are a
-// prefix, and the stream itself was still relayed in full.
-func TestPluginUsageStreamStopsAtByteBudget(t *testing.T) {
-	e, pp := usageEnvEP(t, pluginUsageRules(), func(ep *manifest.Endpoint) { ep.UsageMaxBytes = 1 << 10 })
-	up := fatStream(t, 20, 400)
-	pp.route = func(*pluginv1.ExecuteRequest) string { return up.URL }
-	pp.extract = func(_ context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-		return report(int64(len(in.GetEvents())), 0), nil
-	}
-	res := e.do("/pu/v1/chat", body(testModel, true), nil)
-	if sent := strings.Count(string(res.body), "event: message_delta"); res.status != 200 || sent != 20 {
-		t.Fatalf("client got %d of 20 events (status %d)", sent, res.status)
-	}
-	rec := e.record()
-	in := pp.lastExtract()
-	if !in.GetTruncated() {
-		t.Fatal("truncated not reported")
-	}
-	if n := len(in.GetEvents()); n == 0 || n >= 20 {
-		t.Fatalf("collected %d of 20 events; the budget should have stopped it well short", n)
-	}
-	if int(rec.Tokens.Input) != len(in.GetEvents()) {
-		t.Fatalf("tokens %+v", rec.Tokens)
-	}
-}
-
-// Without usage.maxBytes every listed event is collected, however many and
-// however large, and so is a non-streaming body of any size.
+// Every listed event is collected, however many and however large, and so
+// is a non-streaming body of any size.
 func TestUsageCaptureUnbounded(t *testing.T) {
 	cap := newUsageCapture(pluginUsageRoute())
 	for i := range 1000 {
 		cap.addEvent("message_delta", fmt.Appendf(nil, `{"i":%d}`, i))
 	}
 	cap.addEvent("message_delta", []byte(strings.Repeat("x", 2<<20)))
-	if len(cap.events) != 1001 || cap.stopped {
-		t.Fatalf("collected %d events, stopped=%v", len(cap.events), cap.stopped)
+	if len(cap.events) != 1001 {
+		t.Fatalf("collected %d events", len(cap.events))
 	}
 	body := newUsageCapture(pluginUsageRoute())
 	body.setBody([]byte(strings.Repeat("x", 2<<20)))
-	if body.tooLarge || len(body.body) != 2<<20 {
-		t.Fatalf("body: tooLarge=%v %d bytes", body.tooLarge, len(body.body))
+	if len(body.body) != 2<<20 {
+		t.Fatalf("body: %d bytes", len(body.body))
 	}
-	// Undeclared events are never collected, whatever the budget.
+	// Undeclared events are never collected.
 	cap2 := newUsageCapture(pluginUsageRoute())
 	cap2.addEvent("content_block_delta", []byte(`{"a":1}`))
-	if len(cap2.events) != 0 || cap2.stopped {
+	if len(cap2.events) != 0 {
 		t.Fatalf("collected %+v", cap2.events)
 	}
 	// An endpoint on the declarative rules captures nothing at all.

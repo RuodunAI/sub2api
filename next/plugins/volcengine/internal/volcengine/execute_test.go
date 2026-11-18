@@ -255,11 +255,6 @@ func TestExecuteVideoSubmissionOutcomes(t *testing.T) {
 			}
 		}},
 		{name: "no task id", relay: submitted(`{}`), wantCode: codes.DataLoss},
-		{name: "truncated", relay: func(ctx context.Context, r *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
-			out, _ := submitted(`{"id":"x"}`)(ctx, r)
-			out.Observation.Truncated = true
-			return out, nil
-		}, wantCode: codes.DataLoss},
 		{name: "upstream refused", relay: func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
 			return pluginsdktest.UpstreamFailed(429, []byte(`{"error":{"code":"ServerOverloaded","message":"busy"}}`), ""), nil
 		}, check: func(t *testing.T, r *pluginv1.ExecuteResponse) {

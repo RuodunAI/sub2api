@@ -1882,7 +1882,7 @@ message RankedAccount {
 
 ### 25.3 C 期：插件返回用量、核心记录（已实现；转发 V2 起用量只在 `Execute` 的返回值里，§112）
 
-端点声明 `usageSource: "plugin"` 时，用量由声明该平台的插件读：核心在 `ExecuteRequest` 上置 `extract_usage`，插件用等待形式中继（`RelayAndWait`），从核心交还的有界观察里读出用量，在 `Execute` 的返回值里给 `usage`；核心拿 `UsageReport` 里的 token 与 facts 跑**管理员配置的价格表**。**声明式规则（`usageSource` 缺省，即 `rules`）仍是默认。** 只有声明平台的插件自己的账号类型能服务这类端点（§112.8）；WebSocket 端点不能声明它。
+端点声明 `usageSource: "plugin"` 时，用量由声明该平台的插件读：核心在 `ExecuteRequest` 上置 `extract_usage`，插件用等待形式中继（`RelayAndWait`），从核心交还的观察里读出用量，在 `Execute` 的返回值里给 `usage`；核心拿 `UsageReport` 里的 token 与 facts 跑**管理员配置的价格表**。**声明式规则（`usageSource` 缺省，即 `rules`）仍是默认。** 只有声明平台的插件自己的账号类型能服务这类端点（§112.8）；WebSocket 端点不能声明它。
 
 #### 观察：核心缓冲了什么
 
@@ -1891,15 +1891,15 @@ message RankedAccount {
 | 界限 | 值 |
 |---|---|
 | `usageStreamEvents` 白名单 | 清单检查最多 8 个事件名（`check.MaxUsageStreamEvents`） |
-| `usageMaxBytes` 字节预算 | 默认没有：列出的事件一条不漏、非流式的整个回答体都交给插件。端点自己声明了才有，不小于 1 KiB（`check.MinUsageMaxBytes`），没有上限 |
+| 字节预算 | 没有：列出的事件一条不漏、非流式的整个回答体都交给插件 |
 
-（转发 V2 收尾起，§112.16。此前默认预算 256 KiB、可声明 1 KiB–1 MiB，另有 64 条事件的核心常量。）端点声明了预算而流式事件超出 → 此后一个事件都不再看，`ExtractUsageRequest.truncated` 告诉插件它看到的是前缀。事件名的解析用 `usagerules.EventName`，与声明式 sse 规则同一套。
+（转发 V2 收尾起，§112.16。此前默认预算 256 KiB、可声明 1 KiB–1 MiB，另有 64 条事件的核心常量；之后端点还可以自己声明 `usageMaxBytes`，超出时流式停止收集并置 `ExtractUsageRequest.truncated`、非流式不给 body。没有插件声明过它，清单字段 `usageMaxBytes` 与观察的 `truncated`（字段 7，`reserved`）随之删除，见 §112.12。）事件名的解析用 `usagerules.EventName`，与声明式 sse 规则同一套。
 
-非流式给整个 body；端点声明了预算时，**超过 `usageMaxBytes` 就不给**（`body` 为空）而不是截断——半个 JSON 文档解出来的是错数字。这条不对称是刻意的：事件是列表，前缀有意义；body 是一个文档。观察里还有端点 `usageRequestFields` 声明的请求字段（§25.6）和不带凭证的账号。
+非流式给整个 body。观察里还有端点 `usageRequestFields` 声明的请求字段（§25.6）和不带凭证的账号。
 
 #### 读不出用量 = 采用核心的读数，并且标出来
 
-插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`；观察超过端点声明的 `usageMaxBytes` 而为空时同样按核心读数计。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
+插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
 
 #### 边界：插件填事实，核心补齐并覆盖
 
@@ -1920,7 +1920,7 @@ message RankedAccount {
 声明了 `Reservation` 的插件（视频等异步任务的第一个用户是火山方舟五期）：提交请求时核心按预估用量**预扣**，之后由核心驱动的核对循环拿真实用量补扣或退回。全部复用已有机制（价格表、`balance_ledger` 的 `usage`/`refund` kind、幂等键）。
 
 **先还的两笔 C 期债**：
-- `usage.source` 从 `UsageRules` 挪到 `Endpoint`（`usageSource` / `usageStreamEvents` / `usageMaxBytes`），与 B 期的 `request.modelSource` 对称，不再跟着 §13 覆盖链走。那条「禁止账号类型覆盖里写 source」的禁令**变成不可表达的问题**（`UsageRules` 里根本没这个字段了），删除。
+- `usage.source` 从 `UsageRules` 挪到 `Endpoint`（`usageSource` / `usageStreamEvents` / `usageMaxBytes`，最后一个已在转发 V2 收尾删除），与 B 期的 `request.modelSource` 对称，不再跟着 §13 覆盖链走。那条「禁止账号类型覆盖里写 source」的禁令**变成不可表达的问题**（`UsageRules` 里根本没这个字段了），删除。
 - `usage_logs` 新增 `anomalies jsonb`（迁移 0013），`response_mismatch`（§26.5）与 `usage_extract`（§25.3）两个纯可观测标记从 `billing_detail` 搬过来。搬完更干净：新列**只在 insert 写一次**，settle / retry / markFailed 三段自动全通，不再需要在各处搬运。
 
 **旧结算队列核对超时保留预扣，且绝不写 `failed`**（托管任务的当前超时退款策略见 §32）（§3.4 定的陷阱，已钉死）：放弃时 `billing_status='billed'`、钱不动、`anomalies` 记 `reconcile=abandoned`，`pending_settlements.state='abandoned'`。测试 `TestAbandonKeepsTheChargeAndStaysOutOfTheRetryLoop` **真的跑一遍 `RetryPending`** 断言这一行不会被结算重试循环再捞到（返回 0 行、余额不变、`usage_logs WHERE billing_status IN ('pending','failed')` 计数为 0——直接断言那条部分索引的谓词）。
@@ -8159,7 +8159,7 @@ message UpstreamRequest {
 
 - 一次执行最多一个中继，第二个 `FAILED_PRECONDITION`。被运行时或网关拒绝的请求是 `INVALID_ARGUMENT`，不算已中继，插件可以改了再交。同一次执行的宿主调用串行，前一个没结束时来第二个是 `FAILED_PRECONDITION`。
 - `wait = false`：核心只校验（运行时的检查加网关的检查，§112.5）就立即回空响应，请求挂在这次执行上，等 `Execute` 返回 `host_usage` 才发。
-- `wait = true`：只允许用在 `extract_usage` 或 `task_submission` 为真的执行上，否则 `FAILED_PRECONDITION`。核心立即发送、中继，结束后回 2xx 的有界观察（非流式是整个回答体，超过 `usageMaxBytes` 时为空；流式只有 `usageStreamEvents` 列出的事件）或错误事实（非 2xx 或传输错误）。回答本身由核心中继给客户端，不经插件。
+- `wait = true`：只允许用在 `extract_usage` 或 `task_submission` 为真的执行上，否则 `FAILED_PRECONDITION`。核心立即发送、中继，结束后回 2xx 的观察（非流式是整个回答体；流式只有 `usageStreamEvents` 列出的事件，不限条数和大小）或错误事实（非 2xx 或传输错误）。回答本身由核心中继给客户端，不经插件。
 - 请求体：不限大小（转发 V2 收尾起，§112.16；此前不超过 max(交给插件的请求体, 请求体上限) + 1 MiB）。请求体上限只管网关读客户端的请求（§111.2），插件把它变成什么是插件的事。宿主的 broker 对所有宿主调用的接收上限都是 gRPC 自己的 `MaxInt32`（此前小调用 4 MiB）。
 - 核心发送时不改请求体、不重新强制流式。代理、TLS、重定向、重试不归插件：有代理的账号一律经代理，不跟随重定向，核心不重试。
 
@@ -8197,7 +8197,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 只有等待形式写 `plugin_executions`（`intent` → `observed` → `committed` 或 `unreported`；`state` 是无 CHECK 的文本列，新值不需要改表）：
 
 1. 发送前 `BeginExecution`（意图：执行、请求、插件、账号和尝试的标识，`record` 为空；此前还写入请求前的使用记录，但没有任何地方读它，转发 V2 收尾删除了 `core.ExecutionIntent.Record`）；交换结束后 `ObserveExecution` 存核心的读数和观察（不限大小：`record` 是 jsonb、`observation` 是 bytea，大的值由 PostgreSQL 压缩、行外存放；此前超过 512 KiB 拒绝，请求以 503 和零费用记录结束）；非 SSE 的 2xx 回答先缓冲（内存 1 MiB，超出落临时文件，不限大小，此前最多 64 MiB），事实提交后才发布。临时文件建不了或写不进时，在任何提交之前按 3 关闭为未上报。
-2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数完全为空时不是事实，按 3 处理；观察超过端点声明的 `usageMaxBytes` 而为空时 `usage` 也按核心读数计），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
+2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数完全为空时不是事实，按 3 处理），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
 3. **没有合法事实**（没填、种类不对、`host_usage` 而核心读数完全为空、`Execute` 报错、插件崩溃，或一直提交不上）而观察已落库：
    - 同步请求：`CloseExecutionUnreported` 在一个事务里写一条零费用记录（`success = false`、`error_type = usage_unreported`、token 与计量清零、计费状态免费、`anomalies.usage_extract = "unreported"`），释放预扣，执行行改 `unreported`（`record`、`observation` 保留），每次写一条 ERROR 日志（请求 ID、执行 ID、插件、账号、原因）。缓冲的非流式回答不发出、回 503；已开始的流异常结束。核心不按自己的读数补记。`CloseExecutionUnreported` 对已有使用记录的请求只关执行行、不再写一条（观察落了库但确认丢失时，恢复扫描不会每轮失败）。
    - 观察没能落库（`ObserveExecution` 失败，行还在 `intent`）：这个请求自己的零费用记录照常经 `submit()` 写下，预扣立即释放（此前什么都不写，预扣挂到 24 小时到期）。
@@ -8248,7 +8248,8 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。codex 的两个类型写的是 `[]`。
 - 声明了账号类型就必须有 `accounts.credentials {"types": "own"}`（原来声明式类型可以没有）。
 - `AccountType.AddressFields()` 只认 `upstreamFields`：原来声明了 `upstream` 的类型自动得到 `["base_url"]`，现在要在清单里写出（五个改写的插件都写了）。它决定账号的自定义上游判断（§21）和取回允许的账号地址（§112.6）。
-- `usageSource: "plugin"`、`usageStreamEvents`、`usageMaxBytes`、`usageRequestFields`（`EstimateUsage` 的入参，预扣不变，§25.8）、`endpoint.task` 不变：`extract_usage` 来自端点的 `PluginUsage()`，`task_submission` 来自 `TaskSubmit()`。
+- `usageSource: "plugin"`、`usageStreamEvents`、`usageRequestFields`（`EstimateUsage` 的入参，预扣不变，§25.8）、`endpoint.task` 不变（`usageMaxBytes` 在转发 V2 收尾删除：没有插件声明过它，见下一条）：`extract_usage` 来自端点的 `PluginUsage()`，`task_submission` 来自 `TaskSubmit()`。
+- 端点的 `usageMaxBytes`（读用量的观察的字节预算，以及任务提交时的上限检查）删除：没有插件声明过它，核心按它截停的分支、清单检查（下限 1 KiB、任务提交不超过 256 KiB）和观察的 `ExtractUsageRequest.truncated`（字段 7，`reserved`）一起去掉，观察总是整份。旧清单里还写着它时：核心解码清单时忽略未知字段（`pkg.ParseManifest`），上传、安装、加载都照常，这个值不起作用（等于不设预算）；`sub2api-plugin` 严格解码（`DisallowUnknownFields`），`build`、`pack`、`sign`、`verify`、`index`、`dev` 报 `manifest.json: json: unknown field "usageMaxBytes"`。它不是旧插件协议的标志，所以不报 `outdated_contract`。
 
 ### 112.13 SDK
 
@@ -8299,7 +8300,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | Bedrock 回答流（AWS event stream）单条消息 4 MiB（`awseventstream.MaxChunkMessageSize`，连同 `WithMaxMessageSize`、`ErrTooLarge`） | 切断流 | 一条消息最多到格式自己的 16 MiB 整条进内存；长度和 CRC 的一致性检查是协议本身的，保留 |
 | 协议转换读的非流式回答 32 MiB；只流式上游攒下的内容 32 MiB | 502 | 整份进内存 |
 | 非流式 JSON 回答读用量的缓冲 32 MiB | 超过的部分读不到用量，**按 0 计费** | 按整个回答计费（钱算对了）；回答在读完用量之前整份留在内存里一次 |
-| 读用量插件看到的观察：默认 256 KiB、64 条事件、请求字段单值 4 KiB / 总量 32 KiB、`detail_json` 4 KiB | 不给、略去或存 `{"_truncated":true}` | 插件拿到整份回答、全部列出的事件和整个字段值，gRPC 消息和插件内存随之变大；清单自己写了 `usageMaxBytes` 的照旧（下限 1 KiB，不再有上限） |
+| 读用量插件看到的观察：默认 256 KiB、64 条事件、请求字段单值 4 KiB / 总量 32 KiB、`detail_json` 4 KiB | 不给、略去或存 `{"_truncated":true}` | 插件拿到整份回答、全部列出的事件和整个字段值，gRPC 消息和插件内存随之变大；清单的 `usageMaxBytes`（曾让端点自己设预算）没有插件用过，随后删除（§112.12） |
 | 模型名长度（客户端 256 字节、使用记录 200、观察 256、价格模型 ID 和分组模型名单 200、模型引用 200、`PriceUsage` 等 256） | 400 或截断 | 超长的模型名整份进使用记录和日志；价格表上的唯一 btree 索引仍在，超过约 2.7 KB 的模型 ID 写价格时报错（不截断） |
 | `SendAccountRequest` 的请求体 64 KiB、URL 8 KiB、方法 16 字节，它与配额查询、凭证续期的回答截到 64 KiB（`truncated`） | `INVALID_ARGUMENT`；截断，素材列表一页就超过 | 回答整份进核心和插件的内存（§112.17） |
 | `core.RequestBodyLimit`、`grpcruntime.Options.RequestBodyLimit` 及其接线、`(*gateway.Gateway).MaxRequestBodyBytes(ctx)` | 核心与插件之间的若干检查读请求体上限 | 请求体上限只管网关读客户端请求的地方（§111.2） |

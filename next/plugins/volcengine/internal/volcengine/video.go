@@ -149,7 +149,7 @@ func (p *Plugin) ParseTaskSubmission(_ context.Context, in *pluginv1.ExtractUsag
 	if in.GetMeta().GetProtocol() != ProtocolVideoSubmit {
 		return nil, status.Error(codes.Unimplemented, "only video submissions create tasks")
 	}
-	if in.GetTruncated() || in.GetStatus() < 200 || in.GetStatus() >= 300 || !gjson.ValidBytes(in.GetBody()) || !gjson.ParseBytes(in.GetBody()).IsObject() {
+	if in.GetStatus() < 200 || in.GetStatus() >= 300 || !gjson.ValidBytes(in.GetBody()) || !gjson.ParseBytes(in.GetBody()).IsObject() {
 		return nil, status.Error(codes.DataLoss, "video submission did not return a complete successful JSON object")
 	}
 	usage := p.videoUsage(in)

@@ -212,29 +212,6 @@ func TestExecuteWaitedUpstreamErrorFailsOver(t *testing.T) {
 	require.ElementsMatch(t, []string{core.ExecutionStateCommitted, core.ExecutionStateIntent}, e.settler.executionStates())
 }
 
-// A body larger than usage.maxBytes is not shown to the plugin: whatever it
-// reports, the core's reading is committed, marked as the fallback.
-func TestExecuteWaitedTooLargeObservationKeepsHostReading(t *testing.T) {
-	e, _ := waitedEnv(t, core.DisconnectPrecharge, nil)
-	for i := range e.gen.endpoints {
-		if ep := &e.gen.endpoints[i].Endpoint; ep.Protocol == "anthropic.messages" {
-			ep.UsageMaxBytes = 16
-		}
-	}
-	e.reg.set(e.gen)
-	var shown atomic.Int64
-	e.plat.extract = func(_ context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-		shown.Store(int64(len(in.GetBody())))
-		return report(9000, 9000), nil
-	}
-	require.Equal(t, 200, e.messages(body(testModel, false)).status)
-	rec := e.record()
-	require.Zero(t, shown.Load(), "the oversized body was shown")
-	require.EqualValues(t, upInput, rec.Tokens.Input)
-	require.EqualValues(t, upOutput, rec.Tokens.Output)
-	require.Equal(t, core.UsageExtractFallback, rec.UsageExtract)
-}
-
 // The commit happens inside the attempt, before the gateway settles the
 // sticky binding; the committed record still carries the matched rule and
 // the hit.

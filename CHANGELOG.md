@@ -14,6 +14,7 @@
 
 - **proto**：`EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
 - **proto**：`UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。SDK 设置它的方法此前已删除；它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
+- **清单**：端点的 `usageMaxBytes`（读用量的观察的字节预算）删除，没有插件声明过它；观察总是整份，`ExtractUsageRequest.truncated`（7）随之删除（只有它会置这个字段）。旧清单里还写着它时，核心忽略这个未知字段（上传、安装、加载照常，等于不设预算）；`sub2api-plugin` 严格解码，`build`、`pack`、`sign`、`verify`、`index`、`dev` 报 `unknown field "usageMaxBytes"`，删掉这一行即可。volcengine 的任务提交不再检查这个字段。
 
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移，随转发 V2 发布）
 
@@ -121,7 +122,7 @@
   - 每个插件实例同时进行的 `Execute` 不再限 1024 个（以前满了 503）：并发只由账号和 API Key 的槽位限制。
   - 交给插件的路径参数和查询参数不再截断（以前 32 个、名 64 字节、值 512 字节）；SSE 单行不限长（以前 16 MiB 断流）；Bedrock 回答流的单条 event-stream 消息不再限 4 MiB（以前超过就断流，只剩格式自己的 16 MiB）；协议转换读的回答和只流式上游攒下的内容不限大小（以前 32 MiB 回 502）：都整份进内存。
   - 非流式 JSON 回答按整个回答读用量（以前只读前 32 MiB，超过的回答**按 0 计费**）：这一条是钱的修正，代价是回答在读完用量前整份留在内存里一次。
-  - 读用量的插件默认看到整份回答、全部列出的事件和请求字段的完整值，`detail_json` 不再截断（以前默认 256 KiB、64 条事件、字段 4 KiB / 32 KiB、`detail_json` 4 KiB）：插件内存和消息变大；清单自己写了 `usageMaxBytes` 的照旧。
+  - 读用量的插件默认看到整份回答、全部列出的事件和请求字段的完整值，`detail_json` 不再截断（以前默认 256 KiB、64 条事件、字段 4 KiB / 32 KiB、`detail_json` 4 KiB）：插件内存和消息变大（清单的 `usageMaxBytes` 随后删除，见上面“转发 V2 收尾的协议清理”）。
   - 模型名不限长度（以前客户端的超过 256 字节回 400，使用记录截到 200，价格模型 ID 和分组的模型名单限 200 字符）：超长的模型名整份进使用记录和日志；价格表上的唯一索引仍在，超过约 2.7 KB 的模型 ID 写价格时报错。
 - **迁移 0108**（`0108_model_name_text.sql`）：`usage_logs`、`usage_hourly` 的 `model` / `upstream_model` 和 `price_rules.model`、`model_prices.model` 改成 `text`。类型转换不重写表、不重建索引，每张表只拿一次短暂的排他锁；`lock_timeout` 10 秒，拿不到锁迁移失败，避开业务高峰执行。触发器 `usage_hourly_mark_update` 在同一事务里重建；价格模型 ID 的检查只留字符集。
 - **执行的恢复按存活判断**：插件解析用量的端点和任务提交在观察之后由网关每 15 秒续期，节点崩溃时恢复扫描在 2 分钟没有续期后把它关成零费用的“未上报”、释放预扣（约 3 分钟内），活着的执行不会因为时间长被关掉。
