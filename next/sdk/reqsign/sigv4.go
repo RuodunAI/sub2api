@@ -5,8 +5,9 @@ package reqsign
 //
 // The signature is made by the official signer, aws-sdk-go-v2's
 // aws/signer/v4: the canonical request, the string to sign, the key
-// derivation and the Authorization header are its work. What is left here is
-// the choice of what it gets to sign, and two checks it does not make:
+// derivation and the Authorization header are its work.
+//
+// What this package decides:
 //
 //   - signed headers: host and x-amz-date, plus content-type and
 //     x-amz-security-token when present. The SDK signer signs every header
@@ -16,21 +17,24 @@ package reqsign
 //     overrides, the proxy, net/http itself) may still change those: signing
 //     them would turn any such change into a 403. So the signer is handed a
 //     bare copy of the request with only Content-Type on it, and its three
-//     result headers are copied back;
+//     result headers are copied back, replacing what an earlier layer put
+//     in them;
+//   - a query that cannot be parsed is an error: the signer would sign and
+//     send it without the parameters net/url drops;
+//   - what is sent is what was signed: the query and the host the signer
+//     settled on (below) are written back to the request.
+//
+// What the library does, with its defaults, on the bare copy:
+//
 //   - canonical path: every segment of the path as it goes on the wire
 //     (URL.EscapedPath) is escaped once more with the RFC 3986 unreserved
-//     set, so ":" sent as "%3A" is signed as "%253A" (the signer's default,
-//     DisableURIPathEscaping off);
+//     set, so ":" sent as "%3A" is signed as "%253A";
 //   - canonical query: each name and value percent-encoded with the
 //     unreserved set (a space is "%20", never "+"), then sorted by name and
-//     value. URL.RawQuery is rewritten to that string, so the query sent is
-//     the query signed. A query that cannot be parsed is an error here: the
-//     signer would sign and send it without the parameters net/url drops;
-//   - host: Request.Host, else URL.Host, without the scheme's default port.
-//     A host that lost its port is written back to Request.Host, so the Host
-//     header sent is the host signed. (The signer also drops the brackets of
-//     an IPv6 literal it takes the default port off; AWS endpoints are
-//     names.)
+//     value. It rewrites URL.RawQuery to that string;
+//   - host: Request.Host, else URL.Host, without the scheme's default port,
+//     set as Request.Host. (It also drops the brackets of an IPv6 literal it
+//     takes the default port off; AWS endpoints are names.)
 
 import (
 	"context"
@@ -51,13 +55,11 @@ import (
 // values.
 var sigV4ResultHeaders = []string{"Authorization", "X-Amz-Date", "X-Amz-Security-Token"}
 
-func signAWSSigV4(req *http.Request, payload []byte, d Directive, now time.Time) error {
-	return sigV4Sign(req, payload, d, now)
-}
+// sigV4SignerOptions adjust the SDK signer. Production sets none; the tests
+// have the signer log the canonical request it signed (sigv4_test.go).
+var sigV4SignerOptions []func(*v4.SignerOptions)
 
-// sigV4Sign signs req with the SDK signer; opts adjust the signer for this
-// one call (the tests have it log the canonical request).
-func sigV4Sign(req *http.Request, payload []byte, d Directive, now time.Time, opts ...func(*v4.SignerOptions)) error {
+func signAWSSigV4(req *http.Request, payload []byte, d Directive, now time.Time) error {
 	if d.AccessKeyID == "" || d.SecretAccessKey == "" || d.Region == "" || d.Service == "" {
 		return errors.New("reqsign: aws-sigv4 needs region, service, access key id and secret access key")
 	}
@@ -71,7 +73,7 @@ func sigV4Sign(req *http.Request, payload []byte, d Directive, now time.Time, op
 	// derived key per region and service under the access key id alone, and
 	// would keep signing with the old secret after an account's secret was
 	// corrected.
-	if err := v4.NewSigner().SignHTTP(context.Background(), creds, bare, hex.EncodeToString(sum[:]), d.Service, d.Region, now, opts...); err != nil {
+	if err := v4.NewSigner(sigV4SignerOptions...).SignHTTP(context.Background(), creds, bare, hex.EncodeToString(sum[:]), d.Service, d.Region, now); err != nil {
 		// The signer's own text is left out: nothing here vouches for what
 		// it quotes.
 		return errors.New("reqsign: aws-sigv4 signing failed")

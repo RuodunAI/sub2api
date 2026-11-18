@@ -32,12 +32,14 @@ func (l *signingLog) Logf(_ logging.Classification, format string, v ...any) {
 	}
 }
 
-// signTraced signs like Sign for SchemeAWSSigV4 and returns what was signed.
+// signTraced signs with Sign and returns what was signed, which the signer
+// logs when sigV4SignerOptions asks it to.
 func signTraced(t *testing.T, req *http.Request, payload []byte, d Directive, now time.Time) signingLog {
 	t.Helper()
 	var log signingLog
-	err := sigV4Sign(req, payload, d, now, func(o *v4.SignerOptions) { o.Logger, o.LogSigning = &log, true })
-	if err != nil {
+	sigV4SignerOptions = []func(*v4.SignerOptions){func(o *v4.SignerOptions) { o.Logger, o.LogSigning = &log, true }}
+	defer func() { sigV4SignerOptions = nil }()
+	if err := Sign(req, payload, d, now); err != nil {
 		t.Fatal(err)
 	}
 	if log.canonical == "" || log.stringToSign == "" {
