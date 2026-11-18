@@ -29,17 +29,17 @@ const FormatChunk = "aws-eventstream-chunk"
 //   - a corrupt or truncated message fails the read: the stream was cut. A
 //     message of any length the format allows is read whole; its buffer
 //     grows with the bytes that arrive. A message repeating a header name is
-//     corrupt (Decoder.Decode), so the type of a message is never ambiguous.
+//     corrupt (decoder.Decode), so the type of a message is never ambiguous.
 //
 // It is not a reader for event streams in general: one whose events carry
 // their data in another shape (Bedrock's ConverseStream, for one) has no
 // "bytes" and would come out empty. Such a stream needs its own adapter and
-// its own format name next to FormatChunk; Decoder serves both.
+// its own format name next to FormatChunk; decoder serves both.
 //
 // Each Read returns at most the events of one message, as soon as that
 // message is complete: nothing waits for a buffer to fill.
 type ChunkSSEReader struct {
-	dec     *Decoder
+	dec     *decoder
 	pending []byte
 	buf     bytes.Buffer
 	err     error
@@ -49,7 +49,7 @@ type ChunkSSEReader struct {
 // stream r. Closing and cancelling stay with r: an error of r is returned as
 // it is.
 func NewChunkSSEReader(r io.Reader) *ChunkSSEReader {
-	return &ChunkSSEReader{dec: NewDecoder(r)}
+	return &ChunkSSEReader{dec: newDecoder(r)}
 }
 
 // Read implements io.Reader.
@@ -79,11 +79,11 @@ func (s *ChunkSSEReader) next() {
 	switch msg.Header(HeaderMessageType) {
 	case MessageTypeEvent:
 		writeEvent(&s.buf, msg.Payload)
-	case MessageTypeException:
-		writeError(&s.buf, msg.Header(HeaderExceptionType), exceptionMessage(msg.Payload))
+	case messageTypeException:
+		writeError(&s.buf, msg.Header(headerExceptionType), exceptionMessage(msg.Payload))
 		s.err = io.EOF
-	case MessageTypeError:
-		writeError(&s.buf, msg.Header(HeaderErrorCode), msg.Header(HeaderErrorMessage))
+	case messageTypeError:
+		writeError(&s.buf, msg.Header(headerErrorCode), msg.Header(headerErrorMessage))
 		s.err = io.EOF
 	}
 	s.pending = s.buf.Bytes()
