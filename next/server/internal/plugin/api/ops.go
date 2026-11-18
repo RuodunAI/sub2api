@@ -414,6 +414,8 @@ type Resources struct {
 }
 
 // ResourcesInfo shows manifest requests, admin overrides and the result.
+// Requested.MemoryMB is the plugin's suggestion; Effective.MemoryMB 0 is
+// unlimited.
 type ResourcesInfo struct {
 	Requested Resources `json:"requested"`
 	Overrides Resources `json:"overrides"`
@@ -432,9 +434,13 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 		return ri, err
 	}
 	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
+	// As the runtime launches it (grpcruntime launchSpec): the manifest's
+	// memory figure is what the plugin says it needs, not a limit. Memory is
+	// limited by the operator's override, else the node cap; 0 is unlimited.
 	ri.Effective = ri.Requested
-	if ri.Overrides.MemoryMB > 0 {
-		ri.Effective.MemoryMB = ri.Overrides.MemoryMB
+	ri.Effective.MemoryMB = ri.Overrides.MemoryMB
+	if ri.MaxMemory > 0 && (ri.Effective.MemoryMB == 0 || ri.Effective.MemoryMB > ri.MaxMemory) {
+		ri.Effective.MemoryMB = ri.MaxMemory
 	}
 	if ri.Overrides.CPU > 0 {
 		ri.Effective.CPU = ri.Overrides.CPU
