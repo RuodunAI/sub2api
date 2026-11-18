@@ -656,4 +656,18 @@ func TestForeignFactsAccountTypeSkipped(t *testing.T) {
 	if got := typesFor("p_relay"); !slices.Equal(got, []string{"relay/apikey"}) {
 		t.Fatalf("p_relay types = %v", got)
 	}
+	// The binding itself no longer lists the platform: whoever asks the type
+	// what it serves (routing, the cross-platform judgement of a protocol
+	// binding, the served protocols) reads what the registry bound.
+	for _, b := range g.AccountTypes() {
+		if _, ok := b.Supports("p_video"); ok && b.Plugin.Key == "relay" {
+			t.Fatalf("relay/apikey still serves p_video: %+v", b.Type.Platforms)
+		}
+	}
+	if b, _ := g.AccountType("relay", "apikey"); len(b.Type.Platforms) != 1 {
+		t.Fatalf("AccountType keeps p_video: %+v", b.Type.Platforms)
+	}
+	if len(relay.AccountTypes[0].Platforms) != 2 {
+		t.Fatal("the manifest was changed")
+	}
 }

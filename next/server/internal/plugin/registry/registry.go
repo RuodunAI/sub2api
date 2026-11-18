@@ -552,9 +552,33 @@ func (g *generation) finish() {
 		}
 		return a.DeclIndex < b.DeclIndex
 	})
-	for _, atb := range g.accTypes {
+	for i := range g.accTypes {
+		atb := g.withoutForeignFacts(g.accTypes[i])
+		g.accTypes[i], g.atByKey[atb.Key()] = atb, atb
 		g.indexAccountType(atb)
 	}
+}
+
+// withoutForeignFacts drops from the type's platforms each one whose usage
+// or task facts another plugin states (foreignFacts): the binding is then
+// the one definition of the platforms the type serves, so routing, the
+// cross-platform judgement of a protocol binding and the served protocols
+// all read the platforms the registry binds (forwarding v2, design 4.3).
+func (g *generation) withoutForeignFacts(atb core.AccountTypeBinding) core.AccountTypeBinding {
+	kept := make([]manifest.AccountPlatform, 0, len(atb.Type.Platforms))
+	for _, ap := range atb.Type.Platforms {
+		pb, ok := g.platByID[ap.Platform]
+		if ok && !pb.Builtin && pb.Plugin.Key != atb.Plugin.Key && foreignFacts(pb.Platform, ap) {
+			slog.Error("plugin registry: account type skipped on a platform whose usage or task facts another plugin states",
+				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform, "platformPlugin", pb.Plugin.Key)
+			continue
+		}
+		kept = append(kept, ap)
+	}
+	if len(kept) < len(atb.Type.Platforms) {
+		atb.Type.Platforms = kept
+	}
+	return atb
 }
 
 // indexAccountType maps an account type under every platform it serves.
@@ -573,16 +597,10 @@ func (g *generation) indexAccountType(atb core.AccountTypeBinding) {
 		// ends in "no enabled account type serves this endpoint", so warn
 		// once per generation: a misspelt platform id is indistinguishable
 		// from a platform whose plugin is simply not enabled yet.
-		pb, ok := g.platByID[ap.Platform]
-		if !ok {
+		if _, ok := g.platByID[ap.Platform]; !ok {
 			slog.Warn("plugin registry: account type serves a platform no platform of this generation declares",
 				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform,
 				"hint", "the plugin declaring the platform may not be installed or enabled yet, or the platform id is misspelled")
-		}
-		if ok && !pb.Builtin && pb.Plugin.Key != atb.Plugin.Key && foreignFacts(pb.Platform, ap) {
-			slog.Error("plugin registry: account type skipped on a platform whose usage or task facts another plugin states",
-				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform, "platformPlugin", pb.Plugin.Key)
-			continue
 		}
 		g.atByPlat[ap.Platform] = append(g.atByPlat[ap.Platform], atb)
 	}

@@ -7984,6 +7984,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 跨平台协议转换（下称“转换”） | 入站端点所属的平台，账号类型没有声明 | OpenAI 账号服务 `anthropic.messages`、`gemini.generate`；Claude 账号服务 `openai.chat`；Bedrock 账号服务 `openai.chat` |
 
 - 只看账号类型的声明，与具体请求无关。网关在路由上记 `typeRoute.cross`（`gateway/routing.go`），只有一种算法：`crossPlatform`，即类型不声明入站端点的平台（`!AccountTypeBinding.Supports(入站平台)`），普通路由（`addRoute`）和 count_tokens 的本地估算路由（§88.2，`addLocalCountRoute`）都用它；账号模块校验和 `served_protocols` 用的 `typeProtocols` 也是同一个 `Supports`。选路逻辑本身没有改。
+- `Supports` 读的是注册表绑定后的账号类型。别的插件声明的平台上有“插件解析用量”或任务提交的端点时，跨插件规则（转发 V2 设计 4.3，清单检查 `foreign_facts`）让注册表不把类型绑到这个平台，并把它从绑定的 `Type.Platforms` 里去掉（`registry.withoutForeignFacts`，2026-11-18 合并两个分支时加）：这个平台对该类型既不是本平台，也没有原生路由；网关选路、`crossPlatform`、账号模块的 `typeProtocols` 和 `served_protocols` 读的是同一份平台列表。
 - 同时声明多个平台的类型（如 volcengine 声明 openai、anthropic、volcengine），这些平台的协议都是本平台协议；Gemini 请求打到它才算转换。
 - 同平台适配不算转换，默认照常工作，可以用 `protocols` 关掉。
 
@@ -8226,6 +8227,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 ### 111.4 “平台调用超时”的含义
 
 `platform_call_timeout_ms`（默认 2000，范围 100–30000，都不变）的定义改为：**一次请求里，插件每一段自己的处理时间的上限，不含等待上游的时间**（设计第 8.4 节列出各段：`Execute` 开始到第一次调客户端、两次客户端调用之间、最后一次客户端调用返回到 `Execute` 返回、`ClassifyError` 整个调用、WebSocket 每一轮的 `Execute`）。控制台提示（`web/src/i18n/locales/{zh,en}/settings.ts`）和接口类型注释已按新含义改写；网关按段计时的实现属于转发 V2 的网关改造，不在本节的改动里。
+
 ### 111.5 插件进程的内存：默认不限，只有管理员设置的上限
 
 用户决定（设计 D23：“默认插件内存上限不限制！！除非管理员手动限制！！”）。适用于所有有进程的插件，平台插件和其他插件一样。

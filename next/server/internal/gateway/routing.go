@@ -209,7 +209,8 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 // crossPlatform reports whether account type b does not declare the platform
 // of the client endpoint: the one definition of a cross-platform route
 // (typeRoute.cross), the same the account module judges a protocol binding
-// by (CONTRACTS §110.1).
+// by (CONTRACTS §110.1). Supports reads the platforms the registry bound,
+// without those the cross-plugin rule skips (registry.withoutForeignFacts).
 func (c *call) crossPlatform(b core.AccountTypeBinding) bool {
 	_, own := b.Supports(c.platform)
 	return !own
