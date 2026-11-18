@@ -21,8 +21,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
 
-const maxUsageJSONBuf = 32 << 20
-
 // convertError is a failure converting the upstream response to the client
 // protocol.
 type convertError struct{ err error }
@@ -306,12 +304,9 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 // from it (upstream rules) and writes the converted body. Nothing is written
 // when reading or converting fails.
 func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usageCapture, conv convert.Converter) error {
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxUsageJSONBuf+1))
+	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
-	}
-	if len(raw) > maxUsageJSONBuf {
-		return &convertError{err: errors.New("upstream response too large")}
 	}
 	u.ApplyJSON(raw)
 	cap.setBody(raw)
