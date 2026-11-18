@@ -171,10 +171,11 @@ func TestAC12_RollupOncePerCycle(t *testing.T) {
 	}
 
 	// Manual trigger works and is recorded as manual. A node registers the
-	// jobs of a plugin enabled moments ago on its next task reconciliation,
+	// jobs of a plugin enabled moments ago on its next task reconciliation
+	// (at the latest the one-minute resync),
 	// answering 503 plugin_unavailable until then.
 	var run *Resp
-	Eventually(t, 30*time.Second, time.Second, func() string { return "manual rollup run: " + run.String() }, func() bool {
+	Eventually(t, 90*time.Second, time.Second, func() string { return "manual rollup run: " + run.String() }, func() bool {
 		run = admin.API(t, http.MethodPost, "/plugins/guard/jobs/rollup/run", nil)
 		if run.Status/100 != 2 && run.ErrCode() != "plugin_unavailable" {
 			t.Fatalf("manual rollup run: %s", run)
