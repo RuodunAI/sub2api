@@ -14,10 +14,10 @@
 
 - **对运维**：新版本第一次启动时，核心把旧版本为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`。多个节点同时启动只转换一次；某个角色还有会话（旧插件进程未退出）时留下并记一次警告 `legacy plugin database role still has sessions`，下次该插件取 DSN、迁移或下次启动时再转换；转换失败只记日志，不阻止启动。核心的数据库用户不再需要 `CREATEROLE`；配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（设了也不读），错误 `plugin_db_isolation_unavailable`、`plugin_db_role_conflict` 不再出现。
 - **备份与恢复不再依赖属主**：插件的 schema 和表都属于核心的用户。不带属主恢复（`--no-owner`）后直接可用；带属主恢复的库有旧角色，启动时照上面转换。
-- **连接数**：插件的连接（每节点每个用数据库的插件默认 4 个）现在与核心的连接一样计入核心用户和数据库的连接上限，不再受插件角色的 `CONNECTION LIMIT 20` 约束。
+- **连接数**：插件的连接（每节点每个用数据库的插件默认 4 个，现有 7 个官方插件用数据库）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；规划 `max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”。
 - **隔离（直说）**：持有 `db.schema` 的插件现在能读写核心的用户能访问的所有表，包括核心自己的表和其他插件的表；分隔只靠约定和安装时对 `db.schema` 的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、可还原的 API Key、TOTP、插件加密设置）读不出明文，API Key 与用户密码只存哈希，但余额、授权等都能被改写。因此非官方插件授予 `db.schema` 一律要求超管专属的 `plugin:grant:db_schema_unconfined`（以前只在关闭角色隔离时要求），官方插件不变。
 - **迁移 0111** 删除旧插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；插件迁移由核心以自己的用户执行并直接记录。之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
-- **插件与 SDK**：`GetDSN` 返回核心的 DSN 加 `search_path=plg_<key>`，`role_isolated` 不再填写（恒为 false）；插件代码不用改。
+- **核心代理插件的数据库连接，凭据不进插件**（所有者补充“数据库直接委托给核心来代理就行了”）：沙箱里的插件（严格网络，Linux 默认）从 `GetDSN` 拿到不带密码的虚拟地址 `db.sub2api:5432`，经出口隧道连到核心，核心用自己的数据库配置（含 TLS、SCRAM）代为登录、把 `search_path` 设为插件的 schema 后原样转发协议，取消请求也转给服务器。在 `pg_stat_activity` 里这些连接的 `application_name` 是 `sub2api plugin <key>`。严格网络关闭时（开发、非 Linux）插件仍拿到核心的 DSN 直连。插件代码和 SDK 不用改；`role_isolated` 不再填写（恒为 false）。所以隔离的准确说法是：插件拿不到数据库密码，但能执行核心的数据库用户能执行的任何 SQL。
 
 ### 账号协议绑定与模型的协议限定，跨平台协议转换改为默认关闭（核心；迁移 0106，主节点优先；**升级后依赖协议转换的客户端会收到 404，要在账号上为模型开启**）
 

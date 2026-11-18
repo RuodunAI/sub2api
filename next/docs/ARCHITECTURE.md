@@ -676,7 +676,7 @@ stateDiagram-v2
 | 项目 | 做法 |
 |---|---|
 | schema | 首次发布前创建 `plg_<key>` |
-| 数据库用户 | 只有核心的用户（2026-11-18 起不再给插件建角色，CONTRACTS §113）。插件通过 `HostService.GetDSN` 拿到核心的 DSN，`search_path` 固定为 `plg_<key>`，连接经出口隧道。schema 只是默认位置，不是边界：持有 `db.schema` 的插件能读写核心的用户能访问的所有表，分隔靠约定和安装时的同意（非官方插件要 `plugin:grant:db_schema_unconfined`） |
+| 数据库用户 | 只有核心的用户（2026-11-18 起不再给插件建角色，CONTRACTS §113）。插件通过 `HostService.GetDSN` 拿到不带凭据的虚拟地址 `db.sub2api:5432`，连接经出口隧道到核心，核心用自己的数据库配置代为登录（`search_path` 固定为 `plg_<key>`）后原样转发协议；插件进程里没有数据库密码（严格网络关闭时才直接给核心的 DSN）。schema 只是默认位置，不是边界：持有 `db.schema` 的插件能读写核心的用户能访问的所有表，分隔靠约定和安装时的同意（非官方插件要 `plugin:grant:db_schema_unconfined`） |
 | 迁移脚本 | 核心以自己的用户执行 `migrations/*.sql`，按文件名排序，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；对象属于核心的用户 |
 | 迁移记录 | `plugin_migrations(plugin_key, migration_id, checksum, applied_at)`；已执行文件被修改时重新执行并更新校验和（脚本必须幂等，CONTRACTS §36） |
 | 执行时机 | 发布的"准备"阶段、任何节点激活新版本之前；`pg_advisory_lock(hash(plugin_key))` |
@@ -1248,7 +1248,7 @@ http.Get / GORM（Host.DB）/ redis …
 - HTTPS 在插件与目标之间端到端加密，核心只看到域名、端口和流量
 - `plugin_egress_logs(id, plugin_key, node_id, host, port, started_at, duration_ms, bytes_in, bytes_out, result)`，批量写入，保留 7 天；插件详情页按域名汇总展示，出现新域名时告警
 - 出口策略（每个插件单独配置）：`allow_all`（默认，只记录）或 `allowlist`（只允许批准的 `net` 域名）
-- 插件访问核心的 PostgreSQL（`GetDSN` 的 DSN，用核心的数据库用户，CONTRACTS §113）也走隧道
+- 插件访问核心的 PostgreSQL 也走隧道：拨虚拟地址 `db.sub2api:5432`，核心代为登录后转发（CONTRACTS §113）
 
 ### 9.2 严格模式（Linux）
 

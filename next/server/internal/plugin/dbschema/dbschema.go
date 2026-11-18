@@ -1,6 +1,7 @@
 // Package dbschema owns plugin database schemas (plg_<key>), plugin SQL
-// migrations and the DSN handed to plugins. Plugins use the core's own
-// database user; the schema only scopes their search_path
+// migrations, the DSN handed to plugins and the proxy that logs in to the
+// database for them (tunnel.go). Plugins use the core's own database user;
+// the schema only scopes their search_path
 // (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
 package dbschema
 
@@ -18,6 +19,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/pgproxy"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -39,6 +41,10 @@ type Manager struct {
 	// busy holds the legacy roles left in place because they still had
 	// sessions, so that each is logged once.
 	busy map[string]bool
+
+	proxyOnce sync.Once
+	proxy     *pgproxy.Proxy
+	proxyErr  error
 }
 
 // New creates the manager. databaseURL is the core's DSN (config
@@ -249,13 +255,19 @@ func dropMigrationRecords(g *gorm.DB, pluginKey string) *gorm.DB {
 	return pluginMigrations(g, pluginKey).Delete(nil)
 }
 
-// DSN returns the connection string a plugin uses: the core's, with
-// search_path pinned to the plugin's schema, and the schema's name.
-func (m *Manager) DSN(ctx context.Context, pluginKey string) (dsn, schema string, err error) {
+// DSN returns the connection string a plugin uses and its schema. A plugin
+// behind the egress tunnel (tunnelled, strict network) gets the virtual
+// database address without credentials: the core logs in for it
+// (ServeTunnel). A plugin without the tunnel (development, no sandbox) dials
+// directly and gets the core's DSN with search_path pinned to its schema.
+func (m *Manager) DSN(ctx context.Context, pluginKey string, tunnelled bool) (dsn, schema string, err error) {
 	if err := m.Ensure(ctx, pluginKey); err != nil {
 		return "", "", err
 	}
 	schema = SchemaName(pluginKey)
+	if tunnelled {
+		return tunnelDSN(schema), schema, nil
+	}
 	dsn, err = schemaDSN(m.databaseURL, schema)
 	return dsn, schema, err
 }

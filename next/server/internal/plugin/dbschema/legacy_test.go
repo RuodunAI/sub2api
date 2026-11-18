@@ -168,7 +168,7 @@ func assertConverted(t *testing.T, m *dbschema.Manager, host *store.DB, key, cor
 	if foreign != 0 || schemaOwner != core {
 		t.Fatalf("objects not owned by the core: %d, schema owner %s", foreign, schemaOwner)
 	}
-	dsn, _, err := m.DSN(ctx, key)
+	dsn, _, err := m.DSN(ctx, key, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestLegacyRoleBusyThenPurge(t *testing.T) {
 		t.Fatalf("old process lost its table: %d %v", n, err)
 	}
 	// The core's user reaches the tables meanwhile, through its membership.
-	dsn, _, err := m.DSN(ctx, key)
+	dsn, _, err := m.DSN(ctx, key, false)
 	if err != nil {
 		t.Fatal(err)
 	}

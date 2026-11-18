@@ -366,7 +366,7 @@ func (h *hostServer) GetDSN(ctx context.Context, _ *pluginv1.GetDSNRequest) (*pl
 	if h.i.rt.o.Schemas == nil {
 		return nil, status.Error(codes.Unavailable, "database schemas unavailable")
 	}
-	dsn, schema, err := h.i.rt.o.Schemas.DSN(ctx, h.key())
+	dsn, schema, err := h.i.rt.o.Schemas.DSN(ctx, h.key(), h.i.rt.o.StrictNetwork)
 	if err != nil {
 		h.i.log.Error("GetDSN failed", "err", err)
 		return nil, status.Error(codes.Unavailable, "database schema unavailable")

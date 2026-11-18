@@ -56,6 +56,10 @@ type Options struct {
 	// by HostService.GetDSN. Only a plugin whose policy has Database may
 	// reach it, by exactly this name; it is dialled by name.
 	DatabaseAddrs []string
+	// DatabaseProxy serves a connection to DatabaseHost:DatabasePort of a
+	// plugin whose policy has Database (database.go); without it that
+	// address is refused.
+	DatabaseProxy func(ctx context.Context, conn net.Conn, pluginKey string)
 	// CoreAddrs lists "host:port" targets no plugin may reach under any
 	// policy, AllowPrivate included: the core's Redis (and PostgreSQL for
 	// plugins without Database). Names are resolved, so an IP literal or
@@ -241,6 +245,7 @@ func (s *server) Dial(stream pluginv1.EgressService_DialServer) error {
 	}
 	pol := s.policy()
 	isDNS := host == DNSHost && port == DNSPort
+	isDB := host == DatabaseHost && port == DatabasePort
 	if !isDNS {
 		// Every connection attempt counts for the plugin's domain list
 		// (denied ones included: they show what the plugin tries to reach).
@@ -257,6 +262,12 @@ func (s *server) Dial(stream pluginv1.EgressService_DialServer) error {
 		c1, c2 := net.Pipe()
 		go s.p.serveDNS(ctx, c2, s.key, pol)
 		conn = c1
+	} else if isDB {
+		if !pol.Database || s.p.opts.DatabaseProxy == nil {
+			finish(ResultDenied, "no database")
+			return sendResult(stream, false, "egress: the plugin has no database", "")
+		}
+		conn = s.serveDatabase(ctx)
 	} else {
 		resolved, reason, msg := s.p.check(ctx, pol, host, port)
 		if reason != "" {

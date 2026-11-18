@@ -1,6 +1,6 @@
 # 插件数据库只用核心的数据库用户
 
-2026-11-18，所有者决定："它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户"。契约写进 CONTRACTS §113。
+2026-11-18，所有者决定："它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户"，随后补充："不能每个插件一个用户…数据库直接委托给核心来代理就行了"。第一部分（§2–§5）去掉插件的数据库用户；第二部分（§6）由核心代为登录，数据库凭据不进插件进程。契约写进 CONTRACTS §113。
 
 ## 1. 为什么改
 
@@ -13,13 +13,13 @@
 - 只有一个数据库用户：核心的（`DATABASE_URL` 里的）。核心不再建、改任何角色，也不再需要 `CREATEROLE`。
 - 持有 `db.schema` 的插件仍有自己的 schema `plg_<key>`，属主是核心的用户。核心在插件第一次需要时（迁移、`GetDSN`）`CREATE SCHEMA IF NOT EXISTS`。
 - 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0111 删除两个 SECURITY DEFINER 函数。
-- `HostService.GetDSN` 返回核心的 DSN，凭据、主机、库名、TLS 参数原样，另加 `options=-c search_path=plg_<key>`；`role_isolated` 不再填写（恒为 false，字段待 proto 的所有者删除）。连接仍经出口隧道，隧道对数据库地址的例外不变。
+- `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写（恒为 false，字段待 proto 的所有者删除）。
 - 卸载并清除数据：`DROP SCHEMA plg_<key> CASCADE`，删除迁移记录。
 - 删除的东西：角色的创建与修改、密码派生、归属标记的写入、成员授予、schema 移交、角色的 `search_path`、`rewriteDSN` 换凭据的分支、`Tracker.AsPluginRole`、`Status.Role`/`RoleIsolated`、错误 `plugin_db_isolation_unavailable` 与 `plugin_db_role_conflict`、配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`，以及它们的测试。
 
 ## 3. 隔离的含义（直说）
 
-持有 `db.schema` 的插件现在能访问核心的用户能访问的一切：核心自己的表（`public`）、升级计划（`updater`）、其他插件的 schema，能读也能写。插件之间、插件与核心之间的分隔只靠约定（`search_path` 只是默认位置，不是边界）和安装时对高风险权限 `db.schema` 的同意，PostgreSQL 不再强制。
+插件拿不到数据库密码（§6），但它能执行核心的数据库用户能执行的任何 SQL：持有 `db.schema` 的插件能访问核心的用户能访问的一切：核心自己的表（`public`）、升级计划（`updater`）、其他插件的 schema，能读也能写。插件之间、插件与核心之间的分隔只靠约定（`search_path` 只是默认位置，不是边界）和安装时对高风险权限 `db.schema` 的同意，PostgreSQL 不再强制。
 
 实际能读到什么（已在代码里核对）：
 
@@ -50,3 +50,21 @@
 ## 5. 不能回退
 
 迁移 0111 删除了旧核心给插件角色用的两个函数。回退到旧核心时，旧核心会重新建角色并在授予这两个函数时失败，持有 `db.schema` 的插件起不来。所以这是单向升级：回退只能连同数据库一起回到升级前的备份。
+
+## 6. 核心代理插件的数据库连接
+
+第一部分之后，`GetDSN` 交出的是核心自己的 DSN，核心的数据库用户和密码会进入每个持有 `db.schema` 的插件进程。第二部分让核心代为登录：
+
+- **DSN**：严格网络下（`SUB2API_PLUGIN_STRICT_NETWORK`，Linux 默认开），`GetDSN` 返回 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`：固定的虚拟地址，没有密码，用户名和库名只为满足客户端的 DSN 解析，核心不看。
+- **隧道**：插件经出口隧道拨 `db.sub2api:5432`（SDK 的 `Host.DB` 本来就这样拨号，`DialByName`）。隧道只对策略里有 Database（获授 `db.schema` 且 manifest 声明了 `database`）的插件接受这个地址，否则 `egress: the plugin has no database`；接受后像 `dns.sub2api` 一样在进程内接一条管道交给数据库代理（`egress/database.go`，`egress.go` 的分派处多一个分支）。隧道本身已经认出是哪个插件实例，所以插件侧不问密码。
+- **代理**（`runtime-contract/gormpg/pgproxy`，只有 gormpg 下可以 import pgx；`dbschema.Manager.ServeTunnel` 调它）：
+  - 插件侧的启动：SSL 和 GSS 加密请求回 `N`（管道在本进程内）；读启动消息，忽略其中的 `user`、`database`、`options`、`replication` 和 `_pq_.*`，其余运行参数（`datestyle`、`intervalstyle`、`search_path` 等）带到服务器。
+  - 服务器侧：用核心解析过的同一份配置（`gormpg.ParseConfig(DATABASE_URL)`：主机、端口、库名、用户、密码、TLS、`sslnegotiation`）经 pgconn 登录，SCRAM/MD5 与 TLS 都由核心完成；运行参数另外固定 `search_path=plg_<key>`、`application_name=sub2api plugin <key>`（运维在 `pg_stat_activity` 里能看出是哪个插件的连接）；协议版本与插件请求的一致（pgx 默认 3.0）。
+  - 登录后给插件发 `AuthenticationOk`、服务器报告的全部 `ParameterStatus`、服务器的 `BackendKeyData`（真实的进程号与密钥）和 `ReadyForQuery`，然后接管（`Hijack`）服务器连接，两个方向原样转发字节，任一方向结束就关闭两边。
+  - 连不上服务器时给插件发 `FATAL`：服务器自己的拒绝（如连接数满）原样带上 SQLSTATE 和消息，其他原因只说“the host could not open the database connection”，详细原因记在核心日志里（可能含主机和用户名，不发给插件）。
+  - **取消**：pgx 5.11 在语句的 ctx 结束时先让连接读写超时，再在后台 `asyncClose`：经同一个 `DialFunc`（隧道）向连接的远端地址发 CancelRequest，再发 Terminate、读完残余数据后关闭。隧道连接的远端地址就是 `db.sub2api:5432`，所以取消请求回到代理；代理按进程号找到这个插件自己的会话、比对密钥，再按会话的加密方式（TLS 时先 SSLRequest，`sslnegotiation=direct` 时直接 TLS）把取消请求发给服务器。别的插件的会话或错的密钥一律忽略（与服务器的做法相同）。插件进程直接死掉时没有取消请求：代理关闭服务器连接，正在执行的语句要到它下次向客户端写数据时才结束，这是 PostgreSQL 的行为，与改前直连相同。
+- **连接数**：每条插件连接是核心向 PostgreSQL 开的一条连接，不在核心的连接池里，不另设上限（所有者规则）。数量 = 插件自己的池：SDK 默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，插件可用 `pluginsdk.WithDBPoolSize` 改），连接空闲 30 分钟、存活 1 小时后由插件侧关闭；每次取消另有一条瞬时连接。规划 `max_connections`：节点数 ×（核心池 `SUB2API_PG_MAX_CONNS`，默认 20 + 每个用数据库的插件 4 个）。现在 7 个官方插件用数据库（anthropic、dynweight、growth、guard、moderation、payment、volcengine），全部启用时每节点最多 20 + 28 个。
+- **没有隧道时**（`SUB2API_PLUGIN_STRICT_NETWORK=false`、非 Linux、`sub2api dev`，插件不在沙箱里，SDK 的 `installed` 为 false 时直连）：`GetDSN` 仍返回核心的 DSN 加 `search_path`（第一部分的做法），插件拿得到密码。这种模式下插件进程本来就不受网络与文件限制，只用于开发和测试。插件单元测试（`pluginsdktest`）不经核心，不受影响。
+- **隔离的说法换成**：插件拿不到数据库密码；它仍能执行核心的数据库用户能执行的任何 SQL，schema 之间的隔离仍只靠约定（§3）。不多说。
+- **遗留给别的包**：隧道对真实数据库地址的例外（`egress.Options.DatabaseAddrs`）在严格网络下已用不到（插件只拿到虚拟地址，也没有凭据），留给出口隧道的负责人删除；proto 的 `GetDSNResponse.role_isolated` 和 SDK 的 `DSNInfo.RoleIsolated` 待 proto/SDK 的负责人删除，`host.proto` 对 GetDSN 的注释（“restricted DSN”“plg_<key> role”）也要改。
+

@@ -277,17 +277,17 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 	if cfg.Plugins.EgressAllowPrivate {
 		b.log.Warn("plugins may reach private network addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true); tests and development only")
 	}
-	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, CoreAddrs: coreAddrs,
+	schemas := dbschema.New(b.db, cfg.DatabaseURL, b.log)
+	// Roles of the per-plugin database user model (removed) are taken back once
+	// at start; Ensure retries the ones left (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
+	schemas.ConvertLegacyRoles(b.ctx)
+	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, DatabaseProxy: schemas.ServeTunnel, CoreAddrs: coreAddrs,
 		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Logger: b.log})
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
 	if err := b.tasks.Register(egress.LogsPruneTaskSpec()); err != nil {
 		return fmt.Errorf("egress log prune task: %w", err)
 	}
 	launcher := sandbox.NewLauncher(sandbox.LauncherOptions{DisableWrap: cfg.Plugins.DevMode, Landlock: cfg.Plugins.Landlock, Logger: b.log})
-	schemas := dbschema.New(b.db, cfg.DatabaseURL, b.log)
-	// Roles of the per-plugin database user model (removed) are taken back once
-	// at start; Ensure retries the ones left (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
-	schemas.ConvertLegacyRoles(b.ctx)
 	settings, err := settingsReaders(b.bill.SettingsReaders(), gateway.SettingsReaders(b.db), b.env.SettingsReaders())
 	if err != nil {
 		return err

@@ -80,7 +80,7 @@ func TestSchemaMigrateDSNDrop(t *testing.T) {
 	}
 
 	// The DSN logs in as the core's user, in the plugin's schema.
-	dsn, schema, err := m.DSN(ctx, key)
+	dsn, schema, err := m.DSN(ctx, key, false)
 	if err != nil || schema != "plg_"+key {
 		t.Fatalf("dsn: %v %s", err, schema)
 	}
