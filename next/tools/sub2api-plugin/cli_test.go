@@ -447,7 +447,7 @@ func TestBuildRealPlugin(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := pluginv1.NewPluginServiceClient(raw.(*protocol.Client).Conn).GetInfo(context.Background(), &pluginv1.GetInfoRequest{})
-	if err != nil || info.GetPluginKey() != "anthropic" || info.GetVersion() != "0.3.5-test" {
+	if err != nil || info.GetPluginKey() != "anthropic" || info.GetVersion() != "0.4.1-test" {
 		t.Fatalf("GetInfo = %v %v", info, err)
 	}
 }
