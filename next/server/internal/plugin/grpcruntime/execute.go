@@ -21,14 +21,8 @@ func (h *hostServer) maxRequestBody() int64 {
 	return core.MaxRequestBodyBytes(h.i.rt.o.RequestBodyLimit)
 }
 
-// relayBodyMargin is what a relayed body may exceed its bound by: room for
-// the plugin's envelope and added fields.
-const relayBodyMargin = 1 << 20
-
-// checkBody refuses a body above limit bytes. The broker admits messages up
-// to what the largest body setting allows (brokerMaxRecvBytes; the setting
-// can change while it runs), so every handler taking a body checks it here
-// against the limit of the moment.
+// checkBody refuses a body above limit bytes: the request body of a fetch,
+// against the request body limit of the moment.
 func checkBody(body []byte, limit int64) error {
 	if int64(len(body)) > limit {
 		return status.Errorf(codes.InvalidArgument, "body of %d bytes exceeds the limit of %d bytes", len(body), limit)
@@ -36,24 +30,13 @@ func checkBody(body []byte, limit int64) error {
 	return nil
 }
 
-// relayBodyLimit bounds the body of a relay: the larger of the request body
-// limit and the body this execution handed to the plugin, plus a margin.
-// The core may have enlarged the client's body after admitting it (inlined
-// media, hook patches, parameter overrides); what the plugin got it must be
-// able to hand back.
-func (h *hostServer) relayBodyLimit(sc *callScope) int64 {
-	return max(h.maxRequestBody(), sc.bodyBytes) + relayBodyMargin
-}
-
 // checkUpstreamRequest is the part of validating a relay that needs nothing
-// of the gateway: the request is there, within the body bound, and leaves
-// the transport's headers alone.
+// of the gateway: the request is there and leaves the transport's headers
+// alone. Its body has no bound here: the client's body was admitted by the
+// gateway's request body limit, and what the plugin makes of it is its own.
 func (h *hostServer) checkUpstreamRequest(sc *callScope, req *pluginv1.UpstreamRequest) error {
 	if req == nil || req.GetUrl() == "" {
 		return status.Error(codes.InvalidArgument, "request with a url is required")
-	}
-	if err := checkBody(req.GetBody(), h.relayBodyLimit(sc)); err != nil {
-		return err
 	}
 	for _, headers := range []map[string]string{req.GetHeaders(), req.GetDefaultHeaders()} {
 		for name := range headers {
@@ -192,8 +175,7 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	// (the client leaving, the upstream's timeouts on a relay) or with its
 	// process.
 	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
-		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission(),
-			bodyBytes: int64(len(in.GetBody()))}
+		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission()}
 		token, err := p.scopes.open(sc)
 		if err != nil {
 			return err

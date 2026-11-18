@@ -191,16 +191,13 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 	for range 9 { // no count limit: the ninth and later fetches go out too
 		plan = append(plan, scriptStep{Op: "fetch", URL: ok})
 	}
-	plan = append(plan,
-		relayStep(false, 3*mib+1), // above limit + 1 MiB
-		relayStep(false, 3*mib),
-	)
+	plan = append(plan, relayStep(false, 3*mib+1)) // above limit + 1 MiB: no bound on a relayed body
 	res, err := execute(inst, &pluginv1.ExecuteRequest{Body: script("host_usage", plan...)}, client)
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := steps(t, res.Response.GetClassification().GetReason())
-	want := []string{"PermissionDenied", "InvalidArgument", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "InvalidArgument", "OK"}
+	want := []string{"PermissionDenied", "InvalidArgument", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK"}
 	if len(log) != len(want) {
 		t.Fatalf("steps: %+v", log)
 	}
@@ -212,7 +209,7 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 	if log[2].Truncated || log[2].BodyBytes != 20*mib || log[3].Truncated || log[3].BodyBytes != 2 {
 		t.Errorf("answers: %+v %+v", log[2], log[3])
 	}
-	if fetched.Load() != 10 || len(res.Relay.GetBody()) != 3*mib {
+	if fetched.Load() != 10 || len(res.Relay.GetBody()) != 3*mib+1 {
 		t.Errorf("fetches sent %d, relayed %d bytes", fetched.Load(), len(res.Relay.GetBody()))
 	}
 

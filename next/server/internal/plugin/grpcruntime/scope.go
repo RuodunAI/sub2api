@@ -34,9 +34,6 @@ type callScope struct {
 	// relay: an Execute call (a Monitor call only fetches); wait: its
 	// request allows the waiting form.
 	relay, wait bool
-	// bodyBytes is the size of the request body the call handed to the
-	// plugin: a relayed body may be that large whatever the limit says.
-	bodyBytes int64
 
 	mu           sync.Mutex
 	closed, busy bool

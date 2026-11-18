@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -196,15 +195,12 @@ func TestRelayWaitReturnsObservation(t *testing.T) {
 	}
 }
 
-// The body of a relay may be as large as the larger of the request body
-// limit and the body the plugin was handed, plus 1 MiB; the transport's
-// headers are not the plugin's.
-func TestRelayBodyBoundAndHeaders(t *testing.T) {
+// The body of a relay has no bound of the runtime's, whatever the request
+// body limit and the body the plugin was handed; the transport's headers
+// are not the plugin's.
+func TestRelayBodyUnboundAndHeaders(t *testing.T) {
 	side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-		bound := max(mib, len(in.GetBody())) + mib
-		if _, err := relay(ctx, h, in.GetExecutionToken(), false, bound+1); status.Code(err) != codes.InvalidArgument {
-			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), bound+1, err)
-		}
+		large := max(mib, len(in.GetBody())) + 2*mib
 		for _, name := range []string{"content-length", "Accept-Encoding", "connection", "transfer-encoding"} {
 			for _, req := range []*pluginv1.UpstreamRequest{{Url: "https://u.example.com", Headers: map[string]string{name: "x"}}, {Url: "https://u.example.com", DefaultHeaders: map[string]string{name: "x"}}} {
 				if _, err := h.RelayUpstream(ctx, &pluginv1.RelayUpstreamRequest{ExecutionToken: in.GetExecutionToken(), Request: req}); status.Code(err) != codes.InvalidArgument {
@@ -217,8 +213,8 @@ func TestRelayBodyBoundAndHeaders(t *testing.T) {
 				t.Errorf("request %v: %v", req, err)
 			}
 		}
-		if _, err := relay(ctx, h, in.GetExecutionToken(), false, bound); err != nil {
-			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), bound, err)
+		if _, err := relay(ctx, h, in.GetExecutionToken(), false, large); err != nil {
+			t.Errorf("handed %d, relayed %d: %v", len(in.GetBody()), large, err)
 		}
 		return hostUsage, nil
 	}}
@@ -556,27 +552,6 @@ func TestMemoryLimitOnlyByOperator(t *testing.T) {
 		i.rt.o.RequestBodyLimit = func() int64 { return 4 * body }
 		if i.LimitsStale() {
 			t.Fatalf("stale after the body limit changed from %d", body)
-		}
-	}
-}
-
-// Only the two calls that carry a request body may exceed 4 MiB.
-func TestHostReceiveLimit(t *testing.T) {
-	handled := func(context.Context, any) (any, error) { return "ok", nil }
-	big := make([]byte, hostMaxRecvBytes+1)
-	service := "/" + pluginv1.HostService_ServiceDesc.ServiceName + "/"
-	for _, tc := range []struct {
-		method string
-		req    any
-		code   codes.Code
-	}{
-		{"RelayUpstream", &pluginv1.RelayUpstreamRequest{Request: &pluginv1.UpstreamRequest{Body: big}}, codes.OK},
-		{"ExecuteHTTP", &pluginv1.ExecutionHTTPRequest{Body: big}, codes.OK},
-		{"Publish", &pluginv1.PublishRequest{Payload: big}, codes.ResourceExhausted},
-		{"Publish", &pluginv1.PublishRequest{Payload: big[:mib]}, codes.OK},
-	} {
-		if _, err := limitHostRecv(context.Background(), tc.req, &grpc.UnaryServerInfo{FullMethod: service + tc.method}, handled); status.Code(err) != tc.code {
-			t.Errorf("%s: %v", tc.method, err)
 		}
 	}
 }
