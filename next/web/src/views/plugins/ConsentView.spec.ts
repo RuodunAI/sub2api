@@ -466,7 +466,7 @@ describe('plugin consent page', () => {
 
   it('says the package is gone rather than offering the kept review (410 package_gone)', async () => {
     putReview(review())
-    mocks.get.mockRejectedValue({ status: 410, code: 'package_gone', message: 'the package of this version is no longer available; upload it again', details: {} })
+    mocks.get.mockRejectedValue({ status: 410, code: 'package_gone', message: 'no online node holds the package of this version; bring a node that holds it back online, or upload it again', details: {} })
     for (const locale of ['zh', 'en'] as const) {
       i18n.global.locale.value = locale
       const w = mountView()
