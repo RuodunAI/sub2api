@@ -43,11 +43,12 @@ const DefaultMaxRequestBodyBytes = 128 << 20
 // body. The plugin runtime derives its internal bounds from it: the body of
 // a relay may be as large as the larger of this limit and the body the
 // execution handed to the plugin (the core may have enlarged it), plus
-// 1 MiB; the request body of a fetch at most this limit; and each platform
-// plugin's memory floor and in-flight byte budget. It is read on every
-// check, so a saved change applies at once: it must be cheap (the gateway's
-// cached settings; app wires it to Gateway.MaxRequestBodyBytes). A nil func
-// or a result <= 0 means DefaultMaxRequestBodyBytes (MaxRequestBodyBytes).
+// 1 MiB; the request body of a fetch at most this limit. It plays no part
+// in a plugin's memory limit, which only an administrator sets. It is read
+// on every check, so a saved change applies at once: it must be cheap (the
+// gateway's cached settings; app wires it to Gateway.MaxRequestBodyBytes).
+// A nil func or a result <= 0 means DefaultMaxRequestBodyBytes
+// (MaxRequestBodyBytes).
 type RequestBodyLimit func() int64
 
 // MaxRequestBodyBytes is limit's value with the default applied.
@@ -98,8 +99,7 @@ type ExecutionClient struct {
 	// first host call (or its return), between two host calls, and from the
 	// last host call to the return. Time spent inside Check, Relay and Fetch
 	// is not counted. A stretch that runs over cancels the call and Execute
-	// fails with ErrPluginUnavailable. It also bounds the wait for the
-	// plugin's in-flight byte budget before the call starts. <= 0 means 2 s.
+	// fails with ErrPluginUnavailable. <= 0 means 2 s.
 	SegmentTimeout time.Duration
 	// Check validates the request of a relay locally, without sending
 	// anything: the URL, the SSRF name check, the headers, response_stream,
@@ -162,25 +162,19 @@ type ExecutePlugin interface {
 	//   - ctx bounds the whole call. Cancelling it cancels the plugin's
 	//     call and every host call in progress. The caller decides whether a
 	//     client disconnect reaches ctx.
-	//   - Before the call starts the body's bytes are admitted against the
-	//     plugin instance's in-flight budget (a third of its memory limit),
-	//     waiting at most SegmentTimeout. A body arriving while nothing is
-	//     in flight is admitted whatever its size.
 	//
 	// Errors: ErrPluginUnavailable when the instance is down, draining or
-	// crashed, when a stretch of the plugin's own work ran over
-	// SegmentTimeout, and when the in-flight budget had no room in time
-	// (Details["reason"] is "segment_timeout" or "inflight_bytes" for the
-	// last two); the context's error when ctx ended; the mapped status of
-	// the plugin's own error otherwise. All of them are failures of the
-	// plugin, never of the account.
+	// crashed, and when a stretch of the plugin's own work ran over
+	// SegmentTimeout (Details["reason"] is "segment_timeout"); the context's
+	// error when ctx ended; the mapped status of the plugin's own error
+	// otherwise. All of them are failures of the plugin, never of the
+	// account.
 	Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client ExecutionClient) (ExecutionResult, error)
 }
 
 // Reasons in the Details of an ErrPluginUnavailable returned by Execute.
 const (
 	PluginUnavailableSegmentTimeout = "segment_timeout"
-	PluginUnavailableInflightBytes  = "inflight_bytes"
 )
 
 // MonitorPlugin is implemented by the PlatformPlugin of a plugin declaring

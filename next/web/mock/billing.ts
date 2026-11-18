@@ -1730,9 +1730,7 @@ function claudeMaxTokensError(models: Record<string, number>) {
   }
   if (claudeMaxTokensOverrideBytes(models) > overrideBytes) return err('too_large', 'the model names are too long in total')
 }
-// max_request_body_safe_mb: read-only, (plugin memory cap 1024 - 64) / 3.
-const gatewaySettingsView = () => ({ ...gatewaySettings, max_request_body_safe_mb: 320 })
-on('GET', '/settings/gateway', gatewaySettingsView)
+on('GET', '/settings/gateway', () => gatewaySettings)
 on('PUT', '/settings/gateway', (req) => {
   const b = req.body || {}
   if (!claudeMaxTokensBinds(b.claude_max_tokens)) return fail(400, 'invalid_argument', 'invalid request body')
@@ -1759,7 +1757,7 @@ on('PUT', '/settings/gateway', (req) => {
     max_request_body_mb: b.max_request_body_mb
   })
   if (rule) gatewaySettings.claude_max_tokens = rule
-  return gatewaySettingsView()
+  return gatewaySettings
 })
 
 // Core load balancing (CONTRACTS §89): the row is replaced, absent fields take the defaults; mode is always traffic.

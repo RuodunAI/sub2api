@@ -235,31 +235,26 @@ func checkPackage(files map[string][]byte, m *manifest.Manifest, allowMissingUI 
 		sort.Strings(missing)
 		return nil, fmt.Errorf("missing package files: %s", strings.Join(missing, ", "))
 	}
-	// A runtime "none" package has no binaries; manifest/check rejects any
-	// runtimes/ it would carry.
-	if m.Runtime == manifest.RuntimeGRPC {
-		tmpl := "runtimes/{os}-{arch}/plugin"
-		if m.Entry.GRPC != nil && m.Entry.GRPC.Binaries != "" {
-			tmpl = m.Entry.GRPC.Binaries
+	// Every plugin has a process; the manifest check above requires its
+	// binaries template.
+	tmpl := m.Entry.GRPC.Binaries
+	found := 0
+	for _, plat := range defaultPlatforms {
+		goos, goarch, _ := strings.Cut(plat, "/")
+		p := strings.NewReplacer("{os}", goos, "{arch}", goarch).Replace(tmpl)
+		if _, ok := files[p]; ok {
+			found++
+		} else {
+			warnings = append(warnings, "runtime binary "+p+" missing")
 		}
-		found := 0
-		for _, plat := range defaultPlatforms {
-			goos, goarch, _ := strings.Cut(plat, "/")
-			p := strings.NewReplacer("{os}", goos, "{arch}", goarch).Replace(tmpl)
-			if _, ok := files[p]; ok {
-				found++
-			} else {
-				warnings = append(warnings, "runtime binary "+p+" missing")
-			}
+	}
+	if found == 0 {
+		hasAny := false
+		for p := range files {
+			hasAny = hasAny || strings.HasPrefix(p, "runtimes/")
 		}
-		if found == 0 {
-			hasAny := false
-			for p := range files {
-				hasAny = hasAny || strings.HasPrefix(p, "runtimes/")
-			}
-			if !hasAny {
-				return nil, fmt.Errorf("no runtime binaries: run `sub2api-plugin build` first")
-			}
+		if !hasAny {
+			return nil, fmt.Errorf("no runtime binaries: run `sub2api-plugin build` first")
 		}
 	}
 	return warnings, nil

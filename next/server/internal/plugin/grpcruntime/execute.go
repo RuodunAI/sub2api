@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"slices"
 	"strings"
@@ -241,11 +240,6 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	if segment <= 0 {
 		segment = TimeoutPlatformHot
 	}
-	release, err := a.i.admit(ctx, int64(len(in.GetBody())), segment)
-	if err != nil {
-		return res, err
-	}
-	defer release()
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	// Execute may span a whole upstream exchange (a relay that waits), so
@@ -286,33 +280,6 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 		return core.ExecutionResult{}, a.i.unavailableFor(core.PluginUnavailableSegmentTimeout, fmt.Errorf("%w (%s)", errSegmentTimeout, segment))
 	}
 	return res, err
-}
-
-// admit takes n request body bytes of the instance's in-flight budget - a
-// third of the memory limit its process runs with - waiting at most wait.
-// The returned func gives them back.
-func (i *Instance) admit(ctx context.Context, n int64, wait time.Duration) (release func(), err error) {
-	limit := i.inflightBudget()
-	if n == 0 || limit == math.MaxInt64 {
-		return func() {}, nil
-	}
-	ctx, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-	if !i.bodies.acquire(ctx, n, limit) {
-		return nil, i.unavailableFor(core.PluginUnavailableInflightBytes,
-			fmt.Errorf("request body of %d bytes does not fit the in-flight budget of %d bytes (%d in flight)", n, limit, i.bodies.inFlight()))
-	}
-	return func() { i.bodies.release(n) }, nil
-}
-
-// inflightBudget is a third of the memory limit of the running process;
-// unbounded when there is no process or it has no memory limit.
-func (i *Instance) inflightBudget() int64 {
-	p := i.proc.Load()
-	if p == nil || p.limits.MemoryMB <= 0 {
-		return math.MaxInt64
-	}
-	return int64(p.limits.MemoryMB) << 20 / 3
 }
 
 // unavailableFor is unavailable with the reason in the error's details, for

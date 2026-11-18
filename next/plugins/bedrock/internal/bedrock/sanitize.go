@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // What Claude Code sends Anthropic and InvokeModel refuses, deep inside a
@@ -33,26 +35,27 @@ func idChar(r rune) rune {
 	return '_'
 }
 
-// sanitize adds the edits that clean doc, a Messages body, for model m.
-func sanitize(e *edits, doc gjson.Result, m claudeModel) {
-	eachElement(doc.Get("tools"), func(tool gjson.Result) {
-		e.object(tool, isKey("custom"))
-		cacheControl(e, tool, m)
+// sanitize adds the edits that clean d, a Messages body, for model m.
+func sanitize(d *jsonedit.Doc, m claudeModel) {
+	doc := d.Root()
+	jsonedit.EachElement(doc.Get("tools"), func(tool gjson.Result) {
+		d.Object(tool).Delete("custom")
+		cacheControl(d, tool, m)
 	})
-	eachElement(doc.Get("system"), func(block gjson.Result) { cacheControl(e, block, m) })
-	eachElement(doc.Get("messages"), func(message gjson.Result) {
-		eachElement(message.Get("content"), func(block gjson.Result) {
-			cacheControl(e, block, m)
-			toolUseID(e, block)
+	jsonedit.EachElement(doc.Get("system"), func(block gjson.Result) { cacheControl(d, block, m) })
+	jsonedit.EachElement(doc.Get("messages"), func(message gjson.Result) {
+		jsonedit.EachElement(message.Get("content"), func(block gjson.Result) {
+			cacheControl(d, block, m)
+			toolUseID(d, block)
 		})
 	})
-	thinking(e, doc.Get("thinking"), m)
+	thinking(d, doc.Get("thinking"), m)
 }
 
 // cacheControl removes from the cache_control of block what InvokeModel
 // refuses: scope always, ttl unless the model takes it with that value.
-func cacheControl(e *edits, block gjson.Result, m claudeModel) {
-	e.object(block.Get("cache_control"), func(key string, value gjson.Result) bool {
+func cacheControl(d *jsonedit.Doc, block gjson.Result, m claudeModel) {
+	d.Object(block.Get("cache_control")).DeleteFunc(func(key string, value gjson.Result) bool {
 		return key == "scope" || key == "ttl" && !(m.hasCacheTTL() && value.Type == gjson.String && slices.Contains(cacheTTLs, value.Str))
 	})
 }
@@ -60,7 +63,7 @@ func cacheControl(e *edits, block gjson.Result, m claudeModel) {
 // toolUseID replaces the characters InvokeModel refuses in the id of a
 // tool_use block and in the tool_use_id of a tool_result block, the same
 // way in both, so the pair still matches.
-func toolUseID(e *edits, block gjson.Result) {
+func toolUseID(d *jsonedit.Doc, block gjson.Result) {
 	var id gjson.Result
 	switch block.Get("type").String() {
 	case "tool_use":
@@ -72,35 +75,20 @@ func toolUseID(e *edits, block gjson.Result) {
 		return
 	}
 	if clean := strings.Map(idChar, id.Str); clean != id.Str {
-		e.replace(id, []byte(`"`+clean+`"`)) // clean holds no character JSON escapes
+		d.Replace(id, []byte(`"`+clean+`"`)) // clean holds no character JSON escapes
 	}
 }
 
 // thinking fits the thinking setting to the model: a model that thinks
 // adaptively only gets "adaptive" without a budget, and an "enabled"
 // setting without a budget gets the default one.
-func thinking(e *edits, setting gjson.Result, m claudeModel) {
+func thinking(d *jsonedit.Doc, setting gjson.Result, m claudeModel) {
 	switch typ := setting.Get("type").String(); {
 	case m.adaptiveThinkingOnly() && (typ == "enabled" || typ == "adaptive"):
-		e.object(setting, isKey("budget_tokens"), member{"type", []byte(`"adaptive"`)})
+		o := d.Object(setting)
+		o.Delete("budget_tokens")
+		o.Set("type", []byte(`"adaptive"`))
 	case typ == "enabled" && !setting.Get("budget_tokens").Exists():
-		e.object(setting, nil, member{"budget_tokens", []byte(defaultThinkingBudget)})
+		d.Object(setting).Set("budget_tokens", []byte(defaultThinkingBudget))
 	}
-}
-
-// isKey is a drop rule removing the members named keys.
-func isKey(keys ...string) func(string, gjson.Result) bool {
-	return func(key string, _ gjson.Result) bool { return slices.Contains(keys, key) }
-}
-
-// eachElement calls fn with the elements of an array (nothing for any other
-// value, where gjson's ForEach would call it with the value itself).
-func eachElement(array gjson.Result, fn func(gjson.Result)) {
-	if !array.IsArray() {
-		return
-	}
-	array.ForEach(func(_, v gjson.Result) bool {
-		fn(v)
-		return true
-	})
 }

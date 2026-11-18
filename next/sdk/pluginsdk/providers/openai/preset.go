@@ -2,6 +2,7 @@ package openai
 
 import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
@@ -62,5 +63,5 @@ func IncludeStreamUsage(body []byte, r *standard.Request) ([]byte, error) {
 	if !r.Meta.GetStream() {
 		return body, nil
 	}
-	return standard.SetJSON(body, "stream_options.include_usage", true)
+	return jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
 }

@@ -250,7 +250,7 @@
 | GET `/plugins/:key/grants`，DELETE `/plugins/:key/grants/:permission` | `plugin:read` / `plugin:manage` | |
 | PUT `/plugins/:key/grants/:permission` `{scope?}` | `plugin:manage`，每次二次验证 `plugin.grant`（与同意相同）；重新授予另须 `plugin:install`（与同意相同，二审 security #2；否则 403 `details.permission`），并按同意的检查（`checkGrantRights`：按风险 `plugin:grant:high`/`plugin:grant:critical`，db.schema 可能还要 `plugin:grant:db_schema_unconfined`） | 设置激活版本对一个宿主权限的授予，返回该授予（`Grant`）（0.1.290，A7）。`scope` 省略为清单申请的范围（请求体总是读取，不看 `Content-Length`，分块传输的收窄请求不会被当成省略）；比申请的宽 400 `invalid_argument` `details.fields[{field:"scope", code:"scope_too_wide"}]`；当前版本清单不申请该权限 404；插件还在 `awaiting_consent` 409。当前已授予且新范围在现有范围之内是**收窄**：只要 `plugin:manage`，各版本待生效授予里更宽的同一权限一并收窄，审计 `plugin.grant.narrow`；其余（已撤销、被拒、放宽）是**重新授予**：各版本待生效授予里该权限的撤销在其版本申请的范围不窄于它时解除，审计 `plugin.grant.regrant`。审计 `detail {permission, version, scope, previous?: {status, scope}}`。控制台只对数组型范围提供收窄 |
 | GET `/plugins/:key/scope-options?permission=<本地 key>&q=&ids=&limit=` | `role:read` 或 `plugin:read`（A1） | 带范围的插件权限的候选（角色编辑器、矩阵选范围用，0.1.290）：形状同 GET `/lookup`（§96，参数与上限相同）但 id 为字符串，`{items:[{id, name, hint?, status?}], more}`；只列调用者自己在该权限上能达到的（全部、列出的值；own 时由插件按自己的 `created_by` 过滤）。枚举（`scope.values`）由核心按当前版本清单回答，插件没运行也可用，`name` 为当前语言的 label；资源（`scope.options`）转发给运行中插件的 options 路由（§21.0），插件没运行、路由不存在、回非 200 或格式不对 503 `plugin_unavailable`，核心再过滤一遍（id 须是合法范围值且在调用者范围内、`name` 非空，文本截断）。权限未声明 404，不带范围 400 |
-| PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | |
+| PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | `memory_mb` 是插件内存的唯一上限来源之一（另一个是节点封顶），0 为不设；默认不限，见 §110.5 |
 | PUT `/plugins/:key/egress-policy` `{policy}` | `plugin:manage` | |
 | GET `/plugins/:key/egress`（`?from=&to=`） | `plugin:egress:read` | 按域名汇总 + 明细 |
 | GET `/plugins/:key/jobs`，POST `/plugins/:key/jobs/:job_id/run` | `plugin:read` / `task:run`🔐 | 手动运行与 POST `/system/tasks/:name/run` 同口径（2026-11-12 权限加固 W4-A4，此前为 `plugin:manage`）；审计动作仍是 `plugin.job.run` |
@@ -7970,7 +7970,6 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 - **字段**：`settings` 表 `gateway` 行的 `max_request_body_mb`（`gateway.GatewaySettings.MaxRequestBodyMB`），单位 MB，整数，默认 128，范围 1–1024。接口仍是 `GET/PUT /settings/gateway`（§14.4）：`PUT` 里不带这个字段就保持原值，超出范围回 400、字段错误 `max_request_body_mb` / `out_of_range`。已存的行里没有这个字段时读作 128，超出范围的值读取时收进范围。
 - **生效**：保存的节点立即丢弃设置缓存并广播 `config:changed`（`settings.gateway`），其他节点收到后重读；没收到广播的节点最迟 10 秒后（设置缓存的有效期）读到新值。只影响之后到达的请求和之后建立的 WebSocket 连接。
-- **回答里的只读字段** `max_request_body_safe_mb`：`GET` 和 `PUT /settings/gateway` 的回答多带这一项，是“插件进程内存下限（64 MB + 3 × 请求体上限）仍不超过本节点插件内存封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB`”的最大请求体上限，即 `(封顶 − 64) / 3`（默认封顶 1024 时是 320）；节点没有封顶时为 0。它不是设置，`PUT` 里带它会被忽略，也不存库。超过它的值照常保存，控制台在该行下提示需要同时调高封顶。
 - **控制台**：系统设置 → 网关设置里的“请求体上限”一行（`GatewaySettingsCard.vue`）。“环境变量”页和分组编辑器里不再有它。
 - **插件**：`GetSettings("gateway")` 的 `protocol.GatewaySettings` 多了 `MaxRequestBodyMB`（§107.2），变更通知沿用 `gateway` 分组。
 
@@ -7981,7 +7980,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - 环境变量 `max_request_body_mb`（§74.3）连同它的全局层、分组层和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB`；`sdk/protocol` 的常量 `EnvVarMaxRequestBodyMB`、`core.Environment.Bytes` 和变量单位 `mb` 一并删除。带这个键的 `PUT /settings/environment`、分组或账号的 `environment` 现在按未知变量拒绝（400）。启动时仍设置了 `SUB2API_MAX_REQUEST_BODY_MB` 的进程不报错，这个变量不再被读取。
   - 端点清单的 `request.maxBodyBytes`：核心不再读它（字段本身由 `sdk/manifest` 的改动删除，没有清单用过它）。
   - `gateway/hooks.go` 的 `grpcDefaultMaxRecv`、`grpcRecvTooLarge`、`requestTooLarge`：钩子调用因“请求超过插件 gRPC 接收上限”失败时不计入熔断的特例。现在这种失败和其他失败一样计入熔断。插件的接收上限本身（默认 4 MiB，`WithMaxRecvMsgSize`）由 SDK 的改动固定为传输层最大值；在那之前，`failure: closed` 的钩子插件的接收上限仍会按大小拒绝请求。
-- **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限、插件进程的内存下限（“64 MB + 3 × 请求体上限”）按设计第 8.2、8.3 节由运行时用这个值推出，不另设配置项。
+- **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限按设计第 8.2 节由运行时用这个值推出，不另设配置项。插件进程的内存上限与它无关（§110.5）。
 - **不属于请求大小上限、保持原样的常量**：到 Gemini 的媒体下载上限 `media_download_max_mb`（核心主动下载的文件，§88）；预扣时本地分词统计的提示文本 32 MiB（`tokenizer.MaxTextBytes`，只截断统计，不拒绝请求，§25.8）和传给插件估算的 1 MiB；上游一侧的读取上限（WebSocket 上游消息 64 MiB、SSE 单行 16 MiB、非流式回答的缓冲）；插件路由 `/api/v1/p/:key/*` 的 1 MiB 和控制台接口各自的上限（不是网关请求）。
 
 ### 110.3 迁移 0106
@@ -7998,3 +7997,14 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 ### 110.4 “平台调用超时”的含义
 
 `platform_call_timeout_ms`（默认 2000，范围 100–30000，都不变）的定义改为：**一次请求里，插件每一段自己的处理时间的上限，不含等待上游的时间**（设计第 8.4 节列出各段：`Execute` 开始到第一次调客户端、两次客户端调用之间、最后一次客户端调用返回到 `Execute` 返回、`ClassifyError` 整个调用、WebSocket 每一轮的 `Execute`）。控制台提示（`web/src/i18n/locales/{zh,en}/settings.ts`）和接口类型注释已按新含义改写；网关按段计时的实现属于转发 V2 的网关改造，不在本节的改动里。
+### 110.5 插件进程的内存：默认不限，只有管理员设置的上限
+
+用户决定（设计 D23：“默认插件内存上限不限制！！除非管理员手动限制！！”）。适用于所有有进程的插件，平台插件和其他插件一样。
+
+- **默认不限**：什么都没设置时，插件进程没有内存上限：不设 `GOMEMLIMIT`，看门狗不按内存重启（内存方面没有 rlimit）。**后果**：默认情况下没有任何东西阻止插件进程一直长到节点内存耗尽（比如几个大请求体同时到达）。要界限的管理员按下面两条设置。
+- **管理员给插件设的上限**：`PUT /plugins/:key/resources` 的 `memory_mb`（存在 `plugins.resource_limits`），大于 0 时原样生效，核心不抬高也不压低；0 表示不设。
+- **节点封顶** `SUB2API_PLUGIN_MAX_MEMORY_MB`：默认 0，不封顶（此前默认 1024）。管理员设了时照旧：没有插件上限的插件用它作上限，插件上限超过它时取它；`PUT /plugins/:key/resources` 仍拒绝超过它的 `memory_mb`。
+- **清单的 `resources.memoryMB`**：不是上限，只是插件自述的需要，安装审查（`review.resources`）和插件详情的 `resources.requested` 里照常展示，可作管理员设置上限时的参考。字段与校验不变（设了封顶时仍不能超过封顶）。`cpu`、`maxThreads`、`maxOpenFiles` 不在本节范围，照旧生效。
+- **与请求体上限无关**：不按请求体上限推下限；改 `max_request_body_mb` 不会让任何插件进程过期或被替换。管理员改了插件上限或封顶后，进程按“资源限制过期”由对账循环平滑替换（与以前相同）。交给插件的请求体不做在途字节准入（`ErrPluginUnavailable` 的 `inflight_bytes` 原因删除）。
+- **给平台插件设上限时**：平台插件持有完整请求体，一个 N 字节的请求在插件里的峰值约 3N 到 4N。每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量；默认请求体上限 128 MB 时约 450 MB 一个。网关设置里不再有内存警告。
+

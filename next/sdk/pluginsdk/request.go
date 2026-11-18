@@ -15,3 +15,11 @@ func RequestModel(in *pluginv1.ExecuteRequest) string {
 	}
 	return in.GetMeta().GetModel()
 }
+
+// RequestStream reports whether the answer streams: either flag set is
+// enough. meta.stream is the core's reading of the request; the body's
+// "stream" counts when it is JSON true, since the core may force streaming
+// into the body. A body's false does not undo meta.stream.
+func RequestStream(in *pluginv1.ExecuteRequest) bool {
+	return in.GetMeta().GetStream() || gjson.GetBytes(in.GetBody(), "stream").Type == gjson.True
+}
