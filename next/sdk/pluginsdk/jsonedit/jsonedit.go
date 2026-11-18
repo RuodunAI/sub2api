@@ -28,6 +28,11 @@
 //     edit's business and stay as they are. (The core refuses bodies with
 //     duplicate keys before a plugin runs; the rule keeps an edit from
 //     guessing if one gets through.)
+//   - Edits of one member take effect in the order they are made: a Delete
+//     or DeleteFunc removes what an earlier Set or Default wrote at its
+//     path (DeleteFunc judges the value the member would have then), and a
+//     Set or Default after a Delete writes the member again, at the end of
+//     its object.
 //   - Edits whose bytes overlap (a member deleted and a value inside it
 //     replaced, a value replaced twice) are ErrConflict.
 //   - Paths are dot-separated plain object keys ("stream_options.include_usage");
@@ -69,6 +74,7 @@ type Doc struct {
 	spans   []span          // value replacements
 	objects []*object       // objects with member edits, in the order first edited
 	byStart map[int]*object // the same, by the offset of their "{"
+	seq     int             // member edits made so far: the call order
 	err     error           // the first error; Bytes returns it
 }
 
@@ -152,21 +158,23 @@ func (o Object) Default(path string, raw []byte) { o.d.set(o.v, path, raw, true)
 
 // Delete removes the member at path, every occurrence of it: on the way,
 // every member with the key that is an object is searched. A missing path
-// is no edit. A member removed takes one separating comma with it.
+// is no edit. A member removed takes one separating comma with it. What an
+// earlier Set or Default wrote at path is removed too.
 func (o Object) Delete(path string) {
 	keys, err := splitPath(path)
 	if err != nil {
 		o.d.fail(err)
 		return
 	}
-	o.d.delete(o.v, keys)
+	o.d.delete(o.v, keys, o.d.next())
 }
 
 // DeleteFunc removes every member of the object for which drop reports
-// true.
+// true. A member an earlier Set or Default wrote is judged by the value it
+// would leave.
 func (o Object) DeleteFunc(drop func(key string, value gjson.Result) bool) {
 	if obj := o.d.object(o.v, false); obj != nil {
-		obj.drops = append(obj.drops, drop)
+		obj.drop(drop, o.d.next())
 	}
 }
 
@@ -212,6 +220,12 @@ func (d *Doc) Bytes() ([]byte, error) {
 		at = s.end
 	}
 	return append(out, d.src[at:]...), nil
+}
+
+// next is the place of a member edit in the call order.
+func (d *Doc) next() int {
+	d.seq++
+	return d.seq
 }
 
 func (d *Doc) fail(err error) {
@@ -266,6 +280,7 @@ func (d *Doc) set(v gjson.Result, path string, raw []byte, keep bool) {
 		d.fail(fmt.Errorf("%w: value of %s %.40q", ErrInvalid, path, raw))
 		return
 	}
+	seq := d.next()
 	obj := d.object(v, true)
 	for obj != nil && len(keys) > 1 {
 		child, n := unique(v, keys[0])
@@ -276,29 +291,47 @@ func (d *Doc) set(v gjson.Result, path string, raw []byte, keep bool) {
 		case n == 1 && !child.IsObject() && keep:
 			return // Default replaces nothing
 		case !child.IsObject():
-			obj.put(keys, raw, keep) // missing, or replaced by an object
+			obj.put(keys, raw, keep, seq) // missing, or replaced by an object
 			return
 		}
 		v, keys, obj = child, keys[1:], d.object(child, true)
 	}
 	if obj != nil {
-		obj.put(keys, raw, keep)
+		obj.put(keys, raw, keep, seq)
 	}
 }
 
-func (d *Doc) delete(v gjson.Result, keys []string) {
+func (d *Doc) delete(v gjson.Result, keys []string, seq int) {
 	if len(keys) == 1 {
-		o := Object{d, v}
-		o.DeleteFunc(func(key string, _ gjson.Result) bool { return key == keys[0] })
+		if obj := d.object(v, false); obj != nil {
+			obj.drop(func(key string, _ gjson.Result) bool { return key == keys[0] }, seq)
+		}
 		return
 	}
 	if !v.IsObject() {
 		return
 	}
+	if obj := d.byStart[d.start(v)]; obj != nil {
+		if m := obj.set(keys[0]); m != nil {
+			m.deletePath(keys[1:], seq)
+			if !m.keep {
+				return // the document's member is replaced
+			}
+		}
+	}
 	v.ForEach(func(k, child gjson.Result) bool {
 		if k.Str == keys[0] && child.IsObject() {
-			d.delete(child, keys[1:])
+			d.delete(child, keys[1:], seq)
 		}
 		return true
 	})
+}
+
+// start is the offset of v in the document, -1 for a value not read from
+// it.
+func (d *Doc) start(v gjson.Result) int {
+	if start, ok := d.offset(v.Raw); ok {
+		return start
+	}
+	return -1
 }

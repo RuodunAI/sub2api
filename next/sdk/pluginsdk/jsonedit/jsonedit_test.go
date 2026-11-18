@@ -159,6 +159,75 @@ func TestPaths(t *testing.T) {
 	}
 }
 
+// TestCallOrder: edits of one member take effect in the order they are
+// made, whichever of Set, Default, Delete and DeleteFunc they are.
+func TestCallOrder(t *testing.T) {
+	isTrue := func(_ string, v gjson.Result) bool { return v.Type == gjson.True }
+	for _, tc := range []struct {
+		name, in string
+		fn       func(*jsonedit.Doc)
+		want     string
+	}{
+		{"set then delete", `{"a":1,"stream":false}`,
+			func(d *jsonedit.Doc) { d.Set("stream", raw(`true`)); d.Delete("stream") },
+			`{"a":1}`},
+		{"set of a missing key then delete", `{"a":1}`,
+			func(d *jsonedit.Doc) { d.Set("stream", raw(`true`)); d.Delete("stream") },
+			`{"a":1}`},
+		{"delete then set", `{"a":1,"stream":false}`,
+			func(d *jsonedit.Doc) { d.Delete("stream"); d.Set("stream", raw(`true`)) },
+			`{"a":1,"stream":true}`},
+		{"set, delete, set", `{"stream":false,"a":1}`,
+			func(d *jsonedit.Doc) { d.Set("stream", raw(`1`)); d.Delete("stream"); d.Set("stream", raw(`2`)) },
+			`{"a":1,"stream":2}`},
+		{"nested set then delete", `{"a":{"x":1}}`,
+			func(d *jsonedit.Doc) { d.Set("a.y", raw(`2`)); d.Delete("a.y") },
+			`{"a":{"x":1}}`},
+		{"nested delete then set", `{"a":{"x":1,"y":0}}`,
+			func(d *jsonedit.Doc) { d.Delete("a.y"); d.Set("a.y", raw(`2`)) },
+			`{"a":{"x":1,"y":2}}`},
+		{"set below a missing object then delete", `{"b":1}`,
+			func(d *jsonedit.Doc) { d.Set("a.y", raw(`2`)); d.Set("a.z", raw(`3`)); d.Delete("a.y") },
+			`{"b":1,"a":{"z":3}}`},
+		{"set of an object value then delete inside it", `{"b":1}`,
+			func(d *jsonedit.Doc) { d.Set("a", raw(`{"y":2,"z":3}`)); d.Delete("a.y") },
+			`{"b":1,"a":{"z":3}}`},
+		{"default then delete", `{"a":1}`,
+			func(d *jsonedit.Doc) { d.Default("b", raw(`2`)); d.Delete("b") },
+			`{"a":1}`},
+		{"default of a present key then delete", `{"a":1,"b":0}`,
+			func(d *jsonedit.Doc) { d.Default("b", raw(`2`)); d.Delete("b") },
+			`{"a":1}`},
+		{"delete then default", `{"a":1,"b":0}`,
+			func(d *jsonedit.Doc) { d.Delete("b"); d.Default("b", raw(`2`)) },
+			`{"a":1,"b":2}`},
+		{"set then DeleteFunc judging the value set", `{"a":1,"stream":false}`,
+			func(d *jsonedit.Doc) { d.Set("stream", raw(`true`)); d.Object(d.Root()).DeleteFunc(isTrue) },
+			`{"a":1}`},
+		{"set then DeleteFunc that keeps the value set", `{"stream":true,"a":1}`,
+			func(d *jsonedit.Doc) { d.Set("stream", raw(`false`)); d.Object(d.Root()).DeleteFunc(isTrue) },
+			`{"stream":false,"a":1}`},
+		{"DeleteFunc then set", `{"stream":true,"a":1}`,
+			func(d *jsonedit.Doc) { d.Object(d.Root()).DeleteFunc(isTrue); d.Set("stream", raw(`true`)) },
+			`{"a":1,"stream":true}`},
+		{"default then DeleteFunc", `{"a":1}`,
+			func(d *jsonedit.Doc) { d.Default("b", raw(`true`)); d.Object(d.Root()).DeleteFunc(isTrue) },
+			`{"a":1}`},
+		{"nested set then DeleteFunc of its object", `{"o":{"x":1}}`,
+			func(d *jsonedit.Doc) {
+				d.Set("o.y", raw(`true`))
+				d.Object(d.Root().Get("o")).DeleteFunc(isTrue)
+			},
+			`{"o":{"x":1}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := edit(t, tc.in, tc.fn); got != tc.want {
+				t.Fatalf("got  %s\nwant %s", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestValues: values read from the document are edited where they are,
 // inside arrays and nested objects.
 func TestValues(t *testing.T) {

@@ -2,6 +2,7 @@ package jsonedit
 
 import (
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 
@@ -15,17 +16,26 @@ import (
 type object struct {
 	v     gjson.Result
 	start int // offset of the "{"
-	drops []func(key string, value gjson.Result) bool
+	drops []drop
 	sets  []*member
 }
 
+// drop is a Delete or DeleteFunc of the object, with its place in the call
+// order.
+type drop struct {
+	fn  func(key string, value gjson.Result) bool
+	seq int
+}
+
 // member is a member Set or Default writes: raw, or a new object (sub)
-// when the path goes on below a member that is missing.
+// when the path goes on below a member that is missing. seq is the place
+// in the call order of the Set or Default that wrote it last.
 type member struct {
 	key  string
 	raw  []byte
 	sub  *object
 	keep bool // Default: only where the member is missing
+	seq  int
 }
 
 // object returns the edits of v, an object of the document. For a value
@@ -54,11 +64,12 @@ func (d *Doc) object(v gjson.Result, must bool) *object {
 	return o
 }
 
-// put records keys (one or more) to be set to raw in o.
-func (o *object) put(keys []string, raw []byte, keep bool) {
+// put records keys (one or more) to be set to raw in o; seq is the edit's
+// place in the call order.
+func (o *object) put(keys []string, raw []byte, keep bool, seq int) {
 	i := slices.IndexFunc(o.sets, func(m *member) bool { return m.key == keys[0] })
 	if i < 0 {
-		o.sets = append(o.sets, &member{key: keys[0], keep: keep})
+		o.sets = append(o.sets, &member{key: keys[0], keep: keep, seq: seq})
 		i = len(o.sets) - 1
 	} else if keep {
 		if len(keys) == 1 || o.sets[i].sub == nil {
@@ -67,7 +78,7 @@ func (o *object) put(keys []string, raw []byte, keep bool) {
 	}
 	m := o.sets[i]
 	if !keep {
-		m.keep = false
+		m.keep, m.seq = false, seq
 	}
 	if len(keys) == 1 {
 		m.raw, m.sub = raw, nil
@@ -76,12 +87,78 @@ func (o *object) put(keys []string, raw []byte, keep bool) {
 	if m.sub == nil {
 		m.raw, m.sub = nil, &object{start: -1}
 	}
-	m.sub.put(keys[1:], raw, keep)
+	m.sub.put(keys[1:], raw, keep, seq)
 }
 
-// dropped reports a member some delete removes.
-func (o *object) dropped(key string, value gjson.Result) bool {
-	return slices.ContainsFunc(o.drops, func(drop func(string, gjson.Result) bool) bool { return drop(key, value) })
+// set returns the member a Set or Default of key wrote, or nil.
+func (o *object) set(key string) *member {
+	i := slices.IndexFunc(o.sets, func(m *member) bool { return m.key == key })
+	if i < 0 {
+		return nil
+	}
+	return o.sets[i]
+}
+
+// drop records a Delete or DeleteFunc made at seq. It takes effect after
+// the edits made before it: a member an earlier Set or Default wrote is
+// judged by the value it would leave and, when fn removes it, is not
+// written, and the member of the document under that key goes too.
+func (o *object) drop(fn func(string, gjson.Result) bool, seq int) {
+	o.sets = slices.DeleteFunc(o.sets, func(m *member) bool {
+		value, ok := o.current(m)
+		if !fn(m.key, value) {
+			return false
+		}
+		if ok { // the document's own member, which fn judges at render
+			return true
+		}
+		key := m.key
+		o.drops = append(o.drops, drop{func(k string, _ gjson.Result) bool { return k == key }, seq})
+		return true
+	})
+	o.drops = append(o.drops, drop{fn, seq})
+}
+
+// current is the value m leaves in o: the document's own value for a
+// Default of a member the document has and no earlier delete removed
+// (ok), else what m writes.
+func (o *object) current(m *member) (value gjson.Result, ok bool) {
+	if m.keep {
+		if v, n := unique(o.v, m.key); n > 0 && !o.dropped(m.key, v, m.seq) {
+			return v, true
+		}
+	}
+	return gjson.ParseBytes(m.value()), false
+}
+
+// dropped reports a member of the document that a delete made before seq
+// removes.
+func (o *object) dropped(key string, value gjson.Result, seq int) bool {
+	return slices.ContainsFunc(o.drops, func(d drop) bool { return d.seq < seq && d.fn(key, value) })
+}
+
+// deletePath removes keys (one or more) from what the Sets and Defaults
+// made before seq write in o; the document's members are not its business.
+func (o *object) deletePath(keys []string, seq int) {
+	if len(keys) == 1 {
+		o.drop(func(k string, _ gjson.Result) bool { return k == keys[0] }, seq)
+		return
+	}
+	if m := o.set(keys[0]); m != nil {
+		m.deletePath(keys[1:], seq)
+	}
+}
+
+// deletePath removes keys (one or more) from the value m writes.
+func (m *member) deletePath(keys []string, seq int) {
+	if m.sub != nil {
+		m.sub.deletePath(keys, seq)
+		return
+	}
+	if gjson.ParseBytes(m.raw).IsObject() {
+		// m.raw is valid JSON (Set checked it): deleting cannot fail.
+		m.raw, _ = Edit(m.raw, func(d *Doc) { d.Delete(strings.Join(keys, ".")) })
+	}
 }
 
 // render appends the spans of o's edits: removed members go with one
@@ -99,7 +176,13 @@ func (d *Doc) render(o *object, spans []span) []span {
 		keyStart, _ := d.offset(k.Raw)
 		valueStart, _ := d.offset(v.Raw)
 		end = valueStart + len(v.Raw)
-		if o.dropped(k.Str, v) {
+		// A delete made after a Set of the member judged the value the Set
+		// wrote, not this one.
+		seq := math.MaxInt
+		if m := o.set(k.Str); m != nil && !m.keep {
+			seq = m.seq
+		}
+		if o.dropped(k.Str, v, seq) {
 			if cut < 0 {
 				cut = keyStart
 				if keptEnd >= 0 {
