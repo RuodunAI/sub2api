@@ -6,5 +6,9 @@
 were built from. They cover the shapes Bedrock's
 InvokeModelWithResponseStream sends (chunk events, an exception, an error),
 messages without headers or payload, and one message using every header value
-type. The package under test does not import the SDK; the decoder must read
-these bytes and the encoder must reproduce the string-only ones exactly.
+type.
+
+The package decodes and encodes with that library itself (the version in
+`next/sdk/go.mod`). The recording stays as a fixed point: the decoder must
+read these bytes and the encoder must reproduce the string-only ones exactly,
+whatever version of the library is linked.

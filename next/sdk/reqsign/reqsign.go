@@ -7,9 +7,11 @@
 // request with it (BuildUpstreamRequestResponse.signing in the plugin
 // protocol), and a plugin signs the test request it builds itself.
 //
-// Only the standard library is used. A hand-written signature fails as a 403
-// from the vendor, not as a crash, so every scheme is pinned by golden
-// vectors (see the tests of each scheme).
+// A scheme is signed by its vendor's official library where one exists (AWS
+// SigV4: aws-sdk-go-v2's aws/signer/v4); the package decides what is signed
+// and builds no service client. A wrong signature fails as a 403 from the
+// vendor, not as a crash, so every scheme is pinned by golden vectors (see
+// the tests of each scheme).
 package reqsign
 
 import (

@@ -5,6 +5,9 @@ go 1.27
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0
+	github.com/aws/aws-sdk-go-v2 v1.48.0
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.27
+	github.com/aws/smithy-go v1.28.9
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/hashicorp/go-hclog v1.6.3
 	github.com/hashicorp/go-plugin v1.8.0

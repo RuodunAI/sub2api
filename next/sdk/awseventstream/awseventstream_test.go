@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -45,6 +46,15 @@ func sdkVectors(t testing.TB) map[string]sdkVector {
 	}
 	return out
 }
+
+// Value types of a header, for the frames built by hand.
+const (
+	typeInt32     = 4
+	typeBytes     = 6
+	typeString    = 7
+	typeTimestamp = 8
+	typeUUID      = 9
+)
 
 // rawFrame builds a frame by hand around an arbitrary header block, with
 // correct checksums: independent of AppendMessage, and able to carry header
@@ -89,8 +99,10 @@ func exceptionFrame(t testing.TB, typ, message string) []byte {
 	return mustAppend(t, nil, []Header{{HeaderExceptionType, typ}, {HeaderMessageType, MessageTypeException}}, []byte(`{"message":"`+message+`"}`))
 }
 
-// The decoder reads what the official SDK encodes, including header value
-// types it does not return, and the encoder writes the same bytes.
+// The decoder reads the frames recorded from the official SDK, including
+// header value types it does not return, and the encoder writes the same
+// bytes: the recording pins the wire format across upgrades of the library
+// the package now decodes and encodes with.
 func TestSDKRecordedFrames(t *testing.T) {
 	for name, v := range sdkVectors(t) {
 		t.Run(name, func(t *testing.T) {
@@ -275,33 +287,38 @@ func TestLengthLimits(t *testing.T) {
 	}
 }
 
-// A prelude announcing a large message reserves nothing: the buffer follows
-// the bytes that really arrive, and one that grew large is not kept.
+// allocated is the number of bytes f allocates, whether or not they are
+// still in use.
+func allocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// A prelude announcing a large message reserves nothing: what is allocated
+// follows the bytes that really arrive, and a buffer that grew large is not
+// kept.
 func TestBufferFollowsTheData(t *testing.T) {
-	const sent = 1000
-	cut := append(rawPrelude(MaxMessageSize, 0), make([]byte, sent)...)
-	d := NewDecoder(bytes.NewReader(cut))
-	if _, err := d.Decode(); err != io.ErrUnexpectedEOF {
-		t.Fatalf("cut message: %v", err)
-	}
-	if cap(d.buf) > 2*readStep {
-		t.Fatalf("%d bytes allocated for %d received", cap(d.buf), sent)
+	for _, sent := range []int{0, 1000, 1 << 20} {
+		cut := append(rawPrelude(MaxMessageSize, 0), make([]byte, sent)...)
+		var err error
+		got := allocated(func() { _, err = NewDecoder(bytes.NewReader(cut)).Decode() })
+		if err != io.ErrUnexpectedEOF {
+			t.Fatalf("cut message: %v", err)
+		}
+		// The decoder's own read buffer, and the payload buffer doubling up
+		// to what was received.
+		if limit := uint64(256<<10 + 6*sent); got > limit {
+			t.Fatalf("%d bytes allocated for %d received of %d announced", got, sent, MaxMessageSize)
+		}
 	}
 
-	// Whatever the size, the buffer stays within a step and the growth
-	// factor of what was received.
 	big := mustAppend(t, nil, nil, bytes.Repeat([]byte("x"), 3<<20))
-	d = NewDecoder(bytes.NewReader(big[:len(big)/2]))
-	if _, err := d.Decode(); err != io.ErrUnexpectedEOF {
-		t.Fatalf("half a message: %v", err)
-	}
-	if cap(d.buf) > len(big)/2*2+readStep {
-		t.Fatalf("%d bytes allocated for %d received", cap(d.buf), len(big)/2)
-	}
-
 	// A large message is decoded whole, and its buffer goes with the next.
 	small := mustAppend(t, nil, eventHeaders(), []byte("small"))
-	d = NewDecoder(bytes.NewReader(append(bytes.Clone(big), append(bytes.Clone(small), small...)...)))
+	d := NewDecoder(bytes.NewReader(append(bytes.Clone(big), append(bytes.Clone(small), small...)...)))
 	if msg, err := d.Decode(); err != nil || len(msg.Payload) != 3<<20 {
 		t.Fatalf("large message: %v", err)
 	}
@@ -369,7 +386,6 @@ func TestMalformedHeaders(t *testing.T) {
 	}
 	good := str(":message-type", "event")
 	for name, headers := range map[string][]byte{
-		"empty name":             {0, typeString, 0, 0},
 		"name past the end":      {5, 'a'},
 		"no value type":          {1, 'a'},
 		"unknown value type":     {1, 'a', 10},
@@ -390,6 +406,13 @@ func TestMalformedHeaders(t *testing.T) {
 	msg, err := NewDecoder(bytes.NewReader(rawFrame(append(str("a", ""), good...), nil))).Decode()
 	if err != nil || len(msg.Headers) != 2 || msg.Header(HeaderMessageType) != "event" || len(msg.Payload) != 0 {
 		t.Fatalf("good block: %v %v", msg, err)
+	}
+	// What the official decoder accepts although no encoder writes it: a
+	// header without a name, and a name used twice (the last value is kept).
+	lenient := append(append(str("", "x"), str("a", "1")...), str("a", "2")...)
+	msg, err = NewDecoder(bytes.NewReader(rawFrame(lenient, nil))).Decode()
+	if err != nil || len(msg.Headers) != 2 || msg.Header("") != "x" || msg.Header("a") != "2" {
+		t.Fatalf("lenient block: %v %v", msg, err)
 	}
 }
 

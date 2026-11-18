@@ -2,8 +2,13 @@
 // (application/vnd.amazon.eventstream): Decoder and AppendMessage know the
 // framing only and fit any service using it. ChunkSSEReader is narrower: it
 // presents one kind of event stream, the "chunk" events of Bedrock's
-// InvokeModelWithResponseStream, as server-sent events (FormatChunk). Only
-// the standard library is used.
+// InvokeModelWithResponseStream, as server-sent events (FormatChunk).
+//
+// Messages are decoded and encoded by the official library, aws-sdk-go-v2's
+// aws/protocol/eventstream: the checksum of a message, its headers and their
+// value types, and the bytes written are its work. The library reads
+// whatever length a prelude announces, so the package reads the prelude
+// itself and bounds the message before handing it over (Decoder.Decode).
 //
 // A message on the wire:
 //
@@ -20,12 +25,14 @@ package awseventstream
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
-	"slices"
+
+	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 )
 
 // ContentType is the media type of a response framed as an event stream.
@@ -42,11 +49,12 @@ const (
 	minMessageSize = preludeSize + 4
 	// maxHeadersSize is the format's limit on the header block.
 	maxHeadersSize = 128 << 10
-	// readStep is how far ahead of the bytes received the message buffer
-	// grows: a length announced in a prelude reserves nothing by itself.
-	readStep = 64 << 10
-	// retainSize is the largest buffer kept from one message to the next;
-	// the buffer of a larger message is released after it.
+	// maxHeaderNameSize and maxHeaderValueSize are the format's limits on
+	// one header.
+	maxHeaderNameSize  = 255
+	maxHeaderValueSize = 1<<15 - 1
+	// retainSize is the largest payload buffer kept from one message to the
+	// next; the buffer of a larger message is released after it.
 	retainSize = 256 << 10
 )
 
@@ -74,8 +82,9 @@ var ErrCorrupt = errors.New("awseventstream: corrupt message")
 // not read, so the stream cannot be decoded any further either.
 var ErrTooLarge = errors.New("awseventstream: message over the size limit")
 
-// Header is one message header. Only string values are kept: the decoder
-// checks the values of the other types and leaves them out.
+// Header is one message header. Only string values are kept: the values of
+// the other types are decoded and left out. Of headers sharing a name the
+// last value is kept.
 type Header struct {
 	Name  string
 	Value string
@@ -102,6 +111,9 @@ func (m Message) Header(name string) string {
 // byte arrived.
 type Decoder struct {
 	r   *bufio.Reader
+	sdk *eventstream.Decoder
+	// buf is the payload buffer handed to the library from one message to
+	// the next.
 	buf []byte
 	max uint32
 }
@@ -118,7 +130,7 @@ func WithMaxMessageSize(n int) DecoderOption {
 
 // NewDecoder returns a decoder reading from r.
 func NewDecoder(r io.Reader, opts ...DecoderOption) *Decoder {
-	d := &Decoder{r: bufio.NewReaderSize(r, 32<<10), max: MaxMessageSize}
+	d := &Decoder{r: bufio.NewReaderSize(r, 32<<10), sdk: eventstream.NewDecoder(), max: MaxMessageSize}
 	for _, opt := range opts {
 		opt(d)
 	}
@@ -135,126 +147,76 @@ func (d *Decoder) Decode() (Message, error) {
 	if _, err := io.ReadFull(d.r, prelude[:]); err != nil {
 		return Message{}, err // io.EOF only when not a single byte was read
 	}
-	total := binary.BigEndian.Uint32(prelude[0:4])
-	headersLen := binary.BigEndian.Uint32(prelude[4:8])
-	if crc32.ChecksumIEEE(prelude[:8]) != binary.BigEndian.Uint32(prelude[8:12]) {
-		return Message{}, fmt.Errorf("%w: prelude checksum mismatch", ErrCorrupt)
-	}
-	// The lengths are bounded before anything is read or allocated for them.
-	if total < minMessageSize || total > MaxMessageSize {
-		return Message{}, fmt.Errorf("%w: message length %d outside %d..%d", ErrCorrupt, total, minMessageSize, MaxMessageSize)
-	}
-	if headersLen > maxHeadersSize || headersLen > total-minMessageSize {
-		return Message{}, fmt.Errorf("%w: headers length %d in a message of %d", ErrCorrupt, headersLen, total)
-	}
-	if total > d.max {
-		return Message{}, fmt.Errorf("%w: message length %d, limit %d", ErrTooLarge, total, d.max)
-	}
-	rest, err := d.read(int(total) - preludeSize)
-	if err != nil {
+	if err := d.checkPrelude(prelude); err != nil {
 		return Message{}, err
 	}
-	body, sum := rest[:len(rest)-4], binary.BigEndian.Uint32(rest[len(rest)-4:])
-	if crc32.Update(crc32.ChecksumIEEE(prelude[:]), crc32.IEEETable, body) != sum {
-		return Message{}, fmt.Errorf("%w: message checksum mismatch", ErrCorrupt)
-	}
-	headers, err := decodeHeaders(body[:headersLen])
-	if err != nil {
-		return Message{}, err
-	}
-	return Message{Headers: headers, Payload: body[headersLen:]}, nil
-}
-
-// read reads the n bytes after a prelude into the decoder's buffer. The
-// buffer grows as the bytes arrive, readStep at a time, so a prelude
-// announcing a large message costs nothing until the message is really sent;
-// a buffer that grew past retainSize for one message is not kept for the next.
-func (d *Decoder) read(n int) ([]byte, error) {
 	if cap(d.buf) > retainSize {
 		d.buf = nil
 	}
-	buf := d.buf[:0]
-	for len(buf) < n {
-		step := min(n-len(buf), readStep)
-		buf = slices.Grow(buf, step)
-		got, err := io.ReadFull(d.r, buf[len(buf):len(buf)+step])
-		buf = buf[:len(buf)+got]
-		if err != nil {
-			d.buf = buf
-			if err == io.EOF {
-				err = io.ErrUnexpectedEOF
-			}
-			return nil, err
-		}
+	// The library gets the prelude back and reads the rest of the message
+	// from the stream: exactly the length checked above. Its payload buffer
+	// grows with the bytes that arrive, so a prelude announcing a large
+	// message costs nothing until the message is really sent.
+	src := &source{r: d.r}
+	msg, err := d.sdk.Decode(io.MultiReader(bytes.NewReader(prelude[:]), src), d.buf)
+	switch {
+	case src.err == io.EOF:
+		return Message{}, io.ErrUnexpectedEOF
+	case src.err != nil:
+		return Message{}, src.err
+	case err != nil:
+		// The stream delivered the whole message, so the message is at fault.
+		return Message{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	d.buf = buf
-	return buf, nil
+	if msg.Payload != nil {
+		d.buf = msg.Payload
+	}
+	return Message{Headers: stringHeaders(msg.Headers), Payload: msg.Payload}, nil
 }
 
-// Value types of a header.
-const (
-	typeTrue = iota
-	typeFalse
-	typeByte
-	typeInt16
-	typeInt32
-	typeInt64
-	typeBytes
-	typeString
-	typeTimestamp
-	typeUUID
-)
+// checkPrelude bounds the lengths a prelude announces, before anything is
+// read or allocated for them. The library checks neither: it trusts the
+// lengths once the prelude's checksum matches.
+func (d *Decoder) checkPrelude(prelude [preludeSize]byte) error {
+	total := binary.BigEndian.Uint32(prelude[0:4])
+	headersLen := binary.BigEndian.Uint32(prelude[4:8])
+	switch {
+	case crc32.ChecksumIEEE(prelude[:8]) != binary.BigEndian.Uint32(prelude[8:12]):
+		return fmt.Errorf("%w: prelude checksum mismatch", ErrCorrupt)
+	case total < minMessageSize || total > MaxMessageSize:
+		return fmt.Errorf("%w: message length %d outside %d..%d", ErrCorrupt, total, minMessageSize, MaxMessageSize)
+	case headersLen > maxHeadersSize || headersLen > total-minMessageSize:
+		return fmt.Errorf("%w: headers length %d in a message of %d", ErrCorrupt, headersLen, total)
+	case total > d.max:
+		return fmt.Errorf("%w: message length %d, limit %d", ErrTooLarge, total, d.max)
+	}
+	return nil
+}
 
-// fixedValueSize is the size of the fixed-width value types.
-var fixedValueSize = map[byte]int{typeTrue: 0, typeFalse: 0, typeByte: 1, typeInt16: 2, typeInt32: 4, typeInt64: 8, typeTimestamp: 8, typeUUID: 16}
+// source remembers the error its reader ended with, which tells a message
+// the stream cut short from a malformed one.
+type source struct {
+	r   io.Reader
+	err error
+}
 
-func decodeHeaders(b []byte) ([]Header, error) {
+func (s *source) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil {
+		s.err = err
+	}
+	return n, err
+}
+
+// stringHeaders are the headers with a string value.
+func stringHeaders(headers eventstream.Headers) []Header {
 	var out []Header
-	for len(b) > 0 {
-		name, rest, ok := cutPrefixed(b, 1)
-		if !ok || len(name) == 0 || len(rest) == 0 {
-			return nil, fmt.Errorf("%w: truncated header name", ErrCorrupt)
+	for _, h := range headers {
+		if v, ok := h.Value.(eventstream.StringValue); ok {
+			out = append(out, Header{Name: h.Name, Value: string(v)})
 		}
-		typ := rest[0]
-		value, rest, ok := cutValue(typ, rest[1:])
-		if !ok {
-			return nil, fmt.Errorf("%w: bad value of header %q (type %d)", ErrCorrupt, name, typ)
-		}
-		if typ == typeString {
-			out = append(out, Header{Name: string(name), Value: string(value)})
-		}
-		b = rest
 	}
-	return out, nil
-}
-
-// cutValue splits the value of a header of type typ off b.
-func cutValue(typ byte, b []byte) (value, rest []byte, ok bool) {
-	if typ == typeBytes || typ == typeString {
-		return cutPrefixed(b, 2)
-	}
-	n, known := fixedValueSize[typ]
-	if !known || len(b) < n {
-		return nil, nil, false
-	}
-	return b[:n], b[n:], true
-}
-
-// cutPrefixed splits a field with a big-endian length prefix of width bytes
-// (1 or 2) off b.
-func cutPrefixed(b []byte, width int) (field, rest []byte, ok bool) {
-	if len(b) < width {
-		return nil, nil, false
-	}
-	n := int(b[0])
-	if width == 2 {
-		n = int(binary.BigEndian.Uint16(b))
-	}
-	b = b[width:]
-	if len(b) < n {
-		return nil, nil, false
-	}
-	return b[:n], b[n:], true
+	return out
 }
 
 // AppendMessage appends the encoding of a message with string headers, in
@@ -262,28 +224,24 @@ func cutPrefixed(b []byte, width int) (field, rest []byte, ok bool) {
 // mock upstreams. A message that cannot be encoded returns dst unchanged
 // and an error.
 func AppendMessage(dst []byte, headers []Header, payload []byte) ([]byte, error) {
+	msg := eventstream.Message{Payload: payload}
 	headersLen := 0
 	for _, h := range headers {
-		if len(h.Name) == 0 || len(h.Name) > 255 || len(h.Value) > 0x7fff {
+		// The library's encoder accepts an empty name and bounds neither the
+		// header block nor the message.
+		if len(h.Name) == 0 || len(h.Name) > maxHeaderNameSize || len(h.Value) > maxHeaderValueSize {
 			return dst, fmt.Errorf("awseventstream: header %q cannot be encoded", h.Name)
 		}
 		headersLen += 1 + len(h.Name) + 1 + 2 + len(h.Value)
+		msg.Headers = append(msg.Headers, eventstream.Header{Name: h.Name, Value: eventstream.StringValue(h.Value)})
 	}
 	total := minMessageSize + headersLen + len(payload)
 	if headersLen > maxHeadersSize || total > MaxMessageSize {
 		return dst, fmt.Errorf("awseventstream: message of %d bytes is too large", total)
 	}
-	start := len(dst)
-	dst = binary.BigEndian.AppendUint32(dst, uint32(total))
-	dst = binary.BigEndian.AppendUint32(dst, uint32(headersLen))
-	dst = binary.BigEndian.AppendUint32(dst, crc32.ChecksumIEEE(dst[start:]))
-	for _, h := range headers {
-		dst = append(dst, byte(len(h.Name)))
-		dst = append(dst, h.Name...)
-		dst = append(dst, typeString)
-		dst = binary.BigEndian.AppendUint16(dst, uint16(len(h.Value)))
-		dst = append(dst, h.Value...)
+	out := bytes.NewBuffer(dst)
+	if err := eventstream.NewEncoder().Encode(out, msg); err != nil {
+		return dst, fmt.Errorf("awseventstream: %w", err)
 	}
-	dst = append(dst, payload...)
-	return binary.BigEndian.AppendUint32(dst, crc32.ChecksumIEEE(dst[start:])), nil
+	return out.Bytes(), nil
 }
