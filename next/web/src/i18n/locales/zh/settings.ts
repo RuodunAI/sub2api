@@ -116,11 +116,12 @@ export default {
       queue_sticky_wait_seconds: '等绑定账号的最长时间，超时后按粘性规则换号或返回 429。0 表示不排队。',
       queue_fallback_max_waiting: '所有候选账号都满时，每个账号最多几个请求排队。0 表示不排队，直接返回 429。',
       queue_fallback_wait_seconds: '所有候选账号都满时的最长等待，超时返回 429。0 表示不排队。',
-      platform_call_timeout_ms: '插件对上游失败做错误分类的单次调用超时。插件转发请求时自身的处理不限时间。',
+      platform_call_timeout_ms:
+        '两种单次调用的超时：插件对上游失败做错误分类；网关为请求读取“客户端中途断开时”的计费策略，超时读不到按预扣计费。插件转发请求时自身的处理不限时间。',
       default_hook_timeout_ms: 'manifest 未设置超时的钩子使用此值。',
       platform_hotpath_timeout_ms: '每个请求在调度前不属于钩子的平台调用超时：解析模型、为预扣估算用量。',
       max_request_body_mb:
-        '每个网关请求的请求体大小上限（MB），超出返回 413；WebSocket 的单条消息也按它限制。这是唯一的请求大小上限，端点、分组和插件都不能另设；核心与插件之间的内部上限由它推出。',
+        '每个网关请求的请求体大小上限（MB），超出返回 413；WebSocket 的单条消息也按它限制。这是唯一的请求大小上限，端点、分组和插件都不能另设。',
       media_download_max_mb: '请求转换到 Gemini 时下载 http(s) 图片等媒体，单个文件的大小上限（MB）。',
       claude_max_tokens:
         '开启后，发往 Anthropic 账号的请求没带 max_tokens 时按下表补上，带了不改；账号自己的参数覆盖在其后执行，可再修改。关闭时只有转换到 Anthropic 的请求按协议要求补 {fallback}。'
