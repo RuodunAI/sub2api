@@ -57,7 +57,7 @@
 | 失败 | HTTP 状态码 + `{"error": {"code": "...", "message": "...", "details": {...}}}` |
 | 字段校验失败 | `invalid_argument`，`details.fields = [{"field","code","message"}]` |
 
-错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、安装包已不在任何节点上，§5.7）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
+错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、没有在线节点持有它的安装包，§5.7、§114）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
 
 ### 3.2 数据格式
 
@@ -238,7 +238,7 @@
 | GET `/plugins/:key` | `plugin:read` | 详情：manifest 摘要、授权、节点状态、钩子统计、任务、事件游标、资源 |
 | POST `/plugins/upload`（multipart `file`） | `plugin:install` | → 安装审查信息 `review`（见下） |
 | POST `/plugins/install-from-market` `{source_id, key, version}` | `plugin:install` | → `review` |
-| GET `/plugins/:key/versions/:version/review` | `plugin:read` | 重新获取待确认版本的 `review`；版本不存在 404 `not_found`；版本记录在、但没有节点还持有它的安装包（例如升级失败后包被清理）410 `package_gone`（此前 500 `internal`），重新上传或从市场安装该版本即可（2026-11-14 0.1.286 候选）。之前读过、在进程内缓存了解包结果的版本也一样：每次先确认包存储里还有这个包（`blobs.Store.Has`：本地目录看文件，托管部署向外壳要第 1 个字节），没有就丢掉该版本的缓存、按未缓存重新取包（市场版本可再从市场下载），取不到即 410，不必等核心重启（此前一直返回缓存的 200，2026-11-14 0.1.287 候选） |
+| GET `/plugins/:key/versions/:version/review` | `plugin:read` | 重新获取待确认版本的 `review`；版本不存在 404 `not_found`；版本记录在、但没有在线节点持有它的安装包（持有它的节点都离线，或升级失败后包被清理）410 `package_gone`（此前 500 `internal`），让持有它的节点恢复在线、重新上传或从市场安装该版本即可（2026-11-14 0.1.286 候选；“在线”见 §114）。之前读过、在进程内缓存了解包结果的版本也一样：每次先确认包存储里还有这个包（`blobs.Store.Has`：本地目录看文件，托管部署向外壳要第 1 个字节），没有就丢掉该版本的缓存、按未缓存重新取包（市场版本可再从市场下载），取不到即 410，不必等核心重启（此前一直返回缓存的 200，2026-11-14 0.1.287 候选） |
 | POST `/plugins/:key/versions/:version/consent` `{grants:[{permission, scope?}], denied:[permission], new_permission_roles?:{<本地 key>:{<角色 key>: true \| [范围]}}}`（新权限的角色覆盖，0.1.290起取代旧的数组写法（现在 400 `invalid_argument`）与 `role_keys_for_new_permissions`（不再读取）：`true` 为全部行，`false`/`[]` 为不授予；范围接受清单写法 `*`、`own`、枚举 key，也接受规范后缀 `value/<k>`、`<资源>/<id>`；出现的本地 key 对同意者能指定的角色整体替换默认值（未列出的这些角色不授予，`{}` 一个也不授予），不能指定的角色上的默认值照常挂起；没出现的 key 按 manifest `defaults` 与 `inheritFrom`；出现的 key 对能指定的角色同样替换继承（0.1.290二审 C2，此前继承一律照常）；只对本次新建的权限生效。未声明的本地 key 400 `new_permission_roles.<本地 key>` `unknown`，权限不接受的范围 400 `new_permission_roles.<本地 key>.<角色>` `invalid`；§4“插件权限”） | `plugin:install` + 按风险 `plugin:grant:high`/`plugin:grant:critical`（升级时沿用的已授予宿主权限不要）；升级时 `new_role_grants` 里需要同意的授予（`needs_consent`），另需与 `role-grants/confirm` 相同的资格（`role:define` + `CanGrantToRoles` 覆盖这些授予的每个角色，2026-11-13 权限加固期 4 收尾） | 确认授权。版本的安装包已不在（判断与 review 相同）时 410 `package_gone`，不批准一个取不到的包，且先于版本状态检查（已批准、已拒绝的版本包不在时也是 410 而不是 409，2026-11-14 0.1.287 候选；此前同意只读数据库里的 manifest，包不在也能批准） |
 | POST `/plugins/:key/versions/:version/reject` | `plugin:install` | |
 | POST `/plugins/:key/versions/:version/role-grants/confirm`、`/role-grants/reject` | `plugin:install`，另需与同意页显式指定角色相同的资格（`role:define` + `CanGrantToRoles`）；confirm 每次二次验证 `plugin.grant`（与同意页相同，期 4 整合审查），reject 不需要 | 确认（写入）或全部拒绝内置插件自动升级暂缓的角色授予 → `{grants:[RoleGrant], confirmed}`；该版本没有待确认项 404；拒绝的每个 (permission, role) 也清除此前其他版本暂缓的同一授予（2026-11-13 权限加固期 4 P4C、P4CFIX） |
@@ -2527,7 +2527,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **插件互斥。** 核心计划与插件安装/批准/启用/升级/停用/卸载通过 Redis 锁 `system:cluster-change` 串行提交（25 秒提交上下文），running/paused 计划存在时插件变更被拒绝；紧急撤权例外。大包解包与哈希在取锁前完成。rollout 进入终态后，每个可能仍有旧实例的 boot 在 `plugin_rollout_cleanup`（迁移 0021）记录清理屏障 `cleanup_pending → cleaned`，`plugin_rollout_nodes` 保留各节点 active/failed 结果；未清理完成会阻止新核心计划；运行中的核心在本机旧实例排空后自行确认，已退出核心的 boot 只有网关确认进程组退出后才标为 `cleaned`，存活过期不算证据。
 
-**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes` / 核心 `SUB2API_PLUGIN_MAX_PACKAGE_BYTES`，默认 64 MiB；解包另限 256 MiB、2000 个文件，打包工具同样执行。三者统一定义在 `runtime-contract`（`PluginPackageMaxBytes` 等），0.1.290 起按当时最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）约 4 倍取整，此前为 1 GiB / 2 GiB；包下载、经外壳的传输与外壳从其他节点拉包的超时都是 10 分钟（`PluginPackageTransferTimeout`））；上传在主节点确认保存后才写入版本行。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
+**插件包分发（2026-10-02 补充）。** 插件包字节不再存 PG：迁移 0022 删除 `plugin_versions.package`，新增 `package_url`。市场版本由每个节点按 `package_url` 自行下载；上传和首装的包由主节点网关保存，从节点经节点网络拉取（2026-11-18 起改为每个节点保存自己存过、用过的包，缺包时向任一在线持有者取，不再依赖主节点，见 §114）。核心通过 `blobs.Source` 取包（市场优先，失败或摘要不符时回退到存储），存储在网关托管下是本机管理 socket 上的 `/system/plugin-blobs/<sha256>`，没有网关时是本机目录（只支持单节点）。节点间新增两个范围：`plugin-upload`（`PUT /internal/plugin-blobs/`，从节点→主节点，2026-11-18 删除，§114）与 `plugin-artifact`（`GET /internal/plugin-blobs/`，摘要须被某个版本引用）。所有写入校验 sha256 与大小上限（网关 `plugin_max_bytes` / 核心 `SUB2API_PLUGIN_MAX_PACKAGE_BYTES`，默认 64 MiB；解包另限 256 MiB、2000 个文件，打包工具同样执行。三者统一定义在 `runtime-contract`（`PluginPackageMaxBytes` 等），0.1.290 起按当时最大的内置插件包（moderation，压缩约 16 MiB、解包约 45 MiB）约 4 倍取整，此前为 1 GiB / 2 GiB；包下载、经外壳的传输与外壳从其他节点拉包的超时都是 10 分钟（`PluginPackageTransferTimeout`））；上传在包存好之后才写入版本行（2026-11-18 起只存在接到上传的节点上，§114）。细节见 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md)。
 
 **CPU 保护（2026-10-02 补充）。** 管理员在系统设置的“CPU 保护”页开关并设定阈值（`GET/PUT /api/v1/system/offload`，`settings:read` / `settings:manage`，经核心转给本机网关；未托管节点返回 503 `updater_unavailable`）。设置存于 `updater.clusters.offload_enabled/offload_cpu_percent`，默认关闭、阈值 80，取值 50–95。每个网关每秒采样 CPU，取本节点 cgroup（相对其可用 CPU）与整机两者较高者，按最近 10 秒平均；实时心跳保存到 Redis，（最新规则见 CONTRACTS §39；未测得为未知）。本地服务的节点平均值达到阈值后，把新的公网请求轮流交给其他节点：目标须启用、本地服务就绪、同一核心版本、心跳 20 秒内、自身未在转移且 CPU 低于阈值减 10；没有目标就留在本节点。低于阈值减 10 才停止。网关先在 PG 写入 `offloading=true` 再开始转移，先停止转移再清除标记；接收端只接受带标记的来源的 `forward`，因此转移可以从主节点到从节点。转移不续期 10 秒后自动失效。转移的请求走现有 `/internal/forward`，接收端只交给本地核心，不再转发；进行中的请求不迁移，业务请求不重放，目标路由变化时该请求得到 503。细节见 [规约 §5.1](MULTINODE-SYNC-PROTOCOL.md)。
 
@@ -2547,7 +2547,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **流程。** 管理员发起启用或升级后：
 1. 协调节点（核心）在插件迁移锁内执行目标版本的 `migrations/*.sql`。每个文件在独立事务中执行，并记录在 `plugin_migrations`，已记录且内容未变的文件不再执行。
-2. 每个节点各自同步插件包（上传和首装的包从主节点取，市场包从市场下载）、校验，在旧版本继续服务的同时启动新版本待命。
+2. 每个节点各自同步插件包（上传和首装的包向持有它的任一在线节点取，§114；市场包从市场下载）、校验，在旧版本继续服务的同时启动新版本待命。
 3. 声明了 `migration.data.v1` 的插件，由协调节点调用本机新版本的 `MigrateData`。每次发布只调用一次，完成后记为 `plugin_migrations` 中的 `data:rollout-<id>:<from>-><to>`，协调节点被接管时不再重复调用。协调节点自己的新版本启动失败时，把协调权交给已就绪的节点。
 4. 至少一个节点的新版本就绪，并且其余存活节点都已就绪或失败，或者准备期（默认 120 秒）已满，就提交新版本。只有没有任何节点能就绪（全部失败，或准备期满仍无就绪），或迁移失败时，发布才失败，所有节点继续使用旧版本。
 5. 提交后每个节点自行切换：新版本就绪即切换并排空旧版本；未就绪（仍在启动或失败）则继续用已在运行的旧版本服务，按 `LoadRetry`（默认 30 秒）重试，成功后自行切换，不等待其他节点，也不需要再发起发布。节点上报 `fallback` 字段，说明它仍在用哪个版本。重启后没有旧版本可用的节点，在新版本就绪前该插件在本节点不可用。
@@ -7508,7 +7508,7 @@ type GatewayManifest struct {
 - 信任：发布不签名，网关信任配置的更新源：`github` 经 HTTPS 访问 `api.github.com` 上的该仓库，`url` 是配置的 HTTPS 目录（§102.3 的连接规则不变）。离线导入（`init/import -manifest`）信任 `release_origin`。没有信任公钥，配置不再有 `trusted_keys`（写了也不读）。
 - 摘要：发布摘要 = 清单原始字节的 sha256。网关只登记、保存（PG `updater.releases.manifest`、节点 `<root>/manifests/<digest>`）并使用这份原文，每次用前核对摘要。清单校验通过之前不下载任何摘要包或归档；之后每个安装物都按清单声明的大小与 sha256 校验，网关二进制再核对 `binary_digest`，核心包逐文件核对摘要、大小与权限。
 - 防护范围：防的是下载途中或镜像、缓存、磁盘上损坏、截断或被替换的内容，以及登记后被改动的清单和安装物。不防仓库、GitHub 账号、流水线或配置的 `url` 来源本身被攻破：来源发布什么，网关就认什么。所以更新源只填受信任的仓库或地址；改来源要 `settings:manage` 与二次验证（§102.6），改来源本身不升级任何节点，每次升级都要管理员一键更新或建计划。
-- 内置插件仍签名：内置插件包导入集群插件库后，各节点（包括回滚到的旧核心）按 sha256 从主节点取包，加载时重新验签（§14.3 `VerifyInstalled`），`official` 信任级别、发布者归属与保留键也都来自签名；核心摘要只覆盖安装包本身，不覆盖这些之后的加载。不签内置插件就要给插件信任模型另加一种持久化的信任来源，并且 0.1.291 及更早的核心不认无签名包，回滚后这些插件会失效。所以核心发布流水线保留插件密钥（§102.1），重签内置插件并写 `builtin/trust.pub`。
+- 内置插件仍签名：内置插件包导入集群插件库后，各节点（包括回滚到的旧核心）按 sha256 向持有它的节点取包（§114），加载时重新验签（§14.3 `VerifyInstalled`），`official` 信任级别、发布者归属与保留键也都来自签名；核心摘要只覆盖安装包本身，不覆盖这些之后的加载。不签内置插件就要给插件信任模型另加一种持久化的信任来源，并且 0.1.291 及更早的核心不认无签名包，回滚后这些插件会失效。所以核心发布流水线保留插件密钥（§102.1），重签内置插件并写 `builtin/trust.pub`。
 - 来源密钥只写不读、AES-GCM 加密存储，只发往 `api.github.com` 或配置的源站，从不随跨源跳转发出（§102.3、§102.4）。
 - 插件签名私钥只在 GitHub 环境 `release` 的 Secrets 里（§102.1），不进仓库、节点和日志。
 - `sub2api-release mirror --github owner/repo | --url <目录> [--token-env VAR] (--tags … | --latest N) --out DIR`：用网关同一套来源实现，把若干稳定版原样（清单字节不变，摘要也不变）下载成 `<line>/<version>/<资产>` 加 `releases.json`；再次运行合并索引、跳过已完整的资产。这是运维工具，允许内网来源。其他子命令：`pack`（`--platform os/arch=DIR` 可重复，多平台一个清单）、`pack-gateway`、`pubkey`（打印插件私钥对应的 base64 公钥，核心流水线用它写 `builtin/trust.pub`）。
@@ -8362,3 +8362,14 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、交给 `ClassifyError` 的错误体前 64 KiB。另有一处会切断上游流的：`sdk/awseventstream` 的单条消息上限 4 MiB（`MaxChunkMessageSize`，Bedrock 的响应流格式），这次没有改。
 
 **同批的修正**（钱与正确性，各节已写）：等待形式的发布只看转发本身是否完成（§112.7）；观察没能落库时写零费用记录并立即释放预扣，`CloseExecutionUnreported` 对已有记录的请求幂等（§112.7）；任务提交报失败之前先确认提交是否已落库（§112.7）；原账号永远问不了的任务消耗失败次数而不是延后到期限（§112.9）；`usage.source: plugin` 的端点上插件选了核心读数而读数完全为空时按未上报处理（§112.2、§112.7）；WebSocket 第一轮可重试的 `return_error` 和 HTTP 一样转给客户端（此前变成 503 `no_available_account`）；网关和用量的取回是同一份实现（§112.6）；执行按存活恢复（§112.7）。
+
+## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
+
+取代 §34“插件包分发”里“上传和首装的包由主节点网关保存”与 `plugin-upload` 范围，以及 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md) 的旧写法。
+
+- **存放**：每个节点的网关在 `<root>/plugin-blobs/<前两位>/<sha256>` 保存本节点存过、用过的包；PG 仍只记 `package_sha256` 与市场的 `package_url`。核心经本机管理 socket `PUT/GET /system/plugin-blobs/<sha256>`（`blobs.Shell`）存取，没有网关时用本机目录（只支持单节点）。
+- **写**：`install.Upload`（上传、市场安装、内置插件导入）把包写进接到请求的那个节点的网关就返回，再写版本行；不推给其他节点。存不进去时 503 `unavailable`，信息 `store the plugin package on this node`。节点间 `PUT /internal/plugin-blobs/`、范围 `plugin-upload`、每个来源节点 2 个并发上传的限制一并删除；`plugin_store_max_bytes` 总量上限保留，对本机上传和从别的节点取来的包都生效。
+- **读**：本机没有的包，网关逐个问其他启用且心跳新鲜（`Node.Fresh`，与路由、准入同一个存活判断）的节点 `GET /internal/plugin-blobs/<sha256>`（范围 `plugin-artifact`，任意两个启用节点之间，摘要须被某个版本引用），第一个给出摘要与大小都正确的字节的节点胜出，取到的包留在本机。对方 404 表示它没有；摘要不符、出错就记下并问下一个。不登记谁持有哪个包，主节点没有特殊地位，`set-primary` 与插件包无关。
+- **取不到**：所有在线节点都答没有时，管理 socket 返回 404，正文是 `no online node holds the plugin package (asked: <节点>; offline, not asked: <节点>)`；核心得到 `blobs.ErrNotFound`（带这段正文），审查、同意接口 410 `package_gone`（信息改为“没有在线节点持有这个安装包：让持有它的节点恢复在线，或重新上传”），节点加载失败的错误文本（节点页、`plugin_rollout_nodes.error`）带上这段原因。有节点出错、且没人给出正确的包时返回 502，逐个列出错误，核心按一般错误处理，不当作包不存在。
+- **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都离线时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
+- **升级**：没有迁移。旧主节点上已有的包原地保留，和其他节点一样被问到。网关滚动更新期间，旧网关节点上的上传仍要推给主节点；主节点换成新网关后不再接受（403），在旧网关节点上上传会失败；旧网关的主节点自己缺包时不问别人，在新网关节点上传的包它取不到。换完网关再上传、启用即可。

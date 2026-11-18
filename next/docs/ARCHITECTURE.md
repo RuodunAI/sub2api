@@ -702,7 +702,8 @@ sequenceDiagram
   N2->>PG: 执行插件迁移（advisory lock）
   N2->>R: 广播 plugin:events
   par 所有节点各自准备（包括 node-2）
-    N1->>PG: 读取插件包（本地没有时）
+    N1->>PG: 读取版本的 package_sha256 / package_url
+    N1->>N1: 本机网关没有该包时，从市场下载或向其他在线节点取（任一持有者即可）
     N1->>N1: 校验签名和 sha256 → 启动器启动新版本（受限）→ 健康检查
     N1->>R: 上报 ready
   and
@@ -1313,7 +1314,7 @@ cgroup 可以给每个插件单独设置硬性上限，超出直接被限制，�
 ```
 
 - 校验：上传时重新计算 digest，用发布者公钥验证签名；插件包内任何文件被改动都会导致校验失败
-- 节点从 PG 取回插件包后，启动前再校验一次
+- 插件包不存 PG（PG 只记 `package_sha256`）：节点从市场或从持有它的其他在线节点取回插件包（MULTINODE-SYNC-PROTOCOL §6.2）后，按 sha256 校验，启动前再验一次签名
 
 ### 11.2 信任体系
 
@@ -1516,6 +1517,7 @@ sequenceDiagram
   end
   API->>API: 校验签名、发布者信任级别、吊销状态
   API->>API: 校验 manifest：hostCompat、一致性检查、权限冲突、资源申请上限
+  API->>API: 包存入本节点网关的插件包存储（其他节点用到时向它取）
   API->>PG: 写入 plugin_versions，plugins.status=awaiting_consent
   API-->>A: 确认页（权限分级、账号类型、钩子、任务、订阅、界面、资源、数据库）
   A->>API: 确认授权（勾选高风险项）
