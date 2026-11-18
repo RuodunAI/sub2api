@@ -92,7 +92,7 @@ func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 
 	require.EqualValues(t, 0, res.Get("data.max_request_body_safe_mb").Int(), "no cap on plugin memory")
 
-	// A row holding nothing else (what migration 0106 creates) reads the
+	// A row holding nothing else (what migration 0107 creates) reads the
 	// other fields as their defaults.
 	_, err := e.db.SQL.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('gateway', '{"max_request_body_mb": 300}')`)
 	require.NoError(t, err)

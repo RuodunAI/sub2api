@@ -22,7 +22,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/awseventstream"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 )
 
 // ---------------------------------------------------------------- fakes
@@ -498,7 +497,7 @@ func TestEventStreamIsRelayedAsSSEAndBilled(t *testing.T) {
 // A client speaking another protocol gets the converted stream: conversion
 // sees ordinary Anthropic SSE.
 func TestEventStreamOnAConvertedRoute(t *testing.T) {
-	x := newExtEnv(t, func(e *env) { e.conv = convert.Default() })
+	x := newExtEnv(t, openAIClients)
 	path, input := openAIConversionInput("openai.chat", true)
 	r := x.do(path, input, map[string]string{"authorization": "Bearer " + testKey})
 	require.Equal(t, 200, r.status, string(r.body))

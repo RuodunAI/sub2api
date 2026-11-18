@@ -250,7 +250,7 @@
 | GET `/plugins/:key/grants`，DELETE `/plugins/:key/grants/:permission` | `plugin:read` / `plugin:manage` | |
 | PUT `/plugins/:key/grants/:permission` `{scope?}` | `plugin:manage`，每次二次验证 `plugin.grant`（与同意相同）；重新授予另须 `plugin:install`（与同意相同，二审 security #2；否则 403 `details.permission`），并按同意的检查（`checkGrantRights`：按风险 `plugin:grant:high`/`plugin:grant:critical`，db.schema 可能还要 `plugin:grant:db_schema_unconfined`） | 设置激活版本对一个宿主权限的授予，返回该授予（`Grant`）（0.1.290，A7）。`scope` 省略为清单申请的范围（请求体总是读取，不看 `Content-Length`，分块传输的收窄请求不会被当成省略）；比申请的宽 400 `invalid_argument` `details.fields[{field:"scope", code:"scope_too_wide"}]`；当前版本清单不申请该权限 404；插件还在 `awaiting_consent` 409。当前已授予且新范围在现有范围之内是**收窄**：只要 `plugin:manage`，各版本待生效授予里更宽的同一权限一并收窄，审计 `plugin.grant.narrow`；其余（已撤销、被拒、放宽）是**重新授予**：各版本待生效授予里该权限的撤销在其版本申请的范围不窄于它时解除，审计 `plugin.grant.regrant`。审计 `detail {permission, version, scope, previous?: {status, scope}}`。控制台只对数组型范围提供收窄 |
 | GET `/plugins/:key/scope-options?permission=<本地 key>&q=&ids=&limit=` | `role:read` 或 `plugin:read`（A1） | 带范围的插件权限的候选（角色编辑器、矩阵选范围用，0.1.290）：形状同 GET `/lookup`（§96，参数与上限相同）但 id 为字符串，`{items:[{id, name, hint?, status?}], more}`；只列调用者自己在该权限上能达到的（全部、列出的值；own 时由插件按自己的 `created_by` 过滤）。枚举（`scope.values`）由核心按当前版本清单回答，插件没运行也可用，`name` 为当前语言的 label；资源（`scope.options`）转发给运行中插件的 options 路由（§21.0），插件没运行、路由不存在、回非 200 或格式不对 503 `plugin_unavailable`，核心再过滤一遍（id 须是合法范围值且在调用者范围内、`name` 非空，文本截断）。权限未声明 404，不带范围 400 |
-| PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | `memory_mb` 是插件内存的唯一上限来源之一（另一个是节点封顶），0 为不设；默认不限，见 §110.5 |
+| PUT `/plugins/:key/resources` `{memory_mb, cpu, max_threads, max_open_files}` | `plugin:manage` | `memory_mb` 是插件内存的唯一上限来源之一（另一个是节点封顶），0 为不设；默认不限，见 §111.5 |
 | PUT `/plugins/:key/egress-policy` `{policy}` | `plugin:manage` | |
 | GET `/plugins/:key/egress`（`?from=&to=`） | `plugin:egress:read` | 按域名汇总 + 明细 |
 | GET `/plugins/:key/jobs`，POST `/plugins/:key/jobs/:job_id/run` | `plugin:read` / `task:run`🔐 | 手动运行与 POST `/system/tasks/:name/run` 同口径（2026-11-12 权限加固 W4-A4，此前为 `plugin:manage`）；审计动作仍是 `plugin.job.run` |
@@ -343,7 +343,7 @@
 |---|---|---|
 | `billing` | `{missing_price_policy, min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除，已存的值忽略） | `reject`、`"0"`、`"10"`、`continue` |
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
-| `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`；后来加的字段见 §78、§84.1、§88、§110（`max_request_body_mb`，默认 128） | 3、2000、300 |
+| `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`；后来加的字段见 §78、§84.1、§88、§111（`max_request_body_mb`，默认 128） | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
 
 上表只列最初的字段，后加的字段见各节。插件经 `HostService.GetSettings` 只读地读取的分组与完整字段见 §107.2。
@@ -423,7 +423,7 @@ Anthropic 的 `cache_creation_input_tokens` 是总量（含 1 小时缓存）。
 - 所有尝试都失败时：最后一次是上游错误则返回该错误（按 ClassifyError 的状态码与类型）；是插件或账号问题返回 503 `no_available_account`；有账号但并发槽位全满返回 429
 - **`anthropic` 格式下没有可用账号按官方"过载"返回**（2026-10-10）：HTTP 529，`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded","code":"no_available_account"}}`，与官方 API 的过载一致，Claude Code 与 SDK 会退避重试（`gateway/errors.go` `clientError`）。使用记录的 `status_code` 为 529，`error_type` 仍为 `no_account`，`error_message` 保留核心原因（如 `no available account`）。其他格式（`openai`、`gemini`、`plain`）仍是 503；上游原样透传的错误体不受影响。
 - **模型名不合法时返回 400**（2026-11-02）：从请求取到的模型名含空白或控制字符、超过 256 字节或不是合法 UTF-8 时，在选号前返回 400 `invalid_request_error`，使用记录 `error_type` 为 `invalid_request`。此前只靠插件的可用性检查拦截，返回 503（§44.7）。
-- **分组里根本没有能服务该端点的账号时返回 404**（2026-10-11，用户决定）：没有任何已启用的账号类型声明该端点，或调用方分组里没有这些类型的账号（不论账号状态，已删除的除外；`AccountDirectory.GroupHasType`），返回 404 `not_found_error`「no account in this group serves this endpoint」，`code` 为 `not_found`。客户端不会重试 404。使用记录的 `error_type` 为 `no_account`，`status_code` 为 404。分组里有这种账号、只是全部被禁用、冷却或占满时，仍按上一条返回 529/503。例：一个只有不声明 `count_tokens` 的账号类型的分组，调计数接口会得到 404（CCGateway 2026-11-04 起声明）。
+- **分组里根本没有能服务该端点的账号时返回 404**（2026-10-11，用户决定）：没有任何已启用的账号类型声明该端点，或调用方分组里没有这些类型的账号（不论账号状态，已删除的除外；`AccountDirectory.GroupHasType`），返回 404 `not_found_error`「no account in this group serves this endpoint」，`code` 为 `not_found`。客户端不会重试 404。使用记录的 `error_type` 为 `no_account`，`status_code` 为 404。分组里有这种账号、只是全部被禁用、冷却或占满时，仍按上一条返回 529/503。例：一个只有不声明 `count_tokens` 的账号类型的分组，调计数接口会得到 404（CCGateway 2026-11-04 起声明）。§110 起另有一种 404：分组里有这类账号，但提供给本次请求的候选账号全部被账号的协议绑定过滤（没有账号在这个端点上提供这个模型，含跨平台转换没有开启），消息为 `no account in this group serves this model on this endpoint`，条件见 §110.5。
 
 **token 计数不占资源**（2026-11-04，用户决定）：`*.count_tokens` 不占 API Key 和账号的并发，不计 Key 和账号的 RPM、TPM，不扣额度也不查余额。计数失败可以换账号，但不改变账号状态：不冷却、不自动禁用、不观测额度，失败策略规则也不参与。仍要通过鉴权，已冷却或禁用的账号不会被选中，使用记录照常写一条不计费的记录。粘性会话：计数与粘性无关，按权重随机选账号，不读也不写绑定（2026-11-04，用户决定）。映射：参数错误 400 `invalid_request_error`（上游 4xx 原样透传，不冷却账号）、鉴权 401/403、真正的上游故障 5xx
 - `usage_logs.error_type` 取值另含 `model_not_allowed`、`price_not_configured`、`rate_limited`、`invalid_request`、`plugin_unavailable`、`blocked_by_hook`
@@ -453,7 +453,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 
 **数据库（0005）**：`accounts.platform` 删除（账号类型 = `plugin_key` + `type`）；`model_prices.platform` 删除，唯一约束改为：管理员价格每个模型一条，插件默认价格每个 `(plugin_key, 模型)` 一条（0007 起列名为 `model`）；`usage_logs` 新增 `account_type`、`upstream_protocol`。
 
-**调度**：端点协议 P → 候选账号类型 = 原生支持 P 的，加上支持 Q 且核心有 `P→Q` 转换器的（转换目标、等级与同一优先级内的先后见 §88）→ 分组内这些类型的账号。请求由账号类型所属插件构造；需转换时核心转换请求体和响应（含 SSE）。用量规则：账号类型为该协议声明的 `usage`，否则取声明该协议端点的平台的 `usage`；`requestFields`、`passHeaders` 同理。错误格式始终是端点的 `errorFormat`。
+**调度**：端点协议 P → 候选账号类型 = 原生支持 P 的，加上支持 Q 且核心有 `P→Q` 转换器的（转换目标、等级与同一优先级内的先后见 §88）→ 分组内这些类型的账号（§110 起：其中的跨平台转换默认关闭，账号要在 `model_protocols` 里为模型开启才参与）。请求由账号类型所属插件构造；需转换时核心转换请求体和响应（含 SSE）。用量规则：账号类型为该协议声明的 `usage`，否则取声明该协议端点的平台的 `usage`；`requestFields`、`passHeaders` 同理。错误格式始终是端点的 `errorFormat`。
 
 **计费**：`Resolve(model)` 只按模型匹配：管理员价格优先，其次插件默认价格；按完整模型 ID 精确匹配（0007 起不支持通配符，见 §16），同一模型有多个插件默认价格时取最早安装的插件（插件默认价格已由 §17 取消，每个模型只有一条全局价）。§97 起，全局价之上还有两层按分组设置的标价，`Resolve(ctx, PriceQuery{Model, GroupID, SegmentID})` 按“专属价（用户组 × 分组 × 模型）→ 分组内定价（分组 × 模型）→ 全局价”取先命中的一条；模型没有启用的全局价时不能计费，规则不生效。费用 = 表达式结果 × 倍率。这里的倍率是 Key 所有者在该分组的**实际倍率**（专属倍率 → 分组默认倍率 × 用户组的全场折扣 → 分组默认倍率，先命中者生效，鉴权时算出），不再一律是分组倍率；命中按倍数的规则时另乘规则倍数，两个数只在 `PriceRule.Multiplier` 相乘（§97.3）。
 
@@ -492,7 +492,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 
 **core**：`EndpointBinding{Plugin, Platform, Endpoint}`；`PlatformBinding{Plugin, Builtin, Platform}`（去掉 `Client`）；`Generation.Platforms()`、`Platform(id)`、`PlatformForProtocol(protocol)`、`AccountTypesForPlatform(platformID)`（取代 `PlatformsForProtocol`、`AccountTypesForProtocol`）；`AccountTypeBinding.Supports(platformID)`（取代 `Protocol()`）。`Generation.Endpoints()` 包含内置平台和已启用插件平台的端点。
 
-**调度**：端点 → 平台 P、协议 X；候选账号类型 = `AccountTypesForPlatform(P)`（原生），加上支持其他平台 Q、且 Q 的某个协议 Y 满足 `CanConvert(X, Y)` 的类型（2026-11-08 起，支持 P 但端点子集不含该端点的类型可转换到 P 上子集内的协议，见 §83.3）；候选账号 = API Key 所属分组中这些类型的账号。requestFields / passHeaders：账号类型对该平台的覆盖 → 平台默认。用量规则：账号类型 `usage[协议]` → 端点 `usage` → 平台 `usage`（需转换时按上游协议 Y 所属平台和端点取）。内置平台的默认粘性规则写入 `sticky_rules`，`source='builtin'`、`plugin_key` 为空，除名称外都可修改，改过的定义升级不覆盖、可恢复默认（§15.5）。
+**调度**：端点 → 平台 P、协议 X；候选账号类型 = `AccountTypesForPlatform(P)`（原生），加上支持其他平台 Q、且 Q 的某个协议 Y 满足 `CanConvert(X, Y)` 的类型（2026-11-08 起，支持 P 但端点子集不含该端点的类型可转换到 P 上子集内的协议，见 §83.3）；候选账号 = API Key 所属分组中这些类型的账号（§110 起还要过账号的协议绑定：转换到其他平台 Q 的账号只对开启了该协议的模型参与，本平台协议可以在账号上关闭）。requestFields / passHeaders：账号类型对该平台的覆盖 → 平台默认。用量规则：账号类型 `usage[协议]` → 端点 `usage` → 平台 `usage`（需转换时按上游协议 Y 所属平台和端点取）。内置平台的默认粘性规则写入 `sticky_rules`，`source='builtin'`、`plugin_key` 为空，除名称外都可修改，改过的定义升级不覆盖、可恢复默认（§15.5）。
 
 **REST 变更**
 
@@ -542,7 +542,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 ### 14.4 接口收尾
 
 - **客户端请求 ID**：网关把客户端 `X-Request-Id`（截断到 128 字符）写入 `UsageRecord.ClientRequestID`；`usage_logs.client_request_id`；管理员使用记录列表/详情返回 `client_request_id`，支持 `?client_request_id=` 精确筛选（只比客户端请求 ID）。`?request_id=` 同时匹配我方请求 ID 和客户端请求 ID（`u.request_id = v OR u.client_request_id = v`，核心 0.1.277 起，§95.4；此前只比我方请求 ID）：使用记录列表、汇总、导出都经 `usage/api.go` 的 `parseFilter`，`/usage` 与 `/me/usage` 相同，自助视图仍限定本人。`client_request_id` 不唯一，一个值可以匹配多行；该列没有索引，所以 `request_id` 只在带 `from` 时才加上客户端请求 ID 那一半（按时间范围扫描，与其它无索引筛选相同）；不带 `from` 时只比我方请求 ID（走唯一索引）。控制台的时间范围总会带 `from`。
-- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。`max_request_body_mb`（请求体上限，1–1024，默认 128）与“平台调用超时”的含义见 §110。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
+- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。`max_request_body_mb`（请求体上限，1–1024，默认 128）与“平台调用超时”的含义见 §111。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
 - 前端此前提出的缺失接口说明见 §15（按后端现状整理）。
 
 ## 15. 接口细节补充（按 2026-09-25 代码现状）
@@ -927,7 +927,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 
 ### 18.2 调度顺序（ARCHITECTURE 6.2 更新）
 
-候选账号 = 分组内 `active` 且 `schedulable` 的账号 ∩ 账号类型能服务该端点（原生或经转换） ∩ `models` 为空或含请求模型 ∩ 未冷却 ∩ 未达 rpm/tpm/spm 上限（含模型列表，§68.2、§71.3）。粘性绑定的账号仍然优先；其余按 `priority` 降序（数值大的先用），同优先级按 `weight` 加权随机；逐个获取并发槽位，失败切换时跳过已试过的账号。
+候选账号 = 分组内 `active` 且 `schedulable` 的账号 ∩ 账号类型能服务该端点（原生或经转换） ∩ 账号在该入站协议下提供请求的模型（§110 起：跨平台转换默认关闭，按模型开启；本平台协议可按账号、按模型关闭） ∩ `models` 为空或含请求模型 ∩ 未冷却 ∩ 未达 rpm/tpm/spm 上限（含模型列表，§68.2、§71.3）。粘性绑定的账号仍然优先；其余按 `priority` 降序（数值大的先用），同优先级按 `weight` 加权随机；逐个获取并发槽位，失败切换时跳过已试过的账号。
 
 排序用的 `priority` / `weight` **可能已被插件为本次请求改写**（§24：粘性绑定不服务的挑选（未命中，或绑定账号失败后的切换）会先过一遍 `SchedulerService.RankAccounts`，`weight=0` 的账号本次不用）。候选集合的筛选、并发槽位、限流、冷却仍完全由核心把关，插件改不到。
 
@@ -1489,7 +1489,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 
 账号页的扩展点（含今后再开的）按三条判据验收（2026-11-08 决定）：① **核心不被插件阻断**——核心的保存、删除、测试、列表加载等流程里没有同步等待插件返回值的点，插件请求失败只影响插件自己那块界面；② **插件不写核心数据**——插件只读写自己的接口，需要核心数据时由核心以 props 传入，或按公开接口只读；③ **插件输入进核心必有上限与钳制**——插件交给核心的数据（`setIds` 的 id 列表、声明里的文案与路由）由核心校验、截断或拒绝。
 
-控制台账号列表用它做批量操作：勾选在翻页后保留，改筛选条件清空；「选择全部 N 项」按当前筛选以每页 200 条拉取全部账号。批量编辑（优先级、权重、并发、TPM、RPM、分组〔替换／追加／移除〕、代理、允许自动禁用，只改勾选的字段）、启用／停用、重置状态、删除、测试都对每个账号调用现有单条接口（`PATCH /accounts/:id`、`POST /accounts/:id/reset-status`、`DELETE /accounts/:id`、`POST /accounts/:id/test`），最多 4 个（测试 3 个）同时进行，可中途停止；权限、插件生命周期钩子、审计与单条操作完全相同，没有新增服务端接口。每项操作只作用于所选账号中适用的那部分（按钮显示数量）；与账号现值相同的字段不发送，没有变化的账号不发请求；类型固定了「自动禁用」的账号跳过该项；删除时「保留资源」只对声明了保留天数的类型生效。
+控制台账号列表用它做批量操作：勾选在翻页后保留，改筛选条件清空；「选择全部 N 项」按当前筛选以每页 200 条拉取全部账号。批量编辑（优先级、权重、并发、TPM、RPM、分组〔替换／追加／移除〕、代理、允许自动禁用，只改勾选的字段；§110 起加“本平台协议”“模型的协议限定”两项，都是替换，只在所选账号属于同一账号类型时可用）、启用／停用、重置状态、删除、测试都对每个账号调用现有单条接口（`PATCH /accounts/:id`、`POST /accounts/:id/reset-status`、`DELETE /accounts/:id`、`POST /accounts/:id/test`），最多 4 个（测试 3 个）同时进行，可中途停止；权限、插件生命周期钩子、审计与单条操作完全相同，没有新增服务端接口。每项操作只作用于所选账号中适用的那部分（按钮显示数量）；与账号现值相同的字段不发送，没有变化的账号不发请求；类型固定了「自动禁用」的账号跳过该项；删除时「保留资源」只对声明了保留天数的类型生效。
 
 **UI 3.16 插件权限范围（0.1.290）。** 新导出 `useScrollClip(scroller, content): Ref<boolean>`：`scroller` 是 `overflow-x: auto` 的容器、`content` 是其中的表格（都是 `Ref<HTMLElement | undefined>`），内容被裁到右侧之外时为 `true`（随尺寸变化与滚动更新，挂载前为 `false`），用来在可横向滚动的表格右缘画渐隐或“还有列”的提示；核心的 `STable` 与权限矩阵用的就是它（`web/packages/ui/README.md`“插件权限的范围（UI SDK 3.16）”，`ui-contract.spec.ts` 锁定导出）。用到它的插件声明 `hostUICompat: "^3.16"`。
 
@@ -1633,7 +1633,7 @@ message RankedAccount {
 ```
 
 - **何时写**：① 请求最终以 `error_type = no_account` 结束（`outcome` 为 `none`，429 时为 `busy`）——必写；② 请求选到了账号，但途中有账号因**当时的状态**被跳过（限流、并发满、排队、尝试失败后切换、失败策略收窄重试范围），`outcome = picked`。只因配置或请求形态不合格（模型列表不含该模型等）而选到了别的账号的请求**不写**：那是每个请求都一样的事实，写了只是噪声。
-- `candidates`：分组内可调度、且账号类型能服务该端点的账号数（`AccountDirectory.Candidates` 的结果）；`eligible`：其中能服务**本请求**的账号数（过了模型列表、引用模型、用量计量、资源绑定和模型可用性预检）。
+- `candidates`：分组内可调度、且账号类型能服务该端点的账号数（`AccountDirectory.Candidates` 的结果）；`eligible`：其中能服务**本请求**的账号数（过了协议绑定〔§110 起〕、模型列表、引用模型、用量计量、资源绑定和模型可用性预检）。
 - `skipped`：每个账号每种原因一条，最多 40 条，超出的计入 `omitted`；`counts` 按原因计数，最多 16 个键。`detail` 是原因的对象（模型名、用量种类、账号状态），最长 100 字节；`until` 是定时停用或冷却的结束时间（unix 秒）。
 - **原因码**：
 
@@ -1641,6 +1641,9 @@ message RankedAccount {
 |---|---|---|
 | `not_schedulable` | 账号在分组里，但当前不参与调度。只在 `no_account` 时读取（`AccountDirectory.Unschedulable`，失败路径上的一次查库） | `disabled` / `unschedulable` / `auto_disabled` / `cooldown`；请求期间退出调度而尚未读到状态时为 `left` |
 | `no_route` | 账号类型没有该端点的路由 | `插件/类型` |
+| `protocol_closed` | §110 起：入站协议是账号的本平台协议，但账号的 `protocols` 没有开放它 | 入站协议 |
+| `conversion_not_enabled` | §110 起：请求要经跨平台转换才能到这个账号，账号没有为该模型开启 | 模型名 |
+| `model_protocol_closed` | §110 起：模型在账号的 `model_protocols` 里有条目，条目不含入站协议 | 模型名 |
 | `model_not_served` | 账号模型列表不含请求的模型 | 模型名 |
 | `referenced_model_not_served` | 请求引用了第二个模型（`fallbacks`、advisor 工具，§13 `modelReferences`），账号模型列表不含它 | 模型名 |
 | `usage_unsupported` | 账号类型无法计量请求要求的用量 | `additional` / `attempts` / 引用的用量种类 |
@@ -1655,6 +1658,7 @@ message RankedAccount {
 | `attempt_failed` | 在该账号上的一次尝试失败，请求切到下一个账号 | `状态码 error_type` |
 
 - **节点日志**：`no_account` 的请求另打一行 WARN `gateway: no account for the request`，带 `request_id`、`group`、`model`、`protocol`、`outcome`、`candidates`、`eligible` 和 `skipped`（`账号:原因[:对象]`，空格分隔）。
+- **§110 起**：候选账号全部因 `protocol_closed`、`conversion_not_enabled`、`model_protocol_closed` 被过滤、且组内冷却中或限时停用的账号也都是因这三个原因不能服务时，请求以 404 结束（§110.5），调度记录照常写（`error_type = no_account`，`outcome = none`）。这三个原因的判断排在 `model_not_served` 之前。
 - **接口**：随 `anomalies` 在管理端 `GET /usage/:id` 返回（§15.2；`/me/usage` 不返回 `anomalies`，用户看不到这条）。有 `account:read` 时每条 `skipped` 补上 `account_name`；没有时去掉 `account_id`，原因保留；解析不了的记录对无权限者整个丢弃。它是调度轨迹，不是记录的异常：统计里的"异常行"不计它。
 - **不记的**：请求体不落库，所以 `detail` 只有模型名这类已经过校验的字段；HTTP 与 WebSocket 首轮（`connect`）走同一套记录。由插件执行并在尝试内提交用量的请求不带这条。
 
@@ -4172,7 +4176,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 1. **取结尾的消息不改核心**：gjson 自带的多路径写法 `messages|@reverse|[0,1,…,15]` 就能取到倒数 16 条（倒序；数组不足 16 条时缺的位置自动跳过，2026-10-30 用 gjson v1.19.0 实测）。插件把结果倒回正序，再算出结尾连续的 user 消息，不必把整段历史传过去。下文用 `TAIL16` 代指 `|@reverse|[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]`。**0.6.0 起作废**：插件要审整个请求，`needs` 改为各顶层字段整体（`messages|@this` 等，72.3），核心把整段历史传给插件。
 2. **宿主调用 `SecretSeal` / `SecretOpen`**（HostService，宿主权限 `secrets`，风险 low，即无需管理员额外同意，插件升级时自动授予）：用核心的主密钥做 AES-256-GCM（`secret.Cipher`），AAD = `plugin-secret:{插件 key}:{context}`，context 由插件指定（≤128 字节，例如 `channel:3`），明文 ≤64 KiB。插件 A 封存的数据插件 B 解不开，同一插件换了 context 也解不开；解不开时一律返回 `InvalidArgument "ciphertext does not open"`，不区分原因。SDK：`Host.SealSecret` / `Host.OpenSecret`；`pluginsdktest.FakeHost` 用公开的测试密钥实现同样的绑定。审核渠道的 API Key 和代理地址密文存在插件表里（new-api 存明文；我们的账号凭证都加密，这里不降级）。旧核心没有这两个调用，返回 Unimplemented。
-3. **钩子请求的消息大小**：插件侧 gRPC 默认只收 4 MiB，带图片的请求会超过。SDK 加选项 `pluginsdk.WithMaxRecvMsgSize(n)`（编译进插件），moderation 设 64 MiB（`main.go` 的 `maxRecvMsgSize`），覆盖正常的请求（上游自己也限制请求大小，原先固定的请求体上限是 32 MiB）。核心作为客户端的发送上限是 gRPC 默认值（不限），钩子字段只是请求体的片段。请求体上限（网关设置 `max_request_body_mb`，§110）调大后，个别请求可能超过插件的接收上限：这样的调用以 `RESOURCE_EXHAUSTED` 失败，核心按该钩子的 failure 处理这一次，并和其他失败一样计入熔断。2026-10-31 到 2026-11-18 之间核心把这种失败排除在熔断之外（`hooks.go` 的 `requestTooLarge`），该特例已删除（§110.2）：转发 V2 里 SDK 把所有插件的接收上限固定为传输层最大值、删除 `WithMaxRecvMsgSize`，这种失败不再发生。
+3. **钩子请求的消息大小**：插件侧 gRPC 默认只收 4 MiB，带图片的请求会超过。SDK 加选项 `pluginsdk.WithMaxRecvMsgSize(n)`（编译进插件），moderation 设 64 MiB（`main.go` 的 `maxRecvMsgSize`），覆盖正常的请求（上游自己也限制请求大小，原先固定的请求体上限是 32 MiB）。核心作为客户端的发送上限是 gRPC 默认值（不限），钩子字段只是请求体的片段。请求体上限（网关设置 `max_request_body_mb`，§111）调大后，个别请求可能超过插件的接收上限：这样的调用以 `RESOURCE_EXHAUSTED` 失败，核心按该钩子的 failure 处理这一次，并和其他失败一样计入熔断。2026-10-31 到 2026-11-18 之间核心把这种失败排除在熔断之外（`hooks.go` 的 `requestTooLarge`），该特例已删除（§111.2）：转发 V2 里 SDK 把所有插件的接收上限固定为传输层最大值、删除 `WithMaxRecvMsgSize`，这种失败不再发生。
    - **内存与 failure=open 的后果（0.6.0，2026-10-31 团队审核 P1-7）**：插件内存上限 1024 MB（0.8.0 起，此前 512 MB；下面的预算是按 512 MB 定的，没有改），一个钩子请求在插件里会被解码、规范化、分块，峰值占用是请求字段的数倍；几个大请求同时到达就可能让插件被内存上限杀掉。0.6.0 的做法：钩子入口按请求字段的字节数做并发准入（`max_inflight_mb`，默认 128 MiB；一个请求单独到达时不论多大都接收），超出时立即回答——本应先审的请求返回 503 `moderation_busy`，其余放行（note `moderation: busy`），0.8.0 的规则见 72.5 第 4 步的"准入"；被封禁用户在准入之前就拒绝。图片最多审 `input_max_images` 张（默认 8），单张 base64 超过约 22 MiB（解码后约 16 MiB）的不审；OpenAI 审核器只为选中的那一张图拼 data URL；排队的 post 任务只保留分块后的文字和图片，不持有整个钩子请求。
    - **failure=open 的后果，如实写明**：两个钩子都是 `failure: open`。插件进程不可用、超时、连续失败 10 次触发熔断（30 秒）时，核心不经插件直接放行，**本应先审的用户（72.5 第 6 步）和被封禁用户在这段时间里也会被放行**。核心在插件不可用时无法询问插件，封禁名单也只在插件里，所以插件侧做不到"不可用时拒绝被封禁用户"。改成 `failure: closed` 会在插件故障时拒绝所有用户的请求，代价过大，不改。需要硬性封禁时，应在核心停用该用户或其 API Key（核心鉴权阶段就拒绝，不依赖插件）。
 4. `moderation` 的 `hostCompat` 改为 `>=` 本次核心版本（因为要用 `secrets`）；**发布顺序是先核心、后插件**。
@@ -5120,9 +5124,9 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 - **值的来源**：按 账号 → 分组 → 全局设置 → 进程环境变量 的顺序取，0 或没设置就看下一层。
 - **已声明的变量**（定义见 `core/environment.go`）：
   - `relay_timeout_seconds`、`response_header_timeout_seconds`、`streaming_idle_timeout_seconds`
-  - 请求体上限不是环境变量：它是网关设置 `max_request_body_mb`（§110），没有分组层、账号层和进程环境变量。同名的环境变量 2026-11-18 删除。
+  - 请求体上限不是环境变量：它是网关设置 `max_request_body_mb`（§111），没有分组层、账号层和进程环境变量。同名的环境变量 2026-11-18 删除。
   - `task_timeout_minutes`、`task_poll_max_failures`：只有分组层和账号层，全局层就是对账设置（§8 的 `max_reconcile_age_sec`、`max_poll_failures`），没有进程环境变量。只作用于异步任务；普通预扣条目只按对账设置。`task_timeout_minutes` 在任务登记时折算成截止时间，之后修改不影响已登记的任务；例外是管理员手动重新对账（`POST /usage/:id/reconcile`）：截止时间从重试时刻起、按任务所在分组和账号**当前**的变量重新计算。`task_poll_max_failures` 每次查询失败时重新解析。
-  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限（§110）。
+  - `relay_timeout_seconds`、`response_header_timeout_seconds` 只作用于 HTTP 转发（含插件 `Execute` 经宿主转发的请求）；WebSocket 会话是长连接，不用这两个（握手固定 30 s），每一轮等待上游消息的空闲上限用 `streaming_idle_timeout_seconds`（`websocket.go` 的 `upstreamIdle`，超时以 504 结束该轮并关闭连接），请求体上限作为单条消息的上限（§111）。
   - `relay_timeout_seconds` 从发出上游请求时起算，与 `response_header_timeout_seconds` 同时开始；之前的本地准备（资源与额度请求头、辅助历史包装、可用性检查、任务登记）不计入。`streaming_idle_timeout_seconds` 只在核心等待上游数据（读响应体）时计时，客户端读得慢不算上游空闲。
   - 账号层取本次尝试重新加载的账号，不取挑选候选时的快照。
   - `relay_timeout_seconds` 或 `streaming_idle_timeout_seconds` 中途切断流式响应时，使用记录的错误信息写明是哪一个（`upstream stream interrupted: upstream request exceeded relay_timeout_seconds` / `… upstream stream exceeded streaming_idle_timeout_seconds`），不再只是 `context canceled`。
@@ -5929,6 +5933,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 原生优先：子集含该端点时照旧原生转发，不转换。
 - 这类类型只在 P 内转换，不会因此转到它的其他平台（原来不服务，现在也不经其他平台服务）；不支持 P 的类型的跨平台转换不变。
 - WebSocket 与异步任务端点仍不转换（§35、§28）。
+- §110 起：同平台转换不算“协议转换”，默认仍对所有账号、所有模型生效，可以在账号的 `protocols` 里去掉对应的本平台协议关闭（§110.2）；不支持 P 的类型的跨平台转换默认关闭，要在账号上按模型开启。
 - 目前唯一的同平台转换器是 `openai.chat → openai.responses`：codex 账号类型（子集 `responses`、`responses_websocket`）因此服务 `/v1/chat/completions`；非流式 chat 经 83.1 走流式上游再合成 JSON、转回 chat JSON。
 - 使用记录 `protocol = openai.chat`、`upstream_protocol = openai.responses`，用量规则取上游 `openai.responses` 端点的（`usage.json` / `usage.sse` 的 `response.completed` 规则，`inclusive`），计费照常。插件 `BuildUpstreamRequest` 的 `meta.protocol` 为 `openai.responses`、`meta.client_protocol` 为 `openai.chat`。
 
@@ -5953,7 +5958,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - **失败**：后续轮调用失败（gRPC 错误、空响应）或任一轮的 patch 无法应用（`value_json` 非法、路径非法等，全部或全不）时，本轮回一条错误事件（503 `plugin_unavailable`，记录 `error_type = plugin_unavailable`），释放该轮的并发位与预占，连接保持，下一轮照常；首轮在建连成功之后才失败的，上游连接同样保留给下一轮。patch 改动了模型引用（端点与路由的 `modelReferences`，与 HTTP `validatePatches` 相同的检查）时本轮以模型引用错误失败。调用受 `platform_call_timeout_ms` 约束。
 - **兼容**：旧插件（WebSocket 协议返回空 `patches`，如 openai 插件 0.3.x）发往上游的消息与以前逐字节相同，只是每个后续轮多一次 `BuildUpstreamRequest` 调用（它与握手时的调用相同，确定性地成功）。没有 manifest 字段或能力变化，随核心 0.1.257 发布。
 
-**`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（网关设置 `max_request_body_mb`，§110，默认 128 MB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
+**`requestFields` 的取值与大小**：HTTP（`dispatch.go` `attempt`）与 WebSocket（首轮 `dial`、后续轮 `turnPatches`）都经同一个函数 `requestFieldValues`（`gateway/util.go`）读取，取值方式相同。核心对单个字段和字段总和都不设上限，只受请求体/消息大小上限（网关设置 `max_request_body_mb`，§111，默认 128 MB，WebSocket 为单条消息）和插件 gRPC 接收上限（默认 4 MiB，`pluginsdk.WithMaxRecvMsgSize` 可调；超过时该次调用失败，HTTP 换号、WebSocket 首轮换号、后续轮报该轮错误）约束。插件应使用只返回所需信息的 gjson 查询，不要索取大字段。
 
 **codex 插件 0.1.1**：
 
@@ -6032,7 +6037,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 模板变量：`{api_key}`（只能在 auth 值和路径查询串）、`{base_url}`（auth 和请求头）、`{model}`（映射和账号参数覆盖之后的上游模型；插件 patch 改了模型时只重算 URL，请求头和查询值不变）、`{credentials.<k>}`（k 须在 `credentials.fields`，不能是 api_key/base_url）、`{client_header.<名>}`（须在该类型的 passHeaders 里、不在 §81 禁止列表，只能用在普通请求头）。
 - `auth.name` 只能是凭证头（authorization、x-api-key、x-goog-api-key、api-key、cookie）或普通头名，不能是逐跳、分帧、客户端地址或网关控制头。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
-- 可服务的端点 = routes 列出的协议（须与 `platforms[].endpoints` 一致）加核心能转换到它们的协议；调度不变。
+- 可服务的端点 = routes 列出的协议（须与 `platforms[].endpoints` 一致）加核心能转换到它们的协议；调度不变。（§110 起：这是账号类型“能服务”的端点；跨平台转换到的端点要在账号上按模型开启才提供。）
 - 校验：`sdk/manifest/check/upstream.go`（打包、安装、核心加载共用）；引擎 `sdk/upstream`（`Resolve` → `Profile.Validate/Build/URL/Test/Models/Classify/AuthHeader/PrepareBody`）。
 
 ### 86.2 核心
@@ -6111,6 +6116,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ## 88. 协议转换矩阵（2026-11-09，用户要求，设计见“sup2api 核心通用协议层设计”的“协议转换矩阵”一节，规格与转换器开发说明见 [CONVERT-MATRIX.md](CONVERT-MATRIX.md)；迁移 0093；核心 0.1.262，与第 1、2 期同版发布）
 
 起因：四种文本协议（`openai.chat`、`openai.responses`、`anthropic.messages`、`gemini.generate`/`gemini.stream_generate`）两两互转，原生与转换由管理员用优先级控制，转换的损失由账号或分组的策略决定能否接受。§83.2 的 chat → Responses 转换器保留（丢弃改为带类别的损失）；原来 chat/Responses → Anthropic 的严格转换改为宽松（D1）。
+
+**§110 起（2026-11-17）**：跨平台转换默认关闭。本节的转换器、路由、等级排序、丢失策略、使用记录都不变，但“所有账号类型都参与转换、没有退出机制”（CONVERT-MATRIX D3）不再成立：账号只对在 `model_protocols` 里开了该入站协议的模型接受跨平台转换，没开的账号在转换之前就被过滤（跳过原因 `conversion_not_enabled`），候选账号全部如此时返回 404（§110.5），不是 88.4 的 400 `unsupported_conversion`。同平台转换（§83.3）默认照常，可在账号上关闭。下文凡说“其他账号类型经转换服务”“经转换的候选”，都以账号开启为前提。
 
 ### 88.1 转换器与注册表（`server/internal/gateway/convert`）
 
@@ -6448,7 +6455,7 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 
 - 点应用项时先 `reveal` 取明文，再把页面地址设为该链接；1.5 秒后页面仍有焦点就提示“没有打开？请先安装客户端”。明文只进这个自定义协议链接，不进任何 HTTP 请求的查询串。
 - 只保存了哈希的旧 Key：应用项全部禁用，菜单头部说明原因，仍可打开手动配置说明（说明里用前缀占位，含占位密钥的代码块不可复制，没有导入按钮）。
-- 应用清单和客户端页签不含经协议转换可达的平台（92.5）：协议能转换不等于模型可用，给 Claude 分组的 Key 生成 Codex 配置会因模型名对不上而失败。接入地址的展示才包含转换端点。
+- 应用清单和客户端页签不含经协议转换可达的平台（92.5）：协议能转换不等于模型可用，给 Claude 分组的 Key 生成 Codex 配置会因模型名对不上而失败。接入地址的展示才包含转换端点（§110 起接入地址也不再包含，见 92.5）。
 - 手动配置说明（`KeyUseGuide.vue`）在各客户端页签之后多一个 Magpie 页签，逐项列出 API 密钥、各协议地址、余额查询地址（`/v1/usage`）和余额字段（`remaining`）。字段名照 Magpie 自定义供应商表单的界面文案（`internal/gui/assets/app.js`、`i18n.js`，2026-11-10 核对）：API key / API 密钥、Anthropic URL / Anthropic 地址、OpenAI URL / OpenAI 地址（Chat Completions）、Responses URL / Responses 地址、Gemini URL / Gemini 地址、Balance URL / 余额查询地址、Balance field / 余额字段；表单的“Base URL”一栏填所选协议的地址，其余协议地址在“更多端点”里，余额两项在“高级”里。说明末尾的“可调用的接口”包含经协议转换可达的端点（92.5）。
 
 ### 92.4 平台品牌色（控制台 `web/src/components/platform/`）
@@ -6461,9 +6468,10 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 
 ### 92.5 分组页
 
-- 列表、编辑窗口、详情都不再显示“可服务的平台”：核心对四种文本协议互转（§88），一个分组能接哪些协议不取决于它的账号属于哪个平台。`Group.platforms` 字段照常返回，控制台只用它给分组徽章着色和算接入地址。“有账号但不支持任何已启用平台”的警告随之取消。
+- 列表、编辑窗口、详情都不再显示“可服务的平台”：核心对四种文本协议互转（§88），一个分组能接哪些协议不取决于它的账号属于哪个平台。`Group.platforms` 字段照常返回，控制台只用它给分组徽章着色和算接入地址。“有账号但不支持任何已启用平台”的警告随之取消。§110 起：一个分组能接哪些协议取决于成员账号开放的协议（跨平台转换要在账号上按模型开启），分组详情的“端点”一栏按 `GET /groups/:id` 的 `served_protocols` 显示（§110.9）；列表和编辑窗口仍不显示。
 - 没有账号的分组在“账号数”前显示警告图标（`ProblemIcon`，`data-testid="group-no-accounts"`），列表、手机卡片和详情都有。
 - 接入地址（`views/platforms/PlatformEndpointsPreview.vue`：分组详情、密钥页的手动配置说明、密钥编辑窗口里的分组说明）一律包含经协议转换可达的端点（`views/platforms/convertedEndpoints.ts`）：分组自己的平台里只要有一个文本协议端点（`anthropic.messages`、`openai.chat`、`openai.responses`、`gemini.generate`、`gemini.stream_generate`），就额外列出其它平台上这些协议以及两个 count_tokens 的端点，标“经协议转换”；embeddings、视频等不可转换的端点只列在自己平台下。这是按平台级端点做的近似，不看各账号类型声明的端点子集；这张协议清单与 `server/internal/convert` 的内置转换对一致，新增转换对时两处一起改。密钥编辑窗口里的分组说明（`KeyGroupDetails.vue`）是个小框：每个平台最多列 3 个端点，转换端点收在“经协议转换还可调用：<平台名>”的展开项里（`fold`），默认收起；另两处直接列出。
+- **§110 起（取代上一条的转换部分）**：`convertedEndpoints.ts` 已删除，控制台不再推算“经协议转换可达”的端点。分组详情改用 `served_protocols`（`views/groups/GroupServedProtocols.vue`：按平台列出成员账号实际开放的端点，每个端点带提供它的账号数；没有账号开放任何协议时给警告）；密钥页的手动配置说明和密钥编辑窗口里的分组说明仍用 `PlatformEndpointsPreview`，只按分组的 `platforms` 列端点（`fold` 已去掉），不反映账号关掉的协议和开启的转换（§110.10 第 5 条）。
 
 ### 92.6 兼容与混跑
 
@@ -7802,7 +7810,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 分组 | 类型 | 字段 |
 | --- | --- | --- |
 | `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
-| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`max_request_body_mb`（§110）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
+| `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`max_request_body_mb`（§111）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
 | `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
 | `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
 | `auto_disable` | `AutoDisableSettings` | `enabled`、`status_codes`、`keywords`（§42.2）；发布了故障策略时由策略的账号规则决定，开关看 `failure_policy.account_enabled` |
@@ -7962,30 +7970,251 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；密钥文件由插件用 `encoding/json` 解析一次，检查和使用读同一份值；服务账号的断言用 `github.com/golang-jwt/jwt/v5` 以 RS256 签名（没有用 Google 的库：它没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated；见设计文档 16.10）。`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）：按解析后生效的值判断（键名不分大小写、重复的键取最后一个），这个值只检查，请求和断言的 `aud` 用常量。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstreamRequest` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
 - **bedrock**：插件不联网。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型的构造结果带 `signing{scheme: aws-sigv4, service: bedrock}`。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`，请求体补丁只动顶层字段：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta`（清单声明的请求字段）里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstreamRequest` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用），补丁用 `pluginsdk.SetPatch` / `DeletePatch` 构造。
 
-## 110. 请求体上限是网关设置，“平台调用超时”的新含义（2026-11-18，用户要求“系统设置-网关设置里面配置就行了，其他地方不要限制”；迁移 0106；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md) 第 8 节）
+## 110. 账号协议绑定、模型的协议限定、显式协议转换（2026-11-17，用户要求“在账号上可以进行协议绑定；某个模型只在某个协议上提供服务；协议转换默认不支持，需要显式开启”；迁移 0106；设计与实现差异见 [DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)，升级手册见 `next/deploy/rollback/protocol-binding-release.md`）
 
-项目在开发期，不做兼容：旧的做法在同一次改动里删除。全局层存着的旧值由迁移搬到新设置里，分组层的值丢弃（§110.3）。
+本节优先于前文中与之冲突的描述。§12、§13、§18.2、§83.3、§88 里“账号类型能服务（原生或经转换）就参与调度”的规则，自本节起还要过账号的协议绑定；CONVERT-MATRIX 的 D3（“所有账号类型自然接受转换，没有任何退出机制”）和风险第 11 条由本节修订。
 
-### 110.1 设置
+默认行为：**客户用什么协议访问什么模型，就按这个协议转发**。账号只服务它的类型声明过的平台的协议；跨平台协议转换默认关闭，要在账号上为具体的模型开启。**这是行为变化**：本节之前，跨平台转换对所有账号、所有模型一律开启（110.10 第 1 条）。
+
+### 110.1 定义
+
+| 名称 | 定义 | 例子 |
+|---|---|---|
+| 本平台协议 | 入站端点所属的平台是账号类型声明过的平台（`AccountTypeBinding.Supports`）。包括原生和同平台适配（§83.3）两种路由 | OpenAI 账号的 chat、responses；codex 账号的 chat（适配到 responses） |
+| 跨平台协议转换（下称“转换”） | 入站端点所属的平台，账号类型没有声明 | OpenAI 账号服务 `anthropic.messages`、`gemini.generate`；Claude 账号服务 `openai.chat`；Bedrock 账号服务 `openai.chat` |
+
+- 只看账号类型的声明，与具体请求无关。网关在路由上记 `typeRoute.cross`（`gateway/routing.go`），只有一种算法：`crossPlatform`，即类型不声明入站端点的平台（`!AccountTypeBinding.Supports(入站平台)`），普通路由（`addRoute`）和 count_tokens 的本地估算路由（§88.2，`addLocalCountRoute`）都用它；账号模块校验和 `served_protocols` 用的 `typeProtocols` 也是同一个 `Supports`。选路逻辑本身没有改。
+- 同时声明多个平台的类型（如 volcengine 声明 openai、anthropic、volcengine），这些平台的协议都是本平台协议；Gemini 请求打到它才算转换。
+- 同平台适配不算转换，默认照常工作，可以用 `protocols` 关掉。
+
+### 110.2 字段与默认值
+
+迁移 `0106_account_protocols.sql`，两列都不回填：
+
+```sql
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS protocols       text[];                      -- NULL = 本平台协议全部开放
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEFAULT '[]';
+```
+
+**`protocols`**：账号对哪些本平台协议提供服务。
+
+- `null`（默认）：账号类型能服务的本平台协议全部开放，包括类型以后新增的。
+- 数组：只开放列出的协议；类型以后新增的端点不会自动开放。可以是空数组，表示本平台协议全部关闭，此时 `model_protocols` 里必须至少有一个转换协议（110.6）；要停用账号用“参与调度”开关。
+- 它只管本平台协议，不影响转换。
+
+**`model_protocols`**：`[{models: [模型…], protocols: [协议…]}]`，默认 `[]`。选中模型，指定它在哪些入站协议下提供；转换也在这里开。
+
+```json
+[
+  {"models": ["claude-sonnet-4-5"],      "protocols": ["anthropic.messages"]},
+  {"models": ["gpt-5.6"],                "protocols": ["openai.chat", "openai.responses", "anthropic.messages"]},
+  {"models": ["text-embedding-3-large"], "protocols": ["openai.embeddings"]},
+  {"models": ["*"],                      "protocols": ["openai.chat", "openai.responses"]}
+]
+```
+
+（一个 OpenAI 账号：`claude-sonnet-4-5` 是经模型映射指到 GPT 的名字，只在 Messages 协议下经转换提供；`gpt-5.6` 原生加 Messages 转换；向量模型只走 embeddings；其余模型只走 chat 和 responses。）
+
+- **被列到的模型**只在这一条列出的协议下提供。协议可以是本平台的，也可以是跨平台的；列了跨平台协议就是为这个模型开了转换。
+- **没被列到的模型**在账号开放的全部本平台协议下提供，**不做转换**。
+- `"*"`（`core.OtherModels`）是唯一的通配，表示“其余模型”，只能单独成一条、最多一条。
+- 模型按**映射前的客户端模型**精确匹配，协议按**入站协议**匹配（与 `models`、`model_limits`、计费一致）。一个模型只能出现在一条里。模型不要求在账号的 `models` 白名单里；白名单照旧生效（不在白名单的模型，列进来也不提供）。
+- 条目里的本平台协议实际生效的是它与 `protocols` 的交集；列了账号没开放的本平台协议不报错（控制台给警告）。条目里的跨平台协议不受 `protocols` 影响。
+- 丢失策略不变（§88.4）：模型开了转换之后，照旧按账号 > 分组 > allow 判定有损转换能否接受。
+
+**count_tokens**：`anthropic.count_tokens`、`gemini.count_tokens` 不出现在这两个字段里，跟随同族的生成协议（`core.CountTokensFamily`：`anthropic.messages`、`gemini.generate`）。模型在生成协议下提供，计数就提供（原生转发或本地估算，§88.2）；生成协议关了，计数也关。
+
+### 110.3 判定规则与顺序
+
+两个字段在建分组调度快照和载入单个账号（`AccountDirectory.Load`）时编译成 `core.ProtocolRules`（`core/protocol_rules.go`，`NewProtocolRules(protocols, rules)`），挂在 `core.AccountRef.ProtocolRules` 上；两个字段都是默认值的账号为 nil。判定只有一处定义：
+
+`(*ProtocolRules).Serves(model, protocol string, cross bool) (reason string, ok bool)`
+
+`(*ProtocolRules).ServesOthers(protocol string, cross bool)` 是同一判定对“没有被任何条目点名的模型”的问法（下面第 3 步直接取 `"*"` 条目），给 `served_protocols` 这类不针对具体模型的视图用；`Serves` 在模型没有被点名时就是调用它。
+
+`model` 是映射前的客户端模型，`protocol` 是入站协议，`cross` 是路由的 `cross`（110.1）。按顺序：
+
+1. 没有配置（nil）：`cross` 时不提供（`conversion_not_enabled`），否则提供。
+2. 入站协议是 count_tokens 时，换成同族的生成协议再判断。
+3. 找模型的条目：先按模型名精确找，没有再用 `"*"` 条目。
+4. 模型有条目，而条目不含该协议 → `model_protocol_closed`。
+5. 模型没有条目，且 `cross` → `conversion_not_enabled`。
+6. 不是 `cross`，`protocols` 非 null 且不含该协议 → `protocol_closed`。
+7. 其余情况提供。
+
+所以：有条目的模型，本平台协议要同时过第 4、6 步（条目列了、账号也开放了）；跨平台协议只过第 4 步。
+
+### 110.4 生效位置
+
+- **一个判断**：`gateway/sched_trace.go` 的 `ineligibleReason` 是“账号能否服务这个请求”的唯一判断，HTTP 首次挑选、WebSocket 首轮（`connect`）、故障策略刷新的快照、WebSocket 后续轮次（`candidateEligible`）都走它。原来重复这段判断的 `servesAllModels` 已删除。
+- **顺序**：路由（`no_route`）→ **协议绑定**（`protocolClosedReason`）→ 模型白名单（`model_not_served`）→ 用量计量 → 引用模型。协议绑定对请求的主模型和每个引用模型（`fallbacks`、advisor 工具等，§13 `modelReferences`）各判断一次，第一个不提供的给出原因。它排在模型白名单之前：带白名单的 OpenAI 账号收到 `/v1/messages`，原因是 `conversion_not_enabled`，不是 `model_not_served`。
+- **被过滤的账号**只做了内存比较：不转换请求、不下载媒体、不做模型可用性预检、不参与粘性绑定、不取并发槽、不计尝试次数。调度记录里 `candidates` 计入它，`eligible` 不计入。
+- **粘性会话**：绑定的账号不再提供该协议或模型时，按“绑定账号已不在候选里”处理（§18.1），会话改绑到这次选中的账号。
+- **WebSocket**：首轮与 HTTP 相同；`openai.responses_ws` 是一个可以单独关闭的本平台协议。已建立的连接上，后续轮次换成该账号在这个协议下不提供的模型，返回现有的 400 `the account of this connection does not serve model …; open a new connection for it`，不是 404。
+- **不经调度的端点**：异步任务的查询端点（如 `volcengine.video_query`）不选账号，协议绑定对它不生效；校验和 `served_protocols` 仍把它当普通本平台协议。
+- 优先级、等级排序（§88.3）、丢失策略、故障策略、均衡负载都不变。没有配置这两个字段、请求走本平台协议的账号，行为与本节之前相同。
+
+**调度跳过原因**（§24.6 的表同步增加这三项，`core/ports_billing.go`）：
+
+| `reason` | 常量 | 含义 | `detail` |
+|---|---|---|---|
+| `protocol_closed` | `core.SchedProtocolClosed` | 入站协议是账号的本平台协议，但账号的 `protocols` 没有开放它 | 入站协议。count_tokens 请求填的是计数协议本身，实际被关的是它跟随的生成协议 |
+| `conversion_not_enabled` | `core.SchedConversionNotEnabled` | 请求要经跨平台转换才能到这个账号，而账号没有为该模型开启 | 模型名（主模型或引用模型） |
+| `model_protocol_closed` | `core.SchedModelProtocolClosed` | 模型在 `model_protocols` 里有条目，条目不含入站协议 | 模型名 |
+
+这三项属于“配置不合格”：请求被别的账号服务时不单独写调度记录（§24.6“何时写”）。
+
+### 110.5 全部未开放时的 404
+
+组内提供给本次请求的候选账号（`AccountDirectory.Candidates` 的结果，即可调度、未冷却、类型有路由的账号）**全部**因上面三个原因被过滤，且组内**暂时退出**的账号（见下）也都是因这三个原因不能服务时，请求以 404 结束：
+
+- HTTP 404，`code` 为 `not_found`，消息 `no account in this group serves this model on this endpoint`（`gateway/errors.go` `errProtocolNotServed`）。与 §11 的“分组里没有能服务该端点的账号”同一类错误，客户端不会当成过载重试；`anthropic` 格式也不改写成 529。
+- 使用记录：`status_code` 404，`error_type` 为 `no_account`，`attempts` 为 0，没有 `account_id`、`upstream_protocol`、`conversion`；`anomalies.scheduling` 的 `outcome` 为 `none`，`eligible` 为 0，`skipped` 里是每个候选账号的原因，冷却、停用的账号照 §24.6 记为 `not_schedulable`。
+- 没有请求被转换、构建或发往上游。WebSocket 首轮同样处理，错误以该连接的错误事件返回（`status` 404）。
+
+**暂时退出的账号**（`AccountDirectory.Resting(ctx, groupID, types)`）：分组调度快照里类型有路由、但 `Candidates` 现在不给的账号，即冷却中的和限时自动停用还没到期的。候选全部被协议绑定过滤时，网关对它们跑同一个 `ineligibleReason`（`gateway/sched_trace.go` `protocolNotServed`）：
+
+- 其中有一个不是因这三个原因被过滤（它能服务这个请求，或是因模型白名单、用量等别的原因不能）→ 不返回 404，按暂时缺账号处理：它回来后可能服务这个请求。
+- 它们也都被协议绑定过滤 → 404。所以一个没开转换的账号在冷却，不会把 404 变成可重试的 503/529。
+- 永久停用、关闭调度的账号不在快照里，不算“会回来”，不妨碍 404。
+- 读取失败（读不到冷却状态）→ 不返回 404。
+
+`Resting` 读的是 `Candidates` 用的同一份快照（内存，30 秒，过期时与 `Candidates` 一样读一次库）加一次 Redis 管道查冷却，**不查数据库**，也没有账号数上限；只有候选全部被协议绑定过滤的请求才调用，有账号能服务的请求不调用。调度记录在“无账号”时的那次查库（§24.6 `not_schedulable`，`AccountDirectory.Unschedulable`，最多列 200 个账号）照旧，只用于记录，不参与 404 的判断。
+
+**不返回 404、仍按现有规则（503，`anthropic` 格式 529；全部忙或限流时 429）的其他情况**：
+
+- 候选里有账号是因别的原因没选上（模型白名单、用量、限流、并发满等）。
+- 没有候选账号（全部禁用、冷却等）：与本节之前相同。
+
+### 110.6 校验与错误码
+
+字段错误是 400 `invalid_argument`，`details.fields[{field, code, message}]`。校验对照账号类型能服务的协议（`account/protocols.go` `typeProtocols`：与 `GET /account-types` 的 `endpoints` 同源，另外去掉非原生的 WebSocket 与任务提交端点）。
+
+| 字段路径 | `code` | 条件 |
+|---|---|---|
+| `protocols[i]` | `invalid` | 是 count_tokens 协议（它跟随生成协议，不单独列） |
+| `protocols[i]` | `unsupported` | 该账号类型不能服务这个协议 |
+| `protocols[i]` | `cross_platform` | 是其他平台的协议（转换要在 `model_protocols` 里按模型开） |
+| `protocols` | `no_protocol` | `protocols` 是空数组，且 `model_protocols` 里没有任何跨平台协议（账号没有开放任何协议） |
+| `model_protocols` | `too_many` | 超过 50 条 |
+| `model_protocols[i].models` | `required` | 这一条没有模型 |
+| `model_protocols[i].models` | `invalid` | `"*"` 与其他模型写在同一条 |
+| `model_protocols[i].models` | `too_many` | 超过 500 个模型 |
+| `model_protocols[i].models[j]` | `invalid` | 不是完整的模型 ID（通配只有单独的 `*`） |
+| `model_protocols[i].models[j]` | `duplicate` | 模型已在另一条里（含第二个 `"*"` 条目） |
+| `model_protocols[i].protocols` | `required` | 这一条没有协议 |
+| `model_protocols[i].protocols[j]` | `invalid` | 是 count_tokens 协议 |
+| `model_protocols[i].protocols[j]` | `unsupported` | 该账号类型不能服务这个协议（原生、同平台适配、经转换都不行）。WebSocket 与异步任务提交端点只走原生，所以跨平台或经适配的这类协议也是这个错误 |
+
+- `i`、`j` 是请求里数组的下标。保存前归一化：去掉首尾空白，丢弃空串和同一数组里的重复项。
+- `no_protocol` 在其他字段都没有错误时才判断。PATCH 只带两个字段之一时，另一个取库里的值（在锁定的行上判断）。校验只拦“本平台全关且没有转换”这一种；其他把自己配成不服务任何请求的组合不拦。
+- 没有模型的条目报 `required`，不像 `model_limits` 那样静默丢弃。
+- 账号类型的插件未启用时，PATCH 带这两个字段返回 503 `plugin_unavailable`（不知道该类型能服务哪些协议，与改凭证时相同）；不带时照常保存其他字段。
+- 权限同账号其他字段（`account:create` / `account:update`）。审计的变更字段里记 `protocols`、`model_protocols`。
+
+### 110.7 接口
+
+| 接口 | 字段 |
+|---|---|
+| `GET /accounts`、`GET /accounts/:id` | `protocols`: `string[] \| null`；`model_protocols`: `[{models, protocols}]`，从不为 null |
+| `POST /accounts`、`PATCH /accounts/:id` | 同上两个字段。各自**整体替换**；PATCH 不带时保持原值；`protocols: null` 存为 NULL（全部），`[]` 表示全关 |
+| `GET /accounts/:id`，以及 POST、PATCH 的返回 | 另带只读的 `served_protocols`；列表不带 |
+| `GET /groups/:id` | 另带只读的 `served_protocols`，从不为 null；分组列表和写接口的返回不带 |
+| `GET /account-types` | 不变：`endpoints` 仍列出该类型原生、适配、经转换能服务的全部端点（§88.5），是“能配置什么”，不是“账号开放了什么” |
+
+- **没有批量接口**。控制台的批量编辑对每个账号调 `PATCH /accounts/:id`（§23.3 账号列表的批量操作），只带变化的字段。
+- **没有按协议筛选账号的列表参数**。
+- 变更经现有的 `account:changed` 广播失效各节点的调度快照，保存后立即生效。
+
+**账号的 `served_protocols`**：`[{protocol, via, grade, hops?, models}]`，账号现在实际开放的协议，由两个字段和账号类型算出，与 `Serves` 的判定一致。
+
+- `via`：`native`（类型的端点子集直接说这个协议）、`adapted`（同平台的另一个端点服务它）、`converted`（跨平台转换）。顺序是 native、adapted、converted，各自按类型端点的顺序。
+- `grade`、`hops`：类型端点的等级与经过的协议（同 `GET /account-types` 的 `grade`、`via`）。
+- `models`：`null` 表示“没有被 `model_protocols` 的条目点名的所有模型”在该协议下提供（账号有模型白名单时即白名单内没被点名的那些）；被点名的模型里不在该协议下提供的不在其内，这个结构不表达排除。账号有模型白名单、且白名单里的模型全部被条目点了名时，没有“其余模型”，不用 `null`。否则是在该协议下提供的模型，已按账号的 `models` 白名单过滤、排序。一个模型都不提供的协议不列出：例如白名单是 `["claude-sonnet-4-5"]`、该模型只限定到 `anthropic.messages` 的 OpenAI 账号，只列出 Messages 和它的 count_tokens，不列 OpenAI 的协议。
+- 每个模型的判定都调用编译后的 `ProtocolRules`（被点名的模型用 `Serves`，其余模型用 `ServesOthers`），不另写一遍规则；`account/protocols_test.go` 的 `TestServedProtocolsMatchScheduling` 用随机配置逐模型对拍。
+- count_tokens 协议跟随生成协议列出：`grade` 为 `local`（本地估算）时，类型声明了该平台记 `adapted`，没声明记 `converted`。
+- 账号类型未注册（插件未启用）时为 `[]`。
+
+**分组的 `served_protocols`**：`[{protocol, accounts}]`，组内账号开放的协议的并集，`accounts` 是对至少一个模型开放该协议的账号数，按端点声明的顺序。统计组内未删除的账号，不看状态和是否参与调度；类型未注册的账号不计。分组模块经 `core.GroupProtocols`（账号模块实现）取，不跨模块 import；在 `internal/app/phases.go` 里账号模块建好后赋给 `group.Service.Protocols`。
+
+### 110.8 性能约束
+
+分组快照缓存在每个节点的内存里（30 秒，账号变更经 `account:changed` 立即失效）；每个请求从快照取候选，对每个候选跑 `ineligibleReason`。本节不给这条路径加任何数据库或 Redis 访问：
+
+1. **解析只在建快照时做一次**。`readGroupSnap` 多读两列，`model_protocols` 为 `[]` 时在 SQL 里取成 NULL（`NULLIF(a.model_protocols, '[]'::jsonb)`），不传输、不解析。
+2. **`AccountRef` 只多一个指针**。没有配置的账号为 nil；`ProtocolRules` 建好后不再改，快照内共享，请求按值拷贝 `AccountRef` 时只多 8 字节。
+3. **`Serves` 不分配内存，开销不随规则数增长**：nil 判断 → 一次 map 查找 → 在个位数的协议切片里比较。`core` 的 `TestProtocolRulesServesDoesNotAllocate` 和网关的 `TestIneligibleReasonBindingDoesNotAllocate` 断言为 0 次分配；后者同时断言有规则与无配置时 `ineligibleReason` 的分配数相等。
+4. **跨平台请求比以前便宜**：没开转换的账号在转换请求体、下载媒体之前就被过滤。
+5. **内存上限**：单账号最多 50 条 × 500 个模型；账号在多个分组时每个分组快照各持一份（与 `models`、`model_mapping` 相同）。
+6. 改 `readGroupSnap`、`ineligibleReason`、`Serves` 时重跑基准：`go test -run '^$' -bench ProtocolRulesServes -benchmem ./internal/core/`、`go test -run '^$' -bench IneligibleReason -benchmem ./internal/gateway/`（各 500 个候选一轮）。
+
+实现时的读数（2026-11-17，开发机，只作量级参考）：`Serves` 500 个候选一轮，无配置 3.3–5.4 µs，50 条规则 17–35 µs，都是 0 allocs/op。`ineligibleReason` 500 个候选一轮：被协议绑定过滤的账号 0 allocs/op；能服务的账号无配置与 50 条规则都是 1500 allocs/op（每候选 3 次、约 1 KB，来自原有的用量检查 `routeHasRequiredPrimaryUsageFor`、`declaredAttemptRules`，不是协议判断，本次没有动）。分组快照读取（10 个无配置账号）改前 424 allocs/op、改后 399：为了多读两列不增加分配，`readGroupSnap` 把逐行的扫描临时变量改成整次读取共用一份。这组快照读数来自按旧 `HotGroupSnapshot` 基准临时重写的文件，没有提交（该基准已在 `fcc847b62` 删除，`store/gormtest/BASELINE.md` 现在没有这条路径的基线）。
+
+### 110.9 控制台
+
+可点击的示意图：[mockups/protocol-binding.html](mockups/protocol-binding.html)（实现与它的差异见设计文档“实现记录”）。只改了 `next/web/src`，`@sub2api/ui`、`@sub2api/host` 的公开接口和版本没有变。
+
+- **账号编辑器**：“模型配置”分区改名“协议与模型”，卡片顺序是 本平台协议 → 模型列表 → 模型映射 → 模型的协议限定。
+  - “本平台协议”：全部 / 指定两种模式（全部 = `null`）；指定后逐个勾选，适配的协议标“适配 → 目标”；提示其他平台的协议要在下面按模型开启。
+  - “模型的协议限定”：矩阵、列表、JSON 三种视图。矩阵的行是账号的模型加一行“其余模型”，列是账号开放的本平台协议加该类型经转换能到的协议；账号模型列表为空或窄屏时默认列表视图。没有单独指定的行按 110.3 的判定显示（浅色）：“其余模型”一行有指定时显示那一行的协议，行尾写“跟随其余模型”；否则显示默认（开放的本平台协议、不转换），行尾写“默认”。点任一格，这一行变成“已指定”，从它原来显示的协议开始改；可以多选几行一次指定。保存时勾选相同的模型合并成一条，没有单独指定的行不写。Gemini 的 `generate` 和 `stream_generate` 合成一列，一起勾选，存储仍是两个协议 id。
+  - 列表视图的每张卡在编辑期间保持各自的身份：两张卡的协议改成一样时不合并，只在保存的数据里合成一条；往卡里加减模型不重建卡片。JSON 视图里解析不了的文本保留给用户修改，期间“本平台协议”卡的改动不改写文本。
+  - 提示：`protocols` 里有类型已不服务的协议（“本平台协议”卡里显示成只能移除的警告项，保存会被拒）、条目里有账号没开放的本平台协议（警告，不生效）、类型不能服务的协议（警告，保存会被拒）、给“其余模型”开了转换（警告）、两跳转换（说明）。条目没有协议、账号没有开放任何协议时点保存不发请求，跳到这个分区显示错误。服务端的字段错误按 110.6 的路径定位到卡片。
+  - 导航摘要：`协议 开放数/总数 · 限定 n 个模型 · 转换 n 个`。“高级 › 请求转发”的丢失策略在账号没有任何模型开转换、也没有开放需要适配的协议时置灰，提示“未开启协议转换”。
+  - 账号类型已不存在（插件未启用）的账号不显示这两张卡，保存请求不带这两个字段。
+- **账号列表**：名称下方的平台图标按账号实际开放的协议显示；有模型开了转换的平台图标带“转”角标，本平台协议被限定时标“部分 开放数/总数”，悬停列出协议和模型。**没有“开放协议”筛选**（后端没有这个参数）。
+- **账号详情**：“可服务的端点”按 `served_protocols` 显示，转换项列出模型；类型能服务而账号没开放的置灰标“未开放”。
+- **新建账号的类型选择**：端点列表里跨平台的项标“需在账号上为模型开启”。
+- **批量编辑**：加“本平台协议”“模型的协议限定”两项，都是替换；只有所选账号属于同一个账号类型（且插件已启用）时可用。
+- **分组详情**：“端点”一栏改用 `served_protocols`，按平台列出端点和提供它的账号数；没有列出的端点请求返回 404。前端按“所有类型都能转换”推算转换端点的 `views/platforms/convertedEndpoints.ts` 已删除（§92.5 相应修订）。
+- **使用记录详情**：调度记录里三个新原因的文案是“账号未开放该协议”“模型未开启协议转换”“模型在该协议下不提供”，后面接 `detail`。
+- i18n zh/en；`web/src/api/types.ts` 加 `Account.protocols`、`model_protocols`、`served_protocols`，`Group.served_protocols`。
+
+### 110.10 升级影响与已知限制
+
+1. **升级后存量的跨平台转换流量直接 404**（用户 2026-11-17 决定：不回填，存量默认 404）。字段升级后才存在，没法提前配好；从升级完成到在账号上配好之间，依赖转换的客户端收到 110.5 的 404。升级手册（`next/deploy/rollback/protocol-binding-release.md`）有一条只读查询，列出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级前导出，升级后照着配置。同平台适配（codex 账号接 chat 请求等）不受影响。
+2. **模型列表接口不分协议**。`/v1/models` 和分组的模型列表仍按分组和账号的模型返回，客户端可能看到一个在当前协议下调不通（404）的模型。
+3. **给“其余模型”开转换要谨慎**。账号模型列表为空（= 全部模型）时，Anthropic 客户端发来的 `claude-*` 模型名会原样（或经映射）发给 OpenAI 上游，上游报模型不存在，按故障策略可能冷却账号。转换只开给明确列出的、有映射的模型。
+4. **粘性会话**：升级后，已绑定到某账号的转换会话因该账号不再提供转换而改绑或 404（110.4）。
+5. **API Key 页的端点预览不看协议绑定**。密钥页的手动配置说明和密钥编辑窗口里的分组说明仍只按分组的 `platforms` 列端点（这两处拿不到 `served_protocols`），不反映账号关掉的协议和开启的转换，可能列出实际会 404 的端点。
+6. **冷却中的账号可能推迟 404**（110.5）：组内有冷却中或限时停用、且自己能服务这个请求（或因协议绑定以外的原因不能）的账号时，请求得到 503/529 而不是 404，客户端会重试；这类账号也被协议绑定过滤时仍是 404。
+7. **协议绑定对不经调度的端点不生效**（110.4，异步任务查询）。
+8. **控制台识别不了“只走原生”的端点**。`GET /account-types` 的 `endpoints` 没有标出 WebSocket、任务提交端点；控制台的候选列是从它推出来的，如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端以 `unsupported` 拒绝。
+9. **不做**：分组级、全局级的转换开关；插件经通用配置项（§87）给这两个字段声明默认值或锁定；`/v1/models` 按入站协议过滤；协议 id 通配（`openai.*`）。
+10. 验收用例 `next/e2e/ac19_builtin_platforms_test.go` 已按本节改写：Anthropic 账号的分组请求 `/v1/chat/completions` 先断言 404，给账号的 `model_protocols` 为该模型开 `openai.chat` 后断言 200。e2e 不在 CI 里运行，这个用例只编译过，整个功能没有在部署好的栈上验收。
+11. 控制台的开发 mock（`web/mock/protocols.ts`）按 110.3、110.6、110.7 实现判定、字段路径和错误码（插件未启用时 503），不校验模型 ID 是否完整。
+
+### 110.11 测试
+
+- `core/protocol_rules_test.go`：`Serves` 的全部分支、nil 接收者、count_tokens 跟随、`ServesOthers`、不分配内存；基准 `BenchmarkProtocolRulesServes`。
+- `account/protocols_test.go`：类型能服务的协议、两个字段的归一化与每个错误码、`no_protocol`（含 PATCH 只带一个字段）、`served_protocols`（含白名单内模型全部被点名的情况，以及与 `Serves` 的随机对拍 `TestServedProtocolsMatchScheduling`）、接口读写往返（`TestAccountProtocolBinding`）、快照有配置与无配置（`TestGroupSnapshotProtocolRules`）、分组统计。`account/automatic_expiry_test.go` 的 `TestRestingAccounts`：暂时退出的账号。`group/served_protocols_test.go`：`GET /groups/:id`。
+- `gateway/protocol_binding_test.go`：路由的 `cross`、`ineligibleReason` 各原因与详情、404 的每个条件（含冷却的账号能服务与不能服务、永久停用、读取失败）、端到端（转换默认关闭、按模型开启、本平台协议、模型限定、其余模型、count_tokens 跟随、无配置账号不变、有原生账号时由它服务）、粘性会话、WebSocket 首轮与后续轮次、不分配内存；基准 `BenchmarkIneligibleReason`。
+- 原有的网关测试里依赖默认转换的夹具改成显式开启（`env_test.go` 的 `serveOn`、`openAIClients`），断言没有改。
+- 控制台：`protocolBinding.spec.ts`、`useProtocolEdit.spec.ts`、两张卡与矩阵、列表视图的 spec，以及 `AccountEditor`、`AccountBulkDialogs`、`bulkEdit`、`editorErrors`、`GroupsView`、`UsageSchedulingTrace` 里的用例。
+
+## 111. 请求体上限是网关设置，“平台调用超时”的新含义（2026-11-18，用户要求“系统设置-网关设置里面配置就行了，其他地方不要限制”；迁移 0107；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md) 第 8 节）
+
+项目在开发期，不做兼容：旧的做法在同一次改动里删除。全局层存着的旧值由迁移搬到新设置里，分组层的值丢弃（§111.3）。
+
+### 111.1 设置
 
 - **字段**：`settings` 表 `gateway` 行的 `max_request_body_mb`（`gateway.GatewaySettings.MaxRequestBodyMB`），单位 MB，整数，默认 128，范围 1–1024。接口仍是 `GET/PUT /settings/gateway`（§14.4）：`PUT` 里不带这个字段就保持原值，超出范围回 400、字段错误 `max_request_body_mb` / `out_of_range`。已存的行里没有这个字段时读作 128，超出范围的值读取时收进范围。
 - **生效**：保存的节点立即丢弃设置缓存并广播 `config:changed`（`settings.gateway`），其他节点收到后重读；没收到广播的节点最迟 10 秒后（设置缓存的有效期）读到新值。只影响之后到达的请求和之后建立的 WebSocket 连接。
 - **控制台**：系统设置 → 网关设置里的“请求体上限”一行（`GatewaySettingsCard.vue`）。“环境变量”页和分组编辑器里不再有它。
 - **插件**：`GetSettings("gateway")` 的 `protocol.GatewaySettings` 多了 `MaxRequestBodyMB`（§107.2），变更通知沿用 `gateway` 分组。
 
-### 110.2 它是唯一的请求大小上限
+### 111.2 它是唯一的请求大小上限
 
 - 网关请求路径上限制客户端请求大小的地方只有两处，都读这个设置（`gateway/pipeline.go` 的 `bodyLimit`）：读 HTTP 请求体时的 `http.MaxBytesReader`（超出回 413 `request_too_large`），和 WebSocket 连接的单条消息上限（超出以 1009 关闭连接）。
 - **删除**：
   - 环境变量 `max_request_body_mb`（§74.3）连同它的全局层、分组层和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB`；`sdk/protocol` 的常量 `EnvVarMaxRequestBodyMB`、`core.Environment.Bytes` 和变量单位 `mb` 一并删除。带这个键的 `PUT /settings/environment`、分组或账号的 `environment` 现在按未知变量拒绝（400）。启动时仍设置了 `SUB2API_MAX_REQUEST_BODY_MB` 的进程不报错，这个变量不再被读取。
   - 端点清单的 `request.maxBodyBytes`：核心不再读它（字段本身由 `sdk/manifest` 的改动删除，没有清单用过它）。
   - `gateway/hooks.go` 的 `grpcDefaultMaxRecv`、`grpcRecvTooLarge`、`requestTooLarge`：钩子调用因“请求超过插件 gRPC 接收上限”失败时不计入熔断的特例。现在这种失败和其他失败一样计入熔断。插件的接收上限本身（默认 4 MiB，`WithMaxRecvMsgSize`）由 SDK 的改动固定为传输层最大值；在那之前，`failure: closed` 的钩子插件的接收上限仍会按大小拒绝请求。
-- **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限按设计第 8.2 节由运行时用这个值推出，不另设配置项。插件进程的内存上限与它无关（§110.5）。
+- **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限按设计第 8.2 节由运行时用这个值推出，不另设配置项。插件进程的内存上限与它无关（§111.5）。
 - **不属于请求大小上限、保持原样的常量**：到 Gemini 的媒体下载上限 `media_download_max_mb`（核心主动下载的文件，§88）；预扣时本地分词统计的提示文本 32 MiB（`tokenizer.MaxTextBytes`，只截断统计，不拒绝请求，§25.8）和传给插件估算的 1 MiB；上游一侧的读取上限（WebSocket 上游消息 64 MiB、SSE 单行 16 MiB、非流式回答的缓冲）；插件路由 `/api/v1/p/:key/*` 的 1 MiB 和控制台接口各自的上限（不是网关请求）。
 
-### 110.3 迁移 0106
+### 111.3 迁移 0107
 
-`0106_request_body_limit_setting.sql`，只改数据，不改表结构，可重复执行：
+`0107_request_body_limit_setting.sql`，只改数据，不改表结构，可重复执行：
 
 1. 全局层（`settings` 的 `environment` 行）设过值的，写进 `gateway` 行的 `max_request_body_mb`，该行其他字段不动；没有 `gateway` 行就建一行只含这个键的（其余字段读取时取默认值）。只搬 1–1024 的整数（环境变量原来接受的值），其他值丢弃。
 2. 从 `environment` 行删掉这个键。
@@ -7994,10 +8223,10 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 必须删的原因：读取时未声明的键被忽略，但保存时会被拒绝，而控制台把整层的值原样回传，所以设过这个变量的实例升级后“环境变量”页和那些分组会保存不了。只在进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 里设过上限的实例迁移不到，升级后是默认的 128 MB。
 
-### 110.4 “平台调用超时”的含义
+### 111.4 “平台调用超时”的含义
 
 `platform_call_timeout_ms`（默认 2000，范围 100–30000，都不变）的定义改为：**一次请求里，插件每一段自己的处理时间的上限，不含等待上游的时间**（设计第 8.4 节列出各段：`Execute` 开始到第一次调客户端、两次客户端调用之间、最后一次客户端调用返回到 `Execute` 返回、`ClassifyError` 整个调用、WebSocket 每一轮的 `Execute`）。控制台提示（`web/src/i18n/locales/{zh,en}/settings.ts`）和接口类型注释已按新含义改写；网关按段计时的实现属于转发 V2 的网关改造，不在本节的改动里。
-### 110.5 插件进程的内存：默认不限，只有管理员设置的上限
+### 111.5 插件进程的内存：默认不限，只有管理员设置的上限
 
 用户决定（设计 D23：“默认插件内存上限不限制！！除非管理员手动限制！！”）。适用于所有有进程的插件，平台插件和其他插件一样。
 

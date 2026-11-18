@@ -8,13 +8,35 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 请求体上限改到“系统设置 → 网关设置”，同名环境变量删除（转发 V2 的 W8；迁移 0106，只改数据；改契约）
+### 账号协议绑定与模型的协议限定，跨平台协议转换改为默认关闭（核心；迁移 0106，主节点优先；**升级后依赖协议转换的客户端会收到 404，要在账号上为模型开启**）
 
-分支 `feat/fv2-settings`，未合并。约定见 CONTRACTS §110。
+分支 `feat/protocol-binding`，未合并。规则见 CONTRACTS §110，设计与实现的差异见 [设计文档](next/docs/DESIGN-2026-11-17-PROTOCOL-BINDING.md) 的“实现记录”。只改了核心和控制台，节点外壳、SDK、插件都没有改动，不用发新网关和新插件。核心的单元测试和网关测试（带数据库）、控制台的 typecheck / test / lint 通过，**没有在部署好的栈上跑过验收**。
+
+- **升级影响（发布前必读）**：升级前，任何账号都接受跨平台协议转换（OpenAI 账号回答 `/v1/messages`，Claude 账号回答 `/v1/chat/completions`、`/v1/responses` 和 Gemini 端点）。升级后**跨平台协议转换默认关闭**，迁移不回填（用户 2026-11-17 决定）。依赖转换的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启转换；新字段升级后才存在，没法提前配置。升级前先按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。
+  - 不受影响：原生请求；同一平台内的转换（codex 账号回答 `/v1/chat/completions`、只有 chat 的 OpenAI 类型回答 `/v1/responses`）；声明了多个平台的账号类型（volcengine）在这些平台上的请求。
+  - 受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。
+- **本平台协议**（账号字段 `protocols`）：账号编辑页“协议与模型”里可以把账号开放的本平台协议从“全部”改成“指定”，只勾需要的。例如只有 Chat 没有 Responses 的 OpenAI 兼容站点只勾 Chat Completions；不想让 codex 账号接 chat 请求就去掉 Chat Completions；去掉 Responses WebSocket 就关掉 WebSocket。默认“全部”，旧账号行为不变。指定之后，账号类型以后新增的协议不会自动开放。
+- **模型的协议限定**（账号字段 `model_protocols`）：选中模型，指定它在哪些协议下提供。被列出的模型只在勾选的协议下提供；没列出的模型在账号开放的全部本平台协议下提供、不做转换。**协议转换也在这里开**：给模型勾上其他平台的协议，这个账号才对这个模型做转换。“其余模型”一行代表所有没单独列出的模型；给它开转换等于恢复升级前的行为，不建议（上游不认识的模型名可能触发故障策略冷却账号）。count_tokens 不单独配置，跟随同族的生成协议（Messages、generateContent）。
+- **全部账号都不提供时返回 404**：分组里提供给请求的账号全部因为“账号未开放该协议”“模型未开启协议转换”“模型在该协议下不提供”被过滤时，请求返回 404（客户端不会当成过载重试），不转换、不发上游、尝试次数为 0。组内冷却中或限时停用的账号按同样的规则判断：其中有一个开了这个协议（或为这个模型开了转换）时，它回来后会服务这个请求，仍按原来的规则返回 503（Anthropic 格式 529）；它们也都没开时照样是 404，不会因为有账号在冷却而变成可重试的错误。这个判断只读调度快照和冷却状态，不查数据库。WebSocket 首轮同样处理；已建立的连接上换成该账号在这个协议下不提供的模型，返回 400，要新建连接。
+- **调度记录**：使用记录详情的调度记录多三个原因：`protocol_closed`（账号未开放该协议）、`conversion_not_enabled`（模型未开启协议转换）、`model_protocol_closed`（模型在该协议下不提供），能看到每个账号为什么没被选。这一判断排在模型白名单之前。
+- **控制台**：
+  - 账号编辑页：“模型配置”改名“协议与模型”，新增“本平台协议”和“模型的协议限定”两张卡；后者有矩阵、列表、JSON 三种视图，可以多选模型一次指定协议。矩阵里没有单独指定的模型，在“其余模型”一行指定了协议之后按那一行显示（标“跟随其余模型”），与网关的判定一致。
+  - 账号列表：平台图标按账号实际开放的协议显示，开了转换的带“转”角标，本平台协议被限定的标“部分”。账号详情的“可服务的端点”按实际开放的显示，没开放的置灰。
+  - 批量编辑加“本平台协议”“模型的协议限定”两项（替换），只对同一账号类型的账号可用。
+  - 分组详情的“端点”改为按成员账号实际开放的协议显示，每个端点带提供它的账号数；原来“经协议转换还可调用”的推算删除。**升级后分组详情和密钥页列出的端点会变少**，直到成员账号里有模型开了转换。
+  - 新建账号选类型时，跨平台的端点标“需在账号上为模型开启”。
+- **接口**：账号的 GET / POST / PATCH 和列表带 `protocols`（`string[]` 或 `null`）、`model_protocols`（`[{models, protocols}]`），PATCH 各自整体替换；`GET /accounts/:id` 另带只读的 `served_protocols`（账号实际开放的协议、方式和模型；账号有模型白名单时，白名单里一个模型都不提供的协议不列出），`GET /groups/:id` 另带只读的 `served_protocols`（协议和提供它的账号数）。没有新增批量接口，也没有按协议筛选账号的参数。
+- **迁移 0106**：`accounts` 加 `protocols`（`text[]`，可空，空 = 本平台协议全部开放）和 `model_protocols`（`jsonb`，默认 `[]`）。不回填。
+- **性能**：判断只是调度时的内存比较，不增加数据库和 Redis 访问；没有配置的账号只多一次空指针判断。没开转换的账号在转换请求体、下载媒体之前就被过滤，跨平台请求比以前便宜。
+- **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；密钥页的端点说明只按分组的平台列端点，不反映账号关掉的协议；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 已改成先断言默认 404、在账号上为模型开启转换后断言 200，但只编译过，没有在部署好的栈上运行。
+
+### 请求体上限改到“系统设置 → 网关设置”，同名环境变量删除（转发 V2 的 W8；迁移 0107，只改数据；改契约）
+
+分支 `feat/fv2-settings`，未合并。约定见 CONTRACTS §111。
 
 - **新设置“请求体上限”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭）。它是唯一的请求大小上限，保存后各节点对新请求生效。
-- **升级前必读。** 环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0106 把全局层存着的值搬进网关设置，升级后不变；**分组层的值丢弃，没有分组级的上限了**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是默认 128 MB，要在网关设置里填；仍带着这个变量启动不报错，但它不再起作用。
-- **插件内存默认不限**（CONTRACTS §110.5，设计 D23）：只有管理员设置时才有上限。插件资源页里给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 不再是上限，只作展示。内存不按请求体上限推算，改请求体上限不会重启插件进程；交给插件的请求体不再按字节排队（`inflight_bytes` 删除）；网关设置里没有内存警告。**升级前必读**：之前靠默认封顶 1024 MB 或清单的值（平台插件 64–128 MB，moderation 1024 MB 等）限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`；给平台插件设上限时，每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认 128 MB 时约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。
+- **升级前必读。** 环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0107 把全局层存着的值搬进网关设置，升级后不变；**分组层的值丢弃，没有分组级的上限了**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是默认 128 MB，要在网关设置里填；仍带着这个变量启动不报错，但它不再起作用。
+- **插件内存默认不限**（CONTRACTS §111.5，设计 D23）：只有管理员设置时才有上限。插件资源页里给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 不再是上限，只作展示。内存不按请求体上限推算，改请求体上限不会重启插件进程；交给插件的请求体不再按字节排队（`inflight_bytes` 删除）；网关设置里没有内存警告。**升级前必读**：之前靠默认封顶 1024 MB 或清单的值（平台插件 64–128 MB，moderation 1024 MB 等）限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`；给平台插件设上限时，每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认 128 MB 时约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。
 - 钩子调用因请求超过插件 gRPC 接收上限而失败时，不再被排除在熔断之外（`requestTooLarge` 删除）。
 - 端点清单的 `request.maxBodyBytes` 核心不再读取（没有清单用过）。
 - “平台调用超时”的说明改为新含义：插件在一次请求中每段自身处理时间的上限（构造上游请求、解析用量、错误分类），不含等待上游的时间；默认值和范围不变。
@@ -27,7 +49,7 @@
 - **openai 0.4.4**：API Key 账号“高级（可选）”里新增组织 ID、项目 ID，填了就以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端自己带的；留空时行为不变。
 - **azure_openai 0.1.0**（新，市场插件，只有清单）：Azure OpenAI 资源地址加 API Key（`api-key` 头）。两种类型：v1 接口（chat、responses、embeddings）和按部署的经典接口（chat、embeddings，带 `api-version`；`/v1/responses` 请求由核心转成 chat）。错误分类与 OpenAI 账号相同（`openai` 策略），最低核心 0.1.290。部署不存在（404 `DeploymentNotFound`）默认原样回给客户端；要换到下一个账号，由管理员在「调度策略」的失败处理里加一条自动重试规则（来源：上游 HTTP 响应；错误码 `404`；关键词 `DeploymentNotFound`、`model_not_found`，一行一个），不配账号规则，账号不受惩罚。上游模型就是部署名，用账号的模型映射对应。客户端的 `OpenAI-Organization` / `OpenAI-Project` 和请求体里的 `service_tier`、`safety_identifier` 不转给 Azure。粘贴带 deployments、chat/completions 或 api-version 的请求地址会在保存时报错。不支持 Entra ID 令牌。
 - **vertex 0.1.0**（新，市场插件）：Vertex AI 上的 Gemini（generateContent、streamGenerateContent、countTokens）。三种鉴权：服务账号 JSON、用户凭证 JSON（`gcloud auth application-default login`）、API Key。访问令牌由核心换取并自动续期（CONTRACTS §48），插件自身不联网。服务账号 JWT 用 `github.com/golang-jwt/jwt/v5` 签名，凭证文件由插件自己解析（Google 的库没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated）；`token_uri` 必须是 Google 的令牌地址，按解析后生效的值判断。不支持 Vertex 上的 Claude。
-- **bedrock 0.1.0**（新，市场插件，需要核心 0.1.304）：只服务 anthropic 平台，Claude 走 InvokeModel / InvokeModelWithResponseStream。客户端用 OpenAI 协议（chat、responses）访问时由核心先转换成 Messages 请求，走同一条路；Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接，Claude 以外的 Bedrock 模型这一版不支持。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由核心做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射（ID 按 2026-11-17 的 AWS 模型卡片，含 Fable 5.2、Opus / Sonnet / Haiku 5.5，不含 AWS 已停止服务的 Sonnet 4 和 Opus 4），可选跨区域推理前缀（us、eu、apac、jp、au、in、global）；按 AWS 模型卡片，现行的 Claude 模型几乎都只能经推理配置调用，所以前缀默认是 `global`（预填模型里只有 Opus 4.1 没有全球配置，它的映射直接写 `us.` 开头的 ID），要把请求留在某个地域内就改选地域前缀。账号测试的默认模型是 Haiku 4.5 的全球推理配置。中国区（`cn-*`）和隔离分区的区域在保存时被拒绝。请求体顶层的 `output_config`、`output_format` 保留（旧版会删）；`anthropic_beta` 白名单 15 项。已知限制：不清理 Claude Code 写在请求体深处、Bedrock 不接受的字段，给 Claude Code 用的账号要在参数覆盖里手工删。
+- **bedrock 0.1.0**（新，市场插件，需要核心 0.1.304）：只服务 anthropic 平台，Claude 走 InvokeModel / InvokeModelWithResponseStream。客户端用 OpenAI 协议（chat、responses）访问时由核心先转换成 Messages 请求，走同一条路（与上一条“账号协议绑定”同版发布时，这是跨平台转换，要在 Bedrock 账号上为模型开启）；Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接，Claude 以外的 Bedrock 模型这一版不支持。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由核心做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射（ID 按 2026-11-17 的 AWS 模型卡片，含 Fable 5.2、Opus / Sonnet / Haiku 5.5，不含 AWS 已停止服务的 Sonnet 4 和 Opus 4），可选跨区域推理前缀（us、eu、apac、jp、au、in、global）；按 AWS 模型卡片，现行的 Claude 模型几乎都只能经推理配置调用，所以前缀默认是 `global`（预填模型里只有 Opus 4.1 没有全球配置，它的映射直接写 `us.` 开头的 ID），要把请求留在某个地域内就改选地域前缀。账号测试的默认模型是 Haiku 4.5 的全球推理配置。中国区（`cn-*`）和隔离分区的区域在保存时被拒绝。请求体顶层的 `output_config`、`output_format` 保留（旧版会删）；`anthropic_beta` 白名单 15 项。已知限制：不清理 Claude Code 写在请求体深处、Bedrock 不接受的字段，给 Claude Code 用的账号要在参数覆盖里手工删。
 - **核心：请求签名与响应流格式**（CONTRACTS §109）：插件构造上游请求时可以要求核心对最终请求签名（`signing`，现有方案 `aws-sigv4`），或声明响应流的格式（`response_stream`，现有 `aws-eventstream-chunk`，核心解码成 SSE 后照常中继、计量、转换）。核心不认识的方案或格式、以及 WebSocket 握手带了这两项时，这次尝试换号、不发请求。新包 `next/sdk/reqsign`、`next/sdk/awseventstream`，签名和消息编解码用 AWS 的官方库（`aws-sdk-go-v2` 的 `aws/signer/v4`、`aws/protocol/eventstream`；只用这两个包，请求仍由网关自己构造、经账号代理发出）。event stream 里带同名头的消息按帧损坏处理。不用这两项的插件不受影响；节点外壳没有改动。
 - **核心：保存账号后立即续期到期的凭证**（CONTRACTS §48.3）：新建账号或修改凭证后，类型支持自动续期且凭证已到期时，后台马上续一次，不用等 5 分钟一轮的扫描。Vertex 账号保存后几秒内可用；其他账号类型（凭证没到期）不受影响。
 - **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。

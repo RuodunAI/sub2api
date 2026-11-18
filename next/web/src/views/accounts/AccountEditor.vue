@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // Step 2 of "new account" and the edit form (wireframe A.4, CONTRACTS §18.4):
-// connection (basic info, proxy, plugin credentials) / models and mapping /
-// scheduling and limits. A new account starts from the plugin's default models
-// and mapping (§41); so does an existing account saved without either (see
-// shouldPrefillOnEdit).
+// connection (basic info, proxy, plugin credentials) / protocols and models
+// (own protocols, model list, mapping, protocols per model:
+// DESIGN-2026-11-17-PROTOCOL-BINDING §5.1) / scheduling and limits. A new
+// account starts from the plugin's default models and mapping (§41); so does
+// an existing account saved without either (see shouldPrefillOnEdit).
 // Every core field follows the account type's common controls (hidden, fixed,
 // a default, a required proxy: commonControls.ts); plugin sections declared
 // for the type (account.editor.section) come after the core ones.
@@ -22,6 +23,7 @@ import ProxyPicker from '@/components/ProxyPicker.vue'
 import { lt } from '@/i18n'
 import { assetURL, usePluginStore } from '@/stores/plugins'
 import { useEnvironmentLayer, useGroupsWith, useProxiesLookup } from '@/composables/lookups'
+import { usePlatforms } from '@/composables/platforms'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { useAccountCaps } from '@/composables/useAccountCaps'
 import { errorMessage, fieldErrors, notifyError } from '@/utils/errors'
@@ -47,7 +49,11 @@ import { newAccountConcurrency } from './accountLimits'
 import { shouldPrefillOnEdit } from './modelDefaults'
 import { useModelEdit } from './useModelEdit'
 import { useAccountSave } from './useAccountSave'
-import { CONNECTION_FIELDS, isAdvancedField, isSchedulingField, LIMIT_ROWS, mappingErrorText, modelsErrorText, pluginSection, SCHEDULING_ROWS, SECTION_CONTROLS, splitFieldErrors, type EditorSection } from './editorErrors'
+import { CONNECTION_FIELDS, isAdvancedField, isProtocolField, isSchedulingField, LIMIT_ROWS, mappingErrorText, modelsErrorText, pluginSection, protocolsErrorTexts, SCHEDULING_ROWS, SECTION_CONTROLS, splitFieldErrors, type EditorSection } from './editorErrors'
+import ModelProtocolsCard from './protocols/ModelProtocolsCard.vue'
+import OwnProtocolsField from './protocols/OwnProtocolsField.vue'
+import { sameProtocolColumns } from './protocols/protocolBinding'
+import { useProtocolEdit } from './protocols/useProtocolEdit'
 
 const props = defineProps<{ accountType: AccountType | null; accountTypeOptions?: AccountType[]; account?: Account | null }>()
 const emit = defineEmits<{ (e: 'change-type', at: AccountType): void; (e: 'saved', a: Account): void; (e: 'cancel'): void; (e: 'back'): void; (e: 'test', a: Account): void }>()
@@ -174,6 +180,23 @@ const mergeModels = (ids: string[]) => editorModels.mergeModels(ids)
 /** Models and mappings of the section summary (the cards render their own counts). */
 const mappingCount = computed(() => Object.keys(mapping.value).length)
 
+// Protocol binding (DESIGN-2026-11-17-PROTOCOL-BINDING §5.1): the own protocols the account opens, the protocols of chosen models.
+const protocolEdit = useProtocolEdit(() => props.accountType, () => models.value)
+const platformLabels = usePlatforms()
+const ownProtocolsTitle = computed(() => {
+  const names = (props.accountType?.platforms ?? []).map(p => platformLabels.label(p.id, p.label)).join(' / ')
+  return names ? t('accounts.protocols.own.titleOf', { platforms: names }) : t('accounts.protocols.own.title')
+})
+/** "Protocols 4/4 · 2 models limited · 1 converted", ahead of the models of the section summary. */
+const protocolSummary = computed(() => {
+  const { open, total, limited, converting } = protocolEdit.summary.value
+  return [
+    t('accounts.protocols.summary.open', { open, total }),
+    ...(limited ? [t('accounts.protocols.summary.limited', { n: limited })] : []),
+    converting ? t('accounts.protocols.summary.converting', { n: converting }) : t('accounts.protocols.summary.noConversion')
+  ]
+})
+
 /** Summary parts of the shown controls (falsy parts dropped). */
 const summaryOf = (parts: Array<[CommonControlName, string | number | false]>) => parts.filter(([n, v]) => v && controls.value[n].visible).map(([, v]) => v)
 
@@ -201,6 +224,8 @@ const forwardingSummary = computed(() => {
 const groupList = useGroupsWith(() => basic.group_ids)
 const conversionOptions = computed(() => policyOptions(t, t('accounts.conversion.inherit')))
 const conversionHint = computed(() => policySourceHint(t, basic.conversion_loss_policy, groupPolicies(basic.group_ids, groupList.value)))
+/** Without a model converted or a protocol adapted nothing can be lost: the policy is greyed (an account whose type is gone keeps it editable). */
+const conversionUsed = computed(() => !props.accountType || protocolEdit.conversionUsed.value)
 
 /** Plugin sections declared for this account type (docs/COMMON-CONTROLS.md §4). */
 const pluginSections = computed(() => plugins.slotEntries('account.editor.section').filter(e => forAccountType(e, props.accountType)))
@@ -212,6 +237,7 @@ const editorSections = computed(() => [
     icon: 'cpu',
     label: t('accounts.editorUi.models'),
     summary: [
+      ...(props.accountType ? protocolSummary.value : []),
       models.value.length ? t('accounts.editorUi.modelsSummary', { n: models.value.length }) : t('accounts.editorUi.allModels'),
       ...summaryOf([['model_mapping', mappingCount.value && t('accounts.editorUi.mappingSummary', { n: mappingCount.value })]])
     ].join(' · ')
@@ -251,10 +277,11 @@ const schedulingFields = computed(() =>
 /** Server field errors of the model list / mapping, shown under the editor. */
 const serverModelsError = computed(() => modelsErrorText(errors.value))
 const serverMappingError = computed(() => mappingErrorText(errors.value))
+const serverProtocolErrors = computed(() => protocolsErrorTexts(errors.value, protocolEdit.protocols.value))
 /** Sections holding an error, marked in the navigation. */
 const sectionErrors = computed<Partial<Record<EditorSection, boolean>>>(() => ({
   connection: CONNECTION_FIELDS.some((k) => errors.value[k]) || Object.keys(credErrors.value).length > 0,
-  models: !!(modelsError.value || serverModelsError.value || mappingError.value || serverMappingError.value),
+  models: !!(modelsError.value || serverModelsError.value || mappingError.value || serverMappingError.value) || Object.keys(errors.value).some(isProtocolField) || protocolEdit.issues.value.some(i => i.level === 'error'),
   scheduling: Object.keys(errors.value).some(isSchedulingField) || Object.keys(usageLimitErrors.value).length > 0,
   advanced: Object.keys(errors.value).some(isAdvancedField)
 }))
@@ -403,6 +430,8 @@ function fillForm(a: Account | null | undefined, at: AccountType | null) {
   basic.conversion_loss_policy = a?.conversion_loss_policy ?? null
   if (a) editorModels.setSaved(a.models, a.model_mapping)
   if (!a || shouldPrefillOnEdit(a, at)) editorModels.applyDefaults(at)
+  // After the models: the matrix view needs the model list.
+  protocolEdit.setSaved(a)
   applyValues(a ? savedAccountValues(a, coreValues()) : newAccountValues(at, coreValues(), ownCaller()))
 }
 
@@ -432,6 +461,8 @@ function applyValues(values: ControlValues) {
 /** Switching the auth method of a new account: untouched defaults and fixed controls follow the type. */
 function switchAuth(at: AccountType | null, previous: AccountType | null | undefined) {
   if (editorModels.sameDefaults(previous)) editorModels.applyDefaults(at)
+  // What was ticked only carries over to a type offering the same protocols.
+  if (!sameProtocolColumns(at, previous)) protocolEdit.setSaved(null)
   const before = newAccountValues(previous, coreValues(), ownCaller())
   const untouched = (name: string) => name in basic && sameControlValue(basic[name as keyof typeof basic], before[name as CommonControlName])
   const follows = ([name]: [string, unknown]) => !accountControl(at, name as CommonControlName).configurable || untouched(name)
@@ -511,6 +542,7 @@ const { save } = useAccountSave({
   saving,
   activeSection,
   models: editorModels,
+  protocols: protocolEdit,
   autoDisableEnabled,
   proxyUrlToSend,
   collectCredentials,
@@ -617,6 +649,10 @@ const { save } = useAccountSave({
 
         <!-- ============================================================ models -->
         <div v-show="activeSection === 'models'" data-editor-section="models" class="space-y-4">
+          <SCard v-if="accountType" :title="ownProtocolsTitle" :subtitle="t('accounts.protocols.own.subtitle')" data-testid="own-protocols-card">
+            <OwnProtocolsField :editor="protocolEdit" :errors="serverProtocolErrors" :disabled="saving" />
+            <SAlert tone="neutral" dense class="mt-3">{{ t('accounts.protocols.own.crossHint') }}</SAlert>
+          </SCard>
           <AccountModelsCard
             :editor="editorModels"
             :editing="editing"
@@ -627,6 +663,7 @@ const { save } = useAccountSave({
             :mapping-control="controls.model_mapping"
             @fetch="fetchModels"
           />
+          <ModelProtocolsCard v-if="accountType" :editor="protocolEdit" :models="models" :mapping="mapping" :options="modelLimitOptions" :errors="errors" :disabled="saving" />
         </div>
 
         <!-- ============================================================ scheduling and limits -->
@@ -679,8 +716,8 @@ const { save } = useAccountSave({
             <ParamOverrideField v-if="controls.param_override.visible" v-model="basic.param_override" :models="models" :error="errors.param_override" :disabled="controls.param_override.disabled || saving" :reason="controls.param_override.reason" :header-override="basic.header_override" />
             <SSettingRow :label="t('accounts.conversion.title')" :description="t('accounts.conversion.hint')" :error="errors.conversion_loss_policy" data-testid="account-conversion-policy">
               <div class="w-full space-y-1 sm:w-64">
-                <SSelect v-model="basic.conversion_loss_policy" :options="conversionOptions" :disabled="saving" data-testid="account-conversion-policy-select" />
-                <SHint size="xs" data-testid="account-conversion-policy-hint">{{ conversionHint }}</SHint>
+                <SSelect v-model="basic.conversion_loss_policy" :options="conversionOptions" :disabled="saving || !conversionUsed" data-testid="account-conversion-policy-select" />
+                <SHint size="xs" data-testid="account-conversion-policy-hint">{{ conversionUsed ? conversionHint : t('accounts.protocols.conversionOff') }}</SHint>
               </div>
             </SSettingRow>
             <template v-if="showEnvironment && controls.environment.visible">

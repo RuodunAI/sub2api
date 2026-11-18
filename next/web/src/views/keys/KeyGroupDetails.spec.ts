@@ -17,10 +17,10 @@ const render = (group: Partial<Group>) => {
 }
 
 describe('API key group details', () => {
-  it('lists a few endpoints of each platform of the group, the converted ones folded away', () => {
+  it('lists a few endpoints of each platform of the group', () => {
     const w = render({ platforms: ['anthropic'] })
     expect(w.text()).toContain('此分组的 Key 可以调用')
-    expect(w.getComponent(PlatformEndpointsPreview).props()).toEqual({ ids: ['anthropic'], max: 3, fold: true })
+    expect(w.getComponent(PlatformEndpointsPreview).props()).toEqual({ ids: ['anthropic'], max: 3 })
   })
 
   it('warns instead when the group has no platform to serve', () => {

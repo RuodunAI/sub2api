@@ -568,14 +568,9 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 	if err != nil {
 		return nil, fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)
 	}
-	cl.sched.candidates = len(all)
-	cands := make([]core.AccountRef, 0, len(all))
-	for i := range all {
-		if cl.route(&all[i]) != nil && cl.servesAllModels(&all[i]) {
-			cands = append(cands, all[i])
-		} else if reason, detail, ok := cl.ineligibleReason(&all[i]); !ok {
-			cl.skipAccount(all[i].ID, reason, detail)
-		}
+	cands, closed := cl.eligibleAccounts(all)
+	if e := cl.protocolNotServed(ctx, closed); e != nil {
+		return nil, e
 	}
 	eligible := cands
 	cands, availabilityErr := cl.filterAvailability(ctx, cands)
@@ -786,7 +781,7 @@ func (s *wsSession) reuse(ctx context.Context, cl *call) (func(), *gwError) {
 		}
 		s.ref = current
 	}
-	if !cl.servesAllModels(s.ref) {
+	if !cl.candidateEligible(s.ref) {
 		return nil, &gwError{Status: http.StatusBadRequest, Code: core.ErrInvalidArgument.Code, RecordType: errTypeInvalidRequest,
 			Message: "the account of this connection does not serve model " + strconvQuote(cl.model) + "; open a new connection for it"}
 	}

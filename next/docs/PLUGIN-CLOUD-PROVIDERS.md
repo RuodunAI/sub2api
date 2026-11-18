@@ -13,7 +13,7 @@
 | AWS Bedrock | `bedrock` | 0.1.0 | **0.1.304** | anthropic | 市场，自己安装 |
 
 - 三个新插件装好并启用后，在“新建账号”里各显示为一项，进去后用“鉴权方式”切换具体的账号类型。
-- 客户端用哪种协议访问都可以：账号服务的平台不是客户端用的协议时，核心负责转换（CONVERT-MATRIX）。
+- 客户端用别的平台的协议访问时由核心转换（CONVERT-MATRIX），但带账号协议绑定（CONTRACTS §110）的核心上，**跨平台转换默认关闭**：要在账号编辑页“协议与模型 › 模型的协议限定”里为模型勾上对应的协议，否则这类请求返回 404。同一平台内的转换（如 Azure 经典类型把 `/v1/responses` 转成 chat）不用开。
 - 价格不随插件带来，按客户端请求的模型名在核心的模型价格里配置。
 - “模型映射”在三家都很重要：账号的模型映射把**客户端请求的模型名**（键）换成**发给上游的名字**（值），第 3–5 节分别说明值该填什么。
 
@@ -156,7 +156,7 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 |---|---|---|
 | anthropic | `/v1/messages` | InvokeModel（`/model/<模型 ID>/invoke`），流式是 InvokeModelWithResponseStream |
 
-- **没有 OpenAI 兼容的路由**：Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接。客户端用 OpenAI 协议（`/v1/chat/completions`、`/v1/responses`）访问时，核心先把请求转换成 Messages 请求，再走上面这条 InvokeModel 路。
+- **没有 OpenAI 兼容的路由**：Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接。客户端用 OpenAI 协议（`/v1/chat/completions`、`/v1/responses`）访问时，核心先把请求转换成 Messages 请求，再走上面这条 InvokeModel 路。这是跨平台转换：带账号协议绑定（CONTRACTS §110）的核心上默认关闭，要在 Bedrock 账号上为模型勾上 Chat Completions / Responses 才提供。
 - **这一版只支持 Claude**，Bedrock 上 Claude 以外的模型不支持。
 
 ### 5.1 选哪种类型

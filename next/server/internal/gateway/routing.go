@@ -31,6 +31,13 @@ type typeRoute struct {
 	hops []string
 	// local answers a count_tokens request without an upstream (§8).
 	local bool
+	// cross is set when the account type does not declare the platform of
+	// the client endpoint: the request reaches its accounts through a
+	// cross-platform conversion, which an account enables per model
+	// (core.ProtocolRules). A type declaring the platform serves the
+	// endpoint as one of its own, natively or adapted to another endpoint of
+	// that platform.
+	cross bool
 
 	passHeaders []string
 	usage       manifest.UsageRules
@@ -195,14 +202,24 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 	}
 	k := b.Key()
 	c.routes[k] = &typeRoute{binding: b, platform: c.platform, upstream: upstreamLocal, grade: convert.GradeLocal,
-		hops: []string{c.ep.Protocol}, local: true}
+		hops: []string{c.ep.Protocol}, local: true, cross: c.crossPlatform(b)}
 	c.routeKeys = append(c.routeKeys, k)
+}
+
+// crossPlatform reports whether account type b does not declare the platform
+// of the client endpoint: the one definition of a cross-platform route
+// (typeRoute.cross), the same the account module judges a protocol binding
+// by (CONTRACTS §110.1).
+func (c *call) crossPlatform(b core.AccountTypeBinding) bool {
+	_, own := b.Supports(c.platform)
+	return !own
 }
 
 // addRoute records the route of b to upstream protocol y of platform q:
 // pass headers come from the account type's entry for q, else the platform;
 // usage rules from the account type (per protocol), else the endpoint
-// speaking y, else the platform. (An endpoint whose usage or task the
+// speaking y, else the platform. q is the client endpoint's platform unless
+// b does not declare it (planRoutes). (An endpoint whose usage or task the
 // platform's plugin states reaches only that plugin's account types: the
 // registry binds no other, design §4.3.)
 func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, q, y string,
@@ -214,7 +231,7 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	if _, dup := c.routes[k]; dup {
 		return
 	}
-	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative,
+	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative, cross: c.crossPlatform(b),
 		passHeaders:        ap.ClientHeaders(&pf),
 		usage:              usagerules.For(ap, &ep, &pf, y),
 		pluginUsage:        ep.PluginUsage(),

@@ -33,6 +33,10 @@ type Service struct {
 	reg core.PluginRegistry   // optional: platforms are [] without it
 	// grants clears the scoped grants naming a deleted group (CONTRACTS §21).
 	grants core.ScopeGrantClearer
+	// Protocols reports the protocols the accounts of a group serve, for
+	// GET /groups/:id; optional (served_protocols is [] without it). The
+	// account module is built after this one, so it is set afterwards.
+	Protocols core.GroupProtocols
 }
 
 // New builds the group service. rdb, bus and reg may be nil; reg resolves
@@ -254,12 +258,28 @@ func (s *Service) get(c *gin.Context) {
 	if !ok {
 		return
 	}
-	g, err := s.load(c.Request.Context(), id)
+	ctx := c.Request.Context()
+	g, err := s.load(ctx, id)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, g)
+	d := Detail{Group: g, ServedProtocols: []core.GroupServedProtocol{}}
+	if s.Protocols != nil {
+		if d.ServedProtocols, err = s.Protocols.GroupServedProtocols(ctx, id); err != nil {
+			httpapi.Fail(c, err)
+			return
+		}
+	}
+	httpapi.OK(c, d)
+}
+
+// Detail is GET /groups/:id: the group and what only its own page shows.
+type Detail struct {
+	*Group
+	// ServedProtocols are the inbound protocols the accounts of the group
+	// serve, each with the number of accounts serving it; read-only.
+	ServedProtocols []core.GroupServedProtocol `json:"served_protocols"`
 }
 
 type groupInput struct {

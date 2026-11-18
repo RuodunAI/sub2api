@@ -111,9 +111,9 @@ describe('API key use guide', () => {
     expect(w.get('[data-testid="key-use-snippet"]').text()).toContain('sk-s2a-abcd…')
     expect(imports(w)).toEqual([])
   })
-  it("lists the endpoints the key can call by its group's platforms, unfolded", async () => {
+  it("lists the endpoints the key can call by its group's platforms", async () => {
     const w = await guide({ platforms: ['anthropic'] })
-    expect(w.getComponent(PlatformEndpointsPreview).props()).toEqual({ ids: ['anthropic'], max: undefined, fold: false })
+    expect(w.getComponent(PlatformEndpointsPreview).props()).toEqual({ ids: ['anthropic'], max: undefined })
     expect((await guide({ platforms: [] })).findComponent(PlatformEndpointsPreview).exists()).toBe(false)
   })
   it('has no client or app to set up for other platforms', async () => {

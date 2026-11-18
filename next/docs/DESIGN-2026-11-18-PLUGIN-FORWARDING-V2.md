@@ -592,7 +592,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 - 插件列表：加载被拒绝的插件显示拒绝的原因（第 9 节的那一条信息）。
 - 使用记录：详情与筛选显示“未上报”。
 - 账号编辑器里的请求头覆盖、参数覆盖、透传：界面和存储不变。
-- 数据库：表结构不变，只有一个改数据的迁移 `0106`（8.1：请求体上限从环境变量搬到网关设置）。`plugin_executions.state` 是没有 CHECK 的文本列，新状态 `unreported` 不需要改表（`server/internal/migrations/0019_plugin_executions.sql:8`）。
+- 数据库：表结构不变，只有一个改数据的迁移 `0107`（与协议绑定合并时由 0106 改号）（8.1：请求体上限从环境变量搬到网关设置）。`plugin_executions.state` 是没有 CHECK 的文本列，新状态 `unreported` 不需要改表（`server/internal/migrations/0019_plugin_executions.sql:8`）。
 
 ## 9. 升级方式
 
@@ -621,7 +621,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 
 ### 9.3 回退
 
-没有专门的回退流程。要回到上一个状态，就把上一版的核心和上一版的整套插件一起重新部署。本次唯一的迁移（`0106`，8.1）只改数据：回到旧核心后表结构不需要处理，但请求体上限的环境变量已经被删掉，旧核心会按默认的 128 MB 运行，调过上限的要在“环境变量”页重填（`gateway` 行里多出来的 `max_request_body_mb` 旧核心不认识，读取时忽略，下次保存网关设置时被丢掉）；核心 V 写下的 `unreported` 状态的执行行，旧核心的恢复扫描只找 `observed`，不会碰它。
+没有专门的回退流程。要回到上一个状态，就把上一版的核心和上一版的整套插件一起重新部署。本次唯一的迁移（`0107`，8.1）只改数据：回到旧核心后表结构不需要处理，但请求体上限的环境变量已经被删掉，旧核心会按默认的 128 MB 运行，调过上限的要在“环境变量”页重填（`gateway` 行里多出来的 `max_request_body_mb` 旧核心不认识，读取时忽略，下次保存网关设置时被丢掉）；核心 V 写下的 `unreported` 状态的执行行，旧核心的恢复扫描只找 `observed`，不会碰它。
 
 ### 9.4 已部署实例
 
@@ -815,7 +815,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 
 用户的最终答复：上限只在“系统设置 → 网关设置”里配置，其他地方不要限制。现有代码与它不一致的地方和处理（细节与完整清单见 8.1）：
 
-- 上限今天是环境变量，有全局层、分组层和进程环境变量，不在“网关设置”里。**搬进网关设置，环境变量连同分组层删除**，存着的值用迁移 0106 处理。本文初稿建议过保留环境变量、只在卡片里加一行，已被这条答复推翻。代价是失去按分组设置上限的能力，这是用户的选择。
+- 上限今天是环境变量，有全局层、分组层和进程环境变量，不在“网关设置”里。**搬进网关设置，环境变量连同分组层删除**，存着的值用迁移 0107 处理。本文初稿建议过保留环境变量、只在卡片里加一行，已被这条答复推翻。代价是失去按分组设置上限的能力，这是用户的选择。
 - 清单允许端点声明 `request.maxBodyBytes`。删除（没有使用者）。
 - 钩子插件的 gRPC 接收上限（默认 4 MiB，moderation 设 64 MiB）今天对 `failure: closed` 的钩子实际上是第二个请求体大小限制。改成由 SDK 固定为传输层最大值，`WithMaxRecvMsgSize` 删除。初稿把它列为“不在本次范围”，与“其他地方不要限制”不符，已改。
 - 插件的内存上限：默认不限，只有管理员设置的上限生效（D23、8.3）。管理员设的上限不是“大小上限”，但它实际决定了插件能接多大的请求体，所以管理员要按请求体上限留量。
@@ -847,7 +847,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 - **`AGENTS.md` “内置插件随核心升级（CONTRACTS §37）”与节点就绪检查**：这两条现有机制合在一起，使托管升级在本次改动上走不通（9.4）。按 D4 本文不为此设计；但它意味着“核心与插件一起发布”目前在托管部署上没有一个可用的升级流程，以后每一次不兼容的插件契约变化都会碰到同样的问题。记在这里，是否要另行解决由用户决定，不在本次范围。
 - **`common.proto:7-12` 的契约规则**：“请求体从不整个发给插件”删除（D14）。“除 `EgressService.Dial` 外都是一元调用”在本次改动里仍然成立；(b) 级需要的“插件写给客户端”的通道会打破它，那一阶段立项时处理。
 - **`docs/ARCHITECTURE.md:63`**：把插件 UDP 访问列为不做，与用户的答复一致，不改。
-- **`AGENTS.md`“核心迁移……目前到 0104”**：实际已到 0105（`0105_account_header_override.sql`）。W8 加 0106 时把这句改对。
+- **`AGENTS.md`“核心迁移……目前到 0104”**：实际已到 0105（`0105_account_header_override.sql`）。W8 加的迁移（合并协议绑定后为 0107） 时把这句改对。
 - **CONTRACTS §31.3**：写“内置 anthropic/openai/gemini/relay 0.2.0 使用 Execute”，与代码不符（3.2）。§31 重写时改对。
 - **`docs/CONTRACTS.md:5126`**：提到 `resource_http.go` 的资源请求上限，这个文件在仓库里已经不存在。改 §74.3 时一并删掉。
 - **`docs/OPENAI-RESPONSES-WEBSOCKET.md:42`**：写“客户端单条消息上限取端点 `maxBodyBytes`（默认 32 MiB）”，与代码不符（取的是 `bodyLimit()`，默认 128 MB）。W8 改成网关设置。
@@ -875,7 +875,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 | W5 | 运行时：中继、取回的宿主服务端，执行作用域（不等待时挂起请求、返回后交给网关），`Monitor` 取返回值，宿主服务端接收上限，在途字节准入，内存下限（后两项按 D23 已删）；删回调服务端、`Poll` 适配、`StaticInstance`；握手协议不符时给出 9.2 的信息 | `server/internal/core/ports_execution.go`、`ports_plugin.go`、`server/internal/plugin/grpcruntime/**`、`server/internal/plugin/rollout/**` | 运行时测试：不等待的中继在 `Execute` 返回前不触发发送；等待的中继返回观察；取回第 9 次被拒、清单外主机被拒、回答超限带 `truncated`、令牌过期被拒；超过请求体上限的中继被拒；准入预算不被突破；旧协议的测试插件二进制被拒且信息正确 | W1 | M |
 | W6 | 网关单一路径：`attempt` 调新 `Execute`；不等待与等待两种形式；请求头的默认头与权威头；守卫；WebSocket 逐轮；跨插件规则；删 11.4 里网关的全部条目 | `server/internal/gateway/{dispatch,execute,websocket,param_override,upstream_ext,routing,tasks,usageplugin,util}.go` 及同目录测试 | 第 14.2 节的网关测试矩阵；断开测试在新路径上通过；热路径基准前后对比写进交付说明 | W1、W5 | L |
 | W7 | 用量：从返回值提交、未上报关闭、恢复扫描改标记、监控结算走返回值、任务观察只调 `Monitor` | `server/internal/usage/**`、`server/internal/core/ports_billing.go` | 用量草稿第 11 节的矩阵（同步、任务、监控各行）；数据库测试确认真的跑了 | W1 | M |
-| W8 | 请求体上限搬进网关设置（8.1）：`GatewaySettings` 加 `max_request_body_mb`（默认 128、范围 1 到 1024、`normalized`、接口校验 `out_of_range`、`protocol.GatewaySettings` 镜像）；`bodyLimit` 只读它（HTTP 请求体与 WebSocket 单条消息）；删除环境变量 `max_request_body_mb`（全局层、分组层、进程环境变量）、`Environment.Bytes()`、单位 `mb`；迁移 `0106`（全局值搬进 `gateway` 行，`environment` 行和 `groups.environment` 删键）；`hooks.go` 的 `requestTooLarge` 一组；网关设置卡片加一行、中英文文案、类型与模拟数据；平台调用超时的文案（8.4）；保存过大值时的警告（8.3，按 D23 已删）。`request.maxBodyBytes` 字段本身由 W1 删，W8 先合入时 `bodyLimit` 已不读它 | `server/internal/gateway/{settings,settings_api,settings_plugin,hooks}.go`、`gateway/pipeline.go`（只动 `bodyLimit`）、`server/internal/core/environment.go`、`sdk/protocol/{environment,settings}.go`、`server/internal/migrations/0106_*.sql`、上述各处的测试（8.1 列出的 `gateway`、`core`、`environment`、`group`、`config` 测试）、`web/src/views/settings/**`、`web/src/i18n/locales/*/settings.ts`、`web/src/api/types.ts`、`web/mock/{billing,environment}.ts`、`AGENTS.md`（迁移编号一句） | 设置接口测试：默认 128、缺字段的行取默认、范围外 `out_of_range`、保存后立即生效；网关测试：超过设置的 HTTP 请求 413、WebSocket 消息以 1009 关闭、分组的 `environment` 不再影响上限；环境变量接口不再列出该变量，带着它保存报未知变量；迁移测试（数据库真的跑了）：全局值搬到 `gateway` 行且不覆盖行里其他字段、没有 `gateway` 行时新建、`environment` 行与分组的键被删、分组其余变量不动、迁移后“环境变量”页和分组能保存；`GatewaySettingsCard.spec.ts`；`npm run typecheck`、`test`、`lint` | 无 | M |
+| W8 | 请求体上限搬进网关设置（8.1）：`GatewaySettings` 加 `max_request_body_mb`（默认 128、范围 1 到 1024、`normalized`、接口校验 `out_of_range`、`protocol.GatewaySettings` 镜像）；`bodyLimit` 只读它（HTTP 请求体与 WebSocket 单条消息）；删除环境变量 `max_request_body_mb`（全局层、分组层、进程环境变量）、`Environment.Bytes()`、单位 `mb`；迁移 `0107`（全局值搬进 `gateway` 行，`environment` 行和 `groups.environment` 删键）；`hooks.go` 的 `requestTooLarge` 一组；网关设置卡片加一行、中英文文案、类型与模拟数据；平台调用超时的文案（8.4）；保存过大值时的警告（8.3，按 D23 已删）。`request.maxBodyBytes` 字段本身由 W1 删，W8 先合入时 `bodyLimit` 已不读它 | `server/internal/gateway/{settings,settings_api,settings_plugin,hooks}.go`、`gateway/pipeline.go`（只动 `bodyLimit`）、`server/internal/core/environment.go`、`sdk/protocol/{environment,settings}.go`、`server/internal/migrations/0107_*.sql`、上述各处的测试（8.1 列出的 `gateway`、`core`、`environment`、`group`、`config` 测试）、`web/src/views/settings/**`、`web/src/i18n/locales/*/settings.ts`、`web/src/api/types.ts`、`web/mock/{billing,environment}.ts`、`AGENTS.md`（迁移编号一句） | 设置接口测试：默认 128、缺字段的行取默认、范围外 `out_of_range`、保存后立即生效；网关测试：超过设置的 HTTP 请求 413、WebSocket 消息以 1009 关闭、分组的 `environment` 不再影响上限；环境变量接口不再列出该变量，带着它保存报未知变量；迁移测试（数据库真的跑了）：全局值搬到 `gateway` 行且不覆盖行里其他字段、没有 `gateway` 行时新建、`environment` 行与分组的键被删、分组其余变量不动、迁移后“环境变量”页和分组能保存；`GatewaySettingsCard.spec.ts`；`npm run typecheck`、`test`、`lint` | 无 | M |
 | W9 | 注册表、安装、审查：删 `bindDeclared` 与 `plugin/declarative`；上传与加载时的拒绝信息；审查页固定说明；插件列表显示拒绝原因；`api/ops.go` 的 `runtime none` 分支 | `server/internal/plugin/{registry,declarative,install,pkg,api}/**`、`web/src/views/plugins/**` | 旧契约的包上传被拒、信息正确；审查接口返回固定说明；`pkgtest` 夹具不再有 `runtime none` | W1 | M |
 | W10a–W10j | 十个插件各一个包：清单、`hostCompat`、版本、实现或接入 `Execute` | 各自的 `plugins/<name>/**` | 一致性套件（14.1）；各自原有测试移植后通过；`TestReleasedPluginsBumped` | 见下 | 见下 |
 | W11 | 构建与工具：打包工具删 `runtime none` 分支；构建脚本注释；其余第一方插件（moderation、guard、dynweight、mailer、growth、payment）按新 SDK 重新构建并升版本；moderation 去掉 `WithMaxRecvMsgSize`（8.2） | `tools/sub2api-plugin/**`、`deploy/docker/build-go.sh`、上述插件目录的 `manifest.json` | `tools/sub2api-plugin` 测试；镜像构建产出全部插件包 | W3 | S |
@@ -997,7 +997,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 15. volcengine 视频任务没有真实账号可测。
 16. 新 proto 的生成代码差异没有跑过 `buf generate`。
 17. (b) 级只有提纲：代理的 CONNECT 与 socks5 拨号没有验证。
-18. 迁移 0106 的 SQL（8.1）是草稿，没有运行过；`gateway` 行不存在时由迁移新建一行只含一个键的 JSON，读取时其余字段取默认值这一点只读了 `loadGatewaySettings` 的代码。
+18. 迁移 0107 的 SQL（8.1）是草稿，没有运行过；`gateway` 行不存在时由迁移新建一行只含一个键的 JSON，读取时其余字段取默认值这一点只读了 `loadGatewaySettings` 的代码。
 19. 去掉 `WithMaxRecvMsgSize`、把钩子插件的接收上限固定为最大值之后，moderation 在请求体接近上限时的内存表现没有测量；它自己的 `max_inflight_mb` 预算按请求字段的字节数准入，单个请求总是接收，所以一个 1 GiB 的请求会原样进到它的进程里；插件默认不限内存（D23），管理员给它设了上限时要按 8.3 留量。
 
 ## 16. 需要用户确认
