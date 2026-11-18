@@ -90,7 +90,7 @@ export default {
     model_availability: 'Model temporarily unavailable',
     usage_unreported: 'Usage not reported (not billed)'
   },
-  unreportedHint: 'The plugin returned no usage for this request, so it was not billed.',
+  unreportedHint: 'The plugin returned no usage for this request (or chose the host\'s reading and it was empty), so it was not billed.',
   cols: {
     timing: 'Timing',
     detail: 'Details',
