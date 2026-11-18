@@ -38,7 +38,7 @@
 
 ### `TestBodyFilter`（移植）
 
-两个类型都沿用 openai 预设的过滤字段。输入 `{"model":"d","service_tier":"priority","safety_identifier":"u1","user":"u1","messages":[]}`，结果必须是 `{"model":"d","user":"u1","messages":[]}`（逐字节）。
+两个类型都过滤 `service_tier`、`safety_identifier`（插件的 `azure()` 里写明，预设不带过滤字段）。输入 `{"model":"d","service_tier":"priority","safety_identifier":"u1","user":"u1","messages":[]}`，结果必须是 `{"model":"d","user":"u1","messages":[]}`（逐字节）。
 
 这正是 README 里“顺序例外”实际涉及的两个字段：移植后过滤发生在运营方的参数覆盖之后。
 
@@ -120,7 +120,7 @@ openai 的分类策略原样，没有 Azure 特有的规则。时钟 `1800000000
 
 `TestManifest` 里依赖引擎的只有三处，其余（数据库、平台、表单、权限、路由、升级夹具）保留：
 
-- 移植：`assertJSON(at.Upstream.Layer(), declaration)`（`{"preset":"anthropic","filterFields":[]}`）改成对类型配置的断言；特别是过滤字段为空这一点要保住（预设里有三个）。
+- 移植：`assertJSON(at.Upstream.Layer(), declaration)`（`{"preset":"anthropic","filterFields":[]}`）改成对类型配置的断言；特别是过滤字段为空这一点要保住。
 - 移植：`guardedSettings` 恰好一项，`base_url` 只允许默认上游地址（`https://api.anthropic.com`）。
 - **要反过来**：今天断言清单**不**声明 `platform.execute.v1`（“进程只提供目录路由”），也**不**持有 `accounts.credentials`（“凭证留在核心里，由核心构造请求”）。改写后插件自己构造请求：`platform.execute.v1` 这个能力不再存在（设计稿 D6）；插件要读到账号的凭证，今天凭证只发给持有 `accounts.credentials` 的插件（`common.proto` 里 `Account.credentials_json` 的注释），这一条多半要反过来，以 W1、W9 定下的规则为准。这两条断言要按新契约重写，不能照搬。
 

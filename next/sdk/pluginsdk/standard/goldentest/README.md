@@ -126,9 +126,9 @@
 
 | 类型 | 声明的过滤字段 | 声明的 `paramOverride` |
 |---|---|---|
-| openai/`apikey`、anthropic/`apikey`、gemini/`apikey`、relay/`relay_key` | 清单写的是 `filterFields: []`，把预设的清空了 | 无 |
-| azure_openai/`azure_v1`、`azure_deployment` | 没有自己写，沿用 openai 预设的 `service_tier`、`safety_identifier` | 无 |
-| 预设本身 | openai：`service_tier`、`safety_identifier`；anthropic：`service_tier`、`inference_geo`、`speed`；gemini：无 | 无 |
+| openai/`apikey`、anthropic/`apikey`、gemini/`apikey`、relay/`relay_key` | 无（清单当年写的是 `filterFields: []`） | 无 |
+| azure_openai/`azure_v1`、`azure_deployment` | `service_tier`、`safety_identifier`（插件的 `azure()` 里写明） | 无 |
+| 预设本身 | 无（预设不带过滤字段，azure_openai 自己写这两个） | 无 |
 
 也就是说，今天这条顺序变化只在 azure_openai 的两个类型上可见：运营方在账号的参数覆盖里设置 `service_tier` 或 `safety_identifier` 时，今天发给上游，改写之后被插件删掉。W4、W10d 要把它写进 CONTRACTS 新章节和 CHANGELOG。内置的 `claude_max_tokens` 只写 `max_tokens`，不受影响。
 

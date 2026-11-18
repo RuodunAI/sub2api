@@ -123,7 +123,7 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
   `Set` 原地替换已有的值，没有就加在所在对象的末尾（连同缺的上层对象）；`Delete` 连同一个分隔逗号删掉成员。
 - **非法 JSON、重复键**：核心在调插件之前已经把这两种请求体以 400 拒绝（设计稿 8.1 的结构检查）。库在改写前仍然检查一遍（`jsonedit` 的规则）：要改写的请求体不是合法 JSON，或者 `Set` 路径上的某个键在它所在的对象里出现两次，就返回 `INVALID_ARGUMENT`，什么都不中继（核心按插件不可用换号），而不是发出一个改了一半的请求。路径之外的重复键不归改写管，原样保留；`Delete` 删掉一个路径的每一次出现。路由没有任何改写时，库根本不读请求体。
 - **一次还是两次拷贝**：`FilterFields` 与 `Edit` 各是一批：两者都真的改了请求体时拷贝两次（`Edit` 的签名收发字节，azure_openai 等插件在用）；只有一方改时拷贝一次。
-- **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。目前只有 azure_openai 的两个类型保留了 openai 预设的过滤字段（`service_tier`、`safety_identifier`）。
+- **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。预设都不带过滤字段；目前只有 azure_openai 的两个类型自己写了 `service_tier`、`safety_identifier`。
 - **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`；openai 的 `IncludeStreamUsage` 看的是 `meta.stream`，不是请求体。
 
 ## 例子一：OpenAI 风格（openai 插件）
@@ -143,12 +143,10 @@ import (
 // New returns the platform of the apikey account type.
 func New() *standard.Platform { return standard.New(APIKey()) }
 
-// APIKey is the apikey type: the preset without filter fields (the plugin
-// forwards service_tier and safety_identifier), plus the organization and
-// project an account may set, which replace the client's headers.
+// APIKey is the apikey type: the preset, plus the organization and project
+// an account may set, which replace the client's headers.
 func APIKey() standard.Type {
 	t := openai.APIKey("apikey")
-	t.FilterFields = nil
 	t.Headers = append(t.Headers,
 		standard.Set("openai-organization", standard.Field("organization")),
 		standard.Set("openai-project", standard.Field("project")))
@@ -271,13 +269,9 @@ func New() *Plugin {
 	return p
 }
 
-// APIKey is the apikey type: the preset without filter fields (the plugin
-// forwards service_tier, inference_geo and speed).
-func APIKey() standard.Type {
-	t := anthropic.APIKey("apikey")
-	t.FilterFields = nil
-	return t
-}
+// APIKey is the apikey type: the anthropic preset as it is (every request
+// field is forwarded).
+func APIKey() standard.Type { return anthropic.APIKey("apikey") }
 
 // Init implements pluginsdk.Initializer.
 func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
@@ -288,7 +282,7 @@ func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 
 `main.go` 不变（`pluginsdk.Serve(anthropic.New(), pluginsdk.WithManifest(manifestJSON))`）。
 
-relay 是同一个预设加四处差异，外加它自己的两个客户端请求头：
+relay 是同一个预设加三处差异：
 
 ```go
 // Package relay is the platform of Anthropic-compatible relays.
@@ -311,7 +305,6 @@ func RelayKey() standard.Type {
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = "Base URL of the relay is required / 请填写中转站的 Base URL"
 	t.DefaultProtocol = ""
-	t.FilterFields = nil
 	t.PassHeaders = []string{"anthropic-version", "anthropic-beta"}
 	return t
 }

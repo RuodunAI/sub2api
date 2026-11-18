@@ -68,7 +68,9 @@ func TestFields(t *testing.T) {
 }
 
 func TestWebSocketHandshake(t *testing.T) {
-	p := standard.New(openai.APIKey("apikey"))
+	ty := openai.APIKey("apikey")
+	ty.FilterFields = []string{"service_tier"}
+	p := standard.New(ty)
 	for inbound, want := range map[string]string{
 		"":                                "responses_websockets=2026-02-06",
 		"assistants=v2":                   "assistants=v2,responses_websockets=2026-02-06",

@@ -25,14 +25,6 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-// replayed is the type the golden cases were recorded with: the preset
-// without filter fields, and without the account's organization and project.
-func replayed() standard.Type {
-	t := openai.APIKey("apikey")
-	t.FilterFields = nil
-	return t
-}
-
 var routes = []string{openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings}
 
 // clientHeaders are what a client of the two OpenAI SDK headers sends.
@@ -57,10 +49,10 @@ func build(t *testing.T, p *standard.Platform, protocol, settings string, inboun
 // settings on every route, the WebSocket handshake included: a value set on
 // the account replaces the client's header, and an account that sets
 // neither (absent or left empty in the form) is answered exactly like the
-// replayed type, so the client's own headers still pass through and the
+// preset, the type the golden cases were recorded with, so the client's own headers still pass through and the
 // golden cases hold for the plugin's type.
 func TestOrganizationAndProject(t *testing.T) {
-	plugin, baseline := New(), standard.New(replayed())
+	plugin, baseline := New(), standard.New(openai.APIKey("apikey"))
 	const body = `{"model":"gpt-4o-mini","stream":true}`
 	for _, protocol := range routes {
 		for _, inbound := range []map[string]string{nil, clientHeaders} {
@@ -85,7 +77,7 @@ func TestOrganizationAndProject(t *testing.T) {
 }
 
 // TestForwardsEveryField pins the empty filter list of the released
-// manifest: the fields the preset filters reach the upstream unchanged.
+// manifest: service_tier and safety_identifier reach the upstream unchanged.
 func TestForwardsEveryField(t *testing.T) {
 	const body = `{"model":"gpt-4o-mini", "service_tier":"priority","safety_identifier":"u1","input":[]}`
 	for _, protocol := range []string{openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings} {

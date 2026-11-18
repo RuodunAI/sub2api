@@ -26,7 +26,6 @@ func RelayKey() standard.Type {
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = BaseURLRequired
 	t.DefaultProtocol = ""
-	t.FilterFields = nil
 	t.PassHeaders = []string{"anthropic-version", "anthropic-beta"}
 	return t
 }

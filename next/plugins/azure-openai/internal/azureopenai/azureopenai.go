@@ -49,9 +49,7 @@ func Deployment() standard.Type {
 
 // azure is what both types change in the openai preset: a required resource
 // endpoint without a default (a pasted /openai/v1 or /openai removed), any
-// key format, the key in api-key, the routes given, no model listing. The
-// preset's filter fields stay; they run after the operator's rewrites
-// (design §12.5).
+// key format, the key in api-key, the routes given, no model listing.
 func azure(id string, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
@@ -62,6 +60,10 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 	t.PassHeaders = PassHeaders
 	t.Routes = routes
 	t.Models = nil
+	// service_tier and safety_identifier belong to a client's own OpenAI
+	// account. They are removed after the operator's rewrites (design
+	// §12.5).
+	t.FilterFields = []string{"service_tier", "safety_identifier"}
 	return t
 }
 
