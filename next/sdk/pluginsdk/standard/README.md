@@ -320,7 +320,7 @@ func RelayKey() standard.Type {
 
 测试：`goldentest.Run(t, "anthropic", standardtest.Golden(standard.New(APIKey())))`、`goldentest.Run(t, "relay", standardtest.Golden(New()))`。
 
-azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），完整的配置和它的全部验收断言在 `sdk/pluginsdk/providers/openai/azure_test.go`，照抄即可。
+azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
 ## 测试
 
@@ -328,4 +328,4 @@ azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填�
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(t)`：类型配置能通过检查。
 
-本包自己的验收：`providers/*/golden_test.go` 按五个插件将来的写法构造类型，1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）全部通过，没有例外；`providers/openai/azure_test.go` 是 azure_openai 的断言；`body_test.go` 是请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键。
+本包自己的验收只测库和预设本身：`platform_test.go`、`body_test.go`（请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键），`providers/gemini/golden_test.go` 用原样的 gemini 预设回放 gemini 的样例。插件的类型配置不在 SDK 里复制：1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）由各插件用自己的构造函数回放，azure_openai 的断言在它自己的 `platform_test.go`，CI 测试每个 `plugins/*` 模块。
