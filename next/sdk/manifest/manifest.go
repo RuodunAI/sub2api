@@ -77,12 +77,6 @@ type JSEntry struct {
 // speaking the gRPC plugin protocol. Every plugin has a process.
 const RuntimeGRPC = "grpc"
 
-// Transports of an upstream request (the protocol of an endpoint decides).
-const (
-	TransportHTTP      = "http"
-	TransportWebSocket = "websocket"
-)
-
 // Capability ids understood by host version 0.1.
 const (
 	CapPlatformAdapter   = "platform.adapter.v1"
