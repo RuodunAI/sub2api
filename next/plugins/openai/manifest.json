@@ -3,14 +3,17 @@
   "key": "openai",
   "name": { "en": "OpenAI", "zh": "OpenAI" },
   "description": {
-    "en": "OpenAI API key account type. The openai platform and its endpoints (/v1/chat/completions, /v1/responses including its WebSocket mode, /v1/embeddings) are built into the core; model prices are set by administrators in the core.",
-    "zh": "OpenAI API Key 账号类型（openai 平台及其端点 /v1/chat/completions、/v1/responses（含 WebSocket 模式）、/v1/embeddings 由核心内置；模型价格由管理员在核心中配置）。"
+    "en": "OpenAI API key account type for the built-in openai platform (/v1/chat/completions, /v1/responses including its WebSocket mode, /v1/embeddings). The plugin builds the upstream requests; the core sends them, so the plugin itself makes no network connection. Model prices are set by administrators in the core.",
+    "zh": "为内置 openai 平台提供 OpenAI API Key 账号类型（/v1/chat/completions、/v1/responses（含 WebSocket 模式）、/v1/embeddings）。插件构造上游请求，由核心发送，插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
   },
-  "version": "0.4.4",
+  "version": "0.5.0",
   "publisher": "sub2api",
   "icon": "assets/openai.svg",
-  "runtime": "none",
-  "hostCompat": ">=0.1.290 <0.2.0",
+  "runtime": "grpc",
+  "entry": {
+    "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" }
+  },
+  "hostCompat": ">=0.1.304 <0.2.0",
 
   "capabilities": [
     { "id": "platform.adapter.v1" },
@@ -30,6 +33,7 @@
         "schema": "forms/apikey.schema.json",
         "uiSchema": "forms/apikey.ui.json"
       },
+      "upstreamFields": ["base_url"],
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url", "organization", "project"],
       "guardedSettings": [
@@ -119,22 +123,17 @@
       ],
       "platforms": [
         { "platform": "openai" }
-      ],
-      "upstream": {
-        "preset": "openai",
-        "filterFields": [],
-        "credentials": { "fields": ["organization", "project"] },
-        "headers": {
-          "openai-organization": { "set": "{credentials.organization}" },
-          "openai-project": { "set": "{credentials.project}" }
-        }
-      }
+      ]
     }
   ],
 
+  "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
+
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the OpenAI API key account type for the built-in openai platform", "zh": "为内置 openai 平台注册 OpenAI API Key 账号类型" } }
+      "reason": { "en": "Register the OpenAI API key account type for the built-in openai platform", "zh": "为内置 openai 平台注册 OpenAI API Key 账号类型" } },
+    { "id": "accounts.credentials", "scope": { "types": "own" },
+      "reason": { "en": "Read the API key of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key，用于构造上游请求（由核心发送）" } }
   ],
 
   "externalServices": ["api.openai.com"]
