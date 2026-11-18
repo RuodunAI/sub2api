@@ -583,8 +583,9 @@ func (s *serveSet) buildRuntime(ctx context.Context, peerManager *peer.Manager, 
 	rt.Peer = peerManager
 	rt.SourceAsset = s.store.OpenSourceAsset
 	rt.PeerArtifactClient = peer.NewClient(peerTransport, 30*time.Minute)
-	// Package fetches may reach any enabled node (the old primary after a
-	// primary change among them); only that client is authorized this way.
+	// Package fetches may reach any enabled node: a missing package comes
+	// from whichever online node holds it. Only that client is authorized
+	// this way.
 	packageClient := peer.NewClient(peerManager.WrapTransport(proxy.PeerTransport(s.clientTLS), func(ctx context.Context, u *url.URL) error {
 		return s.store.AuthorizeAnyNodeTarget(ctx, c.NodeID, u)
 	}), runtimecontract.PluginPackageTransferTimeout)
