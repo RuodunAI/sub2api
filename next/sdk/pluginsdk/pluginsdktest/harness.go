@@ -39,6 +39,9 @@ type Options struct {
 	SDK []pluginsdk.Option
 	// SkipHandshake leaves InitHost/Configure to the test.
 	SkipHandshake bool
+	// PluginServer are extra options of the plugin's gRPC server, e.g. an
+	// interceptor that sees when a call returns on the plugin's side.
+	PluginServer []grpc.ServerOption
 }
 
 // Harness is a running in-process plugin.
@@ -124,7 +127,7 @@ func startPlugin(t testing.TB, p any, opts Options, fh *FakeHost, dialHost func(
 	t.Helper()
 	sdkOpts := append([]pluginsdk.Option{pluginsdk.WithStrictNetwork(pluginsdk.StrictNever)}, opts.SDK...)
 	plugLis := bufconn.Listen(1 << 20)
-	plugSrv := pluginsdk.NewGRPCServer(nil)
+	plugSrv := pluginsdk.NewGRPCServer(opts.PluginServer)
 	if err := pluginsdk.Register(plugSrv, p, dialHost, sdkOpts...); err != nil {
 		t.Fatalf("pluginsdktest: register: %v", err)
 	}
