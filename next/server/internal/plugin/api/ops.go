@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
@@ -436,14 +437,10 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 		return ri, err
 	}
 	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
-	// As the runtime launches it (grpcruntime launchSpec): the manifest's
-	// memory figure is what the plugin says it needs, not a limit. Memory is
-	// limited by the operator's override, else the node cap; 0 is unlimited.
+	// As the runtime launches it: the manifest's memory figure is what the
+	// plugin says it needs, not a limit.
 	ri.Effective = ri.Requested
-	ri.Effective.MemoryMB = ri.Overrides.MemoryMB
-	if ri.MaxMemory > 0 && (ri.Effective.MemoryMB == 0 || ri.Effective.MemoryMB > ri.MaxMemory) {
-		ri.Effective.MemoryMB = ri.MaxMemory
-	}
+	ri.Effective.MemoryMB = grpcruntime.EffectiveMemoryMB(ri.Overrides.MemoryMB, ri.MaxMemory)
 	if ri.Overrides.CPU > 0 {
 		ri.Effective.CPU = ri.Overrides.CPU
 	}

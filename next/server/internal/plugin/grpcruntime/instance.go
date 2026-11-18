@@ -196,17 +196,14 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		Seccomp:       i.rt.o.Seccomp,
 	}
 	// The manifest's memory figure is what the plugin says it needs, not a
-	// limit: memory is limited only by the operator, per plugin
-	// (mergeLimits) or by the node's cap.
+	// limit: memory is limited only by the operator (EffectiveMemoryMB).
 	if m.Resources != nil {
 		spec.CPU = m.Resources.CPU
 		spec.MaxThreads = m.Resources.MaxThreads
 		spec.MaxOpenFiles = m.Resources.MaxOpenFiles
 	}
 	mergeLimits(&spec, st.limits)
-	if max := i.rt.o.MaxMemoryMB; max > 0 && (spec.MemoryMB == 0 || spec.MemoryMB > max) {
-		spec.MemoryMB = max
-	}
+	spec.MemoryMB = EffectiveMemoryMB(st.limits.MemoryMB, i.rt.o.MaxMemoryMB)
 	strict := "0"
 	if spec.StrictNetwork {
 		strict = "1"
@@ -220,13 +217,20 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 	return spec
 }
 
-// mergeLimits applies the operator's per-plugin overrides on top of the
-// manifest limits; zero means "keep the manifest value" (for memory: no
-// per-plugin limit).
-func mergeLimits(spec *core.LaunchSpec, l resourceLimits) {
-	if l.MemoryMB > 0 {
-		spec.MemoryMB = l.MemoryMB
+// EffectiveMemoryMB is a plugin's memory limit in MB, 0 for none: the
+// operator's per-plugin override when set (> 0), else the node's cap; an
+// override above a set cap is the cap.
+func EffectiveMemoryMB(override, capMB int) int {
+	if capMB > 0 && (override <= 0 || override > capMB) {
+		return capMB
 	}
+	return max(override, 0)
+}
+
+// mergeLimits applies the operator's per-plugin overrides on top of the
+// manifest limits; zero means "keep the manifest value". Memory is
+// EffectiveMemoryMB's.
+func mergeLimits(spec *core.LaunchSpec, l resourceLimits) {
 	if l.CPU > 0 {
 		spec.CPU = l.CPU
 	}
