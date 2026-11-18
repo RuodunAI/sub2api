@@ -56,10 +56,24 @@ Caddy 路由：
 在 Docker 主机上的完整仓库目录中执行，宿主无需安装 Go：
 
 ```sh
-sh next/deploy/e2e/test.sh
+# 整套约 27 分钟；脚本默认的 -timeout=30m 不够，后给的 -timeout 覆盖它。
+sh next/deploy/e2e/test.sh -timeout=150m
 # 只跑选定用例；参数直接传给 go test。
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
+
+用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36：
+
+| 用例 | 内容 |
+|---|---|
+| AC30 | 十个平台插件各经 `Execute` 转发一个非流式、一个流式请求；mock 看到的是插件构造的请求（主机、路径、凭证、请求体），请求只计费一次 |
+| AC31 | 运营方的请求头覆盖压过插件的默认头、透传只补没有的头、签名（权威）头改不了、账号代理 |
+| AC32 | 上游出错和插件在发送前失败时换号（只计费一次，账号不受罚）；插件在等待任务提交时被杀，任务不登记、请求免费 |
+| AC33 | 旧契约的清单在上传时以固定信息被拒、不留版本行；旧协议的二进制在加载时被拒 |
+| AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
+| AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
+
+发布插件或滚动后测试会等每个节点的 `/healthz` 恢复（发布时两个节点会短暂不就绪，负载均衡此时对写请求回空的 503）；集群回 409“另一个集群变更正在提交”时上传插件会重试最多 20 秒。
 
 脚本只接受 `sub2api-next-e2e` 或 `sub2api-next-e2e-<后缀>` 项目名；启动 runner 前核对 6 个运行中容器的 Compose 项目、服务标签和 `edge` 网络归属。它不会启动或重建后端服务。默认读取同目录 `.env`，可用 `E2E_ENV_FILE` 指定其他独立配置；自定义项目时必须显式传入同一个名称，例如 `E2E_PROJECT=sub2api-next-e2e-ci sh next/deploy/e2e/test.sh`，脚本中的项目名优先于 `.env`。
 
@@ -80,7 +94,7 @@ set +a
 export E2E_BASE_URL="${E2E_PUBLIC_URL:-http://127.0.0.1:3120}"
 export E2E_DOCKER_HOST=local
 export E2E_LONG=1
-(cd next/e2e && go test -count=1 -timeout=30m -v ./...)
+(cd next/e2e && go test -count=1 -timeout=150m -v ./...)
 ```
 
 如果 Docker 位于远端，在本机建立 `ssh -N -L 3120:127.0.0.1:3120 <测试主机>`，将 `E2E_DOCKER_HOST` 改为该 SSH 主机名，并给测试进程提供**这套 E2E 环境**的管理员凭据及 `E2E_PROJECT`。`E2E_NODE_URLS`、`E2E_MOCK_URL` 默认从 `E2E_BASE_URL` 推导，不需要逐项指定。不要把单测的 `TEST_DATABASE_URL` / `TEST_REDIS_URL` 指向这里；E2E 自己创建完整业务状态。

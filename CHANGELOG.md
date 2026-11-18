@@ -30,42 +30,79 @@
 - **性能**：判断只是调度时的内存比较，不增加数据库和 Redis 访问；没有配置的账号只多一次空指针判断。没开转换的账号在转换请求体、下载媒体之前就被过滤，跨平台请求比以前便宜。
 - **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；密钥页的端点说明只按分组的平台列端点，不反映账号关掉的协议；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 已改成先断言默认 404、在账号上为模型开启转换后断言 200，但只编译过，没有在部署好的栈上运行。
 
-### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限（核心与全部插件；插件协议 2、Host API 10；迁移 0107，只改数据；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
+### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限；写死的超时与限制去掉（核心与全部插件；插件协议 2、Host API 10；迁移 0107 只改数据、0108 把模型名的列改成 text；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
 
-分支 `feat/forwarding-v2`（`26950a969`），未发布。契约见 CONTRACTS §111、§112，插件写法见 [PLUGIN-DEVELOPMENT.md](next/docs/PLUGIN-DEVELOPMENT.md)，设计与所有者在实现期间的决定见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)。
+分支 `feat/forwarding-v2`（`dc5c306e9`，含其后的审查修正），未发布。契约见 CONTRACTS §111、§112（去掉的限制与仍然有效的界限在 §112.16），插件写法见 [PLUGIN-DEVELOPMENT.md](next/docs/PLUGIN-DEVELOPMENT.md)，设计与所有者在实现期间的决定见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)。
 
 **升级前必读**
 
-- **核心和全部插件一起换，旧插件包装不上。** 插件线协议从 1 升到 2、Host API 从 9 升到 10。按旧契约构建的插件包（旧协议的二进制，或清单里有 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、`platform.execute.v1`、`platform.poll.v1`）在上传、安装、加载时都以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...`），插件列表显示拒绝原因，它的账号在装上新版本之前不可用。第一方插件全部重新构建并升了版本，`hostCompat` 都是 `>=0.1.304 <0.2.0`；第三方平台插件要由作者用新 SDK 重新构建。
+- **核心和全部插件一起换，旧插件包装不上。** 插件线协议从 1 升到 2、Host API 从 9 升到 10。按旧契约构建的插件包（旧协议的二进制，或清单里有 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、`platform.execute.v1`、`platform.poll.v1`）在上传、安装、加载时都以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心），插件列表显示拒绝原因（控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），它的账号在装上新版本之前不可用。第一方插件全部重新构建并升了版本，`hostCompat` 都是 `>=0.1.304 <0.2.0`；第三方平台插件要由作者用新 SDK 重新构建。
 - **只能停机重新部署。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件（relay、claude_oauth、azure_openai、vertex、bedrock 等）逐个装上新版本。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024，CONTRACTS §111）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭），保存后各节点对新请求生效。环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0107 把全局层存着的值搬进网关设置；**分组层的值丢弃**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。端点清单的 `request.maxBodyBytes` 删除（没有清单用过）。
 - **插件内存默认不限**（CONTRACTS §111.5）：只有管理员设置时才有上限。插件资源页给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 只作展示。之前靠默认封顶或清单的值限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`。平台插件现在持有完整请求体，给它设上限时每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。交给插件的请求体不按字节排队，网关设置里没有内存警告。
 - **同版的协议绑定把跨平台协议转换改为默认关闭**（上一节）：升级前按它的手册导出存量转换，升级后在账号上为模型开启。
 - **azure_openai 的一处顺序变化**：过滤字段（`service_tier`、`safety_identifier`）现在在插件里、排在账号参数覆盖之后执行。运营方在 Azure 账号的参数覆盖里写这两个字段之一时，以前发给上游，现在被删掉。其他插件没有过滤字段，不受影响。
-- 回退：没有专门的回退流程；要回去就把上一版核心和上一版整套插件一起重新部署。迁移 0107 只改数据：回到旧核心后请求体上限按默认 128 MB，调过的要在“环境变量”页重填。
+- **写死的超时与限制去掉**（所有者决定“超时、限制都去掉”，CONTRACTS §112.16）：一次请求上留下的界限只有管理员配置的（请求体上限、上游的响应头 / 整体 / 流式空闲超时、钩子和热路径超时、平台调用超时），加上安全、钱算对和防止进程崩溃的检查。以前带着明确错误被拒绝的东西，现在表现为内存占用、存储增长或一个一直等着的请求。删掉的和没有它的代价：
+  - 插件在 `Execute` 里自己的工作不再计时（以前按段超过平台调用超时就以 `segment_timeout` 换号）：挂住的插件让这次尝试一直等，直到客户端离开、上游超时或插件进程结束，期间占着账号和 API Key 的槽位。
+  - 插件解析用量的端点和任务提交（等待形式）没有总时长（以前 6 小时加 `relay_timeout_seconds`，中间版本还在观察后约 44.5 分钟切断）：没配 `relay_timeout_seconds` 的部署里，一个不停的上游流会一直进行。
+  - 等待形式缓冲的非流式回答不限大小（以前 64 MiB 以上回 503）：大回答落临时文件占磁盘，请求结束即删。
+  - 插件的辅助请求（取回）不限次数和大小（以前每次调用 8 个、回答截到 8 MiB，URL、请求头、方法也有限制），没设 `relay_timeout_seconds` 时也没有整体超时（以前默认 5 分钟）：有缺陷的插件可以不停地取回，回答整份进内存。
+  - 任务观察的结果、等待形式存下的读数和观察不限大小（以前 512 KiB，后者超出时请求 503 且白送）：`plugin_executions` 表会随大回答变大。
+  - 插件发给核心的宿主调用不再有 4 MiB 上限，插件交回的请求体也不再有界：有缺陷的插件可以让核心为一次调用分配到约 2 GiB。
+  - WebSocket：上游单条消息不限大小（以前 64 MiB）、每个 API Key 的会话数不限（以前 64 个，第 65 个 429）、上游握手和读写没有固定时限（以前 30 秒和 1 分钟）：超大消息整条进内存，一个 Key 能开任意多会话，不读的一方由心跳 ping 结束。
+  - 写客户端没有时限（以前每次 60 秒）：客户端连着但不读时，请求一直占着账号和 API Key 的槽位，直到连接断开。
+  - 代理的拨号与 TLS 握手没有固定的 15 秒：由操作系统的连接超时和网关的响应头超时管住。
+  - 每个插件实例同时进行的 `Execute` 不再限 1024 个（以前满了 503）：并发只由账号和 API Key 的槽位限制。
+  - 交给插件的路径参数和查询参数不再截断（以前 32 个、名 64 字节、值 512 字节）；SSE 单行不限长（以前 16 MiB 断流）；协议转换读的回答和只流式上游攒下的内容不限大小（以前 32 MiB 回 502）：都整份进内存。
+  - 非流式 JSON 回答按整个回答读用量（以前只读前 32 MiB，超过的回答**按 0 计费**）：这一条是钱的修正，代价是回答在读完用量前整份留在内存里一次。
+  - 读用量的插件默认看到整份回答、全部列出的事件和请求字段的完整值，`detail_json` 不再截断（以前默认 256 KiB、64 条事件、字段 4 KiB / 32 KiB、`detail_json` 4 KiB）：插件内存和消息变大；清单自己写了 `usageMaxBytes` 的照旧。
+  - 模型名不限长度（以前客户端的超过 256 字节回 400，使用记录截到 200，价格模型 ID 和分组的模型名单限 200 字符）：超长的模型名整份进使用记录和日志；价格表上的唯一索引仍在，超过约 2.7 KB 的模型 ID 写价格时报错。
+- **迁移 0108**（`0108_model_name_text.sql`）：`usage_logs`、`usage_hourly` 的 `model` / `upstream_model` 和 `price_rules.model`、`model_prices.model` 改成 `text`。类型转换不重写表、不重建索引，每张表只拿一次短暂的排他锁；`lock_timeout` 10 秒，拿不到锁迁移失败，避开业务高峰执行。触发器 `usage_hourly_mark_update` 在同一事务里重建；价格模型 ID 的检查只留字符集。
+- **执行的恢复按存活判断**：插件解析用量的端点和任务提交在观察之后由网关每 15 秒续期，节点崩溃时恢复扫描在 2 分钟没有续期后把它关成零费用的“未上报”、释放预扣（约 3 分钟内），活着的执行不会因为时间长被关掉。
+- 回退：没有专门的回退流程；要回去就把上一版核心和上一版整套插件一起重新部署。迁移 0107 只改数据：回到旧核心后请求体上限按默认 128 MB，调过的要在“环境变量”页重填。迁移 0108 不用撤：旧核心读写 `text` 列照常（旧核心自己会把模型名截到 200）。
 
 **运营方能看到的变化**
 
 - 所有平台插件都有进程：openai、gemini、relay、azure_openai 原来只有清单，现在是普通的 gRPC 插件，默认发布包里每个节点多两个进程（openai、gemini）。账号类型、表单、凭证字段不变，账号不用迁移。
 - 插件构造完请求后由核心发送，插件不在流式回答里：插件崩溃、内存超限重启、升级换代不再切断在途的流（以前 codex 会）。codex 请求不再写执行记录（以前每请求三次写入）。
-- 用量由插件解析的端点和任务提交（目前是 volcengine 的视频提交）：插件在交换结束后给出用量或任务；插件什么都没给（报错、崩溃、给错种类）时，同步请求记一条零费用的使用记录（`error_type = usage_unreported`，每次一条 ERROR 日志），核心不再按自己的读数补记；任务提交没有给出任务时，任务不登记、客户端报错、预扣释放。等待期间插件崩溃会切断上游，这个请求不计费。“10 分钟内 20 次未上报就通知”没有做，控制台也还没有“未上报”的筛选。
+- 用量由插件解析的端点和任务提交（目前是 volcengine 的视频提交）：插件在交换结束后给出用量或任务；插件什么都没给（报错、崩溃、给错种类）时，同步请求记一条零费用的使用记录（`error_type = usage_unreported`，每次一条 ERROR 日志），核心不再按自己的读数补记；任务提交没有给出任务时，任务不登记、客户端报错、预扣释放。等待期间插件崩溃会切断上游，这个请求不计费。插件选了核心的读数（`host_usage`）而核心一个用量都没读到时，同样记零费用的“未上报”，不按 0 计费（不等待形式下客户端照常拿到回答）。“10 分钟内 20 次未上报就通知”没有做。
+- 使用记录里“未上报”的请求显示为“未上报用量（未计费）”，详情说明插件没有返回用量；失败请求的错误类型筛选能选它。
 - 运营方的请求头设置：插件的头分成默认头和权威头。透传的客户端头只补没有的；请求头覆盖和参数覆盖可以改、删默认头，改不了权威头。openai、gemini、relay、azure_openai、anthropic 的 `apikey` 只有鉴权头是权威头（与以前一样）；claude_oauth、codex、volcengine 的头全部是权威头（与以前一样）。
-- “平台调用超时”的含义：插件在一次请求中每段自身处理时间的上限（构造请求、两次宿主调用之间、解析用量），不含等待上游的时间；默认值和范围不变。插件超时、出错时请求没有发出，按插件不可用换号，不惩罚账号。
+- “平台调用超时”只管上游出错后的错误分类（`ClassifyError`）和读断开策略，默认值和范围不变；`Execute` 不计时（见上面“写死的超时与限制去掉”）。插件出错、崩溃时请求没有发出，按插件不可用换号，不惩罚账号。设置页的说明已按这个含义改写；“平台热路径超时”的说明改成它实际管的模型解析和预扣估算。
 - 安装与升级的审查页对平台插件固定显示一句：插件会收到经它的账号发出的每个请求的完整内容，并决定请求发往哪个地址（不是权限，不能取消）。
 - bedrock 会清洗 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义的 `custom`、`cache_control` 的 `scope` 和模型不接受的 `ttl` 等），不用再在参数覆盖里手工删。
 - 钩子调用因请求超过插件 gRPC 接收上限而失败的情况不再发生（插件的接收上限固定为传输层最大值），`requestTooLarge` 的熔断例外删除。
+- claude_oauth：`count_tokens` 发到计数端点 `/v1/messages/count_tokens`（带 OAuth 的 beta）；以前发到 `/v1/messages`，上游回 401，运营方透传了 `anthropic-beta` 且客户端带 `max_tokens` 时还会在按免费计的端点上真的生成一次。错误分类改用 Anthropic 的策略（以前读错了错误类型的位置，“prompt is too long”这类 400 被一个账号接一个账号地换号，而不是回给客户端）。不转发任何客户端请求头（与已发布的 0.2.5 相同）。
+- bedrock：删掉请求体里的 `inference_geo`、`speed`（以前删的是拼错的 `interface_geo`，真正的字段会作为未知字段发给 Bedrock）。
+- volcengine：在 anthropic 平台上只服务 Messages，`count_tokens` 改由核心本地估算（以前只有 Ark 账号的分组对 `count_tokens` 一律回 503）。
+- vertex：把客户端的 `user-agent`、`x-goog-api-client` 作为默认头转发。vertex、bedrock 不再声明用不到的 `externalServices`。
+
+**修正**（审查轮发现，都在发布前修好）
+
+- 插件解析用量的端点上，插件在 2xx 回答里读出业务错误时，以前已经计费却回客户端 503；现在照常发出上游的回答。缓冲回答的临时文件真的写不进时，在计费之前就按未上报关闭。
+- 执行的观察没能落库时，以前什么记录都不写、预扣挂到 24 小时后才释放；现在写零费用记录、立即释放。已经有使用记录的请求再被恢复扫描关闭时不再报错。
+- 任务提交的提交在重试窗口末尾才落库时，以前客户端拿到 503 而任务已登记、预留已扣；现在报失败前先确认，落了库就照常交付任务。
+- 任务的原账号已删除或属于别的插件时，以前一直延后到期限、按估算扣费；现在算查询失败，用完失败次数后退款。
+- WebSocket 首轮插件给出可重试的错误回答时，以前客户端收到 503 `no_available_account`；现在和 HTTP 一样收到这个错误。
+- 插件取回在 `Execute` 和任务观察里改用同一份实现：以前 `Execute` 里的取回允许插件改写 `Host` 头、把含代理地址的传输错误原文交给插件。
+- 插件列表的“旧契约被拒”以前靠比较错误文字识别，错误被包装或截断就会丢；现在节点记结构化的代码。插件资源页显示的生效内存上限改用运行时的同一个函数（`EffectiveMemoryMB`），不再各算一份。
+- 插件解析用量的端点上，插件选了核心的读数时不再每个请求记一条 WARN（只在规则一个用量都没读到时记）。
 
 **插件作者**
 
 - 删除：`PlatformService.BuildUpstreamRequest`（声明字段加补丁）、`ExtractUsage`、`ParseTaskSubmission` 作为核心调用、`Poll`、`BuildReconcileRequest` / `ParseReconcileResponse`；`HostService.ForwardUpstream`、`RecordUsage`、`ReserveAndWatch`、`ReportTaskProgress`；`RequestSigning`（核心签名）；清单的 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`，能力 `platform.execute.v1`、`platform.poll.v1`；SDK 的 `SetPatch` / `DeletePatch`、`WithMaxRecvMsgSize`；`sdk/upstream`、`sdk/platforms/upstream`。
-- 新的写法：实现 `UpstreamBuilder.BuildUpstream`，让 `Execute` 是 `pluginsdk.ExecuteDefault`。插件拿到完整请求体（转换、模型映射、参数覆盖之后），用 `NewUpstream` 构造最终请求（`Header` 权威、`DefaultHeader` 默认），经 `Relay` / `RelayAndWait` 交给核心；辅助请求用 `Fetch`（主机是清单 `externalServices` 或本账号的上游地址，每次最多 8 个、回答最多 8 MiB）；用量与任务只在返回值里（`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`）；任务观察实现 `TaskMonitor.Monitor`，结果是返回值。签名用 `sdk/reqsign` 自己签；改请求体只用 `sdk/pluginsdk/jsonedit`；不开套接字、不用厂商 SDK 客户端、不重试。
+- 新的写法：实现 `UpstreamBuilder.BuildUpstream`，让 `Execute` 是 `pluginsdk.ExecuteDefault`。插件拿到完整请求体（转换、模型映射、参数覆盖之后），用 `NewUpstream` 构造最终请求（`Header` 权威、`DefaultHeader` 默认），经 `Relay` / `RelayAndWait` 交给核心；辅助请求用 `Fetch`（主机是清单 `externalServices` 或本账号的上游地址，规则是 `manifest.FetchHostAllowed`；不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除，核心不置 `truncated`）；用量与任务只在返回值里（`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`）；任务观察实现 `TaskMonitor.Monitor`，结果是返回值。签名用 `sdk/reqsign` 自己签；改请求体只用 `sdk/pluginsdk/jsonedit`；不开套接字、不用厂商 SDK 客户端、不重试。
 - API Key 加基础地址的账号类型用新库 `sdk/pluginsdk/standard` 和预设 `providers/{openai,anthropic,gemini}.APIKey`；原声明式引擎的 1498 条黄金样例冻结在 `standard/goldentest`。
-- 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查），假宿主 `pluginsdktest` 的 `Harness.Execute` / `Harness.Monitor`。用到它的是 anthropic、openai、gemini、relay、azure_openai；claude_oauth、codex、vertex、bedrock、volcengine 还没有接上。
+- 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查），十个平台插件都调用它；`Plugin.Manifest` 必填（交给插件的客户端请求头从清单读），`Plugin.PassHeaders` 删除；每个协议的流式 / 非流式形式由套件从端点定义读出，插件不能声明自己不服务某种形式；WebSocket 协议只归第 11 条。只有 bedrock 有两处例外（InvokeModel 按地址选流式、不收 `anthropic-beta` 头）。
+- 假宿主 `pluginsdktest`：`Harness.Execute` / `Harness.Monitor`，`FakeHost.Begin` / `BeginMonitor`；取回的主机按 `FakeHost.Manifest`（启动时取 `WithManifest`，`pluginsdk.ManifestOf`）判断，不再默认放行所有主机；和宿主一样不限请求体、不数取回、不截回答，`Monitor` 的终态要有一次完整成功的取回。`MaxBodyBytes` 删除。
+- 清单：账号类型写 `"passHeaders": []` 表示不交给插件任何客户端请求头（以前空列表会回落到平台的列表）；没写仍取平台的。跨插件事实的判断统一为 `AccountPlatform.ServesPluginFacts`，内置平台不参与。没有使用者的 `TransportHTTP`、`TransportWebSocket` 删除。
+- `standard` 库：`Type.PassHeaders`、`PlatformPassHeaders`、`Auth.Query`、`Route.Method` 删除（核心已按清单过滤客户端头，库把交来的都写成默认头；HTTP 路由一律 POST）；`Route.Edit` 改为 `func(*jsonedit.Doc, *Request)`，和过滤字段在同一次改写里；预设不再带过滤字段（azure_openai 自己写）；流式判断用 `Request.Stream`（`meta.stream` 或请求体的 `stream` 为真），只流式类型的非流式请求也会加 `include_usage`；黄金样例用 `standardtest.Run(t, plugin, p)` 回放。
+- `jsonedit`：同一成员上的改写按调用顺序生效（以前先 `Set` 后 `Delete` 会留下这个键）。`ValidateUpstreamRequest` 与宿主用同一套方法和请求头检查。
 - 声明了账号类型就必须申请 `accounts.credentials`；类型的地址字段只认清单的 `upstreamFields`（原来声明式类型自动得到 `base_url`）。
 
 **插件版本**（全部 `hostCompat >=0.1.304 <0.2.0`）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、claude_oauth 0.3.0、codex 0.1.12、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。
 
-**验证状态**：测试结果以各工作包的交付说明为准；没有在部署好的栈上跑过验收，1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
+**验证状态**：测试结果以各工作包的交付说明为准。e2e 新增 AC30–AC36（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端），e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
 
 ### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0，openai 的改动随 0.5.0 发布；核心加响应流格式；无迁移）
 

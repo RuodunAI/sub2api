@@ -36,7 +36,7 @@ deploy/
 ├── single/                # compose.yml + deploy.sh of a core-only stack without the gateway
 ├── e2e/                   # isolated two-node stack + Caddy + opt-in Go test runner
 ├── docker/                # build and entrypoint scripts used by ../Dockerfile
-├── mock-upstream/         # mock Anthropic API (standalone Go module, used by e2e)
+├── mock-upstream/         # mock upstream for every platform plugin, vendor hosts over TLS, forward proxy (standalone Go module, used by e2e)
 └── ci/compose.yml         # Go test runner joined to the sub2api-next-testdb network
 ```
 
@@ -89,7 +89,9 @@ through the gateway use `/__control` rules or key markers.
 ```bash
 # First start the dedicated stack as documented in e2e/README.md.
 # Run on its Docker host from the full repository checkout; no host Go needed.
-sh next/deploy/e2e/test.sh
+# The full suite takes about 27 minutes: pass -timeout=150m (the script's
+# default -timeout=30m is too short; a later -timeout overrides it).
+sh next/deploy/e2e/test.sh -timeout=150m
 ```
 
 The opt-in runner compiles and executes tests under `/src` with Go 1.27.

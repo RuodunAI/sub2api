@@ -604,7 +604,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 7. **时钟偏差的 `invalid_grant` 算暂时性错误**：400 `invalid_grant` 且 `error_description` 含 `reasonable timeframe` 或 `short-lived token` 时回 `TRANSIENT`（提示检查节点时钟），不是 `AUTH_REJECTED`；否则一个时钟不准的节点会把所有服务账号标成“密钥被拒绝”。
 8. 回答里没有 `expires_in` 时按 3600 秒算。响应被截断、没有 `access_token` 都是 `TRANSIENT`。
 9. **保存时重置令牌的条件**多一条：存着的令牌读不出过期时间也会被丢弃并写 `expires_at: 1`。服务账号、用户凭证账号保存时 `location` 留空会存成 `global`。
-10. **`externalServices`** 列了三项：`oauth2.googleapis.com`、`aiplatform.googleapis.com`、`googleapis.com`。设计没有列。
+10. **`externalServices`** 列了三项：`oauth2.googleapis.com`、`aiplatform.googleapis.com`、`googleapis.com`。设计没有列。（2026-11-18 转发 V2 收尾时删除：核心只在取回和 `SendAccountRequest` 时读 `externalServices`，这个插件两者都不用，令牌和上游请求都由核心发送。）
 11. 错误分类：除 API Key 类型以外的类型（包括未知类型）都按令牌账号处理，401 冷却 60 秒、不禁用；其余沿用 `gemini.Policy`（403 禁用，400 且 key 或区域无效禁用，429 冷却，408 / 5xx 换号不动账号）。
 
 ### 16.7 AWS Bedrock（第 9 节）
@@ -654,7 +654,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    | `claude-haiku-4-5`、`claude-haiku-4-5-20251001` | `anthropic.claude-haiku-4-5-20251001-v1:0` |
 
    只对照了文档，没有用真实账号调过（第 12 节第 9 条）；2026-11-17 的核对结果见第 16 条。
-10. **`externalServices`**：`amazonaws.com`（核心匹配等于它或在它之下的主机；请求的主机是 `bedrock-runtime.<区域>.amazonaws.com`）。
+10. **`externalServices`**：`amazonaws.com`（核心匹配等于它或在它之下的主机；请求的主机是 `bedrock-runtime.<区域>.amazonaws.com`）。（2026-11-18 转发 V2 收尾时删除：核心只在取回和 `SendAccountRequest` 时读 `externalServices`，这个插件两者都不用，令牌和上游请求都由核心发送。）
 11. **openai 平台从插件里去掉了**（第 14 节第 4 条的决定）。没有账号类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）完全不用；`BuildUpstreamRequest` 只接受 `anthropic.messages`。客户端用 OpenAI 协议（chat completions、responses）访问时，核心把请求转换成 Messages 请求，走同一条 InvokeModel 路。原因有两条：这条路依赖的行为没验证的最多（`/openai/v1` 上的 SigV4、`stream_options`、支持哪些模型，第 12 节第 2 条）；AWS 的模型卡片显示 Claude 模型在 bedrock-runtime 上根本不支持 Responses 和 Chat Completions 接口，这条路对 Claude 没有用。后果：Bedrock 账号没有 OpenAI 兼容的路由，Claude 以外的 Bedrock 模型这一版不支持。`response_stream` 只在流式请求上设置。
 12. 表单的“区域与模型”分组说明里写明了 Claude Code 的限制（第 12 节第 7 条），清单测试检查这段文字存在。
 13. **请求体顶层字段的处理**（`upstream.go` 的 `invokePatches`、`droppedFields`）：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`，再加第 6 条的 beta 处理。**`output_config`、`output_format` 特意保留**（旧版会删）：AWS 文档写明 InvokeModel 读 `output_config.format`（结构化输出）和 `output_config.effort`（<https://docs.aws.amazon.com/bedrock/latest/userguide/claude-messages-adaptive-thinking.html>），`output_format` 是它已废弃的写法，插件不替客户端转换。插件仍然不做的（它只看得到清单声明的请求字段）：清理请求体深处的字段（工具定义里的 `custom`，`cache_control` 的 `scope` / `ttl`）；请求体需要某个 beta 而没有点名时替它补上（computer use、tool search）。
