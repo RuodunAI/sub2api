@@ -65,11 +65,10 @@ func TestManagedVideoReconcileSnapshot(t *testing.T) {
 		{`{"status":"succeeded","content":{"video_url":"https://cdn.invalid/result.mp4"}}`, pluginv1.ReconcileResult_SETTLED_ESTIMATE},
 		{`{"status":"failed","error":{"message":"rejected"}}`, pluginv1.ReconcileResult_FAILED},
 	} {
-		r, err := New().ParseReconcileResponse(context.Background(), &pluginv1.ParseReconcileResponseRequest{
-			Entry: &pluginv1.ReconcileEntry{RefId: "ark-1", TaskKind: "video"}, Status: 200, Body: []byte(tc.body),
-		})
-		if err != nil || r.GetState() != tc.want || !json.Valid([]byte(r.GetTaskSnapshotJson())) {
-			t.Fatalf("%s: %v %v", tc.body, r, err)
+		r := New().readTaskQuery(&pluginv1.ReconcileEntry{RefId: "ark-1", TaskKind: "video"},
+			&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(tc.body)})
+		if r.GetState() != tc.want || !json.Valid([]byte(r.GetTaskSnapshotJson())) {
+			t.Fatalf("%s: %v", tc.body, r)
 		}
 		var original, snapshot map[string]json.RawMessage
 		_ = json.Unmarshal([]byte(tc.body), &original)
@@ -94,11 +93,10 @@ func TestVideoTruncatedResultCannotSettleOrReplaceSnapshot(t *testing.T) {
 		{`{"status":"succeeded","usage":{"completion_tokens":10}`, false},
 		{`{"status":"failed"`, false}, {`[]`, false},
 	} {
-		r, err := New().ParseReconcileResponse(context.Background(), &pluginv1.ParseReconcileResponseRequest{
-			Entry: &pluginv1.ReconcileEntry{RefId: "ark-1", TaskKind: "video"}, Status: 200, Body: []byte(tc.body), Truncated: tc.truncated,
-		})
-		if err != nil || r.GetState() != pluginv1.ReconcileResult_POLL_FAILED || r.GetTaskSnapshotJson() != "" {
-			t.Fatalf("incomplete response became authoritative: %+v -> %v %v", tc, r, err)
+		r := New().readTaskQuery(&pluginv1.ReconcileEntry{RefId: "ark-1", TaskKind: "video"},
+			&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(tc.body), Truncated: tc.truncated})
+		if r.GetState() != pluginv1.ReconcileResult_POLL_FAILED || r.GetTaskSnapshotJson() != "" {
+			t.Fatalf("incomplete response became authoritative: %+v -> %v", tc, r)
 		}
 	}
 }

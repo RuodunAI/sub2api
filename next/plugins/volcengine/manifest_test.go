@@ -44,7 +44,7 @@ func TestManifest(t *testing.T) {
 	if err := dec.Decode(&m); err != nil {
 		t.Fatalf("manifest.json: %v", err)
 	}
-	if m.Key != "volcengine" || m.Version != "0.12.8" || m.Publisher != "sub2api" || m.APIVersion != manifest.APIVersion {
+	if m.Key != "volcengine" || m.Version != "0.13.0" || m.Publisher != "sub2api" || m.APIVersion != manifest.APIVersion {
 		t.Fatalf("identity = %s %s %s", m.Key, m.Version, m.Publisher)
 	}
 	if m.Name["en"] == "" || m.Name["zh"] == "" || m.Description["en"] == "" || m.Description["zh"] == "" {
@@ -53,8 +53,9 @@ func TestManifest(t *testing.T) {
 	if m.Runtime != "grpc" || m.Entry.GRPC == nil || m.Entry.GRPC.Binaries == "" || m.HostCompat == "" {
 		t.Fatalf("runtime/entry/hostCompat = %s %+v %s", m.Runtime, m.Entry, m.HostCompat)
 	}
-	// Like every plugin built with SDK 0.2.0 it needs core 0.1.290.
-	for version, want := range map[string]bool{"0.1.288": false, "0.1.290": true} {
+	// The forwarding-v2 contract (one Execute path, Monitor returning its
+	// result) ships with core 0.1.304.
+	for version, want := range map[string]bool{"0.1.303": false, "0.1.304": true} {
 		if got, err := check.HostCompatible(m.HostCompat, version); err != nil || got != want {
 			t.Fatalf("host %s compatibility: %v %v", version, got, err)
 		}
@@ -69,7 +70,7 @@ func TestManifest(t *testing.T) {
 	if m.Database == nil || m.Database.Schema != "plg_volcengine" || m.Database.Migrations != "migrations/" {
 		t.Fatalf("database = %+v", m.Database)
 	}
-	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformExecute, manifest.CapPlatformTasks, manifest.CapPlatformPoll, manifest.CapPlatformMonitor, manifest.CapHTTPRoutes}
+	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks, manifest.CapPlatformMonitor, manifest.CapHTTPRoutes}
 	gotCaps := make([]string, 0, len(m.Capabilities))
 	for _, c := range m.Capabilities {
 		gotCaps = append(gotCaps, c.ID)
@@ -310,7 +311,7 @@ func TestManifest(t *testing.T) {
 	for id, byName := range map[string]map[string]manifest.AccountPlatform{
 		volcengine.AccountTypeAPIKey: officialPlatforms, volcengine.AccountTypeRelay: relayPlatforms} {
 		own := byName[volcengine.PlatformVolcengine]
-		if len(own.PassHeaders) != 0 || len(own.RequestFields) != 0 || len(own.Usage) != 0 {
+		if len(own.PassHeaders) != 0 || len(own.Usage) != 0 {
 			t.Fatalf("%s own platform entry = %+v", id, own)
 		}
 	}
@@ -324,7 +325,7 @@ func TestManifest(t *testing.T) {
 	if !reflect.DeepEqual(officialPlatforms[volcengine.PlatformAnthropic], anth) {
 		t.Fatal("official and relay Messages must share exclusive usage and header declarations")
 	}
-	if !slices.Equal(anth.PassHeaders, volcengine.AnthropicForwardHeaders()) || len(anth.RequestFields) != 0 {
+	if !slices.Equal(anth.PassHeaders, volcengine.AnthropicForwardHeaders()) {
 		t.Fatalf("anthropic platform entry = %+v, want passHeaders %v", anth, volcengine.AnthropicForwardHeaders())
 	}
 	// The old override existed for ONE measured reason; the platform now
@@ -362,7 +363,7 @@ func TestManifest(t *testing.T) {
 	}
 	// Ark ignores OpenAI's org/project and x-stainless-* headers, so both
 	// account types narrow the built-in platform's passHeaders; the usage
-	// rules and requestFields are inherited (Ark is OpenAI-compatible and
+	// rules are inherited (Ark is OpenAI-compatible and
 	// its token counts are inclusive, like the built-in platform's).
 	for id, byName := range map[string]map[string]manifest.AccountPlatform{
 		volcengine.AccountTypeAPIKey: officialPlatforms, volcengine.AccountTypeRelay: relayPlatforms} {
@@ -370,8 +371,8 @@ func TestManifest(t *testing.T) {
 		if !slices.Equal(ap.PassHeaders, volcengine.ForwardHeaders()) {
 			t.Errorf("%s openai passHeaders = %v, want %v", id, ap.PassHeaders, volcengine.ForwardHeaders())
 		}
-		if len(ap.RequestFields) != 0 || len(ap.Usage) != 0 {
-			t.Errorf("%s: requestFields/usage must stay inherited: %+v", id, ap)
+		if len(ap.Usage) != 0 {
+			t.Errorf("%s: usage must stay inherited: %+v", id, ap)
 		}
 	}
 	if b := builtin(t); b != nil {
@@ -582,7 +583,7 @@ func TestAssetRoutesAndPages(t *testing.T) {
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
 	h := pluginsdktest.Start(t, volcengine.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
-	want := []string{manifest.CapPlatformAdapter, manifest.CapPlatformExecute, manifest.CapPlatformTasks, manifest.CapPlatformPoll, manifest.CapPlatformMonitor, manifest.CapHTTPRoutes}
+	want := []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks, manifest.CapPlatformMonitor, manifest.CapHTTPRoutes}
 	got := h.Info.GetCapabilities()
 	slices.Sort(got)
 	slices.Sort(want)
@@ -613,7 +614,7 @@ func TestValidate(t *testing.T) {
 	for _, icon := range []string{"assets/volcengine-color.svg", "assets/doubao-color.svg"} {
 		files[icon] = mustFile(t, icon)
 	}
-	if err := check.Validate(decodeManifest(t), files, check.ValidateOptions{HostVersion: "0.1.290"}); err != nil {
+	if err := check.Validate(decodeManifest(t), files, check.ValidateOptions{HostVersion: "0.1.304"}); err != nil {
 		t.Fatalf("core manifest validation: %v", err)
 	}
 }
@@ -1027,6 +1028,24 @@ func TestV1AliasEndpoints(t *testing.T) {
 		}
 		if a, b := norm(primary), norm(alias); a != b {
 			t.Errorf("v1_%s differs from %s beyond id, path and task kind:\n primary %s\n alias   %s", id, id, a, b)
+		}
+	}
+}
+
+// TestUpstreamFieldsNameTheTaskHosts: Monitor's fetch may reach the hosts of
+// the account's declared upstreamFields besides externalServices, so every
+// field taskQuery takes an address from must be declared: base_url on both
+// types, video_endpoint (an absolute URL is allowed) on the relay type.
+func TestUpstreamFieldsNameTheTaskHosts(t *testing.T) {
+	want := map[string][]string{
+		volcengine.AccountTypeAPIKey: {"base_url"},
+		volcengine.AccountTypeRelay:  {"base_url", volcengine.FieldVideoEndpoint},
+	}
+	for _, at := range decodeManifest(t).AccountTypes {
+		for _, field := range want[at.ID] {
+			if !slices.Contains(at.UpstreamFields, field) {
+				t.Errorf("%s upstreamFields = %v, missing %s", at.ID, at.UpstreamFields, field)
+			}
 		}
 	}
 }
