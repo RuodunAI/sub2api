@@ -136,7 +136,7 @@ func checkBody(s *suite, t testing.TB, c *Case) {
 		t.Fatalf("the relayed body is not valid JSON: %s", clip(string(body)))
 	}
 	if path := duplicateKey(body); path != "" {
-		t.Errorf("key %q repeats within one object of the relayed body; edit by path (sjson) instead of appending", path)
+		t.Errorf("key %q repeats within one object of the relayed body; edit with pluginsdk/jsonedit instead of appending", path)
 	}
 	if want := expectedModel(c); want != "" {
 		if msg := modelKept(r, want); msg != "" {
@@ -327,7 +327,7 @@ func checkLargeBody(s *suite, t testing.TB, c *Case) {
 	extra := got - base
 	t.Logf("%.1f MiB body: %.1f MiB per Execute, %.1f MiB for a pass-through plugin", mib(len(body)), mib(int(got)), mib(int(base)))
 	if extra > int64(4*len(body)) {
-		t.Errorf("Execute allocated %.1f MiB beyond a pass-through plugin for a %.1f MiB body, more than 4x; rewrite by path (gjson/sjson) instead of decoding and copying the body", mib(int(extra)), mib(len(body)))
+		t.Errorf("Execute allocated %.1f MiB beyond a pass-through plugin for a %.1f MiB body, more than 4x; edit with pluginsdk/jsonedit (one pass) instead of decoding the body or copying it per edit", mib(int(extra)), mib(len(body)))
 	}
 }
 
