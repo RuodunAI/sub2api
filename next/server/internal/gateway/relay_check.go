@@ -46,7 +46,7 @@ func (x *execution) validate(ctx context.Context, req *pluginv1.UpstreamRequest)
 	if e != nil {
 		return nil, e
 	}
-	target, err := c.g.checkUpstreamURL(ctx, raw)
+	target, err := x.checkURL(ctx, raw)
 	if err != nil {
 		slog.WarnContext(ctx, "gateway: upstream url rejected", "request_id", c.rid, "plugin", x.rt.binding.Plugin.Key, "account", x.acc.ID, "err", err)
 		return nil, fromCore(core.ErrUnavailable.WithMessage("upstream address rejected"), errTypeInternal)

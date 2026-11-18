@@ -427,15 +427,16 @@ const classifyPrefix = 4 << 10
 
 func truncate(s string, n int) string { return x.TruncateEllipsis(s, n) }
 
-// guardUpstream refuses a direct connection to a non-public host for the
-// console's own upstream calls (test account, fetch models, quota query),
-// the way the gateway does. Through a proxy the proxy decides (it receives
-// the name, not the resolved address), and
+// guardUpstream refuses a non-public host for the console's own upstream
+// calls (test account, fetch models, quota query) by the gateway's rule
+// (netguard.CheckHostVia): a direct connection checks the resolved
+// addresses; through a proxy, which receives the name, only a literal
+// private address is refused and nothing is resolved here.
 // SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM lifts the guard as it does for the
 // gateway.
 func (s *Service) guardUpstream(ctx context.Context, u *url.URL, proxied bool) error {
-	if proxied || s.d.AllowPrivateUpstream {
+	if s.d.AllowPrivateUpstream {
 		return nil
 	}
-	return netguard.CheckHost(ctx, u.Hostname(), netguard.DefaultLookup)
+	return netguard.CheckHostVia(ctx, u.Hostname(), proxied, netguard.DefaultLookup)
 }
