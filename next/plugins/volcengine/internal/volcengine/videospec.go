@@ -2,7 +2,7 @@ package volcengine
 
 // What a Seedance submit will cost, read out of the submit request.
 //
-// The reservation ExtractUsage returns is a real charge against a real
+// The reservation videoUsage returns is a real charge against a real
 // balance, so the number below has to be defensible in both directions: too
 // low and a $0 balance queues expensive work (the pre-charge exists to stop
 // exactly that), too high and a legitimate 5-second clip is refused for want

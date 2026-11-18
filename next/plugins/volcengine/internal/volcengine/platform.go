@@ -373,33 +373,20 @@ func upstreamPath(px prefixes, protocol, model string) (string, error) {
 	}
 }
 
-// upstreamTarget maps the upstream protocol and model to the Ark method and
-// URL. Everything but the video line is a POST to the account's prefix;
-// video_query is a GET whose task id comes from the matched path parameter,
-// which is why this takes the whole meta rather than just the protocol. Both
-// video protocols use the account's task collection (videoTaskURL), the same
-// one Monitor polls.
-func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model string) (method, target string, err error) {
-	switch meta.GetProtocol() {
-	case ProtocolVideoSubmit:
-		target, err = videoTaskURL(base, px, "")
-		return http.MethodPost, target, err
-	case ProtocolVideoQuery:
-		// The task id is client input, the one place on the video line where
-		// it becomes part of an upstream address: videoTaskURL escapes it.
-		id := taskIDOf(meta)
-		if id == "" {
-			return "", "", status.Error(codes.InvalidArgument, "task_id path parameter is required")
-		}
-		target, err = videoTaskURL(base, px, id)
-		return http.MethodGet, target, err
+// upstreamTarget maps the upstream protocol and model to the Ark URL. Every
+// request is a POST: to the account's prefix, or for a video submission to
+// the account's task collection (videoTaskURL), the same one Monitor polls.
+// Task queries never reach the plugin: the core answers them from its own
+// task snapshot.
+func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model string) (string, error) {
+	if meta.GetProtocol() == ProtocolVideoSubmit {
+		return videoTaskURL(base, px, "")
 	}
 	path, err := upstreamPath(px, meta.GetProtocol(), model)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	target, err = upstreamURL(base, path)
-	return http.MethodPost, target, err
+	return upstreamURL(base, path)
 }
 
 // credentialHeader is the header carrying the account key. Bearer remains the compatible relay/default authentication form; the
@@ -435,12 +422,8 @@ func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]st
 // upstreamBody is the body relayed upstream: the one handed in, final, with at
 // most one targeted edit. Streaming chat completions get
 // stream_options.include_usage=true so the upstream reports usage in the last
-// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here). The task query is a
-// GET and carries no body.
-func upstreamBody(meta *pluginv1.RequestMeta, method string, body []byte) ([]byte, error) {
-	if method == http.MethodGet {
-		return nil, nil
-	}
+// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here).
+func upstreamBody(meta *pluginv1.RequestMeta, body []byte) ([]byte, error) {
 	if !meta.GetStream() || (meta.GetProtocol() != ProtocolChat && meta.GetProtocol() != "") {
 		return body, nil
 	}
@@ -463,15 +446,15 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		return nil, err
 	}
 	model := pluginsdk.RequestModel(in)
-	method, target, err := upstreamTarget(cfg.BaseURL, px, meta, model)
+	target, err := upstreamTarget(cfg.BaseURL, px, meta, model)
 	if err != nil {
 		return nil, err
 	}
-	body, err := upstreamBody(meta, method, in.GetBody())
+	body, err := upstreamBody(meta, in.GetBody())
 	if err != nil {
 		return nil, err
 	}
-	up := pluginsdk.NewUpstream(method, target).Body(body).Model(model)
+	up := pluginsdk.NewUpstream(http.MethodPost, target).Body(body).Model(model)
 	for name, value := range upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()) {
 		up.Header(name, value)
 	}

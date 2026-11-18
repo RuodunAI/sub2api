@@ -104,8 +104,6 @@ func executeCases() []executeCase {
 			InboundHeaders: map[string]string{"user-agent": "client/1.0", "anthropic-beta": "beta-1", "cookie": "no"},
 		}
 	}
-	query := in(official, ProtocolVideoQuery, videoModel, false, "")
-	query.Meta.PathParams = map[string]string{TaskIDParam: submittedID}
 	submit := in(official, ProtocolVideoSubmit, videoModel, false,
 		`{"model":"`+videoModel+`","content":[{"type":"text","text":"a cat yawning"}],"resolution":"720p","ratio":"16:9","duration":5}`)
 	submit.ExtractUsage, submit.TaskSubmission = true, true
@@ -124,8 +122,6 @@ func executeCases() []executeCase {
 			method: "POST", url: "https://relay.test/v1/messages", authName: "authorization", authValue: bearer},
 		{name: "images", in: in(official, ProtocolImages, "doubao-seedream-4-0-250828", false, `{"model":"doubao-seedream-4-0-250828","prompt":"a fox"}`),
 			method: "POST", url: DefaultBaseURL + "/api/v3/images/generations", authName: "authorization", authValue: bearer},
-		{name: "video query", in: query,
-			method: "GET", url: DefaultBaseURL + "/api/v3/contents/generations/tasks/" + submittedID, authName: "authorization", authValue: bearer},
 		{name: "video submit", in: submit,
 			method: "POST", url: DefaultBaseURL + "/api/v3/contents/generations/tasks", authName: "authorization", authValue: bearer, wait: true, task: true},
 	}
@@ -152,8 +148,7 @@ func execute(t *testing.T, h *pluginsdktest.Harness, in *pluginv1.ExecuteRequest
 // flags call for, and answers the report that form owes: host_usage after a
 // relay that did not wait, the task (with its estimate) after the submission.
 // Every header is authoritative and listed in authoritativeHeaders; the body
-// is the one handed in, but for the chat stream's include_usage and the
-// bodiless GET.
+// is the one handed in, but for the chat stream's include_usage.
 func TestExecuteEndpointClasses(t *testing.T) {
 	for _, tc := range executeCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -278,7 +273,6 @@ func TestExecuteRelaysNothingItCannotBuild(t *testing.T) {
 	h := startExecution(t, nil)
 	for _, in := range []*pluginv1.ExecuteRequest{
 		{Meta: &pluginv1.RequestMeta{Protocol: "anthropic.count_tokens", Model: "m"}, Account: relayAccount("/v1", ""), Body: modelBody("m")},
-		{Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}, Account: account(testKey, "")},
 		{Meta: &pluginv1.RequestMeta{Protocol: ProtocolChat, Model: "m"}, Account: account(`{}`, ""), Body: modelBody("m")},
 	} {
 		if ex := execute(t, h, in); ex.Err == nil || len(ex.Relays())+len(ex.RelayErrors()) != 0 {

@@ -12,13 +12,10 @@ import (
 
 func TestVideoBillingFacts(t *testing.T) {
 	p := New()
-	r, err := p.ExtractUsage(context.Background(), &pluginv1.ExtractUsageRequest{
+	r := p.videoUsage(&pluginv1.ExtractUsageRequest{
 		Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-5"}, Status: 200, Body: []byte(`{"id":"task"}`),
 		Fields: map[string]string{"resolution": `"720p"`, "ratio": `"16:9"`, "duration": "5", "content.#.type": `["video_url"]`, "draft": "true"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for k, want := range map[string]string{"video_width": "1280", "video_height": "720", "video_pixels": "921600", "video_seconds": "5", "video_input": "true", "video_estimated": "true", "video_draft": "true"} {
 		if r.GetFacts()[k] != want || r.GetReserve().GetFacts()[k] != want {
 			t.Fatalf("%s = %s want %s", k, r.GetFacts()[k], want)
