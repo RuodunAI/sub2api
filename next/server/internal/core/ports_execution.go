@@ -224,7 +224,11 @@ type MonitorPlugin interface {
 
 // States of a plugin_executions row.
 const (
-	ExecutionStateIntent     = "intent"     // BeginExecution: identity stored, nothing sent yet
+	// BeginExecution: identity stored, no durable observation. The request
+	// may have been sent: an upstream error answer, a transport or client
+	// failure, a refused target or an observation that could not be stored
+	// all leave the row here; none of them is billed through it.
+	ExecutionStateIntent     = "intent"
 	ExecutionStateObserved   = "observed"   // ObserveExecution: the host's reading is durable
 	ExecutionStateCommitted  = "committed"  // CommitExecution: the plugin's facts are billed
 	ExecutionStateUnreported = "unreported" // CloseExecutionUnreported: no facts, not billed
