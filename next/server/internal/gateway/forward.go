@@ -269,6 +269,10 @@ func (c *call) checkResponseShape(ctx context.Context, rt *typeRoute, resp *http
 		"declared_stream", rt.resp.Stream, "declared_non_stream", rt.resp.NonStream)
 }
 
+// forwardJSON relays a JSON answer as it arrives and keeps all of it, so
+// the usage is read from the whole answer whatever its size. The answer is
+// held once, in buf, until the usage is read; the plugin's capture keeps a
+// reference to it only within its usage.maxBytes budget.
 func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) error {
 	w := c.relayWriter()
 	ct := resp.Header.Get("Content-Type")
@@ -278,7 +282,6 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 	w.Header().Set("Content-Type", ct)
 	w.WriteHeader(resp.StatusCode)
 	var buf bytes.Buffer
-	overflow := false
 	chunk := make([]byte, 32<<10)
 	for {
 		n, rerr := resp.Body.Read(chunk)
@@ -286,14 +289,7 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 			if _, werr := w.Write(chunk[:n]); werr != nil {
 				return relayWriteError(werr)
 			}
-			if !overflow {
-				if buf.Len()+n > maxUsageJSONBuf {
-					overflow = true
-					buf = bytes.Buffer{}
-				} else {
-					buf.Write(chunk[:n])
-				}
-			}
+			buf.Write(chunk[:n])
 		}
 		if rerr == io.EOF {
 			break
@@ -306,11 +302,6 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 		}
 	}
 	w.Flush()
-	if overflow {
-		slog.Warn("gateway: response too large for usage extraction", "request_id", c.rid)
-		cap.dropBody()
-		return nil
-	}
 	u.ApplyJSON(buf.Bytes())
 	cap.setBody(buf.Bytes())
 	return nil

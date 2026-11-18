@@ -113,14 +113,6 @@ func (u *usageCapture) setBody(body []byte) {
 	u.body = body
 }
 
-// dropBody marks that the non-streaming body could not be kept at all (it
-// exceeded even the host's own usage buffer), so nothing is handed over.
-func (u *usageCapture) dropBody() {
-	if u != nil {
-		u.tooLarge = true
-	}
-}
-
 // pendingExtract is what the observation of a waited relay is built from:
 // everything it needs, copied out of the request and the answer.
 type pendingExtract struct {
