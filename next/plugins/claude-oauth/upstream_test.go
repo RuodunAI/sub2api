@@ -54,27 +54,23 @@ func executeRequest(accountType, protocol string, stream bool, body string) *plu
 // anthropic platform, streaming and not. Every header is authoritative (see
 // BuildUpstream); the inbound headers are not forwarded by the plugin.
 func executeCases() []executeCase {
-	headers := func(beta bool) map[string]string {
-		h := map[string]string{
-			"authorization":     "Bearer sk-ant-test123",
-			"anthropic-version": "2023-06-01",
-			"content-type":      "application/json",
-		}
-		if beta {
-			h["anthropic-beta"] = "oauth-2025-04-20"
-		}
-		return h
+	headers := map[string]string{
+		"authorization":     "Bearer sk-ant-test123",
+		"anthropic-version": "2023-06-01",
+		"anthropic-beta":    "oauth-2025-04-20",
+		"content-type":      "application/json",
 	}
 	var cases []executeCase
 	for _, typ := range []string{"claude_oauth", "claude_setup_token"} {
 		cases = append(cases,
 			executeCase{typ + "/messages stream", executeRequest(typ, "anthropic.messages", true, messagesBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers(true), Body: []byte(messagesBody)}},
+				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, Body: []byte(messagesBody)}},
 			executeCase{typ + "/messages", executeRequest(typ, "anthropic.messages", false, plainBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers(true), Body: []byte(plainBody)}},
-			// The URL is the Messages URL whatever the protocol, as before.
+				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers, Body: []byte(plainBody)}},
+			// count_tokens goes to its own endpoint with the same OAuth
+			// headers: an OAuth bearer without the oauth beta is a 401.
 			executeCase{typ + "/count_tokens", executeRequest(typ, "anthropic.count_tokens", false, plainBody),
-				&pluginv1.UpstreamRequest{Method: "POST", Url: MessagesURL, Headers: headers(false), Body: []byte(plainBody)}},
+				&pluginv1.UpstreamRequest{Method: "POST", Url: CountTokensURL, Headers: headers, Body: []byte(plainBody)}},
 		)
 	}
 	return cases
@@ -182,5 +178,30 @@ func TestExecuteFailsWithoutRelaying(t *testing.T) {
 	ex := h.Execute(t.Context(), executeRequest("claude_oauth", "anthropic.messages", true, messagesBody))
 	if ex.Err == nil || len(ex.Relays()) != 0 || len(ex.RelayErrors()) != 1 {
 		t.Fatalf("refused relay: err %v, %d relays, %d refused", ex.Err, len(ex.Relays()), len(ex.RelayErrors()))
+	}
+}
+
+// A count_tokens request never reaches the Messages URL, whatever its body
+// asks for: on Messages a body with max_tokens would run a real generation
+// on an endpoint billed as free. The stream flag (absent on count_tokens)
+// changes nothing, and a protocol the plugin has no URL for is refused
+// instead of falling back to Messages.
+func TestCountTokensNeverReachesMessages(t *testing.T) {
+	h := startPlatform(t)
+	generating := `{"model":"claude-opus-5","max_tokens":4096,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`
+	for _, typ := range []string{"claude_oauth", "claude_setup_token"} {
+		for _, stream := range []bool{false, true} {
+			in := executeRequest(typ, "anthropic.count_tokens", stream, generating)
+			in.InboundHeaders["anthropic-beta"] = "oauth-2025-04-20"
+			got := relayed(t, h.Execute(t.Context(), in))
+			if got.GetUrl() != "https://api.anthropic.com/v1/messages/count_tokens" || got.GetHeaders()["anthropic-beta"] != OAuthBeta {
+				t.Errorf("%s stream=%v: url %q, anthropic-beta %q", typ, stream, got.GetUrl(), got.GetHeaders()["anthropic-beta"])
+			}
+		}
+	}
+	for _, protocol := range []string{"", "anthropic.unknown", "openai.chat_completions"} {
+		if ex := h.Execute(t.Context(), executeRequest("claude_oauth", protocol, false, plainBody)); ex.Err == nil || len(ex.Relays()) != 0 {
+			t.Errorf("protocol %q: err %v, %d relays; want refused without relaying", protocol, ex.Err, len(ex.Relays()))
+		}
 	}
 }

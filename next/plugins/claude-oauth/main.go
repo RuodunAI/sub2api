@@ -36,7 +36,8 @@ const (
 	ScopeInference = "user:inference"
 
 	// 上游端点
-	MessagesURL = "https://api.anthropic.com/v1/messages"
+	MessagesURL    = "https://api.anthropic.com/v1/messages"
+	CountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens"
 
 	// AnthropicAPIVersion 是所有 Anthropic 面请求带的版本头（与 SDK
 	// providers/anthropic 的默认版本是同一个值）；
@@ -100,15 +101,28 @@ func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*plu
 	return pluginsdk.ExecuteDefault(ctx, p, in)
 }
 
-// BuildUpstream builds the final Messages request of one attempt. The body
-// goes out as the host handed it over. Every header is authoritative, written
-// over the operator's passthrough and overrides, as a code plugin's headers
-// always were: the bearer token and the oauth beta are what an OAuth token
-// is accepted with, and the version and content type stay as the request
+// upstreamURLs maps the protocols the manifest routes here to their
+// upstream URLs. Anything else is refused: a protocol without its own URL
+// must never fall back to the Messages URL, where it would run a generation.
+var upstreamURLs = map[string]string{
+	anthropic.ProtocolMessages:    MessagesURL,
+	anthropic.ProtocolCountTokens: CountTokensURL,
+}
+
+// BuildUpstream builds the final request of one attempt: Messages or
+// count_tokens, by the protocol. The body goes out as the host handed it
+// over. Every header is authoritative, written over the operator's
+// passthrough and overrides, as a code plugin's headers always were: the
+// bearer token and the oauth beta are what an OAuth token is accepted with
+// on both endpoints, and the version and content type stay as the request
 // was built.
 func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	if in.GetMeta() == nil || in.GetAccount() == nil {
 		return nil, status.Error(codes.InvalidArgument, "missing meta or account")
+	}
+	target, ok := upstreamURLs[in.GetMeta().GetProtocol()]
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported protocol %q", in.GetMeta().GetProtocol())
 	}
 	// The host renews the access token before it expires (refresh.go).
 	var creds struct {
@@ -117,16 +131,15 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err := json.Unmarshal([]byte(in.GetAccount().GetCredentialsJson()), &creds); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "parse credentials: "+err.Error())
 	}
-	u := pluginsdk.NewUpstream(http.MethodPost, MessagesURL).
+	// Only the oauth beta, as sub2api's gateway_claude_oauth_body.go adds it;
+	// count_tokens is GA and needs no beta of its own.
+	return pluginsdk.NewUpstream(http.MethodPost, target).
 		Header("authorization", "Bearer "+creds.AccessToken).
 		Header("anthropic-version", AnthropicAPIVersion).
+		Header("anthropic-beta", OAuthBeta).
 		Header("content-type", "application/json").
-		Body(in.GetBody())
-	// Only the oauth beta, as sub2api's gateway_claude_oauth_body.go adds it.
-	if in.GetMeta().GetProtocol() == anthropic.ProtocolMessages {
-		u.Header("anthropic-beta", OAuthBeta)
-	}
-	return u.Build()
+		Body(in.GetBody()).
+		Build()
 }
 
 func (p *Plugin) ClassifyError(ctx context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
