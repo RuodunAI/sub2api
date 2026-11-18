@@ -426,6 +426,9 @@
         },
         {
           "platform": "anthropic",
+          "endpoints": [
+            "messages"
+          ],
           "passHeaders": [
             "anthropic-version",
             "anthropic-beta",
@@ -514,6 +517,9 @@
         },
         {
           "platform": "anthropic",
+          "endpoints": [
+            "messages"
+          ],
           "passHeaders": [
             "anthropic-version",
             "anthropic-beta",

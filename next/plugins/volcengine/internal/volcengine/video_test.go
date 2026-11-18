@@ -39,36 +39,16 @@ func TestBuildUpstreamVideo(t *testing.T) {
 	if !bytes.Equal(r.GetBody(), submitBody) || r.GetUpstreamModel() != "doubao-seedance-1-0-pro-250528" {
 		t.Fatalf("submit body = %s model = %q", r.GetBody(), r.GetUpstreamModel())
 	}
-
-	// Query: GET with the task id from the matched path parameter, and no body.
-	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "cgt-20260101-abcde"}}, []byte(`{}`))
-	if err != nil || r.GetMethod() != "GET" || r.GetBody() != nil ||
-		r.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks/cgt-20260101-abcde" {
-		t.Fatalf("query = %s %s %q (%v)", r.GetMethod(), r.GetUrl(), r.GetBody(), err)
-	}
-
-	// The task id is client input and is escaped into the path.
-	r, err = build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{"task_id": "a/b?c"}}, nil)
-	if err != nil || r.GetUrl() != DefaultBaseURL+"/api/v3/contents/generations/tasks/a%2Fb%3Fc" {
-		t.Fatalf("query escaping = %s (%v)", r.GetUrl(), err)
-	}
-
-	// A query with no task id is a 400-worthy error, not a request to Ark's
-	// task collection (which would list, not poll).
-	if _, err := build(&pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}, nil); err == nil {
-		t.Fatal("expected an error for a query with no task_id")
-	}
 }
 
-// ---------------------------------------------------------------- ExtractUsage (no DB)
+// ---------------------------------------------------------------- videoUsage (no DB)
 
-// TestExtractUsageReservation checks the reservation ExtractUsage returns for
-// a submit response without a database. The host owns persistence.
-func TestExtractUsageReservation(t *testing.T) {
+// TestVideoUsageReservation checks the reservation videoUsage returns for a
+// submit response without a database. The host owns persistence.
+func TestVideoUsageReservation(t *testing.T) {
 	p := New() // no host: estimation is pure parsing
-	ctx := context.Background()
 
-	rep, err := p.ExtractUsage(ctx, &pluginv1.ExtractUsageRequest{
+	rep := p.videoUsage(&pluginv1.ExtractUsageRequest{
 		Meta:    &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-0-260128", UserId: 42},
 		Account: &pluginv1.Account{Id: 7},
 		Status:  200,
@@ -80,9 +60,6 @@ func TestExtractUsageReservation(t *testing.T) {
 			PathContentCount: `1`, "content.0.text": `"a cat yawning"`,
 		},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	rv := rep.GetReserve()
 	if rv == nil {
 		t.Fatal("no reservation")
@@ -112,20 +89,15 @@ func TestExtractUsageReservation(t *testing.T) {
 	}
 	// And with no request fields at all it falls back to the model's bounds,
 	// which must be STRICTLY more expensive - never less.
-	bare, err := p.ExtractUsage(ctx, &pluginv1.ExtractUsageRequest{
+	bare := p.videoUsage(&pluginv1.ExtractUsageRequest{
 		Meta:   &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-0-260128"},
 		Status: 200, Body: []byte(`{"id":"cgt-778"}`),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if bare.GetReserve().GetTokens().GetOutputTokens() <= rv.GetTokens().GetOutputTokens() {
 		t.Fatalf("a request that stated nothing reserved %d, one that stated 1080p/5s reserved %d",
 			bare.GetReserve().GetTokens().GetOutputTokens(), rv.GetTokens().GetOutputTokens())
 	}
-	// The report repeats the estimate outside the reservation: when the core
-	// refuses a ref_id it drops the reservation and bills from these fields,
-	// so leaving them empty would make such a submit silently free.
+	// The report repeats the estimate outside the reservation.
 	if rep.GetTokens().GetOutputTokens() != rv.GetTokens().GetOutputTokens() ||
 		rep.GetFacts()[FactResolution] != rv.GetFacts()[FactResolution] {
 		t.Fatalf("report must repeat the estimate: tokens=%v facts=%v", rep.GetTokens(), rep.GetFacts())
@@ -134,31 +106,20 @@ func TestExtractUsageReservation(t *testing.T) {
 	// A submit with no task id does not reserve (it could never be reconciled)
 	// and does not panic on a malformed body.
 	for _, body := range []string{`{}`, `{"id":""}`, `not json`, ``, `[1,2,3]`} {
-		rep, err := p.ExtractUsage(ctx, &pluginv1.ExtractUsageRequest{
+		rep := p.videoUsage(&pluginv1.ExtractUsageRequest{
 			Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "m"}, Status: 200, Body: []byte(body),
 		})
-		if err != nil {
-			t.Fatalf("body %q: %v", body, err)
-		}
 		if rep.GetReserve() != nil {
 			t.Fatalf("body %q reserved unexpectedly", body)
 		}
 	}
 
 	// A relay that wraps the id is still read.
-	rep, err = p.ExtractUsage(ctx, &pluginv1.ExtractUsageRequest{
+	rep = p.videoUsage(&pluginv1.ExtractUsageRequest{
 		Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "m"}, Status: 200, Body: []byte(`{"data":{"id":"cgt-wrapped"}}`),
 	})
-	if err != nil || rep.GetReserve().GetRefId() != "cgt-wrapped" {
-		t.Fatalf("wrapped id: %v %v", rep.GetReserve(), err)
-	}
-
-	// A non-submit protocol is UNIMPLEMENTED, not an empty report: an empty
-	// report would zero the declarative rules' usage.
-	if _, err := p.ExtractUsage(ctx, &pluginv1.ExtractUsageRequest{
-		Meta: &pluginv1.RequestMeta{Protocol: ProtocolImages}, Status: 200, Body: []byte(`{}`),
-	}); err == nil {
-		t.Fatal("expected UNIMPLEMENTED for a non-video protocol")
+	if rep.GetReserve().GetRefId() != "cgt-wrapped" {
+		t.Fatalf("wrapped id: %v", rep.GetReserve())
 	}
 }
 

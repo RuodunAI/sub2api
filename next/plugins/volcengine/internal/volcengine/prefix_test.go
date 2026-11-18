@@ -235,11 +235,6 @@ func TestVideoPrefixIsIndependent(t *testing.T) {
 	if err != nil || r.GetUrl() != "https://relay.test/doubao/api/v3/contents/generations/tasks" {
 		t.Fatalf("submit: %q %v", r.GetUrl(), err)
 	}
-	r, err = buildFor(t, acc, &pluginv1.RequestMeta{
-		Protocol: ProtocolVideoQuery, Model: "m", PathParams: map[string]string{TaskIDParam: "task_1"}})
-	if err != nil || r.GetUrl() != "https://relay.test/doubao/api/v3/contents/generations/tasks/task_1" {
-		t.Fatalf("query: %q %v", r.GetUrl(), err)
-	}
 	// The reconcile poll is the third caller and the one that would go
 	// unnoticed: it runs offline, and a poll built against the wrong path
 	// answers 404 for every entry, which the core reads as "still pending"
@@ -263,7 +258,7 @@ func TestVideoPrefixIsIndependent(t *testing.T) {
 	}
 }
 
-func TestVideoEndpointUsedBySubmissionQueryAndPoll(t *testing.T) {
+func TestVideoEndpointUsedBySubmissionAndPoll(t *testing.T) {
 	for _, endpoint := range []string{"/doubao/api/v3/contents/generations/tasks", "https://video.example/custom/tasks"} {
 		settings, _ := json.Marshal(map[string]any{"base_url": "https://relay.test", "api_prefix": "/v1", "video_api_prefix": "/legacy", "video_endpoint": endpoint})
 		acc := account(testKey, string(settings))
@@ -277,13 +272,9 @@ func TestVideoEndpointUsedBySubmissionQueryAndPoll(t *testing.T) {
 			t.Fatalf("submit %s: %+v %v", endpoint, created, err)
 		}
 		id := "task/a?x#y"
-		query, err := buildFor(t, acc, &pluginv1.RequestMeta{Protocol: ProtocolVideoQuery, PathParams: map[string]string{TaskIDParam: id}})
-		if err != nil || query.Url != want+"/"+url.PathEscape(id) || query.Method != "GET" {
-			t.Fatalf("query: %+v %v", query, err)
-		}
 		poll, err := taskQuery(&pluginv1.ReconcileEntry{RefId: id}, acc)
-		if err != nil || poll.Url != query.Url || poll.Method != "GET" {
-			t.Fatalf("poll disagrees with query: %+v %v", poll, err)
+		if err != nil || poll.Url != want+"/"+url.PathEscape(id) || poll.Method != "GET" {
+			t.Fatalf("poll: %+v %v", poll, err)
 		}
 		chat, err := buildFor(t, acc, &pluginv1.RequestMeta{Protocol: ProtocolChat, Model: "m"})
 		if err != nil || chat.Url != "https://relay.test/v1/chat/completions" {
@@ -323,20 +314,6 @@ func TestEndpointRejectsAmbiguousURLsAtSaveAndRuntime(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Fatalf("%+v: %s %v", tc, got, err)
 		}
-	}
-}
-
-// TestCountTokensIsRefusedByName documents the cost of the relay type
-// declaring the anthropic platform: it declares two endpoints and
-// AccountPlatform cannot select one, so the type is offered count_tokens
-// whether it can serve it or not.
-func TestCountTokensIsRefusedByName(t *testing.T) {
-	_, err := buildFor(t, relayAccount("/v1", ""), &pluginv1.RequestMeta{Protocol: ProtocolCountTokens, Model: "m"})
-	if err == nil {
-		t.Fatal("count_tokens must not be sent anywhere")
-	}
-	if !strings.Contains(err.Error(), "count_tokens") {
-		t.Errorf("the error must name the protocol, or the log does not explain itself: %v", err)
 	}
 }
 

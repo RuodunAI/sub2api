@@ -14,7 +14,7 @@ package volcengine
 // ID, not a URL, so there is no polling path to keep in step with the prefix.
 //
 //	ParseTaskSubmission    parses the upstream ID, initial snapshot and estimate
-//	ExtractUsage           computes that estimate without storing task identity
+//	videoUsage             computes that estimate without storing task identity
 //	ResolveModel           reads the historical plugin ledger (old task ids)
 //	Monitor                one query through the host's fetch, result returned
 //
@@ -50,7 +50,7 @@ const (
 	// POST /api/v3/contents/generations/tasks. Its usage is read by the
 	// plugin (usageSource "plugin") because the submit response carries only
 	// the task id: the real usage is not known until the task finishes, so
-	// ExtractUsage returns a Reservation instead of a usage number.
+	// the submission carries a Reservation instead of a usage number.
 	ProtocolVideoSubmit = "volcengine.video_submit"
 	// ProtocolVideoQuery is the client's poll of one task, GET
 	// /api/v3/contents/generations/tasks/:task_id. The request has no model,
@@ -130,7 +130,7 @@ const (
 
 // The estimate itself lives in videospec.go. What used to be here - a
 // tier-to-16:9-pixels switch, a fixed 10-second assumption and a
-// ModelMaxResolution table - could not do better, because ExtractUsage was not
+// ModelMaxResolution table - could not do better, because the usage reading was not
 // shown the request (CONTRACTS §25.5 gap 1). It is now, so the estimate reads
 // the requested resolution, ratio and duration instead of guessing them, and
 // uses Ark's own per-generation pixel table rather than assuming 16:9.
@@ -202,7 +202,7 @@ func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequ
 	return &pluginv1.ResolveModelResponse{Model: t.Model}, nil
 }
 
-// ---------------------------------------------------------------- ExtractUsage
+// ---------------------------------------------------------------- submission
 
 // taskIDPaths are the response fields a task id may arrive in, in order. Ark
 // documents "id"; the others are cheap insurance against a relay that wraps
@@ -215,18 +215,16 @@ var _ pluginsdk.TaskSubmissionParser = (*Plugin)(nil)
 // ParseTaskSubmission is synchronous on the managed task path. It describes
 // the upstream task and initial query response; only the host persists owner,
 // original account, task ID and reservation before returning to the client.
-func (p *Plugin) ParseTaskSubmission(ctx context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
+func (p *Plugin) ParseTaskSubmission(_ context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
 	if in.GetMeta().GetProtocol() != ProtocolVideoSubmit {
 		return nil, status.Error(codes.Unimplemented, "only video submissions create tasks")
 	}
 	if in.GetTruncated() || in.GetStatus() < 200 || in.GetStatus() >= 300 || !gjson.ValidBytes(in.GetBody()) || !gjson.ParseBytes(in.GetBody()).IsObject() {
 		return nil, status.Error(codes.DataLoss, "video submission did not return a complete successful JSON object")
 	}
-	usage, err := p.ExtractUsage(ctx, in)
-	if err != nil {
-		return nil, err
-	}
-	ref := usage.GetReserve().GetRefId()
+	usage := p.videoUsage(in)
+	rv := usage.GetReserve()
+	ref := rv.GetRefId()
 	if ref == "" {
 		return nil, status.Error(codes.DataLoss, "video submission did not return a task id")
 	}
@@ -235,7 +233,7 @@ func (p *Plugin) ParseTaskSubmission(ctx context.Context, in *pluginv1.ExtractUs
 		return nil, status.Error(codes.DataLoss, "invalid video submission snapshot")
 	}
 	return &pluginv1.TaskSubmission{UpstreamRefId: ref, SnapshotJson: snapshot, Usage: usage,
-		NextCheckAfterSec: firstCheckSec, DeadlineSec: DeadlineSec}, nil
+		NextCheckAfterSec: rv.GetNextCheckAfterSec(), DeadlineSec: rv.GetDeadlineSec()}, nil
 }
 
 // Preserve the complete upstream payload (including result URLs and errors),
@@ -264,23 +262,12 @@ func videoSnapshot(body []byte, ref, model string, initial bool) (string, error)
 	return string(out), err
 }
 
-// ExtractUsage implements pluginsdk.UsageExtractor for the video_submit
-// endpoint. The submit response is {"id": "..."} and carries nothing
-// billable, so this reads the task id and returns a
-// Reservation: the core pre-charges the estimate now and reconciles the real
-// usage later.
-//
-// ParseTaskSubmission builds the task on it, so the refined estimate travels
-// in the returned TaskSubmission.
-//
-// Any other protocol gets an error rather than an empty report, and that
-// difference matters: an empty report would be APPLIED as a zero usage, while
-// an error makes ExecuteDefault answer host_usage, the host's own reading.
-func (p *Plugin) ExtractUsage(ctx context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-	if in.GetMeta().GetProtocol() != ProtocolVideoSubmit {
-		return nil, status.Errorf(codes.Unimplemented,
-			"volcengine reads usage for %q only, not %q", ProtocolVideoSubmit, in.GetMeta().GetProtocol())
-	}
+// videoUsage is the estimate of a video submission. The submit response is
+// {"id": "..."} and carries nothing billable, so this reads the task id and
+// returns a Reservation: the core pre-charges the estimate now and reconciles
+// the real usage later. A response without a task id gets no reservation, and
+// ParseTaskSubmission refuses it.
+func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageReport {
 	taskID := ""
 	for _, path := range taskIDPaths {
 		v := gjson.GetBytes(in.GetBody(), path)
@@ -290,13 +277,10 @@ func (p *Plugin) ExtractUsage(ctx context.Context, in *pluginv1.ExtractUsageRequ
 		}
 	}
 	if taskID == "" {
-		// A submit that returned no id can never be polled or reconciled, so
-		// pre-charging an estimate nothing will ever correct is worse than
-		// billing nothing at all. No usage and no reservation: the request
-		// falls back to the (empty) declarative rules and is not charged.
+		// A submit that returned no id can never be polled or reconciled.
 		p.log.Warn("volcengine: video submit response carried no task id, not reserving",
 			"request_id", in.GetMeta().GetRequestId(), "status", in.GetStatus())
-		return &pluginv1.UsageReport{}, nil
+		return &pluginv1.UsageReport{}
 	}
 	model := in.GetMeta().GetModel()
 	spec := readVideoSpec(in.GetFields(), in.GetFieldsOmitted())
@@ -316,20 +300,13 @@ func (p *Plugin) ExtractUsage(ctx context.Context, in *pluginv1.ExtractUsageRequ
 	tokens := &pluginv1.UsageTokens{OutputTokens: est.Tokens}
 	facts := estimatedVideoFacts(est, in.GetFields())
 
+	// The report and its reservation carry the same estimate. The
+	// reservation is the single source of truth while the task runs: the core
+	// prices, charges and records it as this request's usage until a
+	// reconcile replaces it.
 	return &pluginv1.UsageReport{
-		// The report carries the estimate TOO, not only the reservation, and
-		// that is not redundancy. When the core cannot use a ref_id it drops
-		// the reservation and bills the request "normally" - from these
-		// fields. Leaving them empty would turn a submit the core refused to
-		// track into a silently free one; with them, the estimate is charged
-		// at once, which is the right end for work that really started
-		// upstream and can never be reconciled. On the normal path the
-		// reservation replaces them with the same numbers (CONTRACTS §25.4).
 		Tokens: tokens,
 		Facts:  facts,
-		// Reservation.tokens is the single source of truth while the task
-		// runs: the core prices, charges and records it as this request's
-		// usage until a reconcile replaces it.
 		Reserve: &pluginv1.Reservation{
 			RefId:             taskID,
 			Tokens:            tokens,
@@ -337,7 +314,7 @@ func (p *Plugin) ExtractUsage(ctx context.Context, in *pluginv1.ExtractUsageRequ
 			NextCheckAfterSec: firstCheckSec,
 			DeadlineSec:       DeadlineSec,
 		},
-	}, nil
+	}
 }
 
 // ---------------------------------------------------------------- reconcile

@@ -68,19 +68,13 @@ const (
 	ProtocolEmbeddings = "openai.embeddings"
 )
 
-// Protocol ids of the built-in anthropic platform's endpoints
-// (sdk/platforms/anthropic.json). They are aliases of the SDK provider
-// constants, so the plugin cannot drift from what classify.go and the core
-// compare against.
-const (
-	ProtocolMessages = sdkvolcengine.ProtocolMessages
-	// ProtocolCountTokens is declared by the platform and therefore routed to
-	// this account type whether we want it or not: AccountPlatform has no
-	// per-endpoint filter, so declaring the platform accepts both endpoints.
-	// Ark documents no token-counting endpoint, so BuildUpstream
-	// refuses it by name rather than inventing a path that 404s.
-	ProtocolCountTokens = sdkvolcengine.ProtocolCountTokens
-)
+// ProtocolMessages is the protocol id of the built-in anthropic platform's
+// messages endpoint (sdk/platforms/anthropic.json), an alias of the SDK
+// provider constant, so the plugin cannot drift from what classify.go and the
+// core compare against. It is the only endpoint of that platform the account
+// types serve (manifest "endpoints": ["messages"]): Ark documents no
+// token-counting endpoint, so count_tokens is left to the core's estimate.
+const ProtocolMessages = sdkvolcengine.ProtocolMessages
 
 // Protocol ids of the volcengine platform declared in manifest.json.
 const (
@@ -374,47 +368,25 @@ func upstreamPath(px prefixes, protocol, model string) (string, error) {
 				"account has no configured upstream path for %q", protocol)
 		}
 		return px.anthropic + "/messages", nil
-	case ProtocolCountTokens:
-		// The relay type declares the anthropic platform, which makes it a
-		// candidate for both of that platform's endpoints: AccountPlatform has
-		// no per-endpoint filter. Neither Ark nor any relay measured so far
-		// serves token counting. Failing by name beats guessing a path: the
-		// client gets a reason and the core fails over to an account that does
-		// serve it.
-		return "", status.Errorf(codes.InvalidArgument,
-			"Ark has no token-counting endpoint, so %q cannot be served by an Ark account", protocol)
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
 }
 
-// upstreamTarget maps the upstream protocol and model to the Ark method and
-// URL. Everything but the video line is a POST to the account's prefix;
-// video_query is a GET whose task id comes from the matched path parameter,
-// which is why this takes the whole meta rather than just the protocol. Both
-// video protocols use the account's task collection (videoTaskURL), the same
-// one Monitor polls.
-func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model string) (method, target string, err error) {
-	switch meta.GetProtocol() {
-	case ProtocolVideoSubmit:
-		target, err = videoTaskURL(base, px, "")
-		return http.MethodPost, target, err
-	case ProtocolVideoQuery:
-		// The task id is client input, the one place on the video line where
-		// it becomes part of an upstream address: videoTaskURL escapes it.
-		id := taskIDOf(meta)
-		if id == "" {
-			return "", "", status.Error(codes.InvalidArgument, "task_id path parameter is required")
-		}
-		target, err = videoTaskURL(base, px, id)
-		return http.MethodGet, target, err
+// upstreamTarget maps the upstream protocol and model to the Ark URL. Every
+// request is a POST: to the account's prefix, or for a video submission to
+// the account's task collection (videoTaskURL), the same one Monitor polls.
+// Task queries never reach the plugin: the core answers them from its own
+// task snapshot.
+func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model string) (string, error) {
+	if meta.GetProtocol() == ProtocolVideoSubmit {
+		return videoTaskURL(base, px, "")
 	}
 	path, err := upstreamPath(px, meta.GetProtocol(), model)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	target, err = upstreamURL(base, path)
-	return http.MethodPost, target, err
+	return upstreamURL(base, path)
 }
 
 // credentialHeader is the header carrying the account key. Bearer remains the compatible relay/default authentication form; the
@@ -437,7 +409,7 @@ func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]st
 	name, value := credentialHeader(accountType, protocol, apiKey)
 	h := map[string]string{name: value, "content-type": "application/json"}
 	names := forwardHeaders
-	if protocol == ProtocolMessages || protocol == ProtocolCountTokens {
+	if protocol == ProtocolMessages {
 		names = anthropicForwardHeaders
 		if strings.TrimSpace(inbound["anthropic-version"]) == "" {
 			h["anthropic-version"] = DefaultAnthropicVersion
@@ -450,12 +422,8 @@ func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]st
 // upstreamBody is the body relayed upstream: the one handed in, final, with at
 // most one targeted edit. Streaming chat completions get
 // stream_options.include_usage=true so the upstream reports usage in the last
-// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here). The task query is a
-// GET and carries no body.
-func upstreamBody(meta *pluginv1.RequestMeta, method string, body []byte) ([]byte, error) {
-	if method == http.MethodGet {
-		return nil, nil
-	}
+// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here).
+func upstreamBody(meta *pluginv1.RequestMeta, body []byte) ([]byte, error) {
 	if !meta.GetStream() || (meta.GetProtocol() != ProtocolChat && meta.GetProtocol() != "") {
 		return body, nil
 	}
@@ -478,19 +446,19 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		return nil, err
 	}
 	model := pluginsdk.RequestModel(in)
-	method, target, err := upstreamTarget(cfg.BaseURL, px, meta, model)
+	target, err := upstreamTarget(cfg.BaseURL, px, meta, model)
 	if err != nil {
 		return nil, err
 	}
-	body, err := upstreamBody(meta, method, in.GetBody())
+	body, err := upstreamBody(meta, in.GetBody())
 	if err != nil {
 		return nil, err
 	}
-	up := pluginsdk.NewUpstream(method, target).Body(body).Model(model)
-	for name, value := range upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()) {
-		up.Header(name, value)
-	}
-	return up.Build()
+	return pluginsdk.NewUpstream(http.MethodPost, target).
+		HeaderMap(upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders())).
+		Body(body).
+		Model(model).
+		Build()
 }
 
 // BuildTestRequest implements pluginsdk.Platform: a minimal chat completion.

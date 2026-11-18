@@ -693,6 +693,32 @@ func TestPlatformDeclaration(t *testing.T) {
 	}
 }
 
+// TestAnthropicMessagesOnly: both account types serve only the messages
+// endpoint of the anthropic platform. Without the subset the core would
+// route count_tokens to them natively (and never use its local estimate),
+// and Ark has no token-counting endpoint, so the request could only fail.
+func TestAnthropicMessagesOnly(t *testing.T) {
+	m := decodeManifest(t)
+	if len(m.AccountTypes) != 2 {
+		t.Fatalf("account types = %d, want official and relay", len(m.AccountTypes))
+	}
+	for _, at := range m.AccountTypes {
+		found := false
+		for _, ap := range at.Platforms {
+			if ap.Platform != volcengine.PlatformAnthropic {
+				continue
+			}
+			found = true
+			if !slices.Equal(ap.Endpoints, []string{"messages"}) {
+				t.Errorf("%s: anthropic endpoints = %v, want [messages]", at.ID, ap.Endpoints)
+			}
+		}
+		if !found {
+			t.Errorf("%s: does not serve the anthropic platform", at.ID)
+		}
+	}
+}
+
 // TestVideoEndpoints pins the two Seedance endpoints (stage five): a submit
 // whose usage the plugin reads and pre-charges, and a poll whose model the
 // plugin resolves and which is never billed.

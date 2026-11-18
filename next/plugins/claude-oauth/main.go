@@ -21,6 +21,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 )
 
@@ -36,7 +37,8 @@ const (
 	ScopeInference = "user:inference"
 
 	// 上游端点
-	MessagesURL = "https://api.anthropic.com/v1/messages"
+	MessagesURL    = "https://api.anthropic.com/v1/messages"
+	CountTokensURL = "https://api.anthropic.com/v1/messages/count_tokens"
 
 	// AnthropicAPIVersion 是所有 Anthropic 面请求带的版本头（与 SDK
 	// providers/anthropic 的默认版本是同一个值）；
@@ -100,89 +102,64 @@ func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*plu
 	return pluginsdk.ExecuteDefault(ctx, p, in)
 }
 
-// BuildUpstream builds the final Messages request of one attempt. The body
-// goes out as the host handed it over. Every header is authoritative, written
-// over the operator's passthrough and overrides, as a code plugin's headers
-// always were: the bearer token and the oauth beta are what an OAuth token
-// is accepted with, and the version and content type stay as the request
+// upstreamURLs maps the protocols the manifest routes here to their
+// upstream URLs. Anything else is refused: a protocol without its own URL
+// must never fall back to the Messages URL, where it would run a generation.
+var upstreamURLs = map[string]string{
+	anthropic.ProtocolMessages:    MessagesURL,
+	anthropic.ProtocolCountTokens: CountTokensURL,
+}
+
+// BuildUpstream builds the final request of one attempt: Messages or
+// count_tokens, by the protocol. The body goes out as the host handed it
+// over. Every header is authoritative, written over the operator's
+// passthrough and overrides, as a code plugin's headers always were: the
+// bearer token and the oauth beta are what an OAuth token is accepted with
+// on both endpoints, and the version and content type stay as the request
 // was built.
 func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	if in.GetMeta() == nil || in.GetAccount() == nil {
 		return nil, status.Error(codes.InvalidArgument, "missing meta or account")
 	}
-	// The host renews the access token before it expires (refresh.go).
-	var creds struct {
-		AccessToken string `json:"access_token"`
+	target, ok := upstreamURLs[in.GetMeta().GetProtocol()]
+	if !ok {
+		return nil, status.Errorf(codes.InvalidArgument, "unsupported protocol %q", in.GetMeta().GetProtocol())
 	}
+	// The host renews the access token before it expires (refresh.go).
+	var creds credentials
 	if err := json.Unmarshal([]byte(in.GetAccount().GetCredentialsJson()), &creds); err != nil {
 		return nil, status.Error(codes.InvalidArgument, "parse credentials: "+err.Error())
 	}
-	u := pluginsdk.NewUpstream(http.MethodPost, MessagesURL).
-		Header("authorization", "Bearer "+creds.AccessToken).
-		Header("anthropic-version", AnthropicAPIVersion).
-		Header("content-type", "application/json").
-		Body(in.GetBody())
-	// Only the oauth beta, as sub2api's gateway_claude_oauth_body.go adds it.
-	if in.GetMeta().GetProtocol() == anthropic.ProtocolMessages {
-		u.Header("anthropic-beta", OAuthBeta)
-	}
-	return u.Build()
+	return pluginsdk.NewUpstream(http.MethodPost, target).
+		HeaderMap(oauthHeaders(creds.AccessToken)).
+		Body(in.GetBody()).
+		Build()
 }
 
-func (p *Plugin) ClassifyError(ctx context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
-	status := req.GetStatus()
-	bodyPrefix := req.GetBodyPrefix()
-
-	// 401: 凭证失效
-	if status == 401 {
-		return &pluginv1.ClassifyErrorResponse{
-			AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE,
-			Reason:        "OAuth token expired or invalid",
-		}, nil
+// oauthHeaders are the headers of every request made with an OAuth access
+// token: a bearer token plus the oauth beta, never an x-api-key. Only the
+// oauth beta, as sub2api's gateway_claude_oauth_body.go adds it; count_tokens
+// is GA and needs no beta of its own.
+func oauthHeaders(accessToken string) map[string]string {
+	return map[string]string{
+		"authorization":     "Bearer " + accessToken,
+		"anthropic-version": AnthropicAPIVersion,
+		"anthropic-beta":    OAuthBeta,
+		"content-type":      "application/json",
 	}
+}
 
-	// 429: 限流
-	if status == 429 {
-		var cooldown int64 = 60
-		// 尝试从 headers 获取 retry-after
-		if headers := req.GetHeaders(); headers != nil {
-			if retryAfter := headers["retry-after"]; retryAfter != "" {
-				// 简化：假设是秒数格式
-				if parsed, err := time.ParseDuration(retryAfter + "s"); err == nil {
-					cooldown = int64(parsed.Seconds())
-				}
-			}
-		}
-		return &pluginv1.ClassifyErrorResponse{
-			AccountEffect:     pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN,
-			CooldownUntilUnix: time.Now().Unix() + cooldown,
-			Reason:            "Rate limited",
-		}, nil
-	}
+// classifyPolicy is Anthropic's policy (error.type and error.message,
+// credentials, credit balance, rate limits, 529, 5xx; anything else goes back
+// to the client) plus the one OAuth-specific reading: a 401 means the access
+// token expired or was revoked, which re-authorizing fixes.
+var classifyPolicy = anthropic.Policy.With(classify.Rule{
+	When: classify.Status(http.StatusUnauthorized), Effect: classify.Disable,
+	Reason: "OAuth token expired or invalid (%d)",
+})
 
-	// 解析 Anthropic 错误格式
-	var apiErr struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(bodyPrefix, &apiErr); err == nil {
-		switch apiErr.Type {
-		case "invalid_request_error":
-			return &pluginv1.ClassifyErrorResponse{
-				Action: pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT,
-				Reason: apiErr.Message,
-			}, nil
-		case "authentication_error":
-			return &pluginv1.ClassifyErrorResponse{
-				AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE,
-				Reason:        apiErr.Message,
-			}, nil
-		}
-	}
-
-	return &pluginv1.ClassifyErrorResponse{
-		Action: pluginv1.ClassifyErrorResponse_ACTION_FAILOVER,
-	}, nil
+func (p *Plugin) ClassifyError(_ context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
+	return classifyPolicy.Classify(time.Now(), req), nil
 }
 
 func (p *Plugin) BuildTestRequest(ctx context.Context, req *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
@@ -208,17 +185,10 @@ func (p *Plugin) BuildTestRequest(ctx context.Context, req *pluginv1.BuildTestRe
 	}
 	bodyBytes, _ := json.Marshal(testBody)
 
-	// Same credentials as BuildUpstream: an OAuth access token is a
-	// bearer token plus the oauth beta, never an x-api-key.
 	return &pluginv1.BuildTestRequestResponse{
-		Method: "POST",
-		Url:    MessagesURL,
-		Headers: map[string]string{
-			"authorization":     "Bearer " + creds.AccessToken,
-			"anthropic-version": AnthropicAPIVersion,
-			"anthropic-beta":    OAuthBeta,
-			"content-type":      "application/json",
-		},
+		Method:        "POST",
+		Url:           MessagesURL,
+		Headers:       oauthHeaders(creds.AccessToken),
 		BodyJson:      string(bodyBytes),
 		Model:         model,
 		UsageProtocol: anthropic.ProtocolMessages,

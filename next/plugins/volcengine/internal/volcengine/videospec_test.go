@@ -595,7 +595,7 @@ func TestEstimateIsNeverZero(t *testing.T) {
 	}
 }
 
-// TestFourKAskedOfAModelWithoutIt: a request stating 4k reaches ExtractUsage
+// TestFourKAskedOfAModelWithoutIt: a request stating 4k reaches videoUsage
 // only if Ark accepted it, so the tier is not clamped to the model's table -
 // but if it arrived via the prompt (weak validation, Ark may have ignored it)
 // the estimate still has to produce a number for a generation that publishes

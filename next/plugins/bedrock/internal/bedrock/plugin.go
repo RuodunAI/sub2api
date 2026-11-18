@@ -98,9 +98,7 @@ func NewWithEndpoints(ep Endpoints) *Plugin {
 	return &Plugin{ep: ep, now: time.Now}
 }
 
-// ServiceDomain is the domain of every host the plugin builds requests for
-// (manifest externalServices: the core matches a host equal to an entry or
-// under it).
+// ServiceDomain is the domain of every host the plugin builds requests for.
 const ServiceDomain = "amazonaws.com"
 
 // RuntimeHost is the Bedrock runtime host of a region.

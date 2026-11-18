@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -94,48 +95,65 @@ func TestValidateCredentials(t *testing.T) {
 	}
 }
 
+// TestClassifyError feeds real-shaped Anthropic error bodies: the type is at
+// error.type, the top-level type is always "error".
 func TestClassifyError(t *testing.T) {
 	h := pluginsdktest.Start(t, newPlugin(), pluginsdktest.Options{
 		SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestRaw)},
 	})
-
+	body := func(typ, msg string) string {
+		return `{"type":"error","error":{"type":"` + typ + `","message":"` + msg + `"},"request_id":"req_011"}`
+	}
+	const (
+		returned = pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT
+		failover = pluginv1.ClassifyErrorResponse_ACTION_FAILOVER
+		none     = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_UNSPECIFIED
+		disable  = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE
+		cooldown = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN
+	)
 	tests := []struct {
 		name       string
 		status     int32
+		headers    map[string]string
 		body       string
+		wantAction pluginv1.ClassifyErrorResponse_Action
 		wantEffect pluginv1.ClassifyErrorResponse_AccountEffect
+		wantType   string
+		wantReason string
 	}{
-		{
-			name:       "401 unauthorized",
-			status:     401,
-			body:       `{"type":"authentication_error","message":"invalid token"}`,
-			wantEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE,
-		},
-		{
-			name:       "429 rate limit",
-			status:     429,
-			body:       `{"type":"rate_limit_error"}`,
-			wantEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN,
-		},
-		{
-			name:       "400 invalid request",
-			status:     400,
-			body:       `{"type":"invalid_request_error","message":"bad input"}`,
-			wantEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_UNSPECIFIED,
-		},
+		{"400 prompt too long", 400, nil, body("invalid_request_error", "prompt is too long: 1000001 tokens > 1000000 maximum"),
+			returned, none, "invalid_request_error", ""},
+		{"400 credit balance", 400, nil, body("invalid_request_error", "Your credit balance is too low to access the Anthropic API."),
+			failover, disable, "invalid_request_error", "upstream credit balance too low"},
+		{"401 token expired", 401, nil, body("authentication_error", "OAuth token has expired."),
+			failover, disable, "authentication_error", "OAuth token expired or invalid (401): OAuth token has expired."},
+		{"403 permission", 403, nil, body("permission_error", "OAuth token does not meet scope requirement user:inference"),
+			failover, disable, "permission_error", "upstream rejected credentials (403)"},
+		{"404 model", 404, nil, body("not_found_error", "model: claude-nope"),
+			returned, none, "not_found_error", ""},
+		{"429 rate limit", 429, map[string]string{"retry-after": "30"}, body("rate_limit_error", "Number of request tokens has exceeded your per-minute rate limit"),
+			failover, cooldown, "rate_limit_error", "rate limited"},
+		{"529 overloaded", 529, nil, body("overloaded_error", "Overloaded"),
+			failover, cooldown, "overloaded_error", "upstream overloaded (529)"},
+		{"500 api error", 500, nil, body("api_error", "Internal server error"),
+			failover, cooldown, "api_error", "upstream server error (500)"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			resp, err := h.Platform.ClassifyError(context.Background(), &pluginv1.ClassifyErrorRequest{
-				Status:     tt.status,
-				BodyPrefix: []byte(tt.body),
+				Status: tt.status, Headers: tt.headers, BodyPrefix: []byte(tt.body),
 			})
 			if err != nil {
 				t.Fatalf("ClassifyError error: %v", err)
 			}
-			if resp.GetAccountEffect() != tt.wantEffect {
-				t.Errorf("account_effect = %v, want %v", resp.GetAccountEffect(), tt.wantEffect)
+			if resp.GetAction() != tt.wantAction || resp.GetAccountEffect() != tt.wantEffect || resp.GetClientErrorType() != tt.wantType {
+				t.Errorf("action %v effect %v type %q, want %v %v %q", resp.GetAction(), resp.GetAccountEffect(), resp.GetClientErrorType(), tt.wantAction, tt.wantEffect, tt.wantType)
+			}
+			if !strings.HasPrefix(resp.GetReason(), tt.wantReason) {
+				t.Errorf("reason %q, want prefix %q", resp.GetReason(), tt.wantReason)
+			}
+			if tt.wantAction == returned && resp.GetClientMessage() == "" {
+				t.Errorf("the upstream message is not passed to the client")
 			}
 		})
 	}

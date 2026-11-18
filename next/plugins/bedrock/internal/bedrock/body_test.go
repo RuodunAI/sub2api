@@ -23,9 +23,12 @@ func TestInvokeBodyTopLevel(t *testing.T) {
 			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[]}`,
 			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
 		{"what Claude Code sends Anthropic", "claude-code-20250219,context-1m-2025-08-07",
-			`{"model":"claude-haiku-4-5","stream":true,"max_tokens":8,"messages":[],"metadata":{"user_id":"u"},"provider":{"only":["x"]},"service_tier":"auto","interface_geo":"us",` +
+			`{"model":"claude-haiku-4-5","stream":true,"max_tokens":8,"messages":[],"metadata":{"user_id":"u"},"provider":{"only":["x"]},"service_tier":"auto","inference_geo":"us","speed":"fast",` +
 				`"context_management":{"edits":[]},"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["oauth-2025-04-20"]}`,
 			`{"max_tokens":8,"messages":[],"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["context-1m-2025-08-07"],"anthropic_version":"bedrock-2023-05-31"}`},
+		{"Anthropic's service choices", "",
+			`{"model":"claude-opus-5-5","inference_geo":"us","max_tokens":8,"speed":"fast","messages":[],"service_tier":"standard_only"}`,
+			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
 		{"context management with its feature", "context-management-2025-06-27",
 			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[],"context_management":{"edits":[]}}`,
 			`{"max_tokens":8,"messages":[],"context_management":{"edits":[]},"anthropic_version":"bedrock-2023-05-31","anthropic_beta":["context-management-2025-06-27"]}`},
