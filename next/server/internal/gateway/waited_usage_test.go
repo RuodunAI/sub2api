@@ -361,3 +361,46 @@ func TestWaitedRelayStreamsBeforeTheFacts(t *testing.T) {
 		t.Fatalf("record %+v", rec)
 	}
 }
+
+// An error the plugin reads out of a complete 2xx answer (UsageReport
+// error_type) makes the record a failure, billed as reported, and the
+// client still gets the upstream's bytes: billed once, delivered once.
+func TestWaitedRelayReportedErrorDeliversTheAnswer(t *testing.T) {
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		r := report(100, 50)
+		r.ErrorType, r.ErrorMessage = "content_filter", "blocked by the upstream"
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: r}}, nil
+	}))
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || !strings.Contains(string(res.body), "hello") {
+		t.Fatalf("the committed answer was held back: %d %s", res.status, res.body)
+	}
+	rec := e.record()
+	if rec.Success || !rec.Billable || rec.ErrorType != "content_filter" || rec.Tokens.Input != 100 || rec.Tokens.Output != 50 {
+		t.Fatalf("record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	e.noRecord()
+}
+
+// A non-streamed answer over the spool's cap cannot be delivered: the
+// execution is closed unreported before anything is committed, the client
+// gets 503 and nothing is billed, whatever the plugin reported.
+func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(100, 50)}}, nil
+	}))
+	e.up.set("pu-9", &upstreamRule{status: 200, body: `{"text":"` + strings.Repeat("x", spoolTotalLimit) + `"}`})
+	var commits atomic.Int32
+	e.settler.commitErr = func(core.ExecutionCommit) error { commits.Add(1); return nil }
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 503 || len(res.body) > 4096 {
+		t.Fatalf("overflowing answer: %d %d bytes", res.status, len(res.body))
+	}
+	if commits.Load() != 0 {
+		t.Fatalf("committed %d times", commits.Load())
+	}
+	assertUnreported(t, e)
+}

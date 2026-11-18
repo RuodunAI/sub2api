@@ -193,6 +193,11 @@ func (w *waitedRelay) settle(ctx context.Context, res core.ExecutionResult, err 
 		if err != nil {
 			return w.unreported(ctx, "execute failed: "+err.Error(), err)
 		}
+		if w.spool != nil && w.spool.err != nil {
+			// The held-back answer cannot be delivered (over the spool's
+			// cap): nothing is committed for an answer the client never gets.
+			return w.unreported(ctx, "response not deliverable: "+w.spool.err.Error(), w.spool.err)
+		}
 		return w.commit(ctx, res.Response)
 	case w.unconfirmed:
 		return w.unreported(ctx, "observation not stored", errors.New(w.result.err.Message))
@@ -239,15 +244,18 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	return w.deliver(ctx)
 }
 
-// deliver publishes the held-back answer of a committed execution.
+// deliver publishes the held-back answer of a committed execution. Whether
+// it can depends only on the forwarding itself (w.base, the reading taken
+// before the plugin's report): an error the plugin read out of a complete
+// 2xx answer makes the record a failure, but the client keeps the bytes.
 func (w *waitedRelay) deliver(ctx context.Context) attemptResult {
 	c := w.x.c
 	if w.spool == nil {
 		return attemptResult{kind: attemptDone}
 	}
-	if w.spool.err != nil || !c.rec.Success {
-		// The usage is committed although the buffered answer cannot be
-		// delivered; dispatch counts no tokens for an attempt that is not done.
+	if w.spool.err != nil || !w.base.Success {
+		// The usage is committed although the buffered answer is incomplete;
+		// dispatch counts no tokens for an attempt that is not done.
 		c.countTokens(context.WithoutCancel(ctx), w.x.acc.ID)
 		e := fromCore(core.ErrUnavailable.WithMessage("upstream response incomplete"), errTypeUpstream)
 		e.LocalFailure = w.spool.err != nil // the spool failed here, not the account
