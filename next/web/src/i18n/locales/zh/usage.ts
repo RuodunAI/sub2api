@@ -89,7 +89,7 @@ export default {
     model_availability: '模型暂不可用',
     usage_unreported: '未上报用量（未计费）'
   },
-  unreportedHint: '插件没有返回这次请求的用量，因此未计费。',
+  unreportedHint: '插件没有返回这次请求的用量（或选用了核心的读数而读数为空），因此未计费。',
   cols: {
     timing: '计时',
     detail: '详情',

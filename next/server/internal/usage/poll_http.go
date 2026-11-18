@@ -13,7 +13,8 @@ import (
 // fetchExecutionHTTP is the fetch of a Monitor call (core.ExecutionHTTP).
 // proxyID and admission come from the already bound account, never from the
 // plugin. It performs one HTTP exchange, without redirects or retries; the
-// runtime has already checked the count, the request body and the host.
+// runtime has already checked the token and the host (neither the number of
+// fetches nor their size is bounded).
 // in.Options may only shorten reconcileHTTPTimeout.
 func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, proxyID *int64, admit func(context.Context) error) (*pluginv1.ExecutionHTTPResponse, error) {
 	return execfetch.Do(ctx, in, execfetch.Binding{

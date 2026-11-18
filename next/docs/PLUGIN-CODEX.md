@@ -291,4 +291,5 @@
 - 清单删掉 `platform.execute.v1` 和两个账号类型的 `requestFields`；`session_id` / `conversation_id` 改从请求体的 `prompt_cache_key` 算（算法不变）。
 - 不再写执行记录：以前每个 codex 请求在 `plugin_executions` 写三次、插件崩溃会切断在途的流；现在核心在 `Execute` 返回后才发请求，插件崩溃或重启不影响在途的流。
 - 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
-- 测试：`internal/codex/execute_test.go`（两种类型、HTTP 与 WebSocket 的改写，经假宿主的一次中继），`upstream_test.go`（会话头）。一致性套件的输入表已准备，还没有调用 `conformance.Run`。
+- 两个账号类型在清单里写 `"passHeaders": []`：核心不交给插件任何客户端请求头（插件本来就丢弃它们、自己写出发送的每个头）。以前没写这个字段，核心把 openai 平台的整份列表交给插件；中间版本只列 `user-agent`。上游收到的请求没有变化。
+- 测试：`internal/codex/execute_test.go`（两种类型、HTTP 与 WebSocket 的改写，经假宿主的一次中继），`upstream_test.go`（会话头），`TestConformance` 调一致性套件（两种类型的 HTTP 请求、WebSocket 一轮，以及核心对只流式类型发出的非流式形式：`meta.stream` 为假、请求体的 `stream` 为真）。`authorization`、`chatgpt-account-id` 是凭证头，其余头按已发布插件的约定声明为权威头；11 条全部通过，没有例外。

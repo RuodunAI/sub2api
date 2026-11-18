@@ -422,7 +422,7 @@ CI 有三个 job：`server (with PostgreSQL and Redis)` / `sdk, tools and e2e` /
 
 ## 10. 核心契约速查（A→E 五期的产出）
 
-改插件或改核心前，先知道有哪些口子可用：
+改插件或改核心前，先知道有哪些口子可用（2026-09-30 的快照。转发 V2 之后的现状以 CONTRACTS §112 为准：`ExtractUsage`、预扣回调、核对循环都已删除；下表的大小上限——观察的默认 256 KiB 与 64 条、`detail_json` 4 KiB、请求字段单值 4 KiB / 总量 32 KiB 与 `fields_omitted`——在 2026-11-18 转发 V2 收尾时删除，默认都不限，见 §112.16）：
 
 | 能力 | 怎么用 | 期 |
 |---|---|---|

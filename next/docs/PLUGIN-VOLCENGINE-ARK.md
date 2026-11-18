@@ -607,6 +607,8 @@ token = **帧数 × 输出宽 × 输出高 / 1024**，固定 24fps。以下每�
 
 ### 11.2 预估的三档语义（`fields_omitted` 的落地）
 
+> 转发 V2 收尾（2026-11-18）起核心不再填 `fields_omitted`：声明的请求字段整个交给插件，不再有单值 4 KiB / 总量 32 KiB 的预算（CONTRACTS §25.6、§112.16）。下表第二、三行的处理留在插件里，现在不会被触发。
+
 | 情况 | 含义 | 做法 |
 |---|---|---|
 | 字段**不在** `fields` 也**不在** `fields_omitted` | 客户端没发 | 用 Ark **文档化的默认值**（这是事实，不是猜） |
@@ -1083,4 +1085,6 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 - 请求体完整交给插件，原来清单里的 `requestFields` 删除；任务观察只有 `Monitor`（原来的 `Poll` 函数体成为它），两阶段的 `BuildReconcileRequest` / `ParseReconcileResponse` 删除；清单删掉 `platform.execute.v1`、`platform.poll.v1`。
 - 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
 - 任务提交上插件没有返回 `task`（解析失败）时，任务不登记、客户端报错、预扣释放；等待期间插件崩溃时核心切断上游，这次请求不计费。
-- 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）。一致性套件的输入表已准备，还没有调用 `conformance.Run`。
+- 两个账号类型在 anthropic 平台上只服务 `messages`（清单 `"endpoints": ["messages"]`）。以前没写端点子集，核心把 `anthropic.count_tokens` 原样路由给它们而不用本地估算，插件又拒绝（Ark 没有计数端点），只有 Ark 账号的分组对 `count_tokens` 一律回 503；现在 `count_tokens` 是核心的本地估算。`ProtocolCountTokens` 及其分支删除，上游收到的请求没有变化（以前计数请求也从未到达上游）。下文 §15 关于“按名字拒绝 `count_tokens`、`AccountPlatform` 没有按端点过滤的能力”的说法到此不再成立。
+- 视频查询由核心从自己的任务快照回答，从不为 `volcengine.video_query` 调 `Execute`：`BuildUpstream` 里查询的 GET 分支删除，每个请求都是 POST；`ExtractUsage` 只剩任务提交解析里用的内部函数 `videoUsage`。
+- 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）；测试把 `manifest.json` 交给假宿主（`WithManifest`），取回能到的主机按清单判断；`TestConformance` 调一致性套件（chat 流式与非流式、responses、embeddings、两种类型的 messages、图片、视频提交），11 条全部通过，没有例外。
