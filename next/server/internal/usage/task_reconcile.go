@@ -11,7 +11,6 @@ import (
 	"gorm.io/gorm/clause"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -96,61 +95,12 @@ func (s *Service) reconcileTask(ctx context.Context, e *settleEntry) bool {
 		s.rec.log.Error("task usage lookup failed", "task", e.task.id, "err", err)
 		return false
 	}
-	cfg := s.reconcileSettings(ctx)
 	if !time.Now().Before(e.deadlineAt) {
 		keptEstimate := e.task.state == "succeeded" && row.status == StatusReserved
 		s.failObservation(ctx, e, row, "task_timeout", "task observation deadline reached")
 		return keptEstimate
 	}
-	res, err := s.askPlugin(ctx, e, row)
-	if e.reported {
-		return false
-	}
-	if err != nil {
-		s.handlePollError(ctx, e, row, cfg, err)
-		return false
-	}
-	if s.handlePollResult(ctx, e, row, cfg, res) {
-		return false
-	}
-	terminal := res.GetState() != pluginv1.ReconcileResult_PENDING
-	if raw := []byte(res.GetTaskSnapshotJson()); len(raw) > 0 {
-		// Paths are captured from the same generation as the parser call.
-		if _, err = protocol.RewriteTaskID(raw, e.task.paths, e.refID, e.task.id); err == nil {
-			e.task.snapshot = raw
-		}
-	} else if terminal {
-		err = errors.New("terminal task observation is missing its snapshot")
-	}
-	if err != nil {
-		s.handlePollError(ctx, e, row, cfg, err)
-		return false
-	}
-	if !terminal {
-		s.rescheduleTask(ctx, e, cfg, time.Duration(res.GetNextCheckAfterSec())*time.Second, "", true)
-		return false
-	}
-	switch res.GetState() {
-	case pluginv1.ReconcileResult_SETTLED, pluginv1.ReconcileResult_SETTLED_ESTIMATE:
-		e.task.state = "succeeded"
-	case pluginv1.ReconcileResult_FAILED:
-		e.task.state = "failed"
-	default:
-		s.rescheduleTask(ctx, e, cfg, 0, "unknown task result state", true)
-		return false
-	}
-	if row.status != StatusReserved {
-		s.finishTaskOnly(ctx, e, "closed")
-		return false
-	}
-	switch res.GetState() {
-	case pluginv1.ReconcileResult_SETTLED:
-		s.settleReconciled(ctx, e, row, res)
-	case pluginv1.ReconcileResult_SETTLED_ESTIMATE:
-		s.settleEstimate(ctx, e, row, res)
-	case pluginv1.ReconcileResult_FAILED:
-		s.refundFailed(ctx, e, row, res.GetReason())
-	}
+	s.observe(ctx, e, row)
 	return false
 }
 

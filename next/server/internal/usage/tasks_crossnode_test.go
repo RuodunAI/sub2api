@@ -48,7 +48,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 
 	before := f.balance()
 	first := prepare("managed-first", "same-upstream-id", 7)
-	if err := f.svc.RegisterTask(ctx, first); err != nil {
+	if err := commitTask(f.svc, first); err != nil {
 		t.Fatal(err)
 	}
 	snap, err := nodeB.FindTask(ctx, query(first.PublicID))
@@ -77,7 +77,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 	}
 
 	chargedBalance := f.balance()
-	if err := nodeB.RegisterTask(ctx, first); err == nil {
+	if err := commitTask(nodeB, first); err == nil {
 		t.Fatal("duplicate request unexpectedly registered twice")
 	}
 	if !f.balance().Equal(chargedBalance) || f.scalar(`SELECT count(*) FROM async_tasks`) != "1" ||
@@ -94,7 +94,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 	mismatch := prepare("managed-mismatch", "another-upstream-id", 7)
 	wrongAccount := int64(8)
 	mismatch.Record.AccountID = &wrongAccount
-	if err := f.svc.RegisterTask(ctx, mismatch); err == nil {
+	if err := commitTask(f.svc, mismatch); err == nil {
 		t.Fatal("changed dispatch account accepted")
 	}
 	assertAbsent(query(mismatch.PublicID))
@@ -105,7 +105,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 	// Same account/ref cannot overwrite the first owner/record, and a rejected
 	// registration rolls its provisional usage and balance changes back.
 	collision := prepare("managed-collision", first.UpstreamID, 7)
-	if err := f.svc.RegisterTask(ctx, collision); err == nil {
+	if err := commitTask(f.svc, collision); err == nil {
 		t.Fatal("same-account upstream ID collision accepted")
 	}
 	assertAbsent(query(collision.PublicID))
@@ -115,7 +115,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 
 	// The same raw ID on another upstream account is a separate task.
 	otherAccount := prepare("managed-other-account", first.UpstreamID, 8)
-	if err := nodeB.RegisterTask(ctx, otherAccount); err != nil {
+	if err := commitTask(nodeB, otherAccount); err != nil {
 		t.Fatal(err)
 	}
 	other, err := f.svc.FindTask(ctx, query(otherAccount.PublicID))

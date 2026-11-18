@@ -6,20 +6,24 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"golang.org/x/net/http/httpguts"
 )
 
-// fetchExecutionHTTP is the host's single transport for offline observations.
+// fetchExecutionHTTP is the fetch of a Monitor call (core.ExecutionHTTP).
 // proxyID and admission come from the already bound account, never from the
-// plugin callback. It performs one HTTP exchange, without redirects or retries.
+// plugin. It performs one HTTP exchange, without redirects or retries; the
+// runtime has already checked the count, the request body and the host.
+// in.Options may only shorten reconcileHTTPTimeout.
 func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, proxyID *int64, admit func(context.Context) error) (*pluginv1.ExecutionHTTPResponse, error) {
 	failure := func(msg string) (*pluginv1.ExecutionHTTPResponse, error) {
 		return &pluginv1.ExecutionHTTPResponse{TransportError: msg}, nil
 	}
-	if in == nil || len(in.GetUrl()) > 8192 || len(in.GetBody()) > maxReconcileBody || len(in.GetHeaders()) > 64 {
+	if in == nil || len(in.GetUrl()) > 8192 || len(in.GetHeaders()) > 64 {
 		return failure("execution request exceeds host limits")
 	}
 	method := strings.ToUpper(strings.TrimSpace(in.GetMethod()))
@@ -42,7 +46,7 @@ func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.Execution
 			return failure("execution request contains a forbidden transport header")
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, reconcileHTTPTimeout)
+	ctx, cancel := context.WithTimeout(ctx, shorter(reconcileHTTPTimeout, in.GetOptions().GetTotalTimeoutMs()))
 	defer cancel()
 	u, err := netguard.CheckURL(ctx, in.GetUrl(), s.rec.AllowPrivateUpstream, netguard.DefaultLookup)
 	if err != nil {
@@ -72,15 +76,20 @@ func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.Execution
 			return nil, err
 		}
 	}
+	// A response header timeout cuts the exchange when no answer started in
+	// time; it is the total timeout's to bound the rest.
+	headers := time.AfterFunc(shorter(reconcileHTTPTimeout, in.GetOptions().GetResponseHeaderTimeoutMs()), cancel)
 	resp, err := client.Do(req)
+	headers.Stop()
 	if err != nil {
 		return failure("execution HTTP request failed")
 	}
 	defer resp.Body.Close()
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxReconcileBody+1))
-	truncated := len(raw) > maxReconcileBody || readErr != nil
-	if len(raw) > maxReconcileBody {
-		raw = raw[:maxReconcileBody]
+	const limit = core.ExecutionHTTPMaxResponseBytes
+	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	truncated := len(raw) > limit || readErr != nil
+	if len(raw) > limit {
+		raw = raw[:limit]
 	}
 	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw, Truncated: truncated}
 	headerBytes = 0
@@ -98,4 +107,12 @@ func (s *Service) fetchExecutionHTTP(ctx context.Context, in *pluginv1.Execution
 		out.TransportError = "incomplete execution HTTP response"
 	}
 	return out, nil
+}
+
+// shorter is d, or ms milliseconds when that is positive and shorter.
+func shorter(d time.Duration, ms int32) time.Duration {
+	if ms > 0 {
+		return min(d, time.Duration(ms)*time.Millisecond)
+	}
+	return d
 }

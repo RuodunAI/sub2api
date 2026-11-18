@@ -18,8 +18,8 @@ import (
 var _ core.AsyncTasks = (*Service)(nil)
 
 // The statements of the task endpoints are on the request path: BeginTask,
-// ReceiveTask and registerTask run for every task submission, FindTask for
-// every poll of a client.
+// ReceiveTask and registerTask (through CommitExecution) run for every task
+// submission, FindTask for every poll of a client.
 
 func (s *Service) BeginTask(ctx context.Context, in core.TaskIntent) (string, error) {
 	// The dispatch identity of the submission; the database fills its
@@ -47,13 +47,10 @@ func (s *Service) ReceiveTask(ctx context.Context, requestID string, status int,
 	}).Error
 }
 
-// RegisterTask commits identity, initial observation, usage and optional debit
-// together. The gateway cannot return a public ID before this succeeds.
-func (s *Service) RegisterTask(ctx context.Context, in core.TaskRegistration) error {
-	return s.registerTask(ctx, in, nil, nil, false)
-}
-
-func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, before func(*gorm.DB) error, after func(*gorm.DB) error, strict bool) error {
+// registerTask writes a submitted task with its usage record in one
+// transaction between before and after (CommitExecution's): the usage row,
+// its reserve or settlement, the task and its monitoring.
+func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, before func(*gorm.DB) error, after func(*gorm.DB) error) error {
 	r := in.Record
 	if r == nil || r.AccountID == nil || in.PublicID == "" || in.UpstreamID == "" {
 		return errors.New("invalid task registration")
@@ -76,26 +73,12 @@ func (s *Service) registerTask(ctx context.Context, in core.TaskRegistration, be
 		if !ok {
 			return errors.New("task request ID already registered")
 		}
-		err := recordTask(ctx, tx, in, uid, next, deadline)
-		if err == nil && after != nil {
-			err = after(tx)
+		if err := recordTask(ctx, tx, in, uid, next, deadline); err != nil {
+			return err
 		}
-		return err
-	}, strict)
-	if err != nil {
-		return err
-	}
-	// A committed task follows the ordinary immediate settlement path when
-	// its submission reported final usage without a reservation. Failure
-	// queues billing for retry; it cannot turn registration into a failed
-	// submission or cause the upstream task to be sent again.
-	if !strict && initialStatus(r) == StatusPending {
-		p := fromRecord(r)
-		if err := s.settle(ctx, p, false); err != nil {
-			s.markFailed(ctx, p, err)
-		}
-	}
-	return nil
+		return after(tx)
+	}, true)
+	return err
 }
 
 // recordTask writes a submitted task in the transaction of its usage row
