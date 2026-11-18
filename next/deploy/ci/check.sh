@@ -10,7 +10,7 @@ cd /src/next
 modules() {
   status=0
   : > "$out/modules.summary"
-  for dir in runtime-contract sdk tools/sub2api-plugin deploy/mock-upstream gateway server plugins/*/; do
+  for dir in runtime-contract sdk protocol-codec tools/sub2api-plugin deploy/mock-upstream gateway server plugins/*/; do
     dir=${dir%/}
     [ -f "$dir/go.mod" ] || continue
     name=$(echo "$dir" | tr '/' '_')
@@ -53,11 +53,19 @@ modules() {
 mutation() {
   tmp=/tmp/s2-mutation
   rm -rf "$tmp" && cp -a /src/next "$tmp" && cd "$tmp"
-  sed -i 's/^\tif err = e.planAuthorizesTx(ctx, tx, digest); err != nil {$/\tif err = error(nil); err != nil {/' gateway/internal/control/engine.go
-  grep -c 'error(nil)' gateway/internal/control/engine.go > "$out/mutation.log"
-  go test -count=1 -v -run 'TestPostgresPauseBetweenAdmissionCheckAndCommitWins|TestPostgresPlanCreatedBeforeBaselineAdmissionCommitWins' ./gateway/internal/control/ >> "$out/mutation.log" 2>&1
-  echo "mutation rc=$? (non-zero expected)" | tee "$out/mutation.summary"
+  sed -i 's/^\t\tif err := e.planAuthorizesTx(ctx, tx, digest); err != nil {$/\t\tif err := error(nil); err != nil {/' gateway/internal/control/engine.go
+  # A pattern that no longer matches would leave the recheck in place and
+  # make the mutation prove nothing.
+  if grep -q 'e.planAuthorizesTx(ctx, tx, digest)' gateway/internal/control/engine.go; then
+    echo "mutation: the recheck call was not removed; update the sed pattern" | tee "$out/mutation.summary"
+    rm -rf "$tmp"
+    return 1
+  fi
+  go test -count=1 -v -run 'TestPostgresPauseBetweenAdmissionCheckAndCommitWins|TestPostgresPlanCreatedBeforeBaselineAdmissionCommitWins' ./gateway/internal/control/ > "$out/mutation.log" 2>&1
+  rc=$?
+  echo "mutation rc=$rc (non-zero expected)" | tee "$out/mutation.summary"
   rm -rf "$tmp"
+  [ "$rc" -ne 0 ]
 }
 
 # Signed test packages for the bundled-plugin bootstrap (anthropic, volcengine).
