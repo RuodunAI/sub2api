@@ -967,10 +967,14 @@ type UpstreamRequest struct {
 	// override, so those cannot change them. Only for what must reach the
 	// upstream exactly as built: the credential header and the headers a
 	// signature covers (with a signature, the Content-Type it was computed
-	// with). Everything else belongs in default_headers.
+	// with). Everything else belongs in default_headers, except in a plugin
+	// whose released versions sent every header above the operator's
+	// settings and keeps doing so.
 	Headers map[string]string `protobuf:"bytes,3,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
-	// Default headers: written BEFORE the operator's settings; a passed
-	// through client header or an override replaces or removes them.
+	// Default headers: written BEFORE the operator's settings. A passed
+	// through client header only fills a name these leave unset; the
+	// account's header override and parameter override may replace or
+	// remove them.
 	//
 	// In both maps names are lower-case, and content-length, accept-encoding,
 	// connection and transfer-encoding are the transport's: a request naming

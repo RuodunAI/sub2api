@@ -102,9 +102,10 @@ type ExecutionClient struct {
 	// fails with ErrPluginUnavailable. <= 0 means 2 s.
 	SegmentTimeout time.Duration
 	// Check validates the request of a relay locally, without sending
-	// anything: the URL, the SSRF name check, the headers, response_stream,
-	// and the gateway's guard on what the plugin did to the body. The
-	// runtime has already refused a nil request, an empty URL, a body above
+	// anything: the URL, the SSRF name check, the headers, response_stream
+	// and, for a type declaring model availability, the upstream model the
+	// plugin names. The body is not inspected (the conformance suite holds
+	// plugins to it). The runtime has already refused a nil request, an empty URL, a body above
 	// its bound (see RequestBodyLimit) and the transport's header names. An error refuses
 	// the request: the plugin gets INVALID_ARGUMENT with the error's text
 	// and the relay counts as not made. Called for both forms, before the

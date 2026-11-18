@@ -34,10 +34,12 @@ var transportHeaders = map[string]bool{
 //     passthrough and override, which therefore cannot change it. Only for
 //     what must reach the upstream exactly as built: the credential header
 //     and the headers a signature covers (with a signature, the Content-Type
-//     it was computed with).
+//     it was computed with); a plugin whose released versions sent every
+//     header above the operator's settings may keep doing so.
 //   - DefaultHeader writes a DEFAULT header, applied before the operator's
-//     settings: a passed through client header or an override replaces or
-//     removes it. Everything else belongs here.
+//     settings: a passed through client header only fills a name left
+//     unset, the account's header override and parameter override may
+//     replace or remove it. Everything else belongs here.
 //
 // A name in both takes the authoritative value.
 type Upstream struct {

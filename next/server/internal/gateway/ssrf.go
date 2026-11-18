@@ -12,7 +12,7 @@ import (
 // of CONTRACTS §25.4 is the other), and two copies of this check would be one
 // copy too many.
 
-// checkUpstreamURL validates a URL returned by BuildUpstreamRequest: http(s),
+// checkUpstreamURL validates the URL of a plugin's relay or fetch: http(s),
 // a host, and (unless AllowPrivateUpstream) only public addresses. Proxied
 // requests are resolved by the proxy; the check still applies to the name.
 func (g *Gateway) checkUpstreamURL(ctx context.Context, raw string) (*url.URL, error) {

@@ -329,8 +329,8 @@ const (
 
 // How a usage record's tokens were obtained, recorded in
 // usage_logs.anomalies ("usage_extract") for the endpoints that declare
-// usage.source "plugin". Endpoints using the declarative rules - every
-// endpoint in the tree today - record nothing.
+// usageSource "plugin". Endpoints using the declarative rules record
+// nothing.
 const (
 	// UsageExtractPlugin: the plugin returned ExecuteResponse.usage and that
 	// report is what was billed.
