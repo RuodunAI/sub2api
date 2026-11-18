@@ -167,15 +167,16 @@ func TestManifestShape(t *testing.T) {
 	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
-	// The core takes an entry as a host or the domain above it, never as a
-	// pattern: the one entry is the domain every region's host is under.
-	if !slices.Equal(m.ExternalServices, []string{"amazonaws.com"}) || bedrock.ServiceDomain != "amazonaws.com" {
-		t.Errorf("externalServices = %v", m.ExternalServices)
+	// No externalServices: they are the hosts the plugin's own Fetch and
+	// SendAccountRequest may reach, and it makes neither call. The core
+	// sends the upstream and test requests the plugin builds; neither is
+	// checked against externalServices.
+	if len(m.ExternalServices) != 0 {
+		t.Errorf("externalServices = %v, want none", m.ExternalServices)
 	}
 	for _, region := range []string{bedrock.DefaultRegion, "eu-central-1", "us-gov-west-1"} {
-		host := bedrock.RuntimeHost(region)
-		if host != "bedrock-runtime."+region+".amazonaws.com" || !strings.HasSuffix(host, "."+m.ExternalServices[0]) {
-			t.Errorf("%s: host %s is not under %v", region, host, m.ExternalServices)
+		if host := bedrock.RuntimeHost(region); host != "bedrock-runtime."+region+".amazonaws.com" {
+			t.Errorf("%s: host %s", region, host)
 		}
 	}
 }

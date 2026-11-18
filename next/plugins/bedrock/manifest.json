@@ -298,8 +298,5 @@
         "zh": "读取本插件账号的 API Key 或 Access Key，用于构造上游请求并签名（由核心发送）"
       }
     }
-  ],
-  "externalServices": [
-    "amazonaws.com"
   ]
 }
