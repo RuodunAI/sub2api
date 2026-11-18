@@ -65,10 +65,9 @@ var ErrExecutionRefused = errors.New("execution write refused")
 // and the timeouts; it applies neither the operator's header passthrough nor
 // overrides and follows no redirect.
 //
-// The fetches of one call are not counted and their answers are whole: the
-// core never sets Truncated, and neither the runtime nor the core bounds
-// the request body (the gateway setting max_request_body_mb applies to the
-// client's request alone). The runtime calls it only after it checked the
+// The fetches of one call are not counted and their answers are whole:
+// neither the runtime nor the core bounds the request body (the gateway
+// setting max_request_body_mb applies to the client's request alone). The runtime calls it only after it checked the
 // execution token and the URL's host: one of the plugin manifest's externalServices (or a
 // subdomain of one), or the host of one of the account's own upstream
 // addresses (the values of the address fields its type declares, manifest

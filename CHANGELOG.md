@@ -15,6 +15,7 @@
 - **proto**：`EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
 - **proto**：`UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。SDK 设置它的方法此前已删除；它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
 - **proto**：`GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：没有插件数据库角色以后它恒为 false。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 执行迁移；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（以前靠临时角色的属主判断，现在看本事务写过的系统目录行）。以前在工具里因为“临时角色没有权限”失败、而宿主能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
+- **proto**：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）删除：核心自去掉 64 KiB / 8 MiB 截断起不再设置它们，codex、vertex 已不读；从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）一并删除。`ExecuteHTTP` 的回答读不完整时照旧是 `transport_error`。
 - **清单**：端点的 `usageMaxBytes`（读用量的观察的字节预算）删除，没有插件声明过它；观察总是整份，`ExtractUsageRequest.truncated`（7）随之删除（只有它会置这个字段）。旧清单里还写着它时，核心忽略这个未知字段（上传、安装、加载照常，等于不设预算）；`sub2api-plugin` 严格解码，`build`、`pack`、`sign`、`verify`、`index`、`dev` 报 `unknown field "usageMaxBytes"`，删掉这一行即可。volcengine 的任务提交不再检查这个字段。
 
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移，随转发 V2 发布）

@@ -261,9 +261,9 @@ service HostService {
   // allows it -, without the operator's header passthrough and override
   // (those describe the client's request, which this is not), and does not
   // follow redirects. The host neither counts the requests of a call nor
-  // cuts their answers: the answer body comes back whole and truncated is
-  // never set; nor does it bound the request body (the request body limit
-  // applies to the client's request in the gateway only). A transport
+  // cuts their answers: the answer body comes back whole; nor does it bound
+  // the request body (the request body limit applies to the client's
+  // request in the gateway only). A transport
   // failure is not an RPC error: it comes back in transport_error with
   // status 0.
   //
@@ -478,11 +478,11 @@ message ExecutionHTTPResponse {
   int32 status = 1;
   map<string, string> headers = 2;
   bytes body = 3;
+  // An ExecuteHTTP answer the host could not read whole comes back with
+  // transport_error set; such an answer never confirms a terminal state.
   string transport_error = 4;
-  // Set only on a SendAccountRequest answer cut at its 64 KiB cap; the core
-  // never sets it on an ExecuteHTTP answer, which comes back whole.
-  // Truncated or incomplete responses must never confirm a terminal state.
-  bool truncated = 5;
+  reserved 5;
+  reserved "truncated";
 }
 
 message ListAccountsRequest {

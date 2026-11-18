@@ -160,7 +160,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 
 - 主机：和中继同一条规则（2.2）：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读，只比主机名，不含子域）。别的主机 `PERMISSION_DENIED`。规则是 `manifest.Manifest.UpstreamHostAllowed`，核心和假宿主共用。`SendAccountRequest`（请求路径之外用账号凭证发请求，如查余额、素材库）也按它判断，请求体和回答都不限大小。
 - 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；拒绝 `Host`、hop-by-hop 和代理认证头。超时：`Execute` 里是账号的响应头超时和 `relay_timeout_seconds`（没设就没有整体超时），`Monitor` 里 20 秒；`Options` 只能收紧。
-- 不限次数、不限大小：一次调用取回多少次都行，回答整份交还，核心不置 `truncated`（读不完整是传输错误）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
+- 不限次数、不限大小：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`truncated` 字段已删除）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
   - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），开始授权时调用它拿一张票据，交给插件的开始路由（约定字段 `proxy_ticket`）；

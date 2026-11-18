@@ -2084,7 +2084,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 #### 1. 核对的回答被静默截断（已修）
 
-当时核对读上游回答用 `io.ReadAll(io.LimitReader(resp.Body, 256KiB))`，**插件收到半个 JSON 文档而且无从得知**：被截断的状态文档里 `status` 在前会读出 `succeeded`，`usage` 在后被切掉读成 0 → 插件答 `SETTLED` 带 0 → **全额退款**。现在任务观察只经取回（§112.6、§112.9）：回答超过 8 MiB 时截断并置 `ExecutionHTTPResponse.truncated`，宿主另外记录这次取回是否完整，截断的回答不能确认终态（`ClassifyPollResponse` 把它当成一次查询失败）。
+当时核对读上游回答用 `io.ReadAll(io.LimitReader(resp.Body, 256KiB))`，**插件收到半个 JSON 文档而且无从得知**：被截断的状态文档里 `status` 在前会读出 `succeeded`，`usage` 在后被切掉读成 0 → 插件答 `SETTLED` 带 0 → **全额退款**。现在任务观察只经取回（§112.6、§112.9）：回答整份交还（转发 V2 收尾起；此前超过 8 MiB 截断并置 `ExecutionHTTPResponse.truncated`，该字段已删除），读不完整是传输错误；宿主另外记录这次取回是否完整，不完整的回答不能确认终态。
 
 #### 2. `usageRequestFields` 表达不了「数组里任意位置的某个字段」
 
@@ -2369,7 +2369,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 - 初始快照必须是上游查询协议的完整 JSON 对象，例如 `{"id":"上游ID","status":"queued"}`，不能把未知字段的提交响应当成任意查询协议。
 - 免费任务无需 Reservation。按用量计费的任务仍可返回估计和 Reservation，`reserve.ref_id` 必须等于 `upstream_ref_id`，宿主持久化时换成自己的公开 ID。已有 `billing:free + usageSource:plugin` 禁止规则不变。
 - 观察使用 `Monitor(PollRequest)`，结果在 `MonitorResponse.result`（`ReconcileResult`，§112.9）。插件通过 `pluginsdk.Fetch(ctx, request)`（`HostService.ExecuteHTTP`）发起本次查询，再解析响应并返回结果；核心提供原账号代理、限额、超时和网络检查。`ReconcileEntry` 包含 `task_kind`、`model`、`protocol`；其 `ref_id` 始终是上游 ID。插件返回完整的 `task_snapshot_json`，宿主再替换公开 ID；暂未观测到结果时留空，不能抹掉旧快照。
-- 核心不再置 `ExecutionHTTPResponse.truncated`：`ExecuteHTTP` 的回答整份交还（转发 V2 收尾起，§112.16），读不完整是传输错误；`SendAccountRequest` 的回答也不再截断（此前超过 64 KiB 截断并置位，§112.17）。截断或不完整的数据不能用于确认终态或结算。托管任务的终态必须带有效、ID 匹配的快照，否则重试。宿主还独立记录本次调用里的取回结果，插件忽略截断或传输错误也不能据此提交终态。
+- `ExecutionHTTPResponse.truncated` 已删除（字段 5 `reserved`）：`ExecuteHTTP` 的回答整份交还（转发 V2 收尾起，§112.16），读不完整是传输错误；`SendAccountRequest` 的回答也不再截断（此前超过 64 KiB 截断并置位，§112.17）。不完整的数据不能用于确认终态或结算。托管任务的终态必须带有效、ID 匹配的快照，否则重试。宿主还独立记录本次调用里的取回结果，插件忽略传输错误也不能据此提交终态。
 
 ### 28.2 核心职责
 
@@ -2878,8 +2878,8 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 `PlatformService` 删除 `QuerySubscriptionLimits`（从未发布），新增两个可选 RPC，模式同 `BuildTestRequest`（插件描述请求、核心发送）：
 
 - `BuildQuotaRequest(BuildQuotaRequestRequest{account})` → `{method（默认 GET）, url, headers, body_json}`。账号带解密凭证（调用对象总是账号类型的声明插件）。
-- 核心经账号代理发送（直连时过 netguard，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开同网关），响应体整份交给插件，不置 `truncated`（转发 V2 收尾起，§112.17；此前上限 64 KiB，超出置 `truncated`）。
-- `ParseQuotaResponse(ParseQuotaResponseRequest{account, status, headers（小写）, body, transport_error, truncated})` → `QuotaResult{windows[], error_type, error_message}`。`QuotaWindow{key, utilization（百分比）, resets_at_unix（0 = 未知）, status, used, limit}`；`utilization` 为 0 且 `limit > 0` 时核心按 `used / limit` 计算。`error_type`：`ERROR_TYPE_UNSPECIFIED`（成功）、`ERROR_TYPE_AUTH_REJECTED`（凭证被拒）、`ERROR_TYPE_TRANSIENT`（其他）。错误只记录到快照（截断 512 字节），**不**冷却、不禁用账号——那是网关分类（§42）的职责。
+- 核心经账号代理发送（直连时过 netguard，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开同网关），响应体整份交给插件（转发 V2 收尾起，§112.17；此前上限 64 KiB，超出置 `truncated`，该字段已删除）。
+- `ParseQuotaResponse(ParseQuotaResponseRequest{account, status, headers（小写）, body, transport_error})`（字段 6 `truncated` 已删除并 `reserved`） → `QuotaResult{windows[], error_type, error_message}`。`QuotaWindow{key, utilization（百分比）, resets_at_unix（0 = 未知）, status, used, limit}`；`utilization` 为 0 且 `limit > 0` 时核心按 `used / limit` 计算。`error_type`：`ERROR_TYPE_UNSPECIFIED`（成功）、`ERROR_TYPE_AUTH_REJECTED`（凭证被拒）、`ERROR_TYPE_TRANSIENT`（其他）。错误只记录到快照（截断 512 字节），**不**冷却、不禁用账号——那是网关分类（§42）的职责。
 - 只有声明了 `quota.query` 的类型才会被调用；插件回 `Unimplemented` 视为只支持被动（不记错误）。SDK：`pluginsdk.QuotaReader` 接口，未实现时自动回 `Unimplemented`。
 
 ### 44.5 接口
@@ -3233,7 +3233,7 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
   - `body_json` 虽然叫这个名字，核心并不解析也不改写它，原样作为请求体发送（`account/quota.go` `sendPluginCall`，额度查询 §44 共用）：`headers` 里设置了 `Content-Type`（不区分大小写，如 OAuth 令牌端点要的 `application/x-www-form-urlencoded`，codex 插件即如此）时按插件给的发送；没有设置且 `body_json` 非空时核心补 `Content-Type: application/json`；`body_json` 为空时不发请求体，也不补 `Content-Type`。
   - 凭证根本无法续期（例如没有 refresh token）时返回 `FAILED_PRECONDITION`，核心按 `auth_rejected` 处理。
   - 返回 `UNIMPLEMENTED` 表示不支持，记为 `transient`。
-- `ParseRefreshResponse(account, status, headers, body, transport_error, truncated)` → `RefreshResult`：
+- `ParseRefreshResponse(account, status, headers, body, transport_error)` → `RefreshResult`（字段 6 `truncated` 已删除并 `reserved`）：
   - 成功时 `credentials_patch_json` 是要合并进凭证的字段：列出的键覆盖，值为 null 的键删除，没列出的键保留。settings 字段不受影响，出现在补丁里会被忽略并记警告。
   - `ERROR_TYPE_AUTH_REJECTED`：refresh token 已失效（`invalid_grant`、401、403），重试没有用。
   - `ERROR_TYPE_TRANSIENT`：其他所有失败，下一轮再试。
@@ -6213,7 +6213,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 | 参数 | `account_id > 0`；`url` 非空；`method` 空 = `GET`，大小写不敏感；URL、方法、`body` 不限大小（转发 V2 收尾起，§112.17；此前 8 KiB、16 字节、64 KiB）。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
 | 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`manifest.UpstreamHostAllowed`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
 | 账号 | account 模块按 `id`、`plugin_key`、未删除查询（`SendPluginAccountRequest`，可选接口 `core.PluginAccountRequester`）。别的插件的账号和不存在的 id 一样回 `NOT_FOUND`，不泄露 id 是否存在。账号状态不限：停用、`auto_disabled` 的账号也能发（重置次数正是给被停用的账号用的） |
-| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；直连时经 netguard 拒绝私网地址（`AllowPrivateUpstream` 除外）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还，不置 `truncated`（此前截到 64 KiB，§112.17）；响应头名转小写，只取第一个值 |
+| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；直连时经 netguard 拒绝私网地址（`AllowPrivateUpstream` 除外）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还（此前截到 64 KiB 并置 `truncated`，§112.17；该字段已删除）；响应头名转小写，只取第一个值 |
 | 上限 | 单次 30 s（`refreshTimeout`），调用方 ctx 取消时立即中止；不另设并发上限 |
 | 传输失败 | 不是 RPC 错误：返回 `status` 0 和 `transport_error`（DNS、连接、超时、代理不可用、netguard 拒绝），和 `sendPluginCall` 一致 |
 | 审计 | 通过账号校验、真正发出的每次请求写一条 `audit_logs`：action `plugin.account_request`，target `account` / `<id>`，`user_id` 为空（执行者是插件），detail 只有 `plugin_key`、`method`、`host`（含端口）、`path`、`status`、`via: "host.SendAccountRequest"`。**不记 query、请求头、请求体、响应头和响应体**，因为这些地方带着凭证。审计在请求之后写，这样才能记下状态码。写入失败只记 WARN 日志，调用照常返回。这里和凭证读取不同（凭证读取先写审计，写不进去就整个调用失败）：这条 RPC 不会交出插件手里还没有的秘密。被拒的调用（授权、参数、主机、`NOT_FOUND`）不写审计 |
@@ -8189,7 +8189,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读；只比主机名，不比端口，不含子域）。其他主机 `PERMISSION_DENIED`。
 - 主机规则是 `manifest.Manifest.UpstreamHostAllowed`（中继与 `SendAccountRequest` 用同一个，§112.17），核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
 - 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；插件不能设超时（`ExecutionHTTPRequest.options` 字段 6 与 `UpstreamOptions` 已删除，`reserved`）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
-- 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误），核心不置 `truncated`；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
+- 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`ExecutionHTTPResponse.truncated` 已删除）；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
 - 签名：`sdk/reqsign.Sign` 对插件构造的 `*http.Request` 签名，`reqsign.SignedHeaders(req, scheme)` 给出签名写入或覆盖的头（`aws-sigv4`：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
 
 ### 112.7 等待形式的事实、执行记录与未上报
@@ -8352,7 +8352,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 不在这条规则里的核心代发请求：配额查询（§44）、凭证续期（§48）、账号测试与模型列表（§19）由插件描述、核心发送，仍只受 SSRF 约束。
 
-**3. `SendAccountRequest` 的主机与大小。** 主机按上面的规则（此前只认 `externalServices`，账号自己的上游地址被拒，例如中转账号按自己的 `base_url` 解析的素材接口、正式账号的 `asset_base_url`）。请求体、URL、方法不限大小（此前 64 KiB、8 KiB、16 字节，超出 `INVALID_ARGUMENT`）；回答整份交还（此前截到 64 KiB 并置 `truncated`，素材列表一页就会超过，解析失败）。配额查询、凭证续期与它共用发送路径（`sendPluginCall`），回答同样不再截断：`ExecutionHTTPResponse.truncated`、`ParseQuotaResponseRequest.truncated`、`ParseRefreshResponseRequest.truncated` 核心都不再设置（proto 字段待删除），codex、vertex 对它的处理已删除。单次 30 秒（`refreshTimeout`）不变。
+**3. `SendAccountRequest` 的主机与大小。** 主机按上面的规则（此前只认 `externalServices`，账号自己的上游地址被拒，例如中转账号按自己的 `base_url` 解析的素材接口、正式账号的 `asset_base_url`）。请求体、URL、方法不限大小（此前 64 KiB、8 KiB、16 字节，超出 `INVALID_ARGUMENT`）；回答整份交还（此前截到 64 KiB 并置 `truncated`，素材列表一页就会超过，解析失败）。配额查询、凭证续期与它共用发送路径（`sendPluginCall`），回答同样不再截断：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）核心都不再设置，随后从协议删除（`reserved`），连同从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）；codex、vertex 对它的处理已删除。单次 30 秒（`refreshTimeout`）不变。
 
 **4. 空值的权威头表示删除。** 请求头分层（§112.4）里插件的权威头是最后一层；权威头的值为空表示“这个头不发”：核心删掉前面各层（插件的默认头、透传的客户端头、运营方的请求头覆盖和参数覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（网关 `layerHeaders`）。默认头的空值照旧写成空值的头。proto 不变（`map<string,string>` 本来就能表达空串）。SDK：`Upstream.RemoveHeader(name)` 写入空值的权威头（`Header(name, "")` 仍然什么都不写）；名字要在一致性第 4 条声明的集合里。bedrock 用它：签名里没有会话令牌（Access Key、API Key 账号）时删除 `x-amz-security-token`，运营方经请求头覆盖加的会话令牌不会到达 AWS 让签名校验失败；账号测试请求没有运营方的层，空值的头直接不发。
 

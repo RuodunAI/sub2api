@@ -511,8 +511,8 @@ func TestFetchHostsAndExpiry(t *testing.T) {
 	if status.Code(errs[0]) != codes.PermissionDenied {
 		t.Errorf("host outside externalServices: %v", errs[0])
 	}
-	if large.GetTruncated() || len(large.GetBody()) != answerBytes {
-		t.Errorf("large answer: truncated=%v len=%d", large.GetTruncated(), len(large.GetBody()))
+	if len(large.GetBody()) != answerBytes {
+		t.Errorf("large answer: len=%d", len(large.GetBody()))
 	}
 	if errs[1] != nil {
 		t.Errorf("fetch %d: %v", fetches, errs[1])

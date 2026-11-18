@@ -233,9 +233,9 @@ type HostServiceClient interface {
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
-	// cuts their answers: the answer body comes back whole and truncated is
-	// never set; nor does it bound the request body (the request body limit
-	// applies to the client's request in the gateway only). A transport
+	// cuts their answers: the answer body comes back whole; nor does it bound
+	// the request body (the request body limit applies to the client's
+	// request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
 	//
@@ -832,9 +832,9 @@ type HostServiceServer interface {
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
-	// cuts their answers: the answer body comes back whole and truncated is
-	// never set; nor does it bound the request body (the request body limit
-	// applies to the client's request in the gateway only). A transport
+	// cuts their answers: the answer body comes back whole; nor does it bound
+	// the request body (the request body limit applies to the client's
+	// request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
 	//
