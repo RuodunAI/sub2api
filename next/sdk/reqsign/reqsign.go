@@ -2,10 +2,10 @@
 // hand over a Directive naming the scheme, and the package looks the scheme
 // up in a table, so they hold no vendor logic. What a Directive can carry is
 // not vendor-neutral, though: its fields are those of the access-key HMAC
-// family (AWS SigV4 and the schemes shaped after it), see Directive. The
-// core signs the final upstream
-// request with it (BuildUpstreamRequestResponse.signing in the plugin
-// protocol), and a plugin signs the test request it builds itself.
+// family (AWS SigV4 and the schemes shaped after it), see Directive. Only
+// plugins sign: the upstream request they build in Execute, whose signed
+// headers they hand to the host as authoritative headers
+// (UpstreamRequest.headers), and the test request they describe.
 //
 // A scheme is signed by its vendor's official library where one exists (AWS
 // SigV4: aws-sdk-go-v2's aws/signer/v4); the package decides what is signed
@@ -34,8 +34,8 @@ var ErrUnknownScheme = errors.New("reqsign: unknown signing scheme")
 // secret, scoped to a region and a service, optionally with a session
 // token). They are typed fields rather than an open map on purpose, so that
 // the secret ones are known and can be redacted; a scheme of another family
-// (an RSA key, a certificate) needs new fields here and in the protocol's
-// RequestSigning, not a reinterpretation of these.
+// (an RSA key, a certificate) needs new fields here, not a reinterpretation
+// of these.
 //
 // A Directive carries the secret and must stay out of logs and error
 // messages; String, GoString and LogValue redact it for the cases where one

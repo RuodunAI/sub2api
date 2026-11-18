@@ -1,11 +1,14 @@
 // Package pluginsdktest runs a plugin in-process for unit tests: the plugin
 // services and a FakeHost are served over bufconn, and the harness performs
-// the host handshake (GetInfo -> InitHost -> Configure).
+// the host handshake (GetInfo -> InitHost -> Configure). Harness.Execute and
+// Harness.Monitor then drive a platform plugin the way the host does, with
+// the FakeHost standing in for the host's HTTP client (execution.go).
 package pluginsdktest
 
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net"
 	"testing"
 	"time"
@@ -105,7 +108,9 @@ func startHost(t testing.TB, opts Options) (*FakeHost, *grpc.Server, func(uint32
 		fh = NewFakeHost()
 	}
 	hostLis := bufconn.Listen(1 << 20)
-	hostSrv := grpc.NewServer()
+	// Like the core, the host accepts whole request bodies back from a
+	// platform plugin and checks the configured limit itself (MaxBodyBytes).
+	hostSrv := grpc.NewServer(grpc.MaxRecvMsgSize(math.MaxInt32))
 	pluginv1.RegisterHostServiceServer(hostSrv, fh)
 	pluginv1.RegisterEgressServiceServer(hostSrv, fh)
 	go func() { _ = hostSrv.Serve(hostLis) }()
