@@ -1,9 +1,11 @@
 // Package execfetch is the fetch form of plugin execution
-// (core.ExecutionHTTP): one bounded HTTP exchange whose answer goes back to
-// the plugin. The gateway serves the fetches of Execute and the usage module
+// (core.ExecutionHTTP): one HTTP exchange whose answer goes back to the
+// plugin. The gateway serves the fetches of Execute and the usage module
 // those of Monitor through this one implementation, each with its own
 // binding (the account's client, the SSRF policy, its base timeouts, an
-// admission), so the request and answer limits cannot drift apart.
+// admission), so the rules for the request and the answer cannot drift
+// apart. It also holds the header rules every request a plugin builds
+// shares with the relay (RelayTransportHeaders, ValidHeader).
 package execfetch
 
 import (
@@ -24,6 +26,48 @@ import (
 // TransportFailure is the plugin's text for an exchange that failed in
 // transport; the cause, which may name the proxy, stays in the host's log.
 const TransportFailure = "execution HTTP request failed"
+
+// RelayTransportHeaders are the request headers the host's transport decides
+// for a relayed request (UpstreamRequest); a relay naming one is refused.
+var RelayTransportHeaders = map[string]bool{"content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
+
+// FetchTransportHeaders are the headers a fetch may not set: they would
+// change where or how the request travels (Host against the checked URL,
+// hop-by-hop and proxy headers). A fetch naming one is refused.
+// Accept-Encoding is not refused but dropped (fetchDroppedHeader).
+var FetchTransportHeaders = map[string]bool{"host": true, "connection": true, "proxy-connection": true, "proxy-authorization": true,
+	"proxy-authenticate": true, "upgrade": true, "transfer-encoding": true, "trailer": true, "te": true, "content-length": true}
+
+// fetchDroppedHeader is left out of a fetch: the transport negotiates the
+// encoding and decodes the answer.
+const fetchDroppedHeader = "accept-encoding"
+
+// ValidHeader reports whether name and value form a header net/http can
+// send; one that is not would fail the exchange after it started.
+func ValidHeader(name, value string) bool {
+	return httpguts.ValidHeaderFieldName(name) && httpguts.ValidHeaderFieldValue(value)
+}
+
+// NoRedirects is a copy of client that returns a redirect as the answer,
+// without a client-wide timeout: the exchange's own timers bound it.
+func NoRedirects(client *http.Client) *http.Client {
+	hc := *client
+	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	hc.Timeout = 0
+	return &hc
+}
+
+// FirstHeaderValues is h as a map of lower-case names to their first value,
+// the form plugins receive headers in.
+func FirstHeaderValues(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			out[strings.ToLower(k)] = v[0]
+		}
+	}
+	return out
+}
 
 // Binding is what the host binds a fetch to; none of it comes from the
 // plugin.
@@ -71,7 +115,7 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 		return failure("invalid execution HTTP request")
 	}
 	for k, v := range in.GetHeaders() {
-		if !strings.EqualFold(k, "accept-encoding") { // the transport negotiates and decodes it
+		if !strings.EqualFold(k, fetchDroppedHeader) {
 			req.Header.Set(k, v)
 		}
 	}
@@ -82,9 +126,7 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	if err != nil || hc == nil {
 		return failure("execution account proxy is unavailable")
 	}
-	client := *hc
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	client.Timeout = 0
+	client := NoRedirects(hc)
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -117,11 +159,10 @@ func checkRequest(in *pluginv1.ExecutionHTTPRequest) (method, refused string) {
 		method = http.MethodGet
 	}
 	for k, v := range in.GetHeaders() {
-		if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) {
+		if !ValidHeader(k, v) {
 			return "", "invalid execution request headers"
 		}
-		switch strings.ToLower(k) {
-		case "host", "connection", "proxy-connection", "proxy-authorization", "proxy-authenticate", "upgrade", "transfer-encoding", "trailer", "te", "content-length":
+		if FetchTransportHeaders[strings.ToLower(k)] {
 			return "", "execution request contains a forbidden transport header"
 		}
 	}
@@ -136,12 +177,7 @@ func answer(ctx context.Context, u *url.URL, resp *http.Response, err error) (*p
 	}
 	defer resp.Body.Close()
 	raw, readErr := io.ReadAll(resp.Body)
-	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw}
-	for k, v := range resp.Header {
-		if len(v) > 0 {
-			out.Headers[strings.ToLower(k)] = v[0]
-		}
-	}
+	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: FirstHeaderValues(resp.Header), Body: raw}
 	if readErr != nil {
 		out.TransportError = "incomplete execution HTTP response"
 	}

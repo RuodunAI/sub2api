@@ -13,6 +13,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
 
@@ -126,7 +127,7 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 	if cap == nil || c.rec == nil {
 		return
 	}
-	headers := firstHeaderValues(resp.Header)
+	headers := execfetch.FirstHeaderValues(resp.Header)
 	// The response is read, not built: credentials are never sent. Settings
 	// travel only to the plugin that owns the account type, which is the one
 	// that already sees them on every upstream attempt.

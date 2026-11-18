@@ -20,6 +20,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 )
 
@@ -685,7 +686,7 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	setHandshakeHeaders(header, req.GetHeaders())
 	dctx, dcancel := context.WithCancel(context.WithoutCancel(ctx))
 	stop := context.AfterFunc(ctx, dcancel)
-	up, resp, err := websocket.Dial(dctx, target.String(), &websocket.DialOptions{HTTPClient: noRedirects(client), HTTPHeader: header,
+	up, resp, err := websocket.Dial(dctx, target.String(), &websocket.DialOptions{HTTPClient: execfetch.NoRedirects(client), HTTPHeader: header,
 		CompressionMode: websocket.CompressionContextTakeover})
 	stop()
 	dcancel()

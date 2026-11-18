@@ -10,23 +10,20 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
-
-// transportHeaders are the request headers the host's transport decides; a
-// plugin's request naming one is refused.
-var transportHeaders = map[string]bool{"content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
 
 // checkUpstreamRequest is the part of validating a relay that needs nothing
 // of the gateway: the request is there and leaves the transport's headers
 // alone. Its body has no bound here: the client's body was admitted by the
 // gateway's request body limit, and what the plugin makes of it is its own.
-func (h *hostServer) checkUpstreamRequest(sc *callScope, req *pluginv1.UpstreamRequest) error {
+func checkUpstreamRequest(req *pluginv1.UpstreamRequest) error {
 	if req == nil || req.GetUrl() == "" {
 		return status.Error(codes.InvalidArgument, "request with a url is required")
 	}
 	for _, headers := range []map[string]string{req.GetHeaders(), req.GetDefaultHeaders()} {
 		for name := range headers {
-			if transportHeaders[strings.ToLower(name)] {
+			if execfetch.RelayTransportHeaders[strings.ToLower(name)] {
 				return status.Errorf(codes.InvalidArgument, "header %q is set by the host's transport", name)
 			}
 		}
@@ -59,7 +56,7 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		return nil, status.Error(codes.FailedPrecondition, "a waiting relay needs extract_usage or task_submission")
 	}
 	req := in.GetRequest()
-	if err := h.checkUpstreamRequest(sc, req); err != nil {
+	if err := checkUpstreamRequest(req); err != nil {
 		return nil, err
 	}
 	cctx, cancel := sc.hostContext(ctx)
