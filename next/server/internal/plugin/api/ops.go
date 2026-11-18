@@ -105,6 +105,29 @@ func refusal(nodes []core.NodeStatus, key string) *Refusal {
 	return nil
 }
 
+// recordedRefusal is the refusal kept with the outcome of the plugin's latest
+// rollout: a node whose load of the target version was refused records the
+// code there (plugin_rollout_nodes.code), which outlives the instance a
+// rollout failing in preparation removes. hostVersion is this core's; nil
+// when no node of that rollout was refused.
+func recordedRefusal(ctx context.Context, db *gorm.DB, key, hostVersion string) (*Refusal, error) {
+	g := store.G(ctx, db)
+	latest := g.Model(&model.PluginRollout{}).Select("max(id)").Where("plugin_key = ?", key)
+	var version, msg string
+	err := g.Table("plugin_rollout_nodes AS n").Select("COALESCE(r.target_version, ''), n.error").
+		Joins("JOIN plugin_rollouts AS r ON r.id = n.rollout_id").
+		Where("n.rollout_id = (?) AND n.code = ?", latest, check.CodeOutdatedContract).
+		Order("n.node_id, n.boot_id").Limit(1).Row().Scan(&version, &msg)
+	if store.IsNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Refusal{Code: check.CodeOutdatedContract, Version: version, HostVersion: hostVersion,
+		ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: msg}, nil
+}
+
 func nodeStates(nodes []core.NodeStatus, key string) []NodeState {
 	out := []NodeState{}
 	for _, n := range nodes {

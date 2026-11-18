@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -128,6 +129,78 @@ func TestRefusalFromRolloutRecording(t *testing.T) {
 	if got == nil || got["code"] != check.CodeOutdatedContract || got["version"] != "0.1.0" ||
 		!strings.HasPrefix(got["message"].(string), "start video@0.1.0") {
 		t.Fatalf("refusal = %v", got)
+	}
+}
+
+// A package refused for the older plugin contract on its first enable fails
+// the rollout in preparation, after which no node reports the failed
+// instance any more: the plugin list still shows the refusal, from the code
+// the rollout kept with the node's outcome.
+func TestRefusalAfterFailedFirstEnable(t *testing.T) {
+	h, root := newHarness(t)
+	ctx := context.Background()
+	if code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(pkgtest.Platform("video", "0.1.0", "sub2api"), root))); code != http.StatusOK {
+		t.Fatalf("upload = %d %v", code, out)
+	}
+	if _, err := h.db.SQL.ExecContext(ctx, `UPDATE plugin_versions SET consent_status = 'approved' WHERE plugin_key = 'video'; UPDATE plugins SET status = 'installed' WHERE key = 'video'`); err != nil {
+		t.Fatal(err)
+	}
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	node := &registrytest.Node{RDB: rdb, ID: "node-1", Boot: "boot-1"}
+	node.Heartbeat(ctx)
+	pkgs := pluginregistry.NewPackages(h.db, t.TempDir(), pluginregistry.WithSource(registrytest.Source()))
+	t.Cleanup(pkgs.Close)
+	refused := fmt.Errorf("start video@0.1.0: %w", grpcruntime.ErrOutdatedContract)
+	ctl, err := pluginrollout.New(pluginrollout.Options{DB: h.db, Node: node, Bus: registrytest.Bus{RDB: rdb}, Packages: pkgs,
+		Registry: pluginregistry.New(), Runtime: refusingRuntime{refused},
+		ReconcileInterval: 100 * time.Millisecond, CoordinatorTick: 50 * time.Millisecond, LoadRetry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctl.Start(ctx)
+	t.Cleanup(func() { ctl.Stop(context.Background()) })
+	h.api.d.Nodes = node
+
+	r, err := ctl.Enable(ctx, "video", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var phase, reason string
+	waitUntil(t, "the rollout fails and the node drops the failed instance", func() bool {
+		if err := h.db.SQL.QueryRowContext(ctx, `SELECT r.phase, p.status_reason FROM plugin_rollouts r JOIN plugins p ON p.key = r.plugin_key WHERE r.id = $1`, r.ID).
+			Scan(&phase, &reason); err != nil {
+			t.Fatal(err)
+		}
+		live, err := node.LiveNodes(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return phase == pluginrollout.PhaseFailed && !strings.Contains(live[0].Plugins["video"], check.CodeOutdatedContract)
+	})
+	if !strings.Contains(reason, "start video@0.1.0") {
+		t.Fatalf("status_reason = %q", reason)
+	}
+	got := listRefusals(h)["video"]
+	if got == nil || got["code"] != check.CodeOutdatedContract || got["version"] != "0.1.0" || got["host_version"] != testHostVersion ||
+		got["message"] != refused.Error() {
+		t.Fatalf("refusal after a failed first enable = %v", got)
+	}
+	_, out := h.do("GET", "/plugins/video", "admin", nil)
+	if d, _ := data(out)["refusal"].(map[string]any); !equalJSON(d, got) {
+		t.Fatalf("plugin refusal = %v", data(out)["refusal"])
+	}
+}
+
+func waitUntil(t *testing.T, what string, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !fn() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }
 

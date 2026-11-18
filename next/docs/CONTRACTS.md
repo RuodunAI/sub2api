@@ -8130,7 +8130,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - **给平台插件设上限时**：平台插件持有完整请求体，一个 N 字节的请求在插件里的峰值约 3N 到 4N。每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量；默认请求体上限 128 MB 时约 450 MB 一个。网关设置里不再有内存警告。
 
 
-## 112. 平台插件转发 V2：一条请求路径、核心的 HTTP 客户端、事实只在返回值里（2026-11-18，用户要求；插件协议 2、Host API 10；本节无迁移，同批的请求体上限见 §111；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)，插件写法见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md)）
+## 112. 平台插件转发 V2：一条请求路径、核心的 HTTP 客户端、事实只在返回值里（2026-11-18，用户要求；插件协议 2、Host API 10；迁移 0108（§112.10 的拒绝原因），同批的请求体上限见 §111；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)，插件写法见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md)）
 
 本节优先于前文中与之冲突的描述。项目在开发期，不做兼容：旧机制在同一次改动里删除，核心与全部第一方插件从同一个提交构建、一起发布，旧插件包被拒绝（§112.10）。
 
@@ -8264,7 +8264,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - 版本：插件线协议 `sdk/protocol.ProtocolVersion` 1 → 2（go-plugin 握手和 `GetInfoResponse.protocol_version`），Host API 9 → 10（`runtime-contract.HostAPIVersion`；`sdk/protocol.HostAPIVersion` 定义为它，两者恒等）。
 - 清单检查报 `outdated_contract`（`check.CodeOutdatedContract`，`check.OutdatedContract(err)`）：`runtime: "none"`；声明 `platform.execute.v1` 或 `platform.poll.v1`；清单原文里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`（这几个字段已不在类型里，从包里的 `manifest.json` 原文读）。
-- 上传、安装（`pkg.Validate`）和加载（`grpcruntime.Runtime.Load`：清单检查不过时不启动进程；握手协议不符；`GetInfo` 报的协议版本不符）都以同一条信息拒绝：`protocol.OutdatedContractMessage(key, version, hostVersion)`，即 `plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<host>, plugin protocol 2); install a version built for core <host> or later`；`errors.Is(err, grpcruntime.ErrOutdatedContract)` 为真。`GET /plugins` 的每项带 `refusal`（`{code: "outdated_contract", version, host_version, protocol_version, message}`），有节点以这条信息拒绝加载时非空。
+- 上传、安装（`pkg.Validate`）和加载（`grpcruntime.Runtime.Load`：清单检查不过时不启动进程；握手协议不符；`GetInfo` 报的协议版本不符）都以同一条信息拒绝：`protocol.OutdatedContractMessage(key, version, hostVersion)`，即 `plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<host>, plugin protocol 2); install a version built for core <host> or later`；`errors.Is(err, grpcruntime.ErrOutdatedContract)` 为真。`GET /plugins` 与 `GET /plugins/:key` 带 `refusal`（`{code: "outdated_contract", version, host_version, protocol_version, first_core_version, message}`），有节点以这条信息拒绝加载时非空。依据只是结构化的代码，不比对文字：节点把加载失败的代码报在实例上（`InstanceState.code`，`errors.Is(err, grpcruntime.ErrOutdatedContract)` 时为 `outdated_contract`），发布结束时随各节点的结果写进 `plugin_rollout_nodes.code`（迁移 0108）。首次启用在准备阶段失败后节点不再有这个实例，`refusal` 取自该插件最近一次发布里带这个代码的节点结果（`version` 为发布的目标版本，`host_version` 为应答的核心版本，`message` 为该节点的错误）；有节点正在报告时以节点报告为准。
 - 旧包装在新核心上没有降级服务，也没有“加载但不执行”。新包装在旧核心上由 `hostCompat`（第一方插件 `>=0.1.304`）拒绝。
 
 ### 112.11 升级

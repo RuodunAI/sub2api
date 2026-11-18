@@ -117,7 +117,7 @@ func TestSQLRecordDataMigration(t *testing.T) {
 
 func TestSQLUpsertRolloutNode(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return upsertRolloutNode(tx, 42, "node-a", "boot-a", NodeFailed, "not ready")
+		return upsertRolloutNode(tx, 42, "node-a", "boot-a", NodeFailed, "not ready", "outdated_contract")
 	})
 }
 

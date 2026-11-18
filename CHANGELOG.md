@@ -30,13 +30,13 @@
 - **性能**：判断只是调度时的内存比较，不增加数据库和 Redis 访问；没有配置的账号只多一次空指针判断。没开转换的账号在转换请求体、下载媒体之前就被过滤，跨平台请求比以前便宜。
 - **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；密钥页的端点说明只按分组的平台列端点，不反映账号关掉的协议；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 已改成先断言默认 404、在账号上为模型开启转换后断言 200，但只编译过，没有在部署好的栈上运行。
 
-### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限（核心与全部插件；插件协议 2、Host API 10；迁移 0107，只改数据；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
+### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限（核心与全部插件；插件协议 2、Host API 10；迁移 0107 只改数据，0108 给发布的节点结果加一列；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
 
 分支 `feat/forwarding-v2`（`26950a969`），未发布。契约见 CONTRACTS §111、§112，插件写法见 [PLUGIN-DEVELOPMENT.md](next/docs/PLUGIN-DEVELOPMENT.md)，设计与所有者在实现期间的决定见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)。
 
 **升级前必读**
 
-- **核心和全部插件一起换，旧插件包装不上。** 插件线协议从 1 升到 2、Host API 从 9 升到 10。按旧契约构建的插件包（旧协议的二进制，或清单里有 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、`platform.execute.v1`、`platform.poll.v1`）在上传、安装、加载时都以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...`），插件列表显示拒绝原因，它的账号在装上新版本之前不可用。第一方插件全部重新构建并升了版本，`hostCompat` 都是 `>=0.1.304 <0.2.0`；第三方平台插件要由作者用新 SDK 重新构建。
+- **核心和全部插件一起换，旧插件包装不上。** 插件线协议从 1 升到 2、Host API 从 9 升到 10。按旧契约构建的插件包（旧协议的二进制，或清单里有 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、`platform.execute.v1`、`platform.poll.v1`）在上传、安装、加载时都以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...`），插件列表和插件详情显示拒绝原因（`refusal`；首次启用就被拒、发布在准备阶段失败时也显示，取自迁移 0108 新增的发布节点结果代码 `plugin_rollout_nodes.code`），它的账号在装上新版本之前不可用。第一方插件全部重新构建并升了版本，`hostCompat` 都是 `>=0.1.304 <0.2.0`；第三方平台插件要由作者用新 SDK 重新构建。
 - **只能停机重新部署。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件（relay、claude_oauth、azure_openai、vertex、bedrock 等）逐个装上新版本。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024，CONTRACTS §111）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭），保存后各节点对新请求生效。环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0107 把全局层存着的值搬进网关设置；**分组层的值丢弃**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。端点清单的 `request.maxBodyBytes` 删除（没有清单用过）。
 - **插件内存默认不限**（CONTRACTS §111.5）：只有管理员设置时才有上限。插件资源页给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 只作展示。之前靠默认封顶或清单的值限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`。平台插件现在持有完整请求体，给它设上限时每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。交给插件的请求体不按字节排队，网关设置里没有内存警告。
