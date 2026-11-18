@@ -11,6 +11,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 // validate is the gateway's check of a relay, before anything is sent: what
@@ -101,7 +102,7 @@ func checkRelayHeaders(req *pluginv1.UpstreamRequest) *gwError {
 	}
 	for _, headers := range []map[string]string{req.GetDefaultHeaders(), req.GetHeaders()} {
 		for k, v := range headers {
-			if !httpguts.ValidHeaderFieldName(k) || !httpguts.ValidHeaderFieldValue(v) {
+			if !execfetch.ValidHeader(k, v) {
 				return relayRefused("invalid header " + strconvQuote(k))
 			}
 		}
