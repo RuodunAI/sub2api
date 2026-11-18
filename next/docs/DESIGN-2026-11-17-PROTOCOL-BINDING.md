@@ -6,7 +6,7 @@
 - "模型默认是不支持协议转换的，默认是客户什么协议访问什么模型，我们就转发"。
 - 配置方式是"选中模型，指定协议"。
 
-状态：**已实现**（2026-11-17，分支 `feat/protocol-binding`，未合并、未发布）。契约在 CONTRACTS §110，迁移 0106（`0106_account_protocols.sql`），升级手册 `next/deploy/rollback/protocol-binding-release.md`。实现与本文的差异见 §10“实现记录”；本文 §1–§9 保留定稿时的原样，两者不一致时以 CONTRACTS §110 和代码为准。
+状态：**已实现**（2026-11-17，分支 `feat/protocol-binding`；2026-11-18 合并进 `feat/forwarding-v2`（合并提交 `6bef447cf`），随转发 V2 一起发布，未发布）。契约在 CONTRACTS §110，迁移 0106（`0106_account_protocols.sql`），升级手册 `next/deploy/rollback/protocol-binding-release.md`。实现与本文的差异见 §10“实现记录”；本文 §1–§9 保留定稿时的原样，两者不一致时以 CONTRACTS §110 和代码为准。
 
 本文修订 CONVERT-MATRIX 的 D3（2026-11-09 定的"所有账号类型自然接受转换，没有任何退出机制"）和风险第 11 条（"账号级关协议不在本期"）。
 

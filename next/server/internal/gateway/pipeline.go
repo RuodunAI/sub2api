@@ -404,8 +404,8 @@ func (c *call) readBody() *gwError {
 // JSON text is UTF-8 (RFC 8259 §8.1) and gjson's validator does not check
 // that, so a body with a stray byte inside a string would pass here and
 // then poison every proto string it is copied into - RequestMeta.model
-// from request.modelPath, the fields of BuildUpstreamRequest / ResolveModel
-// / ExtractUsage, price params - and proto.Marshal refuses invalid UTF-8,
+// from request.modelPath, the request fields handed to plugins, price
+// params - and proto.Marshal refuses invalid UTF-8,
 // which makes every plugin call of the request fail: one curl, a stable
 // 5xx, and a usage row PostgreSQL refuses as well (CONTRACTS §25.1). It is
 // not valid JSON; say so, once, here.

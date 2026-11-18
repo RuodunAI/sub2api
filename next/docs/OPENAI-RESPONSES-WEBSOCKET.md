@@ -26,7 +26,7 @@
 沿用“插件陈述事实，核心决定并落账”：
 
 - **核心（内置 openai 平台）** 声明端点 `GET /v1/responses`，`kind: "websocket"`，协议 `openai.responses_ws`。核心负责鉴权、按轮的模型白名单、钩子、价格与余额、账号调度与粘性、并发与限额、建立上游连接（账号代理、SSRF 检查）、双向转发、按声明式规则读取用量、写使用记录与扣费、节点排空。
-- **openai 插件（0.3.0）** 声明能力 `platform.websocket.v1`，表示它的 `BuildUpstreamRequest` 能为本平台的 WebSocket 协议构造上游请求。对 `openai.responses_ws` 返回 `GET ws(s)://<base_url>/v1/responses` 与鉴权头；建连失败时照常由 `ClassifyError` 分类。插件不参与逐条事件转发，也不读用量：Responses 的事件与 SSE 的 `data` 完全相同，内置平台已有的 `response.completed` / `response.incomplete` 规则直接适用。
+- **openai 插件**（0.3.0 起）声明能力 `platform.websocket.v1`，表示它的 `Execute` 能为本平台 WebSocket 协议的每一轮给出握手和这一轮的消息（转发 V2，CONTRACTS §83.6、§112）。对 `openai.responses_ws` 给出 `GET ws(s)://<base_url>/v1/responses`、鉴权头（权威头）和 `OpenAI-Beta`（默认头）；建连失败时照常由 `ClassifyError` 分类。插件不参与逐条事件转发，也不读用量：Responses 的事件与 SSE 的 `data` 完全相同，内置平台已有的 `response.completed` / `response.incomplete` 规则直接适用。
 - 只有声明了 `platform.websocket.v1` 的插件的账号类型才会被调度到 WebSocket 端点。旧版本插件或其他平台插件的账号不受影响，也不会收到它们不认识的协议。
 - WebSocket 端点只走原生路由，不做协议转换。
 
@@ -45,9 +45,9 @@
    - 占 API Key 并发位并检查 RPM/TPM（CONTRACTS §60）；
    - 运行网关钩子（可拒绝或改写本轮消息）；
    - 解析价格、检查余额；
-   - **首轮**：按 HTTP 请求相同的规则选账号（候选、粘性、排序插件、限额、账号并发位），调用插件构造上游请求，建立上游连接；建连失败交给插件 `ClassifyError`，按结果冷却/禁用账号并在 `max_attempts` 内换号；
+   - **首轮**：按 HTTP 请求相同的规则选账号（候选、粘性、排序插件、限额、账号并发位），调用插件的 `Execute`（这一轮的消息、握手地址与握手头），建立上游连接；建连失败交给插件 `ClassifyError`，按结果冷却/禁用账号并在 `max_attempts` 内换号；
    - **后续轮次**：沿用首轮的账号与上游连接；账号并发位或限额暂时不可用时等待最多 10 s，仍不可用则回 429 错误事件；账号已不能服务本轮模型时回错误事件；
-   - 套用账号的模型映射，再应用插件为本轮消息返回的 body patch（首轮取握手那次 `BuildUpstreamRequest` 的，后续轮每轮调用一次、只取 patch、忽略 URL 与头；空 patch 时消息逐字节不变；patch 失败时回错误事件、连接保持。2026-11-08 起，见 CONTRACTS §83.6），发往上游；
+   - 套用账号的模型映射和与 HTTP 相同的改写，交给插件的 `Execute`，把插件交回的消息发往上游（首轮用握手那次调用交回的消息；后续轮每轮调用一次，只用交回的消息，忽略 URL 与头；调用失败时回错误事件、连接保持。见 CONTRACTS §83.6）；
    - 逐条转发上游事件，按 `usage.sse` 规则累计；遇到 `response.completed`、`response.incomplete`、`response.failed` 或 `error` 事件即结束本轮；
    - 结束时释放 API Key 与账号并发位，结算账号和 Key 的 token 预占（CONTRACTS §78.3），写一条使用记录（`protocol=openai.responses_ws`、`stream=true`），由结算服务扣费。
 4. **上游错误事件**：带 HTTP 状态的 `error` 事件（例如限流）交给插件 `ClassifyError`，冷却或禁用账号；本轮记为失败，连接保持，下一轮仍用该连接，由上游决定。
@@ -60,7 +60,7 @@
 
 ## 6. 计费与记录
 
-每轮一条使用记录与一次扣费，与 HTTP 流式请求相同：价格按本轮模型，`inclusive` 语义，缓存读取 token 单独计价。客户端中途断开或上游未给出用量的一轮按已收到的用量记录（通常为 0），标记失败原因。插件执行路径（`platform.execute.v1` 的 `Execute`/`RecordUsage`）是按请求/响应设计的，不用于 WebSocket；WebSocket 轮次使用核心声明式规则与结算服务，和不声明 Execute 的平台相同。
+每轮一条使用记录与一次扣费，与 HTTP 流式请求相同：价格按本轮模型，`inclusive` 语义，缓存读取 token 单独计价。客户端中途断开或上游未给出用量的一轮按已收到的用量记录（通常为 0），标记失败原因。插件的 `Execute` 每轮只构造请求、不等待地中继并返回 `host_usage`；WebSocket 端点不能由插件解析用量，用量按核心的声明式规则读取，由结算服务扣费。
 
 ## 7. 验收
 

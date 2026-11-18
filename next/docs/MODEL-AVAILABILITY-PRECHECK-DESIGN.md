@@ -148,7 +148,7 @@ const quotaObservationTimeout     = 2 * time.Second        // applyQuotaObservat
 - 两个预算并列，都从请求 ctx 派生。grpcruntime 自身的 2 s（`adapters.go:27`）仍是上限。
 - 做成 `Gateway` 字段，默认取常量，测试里可改小。
 - 镜像命中时读快照是内存读；插件是本机调用，正常不到 1 ms。
-- 插件出问题时不能让每个 attempt 都再等 1 s（guard 每个 attempt 都执行，`CheckModelAvailability` 还和 `BuildUpstreamRequest`、`ClassifyError` 共用 classHot 并发槽，`adapters.go:205/209/263`）：
+- 插件出问题时不能让每个 attempt 都再等 1 s（guard 每个 attempt 都执行，`CheckModelAvailability` 还和 `ClassifyError` 等热路径调用共用 classHot 并发槽（转发 V2 起构造请求的 `Execute` 走单独的 Execute 类），`adapters.go:205/209/263`）：
   - 同一个请求里插件已经失败放行过的，guard 不再调用插件；
   - 节点级熔断：某插件的可用性调用失败（出错、超时、坏结果）后 10 s 内，本节点对它的可用性检查直接按 `plugin_error` 放行，不发 RPC；10 s 后放一个请求试探，成功即恢复；
   - guard 读快照遇到缺失时不等待，直接沿用准入快照。

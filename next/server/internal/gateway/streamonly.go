@@ -20,8 +20,8 @@ import (
 //
 // An account type lists such upstream protocols in
 // AccountPlatform.streamOnly. A non-streaming request routed to one of them is
-// sent upstream with the endpoint's streamPath set to true (attempt, before
-// BuildUpstreamRequest, and again after the plugin's patches in forwardBuilt).
+// sent upstream with the endpoint's streamPath set to true (upstreamBody,
+// before the plugin's Execute; the plugin hands the flag back unchanged).
 // The SSE answer is read here, before anything reaches the client, and turned
 // back into what a non-streaming upstream would have answered: the response
 // object of the terminal event becomes the JSON body and the attempt goes on

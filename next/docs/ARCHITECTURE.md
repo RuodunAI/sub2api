@@ -221,16 +221,16 @@ flowchart LR
 | `proxy` / `account` | 代理；通用账号表、凭证加密、状态与冷却 | 核心 |
 | `billing` | 模型价格、余额、账本、余额检查、结算 | 核心 |
 | `usage` | 使用记录、幂等结算、核心托管异步任务的身份/轮询/共享快照（CONTRACTS §28） | 核心 |
-| `gateway` | 网关流水线（协议无关）、动态端点路由、调度、粘性会话、并发、转发、失败切换、钩子执行、用量提取 | 核心 |
+| `gateway` | 网关流水线（协议无关）、动态端点路由、调度、粘性会话、并发、协议转换、发送与中继（插件构造的请求经核心的 HTTP 客户端发出）、失败切换、钩子执行、用量提取 | 核心 |
 | `event` / `job` | 事件 outbox 与投递、任务调度 | 核心 |
 | `cluster` | 节点注册、心跳、广播、分布式锁 | 核心 |
 | `plugin` | 插件包、签名与信任、manifest、授权确认、迁移、注册表、发布、Runtime 抽象、市场索引 | 核心 |
 | `plugin/grpcruntime` | go-plugin 进程管理、HostService、EgressService | 核心 |
 | `plugin/sandbox` | 启动器：seccomp、rlimit、oom_score_adj、nice；内存看门狗 | 核心 |
-| anthropic 插件 | `apikey` 账号类型（支持内置平台 anthropic）：构造请求、错误分类；默认价格、模型目录 | **插件** |
+| anthropic 插件 | `apikey` 账号类型（支持内置平台 anthropic）：`Execute` 构造上游请求（`sdk/pluginsdk/standard`）、错误分类；默认价格、模型目录 | **插件** |
 | guard 插件 | 请求钩子（关键词拦截）、事件订阅（统计）、后台任务（汇总与清理）、对外告警、原生界面 | **插件** |
 
-**划分原则**：核心负责"数据、钱、安全、调度"，以及内置平台（anthropic、openai、gemini）的端点定义——它们是数据文件（`sdk/platforms/*.json`），流水线代码本身不针对任何平台写死逻辑；插件负责"某种账号怎么对接上游"以及"额外的业务逻辑"。插件**永远不能直接改余额**，只能调用受限的账本接口。
+**划分原则**：核心负责"数据、钱、安全、调度"，以及内置平台（anthropic、openai、gemini）的端点定义——它们是数据文件（`sdk/platforms/*.json`），流水线代码本身不针对任何平台写死逻辑；插件负责"某种账号怎么对接上游"以及"额外的业务逻辑"。平台插件拿到完整请求体，构造最终的上游请求，交给核心的 HTTP 客户端发出（账号代理、SSRF、超时、运营方的请求头设置由核心强制）；用量与任务事实只在插件调用的返回值里（CONTRACTS §112）。插件**永远不能直接改余额**，只能调用受限的账本接口。
 
 ---
 
@@ -422,7 +422,7 @@ erDiagram
 | `credentials_enc` | 凭证整体 AES-256-GCM 加密（主密钥 `MASTER_KEY`）；插件声明的敏感字段接口中永远脱敏 |
 | `settings` | 非敏感配置（base_url 等，由账号类型的 `settingsFields` 决定），明文 JSONB |
 | `proxy_id` / `status` / `schedulable` / `priority` / `weight` / `max_concurrency` | 代理、状态、是否参与调度、优先级（越大越优先，2026-11-09 起）、权重（同优先级内加权随机）、最大并发 |
-| `models` / `model_mapping` | 账号可服务的模型列表（完整模型 ID，空 = 全部）与"客户端模型 → 上游模型"映射；都是核心属性，与插件无关（CONTRACTS §18）。核心在调插件 `BuildUpstreamRequest` 前改写模型。模型列表可从上游拉取：插件 `BuildModelsRequest` 构造请求，核心发出并提取 ID（CONTRACTS §19） |
+| `models` / `model_mapping` | 账号可服务的模型列表（完整模型 ID，空 = 全部）与"客户端模型 → 上游模型"映射；都是核心属性，与插件无关（CONTRACTS §18）。核心在调插件 `Execute` 前改写模型。模型列表可从上游拉取：插件 `BuildModelsRequest` 构造请求，核心发出并提取 ID（CONTRACTS §19） |
 | `rpm_limit` / `tpm_limit` | 每分钟请求数和 token 数上限，0 = 不限；计数在 Redis `rl:account:{id}:*` |
 | 冷却 | Redis `cooldown:account:{id}`，不写 PG |
 
@@ -544,12 +544,12 @@ guard-0.1.0.s2plugin
 flowchart LR
   subgraph host["核心"]
     rt["grpcRuntime"]
-    hs["HostService<br/>Log · KVGet/KVSet/KVDelete/KVList · KVGetMany/KVSetMany/KVDeleteMany（CONTRACTS §93） · GetDSN<br/>AuthzCheck · AccountScopeCheck · LedgerCredit/LedgerDebit · Publish<br/>ListAccounts · GetAccountCredentials<br/>LockAcquire/LockRenew/LockRelease（CONTRACTS §27.3）"]
+    hs["HostService<br/>Log · KVGet/KVSet/KVDelete/KVList · KVGetMany/KVSetMany/KVDeleteMany（CONTRACTS §93） · GetDSN<br/>AuthzCheck · AccountScopeCheck · LedgerCredit/LedgerDebit · Publish<br/>ListAccounts · GetAccountCredentials<br/>LockAcquire/LockRenew/LockRelease（CONTRACTS §27.3）<br/>RelayUpstream · ExecuteHTTP（CONTRACTS §112）"]
     eg["EgressService<br/>Dial（双向流）"]
   end
   subgraph plugin["插件进程"]
     ps["PluginService<br/>GetInfo · Health · Configure · Shutdown"]
-    pf["PlatformService<br/>ValidateCredentials · BuildUpstreamRequest<br/>ClassifyError · BuildTestRequest<br/>BuildModelsRequest（可选）"]
+    pf["PlatformService<br/>Execute · Monitor（任务）<br/>ValidateCredentials · ClassifyError · BuildTestRequest<br/>BuildModelsRequest（可选）"]
     hk["HookService<br/>OnGatewayRequest"]
     ap["AppService<br/>RunJob · OnEvents"]
     hx["HTTPService<br/>HandleHTTP"]
@@ -565,23 +565,29 @@ proto 设计规则（为以后的 JS 运行方式预留）：
 
 - 除 `EgressService.Dial` 外，所有方法都是"一次请求、一次响应"
 - 不使用 `google.protobuf.Any`；字段按 protojson 规则可以直接映射成 JS 对象
-- 请求体不整体传给插件：插件声明需要的字段，返回"设置/删除"指令，由核心执行
+- 平台插件在 `Execute` 里拿到完整请求体，交回最终字节；网关钩子仍只拿声明的字段，返回"设置/删除"指令（`BodyPatch`），由核心执行
 
 关键消息（示意）：
 
 ```proto
-// 平台插件：构造上游请求
-message BuildUpstreamRequestRequest {
-  string protocol = 1;                       // "anthropic.messages"
-  Account account = 2;                       // 含解密后的凭证和 settings
-  map<string, string> fields = 3;            // requestFields 声明的字段（JSON 字符串）
-  map<string, string> inbound_headers = 4;   // 白名单内的客户端请求头
+// 平台插件：一次尝试（CONTRACTS §112）
+message ExecuteRequest {
+  RequestMeta meta = 3;                      // protocol "anthropic.messages"、model（映射后）……
+  Account account = 4;                       // 含解密后的凭证和 settings
+  bytes body = 5;                            // 完整请求体，核心的改写已做完
+  map<string, string> inbound_headers = 6;   // 白名单内的客户端请求头
+  bool extract_usage = 8; bool task_submission = 9;
 }
-message BuildUpstreamRequestResponse {
-  string method = 1;
-  string url = 2;                            // 核心校验：http(s)，不指向内网
-  map<string, string> headers = 3;
-  repeated BodyPatch patches = 4;            // {op: set|delete, path, value_json}
+// 插件在 Execute 里调 HostService.RelayUpstream 交出最终请求
+message UpstreamRequest {
+  string method = 1; string url = 2;         // 核心校验：http(s)，SSRF
+  map<string, string> headers = 3;           // 权威头（鉴权、签名）
+  map<string, string> default_headers = 4;  // 默认头（运营方设置可改）
+  bytes body = 5;                            // 最终字节
+}
+message ExecuteResponse {
+  ClassifyErrorResponse classification = 1;
+  oneof report { UsageReport usage = 2; HostUsage host_usage = 3; TaskSubmission task = 4; }
 }
 
 // 平台插件：错误分类
@@ -756,8 +762,9 @@ sequenceDiagram
     GW->>R: 查粘性会话绑定（规则命中时）
     GW->>GW: 绑定的账号可用就直接用；否则选账号：分组内 · 平台插件已启用 · 启用 · 可调度 · 未冷却 · 未排除<br/>按 priority 排序，同优先级按 weight 加权随机<br/>未命中粘性时 priority/weight 可能先被插件改写，见 6.2
     GW->>R: 获取账号并发槽位，原子检查并计入 RPM 和会话，预占 TPM，超限换下一个账号
-    GW->>P: BuildUpstreamRequest
-    P-->>GW: url、headers、patches
+    GW->>P: Execute（完整请求体）
+    P->>GW: RelayUpstream（最终请求，不等待）
+    P-->>GW: host_usage
     GW->>U: 发送请求（经账号代理）
     alt 成功
       U-->>GW: SSE / JSON
@@ -779,7 +786,8 @@ sequenceDiagram
 说明：
 
 - 流式响应一旦开始输出，就不再失败切换
-- 插件调用超时（平台默认 2 秒）或不可用时，该账号视为不可用；所有账号不可用返回 503
+- 插件在构造请求时出错、超时（平台调用超时，默认 2 秒，按段计时）或不可用时，请求没有发出，换下一个账号、不惩罚账号；所有账号不可用返回 503
+- 插件自己解析用量的端点和任务提交用等待形式：插件在 `RelayAndWait` 里等交换结束、读有界观察，在返回值里给 `usage` 或 `task`（CONTRACTS §112.7）
 - 客户端断开时取消上游请求、释放槽位；已产生的用量照常结算
 
 ### 6.2 调度
@@ -936,12 +944,12 @@ flowchart LR
   "endpoints": [ { "id": "gen", "method": "POST", "path": "/v1/video/generations",
                    "protocol": "myvideo.gen", "auth": {...}, "request": {...}, "response": {...},
                    "errorFormat": "plain", "billing": "usage", "usage": {...} } ],
-  "requestFields": [...], "passHeaders": [...], "usage": {...}   // 没有 stickyRules：插件不声明粘性规则，只能经 ClearStickyBindings 清理绑定（6.5）
+  "passHeaders": [...], "usage": {...}   // 没有 stickyRules：插件不声明粘性规则，只能经 ClearStickyBindings 清理绑定（6.5）
 } ],
 "accountTypes": [ {
   "id": "relay_key", "label": {...}, "form": {...}, "sensitiveFields": ["api_key"],
   "platforms": [ { "platform": "anthropic",           // 内置或插件平台
-                   "requestFields": [...], "passHeaders": [...],   // 可选覆盖
+                   "passHeaders": [...],   // 可选覆盖
                    "usage": { "<protocol>": {...} } } ]            // 可选：按协议覆盖用量规则
 } ]
 ```
@@ -1208,7 +1216,7 @@ sequenceDiagram
 
 ### 8.2 后台任务
 
-上游异步生成任务使用 `endpoint.task` + `Executor` + `TaskSubmissionParser` + `TaskMonitor`（CONTRACTS §28、§31）。插件通过 SDK 发起核心代理请求，再调用 ReserveAndWatch 原子记录预扣与监控；核心按任务认领并回调一次 Monitor，插件通过 ExecuteHTTP 查询、ReportTaskProgress 上报。核心固定原账号，事务性保存共享快照并结算。Poller 和旧 Reconciler 保留兼容。下表的 `jobs[]` 用于插件普通定时工作，不用于重复实现上游任务轮询；同一触发点去重也不等于不同触发点和手动执行互斥。两类后台工作共用核心执行器，保留各自触发和持久状态规则；SDK 的 `Scheduler` 只是在线请求的粘性/账号排序策略扩展，不创建后台调度器。
+上游异步生成任务使用 `endpoint.task` + `Execute` + `TaskSubmissionParser` + `TaskMonitor`（CONTRACTS §28、§112）。插件在 `Execute` 里以等待形式中继提交请求，在返回值里给 `task`，核心原子登记任务、替换预扣；核心按任务认领并调用一次 `Monitor`，插件经 `ExecuteHTTP`（SDK 的 `Fetch`）查询、把结果放在返回值里。核心固定原账号，事务性保存共享快照并结算。下表的 `jobs[]` 用于插件普通定时工作，不用于重复实现上游任务轮询；同一触发点去重也不等于不同触发点和手动执行互斥。两类后台工作共用核心执行器，保留各自触发和持久状态规则；SDK 的 `Scheduler` 只是在线请求的粘性/账号排序策略扩展，不创建后台调度器。
 
 | 项目 | 设计 |
 |---|---|
@@ -1526,13 +1534,13 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 | 能力 | 内容 |
 |---|---|
 | 账号类型 | `apikey`：支持平台 `anthropic`；字段 `api_key`（敏感）、`base_url`（默认 `https://api.anthropic.com`）、`model_mapping` |
-| 构造请求 | 按 `meta.protocol` 选上游路径：`base_url + /v1/messages` 或 `/v1/messages/count_tokens`；请求头 `x-api-key`、`anthropic-version`（透传，默认 `2023-06-01`）、`anthropic-beta`（透传）；命中模型映射时修改 `model` |
+| 构造请求 | `Execute`（`sdk/pluginsdk/standard` 加 anthropic 预设）：按 `meta.protocol` 选上游路径 `base_url + /v1/messages` 或 `/v1/messages/count_tokens`；`x-api-key` 是权威头，`anthropic-version`（客户端没带时默认 `2023-06-01`）、`anthropic-beta`（透传）是默认头；请求体是核心改写（含模型映射）之后的，原样交回 |
 | 错误分类 | 400 直接返回；401/403 切换并禁用账号；429 切换并冷却到 `retry-after`（默认 60 秒）；529 切换并冷却 30 秒；5xx 切换并冷却 10 秒 |
 | 模型目录 | 自己的 schema `plg_anthropic.model_catalog` + 迁移 `0001_init.sql`；接口 `GET /models`；用户权限 `model_catalog:read`（0.3.1 起没有控制台菜单和页面，CONTRACTS §90） |
 | 升级演示 | 测试用 `0.2.0` 增加 `0002_add_family.sql`（加字段并回填），验证升级迁移和旧数据迁移 |
 | 权限 | `platform.register`、`db.schema`、`routes.admin`、`kv` |
 
-另有市场插件 **relay（Claude 中转）**：只声明账号类型 `relay_key`（支持平台 `anthropic`，按平台覆盖 requestFields/passHeaders），演示多个插件的账号类型在同一分组中共同服务 `/v1/messages`。
+另有市场插件 **relay（Claude 中转）**：只声明账号类型 `relay_key`（支持平台 `anthropic`，按平台覆盖 passHeaders），演示多个插件的账号类型在同一分组中共同服务 `/v1/messages`。
 
 ### 15.2 guard（钩子与应用插件）
 
