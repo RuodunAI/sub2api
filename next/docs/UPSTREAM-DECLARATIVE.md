@@ -98,7 +98,7 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
 
 `Resolve(preset, manifest)`：预设 → 清单，后面覆盖前面；对象按字段合并，`headers` 按头名、`routes` 按协议合并（路由内逐字段，`headers` 按头名、`patches` 整体替换），写 `null` 删除。清单可新增预设没有的协议键，但必须是账号类型 `platforms[].endpoints` 覆盖到的协议。
 
-可服务的端点 = routes 里列出的协议（原生）加核心能转换到它们的协议；调度规则不变（routes 必须与账号类型 `platforms[].endpoints` 一致，check 校验）。
+可服务的端点 = routes 里列出的协议（原生）加核心能转换到它们的协议（CONTRACTS §110 起：经跨平台转换服务的端点要在账号上按模型开启才提供）；调度规则不变（routes 必须与账号类型 `platforms[].endpoints` 一致，check 校验）。
 
 ### 2.4 模板
 

@@ -14,7 +14,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 )
 
 // hangUpAfterStart sends a streaming request whose upstream holds after
@@ -266,7 +265,7 @@ func TestClientDisconnectAfterFinalUsageIsServed(t *testing.T) {
 // On a converting route the final usage is the upstream's: a chat client of
 // an Anthropic upstream that hangs up on [DONE] was served.
 func TestClientDisconnectAfterFinalUsageIsServedConverted(t *testing.T) {
-	e := newEnv(t, func(e *env) { e.conv = convert.Default() })
+	e := newEnv(t, openAIClients)
 	e.balance.outputReserve = testOutputReserve
 	e.up.set("acc-1", &upstreamRule{linger: true})
 	path, input := openAIConversionInput("openai.chat", true)

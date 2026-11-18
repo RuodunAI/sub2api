@@ -226,6 +226,8 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		// sweeping node, only once admitted (CONTRACTS §48).
 		Locker: b.cl.Locker, CanWork: b.canWork,
 	})
+	// The group page lists the protocols the accounts of a group serve.
+	b.grp.Protocols = b.acc
 	// Register balance providers (CONTRACTS §51).
 	b.acc.RegisterClaudeOAuthBalanceProvider()
 	// Price sync sources (upstream API keys encrypted) and GET /key/prices for

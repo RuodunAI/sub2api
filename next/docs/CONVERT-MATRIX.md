@@ -24,6 +24,8 @@
 8. relaykit（AGPL）只参考行为，不拷代码；sup2api 保持 LGPL-3.0。
 9. 2026-11-09 用户对第 13 节各项的答复（§13“已定决策”）：严格转换改宽松；优先级优先；所有账号类型都接受转换、没有退出机制；chat 客户端输出 `reasoning_content`；D5–D9 参考 new-api。
 
+> **修订（2026-11-17，用户要求）**：第 9 条里的“所有账号类型都接受转换、没有退出机制”（D3）不再成立。跨平台协议转换默认关闭，要在账号上为具体的模型开启（账号字段 `model_protocols`）；账号还可以用 `protocols` 关掉本平台协议。没开转换的账号在转换之前就被调度过滤，候选账号全部如此时请求返回 404。转换器、等级、调度顺序、丢失策略（第 1–8 条）都不变；同平台转换（chat ↔ Responses）不算协议转换，默认照常。规则见 CONTRACTS §110、[DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)。本文以下各节保留当时的决定，受影响处另加修订说明。
+
 本规格定下的实现方式：
 
 - 响应侧统一用一个内部表示（IR）：每个协议一个 reader（上游 → IR）和一个 writer（IR → 客户端），请求侧逐对实现。两跳只在注册表里做通用组合。
@@ -248,6 +250,8 @@ type Writer interface {
 ### 5.1 选目标端点（`planRoutes` / `addConvertedRoute`）
 
 对每个启用的账号类型 b（客户端端点平台 P、协议 X）。所有账号类型都参与转换，没有插件、账号类型或分组层面的退出机制（D3）：
+
+> **修订（2026-11-17）**：选路规则（下面 1–7）不变，每个账号类型仍得到一条路由；路由上多记一个 `cross`（b 不支持 P，即第 2 步的“看 b 其他平台”）。退出机制在账号层：`cross` 的路由只对账号在 `model_protocols` 里开启了协议 X 的模型可用，b 支持 P 的路由（原生、同平台转换）可以被账号的 `protocols`、`model_protocols` 关闭。判断在 `ineligibleReason` 里，早于转换和 §5.2 的挑选（CONTRACTS §110、[DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)）。
 
 1. 原生：b 支持 P 且子集含该端点 → grade native（不变）。
 2. 否则收集候选端点 e：b 支持 P 但子集不含该端点时只看 P 上子集内的端点（§83.3 规则不变）；b 不支持 P 时看 b 其他平台子集内的端点。跳过 WebSocket、非 proxy 端点、计数端点。
@@ -543,7 +547,7 @@ testdata/ir/<upstream protocol>/<case>.{json,sse}.txt   reader 输出的 IR 快�
 
 ## 12. 风险
 
-1. **端点暴露面扩大（已定，D3）**：几乎每个分组都会服务四家协议的全部文本端点（只有 codex 账号的分组开始回答 `/v1/messages` 和 Gemini 端点，Claude 账号开始回答 Gemini 端点），没有退出机制；费用与上游风控（ccgateway、claude-oauth）都要观察。
+1. **端点暴露面扩大（已定，D3）**：几乎每个分组都会服务四家协议的全部文本端点（只有 codex 账号的分组开始回答 `/v1/messages` 和 Gemini 端点，Claude 账号开始回答 Gemini 端点），没有退出机制；费用与上游风控（ccgateway、claude-oauth）都要观察。**修订（2026-11-17）**：这条风险由协议绑定收回，跨平台转换默认关闭，分组只回答成员账号开放的协议，转换要在账号上按模型开启（CONTRACTS §110、[DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)）。升级到带协议绑定的版本后，存量的转换流量在配置之前返回 404。
 2. **同 priority 下的分布变化**：同一优先级内原生账号先被用满，转换账号才接流量；需要转换账号分担时管理员要调优先级或权重（D2）。
 3. **推理与签名**：推理状态不跨协议（§3.2），推理模型跨轮次会丢失上下文、质量下降；Anthropic 工具循环靠关 thinking 兜住；对话从转换路由换到原生账号时，客户端带回的无签名 thinking 可能被原生上游 400，只能靠粘性会话避免（与 new-api 相同）。必须用 `-live` 实测 Gemini 3 旁路签名。
 4. **严格转为宽松（已定，D1）**：原来 400 的 chat → anthropic 请求会以有损方式成功；需要原行为的账号/分组设成 strict。
@@ -553,7 +557,7 @@ testdata/ir/<upstream protocol>/<case>.{json,sse}.txt   reader 输出的 IR 快�
 8. **Gemini schema**：直接用 `parametersJsonSchema`/`responseJsonSchema`，Gemini 1.5/2.0 等旧模型可能不支持（备选：清洗为 OpenAPI 子集 `parameters`，有损 other）。
 9. **性能**：转换提前到挑选阶段，按顺序惰性进行；组合对做两次。大请求（多 MB base64 图片）在多次回退时 CPU 增加。
 10. **缓存与费用（D7）**：OpenAI 客户端走 Anthropic 上游没有提示缓存，输入成本明显上升。
-11. **只有 chat 的 OpenAI 兼容站点**：openai 的 API Key 类型声明全部 openai 端点为原生，responses 请求不会走 responses → chat（设计已知，账号级关协议不在本期）。
+11. **只有 chat 的 OpenAI 兼容站点**：openai 的 API Key 类型声明全部 openai 端点为原生，responses 请求不会走 responses → chat（设计已知，账号级关协议不在本期）。**修订（2026-11-17）**：账号级关协议已实现。这类账号把“本平台协议”设成只开放 `openai.chat`（`protocols: ["openai.chat"]`），responses 请求就不会再调度到它（跳过原因 `protocol_closed`），由组内其他账号服务，都不提供时返回 404；它不会因此改走 responses → chat，要这种转换仍得用子集不含 responses 的账号类型（CONTRACTS §110、[DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)）。
 12. **第 2 期并行**：`AccountEditor.vue`、`GroupsView.vue`、`GatewaySettingsCard.vue` 可能与第 2 期冲突，合并时手工合并；迁移号与节号按 0093、§88。
 
 ## 13. 已定决策（用户 2026-11-09）
@@ -562,12 +566,14 @@ testdata/ir/<upstream protocol>/<case>.{json,sse}.txt   reader 输出的 IR 快�
 |---|---|---|---|---|
 | D1 | 现有严格转换（chat/responses → anthropic） | 改为宽松，默认 allow；账号/分组可选 safe、strict | — | §1.2、§9.9 重写；strict 用例移植为等价样例 |
 | D2 | 调度顺序 | priority 优先，等级只在同一 priority 内排序；粘性不变 | — | §5.2 |
-| D3 | 账号类型能否拒绝转换 | 全部自然接受转换，没有任何退出机制（同 new-api） | 渠道按格式自动转换 | §5.1 |
+| D3 | 账号类型能否拒绝转换 | 全部自然接受转换，没有任何退出机制（同 new-api）。**2026-11-17 修订，见表后** | 渠道按格式自动转换 | §5.1 |
 | D4 | chat 客户端的推理输出 | 输出 `reasoning_content` | 同（`relaykit/relayconvert/internal/claude_messages/to_oai_chat_resp.go` 等） | §9.8 chat writer；现有 chat → responses 一并输出 |
 | D5 | 到 Anthropic 的 `max_tokens` 缺省 | 参考 new-api | 全局设置 `claude.default_max_tokens`：模型名 → 值的映射，必须有 `default`，默认 `{"default": 8192}`（`setting/model_setting/claude.go`）；转换时客户端没给就按模型取值（`relaykit/relayconvert/internal/oai_chat/to_claude_messages_req.go` 108–113、`oai_responses/to_claude_messages_req.go` 71）；有推理时至少 1280、手动 thinking 抬到 `budget + 1`（`internal/shared/claude/reasoning.go` 92–115）；原生 Claude 请求也补（`relay/channel/claude/adaptor.go` 50–53） | 网关设置 `claude_max_tokens`（2026-11-14 起：可开关的内置参数覆盖，默认关闭，`default` 不必填，CONTRACTS §84.1）：开启时原生请求也补（同 new-api），转换请求客户端没给时用它的值，关闭时转换器兜底 8192；thinking 时抬高规则同 new-api（§6.1、§9.4） |
 | D6 | 到 Gemini 的 http(s) 图片 URL | 参考 new-api | 转 Gemini 时所有媒体都解析为 base64 `inlineData`（`internal/oai_chat/to_gemini_chat_req.go` 330–345、`internal/oai_responses/to_gemini_chat_req.go` 236、365）；URL 由 `service/file_service.go` `loadFromURL` 下载：SSRF 防护客户端（`service/download.go` 52–68），单文件上限 `MAX_FILE_DOWNLOAD_MB` 默认 64（`common/init.go` 193），失败或 MIME 不受 Gemini 支持时整个请求报错；user 文本里的 markdown data URL 图片拆成 `inlineData`（同文件 280–320） | `gateway/convert_media.go`：netguard SSRF 检查、直连、单文件 `media_download_max_mb`（默认 64）、60 秒超时、同请求缓存；失败/超限/MIME 不支持 → `RequestError`（该类型跳过，没有其他类型则 400）；markdown 内联图片同样拆分；到 Anthropic 的 URL 保持 url 源（§9.2） |
 | D7 | 提示缓存参数与标记 | 参考 new-api | 不做 OpenAI `prompt_cache_*` 与 Anthropic `cache_control` 的互转；`prompt_cache_key` chat ↔ responses 原样（`internal/oai_chat/to_oai_responses_req.go` 405、`internal/oai_responses/to_oai_chat_req.go` 81、112），Claude → chat 把消息文本块的 `cache_control` 原样带到 chat 文本部件（`internal/claude_messages/to_oai_chat_req.go` 184–189；system 块只对 OpenRouter 的 Claude 带，133–144）；chat → Claude 不带缓存标记 | 同 new-api：§9.1“缓存”行与说明；sup2api 没有 OpenRouter 方言，system 块的 `cache_control` 一律丢 other |
 | D8 | 推理签名跨协议、换到原生上游 | 参考 new-api | 不做任何信封或清理：OpenAI 推理 → Claude thinking 块不带 signature（`internal/oai_chat/to_claude_messages_resp.go` 342–363、461–466）；Claude signature 不传给 OpenAI 客户端（`internal/claude_messages/to_oai_chat_resp.go` 88–90），`redacted_thinking` 记“continuation_state_lost”诊断（`internal/toolconv/response.go` 214–220）；请求转换不搬运别家推理历史；原生 Claude 渠道不清理请求；对话靠渠道亲和留在同一渠道（`service/channel_affinity.go`）；Gemini 转换的 model 轮次第一个 functionCall（或文本）部件写旁路签名 `context_engineering_is_the_way_to_go`，默认开启（`internal/shared/gemini/request.go` 64–95、`setting/model_setting/gemini.go` 53） | §3.2：推理只传文本；签名与加密推理记响应侧 reasoning 损失；请求侧丢弃别家推理；不生成信封（现有 `sup2api-anthropic-thinking-v1:` 停用）；原生路由不清理，靠粘性；Gemini 旁路签名同值；另加 Anthropic 工具循环关 thinking 规则防 400 |
 | D9 | count_tokens 兜底与响应头 | 参考 new-api；不加任意响应头 | `/v1/messages/count_tokens` 照常选渠道（`router/relay-router.go` 106）；选中非 Anthropic 渠道回 404 不估算，Anthropic 渠道按 `claude_count_tokens_mode` 转发上游 / 转发指定渠道 / 本地估算，不占速率、不记用量、失败不重试（`relay/claude_count_tokens.go` 35–60）；本地估算 `service.CountRequestToken`（`service/token_counter.go` 59–170）：tokenizer 计 system、role、文本、tool_use 名与入参、tool_result 文本、工具定义（`relaykit/dto/claude.go` 288–418），图片按 `tokenkit/image.go` 规则（非流式默认不下载，按 1024×1024），文件 4096、音频 256、视频 8192；响应只有 `{"input_tokens": N}`，无额外头；Gemini `:countTokens` 一律 404（`router/relay-router.go` 222–229） | §8：照常挑账号，选中账号的路由决定转发还是本地估算（原生计数账号不可用时自然落到 local 路由的账号）；估算口径与媒体常数照 new-api；响应只有 `input_tokens` / `totalTokens`，不加响应头；与 new-api 的差别：按已批准的设计对没有计数端点的类型估算而不是 404，保留原生 Gemini 计数，不做按账号的计数模式 |
+
+**D3 的修订（2026-11-17，用户要求“协议转换默认不支持，需要显式开启”）**：跨平台协议转换改为默认关闭、在账号上按模型显式开启；“同 new-api”不再适用（new-api 仍是隐式转换）。同平台转换（chat ↔ Responses）不算协议转换，默认照常，可以在账号上关闭。账号类型、插件、分组层面仍然没有开关。存量账号不回填，升级后依赖转换的请求返回 404，直到在账号上配置。规则见 CONTRACTS §110、[DESIGN-2026-11-17-PROTOCOL-BINDING.md](DESIGN-2026-11-17-PROTOCOL-BINDING.md)；D1、D2、D4–D9 不变。
 
 与现有代码行为不同、发布说明里要写明的：转换“不可能”（`RequestError`）时不再立即 400，而是跳过该类型试其他类型，都不行才 400 且 attempts 为 0；`/account-types` 多出 Gemini/Anthropic/Responses 端点的转换项与等级；chat → anthropic 等原来被拒的请求改为有损成功；codex 的 chat 路径响应多出 `reasoning_content`；responses 客户端经 Anthropic 上游不再收到 `sup2api-anthropic-thinking-v1:` 推理信封。

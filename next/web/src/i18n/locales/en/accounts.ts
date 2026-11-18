@@ -68,7 +68,7 @@ export default {
     noModelMatch: 'No matching models',
     addModels: 'Add',
     groupModelHint: 'Account models and group allowlists apply separately. The API Key group must also allow the request model.',
- authMethod: 'Authentication method', connection: 'Connection', connectionHint: 'Name, groups and credentials', models: 'Models', modelsHint: 'Available models and aliases', scheduling: 'Scheduling & limits', schedulingHint: 'Priority, concurrency and usage', advanced: 'Advanced', navigation: 'Account configuration', searchTypes: 'Search providers or account types',
+ authMethod: 'Authentication method', connection: 'Connection', connectionHint: 'Name, groups and credentials', models: 'Protocols & models', modelsHint: 'Protocols served, available models and aliases', scheduling: 'Scheduling & limits', schedulingHint: 'Priority, concurrency and usage', advanced: 'Advanced', navigation: 'Account configuration', searchTypes: 'Search providers or account types',
     unnamed: 'No name yet', allModels: 'All models', modelsSummary: '{n} models', mappingSummary: '{n} mappings', summaryPriority: 'Priority {n}', summaryWeight: 'Weight {n}', summaryConcurrency: 'Concurrency {n}', pluginSectionAfterSave: 'Available after the account is saved', sectionHasErrors: 'Something here needs fixing',
     basicHint: 'Account name, groups and egress proxy', namePlaceholder: 'e.g. claude-main', groupsHint: 'Accounts outside every group are never scheduled', credentialsHint: 'Credentials are validated and stored by the {plugin} plugin',
     modelsCardHint: 'Request models the account serves; empty means no restriction', mappingCardHint: 'Rewrites request models to upstream models; billing and allowlists still use the request model', prefilled: 'Prefilled with the plugin preset: {what}. Save as is or adjust; an empty model list serves every model.',
@@ -165,6 +165,71 @@ export default {
     gradeHints: { local: 'Estimated by the core without an upstream request' },
     convertedGrade: 'Converted · {grade}',
     categories: { tool: 'Tools', reasoning: 'Reasoning', image: 'Images', other: 'Other' }
+  },
+  protocols: {
+    names: {
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images' },
+      anthropic: { messages: 'Messages' },
+      gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
+    },
+    own: {
+      title: 'Own protocols', titleOf: 'Own protocols ({platforms})', subtitle: 'Which protocols this account takes requests on',
+      all: 'All', custom: 'Chosen', modeHint: '"All" includes protocols the account type adds later; "Chosen" opens only the ticked ones',
+      native: 'Native', adapted: 'Adapted → {target}', adaptedShort: 'Adapted',
+      closed: 'Chosen: {n} own protocol(s) are closed. Protocols the account type adds later will not open by themselves either.',
+      crossHint: 'Protocols of other platforms are not served by default. To convert, choose models under "Protocols per model" below and tick the conversion.',
+      none: 'This account type serves no protocol of its own platforms right now.',
+      unknown: 'These are no own protocols of this account type, and saving will be refused; remove them:'
+    },
+    rules: {
+      title: 'Protocols per model', subtitle: 'Choose models and the protocols they are served on',
+      views: { matrix: 'Matrix', list: 'List', json: 'JSON' },
+      model: 'Model', rest: 'Other models', restHint: 'every model not listed on its own',
+      groupOwn: 'Own platform ({platforms})', groupCross: 'Conversion (off by default)',
+      default: 'Default', followsRest: 'Follows other models', reset: 'Restore default', resetAll: 'Restore all defaults',
+      selectAll: 'Select all models', selectModel: 'Select {model}', cell: '{model} · {protocol}',
+      selected: '{n} model(s) selected', assign: 'Protocols:', apply: 'Apply to the selected models', clearSelection: 'Clear selection',
+      conversionChip: '{name} · conversion',
+      legendDefault: 'Light = default: not limited, forwarded on the protocol the client used, never converted', legendExplicit: 'Dark = set: served only on the ticked protocols',
+      legendFollowsRest: 'Light = not set on its own: follows the "Other models" row, served only on the protocols ticked there',
+      empty: 'Nothing limited: every model is served on the own protocols the account opens, without conversion.',
+      models: 'Models', protocols: 'Served on', removeEntry: 'Remove this set (restore default)',
+      add: 'New set', addPlaceholder: 'Pick or type a model, Enter starts a set', addRest: 'Set protocols for the other models',
+      jsonHint: 'Edit or paste. protocols null opens every own protocol; "*" stands for the other models. Gemini streaming and non-streaming are two protocol ids, shown as one column.',
+      jsonProblems: {
+        json: 'Invalid JSON',
+        shape: 'An object is needed: protocols is null or an array of protocols, model_protocols an array whose items hold a non-empty models array and a protocols array',
+        star: '"*" must be an entry of its own',
+        duplicate: 'Model listed twice: {model}'
+      },
+      entryError: 'Entry {n} ({models}): {message}'
+    },
+    issues: {
+      empty_rule: '{model}: tick at least one protocol, or restore the default.',
+      no_protocol: 'The account opens no protocol. To take it out of service use the "Schedulable" switch.',
+      closed_protocol: '{model} lists {protocol}, which the account does not open: it has no effect.',
+      unknown_protocol: '{model} lists {protocol}, which this account type cannot serve: saving will be refused.',
+      unknown_own_protocol: '{protocol} under "Own protocols" is no own protocol of this account type: saving will be refused. Remove it in the "Own protocols" card.',
+      rest_conversion: 'The other models are converted: every model not listed on its own accepts the conversion, and a model name the upstream does not know may trigger the failure policy. Convert only models that have a mapping.',
+      two_hop: '{model} → {protocol}: converted twice, with poorer results.'
+    },
+    summary: { open: 'Protocols {open}/{total}', limited: '{n} model(s) limited', converting: '{n} converted', noConversion: 'no conversion' },
+    conversionOff: 'No conversion in use: no model is converted and no adapted protocol is open',
+    marks: {
+      partial: 'Partial {open}/{total}', converted: 'C',
+      own: '{platform}: {protocols}', ownAll: '{platform}: every own protocol ({protocols})', ownNone: '{platform}: no own protocol open',
+      adapted: '{name} (adapted)',
+      conversion: '{platform} {protocols} (converted): {n} model(s) {models}'
+    },
+    served: {
+      closed: 'Closed',
+      models: '{n} model(s): {models}', needsModel: 'Turned on per model on the account'
+    },
+    bulk: {
+      own: 'Own protocols', rules: 'Protocols per model',
+      replaceHint: 'Replaces what each account has',
+      mixedTypes: 'The selected accounts are of different account types (or of a type whose plugin is not enabled): protocols depend on the type, so only accounts of one type can be edited together'
+    }
   },
   headerOverride: {
     title: 'Request header override',

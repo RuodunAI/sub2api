@@ -907,14 +907,14 @@ func TestMigration0104DropsCustomPlugin(t *testing.T) {
 	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
 }
 
-// 0106 turns the environment variable max_request_body_mb into the gateway
-// setting of the same name (CONTRACTS §110): a valid value of the global
+// 0107 turns the environment variable max_request_body_mb into the gateway
+// setting of the same name (CONTRACTS §111): a valid value of the global
 // layer moves into the gateway row, keeping its other fields (or creating
 // the row), and the key leaves the global layer, the groups and the
 // accounts, every other key staying. A value the variable would not have
 // accepted is dropped, not moved. A rerun changes nothing.
-func TestMigration0106RequestBodyLimitSetting(t *testing.T) {
-	const id = "0106_request_body_limit_setting.sql"
+func TestMigration0107RequestBodyLimitSetting(t *testing.T) {
+	const id = "0107_request_body_limit_setting.sql"
 	const layers = `INSERT INTO groups (name, environment) VALUES
 			('both', '{"max_request_body_mb": 32, "relay_timeout_seconds": 90}'), ('only', '{"max_request_body_mb": 8}'), ('none', '{"task_timeout_minutes": 5}');
 		INSERT INTO accounts (name, plugin_key, type, credentials_enc, environment) VALUES

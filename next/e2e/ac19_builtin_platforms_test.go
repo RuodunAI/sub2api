@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -9,11 +10,14 @@ import (
 
 // AC 19: the core has built-in platforms (ARCHITECTURE 6.6, CONTRACTS 13).
 // GET /platforms lists at least anthropic, openai and gemini, built in and
-// each with its endpoints. The endpoints of a built-in platform always exist,
-// so /v1/chat/completions is never a 404 for an API key whose group only has
-// anthropic-type accounts: it is 503 no_available_account (in the endpoint's
-// openai error format, no upstream called) while no protocol converter is
-// registered, and a served 200 once one is.
+// each with its endpoints. The endpoints of a built-in platform always
+// exist, but an account serves the protocols of another platform only for
+// the models it enables the conversion for (CONTRACTS 110): for an API key
+// whose group only has anthropic-type accounts, /v1/chat/completions is 404
+// (in the endpoint's openai error format, no upstream called) until an
+// account lists the model with openai.chat in its model_protocols, and a
+// served 200 from then on. While no protocol converter is registered it is
+// 503 no_available_account.
 func TestAC19_BuiltinPlatforms(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -69,10 +73,11 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 	// correct depends on whether the core registers an
 	// openai.chat -> anthropic.messages converter
 	// (server/internal/gateway/convert): with one, anthropic/apikey lists the
-	// endpoint as convertible and must serve it; without one, nothing in the
-	// group can serve it and the answer is 503 in the endpoint's openai error
-	// format. Both are asserted below - a skip here would swallow the 503
-	// branch the day the first converter lands, and would also mask the
+	// endpoint as convertible, and an account serves it for the models it
+	// enables the conversion for, none by default; without one, nothing in
+	// the group can serve it and the answer is 503 in the endpoint's openai
+	// error format. Both are asserted below - a skip here would swallow the
+	// 503 branch the day the first converter lands, and would also mask the
 	// assertions this function already made.
 	at, ok := FindAccountType(admin.OK(t, http.MethodGet, "/account-types", nil).Array(), AnthropicPlugin, AnthropicAPIKey)
 	if !ok {
@@ -80,18 +85,41 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 	}
 	convEP, converted := AccountTypeEndpoint(at, http.MethodPost, "/v1/chat/completions")
 	m := e.Mock()
-	mark := m.Mark(t)
 	body := map[string]any{
 		"model":    tn.Model,
 		"messages": []any{map[string]any{"role": "user", "content": "no openai account"}},
 	}
-	g := e.Gateway(t, e.BaseURL, "/v1/chat/completions", "", body, map[string]string{"Authorization": "Bearer " + tn.APIKey})
+	// chat sends the request and returns the upstream keys it was sent with.
+	chat := func() (*GatewayResult, []string) {
+		mark := m.Mark(t)
+		g := e.Gateway(t, e.BaseURL, "/v1/chat/completions", "", body, map[string]string{"Authorization": "Bearer " + tn.APIKey})
+		return g, KeysUsed(m.Since(t, mark), "")
+	}
+	g, keysUsed := chat()
 	j := g.JSON()
-	keysUsed := KeysUsed(m.Since(t, mark), "")
 
 	if converted {
-		// Conversion path: the request is served by an anthropic account and
-		// answered in the OpenAI chat-completion shape.
+		// The conversion is off until an account enables it for the model:
+		// no account of the group serves the model on this endpoint, which
+		// is a 404 clients do not retry, in the OpenAI error format.
+		if g.Status != http.StatusNotFound || j.Get("error.message").String() != "no account in this group serves this model on this endpoint" ||
+			j.Get("error.type").String() == "" || j.Get("type").Exists() {
+			t.Fatalf("/v1/chat/completions before the conversion is enabled: HTTP %d %s (want 404 in openai format)", g.Status, g.Body)
+		}
+		for _, k := range keysUsed {
+			if tn.AccountKeys()[k] {
+				t.Fatalf("an upstream was called with account key %s before the conversion was enabled", k)
+			}
+		}
+		// Enabled for the model, next to the account's own protocol: the
+		// request is served by an anthropic account and answered in the
+		// OpenAI chat-completion shape.
+		for _, a := range tn.Accounts {
+			admin.OK(t, http.MethodPatch, fmt.Sprintf("/accounts/%d", a.ID), map[string]any{"model_protocols": []any{
+				map[string]any{"models": []string{tn.Model}, "protocols": []string{"anthropic.messages", "openai.chat"}}}})
+		}
+		g, keysUsed = chat()
+		j = g.JSON()
 		if g.Status != http.StatusOK {
 			t.Fatalf("/v1/chat/completions with a convertible anthropic/apikey (%s): HTTP %d %s (want 200)", convEP.Raw, g.Status, g.Body)
 		}

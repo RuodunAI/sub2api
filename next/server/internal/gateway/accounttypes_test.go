@@ -341,8 +341,8 @@ var qUsage = &manifest.UsageRules{
 }
 
 // convEnv adds a "qplug" plugin declaring platform "q" (protocol q.chat) and
-// an account type serving it (priority 0, account 6), and a converter
-// anthropic.messages -> q.chat.
+// an account type serving it (priority 0, account 6, which takes Anthropic
+// requests), and a converter anthropic.messages -> q.chat.
 func convEnv(t *testing.T, conv *fakeConv) (*env, *qUpstream, *fakePlatform) {
 	q := newQUpstream(t)
 	qp := &fakePlatform{urlFor: func(*pluginv1.Account) string { return q.srv.URL + "/q" }}
@@ -360,6 +360,7 @@ func convEnv(t *testing.T, conv *fakeConv) (*env, *qUpstream, *fakePlatform) {
 			Auth: manifest.EndpointAuth{Headers: []string{"x-api-key"}}, Request: manifest.EndpointRequest{ModelPath: "q_model"},
 			ErrorFormat: "plain", Billing: "usage", BillingTypes: []string{"per_request", "per_token", "expression"}}}})
 		e.accounts.addTyped(testGroup, 6, 100, "q-6", "qplug", "q_key")
+		e.accounts.serveOn(6, "anthropic.messages")
 	})
 	return e, q, qp
 }
@@ -468,6 +469,7 @@ func TestConvertedErrors(t *testing.T) {
 func TestConvertRequestFailureSkipsType(t *testing.T) {
 	e, q, qp := convEnv(t, &fakeConv{reqErr: errors.New("unsupported block")})
 	e.accounts.addTyped(testGroup, 7, 100, "q-7", "qplug", "q_key")
+	e.accounts.serveOn(7, "anthropic.messages")
 	if r := e.messages(body(testModel, false)); r.status != 200 || strings.Join(e.up.keys(), ",") != "acc-1" {
 		t.Fatalf("status %d keys %v", r.status, e.up.keys())
 	}

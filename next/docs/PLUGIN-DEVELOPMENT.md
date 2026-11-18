@@ -38,7 +38,7 @@
 | 账号参数覆盖（请求体）、Claude 默认 max_tokens 内置覆盖、过滤字段 | 核心统一，在插件之前执行 | 一致 / 一致（插件按改写后的请求体构建）/ 握手和每轮各一次 | `rewriteBody`；CONTRACTS §84、§84.1。插件的 patch 排在覆盖之后，可以再改覆盖的结果 |
 | 账号参数覆盖（请求头）、请求头覆盖 `header_override`、请求头透传 | 核心统一 | 一致 / 一致 / 覆盖头只用于握手；透传头（含请求头覆盖的透传键）在握手上不生效（有意如此，`websocket.go` `dial`）；请求头覆盖与首条消息的改写分开解析，改写失败时握手仍带它，已存的值编译不过时换号 | `forwardBuilt`、`accountHeaders`；CONTRACTS §84、§108。请求头覆盖是参数覆盖的初始请求头状态；插件的头排在两者之后 |
 | 上游只接受流式（`streamOnly`） | **插件配合**：在账号类型路由上声明 | 一致 / 一致 / 不适用 | `streamonly.go`，CONTRACTS §83 |
-| 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限；插件和清单都不能另设 | 一致 / 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §110 |
+| 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限；插件和清单都不能另设 | 一致 / 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §111 |
 | 上游整体超时、流式空闲超时（环境变量） | 核心统一 | 一致 / 一致（`Execute` 总时限 6 小时 + 整体超时）/ 握手固定 30 秒，每轮受流式空闲超时约束 | `forwardBuilt`、`newIdleBody` |
 
 ### 2.3 调度、限流与保护
@@ -46,6 +46,7 @@
 | 设置 | 归属 | 普通 / 执行 / WebSocket | 说明与位置 |
 |---|---|---|---|
 | 优先级、权重、调度策略、均衡负载 | 核心统一；插件可选实现 `RankAccounts` | 一致 / 一致 / 首轮调度，后续轮复用连接 | `dispatch.go` |
+| 账号的协议绑定：本平台协议（`protocols`）、模型的协议限定与显式协议转换（`model_protocols`） | 核心统一，在调度时过滤账号，早于转换和插件的 `Execute`；插件什么都不用做，清单里也没有对应的声明 | 一致 / 一致 / 首轮调度时判断；后续轮换成该账号在这个协议下不提供的模型返回 400，要新建连接 | `sched_trace.go` `ineligibleReason`；CONTRACTS §110。账号能配哪些协议来自账号类型的 `platforms[].endpoints`：声明过的平台的协议是本平台协议（默认开放），其他平台的协议要经转换、默认关闭 |
 | 粘性会话 | 核心统一（规则按协议匹配，内置规则不设模型和 UA） | 一致 / 一致 / 首轮 | `stampSticky`；CONTRACTS §15.5 |
 | 最大并发、RPM、TPM、会话数限制、Key 限额、用量限制 | 核心统一 | 一致 / 一致 / 每轮重新准入和占槽 | `acquireAccount`、`admitRate`、`admitKey` |
 | CPU 保护 | 核心之前，由节点网关处理 | 与路径无关 | `next/gateway` |
@@ -66,13 +67,14 @@
 | openai、gemini、relay | 普通转发（只有清单）；openai 另有 WebSocket | 无，全部由清单和核心完成 |
 | azure_openai（目录 `plugins/azure-openai`，市场） | 普通转发（只有清单），不提供 WebSocket | 无；清单里覆盖鉴权头（`api-key`）、路由和类型自己的 `passHeaders`，错误分类用预设的 `openai` 策略（[UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) §6.1） |
 | vertex（市场） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6）；插件不联网 |
-| bedrock（市场，核心 0.1.304 起；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
+| bedrock（市场，核心 0.1.304 起；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 普通转发（gRPC，`BuildUpstreamRequest`） | `ClassifyError`；构造结果带 `signing`（AK/SK、临时凭证）和 `response_stream`（流式 InvokeModel），见第 6 节；插件不联网，只自己签账号测试请求 |
 | codex | 插件执行 + WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16） |
 | volcengine | 插件执行（含异步任务） | `ClassifyError`、`EstimateUsage`（视频任务）、`ReserveAndWatch` |
 
 ## 4. 新插件自查
 
 - 用量规则：流式规则把输出数映射在指名的终止事件上；非流式规则映射响应体。
+- 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine），这些平台的协议就都是它的本平台协议。
 - 走插件执行时用 SDK 的 `ExecuteDefault`，或在自己的 `Execute` 里同样经 `ForwardUpstream` 发请求、经 `RecordUsage` 记用量，不要自己连上游（插件的对外连接本来也要经核心转发）。
 - 需要账号被自动禁用到某个时刻时实现 `ClassifyError`，不要在插件里自己改账号状态。
 - 不要在插件里实现限流、并发、粘性、价格、断开计费这类核心已经统一处理的逻辑。

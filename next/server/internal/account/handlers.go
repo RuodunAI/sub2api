@@ -85,6 +85,10 @@ type row struct {
 	// AdminLocked: disabled by a caller with the full scope who does not
 	// own the account (migration 0097); see checkAdminLock.
 	AdminLocked bool
+	// Protocols (nil = all of the type's own platforms) and ModelProtocols
+	// are the account's protocol binding (protocols.go).
+	Protocols      []string
+	ModelProtocols []byte
 }
 
 // rowColumns are the columns of a row, in scanRow's order. Every statement
@@ -95,7 +99,8 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.models, a.model_mapping, a.rpm_limit, a.tpm_limit, a.spm_limit, a.spm_window_seconds, a.model_limits, a.environment, a.last_used_at,
 	a.created_by, u.email, a.owner_id, o.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
-	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked,a.header_override`
+	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked,a.header_override,
+	a.protocols, a.model_protocols`
 
 // rowJoins join the users whose emails rowColumns read: u the creator, o
 // the owner.
@@ -117,7 +122,8 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 		(*store.Strings)(&a.Models), &a.ModelMapping, &a.RPMLimit, &a.TPMLimit, &a.SPMLimit, &a.SPMWindowSeconds, &a.ModelLimits, &env, &a.LastUsedAt,
 		&a.CreatedBy, &a.CreatedByEmail, &a.OwnerID, &a.OwnerEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
-		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked, &a.HeaderOverride)
+		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked, &a.HeaderOverride,
+		(*store.Strings)(&a.Protocols), &a.ModelProtocols)
 	a.Environment = env.V
 	return &a, err
 }
@@ -171,7 +177,8 @@ func (a *row) coreAccount(plain []byte) core.Account {
 		AccountRef: core.AccountRef{ID: a.ID, Name: a.Name, PluginKey: a.PluginKey, Type: a.Type,
 			Priority: a.Priority, Weight: a.Weight, MaxConcurrency: a.MaxConcurrency, ProxyID: a.ProxyID,
 			Models: a.Models, ModelMapping: a.mapping(), RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(),
-			Environment: a.Environment, ConversionLossPolicy: core.ValueOr(a.LossPolicy, "")},
+			Environment: a.Environment, ConversionLossPolicy: core.ValueOr(a.LossPolicy, ""),
+			ProtocolRules: a.protocolBinding().compile()},
 		Status:            a.Status,
 		Schedulable:       a.Schedulable,
 		AutoDisable:       a.AutoDisable,
@@ -296,6 +303,14 @@ type View struct {
 	// HeaderOverride is the account's request header override (CONTRACTS
 	// §108); null = none.
 	HeaderOverride json.RawMessage `json:"header_override"`
+	// Protocols are the inbound protocols of the type's own platforms the
+	// account serves, null = all of them; ModelProtocols the protocols each
+	// listed model is served on, conversions included (protocols.go).
+	Protocols      []string                 `json:"protocols"`
+	ModelProtocols []core.ModelProtocolRule `json:"model_protocols"`
+	// ServedProtocols is what the account serves now, derived from the two
+	// and its type; only present on single-account responses.
+	ServedProtocols []ServedProtocol `json:"served_protocols,omitzero"`
 	// ConversionLossPolicy is the account's conversion loss policy (§88);
 	// null inherits the group's.
 	ConversionLossPolicy *string        `json:"conversion_loss_policy"`
@@ -374,6 +389,7 @@ func (s *Service) views(ctx context.Context, rows []*row) ([]*View, error) {
 			MaxConcurrency: a.MaxConcurrency, Models: models, ModelMapping: a.mapping(),
 			RPMLimit: a.RPMLimit, TPMLimit: a.TPMLimit, SPMLimit: a.SPMLimit, SPMWindowSeconds: a.SPMWindowSeconds, ModelLimits: a.modelLimits(), Environment: a.Environment,
 			HeaderPassthrough: passthrough, ParamOverride: a.ParamOverride, HeaderOverride: a.HeaderOverride, ConversionLossPolicy: a.LossPolicy,
+			Protocols: a.Protocols, ModelProtocols: parseModelProtocols(a.ModelProtocols),
 			Orphaned: !s.pluginActive(a.PluginKey), Settings: st,
 			CreatedBy: a.CreatedBy, CreatedByEmail: a.CreatedByEmail, OwnerID: a.OwnerID, OwnerEmail: a.OwnerEmail,
 			LastUsedAt: a.LastUsedAt, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
@@ -549,6 +565,7 @@ func (s *Service) fullView(ctx context.Context, id int64, scope core.DataScope) 
 	if vs[0].Credentials, err = s.credentialView(a); err != nil {
 		return nil, err
 	}
+	vs[0].ServedProtocols = s.accountServedProtocols(a)
 	return vs[0], nil
 }
 
@@ -807,6 +824,12 @@ type input struct {
 	// HeaderOverride replaces the request header override (§108); null or
 	// {} clears it, absent keeps it.
 	HeaderOverride json.RawMessage `json:"header_override"`
+	// Protocols replaces the protocols of the type's own platforms the
+	// account serves: null opens all of them, [] none, absent keeps them.
+	Protocols nullable[[]string] `json:"protocols"`
+	// ModelProtocols replaces the protocols of listed models as a whole;
+	// absent keeps them.
+	ModelProtocols *[]core.ModelProtocolRule `json:"model_protocols"`
 	// ConversionLossPolicy sets (allow, safe, strict) or, with null, clears
 	// the conversion loss policy (§88); absent keeps it.
 	ConversionLossPolicy core.LossPolicyInput `json:"conversion_loss_policy"`
@@ -868,6 +891,12 @@ func (in *input) columns(settings, reason, mapping, limits *string, adminLocked 
 	if in.ConversionLossPolicy.Set {
 		set["conversion_loss_policy"] = in.ConversionLossPolicy.Stored()
 	}
+	if in.Protocols.Set {
+		set["protocols"] = store.NullStrings(in.Protocols.V)
+	}
+	if in.ModelProtocols != nil {
+		set["model_protocols"] = modelProtocolsJSON(*in.ModelProtocols)
+	}
 	store.SetIf(set, "spm_window_seconds", in.SPMWindowSeconds)
 	store.SetIf(set, "admin_locked", adminLocked)
 	return set
@@ -911,6 +940,8 @@ func (in *input) changedFields() []string {
 	set("param_override", len(in.ParamOverride) > 0)
 	set("header_override", len(in.HeaderOverride) > 0)
 	set("conversion_loss_policy", in.ConversionLossPolicy.Set)
+	set("protocols", in.Protocols.Set)
+	set("model_protocols", in.ModelProtocols != nil)
 	set("credentials", in.hasCredentials())
 	set("settings", len(in.Settings) > 0)
 	return out
@@ -1354,7 +1385,7 @@ func setGroups(ctx context.Context, tx *gorm.DB, id int64, groupIDs []int64) err
 var accountInsertColumns = []string{"name", "plugin_key", "type", "credentials_enc", "settings",
 	"proxy_id", "status", "schedulable", "priority", "max_concurrency", "created_by", "owner_id",
 	"weight", "models", "model_mapping", "rpm_limit", "tpm_limit", "auto_disable", "model_limits", "spm_limit", "environment", "header_passthrough", "param_override",
-	"header_override", "conversion_loss_policy", "spm_window_seconds"}
+	"header_override", "conversion_loss_policy", "spm_window_seconds", "protocols", "model_protocols"}
 
 // nonZero is &v, or nil (NULL) for the zero value: NULLIF(v, zero).
 func nonZero[T comparable](v T) *T {
@@ -1363,6 +1394,14 @@ func nonZero[T comparable](v T) *T {
 		return nil
 	}
 	return &v
+}
+
+// nullStrings is the nullable text[] value of a: nil (NULL) for a nil slice.
+func nullStrings(a []string) *store.Strings {
+	if a == nil {
+		return nil
+	}
+	return new(store.Strings(a))
 }
 
 // rawJSON is the jsonb value of a document, nil (NULL) for none.
@@ -1495,7 +1534,11 @@ func (s *Service) create(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	if fields := controls.check(ctx, &in, nil, scope); len(fields) > 0 {
+	fields := controls.check(ctx, &in, nil, scope)
+	if in.setsProtocols() {
+		fields = append(fields, in.checkProtocols(ctx, typeProtocols(s.gen(), bt, s.d.Converters), nil)...)
+	}
+	if len(fields) > 0 {
 		httpapi.Fail(c, core.InvalidFields(fields...))
 		return
 	}
@@ -1555,7 +1598,9 @@ func (s *Service) create(c *gin.Context) {
 			ModelLimits: json.RawMessage(modelLimitsJSON(modelLimits)), SpmLimit: spm, Environment: environmentJSON(environment),
 			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(overrideColumn(in.ParamOverride)),
 			HeaderOverride:       rawJSON(overrideColumn(in.HeaderOverride)),
-			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow}
+			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow,
+			Protocols:      nullStrings(in.Protocols.V),
+			ModelProtocols: json.RawMessage(modelProtocolsJSON(core.ValueOr(in.ModelProtocols, nil)))}
 		if err := store.G(ctx, tx).Select(accountInsertColumns).Create(&created).Error; err != nil {
 			return err
 		}
@@ -1658,7 +1703,18 @@ func (s *Service) update(c *gin.Context) {
 			p.enc = cur.CredEnc
 		}
 	}
-	bt, _ := s.accountType(cur.PluginKey, cur.Type)
+	bt, registered := s.accountType(cur.PluginKey, cur.Type)
+	// What the type serves decides which protocols the account can be bound to.
+	var served []typeProtocol
+	if in.setsProtocols() {
+		if !registered {
+			httpapi.Fail(c, core.ErrPluginUnavailable.WithMessage(t(ctx,
+				"the plugin providing this account type is not enabled; its protocols cannot be changed",
+				"提供该账号类型的插件未启用，无法修改协议")))
+			return
+		}
+		served = typeProtocols(s.gen(), bt, s.d.Converters)
+	}
 	controls, err := planControls(ctx, bt.Type)
 	if err != nil {
 		httpapi.Fail(c, err)
@@ -1700,7 +1756,10 @@ func (s *Service) update(c *gin.Context) {
 			upstreamChanged: p != nil && p.addressChanged}); err != nil {
 			return err
 		}
-		if fields := controls.check(ctx, &requested, locked, scope); len(fields) > 0 {
+		fields := controls.check(ctx, &requested, locked, scope)
+		// Against the locked row: the field the request leaves out decides
+		// with the one it sends whether the account still serves a protocol.
+		if fields = append(fields, in.checkProtocols(ctx, served, locked)...); len(fields) > 0 {
 			return core.InvalidFields(fields...)
 		}
 		if usageLimitConverged, err = controls.convergeUsageLimit(ctx, tx, id); err != nil {

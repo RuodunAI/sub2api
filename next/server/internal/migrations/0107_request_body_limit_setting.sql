@@ -1,5 +1,5 @@
 -- The request body limit is the gateway setting max_request_body_mb
--- (settings row "gateway", CONTRACTS §110): the one limit on a gateway
+-- (settings row "gateway", CONTRACTS §111): the one limit on a gateway
 -- request, set in the console under system settings, gateway. It used to be
 -- the environment variable of the same name (CONTRACTS §74.3) with a global
 -- layer (settings row "environment") and a group layer (groups.environment).

@@ -15,6 +15,9 @@ import ParamOverrideField from './paramOverride/ParamOverrideField.vue'
 import HeaderOverrideField from './headerOverride/HeaderOverrideField.vue'
 import AccountUsageLimitCard from './AccountUsageLimitCard.vue'
 import RateLimitEditor from './controls/RateLimitEditor.vue'
+import ModelProtocolsCard from './protocols/ModelProtocolsCard.vue'
+import OwnProtocolsField from './protocols/OwnProtocolsField.vue'
+import { codex, openai } from './protocols/fixtures'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), put: vi.fn(), list: vi.fn().mockResolvedValue({ items: [] }), toast: vi.fn() }))
 vi.mock('@sub2api/host', async (original) => ({ ...await original<object>(), api: mocks }))
@@ -126,7 +129,8 @@ describe('account forwarding and proxy', () => {
   })
 
   it('loads, explains and saves the conversion loss policy (CONVERT-MATRIX §6.3)', async () => {
-    const w = render({ ...savedAccount(), group_ids: [1, 2] } as Account)
+    // A Codex account adapts chat to Responses: something may be lost, so the policy applies.
+    const w = render({ ...savedAccount(), group_ids: [1, 2] } as Account, false, { ...accountType, ...codex })
     await flushPromises()
     const { groups } = useGroupsLookup()
     const hint = () => w.get('[data-testid="account-conversion-policy-hint"]').text()
@@ -692,5 +696,159 @@ describe('account field permissions', () => {
     expect(w.find('[data-testid="guarded-settings-hint"]').exists()).toBe(true)
     perms.denied = []
     expect(render(savedAccount(), false, guarded).find('[data-testid="guarded-settings-hint"]').exists()).toBe(false)
+  })
+})
+
+describe('account protocols (DESIGN-2026-11-17-PROTOCOL-BINDING §5.1)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    i18n.global.locale.value = 'zh'
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.patch.mockResolvedValue(savedAccount())
+    mocks.post.mockResolvedValue(savedAccount())
+  })
+  const openaiType = { ...accountType, ...openai } as AccountType
+  const bound = () => ({ ...savedAccount(), models: ['gpt-5.6', 'claude-sonnet-4-5'], protocols: ['openai.chat', 'openai.responses'], model_protocols: [{ models: ['claude-sonnet-4-5'], protocols: ['anthropic.messages'] }] }) as Account
+  const nav = (w: ReturnType<typeof render>) => w.getComponent(AccountEditorNav)
+  const section = (w: ReturnType<typeof render>) => nav(w).props('sections').find(s => s.key === 'models')!
+  const editorOf = (w: ReturnType<typeof render>) => w.getComponent(OwnProtocolsField).props('editor')
+  const policy = (w: ReturnType<typeof render>) => w.get('[data-testid="account-conversion-policy-select"]')
+
+  it('names the section "protocols and models" and orders its cards: own protocols, models and mapping, protocols per model', async () => {
+    const w = render(bound(), false, openaiType)
+    await flushPromises()
+    expect(section(w).label).toBe('协议与模型')
+    const cards = [...w.get('[data-editor-section="models"]').element.children].map(c => c.getAttribute('data-testid') || c.tagName.toLowerCase())
+    expect(cards).toEqual(['own-protocols-card', 'div', 'model-protocols-card-stub'])
+    expect(w.get('[data-testid="own-protocols-card"]').findComponent(OwnProtocolsField).exists()).toBe(true)
+    // Both cards work on one state; the matrix gets the model list and the mapping.
+    const card = w.getComponent(ModelProtocolsCard)
+    expect(card.props('editor')).toBe(editorOf(w))
+    expect([card.props('models'), card.props('mapping')]).toEqual([['gpt-5.6', 'claude-sonnet-4-5'], {}])
+  })
+
+  it('loads the binding of the account, sums it up in the navigation and saves both fields', async () => {
+    const w = render(bound(), false, openaiType)
+    await flushPromises()
+    expect(section(w).summary).toBe('协议 2/4 · 限定 1 个模型 · 转换 1 个 · 2 个模型')
+    const editor = editorOf(w)
+    editor.setMode('all')
+    editor.rules.value = { ...editor.rules.value, 'gpt-5.6': ['openai.chat'] }
+    await flushPromises()
+    expect(section(w).summary).toBe('协议 4/4 · 限定 2 个模型 · 转换 1 个 · 2 个模型')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({
+      protocols: null,
+      model_protocols: [{ models: ['claude-sonnet-4-5'], protocols: ['anthropic.messages'] }, { models: ['gpt-5.6'], protocols: ['openai.chat'] }]
+    }))
+  })
+
+  it('creates an account on every own protocol and without conversion unless told otherwise', async () => {
+    const w = render(undefined, false, openaiType)
+    await flushPromises()
+    expect(section(w).summary).toBe('协议 4/4 · 不转换 · 全部模型')
+    await w.get('input').setValue('new')
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/accounts', expect.objectContaining({ protocols: null, model_protocols: [] }))
+  })
+
+  it('leaves the protocols of an account whose type is gone out of the request', async () => {
+    const w = shallowMount(AccountEditor, { props: { accountType: null, account: { ...bound(), orphaned: true } as Account }, global: { plugins: [i18n] } })
+    await flushPromises()
+    expect(w.findComponent(OwnProtocolsField).exists()).toBe(false)
+    expect(w.findComponent(ModelProtocolsCard).exists()).toBe(false)
+    await w.get('form').trigger('submit'); await flushPromises()
+    const body = mocks.patch.mock.calls[0][1]
+    expect(body).not.toHaveProperty('protocols')
+    expect(body).not.toHaveProperty('model_protocols')
+  })
+
+  it('does not save while a model has no protocol or the account opens none, and shows the section', async () => {
+    const w = render({ ...bound(), model_protocols: [{ models: ['gpt-5.6'], protocols: [] }] } as Account, false, openaiType)
+    await flushPromises()
+    expect(nav(w).props('errors')).toMatchObject({ models: true })
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).not.toHaveBeenCalled()
+    expect(nav(w).props('modelValue')).toBe('models')
+    const editor = editorOf(w)
+    editor.rules.value = {}
+    await flushPromises()
+    expect(nav(w).props('errors')).toMatchObject({ models: false })
+    // Every own protocol closed and nothing converted.
+    editor.setMode('custom')
+    for (const c of editor.columns.value.own) if (editor.protocols.value!.includes(c.key)) editor.toggleOwn(c)
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).not.toHaveBeenCalled()
+    editor.rules.value = { 'gpt-5.6': ['anthropic.messages'] }
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ protocols: [], model_protocols: [{ models: ['gpt-5.6'], protocols: ['anthropic.messages'] }] }))
+  })
+
+  it('does not save while the JSON view holds a text it cannot take', async () => {
+    const w = render(bound(), false, openaiType)
+    await flushPromises()
+    const editor = editorOf(w)
+    editor.setView('json')
+    editor.text.value = '{"model_protocols": 1}'
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).not.toHaveBeenCalled()
+    expect(nav(w).props('modelValue')).toBe('models')
+    editor.text.value = '{"protocols": ["openai.chat"]}'
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ protocols: ['openai.chat'], model_protocols: [] }))
+  })
+
+  it('shows the server errors of the two fields in their cards and marks the section', async () => {
+    mocks.patch.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [
+      { field: 'protocols[1]', code: 'invalid', message: '不是本平台协议' },
+      { field: 'model_protocols[0].protocols[0]', code: 'invalid', message: '不能服务此协议' }
+    ] } }))
+    const w = render(bound(), false, openaiType)
+    await flushPromises()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(nav(w).props('modelValue')).toBe('models')
+    expect(nav(w).props('errors')).toMatchObject({ models: true })
+    expect(w.getComponent(OwnProtocolsField).props('errors')).toEqual(['openai.responses: 不是本平台协议'])
+    expect(w.getComponent(ModelProtocolsCard).props('errors')).toMatchObject({ 'model_protocols[0].protocols[0]': '不能服务此协议' })
+  })
+
+  it('greys the conversion loss policy while no model is converted and no protocol adapted', async () => {
+    const hint = (w: ReturnType<typeof render>) => w.get('[data-testid="account-conversion-policy-hint"]').text()
+    const plain = render({ ...savedAccount(), conversion_loss_policy: 'safe' } as Account, false, openaiType)
+    await flushPromises()
+    expect(policy(plain).attributes('disabled')).toBeDefined()
+    expect(hint(plain)).toBe('未开启协议转换：没有模型开了转换，也没有开放需要适配的协议')
+    // The saved policy is kept and sent as it is.
+    await plain.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ conversion_loss_policy: 'safe' }))
+    // A model with a conversion turns it on.
+    editorOf(plain).rules.value = { 'gpt-5.6': ['openai.chat', 'anthropic.messages'] }
+    await flushPromises()
+    expect(policy(plain).attributes('disabled')).toBeUndefined()
+    expect(hint(plain)).toBe('生效：安全（覆盖分组设置）')
+    // So does an adapted own protocol (Codex chat), until the account closes it.
+    const adapted = render(savedAccount(), false, { ...accountType, ...codex } as AccountType)
+    await flushPromises()
+    expect(policy(adapted).attributes('disabled')).toBeUndefined()
+    const editor = editorOf(adapted)
+    editor.setMode('custom')
+    editor.toggleOwn(editor.columns.value.own.find(c => c.via === 'adapted')!)
+    await flushPromises()
+    expect(policy(adapted).attributes('disabled')).toBeDefined()
+  })
+
+  it('keeps what was ticked when the auth method changes to a type with the same protocols, and starts over otherwise', async () => {
+    const device = { ...openaiType, type: 'device', creation_group: 'g' } as AccountType
+    const oauth = { ...openaiType, type: 'oauth', creation_group: 'g' } as AccountType
+    const other = { ...accountType, ...codex, type: 'codex', creation_group: 'g' } as AccountType
+    const w = render(undefined, false, device)
+    await flushPromises()
+    const editor = editorOf(w)
+    editor.setMode('custom')
+    editor.toggleOwn(editor.columns.value.own[0])
+    await w.setProps({ accountType: oauth })
+    expect(editor.binding().protocols).toEqual(['openai.responses', 'openai.responses_ws', 'openai.embeddings'])
+    await w.setProps({ accountType: other })
+    expect(editor.binding()).toEqual({ protocols: null, model_protocols: [] })
   })
 })

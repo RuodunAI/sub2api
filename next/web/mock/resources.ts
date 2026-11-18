@@ -3,7 +3,7 @@
 import { SCOPABLE, canonicalPermission, parsePermission, permissionIndex } from '../src/authz/implies'
 import { fail, nextId, noContent, now, on, paginate, type MockRequest } from './router'
 import { ALL_PERMISSIONS, MANAGER_PLUGIN_KEYS, SUPER_ONLY_KEYS, SUPPLIER_AGENT_KEYS, SUPPLIER_KEYS, USER_KEYS, agentUser, caller, filterOwned, hasPerm, inScope, moderatorUser, ownerScope, pricerUser, readonlyUser, resolveTeams, stepUp, stepUpRequired, userEmail, vendorUser, type Identity } from './core'
-import { accounts, groupAccountCount, groupPlatforms, proxyAccountCount } from './accounts'
+import { accounts, groupAccountCount, groupPlatforms, groupServed, proxyAccountCount } from './accounts'
 import { pricedModels } from './billing'
 import { accessOf, findSegment, forgetGroup, forgetUser, groupAccess, moveUser, rateOf, rulesWhere, segmentOfUser, segmentRef, type RuleRow } from './pricingStore'
 
@@ -603,7 +603,8 @@ on('GET', '/groups/:id/models', req => {
 })
 on('GET', '/groups/:id', (req) => {
   const g = groups.find((x) => x.id === Number(req.params.id))
-  return g ? groupOut(g) : fail(404, 'not_found', 'group not found')
+  // served_protocols comes with a single group only.
+  return g ? { ...groupOut(g), served_protocols: groupServed(g.id) } : fail(404, 'not_found', 'group not found')
 })
 on('POST', '/groups', (req) => {
   const b = req.body || {}

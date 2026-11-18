@@ -398,6 +398,7 @@ func TestStreamOnlyConvertedRoute(t *testing.T) {
 	plat := &fakePlatform{route: func(*pluginv1.ExecuteRequest) string { return up.srv.URL + "/relayx/v1/responses" }}
 	e.addAccountType("codexlike", "chatgpt", plat, manifest.AccountPlatform{Platform: "relayx", StreamOnly: []string{"relayx.responses"}})
 	e.accounts.addTyped(testGroup, 10, 100, "codex-10", "codexlike", "chatgpt")
+	e.accounts.serveOn(10, "openai.chat") // relayx is not the platform of the chat endpoint
 	chat := func(stream bool) result {
 		return e.do("/v1/chat/completions", map[string]any{"model": testModel, "stream": stream,
 			"messages": []any{map[string]any{"role": "user", "content": "hi"}}},

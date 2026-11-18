@@ -333,7 +333,7 @@ volcengine 在发布包里是内置插件，默认只安装不启用（`deploy/d
 | P6 | SDK | `sdk/pluginsdk/execute.go`、`interfaces.go`、`serve.go`、`task.go`、`doc.go`、`execute_test.go`、`pluginsdktest/*` | `ExecuteDefault` 三种返回各有测试；包内不再有三个回调函数 | P1 |
 | P7 | 插件 | `plugins/codex`、`plugins/volcengine` 的清单、`volcengine/execute.go`、两边测试、`e2e/ac24_async_video_test.go` | `TestReleasedPluginsBumped` 通过；任务提交断言返回的 `task`；监控断言返回的 `result` | P6 |
 | P8 | 旧包的处理与提示 | 按 N1：`gateway/execute.go` 的 `canExecute`、`usage/reconcile.go:401-417`、安装校验（`plugin/pkg/validate.go`、`plugin/install`）、控制台插件列表 | 旧 codex、旧 volcengine 包在核心 V 上的表现符合 N1；上传 v1 包被拒绝且信息清楚；切回已批准的旧版本可行 | P1、P3 |
-| P9 | 文档 | `docs/CONTRACTS.md`（§31 重写，新增一节，目前下一节是 §110）、`PLUGIN-DEVELOPMENT.md`（路径表、“用量来源”行、自查清单）、`PLUGIN-EXECUTES-CORE-RECORDS.md` 开头、`ARCHITECTURE.md:1211`、`PLUGIN-VOLCENGINE-ARK.md:240`、`:263`、`CHANGELOG.md` | 与代码同一组提交；文中不再把三个回调写成现行接口 | 各包 |
+| P9 | 文档 | `docs/CONTRACTS.md`（§31 重写，新增一节，目前下一节是 §112）、`PLUGIN-DEVELOPMENT.md`（路径表、“用量来源”行、自查清单）、`PLUGIN-EXECUTES-CORE-RECORDS.md` 开头、`ARCHITECTURE.md:1211`、`PLUGIN-VOLCENGINE-ARK.md:240`、`:263`、`CHANGELOG.md` | 与代码同一组提交；文中不再把三个回调写成现行接口 | 各包 |
 | P10 | 控制台与缓解措施 | `web/src/views/usage/*`、`usage/api.go`、`usage/settler.go`（通知） | 详情显示未上报；补记后记录为已计费、账本有一笔扣款、重复操作无副作用；达到阈值发一条通知 | P2 |
 
 P1 先做；P2、P4、P6 并行；P3 等 P2；P5 等 P4；P7 等 P6；P8 等 P3；P10 可以第二期。

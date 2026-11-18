@@ -567,6 +567,39 @@ func (a *fakeAccounts) addTyped(group int64, id int64, priority int, key, plugin
 	a.groups[group] = append(a.groups[group], id)
 }
 
+// bind sets the protocol binding of account id as its console fields do:
+// protocols (nil = every protocol of its type's own platforms) and the
+// model_protocols rules (core.ProtocolRules).
+func (a *fakeAccounts) bind(id int64, protocols []string, rules ...core.ModelProtocolRule) {
+	compiled := core.NewProtocolRules(protocols, rules)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.accounts[id].ProtocolRules = compiled
+}
+
+// protocolRule is a model_protocols entry: models are served on protocols
+// only.
+func protocolRule(protocols []string, models ...string) core.ModelProtocolRule {
+	return core.ModelProtocolRule{Models: models, Protocols: protocols}
+}
+
+// serveOn has account id serve every model on protocols and no other: what
+// an operator sets on an account to have it take the requests of a platform
+// its type does not declare, which are converted for no account by default.
+func (a *fakeAccounts) serveOn(id int64, protocols ...string) {
+	a.bind(id, nil, protocolRule(protocols, core.OtherModels))
+}
+
+// openAIClients is the newEnv option of the tests about an OpenAI client on
+// the fixture's Anthropic accounts: the real converters, and the accounts
+// serving the OpenAI protocols next to their own.
+func openAIClients(e *env) {
+	e.conv = convert.Default()
+	for _, id := range []int64{1, 2, 3} {
+		e.accounts.serveOn(id, "anthropic.messages", "openai.chat", "openai.responses")
+	}
+}
+
 func (a *fakeAccounts) GroupHasType(_ context.Context, group int64, types []core.AccountTypeKey) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -599,22 +632,32 @@ func (a *fakeAccounts) Candidates(_ context.Context, group int64, types []core.A
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.lastTypes = append([]core.AccountTypeKey(nil), types...)
+	return a.members(group, types, false), nil
+}
+
+// Resting is the accounts of types Candidates leaves out while they cool
+// down.
+func (a *fakeAccounts) Resting(_ context.Context, group int64, types []core.AccountTypeKey) ([]core.AccountRef, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.members(group, types, true), nil
+}
+
+// members is the enabled accounts of the group, of types, that are cooling
+// down or not, highest priority first. Callers hold a.mu.
+func (a *fakeAccounts) members(group int64, types []core.AccountTypeKey, cooling bool) []core.AccountRef {
 	var out []core.AccountRef
 	for _, id := range a.groups[group] {
 		acc := a.accounts[id]
-		if _, dis := a.disabled[id]; dis || time.Now().Before(a.cooldown[id]) {
+		if _, dis := a.disabled[id]; dis || time.Now().Before(a.cooldown[id]) != cooling {
 			continue
 		}
-		ok := false
-		for _, k := range types {
-			ok = ok || (k.PluginKey == acc.PluginKey && k.Type == acc.Type)
-		}
-		if ok {
+		if slices.Contains(types, core.AccountTypeKey{PluginKey: acc.PluginKey, Type: acc.Type}) {
 			out = append(out, acc.AccountRef)
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Priority > out[j].Priority })
-	return out, nil
+	return out
 }
 
 func (a *fakeAccounts) Load(_ context.Context, id int64) (*core.Account, error) {

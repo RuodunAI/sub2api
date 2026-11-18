@@ -18,10 +18,10 @@ import { useAccountTypes, typeKey } from './accountTypes'
 import AccountTypePicker from './AccountTypePicker.vue'
 import AccountTypeEndpoints from './AccountTypeEndpoints.vue'
 import AccountTypePlatforms from './AccountTypePlatforms.vue'
-import PlatformIcon from '@/components/platform/PlatformIcon.vue'
 import EntityPicker from '@/components/EntityPicker.vue'
 import UserRef from '@/components/entity/UserRef.vue'
 import AccountGroupsCell from './AccountGroupsCell.vue'
+import AccountProtocolMarks from './AccountProtocolMarks.vue'
 import AccountEditor from './AccountEditor.vue'
 import AccountNumberCell from './AccountNumberCell.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
@@ -169,8 +169,6 @@ function groupNames(ids: number[] | undefined, refs?: Array<{ id: number; name: 
   return ids?.length ? ids.map((id) => groupName(id, refs)).join(', ') : '—'
 }
 const groupTags = (a: Account) => (a.group_ids || []).map((id) => ({ id, name: groupName(id, a.groups), platforms: lookupGroup(id)?.platforms }))
-/** Platforms the account's type serves now: their marks lead its type line. */
-const rowPlatforms = (a: Account) => (typeOf(a)?.platforms ?? []).filter((p) => p.available !== false).map((p) => p.id)
 
 /** Applies a server change to the list row and the open detail of the same account. */
 function patchAccount(id: number, patch: Partial<Account>) {
@@ -668,7 +666,7 @@ function resetFilters() {
       <template #cell-name="{ row }">
         <div class="min-w-56 max-w-[17rem] space-y-0.5">
           <div class="flex items-center gap-2"><span class="shrink-0 font-mono text-xxs text-fg-subtle">#{{ row.id }}</span><SLink as="button" class="min-w-0 truncate font-semibold" :title="row.name" @click="openDetail(row)">{{ row.name }}</SLink></div>
-          <div class="flex items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted"><span v-if="rowPlatforms(row).length" class="inline-flex shrink-0 items-center gap-0.5" data-testid="account-platforms"><PlatformIcon v-for="p in rowPlatforms(row)" :id="p" :key="p" /></span><span :title="row.plugin_key">{{ accountTypes.pluginName(row.plugin_key) }}</span><span aria-hidden="true">/</span><span class="truncate" :title="accountTypes.typeLabel(row.plugin_key, row.type, row.type_label)">{{ accountTypes.typeLabel(row.plugin_key, row.type, row.type_label) }}</span><span v-if="row.last_used_at" class="shrink-0 text-xxs text-fg-subtle">· {{ formatRelative(row.last_used_at, t) }}</span></div>
+          <div class="flex items-center gap-1.5 whitespace-nowrap text-xs text-fg-muted"><AccountProtocolMarks :account="row" :account-type="typeOf(row)" /><span :title="row.plugin_key">{{ accountTypes.pluginName(row.plugin_key) }}</span><span aria-hidden="true">/</span><span class="truncate" :title="accountTypes.typeLabel(row.plugin_key, row.type, row.type_label)">{{ accountTypes.typeLabel(row.plugin_key, row.type, row.type_label) }}</span><span v-if="row.last_used_at" class="shrink-0 text-xxs text-fg-subtle">· {{ formatRelative(row.last_used_at, t) }}</span></div>
         </div>
       </template>
       <template #cell-groups="{ row }"><AccountGroupsCell :groups="groupTags(row)" /></template>
@@ -786,7 +784,7 @@ function resetFilters() {
               </SDescItem>
               <SDescItem v-if="detailType" :label="t('platforms.supported')"><AccountTypePlatforms :items="detailType.platforms" /></SDescItem>
               <SDescItem :label="t('accounts.servesEndpoints')">
-                <AccountTypeEndpoints v-if="detailType" :endpoints="detailType.endpoints" />
+                <AccountTypeEndpoints v-if="detailType" :endpoints="detailType.endpoints" :platforms="detailType.platforms.map((p) => p.id)" :served="detail.served_protocols" />
                 <SHint v-else inline size="xs">{{ t('accounts.typeUnavailable') }}</SHint>
               </SDescItem>
               <SDescItem :label="t('common.status')">
