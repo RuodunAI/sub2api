@@ -812,7 +812,7 @@ GET `/ui/plugins`（`self:plugin_ui`，会话天然持有，§80.1）→ 不分�
 - POST `/accounts/:id/credentials/reveal`（`account:credential:view` / `account:own:credential:view`）：→ `{credentials:{...}}`（合并后的明文），写审计日志 `account.credentials.reveal`。
 
 POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
-- 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`，为空时由插件选默认模型）。
+- 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
 - 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
 - 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错时返回错误状态。
 - 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理且本地无法解析的域名交给代理。

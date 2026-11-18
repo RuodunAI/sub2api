@@ -118,6 +118,9 @@ func (s *Service) test(c *gin.Context) {
 	// The account's model mapping applies to test calls too (CONTRACTS §18).
 	requested := strings.TrimSpace(in.Model)
 	model := requested
+	if model == "" {
+		model = a.defaultTestModel()
+	}
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
