@@ -63,10 +63,8 @@ const DefaultMaxRequestBodyBytes = 128 << 20
 // RequestBodyLimit reports the gateway's request body limit in bytes as it
 // is right now: the gateway setting max_request_body_mb
 // (GatewaySettings.MaxRequestBodyMB), the only limit on a client request
-// body. The plugin runtime derives its internal bounds from it: the body of
-// a relay may be as large as the larger of this limit and the body the
-// execution handed to the plugin (the core may have enlarged it), plus
-// 1 MiB; the request body of a fetch at most this limit. It plays no part
+// body. The plugin runtime bounds only the request body of a fetch by it; a
+// relayed body has no bound of the runtime's. It plays no part
 // in a plugin's memory limit, which only an administrator sets. It is read
 // on every check, so a saved change applies at once: it must be cheap (the
 // gateway's cached settings; app wires it to Gateway.MaxRequestBodyBytes).
@@ -122,8 +120,8 @@ type ExecutionClient struct {
 	// anything: the URL, the SSRF name check, the headers, response_stream
 	// and, for a type declaring model availability, the upstream model the
 	// plugin names. The body is not inspected (the conformance suite holds
-	// plugins to it). The runtime has already refused a nil request, an empty URL, a body above
-	// its bound (see RequestBodyLimit) and the transport's header names. An error refuses
+	// plugins to it). The runtime has already refused a nil request, an
+	// empty URL and the transport's header names. An error refuses
 	// the request: the plugin gets INVALID_ARGUMENT with the error's text
 	// and the relay counts as not made. Called for both forms, before the
 	// request is parked or Relay is called. Nil accepts.
