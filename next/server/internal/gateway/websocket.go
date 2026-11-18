@@ -53,13 +53,12 @@ type wsLimits struct {
 	drainGrace   time.Duration // a turn in progress when draining starts
 	handshake    time.Duration // upstream dial and handshake
 	writeTimeout time.Duration // one message to a slow peer
-	upstreamRead int64         // largest upstream message
 	drainPoll    time.Duration
 }
 
 func defaultWSLimits() wsLimits {
 	return wsLimits{ping: 30 * time.Second, pingTimeout: 30 * time.Second, maxPerKey: 64, slotWait: 10 * time.Second, auth: 10 * time.Second,
-		drainGrace: 30 * time.Second, handshake: 30 * time.Second, writeTimeout: time.Minute, upstreamRead: 64 << 20,
+		drainGrace: 30 * time.Second, handshake: 30 * time.Second, writeTimeout: time.Minute,
 		drainPoll: 500 * time.Millisecond}
 }
 
@@ -721,7 +720,7 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 		}
 		return cl.classify(ctx, rt, pacct, 0, nil, nil, err.Error())
 	}
-	up.SetReadLimit(s.g.ws.upstreamRead)
+	up.SetReadLimit(-1) // an upstream message of any size (the library's default is 32 KiB)
 	s.up, s.acc, s.rt, s.pacct = up, acc, rt, pacct
 	s.opening = req.GetBody()
 	s.upIn = make(chan wsMessage, 1)
