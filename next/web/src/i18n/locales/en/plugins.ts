@@ -251,6 +251,10 @@ export default {
 
   resources: {
     memory: 'Memory',
+    memorySuggested: 'Suggested memory',
+    unlimited: 'Unlimited',
+    memoryLimit: 'The plugin suggests {value}; this is not a limit. Current limit: {limit}. Leave empty or 0 for no limit.',
+    platformMemoryHint: 'A platform plugin needs about 3 × the request body limit + 64 MB for each concurrent large request.',
     memoryMB: 'Memory (MB)',
     cpu: 'CPU',
     cores: '{n} cores',
@@ -260,7 +264,7 @@ export default {
     invalid: 'Enter a non-negative number',
     saved: 'Resource limits saved. All nodes have been notified to restart the plugin instances with the new limits.',
     restartHint: 'Saving restarts the plugin instances on every node one by one (a new instance starts before the old one drains).',
-    hint: 'Leave empty to use the manifest request. Limits cannot exceed the global maximum.',
+    hint: 'Leave empty to use the manifest request; memory is unlimited unless set here or capped for the node. Limits cannot exceed the node maximum when one is set.',
     requestedValue: 'Requested by manifest: {value}'
   },
 

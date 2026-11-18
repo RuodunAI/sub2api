@@ -251,6 +251,10 @@ export default {
 
   resources: {
     memory: '内存',
+    memorySuggested: '建议内存',
+    unlimited: '不限',
+    memoryLimit: '插件建议 {value}，这不是限制。当前限制：{limit}。留空或填 0 表示不限。',
+    platformMemoryHint: '平台插件每个并发的大请求约需 3 × 请求体上限 + 64 MB。',
     memoryMB: '内存（MB）',
     cpu: 'CPU',
     cores: '{n} 核',
@@ -260,7 +264,7 @@ export default {
     invalid: '请输入非负数',
     saved: '资源限制已保存，已通知各节点按新限制重启插件实例。',
     restartHint: '保存后各节点会用新限制逐个重启该插件实例（先启动新实例再排空旧实例）。',
-    hint: '留空表示使用 manifest 中的申请值；不能超过全局上限。',
+    hint: '留空表示使用 manifest 中的申请值；内存除非在这里设置或节点设了上限，否则不限。设置了节点上限时不能超过它。',
     requestedValue: 'manifest 申请值：{value}'
   },
 
