@@ -773,6 +773,10 @@ type AccountRef struct {
 	// ConversionLossPolicy is the account's conversion loss policy (§88), ""
 	// to inherit the group's.
 	ConversionLossPolicy string
+	// ProtocolRules is the account's protocol binding (protocols and
+	// model_protocols), nil without one: ProtocolRules.Serves tells whether
+	// the account serves a model on an inbound protocol.
+	ProtocolRules *ProtocolRules
 }
 
 // ModelLimit caps the requests of a list of models on one account. The

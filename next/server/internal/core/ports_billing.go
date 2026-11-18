@@ -489,6 +489,16 @@ const (
 	// The request does not convert to the account type's protocol, or the
 	// account's loss policy refuses the conversion.
 	SchedConversionRefused = "conversion_refused"
+	// The account's protocol binding leaves out the endpoint's protocol, one
+	// of its type's own platforms (Detail: the protocol).
+	SchedProtocolClosed = "protocol_closed"
+	// The request would reach the account through a cross-platform
+	// conversion, which the account does not enable for the model (Detail:
+	// the model).
+	SchedConversionNotEnabled = "conversion_not_enabled"
+	// The account serves the model on other protocols only (Detail: the
+	// model).
+	SchedModelProtocolClosed = "model_protocol_closed"
 	// A rate limit window of the account is exhausted, or the limiter did
 	// not admit the request.
 	SchedRateLimited = "rate_limited"
