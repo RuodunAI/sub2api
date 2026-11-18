@@ -929,10 +929,11 @@ export function myGroups(userId: number) {
     })
 }
 
-/** A row of GET /me/groups: the fields the server's group.MyGroup has, no more. */
+/** A row of GET /me/groups: the fields the server's group.MyGroup has, no more; served_protocols without the account counts. */
 function myGroupOut(g: ReturnType<typeof myGroups>[number]) {
   const { id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, effective_rate, rate_source, exclusive } = g
-  return { id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, effective_rate, rate_source, exclusive }
+  const served_protocols = groupServed(id).map(({ protocol }) => ({ protocol }))
+  return { id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, served_protocols, effective_rate, rate_source, exclusive }
 }
 on('GET', '/me/groups', (req) => myGroups(caller(req).id).map(myGroupOut))
 /** A key under the status filter: one that is switched off is "disabled" even past its expiry. */

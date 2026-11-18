@@ -251,7 +251,10 @@ export interface Group extends Partial<GroupPricingSummary>, Partial<MyGroupPric
   environment?: EnvironmentValues
   /** Loss policy for its accounts' converted requests; null leaves it to the accounts (effective default allow). */
   conversion_loss_policy?: ConversionLossPolicy | null
-  /** Read-only, GET /groups/:id: the protocols its member accounts serve, with how many accounts serve each (DESIGN-2026-11-17-PROTOCOL-BINDING §4). */
+  /**
+   * Read-only, GET /groups/:id and GET /me/groups: the protocols its member accounts serve
+   * (DESIGN-2026-11-17-PROTOCOL-BINDING §4), with how many accounts serve each on GET /groups/:id only.
+   */
   served_protocols?: GroupServedProtocol[]
   created_at?: string
 }
@@ -259,8 +262,8 @@ export interface Group extends Partial<GroupPricingSummary>, Partial<MyGroupPric
 /** A protocol the member accounts of a group serve. */
 export interface GroupServedProtocol {
   protocol: string
-  /** Member accounts serving it. */
-  accounts: number
+  /** Member accounts serving it; absent on GET /me/groups. */
+  accounts?: number
 }
 
 // ------------------------------------------------------------------ protocol conversion (CONVERT-MATRIX §2.3, §2.4, §7)

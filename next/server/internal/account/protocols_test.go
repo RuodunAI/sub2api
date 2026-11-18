@@ -568,7 +568,7 @@ func TestGroupSnapshotProtocolRules(t *testing.T) {
 func TestGroupServedProtocols(t *testing.T) {
 	e := setup(t)
 	ctx := context.Background()
-	group, empty := testutil.InsertGroup(t, e.db, "served"), testutil.InsertGroup(t, e.db, "empty")
+	group, empty, other := testutil.InsertGroup(t, e.db, "served"), testutil.InsertGroup(t, e.db, "empty"), testutil.InsertGroup(t, e.db, "other")
 	create := func(name, plugin, typ string, extra map[string]any) int64 {
 		body := map[string]any{"name": name, "plugin_key": plugin, "type": typ, "group_ids": []int64{group},
 			"credentials": map[string]any{"api_key": "sk-good-key-123"}}
@@ -579,9 +579,12 @@ func TestGroupServedProtocols(t *testing.T) {
 		require.Equal(t, 201, code, fmt.Sprint(out))
 		return int64(data(out)["id"].(float64))
 	}
+	// list reads all the groups at once and renders those of groupID.
 	list := func(groupID int64) string {
-		got, err := e.svc.GroupServedProtocols(ctx, groupID)
+		all, err := e.svc.GroupServedProtocols(ctx, []int64{group, empty, other})
 		require.NoError(t, err)
+		require.Len(t, all, 3)
+		got := all[groupID]
 		require.NotNil(t, got)
 		var s []string
 		for _, p := range got {
@@ -591,6 +594,9 @@ func TestGroupServedProtocols(t *testing.T) {
 	}
 	require.Equal(t, "", list(empty))
 
+	create("elsewhere", "anthropic", "apikey", map[string]any{"group_ids": []int64{other}})
+	require.Equal(t, "", list(group), "accounts of another group are not counted")
+	require.Equal(t, "anthropic.messages=1 anthropic.count_tokens=1", list(other))
 	create("plain", "anthropic", "apikey", nil)
 	create("relay", "relay", "relay_key", nil)
 	require.Equal(t, "anthropic.messages=2 anthropic.count_tokens=2", list(group), "no conversion without a rule")

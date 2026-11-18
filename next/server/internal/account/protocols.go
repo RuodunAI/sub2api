@@ -325,16 +325,20 @@ func (s *Service) accountServedProtocols(a *row) []ServedProtocol {
 	return a.protocolBinding().servedProtocols(typeProtocols(s.gen(), bt, s.d.Converters))
 }
 
-// GroupServedProtocols implements core.GroupProtocols: the protocols the
-// live accounts of the group serve for at least one model, each with the
-// number of accounts serving it.
-func (s *Service) GroupServedProtocols(ctx context.Context, groupID int64) ([]core.GroupServedProtocol, error) {
-	out := []core.GroupServedProtocol{}
+// GroupServedProtocols implements core.GroupProtocols: per group, the
+// protocols its live accounts serve for at least one model, each with the
+// number of accounts serving it. One read covers all the groups.
+func (s *Service) GroupServedProtocols(ctx context.Context, groupIDs []int64) (map[int64][]core.GroupServedProtocol, error) {
+	out := make(map[int64][]core.GroupServedProtocol, len(groupIDs))
+	for _, id := range groupIDs {
+		out[id] = []core.GroupServedProtocol{}
+	}
 	g := s.gen()
-	if g == nil {
+	if g == nil || len(groupIDs) == 0 {
 		return out, nil
 	}
 	var members []struct {
+		GroupID        int64         `gorm:"column:group_id"`
 		PluginKey      string        `gorm:"column:plugin_key"`
 		Type           string        `gorm:"column:type"`
 		Models         store.Strings `gorm:"column:models"`
@@ -342,13 +346,13 @@ func (s *Service) GroupServedProtocols(ctx context.Context, groupID int64) ([]co
 		ModelProtocols []byte        `gorm:"column:model_protocols"`
 	}
 	if err := store.G(ctx, s.d.DB.Gorm).Table("accounts a").
-		Select("a.plugin_key, a.type, a.models, a.protocols, NULLIF(a.model_protocols, '[]'::jsonb) AS model_protocols").
+		Select("ag.group_id, a.plugin_key, a.type, a.models, a.protocols, NULLIF(a.model_protocols, '[]'::jsonb) AS model_protocols").
 		Joins("JOIN account_groups ag ON ag.account_id = a.id").
-		Where("ag.group_id = ? AND a.deleted_at IS NULL", groupID).Scan(&members).Error; err != nil {
+		Where("ag.group_id IN ? AND a.deleted_at IS NULL", groupIDs).Scan(&members).Error; err != nil {
 		return nil, err
 	}
 	types := map[core.AccountTypeKey][]typeProtocol{}
-	counts := map[string]int{}
+	counts := map[int64]map[string]int{}
 	for _, m := range members {
 		k := core.AccountTypeKey{PluginKey: m.PluginKey, Type: m.Type}
 		served, ok := types[k]
@@ -358,15 +362,21 @@ func (s *Service) GroupServedProtocols(ctx context.Context, groupID int64) ([]co
 			}
 			types[k] = served
 		}
+		if counts[m.GroupID] == nil {
+			counts[m.GroupID] = map[string]int{}
+		}
 		b := protocolBinding{models: m.Models, protocols: m.Protocols, rules: parseModelProtocols(m.ModelProtocols)}
 		for _, sp := range b.servedProtocols(served) {
-			counts[sp.Protocol]++
+			counts[m.GroupID][sp.Protocol]++
 		}
 	}
-	for _, e := range g.Endpoints() {
-		if n, ok := counts[e.Endpoint.Protocol]; ok {
-			out = append(out, core.GroupServedProtocol{Protocol: e.Endpoint.Protocol, Accounts: n})
-			delete(counts, e.Endpoint.Protocol) // a protocol two endpoints speak is listed once
+	endpoints := g.Endpoints()
+	for id, c := range counts {
+		for _, e := range endpoints {
+			if n, ok := c[e.Endpoint.Protocol]; ok {
+				out[id] = append(out[id], core.GroupServedProtocol{Protocol: e.Endpoint.Protocol, Accounts: n})
+				delete(c, e.Endpoint.Protocol) // a protocol two endpoints speak is listed once
+			}
 		}
 	}
 	return out, nil

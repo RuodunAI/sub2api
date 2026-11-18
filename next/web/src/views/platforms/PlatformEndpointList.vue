@@ -7,7 +7,7 @@ import { endpointLine, type ListedEndpoint } from './listedEndpoint'
 // The endpoints of one platform under its brand badge. `max` limits how many
 // are listed; `known` is false for a platform the list does not have;
 // `accounts` (by protocol) adds how many accounts serve each endpoint.
-defineProps<{ id: string; endpoints: ListedEndpoint[]; known?: boolean; max?: number; accounts?: Record<string, number> }>()
+defineProps<{ id: string; endpoints: ListedEndpoint[]; known?: boolean; max?: number; accounts?: Partial<Record<string, number>> }>()
 const { t } = useI18n()
 </script>
 

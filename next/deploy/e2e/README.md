@@ -73,7 +73,7 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 | AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
 | AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
 
-插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409“另一个集群变更正在提交”时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
+插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 
 脚本只接受 `sub2api-next-e2e` 或 `sub2api-next-e2e-<后缀>` 项目名；启动 runner 前核对 6 个运行中容器的 Compose 项目、服务标签和 `edge` 网络归属。它不会启动或重建后端服务。默认读取同目录 `.env`，可用 `E2E_ENV_FILE` 指定其他独立配置；自定义项目时必须显式传入同一个名称，例如 `E2E_PROJECT=sub2api-next-e2e-ci sh next/deploy/e2e/test.sh`，脚本中的项目名优先于 `.env`。
 

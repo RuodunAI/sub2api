@@ -57,7 +57,7 @@
 | 失败 | HTTP 状态码 + `{"error": {"code": "...", "message": "...", "details": {...}}}` |
 | 字段校验失败 | `invalid_argument`，`details.fields = [{"field","code","message"}]` |
 
-错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、没有在线节点持有它的安装包，§5.7、§114）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
+错误码（`core/errors.go`）：`invalid_argument` 400、`unauthenticated` 401、`permission_denied` 403、`verification_required` 403（缺少或无效的二次验证 proof，`details {scope, context, methods, password_required}`，§80.2，2026-11-13）、`not_found` 404、`conflict` 409、`cluster_change_busy` 409（另一项集群变更——插件变更或核心升级计划——正在提交、占着集群变更锁，稍后重试即可；定义在 `cluster.ErrChangeBusy`。“核心升级进行中或已暂停”仍是 `conflict`，要先完成或取消升级，2026-11-18）、`insufficient_balance` 402、`model_price_not_configured` 403、`model_not_allowed` 403、`group_deleted` / `group_disabled` / `group_not_allowed` 403（API Key 所属分组已删除 / 已停用 / 不再对其所有者开放，§15.1）、`rate_limited` 429、`no_available_account` 503（网关 `anthropic` 格式渲染为 529 `overloaded_error`，§11.6）、`plugin_unavailable` 503、`package_gone` 410（插件版本记录在、没有在线节点持有它的安装包，§5.7、§114）、`unavailable` 503、`internal` 500。（原 `step_up_required` 已随 2026-10 的二次验证一起删除，§3.3；2026-11-13 的新二次验证用 `verification_required`，§80.2。）
 
 ### 3.2 数据格式
 
@@ -596,7 +596,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 |---|---|---|---|---|
 | GET `/users` | 分页 | `q`（邮箱或显示名 ILIKE）、`status`（`active`\|`disabled`）、`role`（角色 key）、`segment`（用户组 id，或 `personal` 表示所有个人专属的用户，§97.6）、`owner_id`（用户 id 或 `none`）、`direct`（§103.3） | `id` 升序 | `iam/users.go` |
 | GET `/groups` | 分页 | `q`（名称 ILIKE）、`status`、`model`（只留提供该模型的分组，§97.6） | `id` 升序 | `group/group.go` |
-| GET `/me/groups` | 不分页 | 无（只返回 `active` 且对当前用户可用的分组，可用性按调用者所在的用户组，§97；字段 `{id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, effective_rate, rate_source, exclusive}`，后三项见 §97.6，`rate_multiplier` 仍是分组默认倍率） | `id` 升序 | `group/group.go` |
+| GET `/me/groups` | 不分页 | 无（只返回 `active` 且对当前用户可用的分组，可用性按调用者所在的用户组，§97；字段 `{id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, served_protocols, effective_rate, rate_source, exclusive}`，后三项见 §97.6，`rate_multiplier` 仍是分组默认倍率；`served_protocols` 见 §110.7） | `id` 升序 | `group/group.go` |
 | GET `/me/api-keys` | 分页 | 限定当前用户；`q`（名称 ILIKE；以 `sk-s2a-` 开头时也按 `key_prefix` 开头匹配）、`status`（`active`\|`disabled`\|`expired`，按状态与过期时间推导）、`group_id`（正整数）；见 §92.1 | `id` 倒序 | `apikey/apikey.go` |
 | GET `/accounts` | 分页 | `plugin_key`、`type`、`status`、`group_id`（整数）、`q`（名称 ILIKE）、`mine`、`created_by`、`owner_id`、`subordinates`（§103.4） | `created_at` 倒序，再 `id` 倒序（§18.3；与调度顺序无关） | `account/handlers.go` |
 | GET `/proxies` | 分页 | `q`（名称或主机 ILIKE）、`status` | `id` 升序 | `proxy/proxy.go` |
@@ -2417,7 +2417,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
-内置插件安装在锁竞争或单个包失败后持续重试。就绪检查要求镜像所需版本已获批准，数据库 active 版本和本地已发布的服务实例均已获批准且不低于镜像要求；没有本地实例、版本过低或授权无效时不就绪。正常升级期间允许旧实例继续服务，不要求本地版本在每个瞬间都与数据库 active 版本相等，具体目标版本的收敛由 rollout 状态表示。管理员主动禁用的插件、尚未启用的 install-only 插件不阻断整节点就绪。这项检查只决定节点启动后何时第一次就绪，通过后不再撤回（2026-11-18）：之后内置插件的发布（启用 install-only 插件或重新启用时的 `enabling`、本机实例切换、禁用）改的是各节点共读的插件行，检查会在所有节点上同时不通过，`/healthz` 一起变成 503，负载均衡把全部请求答成 503，而每个节点其实仍在服务其他一切；这类发布中某个插件的不可用只体现在该插件的请求上（`plugin_unavailable`），收敛循环照常继续安装与重试（`app.builtinConvergence`）。收敛循环只在内置插件“未装好”时跑 `EnsureBuiltin`（`install.BuiltinsInstalled`，按 `EnsureBuiltin` 实际会做什么判断）：没有内置行或镜像版本未存或未批准、`installed` 且从未启用且不是 install-only、`enabled` 但低于镜像版本时未装好；`enabling`、`upgrading`（发布进行中，交给发布控制器）、`disabled`（含卸载等待中）、install-only 的 `installed`、不低于镜像版本的 `enabled`、`awaiting_consent` 都算装好。此前发布中的内置插件被当成未装好，某个节点每 5 秒跑一整轮 `EnsureBuiltin`（逐个上传 8 个包，每次占集群变更锁），管理员这时提交插件变更会收到 409“another cluster change is being submitted; retry”（2026-11-18）。进程的 Configure 只有成功应答后才记为已应用，失败会重试；权限撤销的宿主侧检查立即采用新授权，不能因插件 Configure 失败继续使用旧权限。
+内置插件安装在锁竞争或单个包失败后持续重试。就绪检查要求镜像所需版本已获批准，数据库 active 版本和本地已发布的服务实例均已获批准且不低于镜像要求；没有本地实例、版本过低或授权无效时不就绪。正常升级期间允许旧实例继续服务，不要求本地版本在每个瞬间都与数据库 active 版本相等，具体目标版本的收敛由 rollout 状态表示。管理员主动禁用的插件、尚未启用的 install-only 插件不阻断整节点就绪。这项检查只决定节点启动后何时第一次就绪，通过后不再撤回（2026-11-18）：之后内置插件的发布（启用 install-only 插件或重新启用时的 `enabling`、本机实例切换、禁用）改的是各节点共读的插件行，检查会在所有节点上同时不通过，`/healthz` 一起变成 503，负载均衡把全部请求答成 503，而每个节点其实仍在服务其他一切；这类发布中某个插件的不可用只体现在该插件的请求上（`plugin_unavailable`），收敛循环照常继续安装与重试（`app.builtinConvergence`）。收敛循环只在内置插件“未装好”时跑 `EnsureBuiltin`（`install.BuiltinsInstalled`，按 `EnsureBuiltin` 实际会做什么判断）：没有内置行或镜像版本未存或未批准、`installed` 且从未启用且不是 install-only、`enabled` 但低于镜像版本时未装好；`enabling`、`upgrading`（发布进行中，交给发布控制器）、`disabled`（含卸载等待中）、install-only 的 `installed`、不低于镜像版本的 `enabled`、`awaiting_consent` 都算装好。此前发布中的内置插件被当成未装好，某个节点每 5 秒跑一整轮 `EnsureBuiltin`（逐个上传 8 个包，每次占集群变更锁），管理员这时提交插件变更会收到 409 `cluster_change_busy`（2026-11-18）。进程的 Configure 只有成功应答后才记为已应用，失败会重试；权限撤销的宿主侧检查立即采用新授权，不能因插件 Configure 失败继续使用旧权限。
 
 ### 29.2 卸载屏障与异常节点恢复
 
@@ -6333,7 +6333,7 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 - 列表、编辑窗口、详情都不再显示“可服务的平台”：核心对四种文本协议互转（§88），一个分组能接哪些协议不取决于它的账号属于哪个平台。`Group.platforms` 字段照常返回，控制台只用它给分组徽章着色和算接入地址。“有账号但不支持任何已启用平台”的警告随之取消。§110 起：一个分组能接哪些协议取决于成员账号开放的协议（跨平台转换要在账号上按模型开启），分组详情的“端点”一栏按 `GET /groups/:id` 的 `served_protocols` 显示（§110.9）；列表和编辑窗口仍不显示。
 - 没有账号的分组在“账号数”前显示警告图标（`ProblemIcon`，`data-testid="group-no-accounts"`），列表、手机卡片和详情都有。
 - 接入地址（`views/platforms/PlatformEndpointsPreview.vue`：分组详情、密钥页的手动配置说明、密钥编辑窗口里的分组说明）一律包含经协议转换可达的端点（`views/platforms/convertedEndpoints.ts`）：分组自己的平台里只要有一个文本协议端点（`anthropic.messages`、`openai.chat`、`openai.responses`、`gemini.generate`、`gemini.stream_generate`），就额外列出其它平台上这些协议以及两个 count_tokens 的端点，标“经协议转换”；embeddings、视频等不可转换的端点只列在自己平台下。这是按平台级端点做的近似，不看各账号类型声明的端点子集；这张协议清单与 `server/internal/convert` 的内置转换对一致，新增转换对时两处一起改。密钥编辑窗口里的分组说明（`KeyGroupDetails.vue`）是个小框：每个平台最多列 3 个端点，转换端点收在“经协议转换还可调用：<平台名>”的展开项里（`fold`），默认收起；另两处直接列出。
-- **§110 起（取代上一条的转换部分）**：`convertedEndpoints.ts` 已删除，控制台不再推算“经协议转换可达”的端点。分组详情改用 `served_protocols`（`views/groups/GroupServedProtocols.vue`：按平台列出成员账号实际开放的端点，每个端点带提供它的账号数；没有账号开放任何协议时给警告）；密钥页的手动配置说明和密钥编辑窗口里的分组说明仍用 `PlatformEndpointsPreview`，只按分组的 `platforms` 列端点（`fold` 已去掉），不反映账号关掉的协议和开启的转换（§110.10 第 5 条）。
+- **§110 起（取代上一条的转换部分）**：`convertedEndpoints.ts` 已删除，控制台不再推算“经协议转换可达”的端点。分组详情改用 `served_protocols`（`views/groups/GroupServedProtocols.vue`：按平台列出成员账号实际开放的端点，每个端点带提供它的账号数；没有账号开放任何协议时给警告）；密钥页的手动配置说明和密钥编辑窗口里的分组说明用 `PlatformEndpointsPreview`，2026-11-18 起按 `GET /me/groups` 每行的 `served_protocols` 列端点，与分组详情同源（§110.10 第 5 条）。
 
 ### 92.6 兼容与混跑
 
@@ -7969,6 +7969,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 | `POST /accounts`、`PATCH /accounts/:id` | 同上两个字段。各自**整体替换**；PATCH 不带时保持原值；`protocols: null` 存为 NULL（全部），`[]` 表示全关 |
 | `GET /accounts/:id`，以及 POST、PATCH 的返回 | 另带只读的 `served_protocols`；列表不带 |
 | `GET /groups/:id` | 另带只读的 `served_protocols`，从不为 null；分组列表和写接口的返回不带 |
+| `GET /me/groups` | 每行带只读的 `served_protocols`：`[{protocol}]`，与分组详情同一计算、同一顺序，但不带 `accounts`（普通用户不看分组里有几个账号）；从不为 null（2026-11-18） |
 | `GET /account-types` | 不变：`endpoints` 仍列出该类型原生、适配、经转换能服务的全部端点（§88.5），是“能配置什么”，不是“账号开放了什么” |
 
 - **没有批量接口**。控制台的批量编辑对每个账号调 `PATCH /accounts/:id`（§23.3 账号列表的批量操作），只带变化的字段。
@@ -7984,7 +7985,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - count_tokens 协议跟随生成协议列出：`grade` 为 `local`（本地估算）时，类型声明了该平台记 `adapted`，没声明记 `converted`。
 - 账号类型未注册（插件未启用）时为 `[]`。
 
-**分组的 `served_protocols`**：`[{protocol, accounts}]`，组内账号开放的协议的并集，`accounts` 是对至少一个模型开放该协议的账号数，按端点声明的顺序。统计组内未删除的账号，不看状态和是否参与调度；类型未注册的账号不计。分组模块经 `core.GroupProtocols`（账号模块实现）取，不跨模块 import；在 `internal/app/phases.go` 里账号模块建好后赋给 `group.Service.Protocols`。
+**分组的 `served_protocols`**：`[{protocol, accounts}]`，组内账号开放的协议的并集，`accounts` 是对至少一个模型开放该协议的账号数，按端点声明的顺序。统计组内未删除的账号，不看状态和是否参与调度；类型未注册的账号不计。分组模块经 `core.GroupProtocols`（账号模块实现）取，不跨模块 import；在 `internal/app/phases.go` 里账号模块建好后赋给 `group.Service.Protocols`。`GroupServedProtocols(ctx, groupIDs)` 一次查询算出多个分组（返回按分组 id 的 map，每个问到的分组都有、列表不为 nil）：分组详情问一个，`GET /me/groups` 对整页问一次，不按行查询（2026-11-18 起；此前只接受一个分组）。
 
 ### 110.8 性能约束
 
@@ -8024,7 +8025,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 2. **模型列表接口不分协议**。`/v1/models` 和分组的模型列表仍按分组和账号的模型返回，客户端可能看到一个在当前协议下调不通（404）的模型。
 3. **给“其余模型”开转换要谨慎**。账号模型列表为空（= 全部模型）时，Anthropic 客户端发来的 `claude-*` 模型名会原样（或经映射）发给 OpenAI 上游，上游报模型不存在，按故障策略可能冷却账号。转换只开给明确列出的、有映射的模型。
 4. **粘性会话**：升级后，已绑定到某账号的转换会话因该账号不再提供转换而改绑或 404（110.4）。
-5. **API Key 页的端点预览不看协议绑定**。密钥页的手动配置说明和密钥编辑窗口里的分组说明仍只按分组的 `platforms` 列端点（这两处拿不到 `served_protocols`），不反映账号关掉的协议和开启的转换，可能列出实际会 404 的端点。
+5. ~~API Key 页的端点预览不看协议绑定~~（2026-11-18 已解决）：`GET /me/groups` 每行带 `served_protocols`（110.7），密钥页的手动配置说明和密钥编辑窗口里的分组说明改用它列端点，与分组详情同源（`PlatformEndpointsPreview` 改收 `served`，`usePlatforms().endpointsOf` 删除）。快速配置菜单和各客户端的配置片段仍按 `platforms` 选客户端。
 6. **冷却中的账号可能推迟 404**（110.5）：组内有冷却中或限时停用、且自己能服务这个请求（或因协议绑定以外的原因不能）的账号时，请求得到 503/529 而不是 404，客户端会重试；这类账号也被协议绑定过滤时仍是 404。
 7. **协议绑定对不经调度的端点不生效**（110.4，异步任务查询）。
 8. **控制台识别不了“只走原生”的端点**。`GET /account-types` 的 `endpoints` 没有标出 WebSocket、任务提交端点；控制台的候选列是从它推出来的，如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端以 `unsupported` 拒绝。
@@ -8342,6 +8343,10 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 113.3 控制台
 
 “系统设置 → 运行环境 → 插件联网”（`/settings?tab=plugin-egress`）：默认设置下拉框（允许所有域名 / 屏蔽所有域名），随模式变化的提示与一张列表（已屏蔽的域名 / 已允许的域名），添加对话框支持多行与批量（每行一个，逐行报错），每项可移除；每次改动立即保存。插件详情“外部访问”页有一行链接到这里。
+
+### 113.4 验收
+
+`next/e2e/ac37_plugin_network_access_test.go`（`TestAC37_PluginNetworkAccess`）用 guard 的 webhook 告警验收：默认设置下送达 mock；把 mock 的主机加进屏蔽列表后连接被拒，出口日志有 `denied` 且原因是屏蔽列表；切到“屏蔽所有域名”、允许列表里没有它时被拒（原因是允许列表）；加进允许列表后送达。设置只对新连接生效，所以用例在默认阶段之后先等 guard 到 mock 的长连接关闭（出口日志里它的行不再是 `open`，空闲连接 90 秒后关闭）。guard 的告警冷却设为 0（默认 60 秒，被拒的告警也占用冷却期，会挡住下一阶段的告警）。设置的保存和触发告警的请求都固定发到节点 1：保存的节点在应答前丢掉缓存，另一个节点要等广播，中间有几十毫秒仍按旧设置判断（实测见过）。用例结束（含失败）经 `t.Cleanup` 把插件联网恢复成默认、清空 guard 规则、guard 设置恢复默认冷却。
 
 ## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
 

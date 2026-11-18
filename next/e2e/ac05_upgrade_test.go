@@ -176,7 +176,7 @@ func TestAC05_EnableBuiltinKeepsNodesServing(t *testing.T) {
 	e.Enable(admin, key)
 	// An operator's next plugin change is accepted at once: the rollout
 	// starts no round over the bundled plugins holding the cluster change
-	// lock (it answered 409 "another cluster change is being submitted").
+	// lock (it answered 409 cluster_change_busy).
 	e.Disable(admin, key)
 	// Past the next readiness check of both nodes and the balancer's health check.
 	time.Sleep(7 * time.Second)
