@@ -201,9 +201,12 @@ func (c *call) policyCandidates(ctx context.Context, original []core.AccountRef)
 	return out, nil
 }
 
-// Used both for the initial pool and each refreshed account snapshot.
+// candidateEligible is ineligibleReason without the reason: for an account
+// read again after the first pick (a refreshed snapshot, a later turn of a
+// WebSocket), whose skip is not noted twice.
 func (c *call) candidateEligible(ref *core.AccountRef) bool {
-	return c.route(ref) != nil && c.servesAllModels(ref)
+	_, _, ok := c.ineligibleReason(ref)
+	return ok
 }
 
 func (c *call) endFailurePolicy(reason string) {

@@ -564,6 +564,39 @@ func (a *fakeAccounts) addTyped(group int64, id int64, priority int, key, plugin
 	a.groups[group] = append(a.groups[group], id)
 }
 
+// bind sets the protocol binding of account id as its console fields do:
+// protocols (nil = every protocol of its type's own platforms) and the
+// model_protocols rules (core.ProtocolRules).
+func (a *fakeAccounts) bind(id int64, protocols []string, rules ...core.ModelProtocolRule) {
+	compiled := core.NewProtocolRules(protocols, rules)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.accounts[id].ProtocolRules = compiled
+}
+
+// protocolRule is a model_protocols entry: models are served on protocols
+// only.
+func protocolRule(protocols []string, models ...string) core.ModelProtocolRule {
+	return core.ModelProtocolRule{Models: models, Protocols: protocols}
+}
+
+// serveOn has account id serve every model on protocols and no other: what
+// an operator sets on an account to have it take the requests of a platform
+// its type does not declare, which are converted for no account by default.
+func (a *fakeAccounts) serveOn(id int64, protocols ...string) {
+	a.bind(id, nil, protocolRule(protocols, core.OtherModels))
+}
+
+// openAIClients is the newEnv option of the tests about an OpenAI client on
+// the fixture's Anthropic accounts: the real converters, and the accounts
+// serving the OpenAI protocols next to their own.
+func openAIClients(e *env) {
+	e.conv = convert.Default()
+	for _, id := range []int64{1, 2, 3} {
+		e.accounts.serveOn(id, "anthropic.messages", "openai.chat", "openai.responses")
+	}
+}
+
 func (a *fakeAccounts) GroupHasType(_ context.Context, group int64, types []core.AccountTypeKey) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

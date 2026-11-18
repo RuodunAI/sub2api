@@ -13,7 +13,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 	"github.com/tidwall/gjson"
 )
 
@@ -78,7 +77,7 @@ func TestOpenAIAnthropicHTTPConversion(t *testing.T) {
 						conversionFixture(w, stream, reason, false)
 					}))
 					t.Cleanup(up.Close)
-					e := newEnv(t, func(e *env) { e.conv = convert.Default(); e.plat.base = up.URL })
+					e := newEnv(t, openAIClients, func(e *env) { e.plat.base = up.URL })
 					e.accounts.set(1, func(a *core.Account) { a.ModelMapping = map[string]string{testModel: "mapped-upstream"} })
 					path, input := openAIConversionInput(protocol, stream)
 					res := e.do(path, input, map[string]string{"authorization": "Bearer " + testKey})
@@ -131,7 +130,7 @@ func TestOpenAIAnthropicHTTPConversion(t *testing.T) {
 // any provider under the strict policy (CONVERT-MATRIX D1, §2.4).
 func TestOpenAIConversionRejectsSemanticLossBeforeProvider(t *testing.T) {
 	for _, protocol := range []string{"openai.chat", "openai.responses"} {
-		e := newEnv(t, func(e *env) { e.conv = convert.Default() })
+		e := newEnv(t, openAIClients)
 		path, input := openAIConversionInput(protocol, false)
 		input["future_generation_feature"] = true
 		if res := e.do(path, input, map[string]string{"authorization": "Bearer " + testKey}); res.status != 200 {
@@ -156,7 +155,7 @@ func TestOpenAIConvertedStreamEOFDoesNotInventSuccess(t *testing.T) {
 	for _, protocol := range []string{"openai.chat", "openai.responses"} {
 		up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { conversionFixture(w, true, "end_turn", true) }))
 		t.Cleanup(up.Close)
-		e := newEnv(t, func(e *env) { e.conv = convert.Default(); e.plat.base = up.URL })
+		e := newEnv(t, openAIClients, func(e *env) { e.plat.base = up.URL })
 		path, input := openAIConversionInput(protocol, true)
 		res := e.do(path, input, map[string]string{"authorization": "Bearer " + testKey})
 		if res.status != 200 || strings.Contains(string(res.body), "data: [DONE]") || strings.Contains(string(res.body), "event: response.completed") {
@@ -170,7 +169,7 @@ func TestOpenAIConvertedStreamEOFDoesNotInventSuccess(t *testing.T) {
 
 func TestOpenAIConversionCannotBypassTargetModelAndUsageGates(t *testing.T) {
 	for _, targetField := range []string{"tools", "compaction"} {
-		e := newEnv(t, func(e *env) { e.conv = convert.Default() })
+		e := newEnv(t, openAIClients)
 		value := `[{"type":"advisor_20260301","name":"advisor","model":"not-authorized"}]`
 		if targetField == "compaction" {
 			value = `{"type":"summarize"}`

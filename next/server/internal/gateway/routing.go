@@ -31,6 +31,13 @@ type typeRoute struct {
 	hops []string
 	// local answers a count_tokens request without an upstream (§8).
 	local bool
+	// cross is set when the account type does not declare the platform of
+	// the client endpoint: the request reaches its accounts through a
+	// cross-platform conversion, which an account enables per model
+	// (core.ProtocolRules). A type declaring the platform serves the
+	// endpoint as one of its own, natively or adapted to another endpoint of
+	// that platform.
+	cross bool
 
 	requestFields []string
 	passHeaders   []string
@@ -194,15 +201,18 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 		return
 	}
 	k := b.Key()
+	_, own := b.Supports(c.platform)
 	c.routes[k] = &typeRoute{binding: b, platform: c.platform, upstream: upstreamLocal, grade: convert.GradeLocal,
-		hops: []string{c.ep.Protocol}, local: true}
+		hops: []string{c.ep.Protocol}, local: true, cross: !own}
 	c.routeKeys = append(c.routeKeys, k)
 }
 
 // addRoute records the route of b to upstream protocol y of platform q:
 // request fields and pass headers come from the account type's entry for q,
 // else the platform; usage rules from the account type (per protocol), else
-// the endpoint speaking y, else the platform.
+// the endpoint speaking y, else the platform. q is the client endpoint's
+// platform unless b does not declare it (planRoutes), which makes the route
+// a cross-platform one.
 func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, q, y string,
 	ep manifest.Endpoint, pf manifest.Platform, conv convert.Converter) {
 	if !ap.SupportsEndpoint(ep.ID) {
@@ -212,7 +222,7 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	if _, dup := c.routes[k]; dup {
 		return
 	}
-	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative,
+	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative, cross: q != c.platform,
 		requestFields: ap.RequestFields, passHeaders: ap.ClientHeaders(&pf),
 		usage:              usagerules.For(ap, &ep, &pf, y),
 		pluginUsage:        ep.PluginUsage(),

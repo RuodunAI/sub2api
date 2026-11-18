@@ -53,14 +53,13 @@ func (c *call) dispatch(ctx context.Context) {
 			return
 		}
 	}
-	c.sched.candidates = len(all)
-	cands := make([]core.AccountRef, 0, len(all))
-	for i := range all {
-		if reason, detail, ok := c.ineligibleReason(&all[i]); !ok {
-			c.skipAccount(all[i].ID, reason, detail)
-			continue
-		}
-		cands = append(cands, all[i])
+	cands, closed := c.eligibleAccounts(all)
+	// Every account offered is closed to the request by its protocol
+	// binding: a 404 like the one above, before anything is checked, bound
+	// or converted for the request.
+	if e := c.protocolNotServed(ctx, closed); e != nil {
+		c.fail(e)
+		return
 	}
 	eligible := cands
 	cands, availabilityErr := c.filterAvailability(ctx, cands)

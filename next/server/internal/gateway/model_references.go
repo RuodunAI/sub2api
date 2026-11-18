@@ -106,27 +106,6 @@ func (c *call) prepareReferencedPrices(ctx context.Context) *gwError {
 	return nil
 }
 
-func (c *call) servesAllModels(ref *core.AccountRef) bool {
-	if !ref.ServesModel(c.model) {
-		return false
-	}
-	if c.ep.Billing != "free" && !c.routeHasRequiredPrimaryUsage(c.route(ref)) {
-		return false
-	}
-	if c.ep.Billing != "free" && !c.routeHasRequiredAttempts(c.route(ref), c.body) {
-		return false
-	}
-	for _, extra := range c.modelRefs {
-		if !ref.ServesModel(extra.model) {
-			return false
-		}
-		if c.ep.Billing != "free" && !routeAccountsFor(c.route(ref), extra.kind) {
-			return false
-		}
-	}
-	return true
-}
-
 func (c *call) routeHasRequiredPrimaryUsage(rt *typeRoute) bool {
 	return c.routeHasRequiredPrimaryUsageFor(rt, c.body)
 }
