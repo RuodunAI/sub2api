@@ -221,7 +221,7 @@ func (s *server) HandleHTTP(ctx context.Context, in *pluginv1.HTTPRequest) (*plu
 		if err != nil {
 			return nil, err
 		}
-		out["dsn"], out["schema"], out["role_isolated"] = r.GetDsn(), r.GetSchema(), r.GetRoleIsolated()
+		out["dsn"], out["schema"] = r.GetDsn(), r.GetSchema()
 	}
 	if in.GetPath() == "/publish" {
 		if _, err := s.hostClient().Publish(ctx, &pluginv1.PublishRequest{Topic: "t.ping", Payload: in.GetBody()}); err != nil {

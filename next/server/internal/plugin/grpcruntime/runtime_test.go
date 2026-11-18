@@ -112,7 +112,7 @@ func setupPackage(t *testing.T, grants map[string]string, bin []byte, mod func(*
 		"migrations/0001_init.sql": []byte(`CREATE TABLE items (id int PRIMARY KEY);`),
 	})
 	registrytest.Install(t, db, m, pkg, grants, "enabled")
-	schemas := dbschema.New(db, testutil.DSN(db), mk, true)
+	schemas := dbschema.New(db, testutil.DSN(db), nil)
 	t.Cleanup(func() { _ = schemas.Drop(context.Background(), key) })
 	pkgs := registry.NewPackages(db, t.TempDir(), registry.WithSource(registrytest.Source()))
 	t.Cleanup(pkgs.Close)

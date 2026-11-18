@@ -57,10 +57,6 @@ var AssetActions = []string{
 	ActionCreateAsset, ActionGetAsset, ActionListAssets, ActionUpdateAsset, ActionDeleteAsset,
 }
 
-// assetCallTimeout bounds one upstream Action (all attempts together) when the
-// caller's context has no earlier deadline.
-const assetCallTimeout = 30 * time.Second
-
 // assetMaxAttempts is how many times one Action may be sent. Retries cover a
 // transport error, a 429 and a 5xx; see retryableAction for the Actions that
 // are never retried at all.
@@ -108,7 +104,6 @@ func newArkAPI(dial DialFunc) *arkAPI {
 		MaxIdleConns:          8,
 		MaxIdleConnsPerHost:   4,
 		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 	}
 	return a
@@ -205,11 +200,8 @@ func (a *arkAPI) call(ctx context.Context, cfg *AssetConfig, action string, body
 	if err != nil {
 		return nil, &ArkError{Action: action, Code: "InternalError", Message: "cannot encode the request: " + err.Error()}
 	}
-	// One budget for the whole Action, retries included, so a retry ladder can
-	// never outlive the console request that started it.
-	ctx, cancel := context.WithTimeout(ctx, assetCallTimeout)
-	defer cancel()
-
+	// The Action, retries included, ends with the console request that
+	// started it: ctx is that request's context.
 	attempts := 1
 	if retryableAction(action) {
 		attempts = assetMaxAttempts

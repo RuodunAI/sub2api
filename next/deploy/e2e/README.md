@@ -66,14 +66,14 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 
 | 用例 | 内容 |
 |---|---|
-| AC30 | 十个平台插件各经 `Execute` 转发一个非流式、一个流式请求；mock 看到的是插件构造的请求（主机、路径、凭证、请求体），请求只计费一次 |
+| AC30 | 九个平台插件各经 `Execute` 转发一个非流式、一个流式请求；mock 看到的是插件构造的请求（主机、路径、凭证、请求体），请求只计费一次 |
 | AC31 | 运营方的请求头覆盖压过插件的默认头、透传只补没有的头、签名（权威）头改不了、账号代理 |
 | AC32 | 上游出错和插件在发送前失败时换号（只计费一次，账号不受罚）；插件在等待任务提交时被杀，任务不登记、请求免费 |
 | AC33 | 旧契约的清单在上传时以固定信息被拒、不留版本行；旧协议的二进制在首次启用时加载被拒，发布在准备阶段失败后插件列表的 `refusal` 仍给出代码、版本、核心版本和信息 |
 | AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
 | AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
 
-插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409“另一个集群变更正在提交”时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
+插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 
 脚本只接受 `sub2api-next-e2e` 或 `sub2api-next-e2e-<后缀>` 项目名；启动 runner 前核对 6 个运行中容器的 Compose 项目、服务标签和 `edge` 网络归属。它不会启动或重建后端服务。默认读取同目录 `.env`，可用 `E2E_ENV_FILE` 指定其他独立配置；自定义项目时必须显式传入同一个名称，例如 `E2E_PROJECT=sub2api-next-e2e-ci sh next/deploy/e2e/test.sh`，脚本中的项目名优先于 `.env`。
 
@@ -101,13 +101,13 @@ export E2E_LONG=1
 
 节点采用 `restart: "no"`，保证 SIGKILL 后不会自动复活干扰接管断言；测试负责重启，测试异常退出后可重新 `up -d`。节点内存固定为 1 GiB，匹配 AC14 的 1500 MiB OOM 场景。插件内存默认不限（不设 `SUB2API_PLUGIN_MAX_MEMORY_MB`），需要上限的用例（AC14）自己经 `PUT /plugins/:key/resources` 设插件上限。节点停止宽限为 180 秒，允许 HTTP、后台工作和账务完成排空。
 
-插件的 strict network、seccomp、数据库角色隔离和签名校验全部开启，开发模式及未签名包关闭。网络策略例外只有两项：`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 与 `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true`（插件自己的出口，如 guard 的 webhook、moderation 的审核模型调用），因为 mock 位于专用容器私网；这两项只适合隔离测试，不应复制到生产。
+插件的 strict network、seccomp 和签名校验全部开启（插件数据库用核心的用户，没有角色隔离可开，CONTRACTS §115），开发模式及未签名包关闭。网络策略例外只有两项：`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 与 `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true`（插件自己的出口，如 guard 的 webhook、moderation 的审核模型调用），因为 mock 位于专用容器私网；这两项只适合隔离测试，不应复制到生产。
 
 其他与生产不同、只为这套环境存在的安排：
 
 - 镜像版本默认 `0.1.999`（`E2E_VERSION`），必须满足全部内置插件的 `hostCompat`（目前 `>=0.1.304 <0.2.0`），否则节点拒绝安装内置插件。
 - 两个节点直接运行核心（没有网关外壳），核心的插件包目录 `plugins/blobs` 只服务一个节点；这里两个节点挂同一个卷 `pkgblobs`，上传的插件包两边都能取到。
-- 没有可配置地址的平台插件（bedrock、vertex、codex、claude_oauth）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口提供 TLS，证书按客户端请求的主机名（SNI）用自建 CA 现签（`MOCK_TLS_ADDR`、`MOCK_TLS_DIR`，mock-upstream 的 `tls.go`），所以主机名只列在 `aliases` 一处，CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
+- 没有可配置地址的平台插件（bedrock、vertex、codex）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口提供 TLS，证书按客户端请求的主机名（SNI）用自建 CA 现签（`MOCK_TLS_ADDR`、`MOCK_TLS_DIR`，mock-upstream 的 `tls.go`），所以主机名只列在 `aliases` 一处，CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
 - mock 同时是 HTTP 正向代理（账号的 `proxy_url` 指向它时记 `proxied`），并能按提示里的 `MOCK-TOOL-CALL` 返回工具调用（官方 SDK 用例）。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
 
 ## 保留现场与清理

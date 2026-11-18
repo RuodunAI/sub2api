@@ -229,8 +229,6 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	})
 	// The group page lists the protocols the accounts of a group serve.
 	b.grp.Protocols = b.acc
-	// Register balance providers (CONTRACTS §51).
-	b.acc.RegisterClaudeOAuthBalanceProvider()
 	// Price sync sources (upstream API keys encrypted) and GET /key/prices for
 	// downstream sup2api instances (CONTRACTS §17).
 	b.bill.SetSyncDeps(billing.SyncDeps{Cipher: b.cipher, Keys: b.keys})
@@ -278,7 +276,11 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 	if cfg.Plugins.EgressAllowPrivate {
 		b.log.Warn("plugins may reach private network addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true); tests and development only")
 	}
-	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, CoreAddrs: coreAddrs,
+	schemas := dbschema.New(b.db, cfg.DatabaseURL, b.log)
+	// Roles of the per-plugin database user model (removed) are taken back once
+	// at start; Ensure retries the ones left (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
+	schemas.ConvertLegacyRoles(b.ctx)
+	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, DatabaseProxy: schemas.ServeTunnel, CoreAddrs: coreAddrs,
 		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Bus: b.cl.Bus, Logger: b.log})
 	b.egress = egress
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
@@ -286,7 +288,6 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		return fmt.Errorf("egress log prune task: %w", err)
 	}
 	launcher := sandbox.NewLauncher(sandbox.LauncherOptions{DisableWrap: cfg.Plugins.DevMode, Landlock: cfg.Plugins.Landlock, Logger: b.log})
-	schemas := dbschema.New(b.db, cfg.DatabaseURL, cfg.MasterKey, cfg.Plugins.DBRoleIsolation)
 	settings, err := settingsReaders(b.bill.SettingsReaders(), gateway.SettingsReaders(b.db), b.env.SettingsReaders())
 	if err != nil {
 		return err

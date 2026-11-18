@@ -12,6 +12,7 @@
 - 路径相对 `next/`，行号对应 `9361c0417`。两份草稿是在 `123282faa` 上核对的；`git diff --stat 123282faa develop` 显示其后只改了 `sdk/reqsign`、`sdk/awseventstream`、`plugins/vertex` 的密钥文件、两个 `go.mod` 和几份文档，网关、运行时、用量、清单代码逐字节未变。本文沿用草稿里这些文件的行号，并重新读了下列部分：`gateway/dispatch.go` 的 `attempt` 与 `forwardBuilt`、`gateway/execute.go` 全文、`gateway/websocket.go` 的建连与逐轮补丁、`gateway/settings.go` 与 `settings_api.go`、`gateway/pipeline.go` 的请求体读取与 `submit`、`plugin/grpcruntime/execute.go`、`plugin/egress/egress.go`、`plugin/declarative/declarative.go`、`sdk/reqsign` 全部、`sdk/manifest/upstream.go`、三个 proto 文件。没有重读而直接沿用的引用在第 15 节说明。
 - “核心 V”指带本设计的第一个核心版本。已发布的最新 tag 是 `core-v0.1.303`；`CHANGELOG.md:9-22` 的“未发布”一节（云厂商插件、`signing`、`response_stream`，原定 0.1.304）还没上线。本设计如果赶在它之前合入，V 就是 0.1.304，否则是下一个版本。
 - “平台插件”指声明账号类型、为网关请求服务的插件，共十个：anthropic、openai、gemini、relay、azure_openai、vertex、bedrock、claude_oauth、codex、volcengine。
+- 本设计实现之后，所有者决定删除 claude_oauth 插件（CONTRACTS §116，迁移 0113），平台插件现在是九个。下文写到它的地方（行号、清单、矩阵、一致性套件）记录的是设计与实现时的状态，不再一一改写。
 
 ## 1. 背景与目标
 
@@ -70,7 +71,7 @@
 | D32 | 协议转换留在核心网关（`internal/gateway/convert`），插件收到的是转换后的请求体（D18 的确认） | 所有者，实现期间 | 已定、已实现 |
 | D33 | 跨插件规则（4.3）只在注册表绑定时执行一次：被跳过的平台从绑定的账号类型的平台里去掉（记 ERROR 日志），清单检查另报 `foreign_facts` | 所有者，实现期间 | 已定、已实现 |
 | D34 | **写死的超时与限制全部去掉**：一次请求上留下的界限只有管理员配置的，加上安全、钱算对和防止进程崩溃的检查。删除：插件在 `Execute` 里的分段计时（`segment_timeout`，8.4）、等待形式的总时限（6 小时加整体超时）和网关在观察后约 44.5 分钟的切断、等待形式缓冲的 64 MiB、取回的次数（8）与大小（回答 8 MiB、URL、请求头、方法名单、请求体）和未设置整体超时时的 5 分钟默认、`Monitor` 结果与执行观察的 512 KiB、宿主小调用的 4 MiB 与中继请求体的界限（8.2）、WebSocket 的上游消息 64 MiB / 每 Key 64 个会话 / 握手 30 秒 / 写 1 分钟、写客户端 60 秒、代理拨号与 TLS 的 15 秒、每实例 1024 个并发 `Execute`、`path_params` / `query` 的截断、SSE 单行 16 MiB、协议转换与只流式上游的 32 MiB、读用量的 32 MiB 缓冲（超出按 0 计费）、读用量插件看到的默认预算、模型名长度。代价是以前带着明确错误被拒绝的东西，现在表现为内存占用、存储增长或一个一直等着的请求；逐项的代价和仍然有效的界限见 CONTRACTS §112.16 | 所有者（“超时、限制都去掉”），审查修正期间 | 已定、已实现 |
-| D35 | **插件交回的 `Host` 不生效**：中继里的 `host` 与 `content-length` 一样归传输层、拒绝（`INVALID_ARGUMENT`），取回一直拒绝；请求的 `Host` 永远是 URL 的主机。运营方的透传和覆盖本来就挡住 `host`，没有任何设置能改它。十个平台插件、`standard`、`reqsign` 都没有设 `Host`，SigV4 签的就是 URL 的主机 | 所有者（“修”），收尾审查 | 已定、已实现（CONTRACTS §112.17） |
+| D35 | **插件交回的 `Host` 不生效**：中继里的 `host` 与 `content-length` 一样归传输层、拒绝（`INVALID_ARGUMENT`），取回一直拒绝；请求的 `Host` 永远是 URL 的主机。运营方的透传和覆盖本来就挡住 `host`，没有任何设置能改它。九个平台插件、`standard`、`reqsign` 都没有设 `Host`，SigV4 签的就是 URL 的主机 | 所有者（“修”），收尾审查 | 已定、已实现（CONTRACTS §112.17） |
 | D36 | **核心代发的主请求只发往声明过的或账号配置的主机**：清单 `externalServices`（含子域）或账号 `upstreamFields` 字段的主机（不含子域），一处规则 `manifest.UpstreamHostAllowed`，中继（HTTP、WebSocket 握手）、取回、`SendAccountRequest` 共用；中继被拒按插件不可用换号、不罚账号（`NeutralReason` `upstream_host_not_allowed`）。“运营方填的上游地址”沿用已有的 `upstreamFields`，不按“账号配置里所有 URL”识别（密钥文件里有不是上游的 URL）。bedrock 声明 `amazonaws.com`、vertex 声明 `googleapis.com`。配额查询、凭证续期、测试与模型列表请求不在范围内 | 所有者（“修”），收尾审查 | 已定、已实现（CONTRACTS §112.17） |
 | D37 | `SendAccountRequest` 按 D36 的同一条规则放行账号自己的上游地址（此前只认 `externalServices`）；请求体、URL、方法不限大小，它与配额查询、凭证续期的回答不再截到 64 KiB（`truncated` 核心不再设置，proto 字段待删除） | 收尾审查（火山素材库接口需要；按 D34） | 已定、已实现（CONTRACTS §91、§112.17） |
 | D38 | 权威头的空值表示“这个头不发”：删掉前面各层设置的同名头；默认头的空值不变。SDK `Upstream.RemoveHeader`；bedrock 用它在签名没有会话令牌时去掉运营方加的 `x-amz-security-token`。proto 不变 | 收尾审查（bedrock 需要） | 已定、已实现（CONTRACTS §112.17） |

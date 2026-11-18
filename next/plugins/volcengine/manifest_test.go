@@ -589,19 +589,20 @@ func TestManifestServes(t *testing.T) {
 // this package, so a rule the core enforces at install time fails here first.
 func TestValidate(t *testing.T) {
 	files := map[string][]byte{
-		"manifest.json":                   manifestJSON,
-		"runtimes/linux-amd64/plugin":     []byte("elf"),
-		"runtimes/linux-arm64/plugin":     []byte("elf"),
-		"forms/apikey.schema.json":        mustJSONFile(t, "forms/apikey.schema.json"),
-		"forms/apikey.ui.json":            mustJSONFile(t, "forms/apikey.ui.json"),
-		"forms/relay.schema.json":         mustJSONFile(t, "forms/relay.schema.json"),
-		"forms/relay.ui.json":             mustJSONFile(t, "forms/relay.ui.json"),
-		"forms/asset-group.schema.json":   mustJSONFile(t, "forms/asset-group.schema.json"),
-		"forms/asset-group.ui.json":       mustJSONFile(t, "forms/asset-group.ui.json"),
-		"forms/asset.schema.json":         mustJSONFile(t, "forms/asset.schema.json"),
-		"forms/asset.ui.json":             mustJSONFile(t, "forms/asset.ui.json"),
-		"migrations/0001_init.sql":        mustFile(t, "migrations/0001_init.sql"),
-		"migrations/0002_video_tasks.sql": mustFile(t, "migrations/0002_video_tasks.sql"),
+		"manifest.json":                        manifestJSON,
+		"runtimes/linux-amd64/plugin":          []byte("elf"),
+		"runtimes/linux-arm64/plugin":          []byte("elf"),
+		"forms/apikey.schema.json":             mustJSONFile(t, "forms/apikey.schema.json"),
+		"forms/apikey.ui.json":                 mustJSONFile(t, "forms/apikey.ui.json"),
+		"forms/relay.schema.json":              mustJSONFile(t, "forms/relay.schema.json"),
+		"forms/relay.ui.json":                  mustJSONFile(t, "forms/relay.ui.json"),
+		"forms/asset-group.schema.json":        mustJSONFile(t, "forms/asset-group.schema.json"),
+		"forms/asset-group.ui.json":            mustJSONFile(t, "forms/asset-group.ui.json"),
+		"forms/asset.schema.json":              mustJSONFile(t, "forms/asset.schema.json"),
+		"forms/asset.ui.json":                  mustJSONFile(t, "forms/asset.ui.json"),
+		"migrations/0001_init.sql":             mustFile(t, "migrations/0001_init.sql"),
+		"migrations/0002_video_tasks.sql":      mustFile(t, "migrations/0002_video_tasks.sql"),
+		"migrations/0003_drop_video_tasks.sql": mustFile(t, "migrations/0003_drop_video_tasks.sql"),
 	}
 	for _, icon := range []string{"assets/volcengine-color.svg", "assets/doubao-color.svg"} {
 		files[icon] = mustFile(t, icon)

@@ -526,8 +526,8 @@ func TestCancelAbortsTheCallInFlight(t *testing.T) {
 		if got.err == nil || got.err.Code != "Canceled" {
 			t.Fatalf("err = %v, want Canceled", got.err)
 		}
-		// assetCallTimeout is 30s; a call that only stopped because of it is
-		// exactly the old behaviour.
+		// The call has no deadline of its own: only the cancellation can
+		// have ended it.
 		if got.elapsed > 5*time.Second {
 			t.Fatalf("the call took %v to notice the cancellation", got.elapsed)
 		}

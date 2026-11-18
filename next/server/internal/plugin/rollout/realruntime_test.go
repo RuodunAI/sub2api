@@ -23,7 +23,7 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 	ctx := context.Background()
 	h.bin = registrytest.TestPlugin(t)
 	registrytest.Install(t, h.db, h.manifest("1.0.0"), h.pkg("1.0.0"), registrytest.DefaultGrants(), "installed")
-	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil, false).Drop(context.Background(), h.key) })
+	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil).Drop(context.Background(), h.key) })
 
 	mk := make([]byte, 32)
 	cipher, _ := secret.New(mk)
@@ -39,7 +39,7 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 	reg := registry.New()
 	ctl, err := rollout.New(rollout.Options{DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: pkgs,
 		Registry: reg, Runtime: rollout.FromGRPC(grt),
-		Schemas:           dbschema.New(h.db, testutil.DSN(h.db), mk, false),
+		Schemas:           dbschema.New(h.db, testutil.DSN(h.db), nil),
 		ReconcileInterval: 200 * time.Millisecond, LeaseTTL: 8 * time.Second, LeaseRenew: time.Second,
 		CoordinatorTick: 100 * time.Millisecond, DrainTimeout: 2 * time.Second})
 	if err != nil {

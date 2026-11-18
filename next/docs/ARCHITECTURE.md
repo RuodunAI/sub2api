@@ -676,13 +676,14 @@ stateDiagram-v2
 | 项目 | 做法 |
 |---|---|
 | schema | 首次发布前创建 `plg_<key>` |
-| 隔离 | 数据库账号有 `CREATEROLE` 时创建角色 `plg_<key>`，只授予自己 schema 的权限；插件通过 `HostService.GetDSN` 拿到受限 DSN，连接经出口隧道。没有该权限时退化为"只隔离 schema"，后台提示 |
-| 迁移脚本 | `migrations/*.sql` 按文件名排序，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>` |
-| 迁移记录 | `plugin_migrations(plugin_key, migration_id, checksum, applied_at)`；已执行文件被修改时拒绝发布 |
+| 数据库用户 | 只有核心的用户（2026-11-18 起不再给插件建角色，CONTRACTS §115）。插件通过 `HostService.GetDSN` 拿到不带凭据的虚拟地址 `db.sub2api:5432`，连接经出口隧道到核心，核心用自己的数据库配置代为登录（`search_path` 固定为 `plg_<key>`）后原样转发协议；插件进程里没有数据库密码（严格网络关闭时才直接给核心的 DSN）。schema 只是默认位置，不是边界：持有 `db.schema` 的插件能读写核心的用户能访问的所有表，分隔靠约定和安装时的同意（非官方插件要 `plugin:grant:db_schema_unconfined`） |
+| 迁移脚本 | 核心以自己的用户执行 `migrations/*.sql`，按文件名排序，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；对象属于核心的用户 |
+| 迁移记录 | `plugin_migrations(plugin_key, migration_id, checksum, applied_at)`；已执行文件被修改时重新执行并更新校验和（脚本必须幂等，CONTRACTS §36） |
 | 执行时机 | 发布的"准备"阶段、任何节点激活新版本之前；`pg_advisory_lock(hash(plugin_key))` |
 | 数据迁移 | 简单转换写在 SQL 里；复杂转换实现 `MigrationService.MigrateData(from, to)`，在 SQL 之后调用 |
 | 兼容要求 | 升级期间新旧版本同时运行，迁移必须"先扩展、后收缩" |
-| 卸载 | 选择"清除数据"时 `DROP SCHEMA plg_<key> CASCADE`，删除角色和迁移记录 |
+| 卸载 | 选择"清除数据"时 `DROP SCHEMA plg_<key> CASCADE`，删除迁移记录 |
+| 旧角色 | 旧版本建的 `plg_<key>` 登录角色在启动时和 Ensure 时转换：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`；还有会话的留到下次（CONTRACTS §115） |
 
 ### 5.7 多节点发布（先准备、再激活）
 
@@ -1248,7 +1249,7 @@ http.Get / GORM（Host.DB）/ redis …
 - HTTPS 在插件与目标之间端到端加密，核心只看到域名、端口和流量
 - `plugin_egress_logs(id, plugin_key, node_id, host, port, started_at, duration_ms, bytes_in, bytes_out, result)`，批量写入，保留 7 天；插件详情页按域名汇总展示，出现新域名时告警
 - 出口策略（每个插件单独配置）：`allow_all`（默认，只记录）或 `allowlist`（只允许批准的 `net` 域名）
-- 插件访问核心的 PostgreSQL（受限 DSN）也走隧道
+- 插件访问核心的 PostgreSQL 也走隧道：拨虚拟地址 `db.sub2api:5432`，核心代为登录后转发（CONTRACTS §115）
 
 ### 9.2 严格模式（Linux）
 
@@ -1600,7 +1601,7 @@ next/
 │   ├── pgdb/                      # 插件的 GORM 句柄、组合器、TestNoRawSQL/TestNoPgxImports
 │   └── testpg/                    # 测试用 PostgreSQL（TEST_DATABASE_URL 或本机 embedded-postgres）
 ├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
-│   ├── anthropic/  openai/  gemini/  volcengine/  relay/  claude-oauth/
+│   ├── anthropic/  openai/  gemini/  volcengine/  relay/
 │   ├── codex/                     # 含 ui/native
 │   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
 │   └── mailer/  payment/

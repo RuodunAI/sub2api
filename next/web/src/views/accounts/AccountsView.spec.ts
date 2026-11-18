@@ -186,7 +186,7 @@ describe('account status recovery', () => {
     mocks.findType.mockReset()
     mocks.confirm.mockResolvedValue(true)
     i18n.global.locale.value = 'zh'
-    list.items.value = [{ id: 23, name: 'cc-test', status: 'disabled', status_reason: 'credentials rejected', schedulable: true, auto_disable: true, plugin_key: 'claude-oauth', type: 'oauth', orphaned: false, cooldown_until: null } as Account]
+    list.items.value = [{ id: 23, name: 'cc-test', status: 'disabled', status_reason: 'credentials rejected', schedulable: true, auto_disable: true, plugin_key: 'codex', type: 'codex_oauth', orphaned: false, cooldown_until: null } as Account]
   })
 
   it('locks the enable button according to the plugin declaration', async () => {
@@ -725,7 +725,7 @@ describe('declared plugin account actions and the toolbar slot (CONTRACTS §23.3
 })
 
 describe('account list layout', () => {
-  const row = (id: number, over: Partial<Account> = {}) => ({ id, name: 'a@example.com', plugin_key: 'claude-oauth', type: 'oauth', status: 'active', schedulable: true, created_by: 1, settings: {}, ...over }) as unknown as Account
+  const row = (id: number, over: Partial<Account> = {}) => ({ id, name: 'a@example.com', plugin_key: 'codex', type: 'codex_oauth', status: 'active', schedulable: true, created_by: 1, settings: {}, ...over }) as unknown as Account
   const renderLayout = () => render({ AccountProtocolMarks: false, STable: { props: ['rows', 'columns'], template: '<div><i data-testid="cols">{{ columns.map((c) => c.key).join() }}</i><div v-for="row in rows" :key="row.id"><slot name="cell-name" :row="row" /><slot name="cell-groups" :row="row" /></div></div>' } })
   beforeEach(() => {
     mocks.findType.mockReset()
