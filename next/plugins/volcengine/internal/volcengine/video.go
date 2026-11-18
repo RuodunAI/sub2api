@@ -15,7 +15,6 @@ package volcengine
 //
 //	ParseTaskSubmission    parses the upstream ID, initial snapshot and estimate
 //	videoUsage             computes that estimate without storing task identity
-//	ResolveModel           reads the historical plugin ledger (old task ids)
 //	Monitor                one query through the host's fetch, result returned
 //
 // The submit is relayed by the host, which waits and hands back the bounded
@@ -23,7 +22,7 @@ package volcengine
 // and binds its execution context to the original account, proxy and
 // deadline. Monitor requests exactly one HTTP exchange through that context
 // and never opens its own socket or retries. Response parsing needs no plugin
-// database; the old ledger is retained only as history.
+// database.
 
 import (
 	"context"
@@ -36,12 +35,9 @@ import (
 	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-
-	"github.com/Sub2API-Devs/sup2api/next/plugins/volcengine/internal/model"
 )
 
 // Protocol ids of the two video endpoints declared in manifest.json.
@@ -134,73 +130,6 @@ const (
 // shown the request (CONTRACTS §25.5 gap 1). It is now, so the estimate reads
 // the requested resolution, ratio and duration instead of guessing them, and
 // uses Ark's own per-generation pixel table rather than assuming 16:9.
-
-// ---------------------------------------------------------------- video_tasks store
-
-// VideoTask reads historical plugin rows for old manifest compatibility.
-// New tasks and reservations live exclusively in the host. This legacy table
-// is not an authorization source for the host's managed or imported tasks.
-type VideoTask struct {
-	Model     string
-	State     string
-	UserID    int64
-	AccountID int64
-}
-
-// lookupVideoTask reads one task by its upstream id. A missing row is
-// (nil, nil): the caller decides what that means (ResolveModel turns it into
-// an empty model, i.e. a 400).
-func lookupVideoTask(db *gorm.DB, taskID string) (*VideoTask, error) {
-	var t VideoTask
-	err := db.Model(&model.VideoTask{}).Select("model, state, user_id, account_id").Where("task_id = ?", taskID).Take(&t).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &t, nil
-}
-
-// ---------------------------------------------------------------- upstream path
-
-// taskIDOf reads the task_id path parameter.
-func taskIDOf(meta *pluginv1.RequestMeta) string {
-	return strings.TrimSpace(meta.GetPathParams()[TaskIDParam])
-}
-
-// ---------------------------------------------------------------- ResolveModel
-
-// ResolveModel remains for callers holding an old endpoint manifest. The
-// current manifest routes queries through the host's task owner/account checks
-// and never uses this method. Missing and foreign legacy rows are identical.
-func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequest) (*pluginv1.ResolveModelResponse, error) {
-	if in.GetMeta().GetProtocol() != ProtocolVideoQuery {
-		// Only historical video queries used plugin model resolution. Another
-		// protocol here is a routing mismatch, never a model to invent.
-		return &pluginv1.ResolveModelResponse{}, nil
-	}
-	id := taskIDOf(in.GetMeta())
-	if id == "" {
-		return &pluginv1.ResolveModelResponse{}, nil
-	}
-	db, err := p.store(ctx)
-	if err != nil {
-		// A database blip must not be served as a free, unlimited request.
-		p.log.Warn("volcengine: ResolveModel cannot reach the database", "task_id", id, "error", err.Error())
-		return &pluginv1.ResolveModelResponse{}, nil
-	}
-	t, err := lookupVideoTask(db, id)
-	if err != nil {
-		p.log.Warn("volcengine: ResolveModel lookup failed", "task_id", id, "error", err.Error())
-		return &pluginv1.ResolveModelResponse{}, nil
-	}
-	if t == nil || t.Model == "" || in.GetMeta().GetUserId() <= 0 || t.UserID != in.GetMeta().GetUserId() {
-		return &pluginv1.ResolveModelResponse{}, nil
-	}
-	// The video poll is a plain JSON GET; it never streams.
-	return &pluginv1.ResolveModelResponse{Model: t.Model}, nil
-}
 
 // ---------------------------------------------------------------- submission
 

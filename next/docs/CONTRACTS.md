@@ -1957,7 +1957,7 @@ message RankedAccount {
 
 `SETTLED` 强制带 tokens。上游 succeeded 却没返回 `usage` 时，返回 0 会把预扣**全额退掉**——等于白送一次视频。
 
-火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**
+火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**（后来由 `ReconcileResult_SETTLED_ESTIMATE` 解决；`video_tasks` 表在火山插件 0.13.0 删除，插件迁移 `0003_drop_video_tasks.sql`。）
 
 **建议**：`ReconcileResult` 加一个「保留预扣」的表达（如 `keep_estimate bool`）。
 
@@ -2107,7 +2107,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 `store/migrate.go` 对每个迁移文件算 sha256 并与 `plugin_migrations.checksum` 比对，**改动已应用的迁移文件会让整个安装/升级中止**。所以：
 
 - 列的增删一律新写迁移文件，已应用的一个字节都不能动
-- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是现存的一处。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
+- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是一处（那张表在火山插件 0.13.0 由 `0003_drop_video_tasks.sql` 删除）。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
 
 ### 25.8 并发透支防护：输出费用预留与插件 EstimateUsage Unimplemented 处理（2026-10-04）
 
