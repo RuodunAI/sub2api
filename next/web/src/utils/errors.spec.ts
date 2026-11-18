@@ -7,12 +7,12 @@ const invalid = (fields: { field: string; code?: string; message: string }[]) =>
 
 describe('errorMessage', () => {
   it('words a version whose package is gone (410 package_gone) in both languages', () => {
-    const e = new ApiError(410, { code: 'package_gone', message: 'the package of this version is no longer available; upload it again' })
+    const e = new ApiError(410, { code: 'package_gone', message: 'no online node holds the package of this version; bring a node that holds it back online, or upload it again' })
     i18n.global.locale.value = 'zh'
     expect(errorMessage(e)).toBe(i18n.global.t('plugins.errors.packageGone'))
-    expect(errorMessage(e)).toContain('安装包已不在任何节点上')
+    expect(errorMessage(e)).toContain('没有在线节点持有该插件版本的安装包')
     i18n.global.locale.value = 'en'
-    expect(errorMessage(e)).toContain('no longer available on any node')
+    expect(errorMessage(e)).toContain('No online node holds the package')
   })
 })
 
