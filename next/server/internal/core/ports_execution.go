@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -45,6 +46,30 @@ const (
 	// gateway: the commit with its retries, then a close.
 	ExecutionFinishTimeout = 15 * time.Second
 )
+
+// Liveness of an observed execution. While the gateway that owns it is
+// alive, it renews the row every ExecutionRenewInterval
+// (RenewExecution), from the stored observation until the execution is
+// committed or closed; the usage module's recovery sweep closes, as
+// unreported, only an observed execution whose last renewal is older than
+// ExecutionStaleAfter - its gateway is gone. A live execution has no other
+// bound than the existing timeouts (the segment timeout, the upstream and
+// fetch timeouts, a client disconnect). The stale bound is eight intervals:
+// a database hiccup that fails a renewal or two (each renewal is one
+// statement, bounded by the interval) never closes a live execution;
+// only an outage of about two minutes does, and then the gateway's commit
+// meets ErrConflict like any execution closed meanwhile. Waited executions
+// are rare (endpoints whose usage the plugin reads, task submissions), so
+// one timer per execution is cheap enough; nothing is batched.
+const (
+	ExecutionRenewInterval = 15 * time.Second
+	ExecutionStaleAfter    = 2 * time.Minute
+)
+
+// ErrExecutionNotObserved is RenewExecution's answer for an execution that
+// is no longer observed (committed, unreported) or does not exist: there is
+// nothing left to keep alive.
+var ErrExecutionNotObserved = errors.New("execution is not observed")
 
 // DefaultMaxRequestBodyBytes is the request body limit when nothing else is
 // configured (128 MiB).
@@ -248,6 +273,13 @@ type ExecutionRecords interface {
 	// CloseExecutionUnreported turns into the free record; it is not billed
 	// by itself. The request and account of rec must be the execution's.
 	ObserveExecution(ctx context.Context, id string, rec *UsageRecord, observation []byte) error
+	// RenewExecution marks an observed execution alive now, in one
+	// statement that changes nothing else and touches only a row still in
+	// state observed: a committed or unreported row is never resurrected or
+	// modified. Such a row, or none, is ErrExecutionNotObserved, which ends
+	// the renewals. Any other error is a failed renewal; the next one tries
+	// again (see ExecutionRenewInterval).
+	RenewExecution(ctx context.Context, id string) error
 	// CommitExecution accepts the facts Execute returned, in one
 	// transaction with the execution row locked: the usage record with its
 	// charge and the release of the request's precharge, for ExecutionOpWatch

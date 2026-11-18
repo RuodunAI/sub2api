@@ -68,6 +68,11 @@ var errExecutionAborted = errors.New("plugin execution aborted")
 // rewrote for it, and upModel, the model it goes upstream with.
 func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte, upModel string, n int) attemptResult {
 	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
+	defer func() {
+		if w := x.waited; w != nil {
+			w.alive.stop()
+		}
+	}()
 	res, err := x.run(ctx, upModel, n)
 	if w := x.waited; w != nil {
 		defer w.release()

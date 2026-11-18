@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +63,8 @@ type waitedRelay struct {
 	base        *core.UsageRecord
 	spool       *bufferedResponse
 	taskBody    []byte
+	// alive renews the observed execution until it ends (heartbeat).
+	alive heartbeat
 }
 
 // relay is ExecutionClient.Relay: send req now and hand the plugin exactly
@@ -179,7 +183,58 @@ func (w *waitedRelay) observe(ctx context.Context) error {
 		return err
 	}
 	w.observed = true
+	w.alive.start(ctx, w.records, w.id, cmp.Or(c.g.renewInterval, core.ExecutionRenewInterval))
 	return nil
+}
+
+// heartbeat renews an observed execution (ExecutionRecords.RenewExecution)
+// so that the recovery sweep knows its gateway is alive, however long the
+// execution takes. It runs from the stored observation until stop - which
+// execute defers for the whole attempt, so every exit (commit, close, an
+// error, a panic) ends it - or until a renewal finds the row no longer
+// observed. One timer per execution: waited executions are rare.
+type heartbeat struct {
+	mu      sync.Mutex
+	timer   *time.Timer
+	stopped bool
+}
+
+func (h *heartbeat) start(ctx context.Context, records core.ExecutionRecords, id string, every time.Duration) {
+	ctx = context.WithoutCancel(ctx) // the execution outlives a client that left
+	var renew func()
+	renew = func() {
+		rctx, cancel := context.WithTimeout(ctx, every)
+		err := records.RenewExecution(rctx, id)
+		cancel()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		switch {
+		case h.stopped:
+		case errors.Is(err, core.ErrExecutionNotObserved):
+			h.stopped = true // committed or closed: nothing left to keep alive
+		default:
+			if err != nil {
+				slog.WarnContext(ctx, "gateway: execution renewal failed", "execution", id, "err", err)
+			}
+			h.timer = time.AfterFunc(every, renew)
+		}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.stopped {
+		h.timer = time.AfterFunc(every, renew)
+	}
+}
+
+// stop ends the renewals; a renewal already running does not schedule
+// another.
+func (h *heartbeat) stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stopped = true
+	if h.timer != nil {
+		h.timer.Stop()
+	}
 }
 
 // settle ends the attempt once Execute returned: the upstream's error with

@@ -404,3 +404,57 @@ func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
 	}
 	assertUnreported(t, e)
 }
+
+// An observed execution is renewed for as long as Execute runs, however
+// long that is, and only that long: the facts commit once and the renewals
+// stop with the attempt.
+func TestWaitedRelayRenewsWhileAlive(t *testing.T) {
+	release := make(chan struct{})
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		<-release // the plugin still working after the answer
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(3, 4)}}, nil
+	}))
+	e.gw.renewInterval = 10 * time.Millisecond
+	done := make(chan result, 1)
+	go func() { done <- e.do("/pu/v1/chat", body(testModel, false), nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for e.settler.renewals.Load() < 5 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(release)
+	res := <-done
+	if res.status != 200 || e.settler.renewals.Load() < 5 {
+		t.Fatalf("status %d, renewals %d", res.status, e.settler.renewals.Load())
+	}
+	if rec := e.record(); !rec.Billable || rec.Tokens.Input != 3 {
+		t.Fatalf("record %+v", rec)
+	}
+	e.noRecord()
+	settled := e.settler.renewals.Load()
+	time.Sleep(10 * e.gw.renewInterval)
+	if n := e.settler.renewals.Load(); n > settled+1 { // one may have been running at the stop
+		t.Fatalf("renewals went on after the attempt: %d -> %d", settled, n)
+	}
+}
+
+// A renewal that finds the execution no longer observed (committed or
+// closed elsewhere) ends the heartbeat without a stop.
+func TestHeartbeatStopsOnceNotObserved(t *testing.T) {
+	s := &fakeSettler{ch: make(chan *core.UsageRecord, 1)}
+	var h heartbeat
+	h.start(context.Background(), s, "gone", 5*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for s.renewals.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := s.renewals.Load(); n != 1 {
+		t.Fatalf("renewals %d, want exactly 1", n)
+	}
+	h.mu.Lock()
+	stopped := h.stopped
+	h.mu.Unlock()
+	if !stopped {
+		t.Fatal("heartbeat still armed")
+	}
+}
