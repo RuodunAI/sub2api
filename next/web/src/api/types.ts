@@ -1231,7 +1231,19 @@ export interface PluginSummary {
   trust?: Trust
   /** Live nodes of the cluster; nodes that did not report the plugin count as `absent`. */
   node_summary?: { total: number; states: Record<string, number> }
+  /** Set when nodes refuse to load the plugin (built for an older plugin contract). */
+  refusal?: PluginRefusal | null
   description?: LText
+}
+
+/** Why the nodes refuse to load a plugin version; `message` is the runtime's own text. */
+export interface PluginRefusal {
+  /** `outdated_contract`: built for an older plugin contract. */
+  code: string
+  version: string
+  host_version: string
+  protocol_version: number
+  message: string
 }
 
 export interface HostPermissionReview {
@@ -1310,6 +1322,8 @@ export interface PluginReview {
   role_grants_need_consent?: boolean
   /** Granting the db.schema asked for takes plugin:grant:db_schema_unconfined. */
   needs_db_schema_unconfined?: boolean
+  /** Fixed statement for a plugin declaring account types: it receives every request in full. Not a permission. */
+  request_access?: LText
 }
 
 /** A role column of the consent matrix (review role_columns), for the viewer. */

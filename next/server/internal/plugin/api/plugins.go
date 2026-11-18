@@ -37,9 +37,12 @@ type PluginSummary struct {
 	SignatureStatus string             `json:"signature_status"`
 	PendingVersions []string           `json:"pending_versions"`
 	Nodes           NodeSummary        `json:"node_summary"`
-	EgressPolicy    string             `json:"egress_policy"`
-	InstalledAt     time.Time          `json:"installed_at"`
-	UpdatedAt       time.Time          `json:"updated_at"`
+	// Refusal is set when nodes refuse to load the plugin because it was
+	// built for an older plugin contract (forwarding v2, design 9.2).
+	Refusal      *Refusal  `json:"refusal"`
+	EgressPolicy string    `json:"egress_policy"`
+	InstalledAt  time.Time `json:"installed_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 	// Builtin plugins ship with the image: they can be disabled, not uninstalled.
 	Builtin     bool `json:"builtin"`
 	HasSettings bool `json:"has_settings"`
@@ -121,6 +124,12 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	return nil
 }
 
+// setNodes adds what the live nodes report of the plugin.
+func (s *PluginSummary) setNodes(nodes []core.NodeStatus) {
+	s.Nodes = summarizeNodes(nodes, s.Key)
+	s.Refusal = refusal(nodes, s.Key)
+}
+
 func (a *API) listPlugins(c *gin.Context) {
 	rc := c.Request.Context()
 	page, size := httpapi.Pagination(c)
@@ -143,7 +152,7 @@ func (a *API) listPlugins(c *gin.Context) {
 			httpapi.Fail(c, err)
 			return
 		}
-		s.Nodes = summarizeNodes(nodes, s.Key)
+		s.setNodes(nodes)
 		out = append(out, s)
 	}
 	httpapi.List(c, out, httpapi.Page{Page: page, PageSize: size, Total: total})
@@ -227,7 +236,7 @@ func (a *API) getPlugin(c *gin.Context) {
 		return
 	}
 	nodes := a.liveNodes(rc)
-	s.Nodes = summarizeNodes(nodes, key)
+	s.setNodes(nodes)
 	d := PluginDetail{PluginSummary: *s, Grants: []install.Grant{}, NodeList: nodeStates(nodes, key), Hooks: []HookInfo{}, Jobs: []JobInfo{}}
 
 	if s.CurrentVersion != "" {

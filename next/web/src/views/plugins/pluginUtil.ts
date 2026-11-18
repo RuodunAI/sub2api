@@ -1,7 +1,7 @@
 // Shared helpers and DTOs of the plugin pages (list, consent, detail,
 // rollout, market). Shapes not frozen by CONTRACTS.md are typed loosely and
 // read tolerantly (camelCase or snake_case).
-import type { LText, PluginRoleGrant, PluginSummary, Trust, ResourceConflict } from '@/api/types'
+import type { LText, PluginRefusal, PluginRoleGrant, PluginSummary, Trust, ResourceConflict } from '@/api/types'
 import type { Tone } from '@sub2api/ui'
 import { useOptionalT } from '@/composables/optionalText'
 
@@ -80,6 +80,12 @@ export function shownStatus(p: { status: string; resource_conflicts?: ResourceCo
 /** One line per conflict: "platform video: <reason>". */
 export function conflictLines(p: { resource_conflicts?: ResourceConflict[] | null }): string[] {
   return (p.resource_conflicts || []).map((c) => `${c.resource} ${c.id}: ${c.reason}`)
+}
+
+/** The refusal to load a plugin, localised when its code is known (the runtime's text otherwise). */
+export function refusalText(t: (key: string, named: Record<string, unknown>) => string, key: string, r: PluginRefusal): string {
+  if (r.code !== 'outdated_contract') return r.message
+  return t('plugins.refusal.outdated_contract', { key, version: r.version, host: r.host_version, protocol: r.protocol_version })
 }
 
 /**
@@ -205,7 +211,7 @@ export interface AccountTypeSummary {
 /**
  * Account types declared by a plugin: top-level `account_types` of a review
  * or manifest summary (CONTRACTS §13). Platforms may be ids or manifest
- * objects ({platform, requestFields, ...}).
+ * objects ({platform, endpoints, ...}).
  */
 export function accountTypesOf(o: unknown): AccountTypeSummary[] {
   return asArray<Record<string, any>>(pick(o, 'account_types', 'accountTypes')).map((a) => ({
@@ -397,6 +403,8 @@ export interface PluginDetail {
   /** Ships with the image: can be disabled, not uninstalled. */
   builtin?: boolean
   status_reason?: string
+  /** Set when nodes refuse to load the plugin (built for an older plugin contract). */
+  refusal?: PluginRefusal | null
   active_version?: string | null
   desired_version?: string | null
   publisher?: string

@@ -71,26 +71,7 @@ func (p *fakePlatform) ValidateCredentials(_ context.Context, in *pluginv1.Valid
 	return resp, nil
 }
 
-func (*fakePlatform) BuildUpstreamRequest(context.Context, *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	return nil, core.ErrInternal
-}
-
 func (*fakePlatform) ResolveModel(context.Context, *pluginv1.ResolveModelRequest) (*pluginv1.ResolveModelResponse, error) {
-	return nil, core.ErrInternal
-}
-
-func (*fakePlatform) ParseTaskSubmission(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
-	return nil, nil
-}
-func (*fakePlatform) ExtractUsage(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-	return nil, core.ErrInternal
-}
-
-func (*fakePlatform) BuildReconcileRequest(context.Context, *pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error) {
-	return nil, core.ErrInternal
-}
-
-func (*fakePlatform) ParseReconcileResponse(context.Context, *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
 	return nil, core.ErrInternal
 }
 

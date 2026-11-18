@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import en from '@/i18n/locales/en/plugins'
 import zh from '@/i18n/locales/zh/plugins'
-import { HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, settingsFieldErrors } from './pluginUtil'
+import { i18n } from '@/i18n'
+import { HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, refusalText, settingsFieldErrors } from './pluginUtil'
 
 describe('plugin endpoint declarations', () => {
   it('preserves the same subset in manifests and installation reviews', () => {
@@ -114,5 +115,20 @@ describe('plugin status tones', () => {
     }
     for (const [status, tone] of Object.entries(expected)) expect([status, pluginStatusTone(status)]).toEqual([status, tone])
     expect(pluginStatusTone(null)).toBe('gray')
+  })
+})
+
+describe('refusalText', () => {
+  const refusal = { code: 'outdated_contract', version: '0.1.0', host_version: '0.2.0', protocol_version: 2, message: 'plugin video@0.1.0 was built for an older plugin protocol' }
+  it('localises a refusal of the older plugin contract', () => {
+    i18n.global.locale.value = 'zh'
+    expect(refusalText(i18n.global.t, 'video', refusal)).toBe('插件 video@0.1.0 是按旧的插件协议构建的，本核心（0.2.0，插件协议 2）不能加载它。请安装为核心 0.2.0 及以上构建的版本。')
+    i18n.global.locale.value = 'en'
+    expect(refusalText(i18n.global.t, 'video', refusal)).toBe(
+      'Plugin video@0.1.0 was built for an older plugin protocol and cannot be loaded by this core (0.2.0, plugin protocol 2). Install a version built for core 0.2.0 or later.'
+    )
+  })
+  it('shows the runtime text of a refusal it does not know', () => {
+    expect(refusalText(i18n.global.t, 'video', { ...refusal, code: 'other' })).toBe(refusal.message)
   })
 })

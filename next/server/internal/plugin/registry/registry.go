@@ -573,13 +573,30 @@ func (g *generation) indexAccountType(atb core.AccountTypeBinding) {
 		// ends in "no enabled account type serves this endpoint", so warn
 		// once per generation: a misspelt platform id is indistinguishable
 		// from a platform whose plugin is simply not enabled yet.
-		if _, ok := g.platByID[ap.Platform]; !ok {
+		pb, ok := g.platByID[ap.Platform]
+		if !ok {
 			slog.Warn("plugin registry: account type serves a platform no platform of this generation declares",
 				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform,
 				"hint", "the plugin declaring the platform may not be installed or enabled yet, or the platform id is misspelled")
 		}
+		if ok && !pb.Builtin && pb.Plugin.Key != atb.Plugin.Key && foreignFacts(pb.Platform, ap) {
+			slog.Error("plugin registry: account type skipped on a platform whose usage or task facts another plugin states",
+				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "platform", ap.Platform, "platformPlugin", pb.Plugin.Key)
+			continue
+		}
 		g.atByPlat[ap.Platform] = append(g.atByPlat[ap.Platform], atb)
 	}
+}
+
+// foreignFacts reports whether ap serves an endpoint of p whose usage or
+// task facts the plugin declaring p states (usageSource "plugin", a task
+// submission). The facts come back from the Execute of the plugin serving
+// the account, so another plugin's account type cannot serve the platform
+// (forwarding v2, design 4.3; the manifest check's foreign_facts).
+func foreignFacts(p manifest.Platform, ap manifest.AccountPlatform) bool {
+	return slices.ContainsFunc(p.Endpoints, func(e manifest.Endpoint) bool {
+		return ap.SupportsEndpoint(e.ID) && (e.PluginUsage() || e.TaskSubmit())
+	})
 }
 
 func (g *generation) Number() uint64                            { return g.number }
