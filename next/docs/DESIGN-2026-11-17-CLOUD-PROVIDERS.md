@@ -1,6 +1,6 @@
 # 云厂商上游：Vertex AI Gemini、Azure OpenAI、AWS Bedrock，以及 OpenAI 的组织 / 项目参数
 
-2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，未合并、未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；bedrock 和 azure_openai 两个清单的 `hostCompat` 都写的是 `>=0.1.304 <0.2.0`，实际发布号不是 0.1.304 时要改清单和它们的测试。
+2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，未合并、未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；bedrock 清单的 `hostCompat` 写的是 `>=0.1.304 <0.2.0`，实际发布号不是 0.1.304 时要改清单和它的测试（azure_openai 不依赖核心改动，是 `>=0.1.290 <0.2.0`）。
 
 正文第 1–15 节是设计时写的，没有逐句改成实现后的样子；**实现与设计不同的地方都列在第 16 节，以第 16 节和代码为准**。没有任何真实云账号可用，所有厂商行为来自 2026-11 的官方文档，第 12 节列出没有实测过的地方。操作说明见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)，契约见 CONTRACTS §109。
 
@@ -155,9 +155,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 ### 6.3 令牌与错误分类
 
-没有令牌。两个类型的清单都写 `"classify": "azure_openai"`：SDK 里新增的策略 `openai.AzurePolicy`（`sdk/pluginsdk/providers/openai/openai.go`，在 `sdk/upstream/validate.go` 的策略表里登记为 `azure_openai`），是 `openai` 策略加一条规则。设计稿原来写的是直接用 `openai` 策略、不新增策略，实现后改了（16.5 第 5 条）。
-
-策略名是核心链接的 SDK 里的一张表，更早的核心没有 `azure_openai` 这个名字，清单检查会拒绝 `classify` 的值，所以插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`。
+没有令牌。两个类型都用预设的 `openai` 策略，不新增策略（清单不写 `classify`）。实现中一度加过 `azure_openai` 策略让 404 `DeploymentNotFound` 换号，合并后撤掉了：这件事由管理员在失败处理设置里配重试规则完成（16.5 第 5 条）。插件的 `hostCompat` 是 `>=0.1.290 <0.2.0`。
 
 | 上游回答 | 结果 | 依据 |
 |---|---|---|
@@ -165,8 +163,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 | 401、403 | 换号，禁用账号 | `Credentials` 规则 |
 | 429 且是 `insufficient_quota` | 换号，禁用账号 | `openai` 策略原有的规则 |
 | 429 | 换号，冷却到 `retry-after-ms` / `retry-after` 指的时间，没有就 60 秒 | `RateLimit` |
-| 404 且错误码是 `DeploymentNotFound` | 换号，不动账号（原因 `upstream has no such deployment (404), the account is not at fault`）：这个账号的资源没有这个部署，别的账号的资源可能有 | `AzurePolicy` 加的规则 |
-| 其他 404 | 原样回客户端 | 没有规则命中 |
+| 404（包括 `DeploymentNotFound`） | 原样回客户端，不动账号；要换号由失败策略的重试规则决定（16.5 第 5 条） | 没有规则命中 |
 | 408、5xx | 换号，冷却 10 秒 | `ServerErrors` |
 
 ### 6.4 模型与映射
@@ -450,7 +447,7 @@ bedrock-runtime 上还有一个 Anthropic 原生接口 `POST /anthropic/v1/messa
 | # | 初始决定 | 改成 | 原因 |
 |---|---|---|---|
 | 1 | Azure 用一个 `api_mode` 选项，或两个类型 | 确定两个类型 | 路由不能按设置分支，一个类型就不是只有清单了 |
-| 2 | 考虑新增 `azure` 错误策略 | 设计稿定的是不新增、用 `openai`；**实现后还是新增了 `azure_openai`**（6.3、16.5 第 5 条） | 设计时的理由：400 `content_filter` 现在就是原样回客户端、不动账号；`retry-after-ms` 现在就读；新增策略还得改 SDK 的校验。后来为了 404 `DeploymentNotFound` 能换号，改了 SDK |
+| 2 | 考虑新增 `azure` 错误策略 | 不新增，用 `openai`（6.3、16.5 第 5 条；实现中加过 `azure_openai`，已撤掉） | 400 `content_filter` 现在就是原样回客户端、不动账号；`retry-after-ms` 现在就读；新增策略还得改 SDK 的校验。404 `DeploymentNotFound` 换号交给失败策略的重试规则 |
 | 3 | Azure 经典接口也提供 responses | 经典类型不提供 | 经典路径下 responses 只有预览版本；这类账号的 responses 请求由核心转成 chat |
 | 4 | Vertex API Key 类型可能纯声明式 | 三个类型都用代码 | 主机随区域变、“填没填项目”要分支，声明式都表达不了 |
 | 5 | Vertex 首枚令牌“设计一下” | `expires_at: 1` + 现有扫描，另加一个可选的核心小改进 | 现有扫描跳过读不出过期时间的账号，所以要写一个读得出的过期值；这样 Vertex 不依赖核心发布 |
@@ -509,7 +506,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 10. Bedrock：短期 API Key 过期、临时凭证过期时上游实际回的状态码和错误类型（现在的规则：`ExpiredToken` 禁用，其余 403 冷却 60 秒）。
 11. Vertex：用户凭证账号带 `x-goog-user-project` 是否足够、用户在该项目上还需要什么权限；令牌端点对时钟偏差的报错文字是否就是代码里匹配的那两句（`reasonable timeframe`、`short-lived token`）。
 12. Vertex：`defaultModels` 与 gemini 插件的预设列表相同，没有按 Vertex 文档核对哪些模型在 Vertex 上存在、哪些有 `global` 区域。
-13. Azure：404 `DeploymentNotFound` 现在换号、不动账号（16.5 第 5 条）。没有验证的是：Azure 在部署不存在时回的错误码是否就是 `DeploymentNotFound`、v1 接口和经典接口是否相同（v1 接口的模型不存在如果回别的错误码，仍然原样回客户端）。
+13. Azure：404 `DeploymentNotFound` 的换号靠管理员配的失败策略重试规则（16.5 第 5 条）。没有验证的是：Azure 在部署不存在时回的错误码是否就是 `DeploymentNotFound`、v1 接口和经典接口是否相同（规则的关键词同时写 `DeploymentNotFound` 和 `model_not_found`）。
 14. **Azure 的 docker e2e（`e2e/ac29_azure_test.go`）写好了，还没有在任何 e2e 栈上执行过**；CI 只编译 e2e，不运行。
 15. **控制台里的新表单（Azure 两个、Vertex 三个、Bedrock 三个、OpenAI 的“高级”分组）没有做过界面走查**：分组折叠、鉴权方式切换（`creationGroup`）、隐藏字段在编辑时回传、date-time 控件、默认模型映射带进表单，都只有清单测试和单元测试覆盖。
 16. 保存后立即刷新（7.3 第 4 点）只在单元测试里对假令牌端点验证过，没有对 Google 的令牌端点跑过。
@@ -520,8 +517,8 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 顺序：
 
 1. openai 0.4.4、vertex 0.1.0：不依赖核心改动，可以先发。openai 是内置插件，随核心同步；vertex 只进市场，管理员自己安装。
-2. 核心 0.1.N（实际是 0.1.304；S1、S2、C1、C2，保留键，以及 SDK 里的 `azure_openai` 分类策略）：改的是核心里的网关流水线（`server/internal/gateway`），节点外壳 `next/gateway` 没有改动，不用发新网关；按核心发布流程。没有迁移。
-3. bedrock 0.1.0、azure_openai 0.1.0：核心 0.1.N 上线之后发，`hostCompat`（`>=0.1.304`）挡住旧核心。只进市场。
+2. 核心 0.1.N（实际是 0.1.304；S1、S2、C1、C2，保留键）：改的是核心里的网关流水线（`server/internal/gateway`），节点外壳 `next/gateway` 没有改动，不用发新网关；按核心发布流程。没有迁移。
+3. bedrock 0.1.0：核心 0.1.N 上线之后发，`hostCompat`（`>=0.1.304`）挡住旧核心。azure_openai 0.1.0 不依赖核心改动（`>=0.1.290`），可以与第 1 步一起发；它的键在 0.1.304 才进保留键列表。都只进市场。
 
 回滚：
 
@@ -553,7 +550,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 
 1. **插件键**：Azure 插件的键是 `azure_openai`，目录是 `plugins/azure-openai`，`creationGroup` 仍是 `azure-openai`。
 2. **新插件需要一行核心改动**：三个新插件的键加进保留键列表（`install/reserved.go`），见第 4 节表下的说明。设计写的“需要核心改动：无”不成立。
-3. **版本**：Vertex 的 `hostCompat` 是 `>=0.1.290 <0.2.0`；Azure 和 Bedrock 都是 `>=0.1.304 <0.2.0`（Azure 因为分类策略名 `azure_openai`，Bedrock 因为第 8 节的两个扩展点）。核心 0.1.303 已发布、不含本分支，第一个带本分支的核心是 0.1.304。openai 是 0.4.4，清单的 `hostCompat` 仍是 `>=0.1.290 <0.2.0`；0.4.3 已随核心 0.1.303 发布。
+3. **版本**：Vertex 和 Azure 的 `hostCompat` 是 `>=0.1.290 <0.2.0`；Bedrock 是 `>=0.1.304 <0.2.0`（第 8 节的两个扩展点）。核心 0.1.303 已发布、不含本分支，第一个带本分支的核心是 0.1.304。openai 是 0.4.4，清单的 `hostCompat` 仍是 `>=0.1.290 <0.2.0`；0.4.3 已随核心 0.1.303 发布。
 4. **发布说明里的“网关二进制有变更”**指核心里的网关流水线，节点外壳没有改动（第 13 节已改）。
 
 ### 16.2 核心扩展点（第 8 节）
@@ -592,7 +589,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    - 拒绝：带 `deployments/...`、`chat/completions`、`/models` 等路径；带查询串或 `#`；带 `用户@`；大小写不同的 `/OpenAI/V1`；协议大写；前后有空格。报错文字是“只填资源地址，不要带 deployments、chat/completions 或 api-version”。
    - **`http://` 仍然接受**，因为 docker e2e 的模拟上游是 http。生产上应当只填 https。
 4. `azure_deployment` 的 `api_version` 存在设置里，经 `credentials.fields` 进路径模板；`azure_v1` 没有这个字段。
-5. **分类策略是新增的 `azure_openai`，不是 `openai`**。两个类型的清单都写 `"classify": "azure_openai"`，对应 `openai.AzurePolicy`：`openai` 策略前面加一条规则，404 且错误码是 `DeploymentNotFound` 时换号、不动账号（原因 `upstream has no such deployment (404), the account is not at fault`）；其他 404 和其余错误与 `openai` 策略相同。`classify` 可取的名字因此是 `openai`、`azure_openai`、`anthropic`、`gemini`（`sdk/upstream/validate.go` 的 `policies`）。名字在核心链接的 SDK 里，更早的核心会拒绝这个清单，所以插件要求核心 `>=0.1.304`。设计 6.3 和第 10 节偏差 2 原来定的是不新增策略。
+5. **分类策略是 `openai`，与设计一致**。实现中加过 `azure_openai` 策略（`openai.AzurePolicy`，404 `DeploymentNotFound` 换号、不动账号，`hostCompat >=0.1.304`），合并后撤掉：失败策略发布后请求是否重试、换号只由失败策略决定（`server/internal/gateway/dispatch.go` 的 `applyClassification`、`failure_policy_runtime.go` 的 `classifyFailure`），插件分类的 action 不参与，这条规则只在没有发布失败策略时才起作用。现在由管理员在失败处理设置里加重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`，不配账号规则，见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md) §3.4）。`classify` 可取的名字仍是 `openai`、`anthropic`、`gemini`，插件的 `hostCompat` 是 `>=0.1.290 <0.2.0`。
 
 ### 16.6 Vertex AI（第 7 节）
 

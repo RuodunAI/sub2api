@@ -53,7 +53,7 @@ server/internal/plugin/declarative   core.PlatformPlugin 适配器（含 extend 
   "defaultProtocol": "anthropic.messages",   // meta.protocol 为空时用
   "filterFields": [],               // 默认不透传的请求体顶层字段
   "paramOverride": null,            // §84 格式；清单的固定改写
-  "classify": "anthropic",          // openai | azure_openai | anthropic | gemini → sdk/pluginsdk/providers/<x>.Policy（azure_openai 是 providers/openai.AzurePolicy，核心 0.1.304 起）
+  "classify": "anthropic",          // openai | anthropic | gemini → sdk/pluginsdk/providers/<x>.Policy
   "test":   { "protocol": "anthropic.messages", "model": "claude-haiku-4-5", "body": "anthropic.ping" },
   "models": { "path": "/v1/models?limit=1000", "idPath": "data.#.id" }   // null = 不支持拉模型
 }
@@ -179,7 +179,7 @@ func (p *Profile) AuthHeader() string   // header 型返回小写头名，供核
 | 账号类型 `platforms[].passHeaders` 写出完整列表 | 覆盖平台的 passHeaders（§86.1：类型的列表非空就用类型的）。这里是 openai 平台的列表去掉 `openai-organization`、`openai-project`，客户端带的这两个头不转给 Azure |
 | 不写 `filterFields` | 用预设的列表（`service_tier`、`safety_identifier` 从请求体删除）。openai 插件为了与旧行为一致写的是 `[]` |
 | `"models": null` | 不支持拉模型列表 |
-| `"classify": "azure_openai"` | 错误分类用 `openai.AzurePolicy`：`openai` 策略加一条规则，404 且错误码是 `DeploymentNotFound` 时换号、不惩罚账号。策略名登记在 `sdk/upstream/validate.go` 的 `policies` 里（现有 `openai`、`azure_openai`、`anthropic`、`gemini`）；这个名字是核心 0.1.304 才有的，所以插件的 `hostCompat` 是 `>=0.1.304 <0.2.0` |
+| 不写 `classify` | 错误分类用预设的 `openai` 策略，没有 Azure 专用规则。404 `DeploymentNotFound` 要换号由管理员在失败处理设置里配重试规则（[PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md) §3.4） |
 
 同一个清单里的两个类型路径不同（v1 与按部署），是因为路由只能按协议选、不能按账号设置分支（§2.1）；用 `creationGroup` 让它们在新建账号时合成一项。
 

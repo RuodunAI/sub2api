@@ -6028,7 +6028,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 86.1 上游声明
 
-- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`（`openai`/`azure_openai`/`anthropic`/`gemini`，`azure_openai` 自核心 0.1.304 起，§109.6）、`test`、`models{path, idPath, stripPrefix}`。
+- manifest `accountTypes[].upstream`（`sdk/manifest/upstream.go`）：`preset`（`openai`/`anthropic`/`gemini`，预设在 `sdk/platforms/upstream/*.json`）、`extend`、`baseURL{default,required,stripSuffixes}`、`credentials{keyValidator,texts,fields}`、`auth{type: header|query|none, name, value}`、`headers`（头名 → `{set|default|append: 模板}`）、`routes`（上游协议 → `{method, path, transport, headers, patches, model}`）、`defaultProtocol`、`filterFields`、`paramOverride`（§84 格式）、`classify`（`openai`/`anthropic`/`gemini`）、`test`、`models{path, idPath, stripPrefix}`。
 - 合并：预设 → 清单，按 JSON merge patch，`headers` 按头名、`routes` 按协议合并，`null` 删除；未知字段拒绝。
 - 模板变量：`{api_key}`（只能在 auth 值和路径查询串）、`{base_url}`（auth 和请求头）、`{model}`（映射和账号参数覆盖之后的上游模型；插件 patch 改了模型时只重算 URL，请求头和查询值不变）、`{credentials.<k>}`（k 须在 `credentials.fields`，不能是 api_key/base_url）、`{client_header.<名>}`（须在该类型的 passHeaders 里、不在 §81 禁止列表，只能用在普通请求头）。
 - `auth.name` 只能是凭证头（authorization、x-api-key、x-goog-api-key、api-key、cookie）或普通头名，不能是逐跳、分帧、客户端地址或网关控制头。
@@ -7949,13 +7949,13 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 插件（键） | 版本 | 形态 | `hostCompat` | 账号类型 | 平台与端点 |
 |---|---|---|---|---|---|
 | `openai` | 0.4.4 | 只有清单 | `>=0.1.290` | `apikey` 加设置 `organization`、`project` | 不变 |
-| `azure_openai`（目录 `plugins/azure-openai`） | 0.1.0 | 只有清单 | `>=0.1.304` | `azure_v1`、`azure_deployment` | openai：v1 类型 chat_completions、responses、embeddings；经典类型 chat_completions、embeddings |
+| `azure_openai`（目录 `plugins/azure-openai`） | 0.1.0 | 只有清单 | `>=0.1.290` | `azure_v1`、`azure_deployment` | openai：v1 类型 chat_completions、responses、embeddings；经典类型 chat_completions、embeddings |
 | `vertex` | 0.1.0 | gRPC | `>=0.1.290` | `vertex_sa`、`vertex_authorized_user`、`vertex_apikey` | gemini：generate_content、stream_generate_content、count_tokens |
 | `bedrock` | 0.1.0 | gRPC | `>=0.1.304` | `bedrock_apikey`、`bedrock_aksk`、`bedrock_sts` | anthropic：messages |
 
 `hostCompat` 的上限都是 `<0.2.0`。核心 0.1.303 不含本节，第一个带本节的核心是 0.1.304。
 
-**分类策略 `azure_openai`**（声明式上游 `classify` 的新取值，§86；`sdk/upstream/validate.go` 的 `policies`，实现是 `sdk/pluginsdk/providers/openai` 的 `AzurePolicy`）：`openai` 策略加一条规则，404 且错误码是 `DeploymentNotFound` 时换号、不惩罚账号（原因 `upstream has no such deployment (404), the account is not at fault`）；其余与 `openai` 策略相同。`classify` 现在可取 `openai`、`azure_openai`、`anthropic`、`gemini`。策略名在核心链接的 SDK 里，更早的核心不认识 `azure_openai`、会拒绝清单，所以用它的插件要 `hostCompat >=0.1.304`。
+**没有新增分类策略**：azure_openai 的两个类型用预设的 `openai` 策略，`classify` 的取值仍是 `openai`、`anthropic`、`gemini`（§86）。404 `DeploymentNotFound` 按该策略原样回客户端；要换号由管理员在失败策略（§69）里配重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`），不配账号规则则账号不动。失败策略发布后请求动作只由它决定，插件分类的 action 不参与。
 
 - **openai 0.4.4**：账号设置 `organization`、`project` 非空时以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端带的；留空时这次写入整个跳过，客户端经 passHeaders 带来的头保持原样（与 0.4.3 逐字节相同）。写在 openai 插件的清单里，不在 `openai` 预设里。WebSocket 握手同样带上。
 - **azure_openai**：`preset: openai`；`baseURL` 必填、无默认值，保存时去掉末尾的 `/openai/v1`、`/openai`；鉴权头 `api-key: {api_key}`，key 不要求前缀；`models: null`（不拉模型列表）；`openai.responses_ws` 为 `null`。类型自己的 `passHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；没有写 `filterFields`，所以预设的 `service_tier`、`safety_identifier` 过滤生效。经典类型的路径是 `/openai/deployments/{model}/…?api-version={credentials.api_version}`，`{model}` 是映射后的模型（部署名），`openai.responses` 为 `null`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 `azure_openai` 策略（见上）：404 `DeploymentNotFound` 换号、不惩罚账号，其他 404 原样回客户端。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
