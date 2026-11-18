@@ -233,7 +233,7 @@ export default {
   },
   headerOverride: {
     title: 'Request header override',
-    hint: "Sets headers sent upstream by name, in the format of a new-api channel's header override, which can be pasted as is. A value is literal text, {'{client_header:name}'} (the client's value), {'{client_header:name:suffix}'} (the client's value with the suffix appended) or {'{unset}'} (removes it); a key * or regex:<pattern> passes client headers through. Applies after header passthrough and before the parameter override. Credentials, hop-by-hop headers, client addresses and gateway control headers cannot be overridden; {'{api_key}'} is not supported",
+    hint: "Sets headers sent upstream by name, in the format of a new-api channel's header override, which can be pasted as is. A value is literal text, {'{client_header:name}'} (the client's value), {'{client_header:name:suffix}'} (the client's value with the suffix appended) or {'{unset}'} (removes it); a key * or regex:<pattern> passes client headers through. Applies after header passthrough and before the parameter override. Credentials, hop-by-hop headers, client addresses and gateway control headers cannot be overridden; {'{api_key}'} is not supported. Headers a plugin declares authoritative are not affected either: for Claude OAuth, Codex and Volcengine accounts every header the plugin sets, for the others the credential header (and, on a signed AWS request, the headers the signature covers)",
     none: 'Not set',
     count: '{n} entries',
     edit: 'Edit',
