@@ -221,6 +221,9 @@ func (f *FakeHost) admitRelay(e *Execution, in *pluginv1.RelayUpstreamRequest) e
 	if err := pluginsdk.ValidateUpstreamRequest(in.GetRequest()); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
+	if u, _ := url.Parse(in.GetRequest().GetUrl()); !f.upstreamHostAllowed(strings.ToLower(u.Hostname()), e.account) {
+		return status.Errorf(codes.InvalidArgument, "upstream host %q is neither one of the manifest's externalServices nor of the account's upstream addresses", u.Hostname())
+	}
 	if webSocketURL(in.GetRequest().GetUrl()) && f.httpProtocol(e.request.GetMeta().GetProtocol()) {
 		return status.Errorf(codes.InvalidArgument, "a ws(s) url on an HTTP route (protocol %s)", e.request.GetMeta().GetProtocol())
 	}
@@ -267,7 +270,7 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 		return status.Errorf(codes.InvalidArgument, "fetch url %q is invalid", in.GetUrl())
 	case (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "":
 		return status.Errorf(codes.PermissionDenied, "fetch url %q is not an http(s) URL with a host", in.GetUrl())
-	case !f.fetchHostAllowed(strings.ToLower(u.Hostname()), e.account):
+	case !f.upstreamHostAllowed(strings.ToLower(u.Hostname()), e.account):
 		return status.Errorf(codes.PermissionDenied, "fetch host %q is neither one of the manifest's externalServices nor of the account's upstream addresses", u.Hostname())
 	}
 	f.mu.Lock()
@@ -276,10 +279,10 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 	return nil
 }
 
-// fetchHostAllowed is the host's decision (manifest.FetchHostAllowed) on
-// the manifest the fake knows, with ExternalServices in place of its
-// externalServices when set.
-func (f *FakeHost) fetchHostAllowed(host string, account *pluginv1.Account) bool {
+// upstreamHostAllowed is the host's decision (manifest.UpstreamHostAllowed)
+// on a relay's or a fetch's host, with the manifest the fake knows and
+// ExternalServices in place of its externalServices when set.
+func (f *FakeHost) upstreamHostAllowed(host string, account *pluginv1.Account) bool {
 	var m manifest.Manifest
 	if f.Manifest != nil {
 		m = *f.Manifest
@@ -287,7 +290,7 @@ func (f *FakeHost) fetchHostAllowed(host string, account *pluginv1.Account) bool
 	if f.ExternalServices != nil {
 		m.ExternalServices = f.ExternalServices
 	}
-	return m.FetchHostAllowed(host, account.GetType(), account.GetSettingsJson(), account.GetCredentialsJson())
+	return m.UpstreamHostAllowed(host, account.GetType(), account.GetSettingsJson(), account.GetCredentialsJson())
 }
 
 // webSocketURL reports a ws(s) URL.

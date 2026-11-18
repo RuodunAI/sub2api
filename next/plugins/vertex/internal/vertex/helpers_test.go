@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -97,7 +98,13 @@ func newTestPlugin(ep Endpoints) *Plugin {
 // the way the core calls it.
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("vertex", Version)}})
+	m, err := os.ReadFile("../../manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fake host knows the manifest: it relays only to the hosts the
+	// core would.
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: m, SDK: []pluginsdk.Option{pluginsdk.WithInfo("vertex", Version)}})
 }
 
 // noDial fails t when anything dials through the default HTTP transport

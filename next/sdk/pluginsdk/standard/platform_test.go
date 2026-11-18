@@ -194,6 +194,7 @@ const manifest = `{
   "apiVersion": 1, "key": "std", "version": "0.1.0", "publisher": "test", "runtime": "grpc",
   "capabilities": [{"id": "platform.adapter.v1"}],
   "hostPermissions": [{"id": "platform.register"}],
+  "externalServices": ["api.openai.com"],
   "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "schema"}, "platforms": [{"platform": "openai"}]}]
 }`
 

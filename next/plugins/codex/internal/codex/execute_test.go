@@ -240,6 +240,7 @@ func TestExecuteWebSocket(t *testing.T) {
 	}
 	// A test server root keeps its scheme family.
 	h = startExecuting(t, testEndpoints("http://127.0.0.1:9"))
+	h.Host.ExternalServices = []string{"127.0.0.1"}
 	if r := relayed(t, h, execRequest(TypeOAuth, ProtocolResponsesWS, turns[1])); r.GetUrl() != "ws://127.0.0.1:9/backend-api/codex/responses" {
 		t.Fatalf("ws url = %s", r.GetUrl())
 	}

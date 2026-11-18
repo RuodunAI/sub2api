@@ -54,7 +54,6 @@ const (
 	// one account on one node; a status change is written at once.
 	quotaPassiveInterval = 30 * time.Second
 	quotaQueryTimeout    = 20 * time.Second
-	maxQuotaBody         = 64 << 10
 	maxQuotaError        = 512
 	maxQuotaErrorDetail  = 256
 	quotaFlushTick       = 5 * time.Second // also core.account.quota_sweep's period
@@ -387,7 +386,7 @@ func (s *Service) sendQuotaRequest(ctx context.Context, b *pluginv1.BuildQuotaRe
 	a := s.sendPluginCall(ctx, pluginCall{what: "quota", method: b.GetMethod(), defaultMethod: http.MethodGet,
 		url: b.GetUrl(), headers: b.GetHeaders(), body: []byte(b.GetBodyJson())}, proxyID)
 	return &pluginv1.ParseQuotaResponseRequest{Status: a.status, Headers: a.headers, Body: a.body,
-		TransportError: a.transportError, Truncated: a.truncated}
+		TransportError: a.transportError}
 }
 
 // pluginCall is an upstream request a plugin described (quota, refresh,
@@ -406,8 +405,7 @@ type pluginCall struct {
 type pluginAnswer struct {
 	status         int32
 	headers        map[string]string // lower-cased, first value
-	body           []byte            // at most maxQuotaBody bytes
-	truncated      bool
+	body           []byte            // the whole answer
 	transportError string
 }
 
@@ -460,10 +458,7 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 		return out
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBody+1))
-	if len(raw) > maxQuotaBody {
-		raw, out.truncated = raw[:maxQuotaBody], true
-	}
+	raw, _ := io.ReadAll(resp.Body)
 	out.status, out.body = int32(resp.StatusCode), raw
 	out.headers = map[string]string{}
 	for k, v := range resp.Header {

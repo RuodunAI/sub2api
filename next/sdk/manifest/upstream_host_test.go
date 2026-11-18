@@ -2,7 +2,7 @@ package manifest
 
 import "testing"
 
-func TestFetchHostAllowed(t *testing.T) {
+func TestUpstreamHostAllowed(t *testing.T) {
 	m := &Manifest{
 		ExternalServices: []string{"api.example.com", "Auth.Example.org:8443"},
 		AccountTypes: []AccountType{
@@ -32,12 +32,12 @@ func TestFetchHostAllowed(t *testing.T) {
 		{"relay.test", "unknown", false},
 		{"", "relay", false},
 	} {
-		if got := m.FetchHostAllowed(tc.host, tc.accountType, settings, credentials, "not json"); got != tc.want {
-			t.Errorf("FetchHostAllowed(%q, %q) = %v, want %v", tc.host, tc.accountType, got, tc.want)
+		if got := m.UpstreamHostAllowed(tc.host, tc.accountType, settings, credentials, "not json"); got != tc.want {
+			t.Errorf("UpstreamHostAllowed(%q, %q) = %v, want %v", tc.host, tc.accountType, got, tc.want)
 		}
 	}
 	var none *Manifest
-	if none.FetchHostAllowed("api.example.com", "relay") {
+	if none.UpstreamHostAllowed("api.example.com", "relay") {
 		t.Error("no manifest allows a host")
 	}
 }

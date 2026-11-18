@@ -392,7 +392,7 @@ func relayPlatform(t *testing.T) manifest.Platform {
 func TestStreamOnlyConvertedRoute(t *testing.T) {
 	up := newResponsesUpstream(t)
 	e := newEnv(t, func(e *env) { e.conv = convert.NewRegistry(chatToRelay{}) })
-	relayInfo := core.PluginInfo{Key: "relayx", Version: "1.0.0", Manifest: &manifest.Manifest{Key: "relayx"}}
+	relayInfo := core.PluginInfo{Key: "relayx", Version: "1.0.0", Manifest: &manifest.Manifest{Key: "relayx", ExternalServices: []string{testUpstreamHost}}}
 	e.gen.plugins = append(e.gen.plugins, relayInfo)
 	e.gen.addPlatform(relayInfo, relayPlatform(t))
 	plat := &fakePlatform{route: func(*pluginv1.ExecuteRequest) string { return up.srv.URL + "/relayx/v1/responses" }}

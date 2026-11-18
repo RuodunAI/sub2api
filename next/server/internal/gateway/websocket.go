@@ -675,15 +675,13 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
 	}
 	// The handshake's headers in the layers of an HTTP request
-	// (upstreamRequest) without the passthrough: the plugin's defaults, the
+	// (layerHeaders) without the passthrough: the plugin's defaults, the
 	// account's header override (§108) and parameter override, the plugin's
 	// authoritative headers. The handshake ends with ctx (the client
 	// leaving) and has no deadline of its own; its dial context is released
 	// once it is done, so the connection itself lives as long as the session.
 	header := http.Header{}
-	setHandshakeHeaders(header, req.GetDefaultHeaders())
-	cl.paramOverride.headers.Apply(header)
-	setHandshakeHeaders(header, req.GetHeaders())
+	layerHeaders(header, req, cl.paramOverride.headers.Apply, handshakeOwned)
 	dctx, dcancel := context.WithCancel(ctx)
 	up, resp, err := websocket.Dial(dctx, target.String(), &websocket.DialOptions{HTTPClient: execfetch.NoRedirects(client), HTTPHeader: header,
 		CompressionMode: websocket.CompressionContextTakeover})
@@ -962,17 +960,14 @@ func strconvQuote(s string) string {
 	return string(bytes.TrimSpace(b))
 }
 
-// setHandshakeHeaders writes built headers onto a WebSocket handshake; the
-// transport owns framing and the WebSocket handshake headers, host is kept.
-func setHandshakeHeaders(h http.Header, m map[string]string) {
-	for k, v := range m {
-		switch strings.ToLower(k) {
-		case "host":
-			h.Set("Host", v)
-		case "content-length", "content-type", "accept-encoding", "connection", "transfer-encoding", "upgrade",
-			"sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-accept":
-		default:
-			h.Set(k, v)
-		}
+// handshakeOwned reports the headers of a WebSocket handshake the transport
+// writes (framing and the WebSocket handshake headers): a plugin's are left
+// out.
+func handshakeOwned(name string) bool {
+	switch strings.ToLower(name) {
+	case "content-length", "content-type", "accept-encoding", "connection", "transfer-encoding", "upgrade",
+		"sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "sec-websocket-accept":
+		return true
 	}
+	return false
 }

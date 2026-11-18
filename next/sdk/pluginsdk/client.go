@@ -126,7 +126,7 @@ func relay(ctx context.Context, operation string, request *pluginv1.UpstreamRequ
 // The URL's host must be one of the manifest's externalServices (or a
 // subdomain of one) or the host of one of the call's account's own upstream
 // addresses, the values of its type's upstreamFields
-// (manifest.Manifest.FetchHostAllowed). The host neither counts the fetches
+// (manifest.Manifest.UpstreamHostAllowed). The host neither counts the fetches
 // of a call nor cuts their answers: the answer body comes back whole. A
 // transport failure is not an error: it comes back in
 // transport_error with status 0. No net permission is needed.

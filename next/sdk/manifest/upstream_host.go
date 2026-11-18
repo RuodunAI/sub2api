@@ -7,17 +7,20 @@ import (
 	"strings"
 )
 
-// FetchHostAllowed decides whether a fetch made during an Execute or Monitor
-// call for an account of type accountType may go to host, the host name of
-// its http(s) URL (any case, without port): a host of the manifest's
-// externalServices (ExternalServiceHost), which the operator reviewed at
-// install, or the host of one of the account's own upstream addresses
-// (AccountType.AddressHosts of accountDocs, the account's settings and
-// credentials JSON), which the operator entered: an account pointed at a
-// relay must be able to query it. Whether the address may be reached at all
-// (the SSRF policy, the account's proxy) is not this decision's. The host
-// and pluginsdktest's fake host both decide with it.
-func (m *Manifest) FetchHostAllowed(host, accountType string, accountDocs ...string) bool {
+// UpstreamHostAllowed decides whether a request the host sends for a plugin
+// with the credentials of an account of type accountType may go to host,
+// the host name of its URL (any case, without port): the relay of an
+// Execute call (HTTP or a WebSocket handshake), a fetch of an Execute or
+// Monitor call, and HostService.SendAccountRequest (CONTRACTS §112.17). It
+// may when host is one of the manifest's externalServices or a subdomain of
+// one (ExternalServiceHost), which the operator reviewed at install, or the
+// host of one of the account's own upstream addresses (AccountType.
+// AddressHosts of accountDocs, the account's settings and credentials
+// JSON), which the operator entered: an account pointed at a relay must be
+// able to reach it. Whether the address may be reached at all (the SSRF
+// policy, the account's proxy) is not this decision's. The host and
+// pluginsdktest's fake host both decide with it.
+func (m *Manifest) UpstreamHostAllowed(host, accountType string, accountDocs ...string) bool {
 	if m == nil || host == "" {
 		return false
 	}

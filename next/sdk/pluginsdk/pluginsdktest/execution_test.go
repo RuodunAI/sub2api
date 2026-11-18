@@ -17,6 +17,7 @@ func TestFakeHostRelayChecks(t *testing.T) {
 	ctx := context.Background()
 	ok := &pluginv1.UpstreamRequest{Url: "https://up.example.com/v1", Headers: map[string]string{"authorization": "k"}}
 	f := NewFakeHost()
+	f.ExternalServices = []string{"up.example.com"}
 	relay := func(e *Execution, r *pluginv1.UpstreamRequest, wait bool) codes.Code {
 		_, err := f.RelayUpstream(ctx, &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(), Request: r, Wait: wait})
 		return status.Code(err)
@@ -72,6 +73,7 @@ func TestFakeHostRelayChecks(t *testing.T) {
 
 func TestRelayedFailsWithoutExactlyOneRelay(t *testing.T) {
 	f := NewFakeHost()
+	f.ExternalServices = []string{"up.example.com"}
 	e := f.Begin(&pluginv1.ExecuteRequest{})
 	probe := &fatalProbe{TB: t}
 	e.Relayed(probe)
@@ -97,9 +99,38 @@ type fatalProbe struct {
 func (p *fatalProbe) Helper()               {}
 func (p *fatalProbe) Fatalf(string, ...any) { p.failed = true }
 
+// A relay reaches the hosts a fetch does (manifest.Manifest.
+// UpstreamHostAllowed), a WebSocket handshake by its host alike; another
+// host is refused as the host refuses it, INVALID_ARGUMENT, and the request
+// counts as not relayed.
+func TestFakeHostRelayHosts(t *testing.T) {
+	ctx := context.Background()
+	relayAccount := &pluginv1.Account{Type: "relay", SettingsJson: `{"base_url":"https://relay.test:8443/v1"}`}
+	f := NewFakeHost()
+	f.Manifest = &manifest.Manifest{
+		ExternalServices: []string{"api.example.com"},
+		AccountTypes:     []manifest.AccountType{{ID: "relay", UpstreamFields: []string{"base_url"}}},
+	}
+	for url, want := range map[string]codes.Code{
+		"https://api.example.com/v1":     codes.OK,
+		"https://eu.api.example.com/v1":  codes.OK,
+		"wss://api.example.com/v1/ws":    codes.OK,
+		"https://relay.test/v1/chat":     codes.OK,
+		"https://sub.relay.test/v1/chat": codes.InvalidArgument,
+		"https://other.test/v1":          codes.InvalidArgument,
+		"wss://other.test/v1/ws":         codes.InvalidArgument,
+	} {
+		e := f.Begin(&pluginv1.ExecuteRequest{Account: relayAccount})
+		_, err := f.RelayUpstream(ctx, &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(), Request: &pluginv1.UpstreamRequest{Url: url}})
+		if status.Code(err) != want || (want != codes.OK) != (len(e.Relays()) == 0) {
+			t.Errorf("%s: %v, relays %d, want %v", url, err, len(e.Relays()), want)
+		}
+	}
+}
+
 // A fetch reaches the manifest's externalServices and the hosts of the
 // account's own upstream addresses, as the host decides
-// (manifest.Manifest.FetchHostAllowed), for an Execute and a Monitor call
+// (manifest.Manifest.UpstreamHostAllowed), for an Execute and a Monitor call
 // alike; nothing without a manifest.
 func TestFakeHostFetchHosts(t *testing.T) {
 	ctx := context.Background()
@@ -147,6 +178,7 @@ func TestFakeHostFetchHosts(t *testing.T) {
 // host.
 func TestFakeHostRelayBodyUnbounded(t *testing.T) {
 	f := NewFakeHost()
+	f.ExternalServices = []string{"up.example.com"}
 	for _, tc := range []struct{ handed, relayed int }{{0, 2 << 20}, {3 << 20, 5 << 20}} {
 		e := f.Begin(&pluginv1.ExecuteRequest{Body: make([]byte, tc.handed)})
 		_, err := f.RelayUpstream(context.Background(), &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(),
@@ -160,6 +192,7 @@ func TestFakeHostRelayBodyUnbounded(t *testing.T) {
 // A ws(s) URL is refused on a protocol the fake knows to be HTTP only.
 func TestFakeHostWebSocketURL(t *testing.T) {
 	f := NewFakeHost()
+	f.ExternalServices = []string{"up.example.com"}
 	f.Manifest = &manifest.Manifest{Platforms: []manifest.Platform{{ID: "p", Endpoints: []manifest.Endpoint{
 		{ID: "chat", Protocol: "p.chat", Kind: manifest.EndpointKindProxy},
 		{ID: "live", Protocol: "p.live", Kind: manifest.EndpointKindWebSocket},

@@ -94,8 +94,6 @@ func (p *Plugin) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefre
 			return refreshError(pluginv1.RefreshResult_ERROR_TYPE_AUTH_REJECTED, "refresh token refused; authorize the account again / 刷新令牌被拒绝，需重新授权: "+msg), nil
 		}
 		return refreshError(pluginv1.RefreshResult_ERROR_TYPE_TRANSIENT, msg), nil
-	case in.GetTruncated():
-		return refreshError(pluginv1.RefreshResult_ERROR_TYPE_TRANSIENT, "token response too large / 令牌响应过大"), nil
 	}
 	var tr tokenResponse
 	if err := json.Unmarshal(in.GetBody(), &tr); err != nil {

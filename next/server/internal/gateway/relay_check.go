@@ -21,7 +21,8 @@ import (
 // The body is not inspected: the plugin's bytes are final and the core does
 // not parse them again (the SDK conformance suite holds plugins to the
 // model, stream flag and usage of the body they were handed). What stays is
-// what only the core can enforce at run time: the SSRF guard on the target,
+// what only the core can enforce at run time: a target host the plugin
+// declared or the account names (allowHost), the SSRF guard on the target,
 // headers the transport can carry, a response framing this core decodes,
 // and, for a type declaring model availability, the upstream model the
 // plugin names.
@@ -47,6 +48,9 @@ func (x *execution) validate(ctx context.Context, req *pluginv1.UpstreamRequest)
 	if e != nil {
 		return nil, e
 	}
+	if e := x.allowHost(ctx, raw); e != nil {
+		return nil, e
+	}
 	target, err := x.checkURL(ctx, raw)
 	if err != nil {
 		slog.WarnContext(ctx, "gateway: upstream url rejected", "request_id", c.rid, "plugin", x.rt.binding.Plugin.Key, "account", x.acc.ID, "err", err)
@@ -55,6 +59,28 @@ func (x *execution) validate(ctx context.Context, req *pluginv1.UpstreamRequest)
 		return nil, e
 	}
 	return target, nil
+}
+
+// allowHost refuses a relay whose host is neither one of the plugin's
+// externalServices (or a subdomain of one) nor the host of one of the
+// account's upstream addresses (manifest.UpstreamHostAllowed, CONTRACTS
+// §112.17): the core sends the account's credentials only where the
+// operator reviewed at install or entered on the account. The refusal is
+// the plugin's, not the account's: the attempt fails over and nothing is
+// sent.
+func (x *execution) allowHost(ctx context.Context, raw string) *gwError {
+	var host string
+	if u, err := url.Parse(raw); err == nil {
+		host = strings.ToLower(u.Hostname())
+	}
+	key, acct := x.rt.binding.Plugin.Key, x.acct
+	if x.rt.binding.Plugin.Manifest.UpstreamHostAllowed(host, acct.GetType(), acct.GetSettingsJson(), acct.GetCredentialsJson()) {
+		return nil
+	}
+	slog.WarnContext(ctx, "gateway: upstream host not allowed", "request_id", x.c.rid, "plugin", key, "account", x.acc.ID, "host", host)
+	e := relayRefused("upstream host " + strconvQuote(host) + " is neither in the externalServices of plugin " + key + " nor an upstream address of the account")
+	e.NeutralReason = "upstream_host_not_allowed"
+	return e
 }
 
 // httpTarget is the http(s) address req goes to. A WebSocket handshake is a

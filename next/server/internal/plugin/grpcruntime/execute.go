@@ -126,7 +126,7 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 }
 
 // requireFetchHost accepts the http(s) URL of a fetch whose host the
-// manifest allows for the account (manifest.Manifest.FetchHostAllowed: its
+// manifest allows for the account (manifest.Manifest.UpstreamHostAllowed: its
 // externalServices or the account's own upstream addresses). Whether the
 // address may be reached at all (the SSRF policy, the account's proxy) is
 // the fetch's to decide, not this check's.
@@ -135,7 +135,7 @@ func (h *hostServer) requireFetchHost(sc *callScope, raw string) error {
 	if err != nil {
 		return err
 	}
-	if !h.i.pkg.Manifest.FetchHostAllowed(host, sc.account.GetType(), sc.account.GetSettingsJson(), sc.account.GetCredentialsJson()) {
+	if !h.i.pkg.Manifest.UpstreamHostAllowed(host, sc.account.GetType(), sc.account.GetSettingsJson(), sc.account.GetCredentialsJson()) {
 		return status.Errorf(codes.PermissionDenied, "plugin %s: url must be http(s) on a host of the manifest's externalServices or of the account's upstream addresses", h.key())
 	}
 	return nil

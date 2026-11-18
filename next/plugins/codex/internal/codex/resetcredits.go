@@ -271,8 +271,6 @@ func backendFailure(r *pluginv1.ExecutionHTTPResponse, token string) *pluginv1.H
 		return pluginsdk.ErrorResponse(http.StatusConflict, "auth_rejected", fmt.Sprintf("ChatGPT rejected the account's token (status %d); authorize the account again / ChatGPT 拒绝了账号令牌（状态 %d），请重新授权", st, st))
 	case st < 200 || st > 299:
 		return upstreamError("upstream_error", fmt.Sprintf("ChatGPT answered status %d / ChatGPT 返回状态 %d: %s", st, st, snippet(string(r.GetBody()), token)))
-	case r.GetTruncated():
-		return upstreamError("upstream_error", "ChatGPT's answer is too large / ChatGPT 响应过大")
 	}
 	return nil
 }

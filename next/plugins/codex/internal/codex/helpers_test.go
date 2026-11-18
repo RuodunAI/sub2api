@@ -37,10 +37,12 @@ func idToken(email, accountID, plan string) string {
 // testEndpoints point every service root at base.
 func testEndpoints(base string) Endpoints { return Endpoints{Auth: base, ChatGPT: base} }
 
-// startPlugin runs p in the SDK harness with a fake host (in-memory KV).
+// startPlugin runs p in the SDK harness with a fake host (in-memory KV)
+// that knows the plugin's manifest, so it relays and fetches only to the
+// hosts the core would.
 func startPlugin(t *testing.T, p *Plugin) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, p, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
+	return pluginsdktest.Start(t, p, pluginsdktest.Options{Manifest: testManifest, SDK: []pluginsdk.Option{pluginsdk.WithInfo("codex", Version)}})
 }
 
 // testManifest is the plugin's own manifest.json.

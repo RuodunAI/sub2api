@@ -39,6 +39,23 @@ func TestUpstreamBuildsTheTwoHeaderKinds(t *testing.T) {
 	}
 }
 
+// RemoveHeader writes an authoritative empty value, which the host reads as
+// "do not send this header"; a later Header of the name replaces it.
+func TestUpstreamRemoveHeader(t *testing.T) {
+	got, err := NewUpstream("", "https://api.example.com/v1").
+		Header("Authorization", "Bearer k").
+		RemoveHeader("X-Amz-Security-Token").
+		RemoveHeader("x-later").Header("X-Later", "v").
+		Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"authorization": "Bearer k", "x-amz-security-token": "", "x-later": "v"}
+	if !maps.Equal(got.GetHeaders(), want) {
+		t.Fatalf("headers %v, want %v", got.GetHeaders(), want)
+	}
+}
+
 func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 	for name, tc := range map[string]struct {
 		build *Upstream
@@ -49,6 +66,7 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 		"content-length":    {NewUpstream("", "https://example.com").Header("Content-Length", "3"), `"content-length" belongs to the host's transport`},
 		"accept-encoding":   {NewUpstream("", "https://example.com").DefaultHeader("Accept-Encoding", "gzip"), `"accept-encoding" belongs to the host's transport`},
 		"connection":        {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
+		"host":              {NewUpstream("", "https://example.com").Header("Host", "internal.example"), `"host" belongs to the host's transport`},
 		"transfer-encoding": {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
 		"line break":        {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
 		"several at once":   {NewUpstream("", "nope").Header("connection", "x"), "transport"},

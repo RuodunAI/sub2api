@@ -19,6 +19,10 @@ import (
 // says).
 const contentJSON = "application/json"
 
+// sessionTokenHeader carries the session token of temporary credentials,
+// covered by their signature.
+const sessionTokenHeader = "X-Amz-Security-Token"
+
 // BuildUpstream implements pluginsdk.UpstreamBuilder: a Claude request for
 // InvokeModel, or InvokeModelWithResponseStream when it streams, with the
 // final InvokeModel body (invokeBody), authorized by the account.
@@ -51,7 +55,10 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 // invoke is the InvokeModel request of the account for model id with the
 // final body. Content-Type and Accept are defaults the operator may change;
 // the authorization is authoritative, and with a signature so is the
-// Content-Type it covers. The URL is the one signed.
+// Content-Type it covers. The URL is the one signed. A session token goes
+// only with a signature that covers it: without one (an access key, an API
+// key) X-Amz-Security-Token is removed, so that one the operator's header
+// settings add does not reach AWS and fail the request.
 func (p *Plugin) invoke(a account, id string, stream bool, body []byte) (*pluginv1.UpstreamRequest, error) {
 	req, err := http.NewRequest(http.MethodPost, p.apiBase(a.region)+invokePath(id, stream), nil)
 	if err != nil {
@@ -68,6 +75,9 @@ func (p *Plugin) invoke(a account, id string, stream bool, body []byte) (*plugin
 		Headers(auth).
 		Body(body).
 		Model(id)
+	if auth.Get(sessionTokenHeader) == "" {
+		u.RemoveHeader(sessionTokenHeader)
+	}
 	if stream {
 		u.ResponseStream(ResponseStream)
 	}
@@ -103,8 +113,11 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 	if err != nil {
 		return nil, err
 	}
+	// The test request has no lower layers: an authoritative header that
+	// removes one (an empty value) is simply not sent.
 	headers := maps.Clone(up.GetDefaultHeaders())
 	maps.Copy(headers, up.GetHeaders())
+	maps.DeleteFunc(headers, func(_, v string) bool { return v == "" })
 	return &pluginv1.BuildTestRequestResponse{
 		Method: up.GetMethod(), Url: up.GetUrl(), Headers: headers, BodyJson: string(up.GetBody()),
 		Model: id, UsageProtocol: ProtocolMessages,

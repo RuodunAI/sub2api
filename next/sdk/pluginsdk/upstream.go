@@ -15,8 +15,10 @@ import (
 )
 
 // transportHeaders belong to the host's transport: a request naming one is
-// refused (host.proto, UpstreamRequest).
+// refused (host.proto, UpstreamRequest). Host is the URL's: the request
+// goes to the host the URL names, which is the host checked.
 var transportHeaders = map[string]bool{
+	"host":              true,
 	"content-length":    true,
 	"accept-encoding":   true,
 	"connection":        true,
@@ -40,7 +42,8 @@ var transportHeaders = map[string]bool{
 //     unset, the account's header override and parameter override may
 //     replace or remove it. Everything else belongs here.
 //
-// A name in both takes the authoritative value.
+// A name in both takes the authoritative value. RemoveHeader keeps a
+// header from being sent at all, whatever a layer below set.
 type Upstream struct {
 	request *pluginv1.UpstreamRequest
 }
@@ -69,6 +72,20 @@ func WebSocketURL(httpURL string) string {
 // Header sets an authoritative header. An empty value writes nothing.
 func (u *Upstream) Header(name, value string) *Upstream {
 	u.request.Headers = u.set(u.request.Headers, name, value)
+	return u
+}
+
+// RemoveHeader keeps the header name from being sent: it is written as an
+// authoritative header with an empty value, which removes whatever a layer
+// below set (a default header, a passed through client header, the
+// operator's header or parameter override). For a header a signature
+// must not see, e.g. a session token the operator added on an account
+// whose signature has none. A later Header of the same name replaces it.
+func (u *Upstream) RemoveHeader(name string) *Upstream {
+	if u.request.Headers == nil {
+		u.request.Headers = map[string]string{}
+	}
+	u.request.Headers[strings.ToLower(name)] = ""
 	return u
 }
 
