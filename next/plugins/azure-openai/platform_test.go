@@ -17,9 +17,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/azure-openai/internal/azureopenai"
 )
 
-// azure_openai has no golden file: these tests are its acceptance
-// (sdk/pluginsdk/standard/goldentest/MANIFEST-ASSERTIONS.md, "azure_openai"),
-// run against the platform the plugin serves.
+// azure_openai has no golden file: these tests are its acceptance, run
+// against the platform the plugin serves.
 
 const (
 	typeV1         = azureopenai.TypeV1

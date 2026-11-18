@@ -8,91 +8,14 @@
 
 ## 接口
 
-```go
-package standard
+`Type`、`Auth`、`Route`、`Model`、`Header`、`Test`、`Request` 和预设（`sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的 `APIKey(id)`）的定义和说明在 Go 文档里（`go doc github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard`），这里只说怎么用：
 
-type Type struct {
-	ID              string            // 账号类型 ID；New 把它抄进 Spec.AccountType
-	Spec            apikey.Spec       // 密钥校验、默认/必填基础地址、去掉的后缀、错误文案
-	Auth            Auth              // Key 放在哪
-	Headers         []Header          // 每个请求都写的头，按顺序，先于路由的
-	Routes          map[string]Route  // 键是上游协议 ID
-	DefaultProtocol string            // 没有协议的请求走它；"" 表示拒绝
-	FilterFields    []string          // 每个请求体（含 WebSocket 一轮的消息）删掉的路径
-	Classify        classify.Policy   // 上游错误分类
-	Test            *Test             // 账号测试；nil 回 UNIMPLEMENTED
-	Models          *apikey.ModelList // 模型列表；nil 回 UNIMPLEMENTED
-}
-
-type Auth struct{ Header, Prefix string } // Key 放在哪个头，Prefix 在 Key 前（"Bearer "）；Header 空 = 不带凭证
-
-type Route struct {
-	Path      func(*Request) string                          // 接在基础地址后的路径（已转义）和可选的查询串
-	WebSocket bool                                           // GET 的 ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息；其余路由都是 POST
-	Model     Model                                          // 上游模型从哪来
-	Headers   []Header                                       // 写在类型的头之后
-	Edit      func(d *jsonedit.Doc, r *Request)              // 在删掉 FilterFields 之后、同一次 jsonedit 里改请求体；WebSocket 路由不能有
-}
-
-type Model struct {
-	FromMeta   bool   // 用 meta.model；否则请求体的 "model"（非空字符串），再否则 meta.model
-	TrimPrefix string // 去掉两侧空白和这个前缀（"models/"）
-	Required   bool   // 没有模型就拒绝
-	Missing    string // 拒绝时的消息，默认 "model is required"
-}
-
-type Header struct{ Name string; Mode Mode; Value Value }
-type Mode int                         // Replace | Keep | Append
-func Set(name string, v Value) Header      // 覆盖
-func Default(name string, v Value) Header  // 没有才写（客户端传了就用客户端的）
-func AppendTo(name string, v Value) Header // 逗号列表里追加；"key=version" 时任何版本的 key 都算已有
-type Value func(*Request) string      // 空串 = 不写这个头
-func Fixed(s string) Value
-func Field(name string) Value         // 账号字段，见 Request.Field
-func Path(p string) func(*Request) string
-
-type Test struct {
-	Protocol string                   // 用哪个路由（不能是 WebSocket）
-	Model    string                   // 控制台没给模型时测它
-	Body     func(model string) string
-}
-
-type Request struct {
-	Account         *pluginv1.Account
-	Meta            *pluginv1.RequestMeta // 账号测试、模型列表时为 nil
-	APIKey, BaseURL string                // 规范化之后的
-	Model           string                // 上游模型；模型列表时为 ""
-	Stream          bool                  // 回答是否流式（pluginsdk.RequestStream：meta.stream 或请求体 "stream" 为 true）；账号测试、模型列表时为 false
-	Client          map[string]string     // 核心交来的客户端请求头（核心已按清单的 passHeaders 过滤；小写名、去空白、丢掉空值）
-}
-func (r *Request) Field(name string) string // 先凭证后设置；字符串原样，数字和布尔取 JSON 文本，其余 ""
-
-func New(types ...Type) *Platform   // 配置不一致时 panic（Check 的结果）
-func Check(types ...Type) error     // 插件测试里也可以直接调
-
-// *Platform 实现 pluginsdk.Platform、pluginsdk.UpstreamBuilder、pluginsdk.ModelLister：
-func (p *Platform) Execute(ctx, *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) // = pluginsdk.ExecuteDefault
-func (p *Platform) BuildUpstream(ctx, *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error)
-func (p *Platform) ValidateCredentials(ctx, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error)
-func (p *Platform) ClassifyError(ctx, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error)
-func (p *Platform) ClassifyAt(now time.Time, in *pluginv1.ClassifyErrorRequest) *pluginv1.ClassifyErrorResponse
-func (p *Platform) BuildTestRequest(ctx, *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error)
-func (p *Platform) BuildModelsRequest(ctx, *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error)
-```
-
-预设（`sdk/pluginsdk/providers/*`）：
-
-```go
-func openai.APIKey(id string) standard.Type    // + 常量 ProtocolChat/Responses/ResponsesWS/Embeddings、ResponsesWebSocketBeta、函数 IncludeStreamUsage
-func anthropic.APIKey(id string) standard.Type // 协议常量 ProtocolMessages、ProtocolCountTokens 原有
-func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/StreamGenerate/CountTokens
-```
-
-每次调用返回新的值（新的 map 和切片），插件可以随意改。
+- 从预设出发得到一个 `standard.Type`（每次调用返回新的值，可以随意改），改 `ID`、`Spec`、`Routes`、`Headers` 等几处；
+- `standard.New(types...)` 得到 `*standard.Platform`：它实现 `pluginsdk.Platform`、`pluginsdk.UpstreamBuilder`、`pluginsdk.ModelLister`，SDK 用 `pluginsdk.ExecuteDefault` 跑它的 `Execute`；配置不一致时 `New` panic，插件测试里可以先调 `standard.Check(types...)`。
 
 ## 一次请求怎么构造
 
-`BuildUpstream`（`Execute` 经 `ExecuteDefault` 调它，然后不等待地中继、返回 `host_usage`）：
+`BuildUpstream`（SDK 的 `ExecuteDefault` 调它，然后不等待地中继、返回 `host_usage`）：
 
 1. 按 `account.type` 找类型。类型不符报 `unsupported account type "x"`；账号没有类型时，只有一个类型的平台用那个类型，多个类型的拒绝。
 2. `Spec.FromAccount`：取 Key 和基础地址（规范化、去后缀、必填、默认值），错误原样返回。
