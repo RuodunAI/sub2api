@@ -204,4 +204,3 @@ func TestEnsureBuiltinUnreadableInstallOnlyInstallsNothing(t *testing.T) {
 		t.Fatalf("installed %d, enabled %v with an unreadable list", n, e.rollout.enabled)
 	}
 }
-
