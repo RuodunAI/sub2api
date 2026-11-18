@@ -2367,7 +2367,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 - 初始快照必须是上游查询协议的完整 JSON 对象，例如 `{"id":"上游ID","status":"queued"}`，不能把未知字段的提交响应当成任意查询协议。
 - 免费任务无需 Reservation。按用量计费的任务仍可返回估计和 Reservation，`reserve.ref_id` 必须等于 `upstream_ref_id`，宿主持久化时换成自己的公开 ID。已有 `billing:free + usageSource:plugin` 禁止规则不变。
 - 观察使用 `Monitor(PollRequest)`，结果在 `MonitorResponse.result`（`ReconcileResult`，§112.9）。插件通过 `pluginsdk.Fetch(ctx, request)`（`HostService.ExecuteHTTP`）发起本次查询，再解析响应并返回结果；核心提供原账号代理、限额、超时和网络检查。`ReconcileEntry` 包含 `task_kind`、`model`、`protocol`；其 `ref_id` 始终是上游 ID。插件返回完整的 `task_snapshot_json`，宿主再替换公开 ID；暂未观测到结果时留空，不能抹掉旧快照。
-- `ExecutionHTTPResponse.truncated` 只在 `SendAccountRequest` 的回答超过 64 KiB 时置位；`ExecuteHTTP` 的回答整份交还，核心不再截断也不置它（转发 V2 收尾起，§112.16），读不完整是传输错误。截断或不完整的数据不能用于确认终态或结算。托管任务的终态必须带有效、ID 匹配的快照，否则重试。宿主还独立记录本次调用里的取回结果，插件忽略截断或传输错误也不能据此提交终态。
+- 核心不再置 `ExecutionHTTPResponse.truncated`：`ExecuteHTTP` 的回答整份交还（转发 V2 收尾起，§112.16），读不完整是传输错误；`SendAccountRequest` 的回答也不再截断（此前超过 64 KiB 截断并置位，§112.17）。截断或不完整的数据不能用于确认终态或结算。托管任务的终态必须带有效、ID 匹配的快照，否则重试。宿主还独立记录本次调用里的取回结果，插件忽略截断或传输错误也不能据此提交终态。
 
 ### 28.2 核心职责
 
@@ -2877,7 +2877,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 `PlatformService` 删除 `QuerySubscriptionLimits`（从未发布），新增两个可选 RPC，模式同 `BuildTestRequest`（插件描述请求、核心发送）：
 
 - `BuildQuotaRequest(BuildQuotaRequestRequest{account})` → `{method（默认 GET）, url, headers, body_json}`。账号带解密凭证（调用对象总是账号类型的声明插件）。
-- 核心经账号代理发送（直连时过 netguard，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开同网关），响应体上限 64 KiB，超出置 `truncated`。
+- 核心经账号代理发送（直连时过 netguard，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开同网关），响应体整份交给插件，不置 `truncated`（转发 V2 收尾起，§112.17；此前上限 64 KiB，超出置 `truncated`）。
 - `ParseQuotaResponse(ParseQuotaResponseRequest{account, status, headers（小写）, body, transport_error, truncated})` → `QuotaResult{windows[], error_type, error_message}`。`QuotaWindow{key, utilization（百分比）, resets_at_unix（0 = 未知）, status, used, limit}`；`utilization` 为 0 且 `limit > 0` 时核心按 `used / limit` 计算。`error_type`：`ERROR_TYPE_UNSPECIFIED`（成功）、`ERROR_TYPE_AUTH_REJECTED`（凭证被拒）、`ERROR_TYPE_TRANSIENT`（其他）。错误只记录到快照（截断 512 字节），**不**冷却、不禁用账号——那是网关分类（§42）的职责。
 - 只有声明了 `quota.query` 的类型才会被调用；插件回 `Unimplemented` 视为只支持被动（不记错误）。SDK：`pluginsdk.QuotaReader` 接口，未实现时自动回 `Unimplemented`。
 
@@ -3231,7 +3231,7 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
 ### 48.2 插件接口（`PlatformService`）
 
 - `BuildRefreshRequest(account)` → `{method（默认 POST）, url, headers, body_json}`。
-  - 核心经账号代理发送，受 netguard 限制（同 §43.4），响应体最多读 64 KiB。
+  - 核心经账号代理发送，受 netguard 限制（同 §43.4），响应体整份读（转发 V2 收尾起，§112.17；此前最多读 64 KiB）。
   - `body_json` 虽然叫这个名字，核心并不解析也不改写它，原样作为请求体发送（`account/quota.go` `sendPluginCall`，额度查询 §44 共用）：`headers` 里设置了 `Content-Type`（不区分大小写，如 OAuth 令牌端点要的 `application/x-www-form-urlencoded`，codex 插件即如此）时按插件给的发送；没有设置且 `body_json` 非空时核心补 `Content-Type: application/json`；`body_json` 为空时不发请求体，也不补 `Content-Type`。
   - 凭证根本无法续期（例如没有 refresh token）时返回 `FAILED_PRECONDITION`，核心按 `auth_rejected` 处理。
   - 返回 `UNIMPLEMENTED` 表示不支持，记为 `transient`。
@@ -6252,10 +6252,10 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 | 项 | 约定 |
 | --- | --- |
 | 授权 | 与 `GetAccountCredentials` 相同（§26.6）：`accounts.credentials`，scope 必须恰好是 `{"types":"own"}`，调用时用 PG 复核授权行（`requireOwnCredentials`）。这类请求带的就是插件用 `GetAccountCredentials` 读到的凭证，所以不另设授权。不满足 → `PERMISSION_DENIED` |
-| 参数 | `account_id > 0`；`url` 非空且不超过 8 KiB；`method` 不超过 16 字节（空 = `GET`，大小写不敏感）；`body` 不超过 64 KiB。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
-| 允许的主机 | scheme 必须是 `http` 或 `https`；主机名（去端口、不分大小写）必须等于 manifest `externalServices` 的某一项，或者是它的子域（以 `.` + 该项结尾）。项也去首尾空白、去端口后比较；端口不限制。否则 → `PERMISSION_DENIED`。`externalServices` 原来只用于展示，安装审阅时列给管理员看（`install/review.go` 的 `external_services`），现在它也是这条 RPC 的允许名单：没有声明 `externalServices` 的插件用不了这条 RPC |
+| 参数 | `account_id > 0`；`url` 非空；`method` 空 = `GET`，大小写不敏感；URL、方法、`body` 不限大小（转发 V2 收尾起，§112.17；此前 8 KiB、16 字节、64 KiB）。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
+| 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`manifest.UpstreamHostAllowed`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
 | 账号 | account 模块按 `id`、`plugin_key`、未删除查询（`SendPluginAccountRequest`，可选接口 `core.PluginAccountRequester`）。别的插件的账号和不存在的 id 一样回 `NOT_FOUND`，不泄露 id 是否存在。账号状态不限：停用、`auto_disabled` 的账号也能发（重置次数正是给被停用的账号用的） |
-| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；直连时经 netguard 拒绝私网地址（`AllowPrivateUpstream` 除外）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体最多 64 KiB，超出部分截掉并置 `truncated`；响应头名转小写，只取第一个值 |
+| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；直连时经 netguard 拒绝私网地址（`AllowPrivateUpstream` 除外）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还，不置 `truncated`（此前截到 64 KiB，§112.17）；响应头名转小写，只取第一个值 |
 | 上限 | 单次 30 s（`refreshTimeout`），调用方 ctx 取消时立即中止；不另设并发上限 |
 | 传输失败 | 不是 RPC 错误：返回 `status` 0 和 `transport_error`（DNS、连接、超时、代理不可用、netguard 拒绝），和 `sendPluginCall` 一致 |
 | 审计 | 通过账号校验、真正发出的每次请求写一条 `audit_logs`：action `plugin.account_request`，target `account` / `<id>`，`user_id` 为空（执行者是插件），detail 只有 `plugin_key`、`method`、`host`（含端口）、`path`、`status`、`via: "host.SendAccountRequest"`。**不记 query、请求头、请求体、响应头和响应体**，因为这些地方带着凭证。审计在请求之后写，这样才能记下状态码。写入失败只记 WARN 日志，调用照常返回。这里和凭证读取不同（凭证读取先写审计，写不进去就整个调用失败）：这条 RPC 不会交出插件手里还没有的秘密。被拒的调用（授权、参数、主机、`NOT_FOUND`）不写审计 |
@@ -8206,8 +8206,8 @@ message UpstreamRequest {
 
 ### 112.4 请求头
 
-- 两个 map 的键都小写；`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝；同名时权威头生效；名或值不合法拒绝。
-- 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
+- 两个 map 的键都小写；`host`、`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝（`Host` 永远是 URL 的主机，§112.17）；同名时权威头生效；名或值不合法拒绝。
+- 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉；值为空表示删掉同名的头、不发，§112.17）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
 - 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（claude_oauth、codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
 - 插件交回的权威头能盖掉运营方设置的同名头，这是代码插件一直以来的行为，签名需要它。
 
@@ -8218,7 +8218,7 @@ message UpstreamRequest {
 - 请求头的名和值能被传输层发送；方法合法。
 - `response_stream` 是核心认识的格式（现有 `aws-eventstream-chunk`，§109.2）；WebSocket 轮次上给了任何格式都拒绝。
 - 类型声明了模型可用性时，`upstream_model`（非空时）必须等于核心算的上游模型，不一致按模型可用性的失配处理。
-- URL 过 SSRF 规则（§43；直连检查解析出的地址，经代理检查名字，“允许私网”按账号所在范围）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
+- URL 的主机必须是清单 `externalServices` 之一（含子域）或账号自己的上游地址的主机（`manifest.UpstreamHostAllowed`，§112.17），之后过 SSRF 规则（§43；直连检查解析出的地址，经代理检查名字，“允许私网”按账号所在范围）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
 - **不检查请求体**：核心不再解析插件交回的字节，不比较模型引用、流式标志或可计量性。这些是插件的责任，由一致性套件第 3 条检查（模型引用与交入的一致、交入时流式为真交回仍为真、合法 JSON、没有重复键）。
 
 网关拒绝的请求在插件一侧是 `INVALID_ARGUMENT`，`Execute` 若随后失败，这次尝试按插件不可用换号，什么都没发出。
@@ -8228,7 +8228,7 @@ message UpstreamRequest {
 SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插件；在 `Execute`（辅助请求：换令牌、上传、预检）和 `Monitor`（任务查询）期间可用。
 
 - 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读；只比主机名，不比端口，不含子域）。其他主机 `PERMISSION_DENIED`。
-- 主机规则是 `manifest.Manifest.FetchHostAllowed`，核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
+- 主机规则是 `manifest.Manifest.UpstreamHostAllowed`（中继与 `SendAccountRequest` 用同一个，§112.17），核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
 - 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；`ExecutionHTTPRequest.options`（字段 6）只能收紧（SDK 的 `Fetch` 已不转发它，字段待从协议删除）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
 - 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误），核心不置 `truncated`；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
 - 签名：`sdk/reqsign.Sign` 对插件构造的 `*http.Request` 签名，`reqsign.SignedHeaders(req, scheme)` 给出签名写入或覆盖的头（`aws-sigv4`：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
@@ -8295,11 +8295,11 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 | 包 | 内容 |
 |---|---|
-| `sdk/pluginsdk` | `Platform`（`Execute` + `ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）；`UpstreamBuilder` + `ExecuteDefault`；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`ManifestOf`（取 `WithManifest` 给的清单原文）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`） |
+| `sdk/pluginsdk` | `Platform`（`Execute` + `ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）；`UpstreamBuilder` + `ExecuteDefault`；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`ManifestOf`（取 `WithManifest` 给的清单原文）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认、`RemoveHeader` 不发某个头，§112.17）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`） |
 | `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游 |
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
-| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（启动时取 `WithManifest`，按 `manifest.FetchHostAllowed` 决定取回能到的主机）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
+| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（启动时取 `WithManifest`，按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
 | `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，十个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
 | `sdk/pluginsdk/standard/goldentest` | 原声明式引擎的 1498 条录制样例，转换后冻结 |
 
@@ -8342,6 +8342,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 非流式 JSON 回答读用量的缓冲 32 MiB | 超过的部分读不到用量，**按 0 计费** | 按整个回答计费（钱算对了）；回答在读完用量之前整份留在内存里一次 |
 | 读用量插件看到的观察：默认 256 KiB、64 条事件、请求字段单值 4 KiB / 总量 32 KiB、`detail_json` 4 KiB | 不给、略去或存 `{"_truncated":true}` | 插件拿到整份回答、全部列出的事件和整个字段值，gRPC 消息和插件内存随之变大；清单自己写了 `usageMaxBytes` 的照旧（下限 1 KiB，不再有上限） |
 | 模型名长度（客户端 256 字节、使用记录 200、观察 256、价格模型 ID 和分组模型名单 200、模型引用 200、`PriceUsage` 等 256） | 400 或截断 | 超长的模型名整份进使用记录和日志；价格表上的唯一 btree 索引仍在，超过约 2.7 KB 的模型 ID 写价格时报错（不截断） |
+| `SendAccountRequest` 的请求体 64 KiB、URL 8 KiB、方法 16 字节，它与配额查询、凭证续期的回答截到 64 KiB（`truncated`） | `INVALID_ARGUMENT`；截断，素材列表一页就超过 | 回答整份进核心和插件的内存（§112.17） |
 | `core.RequestBodyLimit`、`grpcruntime.Options.RequestBodyLimit` 及其接线、`(*gateway.Gateway).MaxRequestBodyBytes(ctx)` | 核心与插件之间的若干检查读请求体上限 | 请求体上限只管网关读客户端请求的地方（§111.2） |
 
 迁移 `0108_model_name_text.sql` 把 `usage_logs.model` / `upstream_model`、`usage_hourly.model` / `upstream_model`、`price_rules.model`、`model_prices.model` 改成 `text`（二进制兼容，不重写表、不重建索引，每张表一次短暂的 ACCESS EXCLUSIVE 锁，`lock_timeout` 10 秒，拿不到锁迁移失败），重建挡住类型修改的触发器 `usage_hourly_mark_update`，`model_prices_model_id_chk` 只留字符集。
@@ -8357,12 +8358,43 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | `Monitor`：整个调用 30 秒（每条任务的处理预算）、每次取回 20 秒；后台结算的查询失败次数（`max_poll_failures`）和任务期限 | 后台工作的轮次要结束才能处理下一批；失败次数和期限决定退款 |
 | 事实的提交重试窗口 15 秒（`core.ExecutionFinishTimeout`） | 钱：窗口之后按未上报关闭，不让请求无限挂着 |
 | WebSocket 心跳 ping 30 秒间隔、30 秒应答，排空宽限 30 秒，后续轮次等账号 10 秒，重新鉴权 10 秒 | 发现死掉的对端；节点停机时有界地排空；调度而不是上限 |
-| SSRF 规则、取回的主机规则（`manifest.FetchHostAllowed`）、拒绝 `Host` 和 hop-by-hop 头、不跟随重定向、执行令牌的范围 | 安全 |
-| 任务快照 256 KiB（`protocol.MaxTaskSnapshotBytes`）、`SendAccountRequest` 64 KiB、清单的计数（`usageStreamEvents` 8 个、`usageRequestFields` 16 条）、KV 自己的规则（单值 64 KiB、一次批量 3 MiB） | 存储格式和清单的规则，不是请求路径的上限 |
+| SSRF 规则、中继 / 取回 / `SendAccountRequest` 的主机规则（`manifest.UpstreamHostAllowed`，§112.17）、拒绝 `Host` 和 hop-by-hop 头、不跟随重定向、执行令牌的范围 | 安全 |
+| 任务快照 256 KiB（`protocol.MaxTaskSnapshotBytes`）、清单的计数（`usageStreamEvents` 8 个、`usageRequestFields` 16 条）、KV 自己的规则（单值 64 KiB、一次批量 3 MiB） | 存储格式和清单的规则，不是请求路径的上限 |
 
 代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、交给 `ClassifyError` 的错误体前 64 KiB。另有一处会切断上游流的：`sdk/awseventstream` 的单条消息上限 4 MiB（`MaxChunkMessageSize`，Bedrock 的响应流格式），这次没有改。
 
 **同批的修正**（钱与正确性，各节已写）：等待形式的发布只看转发本身是否完成（§112.7）；观察没能落库时写零费用记录并立即释放预扣，`CloseExecutionUnreported` 对已有记录的请求幂等（§112.7）；任务提交报失败之前先确认提交是否已落库（§112.7）；原账号永远问不了的任务消耗失败次数而不是延后到期限（§112.9）；`usage.source: plugin` 的端点上插件选了核心读数而读数完全为空时按未上报处理（§112.2、§112.7）；WebSocket 第一轮可重试的 `return_error` 和 HTTP 一样转给客户端（此前变成 503 `no_available_account`）；网关和用量的取回是同一份实现（§112.6）；执行按存活恢复（§112.7）。
+
+### 112.17 核心代发请求的目标主机与 `Host`；空值的权威头表示删除（转发 V2 收尾，所有者决定“修”）
+
+转发 V2 之后，平台插件决定请求发往哪个地址、带哪些头，核心用账号的凭证和代理把它发出。审查发现两个安全问题：插件能用 `Host` 头把请求指向 URL 之外的虚拟主机（SSRF 检查、代理选择只看 URL）；主请求的目标主机除 SSRF 外没有任何约束，插件能把带着账号凭证的请求发到任意公网主机。所有者决定修（设计 D35、D36）。同批放开了 `SendAccountRequest` 的主机与大小（D37），并让空值的权威头表示删除（D38）。
+
+**1. `Host` 只来自 URL。** 插件交回的请求不能设 `Host`：中继（`UpstreamRequest` 的 `headers` 与 `default_headers`，HTTP 与 WebSocket 握手、等待与不等待都一样）里出现 `host` 与 `content-length` 一样按传输层的头拒绝（运行时 `INVALID_ARGUMENT`，`execfetch.RelayTransportHeaders`；SDK 的 `Build` 同样报错）；取回一直拒绝 `Host`（§112.6）。请求发往、并以之为 `Host` 的永远是检查过的 URL 的主机（网关 `layerHeaders` 不再处理 `host`，WebSocket 握手同样）。运营方也设不了 `Host`：账号的请求头透传、请求头覆盖（§108）、参数覆盖的请求头操作（§84）共用的阻止列表（`paramoverride.HeaderBlocked`）本来就有 `host`，所以没有任何设置能改 `Host`。查证：十个平台插件、`sdk/pluginsdk/standard`、`sdk/reqsign` 都没有设 `Host`；SigV4 签的 `host` 就是 URL 的主机（插件按 URL 建 `http.Request`，`reqsign` 签 `req.Host`），bedrock 的签名往返测试照常通过。
+
+**2. 目标主机必须是声明过的或账号配置的。** 规则只有一处：`manifest.Manifest.UpstreamHostAllowed(host, accountType, settingsJSON, credentialsJSON)`（原名 `FetchHostAllowed`），主机（不分大小写、不含端口）满足其一即可：
+
+- 清单的 `externalServices` 之一或其子域（`manifest.ExternalServiceHost`）：安装、升级时管理员审查过；
+- 这个账号自己的上游地址的主机：账号类型在清单 `upstreamFields` 里声明的字段，从账号的设置和凭证里取字符串值（URL 或 `host[:port]`），只比主机名、不含子域（`AccountType.AddressHosts`）：运营方填的。
+
+清单没有“默认上游地址”字段：插件代码里写死的默认地址（如 `api.openai.com`）要写进 `externalServices`，十个官方插件里 openai、anthropic、gemini、codex、volcengine 本来就写了；bedrock 加了 `amazonaws.com`（各区域的 `bedrock-runtime.<region>.amazonaws.com`），vertex 加了 `googleapis.com`（全局与各区域的 `<region>-aiplatform.googleapis.com` 不是同一个域的子域，只能写到公共的上一级）；relay、azure_openai 的地址都来自账号的 `base_url`（`upstreamFields`）。claude_oauth 没有声明，按这条规则它的请求会被拒，它正在被删除，没有改。
+
+为什么用 `upstreamFields` 识别“运营方填的上游地址”：它已经存在、按账号类型声明，账号的自定义上游判断（§21）和取回（§112.6）早就用它，不加新的清单字段；第三方插件作者只需要把写死的主机写进 `externalServices`、把让运营方填地址的字段写进 `upstreamFields`。没有采用“账号配置里所有形如 http(s) URL 的值”：设置和凭证里常有不是上游的 URL（vertex 的服务账号密钥文件里有 `auth_uri`、`token_uri`、`client_x509_cert_url` 等），它们是上传的内容而不是运营方填的地址，会放开没人审查过的主机。
+
+用在三处，都是核心用账号凭证代发的请求：
+
+| 请求 | 判断的地方 | 被拒时 |
+|---|---|---|
+| 中继：HTTP（不等待、等待）与 WebSocket 握手（`ws(s)` 按同名主机判断） | 网关 `relay_check.go` 的 `allowHost`，在 SSRF 检查之前 | 与网关拒绝的其他中继一样（§112.5）：插件一侧 `INVALID_ARGUMENT`，什么都没发出；这次尝试按插件不可用换号（记录类型 `plugin_unavailable`，`NeutralReason` 为 `upstream_host_not_allowed`），账号不冷却、不禁用；信息写明主机与插件；WARN 日志 `gateway: upstream host not allowed` 带请求 ID、插件 key、账号、主机 |
+| 取回（`ExecuteHTTP`，`Execute` 与 `Monitor` 里） | 运行时 `requireFetchHost`（§112.6） | `PERMISSION_DENIED` |
+| `SendAccountRequest`（§91） | 账号模块读出账号（类型、设置、解密的凭证）后判断 | `PERMISSION_DENIED`，什么都没发、不写审计 |
+
+假宿主（`pluginsdktest.FakeHost`）对中继和取回执行同一条规则（中继 `INVALID_ARGUMENT`，取回 `PERMISSION_DENIED`）；它不知道清单时什么主机都不放行（`FakeHost.ExternalServices` 可以替换清单的）。`standardtest.Run` 回放黄金样例时同样检查每个请求的主机。十个平台插件的测试、一致性套件和 1498 条黄金样例都在这条规则下通过（claude_oauth 除外，见上）。
+
+不在这条规则里的核心代发请求：配额查询（§44）、凭证续期（§48）、账号测试与模型列表（§19）由插件描述、核心发送，仍只受 SSRF 约束。
+
+**3. `SendAccountRequest` 的主机与大小。** 主机按上面的规则（此前只认 `externalServices`，账号自己的上游地址被拒，例如中转账号按自己的 `base_url` 解析的素材接口、正式账号的 `asset_base_url`）。请求体、URL、方法不限大小（此前 64 KiB、8 KiB、16 字节，超出 `INVALID_ARGUMENT`）；回答整份交还（此前截到 64 KiB 并置 `truncated`，素材列表一页就会超过，解析失败）。配额查询、凭证续期与它共用发送路径（`sendPluginCall`），回答同样不再截断：`ExecutionHTTPResponse.truncated`、`ParseQuotaResponseRequest.truncated`、`ParseRefreshResponseRequest.truncated` 核心都不再设置（proto 字段待删除），codex、vertex 对它的处理已删除。单次 30 秒（`refreshTimeout`）不变。
+
+**4. 空值的权威头表示删除。** 请求头分层（§112.4）里插件的权威头是最后一层；权威头的值为空表示“这个头不发”：核心删掉前面各层（插件的默认头、透传的客户端头、运营方的请求头覆盖和参数覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（网关 `layerHeaders`）。默认头的空值照旧写成空值的头。proto 不变（`map<string,string>` 本来就能表达空串）。SDK：`Upstream.RemoveHeader(name)` 写入空值的权威头（`Header(name, "")` 仍然什么都不写）；名字要在一致性第 4 条声明的集合里。bedrock 用它：签名里没有会话令牌（Access Key、API Key 账号）时删除 `x-amz-security-token`，运营方经请求头覆盖加的会话令牌不会到达 AWS 让签名校验失败；账号测试请求没有运营方的层，空值的头直接不发。
 
 ## 113. 插件联网：管理员指定插件可访问、不可访问的域名（2026-11-18，所有者决定“默认放行，可以指定域名就行了”；无迁移；设计见 [DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md](DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md)）
 
