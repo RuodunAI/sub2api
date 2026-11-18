@@ -12,7 +12,10 @@ configuring nodes: [gateway/README.md](gateway/README.md);
 each environment's deployment record: `gateway/<environment>/README.md`.
 One-way releases (migrations that cannot be undone) keep their upgrade and
 rollback runbooks in `rollback/` until the release is live everywhere and
-rollback is no longer possible; then they are deleted (none is open now).
+rollback is no longer possible; then they are deleted. Open now:
+[rollback/protocol-binding-release.md](rollback/protocol-binding-release.md)
+(migration 0106: cross-platform conversion is off until enabled per model on
+an account; export the conversions in use before upgrading).
 
 `single/` runs the core directly, without the gateway (services `app` and
 `app-2` sharing their own PostgreSQL and Valkey). It is no longer the long-running deployment (see the
