@@ -124,7 +124,7 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 	res := c.send(ctx, x, req)
 	if c.usage != nil {
 		c.usage = nil
-		c.usageFallback(ctx, x.rt, "the plugin relayed without waiting for the answer", nil)
+		c.hostUsageChosen(ctx, x.rt, "relayed without waiting")
 	}
 	return res
 }

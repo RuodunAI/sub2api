@@ -300,7 +300,7 @@ func (w *waitedRelay) facts(ctx context.Context, out *pluginv1.ExecuteResponse) 
 			return commit, nil, errors.New("host_usage reported for a task submission")
 		}
 		if rt.pluginUsage {
-			c.usageFallback(ctx, rt, "the plugin took the host's reading", nil)
+			c.hostUsageChosen(ctx, rt, "host_usage")
 		}
 		commit.Digest = core.FactDigest(nil)
 	case *pluginv1.ExecuteResponse_Task:

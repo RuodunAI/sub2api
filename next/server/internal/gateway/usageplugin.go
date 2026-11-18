@@ -198,6 +198,22 @@ func usageRequestFields(paths []string, body []byte) (fields map[string]string, 
 	return fields, omitted
 }
 
+// hostUsageChosen marks the record of an endpoint whose usage the plugin
+// reads when the plugin chose the host's reading instead (host_usage, or a
+// relay that did not wait): the marker stays for the usage report
+// (usage_logs.anomalies), but a deliberate choice is no failure and is not
+// warned about - unless the declarative rules found nothing, which bills
+// the request as nothing and must not be silent.
+func (c *call) hostUsageChosen(ctx context.Context, rt *typeRoute, how string) {
+	c.rec.UsageExtract = core.UsageExtractFallback
+	if c.rec.Tokens != (core.UsageTokens{}) || len(c.rec.Metrics) > 0 || len(c.rec.Additional) > 0 {
+		return
+	}
+	slog.WarnContext(ctx, "gateway: the plugin took the host's reading, which holds no usage",
+		"request_id", c.rid, "plugin", rt.binding.Plugin.Key, "platform", rt.platform,
+		"protocol", rt.upstream, "endpoint", c.ep.Path, "how", how)
+}
+
 func (c *call) usageFallback(ctx context.Context, rt *typeRoute, why string, err error) {
 	c.rec.UsageExtract = core.UsageExtractFallback
 	slog.WarnContext(ctx, "gateway: plugin usage extraction failed, billing from the declarative rules",
