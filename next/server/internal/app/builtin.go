@@ -25,6 +25,7 @@ func startBuiltinBootstrap(ctx context.Context, s *install.Service, locker core.
 type builtinInstaller interface {
 	BuiltinRequirements(dir string) (map[string]install.BuiltinRequirement, error)
 	BuiltinsReady(ctx context.Context, want map[string]install.BuiltinRequirement, gen core.Generation) (bool, error)
+	BuiltinsInstalled(ctx context.Context, want map[string]install.BuiltinRequirement) (bool, error)
 	EnsureBuiltin(ctx context.Context, dir string, log *slog.Logger) error
 }
 
@@ -35,6 +36,10 @@ type builtinInstaller interface {
 // enabled, a version switch, a disable) changes plugin rows every node reads
 // alike, so dropping readiness then would take every node out of the load
 // balancer at the same moment, while each still serves everything else.
+// EnsureBuiltin runs only while the bundle is not installed
+// (BuiltinsInstalled): a plugin whose rollout is merely in progress is left
+// to the rollout, so its rollout does not start a round of uploads, each
+// taking the cluster change lock an operator's plugin change needs.
 func builtinConvergence(ctx context.Context, s builtinInstaller, locker core.Locker, reg core.PluginRegistry, dir string, log *slog.Logger, once bool) (*atomic.Bool, func(context.Context)) {
 	ready := &atomic.Bool{}
 	stop := runBuiltinLoop(ctx, func(ctx context.Context) {
@@ -49,14 +54,17 @@ func builtinConvergence(ctx context.Context, s builtinInstaller, locker core.Loc
 			}
 			if requirements != nil {
 				rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
-				ok, err := s.BuiltinsReady(rctx, requirements, reg.Current())
-				rcancel()
-				if err == nil && ok {
-					ready.Store(true)
-					if once {
-						return
+				if !ready.Load() {
+					if ok, err := s.BuiltinsReady(rctx, requirements, reg.Current()); err == nil && ok {
+						ready.Store(true)
 					}
-				} else {
+				}
+				installed, err := s.BuiltinsInstalled(rctx, requirements)
+				rcancel()
+				if ready.Load() && once {
+					return
+				}
+				if err != nil || !installed {
 					ensureBuiltinOnce(ctx, s, locker, dir, log, "builtin install lock failed",
 						func(err error) { log.Warn("builtin install incomplete; will retry", "err", err) })
 				}

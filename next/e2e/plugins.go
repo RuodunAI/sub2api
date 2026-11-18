@@ -83,33 +83,17 @@ func (e *Env) InstallFromMarket(admin *Session, key, version string) gjson.Resul
 	return reviewOf(e, d)
 }
 
-// UploadPlugin uploads a package and returns the raw response, retrying a
-// 409 that asks to (pluginChange).
+// UploadPlugin uploads a package and returns the raw response. A 409 asking
+// to retry (another cluster change, such as the previous test's uninstall,
+// is being submitted) is retried for a while.
 func (e *Env) UploadPlugin(admin *Session, filename string, data []byte) *Resp {
 	e.T.Helper()
-	return pluginChange(func() *Resp { return admin.Upload(e.T, "/plugins/upload", "file", filename, data) })
-}
-
-// pluginChange submits a plugin change (upload, enable, disable, upgrade,
-// uninstall) and returns the raw response. A 409
-// asking to retry is retried for a while: another cluster change holds the
-// cluster change lock, such as the previous test's uninstall or the pass
-// over the bundled plugins a node runs while one of them is being rolled out.
-func pluginChange(submit func() *Resp) *Resp {
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(time.Second) {
-		r := submit()
+	var r *Resp
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(time.Second) {
+		r = admin.Upload(e.T, "/plugins/upload", "file", filename, data)
 		if r.Status != http.StatusConflict || !strings.Contains(r.JSON().Get("error.message").String(), "retry") || time.Now().After(deadline) {
 			return r
 		}
-	}
-}
-
-// changePlugin submits POST /plugins/:key/<action> (pluginChange) and
-// requires a 2xx answer.
-func (e *Env) changePlugin(admin *Session, key, action string, body any) {
-	e.T.Helper()
-	if r := pluginChange(func() *Resp { return admin.API(e.T, http.MethodPost, "/plugins/"+key+"/"+action, body) }); r.Status/100 != 2 {
-		e.T.Fatalf("expected 2xx: %s", r)
 	}
 }
 
@@ -214,30 +198,28 @@ func PluginNodeStates(d gjson.Result) map[string]string {
 // every live node.
 func (e *Env) Enable(admin *Session, key string) {
 	e.T.Helper()
-	e.changePlugin(admin, key, "enable", nil)
+	admin.OK(e.T, http.MethodPost, "/plugins/"+key+"/enable", nil)
 	e.WaitPlugin(admin, key, "enabled", "")
 }
 
 // Disable disables a plugin and waits for the disable rollout to finish.
 func (e *Env) Disable(admin *Session, key string) {
 	e.T.Helper()
-	e.changePlugin(admin, key, "disable", nil)
+	admin.OK(e.T, http.MethodPost, "/plugins/"+key+"/disable", nil)
 	e.WaitPlugin(admin, key, "disabled", "")
 }
 
 // Upgrade starts an upgrade rollout to version and waits for it.
 func (e *Env) Upgrade(admin *Session, key, version string) {
 	e.T.Helper()
-	e.changePlugin(admin, key, "upgrade", map[string]any{"version": version})
+	admin.OK(e.T, http.MethodPost, "/plugins/"+key+"/upgrade", map[string]any{"version": version})
 	e.WaitPlugin(admin, key, "enabled", version)
 }
 
 // Uninstall removes a plugin (DELETE /plugins/:key?purge=).
 func (e *Env) Uninstall(admin *Session, key string, purge bool) {
 	e.T.Helper()
-	r := pluginChange(func() *Resp {
-		return admin.API(e.T, http.MethodDelete, "/plugins/"+key, nil, Query("purge", fmt.Sprint(purge)))
-	})
+	r := admin.API(e.T, http.MethodDelete, "/plugins/"+key, nil, Query("purge", fmt.Sprint(purge)))
 	if r.Status != 200 && r.Status != 204 {
 		e.T.Fatalf("uninstall: %s", r)
 	}

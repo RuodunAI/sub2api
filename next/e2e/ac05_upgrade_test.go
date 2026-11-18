@@ -117,7 +117,8 @@ func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
 }
 
 // AC 5 (enable): enabling an install-only bundled plugin keeps every node
-// ready and the load balancer serving. The bundled plugins gate a node's
+// ready and the load balancer serving, and the plugin can be disabled again
+// at once. The bundled plugins gate a node's
 // readiness at start only; before, the plugin's "enabling" row made /healthz
 // answer 503 on both nodes at once (each node re-checks every 5 s) and the
 // load balancer answered every request with an empty 503.
@@ -169,14 +170,17 @@ func TestAC05_EnableBuiltinKeepsNodesServing(t *testing.T) {
 
 	time.Sleep(time.Second)
 	e.Enable(admin, key)
+	// An operator's next plugin change is accepted at once: the rollout
+	// starts no round over the bundled plugins holding the cluster change
+	// lock (it answered 409 "another cluster change is being submitted").
+	e.Disable(admin, key)
 	// Past the next readiness check of both nodes and the balancer's health check.
 	time.Sleep(7 * time.Second)
 	close(stop)
 	wg.Wait()
-	e.Disable(admin, key)
 
 	if len(failures) > 0 {
-		t.Fatalf("%d of %d probes failed while %s was enabled: %v", len(failures), probes.Load(), key, failures)
+		t.Fatalf("%d of %d probes failed while %s was enabled and disabled: %v", len(failures), probes.Load(), key, failures)
 	}
 	if probes.Load() < 20 {
 		t.Fatalf("too few probes: %d", probes.Load())
