@@ -13,7 +13,8 @@
 // Capability interfaces mirror the generated pluginv1.XxxServiceServer
 // interfaces (without the mustEmbed method):
 //
-//	Platform   -> PlatformService   ("platform.adapter.v1", Execute included)
+//	Platform   -> PlatformService   ("platform.adapter.v1"; Execute from
+//	              its UpstreamBuilder via ExecuteDefault, or its own Executor)
 //	TaskMonitor -> PlatformService.Monitor ("platform.monitor.v1")
 //	Hook       -> HookService       ("gateway.hook.v1")
 //	JobRunner  -> AppService.RunJob ("app.jobs.v1", see JobMux)
@@ -63,7 +64,9 @@
 // value Execute returns; there is no reporting callback and the host does
 // not make up for a response that states nothing. ExecuteDefault does all of
 // this for a platform that implements UpstreamBuilder: it picks the form
-// from the two flags and cannot forget the report.
+// from the two flags and cannot forget the report. The SDK runs it for a
+// Platform that implements UpstreamBuilder and no Executor; Serve refuses a
+// Platform with neither.
 //
 // A plugin sets no size limit: its gRPC server accepts messages up to gRPC's
 // maximum, and the gateway's request body limit is a system setting the

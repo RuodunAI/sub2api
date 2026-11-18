@@ -235,15 +235,16 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 
 ### 5.4 行为与限制
 
-- **Claude Code 的请求体会被清洗**：插件拿到完整请求体，删掉 Bedrock 不接受、Claude Code 写在深处的内容：工具定义里的 `custom`，`cache_control` 里的 `scope` 和模型不接受的 `ttl`（只有支持缓存 TTL 的模型保留 `5m`、`1h`），工具调用 ID 里 `[a-zA-Z0-9_-]` 以外的字符（换成 `_`），模型不接受的 thinking 设置。这套清洗只对照过旧版的规则和 AWS 文档，**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
+- **Claude Code 的请求体会被清洗**：插件拿到完整请求体，删掉 Bedrock 不接受、Claude Code 写在深处的内容：工具定义里的 `custom`，`cache_control` 里的 `scope`（总是删）和模型不接受的 `ttl`（认出模型版本时，只有支持缓存 TTL 的模型保留 `5m`、`1h`；模型 ID 认不出版本时原样保留，以免把一小时的缓存悄悄变成五分钟），工具调用 ID 里 `[a-zA-Z0-9_-]` 以外的字符（换成 `_`），模型不接受的 thinking 设置。这套清洗只对照过旧版的规则和 AWS 文档，**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
 - 除上一条的清洗外，请求体按客户端原样转发，顶层只处理这些字段：
-  - 删除 `model`、`stream`（都移到地址里），写入 `anthropic_version: bedrock-2023-05-31`。
+  - 删除 `model`、`stream`（都移到地址里），写入 `anthropic_version: bedrock-2023-05-31`。走不走流式接口只看客户端请求本身是否流式（`meta.stream`），不看请求体里的 `stream`：运营方在参数覆盖里给非流式请求加 `stream: true` 不会把它变成流式。
   - 删除 `metadata`、`provider`、`service_tier`、`inference_geo`、`speed`：InvokeModel 的请求体没有这些字段；Bedrock 上的数据驻留由推理配置的前缀决定，fast mode 不可用。（此前删的是拼错的 `interface_geo`，真正的 `inference_geo` 会作为未知字段发给 Bedrock。）会悄悄改变回答的字段（`mcp_servers`、`container`、`fallbacks`）不删，交给 Bedrock 拒绝。
   - `anthropic_beta`：见下一条。
   - `context_management`：请求没有带 `context-management-2025-06-27` 这个 beta 时删除。
   - `output_config`、`output_format` **保留**（旧版会删除）：按 AWS 文档，InvokeModel 读 `output_config.format`（结构化输出）和 `output_config.effort`；`output_format` 是已废弃的写法，插件不替客户端转换。
 - `anthropic-beta`：Bedrock 不认这个请求头，beta 要写在请求体的 `anthropic_beta` 里。插件把客户端请求头里的和请求体自带的 `anthropic_beta` 里的合在一起，Bedrock 支持的写进请求体的 `anthropic_beta`，不支持的丢弃、重复的只留一个，请求头本身不发给上游；一个都不剩时请求体里的 `anthropic_beta` 也删掉。支持的名单（15 项，不分模型，某个模型没有的特性由上游拒绝）：`computer-use-2025-01-24`、`computer-use-2025-11-24`、`context-1m-2025-08-07`、`context-management-2025-06-27`、`compact-2026-01-12`、`compact-2026-09-04`、`fallback-credit-2026-07-01`、`thinking-display-updates-2026-08-18`、`mid-conversation-output-config-2026-07-01`、`mid-conversation-effort-2026-08-01`、`per-turn-control-2026-07-01`、`per-message-effort-2026-07-01`、`fine-grained-tool-streaming-2025-05-14`、`tool-search-tool-2025-10-19`、`tool-examples-2025-10-29`（`advanced-tool-use-2025-11-20` 会换成 tool search，并自动带上 tool examples）。前 5 项和最后 3 项抄自旧版，其余 7 项取自 AWS 用户指南（模型卡片和 adaptive thinking 一页）；都没有用真实账号试过。
-- 插件不会根据请求体的内容补 beta（computer use、tool search 等）：请求体用到的特性要客户端自己在 `anthropic-beta` 头或 `anthropic_beta` 里点名。
+- 插件会按请求体里的工具自动补 beta（客户端没点名也补，做法同旧版）：`computer_20250124` 类型的工具补 `computer-use-2025-01-24`，其余 `computer_20…` 补 `computer-use-2025-11-24`；tool search 工具（`tool_search_tool_regex_20251119`、`tool_search_tool_bm25_20251119`，只在认出支持它的模型上）、允许代码执行调用的工具（`allowed_callers` 含 `code_execution_20250825`）和带 `input_examples` 的工具补 `tool-search-tool-2025-10-19`，有它就一并带上 `tool-examples-2025-10-29`（`beta.go` `toolBetas`）。其他特性仍要客户端自己在 `anthropic-beta` 头或 `anthropic_beta` 里点名。
+- 请求头：`Content-Type`、`Accept` 是默认头，运营方的请求头覆盖可以改；鉴权头（API Key 的 `Authorization`，签名类型的签名头）是权威头，运营方改不了。API Key 与 Access Key 类型不带会话令牌，插件把 `X-Amz-Security-Token` 标成“不发”，运营方的请求头设置加的会话令牌不会发到 AWS。
 - `count_tokens` 不发给 Bedrock，由核心本地估算。
 - 错误处理：
 

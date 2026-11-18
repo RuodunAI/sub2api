@@ -25,17 +25,21 @@
 6. 请求头：
    - **默认头**（运营方的透传、覆盖能改）：核心交来的全部客户端请求头（核心已按清单的 `passHeaders` 过滤，库不再筛），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
-7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss。
+7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss（`pluginsdk.WebSocketURL`，codex 用同一个函数）。
 
 账号测试走 `Test.Protocol` 的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表只带类型的头和鉴权，不带 `content-type`。
 
 ## 请求体
 
-- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`：
+- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`（改写本身是 `openai.StreamUsage`，自己改请求体的插件如 volcengine 直接调它，流式按 `pluginsdk.RequestStream` 判断）：
 
   ```go
   func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {
-  	if r.Stream {
+  	StreamUsage(d, r.Stream)
+  }
+
+  func StreamUsage(d *jsonedit.Doc, stream bool) {
+  	if stream {
   		d.Set("stream_options.include_usage", []byte("true"))
   	}
   }
@@ -44,7 +48,7 @@
   `Set` 原地替换已有的值，没有就加在所在对象的末尾（连同缺的上层对象）；`Delete` 连同一个分隔逗号删掉成员。
 - **非法 JSON、重复键**：核心在调插件之前已经把这两种请求体以 400 拒绝（设计稿 8.1 的结构检查）。库在改写前仍然检查一遍（`jsonedit` 的规则）：要改写的请求体不是合法 JSON，或者 `Set` 路径上的某个键在它所在的对象里出现两次，就返回 `INVALID_ARGUMENT`，什么都不中继（核心按插件不可用换号），而不是发出一个改了一半的请求。路径之外的重复键不归改写管，原样保留；`Delete` 删掉一个路径的每一次出现。路由没有任何改写时，库根本不读请求体。
 - **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。预设都不带过滤字段；目前只有 azure_openai 的两个类型自己写了 `service_tier`、`safety_identifier`。
-- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`。`Request.Stream` 是 `meta.stream` 或请求体的 `"stream"` 为 true：只流式的账号类型由核心把 `stream: true` 写进请求体，`meta.stream` 却保留客户端的值，openai 的 `IncludeStreamUsage` 看 `Request.Stream`，否则这种请求拿不到用量。
+- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`。`Request.Stream` 是 `meta.stream` 或请求体的 `"stream"` 为 true（`pluginsdk.RequestStream`）：只流式的账号类型由核心把 `stream: true` 写进请求体，`meta.stream` 却保留客户端的值，openai 的 `IncludeStreamUsage` 看 `Request.Stream`，否则这种请求拿不到用量。
 
 ## 例子一：OpenAI 风格（openai 插件）
 
@@ -236,6 +240,6 @@ azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填�
 
 - `standardtest.Run(t, plugin, manifestPath, p)` 先核对插件清单（`manifestPath`）交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致（清单改了而样例没跟上就在这里失败），再用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
-- `standard.Check(t)`：类型配置能通过检查。
+- `standard.Check(types...)`：类型配置能通过检查（返回 error；`New` 遇到同样的问题会 panic）。
 
 本包自己的验收只测库和预设本身：`platform_test.go`、`body_test.go`（请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键），`providers/gemini/golden_test.go` 用原样的 gemini 预设回放 gemini 的样例。插件的类型配置不在 SDK 里复制：1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）由各插件用自己的构造函数回放，azure_openai 的断言在它自己的 `platform_test.go`，CI 测试每个 `plugins/*` 模块。

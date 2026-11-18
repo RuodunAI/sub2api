@@ -817,7 +817,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
 - 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
 - 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错时返回错误状态。
-- 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理且本地无法解析的域名交给代理。
+- 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理时域名交给代理解析，本机不解析，只拒绝字面的私网地址和 `localhost`（与网关同一条规则 `netguard.CheckHostVia`，§43.4）。
 - 2026-10-05 起：响应另含 `model`（实际请求的模型：插件报告的，否则为映射后的模型）、`requested_model`（调用方选的模型、映射前；未给时为空串，字段总在）、`upstream`、`body`、`usage`、`reason`、`effect`；每次测试结束写入账号的 `last_test`（§50）。测试仍**不改变账号状态**（不冷却、不禁用、不改 `updated_at`）。
 
 ### 15.10 与前文不一致的裁定（2026-09-25）
@@ -2484,7 +2484,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 - `POLL_FAILED`：本次查询失败（网络、鉴权、限流、服务端错误、无法解析等），`reason` 说明原因；保持旧快照，增加连续失败计数，核心按退避继续查询。
 - `SETTLED`、`SETTLED_ESTIMATE`、`FAILED` 的现有成功/估算/上游失败结算语义不变。
 
-SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` 以及可选的 `ClassifyPollResponse(status, transportError, truncated)`。默认分类把完整 404/410 视作 NOT_FOUND，其他非 2xx 以及不完整响应视作 POLL_FAILED；HTTP 200 返回业务错误的服务由插件根据供应商契约解释。任务不存在是领域结果，不使用 gRPC NotFound 代替。网络不完整时宿主允许报告 POLL_FAILED，但仍禁止据此报告成功或 NOT_FOUND。
+SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` 以及可选的 `ClassifyPollResponse(status, transportError)`（转发 V2 收尾起两个参数：取回的回答不再截断，`truncated` 参数随之删除；读不完整是传输错误）。默认分类把 404/410 视作 NOT_FOUND，其他非 2xx 以及传输错误视作 POLL_FAILED；HTTP 200 返回业务错误的服务由插件根据供应商契约解释。任务不存在是领域结果，不使用 gRPC NotFound 代替。网络不完整时宿主允许报告 POLL_FAILED，但仍禁止据此报告成功或 NOT_FOUND。
 
 `settings.reconcile.max_poll_failures` 默认 20，允许 0–1000，0 关闭连续失败次数限制。第 20 次失败与停止任务、退款在原有账务事务中一同提交；配置为其他正数时按配置执行。`poll_failures` 存于 PG，换节点与重启不会清零；旧记录导入托管任务时继承计数。账号忙、冷却、限额暂缓及核心调用取消不计失败。Monitor 结果的提交带这次观察的标识和结果摘要（`core.FactDigest`），不能重复累计或退款。
 
@@ -2540,7 +2540,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 **清单。** `Endpoint.Kind` 新增 `websocket`：必须 `GET`、`response.stream` 为 `websocket`、无 `response.nonStream`/`request.stream`/`request.streamPath`/`modelParam`/`modelSource`/`usageSource: plugin`/`task`，模型只从每条消息的 `request.modelPath` 读；`billing: usage` 时需要非空 `usage.sse`，规则按消息 `type` 匹配。新能力 `platform.websocket.v1`（需 `platform.adapter.v1`）表示插件的 `Execute` 能为本平台 WebSocket 协议的每一轮给出 `GET ws(s)://…` 握手和这一轮的消息（§83.6、§112.2）；SDK 在清单声明它时上报该能力。内置 openai 平台新增端点 `GET /v1/responses`，协议 `openai.responses_ws`，用量规则读取 `response.completed`/`response.incomplete`/`response.failed`，粘性规则 `openai-prompt-cache-key` 也匹配该协议。openai 插件 0.3.0 声明该能力，握手带 `OpenAI-Beta: responses_websockets=2026-02-06`（客户端自带版本时保留）。
 
-**会话。** 升级前完成鉴权与连接数限制（每个 API Key 集群范围 64 条，Redis 并发位 `ws:<key id>`）；排空中的节点不接受新会话。每条能开始一轮的客户端消息（格式检查通过的 `response.create`）在开始之前用握手时的 API Key 与客户端地址重新鉴权一次（与握手同一路径，单次最多 10 s），这一轮按新的 principal 运行（2026-11-12 权限加固 M4）：401/403（密钥被撤销、禁用、过期，用户被禁用，IP 不在白名单）→ 发 `error` 事件并以 **1008** 关闭，客户端不应重连；首轮之后密钥换了分组 → 409 `api_key_group_changed` 并以 **1012** 关闭，客户端应重连；其他鉴权错误（存储暂不可用、超时）只让这一轮失败，会话保留。在这一步被拒的轮次不写使用记录；格式不对的消息直接 400，不触发鉴权；进行中的一轮不被打断，空闲会话不定时复检。每条 `response.create` 是一轮：新请求 ID、模型白名单、钩子、价格与余额、API Key 并发位与限速；首轮按 HTTP 规则调度账号并建立上游连接，握手失败交给插件分类并换号；后续轮次复用同一账号与连接，账号并发位或限额最多等 10 s。每轮消息在钩子与模型映射之后交给插件的 `Execute`，插件交回这一轮的最终消息（首轮的那次调用同时给出握手，§83.6）。只路由到声明了 `platform.websocket.v1` 的插件的原生账号类型，不做协议转换。每轮一条使用记录（`protocol=openai.responses_ws`、`stream=true`）与一次结算，轮次结束即释放 API Key 与账号并发位。带 HTTP 状态的上游 `error` 事件交给插件分类以冷却或禁用账号，连接保持。会话不设空闲超时（2026-11-08 起；此前首条消息 30 s 以 1008、轮间空闲 300 s 以 1000 关闭），保持到客户端断开；核心每 30 s 向客户端与上游各发 ping，30 s 无 pong 即关闭该连接；上游断开以 1011 关闭客户端连接。节点排空时空闲会话立即以 1012 关闭，进行中的一轮最多再等 30 s；核心经 `gateway.Deps.Draining` 观察请求闸门，因为 `http.Server.Shutdown` 不跟踪已升级连接。
+**会话。** 升级前完成鉴权与连接计数（Redis 并发位 `ws:<key id>`；每个 API Key 的会话数不设上限，转发 V2 收尾起，§112.16；此前集群范围 64 条，第 65 条 429）；排空中的节点不接受新会话。每条能开始一轮的客户端消息（格式检查通过的 `response.create`）在开始之前用握手时的 API Key 与客户端地址重新鉴权一次（与握手同一路径，单次最多 10 s），这一轮按新的 principal 运行（2026-11-12 权限加固 M4）：401/403（密钥被撤销、禁用、过期，用户被禁用，IP 不在白名单）→ 发 `error` 事件并以 **1008** 关闭，客户端不应重连；首轮之后密钥换了分组 → 409 `api_key_group_changed` 并以 **1012** 关闭，客户端应重连；其他鉴权错误（存储暂不可用、超时）只让这一轮失败，会话保留。在这一步被拒的轮次不写使用记录；格式不对的消息直接 400，不触发鉴权；进行中的一轮不被打断，空闲会话不定时复检。每条 `response.create` 是一轮：新请求 ID、模型白名单、钩子、价格与余额、API Key 并发位与限速；首轮按 HTTP 规则调度账号并建立上游连接，握手失败交给插件分类并换号；后续轮次复用同一账号与连接，账号并发位或限额最多等 10 s。每轮消息在钩子与模型映射之后交给插件的 `Execute`，插件交回这一轮的最终消息（首轮的那次调用同时给出握手，§83.6）。只路由到声明了 `platform.websocket.v1` 的插件的原生账号类型，不做协议转换。每轮一条使用记录（`protocol=openai.responses_ws`、`stream=true`）与一次结算，轮次结束即释放 API Key 与账号并发位。带 HTTP 状态的上游 `error` 事件交给插件分类以冷却或禁用账号，连接保持。会话不设空闲超时（2026-11-08 起；此前首条消息 30 s 以 1008、轮间空闲 300 s 以 1000 关闭），保持到客户端断开；核心每 30 s 向客户端与上游各发 ping，30 s 无 pong 即关闭该连接；上游断开以 1011 关闭客户端连接。节点排空时空闲会话立即以 1012 关闭，进行中的一轮最多再等 30 s；核心经 `gateway.Deps.Draining` 观察请求闸门，因为 `http.Server.Shutdown` 不跟踪已升级连接。
 
 **不在范围。** ChatGPT OAuth/Codex 账号、上游连接池与预热、断线后 `previous_response_id` 恢复和 HTTP 桥接回退未移植；上游断开时由客户端重连。
 
@@ -2752,7 +2752,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 - URL 必须是绝对 http(s)，不能带用户名密码；
 - 不走代理时，主机名解析出的地址不能是私网、回环或链路本地，IP 字面量直接判断；
-- 经代理时不检查目标地址，由代理检查（43.3）兜底；
+- 经代理时本机不解析目标域名（名字交给代理，本机的 DNS 既不参与判断也不得知这个名字），只拒绝字面的私网、回环、链路本地地址和 `localhost`，其余由代理检查（43.3）兜底。规则只有一处 `netguard.CheckHostVia`，网关的中继与 WebSocket 握手、`Monitor` 的取回、控制台的测试 / 拉取模型 / 额度查询都用它（转发 V2 收尾起；此前网关经代理时也在本机解析，本机 DNS 失败会拒绝所有经代理的账号，控制台经代理时完全不检查）；
 - `SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时不检查。控制台三处（测试、拉取模型、额度查询）此前忽略了这个开关，2026-10-05 修正（`account.Service.guardUpstream`）。
 
 插件出站隧道（`plugin/egress`）的规则：
@@ -3545,6 +3545,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - 重置仅改变路由绑定，按账号原子比较：只解除指向失败账号的绑定，旧请求不能覆盖新绑定（2026-11-04 起绑定在选中账号时写入，不再带代数，见 §18）。软粘性失败动作由新策略接管，账号资源归属不可绕过。
 - 换号支持同一代理、仅代理账号或各账号原配置三种出口约束；默认同一代理，后续规则不能放宽已生效限制。没有合格账号即失败，不修改代理或增加直连兜底。
 - 响应已提交、WebSocket 已升级、任务/辅助操作不可重放、传输结果不确定、账号资源硬绑定、预算或期限耗尽时不自动重放。内层 SDK/CLI 请求不属于核心尝试计数。
+- 与账号健康无关、由核心自己判定的失败不交给两张规则表（`gwError.NeutralReason`，`gateway/failure_policy_runtime.go` 的 `planAvailabilityFailure`）：模型可用性的执行前检查（§44.7）、账号参数覆盖拦下的请求（§84）、插件不可用（`Execute` 报错或崩溃、中继被核心拒绝，§112.2、§112.5）、SSRF 拒绝的目标地址（`upstream_address_rejected`）、不被允许的目标主机（`upstream_host_not_allowed`，§112.17）。这些失败直接换号，不执行账号规则（不冷却、不禁用），决策记录写对应的原因；尝试次数用尽时结果与没有发布策略时相同：请求自己的失败（可用性拒绝、覆盖的应答）原样返回，其余是 503 `no_available_account`（Anthropic 格式 529）。（转发 V2 收尾起；此前插件不可用、被拒的中继和地址在策略下按核心的 503 处理：一次尝试后回 503 `plugin_unavailable`，命中核心来源的账号规则还会冷却或禁用账号。）
 - 决策记录保存到 `usage_logs.anomalies.failure_policy`，用量详情显示，统计时不把该过程记录本身算作异常。界面复用公共设置卡片、保存条、表格、菜单、弹窗和描述组件。详见 [设计与实现](GATEWAY-FAILURE-POLICY-DESIGN.md)。
 - 默认账号规则（`loginAccountRules`，迁移草稿用同一组）：`login-invalid` = 401 + 登录失效关键词（Anthropic API 的 `oauth access token has been revoked`、`oauth token has been revoked`、`invalid x-api-key`、`invalid bearer token`，new-api 关键词里的 `the security token included in the request is invalid`、`your account is not authorized`），`account-on-hold` = 403 + Anthropic API 的 `oauth authentication is currently not allowed for this organization`，动作都是自动禁用。插件把 401/403 判为禁用，但没有命中关键词时核心只冷却（§42、§69），所以上游新的登录失败文字必须同时加进这两条规则。已发布的策略由迁移 0072/0074 写入这两条，当时还带着只有 CCGateway 会回的关键词（CLI/Worker 错误码 `oauth_refresh_dead`、`not_logged_in`、`oauth_account_on_hold`，引擎消息 `has cleared its stored login`，CC 客户端自己的 `oauth refresh token is no longer valid`），迁移 0075（2026-11-02，CLI v44）又给两条各追加了 `stored_login_refused_restart_needed`、`stored_login_refused_admin`。0.1.290 删除 CCGateway：代码默认值去掉这些关键词，迁移 0102 从已发布的策略里去掉（条件见 §101.5）。
 
@@ -6213,7 +6214,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 | 参数 | `account_id > 0`；`url` 非空；`method` 空 = `GET`，大小写不敏感；URL、方法、`body` 不限大小（转发 V2 收尾起，§112.17；此前 8 KiB、16 字节、64 KiB）。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
 | 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`manifest.UpstreamHostAllowed`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
 | 账号 | account 模块按 `id`、`plugin_key`、未删除查询（`SendPluginAccountRequest`，可选接口 `core.PluginAccountRequester`）。别的插件的账号和不存在的 id 一样回 `NOT_FOUND`，不泄露 id 是否存在。账号状态不限：停用、`auto_disabled` 的账号也能发（重置次数正是给被停用的账号用的） |
-| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；直连时经 netguard 拒绝私网地址（`AllowPrivateUpstream` 除外）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还（此前截到 64 KiB 并置 `truncated`，§112.17；该字段已删除），读不完整（例如连接中途断开）按传输错误交给插件：`status` 0、`transport_error`，不交出半截响应体；响应头名转小写，只取第一个值 |
+| 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；目标按 `netguard.CheckHostVia`（§43.4）检查：直连时拒绝解析到私网的地址，经代理时本机不解析、只拒绝字面的私网地址和 `localhost`（`AllowPrivateUpstream` 时都不检查）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还（此前截到 64 KiB 并置 `truncated`，§112.17；该字段已删除），读不完整（例如连接中途断开）按传输错误交给插件：`status` 0、`transport_error`，不交出半截响应体；响应头名转小写，只取第一个值 |
 | 上限 | 单次 30 s（`refreshTimeout`），调用方 ctx 取消时立即中止；不另设并发上限 |
 | 传输失败 | 不是 RPC 错误：返回 `status` 0 和 `transport_error`（DNS、连接、超时、代理不可用、netguard 拒绝、响应体读不完整），和 `sendPluginCall` 一致 |
 | 审计 | 通过账号校验、真正发出的每次请求写一条 `audit_logs`：action `plugin.account_request`，target `account` / `<id>`，`user_id` 为空（执行者是插件），detail 只有 `plugin_key`、`method`、`host`（含端口）、`path`、`status`、`via: "host.SendAccountRequest"`。**不记 query、请求头、请求体、响应头和响应体**，因为这些地方带着凭证。审计在请求之后写，这样才能记下状态码。写入失败只记 WARN 日志，调用照常返回。这里和凭证读取不同（凭证读取先写审计，写不进去就整个调用失败）：这条 RPC 不会交出插件手里还没有的秘密。被拒的调用（授权、参数、主机、`NOT_FOUND`）不写审计 |
@@ -7731,7 +7732,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 - 请求头分层（§84、§86.5、§112.4）：插件的默认头 → 透传（只补没有的：账号 §81 规则、**本字段的透传键**、粘性规则）→ **本字段的设值和 `{unset}`** → 账号参数覆盖（§84）的设置和删除 → 插件的权威头 → 没有 Content-Type 时补默认值。
 - 参数覆盖以本字段解析出的结果为初始请求头状态（同 new-api）：条件可读 `header_override.<名>`，`set_header` 的 `keep_origin` 不覆盖它设的头，`copy_header`、`pass_headers`、`sync_fields` 的 `header:` 源先取它的值再取客户端的，参数覆盖可以再改、再删它设的头。
-- WebSocket 握手同样应用设值和删除，透传键不生效（同 §81）。请求头覆盖与首条消息的请求体改写分开解析：改写失败时（由这一轮报告）握手仍带请求头覆盖的决定；解析失败时这个账号换号，同 HTTP。
+- WebSocket 握手同样应用设值和删除，透传键不生效（同 §81）。首轮的请求头覆盖和请求体改写在调用 `Execute` 之前一起完成（`gateway/dispatch.go` 的 `upstreamBody`，握手和首条消息都来自这一次 `Execute`，§112.2）：解析或改写失败时与 HTTP 相同，这个账号换号（`return_error` 带 `skip_retry` 时把错误回给客户端），不发起握手，不冷却账号（转发 V2 起；此前两者分开解析，改写失败由这一轮报告、握手仍带请求头覆盖的决定）。
 - 预览 `POST /accounts/param-override/preview` 可带 `header_override`，结果的 `set_headers`、`delete_headers` 包含它的决定。
 
 ### 108.3 通用配置项与控制台
@@ -7755,9 +7756,8 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 ### 109.1 签名：`sdk/reqsign`，插件自己签
 
-- `reqsign.Sign(req, payload, directive, now)` 对插件构造的 `*http.Request` 原地签名；`reqsign.Directive{Scheme, Region, Service, AccessKeyID, SecretAccessKey, SessionToken}` 里只有 `Scheme` 是通用的，其余是“访问密钥 HMAC”一族方案（AWS SigV4 及仿它的方案）的输入。别的族（RSA 密钥、证书）要加新字段，不重新解释这些字段。
-- 方案按名字在 `sdk/reqsign` 查表（`reqsign.Sign`、`reqsign.Known`）。现有 `aws-sigv4`（`reqsign.SchemeAWSSigV4`）：AWS Signature Version 4，请求头鉴权，非 S3 规则（规范路径二次转义、总是对请求体取哈希）。
-- **交给核心**：插件把签过的 URL 交给中继，把 `reqsign.SignedHeaders(req, scheme)`（签名写入或覆盖的头：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`）作为权威头（§112.4），运营方的请求头设置改不了它们；其余头是默认头，不在签名范围内。核心不改请求体，发送前重新解析 URL（所以路径要写成线上的样子）。
+- `reqsign.SignAWSSigV4(req, payload, creds, now)` 对插件构造的 `*http.Request` 原地签名，`reqsign.AWSCredentials{Region, Service, AccessKeyID, SecretAccessKey, SessionToken}` 是它的输入：AWS Signature Version 4，请求头鉴权，非 S3 规则（规范路径二次转义、总是对请求体取哈希）。包里只有这一种签名，没有按名字查的方案表（转发 V2 收尾起；此前是 `reqsign.Sign(req, payload, directive, now)` 加 `Directive{Scheme, …}`、`reqsign.Known`、`SchemeAWSSigV4` 这张只有一项的表）。以后要别的签名，加一个新函数。
+- **交给核心**：插件把签过的 URL 交给中继，把 `reqsign.AWSSigV4Headers(req)`（签名写入或覆盖的头：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`）作为权威头（§112.4），运营方的请求头设置改不了它们；其余头是默认头，不在签名范围内。核心不改请求体，发送前重新解析 URL（所以路径要写成线上的样子）。
 - **每次尝试各签一次**：换号重试时对新的构造结果、用当时的时间重新签名，不复用上一次的签名。
 - `aws-sigv4` 由官方签名器生成（`github.com/aws/aws-sdk-go-v2/aws/signer/v4`，只用签名器，不用服务客户端；每次签名新建一个，不共用它的派生密钥缓存）。规则（黄金样例：AWS 公布的测试套件，加 aws-sdk-go-v2 签名器录下的 Bedrock 形状请求，`sdk/reqsign/testdata`）：
   - 签名的头只有 `host`、`x-amz-date`，以及存在时的 `content-type`、`x-amz-security-token`。其他头不签，所以其他层加的、改的头不影响签名。官方签名器本身会签请求上的所有头，所以交给它的是只带 `Content-Type` 的请求副本，签完把 `Authorization`、`X-Amz-Date`、`X-Amz-Security-Token` 抄回原请求。
@@ -7767,9 +7767,9 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - **主机**取 `req.Host`，为空取 URL 的主机，去掉协议的默认端口（https `:443`、http `:80`）后写回，所以发出的 Host 头就是被签名的主机。（IPv6 字面量去掉默认端口时方括号也被去掉。）
   - GET、HEAD 不带请求体，按空负载签名。
   - `region`、`service`、`access_key_id`、`secret_access_key` 缺任何一个，签名失败。
-- **失败**：方案名不认识，或签名失败：`BuildUpstream` 返回错误，这次尝试按插件不可用换号（`plugin_unavailable`，不惩罚账号），**没有请求发出**。
-- **保密**：`Directive` 带着密钥，不写日志。`reqsign.Directive` 的 `String`、`GoString`、`LogValue` 不输出密钥和会话令牌。
-- 账号测试的请求体是插件自己给的、核心原样发送，测试请求由插件在 `BuildTestRequest` 里同样调 `reqsign.Sign` 签。
+- **失败**：签名失败（缺输入、查询串解析不了）：`BuildUpstream` 返回错误，这次尝试按插件不可用换号（`plugin_unavailable`，不惩罚账号），**没有请求发出**。
+- **保密**：`AWSCredentials` 带着密钥，不写日志。它的 `String`、`GoString`、`LogValue` 不输出密钥和会话令牌。
+- 账号测试的请求体是插件自己给的、核心原样发送，测试请求由插件在 `BuildTestRequest` 里同样调 `reqsign.SignAWSSigV4` 签。
 
 ### 109.2 `response_stream`（字段 7）：把非 SSE 的响应流转成 SSE
 
@@ -8107,7 +8107,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 ### 112.2 `PlatformService.Execute`：唯一的请求路径
 
-每次尝试（一个账号一次，换号后从头构造）核心调账号类型所属插件的 `Execute`，WebSocket 会话每一轮消息调一次。核心在调用之前做完协议转换（`internal/gateway/convert`）、账号模型映射、引用模型映射、强制流式（§83）、`claude_max_tokens`（§84.1）和账号参数覆盖的请求体部分（§84），以及模型可用性预检。
+每次尝试（一个账号一次，换号后从头构造）核心调账号类型所属插件的 `Execute`，WebSocket 会话每一轮消息调一次。核心在调用之前做完协议转换（`internal/gateway/convert`）、账号模型映射、引用模型映射、强制流式（§83）、`claude_max_tokens`（§84.1）和账号参数覆盖的请求体部分（§84），以及模型可用性预检。两处覆盖改动了请求体时（`gateway/dispatch.go` 的 `upstreamBody`），核心在结果上**再强制一次流式**（覆盖不能把只流式上游的 `stream` 改回假），再按账号的用量规则检查一次能否计量（`meterable`，与调度时对客户端请求体的检查相同：主用量与尝试次数），不能计量的这次尝试换号（例如覆盖加了用量规则计不了的操作）。插件交回的请求体仍不检查（§112.5）。
 
 `ExecuteRequest`（字段 1 `request` 删除并 `reserved`）：
 
@@ -8133,7 +8133,8 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 核心对结果的处理：
 
 - 不等待的中继，且返回 `host_usage`：核心在 `Execute` **返回之后**发送、中继、按规则读用量，`submit()` 结算，不写执行记录；非流式回答照旧分块透传，不缓冲。插件之后崩溃、重启、换代都不影响这次交换。
-- 不等待的中继但返回了别的、或报错、崩溃：请求不发出，按插件不可用换号，账号不受罚。`Execute` 不计时（§111.4）：插件挂住时这次尝试一直等，直到客户端离开或插件进程结束。插件没有中继而返回 `classification`：按这个分类裁决（发生在主请求之前，可以安全换号）；什么都没有：按插件不可用换号。
+- 不等待的中继但返回了别的、或报错、崩溃：请求不发出，按插件不可用换号，账号不受罚（发布了失败策略时同样，不执行账号规则，§58）。`Execute` 不计时（§111.4）：插件挂住时这次尝试一直等，直到客户端离开或插件进程结束。插件没有中继而返回 `classification`：先看客户端是否已经离开（离开了按客户端断开结束，不采用这个分类，被客户端离开切断的取回不会让账号冷却），否则按这个分类裁决（发生在主请求之前，可以安全换号）；什么都没有：按插件不可用换号。
+- 客户端离开：`Execute` 在客户端的 context 下调用。等待形式（插件解析用量、任务提交）的调用在**中继开始发送之前**随客户端离开取消（什么都没发出，不计费、不写执行记录，槽位释放）；中继开始发送起不再随客户端取消（`execution.run` / `detach`）：上游交换按客户端断开的计费策略处理（§25.8 的 `client_disconnect_policy`，`gateway/disconnect.go`；回答可能继续读完用于计费），插件在观察之后的工作也不取消，因为事实还要提交。插件在转发的观察之后挂住时，这次执行只会随插件进程退出而结束；客户端离开不会结束它，因为事实还要提交。客户端离开之后插件才要求的等待中继不发送。
 - 带标志的执行上插件却用了不等待的中继并返回 `host_usage`：任务提交不发送（按插件失败换号）；插件解析用量的端点照常发送，按核心读数计费并记 `usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费：客户端已经拿到回答，核心写一条零费用的 `usage_unreported` 记录、释放预扣、记 ERROR 日志（与等待形式的未上报相同的记录，§112.7）。
 - 等待形式：见 §112.7。
 
@@ -8177,7 +8178,7 @@ message UpstreamRequest {
 - 请求头的名和值能被传输层发送；方法合法。
 - `response_stream` 是核心认识的格式（现有 `aws-eventstream-chunk`，§109.2）；WebSocket 轮次上给了任何格式都拒绝。
 - 类型声明了模型可用性时，`upstream_model`（非空时）必须等于核心算的上游模型，不一致按模型可用性的失配处理。
-- URL 的主机必须是清单 `externalServices` 之一（含子域）或账号自己的上游地址的主机（`manifest.UpstreamHostAllowed`，§112.17），之后过 SSRF 规则（§43；直连检查解析出的地址，经代理检查名字，“允许私网”按账号所在范围）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
+- URL 的主机必须是清单 `externalServices` 之一（含子域）或账号自己的上游地址的主机（`manifest.UpstreamHostAllowed`，§112.17），之后过 SSRF 规则（§43.4 的 `netguard.CheckHostVia`：直连检查解析出的地址；经代理时本机不解析，只拒绝字面的私网地址和 `localhost`；“允许私网”按账号所在范围）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
 - **不检查请求体**：核心不再解析插件交回的字节，不比较模型引用、流式标志或可计量性。这些是插件的责任，由一致性套件第 3 条检查（模型引用与交入的一致、交入时流式为真交回仍为真、合法 JSON、没有重复键）。
 
 网关拒绝的请求在插件一侧是 `INVALID_ARGUMENT`，`Execute` 若随后失败，这次尝试按插件不可用换号，什么都没发出。
@@ -8190,19 +8191,19 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 主机规则是 `manifest.Manifest.UpstreamHostAllowed`（中继与 `SendAccountRequest` 用同一个，§112.17），核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
 - 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；插件不能设超时（`ExecutionHTTPRequest.options` 字段 6 与 `UpstreamOptions` 已删除，`reserved`）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
 - 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`ExecutionHTTPResponse.truncated` 已删除）；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
-- 签名：`sdk/reqsign.Sign` 对插件构造的 `*http.Request` 签名，`reqsign.SignedHeaders(req, scheme)` 给出签名写入或覆盖的头（`aws-sigv4`：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
+- 签名：`sdk/reqsign.SignAWSSigV4` 对插件构造的 `*http.Request` 签名，`reqsign.AWSSigV4Headers(req)` 给出签名写入或覆盖的头（`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
 
 ### 112.7 等待形式的事实、执行记录与未上报
 
 只有等待形式写 `plugin_executions`（`intent` → `observed` → `committed` 或 `unreported`；`state` 是无 CHECK 的文本列，新值不需要改表）：
 
 1. 发送前 `BeginExecution`（意图：执行、请求、插件、账号和尝试的标识，`record` 为空；此前还写入请求前的使用记录，但没有任何地方读它，转发 V2 收尾删除了 `core.ExecutionIntent.Record`）；交换结束后 `ObserveExecution` 存核心的读数和观察（不限大小：`record` 是 jsonb、`observation` 是 bytea，大的值由 PostgreSQL 压缩、行外存放；此前超过 512 KiB 拒绝，请求以 503 和零费用记录结束）；非 SSE 的 2xx 回答先缓冲（内存 1 MiB，超出落临时文件，不限大小，此前最多 64 MiB），事实提交后才发布。临时文件建不了或写不进时，在任何提交之前按 3 关闭为未上报。
-2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数完全为空时不是事实，按 3 处理），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
+2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数完全为空时不是事实，按 3 处理），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试；冲突（`ErrConflict`）和确定性的拒绝（`core.ErrExecutionRefused`：提交与执行不符、身份不符、观察没有落库、已有使用记录）不重试，立即按失败处理（此前除冲突外都重试满 15 秒）。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
 3. **没有合法事实**（没填、种类不对、`host_usage` 而核心读数完全为空、`Execute` 报错、插件崩溃，或一直提交不上）而观察已落库：
    - 同步请求：`CloseExecutionUnreported` 在一个事务里写一条零费用记录（`success = false`、`error_type = usage_unreported`、token 与计量清零、计费状态免费、`anomalies.usage_extract = "unreported"`），释放预扣，执行行改 `unreported`（`record`、`observation` 保留），每次写一条 ERROR 日志（请求 ID、执行 ID、插件、账号、原因）。缓冲的非流式回答不发出、回 503；已开始的流异常结束。核心不按自己的读数补记。`CloseExecutionUnreported` 对已有使用记录的请求只关执行行、不再写一条（观察落了库但确认丢失时，恢复扫描不会每轮失败）。
    - 观察没能落库（`ObserveExecution` 失败，行还在 `intent`）：这个请求自己的零费用记录照常经 `submit()` 写下，预扣立即释放（此前什么都不写，预扣挂到 24 小时到期）。
    - 回答是否交给客户端只看转发本身有没有完成（核心在插件报告之前的读数），不看插件在 2xx 回答里读出的业务错误：插件在 `UsageReport` 里报了 `error_type` 的请求照常计费、照常发出上游的回答（此前计费之后回 503）。
-   - 任务提交：任务不登记，客户端报错，预扣释放，按任务失败的路径记录（不是“未上报”）。
+   - 任务提交：任务不登记，客户端报错，预扣释放，回执记下原因（`gateway/tasks.go` 的 `taskFailure`）。这次请求的使用记录按 `core.UsageRecord.SetUnreported` 清零（零费用、预扣释放、`anomalies.usage_extract = "unreported"`）：未上报记录只有这一个定义，网关的同步请求、任务提交失败和用量模块的 `CloseExecutionUnreported` 都调它（此前三处各写一份，任务提交失败只部分清零、不带 `usage_extract`）。但任务提交失败随后经 `fail()` 结束，`error_type` 被改写成返回给客户端的错误的类型（上游错误），不是 `usage_unreported`。
 4. 等待期间插件崩溃或放弃调用：中继调用的 context 结束，核心切断上游交换（记为上游中断，不是客户端断开），随后按 3 处理，这个请求不计费。
 5. 恢复按存活判断，不按时长（转发 V2 收尾起）：网关从观察落库起每 `core.ExecutionRenewInterval`（15 秒）续一次执行行（`ExecutionRecords.RenewExecution`，对仍是 `observed` 的行更新一次 `updated_at`），直到这次尝试结束；续期发现行已提交或已关闭就停。恢复扫描只关闭超过 `core.ExecutionStaleAfter`（2 分钟，八个间隔）没有续期的 `observed` 行（任务提交除外），按 3 关闭为未上报。所以活着的执行不会因为时间长被关掉，没有时长上限；崩溃的节点留下的预扣约 3 分钟内释放。`intent` 行不写任何东西，预扣由到期清扫释放。（此前扫描关闭停在 `observed` 超过 1 分钟的行，中间版本按约 46 分钟的年龄关闭并由网关在约 44.5 分钟时切断 `Execute`，都已删除。）
 6. 没有实现的缓解：“每个插件 10 分钟内 20 次未上报就通知运营方”没有做（核心没有运营方告警渠道的设置），目前只有每次的 ERROR 日志。
@@ -8224,7 +8225,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 没有结果、或报错：算一次查询失败。终态（`PENDING`、`POLL_FAILED` 以外）必须伴随这次调用里一次完整、成功的取回（拿到 HTTP 状态、没有传输错误），否则同样算一次查询失败。结果的大小不限（此前超过 512 KiB 算一次查询失败）：事实照常校验，按摘要提交。
 - 整个调用 30 秒，调用方的 context 更短时取更短的；每次取回 20 秒。
 - 原账号永远问不了（没有记录账号、账号已删除、账号属于别的插件）算一次查询失败，消耗失败次数，最终退款（`errTaskAccountGone`；此前和账号冷却一样延后到期限，到期按估算扣费）；冷却、槽位满、限流、查询账号出错仍然延后。
-- SDK：`TaskMonitor.Monitor(ctx, *PollRequest) (*ReconcileResult, error)`；`PollFailure`、`TaskNotFound`、`ClassifyPollResponse` 不变。
+- SDK：`TaskMonitor.Monitor(ctx, *PollRequest) (*ReconcileResult, error)`；`PollFailure`、`TaskNotFound` 不变；`ClassifyPollResponse(status, transportError)` 去掉了 `truncated` 参数（§32）。
 
 ### 112.10 旧契约的插件包
 
@@ -8255,11 +8256,11 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 | 包 | 内容 |
 |---|---|
-| `sdk/pluginsdk` | `Platform`（`Execute` + `ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）；`UpstreamBuilder` + `ExecuteDefault`；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`ManifestOf`（取 `WithManifest` 给的清单原文）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认、`RemoveHeader` 不发某个头，§112.17）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`） |
+| `sdk/pluginsdk` | `Platform`（`ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）加 `UpstreamBuilder`（`BuildUpstream`）：SDK 替它跑 `ExecuteDefault`；`Executor`（自己的 `Execute`）可选，实现了就用它，两者都没有时注册失败（转发 V2 收尾起；此前 `Platform` 必须实现 `Execute`，多数插件写一行转给 `ExecuteDefault`）；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`WithManifest`（清单原文，`pluginsdk.ManifestOf` 已删除）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认、`RemoveHeader` 不发某个头，§112.17）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`） |
 | `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游 |
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
-| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（启动时取 `WithManifest`，按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
+| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（来自 `pluginsdktest.Options{Manifest: manifestJSON}`，Harness 同时用它 `WithManifest` 启动插件；按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
 | `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，九个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
 | `sdk/pluginsdk/standard/goldentest` | 原声明式引擎的 1498 条录制样例，转换后冻结 |
 
@@ -8268,6 +8269,8 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 112.14 顺序变化：过滤字段在运营方改写之后（azure_openai）
 
 以前声明式类型的过滤字段（和清单里的固定改写）在核心里执行，排在 `claude_max_tokens` 与账号参数覆盖**之前**；现在过滤字段和路由改写在插件里，排在它们**之后**。运营方在账号参数覆盖里写了一个被过滤的字段时，以前发给上游，现在被插件删掉。三个预设和五份清单里没有一处声明清单固定改写；anthropic、openai、gemini、relay 把过滤字段清空了；只有 azure_openai 的两个类型保留 openai 预设的 `service_tier`、`safety_identifier`，所以这处变化只在 azure_openai 上可见。
+
+这里说的只是原来声明式的类型。本来就是代码插件的类型删字段一直在插件里、排在运营方改写之后，顺序没有变；运营方在参数覆盖里写了这些字段同样会被删掉。例如 bedrock 总是删请求体顶层的 `model`、`stream`、`metadata`、`provider`、`service_tier`、`inference_geo`、`speed`（`plugins/bedrock/internal/bedrock/body.go` 的 `droppedFields`），总是删 `cache_control.scope`，只在认出模型版本且早于 4.5（或值不被接受）时删缓存 `ttl`（认不出版本的模型，例如应用推理配置的 ARN，保留 `ttl`），并按请求里的工具自动加 computer-use、tool-search、tool-examples 的 beta（`beta.go`）；它按 `meta.stream` 而不是请求体的 `stream` 决定是否走流式接口，所以运营方的参数覆盖给非流式请求加 `stream: true` 不会把它变成流式。
 
 ### 112.15 不在本次范围
 
@@ -8321,7 +8324,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | SSRF 规则、中继 / 取回 / `SendAccountRequest` 的主机规则（`manifest.UpstreamHostAllowed`，§112.17）、拒绝 `Host` 和 hop-by-hop 头、不跟随重定向、执行令牌的范围 | 安全 |
 | 任务快照 256 KiB（`protocol.MaxTaskSnapshotBytes`）、清单的计数（`usageStreamEvents` 8 个、`usageRequestFields` 16 条）、KV 自己的规则（单值 64 KiB、一次批量 3 MiB） | 存储格式和清单的规则，不是请求路径的上限 |
 
-代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、上游的错误体读前 64 KiB（`maxErrorBody`，交给客户端），其中前 4 KiB 交给 `ClassifyError`（`core.ClassifyPrefixBytes`，`ClassifyErrorRequest.body_prefix`）。（`sdk/awseventstream` 的单条消息上限 4 MiB 已按上表删除。）
+代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、上游的 HTTP 错误体在内存里只留前 64 KiB（`maxErrorBody`，`gateway/upstream_error.go`；更长的部分落临时文件，整份转给客户端，WebSocket 握手失败的错误体只读前 64 KiB），其中前 4 KiB 交给 `ClassifyError`（`core.ClassifyPrefixBytes`，`ClassifyErrorRequest.body_prefix`）与故障策略的关键词匹配（§58）。（`sdk/awseventstream` 的单条消息上限 4 MiB 已按上表删除。）
 
 **同批的修正**（钱与正确性，各节已写）：等待形式的发布只看转发本身是否完成（§112.7）；观察没能落库时写零费用记录并立即释放预扣，`CloseExecutionUnreported` 对已有记录的请求幂等（§112.7）；任务提交报失败之前先确认提交是否已落库（§112.7）；原账号永远问不了的任务消耗失败次数而不是延后到期限（§112.9）；`usage.source: plugin` 的端点上插件选了核心读数而读数完全为空时按未上报处理（§112.2、§112.7）；WebSocket 第一轮可重试的 `return_error` 和 HTTP 一样转给客户端（此前变成 503 `no_available_account`）；网关和用量的取回是同一份实现（§112.6）；执行按存活恢复（§112.7）。
 
@@ -8372,6 +8375,10 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。
 - 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
 - 只管出口隧道。核心替插件发的上游请求（`RelayUpstream`、`SendAccountRequest`）与取回（Fetch）不受影响。
+- **局限**（所有者接受）：
+  - `allow_all` 下屏蔽的是名字：插件直接拨 IP 字面量时按 IP 比较，屏蔽某个域名挡不住插件直接拨它解析出的 IP。要彻底限住插件能去哪里，用 `block_all`。
+  - 设置只管新建的连接和 DNS 查询：已建立的连接不断开，插件已有的空闲保活连接会继续被复用，要等它自己关闭（Go HTTP 客户端默认空闲 90 秒）后新设置才管到这个目标。
+  - 多节点下保存的节点立即生效，其他节点收到 `config:changed` 广播才生效（漏收时最多 10 秒），中间有一小段仍按旧设置判断。
 
 ### 113.3 控制台
 
@@ -8403,6 +8410,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **清除数据**：`DROP SCHEMA plg_<key> CASCADE` 并删除迁移记录（`DropTx`，与插件行的删除同一事务）。
 - **隔离**：插件拿不到数据库密码（严格网络下），但能执行核心的用户能执行的任何 SQL，能访问全部表并能写入，插件之间、插件与核心之间的分隔只靠约定和安装时对 `db.schema`（high）的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、`api_keys.key_cipher`、TOTP、插件加密设置与 secrets、价格同步源密钥）读不出明文，API Key、访问密钥、用户密码只存哈希；其余数据可读，所有表可写。非官方插件授予 `db.schema` 一律要求 `plugin:grant:db_schema_unconfined`（`needs_db_schema_unconfined` 同步），官方插件不要求。
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
+- **打包工具**：`sub2api-plugin db diff|check`（`sdk/pgdb/pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 在临时 schema 里执行迁移（整个事务回滚）；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（看本事务写过的系统目录行，以前靠临时角色的属主判断）。以前因为临时角色没有权限而在工具里失败、宿主却能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
 - **单向**：0110 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
 
 ## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0111，核心 0.1.304）
@@ -8459,7 +8467,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - 用插件键解开票据（别的插件的票据、改过的、编造的都解不开），票据里的用户必须等于**这次路由调用的用户**（核心从调用的上下文读，不信插件）；否则 `PERMISSION_DENIED`。所以别的管理员拿到会话 id 或票据也用不了。
 - 按这个用户**此刻**的权限（含访问密钥的收窄）重新做 117.1 的检查：不再能新建或修改账号、不再有 `proxy:manage`（粘贴的代理串）、代理已删或已不可见，这张票据随即不能用，错误照常交给插件（`PERMISSION_DENIED` 或 `INVALID_ARGUMENT`）。
-- 发送用取回的同一份实现 `execfetch.Do`：已有代理用代理服务缓存的客户端，粘贴的代理串用临时客户端（用完关闭空闲连接），不用代理时直连；直连过 SSRF 检查，经代理检查名字（`netguard.CheckURLVia`，“允许私网”同 `AllowPrivateUpstream`）。不跟随重定向、不重试、回答整份交还；**没有自己的超时**，由路由调用的期限（`TimeoutHTTP`）约束。传输失败是回答的 `transport_error`，不是 RPC 错误。不写审计行（路由调用本身已有 `plugin.route.write`，取回从来不审计）；粘贴的代理串不进日志、审计和代理表。
+- 发送用取回的同一份实现 `execfetch.Do`：已有代理用代理服务缓存的客户端，粘贴的代理串用临时客户端（用完关闭空闲连接），不用代理时直连；直连过 SSRF 检查，经代理时本机不解析、只拒绝字面的私网地址和 `localhost`（`netguard.CheckURLVia`，§43.4；“允许私网”同 `AllowPrivateUpstream`）。不跟随重定向、不重试、回答整份交还；**没有自己的超时**，由路由调用的期限（`TimeoutHTTP`）约束。传输失败是回答的 `transport_error`，不是 RPC 错误。不写审计行（路由调用本身已有 `plugin.route.write`，取回从来不审计）；粘贴的代理串不进日志、审计和代理表。
 
 ### 117.4 版本与兼容
 
@@ -8469,5 +8477,5 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 ### 117.5 测试
 
-核心：`account/proxyticket_test.go`（已有代理、粘贴的代理串、不用代理三种选择分别经哪个测试代理到达授权服务器；无代理权限、看不到的代理、冲突、解析错误、既不能新建也不能修改账号的用户；别的用户、没有用户、别的插件、篡改、编造、缺票据都 `PERMISSION_DENIED`；权限收回后票据失效；粘贴的代理串不落代理表、不进审计和日志）、`plugin/grpcruntime/route_fetch_internal_test.go`（路由调用的令牌、带票据才能取回、清单以外的主机、不能中继、调用返回后失效、没有用户没有令牌、`Execute` 的取回不能带票据）。SDK：`pluginsdk/route_fetch_test.go`、假宿主（`Harness.DoAs` 发令牌，`FakeHost.BeginRoute`，路由取回必须带票据）。控制台：`AccountEditor.spec.ts`（三种选择交给原生表单，拒绝时显示在代理输入下）。
+核心：`account/proxyticket_test.go`（已有代理、粘贴的代理串、不用代理三种选择分别经哪个测试代理到达授权服务器；无代理权限、看不到的代理、冲突、解析错误、既不能新建也不能修改账号的用户；别的用户、没有用户、别的插件、篡改、编造、缺票据都 `PERMISSION_DENIED`；权限收回后票据失效；粘贴的代理串不落代理表、不进审计和日志）、`plugin/grpcruntime/route_fetch_internal_test.go`（路由调用的令牌、带票据才能取回、清单以外的主机、不能中继、调用返回后失效、没有用户没有令牌、`Execute` 的取回不能带票据）。SDK：`pluginsdk/route_fetch_test.go`、假宿主（`Harness.DoAs` 发令牌，`FakeHost.BeginRoute`，路由取回必须带票据）。控制台：`AccountEditor.spec.ts`（三种选择交给原生表单，拒绝时显示在代理输入下）。e2e：`next/e2e/ac38_codex_auth_proxy_test.go`（`TestAC38_CodexAuthorizationThroughFormProxy`）：已有代理、粘贴的代理串、不用代理三种选择下，codex 设备码登录的每个请求经代理（或直连）到达 mock 扮演的 `auth.openai.com`，粘贴的代理串不留代理记录，建成的账号经网关可用并计费；Sign in with Codex 的换令牌同样经代理。mock 为此提供授权服务器的接口和 HTTPS 的 `CONNECT` 代理（`next/deploy/e2e/README.md`）。
 

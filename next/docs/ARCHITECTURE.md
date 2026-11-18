@@ -580,7 +580,7 @@ message ExecuteRequest {
 }
 // 插件在 Execute 里调 HostService.RelayUpstream 交出最终请求
 message UpstreamRequest {
-  string method = 1; string url = 2;         // 核心校验：http(s)，SSRF
+  string method = 1; string url = 2;         // 核心校验：http(s)，主机须在清单 externalServices 或账号的上游地址里（§112.17），SSRF
   map<string, string> headers = 3;           // 权威头（鉴权、签名）
   map<string, string> default_headers = 4;  // 默认头（运营方设置可改）
   bytes body = 5;                            // 最终字节
@@ -771,7 +771,7 @@ sequenceDiagram
     alt 成功
       U-->>GW: SSE / JSON
       GW-->>C: 边收边转发
-      GW->>GW: 按声明式规则提取用量
+      GW->>GW: 按清单的用量规则提取用量
       GW->>R: 写入或刷新粘性会话绑定
     else 失败
       U-->>GW: 4xx / 5xx
@@ -788,7 +788,7 @@ sequenceDiagram
 说明：
 
 - 流式响应一旦开始输出，就不再失败切换
-- 插件在构造请求时出错或不可用时，请求没有发出，换下一个账号、不惩罚账号；所有账号不可用返回 503。`Execute` 不计时（CONTRACTS §112.16）：插件挂住时这次尝试一直等，直到客户端离开或插件进程结束
+- 插件在构造请求时出错或不可用时，请求没有发出，换下一个账号、不惩罚账号（发布了故障策略时同样，不执行账号规则，CONTRACTS §58）；所有账号不可用返回 503。`Execute` 不计时（CONTRACTS §112.16）：插件挂住时这次尝试一直等，直到客户端离开或插件进程结束
 - 插件自己解析用量的端点和任务提交用等待形式：插件在 `RelayAndWait` 里等交换结束、读观察，在返回值里给 `usage` 或 `task`（CONTRACTS §112.7）。执行行由网关每 15 秒续期，节点崩溃时恢复扫描在 2 分钟没有续期后把它关成“未上报”、释放预扣
 - 一次请求上的超时和大小上限只有管理员配置的（请求体上限、上游的响应头 / 整体 / 流式空闲超时、钩子和热路径超时），加上安全与防崩溃的检查；完整列表见 CONTRACTS §112.16
 - 客户端断开时取消上游请求、释放槽位；已产生的用量照常结算

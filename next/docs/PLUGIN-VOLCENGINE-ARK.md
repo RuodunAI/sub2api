@@ -1059,7 +1059,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 
 方舟官方 `apikey` 和豆包视频 `relay` 共用这些计量字段：`resolution`、`video_seconds`、`video_pixels`、`video_width`、`video_height`、`video_input`、`video_draft`、`video_estimated`。提交时 `video_estimated=true`；返回真实 Token 后为 `false`。最终轮询仅覆盖上游实际提供的字段，保留提交时的视频输入与 Draft 标记。若上游给了分辨率但无法确认精确宽高，不沿用旧尺寸覆盖，回退基础价格。
 
-`usageRequestFields` 新增有界数组属性投影，例如 `content.#.type`。只传内容类型，避免长提示词或内联图片挤掉视频输入标记；仍受已有字段数和字节预算约束。插件 0.12.0 需要同时升级本次宿主与 SDK，沿用内置插件随核心打包的升级流程。
+`usageRequestFields` 新增有界数组属性投影，例如 `content.#.type`。只传内容类型，避免长提示词或内联图片挤掉视频输入标记；仍受已有字段数和字节预算约束（字节预算已在转发 V2 收尾删除，见 §11.2；每个端点最多 16 个字段的上限仍在）。插件 0.12.0 需要同时升级本次宿主与 SDK，沿用内置插件随核心打包的升级流程。
 
 管理员可在表达式源码使用 `u("video_draft")` 等字段自定义规则；试算新增插件计量输入及预扣/结算示例。源码表达式的自定义逻辑由管理员维护，视频模板配置则始终由服务器重新生成，防止旧源码覆盖新配置。
 
@@ -1083,13 +1083,14 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 
 核心与全部平台插件改成一条请求路径（CONTRACTS §112），volcengine 随之改写，行为对客户端不变：
 
-- `Execute` 是 SDK 的 `ExecuteDefault`：普通端点（chat、embeddings、图片、Anthropic Messages）不等待地中继、返回 `host_usage`，用量由核心按清单规则读；两个视频提交端点是任务提交（也声明了 `usageSource: "plugin"`），等待形式中继、`ParseTaskSubmission` 读观察、返回 `task`（带按请求字段算的预估）。
+- 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供：普通端点（chat、embeddings、图片、Anthropic Messages）不等待地中继、返回 `host_usage`，用量由核心按清单规则读；两个视频提交端点是任务提交（也声明了 `usageSource: "plugin"`），等待形式中继、`ParseTaskSubmission` 读观察、返回 `task`（带按请求字段算的预估）。
 - 请求体完整交给插件，原来清单里的 `requestFields` 删除；任务观察只有 `Monitor`（原来的 `Poll` 函数体成为它），两阶段的 `BuildReconcileRequest` / `ParseReconcileResponse` 删除；清单删掉 `platform.execute.v1`、`platform.poll.v1`。
-- 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
+- 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。转发的客户端请求头就是核心交来的那些（核心已按清单的 `passHeaders` 过滤：anthropic 平台的 `messages` 是 `anthropic-version`、`anthropic-beta`、`user-agent`，其余协议只有 `user-agent`），插件不再自己维护两份名单（`apikey.ForwardHeaders`）；上游收到的请求没有变化。
+- 流式 chat 请求加 `stream_options.include_usage = true`，与 openai 预设同一个改写（`openai.StreamUsage`），“流式”的判断也相同：`pluginsdk.RequestStream`，即 `meta.stream` 或请求体的 `stream` 为 `true`。所以运营方在账号的参数覆盖里给非流式请求加了 `stream:true` 时（参数覆盖在 `Execute` 之前执行），插件同样补上 `stream_options.include_usage`，上游会在最后一块报用量；以前只看 `meta.stream`，这种请求拿不到流式用量。volcengine 没有只流式的账号类型，核心不会替它强制流式。
 - 任务提交上插件没有返回 `task`（解析失败）时，任务不登记、客户端报错、预扣释放；等待期间插件崩溃时核心切断上游，这次请求不计费。
 - 两个账号类型在 anthropic 平台上只服务 `messages`（清单 `"endpoints": ["messages"]`）。以前没写端点子集，核心把 `anthropic.count_tokens` 原样路由给它们而不用本地估算，插件又拒绝（Ark 没有计数端点），只有 Ark 账号的分组对 `count_tokens` 一律回 503；现在 `count_tokens` 是核心的本地估算。`ProtocolCountTokens` 及其分支删除，上游收到的请求没有变化（以前计数请求也从未到达上游）。下文 §15 关于“按名字拒绝 `count_tokens`、`AccountPlatform` 没有按端点过滤的能力”的说法到此不再成立。
 - 视频查询由核心从自己的任务快照回答，从不为 `volcengine.video_query` 调 `Execute`：`BuildUpstream` 里查询的 GET 分支删除，每个请求都是 POST；`ExtractUsage` 只剩任务提交解析里用的内部函数 `videoUsage`。
 - **素材库改由核心发出**（转发 V2 收尾）：插件照旧读账号的 AK/SK 签名（`GetAccountCredentials`，每次读写一条审计），签好的方法、地址、请求头、请求体交给 `pluginsdk.SendAccountRequest`，核心为这个账号发出：有代理的账号经代理（此前插件经出口隧道直连，账号代理不起作用），直连时过 SSRF 检查，不跟随重定向（此前插件的客户端会跟随），回答整份交还（此前插件读到 1 MiB 为止），单次 30 秒（核心的 `refreshTimeout`），每次发送另写一条审计（`plugin.account_request`，只记方法、主机、路径和状态）。插件自己的 HTTP 客户端、传输层、拨号器和 1 MiB 上限删除，清单去掉 `net` 权限（插件不再有别的直连）；重试（传输错误、429、5xx，最多 3 次，间隔 200 毫秒，`Create*` 不重试）不变：核心的发送不重试，它仍然有用。
   - **目标主机**：核心只发往清单允许的主机（`manifest.UpstreamHostAllowed`，CONTRACTS §112.17）。默认的官方控制面 `ark.cn-beijing.volcengineapi.com` 在 `externalServices` 里；运营方填的 `asset_base_url`（两种类型）、中转的 `asset_endpoint`（完整地址）和它所相对的 `base_url` 都在类型的 `upstreamFields` 里（原本就在，没有改清单），所以正式账号指向 BytePlus 等别的控制面、中转按自己的 `base_url` 解析的素材路径都能发出。`asset_endpoints_test.go` 对每种配置断言核心会放行。
   - **发给上游的内容不变**：`arkapi_test.go` 的 `TestRequestIsTheReleasedOne` 用改写前的插件客户端在固定时刻录下一次 `ListAssets` 的完整请求（方法、路径、查询、全部请求头、请求体、签名），新实现交给核心的内容与之逐字节相同，经仿照核心 `sendPluginCall` 的发送到达假上游后同样逐字节相同（`User-Agent`、`Accept-Encoding`、`Content-Length` 由 Go 的 HTTP 客户端自己加，核心与原插件的传输层设置相同）。核心对 `SendAccountRequest` 只在没有 `Content-Type` 时补 `application/json`（插件总是自己设置并签名），不增改别的头，所以签名有效。其余签名测试（独立重算、换 SK / 区域 / 请求体签名都变、十个 Action 都验签、取消一直传到上游）照旧经这条路径通过。
-- 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）；测试把 `manifest.json` 交给假宿主（`WithManifest`），取回能到的主机按清单判断；`TestConformance` 调一致性套件（chat 流式与非流式、responses、embeddings、两种类型的 messages、图片、视频提交），11 条全部通过，没有例外。
+- 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）；测试把 `manifest.json` 交给假宿主（`pluginsdktest.Options{Manifest: ...}`），取回能到的主机按清单判断；`TestConformance` 调一致性套件（chat 流式与非流式、responses、embeddings、两种类型的 messages、图片、视频提交），11 条全部通过，没有例外。

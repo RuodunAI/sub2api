@@ -62,7 +62,7 @@ sh next/deploy/e2e/test.sh
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
 
-用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC38 是同批的授权代理票据：
+用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC37、AC38 是同批的插件联网与授权代理票据：
 
 | 用例 | 内容 |
 |---|---|
@@ -72,6 +72,7 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 | AC33 | 旧契约的清单在上传时以固定信息被拒、不留版本行；旧协议的二进制在首次启用时加载被拒，发布在准备阶段失败后插件列表的 `refusal` 仍给出代码、版本、核心版本和信息 |
 | AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
 | AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
+| AC37 | 插件联网（CONTRACTS §113）：guard 的 webhook 告警在默认设置下送达 mock；mock 的主机进屏蔽列表后连接被拒、出口日志记 `denied` 和屏蔽原因；切到“屏蔽所有域名”而允许列表没有它时被拒，加进允许列表后送达。设置只管新建连接，用例先等 guard 到 mock 的空闲连接关闭；保存与触发都发到节点 1（另一节点要等广播）；结束时恢复默认 |
 | AC38 | codex 授权走账号表单选的代理（CONTRACTS §117）：已有代理、粘贴的代理串、不用代理三种选择下，设备码登录的全部请求（申请、一次待批准的轮询、批准的轮询、换令牌）到达 `auth.openai.com` 时全部经过代理或全部直连，粘贴的代理串不留代理记录；令牌经 `POST /accounts` 建成账号后经网关发一条请求到 Codex 后端并计费；Sign in with Codex 的换令牌经已有代理 |
 
 插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。

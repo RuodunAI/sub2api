@@ -54,7 +54,7 @@
 
 - 存在 `settings` 表 `plugin_egress` 行（JSON `{mode, blocked_domains, allowed_domains}`），写法同其他系统设置（`store.UpdateSettingJSONTx` 在事务里锁行改写）。
 - 接口 `GET /settings/plugin-egress`（`settings:read`）、`PUT /settings/plugin-egress`（`settings:manage`），与网关设置、环境变量等系统设置同一组权限；`PUT` 的字段都可省略，省略的保持原值，列表整体替换。写入在同一事务里记审计 `settings.plugin_egress.update`（`detail` 是保存后的整份设置），因为按插件的出口策略也记审计。
-- 每个节点的出口隧道缓存这份设置 10 秒（与网关设置、环境变量的刷新间隔相同）；保存后本节点立即失效，并广播 `config:changed {"key":"settings.plugin_egress"}`，其他节点收到即失效，漏收时最多 10 秒后读到新值。只影响之后的新连接和 DNS 查询，已经建立的连接不断开。
+- 每个节点的出口隧道缓存这份设置 10 秒（与网关设置、环境变量的刷新间隔相同）；保存后本节点立即失效，并广播 `config:changed {"key":"settings.plugin_egress"}`，其他节点收到即失效，漏收时最多 10 秒后读到新值。只影响之后的新连接和 DNS 查询，已经建立的连接不断开；插件手里已有的空闲保活连接（例如 HTTP 客户端连接池里的）会被继续复用，要等它自己关闭（Go 的默认空闲超时 90 秒）之后，新设置才管到这个目标。多节点下，保存的节点立即生效，其他节点要收到广播（或缓存过期）才生效，中间有一小段仍按旧设置判断。
 - 读失败时沿用上次读到的设置；从来没有读成功过（节点刚启动时数据库不可用）时拒绝连接，原因 `plugin network access settings could not be read`，不按默认放行，以免 `block_all` 在故障时失效。
 
 ### 2.5 日志

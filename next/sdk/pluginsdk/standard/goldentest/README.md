@@ -144,5 +144,5 @@ func Unwrap(message string) string
 
 - `Subject` 的五个函数都要给。缺一个，那一类的每条样例都报错，不会悄悄跳过。
 - `Classify` 收到样例的时钟 `now`，实现必须用它而不是系统时间（冷却到期时间在期望值里）。
-- `Execute` 的适配器负责像核心那样过滤客户端请求头：只把 `client_headers` 里 `pass_headers`（`File.PassHeaders`）列出的交给被测实现。线上是核心按清单的 `passHeaders` 过滤之后才调插件，插件不再筛；样例故意多给的头（`authorization`、`cookie` 等）因此由适配器挡掉，不出现在上游请求里仍然是被比较的结果。`standardtest.Run` 就是这样做的。
+- `Execute` 的适配器负责像核心那样过滤客户端请求头：只把 `client_headers` 里 `pass_headers`（`File.PassHeaders`）列出的交给被测实现。线上是核心按清单的 `passHeaders` 过滤之后才调插件，插件不再筛；样例故意多给的头（`authorization`、`cookie` 等）因此由适配器挡掉，不出现在上游请求里仍然是被比较的结果。`standardtest.Run(t, plugin, manifestPath, p)` 就是这样做的，并且先核对插件清单（`manifestPath`）交给文件账号类型的客户端请求头与 `pass_headers` 完全一致，清单改了而样例没跟上时直接失败。
 - `Except(name, reason)` 声明的样例必须**真的不同**：声明了却与样例一致、或者名字不存在，测试失败。这样例外清单不会比它的理由活得久。

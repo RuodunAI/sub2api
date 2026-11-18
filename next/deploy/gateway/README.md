@@ -88,7 +88,7 @@ docker compose exec node-a sub2api-gateway status
 docker compose up -d node-b
 ```
 
-先确认主节点完成首装，再启动从节点。从节点从主节点拉取已校验的核心制品；插件依据共享数据库中的安装状态自行同步（插件包向持有它的任一在线节点取），全部就绪后才能准入。
+先确认主节点完成首装，再启动从节点。从节点从主节点拉取已校验的核心制品；插件依据共享数据库中的安装状态自行同步（插件包向持有它的任一在线节点取），全部就绪后才能准入。插件包不再依赖主节点，但**新节点加入（以及从节点的核心升级）仍要主节点在线**：核心发布包只从主节点取（非主节点的准备步骤以主节点的 `<peer_url>/internal/blobs` 为来源，`internal/control/engine.go`），主节点离线时新节点拿不到核心、起不来。
 
 ## 更新源与一键更新
 
@@ -167,6 +167,8 @@ docker compose exec node-a sub2api-gateway enable-node -id node-b
 ```
 
 停用节点会持久撤销身份和核心准入，再使Redis登记失效；重新启用只允许它重新登记，仍须完成版本同步、插件加载和准入。主节点停机期间通过本机管理socket执行恢复命令，不依赖控制台在线。
+
+更换主节点用 `sub2api-gateway set-primary -node <节点>`（在集群变更锁内执行；没有进行中的升级计划，新主节点必须已启用且运行当前基线），它只改 PG 里的 `primary_node`。**之后还要把每个节点网关配置（容器里的 `/etc/sub2api/shell.json`，本目录示例是 `config/node-*.json`）里的 `primary_node` 改成新主节点，并逐个重启网关**：升级计划和核心制品来源读 PG，但网关切流的检查读配置文件（`LocalRuntime.PrimaryNode`，`internal/control/runtime.go` 的 `redirectLocked`：主节点不转发给从节点、从节点只转发给“配置的”主节点）。配置不改时，下一次主节点优先升级里从节点转发到新主节点会被拒绝（`followers may redirect only to the configured primary`），升级停在转发步骤。
 
 暂停在步骤边界生效，已开始的排空/替换会安全收尾。仅尚未切流的计划允许 `cancel`。失败后先修复原因再恢复同一计划；从节点更新失败时，已就绪主节点继续服务，从节点继续转发。主节点更新失败时保留维护状态，不擅自启动旧从节点。
 
