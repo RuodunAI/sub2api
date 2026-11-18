@@ -42,8 +42,8 @@ var checks = []check{
 	{"05_no_retry", "after a failed relay or fetch the plugin neither relays nor fetches again and returns an error or a classification (" + design + "§14.1.5, §4.7, §5.4)", perCase(checkNoRetry)},
 	{"06_deterministic", "the same input with a fixed clock builds the same request (" + design + "§14.1.6, §4.6)", perCase(checkDeterministic)},
 	{"07_failover", "an attempt > 0 is built from scratch for its account, never reused (" + design + "§14.1.7, §4.2)", perCase(checkFailover)},
-	{"09_cancellation", "after its context is cancelled Execute returns promptly, within the suite's CallTimeout (" + design + "§14.1.9, §8.4)", perCase(checkCancellation)},
-	{"10_large_body", "a large body (BodyLimit) completes with plugin-side allocation within 4x the body (" + design + "§14.1.10, §8.3, §10.1)", perCase(checkLargeBody)},
+	{"09_cancellation", "after its context is cancelled Execute returns promptly, within the suite's cancelWait (" + design + "§14.1.9, §8.4)", perCase(checkCancellation)},
+	{"10_large_body", "a large body (largeBodySize) completes with plugin-side allocation within 4x the body (" + design + "§14.1.10, §8.3, §10.1)", perCase(checkLargeBody)},
 	{"11_websocket", "a plugin declaring platform.websocket.v1 relays a turn once without waiting, with the handshake URL, handshake headers and the final message, and no response_stream (" + design + "§14.1.11, §4.8)", webSocketItems},
 	{"08_no_sockets", "the plugin opens no socket: every exchange goes through Relay, RelayAndWait or Fetch (" + design + "§14.1.8, §5.1, §5.4)", noSocketItems},
 }
@@ -332,8 +332,8 @@ func checkCancellation(s *suite, t testing.TB, c *Case) {
 	cancel()
 	select {
 	case <-call.returned:
-	case <-time.After(s.p.CallTimeout):
-		t.Errorf("Execute was still running %v after its context was cancelled; pass the call's ctx to Relay, RelayAndWait and Fetch and wait on nothing else", s.p.CallTimeout)
+	case <-time.After(cancelWait):
+		t.Errorf("Execute was still running %v after its context was cancelled; pass the call's ctx to Relay, RelayAndWait and Fetch and wait on nothing else", cancelWait)
 	}
 }
 
@@ -343,7 +343,7 @@ func checkLargeBody(s *suite, t testing.TB, c *Case) {
 	if raceEnabled {
 		t.Skip("skipped under -race: the race detector changes what is allocated, so the 4x bound is measured in a build without it")
 	}
-	body, err := pad(c.Body, s.p.BodyLimit)
+	body, err := pad(c.Body, largeBodySize)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}

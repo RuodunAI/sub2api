@@ -54,15 +54,6 @@ type Plugin struct {
 	// every Execute. Required when the request depends on the time (a
 	// signature), or the determinism and failover rules fail.
 	FixClock func(now time.Time)
-	// BodyLimit is the size the large-body rule pads a case's body to
-	// (default 8 MiB). It only sets the size measured: the host bounds no
-	// body a plugin is handed or relays; the gateway's max_request_body_mb
-	// applies to the client's request alone.
-	BodyLimit int
-	// CallTimeout is how long the cancellation rule waits for Execute to
-	// return once its context is cancelled (default 2s). The host does not
-	// time a plugin's own work during Execute; this is the suite's bound.
-	CallTimeout time.Duration
 	// Exceptions are the rule violations the plugin justifies.
 	Exceptions []Exception
 }
@@ -127,8 +118,14 @@ type Exception struct {
 }
 
 const (
-	defaultBodyLimit   = 8 << 20
-	defaultCallTimeout = 2 * time.Second
+	// largeBodySize is the size the large-body rule pads a case's body to.
+	// It only sets the size measured: the host bounds no body a plugin is
+	// handed or relays.
+	largeBodySize = 8 << 20
+	// cancelWait is how long the cancellation rule waits for Execute to
+	// return once its context is cancelled: the suite's bound, the host does
+	// not time a plugin's own work.
+	cancelWait = 2 * time.Second
 	// executeTimeout bounds every Execute of the suite.
 	executeTimeout = 30 * time.Second
 )
@@ -178,12 +175,6 @@ func newSuite(p Plugin, cases []Case) (*suite, error) {
 		return nil, err
 	}
 	s.declared = d
-	if s.p.BodyLimit <= 0 {
-		s.p.BodyLimit = defaultBodyLimit
-	}
-	if s.p.CallTimeout <= 0 {
-		s.p.CallTimeout = defaultCallTimeout
-	}
 	errs := []error{s.checkPlugin()}
 	names := map[string]bool{}
 	for i := range cases {

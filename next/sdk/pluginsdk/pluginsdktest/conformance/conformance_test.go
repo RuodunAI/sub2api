@@ -224,9 +224,7 @@ func fakePlugin(violate string) Plugin {
 			token := "at-" + gjson.GetBytes(in.GetBody(), "refresh_token").String()
 			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"access_token":"` + token + `"}`)}, nil
 		},
-		FixClock:    f.setClock,
-		BodyLimit:   1 << 20,
-		CallTimeout: 300 * time.Millisecond,
+		FixClock: f.setClock,
 	}
 }
 
