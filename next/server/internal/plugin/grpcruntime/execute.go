@@ -92,7 +92,7 @@ func refusal(err error) string {
 }
 
 // ExecuteHTTP is the fetch form: one bounded exchange for the plugin, during
-// an Execute or a Monitor call.
+// an Execute, a Monitor or a console route call (CONTRACTS §117).
 func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (out *pluginv1.ExecutionHTTPResponse, err error) {
 	sc, err := h.enter(in.GetExecutionToken())
 	if err != nil {
@@ -109,6 +109,9 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 	}
 	if err := h.requireFetchHost(sc, in.GetUrl()); err != nil {
 		return nil, err
+	}
+	if (in.GetProxyTicket() != "") != sc.route {
+		return nil, status.Error(codes.PermissionDenied, "a fetch carries a proxy ticket in a console route call, and only there")
 	}
 	cctx, cancel := sc.hostContext(ctx)
 	defer cancel()
@@ -127,7 +130,8 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 
 // requireFetchHost accepts the http(s) URL of a fetch whose host the
 // manifest allows for the account (manifest.Manifest.FetchHostAllowed: its
-// externalServices or the account's own upstream addresses). Whether the
+// externalServices or the account's own upstream addresses; a route call has
+// no account, so only externalServices). Whether the
 // address may be reached at all (the SSRF policy, the account's proxy) is
 // the fetch's to decide, not this check's.
 func (h *hostServer) requireFetchHost(sc *callScope, raw string) error {

@@ -295,9 +295,35 @@ type httpAdapter struct{ i *Instance }
 // HandleHTTP records the caller, and its access key, for as long as the
 // plugin serves the request: AccountScopeCheck only answers about a user the
 // plugin is serving, and both checks are narrowed by the key (callerSet).
+// A call by a user also gets an execution token for its fetches, which
+// carry the proxy ticket of an account being authorized (CONTRACTS §117).
 func (a httpAdapter) HandleHTTP(ctx context.Context, in *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
-	defer a.i.callers.enter(ctx, in.GetCaller().GetUserId())()
-	return invoke(a.i, ctx, classConsole, TimeoutHTTP, httpOf, pluginv1.HTTPServiceClient.HandleHTTP, in)
+	uid := in.GetCaller().GetUserId()
+	defer a.i.callers.enter(ctx, uid)()
+	if uid <= 0 {
+		return invoke(a.i, ctx, classConsole, TimeoutHTTP, httpOf, pluginv1.HTTPServiceClient.HandleHTTP, in)
+	}
+	var out *pluginv1.HTTPResponse
+	err := a.i.call(ctx, classConsole, TimeoutHTTP, func(ctx context.Context, p *proc) (err error) {
+		sc := &callScope{client: core.ExecutionClient{Fetch: a.fetchWithProxyTicket}, route: true}
+		out, err = withScope(ctx, p, sc, func(ctx context.Context, token string) (*pluginv1.HTTPResponse, error) {
+			req := shallowClone(in)
+			req.ExecutionToken = token
+			return p.http.HandleHTTP(ctx, req)
+		})
+		return err
+	})
+	return out, err
+}
+
+// fetchWithProxyTicket is the fetch of a route call: the account module
+// opens the ticket for the call's user (ctx) and sends through its proxy.
+func (a httpAdapter) fetchWithProxyTicket(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+	f, ok := a.i.rt.o.Accounts.(core.ProxyTicketFetcher)
+	if !ok {
+		return nil, core.ErrUnavailable.WithMessage("proxy tickets are unavailable")
+	}
+	return f.FetchWithProxyTicket(ctx, a.i.pkg.Key, in)
 }
 
 type schedAdapter struct{ i *Instance }

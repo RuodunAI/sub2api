@@ -172,6 +172,8 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("POST", "/accounts/:id/test", s.test, perm.AccountTest)
 	r.PermScoped("POST", "/accounts/:id/models/fetch", s.fetchAccountModels, perm.AccountTest).Uses(perm.AccountRelay)
 	r.PermScoped("POST", "/account-types/:plugin_key/:type/models/fetch", s.fetchTypeModels, perm.AccountCreate).Uses(perm.AccountRelay)
+	// The proxy of an authorization flow before the account exists (CONTRACTS §117).
+	r.PermScoped("POST", "/account-types/:plugin_key/:type/proxy-ticket", s.issueProxyTicket, perm.AccountCreate, perm.AccountUpdate)
 	// Plain-text credentials: a step-up proof each time (CONTRACTS §80.2).
 	r.StepUp(core.StepUpCredentialReveal).PermScoped("POST", "/accounts/:id/credentials/reveal", s.reveal, perm.AccountCredentialView)
 	// Subscription quota and balance (CONTRACTS §44, §51).
