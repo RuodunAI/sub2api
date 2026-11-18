@@ -236,7 +236,7 @@ func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad
 // backendHeaders are the headers of a request to the ChatGPT backend's JSON
 // endpoints (reset credits).
 func backendHeaders(c credentials) map[string]string {
-	h := upstreamHeaders(c)
+	h := accountHeaders(c)
 	h["accept"] = "application/json"
 	return h
 }

@@ -5,44 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/tidwall/gjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
-
-// Request fields the manifest asks the core for (accountTypes[].platforms[]
-// .requestFields), besides "model". They are gjson queries, so the plugin
-// learns what it needs without being handed the whole prompt:
-//
-//   - FieldHasInstructions is 1 when the body has an instructions field,
-//     0 when not (the Codex backend requires one);
-//   - FieldStringInput is the input when it is a JSON string, and absent
-//     when it is an array (the Codex backend requires an array);
-//   - FieldSystemRoles has one entry per item of an array input, in order:
-//     ["system"] for an item whose role is "system", [] for any other item
-//     (another role, no role, not an object). It is absent when the input is
-//     not an array. Only "system" is ever echoed, so the field stays at about
-//     three bytes per item whatever the items hold;
-//   - FieldPromptCacheKey is the client's prompt_cache_key (sessionHeaders).
-const (
-	FieldHasInstructions = "[instructions]|#"
-	FieldStringInput     = `[input]|#(%"*")`
-	FieldSystemRoles     = `input.#.[role].#(=="system")#`
-	FieldPromptCacheKey  = "prompt_cache_key"
-)
-
-// maxRoleRewrites caps the role patches of one request. Each patch is a copy
-// of the body in the core, so a body made of thousands of system items would
-// cost thousands of copies; real requests carry a few. Items past the cap are
-// left as they are (the upstream answers its own error).
-const maxRoleRewrites = 256
 
 // unsupportedFields are body fields the ChatGPT Codex backend rejects
 // ("Unsupported parameter"); they are removed, not reinterpreted.
@@ -67,10 +42,12 @@ func removedFields(ws bool) []string {
 	return slices.DeleteFunc(slices.Clone(unsupportedFields), func(f string) bool { return f == wsKept })
 }
 
-// upstreamHeaders are the upstream headers of an account: the bearer token,
-// the ChatGPT account and sup2api's own, truthful identification. No client
-// header is forwarded.
-func upstreamHeaders(c credentials) map[string]string {
+// accountHeaders are the headers that must reach the upstream as built, so
+// they are authoritative (written after the operator's header settings): the
+// bearer token and the ChatGPT account it acts for, and sup2api's own,
+// truthful identification, which no passthrough or override may turn into
+// another client's. No client header is forwarded.
+func accountHeaders(c credentials) map[string]string {
 	h := map[string]string{
 		"authorization": "Bearer " + c.AccessToken,
 		"originator":    Originator,
@@ -82,22 +59,24 @@ func upstreamHeaders(c credentials) map[string]string {
 	return h
 }
 
-// sessionHeaders add the upstream session of the request's conversation.
-// The Codex backend keeps a conversation's prompt cache on the machine its
-// session picks; without one the turns land anywhere and most of a long
-// prompt is read uncached. The session is derived from the client's
-// prompt_cache_key - the key the core's sticky rule already binds the
-// conversation to one account by - mixed with the API key, so two keys
+// httpHeaders are the defaults of an HTTP request: the upstream only streams.
+var httpHeaders = map[string]string{"accept": "text/event-stream", "content-type": "application/json"}
+
+// upstreamSession is the upstream session of the request's conversation,
+// "" for none. The Codex backend keeps a conversation's prompt cache on the
+// machine its session picks; without one the turns land anywhere and most
+// of a long prompt is read uncached. The session is derived from the
+// client's prompt_cache_key - the key the core's sticky rule already binds
+// the conversation to one account by - mixed with the API key, so two keys
 // sending the same prompt_cache_key never share an upstream session and the
-// client's value is not echoed. A request without the key gets none.
-func sessionHeaders(h map[string]string, apiKeyID int64, fields map[string]string) {
-	var key string
-	if json.Unmarshal([]byte(fields[FieldPromptCacheKey]), &key) != nil || key == "" {
-		return
+// client's value is not echoed. A body without the key (or with a key that
+// is not a non-empty string) gets none.
+func upstreamSession(apiKeyID int64, body []byte) string {
+	key := gjson.GetBytes(body, "prompt_cache_key")
+	if key.Type != gjson.String || key.Str == "" {
+		return ""
 	}
-	id := upstreamSessionID(apiKeyID, key)
-	h["session_id"] = id
-	h["conversation_id"] = id
+	return upstreamSessionID(apiKeyID, key.Str)
 }
 
 // upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the API key
@@ -127,14 +106,6 @@ func accountCredentials(acc *pluginv1.Account) (credentials, error) {
 	return c, nil
 }
 
-func set(path, valueJSON string) *pluginv1.BodyPatch {
-	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_SET, Path: path, ValueJson: valueJSON}
-}
-
-func del(path string) *pluginv1.BodyPatch {
-	return &pluginv1.BodyPatch{Op: pluginv1.BodyPatch_OP_DELETE, Path: path}
-}
-
 // userMessage is a Responses input array holding one user text message.
 func userMessage(text string) string {
 	b, _ := json.Marshal([]map[string]any{{
@@ -144,48 +115,84 @@ func userMessage(text string) string {
 	return string(b)
 }
 
-// BuildUpstreamRequest implements pluginsdk.Platform.
+// Execute implements pluginsdk.Executor: build the request (BuildUpstream)
+// and hand it to the host without waiting; the host sends it after Execute
+// returned and reads the usage by the openai platform's rules (host_usage).
+func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
+	return pluginsdk.ExecuteDefault(ctx, p, in)
+}
+
+// BuildUpstream implements pluginsdk.UpstreamBuilder.
 //
 // HTTP (openai.responses): POST to the Codex backend's Responses endpoint
-// with the body patches of bodyPatches. stream is not touched: the upstream
-// only streams, and the core turns a non-streaming request into a
-// streaming one for account types that declare streamOnly (CONTRACTS §83).
+// with the body made acceptable by codexBody. stream is not touched: the
+// upstream only streams, and the core sets it before Execute for account
+// types that declare streamOnly; keeping it is all the plugin does.
 //
-// WebSocket (openai.responses_ws): GET on the wss URL with the beta header.
-// The core calls this for every turn's response.create message (the first
-// call also opens the connection, CONTRACTS §83.6), so the same patches are
-// returned for that message, without the stream fields.
-func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
+// WebSocket (openai.responses_ws): one call per turn, the body being the
+// turn's response.create message. The request is the handshake (GET on the
+// ws(s) URL with the beta header) and the edited message; the core opens
+// the connection with the handshake of the session's first turn and sends
+// every turn's message on it.
+func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	c, err := accountCredentials(in.GetAccount())
 	if err != nil {
 		return nil, err
 	}
-	resp := &pluginv1.BuildUpstreamRequestResponse{
-		Method:        http.MethodPost,
-		Url:           p.responsesURL(),
-		Headers:       upstreamHeaders(c),
-		UpstreamModel: pluginsdk.RequestModel(in),
+	u, ws, err := p.transport(in.GetMeta().GetProtocol())
+	if err != nil {
+		return nil, err
 	}
-	ws := false
-	switch proto := in.GetMeta().GetProtocol(); proto {
-	case ProtocolResponsesWS:
-		if err := webSocketRequest(resp); err != nil {
-			return nil, err
-		}
-		ws = true
-	case ProtocolResponses:
-		resp.Headers["accept"] = "text/event-stream"
-		resp.Headers["content-type"] = "application/json"
-	default:
-		return nil, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", proto)
+	body, err := codexBody(in.GetBody(), ws)
+	if err != nil {
+		return nil, err
 	}
-	sessionHeaders(resp.Headers, in.GetMeta().GetApiKeyId(), in.GetFields())
-	resp.Patches = bodyPatches(ws, in.GetFields())
-	return resp, nil
+	for name, value := range accountHeaders(c) {
+		u.Header(name, value)
+	}
+	session := upstreamSession(in.GetMeta().GetApiKeyId(), body)
+	return u.DefaultHeader("session_id", session).
+		DefaultHeader("conversation_id", session).
+		Body(body).
+		Model(pluginsdk.RequestModel(in)).
+		Build()
 }
 
-// bodyPatches make a Responses body (an HTTP request or a WebSocket
-// response.create message) one the Codex backend accepts:
+// transport starts the request of an upstream protocol: the HTTP request
+// or the WebSocket handshake, with the defaults of each.
+func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err error) {
+	switch protocol {
+	case ProtocolResponses:
+		u = pluginsdk.NewUpstream(http.MethodPost, p.responsesURL())
+		for name, value := range httpHeaders {
+			u.DefaultHeader(name, value)
+		}
+		return u, false, nil
+	case ProtocolResponsesWS:
+		wsURL, err := webSocketURL(p.responsesURL())
+		if err != nil {
+			return nil, false, err
+		}
+		return pluginsdk.NewUpstream(http.MethodGet, wsURL).DefaultHeader("openai-beta", WebSocketBeta), true, nil
+	default:
+		return nil, false, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
+	}
+}
+
+// webSocketURL is the ws(s) URL of an http(s) one.
+func webSocketURL(httpURL string) (string, error) {
+	if rest, ok := strings.CutPrefix(httpURL, "https://"); ok {
+		return "wss://" + rest, nil
+	}
+	if rest, ok := strings.CutPrefix(httpURL, "http://"); ok {
+		return "ws://" + rest, nil
+	}
+	return "", status.Errorf(codes.Internal, "upstream URL %q has no http(s) scheme", httpURL)
+}
+
+// codexBody makes a Responses body (an HTTP request or a WebSocket
+// response.create message) one the Codex backend accepts, editing the
+// received bytes in place of the fields concerned (body.go):
 //
 //   - store=false (stored responses are refused);
 //   - a string input becomes an array holding one user message (an array
@@ -194,70 +201,67 @@ func (p *Plugin) BuildUpstreamRequest(_ context.Context, in *pluginv1.BuildUpstr
 //     developer messages carry the system prompt);
 //   - instructions "" when the body has none (the field is required);
 //   - the fields the upstream refuses are removed (removedFields).
-func bodyPatches(ws bool, fields map[string]string) []*pluginv1.BodyPatch {
-	patches := []*pluginv1.BodyPatch{set("store", "false")}
-	if raw, ok := fields[FieldStringInput]; ok && raw != "" {
-		var s string
-		if json.Unmarshal([]byte(raw), &s) == nil {
-			if strings.TrimSpace(s) == "" {
-				patches = append(patches, set("input", "[]"))
-			} else {
-				patches = append(patches, set("input", userMessage(s)))
+func codexBody(body []byte, ws bool) ([]byte, error) {
+	obj, ok := parseObject(body)
+	if !ok {
+		return nil, status.Error(codes.InvalidArgument, "the request body is not a JSON object")
+	}
+	removed := removedFields(ws)
+	drop := func(m member) bool { return slices.Contains(removed, m.key.Str) }
+	var edits []edit
+	has := map[string]bool{}
+	for _, m := range obj.members {
+		if drop(m) {
+			continue
+		}
+		has[m.key.Str] = true
+		switch m.key.Str {
+		case "store":
+			if m.value.Raw != "false" {
+				edits = append(edits, replaceValue(m.value, "false"))
 			}
+		case "input":
+			edits = append(edits, inputEdits(m.value)...)
 		}
 	}
-	patches = append(patches, systemToDeveloper(fields[FieldSystemRoles])...)
-	if fields[FieldHasInstructions] == "0" {
-		patches = append(patches, set("instructions", `""`))
+	var added []string
+	if !has["store"] {
+		added = append(added, `"store":false`)
 	}
-	for _, f := range removedFields(ws) {
-		patches = append(patches, del(f))
+	if !has["instructions"] {
+		added = append(added, `"instructions":""`)
 	}
-	return patches
+	return splice(body, append(edits, obj.reshape(drop, added...)...)), nil
 }
 
-// systemToDeveloper turns the FieldSystemRoles value into input.<i>.role
-// patches, one per system item, at most maxRoleRewrites.
-func systemToDeveloper(raw string) []*pluginv1.BodyPatch {
-	if raw == "" {
-		return nil
-	}
-	var items [][]string
-	if json.Unmarshal([]byte(raw), &items) != nil {
-		return nil
-	}
-	var out []*pluginv1.BodyPatch
-	for i, roles := range items {
-		if len(roles) == 1 && roles[0] == "system" {
-			out = append(out, set("input."+strconv.Itoa(i)+".role", `"developer"`))
-			if len(out) == maxRoleRewrites {
-				break
-			}
-		}
-	}
-	return out
-}
-
-// webSocketRequest turns the HTTP request into the WebSocket handshake.
-func webSocketRequest(resp *pluginv1.BuildUpstreamRequestResponse) error {
+// inputEdits turn a string input into an array and system items into
+// developer items.
+func inputEdits(input gjson.Result) []edit {
 	switch {
-	case strings.HasPrefix(resp.Url, "https://"):
-		resp.Url = "wss://" + strings.TrimPrefix(resp.Url, "https://")
-	case strings.HasPrefix(resp.Url, "http://"):
-		resp.Url = "ws://" + strings.TrimPrefix(resp.Url, "http://")
+	case input.Type == gjson.String:
+		if strings.TrimSpace(input.Str) == "" {
+			return []edit{replaceValue(input, "[]")}
+		}
+		return []edit{replaceValue(input, userMessage(input.Str))}
+	case input.IsArray():
+		var edits []edit
+		input.ForEach(func(_, item gjson.Result) bool {
+			if role, ok := systemRole(item); ok {
+				edits = append(edits, replaceValue(role, `"developer"`))
+			}
+			return true
+		})
+		return edits
 	default:
-		return status.Errorf(codes.Internal, "upstream URL %q has no http(s) scheme", resp.Url)
+		return nil
 	}
-	resp.Method = http.MethodGet
-	resp.Headers["openai-beta"] = WebSocketBeta
-	return nil
 }
 
-// Execute implements pluginsdk.Executor with the shared SDK flow: build the
-// upstream request, forward it through the host and let the host record the
-// usage with the declarative rules.
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
+// systemRole returns the role of an input item whose role is the string
+// "system".
+func systemRole(item gjson.Result) (gjson.Result, bool) {
+	role := item.Get("role")
+	return role, role.Type == gjson.String && role.Str == "system"
 }
 
 // BuildTestRequest implements pluginsdk.Platform: the smallest streaming
@@ -279,9 +283,8 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 		"store":        false,
 		"stream":       true,
 	})
-	h := upstreamHeaders(c)
-	h["accept"] = "text/event-stream"
-	h["content-type"] = "application/json"
+	h := accountHeaders(c)
+	maps.Copy(h, httpHeaders)
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        http.MethodPost,
 		Url:           p.responsesURL(),
