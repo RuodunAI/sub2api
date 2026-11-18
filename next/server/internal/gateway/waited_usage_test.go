@@ -54,9 +54,9 @@ func relayThen(answer func(out *pluginv1.RelayUpstreamResponse) (*pluginv1.Execu
 	}
 }
 
-// waitedEnv is usageEnv with the account type's plugin replaced by a
+// scriptedUsageEnv is usageEnv with the account type's plugin replaced by a
 // waitedPlugin running exec.
-func waitedEnv(t *testing.T, exec func(context.Context, *fakePlatform, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error)) (*env, *fakePlatform) {
+func scriptedUsageEnv(t *testing.T, exec func(context.Context, *fakePlatform, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error)) (*env, *fakePlatform) {
 	t.Helper()
 	e, pp := usageEnv(t, pluginUsageRules())
 	for i := range e.gen.accountTypes {
@@ -99,7 +99,7 @@ func TestWaitedRelayWithoutFactsIsUnreported(t *testing.T) {
 	}
 	for name, answer := range cases {
 		t.Run(name, func(t *testing.T) {
-			e, _ := waitedEnv(t, relayThen(answer))
+			e, _ := scriptedUsageEnv(t, relayThen(answer))
 			res := e.do("/pu/v1/chat", body(testModel, false), nil)
 			if res.status != 503 || strings.Contains(string(res.body), "hello") {
 				t.Fatalf("held-back answer published: %d %s", res.status, res.body)
@@ -115,7 +115,7 @@ func TestWaitedRelayWithoutFactsIsUnreported(t *testing.T) {
 // A streamed answer already reached the client when the facts fail to come:
 // the record is still the free unreported one.
 func TestWaitedRelayStreamWithoutFactsIsUnreported(t *testing.T) {
-	e, _ := waitedEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
 		return &pluginv1.ExecuteResponse{}, nil
 	}))
 	e.do("/pu/v1/chat", body(testModel, true), nil)
@@ -199,7 +199,7 @@ func TestWaitedRelayUpstreamErrorClassification(t *testing.T) {
 			if name == "plugin" {
 				e, pp = usageEnv(t, pluginUsageRules())
 			} else {
-				e, pp = waitedEnv(t, relayThen(func(out *pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+				e, pp = scriptedUsageEnv(t, relayThen(func(out *pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
 					if out.GetError() != nil {
 						return &pluginv1.ExecuteResponse{}, nil
 					}
@@ -253,7 +253,7 @@ func TestWaitedRelayUpstreamClientError(t *testing.T) {
 // crash, a kill) cuts the upstream exchange; nothing is billed.
 func TestWaitedRelayPluginCrashCutsTheUpstream(t *testing.T) {
 	var e *env
-	e, _ = waitedEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+	e, _ = scriptedUsageEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
 		req, err := p.buildUpstream(ctx, in)
 		if err != nil {
 			return core.ExecutionResult{}, err

@@ -284,9 +284,11 @@ func TestWebSocketHandshakeHeaderOverride(t *testing.T) {
 	assert.Empty(t, h.Get("X-Other"), "no passthrough on a WebSocket")
 }
 
-// On a WebSocket the header override resolves on its own: when the first
-// message's rewrites fail (the turn reports it) the handshake still carries
-// it, and a stored one that no longer compiles fails the account over.
+// On a WebSocket the first turn's rewrites run before its Execute, as on
+// HTTP: when they fail on an account the turn moves to the next one without
+// blaming it, and the handshake made there carries none of the failed
+// account's headers. A stored header override that no longer compiles fails
+// the account over too.
 func TestWebSocketHeaderOverrideIndependentOfTheBody(t *testing.T) {
 	t.Run("rewrite fails", func(t *testing.T) {
 		e := newWSEnv(t)
@@ -295,18 +297,17 @@ func TestWebSocketHeaderOverrideIndependentOfTheBody(t *testing.T) {
 			{"mode":"set_header","path":"x-op","value":"op"}]}`)
 		c := e.mustDial()
 		c.send(create(wsModel, "first"))
-		ev := c.until("error")
-		assert.Equal(t, "param_override_failed", ev[0].Get("error.code").String(), "%v", ev)
-		e.record()
-		c.send(create(wsModel, "second"))
 		c.until("response.completed")
-		e.record()
+		r := e.record()
+		require.NotNil(t, r.AccountID)
+		assert.NotEqual(t, int64(11), *r.AccountID)
+		assert.Empty(t, e.accounts.cooldowns)
 		e.wsUp.mu.Lock()
 		headers := e.wsUp.headers
 		e.wsUp.mu.Unlock()
 		require.Len(t, headers, 1)
-		assert.Equal(t, "static-1", headers[0].Get("X-Static"))
-		assert.Empty(t, headers[0].Get("X-Op"), "the failed rewrite's headers are not the handshake's")
+		assert.Empty(t, headers[0].Get("X-Static"))
+		assert.Empty(t, headers[0].Get("X-Op"))
 	})
 	t.Run("broken", func(t *testing.T) {
 		e := newWSEnv(t)

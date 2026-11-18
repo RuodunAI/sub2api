@@ -205,6 +205,7 @@ func TestExecuteWaitedTooLargeObservationKeepsHostReading(t *testing.T) {
 			ep.UsageMaxBytes = 16
 		}
 	}
+	e.reg.set(e.gen)
 	var shown atomic.Int64
 	e.plat.extract = func(_ context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 		shown.Store(int64(len(in.GetBody())))

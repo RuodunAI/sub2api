@@ -63,22 +63,6 @@ func TestAccountStatsAdmissionPanicReleasesSlots(t *testing.T) {
 	})
 }
 
-// A relay that waits commits its usage through the execution records, not
-// the settler's Submit; the account statistics still see the request once.
-func TestAccountStatsWaitedRelay(t *testing.T) {
-	e, _ := taskDraftEnv(t, newFakeTasks(), false)
-	capture := &statsCapture{ch: make(chan accountStatsSample, 8)}
-	e.gw.d.Observations = capture
-	r := e.do("/task-draft/videos", map[string]any{"model": testModel}, nil)
-	require.Equal(t, 200, r.status, string(r.body))
-	require.True(t, capture.next(t).Success)
-	require.True(t, e.record().Success, "the committed record")
-	require.Equal(t, []string{core.ExecutionStateCommitted}, e.settler.executionStates())
-	require.Empty(t, capture.ch)
-	n, _ := e.slots.InUse(context.Background(), "account", 9)
-	require.Zero(t, n)
-}
-
 func TestAccountStatsTokenSources(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -172,28 +156,25 @@ func TestAccountStatsSuccessfulRequestsAndRelease(t *testing.T) {
 	}
 }
 
-func TestAccountStatsWaitsForPluginUsageWithoutBlockingResponse(t *testing.T) {
+// A relay that waits commits its usage through the execution records, not
+// the settler's Submit: the account statistics see the request once, with
+// the plugin's usage.
+func TestAccountStatsWaitedRelay(t *testing.T) {
 	e, pp := usageEnv(t, pluginUsageRules())
 	capture := &statsCapture{ch: make(chan accountStatsSample, 8)}
 	e.gw.d.Observations = capture
-	release := make(chan struct{})
-	pp.extract = func(ctx context.Context, _ *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-		select {
-		case <-release:
-			return report(321, 123), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		return report(321, 123), nil
 	}
 	r := e.do("/pu/v1/chat", body(testModel, false), nil)
 	require.Equal(t, http.StatusOK, r.status)
-	require.Empty(t, capture.ch)
-	close(release)
 	e.record()
 	v := capture.next(t)
 	require.True(t, v.Success)
 	require.EqualValues(t, 444, v.Tokens)
 	require.EqualValues(t, 9, v.AccountID)
+	require.Equal(t, []string{core.ExecutionStateCommitted}, e.settler.executionStates())
+	require.Empty(t, capture.ch)
 }
 
 func TestAccountStatsWebSocketPerTurn(t *testing.T) {

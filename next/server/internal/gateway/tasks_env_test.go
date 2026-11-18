@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -32,9 +34,8 @@ type taskDraftPlatform struct {
 // task parser.
 func (p *taskDraftPlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
 	if p.noWait {
-		parked := *in //nolint:govet // a test copy of the request
-		parked.TaskSubmission = false
-		in = &parked
+		in = proto.Clone(in).(*pluginv1.ExecuteRequest)
+		in.TaskSubmission = false
 	}
 	res, err := fakeExecute(ctx, p, in, client)
 	if p.noTask && res.Response != nil && res.Response.GetTask() != nil {
