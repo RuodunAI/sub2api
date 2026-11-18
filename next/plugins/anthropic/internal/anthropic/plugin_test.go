@@ -29,7 +29,7 @@ func TestCapabilities(t *testing.T) {
 // TestGolden replays the frozen golden cases of the anthropic plugin
 // against the platform the plugin serves.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "anthropic", New().Platform)
+	standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform)
 }
 
 // TestAPIKey: the type passes the library's checks and keeps what the

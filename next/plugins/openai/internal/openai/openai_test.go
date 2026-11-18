@@ -15,7 +15,7 @@ import (
 // TestGolden replays the frozen answers of the released plugin against the
 // platform the plugin serves, with no exceptions.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "openai", New())
+	standardtest.Run(t, "openai", "../../manifest.json", New())
 }
 
 func TestCheck(t *testing.T) {

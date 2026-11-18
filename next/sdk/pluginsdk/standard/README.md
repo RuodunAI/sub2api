@@ -99,7 +99,7 @@ func main() {
 
 ```go
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "openai", New())
+	standardtest.Run(t, "openai", "../../manifest.json", New())
 }
 ```
 
@@ -148,7 +148,7 @@ import (
 func New() *standard.Platform { return standard.New(gemini.APIKey("apikey")) }
 ```
 
-`main.go` 与 openai 的相同，只换 import；测试是 `standardtest.Run(t, "gemini", New())`。
+`main.go` 与 openai 的相同，只换 import；测试是 `standardtest.Run(t, "gemini", "../../manifest.json", New())`。
 
 预设怎么把模型写进路径，可以照着写别的“模型在路径里”的路由：
 
@@ -228,13 +228,13 @@ func RelayKey() standard.Type {
 }
 ```
 
-测试：`standardtest.Run(t, "anthropic", New().Platform)`、`standardtest.Run(t, "relay", New())`。
+测试：`standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform)`、`standardtest.Run(t, "relay", "../../manifest.json", New())`。
 
 azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
 ## 测试
 
-- `standardtest.Run(t, plugin, p)` 用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
+- `standardtest.Run(t, plugin, manifestPath, p)` 先核对插件清单（`manifestPath`）交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致（清单改了而样例没跟上就在这里失败），再用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(t)`：类型配置能通过检查。
 
