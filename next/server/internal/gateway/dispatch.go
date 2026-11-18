@@ -585,8 +585,10 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 // hooks saw the client model), the referenced models' mapping, stream: true
 // for an upstream that only streams (§83), then the built-in override
 // (claude_max_tokens, §84.1) and the account's parameter override (§84),
-// which also decide the headers (param_override.go). It returns the body
-// and the model it goes upstream with, or the attempt's end.
+// which also decide the headers (param_override.go). A body the overrides
+// changed is checked again against the account's usage rules (meterable).
+// It returns the body and the model it goes upstream with, or the
+// attempt's end.
 func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.AccountRef, rt *typeRoute, body []byte, n int) ([]byte, string, *attemptResult) {
 	var err error
 	upModel := ref.MapModel(c.model)
@@ -606,7 +608,31 @@ func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.Ac
 			return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
 		}
 	}
-	return c.rewriteBody(ctx, acc, rt, body, upModel, n)
+	rewritten, upModel, failure := c.rewriteBody(ctx, acc, rt, body, upModel, n)
+	if failure != nil {
+		return nil, "", failure
+	}
+	if !bytes.Equal(rewritten, body) {
+		if e := c.meterable(rt, rewritten); e != nil {
+			return nil, "", &attemptResult{kind: attemptFailover, err: e}
+		}
+	}
+	return rewritten, upModel, nil
+}
+
+// meterable refuses a body the overrides rewrote into an operation or
+// attempts the account's usage rules cannot meter, as scheduling refuses
+// the client's (ineligibleReason): the attempt moves to another account.
+// It reads the body the core hands to the plugin, never the plugin's.
+func (c *call) meterable(rt *typeRoute, body []byte) *gwError {
+	switch {
+	case c.ep.Billing == "free":
+	case !c.routeHasRequiredPrimaryUsageFor(rt, body):
+		return invalidModelReference("account usage rules cannot meter the requested operation")
+	case !c.routeHasRequiredAttempts(rt, body):
+		return invalidModelReference("account usage rules cannot meter the requested attempts")
+	}
+	return nil
 }
 
 // setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host
