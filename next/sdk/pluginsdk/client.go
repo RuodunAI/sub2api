@@ -141,9 +141,6 @@ func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*plugin
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "HTTP request is required")
 	}
-	if err := checkOptions(request.GetOptions()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
 	// A shallow copy: the caller's message keeps its token field and a large
 	// body is not duplicated.
 	return ex.client.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{
@@ -152,6 +149,5 @@ func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*plugin
 		Url:            request.GetUrl(),
 		Headers:        request.GetHeaders(),
 		Body:           request.GetBody(),
-		Options:        request.GetOptions(),
 	}, grpc.MaxCallRecvMsgSize(maxMessageBytes))
 }

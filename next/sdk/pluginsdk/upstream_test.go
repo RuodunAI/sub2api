@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,7 +22,6 @@ func TestUpstreamBuildsTheTwoHeaderKinds(t *testing.T) {
 		DefaultHeaders(http.Header{"Accept": {"a", "b"}}).
 		DefaultHeader("x-empty", "").
 		Body(body).Model("m-upstream").ResponseStream("aws-eventstream-chunk").
-		ResponseHeaderTimeout(1500 * time.Millisecond).TotalTimeout(time.Microsecond).
 		Build()
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +33,6 @@ func TestUpstreamBuildsTheTwoHeaderKinds(t *testing.T) {
 		Body:           body,
 		UpstreamModel:  "m-upstream",
 		ResponseStream: "aws-eventstream-chunk",
-		Options:        &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: 1500, TotalTimeoutMs: 1},
 	}
 	if !proto.Equal(got, want) {
 		t.Fatalf("built %v\nwant  %v", got, want)
@@ -54,10 +51,8 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 		"connection":         {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
 		"transfer-encoding":  {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
 		"line break":         {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
-		"negative timeout":   {NewUpstream("", "https://example.com").TotalTimeout(-time.Second), "negative"},
 		"several at once":    {NewUpstream("", "nope").Header("connection", "x"), "transport"},
 		"websocket is fine":  {NewUpstream("GET", "wss://example.com/v1/realtime"), ""},
-		"huge timeout is ok": {NewUpstream("", "https://example.com").TotalTimeout(1 << 62), ""},
 	} {
 		got, err := tc.build.Build()
 		if tc.want == "" {
@@ -89,7 +84,6 @@ func TestValidateUpstreamRequest(t *testing.T) {
 		"mixed default":       {Url: "https://example.com", DefaultHeaders: map[string]string{"X-A": "x"}},
 		"empty name":          {Url: "https://example.com", Headers: map[string]string{"": "x"}},
 		"transport header":    {Url: "https://example.com", DefaultHeaders: map[string]string{"content-length": "1"}},
-		"negative option":     {Url: "https://example.com", Options: &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: -1}},
 		"no host":             {Url: "https:///x"},
 		"name with (":         {Url: "https://example.com", Headers: map[string]string{"x-(a)": "x"}},
 		"name with /":         {Url: "https://example.com", Headers: map[string]string{"x/a": "x"}},

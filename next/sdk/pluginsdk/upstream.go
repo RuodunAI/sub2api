@@ -3,11 +3,9 @@ package pluginsdk
 import (
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"golang.org/x/net/http/httpguts"
 	"google.golang.org/grpc/codes"
@@ -45,7 +43,6 @@ var transportHeaders = map[string]bool{
 // A name in both takes the authoritative value.
 type Upstream struct {
 	request *pluginv1.UpstreamRequest
-	errs    []error
 }
 
 // NewUpstream starts a request. method "" is POST. rawURL is absolute,
@@ -138,46 +135,10 @@ func (u *Upstream) ResponseStream(format string) *Upstream {
 	return u
 }
 
-// ResponseHeaderTimeout shortens the time the host waits for the response
-// headers. It can only tighten the account's effective value: a longer one
-// changes nothing.
-func (u *Upstream) ResponseHeaderTimeout(d time.Duration) *Upstream {
-	u.options().ResponseHeaderTimeoutMs = u.millis("response header timeout", d)
-	return u
-}
-
-// TotalTimeout shortens the time the whole exchange may take; like
-// ResponseHeaderTimeout it can only tighten.
-func (u *Upstream) TotalTimeout(d time.Duration) *Upstream {
-	u.options().TotalTimeoutMs = u.millis("total timeout", d)
-	return u
-}
-
-func (u *Upstream) options() *pluginv1.UpstreamOptions {
-	if u.request.Options == nil {
-		u.request.Options = &pluginv1.UpstreamOptions{}
-	}
-	return u.request.Options
-}
-
-// millis converts a timeout: a positive one is at least 1 ms, and one too
-// long for the field is no tightening at all (0).
-func (u *Upstream) millis(what string, d time.Duration) int32 {
-	if d < 0 {
-		u.errs = append(u.errs, fmt.Errorf("%s is negative", what))
-		return 0
-	}
-	ms := (d + time.Millisecond - 1) / time.Millisecond
-	if ms > math.MaxInt32 {
-		return 0
-	}
-	return int32(ms)
-}
-
 // Build returns the request, or what makes the host refuse it as an
 // INVALID_ARGUMENT error.
 func (u *Upstream) Build() (*pluginv1.UpstreamRequest, error) {
-	if err := errors.Join(append(u.errs, ValidateUpstreamRequest(u.request))...); err != nil {
+	if err := ValidateUpstreamRequest(u.request); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return u.request, nil
@@ -187,8 +148,7 @@ func (u *Upstream) Build() (*pluginv1.UpstreamRequest, error) {
 // without looking at the account: the URL is absolute http(s) (ws(s) for a
 // websocket handshake), the method is empty or an HTTP token, header names
 // are lower-case HTTP tokens and none is the transport's, values are what
-// HTTP can carry (no control character but a tab), options are not
-// negative. The host judges method, names and values with the same
+// HTTP can carry (no control character but a tab). The host judges method, names and values with the same
 // functions (golang.org/x/net/http/httpguts). Relay applies it before the
 // host is asked.
 func ValidateUpstreamRequest(r *pluginv1.UpstreamRequest) error {
@@ -202,7 +162,7 @@ func ValidateUpstreamRequest(r *pluginv1.UpstreamRequest) error {
 	if m := r.GetMethod(); m != "" && !httpguts.ValidHeaderFieldName(m) {
 		errs = append(errs, fmt.Errorf("upstream method %q is not an HTTP method", m))
 	}
-	errs = append(errs, checkHeaders("headers", r.GetHeaders()), checkHeaders("default_headers", r.GetDefaultHeaders()), checkOptions(r.GetOptions()))
+	errs = append(errs, checkHeaders("headers", r.GetHeaders()), checkHeaders("default_headers", r.GetDefaultHeaders()))
 	return errors.Join(errs...)
 }
 
@@ -232,11 +192,4 @@ func checkHeaders(field string, headers map[string]string) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func checkOptions(o *pluginv1.UpstreamOptions) error {
-	if o.GetResponseHeaderTimeoutMs() < 0 || o.GetTotalTimeoutMs() < 0 {
-		return errors.New("upstream options: a timeout is negative")
-	}
-	return nil
 }

@@ -160,8 +160,8 @@ func TestExecuteHTTP(t *testing.T) {
 	in.Meta.ClientProtocol = "openai.chat"
 	r := relayed(t, h, in)
 	if r.GetMethod() != http.MethodPost || r.GetUrl() != "https://chatgpt.com/backend-api/codex/responses" || r.GetUpstreamModel() != "gpt-5.4" ||
-		r.GetResponseStream() != "" || r.GetOptions() != nil {
-		t.Fatalf("request = %s %s %s %q %v", r.GetMethod(), r.GetUrl(), r.GetUpstreamModel(), r.GetResponseStream(), r.GetOptions())
+		r.GetResponseStream() != "" {
+		t.Fatalf("request = %s %s %s %q", r.GetMethod(), r.GetUrl(), r.GetUpstreamModel(), r.GetResponseStream())
 	}
 	wantAuth := map[string]string{
 		"authorization":      "Bearer at-device",
