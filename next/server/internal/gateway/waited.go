@@ -197,7 +197,7 @@ func (w *waitedRelay) read(ctx context.Context, resp *http.Response) attemptResu
 	x, c := w.x, w.x.c
 	if p := c.usage; p != nil {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: p.meta, Account: p.account, Status: int32(p.status), Headers: p.headers,
-			Body: p.cap.body, Events: p.cap.events, Truncated: p.cap.stopped, Fields: p.fields, FieldsOmitted: p.fieldsOmitted}
+			Body: p.cap.body, Events: p.cap.events, Truncated: p.cap.stopped, Fields: p.fields}
 		w.extractable = x.rt.pluginUsage && !p.cap.tooLarge && !c.ep.TaskSubmit()
 	} else {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: c.metaFor(x.rt), Account: x.acct, Status: int32(resp.StatusCode)}

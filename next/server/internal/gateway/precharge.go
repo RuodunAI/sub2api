@@ -46,12 +46,12 @@ func (c *call) precharge(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	fields, omitted := usageRequestFields(c.ep.UsageRequestFields, c.body)
+	fields := usageRequestFields(c.ep.UsageRequestFields, c.body)
 	var report *pluginv1.UsageReport
 	if pb, exists := c.gen.Platform(c.platform); exists && pb.Client != nil {
 		// The local tokenizer counts the prompt up to tokenizer.MaxTextBytes.
 		prompt := c.promptText(tokenizer.MaxTextBytes)
-		in := &pluginv1.EstimateUsageRequest{Meta: c.meta(), Fields: fields, FieldsOmitted: omitted, PreConsumeTokens: floor, Prompt: truncateUTF8(prompt, pluginPromptBytes)}
+		in := &pluginv1.EstimateUsageRequest{Meta: c.meta(), Fields: fields, PreConsumeTokens: floor, Prompt: truncateUTF8(prompt, pluginPromptBytes)}
 		estimator, ok := pb.Client.(interface {
 			EstimateUsage(context.Context, *pluginv1.EstimateUsageRequest) (*pluginv1.UsageReport, error)
 		})

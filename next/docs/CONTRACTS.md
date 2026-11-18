@@ -2025,11 +2025,11 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 "usageRequestFields": ["resolution", "duration", "ratio"]   // 仅 usageSource: "plugin" 下有效
 ```
 
-`ExtractUsageRequest` 新增 `fields`（map）与 **`fields_omitted`**（repeated string）。
+`ExtractUsageRequest` 新增 `fields`（map）与 **`fields_omitted`**（repeated string）。`fields_omitted` 已从协议删除（`EstimateUsageRequest` 字段 3、`ExtractUsageRequest` 字段 9 改为 `reserved`，见下）。
 
 **为什么在端点层**：读用量的是**平台插件**，白名单要是放在账号类型层，就成了第三个插件（账号类型的提供者）决定平台插件能看到什么。端点级声明还保证**只有声明了的端点付代价**（未声明 → 直接返回，零分配）。同一份字段也是 `EstimateUsageRequest.fields`。
 
-上限只有清单的 **16 条路径**（`check.MaxUsageRequestFields`，主机与工具共用）。单值 4 KiB、总量 32 KiB 的预算在转发 V2 收尾时删除（§112.16）：声明的字段值整个交给插件，`fields_omitted` 留在协议里但不再填。取值来源是**交给插件 `Execute` 的 body**（核心的改写之后），在 `armUsageExtraction` 里算（handler 内），只拿到小 map。
+上限只有清单的 **16 条路径**（`check.MaxUsageRequestFields`，主机与工具共用）。单值 4 KiB、总量 32 KiB 的预算在转发 V2 收尾时删除（§112.16）：声明的字段值整个交给插件，没有被略去的值，所以 `fields_omitted` 随之删除（两个消息里都改为 `reserved`，编号不复用）；唯一读过它的火山插件已不再读。取值来源是**交给插件 `Execute` 的 body**（核心的改写之后），在 `armUsageExtraction` 里算（handler 内），只拿到小 map。
 
 （以下是有预算时的设计，留作记录。）**超限的值整个不给，不截断** —— 与 C 期「body 超 `maxBytes` 不给」同理：半个 JSON 值解出来是**错数**，不是没数。被去掉的路径名进 `fields_omitted`：**没有这个字段，插件分不清「客户端没发 `resolution`」和「主机没搬过来」**，会按最便宜的默认档位低估。预算按**声明顺序**消耗，各节点结果一致。
 
@@ -2096,7 +2096,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 实现取的是 `gjson.Result.Raw`（核心另外做了 `strings.ToValidUTF8`）。这是对的也是必要的——数字、布尔、对象都要能表达——但插件侧极容易写成直接当字符串用。**契约正文里要明写这一句**，省掉下一个插件作者一轮调试。
 
-#### 落地经验（写给下一个用 `fields_omitted` 的人）
+#### 落地经验（写给下一个用 `fields_omitted` 的人；该字段已删除，留作记录）
 
 火山插件第一版在这里写错过，是测试抓出来的：**只 bound 了 duration，没 bound resolution**，于是「全部 absent」和「全部 omitted」估出完全相同的数字。两条经验：
 

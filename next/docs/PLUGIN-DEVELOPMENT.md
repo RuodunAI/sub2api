@@ -183,7 +183,7 @@ func (p *Plugin) ExtractUsage(_ context.Context, in *pluginv1.ExtractUsageReques
 }
 ```
 
-观察：非流式是整个回答体，流式是 `usageStreamEvents` 列出的每一条事件，默认都不限大小；端点自己声明了 `usageMaxBytes`（不小于 1 KiB）时，非流式超过它就为空、流式超过它就停止收集并置 `truncated`。`usageRequestFields` 声明的请求字段整个交给插件（`fields_omitted` 不再填）。回答本身已经由核心中继给客户端。只有声明端点的插件自己的账号类型能服务这类端点：别的插件的账号类型声明了这样的平台，注册表绑定时把那个平台从它的平台里去掉（CONTRACTS §112.8）。WebSocket 端点不能声明 `usageSource: "plugin"`。
+观察：非流式是整个回答体，流式是 `usageStreamEvents` 列出的每一条事件，默认都不限大小；端点自己声明了 `usageMaxBytes`（不小于 1 KiB）时，非流式超过它就为空、流式超过它就停止收集并置 `truncated`。`usageRequestFields` 声明的请求字段整个交给插件（`fields_omitted` 已从协议删除）。回答本身已经由核心中继给客户端。只有声明端点的插件自己的账号类型能服务这类端点：别的插件的账号类型声明了这样的平台，注册表绑定时把那个平台从它的平台里去掉（CONTRACTS §112.8）。WebSocket 端点不能声明 `usageSource: "plugin"`。
 
 ### 2.8 任务：提交与 `Monitor`
 

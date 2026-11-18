@@ -105,12 +105,10 @@ type pendingExtract struct {
 	headers map[string]string
 	status  int
 	// fields are the values of the endpoint's usageRequestFields, read out of
-	// the request body at arming time; fieldsOmitted names the declared paths
-	// whose value was there but over a cap. Both nil for endpoints declaring
-	// no request fields. The body itself is NOT kept: this is the whole of
-	// what survives the handler.
-	fields        map[string]string
-	fieldsOmitted []string
+	// the request body at arming time; nil for endpoints declaring no request
+	// fields. The body itself is NOT kept: this is the whole of what survives
+	// the handler.
+	fields map[string]string
 }
 
 // armUsageExtraction records what the observation will need, at the end of
@@ -131,21 +129,19 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 		small.SettingsJson = acct.GetSettingsJson()
 		small.Properties = acct.GetProperties()
 	}
-	fields, omitted := usageRequestFields(rt.usageRequestFields, upBody)
 	c.usage = &pendingExtract{cap: cap, meta: c.metaFor(rt), account: small,
-		headers: headers, status: resp.StatusCode, fields: fields, fieldsOmitted: omitted}
+		headers: headers, status: resp.StatusCode, fields: usageRequestFields(rt.usageRequestFields, upBody)}
 }
 
 // usageRequestFields reads the declared request paths out of body for
-// ExtractUsageRequest.fields, every value whole whatever its size. omitted
-// stays empty: the host no longer leaves a value out (the field remains in
-// the protocol). The raw JSON comes straight from the client, so it is
+// ExtractUsageRequest.fields, every value whole whatever its size. The raw
+// JSON comes straight from the client, so it is
 // sanitised the way every other client byte that enters a proto string
 // field is (CONTRACTS §25.1) - readBody already refuses a body with invalid
 // UTF-8, this is the belt to that brace.
-func usageRequestFields(paths []string, body []byte) (fields map[string]string, omitted []string) {
+func usageRequestFields(paths []string, body []byte) (fields map[string]string) {
 	if len(paths) == 0 || len(body) == 0 {
-		return nil, nil
+		return nil
 	}
 	for _, p := range paths {
 		raw := getJSON(body, p)
@@ -157,7 +153,7 @@ func usageRequestFields(paths []string, body []byte) (fields map[string]string, 
 		}
 		fields[p] = strings.ToValidUTF8(raw, "")
 	}
-	return fields, omitted
+	return fields
 }
 
 // errHostReadingEmpty is why a request is unreported whose plugin chose the

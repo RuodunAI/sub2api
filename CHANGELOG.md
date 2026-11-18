@@ -8,6 +8,12 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 转发 V2 收尾的协议清理：删除没有使用者的字段和例外（核心、SDK、插件；无新迁移，随转发 V2 发布）
+
+转发 V2 各工作包留下的“要改 proto 或跨模块”的清理项。Host API 仍是 10、插件协议仍是 2（只删字段，编号和名字都写进 `reserved`，不复用；照 §91.3、§117.4 的先例）。
+
+- **proto**：`EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
+
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移，随转发 V2 发布）
 
 所有者要求“账号授权时的第一次换令牌不走代理：修复bug”，粘贴的代理串也要支持。规则见 CONTRACTS §117，设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](next/docs/DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)。

@@ -34,9 +34,9 @@ package volcengine
 //     validated form Ark documents as equivalent to the structured field,
 //     with NO documented precedence between the two. So the prompt is read
 //     too, and where the readings disagree the more expensive one wins. Where
-//     the prompt could not be read at all (longer than the host's per-value
-//     cap, or in a content element past the declared paths) every parameter it
-//     could have carried is treated as unknown - not as absent.
+//     the prompt could not be read at all (in a content element past the
+//     declared paths) every parameter it could have carried is treated as
+//     unknown - not as absent.
 //  2. "The model decides". duration -1 means Ark picks a length inside the
 //     model's range, and -1 is the documented default for Seedance 2.5. Ark
 //     documents no default at all for the 2.0 and 1.0 families and does not
@@ -265,10 +265,8 @@ func largestIn(row map[string]int64, ratio string) int64 {
 // ---------------------------------------------------------------- the declaration
 
 // The request paths manifest.json declares in usageRequestFields, in the order
-// it lists them. That order is load-bearing: the host spends the total byte
-// budget in DECLARATION ORDER (CONTRACTS §25.6), so the four scalars that
-// decide the price come first and a four-kilobyte prompt can never starve
-// them.
+// it lists them. The host hands every declared value over whole (CONTRACTS
+// §25.6), so the order no longer matters to what arrives.
 const (
 	PathResolution   = "resolution"
 	PathRatio        = "ratio"

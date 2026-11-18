@@ -142,8 +142,8 @@ func TestPluginUsageNonStream(t *testing.T) {
 		t.Fatalf("meta %+v", in.GetMeta())
 	}
 	// No usageRequestFields declared: not one request field travels.
-	if len(in.GetFields()) != 0 || len(in.GetFieldsOmitted()) != 0 {
-		t.Fatalf("request fields handed over without a declaration: %v %v", in.GetFields(), in.GetFieldsOmitted())
+	if len(in.GetFields()) != 0 {
+		t.Fatalf("request fields handed over without a declaration: %v", in.GetFields())
 	}
 
 	// cache_creation_tokens is the total, so the 5 minute figure is 12-4.
@@ -321,9 +321,6 @@ func TestPluginUsageRequestFields(t *testing.T) {
 		got["duration"] != want["duration"] || got["options.ratio"] != want["options.ratio"] || got["image"] != want["image"] {
 		t.Fatalf("fields = %d entries, want %d", len(got), len(want))
 	}
-	if got := in.GetFieldsOmitted(); len(got) != 0 {
-		t.Fatalf("omitted = %v", got)
-	}
 	// The body itself never travels: not under a declared key, not anywhere.
 	for k, v := range in.GetFields() {
 		if strings.Contains(v, "hello there") || k == "messages" {
@@ -344,9 +341,9 @@ func TestUsageRequestFieldsNoBudget(t *testing.T) {
 		doc[p] = strings.Repeat("x", each-2) // quoted: exactly `each` bytes of raw JSON
 	}
 	raw, _ := json.Marshal(doc)
-	fields, omitted := usageRequestFields(paths, raw)
-	if len(fields) != len(paths) || len(omitted) != 0 {
-		t.Fatalf("%d fields carried, omitted %v", len(fields), omitted)
+	fields := usageRequestFields(paths, raw)
+	if len(fields) != len(paths) {
+		t.Fatalf("%d fields carried", len(fields))
 	}
 	for _, p := range paths {
 		if len(fields[p]) != each {
@@ -354,12 +351,12 @@ func TestUsageRequestFieldsNoBudget(t *testing.T) {
 		}
 	}
 	// Nothing declared, nothing read - not even an allocation's worth.
-	if f, o := usageRequestFields(nil, raw); f != nil || o != nil {
-		t.Fatalf("read without a declaration: %v %v", f, o)
+	if f := usageRequestFields(nil, raw); f != nil {
+		t.Fatalf("read without a declaration: %v", f)
 	}
-	// A path the client did not send is neither carried nor "omitted".
-	if f, o := usageRequestFields([]string{"nope"}, raw); f != nil || o != nil {
-		t.Fatalf("absent path reported: %v %v", f, o)
+	// A path the client did not send is not carried.
+	if f := usageRequestFields([]string{"nope"}, raw); f != nil {
+		t.Fatalf("absent path reported: %v", f)
 	}
 }
 

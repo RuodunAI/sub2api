@@ -133,8 +133,8 @@ service PlatformService {
 message EstimateUsageRequest {
   RequestMeta meta = 1;
   map<string, string> fields = 2;
-  // No longer filled: the host leaves no declared value out.
-  repeated string fields_omitted = 3;
+  reserved 3;
+  reserved "fields_omitted";
   int64 pre_consume_tokens = 4;
   string prompt = 5;
 }
@@ -396,8 +396,8 @@ message ExtractUsageRequest {
   // Only declared paths travel, each value whole whatever its size.
   // Empty for endpoints that declare no usageRequestFields.
   map<string, string> fields = 8;
-  // No longer filled: the host leaves no declared value out.
-  repeated string fields_omitted = 9;
+  reserved 9;
+  reserved "fields_omitted";
 }
 
 // UsageReport is what the plugin states about the upstream response. Every
