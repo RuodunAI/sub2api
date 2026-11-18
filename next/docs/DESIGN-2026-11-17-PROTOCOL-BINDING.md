@@ -277,7 +277,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 **网关**
 
-8. §3.4 写“只要有一个账号是因别的原因（冷却、限流、忙）没选上，就按现有规则返回”，§3.5 第 4 条又写“404 直接由跳过原因得出，不查库”。两条不能同时成立，因为冷却中的账号不在候选里。按 §3.4 实现：候选全部被协议绑定过滤后，读一次组内未提供的账号，有冷却中或限时自动停用的就不返回 404。这次读取就是调度记录在“无账号”时本来要做的那次，提前并复用，每个请求仍只读一次。代价：冷却中的账号自己也没开转换时，冷却期间返回 503/529，冷却结束后才是 404（要精确判断，得让账号模块返回未提供账号的类型和协议规则）。读取失败时不返回 404。**这一条需要用户确认是否接受。**
+8. §3.4 写“只要有一个账号是因别的原因（冷却、限流、忙）没选上，就按现有规则返回”，§3.5 第 4 条又写“404 直接由跳过原因得出，不查库”。冷却中的账号不在候选里，所以第一版实现是读一次组内未提供的账号（查库），有冷却中或限时停用的就不返回 404，不看那个账号自己的协议绑定；审查指出这样在有冷却的号池里 404 基本落空（没开转换的账号一冷却，请求就变成可重试的 503/529），且那次查库只读前 200 个账号。**审查后改为**（10.3 第 1 条）：账号模块加 `AccountDirectory.Resting`，从分组快照里给出冷却中和限时停用未到期的账号，网关对它们跑同一个 `ineligibleReason`；其中有一个不是被协议绑定过滤的才不返回 404。这次读取只用快照和一次 Redis 管道，不查库，两条都满足；读取失败时不返回 404。
 9. 永久停用、关闭调度的账号不算“会回来”，不妨碍 404。现有的“端点无账号”404（`GroupHasType`）把停用账号也算在内，两处口径不同；按本文列举的“冷却、限流、忙”实现。
 10. 协议判断排在模型白名单之前（本文只说“取到路由后调用”）。带模型白名单的 OpenAI 账号收到 `/v1/messages`，得到 `conversion_not_enabled` 和 404，而不是 `model_not_served` 和 503。
 11. WebSocket 已建立的连接上，后续轮次换成该账号在这个协议下不提供的模型，返回现有的 400（要新建连接），不是 404。本文没写这种情况。
@@ -309,12 +309,43 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 ### 10.2 没做完的
 
-- `next/e2e/ac19_builtin_platforms_test.go` 依赖“Anthropic 账号默认能服务 `/v1/chat/completions`”，现在会得到 404。它不在 CI 里运行、需要部署好的栈，夹具还没有改（要给账号的 `model_protocols` 开转换）。整个功能没有在部署好的栈上验收过。
+（审查后已补的在 10.3；下面只留仍然没做的。）
+
+- 整个功能没有在部署好的栈上验收过。`next/e2e/ac19_builtin_platforms_test.go` 的夹具已改（10.3 第 6 条），但只编译过，没有运行。
 - `store/gormtest/BASELINE.md` 没有记录这次的读数（第 14 条），也没有恢复分组快照的基准。
-- AGENTS.md 里“核心迁移目前到 0104”（实际到 0106）和“`rollback/` 现在没有”两处要随合并更新。
 - 账号列表按“开放协议”筛选：要先定参数（如 `?protocol=openai.chat`，语义是账号对至少一个模型开放该协议）并在后端实现。
 - API Key 页的端点预览要准确，需要后端在用户可见的分组信息里也返回 `served_protocols`。
 - `GET /account-types` 的 `endpoints` 没有标出“只走原生”的端点（WebSocket、任务提交）。控制台的候选列是从它推出来的；如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端拒绝。
 - `ineligibleReason` 里原有的用量检查每个候选分配 3 次（第 14 条），500 个候选就是每个请求 1500 次、约 536 KB。这是改动前就有的，值得单独优化。
 - 故障策略刷新快照这条路径只有单元测试（`candidateEligible` 与 `ineligibleReason` 结果一致），没有端到端用例。
 - 控制台的批量编辑弹窗和深色模式没有做视觉检查。
+
+### 10.3 审查后的修改（2026-11-17）
+
+三位审查者（后端、规范、控制台）的发现，逐条核对后的处理。没有改变 §8 的任何决策。
+
+**后端**
+
+1. **404 与冷却中的账号**（10.1 第 8 条）：`core.AccountDirectory` 加 `Resting(ctx, groupID, types)`，账号模块从 `Candidates` 用的同一份快照里给出冷却中、限时停用未到期的账号；`gateway/sched_trace.go` 的 `protocolNotServed` 对它们跑 `ineligibleReason`，只有其中有账号不是被协议绑定过滤时才不返回 404。不查库，没有 200 个账号的上限。调度记录的那次查库（`Unschedulable`）恢复成只在写记录时读，与本功能之前相同。这改了 core 接口，属于契约变更（CONTRACTS §110.5）。
+2. **`served_protocols` 与调度不一致**：账号有模型白名单、白名单里的模型全被条目点名到别的协议时，旧实现仍把本平台协议列为“对所有模型开放”。`modelsOn` 不再自己解释规则：被点名的模型调 `Serves`，其余模型调新增的 `(*ProtocolRules).ServesOthers`，白名单里没有未被点名的模型时不用 `null`。加了随机对拍测试。
+3. **“协议规则只有一处定义”**：同上；`Serves` 拆出内部的 `serves`，`Serves` 与 `ServesOthers` 共用，仍不分配内存。
+4. **`cross` 只有一种算法**：`routing.go` 加 `crossPlatform`（`!b.Supports(入站平台)`），`addRoute` 与 `addLocalCountRoute` 都用它，不再有 `q != c.platform` 这第二种写法。
+5. **模型列表归一化不再复制**：`model_limits.go` 的 `entryModels` 给 `normalizeModelLimits` 和 `normalizeModelProtocols` 共用；两个 jsonb 列的解析与序列化用泛型的 `parseList`、`listJSON`。错误码、路径、文案都没有变。
+
+**验收用例与文档**
+
+6. `e2e/ac19_builtin_platforms_test.go`：先断言默认 404（OpenAI 错误格式、没有调用上游），给租户账号的 `model_protocols` 为该模型开 `openai.chat`（同时保留 `anthropic.messages`）后断言 200。只编译过。
+7. AGENTS.md：迁移号改为 0106，`rollback/` 一行指向协议绑定的手册。CONTRACTS §110.1、110.3、110.5、110.7、110.9–110.11 和 CHANGELOG 同步。
+
+**控制台**
+
+8. **矩阵里没有规则的行**：按 `rules[模型] ?? rules["*"] ?? 默认` 显示（`protocolBinding.protocolsOf`），与网关的判定顺序一致；“其余模型”有指定时这些行行尾写“跟随其余模型”，图例相应换一句；在这样的行上点一格，从它显示的协议开始改。示意图画的是“没有规则就显示默认”，与 §3.4 的判定顺序不一致，以 §3.4 为准。**文案“跟随其余模型”是实现时定的，用户可以改。**
+9. **列表视图的卡片**：编辑期间每张卡有固定的 id，两张卡的协议改成一样时不合并（保存的数据里才合成一条，符合 §5.1“保存时合并”）；卡片的 key 不再是模型列表拼的字符串，加减模型不重建卡片、输入框不丢焦点。
+10. **JSON 视图**：文本解析失败期间，“本平台协议”卡的改动不再覆盖用户正在改的文本（与原注释一致）。
+11. **`protocols` 里类型已不服务的 id**：“本平台协议”卡里显示成只能移除的警告项，问题列表里加一条警告（`unknown_own_protocol`）。
+12. **开发 mock**：插件未启用时返回 503（原来 409）；字段错误的路径和错误码按 CONTRACTS §110.6（`invalid` / `unsupported` / `cross_platform` 等）；`served_protocols` 的模型判定按第 2 条。
+
+**没有处理的**
+
+- BASELINE.md 的读数、账号列表按协议筛选、API Key 页端点预览、`GET /account-types` 标出“只走原生”的端点、`ineligibleReason` 里原有用量检查的分配、故障策略刷新路径的端到端用例、批量编辑弹窗与深色模式的视觉检查：仍如 10.2。
+- 审查没有发现需要改变产品行为的问题。

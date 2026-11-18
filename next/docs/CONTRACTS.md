@@ -1658,7 +1658,7 @@ message RankedAccount {
 | `attempt_failed` | 在该账号上的一次尝试失败，请求切到下一个账号 | `状态码 error_type` |
 
 - **节点日志**：`no_account` 的请求另打一行 WARN `gateway: no account for the request`，带 `request_id`、`group`、`model`、`protocol`、`outcome`、`candidates`、`eligible` 和 `skipped`（`账号:原因[:对象]`，空格分隔）。
-- **§110 起**：候选账号全部因 `protocol_closed`、`conversion_not_enabled`、`model_protocol_closed` 被过滤、且组内没有冷却中或限时停用的账号时，请求以 404 结束（§110.5），调度记录照常写（`error_type = no_account`，`outcome = none`）。这三个原因的判断排在 `model_not_served` 之前。
+- **§110 起**：候选账号全部因 `protocol_closed`、`conversion_not_enabled`、`model_protocol_closed` 被过滤、且组内冷却中或限时停用的账号也都是因这三个原因不能服务时，请求以 404 结束（§110.5），调度记录照常写（`error_type = no_account`，`outcome = none`）。这三个原因的判断排在 `model_not_served` 之前。
 - **接口**：随 `anomalies` 在管理端 `GET /usage/:id` 返回（§15.2；`/me/usage` 不返回 `anomalies`，用户看不到这条）。有 `account:read` 时每条 `skipped` 补上 `account_name`；没有时去掉 `account_id`，原因保留；解析不了的记录对无权限者整个丢弃。它是调度轨迹，不是记录的异常：统计里的"异常行"不计它。
 - **不记的**：请求体不落库，所以 `detail` 只有模型名这类已经过校验的字段；HTTP 与 WebSocket 首轮（`connect`）走同一套记录。由插件执行并在尝试内提交用量的请求不带这条。
 
@@ -7983,7 +7983,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 | 本平台协议 | 入站端点所属的平台是账号类型声明过的平台（`AccountTypeBinding.Supports`）。包括原生和同平台适配（§83.3）两种路由 | OpenAI 账号的 chat、responses；codex 账号的 chat（适配到 responses） |
 | 跨平台协议转换（下称“转换”） | 入站端点所属的平台，账号类型没有声明 | OpenAI 账号服务 `anthropic.messages`、`gemini.generate`；Claude 账号服务 `openai.chat`；Bedrock 账号服务 `openai.chat` |
 
-- 只看账号类型的声明，与具体请求无关。网关在路由上记 `typeRoute.cross`（`gateway/routing.go`）：`addRoute` 里是“路由的上游平台不是入站端点的平台”，count_tokens 的本地估算路由（§88.2，`addLocalCountRoute`）里是“类型不声明入站端点的平台”。选路逻辑本身没有改。
+- 只看账号类型的声明，与具体请求无关。网关在路由上记 `typeRoute.cross`（`gateway/routing.go`），只有一种算法：`crossPlatform`，即类型不声明入站端点的平台（`!AccountTypeBinding.Supports(入站平台)`），普通路由（`addRoute`）和 count_tokens 的本地估算路由（§88.2，`addLocalCountRoute`）都用它；账号模块校验和 `served_protocols` 用的 `typeProtocols` 也是同一个 `Supports`。选路逻辑本身没有改。
 - 同时声明多个平台的类型（如 volcengine 声明 openai、anthropic、volcengine），这些平台的协议都是本平台协议；Gemini 请求打到它才算转换。
 - 同平台适配不算转换，默认照常工作，可以用 `protocols` 关掉。
 
@@ -8026,9 +8026,11 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 ### 110.3 判定规则与顺序
 
-两个字段在建分组调度快照和载入单个账号（`AccountDirectory.Load`）时编译成 `core.ProtocolRules`（`core/protocol_rules.go`，`NewProtocolRules(protocols, rules)`），挂在 `core.AccountRef.ProtocolRules` 上；两个字段都是默认值的账号为 nil。判定只有一个方法：
+两个字段在建分组调度快照和载入单个账号（`AccountDirectory.Load`）时编译成 `core.ProtocolRules`（`core/protocol_rules.go`，`NewProtocolRules(protocols, rules)`），挂在 `core.AccountRef.ProtocolRules` 上；两个字段都是默认值的账号为 nil。判定只有一处定义：
 
 `(*ProtocolRules).Serves(model, protocol string, cross bool) (reason string, ok bool)`
+
+`(*ProtocolRules).ServesOthers(protocol string, cross bool)` 是同一判定对“没有被任何条目点名的模型”的问法（下面第 3 步直接取 `"*"` 条目），给 `served_protocols` 这类不针对具体模型的视图用；`Serves` 在模型没有被点名时就是调用它。
 
 `model` 是映射前的客户端模型，`protocol` 是入站协议，`cross` 是路由的 `cross`（110.1）。按顺序：
 
@@ -8064,20 +8066,25 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 ### 110.5 全部未开放时的 404
 
-组内提供给本次请求的候选账号（`AccountDirectory.Candidates` 的结果，即可调度、未冷却、类型有路由的账号）**全部**因上面三个原因被过滤时，请求以 404 结束：
+组内提供给本次请求的候选账号（`AccountDirectory.Candidates` 的结果，即可调度、未冷却、类型有路由的账号）**全部**因上面三个原因被过滤，且组内**暂时退出**的账号（见下）也都是因这三个原因不能服务时，请求以 404 结束：
 
 - HTTP 404，`code` 为 `not_found`，消息 `no account in this group serves this model on this endpoint`（`gateway/errors.go` `errProtocolNotServed`）。与 §11 的“分组里没有能服务该端点的账号”同一类错误，客户端不会当成过载重试；`anthropic` 格式也不改写成 529。
-- 使用记录：`status_code` 404，`error_type` 为 `no_account`，`attempts` 为 0，没有 `account_id`、`upstream_protocol`、`conversion`；`anomalies.scheduling` 的 `outcome` 为 `none`，`eligible` 为 0，`skipped` 里是每个账号的原因。
+- 使用记录：`status_code` 404，`error_type` 为 `no_account`，`attempts` 为 0，没有 `account_id`、`upstream_protocol`、`conversion`；`anomalies.scheduling` 的 `outcome` 为 `none`，`eligible` 为 0，`skipped` 里是每个候选账号的原因，冷却、停用的账号照 §24.6 记为 `not_schedulable`。
 - 没有请求被转换、构建或发往上游。WebSocket 首轮同样处理，错误以该连接的错误事件返回（`status` 404）。
 
-**不返回 404、仍按现有规则（503，`anthropic` 格式 529；全部忙或限流时 429）的情况**：
+**暂时退出的账号**（`AccountDirectory.Resting(ctx, groupID, types)`）：分组调度快照里类型有路由、但 `Candidates` 现在不给的账号，即冷却中的和限时自动停用还没到期的。候选全部被协议绑定过滤时，网关对它们跑同一个 `ineligibleReason`（`gateway/sched_trace.go` `protocolNotServed`）：
+
+- 其中有一个不是因这三个原因被过滤（它能服务这个请求，或是因模型白名单、用量等别的原因不能）→ 不返回 404，按暂时缺账号处理：它回来后可能服务这个请求。
+- 它们也都被协议绑定过滤 → 404。所以一个没开转换的账号在冷却，不会把 404 变成可重试的 503/529。
+- 永久停用、关闭调度的账号不在快照里，不算“会回来”，不妨碍 404。
+- 读取失败（读不到冷却状态）→ 不返回 404。
+
+`Resting` 读的是 `Candidates` 用的同一份快照（内存，30 秒，过期时与 `Candidates` 一样读一次库）加一次 Redis 管道查冷却，**不查数据库**，也没有账号数上限；只有候选全部被协议绑定过滤的请求才调用，有账号能服务的请求不调用。调度记录在“无账号”时的那次查库（§24.6 `not_schedulable`，`AccountDirectory.Unschedulable`，最多列 200 个账号）照旧，只用于记录，不参与 404 的判断。
+
+**不返回 404、仍按现有规则（503，`anthropic` 格式 529；全部忙或限流时 429）的其他情况**：
 
 - 候选里有账号是因别的原因没选上（模型白名单、用量、限流、并发满等）。
 - 没有候选账号（全部禁用、冷却等）：与本节之前相同。
-- 候选全部被协议绑定过滤，但组内另有**冷却中或限时自动停用**的账号（`AccountDirectory.Unschedulable` 里 `Until` 非零的）：它回来后可能服务这个请求，所以按暂时缺账号处理。这个判断不看那个账号自己的协议绑定，所以它也没开转换时，冷却期间是 503/529，冷却结束后才是 404。永久停用、关闭调度的账号不算，不妨碍 404。
-- 读取组内未提供的账号失败（数据库故障）。
-
-读取组内未提供的账号，就是调度记录在“无账号”时本来要做的那一次查库（§24.6 `not_schedulable`），提前到这里并复用结果，每个请求仍然只读一次；有账号能服务的请求不读。
 
 ### 110.6 校验与错误码
 
@@ -8123,7 +8130,8 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 - `via`：`native`（类型的端点子集直接说这个协议）、`adapted`（同平台的另一个端点服务它）、`converted`（跨平台转换）。顺序是 native、adapted、converted，各自按类型端点的顺序。
 - `grade`、`hops`：类型端点的等级与经过的协议（同 `GET /account-types` 的 `grade`、`via`）。
-- `models`：`null` 表示“`model_protocols` 没有另行限定的所有模型”（账号有模型白名单时即白名单内的这些）；被其他条目限定到别的协议的模型不在其内，这个结构不表达排除。否则是在该协议下提供的模型，已按账号的 `models` 白名单过滤、排序。一个模型都不提供的协议不列出。
+- `models`：`null` 表示“没有被 `model_protocols` 的条目点名的所有模型”在该协议下提供（账号有模型白名单时即白名单内没被点名的那些）；被点名的模型里不在该协议下提供的不在其内，这个结构不表达排除。账号有模型白名单、且白名单里的模型全部被条目点了名时，没有“其余模型”，不用 `null`。否则是在该协议下提供的模型，已按账号的 `models` 白名单过滤、排序。一个模型都不提供的协议不列出：例如白名单是 `["claude-sonnet-4-5"]`、该模型只限定到 `anthropic.messages` 的 OpenAI 账号，只列出 Messages 和它的 count_tokens，不列 OpenAI 的协议。
+- 每个模型的判定都调用编译后的 `ProtocolRules`（被点名的模型用 `Serves`，其余模型用 `ServesOthers`），不另写一遍规则；`account/protocols_test.go` 的 `TestServedProtocolsMatchScheduling` 用随机配置逐模型对拍。
 - count_tokens 协议跟随生成协议列出：`grade` 为 `local`（本地估算）时，类型声明了该平台记 `adapted`，没声明记 `converted`。
 - 账号类型未注册（插件未启用）时为 `[]`。
 
@@ -8148,8 +8156,9 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 - **账号编辑器**：“模型配置”分区改名“协议与模型”，卡片顺序是 本平台协议 → 模型列表 → 模型映射 → 模型的协议限定。
   - “本平台协议”：全部 / 指定两种模式（全部 = `null`）；指定后逐个勾选，适配的协议标“适配 → 目标”；提示其他平台的协议要在下面按模型开启。
-  - “模型的协议限定”：矩阵、列表、JSON 三种视图。矩阵的行是账号的模型加一行“其余模型”，列是账号开放的本平台协议加该类型经转换能到的协议；账号模型列表为空或窄屏时默认列表视图。点任一格，这一行从“默认”变成“已指定”并先带上默认的本平台协议；可以多选几行一次指定。保存时勾选相同的模型合并成一条，默认的行不写。Gemini 的 `generate` 和 `stream_generate` 合成一列，一起勾选，存储仍是两个协议 id。
-  - 提示：条目里有账号没开放的本平台协议（警告，不生效）、类型不能服务的协议（警告，保存会被拒）、给“其余模型”开了转换（警告）、两跳转换（说明）。条目没有协议、账号没有开放任何协议时点保存不发请求，跳到这个分区显示错误。服务端的字段错误按 110.6 的路径定位到卡片。
+  - “模型的协议限定”：矩阵、列表、JSON 三种视图。矩阵的行是账号的模型加一行“其余模型”，列是账号开放的本平台协议加该类型经转换能到的协议；账号模型列表为空或窄屏时默认列表视图。没有单独指定的行按 110.3 的判定显示（浅色）：“其余模型”一行有指定时显示那一行的协议，行尾写“跟随其余模型”；否则显示默认（开放的本平台协议、不转换），行尾写“默认”。点任一格，这一行变成“已指定”，从它原来显示的协议开始改；可以多选几行一次指定。保存时勾选相同的模型合并成一条，没有单独指定的行不写。Gemini 的 `generate` 和 `stream_generate` 合成一列，一起勾选，存储仍是两个协议 id。
+  - 列表视图的每张卡在编辑期间保持各自的身份：两张卡的协议改成一样时不合并，只在保存的数据里合成一条；往卡里加减模型不重建卡片。JSON 视图里解析不了的文本保留给用户修改，期间“本平台协议”卡的改动不改写文本。
+  - 提示：`protocols` 里有类型已不服务的协议（“本平台协议”卡里显示成只能移除的警告项，保存会被拒）、条目里有账号没开放的本平台协议（警告，不生效）、类型不能服务的协议（警告，保存会被拒）、给“其余模型”开了转换（警告）、两跳转换（说明）。条目没有协议、账号没有开放任何协议时点保存不发请求，跳到这个分区显示错误。服务端的字段错误按 110.6 的路径定位到卡片。
   - 导航摘要：`协议 开放数/总数 · 限定 n 个模型 · 转换 n 个`。“高级 › 请求转发”的丢失策略在账号没有任何模型开转换、也没有开放需要适配的协议时置灰，提示“未开启协议转换”。
   - 账号类型已不存在（插件未启用）的账号不显示这两张卡，保存请求不带这两个字段。
 - **账号列表**：名称下方的平台图标按账号实际开放的协议显示；有模型开了转换的平台图标带“转”角标，本平台协议被限定时标“部分 开放数/总数”，悬停列出协议和模型。**没有“开放协议”筛选**（后端没有这个参数）。
@@ -8167,16 +8176,17 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 3. **给“其余模型”开转换要谨慎**。账号模型列表为空（= 全部模型）时，Anthropic 客户端发来的 `claude-*` 模型名会原样（或经映射）发给 OpenAI 上游，上游报模型不存在，按故障策略可能冷却账号。转换只开给明确列出的、有映射的模型。
 4. **粘性会话**：升级后，已绑定到某账号的转换会话因该账号不再提供转换而改绑或 404（110.4）。
 5. **API Key 页的端点预览不看协议绑定**。密钥页的手动配置说明和密钥编辑窗口里的分组说明仍只按分组的 `platforms` 列端点（这两处拿不到 `served_protocols`），不反映账号关掉的协议和开启的转换，可能列出实际会 404 的端点。
-6. **冷却中的账号推迟 404**（110.5）：组内有冷却中或限时停用的账号时，全部未开放的请求得到 503/529 而不是 404，客户端会重试。
+6. **冷却中的账号可能推迟 404**（110.5）：组内有冷却中或限时停用、且自己能服务这个请求（或因协议绑定以外的原因不能）的账号时，请求得到 503/529 而不是 404，客户端会重试；这类账号也被协议绑定过滤时仍是 404。
 7. **协议绑定对不经调度的端点不生效**（110.4，异步任务查询）。
 8. **控制台识别不了“只走原生”的端点**。`GET /account-types` 的 `endpoints` 没有标出 WebSocket、任务提交端点；控制台的候选列是从它推出来的，如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端以 `unsupported` 拒绝。
 9. **不做**：分组级、全局级的转换开关；插件经通用配置项（§87）给这两个字段声明默认值或锁定；`/v1/models` 按入站协议过滤；协议 id 通配（`openai.*`）。
-10. `next/e2e/ac19_builtin_platforms_test.go` 依赖“Anthropic 账号默认能服务 `/v1/chat/completions`”，本节之后会得到 404；它不在 CI 里运行，夹具还没有改（要给账号的 `model_protocols` 开转换）。
+10. 验收用例 `next/e2e/ac19_builtin_platforms_test.go` 已按本节改写：Anthropic 账号的分组请求 `/v1/chat/completions` 先断言 404，给账号的 `model_protocols` 为该模型开 `openai.chat` 后断言 200。e2e 不在 CI 里运行，这个用例只编译过，整个功能没有在部署好的栈上验收。
+11. 控制台的开发 mock（`web/mock/protocols.ts`）按 110.3、110.6、110.7 实现判定、字段路径和错误码（插件未启用时 503），不校验模型 ID 是否完整。
 
 ### 110.11 测试
 
-- `core/protocol_rules_test.go`：`Serves` 的全部分支、nil 接收者、count_tokens 跟随、不分配内存；基准 `BenchmarkProtocolRulesServes`。
-- `account/protocols_test.go`：类型能服务的协议、两个字段的归一化与每个错误码、`no_protocol`（含 PATCH 只带一个字段）、`served_protocols`、接口读写往返（`TestAccountProtocolBinding`）、快照有配置与无配置（`TestGroupSnapshotProtocolRules`）、分组统计。`group/served_protocols_test.go`：`GET /groups/:id`。
-- `gateway/protocol_binding_test.go`：路由的 `cross`、`ineligibleReason` 各原因与详情、404 的每个条件（含冷却、永久停用、读库失败）、端到端（转换默认关闭、按模型开启、本平台协议、模型限定、其余模型、count_tokens 跟随、无配置账号不变、有原生账号时由它服务）、粘性会话、WebSocket 首轮与后续轮次、不分配内存；基准 `BenchmarkIneligibleReason`。
+- `core/protocol_rules_test.go`：`Serves` 的全部分支、nil 接收者、count_tokens 跟随、`ServesOthers`、不分配内存；基准 `BenchmarkProtocolRulesServes`。
+- `account/protocols_test.go`：类型能服务的协议、两个字段的归一化与每个错误码、`no_protocol`（含 PATCH 只带一个字段）、`served_protocols`（含白名单内模型全部被点名的情况，以及与 `Serves` 的随机对拍 `TestServedProtocolsMatchScheduling`）、接口读写往返（`TestAccountProtocolBinding`）、快照有配置与无配置（`TestGroupSnapshotProtocolRules`）、分组统计。`account/automatic_expiry_test.go` 的 `TestRestingAccounts`：暂时退出的账号。`group/served_protocols_test.go`：`GET /groups/:id`。
+- `gateway/protocol_binding_test.go`：路由的 `cross`、`ineligibleReason` 各原因与详情、404 的每个条件（含冷却的账号能服务与不能服务、永久停用、读取失败）、端到端（转换默认关闭、按模型开启、本平台协议、模型限定、其余模型、count_tokens 跟随、无配置账号不变、有原生账号时由它服务）、粘性会话、WebSocket 首轮与后续轮次、不分配内存；基准 `BenchmarkIneligibleReason`。
 - 原有的网关测试里依赖默认转换的夹具改成显式开启（`env_test.go` 的 `serveOn`、`openAIClients`），断言没有改。
 - 控制台：`protocolBinding.spec.ts`、`useProtocolEdit.spec.ts`、两张卡与矩阵、列表视图的 spec，以及 `AccountEditor`、`AccountBulkDialogs`、`bulkEdit`、`editorErrors`、`GroupsView`、`UsageSchedulingTrace` 里的用例。
