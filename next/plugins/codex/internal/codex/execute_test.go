@@ -50,6 +50,26 @@ func executeCases() []executeCase {
 	return out
 }
 
+// keptAbove is why each non-credential header is authoritative.
+const keptAbove = "written above operator settings before forwarding v2; behaviour kept"
+
+// authoritativeHeaders are the headers the plugin writes authoritatively,
+// name -> reason: the credential headers, and every other header of the
+// plugin, because all of them were written above the operator's settings
+// before forwarding v2 (a released plugin keeps that). The conformance
+// suite takes this table with executeCases.
+var authoritativeHeaders = map[string]string{
+	"authorization":      "credential",
+	"chatgpt-account-id": "credential: the ChatGPT account the token acts for",
+	"originator":         keptAbove + "; truthful identification",
+	"user-agent":         keptAbove + "; truthful identification",
+	"accept":             keptAbove,
+	"content-type":       keptAbove,
+	"openai-beta":        keptAbove,
+	"session_id":         keptAbove,
+	"conversation_id":    keptAbove,
+}
+
 // execRequest is a request of an account of type typ as the core hands it
 // over: an HTTP one already streams (streamOnly), a WebSocket one carries
 // the turn's message.
@@ -96,10 +116,6 @@ func relayed(t *testing.T, h *pluginsdktest.Harness, in *pluginv1.ExecuteRequest
 	return r.Request
 }
 
-// authoritative are the header names the plugin may write authoritatively
-// (accountHeaders); everything else is a default the operator may change.
-var authoritative = []string{"authorization", "chatgpt-account-id", "originator", "user-agent"}
-
 func TestExecuteCases(t *testing.T) {
 	h := startExecuting(t, DefaultEndpoints)
 	for _, tc := range executeCases() {
@@ -111,16 +127,15 @@ func TestExecuteCases(t *testing.T) {
 		if tc.in.GetMeta().GetStream() && !gjson.GetBytes(body, "stream").Bool() {
 			t.Errorf("%s: the stream flag was lost: %s", tc.name, body)
 		}
-		for name := range r.GetHeaders() {
-			if !slices.Contains(authoritative, name) {
-				t.Errorf("%s: %s is authoritative", tc.name, name)
-			}
+		if len(r.GetDefaultHeaders()) != 0 {
+			t.Errorf("%s: default headers %v; every header stays above the operator's settings", tc.name, r.GetDefaultHeaders())
 		}
-		for _, hd := range []map[string]string{r.GetHeaders(), r.GetDefaultHeaders()} {
-			for name, value := range hd {
-				if slices.Contains(slices.Collect(maps.Values(clientHeaders)), value) {
-					t.Errorf("%s: client header value forwarded as %s", tc.name, name)
-				}
+		for name, value := range r.GetHeaders() {
+			if _, ok := authoritativeHeaders[name]; !ok {
+				t.Errorf("%s: %s is authoritative without a reason", tc.name, name)
+			}
+			if slices.Contains(slices.Collect(maps.Values(clientHeaders)), value) {
+				t.Errorf("%s: client header value forwarded as %s", tc.name, name)
 			}
 		}
 		// Deterministic, and every attempt is built again from what it is
@@ -153,9 +168,10 @@ func TestExecuteHTTP(t *testing.T) {
 		"chatgpt-account-id": "acct-1",
 		"originator":         "sup2api",
 		"user-agent":         "sup2api-codex/" + Version,
+		"accept":             "text/event-stream",
+		"content-type":       "application/json",
 	}
-	wantDefault := map[string]string{"accept": "text/event-stream", "content-type": "application/json"}
-	if !maps.Equal(r.GetHeaders(), wantAuth) || !maps.Equal(r.GetDefaultHeaders(), wantDefault) {
+	if !maps.Equal(r.GetHeaders(), wantAuth) || len(r.GetDefaultHeaders()) != 0 {
 		t.Fatalf("headers = %v defaults = %v", r.GetHeaders(), r.GetDefaultHeaders())
 	}
 	// The edits land in place; every other byte is the client's.
@@ -209,11 +225,12 @@ func TestExecuteWebSocket(t *testing.T) {
 	for _, typ := range accountTypes {
 		for i, turn := range turns {
 			r := relayed(t, h, execRequest(typ, ProtocolResponsesWS, turn))
-			wantDefault := map[string]string{"openai-beta": WebSocketBeta, "session_id": session, "conversation_id": session}
+			wantHeaders := map[string]string{
+				"authorization": "Bearer at-device", "chatgpt-account-id": "acct-1", "originator": Originator, "user-agent": UserAgent,
+				"openai-beta": WebSocketBeta, "session_id": session, "conversation_id": session,
+			}
 			if r.GetMethod() != http.MethodGet || r.GetUrl() != "wss://chatgpt.com/backend-api/codex/responses" ||
-				!maps.Equal(r.GetDefaultHeaders(), wantDefault) || r.GetHeaders()["authorization"] != "Bearer at-device" ||
-				r.GetHeaders()["user-agent"] != UserAgent || r.GetHeaders()["originator"] != Originator || r.GetHeaders()["chatgpt-account-id"] != "acct-1" ||
-				r.GetResponseStream() != "" {
+				!maps.Equal(r.GetHeaders(), wantHeaders) || len(r.GetDefaultHeaders()) != 0 || r.GetResponseStream() != "" {
 				t.Fatalf("%s turn %d handshake = %s %s %v %v", typ, i, r.GetMethod(), r.GetUrl(), r.GetHeaders(), r.GetDefaultHeaders())
 			}
 			if string(r.GetBody()) != want[i] {
@@ -237,10 +254,10 @@ func TestExecuteSession(t *testing.T) {
 		in := execRequest(TypeDevice, protocol, body)
 		in.Meta.ApiKeyId = apiKeyID
 		r := relayed(t, h, in)
-		if _, ok := r.GetHeaders()["session_id"]; ok {
-			t.Fatalf("session is authoritative: %v", r.GetHeaders())
+		if _, ok := r.GetDefaultHeaders()["session_id"]; ok {
+			t.Fatalf("session is a default header: %v", r.GetDefaultHeaders())
 		}
-		return r.GetDefaultHeaders()
+		return r.GetHeaders()
 	}
 	conv := `{"model":"gpt-5.4","prompt_cache_key":"conv-1"}`
 	first := build(ProtocolResponses, 7, conv)

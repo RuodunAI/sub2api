@@ -42,11 +42,12 @@ func removedFields(ws bool) []string {
 	return slices.DeleteFunc(slices.Clone(unsupportedFields), func(f string) bool { return f == wsKept })
 }
 
-// accountHeaders are the headers that must reach the upstream as built, so
-// they are authoritative (written after the operator's header settings): the
-// bearer token and the ChatGPT account it acts for, and sup2api's own,
-// truthful identification, which no passthrough or override may turn into
-// another client's. No client header is forwarded.
+// accountHeaders are the bearer token, the ChatGPT account it acts for and
+// sup2api's own, truthful identification. Every header of the plugin
+// (these, httpHeaders, the WebSocket beta and the session) is authoritative,
+// written after the operator's header settings, as every header of a code
+// plugin was before forwarding v2: no passthrough or override changes what
+// the plugin sends. No client header is forwarded.
 func accountHeaders(c credentials) map[string]string {
 	h := map[string]string{
 		"authorization": "Bearer " + c.AccessToken,
@@ -59,7 +60,8 @@ func accountHeaders(c credentials) map[string]string {
 	return h
 }
 
-// httpHeaders are the defaults of an HTTP request: the upstream only streams.
+// httpHeaders are the further headers of an HTTP request: the upstream only
+// streams.
 var httpHeaders = map[string]string{"accept": "text/event-stream", "content-type": "application/json"}
 
 // upstreamSession is the upstream session of the request's conversation,
@@ -151,21 +153,21 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		u.Header(name, value)
 	}
 	session := upstreamSession(in.GetMeta().GetApiKeyId(), body)
-	return u.DefaultHeader("session_id", session).
-		DefaultHeader("conversation_id", session).
+	return u.Header("session_id", session).
+		Header("conversation_id", session).
 		Body(body).
 		Model(pluginsdk.RequestModel(in)).
 		Build()
 }
 
 // transport starts the request of an upstream protocol: the HTTP request
-// or the WebSocket handshake, with the defaults of each.
+// or the WebSocket handshake, with the headers of each.
 func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err error) {
 	switch protocol {
 	case ProtocolResponses:
 		u = pluginsdk.NewUpstream(http.MethodPost, p.responsesURL())
 		for name, value := range httpHeaders {
-			u.DefaultHeader(name, value)
+			u.Header(name, value)
 		}
 		return u, false, nil
 	case ProtocolResponsesWS:
@@ -173,7 +175,7 @@ func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err
 		if err != nil {
 			return nil, false, err
 		}
-		return pluginsdk.NewUpstream(http.MethodGet, wsURL).DefaultHeader("openai-beta", WebSocketBeta), true, nil
+		return pluginsdk.NewUpstream(http.MethodGet, wsURL).Header("openai-beta", WebSocketBeta), true, nil
 	default:
 		return nil, false, status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
