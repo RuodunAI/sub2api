@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -17,9 +16,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
-
-// maxMonitorResult bounds the result of one Monitor call.
-const maxMonitorResult = 512 << 10
 
 // monitorOutcome is the claim a Monitor result is applied under: its
 // receipt commits with the outcome, so one claim has one outcome.
@@ -87,8 +83,6 @@ func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observati
 		return nil, err
 	case res == nil:
 		return nil, errors.New("Monitor returned no result")
-	case proto.Size(res) > maxMonitorResult:
-		return nil, errors.New("monitor result too large")
 	}
 	e.monitor = &monitorOutcome{id: fmt.Sprintf("entry:%d:%s", e.id, uuid.NewString()), digest: core.FactDigest(res)}
 	if e.task != nil {
