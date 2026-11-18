@@ -202,9 +202,6 @@
       ]
     }
   ],
-  "requestFields": [
-    "model"
-  ],
   "passHeaders": [
     "openai-organization",
     "openai-project",

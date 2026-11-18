@@ -41,7 +41,6 @@ func TestWarningsUndeclaredAddress(t *testing.T) {
 	}
 	for name, at := range map[string]func(*manifest.AccountType){
 		"declared":    func(at *manifest.AccountType) { at.UpstreamFields = []string{"base_url"} },
-		"derived":     func(at *manifest.AccountType) { at.Upstream = &manifest.Upstream{} },
 		"native form": func(at *manifest.AccountType) { at.Form = manifest.Form{Mode: "native"} },
 		"no address":  func(at *manifest.AccountType) { at.Form.Schema = "forms/none.json" },
 	} {

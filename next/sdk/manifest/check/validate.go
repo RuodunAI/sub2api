@@ -39,8 +39,6 @@ var (
 var KnownCapabilities = map[string]bool{
 	manifest.CapPlatformAdapter:   true,
 	manifest.CapPlatformTasks:     true,
-	manifest.CapPlatformPoll:      true,
-	manifest.CapPlatformExecute:   true,
 	manifest.CapPlatformMonitor:   true,
 	manifest.CapPlatformWebSocket: true,
 	manifest.CapGatewayHook:       true,
@@ -256,6 +254,7 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 	v.database()
 	v.userPermissions()
 	v.retiredUserPermissionFields()
+	v.retiredContractFields()
 	v.routes()
 	v.ui()
 	v.resources()
@@ -347,10 +346,10 @@ func (v *validator) basics() {
 		v.add("publisher", "required", "publisher is required")
 	}
 	switch {
-	case m.Runtime == manifest.RuntimeNone:
-		v.runtimeNone()
+	case m.Runtime == retiredRuntimeNone:
+		v.add("runtime", CodeOutdatedContract, "runtime %q is no longer supported: every plugin has a process (runtime %q)", m.Runtime, manifest.RuntimeGRPC)
 	case m.Runtime != manifest.RuntimeGRPC:
-		v.add("runtime", "unsupported", "runtime must be %q or %q", manifest.RuntimeGRPC, manifest.RuntimeNone)
+		v.add("runtime", "unsupported", "runtime must be %q", manifest.RuntimeGRPC)
 	case m.Entry.GRPC == nil || m.Entry.GRPC.Binaries == "":
 		v.add("entry.grpc.binaries", "required", "entry.grpc.binaries is required")
 	case !v.opt.Tooling:
@@ -449,6 +448,8 @@ func (v *validator) capabilities() {
 		switch {
 		case c.ID == removedAffinityCapability:
 			v.add(f, "sticky_not_for_plugins", "capability %q was removed: plugins take no part in sticky sessions", c.ID)
+		case retiredCapabilities[c.ID]:
+			v.add(f, CodeOutdatedContract, "capability %q was removed: %s covers Execute and %s is the only task observation", c.ID, manifest.CapPlatformAdapter, manifest.CapPlatformMonitor)
 		case !KnownCapabilities[c.ID]:
 			v.add(f, "unknown", "unknown capability %q", c.ID)
 		}
@@ -456,7 +457,7 @@ func (v *validator) capabilities() {
 			v.add(f, "duplicate", "capability %q declared twice", c.ID)
 		}
 		seen[c.ID] = true
-		if c.ID == manifest.CapPlatformPoll || c.ID == manifest.CapPlatformExecute || c.ID == manifest.CapPlatformMonitor || c.ID == manifest.CapPlatformWebSocket {
+		if c.ID == manifest.CapPlatformMonitor || c.ID == manifest.CapPlatformWebSocket {
 			v.needCap(f, manifest.CapPlatformAdapter)
 		}
 		// Cluster broadcast (HostService.Publish / AppService.OnBroadcast)
