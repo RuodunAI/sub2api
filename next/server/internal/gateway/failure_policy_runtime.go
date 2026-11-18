@@ -281,8 +281,10 @@ func (c *call) planFailure(ctx context.Context, ref *core.AccountRef, res attemp
 // down or disable the whole account - and the same account is never tried
 // again. The request moves to another account unless the usual limits
 // (attempts, committed response, account-bound resources) forbid it. An
-// attempt the account's param override stopped (CONTRACTS §84) is handled
-// the same way.
+// attempt the account's param override stopped (CONTRACTS §84), one the
+// plugin could not serve (an Execute error or crash, a relay the core
+// refuses: pluginUnavailable) and one whose target the SSRF guard refused
+// are handled the same way (gwError.NeutralReason).
 func (c *call) planAvailabilityFailure(ctx context.Context, ref *core.AccountRef, res attemptResult, attempts int, excluded map[int64]bool) attemptResult {
 	s := &c.failureState
 	s.facts = &FailureFacts{Source: "core", Status: res.err.Status, Text: res.err.Message, Model: c.model, Protocol: c.ep.Protocol}
@@ -290,7 +292,12 @@ func (c *call) planAvailabilityFailure(ctx context.Context, ref *core.AccountRef
 	s.accountResult = "unchanged"
 	if reason := c.retryBlocked(ctx, res, attempts, failureSwitch); reason != "" {
 		c.finishFailureDecision(ref, attempts, reason)
-		res.kind = attemptReturn
+		if reason != "attempt_limit" {
+			res.kind = attemptReturn
+		}
+		// Out of attempts the loop ends as without a policy: the failure is
+		// relayed when it is the request's (an availability refusal, an
+		// override's answer), else it is no_available_account.
 		return res
 	}
 	s.preserveSticky = true

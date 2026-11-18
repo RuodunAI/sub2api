@@ -56,6 +56,10 @@ type execution struct {
 	refused *gwError
 	// waited is the exchange of a relay that waits (waited.go).
 	waited *waitedRelay
+	// detach stops the client's departure from cancelling the Execute call
+	// of a relay that waits; it reports false when the client has already
+	// left (run).
+	detach func() bool
 }
 
 // errExecutionAborted cuts the upstream exchange of a relay that waits when
@@ -85,11 +89,14 @@ func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, ac
 	return x.unrelayed(ctx, res, err)
 }
 
-// run calls Execute. A request that waits keeps going when the client
-// leaves (its answer may be read on for billing, disconnect.go): the call
-// outlives ctx and has no time limit of its own. It ends with the plugin's
-// return, the upstream exchange (the client leaving, the administrator's
-// upstream timeouts) or the plugin process.
+// run calls Execute under ctx, the client's: the call has no time limit of
+// its own. A request that waits is cancelled by the client leaving only
+// until its relay starts sending (detach): from then on the exchange
+// follows the disconnect policy (its answer may be read on for billing,
+// disconnect.go) and the plugin's work after the observation is not
+// cancelled by the client, since its facts must still be committed. It
+// then ends with the plugin's return, the upstream exchange (the
+// administrator's upstream timeouts, the policy) or the plugin process.
 func (x *execution) run(ctx context.Context, upModel string, n int) (core.ExecutionResult, error) {
 	c, rt := x.c, x.rt
 	plugin, ok := rt.binding.Client.(core.ExecutePlugin)
@@ -103,7 +110,10 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 	client := core.ExecutionClient{Check: x.check, Fetch: x.fetch}
 	if in.ExtractUsage || in.TaskSubmission {
 		client.Relay = x.relay
-		ctx = context.WithoutCancel(ctx)
+		detached, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		x.detach = context.AfterFunc(ctx, cancel)
+		ctx = detached
 	}
 	return plugin.Execute(ctx, in, client)
 }
@@ -111,7 +121,7 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 // sendParked sends the relay the plugin confirmed with host_usage. A task
 // submission must wait: its task is registered from the facts Execute
 // returns, so one relayed without them is not sent. An endpoint whose usage
-// the plugin was to read falls back to the core's reading; when that holds
+// the plugin was to read falls back, once answered, to the core's reading; when that holds
 // no usage the request is unreported: the client keeps the answer it was
 // already sent, the record is the free usage_unreported one (submit
 // releases the precharge) and the core logs at ERROR, as
@@ -122,10 +132,10 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 		return x.pluginFailed(ctx, errors.New("a task submission was relayed without waiting"))
 	}
 	res := c.send(ctx, x, req)
-	if c.usage != nil {
+	if x.rt.pluginUsage && res.kind == attemptDone {
 		c.usage = nil
 		if err := c.hostUsageChosen(); err != nil {
-			unreportedUsage(c.rec, err.Error())
+			c.rec.SetUnreported(err.Error())
 			slog.ErrorContext(ctx, "gateway: plugin execution unreported, not billed", "request_id", c.rid,
 				"plugin", x.rt.binding.Plugin.Key, "account_id", x.acc.ID, "endpoint", c.ep.Path, "reason", err.Error())
 		}
@@ -141,10 +151,12 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 func (x *execution) unrelayed(ctx context.Context, res core.ExecutionResult, err error) attemptResult {
 	c := x.c
 	switch cls := res.Response.GetClassification(); {
+	case ctx.Err() != nil:
+		// The client left: whatever the plugin made of it (a fetch it cut,
+		// classified) says nothing about the account.
+		return attemptResult{kind: attemptCanceled, err: canceledErr()}
 	case err == nil && cls != nil:
 		return c.applyClassification(ctx, x.rt, x.acct, 0, nil, nil, firstNonEmpty(cls.GetReason(), "upstream request failed before the relay"), cls)
-	case ctx.Err() != nil:
-		return attemptResult{kind: attemptCanceled, err: canceledErr()}
 	case x.refused != nil:
 		return attemptResult{kind: attemptFailover, err: x.refused}
 	case err == nil:
@@ -153,15 +165,23 @@ func (x *execution) unrelayed(ctx context.Context, res core.ExecutionResult, err
 	return x.pluginFailed(ctx, err)
 }
 
-// pluginFailed fails over an attempt the plugin could not serve.
+// pluginFailed fails over an attempt the plugin could not serve, without
+// blaming the account (pluginUnavailable).
 func (x *execution) pluginFailed(ctx context.Context, err error) attemptResult {
-	var reason any
-	if ce := (*core.Error)(nil); errors.As(err, &ce) {
-		reason = ce.Details["reason"]
-	}
 	slog.WarnContext(ctx, "gateway: plugin execution failed", "request_id", x.c.rid, "plugin", x.rt.binding.Plugin.Key,
-		"account", x.acc.ID, "reason", reason, "err", err)
-	return attemptResult{kind: attemptFailover, err: fromCore(core.ErrPluginUnavailable.WithCause(err), errTypePluginUnavailable)}
+		"account", x.acc.ID, "err", err)
+	return attemptResult{kind: attemptFailover, err: pluginUnavailable(core.ErrPluginUnavailable.WithCause(err))}
+}
+
+// pluginUnavailable is the failure of an attempt the plugin could not serve
+// (an Execute error or crash, a relay the core refuses): nothing reached
+// the upstream and the account is not to blame. Under a failure policy it
+// moves to another account like an availability refusal, with no account
+// rule run (planAvailabilityFailure); without one it fails over.
+func pluginUnavailable(e *core.Error) *gwError {
+	g := fromCore(e, errTypePluginUnavailable)
+	g.NeutralReason = errTypePluginUnavailable
+	return g
 }
 
 // check is ExecutionClient.Check: the gateway's part of validating a relay

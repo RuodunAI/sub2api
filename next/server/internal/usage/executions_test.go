@@ -223,8 +223,16 @@ func TestExecutionWithoutFactsClosesUnreported(t *testing.T) {
 	if err := f.svc.BeginExecution(ctx, core.ExecutionIntent{ID: iid, RequestID: intent.RequestID, PluginKey: intent.PluginKey, AccountID: 7, Attempt: 1, Record: intent}); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: iid, Reason: "no report"}); err == nil {
-		t.Fatal("an unobserved execution closed")
+	if err := f.svc.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: iid, Reason: "no report"}); !errors.Is(err, core.ErrExecutionRefused) {
+		t.Fatal("an unobserved execution closed, or not as a final refusal", err)
+	}
+	// Facts that cannot fit any execution are a final refusal: the gateway
+	// does not retry them.
+	if err := f.svc.CommitExecution(ctx, core.ExecutionCommit{ID: iid, Operation: core.ExecutionOpUsage, Record: intent}); !errors.Is(err, core.ErrExecutionRefused) {
+		t.Fatal("an invalid commit is not a final refusal", err)
+	}
+	if err := f.svc.CommitExecution(ctx, core.ExecutionCommit{ID: iid, Operation: core.ExecutionOpUsage, Digest: core.FactDigest(nil), Record: intent}); !errors.Is(err, core.ErrExecutionRefused) {
+		t.Fatal("a commit without an observation is not a final refusal", err)
 	}
 	if f.scalar(`SELECT count(*) FROM usage_logs WHERE request_id='close-intent'`) != "0" {
 		t.Fatal("closing an intent wrote a record")

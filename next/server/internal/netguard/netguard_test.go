@@ -163,3 +163,46 @@ func TestClientRefusesPrivateTargetsAndRedirects(t *testing.T) {
 		t.Fatalf("redirect to private name: %v", err)
 	}
 }
+
+// Direct requests check the addresses the name resolves to; proxied ones are
+// resolved by the proxy: nothing is looked up locally, a name only the
+// proxy can resolve passes, and a literal private address (or localhost) is
+// still refused.
+func TestCheckURLVia(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	var lookups int
+	lookup := func(_ context.Context, host string) ([]net.IP, error) {
+		lookups++
+		if host == "inward.example" {
+			return []net.IP{net.ParseIP("10.0.0.5")}, nil
+		}
+		return nil, errors.New("no such host")
+	}
+	for _, raw := range []string{"https://only-the-proxy-resolves.example/v1", "https://inward.example/v1", "https://8.8.8.8/"} {
+		if _, err := CheckURLVia(ctx, raw, false, true, lookup); err != nil {
+			t.Errorf("proxied %s refused: %v", raw, err)
+		}
+	}
+	if lookups != 0 {
+		t.Fatalf("a proxied check resolved %d names locally", lookups)
+	}
+	for _, raw := range []string{"http://127.0.0.1/", "http://[::1]/", "http://10.1.2.3/", "http://localhost/", "http://api.localhost/"} {
+		if _, err := CheckURLVia(ctx, raw, false, true, lookup); !errors.Is(err, ErrPrivate) {
+			t.Errorf("proxied %s: %v, want ErrPrivate", raw, err)
+		}
+	}
+	if _, err := CheckURLVia(ctx, "ftp://x.example/", false, true, lookup); !errors.Is(err, ErrBadURL) {
+		t.Errorf("proxied ftp: %v", err)
+	}
+	// Direct: unchanged.
+	if _, err := CheckURLVia(ctx, "https://only-the-proxy-resolves.example/v1", false, false, lookup); err == nil {
+		t.Error("a direct request to an unresolvable name passed")
+	}
+	if _, err := CheckURL(ctx, "https://inward.example/v1", false, lookup); !errors.Is(err, ErrPrivate) {
+		t.Errorf("direct inward name: %v", err)
+	}
+	if _, err := CheckURLVia(ctx, "http://10.1.2.3/", true, true, lookup); err != nil {
+		t.Errorf("allowPrivate: %v", err)
+	}
+}

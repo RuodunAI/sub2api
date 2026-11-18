@@ -37,40 +37,71 @@ const commitTimeout = core.ExecutionFinishTimeout
 // commitRetryDelay spaces the retries of a failed commit.
 const commitRetryDelay = 250 * time.Millisecond
 
+// relayState is how the exchange of a relay that waits ended, which decides
+// how the attempt settles once Execute returned (settle).
+type relayState int
+
+const (
+	// relaySent: nothing came back to settle - the execution could not be
+	// recorded, the request failed without an answer for the plugin, a task
+	// answer could not be received. The attempt is what send decided.
+	relaySent relayState = iota
+	// relayFailed: the upstream's error answer was handed to the plugin;
+	// its classification decides.
+	relayFailed
+	// relayObserved: a 2xx answer was relayed and the core's reading of it
+	// stored (ObserveExecution); the facts Execute returns decide.
+	relayObserved
+	// relayUnconfirmed: a 2xx answer was relayed but the core's reading
+	// could not be stored: the execution owns no usage and the request's
+	// own free record is submitted.
+	relayUnconfirmed
+)
+
 // waitedRelay is the exchange of one relay that waits.
 type waitedRelay struct {
 	x       *execution
 	ctx     context.Context // the plugin's host call; its end cuts the upstream
 	id      string
 	records core.ExecutionRecords
-	// result is what send decided; the attempt's when there is nothing to
-	// settle (nothing observed, no upstream error).
+	state   relayState
+	// result is what send decided: the attempt's in state relaySent, the
+	// cause in relayUnconfirmed.
 	result attemptResult
-	// failure is the upstream's error answer handed to the plugin, with
+	// relayFailed: the upstream's error answer handed to the plugin, with
 	// the parts kept for the client.
 	failure   *pluginv1.ClassifyErrorRequest
 	header    http.Header
 	raw       []byte
 	errorBody *upstreamErrorBody
-	// The 2xx answer: the observation the plugin reads, whether its usage
-	// may be read from it, the core's reading stored by ObserveExecution
-	// (observed) or that could not be stored (unconfirmed), the answer held
-	// back until the facts commit, and a task submission's answer.
+	// relayObserved: the observation the plugin reads, whether its usage
+	// may be read from it, the core's reading, the answer held back until
+	// the facts commit, and a task submission's answer.
 	observation *pluginv1.ExtractUsageRequest
 	extractable bool
-	observed    bool
-	unconfirmed bool
 	base        *core.UsageRecord
 	spool       *bufferedResponse
 	taskBody    []byte
+	// committing is the record of the facts handed to CommitExecution: the
+	// request's once the commit is found to have landed.
+	committing *core.UsageRecord
 	// alive renews the observed execution until it ends (heartbeat).
 	alive heartbeat
 }
 
+// errClientLeft is a relay that waits asked for after the client left: it
+// is not sent.
+var errClientLeft = errors.New("the client left before the relay was sent")
+
 // relay is ExecutionClient.Relay: send req now and hand the plugin exactly
 // one of the observation and the upstream's error, or an error when the
-// exchange ended without either.
+// exchange ended without either. From here on the client leaving no longer
+// cancels the Execute call (execution.run).
 func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
+	if !x.detach() {
+		// The client left before anything was sent: the call is cancelled.
+		return nil, errClientLeft
+	}
 	c := x.c
 	w := &waitedRelay{x: x, ctx: ctx, id: uuid.NewString()}
 	x.waited = w
@@ -90,9 +121,9 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 	}
 	w.result = c.send(x.network, x, req)
 	switch {
-	case w.failure != nil:
+	case w.state == relayFailed:
 		return &pluginv1.RelayUpstreamResponse{Error: w.failure}, nil
-	case w.observed:
+	case w.state == relayObserved:
 		return &pluginv1.RelayUpstreamResponse{Observation: w.observation}, nil
 	case w.result.err != nil:
 		return nil, errors.New(w.result.err.Message)
@@ -108,45 +139,65 @@ func (w *waitedRelay) fail(status int, header http.Header, raw []byte, transport
 	if len(prefix) > classifyPrefix {
 		prefix = prefix[:classifyPrefix]
 	}
-	w.header, w.raw = header, raw
+	w.state, w.header, w.raw = relayFailed, header, raw
 	w.failure = &pluginv1.ClassifyErrorRequest{Meta: x.c.metaFor(x.rt), Account: x.acct, Status: int32(status),
 		Headers: firstHeaderValues(header), BodyPrefix: prefix, TransportError: transportErr}
 	return attemptResult{kind: attemptReturn}
 }
 
-// answer relays a 2xx answer for the plugin to read: a task submission's is
-// read whole and kept, another is relayed to the client (an answer that is
-// not an event stream into the spool, published once the facts commit).
-// Then the core's reading is stored.
+// answer relays a 2xx answer for the plugin to read, then stores the core's
+// reading of it.
 func (w *waitedRelay) answer(ctx context.Context, resp *http.Response) attemptResult {
-	x := w.x
-	c := x.c
-	if c.ep.TaskSubmit() {
-		c.rec.StatusCode = resp.StatusCode
-		raw, err := io.ReadAll(io.LimitReader(resp.Body, protocol.MaxTaskSnapshotBytes+1))
-		if err != nil || len(raw) > protocol.MaxTaskSnapshotBytes {
-			return c.taskFailure(ctx, "task response incomplete", err)
+	if w.x.c.ep.TaskSubmit() {
+		if res, ok := w.receiveTask(ctx, resp); !ok {
+			return res
 		}
-		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
-		err = c.g.d.Tasks.ReceiveTask(bctx, c.rid, resp.StatusCode, raw, "")
-		cancel()
-		if err != nil {
-			return c.taskFailure(ctx, "task response receipt failed", err)
-		}
-		w.taskBody = raw
-		c.armUsageExtraction(x.rt, x.acct, resp, &usageCapture{body: raw}, x.body)
-		c.rec.Success = true
 	} else {
-		original := c.c.Writer
-		if !isSSE(resp.Header.Get("Content-Type")) {
-			w.spool = newBufferedResponse(original)
-			c.c.Writer = w.spool
-		}
-		func() {
-			defer func() { c.c.Writer = original }()
-			w.result = c.forward(ctx, x.rt, x.acct, resp, x.body)
-		}()
+		w.forward(ctx, resp)
 	}
+	return w.read(ctx, resp)
+}
+
+// receiveTask reads a task submission's answer whole and keeps it, with the
+// task's receipt; ok is false when it cannot (the attempt's end).
+func (w *waitedRelay) receiveTask(ctx context.Context, resp *http.Response) (_ attemptResult, ok bool) {
+	x, c := w.x, w.x.c
+	c.rec.StatusCode = resp.StatusCode
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, protocol.MaxTaskSnapshotBytes+1))
+	if err != nil || len(raw) > protocol.MaxTaskSnapshotBytes {
+		return c.taskFailure(ctx, "task response incomplete", err), false
+	}
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
+	err = c.g.d.Tasks.ReceiveTask(bctx, c.rid, resp.StatusCode, raw, "")
+	cancel()
+	if err != nil {
+		return c.taskFailure(ctx, "task response receipt failed", err), false
+	}
+	w.taskBody = raw
+	c.armUsageExtraction(x.rt, x.acct, resp, &usageCapture{body: raw}, x.body)
+	c.rec.Success = true
+	return attemptResult{}, true
+}
+
+// forward relays the answer to the client: an event stream as it comes,
+// anything else into the spool, published once the facts commit. The
+// attempt's result is settled from the facts, not from the forwarding.
+func (w *waitedRelay) forward(ctx context.Context, resp *http.Response) {
+	x, c := w.x, w.x.c
+	original := c.c.Writer
+	if !isSSE(resp.Header.Get("Content-Type")) {
+		w.spool = newBufferedResponse(original)
+		c.c.Writer = w.spool
+	}
+	defer func() { c.c.Writer = original }()
+	c.forward(ctx, x.rt, x.acct, resp, x.body)
+}
+
+// read builds the observation the plugin reads from the answer and stores
+// the core's reading: relayObserved, or relayUnconfirmed when it could not
+// be stored.
+func (w *waitedRelay) read(ctx context.Context, resp *http.Response) attemptResult {
+	x, c := w.x, w.x.c
 	if p := c.usage; p != nil {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: p.meta, Account: p.account, Status: int32(p.status), Headers: p.headers,
 			Body: p.cap.body, Events: p.cap.events, Truncated: p.cap.stopped, Fields: p.fields, FieldsOmitted: p.fieldsOmitted}
@@ -159,9 +210,10 @@ func (w *waitedRelay) answer(ctx context.Context, resp *http.Response) attemptRe
 	c.stampSticky()
 	w.base = cloneUsage(c.rec)
 	if err := w.observe(ctx); err != nil {
-		w.unconfirmed = true
+		w.state = relayUnconfirmed
 		return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(err), errTypeInternal)}
 	}
+	w.state = relayObserved
 	return attemptResult{kind: attemptDone}
 }
 
@@ -182,7 +234,6 @@ func (w *waitedRelay) observe(ctx context.Context) error {
 	if err := w.records.ObserveExecution(bctx, w.id, reading, summary); err != nil {
 		return err
 	}
-	w.observed = true
 	w.alive.start(ctx, w.records, w.id, cmp.Or(c.g.renewInterval, core.ExecutionRenewInterval))
 	return nil
 }
@@ -241,22 +292,22 @@ func (h *heartbeat) stop() {
 // the plugin's classification, the facts of an observed answer, or what
 // send decided when neither came.
 func (w *waitedRelay) settle(ctx context.Context, res core.ExecutionResult, err error) attemptResult {
-	switch {
-	case w.failure != nil:
+	switch w.state {
+	case relayFailed:
 		return w.classified(ctx, res.Response.GetClassification())
-	case w.observed:
-		if err != nil {
+	case relayUnconfirmed:
+		return w.unreported(ctx, "observation not stored", errors.New(w.result.err.Message))
+	case relayObserved:
+		switch {
+		case err != nil:
 			return w.unreported(ctx, "execute failed: "+err.Error(), err)
-		}
-		if w.spool != nil && w.spool.err != nil {
+		case w.spool != nil && w.spool.err != nil:
 			// The held-back answer cannot be delivered (its temp file
 			// failed): nothing is committed for an answer the client never
 			// gets.
 			return w.unreported(ctx, "response not deliverable: "+w.spool.err.Error(), w.spool.err)
 		}
 		return w.commit(ctx, res.Response)
-	case w.unconfirmed:
-		return w.unreported(ctx, "observation not stored", errors.New(w.result.err.Message))
 	}
 	return w.result
 }
@@ -284,6 +335,7 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	previous := c.rec
 	commit, body, err := w.facts(ctx, out)
 	if err == nil {
+		w.committing = commit.Record
 		err = w.commitWithRetry(ctx, commit)
 		if err != nil && c.ep.TaskSubmit() {
 			err = w.confirmTask(ctx, err)
@@ -293,7 +345,7 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 		c.rec = previous
 		return w.unreported(ctx, err.Error(), err)
 	}
-	c.taskPersisted = true
+	c.executionOwnsUsage = true
 	if body != nil && w.spool == nil {
 		w.spool = newBufferedResponse(c.c.Writer)
 		w.spool.Header().Set("Content-Type", "application/json")
@@ -407,14 +459,16 @@ func (w *waitedRelay) task(ctx context.Context, parsed *pluginv1.TaskSubmission)
 		NextCheckAfter: time.Duration(parsed.GetNextCheckAfterSec()) * time.Second, Deadline: time.Duration(parsed.GetDeadlineSec()) * time.Second}, returned, nil
 }
 
-// commitWithRetry commits, retrying a failure within commitTimeout; a
-// conflict (other facts, or the execution closed meanwhile) is final.
+// commitWithRetry commits, retrying a storage failure within
+// commitTimeout; a conflict (other facts, or the execution closed
+// meanwhile) and a refusal of the facts (core.ErrExecutionRefused) are
+// final.
 func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.ExecutionCommit) error {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
 	for {
 		err := w.records.CommitExecution(cctx, commit)
-		if err == nil || isConflict(err) {
+		if err == nil || isConflict(err) || errors.Is(err, core.ErrExecutionRefused) {
 			return err
 		}
 		select {
@@ -441,7 +495,7 @@ func (w *waitedRelay) confirmTask(ctx context.Context, err error) error {
 		return nil
 	}
 	if cerr == nil {
-		w.x.c.taskPersisted = true
+		w.x.c.executionOwnsUsage = true
 	}
 	return err
 }
@@ -464,30 +518,21 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 	}
 	recordType := errTypeInternal
 	switch {
-	case !w.observed:
+	case w.state != relayObserved:
 		recordType = core.UsageErrorUnreported
-		unreportedUsage(c.rec, reason)
+		c.rec.SetUnreported(reason)
 	case w.closed(ctx, reason):
-		// Committed meanwhile by a retry that timed out here: the facts stand.
-		c.taskPersisted = true
+		// Committed meanwhile by a retry that timed out here: the facts
+		// stand, and so does their record (the rate limits count it).
+		c.rec, c.executionOwnsUsage = w.committing, true
 		return w.deliver(ctx)
 	default:
-		c.taskPersisted = true
+		c.executionOwnsUsage = true
 	}
 	if c.c.Writer.Written() {
 		panic(http.ErrAbortHandler)
 	}
 	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), recordType)}
-}
-
-// unreportedUsage makes rec the free record of a request whose execution
-// stated no facts, as CloseExecutionUnreported writes it: the host's reading
-// without anything to bill.
-func unreportedUsage(rec *core.UsageRecord, reason string) {
-	rec.Success, rec.ErrorType, rec.ErrorMessage = false, core.UsageErrorUnreported, truncateUTF8(reason, 1000)
-	rec.Tokens, rec.Metrics, rec.Additional, rec.Replacement = core.UsageTokens{}, nil, nil, nil
-	rec.Price, rec.BillingError, rec.Reservation = nil, "", nil
-	rec.UsageExtract = core.UsageExtractUnreported
 }
 
 // close closes the execution unreported; it reports whether it turned out

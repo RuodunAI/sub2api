@@ -7,6 +7,8 @@ import (
 
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/x"
 )
 
 // ============================================================ billing (owner: B billing)
@@ -366,6 +368,22 @@ const (
 // UsageErrorUnreported is the ErrorType (usage_logs.error_type) of the free
 // record of an unreported execution.
 const UsageErrorUnreported = "usage_unreported"
+
+// SetUnreported makes r the free record of a request whose plugin stated no
+// usage facts: the host's reading (identity, latency, status, routing)
+// without anything to bill - success false, ErrorType UsageErrorUnreported
+// with reason, no tokens, metrics, additional or replacement usage, price,
+// billing error or reservation, UsageExtract UsageExtractUnreported. It is
+// the one definition of that record: CloseExecutionUnreported writes it, the
+// gateway submits it for an execution without a durable observation, a
+// plugin's host_usage without a reading and a task submission that could not
+// be registered.
+func (r *UsageRecord) SetUnreported(reason string) {
+	r.Success, r.ErrorType, r.ErrorMessage = false, UsageErrorUnreported, x.Truncate(reason, 1000)
+	r.Tokens, r.Metrics, r.Additional, r.Replacement = UsageTokens{}, nil, nil, nil
+	r.Billable, r.Price, r.BillingError, r.Reservation, r.ReservationDropped = false, nil, "", nil, ""
+	r.UsageExtract = UsageExtractUnreported
+}
 
 // Keys of usage_logs.anomalies: facts about how a usage record was produced,
 // never about what it costs. The column exists because billing_detail - whose

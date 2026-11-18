@@ -3,6 +3,7 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -337,21 +339,49 @@ func TestSSRFCheck(t *testing.T) {
 		"http://169.254.169.254/latest", "http://internal.example/x", "http://mixed.example/x", "http://user:pw@api.example/x",
 		"http://[::ffff:10.0.0.1]/x", "http://100.64.1.1/x", "/relative", ""}
 	for _, u := range bad {
-		if _, err := g.checkUpstreamURL(ctx, u); err == nil {
+		if _, err := g.checkUpstream(ctx, u, false); err == nil {
 			t.Errorf("%q accepted", u)
 		}
 	}
 	for _, u := range []string{"https://api.anthropic.com/v1/messages", "http://8.8.8.8/x"} {
-		if _, err := g.checkUpstreamURL(ctx, u); err != nil {
+		if _, err := g.checkUpstream(ctx, u, false); err != nil {
 			t.Errorf("%q rejected: %v", u, err)
 		}
 	}
 	g.allowPrivate = true
-	if _, err := g.checkUpstreamURL(ctx, "http://127.0.0.1:1/x"); err != nil {
+	if _, err := g.checkUpstream(ctx, "http://127.0.0.1:1/x", false); err != nil {
 		t.Fatalf("allow private: %v", err)
 	}
-	if _, err := g.checkUpstreamURL(ctx, "file:///etc/passwd"); err == nil {
+	if _, err := g.checkUpstream(ctx, "file:///etc/passwd", false); err == nil {
 		t.Fatal("scheme must still be checked")
+	}
+}
+
+// A relay, handshake or fetch of an account with a proxy is resolved by the
+// proxy: the name is not resolved here, so one only the proxy can resolve
+// (or with the node's DNS down) passes, while a literal private address is
+// refused. An account without a proxy is checked as before.
+func TestSSRFCheckFollowsTheAccountProxy(t *testing.T) {
+	var lookups atomic.Int32
+	g := &Gateway{lookupIP: func(context.Context, string) ([]net.IP, error) {
+		lookups.Add(1)
+		return nil, errors.New("no such host")
+	}}
+	c := &call{g: g}
+	proxy := int64(4)
+	proxied := &execution{c: c, acc: &core.Account{AccountRef: core.AccountRef{ID: 1, ProxyID: &proxy}}}
+	direct := &execution{c: c, acc: &core.Account{AccountRef: core.AccountRef{ID: 2}}}
+	ctx := context.Background()
+	if _, err := proxied.checkURL(ctx, "https://upstream.proxy-side.example/v1"); err != nil || lookups.Load() != 0 {
+		t.Fatalf("proxied name: %v, %d local lookups", err, lookups.Load())
+	}
+	for _, u := range []string{"http://127.0.0.1:8080/v1", "http://10.1.2.3/x", "http://localhost/x", "http://[::1]/x"} {
+		if _, err := proxied.checkURL(ctx, u); err == nil {
+			t.Errorf("proxied %q accepted", u)
+		}
+	}
+	if _, err := direct.checkURL(ctx, "https://upstream.proxy-side.example/v1"); err == nil || lookups.Load() != 1 {
+		t.Fatalf("direct unresolvable name: %v, %d lookups", err, lookups.Load())
 	}
 }
 

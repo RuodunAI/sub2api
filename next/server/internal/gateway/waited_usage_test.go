@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -155,10 +156,11 @@ func TestWaitedRelayCommitRetried(t *testing.T) {
 	e.noRecord()
 }
 
-// A commit that is refused for good (a conflict) or keeps failing until the
-// commit deadline closes the execution unreported.
+// A commit that is refused for good (a conflict, facts that do not fit the
+// execution) or keeps failing until the commit deadline closes the
+// execution unreported. Only the outage is retried.
 func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
-	for _, name := range []string{"conflict", "outage"} {
+	for _, name := range []string{"conflict", "refused", "outage"} {
 		t.Run(name, func(t *testing.T) {
 			if name == "outage" {
 				if testing.Short() {
@@ -170,9 +172,14 @@ func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
 			pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 				return report(3, 4), nil
 			}
+			var commits atomic.Int32
 			e.settler.commitErr = func(core.ExecutionCommit) error {
-				if name == "conflict" {
+				commits.Add(1)
+				switch name {
+				case "conflict":
 					return core.ErrConflict
+				case "refused":
+					return fmt.Errorf("%w: execution identity mismatch", core.ErrExecutionRefused)
 				}
 				return errors.New("database outage")
 			}
@@ -183,6 +190,9 @@ func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
 			}
 			if name == "outage" && time.Since(start) < commitTimeout-time.Second {
 				t.Fatalf("gave up after %s, before the commit deadline", time.Since(start))
+			}
+			if name != "outage" && (commits.Load() != 1 || time.Since(start) > commitTimeout/2) {
+				t.Fatalf("a final refusal was retried: %d commits in %s", commits.Load(), time.Since(start))
 			}
 			assertUnreported(t, e)
 		})
@@ -486,5 +496,107 @@ func TestHeartbeatStopsOnceNotObserved(t *testing.T) {
 	h.mu.Unlock()
 	if !stopped {
 		t.Fatal("heartbeat still armed")
+	}
+}
+
+// A plugin that hangs before it relays is cancelled by the client leaving:
+// nothing was sent upstream, so its Execute call ends with the client, the
+// attempt is canceled, nothing is billed, no execution is recorded and the
+// slots are released. (Once the relay sends, the client's departure no
+// longer reaches the call: TestClientDisconnectWaitedRelay.)
+func TestWaitedRelayClientLeavesBeforeTheRelay(t *testing.T) {
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	e, _ := scriptedUsageEnv(t, func(ctx context.Context, _ *fakePlatform, _ *pluginv1.ExecuteRequest, _ core.ExecutionClient) (core.ExecutionResult, error) {
+		close(entered)
+		<-ctx.Done() // hangs until its call is cancelled
+		close(canceled)
+		return core.ExecutionResult{}, ctx.Err()
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	raw, _ := json.Marshal(body(testModel, false))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.srv.URL+"/pu/v1/chat", bytes.NewReader(raw))
+	req.Header.Set("x-api-key", testKey)
+	go func() {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute was not called")
+	}
+	cancel()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the client leaving did not cancel the Execute call")
+	}
+	rec := e.record()
+	if rec.Billable || rec.ErrorType != errTypeClientCanceled || rec.Tokens != (core.UsageTokens{}) {
+		t.Fatalf("record %+v", rec)
+	}
+	if len(e.up.keys()) != 0 || len(e.settler.executionStates()) != 0 {
+		t.Fatalf("sent %v, executions %v", e.up.keys(), e.settler.executionStates())
+	}
+	e.noRecord()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.slots.mu.Lock()
+		held := 0
+		for _, n := range e.slots.inUse {
+			held += n
+		}
+		e.slots.mu.Unlock()
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("slots still held: %d", held)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A commit whose acknowledgement was lost and whose retries then fail is
+// found committed when the execution is closed: the answer is delivered,
+// the facts are billed once, and the rate limits count the committed facts,
+// not the core's reading taken before the report.
+func TestWaitedRelayCommitLandedCountsTheFacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the commit deadline")
+	}
+	e, pp := usageEnv(t, pluginUsageRules())
+	lim := newFakeLimiter()
+	e.gw.d.Limiter = lim
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		return report(3, 4), nil
+	}
+	var calls atomic.Int32
+	e.settler.commitErr = func(core.ExecutionCommit) error {
+		if calls.Add(1) == 1 {
+			return nil
+		}
+		return errors.New("database outage")
+	}
+	e.settler.commitAckLost = func(core.ExecutionCommit) error { return context.DeadlineExceeded }
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || !strings.Contains(string(res.body), "hello") {
+		t.Fatalf("status %d %s", res.status, res.body)
+	}
+	rec := e.record()
+	if !rec.Success || !rec.Billable || rec.Tokens.Input != 3 || rec.Tokens.Output != 4 {
+		t.Fatalf("committed record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	e.noRecord()
+	want := rec.Tokens.Throughput(rec.UsageSemantics)
+	lim.mu.Lock()
+	defer lim.mu.Unlock()
+	if got := lim.modelTkns["9:"+testModel]; got != want {
+		t.Fatalf("rate limits counted %d tokens, the committed facts are %d", got, want)
 	}
 }
