@@ -1,18 +1,22 @@
 package vertex
 
 import (
-	"crypto"
+	"context"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/tidwall/gjson"
+	"golang.org/x/oauth2/google"
+	"golang.org/x/oauth2/jws"
 )
 
 const (
@@ -23,7 +27,8 @@ const (
 	assertionLifetime = time.Hour
 	// assertionBackdate is how far before now an assertion is issued, so a
 	// node whose clock runs a few seconds fast is not refused for an iat in
-	// the future (golang.org/x/oauth2/jwt does the same).
+	// the future (golang.org/x/oauth2/jws does the same when it is left to
+	// pick the time; here the time is the plugin's clock).
 	assertionBackdate = 10 * time.Second
 
 	grantJWTBearer    = "urn:ietf:params:oauth:grant-type:jwt-bearer"
@@ -63,6 +68,24 @@ var keyKinds = map[string]keyKind{
 // may quote part of a secret.
 var errNotJSON = errors.New("not a JSON object / 不是合法的 JSON 对象")
 
+// readCredentials has Google's library (golang.org/x/oauth2/google) read raw
+// as a credential file of type typ. Only what the library parsed is used:
+// the token source it also builds is never asked for a token, since token
+// requests are the core's to send (BuildRefreshRequest). Its errors are
+// replaced by ones that quote nothing of the file.
+func readCredentials(raw string, typ google.CredentialsType) (*google.Credentials, error) {
+	creds, err := google.CredentialsFromJSONWithType(context.Background(), []byte(raw), typ, CloudPlatformScope)
+	var syntax *json.SyntaxError
+	var mismatch *json.UnmarshalTypeError
+	switch {
+	case err == nil:
+		return creds, nil
+	case errors.As(err, &syntax), errors.As(err, &mismatch):
+		return nil, errNotJSON
+	}
+	return nil, fmt.Errorf(`"type" must be %q / "type" 必须是 %q`, typ, typ)
+}
+
 // fingerprint is the SHA-256 of the parts that identify a key.
 func fingerprint(parts ...string) string {
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
@@ -72,59 +95,62 @@ func fingerprint(parts ...string) string {
 // ---------------------------------------------------------------- service account
 
 // serviceAccountKey is a service account key file (IAM > Service accounts >
-// Keys > JSON).
+// Keys > JSON), as Google's library reads it.
 type serviceAccountKey struct {
-	Type         string `json:"type"`
-	ProjectID    string `json:"project_id"`
-	PrivateKeyID string `json:"private_key_id"`
-	PrivateKey   string `json:"private_key"`
-	ClientEmail  string `json:"client_email"`
-	TokenURI     string `json:"token_uri"`
-
-	signer *rsa.PrivateKey
+	email     string
+	keyID     string
+	projectID string
+	signer    *rsa.PrivateKey
 }
 
 func parseServiceAccount(raw string) (keyFile, error) {
-	var k serviceAccountKey
-	if json.Unmarshal([]byte(raw), &k) != nil {
+	creds, err := readCredentials(raw, google.ServiceAccount)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := google.JWTConfigFromJSON(creds.JSON)
+	if err != nil {
 		return nil, errNotJSON
 	}
 	switch {
-	case k.Type != "service_account":
-		return nil, errors.New(`"type" must be "service_account" / "type" 必须是 "service_account"`)
-	case strings.TrimSpace(k.ClientEmail) == "":
+	case strings.TrimSpace(cfg.Email) == "":
 		return nil, errors.New(`"client_email" is missing / 缺少 "client_email"`)
-	case strings.TrimSpace(k.PrivateKey) == "":
+	case strings.TrimSpace(string(cfg.PrivateKey)) == "":
 		return nil, errors.New(`"private_key" is missing / 缺少 "private_key"`)
-	case k.TokenURI != TokenURL:
+	// The file's own value is read: the library fills in its default for a
+	// file without token_uri. The value is only checked, never used.
+	case gjson.GetBytes(creds.JSON, "token_uri").String() != TokenURL:
 		return nil, errors.New(`"token_uri" must be ` + TokenURL + ` / "token_uri" 必须是 ` + TokenURL)
 	}
-	signer, err := parseRSAPrivateKey(k.PrivateKey)
+	signer, err := parseRSAPrivateKey(cfg.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	k.signer = signer
-	return &k, nil
+	return &serviceAccountKey{email: cfg.Email, keyID: cfg.PrivateKeyID, projectID: creds.ProjectID, signer: signer}, nil
 }
 
-func (k *serviceAccountKey) fingerprint() string { return fingerprint(k.ClientEmail, k.PrivateKeyID) }
+func (k *serviceAccountKey) fingerprint() string { return fingerprint(k.email, k.keyID) }
 
-func (k *serviceAccountKey) project() string { return strings.TrimSpace(k.ProjectID) }
+func (k *serviceAccountKey) project() string { return strings.TrimSpace(k.projectID) }
 
 // grant signs the assertion Google exchanges for an access token (RFC 7523):
 // issued by the service account for the token endpoint assertionBackdate
-// ago, valid one hour from then.
+// ago, valid one hour from then. The JWT is encoded and signed (RS256) by
+// golang.org/x/oauth2/jws, as in Google's own token source; kid names the
+// key when the file has one.
 func (k *serviceAccountKey) grant(now time.Time) (url.Values, error) {
 	issued := now.Add(-assertionBackdate)
-	assertion, err := signRS256(k.signer, k.PrivateKeyID, map[string]any{
-		"iss":   k.ClientEmail,
-		"scope": CloudPlatformScope,
-		"aud":   TokenURL,
-		"iat":   issued.Unix(),
-		"exp":   issued.Add(assertionLifetime).Unix(),
-	})
+	assertion, err := jws.Encode(
+		&jws.Header{Algorithm: "RS256", Typ: "JWT", KeyID: k.keyID},
+		&jws.ClaimSet{
+			Iss:   k.email,
+			Scope: CloudPlatformScope,
+			Aud:   TokenURL,
+			Iat:   issued.Unix(),
+			Exp:   issued.Add(assertionLifetime).Unix(),
+		}, k.signer)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("cannot sign with the private key / 无法用私钥签名")
 	}
 	return url.Values{"grant_type": {grantJWTBearer}, "assertion": {assertion}}, nil
 }
@@ -133,9 +159,11 @@ func (k *serviceAccountKey) grant(now time.Time) (url.Values, error) {
 var errPrivateKey = errors.New(`"private_key" is not a PEM-encoded RSA private key / "private_key" 不是 PEM 格式的 RSA 私钥`)
 
 // parseRSAPrivateKey reads a PEM block holding a PKCS #8 (what Google
-// issues) or PKCS #1 RSA private key.
-func parseRSAPrivateKey(pemText string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemText))
+// issues) or PKCS #1 RSA private key. Google's library keeps its own key
+// parser internal (it runs inside the token source), so the standard
+// library's is called here.
+func parseRSAPrivateKey(pemText []byte) (*rsa.PrivateKey, error) {
+	block, _ := pem.Decode(pemText)
 	if block == nil {
 		return nil, errPrivateKey
 	}
@@ -153,47 +181,28 @@ func parseRSAPrivateKey(pemText string) (*rsa.PrivateKey, error) {
 	return key, nil
 }
 
-// signRS256 returns a compact JWT signed with RSASSA-PKCS1-v1_5 and SHA-256.
-// kid, when not empty, names the key in the header.
-func signRS256(key *rsa.PrivateKey, kid string, claims map[string]any) (string, error) {
-	header := map[string]string{"alg": "RS256", "typ": "JWT"}
-	if kid != "" {
-		header["kid"] = kid
-	}
-	h, _ := json.Marshal(header)
-	c, err := json.Marshal(claims)
-	if err != nil {
-		return "", err
-	}
-	enc := base64.RawURLEncoding
-	signed := enc.EncodeToString(h) + "." + enc.EncodeToString(c)
-	sum := sha256.Sum256([]byte(signed))
-	sig, err := rsa.SignPKCS1v15(nil, key, crypto.SHA256, sum[:])
-	if err != nil {
-		return "", errors.New("cannot sign with the private key / 无法用私钥签名")
-	}
-	return signed + "." + enc.EncodeToString(sig), nil
-}
-
 // ---------------------------------------------------------------- authorized user
 
 // authorizedUserKey is an application default credentials file of a user
 // (gcloud auth application-default login).
 type authorizedUserKey struct {
-	Type           string `json:"type"`
 	ClientID       string `json:"client_id"`
 	ClientSecret   string `json:"client_secret"`
 	RefreshToken   string `json:"refresh_token"`
 	QuotaProjectID string `json:"quota_project_id"`
 }
 
+// parseAuthorizedUser has Google's library check the file, then reads the
+// fields of the refresh grant itself: the library keeps them inside its
+// token source, which would send the token request on its own.
 func parseAuthorizedUser(raw string) (keyFile, error) {
-	var k authorizedUserKey
-	if json.Unmarshal([]byte(raw), &k) != nil {
-		return nil, errNotJSON
+	creds, err := readCredentials(raw, google.AuthorizedUser)
+	if err != nil {
+		return nil, err
 	}
-	if k.Type != "authorized_user" {
-		return nil, errors.New(`"type" must be "authorized_user" / "type" 必须是 "authorized_user"`)
+	var k authorizedUserKey
+	if json.Unmarshal(creds.JSON, &k) != nil {
+		return nil, errNotJSON
 	}
 	for _, f := range [][2]string{{"client_id", k.ClientID}, {"client_secret", k.ClientSecret}, {"refresh_token", k.RefreshToken}} {
 		if strings.TrimSpace(f[1]) == "" {

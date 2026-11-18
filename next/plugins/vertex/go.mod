@@ -5,10 +5,12 @@ go 1.27
 require (
 	github.com/Sub2API-Devs/sup2api/next/sdk v0.0.0
 	github.com/tidwall/gjson v1.19.0
+	golang.org/x/oauth2 v0.38.0
 	google.golang.org/grpc v1.84.0
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/Sub2API-Devs/sup2api/next/runtime-contract v0.0.0 // indirect
 	github.com/fatih/color v1.13.0 // indirect
