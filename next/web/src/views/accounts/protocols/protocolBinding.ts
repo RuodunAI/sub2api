@@ -41,7 +41,8 @@ export interface ProtocolColumns {
 
 type TypeProtocols = Pick<AccountType, 'platforms' | 'endpoints'> | null | undefined
 
-const viaOf = (e: AccountTypeEndpoint, declared: Set<string>): ServedVia => (e.native ? 'native' : declared.has(e.platform) ? 'adapted' : 'converted')
+/** How a type serves an endpoint, given the platforms it declares. */
+export const viaOf = (e: AccountTypeEndpoint, declared: Set<string>): ServedVia => (e.native ? 'native' : declared.has(e.platform) ? 'adapted' : 'converted')
 
 /** Folds the columns of a merged set into the first of them. */
 function merged(columns: ProtocolColumn[]): ProtocolColumn[] {
