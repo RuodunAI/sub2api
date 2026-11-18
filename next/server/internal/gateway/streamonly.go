@@ -13,8 +13,6 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
 
@@ -222,8 +220,7 @@ func streamOnlyError(name string, data []byte) (int, []byte) {
 // replaces resp with the JSON answer for the non-streaming path (failed
 // false) or returns the attempt's result (failed true). An upstream that
 // answered JSON after all is left untouched.
-func (c *call) collectStreamOnly(ctx, uctx context.Context, rt *typeRoute, acc *core.Account, pacct *pluginv1.Account,
-	execution *gatewayExecution, resp *http.Response) (res attemptResult, failed bool) {
+func (c *call) collectStreamOnly(ctx, uctx context.Context, x *execution, resp *http.Response) (res attemptResult, failed bool) {
 	if !isSSE(resp.Header.Get("Content-Type")) {
 		return attemptResult{}, false
 	}
@@ -237,22 +234,15 @@ func (c *call) collectStreamOnly(ctx, uctx context.Context, rt *typeRoute, acc *
 		if cause := context.Cause(uctx); errors.Is(cause, errRelayTimeout) || errors.Is(cause, errStreamIdleTimeout) {
 			msg = cause.Error()
 		}
-		if execution != nil {
-			return execution.classify(ctx, 0, nil, nil, msg), true
-		}
-		return c.classify(ctx, rt, pacct, 0, nil, nil, msg), true
+		return c.classifyUpstream(ctx, x, 0, nil, nil, msg), true
 	case ans.tooLarge:
-		e := &gwError{Status: http.StatusBadGateway, Code: codeUpstreamError, RecordType: errTypeUpstream,
-			Message: "upstream response too large"}
-		if execution != nil {
-			execution.unclassified = e
-		}
-		return attemptResult{kind: attemptReturn, err: e}, true
+		return attemptResult{kind: attemptReturn, err: &gwError{Status: http.StatusBadGateway, Code: codeUpstreamError, RecordType: errTypeUpstream,
+			Message: "upstream response too large"}}, true
 	case ans.errBody != nil:
 		h := resp.Header.Clone()
 		h.Set("Content-Type", "application/json")
 		h.Del("Content-Length")
-		return c.upstreamFailure(ctx, rt, acc, pacct, execution, ans.status, h, &upstreamErrorBody{prefix: ans.errBody}), true
+		return c.upstreamFailure(ctx, x, ans.status, h, &upstreamErrorBody{prefix: ans.errBody}), true
 	}
 	h := resp.Header.Clone()
 	h.Set("Content-Type", "application/json")

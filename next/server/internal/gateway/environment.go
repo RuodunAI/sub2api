@@ -6,6 +6,7 @@ import (
 	"io"
 	"time"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -53,6 +54,28 @@ func (c *call) streamIdle() time.Duration {
 		return idle
 	}
 	return defaultStreamIdle
+}
+
+// upstreamTimeouts are the response header and total timeouts of an
+// upstream exchange (0 = none): the environment's, the header one else the
+// gateway's wait for a stream or not, each shortened by the plugin's
+// options, which may only tighten them.
+func (c *call) upstreamTimeouts(opts *pluginv1.UpstreamOptions, stream bool) (header, total time.Duration) {
+	header = c.g.headerWait(stream)
+	if d := c.env.Duration(core.EnvVarResponseHeaderTimeoutSeconds); d > 0 {
+		header = d
+	}
+	total = c.env.Duration(core.EnvVarRelayTimeoutSeconds)
+	return tighten(header, opts.GetResponseHeaderTimeoutMs()), tighten(total, opts.GetTotalTimeoutMs())
+}
+
+// tighten is d, or ms when that is shorter (or d is none); ms <= 0 asks
+// nothing.
+func tighten(d time.Duration, ms int32) time.Duration {
+	if t := time.Duration(ms) * time.Millisecond; ms > 0 && (d <= 0 || t < d) {
+		return t
+	}
+	return d
 }
 
 func newIdleBody(body io.ReadCloser, idle time.Duration, cancel context.CancelCauseFunc) *idleBody {
