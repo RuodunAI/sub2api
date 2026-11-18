@@ -8413,6 +8413,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
 - **打包工具**：`sub2api-plugin db diff|check`（`sdk/pgdb/pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 在临时 schema 里执行迁移（整个事务回滚）；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（看本事务写过的系统目录行，以前靠临时角色的属主判断）。以前因为临时角色没有权限而在工具里失败、宿主却能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
 - **单向**：0110 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
+- **网关外壳仍传 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`**：核心不再读它，但外壳与核心分开换，先换外壳的集群在新外壳下继续运行 0.1.303 核心，直到核心重新部署；设成 `false` 的部署（数据库用户没有 `CREATEROLE`）若拿不到它，旧核心按默认打开角色隔离，持有 `db.schema` 的插件起不来。所以它留在 `supervisor.legacyCoreEnv`（`allowlist_test.go` 只按这份名单接受核心不读的 `SUB2API_` 名字，核心又读它时报错），全部集群运行 0.1.304 或更新的核心后，在下一个外壳版本删除。
 
 ## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0111，核心 0.1.304）
 
