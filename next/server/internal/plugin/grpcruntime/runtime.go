@@ -18,6 +18,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
@@ -79,6 +80,11 @@ type Options struct {
 	Notifier core.Notifier
 	// Users serves HostService.GetUsers; nil makes it fail with UNAVAILABLE.
 	Users core.UserDirectory
+	// RequestBodyLimit is the gateway's request body limit of the moment
+	// (the gateway settings). It bounds the bodies of RelayUpstream and
+	// ExecuteHTTP and gives every platform plugin its memory floor and
+	// in-flight byte budget. Nil: core.DefaultMaxRequestBodyBytes.
+	RequestBodyLimit core.RequestBodyLimit
 
 	HostVersion   string
 	DataDir       string // plugin work directories live under DataDir/<key>/work
@@ -114,15 +120,16 @@ type Options struct {
 // never for the slots of the request path.
 type Concurrency struct {
 	// Hot: RPCs on the gateway request path (resolve, estimate, hooks,
-	// scheduler, build, classify, extract). Default 64.
+	// scheduler, classify). Default 64.
 	Hot int
 	// Console: credential checks, test and model requests, plugin HTTP
 	// routes. Default 16.
 	Console int
-	// Background: jobs, events, broadcasts, polls, monitors, reconcile and
-	// data migrations. Default 8.
+	// Background: jobs, events, broadcasts, monitors, refresh and data
+	// migrations. Default 8.
 	Background int
-	// Execute: platform Execute, held for the whole upstream exchange. The
+	// Execute: platform Execute, held while the plugin builds the request
+	// and, for a relay that waits, for the whole upstream exchange. The
 	// account and API key slots of the core bound real concurrency; this is
 	// only a safety cap. Default 1024.
 	Execute int
@@ -182,6 +189,9 @@ func New(o Options) (*Runtime, error) {
 func (r *Runtime) Load(ctx context.Context, pkg *registry.Package) (*Instance, error) {
 	// Validate before ExtractBinary/Init: an incompatible plugin may already
 	// have side effects by the time a post-start health check rejects it.
+	if err := r.checkContract(pkg); err != nil {
+		return nil, err
+	}
 	if err := r.checkHostCompat(pkg); err != nil {
 		return nil, err
 	}
@@ -200,6 +210,46 @@ func (r *Runtime) Load(ctx context.Context, pkg *registry.Package) (*Instance, e
 	}
 	go inst.supervise()
 	return inst, nil
+}
+
+// ErrOutdatedContract marks the refusal of a package built for an older
+// plugin contract; the error's text is protocol.OutdatedContractMessage.
+var ErrOutdatedContract = errors.New("plugin built for an older plugin contract")
+
+// handshakeVersionMismatch is how go-plugin words a handshake with another
+// protocol version (Client.checkProtoVersion); it has no error value for it.
+const handshakeVersionMismatch = "incompatible API version with plugin"
+
+type outdatedContractError struct {
+	msg   string
+	cause error
+}
+
+func (e *outdatedContractError) Error() string        { return e.msg }
+func (e *outdatedContractError) Unwrap() error        { return e.cause }
+func (e *outdatedContractError) Is(target error) bool { return target == ErrOutdatedContract }
+
+// outdatedContract is the one answer to a package of an older plugin
+// contract, whatever gave it away (cause): its manifest, the handshake of
+// its binary or the protocol version it reports.
+func (r *Runtime) outdatedContract(pkg *registry.Package, cause error) error {
+	return &outdatedContractError{msg: protocol.OutdatedContractMessage(pkg.Key, pkg.Version, r.o.HostVersion), cause: cause}
+}
+
+// checkContract rejects a package whose manifest is of an older plugin
+// contract (check.CodeOutdatedContract), before anything of it runs. Other
+// manifest problems are not this check's: the package passed them when it
+// was installed.
+func (r *Runtime) checkContract(pkg *registry.Package) error {
+	if pkg.Manifest == nil {
+		return nil
+	}
+	raw, _ := pkg.ReadFile("manifest.json")
+	err := check.Validate(pkg.Manifest, map[string][]byte{"manifest.json": raw}, check.ValidateOptions{HostVersion: r.o.HostVersion})
+	if check.OutdatedContract(err) {
+		return r.outdatedContract(pkg, err)
+	}
+	return nil
 }
 
 // checkHostCompat rejects a package whose hostCompat excludes this host.

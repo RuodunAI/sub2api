@@ -5,15 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
-	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -43,6 +47,7 @@ type Instance struct {
 
 	sems     [numClasses]chan struct{}
 	inflight atomic.Int64
+	bodies   byteBudget    // request body bytes handed to Execute calls in flight
 	callers  callerSet     // console users of the HTTP requests in flight
 	draining atomic.Bool   // no new calls are admitted
 	idle     chan struct{} // closed once draining and no call in flight
@@ -84,8 +89,7 @@ type proc struct {
 	limits     specLimits               // resource limits the process was started with
 	failures   int                      // consecutive health failures
 	configured atomic.Pointer[settings] // last configuration acknowledged by this process
-	polls      executionScopes
-	executions onlineScopes
+	scopes     callScopes               // the Execute and Monitor calls in flight
 }
 
 // specLimits are the resource fields of a LaunchSpec.
@@ -118,24 +122,8 @@ func newInstance(rt *Runtime, pkg *registry.Package, binPath, sum string, st *se
 	for _, c := range pkg.Manifest.Capabilities {
 		i.caps[c.ID] = true
 	}
-	if !servesPlatform(pkg.Manifest) {
-		delete(i.caps, manifest.CapPlatformAdapter)
-	}
 	i.settings.Store(st)
 	return i
-}
-
-// servesPlatform reports whether the process implements platform.adapter.v1
-// when the manifest declares it: for platforms of its own, or for an account
-// type its upstream declaration does not fully cover (none, or extend). A
-// plugin whose account types all declare their upstream keeps the
-// capability in its manifest (manifest check requires it with account
-// types), but the core serves those types (docs/UPSTREAM-DECLARATIVE.md §6):
-// the process is neither expected to report it nor called for it.
-func servesPlatform(m *manifest.Manifest) bool {
-	return len(m.Platforms) > 0 || slices.ContainsFunc(m.AccountTypes, func(at manifest.AccountType) bool {
-		return at.Upstream == nil || at.Upstream.Extend
-	})
 }
 
 // ------------------------------------------------------------------ accessors
@@ -216,6 +204,11 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		spec.MaxOpenFiles = m.Resources.MaxOpenFiles
 	}
 	mergeLimits(&spec, st.limits)
+	// A platform plugin holds whole request bodies, a few copies of each:
+	// its memory limit is never below what the request body limit needs.
+	if floor := platformMemoryFloorMB(i.rt.o.RequestBodyLimit); i.has(manifest.CapPlatformAdapter) && spec.MemoryMB > 0 && spec.MemoryMB < floor {
+		spec.MemoryMB = floor
+	}
 	if max := i.rt.o.MaxMemoryMB; max > 0 && (spec.MemoryMB == 0 || spec.MemoryMB > max) {
 		spec.MemoryMB = max
 	}
@@ -230,6 +223,15 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		protocol.EnvDataDir + "=" + spec.WorkDir,
 	}
 	return spec
+}
+
+// platformMemoryFloorMB is the least memory limit of a platform plugin
+// process: 64 MB plus three times the request body limit (docs DESIGN
+// forwarding v2 §8.3). The limit is read when a process starts; a process
+// started under another one is stale (LimitsStale) and gets replaced.
+func platformMemoryFloorMB(limit core.RequestBodyLimit) int {
+	const mb = 1 << 20
+	return 64 + 3*int((core.MaxRequestBodyBytes(limit)+mb-1)/mb)
 }
 
 // mergeLimits applies the operator's per-plugin overrides on top of the
@@ -384,6 +386,9 @@ func (i *Instance) newPluginClient(ctx context.Context, spec core.LaunchSpec, ru
 	}()
 	rpc, err := client.Client()
 	if err != nil {
+		if strings.Contains(err.Error(), handshakeVersionMismatch) {
+			return nil, i.rt.outdatedContract(i.pkg, err)
+		}
 		return nil, fmt.Errorf("start plugin process: %w", err)
 	}
 	raw, err := rpc.Dispense(protocol.PluginName)
@@ -429,7 +434,7 @@ func (i *Instance) verifyInfo(ctx context.Context, p *proc) error {
 			info.GetPluginKey(), info.GetVersion(), i.pkg.Key, i.pkg.Version)
 	}
 	if info.GetProtocolVersion() != protocol.ProtocolVersion {
-		return fmt.Errorf("GetInfo: protocol version %d, host supports %d", info.GetProtocolVersion(), protocol.ProtocolVersion)
+		return i.rt.outdatedContract(i.pkg, fmt.Errorf("GetInfo: protocol version %d, host supports %d", info.GetProtocolVersion(), protocol.ProtocolVersion))
 	}
 	reported := map[string]bool{}
 	for _, c := range info.GetCapabilities() {
@@ -456,7 +461,7 @@ func (i *Instance) serveHostBroker(ctx context.Context, p *proc) error {
 	}
 	brokerID := p.broker.NextId()
 	go p.broker.AcceptAndServe(brokerID, func(opts []grpc.ServerOption) *grpc.Server {
-		s := grpc.NewServer(opts...)
+		s := grpc.NewServer(append(opts, hostServerOptions()...)...)
 		pluginv1.RegisterHostServiceServer(s, host)
 		pluginv1.RegisterEgressServiceServer(s, egress)
 		return s
@@ -476,6 +481,34 @@ func (i *Instance) serveHostBroker(ctx context.Context, p *proc) error {
 		return fmt.Errorf("InitHost: plugin not ready: %s", initResp.GetMessage())
 	}
 	return nil
+}
+
+// hostMaxRecvBytes is the largest request of a HostService call that carries
+// no request body of the gateway (the gRPC default, which the limits of
+// sdk/protocol count on).
+const hostMaxRecvBytes = 4 << 20
+
+// bodyCalls are the HostService calls whose request holds a body up to the
+// request body limit. That limit can change while the broker runs and a gRPC
+// server's receive limit cannot, so the transport accepts any size and the
+// handlers of these calls check the body (hostServer.checkBody).
+var bodyCalls = map[string]bool{
+	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/RelayUpstream": true,
+	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/ExecuteHTTP":   true,
+}
+
+// hostServerOptions are the options of the broker server besides go-plugin's
+// own: the transport's maximum as the receive limit, and the usual 4 MiB
+// for every call but bodyCalls.
+func hostServerOptions() []grpc.ServerOption {
+	return []grpc.ServerOption{grpc.MaxRecvMsgSize(math.MaxInt32), grpc.ChainUnaryInterceptor(limitHostRecv)}
+}
+
+func limitHostRecv(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	if m, ok := req.(proto.Message); ok && !bodyCalls[info.FullMethod] && proto.Size(m) > hostMaxRecvBytes {
+		return nil, status.Errorf(codes.ResourceExhausted, "received message larger than max (%d vs. %d)", proto.Size(m), hostMaxRecvBytes)
+	}
+	return handler(ctx, req)
 }
 
 // verifyHealth requires a healthy plugin before it is used.

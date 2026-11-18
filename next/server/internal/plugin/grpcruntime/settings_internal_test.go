@@ -84,8 +84,8 @@ func (p *settingsPlugin) SettingsChanged(_ context.Context, in *pluginv1.Setting
 	return &pluginv1.SettingsChangedResponse{}, p.err
 }
 
-// A plugin built before SettingsChanged existed answers UNIMPLEMENTED, which
-// is not a failure; any other error is.
+// Every plugin of this protocol answers SettingsChanged: an error, whatever
+// its code, is a failure.
 func TestInstanceSettingsChanged(t *testing.T) {
 	ctx := context.Background()
 	i, _ := testInstance(t, nil, nil, registry.Grants{})
@@ -96,13 +96,11 @@ func TestInstanceSettingsChanged(t *testing.T) {
 	if err := i.SettingsChanged(ctx, []string{protocol.SettingsSticky}); err != nil || len(sp.got) != 1 || sp.got[0][0] != protocol.SettingsSticky {
 		t.Fatalf("delivered %v %v", sp.got, err)
 	}
-	sp.err = status.Error(codes.Unimplemented, "old sdk")
-	if err := i.SettingsChanged(ctx, nil); err != nil {
-		t.Fatalf("unimplemented: %v", err)
-	}
-	sp.err = status.Error(codes.Internal, "boom")
-	if err := i.SettingsChanged(ctx, nil); err == nil {
-		t.Fatalf("failure: %v", err)
+	for _, code := range []codes.Code{codes.Unimplemented, codes.Internal} {
+		sp.err = status.Error(code, "boom")
+		if err := i.SettingsChanged(ctx, nil); err == nil {
+			t.Fatalf("%s: no failure", code)
+		}
 	}
 
 	// Background work holding every slot does not hold the call up.

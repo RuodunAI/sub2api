@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"time"
 
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 )
@@ -30,8 +29,7 @@ type Instance interface {
 }
 
 // Runtime starts plugin instances of the package's manifest runtime: a
-// plugin process for "grpc", a static always-ready instance for "none"
-// (grpcruntime.StaticInstance); a JS runtime later.
+// plugin process for "grpc"; a JS runtime later.
 type Runtime interface {
 	Load(ctx context.Context, pkg *registry.Package) (Instance, error)
 }
@@ -47,16 +45,9 @@ func FromGRPC(rt *grpcruntime.Runtime) Runtime { return grpcAdapter{rt} }
 
 type grpcAdapter struct{ rt *grpcruntime.Runtime }
 
-// Load dispatches by manifest.Runtime: a package without a process gets a
-// static instance, any other a plugin process.
+// Load starts the package's plugin process. The explicit nil keeps a failed
+// load from becoming a non-nil Instance holding a nil pointer.
 func (a grpcAdapter) Load(ctx context.Context, pkg *registry.Package) (Instance, error) {
-	if pkg.Manifest != nil && pkg.Manifest.Runtime == manifest.RuntimeNone {
-		inst, err := a.rt.LoadStatic(ctx, pkg)
-		if err != nil {
-			return nil, err
-		}
-		return inst, nil
-	}
 	inst, err := a.rt.Load(ctx, pkg)
 	if err != nil {
 		return nil, err
@@ -126,8 +117,7 @@ type Message struct {
 const MessageResources = "resources"
 
 // limitsAware is implemented by instances that can tell whether their
-// process runs with outdated resource limits (grpcruntime.Instance; a
-// grpcruntime.StaticInstance never does).
+// process runs with outdated resource limits (grpcruntime.Instance).
 type limitsAware interface {
 	LimitsStale() bool
 }

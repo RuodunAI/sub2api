@@ -54,11 +54,11 @@ func TestRealRuntimeSingleNode(t *testing.T) {
 		if !ok {
 			return nil
 		}
-		resp, err := b.Client.BuildUpstreamRequest(ctx, &pluginv1.BuildUpstreamRequestRequest{})
+		res, err := b.Client.(core.ExecutePlugin).Execute(ctx, &pluginv1.ExecuteRequest{}, core.ExecutionClient{})
 		if err != nil {
 			t.Fatalf("account type call: %v", err)
 		}
-		return resp.GetHeaders()
+		return res.Relay.GetHeaders()
 	}
 
 	if _, err := ctl.Enable(ctx, h.key, 0); err != nil {

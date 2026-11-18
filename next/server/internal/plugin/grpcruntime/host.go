@@ -654,23 +654,38 @@ func (h *hostServer) SendAccountRequest(ctx context.Context, in *pluginv1.SendAc
 // manifest's externalServices or a subdomain of one, compared without case
 // or port.
 func (h *hostServer) requireExternalService(raw string) error {
+	host, err := httpHost(raw)
+	if err != nil {
+		return err
+	}
+	if !h.externalService(host) {
+		return status.Errorf(codes.PermissionDenied, "plugin %s: url must be http(s) on a host of the manifest's externalServices", h.key())
+	}
+	return nil
+}
+
+// httpHost is the lower-case host name of the http(s) URL raw, without its
+// port.
+func httpHost(raw string) (string, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return status.Error(codes.InvalidArgument, "invalid url")
+		return "", status.Error(codes.InvalidArgument, "invalid url")
 	}
-	denied := status.Errorf(codes.PermissionDenied, "plugin %s: url must be http(s) on a host of the manifest's externalServices", h.key())
 	host := strings.ToLower(u.Hostname())
 	if (u.Scheme != "http" && u.Scheme != "https") || host == "" {
-		return denied
+		return "", status.Error(codes.PermissionDenied, "url must be http(s) with a host")
 	}
-	for _, svc := range h.i.pkg.Manifest.ExternalServices {
+	return host, nil
+}
+
+// externalService reports whether host is one of the manifest's
+// externalServices or a subdomain of one.
+func (h *hostServer) externalService(host string) bool {
+	return slices.ContainsFunc(h.i.pkg.Manifest.ExternalServices, func(svc string) bool {
 		// An entry written with a port matches its host on any port.
 		svc = strings.ToLower((&url.URL{Host: strings.TrimSpace(svc)}).Hostname())
-		if svc != "" && (host == svc || strings.HasSuffix(host, "."+svc)) {
-			return nil
-		}
-	}
-	return denied
+		return svc != "" && (host == svc || strings.HasSuffix(host, "."+svc))
+	})
 }
 
 func (h *hostServer) SetAccountAutomaticState(ctx context.Context, in *pluginv1.SetAccountAutomaticStateRequest) (*pluginv1.SetAccountAutomaticStateResponse, error) {
