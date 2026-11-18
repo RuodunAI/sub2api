@@ -33,7 +33,7 @@ type GatewaySettings struct {
 	DefaultHookTimeoutMs  int `json:"default_hook_timeout_ms"`
 	// PlatformHotpathTimeoutMs bounds the PlatformService calls that are part
 	// of serving one gateway request rather than of a hook:
-	// ResolveModel (before scheduling) and ExtractUsage (after forwarding).
+	// ResolveModel and EstimateUsage (before scheduling).
 	//
 	// It used to be default_hook_timeout_ms, which was wrong in both
 	// directions: an administrator widening the hook default for one slow
@@ -171,13 +171,16 @@ func (g *Gateway) MaxRequestBodyBytes(ctx context.Context) int64 {
 	return g.settings.get(ctx).gateway.MaxRequestBodyBytes()
 }
 
+// platformTimeout bounds each stretch of a plugin's own work in one Execute
+// (core.ExecutionClient.SegmentTimeout, design §8.4) and a ClassifyError
+// call; the wait for the upstream is not counted.
 func (s GatewaySettings) platformTimeout() time.Duration {
 	return time.Duration(s.PlatformCallTimeoutMs) * time.Millisecond
 }
 
 // hotpathTimeout bounds one PlatformService.ResolveModel or
-// PlatformService.ExtractUsage call: the two RPCs that belong to serving one
-// gateway request but are not hooks. A zero or unnormalised setting falls back
+// PlatformService.EstimateUsage call: the RPCs before scheduling that belong
+// to serving one gateway request but are not hooks. A zero or unnormalised setting falls back
 // to the default instead of "no deadline".
 func (s GatewaySettings) hotpathTimeout() time.Duration {
 	ms := s.PlatformHotpathTimeoutMs
