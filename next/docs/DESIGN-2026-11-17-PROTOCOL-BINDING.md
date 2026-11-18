@@ -6,7 +6,7 @@
 - "模型默认是不支持协议转换的，默认是客户什么协议访问什么模型，我们就转发"。
 - 配置方式是"选中模型，指定协议"。
 
-状态：**已定稿（用户 2026-11-17 确认），实现中**。定稿后契约写进 CONTRACTS 新一节（暂记 §110），迁移暂记 0106（合并时取下一个空号）。
+状态：**已实现**（2026-11-17，分支 `feat/protocol-binding`，未合并、未发布）。契约在 CONTRACTS §110，迁移 0106（`0106_account_protocols.sql`），升级手册 `next/deploy/rollback/protocol-binding-release.md`。实现与本文的差异见 §10“实现记录”；本文 §1–§9 保留定稿时的原样，两者不一致时以 CONTRACTS §110 和代码为准。
 
 本文修订 CONVERT-MATRIX 的 D3（2026-11-09 定的"所有账号类型自然接受转换，没有任何退出机制"）和风险第 11 条（"账号级关协议不在本期"）。
 
@@ -251,3 +251,70 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 | T4 | 控制台：两张卡片、分区改名与摘要、错误定位、列表图标、详情、分组详情、筛选、i18n、类型、测试 | web |
 | T5 | 发布手册：升级前的存量转换查询 | deploy |
 | T6 | CONTRACTS 新一节、CONVERT-MATRIX D3 与风险 11 的修订说明、CHANGELOG | docs |
+
+## 10. 实现记录（2026-11-17）
+
+| 项 | 实际 |
+|---|---|
+| 迁移 | 0106，`server/internal/migrations/0106_account_protocols.sql`（与暂记的号相同） |
+| 契约 | CONTRACTS §110（与暂记的号相同）；§11、§12、§13、§18.2、§23.3、§24.6、§83.3、§86、§88、§92.4、§92.5 加了“§110 起”的交叉引用 |
+| 其他文档 | CONVERT-MATRIX §0、§5.1、§12 风险 1 与 11、§13 D3 的修订说明；ARCHITECTURE 6.2、6.4 的“协议转换”一行、6.6“请求如何调度”；PLUGIN-DEVELOPMENT 2.3 加一行、第 3、4 节；PLUGIN-CLOUD-PROVIDERS、UPSTREAM-DECLARATIVE 各一处；CHANGELOG“未发布” |
+| 升级手册 | `next/deploy/rollback/protocol-binding-release.md` 和只读查询 `protocol-binding-conversions.sql`（T5）；`next/deploy/README.md`、`next/deploy/gateway/README.md` 各加一处指引 |
+| 代码提交 | `1c00559be` 迁移与模型、`f06ae4677` core、`fcd78d84d` account、`37e352336` group 与 app、`c929d188e` gateway、`e7e8dfb2f` `bc55f7a3c` `54828f147` `ba5b06891` `6247ec118` web |
+| 没有改动的 | 节点外壳（`next/gateway`）、SDK、proto、插件、`@sub2api/ui` 与 `@sub2api/host` 的公开接口 |
+
+### 10.1 与本文的差异
+
+**存储、core、账号接口**
+
+1. §3.4 的表格写 `AccountRef` 加 `Protocols`、`ModelProtocols` 两个字段，§3.5 写只多一个指针。按 §3.5 实现：一个指针字段 `ProtocolRules`，判定方法是 `(*core.ProtocolRules).Serves(model, protocol, cross)`。
+2. §3.2 的例子里有 `{"models": ["gpt-image-1"], "protocols": ["openai.images"]}`。`openai.images` 端点还没有实现（§7），现在这样写保存时会被拒（`unsupported`）；契约里的例子去掉了这一条。
+3. §4 没有规定校验的错误码，实现定为：`protocols[i]` 用 `invalid`（count_tokens）、`unsupported`（类型不能服务）、`cross_platform`（其他平台的协议）；`model_protocols` 用 `too_many`、`required`、`invalid`、`duplicate`、`unsupported`；另有 `protocols: no_protocol`。没有模型的条目报 `required`，不像 `model_limits` 那样静默丢弃。
+4. 账号类型的插件未启用时，PATCH 带这两个字段返回 503 `plugin_unavailable`（不知道该类型能服务哪些协议）。本文没写这种情况。
+5. `served_protocols`（§4）的细节本文没定：`models` 为 `null` 的精确含义是“`model_protocols` 没有另行限定的所有模型”，表达不了排除；`via` 只有三种值，count_tokens 本地估算时类型声明了该平台记 `adapted`、没声明记 `converted`，`grade` 仍是 `local`；POST、PATCH 的返回也带它。
+6. §4 的“批量编辑”在服务端没有对应的接口：批量编辑一直是控制台对每个账号调 `PATCH /accounts/:id`（CONTRACTS §23.3），服务端没有新增接口。
+7. 异步任务的查询端点（如 `volcengine.video_query`）不经过调度，协议绑定对它不生效，但校验和 `served_protocols` 把它当普通本平台协议：账号“指定”协议时没勾它，界面显示未开放，实际查询仍可用。
+
+**网关**
+
+8. §3.4 写“只要有一个账号是因别的原因（冷却、限流、忙）没选上，就按现有规则返回”，§3.5 第 4 条又写“404 直接由跳过原因得出，不查库”。两条不能同时成立，因为冷却中的账号不在候选里。按 §3.4 实现：候选全部被协议绑定过滤后，读一次组内未提供的账号，有冷却中或限时自动停用的就不返回 404。这次读取就是调度记录在“无账号”时本来要做的那次，提前并复用，每个请求仍只读一次。代价：冷却中的账号自己也没开转换时，冷却期间返回 503/529，冷却结束后才是 404（要精确判断，得让账号模块返回未提供账号的类型和协议规则）。读取失败时不返回 404。**这一条需要用户确认是否接受。**
+9. 永久停用、关闭调度的账号不算“会回来”，不妨碍 404。现有的“端点无账号”404（`GroupHasType`）把停用账号也算在内，两处口径不同；按本文列举的“冷却、限流、忙”实现。
+10. 协议判断排在模型白名单之前（本文只说“取到路由后调用”）。带模型白名单的 OpenAI 账号收到 `/v1/messages`，得到 `conversion_not_enabled` 和 404，而不是 `model_not_served` 和 503。
+11. WebSocket 已建立的连接上，后续轮次换成该账号在这个协议下不提供的模型，返回现有的 400（要新建连接），不是 404。本文没写这种情况。
+12. `protocol_closed` 的详情填入站协议；count_tokens 请求填的是计数协议本身，实际被关的是它跟随的生成协议。
+13. §3.4 说 HTTP、WebSocket、粘性“走同一个入口，不需要分别处理”，改动前并非如此（WebSocket 首轮先用 `servesAllModels` 判断）。实现时把 `servesAllModels` 删掉，`candidateEligible` 改为调用 `ineligibleReason`，现在才是一个入口。这改动了现有代码，对没有协议配置的账号行为不变。
+14. §3.5 的验收：
+    - “按 BASELINE.md 的命令跑 `HotGroupSnapshot`”跑不了：这个基准已在 `fcc847b62` 删除，BASELINE.md 现在没有这条路径的基线。实现时按旧基准临时重写测了前后（10 个无配置账号，424 → 399 allocs/op），基准文件没有提交，BASELINE.md 没有改。为了多读两列不增加分配，`readGroupSnap` 把逐行的扫描临时变量改成整次读取共用一份。
+    - “有规则时每候选不分配内存”：`Serves` 本身是 0 次分配（有测试断言）；但 `ineligibleReason` 里原有的用量检查对每个能服务的候选分配 3 次、约 1 KB，所以基准里能服务的情况是 1500 allocs/op（500 个候选），有无规则相同。被协议绑定过滤的账号是 0。
+15. 原有的网关测试里有 17 个依赖默认转换（16 个失败、1 个空过），夹具改成显式开启转换，断言没有改。
+
+**控制台**
+
+16. 列表视图和矩阵多选栏的协议选择用的是 `SChip` 的开关（示意图的交互），没有用 §5.1 提到的 `StickyProtocolPicker`（它是“已选标签 + 下拉添加”）。
+17. 示意图里保存按钮置灰、底部显示“有 n 处需要修正”；实现按编辑器现有做法：按钮不置灰，点保存时不发请求，跳到“协议与模型”分区显示错误。
+18. 矩阵里显式勾选的转换格没有用琥珀色区分，靠“协议转换”列分组表头和等级徽标区分；图例简化成两句文字。
+19. 导航摘要是 `协议 4/4 · 限定 n 个模型 · 转换 n 个`（同示意图），不是 §5.1 写的 `协议 4 · 限定 3 个模型 · 转换 2 个模型`；“限定 n 个模型”把“其余模型”也算一个；后面保留原有的“n 个模型 · n 条映射”。
+20. 分组详情（§5.2）：接口只有 `{protocol, accounts}`，做不出示意图里的“原生 / 经转换”分行、“限 1 个模型”和“count_tokens 跟随 Messages”。现在按平台列端点和账号数，底部一行说明“没有列出的端点请求返回 404”。
+21. §5.2 的“高级筛选加开放协议”没有做：§4 没有定义列表筛选参数，后端也没有实现。
+22. 删掉 `convertedEndpoints.ts` 后，API Key 页的分组端点预览（`KeyGroupDetails`、`KeyUseGuide`）只按分组的 `platforms` 列端点。这两处拿不到 `served_protocols`，不反映账号关掉的协议和开启的转换（与 §6 第 2 条同类）。
+23. 模型规则里的本平台协议被账号关闭后，矩阵不显示该列（同示意图），只给警告；要取消勾选得切到列表视图或重新开放该协议。
+24. “两跳转换”按端点 `via` 的协议链长度大于 2 判断，没有按等级是否为 `discouraged` 判断。
+25. 账号类型已不存在的账号：编辑器不显示两张协议卡，保存请求不带这两个字段（与第 4 条一致）。账号详情在 `served_protocols` 返回前先按类型端点原样显示。
+
+**发布手册**
+
+26. §6 第 1 条说“升级后照着在批量编辑里配”。批量编辑是把同一份设置替换到所选账号上，而且只对同一账号类型的账号可用，所以手册以逐个账号在编辑器里配置为主，批量编辑只用于要配成一样的账号。
+27. 导出查询除了跨平台转换的请求，还列出核心本地估算的 count_tokens 请求（`route = local_count`）：账号类型没有声明该平台时，这类请求升级后同样关闭（跟随生成协议），而它们的 `upstream_protocol` 是 `local`，按“平台前缀不同”筛不出来。
+28. 手册放在 `next/deploy/rollback/`（AGENTS.md 规定的单向发布手册位置）。版本号还没定，文件名暂时没有版本前缀，发布时改名。
+
+### 10.2 没做完的
+
+- `next/e2e/ac19_builtin_platforms_test.go` 依赖“Anthropic 账号默认能服务 `/v1/chat/completions`”，现在会得到 404。它不在 CI 里运行、需要部署好的栈，夹具还没有改（要给账号的 `model_protocols` 开转换）。整个功能没有在部署好的栈上验收过。
+- `store/gormtest/BASELINE.md` 没有记录这次的读数（第 14 条），也没有恢复分组快照的基准。
+- AGENTS.md 里“核心迁移目前到 0104”（实际到 0106）和“`rollback/` 现在没有”两处要随合并更新。
+- 账号列表按“开放协议”筛选：要先定参数（如 `?protocol=openai.chat`，语义是账号对至少一个模型开放该协议）并在后端实现。
+- API Key 页的端点预览要准确，需要后端在用户可见的分组信息里也返回 `served_protocols`。
+- `GET /account-types` 的 `endpoints` 没有标出“只走原生”的端点（WebSocket、任务提交）。控制台的候选列是从它推出来的；如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端拒绝。
+- `ineligibleReason` 里原有的用量检查每个候选分配 3 次（第 14 条），500 个候选就是每个请求 1500 次、约 536 KB。这是改动前就有的，值得单独优化。
+- 故障策略刷新快照这条路径只有单元测试（`candidateEligible` 与 `ineligibleReason` 结果一致），没有端到端用例。
+- 控制台的批量编辑弹窗和深色模式没有做视觉检查。
