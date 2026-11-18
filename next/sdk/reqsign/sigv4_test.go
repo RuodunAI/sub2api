@@ -383,10 +383,10 @@ func TestSignErrors(t *testing.T) {
 	v := sdkVectors(t)[0]
 	const secret, token = "s3cr3t-value", "t0ken-value"
 	for name, d := range map[string]AWSCredentials{
-		"no region":      {Service: "s", AccessKeyID: "AK", SecretAccessKey: secret, SessionToken: token},
-		"no service":     {Region: "r", AccessKeyID: "AK", SecretAccessKey: secret, SessionToken: token},
-		"no access key":  {Region: "r", Service: "s", SecretAccessKey: secret, SessionToken: token},
-		"no secret":      {Region: "r", Service: "s", AccessKeyID: "AK", SessionToken: token},
+		"no region":     {Service: "s", AccessKeyID: "AK", SecretAccessKey: secret, SessionToken: token},
+		"no service":    {Region: "r", AccessKeyID: "AK", SecretAccessKey: secret, SessionToken: token},
+		"no access key": {Region: "r", Service: "s", SecretAccessKey: secret, SessionToken: token},
+		"no secret":     {Region: "r", Service: "s", AccessKeyID: "AK", SessionToken: token},
 	} {
 		req := v.request(t)
 		req.Header.Set("Authorization", "Bearer kept")

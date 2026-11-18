@@ -44,15 +44,15 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 		build *Upstream
 		want  string
 	}{
-		"relative url":       {NewUpstream("", "/v1/messages"), "not an absolute"},
-		"other scheme":       {NewUpstream("", "ftp://example.com/x"), "not an absolute"},
-		"content-length":     {NewUpstream("", "https://example.com").Header("Content-Length", "3"), `"content-length" belongs to the host's transport`},
-		"accept-encoding":    {NewUpstream("", "https://example.com").DefaultHeader("Accept-Encoding", "gzip"), `"accept-encoding" belongs to the host's transport`},
-		"connection":         {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
-		"transfer-encoding":  {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
-		"line break":         {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
-		"several at once":    {NewUpstream("", "nope").Header("connection", "x"), "transport"},
-		"websocket is fine":  {NewUpstream("GET", "wss://example.com/v1/realtime"), ""},
+		"relative url":      {NewUpstream("", "/v1/messages"), "not an absolute"},
+		"other scheme":      {NewUpstream("", "ftp://example.com/x"), "not an absolute"},
+		"content-length":    {NewUpstream("", "https://example.com").Header("Content-Length", "3"), `"content-length" belongs to the host's transport`},
+		"accept-encoding":   {NewUpstream("", "https://example.com").DefaultHeader("Accept-Encoding", "gzip"), `"accept-encoding" belongs to the host's transport`},
+		"connection":        {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
+		"transfer-encoding": {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
+		"line break":        {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
+		"several at once":   {NewUpstream("", "nope").Header("connection", "x"), "transport"},
+		"websocket is fine": {NewUpstream("GET", "wss://example.com/v1/realtime"), ""},
 	} {
 		got, err := tc.build.Build()
 		if tc.want == "" {
