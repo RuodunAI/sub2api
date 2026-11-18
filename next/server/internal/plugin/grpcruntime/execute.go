@@ -141,16 +141,12 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 	if sc.client.Fetch == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this call has no fetch capability")
 	}
-	if sc.fetches >= core.ExecutionHTTPMaxRequests {
-		return nil, status.Errorf(codes.ResourceExhausted, "at most %d requests per execution", core.ExecutionHTTPMaxRequests)
-	}
 	if err := checkBody(in.GetBody(), h.maxRequestBody()); err != nil {
 		return nil, err
 	}
 	if err := h.requireFetchHost(sc, in.GetUrl()); err != nil {
 		return nil, err
 	}
-	sc.fetches++
 	cctx, cancel := sc.hostContext(ctx)
 	defer cancel()
 	out, err = sc.client.Fetch(cctx, in)
@@ -160,10 +156,7 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 	if out == nil {
 		return nil, status.Error(codes.Internal, "fetch returned no response")
 	}
-	if len(out.Body) > core.ExecutionHTTPMaxResponseBytes {
-		out.Body, out.Truncated = out.Body[:core.ExecutionHTTPMaxResponseBytes], true
-	}
-	if cctx.Err() == nil && out.GetStatus() >= 200 && out.GetStatus() <= 599 && out.GetTransportError() == "" && !out.GetTruncated() {
+	if cctx.Err() == nil && out.GetStatus() >= 200 && out.GetStatus() <= 599 && out.GetTransportError() == "" {
 		sc.evidence = true
 	}
 	return out, nil

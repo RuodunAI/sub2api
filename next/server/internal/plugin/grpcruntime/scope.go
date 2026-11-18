@@ -45,9 +45,9 @@ type callScope struct {
 	// the call's owner after close joined it.
 	relayed bool
 	parked  *pluginv1.UpstreamRequest // a relay that did not wait
-	fetches int
 	// evidence: a fetch of this call completed with an HTTP status, without
-	// a transport error and untruncated. A terminal Monitor result needs it.
+	// a transport error, while the call was alive. A terminal Monitor result
+	// needs it.
 	evidence bool
 }
 

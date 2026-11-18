@@ -255,16 +255,13 @@ func TestFetchLimits(t *testing.T) {
 			t.Errorf("refused requests were sent: %d", fetches.Load())
 		}
 		out, err := fetch(ctx, h, token, "https://sub.API.example.com:8443/big", mib)
-		if err != nil || !out.GetTruncated() || len(out.GetBody()) != core.ExecutionHTTPMaxResponseBytes {
-			t.Errorf("oversized answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
+		if err != nil || out.GetTruncated() || len(out.GetBody()) != 20*mib {
+			t.Errorf("large answer: truncated=%v bytes=%d err=%v", out.GetTruncated(), len(out.GetBody()), err)
 		}
-		for n := 2; n <= core.ExecutionHTTPMaxRequests; n++ {
+		for n := 2; n <= 12; n++ { // no count limit
 			if out, err := fetch(ctx, h, token, "https://api.example.com/x", 0); err != nil || out.GetTruncated() || out.GetStatus() != 200 {
 				t.Errorf("fetch %d: %v %v", n, out, err)
 			}
-		}
-		if _, err := fetch(ctx, h, token, "https://api.example.com/x", 0); status.Code(err) != codes.ResourceExhausted {
-			t.Errorf("fetch 9: %v", err)
 		}
 		return hostUsage, nil
 	}}
@@ -273,14 +270,14 @@ func TestFetchLimits(t *testing.T) {
 	client := core.ExecutionClient{Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		fetches.Add(1)
 		if len(in.GetBody()) > 0 {
-			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, core.ExecutionHTTPMaxResponseBytes+1)}, nil
+			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, 20*mib)}, nil
 		}
 		return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte("ok")}, nil
 	}}
 	if _, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{}, client); err != nil {
 		t.Fatal(err)
 	}
-	if fetches.Load() != core.ExecutionHTTPMaxRequests {
+	if fetches.Load() != 12 {
 		t.Fatalf("fetches sent: %d", fetches.Load())
 	}
 	if _, err := fetch(context.Background(), side.h, token, "https://api.example.com/x", 0); status.Code(err) != codes.PermissionDenied {
@@ -441,7 +438,6 @@ func TestMonitorResult(t *testing.T) {
 	}{
 		{"terminal with evidence", &pluginv1.ExecutionHTTPResponse{Status: 200}, true, &settled, true},
 		{"terminal on an http error status", &pluginv1.ExecutionHTTPResponse{Status: 404}, true, &settled, true},
-		{"terminal on a truncated answer", &pluginv1.ExecutionHTTPResponse{Status: 200, Truncated: true}, true, &settled, false},
 		{"terminal on a transport error", &pluginv1.ExecutionHTTPResponse{TransportError: "offline"}, true, &settled, false},
 		{"terminal without a fetch", nil, false, &settled, false},
 		{"pending without a fetch", nil, false, &pending, true},

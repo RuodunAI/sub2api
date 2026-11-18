@@ -19,7 +19,6 @@ import (
 	"golang.org/x/net/http/httpguts"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // Limits of a fetch request and of the headers of its answer.
@@ -49,9 +48,9 @@ type Binding struct {
 	Admit func(context.Context) error
 }
 
-// Do performs one fetch: no redirects, no retries, the answer body capped at
-// core.ExecutionHTTPMaxResponseBytes and its headers at MaxHeaders and
-// MaxHeaderBytes (Truncated set when cut). A request the host refuses or an
+// Do performs one fetch: no redirects, no retries, the answer body whole,
+// its headers capped at MaxHeaders and MaxHeaderBytes (Truncated set when
+// cut). A request the host refuses or an
 // exchange that fails is an answer with TransportError set; an error is the
 // context's or Admit's.
 func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*pluginv1.ExecutionHTTPResponse, error) {
@@ -139,20 +138,15 @@ func checkRequest(in *pluginv1.ExecutionHTTPRequest) (method, refused string) {
 	return method, ""
 }
 
-// answer reads the exchange's answer within the limits.
+// answer reads the exchange's answer.
 func answer(ctx context.Context, u *url.URL, resp *http.Response, err error) (*pluginv1.ExecutionHTTPResponse, error) {
 	if err != nil {
 		slog.InfoContext(ctx, "execfetch: exchange failed", "host", u.Host, "err", err)
 		return &pluginv1.ExecutionHTTPResponse{TransportError: TransportFailure}, nil
 	}
 	defer resp.Body.Close()
-	const limit = core.ExecutionHTTPMaxResponseBytes
-	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, limit+1))
-	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw,
-		Truncated: len(raw) > limit || readErr != nil}
-	if len(raw) > limit {
-		out.Body = raw[:limit]
-	}
+	raw, readErr := io.ReadAll(resp.Body)
+	out := &pluginv1.ExecutionHTTPResponse{Status: int32(resp.StatusCode), Headers: map[string]string{}, Body: raw}
 	size := 0
 	for k, v := range resp.Header {
 		if len(v) == 0 {

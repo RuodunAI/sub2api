@@ -178,7 +178,7 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 	client := core.ExecutionClient{Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		fetched.Add(1)
 		if len(in.GetBody()) > 0 {
-			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, core.ExecutionHTTPMaxResponseBytes+1)}, nil
+			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: make([]byte, 20*mib)}, nil
 		}
 		return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte("ok")}, nil
 	}}
@@ -186,14 +186,13 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 	plan := []scriptStep{
 		{Op: "fetch", URL: "https://elsewhere.example.org/x"}, // not in externalServices
 		{Op: "fetch", URL: ok, BodySize: 2*mib + 1},           // above the request body limit
-		{Op: "fetch", URL: ok, BodySize: 2 * mib},             // answered with 8 MiB + 1
+		{Op: "fetch", URL: ok, BodySize: 2 * mib},             // answered with 20 MiB, whole
 	}
-	for range core.ExecutionHTTPMaxRequests - 1 {
+	for range 9 { // no count limit: the ninth and later fetches go out too
 		plan = append(plan, scriptStep{Op: "fetch", URL: ok})
 	}
 	plan = append(plan,
-		scriptStep{Op: "fetch", URL: ok}, // the ninth
-		relayStep(false, 3*mib+1),        // above limit + 1 MiB
+		relayStep(false, 3*mib+1), // above limit + 1 MiB
 		relayStep(false, 3*mib),
 	)
 	res, err := execute(inst, &pluginv1.ExecuteRequest{Body: script("host_usage", plan...)}, client)
@@ -201,7 +200,7 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := steps(t, res.Response.GetClassification().GetReason())
-	want := []string{"PermissionDenied", "InvalidArgument", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "ResourceExhausted", "InvalidArgument", "OK"}
+	want := []string{"PermissionDenied", "InvalidArgument", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "OK", "InvalidArgument", "OK"}
 	if len(log) != len(want) {
 		t.Fatalf("steps: %+v", log)
 	}
@@ -210,16 +209,16 @@ func TestExecuteFetchAndBodyLimitsAcrossProcess(t *testing.T) {
 			t.Errorf("step %d: %s (%s), want %s", n, log[n].Code, log[n].Message, code)
 		}
 	}
-	if !log[2].Truncated || log[2].BodyBytes != core.ExecutionHTTPMaxResponseBytes || log[3].Truncated || log[3].BodyBytes != 2 {
+	if log[2].Truncated || log[2].BodyBytes != 20*mib || log[3].Truncated || log[3].BodyBytes != 2 {
 		t.Errorf("answers: %+v %+v", log[2], log[3])
 	}
-	if fetched.Load() != core.ExecutionHTTPMaxRequests || len(res.Relay.GetBody()) != 3*mib {
+	if fetched.Load() != 10 || len(res.Relay.GetBody()) != 3*mib {
 		t.Errorf("fetches sent %d, relayed %d bytes", fetched.Load(), len(res.Relay.GetBody()))
 	}
 
 	// The token of that call is void now.
 	out, err := httpCall(t, inst, &pluginv1.HTTPRequest{Method: "POST", Path: "/replay", Body: []byte(ok)})
-	if err != nil || out["code"] != "PermissionDenied" || fetched.Load() != core.ExecutionHTTPMaxRequests {
+	if err != nil || out["code"] != "PermissionDenied" || fetched.Load() != 10 {
 		t.Fatalf("expired token: %v %v, fetches %d", out, err, fetched.Load())
 	}
 }

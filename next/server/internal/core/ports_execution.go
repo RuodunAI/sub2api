@@ -22,18 +22,6 @@ import (
 // gateway supplies the ExecutionClient and acts on the ExecutionResult, the
 // usage module implements ExecutionRecords and calls Monitor.
 
-// Limits of the fetch form (HostService.ExecuteHTTP), fixed by the host.
-const (
-	// ExecutionHTTPMaxRequests caps the fetches of one Execute or Monitor
-	// call. The runtime refuses the next one without calling Fetch.
-	ExecutionHTTPMaxRequests = 8
-	// ExecutionHTTPMaxResponseBytes caps the answer body of one fetch. An
-	// ExecutionHTTP implementation reads at most this many bytes (plus one to
-	// know there was more) and sets Truncated; the runtime cuts a longer body
-	// and sets Truncated itself, so the plugin never sees more.
-	ExecutionHTTPMaxResponseBytes = 8 << 20
-)
-
 // Host bounds around plugin execution that more than one module names.
 const (
 	// ExecutionHTTPDefaultTimeout is a gateway fetch's total timeout when the
@@ -103,8 +91,9 @@ func MaxRequestBodyBytes(limit RequestBodyLimit) int64 {
 // overrides and follows no redirect. in.Options may only shorten the
 // effective timeouts.
 //
-// The runtime calls it only after it checked the execution token, the count
-// (ExecutionHTTPMaxRequests), the request body against RequestBodyLimit and
+// The fetches of one call are not counted and their answers are whole: the
+// core never sets Truncated. The runtime calls it only after it checked the
+// execution token, the request body against RequestBodyLimit and
 // the URL's host: one of the plugin manifest's externalServices (or a
 // subdomain of one), or the host of one of the account's own upstream
 // addresses (the values of the address fields its type declares, manifest
@@ -207,12 +196,12 @@ type ExecutePlugin interface {
 // platform.monitor.v1: one scheduled observation of a host-managed task.
 type MonitorPlugin interface {
 	// Monitor runs PlatformService.Monitor once. The plugin queries the
-	// upstream through fetch (at most ExecutionHTTPMaxRequests times, its
-	// execution token void once the call returns) and states what it read
+	// upstream through fetch (as often as it needs, its execution token
+	// void once the call returns) and states what it read
 	// in the result. A nil error comes with a non-nil result: a response
 	// without one is an error, and so is a terminal state (anything but
-	// PENDING and POLL_FAILED) that no complete, successful, untruncated
-	// fetch of this call backs. The caller treats every error as one failed
+	// PENDING and POLL_FAILED) that no complete, successful fetch of this
+	// call backs. The caller treats every error as one failed
 	// query. The call is bounded by the runtime's poll timeout (30 s) and
 	// by ctx.
 	Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch ExecutionHTTP) (*pluginv1.ReconcileResult, error)
