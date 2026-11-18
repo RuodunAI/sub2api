@@ -78,8 +78,8 @@ func Relay(ctx context.Context, request *pluginv1.UpstreamRequest) error {
 
 // RelayAndWait hands the final upstream request to the host, which sends it
 // now, relays the answer to the client and returns when the exchange has
-// ended. The answer holds exactly one of: observation, the bounded view of a
-// 2xx answer the plugin reads into ReportUsage or ReportTask; error, the
+// ended. The answer holds exactly one of: observation, what the host read
+// of a 2xx answer, which the plugin reads into ReportUsage or ReportTask; error, the
 // facts of a failed exchange the plugin classifies (ReportClassification). Only for
 // executions whose request sets extract_usage or task_submission; the rest
 // is as for Relay.
@@ -141,9 +141,6 @@ func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*plugin
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "HTTP request is required")
 	}
-	if err := checkOptions(request.GetOptions()); err != nil {
-		return nil, status.Error(codes.InvalidArgument, err.Error())
-	}
 	// A shallow copy: the caller's message keeps its token field and a large
 	// body is not duplicated.
 	return ex.client.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{
@@ -152,6 +149,5 @@ func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*plugin
 		Url:            request.GetUrl(),
 		Headers:        request.GetHeaders(),
 		Body:           request.GetBody(),
-		Options:        request.GetOptions(),
 	}, grpc.MaxCallRecvMsgSize(maxMessageBytes))
 }

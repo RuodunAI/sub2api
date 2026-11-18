@@ -44,7 +44,7 @@ func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *plug
 	})
 	t.Cleanup(func() { http.DefaultTransport = defaultTransport })
 	h := pluginsdktest.Start(t, p, pluginsdktest.Options{
-		Host: fh, SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestFile(t)), pluginsdk.WithInfo("volcengine", "0.13.0")},
+		Host: fh, Manifest: manifestFile(t), SDK: []pluginsdk.Option{pluginsdk.WithInfo("volcengine", "0.13.0")},
 	})
 	t.Cleanup(func() {
 		if dials := fh.Dials(); len(dials) != 0 {
@@ -110,11 +110,17 @@ func executeCases() []executeCase {
 	const bearer = "Bearer 11111111-2222-3333-4444-555555555555"
 	official, relay := account(testKey, ""), relayAccount("/v1", "/doubao/api/v3")
 	in := func(acc *pluginv1.Account, protocol, model string, stream bool, body string) *pluginv1.ExecuteRequest {
+		// What the core hands over: the manifest's passHeaders of the entry
+		// the protocol is routed to.
+		inbound := map[string]string{"user-agent": "client/1.0"}
+		if protocol == ProtocolMessages {
+			inbound["anthropic-beta"] = "beta-1"
+		}
 		return &pluginv1.ExecuteRequest{
 			Meta:           &pluginv1.RequestMeta{Protocol: protocol, Model: model, Stream: stream, RequestId: "req-1"},
 			Account:        acc,
 			Body:           []byte(body),
-			InboundHeaders: map[string]string{"user-agent": "client/1.0", "anthropic-beta": "beta-1", "cookie": "no"},
+			InboundHeaders: inbound,
 		}
 	}
 	submit := in(official, ProtocolVideoSubmit, videoModel, false,
@@ -198,7 +204,7 @@ func TestExecuteEndpointClasses(t *testing.T) {
 				return
 			}
 			task := ex.Response.GetTask()
-			est := estimateVideo(videoModel, readVideoSpec(requested(Res720, Ratio169, 5), nil))
+			est := estimateVideo(videoModel, readVideoSpec(requested(Res720, Ratio169, 5)))
 			if task.GetUpstreamRefId() != submittedID || task.GetUsage().GetReserve().GetRefId() != submittedID ||
 				task.GetUsage().GetReserve().GetTokens().GetOutputTokens() != est.Tokens ||
 				task.GetUsage().GetTokens().GetOutputTokens() != est.Tokens || task.GetNextCheckAfterSec() != firstCheckSec {

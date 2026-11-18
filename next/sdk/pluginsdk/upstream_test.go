@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -23,7 +22,6 @@ func TestUpstreamBuildsTheTwoHeaderKinds(t *testing.T) {
 		DefaultHeaders(http.Header{"Accept": {"a", "b"}}).
 		DefaultHeader("x-empty", "").
 		Body(body).Model("m-upstream").ResponseStream("aws-eventstream-chunk").
-		ResponseHeaderTimeout(1500 * time.Millisecond).TotalTimeout(time.Microsecond).
 		Build()
 	if err != nil {
 		t.Fatal(err)
@@ -35,7 +33,6 @@ func TestUpstreamBuildsTheTwoHeaderKinds(t *testing.T) {
 		Body:           body,
 		UpstreamModel:  "m-upstream",
 		ResponseStream: "aws-eventstream-chunk",
-		Options:        &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: 1500, TotalTimeoutMs: 1},
 	}
 	if !proto.Equal(got, want) {
 		t.Fatalf("built %v\nwant  %v", got, want)
@@ -47,17 +44,15 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 		build *Upstream
 		want  string
 	}{
-		"relative url":       {NewUpstream("", "/v1/messages"), "not an absolute"},
-		"other scheme":       {NewUpstream("", "ftp://example.com/x"), "not an absolute"},
-		"content-length":     {NewUpstream("", "https://example.com").Header("Content-Length", "3"), `"content-length" belongs to the host's transport`},
-		"accept-encoding":    {NewUpstream("", "https://example.com").DefaultHeader("Accept-Encoding", "gzip"), `"accept-encoding" belongs to the host's transport`},
-		"connection":         {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
-		"transfer-encoding":  {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
-		"line break":         {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
-		"negative timeout":   {NewUpstream("", "https://example.com").TotalTimeout(-time.Second), "negative"},
-		"several at once":    {NewUpstream("", "nope").Header("connection", "x"), "transport"},
-		"websocket is fine":  {NewUpstream("GET", "wss://example.com/v1/realtime"), ""},
-		"huge timeout is ok": {NewUpstream("", "https://example.com").TotalTimeout(1 << 62), ""},
+		"relative url":      {NewUpstream("", "/v1/messages"), "not an absolute"},
+		"other scheme":      {NewUpstream("", "ftp://example.com/x"), "not an absolute"},
+		"content-length":    {NewUpstream("", "https://example.com").Header("Content-Length", "3"), `"content-length" belongs to the host's transport`},
+		"accept-encoding":   {NewUpstream("", "https://example.com").DefaultHeader("Accept-Encoding", "gzip"), `"accept-encoding" belongs to the host's transport`},
+		"connection":        {NewUpstream("", "https://example.com").DefaultHeader("connection", "close"), "transport"},
+		"transfer-encoding": {NewUpstream("", "https://example.com").Header("transfer-encoding", "chunked"), "transport"},
+		"line break":        {NewUpstream("", "https://example.com").Header("x-a", "b\r\nx-c: d"), "malformed"},
+		"several at once":   {NewUpstream("", "nope").Header("connection", "x"), "transport"},
+		"websocket is fine": {NewUpstream("GET", "wss://example.com/v1/realtime"), ""},
 	} {
 		got, err := tc.build.Build()
 		if tc.want == "" {
@@ -89,7 +84,6 @@ func TestValidateUpstreamRequest(t *testing.T) {
 		"mixed default":       {Url: "https://example.com", DefaultHeaders: map[string]string{"X-A": "x"}},
 		"empty name":          {Url: "https://example.com", Headers: map[string]string{"": "x"}},
 		"transport header":    {Url: "https://example.com", DefaultHeaders: map[string]string{"content-length": "1"}},
-		"negative option":     {Url: "https://example.com", Options: &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: -1}},
 		"no host":             {Url: "https:///x"},
 		"name with (":         {Url: "https://example.com", Headers: map[string]string{"x-(a)": "x"}},
 		"name with /":         {Url: "https://example.com", Headers: map[string]string{"x/a": "x"}},
@@ -165,5 +159,17 @@ func TestUpstreamHeaderMaps(t *testing.T) {
 	if !maps.Equal(got.GetHeaders(), map[string]string{"authorization": "Bearer k"}) ||
 		!maps.Equal(got.GetDefaultHeaders(), map[string]string{"accept": "a", "authorization": "default"}) {
 		t.Fatalf("headers %v, defaults %v", got.GetHeaders(), got.GetDefaultHeaders())
+	}
+}
+
+func TestWebSocketURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://api.example.com/v1/responses?a=1": "wss://api.example.com/v1/responses?a=1",
+		"http://127.0.0.1:8080/v1/responses":       "ws://127.0.0.1:8080/v1/responses",
+		"wss://already.example.com/x":              "wss://already.example.com/x",
+	} {
+		if got := WebSocketURL(in); got != want {
+			t.Errorf("WebSocketURL(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

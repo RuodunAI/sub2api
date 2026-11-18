@@ -10,7 +10,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/guard"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -18,7 +17,7 @@ import (
 // checks the declared capabilities (app.broadcast.v1 needs OnBroadcast and
 // the host permission "broadcast") and reports them.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, guard.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, guard.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	if !slices.Contains(h.Info.GetCapabilities(), manifest.CapAppBroadcast) {
 		t.Fatalf("capabilities = %v", h.Info.GetCapabilities())
 	}

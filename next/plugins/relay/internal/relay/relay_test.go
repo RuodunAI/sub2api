@@ -14,7 +14,7 @@ import (
 
 // TestGolden replays the frozen answers of the released plugin, all of them.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "relay", New())
+	standardtest.Run(t, "relay", "../../manifest.json", New())
 }
 
 // TestDifferences pins, on the plugin's own output, the ways relay_key

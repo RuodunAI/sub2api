@@ -14,7 +14,7 @@ import (
 )
 
 // Platform serves the account types it was made with. It implements
-// pluginsdk.Platform (Execute is pluginsdk.ExecuteDefault),
+// pluginsdk.Platform (the SDK runs its Execute with pluginsdk.ExecuteDefault),
 // pluginsdk.UpstreamBuilder and pluginsdk.ModelLister, and is safe for
 // concurrent use.
 type Platform struct {
@@ -39,12 +39,6 @@ func New(types ...Type) *Platform {
 	return &Platform{types: types}
 }
 
-// Execute is the gateway request: ExecuteDefault relays what BuildUpstream
-// builds, without waiting, and answers host_usage.
-func (p *Platform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // BuildUpstream builds the final request of one attempt: the route of
 // meta.protocol on the account's base URL, the key as the authoritative
 // header, every other header as a default header, and
@@ -63,7 +57,7 @@ func (p *Platform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest)
 		return nil, err
 	}
 	r := &Request{Account: in.GetAccount(), Meta: in.GetMeta(), APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: model,
-		Stream: pluginsdk.RequestStream(in), Client: forward(in.GetInboundHeaders())}
+		Stream: pluginsdk.RequestStream(in), Client: clientHeaders(in.GetInboundHeaders())}
 	body, err := t.edit(in.GetBody(), route, r)
 	if err != nil {
 		return nil, err

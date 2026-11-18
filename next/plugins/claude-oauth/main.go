@@ -95,13 +95,6 @@ func (p *Plugin) ValidateCredentials(ctx context.Context, req *pluginv1.Validate
 	return &pluginv1.ValidateCredentialsResponse{}, nil
 }
 
-// Execute is the request path: ExecuteDefault builds the request with
-// BuildUpstream, relays it without waiting and answers host_usage, so the
-// host sends it, relays the answer and reads the usage.
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 // upstreamURLs maps the protocols the manifest routes here to their
 // upstream URLs. Anything else is refused: a protocol without its own URL
 // must never fall back to the Messages URL, where it would run a generation.

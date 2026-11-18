@@ -26,9 +26,6 @@ type minimalPlatform struct{}
 func (minimalPlatform) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	return &pluginv1.ValidateCredentialsResponse{}, nil
 }
-func (p minimalPlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
 func (minimalPlatform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	return pluginsdk.NewUpstream("", "https://up.example.com/v1/messages").Body(in.GetBody()).Build()
 }
@@ -50,11 +47,11 @@ func (listingPlatform) BuildModelsRequest(context.Context, *pluginv1.BuildModels
 func TestBuildModelsRequestOptional(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	h := pluginsdktest.Start(t, minimalPlatform{}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h := pluginsdktest.Start(t, minimalPlatform{}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	if _, err := h.Platform.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("without ModelLister: %v", err)
 	}
-	h2 := pluginsdktest.Start(t, listingPlatform{}, pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}})
+	h2 := pluginsdktest.Start(t, listingPlatform{}, pluginsdktest.Options{Manifest: []byte(platformManifest)})
 	r, err := h2.Platform.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{})
 	if err != nil || r.GetIdsPath() != "data.#.id" {
 		t.Fatalf("with ModelLister: %v %v", r, err)

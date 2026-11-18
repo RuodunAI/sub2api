@@ -99,10 +99,6 @@ func allocated(s *suite, h *pluginsdktest.Harness, c *Case) (int64, *pluginsdkte
 // the body it was given, in the form the request asks for.
 type reference struct{}
 
-func (r reference) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, r, in)
-}
-
 func (reference) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	return pluginsdk.NewUpstream(http.MethodPost, "https://reference.conformance.invalid/").Body(in.GetBody()).Build()
 }

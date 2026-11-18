@@ -10,14 +10,13 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/mailer/internal/mailer"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
 // TestManifestServes starts the plugin with its embedded manifest: the SDK
 // reports notify.channel.v1 and the NotificationService answers.
 func TestManifestServes(t *testing.T) {
-	h := pluginsdktest.Start(t, mailer.New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+	h := pluginsdktest.Start(t, mailer.New(), pluginsdktest.Options{Manifest: manifestJSON})
 	if !slices.Contains(h.Info.GetCapabilities(), manifest.CapNotifyChannel) {
 		t.Fatalf("capabilities = %v", h.Info.GetCapabilities())
 	}

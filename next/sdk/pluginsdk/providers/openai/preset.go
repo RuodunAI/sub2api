@@ -55,9 +55,17 @@ func APIKey(id string) standard.Type {
 // IncludeStreamUsage is the edit of a chat completion: a stream asks for
 // the usage chunk (stream_options.include_usage), which the host's usage
 // rules read; without it the host reads no usage. A stream is meta.stream
-// or a body the core made stream (Request.Stream).
+// or a body the core made stream (Request.Stream, pluginsdk.RequestStream).
 func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {
-	if r.Stream {
+	StreamUsage(d, r.Stream)
+}
+
+// StreamUsage is IncludeStreamUsage for a plugin that edits the body itself:
+// stream is pluginsdk.RequestStream of the execution, so that a type whose
+// upstream only streams (the core forces the body's stream flag) is asked
+// for the usage chunk too.
+func StreamUsage(d *jsonedit.Doc, stream bool) {
+	if stream {
 		d.Set("stream_options.include_usage", []byte("true"))
 	}
 }

@@ -233,15 +233,15 @@ func (a account) authorize(req *http.Request, body []byte, now time.Time) (http.
 	if !a.auth.signed {
 		return http.Header{"Authorization": {"Bearer " + a.creds.Str(fieldAPIKey)}}, nil
 	}
-	d := reqsign.Directive{
-		Scheme: reqsign.SchemeAWSSigV4, Region: a.region, Service: SigningService,
+	c := reqsign.AWSCredentials{
+		Region: a.region, Service: SigningService,
 		AccessKeyID: a.creds.Str(fieldAccessKeyID), SecretAccessKey: a.creds.Str(fieldSecretAccessKey),
 	}
 	if a.auth.session {
-		d.SessionToken = a.creds.Str(fieldSessionToken)
+		c.SessionToken = a.creds.Str(fieldSessionToken)
 	}
-	if err := reqsign.Sign(req, body, d, now); err != nil {
+	if err := reqsign.SignAWSSigV4(req, body, c, now); err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	return reqsign.SignedHeaders(req, d.Scheme), nil
+	return reqsign.AWSSigV4Headers(req), nil
 }

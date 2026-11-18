@@ -152,7 +152,6 @@ func differ(a, b *pluginv1.UpstreamRequest) string {
 		{"body", string(a.GetBody()), string(b.GetBody())},
 		{"upstream_model", a.GetUpstreamModel(), b.GetUpstreamModel()},
 		{"response_stream", a.GetResponseStream(), b.GetResponseStream()},
-		{"options", a.GetOptions().String(), b.GetOptions().String()},
 	}
 	for _, f := range fields {
 		// fmt prints maps sorted, and a nil map like an empty one.

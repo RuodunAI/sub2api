@@ -19,7 +19,8 @@ import (
 // another account. Usage and task facts travel only in the response:
 // ReportHostUsage, ReportUsage, ReportTask or ReportClassification.
 //
-// Most platforms implement UpstreamBuilder and let Execute be ExecuteDefault.
+// Optional: most platforms implement only UpstreamBuilder, and the SDK runs
+// ExecuteDefault for them. A Platform that implements Executor runs its own.
 type Executor interface {
 	Execute(context.Context, *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error)
 }
@@ -106,7 +107,8 @@ func (e *classifiedError) Error() string {
 	return "upstream request failed: " + e.classification.GetReason()
 }
 
-// ExecuteDefault is Execute for a platform that only builds the request.
+// ExecuteDefault is Execute for a platform that only builds the request: the
+// SDK runs it for a Platform that implements UpstreamBuilder and no Executor.
 // The two flags of the request choose the form of the exchange:
 //
 //   - neither: Relay without waiting and answer host_usage. The request is
@@ -178,6 +180,26 @@ func classifyObserved(ctx context.Context, b UpstreamBuilder, failed *pluginv1.C
 	return classified
 }
 
+// executorOf is the Execute of a Platform: its own when it implements
+// Executor, otherwise ExecuteDefault over its UpstreamBuilder.
+func executorOf(p Platform) (Executor, error) {
+	if e, ok := p.(Executor); ok {
+		return e, nil
+	}
+	if b, ok := p.(UpstreamBuilder); ok {
+		return defaultExecutor{b}, nil
+	}
+	return nil, errors.New("a Platform must implement UpstreamBuilder or Executor")
+}
+
+// defaultExecutor runs ExecuteDefault over the plugin itself, so that the
+// optional interfaces ExecuteDefault looks for are the plugin's.
+type defaultExecutor struct{ builder UpstreamBuilder }
+
+func (d defaultExecutor) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
+	return ExecuteDefault(ctx, d.builder, in)
+}
+
 // extractObserved reads the usage of a waited relay; nil is the fallback to
 // the host's reading.
 func extractObserved(ctx context.Context, b UpstreamBuilder, observation *pluginv1.ExtractUsageRequest) *pluginv1.UsageReport {
@@ -238,7 +260,7 @@ func (s platformServer) Execute(ctx context.Context, in *pluginv1.ExecuteRequest
 		return nil, err
 	}
 	defer cancel()
-	out, err := s.impl.Execute(ctx, in)
+	out, err := s.execute.Execute(ctx, in)
 	if err != nil {
 		return nil, err
 	}

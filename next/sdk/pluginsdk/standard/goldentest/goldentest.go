@@ -2,12 +2,9 @@
 // plugins (openai, anthropic, gemini, relay) and replays them against an
 // implementation (README.md).
 //
-// The cases were recorded from the four code plugins before they became
-// declarations, and converted once from sdk/upstream/testdata/golden into a
-// form that names the final upstream request instead of body patches
-// (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md §7.3). Nothing here
-// depends on the declarative engine or on the messages of
-// BuildUpstreamRequest, so the cases outlive both.
+// The cases were recorded from earlier implementations of the four plugins
+// and name the final upstream request each input must produce
+// (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md §7.3).
 //
 // A plugin's test adapts its entry points to a Subject and calls Run:
 //

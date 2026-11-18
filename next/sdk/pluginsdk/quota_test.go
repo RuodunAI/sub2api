@@ -9,7 +9,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
@@ -28,7 +27,7 @@ func (quotaPlatform) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaRes
 func TestQuotaReaderOptional(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	opts := pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}}
+	opts := pluginsdktest.Options{Manifest: []byte(platformManifest)}
 	h := pluginsdktest.Start(t, minimalPlatform{}, opts)
 	if _, err := h.Platform.BuildQuotaRequest(ctx, &pluginv1.BuildQuotaRequestRequest{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("BuildQuotaRequest without QuotaReader: %v", err)
@@ -60,7 +59,7 @@ func (refreshPlatform) ParseRefreshResponse(context.Context, *pluginv1.ParseRefr
 func TestCredentialRefresherOptional(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	opts := pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest([]byte(platformManifest))}}
+	opts := pluginsdktest.Options{Manifest: []byte(platformManifest)}
 	h := pluginsdktest.Start(t, minimalPlatform{}, opts)
 	if _, err := h.Platform.BuildRefreshRequest(ctx, &pluginv1.BuildRefreshRequestRequest{}); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("BuildRefreshRequest without CredentialRefresher: %v", err)

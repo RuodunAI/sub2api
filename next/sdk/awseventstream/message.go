@@ -1,5 +1,5 @@
 // Package awseventstream reads and writes the AWS event stream framing
-// (application/vnd.amazon.eventstream): Decoder and AppendMessage know the
+// (application/vnd.amazon.eventstream): decoder and AppendMessage know the
 // framing only and fit any service using it. ChunkSSEReader is narrower: it
 // presents one kind of event stream, the "chunk" events of Bedrock's
 // InvokeModelWithResponseStream, as server-sent events (FormatChunk).
@@ -7,7 +7,7 @@
 // Messages are decoded and encoded by the official library, aws-sdk-go-v2's
 // aws/protocol/eventstream: the checksum of a message, its headers and their
 // value types, and the bytes written are its work. Two things the library
-// lets through are refused here (Decoder.Decode): it reads whatever length a
+// lets through are refused here (decoder.Decode): it reads whatever length a
 // prelude announces, so the package reads the prelude itself and checks the
 // lengths against the format before handing it over; and it keeps the last of headers sharing a
 // name, so a message repeating a header name is rejected after it.
@@ -40,10 +40,10 @@ import (
 // ContentType is the media type of a response framed as an event stream.
 const ContentType = "application/vnd.amazon.eventstream"
 
-// MaxMessageSize is the format's own limit on a message, 16 MiB: the
+// maxMessageSize is the format's own limit on a message, 16 MiB: the
 // largest message the encoder produces and the decoder accepts. A prelude
 // announcing more is corrupt, not large.
-const MaxMessageSize = 16 << 20
+const maxMessageSize = 16 << 20
 
 const (
 	preludeSize = 12
@@ -64,40 +64,40 @@ const (
 const (
 	HeaderMessageType   = ":message-type"
 	HeaderEventType     = ":event-type"
-	HeaderExceptionType = ":exception-type"
-	HeaderErrorCode     = ":error-code"
-	HeaderErrorMessage  = ":error-message"
+	headerExceptionType = ":exception-type"
+	headerErrorCode     = ":error-code"
+	headerErrorMessage  = ":error-message"
 	HeaderContentType   = ":content-type"
 
 	MessageTypeEvent     = "event"
-	MessageTypeException = "exception"
-	MessageTypeError     = "error"
+	messageTypeException = "exception"
+	messageTypeError     = "error"
 )
 
-// ErrCorrupt is wrapped by every decoding error that means the stream cannot
+// errCorrupt is wrapped by every decoding error that means the stream cannot
 // be trusted any further: a bad length, a checksum mismatch, a malformed
 // header block.
-var ErrCorrupt = errors.New("awseventstream: corrupt message")
+var errCorrupt = errors.New("awseventstream: corrupt message")
 
 // Header is one message header. Only string values are kept: the values of
 // the other types are decoded and left out. A name occurs once in a message:
 // AWS never repeats one, and a decoded message that does is refused
-// (ErrCorrupt), whatever the types of the values.
+// (errCorrupt), whatever the types of the values.
 type Header struct {
 	Name  string
 	Value string
 }
 
-// Message is one decoded frame. Its headers have distinct names, so what
+// eventMessage is one decoded frame. Its headers have distinct names, so what
 // Header returns for a name is that header's only value in the frame: a
 // second ":message-type" cannot change how a message is routed.
-type Message struct {
+type eventMessage struct {
 	Headers []Header
 	Payload []byte
 }
 
 // Header returns the string value of the header called name, "" without one.
-func (m Message) Header(name string) string {
+func (m eventMessage) Header(name string) string {
 	for _, h := range m.Headers {
 		if h.Name == name {
 			return h.Value
@@ -106,10 +106,10 @@ func (m Message) Header(name string) string {
 	return ""
 }
 
-// Decoder reads messages from a stream. It asks the stream for no more than
+// decoder reads messages from a stream. It asks the stream for no more than
 // the message it is reading, so a message is returned as soon as its last
 // byte arrived.
-type Decoder struct {
+type decoder struct {
 	r   *bufio.Reader
 	sdk *eventstream.Decoder
 	// buf is the payload buffer handed to the library from one message to
@@ -117,23 +117,23 @@ type Decoder struct {
 	buf []byte
 }
 
-// NewDecoder returns a decoder reading from r.
-func NewDecoder(r io.Reader) *Decoder {
-	return &Decoder{r: bufio.NewReaderSize(r, 32<<10), sdk: eventstream.NewDecoder()}
+// newDecoder returns a decoder reading from r.
+func newDecoder(r io.Reader) *decoder {
+	return &decoder{r: bufio.NewReaderSize(r, 32<<10), sdk: eventstream.NewDecoder()}
 }
 
 // Decode returns the next message. Its payload is only valid until the next
 // call. At a clean end of the stream it returns io.EOF; a stream that ends
 // inside a message returns io.ErrUnexpectedEOF, a malformed message (one
-// repeating a header name included) an error wrapping ErrCorrupt, and a
+// repeating a header name included) an error wrapping errCorrupt, and a
 // failing reader that reader's error.
-func (d *Decoder) Decode() (Message, error) {
+func (d *decoder) Decode() (eventMessage, error) {
 	var prelude [preludeSize]byte
 	if _, err := io.ReadFull(d.r, prelude[:]); err != nil {
-		return Message{}, err // io.EOF only when not a single byte was read
+		return eventMessage{}, err // io.EOF only when not a single byte was read
 	}
 	if err := d.checkPrelude(prelude); err != nil {
-		return Message{}, err
+		return eventMessage{}, err
 	}
 	if cap(d.buf) > retainSize {
 		d.buf = nil
@@ -146,35 +146,35 @@ func (d *Decoder) Decode() (Message, error) {
 	msg, err := d.sdk.Decode(io.MultiReader(bytes.NewReader(prelude[:]), src), d.buf)
 	switch {
 	case src.err == io.EOF:
-		return Message{}, io.ErrUnexpectedEOF
+		return eventMessage{}, io.ErrUnexpectedEOF
 	case src.err != nil:
-		return Message{}, src.err
+		return eventMessage{}, src.err
 	case err != nil:
 		// The stream delivered the whole message, so the message is at fault.
-		return Message{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
+		return eventMessage{}, fmt.Errorf("%w: %v", errCorrupt, err)
 	}
 	if msg.Payload != nil {
 		d.buf = msg.Payload
 	}
 	if err := checkHeaders(msg.Headers, binary.BigEndian.Uint32(prelude[4:8])); err != nil {
-		return Message{}, err
+		return eventMessage{}, err
 	}
-	return Message{Headers: stringHeaders(msg.Headers), Payload: msg.Payload}, nil
+	return eventMessage{Headers: stringHeaders(msg.Headers), Payload: msg.Payload}, nil
 }
 
 // checkPrelude checks the lengths a prelude announces against the format,
 // before anything is read for them. The library checks neither: it trusts
 // the lengths once the prelude's checksum matches.
-func (d *Decoder) checkPrelude(prelude [preludeSize]byte) error {
+func (d *decoder) checkPrelude(prelude [preludeSize]byte) error {
 	total := binary.BigEndian.Uint32(prelude[0:4])
 	headersLen := binary.BigEndian.Uint32(prelude[4:8])
 	switch {
 	case crc32.ChecksumIEEE(prelude[:8]) != binary.BigEndian.Uint32(prelude[8:12]):
-		return fmt.Errorf("%w: prelude checksum mismatch", ErrCorrupt)
-	case total < minMessageSize || total > MaxMessageSize:
-		return fmt.Errorf("%w: message length %d outside %d..%d", ErrCorrupt, total, minMessageSize, MaxMessageSize)
+		return fmt.Errorf("%w: prelude checksum mismatch", errCorrupt)
+	case total < minMessageSize || total > maxMessageSize:
+		return fmt.Errorf("%w: message length %d outside %d..%d", errCorrupt, total, minMessageSize, maxMessageSize)
 	case headersLen > maxHeadersSize || headersLen > total-minMessageSize:
-		return fmt.Errorf("%w: headers length %d in a message of %d", ErrCorrupt, headersLen, total)
+		return fmt.Errorf("%w: headers length %d in a message of %d", errCorrupt, headersLen, total)
 	}
 	return nil
 }
@@ -205,9 +205,9 @@ func checkHeaders(headers eventstream.Headers, wireLen uint32) error {
 	var n byteCount
 	switch err := eventstream.EncodeHeaders(&n, headers); {
 	case err != nil:
-		return fmt.Errorf("%w: a header is over the format's limits", ErrCorrupt)
+		return fmt.Errorf("%w: a header is over the format's limits", errCorrupt)
 	case uint32(n) != wireLen:
-		return fmt.Errorf("%w: a header name is repeated", ErrCorrupt)
+		return fmt.Errorf("%w: a header name is repeated", errCorrupt)
 	}
 	return nil
 }
@@ -232,7 +232,7 @@ func stringHeaders(headers eventstream.Headers) []Header {
 }
 
 // AppendMessage appends the encoding of a message with string headers, in
-// the order given, to dst. It is the counterpart of Decoder for tests and
+// the order given, to dst. It is the counterpart of decoder for tests and
 // mock upstreams. A message that cannot be encoded returns dst unchanged
 // and an error.
 func AppendMessage(dst []byte, headers []Header, payload []byte) ([]byte, error) {
@@ -248,7 +248,7 @@ func AppendMessage(dst []byte, headers []Header, payload []byte) ([]byte, error)
 		msg.Headers = append(msg.Headers, eventstream.Header{Name: h.Name, Value: eventstream.StringValue(h.Value)})
 	}
 	total := minMessageSize + headersLen + len(payload)
-	if headersLen > maxHeadersSize || total > MaxMessageSize {
+	if headersLen > maxHeadersSize || total > maxMessageSize {
 		return dst, fmt.Errorf("awseventstream: message of %d bytes is too large", total)
 	}
 	out := bytes.NewBuffer(dst)

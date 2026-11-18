@@ -46,7 +46,6 @@ func TestMonitorFetchesOnceAndReturnsTheResult(t *testing.T) {
 			response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"running","progress":0.7}`)}, wantBody: true},
 		{name: "failed", response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"failed","error":{"message":"rejected"}}`)}, wantState: pluginv1.ReconcileResult_FAILED, wantBody: true},
 		{name: "estimate", response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","content":{"video_url":"https://cdn.invalid/a.mp4"}}`)}, wantState: pluginv1.ReconcileResult_SETTLED_ESTIMATE, wantBody: true},
-		{name: "truncated", response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":17}}`), Truncated: true}, wantState: pluginv1.ReconcileResult_POLL_FAILED},
 		{name: "malformed", response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"failed"`)}, wantState: pluginv1.ReconcileResult_POLL_FAILED},
 		{name: "transport_error", response: &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"failed"}`), TransportError: "unexpected EOF"}, wantState: pluginv1.ReconcileResult_POLL_FAILED},
 		{name: "http_error", response: &pluginv1.ExecutionHTTPResponse{Status: 503, Body: []byte(`{"status":"failed"}`)}, wantState: pluginv1.ReconcileResult_POLL_FAILED},
