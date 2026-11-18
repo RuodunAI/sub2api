@@ -25,7 +25,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
-	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -88,7 +87,9 @@ func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, ac
 
 // run calls Execute. A request that waits keeps going when the client
 // leaves (its answer may be read on for billing, disconnect.go): the call
-// outlives ctx, capped at 6 h beyond the relay timeout.
+// outlives ctx and has no time limit of its own. It ends with the plugin's
+// return, the upstream exchange (the client leaving, the administrator's
+// upstream timeouts) or the plugin process.
 func (x *execution) run(ctx context.Context, upModel string, n int) (core.ExecutionResult, error) {
 	c, rt := x.c, x.rt
 	plugin, ok := rt.binding.Client.(core.ExecutePlugin)
@@ -102,9 +103,7 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 	client := core.ExecutionClient{Check: x.check, Fetch: x.fetch}
 	if in.ExtractUsage || in.TaskSubmission {
 		client.Relay = x.relay
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.WithoutCancel(ctx), 6*time.Hour+c.env.Duration(core.EnvVarRelayTimeoutSeconds))
-		defer cancel()
+		ctx = context.WithoutCancel(ctx)
 	}
 	return plugin.Execute(ctx, in, client)
 }
