@@ -19,9 +19,8 @@ func TestAC31_OperatorSettingsOnPluginRequests(t *testing.T) {
 
 	t.Run("header override, passthrough", func(t *testing.T) {
 		e := e.With(t)
-		st := e.newSingleTenant(admin, "grp-hdr")
 		k := fmt.Sprintf("sk-ant-hdr-%s-%d", e.RunID, nextSeq())
-		id := e.CreateAccount(admin, AccountSpec{GroupIDs: []int64{st.GroupID}, APIKey: k, Extra: map[string]any{
+		tn := e.singleAccount(admin, "grp-hdr", AccountSpec{APIKey: k, Extra: map[string]any{
 			// anthropic-version is a default header of the plugin.
 			"header_override": map[string]any{
 				"anthropic-version": "2099-12-31",
@@ -30,10 +29,9 @@ func TestAC31_OperatorSettingsOnPluginRequests(t *testing.T) {
 			},
 			// content-type is set by the plugin: the client's must not replace it.
 			"header_passthrough": []string{"content-type", "x-e2e-trace"},
-		}})
-		model := e.RunModel(admin, "hdr")
+		}}, k, "claude", "hdr")
 		mark := m.Mark(t)
-		g := e.Messages(st.APIKey, MessagesBody(model, "headers", false), map[string]string{
+		g := e.Messages(tn.APIKey, MessagesBody(tn.Model, "headers", false), map[string]string{
 			"Content-Type":   "application/json; charset=utf-8",
 			"X-E2E-Trace":    "trace-1",
 			"X-E2E-Pass-One": "pass-1",
@@ -56,24 +54,20 @@ func TestAC31_OperatorSettingsOnPluginRequests(t *testing.T) {
 				t.Errorf("upstream %s = %q, want %q (headers %s)", name, got, want, r.Headers.Raw)
 			}
 		}
-		e.expectBilled(admin, st.User.UserID, g.RequestID, id, usageAnthropic, false)
+		e.expectBilled(admin, tn.User.UserID, g.RequestID, tn.Accounts[0].ID, usageAnthropic, false)
 	})
 
 	t.Run("authoritative headers of a signed request", func(t *testing.T) {
 		e := e.With(t)
-		e.EnsurePlugin(admin, "bedrock", "")
-		st := e.newSingleTenant(admin, "grp-sig")
 		k := fmt.Sprintf("AKIASIG%s%dMOCK", strings.ToUpper(e.RunID), nextSeq())
-		id := e.CreateAccount(admin, AccountSpec{PluginKey: "bedrock", Type: "bedrock_aksk", GroupIDs: []int64{st.GroupID},
-			Credentials: map[string]any{"access_key_id": k, "secret_access_key": "mock-secret-" + k, "region": "us-east-1", "inference_profile_prefix": "none"},
+		tn := e.singleAccount(admin, "grp-sig", AccountSpec{PluginKey: "bedrock", Type: "bedrock_aksk", Credentials: bedrockCreds(k),
 			Extra: map[string]any{"header_override": map[string]any{
 				"x-amz-date":   "20000101T000000Z",  // signed: authoritative
 				"content-type": "text/plain",        // signed: authoritative
 				"accept":       "application/x-e2e", // a default header of the plugin
-			}}})
-		model := e.RunModel(admin, "sig")
+			}}}, k, "claude", "sig")
 		mark := m.Mark(t)
-		g := e.Messages(st.APIKey, MessagesBody(model, "signed", false), nil)
+		g := e.Messages(tn.APIKey, MessagesBody(tn.Model, "signed", false), nil)
 		if g.Status != 200 {
 			t.Fatalf("signed request with an override of signed headers: HTTP %d %s", g.Status, g.Body)
 		}
@@ -85,20 +79,18 @@ func TestAC31_OperatorSettingsOnPluginRequests(t *testing.T) {
 		if r.Header("accept") != "application/x-e2e" {
 			t.Fatalf("the override did not change the default header accept: %s", r.Headers.Raw)
 		}
-		e.expectBilled(admin, st.User.UserID, g.RequestID, id, usageAnthropic, false)
+		e.expectBilled(admin, tn.User.UserID, g.RequestID, tn.Accounts[0].ID, usageAnthropic, false)
 	})
 
 	t.Run("account proxy", func(t *testing.T) {
 		e := e.With(t)
-		st := e.newSingleTenant(admin, "grp-proxy")
 		k := fmt.Sprintf("sk-proxy-%s-%d", e.RunID, nextSeq())
 		// The mock also answers as an HTTP forward proxy and records it.
-		id := e.CreateAccount(admin, AccountSpec{PluginKey: OpenAIPlugin, Type: APIKeyType, GroupIDs: []int64{st.GroupID}, APIKey: k,
-			Extra: map[string]any{"proxy_url": e.MockInternalURL}})
-		model := e.RunModelOf(admin, "gpt", "proxy")
+		tn := e.singleAccount(admin, "grp-proxy", AccountSpec{PluginKey: OpenAIPlugin, Type: APIKeyType, APIKey: k,
+			Extra: map[string]any{"proxy_url": e.MockInternalURL}}, k, "gpt", "proxy")
 		for _, stream := range []bool{false, true} {
 			mark := m.Mark(t)
-			g := e.OpenAI(st.APIKey, "/v1/chat/completions", ChatBody(model, "through the proxy", stream))
+			g := e.OpenAI(tn.APIKey, "/v1/chat/completions", ChatBody(tn.Model, "through the proxy", stream))
 			if g.Status != 200 {
 				t.Fatalf("stream=%v: HTTP %d %s", stream, g.Status, g.Body)
 			}
@@ -106,7 +98,7 @@ func TestAC31_OperatorSettingsOnPluginRequests(t *testing.T) {
 			if !r.Proxied || r.Path != "/v1/chat/completions" || r.Header("authorization") != "Bearer "+k {
 				t.Fatalf("stream=%v: the request did not go through the account's proxy: %+v", stream, r)
 			}
-			e.expectBilled(admin, st.User.UserID, g.RequestID, id, usageOpenAI, stream)
+			e.expectBilled(admin, tn.User.UserID, g.RequestID, tn.Accounts[0].ID, usageOpenAI, stream)
 		}
 	})
 }

@@ -54,6 +54,8 @@ func (e *Env) expectBilled(admin *Session, userID int64, requestID string, accou
 			e.T.Fatalf("usage tokens (gemini): %s", u.Raw)
 		}
 		want = ExpectedTokenCost(RunPrice, MockInputTokens-MockCacheReadTokens, out, MockCacheReadTokens, 0, 0, 1)
+	default:
+		e.T.Fatalf("expectBilled: unknown usage family %d", fam)
 	}
 	AssertMoney(e.T, "usage.total_cost", u.Get("total_cost").String(), want)
 	e.expectOneDebit(admin, userID, requestID, want)
@@ -113,24 +115,47 @@ func validJSONBody(t testing.TB, r MockRequest, model, prompt, what string) {
 	}
 }
 
-// singleTenant is one user with balance, one group holding the given
-// accounts and a key of that group.
-type singleTenant struct {
-	GroupID int64
-	User    *Session
-	APIKey  string
+// singleAccount builds a tenant (group named after name, credit "20")
+// with one account, spec, whose upstream key is key (the one spec
+// carries), and a run-priced model "<family>-e2e-<run>-<suffix>". The
+// account's plugin is enabled first.
+func (e *Env) singleAccount(admin *Session, name string, spec AccountSpec, key, family, suffix string) *Tenant {
+	e.T.Helper()
+	plugin := spec.PluginKey
+	if plugin == "" {
+		plugin = AnthropicPlugin
+	}
+	e.EnsurePlugin(admin, plugin, "")
+	tn := e.newTenantShell(admin, e.Name(name), 1, "20")
+	tn.addAccount(e, admin, spec, key)
+	tn.Model = e.RunModelOf(admin, family, suffix)
+	return tn
 }
 
-// newSingleTenant creates the group, the user (credit "20") and the key;
-// accounts are created by the caller with GroupIDs {GroupID}.
-func (e *Env) newSingleTenant(admin *Session, name string) *singleTenant {
-	e.T.Helper()
-	st := &singleTenant{GroupID: e.CreateGroup(admin, e.Name(name), "restricted", 1, nil)}
-	st.User = e.CreateUser(admin, UserSpec{})
-	e.GrantGroups(admin, st.User.UserID, []int64{st.GroupID})
-	e.AdjustBalance(admin, st.User.UserID, "20", true, "e2e forwarding credit")
-	_, st.APIKey = e.CreateAPIKey(st.User, st.GroupID)
-	return st
+// bedrockCreds are the credentials of a bedrock_aksk account with access
+// key id k; the mock checks SigV4 with the secret mock-secret-<k>.
+func bedrockCreds(k string) map[string]any {
+	return map[string]any{"access_key_id": k, "secret_access_key": "mock-secret-" + k, "region": "us-east-1", "inference_profile_prefix": "none"}
+}
+
+// codexCreds are the credentials of a codex_oauth account with access
+// token k.
+func codexCreds(k string) map[string]any {
+	return map[string]any{"access_token": k, "chatgpt_account_id": "acct-e2e"}
+}
+
+// wsCalls splits recorded WebSocket traffic into the handshakes (GET) and
+// the turns (one recorded "WS" request per message).
+func wsCalls(calls []MockRequest) (handshakes, turns []MockRequest) {
+	for _, r := range calls {
+		switch r.Method {
+		case http.MethodGet:
+			handshakes = append(handshakes, r)
+		case "WS":
+			turns = append(turns, r)
+		}
+	}
+	return handshakes, turns
 }
 
 // enableProtocols PATCHes an account's model_protocols: model served under
@@ -157,7 +182,7 @@ func (e *Env) setMaxRequestBodyMB(admin *Session, mb int) int {
 const notServedMessage = "no account in this group serves this model on this endpoint"
 
 // expectNotServed requires that 404, in the endpoint's error format
-// ("openai", "anthropic" or "gemini").
+// ("openai" or "anthropic").
 func expectNotServed(t testing.TB, g *GatewayResult, format string) {
 	t.Helper()
 	j := g.JSON()
@@ -168,6 +193,8 @@ func expectNotServed(t testing.TB, g *GatewayResult, format string) {
 		ok = ok && j.Get("error.type").String() != "" && !j.Get("type").Exists()
 	case "anthropic":
 		ok = ok && j.Get("type").String() == "error"
+	default:
+		t.Fatalf("expectNotServed: unknown error format %q", format)
 	}
 	if !ok {
 		t.Fatalf("want 404 %q in %s format, got HTTP %d %s", notServedMessage, format, g.Status, g.Body)
