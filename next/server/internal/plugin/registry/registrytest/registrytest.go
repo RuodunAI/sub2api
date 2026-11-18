@@ -458,7 +458,7 @@ var (
 )
 
 // Source is the package source shared by every node of a test process, as
-// the primary's store is in a cluster. AddVersion and uploads put into it.
+// if every node held every package. AddVersion and uploads put into it.
 // Its directory outlives every test, so a package that uses it runs its
 // tests through Main, which removes it.
 func Source() *blobs.Source {

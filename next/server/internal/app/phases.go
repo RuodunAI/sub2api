@@ -132,9 +132,10 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		trust.SetVerifySignatures(false)
 		b.log.Warn("plugin signature verification is disabled (SUB2API_PLUGIN_VERIFY_SIGNATURES=false)")
 	}
-	// Package bytes are not in PostgreSQL. Under the shell they are kept by
-	// the primary and fetched over the node network; market packages are
-	// downloaded by each node. Without a shell only one node is supported.
+	// Package bytes are not in PostgreSQL. Under the shell every node keeps
+	// the packages it stored or used and fetches a missing one from any online
+	// node over the node network; market packages are downloaded by each
+	// node. Without a shell only one node is supported.
 	packageStore := blobs.Store(blobs.Dir(filepath.Join(cfg.Plugins.DataDir, "blobs")))
 	if cfg.Managed.UpdaterSocket != "" {
 		packageStore = blobs.NewShell(cfg.Managed.UpdaterSocket, cfg.Managed.UpdaterToken, cfg.Plugins.MaxPackageBytes)

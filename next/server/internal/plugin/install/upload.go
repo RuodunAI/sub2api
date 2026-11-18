@@ -25,7 +25,7 @@ type UploadOptions struct {
 	ExpectVersion string
 	Source        string // "upload" | "market:<source id>"
 	// PackageURL is the market download URL; every node fetches the package
-	// from it. Empty for uploads, which nodes fetch from the primary.
+	// from it. Empty for uploads, which nodes fetch from a node holding them.
 	PackageURL string
 }
 
@@ -44,7 +44,7 @@ func (s *Service) Upload(ctx context.Context, data []byte, actorID int64, opt Up
 		return nil, core.ErrUnavailable.WithMessage("plugin package store is not configured")
 	}
 	if err := s.d.Packages.Store.Put(ctx, p.SHA256, p.Raw); err != nil {
-		return nil, core.ErrUnavailable.WithMessage("store the plugin package on the primary node").WithCause(err)
+		return nil, core.ErrUnavailable.WithMessage("store the plugin package on this node").WithCause(err)
 	}
 	ctx, release, guardErr := core.BeginPluginMutation(ctx, s.d.Mutations)
 	if guardErr != nil {
