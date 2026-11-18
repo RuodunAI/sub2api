@@ -115,6 +115,27 @@ func TestMonitorStaysWithinExternalServices(t *testing.T) {
 	}
 }
 
+// A relay account's task host is its own base_url (or video_endpoint), which
+// no manifest can list. The core allows the hosts of the account's declared
+// upstreamFields besides externalServices.
+func TestMonitorReachesARelayOutsideExternalServices(t *testing.T) {
+	// TODO(forwarding-v2 W3/W5): pluginsdktest.FakeHost only knows
+	// ExternalServices; enable once it also admits the hosts of the account's
+	// upstreamFields (base_url, video_endpoint), as the core runtime will.
+	t.Skip("needs the fake host to admit the account's upstreamFields hosts (SDK pluginsdktest, W3/W5)")
+	h := startExecution(t, func(fh *pluginsdktest.FakeHost) {
+		fh.ExternalServices = []string{"ark.cn-beijing.volces.com", "ark.ap-southeast.bytepluses.com", "ark.cn-beijing.volcengineapi.com"}
+		fh.ExecuteHTTPFunc = func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"running"}`)}, nil
+		}
+	})
+	ex := monitor(t, h, &pluginv1.PollRequest{Entry: &pluginv1.ReconcileEntry{RefId: "cgt-1"}, Account: relayAccount("/v1", "/doubao/api/v3")})
+	if ex.Err != nil || ex.MonitorResponse.GetResult().GetState() != pluginv1.ReconcileResult_PENDING ||
+		len(ex.Fetches()) != 1 || ex.Fetches()[0].GetUrl() != "https://relay.test/doubao/api/v3/contents/generations/tasks/cgt-1" {
+		t.Fatalf("relay Monitor: %v %v", ex.MonitorResponse, ex.Err)
+	}
+}
+
 func TestMonitorRequiresExecutionContextAndUsableEntry(t *testing.T) {
 	h := startMonitor(t, func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 		return &pluginv1.ExecutionHTTPResponse{Status: 200}, nil

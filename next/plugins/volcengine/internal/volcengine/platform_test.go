@@ -136,11 +136,10 @@ func TestBuildUpstream(t *testing.T) {
 	if r.GetMethod() != "POST" || r.GetUrl() != DefaultBaseURL+"/api/v3/chat/completions" {
 		t.Fatalf("request = %s %s", r.GetMethod(), r.GetUrl())
 	}
-	if want := map[string]string{"authorization": "Bearer 11111111-2222-3333-4444-555555555555"}; !maps.Equal(r.GetHeaders(), want) {
-		t.Fatalf("authoritative headers = %v, want %v", r.GetHeaders(), want)
-	}
-	if want := map[string]string{"content-type": "application/json", "user-agent": "OpenAI/Python 1.0"}; !maps.Equal(r.GetDefaultHeaders(), want) {
-		t.Fatalf("default headers = %v, want %v", r.GetDefaultHeaders(), want)
+	// Every header is authoritative, as it was before forwarding v2.
+	if want := map[string]string{"authorization": "Bearer 11111111-2222-3333-4444-555555555555",
+		"content-type": "application/json", "user-agent": "OpenAI/Python 1.0"}; !maps.Equal(r.GetHeaders(), want) || len(r.GetDefaultHeaders()) != 0 {
+		t.Fatalf("headers = %v / default %v, want all of %v authoritative", r.GetHeaders(), r.GetDefaultHeaders(), want)
 	}
 	if want := `{"model":"doubao-seed-1-6-250615","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":true}}`; string(r.GetBody()) != want ||
 		r.GetUpstreamModel() != "doubao-seed-1-6-250615" {
@@ -260,10 +259,10 @@ func TestBuildUpstreamImages(t *testing.T) {
 	}
 	if r.GetMethod() != "POST" || r.GetUrl() != DefaultBaseURL+"/api/v3/images/generations" ||
 		r.GetHeaders()["authorization"] != "Bearer 11111111-2222-3333-4444-555555555555" ||
-		r.GetDefaultHeaders()["content-type"] != "application/json" || r.GetDefaultHeaders()["user-agent"] != "Ark/Python 1.0" {
-		t.Fatalf("images = %s %s %v %v", r.GetMethod(), r.GetUrl(), r.GetHeaders(), r.GetDefaultHeaders())
+		r.GetHeaders()["content-type"] != "application/json" || r.GetHeaders()["user-agent"] != "Ark/Python 1.0" {
+		t.Fatalf("images = %s %s %v", r.GetMethod(), r.GetUrl(), r.GetHeaders())
 	}
-	if _, ok := r.GetDefaultHeaders()["cookie"]; ok {
+	if _, ok := r.GetHeaders()["cookie"]; ok {
 		t.Fatal("cookie must not be forwarded")
 	}
 	if r.GetUpstreamModel() != "doubao-seedream-4-0-250828" {

@@ -417,9 +417,7 @@ func upstreamTarget(base string, px prefixes, meta *pluginv1.RequestMeta, model 
 	return http.MethodPost, target, err
 }
 
-// credentialHeader is the header carrying the account key, the one
-// authoritative header of every request (nothing is signed on the request
-// path). Bearer remains the compatible relay/default authentication form; the
+// credentialHeader is the header carrying the account key. Bearer remains the compatible relay/default authentication form; the
 // official native Messages surface takes x-api-key.
 func credentialHeader(accountType, protocol, apiKey string) (name, value string) {
 	if protocol == ProtocolMessages && accountType != AccountTypeRelay {
@@ -428,16 +426,16 @@ func credentialHeader(accountType, protocol, apiKey string) (name, value string)
 	return "authorization", "Bearer " + apiKey
 }
 
-// defaultHeaders are the request headers the operator's passthrough and
-// override may still replace: the content type and the client headers this
-// protocol forwards.
+// upstreamHeaders are all headers of one request: the account key, the
+// content type and the client headers this protocol forwards.
 //
 // Anthropic requires a version header and rejects a request without one, so an
 // Anthropic-protocol request that the client sent none for gets the default.
 // The client's own value wins when it sent one: it knows which beta shape its
 // body is in, and we must not silently downgrade it.
-func defaultHeaders(protocol string, inbound map[string]string) map[string]string {
-	h := map[string]string{"content-type": "application/json"}
+func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]string) map[string]string {
+	name, value := credentialHeader(accountType, protocol, apiKey)
+	h := map[string]string{name: value, "content-type": "application/json"}
 	names := forwardHeaders
 	if protocol == ProtocolMessages || protocol == ProtocolCountTokens {
 		names = anthropicForwardHeaders
@@ -470,8 +468,9 @@ func upstreamBody(meta *pluginv1.RequestMeta, method string, body []byte) ([]byt
 
 // BuildUpstream implements pluginsdk.UpstreamBuilder: {base_url}{prefix}/...
 // following meta.protocol and, for chat completions, the model (bots have
-// their own path), with the account key as the authoritative header and
-// everything else as default headers.
+// their own path). Every header is authoritative: before forwarding v2 this
+// plugin's headers were written above the operator's passthrough and
+// override, and that behaviour is kept.
 func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	acc, meta := in.GetAccount(), in.GetMeta()
 	cfg, px, err := accountConfig(acc)
@@ -487,12 +486,9 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	up := pluginsdk.NewUpstream(method, target).
-		Header(credentialHeader(acc.GetType(), meta.GetProtocol(), cfg.APIKey)).
-		Body(body).
-		Model(model)
-	for name, value := range defaultHeaders(meta.GetProtocol(), in.GetInboundHeaders()) {
-		up.DefaultHeader(name, value)
+	up := pluginsdk.NewUpstream(method, target).Body(body).Model(model)
+	for name, value := range upstreamHeaders(acc.GetType(), meta.GetProtocol(), cfg.APIKey, in.GetInboundHeaders()) {
+		up.Header(name, value)
 	}
 	return up.Build()
 }
@@ -517,13 +513,10 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 		return nil, err
 	}
 	body := openaiprovider.ChatPingBody(model, testMaxTokens)
-	headers := defaultHeaders(ProtocolChat, nil)
-	name, value := credentialHeader(in.GetAccount().GetType(), ProtocolChat, cfg.APIKey)
-	headers[name] = value
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        "POST",
 		Url:           u,
-		Headers:       headers,
+		Headers:       upstreamHeaders(in.GetAccount().GetType(), ProtocolChat, cfg.APIKey, nil),
 		BodyJson:      body,
 		Model:         model,
 		UsageProtocol: ProtocolChat,

@@ -142,10 +142,10 @@ func TestOfficialNativeAnthropicMessages(t *testing.T) {
 		if r.Headers["x-api-key"] != "11111111-2222-3333-4444-555555555555" {
 			t.Fatal("wrong upstream API key")
 		}
-		if r.Headers["x-api-key"] == "caller-key" || r.Headers["authorization"] != "" || r.DefaultHeaders["authorization"] != "" || len(r.Headers) != 1 {
+		if r.Headers["x-api-key"] == "caller-key" || r.Headers["authorization"] != "" || len(r.DefaultHeaders) != 0 {
 			t.Fatal("caller credential leaked or wrong auth scheme")
 		}
-		if r.DefaultHeaders["anthropic-version"] != "2023-06-01" || r.DefaultHeaders["anthropic-beta"] != "test-beta" || !bytes.Equal(r.Body, body) {
+		if r.Headers["anthropic-version"] != "2023-06-01" || r.Headers["anthropic-beta"] != "test-beta" || !bytes.Equal(r.Body, body) {
 			t.Fatalf("Anthropic wire was altered: %+v", r)
 		}
 	}
@@ -355,11 +355,11 @@ func TestUnknownAccountTypeIsRefused(t *testing.T) {
 // one is supplied - but never in place of the client's own, which tells the
 // upstream which shape the body is in.
 func TestAnthropicHeaders(t *testing.T) {
-	h := defaultHeaders(ProtocolMessages, nil)
+	h := upstreamHeaders(AccountTypeRelay, ProtocolMessages, "k", nil)
 	if h["anthropic-version"] != DefaultAnthropicVersion {
 		t.Errorf("version = %q, want the default %q", h["anthropic-version"], DefaultAnthropicVersion)
 	}
-	h = defaultHeaders(ProtocolMessages, map[string]string{
+	h = upstreamHeaders(AccountTypeRelay, ProtocolMessages, "k", map[string]string{
 		"anthropic-version": "2026-01-01", "anthropic-beta": "x-1", "user-agent": "ua", "x-stainless-lang": "go"})
 	if h["anthropic-version"] != "2026-01-01" {
 		t.Errorf("the client's version must win: %q", h["anthropic-version"])
@@ -371,7 +371,7 @@ func TestAnthropicHeaders(t *testing.T) {
 		t.Error("only the declared headers are forwarded")
 	}
 	// The OpenAI surface is unchanged: no version header appears there.
-	if _, ok := defaultHeaders(ProtocolChat, nil)["anthropic-version"]; ok {
+	if _, ok := upstreamHeaders(AccountTypeRelay, ProtocolChat, "k", nil)["anthropic-version"]; ok {
 		t.Error("the openai surface must not grow an anthropic header")
 	}
 }

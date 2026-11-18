@@ -74,6 +74,22 @@ type executeCase struct {
 	task bool
 }
 
+// keptAboveOperator is the reason of every authoritative header that is
+// neither the credential nor signed.
+const keptAboveOperator = "written above operator settings before forwarding v2; behaviour kept"
+
+// authoritativeHeaders is the plugin's authoritative header set, name ->
+// reason, for the conformance suite: every request header this plugin
+// writes is authoritative, none is a default.
+var authoritativeHeaders = map[string]string{
+	"authorization":     "credential (Bearer key)",
+	"x-api-key":         "credential (official Anthropic Messages surface)",
+	"content-type":      keptAboveOperator,
+	"user-agent":        keptAboveOperator + " (forwarded client header)",
+	"anthropic-version": keptAboveOperator + " (forwarded, or the default when the client sent none)",
+	"anthropic-beta":    keptAboveOperator + " (forwarded client header)",
+}
+
 // executeCases lists every endpoint class the plugin serves, on both account
 // types where they differ. The conformance suite
 // (sdk/pluginsdk/pluginsdktest/conformance) takes the same inputs.
@@ -85,7 +101,7 @@ func executeCases() []executeCase {
 			Meta:           &pluginv1.RequestMeta{Protocol: protocol, Model: model, Stream: stream, RequestId: "req-1"},
 			Account:        acc,
 			Body:           []byte(body),
-			InboundHeaders: map[string]string{"user-agent": "client/1.0"},
+			InboundHeaders: map[string]string{"user-agent": "client/1.0", "anthropic-beta": "beta-1", "cookie": "no"},
 		}
 	}
 	query := in(official, ProtocolVideoQuery, videoModel, false, "")
@@ -135,8 +151,9 @@ func execute(t *testing.T, h *pluginsdktest.Harness, in *pluginv1.ExecuteRequest
 // TestExecuteEndpointClasses: every class relays exactly once, in the form its
 // flags call for, and answers the report that form owes: host_usage after a
 // relay that did not wait, the task (with its estimate) after the submission.
-// The credential is the one authoritative header; the body is the one handed
-// in, but for the chat stream's include_usage and the bodiless GET.
+// Every header is authoritative and listed in authoritativeHeaders; the body
+// is the one handed in, but for the chat stream's include_usage and the
+// bodiless GET.
 func TestExecuteEndpointClasses(t *testing.T) {
 	for _, tc := range executeCases() {
 		t.Run(tc.name, func(t *testing.T) {
@@ -147,11 +164,17 @@ func TestExecuteEndpointClasses(t *testing.T) {
 			if relay.Wait != tc.wait || r.GetMethod() != tc.method || r.GetUrl() != tc.url {
 				t.Fatalf("relay = wait %v %s %s", relay.Wait, r.GetMethod(), r.GetUrl())
 			}
-			if len(r.GetHeaders()) != 1 || r.GetHeaders()[tc.authName] != tc.authValue {
-				t.Fatalf("authoritative headers = %v, want only %s", r.GetHeaders(), tc.authName)
+			hd := r.GetHeaders()
+			if hd[tc.authName] != tc.authValue || hd["user-agent"] != "client/1.0" || hd["content-type"] != "application/json" || len(r.GetDefaultHeaders()) != 0 {
+				t.Fatalf("headers = %v / default %v", hd, r.GetDefaultHeaders())
 			}
-			if r.GetDefaultHeaders()["user-agent"] != "client/1.0" || r.GetDefaultHeaders()["content-type"] != "application/json" {
-				t.Fatalf("default headers = %v", r.GetDefaultHeaders())
+			for name := range hd {
+				if authoritativeHeaders[name] == "" {
+					t.Fatalf("authoritative header %q has no stated reason", name)
+				}
+			}
+			if anthropic := tc.in.GetMeta().GetProtocol() == ProtocolMessages; (hd["anthropic-beta"] == "beta-1") != anthropic || (hd["anthropic-version"] != "") != anthropic {
+				t.Fatalf("anthropic headers on %s: %v", tc.name, hd)
 			}
 			if r.GetUpstreamModel() != pluginsdk.RequestModel(tc.in) {
 				t.Fatalf("upstream model = %q", r.GetUpstreamModel())

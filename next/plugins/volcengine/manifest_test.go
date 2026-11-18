@@ -316,7 +316,7 @@ func TestManifest(t *testing.T) {
 		}
 	}
 	// anthropic's passHeaders must be narrowed the same way openai's is, and
-	// must match what defaultHeaders forwards: passHeaders REPLACES the
+	// must match what upstreamHeaders forwards: passHeaders REPLACES the
 	// platform's list rather than merging, so a header named on one side and
 	// not the other is dropped at whichever side forgot it. anthropic-version
 	// and anthropic-beta are in both because they change how the upstream
@@ -1028,6 +1028,24 @@ func TestV1AliasEndpoints(t *testing.T) {
 		}
 		if a, b := norm(primary), norm(alias); a != b {
 			t.Errorf("v1_%s differs from %s beyond id, path and task kind:\n primary %s\n alias   %s", id, id, a, b)
+		}
+	}
+}
+
+// TestUpstreamFieldsNameTheTaskHosts: Monitor's fetch may reach the hosts of
+// the account's declared upstreamFields besides externalServices, so every
+// field taskQuery takes an address from must be declared: base_url on both
+// types, video_endpoint (an absolute URL is allowed) on the relay type.
+func TestUpstreamFieldsNameTheTaskHosts(t *testing.T) {
+	want := map[string][]string{
+		volcengine.AccountTypeAPIKey: {"base_url"},
+		volcengine.AccountTypeRelay:  {"base_url", volcengine.FieldVideoEndpoint},
+	}
+	for _, at := range decodeManifest(t).AccountTypes {
+		for _, field := range want[at.ID] {
+			if !slices.Contains(at.UpstreamFields, field) {
+				t.Errorf("%s upstreamFields = %v, missing %s", at.ID, at.UpstreamFields, field)
+			}
 		}
 	}
 }
