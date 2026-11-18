@@ -907,54 +907,66 @@ func TestMigration0104DropsCustomPlugin(t *testing.T) {
 	require.Equal(t, "guard", read(`SELECT string_agg(key, ' ') FROM plugins`))
 }
 
-// 0107 removes the stored values of the environment variable
-// max_request_body_mb, which became the gateway setting of the same name
-// (CONTRACTS §110): from the global layer, the groups and the accounts,
-// keeping every other key and row, and without touching the gateway
-// settings. A rerun changes nothing.
-func TestMigration0107DropsMaxRequestBodyEnv(t *testing.T) {
-	const id = "0107_drop_max_request_body_env.sql"
-	db := testutil.DBThrough(t, migrationBefore(t, id))
-	ctx := t.Context()
-	exec := func(sql string) {
-		t.Helper()
-		_, err := db.SQL.ExecContext(ctx, sql)
-		require.NoError(t, err)
-	}
-	read := func(sql string) (v string) {
-		t.Helper()
-		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
-		return v
-	}
-	migrate := func() []string {
-		t.Helper()
-		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
-		require.NoError(t, err)
-		return done
-	}
-	state := func() string {
-		t.Helper()
-		return read(`SELECT concat_ws(' | ',
-			(SELECT string_agg(key || '=' || value::text, ' ' ORDER BY key) FROM settings),
-			(SELECT string_agg(name || '=' || environment::text, ' ' ORDER BY name) FROM groups),
-			(SELECT string_agg(name || '=' || environment::text, ' ' ORDER BY name) FROM accounts))`)
-	}
-	exec(`DELETE FROM settings;
-		INSERT INTO settings (key, value) VALUES
-			('environment', '{"max_request_body_mb": 256, "relay_timeout_seconds": 600}'),
-			('gateway', '{"max_attempts": 4, "max_request_body_mb": 64}');
-		INSERT INTO groups (name, environment) VALUES
+// 0106 turns the environment variable max_request_body_mb into the gateway
+// setting of the same name (CONTRACTS §110): a valid value of the global
+// layer moves into the gateway row, keeping its other fields (or creating
+// the row), and the key leaves the global layer, the groups and the
+// accounts, every other key staying. A value the variable would not have
+// accepted is dropped, not moved. A rerun changes nothing.
+func TestMigration0106RequestBodyLimitSetting(t *testing.T) {
+	const id = "0106_request_body_limit_setting.sql"
+	const layers = `INSERT INTO groups (name, environment) VALUES
 			('both', '{"max_request_body_mb": 32, "relay_timeout_seconds": 90}'), ('only', '{"max_request_body_mb": 8}'), ('none', '{"task_timeout_minutes": 5}');
 		INSERT INTO accounts (name, plugin_key, type, credentials_enc, environment) VALUES
-			('stale', 'p', 't', '', '{"max_request_body_mb": 10, "relay_timeout_seconds": 60}'), ('plain', 'p', 't', '', '{}')`)
-
-	const want = `environment={"relay_timeout_seconds": 600} gateway={"max_attempts": 4, "max_request_body_mb": 64}` +
-		` | both={"relay_timeout_seconds": 90} none={"task_timeout_minutes": 5} only={}` +
+			('stale', 'p', 't', '', '{"max_request_body_mb": 10, "relay_timeout_seconds": 60}'), ('plain', 'p', 't', '', '{}')`
+	const layersAfter = ` | both={"relay_timeout_seconds": 90} none={"task_timeout_minutes": 5} only={}` +
 		` | plain={} stale={"relay_timeout_seconds": 60}`
-	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
-	require.Equal(t, want, state())
+	for _, tc := range []struct {
+		name, settings, want string
+	}{
+		{"moved into the gateway row", `('environment', '{"max_request_body_mb": 256, "relay_timeout_seconds": 600}'), ('gateway', '{"max_attempts": 4}')`,
+			`environment={"relay_timeout_seconds": 600} gateway={"max_attempts": 4, "max_request_body_mb": 256}`},
+		{"gateway row created", `('environment', '{"max_request_body_mb": 1024}')`,
+			`environment={} gateway={"max_request_body_mb": 1024}`},
+		{"out of range dropped", `('environment', '{"max_request_body_mb": 4096}'), ('gateway', '{"max_attempts": 4}')`,
+			`environment={} gateway={"max_attempts": 4}`},
+		{"fraction dropped", `('environment', '{"max_request_body_mb": 64.5}')`, `environment={}`},
+		{"not a number dropped", `('environment', '{"max_request_body_mb": "64", "relay_timeout_seconds": 600}')`,
+			`environment={"relay_timeout_seconds": 600}`},
+		{"nothing set", `('environment', '{"relay_timeout_seconds": 600}'), ('gateway', '{"max_attempts": 4}')`,
+			`environment={"relay_timeout_seconds": 600} gateway={"max_attempts": 4}`},
+		{"no global layer", `('gateway', '{"max_attempts": 4}')`, `gateway={"max_attempts": 4}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := testutil.DBThrough(t, migrationBefore(t, id))
+			ctx := t.Context()
+			exec := func(sql string) {
+				t.Helper()
+				_, err := db.SQL.ExecContext(ctx, sql)
+				require.NoError(t, err)
+			}
+			migrate := func() []string {
+				t.Helper()
+				done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+				require.NoError(t, err)
+				return done
+			}
+			state := func() (v string) {
+				t.Helper()
+				require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT concat_ws(' | ',
+					(SELECT string_agg(key || '=' || value::text, ' ' ORDER BY key) FROM settings WHERE key IN ('environment', 'gateway')),
+					(SELECT string_agg(name || '=' || environment::text, ' ' ORDER BY name) FROM groups),
+					(SELECT string_agg(name || '=' || environment::text, ' ' ORDER BY name) FROM accounts))`).Scan(&v))
+				return v
+			}
+			exec(`DELETE FROM settings WHERE key IN ('environment', 'gateway'); INSERT INTO settings (key, value) VALUES ` + tc.settings + `; ` + layers)
 
-	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
-	require.Equal(t, []string{id}, migrate())
-	require.Equal(t, want, state())
+			require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+			require.Equal(t, tc.want+layersAfter, state())
+
+			exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+			require.Equal(t, []string{id}, migrate())
+			require.Equal(t, tc.want+layersAfter, state())
+		})
+	}
 }

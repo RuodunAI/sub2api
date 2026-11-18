@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { SInput, SSettingRow, SSettingsGroup, SSpinner, SSwitch } from '@sub2api/ui'
-import { CLAUDE_MAX_TOKENS, GATEWAY_SETTINGS_RANGES, type GatewayNumberSetting, type GatewaySettings } from '@/api/types'
+import { CLAUDE_MAX_TOKENS, GATEWAY_SETTINGS_RANGES, type GatewayNumberSetting, type GatewaySettings, type GatewaySettingsView } from '@/api/types'
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
 import { useSettingsForm } from '@/composables/useSettingsForm'
 import { useAuthStore } from '@/stores/auth'
@@ -44,18 +44,26 @@ const fields: Array<{ key: Key; unit?: string }> = [
   { key: 'media_download_max_mb', unit: 'MB' }
 ]
 
-const { form, loading, saving, dirty, errors, isLoaded, load, save, reset } = useSettingsForm<Form, GatewaySettings>({
+// Read-only, from the server: above it one request may exceed a plugin's memory (0: the node has no cap).
+const BODY = 'max_request_body_mb'
+const bodySafeMb = ref(0)
+
+const { form, loading, saving, dirty, errors, isLoaded, load, save, reset } = useSettingsForm<Form, GatewaySettingsView>({
   path: '/settings/gateway',
   defaults: {
     ...DEFAULTS,
     [MAX_TOKENS]: maxTokensRows({ [CLAUDE_MAX_TOKENS.fallbackKey]: CLAUDE_MAX_TOKENS.fallback }),
     [MAX_TOKENS_ON]: false
   },
-  fromServer: (r) => ({
-    ...(Object.fromEntries(fields.map((f) => [f.key, Number(r[f.key] ?? DEFAULTS[f.key])])) as Record<Key, number>),
-    [MAX_TOKENS]: maxTokensRows(r[MAX_TOKENS]?.models),
-    [MAX_TOKENS_ON]: !!r[MAX_TOKENS]?.enabled
-  }),
+  fromServer: (r) => {
+    // A PUT body echoed back carries none: keep the last one read.
+    bodySafeMb.value = r.max_request_body_safe_mb ?? bodySafeMb.value
+    return {
+      ...(Object.fromEntries(fields.map((f) => [f.key, Number(r[f.key] ?? DEFAULTS[f.key])])) as Record<Key, number>),
+      [MAX_TOKENS]: maxTokensRows(r[MAX_TOKENS]?.models),
+      [MAX_TOKENS_ON]: !!r[MAX_TOKENS]?.enabled
+    }
+  },
   // Client-side check for whole numbers only; ranges are enforced by the server (field errors).
   toBody: (f, errs) => {
     const body = {} as GatewaySettings
@@ -74,7 +82,9 @@ const { form, loading, saving, dirty, errors, isLoaded, load, save, reset } = us
 
 function description(k: Key): string {
   const [min, max] = GATEWAY_SETTINGS_RANGES[k]
-  return `${t(`settings.gateway.hints.${k}`)} ${t('settings.gateway.range', { min, max })}`
+  const text = `${t(`settings.gateway.hints.${k}`)} ${t('settings.gateway.range', { min, max })}`
+  const over = k === BODY && bodySafeMb.value > 0 && (form[BODY] ?? 0) > bodySafeMb.value
+  return over ? `${text} ${t('settings.gateway.bodyOverPluginMemory', { safe: bodySafeMb.value })}` : text
 }
 
 onMounted(load)

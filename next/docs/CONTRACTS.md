@@ -4172,7 +4172,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 1. **取结尾的消息不改核心**：gjson 自带的多路径写法 `messages|@reverse|[0,1,…,15]` 就能取到倒数 16 条（倒序；数组不足 16 条时缺的位置自动跳过，2026-10-30 用 gjson v1.19.0 实测）。插件把结果倒回正序，再算出结尾连续的 user 消息，不必把整段历史传过去。下文用 `TAIL16` 代指 `|@reverse|[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]`。**0.6.0 起作废**：插件要审整个请求，`needs` 改为各顶层字段整体（`messages|@this` 等，72.3），核心把整段历史传给插件。
 2. **宿主调用 `SecretSeal` / `SecretOpen`**（HostService，宿主权限 `secrets`，风险 low，即无需管理员额外同意，插件升级时自动授予）：用核心的主密钥做 AES-256-GCM（`secret.Cipher`），AAD = `plugin-secret:{插件 key}:{context}`，context 由插件指定（≤128 字节，例如 `channel:3`），明文 ≤64 KiB。插件 A 封存的数据插件 B 解不开，同一插件换了 context 也解不开；解不开时一律返回 `InvalidArgument "ciphertext does not open"`，不区分原因。SDK：`Host.SealSecret` / `Host.OpenSecret`；`pluginsdktest.FakeHost` 用公开的测试密钥实现同样的绑定。审核渠道的 API Key 和代理地址密文存在插件表里（new-api 存明文；我们的账号凭证都加密，这里不降级）。旧核心没有这两个调用，返回 Unimplemented。
-3. **钩子请求的消息大小**：插件侧 gRPC 默认只收 4 MiB，带图片的请求会超过。SDK 加选项 `pluginsdk.WithMaxRecvMsgSize(n)`（编译进插件），moderation 设 64 MiB（`main.go` 的 `maxRecvMsgSize`），覆盖正常的请求（上游自己也限制请求大小，原先固定的请求体上限是 32 MiB）。核心作为客户端的发送上限是 gRPC 默认值（不限），钩子字段只是请求体的片段。§74.3 的 `max_request_body_mb` 允许管理员把请求体调大，个别请求可能超过插件的接收上限：这样的调用以 `RESOURCE_EXHAUSTED` 失败，核心按该钩子的 failure 处理这一次，**但熔断不理会它**（2026-10-31，`hooks.go` `requestTooLarge`）：只有同时满足三条才算超大请求——状态码 `RESOURCE_EXHAUSTED`、消息以 grpc-go 接收端自己的 `grpc: received message larger than max` 开头、请求本身（`proto.Size(request)`）超过 4 MiB（gRPC 默认接收上限）；超大请求既不计为失败，也不重置连续失败计数。插件自己因过载返回 `RESOURCE_EXHAUSTED`（消息是插件自己的）时，即使请求很大也计为失败（2026-10-31 修订，原先只看状态码和大小，会把过载误判成超大请求）。插件是健康的，不能因为个别超大请求让整个集群暂停审核。（原先这里写"插件的响应超大仍计为失败"：核心的接收上限是 MaxInt32，这个分支实际碰不到，已删去。）
+3. **钩子请求的消息大小**：插件侧 gRPC 默认只收 4 MiB，带图片的请求会超过。SDK 加选项 `pluginsdk.WithMaxRecvMsgSize(n)`（编译进插件），moderation 设 64 MiB（`main.go` 的 `maxRecvMsgSize`），覆盖正常的请求（上游自己也限制请求大小，原先固定的请求体上限是 32 MiB）。核心作为客户端的发送上限是 gRPC 默认值（不限），钩子字段只是请求体的片段。请求体上限（网关设置 `max_request_body_mb`，§110）调大后，个别请求可能超过插件的接收上限：这样的调用以 `RESOURCE_EXHAUSTED` 失败，核心按该钩子的 failure 处理这一次，并和其他失败一样计入熔断。2026-10-31 到 2026-11-18 之间核心把这种失败排除在熔断之外（`hooks.go` 的 `requestTooLarge`），该特例已删除（§110.2）：转发 V2 里 SDK 把所有插件的接收上限固定为传输层最大值、删除 `WithMaxRecvMsgSize`，这种失败不再发生。
    - **内存与 failure=open 的后果（0.6.0，2026-10-31 团队审核 P1-7）**：插件内存上限 1024 MB（0.8.0 起，此前 512 MB；下面的预算是按 512 MB 定的，没有改），一个钩子请求在插件里会被解码、规范化、分块，峰值占用是请求字段的数倍；几个大请求同时到达就可能让插件被内存上限杀掉。0.6.0 的做法：钩子入口按请求字段的字节数做并发准入（`max_inflight_mb`，默认 128 MiB；一个请求单独到达时不论多大都接收），超出时立即回答——本应先审的请求返回 503 `moderation_busy`，其余放行（note `moderation: busy`），0.8.0 的规则见 72.5 第 4 步的"准入"；被封禁用户在准入之前就拒绝。图片最多审 `input_max_images` 张（默认 8），单张 base64 超过约 22 MiB（解码后约 16 MiB）的不审；OpenAI 审核器只为选中的那一张图拼 data URL；排队的 post 任务只保留分块后的文字和图片，不持有整个钩子请求。
    - **failure=open 的后果，如实写明**：两个钩子都是 `failure: open`。插件进程不可用、超时、连续失败 10 次触发熔断（30 秒）时，核心不经插件直接放行，**本应先审的用户（72.5 第 6 步）和被封禁用户在这段时间里也会被放行**。核心在插件不可用时无法询问插件，封禁名单也只在插件里，所以插件侧做不到"不可用时拒绝被封禁用户"。改成 `failure: closed` 会在插件故障时拒绝所有用户的请求，代价过大，不改。需要硬性封禁时，应在核心停用该用户或其 API Key（核心鉴权阶段就拒绝，不依赖插件）。
 4. `moderation` 的 `hostCompat` 改为 `>=` 本次核心版本（因为要用 `secrets`）；**发布顺序是先核心、后插件**。
@@ -7962,14 +7962,15 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；密钥文件由插件用 `encoding/json` 解析一次，检查和使用读同一份值；服务账号的断言用 `github.com/golang-jwt/jwt/v5` 以 RS256 签名（没有用 Google 的库：它没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated；见设计文档 16.10）。`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）：按解析后生效的值判断（键名不分大小写、重复的键取最后一个），这个值只检查，请求和断言的 `aud` 用常量。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstreamRequest` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
 - **bedrock**：插件不联网。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型的构造结果带 `signing{scheme: aws-sigv4, service: bedrock}`。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`，请求体补丁只动顶层字段：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta`（清单声明的请求字段）里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstreamRequest` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用），补丁用 `pluginsdk.SetPatch` / `DeletePatch` 构造。
 
-## 110. 请求体上限是网关设置，“平台调用超时”的新含义（2026-11-18，用户要求“系统设置-网关设置里面配置就行了，其他地方不要限制”；迁移 0107；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md) 第 8 节）
+## 110. 请求体上限是网关设置，“平台调用超时”的新含义（2026-11-18，用户要求“系统设置-网关设置里面配置就行了，其他地方不要限制”；迁移 0106；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md) 第 8 节）
 
-项目在开发期，不做兼容：旧的做法在同一次改动里删除，已存的旧值不迁移。
+项目在开发期，不做兼容：旧的做法在同一次改动里删除。全局层存着的旧值由迁移搬到新设置里，分组层的值丢弃（§110.3）。
 
 ### 110.1 设置
 
 - **字段**：`settings` 表 `gateway` 行的 `max_request_body_mb`（`gateway.GatewaySettings.MaxRequestBodyMB`），单位 MB，整数，默认 128，范围 1–1024。接口仍是 `GET/PUT /settings/gateway`（§14.4）：`PUT` 里不带这个字段就保持原值，超出范围回 400、字段错误 `max_request_body_mb` / `out_of_range`。已存的行里没有这个字段时读作 128，超出范围的值读取时收进范围。
 - **生效**：保存的节点立即丢弃设置缓存并广播 `config:changed`（`settings.gateway`），其他节点收到后重读；没收到广播的节点最迟 10 秒后（设置缓存的有效期）读到新值。只影响之后到达的请求和之后建立的 WebSocket 连接。
+- **回答里的只读字段** `max_request_body_safe_mb`：`GET` 和 `PUT /settings/gateway` 的回答多带这一项，是“插件进程内存下限（64 MB + 3 × 请求体上限）仍不超过本节点插件内存封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB`”的最大请求体上限，即 `(封顶 − 64) / 3`（默认封顶 1024 时是 320）；节点没有封顶时为 0。它不是设置，`PUT` 里带它会被忽略，也不存库。超过它的值照常保存，控制台在该行下提示需要同时调高封顶。
 - **控制台**：系统设置 → 网关设置里的“请求体上限”一行（`GatewaySettingsCard.vue`）。“环境变量”页和分组编辑器里不再有它。
 - **插件**：`GetSettings("gateway")` 的 `protocol.GatewaySettings` 多了 `MaxRequestBodyMB`（§107.2），变更通知沿用 `gateway` 分组。
 
@@ -7979,12 +7980,20 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - **删除**：
   - 环境变量 `max_request_body_mb`（§74.3）连同它的全局层、分组层和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB`；`sdk/protocol` 的常量 `EnvVarMaxRequestBodyMB`、`core.Environment.Bytes` 和变量单位 `mb` 一并删除。带这个键的 `PUT /settings/environment`、分组或账号的 `environment` 现在按未知变量拒绝（400）。启动时仍设置了 `SUB2API_MAX_REQUEST_BODY_MB` 的进程不报错，这个变量不再被读取。
   - 端点清单的 `request.maxBodyBytes`：核心不再读它（字段本身由 `sdk/manifest` 的改动删除，没有清单用过它）。
+  - `gateway/hooks.go` 的 `grpcDefaultMaxRecv`、`grpcRecvTooLarge`、`requestTooLarge`：钩子调用因“请求超过插件 gRPC 接收上限”失败时不计入熔断的特例。现在这种失败和其他失败一样计入熔断。插件的接收上限本身（默认 4 MiB，`WithMaxRecvMsgSize`）由 SDK 的改动固定为传输层最大值；在那之前，`failure: closed` 的钩子插件的接收上限仍会按大小拒绝请求。
 - **核心内部的上限由它推出**：`GatewaySettings.MaxRequestBodyBytes()` 给出字节数（未设置时按默认值），网关之外的组件用 `(*gateway.Gateway).MaxRequestBodyBytes(ctx)` 读本节点当前生效的值（走设置缓存，随 `config:changed` 更新）。核心与插件之间的消息上限、插件进程的内存下限（“64 MB + 3 × 请求体上限”）按设计第 8.2、8.3 节由运行时用这个值推出，不另设配置项。
-- **不属于请求大小上限、保持原样的常量**：到 Gemini 的媒体下载上限 `media_download_max_mb`（核心主动下载的文件，§88）；预扣时本地分词统计的提示文本 32 MiB（`tokenizer.MaxTextBytes`，只截断统计，不拒绝请求，§25.8）和传给插件估算的 1 MiB；钩子插件的 gRPC 接收上限（插件自己用 `WithMaxRecvMsgSize` 定，超出时这次钩子调用不计入熔断）；上游一侧的读取上限（WebSocket 上游消息 64 MiB、SSE 单行 16 MiB、非流式回答的缓冲）；插件路由 `/api/v1/p/:key/*` 的 1 MiB 和控制台接口各自的上限（不是网关请求）。
+- **不属于请求大小上限、保持原样的常量**：到 Gemini 的媒体下载上限 `media_download_max_mb`（核心主动下载的文件，§88）；预扣时本地分词统计的提示文本 32 MiB（`tokenizer.MaxTextBytes`，只截断统计，不拒绝请求，§25.8）和传给插件估算的 1 MiB；上游一侧的读取上限（WebSocket 上游消息 64 MiB、SSE 单行 16 MiB、非流式回答的缓冲）；插件路由 `/api/v1/p/:key/*` 的 1 MiB 和控制台接口各自的上限（不是网关请求）。
 
-### 110.3 迁移 0107
+### 110.3 迁移 0106
 
-`0107_drop_max_request_body_env.sql`：从 `settings` 的 `environment` 行、`groups.environment`、`accounts.environment` 里删掉键 `max_request_body_mb`，其他键不动；`gateway` 行不动。只改数据，不改表结构，可重复执行。旧值不带到新设置里：升级后上限回到默认 128 MB，调过的实例要在网关设置里重新填。不删的话，带着这个键的分组再保存时会因“未知的环境变量”被拒绝。
+`0106_request_body_limit_setting.sql`，只改数据，不改表结构，可重复执行：
+
+1. 全局层（`settings` 的 `environment` 行）设过值的，写进 `gateway` 行的 `max_request_body_mb`，该行其他字段不动；没有 `gateway` 行就建一行只含这个键的（其余字段读取时取默认值）。只搬 1–1024 的整数（环境变量原来接受的值），其他值丢弃。
+2. 从 `environment` 行删掉这个键。
+3. 从每个分组的 `groups.environment` 删掉这个键。**分组层的值丢弃**，上限不再有分组层。升级前先查哪些分组设过：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`，确认全局值够用。
+4. `accounts.environment` 里的这个键也删。账号层从不接受它，只有绕过接口写入的行才会有，删除的理由与 3 相同。
+
+必须删的原因：读取时未声明的键被忽略，但保存时会被拒绝，而控制台把整层的值原样回传，所以设过这个变量的实例升级后“环境变量”页和那些分组会保存不了。只在进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 里设过上限的实例迁移不到，升级后是默认的 128 MB。
 
 ### 110.4 “平台调用超时”的含义
 

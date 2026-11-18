@@ -1137,6 +1137,12 @@ export interface ClaudeMaxTokensRule {
   models: Record<string, number>
 }
 
+/** What GET/PUT /settings/gateway answer: the settings and, read-only, what the console warns by. */
+export interface GatewaySettingsView extends GatewaySettings {
+  /** Largest request body limit a plugin process still has memory for under the node's cap (SUB2API_PLUGIN_MAX_MEMORY_MB); 0 without a cap. */
+  max_request_body_safe_mb?: number
+}
+
 /** The numeric gateway settings (one value each). */
 export type GatewayNumberSetting = Exclude<keyof GatewaySettings, 'claude_max_tokens'>
 
