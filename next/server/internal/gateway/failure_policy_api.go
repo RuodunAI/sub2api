@@ -171,7 +171,7 @@ func (g *Gateway) previewFailurePolicy(c *gin.Context) {
 		httpapi.Fail(c, core.InvalidFields(fields...))
 		return
 	}
-	httpapi.OK(c, gin.H{"decision": in.Policy.decide(in.Facts), "text_truncated": len(in.Facts.Text) > classifyPrefix})
+	httpapi.OK(c, gin.H{"decision": in.Policy.decide(in.Facts), "text_truncated": len(in.Facts.Text) > core.ClassifyPrefixBytes})
 }
 
 func legacyFailureSettingGuard(ctx context.Context, tx *gorm.DB) error {
