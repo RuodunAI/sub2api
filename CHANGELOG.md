@@ -14,7 +14,7 @@
 
 - **新设置“请求体上限”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭）。它是唯一的请求大小上限，保存后各节点对新请求生效。
 - **升级前必读。** 环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0106 把全局层存着的值搬进网关设置，升级后不变；**分组层的值丢弃，没有分组级的上限了**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是默认 128 MB，要在网关设置里填；仍带着这个变量启动不报错，但它不再起作用。
-- 上限超过“(插件内存封顶 − 64) / 3”（默认封顶 1024 MB 时是 320 MB）时，网关设置里该行提示需要同时调高 `SUB2API_PLUGIN_MAX_MEMORY_MB`；值照常保存。
+- **插件内存默认不限**（CONTRACTS §110.5，设计 D23）：只有管理员设置时才有上限。插件资源页里给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 不再是上限，只作展示。内存不按请求体上限推算，改请求体上限不会重启插件进程；交给插件的请求体不再按字节排队（`inflight_bytes` 删除）；网关设置里没有内存警告。**升级前必读**：之前靠默认封顶 1024 MB 或清单的值（平台插件 64–128 MB，moderation 1024 MB 等）限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`；给平台插件设上限时，每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认 128 MB 时约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。
 - 钩子调用因请求超过插件 gRPC 接收上限而失败时，不再被排除在熔断之外（`requestTooLarge` 删除）。
 - 端点清单的 `request.maxBodyBytes` 核心不再读取（没有清单用过）。
 - “平台调用超时”的说明改为新含义：插件在一次请求中每段自身处理时间的上限（构造上游请求、解析用量、错误分类），不含等待上游的时间；默认值和范围不变。

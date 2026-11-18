@@ -33,7 +33,6 @@ type ExecutePlugin interface {
     Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client ExecutionClient) (ExecutionResult, error)
 }
 const PluginUnavailableSegmentTimeout = "segment_timeout" // ErrPluginUnavailable 的 Details["reason"]
-const PluginUnavailableInflightBytes  = "inflight_bytes"
 
 type MonitorPlugin interface {
     Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch ExecutionHTTP) (*pluginv1.ReconcileResult, error)
@@ -75,8 +74,8 @@ func FactDigest(m proto.Message) string                 // 确定性编码的 SH
 6. **分段计时（设计 8.4）。** `SegmentTimeout` 管插件自己的每一段：`Execute` 开始到第一次宿主调用、两次宿主调用之间、最后一次宿主调用返回到 `Execute` 返回。宿主调用内部的时间不计。超时：`ErrPluginUnavailable`，`Details["reason"] == "segment_timeout"`。`Execute` 没有总时限，总时限由调用方的 `ctx` 给。`Monitor` 仍是整个调用 30 秒，`ClassifyError` 仍是 2 秒（调用方的 `ctx` 更短时取更短的）。
 7. **请求体大小。** 中继的请求体不超过 max(这次 `ExecuteRequest.body` 的长度, 请求体上限) + 1 MiB；取回的请求体不超过请求体上限；超出 `INVALID_ARGUMENT`。上限每次检查时现读，保存后立即生效。宿主服务端的接收上限是 `MaxInt32`；除 `RelayUpstream`、`ExecuteHTTP` 外的宿主调用仍然只收 4 MiB（拦截器，保持 `sdk/protocol` 里 KV 等上限所依赖的数字）。
 8. **取回。** 每次调用最多 8 个（第 9 个 `RESOURCE_EXHAUSTED`，`Fetch` 不被调用）；主机必须是清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的 settings 和 credentials 里读，只比较主机名、不比较端口，不含子域），否则 `PERMISSION_DENIED`；回答超过 8 MiB 由运行时截到 8 MiB 并置 `truncated`。**SSRF 不在运行时做**：账号地址是运营方填的，可能指向私网，`Fetch` 的实现必须照旧过 `netguard`（按账号所在范围的“允许私网”）并走账号代理。被运行时拒绝的取回不计入 8 个。
-9. **在途字节准入。** 每个插件实例“已交给 `Execute`、尚未返回”的请求体字节不超过该进程内存上限的三分之一；放不下的排队，最长等 `SegmentTimeout`，之后 `ErrPluginUnavailable`，`reason == "inflight_bytes"`。没有其他在途请求时，不论多大都放行（准入是并发预算，不是第二个大小上限）。进程没有内存上限时不做准入。
-10. **内存下限。** 声明 `platform.adapter.v1` 的插件，进程内存上限至少是 64 MB 加 3 倍请求体上限（清单或运营方的值更大时用更大的），再受 `SUB2API_PLUGIN_MAX_MEMORY_MB` 封顶。清单没写内存上限的保持不限。上限变了之后 `LimitsStale()` 为真，现有的对账循环会平滑替换实例。
+9. **没有在途字节准入**（设计 D23）。交给 `Execute` 的请求体不按字节排队或拒绝。
+10. **内存上限只由管理员设置**（设计 D23、8.3）。清单的 `resources.memoryMB` 不是上限；进程的内存上限是管理员给这个插件设的值（`plugins.resource_limits.memory_mb`），没有时是节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB`（默认 0，不封顶），插件的值超过封顶时取封顶；都没有就不限。与请求体上限无关：改请求体上限不会让 `LimitsStale()` 为真；管理员改了插件的上限或封顶后它为真，现有的对账循环平滑替换实例。
 11. **`Monitor`。** 返回 `(*ReconcileResult, error)`：没有结果是错误；终态（`PENDING`、`POLL_FAILED` 以外）而这次调用里没有一次完整、成功、未截断的取回，也是错误。调用方把任何错误都当作一次查询失败。`Monitor` 里不能中继。
 12. **`ExecuteRequest` 不被修改、请求体不被复制。** 运行时浅拷贝一份填 `execution_token`。
 13. **旧契约的包。** 清单检查报 `outdated_contract`、握手协议版本不符、`GetInfo` 报的协议版本不符，`Runtime.Load` 都返回同一个错误：文字恰好是 `protocol.OutdatedContractMessage(key, version, hostVersion)`，`errors.Is(err, grpcruntime.ErrOutdatedContract)` 为真。前一种情况进程不会被启动。

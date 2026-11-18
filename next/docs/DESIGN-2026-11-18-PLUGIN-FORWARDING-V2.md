@@ -58,6 +58,7 @@
 | D20 | B6：核心的 `signing` 指令删除，插件用 `sdk/reqsign` 自己签；`response_stream` 留在核心 | 转发 | 已定 |
 | D21 | B5 重做：只有一条请求路径，不继承执行路径今天的代价（每请求三次执行记录写入、插件崩溃切断在途的流）。例外：等待形式下插件崩溃时切断上游，这个请求不计费（12.4） | 主控 10；最终答复 2 | 已定 |
 | D22 | 旧的任务轮询 `Poll`（`platform.poll.v1`）和两阶段 `BuildReconcileRequest` / `ParseReconcileResponse` 删除，任务观察只剩 `Monitor` | 主控要求核对后决定，本文选定（4.4） | 已定 |
+| D23 | 插件内存默认不限制，只有管理员手动设置时才有上限：插件自己的资源限制（控制台/接口）原样生效，节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 只在设置了时生效（默认不再是 1024），清单里的 `memoryMB` 只是插件自述的需要、不是上限。不按请求体上限推内存下限，不抬高也不压低管理员的值，请求体上限改了不替换插件进程；在途请求体字节准入删除，网关设置里的内存警告删除（8.3） | 用户（“插件的内存下限是按请求体上限算出来的：为什么要自动算？”；“不要限制”；“默认插件内存上限不限制！！除非管理员手动限制！！”） | 已定 |
 
 ## 3. 现状
 
@@ -449,7 +450,7 @@ func New() *standard.Platform {
 
 **进程数**。默认发布包里启用的内置插件是 anthropic、openai、gemini、moderation、codex（`deploy/docker/build-go.sh:165`）。今天其中有进程的是 anthropic、moderation、codex 三个；之后 openai、gemini 也各有一个，每个节点多 2 个进程。装齐十个平台插件的节点，平台插件进程从 6 个变成 10 个。进程数与账号数、请求量无关。
 
-**内存**。上限是清单里申请的值，实际占用没有测量。Go 写的 gRPC 插件空闲时的常驻内存按经验在一二十 MB 的量级（**未测量**）；按 20 MB 估，每节点默认多 40 MB，装齐多 80 MB。更大的变化来自完整请求体（第 10 节）：平台插件今天申请 64 MB，看门狗在连续 15 秒超过 110% 时重启，而请求体上限默认 128 MB，一个大请求就能超。所以内存上限要由核心按请求体上限推出下限（8.3），而不是让每个插件自己估。
+**内存**。实际占用没有测量。Go 写的 gRPC 插件空闲时的常驻内存按经验在一二十 MB 的量级（**未测量**）；按 20 MB 估，每节点默认多 40 MB，装齐多 80 MB。更大的变化来自完整请求体（第 10 节）：平台插件今天申请 64 MB，看门狗在连续 15 秒超过 110% 时重启，而请求体上限默认 128 MB，一个大请求就能超。按 D23，插件进程默认不限内存，清单里的数不再是上限，只有管理员设置的上限才生效（8.3）。
 
 **启动**。每个进程启动超时 30 秒（`grpcruntime/runtime.go` 的 `StartTimeout`），实际启动时间没有测量，预计几百毫秒。核心启动和每次内置同步多启动两个到四个进程。
 
@@ -481,7 +482,6 @@ func New() *standard.Platform {
 
 - `views/settings/GatewaySettingsCard.vue`：`DEFAULTS` 和数值行各加一项 `{ key: 'max_request_body_mb', unit: 'MB' }`；`api/types.ts` 的 `GatewaySettings` 与 `GATEWAY_SETTINGS_RANGES` 加一项（后者的类型会强制要求）；`mock/billing.ts` 的网关设置和范围加一项。
 - `i18n/locales/{zh,en}/settings.ts` 的 `settings.gateway.fields` 与 `hints` 各加一条。中文：“请求体上限”，提示“客户端请求体（以及 WebSocket 单条消息）的最大字节数，超过的请求返回 413。对所有分组和端点生效。”英文对应。
-- 保存的值超过插件内存封顶的三分之一时的警告见 8.3。
 - “环境变量”页和分组编辑器不再有这一行：两处的行都由服务端的变量表生成，删掉变量即可，不改组件。
 
 **删除环境变量**
@@ -545,19 +545,23 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 | 核心侧宿主服务端的接收上限（`grpcruntime/instance.go:459`） | 4 MiB | 设为 `MaxInt32`；处理函数里检查 `len(body)`，超出回 `InvalidArgument`。中继的界限是“这次执行交给插件的请求体长度”与“当前的请求体上限”中较大的一个，再加 1 MiB 余量（插件加信封、补字段）：核心交出去的请求体可能已经因为协议转换、钩子补丁、参数覆盖而大于上限（8.1 末尾），插件原样交回必须能过。设置改了立即生效，不用重启插件 |
 | 取回方式的请求体 | `ExecuteHTTP` 没有专门的上限 | 当前的请求体上限（辅助请求是插件自己写的，与客户端的请求体无关，用同一个数只是为了不另设一个上限） |
 | 取回方式的回答 | — | 常量 8 MiB |
-| 插件进程的内存上限 | 清单申请的值，可被运营方的资源限制覆盖 | 8.3 |
-| 在途请求体字节准入 | 无 | 8.3 |
+| 插件进程的内存上限 | 清单申请的值，可被运营方的资源限制覆盖 | 不由请求体上限推出：默认不限，只有管理员的设置才是上限（8.3） |
 
 传输层的上限固定为最大值、由处理函数按当前设置检查，是因为 gRPC 服务端的接收上限在建服务端时定死，而设置可以随时改。
 
-### 8.3 内存：下限和准入
+### 8.3 内存：默认不限，只有管理员设置的上限（D23）
 
-一个请求体 N 字节的尝试，插件进程里的瞬时峰值约 3N 到 4N（接收缓冲、解码后的字节、改写后的副本、发给核心时的序列化缓冲，第 10 节）。两项措施都放在核心：
+一个请求体 N 字节的尝试，插件进程里的瞬时峰值约 3N 到 4N（接收缓冲、解码后的字节、改写后的副本、发给核心时的序列化缓冲，第 10 节）。初稿据此让核心按请求体上限推出平台插件的内存下限（64 MB + 3 × 上限），并按内存上限的三分之一做在途请求体字节准入。用户否决了这两项（D23）：内存不自动算，也不做准入。现在的规则：
 
-- **内存上限的下限**：平台插件进程的生效内存上限取“清单申请的值”与“64 MB 加 3 倍请求体上限”中较大的，再受全局封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB`（默认 1024）约束。默认设置下是 448 MB。这是看门狗的阈值，不是预留的内存。请求体上限改了，下限随之变；`GOMEMLIMIT` 在进程启动时定，新值在插件下次启动时生效，控制台在两者不一致时提示（`rollout/types.go:129-130` 已有“进程的资源限制过期”的概念）。
-- **在途字节准入**：核心按插件实例统计“已交给插件、尚未返回”的请求体字节数，预算是该实例内存上限的三分之一。超出时新的尝试排队，最长等一个平台调用超时，再不行就以中性原因换号（账号不冷却）。做法照搬审核插件的 `max_inflight_mb`（`docs/CONTRACTS.md:4175` 一带），但放在核心，因为核心在发送前就知道大小。与它一样，一个请求单独到达时不论多大都放行：准入是并发与内存的预算，不能变成第二个请求体大小限制。不等待形式下插件持有请求体只有几毫秒，这个准入平时不会触发，它防的是大请求体的并发尖峰。
+| 来源 | 是否构成上限 |
+|---|---|
+| 什么都没设置 | 不限：不设 `GOMEMLIMIT`，看门狗不按内存重启 |
+| 清单 `resources.memoryMB` | 不是上限，只是插件自述的需要（安装审查页、资源页里展示） |
+| 管理员给这个插件设的内存上限（`plugins.resource_limits.memory_mb`，控制台或 `PUT /plugins/:key/resources`） | 原样生效，不被抬高或压低（下一行的封顶除外） |
+| 节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` | 默认 0（不封顶）；管理员设了时照旧：没有插件上限的插件就用它，插件上限超过它时取它 |
+| 请求体上限 `max_request_body_mb` | 与内存无关；改它不会让任何插件进程过期（`LimitsStale()` 只看上面几项） |
 
-请求体上限调到全局封顶的三分之一以上时（默认封顶下约 320 MB），单个最大的请求就可能超过插件内存；控制台在保存这样的值时给出警告，说明需要同时调高 `SUB2API_PLUGIN_MAX_MEMORY_MB`。
+后果要说清楚：默认情况下没有任何东西阻止插件进程一直长到节点内存耗尽（比如并发的大请求体）。想要界限的管理员给插件设上限，或设节点封顶。给平台插件设上限时，每个并发的大请求按“3 倍请求体上限 + 64 MB”留量；默认请求体上限 128 MB 下，一个请求约 450 MB。网关设置卡片里不再有内存警告：卡片看不到每个插件的上限，默认又没有上限可比。
 
 ### 8.4 “平台调用超时”的新含义
 
@@ -664,7 +668,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 | 插件崩溃时在途的流 | 普通转发：不受影响。执行路径（codex、volcengine）：全部切断 | 不等待形式：不受影响（codex 因此变好）。等待形式：切断，不计费（已定，12.4），范围只有那个插件正在等待的请求 |
 | 没有进程的插件 | 没有可崩溃的东西 | openai、gemini、relay、azure_openai、anthropic 的 `apikey` 现在依赖一个进程。进程 10 分钟内重启超过 5 次，这个节点上该插件的全部账号不可用（`grpcruntime/runtime.go:98-104`） |
 | 插件升级换代 | 旧实例排空 30 秒；执行路径的长流跨不过去 | 不等待形式下流不在插件里，不受排空影响 |
-| 内存超限重启 | 少见（插件不持有请求体） | 可能性上升，靠 8.3 的下限和准入控制 |
+| 内存超限重启 | 少见（插件不持有请求体） | 默认不限内存，看门狗不按内存重启；管理员设了上限时可能性上升，界限由管理员按 8.3 留量 |
 
 ### 10.5 失去的保证，和替代它们的东西
 
@@ -814,7 +818,7 @@ UPDATE groups SET environment = environment - 'max_request_body_mb' WHERE enviro
 - 上限今天是环境变量，有全局层、分组层和进程环境变量，不在“网关设置”里。**搬进网关设置，环境变量连同分组层删除**，存着的值用迁移 0106 处理。本文初稿建议过保留环境变量、只在卡片里加一行，已被这条答复推翻。代价是失去按分组设置上限的能力，这是用户的选择。
 - 清单允许端点声明 `request.maxBodyBytes`。删除（没有使用者）。
 - 钩子插件的 gRPC 接收上限（默认 4 MiB，moderation 设 64 MiB）今天对 `failure: closed` 的钩子实际上是第二个请求体大小限制。改成由 SDK 固定为传输层最大值，`WithMaxRecvMsgSize` 删除。初稿把它列为“不在本次范围”，与“其他地方不要限制”不符，已改。
-- 插件的内存上限仍由清单申请。这不是“大小上限”，但它实际决定了插件能接多大的请求体。由核心按请求体上限推出下限（8.3），清单里的值只在更大时起作用。
+- 插件的内存上限：默认不限，只有管理员设置的上限生效（D23、8.3）。管理员设的上限不是“大小上限”，但它实际决定了插件能接多大的请求体，所以管理员要按请求体上限留量。
 
 默认值保持 128 MB、范围保持 1 到 1024（任务说明起初建议 64 MB，不采用，理由见 8.1）。
 
@@ -868,10 +872,10 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 | W2 | 黄金样例转换（**已完成**）：在 W1 **之前**的提交上把四个黄金文件转成不依赖引擎的样例并冻结，带回放辅助 `goldentest.Run`；同时导出 azure 与五份 `manifest_test.go` 的断言清单 | `sdk/pluginsdk/standard/goldentest/**`（新；样例在它的 `testdata/golden` 下，随包内嵌，这样插件模块 import 就能用）、`sdk/upstream/golden_convert_test.go`（新，随引擎删除） | 转换结果条数为 441、343、371、343；`TestGoldenConversion`（提交的文件就是录制的转换输出，输入转回去不丢东西）和 `TestConvertedGoldenReplay`（每一条经今天的引擎回放一致）通过（7.3 第 1、2 条） | 无（必须最先做，旧引擎一删就做不了） | S |
 | W3 | SDK：`Relay`、`Fetch`、新的 `ExecuteDefault`、`Monitor` 返回值、能力推断、所有插件的接收上限固定为 `MaxInt32`、假宿主；删回调、`Poller`、`Reconciler`、补丁辅助、`WithMaxRecvMsgSize` | `sdk/pluginsdk/*.go`、`sdk/pluginsdk/pluginsdktest/**`、`sdk/reqsign`（注释） | 单测：三种返回各一例；标志决定等待与否；解析失败返回 `host_usage`；`Monitor` 返回结果；包里不再有三个回调函数 | W1 | M |
 | W4 | 公共库与预设：`sdk/pluginsdk/standard`，`providers/{openai,anthropic,gemini}` 的预设构造函数；删 `sdk/upstream`（含 W2 的 `golden_convert_test.go`）、`sdk/platforms/upstream`。`standard/goldentest` 的样例是冻结的，不改 | `sdk/pluginsdk/standard/**`、`sdk/pluginsdk/providers/**`、`sdk/upstream/**`、`sdk/platforms/upstream/**` | W2 冻结的 1498 条样例全过；`sdk` 模块里搜不到 `sdk/upstream` | W2、W3 | L |
-| W5 | 运行时：中继、取回的宿主服务端，执行作用域（不等待时挂起请求、返回后交给网关），`Monitor` 取返回值，宿主服务端接收上限，在途字节准入，内存下限；删回调服务端、`Poll` 适配、`StaticInstance`；握手协议不符时给出 9.2 的信息 | `server/internal/core/ports_execution.go`、`ports_plugin.go`、`server/internal/plugin/grpcruntime/**`、`server/internal/plugin/rollout/**` | 运行时测试：不等待的中继在 `Execute` 返回前不触发发送；等待的中继返回观察；取回第 9 次被拒、清单外主机被拒、回答超限带 `truncated`、令牌过期被拒；超过请求体上限的中继被拒；准入预算不被突破；旧协议的测试插件二进制被拒且信息正确 | W1 | M |
+| W5 | 运行时：中继、取回的宿主服务端，执行作用域（不等待时挂起请求、返回后交给网关），`Monitor` 取返回值，宿主服务端接收上限，在途字节准入，内存下限（后两项按 D23 已删）；删回调服务端、`Poll` 适配、`StaticInstance`；握手协议不符时给出 9.2 的信息 | `server/internal/core/ports_execution.go`、`ports_plugin.go`、`server/internal/plugin/grpcruntime/**`、`server/internal/plugin/rollout/**` | 运行时测试：不等待的中继在 `Execute` 返回前不触发发送；等待的中继返回观察；取回第 9 次被拒、清单外主机被拒、回答超限带 `truncated`、令牌过期被拒；超过请求体上限的中继被拒；准入预算不被突破；旧协议的测试插件二进制被拒且信息正确 | W1 | M |
 | W6 | 网关单一路径：`attempt` 调新 `Execute`；不等待与等待两种形式；请求头的默认头与权威头；守卫；WebSocket 逐轮；跨插件规则；删 11.4 里网关的全部条目 | `server/internal/gateway/{dispatch,execute,websocket,param_override,upstream_ext,routing,tasks,usageplugin,util}.go` 及同目录测试 | 第 14.2 节的网关测试矩阵；断开测试在新路径上通过；热路径基准前后对比写进交付说明 | W1、W5 | L |
 | W7 | 用量：从返回值提交、未上报关闭、恢复扫描改标记、监控结算走返回值、任务观察只调 `Monitor` | `server/internal/usage/**`、`server/internal/core/ports_billing.go` | 用量草稿第 11 节的矩阵（同步、任务、监控各行）；数据库测试确认真的跑了 | W1 | M |
-| W8 | 请求体上限搬进网关设置（8.1）：`GatewaySettings` 加 `max_request_body_mb`（默认 128、范围 1 到 1024、`normalized`、接口校验 `out_of_range`、`protocol.GatewaySettings` 镜像）；`bodyLimit` 只读它（HTTP 请求体与 WebSocket 单条消息）；删除环境变量 `max_request_body_mb`（全局层、分组层、进程环境变量）、`Environment.Bytes()`、单位 `mb`；迁移 `0106`（全局值搬进 `gateway` 行，`environment` 行和 `groups.environment` 删键）；`hooks.go` 的 `requestTooLarge` 一组；网关设置卡片加一行、中英文文案、类型与模拟数据；平台调用超时的文案（8.4）；保存过大值时的警告（8.3）。`request.maxBodyBytes` 字段本身由 W1 删，W8 先合入时 `bodyLimit` 已不读它 | `server/internal/gateway/{settings,settings_api,settings_plugin,hooks}.go`、`gateway/pipeline.go`（只动 `bodyLimit`）、`server/internal/core/environment.go`、`sdk/protocol/{environment,settings}.go`、`server/internal/migrations/0106_*.sql`、上述各处的测试（8.1 列出的 `gateway`、`core`、`environment`、`group`、`config` 测试）、`web/src/views/settings/**`、`web/src/i18n/locales/*/settings.ts`、`web/src/api/types.ts`、`web/mock/{billing,environment}.ts`、`AGENTS.md`（迁移编号一句） | 设置接口测试：默认 128、缺字段的行取默认、范围外 `out_of_range`、保存后立即生效；网关测试：超过设置的 HTTP 请求 413、WebSocket 消息以 1009 关闭、分组的 `environment` 不再影响上限；环境变量接口不再列出该变量，带着它保存报未知变量；迁移测试（数据库真的跑了）：全局值搬到 `gateway` 行且不覆盖行里其他字段、没有 `gateway` 行时新建、`environment` 行与分组的键被删、分组其余变量不动、迁移后“环境变量”页和分组能保存；`GatewaySettingsCard.spec.ts`；`npm run typecheck`、`test`、`lint` | 无 | M |
+| W8 | 请求体上限搬进网关设置（8.1）：`GatewaySettings` 加 `max_request_body_mb`（默认 128、范围 1 到 1024、`normalized`、接口校验 `out_of_range`、`protocol.GatewaySettings` 镜像）；`bodyLimit` 只读它（HTTP 请求体与 WebSocket 单条消息）；删除环境变量 `max_request_body_mb`（全局层、分组层、进程环境变量）、`Environment.Bytes()`、单位 `mb`；迁移 `0106`（全局值搬进 `gateway` 行，`environment` 行和 `groups.environment` 删键）；`hooks.go` 的 `requestTooLarge` 一组；网关设置卡片加一行、中英文文案、类型与模拟数据；平台调用超时的文案（8.4）；保存过大值时的警告（8.3，按 D23 已删）。`request.maxBodyBytes` 字段本身由 W1 删，W8 先合入时 `bodyLimit` 已不读它 | `server/internal/gateway/{settings,settings_api,settings_plugin,hooks}.go`、`gateway/pipeline.go`（只动 `bodyLimit`）、`server/internal/core/environment.go`、`sdk/protocol/{environment,settings}.go`、`server/internal/migrations/0106_*.sql`、上述各处的测试（8.1 列出的 `gateway`、`core`、`environment`、`group`、`config` 测试）、`web/src/views/settings/**`、`web/src/i18n/locales/*/settings.ts`、`web/src/api/types.ts`、`web/mock/{billing,environment}.ts`、`AGENTS.md`（迁移编号一句） | 设置接口测试：默认 128、缺字段的行取默认、范围外 `out_of_range`、保存后立即生效；网关测试：超过设置的 HTTP 请求 413、WebSocket 消息以 1009 关闭、分组的 `environment` 不再影响上限；环境变量接口不再列出该变量，带着它保存报未知变量；迁移测试（数据库真的跑了）：全局值搬到 `gateway` 行且不覆盖行里其他字段、没有 `gateway` 行时新建、`environment` 行与分组的键被删、分组其余变量不动、迁移后“环境变量”页和分组能保存；`GatewaySettingsCard.spec.ts`；`npm run typecheck`、`test`、`lint` | 无 | M |
 | W9 | 注册表、安装、审查：删 `bindDeclared` 与 `plugin/declarative`；上传与加载时的拒绝信息；审查页固定说明；插件列表显示拒绝原因；`api/ops.go` 的 `runtime none` 分支 | `server/internal/plugin/{registry,declarative,install,pkg,api}/**`、`web/src/views/plugins/**` | 旧契约的包上传被拒、信息正确；审查接口返回固定说明；`pkgtest` 夹具不再有 `runtime none` | W1 | M |
 | W10a–W10j | 十个插件各一个包：清单、`hostCompat`、版本、实现或接入 `Execute` | 各自的 `plugins/<name>/**` | 一致性套件（14.1）；各自原有测试移植后通过；`TestReleasedPluginsBumped` | 见下 | 见下 |
 | W11 | 构建与工具：打包工具删 `runtime none` 分支；构建脚本注释；其余第一方插件（moderation、guard、dynweight、mailer、growth、payment）按新 SDK 重新构建并升版本；moderation 去掉 `WithMaxRecvMsgSize`（8.2） | `tools/sub2api-plugin/**`、`deploy/docker/build-go.sh`、上述插件目录的 `manifest.json` | `tools/sub2api-plugin` 测试；镜像构建产出全部插件包 | W3 | S |
@@ -988,13 +992,13 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 10. `plugin.proto:22-23` 说的“旧 SDK 对 `SettingsChanged` 回 UNIMPLEMENTED 时核心忽略”，核心侧的忽略逻辑在哪、删掉是否安全，没有核对。
 11. 仓库外有没有第三方平台插件、有没有跨插件服务“插件解析用量”端点的组合，代码里查不到。
 12. 等待形式下未上报的失败在启用故障策略时会不会触发管理员的 503 规则而冷却账号。
-13. 内存下限改变后“进程的资源限制过期”提示的现有机制是否覆盖由设置推出的值。
+13. （按 D23 作废：内存不再由设置推出。）
 14. `sdk/pluginsdk/request.go` 的 `SetPatch`、`DeletePatch` 是否有钩子插件在用（核对后才能删）。
 15. volcengine 视频任务没有真实账号可测。
 16. 新 proto 的生成代码差异没有跑过 `buf generate`。
 17. (b) 级只有提纲：代理的 CONNECT 与 socks5 拨号没有验证。
 18. 迁移 0106 的 SQL（8.1）是草稿，没有运行过；`gateway` 行不存在时由迁移新建一行只含一个键的 JSON，读取时其余字段取默认值这一点只读了 `loadGatewaySettings` 的代码。
-19. 去掉 `WithMaxRecvMsgSize`、把钩子插件的接收上限固定为最大值之后，moderation 在请求体接近上限时的内存表现没有测量；它自己的 `max_inflight_mb` 预算按请求字段的字节数准入，单个请求总是接收，所以一个 1 GiB 的请求会原样进到一个内存上限 1024 MB 的进程里（8.3 的下限只对平台插件算）。
+19. 去掉 `WithMaxRecvMsgSize`、把钩子插件的接收上限固定为最大值之后，moderation 在请求体接近上限时的内存表现没有测量；它自己的 `max_inflight_mb` 预算按请求字段的字节数准入，单个请求总是接收，所以一个 1 GiB 的请求会原样进到它的进程里；插件默认不限内存（D23），管理员给它设了上限时要按 8.3 留量。
 
 ## 16. 需要用户确认
 
