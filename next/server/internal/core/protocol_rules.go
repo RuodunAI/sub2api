@@ -120,11 +120,12 @@ type GroupServedProtocol struct {
 	Accounts int    `json:"accounts"`
 }
 
-// GroupProtocols (owner: account) reports what the accounts of a group
-// serve, for the group's page.
+// GroupProtocols (owner: account) reports what the accounts of groups
+// serve, for the group's page and the caller's groups (GET /me/groups).
 type GroupProtocols interface {
-	// GroupServedProtocols lists the inbound protocols the live accounts of
-	// the group serve for at least one model, in the order the generation
-	// lists their endpoints; never nil.
-	GroupServedProtocols(ctx context.Context, groupID int64) ([]GroupServedProtocol, error)
+	// GroupServedProtocols lists, for each of the groups, the inbound
+	// protocols its live accounts serve for at least one model, in the
+	// order the generation lists their endpoints. Every group asked is in
+	// the map, never with a nil list.
+	GroupServedProtocols(ctx context.Context, groupIDs []int64) (map[int64][]GroupServedProtocol, error)
 }

@@ -595,7 +595,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 |---|---|---|---|---|
 | GET `/users` | 分页 | `q`（邮箱或显示名 ILIKE）、`status`（`active`\|`disabled`）、`role`（角色 key）、`segment`（用户组 id，或 `personal` 表示所有个人专属的用户，§97.6）、`owner_id`（用户 id 或 `none`）、`direct`（§103.3） | `id` 升序 | `iam/users.go` |
 | GET `/groups` | 分页 | `q`（名称 ILIKE）、`status`、`model`（只留提供该模型的分组，§97.6） | `id` 升序 | `group/group.go` |
-| GET `/me/groups` | 不分页 | 无（只返回 `active` 且对当前用户可用的分组，可用性按调用者所在的用户组，§97；字段 `{id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, effective_rate, rate_source, exclusive}`，后三项见 §97.6，`rate_multiplier` 仍是分组默认倍率） | `id` 升序 | `group/group.go` |
+| GET `/me/groups` | 不分页 | 无（只返回 `active` 且对当前用户可用的分组，可用性按调用者所在的用户组，§97；字段 `{id, name, description, rate_multiplier, model_allowlist, model_filter_mode, platforms, served_protocols, effective_rate, rate_source, exclusive}`，后三项见 §97.6，`rate_multiplier` 仍是分组默认倍率；`served_protocols` 见 §110.7） | `id` 升序 | `group/group.go` |
 | GET `/me/api-keys` | 分页 | 限定当前用户；`q`（名称 ILIKE；以 `sk-s2a-` 开头时也按 `key_prefix` 开头匹配）、`status`（`active`\|`disabled`\|`expired`，按状态与过期时间推导）、`group_id`（正整数）；见 §92.1 | `id` 倒序 | `apikey/apikey.go` |
 | GET `/accounts` | 分页 | `plugin_key`、`type`、`status`、`group_id`（整数）、`q`（名称 ILIKE）、`mine`、`created_by`、`owner_id`、`subordinates`（§103.4） | `created_at` 倒序，再 `id` 倒序（§18.3；与调度顺序无关） | `account/handlers.go` |
 | GET `/proxies` | 分页 | `q`（名称或主机 ILIKE）、`status` | `id` 升序 | `proxy/proxy.go` |
@@ -6375,7 +6375,7 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 - 列表、编辑窗口、详情都不再显示“可服务的平台”：核心对四种文本协议互转（§88），一个分组能接哪些协议不取决于它的账号属于哪个平台。`Group.platforms` 字段照常返回，控制台只用它给分组徽章着色和算接入地址。“有账号但不支持任何已启用平台”的警告随之取消。§110 起：一个分组能接哪些协议取决于成员账号开放的协议（跨平台转换要在账号上按模型开启），分组详情的“端点”一栏按 `GET /groups/:id` 的 `served_protocols` 显示（§110.9）；列表和编辑窗口仍不显示。
 - 没有账号的分组在“账号数”前显示警告图标（`ProblemIcon`，`data-testid="group-no-accounts"`），列表、手机卡片和详情都有。
 - 接入地址（`views/platforms/PlatformEndpointsPreview.vue`：分组详情、密钥页的手动配置说明、密钥编辑窗口里的分组说明）一律包含经协议转换可达的端点（`views/platforms/convertedEndpoints.ts`）：分组自己的平台里只要有一个文本协议端点（`anthropic.messages`、`openai.chat`、`openai.responses`、`gemini.generate`、`gemini.stream_generate`），就额外列出其它平台上这些协议以及两个 count_tokens 的端点，标“经协议转换”；embeddings、视频等不可转换的端点只列在自己平台下。这是按平台级端点做的近似，不看各账号类型声明的端点子集；这张协议清单与 `server/internal/convert` 的内置转换对一致，新增转换对时两处一起改。密钥编辑窗口里的分组说明（`KeyGroupDetails.vue`）是个小框：每个平台最多列 3 个端点，转换端点收在“经协议转换还可调用：<平台名>”的展开项里（`fold`），默认收起；另两处直接列出。
-- **§110 起（取代上一条的转换部分）**：`convertedEndpoints.ts` 已删除，控制台不再推算“经协议转换可达”的端点。分组详情改用 `served_protocols`（`views/groups/GroupServedProtocols.vue`：按平台列出成员账号实际开放的端点，每个端点带提供它的账号数；没有账号开放任何协议时给警告）；密钥页的手动配置说明和密钥编辑窗口里的分组说明仍用 `PlatformEndpointsPreview`，只按分组的 `platforms` 列端点（`fold` 已去掉），不反映账号关掉的协议和开启的转换（§110.10 第 5 条）。
+- **§110 起（取代上一条的转换部分）**：`convertedEndpoints.ts` 已删除，控制台不再推算“经协议转换可达”的端点。分组详情改用 `served_protocols`（`views/groups/GroupServedProtocols.vue`：按平台列出成员账号实际开放的端点，每个端点带提供它的账号数；没有账号开放任何协议时给警告）；密钥页的手动配置说明和密钥编辑窗口里的分组说明用 `PlatformEndpointsPreview`，2026-11-18 起按 `GET /me/groups` 每行的 `served_protocols` 列端点，与分组详情同源（§110.10 第 5 条）。
 
 ### 92.6 兼容与混跑
 
@@ -8011,6 +8011,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 | `POST /accounts`、`PATCH /accounts/:id` | 同上两个字段。各自**整体替换**；PATCH 不带时保持原值；`protocols: null` 存为 NULL（全部），`[]` 表示全关 |
 | `GET /accounts/:id`，以及 POST、PATCH 的返回 | 另带只读的 `served_protocols`；列表不带 |
 | `GET /groups/:id` | 另带只读的 `served_protocols`，从不为 null；分组列表和写接口的返回不带 |
+| `GET /me/groups` | 每行带只读的 `served_protocols`：`[{protocol}]`，与分组详情同一计算、同一顺序，但不带 `accounts`（普通用户不看分组里有几个账号）；从不为 null（2026-11-18） |
 | `GET /account-types` | 不变：`endpoints` 仍列出该类型原生、适配、经转换能服务的全部端点（§88.5），是“能配置什么”，不是“账号开放了什么” |
 
 - **没有批量接口**。控制台的批量编辑对每个账号调 `PATCH /accounts/:id`（§23.3 账号列表的批量操作），只带变化的字段。
@@ -8026,7 +8027,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - count_tokens 协议跟随生成协议列出：`grade` 为 `local`（本地估算）时，类型声明了该平台记 `adapted`，没声明记 `converted`。
 - 账号类型未注册（插件未启用）时为 `[]`。
 
-**分组的 `served_protocols`**：`[{protocol, accounts}]`，组内账号开放的协议的并集，`accounts` 是对至少一个模型开放该协议的账号数，按端点声明的顺序。统计组内未删除的账号，不看状态和是否参与调度；类型未注册的账号不计。分组模块经 `core.GroupProtocols`（账号模块实现）取，不跨模块 import；在 `internal/app/phases.go` 里账号模块建好后赋给 `group.Service.Protocols`。
+**分组的 `served_protocols`**：`[{protocol, accounts}]`，组内账号开放的协议的并集，`accounts` 是对至少一个模型开放该协议的账号数，按端点声明的顺序。统计组内未删除的账号，不看状态和是否参与调度；类型未注册的账号不计。分组模块经 `core.GroupProtocols`（账号模块实现）取，不跨模块 import；在 `internal/app/phases.go` 里账号模块建好后赋给 `group.Service.Protocols`。`GroupServedProtocols(ctx, groupIDs)` 一次查询算出多个分组（返回按分组 id 的 map，每个问到的分组都有、列表不为 nil）：分组详情问一个，`GET /me/groups` 对整页问一次，不按行查询（2026-11-18 起；此前只接受一个分组）。
 
 ### 110.8 性能约束
 
@@ -8066,7 +8067,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 2. **模型列表接口不分协议**。`/v1/models` 和分组的模型列表仍按分组和账号的模型返回，客户端可能看到一个在当前协议下调不通（404）的模型。
 3. **给“其余模型”开转换要谨慎**。账号模型列表为空（= 全部模型）时，Anthropic 客户端发来的 `claude-*` 模型名会原样（或经映射）发给 OpenAI 上游，上游报模型不存在，按故障策略可能冷却账号。转换只开给明确列出的、有映射的模型。
 4. **粘性会话**：升级后，已绑定到某账号的转换会话因该账号不再提供转换而改绑或 404（110.4）。
-5. **API Key 页的端点预览不看协议绑定**。密钥页的手动配置说明和密钥编辑窗口里的分组说明仍只按分组的 `platforms` 列端点（这两处拿不到 `served_protocols`），不反映账号关掉的协议和开启的转换，可能列出实际会 404 的端点。
+5. ~~API Key 页的端点预览不看协议绑定~~（2026-11-18 已解决）：`GET /me/groups` 每行带 `served_protocols`（110.7），密钥页的手动配置说明和密钥编辑窗口里的分组说明改用它列端点，与分组详情同源（`PlatformEndpointsPreview` 改收 `served`，`usePlatforms().endpointsOf` 删除）。快速配置菜单和各客户端的配置片段仍按 `platforms` 选客户端。
 6. **冷却中的账号可能推迟 404**（110.5）：组内有冷却中或限时停用、且自己能服务这个请求（或因协议绑定以外的原因不能）的账号时，请求得到 503/529 而不是 404，客户端会重试；这类账号也被协议绑定过滤时仍是 404。
 7. **协议绑定对不经调度的端点不生效**（110.4，异步任务查询）。
 8. **控制台识别不了“只走原生”的端点**。`GET /account-types` 的 `endpoints` 没有标出 WebSocket、任务提交端点；控制台的候选列是从它推出来的，如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端以 `unsupported` 拒绝。
