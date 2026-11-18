@@ -99,11 +99,6 @@ func TestConformance(t *testing.T) {
 		Manifest:    manifestJSON,
 		Protocols:   httpProtocols,
 		Credentials: []string{"authorization"},
-		Exceptions: []conformance.Exception{{
-			Check:  "01_one_relay",
-			Case:   "coverage: " + wsTurn,
-			Reason: "openai.responses_ws exists only as WebSocket turns; listing it in Protocols would demand HTTP stream and non-stream cases it cannot have",
-		}},
 	}, conformanceCases()...)
 }
 
@@ -117,6 +112,9 @@ func conformanceCases() []conformance.Case {
 	var cases []conformance.Case
 	for _, protocol := range httpProtocols {
 		for _, stream := range []bool{false, true} {
+			if stream && protocol == preset.ProtocolEmbeddings {
+				continue // embeddings never stream (no streamPath)
+			}
 			body := `{"model":"gpt-4o-mini","input":"hi"}`
 			if stream {
 				body = `{"model":"gpt-4o-mini","input":"hi","stream":true}`

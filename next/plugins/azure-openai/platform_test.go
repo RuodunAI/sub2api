@@ -260,8 +260,9 @@ func TestClassify(t *testing.T) {
 }
 
 // TestConformance runs the platform conformance suite with the embedded
-// manifest: both types, each protocol a type serves, stream and not. The
-// key in api-key is the only authoritative header.
+// manifest: both types, each protocol a type serves in each form the core
+// sends it (embeddings never stream). The key in api-key is the only
+// authoritative header.
 func TestConformance(t *testing.T) {
 	var cases []conformance.Case
 	served := map[string][]string{
@@ -273,6 +274,9 @@ func TestConformance(t *testing.T) {
 		acc := account(accountType, resource, `"api_version":"2024-10-21"`)
 		for _, protocol := range protocols {
 			for _, stream := range []bool{false, true} {
+				if stream && protocol == openai.ProtocolEmbeddings {
+					continue
+				}
 				body := `{"model":"gpt-4o","input":"hi","messages":[{"role":"user","content":"hi"}]}`
 				name := accountType + " " + protocol + " non-stream"
 				if stream {

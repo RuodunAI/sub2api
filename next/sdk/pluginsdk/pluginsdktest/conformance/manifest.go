@@ -63,3 +63,43 @@ func (d *declared) clientHeaders(accountType, protocol string) ([]string, error)
 	}
 	return nil, fmt.Errorf("the manifest declares no account type %q", accountType)
 }
+
+// requestForms are the forms the core sends a request of a protocol in, read from
+// the endpoints of the protocol: an HTTP endpoint with request.stream
+// streams only, one with request.streamPath (or a model the plugin
+// resolves, which answers the stream too) has both forms, any other none
+// but the non-stream one; a websocket endpoint has turns (rule 11).
+type requestForms struct {
+	known, stream, nonStream, websocket bool
+}
+
+func (d *declared) forms(protocol string) requestForms {
+	var f requestForms
+	for _, p := range d.platforms {
+		for _, e := range p.Endpoints {
+			if e.Protocol != protocol {
+				continue
+			}
+			f.known = true
+			switch {
+			case e.WebSocket():
+				f.websocket = true
+			case e.Request.Stream:
+				f.stream = true
+			case e.Request.StreamPath != "" || e.Request.ModelSource == manifest.ModelSourcePlugin:
+				f.stream, f.nonStream = true, true
+			default:
+				f.nonStream = true
+			}
+		}
+	}
+	return f
+}
+
+// has reports whether the core sends an HTTP request of the form.
+func (f requestForms) has(stream bool) bool {
+	if stream {
+		return f.stream
+	}
+	return f.nonStream
+}

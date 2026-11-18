@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -34,7 +35,7 @@ const design = "DESIGN-2026-11-18-PLUGIN-FORWARDING-V2 "
 // checks in the order they run. 08_no_sockets runs last: it judges the
 // whole suite.
 var checks = []check{
-	{"01_one_relay", "every declared upstream protocol, stream and non-stream, completes Execute with exactly one relay (" + design + "§14.1.1, §4.2, §4.7)", oneRelayItems},
+	{"01_one_relay", "every declared upstream protocol, in each form the core sends it (its endpoint's request.stream / request.streamPath), completes Execute with exactly one relay (" + design + "§14.1.1, §4.2, §4.7)", oneRelayItems},
 	{"02_form_and_report", "an ordinary endpoint relays without waiting and returns host_usage; a plugin-usage endpoint waits and returns usage; a task submission waits and returns task; returning nothing is not allowed (" + design + "§14.1.2, §4.2, §4.3)", perCase(checkForm)},
 	{"03_body", "the relayed body is valid JSON without duplicate keys, keeps the model reference (or the declared mapping) and a true stream flag (" + design + "§14.1.3, §4.5)", perCase(checkBody)},
 	{"04_headers", "credential and signed headers are authoritative, any other authoritative header is declared with a reason, the rest are default headers; no transport header; the client headers the core hands over (the manifest's passHeaders) reach the upstream request (" + design + "§14.1.4, §4.5, §5.4)", headerItems},
@@ -70,8 +71,10 @@ func oneRelayItems(s *suite) []item {
 	out := perCase(func(s *suite, t testing.TB, c *Case) { s.once(t, c).Relayed(t) })(s)
 	for _, protocol := range s.p.Protocols {
 		for _, stream := range []bool{false, true} {
-			name := "coverage: " + protocol + map[bool]string{false: " non-stream", true: " stream"}[stream]
-			out = append(out, item{name, func(t testing.TB) {
+			if !s.declared.forms(protocol).has(stream) {
+				continue
+			}
+			out = append(out, item{"coverage: " + protocol + formName(stream), func(t testing.TB) {
 				if !slices.ContainsFunc(s.cases, func(c *Case) bool {
 					return !c.WebSocket && c.Meta.GetProtocol() == protocol && c.Meta.GetStream() == stream
 				}) {
@@ -81,13 +84,34 @@ func oneRelayItems(s *suite) []item {
 		}
 	}
 	for _, c := range s.cases {
-		if !slices.Contains(s.p.Protocols, c.Meta.GetProtocol()) {
-			out = append(out, item{"coverage: " + c.Name, func(t testing.TB) {
-				t.Errorf("protocol %q is not in Plugin.Protocols", c.Meta.GetProtocol())
-			}})
+		if msg := s.caseForm(c); msg != "" {
+			out = append(out, item{"coverage: " + c.Name, func(t testing.TB) { t.Errorf("%s", msg) }})
 		}
 	}
 	return out
+}
+
+func formName(stream bool) string {
+	return map[bool]string{false: " non-stream", true: " stream"}[stream]
+}
+
+// caseForm says what is wrong with the form of c, "" for nothing: a turn
+// of a protocol without a websocket endpoint, an HTTP case of a protocol
+// not in Plugin.Protocols, or of a form the core never sends it in.
+func (s *suite) caseForm(c *Case) string {
+	protocol := c.Meta.GetProtocol()
+	f := s.declared.forms(protocol)
+	switch {
+	case c.WebSocket && !f.websocket:
+		return fmt.Sprintf("a WebSocket turn of protocol %q, which has no websocket endpoint", protocol)
+	case c.WebSocket:
+		return ""
+	case !slices.Contains(s.p.Protocols, protocol):
+		return fmt.Sprintf("protocol %q is not in Plugin.Protocols", protocol)
+	case !f.has(c.Meta.GetStream()):
+		return fmt.Sprintf("the core never sends protocol %q as a%s request (its endpoint's request.stream / request.streamPath): remove the case", protocol, formName(c.Meta.GetStream()))
+	}
+	return ""
 }
 
 // --- 2 ---

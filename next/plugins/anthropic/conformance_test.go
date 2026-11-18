@@ -19,11 +19,6 @@ func TestConformance(t *testing.T) {
 		Manifest:    manifestJSON,
 		Protocols:   []string{provider.ProtocolMessages, provider.ProtocolCountTokens},
 		Credentials: []string{"x-api-key"},
-		Exceptions: []conformance.Exception{{
-			Check:  "01_one_relay",
-			Case:   "coverage: " + provider.ProtocolCountTokens + " stream",
-			Reason: "count_tokens of the built-in anthropic platform has no stream form (sdk/platforms/anthropic.json: no streamPath, nonStream response only)",
-		}},
 	},
 		conformanceCase(provider.ProtocolMessages, true, `{"model":"claude-sonnet-4-6","max_tokens":16,"stream":true,"messages":[{"role":"user","content":"Hi"}]}`),
 		conformanceCase(provider.ProtocolMessages, false, `{"model":"claude-sonnet-4-6","max_tokens":16,"messages":[{"role":"user","content":"Hi"}]}`),

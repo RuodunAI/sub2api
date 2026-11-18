@@ -33,8 +33,12 @@ type Plugin struct {
 	SDK []pluginsdk.Option
 	// Config is the plugin settings sent with Configure (nil = "{}").
 	Config any
-	// Protocols are the upstream protocols the plugin declares. Each needs a
-	// stream and a non-stream HTTP case.
+	// Protocols are the HTTP upstream protocols the plugin declares. Each
+	// needs an HTTP case of every form the core sends it in, which the
+	// suite reads from the protocol's endpoint (a built-in platform's or
+	// the manifest's): stream and non-stream with request.streamPath,
+	// stream only with request.stream, otherwise non-stream only. A
+	// WebSocket protocol is not listed: its turns are rule 11's.
 	Protocols []string
 	// Credentials are the credential and signed header names (lower-case):
 	// they must be authoritative, never default headers.
@@ -203,6 +207,14 @@ func (s *suite) checkPlugin() error {
 	}
 	if len(s.p.Protocols) == 0 {
 		errs = append(errs, errors.New("Plugin.Protocols must list the declared upstream protocols"))
+	}
+	for _, protocol := range s.p.Protocols {
+		switch f := s.declared.forms(protocol); {
+		case !f.known:
+			errs = append(errs, fmt.Errorf("Plugin.Protocols: %q belongs to no endpoint of a built-in platform or of the manifest", protocol))
+		case !f.stream && !f.nonStream:
+			errs = append(errs, fmt.Errorf("Plugin.Protocols: %q is a WebSocket endpoint's protocol; its turns are rule 11's, leave it out", protocol))
+		}
 	}
 	for name, reason := range s.p.Authoritative {
 		if reason == "" {

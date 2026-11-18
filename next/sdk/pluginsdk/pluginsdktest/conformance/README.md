@@ -22,7 +22,7 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `Manifest` | 插件的 `manifest.json`，必填。套件用它起插件（`WithManifest`），清单里声明的能力决定第 11 条是否适用；第 4 条交给插件的客户端请求头也从它读 |
 | `SDK` | 传给 `pluginsdk.Register` 的其余选项，通常不用 |
 | `Config` | `Configure` 的插件设置，nil 为 `{}` |
-| `Protocols` | 插件声明的全部上游协议。每个协议都要有一个流式、一个非流式的 HTTP 用例 |
+| `Protocols` | 插件声明的 HTTP 上游协议（不含 WebSocket 协议，它的轮次归第 11 条）。每个协议在核心会发的每种形式下都要有 HTTP 用例；有哪些形式由套件从协议的端点（内置平台的或清单里的）读出：有 `request.streamPath`（或模型由插件解析）的流式、非流式都有，`request.stream` 为真的只有流式，其余只有非流式。列了 WebSocket 协议或没有端点的协议，`Run` 在开始时就失败 |
 | `Credentials` | 鉴权头和被签名的头（小写）。必须在权威头里，出现在默认头里就失败 |
 | `Authoritative` | 其余要保留为权威头的头，名字 → 理由（例如改写前代码插件的头都在运营方设置之上，转换后要保持）。理由不能为空 |
 | `Fetch` | 插件辅助请求（换令牌、上传）的回答。nil 时取回回 `UNIMPLEMENTED` |
@@ -53,7 +53,7 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 
 | 子测试 | 做法 |
 |---|---|
-| `01_one_relay` | 每个用例执行一次，`Execute` 成功且恰好一次中继；另有 `coverage: <协议> stream|non-stream` 项检查每个声明的协议两种都有用例，`coverage: <用例>` 项检查用例的协议已声明 |
+| `01_one_relay` | 每个用例执行一次，`Execute` 成功且恰好一次中继；另有 `coverage: <协议> stream|non-stream` 项检查每个声明的协议在它的每种形式下都有用例；`coverage: <用例>` 项在用例有问题时出现：HTTP 用例的协议没声明，或者是核心不会发的形式（例如流式的 count_tokens），或者 WebSocket 轮次的协议没有 WebSocket 端点 |
 | `02_form_and_report` | 按 `Endpoint` 检查等待与否和返回的种类；什么都不返回（未上报）失败 |
 | `03_body` | 交回的请求体是合法 JSON、同一对象里没有重复键；`model` 等于交入的（或 `UpstreamModel`），请求体里没有 `model` 时 URL 里要有它；交入 `stream: true` 时交回仍为真 |
 | `04_headers` | 权威头的名字都在 `Credentials` ∪ `Authoritative` 里；`Credentials` 的头不在默认头里；默认头的值里不带账号凭证；没有 `content-length`、`transfer-encoding`、`connection`、`accept-encoding`；核心交来的每个客户端请求头（清单的 `passHeaders`）都出现在默认头里（值可以被插件改，例如账号设置；声明在 `Authoritative` 里的也可以是权威头）。另有 `declared authoritative headers` 一项：声明的每个权威头至少在一个用例里作为权威头出现，否则是过期声明 |
@@ -85,7 +85,7 @@ Exceptions: []conformance.Exception{{
 ## 套件证明不了什么
 
 - 只看假宿主收到的东西：核心真实的发送、SSRF、代理、请求头分层、守卫、计费不在这里（网关测试 §14.2、e2e §14.5）。
-- 只覆盖给出的用例。没有用例的端点、账号类型、请求形状没有被检查；第 1 条只核对 `Protocols` 列出的协议都有用例，不读清单推断。
+- 只覆盖给出的用例。没有用例的端点、账号类型、请求形状没有被检查；第 1 条只核对 `Protocols` 列出的协议，不从清单推断插件服务哪些协议（每个协议有哪些形式是从端点定义读的）。
 - 第 8 条拦得住经默认传输、默认解析器（主机名）和出口隧道的拨号；直接拨 IP 字面量、或用 cgo、`syscall` 开套接字的代码拦不住。
 - 第 9 条只测“阻塞在宿主调用里时被取消”；插件在两次宿主调用之间自己算很久不在范围内。
 - 第 10 条用默认 8 MiB 而不是网关默认的 128 MiB 上限（分配随大小线性，比值相同），计量的是整个进程的分配减去参照插件，插件在后台另起的 goroutine 也算在内；填充字段被插件过滤掉时测到的就少。
