@@ -51,37 +51,8 @@ describe('platform endpoints preview', () => {
     expect(gone.text()).toContain('暂时无法获取该平台的端点。')
   })
 
-  it('adds the endpoints of other platforms reached through conversion, marked as such', () => {
-    const w = render({ ids: ['anthropic'] })
-    expect(ids(w)).toEqual(['anthropic', 'openai', 'gemini'])
-    const [anthropic, openai] = sections(w)
-    expect(anthropic.attributes('data-converted')).toBeUndefined()
-    expect(anthropic.text()).not.toContain('经协议转换')
-    expect(openai.attributes('data-converted')).toBe('true')
-    expect(openai.text()).toContain('经协议转换')
-    expect(openai.findAll('li').map(li => li.text())).toEqual(['POST /v1/chat/completions', 'POST /v1/responses'])
-    // A platform without a text endpoint converts to nothing.
-    expect(ids(render({ ids: ['myvideo'] }))).toEqual(['myvideo'])
-  })
-
-  it('keeps the converted platforms behind a toggle that names them when folded', async () => {
-    const w = render({ ids: ['anthropic'], max: 2, fold: true })
-    expect(ids(w)).toEqual(['anthropic'])
-    const fold = w.get('[data-testid="converted-endpoints"]')
-    expect(fold.text()).toBe('经协议转换还可调用：OpenAI、Gemini')
-    expect(fold.find('[data-platform]').exists()).toBe(false)
-    await fold.get('button').trigger('click')
-    expect(fold.findAll('div[data-platform]').map(s => s.attributes('data-platform'))).toEqual(['openai', 'gemini'])
-    expect(fold.findAll('div[data-platform="gemini"] li').map(li => li.text())).toEqual([
-      'POST /v1beta/models/:model:generateContent',
-      'POST /v1beta/models/:model:streamGenerateContent',
-      '另有 1 个'
-    ])
-    // Nothing converted, nothing to unfold.
-    expect(
-      render({ ids: ['myvideo'], fold: true })
-        .find('[data-testid="converted-endpoints"]')
-        .exists()
-    ).toBe(false)
+  it('lists only the given platforms: a conversion is an account\'s choice per model, not derived here', () => {
+    expect(ids(render({ ids: ['anthropic'] }))).toEqual(['anthropic'])
+    expect(render({ ids: ['anthropic'] }).text()).not.toContain('转换')
   })
 })
