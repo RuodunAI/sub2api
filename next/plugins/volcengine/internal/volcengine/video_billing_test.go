@@ -56,7 +56,7 @@ func TestVideoDimensionsMatchEveryPublishedArea(t *testing.T) {
 
 func TestEstimateUsageUnimplementedForNonVideo(t *testing.T) {
 	p := New()
-	for _, protocol := range []string{ProtocolMessages, ProtocolCountTokens, ""} {
+	for _, protocol := range []string{ProtocolMessages, ""} {
 		_, err := p.EstimateUsage(context.Background(), &pluginv1.EstimateUsageRequest{
 			Meta: &pluginv1.RequestMeta{Protocol: protocol, Model: "doubao-pro-256k"},
 		})

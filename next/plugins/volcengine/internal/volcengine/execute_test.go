@@ -277,7 +277,7 @@ func TestExecuteVideoSubmissionOutcomes(t *testing.T) {
 func TestExecuteRelaysNothingItCannotBuild(t *testing.T) {
 	h := startExecution(t, nil)
 	for _, in := range []*pluginv1.ExecuteRequest{
-		{Meta: &pluginv1.RequestMeta{Protocol: ProtocolCountTokens, Model: "m"}, Account: relayAccount("/v1", ""), Body: modelBody("m")},
+		{Meta: &pluginv1.RequestMeta{Protocol: "anthropic.count_tokens", Model: "m"}, Account: relayAccount("/v1", ""), Body: modelBody("m")},
 		{Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoQuery}, Account: account(testKey, "")},
 		{Meta: &pluginv1.RequestMeta{Protocol: ProtocolChat, Model: "m"}, Account: account(`{}`, ""), Body: modelBody("m")},
 	} {

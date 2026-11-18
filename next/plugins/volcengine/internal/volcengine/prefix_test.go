@@ -326,20 +326,6 @@ func TestEndpointRejectsAmbiguousURLsAtSaveAndRuntime(t *testing.T) {
 	}
 }
 
-// TestCountTokensIsRefusedByName documents the cost of the relay type
-// declaring the anthropic platform: it declares two endpoints and
-// AccountPlatform cannot select one, so the type is offered count_tokens
-// whether it can serve it or not.
-func TestCountTokensIsRefusedByName(t *testing.T) {
-	_, err := buildFor(t, relayAccount("/v1", ""), &pluginv1.RequestMeta{Protocol: ProtocolCountTokens, Model: "m"})
-	if err == nil {
-		t.Fatal("count_tokens must not be sent anywhere")
-	}
-	if !strings.Contains(err.Error(), "count_tokens") {
-		t.Errorf("the error must name the protocol, or the log does not explain itself: %v", err)
-	}
-}
-
 // TestUnknownAccountTypeIsRefused: the plugin now has two types and picks the
 // credential spec by name, so an unknown one must fail loudly instead of
 // silently getting the official layout.

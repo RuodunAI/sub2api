@@ -68,19 +68,13 @@ const (
 	ProtocolEmbeddings = "openai.embeddings"
 )
 
-// Protocol ids of the built-in anthropic platform's endpoints
-// (sdk/platforms/anthropic.json). They are aliases of the SDK provider
-// constants, so the plugin cannot drift from what classify.go and the core
-// compare against.
-const (
-	ProtocolMessages = sdkvolcengine.ProtocolMessages
-	// ProtocolCountTokens is declared by the platform and therefore routed to
-	// this account type whether we want it or not: AccountPlatform has no
-	// per-endpoint filter, so declaring the platform accepts both endpoints.
-	// Ark documents no token-counting endpoint, so BuildUpstream
-	// refuses it by name rather than inventing a path that 404s.
-	ProtocolCountTokens = sdkvolcengine.ProtocolCountTokens
-)
+// ProtocolMessages is the protocol id of the built-in anthropic platform's
+// messages endpoint (sdk/platforms/anthropic.json), an alias of the SDK
+// provider constant, so the plugin cannot drift from what classify.go and the
+// core compare against. It is the only endpoint of that platform the account
+// types serve (manifest "endpoints": ["messages"]): Ark documents no
+// token-counting endpoint, so count_tokens is left to the core's estimate.
+const ProtocolMessages = sdkvolcengine.ProtocolMessages
 
 // Protocol ids of the volcengine platform declared in manifest.json.
 const (
@@ -374,15 +368,6 @@ func upstreamPath(px prefixes, protocol, model string) (string, error) {
 				"account has no configured upstream path for %q", protocol)
 		}
 		return px.anthropic + "/messages", nil
-	case ProtocolCountTokens:
-		// The relay type declares the anthropic platform, which makes it a
-		// candidate for both of that platform's endpoints: AccountPlatform has
-		// no per-endpoint filter. Neither Ark nor any relay measured so far
-		// serves token counting. Failing by name beats guessing a path: the
-		// client gets a reason and the core fails over to an account that does
-		// serve it.
-		return "", status.Errorf(codes.InvalidArgument,
-			"Ark has no token-counting endpoint, so %q cannot be served by an Ark account", protocol)
 	default:
 		return "", status.Errorf(codes.InvalidArgument, "unsupported upstream protocol %q", protocol)
 	}
@@ -437,7 +422,7 @@ func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]st
 	name, value := credentialHeader(accountType, protocol, apiKey)
 	h := map[string]string{name: value, "content-type": "application/json"}
 	names := forwardHeaders
-	if protocol == ProtocolMessages || protocol == ProtocolCountTokens {
+	if protocol == ProtocolMessages {
 		names = anthropicForwardHeaders
 		if strings.TrimSpace(inbound["anthropic-version"]) == "" {
 			h["anthropic-version"] = DefaultAnthropicVersion
