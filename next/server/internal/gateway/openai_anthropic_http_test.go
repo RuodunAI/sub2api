@@ -10,8 +10,6 @@ import (
 	"sync"
 	"testing"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 	"github.com/tidwall/gjson"
@@ -164,30 +162,6 @@ func TestOpenAIConvertedStreamEOFDoesNotInventSuccess(t *testing.T) {
 		}
 		if rec := e.record(); rec.Success || rec.ErrorType != errTypeUpstream || rec.Tokens.Input != 10 {
 			t.Fatalf("broken stream accounting: %+v", rec)
-		}
-	}
-}
-
-func TestOpenAIConversionCannotBypassTargetModelAndUsageGates(t *testing.T) {
-	for _, targetField := range []string{"tools", "compaction"} {
-		e := newEnv(t, func(e *env) { e.conv = convert.Default() })
-		value := `[{"type":"advisor_20260301","name":"advisor","model":"not-authorized"}]`
-		if targetField == "compaction" {
-			value = `{"type":"summarize"}`
-			for i := range e.gen.accountTypes {
-				for j := range e.gen.accountTypes[i].Type.Platforms {
-					e.gen.accountTypes[i].Type.Platforms[j].Usage = map[string]manifest.UsageRules{"anthropic.messages": {Semantics: "exclusive"}}
-				}
-			}
-		}
-		e.plat.patches = []*pluginv1.BodyPatch{{Op: pluginv1.BodyPatch_OP_SET, Path: targetField, ValueJson: value}}
-		path, input := openAIConversionInput("openai.responses", false)
-		res := e.do(path, input, map[string]string{"authorization": "Bearer " + testKey})
-		if res.status != 400 || len(e.up.keys()) != 0 {
-			t.Fatalf("target %s bypassed authorization or accounting: %d %s", targetField, res.status, res.body)
-		}
-		if rec := e.record(); rec.Success {
-			t.Fatal("unadmitted target operation succeeded")
 		}
 	}
 }

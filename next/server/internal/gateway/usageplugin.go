@@ -19,30 +19,17 @@ import (
 
 // Plugin-reported usage (CONTRACTS §25.3): endpoints whose usage rules
 // declare usage.source "plugin" have their token usage read by the plugin
-// declaring the platform, through PlatformService.ExtractUsage, instead of by
-// the declarative gjson rules.
+// declaring the platform, from the observation of its relay that waits
+// (waited.go), instead of by the declarative gjson rules, which still run
+// and are the fallback.
 //
-// Two properties of this file are the whole point of the design and must not
-// be traded away:
-//
-//  1. THE STREAM IS NEVER BUFFERED. common.proto's opening contract says
-//     request bodies are not shipped whole on the hot path; the same holds
-//     for responses, and an SSE stream is unbounded. So a streaming response
-//     is relayed exactly as before - event by event, flushed as it goes - and
-//     the host keeps only the events whose name the endpoint listed in
-//     usage.streamEvents, under a byte budget and an event count cap. A
-//     stream that exceeds either stops being collected (and the plugin is
-//     told, so it does not report a number computed from a prefix as if it
-//     were the total).
-//
-//  2. THE CALL HAPPENS AFTER THE HANDLER RETURNS. Everything the client is
-//     going to receive has been written when the extraction runs, and the
-//     gin handler has already returned, so the response is terminated (the
-//     last chunk of a chunked or SSE body goes out) without waiting for a
-//     plugin. Running it inside forward() would be "after the bytes" but
-//     still before the client sees the end of the response - measurably
-//     slower for exactly the streaming endpoints this feature exists for.
-//     Only the usage record waits, and that was always asynchronous.
+// THE STREAM IS NEVER BUFFERED. An SSE stream is unbounded, so a streaming
+// response is relayed exactly as before - event by event, flushed as it
+// goes - and the host keeps only the events whose name the endpoint listed
+// in usage.streamEvents, under a byte budget and an event count cap. A
+// stream that exceeds either stops being collected (and the plugin is told,
+// so it does not report a number computed from a prefix as if it were the
+// total).
 const (
 	// defaultUsageMaxBytes is what usage.maxBytes defaults to: the whole
 	// non-streaming body, or the total size of the collected stream events.
@@ -55,7 +42,7 @@ const (
 	maxUsageStreamEvents = 64
 )
 
-// usageCapture holds what PlatformService.ExtractUsage will be given. It is
+// usageCapture holds what the observation will show the plugin. It is
 // nil for every endpoint that does not declare usage.source "plugin", which
 // is how those endpoints pay exactly nothing for this feature - not one
 // comparison per event, not one allocation, and never a call.
@@ -74,7 +61,7 @@ type usageCapture struct {
 //
 // The three knobs are read off the upstream ENDPOINT, not off the usage rules
 // in effect: the rules follow the §13 override chain whose last link belongs
-// to a third plugin, so who answers ExtractUsage would otherwise have had two
+// to a third plugin, so who reads the usage would otherwise have had two
 // readings (CONTRACTS §25.3, manifest.Endpoint.UsageSource).
 func newUsageCapture(rt *typeRoute) *usageCapture {
 	if !rt.pluginUsage {
@@ -133,68 +120,8 @@ func (u *usageCapture) dropBody() {
 	}
 }
 
-// extractUsage asks the plugin declaring the platform to read the usage of a
-// response the client has already received in full, and replaces what the
-// declarative rules produced with what it answers.
-//
-// It runs on its own goroutine after the gin handler returned (submit), so
-// everything it needs was copied out of the request in armUsageExtraction:
-// the gin context is pooled and must not be touched from here.
-//
-// The declarative rules ran anyway while forwarding: they cost nothing extra
-// (they were already applied to every event) and they are the fallback here.
-// On any failure - no plugin client, a transport error, a timeout, an
-// UNIMPLEMENTED from a plugin that never wrote the method, a nil answer, or a
-// body the host would not hand over - the record keeps whatever the rules
-// found and is marked core.UsageExtractFallback.
-//
-// Falling back rather than failing is deliberate: the response was already
-// delivered and the upstream was already paid for it, so turning a successful
-// request into an error afterwards helps nobody. The cost of that choice is
-// real - an endpoint that chose usage.source "plugin" usually has no usable
-// gjson rules, so the fallback often bills zero. That is why the fallback is
-// never silent: it warns naming the plugin and the reason, and it writes
-// usage_extract into usage_logs.billing_detail, so "billed from nothing"
-// is a state an operator can find and alert on rather than a gap in a graph.
-func (c *call) extractUsage(ctx context.Context, p *pendingExtract) {
-	if p == nil || c.rec == nil {
-		return
-	}
-	rt := p.rt
-	pb, ok := c.gen.Platform(rt.platform)
-	if !ok || pb.Client == nil {
-		// Install-time validation requires platform.adapter.v1 of any plugin
-		// declaring usage.source "plugin", so this is a package installed
-		// before that rule existed, or a built-in platform. Nothing can be
-		// asked, so the rules stand.
-		c.usageFallback(ctx, rt, "the platform of this response has no plugin client", nil)
-		return
-	}
-	if p.cap.tooLarge {
-		c.usageFallback(ctx, rt, "response body larger than usage.maxBytes", nil)
-		return
-	}
-	if p.cap.stopped {
-		slog.WarnContext(ctx, "gateway: stopped collecting usage stream events at the cap",
-			"request_id", c.rid, "plugin", pb.Plugin.Key, "platform", rt.platform, "protocol", rt.upstream,
-			"events", len(p.cap.events), "max_events", maxUsageStreamEvents)
-	}
-	ectx, cancel := context.WithTimeout(ctx, c.gw.hotpathTimeout())
-	rep, err := pb.Client.ExtractUsage(ectx, &pluginv1.ExtractUsageRequest{
-		Meta: p.meta, Account: p.account, Status: int32(p.status), Headers: p.headers,
-		Body: p.cap.body, Events: p.cap.events, Truncated: p.cap.stopped,
-		Fields: p.fields, FieldsOmitted: p.fieldsOmitted,
-	})
-	cancel()
-	if err != nil || rep == nil {
-		c.usageFallback(ctx, rt, "ExtractUsage failed", err)
-		return
-	}
-	c.applyUsageReport(ctx, rt, pb.Plugin.Key, rep)
-}
-
-// pendingExtract is one armed ExtractUsage call: everything it needs, copied
-// out of the request while the handler still owned it.
+// pendingExtract is what the observation of a waited relay is built from:
+// everything it needs, copied out of the request and the answer.
 type pendingExtract struct {
 	rt      *typeRoute
 	cap     *usageCapture
@@ -209,26 +136,17 @@ type pendingExtract struct {
 	// what survives the handler.
 	fields        map[string]string
 	fieldsOmitted []string
-	// accountID is the account that served the request; its rate-limit token
-	// counter is only updated once the real usage is known.
-	accountID int64
 }
 
-// armUsageExtraction records what the plugin call will need, at the end of
-// forwarding. It does not call anything: the call happens in submit, after
-// the handler returned. upBody is the request body as it went upstream
-// (converted when the route converts, before the plugin's own patches) - the
-// document BuildUpstreamRequest's fields were read from.
+// armUsageExtraction records what the observation will need, at the end of
+// forwarding. upBody is the request body the plugin was handed (converted
+// when the route converts) - the document the usageRequestFields are read
+// from.
 func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *http.Response, cap *usageCapture, upBody []byte) {
 	if cap == nil || c.rec == nil {
 		return
 	}
-	headers := make(map[string]string, len(resp.Header))
-	for k, v := range resp.Header {
-		if len(v) > 0 {
-			headers[strings.ToLower(k)] = v[0]
-		}
-	}
+	headers := firstHeaderValues(resp.Header)
 	// The response is read, not built: credentials are never sent. Settings
 	// travel only to the plugin that owns the account type, which is the one
 	// that already sees them on every upstream attempt.

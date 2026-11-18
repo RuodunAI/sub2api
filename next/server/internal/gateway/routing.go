@@ -32,9 +32,8 @@ type typeRoute struct {
 	// local answers a count_tokens request without an upstream (§8).
 	local bool
 
-	requestFields []string
-	passHeaders   []string
-	usage         manifest.UsageRules
+	passHeaders []string
+	usage       manifest.UsageRules
 	// pluginUsage, usageEvents and usageMaxBytes are the upstream endpoint's
 	// usageSource / usageStreamEvents / usageMaxBytes (CONTRACTS §25.3).
 	//
@@ -48,7 +47,8 @@ type typeRoute struct {
 	pluginUsage   bool
 	usageEvents   []string
 	usageMaxBytes int64
-	// usageRequestFields are the request body paths ExtractUsage is shown
+	// usageRequestFields are the request body paths the observation of a
+	// relay that waits carries
 	// (endpoint.usageRequestFields); nil for every endpoint that declares
 	// none, which is how those pay nothing for the feature.
 	usageRequestFields []string
@@ -200,9 +200,11 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 }
 
 // addRoute records the route of b to upstream protocol y of platform q:
-// request fields and pass headers come from the account type's entry for q,
-// else the platform; usage rules from the account type (per protocol), else
-// the endpoint speaking y, else the platform.
+// pass headers come from the account type's entry for q, else the platform;
+// usage rules from the account type (per protocol), else the endpoint
+// speaking y, else the platform. (An endpoint whose usage or task the
+// platform's plugin states reaches only that plugin's account types: the
+// registry binds no other, design §4.3.)
 func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, q, y string,
 	ep manifest.Endpoint, pf manifest.Platform, conv convert.Converter) {
 	if !ap.SupportsEndpoint(ep.ID) {
@@ -213,7 +215,7 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 		return
 	}
 	rt := &typeRoute{binding: b, platform: q, upstream: y, conv: conv, grade: convert.GradeNative,
-		requestFields: ap.RequestFields, passHeaders: ap.ClientHeaders(&pf),
+		passHeaders:        ap.ClientHeaders(&pf),
 		usage:              usagerules.For(ap, &ep, &pf, y),
 		pluginUsage:        ep.PluginUsage(),
 		usageEvents:        ep.UsageStreamEvents,
@@ -231,9 +233,6 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 		rt.requiredAttempts = append(rt.requiredAttempts, ep.Usage.Attempts)
 	}
 	rt.requiredAttempts = append(rt.requiredAttempts, pf.Usage.Attempts)
-	if len(rt.requestFields) == 0 {
-		rt.requestFields = pf.RequestFields
-	}
 	if conv != nil {
 		rt.grade, rt.hops = conv.Grade(), convert.Hops(conv)
 	}

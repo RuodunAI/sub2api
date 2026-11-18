@@ -143,11 +143,11 @@ type call struct {
 	// it, so the plugin is asked again exactly when a hook changed the body.
 	modelResolved bool
 
-	// usage is the armed PlatformService.ExtractUsage call for endpoints
-	// declaring usage.source "plugin" (usageplugin.go); nil for every other
-	// endpoint, which is how they pay nothing for the feature. It is filled
-	// at the end of forwarding and consumed by submit, on its own goroutine,
-	// after the handler returned.
+	// usage is what the plugin reading an endpoint's usage (usage.source
+	// "plugin", usageplugin.go) is shown of the answer: filled at the end of
+	// forwarding and taken by the waited relay for its observation
+	// (waited.go); nil for every other endpoint, which is how they pay
+	// nothing for the feature.
 	usage *pendingExtract
 	// Context of the currently selected account's concurrency lease.
 	slotCtx context.Context
@@ -277,12 +277,7 @@ func (c *call) run(ctx context.Context) {
 		ctx = admitted
 	}
 	// A request that never reaches countTokens gives its reservations back.
-	// With usage still to come, submit counts it after the handler returns.
-	defer func() {
-		if c.usage == nil {
-			c.releaseHolds(ctx)
-		}
-	}()
+	defer c.releaseHolds(ctx)
 
 	// 4. Hooks (may deny or patch the body).
 	c.sessionFP = c.sessionFingerprint(ctx)
@@ -540,15 +535,9 @@ func (c *call) resolveModelFromPlugin(ctx context.Context) *gwError {
 			"builtin", pb.Builtin, "found", ok)
 		return fromCore(core.ErrInternal.WithMessage("the platform of this endpoint cannot resolve models"), errTypeInternal)
 	}
-	fields := map[string]string{}
-	for _, p := range c.pf.RequestFields {
-		if r := getJSON(c.body, p); r != "" {
-			fields[p] = r
-		}
-	}
 	rctx, cancel := context.WithTimeout(ctx, c.gw.hotpathTimeout())
 	resp, err := pb.Client.ResolveModel(rctx, &pluginv1.ResolveModelRequest{
-		Meta: c.meta(), Fields: fields, InboundHeaders: c.passHeaders(c.pf.PassHeaders)})
+		Meta: c.meta(), InboundHeaders: c.passHeaders(c.pf.PassHeaders)})
 	cancel()
 	if err != nil || resp.GetModel() == "" {
 		slog.InfoContext(ctx, "gateway: resolve model failed", "plugin", pb.Plugin.Key,
@@ -804,14 +793,9 @@ func (c *call) fail(e *gwError) {
 	writeError(c.c, c.format, e)
 }
 
-// submit finalizes the usage record and hands it to the settler.
-//
-// For an endpoint whose usage a plugin reports, the plugin is asked here
-// rather than in forward(): the handler returns as soon as submit does, so
-// the response is terminated for the client before a remote call is made. The
-// record is finished on that goroutine instead (finishSubmit), which is the
-// one thing that was always allowed to be late - it goes to an asynchronous
-// settler either way.
+// submit finalizes the usage record and hands it to the settler. A request
+// whose usage the records of a waited relay own (taskPersisted) has none to
+// submit.
 func (c *call) submit() {
 	rec := c.rec
 	if rec == nil || c.g.d.Settler == nil {
@@ -833,47 +817,7 @@ func (c *call) submit() {
 	if rec.StatusCode == 0 {
 		rec.StatusCode = c.c.Writer.Status()
 	}
-	// Read off the gin context here: it is pooled and reused once the handler
-	// returns, so nothing below this point may touch it.
-	billing := c.ep.Billing
-	if p := c.usage; p != nil {
-		c.usage = nil
-		// The goroutine below captures c, and with it the request body (and
-		// its converted copies) - possibly megabytes of base64 for exactly
-		// the endpoints this path serves. Nothing after this point reads
-		// them: ExtractUsage was armed with the few request fields it is
-		// shown, so let the body go before the handler returns rather than
-		// keep it for the length of a plugin round trip.
-		c.releaseBodies()
-		// g.wg is the gateway's own group, so Close waits for the extraction
-		// instead of dropping the record. Add is safe here because it happens
-		// inside the handler: app.go shuts the HTTP server down (every handler
-		// returned) before it calls Gateway.Close.
-		c.g.wg.Add(1)
-		go func() {
-			defer c.g.wg.Done()
-			ctx := context.Background()
-			c.extractUsage(ctx, p)
-			// Rate limits count what was really used, so they are updated
-			// with the plugin's answer rather than the rules' guess.
-			c.countTokens(ctx, p.accountID)
-			c.finishSubmit(ctx, rec, billing)
-		}()
-		return
-	}
-	c.finishSubmit(context.Background(), rec, billing)
-}
-
-// releaseBodies drops every reference the call holds to the request body.
-// Only for the asynchronous submit path, once nothing will read them again.
-func (c *call) releaseBodies() {
-	c.body = nil
-	c.promptCache = nil
-	c.doc, c.docValid = gjson.Result{}, false
-	c.digestValid = false
-	for _, rt := range c.routes {
-		rt.body = nil
-	}
+	c.finishSubmit(context.Background(), rec, c.ep.Billing)
 }
 
 func (c *call) finishSubmit(ctx context.Context, rec *core.UsageRecord, billing string) {

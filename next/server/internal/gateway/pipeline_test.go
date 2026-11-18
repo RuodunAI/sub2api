@@ -319,7 +319,7 @@ func TestNoAccountOtherFormats(t *testing.T) {
 func TestPluginTimeoutTreatsAccountUnavailable(t *testing.T) {
 	e := newEnv(t)
 	e.setSettings(GatewaySettings{MaxAttempts: 3, PlatformCallTimeoutMs: 100}, StickySettings{})
-	e.plat.buildHook = func(ctx context.Context, in *pluginv1.BuildUpstreamRequestRequest) error {
+	e.plat.buildHook = func(ctx context.Context, in *pluginv1.ExecuteRequest) error {
 		if in.GetAccount().GetId() == 1 {
 			<-ctx.Done()
 			return ctx.Err()
@@ -331,7 +331,7 @@ func TestPluginTimeoutTreatsAccountUnavailable(t *testing.T) {
 		t.Fatalf("plugin timeout: %d %v", r.status, e.up.keys())
 	}
 	// Plugin down for every account -> 529 no_available_account.
-	e.plat.buildHook = func(context.Context, *pluginv1.BuildUpstreamRequestRequest) error {
+	e.plat.buildHook = func(context.Context, *pluginv1.ExecuteRequest) error {
 		return core.ErrPluginUnavailable
 	}
 	e.record()
@@ -580,7 +580,9 @@ func TestRouteFallthroughAndGenerationSwitch(t *testing.T) {
 	e.record()
 }
 
-func TestUpstreamPatchesAndFields(t *testing.T) {
+// The upstream receives the plugin's bytes; the plugin is handed the whole
+// body as the client sent it (no mapping here) and the allowed headers.
+func TestUpstreamGetsPluginBodyAndPluginGetsRequest(t *testing.T) {
 	e := newEnv(t)
 	e.plat.patches = []*pluginv1.BodyPatch{{Op: pluginv1.BodyPatch_OP_SET, Path: "model", ValueJson: `"claude-mapped"`}}
 	e.messages(body(testModel, false))
@@ -589,7 +591,7 @@ func TestUpstreamPatchesAndFields(t *testing.T) {
 		t.Fatalf("patched model = %s", m)
 	}
 	b := e.plat.builds[0]
-	if b.GetFields()["model"] != `"`+testModel+`"` || b.GetInboundHeaders()["anthropic-version"] != "2023-06-01" ||
+	if gjson.GetBytes(b.GetBody(), "model").String() != testModel || b.GetInboundHeaders()["anthropic-version"] != "2023-06-01" ||
 		b.GetMeta().GetRequestId() == "" || b.GetAccount().GetCredentialsJson() == "" {
 		t.Fatalf("build request: %+v", b)
 	}
