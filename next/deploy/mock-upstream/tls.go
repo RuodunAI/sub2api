@@ -32,9 +32,9 @@ import (
 // the client asks for (SNI) the first time it asks, so the host names are
 // listed once, in the network's aliases. Only the CA persists.
 
-// serveTLS serves h on MOCK_TLS_ADDR when it is set; it returns nil at once
-// otherwise.
-func serveTLS(h http.Handler) error {
+// serveTLS serves h on MOCK_TLS_ADDR when it is set, and on the CONNECT
+// tunnels (connect.go); it returns nil at once otherwise.
+func serveTLS(h http.Handler, tunnels *tunnelListener) error {
 	addr := os.Getenv("MOCK_TLS_ADDR")
 	if addr == "" {
 		return nil
@@ -43,14 +43,27 @@ func serveTLS(h http.Handler) error {
 	if dir == "" {
 		dir = "/tls"
 	}
-	ca, caKey, err := loadOrCreateCA(dir)
+	cfg, err := tlsConfig(dir)
 	if err != nil {
 		return err
 	}
+	errc := make(chan error, 2)
+	go func() { errc <- tunnelServer(h, cfg).ServeTLS(tunnels, "", "") }()
+	go func() {
+		srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second, TLSConfig: cfg}
+		errc <- srv.ListenAndServeTLS("", "")
+	}()
+	return <-errc
+}
+
+// tlsConfig issues server certificates by SNI from the CA in dir.
+func tlsConfig(dir string) (*tls.Config, error) {
+	ca, caKey, err := loadOrCreateCA(dir)
+	if err != nil {
+		return nil, err
+	}
 	certs := &certIssuer{ca: ca, caKey: caKey, byName: map[string]*tls.Certificate{}}
-	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second,
-		TLSConfig: &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}}
-	return srv.ListenAndServeTLS("", "")
+	return &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}, nil
 }
 
 // certIssuer issues and keeps one server certificate per host name.
