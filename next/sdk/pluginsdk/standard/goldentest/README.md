@@ -2,7 +2,7 @@
 
 这里是 openai、anthropic、gemini、relay 四个插件的验收依据，共 1498 条（441、343、371、343）。它们是当年四个代码插件改成声明式之前录下的回答，由 `sdk/upstream/testdata/golden` 转换而来（`docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` 7.3 节，任务包 W2）。
 
-转换后的样例不依赖声明式引擎，也不依赖 `BuildUpstreamRequest` 的消息：引擎（`sdk/upstream`）和旧的黄金文件删除之后，这个包原样留下，供 `sdk/pluginsdk/standard` 和五个插件的改写（W4、W10a 到 W10e）使用。
+转换后的样例不依赖声明式引擎，也不依赖旧的请求构造消息：引擎（`sdk/upstream`）和旧的黄金文件已在 `05ae9ef6f` 删除，这个包原样留下，供 `sdk/pluginsdk/standard` 和用它写的插件（openai、anthropic、gemini、relay）回放。
 
 **样例是冻结的**：不增、不删、不改。发现样例与新实现不一致时，改的是实现；确实合理的差异用 `Except` 逐条声明（见下）。
 
@@ -13,7 +13,7 @@
 | `testdata/golden/<plugin>.json` | 转换后的样例，随包内嵌（`go:embed`），插件模块 import 这个包就能用，不需要相对路径 |
 | `goldentest.go` | 样例的结构、读取、回放 |
 | `MANIFEST-ASSERTIONS.md` | 五份 `manifest_test.go` 里依赖引擎的断言清单（azure_openai 没有黄金文件，以它为准） |
-| `sdk/upstream/golden_convert_test.go` | 一次性的转换程序和忠实性证明，**随引擎一起删除** |
+| `sdk/upstream/golden_convert_test.go`（已删除） | 一次性的转换程序和忠实性证明，随引擎在 `05ae9ef6f` 删除，原文见 `f4918300c` |
 
 位置与设计稿原文（`sdk/pluginsdk/standard/testdata/golden`）差一层目录，原因：样例要被别的模块（`plugins/*`）的测试读到，只能由一个非测试包内嵌后导出，而 `go:embed` 只能内嵌本包目录之下的文件；放进 `standard` 包本身则会把 1.2 MB 的样例链接进每个插件的二进制。
 
@@ -175,7 +175,7 @@ func Unwrap(message string) string
 
 ## 转换是否忠实：两个测试
 
-在 `sdk/upstream/golden_convert_test.go`，文件开头标着随引擎删除：
+在 `sdk/upstream/golden_convert_test.go`（随引擎在 `05ae9ef6f` 删除，下面记的是删除前跑过的结果）：
 
 - `TestGoldenConversion`：不调用引擎，只从录下的回答转换，要求提交的文件与转换输出逐字节相同，并核对条数（441、343、371、343）和带 `note` 的条数（1、0、8、40）。转换时还检查每条输入“转回去”仍是原输入（账号、元信息、字段、客户端请求头一项不丢）。重新生成：`SUB2API_GOLDEN_CONVERT=write go test -run TestGoldenConversion ./upstream/`（在 `next/sdk` 下）。
 - `TestConvertedGoldenReplay`：把转换后的每一条经 `goldentest.Run` 交给今天的引擎，按核心的用法回放（从请求体读字段、`Build`、把补丁应用到请求体、把请求头分成声明的和凭证的），1498 条全部一致。

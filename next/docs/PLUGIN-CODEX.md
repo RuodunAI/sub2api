@@ -1,6 +1,6 @@
 # codex 插件：ChatGPT 账号（Codex 设备码 / Sign in with Codex）
 
-日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。核心契约见 CONTRACTS §83（WebSocket 每轮 patch 见 §83.6），额度见 §44、§69。
+日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。0.1.12 按转发 V2 改写（第 18 节，需核心 ≥0.1.304）。核心契约见 CONTRACTS §83、§112（WebSocket 每轮见 §83.6），额度见 §44、§69。第 4 节按现状写；第 6–17 节是各版本当时的记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields` 都已被第 18 节取代。
 
 ## 1. 目标与边界
 
@@ -52,9 +52,9 @@
 
 ## 4. 插件 `codex`
 
-- 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.execute.v1`、`platform.websocket.v1`、`http.routes.v1`。
+- 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.websocket.v1`、`http.routes.v1`。
 - 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
-- `BuildUpstreamRequest`：两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；patch `store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，并对每轮 `response.create` 消息返回同样的 patch（不含 stream 相关字段；核心每轮应用，CONTRACTS §83.6）。
+- `Execute` 是 SDK 的 `ExecuteDefault`（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
@@ -282,3 +282,13 @@
 - 两种账号类型的 `defaultModels` 最前面加 `gpt-6.2-astra`、`gpt-6.2-sol`（新到旧，排在 `gpt-6.1-sol` 前），其余不变；openai 0.4.3 的 API Key 账号默认模型同样加在最前。价格不在插件里，未改动。
 - 依据：ec2pool 测试实例上两个 `codex_device` 账号（id 2、3）已由管理员手动加上这两个模型；经临时 Key 各发一次流式 `/v1/responses`，上游都正常完成（`response.completed`，`model` 分别为 `gpt-6.2-astra`、`gpt-6.2-sol`）。设备码账号没有在线模型列表，`gpt-6.2` 其他后缀（如 luna、terra）在测试实例与线上都没有价格、也没有账号用到，未加。
 - 已有账号的模型列表不变，要用新模型请在账号上手动添加。`DefaultTestModel` 仍为 `gpt-6-luna`。
+
+## 18. 0.1.12：转发 V2（2026-11-18，需核心 ≥0.1.304）
+
+核心与全部平台插件改成一条请求路径（CONTRACTS §112），codex 随之改写，行为对客户端不变：
+
+- 插件拿到完整请求体，在 `BuildUpstream` 里用 `sdk/pluginsdk/jsonedit` 改写（第 4 节列的几项），交回最终字节；`Execute` 是 `ExecuteDefault`。原来的“清单声明请求字段 + 补丁”、每请求最多 256 个 system → developer 改写的上限、字符串 input 超过插件 gRPC 接收上限（4 MiB）就失败的限制都没有了。
+- 清单删掉 `platform.execute.v1` 和两个账号类型的 `requestFields`；`session_id` / `conversation_id` 改从请求体的 `prompt_cache_key` 算（算法不变）。
+- 不再写执行记录：以前每个 codex 请求在 `plugin_executions` 写三次、插件崩溃会切断在途的流；现在核心在 `Execute` 返回后才发请求，插件崩溃或重启不影响在途的流。
+- 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
+- 测试：`internal/codex/execute_test.go`（两种类型、HTTP 与 WebSocket 的改写，经假宿主的一次中继），`upstream_test.go`（会话头）。一致性套件的输入表已准备，还没有调用 `conformance.Run`。

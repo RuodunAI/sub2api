@@ -28,7 +28,7 @@
 next 的原则是"插件描述、核心执行与记录"（`PLUGIN-EXECUTES-CORE-RECORDS.md`）：插件不开网络、不列账号、不自带定时器。
 
 - **被动采样是纯数据映射**，用 manifest 声明（`accountTypes[].quota.headers`：窗口 key → 头名 + 换算）就够了，核心在网关热路径上读几个头，零插件调用、零额外上游请求。这也是 sub2api 账号列表的主数据源。
-- **主动查询要凭证和上游知识**，沿用 `BuildTestRequest` / `BuildReconcileRequest` 的形状：`BuildQuotaRequest` 描述请求、核心经账号代理 + netguard 发送、`ParseQuotaResponse` 把响应读成窗口与错误类型。插件不需要 `net` 权限，限频完全由核心掌握。
+- **主动查询要凭证和上游知识**，沿用 `BuildTestRequest` 的形状：`BuildQuotaRequest` 描述请求、核心经账号代理 + netguard 发送、`ParseQuotaResponse` 把响应读成窗口与错误类型。插件不需要 `net` 权限，限频完全由核心掌握。
 - manifest 再用 `quota.query: true` 声明"插件实现了主动查询"。这样核心不必试探调用就知道某类型支持额度（账号列表要据此决定 `quota` 是 null 还是快照），也不会对没声明的插件发 RPC。插件声明了却回 `Unimplemented` 时按"只支持被动"处理。
 
 ### 3.2 存储与合并

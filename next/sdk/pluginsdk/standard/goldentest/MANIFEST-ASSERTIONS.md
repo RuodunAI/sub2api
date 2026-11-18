@@ -1,6 +1,6 @@
 # 五份 `manifest_test.go` 里依赖引擎的断言（W2 导出）
 
-导出自 `feat/forwarding-v2` 的 `2b0a41d00`。这五个文件今天用 `sdk/upstream` 的 `Resolve`、`Profile` 作断言；引擎删除后，W10a 到 W10e 把下面每一条改写成对新插件（`sdk/pluginsdk/standard` 的类型配置）的断言。azure_openai 没有黄金文件，这份清单就是它的验收依据（设计稿 7.3 节第 3、4 条）。
+导出自 `feat/forwarding-v2` 的 `2b0a41d00`。这五个文件当时用 `sdk/upstream` 的 `Resolve`、`Profile` 作断言；引擎删除时（`05ae9ef6f`），W10a 到 W10e 已把下面每一条改写成对新插件（`sdk/pluginsdk/standard` 的类型配置）的断言（azure_openai 的在 `sdk/pluginsdk/providers/openai/azure_test.go`）。本文件保留为移植的对照记录。azure_openai 没有黄金文件，这份清单就是它的验收依据（设计稿 7.3 节第 3、4 条）。
 
 标 **保留** 的断言不依赖引擎，原样留下（只需去掉 `runtime none`、`upstream` 块相关的部分）；标 **移植** 的要改写。
 

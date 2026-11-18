@@ -1,16 +1,18 @@
 # 云厂商账号怎么填：Azure OpenAI、Vertex AI、AWS Bedrock，以及 OpenAI 的组织 / 项目
 
-> 状态：2026-11-17，按分支 `feat/cloud-providers` 的代码写成，**未发布**。三家都没有用真实云账号验证过，只对官方文档、黄金样例和模拟上游测试过；没验证的事项见 [DESIGN-2026-11-17-CLOUD-PROVIDERS.md](DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节。
+> 状态：2026-11-17 按分支 `feat/cloud-providers` 的代码写成，2026-11-18 按转发 V2（CONTRACTS §112）改写，**未发布**。三家都没有用真实云账号验证过，只对官方文档、黄金样例和模拟上游测试过；没验证的事项见 [DESIGN-2026-11-17-CLOUD-PROVIDERS.md](DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节。
 > 给管理员看的填表说明。设计、与设计的差异见上面的设计文档（第 16 节），契约见 CONTRACTS §109。
 
 ## 1. 总览
 
 | 上游 | 插件（键） | 版本 | 最低核心版本 | 服务的平台 | 来源 |
 |---|---|---|---|---|---|
-| OpenAI 组织 / 项目 | `openai` | 0.4.4 | 0.1.290 | openai | 内置 |
-| Azure OpenAI | `azure_openai` | 0.1.0 | 0.1.290 | openai | 市场，自己安装 |
-| Vertex AI（Gemini） | `vertex` | 0.1.0 | 0.1.290 | gemini | 市场，自己安装 |
-| AWS Bedrock | `bedrock` | 0.1.0 | **0.1.304** | anthropic | 市场，自己安装 |
+| OpenAI 组织 / 项目 | `openai` | 0.5.0 | 0.1.304 | openai | 内置 |
+| Azure OpenAI | `azure_openai` | 0.1.0 | 0.1.304 | openai | 市场，自己安装 |
+| Vertex AI（Gemini） | `vertex` | 0.1.0 | 0.1.304 | gemini | 市场，自己安装 |
+| AWS Bedrock | `bedrock` | 0.1.0 | 0.1.304 | anthropic | 市场，自己安装 |
+
+四个插件都是转发 V2 的代码插件（`hostCompat` `>=0.1.304 <0.2.0`），要和核心、其余第一方插件一起升级；按旧插件协议构建的包装不上新核心（CONTRACTS §112.10）。
 
 - 三个新插件装好并启用后，在“新建账号”里各显示为一项，进去后用“鉴权方式”切换具体的账号类型。
 - 客户端用别的平台的协议访问时由核心转换（CONVERT-MATRIX），但带账号协议绑定（CONTRACTS §110）的核心上，**跨平台转换默认关闭**：要在账号编辑页“协议与模型 › 模型的协议限定”里为模型勾上对应的协议，否则这类请求返回 404。同一平台内的转换（如 Azure 经典类型把 `/v1/responses` 转成 chat）不用开。
@@ -34,7 +36,7 @@
 
 ## 3. Azure OpenAI
 
-需要核心 0.1.290 或更高（插件的 `hostCompat` 是 `>=0.1.290 <0.2.0`）。
+需要核心 0.1.304 或更高（插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`）。
 
 ### 3.1 选哪种类型
 
@@ -148,7 +150,7 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 
 ## 5. AWS Bedrock
 
-**需要核心 0.1.304 或更高**（插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`）：SigV4 签名和二进制响应流的解码都由核心完成，更早的核心装不上这个插件。
+需要核心 0.1.304 或更高（插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`）。SigV4 签名由插件自己做，二进制响应流由核心解码成 SSE（CONTRACTS §109）。
 
 只服务 anthropic 平台，只有一条路：
 
@@ -164,8 +166,8 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 | 鉴权方式 | 账号类型 | 凭证 | 会过期吗 |
 |---|---|---|---|
 | API Key（默认） | `bedrock_apikey` | Bedrock API Key，以 `Authorization: Bearer` 发送 | 短期 Key 最长 12 小时，且只能用在创建它的区域；长期 Key 按创建时在 AWS 上设定的有效期 |
-| Access Key | `bedrock_aksk` | IAM 用户的长期 Access Key ID + Secret Access Key，核心做 SigV4 签名 | 不过期 |
-| 临时凭证 | `bedrock_sts` | STS 签发的 Access Key ID + Secret Access Key + Session Token，核心做 SigV4 签名 | 会，按签发时的有效期 |
+| Access Key | `bedrock_aksk` | IAM 用户的长期 Access Key ID + Secret Access Key，插件做 SigV4 签名 | 不过期 |
+| 临时凭证 | `bedrock_sts` | STS 签发的 Access Key ID + Secret Access Key + Session Token，插件做 SigV4 签名 | 会，按签发时的有效期 |
 
 **三种都不会自动续期**。短期 Key 或临时凭证到期后上游拒绝请求，账号被禁用或冷却，要在账号上换新凭证并重新启用。
 
@@ -232,8 +234,8 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 
 ### 5.4 行为与限制
 
-- **Claude Code 的请求体不做深度清洗**（已知限制，表单里也写了）。Claude Code 会在工具定义里带 `custom`，在 `cache_control` 里带 `scope`、`ttl`，Bedrock 不接受这些字段，会回 400。插件只处理请求体顶层的几个字段（见下一条），够不到这些位置。账号要给 Claude Code 用时，在账号的“请求参数覆盖”里删除这些字段（带通配路径的删除，或 `prune_objects`）；这套配置还没有实测过。**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
-- 请求体按客户端原样转发，只处理这些顶层字段：
+- **Claude Code 的请求体会被清洗**：插件拿到完整请求体，删掉 Bedrock 不接受、Claude Code 写在深处的内容：工具定义里的 `custom`，`cache_control` 里的 `scope` 和模型不接受的 `ttl`（只有支持缓存 TTL 的模型保留 `5m`、`1h`），工具调用 ID 里 `[a-zA-Z0-9_-]` 以外的字符（换成 `_`），模型不接受的 thinking 设置。这套清洗只对照过旧版的规则和 AWS 文档，**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
+- 除上一条的清洗外，请求体按客户端原样转发，顶层只处理这些字段：
   - 删除 `model`、`stream`（都移到地址里），写入 `anthropic_version: bedrock-2023-05-31`。
   - 删除 `metadata`、`provider`。
   - `anthropic_beta`：见下一条。
@@ -266,4 +268,4 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 2. Azure 的验收测试（`next/e2e/ac29_azure_test.go`）已经写好，但还没有在任何 e2e 环境里执行过。
 3. 这些新表单没有在控制台里做过界面走查（分组折叠、鉴权方式切换、编辑时隐藏字段的回传、日期时间控件、预填的模型映射）。
 4. Bedrock 预填的模型映射和 beta 名单只对照过 AWS 文档（beta 名单里旧版的 8 项连文档也没对照），没有用真实账号调过；保留 `output_config` / `output_format` 也只有文档依据。
-5. Bedrock + Claude Code 的参数覆盖配置没有实测过。
+5. Bedrock 对 Claude Code 请求体的清洗没有用真实账号实测过。

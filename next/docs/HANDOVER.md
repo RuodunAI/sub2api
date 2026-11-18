@@ -497,7 +497,7 @@ platforms/                   三个内置平台的 JSON（Builtin() 每次重新
 
 ## 12. 插件开发工作流
 
-标准 API Key 类账号类型不用写代码：在清单里声明 `upstream`（引用 openai/anthropic/gemini 预设并覆盖少数参数），可以是只有清单的插件（`runtime: "none"`），见 [UPSTREAM-DECLARATIVE.md](UPSTREAM-DECLARATIVE.md) 和 CONTRACTS §86；有私有逻辑的再写代码，或用 `extend` 在声明结果上追加。
+平台插件都是代码插件，经 `PlatformService.Execute` 构造请求、交给核心的 HTTP 客户端（转发 V2，CONTRACTS §112）。标准 API Key 类账号类型用 `sdk/pluginsdk/standard` 库加厂商预设写，只需几行 Go，见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节；有私有逻辑的自己实现 `BuildUpstream`。（2026-11-09 到转发 V2 之间有过清单声明的上游和只有清单的插件，已删除。）
 
 开发工具是 `next/tools/sub2api-plugin`（自己的 Go 模块）：
 

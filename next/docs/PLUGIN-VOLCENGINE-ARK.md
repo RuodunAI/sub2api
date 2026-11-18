@@ -1,6 +1,6 @@
 # 插件设计：字节火山方舟 / 豆包（`volcengine`）
 
-> 状态：2026-09-29 调研产出的设计稿，**已实现**（0.5.x）。**2026-09-30 第一次经真实上游跑通视频全链路，见 §12**；正文里与 §12 冲突的数字以 §12 为准。
+> 状态：2026-09-29 调研产出的设计稿，**已实现**（0.5.x）。0.13.0 按转发 V2 改写（CONTRACTS §112，需核心 ≥0.1.304），现状见 §5 与 §17；§3、§4、§9–§16 是各期当时的设计与记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields`、`ExtractUsage` 事后调用、`Poll` 与两阶段核对都已删除。**2026-09-30 第一次经真实上游跑通视频全链路，见 §12**；正文里与 §12 冲突的数字以 §12 为准。
 > 目标：把 new-api 拆成两个渠道类型的「字节火山方舟」和「豆包通用 / 豆包视频」合成 **一个** sup2api 插件，支持自定义 Base URL 与素材库端点。
 > 参考实现：`D:\projects\golang\new-api`（AGPL-3.0，**只读设计、不复制代码**；sup2api 为 LGPL-3.0）。
 
@@ -235,9 +235,9 @@ rpc GetAccountCredentials(GetAccountCredentialsRequest) returns (GetAccountCrede
 
 ### 4.5.3 火山官方 SDK 用不到的地方（重要）
 
-**代理路径上用不了它。** 在 sup2api 的架构里上游请求是**核心发的**：插件的 `BuildUpstreamRequest` 只返回 `{method, url, headers, patches}`，真正的 HTTP 调用连同账号代理、SSRF 防护、用量提取、失败切换、并发槽位全在核心手里（`gateway/dispatch.go`）。插件改用 Ark SDK 自己发请求，就等于把这一整套全部绕过。
+**代理路径上用不了它。** 在 sup2api 的架构里上游请求是**核心发的**：插件在 `Execute` 里构造最终请求，交给核心的 HTTP 客户端（`RelayUpstream`），真正的 HTTP 调用连同账号代理、SSRF 防护、用量提取、失败切换、并发槽位全在核心手里（CONTRACTS §112）。插件改用 Ark SDK 自己发请求，就等于把这一整套全部绕过。插件和核心都不用厂商的 SDK 客户端。
 
-四期的核对循环使用 `BuildReconcileRequest` → 核心代发 → `ParseReconcileResponse`。后续 Poll 将查询与解析合并；当前 0.10.0 由核心调用一次 `Monitor`，插件通过受执行上下文约束的 `ExecuteHTTP` 查询，再用 `ReportTaskProgress` 提交进度或终态；连接仍由核心代理，沿用原账号的网络与限额约束，账务和结束监控由核心原子提交。
+任务观察由核心调用一次 `Monitor`，插件通过受执行上下文约束的 `ExecuteHTTP`（SDK 的 `Fetch`）查询，把进度或终态放在返回值里；连接仍由核心代理，沿用原账号的网络与限额约束，账务和结束监控由核心原子提交。
 
 所以本插件里火山官方 SDK 的作用域**只有素材库这一处**：它是插件自己的 HTTP 路由 + 自己的出口调用，不经过网关。
 
@@ -247,7 +247,7 @@ rpc GetAccountCredentials(GetAccountCredentialsRequest) returns (GetAccountCrede
 
 - **`bot` 前缀模型走另一条路径**：模型名以 `bot` 开头时是「接入点/智能体」，路径为 `/api/v3/bots/chat/completions`。判据只能是 `strings.HasPrefix(model, "bot")`——上游只给了这一个信号，所以名字里带 bot 但不是接入点的模型（如 `doubao-bot`）会被误判。一期已实现并在测试里钉住了这个边界。
 - **Ark 错误体的 `type` 不是 OpenAI 语义类型**。Ark 返回 `{"error":{code,message,param,type}}`，但 `type` 是 HTTP 短语（`Unauthorized`、`BadRequest`），不是 OpenAI 的 `invalid_request_error` / `rate_limit_error`。**任何「OpenAI 兼容就直接透传 type」的实现都会把 HTTP 短语吐给 OpenAI SDK**。正确做法是按状态码给标准类型，把 Ark 的 `code` 放进 reason。
-- **图片生成的失败可能是 HTTP 200**：整个请求一张也没生成时，Ark 在 200 里放顶层 `error` 对象；组图时 `data[]` 里也可能逐张带 `error`。核心只在非 2xx 才调 `ClassifyError`，所以这两种会被当成功请求记账。目前不会乱收钱（这时 `generated_images` 通常是 0 或缺失，`u("images")` 算出 0），但 `billable` 会因为 `Metrics` 非空而为 true。四期的 `ExtractUsage` 里处理。
+- **图片生成的失败可能是 HTTP 200**：整个请求一张也没生成时，Ark 在 200 里放顶层 `error` 对象；组图时 `data[]` 里也可能逐张带 `error`。核心只在非 2xx 才调 `ClassifyError`，所以这两种会被当成功请求记账。目前不会乱收钱（这时 `generated_images` 通常是 0 或缺失，`u("images")` 算出 0），但 `billable` 会因为 `Metrics` 非空而为 true。
 
 ### 4.7 明确不做
 
@@ -258,26 +258,27 @@ rpc GetAccountCredentials(GetAccountCredentialsRequest) returns (GetAccountCrede
 
 ## 5. 异步任务：插件执行，核心记录
 
-本轮先接入 [CONTRACTS §28](CONTRACTS.md#28-核心托管异步任务2026-10-01) 的核心托管任务，最终 0.10.0 使用 §31 的 Execute / Monitor 和 SDK 主动上报接口。插件负责 Ark/relay 的请求、状态和计量事实；核心提供任务身份、账号约束、统一调度、共享快照和账务。此前“不让核心拥有任何异步任务概念”的方案未能提供跨节点归属和查询协调，本轮用不带厂商字段的通用契约替代。
+本轮先接入 [CONTRACTS §28](CONTRACTS.md#28-核心托管异步任务2026-10-01) 的核心托管任务；0.13.0 起提交走 `Execute` 的等待形式、观察走 `Monitor`，事实都在返回值里（CONTRACTS §112）。插件负责 Ark/relay 的请求、状态和计量事实；核心提供任务身份、账号约束、统一调度、共享快照和账务。此前“不让核心拥有任何异步任务概念”的方案未能提供跨节点归属和查询协调，本轮用不带厂商字段的通用契约替代。
 
-新插件声明 `platform.tasks.v1`、`platform.execute.v1` 和 `platform.monitor.v1`，并在 `InitHost` 要求宿主 API 4，避免旧节点从共享数据库加载新包后缺少执行或记录能力。提交时由插件调用 ReserveAndWatch；后续查询读核心快照，监控由核心回调插件。先停止全部旧核心及其后台对账、升级完整集群，再激活此版本；内置插件自动升级和回退限制见 CONTRACTS §28.4。客户端应把提交响应中的 `s2task_` ID 当作不透明字符串，后续原样传回查询端点。
+插件声明 `platform.adapter.v1`、`platform.tasks.v1` 和 `platform.monitor.v1`；按旧插件协议构建的包被新核心拒绝（CONTRACTS §112.10）。提交时插件在 `Execute` 的返回值里给 `task`；后续查询读核心快照，观察由核心调 `Monitor`。先停止全部旧核心及其后台对账、升级完整集群，再激活此版本；内置插件自动升级和回退限制见 CONTRACTS §28.4。客户端应把提交响应中的 `s2task_` ID 当作不透明字符串，后续原样传回查询端点。
 
 ### 5.1 跑起来是这样
 
 ```
 提交  POST /api/v3/contents/generations/tasks
-      核心鉴权 → 调度选本插件账号 → 持久记录提交意图 → 插件 BuildUpstreamRequest → 请求上游
-      核心收到有界成功 JSON 后同步调 ParseTaskSubmission：
-        插件返回上游 task id、初始 queued 查询快照、按分辨率与时长预估的 Reservation
+      核心鉴权 → 调度选本插件账号 → 插件 Execute（task_submission）
+      插件构造请求，RelayAndWait：核心持久记录提交意图、请求上游、把有界成功 JSON 交还插件
+      插件解析，返回 task：上游 task id、初始 queued 查询快照、按分辨率与时长预估的 Reservation
       核心同事务写任务归属/账号/快照、usage_logs、预扣和 pending_settlements
       核心把提交响应中的上游 ID 换成 s2task_ 公开 ID，再返回客户端
+      （插件没返回 task：任务不登记，客户端报错，预扣释放）
 
 轮询  GET /api/v3/contents/generations/tasks/:task_id      billing: free
       核心鉴权、校验任务所属用户及当前分组的模型权限
       直接返回共享快照；不选账号、不使用 RankAccounts、不访问上游
 
-观测  核心认领到期任务 → Poll（始终使用提交账号）
-      → ExecuteHTTP（核心绑定账号代理和限额）→ 插件解析结果：
+观测  核心认领到期任务 → Monitor（始终使用提交账号）
+      → Fetch（核心绑定账号代理和限额）→ 插件解析结果并返回：
           还在跑    → PENDING + task_snapshot_json + next_check_after_sec
           成功      → SETTLED + 真实用量 + task_snapshot_json；无用量则 SETTLED_ESTIMATE
           上游失败  → FAILED + reason + task_snapshot_json
@@ -1073,3 +1074,13 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 后续清理修复了版本资源读取时未关闭临时插件包句柄的问题，Windows 的 `TestVersionAssetsReadApprovedPackageWithoutLocalProcess` 已在本地 PostgreSQL 下复测通过。
 
 验证：相关单元测试、前端回读/类型检查/构建通过；另启动独立本地 PostgreSQL 18.3，计费、用量及插件运行时事务测试通过，覆盖并发余额不足、幂等预扣与退款、最终结算、异步任务预扣接续及失败回滚。扩展 registry 测试中的 TestVersionAssetsReadApprovedPackageWithoutLocalProcess 在 Windows 临时文件清理时遇到占用失败，此项未通过。未调用真实付费视频上游，也未部署。
+
+## 17. 0.13.0：转发 V2（2026-11-18，需核心 ≥0.1.304）
+
+核心与全部平台插件改成一条请求路径（CONTRACTS §112），volcengine 随之改写，行为对客户端不变：
+
+- `Execute` 是 SDK 的 `ExecuteDefault`：普通端点（chat、embeddings、图片、Anthropic Messages）不等待地中继、返回 `host_usage`，用量由核心按清单规则读；两个视频提交端点是任务提交（也声明了 `usageSource: "plugin"`），等待形式中继、`ParseTaskSubmission` 读观察、返回 `task`（带按请求字段算的预估）。
+- 请求体完整交给插件，原来清单里的 `requestFields` 删除；任务观察只有 `Monitor`（原来的 `Poll` 函数体成为它），两阶段的 `BuildReconcileRequest` / `ParseReconcileResponse` 删除；清单删掉 `platform.execute.v1`、`platform.poll.v1`。
+- 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
+- 任务提交上插件没有返回 `task`（解析失败）时，任务不登记、客户端报错、预扣释放；等待期间插件崩溃时核心切断上游，这次请求不计费。
+- 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）。一致性套件的输入表已准备，还没有调用 `conformance.Run`。

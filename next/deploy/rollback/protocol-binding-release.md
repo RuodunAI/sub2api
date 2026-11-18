@@ -50,7 +50,9 @@ psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 --csv \
 
 ## 二、升级
 
-迁移 0106 只给 `accounts` 加两列（可空的 `text[]` 和带默认值的 `jsonb`），不回填、不重写表。按 [gateway/README.md](../gateway/README.md) “升级和恢复”的常规流程做，改库的版本走主节点优先（`primary-first-v1`）。
+迁移 0106 只给 `accounts` 加两列（可空的 `text[]` 和带默认值的 `jsonb`），不回填、不重写表。单独发布时按 [gateway/README.md](../gateway/README.md) “升级和恢复”的常规流程做，改库的版本走主节点优先（`primary-first-v1`）。
+
+**与转发 V2 同版发布时**（协议绑定已合并进 `feat/forwarding-v2`）：转发 V2 改了插件协议和 Host API（CONTRACTS §112.10、§112.11），核心和全部插件要一起换，托管升级走不通，只能停机重新部署（新核心加整套新插件，再把非内置插件逐个装上新版本），见 `CHANGELOG.md` “未发布”里转发 V2 一节的升级步骤。第一节的导出和第三节的配置照做，第二节的升级方式以那一节为准。
 
 升级前把导出的 CSV 留好，并通知依赖转换的客户：升级后到配置完成之间会有一段 404。想缩短这一段，就在升级前把第三节要点的账号和模型列成清单，升级完成后马上配置。
 

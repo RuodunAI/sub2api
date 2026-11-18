@@ -1,6 +1,8 @@
 # 云厂商上游：Vertex AI Gemini、Azure OpenAI、AWS Bedrock，以及 OpenAI 的组织 / 项目参数
 
-2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，未合并、未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；bedrock 清单的 `hostCompat` 写的是 `>=0.1.304 <0.2.0`，实际发布号不是 0.1.304 时要改清单和它的测试（azure_openai 不依赖核心改动，是 `>=0.1.290 <0.2.0`）。
+2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，已合并进 develop（`9a503d974`），未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；bedrock 清单的 `hostCompat` 写的是 `>=0.1.304 <0.2.0`，实际发布号不是 0.1.304 时要改清单和它的测试（azure_openai 不依赖核心改动，是 `>=0.1.290 <0.2.0`）。
+
+> **2026-11-18 转发 V2（CONTRACTS §112）之后**：核心替插件签名的扩展点（`signing`）删除，签名由插件用 `sdk/reqsign` 自己做；`response_stream` 留在插件交给核心的 `UpstreamRequest` 上；azure_openai 和 openai 改成用 `sdk/pluginsdk/standard` 的代码插件；bedrock 拿到完整请求体后清洗 Claude Code 的深层字段（第 12 节的已知限制已解决）。下文里的 `BuildUpstreamRequest`、补丁、`requestFields`、清单 `upstream` 声明都是当时的接口。现行说明见 CONTRACTS §109、§112 和 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)。
 
 正文第 1–15 节是设计时写的，没有逐句改成实现后的样子；**实现与设计不同的地方都列在第 16 节，以第 16 节和代码为准**。没有任何真实云账号可用，所有厂商行为来自 2026-11 的官方文档，第 12 节列出没有实测过的地方。操作说明见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)，契约见 CONTRACTS §109。
 
