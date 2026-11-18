@@ -21,7 +21,8 @@
 // embeddings (stage one), synchronous images (stage two) and the asset
 // library (stage three: assets.go, arkapi.go, store.go, routes.go - the
 // plugin's own admin routes over the Ark asset OpenAPI, with a local index in
-// plg_volcengine). Video (Seedance) comes later.
+// plg_volcengine), and video generation (Seedance) as a host-managed task
+// (video.go).
 package volcengine
 
 import (
