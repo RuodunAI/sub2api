@@ -36,7 +36,6 @@ const shared = `
 	"preset": "openai",
 	"baseURL": {"default": null, "required": true, "stripSuffixes": ["/openai/v1", "/openai"]},
 	"auth": {"type": "header", "name": "api-key", "value": "{api_key}"},
-	"classify": "azure_openai",
 	"models": null,`
 
 // notForwarded are the client headers of the openai platform that name an
@@ -384,9 +383,7 @@ func TestAccountTest(t *testing.T) {
 	}
 }
 
-// TestClassify pins §6.3: the azure_openai policy, which is the openai
-// policy plus one rule. A 404 DeploymentNotFound fails over without touching
-// the account, since another account's resource may have the deployment.
+// TestClassify pins §6.3: the openai policy as it is, with no Azure rules.
 func TestClassify(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	const (
@@ -396,6 +393,7 @@ func TestClassify(t *testing.T) {
 		cooldown = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN
 		disable  = pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE
 	)
+	p := resolveAll(t)[typeV1]
 	for _, tc := range []struct {
 		name    string
 		status  int32
@@ -407,8 +405,7 @@ func TestClassify(t *testing.T) {
 	}{
 		{"content filter", 400, nil, `{"error":{"code":"content_filter","message":"The response was filtered"}}`, toClient, none, 0},
 		{"bad request", 400, nil, `{"error":{"code":"BadRequest","message":"bad"}}`, toClient, none, 0},
-		{"deployment not found", 404, nil, `{"error":{"code":"DeploymentNotFound","message":"no such deployment"}}`, failover, none, 0},
-		{"another 404", 404, nil, `{"error":{"code":"404","message":"Resource not found"}}`, toClient, none, 0},
+		{"deployment not found", 404, nil, `{"error":{"code":"DeploymentNotFound","message":"no such deployment"}}`, toClient, none, 0},
 		{"bad key", 401, nil, `{"error":{"code":"401","message":"Access denied due to invalid subscription key"}}`, failover, disable, 0},
 		{"forbidden", 403, nil, `{"error":{"code":"403","message":"forbidden"}}`, failover, disable, 0},
 		{"rate limit, retry-after-ms", 429, map[string]string{"retry-after-ms": "30000", "retry-after": "31"}, `{"error":{"code":"429","message":"slow down"}}`, failover, cooldown, 30},
@@ -418,18 +415,16 @@ func TestClassify(t *testing.T) {
 		{"server error", 500, nil, `{"error":{"code":"InternalServerError","message":"oops"}}`, failover, cooldown, 10},
 		{"unavailable", 503, nil, ``, failover, cooldown, 10},
 	} {
+		out := p.Classify(now, &pluginv1.ClassifyErrorRequest{
+			Meta:   &pluginv1.RequestMeta{Protocol: "openai.chat"},
+			Status: tc.status, Headers: tc.headers, BodyPrefix: []byte(tc.body),
+		})
 		until := int64(0)
 		if tc.seconds > 0 {
 			until = now.Unix() + tc.seconds
 		}
-		for accountType, p := range resolveAll(t) {
-			out := p.Classify(now, &pluginv1.ClassifyErrorRequest{
-				Meta:   &pluginv1.RequestMeta{Protocol: "openai.chat"},
-				Status: tc.status, Headers: tc.headers, BodyPrefix: []byte(tc.body),
-			})
-			if out.Action != tc.action || out.AccountEffect != tc.effect || out.CooldownUntilUnix != until {
-				t.Errorf("%s, %s: %v %v until %d, want %v %v until %d", accountType, tc.name, out.Action, out.AccountEffect, out.CooldownUntilUnix, tc.action, tc.effect, until)
-			}
+		if out.Action != tc.action || out.AccountEffect != tc.effect || out.CooldownUntilUnix != until {
+			t.Errorf("%s: %v %v until %d, want %v %v until %d", tc.name, out.Action, out.AccountEffect, out.CooldownUntilUnix, tc.action, tc.effect, until)
 		}
 	}
 }
