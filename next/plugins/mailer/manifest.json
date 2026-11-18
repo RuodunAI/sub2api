@@ -6,12 +6,12 @@
     "en": "Delivers the core's and other plugins' notifications by email over SMTP (notification channel \"email\").",
     "zh": "通过 SMTP 以邮件发送核心和其他插件的通知（通知渠道「邮件」）。"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "sub2api",
   "icon": "text:M",
   "runtime": "grpc",
   "entry": { "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" } },
-  "hostCompat": ">=0.1.290 <0.2.0",
+  "hostCompat": ">=0.1.304 <0.2.0",
 
   "capabilities": [
     { "id": "notify.channel.v1" }
