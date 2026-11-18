@@ -8321,7 +8321,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | SSRF 规则、中继 / 取回 / `SendAccountRequest` 的主机规则（`manifest.UpstreamHostAllowed`，§112.17）、拒绝 `Host` 和 hop-by-hop 头、不跟随重定向、执行令牌的范围 | 安全 |
 | 任务快照 256 KiB（`protocol.MaxTaskSnapshotBytes`）、清单的计数（`usageStreamEvents` 8 个、`usageRequestFields` 16 条）、KV 自己的规则（单值 64 KiB、一次批量 3 MiB） | 存储格式和清单的规则，不是请求路径的上限 |
 
-代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、交给 `ClassifyError` 的错误体前 64 KiB。另有一处会切断上游流的：`sdk/awseventstream` 的单条消息上限 4 MiB（`MaxChunkMessageSize`，Bedrock 的响应流格式），这次没有改。
+代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、上游的错误体读前 64 KiB（`maxErrorBody`，交给客户端），其中前 4 KiB 交给 `ClassifyError`（`core.ClassifyPrefixBytes`，`ClassifyErrorRequest.body_prefix`）。（`sdk/awseventstream` 的单条消息上限 4 MiB 已按上表删除。）
 
 **同批的修正**（钱与正确性，各节已写）：等待形式的发布只看转发本身是否完成（§112.7）；观察没能落库时写零费用记录并立即释放预扣，`CloseExecutionUnreported` 对已有记录的请求幂等（§112.7）；任务提交报失败之前先确认提交是否已落库（§112.7）；原账号永远问不了的任务消耗失败次数而不是延后到期限（§112.9）；`usage.source: plugin` 的端点上插件选了核心读数而读数完全为空时按未上报处理（§112.2、§112.7）；WebSocket 第一轮可重试的 `return_error` 和 HTTP 一样转给客户端（此前变成 503 `no_available_account`）；网关和用量的取回是同一份实现（§112.6）；执行按存活恢复（§112.7）。
 

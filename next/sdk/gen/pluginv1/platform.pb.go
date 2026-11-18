@@ -553,7 +553,9 @@ type ExecuteRequest struct {
 	Account *Account `protobuf:"bytes,4,opt,name=account,proto3" json:"account,omitempty"`
 	// The whole request body in the upstream protocol (meta.protocol), after
 	// every rewrite the host owns; on a websocket endpoint the message of
-	// this turn. At most the gateway's request body limit.
+	// this turn. The client's request passed the gateway's request body
+	// limit; the host's own rewrites may make this larger, and its size is
+	// not checked again.
 	Body []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 	// Client headers from the host allow-list (lower-cased names).
 	InboundHeaders map[string]string `protobuf:"bytes,6,rep,name=inbound_headers,json=inboundHeaders,proto3" json:"inbound_headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`

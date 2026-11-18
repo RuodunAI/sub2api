@@ -151,7 +151,9 @@ message ExecuteRequest {
   Account account = 4;
   // The whole request body in the upstream protocol (meta.protocol), after
   // every rewrite the host owns; on a websocket endpoint the message of
-  // this turn. At most the gateway's request body limit.
+  // this turn. The client's request passed the gateway's request body
+  // limit; the host's own rewrites may make this larger, and its size is
+  // not checked again.
   bytes body = 5;
   // Client headers from the host allow-list (lower-cased names).
   map<string, string> inbound_headers = 6;

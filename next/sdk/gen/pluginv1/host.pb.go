@@ -85,7 +85,7 @@ type SendAccountRequestRequest struct {
 	Url       string            `protobuf:"bytes,3,opt,name=url,proto3" json:"url,omitempty"`
 	Headers   map[string]string `protobuf:"bytes,4,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	// Sent as is; Content-Type defaults to application/json when a body is
-	// given and the headers set none. At most 64 KiB.
+	// given and the headers set none.
 	Body []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 }
 
@@ -1157,9 +1157,9 @@ type RelayUpstreamResponse struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	// A 2xx answer: the bounded usage observation, never the entire answer or
-	// an unbounded stream. The plugin reads it into ExecuteResponse.usage or
-	// .task.
+	// A 2xx answer: the usage observation - the whole body of a non-streaming
+	// answer, the events the endpoint lists of a stream, never the stream
+	// itself. The plugin reads it into ExecuteResponse.usage or .task.
 	Observation *ExtractUsageRequest `protobuf:"bytes,1,opt,name=observation,proto3" json:"observation,omitempty"`
 	// A failed exchange (a non-2xx status or a transport error). The plugin
 	// classifies it locally and returns ExecuteResponse.classification; the
