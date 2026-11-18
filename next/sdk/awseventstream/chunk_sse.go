@@ -32,7 +32,8 @@ const MaxChunkMessageSize = 4 << 20
 //     it as the upstream's error;
 //   - any other message, and an event without bytes, is skipped;
 //   - a corrupt, truncated or oversized (MaxChunkMessageSize) message fails
-//     the read: the stream was cut.
+//     the read: the stream was cut. A message repeating a header name is
+//     corrupt (Decoder.Decode), so the type of a message is never ambiguous.
 //
 // It is not a reader for event streams in general: one whose events carry
 // their data in another shape (Bedrock's ConverseStream, for one) has no

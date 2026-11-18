@@ -6,9 +6,11 @@
 //
 // Messages are decoded and encoded by the official library, aws-sdk-go-v2's
 // aws/protocol/eventstream: the checksum of a message, its headers and their
-// value types, and the bytes written are its work. The library reads
-// whatever length a prelude announces, so the package reads the prelude
-// itself and bounds the message before handing it over (Decoder.Decode).
+// value types, and the bytes written are its work. Two things the library
+// lets through are refused here (Decoder.Decode): it reads whatever length a
+// prelude announces, so the package reads the prelude itself and bounds the
+// message before handing it over; and it keeps the last of headers sharing a
+// name, so a message repeating a header name is rejected after it.
 //
 // A message on the wire:
 //
@@ -83,20 +85,23 @@ var ErrCorrupt = errors.New("awseventstream: corrupt message")
 var ErrTooLarge = errors.New("awseventstream: message over the size limit")
 
 // Header is one message header. Only string values are kept: the values of
-// the other types are decoded and left out. Of headers sharing a name the
-// last value is kept.
+// the other types are decoded and left out. A name occurs once in a message:
+// AWS never repeats one, and a decoded message that does is refused
+// (ErrCorrupt), whatever the types of the values.
 type Header struct {
 	Name  string
 	Value string
 }
 
-// Message is one decoded frame.
+// Message is one decoded frame. Its headers have distinct names, so what
+// Header returns for a name is that header's only value in the frame: a
+// second ":message-type" cannot change how a message is routed.
 type Message struct {
 	Headers []Header
 	Payload []byte
 }
 
-// Header returns the value of the first header called name, "" without one.
+// Header returns the string value of the header called name, "" without one.
 func (m Message) Header(name string) string {
 	for _, h := range m.Headers {
 		if h.Name == name {
@@ -139,9 +144,10 @@ func NewDecoder(r io.Reader, opts ...DecoderOption) *Decoder {
 
 // Decode returns the next message. Its payload is only valid until the next
 // call. At a clean end of the stream it returns io.EOF; a stream that ends
-// inside a message returns io.ErrUnexpectedEOF, a malformed message an error
-// wrapping ErrCorrupt, a message over the decoder's limit an error wrapping
-// ErrTooLarge, and a failing reader that reader's error.
+// inside a message returns io.ErrUnexpectedEOF, a malformed message (one
+// repeating a header name included) an error wrapping ErrCorrupt, a message
+// over the decoder's limit an error wrapping ErrTooLarge, and a failing
+// reader that reader's error.
 func (d *Decoder) Decode() (Message, error) {
 	var prelude [preludeSize]byte
 	if _, err := io.ReadFull(d.r, prelude[:]); err != nil {
@@ -170,6 +176,9 @@ func (d *Decoder) Decode() (Message, error) {
 	}
 	if msg.Payload != nil {
 		d.buf = msg.Payload
+	}
+	if err := checkHeaders(msg.Headers, binary.BigEndian.Uint32(prelude[4:8])); err != nil {
+		return Message{}, err
 	}
 	return Message{Headers: stringHeaders(msg.Headers), Payload: msg.Payload}, nil
 }
@@ -206,6 +215,32 @@ func (s *source) Read(p []byte) (int, error) {
 		s.err = err
 	}
 	return n, err
+}
+
+// checkHeaders refuses a header block of wireLen bytes the library decoded
+// leniently into headers. The library keeps one header per name (the last
+// value), so a block repeating a name comes back shorter than it was sent:
+// writing the decoded headers out again and comparing the lengths finds a
+// repeat of any value type, with the library's own knowledge of the types.
+// The library also reads values longer than the format allows and refuses
+// to write them; such a block is refused here too.
+func checkHeaders(headers eventstream.Headers, wireLen uint32) error {
+	var n byteCount
+	switch err := eventstream.EncodeHeaders(&n, headers); {
+	case err != nil:
+		return fmt.Errorf("%w: a header is over the format's limits", ErrCorrupt)
+	case uint32(n) != wireLen:
+		return fmt.Errorf("%w: a header name is repeated", ErrCorrupt)
+	}
+	return nil
+}
+
+// byteCount counts the bytes written to it.
+type byteCount int
+
+func (n *byteCount) Write(p []byte) (int, error) {
+	*n += byteCount(len(p))
+	return len(p), nil
 }
 
 // stringHeaders are the headers with a string value.

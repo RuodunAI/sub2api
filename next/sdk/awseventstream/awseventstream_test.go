@@ -408,12 +408,67 @@ func TestMalformedHeaders(t *testing.T) {
 	if err != nil || len(msg.Headers) != 2 || msg.Header(HeaderMessageType) != "event" || len(msg.Payload) != 0 {
 		t.Fatalf("good block: %v %v", msg, err)
 	}
-	// What the official decoder accepts although no encoder writes it: a
-	// header without a name, and a name used twice (the last value is kept).
-	lenient := append(append(str("", "x"), str("a", "1")...), str("a", "2")...)
-	msg, err = NewDecoder(bytes.NewReader(rawFrame(lenient, nil))).Decode()
-	if err != nil || len(msg.Headers) != 2 || msg.Header("") != "x" || msg.Header("a") != "2" {
+	// What the official decoder accepts although no encoder writes it, and
+	// stays accepted: a header without a name.
+	msg, err = NewDecoder(bytes.NewReader(rawFrame(append(str("", "x"), str("a", "1")...), nil))).Decode()
+	if err != nil || len(msg.Headers) != 2 || msg.Header("") != "x" || msg.Header("a") != "1" {
 		t.Fatalf("lenient block: %v %v", msg, err)
+	}
+}
+
+// A message repeating a header name is corrupt, whatever the value types and
+// wherever the repeat stands: the official decoder would keep the last value
+// only, and the headers that route a message must not be replaceable.
+func TestRepeatedHeaders(t *testing.T) {
+	str := func(name, value string) []byte {
+		b := append([]byte{byte(len(name))}, name...)
+		b = append(b, typeString)
+		b = binary.BigEndian.AppendUint16(b, uint16(len(value)))
+		return append(b, value...)
+	}
+	typed := func(name string, typ byte, value ...byte) []byte {
+		return append(append(append([]byte{byte(len(name))}, name...), typ), value...)
+	}
+	join := func(headers ...[]byte) []byte { return bytes.Join(headers, nil) }
+	event, chunk := str(HeaderMessageType, MessageTypeEvent), str(HeaderEventType, "chunk")
+
+	for name, headers := range map[string][]byte{
+		"string then string":         join(event, chunk, str(HeaderMessageType, MessageTypeException)),
+		"same string twice":          join(event, event),
+		"string then int32":          join(event, chunk, typed(HeaderMessageType, typeInt32, 0, 0, 0, 1)),
+		"string then bool":           join(event, typed(HeaderMessageType, 0)),
+		"int32 then string":          join(typed(HeaderMessageType, typeInt32, 0, 0, 0, 1), event),
+		"bool then bool":             join(event, typed("flag", 0), typed("flag", 1)),
+		"event type repeated":        join(event, chunk, str(HeaderEventType, "other")),
+		"event type then uuid":       join(event, chunk, typed(HeaderEventType, typeUUID, make([]byte, 16)...)),
+		"exception type repeated":    join(str(HeaderMessageType, MessageTypeException), str(HeaderExceptionType, "a"), str(HeaderExceptionType, "b")),
+		"exception type then bytes":  join(str(HeaderExceptionType, "a"), typed(HeaderExceptionType, typeBytes, 0, 1, 'x')),
+		"an unrelated header":        join(event, str("x", "1"), chunk, str("x", "2")),
+		"an empty name":              join(str("", "1"), event, str("", "2")),
+		"three of a name":            join(event, event, event),
+		"value over the limit":       join(event, typed("big", typeString, append([]byte{0x80, 0x00}, make([]byte, 1<<15)...)...)),
+		"bytes value over the limit": join(event, typed("big", typeBytes, append([]byte{0xff, 0xff}, make([]byte, 1<<16-1)...)...)),
+	} {
+		frame := rawFrame(headers, chunkPayload(evStart))
+		if msg, err := NewDecoder(bytes.NewReader(frame)).Decode(); !errors.Is(err, ErrCorrupt) || len(msg.Headers) != 0 || msg.Payload != nil {
+			t.Errorf("%s: decoded %v, err %v", name, msg, err)
+		}
+		// The SSE view delivers what came before the frame and then fails:
+		// the frame is neither skipped nor read as an event or an exception.
+		stream := append(chunkFrame(t, evStop), frame...)
+		got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(stream)))
+		if want := "event: message_stop\ndata: " + evStop + "\n\n"; !errors.Is(err, ErrCorrupt) || string(got) != want {
+			t.Errorf("%s: sse %q, err %v", name, got, err)
+		}
+	}
+
+	// Headers of every type under distinct names, at the format's limits,
+	// are read as before.
+	block := join(event, chunk, typed("b", 0), typed("B", 1), typed("i", typeInt32, 0, 0, 0, 1), typed("u", typeUUID, make([]byte, 16)...),
+		typed("t", typeTimestamp, make([]byte, 8)...), typed("y", typeBytes, append([]byte{0x7f, 0xff}, make([]byte, 1<<15-1)...)...))
+	msg, err := NewDecoder(bytes.NewReader(rawFrame(block, nil))).Decode()
+	if err != nil || len(msg.Headers) != 2 || msg.Header(HeaderMessageType) != MessageTypeEvent || msg.Header(HeaderEventType) != "chunk" {
+		t.Fatalf("distinct names: %v %v", msg.Headers, err)
 	}
 }
 
@@ -424,6 +479,7 @@ func FuzzDecoder(f *testing.F) {
 	}
 	f.Add(rawPrelude(MaxMessageSize, 0))
 	f.Add(rawFrame([]byte{1, 'a', 10}, nil))
+	f.Add(rawFrame([]byte{1, 'a', 0, 1, 'a', 1}, nil))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		d := NewDecoder(bytes.NewReader(data))
 		read := 0
