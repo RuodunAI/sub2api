@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // InvokeModel takes beta features in the body (anthropic_beta), not in the
@@ -82,7 +84,7 @@ func bodyBetas(value gjson.Result) []string {
 		return headerBetas(value.Str)
 	}
 	var out []string
-	eachElement(value, func(item gjson.Result) {
+	jsonedit.EachElement(value, func(item gjson.Result) {
 		if item.Type == gjson.String {
 			out = append(out, item.Str)
 		}
@@ -97,7 +99,7 @@ func bodyBetas(value gjson.Result) []string {
 // need tool search.
 func toolBetas(tools gjson.Result, m claudeModel) []string {
 	var out []string
-	eachElement(tools, func(tool gjson.Result) {
+	jsonedit.EachElement(tools, func(tool gjson.Result) {
 		switch typ := tool.Get("type").String(); {
 		case typ == "computer_20250124":
 			out = append(out, betaComputerUse2501)
@@ -119,7 +121,7 @@ func isToolSearchTool(typ string) bool {
 // with input examples.
 func usesAdvancedToolUse(tool gjson.Result) bool {
 	callers := false
-	eachElement(tool.Get("allowed_callers"), func(c gjson.Result) { callers = callers || c.Str == "code_execution_20250825" })
+	jsonedit.EachElement(tool.Get("allowed_callers"), func(c gjson.Result) { callers = callers || c.Str == "code_execution_20250825" })
 	examples := tool.Get("input_examples")
 	return callers || examples.IsArray() && examples.Get("#").Int() > 0
 }

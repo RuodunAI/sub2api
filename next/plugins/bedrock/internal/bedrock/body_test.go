@@ -11,63 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// TestEditsObject pins the member rewrite: removed members take the right
-// comma, set members replace in place or append, and the bytes around stay
-// as they were.
-func TestEditsObject(t *testing.T) {
-	drop := func(keys ...string) func(string, gjson.Result) bool { return isKey(keys...) }
-	for _, tc := range []struct {
-		name, in string
-		drop     func(string, gjson.Result) bool
-		set      []member
-		want     string
-	}{
-		{"nothing", `{"a":1}`, nil, nil, `{"a":1}`},
-		{"first", `{"a":1,"b":2,"c":3}`, drop("a"), nil, `{"b":2,"c":3}`},
-		{"middle", `{"a":1,"b":2,"c":3}`, drop("b"), nil, `{"a":1,"c":3}`},
-		{"last", `{"a":1,"b":2,"c":3}`, drop("c"), nil, `{"a":1,"b":2}`},
-		{"leading run", `{"a":1,"b":2,"c":3}`, drop("a", "b"), nil, `{"c":3}`},
-		{"trailing run", `{"a":1,"b":2,"c":3}`, drop("b", "c"), nil, `{"a":1}`},
-		{"around a kept one", `{"a":1,"b":2,"c":3}`, drop("a", "c"), nil, `{"b":2}`},
-		{"all", `{"a":1,"b":2}`, drop("a", "b"), nil, `{}`},
-		{"empty object", `{}`, drop("a"), nil, `{}`},
-		{"set in place", `{"a":1,"b":2}`, nil, []member{{"a", []byte(`"x"`)}}, `{"a":"x","b":2}`},
-		{"set appends", `{"a":1}`, nil, []member{{"z", []byte(`true`)}, {"y", []byte(`[]`)}}, `{"a":1,"z":true,"y":[]}`},
-		{"set into empty", `{}`, nil, []member{{"z", []byte(`1`)}, {"y", []byte(`2`)}}, `{"z":1,"y":2}`},
-		{"set after all removed", `{"a":1,"b":2}`, drop("a", "b"), []member{{"z", []byte(`1`)}}, `{"z":1}`},
-		{"set after the last removed", `{"a":1,"b":2}`, drop("b"), []member{{"z", []byte(`1`)}}, `{"a":1,"z":1}`},
-		{"duplicates of a set key go", `{"a":1,"b":2,"a":3}`, nil, []member{{"a", []byte(`9`)}}, `{"a":9,"b":2}`},
-		{"duplicates of a dropped key go", `{"a":1,"b":2,"a":3}`, drop("a"), nil, `{"b":2}`},
-		{"escaped key", `{"model":"x","b":2}`, drop("model"), nil, `{"b":2}`},
-		{"whitespace kept", "{\n  \"a\": 1,\n  \"b\" : [ 1 ],\n  \"c\": 3\n}", drop("b"), nil, "{\n  \"a\": 1,\n  \"c\": 3\n}"},
-		{"whitespace, leading", "{ \"a\": 1 ,\n \"b\": 2 }", drop("a"), []member{{"z", []byte(`0`)}}, "{ \"b\": 2,\"z\":0 }"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			doc, e, err := parseObject([]byte(tc.in))
-			if err != nil {
-				t.Fatal(err)
-			}
-			e.object(doc, tc.drop, tc.set...)
-			got, err := e.bytes()
-			if err != nil || string(got) != tc.want || !json.Valid(got) {
-				t.Fatalf("got %s (%v)\nwant %s", got, err, tc.want)
-			}
-		})
-	}
-	for _, in := range []string{``, `[]`, `"x"`, `{"a":`, `{} {}`} {
-		if _, _, err := parseObject([]byte(in)); err == nil {
-			t.Errorf("%q parsed as an object", in)
-		}
-	}
-	// Overlapping edits are a bug, reported rather than applied.
-	doc, e, _ := parseObject([]byte(`{"a":{"b":1}}`))
-	e.object(doc, isKey("a"))
-	e.replace(doc.Get("a.b"), []byte(`2`))
-	if _, err := e.bytes(); err != errOverlap {
-		t.Fatalf("overlap: %v", err)
-	}
-}
-
 // TestInvokeBodyTopLevel: the path carries model and stream, so both leave
 // the body; anthropic_version is always set, the top-level fields InvokeModel
 // refuses leave, output_config stays, and the fallbacks the core guards are

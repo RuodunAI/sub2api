@@ -17,6 +17,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // unsupportedFields are body fields the ChatGPT Codex backend rejects
@@ -109,12 +110,12 @@ func accountCredentials(acc *pluginv1.Account) (credentials, error) {
 }
 
 // userMessage is a Responses input array holding one user text message.
-func userMessage(text string) string {
+func userMessage(text string) []byte {
 	b, _ := json.Marshal([]map[string]any{{
 		"type": "message", "role": "user",
 		"content": []map[string]string{{"type": "input_text", "text": text}},
 	}})
-	return string(b)
+	return b
 }
 
 // Execute implements pluginsdk.Executor: build the request (BuildUpstream)
@@ -194,7 +195,7 @@ func webSocketURL(httpURL string) (string, error) {
 
 // codexBody makes a Responses body (an HTTP request or a WebSocket
 // response.create message) one the Codex backend accepts, editing the
-// received bytes in place of the fields concerned (body.go):
+// received bytes in place of the fields concerned (jsonedit):
 //
 //   - store=false (stored responses are refused);
 //   - a string input becomes an array holding one user message (an array
@@ -204,58 +205,37 @@ func webSocketURL(httpURL string) (string, error) {
 //   - instructions "" when the body has none (the field is required);
 //   - the fields the upstream refuses are removed (removedFields).
 func codexBody(body []byte, ws bool) ([]byte, error) {
-	obj, ok := parseObject(body)
-	if !ok {
+	d, err := jsonedit.Parse(body)
+	if err != nil || !d.Root().IsObject() {
 		return nil, status.Error(codes.InvalidArgument, "the request body is not a JSON object")
 	}
-	removed := removedFields(ws)
-	drop := func(m member) bool { return slices.Contains(removed, m.key.Str) }
-	var edits []edit
-	has := map[string]bool{}
-	for _, m := range obj.members {
-		if drop(m) {
-			continue
-		}
-		has[m.key.Str] = true
-		switch m.key.Str {
-		case "store":
-			if m.value.Raw != "false" {
-				edits = append(edits, replaceValue(m.value, "false"))
-			}
-		case "input":
-			edits = append(edits, inputEdits(m.value)...)
-		}
+	for _, f := range removedFields(ws) {
+		d.Delete(f)
 	}
-	var added []string
-	if !has["store"] {
-		added = append(added, `"store":false`)
+	d.Set("store", []byte("false"))
+	d.Default("instructions", []byte(`""`))
+	inputEdits(d, d.Root().Get("input"))
+	out, err := d.Bytes()
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if !has["instructions"] {
-		added = append(added, `"instructions":""`)
-	}
-	return splice(body, append(edits, obj.reshape(drop, added...)...)), nil
+	return out, nil
 }
 
 // inputEdits turn a string input into an array and system items into
 // developer items.
-func inputEdits(input gjson.Result) []edit {
+func inputEdits(d *jsonedit.Doc, input gjson.Result) {
 	switch {
+	case input.Type == gjson.String && strings.TrimSpace(input.Str) == "":
+		d.Replace(input, []byte("[]"))
 	case input.Type == gjson.String:
-		if strings.TrimSpace(input.Str) == "" {
-			return []edit{replaceValue(input, "[]")}
-		}
-		return []edit{replaceValue(input, userMessage(input.Str))}
-	case input.IsArray():
-		var edits []edit
-		input.ForEach(func(_, item gjson.Result) bool {
-			if role, ok := systemRole(item); ok {
-				edits = append(edits, replaceValue(role, `"developer"`))
-			}
-			return true
-		})
-		return edits
+		d.Replace(input, userMessage(input.Str))
 	default:
-		return nil
+		jsonedit.EachElement(input, func(item gjson.Result) {
+			if role, ok := systemRole(item); ok {
+				d.Replace(role, []byte(`"developer"`))
+			}
+		})
 	}
 }
 

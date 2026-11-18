@@ -55,6 +55,10 @@ import (
 // values.
 var sigV4ResultHeaders = []string{"Authorization", "X-Amz-Date", "X-Amz-Security-Token"}
 
+// sigV4SignedHeaders are what SignedHeaders returns: the result headers
+// and the Content-Type the signature covers.
+var sigV4SignedHeaders = append([]string{"Content-Type"}, sigV4ResultHeaders...)
+
 // sigV4SignerOptions adjust the SDK signer. Production sets none; the tests
 // have the signer log the canonical request it signed (sigv4_test.go).
 var sigV4SignerOptions []func(*v4.SignerOptions)
