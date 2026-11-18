@@ -78,7 +78,8 @@ type Binding struct {
 	// a copy that follows no redirect and has no client-wide timeout.
 	Client func(ctx context.Context) (*http.Client, error)
 	// HeaderTimeout and TotalTimeout are the host's; the request's options
-	// may only shorten them. <= 0 is none.
+	// (set by no SDK helper any more, the field is to leave the protocol)
+	// can only shorten them. <= 0 is none.
 	HeaderTimeout, TotalTimeout time.Duration
 	// Admit, when set, is asked right before the exchange; its error is
 	// returned as the fetch's error and nothing is sent.

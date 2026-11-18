@@ -2458,7 +2458,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 
 - token 为随机 256 bit，仅存在于提供本次调用的具体插件进程及其 broker；不能用于同插件另一个进程或重启后的实例。token 在 Monitor 返回时撤销；取消在途 HTTP 并等待其结束后，才释放账号执行资源。
 - 取回次数不限（转发 V2 收尾起；此前每次 Monitor 最多 8 次）；主机必须在清单 `externalServices` 内或是账号自己的上游地址（§112.6）。账号、代理及限额由核心捕获，插件请求没有可更换的账号/代理字段。每次实际发送前执行原账号的原子限额检查。
-- 使用核心 SSRF 检查，禁用自动重定向，不做应用层自动重试（Go transport 仍可能按标准规则重试可重放请求）。禁止 Host、代理认证及 hop-by-hop 等传输控制头和不是 HTTP 的头。URL、请求头、请求体、回答都不限大小，方法也不按名单检查（转发 V2 收尾起，此前 URL 8 KiB、请求头 64 个 / 32 KiB、请求体不超过请求体上限、回答 8 MiB 截断；§112.16）。Monitor 的取回整个交换 20 秒（`reconcileHTTPTimeout`），插件只能收紧；实现与网关的取回是同一份 `internal/execfetch`。
+- 使用核心 SSRF 检查，禁用自动重定向，不做应用层自动重试（Go transport 仍可能按标准规则重试可重放请求）。禁止 Host、代理认证及 hop-by-hop 等传输控制头和不是 HTTP 的头。URL、请求头、请求体、回答都不限大小，方法也不按名单检查（转发 V2 收尾起，此前 URL 8 KiB、请求头 64 个 / 32 KiB、请求体不超过请求体上限、回答 8 MiB 截断；§112.16）。Monitor 的取回整个交换 20 秒（`reconcileHTTPTimeout`），请求的 `options` 只能收紧（SDK 已不转发它）；实现与网关的取回是同一份 `internal/execfetch`。
 - 宿主独立记录这次调用里有没有一次完整、成功的取回（拿到 HTTP 状态、没有传输错误）。无有效网络观测不能提交终态，即便插件错误地声称成功。任务快照 ID 校验、执行权 fencing 与账务事务保持 §28 的约束。
 
 这项能力不要求插件新增通用 `net` 或账号枚举权限。它约束的是本次受调度执行的专用 HTTP 通道；插件既有的通用 Egress 权限仍独立存在，不能据此声称任意恶意插件的所有出网都会自动使用任务账号限额。内置 volcengine 的 Monitor 只使用取回，素材管理继续使用其已授权的通用出口。
@@ -8194,7 +8194,7 @@ message UpstreamRequest {
   bytes body = 5;                           // 最终字节；WebSocket 轮次是这一轮的消息
   string upstream_model = 6;                // 记入使用记录；类型声明了模型可用性时核对
   string response_stream = 7;               // 如 "aws-eventstream-chunk"
-  UpstreamOptions options = 8;              // response_header_timeout_ms、total_timeout_ms，只能收紧
+  UpstreamOptions options = 8;              // response_header_timeout_ms、total_timeout_ms：SDK 不再提供设置它的方法，字段待从协议删除；仍在时只能收紧
 }
 ```
 
@@ -8229,7 +8229,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读；只比主机名，不比端口，不含子域）。其他主机 `PERMISSION_DENIED`。
 - 主机规则是 `manifest.Manifest.FetchHostAllowed`，核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
-- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；`ExecutionHTTPRequest.options`（字段 6）只能收紧。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
+- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；`ExecutionHTTPRequest.options`（字段 6）只能收紧（SDK 的 `Fetch` 已不转发它，字段待从协议删除）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
 - 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误），核心不置 `truncated`；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
 - 签名：`sdk/reqsign.Sign` 对插件构造的 `*http.Request` 签名，`reqsign.SignedHeaders(req, scheme)` 给出签名写入或覆盖的头（`aws-sigv4`：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
 
@@ -8352,7 +8352,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 |---|---|
 | 请求体是合法 JSON（合法 UTF-8、没有重复键），嵌套深度 10000（`gateway/jsonscan.go`） | 更深的输入会让进程崩溃 |
 | `max_request_body_mb`（§111） | 管理员配置；只管网关读客户端的 HTTP 请求体和 WebSocket 单条消息 |
-| 上游的响应头超时、流式空闲超时（未设置时 180 秒）、`relay_timeout_seconds`（环境变量，§74.3） | 管理员配置；插件只能收紧 |
+| 上游的响应头超时、流式空闲超时（未设置时 180 秒）、`relay_timeout_seconds`（环境变量，§74.3） | 管理员配置（`UpstreamRequest.options` 只能收紧它们，SDK 已不提供设置它的方法，字段待从协议删除） |
 | 平台调用超时（只管 `ClassifyError` 和读断开策略，§111.4）、钩子超时、平台热路径超时（`ResolveModel`、`EstimateUsage`） | 系统设置，管理员配置 |
 | `Monitor`：整个调用 30 秒（每条任务的处理预算）、每次取回 20 秒；后台结算的查询失败次数（`max_poll_failures`）和任务期限 | 后台工作的轮次要结束才能处理下一批；失败次数和期限决定退款 |
 | 事实的提交重试窗口 15 秒（`core.ExecutionFinishTimeout`） | 钱：窗口之后按未上报关闭，不让请求无限挂着 |

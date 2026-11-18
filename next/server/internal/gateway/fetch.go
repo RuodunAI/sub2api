@@ -16,8 +16,8 @@ import (
 // back to the plugin (a token exchange, an upload, a preflight). It is the
 // attempt's account's request like the relay - its proxy, the SSRF guard,
 // no redirect, the environment's timeouts (no total timeout when
-// relay_timeout_seconds is unset, as for the relayed request), which the
-// plugin may only shorten - but not the client's request: the operator's
+// relay_timeout_seconds is unset, as for the relayed request) - but not the
+// client's request: the operator's
 // passthrough and overrides do not apply. The runtime has already checked
 // the token and the host; execfetch applies what every fetch shares with
 // Monitor's. A transport failure is an answer with status
