@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -84,7 +85,7 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "relay failed internally")
 		}
-		sc.leave()
+		sc.leave(proto.Size(out))
 	}()
 	switch {
 	case !sc.relay:
@@ -141,7 +142,7 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "execution HTTP failed internally")
 		}
-		sc.leave()
+		sc.leave(proto.Size(out))
 	}()
 	if sc.client.Fetch == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this call has no fetch capability")
@@ -249,7 +250,8 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
 		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission(),
 			bodyBytes: int64(len(in.GetBody())), segmentTimeout: segment}
-		sc.segment = time.AfterFunc(segment, func() { cancel(errSegmentTimeout) })
+		// The first stretch also delivers the request, body and all.
+		sc.segment = time.AfterFunc(sc.segmentLimit(int64(proto.Size(in))), func() { cancel(errSegmentTimeout) })
 		token, err := p.scopes.open(sc)
 		if err != nil {
 			sc.segment.Stop()
