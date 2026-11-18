@@ -21,7 +21,21 @@ func startBuiltinBootstrap(ctx context.Context, s *install.Service, locker core.
 	return builtinConvergence(core.WithPluginBootstrap(ctx), s, locker, reg, dir, log, true)
 }
 
-func builtinConvergence(ctx context.Context, s *install.Service, locker core.Locker, reg core.PluginRegistry, dir string, log *slog.Logger, once bool) (*atomic.Bool, func(context.Context)) {
+// builtinInstaller is what the builtin loops use of install.Service.
+type builtinInstaller interface {
+	BuiltinRequirements(dir string) (map[string]install.BuiltinRequirement, error)
+	BuiltinsReady(ctx context.Context, want map[string]install.BuiltinRequirement, gen core.Generation) (bool, error)
+	EnsureBuiltin(ctx context.Context, dir string, log *slog.Logger) error
+}
+
+// builtinConvergence installs the bundled plugins until this node runs them
+// and keeps converging afterwards. The returned flag gates the node's
+// readiness (/healthz) at start only: once the bundled plugins ran here it
+// stays set. A later rollout of one of them (an install-only plugin being
+// enabled, a version switch, a disable) changes plugin rows every node reads
+// alike, so dropping readiness then would take every node out of the load
+// balancer at the same moment, while each still serves everything else.
+func builtinConvergence(ctx context.Context, s builtinInstaller, locker core.Locker, reg core.PluginRegistry, dir string, log *slog.Logger, once bool) (*atomic.Bool, func(context.Context)) {
 	ready := &atomic.Bool{}
 	stop := runBuiltinLoop(ctx, func(ctx context.Context) {
 		var requirements map[string]install.BuiltinRequirement
@@ -37,11 +51,12 @@ func builtinConvergence(ctx context.Context, s *install.Service, locker core.Loc
 				rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
 				ok, err := s.BuiltinsReady(rctx, requirements, reg.Current())
 				rcancel()
-				ready.Store(err == nil && ok)
-				if ready.Load() && once {
-					return
-				}
-				if !ready.Load() {
+				if err == nil && ok {
+					ready.Store(true)
+					if once {
+						return
+					}
+				} else {
 					ensureBuiltinOnce(ctx, s, locker, dir, log, "builtin install lock failed",
 						func(err error) { log.Warn("builtin install incomplete; will retry", "err", err) })
 				}
@@ -128,7 +143,7 @@ func waitOrDone(ctx context.Context, d time.Duration) bool {
 // one EnsureBuiltin pass under it, bounded by the 10 minute install timeout.
 // It reports whether the pass ran at all: false means another node holds the
 // lock and the caller's loop should simply try again on its next tick.
-func ensureBuiltinOnce(ctx context.Context, s *install.Service, locker core.Locker, dir string, log *slog.Logger, lockMsg string, incomplete func(error)) bool {
+func ensureBuiltinOnce(ctx context.Context, s builtinInstaller, locker core.Locker, dir string, log *slog.Logger, lockMsg string, incomplete func(error)) bool {
 	lk, held, err := locker.TryLock(ctx, "plugins:builtin", time.Minute)
 	if err != nil {
 		log.Warn(lockMsg, "err", err)

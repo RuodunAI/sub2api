@@ -91,7 +91,7 @@ func TestAC33_OldContractPackagesRefused(t *testing.T) {
 				return r.Status == 200 || r.Status == 204 || r.Status == 404
 			})
 		})
-		admin.API(t, http.MethodPost, "/plugins/"+dp.Key+"/enable", nil)
+		e.changePlugin(admin, dp.Key, "enable", nil)
 		want := protocol.OutdatedContractMessage(dp.Key, version, hostVersion)
 		// Every node refuses to prepare the version, with the one message,
 		// and the plugin list says so.
