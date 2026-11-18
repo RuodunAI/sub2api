@@ -1679,13 +1679,15 @@ const gatewaySettings = {
   platform_call_timeout_ms: 2000,
   default_hook_timeout_ms: 300,
   platform_hotpath_timeout_ms: 300,
+  max_request_body_mb: 128,
   claude_max_tokens: { enabled: false, models: { default: 8192 } as Record<string, number> }
 }
 const GATEWAY_RANGES: Record<Exclude<keyof typeof gatewaySettings, 'claude_max_tokens'>, [number, number]> = {
   max_attempts: [1, 10],
   platform_call_timeout_ms: [100, 30000],
   default_hook_timeout_ms: [50, 2000],
-  platform_hotpath_timeout_ms: [50, 2000]
+  platform_hotpath_timeout_ms: [50, 2000],
+  max_request_body_mb: [1, 1024]
 }
 
 const CLAUDE_MAX_TOKENS = { models: 100, nameLength: 200, max: 1048576, overrideBytes: 64 << 10 }
@@ -1751,7 +1753,8 @@ on('PUT', '/settings/gateway', (req) => {
     max_attempts: b.max_attempts,
     platform_call_timeout_ms: b.platform_call_timeout_ms,
     default_hook_timeout_ms: b.default_hook_timeout_ms,
-    platform_hotpath_timeout_ms: b.platform_hotpath_timeout_ms
+    platform_hotpath_timeout_ms: b.platform_hotpath_timeout_ms,
+    max_request_body_mb: b.max_request_body_mb
   })
   if (rule) gatewaySettings.claude_max_tokens = rule
   return gatewaySettings
