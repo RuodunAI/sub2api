@@ -53,6 +53,12 @@ const (
 // nothing left to keep alive.
 var ErrExecutionNotObserved = errors.New("execution is not observed")
 
+// ErrExecutionRefused marks a refusal of ExecutionRecords that no retry
+// changes: facts that do not fit the execution (an invalid commit, another
+// identity, no durable observation, a usage record already written). A
+// caller retrying failed writes stops at once on it, as on ErrConflict.
+var ErrExecutionRefused = errors.New("execution write refused")
+
 // ExecutionHTTP is the fetch form of the host's HTTP client for one Execute
 // or Monitor call: one bounded, non-streaming exchange whose answer goes back
 // to the plugin. The closure binds the account, its proxy, the SSRF guard
@@ -243,7 +249,8 @@ type ExecutionRecords interface {
 	// is a no-op returning nil, so the caller may retry a failed commit with
 	// the same facts (it does, within ExecutionFinishTimeout). Other facts
 	// for a committed execution are ErrConflict and change nothing. An
-	// execution closed as unreported is ErrConflict too.
+	// execution closed as unreported is ErrConflict too. A commit that does
+	// not fit the execution wraps ErrExecutionRefused; neither is retried.
 	CommitExecution(context.Context, ExecutionCommit) error
 	// CloseExecutionUnreported ends an observed execution for which Execute
 	// gave no valid facts (nothing stated, the wrong kind, an error, a

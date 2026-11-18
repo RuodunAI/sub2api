@@ -416,14 +416,16 @@ func (w *waitedRelay) task(ctx context.Context, parsed *pluginv1.TaskSubmission)
 		NextCheckAfter: time.Duration(parsed.GetNextCheckAfterSec()) * time.Second, Deadline: time.Duration(parsed.GetDeadlineSec()) * time.Second}, returned, nil
 }
 
-// commitWithRetry commits, retrying a failure within commitTimeout; a
-// conflict (other facts, or the execution closed meanwhile) is final.
+// commitWithRetry commits, retrying a storage failure within
+// commitTimeout; a conflict (other facts, or the execution closed
+// meanwhile) and a refusal of the facts (core.ErrExecutionRefused) are
+// final.
 func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.ExecutionCommit) error {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
 	for {
 		err := w.records.CommitExecution(cctx, commit)
-		if err == nil || isConflict(err) {
+		if err == nil || isConflict(err) || errors.Is(err, core.ErrExecutionRefused) {
 			return err
 		}
 		select {

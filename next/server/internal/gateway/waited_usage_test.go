@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -155,10 +156,11 @@ func TestWaitedRelayCommitRetried(t *testing.T) {
 	e.noRecord()
 }
 
-// A commit that is refused for good (a conflict) or keeps failing until the
-// commit deadline closes the execution unreported.
+// A commit that is refused for good (a conflict, facts that do not fit the
+// execution) or keeps failing until the commit deadline closes the
+// execution unreported. Only the outage is retried.
 func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
-	for _, name := range []string{"conflict", "outage"} {
+	for _, name := range []string{"conflict", "refused", "outage"} {
 		t.Run(name, func(t *testing.T) {
 			if name == "outage" {
 				if testing.Short() {
@@ -170,9 +172,14 @@ func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
 			pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 				return report(3, 4), nil
 			}
+			var commits atomic.Int32
 			e.settler.commitErr = func(core.ExecutionCommit) error {
-				if name == "conflict" {
+				commits.Add(1)
+				switch name {
+				case "conflict":
 					return core.ErrConflict
+				case "refused":
+					return fmt.Errorf("%w: execution identity mismatch", core.ErrExecutionRefused)
 				}
 				return errors.New("database outage")
 			}
@@ -183,6 +190,9 @@ func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
 			}
 			if name == "outage" && time.Since(start) < commitTimeout-time.Second {
 				t.Fatalf("gave up after %s, before the commit deadline", time.Since(start))
+			}
+			if name != "outage" && (commits.Load() != 1 || time.Since(start) > commitTimeout/2) {
+				t.Fatalf("a final refusal was retried: %d commits in %s", commits.Load(), time.Since(start))
 			}
 			assertUnreported(t, e)
 		})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -60,7 +61,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 	task := in.Operation == core.ExecutionOpWatch
 	if in.Record == nil || in.Record.AccountID == nil || len(in.Digest) != 64 || (in.Task != nil) != task ||
 		!task && in.Operation != core.ExecutionOpUsage {
-		return errors.New("invalid execution commit")
+		return refused("invalid execution commit")
 	}
 	before := func(tx *gorm.DB) error {
 		x, err := lockExecution(ctx, tx, in.ID)
@@ -68,7 +69,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 			return err
 		}
 		if x.RequestID != in.Record.RequestID || x.PluginKey != in.Record.PluginKey || x.AccountID != *in.Record.AccountID {
-			return errors.New("execution identity mismatch")
+			return refused("execution identity mismatch")
 		}
 		switch core.ValueOr(x.State, "") {
 		case core.ExecutionStateObserved:
@@ -81,7 +82,7 @@ func (s *Service) CommitExecution(ctx context.Context, in core.ExecutionCommit) 
 		case core.ExecutionStateUnreported:
 			return core.ErrConflict.WithMessage("execution closed as unreported")
 		}
-		return errors.New("execution has no durable observation")
+		return refused("execution has no durable observation")
 	}
 	taskID := ""
 	if task {
@@ -156,7 +157,13 @@ func closableExecution(x model.PluginExecution) error {
 	case core.ExecutionStateCommitted:
 		return core.ErrConflict.WithMessage("execution facts already committed")
 	}
-	return errors.New("execution has no durable observation")
+	return refused("execution has no durable observation")
+}
+
+// refused is a deterministic refusal of an execution write: retrying it
+// changes nothing (core.ErrExecutionRefused).
+func refused(msg string) error {
+	return fmt.Errorf("%w: %s", core.ErrExecutionRefused, msg)
 }
 
 func ignoreDone(err error) error {
@@ -183,7 +190,7 @@ func unreportedRecord(rec *core.UsageRecord, reason string) *core.UsageRecord {
 func (s *Service) insertExecutionRecord(ctx context.Context, rec *core.UsageRecord, before func(*gorm.DB) error, after func(*gorm.DB) error) error {
 	_, err := s.insertAtomic(ctx, []*core.UsageRecord{rec}, before, func(tx *gorm.DB, ids map[string]int64) error {
 		if _, ok := ids[rec.RequestID]; !ok {
-			return errors.New("usage identity already recorded")
+			return refused("usage identity already recorded")
 		}
 		return after(tx)
 	}, true)
