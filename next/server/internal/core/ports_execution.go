@@ -217,8 +217,8 @@ type ExecutionRecords interface {
 	// any network side effect. A second call with the same ID fails.
 	BeginExecution(context.Context, ExecutionIntent) error
 	// ObserveExecution stores, for an execution in state intent, the usage
-	// record as the host read it (rec, at most 512 KiB as JSON) and a
-	// diagnostic summary of the observation (at most 512 KiB). rec is what
+	// record as the host read it (rec, as JSON) and a diagnostic summary of
+	// the observation, both of any size. rec is what
 	// CloseExecutionUnreported turns into the free record; it is not billed
 	// by itself. The request and account of rec must be the execution's.
 	ObserveExecution(ctx context.Context, id string, rec *UsageRecord, observation []byte) error
