@@ -7900,12 +7900,12 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 - **为什么由核心签**：签名覆盖请求体，而插件只收到清单声明的 `requestFields`，看不到整个请求体；请求体在插件返回之后还会被补丁和强制流式改写。
 - **位置**（`forwardBuilt` → `signUpstreamRequest`，`gateway/upstream_ext.go`）：请求体定稿（§86.5 的全部步骤，含插件 patch 和再次强制 stream）、§86.5 的请求头各层（声明、透传、请求头覆盖与参数覆盖、插件的头、声明式鉴权头）以及缺省的 `Content-Type: application/json` 都写完之后，发送之前。普通转发和插件执行路径（`ForwardUpstream`）都经过这里。
 - **每次尝试各签一次**：换号重试时对新的构造结果、用当时的时间重新签名，不复用上一次的签名。
-- `aws-sigv4` 的规则（黄金样例：AWS 公布的测试套件，加 aws-sdk-go-v2 签名器录下的 Bedrock 形状请求，`sdk/reqsign/testdata`）：
-  - 签名的头只有 `host`、`x-amz-date`，以及存在时的 `content-type`、`x-amz-security-token`。其他头不签，所以其他层加的、改的头不影响签名。
+- `aws-sigv4` 由官方签名器生成（`github.com/aws/aws-sdk-go-v2/aws/signer/v4`，只用签名器，不用服务客户端；每次签名新建一个，不共用它的派生密钥缓存）。规则（黄金样例：AWS 公布的测试套件，加 aws-sdk-go-v2 签名器录下的 Bedrock 形状请求，`sdk/reqsign/testdata`）：
+  - 签名的头只有 `host`、`x-amz-date`，以及存在时的 `content-type`、`x-amz-security-token`。其他头不签，所以其他层加的、改的头不影响签名。官方签名器本身会签请求上的所有头，所以交给它的是只带 `Content-Type` 的请求副本，签完把 `Authorization`、`X-Amz-Date`、`X-Amz-Security-Token` 抄回原请求。
   - 签名前删掉已有的 `Authorization` 和 `X-Amz-Security-Token`，写入 `X-Amz-Date`、`Authorization`，有 `session_token` 时写 `X-Amz-Security-Token`。
   - **路径由插件负责编码**：`url` 的路径必须已经是线上的样子，每一段都百分号编码好（段里的 `:` 写成 `%3A`，段内的 `/` 写成 `%2F`）。签名器不替插件编码，只把线上路径的每一段再转义一次（`%3A` 签成 `%253A`）。
-  - **查询串会被改写**成规范形式再发送：按键、再按值排序，按 RFC 3986 非保留字符集重新编码（空格是 `%20`）。解析不了的查询串使这次尝试失败，不会只签一部分。
-  - **主机**取 `req.Host`，为空取 URL 的主机，去掉协议的默认端口（https `:443`、http `:80`）后写回，所以发出的 Host 头就是被签名的主机。
+  - **查询串会被改写**成规范形式再发送：按 RFC 3986 非保留字符集重新编码（空格是 `%20`），再按编码后的键、值排序。解析不了的查询串使这次尝试失败，不会只签一部分。
+  - **主机**取 `req.Host`，为空取 URL 的主机，去掉协议的默认端口（https `:443`、http `:80`）后写回，所以发出的 Host 头就是被签名的主机。（IPv6 字面量去掉默认端口时方括号也被去掉。）
   - GET、HEAD 不带请求体，按空负载签名。
   - `region`、`service`、`access_key_id`、`secret_access_key` 缺任何一个，签名失败。
 - **失败**：方案名核心不认识，或签名失败：这次尝试按插件不可用换号（`plugin_unavailable`，不惩罚账号），**没有请求发出**，绝不发出未签名的请求。
@@ -7920,8 +7920,9 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - `:message-type` 为 `event`、负载 `{"bytes":"<base64>"}`：输出 `event: <解码后 JSON 的 type>\ndata: <JSON>\n\n`，没有 `type` 就只有 `data:` 行。
   - `exception` 或 `error` 消息：输出 `event: error`，`data: {"type":"error","error":{"type":<异常类型>,"message":<消息>}}`，然后流结束。这是 Anthropic 流错误的形状，用量规则把它记为上游流错误并交给故障策略。
   - 其他消息、没有 `bytes` 的事件跳过。
+  - 消息由官方库解码（`github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream`）；帧头由 `awseventstream` 自己读，长度在读取和分配之前检查（官方解码器不限制长度）。
   - 帧损坏（长度不合法、两处 CRC 任一不对、头块格式错）、截断，或单条消息超过 4 MiB（`MaxChunkMessageSize`；格式自己的上限是 16 MiB）：读取出错，按上游流中断处理。
-  - 解码器的消息缓冲随收到的字节增长（每次 64 KiB），帧头声明的长度不预留内存；超过 256 KiB 的缓冲不留给下一条消息。
+  - 解码器的负载缓冲随收到的字节成倍增长，帧头声明的长度不预留内存；超过 256 KiB 的缓冲不留给下一条消息。
   - 别的事件形状（如 ConverseStream）不在这个名字之内，要另起格式名、另写适配器；`awseventstream.Decoder` 只管分帧，可以共用。
 - **位置**（`adaptResponseStream`）：上游回答 2xx 之后、流的内容类型嗅探（§104）之前。回答的 `Content-Type` 正好是该格式的媒体类型时，把响应体换成适配器、`Content-Type` 改成 `text/event-stream`、去掉 `Content-Length`。此后的中继、用量规则、协议转换、首 token 计时、空闲超时、断开计费看到的都是普通 SSE。
 - 内容类型对不上（上游回了 JSON 或普通 SSE）时不处理，照原样走。非 2xx 的回答不适配，照常进错误分类。

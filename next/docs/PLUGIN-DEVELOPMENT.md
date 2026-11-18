@@ -119,7 +119,7 @@ if !sticky.Enabled { ... }
 - 核心不认识的方案名或格式名：这次尝试在发送前失败（插件不可用，换号），没有请求发出。
 - 更早的核心会忽略这两个字段：请求不签名就发出去，二进制流原样转给客户端。用到它们的插件必须在 `hostCompat` 里要求带 §109 的核心（bedrock 是 `>=0.1.304`）。
 - 账号测试请求（`BuildTestRequest`）核心原样发送、不签名：请求体是插件自己写的，插件调 `sdk/reqsign` 的 `Sign` 自己签（bedrock 的 `sign`）。
-- 两个库都在 SDK 里、只用标准库：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
+- 两个库都在 SDK 里，底下是 AWS 的官方库（`aws-sdk-go-v2` 的 `aws/signer/v4` 和 `aws/protocol/eventstream`，只用这两个包，不用服务客户端）：`sdk/reqsign`（签名，方案表）、`sdk/awseventstream`（`Decoder` 只管分帧；`NewChunkSSEReader` 是 chunk 事件到 SSE 的适配器；`AppendMessage` 给测试和模拟上游编码）。要支持新的方案或新的事件形状，在库里加一个名字，再在 `server/internal/gateway/upstream_ext.go` 的表里登记，不在网关里写厂商判断。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
 
 ## 7. SDK 里的账号表单与请求体补丁辅助（2026-11-17）
