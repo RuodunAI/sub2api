@@ -107,7 +107,7 @@ export E2E_LONG=1
 
 - 镜像版本默认 `0.1.999`（`E2E_VERSION`），必须满足全部内置插件的 `hostCompat`（目前 `>=0.1.304 <0.2.0`），否则节点拒绝安装内置插件。
 - 两个节点直接运行核心（没有网关外壳），核心的插件包目录 `plugins/blobs` 只服务一个节点；这里两个节点挂同一个卷 `pkgblobs`，上传的插件包两边都能取到。
-- 没有可配置地址的平台插件（bedrock、vertex、codex、claude_oauth）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口用自建 CA 签的证书提供 TLS（`MOCK_TLS_*`，mock-upstream 的 `tls.go`），CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
+- 没有可配置地址的平台插件（bedrock、vertex、codex、claude_oauth）访问厂商主机。mock 在 `e2e` 网络上带这些主机名的别名（`compose.yml` 的 `aliases`），在 443 端口提供 TLS，证书按客户端请求的主机名（SNI）用自建 CA 现签（`MOCK_TLS_ADDR`、`MOCK_TLS_DIR`，mock-upstream 的 `tls.go`），所以主机名只列在 `aliases` 一处，CA 写在卷 `mocktls`，节点以 `SSL_CERT_DIR=/etc/ssl/certs:/e2e-tls` 信任它。所以这些插件以正式构建原样运行，请求只到 mock；内网是 `internal: true`，到不了真实厂商。
 - mock 同时是 HTTP 正向代理（账号的 `proxy_url` 指向它时记 `proxied`），并能按提示里的 `MOCK-TOOL-CALL` 返回工具调用（官方 SDK 用例）。两个网络都由本次 Compose 项目创建，没有外部网络引用或宿主网络。`edge` 为 Caddy 提供宿主端口发布通路，也供显式启动的 runner 访问入口；PG、Redis、节点和 mock 不因此获得外部网桥连接。
 
 ## 保留现场与清理

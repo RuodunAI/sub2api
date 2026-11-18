@@ -145,8 +145,6 @@ services:
     environment:
       MOCK_TLS_ADDR: ":443"
       MOCK_TLS_DIR: /tls
-      MOCK_TLS_HOSTS: >-
-        api.anthropic.com,platform.claude.com,chatgpt.com,auth.openai.com,aiplatform.googleapis.com,us-central1-aiplatform.googleapis.com,oauth2.googleapis.com,bedrock-runtime.us-east-1.amazonaws.com
     volumes:
       - mocktls:/tls
     healthcheck:
@@ -157,15 +155,13 @@ services:
     networks:
       e2e:
         # Platform plugins without a configurable base URL (bedrock, vertex,
-        # codex, claude_oauth) address these hosts; inside the isolated
-        # network they are the mock, over TLS with the CA above.
+        # codex, claude_oauth) address these hosts in the tests; inside the
+        # isolated network they are the mock, over TLS with a certificate the
+        # mock issues per host name from the CA above.
         aliases:
           - api.anthropic.com
-          - platform.claude.com
           - chatgpt.com
-          - auth.openai.com
           - aiplatform.googleapis.com
-          - us-central1-aiplatform.googleapis.com
           - oauth2.googleapis.com
           - bedrock-runtime.us-east-1.amazonaws.com
 

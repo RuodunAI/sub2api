@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,11 +25,12 @@ import (
 // the mock's CA, so the real plugins reach the mock without a test endpoint.
 //
 //	MOCK_TLS_ADDR   address of the TLS listener (e.g. ":443"); unset = no TLS
-//	MOCK_TLS_HOSTS  comma separated names of the server certificate
 //	MOCK_TLS_DIR    directory of ca.pem (what clients trust) and
 //	                private/ca-key.pem; the CA is created once and reused
 //
-// The certificate is issued at every start; only the CA persists.
+// The server certificate of a host name is issued, by that CA, for the name
+// the client asks for (SNI) the first time it asks, so the host names are
+// listed once, in the network's aliases. Only the CA persists.
 
 // serveTLS serves h on MOCK_TLS_ADDR when it is set; it returns nil at once
 // otherwise.
@@ -36,10 +38,6 @@ func serveTLS(h http.Handler) error {
 	addr := os.Getenv("MOCK_TLS_ADDR")
 	if addr == "" {
 		return nil
-	}
-	hosts := splitHosts(os.Getenv("MOCK_TLS_HOSTS"))
-	if len(hosts) == 0 {
-		return errors.New("MOCK_TLS_ADDR needs MOCK_TLS_HOSTS")
 	}
 	dir := os.Getenv("MOCK_TLS_DIR")
 	if dir == "" {
@@ -49,23 +47,36 @@ func serveTLS(h http.Handler) error {
 	if err != nil {
 		return err
 	}
-	cert, err := issue(ca, caKey, hosts)
-	if err != nil {
-		return err
-	}
+	certs := &certIssuer{ca: ca, caKey: caKey, byName: map[string]*tls.Certificate{}}
 	srv := &http.Server{Addr: addr, Handler: h, ReadHeaderTimeout: 10 * time.Second,
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}}
+		TLSConfig: &tls.Config{GetCertificate: certs.get, MinVersion: tls.VersionTLS12}}
 	return srv.ListenAndServeTLS("", "")
 }
 
-func splitHosts(s string) []string {
-	var out []string
-	for _, h := range strings.Split(s, ",") {
-		if h = strings.TrimSpace(h); h != "" {
-			out = append(out, h)
-		}
+// certIssuer issues and keeps one server certificate per host name.
+type certIssuer struct {
+	ca     *x509.Certificate
+	caKey  *ecdsa.PrivateKey
+	mu     sync.Mutex
+	byName map[string]*tls.Certificate
+}
+
+func (c *certIssuer) get(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	name := strings.ToLower(hello.ServerName)
+	if name == "" {
+		return nil, errors.New("mock TLS: the client sent no server name")
 	}
-	return out
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cert, ok := c.byName[name]; ok {
+		return cert, nil
+	}
+	cert, err := issue(c.ca, c.caKey, name)
+	if err != nil {
+		return nil, err
+	}
+	c.byName[name] = &cert
+	return &cert, nil
 }
 
 func loadOrCreateCA(dir string) (*x509.Certificate, *ecdsa.PrivateKey, error) {
@@ -124,15 +135,15 @@ func parseCA(certPEM, keyPEM []byte) (*x509.Certificate, *ecdsa.PrivateKey, erro
 	return cert, key, err
 }
 
-func issue(ca *x509.Certificate, caKey *ecdsa.PrivateKey, hosts []string) (tls.Certificate, error) {
+func issue(ca *x509.Certificate, caKey *ecdsa.PrivateKey, host string) (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
-		Subject:      pkix.Name{CommonName: hosts[0]},
-		DNSNames:     hosts,
+		Subject:      pkix.Name{CommonName: host},
+		DNSNames:     []string{host},
 		NotBefore:    time.Now().Add(-time.Hour), NotAfter: time.Now().AddDate(1, 0, 0),
 		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
