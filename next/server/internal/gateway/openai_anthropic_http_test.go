@@ -165,4 +165,3 @@ func TestOpenAIConvertedStreamEOFDoesNotInventSuccess(t *testing.T) {
 		}
 	}
 }
-

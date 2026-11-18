@@ -1,11 +1,3 @@
-//go:build fv2_needs_usage
-
-// These tests need the real task store of the usage module
-// (usage.Service as core.AsyncTasks, task_submission_receipts in
-// PostgreSQL). They are built with -tags fv2_needs_usage until the usage
-// module implements the forwarding v2 ports (work package W7); then the
-// tag goes.
-
 package gateway
 
 import (
@@ -33,6 +25,7 @@ func TestTaskGatewayCrossNodeSnapshotAndAuthorization(t *testing.T) {
 	billB := billing.New(db, nil, nil, nil, nil)
 	nodeB := usage.New(db, billB, billB, nil, usage.Options{})
 	a, pa := taskDraftEnv(t, nodeA, false)
+	a.gw.d.Settler = nodeA // its execution records register the task in PostgreSQL
 	b, pb := taskDraftEnv(t, nodeB, true)
 	res := a.do("/task-draft/videos", map[string]any{"model": testModel}, nil)
 	public := res.json().Get("id").String()
@@ -40,7 +33,7 @@ func TestTaskGatewayCrossNodeSnapshotAndAuthorization(t *testing.T) {
 		strings.Contains(string(res.body), "raw-video-id") {
 		t.Fatalf("submit did not return only public IDs: %d %s", res.status, res.body)
 	}
-	a.noRecord() // successful registration already persisted usage synchronously
+	a.noRecord() // the commit persisted the usage with the task
 	for _, key := range []string{testKey, "same-owner-other-key"} {
 		got := taskDraftGet(t, b, public, key)
 		if got.status != 200 || got.json().Get("id").String() != public || got.json().Get("data.id").String() != public ||
