@@ -21,6 +21,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
 )
 
@@ -766,7 +767,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if c.failurePolicy != nil {
 		hreq = hreq.WithContext(httptrace.WithClientTrace(hreq.Context(), &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { requestWritten.Store(true) }}))
 	}
-	resp, err := noRedirects(client).Do(hreq)
+	resp, err := execfetch.NoRedirects(client).Do(hreq)
 	timer.Stop()
 	if err != nil {
 		if c.failurePolicy != nil {
@@ -875,7 +876,6 @@ func canceledErr() *gwError {
 
 const (
 	maxErrorBody    = 64 << 10
-	classifyPrefix  = 4 << 10
 	defaultCooldown = 60 * time.Second
 )
 
@@ -895,11 +895,8 @@ func (c *call) classify(ctx context.Context, rt *typeRoute, acct *pluginv1.Accou
 // means; defaults when the call fails.
 func (c *call) classifyWithPlugin(ctx context.Context, rt *typeRoute, acct *pluginv1.Account,
 	status int, header http.Header, body []byte, transportErr string) *pluginv1.ClassifyErrorResponse {
-	headers := firstHeaderValues(header)
-	prefix := body
-	if len(prefix) > classifyPrefix {
-		prefix = prefix[:classifyPrefix]
-	}
+	headers := execfetch.FirstHeaderValues(header)
+	prefix := core.ClassifyPrefix(body)
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.gw.platformTimeout())
 	cls, err := rt.binding.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
 		Meta: c.metaFor(rt), Account: acct, Status: int32(status), Headers: headers, BodyPrefix: prefix, TransportError: transportErr,

@@ -37,10 +37,3 @@ func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest
 	}
 	return out, err
 }
-
-// The request-path files still call these by their old names; they go when
-// those call execfetch's directly.
-var (
-	noRedirects       = execfetch.NoRedirects
-	firstHeaderValues = execfetch.FirstHeaderValues
-)
