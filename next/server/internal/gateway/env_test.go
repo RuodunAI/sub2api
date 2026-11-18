@@ -782,6 +782,9 @@ type fakeSettler struct {
 	// ObserveExecution.
 	commitErr  func(core.ExecutionCommit) error
 	observeErr error
+	// commitAckLost, when set, answers a CommitExecution that was stored
+	// (the commit landed, its answer did not).
+	commitAckLost func(core.ExecutionCommit) error
 }
 
 // fakeExecution is one plugin_executions row.
@@ -825,7 +828,13 @@ func (s *fakeSettler) ObserveExecution(_ context.Context, id string, rec *core.U
 func (s *fakeSettler) CommitExecution(_ context.Context, in core.ExecutionCommit) error {
 	s.mu.Lock()
 	x := s.executions[in.ID]
-	commitErr := s.commitErr
+	commitErr, ackLost := s.commitErr, s.commitAckLost
+	if x != nil && commitErr != nil {
+		if err := commitErr(in); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
 	switch {
 	case x == nil:
 		s.mu.Unlock()
@@ -840,15 +849,12 @@ func (s *fakeSettler) CommitExecution(_ context.Context, in core.ExecutionCommit
 		s.mu.Unlock()
 		return errors.New("execution not observed")
 	}
-	if commitErr != nil {
-		if err := commitErr(in); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-	}
 	x.state, x.commit = core.ExecutionStateCommitted, in
 	s.mu.Unlock()
 	s.ch <- in.Record
+	if ackLost != nil {
+		return ackLost(in)
+	}
 	return nil
 }
 

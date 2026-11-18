@@ -121,7 +121,7 @@ export default {
         'Upper bound of each stretch of a plugin\'s own processing within one request (building the upstream request, parsing usage, classifying an error), not counting the wait for the upstream.',
       default_hook_timeout_ms: 'Used by hooks whose manifest sets no timeout.',
       platform_hotpath_timeout_ms:
-        'Timeout of the per-request platform calls that are not hooks: resolving the model before scheduling, and reading usage after the response was sent.',
+        'Timeout of the per-request platform calls before scheduling that are not hooks: resolving the model, and estimating usage for the pre-charge.',
       max_request_body_mb:
         'Largest body of any gateway request (MB); a larger one gets 413, and one WebSocket message is bounded by it too. It is the only request size limit: endpoints, groups and plugins cannot set another, and the internal limits between the core and plugins derive from it.',
       media_download_max_mb: 'Size cap of one http(s) image or other media file downloaded for a request converted to Gemini (MB).',

@@ -648,7 +648,11 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 			return nil, res.err
 		}
 	}
-	if last == nil || (last.RecordType != errTypeUpstream && last.RecordType != errTypeModelAvailability && last.Status != http.StatusTooManyRequests) {
+	if last == nil || (last.RecordType != errTypeUpstream && last.RecordType != errTypeInvalidRequest && last.RecordType != errTypeModelAvailability &&
+		last.Status != http.StatusTooManyRequests) {
+		// As on HTTP (dispatch): upstream answers and requests no account
+		// can serve (a return_error that let the attempt move on) are
+		// relayed; plugin or account problems are "no available account".
 		last = fromCore(core.ErrNoAvailableAccount, errTypeNoAccount)
 	}
 	cl.finishSticky(ctx, 0, false)

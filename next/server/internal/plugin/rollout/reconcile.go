@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
@@ -33,7 +35,9 @@ type entry struct {
 	inst    Instance // nil when loading failed
 	epoch   int64    // plugins.row_version when (re)created
 	loadErr string
-	failAt  time.Time
+	// loadCode classifies loadErr for the console (InstanceState.Code).
+	loadCode string
+	failAt   time.Time
 	// Last failed attempt to replace inst with new resource limits.
 	restartErr    string
 	restartFailAt time.Time
@@ -375,7 +379,7 @@ func collectInstances(s *slot, loadRetry time.Duration) (instances []InstanceSta
 			running = append(running, e.inst)
 			retryOK = append(retryOK, e.restartErr == "" || time.Since(e.restartFailAt) >= loadRetry)
 		} else {
-			is.State, is.Error = stateFailed, e.loadErr
+			is.State, is.Error, is.Code = stateFailed, e.loadErr, e.loadCode
 		}
 		instances = append(instances, is)
 	}
@@ -486,7 +490,7 @@ func (c *Controller) ensure(ctx context.Context, s *slot, version string, epoch 
 	defer s.mu.Unlock()
 	if err != nil {
 		c.log.Error("plugin instance failed to start", "plugin", s.key, "version", version, "err", err)
-		s.entries[version] = &entry{version: version, epoch: epoch, loadErr: truncate(err.Error(), 500), failAt: time.Now()}
+		s.entries[version] = &entry{version: version, epoch: epoch, loadErr: truncate(err.Error(), 500), loadCode: loadCode(err), failAt: time.Now()}
 		return
 	}
 	c.log.Info("plugin instance started", "plugin", s.key, "version", version)
@@ -628,6 +632,16 @@ func (c *Controller) republish() {
 }
 
 func truncate(s string, n int) string { return x.Truncate(s, n) }
+
+// loadCode is the code of a failed load the console acts on:
+// check.CodeOutdatedContract for the runtime's refusal of a package built
+// for an older plugin contract, however the error was wrapped; "" else.
+func loadCode(err error) string {
+	if errors.Is(err, grpcruntime.ErrOutdatedContract) {
+		return check.CodeOutdatedContract
+	}
+	return ""
+}
 
 // entryReady reports a running instance that can serve.
 func entryReady(e *entry) bool {

@@ -1146,7 +1146,7 @@ export interface GatewaySettings {
   platform_call_timeout_ms: number
   /** Default hook timeout when the manifest sets none, 50–2000 ms (default 300). */
   default_hook_timeout_ms: number
-  /** Timeout of the per-request platform RPCs that are not hooks (ResolveModel, ExtractUsage), 50–2000 ms (default 300). */
+  /** Timeout of the per-request platform RPCs before scheduling that are not hooks (ResolveModel, EstimateUsage for the pre-charge), 50–2000 ms (default 300). */
   platform_hotpath_timeout_ms: number
   /** Requests that may queue for a session's bound account when it is full, 0–10000 (default 3); 0 turns this queue off. */
   queue_sticky_max_waiting: number
@@ -1282,6 +1282,8 @@ export interface PluginRefusal {
   version: string
   host_version: string
   protocol_version: number
+  /** The first core release of the current plugin protocol: a version built for it loads on this core. */
+  first_core_version: string
   message: string
 }
 

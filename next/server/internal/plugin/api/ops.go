@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/job"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
@@ -68,32 +69,36 @@ func summarizeNodes(nodes []core.NodeStatus, key string) NodeSummary {
 
 // Refusal is why the nodes refuse to load a plugin version: it was built
 // for an older plugin contract (Code check.CodeOutdatedContract). Message
-// is the runtime's refusal, protocol.OutdatedContractMessage.
+// is the runtime's refusal, protocol.OutdatedContractMessage;
+// FirstCoreVersion is the oldest core a replacement may be built for.
 type Refusal struct {
-	Code            string `json:"code"`
-	Version         string `json:"version"`
-	HostVersion     string `json:"host_version"`
-	ProtocolVersion int    `json:"protocol_version"`
-	Message         string `json:"message"`
+	Code             string `json:"code"`
+	Version          string `json:"version"`
+	HostVersion      string `json:"host_version"`
+	ProtocolVersion  int    `json:"protocol_version"`
+	FirstCoreVersion string `json:"first_core_version"`
+	Message          string `json:"message"`
 }
 
 // refusal finds a node whose instance of the plugin failed to load with the
-// runtime's refusal of an older plugin contract; nil when none did.
+// runtime's refusal of an older plugin contract, which the node records as
+// the instance's code; nil when none did.
 func refusal(nodes []core.NodeStatus, key string) *Refusal {
 	for _, n := range nodes {
 		var st struct {
 			Instances []struct {
 				Version string `json:"version"`
 				Error   string `json:"error"`
+				Code    string `json:"code"`
 			} `json:"instances"`
 		}
 		if json.Unmarshal([]byte(n.Plugins[key]), &st) != nil {
 			continue
 		}
 		for _, in := range st.Instances {
-			if in.Error == protocol.OutdatedContractMessage(key, in.Version, n.HostVersion) {
+			if in.Code == check.CodeOutdatedContract {
 				return &Refusal{Code: check.CodeOutdatedContract, Version: in.Version, HostVersion: n.HostVersion,
-					ProtocolVersion: protocol.ProtocolVersion, Message: in.Error}
+					ProtocolVersion: protocol.ProtocolVersion, FirstCoreVersion: protocol.FirstCoreVersion, Message: in.Error}
 			}
 		}
 	}
@@ -434,14 +439,10 @@ func (a *API) resourcesInfo(ctx context.Context, key string, m *manifest.Manifes
 		return ri, err
 	}
 	_ = json.Unmarshal(row.ResourceLimits, &ri.Overrides)
-	// As the runtime launches it (grpcruntime launchSpec): the manifest's
-	// memory figure is what the plugin says it needs, not a limit. Memory is
-	// limited by the operator's override, else the node cap; 0 is unlimited.
+	// As the runtime launches it: the manifest's memory figure is what the
+	// plugin says it needs, not a limit.
 	ri.Effective = ri.Requested
-	ri.Effective.MemoryMB = ri.Overrides.MemoryMB
-	if ri.MaxMemory > 0 && (ri.Effective.MemoryMB == 0 || ri.Effective.MemoryMB > ri.MaxMemory) {
-		ri.Effective.MemoryMB = ri.MaxMemory
-	}
+	ri.Effective.MemoryMB = grpcruntime.EffectiveMemoryMB(ri.Overrides.MemoryMB, ri.MaxMemory)
 	if ri.Overrides.CPU > 0 {
 		ri.Effective.CPU = ri.Overrides.CPU
 	}

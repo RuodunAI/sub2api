@@ -172,15 +172,32 @@ func TestExecuteWaitedCommitFailureIsUnreported(t *testing.T) {
 	}
 }
 
-// An observation that cannot be stored leaves nothing to settle: the answer
-// is not published, nothing is billed and no record is written.
+// An observation that cannot be stored leaves no execution record to own
+// the usage: the answer is not published, and the request's own free record
+// is submitted - nothing billed, and as a free record it releases the
+// precharge at once instead of at its expiry.
 func TestExecuteWaitedObservationNotStored(t *testing.T) {
-	e, _ := waitedEnv(t, core.DisconnectPrecharge, nil)
-	e.settler.observeErr = errors.New("database down")
-	r := e.messages(body(testModel, false))
-	require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
-	require.Equal(t, []string{core.ExecutionStateIntent}, e.settler.executionStates())
-	e.noRecord()
+	for _, stream := range []bool{false, true} {
+		t.Run(map[bool]string{false: "non-stream", true: "stream"}[stream], func(t *testing.T) {
+			e, _ := waitedEnv(t, core.DisconnectPrecharge, nil)
+			e.settler.observeErr = errors.New("database down")
+			r := e.messages(body(testModel, stream))
+			if !stream {
+				require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
+				require.NotContains(t, string(r.body), "hello", "the held-back answer was published")
+			}
+			require.Equal(t, []string{core.ExecutionStateIntent}, e.settler.executionStates())
+			rec := e.record()
+			require.False(t, rec.Success)
+			require.False(t, rec.Billable, "a free record releases the precharge")
+			require.Nil(t, rec.Price)
+			require.Nil(t, rec.Reservation)
+			require.Equal(t, core.UsageTokens{}, rec.Tokens)
+			require.Equal(t, core.UsageErrorUnreported, rec.ErrorType)
+			require.Equal(t, core.UsageExtractUnreported, rec.UsageExtract)
+			e.noRecord()
+		})
+	}
 }
 
 // A waited upstream error is classified by the plugin and fails over like
@@ -288,6 +305,50 @@ func TestExecuteTaskWithoutFacts(t *testing.T) {
 			require.Nil(t, rec.Reservation)
 			require.Equal(t, []string{core.ExecutionStateObserved}, e.settler.executionStates())
 			e.noRecord()
+		})
+	}
+}
+
+// A task commit whose last try landed after the commit deadline (its answer
+// lost) is found committed before the submission is reported as failed: the
+// client gets the task. One that never landed is closed unreported: 503,
+// the execution's free record, the receipt marked failed.
+func TestExecuteTaskCommitTimeoutIsConfirmed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the commit deadline")
+	}
+	for _, landed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "landed", false: "lost"}[landed], func(t *testing.T) {
+			t.Parallel()
+			tasks := newFakeTasks()
+			e, _ := taskDraftEnv(t, tasks, false)
+			var calls atomic.Int32
+			e.settler.commitErr = func(core.ExecutionCommit) error {
+				if landed && calls.Add(1) == 1 {
+					return nil
+				}
+				return errors.New("database outage")
+			}
+			e.settler.commitAckLost = func(core.ExecutionCommit) error { return context.DeadlineExceeded }
+			r := e.do("/task-draft/videos", map[string]any{"model": testModel}, nil)
+			rec := e.record()
+			if landed {
+				require.Equal(t, 200, r.status, string(r.body))
+				require.True(t, strings.HasPrefix(r.json().Get("id").String(), "s2task_"), string(r.body))
+				require.True(t, rec.Success)
+				require.Equal(t, []string{core.ExecutionStateCommitted}, e.settler.executionStates())
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
+				require.False(t, rec.Billable)
+				require.Equal(t, core.UsageErrorUnreported, rec.ErrorType)
+				require.Equal(t, []string{core.ExecutionStateUnreported}, e.settler.executionStates())
+			}
+			e.noRecord()
+			tasks.mu.Lock()
+			defer tasks.mu.Unlock()
+			for _, reason := range tasks.receipts {
+				require.Equal(t, !landed, reason != "", "receipt %q", reason)
+			}
 		})
 	}
 }

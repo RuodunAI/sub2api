@@ -124,7 +124,12 @@ func (s *Service) CloseExecutionUnreported(ctx context.Context, in core.Executio
 		return execution(store.G(ctx, tx), in.ID).Updates(map[string]any{"state": core.ExecutionStateUnreported,
 			"updated_at": gorm.Expr("clock_timestamp()")}).Error
 	}
-	if err := s.insertExecutionRecord(ctx, unreportedRecord(&rec, in.Reason), before, after); err != nil {
+	// A request that already has its usage record is closed without another:
+	// the gateway submitted the free record itself when it could not confirm
+	// the observation (stored, but its acknowledgement lost).
+	free := unreportedRecord(&rec, in.Reason)
+	_, err := s.insertAtomic(ctx, []*core.UsageRecord{free}, before, func(tx *gorm.DB, _ map[string]int64) error { return after(tx) }, true)
+	if err != nil {
 		return ignoreDone(err)
 	}
 	slog.ErrorContext(ctx, "usage: plugin execution closed as unreported, not billed", "request_id", x.RequestID,
@@ -190,8 +195,11 @@ func lockExecution(ctx context.Context, tx *gorm.DB, id string) (model.PluginExe
 }
 
 // executionRecoveryAge is how long an observed execution may wait for its
-// facts before the recovery sweep closes it as unreported.
-const executionRecoveryAge = time.Minute
+// facts before the recovery sweep closes it as unreported. The sweep is for
+// executions whose gateway is gone, so it outlasts the longest a live one
+// keeps an execution observed (core.ExecutionRecoveryAge, about 46 minutes);
+// until then a crashed gateway's precharge stays reserved.
+const executionRecoveryAge = core.ExecutionRecoveryAge
 
 // recoverExecutions closes the observed synchronous executions that neither
 // committed nor were closed within executionRecoveryAge as unreported: the
@@ -206,7 +214,7 @@ func (s *Service) recoverExecutions(ctx context.Context) error {
 	}
 	for _, id := range ids {
 		// A conflict is an execution committed meanwhile: its facts stand.
-		err := s.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: id, Reason: "no facts within a minute of the observation"})
+		err := s.CloseExecutionUnreported(ctx, core.ExecutionUnreported{ID: id, Reason: "no facts within the recovery age of the observation"})
 		if err != nil && core.AsError(err).Code != core.ErrConflict.Code {
 			s.deferExecutionRecovery(ctx, id, err)
 		}

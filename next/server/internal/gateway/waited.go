@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -30,7 +31,7 @@ import (
 
 // commitTimeout bounds the records' writes of one execution, a commit with
 // its retries included.
-const commitTimeout = 15 * time.Second
+const commitTimeout = core.ExecutionFinishTimeout
 
 // commitRetryDelay spaces the retries of a failed commit.
 const commitRetryDelay = 250 * time.Millisecond
@@ -85,6 +86,10 @@ func (x *execution) relay(ctx context.Context, req *pluginv1.UpstreamRequest) (*
 		return nil, err
 	}
 	w.result = c.send(x.network, x, req)
+	if w.observed {
+		// The recovery sweep counts on this bound (core.ExecutionRecoveryAge).
+		x.factsTimer = time.AfterFunc(cmp.Or(c.g.factsTimeout, core.ExecutionFactsTimeout), x.cutExecute)
+	}
 	switch {
 	case w.failure != nil:
 		return &pluginv1.RelayUpstreamResponse{Error: w.failure}, nil
@@ -193,6 +198,11 @@ func (w *waitedRelay) settle(ctx context.Context, res core.ExecutionResult, err 
 		if err != nil {
 			return w.unreported(ctx, "execute failed: "+err.Error(), err)
 		}
+		if w.spool != nil && w.spool.err != nil {
+			// The held-back answer cannot be delivered (over the spool's
+			// cap): nothing is committed for an answer the client never gets.
+			return w.unreported(ctx, "response not deliverable: "+w.spool.err.Error(), w.spool.err)
+		}
 		return w.commit(ctx, res.Response)
 	case w.unconfirmed:
 		return w.unreported(ctx, "observation not stored", errors.New(w.result.err.Message))
@@ -224,6 +234,9 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	commit, body, err := w.facts(ctx, out)
 	if err == nil {
 		err = w.commitWithRetry(ctx, commit)
+		if err != nil && c.ep.TaskSubmit() {
+			err = w.confirmTask(ctx, err)
+		}
 	}
 	if err != nil {
 		c.rec = previous
@@ -239,15 +252,18 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	return w.deliver(ctx)
 }
 
-// deliver publishes the held-back answer of a committed execution.
+// deliver publishes the held-back answer of a committed execution. Whether
+// it can depends only on the forwarding itself (w.base, the reading taken
+// before the plugin's report): an error the plugin read out of a complete
+// 2xx answer makes the record a failure, but the client keeps the bytes.
 func (w *waitedRelay) deliver(ctx context.Context) attemptResult {
 	c := w.x.c
 	if w.spool == nil {
 		return attemptResult{kind: attemptDone}
 	}
-	if w.spool.err != nil || !c.rec.Success {
-		// The usage is committed although the buffered answer cannot be
-		// delivered; dispatch counts no tokens for an attempt that is not done.
+	if w.spool.err != nil || !w.base.Success {
+		// The usage is committed although the buffered answer is incomplete;
+		// dispatch counts no tokens for an attempt that is not done.
 		c.countTokens(context.WithoutCancel(ctx), w.x.acc.ID)
 		e := fromCore(core.ErrUnavailable.WithMessage("upstream response incomplete"), errTypeUpstream)
 		e.LocalFailure = w.spool.err != nil // the spool failed here, not the account
@@ -284,7 +300,7 @@ func (w *waitedRelay) facts(ctx context.Context, out *pluginv1.ExecuteResponse) 
 			return commit, nil, errors.New("host_usage reported for a task submission")
 		}
 		if rt.pluginUsage {
-			c.usageFallback(ctx, rt, "the plugin took the host's reading", nil)
+			c.hostUsageChosen(ctx, rt, "host_usage")
 		}
 		commit.Digest = core.FactDigest(nil)
 	case *pluginv1.ExecuteResponse_Task:
@@ -355,44 +371,90 @@ func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.Execution
 	}
 }
 
+// confirmTask establishes what a task commit that failed (err) left behind
+// before the submission is reported as failed: the last try may have landed
+// after the deadline, the task registered and its reserve charged. The
+// execution is closed unreported unless it turns out committed, which is
+// nil: the task stands and its answer is delivered. Closed, its free record
+// is the request's; a close that fails leaves the free record to submit.
+// A conflict is final as it is.
+func (w *waitedRelay) confirmTask(ctx context.Context, err error) error {
+	if isConflict(err) {
+		return err
+	}
+	committed, cerr := w.close(ctx, err.Error())
+	if committed {
+		return nil
+	}
+	if cerr == nil {
+		w.x.c.taskPersisted = true
+	}
+	return err
+}
+
 // unreported ends an execution whose answer reached the upstream but whose
 // facts did not come (or could not be committed). A task is not registered:
 // taskFailure leaves the free record for submit (the records' recovery
-// never touches a task submission). Any other request is closed without
-// facts - a free record, the precharge released, nothing billed - and its
-// records own the request's usage; an answer held back is not published
-// (503), one already streamed ends abruptly.
+// never touches a task submission). Any other request whose observation is
+// stored is closed without facts - a free record, the precharge released,
+// nothing billed - and its records own the request's usage; one whose
+// observation could not be confirmed has no execution record to own it, so
+// submit writes the same free record (the settler retries it) and releases
+// the precharge at once. An answer held back is not published (503), one
+// already streamed ends abruptly.
 func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error) attemptResult {
 	c := w.x.c
 	c.usage = nil
 	if c.ep.TaskSubmit() {
 		return c.taskFailure(ctx, "task execution could not be confirmed", cause)
 	}
-	if w.observed && w.close(ctx, reason) {
+	recordType := errTypeInternal
+	switch {
+	case !w.observed:
+		recordType = core.UsageErrorUnreported
+		unreportedUsage(c.rec, reason)
+	case w.closed(ctx, reason):
 		// Committed meanwhile by a retry that timed out here: the facts stand.
 		c.taskPersisted = true
 		return w.deliver(ctx)
+	default:
+		c.taskPersisted = true
 	}
-	c.taskPersisted = true
 	if c.c.Writer.Written() {
 		panic(http.ErrAbortHandler)
 	}
-	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), errTypeInternal)}
+	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), recordType)}
+}
+
+// unreportedUsage makes rec the free record of a request whose execution
+// stated no facts, as CloseExecutionUnreported writes it: the host's reading
+// without anything to bill.
+func unreportedUsage(rec *core.UsageRecord, reason string) {
+	rec.Success, rec.ErrorType, rec.ErrorMessage = false, core.UsageErrorUnreported, truncateUTF8(reason, 1000)
+	rec.Tokens, rec.Metrics, rec.Additional, rec.Replacement = core.UsageTokens{}, nil, nil, nil
+	rec.Price, rec.BillingError, rec.Reservation = nil, "", nil
+	rec.UsageExtract = core.UsageExtractUnreported
 }
 
 // close closes the execution unreported; it reports whether it turned out
-// to be committed already (ErrConflict).
-func (w *waitedRelay) close(ctx context.Context, reason string) (committed bool) {
+// to be committed already (ErrConflict), else the close's error.
+func (w *waitedRelay) close(ctx context.Context, reason string) (committed bool, err error) {
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
-	err := w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason})
+	err = w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason})
 	if isConflict(err) {
-		return true
+		return true, nil
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "gateway: close unreported execution", "request_id", w.x.c.rid, "execution", w.id, "err", err)
 	}
-	return false
+	return false, err
+}
+
+// closed is close reporting only whether the execution was committed.
+func (w *waitedRelay) closed(ctx context.Context, reason string) (committed bool) {
+	committed, _ = w.close(ctx, reason)
+	return committed
 }
 
 // isConflict reports core.ErrConflict.

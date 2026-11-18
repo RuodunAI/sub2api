@@ -11,6 +11,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 type boundPollProxy struct {
@@ -83,7 +84,7 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 			t.Fatalf("timeout %+v not applied: %+v %v", opts, out, err)
 		}
 	}
-	if shorter(reconcileHTTPTimeout, 3_600_000) != reconcileHTTPTimeout {
+	if execfetch.Tighten(reconcileHTTPTimeout, 3_600_000) != reconcileHTTPTimeout {
 		t.Fatal("an option lengthened the timeout")
 	}
 	admitted.Store(2)
