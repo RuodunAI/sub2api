@@ -2,6 +2,7 @@ package conformance
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"net/http"
 	"strconv"
@@ -91,8 +92,12 @@ func (f *fake) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (
 	}
 	u.Header("x-conformance-date", f.clock().Format(time.RFC3339)).
 		DefaultHeader("content-type", "application/json").
-		DefaultHeader("x-conformance-beta", in.GetInboundHeaders()["x-conformance-beta"]).
 		Body(body).Model(pluginsdk.RequestModel(in))
+	if f.violate != "drops a client header" {
+		for name, value := range in.GetInboundHeaders() {
+			u.DefaultHeader(name, value)
+		}
+	}
 	f.headerViolations(u, credential, in)
 	request, err := u.Build()
 	f.remember(in, request)
@@ -191,15 +196,29 @@ func (f *fake) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestReque
 	return &pluginv1.BuildTestRequestResponse{}, nil
 }
 
-const fakeManifest = `{"key":"conformance-fake","version":"1.0.0","capabilities":[{"id":"platform.adapter.v1"},{"id":"platform.websocket.v1"}]}`
+const fakeManifest = `{
+  "key": "conformance-fake", "version": "1.0.0",
+  "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.websocket.v1"}],
+  "platforms": [{"id": "conformance", "passHeaders": ["x-conformance-beta"], "endpoints": [
+    {"id": "chat", "method": "POST", "path": "/v1/chat", "protocol": "conformance.chat", "kind": "proxy",
+     "request": {"modelPath": "model", "streamPath": "stream"}, "response": {"stream": "sse", "nonStream": "json"}},
+    {"id": "count", "method": "POST", "path": "/v1/count", "protocol": "conformance.count", "kind": "proxy",
+     "request": {"modelPath": "model"}, "response": {"nonStream": "json"}},
+    {"id": "ws", "method": "GET", "path": "/v1/ws", "protocol": "conformance.ws", "kind": "websocket",
+     "request": {"modelPath": "model"}, "response": {"stream": "websocket", "nonStream": "json"}}
+  ]}],
+  "accountTypes": [
+    {"id": "apikey", "platforms": [{"platform": "conformance"}]},
+    {"id": "oauth", "platforms": [{"platform": "conformance", "passHeaders": ["x-conformance-beta", "x-conformance-oauth"]}]}
+  ]
+}`
 
 func fakePlugin(violate string) Plugin {
 	f := &fake{violate: violate}
 	return Plugin{
 		Platform:    f,
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest([]byte(fakeManifest))},
-		Protocols:   []string{"conformance.chat"},
-		PassHeaders: []string{"x-conformance-beta"},
+		Manifest:    []byte(fakeManifest),
+		Protocols:   []string{"conformance.chat", "conformance.count"},
 		Credentials: []string{"authorization", "x-conformance-date"},
 		Fetch: func(_ context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 			token := "at-" + gjson.GetBytes(in.GetBody(), "refresh_token").String()
@@ -215,12 +234,14 @@ func fakeCases() []Case {
 	apikey := &pluginv1.Account{Id: 1, Type: "apikey", CredentialsJson: `{"api_key":"sk-conformance-key"}`}
 	oauth := &pluginv1.Account{Id: 2, Type: "oauth", CredentialsJson: `{"refresh_token":"rt-conformance-token"}`}
 	meta := func(stream bool, endpoint string) *pluginv1.RequestMeta {
-		return &pluginv1.RequestMeta{Protocol: "conformance.chat", Model: "m1", Stream: stream, Endpoint: endpoint}
+		protocol := map[string]string{"/v1/count": "conformance.count", wsEndpoint: "conformance.ws"}[endpoint]
+		return &pluginv1.RequestMeta{Protocol: cmp.Or(protocol, "conformance.chat"), Model: "m1", Stream: stream, Endpoint: endpoint}
 	}
 	return []Case{
 		{Name: "apikey", Account: apikey, Meta: meta(false, "/v1/chat"), Body: []byte(`{"model":"m1","messages":[]}`)},
 		{Name: "apikey stream", Account: apikey, Meta: meta(true, "/v1/chat"), Body: []byte(`{"model":"m1","stream":true}`)},
 		{Name: "oauth", Account: oauth, Meta: meta(false, "/v1/chat"), Body: []byte(`{"model":"m1"}`)},
+		{Name: "count", Account: apikey, Meta: meta(false, "/v1/count"), Body: []byte(`{"model":"m1"}`)},
 		{Name: "usage", Account: apikey, Meta: meta(false, "/v1/usage"), Body: []byte(`{"model":"m1"}`), Endpoint: PluginUsage,
 			Observed: pluginsdktest.Observed(200, []byte(`{"usage":{"output_tokens":7}}`))},
 		{Name: "task", Account: apikey, Meta: meta(false, "/v1/tasks"), Body: []byte(`{"model":"m1"}`), Endpoint: TaskSubmission,
@@ -258,8 +279,8 @@ func TestConformingPluginPasses(t *testing.T) {
 	}
 }
 
-// Every rule catches the violation of it: one violation per rule (two for
-// the headers).
+// Every rule catches the violation of it: one violation per rule (three
+// for the headers).
 func TestEveryRuleCatchesItsViolation(t *testing.T) {
 	for _, v := range []struct{ violate, rule string }{
 		{"no relay", "01_one_relay"},
@@ -267,6 +288,7 @@ func TestEveryRuleCatchesItsViolation(t *testing.T) {
 		{"drops stream", "03_body"},
 		{"undeclared authoritative", "04_headers"},
 		{"credential default", "04_headers"},
+		{"drops a client header", "04_headers"},
 		{"refetches", "05_no_retry"},
 		{"nonce", "06_deterministic"},
 		{"reuses", "07_failover"},
@@ -306,6 +328,59 @@ func TestExceptions(t *testing.T) {
 	got := strings.Join(record(t, conforming, "03_body")["setup"], "\n")
 	if !strings.Contains(got, "has no reason") || !strings.Contains(got, "names no rule and case") {
 		t.Errorf("bad exceptions were accepted: %q", got)
+	}
+}
+
+// The forms of a protocol come from its endpoint: a missing one is reported,
+// an invented one (a stream case of an endpoint without a stream form, a
+// turn of an HTTP protocol) too, and a WebSocket protocol is not listed.
+func TestForms(t *testing.T) {
+	failures := func(p Plugin, cases []Case) string {
+		var out []string
+		setup := runItem(t, "setup", "", true, func(tb testing.TB) {
+			run(tb, p, cases, func(name string, fn func(testing.TB)) {
+				if name == "01_one_relay" {
+					out = runItem(tb, name, "", true, fn).failures
+				}
+			})
+		})
+		return strings.Join(append(out, setup.failures...), "\n")
+	}
+	cases := fakeCases()
+	if got := failures(fakePlugin(""), append(cases[:1:1], cases[2:]...)); !strings.Contains(got, "coverage: conformance.chat stream: no HTTP case covers it") {
+		t.Errorf("a missing form: %q", got)
+	}
+	invented := append(fakeCases(), Case{Name: "count stream", Account: cases[0].Account, Body: []byte(`{"model":"m1","stream":true}`),
+		Meta: &pluginv1.RequestMeta{Protocol: "conformance.count", Model: "m1", Stream: true}})
+	if got := failures(fakePlugin(""), invented); !strings.Contains(got, `coverage: count stream: the core never sends protocol "conformance.count" as a stream request`) {
+		t.Errorf("an invented stream form: %q", got)
+	}
+	turn := fakeCases()
+	turn[len(turn)-1].Meta.Protocol = "conformance.chat"
+	if got := failures(fakePlugin(""), turn); !strings.Contains(got, `has no websocket endpoint`) {
+		t.Errorf("a turn of an HTTP protocol: %q", got)
+	}
+	ws := fakePlugin("")
+	ws.Protocols = append(ws.Protocols, "conformance.ws")
+	if got := failures(ws, fakeCases()); !strings.Contains(got, "is a WebSocket endpoint's protocol") {
+		t.Errorf("a WebSocket protocol in Protocols: %q", got)
+	}
+}
+
+// The client headers come from the manifest: without one, or with a case
+// on an account type it does not declare, the suite cannot tell what the
+// core hands over and refuses to start.
+func TestClientHeadersFromTheManifest(t *testing.T) {
+	p := fakePlugin("")
+	p.Manifest = nil
+	if got := strings.Join(record(t, p, "04_headers")["setup"], "\n"); !strings.Contains(got, "Plugin.Manifest is required") {
+		t.Errorf("no manifest: %q", got)
+	}
+	cases := fakeCases()
+	cases[0].Account = &pluginv1.Account{Id: 9, Type: "undeclared", CredentialsJson: `{"api_key":"k"}`}
+	setup := runItem(t, "setup", "", true, func(tb testing.TB) { run(tb, fakePlugin(""), cases, func(string, func(testing.TB)) {}) })
+	if got := strings.Join(setup.failures, "\n"); !strings.Contains(got, `no account type "undeclared"`) {
+		t.Errorf("undeclared account type: %q", got)
 	}
 }
 

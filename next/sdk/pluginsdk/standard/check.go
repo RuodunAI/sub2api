@@ -80,8 +80,6 @@ func (t *Type) check() error {
 
 func (a Auth) check() error {
 	switch {
-	case a.Header != "" && a.Query != "":
-		return errors.New("auth is a header or a query parameter, not both")
 	case a.Header != "" && (!paramoverride.ValidHeaderName(a.Header) || strings.ToLower(a.Header) != a.Header):
 		return fmt.Errorf("auth header %q is not a lower-case header name", a.Header)
 	case a.Header != "" && paramoverride.HeaderBlocked(a.Header) && !paramoverride.CredentialHeader(a.Header):
@@ -113,8 +111,8 @@ func (t *Type) checkRoute(r Route) error {
 	if r.Path == nil {
 		errs = append(errs, errors.New("no path"))
 	}
-	if r.WebSocket && (r.Edit != nil || (r.Method != "" && r.Method != "GET")) {
-		errs = append(errs, errors.New("a websocket route is opened with GET and has no body edit"))
+	if r.WebSocket && r.Edit != nil {
+		errs = append(errs, errors.New("a websocket route has no body edit"))
 	}
 	return errors.Join(append(errs, checkHeaders("headers", r.Headers))...)
 }

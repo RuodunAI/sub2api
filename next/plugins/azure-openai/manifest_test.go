@@ -49,13 +49,13 @@ func TestManifest(t *testing.T) {
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != 2 || m.AccountTypes[0].ID != typeV1 || m.AccountTypes[1].ID != typeDeployment {
 		t.Fatalf("platforms = %+v accountTypes = %+v, want %s then %s only", m.Platforms, m.AccountTypes, typeV1, typeDeployment)
 	}
-	// The plugin's list is the platform's own minus the two OpenAI
-	// account headers, so a header the platform gains later is noticed.
+	// The client headers the core hands over are the openai platform's
+	// minus openai-organization and openai-project, which name an
+	// organization and a project at OpenAI itself and mean nothing to
+	// Azure; derived from the platform, so a header it gains later is
+	// noticed.
 	notForwarded := []string{"openai-organization", "openai-project"}
 	fromPlatform := slices.DeleteFunc(slices.Clone(builtinPlatform("openai").PassHeaders), func(h string) bool { return slices.Contains(notForwarded, h) })
-	if !slices.Equal(azureopenai.PassHeaders, fromPlatform) {
-		t.Errorf("passHeaders = %v, the openai platform passes %v", azureopenai.PassHeaders, fromPlatform)
-	}
 	types := map[string]standard.Type{typeV1: azureopenai.V1(), typeDeployment: azureopenai.Deployment()}
 	for _, at := range m.AccountTypes {
 		if at.CreationGroup != "azure-openai" || at.AuthMethodLabel["en"] == "" || at.AuthMethodLabel["zh"] == "" {
@@ -64,8 +64,8 @@ func TestManifest(t *testing.T) {
 		if len(at.Platforms) != 1 || at.Platforms[0].Platform != "openai" || !slices.Equal(at.Platforms[0].Endpoints, endpoints[at.ID]) {
 			t.Fatalf("%s: platforms = %+v, want openai %v", at.ID, at.Platforms, endpoints[at.ID])
 		}
-		if !slices.Equal(at.Platforms[0].PassHeaders, azureopenai.PassHeaders) {
-			t.Errorf("%s: passHeaders = %v, the type forwards %v", at.ID, at.Platforms[0].PassHeaders, azureopenai.PassHeaders)
+		if !slices.Equal(at.Platforms[0].PassHeaders, fromPlatform) {
+			t.Errorf("%s: passHeaders = %v, want the openai platform's without %v: %v", at.ID, at.Platforms[0].PassHeaders, notForwarded, fromPlatform)
 		}
 		if !slices.Equal(at.SensitiveFields, []string{"api_key"}) || len(at.GuardedSettings) != 0 || len(at.DefaultModels) != 0 {
 			t.Errorf("%s: sensitiveFields %v guardedSettings %v defaultModels %v", at.ID, at.SensitiveFields, at.GuardedSettings, at.DefaultModels)

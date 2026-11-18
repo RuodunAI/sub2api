@@ -27,13 +27,9 @@ func New() *Plugin {
 	return p
 }
 
-// APIKey is the apikey type: the anthropic preset without filter fields
-// (the plugin forwards service_tier, inference_geo and speed).
-func APIKey() standard.Type {
-	t := anthropic.APIKey("apikey")
-	t.FilterFields = nil
-	return t
-}
+// APIKey is the apikey type: the anthropic preset as it is (every request
+// field is forwarded).
+func APIKey() standard.Type { return anthropic.APIKey("apikey") }
 
 // Init implements pluginsdk.Initializer.
 func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {

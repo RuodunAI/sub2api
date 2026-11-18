@@ -47,7 +47,7 @@ func (p *Platform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*p
 
 // BuildUpstream builds the final request of one attempt: the route of
 // meta.protocol on the account's base URL, the key as the authoritative
-// header (or in the query), every other header as a default header, and
+// header, every other header as a default header, and
 // the body with the type's FilterFields and the route's Edit applied.
 func (p *Platform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	t, cfg, err := p.account(in.GetAccount())
@@ -62,7 +62,8 @@ func (p *Platform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest)
 	if err != nil {
 		return nil, err
 	}
-	r := &Request{Account: in.GetAccount(), Meta: in.GetMeta(), APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: model, Client: t.forward(in.GetInboundHeaders())}
+	r := &Request{Account: in.GetAccount(), Meta: in.GetMeta(), APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: model,
+		Stream: pluginsdk.RequestStream(in), Client: forward(in.GetInboundHeaders())}
 	body, err := t.edit(in.GetBody(), route, r)
 	if err != nil {
 		return nil, err
@@ -71,7 +72,7 @@ func (p *Platform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest)
 	if route.WebSocket {
 		delete(headers, "content-type") // a handshake has no body
 	}
-	u := pluginsdk.NewUpstream(route.method(), t.url(route.Path(r), route.WebSocket, r)).
+	u := pluginsdk.NewUpstream(route.method(), upstreamURL(route.Path(r), route.WebSocket, r)).
 		Body(body).
 		Model(model)
 	for name, value := range headers {
@@ -123,7 +124,7 @@ func (p *Platform) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReq
 	}
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        route.method(),
-		Url:           t.url(route.Path(r), false, r),
+		Url:           upstreamURL(route.Path(r), false, r),
 		Headers:       headers,
 		BodyJson:      t.Test.Body(model),
 		Model:         model,
@@ -147,7 +148,7 @@ func (p *Platform) BuildModelsRequest(_ context.Context, in *pluginv1.BuildModel
 		headers[name] = value
 	}
 	out := apikey.ModelListRequest(cfg, *t.Models, headers)
-	out.Url = t.url(t.Models.Path, false, r)
+	out.Url = upstreamURL(t.Models.Path, false, r)
 	return out, nil
 }
 
@@ -208,11 +209,8 @@ func (r *Route) model(in *pluginv1.ExecuteRequest) (string, error) {
 }
 
 func (r *Route) method() string {
-	switch {
-	case r.WebSocket:
+	if r.WebSocket {
 		return http.MethodGet
-	case r.Method == "":
-		return http.MethodPost
 	}
-	return r.Method
+	return http.MethodPost
 }

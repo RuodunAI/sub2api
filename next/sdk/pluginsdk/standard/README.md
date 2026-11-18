@@ -1,6 +1,6 @@
 # standard：API Key 账号类型的公共库
 
-“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 放在请求头或查询串里”这一类账号类型，用这个包实现全部平台接口。openai、gemini、relay、azure_openai 四个插件和 anthropic 插件的 `apikey` 类型都是这一类（设计稿 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` 7.3 节）。
+“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 放在请求头里”这一类账号类型，用这个包实现全部平台接口。openai、gemini、relay、azure_openai 四个插件和 anthropic 插件的 `apikey` 类型都是这一类（设计稿 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` 7.3 节）。
 
 它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `Type`（通常从厂商预设出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 就是 `pluginsdk.Platform`。
 
@@ -14,7 +14,6 @@ package standard
 type Type struct {
 	ID              string            // 账号类型 ID；New 把它抄进 Spec.AccountType
 	Spec            apikey.Spec       // 密钥校验、默认/必填基础地址、去掉的后缀、错误文案
-	PassHeaders     []string          // 转发的客户端请求头；清单没写自己的就用 PlatformPassHeaders(平台)
 	Auth            Auth              // Key 放在哪
 	Headers         []Header          // 每个请求都写的头，按顺序，先于路由的
 	Routes          map[string]Route  // 键是上游协议 ID
@@ -25,15 +24,14 @@ type Type struct {
 	Models          *apikey.ModelList // 模型列表；nil 回 UNIMPLEMENTED
 }
 
-type Auth struct{ Header, Query, Prefix string } // 头名或查询参数名二选一，Prefix 在 Key 前（"Bearer "）；都空 = 不带凭证
+type Auth struct{ Header, Prefix string } // Key 放在哪个头，Prefix 在 Key 前（"Bearer "）；Header 空 = 不带凭证
 
 type Route struct {
-	Method    string                                         // 默认 POST；WebSocket 固定 GET
 	Path      func(*Request) string                          // 接在基础地址后的路径（已转义）和可选的查询串
-	WebSocket bool                                           // ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息
+	WebSocket bool                                           // GET 的 ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息；其余路由都是 POST
 	Model     Model                                          // 上游模型从哪来
 	Headers   []Header                                       // 写在类型的头之后
-	Edit      func(body []byte, r *Request) ([]byte, error)  // 在 FilterFields 之后改请求体（用 jsonedit）；没有 gRPC 状态的错误按 INVALID_ARGUMENT 返回；WebSocket 路由不能有
+	Edit      func(d *jsonedit.Doc, r *Request)              // 在删掉 FilterFields 之后、同一次 jsonedit 里改请求体；WebSocket 路由不能有
 }
 
 type Model struct {
@@ -64,13 +62,13 @@ type Request struct {
 	Meta            *pluginv1.RequestMeta // 账号测试、模型列表时为 nil
 	APIKey, BaseURL string                // 规范化之后的
 	Model           string                // 上游模型；模型列表时为 ""
-	Client          map[string]string     // 转发的客户端请求头（小写名、去空白）
+	Stream          bool                  // 回答是否流式（pluginsdk.RequestStream：meta.stream 或请求体 "stream" 为 true）；账号测试、模型列表时为 false
+	Client          map[string]string     // 核心交来的客户端请求头（核心已按清单的 passHeaders 过滤；小写名、去空白、丢掉空值）
 }
 func (r *Request) Field(name string) string // 先凭证后设置；字符串原样，数字和布尔取 JSON 文本，其余 ""
 
 func New(types ...Type) *Platform   // 配置不一致时 panic（Check 的结果）
 func Check(types ...Type) error     // 插件测试里也可以直接调
-func PlatformPassHeaders(id string) []string
 
 // *Platform 实现 pluginsdk.Platform、pluginsdk.UpstreamBuilder、pluginsdk.ModelLister：
 func (p *Platform) Execute(ctx, *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) // = pluginsdk.ExecuteDefault
@@ -100,32 +98,30 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
 2. `Spec.FromAccount`：取 Key 和基础地址（规范化、去后缀、必填、默认值），错误原样返回。
 3. 按 `meta.protocol` 找路由（空协议用 `DefaultProtocol`），没有就 `unsupported upstream protocol "x"`。
 4. 按 `Route.Model` 取上游模型。
-5. 请求体：`FilterFields`，再 `Route.Edit`。
+5. 请求体：一次 `jsonedit` 里先删 `FilterFields`，再 `Route.Edit`；两者都没有就不读请求体。
 6. 请求头：
-   - **默认头**（运营方的透传、覆盖能改）：转发的客户端请求头（只有 `PassHeaders` 里的），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
+   - **默认头**（运营方的透传、覆盖能改）：核心交来的全部客户端请求头（核心已按清单的 `passHeaders` 过滤，库不再筛），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
-7. URL：基础地址 + `Path`，查询鉴权时追加 `<Auth.Query>=<Key>`，WebSocket 路由换成 ws/wss。
+7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss。
 
 账号测试走 `Test.Protocol` 的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表只带类型的头和鉴权，不带 `content-type`。
 
 ## 请求体
 
-- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，一批改写只拷贝一次。`FilterFields` 是一批 `Delete`；`Edit` 自己写，例如 openai 的 `IncludeStreamUsage`：
+- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`：
 
   ```go
-  func IncludeStreamUsage(body []byte, r *standard.Request) ([]byte, error) {
-  	if !r.Meta.GetStream() {
-  		return body, nil
+  func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {
+  	if r.Stream {
+  		d.Set("stream_options.include_usage", []byte("true"))
   	}
-  	return jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
   }
   ```
 
   `Set` 原地替换已有的值，没有就加在所在对象的末尾（连同缺的上层对象）；`Delete` 连同一个分隔逗号删掉成员。
 - **非法 JSON、重复键**：核心在调插件之前已经把这两种请求体以 400 拒绝（设计稿 8.1 的结构检查）。库在改写前仍然检查一遍（`jsonedit` 的规则）：要改写的请求体不是合法 JSON，或者 `Set` 路径上的某个键在它所在的对象里出现两次，就返回 `INVALID_ARGUMENT`，什么都不中继（核心按插件不可用换号），而不是发出一个改了一半的请求。路径之外的重复键不归改写管，原样保留；`Delete` 删掉一个路径的每一次出现。路由没有任何改写时，库根本不读请求体。
-- **一次还是两次拷贝**：`FilterFields` 与 `Edit` 各是一批：两者都真的改了请求体时拷贝两次（`Edit` 的签名收发字节，azure_openai 等插件在用）；只有一方改时拷贝一次。
-- **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。目前只有 azure_openai 的两个类型保留了 openai 预设的过滤字段（`service_tier`、`safety_identifier`）。
-- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`；openai 的 `IncludeStreamUsage` 看的是 `meta.stream`，不是请求体。
+- **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。预设都不带过滤字段；目前只有 azure_openai 的两个类型自己写了 `service_tier`、`safety_identifier`。
+- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`。`Request.Stream` 是 `meta.stream` 或请求体的 `"stream"` 为 true：只流式的账号类型由核心把 `stream: true` 写进请求体，`meta.stream` 却保留客户端的值，openai 的 `IncludeStreamUsage` 看 `Request.Stream`，否则这种请求拿不到用量。
 
 ## 例子一：OpenAI 风格（openai 插件）
 
@@ -144,12 +140,10 @@ import (
 // New returns the platform of the apikey account type.
 func New() *standard.Platform { return standard.New(APIKey()) }
 
-// APIKey is the apikey type: the preset without filter fields (the plugin
-// forwards service_tier and safety_identifier), plus the organization and
-// project an account may set, which replace the client's headers.
+// APIKey is the apikey type: the preset, plus the organization and project
+// an account may set, which replace the client's headers.
 func APIKey() standard.Type {
 	t := openai.APIKey("apikey")
-	t.FilterFields = nil
 	t.Headers = append(t.Headers,
 		standard.Set("openai-organization", standard.Field("organization")),
 		standard.Set("openai-project", standard.Field("project")))
@@ -182,7 +176,7 @@ func main() {
 
 ```go
 func TestGolden(t *testing.T) {
-	goldentest.Run(t, "openai", standardtest.Golden(New()))
+	standardtest.Run(t, "openai", New())
 }
 ```
 
@@ -231,7 +225,7 @@ import (
 func New() *standard.Platform { return standard.New(gemini.APIKey("apikey")) }
 ```
 
-`main.go` 与 openai 的相同，只换 import；测试是 `goldentest.Run(t, "gemini", standardtest.Golden(New()))`。
+`main.go` 与 openai 的相同，只换 import；测试是 `standardtest.Run(t, "gemini", New())`。
 
 预设怎么把模型写进路径，可以照着写别的“模型在路径里”的路由：
 
@@ -272,13 +266,9 @@ func New() *Plugin {
 	return p
 }
 
-// APIKey is the apikey type: the preset without filter fields (the plugin
-// forwards service_tier, inference_geo and speed).
-func APIKey() standard.Type {
-	t := anthropic.APIKey("apikey")
-	t.FilterFields = nil
-	return t
-}
+// APIKey is the apikey type: the anthropic preset as it is (every request
+// field is forwarded).
+func APIKey() standard.Type { return anthropic.APIKey("apikey") }
 
 // Init implements pluginsdk.Initializer.
 func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
@@ -289,7 +279,7 @@ func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 
 `main.go` 不变（`pluginsdk.Serve(anthropic.New(), pluginsdk.WithManifest(manifestJSON))`）。
 
-relay 是同一个预设加四处差异，外加它自己的两个客户端请求头：
+relay 是同一个预设加三处差异（它收到哪两个客户端请求头由清单的 `passHeaders` 决定，核心过滤）：
 
 ```go
 // Package relay is the platform of Anthropic-compatible relays.
@@ -304,28 +294,25 @@ import (
 func New() *standard.Platform { return standard.New(RelayKey()) }
 
 // RelayKey is the anthropic preset on the relay's own address: the base URL
-// is required and has no default, a request must name its protocol, the
-// plugin forwards every field, and only the two headers the manifest passes
-// reach the relay.
+// is required and has no default, a request must name its protocol, and the
+// plugin forwards every field.
 func RelayKey() standard.Type {
 	t := anthropic.APIKey("relay_key")
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = "Base URL of the relay is required / 请填写中转站的 Base URL"
 	t.DefaultProtocol = ""
-	t.FilterFields = nil
-	t.PassHeaders = []string{"anthropic-version", "anthropic-beta"}
 	return t
 }
 ```
 
-测试：`goldentest.Run(t, "anthropic", standardtest.Golden(standard.New(APIKey())))`、`goldentest.Run(t, "relay", standardtest.Golden(New()))`。
+测试：`standardtest.Run(t, "anthropic", New().Platform)`、`standardtest.Run(t, "relay", New())`。
 
-azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），完整的配置和它的全部验收断言在 `sdk/pluginsdk/providers/openai/azure_test.go`，照抄即可。
+azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
 ## 测试
 
-- `standardtest.Golden(p)` 把一个 `*standard.Platform` 接到 `goldentest.Run`：`Execute` 是 `BuildUpstream`（`ExecuteDefault` 中继的就是它），其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
+- `standardtest.Run(t, plugin, p)` 用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(t)`：类型配置能通过检查。
 
-本包自己的验收：`providers/*/golden_test.go` 按五个插件将来的写法构造类型，1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）全部通过，没有例外；`providers/openai/azure_test.go` 是 azure_openai 的断言；`body_test.go` 是请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键。
+本包自己的验收只测库和预设本身：`platform_test.go`、`body_test.go`（请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键），`providers/gemini/golden_test.go` 用原样的 gemini 预设回放 gemini 的样例。插件的类型配置不在 SDK 里复制：1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）由各插件用自己的构造函数回放，azure_openai 的断言在它自己的 `platform_test.go`，CI 测试每个 `plugins/*` 模块。

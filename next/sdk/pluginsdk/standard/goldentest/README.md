@@ -126,9 +126,9 @@
 
 | 类型 | 声明的过滤字段 | 声明的 `paramOverride` |
 |---|---|---|
-| openai/`apikey`、anthropic/`apikey`、gemini/`apikey`、relay/`relay_key` | 清单写的是 `filterFields: []`，把预设的清空了 | 无 |
-| azure_openai/`azure_v1`、`azure_deployment` | 没有自己写，沿用 openai 预设的 `service_tier`、`safety_identifier` | 无 |
-| 预设本身 | openai：`service_tier`、`safety_identifier`；anthropic：`service_tier`、`inference_geo`、`speed`；gemini：无 | 无 |
+| openai/`apikey`、anthropic/`apikey`、gemini/`apikey`、relay/`relay_key` | 无（清单当年写的是 `filterFields: []`） | 无 |
+| azure_openai/`azure_v1`、`azure_deployment` | `service_tier`、`safety_identifier`（插件的 `azure()` 里写明） | 无 |
+| 预设本身 | 无（预设不带过滤字段，azure_openai 自己写这两个） | 无 |
 
 也就是说，今天这条顺序变化只在 azure_openai 的两个类型上可见：运营方在账号的参数覆盖里设置 `service_tier` 或 `safety_identifier` 时，今天发给上游，改写之后被插件删掉。W4、W10d 要把它写进 CONTRACTS 新章节和 CHANGELOG。内置的 `claude_max_tokens` 只写 `max_tokens`，不受影响。
 
@@ -170,7 +170,7 @@ func Unwrap(message string) string
 
 - `Subject` 的五个函数都要给。缺一个，那一类的每条样例都报错，不会悄悄跳过。
 - `Classify` 收到样例的时钟 `now`，实现必须用它而不是系统时间（冷却到期时间在期望值里）。
-- `Execute` 的适配器负责把 `pass_headers`（`File.PassHeaders`）交给被测实现，如果实现需要的话；`client_headers` 原样传入，过滤是被测实现的事。
+- `Execute` 的适配器负责像核心那样过滤客户端请求头：只把 `client_headers` 里 `pass_headers`（`File.PassHeaders`）列出的交给被测实现。线上是核心按清单的 `passHeaders` 过滤之后才调插件，插件不再筛；样例故意多给的头（`authorization`、`cookie` 等）因此由适配器挡掉，不出现在上游请求里仍然是被比较的结果。`standardtest.Run` 就是这样做的。
 - `Except(name, reason)` 声明的样例必须**真的不同**：声明了却与样例一致、或者名字不存在，测试失败。这样例外清单不会比它的理由活得久。
 
 ## 转换是否忠实：两个测试

@@ -17,7 +17,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	preset "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
 const (
@@ -97,15 +96,9 @@ func TestManifestServes(t *testing.T) {
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    openai.New(),
-		SDK:         []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)},
+		Manifest:    manifestJSON,
 		Protocols:   httpProtocols,
-		PassHeaders: standard.PlatformPassHeaders(platform),
 		Credentials: []string{"authorization"},
-		Exceptions: []conformance.Exception{{
-			Check:  "01_one_relay",
-			Case:   "coverage: " + wsTurn,
-			Reason: "openai.responses_ws exists only as WebSocket turns; listing it in Protocols would demand HTTP stream and non-stream cases it cannot have",
-		}},
 	}, conformanceCases()...)
 }
 
@@ -119,6 +112,9 @@ func conformanceCases() []conformance.Case {
 	var cases []conformance.Case
 	for _, protocol := range httpProtocols {
 		for _, stream := range []bool{false, true} {
+			if stream && protocol == preset.ProtocolEmbeddings {
+				continue // embeddings never stream (no streamPath)
+			}
 			body := `{"model":"gpt-4o-mini","input":"hi"}`
 			if stream {
 				body = `{"model":"gpt-4o-mini","input":"hi","stream":true}`

@@ -7,6 +7,7 @@ package azureopenai
 import (
 	"net/url"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -16,15 +17,6 @@ const (
 	TypeV1         = "azure_v1"
 	TypeDeployment = "azure_deployment"
 )
-
-// PassHeaders are the client headers both types forward: the openai
-// platform's without openai-organization and openai-project, which name an
-// organization and a project at OpenAI itself and mean nothing to Azure.
-var PassHeaders = []string{
-	"openai-beta", "user-agent",
-	"x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version",
-	"x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout",
-}
 
 // New returns the platform of both account types.
 func New() *standard.Platform { return standard.New(V1(), Deployment()) }
@@ -49,9 +41,7 @@ func Deployment() standard.Type {
 
 // azure is what both types change in the openai preset: a required resource
 // endpoint without a default (a pasted /openai/v1 or /openai removed), any
-// key format, the key in api-key, the routes given, no model listing. The
-// preset's filter fields stay; they run after the operator's rewrites
-// (design §12.5).
+// key format, the key in api-key, the routes given, no model listing.
 func azure(id string, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
@@ -59,15 +49,19 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 	t.Spec.KeyValidator = nil
 	t.Spec.Texts.BaseURLRequired = "Resource endpoint is required / 请填写资源地址"
 	t.Auth = standard.Auth{Header: "api-key"}
-	t.PassHeaders = PassHeaders
 	t.Routes = routes
 	t.Models = nil
+	// service_tier and safety_identifier belong to a client's own OpenAI
+	// account. The plugin removes them after the operator's rewrites
+	// (design §12.5), so an operator's param_override that sets either on
+	// an Azure account is removed too.
+	t.FilterFields = []string{"service_tier", "safety_identifier"}
 	return t
 }
 
 // deployment is a route of the classic API: the deployment (the upstream
 // model) as one path segment, the account's api_version in the query.
-func deployment(operation string, edit func([]byte, *standard.Request) ([]byte, error)) standard.Route {
+func deployment(operation string, edit func(*jsonedit.Doc, *standard.Request)) standard.Route {
 	return standard.Route{
 		Path: func(r *standard.Request) string {
 			return "/openai/deployments/" + url.PathEscape(r.Model) + operation + "?api-version=" + url.QueryEscape(r.Field("api_version"))

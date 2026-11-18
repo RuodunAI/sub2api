@@ -34,7 +34,7 @@ func (s *suite) start(t testing.TB, c *Case, u upstream) *pluginsdktest.Harness 
 	if u.fetch == nil {
 		u.fetch = s.p.Fetch
 	}
-	return s.serve(t, s.p.Platform, s.p.SDK, s.p.Config, u)
+	return s.serve(t, s.p.Platform, s.sdk, s.p.Config, u)
 }
 
 func (s *suite) serve(t testing.TB, p any, sdk []pluginsdk.Option, config any, u upstream) *pluginsdktest.Harness {

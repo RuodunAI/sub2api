@@ -19,10 +19,10 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | 字段 | 含义 |
 |---|---|
 | `Platform` | 被测实现。`TaskMonitor`、`UsageExtractor`、`TaskSubmissionParser` 由 SDK 照常按类型断言找到 |
-| `SDK` | 传给 `pluginsdk.Register` 的选项，通常是 `WithManifest(manifestJSON)`。清单里声明的能力决定第 11 条是否适用 |
+| `Manifest` | 插件的 `manifest.json`，必填。套件用它起插件（`WithManifest`），清单里声明的能力决定第 11 条是否适用；第 4 条交给插件的客户端请求头也从它读 |
+| `SDK` | 传给 `pluginsdk.Register` 的其余选项，通常不用 |
 | `Config` | `Configure` 的插件设置，nil 为 `{}` |
-| `Protocols` | 插件声明的全部上游协议。每个协议都要有一个流式、一个非流式的 HTTP 用例 |
-| `PassHeaders` | 客户端请求头白名单（清单的 `passHeaders`）。套件把其中每个头以 `conformance-client-<名字>` 的值交给插件，另外再交一个白名单外的 `x-conformance-not-passed`，它不许出现在上游请求里 |
+| `Protocols` | 插件声明的 HTTP 上游协议（不含 WebSocket 协议，它的轮次归第 11 条）。每个协议在核心会发的每种形式下都要有 HTTP 用例；有哪些形式由套件从协议的端点（内置平台的或清单里的）读出：有 `request.streamPath`（或模型由插件解析）的流式、非流式都有，`request.stream` 为真的只有流式，其余只有非流式。列了 WebSocket 协议或没有端点的协议，`Run` 在开始时就失败 |
 | `Credentials` | 鉴权头和被签名的头（小写）。必须在权威头里，出现在默认头里就失败 |
 | `Authoritative` | 其余要保留为权威头的头，名字 → 理由（例如改写前代码插件的头都在运营方设置之上，转换后要保持）。理由不能为空 |
 | `Fetch` | 插件辅助请求（换令牌、上传）的回答。nil 时取回回 `UNIMPLEMENTED` |
@@ -45,16 +45,18 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `Observed` | 等待形式的上游回答，`PluginUsage`、`TaskSubmission` 必填，例如 `pluginsdktest.Observed(200, body)` |
 | `Failover` | 换号那次尝试用的账号。nil 时由 `Account` 推出：换 id，凭证 JSON 顶层的每个字符串值加后缀 `.failover`。凭证有结构、加后缀会坏时自己给 |
 
+客户端请求头不由用例给：套件像核心一样，按用例账号的类型在清单里找它对协议所属平台的那一项，取那一项的 `passHeaders`，没写就取平台的（`AccountPlatform.ClientHeaders`），每个头以 `conformance-client-<名字>` 的值交给插件。核心在调插件之前已经过滤，所以套件不再交白名单外的头。账号类型不在清单里、或者它不服务协议所属的平台，`Run` 在开始时就失败。
+
 ## 十一条检查
 
 每条是一个子测试，子测试里每个用例一项。失败信息的格式是 `<用例>: <看到了什么，怎么改>`，下一行 `rule:` 写规则和设计里的章节。`08_no_sockets` 最后运行，因为它判断整个套件期间有没有拨号。
 
 | 子测试 | 做法 |
 |---|---|
-| `01_one_relay` | 每个用例执行一次，`Execute` 成功且恰好一次中继；另有 `coverage: <协议> stream|non-stream` 项检查每个声明的协议两种都有用例，`coverage: <用例>` 项检查用例的协议已声明 |
+| `01_one_relay` | 每个用例执行一次，`Execute` 成功且恰好一次中继；另有 `coverage: <协议> stream|non-stream` 项检查每个声明的协议在它的每种形式下都有用例；`coverage: <用例>` 项在用例有问题时出现：HTTP 用例的协议没声明，或者是核心不会发的形式（例如流式的 count_tokens），或者 WebSocket 轮次的协议没有 WebSocket 端点 |
 | `02_form_and_report` | 按 `Endpoint` 检查等待与否和返回的种类；什么都不返回（未上报）失败 |
 | `03_body` | 交回的请求体是合法 JSON、同一对象里没有重复键；`model` 等于交入的（或 `UpstreamModel`），请求体里没有 `model` 时 URL 里要有它；交入 `stream: true` 时交回仍为真 |
-| `04_headers` | 权威头的名字都在 `Credentials` ∪ `Authoritative` 里；`Credentials` 的头不在默认头里；默认头的值里不带账号凭证；没有 `content-length`、`transfer-encoding`、`connection`、`accept-encoding`；白名单外的客户端头不出现。另有 `declared authoritative headers` 一项：声明的每个权威头至少在一个用例里作为权威头出现，否则是过期声明 |
+| `04_headers` | 权威头的名字都在 `Credentials` ∪ `Authoritative` 里；`Credentials` 的头不在默认头里；默认头的值里不带账号凭证；没有 `content-length`、`transfer-encoding`、`connection`、`accept-encoding`；核心交来的每个客户端请求头（清单的 `passHeaders`）都出现在默认头里（值可以被插件改，例如账号设置；声明在 `Authoritative` 里的也可以是权威头）。另有 `declared authoritative headers` 一项：声明的每个权威头至少在一个用例里作为权威头出现，否则是过期声明 |
 | `05_no_retry` | 三种失败各执行一次：中继调用失败；等待形式下上游交换失败（503）；插件取回过的用例，取回失败。之后不许再中继、不许多取回，必须返回错误或 `classification`，不许返回 `host_usage`/`usage`/`task` |
 | `06_deterministic` | 固定时钟下同一输入构造 5 次，逐字段比较 |
 | `07_failover` | 先给换号账号做一次全新构造（尝试 0、另一个请求 ID）作参照；再按原账号尝试 0、换号账号尝试 1（同一请求 ID）。尝试 1 必须等于参照。两个账号构造出相同请求时无法区分复用，项失败并要求设置 `Failover` |
@@ -83,7 +85,7 @@ Exceptions: []conformance.Exception{{
 ## 套件证明不了什么
 
 - 只看假宿主收到的东西：核心真实的发送、SSRF、代理、请求头分层、发送前检查、计费不在这里（网关测试 §14.2、e2e §14.5）。
-- 只覆盖给出的用例。没有用例的端点、账号类型、请求形状没有被检查；第 1 条只核对 `Protocols` 列出的协议都有用例，不读清单推断。
+- 只覆盖给出的用例。没有用例的端点、账号类型、请求形状没有被检查；第 1 条只核对 `Protocols` 列出的协议，不从清单推断插件服务哪些协议（每个协议有哪些形式是从端点定义读的）。
 - 第 8 条拦得住经默认传输、默认解析器（主机名）和出口隧道的拨号；直接拨 IP 字面量、或用 cgo、`syscall` 开套接字的代码拦不住。
 - 第 9 条只测“阻塞在宿主调用里时被取消”；插件在两次宿主调用之间自己算很久不在范围内。
 - 第 10 条用默认 8 MiB 而不是网关默认的 128 MiB 上限（分配随大小线性，比值相同），计量的是整个进程的分配减去参照插件，插件在后台另起的 goroutine 也算在内；填充字段被插件过滤掉时测到的就少。

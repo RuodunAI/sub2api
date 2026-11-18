@@ -1,6 +1,6 @@
 // Package standard implements the platform of "API key" account types: an
 // account holds an API key and a base URL, and a request is a route per
-// upstream protocol on that base URL with the key in a header or the query.
+// upstream protocol on that base URL with the key in a header.
 // openai, gemini, relay, azure_openai and the apikey type of anthropic are
 // such types (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md §7.3).
 //
@@ -17,11 +17,9 @@
 package standard
 
 import (
-	"slices"
-
-	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // Type is the whole behaviour of one account type. Its maps and slices are
@@ -34,10 +32,6 @@ type Type struct {
 	// format, default base URL, whether it is required, the suffixes a
 	// pasted URL loses, the wording of the errors.
 	Spec apikey.Spec
-	// PassHeaders are the client headers the type forwards: the
-	// passHeaders of the manifest's accountTypes[].platforms, else the
-	// platform's (PlatformPassHeaders). Any other client header is dropped.
-	PassHeaders []string
 	// Auth is where the API key goes.
 	Auth Auth
 	// Headers are written on every request of the type, in order, before
@@ -62,36 +56,31 @@ type Type struct {
 	Models *apikey.ModelList
 }
 
-// Auth is where a request carries the API key: a header (Header, the
-// authoritative header of the request) or a query parameter (Query), with
-// Prefix before the key ("Bearer "). Both empty sends no credential.
+// Auth is the header that carries the API key, the authoritative header of
+// the request, with Prefix before the key ("Bearer "). An empty Header
+// sends no credential.
 type Auth struct {
 	Header string
-	Query  string
 	Prefix string
 }
 
 // Route is the request of one upstream protocol.
 type Route struct {
-	// Method defaults to POST; a websocket route is opened with GET.
-	Method string
 	// Path is appended to the base URL: the path, written the way it goes
 	// on the wire (escape what the request supplies with url.PathEscape),
 	// and an optional query. Path fixes a constant one.
 	Path func(*Request) string
-	// WebSocket makes the route a websocket turn: the URL is the
-	// handshake's (ws, wss), the headers the handshake's (no
+	// WebSocket makes the route a websocket turn, opened with GET (any other
+	// route is a POST): the URL is the handshake's (ws, wss), the headers the handshake's (no
 	// content-type), the body the turn's message.
 	WebSocket bool
 	// Model says where the upstream model comes from.
 	Model Model
 	// Headers are written after the type's.
 	Headers []Header
-	// Edit changes the body after FilterFields (nil: none). It edits with
-	// jsonedit (jsonedit.Edit) and returns body unchanged when it has
-	// nothing to do; an error without a gRPC status is returned as
-	// INVALID_ARGUMENT. Not on a websocket route.
-	Edit func(body []byte, r *Request) ([]byte, error)
+	// Edit changes the body after FilterFields are deleted, in the same
+	// jsonedit pass (nil: none). Not on a websocket route.
+	Edit func(d *jsonedit.Doc, r *Request)
 }
 
 // Model is the rule for a route's upstream model.
@@ -157,16 +146,4 @@ type Test struct {
 	Model string
 	// Body is the request body for model.
 	Body func(model string) string
-}
-
-// PlatformPassHeaders are the client headers the built-in platform id
-// passes (sdk/platforms), nil for an unknown id: the PassHeaders of a type
-// whose manifest does not list its own.
-func PlatformPassHeaders(id string) []string {
-	for _, p := range platforms.Builtin() {
-		if p.ID == id {
-			return slices.Clone(p.PassHeaders)
-		}
-	}
-	return nil
 }

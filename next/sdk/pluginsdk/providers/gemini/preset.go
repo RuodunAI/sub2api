@@ -21,11 +21,10 @@ const (
 // error policy, a one-token generateContent test and the model listing.
 func APIKey(id string) standard.Type {
 	return standard.Type{
-		ID:          id,
-		Spec:        apikey.Spec{DefaultBaseURL: "https://generativelanguage.googleapis.com", StripSuffixes: []string{"/v1beta", "/v1"}},
-		PassHeaders: standard.PlatformPassHeaders("gemini"),
-		Auth:        standard.Auth{Header: "x-goog-api-key"},
-		Headers:     []standard.Header{standard.Set("content-type", standard.Fixed("application/json"))},
+		ID:      id,
+		Spec:    apikey.Spec{DefaultBaseURL: "https://generativelanguage.googleapis.com", StripSuffixes: []string{"/v1beta", "/v1"}},
+		Auth:    standard.Auth{Header: "x-goog-api-key"},
+		Headers: []standard.Header{standard.Set("content-type", standard.Fixed("application/json"))},
 		Routes: map[string]standard.Route{
 			ProtocolGenerate:       modelRoute(":generateContent"),
 			ProtocolStreamGenerate: modelRoute(":streamGenerateContent?alt=sse"),

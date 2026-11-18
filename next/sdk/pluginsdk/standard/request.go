@@ -2,7 +2,6 @@ package standard
 
 import (
 	"encoding/json"
-	"net/url"
 	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -20,8 +19,14 @@ type Request struct {
 	BaseURL string
 	// Model is the upstream model (Route.Model); "" for the model listing.
 	Model string
-	// Client are the forwarded client headers (Type.PassHeaders), lower-case
-	// names, trimmed values; none for the account test and the listing.
+	// Stream is whether the answer streams (pluginsdk.RequestStream):
+	// meta.stream, or the body's "stream" when it is true, which the core
+	// sets for a stream-only account type while meta.stream keeps the
+	// client's value. false for the account test and the listing.
+	Stream bool
+	// Client are the client headers the core handed over (it has filtered
+	// them by the manifest's passHeaders), lower-case names, trimmed values,
+	// blank ones dropped; none for the account test and the listing.
 	Client map[string]string
 
 	fields []map[string]any
@@ -48,17 +53,9 @@ func (r *Request) Field(name string) string {
 	return ""
 }
 
-// url is the URL of route on the base URL: path, the key in the query when
-// the type puts it there, the ws(s) scheme of a websocket route.
-func (t *Type) url(path string, websocket bool, r *Request) string {
+// upstreamURL is path on the base URL, with the ws(s) scheme for a websocket route.
+func upstreamURL(path string, websocket bool, r *Request) string {
 	u := r.BaseURL + path
-	if t.Auth.Query != "" {
-		sep := "?"
-		if strings.Contains(path, "?") {
-			sep = "&"
-		}
-		u += sep + url.QueryEscape(t.Auth.Query) + "=" + url.QueryEscape(t.Auth.Prefix+r.APIKey)
-	}
 	if websocket {
 		u = "ws" + strings.TrimPrefix(u, "http") // the base URL is http(s) (apikey.NormalizeBaseURL)
 	}
@@ -82,8 +79,8 @@ func (t *Type) headers(route []Header, r *Request) map[string]string {
 	return h
 }
 
-// credential is the authoritative header of the request: the key, when the
-// type sends it in a header.
+// credential is the authoritative header of the request: the key, unless
+// the type sends no credential.
 func (t *Type) credential(r *Request) map[string]string {
 	if t.Auth.Header == "" {
 		return map[string]string{}
@@ -118,11 +115,16 @@ func hasToken(cur, value string) bool {
 	return false
 }
 
-// forward are the client headers of inbound the type passes, trimmed,
-// blank ones dropped.
-func (t *Type) forward(inbound map[string]string) map[string]string {
-	out := map[string]string{}
-	apikey.ForwardHeaders(out, inbound, t.PassHeaders)
+// forward are the client headers of inbound: every one the core handed
+// over, lower-case, trimmed, blank ones dropped. The core passes only the
+// manifest's passHeaders, so the library filters nothing more.
+func forward(inbound map[string]string) map[string]string {
+	out := make(map[string]string, len(inbound))
+	for name, value := range inbound {
+		if value = strings.TrimSpace(value); value != "" {
+			out[strings.ToLower(name)] = value
+		}
+	}
 	return out
 }
 
