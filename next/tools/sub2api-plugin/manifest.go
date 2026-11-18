@@ -88,22 +88,19 @@ func parseManifest(raw []byte) (*manifest.Manifest, error) {
 	return &m, nil
 }
 
-// outdatedContract returns protocol.OutdatedContractMessage when the host's
-// manifest check finds what only an older plugin contract declares
-// (check.CodeOutdatedContract); its fields would otherwise fail the strict
-// decode as unknown.
+// outdatedContract refuses a manifest of an older plugin contract with the
+// one message the host gives it (check.OutdatedPackage); its fields would
+// otherwise fail the strict decode as unknown. The CLI has no core version
+// of its own: the message names the first core of the protocol.
 func outdatedContract(raw []byte) error {
 	var m manifest.Manifest
 	if json.Unmarshal(raw, &m) != nil {
 		return nil
 	}
-	files := map[string][]byte{"manifest.json": raw}
-	if !check.OutdatedContract(check.Validate(&m, files, check.ValidateOptions{Tooling: true})) {
-		return nil
+	if msg, outdated := check.OutdatedPackage(&m, raw, protocol.FirstCoreVersion); outdated {
+		return errors.New(msg)
 	}
-	// The CLI has no core version of its own: it names the first core of
-	// the protocol.
-	return errors.New(protocol.OutdatedContractMessage(m.Key, m.Version, protocol.FirstCoreVersion))
+	return nil
 }
 
 // applyMergePatch applies an RFC 7386 JSON merge patch and re-encodes the

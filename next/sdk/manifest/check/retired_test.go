@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
 // hasCode reports whether err holds code on field (codes keeps only the
@@ -86,10 +87,23 @@ func TestOutdatedContract(t *testing.T) {
 		if raw == nil {
 			raw = func(map[string]any) {}
 		}
-		err := Validate(m, controlFiles(t, m, raw), ValidateOptions{Tooling: true})
+		files := controlFiles(t, m, raw)
+		err := Validate(m, files, ValidateOptions{Tooling: true})
 		if !hasCode(err, tc.field, CodeOutdatedContract) || !OutdatedContract(err) {
 			t.Errorf("%s: want %s on %s, got %v", tc.name, CodeOutdatedContract, tc.field, err)
 		}
+		// The one decision upload, install, load and the CLI share reads
+		// the manifest alone.
+		if msg, outdated := OutdatedPackage(m, files["manifest.json"], "0.1.310"); !outdated || msg != protocol.OutdatedContractMessage(m.Key, m.Version, "0.1.310") {
+			t.Errorf("%s: OutdatedPackage = %q, %v", tc.name, msg, outdated)
+		}
+	}
+	m := controlsManifest(nil)
+	if msg, outdated := OutdatedPackage(m, controlFiles(t, m, func(map[string]any) {})["manifest.json"], "0.1.310"); outdated || msg != "" {
+		t.Errorf("current manifest: OutdatedPackage = %q, %v", msg, outdated)
+	}
+	if _, outdated := OutdatedPackage(nil, nil, "0.1.310"); outdated {
+		t.Error("no manifest is outdated")
 	}
 }
 

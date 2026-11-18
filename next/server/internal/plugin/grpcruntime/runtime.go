@@ -236,7 +236,7 @@ func (r *Runtime) outdatedContract(pkg *registry.Package, cause error) error {
 }
 
 // checkContract rejects a package whose manifest is of an older plugin
-// contract (check.CodeOutdatedContract), before anything of it runs. Other
+// contract (check.OutdatedPackage), before anything of it runs. Other
 // manifest problems are not this check's: the package passed them when it
 // was installed.
 func (r *Runtime) checkContract(pkg *registry.Package) error {
@@ -244,9 +244,8 @@ func (r *Runtime) checkContract(pkg *registry.Package) error {
 		return nil
 	}
 	raw, _ := pkg.ReadFile("manifest.json")
-	err := check.Validate(pkg.Manifest, map[string][]byte{"manifest.json": raw}, check.ValidateOptions{HostVersion: r.o.HostVersion})
-	if check.OutdatedContract(err) {
-		return r.outdatedContract(pkg, err)
+	if msg, outdated := check.OutdatedPackage(pkg.Manifest, raw, r.o.HostVersion); outdated {
+		return &outdatedContractError{msg: msg}
 	}
 	return nil
 }
