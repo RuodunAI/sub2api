@@ -112,7 +112,9 @@ var upstreamURLs = map[string]string{
 
 // BuildUpstream builds the final request of one attempt: Messages or
 // count_tokens, by the protocol. The body goes out as the host handed it
-// over. Every header is authoritative, written over the operator's
+// over. The client headers the core hands over (the anthropic platform's
+// passHeaders, already filtered) go out as default headers. Every header
+// the plugin writes itself is authoritative, written over the operator's
 // passthrough and overrides, as a code plugin's headers always were: the
 // bearer token and the oauth beta are what an OAuth token is accepted with
 // on both endpoints, and the version and content type stay as the request
@@ -131,6 +133,7 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		return nil, status.Error(codes.InvalidArgument, "parse credentials: "+err.Error())
 	}
 	return pluginsdk.NewUpstream(http.MethodPost, target).
+		DefaultHeaderMap(in.GetInboundHeaders()).
 		HeaderMap(oauthHeaders(creds.AccessToken)).
 		Body(in.GetBody()).
 		Build()
