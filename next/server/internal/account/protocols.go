@@ -348,7 +348,7 @@ func (s *Service) GroupServedProtocols(ctx context.Context, groupIDs []int64) (m
 	if err := store.G(ctx, s.d.DB.Gorm).Table("accounts a").
 		Select("ag.group_id, a.plugin_key, a.type, a.models, a.protocols, NULLIF(a.model_protocols, '[]'::jsonb) AS model_protocols").
 		Joins("JOIN account_groups ag ON ag.account_id = a.id").
-		Where("ag.group_id IN ? AND a.deleted_at IS NULL", groupIDs).Scan(&members).Error; err != nil {
+		Where("ag.group_id = ANY(?) AND a.deleted_at IS NULL", store.Int64s(groupIDs)).Scan(&members).Error; err != nil {
 		return nil, err
 	}
 	types := map[core.AccountTypeKey][]typeProtocol{}
