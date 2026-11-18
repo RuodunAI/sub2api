@@ -4,19 +4,36 @@ package protocol
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
+
+	runtimecontract "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
-// ProtocolVersion is the plugin protocol understood by this SDK; it must
-// equal GetInfoResponse.protocol_version.
-const ProtocolVersion = 1
+// ProtocolVersion is the plugin wire protocol of this SDK and core: the
+// go-plugin handshake version and GetInfoResponse.protocol_version. It rises
+// with every incompatible change of the plugin contract, so that a binary
+// built for another protocol is refused when its process starts; hostCompat
+// alone cannot do that for packages published before the change. Protocol 2
+// is the single Execute path (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2).
+const ProtocolVersion = 2
 
-// HostAPIVersion is sent in InitHostRequest.host_api_version (HostInfo).
-// Which cores a plugin runs on is its manifest's hostCompat; the wire
-// protocol stays at 1.
-const HostAPIVersion = 9
+// HostAPIVersion is sent in InitHostRequest.host_api_version (HostInfo). It
+// is the runtime contract's, which the shell compares between core releases.
+const HostAPIVersion = runtimecontract.HostAPIVersion
+
+// OutdatedContractMessage is the one answer to a plugin package built for an
+// older plugin contract, whatever gave it away: a handshake with another
+// ProtocolVersion, or a manifest the check rejects with
+// check.CodeOutdatedContract. hostVersion is the core's own version. Upload,
+// install and load all report exactly this.
+func OutdatedContractMessage(pluginKey, pluginVersion, hostVersion string) string {
+	return fmt.Sprintf(outdatedContractFormat, pluginKey, pluginVersion, hostVersion, ProtocolVersion, hostVersion)
+}
+
+const outdatedContractFormat = "plugin %s@%s was built for an older plugin protocol and cannot be loaded by this core (%s, plugin protocol %d); install a version built for core %s or later"
 
 // GetUsersMaxIDs caps the user ids of one HostService.GetUsers call.
 const GetUsersMaxIDs = 500
