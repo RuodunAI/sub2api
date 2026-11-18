@@ -12,7 +12,7 @@
 
 - 只有一个数据库用户：核心的（`DATABASE_URL` 里的）。核心不再建、改任何角色，也不再需要 `CREATEROLE`。
 - 持有 `db.schema` 的插件仍有自己的 schema `plg_<key>`，属主是核心的用户。核心在插件第一次需要时（迁移、`GetDSN`）`CREATE SCHEMA IF NOT EXISTS`。
-- 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0111 删除两个 SECURITY DEFINER 函数。
+- 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0110 删除两个 SECURITY DEFINER 函数。
 - `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写，随后从协议删除（`GetDSNResponse` 字段 3 `reserved`，SDK 的 `DSNInfo.RoleIsolated` 一并删除）。
 - 卸载并清除数据：`DROP SCHEMA plg_<key> CASCADE`，删除迁移记录。
 - 删除的东西：角色的创建与修改、密码派生、归属标记的写入、成员授予、schema 移交、角色的 `search_path`、`rewriteDSN` 换凭据的分支、`Tracker.AsPluginRole`、`Status.Role`/`RoleIsolated`、错误 `plugin_db_isolation_unavailable` 与 `plugin_db_role_conflict`、配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`，以及它们的测试。
@@ -41,7 +41,7 @@
 - **权限**：`REASSIGN OWNED`、`DROP OWNED` 要求核心有该角色的权限，`DROP ROLE` 要求 `CREATEROLE`（PostgreSQL 16 起还要对该角色有 ADMIN）。这些都是旧代码建角色时就具备的：角色由核心的用户创建（16 起自动得到 ADMIN），并且旧代码执行过 `GRANT plg_<key> TO CURRENT_USER`（继承权限）。所以不需要超级用户；Supabase 的 `postgres` 用户就是这种情况。逐个对象 `ALTER … OWNER TO` 要求同样的权限，不是退路，所以不做。
 - **还有会话的角色**：PostgreSQL 允许删除仍有会话的角色（已在 PostgreSQL 17 上验证），删掉后旧进程会失去自己表的权限。所以转换前查 `pg_stat_activity`，有该角色的会话就整个跳过、只记一次警告，下次 Ensure（以及下次启动）再试；此期间核心的用户经成员关系照样能读写这些表，新插件进程不受影响。
 - **多节点同时启动**：同一插件的转换在 schema 锁里串行，后到的节点再查时角色已不在，什么也不做；不同插件的转换另取一把全局锁 `plugin-role-conversion`（总在插件锁之后取），避免并发改同一对象的 ACL 报 `tuple concurrently updated`。
-- **滚动重启怎么收尾**：本版本有核心迁移（0111），按主节点优先升级：从节点先停，主节点停机、迁移、启动；旧核心停下时它的插件进程随之退出，会话结束，所以主节点第一次启动就能转换全部角色。若某个旧插件进程的连接还没断（例如节点没按计划停），该角色留到下次 Ensure：那个节点换成新核心、插件重启取 DSN 时，或任何节点下次启动时完成。
+- **滚动重启怎么收尾**：本版本有核心迁移（0110），按主节点优先升级：从节点先停，主节点停机、迁移、启动；旧核心停下时它的插件进程随之退出，会话结束，所以主节点第一次启动就能转换全部角色。若某个旧插件进程的连接还没断（例如节点没按计划停），该角色留到下次 Ensure：那个节点换成新核心、插件重启取 DSN 时，或任何节点下次启动时完成。
 - **恢复的三种情况**：
   - 不带属主恢复（全部对象已属于核心的用户、没有角色）：什么也不做，正常启动。
   - 带属主恢复（角色存在、对象属于角色）：与生产相同，启动时转换。
@@ -49,7 +49,7 @@
 
 ## 5. 不能回退
 
-迁移 0111 删除了旧核心给插件角色用的两个函数。回退到旧核心时，旧核心会重新建角色并在授予这两个函数时失败，持有 `db.schema` 的插件起不来。所以这是单向升级：回退只能连同数据库一起回到升级前的备份。
+迁移 0110 删除了旧核心给插件角色用的两个函数。回退到旧核心时，旧核心会重新建角色并在授予这两个函数时失败，持有 `db.schema` 的插件起不来。所以这是单向升级：回退只能连同数据库一起回到升级前的备份。
 
 ## 6. 核心代理插件的数据库连接
 

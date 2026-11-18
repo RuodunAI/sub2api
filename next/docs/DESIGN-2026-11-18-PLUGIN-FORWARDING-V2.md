@@ -12,7 +12,7 @@
 - 路径相对 `next/`，行号对应 `9361c0417`。两份草稿是在 `123282faa` 上核对的；`git diff --stat 123282faa develop` 显示其后只改了 `sdk/reqsign`、`sdk/awseventstream`、`plugins/vertex` 的密钥文件、两个 `go.mod` 和几份文档，网关、运行时、用量、清单代码逐字节未变。本文沿用草稿里这些文件的行号，并重新读了下列部分：`gateway/dispatch.go` 的 `attempt` 与 `forwardBuilt`、`gateway/execute.go` 全文、`gateway/websocket.go` 的建连与逐轮补丁、`gateway/settings.go` 与 `settings_api.go`、`gateway/pipeline.go` 的请求体读取与 `submit`、`plugin/grpcruntime/execute.go`、`plugin/egress/egress.go`、`plugin/declarative/declarative.go`、`sdk/reqsign` 全部、`sdk/manifest/upstream.go`、三个 proto 文件。没有重读而直接沿用的引用在第 15 节说明。
 - “核心 V”指带本设计的第一个核心版本。已发布的最新 tag 是 `core-v0.1.303`；`CHANGELOG.md:9-22` 的“未发布”一节（云厂商插件、`signing`、`response_stream`，原定 0.1.304）还没上线。本设计如果赶在它之前合入，V 就是 0.1.304，否则是下一个版本。
 - “平台插件”指声明账号类型、为网关请求服务的插件，共十个：anthropic、openai、gemini、relay、azure_openai、vertex、bedrock、claude_oauth、codex、volcengine。
-- 本设计实现之后，所有者决定删除 claude_oauth 插件（CONTRACTS §116，迁移 0113），平台插件现在是九个。下文写到它的地方（行号、清单、矩阵、一致性套件）记录的是设计与实现时的状态，不再一一改写。
+- 本设计实现之后，所有者决定删除 claude_oauth 插件（CONTRACTS §116，迁移 0111），平台插件现在是九个。下文写到它的地方（行号、清单、矩阵、一致性套件）记录的是设计与实现时的状态，不再一一改写。
 
 ## 1. 背景与目标
 

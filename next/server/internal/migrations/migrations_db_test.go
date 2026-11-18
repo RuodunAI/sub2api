@@ -1007,13 +1007,13 @@ func TestMigration0108ModelNameText(t *testing.T) {
 	require.Equal(t, want, state())
 }
 
-// 0113 removes the claude_oauth plugin (CONTRACTS §116) as an uninstall
+// 0111 removes the claude_oauth plugin (CONTRACTS §116) as an uninstall
 // with purge would: its row (cascading the versions and rollouts), its
 // permission and the grants of it, its egress domains, job tasks and a
 // hand-made schema. Its accounts and the other plugins stay; a rerun
 // changes nothing.
-func TestMigration0113DropsClaudeOAuthPlugin(t *testing.T) {
-	const id = "0113_drop_claude_oauth_plugin.sql"
+func TestMigration0111DropsClaudeOAuthPlugin(t *testing.T) {
+	const id = "0111_drop_claude_oauth_plugin.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
 	ctx := t.Context()
 	exec := func(sql string) {

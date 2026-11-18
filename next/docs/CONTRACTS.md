@@ -8392,20 +8392,20 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都离线时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
 - **升级**：没有迁移。旧主节点上已有的包原地保留，和其他节点一样被问到。网关滚动更新期间，旧网关节点上的上传仍要推给主节点；主节点换成新网关后不再接受（403），在旧网关节点上上传会失败；旧网关的主节点自己缺包时不问别人，在新网关节点上传的包它取不到。换完网关再上传、启用即可。
 
-## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0111；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）
+## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0110；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）
 
 取代 §54 的“数据库角色隔离不再降级”、§5.6 的角色隔离和 0003/0023 的迁移记录函数。
 
 - **一个数据库用户**：核心不建、不改任何数据库角色，核心的用户不需要 `CREATEROLE`。持有 `db.schema` 的插件有 schema `plg_<key>`（属主是核心的用户，`dbschema.Manager.Ensure` 按需 `CREATE SCHEMA IF NOT EXISTS`）。
-- **迁移**：插件的 `migrations/*.sql` 由核心以自己的用户执行，每个文件一个事务，`SET LOCAL search_path TO plg_<key>`，按插件的 advisory 锁串行；记录直接 upsert `public.plugin_migrations`。迁移 0111 删除 `plugin_migrations_applied`、`plugin_migration_record`。
+- **迁移**：插件的 `migrations/*.sql` 由核心以自己的用户执行，每个文件一个事务，`SET LOCAL search_path TO plg_<key>`，按插件的 advisory 锁串行；记录直接 upsert `public.plugin_migrations`。迁移 0110 删除 `plugin_migrations_applied`、`plugin_migration_record`。
 - **`GetDSN`**（所有者补充“数据库直接委托给核心来代理”）：严格网络下返回 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`，没有任何凭据；`schema` 为 `plg_<key>`；`role_isolated`（字段 3）已删除并 `reserved`，SDK 的 `DSNInfo.RoleIsolated` 随之删除。没有出口隧道时（严格网络关闭：开发、非 Linux）返回核心的 DSN 加 `options=-c search_path=plg_<key>`。
 - **核心代理**：出口隧道只对策略有 Database 的插件接受 `db.sub2api:5432`（否则拒绝 `egress: the plugin has no database`），交给 `dbschema.Manager.ServeTunnel` → `runtime-contract/gormpg/pgproxy`：插件侧 SSL/GSS 请求回 `N`，启动消息的 `user`、`database`、`options`、`replication`、`_pq_.*` 忽略，其余运行参数带上；核心用自己的数据库配置（同一 DSN 解析，含 TLS、SCRAM/MD5）登录，固定 `search_path=plg_<key>`、`application_name=sub2api plugin <key>`，协议版本与插件请求的一致；回插件 `AuthenticationOk`、服务器的全部 `ParameterStatus`、服务器的 `BackendKeyData`、`ReadyForQuery`，之后两向原样转发。连不上时回 `FATAL`：服务器的 PgError 原样，其他只说 `the host could not open the database connection`。插件的 CancelRequest（pgx 在 ctx 结束时经同一隧道发出）按进程号与密钥找到该插件自己的会话，按会话的加密方式转发给服务器；其他忽略。每条插件连接是核心对 PostgreSQL 的一条连接，不在核心池里，不设上限，数量由插件的池决定（默认每节点每插件 4 个）。
 - **清除数据**：`DROP SCHEMA plg_<key> CASCADE` 并删除迁移记录（`DropTx`，与插件行的删除同一事务）。
 - **隔离**：插件拿不到数据库密码（严格网络下），但能执行核心的用户能执行的任何 SQL，能访问全部表并能写入，插件之间、插件与核心之间的分隔只靠约定和安装时对 `db.schema`（high）的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、`api_keys.key_cipher`、TOTP、插件加密设置与 secrets、价格同步源密钥）读不出明文，API Key、访问密钥、用户密码只存哈希；其余数据可读，所有表可写。非官方插件授予 `db.schema` 一律要求 `plugin:grant:db_schema_unconfined`（`needs_db_schema_unconfined` 同步），官方插件不要求。
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
-- **单向**：0111 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
+- **单向**：0110 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
 
-## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0113，核心 0.1.304）
+## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0111，核心 0.1.304）
 
 插件 `claude_oauth`（目录 `next/plugins/claude-oauth`，账号类型 `claude_oauth`、`claude_setup_token`）整体删除，不留兼容。线上没有安装它，也没有这两种类型的账号。最后的源码是 `77158211c`（`git show 77158211c:next/plugins/claude-oauth/manifest.json`）。§44.6、§48.5、§52.6 只留标题。
 
@@ -8417,9 +8417,9 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - e2e：AC30 的平台插件矩阵去掉它那一行，变成九个插件；e2e 栈里只为它存在的 mock 主机别名 `api.anthropic.com` 删除。
 - 控制台：mock 里的两种类型和四个示例账号（示例账号改成 Anthropic API Key）、请求头覆盖提示里点它名字的句子。
 
-### 116.2 数据库：迁移 0113
+### 116.2 数据库：迁移 0111
 
-`0113_drop_claude_oauth_plugin.sql` 照 0102（§101.5）、0104（§106）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障：发布迁移时所有节点都已停下），可以重跑：
+`0111_drop_claude_oauth_plugin.sql` 照 0102（§101.5）、0104（§106）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障：发布迁移时所有节点都已停下），可以重跑：
 
 - 它任务的 `scheduled_tasks` 行（这张表没有到 `plugins` 的外键）；
 - 它的权限 `plugin.claude_oauth:claude_oauth:manage` 和这条权限的授予（`casbin_rule` 按键引用权限，没有外键级联；持有它的角色升 `revision`），插件存在时 `authz_meta` 的两个版本各加一；
