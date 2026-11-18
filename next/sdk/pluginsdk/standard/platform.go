@@ -62,7 +62,8 @@ func (p *Platform) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest)
 	if err != nil {
 		return nil, err
 	}
-	r := &Request{Account: in.GetAccount(), Meta: in.GetMeta(), APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: model, Client: t.forward(in.GetInboundHeaders())}
+	r := &Request{Account: in.GetAccount(), Meta: in.GetMeta(), APIKey: cfg.APIKey, BaseURL: cfg.BaseURL, Model: model,
+		Stream: pluginsdk.RequestStream(in), Client: t.forward(in.GetInboundHeaders())}
 	body, err := t.edit(in.GetBody(), route, r)
 	if err != nil {
 		return nil, err

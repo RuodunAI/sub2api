@@ -55,17 +55,19 @@ func filtering(t standard.Type) standard.Type {
 
 // A body without edits is returned as it came, byte for byte.
 func TestBodyUnchanged(t *testing.T) {
-	in := realistic(`, "stream": true`)
+	streaming, still := realistic(`, "stream": true`), realistic(`, "stream": false`)
 	for name, tc := range map[string]struct {
 		ty       standard.Type
 		protocol string
 		stream   bool
+		in       []byte
 	}{
-		"anthropic messages":     {anthropic.APIKey("apikey"), anthropic.ProtocolMessages, true},
-		"openai responses":       {openai.APIKey("apikey"), openai.ProtocolResponses, true},
-		"openai chat, no stream": {openai.APIKey("apikey"), openai.ProtocolChat, false},
-		"openai websocket turn":  {openai.APIKey("apikey"), openai.ProtocolResponsesWS, true},
+		"anthropic messages":     {anthropic.APIKey("apikey"), anthropic.ProtocolMessages, true, streaming},
+		"openai responses":       {openai.APIKey("apikey"), openai.ProtocolResponses, true, streaming},
+		"openai chat, no stream": {openai.APIKey("apikey"), openai.ProtocolChat, false, still},
+		"openai websocket turn":  {openai.APIKey("apikey"), openai.ProtocolResponsesWS, true, streaming},
 	} {
+		in := tc.in
 		out, err := build(t, tc.ty, tc.protocol, tc.stream, in)
 		if err != nil || !bytes.Equal(out, in) {
 			t.Errorf("%s: body changed (%d -> %d bytes), %v", name, len(in), len(out), err)
@@ -80,6 +82,27 @@ func TestBodyEdits(t *testing.T) {
 	t.Run("stream usage is added at the end", func(t *testing.T) {
 		out, err := build(t, openai.APIKey("apikey"), openai.ProtocolChat, true, in)
 		want := string(in[:end]) + `,"stream_options":{"include_usage":true}` + string(in[end:])
+		if err != nil || string(out) != want {
+			t.Fatalf("err %v, tail %q", err, tail(out))
+		}
+	})
+	// A stream-only account type: the core forces "stream": true into the
+	// body while meta.stream keeps the client's false. The answer streams,
+	// so it must carry the usage chunk or the host reads no usage.
+	t.Run("a body the core made stream asks for usage too", func(t *testing.T) {
+		in := realistic(`, "stream": true`)
+		end := bytes.LastIndexByte(in, '}')
+		out, err := build(t, openai.APIKey("apikey"), openai.ProtocolChat, false, in)
+		want := string(in[:end]) + `,"stream_options":{"include_usage":true}` + string(in[end:])
+		if err != nil || string(out) != want {
+			t.Fatalf("err %v, tail %q", err, tail(out))
+		}
+	})
+	t.Run("filter fields and the edit in one pass", func(t *testing.T) {
+		out, err := build(t, filtering(openai.APIKey("apikey")), openai.ProtocolChat, true, in)
+		want := strings.Replace(strings.Replace(string(in), ",\n  \"service_tier\" : \"priority\"", "", 1), ",\n  \"safety_identifier\": \"u-1\"", "", 1)
+		end := strings.LastIndexByte(want, '}')
+		want = want[:end] + `,"stream_options":{"include_usage":true}` + want[end:]
 		if err != nil || string(out) != want {
 			t.Fatalf("err %v, tail %q", err, tail(out))
 		}

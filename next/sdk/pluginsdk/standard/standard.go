@@ -22,6 +22,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 )
 
 // Type is the whole behaviour of one account type. Its maps and slices are
@@ -84,11 +85,9 @@ type Route struct {
 	Model Model
 	// Headers are written after the type's.
 	Headers []Header
-	// Edit changes the body after FilterFields (nil: none). It edits with
-	// jsonedit (jsonedit.Edit) and returns body unchanged when it has
-	// nothing to do; an error without a gRPC status is returned as
-	// INVALID_ARGUMENT. Not on a websocket route.
-	Edit func(body []byte, r *Request) ([]byte, error)
+	// Edit changes the body after FilterFields are deleted, in the same
+	// jsonedit pass (nil: none). Not on a websocket route.
+	Edit func(d *jsonedit.Doc, r *Request)
 }
 
 // Model is the rule for a route's upstream model.

@@ -32,7 +32,7 @@ type Route struct {
 	WebSocket bool                                           // GET 的 ws(s) 握手地址、握手头（无 content-type）、请求体是这一轮的消息；其余路由都是 POST
 	Model     Model                                          // 上游模型从哪来
 	Headers   []Header                                       // 写在类型的头之后
-	Edit      func(body []byte, r *Request) ([]byte, error)  // 在 FilterFields 之后改请求体（用 jsonedit）；没有 gRPC 状态的错误按 INVALID_ARGUMENT 返回；WebSocket 路由不能有
+	Edit      func(d *jsonedit.Doc, r *Request)              // 在删掉 FilterFields 之后、同一次 jsonedit 里改请求体；WebSocket 路由不能有
 }
 
 type Model struct {
@@ -63,6 +63,7 @@ type Request struct {
 	Meta            *pluginv1.RequestMeta // 账号测试、模型列表时为 nil
 	APIKey, BaseURL string                // 规范化之后的
 	Model           string                // 上游模型；模型列表时为 ""
+	Stream          bool                  // 回答是否流式（pluginsdk.RequestStream：meta.stream 或请求体 "stream" 为 true）；账号测试、模型列表时为 false
 	Client          map[string]string     // 转发的客户端请求头（小写名、去空白）
 }
 func (r *Request) Field(name string) string // 先凭证后设置；字符串原样，数字和布尔取 JSON 文本，其余 ""
@@ -99,7 +100,7 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
 2. `Spec.FromAccount`：取 Key 和基础地址（规范化、去后缀、必填、默认值），错误原样返回。
 3. 按 `meta.protocol` 找路由（空协议用 `DefaultProtocol`），没有就 `unsupported upstream protocol "x"`。
 4. 按 `Route.Model` 取上游模型。
-5. 请求体：`FilterFields`，再 `Route.Edit`。
+5. 请求体：一次 `jsonedit` 里先删 `FilterFields`，再 `Route.Edit`；两者都没有就不读请求体。
 6. 请求头：
    - **默认头**（运营方的透传、覆盖能改）：转发的客户端请求头（只有 `PassHeaders` 里的），然后类型的 `Headers`，然后路由的 `Headers`。WebSocket 路由去掉 `content-type`。
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
@@ -109,22 +110,20 @@ func gemini.APIKey(id string) standard.Type    // + 常量 ProtocolGenerate/Stre
 
 ## 请求体
 
-- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，一批改写只拷贝一次。`FilterFields` 是一批 `Delete`；`Edit` 自己写，例如 openai 的 `IncludeStreamUsage`：
+- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`：
 
   ```go
-  func IncludeStreamUsage(body []byte, r *standard.Request) ([]byte, error) {
-  	if !r.Meta.GetStream() {
-  		return body, nil
+  func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {
+  	if r.Stream {
+  		d.Set("stream_options.include_usage", []byte("true"))
   	}
-  	return jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
   }
   ```
 
   `Set` 原地替换已有的值，没有就加在所在对象的末尾（连同缺的上层对象）；`Delete` 连同一个分隔逗号删掉成员。
 - **非法 JSON、重复键**：核心在调插件之前已经把这两种请求体以 400 拒绝（设计稿 8.1 的结构检查）。库在改写前仍然检查一遍（`jsonedit` 的规则）：要改写的请求体不是合法 JSON，或者 `Set` 路径上的某个键在它所在的对象里出现两次，就返回 `INVALID_ARGUMENT`，什么都不中继（核心按插件不可用换号），而不是发出一个改了一半的请求。路径之外的重复键不归改写管，原样保留；`Delete` 删掉一个路径的每一次出现。路由没有任何改写时，库根本不读请求体。
-- **一次还是两次拷贝**：`FilterFields` 与 `Edit` 各是一批：两者都真的改了请求体时拷贝两次（`Edit` 的签名收发字节，azure_openai 等插件在用）；只有一方改时拷贝一次。
 - **顺序变化（设计稿 12.5）**：`FilterFields` 和 `Edit` 在插件里，排在核心的改写（`claude_max_tokens`、账号的参数覆盖）之后。运营方在参数覆盖里写了一个被过滤的字段，以后会被删掉。预设都不带过滤字段；目前只有 azure_openai 的两个类型自己写了 `service_tier`、`safety_identifier`。
-- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`；openai 的 `IncludeStreamUsage` 看的是 `meta.stream`，不是请求体。
+- **流式标志**：交入时为真，交回时仍为真。库不碰 `stream`。`Request.Stream` 是 `meta.stream` 或请求体的 `"stream"` 为 true：只流式的账号类型由核心把 `stream: true` 写进请求体，`meta.stream` 却保留客户端的值，openai 的 `IncludeStreamUsage` 看 `Request.Stream`，否则这种请求拿不到用量。
 
 ## 例子一：OpenAI 风格（openai 插件）
 

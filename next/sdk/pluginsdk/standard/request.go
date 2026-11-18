@@ -19,6 +19,11 @@ type Request struct {
 	BaseURL string
 	// Model is the upstream model (Route.Model); "" for the model listing.
 	Model string
+	// Stream is whether the answer streams (pluginsdk.RequestStream):
+	// meta.stream, or the body's "stream" when it is true, which the core
+	// sets for a stream-only account type while meta.stream keeps the
+	// client's value. false for the account test and the listing.
+	Stream bool
 	// Client are the forwarded client headers (Type.PassHeaders), lower-case
 	// names, trimmed values; none for the account test and the listing.
 	Client map[string]string

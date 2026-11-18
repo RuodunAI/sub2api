@@ -55,10 +55,10 @@ func APIKey(id string) standard.Type {
 
 // IncludeStreamUsage is the edit of a chat completion: a stream asks for
 // the usage chunk (stream_options.include_usage), which the host's usage
-// rules read. It follows the request's meta.stream, not the body's flag.
-func IncludeStreamUsage(body []byte, r *standard.Request) ([]byte, error) {
-	if !r.Meta.GetStream() {
-		return body, nil
+// rules read; without it the host reads no usage. A stream is meta.stream
+// or a body the core made stream (Request.Stream).
+func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {
+	if r.Stream {
+		d.Set("stream_options.include_usage", []byte("true"))
 	}
-	return jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
 }

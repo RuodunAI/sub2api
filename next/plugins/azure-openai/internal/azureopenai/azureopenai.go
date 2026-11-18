@@ -7,6 +7,7 @@ package azureopenai
 import (
 	"net/url"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -69,7 +70,7 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 
 // deployment is a route of the classic API: the deployment (the upstream
 // model) as one path segment, the account's api_version in the query.
-func deployment(operation string, edit func([]byte, *standard.Request) ([]byte, error)) standard.Route {
+func deployment(operation string, edit func(*jsonedit.Doc, *standard.Request)) standard.Route {
 	return standard.Route{
 		Path: func(r *standard.Request) string {
 			return "/openai/deployments/" + url.PathEscape(r.Model) + operation + "?api-version=" + url.QueryEscape(r.Field("api_version"))

@@ -18,7 +18,8 @@ import (
 // edit sets that appears twice in its object, is refused (INVALID_ARGUMENT,
 // nothing is relayed) instead of being sent half edited.
 
-// edit runs the type's FilterFields and the route's Edit on body.
+// edit deletes the type's FilterFields from body, then runs the route's
+// Edit, in one jsonedit pass; with neither the body is not read.
 func (t *Type) edit(body []byte, route *Route, r *Request) ([]byte, error) {
 	if len(t.FilterFields) == 0 && route.Edit == nil {
 		return body, nil
@@ -27,20 +28,12 @@ func (t *Type) edit(body []byte, route *Route, r *Request) ([]byte, error) {
 		for _, f := range t.FilterFields {
 			d.Delete(f)
 		}
+		if route.Edit != nil {
+			route.Edit(d, r)
+		}
 	})
-	if err == nil && route.Edit != nil {
-		body, err = route.Edit(body, r)
-	}
 	if err != nil {
-		return nil, bodyError(err)
+		return nil, status.Errorf(codes.InvalidArgument, "request body: %v", err)
 	}
 	return body, nil
-}
-
-// bodyError is err with its gRPC status, INVALID_ARGUMENT when it has none.
-func bodyError(err error) error {
-	if _, ok := status.FromError(err); ok {
-		return err
-	}
-	return status.Errorf(codes.InvalidArgument, "request body: %v", err)
 }
