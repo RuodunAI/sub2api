@@ -19,12 +19,10 @@ function fillGroupModels() {
   emit('update:modelValue', [...new Set([...props.modelValue, ...pending, ...suggestions.value])])
 }
 // commit adds the drafted patterns. A pattern of any length is accepted:
-// the core no longer bounds a model name (CONTRACTS §112.16). It returns
-// true for the edit modal's save step, which nothing here can fail.
-function commit(): boolean {
+// the core no longer bounds a model name (CONTRACTS §112.16).
+function commit() {
   if (draftPatterns(draft.value).length) emit('update:modelValue', mergeDraftPatterns(props.modelValue, draft.value))
   draft.value = ''
-  return true
 }
 function paste(event: ClipboardEvent) {
   const text = event.clipboardData?.getData('text')
