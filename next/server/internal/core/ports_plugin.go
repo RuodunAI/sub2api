@@ -29,11 +29,11 @@ func ClassifyPrefix(body []byte) []byte {
 }
 
 // PlatformPlugin is the PlatformService of a plugin declaring
-// platform.adapter.v1, minus the two calls that carry a host client:
-// Execute, the one path of a gateway request (ExecutePlugin), and Monitor
-// (MonitorPlugin). The runtime's client implements all three; the gateway
-// and the usage module reach the other two by type assertion.
+// platform.adapter.v1: Execute, the one path of a gateway request
+// (ExecutePlugin), Monitor (MonitorPlugin), and the calls below.
 type PlatformPlugin interface {
+	ExecutePlugin
+	MonitorPlugin
 	ValidateCredentials(ctx context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error)
 	// ClassifyError classifies one failed upstream attempt of a relay that
 	// did not wait (the host read the error). The error of a relay that

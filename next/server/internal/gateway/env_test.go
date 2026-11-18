@@ -1276,3 +1276,7 @@ func (p *fakePlatform) BuildRefreshRequest(context.Context, *pluginv1.BuildRefre
 func (p *fakePlatform) ParseRefreshResponse(context.Context, *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
 	return nil, status.Error(codes.Unimplemented, "no")
 }
+
+func (*fakePlatform) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+	return nil, errors.New("the fake platform does not monitor tasks")
+}

@@ -202,7 +202,7 @@ func build(t *testing.T, inst *grpcruntime.Instance) *pluginv1.UpstreamRequest {
 }
 
 func execute(inst *grpcruntime.Instance, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
-	return inst.Platform().(core.ExecutePlugin).Execute(context.Background(), in, client)
+	return inst.Platform().Execute(context.Background(), in, client)
 }
 
 func httpCall(t *testing.T, inst *grpcruntime.Instance, req *pluginv1.HTTPRequest) (map[string]any, error) {

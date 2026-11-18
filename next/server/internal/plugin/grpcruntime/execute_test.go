@@ -226,7 +226,7 @@ func TestMonitorAcrossProcess(t *testing.T) {
 	})
 	inst := e.load(t, e.runtime(t, nil))
 	monitor := func(body []byte) (*pluginv1.ReconcileResult, error) {
-		return inst.Platform().(core.MonitorPlugin).Monitor(context.Background(), &pluginv1.PollRequest{Entry: &pluginv1.ReconcileEntry{RefId: string(body)}},
+		return inst.Platform().Monitor(context.Background(), &pluginv1.PollRequest{Entry: &pluginv1.ReconcileEntry{RefId: string(body)}},
 			func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 				return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"done"}`)}, nil
 			})
