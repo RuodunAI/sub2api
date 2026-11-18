@@ -213,13 +213,22 @@ func TestAC22_PromptModeration(t *testing.T) {
 	}
 	admin.OK(t, http.MethodDelete, "/p/moderation/blocks/"+buid, nil)
 	sendUntil(tb, "user unblocked on every node", 200, "", "welcome back")
-	// Automatic bans off again. tn's earlier violations are within the ban
-	// window too, so the threshold banned it as well: lift that, for step 6.
-	e.SetModerationSettings(admin, e.ModerationSettings("enforce"))
+	// Automatic bans off again, and no automatic watch entries: tn's earlier
+	// violations are within the ban window too, so the threshold banned it
+	// as well; lift that, for step 6.
+	s = e.ModerationSettings("enforce")
+	s["auto_watch"] = false
+	e.SetModerationSettings(admin, s)
 	if r := admin.API(t, http.MethodDelete, "/p/moderation/blocks/"+uid, nil); r.Status/100 != 2 && r.Status != http.StatusNotFound {
 		t.Fatalf("unblock %s: %s", uid, r)
 	}
 	sendUntil(tn, "tn not banned on every node", 200, "", "welcome back")
+	// tn's observe-mode hits put it back on the watch list at the observe
+	// level, which moderates in the background even in enforce mode: clear it
+	// (auto_watch is off now, so it stays clear).
+	if r := admin.API(t, http.MethodDelete, "/p/moderation/watchlist/"+uid, nil); r.Status/100 != 2 && r.Status != http.StatusNotFound {
+		t.Fatalf("remove watch entry %s: %s", uid, r)
+	}
 
 	// 4. Console test: bad tool arguments get fed back, the second call wins.
 	r := admin.OK(t, http.MethodPost, "/p/moderation/test", map[string]any{"text": "MOD-BADARGS check " + e.RunID, "flow_id": fx.FlowID})
@@ -255,8 +264,16 @@ func TestAC22_PromptModeration(t *testing.T) {
 	})
 	fx.Bind(e, admin, tn.GroupID, tb.GroupID, gid)
 	e.WaitModerationConfig(admin)
-	mark = m.Mark(t)
-	g = e.Messages(tn.APIKey, MessagesBody(tn.Model, "self MOD-BLOCK "+e.RunID, false), nil)
+	// The watch entry's removal reaches the nodes asynchronously: until it
+	// does, the hit is moderated in the background and passes.
+	for i := 0; ; i++ {
+		mark = m.Mark(t)
+		g = e.Messages(tn.APIKey, MessagesBody(tn.Model, fmt.Sprintf("self MOD-BLOCK %s %d", e.RunID, i), false), nil)
+		if g.Status == 403 || i == 20 {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 	if g.Status != 403 || !strings.Contains(string(g.Body), moderationDenyCode) {
 		t.Fatalf("violation judged through the gateway: HTTP %d %s", g.Status, g.Body)
 	}
