@@ -69,7 +69,7 @@ func TestManifest(t *testing.T) {
 	// hostCompat: the core of SDK 0.2.0 and of risk and defaults, 0.1.290.
 	// UI 3.15 (permissions.hasAction, resource scopes; the UI feature-detects
 	// it, so ^3.15 is declared for clarity, not need).
-	if m.Key != "moderation" || m.Version != "0.12.1" || m.HostCompat != ">=0.1.290 <0.2.0" || m.HostUICompat != "^3.15" || m.UI == nil || m.UI.Native == nil ||
+	if m.Key != "moderation" || m.Version != "0.12.2" || m.HostCompat != ">=0.1.304 <0.2.0" || m.HostUICompat != "^3.15" || m.UI == nil || m.UI.Native == nil ||
 		m.UI.Native.Entry != "ui/native/entry.js" || m.Database == nil || m.Database.Schema != "plg_moderation" {
 		t.Fatalf("manifest = %+v", m)
 	}
