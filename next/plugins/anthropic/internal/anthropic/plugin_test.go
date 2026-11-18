@@ -7,17 +7,40 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
 func start(t *testing.T) *pluginsdktest.Harness {
 	t.Helper()
-	return pluginsdktest.Start(t, New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.3.4")}})
+	return pluginsdktest.Start(t, New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.4.0")}})
 }
 
-// TestCapabilities: the process only serves the model catalog; the account
-// type's upstream is the core's (manifest accountTypes[].upstream).
+// TestCapabilities: one process serves the apikey platform and the model
+// catalog route.
 func TestCapabilities(t *testing.T) {
-	if got := start(t).Info.GetCapabilities(); !slices.Equal(got, []string{manifest.CapHTTPRoutes}) {
-		t.Fatalf("capabilities = %v", got)
+	got := start(t).Info.GetCapabilities()
+	slices.Sort(got)
+	if want := []string{manifest.CapHTTPRoutes, manifest.CapPlatformAdapter}; !slices.Equal(got, want) {
+		t.Fatalf("capabilities = %v, want %v", got, want)
+	}
+}
+
+// TestGolden replays the frozen golden cases of the anthropic plugin
+// against the platform the plugin serves.
+func TestGolden(t *testing.T) {
+	goldentest.Run(t, "anthropic", standardtest.Golden(New().Platform))
+}
+
+// TestAPIKey: the type passes the library's checks and keeps what the
+// released plugin declared: the anthropic preset with no filter fields.
+func TestAPIKey(t *testing.T) {
+	at := APIKey()
+	if err := standard.Check(at); err != nil {
+		t.Fatal(err)
+	}
+	if at.ID != "apikey" || len(at.FilterFields) != 0 {
+		t.Fatalf("type %q filters %v, want apikey filtering nothing", at.ID, at.FilterFields)
 	}
 }
