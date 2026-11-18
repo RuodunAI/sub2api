@@ -3,6 +3,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { BUILTIN_PLATFORMS } from '@/composables/platforms'
 import { i18n } from '@/i18n'
 import GroupServedProtocols from './GroupServedProtocols.vue'
+import { endpointLine } from '@/views/platforms/listedEndpoint'
 import { servedEndpoints } from './servedProtocols'
 
 // The platform list falls back to the built-in catalog.
@@ -20,16 +21,16 @@ describe('protocols a group serves', () => {
   })
 
   it('groups the endpoints of the served protocols by platform, in the catalog order', () => {
-    expect(servedEndpoints(BUILTIN_PLATFORMS, served).map(g => [g.id, g.endpoints.map(e => e.path)])).toEqual([
-      ['anthropic', ['/v1/messages', '/v1/messages/count_tokens']],
-      ['openai', ['/v1/chat/completions']]
+    expect(servedEndpoints(BUILTIN_PLATFORMS, served).map(g => [g.id, g.endpoints.map(endpointLine)])).toEqual([
+      ['anthropic', ['POST /v1/messages', 'POST /v1/messages/count_tokens']],
+      ['openai', ['POST /v1/chat/completions']]
     ])
     expect(servedEndpoints(BUILTIN_PLATFORMS, [])).toEqual([])
   })
 
   it('lists a protocol the catalog does not know by its id, under the platform it names', () => {
     const groups = servedEndpoints(BUILTIN_PLATFORMS, [{ protocol: 'openai.responses_ws', accounts: 1 }, { protocol: 'volcengine.images', accounts: 2 }])
-    expect(groups.map(g => [g.id, g.endpoints.map(e => `${e.method} ${e.path}`.trim())])).toEqual([['openai', ['openai.responses_ws']], ['volcengine', ['volcengine.images']]])
+    expect(groups.map(g => [g.id, g.endpoints])).toEqual([['openai', [{ protocol: 'openai.responses_ws' }]], ['volcengine', [{ protocol: 'volcengine.images' }]]])
   })
 
   it('shows each endpoint with the number of member accounts serving it', async () => {

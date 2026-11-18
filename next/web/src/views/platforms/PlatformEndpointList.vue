@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { SCode, SHint } from '@sub2api/ui'
-import type { PlatformEndpoint } from '@/api/types'
 import PlatformBadge from '@/components/platform/PlatformBadge.vue'
+import { endpointLine, type ListedEndpoint } from './listedEndpoint'
 
 // The endpoints of one platform under its brand badge. `max` limits how many
 // are listed; `known` is false for a platform the list does not have;
 // `accounts` (by protocol) adds how many accounts serve each endpoint.
-defineProps<{ id: string; endpoints: PlatformEndpoint[]; known?: boolean; max?: number; accounts?: Record<string, number> }>()
+defineProps<{ id: string; endpoints: ListedEndpoint[]; known?: boolean; max?: number; accounts?: Record<string, number> }>()
 const { t } = useI18n()
 </script>
 
@@ -17,10 +17,10 @@ const { t } = useI18n()
     <ul v-if="endpoints.length" class="mt-1 space-y-0.5 pl-1">
       <li
         v-for="e in max ? endpoints.slice(0, max) : endpoints"
-        :key="`${e.method} ${e.path}`"
+        :key="endpointLine(e)"
         class="flex flex-wrap items-center gap-1.5 text-xs"
       >
-        <SCode inline class="min-w-0 break-words" :text="`${e.method} ${e.path}`.trim()" />
+        <SCode inline class="min-w-0 break-words" :text="endpointLine(e)" />
         <SHint v-if="e.billing === 'free'" inline size="xs">({{ t('platforms.free') }})</SHint>
         <SHint v-if="accounts?.[e.protocol] !== undefined" inline size="xs" class="ml-auto" data-testid="endpoint-accounts">{{ t('platforms.servedAccounts', { n: accounts[e.protocol] }) }}</SHint>
       </li>
