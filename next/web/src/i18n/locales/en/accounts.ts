@@ -168,7 +168,7 @@ export default {
   },
   protocols: {
     names: {
-      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images' },
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings' },
       anthropic: { messages: 'Messages' },
       gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
     },
@@ -209,7 +209,6 @@ export default {
       no_protocol: 'The account opens no protocol. To take it out of service use the "Schedulable" switch.',
       closed_protocol: '{model} lists {protocol}, which the account does not open: it has no effect.',
       unknown_protocol: '{model} lists {protocol}, which this account type cannot serve: saving will be refused.',
-      unknown_own_protocol: '{protocol} under "Own protocols" is no own protocol of this account type: saving will be refused. Remove it in the "Own protocols" card.',
       rest_conversion: 'The other models are converted: every model not listed on its own accepts the conversion, and a model name the upstream does not know may trigger the failure policy. Convert only models that have a mapping.',
       two_hop: '{model} → {protocol}: converted twice, with poorer results.'
     },

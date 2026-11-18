@@ -290,7 +290,7 @@ export function bindingJSON(b: ProtocolBinding): string {
 
 // ---------------------------------------------------------------- checks and summaries
 
-export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'unknown_own_protocol' | 'rest_conversion' | 'two_hop'
+export type IssueCode = 'empty_rule' | 'no_protocol' | 'closed_protocol' | 'unknown_protocol' | 'rest_conversion' | 'two_hop'
 
 /** A finding of the editor: errors block saving, warnings and notes do not. */
 export interface BindingIssue {
@@ -315,7 +315,8 @@ const converts = (c: ProtocolColumns, ids: readonly string[]) => columnsOf(c.cro
 
 /**
  * The ids of `protocols` that are no own protocol of the type (its endpoint
- * is gone, or it was written by hand): the server refuses them.
+ * is gone, or it was written by hand): the server refuses them. The own
+ * protocols field shows them; they are no binding issue.
  */
 export function unknownOwnProtocols(protocols: readonly string[] | null, c: ProtocolColumns): string[] {
   const own = idsOf(c.own)
@@ -330,7 +331,7 @@ export function unknownOwnProtocols(protocols: readonly string[] | null, c: Prot
  * is a note.
  */
 export function bindingIssues(protocols: readonly string[] | null, rules: ModelRules, c: ProtocolColumns): BindingIssue[] {
-  const out: BindingIssue[] = unknownOwnProtocols(protocols, c).map(protocol => ({ level: 'warning', code: 'unknown_own_protocol', protocol }))
+  const out: BindingIssue[] = []
   const known = new Set(idsOf(allColumns(c)))
   const open = openColumns(c, protocols)
   for (const [model, ids] of Object.entries(rules)) {

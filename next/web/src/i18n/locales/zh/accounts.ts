@@ -167,7 +167,7 @@ export default {
   },
   protocols: {
     names: {
-      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images' },
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings' },
       anthropic: { messages: 'Messages' },
       gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
     },
@@ -208,7 +208,6 @@ export default {
       no_protocol: '账号没有开放任何协议。要停用账号请用“参与调度”开关。',
       closed_protocol: '{model} 指定了账号未开放的协议 {protocol}，这一项不生效。',
       unknown_protocol: '{model} 指定了此账号类型不能服务的协议 {protocol}，保存时会被拒绝。',
-      unknown_own_protocol: '“本平台协议”里的 {protocol} 不是此账号类型的本平台协议，保存时会被拒绝；请在“本平台协议”卡片里移除。',
       rest_conversion: '“其余模型”开了协议转换：所有没有单独列出的模型都会接受转换，上游不认识的模型名可能触发故障策略。建议只给有映射的模型开。',
       two_hop: '{model} → {protocol}：要经过两次转换，质量较差。'
     },
