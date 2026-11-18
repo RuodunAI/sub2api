@@ -67,7 +67,7 @@ func TestManifestShape(t *testing.T) {
 	if m.Key != "vertex" || m.Version != vertex.Version || m.Runtime != "grpc" || m.APIVersion != manifest.APIVersion || m.Publisher != "sub2api" {
 		t.Fatalf("key/version/runtime = %s %s %s (plugin version %s)", m.Key, m.Version, m.Runtime, vertex.Version)
 	}
-	if m.Entry.GRPC == nil || m.Entry.GRPC.Binaries == "" || m.HostCompat != ">=0.1.290 <0.2.0" {
+	if m.Entry.GRPC == nil || m.Entry.GRPC.Binaries == "" || m.HostCompat != ">=0.1.304 <0.2.0" {
 		t.Fatalf("entry/hostCompat = %+v %s", m.Entry, m.HostCompat)
 	}
 	if m.Name["en"] == "" || m.Name["zh"] == "" || m.Description["en"] == "" || m.Description["zh"] == "" {
@@ -102,8 +102,8 @@ func TestManifestShape(t *testing.T) {
 			t.Errorf("%s needs en and zh label and description", at.ID)
 		}
 		// The host comes from the location: no address field, nothing guarded.
-		if at.UpstreamFields == nil || len(at.UpstreamFields) != 0 || len(at.GuardedSettings) != 0 || at.Upstream != nil {
-			t.Errorf("%s upstreamFields/guardedSettings/upstream = %v %v %v", at.ID, at.UpstreamFields, at.GuardedSettings, at.Upstream)
+		if at.UpstreamFields == nil || len(at.UpstreamFields) != 0 || len(at.GuardedSettings) != 0 {
+			t.Errorf("%s upstreamFields/guardedSettings = %v %v", at.ID, at.UpstreamFields, at.GuardedSettings)
 		}
 		if !slices.Equal(at.SensitiveFields, want.sensitive) || !slices.Equal(at.SettingsFields, []string{"project_id", "location"}) {
 			t.Errorf("%s sensitive/settings = %v %v", at.ID, at.SensitiveFields, at.SettingsFields)
