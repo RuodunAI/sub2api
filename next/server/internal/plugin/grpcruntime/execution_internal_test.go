@@ -432,6 +432,24 @@ func TestSegmentTimeout(t *testing.T) {
 	}
 }
 
+// A stretch is bounded by the timeout plus the transfer of what it carries:
+// what the host sent as it began and, until the relay, the body the plugin
+// is to hand back.
+func TestSegmentLimit(t *testing.T) {
+	sc := &callScope{relay: true, bodyBytes: 32 * mib, segmentTimeout: time.Second}
+	if got := sc.segmentLimit(32 * mib); got != time.Second+2*transferAllowance(32*mib) {
+		t.Fatalf("first stretch: %s", got)
+	}
+	sc.relayed = true
+	if got := sc.segmentLimit(8 * mib); got != time.Second+transferAllowance(8*mib) {
+		t.Fatalf("after the relay: %s", got)
+	}
+	small := &callScope{relay: true, bodyBytes: 1024, segmentTimeout: time.Second}
+	if got := small.segmentLimit(1100); got > time.Second+time.Millisecond {
+		t.Fatalf("small body: %s", got)
+	}
+}
+
 // When the plugin gives up a waiting relay - its Execute returns or fails,
 // or its host call is cancelled as for a crashed process - the exchange's
 // context ends, and Execute returns only after the relay has ended.

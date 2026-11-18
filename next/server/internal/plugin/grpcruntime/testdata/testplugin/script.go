@@ -45,9 +45,11 @@ type stepResult struct {
 	Error       bool   `json:"error,omitempty"`
 }
 
+// parseScript reads the script at the start of raw; what follows it is
+// padding, for a body of any size.
 func parseScript(raw []byte) (script, bool) {
 	var sc script
-	if !bytes.Contains(raw, []byte(`"script":`)) || json.Unmarshal(raw, &sc) != nil {
+	if !bytes.Contains(raw, []byte(`"script":`)) || json.NewDecoder(bytes.NewReader(raw)).Decode(&sc) != nil {
 		return sc, false
 	}
 	return sc, true

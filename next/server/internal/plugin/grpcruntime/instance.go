@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,17 +196,14 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		Seccomp:       i.rt.o.Seccomp,
 	}
 	// The manifest's memory figure is what the plugin says it needs, not a
-	// limit: memory is limited only by the operator, per plugin
-	// (mergeLimits) or by the node's cap.
+	// limit: memory is limited only by the operator (EffectiveMemoryMB).
 	if m.Resources != nil {
 		spec.CPU = m.Resources.CPU
 		spec.MaxThreads = m.Resources.MaxThreads
 		spec.MaxOpenFiles = m.Resources.MaxOpenFiles
 	}
 	mergeLimits(&spec, st.limits)
-	if max := i.rt.o.MaxMemoryMB; max > 0 && (spec.MemoryMB == 0 || spec.MemoryMB > max) {
-		spec.MemoryMB = max
-	}
+	spec.MemoryMB = EffectiveMemoryMB(st.limits.MemoryMB, i.rt.o.MaxMemoryMB)
 	strict := "0"
 	if spec.StrictNetwork {
 		strict = "1"
@@ -221,13 +217,20 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 	return spec
 }
 
-// mergeLimits applies the operator's per-plugin overrides on top of the
-// manifest limits; zero means "keep the manifest value" (for memory: no
-// per-plugin limit).
-func mergeLimits(spec *core.LaunchSpec, l resourceLimits) {
-	if l.MemoryMB > 0 {
-		spec.MemoryMB = l.MemoryMB
+// EffectiveMemoryMB is a plugin's memory limit in MB, 0 for none: the
+// operator's per-plugin override when set (> 0), else the node's cap; an
+// override above a set cap is the cap.
+func EffectiveMemoryMB(override, capMB int) int {
+	if capMB > 0 && (override <= 0 || override > capMB) {
+		return capMB
 	}
+	return max(override, 0)
+}
+
+// mergeLimits applies the operator's per-plugin overrides on top of the
+// manifest limits; zero means "keep the manifest value". Memory is
+// EffectiveMemoryMB's.
+func mergeLimits(spec *core.LaunchSpec, l resourceLimits) {
 	if l.CPU > 0 {
 		spec.CPU = l.CPU
 	}
@@ -476,20 +479,38 @@ func (i *Instance) serveHostBroker(ctx context.Context, p *proc) error {
 // sdk/protocol count on).
 const hostMaxRecvBytes = 4 << 20
 
+// maxRequestBodySetting is the largest request body limit the gateway
+// setting max_request_body_mb can ever take (its maximum, 1024 MiB).
+const maxRequestBodySetting = 1024 << 20
+
+// brokerMaxRecvBytes is the broker server's receive limit, for every call
+// and every stream frame: the largest relay body the body setting can ever
+// allow (maxRequestBodySetting + relayBodyMargin) plus 1 MiB for the rest
+// of the message. gRPC checks it from a message's length prefix, before
+// the message is read.
+const brokerMaxRecvBytes = maxRequestBodySetting + relayBodyMargin + 1<<20
+
 // bodyCalls are the HostService calls whose request holds a body up to the
 // request body limit. That limit can change while the broker runs and a gRPC
-// server's receive limit cannot, so the transport accepts any size and the
-// handlers of these calls check the body (hostServer.checkBody).
+// server's receive limit cannot, so the transport admits up to
+// brokerMaxRecvBytes and the handlers of these calls check the body against
+// the limit of the moment (checkBody).
 var bodyCalls = map[string]bool{
 	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/RelayUpstream": true,
 	"/" + pluginv1.HostService_ServiceDesc.ServiceName + "/ExecuteHTTP":   true,
 }
 
 // hostServerOptions are the options of the broker server besides go-plugin's
-// own: the transport's maximum as the receive limit, and the usual 4 MiB
-// for every call but bodyCalls.
+// own. The transport refuses any message above brokerMaxRecvBytes before
+// reading it. The 4 MiB of hostMaxRecvBytes for the unary HostService calls
+// other than bodyCalls is checked by limitHostRecv only once such a message
+// has been received and decoded, so it refuses the call but does not keep
+// the core from reading up to brokerMaxRecvBytes; EgressService's stream
+// frames have only the transport's limit. Bounding those at receipt needs a
+// broker server of their own with the 4 MiB limit, which the plugin would
+// have to dial: InitHost hands it one broker id for both services.
 func hostServerOptions() []grpc.ServerOption {
-	return []grpc.ServerOption{grpc.MaxRecvMsgSize(math.MaxInt32), grpc.ChainUnaryInterceptor(limitHostRecv)}
+	return []grpc.ServerOption{grpc.MaxRecvMsgSize(brokerMaxRecvBytes), grpc.ChainUnaryInterceptor(limitHostRecv)}
 }
 
 func limitHostRecv(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {

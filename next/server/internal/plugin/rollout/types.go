@@ -99,9 +99,13 @@ type NodePluginState struct {
 }
 
 type InstanceState struct {
-	Version  string `json:"version"`
-	State    string `json:"state"`
-	Error    string `json:"error,omitempty"`
+	Version string `json:"version"`
+	State   string `json:"state"`
+	Error   string `json:"error,omitempty"`
+	// Code classifies a failed load where the console acts on it:
+	// check.CodeOutdatedContract when the runtime refused a package built
+	// for an older plugin contract. Error is the text to show.
+	Code     string `json:"code,omitempty"`
 	Restarts int    `json:"restarts"`
 }
 

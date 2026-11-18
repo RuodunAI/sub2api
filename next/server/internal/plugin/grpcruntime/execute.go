@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -27,9 +28,10 @@ func (h *hostServer) maxRequestBody() int64 {
 // the plugin's envelope and added fields.
 const relayBodyMargin = 1 << 20
 
-// checkBody refuses a body above limit bytes. The broker accepts messages of
-// any size (the setting can change while it runs), so every handler taking a
-// body checks it here.
+// checkBody refuses a body above limit bytes. The broker admits messages up
+// to what the largest body setting allows (brokerMaxRecvBytes; the setting
+// can change while it runs), so every handler taking a body checks it here
+// against the limit of the moment.
 func checkBody(body []byte, limit int64) error {
 	if int64(len(body)) > limit {
 		return status.Errorf(codes.InvalidArgument, "body of %d bytes exceeds the limit of %d bytes", len(body), limit)
@@ -80,7 +82,7 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "relay failed internally")
 		}
-		sc.leave()
+		sc.leave(proto.Size(out))
 	}()
 	switch {
 	case !sc.relay:
@@ -137,7 +139,7 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 		if recover() != nil {
 			out, err = nil, status.Error(codes.Internal, "execution HTTP failed internally")
 		}
-		sc.leave()
+		sc.leave(proto.Size(out))
 	}()
 	if sc.client.Fetch == nil {
 		return nil, status.Error(codes.FailedPrecondition, "this call has no fetch capability")
@@ -204,7 +206,8 @@ func (a platformAdapter) Execute(ctx context.Context, in *pluginv1.ExecuteReques
 	err = a.i.call(ctx, classExecute, 0, func(ctx context.Context, p *proc) error {
 		sc := &callScope{ctx: ctx, client: client, account: in.GetAccount(), relay: true, wait: in.GetExtractUsage() || in.GetTaskSubmission(),
 			bodyBytes: int64(len(in.GetBody())), segmentTimeout: segment}
-		sc.segment = time.AfterFunc(segment, func() { cancel(errSegmentTimeout) })
+		// The first stretch also delivers the request, body and all.
+		sc.segment = time.AfterFunc(sc.segmentLimit(int64(proto.Size(in))), func() { cancel(errSegmentTimeout) })
 		token, err := p.scopes.open(sc)
 		if err != nil {
 			sc.segment.Stop()
