@@ -19,8 +19,7 @@ service PluginService {
   // SettingsChanged tells the process that sections of the system settings
   // changed (CONTRACTS §107). The host of every node calls it on the plugins
   // it serves, best effort, so values cached from HostService.GetSettings
-  // are read again. A plugin built with an older SDK answers UNIMPLEMENTED,
-  // which the host ignores.
+  // are read again.
   rpc SettingsChanged(SettingsChangedRequest) returns (SettingsChangedResponse);
 }
 
@@ -30,7 +29,7 @@ message GetInfoResponse {
   string plugin_key = 1;       // must equal manifest.key
   string version = 2;          // must equal manifest.version
   string sdk_version = 3;
-  int32 protocol_version = 4;  // must equal the host's supported protocol (1)
+  int32 protocol_version = 4;  // must equal the host's supported protocol (2)
   // Capability ids actually implemented, e.g. "platform.adapter.v1".
   repeated string capabilities = 5;
 }

@@ -66,7 +66,7 @@ type GetInfoResponse struct {
 	PluginKey       string `protobuf:"bytes,1,opt,name=plugin_key,json=pluginKey,proto3" json:"plugin_key,omitempty"` // must equal manifest.key
 	Version         string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`                      // must equal manifest.version
 	SdkVersion      string `protobuf:"bytes,3,opt,name=sdk_version,json=sdkVersion,proto3" json:"sdk_version,omitempty"`
-	ProtocolVersion int32  `protobuf:"varint,4,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"` // must equal the host's supported protocol (1)
+	ProtocolVersion int32  `protobuf:"varint,4,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"` // must equal the host's supported protocol (2)
 	// Capability ids actually implemented, e.g. "platform.adapter.v1".
 	Capabilities []string `protobuf:"bytes,5,rep,name=capabilities,proto3" json:"capabilities,omitempty"`
 }

@@ -66,9 +66,7 @@ func (v *validator) accountTypes() {
 	}
 	v.needCap("accountTypes", manifest.CapPlatformAdapter)
 	v.needPerm("accountTypes", "platform.register", "account types")
-	if needsCredentials(ats) {
-		v.needPerm("accountTypes", "accounts.credentials", "account types the plugin implements or extends")
-	}
+	v.needPerm("accountTypes", "accounts.credentials", "account types")
 	ownPlatforms := map[string]*manifest.Platform{}
 	for i := range v.m.Platforms {
 		ownPlatforms[v.m.Platforms[i].ID] = &v.m.Platforms[i]
@@ -98,9 +96,6 @@ func (v *validator) accountTypes() {
 		v.quota(f, at.Quota)
 		v.balance(f, at.Balance)
 		v.refresh(f, at)
-		if at.Upstream != nil {
-			v.upstream(f, at, ownPlatforms)
-		}
 		if len(at.Platforms) == 0 {
 			v.add(f+".platforms", "required", "at least one platform is required")
 		}
@@ -126,6 +121,7 @@ func (v *validator) accountPlatform(pf string, ap manifest.AccountPlatform, seen
 	seen[ap.Platform] = true
 	own := ownPlatforms[ap.Platform]
 	v.accountEndpoints(pf, ap, own)
+	v.foreignFacts(pf, ap, own)
 	v.accountStreamOnly(pf, ap, own)
 	for _, proto := range sortedKeys(ap.Usage) {
 		uf := pf + ".usage." + proto
@@ -163,6 +159,25 @@ func (v *validator) accountEndpoints(field string, ap manifest.AccountPlatform, 
 			v.add(f, "unknown_endpoint", "endpoint %q does not belong to platform %q", id, ap.Platform)
 		}
 		seen[id] = true
+	}
+}
+
+// foreignFacts rejects an account type serving, on another plugin's
+// platform, an endpoint whose usage or task facts that plugin states: the
+// facts come back from the Execute of the plugin serving the account, which
+// cannot read another platform's answers.
+func (v *validator) foreignFacts(pf string, ap manifest.AccountPlatform, own *manifest.Platform) {
+	if own != nil {
+		return
+	}
+	p := v.referencedPlatform(ap.Platform, nil)
+	if p == nil {
+		return
+	}
+	for _, e := range p.Endpoints {
+		if ap.SupportsEndpoint(e.ID) && (e.PluginUsage() || e.TaskSubmit()) {
+			v.add(pf+".platform", "foreign_facts", "endpoint %q of platform %q has its usage or task read by the plugin declaring the platform; only that plugin's account types may serve it", e.ID, ap.Platform)
+		}
 	}
 }
 

@@ -26,7 +26,7 @@ type Manifest struct {
 	Version      string        `json:"version"` // semver
 	Publisher    string        `json:"publisher"`
 	Icon         string        `json:"icon,omitempty"` // path inside the package or "text:<label>"
-	Runtime      string        `json:"runtime"`        // RuntimeGRPC or RuntimeNone ("js" reserved)
+	Runtime      string        `json:"runtime"`        // RuntimeGRPC ("js" reserved)
 	Entry        Entry         `json:"entry"`
 	HostCompat   string        `json:"hostCompat"`             // semver range, e.g. ">=0.1.0 <0.2.0"
 	HostUICompat string        `json:"hostUICompat,omitempty"` // required when ui.native is set
@@ -73,12 +73,20 @@ type JSEntry struct {
 	Source string `json:"source"`
 }
 
+// RuntimeGRPC is the only value of Manifest.Runtime: a plugin process
+// speaking the gRPC plugin protocol. Every plugin has a process.
+const RuntimeGRPC = "grpc"
+
+// Transports of an upstream request (the protocol of an endpoint decides).
+const (
+	TransportHTTP      = "http"
+	TransportWebSocket = "websocket"
+)
+
 // Capability ids understood by host version 0.1.
 const (
 	CapPlatformAdapter   = "platform.adapter.v1"
 	CapPlatformTasks     = "platform.tasks.v1"
-	CapPlatformPoll      = "platform.poll.v1"
-	CapPlatformExecute   = "platform.execute.v1"
 	CapPlatformMonitor   = "platform.monitor.v1"
 	CapPlatformWebSocket = "platform.websocket.v1" // upstream requests for websocket endpoints
 	CapGatewayHook       = "gateway.hook.v1"
@@ -162,9 +170,7 @@ type Platform struct {
 	Endpoints []Endpoint    `json:"endpoints"`
 	// Defaults for every endpoint of the platform; an endpoint (Usage) or an
 	// account type (AccountPlatform) may override them.
-	// Request body paths sent to BuildUpstreamRequest (never the whole body).
-	RequestFields []string `json:"requestFields,omitempty"`
-	// Client headers the host forwards to BuildUpstreamRequest (lower-case).
+	// Client headers the host forwards to PlatformService.Execute (lower-case).
 	PassHeaders []string   `json:"passHeaders,omitempty"`
 	Usage       UsageRules `json:"usage"`
 	// StickyRules are the core's default sticky rules of a built-in platform
@@ -212,9 +218,9 @@ type Endpoint struct {
 	// UsageSource decides WHO reads the token usage out of this endpoint's
 	// upstream responses: UsageSourceRules (the default, and what "" means)
 	// applies the declarative sse/json maps of the usage rules in effect,
-	// UsageSourcePlugin asks the plugin declaring the endpoint's platform
-	// through PlatformService.ExtractUsage once the response has been
-	// forwarded in full.
+	// UsageSourcePlugin has the plugin declaring the endpoint's platform read
+	// it from the bounded observation of a waited relay and return it from
+	// PlatformService.Execute.
 	//
 	// It sits on the endpoint, beside Request.ModelSource, and deliberately
 	// NOT on UsageRules. The rules follow the override chain of CONTRACTS
@@ -223,38 +229,31 @@ type Endpoint struct {
 	// be redirected by that plugin, and, worse, an override that simply does
 	// not mention it would switch the endpoint back to the declarative rules
 	// without saying anything. On the endpoint there is exactly one reading
-	// of "who answers ExtractUsage", and no ban is needed to keep it.
+	// of "who reads the usage", and no ban is needed to keep it.
 	UsageSource string `json:"usageSource,omitempty"`
-	// UsageStreamEvents are the SSE event names the host collects for
-	// ExtractUsage on a streaming response - and the only ones. The whole
+	// UsageStreamEvents are the SSE event names the host collects into the
+	// observation of a streaming response - and the only ones. The whole
 	// stream is never buffered. Only read with UsageSource
 	// UsageSourcePlugin.
 	UsageStreamEvents []string `json:"usageStreamEvents,omitempty"`
-	// UsageMaxBytes caps what ExtractUsage receives: the non-streaming body,
+	// UsageMaxBytes caps what the observation carries: the non-streaming body,
 	// and the total size of the collected stream events. 0 uses the host
 	// default. Also bounds the synchronous parser on task submissions.
 	UsageMaxBytes int64 `json:"usageMaxBytes,omitempty"`
 	// UsageRequestFields are request body paths (gjson) whose values the host
-	// hands to ExtractUsage in ExtractUsageRequest.fields - and the only ones,
-	// like Platform.RequestFields for BuildUpstreamRequest. They are for
-	// endpoints that only START work: the response is {"id": ...} and the
-	// request is where the resolution and the duration of the job are, which
-	// is what a pre-charge estimate has to be made from.
-	//
-	// Declared on the endpoint, not reused from the platform's RequestFields,
-	// for two reasons. RequestFields serves BuildUpstreamRequest on every
-	// endpoint and is overridden per account type - by a third plugin, which
-	// must not decide what the platform's plugin sees in ExtractUsage. And the
-	// need is per endpoint: the submit endpoint wants "resolution", nothing
-	// else on the platform does, and only the endpoints that ask pay for it.
-	// Values are capped per field and in total (check.MaxUsageRequestField*);
-	// a request body is never handed over whole. Only read with UsageSource
+	// hands to PlatformService.EstimateUsage before an account is chosen, and
+	// repeats in the observation (ExtractUsageRequest.fields) - and the only
+	// ones. They are for endpoints that only START work: the response is
+	// {"id": ...} and the request is where the resolution and the duration
+	// of the job are, which is what a pre-charge estimate has to be made
+	// from. Values are capped per field and in total
+	// (check.MaxUsageRequestField*). Only read with UsageSource
 	// UsageSourcePlugin or TaskSubmit().
 	UsageRequestFields []string `json:"usageRequestFields,omitempty"`
 }
 
 // PluginUsage reports whether this endpoint's usage is read by the plugin
-// declaring its platform (PlatformService.ExtractUsage) instead of by the
+// declaring its platform (ExecuteRequest.extract_usage) instead of by the
 // declarative usage rules.
 func (e Endpoint) PluginUsage() bool { return e.UsageSource == UsageSourcePlugin }
 
@@ -301,9 +300,8 @@ type EndpointRequest struct {
 	// Stream marks endpoints that always stream (e.g. streamGenerateContent).
 	Stream          bool     `json:"stream,omitempty"`
 	PromptTextPaths []string `json:"promptTextPaths,omitempty"`
-	MaxBodyBytes    int64    `json:"maxBodyBytes,omitempty"` // 0 = host default
 	// QueryParams are the query parameter names the host puts in
-	// RequestMeta.query, and the only ones - like RequestFields for the body.
+	// RequestMeta.query, and the only ones.
 	// Matched case-insensitively; the endpoint's Auth.Query parameter may not
 	// be listed and is never passed on.
 	QueryParams []string `json:"queryParams,omitempty"`
@@ -342,8 +340,8 @@ type AccountType struct {
 	// declare none are unrestricted.
 	GuardedSettings []GuardedSetting `json:"guardedSettings,omitempty"`
 	// UpstreamFields are the top-level credentials/settings keys that say
-	// where requests go (base_url, endpoints). nil: not declared (derived
-	// from Upstream, otherwise the legacy rule applies); []: the type has no
+	// where requests go (base_url, endpoints). nil: not declared (the legacy
+	// rule applies); []: the type has no
 	// caller-set address (OAuth and managed types). omitzero keeps [] apart
 	// from nil.
 	UpstreamFields []string          `json:"upstreamFields,omitzero"`
@@ -381,23 +379,12 @@ type AccountType struct {
 	// plugin implements BuildRefreshRequest / ParseRefreshResponse to renew
 	// them (CONTRACTS §48). nil: the host never refreshes them.
 	Refresh *AccountRefresh `json:"refresh,omitempty"`
-	// Upstream declares the upstream so the core builds its requests itself
-	// (docs/UPSTREAM-DECLARATIVE.md). nil: the plugin implements the
-	// platform calls.
-	Upstream *Upstream `json:"upstream,omitempty"`
 }
 
 // AddressFields returns the upstream address fields of the type and whether
-// they are known: declared in UpstreamFields, or derived from a declarative
-// Upstream (the core builds requests from base_url).
+// they are known, that is declared in UpstreamFields.
 func (at AccountType) AddressFields() ([]string, bool) {
-	switch {
-	case at.UpstreamFields != nil:
-		return at.UpstreamFields, true
-	case at.Upstream != nil:
-		return []string{"base_url"}, true
-	}
-	return nil, false
+	return at.UpstreamFields, at.UpstreamFields != nil
 }
 
 // CustomUpstream reports whether a caller without account:settings:custom
@@ -558,9 +545,8 @@ type AccountPlatform struct {
 	Platform string `json:"platform"`
 	// Endpoints selects endpoint IDs within Platform. Omitted means all endpoints
 	// for compatibility; an explicit empty list is invalid.
-	Endpoints     []string `json:"endpoints,omitempty"`
-	RequestFields []string `json:"requestFields,omitempty"`
-	PassHeaders   []string `json:"passHeaders,omitempty"`
+	Endpoints   []string `json:"endpoints,omitempty"`
+	PassHeaders []string `json:"passHeaders,omitempty"`
 	// Usage overrides the usage rules per protocol of the platform.
 	Usage map[string]UsageRules `json:"usage,omitempty"`
 	// StreamOnly lists the upstream protocols of Platform whose upstream
@@ -671,12 +657,13 @@ const (
 	// declarative sse/json maps of the rules in effect. An empty
 	// Endpoint.UsageSource means this.
 	UsageSourceRules = "rules"
-	// UsageSourcePlugin asks PlatformService.ExtractUsage instead.
+	// UsageSourcePlugin has the plugin return the usage from
+	// PlatformService.Execute instead (ExecuteResponse.usage).
 	//
 	// The declarative rules are not replaced by the plugin: the host keeps
-	// applying them while it forwards (they cost nothing extra and detect
-	// stream errors), and falls back to what they produced when the plugin
-	// call fails.
+	// applying them while it relays (they cost nothing extra and detect
+	// stream errors), and uses what they produced when the plugin returns
+	// host_usage.
 	UsageSourcePlugin = "plugin"
 )
 
