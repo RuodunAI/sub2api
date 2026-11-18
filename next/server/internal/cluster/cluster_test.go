@@ -428,19 +428,3 @@ func TestClusterStartClose(t *testing.T) {
 		t.Fatal("alive after close")
 	}
 }
-
-func sameSet(got []string, want ...string) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	m := map[string]bool{}
-	for _, g := range got {
-		m[g] = true
-	}
-	for _, w := range want {
-		if !m[w] {
-			return false
-		}
-	}
-	return true
-}
