@@ -21,6 +21,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 )
 
@@ -142,60 +143,17 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		Build()
 }
 
-func (p *Plugin) ClassifyError(ctx context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
-	status := req.GetStatus()
-	bodyPrefix := req.GetBodyPrefix()
+// classifyPolicy is Anthropic's policy (error.type and error.message,
+// credentials, credit balance, rate limits, 529, 5xx; anything else goes back
+// to the client) plus the one OAuth-specific reading: a 401 means the access
+// token expired or was revoked, which re-authorizing fixes.
+var classifyPolicy = anthropic.Policy.With(classify.Rule{
+	When: classify.Status(http.StatusUnauthorized), Effect: classify.Disable,
+	Reason: "OAuth token expired or invalid (%d)",
+})
 
-	// 401: 凭证失效
-	if status == 401 {
-		return &pluginv1.ClassifyErrorResponse{
-			AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE,
-			Reason:        "OAuth token expired or invalid",
-		}, nil
-	}
-
-	// 429: 限流
-	if status == 429 {
-		var cooldown int64 = 60
-		// 尝试从 headers 获取 retry-after
-		if headers := req.GetHeaders(); headers != nil {
-			if retryAfter := headers["retry-after"]; retryAfter != "" {
-				// 简化：假设是秒数格式
-				if parsed, err := time.ParseDuration(retryAfter + "s"); err == nil {
-					cooldown = int64(parsed.Seconds())
-				}
-			}
-		}
-		return &pluginv1.ClassifyErrorResponse{
-			AccountEffect:     pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_COOLDOWN,
-			CooldownUntilUnix: time.Now().Unix() + cooldown,
-			Reason:            "Rate limited",
-		}, nil
-	}
-
-	// 解析 Anthropic 错误格式
-	var apiErr struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(bodyPrefix, &apiErr); err == nil {
-		switch apiErr.Type {
-		case "invalid_request_error":
-			return &pluginv1.ClassifyErrorResponse{
-				Action: pluginv1.ClassifyErrorResponse_ACTION_RETURN_TO_CLIENT,
-				Reason: apiErr.Message,
-			}, nil
-		case "authentication_error":
-			return &pluginv1.ClassifyErrorResponse{
-				AccountEffect: pluginv1.ClassifyErrorResponse_ACCOUNT_EFFECT_DISABLE,
-				Reason:        apiErr.Message,
-			}, nil
-		}
-	}
-
-	return &pluginv1.ClassifyErrorResponse{
-		Action: pluginv1.ClassifyErrorResponse_ACTION_FAILOVER,
-	}, nil
+func (p *Plugin) ClassifyError(_ context.Context, req *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
+	return classifyPolicy.Classify(time.Now(), req), nil
 }
 
 func (p *Plugin) BuildTestRequest(ctx context.Context, req *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
