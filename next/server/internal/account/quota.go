@@ -411,7 +411,8 @@ type pluginAnswer struct {
 
 // sendPluginCall sends a request a plugin described through the account's
 // proxy (behind netguard for a direct connection). A failure is not an
-// error: the plugin is shown the transport error, as ClassifyError is.
+// error: the plugin is shown the transport error, as ClassifyError is; an
+// answer that cannot be read whole is such a failure.
 func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int64) pluginAnswer {
 	var out pluginAnswer
 	u, err := url.Parse(b.url)
@@ -458,7 +459,12 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 		return out
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		// An answer cut short is a transport failure, not a shorter answer.
+		out.transportError = transportError(upstreamAddr(u), err)
+		return out
+	}
 	out.status, out.body = int32(resp.StatusCode), raw
 	out.headers = map[string]string{}
 	for k, v := range resp.Header {
