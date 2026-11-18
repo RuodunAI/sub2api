@@ -645,8 +645,8 @@ func (c *call) priceInputsFrom(rule *core.PriceRule, body []byte) (params map[st
 // upstream protocol and the attempt's environment (metaFor).
 func (c *call) meta() *pluginv1.RequestMeta {
 	if !c.metaMapsDone {
-		c.metaPathParams = boundMeta(c.params)
-		c.metaQuery = boundMeta(c.declaredQuery())
+		c.metaPathParams = validMeta(c.params)
+		c.metaQuery = validMeta(c.declaredQuery())
 		c.metaMapsDone = true
 	}
 	m := &pluginv1.RequestMeta{
@@ -711,41 +711,24 @@ func (c *call) declaredQuery() map[string]string {
 	return out
 }
 
-// metaMapMaxKeys, metaMapMaxKeyBytes and metaMapMaxValueBytes bound the
-// RequestMeta path_params and query maps: both come straight from the client.
-const (
-	metaMapMaxKeys       = 32
-	metaMapMaxKeyBytes   = 64
-	metaMapMaxValueBytes = 512
-)
-
-// boundMeta caps in to metaMapMaxKeys entries (lowest key names first, so the
-// choice is stable) and truncates keys and values on a UTF-8 boundary. It
-// returns nil for an empty map: the field is optional and a nil map costs no
-// allocation on the hot path.
+// validMeta is a RequestMeta path_params or query map as the client sent
+// it, every entry of any size. It returns nil for an empty map: the field
+// is optional and a nil map costs no allocation on the hot path.
 //
-// The map comes straight off the wire, so invalid UTF-8 is dropped first:
-// proto3 string fields must be valid UTF-8 and marshalling a RequestMeta with
-// a stray byte would fail every plugin call of the request.
-func boundMeta(in map[string]string) map[string]string {
+// The map comes straight off the wire, so invalid UTF-8 is dropped: proto3
+// string fields must be valid UTF-8 and marshalling a RequestMeta with a
+// stray byte would fail every plugin call of the request.
+func validMeta(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(in))
-	for k := range in {
-		keys = append(keys, k)
-	}
-	if len(keys) > metaMapMaxKeys {
-		sort.Strings(keys)
-		keys = keys[:metaMapMaxKeys]
-	}
-	out := make(map[string]string, len(keys))
-	for _, k := range keys {
-		name := truncateUTF8(strings.ToValidUTF8(k, ""), metaMapMaxKeyBytes)
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		name := strings.ToValidUTF8(k, "")
 		if name == "" {
 			continue
 		}
-		out[name] = truncateUTF8(strings.ToValidUTF8(in[k], ""), metaMapMaxValueBytes)
+		out[name] = strings.ToValidUTF8(v, "")
 	}
 	if len(out) == 0 {
 		return nil

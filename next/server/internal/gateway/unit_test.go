@@ -403,37 +403,22 @@ func TestMetaPathParams(t *testing.T) {
 	}
 }
 
-// path_params is bounded in key count, key length and value length, and is
-// nil (not an empty map) when the pattern has no parameters.
-func TestMetaMapsBounded(t *testing.T) {
+// path_params carries what the client sent, every entry of any size (only
+// invalid UTF-8 is dropped), and is nil (not an empty map) when the pattern
+// has no parameters.
+func TestMetaMapsWhole(t *testing.T) {
 	params := map[string]string{}
 	for i := 0; i < 40; i++ {
 		params[fmt.Sprintf("p%02d", i)] = "v"
 	}
 	pp := metaCall(manifest.Endpoint{Protocol: "p.x"}, params, "").meta().GetPathParams()
-	if len(pp) != metaMapMaxKeys {
+	if len(pp) != len(params) {
 		t.Fatalf("size = %d", len(pp))
 	}
-	// The kept keys are the lowest by name, so the choice is stable.
-	if _, ok := pp["p31"]; !ok {
-		t.Fatal("p31 missing")
-	}
-	if _, ok := pp["p32"]; ok {
-		t.Fatal("p32 kept")
-	}
-	// Long keys and values are cut on a UTF-8 boundary.
 	longKey, longVal := strings.Repeat("é", 100), strings.Repeat("ü", 600)
-	got := metaCall(manifest.Endpoint{Protocol: "p.x"}, map[string]string{longKey: longVal}, "").meta().GetPathParams()
-	if len(got) != 1 {
-		t.Fatalf("long: %v", got)
-	}
-	for k, v := range got {
-		if k != truncateUTF8(longKey, metaMapMaxKeyBytes) || len(k) > metaMapMaxKeyBytes {
-			t.Fatalf("key %d bytes", len(k))
-		}
-		if v != truncateUTF8(longVal, metaMapMaxValueBytes) || len(v) > metaMapMaxValueBytes {
-			t.Fatalf("value %d bytes", len(v))
-		}
+	got := metaCall(manifest.Endpoint{Protocol: "p.x"}, map[string]string{longKey: longVal, "bad\xff": "v\xffw"}, "").meta().GetPathParams()
+	if len(got) != 2 || got[longKey] != longVal || got["bad"] != "vw" {
+		t.Fatalf("long and invalid: %v", got)
 	}
 	// No path parameters: the map stays nil.
 	if m := metaCall(manifest.Endpoint{Protocol: "p.x"}, nil, "").meta(); m.GetPathParams() != nil {
@@ -510,8 +495,8 @@ func TestMetaMapsDropInvalidUTF8(t *testing.T) {
 	}
 }
 
-// The query map is bounded exactly like path_params.
-func TestMetaQueryBounded(t *testing.T) {
+// The query map carries the declared parameters whole, like path_params.
+func TestMetaQueryWhole(t *testing.T) {
 	names := make([]string, 0, 40)
 	var raw []string
 	for i := 0; i < 40; i++ {
@@ -521,19 +506,13 @@ func TestMetaQueryBounded(t *testing.T) {
 	}
 	ep := manifest.Endpoint{Protocol: "p.x", Request: manifest.EndpointRequest{QueryParams: names}}
 	q := metaCall(ep, nil, strings.Join(raw, "&")).meta().GetQuery()
-	if len(q) != metaMapMaxKeys {
+	if len(q) != len(names) {
 		t.Fatalf("size = %d", len(q))
-	}
-	if _, ok := q["p31"]; !ok {
-		t.Fatal("p31 missing")
-	}
-	if _, ok := q["p32"]; ok {
-		t.Fatal("p32 kept")
 	}
 	longVal := strings.Repeat("ü", 600)
 	ep2 := manifest.Endpoint{Protocol: "p.x", Request: manifest.EndpointRequest{QueryParams: []string{"alt"}}}
 	q = metaCall(ep2, nil, "alt="+url.QueryEscape(longVal)).meta().GetQuery()
-	if len(q) != 1 || q["alt"] != truncateUTF8(longVal, metaMapMaxValueBytes) || len(q["alt"]) > metaMapMaxValueBytes {
+	if len(q) != 1 || q["alt"] != longVal {
 		t.Fatalf("value %d bytes", len(q["alt"]))
 	}
 }
