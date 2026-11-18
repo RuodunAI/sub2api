@@ -143,28 +143,16 @@ func TestFakeHostFetchHosts(t *testing.T) {
 	}
 }
 
-// A relayed body may exceed the larger of the limit and the body handed to
-// the plugin by 1 MiB, as on the host.
-func TestFakeHostRelayBodyLimit(t *testing.T) {
+// A relayed body has no bound, whatever the plugin was handed, as on the
+// host.
+func TestFakeHostRelayBodyUnbounded(t *testing.T) {
 	f := NewFakeHost()
-	f.MaxBodyBytes = 10
-	relay := func(handed, relayed int) codes.Code {
-		e := f.Begin(&pluginv1.ExecuteRequest{Body: make([]byte, handed)})
+	for _, tc := range []struct{ handed, relayed int }{{0, 2 << 20}, {3 << 20, 5 << 20}} {
+		e := f.Begin(&pluginv1.ExecuteRequest{Body: make([]byte, tc.handed)})
 		_, err := f.RelayUpstream(context.Background(), &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(),
-			Request: &pluginv1.UpstreamRequest{Url: "https://up.example.com", Body: make([]byte, relayed)}})
-		return status.Code(err)
-	}
-	for _, tc := range []struct {
-		handed, relayed int
-		want            codes.Code
-	}{
-		{0, 10 + 1<<20, codes.OK},
-		{0, 11 + 1<<20, codes.InvalidArgument},
-		{3 << 20, 4 << 20, codes.OK},
-		{3 << 20, 4<<20 + 1, codes.InvalidArgument},
-	} {
-		if got := relay(tc.handed, tc.relayed); got != tc.want {
-			t.Errorf("handed %d, relayed %d: %v, want %v", tc.handed, tc.relayed, got, tc.want)
+			Request: &pluginv1.UpstreamRequest{Url: "https://up.example.com", Body: make([]byte, tc.relayed)}})
+		if err != nil {
+			t.Errorf("handed %d, relayed %d: %v", tc.handed, tc.relayed, err)
 		}
 	}
 }

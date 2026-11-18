@@ -27,8 +27,8 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `Authoritative` | 其余要保留为权威头的头，名字 → 理由（例如改写前代码插件的头都在运营方设置之上，转换后要保持）。理由不能为空 |
 | `Fetch` | 插件辅助请求（换令牌、上传）的回答。nil 时取回回 `UNIMPLEMENTED` |
 | `FixClock` | 把插件的时钟设成给定时间；套件在每次 `Execute` 前调用。请求依赖时间（签名）时必填，否则第 6、7 条失败 |
-| `BodyLimit` | 第 10 条用的请求体大小，默认 8 MiB |
-| `CallTimeout` | 第 9 条用的平台调用超时，默认 2 秒（系统设置的默认值） |
+| `BodyLimit` | 第 10 条把请求体补到的大小，默认 8 MiB。只决定计量用多大的请求体：宿主不限制交给插件或插件交回的请求体，网关的 `max_request_body_mb` 只管客户端请求 |
+| `CallTimeout` | 第 9 条取消后等 `Execute` 返回的时长，默认 2 秒。宿主不给插件在 `Execute` 里的工作计时，这是套件自己的界限 |
 | `Exceptions` | 有理由的例外，见下文 |
 
 `Case`（一个样例请求）：
@@ -88,7 +88,7 @@ Exceptions: []conformance.Exception{{
 - 只覆盖给出的用例。没有用例的端点、账号类型、请求形状没有被检查；第 1 条只核对 `Protocols` 列出的协议，不从清单推断插件服务哪些协议（每个协议有哪些形式是从端点定义读的）。
 - 第 8 条拦得住经默认传输、默认解析器（主机名）和出口隧道的拨号；直接拨 IP 字面量、或用 cgo、`syscall` 开套接字的代码拦不住。
 - 第 9 条只测“阻塞在宿主调用里时被取消”；插件在两次宿主调用之间自己算很久不在范围内。
-- 第 10 条用默认 8 MiB 而不是网关默认的 128 MiB 上限（分配随大小线性，比值相同），计量的是整个进程的分配减去参照插件，插件在后台另起的 goroutine 也算在内；填充字段被插件过滤掉时测到的就少。
+- 第 10 条默认用 8 MiB 而不是网关请求体上限的默认值 128 MiB（分配随大小线性，比值相同），计量的是整个进程的分配减去参照插件，插件在后台另起的 goroutine 也算在内；填充字段被插件过滤掉时测到的就少。
 - 第 6、7 条比较的是交回的请求，不比较取回（插件按账号缓存令牌是允许的）。第 7 条只能抓到请求随账号变化的复用。
 - 第 11 条没有元信息里的“传输”字段可用（`RequestMeta` 没有这个字段），WebSocket 轮次由用例的 `WebSocket` 标出，插件怎么认出它是插件自己的事（例如按 `meta.endpoint`）。
 - 不检查 `Monitor`，也不检查 `ValidateCredentials`、`ClassifyError`、`BuildTestRequest`、`BuildModelsRequest`（§14.1 第 12 条）和 SigV4（第 13 条）。

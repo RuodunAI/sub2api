@@ -45,8 +45,9 @@ type Execution struct {
 	relays    []RelayCall
 	relayErrs []error
 	fetches   []*pluginv1.ExecutionHTTPRequest
-	// evidence: a fetch of the call was answered completely and with an
-	// HTTP status, which a terminal Monitor result needs.
+	// evidence: a fetch of the call was answered with an HTTP status and no
+	// transport error while the call was alive, which a terminal Monitor
+	// result needs.
 	evidence bool
 }
 
@@ -212,10 +213,6 @@ func (f *FakeHost) relay(ctx context.Context, e *Execution, in *pluginv1.RelayUp
 	return out, nil
 }
 
-// relayBodyMargin is what a relayed body may exceed its bound by, as on
-// the host: room for the plugin's envelope and added fields.
-const relayBodyMargin = 1 << 20
-
 // admitRelay applies the host's checks of a relay and records it.
 func (f *FakeHost) admitRelay(e *Execution, in *pluginv1.RelayUpstreamRequest) error {
 	if e.request == nil {
@@ -223,11 +220,6 @@ func (f *FakeHost) admitRelay(e *Execution, in *pluginv1.RelayUpstreamRequest) e
 	}
 	if err := pluginsdk.ValidateUpstreamRequest(in.GetRequest()); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
-	}
-	// The bound is the larger of the limit and the body the plugin was
-	// handed, plus a margin: what the plugin got it may hand back.
-	if limit := max(f.MaxBodyBytes, len(e.request.GetBody())) + relayBodyMargin; f.MaxBodyBytes > 0 && len(in.GetRequest().GetBody()) > limit {
-		return status.Errorf(codes.InvalidArgument, "upstream body of %d bytes exceeds the limit of %d bytes", len(in.GetRequest().GetBody()), limit)
 	}
 	if webSocketURL(in.GetRequest().GetUrl()) && f.httpProtocol(e.request.GetMeta().GetProtocol()) {
 		return status.Errorf(codes.InvalidArgument, "a ws(s) url on an HTTP route (protocol %s)", e.request.GetMeta().GetProtocol())
@@ -259,10 +251,7 @@ func (f *FakeHost) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTPRe
 	if err != nil {
 		return out, err
 	}
-	if len(out.GetBody()) > pluginsdk.FetchResponseLimit {
-		out.Body, out.Truncated = out.Body[:pluginsdk.FetchResponseLimit], true
-	}
-	if ctx.Err() == nil && out.GetStatus() >= 200 && out.GetStatus() <= 599 && out.GetTransportError() == "" && !out.GetTruncated() {
+	if ctx.Err() == nil && out.GetStatus() >= 200 && out.GetStatus() <= 599 && out.GetTransportError() == "" {
 		f.mu.Lock()
 		e.evidence = true
 		f.mu.Unlock()
@@ -286,9 +275,6 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(e.fetches) >= pluginsdk.FetchLimit {
-		return status.Errorf(codes.ResourceExhausted, "an execution fetches at most %d times", pluginsdk.FetchLimit)
-	}
 	e.fetches = append(e.fetches, in)
 	return nil
 }
@@ -342,7 +328,7 @@ func terminal(r *pluginv1.ReconcileResult) bool {
 }
 
 // largeMessages lets the harness carry the answers the host's client may
-// return (a fetch answer is up to pluginsdk.FetchResponseLimit).
+// return (a fetch answer of any size).
 var largeMessages = grpc.MaxCallRecvMsgSize(math.MaxInt32)
 
 // Execute makes one PlatformService.Execute call the way the host does: it
@@ -361,8 +347,8 @@ func (h *Harness) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) *Exe
 
 // Monitor makes one PlatformService.Monitor call the way the host does; see
 // Execute. As the host does, it refuses a terminal result (not PENDING or
-// POLL_FAILED) unless a fetch of the call was answered completely, with an
-// HTTP status and no transport error: Err is then FAILED_PRECONDITION and
+// POLL_FAILED) unless a fetch of the call was answered, while the call was
+// alive, with an HTTP status and no transport error: Err is then FAILED_PRECONDITION and
 // MonitorResponse keeps what the plugin returned.
 func (h *Harness) Monitor(ctx context.Context, in *pluginv1.PollRequest) *Execution {
 	in = proto.Clone(in).(*pluginv1.PollRequest)

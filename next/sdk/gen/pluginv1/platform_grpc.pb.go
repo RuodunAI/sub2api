@@ -44,9 +44,9 @@ type PlatformServiceClient interface {
 	//   - extract_usage or task_submission: relay and wait, read the
 	//     observation and return usage or task (host_usage when the usage
 	//     cannot be read; classification for an upstream error).
-	// The host's platform call timeout bounds each stretch of the plugin's own
-	// work - before the first host call, between two, after the last - and
-	// never the time spent waiting for the upstream.
+	// The host does not time the plugin's own work in this call: it ends with
+	// the client leaving, the upstream's timeouts on a relay, or the plugin's
+	// process.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
 	// One scheduled observation of a host-managed asynchronous task. The
 	// plugin queries the upstream once through HostService.ExecuteHTTP and
@@ -310,9 +310,9 @@ type PlatformServiceServer interface {
 	//   - extract_usage or task_submission: relay and wait, read the
 	//     observation and return usage or task (host_usage when the usage
 	//     cannot be read; classification for an upstream error).
-	// The host's platform call timeout bounds each stretch of the plugin's own
-	// work - before the first host call, between two, after the last - and
-	// never the time spent waiting for the upstream.
+	// The host does not time the plugin's own work in this call: it ends with
+	// the client leaving, the upstream's timeouts on a relay, or the plugin's
+	// process.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
 	// One scheduled observation of a host-managed asynchronous task. The
 	// plugin queries the upstream once through HostService.ExecuteHTTP and

@@ -70,10 +70,11 @@ type FakeHost struct {
 	// The checks are the host's: a fetch may reach the hosts the manifest
 	// allows for the call's account (manifest.Manifest.FetchHostAllowed:
 	// externalServices, or the hosts of the account's upstreamFields), a
-	// relay's method and headers are judged as the gateway judges them, a
-	// relayed body may exceed the larger of MaxBodyBytes and the body the
-	// plugin was handed by 1 MiB, and Harness.Monitor refuses a terminal
-	// result without one complete, successful fetch in the call. Where the
+	// relay's method and headers are judged as the gateway judges them, and
+	// Harness.Monitor refuses a terminal result without one complete,
+	// successful fetch in the call (an HTTP status, no transport error).
+	// Like the host, the fake neither bounds a relayed body nor counts the
+	// fetches of a call nor cuts their answers. Where the
 	// fake still differs from the host:
 	//   - It cannot always tell a WebSocket turn from an HTTP request (the
 	//     ExecuteRequest does not say): it refuses a ws(s) URL only when
@@ -90,9 +91,9 @@ type FakeHost struct {
 	// that does not wait only its error matters (nil accepts). An
 	// INVALID_ARGUMENT error is a refusal: the request counts as not relayed.
 	RelayFunc func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
-	// ExecuteHTTPFunc answers a fetch; nil answers UNIMPLEMENTED. A body over
-	// pluginsdk.FetchResponseLimit is cut and marked truncated, as the host
-	// does; a test may also set truncated or transport_error itself.
+	// ExecuteHTTPFunc answers a fetch; nil answers UNIMPLEMENTED. The answer
+	// is returned whole, as the host does; a test may set transport_error
+	// itself (the host never sets truncated).
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
 	// Manifest is the plugin's manifest as the host knows it, which decides
 	// the hosts a fetch may reach and the protocols that are HTTP routes.
@@ -105,8 +106,7 @@ type FakeHost struct {
 	// runs the plugin without its manifest.
 	ExternalServices []string
 	// MaxBodyBytes is the gateway's request body limit: a fetched body may
-	// not exceed it, a relayed one not the larger of it and the body the
-	// plugin was handed by more than 1 MiB; 0 is no limit.
+	// not exceed it; 0 is no limit.
 	MaxBodyBytes int
 	// PriceUsageFunc answers PriceUsage; nil answers every model as not
 	// priced ("no_price"). Set it before Start.
