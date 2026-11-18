@@ -119,12 +119,7 @@ func TestMonitorStaysWithinExternalServices(t *testing.T) {
 // no manifest can list. The core allows the hosts of the account's declared
 // upstreamFields besides externalServices.
 func TestMonitorReachesARelayOutsideExternalServices(t *testing.T) {
-	// TODO(forwarding-v2 W3/W5): pluginsdktest.FakeHost only knows
-	// ExternalServices; enable once it also admits the hosts of the account's
-	// upstreamFields (base_url, video_endpoint), as the core runtime will.
-	t.Skip("needs the fake host to admit the account's upstreamFields hosts (SDK pluginsdktest, W3/W5)")
 	h := startExecution(t, func(fh *pluginsdktest.FakeHost) {
-		fh.ExternalServices = []string{"ark.cn-beijing.volces.com", "ark.ap-southeast.bytepluses.com", "ark.cn-beijing.volcengineapi.com"}
 		fh.ExecuteHTTPFunc = func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 			return &pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"running"}`)}, nil
 		}
