@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 )
 
@@ -71,9 +72,17 @@ func TestProtocolRulesServes(t *testing.T) {
 		{name: "other models, protocol the account closed", protocols: bound, rules: withOther, model: "gpt-4o", protocol: responses, want: SchedProtocolClosed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reason, ok := NewProtocolRules(tc.protocols, tc.rules).Serves(tc.model, tc.protocol, tc.cross)
+			compiled := NewProtocolRules(tc.protocols, tc.rules)
+			reason, ok := compiled.Serves(tc.model, tc.protocol, tc.cross)
 			if ok != (tc.want == "") || reason != tc.want {
 				t.Fatalf("Serves(%q, %q, cross=%v) = %q, %v; want %q", tc.model, tc.protocol, tc.cross, reason, ok, tc.want)
+			}
+			// A model no rule names is judged as the other models are.
+			if slices.ContainsFunc(tc.rules, func(r ModelProtocolRule) bool { return slices.Contains(r.Models, tc.model) }) {
+				return
+			}
+			if others, served := compiled.ServesOthers(tc.protocol, tc.cross); others != reason || served != ok {
+				t.Fatalf("ServesOthers(%q, cross=%v) = %q, %v; Serves gives %q, %v", tc.protocol, tc.cross, others, served, reason, ok)
 			}
 		})
 	}

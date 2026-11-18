@@ -75,18 +75,32 @@ func NewProtocolRules(protocols []string, rules []ModelProtocolRule) *ProtocolRu
 // A count_tokens protocol is judged as the generation protocol of its
 // family. Serves does not allocate.
 func (r *ProtocolRules) Serves(model, protocol string, cross bool) (reason string, ok bool) {
-	if r == nil {
-		if cross {
-			return SchedConversionNotEnabled, false
+	if r != nil {
+		if rule, named := r.models[model]; named {
+			return r.serves(rule, true, protocol, cross)
 		}
-		return "", true
 	}
+	return r.ServesOthers(protocol, cross)
+}
+
+// ServesOthers is Serves for the models no rule lists by name: those of the
+// OtherModels rule, or of no rule at all. It is how a view of what the
+// account serves (served_protocols) asks about them without naming one.
+func (r *ProtocolRules) ServesOthers(protocol string, cross bool) (reason string, ok bool) {
+	switch {
+	case r != nil:
+		return r.serves(r.other, r.listed, protocol, cross)
+	case cross:
+		return SchedConversionNotEnabled, false
+	}
+	return "", true
+}
+
+// serves judges protocol for a model whose rule is rule; listed is false for
+// a model without one.
+func (r *ProtocolRules) serves(rule []string, listed bool, protocol string, cross bool) (reason string, ok bool) {
 	if family := CountTokensFamily(protocol); family != "" {
 		protocol = family
-	}
-	rule, listed := r.models[model]
-	if !listed {
-		rule, listed = r.other, r.listed
 	}
 	switch {
 	case listed && !slices.Contains(rule, protocol):

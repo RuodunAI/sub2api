@@ -3,6 +3,8 @@ package account
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,53 +271,86 @@ func TestServedProtocols(t *testing.T) {
 			want: "openai.responses native[*]; anthropic.messages converted[gpt-5.6]; anthropic.count_tokens converted[gpt-5.6]"},
 		{name: "the other models rule decides the unlisted models", b: protocolBinding{rules: append(rules[1:2:2], other)},
 			want: "openai.responses native[*]; openai.chat adapted[gpt-5.6]; anthropic.messages converted[*]; anthropic.count_tokens converted[*]"},
-		{name: "models outside the account's model list are left out", b: protocolBinding{models: []string{"gpt-5.6", "claude-opus-4-1"}, rules: rules},
+		{name: "models outside the account's model list are left out", b: protocolBinding{models: []string{"gpt-5.6", "claude-opus-4-1", "gpt-4o"}, rules: rules},
 			want: allOwn + "; anthropic.messages converted[claude-opus-4-1,gpt-5.6]; anthropic.count_tokens converted[claude-opus-4-1,gpt-5.6]"},
+		{name: "a model list whose every model has a rule leaves no other model", b: protocolBinding{models: []string{"gpt-5.6", "claude-opus-4-1"}, rules: rules},
+			want: "openai.responses native[gpt-5.6]; openai.chat adapted[gpt-5.6]; " +
+				"anthropic.messages converted[claude-opus-4-1,gpt-5.6]; anthropic.count_tokens converted[claude-opus-4-1,gpt-5.6]"},
+		{name: "a protocol none of the listed models is served on is not listed", b: protocolBinding{models: []string{"claude-opus-4-1"}, rules: rules[:1]},
+			want: "anthropic.messages converted[claude-opus-4-1]; anthropic.count_tokens converted[claude-opus-4-1]"},
+		{name: "the other models rule converts no model when the model list has none left", b: protocolBinding{models: []string{"gpt-5.6"}, rules: append(rules[1:2:2], other)},
+			want: "openai.responses native[gpt-5.6]; openai.chat adapted[gpt-5.6]; anthropic.messages converted[gpt-5.6]; anthropic.count_tokens converted[gpt-5.6]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.b.servedProtocols(served)
 			require.NotNil(t, got)
 			require.Equal(t, tc.want, servedList(got))
-			// The view agrees with what the scheduler decides, model by model.
-			compiled := tc.b.compile()
-			for _, tp := range served {
-				models, open := tc.b.modelsOn(tp)
-				for _, model := range []string{"gpt-5.6", "claude-opus-4-1", "unlisted"} {
-					_, schedules := compiled.Serves(model, tp.protocol, !tp.own)
-					inList := len(tc.b.models) == 0 || contains(tc.b.models, model)
-					switch {
-					case !open:
-						require.False(t, schedules, "%s on %s, not shown", model, tp.protocol)
-					case models != nil:
-						require.Equal(t, contains(models, model), schedules && inList, "%s on %s", model, tp.protocol)
-					case !tc.b.lists(model):
-						require.True(t, schedules, "%s on %s, shown for every other model", model, tp.protocol)
-					}
-				}
-			}
+			requireServedAsScheduled(t, tc.b, served, []string{"gpt-5.6", "claude-opus-4-1", "gpt-4o", "unlisted"})
 		})
 	}
 	hops := (protocolBinding{}).servedProtocols(served)[1]
 	require.Equal(t, ServedProtocol{Protocol: "openai.chat", Via: viaAdapted, Grade: "fair", Hops: []string{"openai.chat", "openai.responses"}}, hops)
 }
 
-// lists reports whether a rule of the binding names the model.
-func (b protocolBinding) lists(model string) bool {
-	for _, r := range b.rules {
-		if contains(r.Models, model) {
-			return true
+// requireServedAsScheduled checks the view against the scheduler, model by
+// model: a protocol lists a model exactly when the account's model list
+// holds it and the compiled rules serve it there. null stands for the models
+// no rule names, of which the account then has at least one; the models a
+// rule names are not told apart under it.
+func requireServedAsScheduled(t *testing.T, b protocolBinding, served []typeProtocol, models []string) {
+	t.Helper()
+	compiled := b.compile()
+	view := map[string]ServedProtocol{}
+	for _, sp := range b.servedProtocols(served) {
+		view[sp.Protocol] = sp
+	}
+	named, others := b.boundModels()
+	for _, tp := range served {
+		sp, open := view[tp.protocol]
+		require.False(t, open && sp.Models == nil && !others, "%s: open to other models the account does not have", tp.protocol)
+		for _, model := range models {
+			_, schedules := compiled.Serves(model, tp.protocol, !tp.own)
+			schedules = schedules && (len(b.models) == 0 || slices.Contains(b.models, model))
+			isNamed := slices.Contains(named, model)
+			switch {
+			case !open:
+				require.False(t, schedules, "%s on %s, not shown", model, tp.protocol)
+			case sp.Models != nil:
+				require.Equal(t, slices.Contains(sp.Models, model), schedules, "%s on %s", model, tp.protocol)
+			case !isNamed:
+				require.Equal(t, len(b.models) == 0 || slices.Contains(b.models, model), schedules, "%s on %s, shown for every other model", model, tp.protocol)
+			}
 		}
 	}
-	return false
 }
 
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
+// Random bindings: whatever the model list, protocols and rules, the view of
+// what the account serves is what the scheduler decides.
+func TestServedProtocolsMatchScheduling(t *testing.T) {
+	g, chatgpt, _ := protocolGen()
+	served := typeProtocols(g, chatgpt, bindingConverters{})
+	models := []string{"a", "b", "c", "d"}
+	protocols := []string{"openai.responses", "openai.chat", "anthropic.messages"}
+	rnd := rand.New(rand.NewPCG(1, 2))
+	some := func(of []string) []string {
+		out := []string{}
+		for _, v := range of {
+			if rnd.IntN(2) == 0 {
+				out = append(out, v)
+			}
 		}
+		return out
 	}
-	return false
+	for range 5000 {
+		b := protocolBinding{models: some(models)}
+		if rnd.IntN(2) == 0 {
+			b.protocols = some(protocols[:2])
+		}
+		for _, m := range some(append([]string{core.OtherModels}, models...)) {
+			b.rules = append(b.rules, core.ModelProtocolRule{Models: []string{m}, Protocols: some(protocols)})
+		}
+		requireServedAsScheduled(t, b, served, append([]string{"unlisted"}, models...))
+	}
 }
 
 // The binding is saved by create and PATCH, each field replaced as a whole,

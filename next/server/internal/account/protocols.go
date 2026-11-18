@@ -2,12 +2,10 @@ package account
 
 import (
 	"context"
-	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 )
@@ -89,20 +87,10 @@ func findProtocol(served []typeProtocol, protocol string) *typeProtocol {
 
 // parseModelProtocols decodes a model_protocols column; never nil.
 func parseModelProtocols(raw []byte) []core.ModelProtocolRule {
-	out := []core.ModelProtocolRule{}
-	if len(raw) > 0 {
-		_ = json.Unmarshal(raw, &out)
-	}
-	return out
+	return parseList[core.ModelProtocolRule](raw)
 }
 
-func modelProtocolsJSON(in []core.ModelProtocolRule) string {
-	if in == nil {
-		in = []core.ModelProtocolRule{}
-	}
-	b, _ := json.Marshal(in)
-	return string(b)
-}
+func modelProtocolsJSON(in []core.ModelProtocolRule) string { return listJSON(in) }
 
 // protocolBinding is what decides the protocols an account serves: its
 // model list (empty = all models), protocols (nil = all of its type's own
@@ -232,29 +220,15 @@ func normalizeModelProtocols(ctx context.Context, in []core.ModelProtocolRule, s
 		fe = append(fe, core.FieldError{Field: field, Code: code, Message: t(ctx, en, zh)})
 	}
 	out := make([]core.ModelProtocolRule, 0, len(in))
-	owner := map[string]int{}
+	entries := entryModels{other: core.OtherModels, owner: map[string]int{},
+		invalid:   [2]string{"not a complete model id (the only wildcard is * alone, for the other models)", "不是完整的模型 ID（通配只有单独的 *，表示其余模型）"},
+		duplicate: [2]string{"the model is already in another entry", "该模型已在另一条里"}}
 	for i, r := range in {
 		field := "model_protocols[" + strconv.Itoa(i) + "]"
-		refused := len(fe)
-		models := make([]string, 0, len(r.Models))
-		for j, m := range r.Models {
-			m = strings.TrimSpace(m)
-			at := field + ".models[" + strconv.Itoa(j) + "]"
-			switch {
-			case m == "" || slices.Contains(models, m):
-			case m != core.OtherModels && !manifest.ValidModelID(m):
-				add(at, "invalid", "not a complete model id (the only wildcard is * alone, for the other models)", "不是完整的模型 ID（通配只有单独的 *，表示其余模型）")
-			default:
-				if k, ok := owner[m]; ok && k != i {
-					add(at, "duplicate", "the model is already in another entry", "该模型已在另一条里")
-					continue
-				}
-				owner[m] = i
-				models = append(models, m)
-			}
-		}
+		models, refused := entries.of(ctx, field, i, r.Models)
+		fe = append(fe, refused...)
 		switch {
-		case len(models) == 0 && len(fe) == refused:
+		case len(models) == 0 && len(refused) == 0:
 			add(field+".models", "required", "choose at least one model", "至少选择一个模型")
 		case len(models) > 1 && slices.Contains(models, core.OtherModels):
 			add(field+".models", "invalid", "* (the other models) must be alone in its entry", "*（其余模型）只能单独成条")
@@ -291,51 +265,54 @@ type ServedProtocol struct {
 }
 
 // servedProtocols lists what an account with the binding serves of the
-// protocols its type serves, in their order; never nil.
+// protocols its type serves, in their order; never nil. Every model is
+// judged by the compiled rules, as the scheduler judges it.
 func (b protocolBinding) servedProtocols(served []typeProtocol) []ServedProtocol {
 	out := []ServedProtocol{}
+	rules := b.compile()
+	named, others := b.boundModels()
 	for _, tp := range served {
-		if models, ok := b.modelsOn(tp); ok {
+		if models, ok := modelsOn(rules, tp, named, others); ok {
 			out = append(out, ServedProtocol{Protocol: tp.protocol, Via: tp.via, Grade: tp.grade, Hops: tp.hops, Models: models})
 		}
 	}
 	return out
 }
 
-// modelsOn returns the models the account serves on a protocol of its type,
-// as core.ProtocolRules.Serves judges them: nil for every model no rule
-// lists, else the models of the rules listing the protocol; false when it
-// serves none. A count_tokens protocol follows the generation protocol of
-// its family.
-func (b protocolBinding) modelsOn(tp typeProtocol) (models []string, ok bool) {
-	p := tp.protocol
-	if family := core.CountTokensFamily(p); family != "" {
-		p = family
-	}
-	if tp.own && b.protocols != nil && !slices.Contains(b.protocols, p) {
-		return nil, false
-	}
-	// A model no rule lists is served on the own protocols, never converted.
-	others := tp.own
+// boundModels splits the models of the account (its model list, empty = all
+// models) by how model_protocols reaches them: named are those a rule lists
+// by name, sorted; others reports that it has models no rule names.
+func (b protocolBinding) boundModels() (named []string, others bool) {
+	listed := map[string]bool{}
 	for _, r := range b.rules {
-		listed := slices.Contains(r.Protocols, p)
-		if slices.Contains(r.Models, core.OtherModels) {
-			others = listed
-			continue
-		}
-		if !listed {
-			continue
-		}
 		for _, m := range r.Models {
+			if m == core.OtherModels || listed[m] {
+				continue
+			}
+			listed[m] = true
 			if len(b.models) == 0 || slices.Contains(b.models, m) {
-				models = append(models, m)
+				named = append(named, m)
 			}
 		}
 	}
-	if others {
+	slices.Sort(named)
+	others = len(b.models) == 0 || slices.ContainsFunc(b.models, func(m string) bool { return !listed[m] })
+	return named, others
+}
+
+// modelsOn returns the models an account serves on a protocol of its type:
+// nil when it serves on it the models no rule names (others, from
+// boundModels), else those of named it serves on it; false when it serves
+// none.
+func modelsOn(rules *core.ProtocolRules, tp typeProtocol, named []string, others bool) (models []string, ok bool) {
+	if _, serves := rules.ServesOthers(tp.protocol, !tp.own); others && serves {
 		return nil, true
 	}
-	slices.Sort(models)
+	for _, m := range named {
+		if _, serves := rules.Serves(m, tp.protocol, !tp.own); serves {
+			models = append(models, m)
+		}
+	}
 	return models, len(models) > 0
 }
 
