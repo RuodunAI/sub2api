@@ -14,8 +14,9 @@ import (
 var claudeVersion = regexp.MustCompile(`claude-(haiku|sonnet|opus|fable)-(\d+)(?:[-.](\d{1,2})\b)?`)
 
 // claudeModel is what the body rules need of the model a request invokes.
-// The zero value is a model the id does not name (an ARN, another vendor):
-// the rules then take the oldest behaviour.
+// The zero value is a model the id does not name (an application inference
+// profile ARN, a mapped name, another vendor): a rule that depends on the
+// version then alters nothing, since the model may well be a recent one.
 type claudeModel struct {
 	family       string
 	major, minor int
@@ -30,6 +31,9 @@ func parseClaude(id string) claudeModel {
 	minor, _ := strconv.Atoi(m[3])
 	return claudeModel{family: m[1], major: major, minor: minor}
 }
+
+// known reports whether the id named a Claude version.
+func (m claudeModel) known() bool { return m.family != "" }
 
 // atLeast reports a model of version major.minor or later.
 func (m claudeModel) atLeast(major, minor int) bool {
