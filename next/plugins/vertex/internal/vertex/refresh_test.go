@@ -21,7 +21,8 @@ import (
 )
 
 // verifyAssertion checks an RS256 JWT against pub and returns its header and
-// claims. It is written against the JWT format, not against signRS256.
+// claims. It is written against the JWT format with crypto/rsa, not with
+// the library that signs the assertion.
 func verifyAssertion(t *testing.T, assertion string, pub *rsa.PublicKey) (header, claims map[string]any) {
 	t.Helper()
 	parts := strings.Split(assertion, ".")

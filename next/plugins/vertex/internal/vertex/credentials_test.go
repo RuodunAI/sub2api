@@ -87,6 +87,77 @@ func TestValidateRejects(t *testing.T) {
 	}
 }
 
+// A key file is refused with a message that names the field at fault and
+// quotes nothing of the file.
+func TestKeyFileRefusals(t *testing.T) {
+	// with is file with one more member written after all of its own.
+	with := func(file, member string) string { return strings.TrimSuffix(file, "}") + "," + member + "}" }
+	const evil = `"https://evil.example/token"`
+	sa, user := saJSON(nil), userJSON(nil)
+	noURI := saJSON(map[string]any{"token_uri": nil})
+
+	for _, tc := range []struct {
+		name  string
+		parse func(string) (keyFile, error)
+		raw   string
+		want  string // the start of the message
+	}{
+		{"sa: not JSON", parseServiceAccount, "{", "not a JSON object"},
+		{"sa: JSON array", parseServiceAccount, "[]", "not a JSON object"},
+		{"sa: no type", parseServiceAccount, saJSON(map[string]any{"type": nil}), `"type" must be "service_account"`},
+		{"sa: a user file", parseServiceAccount, user, `"type" must be "service_account"`},
+		{"sa: external account", parseServiceAccount, saJSON(map[string]any{"type": "external_account"}), `"type" must be "service_account"`},
+		{"sa: impersonated", parseServiceAccount, saJSON(map[string]any{"type": "impersonated_service_account"}), `"type" must be "service_account"`},
+		{"sa: gdch", parseServiceAccount, saJSON(map[string]any{"type": "gdch_service_account"}), `"type" must be "service_account"`},
+		{"sa: type repeated", parseServiceAccount, with(sa, `"type":"external_account"`), `"type" must be "service_account"`},
+		{"sa: number for a string", parseServiceAccount, saJSON(map[string]any{"client_email": 5}), `"client_email" must be a string`},
+		{"sa: no client_email", parseServiceAccount, saJSON(map[string]any{"client_email": nil}), `"client_email" is missing`},
+		{"sa: no private_key", parseServiceAccount, saJSON(map[string]any{"private_key": " "}), `"private_key" is missing`},
+		{"sa: private_key not PEM", parseServiceAccount, saJSON(map[string]any{"private_key": "x"}), `"private_key" is not a PEM-encoded RSA private key`},
+		{"sa: private_key not RSA", parseServiceAccount, saJSON(map[string]any{"private_key": ecPEM(t)}), `"private_key" is not a PEM-encoded RSA private key`},
+
+		// token_uri is judged on the value the decoder keeps: the last of
+		// repeated keys, key names matched without regard to case.
+		{"sa: no token_uri", parseServiceAccount, noURI, `"token_uri" must be ` + TokenURL},
+		{"sa: foreign token_uri", parseServiceAccount, with(noURI, `"token_uri":`+evil), `"token_uri" must be ` + TokenURL},
+		{"sa: token_uri repeated, foreign last", parseServiceAccount, with(sa, `"token_uri":`+evil), `"token_uri" must be ` + TokenURL},
+		{"sa: token_uri repeated in another case", parseServiceAccount, with(sa, `"Token_URI":`+evil), `"token_uri" must be ` + TokenURL},
+		{"sa: token_uri in another case only", parseServiceAccount, with(noURI, `"TOKEN_URI":`+evil), `"token_uri" must be ` + TokenURL},
+		{"sa: token_uri null", parseServiceAccount, with(noURI, `"token_uri":null`), `"token_uri" must be ` + TokenURL},
+		{"sa: token_uri not a string", parseServiceAccount, with(sa, `"token_uri":["`+TokenURL+`"]`), `"token_uri" must be a string`},
+
+		{"user: not JSON", parseAuthorizedUser, "x", "not a JSON object"},
+		{"user: a service account file", parseAuthorizedUser, sa, `"type" must be "authorized_user"`},
+		{"user: external account", parseAuthorizedUser, userJSON(map[string]any{"type": "external_account"}), `"type" must be "authorized_user"`},
+		{"user: no client_id", parseAuthorizedUser, userJSON(map[string]any{"client_id": nil}), `"client_id" is missing`},
+		{"user: no client_secret", parseAuthorizedUser, userJSON(map[string]any{"client_secret": ""}), `"client_secret" is missing`},
+		{"user: no refresh_token", parseAuthorizedUser, userJSON(map[string]any{"refresh_token": nil}), `"refresh_token" is missing`},
+		{"user: object for a string", parseAuthorizedUser, userJSON(map[string]any{"refresh_token": map[string]any{"a": "1//0secret"}}), `"refresh_token" must be a string`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key, err := tc.parse(tc.raw)
+			if err == nil || key != nil {
+				t.Fatalf("accepted: %v", err)
+			}
+			if msg := err.Error(); !strings.HasPrefix(msg, tc.want) || strings.Contains(msg, "evil") || strings.Contains(msg, "1//0") || strings.Contains(msg, "BEGIN") {
+				t.Fatalf("message = %q, want it to start with %q and quote nothing", msg, tc.want)
+			}
+		})
+	}
+
+	// The same rule read the other way: a file whose effective token_uri is
+	// Google's is accepted, since the value is never used for a request.
+	for name, raw := range map[string]string{
+		"google last":     with(with(noURI, `"token_uri":`+evil), `"token_uri":"`+TokenURL+`"`),
+		"another case":    with(noURI, `"Token_URI":"`+TokenURL+`"`),
+		"unknown members": with(sa, `"universe_domain":"googleapis.com"`),
+	} {
+		if _, err := parseServiceAccount(raw); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
 func TestValidateRejectsNonObjects(t *testing.T) {
 	p := newTestPlugin(Endpoints{})
 	for _, tc := range []struct{ creds, settings string }{
