@@ -2,11 +2,8 @@ package grpcruntime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -14,7 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -174,61 +170,20 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 	return out, nil
 }
 
-// requireFetchHost accepts the http(s) URL of a fetch whose host is one of
-// the manifest's externalServices (or a subdomain of one), which the
-// operator reviewed at install, or the host of one of the account's own
-// upstream addresses, which the operator entered: an account pointed at a
-// relay must be able to query it. Whether the address may be reached at all
-// (the SSRF policy, the account's proxy) is the fetch's to decide, not this
-// check's.
+// requireFetchHost accepts the http(s) URL of a fetch whose host the
+// manifest allows for the account (manifest.Manifest.FetchHostAllowed: its
+// externalServices or the account's own upstream addresses). Whether the
+// address may be reached at all (the SSRF policy, the account's proxy) is
+// the fetch's to decide, not this check's.
 func (h *hostServer) requireFetchHost(sc *callScope, raw string) error {
 	host, err := httpHost(raw)
 	if err != nil {
 		return err
 	}
-	if !h.externalService(host) && !slices.Contains(h.i.accountHosts(sc.account), host) {
+	if !h.i.pkg.Manifest.FetchHostAllowed(host, sc.account.GetType(), sc.account.GetSettingsJson(), sc.account.GetCredentialsJson()) {
 		return status.Errorf(codes.PermissionDenied, "plugin %s: url must be http(s) on a host of the manifest's externalServices or of the account's upstream addresses", h.key())
 	}
 	return nil
-}
-
-// accountHosts are the lower-case host names of the account's own upstream
-// addresses: the values of the address fields its type declares (manifest
-// upstreamFields), wherever the account keeps them.
-func (i *Instance) accountHosts(acct *pluginv1.Account) []string {
-	at := slices.IndexFunc(i.pkg.Manifest.AccountTypes, func(at manifest.AccountType) bool { return at.ID == acct.GetType() })
-	if at < 0 {
-		return nil
-	}
-	fields, _ := i.pkg.Manifest.AccountTypes[at].AddressFields()
-	var hosts []string
-	for _, doc := range []string{acct.GetSettingsJson(), acct.GetCredentialsJson()} {
-		var values map[string]any
-		if len(fields) == 0 || json.Unmarshal([]byte(doc), &values) != nil {
-			continue
-		}
-		for _, f := range fields {
-			address, _ := values[f].(string)
-			if host := addressHost(address); host != "" {
-				hosts = append(hosts, host)
-			}
-		}
-	}
-	return hosts
-}
-
-// addressHost is the lower-case host name of an upstream address, which is
-// a URL or a bare host[:port]; "" when it names none.
-func addressHost(address string) string {
-	address = strings.TrimSpace(address)
-	if !strings.Contains(address, "://") {
-		address = "//" + address
-	}
-	u, err := url.Parse(address)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(u.Hostname())
 }
 
 // Execute runs PlatformService.Execute for one attempt (core.ExecutePlugin).

@@ -3,6 +3,9 @@ package check
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
 // CodeOutdatedContract marks what only a package built for the plugin
@@ -22,6 +25,20 @@ func OutdatedContract(err error) bool {
 		}
 	}
 	return false
+}
+
+// OutdatedPackage decides whether the package of manifest m (manifestJSON
+// is its manifest.json as written) is built for an older plugin contract:
+// its manifest declares what only that contract did (CodeOutdatedContract).
+// If so it returns the one message for it, protocol.OutdatedContractMessage
+// with hostVersion, the version of the core that refuses. Upload, install,
+// load and the CLI wrap it in their own error; nothing but the manifest is
+// read (a binary of an older protocol shows at its handshake).
+func OutdatedPackage(m *manifest.Manifest, manifestJSON []byte, hostVersion string) (string, bool) {
+	if m == nil || !OutdatedContract(Validate(m, map[string][]byte{"manifest.json": manifestJSON}, ValidateOptions{Tooling: true})) {
+		return "", false
+	}
+	return protocol.OutdatedContractMessage(m.Key, m.Version, hostVersion), true
 }
 
 // What the single Execute path removed from the manifest.

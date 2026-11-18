@@ -133,10 +133,11 @@ func relay(ctx context.Context, operation string, request *pluginv1.UpstreamRequ
 // The host sends it through the account's proxy behind its SSRF guard,
 // without the operator's header settings and without following redirects.
 // The URL's host must be one of the manifest's externalServices (or a
-// subdomain of one), or the host of one of the call's account's own
-// upstream addresses (the address fields its type declares, manifest
-// upstreamFields). At most FetchLimit per call; the answer body is cut at
-// FetchResponseLimit (truncated set). A transport failure is not an error: it comes back in
+// subdomain of one) or the host of one of the call's account's own upstream
+// addresses, the values of its type's upstreamFields
+// (manifest.Manifest.FetchHostAllowed). At most FetchLimit per call; the
+// answer body is cut at FetchResponseLimit (truncated set). A transport
+// failure is not an error: it comes back in
 // transport_error with status 0. No net permission is needed.
 //
 // ctx is the context of the Execute or Monitor call or a child of it. The

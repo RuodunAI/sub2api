@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
 // The fake applies the host's own checks, whatever the SDK checked before:
@@ -53,7 +54,7 @@ func TestFakeHostRelayChecks(t *testing.T) {
 	if got := relay(waiting, ok, true); got != codes.Unimplemented {
 		t.Fatalf("waited relay without RelayFunc: %v", got)
 	}
-	if got := relay(f.Begin(nil), ok, false); got != codes.FailedPrecondition {
+	if got := relay(f.BeginMonitor(&pluginv1.PollRequest{}), ok, false); got != codes.PermissionDenied {
 		t.Fatalf("relay in Monitor: %v", got)
 	}
 
@@ -64,7 +65,7 @@ func TestFakeHostRelayChecks(t *testing.T) {
 	if _, err := f.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{ExecutionToken: "made-up", Url: ok.Url}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("fetch with a token the host never issued: %v", err)
 	}
-	if _, err := f.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{ExecutionToken: waiting.Token(), Url: "ftp://up.example.com"}); status.Code(err) != codes.InvalidArgument {
+	if _, err := f.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{ExecutionToken: waiting.Token(), Url: "ftp://up.example.com"}); status.Code(err) != codes.PermissionDenied {
 		t.Fatalf("fetch of a non-http URL: %v", err)
 	}
 }
@@ -95,3 +96,98 @@ type fatalProbe struct {
 
 func (p *fatalProbe) Helper()               {}
 func (p *fatalProbe) Fatalf(string, ...any) { p.failed = true }
+
+// A fetch reaches the manifest's externalServices and the hosts of the
+// account's own upstream addresses, as the host decides
+// (manifest.Manifest.FetchHostAllowed), for an Execute and a Monitor call
+// alike; nothing without a manifest.
+func TestFakeHostFetchHosts(t *testing.T) {
+	ctx := context.Background()
+	relayAccount := &pluginv1.Account{Type: "relay", SettingsJson: `{"base_url":"https://relay.test:8443/v1"}`}
+	keyAccount := &pluginv1.Account{Type: "apikey", SettingsJson: `{"base_url":"https://relay.test"}`}
+	f := NewFakeHost()
+	f.ExecuteHTTPFunc = func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+		return &pluginv1.ExecutionHTTPResponse{Status: 200}, nil
+	}
+	fetch := func(e *Execution, url string) codes.Code {
+		_, err := f.ExecuteHTTP(ctx, &pluginv1.ExecutionHTTPRequest{ExecutionToken: e.Token(), Url: url})
+		return status.Code(err)
+	}
+	if got := fetch(f.Begin(&pluginv1.ExecuteRequest{Account: relayAccount}), "https://api.example.com/x"); got != codes.PermissionDenied {
+		t.Fatalf("fetch without a manifest: %v", got)
+	}
+	f.Manifest = &manifest.Manifest{
+		ExternalServices: []string{"api.example.com:443"},
+		AccountTypes:     []manifest.AccountType{{ID: "relay", UpstreamFields: []string{"base_url"}}, {ID: "apikey"}},
+	}
+	for name, tc := range map[string]struct {
+		e    *Execution
+		url  string
+		want codes.Code
+	}{
+		"external service":          {f.Begin(&pluginv1.ExecuteRequest{Account: keyAccount}), "https://API.example.com/x", codes.OK},
+		"subdomain of one":          {f.Begin(&pluginv1.ExecuteRequest{}), "https://eu.api.example.com/x", codes.OK},
+		"the account's address":     {f.Begin(&pluginv1.ExecuteRequest{Account: relayAccount}), "http://relay.test/tasks/1", codes.OK},
+		"the account's, in Monitor": {f.BeginMonitor(&pluginv1.PollRequest{Account: relayAccount}), "https://relay.test/tasks/1", codes.OK},
+		"a type with no address":    {f.Begin(&pluginv1.ExecuteRequest{Account: keyAccount}), "https://relay.test/x", codes.PermissionDenied},
+		"another host":              {f.BeginMonitor(&pluginv1.PollRequest{Account: relayAccount}), "https://other.test/x", codes.PermissionDenied},
+		"no account in Monitor":     {f.BeginMonitor(&pluginv1.PollRequest{}), "https://relay.test/x", codes.PermissionDenied},
+	} {
+		if got := fetch(tc.e, tc.url); got != tc.want {
+			t.Errorf("%s: %v, want %v", name, got, tc.want)
+		}
+	}
+	f.ExternalServices = []string{"other.test"}
+	if got := fetch(f.Begin(&pluginv1.ExecuteRequest{}), "https://api.example.com/x"); got != codes.PermissionDenied {
+		t.Errorf("ExternalServices did not replace the manifest's: %v", got)
+	}
+}
+
+// A relayed body may exceed the larger of the limit and the body handed to
+// the plugin by 1 MiB, as on the host.
+func TestFakeHostRelayBodyLimit(t *testing.T) {
+	f := NewFakeHost()
+	f.MaxBodyBytes = 10
+	relay := func(handed, relayed int) codes.Code {
+		e := f.Begin(&pluginv1.ExecuteRequest{Body: make([]byte, handed)})
+		_, err := f.RelayUpstream(context.Background(), &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(),
+			Request: &pluginv1.UpstreamRequest{Url: "https://up.example.com", Body: make([]byte, relayed)}})
+		return status.Code(err)
+	}
+	for _, tc := range []struct {
+		handed, relayed int
+		want            codes.Code
+	}{
+		{0, 10 + 1<<20, codes.OK},
+		{0, 11 + 1<<20, codes.InvalidArgument},
+		{3 << 20, 4 << 20, codes.OK},
+		{3 << 20, 4<<20 + 1, codes.InvalidArgument},
+	} {
+		if got := relay(tc.handed, tc.relayed); got != tc.want {
+			t.Errorf("handed %d, relayed %d: %v, want %v", tc.handed, tc.relayed, got, tc.want)
+		}
+	}
+}
+
+// A ws(s) URL is refused on a protocol the fake knows to be HTTP only.
+func TestFakeHostWebSocketURL(t *testing.T) {
+	f := NewFakeHost()
+	f.Manifest = &manifest.Manifest{Platforms: []manifest.Platform{{ID: "p", Endpoints: []manifest.Endpoint{
+		{ID: "chat", Protocol: "p.chat", Kind: manifest.EndpointKindProxy},
+		{ID: "live", Protocol: "p.live", Kind: manifest.EndpointKindWebSocket},
+	}}}}
+	for protocol, want := range map[string]codes.Code{
+		"p.chat":              codes.InvalidArgument,
+		"openai.responses":    codes.InvalidArgument,
+		"p.live":              codes.OK,
+		"openai.responses_ws": codes.OK,
+		"unknown.protocol":    codes.OK,
+	} {
+		e := f.Begin(&pluginv1.ExecuteRequest{Meta: &pluginv1.RequestMeta{Protocol: protocol}})
+		_, err := f.RelayUpstream(context.Background(), &pluginv1.RelayUpstreamRequest{ExecutionToken: e.Token(),
+			Request: &pluginv1.UpstreamRequest{Method: "GET", Url: "wss://up.example.com/live"}})
+		if status.Code(err) != want {
+			t.Errorf("%s: %v, want %v", protocol, err, want)
+		}
+	}
+}

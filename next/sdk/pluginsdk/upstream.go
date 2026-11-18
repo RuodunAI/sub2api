@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http/httpguts"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -184,9 +185,12 @@ func (u *Upstream) Build() (*pluginv1.UpstreamRequest, error) {
 
 // ValidateUpstreamRequest checks what the host refuses in a relayed request
 // without looking at the account: the URL is absolute http(s) (ws(s) for a
-// websocket handshake), header names are lower-case and none is the
-// transport's, values hold no line break, options are not negative. Relay
-// applies it before the host is asked.
+// websocket handshake), the method is empty or an HTTP token, header names
+// are lower-case HTTP tokens and none is the transport's, values are what
+// HTTP can carry (no control character but a tab), options are not
+// negative. The host judges method, names and values with the same
+// functions (golang.org/x/net/http/httpguts). Relay applies it before the
+// host is asked.
 func ValidateUpstreamRequest(r *pluginv1.UpstreamRequest) error {
 	if r == nil {
 		return errors.New("upstream request is required")
@@ -194,6 +198,9 @@ func ValidateUpstreamRequest(r *pluginv1.UpstreamRequest) error {
 	var errs []error
 	if err := checkURL(r.GetUrl(), "http", "https", "ws", "wss"); err != nil {
 		errs = append(errs, err)
+	}
+	if m := r.GetMethod(); m != "" && !httpguts.ValidHeaderFieldName(m) {
+		errs = append(errs, fmt.Errorf("upstream method %q is not an HTTP method", m))
 	}
 	errs = append(errs, checkHeaders("headers", r.GetHeaders()), checkHeaders("default_headers", r.GetDefaultHeaders()), checkOptions(r.GetOptions()))
 	return errors.Join(errs...)
@@ -220,7 +227,7 @@ func checkHeaders(field string, headers map[string]string) error {
 			errs = append(errs, fmt.Errorf("%s: header name %q must be lower-case", field, name))
 		case transportHeaders[name]:
 			errs = append(errs, fmt.Errorf("%s: header %q belongs to the host's transport and cannot be set", field, name))
-		case strings.ContainsAny(name, " \r\n:") || strings.ContainsAny(value, "\r\n"):
+		case !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value):
 			errs = append(errs, fmt.Errorf("%s: header %q is malformed", field, name))
 		}
 	}

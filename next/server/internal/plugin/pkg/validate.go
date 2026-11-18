@@ -7,7 +7,6 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -78,16 +77,15 @@ func Validate(m *manifest.Manifest, files map[string][]byte, opt ValidateOptions
 }
 
 // CheckContract refuses a package built for an older plugin contract
-// (check.CodeOutdatedContract: runtime "none", an upstream block, a removed
+// (check.OutdatedPackage: runtime "none", an upstream block, a removed
 // capability or manifest field) with the one message the runtime gives when
-// it refuses to load such a package (protocol.OutdatedContractMessage). It
-// reads the manifest only: a binary of an older protocol shows when it is
-// loaded.
+// it refuses to load such a package. It reads the manifest only: a binary
+// of an older protocol shows when it is loaded.
 func CheckContract(m *manifest.Manifest, files map[string][]byte, hostVersion string) error {
-	if !check.OutdatedContract(check.Validate(m, files, ValidateOptions{HostVersion: hostVersion})) {
+	msg, outdated := check.OutdatedPackage(m, files["manifest.json"], hostVersion)
+	if !outdated {
 		return nil
 	}
-	msg := protocol.OutdatedContractMessage(m.Key, m.Version, hostVersion)
 	return core.InvalidFields(core.FieldError{Field: "manifest", Code: check.CodeOutdatedContract, Message: msg}).WithMessage(msg)
 }
 

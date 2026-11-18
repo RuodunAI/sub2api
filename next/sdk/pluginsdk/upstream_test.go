@@ -75,18 +75,34 @@ func TestUpstreamBuildReportsWhatTheHostRefuses(t *testing.T) {
 // A request written by hand is held to the same rules as a built one, the
 // lower-case names included.
 func TestValidateUpstreamRequest(t *testing.T) {
-	ok := &pluginv1.UpstreamRequest{Url: "https://example.com", Headers: map[string]string{"authorization": "x"}}
-	if err := ValidateUpstreamRequest(ok); err != nil {
-		t.Fatal(err)
+	for _, ok := range []*pluginv1.UpstreamRequest{
+		{Url: "https://example.com", Headers: map[string]string{"authorization": "x"}},
+		{Url: "https://example.com", Method: "PATCH", Headers: map[string]string{"x-a": "tab\tand obs-text \xff"}},
+	} {
+		if err := ValidateUpstreamRequest(ok); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for name, r := range map[string]*pluginv1.UpstreamRequest{
-		"nil":              nil,
-		"mixed case":       {Url: "https://example.com", Headers: map[string]string{"Authorization": "x"}},
-		"mixed default":    {Url: "https://example.com", DefaultHeaders: map[string]string{"X-A": "x"}},
-		"empty name":       {Url: "https://example.com", Headers: map[string]string{"": "x"}},
-		"transport header": {Url: "https://example.com", DefaultHeaders: map[string]string{"content-length": "1"}},
-		"negative option":  {Url: "https://example.com", Options: &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: -1}},
-		"no host":          {Url: "https:///x"},
+		"nil":                 nil,
+		"mixed case":          {Url: "https://example.com", Headers: map[string]string{"Authorization": "x"}},
+		"mixed default":       {Url: "https://example.com", DefaultHeaders: map[string]string{"X-A": "x"}},
+		"empty name":          {Url: "https://example.com", Headers: map[string]string{"": "x"}},
+		"transport header":    {Url: "https://example.com", DefaultHeaders: map[string]string{"content-length": "1"}},
+		"negative option":     {Url: "https://example.com", Options: &pluginv1.UpstreamOptions{ResponseHeaderTimeoutMs: -1}},
+		"no host":             {Url: "https:///x"},
+		"name with (":         {Url: "https://example.com", Headers: map[string]string{"x-(a)": "x"}},
+		"name with /":         {Url: "https://example.com", Headers: map[string]string{"x/a": "x"}},
+		"name with a tab":     {Url: "https://example.com", DefaultHeaders: map[string]string{"x\ta": "x"}},
+		"name with a space":   {Url: "https://example.com", Headers: map[string]string{"x a": "x"}},
+		"name with a colon":   {Url: "https://example.com", Headers: map[string]string{"x:a": "x"}},
+		"non-ASCII name":      {Url: "https://example.com", Headers: map[string]string{"x-ü": "x"}},
+		"value with NUL":      {Url: "https://example.com", Headers: map[string]string{"x-a": "a\x00b"}},
+		"value with CR LF":    {Url: "https://example.com", DefaultHeaders: map[string]string{"x-a": "a\r\nx-b: c"}},
+		"value with DEL":      {Url: "https://example.com", Headers: map[string]string{"x-a": "a\x7fb"}},
+		"method with a space": {Url: "https://example.com", Method: "GET X"},
+		"method with CR LF":   {Url: "https://example.com", Method: "GET\r\n"},
+		"method with (":       {Url: "https://example.com", Method: "P(ST"},
 	} {
 		if err := ValidateUpstreamRequest(r); err == nil {
 			t.Errorf("%s accepted", name)

@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
@@ -33,7 +34,8 @@ type LedgerEntry struct {
 	ID     int64
 }
 
-// FakeHost is an in-memory HostService + EgressService for plugin tests.
+// FakeHost is an in-memory HostService + EgressService for plugin tests;
+// the comment of its HTTP client fields says where it differs from the host.
 // Zero value is not usable; use NewFakeHost.
 type FakeHost struct {
 	pluginv1.UnimplementedHostServiceServer
@@ -65,6 +67,23 @@ type FakeHost struct {
 	// that need no network and records what it accepted. No real network is
 	// used. Set these before Start.
 	//
+	// The checks are the host's: a fetch may reach the hosts the manifest
+	// allows for the call's account (manifest.Manifest.FetchHostAllowed:
+	// externalServices, or the hosts of the account's upstreamFields), a
+	// relay's method and headers are judged as the gateway judges them, a
+	// relayed body may exceed the larger of MaxBodyBytes and the body the
+	// plugin was handed by 1 MiB, and Harness.Monitor refuses a terminal
+	// result without one complete, successful fetch in the call. Where the
+	// fake still differs from the host:
+	//   - It cannot always tell a WebSocket turn from an HTTP request (the
+	//     ExecuteRequest does not say): it refuses a ws(s) URL only when
+	//     meta.protocol is a protocol it knows (the manifest's platforms or
+	//     the built-in ones) with no WebSocket endpoint, and accepts one for
+	//     an unknown protocol, which the host may refuse.
+	//   - It makes no network check: the SSRF policy and the gateway's
+	//     checks that need the account's binding (model availability, the
+	//     response stream formats it decodes) are not simulated.
+	//
 	// RelayFunc scripts the upstream for an accepted relay. For one that
 	// waits it returns the answer: Observed, UpstreamFailed or anything else
 	// a test wants the plugin to cope with; nil answers UNIMPLEMENTED. For one
@@ -75,11 +94,19 @@ type FakeHost struct {
 	// pluginsdk.FetchResponseLimit is cut and marked truncated, as the host
 	// does; a test may also set truncated or transport_error itself.
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
-	// ExternalServices are the hosts a fetch may reach (the manifest's
-	// externalServices; a subdomain of one matches). nil allows every host.
+	// Manifest is the plugin's manifest as the host knows it, which decides
+	// the hosts a fetch may reach and the protocols that are HTTP routes.
+	// Start sets it from the pluginsdk.WithManifest option when it is nil.
+	// Without a manifest no fetch is allowed unless ExternalServices says
+	// so, and no account has upstream addresses.
+	Manifest *manifest.Manifest
+	// ExternalServices, when not nil, replaces the manifest's
+	// externalServices (a subdomain of one matches), e.g. for a test that
+	// runs the plugin without its manifest.
 	ExternalServices []string
-	// MaxBodyBytes is the gateway's request body limit applied to relayed
-	// and fetched bodies; 0 is no limit.
+	// MaxBodyBytes is the gateway's request body limit: a fetched body may
+	// not exceed it, a relayed one not the larger of it and the body the
+	// plugin was handed by more than 1 MiB; 0 is no limit.
 	MaxBodyBytes int
 	// PriceUsageFunc answers PriceUsage; nil answers every model as not
 	// priced ("no_price"). Set it before Start.
