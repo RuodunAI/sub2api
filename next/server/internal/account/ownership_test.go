@@ -918,7 +918,7 @@ func TestOwnCustomUpstream(t *testing.T) {
 	authz.keys[e.uid], authz.keys[alice] = adminKeys, supplierKeys
 	oauth := core.PluginInfo{Key: "oauth", Manifest: &manifest.Manifest{Name: manifest.LocalizedText{"en": "OAuth"}}}
 	e.gen.plugins = append(e.gen.plugins, oauth)
-	for _, id := range []string{"claude_oauth", "managed"} {
+	for _, id := range []string{"codex_oauth", "managed"} {
 		e.gen.types = append(e.gen.types, core.AccountTypeBinding{Plugin: oauth, Client: e.plat,
 			Type:       manifest.AccountType{ID: id, Form: manifest.Form{Mode: "schema"}, UpstreamFields: []string{}},
 			FormSchema: json.RawMessage(`{"type":"object"}`)})
@@ -927,7 +927,7 @@ func TestOwnCustomUpstream(t *testing.T) {
 		t.Helper()
 		return e.doAs(alice, "POST", "/accounts", map[string]any{"name": typ, "plugin_key": pk, "type": typ, "credentials": creds})
 	}
-	for _, typ := range []string{"claude_oauth", "managed"} {
+	for _, typ := range []string{"codex_oauth", "managed"} {
 		if code, out := post("oauth", typ, map[string]any{}); code != 201 {
 			t.Fatalf("create %s: %d %v", typ, code, out)
 		}
@@ -995,11 +995,11 @@ func TestBuiltinSupplierRole(t *testing.T) {
 	oauth := core.PluginInfo{Key: "oauth", Manifest: &manifest.Manifest{Name: manifest.LocalizedText{"en": "OAuth"}}}
 	e.gen.plugins = append(e.gen.plugins, oauth)
 	e.gen.types = append(e.gen.types, core.AccountTypeBinding{Plugin: oauth, Client: e.plat,
-		Type:       manifest.AccountType{ID: "claude_oauth", Form: manifest.Form{Mode: "schema"}, UpstreamFields: []string{}},
+		Type:       manifest.AccountType{ID: "codex_oauth", Form: manifest.Form{Mode: "schema"}, UpstreamFields: []string{}},
 		FormSchema: json.RawMessage(`{"type":"object"}`)})
-	code, out := e.doAs(alice, "POST", "/accounts", map[string]any{"name": "mine", "plugin_key": "oauth", "type": "claude_oauth", "credentials": map[string]any{}})
+	code, out := e.doAs(alice, "POST", "/accounts", map[string]any{"name": "mine", "plugin_key": "oauth", "type": "codex_oauth", "credentials": map[string]any{}})
 	if code != 201 {
-		t.Fatalf("create claude_oauth: %d %v", code, out)
+		t.Fatalf("create codex_oauth: %d %v", code, out)
 	}
 	mine := fmt.Sprintf("/accounts/%d", int64(data(out)["id"].(float64)))
 	relay := map[string]any{"name": "relay", "plugin_key": "relay", "type": "relay_key",

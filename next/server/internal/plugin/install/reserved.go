@@ -24,13 +24,13 @@ import (
 // TestReservedCoverRepo keeps the lists in step with next/plugins.
 var (
 	reservedKeys = map[string]bool{
-		"anthropic": true, "azure_openai": true, "bedrock": true, "claude_oauth": true, "codex": true, "dynweight": true, "gemini": true, "growth": true, "guard": true,
+		"anthropic": true, "azure_openai": true, "bedrock": true, "codex": true, "dynweight": true, "gemini": true, "growth": true, "guard": true,
 		"mailer": true, "moderation": true, "openai": true, "payment": true, "relay": true, "vertex": true, "volcengine": true,
 	}
 	// removedKeys maps the key of a first-party plugin the core no longer
 	// supports to the release that removed it: no package of it installs,
 	// whatever its signature or source, since the core side it needs is gone.
-	removedKeys = map[string]string{"ccgateway": "0.1.290", "custom": "0.1.301"}
+	removedKeys = map[string]string{"ccgateway": "0.1.290", "claude_oauth": "0.1.304", "custom": "0.1.301"}
 	// reservedPlatforms maps a platform id to the plugin it belongs to.
 	reservedPlatforms = map[string]string{"volcengine": "volcengine"}
 	// reservedChannels maps a notification channel id to the plugin it

@@ -1598,7 +1598,7 @@ next/
 │   ├── pgdb/                      # 插件的 GORM 句柄、组合器、TestNoRawSQL/TestNoPgxImports
 │   └── testpg/                    # 测试用 PostgreSQL（TEST_DATABASE_URL 或本机 embedded-postgres）
 ├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
-│   ├── anthropic/  openai/  gemini/  volcengine/  relay/  claude-oauth/
+│   ├── anthropic/  openai/  gemini/  volcengine/  relay/
 │   ├── codex/                     # 含 ui/native
 │   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
 │   └── mailer/  payment/

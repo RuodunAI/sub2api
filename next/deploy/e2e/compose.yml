@@ -155,11 +155,10 @@ services:
     networks:
       e2e:
         # Platform plugins without a configurable base URL (bedrock, vertex,
-        # codex, claude_oauth) address these hosts in the tests; inside the
-        # isolated network they are the mock, over TLS with a certificate the
-        # mock issues per host name from the CA above.
+        # codex) address these hosts in the tests; inside the isolated
+        # network they are the mock, over TLS with a certificate the mock
+        # issues per host name from the CA above.
         aliases:
-          - api.anthropic.com
           - chatgpt.com
           - aiplatform.googleapis.com
           - oauth2.googleapis.com

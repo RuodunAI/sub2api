@@ -1006,3 +1006,72 @@ func TestMigration0108ModelNameText(t *testing.T) {
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, want, state())
 }
+
+// 0113 removes the claude_oauth plugin (CONTRACTS §113) as an uninstall
+// with purge would: its row (cascading the versions and rollouts), its
+// permission and the grants of it, its egress domains, job tasks and a
+// hand-made schema. Its accounts and the other plugins stay; a rerun
+// changes nothing.
+func TestMigration0113DropsClaudeOAuthPlugin(t *testing.T) {
+	const id = "0113_drop_claude_oauth_plugin.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO roles (key, name, superuser) VALUES ('ops', '{}', false), ('other', '{}', false);
+		INSERT INTO plugins (key, name, status, builtin) VALUES ('claude_oauth', '{"en":"Claude OAuth Accounts"}', 'enabled', false), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('claude_oauth', '0.2.5', '{}', 'x', 'x', 1, 'valid'), ('guard', '0.2.10', '{}', 'y', 'y', 1, 'valid');
+		INSERT INTO plugin_rollouts (plugin_key, action, target_version, phase) VALUES ('claude_oauth', 'enable', '0.2.5', 'active');
+		INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+			('plugin.claude_oauth:claude_oauth:manage', 'claude_oauth', '{}', 'plugin', 'claude_oauth'), ('guard:x', 'guard', '{}', 'plugin', 'guard');
+		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'plugin.claude_oauth:claude_oauth:manage', '*'), ('p', 'r:other', 'guard:x', '*');
+		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('claude_oauth', 'platform.claude.com'), ('guard', 'example.com');
+		INSERT INTO scheduled_tasks (name, source, timeout_ms, plugin_key) VALUES ('plugin.claude_oauth.refresh_tokens', 'plugin_manifest', 1000, 'claude_oauth'),
+			('core.usage.rollup', 'core', 1000, NULL);
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('orphan', 'claude_oauth', 'claude_setup_token', '');
+		CREATE SCHEMA plg_claude_oauth; CREATE TABLE plg_claude_oauth.t (id int)`)
+	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
+	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
+
+	state := func() string {
+		return read(`SELECT concat_ws(' | ',
+			(SELECT string_agg(key, ' ') FROM plugins),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_versions),
+			(SELECT count(*)::text FROM plugin_rollouts),
+			(SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL),
+			(SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_egress_domains),
+			(SELECT string_agg(name, ' ') FROM scheduled_tasks),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements),
+			(SELECT count(*)::text FROM pg_namespace WHERE nspname = 'plg_claude_oauth'),
+			(SELECT string_agg(name, ' ') FROM accounts WHERE plugin_key = 'claude_oauth'))`)
+	}
+	const want = "guard | guard | 0 | guard:x | r:other guard:x | guard | core.usage.rollup | claude_oauth | 0 | orphan"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	after := read(revisions)
+	require.NotEqual(t, before, after, "the role that held the permission keeps its revision")
+	require.Equal(t, strings.Split(before, " ")[1], strings.Split(after, " ")[1], "another role moved")
+	require.NotEqual(t, version, read(`SELECT policy_version::text FROM authz_meta`))
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	version = read(`SELECT policy_version::text FROM authz_meta`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
+}
