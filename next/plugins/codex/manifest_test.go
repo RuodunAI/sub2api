@@ -118,8 +118,13 @@ func TestManifestShape(t *testing.T) {
 			t.Fatalf("%s platforms = %+v", at.ID, at.Platforms)
 		}
 		ap := at.Platforms[0]
+		// The plugin forwards no client header: it identifies itself and
+		// writes every header it sends. A manifest cannot list none (an
+		// empty list means the openai platform's: openai-organization,
+		// openai-project, x-stainless-* ...), so the type passes only
+		// user-agent, which the plugin always replaces with its own.
 		if ap.Platform != codex.PlatformID || !slices.Equal(ap.Endpoints, []string{"responses", "responses_websocket"}) ||
-			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || len(ap.PassHeaders) != 0 {
+			!slices.Equal(ap.StreamOnly, []string{codex.ProtocolResponses}) || !slices.Equal(ap.PassHeaders, []string{"user-agent"}) {
 			t.Errorf("%s platform = %+v", at.ID, ap)
 		}
 	}
