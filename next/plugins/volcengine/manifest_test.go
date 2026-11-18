@@ -399,13 +399,14 @@ func TestManifest(t *testing.T) {
 		}
 		perms[p.ID] = p
 	}
-	// Stage three adds exactly five permissions, and every one of them is
-	// what the administrator sees on the consent screen. Notably absent:
-	// ui.native (Critical) - the asset pages are rendered by the host from
-	// the manifest instead.
+	// Every permission is what the administrator sees on the consent
+	// screen. Notably absent: ui.native (Critical) - the asset pages are
+	// rendered by the host from the manifest instead - and net: the asset
+	// library's requests are sent by the host (SendAccountRequest), the
+	// plugin opens no connection.
 	wantPerms := []string{
 		"platform.register", "gateway.endpoint", "accounts.credentials",
-		"accounts.read", "db.schema", "routes.admin", "ui.menu", "net",
+		"accounts.read", "db.schema", "routes.admin", "ui.menu",
 	}
 	if len(perms) != len(wantPerms) {
 		t.Fatalf("host permissions = %v, want %v", perms, wantPerms)
@@ -426,11 +427,11 @@ func TestManifest(t *testing.T) {
 	if c := perms["accounts.read"]; len(c.Scope) != 0 {
 		t.Errorf("accounts.read scope = %v, want none", c.Scope)
 	}
-	// The net allowlist has to cover the default asset endpoint, or the
-	// asset library is dead on a node whose egress policy is an allowlist.
-	doms, _ := check.StringList(perms["net"].Scope, "domains")
-	if !hostAllowed(doms, hostOf(t, volcengine.DefaultAssetBaseURL)) {
-		t.Errorf("net domains %v do not cover the default asset endpoint %q", doms, volcengine.DefaultAssetBaseURL)
+	// The core sends the asset library's requests only to hosts the
+	// manifest allows: the default asset endpoint has to be an external
+	// service, or an account that leaves asset_base_url empty is refused.
+	if !manifest.ExternalServiceHost(m.ExternalServices, hostOf(t, volcengine.DefaultAssetBaseURL)) {
+		t.Errorf("externalServices %v do not cover the default asset endpoint %q", m.ExternalServices, volcengine.DefaultAssetBaseURL)
 	}
 	// The addresses shown on the consent screen must be the ones the plugin
 	// can actually reach by default - the two API hosts and the asset
@@ -449,20 +450,6 @@ func hostOf(t *testing.T, raw string) string {
 		t.Fatalf("not an absolute URL: %q", raw)
 	}
 	return u.Host
-}
-
-// hostAllowed mirrors the core's egress allowlist matching (server
-// plugin/egress AllowedHost): an exact host or a "*.suffix" wildcard.
-func hostAllowed(domains []string, host string) bool {
-	for _, d := range domains {
-		if d == "*" || d == host {
-			return true
-		}
-		if suffix, ok := strings.CutPrefix(d, "*."); ok && strings.HasSuffix(host, "."+suffix) {
-			return true
-		}
-	}
-	return false
 }
 
 // TestAssetRoutesAndPages pins the asset library's declared surface: every

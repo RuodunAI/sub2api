@@ -197,7 +197,7 @@ DELETE /api/v1/p/volcengine/assets/:id        删除素材
 GET    /api/v1/p/volcengine/asset-groups      素材组
 ```
 
-插件内部用账号上的 `asset_base_url` + `access_key/secret_key` 做火山 V4 HMAC-SHA256 签名调用上游（需要 `net` 权限）。`plg_volcengine` 里存本地索引（账号 id、上游素材 id、名称、类型、状态），控制台出一个 native 页面。
+插件内部用账号上的 `asset_base_url` + `access_key/secret_key` 做火山 V4 HMAC-SHA256 签名调用上游（0.13.0 起由核心经账号代理发出、不需要 `net` 权限，见 §17；此前需要 `net` 权限、经出口隧道直连）。`plg_volcengine` 里存本地索引（账号 id、上游素材 id、名称、类型、状态），控制台出一个 native 页面。
 
 **签名用火山官方 Go SDK，不要手写**（2026-09-29 决定）：`github.com/volcengine/volcengine-go-sdk`（Apache-2.0，与本仓库 LGPL-3.0 兼容），走 `universal.DoCall`，`ServiceName=ark`、`Version=2024-01-01`、`Region` 取账号的 `asset_region`（默认 `cn-beijing`，BytePlus 用 `ap-southeast-1`）。手写 V4 签名是典型的易错活，new-api 也是这么做的（`service/assetlib/upstream.go`）。
 
@@ -290,7 +290,7 @@ rpc GetAccountCredentials(GetAccountCredentialsRequest) returns (GetAccountCrede
 
 - **钱收得到**：客户端提交完再也不回来查是常态，new-api 正是因此用后台轮询（`fetchMode: "per_task"`）而不是依赖客户端。核对由核心驱动，与客户端来不来无关。
 - 提交估计与后续差额结算都由核心事务和幂等账本负责；客户端查询免费，不会触发重复轮询或扣款。
-- 视频链路不需要额外 `net`、`app.jobs.v1`、`lock`、`ledger.debit` 或任务表权限。素材库仍有自己的数据库和出网需求，不能据此删除整个插件的相关权限。
+- 视频链路不需要额外 `net`、`app.jobs.v1`、`lock`、`ledger.debit` 或任务表权限。素材库仍有自己的数据库，0.13.0 起它的上游调用由核心发出，插件不再申请 `net`（§17）。
 - 余额门禁保留现有允许短时超额的契约，不能把异步预扣宣传成严格并发资金预授权。
 
 ### 5.3 历史任务
@@ -531,13 +531,13 @@ Ark 图片响应的 `data[]` 每条带 `size`（如 `"2848x1600"`），**按分�
 
 10 个 Action、13 条 admin 路由、`plg_volcengine` 本地索引、四个宿主渲染页面（2 table + 2 form），版本 0.3.0。**没有 `ui.native`**，所以不需要 `hostUICompat`，也不用付 Critical 权限。
 
-新增权限五条：`accounts.read`(M)、`db.schema`(H)、`routes.admin`(M)、`ui.menu`(M)、`net`(H, optional，`scope.domains` 只到 `*.volcengineapi.com`)。
+新增权限五条：`accounts.read`(M)、`db.schema`(H)、`routes.admin`(M)、`ui.menu`(M)、`net`(H, optional，`scope.domains` 只到 `*.volcengineapi.com`)。（`net` 在 0.13.0 删除，§17。）
 
 ### 10.1 签名是重算验证过的，不是"能编译"
 
 测试从收到的请求**独立重建**火山 V4 canonical request 并自己推 signing key 链，与 `Authorization` 里的 Signature 逐字节比对；再用「换 SK / 换 region / 换 body 签名都必须变」证明它是签名而不是装饰；10 个 Action 全跑一遍都验签。另有 Action 白名单测试：路由无法诱使插件拿账号的 AK/SK 去签任意控制面调用（如 `DeleteEndpoint`），断言上游收到 0 个请求。
 
-出网全程经注入的拨号器（生产里就是 `egress.DialContext`），`dial == nil` 时直接报错，**绝不回落到直连 socket**。
+出网全程经注入的拨号器（生产里就是 `egress.DialContext`），`dial == nil` 时直接报错，**绝不回落到直连 socket**。（0.13.0 起插件不再联网，见 §17。）
 
 ### 10.2 本地索引与上游不一致的处理
 
@@ -655,7 +655,7 @@ token = **帧数 × 输出宽 × 输出高 / 1024**，固定 24fps。以下每�
 3. **go.mod 少 6 个模块**，含 §10.3 当初为压住歧义导入而 pin 的**单体 `google.golang.org/genproto`**（`go mod why` 确认主模块根本不需要它）。那笔 workspace 污染债一并还清。
 4. 顺带补了非 JSON 响应的处理（中间代理的 HTML 502、空 body、200 里塞数组），旧代码对这些只会给一个含糊的 `InternalError`。
 
-> 0.13.0（转发 V2 收尾）起素材库调用不再有自己的总时限：原来每个 Action（含重试）最多 30 秒（`assetCallTimeout`），传输的 TLS 握手最多 10 秒，现在都随发起它的控制台请求的 context 结束（AGENTS.md、CONTRACTS §112.16 不留写死的超时）。重试（传输错误、429、5xx，最多 3 次，间隔 200 毫秒，`Create*` 不重试）不是为配合那个时限而设的，保留。
+> 0.13.0（转发 V2 收尾）起素材库调用不再有自己的总时限：原来每个 Action（含重试）最多 30 秒（`assetCallTimeout`），传输的 TLS 握手最多 10 秒，现在都随发起它的控制台请求的 context 结束（AGENTS.md、CONTRACTS §112.16 不留写死的超时）；之后改由核心发出（§17），每次发送受核心 `SendAccountRequest` 已有的单次 30 秒约束。重试（传输错误、429、5xx，最多 3 次，间隔 200 毫秒，`Create*` 不重试）不是为配合那个时限而设的，保留。
 
 **正确性风险由 golden vector 消除**：在删掉 SDK **之前**，先用官方 SDK v1.2.54 真的发出两个请求并把整个请求逐字段冻结（含它随机生成的 `X-Sdk-Invocation-Id`），自写签名对同样输入必须产出**逐字节相同**的 `Authorization`。**这批向量一旦需要重新生成，必须再从官方 SDK 取 —— 用 `signV4` 重算会让测试变成同义反复**（测试文件头写明了这一点和抓取方法）。
 
@@ -1089,4 +1089,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 - 任务提交上插件没有返回 `task`（解析失败）时，任务不登记、客户端报错、预扣释放；等待期间插件崩溃时核心切断上游，这次请求不计费。
 - 两个账号类型在 anthropic 平台上只服务 `messages`（清单 `"endpoints": ["messages"]`）。以前没写端点子集，核心把 `anthropic.count_tokens` 原样路由给它们而不用本地估算，插件又拒绝（Ark 没有计数端点），只有 Ark 账号的分组对 `count_tokens` 一律回 503；现在 `count_tokens` 是核心的本地估算。`ProtocolCountTokens` 及其分支删除，上游收到的请求没有变化（以前计数请求也从未到达上游）。下文 §15 关于“按名字拒绝 `count_tokens`、`AccountPlatform` 没有按端点过滤的能力”的说法到此不再成立。
 - 视频查询由核心从自己的任务快照回答，从不为 `volcengine.video_query` 调 `Execute`：`BuildUpstream` 里查询的 GET 分支删除，每个请求都是 POST；`ExtractUsage` 只剩任务提交解析里用的内部函数 `videoUsage`。
+- **素材库改由核心发出**（转发 V2 收尾）：插件照旧读账号的 AK/SK 签名（`GetAccountCredentials`，每次读写一条审计），签好的方法、地址、请求头、请求体交给 `pluginsdk.SendAccountRequest`，核心为这个账号发出：有代理的账号经代理（此前插件经出口隧道直连，账号代理不起作用），直连时过 SSRF 检查，不跟随重定向（此前插件的客户端会跟随），回答整份交还（此前插件读到 1 MiB 为止），单次 30 秒（核心的 `refreshTimeout`），每次发送另写一条审计（`plugin.account_request`，只记方法、主机、路径和状态）。插件自己的 HTTP 客户端、传输层、拨号器和 1 MiB 上限删除，清单去掉 `net` 权限（插件不再有别的直连）；重试（传输错误、429、5xx，最多 3 次，间隔 200 毫秒，`Create*` 不重试）不变：核心的发送不重试，它仍然有用。
+  - **目标主机**：核心只发往清单允许的主机（`manifest.UpstreamHostAllowed`，CONTRACTS §112.17）。默认的官方控制面 `ark.cn-beijing.volcengineapi.com` 在 `externalServices` 里；运营方填的 `asset_base_url`（两种类型）、中转的 `asset_endpoint`（完整地址）和它所相对的 `base_url` 都在类型的 `upstreamFields` 里（原本就在，没有改清单），所以正式账号指向 BytePlus 等别的控制面、中转按自己的 `base_url` 解析的素材路径都能发出。`asset_endpoints_test.go` 对每种配置断言核心会放行。
+  - **发给上游的内容不变**：`arkapi_test.go` 的 `TestRequestIsTheReleasedOne` 用改写前的插件客户端在固定时刻录下一次 `ListAssets` 的完整请求（方法、路径、查询、全部请求头、请求体、签名），新实现交给核心的内容与之逐字节相同，经仿照核心 `sendPluginCall` 的发送到达假上游后同样逐字节相同（`User-Agent`、`Accept-Encoding`、`Content-Length` 由 Go 的 HTTP 客户端自己加，核心与原插件的传输层设置相同）。核心对 `SendAccountRequest` 只在没有 `Content-Type` 时补 `application/json`（插件总是自己设置并签名），不增改别的头，所以签名有效。其余签名测试（独立重算、换 SK / 区域 / 请求体签名都变、十个 Action 都验签、取消一直传到上游）照旧经这条路径通过。
 - 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）；测试把 `manifest.json` 交给假宿主（`WithManifest`），取回能到的主机按清单判断；`TestConformance` 调一致性套件（chat 流式与非流式、responses、embeddings、两种类型的 messages、图片、视频提交），11 条全部通过，没有例外。

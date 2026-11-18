@@ -6,8 +6,8 @@ package volcengine
 // upstream call in here is a real signed HTTP request.
 //
 // The host is faked locally instead of with pluginsdktest.FakeHost because
-// that one does not serve ListAccounts / GetAccountCredentials (it embeds
-// UnimplementedHostServiceServer). pluginsdktest.Options.Host takes the
+// that one does not serve ListAccounts / GetAccountCredentials /
+// SendAccountRequest (it embeds UnimplementedHostServiceServer). pluginsdktest.Options.Host takes the
 // concrete *FakeHost, so it cannot be substituted - hence testHost below,
 // which also lets these tests COUNT credential reads, which is the property
 // that matters most here.
@@ -17,17 +17,20 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
 	"testing"
 
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
@@ -49,13 +52,39 @@ type testHost struct {
 	// credReads counts GetAccountCredentials calls, one audit row each.
 	credReads map[int64]int
 	listCalls int
+
+	// manifest and ark serve SendAccountRequest (Client).
+	manifest *manifest.Manifest
+	ark      *fakeArk
 }
 
 func (h *testHost) Logger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func (h *testHost) DB(ctx context.Context) (*gorm.DB, error) { return h.db.WithContext(ctx), nil }
+// Client answers SendAccountRequest as the core does: an account of this
+// plugin's type, a URL host the manifest allows for that account
+// (manifest.UpstreamHostAllowed), then the fake Ark control plane.
+func (h *testHost) Client() pluginv1.HostServiceClient { return hostClient{h: h} }
 
-func (h *testHost) EgressInstalled() bool { return false }
+type hostClient struct {
+	pluginv1.HostServiceClient
+	h *testHost
+}
+
+func (c hostClient) SendAccountRequest(ctx context.Context, in *pluginv1.SendAccountRequestRequest, _ ...grpc.CallOption) (*pluginv1.ExecutionHTTPResponse, error) {
+	c.h.mu.Lock()
+	a, ok := c.h.accounts[in.GetAccountId()]
+	c.h.mu.Unlock()
+	if !ok {
+		return nil, statusNotFound()
+	}
+	u, err := url.Parse(in.GetUrl())
+	if err != nil || !c.h.manifest.UpstreamHostAllowed(u.Hostname(), a.Type, a.SettingsJSON, a.CredentialsJSON) {
+		return nil, status.Errorf(codes.PermissionDenied, "host of %q is not allowed for account %d", in.GetUrl(), a.ID)
+	}
+	return c.h.ark.send(ctx, in)
+}
+
+func (h *testHost) DB(ctx context.Context) (*gorm.DB, error) { return h.db.WithContext(ctx), nil }
 
 func (h *testHost) ListAccounts(_ context.Context, q pluginsdk.AccountQuery) ([]pluginsdk.AccountSummary, string, error) {
 	h.mu.Lock()
@@ -111,7 +140,11 @@ func startRoutes(t *testing.T) (*Plugin, *testHost, *fakeArk) {
 	t.Cleanup(func() { _ = pgdb.Close(db) })
 
 	f := newFakeArk(t)
-	h := &testHost{db: db, accounts: map[int64]pluginsdk.AccountCredentials{}, credReads: map[int64]int{}}
+	var m manifest.Manifest
+	if err := json.Unmarshal(manifestFile(t), &m); err != nil {
+		t.Fatal(err)
+	}
+	h := &testHost{db: db, accounts: map[int64]pluginsdk.AccountCredentials{}, credReads: map[int64]int{}, manifest: &m, ark: f}
 	h.accounts[1] = pluginsdk.AccountCredentials{
 		AccountSummary: pluginsdk.AccountSummary{
 			ID: 1, Name: "ark-with-assets", Type: AccountTypeAPIKey, Status: "active", Enabled: true,
@@ -128,11 +161,9 @@ func startRoutes(t *testing.T) (*Plugin, *testHost, *fakeArk) {
 	}
 
 	p := New()
-	p.SetDialer(f.dialer())
 	if err := p.Init(context.Background(), h); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	t.Cleanup(func() { _ = p.Shutdown(context.Background()) })
 	return p, h, f
 }
 

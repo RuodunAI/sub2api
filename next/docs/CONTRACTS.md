@@ -6205,7 +6205,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 
 ### 91.1 `HostService.SendAccountRequest`
 
-宿主替插件为它**自己的某个账号**发一次有上限的 HTTP 请求，走该账号的代理，和插件描述的配额查询、凭证刷新请求同一条发送路径。
+宿主替插件为它**自己的某个账号**发一次 HTTP 请求，走该账号的代理，和插件描述的配额查询、凭证刷新请求同一条发送路径。使用者：codex 的重置次数、volcengine 的素材库（0.13.0 起，插件签名后交给它发出，插件不再申请 `net`，[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) §17）。
 
 | 项 | 约定 |
 | --- | --- |

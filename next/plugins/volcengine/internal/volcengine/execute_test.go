@@ -20,8 +20,7 @@ import (
 )
 
 // startExecution runs the plugin on the fake host with every way out of the
-// process closed: the egress tunnel, the asset library's dialler and the
-// default HTTP transport. The request path (Relay, RelayAndWait, Fetch) must
+// process closed: the egress tunnel and the default HTTP transport. The request path (Relay, RelayAndWait, Fetch) must
 // not need any of them.
 func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *pluginsdktest.Harness {
 	t.Helper()
@@ -36,7 +35,6 @@ func startExecution(t *testing.T, configure func(*pluginsdktest.FakeHost)) *plug
 	fh.DialFunc = denyDial
 	p := New()
 	p.now = func() time.Time { return time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC) }
-	p.SetDialer(denyDial)
 	defaultTransport := http.DefaultTransport
 	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("the request path used the default HTTP transport")

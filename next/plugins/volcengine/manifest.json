@@ -975,20 +975,6 @@
         "en": "Add the \"Volcengine Ark\" sidebar group with the asset and asset group pages. These pages are rendered by the console from the manifest (table and form), so the plugin ships no front-end code and does not need ui.native.",
         "zh": "添加「火山方舟」侧边栏分组与素材、素材组页面。这些页面由控制台按 manifest 渲染（table 与 form），插件不带前端代码，因此不需要 ui.native 权限。"
       }
-    },
-    {
-      "id": "net",
-      "scope": {
-        "domains": [
-          "ark.cn-beijing.volcengineapi.com",
-          "*.volcengineapi.com"
-        ]
-      },
-      "optional": true,
-      "reason": {
-        "en": "Call the Ark asset library OpenAPI at the account's asset endpoint - the Ark control plane, a different host from the API Base URL. Only enforced when the egress policy is an allowlist; an account pointed at any other host then needs that host added.",
-        "zh": "调用账号的素材端点上的方舟素材库 OpenAPI —— 那是方舟控制面，与 API 的 Base URL 不是同一个主机。仅在出口策略为白名单时生效；账号指向其他主机时需要把该主机加进白名单。"
-      }
     }
   ],
   "externalServices": [
