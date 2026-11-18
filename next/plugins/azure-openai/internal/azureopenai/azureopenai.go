@@ -52,8 +52,9 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 	t.Routes = routes
 	t.Models = nil
 	// service_tier and safety_identifier belong to a client's own OpenAI
-	// account. They are removed after the operator's rewrites (design
-	// §12.5).
+	// account. The plugin removes them after the operator's rewrites
+	// (design §12.5), so an operator's param_override that sets either on
+	// an Azure account is removed too.
 	t.FilterFields = []string{"service_tier", "safety_identifier"}
 	return t
 }
