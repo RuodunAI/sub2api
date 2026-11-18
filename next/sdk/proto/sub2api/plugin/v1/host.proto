@@ -420,16 +420,11 @@ message UpstreamRequest {
   // content type is left as it is. An unknown name, or any name on a
   // websocket turn, is refused.
   string response_stream = 7;
-  UpstreamOptions options = 8;
-}
-
-// UpstreamOptions are the only transport settings a plugin may state, and
-// they only tighten what the account's configuration gives: a value of 0, or
-// one at or above the effective value, changes nothing. Proxy, TLS,
-// redirects and retries are not the plugin's to choose.
-message UpstreamOptions {
-  int32 response_header_timeout_ms = 1;
-  int32 total_timeout_ms = 2;
+  // Timeouts are the host's (the account's and the administrator's
+  // settings); proxy, TLS, redirects and retries are not the plugin's to
+  // choose either.
+  reserved 8;
+  reserved "options";
 }
 
 message RelayUpstreamRequest {
@@ -462,7 +457,8 @@ message ExecutionHTTPRequest {
   // Sent as is; Content-Type defaults to application/json when a body is
   // given and the headers set none.
   bytes body = 5;
-  UpstreamOptions options = 6;
+  reserved 6;
+  reserved "options";
   // Only in a console route call, and required there: the proxy ticket the
   // console issued for the account being authorized (POST
   // /account-types/:plugin_key/:type/proxy-ticket, CONTRACTS §117). The host

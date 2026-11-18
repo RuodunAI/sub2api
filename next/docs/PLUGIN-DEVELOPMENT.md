@@ -299,7 +299,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 | 上游只接受流式（`streamOnly`） | **插件配合**：在账号类型路由上声明；核心在交给插件前把流式写进请求体，插件交回时保持 | 一致 / 不适用 | `streamonly.go`，CONTRACTS §83 |
 | 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限，只管网关读客户端的请求；插件和清单都不能另设，核心与插件之间也不由它推出任何上限 | 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §111 |
 | 平台调用超时（网关设置 `platform_call_timeout_ms`） | 核心统一，只管不等待形式的 `ClassifyError` 和读断开策略；`Execute` 不计时 | 一致 / 每轮的 `Execute` 同样不计时 | `gateway/settings.go` `platformTimeout`；CONTRACTS §111.4 |
-| 上游整体超时、响应头超时、流式空闲超时（环境变量） | 核心统一；插件只能经 `UpstreamOptions` 收紧；`Fetch` 在 `Execute` 里用同样的响应头超时和整体超时 | 一致（`Execute` 没有另外的总时限）/ 握手没有固定时限（随客户端离开结束），每轮受流式空闲超时约束，不读的一方由心跳 ping 结束 | `upstreamTimeouts`、`newIdleBody`；CONTRACTS §112.16 |
+| 上游整体超时、响应头超时、流式空闲超时（环境变量） | 核心统一，插件不能设超时；`Fetch` 在 `Execute` 里用同样的响应头超时和整体超时 | 一致（`Execute` 没有另外的总时限）/ 握手没有固定时限（随客户端离开结束），每轮受流式空闲超时约束，不读的一方由心跳 ping 结束 | `upstreamTimeouts`、`newIdleBody`；CONTRACTS §112.16 |
 
 ### 5.3 调度、限流与保护
 

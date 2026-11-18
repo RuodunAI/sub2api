@@ -13,6 +13,7 @@
 转发 V2 各工作包留下的“要改 proto 或跨模块”的清理项。Host API 仍是 10、插件协议仍是 2（只删字段，编号和名字都写进 `reserved`，不复用；照 §91.3、§117.4 的先例）。
 
 - **proto**：`EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
+- **proto**：`UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。SDK 设置它的方法此前已删除；它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
 
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移，随转发 V2 发布）
 

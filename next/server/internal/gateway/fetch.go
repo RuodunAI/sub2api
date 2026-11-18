@@ -24,7 +24,7 @@ import (
 // 0, so the plugin can classify it.
 func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 	c := x.c
-	header, total := c.upstreamTimeouts(nil, false)
+	header, total := c.upstreamTimeouts(false)
 	out, err := execfetch.Do(ctx, in, execfetch.Binding{
 		CheckURL:      x.checkURL,
 		Client:        func(ctx context.Context) (*http.Client, error) { return c.g.d.Proxies.HTTPClient(ctx, x.acc.ProxyID) },

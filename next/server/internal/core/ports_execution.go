@@ -63,9 +63,7 @@ var ErrExecutionRefused = errors.New("execution write refused")
 // or Monitor call: one bounded, non-streaming exchange whose answer goes back
 // to the plugin. The closure binds the account, its proxy, the SSRF guard
 // and the timeouts; it applies neither the operator's header passthrough nor
-// overrides and follows no redirect. in.Options is set by no SDK helper any
-// more and is to leave the protocol; while it is there, a value in it can
-// only shorten the effective timeouts.
+// overrides and follows no redirect.
 //
 // The fetches of one call are not counted and their answers are whole: the
 // core never sets Truncated, and neither the runtime nor the core bounds

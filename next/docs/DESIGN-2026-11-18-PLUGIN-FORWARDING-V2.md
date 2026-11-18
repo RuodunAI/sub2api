@@ -326,6 +326,8 @@ message RelayUpstreamResponse {
 
 ### 5.4 插件能传的选项和边界
 
+> 实现记录：SDK 设置超时的方法删除之后，`UpstreamOptions`（`UpstreamRequest.options` 字段 8、`ExecutionHTTPRequest.options` 字段 6）在转发 V2 收尾时从协议删除（`reserved`），下表第一行不再适用：超时只归核心（CONTRACTS §112.3、§112.6）。
+
 | 选项 | 允许 | 不允许 |
 |---|---|---|
 | 响应头超时、整体超时 | 比账号的生效值更短 | 更长；设为不限 |

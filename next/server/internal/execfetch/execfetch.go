@@ -79,9 +79,7 @@ type Binding struct {
 	// Client is the bound account's HTTP client (its proxy). The fetch uses
 	// a copy that follows no redirect and has no client-wide timeout.
 	Client func(ctx context.Context) (*http.Client, error)
-	// HeaderTimeout and TotalTimeout are the host's; the request's options
-	// (set by no SDK helper any more, the field is to leave the protocol)
-	// can only shorten them. <= 0 is none.
+	// HeaderTimeout and TotalTimeout are the host's. <= 0 is none.
 	HeaderTimeout, TotalTimeout time.Duration
 	// Admit, when set, is asked right before the exchange; its error is
 	// returned as the fetch's error and nothing is sent.
@@ -101,10 +99,9 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	if msg != "" {
 		return failure(msg)
 	}
-	opts := in.GetOptions()
-	if total := Tighten(b.TotalTimeout, opts.GetTotalTimeoutMs()); total > 0 {
+	if b.TotalTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, total)
+		ctx, cancel = context.WithTimeout(ctx, b.TotalTimeout)
 		defer cancel()
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -141,8 +138,8 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	// A response header timeout cuts the exchange when no answer started in
 	// time; it is the total timeout's to bound the rest.
 	stop := func() bool { return false }
-	if header := Tighten(b.HeaderTimeout, opts.GetResponseHeaderTimeoutMs()); header > 0 {
-		stop = time.AfterFunc(header, cancel).Stop
+	if b.HeaderTimeout > 0 {
+		stop = time.AfterFunc(b.HeaderTimeout, cancel).Stop
 	}
 	resp, err := client.Do(req)
 	stop()
@@ -185,13 +182,4 @@ func answer(ctx context.Context, u *url.URL, resp *http.Response, err error) (*p
 		out.TransportError = "incomplete execution HTTP response"
 	}
 	return out, nil
-}
-
-// Tighten is d, or ms milliseconds when that is shorter (or d is none);
-// ms <= 0 asks nothing.
-func Tighten(d time.Duration, ms int32) time.Duration {
-	if t := time.Duration(ms) * time.Millisecond; ms > 0 && (d <= 0 || t < d) {
-		return t
-	}
-	return d
 }

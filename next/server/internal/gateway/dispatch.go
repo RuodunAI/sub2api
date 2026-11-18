@@ -769,7 +769,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	}
 
 	forced := c.forcesStream(rt)
-	headerWait, total := c.upstreamTimeouts(req.GetOptions(), c.stream || forced)
+	headerWait, total := c.upstreamTimeouts(c.stream || forced)
 	// The relay timeout covers the upstream exchange, not the local
 	// preparation above, so it starts with the header timer.
 	if total > 0 {
