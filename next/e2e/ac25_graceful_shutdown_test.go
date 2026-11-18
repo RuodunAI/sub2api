@@ -66,12 +66,9 @@ func TestAC25_GracefulShutdownKeepsInflightAccounting(t *testing.T) {
 		t.Fatal("stream did not produce message_start")
 	}
 	accountSlot := fmt.Sprintf("slot:account:%d", acct.ID)
-	userSlot := fmt.Sprintf("slot:user:%d", tn.User.UserID)
+	// (There are no user slots: concurrency is per account, CONTRACTS §78.)
 	if got := e.Redis("ZCARD", accountSlot); got != "1" {
 		t.Fatalf("in-flight stream must hold one account slot, got %q", got)
-	}
-	if got := e.Redis("ZCARD", userSlot); got != "1" {
-		t.Fatalf("in-flight stream must hold one user slot, got %q", got)
 	}
 	select {
 	case result := <-done:
@@ -152,7 +149,7 @@ func TestAC25_GracefulShutdownKeepsInflightAccounting(t *testing.T) {
 	}
 	assertAccounting()
 	Eventually(t, 10*time.Second, 200*time.Millisecond, "drained request releases account and user slots", func() bool {
-		return e.Redis("ZCARD", accountSlot) == "0" && e.Redis("ZCARD", userSlot) == "0"
+		return e.Redis("ZCARD", accountSlot) == "0"
 	})
 	// Waiting for stopped state verifies full shutdown, not merely a closed
 	// listener. Exit 0 and OOMKilled=false distinguish it from forced death.

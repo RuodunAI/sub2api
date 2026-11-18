@@ -70,7 +70,8 @@ func TestAC22_PromptModeration(t *testing.T) {
 	}
 	hookNote := func(u string) string {
 		for _, d := range gjson.Get(u, "hook_decisions").Array() {
-			if d.Get("plugin_key").String() == moderationKey {
+			// The plugin's "ban" hook runs first; the verdict is its "moderation" hook.
+			if d.Get("plugin_key").String() == moderationKey && d.Get("hook_id").String() == "moderation" {
 				return d.Get("decision").String() + " " + d.Get("note").String()
 			}
 		}
@@ -158,8 +159,19 @@ func TestAC22_PromptModeration(t *testing.T) {
 
 	// 2. observe: the request passes and is moderated in the background; the
 	// suspicious user joins the watch list at the observe level.
+	// The enforce-mode hit above put the user on the watch list at the
+	// enforce level (source auto), which would refuse its hits in observe
+	// mode too (checked below): start this step from a clean entry.
+	if w := admin.OK(t, http.MethodGet, "/p/moderation/watchlist", nil, Query("user_id", uid)).Array(); len(w) != 1 ||
+		w[0].Get("level").String() != "enforce" || w[0].Get("source").String() != "auto" {
+		t.Fatalf("watch entry after the enforce-mode hit: %v", w)
+	}
+	admin.OK(t, http.MethodDelete, "/p/moderation/watchlist/"+uid, nil)
 	e.SetModerationSettings(admin, e.ModerationSettings("observe"))
-	g = e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "observe MOD-BLOCK "+e.RunID, false), nil)
+	Eventually(t, 20*time.Second, time.Second, "observe-mode hit passes on every node", func() bool {
+		g = e.Messages(tn.APIKey, MessagesBody(tn.Model, "observe MOD-BLOCK "+e.RunID, false), nil)
+		return g.Status == 200
+	})
 	Eventually(t, 20*time.Second, time.Second, "observe record", func() bool {
 		for _, ev := range e.ModerationEvents(admin, "user_id", uid, "timing", "post") {
 			if ev.Get("request_id").String() == g.RequestID {
@@ -181,7 +193,7 @@ func TestAC22_PromptModeration(t *testing.T) {
 
 	// 3. Automatic ban after two violations; unblocking lets the user back in.
 	s := e.ModerationSettings("enforce")
-	s["ban_threshold"], s["ban_window_hours"], s["ban_duration_hours"] = 2, 1, 0
+	s["ban_threshold"], s["ban_window_seconds"], s["ban_duration_hours"] = 2, 3600, 0
 	e.SetModerationSettings(admin, s)
 	for i := 0; i < 2; i++ {
 		if g := e.Messages(tb.APIKey, MessagesBody(tb.Model, fmt.Sprintf("ban MOD-BLOCK %s %d", e.RunID, i), false), nil); g.Status != 403 {
@@ -201,6 +213,13 @@ func TestAC22_PromptModeration(t *testing.T) {
 	}
 	admin.OK(t, http.MethodDelete, "/p/moderation/blocks/"+buid, nil)
 	sendUntil(tb, "user unblocked on every node", 200, "", "welcome back")
+	// Automatic bans off again. tn's earlier violations are within the ban
+	// window too, so the threshold banned it as well: lift that, for step 6.
+	e.SetModerationSettings(admin, e.ModerationSettings("enforce"))
+	if r := admin.API(t, http.MethodDelete, "/p/moderation/blocks/"+uid, nil); r.Status/100 != 2 && r.Status != http.StatusNotFound {
+		t.Fatalf("unblock %s: %s", uid, r)
+	}
+	sendUntil(tn, "tn not banned on every node", 200, "", "welcome back")
 
 	// 4. Console test: bad tool arguments get fed back, the second call wins.
 	r := admin.OK(t, http.MethodPost, "/p/moderation/test", map[string]any{"text": "MOD-BADARGS check " + e.RunID, "flow_id": fx.FlowID})

@@ -167,6 +167,11 @@ type AccountSpec struct {
 	MaxConcurrency int
 	ModelMapping   map[string]string
 	Settings       map[string]any // non-secret form fields; the host splits them from credentials
+	// Credentials, when set, is the whole credentials object (instead of
+	// api_key + base_url + Settings), for types with other fields.
+	Credentials map[string]any
+	// Extra fields of the POST /accounts body (header_override, proxy_url ...).
+	Extra map[string]any
 }
 
 // CreateAccount creates an account (POST /accounts with plugin_key + type).
@@ -194,6 +199,9 @@ func (e *Env) CreateAccount(admin *Session, a AccountSpec) int64 {
 	for key, value := range a.Settings {
 		creds[key] = value
 	}
+	if a.Credentials != nil {
+		creds = a.Credentials
+	}
 	body := map[string]any{
 		"name": a.Name, "plugin_key": a.PluginKey, "type": a.Type, "group_ids": a.GroupIDs,
 		"proxy_id": nil, "priority": a.Priority, "max_concurrency": a.MaxConcurrency,
@@ -201,6 +209,12 @@ func (e *Env) CreateAccount(admin *Session, a AccountSpec) int64 {
 	}
 	if a.ModelMapping != nil {
 		body["model_mapping"] = a.ModelMapping
+	}
+	for k, v := range a.Extra {
+		body[k] = v
+	}
+	if _, ok := a.Extra["proxy_url"]; ok {
+		delete(body, "proxy_id") // the two cannot both be given
 	}
 	d := admin.OK(e.T, http.MethodPost, "/accounts", body)
 	id := d.Get("id").Int()
