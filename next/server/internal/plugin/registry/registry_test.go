@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -628,4 +629,31 @@ func (stub) BuildRefreshRequest(context.Context, *pluginv1.BuildRefreshRequestRe
 
 func (stub) ParseRefreshResponse(context.Context, *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
 	return nil, nil
+}
+
+// Another plugin's account type does not serve a platform whose usage or
+// task facts the declaring plugin states (usageSource "plugin", a task
+// submission): only that plugin's Execute can read them (forwarding v2,
+// design 4.3). Its own types and the other platforms it serves stay.
+func TestForeignFactsAccountTypeSkipped(t *testing.T) {
+	video := registrytest.Manifest("video", "1.0.0")
+	video.Platforms[0].Endpoints[0].UsageSource = manifest.UsageSourcePlugin
+	relay := registrytest.Manifest("relay", "1.0.0")
+	relay.AccountTypes[0].Platforms = append(relay.AccountTypes[0].Platforms, manifest.AccountPlatform{Platform: "p_video"})
+	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
+	g := registry.New().Publish([]registry.Extension{
+		ext{pkg: load(t, video), grants: creds}, ext{pkg: load(t, relay), grants: creds},
+	})
+	typesFor := func(platformID string) (out []string) {
+		for _, b := range g.AccountTypesForPlatform(platformID) {
+			out = append(out, b.Plugin.Key+"/"+b.Type.ID)
+		}
+		return out
+	}
+	if got := typesFor("p_video"); !slices.Equal(got, []string{"video/apikey"}) {
+		t.Fatalf("p_video types = %v", got)
+	}
+	if got := typesFor("p_relay"); !slices.Equal(got, []string{"relay/apikey"}) {
+		t.Fatalf("p_relay types = %v", got)
+	}
 }
