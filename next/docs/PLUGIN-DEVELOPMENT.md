@@ -6,7 +6,7 @@
 
 ## 1. 一条请求路径
 
-每个平台插件都是有进程的代码插件（`runtime: "grpc"`），都实现 `PlatformService.Execute`。没有只有清单、没有进程的插件，也没有第二条请求路径：核心里不替插件构造上游请求。按旧契约构建的插件包（插件协议 1、`runtime: "none"`、清单里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`，或声明了 `platform.execute.v1`、`platform.poll.v1`）在上传、安装和加载时以同一条信息被拒绝（CONTRACTS §112.10）。
+每个平台插件都是有进程的代码插件（`runtime: "grpc"`），都服务 `PlatformService.Execute`（多数只写 `BuildUpstream`，由 SDK 跑 `ExecuteDefault`，2.1）。没有只有清单、没有进程的插件，也没有第二条请求路径：核心里不替插件构造上游请求。按旧契约构建的插件包（插件协议 1、`runtime: "none"`、清单里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`，或声明了 `platform.execute.v1`、`platform.poll.v1`）在上传、安装和加载时以同一条信息被拒绝（CONTRACTS §112.10）。
 
 一次尝试（一个账号一次，换号后从头再来）：
 
@@ -24,26 +24,22 @@
 
 | 端点 | 标志 | 插件调用 | 返回 | 核心何时发请求 |
 |---|---|---|---|---|
-| 用量由核心按清单规则读（绝大多数） | 都不置 | `Relay` | `host_usage` | `Execute` **返回之后**。插件在返回前出任何问题（报错、崩溃），请求都没发出，核心按插件不可用换号，账号不受罚。流式回答期间插件不在调用里，插件重启不影响在途的流 |
+| 用量由核心按清单规则读（绝大多数） | 都不置 | `Relay` | `host_usage` | `Execute` **返回之后**。插件在返回前出任何问题（报错、崩溃），请求都没发出，核心按插件不可用换号，账号不受罚（发布了故障策略时也一样：只换号，不跑账号规则）。流式回答期间插件不在调用里，插件重启不影响在途的流 |
 | 端点声明 `usageSource: "plugin"` | `extract_usage` | `RelayAndWait` | `usage`；读不出时 `host_usage`（核心记 `usage_extract=fallback`）；上游出错时 `classification` | 中继调用里立即发送；调用返回观察（2xx）或错误事实 |
 | 任务提交（`endpoint.task.action: "submit"`） | `task_submission` | `RelayAndWait` | `task`；上游出错时 `classification` | 同上 |
 
 - 等待形式下什么都没返回（或 `Execute` 报错、插件崩溃，或返回了 `host_usage` 而核心的读数完全为空）：同步请求记一条零费用的“未上报”记录（`error_type=usage_unreported`，预扣释放，ERROR 日志），已缓冲的非流式回答不发出、回 503，已开始的流异常结束；任务提交没有 `task` 时任务不登记、客户端报错、预扣释放（任务失败的路径，不是“未上报”）。等待期间插件崩溃或放弃调用，核心切断上游、这个请求不计费。核心不替插件补记用量。不等待形式下插件返回 `host_usage` 而核心的读数完全为空时，客户端已经拿到回答，记录同样是零费用的“未上报”（CONTRACTS §112.2）。
 - WebSocket（`platform.websocket.v1`）：会话的每一轮消息调一次 `Execute`，请求体是这一轮的消息。插件照常 `Relay` + `host_usage`，给出握手地址（`ws(s)://` 或 `http(s)://`）、握手头和最终消息；核心在会话还没有上游连接时用第一轮的 URL 和握手头建连，以后每轮只发消息。WebSocket 端点没有等待形式，不能给 `response_stream`（CONTRACTS §83.6、[OPENAI-RESPONSES-WEBSOCKET.md](OPENAI-RESPONSES-WEBSOCKET.md)）。
 - 插件只描述请求、不开套接字：上游请求、辅助请求都经核心的客户端发出，核心套上账号的代理、SSRF 规则、超时和运营方的请求头设置。插件不重试、不换号，一次执行最多一个中继。
-- `Execute` 不计时：插件在 `Execute` 里自己的工作没有时限，等待形式的交换也没有总时限（所有者决定“超时、限制都去掉”，CONTRACTS §112.16）。挂住的插件由客户端离开、上游超时（管理员配置）或它的进程结束收场，期间这次尝试占着账号和 API Key 的槽位，所以插件要自己保证每一步都会结束、把 `ctx` 传到底。平台调用超时（网关设置 `platform_call_timeout_ms`）只管不等待形式下的 `ClassifyError` 和读断开策略（CONTRACTS §111.4）。
+- `Execute` 不计时：插件在 `Execute` 里自己的工作没有时限，等待形式的交换也没有总时限（所有者决定“超时、限制都去掉”，CONTRACTS §112.16）。挂住的插件由客户端离开、上游超时（管理员配置）或它的进程结束收场：客户端离开会取消 `Execute` 调用，但等待形式下只到中继开始发送为止，之后上游交换按断开策略处理，插件读观察之后的工作不再随客户端取消（它的事实还要入账）；期间这次尝试占着账号和 API Key 的槽位，所以插件要自己保证每一步都会结束、把 `ctx` 传到底。平台调用超时（网关设置 `platform_call_timeout_ms`）只管不等待形式下的 `ClassifyError` 和读断开策略（CONTRACTS §111.4）。
 
 ## 2. 写一个平台插件
 
 ### 2.1 接口
 
-SDK 是 `sdk/pluginsdk`。`pluginsdk.Platform` 包含 `Execute`（`Executor`）、`ClassifyError`、`ValidateCredentials`、`BuildTestRequest`。大多数插件只写构造请求的部分：实现 `UpstreamBuilder`，让 `Execute` 是 `ExecuteDefault`：
+SDK 是 `sdk/pluginsdk`。`pluginsdk.Platform` 包含 `ClassifyError`、`ValidateCredentials`、`BuildTestRequest`；`Execute` 另由下面两者之一提供：实现 `UpstreamBuilder`（`BuildUpstream`），SDK 就替它跑 `ExecuteDefault`；或者实现 `Executor`（自己的 `Execute`），它优先。两者都没有时 `Serve` 拒绝启动（`a Platform must implement UpstreamBuilder or Executor`）。大多数插件只写构造请求的部分，不用写 `Execute`：
 
 ```go
-func (p *Plugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-	return pluginsdk.ExecuteDefault(ctx, p, in)
-}
-
 func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	cfg, err := spec.FromAccount(in.GetAccount()) // apikey.Spec
 	if err != nil {
@@ -61,9 +57,9 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 `ExecuteDefault` 按两个标志选形式（第 1 节的表）：普通端点 `Relay` 后返回 `ReportHostUsage()`；`extract_usage` 时 `RelayAndWait` 后调插件的 `UsageExtractor`（没有实现、出错或返回空时回落到 `host_usage`）；`task_submission` 时 `RelayAndWait` 后调 `TaskSubmissionParser`（没有实现时在构造之前就报错）；等待形式的上游错误用插件的 `ClassifyError` 分类。`BuildUpstream` 返回 `pluginsdk.Classified(c)` 时（例如 `Fetch` 被上游拒绝），`ExecuteDefault` 回 `ReportClassification(c)`，核心按分类裁决而不是当成插件故障。
 
-自己写 `Execute` 也可以，返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
+自己写 `Execute`（实现 `Executor`）也可以，其中仍可调 `pluginsdk.ExecuteDefault(ctx, p, in)` 做默认的部分；返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
 
-可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform` 就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
+可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform`（加上 `UpstreamBuilder` 或 `Executor`）就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
 
 ### 2.2 构造请求：`NewUpstream`
 
@@ -87,7 +83,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 核心交给插件的客户端请求头（`inbound_headers`）已经按清单过滤过：账号类型在这个平台上写了 `passHeaders` 就用它，写成 `[]` 就一个都不交，没写才用平台的列表（`AccountPlatform.ClientHeaders`）。交来的头插件要作为默认头转发（一致性第 4 条），不想转发任何客户端头的类型在清单里写 `"passHeaders": []`（codex 就这样）。
 
-发送时自下而上：插件的默认头 → 透传（账号 `header_passthrough`、`header_override` 的透传键、粘性规则，只补没有的）→ `header_override` 与 `param_override` 的设值和删除 → 插件的权威头 → 没有 Content-Type 时补 `application/json`（CONTRACTS §86.5）。WebSocket 握手同样分层，但不套透传。
+发送时自下而上：插件的默认头 → 透传（账号 `header_passthrough`、`header_override` 的透传键、粘性规则，只补没有的）→ `header_override` 与 `param_override` 的设值和删除 → 插件的权威头 → 没有 Content-Type 时补 `application/json`（CONTRACTS §86.5）。WebSocket 握手同样分层（`websocket.go` `dial` 调同一个 `layerHeaders`）：插件的默认头 → `header_override` 与 `param_override` 的设值和删除（来自第一轮消息的改写）→ 插件的权威头（空值删除），**不套透传**，也不补 Content-Type；插件给的传输层的头（`upgrade`、`sec-websocket-*`、`content-type`、`content-length` 等，`handshakeOwned`）被跳过。
 
 放哪一类：
 
@@ -96,9 +92,9 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 - 已经发布过的代码插件（codex、volcengine）的头以前全都在运营方设置之上，改写后**保持全部权威**，运营方的透传和覆盖照旧改不了它们。没有发布过的 vertex、bedrock 按第一条写：只有凭证头（bedrock 的签名类型是签名头）是权威头，`content-type`、`accept` 是默认头。新插件按第一条写。
 - 一致性套件第 4 条检查的是“声明的集合”：权威头的名字必须在插件声明的 `Credentials`（鉴权与签名头）与 `Authoritative`（其余要保留为权威的头，每个写理由）的并集里，`Credentials` 的头不能出现在默认头里。
 
-签名的插件不要写 `Headers(req.Header)`（会把请求上每个头都变成权威头），用 `reqsign.SignedHeaders(req, scheme)` 只取签名写入或覆盖的那几个。
+签名的插件不要写 `Headers(req.Header)`（会把请求上每个头都变成权威头），用 `reqsign.AWSSigV4Headers(req)` 只取签名写入或覆盖的那几个。
 
-**不发某个头**：`RemoveHeader(name)` 写入空值的权威头，核心把它当作“这个头不发”，删掉前面各层（默认头、透传、运营方的覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（CONTRACTS §112.17）。用于签名不能看到的头：bedrock 在签名没有会话令牌时 `RemoveHeader("x-amz-security-token")`，运营方加的会话令牌就不会让 AWS 的签名校验失败。名字同样要在一致性第 4 条声明的集合里。
+**不发某个头**：`RemoveHeader(name)` 写入空值的权威头，核心把它当作“这个头不发”，删掉前面各层（默认头、透传、运营方的覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（CONTRACTS §112.17）。用于签名不能看到的头：bedrock 在鉴权头里没有会话令牌时（Access Key 签名的类型，以及不签名的 API Key 类型）`RemoveHeader("x-amz-security-token")`，运营方加的会话令牌就不会发到 AWS、让请求失败。名字同样要在一致性第 4 条声明的集合里。
 
 ### 2.4 改请求体：`jsonedit`
 
@@ -132,25 +128,26 @@ if err != nil {
 
 ### 2.5 签名与响应流格式
 
-插件自己签名：对自己构造的 `*http.Request` 调 `sdk/reqsign` 的 `Sign`，再把签过的 URL 和签名头交给核心：
+插件自己签名：对自己构造的 `*http.Request` 调 `sdk/reqsign` 的 `SignAWSSigV4`（凭证是 `reqsign.AWSCredentials`：区域、服务名、Access Key ID、Secret、可选的会话令牌），再把签过的 URL 和签名头交给核心：
 
 ```go
 req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
 req.Header.Set("Content-Type", "application/json")
-if err := reqsign.Sign(req, body, directive, now); err != nil {
+creds := reqsign.AWSCredentials{Region: region, Service: "bedrock", AccessKeyID: ak, SecretAccessKey: sk}
+if err := reqsign.SignAWSSigV4(req, body, creds, now); err != nil {
 	return nil, err
 }
 return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
-	Headers(reqsign.SignedHeaders(req, directive.Scheme)).     // only what the signature wrote or covers
+	Headers(reqsign.AWSSigV4Headers(req)).                    // only what the signature wrote or covers
 	DefaultHeader("accept", "application/vnd.amazon.eventstream").
 	Body(body).ResponseStream(awseventstream.FormatChunk).Build()
 ```
 
 - 请求体在签名之后不再改；签名头是权威头，运营方的覆盖改不了；`host` 在覆盖的禁止名单里。每次尝试重新构造、重新签，时间从可替换的时钟取（一致性第 6、7 条）。
-- `aws-sigv4` 返回的权威头：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`。签名由 AWS 官方的 `aws/signer/v4` 完成，包只决定签哪些头。
+- `AWSSigV4Headers` 返回的头（有才返回）：`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`。签名由 AWS 官方的 `aws/signer/v4` 完成，包只决定签哪些头。`AWSCredentials` 的 `String`、`GoString`、`LogValue` 不输出密钥，签名失败的错误也不带密钥。
 - `response_stream`：回答不是 SSE 或 JSON 时说明格式，核心解码后照常中继和计量。现有 `aws-eventstream-chunk`（`sdk/awseventstream.FormatChunk`）：内容类型是 `application/vnd.amazon.eventstream` 的 2xx 回答，chunk 事件解成 SSE，异常帧变成 Anthropic 形状的 `error` 事件；别的内容类型原样不动。不认识的名字、WebSocket 轮次上给了名字，核心都拒绝这次中继（按插件不可用换号）。只在这一次请求的回答确实是该格式时设置（bedrock 只在流式 InvokeModel 上设）。
 - 账号测试请求（`BuildTestRequest`）核心原样发送，插件同样自己签（bedrock 的 `sign`）。
-- 要支持新的签名方案或新的事件形状，在 `sdk/reqsign` 或 `sdk/awseventstream` 里加一个名字（响应流格式还要在 `server/internal/gateway/upstream_ext.go` 的表里登记），不在网关里写厂商判断。
+- 要支持新的签名方案，在 `sdk/reqsign` 里 `SignAWSSigV4` 旁边加一个签名函数（签名只在插件里做，核心不认识签名方案）；新的事件形状在 `sdk/awseventstream` 里加一个格式名，并在 `server/internal/gateway/upstream_ext.go` 的表里登记。不在网关里写厂商判断。
 
 不用厂商的 SDK 客户端（也不做 `RoundTripper` 适配）：插件和核心里只用 AWS 的签名与 event stream 库和 `golang-jwt`；OpenAI、Anthropic 的官方 SDK 只允许用作 e2e 测试的客户端。
 
@@ -159,7 +156,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 `pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{...})` 发一个非流式的请求，回答整份交还插件。用于 `Execute` 里的辅助请求和 `Monitor` 里的任务查询。
 
 - 主机：和中继同一条规则（2.2）：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读，只比主机名，不含子域）。别的主机 `PERMISSION_DENIED`。规则是 `manifest.Manifest.UpstreamHostAllowed`，核心和假宿主共用。`SendAccountRequest`（请求路径之外用账号凭证发请求，如查余额、素材库）也按它判断，请求体和回答都不限大小。
-- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；拒绝 `Host`、hop-by-hop 和代理认证头。超时：`Execute` 里是账号的响应头超时和 `relay_timeout_seconds`（没设就没有整体超时），`Monitor` 里 20 秒；`Options` 只能收紧。
+- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断；经代理的账号不在本机解析上游域名，只拒绝字面量的私网地址和 localhost，`netguard.CheckHostVia`）、不跟随重定向、不重试；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；拒绝 `Host`、hop-by-hop 和代理认证头。超时：`Execute` 里是账号的响应头超时和 `relay_timeout_seconds`（没设就没有整体超时），`Monitor` 里 20 秒；插件不能设超时（请求的 `options` 字段已从协议删除）。
 - 不限次数、不限大小：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`truncated` 字段已删除）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
@@ -206,7 +203,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 	if err != nil {
 		return nil, err
 	}
-	if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError(), answer.GetTruncated()); early != nil {
+	if early := pluginsdk.ClassifyPollResponse(answer.GetStatus(), answer.GetTransportError()); early != nil {
 		return early, nil // transport error, 404/410, non-2xx
 	}
 	return parseTaskState(answer.GetBody()), nil // PENDING or a terminal state
@@ -226,7 +223,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 ## 3. `standard` 库与厂商预设
 
-“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头或查询串里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`，`Execute` 就是 `ExecuteDefault`。接口、构造步骤和三个风格的完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
+“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和三个风格的完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
 
 旧的清单 `upstream` 声明（已删除）的每一项在库里的对应：
 
@@ -257,7 +254,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 **假宿主**（`sdk/pluginsdk/pluginsdktest`）：
 
 ```go
-h := pluginsdktest.Start(t, New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithManifest(manifestJSON)}})
+h := pluginsdktest.Start(t, New(), pluginsdktest.Options{Manifest: manifestJSON})
 ex := h.Execute(ctx, &pluginv1.ExecuteRequest{
 	Meta:    &pluginv1.RequestMeta{Protocol: "anthropic.messages", Model: "claude-x", Stream: true},
 	Account: &pluginv1.Account{Id: 1, Type: "apikey", CredentialsJson: `{"api_key":"sk-test"}`},
@@ -268,12 +265,12 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 ```
 
 - `Harness.Execute` / `Harness.Monitor` 像核心一样发执行令牌、调用、调用返回后作废令牌；返回 `*Execution`（`Response`、`MonitorResponse`、`Err`、`Relays()`、`RelayErrors()`、`Fetches()`、`Relayed(t)`）。
-- `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`h.Host.Manifest` 是宿主知道的清单（`Start` 时取 `WithManifest` 或 `Options.Manifest`），中继和取回能到哪些主机按它和这次调用的账号决定（`manifest.UpstreamHostAllowed`；中继到别的主机 `INVALID_ARGUMENT`），没有清单时只有 `h.Host.ExternalServices` 放行的主机（测试指向 `127.0.0.1` 的假上游时在这里写上它）；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、方法和头名按 `httpguts`、HTTP 协议上不许 ws(s) 地址、`Monitor` 的终态要有一次完整成功的取回）；和宿主一样不限请求体、不数取回、不截回答。不经 `Harness` 时用 `h.Host.Begin(in)` / `BeginMonitor(in)` 发令牌。仍与宿主不同的地方写在 `FakeHost` 的注释里。
+- `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`Options.Manifest` 是插件的 `manifest.json`：harness 用它起插件（等于 `pluginsdk.WithManifest`），假宿主也知道它；`h.Host.Manifest` 是宿主知道的清单（没有事先设置时取 `Options.Manifest`），中继和取回能到哪些主机按它和这次调用的账号决定（`manifest.UpstreamHostAllowed`；中继到别的主机 `INVALID_ARGUMENT`），没有清单时只有 `h.Host.ExternalServices` 放行的主机（测试指向 `127.0.0.1` 的假上游时在这里写上它）；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、方法和头名按 `httpguts`、HTTP 协议上不许 ws(s) 地址、`Monitor` 的终态要有一次完整成功的取回）；和宿主一样不限请求体、不数取回、不截回答。不经 `Harness` 时用 `h.Host.Begin(in)` / `BeginMonitor(in)` 发令牌。仍与宿主不同的地方写在 `FakeHost` 的注释里。
 - 只测构造时直接调 `p.BuildUpstream(ctx, in)` 比较结果。
 
-**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。十个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
+**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。九个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。大请求体的大小（8 MiB）和取消的等待时限（2 秒）是套件内部的常量，`Plugin` 没有对应字段。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
 
-**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：原声明式引擎的 1498 条录制样例（openai 441、anthropic 343、gemini 371、relay 343）转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, p)` 回放（它像核心一样先按文件的 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的，2.2）。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
+**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：转发 V2 之前（四个插件还由已删除的声明式引擎驱动时）录下的 1498 条样例（openai 441、anthropic 343、gemini 371、relay 343），转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, manifestPath, p)` 回放：它先核对插件清单交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致，再像核心一样按 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的（2.2）。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
 
 ## 5. 设置对照表
 
@@ -295,7 +292,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 | 设置 | 归属 | HTTP / WebSocket | 说明与位置 |
 |---|---|---|---|
 | 协议转换、账号参数覆盖（请求体）、Claude 默认 max_tokens 内置覆盖、强制流式 | 核心统一，在交给插件**之前**执行；插件拿到的是改写完的请求体 | 一致 / 每轮 | `upstreamBody`、`rewriteBody`；CONTRACTS §84、§84.1、§88。插件在其后的改写（过滤字段、厂商清洗）可以改掉覆盖的结果，见第 3 节的顺序变化 |
-| 账号参数覆盖（请求头）、请求头覆盖 `header_override`、请求头透传 | 核心统一；**插件配合**：按 2.3 把头分成权威头和默认头 | 默认头可被覆盖设值或删除，透传只补没有的；权威头不受影响 / 握手只套覆盖，透传不生效（有意如此，`websocket.go` `dial`）；请求头覆盖与首条消息的改写分开解析，改写失败时握手仍带它，已存的值编译不过时换号 | `upstreamRequest`；CONTRACTS §84、§86.5、§108 |
+| 账号参数覆盖（请求头）、请求头覆盖 `header_override`、请求头透传 | 核心统一；**插件配合**：按 2.3 把头分成权威头和默认头 | 默认头可被覆盖设值或删除，透传只补没有的；权威头不受影响，空值的权威头删掉同名头 / 握手按同样的层次套默认头、`header_override` 与 `param_override` 的请求头部分、权威头（空值删除），透传不生效（有意如此，`websocket.go` `dial`）；请求头覆盖是参数覆盖的初始请求头状态，和第一轮消息的改写一起执行：改写失败（或已存的请求头覆盖编译不过）时这次尝试结束、不握手，`return_error` 按它的设置回给客户端或换号，其余换号，都不罚账号 | `upstreamRequest`；CONTRACTS §84、§86.5、§108 |
 | 上游只接受流式（`streamOnly`） | **插件配合**：在账号类型路由上声明；核心在交给插件前把流式写进请求体，插件交回时保持 | 一致 / 不适用 | `streamonly.go`，CONTRACTS §83 |
 | 请求体上限（网关设置 `max_request_body_mb`，默认 128 MB） | 核心统一，是唯一的请求大小上限，只管网关读客户端的请求；插件和清单都不能另设，核心与插件之间也不由它推出任何上限 | 一致 / 作为单条消息上限 | `bodyLimit`、`readBody`；CONTRACTS §111 |
 | 平台调用超时（网关设置 `platform_call_timeout_ms`） | 核心统一，只管不等待形式的 `ClassifyError` 和读断开策略；`Execute` 不计时 | 一致 / 每轮的 `Execute` 同样不计时 | `gateway/settings.go` `platformTimeout`；CONTRACTS §111.4 |
@@ -309,7 +306,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 | 账号的协议绑定：本平台协议（`protocols`）、模型的协议限定与显式协议转换（`model_protocols`） | 核心统一，在调度时过滤账号，早于转换和插件的 `Execute`；插件什么都不用做，清单里也没有对应的声明 | 一致 / 首轮调度时判断；后续轮换成该账号在这个协议下不提供的模型返回 400，要新建连接 | `sched_trace.go` `ineligibleReason`；CONTRACTS §110。账号能配哪些协议来自账号类型的 `platforms[].endpoints`：声明过的平台的协议是本平台协议（默认开放），其他平台的协议要经转换、默认关闭 |
 | 粘性会话 | 核心统一（规则按协议匹配，内置规则不设模型和 UA） | 一致 / 首轮 | `stampSticky`；CONTRACTS §15.5 |
 | 最大并发、RPM、TPM、会话数限制、Key 限额、用量限制 | 核心统一；`Fetch` 算在同一次执行里，不另占 | 一致 / 每轮重新准入和占槽 | `acquireAccount`、`admitRate`、`admitKey` |
-| 账号代理、SSRF | 核心统一：中继和取回都经账号代理，插件不能选也不能关 | 一致 / 握手经账号代理 | `send`、`fetch.go`、`ssrf.go` |
+| 账号代理、SSRF | 核心统一：中继和取回都经账号代理，插件不能选也不能关；经代理的账号由代理解析上游域名，核心不在本机解析，只拒绝字面量的私网地址和 localhost | 一致 / 握手经账号代理，检查相同 | `send`、`fetch.go`、`ssrf.go`、`netguard.CheckHostVia` |
 | CPU 保护 | 核心之前，由节点网关处理 | 与传输无关 | `next/gateway` |
 | 提示词审核 | 审核插件以钩子实现，平台插件不用做什么 | 一致 / 每轮 | `runHooks`、`runAttemptHooks` |
 
@@ -317,7 +314,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 设置 | 归属 | HTTP / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用；传输错误完全由策略决定 | 不等待形式由核心调 `ClassifyError`；等待形式由插件在返回值里给 `classification` / 握手和流内错误事件都分类 | `applyClassification`、`waited.go`；CONTRACTS §69 |
+| 故障策略、冷却、自动禁用 | 核心统一；**插件配合**：实现 `ClassifyError`，故障策略下核心只采用其中的额度观测和限时禁用；传输错误完全由策略决定。插件不可用（`Execute` 报错或崩溃、中继被核心拒绝、目标主机被拒）不经账号规则：有没有故障策略都只换号、不罚账号；客户端已经离开时插件返回的分类不采用 | 不等待形式由核心调 `ClassifyError`；等待形式由插件在返回值里给 `classification` / 握手和流内错误事件都分类 | `applyClassification`、`waited.go`；CONTRACTS §69 |
 | 订阅额度窗口（5 小时、周） | **插件配合**：在账号类型上声明 `quota.headers` | 一致 / 握手头和带头的错误事件 | `observeQuota`；CONTRACTS §44、§105 |
 
 ## 6. 读取系统设置与变更通知（核心 0.1.301 起）
@@ -365,13 +362,13 @@ if !sticky.Enabled { ... }
 | anthropic | 在已有进程（模型目录路由）里嵌入 `standard` 的 `apikey` 类型 | 同上 |
 | azure_openai（目录 `plugins/azure-openai`，市场） | `standard` 库，两个类型（v1 与按部署） | 同上；错误分类用 openai 预设的策略 |
 | vertex（市场） | 自己的 `BuildUpstream`；把核心交来的 `user-agent`、`x-goog-api-client` 作为默认头转发；`externalServices` 是 `googleapis.com`（全局与各区域的 Vertex AI 主机都在它下面；不取回） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6） |
-| bedrock（市场；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 自己的 `BuildUpstream`：把 Messages 请求装进 InvokeModel 信封，清洗 Bedrock 不接受的字段（顶层的 `model`、`stream`、`metadata`、`service_tier`、`inference_geo`、`speed`、`provider`，以及 `tools[].custom`、`cache_control.scope` 等），AK/SK 与临时凭证类型自己做 SigV4 签名，签名没有会话令牌时 `RemoveHeader("x-amz-security-token")`，流式请求给 `response_stream`；`externalServices` 是 `amazonaws.com`（各区域的运行时主机） | `ClassifyError`；账号测试请求同样自己签；一致性套件的两处例外见第 4 节 |
+| bedrock（市场；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 自己的 `BuildUpstream`：把 Messages 请求装进 InvokeModel 信封，清洗 Bedrock 不接受的字段（顶层的 `model`、`stream`、`metadata`、`service_tier`、`inference_geo`、`speed`、`provider` 总是删除，以及 `tools[].custom`、`cache_control.scope`；`cache_control.ttl` 只在认出模型版本且它不支持缓存 TTL 时删除，认不出的保留），客户端点名的 beta 和工具需要的 beta（computer use、tool search、tool examples）写进请求体的 `anthropic_beta`，AK/SK 与临时凭证类型自己做 SigV4 签名，鉴权头里没有会话令牌（Access Key 与 API Key 类型）时 `RemoveHeader("x-amz-security-token")`；是否流式只看 `meta.stream`（不看请求体的 `stream`，运营方参数覆盖加的 `stream:true` 不会把非流式请求变成流式），流式请求给 `response_stream`；`externalServices` 是 `amazonaws.com`（各区域的运行时主机） | `ClassifyError`；账号测试请求同样自己签；一致性套件的两处例外见第 4 节 |
 | codex | 自己的 `BuildUpstream`，HTTP 与 WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16）；全部头保持权威；两个类型 `passHeaders: []`，插件自己写出它发的每个头 |
 | volcengine | `ExecuteDefault`：普通端点不等待；两个视频提交端点是任务提交，等待并返回 `task`；任务观察用 `Monitor`（任务查询由核心从自己的快照回答，不调 `Execute`）。anthropic 平台只服务 `messages`（`endpoints: ["messages"]`），`count_tokens` 是核心的本地估算 | `ClassifyError`、`EstimateUsage`（视频任务）、`TaskSubmissionParser`、`TaskMonitor` |
 
 ## 8. 新插件自查
 
-- 实现 `UpstreamBuilder` 并让 `Execute` 是 `ExecuteDefault`；API Key 加基础地址的类型直接用 `standard` 库。
+- 实现 `UpstreamBuilder`，不写 `Execute`（SDK 跑 `ExecuteDefault`）；API Key 加基础地址的类型直接用 `standard` 库。
 - 权威头只放鉴权头和签名头，其余放默认头；改请求体只用 `jsonedit`。
 - 用量规则：流式规则把输出数映射在指名的终止事件上；非流式规则映射响应体。规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`。
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine）。

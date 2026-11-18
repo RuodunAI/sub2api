@@ -1,6 +1,6 @@
 # codex 插件：ChatGPT 账号（Codex 设备码 / Sign in with Codex）
 
-日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。0.1.12 按转发 V2 改写（第 18 节，需核心 ≥0.1.304）。0.2.0 起授权请求由核心经账号表单选的代理发出，插件不再联网（第 19 节，同批核心，CONTRACTS §117）。核心契约见 CONTRACTS §83、§112（WebSocket 每轮见 §83.6），额度见 §44、§69。第 4 节按现状写；第 6–17 节是各版本当时的记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields` 都已被第 18 节取代。
+日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。0.1.11 是线上最后发布的版本。下一个发布版本是 0.2.0（未发布，需核心 ≥0.1.304、UI 3.20）：按转发 V2 改写（第 18 节；开发中曾编号 0.1.12，从未发布，因为是不兼容的契约变化，与其他平台插件一样升次版本号），并且授权请求由核心经账号表单选的代理发出，插件不再联网（第 19 节，CONTRACTS §117）。核心契约见 CONTRACTS §83、§112（WebSocket 每轮见 §83.6），额度见 §44、§69。第 4 节按现状写；第 6–17 节是各版本当时的记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields` 都已被第 18 节取代。
 
 ## 1. 目标与边界
 
@@ -54,7 +54,7 @@
 
 - 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.websocket.v1`、`http.routes.v1`。
 - 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
-- `Execute` 是 SDK 的 `ExecuteDefault`（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
+- 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
@@ -284,11 +284,11 @@
 - 依据：ec2pool 测试实例上两个 `codex_device` 账号（id 2、3）已由管理员手动加上这两个模型；经临时 Key 各发一次流式 `/v1/responses`，上游都正常完成（`response.completed`，`model` 分别为 `gpt-6.2-astra`、`gpt-6.2-sol`）。设备码账号没有在线模型列表，`gpt-6.2` 其他后缀（如 luna、terra）在测试实例与线上都没有价格、也没有账号用到，未加。
 - 已有账号的模型列表不变，要用新模型请在账号上手动添加。`DefaultTestModel` 仍为 `gpt-6-luna`。
 
-## 18. 0.1.12：转发 V2（2026-11-18，需核心 ≥0.1.304）
+## 18. 0.2.0：转发 V2（2026-11-18，需核心 ≥0.1.304；开发中编号 0.1.12，未发布）
 
 核心与全部平台插件改成一条请求路径（CONTRACTS §112），codex 随之改写，行为对客户端不变：
 
-- 插件拿到完整请求体，在 `BuildUpstream` 里用 `sdk/pluginsdk/jsonedit` 改写（第 4 节列的几项），交回最终字节；`Execute` 是 `ExecuteDefault`。原来的“清单声明请求字段 + 补丁”、每请求最多 256 个 system → developer 改写的上限、字符串 input 超过插件 gRPC 接收上限（4 MiB）就失败的限制都没有了。
+- 插件拿到完整请求体，在 `BuildUpstream` 里用 `sdk/pluginsdk/jsonedit` 改写（第 4 节列的几项），交回最终字节；插件不写 `Execute`，SDK 用 `ExecuteDefault` 跑它。原来的“清单声明请求字段 + 补丁”、每请求最多 256 个 system → developer 改写的上限、字符串 input 超过插件 gRPC 接收上限（4 MiB）就失败的限制都没有了。
 - 清单删掉 `platform.execute.v1` 和两个账号类型的 `requestFields`；`session_id` / `conversation_id` 改从请求体的 `prompt_cache_key` 算（算法不变）。
 - 不再写执行记录：以前每个 codex 请求在 `plugin_executions` 写三次、插件崩溃会切断在途的流；现在核心在 `Execute` 返回后才发请求，插件崩溃或重启不影响在途的流。
 - 插件的头全部保持权威头，运营方的请求头透传和覆盖改不了它们（与改写前相同）。
@@ -301,9 +301,9 @@
 
 - 现象：账号配了代理（本机 IP 到 OpenAI 不通或会被风控），但设备码申请、轮询和两种登录的换令牌是插件用自己的 `http.Client` 直连 `auth.openai.com`，从服务器本机 IP 出去。账号建好后的上游、刷新（`BuildRefreshRequest`，核心按账号 `proxy_id` 发）、重置次数（`SendAccountRequest`）一直走账号代理，不受影响；vertex 的刷新同样由核心经账号代理发。
 - 现在：`CodexAuthForm` 收到编辑器的 `proxyTicket`，两种登录开始时各要一张票据（表单当前的代理选择：已有代理、粘贴的代理串、不用代理），交给 `/auth/device/start` 或 `/auth/codex/start`，插件存进授权会话。四类请求（`/api/accounts/deviceauth/usercode`、`/api/accounts/deviceauth/token`、两种登录的 `/oauth/token`）都改成 `pluginsdk.Fetch` 带会话里的票据，核心解开票据、确认是同一个管理员、复查他能用这个代理后从代理发出；设备码的每次轮询都走同一个代理。
-- 发给 OpenAI 的内容不变：方法 POST、路径、请求头（`Content-Type`、`Accept: application/json`、`User-Agent: sup2api-codex/<版本>`、`Originator: sup2api`）和请求体逐字节相同（`oauth_proxy_test.go` 钉住），变的只有出口。
+- 发给 OpenAI 的内容不变：方法 POST、路径、请求头（`Content-Type`、`Accept: application/json`、`User-Agent: sup2api-codex/<版本>`、`Originator: sup2api`）和请求体逐字节相同（`oauth_proxy_test.go` 钉住），变的只有出口。`User-Agent` 里的版本取自代码常量 `Version`（与清单一致），所以相对线上的 0.1.11，0.2.0 发出的授权、上游、刷新、重置次数请求都带 `User-Agent: sup2api-codex/0.2.0`（原为 `sup2api-codex/0.1.11`），这是版本号本身的变化。
 - 错误：传输失败（核心发了但连不上）与以前一样：开始、换令牌回 502 `upstream_unavailable`，轮询回 `pending` 下次再问。核心拒绝发送（票据不是这个管理员的、权限被收回、代理被删）是新的 400 `proxy_refused`，轮询回 `error`，会话结束（重试没用）；界面把 `proxy_refused` 当成会话已结束，提示重新生成链接。
 - 删除：插件自己的 `http.Client`、20 秒 `authTimeout`、1 MiB 读上限；清单的 `net`（沙箱不再让插件联网）。轮询锁的 ttl 原来写成 `2*authTimeout+10s`，改成同值的 50 秒。
-- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304`（同批核心），版本仍是未发布的 0.2.0。会话里多了票据，升级时进行中的授权要重新开始。
+- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
 - 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
 
