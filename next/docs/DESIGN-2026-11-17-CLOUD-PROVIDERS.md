@@ -36,7 +36,7 @@
    - 请求头的模板里有变量取不到值，这个头就不写（`sdk/upstream/build.go:136-141`）。
    - 路由只按协议选，不能按账号设置分支（`sdk/upstream/build.go:44-53`）；基地址固定是账号的 `base_url`，不能按别的字段拼主机（`sdk/upstream/build.go:86-89`）。
    - 声明式类型一定要有 `api_key`（`sdk/pluginsdk/apikey/apikey.go:176-200`）。
-   - `classify` 只能是 `openai`、`anthropic`、`gemini`（`sdk/upstream/check.go:74-76`）。这是设计时的状态；实现后多了 `azure_openai`（16.5 第 5 条）。
+   - `classify` 只能是 `openai`、`anthropic`、`gemini`（`sdk/upstream/check.go:74-76`）。实现中一度加过 `azure_openai`，已撤掉（16.5 第 5 条）。
    - 清单的路由必须和类型服务的端点一一对应（`sdk/manifest/check/upstream.go:32-44`）。
 2. **OpenAI 插件**。只有 `api_key`、`base_url`（`plugins/openai/manifest.json`、`forms/apikey.*`）。`openai-organization`、`openai-project` 在 openai 平台的 `passHeaders` 里，客户端带了就原样转给上游。清单版本 0.4.3，线上是 0.4.2（`plugins/released.json`）。预设的 key 校验要求 `sk-` / `sess-` 开头（`sdk/platforms/upstream/openai.json`），所以 Azure 的密钥填不进现有 openai 账号。
 3. **网关热路径**。`attempt` 调插件的 `BuildUpstreamRequest`（`server/internal/gateway/dispatch.go:627`），`forwardBuilt` 应用补丁得到最终请求体（`:755`、`:812`），按层写请求头（`:824-833`），发出（`:876`）。响应只认 `text/event-stream` 和 JSON（`server/internal/gateway/forward.go:63-76`）；流式请求在分流前有一次内容类型嗅探（`dispatch.go:923`）。
@@ -53,7 +53,7 @@
 | 上游 | 账号类型（鉴权） | 插件 | 插件形态 | 需要核心改动 |
 |---|---|---|---|---|
 | OpenAI | `apikey`（原有，加组织 / 项目） | `openai` 0.4.4 | 只有清单 | 无 |
-| Azure OpenAI | `azure_v1`（API Key，v1 接口） | `azure_openai` 0.1.0（新，目录 `plugins/azure-openai`） | 只有清单 | 保留键一行（见表下）+ 分类策略 `azure_openai`（6.3） |
+| Azure OpenAI | `azure_v1`（API Key，v1 接口） | `azure_openai` 0.1.0（新，目录 `plugins/azure-openai`） | 只有清单 | 保留键一行（见表下） |
 | Azure OpenAI | `azure_deployment`（API Key，经典接口） | 同上 | 只有清单 | 同上 |
 | Vertex AI | `vertex_sa`（服务账号 JSON） | `vertex` 0.1.0（新） | gRPC 进程 | 保留键一行；令牌用 §48 现有能力 |
 | Vertex AI | `vertex_authorized_user`（ADC 用户凭证 JSON） | 同上 | gRPC 进程 | 同上 |
@@ -62,7 +62,7 @@
 | Bedrock | `bedrock_aksk`（长期 AK/SK） | 同上 | gRPC 进程 | 保留键一行 + 请求签名（8.1）+ 响应流格式 |
 | Bedrock | `bedrock_sts`（临时凭证） | 同上 | gRPC 进程 | 同上 |
 
-保留键一行：每个新的第一方插件的键都要加进核心的保留键列表（`server/internal/plugin/install/reserved.go` 的 `reservedKeys`，这次加了 `azure_openai`、`bedrock`、`vertex`），否则 `TestReservedCoverRepo` 失败。所以新增插件并不是“核心零改动”。它只影响没有官方签名的手动上传；Vertex 的功能不依赖它，从市场安装到更早的核心（`hostCompat` 下限 0.1.290）上照样能用。Azure 不行：它的清单用了分类策略名 `azure_openai`，更早的核心不认识这个名字、会拒绝清单，所以 `hostCompat` 下限是 0.1.304（6.3）。
+保留键一行：每个新的第一方插件的键都要加进核心的保留键列表（`server/internal/plugin/install/reserved.go` 的 `reservedKeys`，这次加了 `azure_openai`、`bedrock`、`vertex`），否则 `TestReservedCoverRepo` 失败。所以新增插件并不是“核心零改动”。它只影响没有官方签名的手动上传；Vertex 和 Azure 的功能不依赖它，从市场安装到更早的核心（`hostCompat` 下限 0.1.290）上照样能用。
 
 三个新插件都只进市场，不进内置列表（`deploy/docker/build-go.sh:165-166` 不改；市场列表按 `plugins/*` 自动发现，`tools/sub2api-plugin/scripts/build-demo.sh:105-118`）。
 
@@ -135,7 +135,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 ### 6.2 转发
 
-共同部分：`preset: "openai"`；`baseURL: {default: null, required: true, stripSuffixes: ["/openai/v1", "/openai"]}`（用户连 `/openai/v1` 一起粘贴也行）；`auth: {type: "header", name: "api-key", value: "{api_key}"}`；`credentials.keyValidator: null`；`models: null`；`filterFields: []`（没有采用，见 16.5 第 2 条）；`classify: "azure_openai"`（6.3）。
+共同部分：`preset: "openai"`；`baseURL: {default: null, required: true, stripSuffixes: ["/openai/v1", "/openai"]}`（用户连 `/openai/v1` 一起粘贴也行）；`auth: {type: "header", name: "api-key", value: "{api_key}"}`；`credentials.keyValidator: null`；`models: null`；`filterFields: []`（没有采用，见 16.5 第 2 条）；不写 `classify`，用预设的 `openai` 策略（6.3）。
 
 | 类型 | 协议 | 上游路径 |
 |---|---|---|
