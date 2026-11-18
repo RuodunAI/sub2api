@@ -7820,7 +7820,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - `exception` 或 `error` 消息：输出 `event: error`，`data: {"type":"error","error":{"type":<异常类型>,"message":<消息>}}`，然后流结束。这是 Anthropic 流错误的形状，用量规则把它记为上游流错误并交给故障策略。
   - 其他消息、没有 `bytes` 的事件跳过。
   - 消息由官方库解码（`github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream`）；帧头由 `awseventstream` 自己读，长度在读取和分配之前检查（官方解码器不限制长度）。一条消息里头名不重复：带同名头的消息（不论值的类型）算帧损坏，所以 `:message-type`、`:event-type`、`:exception-type` 各只有一个值（官方解码器对同名的头只留最后一个，AWS 不发同名的头）。
-  - 帧损坏（长度不合法、两处 CRC 任一不对、头块格式错、头名重复）、截断，或单条消息超过 4 MiB（`MaxChunkMessageSize`；格式自己的上限是 16 MiB）：读取出错，按上游流中断处理。
+  - 帧损坏（长度不合法、超过格式自己的上限 16 MiB、两处 CRC 任一不对、头块格式错、头名重复）或截断：读取出错，按上游流中断处理。格式允许的任何长度的消息整条读出，缓冲随到达的字节增长，不按声明的长度预先分配（转发 V2 收尾起；此前适配器在单条消息超过 4 MiB（`MaxChunkMessageSize`）时切断流）。
   - 解码器的负载缓冲随收到的字节成倍增长，帧头声明的长度不预留内存；超过 256 KiB 的缓冲不留给下一条消息。
   - 别的事件形状（如 ConverseStream）不在这个名字之内，要另起格式名、另写适配器；`awseventstream.Decoder` 只管分帧，可以共用。
 - **位置**（`adaptResponseStream`）：上游回答 2xx 之后、流的内容类型嗅探（§104）之前。回答的 `Content-Type` 正好是该格式的媒体类型时，把响应体换成适配器、`Content-Type` 改成 `text/event-stream`、去掉 `Content-Length`。此后的中继、用量规则、协议转换、首 token 计时、空闲超时、断开计费看到的都是普通 SSE。
@@ -8336,6 +8336,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 每个插件实例 1024 个并发 `Execute` | 等不到槽位 503 | 没有兜底：并发只由账号和 API Key 的槽位限制 |
 | `RequestMeta.path_params`、`query` 32 个、名 64 字节、值 512 字节 | 截断 | 客户端发的大参数整份交给插件 |
 | SSE 单行 16 MiB | 切断流 | 超长的一行整行进内存 |
+| Bedrock 回答流（AWS event stream）单条消息 4 MiB（`awseventstream.MaxChunkMessageSize`，连同 `WithMaxMessageSize`、`ErrTooLarge`） | 切断流 | 一条消息最多到格式自己的 16 MiB 整条进内存；长度和 CRC 的一致性检查是协议本身的，保留 |
 | 协议转换读的非流式回答 32 MiB；只流式上游攒下的内容 32 MiB | 502 | 整份进内存 |
 | 非流式 JSON 回答读用量的缓冲 32 MiB | 超过的部分读不到用量，**按 0 计费** | 按整个回答计费（钱算对了）；回答在读完用量之前整份留在内存里一次 |
 | 读用量插件看到的观察：默认 256 KiB、64 条事件、请求字段单值 4 KiB / 总量 32 KiB、`detail_json` 4 KiB | 不给、略去或存 `{"_truncated":true}` | 插件拿到整份回答、全部列出的事件和整个字段值，gRPC 消息和插件内存随之变大；清单自己写了 `usageMaxBytes` 的照旧（下限 1 KiB，不再有上限） |

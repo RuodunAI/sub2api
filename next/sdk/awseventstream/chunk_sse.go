@@ -12,12 +12,6 @@ import (
 // ChunkSSEReader.
 const FormatChunk = "aws-eventstream-chunk"
 
-// MaxChunkMessageSize is the largest message ChunkSSEReader accepts. One
-// message carries one stream event of a model, base64 in JSON; 4 MiB is far
-// above those and keeps a stream from holding the format's 16 MiB (and the
-// decoded copies of it) per message.
-const MaxChunkMessageSize = 4 << 20
-
 // ChunkSSEReader presents an event stream of "chunk" events - what Bedrock's
 // InvokeModelWithResponseStream answers, each event wrapping one of the
 // model's native stream events - as server-sent events:
@@ -32,8 +26,9 @@ const MaxChunkMessageSize = 4 << 20
 //     event of their own in the stream use it, and the host's relaying reads
 //     it as the upstream's error;
 //   - any other message, and an event without bytes, is skipped;
-//   - a corrupt, truncated or oversized (MaxChunkMessageSize) message fails
-//     the read: the stream was cut. A message repeating a header name is
+//   - a corrupt or truncated message fails the read: the stream was cut. A
+//     message of any length the format allows is read whole; its buffer
+//     grows with the bytes that arrive. A message repeating a header name is
 //     corrupt (Decoder.Decode), so the type of a message is never ambiguous.
 //
 // It is not a reader for event streams in general: one whose events carry
@@ -54,7 +49,7 @@ type ChunkSSEReader struct {
 // stream r. Closing and cancelling stay with r: an error of r is returned as
 // it is.
 func NewChunkSSEReader(r io.Reader) *ChunkSSEReader {
-	return &ChunkSSEReader{dec: NewDecoder(r, WithMaxMessageSize(MaxChunkMessageSize))}
+	return &ChunkSSEReader{dec: NewDecoder(r)}
 }
 
 // Read implements io.Reader.

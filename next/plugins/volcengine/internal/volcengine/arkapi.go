@@ -71,8 +71,8 @@ const assetMaxAttempts = 3
 const assetRetryDelay = 200 * time.Millisecond
 
 // assetMaxResponseBody caps what is read back. A control-plane answer is a
-// small JSON document; anything larger is not one, and reading it into the
-// plugin's 64 MiB would be the wrong way to find that out.
+// small JSON document; anything larger is not one, and reading it whole into
+// the plugin's memory would be the wrong way to find that out.
 const assetMaxResponseBody = 1 << 20 // 1 MiB
 
 // assetContentType is both sent and signed. The charset is part of it because
