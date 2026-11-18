@@ -418,7 +418,7 @@ func TestFailurePolicyRechecksChangedCandidateModels(t *testing.T) {
 	e := newEnv(t)
 	e.setFailurePolicy(testFailurePolicy())
 	e.up.set("acc-1", &upstreamRule{status: 503})
-	e.plat.buildHook = func(_ context.Context, in *pluginv1.BuildUpstreamRequestRequest) error {
+	e.plat.buildHook = func(_ context.Context, in *pluginv1.ExecuteRequest) error {
 		if in.Account.Id == 1 {
 			e.accounts.mu.Lock()
 			e.accounts.accounts[2].Models = []string{"another-model"}

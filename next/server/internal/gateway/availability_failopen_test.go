@@ -257,12 +257,7 @@ func TestAvailabilityFailurePolicyTakesNoAccountAction(t *testing.T) {
 	p.AccountRules = []FailureRule{{ID: "cool", Name: "Cool", Enabled: true, Action: "cooldown", CooldownSeconds: 60,
 		Match: FailureMatch{Source: "core", StatusCodes: "429,503"}}}
 	e.setFailurePolicy(p)
-	e.plat.route = func(in *pluginv1.BuildUpstreamRequestRequest) string {
-		if in.Account.Id == 1 {
-			source.deny(1)
-		}
-		return e.up.srv.URL + "/v1/messages"
-	}
+	denyAfterPrecheck(e, source, func(id int64) bool { return id == 1 })
 	r := e.messages(body(testModel, false))
 	require.Equal(t, 200, r.status, string(r.body))
 	require.Equal(t, []string{"acc-2"}, e.up.keys())

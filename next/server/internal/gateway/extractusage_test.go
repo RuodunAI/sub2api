@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -16,9 +15,17 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-// Plugin-reported usage: endpoints declaring usage.source "plugin" have their
-// token usage read by PlatformService.ExtractUsage after the response has
-// been forwarded (CONTRACTS §25.3).
+// Plugin-reported usage: an endpoint declaring usage.source "plugin" is
+// served in the wait form of Execute (CONTRACTS §25.3, design §4.3). The
+// plugin relays through ExecutionClient.Relay, which sends the request,
+// relays the answer and hands the plugin the bounded observation; the plugin
+// reads the usage from it inside Execute (here fakeExecute calls the fake's
+// ExtractUsage) and returns it. The gateway commits those facts through
+// core.ExecutionRecords (the committed record lands on e.settler.ch like a
+// submitted one) before a buffered answer is published. A plugin that cannot
+// read the usage answers host_usage: the declarative rules bill it, marked
+// usage_extract=fallback. The other rows of the wait form are in
+// zz_b_waited_test.go.
 
 // ---------------------------------------------------------------- environment
 
@@ -109,8 +116,8 @@ func TestPluginUsageNonStream(t *testing.T) {
 	if res.status != 200 {
 		t.Fatalf("status %d %s", res.status, res.body)
 	}
-	// The record is submitted only once the plugin has answered, so waiting
-	// for it is what makes the call observable.
+	// The record is committed only once Execute returned the plugin's
+	// facts, so waiting for it is what makes the call observable.
 	rec := e.record()
 	if pp.extractCount() != 1 {
 		t.Fatalf("ExtractUsage called %d times", pp.extractCount())
@@ -158,13 +165,17 @@ func TestPluginUsageNonStream(t *testing.T) {
 	if !rec.Billable || rec.Price == nil || rec.Price.ID != 9 {
 		t.Fatalf("billing %+v %+v", rec.Billable, rec.Price)
 	}
+	// The facts were committed through the execution records.
+	if st := e.settler.executionStates(); len(st) != 1 || st[0] != core.ExecutionStateCommitted {
+		t.Fatalf("execution states %v", st)
+	}
 }
 
 // ---------------------------------------------------------------- streaming
 
 // A streaming response is relayed as it arrives; the host keeps only the
-// events the endpoint named and hands those to the plugin once the stream is
-// over. The upstream sends four events here and exactly one is collected,
+// events the endpoint named and hands those to the plugin in the
+// observation once the stream is over. The upstream sends four events here and exactly one is collected,
 // which is the assertion that matters: the stream is not buffered.
 func TestPluginUsageStreamCollectsOnlyDeclaredEvents(t *testing.T) {
 	e, pp := usageEnv(t, pluginUsageRules())
@@ -176,7 +187,7 @@ func TestPluginUsageStreamCollectsOnlyDeclaredEvents(t *testing.T) {
 		t.Fatalf("status %d %s", res.status, res.body)
 	}
 	// input_tokens echoes how many events the host handed over; the record
-	// arrives only after the plugin answered, so waiting for it orders this.
+	// is committed only after Execute returned, so waiting for it orders this.
 	rec := e.record()
 	in := pp.lastExtract()
 	if len(in.GetEvents()) != 1 {
@@ -216,7 +227,7 @@ func fatStream(t *testing.T, n, size int) *httptest.Server {
 func TestPluginUsageStreamStopsAtByteBudget(t *testing.T) {
 	e, pp := usageEnvEP(t, pluginUsageRules(), func(ep *manifest.Endpoint) { ep.UsageMaxBytes = 1 << 10 })
 	up := fatStream(t, 20, 400)
-	pp.route = func(*pluginv1.BuildUpstreamRequestRequest) string { return up.URL }
+	pp.route = func(*pluginv1.ExecuteRequest) string { return up.URL }
 	pp.extract = func(_ context.Context, in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 		return report(int64(len(in.GetEvents())), 0), nil
 	}
@@ -276,8 +287,8 @@ func TestUsageCaptureCopiesEventData(t *testing.T) {
 
 // An endpoint that only starts a job answers {"id": ...}; the size of the job
 // is in the request. usageRequestFields hands ExtractUsage exactly the
-// declared paths - as raw JSON, keyed by path, like BuildUpstreamRequest's
-// fields - and nothing else of the body. A value over the per-value cap is
+// declared paths in the observation - as raw JSON, keyed by path - and
+// nothing else of the body. A value over the per-value cap is
 // not cut, it is left out and NAMED, so the plugin can tell "not sent" from
 // "not carried".
 func TestPluginUsageRequestFields(t *testing.T) {
@@ -351,8 +362,8 @@ func TestUsageRequestFieldsTotalBudget(t *testing.T) {
 
 // A body with invalid UTF-8 inside a string is not JSON (RFC 8259 §8.1), and
 // gjson does not check that. Left in, the bytes would be copied into
-// RequestMeta.model and every plugin's fields map, where proto.Marshal refuses
-// them: every plugin call of the request fails, the client gets a 5xx and the
+// RequestMeta.model, where proto.Marshal refuses
+// it: every plugin call of the request fails, the client gets a 5xx and the
 // usage row is refused by PostgreSQL too. It is refused here, as the 400 it
 // is, before anything is asked.
 func TestInvalidUTF8BodyIsRejectedAsInvalidJSON(t *testing.T) {
@@ -467,11 +478,13 @@ func TestPluginUsageDetailJSONLimits(t *testing.T) {
 
 // ---------------------------------------------------------------- failure
 
-// A plugin that cannot answer never turns an already-delivered response into
-// an error. The request keeps its 200, the record is billed from whatever the
+// A plugin that cannot read the usage answers host_usage (the SDK's
+// ExecuteDefault does so when ExtractUsage fails or reports nothing): the
+// request keeps its 200, the record is committed and billed from whatever the
 // declarative rules found, and the fallback is recorded so it can be found
 // later - for this endpoint the rules find nothing, which is exactly the case
-// worth alerting on.
+// worth alerting on. A plugin that overruns its segment instead fails
+// Execute: that execution is unreported (zz_b_waited_test.go).
 func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 	cases := map[string]func(*fakePlatform){
 		"unimplemented": func(p *fakePlatform) { p.extract = nil },
@@ -485,21 +498,10 @@ func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 				return nil, nil
 			}
 		},
-		"timeout": func(p *fakePlatform) {
-			p.extract = func(ctx context.Context, _ *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-				<-ctx.Done()
-				return nil, ctx.Err()
-			}
-		},
 	}
 	for name, setup := range cases {
 		t.Run(name, func(t *testing.T) {
 			e, pp := usageEnv(t, pluginUsageRules())
-			if name == "timeout" {
-				gw := defaultGatewaySettings()
-				gw.PlatformHotpathTimeoutMs = 50
-				e.setSettings(gw, StickySettings{})
-			}
 			setup(pp)
 			res := e.do("/pu/v1/chat", body(testModel, false), nil)
 			if res.status != 200 {
@@ -516,6 +518,10 @@ func TestPluginUsageFallsBackWhenThePluginFails(t *testing.T) {
 			// the trade the marker exists to make visible.
 			if rec.Tokens != (core.UsageTokens{}) {
 				t.Fatalf("tokens %+v", rec.Tokens)
+			}
+			// host_usage is a fact like any other: committed.
+			if st := e.settler.executionStates(); len(st) != 1 || st[0] != core.ExecutionStateCommitted {
+				t.Fatalf("execution states %v", st)
 			}
 		})
 	}
@@ -540,33 +546,6 @@ func TestPluginUsageFallbackUsesTheDeclarativeRules(t *testing.T) {
 	}
 }
 
-// A platform whose plugin has no PlatformService (declared before the
-// install-time check existed) falls back too, instead of 500-ing a response
-// the client already has.
-func TestPluginUsageWithoutPlatformClient(t *testing.T) {
-	pp := &fakePlatform{}
-	e := newEnv(t, func(e *env) {
-		pp.base = e.up.srv.URL
-		ep := pluginUsageEndpoint()
-		ep.Response = manifest.EndpointResp{NonStream: "json"}
-		pf := manifest.Platform{ID: "pu", Usage: pluginUsageRules(), Endpoints: []manifest.Endpoint{ep}}
-		info := e.addAccountType("pu", "pu_key", pp, manifest.AccountPlatform{Platform: "pu"})
-		e.gen.addPlatform(info, pf) // no client
-		e.accounts.addTyped(testGroup, 9, 100, "pu-9", "pu", "pu_key")
-		e.accounts.groups[testGroup] = []int64{9}
-	})
-	res := e.do("/pu/v1/chat", body(testModel, false), nil)
-	if res.status != 200 {
-		t.Fatalf("status %d %s", res.status, res.body)
-	}
-	if rec := e.record(); rec.UsageExtract != core.UsageExtractFallback {
-		t.Fatalf("usage extract %q", rec.UsageExtract)
-	}
-	if pp.extractCount() != 0 {
-		t.Fatalf("ExtractUsage called %d times without a platform client", pp.extractCount())
-	}
-}
-
 // ---------------------------------------------------------------- not declared
 
 // Endpoints that say nothing about usage.source keep the behaviour they had
@@ -587,35 +566,5 @@ func TestExtractUsageNotCalledWithoutDeclaration(t *testing.T) {
 	}
 	if e.plat.extractCount() != 0 {
 		t.Fatalf("ExtractUsage called %d times", e.plat.extractCount())
-	}
-}
-
-// ---------------------------------------------------------------- latency
-
-// ExtractUsage runs after the last byte reached the client: a plugin that
-// blocks in it delays the usage record, never the response.
-func TestExtractUsageRunsAfterTheResponse(t *testing.T) {
-	e, pp := usageEnv(t, pluginUsageRules())
-	gw := defaultGatewaySettings()
-	gw.PlatformHotpathTimeoutMs = 300
-	e.setSettings(gw, StickySettings{})
-	pp.extract = func(ctx context.Context, _ *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-		time.Sleep(150 * time.Millisecond)
-		return report(1, 1), nil
-	}
-	start := time.Now()
-	res := e.do("/pu/v1/chat", body(testModel, true), nil)
-	clientDone := time.Since(start)
-	if res.status != 200 {
-		t.Fatalf("status %d", res.status)
-	}
-	rec := e.record()
-	if rec.Tokens.Input != 1 {
-		t.Fatalf("tokens %+v", rec.Tokens)
-	}
-	// The record waited for the plugin; the client did not. Compared against
-	// the sleep so the assertion cannot pass by being slow everywhere.
-	if clientDone >= 150*time.Millisecond {
-		t.Fatalf("client waited %s for a call that must run after its last byte", clientDone)
 	}
 }

@@ -1,0 +1,363 @@
+package gateway
+
+// The wait form of Execute (design §4.3): an endpoint whose usage the plugin
+// reads. Relay sends inside the plugin's call and returns the observation;
+// the facts Execute returns are committed through core.ExecutionRecords, or
+// the execution is closed unreported (a free record, nothing billed, a
+// held-back answer not published).
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+)
+
+// waitedPlugin is a fakePlatform whose Execute is the test's: exec gets the
+// fake (to build the request) and the client.
+type waitedPlugin struct {
+	*fakePlatform
+	exec func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error)
+}
+
+func (p *waitedPlugin) Execute(ctx context.Context, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+	return p.exec(ctx, p.fakePlatform, in, client)
+}
+
+// relayThen builds and relays like ExecuteDefault, then answers what answer
+// returns for the relay's outcome.
+func relayThen(answer func(out *pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error)) func(context.Context, *fakePlatform, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error) {
+	return func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+		req, err := p.buildUpstream(ctx, in)
+		if err != nil {
+			return core.ExecutionResult{}, err
+		}
+		if err := client.Check(ctx, req); err != nil {
+			return core.ExecutionResult{}, err
+		}
+		out, err := client.Relay(ctx, req)
+		if err != nil {
+			return core.ExecutionResult{}, err
+		}
+		res, err := answer(out)
+		return core.ExecutionResult{Response: res}, err
+	}
+}
+
+// waitedEnv is usageEnv with the account type's plugin replaced by a
+// waitedPlugin running exec.
+func waitedEnv(t *testing.T, exec func(context.Context, *fakePlatform, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error)) (*env, *fakePlatform) {
+	t.Helper()
+	e, pp := usageEnv(t, pluginUsageRules())
+	for i := range e.gen.accountTypes {
+		if e.gen.accountTypes[i].Plugin.Key == "pu" {
+			e.gen.accountTypes[i].Client = &waitedPlugin{fakePlatform: pp, exec: exec}
+		}
+	}
+	return e, pp
+}
+
+// assertUnreported checks the record of an execution closed without facts.
+func assertUnreported(t *testing.T, e *env) {
+	t.Helper()
+	rec := e.record()
+	if rec.Success || rec.Billable || rec.ErrorType != core.UsageErrorUnreported || rec.UsageExtract != core.UsageExtractUnreported ||
+		rec.Tokens != (core.UsageTokens{}) {
+		t.Fatalf("free record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateUnreported}) {
+		t.Fatalf("execution states %v", st)
+	}
+	e.noRecord()
+}
+
+// Facts that do not come - no report, a report of the wrong kind, an
+// Execute error after the relay - close the execution unreported: the
+// non-streamed answer is held back (503, the upstream's body never reaches
+// the client) and the record is the free one.
+func TestWaitedRelayWithoutFactsIsUnreported(t *testing.T) {
+	cases := map[string]func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error){
+		"nothing": func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+			return &pluginv1.ExecuteResponse{}, nil
+		},
+		"task_on_non_task_endpoint": func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+			return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Task{Task: &pluginv1.TaskSubmission{UpstreamRefId: "t-1"}}}, nil
+		},
+		"execute_error": func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+			return nil, errors.New("plugin failed after the relay")
+		},
+	}
+	for name, answer := range cases {
+		t.Run(name, func(t *testing.T) {
+			e, _ := waitedEnv(t, relayThen(answer))
+			res := e.do("/pu/v1/chat", body(testModel, false), nil)
+			if res.status != 503 || strings.Contains(string(res.body), "hello") {
+				t.Fatalf("held-back answer published: %d %s", res.status, res.body)
+			}
+			if n := len(e.up.keys()); n != 1 {
+				t.Fatalf("upstream called %d times", n)
+			}
+			assertUnreported(t, e)
+		})
+	}
+}
+
+// A streamed answer already reached the client when the facts fail to come:
+// the record is still the free unreported one.
+func TestWaitedRelayStreamWithoutFactsIsUnreported(t *testing.T) {
+	e, _ := waitedEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		return &pluginv1.ExecuteResponse{}, nil
+	}))
+	e.do("/pu/v1/chat", body(testModel, true), nil)
+	assertUnreported(t, e)
+}
+
+// A failed commit is retried; the facts are committed once and the answer
+// published.
+func TestWaitedRelayCommitRetried(t *testing.T) {
+	e, pp := usageEnv(t, pluginUsageRules())
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		return report(3, 4), nil
+	}
+	var calls atomic.Int32
+	e.settler.commitErr = func(core.ExecutionCommit) error {
+		if calls.Add(1) == 1 {
+			return errors.New("database outage")
+		}
+		return nil
+	}
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || !strings.Contains(string(res.body), "hello") {
+		t.Fatalf("status %d %s", res.status, res.body)
+	}
+	rec := e.record()
+	if !rec.Success || !rec.Billable || rec.Tokens.Input != 3 || rec.Tokens.Output != 4 || rec.UsageExtract != core.UsageExtractPlugin {
+		t.Fatalf("record %+v", rec)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("commit tried %d times", calls.Load())
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	e.noRecord()
+}
+
+// A commit that is refused for good (a conflict) or keeps failing until the
+// commit deadline closes the execution unreported.
+func TestWaitedRelayCommitFailsUnreported(t *testing.T) {
+	for _, name := range []string{"conflict", "outage"} {
+		t.Run(name, func(t *testing.T) {
+			if name == "outage" {
+				if testing.Short() {
+					t.Skip("waits out the commit deadline")
+				}
+				t.Parallel()
+			}
+			e, pp := usageEnv(t, pluginUsageRules())
+			pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+				return report(3, 4), nil
+			}
+			e.settler.commitErr = func(core.ExecutionCommit) error {
+				if name == "conflict" {
+					return core.ErrConflict
+				}
+				return errors.New("database outage")
+			}
+			start := time.Now()
+			res := e.do("/pu/v1/chat", body(testModel, false), nil)
+			if res.status != 503 || strings.Contains(string(res.body), "hello") {
+				t.Fatalf("held-back answer published: %d %s", res.status, res.body)
+			}
+			if name == "outage" && time.Since(start) < commitTimeout-time.Second {
+				t.Fatalf("gave up after %s, before the commit deadline", time.Since(start))
+			}
+			assertUnreported(t, e)
+		})
+	}
+}
+
+// An upstream error in the wait form is classified by the plugin inside
+// Execute (ExecuteResponse.classification) and that classification applies:
+// here a 500 cools the account down and fails over. Without one the default
+// classification applies (a 500 fails over, without an account effect).
+func TestWaitedRelayUpstreamErrorClassification(t *testing.T) {
+	for _, name := range []string{"plugin", "default"} {
+		t.Run(name, func(t *testing.T) {
+			var e *env
+			var pp *fakePlatform
+			if name == "plugin" {
+				e, pp = usageEnv(t, pluginUsageRules())
+			} else {
+				e, pp = waitedEnv(t, relayThen(func(out *pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+					if out.GetError() != nil {
+						return &pluginv1.ExecuteResponse{}, nil
+					}
+					return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(1, 2)}}, nil
+				}))
+			}
+			pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+				return report(1, 2), nil
+			}
+			e.accounts.addTyped(testGroup, 10, 50, "pu-10", "pu", "pu_key")
+			e.up.set("pu-9", &upstreamRule{status: 500})
+			res := e.do("/pu/v1/chat", body(testModel, false), nil)
+			if res.status != 200 || strings.Join(e.up.keys(), ",") != "pu-9,pu-10" {
+				t.Fatalf("failover: %d %v %s", res.status, e.up.keys(), res.body)
+			}
+			rec := e.record()
+			if !rec.Success || rec.Attempts != 2 || *rec.AccountID != 10 || rec.Tokens.Output != 2 {
+				t.Fatalf("record %+v", rec)
+			}
+			pp.mu.Lock()
+			classified := len(pp.classify)
+			pp.mu.Unlock()
+			cooled := slices.Contains(e.accounts.cooldowns, 9)
+			if name == "plugin" && (classified != 1 || !cooled) || name == "default" && (classified != 0 || cooled) {
+				t.Fatalf("classify calls %d, cooldowns %v", classified, e.accounts.cooldowns)
+			}
+			if st := e.settler.executionStates(); !slices.Contains(st, core.ExecutionStateCommitted) {
+				t.Fatalf("execution states %v", st)
+			}
+			e.noRecord()
+		})
+	}
+}
+
+// A 4xx the plugin returns to the client reaches it as the upstream sent it,
+// without failover.
+func TestWaitedRelayUpstreamClientError(t *testing.T) {
+	e, _ := usageEnv(t, pluginUsageRules())
+	e.accounts.addTyped(testGroup, 10, 50, "pu-10", "pu", "pu_key")
+	e.up.set("pu-9", &upstreamRule{status: 400})
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 400 || strings.Join(e.up.keys(), ",") != "pu-9" {
+		t.Fatalf("client error: %d %v %s", res.status, e.up.keys(), res.body)
+	}
+	if rec := e.record(); rec.Success || rec.Billable || rec.StatusCode != 400 {
+		t.Fatalf("record %+v", rec)
+	}
+}
+
+// The plugin giving up its host call while the upstream still streams (a
+// crash, a kill) cuts the upstream exchange; nothing is billed.
+func TestWaitedRelayPluginCrashCutsTheUpstream(t *testing.T) {
+	var e *env
+	e, _ = waitedEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+		req, err := p.buildUpstream(ctx, in)
+		if err != nil {
+			return core.ExecutionResult{}, err
+		}
+		if err := client.Check(ctx, req); err != nil {
+			return core.ExecutionResult{}, err
+		}
+		rctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go func() {
+			// The crash: once the upstream holds the stream.
+			for len(e.up.keys()) == 0 {
+				time.Sleep(5 * time.Millisecond)
+			}
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+		if _, err := client.Relay(rctx, req); err != nil {
+			return core.ExecutionResult{}, err
+		}
+		return core.ExecutionResult{}, errors.New("plugin process exited")
+	})
+	hold := make(chan struct{})
+	defer close(hold)
+	e.up.set("pu-9", &upstreamRule{hold: hold})
+	done := make(chan result, 1)
+	go func() { done <- e.do("/pu/v1/chat", body(testModel, true), nil) }()
+	select {
+	case key := <-e.up.canceled:
+		if key != "pu-9" {
+			t.Fatalf("canceled %s", key)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the upstream exchange was not cut")
+	}
+	<-done
+	assertUnreported(t, e)
+}
+
+// A non-streamed answer is published only once the facts are committed.
+func TestWaitedRelayPublishesJSONAfterCommit(t *testing.T) {
+	e, pp := usageEnv(t, pluginUsageRules())
+	release := make(chan struct{})
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		<-release
+		return report(1, 1), nil
+	}
+	const wait = 300 * time.Millisecond
+	time.AfterFunc(wait, func() { close(release) })
+	start := time.Now()
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || !strings.Contains(string(res.body), "hello") {
+		t.Fatalf("status %d %s", res.status, res.body)
+	}
+	if d := time.Since(start); d < wait {
+		t.Fatalf("answer published %s in, before the facts", d)
+	}
+	if rec := e.record(); rec.Tokens.Input != 1 || !rec.Success {
+		t.Fatalf("record %+v", rec)
+	}
+}
+
+// A streamed answer reaches the client as it arrives, while the plugin has
+// not read the usage yet: the plugin is released only once the client got
+// the stream's last event.
+func TestWaitedRelayStreamsBeforeTheFacts(t *testing.T) {
+	e, pp := usageEnv(t, pluginUsageRules())
+	release := make(chan struct{})
+	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
+		<-release
+		return report(1, 1), nil
+	}
+	raw, _ := json.Marshal(body(testModel, true))
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/pu/v1/chat", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", testKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		close(release)
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got := make(chan bool, 1)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			if strings.Contains(sc.Text(), "message_stop") {
+				got <- true
+				return
+			}
+		}
+		got <- false
+	}()
+	select {
+	case ok := <-got:
+		close(release)
+		if !ok {
+			t.Fatal("stream ended without message_stop")
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the stream waited for the plugin's facts")
+	}
+	if rec := e.record(); rec.Tokens.Input != 1 || !rec.Success {
+		t.Fatalf("record %+v", rec)
+	}
+}
