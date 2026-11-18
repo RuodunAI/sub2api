@@ -251,7 +251,16 @@ export interface Group extends Partial<GroupPricingSummary>, Partial<MyGroupPric
   environment?: EnvironmentValues
   /** Loss policy for its accounts' converted requests; null leaves it to the accounts (effective default allow). */
   conversion_loss_policy?: ConversionLossPolicy | null
+  /** Read-only, GET /groups/:id: the protocols its member accounts serve, with how many accounts serve each (DESIGN-2026-11-17-PROTOCOL-BINDING §4). */
+  served_protocols?: GroupServedProtocol[]
   created_at?: string
+}
+
+/** A protocol the member accounts of a group serve. */
+export interface GroupServedProtocol {
+  protocol: string
+  /** Member accounts serving it. */
+  accounts: number
 }
 
 // ------------------------------------------------------------------ protocol conversion (CONVERT-MATRIX §2.3, §2.4, §7)
@@ -495,6 +504,30 @@ export interface AccountType {
   endpoints: AccountTypeEndpoint[]
 }
 
+/**
+ * The inbound protocols a list of client models is served on (DESIGN-2026-11-17-PROTOCOL-BINDING §3.2).
+ * `models: ['*']` stands for every model no other entry lists. A protocol of another platform turns the
+ * conversion on for these models.
+ */
+export interface ModelProtocolRule {
+  models: string[]
+  protocols: string[]
+}
+
+/** How an account serves a protocol: natively, adapted to another endpoint of the same platform, or converted to another platform. */
+export type ServedVia = 'native' | 'adapted' | 'converted'
+
+/** A protocol an account serves now (read-only, GET /accounts/:id). */
+export interface AccountServedProtocol {
+  protocol: string
+  via: ServedVia
+  grade: ConversionGrade
+  /** Protocols passed through when adapted or converted, client first. */
+  hops?: string[] | null
+  /** The client models served on it; null = no model restriction. */
+  models: string[] | null
+}
+
 /** Caps of a list of client models on one account; its models share one set of counters, 0 = unlimited (CONTRACTS §68, §71). */
 export interface ModelLimit {
   models: string[]
@@ -663,6 +696,12 @@ export interface Account {
   spm_limit: number
   /** Window of spm_limit in seconds, 60–86400; absent = 60. */
   spm_window_seconds?: number
+  /** Protocols of the account type's own platforms the account serves; null = all of them (DESIGN-2026-11-17-PROTOCOL-BINDING §3.1). */
+  protocols?: string[] | null
+  /** Protocols per model list, conversions included; a model in no entry is served on the account's own protocols only (§3.2). */
+  model_protocols?: ModelProtocolRule[]
+  /** Read-only, GET /accounts/:id: what the account serves now. */
+  served_protocols?: AccountServedProtocol[]
   /** Limits of lists of client models on top of the account's own (CONTRACTS §68). */
   model_limits?: ModelLimit[]
   /** The account layer of the environment variables (CONTRACTS §74.3). */
