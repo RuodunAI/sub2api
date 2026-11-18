@@ -68,6 +68,8 @@ describe('gateway conversion settings (CONVERT-MATRIX §6.1)', () => {
         media_download_max_mb: 128
       })
     )
+    // max_attempts belongs to the failure policy once one is published (409 when changed here): never sent.
+    expect(api.put.mock.calls[0][1]).not.toHaveProperty('max_attempts')
   })
 
   it('hides the rows while the rule is off and still saves them', async () => {

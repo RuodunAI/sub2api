@@ -164,6 +164,22 @@ func (a *row) mapping() map[string]string {
 	return m
 }
 
+// defaultTestModel is the model a test that names none asks for: the first
+// of the account's model list, else the smallest request model of its
+// mapping, else "" (the plugin picks its default, CONTRACTS §15.9).
+func (a *row) defaultTestModel() string {
+	if len(a.Models) > 0 {
+		return a.Models[0]
+	}
+	first := ""
+	for m := range a.mapping() {
+		if first == "" || m < first {
+			first = m
+		}
+	}
+	return first
+}
+
 func (a *row) modelLimits() []core.ModelLimit { return parseModelLimits(a.ModelLimits) }
 
 // coreAccount is the account with the given plaintext credentials, as the

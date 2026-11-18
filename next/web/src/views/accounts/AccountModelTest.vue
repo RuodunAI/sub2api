@@ -30,7 +30,7 @@ const { t } = useI18n()
 const scope = useScope()
 
 const rows = ref<TestRow[]>([])
-/** The "plugin default model" probe (no model sent), pinned above the list once run. */
+/** The "default model" probe (no model sent: the server picks the account's first listed model, else the plugin's default), pinned above the list once run. */
 const probe = ref<TestRow | null>(null)
 const selected = reactive(new Set<string>())
 const search = ref('')
