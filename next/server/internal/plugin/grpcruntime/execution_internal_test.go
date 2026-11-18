@@ -481,101 +481,6 @@ func TestWaitingRelayIsCutAndJoined(t *testing.T) {
 	}
 }
 
-// The bodies handed to an instance stay within a third of its memory limit;
-// one that finds no room in time fails for a neutral reason; a body arriving
-// alone is admitted whatever its size.
-func TestInflightByteAdmission(t *testing.T) {
-	const budget, body = mib, 400 << 10 // two bodies fit, three do not
-	var inFlight, peak atomic.Int64
-	release := make(chan struct{})
-	side := &pluginSide{execute: func(_ context.Context, _ *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
-		n := inFlight.Add(int64(len(in.GetBody())))
-		for old := peak.Load(); n > old && !peak.CompareAndSwap(old, n); old = peak.Load() {
-		}
-		<-release
-		inFlight.Add(-int64(len(in.GetBody())))
-		return hostUsage, nil
-	}}
-	i, a := executionInstance(t, side)
-	i.proc.Load().limits.MemoryMB = 3
-	if got := i.inflightBudget(); got != budget {
-		t.Fatalf("budget %d", got)
-	}
-	// SegmentTimeout bounds the wait for room, not the blocked plugin: the
-	// plugin side here ignores its context.
-	run := func(size int, wait time.Duration) error {
-		_, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{Body: make([]byte, size)}, core.ExecutionClient{SegmentTimeout: wait})
-		return err
-	}
-	errs := make(chan error, 8)
-	for range 8 {
-		go func() { errs <- run(body, 150*time.Millisecond) }()
-	}
-	var refused int
-	for range 6 {
-		if err := <-errs; core.AsError(err).Code == core.ErrPluginUnavailable.Code && reason(err) == core.PluginUnavailableInflightBytes {
-			refused++
-		}
-	}
-	if refused != 6 || peak.Load() != 2*body || i.bodies.inFlight() != 2*body {
-		t.Fatalf("refused %d, peak %d, in flight %d", refused, peak.Load(), i.bodies.inFlight())
-	}
-	close(release)
-	<-errs
-	<-errs
-	if i.bodies.inFlight() != 0 {
-		t.Fatalf("in flight after all returned: %d", i.bodies.inFlight())
-	}
-	if err := run(5*budget, time.Second); err != nil {
-		t.Fatalf("a lone body above the budget: %v", err)
-	}
-}
-
-// Many bodies of mixed sizes: the sum in flight never passes the limit while
-// more than one is in flight.
-func TestByteBudgetNeverExceeded(t *testing.T) {
-	const limit = 1000
-	var b byteBudget
-	var mu sync.Mutex
-	var used, count int64
-	var wg sync.WaitGroup
-	for g := range 32 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for k := range 200 {
-				n := int64(1 + (g*37+k*101)%700)
-				if g == 0 && k%50 == 0 {
-					n = 3 * limit // admitted only alone
-				}
-				if !b.acquire(context.Background(), n, limit) {
-					t.Error("acquire without a deadline failed")
-					return
-				}
-				mu.Lock()
-				used, count = used+n, count+1
-				if used > limit && count > 1 {
-					t.Errorf("%d bytes of %d in flight in %d bodies", used, limit, count)
-				}
-				mu.Unlock()
-				mu.Lock()
-				used, count = used-n, count-1
-				mu.Unlock()
-				b.release(n)
-			}
-		}()
-	}
-	wg.Wait()
-	if b.inFlight() != 0 {
-		t.Fatalf("left in flight: %d", b.inFlight())
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	if !b.acquire(ctx, 600, limit) || b.acquire(ctx, 600, limit) {
-		t.Fatal("a second body over the limit was admitted")
-	}
-}
-
 // Monitor's result is its return value. A terminal state needs a complete,
 // successful, untruncated fetch made during the call.
 func TestMonitorResult(t *testing.T) {
@@ -672,40 +577,43 @@ func TestShallowCloneSharesFields(t *testing.T) {
 	}
 }
 
-// A platform plugin's memory limit is at least 64 MB plus three times the
-// request body limit, under the global cap; a process started under another
-// limit is stale.
-func TestPlatformMemoryFloor(t *testing.T) {
+// Memory is limited only by the operator: the plugin's own limit when one is
+// set, exactly, else the node's cap when one is set, else nothing. The
+// manifest's figure and the request body limit play no part, so changing the
+// body limit never makes a process stale.
+func TestMemoryLimitOnlyByOperator(t *testing.T) {
 	i, _ := executionInstance(t, &pluginSide{})
-	spec := func(declared, cap int) int {
+	spec := func(declared, operator, cap int) int {
 		i.pkg.Manifest.Resources = &manifest.Resources{MemoryMB: declared}
+		st := *i.settings.Load()
+		st.limits = resourceLimits{MemoryMB: operator}
+		i.settings.Store(&st)
 		i.rt.o.MaxMemoryMB = cap
 		return i.launchSpec().MemoryMB
 	}
-	for _, tc := range []struct{ declared, cap, want int }{
-		{128, 0, 448},      // default limit: 64 + 3*128
-		{512, 0, 512},      // the manifest asks for more
-		{128, 300, 300},    // the global cap wins
-		{0, 0, 0},          // no limit stays no limit
-		{128, 1024, 448},   //
-		{2048, 1024, 1024}, //
+	for _, tc := range []struct{ declared, operator, cap, want int }{
+		{0, 0, 0, 0},          // nothing configured: no limit
+		{64, 0, 0, 0},         // the manifest's figure is no limit
+		{64, 48, 0, 48},       // an operator limit below it, as set
+		{64, 4096, 0, 4096},   // and above it, as set
+		{64, 0, 300, 300},     // the node's cap when the operator set one
+		{0, 512, 1024, 512},   // a plugin's limit under the cap
+		{0, 2048, 1024, 1024}, // the cap over a plugin's limit
 	} {
-		if got := spec(tc.declared, tc.cap); got != tc.want {
-			t.Errorf("declared %d, cap %d: %d MB, want %d", tc.declared, tc.cap, got, tc.want)
+		if got := spec(tc.declared, tc.operator, tc.cap); got != tc.want {
+			t.Errorf("declared %d, operator %d, cap %d: %d MB, want %d", tc.declared, tc.operator, tc.cap, got, tc.want)
 		}
 	}
-	spec(128, 0)
-	i.proc.Load().limits = limitsOf(i.launchSpec())
-	if i.LimitsStale() {
-		t.Fatal("stale under the limit it started with")
-	}
-	i.rt.o.RequestBodyLimit = func() int64 { return 256*mib + 1 }
-	if got := i.launchSpec().MemoryMB; got != 64+3*257 || !i.LimitsStale() {
-		t.Fatalf("after the limit changed: %d MB, stale %v", got, i.LimitsStale())
-	}
-	delete(i.caps, manifest.CapPlatformAdapter)
-	if got := i.launchSpec().MemoryMB; got != 128 {
-		t.Fatalf("a plugin that is no platform: %d MB", got)
+	for _, body := range []int64{mib, 1024 * mib} {
+		i.rt.o.RequestBodyLimit = func() int64 { return body }
+		if got := spec(64, 48, 0); got != 48 {
+			t.Fatalf("body limit %d: %d MB", body, got)
+		}
+		i.proc.Load().limits = limitsOf(i.launchSpec())
+		i.rt.o.RequestBodyLimit = func() int64 { return 4 * body }
+		if i.LimitsStale() {
+			t.Fatalf("stale after the body limit changed from %d", body)
+		}
 	}
 }
 
