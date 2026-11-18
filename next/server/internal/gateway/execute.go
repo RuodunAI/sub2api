@@ -70,7 +70,7 @@ func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, ac
 	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
 	res, err := x.run(ctx, upModel, n)
 	if w := x.waited; w != nil {
-		defer w.close()
+		defer w.release()
 		return w.settle(ctx, res, err)
 	}
 	if err == nil && res.Relay != nil {

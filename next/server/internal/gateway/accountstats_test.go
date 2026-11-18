@@ -63,33 +63,20 @@ func TestAccountStatsAdmissionPanicReleasesSlots(t *testing.T) {
 	})
 }
 
-type statsExecutionStore struct{ *fakeSettler }
-
-func (*statsExecutionStore) BeginExecution(context.Context, core.ExecutionIntent) error { return nil }
-func (*statsExecutionStore) ObserveExecution(context.Context, string, *core.UsageRecord, []byte) error {
-	return nil
-}
-func (*statsExecutionStore) CommitExecution(context.Context, core.ExecutionCommit) (*pluginv1.ExecutionReceipt, error) {
-	return &pluginv1.ExecutionReceipt{}, nil
-}
-
-func TestAccountStatsExecuteAndHelper(t *testing.T) {
-	t.Run("execute", func(t *testing.T) {
-		svc := &statsExecutionStore{fakeSettler: &fakeSettler{ch: make(chan *core.UsageRecord, 8)}}
-		e, plugin := executeFixture(t, svc)
-		capture := &statsCapture{ch: make(chan accountStatsSample, 8)}
-		e.gw.d.Observations = capture
-		r := e.messages(body(testModel, false))
-		require.Equal(t, 200, r.status)
-		require.EqualValues(t, 1, plugin.calls.Load())
-		v := capture.next(t)
-		require.True(t, v.Success)
-		require.Positive(t, v.Tokens)
-		require.Empty(t, svc.ch)
-		require.Empty(t, capture.ch)
-		n, _ := e.slots.InUse(context.Background(), "account", 1)
-		require.Zero(t, n)
-	})
+// A relay that waits commits its usage through the execution records, not
+// the settler's Submit; the account statistics still see the request once.
+func TestAccountStatsWaitedRelay(t *testing.T) {
+	e, _ := taskDraftEnv(t, newFakeTasks(), false)
+	capture := &statsCapture{ch: make(chan accountStatsSample, 8)}
+	e.gw.d.Observations = capture
+	r := e.do("/task-draft/videos", map[string]any{"model": testModel}, nil)
+	require.Equal(t, 200, r.status, string(r.body))
+	require.True(t, capture.next(t).Success)
+	require.True(t, e.record().Success, "the committed record")
+	require.Equal(t, []string{core.ExecutionStateCommitted}, e.settler.executionStates())
+	require.Empty(t, capture.ch)
+	n, _ := e.slots.InUse(context.Background(), "account", 9)
+	require.Zero(t, n)
 }
 
 func TestAccountStatsTokenSources(t *testing.T) {

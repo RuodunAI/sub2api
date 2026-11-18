@@ -236,6 +236,12 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 		w.spool.WriteHeader(c.rec.StatusCode)
 		_, _ = w.spool.Write(body)
 	}
+	return w.deliver(ctx)
+}
+
+// deliver publishes the held-back answer of a committed execution.
+func (w *waitedRelay) deliver(ctx context.Context) attemptResult {
+	c := w.x.c
 	if w.spool == nil {
 		return attemptResult{kind: attemptDone}
 	}
@@ -338,8 +344,7 @@ func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.Execution
 	defer cancel()
 	for {
 		err := w.records.CommitExecution(cctx, commit)
-		var ce *core.Error
-		if err == nil || errors.As(err, &ce) && ce.Code == core.ErrConflict.Code {
+		if err == nil || isConflict(err) {
 			return err
 		}
 		select {
@@ -351,32 +356,53 @@ func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.Execution
 }
 
 // unreported ends an execution whose answer reached the upstream but whose
-// facts did not come (or could not be committed): it is closed without
-// them - a free record, the precharge released, nothing billed - and its
-// records own the request's usage. A task is not registered; an answer
-// held back is not published (503), one already streamed ends abruptly.
+// facts did not come (or could not be committed). A task is not registered:
+// taskFailure leaves the free record for submit (the records' recovery
+// never touches a task submission). Any other request is closed without
+// facts - a free record, the precharge released, nothing billed - and its
+// records own the request's usage; an answer held back is not published
+// (503), one already streamed ends abruptly.
 func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error) attemptResult {
 	c := w.x.c
-	if w.observed {
-		bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
-		if err := w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason}); err != nil {
-			slog.ErrorContext(ctx, "gateway: close unreported execution", "request_id", c.rid, "execution", w.id, "err", err)
-		}
-		cancel()
-	}
 	c.usage = nil
-	c.taskPersisted = true
 	if c.ep.TaskSubmit() {
 		return c.taskFailure(ctx, "task execution could not be confirmed", cause)
 	}
+	if w.observed && w.close(ctx, reason) {
+		// Committed meanwhile by a retry that timed out here: the facts stand.
+		c.taskPersisted = true
+		return w.deliver(ctx)
+	}
+	c.taskPersisted = true
 	if c.c.Writer.Written() {
 		panic(http.ErrAbortHandler)
 	}
 	return attemptResult{kind: attemptReturn, err: fromCore(core.ErrUnavailable.WithMessage("usage recording could not be confirmed").WithCause(cause), errTypeInternal)}
 }
 
-// close frees the held-back answer.
-func (w *waitedRelay) close() {
+// close closes the execution unreported; it reports whether it turned out
+// to be committed already (ErrConflict).
+func (w *waitedRelay) close(ctx context.Context, reason string) (committed bool) {
+	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
+	defer cancel()
+	err := w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason})
+	if isConflict(err) {
+		return true
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "gateway: close unreported execution", "request_id", w.x.c.rid, "execution", w.id, "err", err)
+	}
+	return false
+}
+
+// isConflict reports core.ErrConflict.
+func isConflict(err error) bool {
+	var ce *core.Error
+	return errors.As(err, &ce) && ce.Code == core.ErrConflict.Code
+}
+
+// release frees the held-back answer.
+func (w *waitedRelay) release() {
 	if w.spool != nil {
 		w.spool.close()
 	}

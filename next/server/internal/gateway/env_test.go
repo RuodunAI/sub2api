@@ -245,10 +245,10 @@ type fakePlatform struct {
 	buildHook      func(ctx context.Context, in *pluginv1.ExecuteRequest) error
 	// patches are applied to the body the plugin is handed, as a plugin
 	// rewriting its request would.
-	patches []*pluginv1.BodyPatch
-	builds  []*pluginv1.ExecuteRequest
-	classify       []*pluginv1.ClassifyErrorRequest
-	urlFor         func(acct *pluginv1.Account) string
+	patches  []*pluginv1.BodyPatch
+	builds   []*pluginv1.ExecuteRequest
+	classify []*pluginv1.ClassifyErrorRequest
+	urlFor   func(acct *pluginv1.Account) string
 	// route overrides the upstream URL from the whole request.
 	route func(in *pluginv1.ExecuteRequest) string
 	// resolve answers ResolveModel; nil = UNIMPLEMENTED, like a plugin that
@@ -735,8 +735,10 @@ type fakeSettler struct {
 	mu         sync.Mutex
 	executions map[string]*fakeExecution
 	// commitErr, when set, answers CommitExecution before anything is
-	// stored (an outage); nil lets it through.
-	commitErr func(core.ExecutionCommit) error
+	// stored (an outage); nil lets it through. observeErr fails every
+	// ObserveExecution.
+	commitErr  func(core.ExecutionCommit) error
+	observeErr error
 }
 
 // fakeExecution is one plugin_executions row.
@@ -767,6 +769,9 @@ func (s *fakeSettler) ObserveExecution(_ context.Context, id string, rec *core.U
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	x := s.executions[id]
+	if s.observeErr != nil {
+		return s.observeErr
+	}
 	if x == nil || x.state != core.ExecutionStateIntent {
 		return errors.New("execution not in intent")
 	}

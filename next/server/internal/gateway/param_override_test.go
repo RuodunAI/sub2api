@@ -1,5 +1,3 @@
-//go:build fv2_parked
-
 package gateway
 
 import (
@@ -13,10 +11,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/usage"
 )
 
 func setParamOverride(t *testing.T, e *env, id int64, raw string) {
@@ -100,26 +95,24 @@ func TestAccountParamOverrideStops(t *testing.T) {
 	}
 }
 
-// A plugin's Execute forwards through the core as well: there too the
-// plugin builds from the overridden body, with the override's model, and
-// its patches and headers come after the override.
-func TestAccountParamOverrideExecutePath(t *testing.T) {
-	db := testutil.DB(t)
-	bill := billing.New(db, nil, nil, nil, nil)
-	e, p := executeFixture(t, usage.New(db, bill, bill, nil, usage.Options{}))
+// The plugin is handed the overridden body, with the override's model, and
+// what it relays goes upstream as it is: here its own rewrite of a field the
+// override set wins, and the override's headers still apply.
+func TestAccountParamOverrideBeforeThePlugin(t *testing.T) {
+	e := newEnv(t)
 	e.plat.patches = []*pluginv1.BodyPatch{{Op: pluginv1.BodyPatch_OP_SET, Path: "temperature", ValueJson: "0.9"}}
 	setParamOverride(t, e, 1, `{"operations":[{"mode":"set","path":"temperature","value":0.3},{"mode":"set","path":"top_k","value":4},
 		{"mode":"set_header","path":"x-custom","value":"v1"},{"mode":"set","path":"model","value":"claude-override"}]}`)
 	require.Equal(t, 200, e.messages(body(testModel, false)).status)
-	require.Equal(t, int64(1), p.calls.Load())
 	got := e.up.last()
-	assert.Equal(t, 0.9, gjson.GetBytes(got.body, "temperature").Float(), "the plugin's patch wins over the override")
+	assert.Equal(t, 0.9, gjson.GetBytes(got.body, "temperature").Float(), "the plugin's rewrite wins over the override")
 	assert.Equal(t, int64(4), gjson.GetBytes(got.body, "top_k").Int())
 	assert.Equal(t, "claude-override", gjson.GetBytes(got.body, "model").String())
 	assert.Equal(t, "v1", got.header.Get("X-Custom"))
 	b := e.plat.builds[0]
 	assert.Equal(t, "claude-override", b.GetMeta().GetModel())
-	assert.Equal(t, `"claude-override"`, b.GetFields()["model"])
+	assert.Equal(t, 0.3, gjson.GetBytes(b.GetBody(), "temperature").Float(), "the plugin is handed the overridden body")
+	assert.Equal(t, "claude-override", gjson.GetBytes(b.GetBody(), "model").String())
 }
 
 // The built-in claude_max_tokens override (CONTRACTS §84.1): off, nothing is
