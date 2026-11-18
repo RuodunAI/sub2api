@@ -72,7 +72,9 @@ export const codexAccountTypes = (['codex_device', 'codex_oauth'] as const).map(
     auth_method_label: d.authMethodLabel || FALLBACK[type].authMethodLabel,
     form: { mode: d.form?.mode || 'native', component: d.form?.component || 'CodexAuthForm' },
     sensitive_fields: d.sensitiveFields || ['access_token', 'refresh_token', 'id_token'],
-    supports: ['openai']
+    supports: ['openai'],
+    // Codex speaks Responses only: chat requests are adapted to it (CONTRACTS §83.3).
+    subset: ['openai.responses']
   }
 })
 
