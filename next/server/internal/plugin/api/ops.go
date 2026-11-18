@@ -439,11 +439,6 @@ func (a *API) putResources(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if m.Runtime == manifest.RuntimeNone {
-		httpapi.Fail(c, core.InvalidFields(core.FieldError{Field: "runtime", Code: "unsupported",
-			Message: "the plugin has runtime \"none\": it runs no process, so resource limits do not apply"}))
-		return
-	}
 	b, _ := json.Marshal(in)
 	if err := updatePlugin(store.G(c.Request.Context(), a.d.DB.Gorm), key, "resource_limits", b).Error; err != nil {
 		httpapi.Fail(c, err)
