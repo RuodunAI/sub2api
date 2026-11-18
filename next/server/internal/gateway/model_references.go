@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -293,29 +292,4 @@ func modelReferenceSnapshotIn(root gjson.Result, rules []manifest.RequestModelRe
 		}
 	}
 	return refs, nil
-}
-
-func validateModelReferencePatches(before, after []byte, rules []manifest.RequestModelReference) error {
-	return modelReferencePatches(gjson.ParseBytes(before), gjson.ParseBytes(after), rules)
-}
-
-// modelReferencePatches is validateModelReferencePatches over parsed roots:
-// plugins may shape transport fields, but may not introduce a new billable
-// model invocation after authorization, account selection and price freezing.
-func modelReferencePatches(before, after gjson.Result, rules []manifest.RequestModelReference) error {
-	if len(rules) == 0 {
-		return nil // nothing is declared, so a patch cannot change a declared reference
-	}
-	want, err := modelReferenceSnapshotIn(before, rules)
-	if err != nil {
-		return err
-	}
-	got, err := modelReferenceSnapshotIn(after, rules)
-	if err != nil {
-		return err
-	}
-	if !slices.Equal(want, got) {
-		return fmt.Errorf("plugin patches cannot change admitted model references")
-	}
-	return nil
 }
