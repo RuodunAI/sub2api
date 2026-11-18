@@ -45,7 +45,8 @@ const DefaultMaxRequestBodyBytes = 128 << 20
 // execution handed to the plugin (the core may have enlarged it), plus
 // 1 MiB; the request body of a fetch at most this limit; and each platform
 // plugin's memory floor and in-flight byte budget. It is read on every
-// check, so a saved change applies at once, and must not block. A nil func
+// check, so a saved change applies at once: it must be cheap (the gateway's
+// cached settings; app wires it to Gateway.MaxRequestBodyBytes). A nil func
 // or a result <= 0 means DefaultMaxRequestBodyBytes (MaxRequestBodyBytes).
 type RequestBodyLimit func() int64
 
