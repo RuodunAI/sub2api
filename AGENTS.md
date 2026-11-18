@@ -78,7 +78,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 
 - 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 seccomp、rlimit、内存看门狗（只在管理员给插件设了内存上限或节点封顶时生效，默认不限，CONTRACTS §111.5）和出口隧道（插件的对外连接经核心转发）。
 - 插件包：`manifest.json`、`migrations/*.sql`、`forms/`、`i18n/`、`assets/`、`ui/`（schema、iframe 或原生微前端）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
-- 每个插件有自己的 schema `plg_<key>`，有权限时还有同名的受限数据库角色。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
+- 每个插件有自己的 schema `plg_<key>`，插件用核心的数据库用户访问它（没有插件专用的数据库角色，`search_path` 不是边界，CONTRACTS §115）。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
 - 一次请求上的超时和大小上限只有管理员配置的（请求体上限、上游超时、钩子和热路径超时等），加上安全、钱算对和防止崩溃的检查；不要在请求路径上加写死的超时、大小或次数上限（所有者决定，完整列表见 CONTRACTS §112.16）。
 - 平台插件（声明账号类型的插件）都是有进程的代码插件，没有只有清单的插件。每个网关请求只有一条路径（CONTRACTS §112）：核心做完协议转换和运营方的改写，把完整请求体交给账号类型插件的 `PlatformService.Execute`；插件构造最终请求，经 `HostService.RelayUpstream` 交给核心的 HTTP 客户端发出（插件不开套接字，账号代理、SSRF、超时、运营方的请求头设置由核心强制）；用量与任务事实只在 `Execute` / `Monitor` 的返回值里。插件写法、`sdk/pluginsdk/standard` 库、`jsonedit`、一致性套件见 `next/docs/PLUGIN-DEVELOPMENT.md`。
 - 平台插件必须遵守全部系统设置：每项设置在 HTTP 与 WebSocket 两种传输上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md` 第 5 节，改动相关行为时同步它。
@@ -155,7 +155,7 @@ cd next/plugins/<name> && go test -count=1 ./...
 
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
 - 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
-- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh -timeout=150m`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认的 `-timeout=30m` 不够，要带 `-timeout=150m`。AC30–AC36 是转发 V2 的用例（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端）。
+- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh -timeout=150m`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认的 `-timeout=30m` 不够，要带 `-timeout=150m`。AC30–AC36 是转发 V2 的用例（九个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端）。
 
 ### 控制台（`next/web`，Node 24，npm）
 

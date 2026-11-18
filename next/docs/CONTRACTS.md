@@ -32,7 +32,7 @@
 - 下载依赖：`GOPROXY=https://goproxy.cn,direct`（只在命令里临时设置）；整理依赖用 `GOWORK=off go mod tidy`
 - 重新生成 proto：`cd sdk && buf generate`（工具在 `go env GOBIN`；版本 buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0，输出与提交的生成代码逐字节相同，生成后 `git status --short gen` 应当没有意外的差异）
 - 每个模块完成时必须通过：`gofmt -l .` 无输出、`go vet ./...`、`go build ./...`、本模块的 `go test ./...`（工作区模式，不设 `GOWORK`）。CI（`.github/workflows/next-ci.yml`）对每个模块跑的就是这四条，脚本是 `.github/next-ci/next-check-module.sh`，可在仓库根本地执行（`sh .github/next-ci/next-check-module.sh next/server`）；`e2e` 只编译不运行（`--no-test`）。核心另在 CI 里交叉编译 `GOOS=linux/windows/darwin go build ./...`，并跑 `go test -race ./gateway/... ./runtime-contract/... ./server/internal/app/... ./server/internal/background/...`（在 `next/` 下）；`next-sums-clean.sh` 检查 `go.sum`/`go.work.sum` 没有未提交的改动
-- **插件数据库**（2026-11-15，2026-11-16 改为目录比对、共用 `runtime-contract/gormpg`；插件 SDK 0.2.0）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），连接池大小由调用方给定（`gormpg.Settings`：核心默认 20 个、`SUB2API_PG_MAX_CONNS` 可改，网关默认 8 个、`SUB2API_GATEWAY_POOL_MAX_CONNS` 可改，插件按 `pgdb.Options`），DSN 不带 `pool_*` 参数（带了 `gormpg.ParseConfig` 启动即报错，只列参数名，见 §101.2），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；拨号钩子（严格网络模式的出口隧道）装在它解析出的驱动配置上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）和 PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`IsForeignKeyViolation`、`IsDeadlock`、`SQLState`、`ConstraintName`、`Hint`，核心经 `store` 的同名函数）也在这里，它是唯一 import pgx 的包。句柄绑定调用时的 ctx，每次调用重新取（连接共享，开销很小），不要缓存（例如在 Init 里取了交给后台任务）：ctx 结束后缓存的句柄每条语句都报错，语句不执行，错误包装 ctx 的错误（`context.Canceled` 或 `context.DeadlineExceeded`），并提示缓存的句柄是可能的原因（正常的取消、超时也是这条错误，提示写成条件句）。连接池默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，`pluginsdk.WithDBPoolSize` 可改），插件角色 `CONNECTION LIMIT 20` 含宿主迁移的那 1 个，4 个节点以内不会超限。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`；迁移里有模型描述不了的函数、视图、序列、触发器、类型时再导出 `func Unmanaged() []string`，如 `"function touch()"`、`"trigger t.t_touch"`、`"view v"`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff|check` 在比对库的一个事务里完成全部工作，结束时回滚（中断也不留下 schema 或角色，见 `sdk/pgdb/pgdbtool`）：以一个只拥有临时 schema 的临时角色执行迁移（与宿主用插件角色执行一致，需要更多权限的迁移在这里同样失败；建到 schema 之外的对象列为差异），在另一个空 schema 上对模型跑 AutoMigrate，比较两边的系统目录：表；每列的 `format_type`、NOT NULL、默认值（按值比较，`0` 与 `'0'::numeric` 相同）；主键；索引与约束按定义（`pg_get_indexdef`、`pg_get_constraintdef`，与名字无关，唯一约束与同列唯一索引视为相同）。模型的 `TableName` 不得带 schema。`db diff` 把 AutoMigrate 在迁移 schema 上执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），AutoMigrate 不处理的差异（给已有列加 NOT NULL、改主键、同名索引或约束改定义），以及库里有而模型里没有的表、列、索引、约束、未声明为 Unmanaged 的视图、序列、函数、触发器、类型只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动且没有其他程序在用时在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节。插件和 SDK 的语句（2026-11-16 起）全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Select`、`Create`、`Updates`、`Delete`、`clause.OnConflict`、`clause.Returning`），不手写整条 SQL：`Raw`/`Exec` 只组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），序列和锁走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`（键为 `hashtextextended(名字 || ':' || current_schema(), 0)`）；`Exists`、`InsertSelect`、`NextIDs`、`TryXactLock` 是 `runtime-contract/gormpg` 同名组合器的转交，核心和网关用的是同一份。SQL 文本的规则与核心相同（见下条“核心的 SQL”，同一个检查器 `runtime-contract/gormpg/sqlcheck`）：必须是常量或只由常量拼成，值只走 `?` 参数，请求选择的列和排序经固定白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.SQL` 标记交给辅助函数的 SQL 片段（只有常量能隐式转换）。`sdk/pgdb` 的 `TestNoRawSQL` 检查 SDK、仓库里全部插件和 `tools` 的非测试代码（`[raw-sql]`、`[sql-const]`，以及不经 gorm 的 `ConnPool` 或 `(*gorm.DB).DB()` 拿连接、`*sql.DB` 执行语句的 `[gorm-instance]`；GORM 的泛型 API `gorm.G` 不许用，它的方法检查器看不到），例外按声明（`包.函数`）登记原因，目前只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL（标识符经 `clause.Table` 引用）和 `pgdb.LockTable`，连接池上只有 `pgdb.Close`、testpg 的探测和 `hierarchy.requireTx`（只看句柄是否在事务里）。插件要在自己的表上存树（层级）用 `sdk/hierarchy`（0.1.292，核心的用户上级是它的第一个使用者，§103.2）：表按约定有 `id`、`parent_id`（无 ON DELETE）、`path bigint[] NOT NULL DEFAULT '{}'`（祖先，自顶向下到父节点，GIN 索引）和 `CHECK (path[cardinality(path)] IS NOT DISTINCT FROM parent_id)`，`hierarchy.New(table, maxDepth)` 给出 `Tree`（列名不同时直接填 `Tree` 的字段）；新行作为根插入，同一事务里 `Move` 放到父节点下，`Move` 是父列与路径的唯一写入者
+- **插件数据库**（2026-11-15，2026-11-16 改为目录比对、共用 `runtime-contract/gormpg`；插件 SDK 0.2.0）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），连接池大小由调用方给定（`gormpg.Settings`：核心默认 20 个、`SUB2API_PG_MAX_CONNS` 可改，网关默认 8 个、`SUB2API_GATEWAY_POOL_MAX_CONNS` 可改，插件按 `pgdb.Options`），DSN 不带 `pool_*` 参数（带了 `gormpg.ParseConfig` 启动即报错，只列参数名，见 §101.2），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；拨号钩子（严格网络模式的出口隧道）装在它解析出的驱动配置上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）和 PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`IsForeignKeyViolation`、`IsDeadlock`、`SQLState`、`ConstraintName`、`Hint`，核心经 `store` 的同名函数）也在这里，它是唯一 import pgx 的包。句柄绑定调用时的 ctx，每次调用重新取（连接共享，开销很小），不要缓存（例如在 Init 里取了交给后台任务）：ctx 结束后缓存的句柄每条语句都报错，语句不执行，错误包装 ctx 的错误（`context.Canceled` 或 `context.DeadlineExceeded`），并提示缓存的句柄是可能的原因（正常的取消、超时也是这条错误，提示写成条件句）。连接池默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，`pluginsdk.WithDBPoolSize` 可改）；插件的连接由核心代为登录、用核心的数据库用户（§115），这些连接与核心自己的连接池一起计入数据库的连接上限，规划 `max_connections` 时按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”算。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`；迁移里有模型描述不了的函数、视图、序列、触发器、类型时再导出 `func Unmanaged() []string`，如 `"function touch()"`、`"trigger t.t_touch"`、`"view v"`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff|check` 在比对库的一个事务里完成全部工作，结束时回滚（中断也不留下 schema 或角色，见 `sdk/pgdb/pgdbtool`）：以一个只拥有临时 schema 的临时角色执行迁移（比宿主严：宿主 2026-11-18 起以核心的用户执行，§115；需要 schema 之外权限的迁移在这里失败，建到 schema 之外的对象列为差异），在另一个空 schema 上对模型跑 AutoMigrate，比较两边的系统目录：表；每列的 `format_type`、NOT NULL、默认值（按值比较，`0` 与 `'0'::numeric` 相同）；主键；索引与约束按定义（`pg_get_indexdef`、`pg_get_constraintdef`，与名字无关，唯一约束与同列唯一索引视为相同）。模型的 `TableName` 不得带 schema。`db diff` 把 AutoMigrate 在迁移 schema 上执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），AutoMigrate 不处理的差异（给已有列加 NOT NULL、改主键、同名索引或约束改定义），以及库里有而模型里没有的表、列、索引、约束、未声明为 Unmanaged 的视图、序列、函数、触发器、类型只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动且没有其他程序在用时在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节。插件和 SDK 的语句（2026-11-16 起）全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Select`、`Create`、`Updates`、`Delete`、`clause.OnConflict`、`clause.Returning`），不手写整条 SQL：`Raw`/`Exec` 只组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），序列和锁走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`（键为 `hashtextextended(名字 || ':' || current_schema(), 0)`）；`Exists`、`InsertSelect`、`NextIDs`、`TryXactLock` 是 `runtime-contract/gormpg` 同名组合器的转交，核心和网关用的是同一份。SQL 文本的规则与核心相同（见下条“核心的 SQL”，同一个检查器 `runtime-contract/gormpg/sqlcheck`）：必须是常量或只由常量拼成，值只走 `?` 参数，请求选择的列和排序经固定白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.SQL` 标记交给辅助函数的 SQL 片段（只有常量能隐式转换）。`sdk/pgdb` 的 `TestNoRawSQL` 检查 SDK、仓库里全部插件和 `tools` 的非测试代码（`[raw-sql]`、`[sql-const]`，以及不经 gorm 的 `ConnPool` 或 `(*gorm.DB).DB()` 拿连接、`*sql.DB` 执行语句的 `[gorm-instance]`；GORM 的泛型 API `gorm.G` 不许用，它的方法检查器看不到），例外按声明（`包.函数`）登记原因，目前只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL（标识符经 `clause.Table` 引用）和 `pgdb.LockTable`，连接池上只有 `pgdb.Close`、testpg 的探测和 `hierarchy.requireTx`（只看句柄是否在事务里）。插件要在自己的表上存树（层级）用 `sdk/hierarchy`（0.1.292，核心的用户上级是它的第一个使用者，§103.2）：表按约定有 `id`、`parent_id`（无 ON DELETE）、`path bigint[] NOT NULL DEFAULT '{}'`（祖先，自顶向下到父节点，GIN 索引）和 `CHECK (path[cardinality(path)] IS NOT DISTINCT FROM parent_id)`，`hierarchy.New(table, maxDepth)` 给出 `Tree`（列名不同时直接填 `Tree` 的字段）；新行作为根插入，同一事务里 `Move` 放到父节点下，`Move` 是父列与路径的唯一写入者
 - **核心的 SQL**（raw-SQL 策略，2026-11-16，0.1.290；gormguard `[raw-sql]`、`[sql-const]`，规则在 `runtime-contract/gormpg/sqlcheck`，允许列表在 `server/internal/store/gormguard/rawsql_test.go`）：核心的语句一律由 GORM 的模型与查询构造器生成（`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()`，统计用 `Select`/`Group` 里的表达式，子查询与 `UNION ALL` 用 `(?)` 组合构造器查询），多行插入一次 `Create` 一个切片，需要按顺序拿 id 时先 `gormpg.NextIDs`，行数随批次变化的写入按 `store.InsertChunk` 行一条（`CreateInBatches`，满条的文本相同）。插入的行用类型化的行结构体（带 `TableName`，只含要写的列，没有默认值标签，所以不读回；数据库时钟的列用 `store.DBNow`，值是其他 SQL 表达式（子查询、时钟加间隔）的列用 `store.ExprValue`），行从查询里来的用 `gormpg.InsertSelect`；不用没有 `Model` 的列映射（GORM 每次把映射当模型解析，失败后把整个映射格式化进丢弃的错误）。整条手写的语句只留在允许列表里按名字（`包.函数`）登记、写明理由的地方：账本的 data-modifying CTE（预扣、结算、释放、退款）、`store/system.go` 里非数据语句的小助手（事务级 advisory 锁 `XactLock`/`TryXactLock`（按名字，`hashtextextended`）与 `XactLockID`（按 id，只用于要与同 id 的迁移会话锁互斥的插件迁移锁）、`SetLocal`（`set_config(名, 值, true)`，只在事务里）、`ClockTimestamp`、`CurrentSnapshot`、`CurrentDatabase`）、`DDL`、迁移执行器、开发工具 `modelgen`，以及插件迁移记录的 SECURITY DEFINER 函数调用；核心、网关、SDK 共用的组合器 `runtime-contract/gormpg` 的 `ExistsQuery`/`Exists`、`InsertSelect`、`NextIDs`（核对取到的个数）、`RelationExists`、`TryXactLock` 在那个模块登记；只由 `(?)`（或 `?`）与集合运算组成的组合文本自动放行。交给 GORM 的 SQL 文本必须由常量构成，值只走 `?` 参数：`Raw`、`Exec`、`Where`、`Not`、`Or`、`Having`、`Order`、`Group`、`Joins`、`InnerJoins`、`Table`、`Pluck` 的第一个参数，`Select`/`Distinct` 的全部参数（字符串或 `[]string`），`Find`/`First`/`Take`/`Last`/`Delete`/`FirstOrInit`/`FirstOrCreate`/`Preload` 的内联条件，`gorm.Expr`、`clause.Expr`/`NamedExpr` 的 SQL（含给 `.SQL` 字段赋值），`Raw: true` 的 `clause.Column`/`clause.Table` 的名字（字面量之外给 `Name`/`Table`/`Alias` 赋值一律要常量，`Raw` 只能在字面量里设），经 `WriteString`/`WriteByte` 等直接写进语句的文本（`gorm.Statement`、它的 `SQL`、`clause.Builder`/`Writer`），放进 `any` 参数的字符串，登记为 SQL 文本的函数（`store.Conds.And`、`UpdateFrom`、`NewNumbered`，`DDL` 按签名取第一个字符串参数即格式串）；经接口、方法值或方法表达式调用的同名方法同样检查，把这些方法当值用（不调用）直接失败。常量跟踪是保守的，只认：常量及其 `+`、`strings.Join`/`fmt.Sprintf`/`Repeat`/修剪、`append`/`slices.Concat`；本包里每个取值（声明、赋值、`range`、`v, ok := m[k]`）都是常量、没有被取地址或交给可能改写它的函数的局部变量、未导出的包变量和未导出字段；本包未导出、无接收者、只被直接调用的函数的参数（每个调用都传常量）；本包函数的返回值（多返回值也算）。其余一律当未知：导出的包变量（别的包能改）、导出函数和方法的参数、接收者、函数字面量的参数、type switch 的绑定。GORM 的泛型 API `gorm.G` 不许用（`[raw-sql]`）；gorm 的 `ConnPool`（读或写）和 `(*gorm.DB).DB()` 只在允许列表 `Pool` 登记的声明里出现（`[gorm-instance]`，核心是 `store` 的 `WithConn`、`SQLTx`、`InTx`、迁移执行器和测试设施）；运行时选的列名经固定映射变成 `clause.Column`/`clause.OrderByColumn`，不拼进文本；检查跟不出的（如账本 CTE 的拼接、统计的度量表）在允许列表 `Dynamic` 里登记理由。允许列表（`Raw`、`Dynamic`、`Quoting` 等）里没有命中的条目也算失败（名字写错、函数已删除都会报）。规则实现在 `runtime-contract/gormpg/sqlcheck`，核心、网关（§39）、SDK 与插件共用，各模块只保留自己的允许列表（核心是 `server/internal/store/gormguard/rawsql_test.go` 的 `sqlPolicy`）。
 - **数据库测试**：核心用 `testutil.DB(t)`，插件用 `pluginsdktest.NewSchema(t, …)`，两者都从 `sdk/testpg` 拿库：
   - 设置了 `TEST_DATABASE_URL`（超级用户 DSN，如 CI）就用它；
@@ -400,7 +400,7 @@ func Install(client pluginv1.EgressServiceClient) error
 func DialContext(ctx context.Context, network, address string) (net.Conn, error)
 ```
 
-插件的 PostgreSQL 连接（受限 DSN）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起），插件用它就不必自己连库。
+插件的 PostgreSQL 连接（`GetDSN` 的 DSN，§115）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起），插件用它就不必自己连库。
 
 **插件 SDK 0.2.0 的不兼容改动**（`pluginsdk.SDKVersion`，随 `GetInfoResponse.sdk_version` 上报）：`Host.DB(ctx)` 从返回 `*pgxpool.Pool` 改为返回绑定 ctx 的 `*gorm.DB`。第三方插件把 `next/sdk` 升到 0.2.0 后，`h.DB(ctx)` 的调用点和自己实现的 `pluginsdk.Host` 测试替身编译不过：改用 GORM 的模型与查询构建器（§2“插件数据库”，数组参数与数组列用 `pgdb.Array`），测试替身用 `pgdb.Open` 返回句柄；句柄每次调用重新取，不要跨调用缓存（见上文“插件数据库”）。已编译的旧插件不受影响：gRPC 协议没变。
 
@@ -1958,7 +1958,7 @@ message RankedAccount {
 
 `SETTLED` 强制带 tokens。上游 succeeded 却没返回 `usage` 时，返回 0 会把预扣**全额退掉**——等于白送一次视频。
 
-火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**
+火山插件的绕法是自己在 `video_tasks` 里存一列 `est_tokens`，Parse 时回退到它。**每个插件都要自建这张估值表，这是核心该提供的语义。**（后来由 `ReconcileResult_SETTLED_ESTIMATE` 解决；`video_tasks` 表在火山插件 0.13.0 删除，插件迁移 `0003_drop_video_tasks.sql`。）
 
 **建议**：`ReconcileResult` 加一个「保留预扣」的表达（如 `keep_estimate bool`）。
 
@@ -2108,7 +2108,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 `store/migrate.go` 对每个迁移文件算 sha256 并与 `plugin_migrations.checksum` 比对，**改动已应用的迁移文件会让整个安装/升级中止**。所以：
 
 - 列的增删一律新写迁移文件，已应用的一个字节都不能动
-- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是现存的一处。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
+- **迁移文件里不要写「这一列为什么存在」**——那种注释会随语义变化而失效，而且**无法修改**。`0002_video_tasks.sql` 里关于 `est_tokens` 的那段注释就是一处（那张表在火山插件 0.13.0 由 `0003_drop_video_tasks.sql` 删除）。语义变了只能靠后续迁移的 `COMMENT ON COLUMN` 追平
 
 ### 25.8 并发透支防护：输出费用预留与插件 EstimateUsage Unimplemented 处理（2026-10-04）
 
@@ -2645,7 +2645,6 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 | 插件（版本） | 账号类型 | 预设模型 | 预设映射 |
 |---|---|---|---|
 | anthropic 0.2.5 | `apikey` | Claude 现行与仍可用的模型（别名与带日期 ID），不含已退役模型 | 无 |
-| claude-oauth 0.2.1 | `claude_oauth`、`claude_setup_token` | 同 anthropic | 无 |
 | relay 0.2.2 | `relay_key` | 同 anthropic | 无（由中转站自己决定模型） |
 | openai 0.3.4 | `apikey` | new-api OpenAI 列表中走 chat / responses / embeddings 的模型（不含本平台没有端点的音频、图片、实时、视频模型，也不含 `gpt-4.5-preview*`、`o1-preview`、`o1-mini` 等已退役模型） | 无 |
 | gemini 0.2.4 | `apikey` | new-api Gemini 列表中走 generateContent 的模型（不含 imagen、veo、TTS、原生音频，也不含 `gemini-1.5-*` 与旧 2.5 预览版） | 无 |
@@ -2768,7 +2767,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 - 把账号绑定到分组需要 `group:manage` 或 `account:group:bind`；
 - `priority` 只能 0–100，`weight` 只能 1–100，`max_concurrency` 只能 1–1000，超出返回字段错误 `restricted`；
 - 管理员禁用的账号（`admin_locked`，§15.9、§21.3.1）不能自行启用或重置状态，403 `account_locked_by_admin`；
-- 账号类型**没有声明 `guardedSettings`** 时（relay 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 `claude_oauth`）目前也要求这个权限。
+- 账号类型**没有声明 `guardedSettings`** 时（relay 这类可以自填上游地址的类型；核心内置类型同样算），创建或修改需要 `account:relay`，否则 403，`details.required_permission = "account:relay"`。注意判断条件是"没有声明受限设置"，不是"类型叫 relay"：上游地址固定、不需要受限设置的类型（如 codex 的 `codex_oauth`）目前也要求这个权限。
 
 ### 43.6 授予与操作他人的权限检查
 
@@ -2911,12 +2910,9 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 旧路由 `GET /accounts/:id/subscription/limits`、`POST /accounts/:id/subscription/limits/reset` 删除（从未发布）。
 
-### 44.6 claude-oauth 插件（0.1.1）
+### 44.6 claude-oauth 插件（已删除）
 
-- `claude_oauth` 与 `claude_setup_token` 都声明被动采样：`5h` / `7d` / `7d_fable` ← `anthropic-ratelimit-unified-{5h,7d,7d_oi}-{utilization,reset,status}`（utilization 为 0–1 小数、reset 为 Unix 秒，见 sub2api `ratelimit_service.go` `samplePassiveUsageFromHeaders` 与 `account_usage_service.go` `buildPassiveUsageWindow` 的 `util * 100`）。
-- `claude_oauth` 声明 `query: true`：`GET https://api.anthropic.com/api/oauth/usage`，头部 `Accept: application/json, text/plain, */*`、`Content-Type: application/json`、`Authorization: Bearer <access_token>`、`anthropic-beta: oauth-2025-04-20`、`User-Agent: claude-code/2.1.7`（同 sub2api `claude_usage_service.go`）。响应 `five_hour` → `5h`（总是返回），`seven_day` → `7d`、`seven_day_sonnet` → `7d_sonnet`、`seven_day_overage_included`（缺失时取 `limits[]` 中 Fable 的 `weekly_scoped`）→ `7d_fable`（仅当带 `resets_at` 时返回，同 sub2api `buildUsageInfo`）；`utilization` 已是百分比。401/403 → `auth_rejected`，其他失败 → `transient`。
-- `claude_setup_token` 没有 profile 权限，`BuildQuotaRequest` 回 `Unimplemented`，只靠响应头（同 sub2api `estimateSetupTokenUsage`）。
-- manifest 同时补齐安装校验要求的 `platform.register` 权限与 `accounts.credentials` 的 `{"types": "own"}` scope。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ### 44.7 插件模型可用性与自动配额查询
 
@@ -3219,7 +3215,7 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
 ### 48.1 manifest
 
 ```json
-"accountTypes": [{ "id": "claude_oauth", "refresh": { "expiresAtField": "expires_at", "beforeExpirySec": 1800 } }]
+"accountTypes": [{ "id": "codex_oauth", "refresh": { "expiresAtField": "expires_at", "beforeExpirySec": 1800 } }]
 ```
 
 - `refresh` 存在即表示这个类型的凭证会过期，插件实现了下面两个 RPC。`{}` 使用默认值。
@@ -3273,19 +3269,9 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
   - 类型不支持时返回 400。
 - 控制台：账号详情新增"令牌"一行，显示过期时间、上次刷新时间和错误（`auth_rejected` 提示重新授权），旁边有"立即刷新令牌"；行操作菜单里也有同一个入口。
 
-### 48.5 claude-oauth 0.2.0
+### 48.5 claude-oauth 0.2.0（已删除）
 
-- `claude_oauth` 与 `claude_setup_token` 都声明 `"refresh": {}`。
-- **请求**（同 sub2api `claude_oauth_service.go` `RefreshToken`）：
-  - `POST https://platform.claude.com/v1/oauth/token`；
-  - body `{"grant_type":"refresh_token","refresh_token":…,"client_id":"9d1c250a-…"}`；
-  - `User-Agent: axios/1.13.6`。
-- **保存的字段**：`access_token`、`expires_at`（现在 + `expires_in`）。回包带了 `refresh_token`（轮换）或 `scope` 时一并保存，没带就保留原值。
-- **错误判断**：400 且包含 `invalid_grant`、401、403 记为 `auth_rejected`，其他记为 `transient`。没有 refresh token 的 setup token 返回 `FAILED_PRECONDITION`。
-- **删掉的东西**：空壳任务 `refresh_tokens`、`app.jobs.v1` 能力、`jobs` 权限。插件构造请求时只打日志的"即将过期"检查也删了。
-- **兼容**：`credentials.expires_at` 改用 `json.Number`，数字字符串也能解析。
-- 网关请求路径上不做同步续期。sub2api 在请求时剩余不到 3 分钟会先刷新再转发；这里靠 30 分钟提前量的定时扫描兜住，未做同步续期。
-- `net` 权限保留，只用于授权时用授权码换令牌。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ## 49. CCGateway 账号（已删除）
 
@@ -3315,6 +3301,8 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 ## 52. 账号余额展示与刷新（2026-10-05）
 
 与 §44 订阅配额并行，账号类型可以声明 `balance`（账号余额），插件实现余额查询，核心定期或按需查询并缓存结果（PG + Redis），前端显示余额和"刷新余额"按钮。
+
+> **现状（0.1.304，§116）**：唯一的使用者 claude-oauth 已删除。核心从来没有调用下文的 `BuildBalanceRequest` / `ParseBalanceResponse`，余额只由核心里按账号类型注册的查询器（`account.RegisterBalanceProvider`）取得，而唯一的查询器（写死的 `balance_claudeoauth.go`）随插件删除。现在没有账号类型声明 `balance`，也没有注册任何查询器：声明了 `balance` 的类型只会显示“支持余额”而永远查不到数据。清单字段、两个 RPC、`account_balances` 表、接口和控制台暂时保留，是否删除由所有者决定（§116.3）。
 
 ### 52.1 manifest 账号类型声明 `balance`
 
@@ -3457,46 +3445,14 @@ CREATE INDEX IF NOT EXISTS idx_account_balances_updated_at ON account_balances(u
 3. i18n（zh/en）：余额标签、货币格式化。
 4. types.ts：`Account.balance?: Money`（移除 `// assumed` 注释）。
 
-### 52.6 claude-oauth 插件实现（版本 0.2.1）
+### 52.6 claude-oauth 插件实现（已删除）
 
-**manifest 变更**（`next/plugins/claude-oauth/manifest.json`）：
-
-```json
-{
-  "version": "0.2.1",
-  "accountTypes": [{
-    "id": "oauth",
-    "balance": {
-      "currency": "USD"
-    },
-    "quota": { ... }
-  }]
-}
-```
-
-**实现**（`next/plugins/claude-oauth/balance.go`）：
-
-- `BuildBalanceRequest`：返回与 quota 查询相同的请求（`GET https://api.anthropic.com/v1/organization/usage/subscription`，带 OAuth access token）。
-- `ParseBalanceResponse`：解析响应 JSON 的 `account_balance` 字段（与 `usage_windows` 并列）：
-  ```json
-  {
-    "account_balance": {
-      "amount_micros": 12345678,
-      "currency": "USD"
-    },
-    "usage_windows": [...]
-  }
-  ```
-  - `amount_micros` 已经是微单位，直接返回。
-  - 上游未返回 `account_balance` → `unsupported`（旧 API 版本或账号类型不支持）。
-
-**测试**（`balance_test.go`）：解析成功、解析失败、账号余额字段缺失。
+0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
 
 ### 52.7 测试覆盖
 
 - **SDK**：`manifest/check/balance_test.go`（manifest 校验、货币代码格式）。
 - **核心**：`account/balance_test.go`（查询流程、错误处理、新鲜度）、`account/balance_cache_test.go`（Redis 缓存）。
-- **claude-oauth**：`balance_test.go`（解析响应、错误情况）。
 - **集成**：PG 表迁移幂等性（`0034_account_balances.sql`）、账号列表/详情返回 balance。
 
 ### 49.17 CCGateway 容器地址池（已删除）
@@ -3522,7 +3478,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **私有 run 目录 + 双向 TLS**：每个插件进程一个 `<SUB2API_PLUGIN_RUN_DIR>/<key>-<随机>/`（0700，默认 `<插件数据目录>/.run`；路径对 unix socket 过长时退回 `/tmp/sub2api-<uid>`，须是本用户 0700 的真目录），go-plugin 的两个 socket 和插件的 `TMPDIR` 都在里面，进程结束即删除。核心与插件之间所有连接（插件服务端、核心 broker 上的 HostService/EgressService）都是 go-plugin AutoMTLS，一次性证书，其他进程无法连入或冒充该插件。
 - **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
-- **数据库角色隔离不再降级**：开启隔离（默认）但核心角色没有 CREATEROLE 时，授予 `db.schema` 与 `Ensure` 都失败，`409 plugin_db_isolation_unavailable`（运维可显式 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false`）；已存在且不是本库为该插件建的同名角色不接管，`409 plugin_db_role_conflict`。角色加注释 `sub2api plugin role; database=<库>; plugin=<key>` 作归属标记，删除插件时只删自己的角色。
+- ~~**数据库角色隔离不再降级**~~：每个插件一个数据库角色的做法已在 2026-11-18 删除，插件用核心的数据库用户，`plugin_db_isolation_unavailable`、`plugin_db_role_conflict`、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 都不再存在，见 §115。
 - **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；托管核心（`SUB2API_MANAGED=true`）没有这个变量、文件读不到或内容不是 64 位十六进制时启动失败，非托管核心不读它。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
 - **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。
 - **部署**：Redis/Valkey 必须 `requirepass`，`REDIS_URL` 带密码（建议十六进制密码免转义）；网关容器 `no-new-privileges`、`cap_drop: [ALL]`。迁移顺序见 `deploy/gateway/ovh/README.md`。
@@ -8209,7 +8165,7 @@ message UpstreamRequest {
 
 - 两个 map 的键都小写；`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝；同名时权威头生效；名或值不合法拒绝。
 - 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
-- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（claude_oauth、codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
+- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
 - 插件交回的权威头能盖掉运营方设置的同名头，这是代码插件一直以来的行为，签名需要它。
 
 ### 112.5 发送前的检查
@@ -8287,7 +8243,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 112.12 清单
 
 - `runtime` 只有 `grpc`（`js` 仍是保留值）；`manifest.RuntimeGRPC` 在 `manifest.go`（没有使用者的 `TransportHTTP`、`TransportWebSocket` 已删除）。
-- 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。claude_oauth 的两个类型和 codex 的两个类型写的是 `[]`。
+- 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。codex 的两个类型写的是 `[]`。
 - 声明了账号类型就必须有 `accounts.credentials {"types": "own"}`（原来声明式类型可以没有）。
 - `AccountType.AddressFields()` 只认 `upstreamFields`：原来声明了 `upstream` 的类型自动得到 `["base_url"]`，现在要在清单里写出（五个改写的插件都写了）。它决定账号的自定义上游判断（§21）和取回允许的账号地址（§112.6）。
 - `usageSource: "plugin"`、`usageStreamEvents`、`usageMaxBytes`、`usageRequestFields`（`EstimateUsage` 的入参，预扣不变，§25.8）、`endpoint.task` 不变：`extract_usage` 来自端点的 `PluginUsage()`，`task_submission` 来自 `TaskSubmit()`。
@@ -8301,7 +8257,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
 | `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（启动时取 `WithManifest`，按 `manifest.FetchHostAllowed` 决定取回能到的主机）、`ExternalServices`（替换清单的）、`ExpireExecutions`。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
-| `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，十个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
+| `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，11 条检查，九个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条） |
 | `sdk/pluginsdk/standard/goldentest` | 原声明式引擎的 1498 条录制样例，转换后冻结 |
 
 插件和核心不用厂商的 SDK 客户端，只用 AWS 的 `aws/signer/v4`、`aws/protocol/eventstream` 和 Vertex 断言用的 `golang-jwt/jwt/v5`；OpenAI、Anthropic 的官方 SDK 只允许用作 e2e 测试的客户端（e2e 的 AC36 用 openai-go 和 anthropic-sdk-go 驱动网关）。
@@ -8400,3 +8356,49 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **取不到**：所有在线节点都答没有时，管理 socket 返回 404，正文是 `no online node holds the plugin package (asked: <节点>; offline, not asked: <节点>)`；核心得到 `blobs.ErrNotFound`（带这段正文），审查、同意接口 410 `package_gone`（信息改为“没有在线节点持有这个安装包：让持有它的节点恢复在线，或重新上传”），节点加载失败的错误文本（节点页、`plugin_rollout_nodes.error`）带上这段原因。有节点出错、且没人给出正确的包时返回 502，逐个列出错误，核心按一般错误处理，不当作包不存在。
 - **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都离线时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
 - **升级**：没有迁移。旧主节点上已有的包原地保留，和其他节点一样被问到。网关滚动更新期间，旧网关节点上的上传仍要推给主节点；主节点换成新网关后不再接受（403），在旧网关节点上上传会失败；旧网关的主节点自己缺包时不问别人，在新网关节点上传的包它取不到。换完网关再上传、启用即可。
+
+## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0111；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）
+
+取代 §54 的“数据库角色隔离不再降级”、§5.6 的角色隔离和 0003/0023 的迁移记录函数。
+
+- **一个数据库用户**：核心不建、不改任何数据库角色，核心的用户不需要 `CREATEROLE`。持有 `db.schema` 的插件有 schema `plg_<key>`（属主是核心的用户，`dbschema.Manager.Ensure` 按需 `CREATE SCHEMA IF NOT EXISTS`）。
+- **迁移**：插件的 `migrations/*.sql` 由核心以自己的用户执行，每个文件一个事务，`SET LOCAL search_path TO plg_<key>`，按插件的 advisory 锁串行；记录直接 upsert `public.plugin_migrations`。迁移 0111 删除 `plugin_migrations_applied`、`plugin_migration_record`。
+- **`GetDSN`**（所有者补充“数据库直接委托给核心来代理”）：严格网络下返回 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`，没有任何凭据；`schema` 为 `plg_<key>`；`role_isolated` 不再填写（恒为 false），待 proto 删除该字段。没有出口隧道时（严格网络关闭：开发、非 Linux）返回核心的 DSN 加 `options=-c search_path=plg_<key>`。
+- **核心代理**：出口隧道只对策略有 Database 的插件接受 `db.sub2api:5432`（否则拒绝 `egress: the plugin has no database`），交给 `dbschema.Manager.ServeTunnel` → `runtime-contract/gormpg/pgproxy`：插件侧 SSL/GSS 请求回 `N`，启动消息的 `user`、`database`、`options`、`replication`、`_pq_.*` 忽略，其余运行参数带上；核心用自己的数据库配置（同一 DSN 解析，含 TLS、SCRAM/MD5）登录，固定 `search_path=plg_<key>`、`application_name=sub2api plugin <key>`，协议版本与插件请求的一致；回插件 `AuthenticationOk`、服务器的全部 `ParameterStatus`、服务器的 `BackendKeyData`、`ReadyForQuery`，之后两向原样转发。连不上时回 `FATAL`：服务器的 PgError 原样，其他只说 `the host could not open the database connection`。插件的 CancelRequest（pgx 在 ctx 结束时经同一隧道发出）按进程号与密钥找到该插件自己的会话，按会话的加密方式转发给服务器；其他忽略。每条插件连接是核心对 PostgreSQL 的一条连接，不在核心池里，不设上限，数量由插件的池决定（默认每节点每插件 4 个）。
+- **清除数据**：`DROP SCHEMA plg_<key> CASCADE` 并删除迁移记录（`DropTx`，与插件行的删除同一事务）。
+- **隔离**：插件拿不到数据库密码（严格网络下），但能执行核心的用户能执行的任何 SQL，能访问全部表并能写入，插件之间、插件与核心之间的分隔只靠约定和安装时对 `db.schema`（high）的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、`api_keys.key_cipher`、TOTP、插件加密设置与 secrets、价格同步源密钥）读不出明文，API Key、访问密钥、用户密码只存哈希；其余数据可读，所有表可写。非官方插件授予 `db.schema` 一律要求 `plugin:grant:db_schema_unconfined`（`needs_db_schema_unconfined` 同步），官方插件不要求。
+- **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
+- **单向**：0111 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
+
+## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0113，核心 0.1.304）
+
+插件 `claude_oauth`（目录 `next/plugins/claude-oauth`，账号类型 `claude_oauth`、`claude_setup_token`）整体删除，不留兼容。线上没有安装它，也没有这两种类型的账号。最后的源码是 `77158211c`（`git show 77158211c:next/plugins/claude-oauth/manifest.json`）。§44.6、§48.5、§52.6 只留标题。
+
+### 116.1 删除了什么
+
+- 插件目录、`plugins/released.json` 里它那一条、`go.work` 的模块。CI、镜像构建和市场打包都按 `plugins/*` 发现插件，不用改。
+- 核心里只为它存在的代码：写死在核心的余额查询器 `account/balance_claudeoauth.go`（向 `api.anthropic.com/api/oauth/usage` 读 `account_balance`）和它在 `app` 里的注册。
+- 插件键 `claude_oauth` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.304）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.304。已签名的 claude-oauth 0.3.0 包的 `hostCompat` 落在 0.1.304 范围内，没有这一条就能装上。
+- e2e：AC30 的平台插件矩阵去掉它那一行，变成九个插件；e2e 栈里只为它存在的 mock 主机别名 `api.anthropic.com` 删除。
+- 控制台：mock 里的两种类型和四个示例账号（示例账号改成 Anthropic API Key）、请求头覆盖提示里点它名字的句子。
+
+### 116.2 数据库：迁移 0113
+
+`0113_drop_claude_oauth_plugin.sql` 照 0102（§101.5）、0104（§106）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障：发布迁移时所有节点都已停下），可以重跑：
+
+- 它任务的 `scheduled_tasks` 行（这张表没有到 `plugins` 的外键）；
+- 它的权限 `plugin.claude_oauth:claude_oauth:manage` 和这条权限的授予（`casbin_rule` 按键引用权限，没有外键级联；持有它的角色升 `revision`），插件存在时 `authz_meta` 的两个版本各加一；
+- 键记入 `plugin_key_retirements`（归原发布者）；
+- 插件行，级联删除版本（含暂存的授予）、宿主权限授予、事件游标与死信、任务运行、发布状态（`plugin_rollouts`，连同节点结果和清理屏障）、运行节点、卸载屏障、插件迁移记录和粘性规则；`plugin_egress_domains` 没有外键，单独删除；
+- 它没有申请数据库权限，所以没有 `plg_claude_oauth` schema 和角色；迁移仍然 `DROP SCHEMA IF EXISTS plg_claude_oauth CASCADE`，角色只在带着核心的标记时删除（同 `dbschema.DropTx`），只为手工建过的情况。
+
+保留：`plugin_key = 'claude_oauth'` 的账号（连同分组关系、使用记录、账本、余额快照），在控制台显示为插件已卸载，由管理员删除；`usage_logs`、`balance_ledger`、`audit_logs`；`plugin_executions`、`plugin_history`、`plugin_egress_logs`。它在 Valkey 里的 KV（OAuth 授权会话）不在数据库里，30 分钟内自己过期。
+
+### 116.3 删掉它以后没有使用者、暂时保留的能力
+
+下面这些是给第三方插件作者的通用契约，删掉它们会改清单格式或插件协议，所以保留，由所有者决定是否删除：
+
+- **账号余额（§52）**：清单 `accountTypes[].balance`（`manifest.AccountBalance`，`check/balance.go`）、`PlatformService.BuildBalanceRequest` / `ParseBalanceResponse` 与它们的消息、核心 `account/balance.go` 的 `BalanceProvider` 注册表、`balance_cache.go`、表 `account_balances`、`GET /accounts/:id/balance`、账号视图的 `balance`、控制台的余额显示。核心从来没有调用那两个 RPC，余额只来自核心里注册的查询器，而唯一的查询器随本次删除；现在没有类型声明 `balance`，声明了也只显示“支持余额”而查不到数据。
+- **额度主动查询（§44）**：清单 `quota.query`、`quota.autoRefresh`，`PlatformService.BuildQuotaRequest` / `ParseQuotaResponse`（`pluginsdk.QuotaReader`），核心的主动查询与自动复查。现在没有第一方插件声明 `query`（codex 只用响应头被动采样），机制本身完整可用。
+
+仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex、volcengine 等）。

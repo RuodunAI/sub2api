@@ -84,7 +84,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 | 写入时机 | 运营方的透传和覆盖**之后**，运营方改不掉 | 运营方设置**之前** |
 | 运营方能做什么 | 不能改 | 客户端头透传**只补没有的**（不替换默认头）；请求头覆盖（`header_override`）和参数覆盖的请求头部分可以设值或删除 |
 
-核心交给插件的客户端请求头（`inbound_headers`）已经按清单过滤过：账号类型在这个平台上写了 `passHeaders` 就用它，写成 `[]` 就一个都不交，没写才用平台的列表（`AccountPlatform.ClientHeaders`）。交来的头插件要作为默认头转发（一致性第 4 条），不想转发任何客户端头的类型在清单里写 `"passHeaders": []`（claude_oauth、codex 就这样）。
+核心交给插件的客户端请求头（`inbound_headers`）已经按清单过滤过：账号类型在这个平台上写了 `passHeaders` 就用它，写成 `[]` 就一个都不交，没写才用平台的列表（`AccountPlatform.ClientHeaders`）。交来的头插件要作为默认头转发（一致性第 4 条），不想转发任何客户端头的类型在清单里写 `"passHeaders": []`（codex 就这样）。
 
 发送时自下而上：插件的默认头 → 透传（账号 `header_passthrough`、`header_override` 的透传键、粘性规则，只补没有的）→ `header_override` 与 `param_override` 的设值和删除 → 插件的权威头 → 没有 Content-Type 时补 `application/json`（CONTRACTS §86.5）。WebSocket 握手同样分层，但不套透传。
 
@@ -92,7 +92,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 - 鉴权头（`authorization`、`x-api-key`、`api-key` ……）和签名写入或覆盖的头放权威头；签名时用的 `content-type` 也算。
 - 原来是声明式的五个类型（openai、gemini、relay、azure_openai、anthropic 的 `apikey`）改写后**只有鉴权头**是权威头，其余都是默认头，和以前的行为一样（`standard` 库就这样做）。
-- 已经发布过的代码插件（claude_oauth、codex、volcengine）的头以前全都在运营方设置之上，改写后**保持全部权威**，运营方的透传和覆盖照旧改不了它们。没有发布过的 vertex、bedrock 按第一条写：只有凭证头（bedrock 的签名类型是签名头）是权威头，`content-type`、`accept` 是默认头。新插件按第一条写。
+- 已经发布过的代码插件（codex、volcengine）的头以前全都在运营方设置之上，改写后**保持全部权威**，运营方的透传和覆盖照旧改不了它们。没有发布过的 vertex、bedrock 按第一条写：只有凭证头（bedrock 的签名类型是签名头）是权威头，`content-type`、`accept` 是默认头。新插件按第一条写。
 - 一致性套件第 4 条检查的是“声明的集合”：权威头的名字必须在插件声明的 `Credentials`（鉴权与签名头）与 `Authoritative`（其余要保留为权威的头，每个写理由）的并集里，`Credentials` 的头不能出现在默认头里。
 
 签名的插件不要写 `Headers(req.Header)`（会把请求上每个头都变成权威头），用 `reqsign.SignedHeaders(req, scheme)` 只取签名写入或覆盖的那几个。
@@ -339,6 +339,14 @@ if !sticky.Enabled { ... }
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
 - 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。
 
+## 6.1 插件自己的表：`Host.DB` 与 DSN
+
+- 插件在 manifest 声明 `database`（`schema` 必须是 `plg_<key>`）并获授 `db.schema` 后，用 `Host.DB(ctx)` 拿 GORM 句柄，每次调用重新取（CONTRACTS §2“插件数据库”）。
+- 句柄背后的 DSN 来自 `HostService.GetDSN`：在沙箱里（严格网络）是 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`，没有密码。连接经出口隧道到核心，核心用自己的数据库配置代为登录（TLS、密码认证都在核心），把会话的 `search_path` 设成 `plg_<key>`，之后原样转发协议；语句的 ctx 结束时 pgx 发的取消请求也由核心转给服务器（CONTRACTS §115）。插件进程里没有数据库凭据，也没有插件专用的数据库用户。不在沙箱里（开发模式、严格网络关闭）时 DSN 是核心自己的，直接连库。
+- 连接数由插件自己的池决定（默认每节点 4 个，`pluginsdk.WithDBPoolSize`），每条都是核心对数据库的一条连接，运维按它规划 `max_connections`。
+- 所以不写 schema 前缀的表名都落在自己的 schema 里，但 `search_path` 不是边界：句柄能访问核心的用户能访问的所有表。只访问自己 schema 里的表是插件的义务；访问别处的数据走 Host API。
+- 迁移由核心执行（以核心的用户、`search_path` 为自己的 schema），脚本必须幂等（CONTRACTS §36）；表的属主是核心的用户。
+
 ## 7. 现有平台插件
 
 全部是 gRPC 代码插件，清单 `hostCompat` 下限 `>=0.1.304`。
@@ -348,7 +356,6 @@ if !sticky.Enabled { ... }
 | openai、gemini、relay | `standard` 库加预设；openai 另有 WebSocket（`openai.responses_ws`） | 全部在库和预设里；鉴权头之外都是默认头 |
 | anthropic | 在已有进程（模型目录路由）里嵌入 `standard` 的 `apikey` 类型 | 同上 |
 | azure_openai（目录 `plugins/azure-openai`，市场） | `standard` 库，两个类型（v1 与按部署） | 同上；错误分类用 openai 预设的策略 |
-| claude_oauth | 自己的 `BuildUpstream`；`messages` 发到 `/v1/messages`，`count_tokens` 发到 `/v1/messages/count_tokens`，两者都带 OAuth 的 `anthropic-beta` | `ClassifyError` 用 Anthropic 的策略（`providers/anthropic.Policy`，读 `error.type`），前面加一条：401 按“OAuth 令牌过期或无效”禁用；额度头；全部头保持权威；两个类型 `passHeaders: []`，不转发任何客户端头（与已发布的 0.2.5 相同） |
 | vertex（市场） | 自己的 `BuildUpstream`；把核心交来的 `user-agent`、`x-goog-api-client` 作为默认头转发；没有 `externalServices`（不取回） | `ClassifyError`；凭证续期 `BuildRefreshRequest` / `ParseRefreshResponse`（CONTRACTS §48），第一枚令牌靠保存后续期（§48.3 第 5 条）；服务账号断言用 `golang-jwt/jwt/v5` 签名，密钥文件由插件自己解析（§109.6） |
 | bedrock（市场；只服务 anthropic 平台的 messages，OpenAI 协议的请求由核心转换后走同一条路；带 CONTRACTS §110 的核心上这是跨平台转换，要在账号上为模型开启） | 自己的 `BuildUpstream`：把 Messages 请求装进 InvokeModel 信封，清洗 Bedrock 不接受的字段（顶层的 `model`、`stream`、`metadata`、`service_tier`、`inference_geo`、`speed`、`provider`，以及 `tools[].custom`、`cache_control.scope` 等），AK/SK 与临时凭证类型自己做 SigV4 签名，流式请求给 `response_stream`；没有 `externalServices` | `ClassifyError`；账号测试请求同样自己签；一致性套件的两处例外见第 4 节 |
 | codex | 自己的 `BuildUpstream`，HTTP 与 WebSocket | `ClassifyError`、额度头、`streamOnly`；`session_id` 由插件按 `prompt_cache_key` 派生（[PLUGIN-CODEX.md](PLUGIN-CODEX.md) §16）；全部头保持权威；两个类型 `passHeaders: []`，插件自己写出它发的每个头 |

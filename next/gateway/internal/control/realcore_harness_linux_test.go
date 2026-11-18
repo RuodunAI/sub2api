@@ -154,14 +154,6 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 		cleanup, done := context.WithTimeout(context.Background(), 20*time.Second)
 		defer done()
 		admin.WithContext(cleanup).Exec("DROP DATABASE " + quoted + " WITH (FORCE)")
-		// Plugin roles are cluster-wide and marked with the database that
-		// created them; left behind, the next cluster's core refuses the
-		// same plugin keys with plugin_db_role_conflict.
-		var roles []string
-		admin.WithContext(cleanup).Raw("SELECT rolname FROM pg_roles WHERE starts_with(shobj_description(oid, 'pg_authid'), ?)", "sub2api plugin role; database="+c.dbname+";").Scan(&roles)
-		for _, role := range roles {
-			admin.WithContext(cleanup).Exec("DROP ROLE IF EXISTS " + quoteIdent(role))
-		}
 	})
 	c.coreDSN = dsn + " dbname=" + c.dbname
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {

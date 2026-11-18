@@ -14,6 +14,21 @@
 - `GET /me/groups` 每行带 `served_protocols`（`[{protocol}]`，与分组详情同一计算，不带账号数，整页一次查询）。密钥页的手动配置说明和密钥编辑窗口里的分组说明改按它列端点，与分组详情一致，不再列出账号没开放、实际会 404 的端点。
 - e2e 新增 AC37：插件联网的屏蔽列表、允许列表对 guard webhook 的效果与出口日志里的拒绝原因（CONTRACTS §113.4）。
 
+### 删除 Claude OAuth 插件及两种账号类型（核心；迁移 0113，随转发 V2 发布）
+
+所有者决定整个删除（原话“删除掉！”），不留兼容。线上没有安装这个插件，也没有这两种类型的账号。规则见 CONTRACTS §116。
+
+- 插件 `claude_oauth`（`next/plugins/claude-oauth`）与账号类型 `claude_oauth`（Claude OAuth）、`claude_setup_token`（Claude Setup Token）删除，市场里不再有它；核心里写死的 Claude OAuth 余额查询一并删除。
+- 插件键 `claude_oauth` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.3.0 包同样被拒）。
+- **迁移 0113**（`0113_drop_claude_oauth_plugin.sql`）：装过它的库（例如测试实例）像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予）、它的权限 `claude_oauth:manage` 与授予、出网域名、任务，键记入 `plugin_key_retirements`；没有它的库什么都不变，可以重跑。这两种类型的账号、使用记录、账本保留，控制台显示为插件已卸载，由管理员删除。
+- 删掉它之后没有使用者、暂时保留的通用能力（账号余额、额度主动查询）见 CONTRACTS §116.3。
+- e2e：AC30 的平台插件矩阵变成九个插件。删除后没有重跑 e2e。
+
+### volcengine 0.13.0：删除旧的视频任务表，素材库调用不再有写死的超时（插件迁移 0003，随转发 V2 发布）
+
+- 插件迁移 `0003_drop_video_tasks.sql` 删除 `plg_volcengine.video_tasks`（`DROP TABLE IF EXISTS`），连同只读它的 `ResolveModel`。转发 V2 之后视频任务的归属、账号、模型和预扣都在核心，这张表没有写入方；唯一的读者 `ResolveModel` 只在端点声明 `request.modelSource: "plugin"` 时被调用，线上的 0.12.8 和之前发布过的清单都没有这样声明，所以还在旧版本上的节点也不会读写它，表直接删除（[设计文档](next/docs/PLUGIN-VOLCENGINE-ARK.md) §5.3）。
+- 素材库的上游调用（分组、素材的增删改查）不再有自己的 30 秒总时限和 10 秒 TLS 握手时限，随发起它的控制台请求结束（CONTRACTS §112.16 的规则）。传输错误、429、5xx 的重试（最多 3 次、间隔 200 毫秒，创建不重试）不变。
+
 ### 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（网关；核心只改错误文案；无迁移）
 
 - 上传、市场安装、内置插件导入只把包存在接到请求的那个节点，不再推给主节点；主节点宕机时，在其他节点上传、安装、升级插件照常进行。
@@ -21,6 +36,17 @@
 - 持有某个包的节点都离线时装不了：控制台 `package_gone` 的文案改为“没有在线节点持有这个安装包”，节点加载失败的错误里写明问过哪些节点、哪些离线。
 - 删除节点间插件包上传（`PUT /internal/plugin-blobs/`、范围 `plugin-upload`、每节点 2 个并发上传的限制）。`plugin_store_max_bytes` 总量上限保留。
 - **升级**：只需换网关二进制（核心文案随下次核心发布）。网关滚动更新期间不要上传插件：旧网关节点上的上传仍要推主节点，主节点换新后会被拒；旧网关的主节点取不到在新网关节点上传的包。全部换完再上传、启用。见 CONTRACTS §114、[设计](next/docs/DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)。
+
+### 插件数据库只用核心的数据库用户，不再给插件建数据库角色（核心；迁移 0111，主节点优先；**单向，回退要连同数据库回到升级前的备份**）
+
+所有者决定："它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户"。设计见 `next/docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md`，契约 CONTRACTS §115。
+
+- **对运维**：新版本第一次启动时，核心把旧版本为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`。多个节点同时启动只转换一次；某个角色还有会话（旧插件进程未退出）时留下并记一次警告 `legacy plugin database role still has sessions`，下次该插件取 DSN、迁移或下次启动时再转换；转换失败只记日志，不阻止启动。核心的数据库用户不再需要 `CREATEROLE`；配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（设了也不读），错误 `plugin_db_isolation_unavailable`、`plugin_db_role_conflict` 不再出现。
+- **备份与恢复不再依赖属主**：插件的 schema 和表都属于核心的用户。不带属主恢复（`--no-owner`）后直接可用；带属主恢复的库有旧角色，启动时照上面转换。
+- **连接数**：插件的连接（每节点每个用数据库的插件默认 4 个，现有 7 个官方插件用数据库）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；规划 `max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”。
+- **隔离（直说）**：持有 `db.schema` 的插件现在能读写核心的用户能访问的所有表，包括核心自己的表和其他插件的表；分隔只靠约定和安装时对 `db.schema` 的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、可还原的 API Key、TOTP、插件加密设置）读不出明文，API Key 与用户密码只存哈希，但余额、授权等都能被改写。因此非官方插件授予 `db.schema` 一律要求超管专属的 `plugin:grant:db_schema_unconfined`（以前只在关闭角色隔离时要求），官方插件不变。
+- **迁移 0111** 删除旧插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；插件迁移由核心以自己的用户执行并直接记录。之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
+- **核心代理插件的数据库连接，凭据不进插件**（所有者补充“数据库直接委托给核心来代理就行了”）：沙箱里的插件（严格网络，Linux 默认）从 `GetDSN` 拿到不带密码的虚拟地址 `db.sub2api:5432`，经出口隧道连到核心，核心用自己的数据库配置（含 TLS、SCRAM）代为登录、把 `search_path` 设为插件的 schema 后原样转发协议，取消请求也转给服务器。在 `pg_stat_activity` 里这些连接的 `application_name` 是 `sub2api plugin <key>`。严格网络关闭时（开发、非 Linux）插件仍拿到核心的 DSN 直连。插件代码和 SDK 不用改；`role_isolated` 不再填写（恒为 false）。所以隔离的准确说法是：插件拿不到数据库密码，但能执行核心的数据库用户能执行的任何 SQL。
 
 ### 账号协议绑定与模型的协议限定，跨平台协议转换改为默认关闭（核心；迁移 0106，主节点优先；**升级后依赖协议转换的客户端会收到 404，要在账号上为模型开启**）
 
@@ -51,7 +77,7 @@
 - **新设置“系统设置 → 运行环境 → 插件联网”**：所有域名的默认设置二选一。“允许所有域名”（默认）下维护一张“已屏蔽的域名”，“屏蔽所有域名”下维护一张“已允许的域名”；列出的域名连同它的子域名生效，两张表分开保存，切换模式不会丢。添加对话框可以一次填多个，或批量粘贴（每行一个），格式不对的行逐行提示。保存后各节点对新连接立即生效（漏收广播的节点最多 10 秒），已建立的连接不断开。接口 `GET/PUT /settings/plugin-egress`（`settings:read` / `settings:manage`），每次保存记审计 `settings.plugin_egress.update`。
 - **只收紧，不放宽**：插件仍须持有 `net` 授权；插件详情“外部访问”里设为“仅白名单”的插件仍只能访问它获批的域名，管理员的允许列表不会把别的域名加给它。被拒的连接和 DNS 查询照常记在插件的外部访问日志里，结果“已拒绝”，原因写明是被屏蔽还是不在允许列表里。
 - **只管插件自己的联网**（出口隧道：授权换令牌、Webhook、SMTP 等）；核心替插件发的上游请求和取回不受影响。
-- **升级影响**：以前没有全局的插件联网设置，按插件的出口策略（`allow_all` / `allowlist`）保持原样，没有要迁移的旧选项。新设置默认“允许所有域名”、列表为空，升级后每个插件能访问的主机与升级前相同。要严格控制插件出网的部署，升级后改为“屏蔽所有域名”并列出需要的域名：claude_oauth、codex 换令牌的域名，mailer 的 SMTP 服务器，guard、moderation 的通知地址，volcengine 的素材库。改为“屏蔽所有域名”前先在各插件的“外部访问”里看它们实际访问过哪些域名。
+- **升级影响**：以前没有全局的插件联网设置，按插件的出口策略（`allow_all` / `allowlist`）保持原样，没有要迁移的旧选项。新设置默认“允许所有域名”、列表为空，升级后每个插件能访问的主机与升级前相同。要严格控制插件出网的部署，升级后改为“屏蔽所有域名”并列出需要的域名：codex 换令牌的域名，mailer 的 SMTP 服务器，guard、moderation 的通知地址，volcengine 的素材库。改为“屏蔽所有域名”前先在各插件的“外部访问”里看它们实际访问过哪些域名。
 
 ### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限；写死的超时与限制去掉（核心与全部插件；插件协议 2、Host API 10；迁移 0107 只改数据、0108 把模型名的列改成 text、0109 给发布的节点结果加一列；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
 
@@ -60,7 +86,7 @@
 **升级前必读**
 
 - **核心和全部插件一起换，旧插件包装不上。** 插件线协议从 1 升到 2、Host API 从 9 升到 10。按旧契约构建的插件包（旧协议的二进制，或清单里有 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、`platform.execute.v1`、`platform.poll.v1`）在上传、安装、加载时都以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心），插件列表和插件详情显示拒绝原因（`refusal`；首次启用就被拒、发布在准备阶段失败时也显示，取自迁移 0109 新增的发布节点结果代码 `plugin_rollout_nodes.code`；控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），它的账号在装上新版本之前不可用。第一方插件全部重新构建并升了版本，`hostCompat` 都是 `>=0.1.304 <0.2.0`；第三方平台插件要由作者用新 SDK 重新构建。
-- **只能停机重新部署。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件（relay、claude_oauth、azure_openai、vertex、bedrock 等）逐个装上新版本。
+- **只能停机重新部署。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件（relay、azure_openai、vertex、bedrock 等）逐个装上新版本。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024，CONTRACTS §111）：每个网关请求的请求体、WebSocket 的单条消息都按它限制，超出回 413（WebSocket 以 1009 关闭），保存后各节点对新请求生效。环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除。迁移 0107 把全局层存着的值搬进网关设置；**分组层的值丢弃**，升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。端点清单的 `request.maxBodyBytes` 删除（没有清单用过）。
 - **插件内存默认不限**（CONTRACTS §111.5）：只有管理员设置时才有上限。插件资源页给插件设的内存上限原样生效；节点封顶 `SUB2API_PLUGIN_MAX_MEMORY_MB` 的默认值从 1024 改为 0（不封顶），设了时照旧生效；清单里的 `memoryMB` 只作展示。之前靠默认封顶或清单的值限住的插件，升级后不再受限，要界限的在插件资源页设上限或设置 `SUB2API_PLUGIN_MAX_MEMORY_MB`。平台插件现在持有完整请求体，给它设上限时每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量（默认约 450 MB）。单机栈 `deploy/single/compose.yml` 不再默认传 1024。交给插件的请求体不按字节排队，网关设置里没有内存警告。
 - **同版的协议绑定把跨平台协议转换改为默认关闭**（上一节）：升级前按它的手册导出存量转换，升级后在账号上为模型开启。
@@ -90,12 +116,11 @@
 - 插件构造完请求后由核心发送，插件不在流式回答里：插件崩溃、内存超限重启、升级换代不再切断在途的流（以前 codex 会）。codex 请求不再写执行记录（以前每请求三次写入）。
 - 用量由插件解析的端点和任务提交（目前是 volcengine 的视频提交）：插件在交换结束后给出用量或任务；插件什么都没给（报错、崩溃、给错种类）时，同步请求记一条零费用的使用记录（`error_type = usage_unreported`，每次一条 ERROR 日志），核心不再按自己的读数补记；任务提交没有给出任务时，任务不登记、客户端报错、预扣释放。等待期间插件崩溃会切断上游，这个请求不计费。插件选了核心的读数（`host_usage`）而核心一个用量都没读到时，同样记零费用的“未上报”，不按 0 计费（不等待形式下客户端照常拿到回答）。“10 分钟内 20 次未上报就通知”没有做。
 - 使用记录里“未上报”的请求显示为“未上报用量（未计费）”，详情说明插件没有返回用量；失败请求的错误类型筛选能选它。
-- 运营方的请求头设置：插件的头分成默认头和权威头。透传的客户端头只补没有的；请求头覆盖和参数覆盖可以改、删默认头，改不了权威头。openai、gemini、relay、azure_openai、anthropic 的 `apikey` 只有鉴权头是权威头（与以前一样）；claude_oauth、codex、volcengine 的头全部是权威头（与以前一样）。
+- 运营方的请求头设置：插件的头分成默认头和权威头。透传的客户端头只补没有的；请求头覆盖和参数覆盖可以改、删默认头，改不了权威头。openai、gemini、relay、azure_openai、anthropic 的 `apikey` 只有鉴权头是权威头（与以前一样）；codex、volcengine 的头全部是权威头（与以前一样）。
 - “平台调用超时”只管上游出错后的错误分类（`ClassifyError`）和读断开策略，默认值和范围不变；`Execute` 不计时（见上面“写死的超时与限制去掉”）。插件出错、崩溃时请求没有发出，按插件不可用换号，不惩罚账号。设置页的说明已按这个含义改写；“平台热路径超时”的说明改成它实际管的模型解析和预扣估算。
 - 安装与升级的审查页对平台插件固定显示一句：插件会收到经它的账号发出的每个请求的完整内容，并决定请求发往哪个地址（不是权限，不能取消）。
 - bedrock 会清洗 Claude Code 写在请求体深处、Bedrock 不接受的字段（工具定义的 `custom`、`cache_control` 的 `scope` 和模型不接受的 `ttl` 等），不用再在参数覆盖里手工删。
 - 钩子调用因请求超过插件 gRPC 接收上限而失败的情况不再发生（插件的接收上限固定为传输层最大值），`requestTooLarge` 的熔断例外删除。
-- claude_oauth：`count_tokens` 发到计数端点 `/v1/messages/count_tokens`（带 OAuth 的 beta）；以前发到 `/v1/messages`，上游回 401，运营方透传了 `anthropic-beta` 且客户端带 `max_tokens` 时还会在按免费计的端点上真的生成一次。错误分类改用 Anthropic 的策略（以前读错了错误类型的位置，“prompt is too long”这类 400 被一个账号接一个账号地换号，而不是回给客户端）。不转发任何客户端请求头（与已发布的 0.2.5 相同）。
 - bedrock：删掉请求体里的 `inference_geo`、`speed`（以前删的是拼错的 `interface_geo`，真正的字段会作为未知字段发给 Bedrock）。
 - volcengine：在 anthropic 平台上只服务 Messages，`count_tokens` 改由核心本地估算（以前只有 Ark 账号的分组对 `count_tokens` 一律回 503）。
 - vertex：把客户端的 `user-agent`、`x-goog-api-client` 作为默认头转发。vertex、bedrock 不再声明用不到的 `externalServices`。
@@ -118,14 +143,14 @@
 - 删除：`PlatformService.BuildUpstreamRequest`（声明字段加补丁）、`ExtractUsage`、`ParseTaskSubmission` 作为核心调用、`Poll`、`BuildReconcileRequest` / `ParseReconcileResponse`；`HostService.ForwardUpstream`、`RecordUsage`、`ReserveAndWatch`、`ReportTaskProgress`；`RequestSigning`（核心签名）；清单的 `runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`，能力 `platform.execute.v1`、`platform.poll.v1`；SDK 的 `SetPatch` / `DeletePatch`、`WithMaxRecvMsgSize`；`sdk/upstream`、`sdk/platforms/upstream`。
 - 新的写法：实现 `UpstreamBuilder.BuildUpstream`，让 `Execute` 是 `pluginsdk.ExecuteDefault`。插件拿到完整请求体（转换、模型映射、参数覆盖之后），用 `NewUpstream` 构造最终请求（`Header` 权威、`DefaultHeader` 默认），经 `Relay` / `RelayAndWait` 交给核心；辅助请求用 `Fetch`（主机是清单 `externalServices` 或本账号的上游地址，规则是 `manifest.FetchHostAllowed`；不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除，核心不置 `truncated`）；用量与任务只在返回值里（`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`）；任务观察实现 `TaskMonitor.Monitor`，结果是返回值。签名用 `sdk/reqsign` 自己签；改请求体只用 `sdk/pluginsdk/jsonedit`；不开套接字、不用厂商 SDK 客户端、不重试。
 - API Key 加基础地址的账号类型用新库 `sdk/pluginsdk/standard` 和预设 `providers/{openai,anthropic,gemini}.APIKey`；原声明式引擎的 1498 条黄金样例冻结在 `standard/goldentest`。
-- 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查），十个平台插件都调用它；`Plugin.Manifest` 必填（交给插件的客户端请求头从清单读），`Plugin.PassHeaders` 删除；每个协议的流式 / 非流式形式由套件从端点定义读出，插件不能声明自己不服务某种形式；WebSocket 协议只归第 11 条。只有 bedrock 有两处例外（InvokeModel 按地址选流式、不收 `anthropic-beta` 头）。
+- 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查），九个平台插件都调用它；`Plugin.Manifest` 必填（交给插件的客户端请求头从清单读），`Plugin.PassHeaders` 删除；每个协议的流式 / 非流式形式由套件从端点定义读出，插件不能声明自己不服务某种形式；WebSocket 协议只归第 11 条。只有 bedrock 有两处例外（InvokeModel 按地址选流式、不收 `anthropic-beta` 头）。
 - 假宿主 `pluginsdktest`：`Harness.Execute` / `Harness.Monitor`，`FakeHost.Begin` / `BeginMonitor`；取回的主机按 `FakeHost.Manifest`（启动时取 `WithManifest`，`pluginsdk.ManifestOf`）判断，不再默认放行所有主机；和宿主一样不限请求体、不数取回、不截回答，`Monitor` 的终态要有一次完整成功的取回。`MaxBodyBytes` 删除。
 - 清单：账号类型写 `"passHeaders": []` 表示不交给插件任何客户端请求头（以前空列表会回落到平台的列表）；没写仍取平台的。跨插件事实的判断统一为 `AccountPlatform.ServesPluginFacts`，内置平台不参与。没有使用者的 `TransportHTTP`、`TransportWebSocket` 删除。
 - `standard` 库：`Type.PassHeaders`、`PlatformPassHeaders`、`Auth.Query`、`Route.Method` 删除（核心已按清单过滤客户端头，库把交来的都写成默认头；HTTP 路由一律 POST）；`Route.Edit` 改为 `func(*jsonedit.Doc, *Request)`，和过滤字段在同一次改写里；预设不再带过滤字段（azure_openai 自己写）；流式判断用 `Request.Stream`（`meta.stream` 或请求体的 `stream` 为真），只流式类型的非流式请求也会加 `include_usage`；黄金样例用 `standardtest.Run(t, plugin, p)` 回放。
 - `jsonedit`：同一成员上的改写按调用顺序生效（以前先 `Set` 后 `Delete` 会留下这个键）。`ValidateUpstreamRequest` 与宿主用同一套方法和请求头检查。
 - 声明了账号类型就必须申请 `accounts.credentials`；类型的地址字段只认清单的 `upstreamFields`（原来声明式类型自动得到 `base_url`）。
 
-**插件版本**（全部 `hostCompat >=0.1.304 <0.2.0`）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、claude_oauth 0.3.0、codex 0.1.12、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。
+**插件版本**（全部 `hostCompat >=0.1.304 <0.2.0`）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.1.12、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。
 
 **验证状态**：测试结果以各工作包的交付说明为准；整套 e2e 共 49 个用例（含 AC19、AC29、AC30–AC36）已在合并后的最终代码上运行，全部通过。e2e 新增 AC30–AC36（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端），e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
 

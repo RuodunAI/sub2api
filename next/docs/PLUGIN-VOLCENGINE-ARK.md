@@ -295,7 +295,7 @@ rpc GetAccountCredentials(GetAccountCredentialsRequest) returns (GetAccountCrede
 
 ### 5.3 历史任务
 
-已应用的 `0002_video_tasks.sql` 及旧表保留，不篡改迁移，也不再向它登记新视频任务。旧裸 ID 的归属只从核心可信账务恢复，不能使用曾按裸 ID 覆盖的插件表授权。
+插件 0.13.0 删除了旧的任务表 `video_tasks`（迁移 `0003_drop_video_tasks.sql`，`DROP TABLE IF EXISTS`；已应用的 `0002_video_tasks.sql` 不改）以及只读它的 `ResolveModel`。转发 V2 之后提交不再写这张表；唯一的读者 `ResolveModel` 只在端点声明 `request.modelSource: "plugin"` 时被核心调用，而线上的 0.12.8 与之前发布过的清单都没有这样声明，所以还在旧版本上的节点也不会读写它，可以直接删表。旧裸 ID 的归属只从核心可信账务恢复。
 
 旧任务首次恢复缺少完整结果时，核心安排统一轮询，查询暂时返回 `task_snapshot_pending`。未知、歧义或其他用户的任务不得退回普通调度；上游结果已超过保留期时明确返回无法继续观测。
 
@@ -654,6 +654,8 @@ token = **帧数 × 输出宽 × 输出高 / 1024**，固定 24fps。以下每�
 2. **不再重试非幂等的 `Create*`**（§10.3 漏记的一条代价）。旧的 `WithMaxRetries(2)` 会重试 `CreateAssetGroup` / `CreateAsset`，重试一次就在上游多建一个资源，而创建路由只拿得到最后一次尝试的 id ——「上游成功但索引写失败就补偿删除」这条设计**永远够不到第一个**。
 3. **go.mod 少 6 个模块**，含 §10.3 当初为压住歧义导入而 pin 的**单体 `google.golang.org/genproto`**（`go mod why` 确认主模块根本不需要它）。那笔 workspace 污染债一并还清。
 4. 顺带补了非 JSON 响应的处理（中间代理的 HTML 502、空 body、200 里塞数组），旧代码对这些只会给一个含糊的 `InternalError`。
+
+> 0.13.0（转发 V2 收尾）起素材库调用不再有自己的总时限：原来每个 Action（含重试）最多 30 秒（`assetCallTimeout`），传输的 TLS 握手最多 10 秒，现在都随发起它的控制台请求的 context 结束（AGENTS.md、CONTRACTS §112.16 不留写死的超时）。重试（传输错误、429、5xx，最多 3 次，间隔 200 毫秒，`Create*` 不重试）不是为配合那个时限而设的，保留。
 
 **正确性风险由 golden vector 消除**：在删掉 SDK **之前**，先用官方 SDK v1.2.54 真的发出两个请求并把整个请求逐字段冻结（含它随机生成的 `X-Sdk-Invocation-Id`），自写签名对同样输入必须产出**逐字节相同**的 `Authorization`。**这批向量一旦需要重新生成，必须再从官方 SDK 取 —— 用 `signV4` 重算会让测试变成同义反复**（测试文件头写明了这一点和抓取方法）。
 

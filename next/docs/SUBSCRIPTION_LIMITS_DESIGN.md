@@ -59,11 +59,9 @@ sub2api 在缓存未命中时还加 0–800 ms 随机抖动以打散多账号同
 
 next 里限流、过载、失败冷却都落在同一个 Redis 键 `cooldown:account:<id>`（`SetCooldown`），没有 sub2api 那些分散的列，所以 `POST /accounts/:id/reset-status` = 删冷却键 + 审计 + （确有冷却时）`account.status_changed` + `account:changed` 广播。与 sub2api 一致，不恢复 `status = disabled`（§42 自动禁用或管理员禁用），也不清额度快照。
 
-### 3.6 claude-oauth
+### 3.6 claude-oauth（已删除）
 
-- 两个类型都声明 `5h` / `7d` / `7d_fable` 三组头（`7d_oi` → `7d_fable`）。
-- 只有 `claude_oauth` 声明 `query`，查询 `/api/oauth/usage`；`claude_setup_token` 的 `BuildQuotaRequest` 回 `Unimplemented`。
-- `7d_sonnet` 只来自主动查询（sub2api 也没有对应的被动头）。
+插件在 0.1.304 删除（CONTRACTS §116），本节原文见 `git show 77158211c:next/docs/SUBSCRIPTION_LIMITS_DESIGN.md`。现在没有第一方插件声明 `query`，codex 只用响应头被动采样。
 
 ## 4. 已知限制
 
