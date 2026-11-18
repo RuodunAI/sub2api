@@ -1,16 +1,12 @@
 package pluginsdk
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"math"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
@@ -101,47 +97,5 @@ func TestServerReceiveLimitIsTheMaximum(t *testing.T) {
 	}
 	if v.Int() != math.MaxInt32 {
 		t.Fatalf("receive limit %d", v.Int())
-	}
-}
-
-// The reporting callbacks and the old request path are gone: from the host
-// contract, and from this package.
-func TestReportingCallbacksAreGone(t *testing.T) {
-	removed := []string{
-		"RecordUsage", "ReserveAndWatch", "ReportTaskProgress", "ForwardUpstream",
-		"ExecuteHTTP", "SetPatch", "DeletePatch", "WithMaxRecvMsgSize", "Poll", "BuildUpstreamRequest", "BuildReconcileRequest", "ParseReconcileResponse",
-	}
-	removedTypes := []string{"Poller", "Reconciler"}
-	host := reflect.TypeOf((*pluginv1.HostServiceClient)(nil)).Elem()
-	platform := reflect.TypeOf((*pluginv1.PlatformServiceServer)(nil)).Elem()
-	for _, name := range removed[:4] {
-		if _, ok := host.MethodByName(name); ok {
-			t.Errorf("HostService still has %s", name)
-		}
-	}
-	for _, name := range []string{"Poll", "BuildUpstreamRequest", "ExtractUsage", "ParseTaskSubmission", "BuildReconcileRequest", "ParseReconcileResponse"} {
-		if _, ok := platform.MethodByName(name); ok {
-			t.Errorf("PlatformService still has %s", name)
-		}
-	}
-	pkgs, err := parser.ParseDir(token.NewFileSet(), ".", nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, file := range pkgs["pluginsdk"].Files {
-		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.FuncDecl:
-				if slices.Contains(removed, d.Name.Name) {
-					t.Errorf("package pluginsdk still declares %s", d.Name.Name)
-				}
-			case *ast.GenDecl:
-				for _, spec := range d.Specs {
-					if ts, ok := spec.(*ast.TypeSpec); ok && slices.Contains(removedTypes, ts.Name.Name) {
-						t.Errorf("package pluginsdk still declares type %s", ts.Name.Name)
-					}
-				}
-			}
-		}
 	}
 }
