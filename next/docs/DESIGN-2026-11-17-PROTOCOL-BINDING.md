@@ -311,7 +311,6 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 （审查后已补的在 10.3；下面只留仍然没做的。）
 
-- 整个功能没有在部署好的栈上验收过。`next/e2e/ac19_builtin_platforms_test.go` 的夹具已改（10.3 第 6 条），但只编译过，没有运行。
 - `store/gormtest/BASELINE.md` 没有记录这次的读数（第 14 条），也没有恢复分组快照的基准。
 - 账号列表按“开放协议”筛选：要先定参数（如 `?protocol=openai.chat`，语义是账号对至少一个模型开放该协议）并在后端实现。
 - API Key 页的端点预览要准确，需要后端在用户可见的分组信息里也返回 `served_protocols`。
@@ -334,7 +333,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 
 **验收用例与文档**
 
-6. `e2e/ac19_builtin_platforms_test.go`：先断言默认 404（OpenAI 错误格式、没有调用上游），给租户账号的 `model_protocols` 为该模型开 `openai.chat`（同时保留 `anthropic.messages`）后断言 200。只编译过。
+6. `e2e/ac19_builtin_platforms_test.go`：先断言默认 404（OpenAI 错误格式、没有调用上游），给租户账号的 `model_protocols` 为该模型开 `openai.chat`（同时保留 `anthropic.messages`）后断言 200。已随整套 e2e（49 个用例）在与转发 V2 合并后的代码上运行并通过。
 7. AGENTS.md：迁移号改为 0106，`rollback/` 一行指向协议绑定的手册。CONTRACTS §110.1、110.3、110.5、110.7、110.9–110.11 和 CHANGELOG 同步。
 
 **控制台**

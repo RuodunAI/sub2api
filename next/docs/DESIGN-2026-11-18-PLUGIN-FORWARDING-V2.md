@@ -1020,7 +1020,7 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 15. volcengine 视频任务没有真实账号可测。
 16. 新 proto 的生成代码差异没有跑过 `buf generate`。
 17. (b) 级只有提纲：代理的 CONNECT 与 socks5 拨号没有验证。
-18. 迁移 0107 的 SQL（8.1）是草稿，没有运行过；`gateway` 行不存在时由迁移新建一行只含一个键的 JSON，读取时其余字段取默认值这一点只读了 `loadGatewaySettings` 的代码。
+18. （已验证）迁移 0107 的 SQL（8.1）起初是草稿；实现为 `server/internal/migrations/0107_request_body_limit_setting.sql`，由真实 PostgreSQL 上的 `TestMigration0107RequestBodyLimitSetting` 运行；`gateway` 行只含这一个键时其余字段取默认值，由 `gateway/request_body_limit_test.go` 覆盖。
 19. 去掉 `WithMaxRecvMsgSize`、把钩子插件的接收上限固定为最大值之后，moderation 在请求体接近上限时的内存表现没有测量；它自己的 `max_inflight_mb` 预算按请求字段的字节数准入，单个请求总是接收，所以一个 1 GiB 的请求会原样进到它的进程里；插件默认不限内存（D23），管理员给它设了上限时要按 8.3 留量。
 
 ## 16. 需要用户确认

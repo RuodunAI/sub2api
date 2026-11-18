@@ -8070,7 +8070,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 7. **协议绑定对不经调度的端点不生效**（110.4，异步任务查询）。
 8. **控制台识别不了“只走原生”的端点**。`GET /account-types` 的 `endpoints` 没有标出 WebSocket、任务提交端点；控制台的候选列是从它推出来的，如果某个类型的 `endpoints` 里出现经转换或适配的这类端点，界面会列出来，保存时被服务端以 `unsupported` 拒绝。
 9. **不做**：分组级、全局级的转换开关；插件经通用配置项（§87）给这两个字段声明默认值或锁定；`/v1/models` 按入站协议过滤；协议 id 通配（`openai.*`）。
-10. 验收用例 `next/e2e/ac19_builtin_platforms_test.go` 已按本节改写：Anthropic 账号的分组请求 `/v1/chat/completions` 先断言 404，给账号的 `model_protocols` 为该模型开 `openai.chat` 后断言 200。e2e 不在 CI 里运行，这个用例只编译过，整个功能没有在部署好的栈上验收。
+10. 验收用例 `next/e2e/ac19_builtin_platforms_test.go` 已按本节改写：Anthropic 账号的分组请求 `/v1/chat/completions` 先断言 404，给账号的 `model_protocols` 为该模型开 `openai.chat` 后断言 200。e2e 不在 CI 里运行；这个用例随整套 e2e（49 个用例）在与转发 V2 合并后的代码上运行并通过。
 11. 控制台的开发 mock（`web/mock/protocols.ts`）按 110.3、110.6、110.7 实现判定、字段路径和错误码（插件未启用时 503），不校验模型 ID 是否完整。
 
 ### 110.11 测试

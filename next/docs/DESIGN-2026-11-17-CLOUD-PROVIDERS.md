@@ -509,7 +509,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 11. Vertex：用户凭证账号带 `x-goog-user-project` 是否足够、用户在该项目上还需要什么权限；令牌端点对时钟偏差的报错文字是否就是代码里匹配的那两句（`reasonable timeframe`、`short-lived token`）。
 12. Vertex：`defaultModels` 与 gemini 插件的预设列表相同，没有按 Vertex 文档核对哪些模型在 Vertex 上存在、哪些有 `global` 区域。
 13. Azure：404 `DeploymentNotFound` 的换号靠管理员配的失败策略重试规则（16.5 第 5 条）。没有验证的是：Azure 在部署不存在时回的错误码是否就是 `DeploymentNotFound`、v1 接口和经典接口是否相同（规则的关键词同时写 `DeploymentNotFound` 和 `model_not_found`）。
-14. **Azure 的 docker e2e（`e2e/ac29_azure_test.go`）写好了，还没有在任何 e2e 栈上执行过**；CI 只编译 e2e，不运行。
+14. Azure 的 docker e2e（`e2e/ac29_azure_test.go`）已随整套 e2e（49 个用例）在与转发 V2 合并后的代码上运行并通过；CI 只编译 e2e，不运行。
 15. **控制台里的新表单（Azure 两个、Vertex 三个、Bedrock 三个、OpenAI 的“高级”分组）没有做过界面走查**：分组折叠、鉴权方式切换（`creationGroup`）、隐藏字段在编辑时回传、date-time 控件、默认模型映射带进表单，都只有清单测试和单元测试覆盖。
 16. 保存后立即刷新（7.3 第 4 点）只在单元测试里对假令牌端点验证过，没有对 Google 的令牌端点跑过。
 17. 核心两个扩展点对真实上游的表现：真实 Bedrock 流的分帧（消息大小、异常帧的形状）只按旧版的样例和 aws-sdk-go-v2 录下的数据测试过。
@@ -671,7 +671,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 ### 16.8 模拟上游与测试
 
 1. 模拟上游（`deploy/mock-upstream/cloud.go`）新增路径：Azure 的 `/openai/v1/{chat/completions,responses,embeddings}`（v1 接口）和 `/openai/deployments/{部署}/{chat/completions,embeddings}`（经典接口）；Bedrock 的 `/model/{id}/invoke`、`/model/{id}/invoke-with-response-stream`；Vertex 的 `/v1/projects/{项目}/locations/{区域}/publishers/google/models/{模型}:{动作}`、`/v1/publishers/google/models/{模型}:{动作}`。`/openai/v1/*` 只是 Azure 的路径，模拟上游从来没有 Bedrock 的 `/openai/v1` 路径，去掉 Bedrock 的 openai 平台时这里没有删东西。Bedrock 路径上带 SigV4 的请求要用密钥 `mock-secret-<access key id>` 签名，模拟上游自己重算。上游 Key 的读取多了 `api-key` 头和 SigV4 `Authorization` 里的 access key id。
-2. `e2e/ac29_azure_test.go` 已写，没有执行过（第 12 节第 14 条）。Vertex、Bedrock 没有 docker e2e，与设计一致。
+2. `e2e/ac29_azure_test.go` 已在 e2e 栈上运行并通过（第 12 节第 14 条）。Vertex、Bedrock 没有 docker e2e，与设计一致。
 
 ### 16.9 SDK 新增的辅助（设计里没有）
 

@@ -28,7 +28,7 @@
 - **接口**：账号的 GET / POST / PATCH 和列表带 `protocols`（`string[]` 或 `null`）、`model_protocols`（`[{models, protocols}]`），PATCH 各自整体替换；`GET /accounts/:id` 另带只读的 `served_protocols`（账号实际开放的协议、方式和模型；账号有模型白名单时，白名单里一个模型都不提供的协议不列出），`GET /groups/:id` 另带只读的 `served_protocols`（协议和提供它的账号数）。没有新增批量接口，也没有按协议筛选账号的参数。
 - **迁移 0106**：`accounts` 加 `protocols`（`text[]`，可空，空 = 本平台协议全部开放）和 `model_protocols`（`jsonb`，默认 `[]`）。不回填。
 - **性能**：判断只是调度时的内存比较，不增加数据库和 Redis 访问；没有配置的账号只多一次空指针判断。没开转换的账号在转换请求体、下载媒体之前就被过滤，跨平台请求比以前便宜。
-- **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；密钥页的端点说明只按分组的平台列端点，不反映账号关掉的协议；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 已改成先断言默认 404、在账号上为模型开启转换后断言 200，但只编译过，没有在部署好的栈上运行。
+- **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；密钥页的端点说明只按分组的平台列端点，不反映账号关掉的协议；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 已改成先断言默认 404、在账号上为模型开启转换后断言 200；它随整套 e2e（49 个用例）在合并后的最终代码上运行并通过。
 
 ### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径；请求体上限改到网关设置；插件内存默认不限；写死的超时与限制去掉（核心与全部插件；插件协议 2、Host API 10；迁移 0107 只改数据、0108 把模型名的列改成 text、0109 给发布的节点结果加一列；**不能滚动升级，核心和全部插件要一起换，停机重新部署**）
 
@@ -104,7 +104,7 @@
 
 **插件版本**（全部 `hostCompat >=0.1.304 <0.2.0`）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、claude_oauth 0.3.0、codex 0.1.12、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。
 
-**验证状态**：测试结果以各工作包的交付说明为准。e2e 新增 AC30–AC36（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端），e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
+**验证状态**：测试结果以各工作包的交付说明为准；整套 e2e 共 49 个用例（含 AC19、AC29、AC30–AC36）已在合并后的最终代码上运行，全部通过。e2e 新增 AC30–AC36（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端），e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
 
 ### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0，openai 的改动随 0.5.0 发布；核心加响应流格式；无迁移）
 
@@ -118,7 +118,7 @@
 - **核心：保存账号后立即续期到期的凭证**（CONTRACTS §48.3）：新建账号或修改凭证后，类型支持自动续期且凭证已到期时，后台马上续一次，不用等 5 分钟一轮的扫描。Vertex 账号保存后几秒内可用；其他账号类型（凭证没到期）不受影响。
 - **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。
 - **SDK**：新包 `next/sdk/pluginsdk/accountform`（自带账号表单的插件解码、校验、归一化的公共部分，vertex、bedrock 在用）。
-- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（**已写，尚未在任何 e2e 栈上执行**）。新表单没有做过控制台界面走查。
+- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（已随整套 e2e 在 e2e 栈上运行并通过）。新表单没有做过控制台界面走查。
 
 ## 2026-11-18
 
