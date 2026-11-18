@@ -56,8 +56,8 @@ Caddy 路由：
 在 Docker 主机上的完整仓库目录中执行，宿主无需安装 Go：
 
 ```sh
-# 整套约 27 分钟；脚本默认的 -timeout=30m 不够，后给的 -timeout 覆盖它。
-sh next/deploy/e2e/test.sh -timeout=150m
+# 整套约 27 分钟，脚本默认 -timeout=150m。
+sh next/deploy/e2e/test.sh
 # 只跑选定用例；参数直接传给 go test。
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
