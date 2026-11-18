@@ -38,7 +38,14 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	return p.invoke(a, id, pluginsdk.RequestStream(in), body)
+	// Whether the answer streams is the client's choice, meta.stream, not
+	// the body's flag (pluginsdk.RequestStream): no Bedrock account type is
+	// stream-only, so the core never forces the flag, and an operator's
+	// param_override adding "stream":true to a non-stream request must not
+	// switch it to invoke-with-response-stream and answer SSE the client did
+	// not ask for. The openai-style plugins read RequestStream on purpose,
+	// for their stream-only types; the two are not to be unified.
+	return p.invoke(a, id, in.GetMeta().GetStream(), body)
 }
 
 // invoke is the InvokeModel request of the account for model id with the

@@ -90,6 +90,15 @@ func TestInvokeModelURLs(t *testing.T) {
 	}
 }
 
+// The client's stream choice (meta.stream) decides the action, not a stream
+// flag an operator's param_override wrote into a non-stream body.
+func TestStreamFollowsMeta(t *testing.T) {
+	up := build(t, executeRequest(stored(TypeAPIKey, apiKeyCreds, settingsOf("us-east-1", NoProfilePrefix)), testHaiku, false, claudeBody(testHaiku, true)))
+	if up.GetUrl() != useast1+"/model/"+haikuSegment+"/invoke" || up.GetResponseStream() != "" {
+		t.Fatalf("a non-stream request with stream:true in its body = %s %q", up.GetUrl(), up.GetResponseStream())
+	}
+}
+
 func TestInvokeModelWithoutModel(t *testing.T) {
 	_, err := newTestPlugin(Endpoints{}).BuildUpstream(context.Background(),
 		executeRequest(stored(TypeAPIKey, apiKeyCreds, nil), "  ", false, `{"model":"  ","max_tokens":1,"messages":[]}`))
