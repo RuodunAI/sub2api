@@ -562,14 +562,17 @@ func TestWebSocketConnectionLimits(t *testing.T) {
 		t.Fatalf("plain GET: %v %v", resp, err)
 	}
 	resp.Body.Close()
-	e.gw.ws.maxPerKey = 1
 	e.gw.ws.firstMessage = 200 * time.Millisecond
-	first := e.mustDial()
-	if _, resp, err := e.dial(nil); err == nil || resp == nil || resp.StatusCode != 429 {
-		t.Fatalf("second connection over the limit: %v %v", resp, err)
+	// No limit on the sessions of a key: they are only counted.
+	var open []*wsClient
+	for range 70 {
+		open = append(open, e.mustDial())
 	}
-	if code := first.closed(); code != websocket.StatusPolicyViolation {
-		t.Fatalf("no first message: %d", code)
+	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 70 })
+	for _, c := range open {
+		if code := c.closed(); code != websocket.StatusPolicyViolation {
+			t.Fatalf("no first message: %d", code)
+		}
 	}
 	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 0 })
 	e.gw.ws.idle = 200 * time.Millisecond

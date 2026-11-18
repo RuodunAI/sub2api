@@ -47,7 +47,6 @@ type wsLimits struct {
 	idle         time.Duration // end of a turn to the next message; 0 = none
 	ping         time.Duration // keepalive ping interval on both connections; 0 = none
 	pingTimeout  time.Duration // a ping unanswered this long closes that connection
-	maxPerKey    int           // open sessions per API key, cluster-wide
 	slotWait     time.Duration // later turns wait this long for the account
 	auth         time.Duration // re-authenticating the key before a turn
 	drainGrace   time.Duration // a turn in progress when draining starts
@@ -57,7 +56,7 @@ type wsLimits struct {
 }
 
 func defaultWSLimits() wsLimits {
-	return wsLimits{ping: 30 * time.Second, pingTimeout: 30 * time.Second, maxPerKey: 64, slotWait: 10 * time.Second, auth: 10 * time.Second,
+	return wsLimits{ping: 30 * time.Second, pingTimeout: 30 * time.Second, slotWait: 10 * time.Second, auth: 10 * time.Second,
 		drainGrace: 30 * time.Second, handshake: 30 * time.Second, writeTimeout: time.Minute,
 		drainPoll: 500 * time.Millisecond}
 }
@@ -96,14 +95,10 @@ func (g *Gateway) serveWebSocket(ctx context.Context, cl *call) {
 		writeError(cl.c, cl.format, fromCore(core.ErrUnavailable.WithMessage("node is draining"), ""))
 		return
 	}
-	ctx, release, ok, err := core.AcquireSlot(ctx, g.d.Slots, "ws", p.KeyID, g.ws.maxPerKey, cl.rid)
+	// The open sessions of a key are counted cluster-wide, without a limit.
+	ctx, release, _, err := core.AcquireSlot(ctx, g.d.Slots, "ws", p.KeyID, 0, cl.rid)
 	if err != nil {
 		writeError(cl.c, cl.format, fromCore(core.ErrUnavailable.WithCause(err), ""))
-		return
-	}
-	if !ok {
-		cl.c.Header("Retry-After", "5")
-		writeError(cl.c, cl.format, fromCore(core.ErrRateLimited.WithMessage("too many open WebSocket connections for this API key"), ""))
 		return
 	}
 	defer release()
