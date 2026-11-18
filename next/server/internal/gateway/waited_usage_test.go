@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -385,19 +387,47 @@ func TestWaitedRelayReportedErrorDeliversTheAnswer(t *testing.T) {
 	e.noRecord()
 }
 
-// A non-streamed answer over the spool's cap cannot be delivered: the
-// execution is closed unreported before anything is committed, the client
-// gets 503 and nothing is billed, whatever the plugin reported.
-func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
+// A non-streamed answer of any size is held back on disk and delivered
+// whole once committed; the temp file is gone afterwards.
+func TestWaitedRelayLargeAnswerIsDeliveredWhole(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
 		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(100, 50)}}, nil
 	}))
-	e.up.set("pu-9", &upstreamRule{status: 200, body: `{"text":"` + strings.Repeat("x", spoolTotalLimit) + `"}`})
+	big := `{"text":"` + strings.Repeat("x", 65<<20) + `"}`
+	e.up.set("pu-9", &upstreamRule{status: 200, body: big})
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 200 || len(res.body) != len(big) {
+		t.Fatalf("large answer: %d, %d of %d bytes", res.status, len(res.body), len(big))
+	}
+	// The observation is over usage.maxBytes, so the plugin's report is
+	// not read; the answer is delivered all the same.
+	if rec := e.record(); !rec.Success || rec.UsageExtract != core.UsageExtractFallback {
+		t.Fatalf("record %+v", rec)
+	}
+	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {
+		t.Fatalf("execution states %v", st)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Fatalf("temp files left: %v", left)
+	}
+}
+
+// A spool that fails for real (its temp file cannot be created) is known
+// before the commit: the execution is closed unreported, the client gets
+// 503 and nothing is billed, whatever the plugin reported.
+func TestWaitedRelaySpoolFailureIsUnreported(t *testing.T) {
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+	e, _ := scriptedUsageEnv(t, relayThen(func(*pluginv1.RelayUpstreamResponse) (*pluginv1.ExecuteResponse, error) {
+		return &pluginv1.ExecuteResponse{Report: &pluginv1.ExecuteResponse_Usage{Usage: report(100, 50)}}, nil
+	}))
+	e.up.set("pu-9", &upstreamRule{status: 200, body: `{"text":"` + strings.Repeat("x", 2<<20) + `"}`})
 	var commits atomic.Int32
 	e.settler.commitErr = func(core.ExecutionCommit) error { commits.Add(1); return nil }
 	res := e.do("/pu/v1/chat", body(testModel, false), nil)
 	if res.status != 503 || len(res.body) > 4096 {
-		t.Fatalf("overflowing answer: %d %d bytes", res.status, len(res.body))
+		t.Fatalf("failed spool: %d %d bytes", res.status, len(res.body))
 	}
 	if commits.Load() != 0 {
 		t.Fatalf("committed %d times", commits.Load())

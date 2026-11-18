@@ -68,14 +68,16 @@ var errExecutionAborted = errors.New("plugin execution aborted")
 // rewrote for it, and upModel, the model it goes upstream with.
 func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte, upModel string, n int) attemptResult {
 	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
+	// Whatever happens below - a commit, a close, an error, a panic - the
+	// waited relay's heartbeat stops and its held-back answer is removed.
 	defer func() {
 		if w := x.waited; w != nil {
 			w.alive.stop()
+			w.release()
 		}
 	}()
 	res, err := x.run(ctx, upModel, n)
 	if w := x.waited; w != nil {
-		defer w.release()
 		return w.settle(ctx, res, err)
 	}
 	if err == nil && res.Relay != nil {

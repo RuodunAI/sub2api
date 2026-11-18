@@ -249,8 +249,9 @@ func (w *waitedRelay) settle(ctx context.Context, res core.ExecutionResult, err 
 			return w.unreported(ctx, "execute failed: "+err.Error(), err)
 		}
 		if w.spool != nil && w.spool.err != nil {
-			// The held-back answer cannot be delivered (over the spool's
-			// cap): nothing is committed for an answer the client never gets.
+			// The held-back answer cannot be delivered (its temp file
+			// failed): nothing is committed for an answer the client never
+			// gets.
 			return w.unreported(ctx, "response not deliverable: "+w.spool.err.Error(), w.spool.err)
 		}
 		return w.commit(ctx, res.Response)
