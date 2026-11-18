@@ -3,12 +3,38 @@ package volcengine
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
+
+// The core rewrites public task ids by the manifest's task.idPaths and the
+// plugin reads the submitted id by taskIDPaths: the two lists are one.
+func TestTaskIDPathsMatchTheManifest(t *testing.T) {
+	var m manifest.Manifest
+	if err := json.Unmarshal(manifestFile(t), &m); err != nil {
+		t.Fatal(err)
+	}
+	tasks := 0
+	for _, p := range m.Platforms {
+		for _, e := range p.Endpoints {
+			if e.Task == nil {
+				continue
+			}
+			tasks++
+			if !slices.Equal(e.Task.IDPaths, taskIDPaths) {
+				t.Errorf("%s task.idPaths = %v, the plugin reads %v", e.Protocol, e.Task.IDPaths, taskIDPaths)
+			}
+		}
+	}
+	if tasks == 0 {
+		t.Fatal("the manifest declares no task endpoint")
+	}
+}
 
 func TestManagedVideoSubmission(t *testing.T) {
 	p := New() // No host: parsing must not read credentials or write a second ledger.

@@ -207,7 +207,8 @@ func (p *Plugin) ResolveModel(ctx context.Context, in *pluginv1.ResolveModelRequ
 // taskIDPaths are the response fields a task id may arrive in, in order. Ark
 // documents "id"; the others are cheap insurance against a relay that wraps
 // the answer, and cost one gjson probe on a path that only runs once per
-// submit.
+// submit. It equals every task endpoint's task.idPaths in manifest.json, by
+// which the core rewrites public ids (TestTaskIDPathsMatchTheManifest).
 var taskIDPaths = []string{"id", "task_id", "data.id", "result.id"}
 
 var _ pluginsdk.TaskSubmissionParser = (*Plugin)(nil)
