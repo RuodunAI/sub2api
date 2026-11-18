@@ -202,12 +202,12 @@ func (c *call) addLocalCountRoute(b core.AccountTypeBinding) {
 // addRoute records the route of b to upstream protocol y of platform q:
 // pass headers come from the account type's entry for q, else the platform;
 // usage rules from the account type (per protocol), else the endpoint
-// speaking y, else the platform. An endpoint whose usage the platform's
-// plugin reads is served by that plugin's own account types only: only it
-// can read the observation in its Execute (design §4.3).
+// speaking y, else the platform. (An endpoint whose usage or task the
+// platform's plugin states reaches only that plugin's account types: the
+// registry binds no other, design §4.3.)
 func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, q, y string,
 	ep manifest.Endpoint, pf manifest.Platform, conv convert.Converter) {
-	if !ap.SupportsEndpoint(ep.ID) || ep.PluginUsage() && !c.platformOwnedBy(q, b.Plugin.Key) {
+	if !ap.SupportsEndpoint(ep.ID) {
 		return
 	}
 	k := b.Key()
@@ -238,12 +238,6 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	}
 	c.routes[k] = rt
 	c.routeKeys = append(c.routeKeys, k)
-}
-
-// platformOwnedBy reports whether plugin key declares platform q.
-func (c *call) platformOwnedBy(q, key string) bool {
-	pb, ok := c.gen.Platform(q)
-	return ok && pb.Plugin.Key == key
 }
 
 // route returns the route of an account, nil when its type cannot serve
