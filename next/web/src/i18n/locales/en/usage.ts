@@ -87,8 +87,10 @@ export default {
     internal: 'Internal error',
     rate_limited: 'Rate limited',
     invalid_request: 'Invalid request',
-    model_availability: 'Model temporarily unavailable'
+    model_availability: 'Model temporarily unavailable',
+    usage_unreported: 'Usage not reported (not billed)'
   },
+  unreportedHint: 'The plugin returned no usage for this request, so it was not billed.',
   cols: {
     timing: 'Timing',
     detail: 'Details',

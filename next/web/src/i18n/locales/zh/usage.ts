@@ -86,8 +86,10 @@ export default {
     internal: '内部错误',
     rate_limited: '限流',
     invalid_request: '请求无效',
-    model_availability: '模型暂不可用'
+    model_availability: '模型暂不可用',
+    usage_unreported: '未上报用量（未计费）'
   },
+  unreportedHint: '插件没有返回这次请求的用量，因此未计费。',
   cols: {
     timing: '计时',
     detail: '详情',

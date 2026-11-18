@@ -1132,6 +1132,14 @@ for (let i = 0; i < 90; i++) {
       ],
       guard: [{ account_id: 24, model: 'claude-fable-4', decision: 'block', reason: 'guard_models_changed', attempt: 1 }]
     }) }
+  })  // An unreported execution (design §8.5): the plugin's Execute returned no
+  // usable usage, so the core wrote this free record and released the pre-charge.
+  usageRows.push({
+    ...base, id: 4989, request_id: 'req_unreported0001', client_request_id: '', created_at: at(15).toISOString(),
+    account_id: 16, account_name: 'relay-1', plugin_key: 'relay', account_type: 'relay_key', upstream_protocol: 'anthropic.messages',
+    status_code: 200, success: false, error_type: 'usage_unreported', error_message: 'plugin relay returned no usage for this execution',
+    input_tokens: 0, output_tokens: 0, total_cost: money(0), billing_status: 'free', latency_ms: 2100,
+    _anomalies: { usage_extract: 'unreported' }
   })
 }
 // Four records priced by group pricing, as mock/pricingStore.ts sets it up
