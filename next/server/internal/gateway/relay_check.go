@@ -49,7 +49,9 @@ func (x *execution) validate(ctx context.Context, req *pluginv1.UpstreamRequest)
 	target, err := x.checkURL(ctx, raw)
 	if err != nil {
 		slog.WarnContext(ctx, "gateway: upstream url rejected", "request_id", c.rid, "plugin", x.rt.binding.Plugin.Key, "account", x.acc.ID, "err", err)
-		return nil, fromCore(core.ErrUnavailable.WithMessage("upstream address rejected"), errTypeInternal)
+		e := fromCore(core.ErrUnavailable.WithMessage("upstream address rejected"), errTypeInternal)
+		e.NeutralReason = "upstream_address_rejected" // the target, not the account's health
+		return nil, e
 	}
 	return target, nil
 }
@@ -108,7 +110,7 @@ func checkRelayHeaders(req *pluginv1.UpstreamRequest) *gwError {
 }
 
 // relayRefused is a relay the plugin built wrongly: the attempt fails over
-// as the plugin's failure.
+// as the plugin's failure (pluginUnavailable).
 func relayRefused(msg string) *gwError {
-	return fromCore(core.ErrPluginUnavailable.WithMessage(msg), errTypePluginUnavailable)
+	return pluginUnavailable(core.ErrPluginUnavailable.WithMessage(msg))
 }

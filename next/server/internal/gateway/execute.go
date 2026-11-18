@@ -163,11 +163,23 @@ func (x *execution) unrelayed(ctx context.Context, res core.ExecutionResult, err
 	return x.pluginFailed(ctx, err)
 }
 
-// pluginFailed fails over an attempt the plugin could not serve.
+// pluginFailed fails over an attempt the plugin could not serve, without
+// blaming the account (pluginUnavailable).
 func (x *execution) pluginFailed(ctx context.Context, err error) attemptResult {
 	slog.WarnContext(ctx, "gateway: plugin execution failed", "request_id", x.c.rid, "plugin", x.rt.binding.Plugin.Key,
 		"account", x.acc.ID, "err", err)
-	return attemptResult{kind: attemptFailover, err: fromCore(core.ErrPluginUnavailable.WithCause(err), errTypePluginUnavailable)}
+	return attemptResult{kind: attemptFailover, err: pluginUnavailable(core.ErrPluginUnavailable.WithCause(err))}
+}
+
+// pluginUnavailable is the failure of an attempt the plugin could not serve
+// (an Execute error or crash, a relay the core refuses): nothing reached
+// the upstream and the account is not to blame. Under a failure policy it
+// moves to another account like an availability refusal, with no account
+// rule run (planAvailabilityFailure); without one it fails over.
+func pluginUnavailable(e *core.Error) *gwError {
+	g := fromCore(e, errTypePluginUnavailable)
+	g.NeutralReason = errTypePluginUnavailable
+	return g
 }
 
 // check is ExecutionClient.Check: the gateway's part of validating a relay
