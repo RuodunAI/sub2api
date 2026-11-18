@@ -21,9 +21,11 @@ const maxMessageBytes = math.MaxInt32
 const (
 	kindExecute = "Execute"
 	kindMonitor = "Monitor"
+	kindHTTP    = "HandleHTTP"
 )
 
-// execution is the authority of one Execute or Monitor call: the host's
+// execution is the authority of one Execute, Monitor or console HandleHTTP
+// call: the host's
 // token and what the call may still do with it. It lives in the call's
 // context and is void once the call returns (the context is cancelled).
 type execution struct {
@@ -50,7 +52,7 @@ func scopedExecution(ctx context.Context, operation string, kinds ...string) (*e
 	}
 	ex, _ := ctx.Value(executionKey{}).(*execution)
 	if ex == nil || ex.client == nil || ex.token == "" {
-		return nil, status.Errorf(codes.FailedPrecondition, "%s needs the context of the Execute or Monitor call it is made in", operation)
+		return nil, status.Errorf(codes.FailedPrecondition, "%s needs the context of the Execute, Monitor or console route call it is made in", operation)
 	}
 	for _, kind := range kinds {
 		if ex.kind == kind {
@@ -131,10 +133,17 @@ func relay(ctx context.Context, operation string, request *pluginv1.UpstreamRequ
 // transport failure is not an error: it comes back in
 // transport_error with status 0. No net permission is needed.
 //
-// ctx is the context of the Execute or Monitor call or a child of it. The
-// SDK supplies the execution token; one set on request is ignored.
+// In a console route call (a handler of a route of a signed-in user) Fetch
+// serves the authorization of an account not saved yet (CONTRACTS §117):
+// there is no account, so only externalServices are reachable, and request
+// must carry the ProxyTicket the console issued for the form's proxy
+// choice; the host sends the request through that proxy (or directly when
+// the operator chose none). Execute and Monitor fetches carry no ticket.
+//
+// ctx is the context of the Execute, Monitor or route call or a child of
+// it. The SDK supplies the execution token; one set on request is ignored.
 func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
-	ex, err := scopedExecution(ctx, "Fetch", kindExecute, kindMonitor)
+	ex, err := scopedExecution(ctx, "Fetch", kindExecute, kindMonitor, kindHTTP)
 	if err != nil {
 		return nil, err
 	}
@@ -149,5 +158,6 @@ func Fetch(ctx context.Context, request *pluginv1.ExecutionHTTPRequest) (*plugin
 		Url:            request.GetUrl(),
 		Headers:        request.GetHeaders(),
 		Body:           request.GetBody(),
+		ProxyTicket:    request.GetProxyTicket(),
 	}, grpc.MaxCallRecvMsgSize(maxMessageBytes))
 }

@@ -11,7 +11,8 @@ import "sub2api/plugin/v1/observation.proto";
 // go-plugin broker. The host knows which plugin is calling from the broker
 // connection and checks the matching grant on every call. RelayUpstream and
 // ExecuteHTTP instead require the invocation-local authority (execution
-// token) the host issued for one PlatformService.Execute or Monitor call.
+// token) the host issued for one PlatformService.Execute or Monitor call, or
+// (ExecuteHTTP only) for one console call of HTTPService.HandleHTTP.
 // Calls without the required authority fail with PERMISSION_DENIED.
 service HostService {
   rpc SetAccountAutomaticState(SetAccountAutomaticStateRequest) returns (SetAccountAutomaticStateResponse);
@@ -261,6 +262,12 @@ service HostService {
   // applies to the client's request in the gateway only). A transport
   // failure is not an RPC error: it comes back in transport_error with
   // status 0.
+  //
+  // A console route call (HTTPRequest.execution_token) may fetch too, for
+  // the authorization of an account not saved yet: it has no account, so
+  // only externalServices are reachable, and every fetch names the proxy
+  // ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
+  // §117).
   rpc ExecuteHTTP(ExecutionHTTPRequest) returns (ExecutionHTTPResponse);
 
   // accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
@@ -456,6 +463,15 @@ message ExecutionHTTPRequest {
   // given and the headers set none.
   bytes body = 5;
   UpstreamOptions options = 6;
+  // Only in a console route call, and required there: the proxy ticket the
+  // console issued for the account being authorized (POST
+  // /account-types/:plugin_key/:type/proxy-ticket, CONTRACTS §117). The host
+  // sends the fetch through the proxy it names - or directly when it names
+  // none - once it has checked that the ticket is this plugin's, was issued
+  // to the user of the call and that the user may still use that proxy. The
+  // plugin never learns the proxy. Refused in Execute and Monitor calls,
+  // whose fetches go through the account's own proxy.
+  string proxy_ticket = 7;
 }
 
 message ExecutionHTTPResponse {

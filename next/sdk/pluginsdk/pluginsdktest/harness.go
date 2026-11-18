@@ -200,7 +200,9 @@ func (h *Harness) Do(method, routePath string, query map[string]string, body any
 }
 
 // DoAs is Do as console user userID (Do is user 1; 0 is an unauthenticated
-// caller).
+// caller). As the host does, a call by a user carries an execution token
+// (BeginRoute), void once the call returns, so the handler may Fetch with a
+// proxy ticket.
 func (h *Harness) DoAs(userID int64, method, routePath string, query map[string]string, body any) *pluginv1.HTTPResponse {
 	h.T.Helper()
 	req := &pluginv1.HTTPRequest{
@@ -226,6 +228,9 @@ func (h *Harness) DoAs(userID int64, method, routePath string, query map[string]
 	}
 	if userID > 0 {
 		defer h.Host.Serve(userID)()
+		e := h.Host.BeginRoute()
+		defer e.End()
+		req.ExecutionToken = e.token
 	}
 	resp, err := h.HTTP.HandleHTTP(context.Background(), req)
 	if err != nil {

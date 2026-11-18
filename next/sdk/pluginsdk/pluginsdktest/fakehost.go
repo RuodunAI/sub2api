@@ -93,7 +93,10 @@ type FakeHost struct {
 	RelayFunc func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error)
 	// ExecuteHTTPFunc answers a fetch; nil answers UNIMPLEMENTED. The answer
 	// is returned whole, as the host does; a test may set transport_error
-	// itself (the host never sets truncated).
+	// itself (the host never sets truncated). A fetch of a route call
+	// (Harness.DoAs) must carry a proxy ticket and one of an Execute or
+	// Monitor call must not, as on the host; the fake cannot open a ticket
+	// (the core seals it), so it takes any and the test sees it here.
 	ExecuteHTTPFunc func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error)
 	// Manifest is the plugin's manifest as the host knows it, which decides
 	// the hosts a fetch may reach and the protocols that are HTTP routes.

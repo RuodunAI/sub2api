@@ -37,10 +37,13 @@ type Execution struct {
 	MonitorResponse *pluginv1.MonitorResponse
 	Err             error
 
-	host      *FakeHost
-	token     string
-	request   *pluginv1.ExecuteRequest // nil for Monitor
-	account   *pluginv1.Account        // the account of the call
+	host    *FakeHost
+	token   string
+	request *pluginv1.ExecuteRequest // nil for Monitor
+	account *pluginv1.Account        // the account of the call
+	// route: a console route call (HandleHTTP), whose fetches carry the
+	// proxy ticket of an account being authorized.
+	route     bool
 	ended     bool
 	relays    []RelayCall
 	relayErrs []error
@@ -62,6 +65,18 @@ func (f *FakeHost) Begin(in *pluginv1.ExecuteRequest) *Execution {
 // decides which hosts a fetch may reach. The token is live until End.
 func (f *FakeHost) BeginMonitor(in *pluginv1.PollRequest) *Execution {
 	return f.begin(nil, in.GetAccount())
+}
+
+// BeginRoute issues the token of one console route call (HandleHTTP by a
+// signed-in user): its fetches reach the manifest's externalServices only
+// and must carry a proxy ticket. The token is live until End. Harness.DoAs
+// issues one for every call of a user.
+func (f *FakeHost) BeginRoute() *Execution {
+	e := f.begin(nil, nil)
+	f.mu.Lock()
+	e.route = true
+	f.mu.Unlock()
+	return e
 }
 
 func (f *FakeHost) begin(in *pluginv1.ExecuteRequest, account *pluginv1.Account) *Execution {
@@ -269,6 +284,10 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 		return status.Errorf(codes.PermissionDenied, "fetch url %q is not an http(s) URL with a host", in.GetUrl())
 	case !f.fetchHostAllowed(strings.ToLower(u.Hostname()), e.account):
 		return status.Errorf(codes.PermissionDenied, "fetch host %q is neither one of the manifest's externalServices nor of the account's upstream addresses", u.Hostname())
+	case e.route && in.GetProxyTicket() == "":
+		return status.Error(codes.PermissionDenied, "a fetch of a console route call needs the proxy ticket of the account being authorized")
+	case !e.route && in.GetProxyTicket() != "":
+		return status.Error(codes.PermissionDenied, "a proxy ticket is only for the fetches of a console route call")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()

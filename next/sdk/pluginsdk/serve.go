@@ -150,7 +150,7 @@ func Register(s grpc.ServiceRegistrar, p any, dial HostDialer, opts ...Option) e
 		pluginv1.RegisterAppServiceServer(s, appServer{jobs: jr, events: eh, broadcast: bh})
 	}
 	if v, ok := p.(HTTP); ok {
-		pluginv1.RegisterHTTPServiceServer(s, httpServer{impl: v})
+		pluginv1.RegisterHTTPServiceServer(s, httpServer{impl: v, runtime: rt})
 	}
 	if rk, ok := p.(AccountRanker); ok {
 		pluginv1.RegisterSchedulerServiceServer(s, schedulerServer{rank: rk})
@@ -538,10 +538,22 @@ func (s appServer) OnEvents(ctx context.Context, in *pluginv1.OnEventsRequest) (
 
 type httpServer struct {
 	pluginv1.UnimplementedHTTPServiceServer
-	impl HTTP
+	impl    HTTP
+	runtime *runtime
 }
 
+// HandleHTTP binds the execution token of a console call to the handler's
+// context, so that Fetch works there (CONTRACTS §117); a call without one
+// (public, webhook) is served as it is.
 func (s httpServer) HandleHTTP(ctx context.Context, in *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error) {
+	if in.GetExecutionToken() == "" {
+		return s.impl.HandleHTTP(ctx, in)
+	}
+	ctx, cancel, err := s.runtime.bindExecution(ctx, &execution{token: in.GetExecutionToken(), kind: kindHTTP})
+	if err != nil {
+		return nil, err
+	}
+	defer cancel()
 	return s.impl.HandleHTTP(ctx, in)
 }
 
