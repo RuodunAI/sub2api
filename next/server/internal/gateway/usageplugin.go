@@ -26,30 +26,22 @@ import (
 // THE STREAM IS NEVER BUFFERED. An SSE stream is unbounded, so a streaming
 // response is relayed exactly as before - event by event, flushed as it
 // goes - and the host keeps only the events whose name the endpoint listed
-// in usage.streamEvents, all of them, of any number and size. Only an
-// endpoint that sets usage.maxBytes itself has a byte budget: a stream that
-// exceeds it stops being collected (and the plugin is told, so it does not
-// report a number computed from a prefix as if it were the total).
+// in usage.streamEvents, all of them, of any number and size.
 
 // usageCapture holds what the observation will show the plugin. It is
 // nil for every endpoint that does not declare usage.source "plugin", which
 // is how those endpoints pay exactly nothing for this feature - not one
 // comparison per event, not one allocation, and never a call.
 type usageCapture struct {
-	want map[string]bool
-	// limited: the endpoint set usage.maxBytes; budget is what is left of it.
-	limited  bool
-	budget   int
-	events   []*pluginv1.StreamEvent
-	stopped  bool // the cap was reached; collection has ended
-	body     []byte
-	tooLarge bool // non-streaming body over usage.maxBytes: not handed over
+	want   map[string]bool
+	events []*pluginv1.StreamEvent
+	body   []byte
 }
 
 // newUsageCapture returns the capture for the route, or nil when the usage
 // comes from the declarative rules.
 //
-// The three knobs are read off the upstream ENDPOINT, not off the usage rules
+// The knobs are read off the upstream ENDPOINT, not off the usage rules
 // in effect: the rules follow the §13 override chain whose last link belongs
 // to a third plugin, so who reads the usage would otherwise have had two
 // readings (CONTRACTS §25.3, manifest.Endpoint.UsageSource).
@@ -61,36 +53,21 @@ func newUsageCapture(rt *typeRoute) *usageCapture {
 	for _, n := range rt.usageEvents {
 		want[n] = true
 	}
-	return &usageCapture{want: want, limited: rt.usageMaxBytes > 0, budget: int(rt.usageMaxBytes)}
+	return &usageCapture{want: want}
 }
 
 // addEvent keeps one upstream SSE event when the endpoint asked for it. data
 // belongs to the forwarding loop's reusable buffer, so it is copied.
 func (u *usageCapture) addEvent(name string, data []byte) {
-	if u == nil || u.stopped || !u.want[name] || len(data) == 0 {
+	if u == nil || !u.want[name] || len(data) == 0 {
 		return
-	}
-	if u.limited {
-		if len(data) > u.budget {
-			u.stopped = true
-			return
-		}
-		u.budget -= len(data)
 	}
 	u.events = append(u.events, &pluginv1.StreamEvent{Name: name, Data: append([]byte(nil), data...)})
 }
 
-// setBody keeps a non-streaming response body. A body larger than the
-// endpoint's own usage.maxBytes, when it set one, is dropped rather than cut: the events of a stream are a list, of which a
-// prefix still means something, but a JSON document cut in half is not a
-// document at all and a plugin parsing it would report numbers that are
-// wrong rather than missing.
+// setBody keeps a non-streaming response body, whole.
 func (u *usageCapture) setBody(body []byte) {
 	if u == nil {
-		return
-	}
-	if u.limited && len(body) > u.budget {
-		u.tooLarge = true
 		return
 	}
 	u.body = body
@@ -105,12 +82,10 @@ type pendingExtract struct {
 	headers map[string]string
 	status  int
 	// fields are the values of the endpoint's usageRequestFields, read out of
-	// the request body at arming time; fieldsOmitted names the declared paths
-	// whose value was there but over a cap. Both nil for endpoints declaring
-	// no request fields. The body itself is NOT kept: this is the whole of
-	// what survives the handler.
-	fields        map[string]string
-	fieldsOmitted []string
+	// the request body at arming time; nil for endpoints declaring no request
+	// fields. The body itself is NOT kept: this is the whole of what survives
+	// the handler.
+	fields map[string]string
 }
 
 // armUsageExtraction records what the observation will need, at the end of
@@ -131,21 +106,19 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 		small.SettingsJson = acct.GetSettingsJson()
 		small.Properties = acct.GetProperties()
 	}
-	fields, omitted := usageRequestFields(rt.usageRequestFields, upBody)
 	c.usage = &pendingExtract{cap: cap, meta: c.metaFor(rt), account: small,
-		headers: headers, status: resp.StatusCode, fields: fields, fieldsOmitted: omitted}
+		headers: headers, status: resp.StatusCode, fields: usageRequestFields(rt.usageRequestFields, upBody)}
 }
 
 // usageRequestFields reads the declared request paths out of body for
-// ExtractUsageRequest.fields, every value whole whatever its size. omitted
-// stays empty: the host no longer leaves a value out (the field remains in
-// the protocol). The raw JSON comes straight from the client, so it is
+// ExtractUsageRequest.fields, every value whole whatever its size. The raw
+// JSON comes straight from the client, so it is
 // sanitised the way every other client byte that enters a proto string
 // field is (CONTRACTS §25.1) - readBody already refuses a body with invalid
 // UTF-8, this is the belt to that brace.
-func usageRequestFields(paths []string, body []byte) (fields map[string]string, omitted []string) {
+func usageRequestFields(paths []string, body []byte) (fields map[string]string) {
 	if len(paths) == 0 || len(body) == 0 {
-		return nil, nil
+		return nil
 	}
 	for _, p := range paths {
 		raw := getJSON(body, p)
@@ -157,7 +130,7 @@ func usageRequestFields(paths []string, body []byte) (fields map[string]string, 
 		}
 		fields[p] = strings.ToValidUTF8(raw, "")
 	}
-	return fields, omitted
+	return fields
 }
 
 // errHostReadingEmpty is why a request is unreported whose plugin chose the

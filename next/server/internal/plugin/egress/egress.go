@@ -53,9 +53,14 @@ const (
 type Options struct {
 	NodeID      string
 	DialTimeout time.Duration // default 10 s
-	// DatabaseAddrs lists the "host:port" of the PostgreSQL server handed out
-	// by HostService.GetDSN. Only a plugin whose policy has Database may
-	// reach it, by exactly this name; it is dialled by name.
+	// DatabaseAddrs lists the "host:port" of the PostgreSQL server in the
+	// DSN HostService.GetDSN hands out without strict network (the core's
+	// DSN; under strict network a plugin gets the virtual address instead,
+	// DatabaseProxy). A plugin reaches it through the tunnel only when it
+	// installs the tunnel on a host that does not require it
+	// (pluginsdk.WithStrictNetwork(StrictAlways)). Only a plugin whose
+	// policy has Database may reach it, by exactly this name; it is dialled
+	// by name.
 	DatabaseAddrs []string
 	// DatabaseProxy serves a connection to DatabaseHost:DatabasePort of a
 	// plugin whose policy has Database (database.go); without it that

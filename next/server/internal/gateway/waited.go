@@ -197,8 +197,8 @@ func (w *waitedRelay) read(ctx context.Context, resp *http.Response) attemptResu
 	x, c := w.x, w.x.c
 	if p := c.usage; p != nil {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: p.meta, Account: p.account, Status: int32(p.status), Headers: p.headers,
-			Body: p.cap.body, Events: p.cap.events, Truncated: p.cap.stopped, Fields: p.fields, FieldsOmitted: p.fieldsOmitted}
-		w.extractable = x.rt.pluginUsage && !p.cap.tooLarge && !c.ep.TaskSubmit()
+			Body: p.cap.body, Events: p.cap.events, Fields: p.fields}
+		w.extractable = x.rt.pluginUsage && !c.ep.TaskSubmit()
 	} else {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: c.metaFor(x.rt), Account: x.acct, Status: int32(resp.StatusCode)}
 	}
@@ -225,7 +225,7 @@ func (w *waitedRelay) observe(ctx context.Context) error {
 	c.finalizeBillability(ctx, reading, c.ep.Billing)
 	o := w.observation
 	summary, _ := json.Marshal(map[string]any{"status": c.rec.StatusCode, "body_bytes": len(o.GetBody()), "event_count": len(o.GetEvents()),
-		"truncated": o.GetTruncated(), "task_submission": c.ep.TaskSubmit()})
+		"task_submission": c.ep.TaskSubmit()})
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
 	if err := w.records.ObserveExecution(bctx, w.id, reading, summary); err != nil {

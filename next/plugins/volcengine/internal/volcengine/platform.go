@@ -28,7 +28,6 @@ package volcengine
 import (
 	"context"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -39,7 +38,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	sdkanthropic "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	openaiprovider "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -243,11 +241,9 @@ type Plugin struct {
 	host pluginsdk.Host
 	log  *slog.Logger
 
-	// dial is how the asset library reaches upstream. Init sets it to the
-	// host egress tunnel (or a direct dialler when the SDK did not install
-	// the tunnel, i.e. outside strict network mode); a test may preset it.
-	dial DialFunc
-	ark  *arkAPI
+	// ark is how the asset library reaches upstream: through the host
+	// (SendAccountRequest), set by Init.
+	ark *arkAPI
 }
 
 // New returns the plugin.
@@ -257,38 +253,15 @@ func New() *Plugin {
 	return p
 }
 
-// SetDialer overrides how the asset library dials upstream. Only for tests;
-// it must be called before Init, which leaves a preset dialler alone.
-func (p *Plugin) SetDialer(d DialFunc) { p.dial = d }
-
-// Init implements pluginsdk.Initializer: it wires the asset library's
-// outbound network to the host egress tunnel. Every asset library request is
-// dialled through it, because a plugin in strict network mode cannot open a
-// socket of its own (sdk/pluginsdk/egress).
+// Init implements pluginsdk.Initializer: the asset library's requests are
+// sent by the host, for the account, through its proxy
+// (pluginsdk.SendAccountRequest); the plugin opens no connection.
 func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 	p.host = h
 	p.log = h.Logger()
-	if p.dial == nil {
-		if h.EgressInstalled() {
-			p.dial = egress.DialContext
-		} else {
-			// The SDK did not install the tunnel (strict network off, or a
-			// test harness): dial directly. In production on Linux this
-			// branch is not taken - and if it were, the sandbox would refuse
-			// the socket rather than letting traffic escape unlogged.
-			d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-			p.dial = d.DialContext
-		}
-	}
-	p.ark = newArkAPI(p.dial)
-	return nil
-}
-
-// Shutdown implements pluginsdk.Shutdowner.
-func (p *Plugin) Shutdown(context.Context) error {
-	if p.ark != nil {
-		p.ark.close()
-	}
+	p.ark = newArkAPI(func(ctx context.Context, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+		return pluginsdk.SendAccountRequest(ctx, h, in)
+	})
 	return nil
 }
 

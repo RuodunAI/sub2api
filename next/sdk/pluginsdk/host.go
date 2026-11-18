@@ -122,11 +122,10 @@ type Host interface {
 	EgressInstalled() bool
 }
 
-// DSNInfo is the restricted database access handed out by the host.
+// DSNInfo is the database access handed out by the host (CONTRACTS §115).
 type DSNInfo struct {
-	DSN          string
-	Schema       string
-	RoleIsolated bool
+	DSN    string
+	Schema string
 }
 
 // PriceUsage is the token usage PriceUsage prices. Semantics "inclusive"
@@ -272,7 +271,7 @@ func (h *host) DSN(ctx context.Context) (*DSNInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &DSNInfo{DSN: r.GetDsn(), Schema: r.GetSchema(), RoleIsolated: r.GetRoleIsolated()}, nil
+	return &DSNInfo{DSN: r.GetDsn(), Schema: r.GetSchema()}, nil
 }
 
 func (h *host) DB(ctx context.Context) (*gorm.DB, error) {

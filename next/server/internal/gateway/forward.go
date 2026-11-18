@@ -266,7 +266,7 @@ func (c *call) checkResponseShape(ctx context.Context, rt *typeRoute, resp *http
 // forwardJSON relays a JSON answer as it arrives and keeps all of it, so
 // the usage is read from the whole answer whatever its size. The answer is
 // held once, in buf, until the usage is read; the plugin's capture keeps a
-// reference to it only within its usage.maxBytes budget.
+// reference to it.
 func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) error {
 	w := c.relayWriter()
 	ct := resp.Header.Get("Content-Type")

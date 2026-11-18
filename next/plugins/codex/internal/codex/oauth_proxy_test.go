@@ -67,7 +67,7 @@ func TestAuthRequestsCarryTheTicket(t *testing.T) {
 	for i, w := range want {
 		f := fetches[i]
 		if f.GetMethod() != "POST" || f.GetProxyTicket() != w.ticket || f.GetUrl() != w.url || fmt.Sprint(f.GetHeaders()) != w.headers ||
-			(w.body != "" && string(f.GetBody()) != w.body) || f.GetOptions() != nil {
+			(w.body != "" && string(f.GetBody()) != w.body) {
 			t.Errorf("fetch %d = %v %s %s %v %s, want %+v", i, f.GetMethod(), f.GetProxyTicket(), f.GetUrl(), f.GetHeaders(), f.GetBody(), w)
 		}
 	}

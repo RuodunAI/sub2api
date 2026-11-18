@@ -133,8 +133,8 @@ service PlatformService {
 message EstimateUsageRequest {
   RequestMeta meta = 1;
   map<string, string> fields = 2;
-  // No longer filled: the host leaves no declared value out.
-  repeated string fields_omitted = 3;
+  reserved 3;
+  reserved "fields_omitted";
   int64 pre_consume_tokens = 4;
   string prompt = 5;
 }
@@ -151,7 +151,9 @@ message ExecuteRequest {
   Account account = 4;
   // The whole request body in the upstream protocol (meta.protocol), after
   // every rewrite the host owns; on a websocket endpoint the message of
-  // this turn. At most the gateway's request body limit.
+  // this turn. The client's request passed the gateway's request body
+  // limit; the host's own rewrites may make this larger, and its size is
+  // not checked again.
   bytes body = 5;
   // Client headers from the host allow-list (lower-cased names).
   map<string, string> inbound_headers = 6;
@@ -357,14 +359,10 @@ message StreamEvent {
 // ExtractUsageRequest is the observation of one successful upstream answer,
 // handed to the plugin by a HostService.RelayUpstream that waited
 // (RelayUpstreamResponse.observation). It is never the whole stream:
-//   - non-streaming: the whole body, of any size. Only when the endpoint
-//     sets its own usageMaxBytes is a larger body not handed over at all
-//     (half a JSON document parses into wrong numbers, which is worse than
-//     none);
+//   - non-streaming: the whole body, of any size;
 //   - streaming: every event whose name the endpoint listed in
-//     usageStreamEvents, in arrival order, of any number and size. Only
-//     when the endpoint sets usageMaxBytes does collection stop at it, and
-//     `truncated` says so; the host never buffers the whole stream.
+//     usageStreamEvents, in arrival order, of any number and size; the
+//     host never buffers the whole stream.
 message ExtractUsageRequest {
   RequestMeta meta = 1;
   // The account that served the request, as in ExecuteRequest.account
@@ -375,17 +373,14 @@ message ExtractUsageRequest {
   int32 status = 3;
   // Upstream response headers, lower-cased.
   map<string, string> headers = 4;
-  // Non-streaming: the whole response body. Empty when the body was larger
-  // than the endpoint's own usageMaxBytes and when the response streamed.
+  // Non-streaming: the whole response body. Empty when the response
+  // streamed.
   bytes body = 5;
   // Streaming: the events matching usageStreamEvents, in arrival order.
   // Empty for a non-streaming response.
   repeated StreamEvent events = 6;
-  // True when the host stopped collecting events before the stream ended
-  // (the endpoint's own usageMaxBytes was reached), so the plugin knows
-  // it is looking at a prefix. Never set for a non-streaming response: an
-  // oversized body is not handed over at all.
-  bool truncated = 7;
+  reserved 7;
+  reserved "truncated";
   // Values of the REQUEST fields the endpoint listed in usageRequestFields,
   // JSON-encoded and keyed by path - the same map EstimateUsageRequest
   // carries, read from the body handed to Execute. It exists
@@ -396,8 +391,8 @@ message ExtractUsageRequest {
   // Only declared paths travel, each value whole whatever its size.
   // Empty for endpoints that declare no usageRequestFields.
   map<string, string> fields = 8;
-  // No longer filled: the host leaves no declared value out.
-  repeated string fields_omitted = 9;
+  reserved 9;
+  reserved "fields_omitted";
 }
 
 // UsageReport is what the plugin states about the upstream response. Every
@@ -585,11 +580,10 @@ message ParseQuotaResponseRequest {
   // Upstream status, 0 for a transport error (see transport_error).
   int32 status = 2;
   map<string, string> headers = 3; // lower-cased
-  bytes body = 4;                  // truncated to the host's body cap (64 KiB)
+  bytes body = 4;                  // the whole answer body
   string transport_error = 5;
-  // The response exceeded the host's body cap; do not trust a partial
-  // document.
-  bool truncated = 6;
+  reserved 6;
+  reserved "truncated";
 }
 
 // QuotaWindow is one usage window of a subscription, e.g. the 5-hour or the
@@ -699,11 +693,10 @@ message ParseRefreshResponseRequest {
   // Upstream status, 0 for a transport error (see transport_error).
   int32 status = 2;
   map<string, string> headers = 3; // lower-cased
-  bytes body = 4;                  // truncated to the host's body cap (64 KiB)
+  bytes body = 4;                  // the whole answer body
   string transport_error = 5;
-  // The response exceeded the host's body cap; do not trust a partial
-  // document.
-  bool truncated = 6;
+  reserved 6;
+  reserved "truncated";
 }
 
 // RefreshResult is what the plugin read out of the refresh answer.
@@ -754,11 +747,10 @@ message ParseBalanceResponseRequest {
   // Upstream status, 0 for a transport error (see transport_error).
   int32 status = 2;
   map<string, string> headers = 3; // lower-cased
-  bytes body = 4;                  // truncated to the host's body cap (64 KiB)
+  bytes body = 4;                  // the whole answer body
   string transport_error = 5;
-  // The response exceeded the host's body cap; do not trust a partial
-  // document.
-  bool truncated = 6;
+  reserved 6;
+  reserved "truncated";
 }
 
 message ParseBalanceResponseResponse {

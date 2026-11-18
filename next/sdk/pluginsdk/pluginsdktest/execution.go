@@ -154,8 +154,8 @@ func (e *Execution) Relayed(t testing.TB) RelayCall {
 }
 
 // Observed is the answer of a waited relay to a 2xx: the observation with
-// the whole body of a non-streaming answer. Set events,
-// headers or truncated on the returned observation for other cases. The
+// the whole body of a non-streaming answer. Set events or headers on the
+// returned observation for other cases. The
 // fake fills meta and the account (without credentials) from the request.
 func Observed(status int32, body []byte) *pluginv1.RelayUpstreamResponse {
 	return &pluginv1.RelayUpstreamResponse{Observation: &pluginv1.ExtractUsageRequest{Status: status, Body: body}}

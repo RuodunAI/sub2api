@@ -64,15 +64,16 @@ type HostServiceClient interface {
 	// RelayUpstream hands over the FINAL upstream request of the execution;
 	// the upstream's answer goes to the client, never to the plugin. At most
 	// one per execution, in one of two forms:
-	//   - wait = false: the host validates the request (URL, SSRF name check,
-	//     headers) and answers at once
-	//     with an empty response. Nothing is sent until Execute returns
+	//   - wait = false: the host validates the request (URL and its host,
+	//     SSRF name check, headers) and answers at once with an empty
+	//     response. Nothing is sent until Execute returns
 	//     host_usage; the host then sends, relays and reads the usage by the
 	//     declared rules. An Execute that fails or returns anything else
 	//     after this leaves the request unsent.
 	//   - wait = true: the host sends and relays now and answers when the
-	//     exchange has ended, with a bounded observation of a successful
-	//     answer or the facts of a failed one. Only for executions whose
+	//     exchange has ended, with the observation of a successful answer
+	//     (the whole body, or the listed events of a stream) or the facts of
+	//     a failed one. Only for executions whose
 	//     ExecuteRequest sets extract_usage or task_submission; otherwise
 	//     FAILED_PRECONDITION.
 	// A request the host refuses is INVALID_ARGUMENT and counts as not relayed.
@@ -116,8 +117,12 @@ type HostServiceClient interface {
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(ctx context.Context, in *PriceUsageRequest, opts ...grpc.CallOption) (*PriceUsageResponse, error)
-	// db.schema: restricted DSN for the plugin schema. The connection must go
-	// through EgressService (the SDK dialer does this automatically).
+	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
+	// egress tunnel it is the virtual address db.sub2api:5432 without
+	// credentials, which the core logs in to as its own database user with
+	// search_path on the schema; without the tunnel (development) it is the
+	// core's DSN with search_path pinned. The SDK dialer goes through
+	// EgressService automatically.
 	GetDSN(ctx context.Context, in *GetDSNRequest, opts ...grpc.CallOption) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
@@ -229,9 +234,9 @@ type HostServiceClient interface {
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
-	// cuts their answers: the answer body comes back whole and truncated is
-	// never set; nor does it bound the request body (the request body limit
-	// applies to the client's request in the gateway only). A transport
+	// cuts their answers: the answer body comes back whole; nor does it bound
+	// the request body (the request body limit applies to the client's
+	// request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
 	//
@@ -241,14 +246,16 @@ type HostServiceClient interface {
 	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
 	// §117).
 	ExecuteHTTP(ctx context.Context, in *ExecutionHTTPRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
-	// for ONE account of this plugin's account types, sent by the host through
+	// accounts.credentials {"types":"own"} (Critical): one HTTP request for
+	// ONE account of this plugin's account types, sent by the host through
 	// that account's proxy (behind netguard for a direct connection), the same
 	// way as the quota and refresh requests the plugin describes (CONTRACTS
 	// §91). The URL must be http(s) and its host one of the manifest's
-	// externalServices (or a subdomain of one). Redirects are not followed;
-	// the answer body is capped at 64 KiB (truncated set). A transport failure
-	// is not an RPC error: it comes back in transport_error with status 0.
+	// externalServices (or a subdomain of one) or the host of one of the
+	// account's own upstream addresses (manifest upstreamFields; CONTRACTS
+	// §112.17). Redirects are not followed; the answer body comes back whole.
+	// A transport failure is not an RPC error: it comes back in
+	// transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
 	// bodies).
 	SendAccountRequest(ctx context.Context, in *SendAccountRequestRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
@@ -659,15 +666,16 @@ type HostServiceServer interface {
 	// RelayUpstream hands over the FINAL upstream request of the execution;
 	// the upstream's answer goes to the client, never to the plugin. At most
 	// one per execution, in one of two forms:
-	//   - wait = false: the host validates the request (URL, SSRF name check,
-	//     headers) and answers at once
-	//     with an empty response. Nothing is sent until Execute returns
+	//   - wait = false: the host validates the request (URL and its host,
+	//     SSRF name check, headers) and answers at once with an empty
+	//     response. Nothing is sent until Execute returns
 	//     host_usage; the host then sends, relays and reads the usage by the
 	//     declared rules. An Execute that fails or returns anything else
 	//     after this leaves the request unsent.
 	//   - wait = true: the host sends and relays now and answers when the
-	//     exchange has ended, with a bounded observation of a successful
-	//     answer or the facts of a failed one. Only for executions whose
+	//     exchange has ended, with the observation of a successful answer
+	//     (the whole body, or the listed events of a stream) or the facts of
+	//     a failed one. Only for executions whose
 	//     ExecuteRequest sets extract_usage or task_submission; otherwise
 	//     FAILED_PRECONDITION.
 	// A request the host refuses is INVALID_ARGUMENT and counts as not relayed.
@@ -711,8 +719,12 @@ type HostServiceServer interface {
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(context.Context, *PriceUsageRequest) (*PriceUsageResponse, error)
-	// db.schema: restricted DSN for the plugin schema. The connection must go
-	// through EgressService (the SDK dialer does this automatically).
+	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
+	// egress tunnel it is the virtual address db.sub2api:5432 without
+	// credentials, which the core logs in to as its own database user with
+	// search_path on the schema; without the tunnel (development) it is the
+	// core's DSN with search_path pinned. The SDK dialer goes through
+	// EgressService automatically.
 	GetDSN(context.Context, *GetDSNRequest) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
@@ -824,9 +836,9 @@ type HostServiceServer interface {
 	// allows it -, without the operator's header passthrough and override
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
-	// cuts their answers: the answer body comes back whole and truncated is
-	// never set; nor does it bound the request body (the request body limit
-	// applies to the client's request in the gateway only). A transport
+	// cuts their answers: the answer body comes back whole; nor does it bound
+	// the request body (the request body limit applies to the client's
+	// request in the gateway only). A transport
 	// failure is not an RPC error: it comes back in transport_error with
 	// status 0.
 	//
@@ -836,14 +848,16 @@ type HostServiceServer interface {
 	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
 	// §117).
 	ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
-	// for ONE account of this plugin's account types, sent by the host through
+	// accounts.credentials {"types":"own"} (Critical): one HTTP request for
+	// ONE account of this plugin's account types, sent by the host through
 	// that account's proxy (behind netguard for a direct connection), the same
 	// way as the quota and refresh requests the plugin describes (CONTRACTS
 	// §91). The URL must be http(s) and its host one of the manifest's
-	// externalServices (or a subdomain of one). Redirects are not followed;
-	// the answer body is capped at 64 KiB (truncated set). A transport failure
-	// is not an RPC error: it comes back in transport_error with status 0.
+	// externalServices (or a subdomain of one) or the host of one of the
+	// account's own upstream addresses (manifest upstreamFields; CONTRACTS
+	// §112.17). Redirects are not followed; the answer body comes back whole.
+	// A transport failure is not an RPC error: it comes back in
+	// transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
 	// bodies).
 	SendAccountRequest(context.Context, *SendAccountRequestRequest) (*ExecutionHTTPResponse, error)

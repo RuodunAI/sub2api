@@ -12,8 +12,8 @@
 
 - 只有一个数据库用户：核心的（`DATABASE_URL` 里的）。核心不再建、改任何角色，也不再需要 `CREATEROLE`。
 - 持有 `db.schema` 的插件仍有自己的 schema `plg_<key>`，属主是核心的用户。核心在插件第一次需要时（迁移、`GetDSN`）`CREATE SCHEMA IF NOT EXISTS`。
-- 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0111 删除两个 SECURITY DEFINER 函数。
-- `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写（恒为 false，字段待 proto 的所有者删除）。
+- 插件迁移由核心以自己的用户执行，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；迁移记录由核心直接写 `public.plugin_migrations`。迁移 0110 删除两个 SECURITY DEFINER 函数。
+- `HostService.GetDSN` 返回的 DSN 见 §6：严格网络下（Linux 默认）是不带凭据的虚拟地址，由核心代为登录；`role_isolated` 不再填写，随后从协议删除（`GetDSNResponse` 字段 3 `reserved`，SDK 的 `DSNInfo.RoleIsolated` 一并删除）。
 - 卸载并清除数据：`DROP SCHEMA plg_<key> CASCADE`，删除迁移记录。
 - 删除的东西：角色的创建与修改、密码派生、归属标记的写入、成员授予、schema 移交、角色的 `search_path`、`rewriteDSN` 换凭据的分支、`Tracker.AsPluginRole`、`Status.Role`/`RoleIsolated`、错误 `plugin_db_isolation_unavailable` 与 `plugin_db_role_conflict`、配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`，以及它们的测试。
 
@@ -41,7 +41,7 @@
 - **权限**：`REASSIGN OWNED`、`DROP OWNED` 要求核心有该角色的权限，`DROP ROLE` 要求 `CREATEROLE`（PostgreSQL 16 起还要对该角色有 ADMIN）。这些都是旧代码建角色时就具备的：角色由核心的用户创建（16 起自动得到 ADMIN），并且旧代码执行过 `GRANT plg_<key> TO CURRENT_USER`（继承权限）。所以不需要超级用户；Supabase 的 `postgres` 用户就是这种情况。逐个对象 `ALTER … OWNER TO` 要求同样的权限，不是退路，所以不做。
 - **还有会话的角色**：PostgreSQL 允许删除仍有会话的角色（已在 PostgreSQL 17 上验证），删掉后旧进程会失去自己表的权限。所以转换前查 `pg_stat_activity`，有该角色的会话就整个跳过、只记一次警告，下次 Ensure（以及下次启动）再试；此期间核心的用户经成员关系照样能读写这些表，新插件进程不受影响。
 - **多节点同时启动**：同一插件的转换在 schema 锁里串行，后到的节点再查时角色已不在，什么也不做；不同插件的转换另取一把全局锁 `plugin-role-conversion`（总在插件锁之后取），避免并发改同一对象的 ACL 报 `tuple concurrently updated`。
-- **滚动重启怎么收尾**：本版本有核心迁移（0111），按主节点优先升级：从节点先停，主节点停机、迁移、启动；旧核心停下时它的插件进程随之退出，会话结束，所以主节点第一次启动就能转换全部角色。若某个旧插件进程的连接还没断（例如节点没按计划停），该角色留到下次 Ensure：那个节点换成新核心、插件重启取 DSN 时，或任何节点下次启动时完成。
+- **滚动重启怎么收尾**：本版本有核心迁移（0110），按主节点优先升级：从节点先停，主节点停机、迁移、启动；旧核心停下时它的插件进程随之退出，会话结束，所以主节点第一次启动就能转换全部角色。若某个旧插件进程的连接还没断（例如节点没按计划停），该角色留到下次 Ensure：那个节点换成新核心、插件重启取 DSN 时，或任何节点下次启动时完成。
 - **恢复的三种情况**：
   - 不带属主恢复（全部对象已属于核心的用户、没有角色）：什么也不做，正常启动。
   - 带属主恢复（角色存在、对象属于角色）：与生产相同，启动时转换。
@@ -49,7 +49,7 @@
 
 ## 5. 不能回退
 
-迁移 0111 删除了旧核心给插件角色用的两个函数。回退到旧核心时，旧核心会重新建角色并在授予这两个函数时失败，持有 `db.schema` 的插件起不来。所以这是单向升级：回退只能连同数据库一起回到升级前的备份。
+迁移 0110 删除了旧核心给插件角色用的两个函数。回退到旧核心时，旧核心会重新建角色并在授予这两个函数时失败，持有 `db.schema` 的插件起不来。所以这是单向升级：回退只能连同数据库一起回到升级前的备份。
 
 ## 6. 核心代理插件的数据库连接
 
@@ -66,5 +66,5 @@
 - **连接数**：每条插件连接是核心向 PostgreSQL 开的一条连接，不在核心的连接池里，不另设上限（所有者规则）。数量 = 插件自己的池：SDK 默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，插件可用 `pluginsdk.WithDBPoolSize` 改），连接空闲 30 分钟、存活 1 小时后由插件侧关闭；每次取消另有一条瞬时连接。规划 `max_connections`：节点数 ×（核心池 `SUB2API_PG_MAX_CONNS`，默认 20 + 每个用数据库的插件 4 个）。现在 7 个官方插件用数据库（anthropic、dynweight、growth、guard、moderation、payment、volcengine），全部启用时每节点最多 20 + 28 个。
 - **没有隧道时**（`SUB2API_PLUGIN_STRICT_NETWORK=false`、非 Linux、`sub2api dev`，插件不在沙箱里，SDK 的 `installed` 为 false 时直连）：`GetDSN` 仍返回核心的 DSN 加 `search_path`（第一部分的做法），插件拿得到密码。这种模式下插件进程本来就不受网络与文件限制，只用于开发和测试。插件单元测试（`pluginsdktest`）不经核心，不受影响。
 - **隔离的说法换成**：插件拿不到数据库密码；它仍能执行核心的数据库用户能执行的任何 SQL，schema 之间的隔离仍只靠约定（§3）。不多说。
-- **遗留给别的包**：隧道对真实数据库地址的例外（`egress.Options.DatabaseAddrs`）在严格网络下已用不到（插件只拿到虚拟地址，也没有凭据），留给出口隧道的负责人删除；proto 的 `GetDSNResponse.role_isolated` 和 SDK 的 `DSNInfo.RoleIsolated` 待 proto/SDK 的负责人删除，`host.proto` 对 GetDSN 的注释（“restricted DSN”“plg_<key> role”）也要改。
+- **遗留给别的包**：隧道对真实数据库地址的例外（`egress.Options.DatabaseAddrs`）在严格网络下用不到（插件只拿到虚拟地址，也没有凭据），但仍有一条路径用它：插件用 `pluginsdk.WithStrictNetwork(StrictAlways)` 在不要求严格网络的核心上（`SUB2API_PLUGIN_STRICT_NETWORK=false`、非 Linux、`sub2api dev`）自己装上隧道，`GetDSN` 给它核心的 DSN，它经隧道拨真实地址。核心只要插件有 `net` 或 `db.schema` 就提供出口服务，与是否严格网络无关，所以这条路径能走通；第一方插件都不用 `StrictAlways`。因此保留（转发 V2 收尾核实，`egress.go` 的注释写明）；proto 的 `GetDSNResponse.role_isolated` 和 SDK 的 `DSNInfo.RoleIsolated` 已在转发 V2 收尾的协议清理中删除（字段 3 `reserved`），`host.proto` 对 GetDSN 的注释一并改写；`sub2api-plugin db check` 的比对工具也不再用临时角色。
 

@@ -113,8 +113,8 @@
 // A plugin with a database (manifest "database", grant "db.schema") owns one
 // schema, plg_<key>. Host.DB returns a GORM handle on it (package pgdb:
 // search_path on the schema, the egress tunnel in strict network mode), at
-// most 4 connections per node unless WithDBPoolSize says otherwise; the
-// plugin's role allows 20 in all, the host's migration connection included.
+// most 4 connections per node unless WithDBPoolSize says otherwise; the core
+// opens them as its own database user (CONTRACTS §115).
 // The handle is bound to the context Host.DB was called with: ask again for
 // each call (it is cheap, the connections are shared) and never keep one,
 // e.g. from Init for a goroutine; a kept handle fails every statement once
@@ -174,10 +174,11 @@
 //
 // Both compare on the test PostgreSQL (TEST_DATABASE_URL, or the local
 // server of package testpg), in one transaction they roll back
-// (pgdbtool.Drift). They run migrations/ in a scratch schema as a scratch
-// role that owns that schema and nothing else, as the host runs them with
-// the plugin's role: a migration that needs more (CREATE EXTENSION, a table
-// in public, ALTER ROLE) fails here as it would on install. They let
+// (pgdbtool.Drift). They run migrations/ in a scratch schema as the
+// connecting user with search_path on that schema, as the host runs them
+// with the core's user, and list what a migration created or changed
+// outside that schema (a table in public, another schema, an extension) as
+// a difference. They let
 // AutoMigrate build All() in a second, empty schema and compare the two
 // catalogs: the tables; each column's type, NOT NULL and default (by value:
 // '{}' and '{}'::jsonb, 0 and '0'::numeric are the same); primary keys; and

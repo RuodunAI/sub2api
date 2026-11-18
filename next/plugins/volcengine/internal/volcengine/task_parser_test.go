@@ -64,16 +64,15 @@ func TestManagedVideoSubmission(t *testing.T) {
 
 func TestManagedVideoRejectsIncompleteSubmission(t *testing.T) {
 	for _, tc := range []struct {
-		body      string
-		status    int32
-		truncated bool
+		body   string
+		status int32
 	}{
-		{`{"id":"ark-1"}`, 200, true}, {`{"id":"ark-1"`, 200, false},
-		{`{"id":"ark-1"}`, 500, false}, {`{}`, 200, false},
-		{`{"id":123}`, 200, false}, {`{"id":{}}`, 200, false}, {`null`, 200, false},
+		{`{"id":"ark-1"`, 200},
+		{`{"id":"ark-1"}`, 500}, {`{}`, 200},
+		{`{"id":123}`, 200}, {`{"id":{}}`, 200}, {`null`, 200},
 	} {
 		_, err := New().ParseTaskSubmission(context.Background(), &pluginv1.ExtractUsageRequest{
-			Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit}, Body: []byte(tc.body), Status: tc.status, Truncated: tc.truncated,
+			Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit}, Body: []byte(tc.body), Status: tc.status,
 		})
 		if err == nil {
 			t.Fatalf("accepted unusable task: %+v", tc)

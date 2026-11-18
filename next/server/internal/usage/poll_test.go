@@ -7,11 +7,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 type boundPollProxy struct {
@@ -34,10 +32,6 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/large" {
 			_, _ = w.Write([]byte(strings.Repeat("x", 20<<20)))
-			return
-		}
-		if r.URL.Path == "/slow" {
-			time.Sleep(time.Second)
 			return
 		}
 		http.Redirect(w, r, dst.URL, http.StatusFound)
@@ -76,18 +70,6 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 	if admitted.Load() != 2 {
 		t.Fatalf("invalid request consumed admission: %d", admitted.Load())
 	}
-	// The plugin's options only shorten the host's timeouts.
-	for _, opts := range []*pluginv1.UpstreamOptions{{TotalTimeoutMs: 50}, {ResponseHeaderTimeoutMs: 50}} {
-		start := time.Now()
-		out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL + "/slow", Options: opts}, &id, admit)
-		if err != nil || out.GetTransportError() == "" || time.Since(start) > 900*time.Millisecond {
-			t.Fatalf("timeout %+v not applied: %+v %v", opts, out, err)
-		}
-	}
-	if execfetch.Tighten(reconcileHTTPTimeout, 3_600_000) != reconcileHTTPTimeout {
-		t.Fatal("an option lengthened the timeout")
-	}
-	admitted.Store(2)
 	s.rec.AllowPrivateUpstream = false
 	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, &id, admit)
 	if err != nil || out.GetTransportError() == "" || admitted.Load() != 2 {
