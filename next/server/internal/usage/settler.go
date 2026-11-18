@@ -679,7 +679,7 @@ func newUsageLogRow(rec *core.UsageRecord) usageLogRow {
 	return usageLogRow{
 		RequestID: trunc(rec.RequestID, 64), UserID: rec.UserID, APIKeyID: rec.APIKeyID, GroupID: rec.GroupID, AccountID: rec.AccountID,
 		PluginKey: trunc(rec.PluginKey, 30), PluginVersion: trunc(rec.PluginVersion, 50), Platform: trunc(rec.Platform, 50),
-		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: trunc(rec.Model, 200), UpstreamModel: trunc(rec.UpstreamModel, 200),
+		Protocol: trunc(rec.Protocol, 100), Endpoint: trunc(rec.Endpoint, 200), Model: rec.Model, UpstreamModel: rec.UpstreamModel,
 		Stream: rec.Stream, StatusCode: rec.StatusCode, Success: rec.Success, ErrorType: trunc(rec.ErrorType, 50), ErrorMessage: rec.ErrorMessage, Attempts: attempts,
 		InputTokens: t.Input, OutputTokens: t.Output, CacheReadTokens: t.CacheRead, CacheCreationTokens: t.CacheCreation, CacheCreation1hTokens: t.CacheCreation1h,
 		Metrics: jsonOr(rec.Metrics, "{}"), StickyRule: trunc(rec.StickyRule, 100), StickyHit: rec.StickyHit, HookDecisions: jsonOr(rec.HookDecisions, "[]"),

@@ -3,7 +3,6 @@ package gateway
 import (
 	"strings"
 	"testing"
-
 )
 
 func TestVideoPriceRejectsTextEndpoint(t *testing.T) {

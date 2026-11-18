@@ -45,8 +45,8 @@ func (c *call) checkReferencedModels() *gwError {
 			}
 			value := item.Get(rule.ModelPath)
 			path := location.path + "." + rule.ModelPath
-			if value.Type != gjson.String || value.Str == "" || len(value.Str) > 200 || strings.TrimSpace(value.Str) != value.Str || strings.ContainsAny(value.Str, "\r\n\x00") {
-				return invalidModelReference(path + " must be a nonempty model identifier up to 200 bytes")
+			if value.Type != gjson.String || value.Str == "" || strings.TrimSpace(value.Str) != value.Str || strings.ContainsAny(value.Str, "\r\n\x00") {
+				return invalidModelReference(path + " must be a nonempty model identifier")
 			}
 			if !c.principal.Group.AllowsModel(value.Str) {
 				return fromCore(core.ErrModelNotFound.WithDetails(map[string]any{"model": value.Str}), errTypeModelNotAllowed)

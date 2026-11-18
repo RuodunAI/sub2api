@@ -474,7 +474,7 @@ func (c *call) checkModel(ctx context.Context) *gwError {
 	// no model id looks like before any of them sees it (CONTRACTS §15.2).
 	if !c.ep.TaskQuery() && c.model != "" && !validModelName(c.model) {
 		return &gwError{Status: http.StatusBadRequest, Code: core.ErrInvalidArgument.Code,
-			Message: "model must be a model identifier of at most 256 bytes without whitespace or control characters", RecordType: errTypeInvalidRequest}
+			Message: "model must be a model identifier without whitespace or control characters", RecordType: errTypeInvalidRequest}
 	}
 	// request.stream is an endpoint-level fact ("this endpoint only streams")
 	// and always wins, including over a plugin: a plugin answering false would

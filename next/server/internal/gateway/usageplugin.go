@@ -211,7 +211,7 @@ func (c *call) applyUsageReport(ctx context.Context, rt *typeRoute, platformKey 
 		t.GetCacheCreationTokens(), t.GetCacheCreation_1HTokens())
 	c.rec.Metrics = preserveHostCacheEvidence(c.rec.Metrics, c.reportedFacts(ctx, rt, rep.GetFacts()))
 	if m := rep.GetUpstreamModel(); m != "" && m != c.model {
-		c.rec.UpstreamModel = truncateUTF8(m, 200)
+		c.rec.UpstreamModel = m
 	}
 	// An error the plugin read out of a 2xx response is recorded the same way
 	// an error event in a stream already is: the client keeps the bytes it
