@@ -125,11 +125,11 @@ func TestBuildUpstream(t *testing.T) {
 	}
 
 	// Streaming chat on the default base URL: Ark's /api/v3 prefix, bearer
-	// key as the one authoritative header, include_usage forced, only the
-	// user agent forwarded.
+	// key, include_usage forced, the user agent (the one client header the
+	// core hands over on this surface) forwarded.
 	r, err := build(&pluginv1.RequestMeta{Protocol: ProtocolChat, Model: "doubao-seed-1-6-250615", Stream: true},
 		account(testKey, ""),
-		map[string]string{"user-agent": "OpenAI/Python 1.0", "openai-organization": "org-1", "cookie": "no"})
+		map[string]string{"user-agent": "OpenAI/Python 1.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestBuildUpstreamImages(t *testing.T) {
 	}
 
 	r, err := build(&pluginv1.RequestMeta{Protocol: ProtocolImages, Model: "doubao-seedream-4-0-250828"},
-		account(testKey, ""), map[string]string{"user-agent": "Ark/Python 1.0", "cookie": "no"})
+		account(testKey, ""), map[string]string{"user-agent": "Ark/Python 1.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,9 +261,6 @@ func TestBuildUpstreamImages(t *testing.T) {
 		r.GetHeaders()["authorization"] != "Bearer 11111111-2222-3333-4444-555555555555" ||
 		r.GetHeaders()["content-type"] != "application/json" || r.GetHeaders()["user-agent"] != "Ark/Python 1.0" {
 		t.Fatalf("images = %s %s %v", r.GetMethod(), r.GetUrl(), r.GetHeaders())
-	}
-	if _, ok := r.GetHeaders()["cookie"]; ok {
-		t.Fatal("cookie must not be forwarded")
 	}
 	if r.GetUpstreamModel() != "doubao-seedream-4-0-250828" {
 		t.Fatalf("upstream model = %q", r.GetUpstreamModel())

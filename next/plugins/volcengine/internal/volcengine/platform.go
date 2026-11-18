@@ -228,32 +228,6 @@ func accountConfig(acc *pluginv1.Account) (*apikey.Config, prefixes, error) {
 	return cfg, px, nil
 }
 
-// forwardHeaders are the client headers copied verbatim to the upstream
-// request. It must stay equal to the account type's passHeaders override in
-// manifest.json: Ark ignores OpenAI's org/project and x-stainless-* headers,
-// so only the user agent is passed on.
-var forwardHeaders = []string{"user-agent"}
-
-// anthropicForwardHeaders are the client headers copied on the Anthropic
-// surface. It must stay equal to the anthropic entry's passHeaders override in
-// manifest.json - that list REPLACES the platform's rather than merging with
-// it, so the two have to be written the same on both sides or the header a
-// client sent is dropped at one of them.
-//
-// anthropic-version and anthropic-beta are here because they change how the
-// upstream reads the body: a client that asked for a beta shape and had the
-// header dropped would get its request interpreted under different rules.
-var anthropicForwardHeaders = []string{"anthropic-version", "anthropic-beta", "user-agent"}
-
-// ForwardHeaders returns the client headers copied to the upstream request.
-func ForwardHeaders() []string { return append([]string(nil), forwardHeaders...) }
-
-// AnthropicForwardHeaders returns the client headers copied on the Anthropic
-// surface.
-func AnthropicForwardHeaders() []string {
-	return append([]string(nil), anthropicForwardHeaders...)
-}
-
 // Plugin is the volcengine plugin. It implements pluginsdk.Platform and,
 // since stage three, pluginsdk.HTTP (the asset library routes in routes.go)
 // plus the lifecycle interfaces they need.
@@ -400,23 +374,25 @@ func credentialHeader(accountType, protocol, apiKey string) (name, value string)
 }
 
 // upstreamHeaders are all headers of one request: the account key, the
-// content type and the client headers this protocol forwards.
+// content type and the client headers the core handed over. Those are the
+// manifest's passHeaders of the platform entry the request was routed to:
+// only the user agent on the openai and volcengine surfaces (Ark ignores
+// OpenAI's org/project and x-stainless-* headers), and on the Anthropic
+// surface also anthropic-version and anthropic-beta, which change how the
+// upstream reads the body.
 //
 // Anthropic requires a version header and rejects a request without one, so an
 // Anthropic-protocol request that the client sent none for gets the default.
 // The client's own value wins when it sent one: it knows which beta shape its
 // body is in, and we must not silently downgrade it.
 func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]string) map[string]string {
-	name, value := credentialHeader(accountType, protocol, apiKey)
-	h := map[string]string{name: value, "content-type": "application/json"}
-	names := forwardHeaders
-	if protocol == ProtocolMessages {
-		names = anthropicForwardHeaders
-		if strings.TrimSpace(inbound["anthropic-version"]) == "" {
-			h["anthropic-version"] = DefaultAnthropicVersion
-		}
+	h := map[string]string{}
+	if protocol == ProtocolMessages && strings.TrimSpace(inbound["anthropic-version"]) == "" {
+		h["anthropic-version"] = DefaultAnthropicVersion
 	}
-	apikey.ForwardHeaders(h, inbound, names)
+	apikey.ForwardHeaders(h, inbound)
+	name, value := credentialHeader(accountType, protocol, apiKey)
+	h[name], h["content-type"] = value, "application/json"
 	return h
 }
 

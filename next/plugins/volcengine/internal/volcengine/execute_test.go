@@ -110,11 +110,17 @@ func executeCases() []executeCase {
 	const bearer = "Bearer 11111111-2222-3333-4444-555555555555"
 	official, relay := account(testKey, ""), relayAccount("/v1", "/doubao/api/v3")
 	in := func(acc *pluginv1.Account, protocol, model string, stream bool, body string) *pluginv1.ExecuteRequest {
+		// What the core hands over: the manifest's passHeaders of the entry
+		// the protocol is routed to.
+		inbound := map[string]string{"user-agent": "client/1.0"}
+		if protocol == ProtocolMessages {
+			inbound["anthropic-beta"] = "beta-1"
+		}
 		return &pluginv1.ExecuteRequest{
 			Meta:           &pluginv1.RequestMeta{Protocol: protocol, Model: model, Stream: stream, RequestId: "req-1"},
 			Account:        acc,
 			Body:           []byte(body),
-			InboundHeaders: map[string]string{"user-agent": "client/1.0", "anthropic-beta": "beta-1", "cookie": "no"},
+			InboundHeaders: inbound,
 		}
 	}
 	submit := in(official, ProtocolVideoSubmit, videoModel, false,

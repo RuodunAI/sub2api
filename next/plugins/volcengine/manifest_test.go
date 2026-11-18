@@ -314,18 +314,16 @@ func TestManifest(t *testing.T) {
 			t.Fatalf("%s own platform entry = %+v", id, own)
 		}
 	}
-	// anthropic's passHeaders must be narrowed the same way openai's is, and
-	// must match what upstreamHeaders forwards: passHeaders REPLACES the
-	// platform's list rather than merging, so a header named on one side and
-	// not the other is dropped at whichever side forgot it. anthropic-version
-	// and anthropic-beta are in both because they change how the upstream
-	// reads the body.
+	// anthropic's passHeaders are narrowed the same way openai's is: the
+	// plugin forwards exactly what the core hands over. anthropic-version and
+	// anthropic-beta are in it because they change how the upstream reads the
+	// body.
 	anth := relayPlatforms[volcengine.PlatformAnthropic]
 	if !reflect.DeepEqual(officialPlatforms[volcengine.PlatformAnthropic], anth) {
 		t.Fatal("official and relay Messages must share exclusive usage and header declarations")
 	}
-	if !slices.Equal(anth.PassHeaders, volcengine.AnthropicForwardHeaders()) {
-		t.Fatalf("anthropic platform entry = %+v, want passHeaders %v", anth, volcengine.AnthropicForwardHeaders())
+	if want := []string{"anthropic-version", "anthropic-beta", "user-agent"}; !slices.Equal(anth.PassHeaders, want) {
+		t.Fatalf("anthropic platform entry = %+v, want passHeaders %v", anth, want)
 	}
 	// The old override existed for ONE measured reason; the platform now
 	// handles it, so the account type must inherit the complete rules.
@@ -367,8 +365,8 @@ func TestManifest(t *testing.T) {
 	for id, byName := range map[string]map[string]manifest.AccountPlatform{
 		volcengine.AccountTypeAPIKey: officialPlatforms, volcengine.AccountTypeRelay: relayPlatforms} {
 		ap := byName[volcengine.PlatformID]
-		if !slices.Equal(ap.PassHeaders, volcengine.ForwardHeaders()) {
-			t.Errorf("%s openai passHeaders = %v, want %v", id, ap.PassHeaders, volcengine.ForwardHeaders())
+		if want := []string{"user-agent"}; !slices.Equal(ap.PassHeaders, want) {
+			t.Errorf("%s openai passHeaders = %v, want %v", id, ap.PassHeaders, want)
 		}
 		if len(ap.Usage) != 0 {
 			t.Errorf("%s: usage must stay inherited: %+v", id, ap)
@@ -385,11 +383,6 @@ func TestManifest(t *testing.T) {
 		}
 		if !slices.Equal(got, volcengine.Protocols) {
 			t.Fatalf("built-in openai protocols %v, implemented %v", got, volcengine.Protocols)
-		}
-		for _, h := range volcengine.ForwardHeaders() {
-			if !slices.Contains(b.PassHeaders, h) {
-				t.Errorf("forwarded header %q is not in the built-in platform's passHeaders %v", h, b.PassHeaders)
-			}
 		}
 		if b.Usage.Semantics != "inclusive" {
 			t.Errorf("built-in openai usage semantics = %q; Ark is inclusive too, check the override", b.Usage.Semantics)

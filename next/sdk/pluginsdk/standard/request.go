@@ -115,16 +115,10 @@ func hasToken(cur, value string) bool {
 	return false
 }
 
-// forward are the client headers of inbound: every one the core handed
-// over, lower-case, trimmed, blank ones dropped. The core passes only the
-// manifest's passHeaders, so the library filters nothing more.
-func forward(inbound map[string]string) map[string]string {
+// clientHeaders are the client headers of inbound (apikey.ForwardHeaders).
+func clientHeaders(inbound map[string]string) map[string]string {
 	out := make(map[string]string, len(inbound))
-	for name, value := range inbound {
-		if value = strings.TrimSpace(value); value != "" {
-			out[strings.ToLower(name)] = value
-		}
-	}
+	apikey.ForwardHeaders(out, inbound)
 	return out
 }
 
