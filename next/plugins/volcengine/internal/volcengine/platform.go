@@ -32,7 +32,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tidwall/sjson"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -40,6 +39,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	sdkanthropic "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	openaiprovider "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	sdkvolcengine "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/volcengine"
@@ -459,7 +459,7 @@ func upstreamBody(meta *pluginv1.RequestMeta, method string, body []byte) ([]byt
 	if !meta.GetStream() || (meta.GetProtocol() != ProtocolChat && meta.GetProtocol() != "") {
 		return body, nil
 	}
-	out, err := sjson.SetBytes(body, "stream_options.include_usage", true)
+	out, err := jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "request body: %v", err)
 	}
