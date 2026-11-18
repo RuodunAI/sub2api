@@ -100,12 +100,15 @@ func legacyRole(t *testing.T, db, host *store.DB, hostDSN, key string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer done()
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE items (id serial PRIMARY KEY, v text);
 		INSERT INTO items (v) VALUES ('a'), ('b');
 		CREATE VIEW item_names AS SELECT v FROM items`); err != nil {
+		done()
 		t.Fatal(err)
 	}
+	done()
+	// A role with a session is left alone by the conversion.
+	waitNoSessions(t, host, role)
 	return u.String()
 }
 
