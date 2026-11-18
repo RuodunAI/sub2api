@@ -157,8 +157,9 @@ func TestAC35_RequestBodyLimitSetting(t *testing.T) {
 	big := strings.Repeat("x", 1536<<10) // 1.5 MiB of prompt
 	body := MessagesBody(tn.Model, big, false)
 
-	// Every node applies the new value (cached for up to 10 s otherwise).
-	mark := m.Mark(t)
+	// Every node applies the new value (cached for up to 10 s otherwise);
+	// until then a node serves the request, so the upstream is watched only
+	// from here on.
 	Eventually(t, 20*time.Second, time.Second, "413 on every node", func() bool {
 		for _, base := range e.NodeURLs {
 			if g := e.Gateway(t, base, "/v1/messages", tn.APIKey, body, nil); g.Status != http.StatusRequestEntityTooLarge {
@@ -167,6 +168,7 @@ func TestAC35_RequestBodyLimitSetting(t *testing.T) {
 		}
 		return true
 	})
+	mark := m.Mark(t)
 	g := e.Messages(tn.APIKey, body, nil)
 	if g.Status != http.StatusRequestEntityTooLarge || g.JSON().Get("error.type").String() == "" {
 		t.Fatalf("over the limit: HTTP %d %s", g.Status, g.Body)

@@ -81,7 +81,7 @@ func mockCallsOf(t testing.TB, m *Mock, mark int64, key string) []MockRequest {
 	t.Helper()
 	var out []MockRequest
 	for _, r := range m.Since(t, mark) {
-		if r.Key() == key || strings.Contains(r.Header("authorization"), key) {
+		if r.Key() == key {
 			out = append(out, r)
 		}
 	}

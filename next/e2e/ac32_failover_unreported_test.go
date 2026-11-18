@@ -10,7 +10,6 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -94,23 +93,28 @@ func TestAC32_FailoverAndUnreported(t *testing.T) {
 		defer m.ClearRule(t, k)
 		before := Money(t, e.Balance(st.User))
 		mark := m.Mark(t)
-		var (
-			wg  sync.WaitGroup
+		// The goroutine only sends: the test fails on this goroutine.
+		type submitted struct {
 			res *Resp
-		)
-		wg.Add(1)
+			err error
+		}
+		done := make(chan submitted, 1)
 		go func() {
-			defer wg.Done()
-			res = NewClient(e.NodeURLs[0]).Do(t, http.MethodPost, videoPath, map[string]any{
+			res, err := NewClient(e.NodeURLs[0]).Try(http.MethodPost, videoPath, map[string]any{
 				"model": model, "content": []map[string]string{{"type": "text", "text": "crash"}},
 				"resolution": "480p", "ratio": "16:9", "duration": 4,
 			}, Header("Authorization", "Bearer "+st.APIKey))
+			done <- submitted{res, err}
 		}()
 		Eventually(t, 20*time.Second, 100*time.Millisecond, "the submission reached the upstream", func() bool {
 			return len(mockCallsOf(t, m, mark, k)) > 0
 		})
 		e.KillPluginProcesses(1, "volcengine")
-		wg.Wait()
+		sub := <-done
+		if sub.err != nil {
+			t.Fatalf("submission whose plugin died while waiting: %v", sub.err)
+		}
+		res := sub.res
 		if res.Status < 500 {
 			t.Fatalf("submission whose plugin died while waiting: %s (want 5xx)", res)
 		}

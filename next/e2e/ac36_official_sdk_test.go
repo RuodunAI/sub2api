@@ -293,17 +293,22 @@ func TestAC36_OfficialSDKClients(t *testing.T) {
 		e.With(t).enableProtocols(admin, oaID, gpt, "openai.chat", "anthropic.messages")
 		mark := m.Mark(t)
 		t.Run("openai sdk, anthropic account", func(t *testing.T) { openaiChatSuite(t, openaiSDK(e, an.APIKey), claude) })
-		for _, r := range mockCallsOf(t, m, mark, anKey) {
-			if r.Path != "/v1/messages" {
-				t.Fatalf("converted chat reached %s, want /v1/messages", r.Path)
-			}
-		}
+		expectAllOnPath(t, mockCallsOf(t, m, mark, anKey), "/v1/messages", "converted chat")
 		mark = m.Mark(t)
 		t.Run("anthropic sdk, openai account", func(t *testing.T) { anthropicSuite(t, anthropicSDK(e, oa.APIKey), gpt) })
-		for _, r := range mockCallsOf(t, m, mark, oaKey) {
-			if r.Path != "/v1/chat/completions" {
-				t.Fatalf("converted messages reached %s, want /v1/chat/completions", r.Path)
-			}
-		}
+		expectAllOnPath(t, mockCallsOf(t, m, mark, oaKey), "/v1/chat/completions", "converted messages")
 	})
+}
+
+// expectAllOnPath requires at least one upstream call, all of them on path.
+func expectAllOnPath(t *testing.T, calls []MockRequest, path, what string) {
+	t.Helper()
+	if len(calls) == 0 {
+		t.Fatalf("%s: no upstream call with the account's key", what)
+	}
+	for _, r := range calls {
+		if r.Path != path {
+			t.Fatalf("%s reached %s, want %s", what, r.Path, path)
+		}
+	}
 }
