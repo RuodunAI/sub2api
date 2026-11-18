@@ -73,8 +73,6 @@ func TestUsageSourcePlugin(t *testing.T) {
 		}, "endpoints[0].usageStreamEvents[1]", "duplicate"},
 		{"usageMaxBytes too small", func(e *manifest.Endpoint) { e.UsageMaxBytes = 10 },
 			"endpoints[0].usageMaxBytes", "out_of_range"},
-		{"usageMaxBytes too large", func(e *manifest.Endpoint) { e.UsageMaxBytes = MaxUsageMaxBytes + 1 },
-			"endpoints[0].usageMaxBytes", "out_of_range"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,5 +287,15 @@ func TestAccountTypeOverrideCannotReachUsageSource(t *testing.T) {
 	// The endpoint still says "plugin": nothing in the account type moved it.
 	if !m.Platforms[0].Endpoints[0].PluginUsage() {
 		t.Fatal("the endpoint's usage source was reachable from an account type")
+	}
+}
+
+// usageMaxBytes has no upper bound: a plugin may set any budget at or above
+// MinUsageMaxBytes.
+func TestUsageMaxBytesHasNoUpperBound(t *testing.T) {
+	p := pluginSourcePlatform()
+	p.Endpoints[0].UsageMaxBytes = 1 << 40
+	if got := platformCodes(p); got["endpoints[0].usageMaxBytes"] != "" {
+		t.Fatalf("codes = %v", got)
 	}
 }

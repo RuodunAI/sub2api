@@ -43,26 +43,20 @@ var UsageFactTypes = []string{"number", "boolean", "enum", "string"}
 var UsageSources = []string{manifest.UsageSourceRules, manifest.UsageSourcePlugin}
 
 // Bounds on the plugin-source knobs. MaxUsageStreamEvents is the number of
-// distinct event NAMES an endpoint may list, not the number of events the
-// host collects at runtime (that cap lives in the gateway): a declaration
-// naming dozens of event names is asking for the whole stream, which is the
-// one thing this design does not do.
+// distinct event NAMES an endpoint may list; the host collects every event
+// of a listed name at runtime. A declaration naming dozens of event names
+// is asking for the whole stream, which is the one thing this design does
+// not do.
 const (
 	MaxUsageStreamEvents = 8
-	MinUsageMaxBytes     = 1 << 10 // 1 KiB
-	MaxUsageMaxBytes     = 1 << 20 // 1 MiB
+	// MinUsageMaxBytes is the smallest usageMaxBytes an endpoint may set:
+	// a budget below it cannot hold one usage event. There is no upper
+	// bound, and 0 (the default) is no budget at all.
+	MinUsageMaxBytes = 1 << 10 // 1 KiB
 	// MaxUsageRequestFields is how many request body paths an endpoint may
 	// list in usageRequestFields. The list names the few scalars an estimate
 	// is made from; a long one is asking for the request body.
 	MaxUsageRequestFields = 16
-	// MaxUsageRequestFieldBytes caps one value of ExtractUsageRequest.fields
-	// (its raw JSON); MaxUsageRequestFieldsBytes caps all of them together.
-	// The host leaves a value out rather than cutting it - half a JSON value
-	// is not a value - and names the path in fields_omitted. Both are host
-	// constants, not manifest knobs: an author who needs a base64 image in
-	// ExtractUsage is asking for the thing this design does not hand over.
-	MaxUsageRequestFieldBytes  = 4 << 10  // 4 KiB
-	MaxUsageRequestFieldsBytes = 32 << 10 // 32 KiB
 )
 
 // usageEventRe is what an SSE event name may look like. It is the name of an
@@ -198,9 +192,8 @@ func (v *validator) usageSource(f string, e manifest.Endpoint) {
 		}
 		seen[name] = true
 	}
-	if e.UsageMaxBytes != 0 && (e.UsageMaxBytes < MinUsageMaxBytes || e.UsageMaxBytes > MaxUsageMaxBytes) {
-		v.add(f+".usageMaxBytes", "out_of_range", "usageMaxBytes must be between %d and %d (0 uses the host default)",
-			MinUsageMaxBytes, MaxUsageMaxBytes)
+	if e.UsageMaxBytes != 0 && e.UsageMaxBytes < MinUsageMaxBytes {
+		v.add(f+".usageMaxBytes", "out_of_range", "usageMaxBytes must be at least %d (0 sets no budget)", MinUsageMaxBytes)
 	}
 	v.usageRequestFields(f, e)
 }

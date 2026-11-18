@@ -401,9 +401,9 @@ func TestWaitedRelayLargeAnswerIsDeliveredWhole(t *testing.T) {
 	if res.status != 200 || len(res.body) != len(big) {
 		t.Fatalf("large answer: %d, %d of %d bytes", res.status, len(res.body), len(big))
 	}
-	// The observation is over usage.maxBytes, so the plugin's report is
-	// not read; the answer is delivered all the same.
-	if rec := e.record(); !rec.Success || rec.UsageExtract != core.UsageExtractFallback {
+	// No observation budget: the plugin is shown the whole answer and its
+	// report is billed.
+	if rec := e.record(); !rec.Success || rec.UsageExtract != core.UsageExtractPlugin || rec.Tokens.Input != 100 {
 		t.Fatalf("record %+v", rec)
 	}
 	if st := e.settler.executionStates(); !slices.Equal(st, []string{core.ExecutionStateCommitted}) {

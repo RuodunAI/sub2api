@@ -381,12 +381,12 @@ type pendingDetail struct {
 }
 
 // pluginDetailJSON is what goes into usage_logs.plugin_detail: the plugin's
-// own document when it is a JSON object within the cap, "{}" otherwise. The
-// gateway already applies the cap and warns; this is the last guard, because
-// a non-object (or invalid) document would fail the whole batch insert and
+// own document when it is a JSON object, of any size, "{}" otherwise. The
+// gateway already checks it and warns; this is the last guard, because a
+// non-object (or invalid) document would fail the whole batch insert and
 // take unrelated records down with it.
 func pluginDetailJSON(raw core.RawJSON) []byte {
-	if len(raw) == 0 || len(raw) > core.MaxPluginDetailBytes {
+	if len(raw) == 0 {
 		return []byte("{}")
 	}
 	if !gjson.ValidBytes(raw) || !gjson.ParseBytes(raw).IsObject() {

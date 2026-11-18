@@ -367,9 +367,6 @@ const (
 // record of an unreported execution.
 const UsageErrorUnreported = "usage_unreported"
 
-// MaxPluginDetailBytes caps UsageReport.detail_json.
-const MaxPluginDetailBytes = 4 << 10
-
 // Keys of usage_logs.anomalies: facts about how a usage record was produced,
 // never about what it costs. The column exists because billing_detail - whose
 // name promises a billing breakdown, and which settlement rewrites wholesale -

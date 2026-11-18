@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/usagerules"
 )
@@ -27,28 +25,19 @@ import (
 // THE STREAM IS NEVER BUFFERED. An SSE stream is unbounded, so a streaming
 // response is relayed exactly as before - event by event, flushed as it
 // goes - and the host keeps only the events whose name the endpoint listed
-// in usage.streamEvents, under a byte budget and an event count cap. A
-// stream that exceeds either stops being collected (and the plugin is told,
-// so it does not report a number computed from a prefix as if it were the
-// total).
-const (
-	// defaultUsageMaxBytes is what usage.maxBytes defaults to: the whole
-	// non-streaming body, or the total size of the collected stream events.
-	defaultUsageMaxBytes = 256 << 10
-	// maxUsageStreamEvents caps how many events are collected regardless of
-	// the byte budget. The allow-list is meant to name a handful of summary
-	// events ("message_delta"); an endpoint whose listed name matches every
-	// chunk would otherwise turn the byte budget into the only thing
-	// standing between a long stream and a large buffer.
-	maxUsageStreamEvents = 64
-)
+// in usage.streamEvents, all of them, of any number and size. Only an
+// endpoint that sets usage.maxBytes itself has a byte budget: a stream that
+// exceeds it stops being collected (and the plugin is told, so it does not
+// report a number computed from a prefix as if it were the total).
 
 // usageCapture holds what the observation will show the plugin. It is
 // nil for every endpoint that does not declare usage.source "plugin", which
 // is how those endpoints pay exactly nothing for this feature - not one
 // comparison per event, not one allocation, and never a call.
 type usageCapture struct {
-	want     map[string]bool
+	want map[string]bool
+	// limited: the endpoint set usage.maxBytes; budget is what is left of it.
+	limited  bool
 	budget   int
 	events   []*pluginv1.StreamEvent
 	stream   bool
@@ -68,15 +57,11 @@ func newUsageCapture(rt *typeRoute) *usageCapture {
 	if !rt.pluginUsage {
 		return nil
 	}
-	budget := int(rt.usageMaxBytes)
-	if budget <= 0 {
-		budget = defaultUsageMaxBytes
-	}
 	want := make(map[string]bool, len(rt.usageEvents))
 	for _, n := range rt.usageEvents {
 		want[n] = true
 	}
-	return &usageCapture{want: want, budget: budget}
+	return &usageCapture{want: want, limited: rt.usageMaxBytes > 0, budget: int(rt.usageMaxBytes)}
 }
 
 // addEvent keeps one upstream SSE event when the endpoint asked for it. data
@@ -89,16 +74,18 @@ func (u *usageCapture) addEvent(name string, data []byte) {
 	if u.stopped || !u.want[name] || len(data) == 0 {
 		return
 	}
-	if len(u.events) >= maxUsageStreamEvents || len(data) > u.budget {
-		u.stopped = true
-		return
+	if u.limited {
+		if len(data) > u.budget {
+			u.stopped = true
+			return
+		}
+		u.budget -= len(data)
 	}
-	u.budget -= len(data)
 	u.events = append(u.events, &pluginv1.StreamEvent{Name: name, Data: append([]byte(nil), data...)})
 }
 
-// setBody keeps a non-streaming response body. A body larger than the budget
-// is dropped rather than cut: the events of a stream are a list, of which a
+// setBody keeps a non-streaming response body. A body larger than the
+// endpoint's own usage.maxBytes, when it set one, is dropped rather than cut: the events of a stream are a list, of which a
 // prefix still means something, but a JSON document cut in half is not a
 // document at all and a plugin parsing it would report numbers that are
 // wrong rather than missing.
@@ -106,7 +93,7 @@ func (u *usageCapture) setBody(body []byte) {
 	if u == nil {
 		return
 	}
-	if len(body) > u.budget {
+	if u.limited && len(body) > u.budget {
 		u.tooLarge = true
 		return
 	}
@@ -155,34 +142,21 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 }
 
 // usageRequestFields reads the declared request paths out of body for
-// ExtractUsageRequest.fields, under the SDK's two caps: a value larger than
-// check.MaxUsageRequestFieldBytes is left out, and so is every value that
-// would take the total past check.MaxUsageRequestFieldsBytes. Left-out paths
-// are returned in omitted, so the plugin can tell them from paths the client
-// did not send. Declared order decides who wins the budget, so the answer is
-// the same on every node.
-//
-// A value is left out rather than cut for the reason a non-streaming body
-// over usage.maxBytes is not handed over: half a JSON value parses into the
-// wrong thing, not into nothing. And the raw JSON comes straight from the
-// client, so it is sanitised the way every other client byte that enters a
-// proto string field is (CONTRACTS §25.1) - readBody already refuses a body
-// with invalid UTF-8, this is the belt to that brace.
+// ExtractUsageRequest.fields, every value whole whatever its size. omitted
+// stays empty: the host no longer leaves a value out (the field remains in
+// the protocol). The raw JSON comes straight from the client, so it is
+// sanitised the way every other client byte that enters a proto string
+// field is (CONTRACTS §25.1) - readBody already refuses a body with invalid
+// UTF-8, this is the belt to that brace.
 func usageRequestFields(paths []string, body []byte) (fields map[string]string, omitted []string) {
 	if len(paths) == 0 || len(body) == 0 {
 		return nil, nil
 	}
-	budget := check.MaxUsageRequestFieldsBytes
 	for _, p := range paths {
 		raw := getJSON(body, p)
 		if raw == "" {
 			continue
 		}
-		if len(raw) > check.MaxUsageRequestFieldBytes || len(raw) > budget {
-			omitted = append(omitted, p)
-			continue
-		}
-		budget -= len(raw)
 		if fields == nil {
 			fields = make(map[string]string, len(paths))
 		}
@@ -336,22 +310,10 @@ func (c *call) reportedFacts(ctx context.Context, rt *typeRoute, facts map[strin
 }
 
 // pluginDetail validates UsageReport.detail_json for usage_logs.plugin_detail:
-// a JSON object of at most core.MaxPluginDetailBytes.
-//
-// An over-long document is replaced by a marker rather than cut off. The
-// column is jsonb, so there is no such thing as storing the first 4 KiB of it;
-// the choice is between a document and a note saying there was one. A note
-// that names the size is the honest half of that pair, and the warning names
-// the plugin that should shrink it.
+// a JSON object, of any size (the column is jsonb).
 func pluginDetail(ctx context.Context, rid, pluginKey, raw string) core.RawJSON {
 	if raw == "" {
 		return nil
-	}
-	if len(raw) > core.MaxPluginDetailBytes {
-		slog.WarnContext(ctx, "gateway: plugin detail_json over the limit, stored as a marker",
-			"request_id", rid, "plugin", pluginKey, "bytes", len(raw), "limit", core.MaxPluginDetailBytes)
-		b, _ := json.Marshal(map[string]any{"_truncated": true, "_bytes": len(raw)})
-		return b
 	}
 	if !gjson.Valid(raw) || !gjson.Parse(raw).IsObject() {
 		slog.WarnContext(ctx, "gateway: plugin detail_json is not a JSON object, dropped",

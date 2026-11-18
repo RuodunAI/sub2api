@@ -11,7 +11,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -248,14 +247,21 @@ func TestPluginUsageStreamStopsAtByteBudget(t *testing.T) {
 	}
 }
 
-// The event count cap stops collection even when every event is tiny.
-func TestUsageCaptureEventCountCap(t *testing.T) {
+// Without usage.maxBytes every listed event is collected, however many and
+// however large, and so is a non-streaming body of any size.
+func TestUsageCaptureUnbounded(t *testing.T) {
 	cap := newUsageCapture(pluginUsageRoute())
-	for i := range maxUsageStreamEvents + 10 {
+	for i := range 1000 {
 		cap.addEvent("message_delta", fmt.Appendf(nil, `{"i":%d}`, i))
 	}
-	if len(cap.events) != maxUsageStreamEvents || !cap.stopped {
+	cap.addEvent("message_delta", []byte(strings.Repeat("x", 2<<20)))
+	if len(cap.events) != 1001 || cap.stopped {
 		t.Fatalf("collected %d events, stopped=%v", len(cap.events), cap.stopped)
+	}
+	body := newUsageCapture(pluginUsageRoute())
+	body.setBody([]byte(strings.Repeat("x", 2<<20)))
+	if body.tooLarge || len(body.body) != 2<<20 {
+		t.Fatalf("body: tooLarge=%v %d bytes", body.tooLarge, len(body.body))
 	}
 	// Undeclared events are never collected, whatever the budget.
 	cap2 := newUsageCapture(pluginUsageRoute())
@@ -288,9 +294,7 @@ func TestUsageCaptureCopiesEventData(t *testing.T) {
 // An endpoint that only starts a job answers {"id": ...}; the size of the job
 // is in the request. usageRequestFields hands ExtractUsage exactly the
 // declared paths in the observation - as raw JSON, keyed by path - and
-// nothing else of the body. A value over the per-value cap is
-// not cut, it is left out and NAMED, so the plugin can tell "not sent" from
-// "not carried".
+// nothing else of the body. Every value travels whole, whatever its size.
 func TestPluginUsageRequestFields(t *testing.T) {
 	e, pp := usageEnvEP(t, pluginUsageRules(), func(ep *manifest.Endpoint) {
 		ep.UsageRequestFields = []string{"resolution", "duration", "options.ratio", "image", "absent"}
@@ -298,7 +302,7 @@ func TestPluginUsageRequestFields(t *testing.T) {
 	pp.extract = func(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 		return report(1, 1), nil
 	}
-	huge := strings.Repeat("A", check.MaxUsageRequestFieldBytes) // base64-ish, over the cap once quoted
+	huge := strings.Repeat("A", 64<<10) // base64-ish, far over the 4 KiB cap it once had
 	b := body(testModel, false)
 	b["resolution"] = "1080p"
 	b["duration"] = 5
@@ -309,13 +313,13 @@ func TestPluginUsageRequestFields(t *testing.T) {
 	}
 	e.record()
 	in := pp.lastExtract()
-	want := map[string]string{"resolution": `"1080p"`, "duration": `5`, "options.ratio": `"16:9"`}
+	want := map[string]string{"resolution": `"1080p"`, "duration": `5`, "options.ratio": `"16:9"`, "image": `"` + huge + `"`}
 	if got := in.GetFields(); len(got) != len(want) || got["resolution"] != want["resolution"] ||
-		got["duration"] != want["duration"] || got["options.ratio"] != want["options.ratio"] {
-		t.Fatalf("fields = %v, want %v", got, want)
+		got["duration"] != want["duration"] || got["options.ratio"] != want["options.ratio"] || got["image"] != want["image"] {
+		t.Fatalf("fields = %d entries, want %d", len(got), len(want))
 	}
-	if got := in.GetFieldsOmitted(); len(got) != 1 || got[0] != "image" {
-		t.Fatalf("omitted = %v, want [image]", got)
+	if got := in.GetFieldsOmitted(); len(got) != 0 {
+		t.Fatalf("omitted = %v", got)
 	}
 	// The body itself never travels: not under a declared key, not anywhere.
 	for k, v := range in.GetFields() {
@@ -325,10 +329,10 @@ func TestPluginUsageRequestFields(t *testing.T) {
 	}
 }
 
-// The total budget is spent in declared order, so which paths make it is the
-// same on every node; the ones past it are named, not silently absent.
-func TestUsageRequestFieldsTotalBudget(t *testing.T) {
-	const each = 3 << 10 // under the per-value cap; ten of them are over the total
+// No total budget: every declared path the client sent travels, whatever
+// they add up to.
+func TestUsageRequestFieldsNoBudget(t *testing.T) {
+	const each = 3 << 10 // twelve of them are over the 32 KiB total it once had
 	var paths []string
 	doc := map[string]string{}
 	for i := range 12 {
@@ -338,17 +342,13 @@ func TestUsageRequestFieldsTotalBudget(t *testing.T) {
 	}
 	raw, _ := json.Marshal(doc)
 	fields, omitted := usageRequestFields(paths, raw)
-	fit := check.MaxUsageRequestFieldsBytes / each
-	if len(fields) != fit {
-		t.Fatalf("%d fields carried, want the first %d", len(fields), fit)
+	if len(fields) != len(paths) || len(omitted) != 0 {
+		t.Fatalf("%d fields carried, omitted %v", len(fields), omitted)
 	}
-	for i := range fit {
-		if len(fields[paths[i]]) != each {
-			t.Fatalf("field %s missing or resized: %d bytes", paths[i], len(fields[paths[i]]))
+	for _, p := range paths {
+		if len(fields[p]) != each {
+			t.Fatalf("field %s missing or resized: %d bytes", p, len(fields[p]))
 		}
-	}
-	if len(omitted) != 12-fit || omitted[0] != paths[fit] {
-		t.Fatalf("omitted = %v", omitted)
 	}
 	// Nothing declared, nothing read - not even an allocation's worth.
 	if f, o := usageRequestFields(nil, raw); f != nil || o != nil {
@@ -446,9 +446,8 @@ func TestPluginUsageDetailJSONLimits(t *testing.T) {
 	}{
 		{"object", `{"a":1}`, `{"a":1}`},
 		{"empty", "", ""},
-		// jsonb cannot hold half a document, so an over-long one becomes a
-		// marker that says how big it was.
-		{"too_large", `{"pad":"` + strings.Repeat("x", core.MaxPluginDetailBytes) + `"}`, ""},
+		// Any size is stored as it is.
+		{"large", `{"pad":"` + strings.Repeat("x", 64<<10) + `"}`, `{"pad":"` + strings.Repeat("x", 64<<10) + `"}`},
 		{"not_an_object", `[1,2,3]`, ""},
 		{"invalid", `{nope`, ""},
 	} {
@@ -462,13 +461,6 @@ func TestPluginUsageDetailJSONLimits(t *testing.T) {
 			e.do("/pu/v1/chat", body(testModel, false), nil)
 			rec := e.record()
 			got := string(rec.PluginDetail)
-			if tc.name == "too_large" {
-				var m map[string]any
-				if err := json.Unmarshal(rec.PluginDetail, &m); err != nil || m["_truncated"] != true {
-					t.Fatalf("marker %s (%v)", got, err)
-				}
-				return
-			}
 			if got != tc.want {
 				t.Fatalf("plugin detail %q, want %q", got, tc.want)
 			}
