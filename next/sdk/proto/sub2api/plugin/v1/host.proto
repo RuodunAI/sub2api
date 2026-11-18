@@ -245,11 +245,17 @@ service HostService {
   // upstream query of a Monitor call. Authority comes from the call's
   // execution token, not from a generic net/accounts permission.
   //
-  // The URL must be http(s) and its host one of the manifest's
-  // externalServices (or a subdomain of one). The host sends it through the
-  // account's proxy behind the SSRF guard, without the operator's header
-  // passthrough and override (those describe the client's request, which
-  // this is not), and does not follow redirects. At most 8 requests per
+  // The URL must be http(s). Its host must be one of the manifest's
+  // externalServices (or a subdomain of one), or the host of one of the
+  // call's own account's upstream addresses: the values of the address
+  // fields its account type declares (manifest upstreamFields), so that an
+  // account an operator pointed at a relay can be queried there. No other
+  // host is reachable. In both cases the host sends the request through the
+  // account's proxy behind the SSRF guard - an account address naming a
+  // private target is refused like any other unless the account's scope
+  // allows it -, without the operator's header passthrough and override
+  // (those describe the client's request, which this is not), and does not
+  // follow redirects. At most 8 requests per
   // execution; the request body is bounded by the request body limit and
   // the answer body by 8 MiB (truncated set). A transport failure is not an
   // RPC error: it comes back in transport_error with status 0.
