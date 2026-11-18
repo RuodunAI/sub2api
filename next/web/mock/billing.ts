@@ -1679,13 +1679,15 @@ const gatewaySettings = {
   platform_call_timeout_ms: 2000,
   default_hook_timeout_ms: 300,
   platform_hotpath_timeout_ms: 300,
+  max_request_body_mb: 128,
   claude_max_tokens: { enabled: false, models: { default: 8192 } as Record<string, number> }
 }
 const GATEWAY_RANGES: Record<Exclude<keyof typeof gatewaySettings, 'claude_max_tokens'>, [number, number]> = {
   max_attempts: [1, 10],
   platform_call_timeout_ms: [100, 30000],
   default_hook_timeout_ms: [50, 2000],
-  platform_hotpath_timeout_ms: [50, 2000]
+  platform_hotpath_timeout_ms: [50, 2000],
+  max_request_body_mb: [1, 1024]
 }
 
 const CLAUDE_MAX_TOKENS = { models: 100, nameLength: 200, max: 1048576, overrideBytes: 64 << 10 }
@@ -1728,7 +1730,9 @@ function claudeMaxTokensError(models: Record<string, number>) {
   }
   if (claudeMaxTokensOverrideBytes(models) > overrideBytes) return err('too_large', 'the model names are too long in total')
 }
-on('GET', '/settings/gateway', () => gatewaySettings)
+// max_request_body_safe_mb: read-only, (plugin memory cap 1024 - 64) / 3.
+const gatewaySettingsView = () => ({ ...gatewaySettings, max_request_body_safe_mb: 320 })
+on('GET', '/settings/gateway', gatewaySettingsView)
 on('PUT', '/settings/gateway', (req) => {
   const b = req.body || {}
   if (!claudeMaxTokensBinds(b.claude_max_tokens)) return fail(400, 'invalid_argument', 'invalid request body')
@@ -1751,10 +1755,11 @@ on('PUT', '/settings/gateway', (req) => {
     max_attempts: b.max_attempts,
     platform_call_timeout_ms: b.platform_call_timeout_ms,
     default_hook_timeout_ms: b.default_hook_timeout_ms,
-    platform_hotpath_timeout_ms: b.platform_hotpath_timeout_ms
+    platform_hotpath_timeout_ms: b.platform_hotpath_timeout_ms,
+    max_request_body_mb: b.max_request_body_mb
   })
   if (rule) gatewaySettings.claude_max_tokens = rule
-  return gatewaySettings
+  return gatewaySettingsView()
 })
 
 // Core load balancing (CONTRACTS §89): the row is replaced, absent fields take the defaults; mode is always traffic.

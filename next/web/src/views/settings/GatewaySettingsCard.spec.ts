@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { ApiError } from '@sub2api/host'
+import { SSettingRow } from '@sub2api/ui'
 import { i18n } from '@/i18n'
 import GatewaySettingsCard from './GatewaySettingsCard.vue'
 import { maxTokensMap, maxTokensRows } from './claudeMaxTokens'
@@ -20,7 +21,8 @@ const saved = {
   queue_fallback_max_waiting: 100,
   queue_fallback_wait_seconds: 30,
   claude_max_tokens: { enabled: true, models: { default: 16000, 'claude-x': 4096 } },
-  media_download_max_mb: 32
+  media_download_max_mb: 32,
+  max_request_body_mb: 256
 }
 
 beforeEach(() => {
@@ -121,6 +123,84 @@ describe('gateway conversion settings (CONVERT-MATRIX §6.1)', () => {
     )
     await save(w)
     expect(w.get('[data-testid="gateway-claude-max-tokens"]').text()).toContain('模型名总长度过长')
+  })
+})
+
+describe('request body limit and platform call timeout (forwarding v2 §8.1, §8.4)', () => {
+  const field = (w: Awaited<ReturnType<typeof render>>, name: string) =>
+    w.findAllComponents(SSettingRow).find(r => r.find(`input[name="${name}"]`).exists())!
+
+  it('shows the saved limit with its range and saves a new one', async () => {
+    const w = await render()
+    const input = w.get('input[name="max_request_body_mb"]')
+    expect((input.element as HTMLInputElement).value).toBe('256')
+    expect(input.attributes('min')).toBe('1')
+    expect(input.attributes('max')).toBe('1024')
+    const row = field(w, 'max_request_body_mb').text()
+    expect(row).toContain('请求体上限')
+    expect(row).toContain('每个网关请求')
+    expect(row).toContain('内部上限由它推出')
+    expect(row).toContain('MB')
+
+    await input.setValue('512')
+    await save(w)
+    expect(api.put).toHaveBeenCalledWith('/settings/gateway', expect.objectContaining({ max_request_body_mb: 512 }))
+  })
+
+  it('falls back to 128 when the server sends none, refuses a fraction and shows the server range error', async () => {
+    api.get.mockResolvedValue({ ...saved, max_request_body_mb: undefined })
+    const w = await render()
+    const input = w.get('input[name="max_request_body_mb"]')
+    expect((input.element as HTMLInputElement).value).toBe('128')
+
+    await input.setValue('1.5')
+    await save(w)
+    expect(api.put).not.toHaveBeenCalled()
+    expect(field(w, 'max_request_body_mb').text()).toContain('整数')
+
+    await input.setValue('2048')
+    api.put.mockRejectedValueOnce(
+      new ApiError(400, {
+        code: 'invalid_argument',
+        message: 'invalid',
+        details: { fields: [{ field: 'max_request_body_mb', code: 'out_of_range', message: '取值范围为 1 到 1024' }] }
+      })
+    )
+    await save(w)
+    expect(field(w, 'max_request_body_mb').text()).toContain('取值范围为 1 到 1024')
+  })
+
+  it('warns while the limit is above what a plugin process has memory for, and still saves it', async () => {
+    api.get.mockResolvedValue({ ...saved, max_request_body_safe_mb: 320 })
+    api.put.mockImplementation((_path, body) => Promise.resolve({ ...body, max_request_body_safe_mb: 320 }))
+    const w = await render()
+    const warning = 'SUB2API_PLUGIN_MAX_MEMORY_MB'
+    expect(field(w, 'max_request_body_mb').text()).not.toContain(warning)
+    await w.get('input[name="max_request_body_mb"]').setValue('320')
+    expect(field(w, 'max_request_body_mb').text()).not.toContain(warning)
+    await w.get('input[name="max_request_body_mb"]').setValue('321')
+    expect(field(w, 'max_request_body_mb').text()).toContain('超过 320 MB 后')
+    expect(field(w, 'max_request_body_mb').text()).toContain(warning)
+    expect(field(w, 'media_download_max_mb').text()).not.toContain(warning)
+    await save(w)
+    expect(api.put).toHaveBeenCalledWith('/settings/gateway', expect.not.objectContaining({ max_request_body_safe_mb: expect.anything() }))
+    expect(api.put).toHaveBeenCalledWith('/settings/gateway', expect.objectContaining({ max_request_body_mb: 321 }))
+    expect(field(w, 'max_request_body_mb').text()).toContain(warning)
+  })
+
+  it('does not warn on a node without a plugin memory cap', async () => {
+    api.get.mockResolvedValue({ ...saved, max_request_body_mb: 1024, max_request_body_safe_mb: 0 })
+    expect(field(await render(), 'max_request_body_mb').text()).not.toContain('SUB2API_PLUGIN_MAX_MEMORY_MB')
+  })
+
+  it('describes the platform call timeout as the plugin\'s own processing time, in both languages', async () => {
+    const zh = field(await render(), 'platform_call_timeout_ms').text()
+    expect(zh).toContain('每段自身处理时间的上限')
+    expect(zh).toContain('不含等待上游的时间')
+    i18n.global.locale.value = 'en'
+    const en = await render()
+    expect(field(en, 'platform_call_timeout_ms').text()).toContain('not counting the wait for the upstream')
+    expect(field(en, 'max_request_body_mb').text()).toContain('Request body limit')
   })
 })
 

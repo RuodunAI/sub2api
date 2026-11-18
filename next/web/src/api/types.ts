@@ -304,7 +304,7 @@ export type EnvironmentValues = Record<string, number>
 /** A variable the core declares (GET /environment/variables). */
 export interface EnvironmentVariable {
   key: string
-  unit: 'seconds' | 'minutes' | 'mb' | 'count'
+  unit: 'seconds' | 'minutes' | 'count'
   min: number
   max: number
   name: LText
@@ -1103,7 +1103,7 @@ export interface BillingSettings {
 export interface GatewaySettings {
   /** Attempts per request incl. failover, 1–10 (default 3). */
   max_attempts: number
-  /** Timeout of platform calls on the request hot path, 100–30000 ms (default 2000). */
+  /** Upper bound of each stretch of a plugin's own processing within one request, not counting the wait for the upstream, 100–30000 ms (default 2000). */
   platform_call_timeout_ms: number
   /** Default hook timeout when the manifest sets none, 50–2000 ms (default 300). */
   default_hook_timeout_ms: number
@@ -1121,6 +1121,8 @@ export interface GatewaySettings {
   claude_max_tokens: ClaudeMaxTokensRule
   /** Size cap of one http(s) media file downloaded for Gemini, 1–1024 MB (default 64). */
   media_download_max_mb: number
+  /** Largest client request body and WebSocket message, 1–1024 MB (default 128); the only request size limit. */
+  max_request_body_mb: number
 }
 
 /**
@@ -1133,6 +1135,12 @@ export interface ClaudeMaxTokensRule {
   enabled: boolean
   /** Client model name -> max_tokens; kept while off. */
   models: Record<string, number>
+}
+
+/** What GET/PUT /settings/gateway answer: the settings and, read-only, what the console warns by. */
+export interface GatewaySettingsView extends GatewaySettings {
+  /** Largest request body limit a plugin process still has memory for under the node's cap (SUB2API_PLUGIN_MAX_MEMORY_MB); 0 without a cap. */
+  max_request_body_safe_mb?: number
 }
 
 /** The numeric gateway settings (one value each). */
@@ -1161,7 +1169,8 @@ export const GATEWAY_SETTINGS_RANGES: Record<GatewayNumberSetting, [number, numb
   queue_sticky_wait_seconds: [0, 600],
   queue_fallback_max_waiting: [0, 10000],
   queue_fallback_wait_seconds: [0, 600],
-  media_download_max_mb: [1, 1024]
+  media_download_max_mb: [1, 1024],
+  max_request_body_mb: [1, 1024]
 }
 
 // ------------------------------------------------------------------ sticky

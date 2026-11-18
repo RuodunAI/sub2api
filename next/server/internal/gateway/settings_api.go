@@ -71,6 +71,7 @@ type gatewaySettingsInput struct {
 	// ClaudeMaxTokens replaces the rule as a whole.
 	ClaudeMaxTokens    *ClaudeMaxTokensRule `json:"claude_max_tokens"`
 	MediaDownloadMaxMB *int                 `json:"media_download_max_mb"`
+	MaxRequestBodyMB   *int                 `json:"max_request_body_mb"`
 }
 
 // validate checks the provided fields against the accepted ranges
@@ -97,6 +98,7 @@ func (in *gatewaySettingsInput) validate(ctx context.Context) []core.FieldError 
 	check("queue_fallback_max_waiting", in.QueueFallbackMaxWaiting, 0, maxQueueWaiting)
 	check("queue_fallback_wait_seconds", in.QueueFallbackWaitSecond, 0, maxQueueWaitSeconds)
 	check("media_download_max_mb", in.MediaDownloadMaxMB, minMediaDownloadMaxMB, maxMediaDownloadMaxMB)
+	check("max_request_body_mb", in.MaxRequestBodyMB, minMaxRequestBodyMB, maxMaxRequestBodyMB)
 	if in.ClaudeMaxTokens != nil {
 		fe = append(fe, in.ClaudeMaxTokens.validate(zh)...)
 	}
@@ -134,6 +136,38 @@ func (in *gatewaySettingsInput) applyTo(v *GatewaySettings) {
 	if in.MediaDownloadMaxMB != nil {
 		v.MediaDownloadMaxMB = *in.MediaDownloadMaxMB
 	}
+	if in.MaxRequestBodyMB != nil {
+		v.MaxRequestBodyMB = *in.MaxRequestBodyMB
+	}
+}
+
+// A platform plugin holds a request body a few times over while it works on
+// it, so the runtime keeps the memory limit of its process at no less than
+// pluginMemoryBaseMB + pluginMemoryPerBodyLimit x the request body limit,
+// under the node's cap on plugin memory (forwarding v2 design 8.3).
+const (
+	pluginMemoryBaseMB       = 64
+	pluginMemoryPerBodyLimit = 3
+)
+
+// gatewaySettingsView is what GET and PUT /settings/gateway answer: the
+// settings and what the console needs to warn about them.
+type gatewaySettingsView struct {
+	GatewaySettings
+	// MaxRequestBodySafeMB is the largest request body limit whose plugin
+	// memory floor still fits under the node's cap on plugin memory
+	// (SUB2API_PLUGIN_MAX_MEMORY_MB); 0 when the node has no cap. A limit
+	// above it is accepted: one request of that size may exceed what a
+	// plugin process is allowed, and the console says so. Read-only.
+	MaxRequestBodySafeMB int `json:"max_request_body_safe_mb"`
+}
+
+func (g *Gateway) settingsView(v GatewaySettings) gatewaySettingsView {
+	view := gatewaySettingsView{GatewaySettings: v}
+	if cfg := g.d.Config; cfg != nil && cfg.Plugins.MaxMemoryMB > 0 {
+		view.MaxRequestBodySafeMB = max((cfg.Plugins.MaxMemoryMB-pluginMemoryBaseMB)/pluginMemoryPerBodyLimit, minMaxRequestBodyMB)
+	}
+	return view
 }
 
 // getGatewaySettingsHandler returns the effective gateway settings
@@ -144,7 +178,7 @@ func (g *Gateway) getGatewaySettingsHandler(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	httpapi.OK(c, v.normalized())
+	httpapi.OK(c, g.settingsView(v.normalized()))
 }
 
 // putGatewaySettingsHandler updates the provided fields, then invalidates
@@ -166,5 +200,5 @@ func (g *Gateway) putGatewaySettingsHandler(c *gin.Context) {
 		return
 	}
 	g.changed(ctx, "settings.gateway")
-	httpapi.OK(c, cur)
+	httpapi.OK(c, g.settingsView(cur))
 }

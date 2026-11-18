@@ -23,8 +23,7 @@ const (
 	// maxHookTimeout caps any hook call, including a manifest timeoutMs
 	// (CONTRACTS §20.1). The admin default for hooks without timeoutMs has
 	// its own, lower ceiling (maxDefaultHookTimeoutMs).
-	maxHookTimeout      = 30 * time.Second
-	defaultMaxBodyBytes = 128 << 20
+	maxHookTimeout = 30 * time.Second
 )
 
 // GatewaySettings is the "gateway" row of the settings table (CONTRACTS §8).
@@ -57,6 +56,11 @@ type GatewaySettings struct {
 	// MediaDownloadMaxMB caps one media file the core downloads to inline it
 	// into a request converted to Gemini (CONVERT-MATRIX §9.2).
 	MediaDownloadMaxMB int `json:"media_download_max_mb"`
+	// MaxRequestBodyMB is the one limit on a client request: the body of an
+	// HTTP request and one WebSocket message. No endpoint, group or process
+	// environment variable sets another; what the core allows between itself
+	// and a plugin derives from it (MaxRequestBodyBytes).
+	MaxRequestBodyMB int `json:"max_request_body_mb"`
 }
 
 // StickySettings is the "sticky" row of the settings table.
@@ -69,7 +73,8 @@ type StickySettings struct {
 func defaultGatewaySettings() GatewaySettings {
 	return GatewaySettings{MaxAttempts: 3, PlatformCallTimeoutMs: 2000, DefaultHookTimeoutMs: 300,
 		PlatformHotpathTimeoutMs: 300, QueueStickyMaxWaiting: 8, QueueStickyWaitSeconds: 120,
-		QueueFallbackMaxWaiting: 100, QueueFallbackWaitSecond: 30, MediaDownloadMaxMB: 64}
+		QueueFallbackMaxWaiting: 100, QueueFallbackWaitSecond: 30, MediaDownloadMaxMB: 64,
+		MaxRequestBodyMB: 128}
 }
 
 // Accepted ranges of the gateway settings (CONTRACTS §14.4).
@@ -89,6 +94,8 @@ const (
 	maxQueueWaitSeconds         = 600
 	minMediaDownloadMaxMB       = 1
 	maxMediaDownloadMaxMB       = 1024
+	minMaxRequestBodyMB         = 1
+	maxMaxRequestBodyMB         = 1024
 	// claude_max_tokens: the fallback key, its suggested value, and the caps
 	// on the models (one override operation each), a name and a value.
 	claudeDefaultKey         = "default"
@@ -132,6 +139,7 @@ func (s GatewaySettings) normalized() GatewaySettings {
 	s.QueueFallbackMaxWaiting = bound(s.QueueFallbackMaxWaiting, maxQueueWaiting)
 	s.QueueFallbackWaitSecond = bound(s.QueueFallbackWaitSecond, maxQueueWaitSeconds)
 	s.MediaDownloadMaxMB = clamp(s.MediaDownloadMaxMB, d.MediaDownloadMaxMB, minMediaDownloadMaxMB, maxMediaDownloadMaxMB)
+	s.MaxRequestBodyMB = clamp(s.MaxRequestBodyMB, d.MaxRequestBodyMB, minMaxRequestBodyMB, maxMaxRequestBodyMB)
 	s.ClaudeMaxTokens = s.ClaudeMaxTokens.normalized()
 	return s
 }
@@ -143,6 +151,24 @@ func (s GatewaySettings) mediaDownloadMaxBytes() int64 {
 		mb = defaultGatewaySettings().MediaDownloadMaxMB
 	}
 	return int64(mb) << 20
+}
+
+// MaxRequestBodyBytes is the request body limit in bytes: the largest client
+// request body and WebSocket message, and what every internal limit on a
+// request body derives from. An unnormalised setting reads as the default.
+func (s GatewaySettings) MaxRequestBodyBytes() int64 {
+	mb := s.MaxRequestBodyMB
+	if mb <= 0 {
+		mb = defaultGatewaySettings().MaxRequestBodyMB
+	}
+	return int64(mb) << 20
+}
+
+// MaxRequestBodyBytes is the request body limit now in force on this node
+// (the cached gateway settings, refreshed on config:changed), for the
+// components outside the gateway that bound a request body by it.
+func (g *Gateway) MaxRequestBodyBytes(ctx context.Context) int64 {
+	return g.settings.get(ctx).gateway.MaxRequestBodyBytes()
 }
 
 func (s GatewaySettings) platformTimeout() time.Duration {
