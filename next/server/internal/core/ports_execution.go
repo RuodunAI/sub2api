@@ -56,32 +56,6 @@ const (
 // nothing left to keep alive.
 var ErrExecutionNotObserved = errors.New("execution is not observed")
 
-// DefaultMaxRequestBodyBytes is the request body limit when nothing else is
-// configured (128 MiB).
-const DefaultMaxRequestBodyBytes = 128 << 20
-
-// RequestBodyLimit reports the gateway's request body limit in bytes as it
-// is right now: the gateway setting max_request_body_mb
-// (GatewaySettings.MaxRequestBodyMB), the only limit on a client request
-// body. The plugin runtime bounds only the request body of a fetch by it; a
-// relayed body has no bound of the runtime's. It plays no part
-// in a plugin's memory limit, which only an administrator sets. It is read
-// on every check, so a saved change applies at once: it must be cheap (the
-// gateway's cached settings; app wires it to Gateway.MaxRequestBodyBytes).
-// A nil func or a result <= 0 means DefaultMaxRequestBodyBytes
-// (MaxRequestBodyBytes).
-type RequestBodyLimit func() int64
-
-// MaxRequestBodyBytes is limit's value with the default applied.
-func MaxRequestBodyBytes(limit RequestBodyLimit) int64 {
-	if limit != nil {
-		if n := limit(); n > 0 {
-			return n
-		}
-	}
-	return DefaultMaxRequestBodyBytes
-}
-
 // ExecutionHTTP is the fetch form of the host's HTTP client for one Execute
 // or Monitor call: one bounded, non-streaming exchange whose answer goes back
 // to the plugin. The closure binds the account, its proxy, the SSRF guard
@@ -90,9 +64,10 @@ func MaxRequestBodyBytes(limit RequestBodyLimit) int64 {
 // effective timeouts.
 //
 // The fetches of one call are not counted and their answers are whole: the
-// core never sets Truncated. The runtime calls it only after it checked the
-// execution token, the request body against RequestBodyLimit and
-// the URL's host: one of the plugin manifest's externalServices (or a
+// core never sets Truncated, and neither the runtime nor the core bounds
+// the request body (the gateway setting max_request_body_mb applies to the
+// client's request alone). The runtime calls it only after it checked the
+// execution token and the URL's host: one of the plugin manifest's externalServices (or a
 // subdomain of one), or the host of one of the account's own upstream
 // addresses (the values of the address fields its type declares, manifest
 // upstreamFields). The implementation need not repeat those. The SSRF policy

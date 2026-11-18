@@ -49,10 +49,10 @@ func TestRequestBodyLimitIsTheGatewaySetting(t *testing.T) {
 	r := e.messages(big)
 	require.Equal(t, 200, r.status, "the 128 MB default: %s", r.body)
 	e.record()
-	require.EqualValues(t, 128<<20, e.gw.MaxRequestBodyBytes(context.Background()))
+	require.EqualValues(t, 128<<20, e.gw.settings.get(context.Background()).gateway.MaxRequestBodyBytes())
 
 	e.setSettings(GatewaySettings{MaxRequestBodyMB: 1}, defaultStickySettings())
-	require.EqualValues(t, 1<<20, e.gw.MaxRequestBodyBytes(context.Background()))
+	require.EqualValues(t, 1<<20, e.gw.settings.get(context.Background()).gateway.MaxRequestBodyBytes())
 	r = e.messages(big)
 	require.Equal(t, 413, r.status, "1 MB replaces the default: %s", r.body)
 	require.Contains(t, string(r.body), "request_too_large")
@@ -80,12 +80,12 @@ func TestWebSocketMessageLimitIsTheGatewaySetting(t *testing.T) {
 	require.Equal(t, websocket.StatusMessageTooBig, c.closed())
 }
 
-// A saved value is stored, reaches plugins, and is the limit of this node at
-// once; a node told by config:changed reads it too.
+// A saved value is stored, reaches plugins' settings reads, and is the limit
+// of this node at once; a node told by config:changed reads it too.
 func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 	ctx := context.Background()
 	e := newDBEnv(t)
-	require.EqualValues(t, 128<<20, e.gw.MaxRequestBodyBytes(ctx))
+	require.EqualValues(t, 128<<20, e.gw.settings.get(ctx).gateway.MaxRequestBodyBytes())
 	code, res := e.api("GET", "/settings/gateway", nil)
 	require.Equal(t, 200, code, res.Raw)
 	require.EqualValues(t, 128, res.Get("data.max_request_body_mb").Int())
@@ -101,7 +101,7 @@ func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 	require.Equal(t, 200, code, res.Raw)
 	require.EqualValues(t, 300, res.Get("data.max_request_body_mb").Int())
 	require.EqualValues(t, 3, res.Get("data.max_attempts").Int())
-	require.EqualValues(t, 300<<20, e.gw.MaxRequestBodyBytes(ctx))
+	require.EqualValues(t, 300<<20, e.gw.settings.get(ctx).gateway.MaxRequestBodyBytes())
 
 	code, res = e.api("PUT", "/settings/gateway", map[string]any{"max_request_body_mb": 1025})
 	require.Equal(t, 400, code, res.Raw)
@@ -112,7 +112,7 @@ func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 	require.Equal(t, 200, code, res.Raw)
 	require.EqualValues(t, 64, res.Get("data.max_request_body_mb").Int())
 	require.EqualValues(t, 2000, res.Get("data.platform_call_timeout_ms").Int(), "other fields keep their values")
-	require.EqualValues(t, 64<<20, e.gw.MaxRequestBodyBytes(ctx), "the saving node drops its cache")
+	require.EqualValues(t, 64<<20, e.gw.settings.get(ctx).gateway.MaxRequestBodyBytes(), "the saving node drops its cache")
 
 	plugin, err := SettingsReaders(e.db)[protocol.SettingsGateway](ctx)
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestMaxRequestBodySettingSavedAndPropagated(t *testing.T) {
 	// broadcast (or the TTL) drops it.
 	_, err = e.db.SQL.ExecContext(ctx, `UPDATE settings SET value = jsonb_set(value, '{max_request_body_mb}', '256') WHERE key = 'gateway'`)
 	require.NoError(t, err)
-	require.EqualValues(t, 64<<20, e.gw.MaxRequestBodyBytes(ctx))
+	require.EqualValues(t, 64<<20, e.gw.settings.get(ctx).gateway.MaxRequestBodyBytes())
 	e.gw.onConfigChanged([]byte(`{"key":"settings.gateway"}`))
-	require.EqualValues(t, 256<<20, e.gw.MaxRequestBodyBytes(ctx))
+	require.EqualValues(t, 256<<20, e.gw.settings.get(ctx).gateway.MaxRequestBodyBytes())
 }

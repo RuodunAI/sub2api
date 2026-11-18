@@ -270,9 +270,6 @@ func (f *FakeHost) admitFetch(e *Execution, in *pluginv1.ExecutionHTTPRequest) e
 	case !f.fetchHostAllowed(strings.ToLower(u.Hostname()), e.account):
 		return status.Errorf(codes.PermissionDenied, "fetch host %q is neither one of the manifest's externalServices nor of the account's upstream addresses", u.Hostname())
 	}
-	if f.MaxBodyBytes > 0 && len(in.GetBody()) > f.MaxBodyBytes {
-		return status.Error(codes.InvalidArgument, "fetch body exceeds the request body limit")
-	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	e.fetches = append(e.fetches, in)

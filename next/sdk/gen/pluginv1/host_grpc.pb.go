@@ -230,9 +230,10 @@ type HostServiceClient interface {
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
 	// cuts their answers: the answer body comes back whole and truncated is
-	// never set. The request body is bounded by the request body limit. A
-	// transport failure is not an RPC error: it comes back in transport_error
-	// with status 0.
+	// never set; nor does it bound the request body (the request body limit
+	// applies to the client's request in the gateway only). A transport
+	// failure is not an RPC error: it comes back in transport_error with
+	// status 0.
 	ExecuteHTTP(ctx context.Context, in *ExecutionHTTPRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through
@@ -818,9 +819,10 @@ type HostServiceServer interface {
 	// (those describe the client's request, which this is not), and does not
 	// follow redirects. The host neither counts the requests of a call nor
 	// cuts their answers: the answer body comes back whole and truncated is
-	// never set. The request body is bounded by the request body limit. A
-	// transport failure is not an RPC error: it comes back in transport_error
-	// with status 0.
+	// never set; nor does it bound the request body (the request body limit
+	// applies to the client's request in the gateway only). A transport
+	// failure is not an RPC error: it comes back in transport_error with
+	// status 0.
 	ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error)
 	// accounts.credentials {"types":"own"} (Critical): one bounded HTTP request
 	// for ONE account of this plugin's account types, sent by the host through

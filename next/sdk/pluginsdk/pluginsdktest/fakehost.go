@@ -73,8 +73,8 @@ type FakeHost struct {
 	// relay's method and headers are judged as the gateway judges them, and
 	// Harness.Monitor refuses a terminal result without one complete,
 	// successful fetch in the call (an HTTP status, no transport error).
-	// Like the host, the fake neither bounds a relayed body nor counts the
-	// fetches of a call nor cuts their answers. Where the
+	// Like the host, the fake bounds neither a relayed nor a fetched body,
+	// does not count the fetches of a call and does not cut their answers. Where the
 	// fake still differs from the host:
 	//   - It cannot always tell a WebSocket turn from an HTTP request (the
 	//     ExecuteRequest does not say): it refuses a ws(s) URL only when
@@ -105,9 +105,6 @@ type FakeHost struct {
 	// externalServices (a subdomain of one matches), e.g. for a test that
 	// runs the plugin without its manifest.
 	ExternalServices []string
-	// MaxBodyBytes is the gateway's request body limit: a fetched body may
-	// not exceed it; 0 is no limit.
-	MaxBodyBytes int
 	// PriceUsageFunc answers PriceUsage; nil answers every model as not
 	// priced ("no_price"). Set it before Start.
 	PriceUsageFunc func(context.Context, *pluginv1.PriceUsageRequest) (*pluginv1.PriceUsageResponse, error)

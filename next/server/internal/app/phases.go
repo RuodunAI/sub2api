@@ -297,9 +297,6 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		HostVersion: b.version, DataDir: cfg.Plugins.DataDir, RunDir: cfg.Plugins.RunDir,
 		StrictNetwork: cfg.Plugins.StrictNetwork, Seccomp: cfg.Plugins.Seccomp, MaxMemoryMB: cfg.Plugins.MaxMemoryMB,
 		Logger: b.log,
-		// The gateway is created below; the limit is read per check, only
-		// once plugins load and requests run.
-		RequestBodyLimit: func() int64 { return b.gw.MaxRequestBodyBytes(context.Background()) },
 	})
 	if err != nil {
 		return fmt.Errorf("plugin runtime: %w", err)

@@ -80,10 +80,6 @@ type Options struct {
 	Notifier core.Notifier
 	// Users serves HostService.GetUsers; nil makes it fail with UNAVAILABLE.
 	Users core.UserDirectory
-	// RequestBodyLimit is the gateway's request body limit of the moment
-	// (the gateway settings). It bounds the bodies of RelayUpstream and
-	// ExecuteHTTP. Nil: core.DefaultMaxRequestBodyBytes.
-	RequestBodyLimit core.RequestBodyLimit
 
 	HostVersion   string
 	DataDir       string // plugin work directories live under DataDir/<key>/work
