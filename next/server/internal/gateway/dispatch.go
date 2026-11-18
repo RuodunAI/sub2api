@@ -586,7 +586,8 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 // for an upstream that only streams (§83), then the built-in override
 // (claude_max_tokens, §84.1) and the account's parameter override (§84),
 // which also decide the headers (param_override.go). A body the overrides
-// changed is checked again against the account's usage rules (meterable).
+// changed gets the forced stream again and is checked again against the
+// account's usage rules (meterable).
 // It returns the body and the model it goes upstream with, or the
 // attempt's end.
 func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.AccountRef, rt *typeRoute, body []byte, n int) ([]byte, string, *attemptResult) {
@@ -603,21 +604,34 @@ func (c *call) upstreamBody(ctx context.Context, acc *core.Account, ref *core.Ac
 	if body, err = c.mapReferencedModels(body, ref, rt); err != nil {
 		return nil, "", &attemptResult{kind: attemptFailover, err: invalidModelReference(err.Error())}
 	}
-	if c.forcesStream(rt) {
-		if body, err = forceStreamPath(body, rt.streamPath); err != nil {
-			return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
-		}
+	if body, err = c.forceStream(rt, body); err != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
 	}
 	rewritten, upModel, failure := c.rewriteBody(ctx, acc, rt, body, upModel, n)
 	if failure != nil {
 		return nil, "", failure
 	}
-	if !bytes.Equal(rewritten, body) {
-		if e := c.meterable(rt, rewritten); e != nil {
-			return nil, "", &attemptResult{kind: attemptFailover, err: e}
-		}
+	if bytes.Equal(rewritten, body) {
+		return body, upModel, nil
+	}
+	// An override may not undo the forced stream; set it again on what the
+	// overrides made of the body.
+	if rewritten, err = c.forceStream(rt, rewritten); err != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: fromCore(core.ErrInternal.WithCause(err), errTypeInternal)}
+	}
+	if e := c.meterable(rt, rewritten); e != nil {
+		return nil, "", &attemptResult{kind: attemptFailover, err: e}
 	}
 	return rewritten, upModel, nil
+}
+
+// forceStream sets stream: true on body for an upstream that only streams
+// (forcesStream); any other body is returned as it is.
+func (c *call) forceStream(rt *typeRoute, body []byte) ([]byte, error) {
+	if !c.forcesStream(rt) {
+		return body, nil
+	}
+	return forceStreamPath(body, rt.streamPath)
 }
 
 // meterable refuses a body the overrides rewrote into an operation or
