@@ -37,7 +37,6 @@ type stepResult struct {
 	Message     string `json:"message"`
 	Status      int32  `json:"status"`
 	BodyBytes   int    `json:"body_bytes"`
-	Truncated   bool   `json:"truncated"`
 	Observation bool   `json:"observation"`
 	Error       bool   `json:"error"`
 }
@@ -206,7 +205,7 @@ func TestExecuteFetchAndBodiesAcrossProcess(t *testing.T) {
 			t.Errorf("step %d: %s (%s), want %s", n, log[n].Code, log[n].Message, code)
 		}
 	}
-	if log[1].Truncated || log[1].BodyBytes != 20*mib || log[2].Truncated || log[2].BodyBytes != 20*mib || log[3].Truncated || log[3].BodyBytes != 2 {
+	if log[1].BodyBytes != 20*mib || log[2].BodyBytes != 20*mib || log[3].BodyBytes != 2 {
 		t.Errorf("answers: %+v %+v %+v", log[1], log[2], log[3])
 	}
 	if fetched.Load() != 11 || len(res.Relay.GetBody()) != 3*mib+1 {

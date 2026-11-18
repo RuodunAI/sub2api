@@ -66,15 +66,13 @@ type call struct {
 	prompt *promptCount
 	// bodyVersion counts hook body replacements. scanned/scannedBodyVersion
 	// remember the version whose referenced-model check passed, so the
-	// second checkModel can reuse it; doc and digest cache
-	// the parsed document and the SHA-256 of that same version (body_state.go).
+	// second checkModel can reuse it; doc caches the parsed document of that
+	// same version (body_state.go).
 	bodyVersion        uint64
 	scanned            bool
 	scannedBodyVersion uint64
 	doc                gjson.Result
 	docValid           bool
-	digest             [32]byte
-	digestValid        bool
 
 	// scheduling: account types able to serve the endpoint protocol
 	routes    map[core.AccountTypeKey]*typeRoute

@@ -38,23 +38,9 @@ func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest
 	return out, err
 }
 
-// noRedirects is a copy of client that returns a redirect as the answer,
-// without a client-wide timeout: the exchange's own timers bound it.
-func noRedirects(client *http.Client) *http.Client {
-	hc := *client
-	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	hc.Timeout = 0
-	return &hc
-}
-
-// firstHeaderValues is h as a map of lower-case names to their first value,
-// the form plugins receive headers in.
-func firstHeaderValues(h http.Header) map[string]string {
-	out := make(map[string]string, len(h))
-	for k, v := range h {
-		if len(v) > 0 {
-			out[strings.ToLower(k)] = v[0]
-		}
-	}
-	return out
-}
+// The request-path files still call these by their old names; they go when
+// those call execfetch's directly.
+var (
+	noRedirects       = execfetch.NoRedirects
+	firstHeaderValues = execfetch.FirstHeaderValues
+)
