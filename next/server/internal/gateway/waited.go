@@ -229,6 +229,9 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 	commit, body, err := w.facts(ctx, out)
 	if err == nil {
 		err = w.commitWithRetry(ctx, commit)
+		if err != nil && c.ep.TaskSubmit() {
+			err = w.confirmTask(ctx, err)
+		}
 	}
 	if err != nil {
 		c.rec = previous
@@ -363,6 +366,27 @@ func (w *waitedRelay) commitWithRetry(ctx context.Context, commit core.Execution
 	}
 }
 
+// confirmTask establishes what a task commit that failed (err) left behind
+// before the submission is reported as failed: the last try may have landed
+// after the deadline, the task registered and its reserve charged. The
+// execution is closed unreported unless it turns out committed, which is
+// nil: the task stands and its answer is delivered. Closed, its free record
+// is the request's; a close that fails leaves the free record to submit.
+// A conflict is final as it is.
+func (w *waitedRelay) confirmTask(ctx context.Context, err error) error {
+	if isConflict(err) {
+		return err
+	}
+	committed, cerr := w.close(ctx, err.Error())
+	if committed {
+		return nil
+	}
+	if cerr == nil {
+		w.x.c.taskPersisted = true
+	}
+	return err
+}
+
 // unreported ends an execution whose answer reached the upstream but whose
 // facts did not come (or could not be committed). A task is not registered:
 // taskFailure leaves the free record for submit (the records' recovery
@@ -384,7 +408,7 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 	case !w.observed:
 		recordType = core.UsageErrorUnreported
 		unreportedUsage(c.rec, reason)
-	case w.close(ctx, reason):
+	case w.closed(ctx, reason):
 		// Committed meanwhile by a retry that timed out here: the facts stand.
 		c.taskPersisted = true
 		return w.deliver(ctx)
@@ -408,18 +432,24 @@ func unreportedUsage(rec *core.UsageRecord, reason string) {
 }
 
 // close closes the execution unreported; it reports whether it turned out
-// to be committed already (ErrConflict).
-func (w *waitedRelay) close(ctx context.Context, reason string) (committed bool) {
+// to be committed already (ErrConflict), else the close's error.
+func (w *waitedRelay) close(ctx context.Context, reason string) (committed bool, err error) {
 	bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitTimeout)
 	defer cancel()
-	err := w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason})
+	err = w.records.CloseExecutionUnreported(bctx, core.ExecutionUnreported{ID: w.id, Reason: reason})
 	if isConflict(err) {
-		return true
+		return true, nil
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "gateway: close unreported execution", "request_id", w.x.c.rid, "execution", w.id, "err", err)
 	}
-	return false
+	return false, err
+}
+
+// closed is close reporting only whether the execution was committed.
+func (w *waitedRelay) closed(ctx context.Context, reason string) (committed bool) {
+	committed, _ = w.close(ctx, reason)
+	return committed
 }
 
 // isConflict reports core.ErrConflict.

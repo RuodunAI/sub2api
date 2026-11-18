@@ -309,6 +309,50 @@ func TestExecuteTaskWithoutFacts(t *testing.T) {
 	}
 }
 
+// A task commit whose last try landed after the commit deadline (its answer
+// lost) is found committed before the submission is reported as failed: the
+// client gets the task. One that never landed is closed unreported: 503,
+// the execution's free record, the receipt marked failed.
+func TestExecuteTaskCommitTimeoutIsConfirmed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits out the commit deadline")
+	}
+	for _, landed := range []bool{true, false} {
+		t.Run(map[bool]string{true: "landed", false: "lost"}[landed], func(t *testing.T) {
+			t.Parallel()
+			tasks := newFakeTasks()
+			e, _ := taskDraftEnv(t, tasks, false)
+			var calls atomic.Int32
+			e.settler.commitErr = func(core.ExecutionCommit) error {
+				if landed && calls.Add(1) == 1 {
+					return nil
+				}
+				return errors.New("database outage")
+			}
+			e.settler.commitAckLost = func(core.ExecutionCommit) error { return context.DeadlineExceeded }
+			r := e.do("/task-draft/videos", map[string]any{"model": testModel}, nil)
+			rec := e.record()
+			if landed {
+				require.Equal(t, 200, r.status, string(r.body))
+				require.True(t, strings.HasPrefix(r.json().Get("id").String(), "s2task_"), string(r.body))
+				require.True(t, rec.Success)
+				require.Equal(t, []string{core.ExecutionStateCommitted}, e.settler.executionStates())
+			} else {
+				require.Equal(t, http.StatusServiceUnavailable, r.status, string(r.body))
+				require.False(t, rec.Billable)
+				require.Equal(t, core.UsageErrorUnreported, rec.ErrorType)
+				require.Equal(t, []string{core.ExecutionStateUnreported}, e.settler.executionStates())
+			}
+			e.noRecord()
+			tasks.mu.Lock()
+			defer tasks.mu.Unlock()
+			for _, reason := range tasks.receipts {
+				require.Equal(t, !landed, reason != "", "receipt %q", reason)
+			}
+		})
+	}
+}
+
 // A task submission relayed without waiting carries no task: it is not
 // sent, and no account serves the request.
 func TestExecuteTaskRelayedWithoutWaitingIsNotSent(t *testing.T) {
