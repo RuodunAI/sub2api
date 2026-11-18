@@ -399,12 +399,14 @@ func upstreamHeaders(accountType, protocol, apiKey string, inbound map[string]st
 // upstreamBody is the body relayed upstream: the one handed in, final, with at
 // most one targeted edit. Streaming chat completions get
 // stream_options.include_usage=true so the upstream reports usage in the last
-// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here).
-func upstreamBody(meta *pluginv1.RequestMeta, body []byte) ([]byte, error) {
-	if !meta.GetStream() || (meta.GetProtocol() != ProtocolChat && meta.GetProtocol() != "") {
+// chunk (CONTRACTS 14.1; Ark is OpenAI-compatible here), the same edit and
+// the same notion of a stream as the openai preset's.
+func upstreamBody(in *pluginv1.ExecuteRequest) ([]byte, error) {
+	body, protocol, stream := in.GetBody(), in.GetMeta().GetProtocol(), pluginsdk.RequestStream(in)
+	if !stream || (protocol != ProtocolChat && protocol != "") {
 		return body, nil
 	}
-	out, err := jsonedit.Edit(body, func(d *jsonedit.Doc) { d.Set("stream_options.include_usage", []byte("true")) })
+	out, err := jsonedit.Edit(body, func(d *jsonedit.Doc) { openaiprovider.StreamUsage(d, stream) })
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "request body: %v", err)
 	}
@@ -427,7 +429,7 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	body, err := upstreamBody(meta, in.GetBody())
+	body, err := upstreamBody(in)
 	if err != nil {
 		return nil, err
 	}

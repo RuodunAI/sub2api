@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 )
 
@@ -57,7 +58,7 @@ func (r *Request) Field(name string) string {
 func upstreamURL(path string, websocket bool, r *Request) string {
 	u := r.BaseURL + path
 	if websocket {
-		u = "ws" + strings.TrimPrefix(u, "http") // the base URL is http(s) (apikey.NormalizeBaseURL)
+		u = pluginsdk.WebSocketURL(u) // the base URL is http(s) (apikey.NormalizeBaseURL)
 	}
 	return u
 }

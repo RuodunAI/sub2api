@@ -161,3 +161,15 @@ func TestUpstreamHeaderMaps(t *testing.T) {
 		t.Fatalf("headers %v, defaults %v", got.GetHeaders(), got.GetDefaultHeaders())
 	}
 }
+
+func TestWebSocketURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://api.example.com/v1/responses?a=1": "wss://api.example.com/v1/responses?a=1",
+		"http://127.0.0.1:8080/v1/responses":       "ws://127.0.0.1:8080/v1/responses",
+		"wss://already.example.com/x":              "wss://already.example.com/x",
+	} {
+		if got := WebSocketURL(in); got != want {
+			t.Errorf("WebSocketURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

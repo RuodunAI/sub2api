@@ -53,6 +53,19 @@ func NewUpstream(method, rawURL string) *Upstream {
 	return &Upstream{request: &pluginv1.UpstreamRequest{Method: method, Url: rawURL}}
 }
 
+// WebSocketURL is the ws(s) URL of an http(s) one, for a WebSocket handshake
+// on the address of an HTTP route: https becomes wss and http ws. Any other
+// URL comes back unchanged, and Build refuses it.
+func WebSocketURL(httpURL string) string {
+	if rest, ok := strings.CutPrefix(httpURL, "https://"); ok {
+		return "wss://" + rest
+	}
+	if rest, ok := strings.CutPrefix(httpURL, "http://"); ok {
+		return "ws://" + rest
+	}
+	return httpURL
+}
+
 // Header sets an authoritative header. An empty value writes nothing.
 func (u *Upstream) Header(name, value string) *Upstream {
 	u.request.Headers = u.set(u.request.Headers, name, value)
