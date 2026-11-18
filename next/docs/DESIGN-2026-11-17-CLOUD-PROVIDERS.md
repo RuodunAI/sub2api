@@ -46,7 +46,7 @@
 7. **同一产品的多种鉴权**。同插件内 `creationGroup` 相同的类型在新建账号时合成一项，用 `authMethodLabel` 切换（`web/src/views/accounts/accountTypeChoices.ts`、`AccountEditor.vue:66`、`:575-581`），schema 表单和 native 表单都适用。codex 是现成例子。
 8. **错误分类**。`openai` 策略：401/403 禁用、429 按 `retry-after-ms` / `retry-after` 冷却、408 和 5xx 换号冷却 10 秒，其余（包括所有 400）原样回给客户端、不动账号（`sdk/pluginsdk/providers/openai/openai.go:18-29`、`sdk/pluginsdk/classify/classify.go:373`）。`api-key` 已经在凭证头名单里（`sdk/paramoverride/headers.go:42-48`）。
 9. **旧实现**。仓库根目录的旧版有 Bedrock 和 Vertex 的实现可以对照：`backend/internal/service/bedrock_stream.go:251`（eventstream 解码）、`bedrock_request.go:167`（URL）、`:197`（请求体改写）、`:482`（beta 白名单）、`vertex_service_account.go:218`（JWT 换令牌）。旧的签名用了 aws-sdk-go-v2（`bedrock_signer.go`）。
-10. **手写签名的先例**。volcengine 没引厂商 SDK，手写了 V4 签名，用官方 SDK 录下来的样例做黄金测试（`plugins/volcengine/internal/volcengine/arksign.go`）。这次原定照做：只用标准库，不引 aws-sdk、google SDK。**后来改了**：签名、分帧、令牌断言凡有官方库的都用官方库（只用库，不用 SDK 的服务客户端），见 16.10。
+10. **手写签名的先例**。volcengine 没引厂商 SDK，手写了 V4 签名，用官方 SDK 录下来的样例做黄金测试（`plugins/volcengine/internal/volcengine/arksign.go`）。这次原定照做：只用标准库，不引 aws-sdk、google SDK。**后来改了**：AWS 的签名和分帧用 AWS 的官方库（只用库，不用 SDK 的服务客户端），Vertex 的令牌断言用 `golang-jwt/jwt/v5` 签名，见 16.10。
 
 ## 4. 总体方案
 
@@ -227,7 +227,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 **请求**（`BuildRefreshRequest`，纯计算）：
 
-- 服务账号：用私钥签 RS256 JWT（`iss` = `client_email`，`scope` = `https://www.googleapis.com/auth/cloud-platform`，`aud` = `https://oauth2.googleapis.com/token`，`exp` = `iat` + 3600，头里带 `kid`），`POST https://oauth2.googleapis.com/token`，表单体 `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=…`，`Content-Type: application/x-www-form-urlencoded`。JWT 由 `golang.org/x/oauth2/jws` 编码并签名，密钥文件由 `golang.org/x/oauth2/google` 解析（16.10）；插件仍然不联网。
+- 服务账号：用私钥签 RS256 JWT（`iss` = `client_email`，`scope` = `https://www.googleapis.com/auth/cloud-platform`，`aud` = `https://oauth2.googleapis.com/token`，`exp` = `iat` + 3600，头里带 `kid`），`POST https://oauth2.googleapis.com/token`，表单体 `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=…`，`Content-Type: application/x-www-form-urlencoded`。JWT 由 `github.com/golang-jwt/jwt/v5` 编码并签名，密钥文件由插件自己用 `encoding/json` 解析（16.10）；插件仍然不联网。
 - 用户凭证：同一地址，`grant_type=refresh_token&client_id=…&client_secret=…&refresh_token=…`。
 
 **回答**（`ParseRefreshResponse`）：200 → 补丁 `{access_token, expires_at: 现在 + expires_in, token_for: 指纹}`；400 `invalid_grant`、`invalid_client`、401、403 → `AUTH_REJECTED`（密钥被删、被停用、刷新令牌作废）；其他 → `TRANSIENT`。
@@ -600,7 +600,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 2. **`location` 是文本框**，不是可搜索的下拉；占位 `global`。`project_id` 也是文本框。
 3. **用户凭证账号发 `x-goog-user-project`**，值是账号的项目 ID：用户凭证不属于任何项目，不带配额项目时 aiplatform 回 403。服务账号不发。
 4. `vertex_authorized_user` 的 `project_id` 在表单 schema 里不是必填：留空时取凭证文件的 `quota_project_id`，两处都没有才报必填。
-5. **JWT 的 `iat` 往前拨 10 秒**（`assertionBackdate`，与 golang.org/x/oauth2 自己取时间时相同；这里的时间来自插件的时钟，显式传给 `jws.ClaimSet`），`exp` = `iat` + 3600。设计写的是 `iat` = 现在。
+5. **JWT 的 `iat` 往前拨 10 秒**（`assertionBackdate`；时间来自插件的时钟，以整数秒写进声明），`exp` = `iat` + 3600。设计写的是 `iat` = 现在。
 6. **令牌过期也回 `FAILED_PRECONDITION`**：设计只写了“还没有令牌”。现在存着的令牌 `expires_at` 已过也不发请求，换下一个账号，不惩罚这个账号。读不出过期时间的令牌不算过期。
 7. **时钟偏差的 `invalid_grant` 算暂时性错误**：400 `invalid_grant` 且 `error_description` 含 `reasonable timeframe` 或 `short-lived token` 时回 `TRANSIENT`（提示检查节点时钟），不是 `AUTH_REJECTED`；否则一个时钟不准的节点会把所有服务账号标成“密钥被拒绝”。
 8. 回答里没有 `expires_in` 时按 3600 秒算。响应被截断、没有 `access_token` 都是 `TRANSIENT`。
@@ -684,9 +684,9 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    - `DecodeAccount(acc)`：解出已存账号的凭证和设置，不是 JSON 对象时回 `INVALID_ARGUMENT`。
 2. **`pluginsdk.SetPatch(path, value)`、`pluginsdk.DeletePatch(path)`**（`sdk/pluginsdk/request.go`）：构造 `BuildUpstreamRequest` 结果里的请求体补丁（`pluginv1.BodyPatch`）。`SetPatch` 把值编码成 JSON，编码不了时写 `null`；`DeletePatch` 删除路径，路径不存在时什么都不变。bedrock 的补丁都用它们构造。
 
-### 16.10 签名、分帧、令牌断言改用官方库（2026-11-17，分支 `feat/official-libs`）
+### 16.10 签名、分帧改用 AWS 官方库，令牌断言用 golang-jwt（2026-11-17，分支 `feat/official-libs`）
 
-所有者决定：签名、流分帧、令牌断言凡有官方库的，用官方库，不用自己的实现。网关仍然自己构造并发送 HTTP 请求：请求体原样透传、请求经账号的代理发出、响应流由核心中继，所以**不用 SDK 的服务客户端**，只换下面三处。对外接口都没有变。
+所有者决定：签名、流分帧、令牌断言不用自己的实现。AWS 的签名和分帧用 AWS 的官方库；Vertex 的令牌断言用 `github.com/golang-jwt/jwt/v5` 签名，凭证文件由插件自己解析（Google 的库没有留下，原因见第 3 点）。网关仍然自己构造并发送 HTTP 请求：请求体原样透传、请求经账号的代理发出、响应流由核心中继，所以**不用 SDK 的服务客户端**，只换下面三处。对外接口都没有变。
 
 1. **`sdk/reqsign`（SigV4）**：规范请求、待签字符串、密钥派生、`Authorization` 头由 `github.com/aws/aws-sdk-go-v2/aws/signer/v4`（`Signer.SignHTTP`）生成，手写的规范化代码已删除。包里留下的：
    - **只签四个头**。官方签名器会签请求上的所有头（少数几个除外）和 `content-length`；网关的请求还带着客户端透传的头、插件加的头，签名之后的各层（请求头覆盖、代理、net/http）还会改它们，签进去的头一变就是 403。所以交给签名器的是一份只带 `Content-Type` 的请求副本，签完把 `Authorization`、`X-Amz-Date`、`X-Amz-Security-Token` 抄回原请求。签名的头集合因此与原来相同，两个来源的黄金样例逐字节不变。
@@ -698,12 +698,12 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    - **帧头自己读**（12 字节：两个长度和帧头校验和）并在读取、分配之前检查长度（总长 16..16 MiB、头块不超过 128 KiB 也不超过消息、解码器自己的上限）。官方解码器只验帧头校验和，不限制长度，头块长度大于消息时还会算出一个回绕的负载长度。检查过的帧头再连同后面的流交给官方解码器。
    - **错误分类**：流在消息中间结束是 `io.ErrUnexpectedEOF`，流自己的错误原样返回，其余（校验和不对、头块格式错、未知的值类型）都是 `ErrCorrupt`。
    - 只保留字符串头；编码前检查头名、头值、头块、消息的长度；负载缓冲超过 256 KiB 不留给下一条消息。
-   - 行为变化两处：没有名字的头不再算损坏（官方解码器接受）；同名的头保留最后一个值（原来是第一个）。AWS 不会发这两种头。
-3. **`plugins/vertex`（服务账号 JWT、凭证文件）**：凭证文件由 `golang.org/x/oauth2/google` 解析并检查类型（`CredentialsFromJSONWithType`，服务账号再用 `JWTConfigFromJSON` 取邮箱、私钥、密钥 ID），JWT 由 `golang.org/x/oauth2/jws`（`jws.Encode`）编码并用 RS256 签名。插件仍然不联网：库顺带建出来的 TokenSource 从不取令牌，令牌请求照旧由 `BuildRefreshRequest` 构造、核心经账号代理发出。包里留下的：
-   - `token_uri` 必须等于 `https://oauth2.googleapis.com/token`（读文件里的原值比对，库会给缺省值；这个值只检查、不使用）；`iat`、`exp` 按插件的时钟显式给出。
-   - PEM 私钥的解析（PKCS #8、PKCS #1，标准库 `crypto/x509`）：库的密钥解析在 internal 包里，只在它自己的 TokenSource 里用。
-   - 用户凭证的三个字段（`client_id`、`client_secret`、`refresh_token`）和 `quota_project_id` 自己读：库把它们收在 TokenSource 里，不导出。
-   - 指纹、错误信息（不引用文件内容，库的错误文本不外传）。
-   - 注意：`golang.org/x/oauth2/jws` 的包注释写着 Deprecated（“仅供 x/oauth2 内部使用，将来可能移除”）。它是 Google 自己的令牌源在用的同一个函数；真被移除时，这一处要换回标准库的二十行。
-4. **依赖**：`next/sdk` 加 `github.com/aws/aws-sdk-go-v2` v1.48.0、`github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` v1.7.27、`github.com/aws/smithy-go` v1.28.9（Apache-2.0）；`next/plugins/vertex` 加 `golang.org/x/oauth2` v0.38.0（BSD-3-Clause）和它的间接依赖 `cloud.google.com/go/compute/metadata` v0.9.0（Apache-2.0）。`next/server`、`next/plugins/bedrock` 的 `go.mod` 多三行间接依赖。
+   - **同名的头算损坏**（`ErrCorrupt`，不论值的类型）。官方解码器对同名的头只留最后一个值，于是 `:message-type` 先是字符串 `event`、后面再来一个同名的非字符串头，这个头就没了、消息被跳过；先 `event` 后 `exception` 则被当成异常结束整条流。官方解码器解出来的结果里已经看不到重复，所以包把解出的头用官方编码器（`eventstream.EncodeHeaders`）重新写一遍只数字节：比帧头声明的头块短，就是有同名的头被合并了。顺带的效果：头值超过格式上限（32767 字节）的消息也算损坏，官方解码器读得进、官方编码器不肯写。
+   - 行为变化一处：没有名字的头不再算损坏（官方解码器接受）。AWS 不会发这种头，也不会发同名的头。
+3. **`plugins/vertex`（服务账号 JWT、凭证文件）**：JWT 由 `github.com/golang-jwt/jwt/v5` 编码并用 RS256 签名（`jwt.NewWithClaims` + `SignedString`），PEM 私钥由同一个库解析（`jwt.ParseRSAPrivateKeyFromPEM`，PKCS #8 和 PKCS #1 都读）。凭证文件由插件自己用 `encoding/json` 解析。插件仍然不联网：令牌请求照旧由 `BuildRefreshRequest` 构造、核心经账号代理发出。
+   - **为什么不是 Google 的库**：这个分支先试过 `golang.org/x/oauth2`（提交 `07e58221d`），后来撤掉了。它公开、受支持的入口（`google.CredentialsFromJSONWithType`、`google.JWTConfigFromJSON` 得到的 TokenSource）都是签完断言就自己把令牌请求发出去，没有只签断言、不发请求的公开接口；能单独签名的只有 `golang.org/x/oauth2/jws`，它的包注释写着 Deprecated（仅供 x/oauth2 内部使用，将来可能移除）。而令牌请求必须由核心经账号的代理发出。剩下它能做的只是解析文件：对用户凭证只贡献了一次类型字符串的比较（同时建出一个装着 `client_secret`、`refresh_token` 却从不使用的 TokenSource），对服务账号只多给一个 `ProjectID`。所以整个依赖去掉。
+   - **文件只解析一次**：一次 `json.Unmarshal` 进一个小结构体（服务账号：`type`、`project_id`、`private_key_id`、`private_key`、`client_email`、`token_uri`；用户凭证：`type`、`client_id`、`client_secret`、`refresh_token`、`quota_project_id`），检查和后面的使用读的是同一份值。`encoding/json` 匹配键名不区分大小写，重复的键取最后一个；`token_uri` 按这个**生效值**判断，必须正好等于 `https://oauth2.googleapis.com/token`，缺失、`null`、别的地址都拒绝。（用 Google 的库时这一项是另用 gjson 读的，gjson 取第一个键，于是 `{"token_uri":"<正确>",…,"token_uri":"https://evil.example/token"}` 能通过检查；现在是回归测试。）这个值只检查、不使用：请求永远发往常量地址，断言的 `aud` 也是常量。
+   - **断言的内容不变**：`iss` = `client_email`，`scope` = cloud-platform，`aud` = 令牌地址常量，`iat` = 插件时钟的现在 − 10 秒，`exp` = `iat` + 3600，都是整数秒；头 `alg` = RS256、`typ` = JWT，文件有 `private_key_id` 时带 `kid`。golang-jwt 签名时不校验任何声明，数值由插件给定；测试用 `crypto/rsa` 独立验签并核对每个声明。
+   - **错误信息各报各的字段**：不是 JSON 对象、`"type"` 不对（`external_account`、`impersonated_service_account`、`gdch_service_account` 等都落在这里）、某个字段缺失、某个字段不是字符串、`"token_uri"` 不对、`"private_key"` 不是 PEM 格式的 RSA 私钥。都不引用文件内容，也不带库的错误文本。
+4. **依赖**：`next/sdk` 加 `github.com/aws/aws-sdk-go-v2` v1.48.0、`github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` v1.7.27、`github.com/aws/smithy-go` v1.28.9（Apache-2.0）；`next/plugins/vertex` 加 `github.com/golang-jwt/jwt/v5` v5.3.1（MIT，没有间接依赖；`next/server` 的依赖图里已有同一版本）。`next/server`、`next/plugins/bedrock` 的 `go.mod` 多三行间接依赖。
 5. **没有动的**：模拟上游（`deploy/mock-upstream`）的 SigV4 校验和 event stream 编码仍是独立的手写实现，这样测试里签名方和验签方不是同一份代码。volcengine 的素材库签名没有官方 Go 签名库可单独引用，不在这次范围内。
