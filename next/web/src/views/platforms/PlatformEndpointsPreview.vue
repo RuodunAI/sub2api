@@ -1,19 +1,18 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { GroupServedProtocol } from '@/api/types'
 import { usePlatforms } from '@/composables/platforms'
+import { servedEndpoints } from '@/views/groups/servedProtocols'
 import PlatformEndpointList from './PlatformEndpointList.vue'
 
-// Endpoints of the given platforms, grouped by platform (e.g. what an API
-// key of a group can call). `max` limits endpoints per platform. Whether an
-// account serves another platform through protocol conversion is the
-// account's choice per model (DESIGN-2026-11-17-PROTOCOL-BINDING §3.2), so
-// nothing is derived here; a group's detail lists what its accounts really
-// open (GroupServedProtocols).
-const props = defineProps<{ ids: string[]; max?: number }>()
+// The endpoints of the protocols a group serves (the server's
+// served_protocols, as the group's detail lists them), grouped by platform:
+// what an API key of the group can call. `max` limits endpoints per platform.
+const props = defineProps<{ served: GroupServedProtocol[]; max?: number }>()
 const platforms = usePlatforms()
 platforms.load()
 
-const own = computed(() => platforms.endpointsOf(props.ids))
+const own = computed(() => servedEndpoints(platforms.platforms.value, props.served))
 </script>
 
 <template>
