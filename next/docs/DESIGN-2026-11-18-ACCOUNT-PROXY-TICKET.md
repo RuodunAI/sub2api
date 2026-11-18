@@ -89,4 +89,4 @@
 
 - 不给票据加有效期：每次使用都按当前权限重新校验，会话本身有寿命；加时长违背“不要擅自加限制”。
 - 不改 `SendAccountRequest`：它是账号建好以后的账号请求，语义和限制都不一样。
-- e2e：mock 上游没有 `auth.openai.com` 的路由，不加用例（见交付说明）。
+- e2e：交付时 mock 上游没有 `auth.openai.com` 的路由，没有用例；之后补了 AC38（`next/e2e/ac38_codex_auth_proxy_test.go`，mock 扮演授权服务器并支持 HTTPS 的 `CONNECT` 代理）。

@@ -17,6 +17,7 @@
 - **契约**：proto 加 `HTTPRequest.execution_token`（10）、`ExecutionHTTPRequest.proxy_ticket`（7）；Host API 仍是 10。SDK：路由处理函数的 context 绑定执行令牌，`pluginsdk.Fetch` 在路由里可用并传 `ProxyTicket`；假宿主的 `Harness.DoAs` 发令牌（`FakeHost.BeginRoute`）。
 - **@sub2api/ui、@sub2api/host、@sub2api/vite-preset 3.20**：原生账号表单多一个 prop `proxyTicket`（类型 `ProxyTicketSource`），按表单当前的代理选择要一张票据。只加不改；用到的插件声明 `hostUICompat: "^3.20"`。
 - **codex 0.2.0**：清单去掉 `net`，插件不再联网；开始路由要 `proxy_ticket`；核心拒绝发送时回 400 `proxy_refused` 并结束会话。进行中的授权在升级后要重新开始。
+- **e2e AC38**：三种代理选择下 codex 设备码登录的全部请求经代理（或直连）到达 mock 扮演的 `auth.openai.com`，粘贴的代理串不留代理记录，令牌建成的账号能经网关用并计费；Sign in with Codex 的换令牌经代理。mock 为此新增授权服务器的三个接口和 HTTPS 的 `CONNECT` 代理（以前 https 地址经代理到不了 mock），e2e 网络给 mock 加别名 `auth.openai.com`。
 
 ### 小改动（核心、控制台与 e2e；无迁移）
 

@@ -74,7 +74,9 @@ func TestTLSAndProxyRecording(t *testing.T) {
 	t.Setenv("MOCK_TLS_ADDR", addr)
 	t.Setenv("MOCK_TLS_DIR", dir)
 	s := newServer()
-	go func() { _ = serveTLS(s.handler()) }()
+	s.tunnels = newTunnelListener()
+	defer s.tunnels.Close()
+	go func() { _ = serveTLS(s.handler(), s.tunnels) }()
 	var pemCA []byte
 	deadline := time.Now().Add(5 * time.Second)
 	for len(pemCA) == 0 && time.Now().Before(deadline) {
