@@ -4,7 +4,7 @@ import { claude, codex, ep, openai, type } from './fixtures'
 import {
   bindingIssues, bindingJSON, bindingSummary, columnState, conversionInUse, defaultProtocols, matrixModels, modelProtocolRules, openColumns, parseBinding,
   cardRules, platformMarks, protocolColumns, protocolsOf, REST, ruleCards, rulesByModel, sameModelProtocols, sameProtocolColumns, sameProtocols, toggleCell, toggleColumn,
-  unknownOwnProtocols, withCardModels, withModels, withNewCard, withoutModels, type ModelRules
+  sharedOwnProtocols, unknownOwnProtocols, withCardModels, withModels, withNewCard, withoutModels, type ModelRules
 } from './protocolBinding'
 
 const columns = protocolColumns(openai)
@@ -195,6 +195,12 @@ describe('checks of the binding', () => {
     expect(codes(['openai.chat'], { a: ['openai.chat', 'openai.embeddings'] })).toEqual([['warning', 'closed_protocol', 'a', 'openai.embeddings']])
     expect(codes(null, { a: ['openai.chat', 'volcengine.images'] })).toEqual([['warning', 'unknown_protocol', 'a', 'volcengine.images']])
     expect(codes(null, { '*': ['openai.chat', 'anthropic.messages'], a: ['anthropic.messages'] })).toEqual([['warning', 'rest_conversion', '*']])
+  })
+
+  it('finds the own protocols every account opens', () => {
+    expect(sharedOwnProtocols([null, undefined])).toBeNull()
+    expect(sharedOwnProtocols([null, ['openai.chat', 'openai.responses'], ['openai.responses', 'openai.embeddings']])).toEqual(['openai.responses'])
+    expect(sharedOwnProtocols([['openai.chat'], []])).toEqual([])
   })
 
   it('finds the ids under protocols that are no own protocol of the type, which the own protocols field shows, not the issues', () => {

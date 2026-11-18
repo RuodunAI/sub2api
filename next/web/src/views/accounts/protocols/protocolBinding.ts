@@ -107,6 +107,12 @@ export function toggleColumn(ids: readonly string[], c: ProtocolColumn): string[
 /** The own columns the account opens (in part counts). */
 export const openColumns = (c: ProtocolColumns, protocols: readonly string[] | null) => c.own.filter(x => columnState(protocols, x) !== 'off')
 
+/** The own protocols every account opens, from their `protocols` (null or absent: all of them); null when every one opens all. */
+export function sharedOwnProtocols(lists: ReadonlyArray<readonly string[] | null | undefined>): string[] | null {
+  const chosen = lists.filter((l): l is readonly string[] => Array.isArray(l))
+  return chosen.length ? chosen[0].filter(id => chosen.every(l => l.includes(id))) : null
+}
+
 /** The protocols of a model without a rule: the own protocols the account opens, no conversion. */
 export function defaultProtocols(c: ProtocolColumns, protocols: readonly string[] | null): string[] {
   const own = idsOf(c.own)
