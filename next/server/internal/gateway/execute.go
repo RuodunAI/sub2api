@@ -121,7 +121,7 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 // sendParked sends the relay the plugin confirmed with host_usage. A task
 // submission must wait: its task is registered from the facts Execute
 // returns, so one relayed without them is not sent. An endpoint whose usage
-// the plugin was to read falls back to the core's reading; when that holds
+// the plugin was to read falls back, once answered, to the core's reading; when that holds
 // no usage the request is unreported: the client keeps the answer it was
 // already sent, the record is the free usage_unreported one (submit
 // releases the precharge) and the core logs at ERROR, as
@@ -132,7 +132,7 @@ func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamReques
 		return x.pluginFailed(ctx, errors.New("a task submission was relayed without waiting"))
 	}
 	res := c.send(ctx, x, req)
-	if c.usage != nil {
+	if x.rt.pluginUsage && res.kind == attemptDone {
 		c.usage = nil
 		if err := c.hostUsageChosen(); err != nil {
 			c.rec.SetUnreported(err.Error())
@@ -165,12 +165,8 @@ func (x *execution) unrelayed(ctx context.Context, res core.ExecutionResult, err
 
 // pluginFailed fails over an attempt the plugin could not serve.
 func (x *execution) pluginFailed(ctx context.Context, err error) attemptResult {
-	var reason any
-	if ce := (*core.Error)(nil); errors.As(err, &ce) {
-		reason = ce.Details["reason"]
-	}
 	slog.WarnContext(ctx, "gateway: plugin execution failed", "request_id", x.c.rid, "plugin", x.rt.binding.Plugin.Key,
-		"account", x.acc.ID, "reason", reason, "err", err)
+		"account", x.acc.ID, "err", err)
 	return attemptResult{kind: attemptFailover, err: fromCore(core.ErrPluginUnavailable.WithCause(err), errTypePluginUnavailable)}
 }
 

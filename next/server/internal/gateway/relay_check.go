@@ -14,8 +14,8 @@ import (
 )
 
 // validate is the gateway's check of a relay, before anything is sent: what
-// the runtime cannot judge (it has refused a missing URL, an oversized body
-// and the transport's header names already). It returns the URL to send to.
+// the runtime cannot judge (it has refused a missing URL and the
+// transport's header names already). It returns the URL to send to.
 //
 // The body is not inspected: the plugin's bytes are final and the core does
 // not parse them again (the SDK conformance suite holds plugins to the

@@ -345,7 +345,7 @@ func (w *waitedRelay) commit(ctx context.Context, out *pluginv1.ExecuteResponse)
 		c.rec = previous
 		return w.unreported(ctx, err.Error(), err)
 	}
-	c.taskPersisted = true
+	c.executionOwnsUsage = true
 	if body != nil && w.spool == nil {
 		w.spool = newBufferedResponse(c.c.Writer)
 		w.spool.Header().Set("Content-Type", "application/json")
@@ -495,7 +495,7 @@ func (w *waitedRelay) confirmTask(ctx context.Context, err error) error {
 		return nil
 	}
 	if cerr == nil {
-		w.x.c.taskPersisted = true
+		w.x.c.executionOwnsUsage = true
 	}
 	return err
 }
@@ -524,10 +524,10 @@ func (w *waitedRelay) unreported(ctx context.Context, reason string, cause error
 	case w.closed(ctx, reason):
 		// Committed meanwhile by a retry that timed out here: the facts
 		// stand, and so does their record (the rate limits count it).
-		c.rec, c.taskPersisted = w.committing, true
+		c.rec, c.executionOwnsUsage = w.committing, true
 		return w.deliver(ctx)
 	default:
-		c.taskPersisted = true
+		c.executionOwnsUsage = true
 	}
 	if c.c.Writer.Written() {
 		panic(http.ErrAbortHandler)

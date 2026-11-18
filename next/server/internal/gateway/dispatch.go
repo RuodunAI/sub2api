@@ -649,17 +649,16 @@ func (c *call) meterable(rt *typeRoute, body []byte) *gwError {
 	return nil
 }
 
-// setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host
-// and the framing headers stay the transport's (transparent gzip, framing).
+// setBuiltHeaders writes a plugin's headers onto req; host goes to req.Host.
+// The transport's own headers (framing, transparent gzip) never get here:
+// the runtime refuses a relay naming them.
 func setBuiltHeaders(req *http.Request, h map[string]string) {
 	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "host":
+		if strings.EqualFold(k, "host") {
 			req.Host = v
-		case "content-length", "accept-encoding", "connection", "transfer-encoding":
-		default:
-			req.Header.Set(k, v)
+			continue
 		}
+		req.Header.Set(k, v)
 	}
 }
 
