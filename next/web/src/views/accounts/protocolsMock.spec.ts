@@ -71,13 +71,41 @@ describe('protocol binding in the mock', () => {
     // The entry for the other models decides for every model: generate and the chat conversion, not stream_generate.
     expect(await served(20)).toEqual([['gemini.count_tokens', 'native', null], ['gemini.generate', 'native', null], ['openai.chat', 'converted', null]])
 
-    expect(fields(await patch({ protocols: ['gemini.generate', 'openai.chat', 'gemini.count_tokens'] }))).toEqual(['protocols[1]', 'protocols[2]'])
-    const bad = await patch({ model_protocols: [{ models: ['a', '*'], protocols: [] }, { models: ['a'], protocols: ['zz.gone'] }] })
-    expect(fields(bad)).toEqual(['model_protocols[0].protocols', 'model_protocols[0].models[1]', 'model_protocols[1].models[0]', 'model_protocols[1].protocols[0]'])
+    // The paths and codes of CONTRACTS §110.6.
+    const errors = (a: Awaited<ReturnType<typeof patch>>) => a.body.error?.details?.fields?.map((f: { field: string; code: string }) => `${f.field}: ${f.code}`)
+    expect(errors(await patch({ protocols: ['gemini.generate', 'openai.chat', 'gemini.count_tokens', 'zz.gone'] }))).toEqual(['protocols[1]: cross_platform', 'protocols[2]: invalid', 'protocols[3]: unsupported'])
+    const bad = await patch({ model_protocols: [{ models: ['a', '*'], protocols: [] }, { models: ['a'], protocols: ['zz.gone', 'gemini.count_tokens'] }, { models: [], protocols: ['openai.chat'] }] })
+    expect(errors(bad)).toEqual([
+      'model_protocols[0].models: invalid',
+      'model_protocols[0].protocols: required',
+      'model_protocols[1].models[0]: duplicate',
+      'model_protocols[1].protocols[0]: unsupported',
+      'model_protocols[1].protocols[1]: invalid',
+      'model_protocols[2].models: required'
+    ])
     // Every own protocol closed: fine with a conversion, refused without (the rules the request leaves out count).
     expect(fields(await patch({ protocols: [], model_protocols: [] }))).toEqual(['protocols'])
     expect((await patch({ protocols: [] })).status).toBe(200)
     expect(fields(await patch({ model_protocols: [] }))).toEqual(['protocols'])
     expect((await patch({ protocols: null, model_protocols: [] })).body.data).toMatchObject({ protocols: null, model_protocols: [] })
+  })
+
+  it('lists for an account with a model list only the protocols one of its models is served on', async () => {
+    // video-1 serves one model: bound to another protocol by name, no own protocol is left open "for the other models".
+    const type = ((await data('GET', '/account-types')) as AccountType[]).find(t => t.plugin_key === 'videogen' && t.type === 'video_key')!
+    const [own] = protocolColumns(type).own
+    const before = await served(17)
+    expect(before.every(([, , models]) => models === null)).toBe(true)
+    const ok = await call('PATCH', '/accounts/17', { model_protocols: [{ models: ['myvideo-pro'], protocols: [own.key] }] }, admin)
+    expect(ok.status).toBe(200)
+    expect(await served(17)).toEqual([[own.key, 'native', ['myvideo-pro']]])
+    await call('PATCH', '/accounts/17', { model_protocols: [] }, admin)
+  })
+
+  it('answers 503 for the binding of an account whose plugin is not enabled', async () => {
+    // legacy-vendor: its plugin was uninstalled. As the core, which does not know what the type serves (CONTRACTS §110.6).
+    const refused = await call('PATCH', '/accounts/15', { protocols: null }, admin)
+    expect([refused.status, refused.body.error?.code]).toEqual([503, 'plugin_unavailable'])
+    expect((await call('PATCH', '/accounts/15', { priority: 9 }, admin)).status).toBe(200)
   })
 })

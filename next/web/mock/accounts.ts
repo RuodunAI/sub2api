@@ -290,7 +290,7 @@ const servedOf = (a: any) => {
 function validateProtocols(body: Record<string, any>, a: { plugin_key: string; type: string; protocols?: string[] | null; model_protocols?: any[] }) {
   if (!('protocols' in body) && !('model_protocols' in body)) return null
   const at = typeOutOf(a)
-  if (!at) return fail(409, 'plugin_unavailable', 'the plugin providing this account type is not enabled; its protocols cannot be changed')
+  if (!at) return fail(503, 'plugin_unavailable', 'the plugin providing this account type is not enabled; its protocols cannot be changed')
   const fields = protocolFieldErrors({ protocols: 'protocols' in body ? body.protocols : a.protocols, model_protocols: body.model_protocols ?? a.model_protocols }, at)
   return fields.length ? fail(400, 'invalid_argument', 'invalid protocols', { fields }) : null
 }

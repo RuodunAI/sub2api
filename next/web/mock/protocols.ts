@@ -2,7 +2,9 @@
 // what an account type serves (native, adapted within a platform, converted
 // from another platform, count_tokens estimated locally), what an account and
 // a group serve with their `protocols` / `model_protocols`, and the field
-// errors of the two. The rules mirror the core's; the grades are made up.
+// errors of the two. The rules, the field paths and the error codes mirror
+// the core's (CONTRACTS §110.3, §110.6, §110.7); model ids are not checked
+// and the grades are made up.
 import { activePlatforms } from './platforms'
 
 interface TypeEndpoint {
@@ -78,22 +80,20 @@ function typeProtocols(at: TypeView): Array<TypeEndpoint & { how: Served['via'] 
 const bindable = (at: TypeView) => typeProtocols(at).filter((e) => !(e.protocol in COUNT_TOKENS_FAMILY) && e.grade !== 'local')
 
 /**
- * The models an account serves on a protocol of its type: null for every
- * model no rule lists, else the models of the rules listing it; undefined
- * when it serves none. A count_tokens protocol follows its family.
+ * The models an account serves on a protocol of its type: null when it
+ * serves on it the models no rule names (it has some: no model list, or one
+ * with a model without a rule), else the models with a rule it serves on it;
+ * undefined when it serves none. A count_tokens protocol follows its family.
  */
 function modelsOn(a: Binding, protocol: string, own: boolean): string[] | null | undefined {
   const p = COUNT_TOKENS_FAMILY[protocol] ?? protocol
-  if (own && a.protocols && !a.protocols.includes(p)) return undefined
-  // A model no rule lists is served on the own protocols, never converted.
-  let others = own
-  const models: string[] = []
-  for (const r of a.model_protocols ?? []) {
-    const listed = r.protocols.includes(p)
-    if (r.models.includes(REST)) others = listed
-    else if (listed) models.push(...r.models.filter((m) => !a.models?.length || a.models.includes(m)))
-  }
-  if (others) return null
+  const rules = a.model_protocols ?? []
+  const named = new Map(rules.filter((r) => !r.models.includes(REST)).flatMap((r) => r.models.map((m): [string, string[]] => [m, r.protocols])))
+  /** Whether a model with these rule protocols (undefined: no rule) is served on the protocol. */
+  const serves = (listed?: string[]) => (listed ? listed.includes(p) : own) && (!own || !a.protocols || a.protocols.includes(p))
+  const others = !a.models?.length || a.models.some((m) => !named.has(m))
+  if (others && serves(rules.find((r) => r.models.includes(REST))?.protocols)) return null
+  const models = [...named].filter(([m, listed]) => (!a.models?.length || a.models.includes(m)) && serves(listed)).map(([m]) => m)
   return models.length ? models.sort() : undefined
 }
 
@@ -116,27 +116,39 @@ export function groupServedProtocols(members: Served[][]): Array<{ protocol: str
 
 type FieldError = { field: string; code: string; message: string }
 
-/** Field errors of `protocols` / `model_protocols` (design §4), for the account the request would leave. */
+/** Field errors of `protocols` / `model_protocols` (CONTRACTS §110.6), for the account the request would leave. */
 export function protocolFieldErrors(b: Binding, at: TypeView): FieldError[] {
   const all = bindable(at)
-  const own = new Set(all.filter((e) => e.how !== 'converted').map((e) => e.protocol))
   const cross = new Set(all.filter((e) => e.how === 'converted').map((e) => e.protocol))
   const out: FieldError[] = []
   const bad = (field: string, code: string, message: string) => out.push({ field, code, message })
-  ;(b.protocols ?? []).forEach((p, i) => own.has(p) || bad(`protocols[${i}]`, 'invalid', 'not a protocol of the account type\'s own platforms'))
+  /** Refuses a protocol an account cannot be bound to; ownOnly also one of another platform. */
+  const check = (field: string, p: string, ownOnly: boolean) => {
+    if (p in COUNT_TOKENS_FAMILY) bad(field, 'invalid', 'a count_tokens protocol is not listed: it follows the generation protocol of its family')
+    else if (!all.some((e) => e.protocol === p)) bad(field, 'unsupported', 'the account type does not serve this protocol')
+    else if (ownOnly && cross.has(p)) bad(field, 'cross_platform', 'a protocol of another platform is enabled per model, in model_protocols')
+  }
+  ;(b.protocols ?? []).forEach((p, i) => check(`protocols[${i}]`, p, true))
   const rules = b.model_protocols ?? []
-  if (rules.length > 50) bad('model_protocols', 'too_many', 'at most 50 entries')
-  const seen = new Set<string>()
+  const owner = new Map<string, number>()
   rules.forEach((r, i) => {
-    if (!r.protocols?.length) bad(`model_protocols[${i}].protocols`, 'required', 'pick at least one protocol')
-    if ((r.models?.length ?? 0) > 500) bad(`model_protocols[${i}].models`, 'too_many', 'at most 500 models')
+    const field = `model_protocols[${i}]`
+    const models: string[] = []
     ;(r.models ?? []).forEach((m, j) => {
-      if (m === REST && r.models.length > 1) bad(`model_protocols[${i}].models[${j}]`, 'invalid', '"*" must be an entry of its own')
-      if (seen.has(m)) bad(`model_protocols[${i}].models[${j}]`, 'duplicate', 'model listed twice')
-      seen.add(m)
+      if (models.includes(m)) return
+      if (owner.has(m) && owner.get(m) !== i) return bad(`${field}.models[${j}]`, 'duplicate', 'the model is already in another entry')
+      owner.set(m, i)
+      models.push(m)
     })
-    ;(r.protocols ?? []).forEach((p, j) => own.has(p) || cross.has(p) || bad(`model_protocols[${i}].protocols[${j}]`, 'invalid', 'the account type cannot serve this protocol'))
+    if (!r.models?.length) bad(`${field}.models`, 'required', 'choose at least one model')
+    else if (models.length > 1 && models.includes(REST)) bad(`${field}.models`, 'invalid', '* (the other models) must be alone in its entry')
+    else if (models.length > 500) bad(`${field}.models`, 'too_many', 'at most 500 models per entry')
+    if (!r.protocols?.length) bad(`${field}.protocols`, 'required', 'choose at least one protocol')
+    ;(r.protocols ?? []).forEach((p, j) => check(`${field}.protocols[${j}]`, p, false))
   })
-  if (b.protocols && !b.protocols.length && !rules.some((r) => r.protocols?.some((p) => cross.has(p)))) bad('protocols', 'no_protocol', 'the account opens no protocol')
+  if (rules.length > 50) bad('model_protocols', 'too_many', 'at most 50 entries')
+  if (!out.length && b.protocols && !b.protocols.length && !rules.some((r) => r.protocols?.some((p) => cross.has(p)))) {
+    bad('protocols', 'no_protocol', 'the account serves no protocol: enable one of its own, or a conversion for a model')
+  }
   return out
 }
