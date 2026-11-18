@@ -339,6 +339,14 @@ if !sticky.Enabled { ... }
 - 需要在变更后做一次性的工作（重算、通知）时，另外订阅 `settings.changed` 事件（`app.events.v1`，payload `{"sections": [...]}`），每个插件由一个节点接收，至少投递一次（按事件 id 幂等）。
 - 测试：`pluginsdktest.FakeHost.SetSettings(v)` 设置分组（没设置的分组回 `UNAVAILABLE`），`Harness.SettingsChanged(sections...)` 模拟变更通知；读取失败后 SDK 2 秒内不再读宿主，测试里补设分组后要调一次 `Harness.SettingsChanged`。
 
+## 6.1 插件自己的表：`Host.DB` 与 DSN
+
+- 插件在 manifest 声明 `database`（`schema` 必须是 `plg_<key>`）并获授 `db.schema` 后，用 `Host.DB(ctx)` 拿 GORM 句柄，每次调用重新取（CONTRACTS §2“插件数据库”）。
+- 句柄背后的 DSN 来自 `HostService.GetDSN`：在沙箱里（严格网络）是 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`，没有密码。连接经出口隧道到核心，核心用自己的数据库配置代为登录（TLS、密码认证都在核心），把会话的 `search_path` 设成 `plg_<key>`，之后原样转发协议；语句的 ctx 结束时 pgx 发的取消请求也由核心转给服务器（CONTRACTS §115）。插件进程里没有数据库凭据，也没有插件专用的数据库用户。不在沙箱里（开发模式、严格网络关闭）时 DSN 是核心自己的，直接连库。
+- 连接数由插件自己的池决定（默认每节点 4 个，`pluginsdk.WithDBPoolSize`），每条都是核心对数据库的一条连接，运维按它规划 `max_connections`。
+- 所以不写 schema 前缀的表名都落在自己的 schema 里，但 `search_path` 不是边界：句柄能访问核心的用户能访问的所有表。只访问自己 schema 里的表是插件的义务；访问别处的数据走 Host API。
+- 迁移由核心执行（以核心的用户、`search_path` 为自己的 schema），脚本必须幂等（CONTRACTS §36）；表的属主是核心的用户。
+
 ## 7. 现有平台插件
 
 全部是 gRPC 代码插件，清单 `hostCompat` 下限 `>=0.1.304`。

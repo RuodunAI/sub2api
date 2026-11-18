@@ -25,16 +25,17 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// SchemaDSN hands out restricted plugin DSNs (implemented by dbschema.Manager).
+// SchemaDSN hands out plugin DSNs (implemented by dbschema.Manager);
+// tunnelled is set when the plugin's connections go through the egress
+// tunnel (strict network), which then carries no database credential.
 type SchemaDSN interface {
-	DSN(ctx context.Context, pluginKey string) (string, dbschema.Status, error)
+	DSN(ctx context.Context, pluginKey string, tunnelled bool) (dsn, schema string, err error)
 }
 
 // Options configures the runtime. DB, Redis, Cipher, Node and Launcher are

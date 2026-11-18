@@ -92,7 +92,7 @@ const MODULES: ModuleDef[] = [
     { key: 'plugin:manage', label: L('Manage', '管理') }, { key: 'plugin:uninstall', label: L('Uninstall', '卸载'), risk: 'sensitive' },
     { key: 'plugin:grant:high', label: L('Grant high risk', '授予高风险权限') },
     { key: 'plugin:grant:critical', label: L('Grant critical risk', '授予极高风险权限'), risk: 'sensitive' },
-    { key: 'plugin:grant:db_schema_unconfined', label: L('Grant db.schema without role isolation', '无角色隔离时授予 db.schema'), risk: 'sensitive' },
+    { key: 'plugin:grant:db_schema_unconfined', label: L('Grant db.schema to non-official plugins', '授予非官方插件 db.schema'), risk: 'sensitive' },
     { key: 'plugin:egress:read', label: L('View egress', '查看出口流量') }, { key: 'plugin:market:read', label: L('Browse market', '浏览市场') }] },
   { module: 'publisher', label: L('Publishers', '发布者'), source: 'core', status: 'active', permissions: [
     { key: 'publisher:read', label: L('View', '查看') }, { key: 'publisher:manage', label: L('Manage', '管理'), risk: 'sensitive' }] },
