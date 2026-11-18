@@ -104,11 +104,12 @@ func TestAC33_OldContractPackagesRefused(t *testing.T) {
 		if listed.Get("status").String() == "enabled" {
 			t.Fatalf("the refused plugin is enabled: %s", listed.Raw)
 		}
-		// refusal (CONTRACTS-to-be, design §8.5) is filled from what the
-		// nodes report of a loaded instance; check it whenever it is given.
-		if r := listed.Get("refusal"); r.Type != gjson.Null &&
-			(r.Get("code").String() != "outdated_contract" || r.Get("message").String() != want || r.Get("protocol_version").Int() != protocol.ProtocolVersion) {
-			t.Fatalf("refusal: %s", r.Raw)
+		// The refusal the console shows outlives the failed rollout: the
+		// rollout kept the code with each node's outcome.
+		if r := listed.Get("refusal"); r.Get("code").String() != "outdated_contract" || r.Get("version").String() != version ||
+			r.Get("host_version").String() != hostVersion || r.Get("message").String() != want ||
+			r.Get("protocol_version").Int() != protocol.ProtocolVersion || r.Get("first_core_version").String() != protocol.FirstCoreVersion {
+			t.Fatalf("refusal: %s", listed.Raw)
 		}
 		d, _ := e.Plugin(admin, dp.Key)
 		for node, st := range PluginNodeStates(d) {

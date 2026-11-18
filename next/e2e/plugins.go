@@ -304,17 +304,6 @@ func (e *Env) WaitPlugin(admin *Session, key, status, version string) gjson.Resu
 		}
 		return true
 	})
-	// A rollout makes the nodes briefly unready (/healthz 503 while their
-	// shared plugin assets rebuild), which the load balancer answers with an
-	// empty 503 for both nodes: wait until they serve again.
-	Eventually(e.T, 60*time.Second, 500*time.Millisecond, "every node healthy after the rollout of "+key, func() bool {
-		for n := range e.NodeURLs {
-			if !e.NodeHealthy(n + 1) {
-				return false
-			}
-		}
-		return true
-	})
 	return last
 }
 

@@ -124,10 +124,16 @@ func (a *API) fillSummary(ctx context.Context, s *PluginSummary) error {
 	return nil
 }
 
-// setNodes adds what the live nodes report of the plugin.
-func (s *PluginSummary) setNodes(nodes []core.NodeStatus) {
+// setNodes adds what the live nodes report of the plugin and, when no node
+// refuses it now, the refusal its latest rollout recorded.
+func (a *API) setNodes(ctx context.Context, s *PluginSummary, nodes []core.NodeStatus) error {
 	s.Nodes = summarizeNodes(nodes, s.Key)
-	s.Refusal = refusal(nodes, s.Key)
+	if s.Refusal = refusal(nodes, s.Key); s.Refusal != nil {
+		return nil
+	}
+	var err error
+	s.Refusal, err = recordedRefusal(ctx, a.d.DB.Gorm, s.Key, a.d.Install.HostVersion())
+	return err
 }
 
 func (a *API) listPlugins(c *gin.Context) {
@@ -152,7 +158,10 @@ func (a *API) listPlugins(c *gin.Context) {
 			httpapi.Fail(c, err)
 			return
 		}
-		s.setNodes(nodes)
+		if err := a.setNodes(rc, s, nodes); err != nil {
+			httpapi.Fail(c, err)
+			return
+		}
 		out = append(out, s)
 	}
 	httpapi.List(c, out, httpapi.Page{Page: page, PageSize: size, Total: total})
@@ -236,7 +245,10 @@ func (a *API) getPlugin(c *gin.Context) {
 		return
 	}
 	nodes := a.liveNodes(rc)
-	s.setNodes(nodes)
+	if err := a.setNodes(rc, s, nodes); err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
 	d := PluginDetail{PluginSummary: *s, Grants: []install.Grant{}, NodeList: nodeStates(nodes, key), Hooks: []HookInfo{}, Jobs: []JobInfo{}}
 
 	if s.CurrentVersion != "" {

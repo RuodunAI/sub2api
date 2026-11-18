@@ -115,3 +115,74 @@ func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
 		}
 	}
 }
+
+// AC 5 (enable): enabling an install-only bundled plugin keeps every node
+// ready and the load balancer serving, and the plugin can be disabled again
+// at once. The bundled plugins gate a node's
+// readiness at start only; before, the plugin's "enabling" row made /healthz
+// answer 503 on both nodes at once (each node re-checks every 5 s) and the
+// load balancer answered every request with an empty 503.
+func TestAC05_EnableBuiltinKeepsNodesServing(t *testing.T) {
+	e := Setup(t)
+	admin := e.Admin()
+	const key = "mailer"
+	if d, ok := e.Plugin(admin, key); !ok || !d.Get("builtin").Bool() {
+		t.Fatalf("%s is not a bundled plugin here: %s", key, d.Raw)
+	} else if d.Get("status").String() == "enabled" {
+		e.Disable(admin, key)
+	}
+
+	var failures []string
+	var mu sync.Mutex
+	var probes atomic.Int64
+	fail := func(f string) {
+		mu.Lock()
+		failures = append(failures, time.Now().Format("15:04:05.000")+" "+f)
+		mu.Unlock()
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			for n := range e.NodeURLs {
+				if !e.NodeHealthy(n + 1) {
+					fail("node-" + itoa(int64(n+1)) + " /healthz not 200")
+				}
+			}
+			// Without an API key the gateway answers 401; the load balancer
+			// answers 503 when it sees no healthy node.
+			if g, err := GatewayTry(e.BaseURL, "/v1/messages", "", map[string]any{}, nil); err != nil {
+				fail("load balancer: " + err.Error())
+			} else if g.Status >= 500 {
+				fail("load balancer: " + itoa(int64(g.Status)) + " " + string(g.Body))
+			}
+			probes.Add(1)
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	time.Sleep(time.Second)
+	e.Enable(admin, key)
+	// An operator's next plugin change is accepted at once: the rollout
+	// starts no round over the bundled plugins holding the cluster change
+	// lock (it answered 409 "another cluster change is being submitted").
+	e.Disable(admin, key)
+	// Past the next readiness check of both nodes and the balancer's health check.
+	time.Sleep(7 * time.Second)
+	close(stop)
+	wg.Wait()
+
+	if len(failures) > 0 {
+		t.Fatalf("%d of %d probes failed while %s was enabled and disabled: %v", len(failures), probes.Load(), key, failures)
+	}
+	if probes.Load() < 20 {
+		t.Fatalf("too few probes: %d", probes.Load())
+	}
+}

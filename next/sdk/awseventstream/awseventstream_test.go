@@ -340,43 +340,6 @@ func TestBufferFollowsTheData(t *testing.T) {
 	}
 }
 
-// A decoder can be given a limit below the format's; a message over it is
-// refused before anything is read for it.
-func TestMaxMessageSizeOption(t *testing.T) {
-	frame := mustAppend(t, nil, nil, make([]byte, 100)) // 116 bytes
-	for name, tc := range map[string]struct {
-		limit int
-		is    error
-	}{
-		"at the limit":        {len(frame), nil},
-		"over the limit":      {len(frame) - 1, ErrTooLarge},
-		"below the format's":  {-1, ErrTooLarge}, // raised to the smallest message
-		"above the format's":  {MaxMessageSize + 1, nil},
-		"the package maximum": {MaxMessageSize, nil},
-	} {
-		d := NewDecoder(io.MultiReader(bytes.NewReader(frame[:preludeSize]), iotest.ErrReader(errors.New("read past the prelude"))), WithMaxMessageSize(tc.limit))
-		_, err := d.Decode()
-		if tc.is == nil {
-			if d.max > MaxMessageSize || err == nil || errors.Is(err, ErrTooLarge) {
-				t.Errorf("%s: limit %d, %v", name, d.max, err)
-			}
-			continue
-		}
-		if !errors.Is(err, tc.is) || errors.Is(err, ErrCorrupt) || d.buf != nil {
-			t.Errorf("%s: %v, %d bytes allocated", name, err, cap(d.buf))
-		}
-	}
-	if d := NewDecoder(bytes.NewReader(frame), WithMaxMessageSize(len(frame))); d.max != uint32(len(frame)) {
-		t.Fatalf("limit %d", d.max)
-	} else if msg, err := d.Decode(); err != nil || len(msg.Payload) != 100 {
-		t.Fatalf("message at the limit: %v", err)
-	}
-	// Beyond the format's own limit a length is still corrupt, whatever the option.
-	if _, err := NewDecoder(bytes.NewReader(rawPrelude(MaxMessageSize+1, 0)), WithMaxMessageSize(1<<10)).Decode(); !errors.Is(err, ErrCorrupt) {
-		t.Fatalf("over 16 MiB: %v", err)
-	}
-}
-
 // Header blocks with correct checksums and broken contents.
 func TestMalformedHeaders(t *testing.T) {
 	str := func(name, value string) []byte {
@@ -499,7 +462,7 @@ func FuzzDecoder(f *testing.F) {
 		}
 		// The SSE view never panics and ends the same way.
 		if _, err := io.Copy(io.Discard, NewChunkSSEReader(bytes.NewReader(data))); err != nil &&
-			err != io.ErrUnexpectedEOF && !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrTooLarge) {
+			err != io.ErrUnexpectedEOF && !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("sse: %v", err)
 		}
 	})
@@ -536,8 +499,9 @@ func TestChunkSSEReader(t *testing.T) {
 	if FormatChunk != "aws-eventstream-chunk" {
 		t.Fatalf("the format name is part of the plugin protocol: %q", FormatChunk)
 	}
-	// The largest chunk message passes; other event shapes come out empty.
-	largest := mustAppend(t, nil, nil, make([]byte, MaxChunkMessageSize-minMessageSize))
+	// The largest message the format allows passes; other event shapes come
+	// out empty.
+	largest := mustAppend(t, nil, nil, make([]byte, MaxMessageSize-minMessageSize))
 	converse := mustAppend(t, largest, []Header{{HeaderMessageType, MessageTypeEvent}, {HeaderEventType, "contentBlockDelta"}}, []byte(`{"contentBlockIndex":0,"delta":{"text":"x"}}`))
 	if got, err := io.ReadAll(NewChunkSSEReader(bytes.NewReader(converse))); err != nil || len(got) != 0 {
 		t.Fatalf("messages without chunk bytes: %q %v", got, err)
@@ -665,7 +629,8 @@ func TestChunkSSEReaderCorruptAndTruncated(t *testing.T) {
 		"cut in the prelude":   {bad[:5], io.ErrUnexpectedEOF},
 		"cut in the message":   {bad[:len(bad)-1], io.ErrUnexpectedEOF},
 		"oversized":            {rawPrelude(MaxMessageSize+1, 0), ErrCorrupt},
-		"over the chunk limit": {rawPrelude(MaxChunkMessageSize+1, 0), ErrTooLarge},
+		"prelude checksum":     {append(rawPrelude(64, 0)[:11], 0), ErrCorrupt},
+		"headers past the end": {rawPrelude(64, 64), ErrCorrupt},
 		"garbage":              {[]byte("HTTP/1.1 500 Internal Server Error\r\n\r\n"), ErrCorrupt},
 	} {
 		r := NewChunkSSEReader(bytes.NewReader(append(bytes.Clone(good), tc.tail...)))
@@ -677,6 +642,24 @@ func TestChunkSSEReaderCorruptAndTruncated(t *testing.T) {
 		if n, again := r.Read(make([]byte, 8)); n != 0 || !errors.Is(again, tc.is) {
 			t.Errorf("%s: second read %d %v", name, n, again)
 		}
+	}
+}
+
+// A chunk event whose message is larger than any fixed cap would allow
+// (here 7 MiB, the adapter used to cut a stream at 4 MiB) comes out whole:
+// only the format's own 16 MiB bounds a message.
+func TestChunkSSEReaderLargeEvent(t *testing.T) {
+	text := strings.Repeat("x", 5<<20)
+	event := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"` + text + `"}}`
+	frame := chunkFrame(t, event)
+	if len(frame) <= 4<<20 || len(frame) > MaxMessageSize {
+		t.Fatalf("frame of %d bytes", len(frame))
+	}
+	stream := append(frame, chunkFrame(t, evStop)...)
+	got, err := io.ReadAll(NewChunkSSEReader(iotest.HalfReader(bytes.NewReader(stream))))
+	want := "event: content_block_delta\ndata: " + event + "\n\nevent: message_stop\ndata: " + evStop + "\n\n"
+	if err != nil || string(got) != want {
+		t.Fatalf("err %v, %d bytes, want %d", err, len(got), len(want))
 	}
 }
 

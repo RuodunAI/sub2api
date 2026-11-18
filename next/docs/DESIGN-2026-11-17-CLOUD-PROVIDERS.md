@@ -327,7 +327,7 @@ volcengine 的素材库签名（插件自己发请求、算法细节不同）以
 | `:message-type` = `event`，负载 `{"bytes":"<base64>"}` | 解出 base64 得到模型原生事件 JSON，输出 `event: <JSON 的 type>\ndata: <JSON>\n\n`（没有 `type` 就只有 `data:` 行） |
 | `:message-type` = `exception` 或 `error` | 输出 `event: error\ndata: {"type":"error","error":{"type":"<异常类型>","message":"<消息>"}}\n\n`，然后结束 |
 | 其他事件、没有 `bytes` 的负载 | 跳过 |
-| 帧损坏（长度不合法、校验和不对、超过格式上限 16 MiB），或单条消息超过适配器自己的上限 4 MiB（`MaxChunkMessageSize`） | 读取返回错误，按上游中断处理 |
+| 帧损坏（长度不合法、校验和不对、超过格式上限 16 MiB）或截断（适配器自己的 4 MiB 上限 `MaxChunkMessageSize` 已在转发 V2 收尾时删除，CONTRACTS §112.16） | 读取返回错误，按上游中断处理 |
 
 **挂点**：`dispatch.go:923` 的嗅探之前。插件的构造结果里 `response_stream` 非空、上游状态是 2xx、并且响应的 `Content-Type` 就是该格式的媒体类型时，把 `resp.Body` 换成适配器，把 `Content-Type` 改成 `text/event-stream`。此后的一切（SSE 转发、用量规则、协议转换、首 token 计时、空闲超时、断开计费）都不用改，看到的就是普通 SSE。
 
@@ -558,7 +558,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 ### 16.2 核心扩展点（第 8 节）
 
 1. **格式名**：响应流格式叫 `aws-eventstream-chunk`（常量 `awseventstream.FormatChunk`，适配器 `awseventstream.NewChunkSSEReader`），不是 `aws-eventstream`。名字指“分帧 + 帧里事件的形状”：它只读 InvokeModelWithResponseStream 的 chunk 事件（负载 `{"bytes": base64}`），Converse 流这类别的形状要另起名字、另写适配器；`Decoder` 只管分帧，可以共用。
-2. **单条消息上限**：chunk 适配器只接受 4 MiB 以内的消息（`MaxChunkMessageSize`），超过按流中断处理；格式本身的上限 16 MiB（`MaxMessageSize`）只是解码器的默认值。
+2. **单条消息上限**：只有格式本身的上限 16 MiB（`MaxMessageSize`），超过算帧损坏。原先 chunk 适配器另限 4 MiB（`MaxChunkMessageSize`），转发 V2 收尾时按所有者“超时、限制都去掉”的决定删除（CONTRACTS §112.16）。
 3. **解码器缓冲**：帧头里声明的长度在读取和分配之前先检查（包自己读 12 字节帧头，官方解码器不检查长度）；负载缓冲随实际收到的字节成倍增长，声明的长度本身不预留内存。一条消息用过超过 256 KiB 的缓冲，下一条消息前释放。
 4. **异常帧的输出**固定是 Anthropic 流错误的形状（`event: error`，`{"type":"error","error":{"type","message"}}`），类型为空时写 `upstream_error`。
 5. **签名会改写请求**：签名器把查询串改写成规范形式（先编码，再按键、按值排序，空格写成 `%20`），发出去的就是签的那一份；解析不了的查询串（`;` 分隔、坏的转义）直接报错，不会只签一部分。主机去掉协议的默认端口（https 的 `:443`、http 的 `:80`）后写回 `req.Host`，所以发出的 Host 头就是被签名的主机。设计只写了“主机取 `req.Host`”。

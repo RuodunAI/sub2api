@@ -2414,7 +2414,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 
 核心没有准入看门狗（2026-11-08 起）。PG 的 `updater.node_admissions` 只在外壳向核心发 `/v1/admission` 时核对一次（`verifyAdmission`）；之后停核心只由外壳发起，撤销准入的每条路（升级 `stop` 步骤、禁用节点、身份撤销）都由外壳直接向核心发排空，不依赖核心自己发现；外壳死了，Caddy 的 `/readyz` 把流量切走。历史：此前核心每秒查一次该行、1 秒超时、失败一次就停内核且不留日志，2026-11-08 使 sup2api-ccp 一天自停 16 次（见 `deploy/gateway/clicodeplus/README.md`）；同日先改为只报告不自停，随后按用户决定整个去掉（连同它的专用连接 `store.OpenSingle` 与 `verifyLiveAdmission`）。外壳侧同日补齐：`Work`/`Coordinate` 的错误不再丢弃（同一错误 5 分钟记一次 WARN，恢复记 INFO），`Work` 因本机核心不就绪而走 `Recover` 重拉时记 WARN 并带核心的 mode、boot 与 blockers。
 
-内置插件安装在锁竞争或单个包失败后持续重试。就绪检查要求镜像所需版本已获批准，数据库 active 版本和本地已发布的服务实例均已获批准且不低于镜像要求；没有本地实例、版本过低或授权无效时不就绪。正常升级期间允许旧实例继续服务，不要求本地版本在每个瞬间都与数据库 active 版本相等，具体目标版本的收敛由 rollout 状态表示。管理员主动禁用的插件、尚未启用的 install-only 插件不阻断整节点就绪。进程的 Configure 只有成功应答后才记为已应用，失败会重试；权限撤销的宿主侧检查立即采用新授权，不能因插件 Configure 失败继续使用旧权限。
+内置插件安装在锁竞争或单个包失败后持续重试。就绪检查要求镜像所需版本已获批准，数据库 active 版本和本地已发布的服务实例均已获批准且不低于镜像要求；没有本地实例、版本过低或授权无效时不就绪。正常升级期间允许旧实例继续服务，不要求本地版本在每个瞬间都与数据库 active 版本相等，具体目标版本的收敛由 rollout 状态表示。管理员主动禁用的插件、尚未启用的 install-only 插件不阻断整节点就绪。这项检查只决定节点启动后何时第一次就绪，通过后不再撤回（2026-11-18）：之后内置插件的发布（启用 install-only 插件或重新启用时的 `enabling`、本机实例切换、禁用）改的是各节点共读的插件行，检查会在所有节点上同时不通过，`/healthz` 一起变成 503，负载均衡把全部请求答成 503，而每个节点其实仍在服务其他一切；这类发布中某个插件的不可用只体现在该插件的请求上（`plugin_unavailable`），收敛循环照常继续安装与重试（`app.builtinConvergence`）。收敛循环只在内置插件“未装好”时跑 `EnsureBuiltin`（`install.BuiltinsInstalled`，按 `EnsureBuiltin` 实际会做什么判断）：没有内置行或镜像版本未存或未批准、`installed` 且从未启用且不是 install-only、`enabled` 但低于镜像版本时未装好；`enabling`、`upgrading`（发布进行中，交给发布控制器）、`disabled`（含卸载等待中）、install-only 的 `installed`、不低于镜像版本的 `enabled`、`awaiting_consent` 都算装好。此前发布中的内置插件被当成未装好，某个节点每 5 秒跑一整轮 `EnsureBuiltin`（逐个上传 8 个包，每次占集群变更锁），管理员这时提交插件变更会收到 409“another cluster change is being submitted; retry”（2026-11-18）。进程的 Configure 只有成功应答后才记为已应用，失败会重试；权限撤销的宿主侧检查立即采用新授权，不能因插件 Configure 失败继续使用旧权限。
 
 ### 29.2 卸载屏障与异常节点恢复
 
@@ -7820,7 +7820,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
   - `exception` 或 `error` 消息：输出 `event: error`，`data: {"type":"error","error":{"type":<异常类型>,"message":<消息>}}`，然后流结束。这是 Anthropic 流错误的形状，用量规则把它记为上游流错误并交给故障策略。
   - 其他消息、没有 `bytes` 的事件跳过。
   - 消息由官方库解码（`github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream`）；帧头由 `awseventstream` 自己读，长度在读取和分配之前检查（官方解码器不限制长度）。一条消息里头名不重复：带同名头的消息（不论值的类型）算帧损坏，所以 `:message-type`、`:event-type`、`:exception-type` 各只有一个值（官方解码器对同名的头只留最后一个，AWS 不发同名的头）。
-  - 帧损坏（长度不合法、两处 CRC 任一不对、头块格式错、头名重复）、截断，或单条消息超过 4 MiB（`MaxChunkMessageSize`；格式自己的上限是 16 MiB）：读取出错，按上游流中断处理。
+  - 帧损坏（长度不合法、超过格式自己的上限 16 MiB、两处 CRC 任一不对、头块格式错、头名重复）或截断：读取出错，按上游流中断处理。格式允许的任何长度的消息整条读出，缓冲随到达的字节增长，不按声明的长度预先分配（转发 V2 收尾起；此前适配器在单条消息超过 4 MiB（`MaxChunkMessageSize`）时切断流）。
   - 解码器的负载缓冲随收到的字节成倍增长，帧头声明的长度不预留内存；超过 256 KiB 的缓冲不留给下一条消息。
   - 别的事件形状（如 ConverseStream）不在这个名字之内，要另起格式名、另写适配器；`awseventstream.Decoder` 只管分帧，可以共用。
 - **位置**（`adaptResponseStream`）：上游回答 2xx 之后、流的内容类型嗅探（§104）之前。回答的 `Content-Type` 正好是该格式的媒体类型时，把响应体换成适配器、`Content-Type` 改成 `text/event-stream`、去掉 `Content-Length`。此后的中继、用量规则、协议转换、首 token 计时、空闲超时、断开计费看到的都是普通 SSE。
@@ -8131,7 +8131,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - **给平台插件设上限时**：平台插件持有完整请求体，一个 N 字节的请求在插件里的峰值约 3N 到 4N。每个同时处理的大请求按“3 × 请求体上限 + 64 MB”留量；默认请求体上限 128 MB 时约 450 MB 一个。网关设置里不再有内存警告。
 
 
-## 112. 平台插件转发 V2：一条请求路径、核心的 HTTP 客户端、事实只在返回值里（2026-11-18，用户要求；插件协议 2、Host API 10；本节无迁移，同批的请求体上限见 §111；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)，插件写法见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md)）
+## 112. 平台插件转发 V2：一条请求路径、核心的 HTTP 客户端、事实只在返回值里（2026-11-18，用户要求；插件协议 2、Host API 10；迁移 0108（模型名的列，§112.16）、0109（§112.10 的拒绝原因），同批的请求体上限见 §111；设计见 [DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md](DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md)，插件写法见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md)）
 
 本节优先于前文中与之冲突的描述。项目在开发期，不做兼容：旧机制在同一次改动里删除，核心与全部第一方插件从同一个提交构建、一起发布，旧插件包被拒绝（§112.10）。
 
@@ -8272,7 +8272,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 清单检查报 `outdated_contract`（`check.CodeOutdatedContract`，`check.OutdatedContract(err)`）：`runtime: "none"`；声明 `platform.execute.v1` 或 `platform.poll.v1`；清单原文里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`（这几个字段已不在类型里，从包里的 `manifest.json` 原文读）。
 - 判断只有一处：`check.OutdatedPackage(manifest, manifestJSON, hostVersion)` 只读清单，返回信息；运行时、上传安装和 CLI 各自包成自己的错误类型。
 - 上传、安装（`pkg.Validate`）和加载（`grpcruntime.Runtime.Load`：清单检查不过时不启动进程；握手协议不符；`GetInfo` 报的协议版本不符）都以同一条信息拒绝：`protocol.OutdatedContractMessage(key, version, hostVersion)`，即 `plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<host>, plugin protocol 2); install a version built for core <first> or later`，`<first>` 是本插件协议的第一个核心版本 `protocol.FirstCoreVersion`（`0.1.304`；为它构建的插件能在之后同一协议的每个核心上加载，所以不要求为当前核心构建）；`errors.Is(err, grpcruntime.ErrOutdatedContract)` 为真。CLI 的测试要求每个平台插件的 `hostCompat` 下限等于它。
-- 加载失败时节点在实例状态里记结构化的 `code: "outdated_contract"`（`errors.Is(err, grpcruntime.ErrOutdatedContract)` 时），`error` 仍是显示的文字；接口按 `code` 判断，不比较文字（此前比较文字，而 rollout 把错误截到 500 字符，包装或长版本号会让拒绝悄悄丢失）。`GET /plugins` 的每项带 `refusal`（`{code: "outdated_contract", version, host_version, protocol_version, first_core_version, message}`），有节点以这条信息拒绝加载时非空；控制台的文字以“请安装为核心 {first} 及以上构建的版本”结尾。
+- 加载失败时节点在实例状态里记结构化的 `code: "outdated_contract"`（`errors.Is(err, grpcruntime.ErrOutdatedContract)` 时），`error` 仍是显示的文字；接口按 `code` 判断，不比较文字（此前比较文字，而 rollout 把错误截到 500 字符，包装或长版本号会让拒绝悄悄丢失）。`GET /plugins` 的每项带 `refusal`（`{code: "outdated_contract", version, host_version, protocol_version, first_core_version, message}`），有节点以这条信息拒绝加载时非空，`GET /plugins/:key` 同样带它。节点的实例状态只在实例条目还在时报告这个代码；发布结束时它随各节点的结果写进 `plugin_rollout_nodes.code`（迁移 0109），所以首次启用就被拒、发布在准备阶段失败、节点不再有这个实例之后，`refusal` 取自该插件最近一次发布里带这个代码的节点结果（`version` 为发布的目标版本，`host_version` 为应答的核心版本，`message` 为该节点的错误）；有节点正在报告时以节点报告为准。控制台的文字以“请安装为核心 {first} 及以上构建的版本”结尾。
 - 旧包装在新核心上没有降级服务，也没有“加载但不执行”。新包装在旧核心上由 `hostCompat`（第一方插件 `>=0.1.304`）拒绝。
 
 ### 112.11 升级
@@ -8336,6 +8336,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 每个插件实例 1024 个并发 `Execute` | 等不到槽位 503 | 没有兜底：并发只由账号和 API Key 的槽位限制 |
 | `RequestMeta.path_params`、`query` 32 个、名 64 字节、值 512 字节 | 截断 | 客户端发的大参数整份交给插件 |
 | SSE 单行 16 MiB | 切断流 | 超长的一行整行进内存 |
+| Bedrock 回答流（AWS event stream）单条消息 4 MiB（`awseventstream.MaxChunkMessageSize`，连同 `WithMaxMessageSize`、`ErrTooLarge`） | 切断流 | 一条消息最多到格式自己的 16 MiB 整条进内存；长度和 CRC 的一致性检查是协议本身的，保留 |
 | 协议转换读的非流式回答 32 MiB；只流式上游攒下的内容 32 MiB | 502 | 整份进内存 |
 | 非流式 JSON 回答读用量的缓冲 32 MiB | 超过的部分读不到用量，**按 0 计费** | 按整个回答计费（钱算对了）；回答在读完用量之前整份留在内存里一次 |
 | 读用量插件看到的观察：默认 256 KiB、64 条事件、请求字段单值 4 KiB / 总量 32 KiB、`detail_json` 4 KiB | 不给、略去或存 `{"_truncated":true}` | 插件拿到整份回答、全部列出的事件和整个字段值，gRPC 消息和插件内存随之变大；清单自己写了 `usageMaxBytes` 的照旧（下限 1 KiB，不再有上限） |

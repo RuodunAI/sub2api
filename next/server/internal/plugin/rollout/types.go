@@ -133,6 +133,17 @@ type broadcastReceiver interface {
 	OnBroadcast(ctx context.Context, msg grpcruntime.BroadcastMessage) error
 }
 
+// code is the code of the failed load of version reported among the
+// instances, "" when none.
+func (s NodePluginState) code(version string) string {
+	for _, in := range s.Instances {
+		if in.Version == version {
+			return in.Code
+		}
+	}
+	return ""
+}
+
 func parseState(s string) (NodePluginState, bool) {
 	var st NodePluginState
 	if s == "" || json.Unmarshal([]byte(s), &st) != nil {

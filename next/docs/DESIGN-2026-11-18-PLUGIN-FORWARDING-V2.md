@@ -1039,4 +1039,4 @@ D18 说运营方的改写在插件之前。今天声明式类型自己的过滤�
 
 1. **一致性套件接到了全部十个平台插件上**（原差异：只有 anthropic、openai、gemini、relay、azure_openai 调用）。claude_oauth、codex、vertex、bedrock、volcengine 现在都调 `conformance.Run`；只有 bedrock 声明了两处例外（流式用例的 `03_body`、全部用例的 `04_headers`，都是 InvokeModel 本身的性质，见 PLUGIN-DEVELOPMENT.md 第 4 节）。接套件的过程中改了这些插件：vertex 把核心交来的 `user-agent`、`x-goog-api-client` 作为默认头转发；claude_oauth、codex 在清单里写 `passHeaders: []`（为此清单的 `passHeaders` 区分“没写”和“空”）；套件改为从端点定义读出每个协议的形式，WebSocket 协议只归第 11 条。
 2. **使用记录有了“未上报”的显示和筛选**（8.5）。
-3. **拒绝信息仍是英文**（9.2 写的是中文句子）：`sdk/protocol/protocol.go` 的 `outdatedContractFormat`；控制台按 `refusal` 的字段另行组织文字。信息里要求的版本从“当前核心”改成本插件协议的第一个核心 `protocol.FirstCoreVersion`（0.1.304），`refusal` 多了 `first_core_version`；节点按结构化的 `code` 记录拒绝，不再靠比较文字。
+3. **拒绝信息仍是英文**（9.2 写的是中文句子）：`sdk/protocol/protocol.go` 的 `outdatedContractFormat`；控制台按 `refusal` 的字段另行组织文字。信息里要求的版本从“当前核心”改成本插件协议的第一个核心 `protocol.FirstCoreVersion`（0.1.304），`refusal` 多了 `first_core_version`；节点按结构化的 `code` 记录拒绝，不再靠比较文字。首次启用就被拒、发布在准备阶段失败、节点已经删掉失败的实例时，拒绝也照样给出：发布结束时把每个节点的代码记在 `plugin_rollout_nodes.code`（迁移 0109），`refusal` 从该插件最近一次发布的节点结果取（CONTRACTS §112.10）。
