@@ -684,11 +684,9 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	setHandshakeHeaders(header, req.GetDefaultHeaders())
 	cl.paramOverride.headers.Apply(header)
 	setHandshakeHeaders(header, req.GetHeaders())
-	dctx, dcancel := context.WithCancel(context.WithoutCancel(ctx))
-	stop := context.AfterFunc(ctx, dcancel)
+	dctx, dcancel := context.WithCancel(ctx)
 	up, resp, err := websocket.Dial(dctx, target.String(), &websocket.DialOptions{HTTPClient: execfetch.NoRedirects(client), HTTPHeader: header,
 		CompressionMode: websocket.CompressionContextTakeover})
-	stop()
 	dcancel()
 	if resp != nil {
 		s.g.observeQuota(rt, acc.ID, resp.StatusCode, resp.Header)
