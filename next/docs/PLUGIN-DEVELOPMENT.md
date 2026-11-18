@@ -159,6 +159,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 - 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖（它们描述的是客户端的请求）；拒绝 `Host`、hop-by-hop 和代理认证头。超时：`Execute` 里是账号的响应头超时和 `relay_timeout_seconds`（没设就没有整体超时），`Monitor` 里 20 秒；`Options` 只能收紧。
 - 不限次数、不限大小：一次调用取回多少次都行，回答整份交还，核心不置 `truncated`（读不完整是传输错误）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
+- 插件自己的对外连接（授权流程换令牌、Webhook、SMTP 等，不是转发也不是取回）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。取回和 `Relay` 不受这项设置影响。
 
 ### 2.7 插件自己解析用量的端点
 
