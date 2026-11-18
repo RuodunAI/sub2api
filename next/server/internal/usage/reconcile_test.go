@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -24,15 +25,16 @@ import (
 
 // ---------------------------------------------------------------- doubles
 
-// recPlugin is the PlatformService the loop talks to. build and parse are set
-// per test; both are counted, which is how "the plugin was never asked" and
-// "only one node asked" are asserted.
+// recPlugin is the PlatformService the loop talks to. Its Monitor fetches
+// the upstream double once and answers what parse makes of it (PENDING when
+// parse is unset). asks counts the Monitor calls, parses the answers it
+// gave after a fetch, which is how "the plugin was never asked" and "only
+// one node asked" are asserted.
 type recPlugin struct {
 	url    string
-	builds atomic.Int64
+	asks   atomic.Int64
 	parses atomic.Int64
-	build  func(*pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error)
-	parse  func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error)
+	parse  func(*monitorCall) (*pluginv1.ReconcileResult, error)
 	// lastAccount records what the plugin was handed, for the credential
 	// boundary assertions.
 	mu          sync.Mutex
@@ -40,32 +42,49 @@ type recPlugin struct {
 	lastEntry   *pluginv1.ReconcileEntry
 }
 
-func (p *recPlugin) BuildReconcileRequest(_ context.Context, in *pluginv1.BuildReconcileRequestRequest) (*pluginv1.BuildReconcileRequestResponse, error) {
-	p.builds.Add(1)
+// monitorCall is what recPlugin's Monitor saw: the call and its one fetch.
+type monitorCall struct {
+	Entry   *pluginv1.ReconcileEntry
+	Account *pluginv1.Account
+	Fetch   *pluginv1.ExecutionHTTPResponse
+}
+
+func (c *monitorCall) GetEntry() *pluginv1.ReconcileEntry { return c.Entry }
+
+func (p *recPlugin) Monitor(ctx context.Context, in *pluginv1.PollRequest, fetch core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+	p.asks.Add(1)
 	p.mu.Lock()
 	p.lastAccount, p.lastEntry = in.GetAccount(), in.GetEntry()
 	p.mu.Unlock()
-	if p.build != nil {
-		return p.build(in)
+	got, err := fetch(ctx, &pluginv1.ExecutionHTTPRequest{Method: "GET", Url: p.url})
+	if err != nil {
+		return nil, err
 	}
-	return &pluginv1.BuildReconcileRequestResponse{Method: "GET", Url: p.url}, nil
+	p.parses.Add(1)
+	res := &pluginv1.ReconcileResult{}
+	if p.parse != nil {
+		if res, err = p.parse(&monitorCall{Entry: in.GetEntry(), Account: in.GetAccount(), Fetch: got}); err != nil {
+			return nil, err
+		}
+	}
+	return checkedResult(res, got)
 }
 
-func (p *recPlugin) ParseReconcileResponse(_ context.Context, in *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
-	p.parses.Add(1)
-	if p.parse != nil {
-		return p.parse(in)
+// checkedResult is the runtime's rule on a Monitor result (W5): a terminal
+// state needs a complete, successful fetch of the call.
+func checkedResult(res *pluginv1.ReconcileResult, fetch *pluginv1.ExecutionHTTPResponse) (*pluginv1.ReconcileResult, error) {
+	state := res.GetState()
+	complete := fetch.GetTransportError() == "" && !fetch.GetTruncated() && fetch.GetStatus() >= 200 && fetch.GetStatus() < 300
+	if res != nil && state != pluginv1.ReconcileResult_PENDING && state != pluginv1.ReconcileResult_POLL_FAILED && !complete {
+		return nil, errors.New("a terminal result needs a complete fetch")
 	}
-	return &pluginv1.ReconcileResult{}, nil
+	return res, nil
 }
 
 func (p *recPlugin) ValidateCredentials(context.Context, *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	return nil, nil
 }
 
-func (p *recPlugin) BuildUpstreamRequest(context.Context, *pluginv1.BuildUpstreamRequestRequest) (*pluginv1.BuildUpstreamRequestResponse, error) {
-	return nil, nil
-}
 func (p *recPlugin) ClassifyError(context.Context, *pluginv1.ClassifyErrorRequest) (*pluginv1.ClassifyErrorResponse, error) {
 	return nil, nil
 }
@@ -78,14 +97,6 @@ func (p *recPlugin) BuildModelsRequest(context.Context, *pluginv1.BuildModelsReq
 func (p *recPlugin) ResolveModel(context.Context, *pluginv1.ResolveModelRequest) (*pluginv1.ResolveModelResponse, error) {
 	return nil, nil
 }
-func (p *recPlugin) ExtractUsage(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-	return nil, nil
-}
-
-func (p *recPlugin) ParseTaskSubmission(context.Context, *pluginv1.ExtractUsageRequest) (*pluginv1.TaskSubmission, error) {
-	return nil, nil
-}
-
 func (p *recPlugin) BuildQuotaRequest(context.Context, *pluginv1.BuildQuotaRequestRequest) (*pluginv1.BuildQuotaRequestResponse, error) {
 	return nil, nil
 }
@@ -340,9 +351,9 @@ func TestNoReservationBehavesAsBefore(t *testing.T) {
 	if got := rf.svc.ReconcileDue(ctx); got != 0 {
 		t.Fatalf("the loop claimed %d entries", got)
 	}
-	if rf.plugin.builds.Load() != 0 || rf.plugin.parses.Load() != 0 {
-		t.Fatalf("the plugin was asked to reconcile: %d builds, %d parses",
-			rf.plugin.builds.Load(), rf.plugin.parses.Load())
+	if rf.plugin.asks.Load() != 0 || rf.plugin.parses.Load() != 0 {
+		t.Fatalf("the plugin was asked to reconcile: %d asks, %d parses",
+			rf.plugin.asks.Load(), rf.plugin.parses.Load())
 	}
 }
 
@@ -370,7 +381,7 @@ func TestReconcileSettledAdjustsTheDifference(t *testing.T) {
 			afterReserve := rf.balance()
 
 			real := tc.real
-			rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+			rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 				return &pluginv1.ReconcileResult{
 					State: pluginv1.ReconcileResult_SETTLED,
 					Tokens: &pluginv1.UsageTokens{
@@ -382,8 +393,8 @@ func TestReconcileSettledAdjustsTheDifference(t *testing.T) {
 			if n := rf.svc.ReconcileDue(ctx); n != 1 {
 				t.Fatalf("claimed %d entries", n)
 			}
-			if rf.plugin.builds.Load() != 1 || rf.plugin.parses.Load() != 1 || rf.hits.Load() != 1 {
-				t.Fatalf("builds=%d parses=%d upstream=%d", rf.plugin.builds.Load(), rf.plugin.parses.Load(), rf.hits.Load())
+			if rf.plugin.asks.Load() != 1 || rf.plugin.parses.Load() != 1 || rf.hits.Load() != 1 {
+				t.Fatalf("asks=%d parses=%d upstream=%d", rf.plugin.asks.Load(), rf.plugin.parses.Load(), rf.hits.Load())
 			}
 			final := rf.cost("req-set")
 			if s := rf.scalar(`SELECT billing_status FROM usage_logs WHERE request_id = 'req-set'`); s != StatusBilled {
@@ -422,7 +433,7 @@ func TestReconcileFailedRefundsEverything(t *testing.T) {
 	if rf.balance().Equal(before) {
 		t.Fatal("the reservation was not charged")
 	}
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_FAILED, Reason: "content_filtered"}, nil
 	}
 	rf.due()
@@ -447,7 +458,7 @@ func TestReconcilePendingReschedules(t *testing.T) {
 	rf := reconcileFixture(t)
 	ctx := context.Background()
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-pend", "task-pend", core.UsageTokens{Input: 10, Output: 1})})
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
 	}
 	rf.due()
@@ -486,7 +497,7 @@ func TestReconcileSettledEstimateKeepsTheChargeAndSaysWhy(t *testing.T) {
 		t.Fatalf("the reservation was not charged: %s", charged)
 	}
 
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{
 			State:  pluginv1.ReconcileResult_SETTLED_ESTIMATE,
 			Reason: "status document carries no usage",
@@ -498,8 +509,8 @@ func TestReconcileSettledEstimateKeepsTheChargeAndSaysWhy(t *testing.T) {
 	if n := rf.svc.ReconcileDue(ctx); n != 1 {
 		t.Fatalf("claimed %d entries", n)
 	}
-	if rf.plugin.builds.Load() != 1 || rf.plugin.parses.Load() != 1 {
-		t.Fatalf("builds=%d parses=%d", rf.plugin.builds.Load(), rf.plugin.parses.Load())
+	if rf.plugin.asks.Load() != 1 || rf.plugin.parses.Load() != 1 {
+		t.Fatalf("asks=%d parses=%d", rf.plugin.asks.Load(), rf.plugin.parses.Load())
 	}
 	// 1. Billed, at the estimate, with the estimate's tokens - not repriced
 	//    at the zero a SETTLED answer would have carried, not refunded.
@@ -558,7 +569,7 @@ func TestReconcileSettledWithZeroTokensRefundsEverything(t *testing.T) {
 	ctx := context.Background()
 	before := rf.balance()
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-zero", "task-zero", core.UsageTokens{Input: 2000, Output: 200})})
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_SETTLED}, nil
 	}
 	rf.due()
@@ -598,7 +609,7 @@ func TestSummaryCountsAnomaliesAndEstimatedRevenue(t *testing.T) {
 		"task-s-est":  {State: pluginv1.ReconcileResult_SETTLED_ESTIMATE},
 		"task-s-real": {State: pluginv1.ReconcileResult_SETTLED, Tokens: &pluginv1.UsageTokens{InputTokens: 1000, OutputTokens: 100}},
 	}
-	rf.plugin.parse = func(in *pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(in *monitorCall) (*pluginv1.ReconcileResult, error) {
 		return answers[in.GetEntry().GetRefId()], nil
 	}
 	if _, err := rf.db.SQL.ExecContext(ctx, `UPDATE pending_settlements SET deadline_at = now() - interval '1 minute' WHERE ref_id = 'task-s-aband'`); err != nil {
@@ -705,7 +716,7 @@ func TestAbandonKeepsTheChargeAndStaysOutOfTheRetryLoop(t *testing.T) {
 		t.Fatalf("claimed %d entries", n)
 	}
 	// Nothing was asked: there was no point.
-	if rf.plugin.builds.Load() != 0 {
+	if rf.plugin.asks.Load() != 0 {
 		t.Fatalf("the plugin was asked after the deadline")
 	}
 	if s := rf.scalar(`SELECT state FROM pending_settlements`); s != SettleStateAbandoned {
@@ -806,7 +817,7 @@ func TestManualRefundAndRetryOfAnAbandonedEntry(t *testing.T) {
 		t.Fatalf("entry = %q", s)
 	}
 	// It is due now and the loop really picks it up again.
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
 	}
 	if n := rf.svc.ReconcileDue(ctx); n != 1 {
@@ -850,18 +861,19 @@ func TestReconcileRunsOnOneNodeOnly(t *testing.T) {
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-multi", "task-multi", core.UsageTokens{Input: 10, Output: 1})})
 
 	// Two services over the same database, which is what two nodes are.
+	acc := rf.svc.rec.Accounts
 	var svcs []*Service
 	for _, node := range []string{"node-a", "node-b"} {
 		s := New(rf.db, rf.ledger, rf.ledger, nil, Options{RetryInterval: time.Hour, RetryAfter: time.Hour})
 		s.StartReconcile(ctx, ReconcileDeps{
 			Registry:             recRegistry{gen: reconcileGen(rf.plugin)},
-			Accounts:             recAccounts{},
+			Accounts:             acc,
 			Proxies:              recProxies{},
 			AllowPrivateUpstream: true, NodeID: node,
 		})
 		svcs = append(svcs, s)
 	}
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
 	}
 
@@ -883,7 +895,7 @@ func TestReconcileRunsOnOneNodeOnly(t *testing.T) {
 	if claimed[0]+claimed[1] != 1 {
 		t.Fatalf("entries claimed: node-a %d, node-b %d; exactly one node must check it", claimed[0], claimed[1])
 	}
-	if got := rf.plugin.builds.Load(); got != 1 {
+	if got := rf.plugin.asks.Load(); got != 1 {
 		t.Fatalf("the plugin was asked %d times for one entry", got)
 	}
 	if s := rf.scalar(`SELECT attempts::text FROM pending_settlements`); s != "1" {
@@ -893,16 +905,16 @@ func TestReconcileRunsOnOneNodeOnly(t *testing.T) {
 
 // ---------------------------------------------------------------- credentials
 
-// The core sends the request, so it can hand the plugin the account - with
-// its credentials, but only when the account's type is that plugin's own. A
-// platform plugin that does not own the account type would otherwise be
-// shown a third party's secret for the first time, which is not a decision a
-// background loop gets to make.
+// Monitor runs on the account that served the request, credentials
+// included, and only when that account's type is the plugin's own: the
+// plugin already sees these credentials on every request it serves with the
+// account. An account of another plugin's type is never handed over; the
+// check is deferred without spending an attempt.
 func TestReconcileCredentialBoundary(t *testing.T) {
 	rf := reconcileFixture(t)
 	ctx := context.Background()
 	rf.svc.process(ctx, []*core.UsageRecord{rf.reserved("req-cred", "task-cred", core.UsageTokens{Input: 10, Output: 1})})
-	rf.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
+	rf.plugin.parse = func(*monitorCall) (*pluginv1.ReconcileResult, error) {
 		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
 	}
 	rf.due()
@@ -918,23 +930,20 @@ func TestReconcileCredentialBoundary(t *testing.T) {
 		t.Fatalf("entry = %+v", entry)
 	}
 
-	// The same account under another plugin's account type: metadata only.
+	// The same account under another plugin's account type.
 	rf2 := reconcileFixtureWith(t, &core.Account{
 		AccountRef:  core.AccountRef{ID: 7, Name: "other", PluginKey: "someone_else", Type: "other_key"},
 		Credentials: json.RawMessage(`{"api_key":"sk-not-yours"}`),
 		Settings:    json.RawMessage(`{"base_url":"https://nope.invalid"}`),
 	})
 	rf2.svc.process(ctx, []*core.UsageRecord{rf2.reserved("req-cred2", "task-cred2", core.UsageTokens{Input: 10, Output: 1})})
-	rf2.plugin.parse = func(*pluginv1.ParseReconcileResponseRequest) (*pluginv1.ReconcileResult, error) {
-		return &pluginv1.ReconcileResult{NextCheckAfterSec: 600}, nil
-	}
 	rf2.due()
 	rf2.svc.ReconcileDue(ctx)
-	rf2.plugin.mu.Lock()
-	got := rf2.plugin.lastAccount
-	rf2.plugin.mu.Unlock()
-	if got.GetCredentialsJson() != "" || got.GetSettingsJson() != "" {
-		t.Fatalf("another plugin's credentials leaked: %+v", got)
+	if rf2.plugin.asks.Load() != 0 || rf2.plugin.lastAccount != nil {
+		t.Fatalf("another plugin's account was handed over: %+v", rf2.plugin.lastAccount)
+	}
+	if s := rf2.scalar(`SELECT state || ' ' || attempts::text FROM pending_settlements`); s != "pending 0" {
+		t.Fatalf("entry = %q", s)
 	}
 }
 
