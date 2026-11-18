@@ -10,6 +10,7 @@ import { toast } from '@sub2api/ui'
 const KNOWN_ERRORS: Record<string, string> = {
   would_leave_scope: 'accounts.scopeErrors.wouldLeaveScope',
   package_gone: 'plugins.errors.packageGone',
+  cluster_change_busy: 'plugins.errors.clusterChangeBusy',
   'permission_denied proxy:manage:own': 'proxies.cannotCreate'
 }
 

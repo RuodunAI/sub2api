@@ -14,6 +14,14 @@ describe('errorMessage', () => {
     i18n.global.locale.value = 'en'
     expect(errorMessage(e)).toContain('No online node holds the package')
   })
+
+  it('words a busy cluster change (409 cluster_change_busy) in both languages', () => {
+    const e = new ApiError(409, { code: 'cluster_change_busy', message: 'another cluster change is being submitted; retry' })
+    i18n.global.locale.value = 'zh'
+    expect(errorMessage(e)).toContain('请稍后重试')
+    i18n.global.locale.value = 'en'
+    expect(errorMessage(e)).toContain('Try again in a moment')
+  })
 })
 
 describe('fieldErrors', () => {
