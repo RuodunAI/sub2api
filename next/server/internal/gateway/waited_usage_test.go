@@ -404,3 +404,26 @@ func TestWaitedRelaySpoolOverflowIsUnreported(t *testing.T) {
 	}
 	assertUnreported(t, e)
 }
+
+// Facts that do not come within core.ExecutionFactsTimeout of the stored
+// observation: the gateway cancels Execute itself and closes the execution
+// unreported, the bound the recovery sweep counts on.
+func TestWaitedRelayFactsTimeoutClosesUnreported(t *testing.T) {
+	e, _ := scriptedUsageEnv(t, func(ctx context.Context, p *fakePlatform, in *pluginv1.ExecuteRequest, client core.ExecutionClient) (core.ExecutionResult, error) {
+		req, err := p.buildUpstream(ctx, in)
+		if err != nil {
+			return core.ExecutionResult{}, err
+		}
+		if _, err := client.Relay(ctx, req); err != nil {
+			return core.ExecutionResult{}, err
+		}
+		<-ctx.Done() // a plugin that never states its facts
+		return core.ExecutionResult{}, ctx.Err()
+	})
+	e.gw.factsTimeout = 100 * time.Millisecond
+	res := e.do("/pu/v1/chat", body(testModel, false), nil)
+	if res.status != 503 || strings.Contains(string(res.body), "hello") {
+		t.Fatalf("held-back answer published: %d %s", res.status, res.body)
+	}
+	assertUnreported(t, e)
+}

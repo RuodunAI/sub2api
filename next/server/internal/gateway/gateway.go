@@ -109,6 +109,8 @@ type Gateway struct {
 	randFloat func() float64
 	// ws holds the WebSocket session limits (websocket.go).
 	ws wsLimits
+	// factsTimeout replaces core.ExecutionFactsTimeout in tests (waited.go).
+	factsTimeout time.Duration
 
 	// Model availability precheck budgets (availability.go); zero = the
 	// package constants. Overridable in tests.

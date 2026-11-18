@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -237,7 +238,8 @@ func TestExecutionCloseAfterTheGatewaysFreeRecord(t *testing.T) {
 }
 
 // The recovery sweep never bills the host's reading: a synchronous
-// execution still observed after a minute is closed as unreported. Task
+// execution still observed after executionRecoveryAge is closed as
+// unreported; one younger is left to its gateway. Task
 // submissions are left to their receipt, and everything goes after 7 days.
 func TestExecutionRecoveryMarksAndNeverBills(t *testing.T) {
 	f := newFixture(t)
@@ -249,11 +251,14 @@ func TestExecutionRecoveryMarksAndNeverBills(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	past := fmt.Sprintf("%d seconds", int((executionRecoveryAge + time.Minute).Seconds()))
+	alive := fmt.Sprintf("%d seconds", int((executionRecoveryAge - time.Minute).Seconds()))
 	stale := observe(t, f.svc, syncRecord(f, "stale"), false)
-	age(stale, "2 minutes")
+	age(stale, past)
 	fresh := observe(t, f.svc, syncRecord(f, "fresh"), false)
+	age(fresh, alive) // a plugin still fetching after the stream ended
 	task := observe(t, f.svc, syncRecord(f, "stale-task"), true)
-	age(task, "2 minutes")
+	age(task, past)
 	if err := f.svc.recoverExecutions(ctx); err != nil {
 		t.Fatal(err)
 	}

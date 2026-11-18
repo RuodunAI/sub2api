@@ -16,7 +16,7 @@ import (
 
 // fetchTimeout bounds a fetch when the environment sets no relay timeout:
 // its answer is bounded and never streamed to the client.
-const fetchTimeout = 5 * time.Minute
+const fetchTimeout = core.ExecutionHTTPDefaultTimeout
 
 // fetch is ExecutionClient.Fetch: one bounded exchange whose answer goes
 // back to the plugin (a token exchange, an upload, a preflight). It is the
