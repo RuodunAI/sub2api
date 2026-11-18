@@ -284,9 +284,10 @@ func (s *server) Dial(stream pluginv1.EgressService_DialServer) error {
 	pol := s.policy()
 	isDNS := host == DNSHost && port == DNSPort
 	isDB := host == DatabaseHost && port == DatabasePort
-	if !isDNS {
+	if !isDNS && !isDB {
 		// Every connection attempt counts for the plugin's domain list
 		// (denied ones included: they show what the plugin tries to reach).
+		// The core's own services are not external hosts.
 		s.p.logs.observe(s.key, entry.Host, port)
 	}
 
