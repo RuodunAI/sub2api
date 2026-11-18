@@ -174,16 +174,24 @@ func (g *Gateway) previewFailurePolicy(c *gin.Context) {
 	httpapi.OK(c, gin.H{"decision": in.Policy.decide(in.Facts), "text_truncated": len(in.Facts.Text) > classifyPrefix})
 }
 
-func legacyFailureSettingGuard(ctx context.Context, tx *gorm.DB) error {
+// errManagedByFailurePolicy rejects a legacy setting that a published
+// failure policy has taken over.
+var errManagedByFailurePolicy = core.ErrConflict.WithMessage("managed by settings/failure-policy")
+
+// failurePolicyPublished locks the failure settings and reports whether a
+// failure policy has been published, which takes over the legacy settings.
+func failurePolicyPublished(ctx context.Context, tx *gorm.DB) (bool, error) {
 	if err := lockFailureSettings(ctx, tx); err != nil {
-		return err
+		return false, err
 	}
 	p, err := loadFailurePolicy(ctx, tx)
-	if err != nil {
-		return err
+	return p != nil, err
+}
+
+func legacyFailureSettingGuard(ctx context.Context, tx *gorm.DB) error {
+	published, err := failurePolicyPublished(ctx, tx)
+	if err == nil && published {
+		err = errManagedByFailurePolicy
 	}
-	if p != nil {
-		return core.ErrConflict.WithMessage("managed by settings/failure-policy")
-	}
-	return nil
+	return err
 }

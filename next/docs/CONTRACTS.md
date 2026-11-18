@@ -542,7 +542,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 ### 14.4 接口收尾
 
 - **客户端请求 ID**：网关把客户端 `X-Request-Id`（截断到 128 字符）写入 `UsageRecord.ClientRequestID`；`usage_logs.client_request_id`；管理员使用记录列表/详情返回 `client_request_id`，支持 `?client_request_id=` 精确筛选（只比客户端请求 ID）。`?request_id=` 同时匹配我方请求 ID 和客户端请求 ID（`u.request_id = v OR u.client_request_id = v`，核心 0.1.277 起，§95.4；此前只比我方请求 ID）：使用记录列表、汇总、导出都经 `usage/api.go` 的 `parseFilter`，`/usage` 与 `/me/usage` 相同，自助视图仍限定本人。`client_request_id` 不唯一，一个值可以匹配多行；该列没有索引，所以 `request_id` 只在带 `from` 时才加上客户端请求 ID 那一半（按时间范围扫描，与其它无索引筛选相同）；不带 `from` 时只比我方请求 ID（走唯一索引）。控制台的时间范围总会带 `from`。
-- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。`max_request_body_mb`（请求体上限，1–1024，默认 128）与“平台调用超时”的含义见 §111。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
+- **`GET/PUT /settings/gateway`**（`settings:read` / `settings:manage`，网关负责）：`{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`，校验范围 1–10、100–30000、50–2000。发布失败策略后 `max_attempts` 由失败策略接管：写入与当前值不同时 409，相同（GET 的结果原样写回）照常保存（§58）。`max_request_body_mb`（请求体上限，1–1024，默认 128）与“平台调用超时”的含义见 §111。自动禁用设置是独立接口 `/settings/auto-disable`，见 §42.2。
 - 前端此前提出的缺失接口说明见 §15（按后端现状整理）。
 
 ## 15. 接口细节补充（按 2026-09-25 代码现状）
@@ -3579,7 +3579,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 ## 58. 核心通用失败处理
 
-- 核心提供 `/api/v1/settings/failure-policy` GET/PUT、`/preview` POST、`/history` GET，使用 `settings:read/manage`。PUT 携带 `expected_revision`，并发修改返回 409；最近 10 份历史与新配置原子保存。首次发布前保留旧行为；发布后旧重试/禁用写接口拒绝覆盖新策略。
+- 核心提供 `/api/v1/settings/failure-policy` GET/PUT、`/preview` POST、`/history` GET，使用 `settings:read/manage`。PUT 携带 `expected_revision`，并发修改返回 409；最近 10 份历史与新配置原子保存。首次发布前保留旧行为；发布后旧重试/禁用写接口拒绝覆盖新策略：`/settings/gateway` 的 `max_attempts` 与当前值不同时返回 409，相同（GET 的结果原样 PUT 回去）照常保存；`/settings/auto-disable` 的任何写入返回 409。
 - 新策略直接匹配核心错误事实，不使用插件 `ClassifyError` 的重试、冷却、禁用建议，不新增插件接口。每次请求固定策略版本，配置读取/校验失败拒绝业务请求。（2026-10-30 起例外：插件给出的带解除时间的自动禁用和配额观测照样执行，见 §69。）
 - 重试规则表和账号处理表独立首条命中。HTTP 状态码支持 400–599 和区间；关键词可空，此时仅按状态码。都填写时显式 AND/OR；传输错误没有 HTTP 状态码。只匹配前 4 KiB 错误文本。
 - 请求动作：返回、同账号重试、换号保留绑定、换号重置绑定。额外重试上限 0–9，所有动作共享预算；同账号重试耗尽后的动作必须明确配置。账号处理：不改变、定时冷却、自动禁用。自动禁用还需账号允许；禁用关闭或失败不隐式转成冷却，也不强制换号。

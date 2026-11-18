@@ -106,6 +106,12 @@
 
 **验证状态**：测试结果以各工作包的交付说明为准；整套 e2e 共 49 个用例（含 AC19、AC29、AC30–AC36）已在合并后的最终代码上运行，全部通过。e2e 新增 AC30–AC36（十个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端），e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。1、8、32、128 MiB 请求体的延迟和内存没有测量，已部署实例的停机升级步骤没有演练过（设计文档第 15 节）。
 
+### 真实数据测试发现的小毛病（核心与控制台；无迁移）
+
+分支 `feat/fv2-rdfix`，随转发 V2 一起发布。
+
+- **网关设置读出来原样保存不再 409**：发布了失败策略后，`PUT /settings/gateway` 带着与当前值相同的 `max_attempts`（例如把 GET 的结果原样写回）照常保存；改成别的值仍返回 409 `managed by settings/failure-policy`（CONTRACTS §58、§14.4）。控制台的网关设置页本来就不提交这个字段，不受影响。
+
 ### 云厂商上游：Azure OpenAI、Vertex AI、AWS Bedrock 三个新插件，OpenAI 账号可填组织与项目（azure_openai 0.1.0、vertex 0.1.0、bedrock 0.1.0，openai 的改动随 0.5.0 发布；核心加响应流格式；无迁移）
 
 分支 `feat/cloud-providers`，已在 develop 上，随转发 V2 一起发布：下面的插件都已按转发 V2 改写（上一节），签名由插件自己做，版本和最低核心以上一节为准。**没有真实云账号，三家的行为都只对文档、黄金样例和模拟上游验证过**；没验证的事项见 [设计文档](next/docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md) 第 12 节，验证之前不要对外说“已支持”。填法见 [PLUGIN-CLOUD-PROVIDERS.md](next/docs/PLUGIN-CLOUD-PROVIDERS.md)。

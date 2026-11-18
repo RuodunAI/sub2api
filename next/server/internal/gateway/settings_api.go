@@ -38,14 +38,21 @@ func (s dbGatewaySettings) update(ctx context.Context, in gatewaySettingsInput, 
 		return v, core.ErrUnavailable
 	}
 	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
+		// Once a failure policy is published it owns max_attempts: sending
+		// back the value GET returned is accepted, changing it is a conflict.
+		managed := false
 		if in.MaxAttempts != nil {
-			if err := legacyFailureSettingGuard(ctx, tx); err != nil {
+			var err error
+			if managed, err = failurePolicyPublished(ctx, tx); err != nil {
 				return err
 			}
 		}
 		if _, err := store.UpdateSettingJSONTx(ctx, tx, settingsKeyGateway, nullID(updatedBy), func(raw json.RawMessage) (json.RawMessage, error) {
 			if err := json.Unmarshal(raw, &v); err != nil {
 				return nil, err
+			}
+			if managed && *in.MaxAttempts != v.normalized().MaxAttempts {
+				return nil, errManagedByFailurePolicy
 			}
 			in.applyTo(&v)
 			return json.Marshal(v.normalized())
