@@ -211,7 +211,7 @@ export interface AccountTypeSummary {
 /**
  * Account types declared by a plugin: top-level `account_types` of a review
  * or manifest summary (CONTRACTS §13). Platforms may be ids or manifest
- * objects ({platform, requestFields, ...}).
+ * objects ({platform, endpoints, ...}).
  */
 export function accountTypesOf(o: unknown): AccountTypeSummary[] {
   return asArray<Record<string, any>>(pick(o, 'account_types', 'accountTypes')).map((a) => ({
