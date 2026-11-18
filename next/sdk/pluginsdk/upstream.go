@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
@@ -62,9 +65,10 @@ func (u *Upstream) DefaultHeader(name, value string) *Upstream {
 	return u
 }
 
-// Headers sets every header of h as authoritative, e.g. those of an
-// http.Request signed with reqsign.Sign; several values of one name are
-// joined with ", ".
+// Headers sets every header of h as authoritative; several values of one
+// name are joined with ", ". For a signed request pass only what the
+// signature produced or covers (reqsign.SignedHeaders), not req.Header:
+// every other header there would become authoritative too.
 func (u *Upstream) Headers(h http.Header) *Upstream {
 	for name, values := range h {
 		u.Header(name, strings.Join(values, ", "))
@@ -76,6 +80,22 @@ func (u *Upstream) Headers(h http.Header) *Upstream {
 func (u *Upstream) DefaultHeaders(h http.Header) *Upstream {
 	for name, values := range h {
 		u.DefaultHeader(name, strings.Join(values, ", "))
+	}
+	return u
+}
+
+// HeaderMap sets every header of h as authoritative.
+func (u *Upstream) HeaderMap(h map[string]string) *Upstream {
+	for name, value := range h {
+		u.Header(name, value)
+	}
+	return u
+}
+
+// DefaultHeaderMap sets every header of h as a default header.
+func (u *Upstream) DefaultHeaderMap(h map[string]string) *Upstream {
+	for name, value := range h {
+		u.DefaultHeader(name, value)
 	}
 	return u
 }
@@ -151,10 +171,11 @@ func (u *Upstream) millis(what string, d time.Duration) int32 {
 	return int32(ms)
 }
 
-// Build returns the request, or what makes the host refuse it.
+// Build returns the request, or what makes the host refuse it as an
+// INVALID_ARGUMENT error.
 func (u *Upstream) Build() (*pluginv1.UpstreamRequest, error) {
 	if err := errors.Join(append(u.errs, ValidateUpstreamRequest(u.request))...); err != nil {
-		return nil, err
+		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
 	return u.request, nil
 }
