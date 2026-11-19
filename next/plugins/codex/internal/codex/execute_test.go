@@ -196,18 +196,18 @@ func TestExecuteHTTP(t *testing.T) {
 }
 
 // An image request reaches the plugin converted to Responses with the chat
-// model driving the image tool at the top: the plugin reports no upstream
-// model, so the core records the image model the response names
-// (CONTRACTS §121.4). The body is edited as any other.
-func TestExecuteImagesReportNoModel(t *testing.T) {
+// model driving the image tool at the top: the plugin reports it as the
+// upstream model, as for any request, and edits the body as any other
+// (CONTRACTS §121.4).
+func TestExecuteImagesReportChatModel(t *testing.T) {
 	h := startExecuting(t, DefaultEndpoints)
 	const body = `{"model":"gpt-6-luna","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"a dot"}]}],` +
 		`"tools":[{"type":"image_generation","model":"gpt-image-2","action":"generate"}],"tool_choice":{"type":"image_generation"},"stream":true}`
-	for _, client := range []string{ProtocolImages, ProtocolImagesEdit} {
+	for _, client := range []string{ProtocolImages, "openai.images_edit"} {
 		in := execRequest(TypeDevice, ProtocolResponses, body)
 		in.Meta.ClientProtocol = client
 		r := relayed(t, h, in)
-		if r.GetUpstreamModel() != "" {
+		if r.GetUpstreamModel() != ImageChatModel {
 			t.Errorf("%s: upstream model = %q", client, r.GetUpstreamModel())
 		}
 		if gjson.GetBytes(r.GetBody(), "store").Raw != "false" || gjson.GetBytes(r.GetBody(), "instructions").Raw != `""` ||

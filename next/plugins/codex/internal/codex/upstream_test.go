@@ -73,8 +73,11 @@ func TestBuildTestRequestByProtocol(t *testing.T) {
 		body.Get("input.0.content.0.type").Str != "input_text" || r.GetModel() != "gpt-image-2" || r.GetUsageProtocol() != ProtocolResponses {
 		t.Fatalf("image test = %v", r)
 	}
-	if _, err := build("gpt-6-sol", "openai.embeddings"); status.Code(err) != codes.InvalidArgument {
+	if _, err := build("gpt-6-sol", "openai.embeddings"); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("no protocol to test: %v", err)
+	}
+	if r, err := build("gpt-6-sol"); err != nil || gjson.Get(r.GetBodyJson(), "tools").Exists() {
+		t.Fatalf("no protocols: %v %v", r, err)
 	}
 }
 

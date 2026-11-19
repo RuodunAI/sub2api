@@ -152,20 +152,8 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		Header("session_id", session).
 		Header("conversation_id", session).
 		Body(body).
-		Model(upstreamModel(in)).
+		Model(pluginsdk.RequestModel(in)).
 		Build()
-}
-
-// upstreamModel is the model the request reports going upstream with: the
-// body's, except for an image request, whose body's model is the chat model
-// driving the image tool (ImageChatModel); the core then records the image
-// model the response names (CONTRACTS §121.4).
-func upstreamModel(in *pluginv1.ExecuteRequest) string {
-	switch in.GetMeta().GetClientProtocol() {
-	case ProtocolImages, ProtocolImagesEdit:
-		return ""
-	}
-	return pluginsdk.RequestModel(in)
 }
 
 // transport starts the request of an upstream protocol: the HTTP request
@@ -237,7 +225,8 @@ func systemRole(item gjson.Result) (gjson.Result, bool) {
 // BuildTestRequest implements pluginsdk.Platform: a streaming Responses
 // request (store=false, stream=true, an input array, empty instructions)
 // for the first of the offered protocols the plugin tests (CONTRACTS
-// §122; none offered is the Responses test, as with the standard library):
+// §122; as with the standard library, none offered is the Responses test
+// and none of them among those offered FailedPrecondition):
 // openai.responses, or openai.chat that reaches it converted, is
 // the smallest one ("ping"); openai.images is the image request the core
 // converts an image generation to (CONTRACTS §121.2): the model in the
@@ -266,7 +255,7 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 	switch {
 	case len(protocols) == 0:
 	case i < 0:
-		return nil, status.Errorf(codes.InvalidArgument, "no protocol to test among %v", protocols)
+		return nil, status.Errorf(codes.FailedPrecondition, "no test request for protocols %v", protocols)
 	case protocols[i] == ProtocolImages:
 		body["model"], body["input"] = ImageChatModel, json.RawMessage(userMessage("a small white dot"))
 		body["tools"] = []map[string]any{{"type": "image_generation", "model": model, "output_format": "png", "quality": "low"}}
