@@ -1,11 +1,8 @@
 // The account forms (apikey: createApiKeyForm; relay: RelayForm) as the
-// account editor mounts them. The cases below are the inputs the retired
-// schema forms (forms/apikey, forms/relay) were compared on, with the value
-// and verdict both gave, written out; one case differs on purpose and says so,
-// and the relay's api_key cases follow the any-non-empty-key rule the schema
-// forms predate (a short, long, spaced or non-ASCII key is accepted).
-// The apikey form's api_key and base_url cases are the shared ones
-// (keyAndUrlCases).
+// account editor mounts them: each case is an input and the value and
+// verdict the form must give for it. The apikey form's api_key and base_url
+// cases are the shared ones (keyAndUrlCases); the relay's api_key takes any
+// key that is not blank (a short, long, spaced or non-ASCII key is accepted).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises, type VueWrapper } from '@vue/test-utils'
 import { cleanup, control, fakeHost, fillControls, keyAndUrlCases, mountAccountForm } from '@sub2api/ui/testing'
@@ -68,10 +65,9 @@ async function run(form: object, labels: Record<string, string>, c: Case, type: 
   return { value: saved(), ok: await validate() }
 }
 
-// The one intended difference (design 5.9): typing into a stored secret and
-// emptying the box again keeps the stored value (******, valid), where the
-// schema form sent '' and refused it as missing (keyAndUrlCases' "edit: the
-// emptied key box keeps the stored key", and the relay case below).
+// Typing into a stored secret and emptying the box again keeps the stored
+// value (******, valid; design 5.9): keyAndUrlCases' "edit: the emptied key
+// box keeps the stored key", and the relay case below.
 const APIKEY: Case[] = [
   { name: 'AK/SK pair', typed: [['api_key', 'ark-key-12345678'], ['access_key', 'AKLT12345678'], ['secret_key', 'secret12345678']], out: { api_key: 'ark-key-12345678', access_key: 'AKLT12345678', secret_key: 'secret12345678' }, ok: true },
   { name: 'access key alone (the pair is the server rule)', typed: [['api_key', 'ark-key-12345678'], ['access_key', 'AKLT12345678']], out: { api_key: 'ark-key-12345678', access_key: 'AKLT12345678' }, ok: true },

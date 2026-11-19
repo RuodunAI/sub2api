@@ -271,12 +271,9 @@ describe('SFormSection', () => {
   })
 })
 
-// The anthropic account form written with createApiKeyForm (DESIGN §5.10),
-// with the keys of the schema form it replaced (plugins/anthropic/forms/apikey.schema.json, deleted):
-//   required: [api_key]; additionalProperties: false; no defaults;
-//   base_url: ^(https?://[^\s?#]+)?$ (ui: url-presets, presets [https://api.anthropic.com]).
-// The api_key verdicts follow DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES §5.1:
-// any non-blank string (the schema form wanted 8–512 visible ASCII characters).
+// The anthropic account form written with createApiKeyForm (DESIGN §5.10):
+//   api_key required, any non-blank string (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES §5.1);
+//   base_url ^(https?://[^\s?#]+)?$ with the preset https://api.anthropic.com; no defaults.
 describe('createApiKeyForm: the anthropic form', () => {
   const Anthropic = createApiKeyForm({
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => 'Leave empty to use https://api.anthropic.com' },

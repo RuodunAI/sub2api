@@ -12,8 +12,7 @@ afterEach(cleanup)
 
 describe('NewAPIKeyForm', () => {
   const accountType = { plugin_key: 'newapi', type: 'apikey' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   for (const c of keyAndUrlCases('sk-abcdefgh', 'https://site.example.com', true)) {
     it(c.name, async () => {
       const { w, saved, validate } = mountAccountForm(NewAPIKeyForm, { accountType, stored: c.stored })

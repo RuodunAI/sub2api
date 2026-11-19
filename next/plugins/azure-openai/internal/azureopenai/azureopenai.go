@@ -112,8 +112,9 @@ func Deployment() standard.Type {
 // azure is what both types change in the openai preset: a required resource
 // endpoint without a default, saved as written, its trailing /openai/v1 or
 // /openai left out when each route's full path is appended, the credentials
-// api_key, base_url and fields only (their rules in ValidateCredentials), the key in api-key, the routes given and the
-// preset's tests on them, no model listing.
+// api_key, base_url and fields only (their rules in ValidateCredentials), the
+// key in api-key, the routes given and the preset's tests on them, no model
+// listing.
 func azure(id string, fields fieldcheck.Fields, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
 	t.Spec.Fields = fields

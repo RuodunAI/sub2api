@@ -12,8 +12,7 @@ afterEach(cleanup)
 
 describe('RelayKeyForm', () => {
   const accountType = { plugin_key: 'relay', type: 'relay_key' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   for (const c of keyAndUrlCases('sk-relay-abcdef', 'https://site.example.com', true)) {
     it(c.name, async () => {
       const { w, saved, validate } = mountAccountForm(RelayKeyForm, { accountType, stored: c.stored })

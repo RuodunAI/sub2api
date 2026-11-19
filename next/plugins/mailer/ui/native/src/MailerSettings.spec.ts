@@ -114,12 +114,8 @@ describe('MailerSettings', () => {
   })
 })
 
-// Rules of the settings, one case per constraint of the JSON Schema form it
-// replaces (written out: the schema file is gone): the value the form saves
-// and whether it lets it be saved. Checked against that form on 78 inputs
-// before it was deleted: the same values and verdicts, except an unknown
-// security mode, which the schema form's own check let through (the core's
-// schema check refused it) and these rules refuse.
+// Rules of the settings, one case per constraint: the value the form saves
+// and whether it lets it be saved.
 describe('MailerSettings rules', () => {
   const cases: Array<{ name: string; set: M; ok: boolean }> = [
     { name: 'defaults', set: {}, ok: true },

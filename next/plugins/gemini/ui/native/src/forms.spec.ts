@@ -12,8 +12,7 @@ afterEach(cleanup)
 
 describe('GeminiKeyForm', () => {
   const accountType = { plugin_key: 'gemini', type: 'apikey' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   for (const c of keyAndUrlCases('AIzaSyAbcdefgh', 'https://x.example.com/gemini', false)) {
     it(c.name, async () => {
       const { w, saved, validate } = mountAccountForm(GeminiKeyForm, { accountType, stored: c.stored })
@@ -29,7 +28,7 @@ describe('GeminiKeyForm', () => {
     expect(control(w, LABELS.api_key).attributes('placeholder')).toBe('AIza...')
     expect(control(w, LABELS.base_url).attributes('placeholder')).toBe(messages.en.baseUrl.placeholder)
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help]) expect(w.text()).toContain(help)
-    // The presets of the former form (ui:options.presets).
+    // The official address, offered as a preset.
     expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://generativelanguage.googleapis.com'])
   })
 
