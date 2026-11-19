@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ApiError, type PluginHost } from '@sub2api/host'
-import { SInput, SSecretInput, SSegmented, SSettingRow, SSwitch } from '@sub2api/ui'
+import { SField, SInput, SSecretInput, SSegmented, SSettingRow, SSwitch } from '@sub2api/ui'
 import SettingsTab from './SettingsTab.vue'
 import DurationInput from './DurationInput.vue'
 import JevQuestionsEditor from './JevQuestionsEditor.vue'
@@ -34,7 +34,7 @@ beforeEach(() => {
   coreGet.mockImplementation(async () => ({ values: structuredClone(stored), secret_fields: ['api_key', 'notify_webhook_secret', 'notify_webhook_url'] }))
   corePut.mockImplementation(async () => ({ values: stored }))
   pluginGet.mockImplementation(async (path) => (path === '/jev/default-questions' ? { builtin: BUILTIN, builtin_version: 'v3', openai_categories: ['violence', 'hate'] } : path === '/status' ? { lists_imported: true } : []))
-  const t = (key: string) => key
+  const t = (key: string, p?: Record<string, unknown>) => (p ? `${key} ${JSON.stringify(p)}` : key)
   setHost({
     t,
     i18n: { t, text: (v: { zh?: string } | string) => (typeof v === 'string' ? v : (v?.zh ?? '')), formatNumber: String, locale: { value: 'zh' } },
@@ -283,49 +283,107 @@ describe('the Jev default set', () => {
     expect(typed.put).toEqual({ ...STORED, jev_default_set: { preamble: 'x', items: [{ ...ROW, question: 'new question?', threshold: 0.7 }] } })
   })
 
-  it('refuses the tables the settings form refused', async () => {
-    const bad: [string, Edit][] = [
-      ['no question', (w) => button(w, 'delete').trigger('click')],
-      ['a new row left empty', (w) => button(w, 'auditors.addQuestion').trigger('click')],
-      ['a bad category', (w) => input(w, CATEGORY).setValue('Bad')],
-      ['an empty question', (w) => textarea(w, QUESTION).setValue('')],
-      ['threshold 0', (w) => input(w, THRESHOLD).setValue('0')],
-      ['threshold above 1', (w) => input(w, THRESHOLD).setValue('1.5')]
+  /** The message shown at each invalid control of the table, by the path of its cell. */
+  function cellErrors(w: W): Record<string, string> {
+    const out: Record<string, string> = {}
+    for (const f of editor(w).findAllComponents(SField)) {
+      if (f.find('[aria-invalid="true"]').exists()) out[f.props('prop') as string] = f.find('.input-error-text').text()
+    }
+    return out
+  }
+  const at = (i: number, field: string) => `jev_default_set.items.${i}.${field}`
+  const add: Edit = (w) => button(w, 'auditors.addQuestion').trigger('click')
+  /** Row 1 (added): its category input and question box. */
+  const ROW1_CATEGORY = 5
+  const ROW1_QUESTION = 2
+
+  it('refuses the tables the settings form refused, each at its cell', async () => {
+    const bad: [string, Record<string, string>, Edit][] = [
+      ['a new row left empty', { [at(1, 'label')]: 'settingsTab.jev.labelRequired', [at(1, 'question')]: 'settingsTab.jev.question {"n":2000}' }, add],
+      ['a bad category', { [at(0, 'category')]: 'settingsTab.jev.category' }, (w) => input(w, CATEGORY).setValue('Bad')],
+      ['an empty question', { [at(0, 'question')]: 'settingsTab.jev.question {"n":2000}' }, (w) => textarea(w, QUESTION).setValue('')],
+      ['threshold 0', { [at(0, 'threshold')]: 'settingsTab.jev.threshold' }, (w) => input(w, THRESHOLD).setValue('0')],
+      ['threshold above 1', { [at(0, 'threshold')]: 'settingsTab.jev.threshold' }, (w) => input(w, THRESHOLD).setValue('1.5')]
     ]
-    for (const [name, edit] of bad) {
+    for (const [name, errors, edit] of bad) {
       stored = STORED
       corePut.mockClear()
       const { w, put } = await save('jev', edit)
       expect(put, name).toBeNull()
-      expect(row(w, 'jev_default_set').find('.input-error-text').exists(), name).toBe(true)
+      expect(cellErrors(w), name).toEqual(errors)
       w.unmount()
     }
+    // no question at all: at the set's row
+    stored = STORED
+    const { w, put } = await save('jev', (w) => button(w, 'delete').trigger('click'))
+    expect(put).toBeNull()
+    expect(row(w, 'jev_default_set').find('.input-error-text').text()).toBe('settingsTab.jev.items {"min":1,"max":32}')
   })
 
-  it('refuses the tables JevQuestions.Validate refuses, naming the question', async () => {
-    /** Row 1 (added) inputs: category, label, threshold, answer yes, answer no. */
-    const ROW1_CATEGORY = 5
-    const ROW1_QUESTION = 2
-    const bad: [string, string, Edit[]][] = [
+  it('refuses the tables JevQuestions.Validate refuses, at the cell', async () => {
+    const bad: [string, Record<string, string>, Edit[]][] = [
       [
         'a repeated category',
-        'settingsTab.jev.duplicate',
-        [(w) => button(w, 'auditors.addQuestion').trigger('click'), (w) => input(w, ROW1_CATEGORY).setValue('violence'), (w) => textarea(w, ROW1_QUESTION).setValue('again?')]
+        { [at(1, 'category')]: 'settingsTab.jev.duplicate {"first":1}' },
+        [add, (w) => input(w, ROW1_CATEGORY).setValue('violence'), (w) => textarea(w, ROW1_QUESTION).setValue('again?')]
       ],
-      ['a custom category without a label', 'settingsTab.jev.labelRequired', [(w) => input(w, CATEGORY).setValue('custom/x')]],
-      ['a question of only spaces', 'settingsTab.jev.question', [(w) => textarea(w, QUESTION).setValue('  \n ')]]
+      ['a custom category without a label', { [at(0, 'label')]: 'settingsTab.jev.labelRequired' }, [(w) => input(w, CATEGORY).setValue('custom/x')]],
+      ['a question of only spaces', { [at(0, 'question')]: 'settingsTab.jev.question {"n":2000}' }, [(w) => textarea(w, QUESTION).setValue('  \n ')]]
     ]
-    for (const [name, message, edits] of bad) {
+    for (const [name, errors, edits] of bad) {
       stored = STORED
       corePut.mockClear()
       const { w, put } = await save('jev', ...edits)
       expect(put, name).toBeNull()
-      expect(row(w, 'jev_default_set').find('.input-error-text').text(), name).toBe(message)
+      expect(cellErrors(w), name).toEqual(errors)
+      expect(row(w, 'jev_default_set').findAll('.input-error-text'), name).toHaveLength(Object.keys(errors).length)
       w.unmount()
     }
     // a custom category with a label, an OpenAI one without: saved
     stored = STORED
     const { put } = await save('jev', (w) => input(w, CATEGORY).setValue('custom/x'), (w) => input(w, 1).setValue('X'))
     expect(put).toEqual({ ...STORED, jev_default_set: { preamble: 'p', items: [{ ...ROW, category: 'custom/x', label: 'X' }] } })
+  })
+
+  it('shows a refusal of the plugin at the cell its pointer names', async () => {
+    stored = STORED
+    corePut.mockRejectedValueOnce(
+      new ApiError(400, { code: 'invalid_argument', message: 'invalid argument', details: { fields: [{ field: 'values/jev_default_set/items/0/question', code: 'required', message: 'question is required' }] } })
+    )
+    const { w } = await save('jev', (w) => textarea(w, QUESTION).setValue('new?'))
+    expect(corePut).toHaveBeenCalled()
+    expect(cellErrors(w)).toEqual({ [at(0, 'question')]: 'question is required' })
+    expect(toast).not.toHaveBeenCalledWith(expect.anything(), 'error')
+  })
+
+  it('leaves no message at another question once a question is removed', async () => {
+    stored = STORED
+    const { w } = await save('jev', (w) => input(w, CATEGORY).setValue('Bad'), add, (w) => input(w, ROW1_CATEGORY).setValue('hate'), (w) => textarea(w, ROW1_QUESTION).setValue('q2?'))
+    expect(cellErrors(w)).toEqual({ [at(0, 'category')]: 'settingsTab.jev.category' })
+    await button(w, 'delete').trigger('click')
+    await flushPromises()
+    expect(editor(w).findAll('.mod-question')).toHaveLength(1)
+    expect(cellErrors(w)).toEqual({})
+  })
+
+  it('works without a form around it (the auditor editor), a box per field as before', async () => {
+    const w = mount(JevQuestionsEditor, { props: { modelValue: structuredClone(BUILTIN) } })
+    await flushPromises()
+    expect(w.findAll('input')).toHaveLength(5)
+    expect(w.findAll('textarea')).toHaveLength(2)
+    expect(w.findAllComponents(SField).every((f) => f.props('prop') === undefined)).toBe(true)
+  })
+})
+
+describe('a stored setting of another page that breaks the rules', () => {
+  it('is named when it refuses the save of this page', async () => {
+    stored = STORED
+    corePut.mockRejectedValueOnce(
+      new ApiError(400, { code: 'invalid_argument', message: 'invalid argument', details: { fields: [{ field: 'values/jev_default_set/items/1/category', code: 'duplicate', message: 'repeated' }] } })
+    )
+    const { w } = await save('policy', typeIn('mode', 'enforce'))
+    expect(toast).toHaveBeenCalledWith('settingsTab.storedInvalid {"keys":"settingsTab.field.jev_default_set.label"}', 'error')
+    expect(toast).not.toHaveBeenCalledWith(expect.stringContaining('invalid argument'), 'error')
+    expect(w.findAll('.input-error-text')).toHaveLength(0)
   })
 })
