@@ -408,9 +408,10 @@ func TestSpecFields(t *testing.T) {
 }
 
 // NoBaseURL: a type without base_url refuses one in either object as an
-// unknown key, whatever its value, and saves the others as they are.
+// unknown key, whatever its value and even when Fields names it, and saves
+// the others as they are; FromAccount reads no base_url.
 func TestSpecNoBaseURL(t *testing.T) {
-	s := Spec{AccountType: "apikey", NoBaseURL: true, Fields: fieldcheck.Fields{"project_id": fieldcheck.Any()}}
+	s := Spec{AccountType: "apikey", NoBaseURL: true, Fields: fieldcheck.Fields{"project_id": fieldcheck.Any(), "base_url": fieldcheck.Any()}}
 	for _, req := range []*pluginv1.ValidateCredentialsRequest{
 		{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"https://u.example"}`},
 		{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"not a url"}`},
@@ -423,5 +424,9 @@ func TestSpecNoBaseURL(t *testing.T) {
 		CredentialsJson: `{"api_key":" sk-12345678 "}`, SettingsJson: `{"project_id":"p"}`})
 	if len(resp.GetErrors()) != 0 || resp.GetNormalizedCredentialsJson() != `{"api_key":"sk-12345678"}` || resp.GetNormalizedSettingsJson() != `{"project_id":"p"}` {
 		t.Fatalf("valid = %v", resp)
+	}
+	cfg, err := s.FromAccount(&pluginv1.Account{CredentialsJson: `{"api_key":"k"}`, SettingsJson: `{"base_url":"not a url"}`})
+	if err != nil || *cfg != (Config{APIKey: "k"}) {
+		t.Fatalf("FromAccount = %+v, %v", cfg, err)
 	}
 }
