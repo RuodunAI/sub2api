@@ -62,7 +62,8 @@ var settingsRules = fieldcheck.Fields{
 }
 
 // jevSetRules and jevItemRules are a jev_default_set table and one of its
-// rows; a threshold must also be above 0 (checkJevSet).
+// rows; a threshold must also be above 0 (checkJevSet), and the rules a row's
+// fields alone do not decide are checkJevRow's.
 var (
 	jevSetRules = fieldcheck.Fields{
 		"preamble": fieldcheck.String().MaxLen(maxJevPreambleRunes),
@@ -109,6 +110,7 @@ func checkJevSet(errs pluginsdk.FieldErrors, v any) pluginsdk.FieldErrors {
 	}
 	errs = nestErrors(errs, jevSetKey, fieldcheck.Check(jevSetRules, set))
 	items, _ := set["items"].([]any)
+	seen := map[string]bool{}
 	for i, item := range items {
 		at := jevSetKey + "/items/" + strconv.Itoa(i)
 		row, ok := item.(map[string]any)
@@ -120,7 +122,34 @@ func checkJevSet(errs pluginsdk.FieldErrors, v any) pluginsdk.FieldErrors {
 		if th, ok := row["threshold"].(float64); ok && th <= 0 {
 			rowErrs = rowErrs.Add("threshold", "minimum", "threshold must be greater than 0 / threshold 必须大于 0")
 		}
-		errs = nestErrors(errs, at, rowErrs)
+		errs = nestErrors(errs, at, checkJevRow(rowErrs, row, seen))
+	}
+	return errs
+}
+
+// checkJevRow adds to the errors of a row what JevQuestions.Validate also
+// refuses beyond jevItemRules, each on a field whose own rules passed: the
+// category of an earlier row (seen), a custom category without a label
+// (jevLabelMissing) and a question of only white space (jevQuestionBlank).
+func checkJevRow(errs pluginsdk.FieldErrors, row map[string]any, seen map[string]bool) pluginsdk.FieldErrors {
+	failed := map[string]bool{}
+	for _, e := range errs {
+		failed[e.GetField()] = true
+	}
+	category, _ := row["category"].(string)
+	label, _ := row["label"].(string)
+	question, _ := row["question"].(string)
+	if !failed["category"] {
+		if seen[category] {
+			errs = errs.Add("category", "duplicate", "category repeats the category of an earlier question / category 与前面某题的类别重复")
+		}
+		seen[category] = true
+		if !failed["label"] && jevLabelMissing(category, label) {
+			errs = errs.Add("label", "required", "label is required for a custom category / 自定义类别的 label 不能为空")
+		}
+	}
+	if !failed["question"] && jevQuestionBlank(question) {
+		errs = errs.Add("question", "required", "question is required / question 不能为空")
 	}
 	return errs
 }

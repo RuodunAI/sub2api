@@ -53,7 +53,12 @@ const keys = computed(() => pageKeys(props.page))
 /** This page's values as shown. */
 const values = ref<Record<string, unknown>>({})
 const serverErrors = ref<FieldErrors>({})
-const form = useForm({ model: () => values.value, update: (v) => (values.value = v), rules: () => settingRules(keys.value, t), serverErrors: () => serverErrors.value })
+const form = useForm({
+  model: () => values.value,
+  update: (v) => (values.value = v),
+  rules: () => settingRules(keys.value, t, defaults.value?.openai_categories ?? []),
+  serverErrors: () => serverErrors.value
+})
 const saving = ref(false)
 /** The status (loaded by the dashboard) says the lists are not imported yet: no save. */
 const status = useStatus()

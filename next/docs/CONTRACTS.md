@@ -4439,6 +4439,8 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 | `pass_retention_days` | 3（上限 3） |
 | `jev_default_set` | null，是 Jev 审核器的默认题集 |
 
+- `jev_default_set` 的校验（0.12.2）：保存时（`ValidateSettings`）除各字段的上下限外，还拒绝 `JevQuestions.Validate` 不接受的表（类别重复报 `items/<i>/category` `duplicate`，自定义类别没填名称报 `items/<i>/label` `required`，问题只有空白报 `items/<i>/question` `required`），两处共用 `engine.go` 的判断；运行时（`Configure`）遇到这样的已存表照旧改用内置题集、只记不含值的警告。库里存着这样的表时，之后任何设置页的保存都会被拒，直到把题集改对。
+
 - **0.6.0 新增**（2026-10-31 团队审核后，用户要求；都在插件详情页的通用设置表单里）：
 
 | 设置 | 默认值 / 范围 | 说明 |

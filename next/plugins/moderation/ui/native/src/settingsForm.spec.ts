@@ -193,22 +193,31 @@ describe('the defaults', () => {
 describe('jevIssue', () => {
   const t = (k: string, p?: Record<string, unknown>) => `${k}${p ? ' ' + JSON.stringify(p) : ''}`
   const row = { category: 'violence', label: '', question: 'q?', answer_yes: '', answer_no: '', threshold: 0.5 }
+  const OPENAI = ['violence', 'hate']
   const set = (over: Record<string, unknown> = {}, rows = [row]) => ({ preamble: '', items: rows, ...over })
   it('accepts the built-in set (null) and a valid table, thresholds typed as text too', () => {
-    expect(jevIssue(null, t)).toBeUndefined()
-    expect(jevIssue(set({}, [{ ...row, threshold: '1' as unknown as number }]), t)).toBeUndefined()
+    expect(jevIssue(null, t, OPENAI)).toBeUndefined()
+    expect(jevIssue(set({}, [{ ...row, threshold: '1' as unknown as number }]), t, OPENAI)).toBeUndefined()
   })
   it('refuses what the settings form refused', () => {
-    expect(jevIssue(set({}, []), t)).toBe('settingsTab.jev.items {"min":1,"max":32}')
-    expect(jevIssue(set({}, Array(JEV_LIMITS.items.max + 1).fill(row)), t)).toContain('settingsTab.jev.items')
-    expect(jevIssue(set({ preamble: 'x'.repeat(2001) }), t)).toContain('settingsTab.jev.preamble')
-    expect(jevIssue(set({}, [{ ...row, category: 'Bad' }]), t)).toBe('settingsTab.jev.category {"row":1}')
-    expect(jevIssue(set({}, [{ ...row, category: 'x'.repeat(65) }]), t)).toContain('settingsTab.jev.category')
-    expect(jevIssue(set({}, [{ ...row, label: 'x'.repeat(65) }]), t)).toContain('settingsTab.jev.label')
-    expect(jevIssue(set({}, [{ ...row, question: '' }]), t)).toContain('settingsTab.jev.question')
-    expect(jevIssue(set({}, [{ ...row, question: 'x'.repeat(2001) }]), t)).toContain('settingsTab.jev.question')
-    expect(jevIssue(set({}, [{ ...row, answer_no: 'x'.repeat(1001) }]), t)).toContain('settingsTab.jev.answer')
-    for (const threshold of [0, 1.01, Number.NaN]) expect(jevIssue(set({}, [{ ...row, threshold }]), t)).toContain('settingsTab.jev.threshold')
+    expect(jevIssue(set({}, []), t, OPENAI)).toBe('settingsTab.jev.items {"min":1,"max":32}')
+    expect(jevIssue(set({}, Array(JEV_LIMITS.items.max + 1).fill(row)), t, OPENAI)).toContain('settingsTab.jev.items')
+    expect(jevIssue(set({ preamble: 'x'.repeat(2001) }), t, OPENAI)).toContain('settingsTab.jev.preamble')
+    expect(jevIssue(set({}, [{ ...row, category: 'Bad' }]), t, OPENAI)).toBe('settingsTab.jev.category {"row":1}')
+    expect(jevIssue(set({}, [{ ...row, category: 'x'.repeat(65) }]), t, OPENAI)).toContain('settingsTab.jev.category')
+    expect(jevIssue(set({}, [{ ...row, label: 'x'.repeat(65) }]), t, OPENAI)).toContain('settingsTab.jev.label')
+    expect(jevIssue(set({}, [{ ...row, question: '' }]), t, OPENAI)).toContain('settingsTab.jev.question')
+    expect(jevIssue(set({}, [{ ...row, question: 'x'.repeat(2001) }]), t, OPENAI)).toContain('settingsTab.jev.question')
+    expect(jevIssue(set({}, [{ ...row, answer_no: 'x'.repeat(1001) }]), t, OPENAI)).toContain('settingsTab.jev.answer')
+    for (const threshold of [0, 1.01, Number.NaN]) expect(jevIssue(set({}, [{ ...row, threshold }]), t, OPENAI)).toContain('settingsTab.jev.threshold')
+  })
+  it('refuses what JevQuestions.Validate refuses: a repeated category, a custom one without a label, a blank question', () => {
+    expect(jevIssue(set({}, [row, { ...row, category: 'hate' }, row]), t, OPENAI)).toBe('settingsTab.jev.duplicate {"row":3,"first":1}')
+    expect(jevIssue(set({}, [row, { ...row, category: 'custom/x' }]), t, OPENAI)).toBe('settingsTab.jev.labelRequired {"row":2}')
+    expect(jevIssue(set({}, [{ ...row, category: 'custom/x', label: ' \t' }]), t, OPENAI)).toBe('settingsTab.jev.labelRequired {"row":1}')
+    expect(jevIssue(set({}, [{ ...row, category: 'custom/x', label: 'X' }]), t, OPENAI)).toBeUndefined()
+    expect(jevIssue(set({}, [row]), t, [])).toBe('settingsTab.jev.labelRequired {"row":1}')
+    expect(jevIssue(set({}, [{ ...row, question: ' \n ' }]), t, OPENAI)).toBe('settingsTab.jev.question {"row":1,"n":2000}')
   })
 })
 

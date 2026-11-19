@@ -1,12 +1,17 @@
 package moderation
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"maps"
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
 // The settings form of forms/settings.schema.json (removed in 0.12.2) as plain
@@ -36,6 +41,15 @@ var schemaIntegers = map[string][2]float64{
 var schemaBools = []string{"auto_watch", "record_pass", "record_overturned", "record_errors", "store_text", "record_pass_input_message"}
 
 const jevRow = `{"category":"violence","label":"","question":"q?","answer_yes":"","answer_no":"","threshold":0.5}`
+
+// jevRows is n valid rows of distinct 64-character categories, labelled label.
+func jevRows(n int, label string) string {
+	rows := make([]string, n)
+	for i := range rows {
+		rows[i] = fmt.Sprintf(`{"category":"%064d","label":"%s","question":"q","threshold":1}`, i, label)
+	}
+	return strings.Join(rows, ",")
+}
 
 // fullSettings: every key set, the optional ones (secrets, the question set) too.
 func fullSettings() map[string]any {
@@ -129,22 +143,27 @@ func TestCheckSettingsRefusesWhatTheFormRefused(t *testing.T) {
 		{"jev_default_set", `{"preamble":"` + strings.Repeat("x", 2001) + `","items":[` + jevRow + `]}`, "jev_default_set/preamble", "maxLength"},
 		{"jev_default_set", `{"items":{}}`, "jev_default_set/items", "type"},
 		{"jev_default_set", `{"items":[]}`, "jev_default_set/items", "minItems"},
-		{"jev_default_set", `{"items":[` + strings.Repeat(jevRow+",", 32) + jevRow + `]}`, "jev_default_set/items", "maxItems"},
+		{"jev_default_set", `{"items":[` + jevRows(33, "a") + `]}`, "jev_default_set/items", "maxItems"},
 		{"jev_default_set", `{"items":["q"]}`, "jev_default_set/items/0", "type"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":0.5,"x":1}]}`, "jev_default_set/items/0/x", "unknown"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":0.5,"x":1}]}`, "jev_default_set/items/0/x", "unknown"},
 		{"jev_default_set", `{"items":[{"question":"q","threshold":0.5}]}`, "jev_default_set/items/0/category", "required"},
 		{"jev_default_set", `{"items":[{"category":"Bad","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/category", "pattern"},
 		{"jev_default_set", `{"items":[{"category":"` + strings.Repeat("a", 65) + `","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/category", "pattern"},
 		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":0.5,"label":"` + strings.Repeat("x", 65) + `"}]}`, "jev_default_set/items/0/label", "maxLength"},
-		{"jev_default_set", `{"items":[{"category":"a","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"` + strings.Repeat("x", 2001) + `","threshold":0.5}]}`, "jev_default_set/items/0/question", "maxLength"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":0.5,"answer_yes":"` + strings.Repeat("x", 1001) + `"}]}`, "jev_default_set/items/0/answer_yes", "maxLength"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":0.5,"answer_no":"` + strings.Repeat("x", 1001) + `"}]}`, "jev_default_set/items/0/answer_no", "maxLength"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q"}]}`, "jev_default_set/items/0/threshold", "required"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":"0.5"}]}`, "jev_default_set/items/0/threshold", "type"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":0}]}`, "jev_default_set/items/0/threshold", "minimum"},
-		{"jev_default_set", `{"items":[{"category":"a","question":"q","threshold":1.01}]}`, "jev_default_set/items/0/threshold", "maximum"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"` + strings.Repeat("x", 2001) + `","threshold":0.5}]}`, "jev_default_set/items/0/question", "maxLength"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":0.5,"answer_yes":"` + strings.Repeat("x", 1001) + `"}]}`, "jev_default_set/items/0/answer_yes", "maxLength"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":0.5,"answer_no":"` + strings.Repeat("x", 1001) + `"}]}`, "jev_default_set/items/0/answer_no", "maxLength"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q"}]}`, "jev_default_set/items/0/threshold", "required"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":"0.5"}]}`, "jev_default_set/items/0/threshold", "type"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":0}]}`, "jev_default_set/items/0/threshold", "minimum"},
+		{"jev_default_set", `{"items":[{"category":"a","label":"A","question":"q","threshold":1.01}]}`, "jev_default_set/items/0/threshold", "maximum"},
+		// the rules of JevQuestions.Validate beyond the fields' bounds
+		{"jev_default_set", `{"items":[` + jevRow + `,` + jevRow + `]}`, "jev_default_set/items/1/category", "duplicate"},
+		{"jev_default_set", `{"items":[{"category":"custom/x","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/label", "required"},
+		{"jev_default_set", `{"items":[{"category":"custom/x","label":" \t","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/label", "required"},
+		{"jev_default_set", `{"items":[{"category":"violence","question":" \n ","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
 	}
 	for k, b := range schemaIntegers {
 		cases = append(cases,
@@ -190,7 +209,7 @@ func TestCheckSettingsAcceptsTheBounds(t *testing.T) {
 	m["notify_webhook_url"] = "https://" + strings.Repeat("例", 992)
 	m["notify_webhook_secret"] = strings.Repeat("x", 200)
 	var set any
-	_ = json.Unmarshal([]byte(`{"items":[`+strings.Repeat(`{"category":"`+strings.Repeat("a", 64)+`","question":"q","threshold":1},`, 31)+jevRow+`]}`), &set)
+	_ = json.Unmarshal([]byte(`{"items":[`+jevRows(31, strings.Repeat("x", 64))+`,`+jevRow+`]}`), &set)
 	m["jev_default_set"] = set
 	if errs := check(t, m); len(errs) > 0 {
 		t.Errorf("bounds refused: %v", errs)
@@ -256,5 +275,78 @@ func TestParseSettingsAppliesStoredSettings(t *testing.T) {
 	}
 	if _, _, err := parseSettings([]byte(`[1]`)); err == nil {
 		t.Fatal("not an object must fail")
+	}
+}
+
+// A question table is refused on save exactly when JevQuestions.Validate
+// refuses it (it is then dropped for the built-in set at run time), and the
+// messages carry no value of the table.
+func TestCheckJevSetFollowsValidate(t *testing.T) {
+	builtin, _ := json.Marshal(builtinQuestions)
+	const secret = "custom/secret-name"
+	tables := []string{
+		string(builtin),
+		`{"items":[` + jevRow + `]}`,
+		`{"items":[{"category":"` + secret + `","label":"L","question":"q","threshold":0.5}]}`,
+		`{"items":[{"category":"violence","label":" ","question":"q","threshold":0.5}]}`,
+		`{"items":[` + jevRow + `,` + jevRow + `]}`,
+		`{"items":[{"category":"` + secret + `","label":"L","question":"q","threshold":0.5},{"category":"` + secret + `","label":"M","question":"r","threshold":0.5}]}`,
+		`{"items":[{"category":"` + secret + `","question":"q","threshold":0.5}]}`,
+		`{"items":[{"category":"` + secret + `","label":"　","question":"q","threshold":0.5}]}`,
+		`{"items":[{"category":"violence","question":"\t \n","threshold":0.5}]}`,
+	}
+	for _, table := range tables {
+		var qs JevQuestions
+		if err := json.Unmarshal([]byte(table), &qs); err != nil {
+			t.Fatal(err)
+		}
+		var set any
+		_ = json.Unmarshal([]byte(table), &set)
+		m := maps.Clone(schemaDefaults)
+		m["jev_default_set"] = set
+		b, _ := json.Marshal(m)
+		errs := CheckSettings(b)
+		if (qs.Validate() == nil) != (len(errs) == 0) {
+			t.Errorf("%.80s: Validate %v, check %v", table, qs.Validate(), errs)
+		}
+		for _, e := range errs {
+			if strings.Contains(e.GetMessage(), "secret-name") {
+				t.Errorf("%s: the message holds the value: %s", e.GetField(), e.GetMessage())
+			}
+		}
+	}
+}
+
+// Stored settings with a question table Validate refuses still configure
+// (the built-in set applies, the warning names no value), while a save of
+// them is refused at the rows.
+func TestStoredJevSetRefusedOnSaveOnly(t *testing.T) {
+	stored := json.RawMessage(`{"mode":"observe","jev_default_set":{"items":[` + jevRow + `,` + jevRow + `,` +
+		`{"category":"custom/secret-name","question":"q","threshold":0.5},{"category":"hate","label":"H","question":"  ","threshold":0.5}]}}`)
+	p := New()
+	var log bytes.Buffer
+	p.log = slog.New(slog.NewTextHandler(&log, nil))
+	if err := p.Configure(context.Background(), pluginsdk.Config{JSON: stored}); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if v := p.cfg.Load().jevDefault.RulesVersion; v != RulesVersionZH {
+		t.Fatalf("default set %s, want the built-in %s", v, RulesVersionZH)
+	}
+	if w := log.String(); !strings.Contains(w, "jev_default_set/items/2/label") || strings.Contains(w, "secret-name") {
+		t.Fatalf("warning: %s", w)
+	}
+	_, err := p.ValidateSettings(context.Background(), pluginsdk.Config{JSON: stored})
+	errs, _ := pluginsdk.AsFieldErrors(err)
+	got := map[string]string{}
+	for _, e := range errs {
+		got[e.GetField()] = e.GetCode()
+	}
+	want := map[string]string{
+		"jev_default_set/items/1/category": "duplicate",
+		"jev_default_set/items/2/label":    "required",
+		"jev_default_set/items/3/question": "required",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("ValidateSettings: %v, want %v", got, want)
 	}
 }

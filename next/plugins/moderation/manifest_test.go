@@ -258,7 +258,7 @@ func TestValidateSettings(t *testing.T) {
 	if err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
 		t.Fatalf("valid settings: %v %v", resp, err)
 	}
-	resp, err = h.ValidateSettings(`{"mode":"on","watch_days":0,"cache_ttl_seconds":1,"jev_default_set":{"items":[{"category":"a","question":"q","threshold":0}]}}`, nil)
+	resp, err = h.ValidateSettings(`{"mode":"on","watch_days":0,"cache_ttl_seconds":1,"jev_default_set":{"items":[{"category":"a","label":"A","question":"q","threshold":0}]}}`, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
