@@ -174,6 +174,8 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 
 ### 5.2 表单字段
 
+表单是插件自己的原生界面（`plugins/bedrock/ui/native`，三种类型共用 `BedrockAccountForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。
+
 各类型自己的凭证字段：
 
 | 类型 | 字段 | 含义 | 例子 |

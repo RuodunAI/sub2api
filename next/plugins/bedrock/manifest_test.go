@@ -12,8 +12,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-
 	"github.com/Sub2API-Devs/sup2api/next/plugins/bedrock/internal/bedrock"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
@@ -57,29 +55,27 @@ func TestHostCompat(t *testing.T) {
 // wantType is what the manifest must declare of an account type
 // (docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md §9).
 type wantType struct {
-	id, form, authEN, authZH string
-	sensitive                []string
-	settings                 []string
-	// credentials are the schema properties besides the shared settings, in
-	// form order; all of them are required but session_expires_at.
-	credentials []string
-	// secrets are the properties shown with the secret widget.
-	secrets []string
+	id, authEN, authZH string
+	// sensitive are the fields the account form shows as secrets
+	// (ui/native/src/BedrockAccountForm.vue): masked when read back.
+	sensitive []string
+	settings  []string
 }
 
 var sharedSettings = []string{"region", "inference_profile_prefix"}
 
 var wantTypes = []wantType{
-	{bedrock.TypeAPIKey, "apikey", "API Key", "API Key", []string{"api_key"}, sharedSettings,
-		[]string{"api_key"}, []string{"api_key"}},
-	{bedrock.TypeAccessKey, "aksk", "Access Key", "Access Key", []string{"secret_access_key"}, sharedSettings,
-		[]string{"access_key_id", "secret_access_key"}, []string{"secret_access_key"}},
-	{bedrock.TypeSTS, "sts", "Temporary Credentials", "临时凭证", []string{"secret_access_key", "session_token"}, append(slices.Clone(sharedSettings), "session_expires_at"),
-		[]string{"access_key_id", "secret_access_key", "session_token", "session_expires_at"}, []string{"secret_access_key", "session_token"}},
+	{bedrock.TypeAPIKey, "API Key", "API Key", []string{"api_key"}, sharedSettings},
+	{bedrock.TypeAccessKey, "Access Key", "Access Key", []string{"secret_access_key"}, sharedSettings},
+	{bedrock.TypeSTS, "Temporary Credentials", "临时凭证", []string{"secret_access_key", "session_token"}, append(slices.Clone(sharedSettings), "session_expires_at")},
 }
 
-// TestManifestShape pins manifest.json and the forms to the design and to
-// the constants the code uses.
+// formComponent is the native account form of every type, registered by
+// ui/native/src/entry.ts.
+const formComponent = "BedrockAccountForm"
+
+// TestManifestShape pins manifest.json to the design and to the constants
+// the code uses.
 func TestManifestShape(t *testing.T) {
 	dec := json.NewDecoder(bytes.NewReader(manifestJSON))
 	dec.DisallowUnknownFields()
@@ -97,13 +93,16 @@ func TestManifestShape(t *testing.T) {
 	if m.Name["en"] == "" || m.Name["zh"] == "" || m.Description["en"] == "" || m.Description["zh"] == "" {
 		t.Fatal("name and description need en and zh")
 	}
-	// An ordinary forwarding plugin: no platform, routes, jobs, UI or
-	// database of its own.
+	// An ordinary forwarding plugin: no platform, routes, jobs or database
+	// of its own; its UI is the account form.
 	if len(m.Capabilities) != 1 || m.Capabilities[0].ID != manifest.CapPlatformAdapter {
 		t.Fatalf("capabilities = %+v", m.Capabilities)
 	}
-	if len(m.Platforms) != 0 || len(m.Routes) != 0 || m.UI != nil || m.Database != nil || len(m.UserPermissions) != 0 {
+	if len(m.Platforms) != 0 || len(m.Routes) != 0 || m.Database != nil || len(m.UserPermissions) != 0 {
 		t.Fatalf("the manifest declares more than account types: %+v", m)
+	}
+	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.UI.Settings != nil || len(m.UI.Slots) != 0 || m.HostUICompat != "^3.20" {
+		t.Fatalf("ui = %+v, hostUICompat = %q", m.UI, m.HostUICompat)
 	}
 	if _, err := os.Stat(m.Icon); err != nil || m.Icon != "assets/bedrock-color.svg" {
 		t.Fatalf("icon %q: %v", m.Icon, err)
@@ -112,13 +111,12 @@ func TestManifestShape(t *testing.T) {
 	if len(m.AccountTypes) != len(wantTypes) {
 		t.Fatalf("accountTypes = %d", len(m.AccountTypes))
 	}
-	files := packageFiles(t)
 	for i, want := range wantTypes {
 		at := m.AccountTypes[i]
 		if at.ID != want.id {
 			t.Fatalf("accountTypes[%d] = %s, want %s", i, at.ID, want.id)
 		}
-		if at.Form.Mode != "schema" || at.Form.Schema != "forms/"+want.form+".schema.json" || at.Form.UISchema != "forms/"+want.form+".ui.json" {
+		if at.Form.Mode != "native" || at.Form.Component != formComponent || at.Form.Schema != "" || at.Form.UISchema != "" {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
 		}
 		// One entry in the "new account" dialog, switched by auth method.
@@ -142,17 +140,13 @@ func TestManifestShape(t *testing.T) {
 		}
 		checkPlatforms(t, at)
 		checkModels(t, at, m.AccountTypes[0])
-		checkForm(t, want, files[at.Form.Schema], files[at.Form.UISchema])
-		// The parts of the form every type shares are the same text.
-		for _, field := range sharedSettings {
-			first := gjson.GetBytes(files[m.AccountTypes[0].Form.UISchema], field).Raw
-			if got := gjson.GetBytes(files[at.Form.UISchema], field).Raw; compact(got) != compact(first) {
-				t.Errorf("%s: the form's %s differs from %s's", at.ID, field, m.AccountTypes[0].ID)
-			}
-			if schemaProperty(files[at.Form.Schema], field) != schemaProperty(files[m.AccountTypes[0].Form.Schema], field) {
-				t.Errorf("%s: the schema's %s differs from %s's", at.ID, field, m.AccountTypes[0].ID)
-			}
-		}
+	}
+	// The form's region default is the plugin's, and its prefix choices
+	// (ui/native/src/fields.ts) are the plugin's values; the form's
+	// default prefix is the global profile the prefilled models need.
+	if bedrock.DefaultRegion != "us-east-1" || bedrock.DefaultProfilePrefix != "global" ||
+		!slices.Equal(bedrock.ProfilePrefixes, []string{"none", "us", "eu", "apac", "jp", "au", "in", "global"}) {
+		t.Errorf("defaults %s / %s, prefixes %v: update ui/native/src/fields.ts with them", bedrock.DefaultRegion, bedrock.DefaultProfilePrefix, bedrock.ProfilePrefixes)
 	}
 
 	perms := map[string]manifest.HostPermission{}
@@ -163,7 +157,7 @@ func TestManifestShape(t *testing.T) {
 		perms[perm.ID] = perm
 	}
 	// No "net": the core sends the upstream requests.
-	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
+	if len(perms) != 3 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" || perms["ui.native"].ID == "" {
 		t.Errorf("host permissions = %v", perms)
 	}
 	// externalServices is amazonaws.com, the domain of every runtime host:
@@ -274,131 +268,6 @@ func checkModels(t *testing.T, at, first manifest.AccountType) {
 	}
 }
 
-// checkForm pins a form: a closed schema whose properties are exactly the
-// fields the plugin reads, bounded the way the plugin validates them.
-func checkForm(t *testing.T, want wantType, schema, ui []byte) {
-	t.Helper()
-	if len(schema) == 0 || len(ui) == 0 {
-		t.Fatalf("%s: form files missing", want.id)
-	}
-	s, u := gjson.ParseBytes(schema), gjson.ParseBytes(ui)
-	required := slices.DeleteFunc(slices.Clone(want.credentials), func(f string) bool { return f == "session_expires_at" })
-	if s.Get("additionalProperties").Type != gjson.False || !slices.Equal(stringsOf(s.Get("required")), required) {
-		t.Errorf("%s schema additionalProperties/required = %s %s", want.id, s.Get("additionalProperties").Raw, s.Get("required").Raw)
-	}
-	fields := append(slices.Clone(want.credentials), sharedSettings...)
-	var props []string
-	s.Get("properties").ForEach(func(k, _ gjson.Result) bool { props = append(props, k.String()); return true })
-	if !slices.Equal(slices.Sorted(slices.Values(props)), slices.Sorted(slices.Values(fields))) {
-		t.Errorf("%s schema properties = %v, want %v", want.id, props, fields)
-	}
-	// The form shows the credentials first, then the shared settings.
-	if !slices.Equal(stringsOf(u.Get("ui:order")), fields) {
-		t.Errorf("%s ui:order = %s", want.id, u.Get("ui:order").Raw)
-	}
-
-	// The region goes into the host name: the plugin's own strict pattern,
-	// with the empty string allowed (it means the default region).
-	region := s.Get("properties.region")
-	if region.Get("pattern").String() != `^([a-z]{2}(-[a-z]+)+-\d)?$` || region.Get("default").String() != bedrock.DefaultRegion {
-		t.Errorf("%s region = %s", want.id, region.Raw)
-	}
-	prefix := s.Get("properties.inference_profile_prefix")
-	if !slices.Equal(stringsOf(prefix.Get("enum")), bedrock.ProfilePrefixes) || prefix.Get("default").String() != bedrock.DefaultProfilePrefix {
-		t.Errorf("%s inference_profile_prefix = %s", want.id, prefix.Raw)
-	}
-	// A new account works with the prefilled models: the form's default is
-	// the global profile, and the help says when to pick none instead.
-	if bedrock.DefaultProfilePrefix != "global" || !slices.Contains(bedrock.ProfilePrefixes, bedrock.DefaultProfilePrefix) {
-		t.Errorf("the default prefix %q is not the global profile", bedrock.DefaultProfilePrefix)
-	}
-	for _, lang := range []string{"en", "zh"} {
-		help := u.Get("inference_profile_prefix.ui:help." + lang).String()
-		for _, part := range []string{"global", "Opus 4.1", "us-gov.", "ARN"} {
-			if !strings.Contains(help, part) {
-				t.Errorf("%s: the %s prefix help does not mention %s", want.id, lang, part)
-			}
-		}
-	}
-	if !slices.Contains(bedrock.ProfilePrefixes, "in") {
-		t.Errorf("the India geography (in.) is not a prefix: %v", bedrock.ProfilePrefixes)
-	}
-	if u.Get("inference_profile_prefix.ui:widget").String() != "select" || len(u.Get("inference_profile_prefix.ui:enumNames").Array()) != len(bedrock.ProfilePrefixes) {
-		t.Errorf("%s: the prefix is a select with a name per value", want.id)
-	}
-	// What happens to a request body is stated where the administrator
-	// reads it, with no known limitation left, and the China regions are
-	// not served.
-	for _, lang := range []string{"en", "zh"} {
-		note := u.Get("region.ui:section.description." + lang).String()
-		for _, part := range []string{"Claude Code", "custom", "cache_control", "thinking", "computer use", "tool search", "output_format", "metadata"} {
-			if !strings.Contains(note, part) {
-				t.Errorf("%s: the %s form does not say what happens to %s", want.id, lang, part)
-			}
-		}
-		for _, part := range []string{"limitation", "限制", "parameter override", "参数覆盖"} {
-			if strings.Contains(note, part) {
-				t.Errorf("%s: the %s form still states a limitation (%s)", want.id, lang, part)
-			}
-		}
-		for _, part := range []string{"cn-*", "us-iso-*"} {
-			if help := u.Get("region.ui:help." + lang).String(); !strings.Contains(help, part) {
-				t.Errorf("%s: the %s region help does not say the %s regions are not supported", want.id, lang, part)
-			}
-		}
-	}
-
-	for _, p := range fields {
-		if (u.Get(p+".ui:widget").String() == "secret") != slices.Contains(want.secrets, p) {
-			t.Errorf("%s: %s secret widget = %q", want.id, p, u.Get(p+".ui:widget").String())
-		}
-		if title := u.Get(p + ".ui:title"); title.Get("en").String() == "" || title.Get("zh").String() == "" {
-			t.Errorf("%s: %s needs an en and zh title", want.id, p)
-		}
-		if help := u.Get(p + ".ui:help"); help.Get("en").String() == "" || help.Get("zh").String() == "" {
-			t.Errorf("%s: %s needs an en and zh help", want.id, p)
-		}
-	}
-	if slices.Contains(want.credentials, "access_key_id") && s.Get("properties.access_key_id.pattern").String() != `^[A-Z0-9]{16,128}$` {
-		t.Errorf("%s access_key_id pattern = %s", want.id, s.Get("properties.access_key_id.pattern"))
-	}
-	if slices.Contains(want.credentials, "api_key") && (s.Get("properties.api_key.minLength").Int() != 8 || s.Get("properties.api_key.maxLength").Int() != 2048) {
-		t.Errorf("%s api_key bounds = %s", want.id, s.Get("properties.api_key").Raw)
-	}
-	if !slices.Contains(want.credentials, "session_expires_at") {
-		return
-	}
-	// The expiry of temporary credentials is a hint, and the form says that
-	// nothing renews them.
-	expiry := u.Get("session_expires_at")
-	if s.Get("properties.session_expires_at.format").String() != "date-time" || expiry.Get("ui:widget").String() != "date-time" ||
-		!strings.Contains(expiry.Get("ui:help.en").String(), "not renewed") || !strings.Contains(expiry.Get("ui:help.zh").String(), "不会自动续期") {
-		t.Errorf("%s session_expires_at = %s / %s", want.id, s.Get("properties.session_expires_at").Raw, expiry.Raw)
-	}
-}
-
-// stringsOf are the strings of a JSON array.
-func stringsOf(r gjson.Result) []string {
-	out := []string{}
-	for _, v := range r.Array() {
-		out = append(out, v.String())
-	}
-	return out
-}
-
-// schemaProperty is a schema property as its compact JSON.
-func schemaProperty(schema []byte, name string) string {
-	return compact(gjson.GetBytes(schema, "properties."+name).Raw)
-}
-
-func compact(raw string) string {
-	var buf bytes.Buffer
-	if json.Compact(&buf, []byte(raw)) != nil {
-		return raw
-	}
-	return buf.String()
-}
-
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
 	h := pluginsdktest.Start(t, bedrock.New(), pluginsdktest.Options{Manifest: manifestJSON})
@@ -410,7 +279,8 @@ func TestManifestServes(t *testing.T) {
 	}
 }
 
-// packageFiles collects the files a package would carry.
+// packageFiles collects the files a package would carry (the native UI's
+// sources are not packaged, only its build output).
 func packageFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}
@@ -420,7 +290,7 @@ func packageFiles(t *testing.T) map[string][]byte {
 			return err
 		case p == ".":
 			return nil
-		case strings.HasPrefix(d.Name(), "."):
+		case strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules":
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

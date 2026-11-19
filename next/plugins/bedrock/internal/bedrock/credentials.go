@@ -22,7 +22,7 @@ type object = accountform.Object
 
 var fieldError = accountform.FieldError
 
-// Credential and settings fields (forms/*.schema.json).
+// Credential and settings fields (the account form, ui/native/src/fields.ts).
 const (
 	fieldAPIKey          = "api_key"
 	fieldAccessKeyID     = "access_key_id"
@@ -47,7 +47,7 @@ func visible(min, max int) func(string) bool {
 	return func(s string) bool { return len(s) >= min && len(s) <= max && visiblePattern.MatchString(s) }
 }
 
-// The shapes of the credentials (the same bounds as forms/*.schema.json).
+// The shapes of the credentials (the account form checks the same bounds).
 var (
 	validAPIKey       = visible(8, 2048)
 	validAccessKeyID  = accessKeyIDPattern.MatchString

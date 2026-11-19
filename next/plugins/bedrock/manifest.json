@@ -19,6 +19,7 @@
     }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
   "capabilities": [
     {
       "id": "platform.adapter.v1"
@@ -37,9 +38,8 @@
         "zh": "Amazon Bedrock 的 API Key，以 Bearer 令牌发送。短期 Key 最长 12 小时有效且绑定区域，不会自动续期。"
       },
       "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
+        "mode": "native",
+        "component": "BedrockAccountForm"
       },
       "creationGroup": "bedrock",
       "authMethodLabel": {
@@ -119,9 +119,8 @@
         "zh": "IAM 用户的长期 Access Key。插件用它为每个请求签名（SigV4）。"
       },
       "form": {
-        "mode": "schema",
-        "schema": "forms/aksk.schema.json",
-        "uiSchema": "forms/aksk.ui.json"
+        "mode": "native",
+        "component": "BedrockAccountForm"
       },
       "creationGroup": "bedrock",
       "authMethodLabel": {
@@ -201,9 +200,8 @@
         "zh": "AWS STS 签发的临时凭证（Access Key、Secret Key 和 Session Token）。不会自动续期：到期后上游拒绝该账号，需要管理员手动更换。"
       },
       "form": {
-        "mode": "schema",
-        "schema": "forms/sts.schema.json",
-        "uiSchema": "forms/sts.ui.json"
+        "mode": "native",
+        "component": "BedrockAccountForm"
       },
       "creationGroup": "bedrock",
       "authMethodLabel": {
@@ -280,6 +278,11 @@
     "maxThreads": 32,
     "maxOpenFiles": 64
   },
+  "ui": {
+    "native": {
+      "entry": "ui/native/entry.js"
+    }
+  },
   "hostPermissions": [
     {
       "id": "platform.register",
@@ -296,6 +299,13 @@
       "reason": {
         "en": "Read the API key or access key of its own accounts to build and sign upstream requests (the core sends them)",
         "zh": "读取本插件账号的 API Key 或 Access Key，用于构造上游请求并签名（由核心发送）"
+      }
+    },
+    {
+      "id": "ui.native",
+      "reason": {
+        "en": "The account form of the three auth methods (BedrockAccountForm): API key, access key, temporary credentials, region and cross-region inference prefix",
+        "zh": "三种鉴权方式的账号表单（BedrockAccountForm）：API Key、Access Key、临时凭证，以及区域与跨区域推理前缀"
       }
     }
   ],
