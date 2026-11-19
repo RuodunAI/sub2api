@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -706,5 +707,43 @@ func TestAccountTestNoModelsNoTestableProtocol(t *testing.T) {
 	defer e.plat.mu.Unlock()
 	if len(e.plat.tests) != 0 {
 		t.Fatalf("the plugin built a test request: %v", e.plat.tests)
+	}
+}
+
+// The test request's plugin is handed the account with the proxy the test
+// goes out through; with the proxy disabled nothing is built or sent and the
+// result says why (CONTRACTS §124).
+func TestAccountTestCarriesTheProxy(t *testing.T) {
+	e := setup(t)
+	up := testUpstream(t)
+	e.plat.testURL = up.URL + "/v1/messages"
+	id := e.mkAccount("sk-good-key-123")
+	host, port, hits := forwardProxy(t)
+	pid := e.exec1(`INSERT INTO proxies (name, protocol, host, port, username) VALUES ('p', 'http', $1, $2, 'bob') RETURNING id`, host, port)
+	if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"proxy_id": pid}); code != http.StatusOK {
+		t.Fatalf("set proxy: %d %v", code, out)
+	}
+	built := func() []*pluginv1.BuildTestRequestRequest {
+		e.plat.mu.Lock()
+		defer e.plat.mu.Unlock()
+		return slices.Clone(e.plat.tests)
+	}
+	code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"})
+	tests := built()
+	if code != 200 || !gjson.GetBytes(raw, "data.ok").Bool() || len(tests) != 1 || hits.Load() != 1 {
+		t.Fatalf("test through the proxy: %d %s (builds %d, proxy hits %d)", code, raw, len(tests), hits.Load())
+	}
+	if p := tests[0].GetAccount().GetProxy(); p.GetId() != pid || p.GetHost() != host || int(p.GetPort()) != port || p.GetUsername() != "bob" {
+		t.Fatalf("proxy handed to the plugin: %v", p)
+	}
+
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE proxies SET status = 'disabled', updated_at = clock_timestamp() WHERE id = $1`, pid); err != nil {
+		t.Fatal(err)
+	}
+	e.prx.Invalidate(pid)
+	code, raw = e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"})
+	d := gjson.GetBytes(raw, "data")
+	if code != 200 || d.Get("ok").Bool() || d.Get("message").String() != "proxy disabled" || len(built()) != 1 || hits.Load() != 1 {
+		t.Fatalf("test with the proxy disabled: %d %s (builds %d, proxy hits %d)", code, raw, len(built()), hits.Load())
 	}
 }

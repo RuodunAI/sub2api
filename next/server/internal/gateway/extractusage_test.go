@@ -134,8 +134,8 @@ func TestPluginUsageNonStream(t *testing.T) {
 	if ct := in.GetHeaders()["content-type"]; !strings.Contains(ct, "json") {
 		t.Fatalf("headers %v", in.GetHeaders())
 	}
-	// The response is read, not built: no credentials travel.
-	if a := in.GetAccount(); a.GetId() != 9 || a.GetCredentialsJson() != "" || a.GetType() != "pu_key" {
+	// The account is the one Execute was handed (CONTRACTS §124).
+	if a := in.GetAccount(); a.GetId() != 9 || a.GetCredentialsJson() != `{"api_key":"pu-9"}` || a.GetType() != "pu_key" {
 		t.Fatalf("account %+v", in.GetAccount())
 	}
 	if in.GetMeta().GetRequestId() == "" || in.GetMeta().GetProtocol() != "pu.chat" {

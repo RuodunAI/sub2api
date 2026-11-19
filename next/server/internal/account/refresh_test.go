@@ -464,4 +464,13 @@ func TestCredentialRefreshFollowsTheAccountsProxy(t *testing.T) {
 			t.Fatalf("renewal %d through proxy %d: a=%d b=%d", i+1, step.proxy, aHits.Load(), bHits.Load())
 		}
 	}
+	// With the proxy disabled the plugin is not asked and nothing is sent.
+	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE proxies SET status = 'disabled', updated_at = clock_timestamp() WHERE id = $1`, b); err != nil {
+		t.Fatal(err)
+	}
+	e.prx.Invalidate(b)
+	e.do("POST", fmt.Sprintf("/accounts/%d/refresh-credentials", id), nil)
+	if up.calls.Load() != 2 || bHits.Load() != 1 {
+		t.Fatalf("renewal through a disabled proxy: upstream calls %d, proxy hits %d", up.calls.Load(), bHits.Load())
+	}
 }

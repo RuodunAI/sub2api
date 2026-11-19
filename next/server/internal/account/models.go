@@ -143,7 +143,7 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	account := a.pluginAccount(secret)
+	account := a.pluginAccount(secret, eg.Proxy)
 	account.SettingsJson = string(settings)
 	res, err := s.fetchModels(ctx, bt, account, eg)
 	if err != nil {

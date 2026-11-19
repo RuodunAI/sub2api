@@ -33,15 +33,15 @@ import (
 // execution is one Execute call: one attempt on one account, or one turn of
 // a WebSocket session.
 type execution struct {
-	c    *call
-	rt   *typeRoute
-	acc  *core.Account
+	c   *call
+	rt  *typeRoute
+	acc *core.Account
+	// acct is the account the plugin is handed: its proxy is egress's.
 	acct *pluginv1.Account
 	// egress is the account's way out as it stood when the call began
-	// (AccountDirectory.Egress), egressErr why its client cannot be had:
-	// the relay, the fetches and the checks of their URLs all go by it.
-	egress    core.Egress
-	egressErr error
+	// (AccountDirectory.Egress): the relay, the fetches and the checks of
+	// their URLs all go by it.
+	egress core.Egress
 	// body is what the plugin was handed: the request in the upstream
 	// protocol after the core's rewrites. The usage rules read the
 	// requested operation from it, never from the plugin's bytes.
@@ -73,17 +73,25 @@ type execution struct {
 var errExecutionAborted = errors.New("plugin execution aborted")
 
 // newExecution is an Execute call on acc with body, bound to the account's
-// egress as it stands now.
-func (c *call) newExecution(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte) *execution {
-	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
-	x.egress, x.egressErr = c.g.d.Accounts.Egress(ctx, acc.ID)
-	return x
+// egress as it stands now; the plugin is handed the account with that
+// egress's proxy (CONTRACTS §124). Without an egress (the proxy disabled or
+// gone) there is no call: the request could not go out, and the plugin is
+// never handed the account without its proxy. The attempt then fails over.
+func (c *call) newExecution(ctx context.Context, rt *typeRoute, acc *core.Account, body []byte) (*execution, *attemptResult) {
+	eg, err := c.g.d.Accounts.Egress(ctx, acc.ID)
+	if err != nil {
+		return nil, &attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
+	}
+	return &execution{c: c, rt: rt, acc: acc, acct: acc.PluginAccount(c.platform, eg.Proxy), egress: eg, body: body, network: ctx}, nil
 }
 
 // execute runs attempt n on rt's account with body, the request the core
 // rewrote for it, and upModel, the model it goes upstream with.
-func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte, upModel string, n int) attemptResult {
-	x := c.newExecution(ctx, rt, acc, acct, body)
+func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, body []byte, upModel string, n int) attemptResult {
+	x, failed := c.newExecution(ctx, rt, acc, body)
+	if failed != nil {
+		return *failed
+	}
 	// Whatever happens below - a commit, a close, an error, a panic - the
 	// waited relay's heartbeat stops and its held-back answer is removed.
 	defer func() {

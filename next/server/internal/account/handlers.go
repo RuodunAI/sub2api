@@ -207,10 +207,11 @@ func (a *row) coreAccount(plain []byte) core.Account {
 }
 
 // pluginAccount is the account as a plugin sees it, with the given plaintext
-// credentials.
-func (a *row) pluginAccount(credentials []byte) *pluginv1.Account {
+// credentials and proxy, the one its requests of the call go out through
+// (proxyEgress of the row's proxy_id; nil = direct).
+func (a *row) pluginAccount(credentials []byte, proxy *core.ProxyRef) *pluginv1.Account {
 	acc := a.coreAccount(credentials)
-	return acc.PluginAccount("")
+	return acc.PluginAccount("", proxy)
 }
 
 func notFound(ctx context.Context) error {

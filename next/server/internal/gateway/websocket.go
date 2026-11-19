@@ -124,7 +124,8 @@ type wsSession struct {
 	key, ip string
 
 	// The upstream connection and the account the first turn chose; every
-	// later turn of the session uses them.
+	// later turn of the session uses them. pacct is the account as the
+	// plugin was handed it for the current turn (its proxy that turn's).
 	up              *websocket.Conn
 	ref             *core.AccountRef
 	acc             *core.Account
@@ -529,10 +530,11 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 	payload := s.opening
 	s.opening = nil
 	if !opensUpstream {
-		_, req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt, s.pacct)
+		x, req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt)
 		if req == nil {
 			return reject(cl, res.err)
 		}
+		s.pacct = x.acct
 		payload = req.GetBody()
 	}
 	err := s.up.Write(ctx, websocket.MessageText, payload)
@@ -665,15 +667,11 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	}
 	s.recordAccount(cl, acc.ID, rt)
 	cl.env = cl.environment(&acc.AccountRef)
-	pacct := acc.PluginAccount(cl.platform)
-	x, req, target, res := s.executeTurn(ctx, cl, ref, acc, rt, pacct)
+	x, req, target, res := s.executeTurn(ctx, cl, ref, acc, rt)
 	if req == nil {
 		return res
 	}
-	client, err := x.egress.Client, x.egressErr
-	if err != nil || client == nil {
-		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
-	}
+	client, pacct := x.egress.Client, x.acct
 	// The handshake's headers in the layers of an HTTP request
 	// (layerHeaders) without the passthrough: the plugin's defaults, the
 	// account's header override (§108) and parameter override, the plugin's
@@ -721,8 +719,7 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 // the handshake goes out by, and the relay with the address check accepted
 // for it (the handshake's, on the turn opening the connection), or, without
 // one, the result saying why.
-func (s *wsSession) executeTurn(ctx context.Context, cl *call, ref *core.AccountRef, acc *core.Account, rt *typeRoute,
-	pacct *pluginv1.Account) (*execution, *pluginv1.UpstreamRequest, *url.URL, attemptResult) {
+func (s *wsSession) executeTurn(ctx context.Context, cl *call, ref *core.AccountRef, acc *core.Account, rt *typeRoute) (*execution, *pluginv1.UpstreamRequest, *url.URL, attemptResult) {
 	n := max(0, cl.rec.Attempts-1)
 	body, upModel, failure := cl.upstreamBody(ctx, acc, ref, rt, cl.body, n)
 	if failure != nil {
@@ -731,7 +728,10 @@ func (s *wsSession) executeTurn(ctx context.Context, cl *call, ref *core.Account
 	if e := cl.guardAvailability(ctx, ref); e != nil {
 		return nil, nil, nil, attemptResult{kind: attemptFailover, err: e}
 	}
-	x := cl.newExecution(ctx, rt, acc, pacct, body)
+	x, failed := cl.newExecution(ctx, rt, acc, body)
+	if failed != nil {
+		return nil, nil, nil, *failed
+	}
 	x.turn, x.opens = true, s.up == nil
 	res, err := x.run(ctx, upModel, n)
 	if err != nil || res.Relay == nil {
