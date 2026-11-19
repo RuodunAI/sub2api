@@ -17,7 +17,7 @@ import (
 // TestGolden replays the frozen answers of the released plugin against the
 // platform the plugin serves, with no exceptions.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "openai", "../../manifest.json", New())
+	standardtest.Run(t, "openai", "../../manifest.json", New().Platform)
 }
 
 func TestCheck(t *testing.T) {
@@ -54,7 +54,7 @@ func build(t *testing.T, p *standard.Platform, protocol, settings string, inboun
 // preset, the type the golden cases were recorded with, so the client's own headers still pass through and the
 // golden cases hold for the plugin's type.
 func TestOrganizationAndProject(t *testing.T) {
-	plugin, baseline := New(), standard.New(openai.APIKey("apikey"))
+	plugin, baseline := New().Platform, standard.New(openai.APIKey("apikey"))
 	const body = `{"model":"gpt-4o-mini","stream":true}`
 	for _, protocol := range routes {
 		for _, inbound := range []map[string]string{nil, clientHeaders} {
@@ -83,7 +83,7 @@ func TestOrganizationAndProject(t *testing.T) {
 func TestForwardsEveryField(t *testing.T) {
 	const body = `{"model":"gpt-4o-mini", "service_tier":"priority","safety_identifier":"u1","input":[]}`
 	for _, protocol := range []string{openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings} {
-		if got := string(build(t, New(), protocol, "", nil, body).GetBody()); got != body {
+		if got := string(build(t, New().Platform, protocol, "", nil, body).GetBody()); got != body {
 			t.Errorf("%s body = %s, want %s", protocol, got, body)
 		}
 	}
@@ -102,7 +102,7 @@ func TestImages(t *testing.T) {
 	} {
 		for _, stream := range []string{"false", "true"} {
 			body := fmt.Sprintf(c.body, stream)
-			got := build(t, New(), protocol, "", clientHeaders, body)
+			got := build(t, New().Platform, protocol, "", clientHeaders, body)
 			if got.GetMethod() != "POST" || got.GetUrl() != "https://api.openai.com"+c.path || string(got.GetBody()) != body {
 				t.Errorf("%s stream %s: %s %s %s", protocol, stream, got.GetMethod(), got.GetUrl(), got.GetBody())
 			}

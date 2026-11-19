@@ -76,7 +76,7 @@ func TestManifest(t *testing.T) {
 	for _, perm := range m.HostPermissions {
 		perms[perm.ID] = perm
 	}
-	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
+	if len(perms) != 3 || perms["platform.register"].ID == "" || perms["ui.native"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
 		t.Errorf("host permissions = %v", perms)
 	}
 }
@@ -152,7 +152,7 @@ func load(t *testing.T) manifest.Manifest {
 		t.Fatalf("manifest.json: %v", err)
 	}
 	files := map[string][]byte{"manifest.json": manifestJSON}
-	for _, dir := range []string{"forms", "assets"} {
+	for _, dir := range []string{"assets"} {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			p := path.Join(dir, e.Name())
