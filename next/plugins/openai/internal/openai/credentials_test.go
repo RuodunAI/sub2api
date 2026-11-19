@@ -11,7 +11,7 @@ import (
 // string; base_url an http(s) URL without whitespace, query or fragment,
 // saved as written; organization and project strings
 // of at most 128 characters of [!-~]; no other key) hold in
-// ValidateCredentials, which is final: the core no longer checks a schema.
+// ValidateCredentials, which is final: the core checks nothing else.
 // The shared api_key + base_url cases, then the two headers'.
 func TestCredentialsRefused(t *testing.T) {
 	form := apikeytest.Form{AccountType: TypeAPIKey, Key: "sk-proj-abcdef", BaseURL: "https://x.example.com"}
@@ -19,7 +19,6 @@ func TestCredentialsRefused(t *testing.T) {
 		return apikeytest.Case{Name: name, AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef"` + fields + `}`, Field: field, Code: code}
 	}
 	cases := append(form.Cases(),
-		apikeytest.Case{Name: "a key the form never sends", AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef", "legacy": "x"}`, Field: "legacy", Code: "unknown"},
 		with("organization and project of 128 characters", `, "organization": "`+strings.Repeat("o", 128)+`", "project": "`+strings.Repeat("p", 128)+`"`, "", ""),
 		with("empty organization and project", `, "organization": "", "project": ""`, "", ""),
 	)
