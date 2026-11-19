@@ -125,8 +125,9 @@ const (
 	project   = "https://res.services.ai.azure.com/api/projects/p"
 )
 
-// acceptedEndpoints are the base_url inputs the forms accept, each with the
-// address requests are built on.
+// acceptedEndpoints are the base_url inputs the types accept, each with the
+// address requests are built on: the last four only once normalized (the
+// forms refuse them as typed).
 var acceptedEndpoints = map[string]string{
 	resource:                           resource,
 	resource + "/":                     resource,
@@ -141,6 +142,10 @@ var acceptedEndpoints = map[string]string{
 	"https://RES.OpenAI.Azure.com":     "https://RES.OpenAI.Azure.com",
 	"http://mock-upstream:8080":        "http://mock-upstream:8080",
 	"http://mock-upstream:8080/openai": "http://mock-upstream:8080",
+	resource + "/openai/v1//":          resource,
+	"HTTPS://res.openai.azure.com":     resource,
+	" " + resource:                     resource,
+	resource + " ":                     resource,
 }
 
 // TestResourceEndpoint covers the account's base_url: it is required (there
@@ -153,7 +158,7 @@ func TestResourceEndpoint(t *testing.T) {
 			assertEndpoint(t, accountType, in, base)
 		}
 
-		acc := account(accountType, "", `"api_version":"2024-10-21"`)
+		acc := account(accountType, "", formFields(accountType)...)
 		res, _ := platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{AccountType: accountType, CredentialsJson: acc.CredentialsJson, SettingsJson: acc.SettingsJson})
 		if len(res.GetErrors()) != 1 || res.Errors[0].Field != "base_url" || res.Errors[0].Code != "required" || res.Errors[0].Message != "Resource endpoint is required / 请填写资源地址" {
 			t.Errorf("%s without base_url: validate errors %v", accountType, res.GetErrors())
@@ -169,7 +174,7 @@ func TestResourceEndpoint(t *testing.T) {
 func assertEndpoint(t *testing.T, accountType, in, base string) {
 	t.Helper()
 	ctx := context.Background()
-	acc := account(accountType, in, `"api_version":"2024-10-21"`)
+	acc := account(accountType, in, formFields(accountType)...)
 	res, err := platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{AccountType: accountType, CredentialsJson: acc.CredentialsJson, SettingsJson: acc.SettingsJson})
 	var saved struct {
 		BaseURL string `json:"base_url"`
@@ -316,6 +321,15 @@ func coreFiltered(t *testing.T, accountType string, client map[string]string) ma
 
 // account is an account of accountType on baseURL ("" = not set) with
 // extra settings members.
+// formFields are the account form's fields of the type besides api_key and
+// base_url (the type refuses any other).
+func formFields(accountType string) []string {
+	if accountType == typeDeployment {
+		return []string{`"api_version":"2024-10-21"`}
+	}
+	return nil
+}
+
 func account(accountType, baseURL string, settings ...string) *pluginv1.Account {
 	if baseURL != "" {
 		b, _ := json.Marshal(baseURL)
