@@ -110,7 +110,7 @@ func prefixesOf(accountType, settingsJSON string) (prefixes, error) {
 // prefix, and refuses a missing one.
 //
 // Both halves exist because of the same failure, which is a billing failure
-// rather than a 404. relaySpec strips nothing (see its comment), so a base URL
+// rather than a 404. relaySpec has no Versions (see its comment), so a base URL
 // of "https://r/v1" with the default prefix yields "https://r/v1/v1/...". On
 // the text surface that is a loud 404. On the video surface the submit 404s,
 // but if a relay instead answers 200 for the submit and 404 for the poll - or

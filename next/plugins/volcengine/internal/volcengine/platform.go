@@ -169,11 +169,12 @@ const (
 	DefaultAnthropicVersion = sdkanthropic.DefaultAPIVersion
 )
 
-// spec describes the apikey (official Ark) account type. A trailing /api/v3 of
-// base_url is removed: operators paste the Ark SDK base URL
-// ("https://ark.cn-beijing.volces.com/api/v3"), while guardedSettings
-// (CONTRACTS §21.3) compares against the bare host, and the paths below add
-// the prefix themselves.
+// spec describes the apikey (official Ark) account type. base_url is saved as
+// written; /api/v3 is its one version: operators paste the Ark SDK base URL
+// ("https://ark.cn-beijing.volces.com/api/v3"), FromAccount leaves the trailing
+// /api/v3 out and the paths below add their own prefix to the root. The
+// manifest's guardedSettings declare the same versions, so the core compares
+// the root against the bare host (CONTRACTS §21.3).
 var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBaseURL, Versions: []string{APIPrefix}, Fields: assetKeys}
 
 // assetKeys are the asset library keys both account forms send besides
@@ -194,13 +195,13 @@ var assetKeys = fieldcheck.Fields{
 //     base_url is a misconfiguration rather than an official account, and
 //     relayBaseURL below says so instead of quietly sending a relay's key to
 //     Ark.
-//   - No StripSuffixes. On the apikey type, stripping /api/v3 undoes a paste of
-//     Ark's documented SDK base URL. Here the base URL is the relay's root and
-//     the layout is named by api_prefix, so stripping anything would silently
-//     move an operator's request: "https://r/api/v3" with the default prefix
-//     would become "https://r/v1/...". validateRelayBaseURL refuses that shape
-//     with a message pointing at api_prefix, which is the value that expresses
-//     it.
+//   - No Versions. On the apikey type, leaving a trailing /api/v3 out undoes
+//     a paste of Ark's documented SDK base URL. Here the base URL is the
+//     relay's root and the layout is named by api_prefix, so leaving anything
+//     out would silently move an operator's request: "https://r/api/v3" with
+//     the default prefix would become "https://r/v1/...". validateRelayBaseURL
+//     refuses that shape with a message pointing at api_prefix, which is the
+//     value that expresses it.
 //
 // Its form also sends the relay's endpoints and the legacy prefixes
 // (checked by validatePrefixFields and the endpoint checks).

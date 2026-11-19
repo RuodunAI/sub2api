@@ -4,7 +4,7 @@ const zh = {
   apikey: {
     keyHelp: '官方方舟 API Key，支持 OpenAI 兼容接口、Anthropic Messages 与官方豆包视频，加密保存。',
     baseUrlPlaceholder: '留空使用默认地址 https://ark.cn-beijing.volces.com',
-    baseUrlHelp: '官方方舟服务根地址。OpenAI、图片与视频使用 /api/v3；Anthropic Messages 使用 /api/compatible/v1/messages。其他主机需要 account:settings:custom 权限。',
+    baseUrlHelp: '官方方舟服务根地址。OpenAI、图片与视频使用 /api/v3；Anthropic Messages 使用 /api/compatible/v1/messages。地址已以 /api/v3 结尾（方舟 SDK 的地址）时 OpenAI、图片与视频不再重复添加，Anthropic Messages 仍发往根地址下的 /api/compatible/v1/messages。其他主机需要 account:settings:custom 权限。',
     accessKeyHelp: '火山引擎账号的 Access Key ID（控制台「访问控制」）。只有素材库需要它：素材库用账号的 AK/SK 签名，不用 API Key。它和 Secret Key 都留空，这个账号就不参与素材库。',
     secretKeyHelp: 'AK/SK 中的密钥部分。加密保存，保存后不再明文显示。两者只填一个会被拒绝。',
     assetBaseUrlPlaceholder: '留空使用默认地址 https://ark.cn-beijing.volcengineapi.com',
@@ -87,7 +87,7 @@ const en: typeof zh = {
     keyHelp: 'Official Ark API key for OpenAI-compatible APIs, Anthropic Messages and official video. Stored encrypted.',
     baseUrlPlaceholder: 'Leave empty to use https://ark.cn-beijing.volces.com',
     baseUrlHelp:
-      'Official Ark service root. OpenAI/image/video use /api/v3; Anthropic Messages uses /api/compatible/v1/messages. Other hosts require account:settings:custom.',
+      'Official Ark service root. OpenAI/image/video use /api/v3; Anthropic Messages uses /api/compatible/v1/messages. An address already ending in /api/v3 (the Ark SDK base URL) does not get it twice on OpenAI, image and video requests; Anthropic Messages still goes to /api/compatible/v1/messages on the root. Other hosts require account:settings:custom.',
     accessKeyHelp:
       "Volcengine account access key id (console: Access Control). Only needed for the asset library, which is signed with the account's AK/SK instead of the API key. Leave this and the secret key empty and the account simply does not take part in the asset library.",
     secretKeyHelp: 'The secret half of the pair. Stored encrypted and never shown again. Filling in only one of the two is refused.',

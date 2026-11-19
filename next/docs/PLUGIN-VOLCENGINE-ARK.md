@@ -816,7 +816,7 @@ token = **帧数 × 输出宽 × 输出高 / 1024**，固定 24fps。以下每�
 
 **三处调用点都要用视频前缀**，其中 `BuildReconcileRequest` 最容易漏：它跑在离线循环里，路径错了每次轮询都 404 → 核心读成「仍在进行」→ 到 deadline 放弃 → **保留预扣**。于是一个真的跑完、真的上报了用量的任务，被按预估收费。测试专门钉了这一条。
 
-`spec.StripSuffixes` **保持字面 `/api/v3`，不跟随任何设置**。两者看着像、其实是两件事：它的作用是「撤销一次从 Ark SDK 文档粘贴 base URL 的动作」，与上游实际挂载点无关。
+`spec.Versions` **保持字面 `/api/v3`，不跟随任何设置**。两者看着像、其实是两件事：它的作用是「撤销一次从 Ark SDK 文档粘贴 base URL 的动作」，与上游实际挂载点无关。（2026-11-20 起地址按填写的保存，不再在保存时去掉 `/api/v3`；请求时 `FromAccount` 去掉末尾至多一个 `/api/v3` 得到根，各路径照旧完整接在根上，清单的 `guardedSettings` 写同样的 `versions`，核心按根比较。）
 
 ### 13.3 安全：前缀不能把请求移出 base_url 的主机
 
@@ -966,7 +966,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 | `base_url` | 可留空（默认国内），**guarded** 到两个官方地址 | **必填**，**不 guarded**（无法 guard） |
 | 路径布局 | 固定 `/api/v3`，**没有前缀字段** | 默认 `/v1`，`api_prefix` + `video_api_prefix` 可配 |
 | 平台 | `openai` + `volcengine` | `openai` + **`anthropic`** + `volcengine` |
-| `StripSuffixes` | `/api/v3`（撤销粘贴 SDK base URL） | **无**（见 14.3） |
+| `Versions` | `/api/v3`（撤销粘贴 SDK base URL：保存原样，请求时去掉） | **无**（见 14.3） |
 | 素材库 | 官方控制面，`asset_base_url` guarded | 中转站自己的端点，完整地址，不 guarded |
 
 `prefixesOf` 于是只有两个分支，且**官方那支不读任何设置**：前缀不在它的 `settingsFields` 里、不在它的表单里，真被写进去也读不到（会落进加密 blob）。测试钉了这一条 —— 一个「看起来能改、其实改不了」的设置比没有更糟。
@@ -980,7 +980,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 
 ### 14.3 中转 `base_url` 的保存期检查（新增）
 
-`relaySpec` 不设 `StripSuffixes`，理由和官方那边设它的理由是同一个：官方那边是「撤销一次从 Ark SDK 文档粘贴 base URL 的动作」，而中转类型的 `base_url` 是**中转站的根**、路径由两个前缀表达 —— 去掉任何后缀都等于**把请求悄悄挪到运维没写的地方**（`https://r/api/v3` 配默认前缀会变成 `https://r/v1/...`）。
+`relaySpec` 不设 `Versions`（原名 `StripSuffixes`，2026-11-20 改名后中转类型的地址规则不变），理由和官方那边设它的理由是同一个：官方那边是「撤销一次从 Ark SDK 文档粘贴 base URL 的动作」，而中转类型的 `base_url` 是**中转站的根**、路径由两个前缀表达 —— 去掉任何后缀都等于**把请求悄悄挪到运维没写的地方**（`https://r/api/v3` 配默认前缀会变成 `https://r/v1/...`）。
 
 所以改成**保存时拒绝**：`base_url` 的路径以 `/v1` 或 `/api/v3` 结尾时报字段错误，并点明「把路径填到 `api_prefix` 里」。
 

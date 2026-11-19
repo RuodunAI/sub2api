@@ -105,15 +105,28 @@ var assetCases = []rejectCase{
 	{"asset_region not a string", map[string]any{"asset_region": 1}, ""},
 }
 
-// apiKeyCases: api_key required, 8-512 visible ASCII characters.
+// apiKeyCases: api_key required, a non-empty string; nothing else about it is
+// checked (acceptedKeys).
 var apiKeyCases = []rejectCase{
 	{"no api_key", map[string]any{"api_key": nil}, "api_key"},
 	{"empty api_key", map[string]any{"api_key": ""}, "api_key"},
-	{"api_key of 7 characters", map[string]any{"api_key": "1234567"}, "api_key"},
-	{"api_key of 513 characters", map[string]any{"api_key": strings.Repeat("k", 513)}, "api_key"},
-	{"api_key with a space", map[string]any{"api_key": "ark key 12345678"}, "api_key"},
-	{"api_key not ASCII", map[string]any{"api_key": "ark-密钥-12345678"}, "api_key"},
+	{"blank api_key", map[string]any{"api_key": " \t "}, "api_key"},
 	{"api_key not a string", map[string]any{"api_key": 12345678}, "api_key"},
+}
+
+// acceptedKeys are api_key values the old forms refused and both types now
+// accept: any non-empty string.
+var acceptedKeys = []string{"1234567", strings.Repeat("k", 4096), "ark key 12345678", "ark-密钥-12345678"}
+
+// assertKeysAccepted checks that each of acceptedKeys on base is accepted.
+func assertKeysAccepted(t *testing.T, accountType string, base map[string]any) {
+	t.Helper()
+	for _, key := range acceptedKeys {
+		r, err := New().ValidateCredentials(context.Background(), formInput(accountType, base, map[string]any{"api_key": key}))
+		if err != nil || len(r.GetErrors()) != 0 {
+			t.Errorf("%s api_key %.20q: %v %v, want it accepted", accountType, key, r.GetErrors(), err)
+		}
+	}
 }
 
 func TestApiKeyFormConstraints(t *testing.T) {
@@ -128,6 +141,7 @@ func TestApiKeyFormConstraints(t *testing.T) {
 		rejectCase{"base_url with a space", map[string]any{"base_url": "https://ark.example.com/a b"}, "base_url"},
 	)
 	assertRefused(t, AccountTypeAPIKey, base, cases)
+	assertKeysAccepted(t, AccountTypeAPIKey, base)
 }
 
 func TestRelayFormConstraints(t *testing.T) {
@@ -173,6 +187,7 @@ func TestRelayFormConstraints(t *testing.T) {
 		)
 	}
 	assertRefused(t, AccountTypeRelay, base, cases)
+	assertKeysAccepted(t, AccountTypeRelay, base)
 
 	// Both endpoints are optional and take a path or an http(s) URL.
 	p := New()
