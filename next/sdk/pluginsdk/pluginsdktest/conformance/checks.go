@@ -45,6 +45,7 @@ var checks = []check{
 	{"09_cancellation", "after its context is cancelled Execute returns promptly, within the suite's cancelWait (" + design + "§14.1.9, §8.4)", perCase(checkCancellation)},
 	{"10_large_body", "a large body (largeBodySize) completes with plugin-side allocation within 4x the body (" + design + "§14.1.10, §8.3, §10.1)", perCase(checkLargeBody)},
 	{"11_websocket", "a plugin declaring platform.websocket.v1 relays a turn once without waiting, with the handshake URL, handshake headers and the final message, and no response_stream (" + design + "§14.1.11, §4.8)", webSocketItems},
+	{"12_balance", "an account type declaring manifest balance reads it (pluginsdk.BalanceReader) with requests to hosts the core sends to, and an answer it cannot read (a transport error, an empty body) is an error result; a type declaring none answers UNIMPLEMENTED (DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE §3.1.7)", balanceItems},
 	{"08_no_sockets", "the plugin opens no socket: every exchange goes through Relay, RelayAndWait or Fetch (" + design + "§14.1.8, §5.1, §5.4)", noSocketItems},
 }
 
