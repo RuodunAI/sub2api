@@ -31,6 +31,8 @@ function fakeHost(): PluginHost {
 const DEVICE_CREDS = { access_token: 'at', refresh_token: 'rt', id_token: 'it', expires_at: 1800000000, email: 'me@example.com', chatgpt_account_id: 'acc-1', plan_type: 'plus' }
 const OAUTH_CREDS = { access_token: 'at2', refresh_token: 'rt2', id_token: 'it2', expires_at: 1800000000, email: 'me@example.com', chatgpt_account_id: 'acc-2', plan_type: 'pro' }
 const CALLBACK = 'http://localhost:1455/auth/callback'
+/** The client headers a call of a form without its own carries. */
+const NO_AGENT = { user_agent: '', originator: '' }
 
 /** The editor's proxyTicket (UI 3.20): a ticket of its current proxy choice. */
 let proxyTicket: ReturnType<typeof vi.fn<() => Promise<string>>>
@@ -92,6 +94,34 @@ describe('CodexAuthForm: client headers', () => {
     expect(lastValue(w)).toEqual({ ...loaded, user_agent: 'ua-acct' })
   })
 
+  it('sends the form\'s current values with every call of a login', async () => {
+    answer = (path) => {
+      if (path === '/auth/device/start') return { session_id: 's1', verification_url: 'https://x', user_code: 'C', interval: 5, expires_in: 900 }
+      if (path === '/auth/device/poll') return { status: 'pending' }
+      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/a' }
+      if (path === '/auth/codex/exchange') return { credentials: OAUTH_CREDS }
+      throw new Error(`unexpected ${path}`)
+    }
+    const w = mountForm({ modelValue: { user_agent: 'ua-1' } })
+    await w.get('[data-testid="codex-device-start"]').trigger('click')
+    await flushPromises()
+    expect(calls.at(-1)?.body).toEqual({ proxy_ticket: 'sealed-ticket', user_agent: 'ua-1', originator: '' })
+    // Changed while the login runs: the next call has the new values.
+    await w.setProps({ modelValue: { user_agent: 'ua-2', originator: 'or-2' } })
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(calls.at(-1)?.body).toEqual({ session_id: 's1', proxy_ticket: 'sealed-ticket', user_agent: 'ua-2', originator: 'or-2' })
+
+    await w.findAll('[role="tab"]')[1].trigger('click')
+    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+    await flushPromises()
+    expect(calls.at(-1)?.body).toEqual({ proxy_ticket: 'sealed-ticket', user_agent: 'ua-2', originator: 'or-2' })
+    await w.setProps({ modelValue: { originator: 'or-3' } })
+    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
+    await flushPromises()
+    expect(calls.at(-1)?.body).toEqual({ session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s`, proxy_ticket: 'sealed-ticket', user_agent: '', originator: 'or-3' })
+  })
+
   it('shows the fields while creating, before any authorization', () => {
     const w = mountForm({ accountType: { type: 'codex_oauth' } })
     expect(w.find('[data-testid="codex-user-agent"]').exists()).toBe(true)
@@ -120,13 +150,13 @@ describe('CodexAuthForm: device code', () => {
     expect(w.get('[data-testid="codex-device-countdown"]').text()).toBe('device.expiresIn')
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
     // Every call carries a fresh ticket of the editor's current proxy choice.
-    expect(calls[0]).toEqual({ path: '/auth/device/start', body: { proxy_ticket: 'sealed-ticket' } })
+    expect(calls[0]).toEqual({ path: '/auth/device/start', body: { proxy_ticket: 'sealed-ticket', ...NO_AGENT } })
     expect(proxyTicket).toHaveBeenCalledTimes(1)
 
     // The operator picks another proxy after starting: the next poll has it.
     proxyTicket.mockResolvedValue('changed-ticket')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1', proxy_ticket: 'changed-ticket' } }])
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1', proxy_ticket: 'changed-ticket', ...NO_AGENT } }])
     expect(proxyTicket).toHaveBeenCalledTimes(2)
     expect(lastValue(w)).toBeUndefined()
 
@@ -238,7 +268,7 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     const w = mountForm({ accountType: { type: 'codex_oauth' } })
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket' } })
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket', ...NO_AGENT } })
     expect((w.get('[data-testid="codex-oauth-url"]').element as HTMLInputElement).value).toBe('https://auth.openai.com/oauth/authorize?x=1')
     expect(w.get('[data-testid="codex-oauth-open"]').attributes('target')).toBe('_blank')
     expect(w.find('[data-testid="codex-oauth-note"]').exists()).toBe(true)
@@ -256,7 +286,7 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
     // The exchange carries the ticket of the proxy chosen since the start.
-    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s`, proxy_ticket: 'changed-ticket' } })
+    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s`, proxy_ticket: 'changed-ticket', ...NO_AGENT } })
     expect(lastValue(w)).toEqual(OAUTH_CREDS)
     expect(w.find('[data-testid="codex-authorized"]').exists()).toBe(true)
   })
@@ -337,20 +367,21 @@ describe('CodexAuthForm: editing', () => {
       if (path === '/auth/codex/exchange') return { credentials: { ...OAUTH_CREDS, email: 'old@example.com' } }
       throw new Error(`unexpected ${path}`)
     }
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked, proxy_note: 'kept' } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked, proxy_note: 'kept', originator: 'or-acct' } })
     await w.get('[data-testid="codex-reauth"]').trigger('click')
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket' } })
+    // The account's own client headers, as the form holds them, go along.
+    expect(calls[0]).toEqual({ path: '/auth/codex/start', body: { proxy_ticket: 'sealed-ticket', user_agent: '', originator: 'or-acct' } })
     await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
     await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(lastValue(w)).toEqual({ ...OAUTH_CREDS, email: 'old@example.com', proxy_note: 'kept' })
+    expect(lastValue(w)).toEqual({ ...OAUTH_CREDS, email: 'old@example.com', proxy_note: 'kept', originator: 'or-acct' })
     expect(w.get('[data-testid="codex-authorized"]').text()).toContain('done.titleReauth')
 
     // "Authorize again" puts the loaded credentials back.
     await w.get('[data-testid="codex-again"]').trigger('click')
-    expect(lastValue(w)).toEqual({ ...masked, proxy_note: 'kept' })
+    expect(lastValue(w)).toEqual({ ...masked, proxy_note: 'kept', originator: 'or-acct' })
   })
 
   it('cancelling a re-authorization hides the flow', async () => {
@@ -410,7 +441,7 @@ describe('CodexAuthForm: proxy ticket', () => {
     proxyTicket.mockResolvedValueOnce('another-ticket')
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
-    expect(calls).toEqual([{ path: '/auth/codex/start', body: { proxy_ticket: 'another-ticket' } }])
+    expect(calls).toEqual([{ path: '/auth/codex/start', body: { proxy_ticket: 'another-ticket', ...NO_AGENT } }])
     expect(proxyTicket).toHaveBeenCalledTimes(2)
   })
 })

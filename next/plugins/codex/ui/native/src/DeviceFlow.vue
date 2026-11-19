@@ -9,11 +9,13 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { SAlert, SButton, SCopyButton, SHint, SIcon, SLink, SSpinner, SSteps, useNow } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
 import { errorMessage, pollDevice, startDevice, useCodexHost, type CodexCredentials, type DeviceStart } from './host'
-import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay } from './flow'
+import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay, type FormAgent } from './flow'
 
 const props = defineProps<{
   /** A proxy ticket of the account form's current proxy choice (UI 3.20), taken afresh for every call of the login. */
   proxyTicket: ProxyTicketSource
+  /** The account form's current User-Agent and originator, sent with every call of the login. */
+  agent: FormAgent
 }>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
@@ -55,7 +57,7 @@ async function start() {
   session.value = null
   setPhase('starting')
   try {
-    const s = await startDevice(await props.proxyTicket())
+    const s = await startDevice(await props.proxyTicket(), props.agent)
     if (gen !== generation) return
     session.value = s
     expiresAt.value = Date.now() + (Number(s.expires_in) > 0 ? Number(s.expires_in) : DEFAULT_CODE_TTL_SECONDS) * 1000
@@ -94,7 +96,7 @@ async function poll(gen: number) {
     return schedule(gen)
   }
   try {
-    const r = await pollDevice(id, ticket)
+    const r = await pollDevice(id, ticket, props.agent)
     if (gen !== generation) return
     failures = 0
     if (r.interval) delay = pollDelay(r.interval)

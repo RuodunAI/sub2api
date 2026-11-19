@@ -63,11 +63,12 @@
   - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
   - 开始、轮询、换令牌路由都要 `proxy_ticket`（账号表单**当前**的代理选择，界面每次调用现取一张，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `pending` 并在 `message` 里带拒绝原因。请求没有到 OpenAI，设备码、授权码都没用掉，所以会话保留：代理改好后，下一次轮询或换令牌带着新票据就能继续。
   - `POST /auth/codex/exchange` `{session_id, callback_url, proxy_ticket}` → `{credentials}` 或错误。
+  - 四个路由的请求体另带可选的 `user_agent`、`originator`：账号表单此刻填的客户端标识（第 20.2 节），界面每次调用都带上，插件只用于这次调用的请求、不存进会话。校验与 `ValidateCredentials` 对这两个字段的相同（`credMap.agentError`：去掉首尾空白后必须是字符串、不能含控制字符），不合格时 400 `invalid_argument`（field `user_agent` / `originator`，code `pattern`），什么也不发。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
   - `chatgpt_account_id`（两种类型都有）。
-  - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填；空或没有时用插件设置的值。
+  - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填（授权时每次调用也带上表单此刻的值）；空或没有时用插件设置的值。
   - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
 - 网络权限（与 manifest 一致）：0.2.0 起没有 `net`，插件不开任何对外连接。`auth.openai.com`、`chatgpt.com` 列在 `externalServices`：授权请求是带代理票据的取回（第 19 节），上游请求、令牌刷新与重置次数请求都由核心经账号代理发出。（0.2.0 之前 `net` 只有 `auth.openai.com`，授权请求由插件直连。）不访问 `api.openai.com`，没有模型列表（控制台用 manifest 默认模型），也没有用量查询（窗口由核心从响应头采样，第 13 节）。
 - 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
@@ -322,7 +323,7 @@
 ### 20.2 User-Agent 与 originator
 
 - 取值（每个头各自）：账号凭证里的 `user_agent` / `originator` → 插件设置的 `user_agent` / `originator` → 内置 `sup2api-codex/<版本>` / `sup2api`。空字符串（去掉首尾空白后）表示不自定义，沿用上一级。只在 `agent.go` 一处解析（`Plugin.agent`），用在账号建好后发往 OpenAI 的全部请求：转发（HTTP 与 WebSocket 握手）、账号测试（`BuildTestRequest`）、令牌刷新（`BuildRefreshRequest`）、重置次数（`SendAccountRequest`）。
-- 授权请求（设备码申请与轮询、两种登录的换令牌）目前对所有账号——新建和重新授权都一样——只用插件设置的值，没有时用内置值，不读表单里填的账号值：授权路由不知道是哪个账号，也收不到表单的值。
+- 授权请求（设备码申请与轮询、两种登录的换令牌）用账号表单此刻填的值（2026-11-19 审查判定必须改，原先只用插件设置的值）：授权时账号还没保存，值只在表单里，所以和代理票据一样，界面每次调用授权路由都把表单当前的 `user_agent`、`originator` 放进请求体（`host.ts`，`flow.ts` 的 `agentOf`），插件在这次调用里按 `Plugin.agent(credentials{UserAgent, Originator})` 解析（`oauth.go` 的 `readCall` / `routeCall`），不存进会话；授权中途改了这两个值，下一次轮询或换令牌就用新值。表单留空时照常落到插件设置和内置值。新建和编辑已有账号时的重新授权相同。路由里的校验复用 `ValidateCredentials` 对这两个字段的检查（`credMap.agentError`），没有另加限制。
 - 账号上：凭证的两个普通字段（不在 `sensitiveFields`，编辑时原样显示；不在 `settingsFields`，所以和令牌一起进 `credentials_json`，刷新、测试、重置读到的都是它）。`ValidateCredentials` 只做格式校验：必须是字符串、不能含控制字符（水平制表符除外，与发送前的检查相同）。原生表单 `CodexAuthForm` 多一块“客户端标识”，两个输入框，新建和编辑都有；重新授权保留它们（`mergeCredentials` 只替换令牌字段，`withAgent` 在“重新授权”撤回时保留表单里改过的值）。原生表单的凭证控制台不会自动渲染，所以这两个输入框写在插件的表单里；账号的 `extensionsSchema` 控制台没有渲染（`web/src` 里只有类型声明 `extensions_schema`，没有组件读它），值存进账号设置、不进 `credentials_json`（`account/creds.go` 把扩展键从凭证里拿掉），所以没有用它。
 - 插件设置：清单 `ui.settings`（`mode: "schema"`，`forms/settings.schema.json` 与 `settings.ui.json`），控制台自动渲染；两个字符串，默认空，schema 的 `pattern` 只拒绝控制字符。`Configure` 去掉首尾空白后保存在进程里，各节点各自收到。
 - 现有机制查过，不能直接满足：账号请求头覆盖（CONTRACTS §108）和参数覆盖（§84）只作用在转发上，而 codex 的头全部是权威头（§112.4，所有者定的例外），覆盖改不了；刷新、测试、重置次数、授权这些请求核心按插件交回的头原样发送，不套覆盖。
@@ -330,4 +331,4 @@
 
 ### 20.3 测试
 
-`execute_test.go`（会话头按账号 id 计算：同一账号同输入稳定、另一个账号 id 结果不同、与不加盐的旧值不同、请求的头、体、URL 都不含账号 id）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数、授权的两个头；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有）、`flow.spec.ts`（`withAgent`、重新授权保留）。
+`execute_test.go`（会话头按账号 id 计算：同一账号同输入稳定、另一个账号 id 结果不同、与不加盐的旧值不同、请求的头、体、URL 都不含账号 id）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数的两个头；授权的设备码申请、轮询、两种登录的换令牌用路由调用带的表单值，六种组合同样成立；表单值不是字符串或含控制字符时四个路由都回 400 且不发请求；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有；两种登录的每次调用都带表单当前的值，中途改了下一次调用带新值；重新授权带账号已有的值）、`flow.spec.ts`（`withAgent`、`agentOf`、重新授权保留）。

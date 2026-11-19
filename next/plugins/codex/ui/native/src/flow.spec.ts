@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, typeOf, withAgent } from './flow'
+import { agentOf, callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, typeOf, withAgent } from './flow'
 
 describe('flowsFor / typeOf', () => {
   it('shows only the flow of a known type, both otherwise', () => {
@@ -26,6 +26,13 @@ describe('withAgent', () => {
 
   it('a re-authorization keeps them', () => {
     expect(mergeCredentials({ access_token: '******', user_agent: 'ua', originator: 'or' }, { access_token: 'at' })).toEqual({ access_token: 'at', user_agent: 'ua', originator: 'or' })
+  })
+})
+
+describe('agentOf', () => {
+  it('reads the client headers, "" where there is none or not a string', () => {
+    expect(agentOf({ access_token: 'x', user_agent: 'ua', originator: 7 })).toEqual({ user_agent: 'ua', originator: '' })
+    expect(agentOf(null)).toEqual({ user_agent: '', originator: '' })
   })
 })
 
