@@ -1,28 +1,9 @@
 /// <reference types="vite/client" />
-import { describe, expect, it } from 'vitest'
+import { describe } from 'vitest'
+import { checkMessages } from '@sub2api/ui/testing'
 import messages from './messages'
 
-// zh and en must have the same keys (a missing one shows the raw key).
-const keys = (o: unknown, prefix = ''): string[] =>
-  o && typeof o === 'object' ? Object.entries(o).flatMap(([k, v]) => keys(v, prefix ? `${prefix}.${k}` : k)) : [prefix]
-
-describe('messages', () => {
-  it('zh and en have the same keys', () => {
-    const zh = new Set(keys(messages.zh))
-    const en = new Set(keys(messages.en))
-    expect([...zh].filter((k) => !en.has(k))).toEqual([])
-    expect([...en].filter((k) => !zh.has(k))).toEqual([])
-  })
-
-  it('keeps vue-i18n special characters out of plain text', () => {
-    const leaves = (o: unknown): string[] => (o && typeof o === 'object' ? Object.values(o).flatMap(leaves) : [String(o)])
-    for (const lang of [messages.zh, messages.en]) expect(leaves(lang).filter((s) => /[@|{}]/.test(s))).toEqual([])
-  })
-
-  it('has no key the code never uses', () => {
-    const files = import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true })
-    const sources = Object.values(files).join('\n')
-    expect(Object.keys(files)).toContain('./RelayForm.vue')
-    expect(keys(messages.en).filter((k) => !sources.includes(`'${k}'`))).toEqual([])
-  })
-})
+describe('messages', () =>
+  checkMessages(messages, {
+    sources: import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true })
+  }))

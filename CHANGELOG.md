@@ -45,6 +45,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 各插件改用补缺的公共接口（U3b）：
 
 - bedrock、vertex：表单的分节改用 `SFormSection`，props 改用 `nativeAccountFormProps`，bedrock 的到期时间改用 `SDateTimeInput`，`vertex_apikey` 改为直接用 `createApiKeyForm`（字段、文案、校验不变；项目 ID 与区域两个输入框不再用等宽字体）；spec 改用 `@sub2api/ui/testing`。bedrock 不认识的账号类型不再当作 `bedrock_apikey` 显示。vertex 拒绝表单没有声明的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和核心续期写回的 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
+- volcengine：apikey 表单的“素材库（可选）”一节补回原表单的说明（迁移时丢了）；relay 表单的素材库一节和兼容配置一节改用 `SFormSection`（兼容配置 `collapsed`），props 改用 `nativeAccountFormProps`。`api_prefix`、`video_api_prefix` 里的空白只在保存时拒绝：此前请求时读已存的前缀也查空白，含 `\v`、不换行空格等的已存前缀每次请求都报错。
 
 ### 插件界面只用代码写：云厂商插件的账号表单
 

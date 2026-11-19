@@ -422,6 +422,28 @@ func TestNormalizePrefix(t *testing.T) {
 	}
 }
 
+// TestStoredPrefixWithSpaceKeepsWorking: whitespace inside a prefix is
+// refused on save (validatePrefixFields), not on the request path. A prefix
+// stored before that rule (with a vertical tab or a no-break space) still
+// reads, and the request is built as before; only upstreamURL's own checks
+// apply to it.
+func TestStoredPrefixWithSpaceKeepsWorking(t *testing.T) {
+	for _, prefix := range []string{"/v1\vx", "/v1\u00a0x"} {
+		quoted, _ := json.Marshal(prefix)
+		settings := `{"base_url":"https://relay.test","api_prefix":` + string(quoted) + `}`
+		if got, err := prefixesOf(AccountTypeRelay, settings); err != nil || got.api != prefix {
+			t.Errorf("prefixesOf(%q) = %q, %v; want it as stored", prefix, got.api, err)
+		}
+		if errs := validatePrefixFields(nil, settings); len(errs) != 1 || errs[0].GetField() != FieldAPIPrefix || errs[0].GetCode() != "pattern" {
+			t.Errorf("saving %q: errors = %v, want api_prefix:pattern", prefix, errs)
+		}
+	}
+	r, err := buildFor(t, relayAccount("/v1\u00a0x", ""), &pluginv1.RequestMeta{Protocol: ProtocolChat, Model: "m"})
+	if err != nil || r.GetUrl() != "https://relay.test/v1\u00a0x/chat/completions" {
+		t.Fatalf("url = %q (%v)", r.GetUrl(), err)
+	}
+}
+
 // TestValidateRelayBaseURL covers the save-time guard on the relay base URL.
 // The prefixes are what express a path, and a base URL that already carries one
 // would double it - loudly on text, but on video the poll 404s forever and the
