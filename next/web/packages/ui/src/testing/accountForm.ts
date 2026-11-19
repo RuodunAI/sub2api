@@ -24,7 +24,8 @@ export interface MountedAccountForm {
  * v-model credentials and the §23.5 props. With `stored` it edits an account
  * holding those credentials (secrets as SECRET_MASK), else it creates one.
  * `form` is typed loosely: the plugin's component carries its own copy of
- * the Vue types.
+ * the Vue types. Call fakeHost() first (beforeEach): the forms read the
+ * console through useHost().
  */
 export function mountAccountForm(form: object, opts: { accountType: AccountTypeView; stored?: M; errors?: Record<string, string> }): MountedAccountForm {
   const credentials = ref<M>(opts.stored ? { ...opts.stored } : {})
@@ -66,8 +67,8 @@ export function control(w: VueWrapper, label: string): Omit<DOMWrapper<Element>,
 /**
  * Types `input` (field -> text) into the controls, in order: `labels` names
  * each field's label. A select takes the text of the option to pick, a
- * datetime-local box its local value; '' clears a box (after typing
- * something first, so the clearing is a change). Each control is blurred.
+ * datetime-local box its local value, '' clears a box. Each control is
+ * blurred.
  */
 export async function fillControls(w: VueWrapper, labels: Record<string, string>, input: Record<string, string>) {
   await flushPromises()
@@ -80,7 +81,6 @@ export async function fillControls(w: VueWrapper, labels: Record<string, string>
       if (!option) throw new Error(`${field}: no option ${value}`)
       await el.setValue((option.element as HTMLOptionElement).value)
     } else {
-      if (value === '') await el.setValue('x')
       await el.setValue(value)
     }
     await el.trigger('blur')

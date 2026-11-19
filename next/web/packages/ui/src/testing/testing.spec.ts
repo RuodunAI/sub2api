@@ -1,8 +1,8 @@
 // The spec helpers of @sub2api/ui/testing, used the way a plugin's specs
 // use them (through the alias).
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { defineComponent, h } from 'vue'
-import type { PluginHost } from '@sub2api/host'
+import { useHost, type PluginHost } from '@sub2api/host'
 import { checkMessages, cleanup, control, fakeCore, fakeHost, fillControls, keyAndUrlCases, messagesT, mountAccountForm, mountSettings } from '@sub2api/ui/testing'
 import { messageProblems } from './messages'
 import { createApiKeyForm, SECRET_MASK, SSettingsPage, SSettingsGroup, SSettingRow, SInput, SSecretInput, SSelect, usePluginSettings } from '../index'
@@ -19,10 +19,10 @@ describe('account forms: mountAccountForm, fillControls, keyAndUrlCases', () => 
   })
   const LABELS = { api_key: 'API key', base_url: 'Base URL', tier: 'Tier', expires: 'Expires' }
   const accountType = { plugin_key: 'demo', type: 'apikey' }
+  beforeEach(() => fakeHost())
 
   for (const c of keyAndUrlCases('sk-demo-abcdef', 'https://x.example.com/demo', false)) {
     it(c.name, async () => {
-      fakeHost()
       const { w, saved, validate } = mountAccountForm(Form, { accountType, stored: c.stored })
       await fillControls(w, LABELS, c.input ?? {})
       expect({ value: saved(), ok: await validate() }).toEqual({ value: c.out, ok: c.ok })
@@ -30,7 +30,6 @@ describe('account forms: mountAccountForm, fillControls, keyAndUrlCases', () => 
   }
 
   it('a select takes the option text, a date box its local value; an unknown label throws', async () => {
-    fakeHost()
     const { w, saved } = mountAccountForm(Form, { accountType })
     await fillControls(w, LABELS, { tier: 'PAID', expires: '2026-11-19T10:00' })
     expect(saved()).toEqual({ tier: 'paid', expires: new Date('2026-11-19T10:00').toISOString() })
@@ -39,7 +38,6 @@ describe('account forms: mountAccountForm, fillControls, keyAndUrlCases', () => 
   })
 
   it('edits with the stored credentials, and shows server errors', async () => {
-    fakeHost()
     const { w, credentials } = mountAccountForm(Form, { accountType, stored: { api_key: SECRET_MASK }, errors: { api_key: 'invalid key' } })
     expect(credentials.value).toEqual({ api_key: SECRET_MASK })
     expect(w.text()).toContain('invalid key')
@@ -47,18 +45,24 @@ describe('account forms: mountAccountForm, fillControls, keyAndUrlCases', () => 
 
   it('fakeHost grants the permissions given: a guarded base URL is free with account:settings:custom', async () => {
     const guarded = { ...accountType, guarded_settings: [{ field: 'base_url', allowed: ['https://api.example.com'] }] }
-    fakeHost()
     expect(mountAccountForm(Form, { accountType: guarded }).w.find('input[type="url"]').exists()).toBe(false)
     fakeHost({ granted: ['account:settings:custom'] })
     expect(mountAccountForm(Form, { accountType: guarded }).w.find('input[type="url"]').exists()).toBe(true)
   })
 
-  it('cleanup unmounts and empties the page', () => {
-    fakeHost()
+  it('cleanup unmounts, empties the page and withdraws the console', () => {
+    fakeHost({ granted: ['account:settings:custom'] })
     mountAccountForm(Form, { accountType })
     expect(document.body.innerHTML).not.toBe('')
     cleanup()
     expect(document.body.innerHTML).toBe('')
+    expect(() => useHost()).toThrow('host context not initialised')
+  })
+
+  it('a cleared box drops the stored value', async () => {
+    const { w, saved } = mountAccountForm(Form, { accountType, stored: { api_key: SECRET_MASK, base_url: 'https://x.example.com' } })
+    await fillControls(w, LABELS, { base_url: '' })
+    expect(saved()).toEqual({ api_key: SECRET_MASK })
   })
 })
 
