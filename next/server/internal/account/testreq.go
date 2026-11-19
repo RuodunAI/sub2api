@@ -150,7 +150,7 @@ func (s *Service) test(c *gin.Context) {
 		}
 	}
 	if err != nil {
-		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Protocol: strings.TrimSpace(req.GetUsageProtocol()), Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
 		httpapi.Fail(c, err)
 		return
 	}

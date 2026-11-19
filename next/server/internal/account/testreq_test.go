@@ -636,13 +636,14 @@ func TestAccountTestProtocolsSubset(t *testing.T) {
 // error, whatever missing_price_policy says (the fake answers as under
 // "free"), records it as the gateway's, and nothing goes upstream. The model
 // priced is the one tested before the account's mapping: the caller's, else
-// the account's default test model, else the one the plugin reports.
+// the account's default test model, else the one the plugin reports. The
+// recorded test still says which protocol the plugin would have tested.
 func TestAccountTestRefusesModelWithoutPrice(t *testing.T) {
 	e := setup(t)
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1) }))
 	t.Cleanup(up.Close)
-	e.plat.testURL, e.plat.testModel = up.URL+"/v1/messages", "plug-m"
+	e.plat.testURL, e.plat.testModel, e.plat.usageProtocol = up.URL+"/v1/messages", "plug-m", "anthropic.messages"
 	id := e.mkAccount("sk-good-key-123")
 	refused := func(what string, unpriced string, body map[string]any) {
 		t.Helper()
@@ -653,7 +654,7 @@ func TestAccountTestRefusesModelWithoutPrice(t *testing.T) {
 		}
 		_, raw = e.doRaw(e.uid, "GET", fmt.Sprintf("/accounts/%d", id), nil)
 		if last := gjson.GetBytes(raw, "data.last_test"); last.Get("ok").Bool() || last.Get("error_source").String() != "gateway" ||
-			last.Get("error_code").String() != core.ErrPriceNotConfigured.Code {
+			last.Get("error_code").String() != core.ErrPriceNotConfigured.Code || last.Get("protocol").String() != "anthropic.messages" {
 			t.Fatalf("%s: last test %s", what, last)
 		}
 		if calls.Load() != 0 {
