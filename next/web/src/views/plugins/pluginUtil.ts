@@ -183,22 +183,6 @@ export function endpointText(e: Record<string, any>): string {
   return head ? (proto ? `${head} (${proto})` : head) : display(e)
 }
 
-/**
- * Field errors of PUT /plugins/:key/settings -> SchemaForm paths. Schema
- * errors are JSON pointers under "values" (values/a/0/b), plugin errors may
- * be dotted (values.a.0.b); errors of the whole object come back in `root`.
- */
-export function settingsFieldErrors(fields: Record<string, string>): { fields: Record<string, string>; root: string[] } {
-  const out: Record<string, string> = {}
-  const root: string[] = []
-  for (const [k, v] of Object.entries(fields)) {
-    const p = k.replace(/^values(?=[./]|$)/, '').replace(/^[./]/, '').replace(/\//g, '.')
-    if (p) out[p] = v
-    else root.push(v)
-  }
-  return { fields: out, root }
-}
-
 export interface AccountTypeSummary {
   id: string
   label: LText | undefined
@@ -422,18 +406,21 @@ export interface PluginDetail {
 /**
  * Where the installed plugins list opens a plugin's settings; neither the
  * sidebar nor system settings lists them (CONTRACTS §90): the settings tab of
- * the detail page for the form the console renders (has_settings is false for
- * native settings, §75.5); undefined without one.
+ * the detail page (has_settings: the manifest declares ui.settings; settings
+ * edited on a plugin page of their own are sent there, nativeSettingsPath);
+ * undefined without settings.
  */
 export function consoleSettingsPath(p: Pick<PluginSummary, 'key' | 'has_settings'>): string | undefined {
   return p.has_settings ? `/plugins/${encodeURIComponent(p.key)}?tab=settings` : undefined
 }
 
 export interface PluginSettings {
-  /** schema: the console renders the form; native: the plugin edits them on its own page (ui.settings.page, §75.5). */
+  /** schema: the console renders the form; native: the plugin's component (on the settings tab), or its own page (ui.settings.page, §75.5). */
   mode?: string
   /** The plugin page (ui.pages key) holding native settings. */
   page?: string
+  /** Native settings without a page: the component the plugin registered for them, shown on the settings tab. */
+  component?: string
   schema: Record<string, any> | null
   ui_schema?: Record<string, any> | null
   values: Record<string, any> | null
@@ -448,9 +435,15 @@ export function isPendingConsent(s: string | undefined): boolean {
   return s === 'pending' || s === 'awaiting_consent' || s === 'awaiting'
 }
 
-/** Settings the console renders as a schema form; native settings, even with a schema, live on the plugin's page (§75.5). */
+/**
+ * Settings the settings tab shows: a schema form, or the component of native
+ * settings that have no page of their own; native settings with a page live
+ * on that page (§75.5).
+ */
 export function consoleSettings(s: PluginSettings | null | undefined): PluginSettings | null {
-  return s && s.schema && (s.mode ?? 'schema') === 'schema' ? s : null
+  if (!s) return null
+  const mode = s.mode ?? 'schema'
+  return (mode === 'schema' && s.schema) || (mode === 'native' && s.component && !s.page) ? s : null
 }
 
 /** A plugin's settings form on a page of its own: for holders of the plugin's settings permission alone, and for old links. */

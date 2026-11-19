@@ -17,6 +17,7 @@ import EnvironmentEditor from '@/components/environment/EnvironmentEditor.vue'
 import { schemaWidgets } from '@/components/schema/widgets'
 import PluginIframe from '@/components/plugin/PluginIframe.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
+import PluginComponent from '@/components/plugin/PluginComponent.vue'
 import { forAccountType, slotKey } from '@/components/plugin/slots'
 import GroupPicker from '@/components/GroupPicker.vue'
 import ProxyPicker from '@/components/ProxyPicker.vue'
@@ -112,10 +113,9 @@ const iframe = ref<InstanceType<typeof PluginIframe>>()
 const nativeRef = ref<{ validate?: () => boolean | Promise<boolean> }>()
 const uiPlugin = computed(() => (props.accountType ? plugins.plugin(props.accountType.plugin_key) : undefined))
 const iframeSrc = computed(() => (uiPlugin.value && props.accountType?.form.page ? assetURL(uiPlugin.value, props.accountType.form.page) : ''))
-const nativeComponent = computed(() => (props.accountType ? plugins.component(props.accountType.plugin_key, props.accountType.form.component) : undefined))
-// The plugin list (iframe, native) or the plugin's native module is still
-// loading: show a spinner, not "form unavailable" (as PluginPageView does).
-const pluginFormWaiting = computed(() => !plugins.listed || (props.accountType?.form.mode === 'native' && !!plugins.pending[props.accountType.plugin_key]))
+// The plugin list is still loading: show a spinner, not "form unavailable"
+// (a native form waits for its plugin's module too, in PluginComponent).
+const pluginFormWaiting = computed(() => !plugins.listed)
 
 // ---------------------------------------------------------------- common controls (docs/COMMON-CONTROLS.md §2)
 
@@ -658,9 +658,9 @@ const { save } = useAccountSave({
               <SHint v-else tone="danger">{{ t('accounts.formUnavailable') }}</SHint>
             </template>
             <template v-else-if="mode === 'native'">
-              <component :is="nativeComponent" v-if="nativeComponent" ref="nativeRef" v-model="credentials" :mode="editing ? 'edit' : 'create'" :account="account" :account-type="accountType" :errors="credErrors" :proxy-ticket="proxyTicket" />
-              <div v-else-if="pluginFormWaiting" class="flex justify-center py-6"><SSpinner /></div>
-              <SHint v-else tone="danger">{{ plugins.errors[accountType.plugin_key] || t('accounts.formUnavailable') }}</SHint>
+              <PluginComponent v-slot="{ component }" :plugin-key="accountType.plugin_key" :name="accountType.form.component">
+                <component :is="component" ref="nativeRef" v-model="credentials" :mode="editing ? 'edit' : 'create'" :account="account" :account-type="accountType" :errors="credErrors" :proxy-ticket="proxyTicket" />
+              </PluginComponent>
             </template>
 
             <div class="mt-4 space-y-3 empty:hidden">

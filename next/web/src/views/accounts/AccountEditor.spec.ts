@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), p
 vi.mock('@sub2api/host', async (original) => ({ ...await original<object>(), api: mocks }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<typeof import('@sub2api/ui')>(), toast: mocks.toast }))
 const ownership = vi.hoisted(() => ({ scope: 'all' as 'all' | 'own' }))
-const pluginStore = vi.hoisted(() => ({ listed: true, pending: {} as Record<string, boolean>, errors: {} as Record<string, string>, plugin: () => null, component: (() => null) as (key: string, name?: string) => unknown, slotEntries: (() => []) as (slot: string) => unknown[] }))
+const pluginStore = vi.hoisted(() => ({ listed: true, pending: {} as Record<string, boolean>, errors: {} as Record<string, string>, plugin: () => null, component: (() => null) as (key: string, name?: string) => unknown, slotEntries: (() => []) as (slot: string) => unknown[], refresh: vi.fn() }))
 vi.mock('@/stores/plugins', () => ({ usePluginStore: () => pluginStore, assetURL: () => '' }))
 const perms = vi.hoisted(() => ({ denied: [] as string[] }))
 // Keys compare in their canonical spelling (CONTRACTS §21).
@@ -55,6 +55,10 @@ function render(account?: Account, realSelect = false, type: AccountType = accou
     // Like SInput, type="number" emits a number (null when empty).
     SInput: { props: ['modelValue', 'type'], emits: ['update:modelValue'], template: '<input :type="type" :value="modelValue" @input="$emit(\'update:modelValue\', type === \'number\' ? ($event.target.value === \'\' ? null : Number($event.target.value)) : $event.target.value)" />' },
     SchemaForm: { template: '<div />', methods: { validate: () => true } },
+    // Mounts a native form the way plugin pages do: rendered for real.
+    PluginComponent: false,
+    // A native form whose expose (validate) the editor calls.
+    ValidatingForm: false,
   } } })
 }
 
@@ -182,11 +186,12 @@ describe('account forwarding and proxy', () => {
 
 // A plugin's native account form (form.mode "native", e.g. codex's
 // CodexAuthForm) comes from the plugin store: wait while the plugin list or
-// the plugin's module loads, then show the component or why it is missing.
+// the plugin's module loads, then show the component or why it is missing
+// (with Retry); the rest of the editor stays usable either way.
 describe('native plugin account form', () => {
   const nativeType = { ...accountType, plugin_key: 'codex', type: 'codex_device', creation_group: 'codex', form: { mode: 'native', component: 'CodexAuthForm' } } as unknown as AccountType
   const CodexAuthForm = { name: 'CodexAuthForm', props: ['mode'], template: '<div />' }
-  const unavailable = () => i18n.global.t('accounts.formUnavailable')
+  const unavailable = () => i18n.global.t('pluginHost.nativeMissing', { component: 'CodexAuthForm' })
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -225,6 +230,30 @@ describe('native plugin account form', () => {
     w = render(undefined, false, nativeType)
     await flushPromises()
     expect(w.text()).toContain('entry does not export register(host)')
+  })
+
+  it('offers Retry when the plugin module failed, and still saves the other sections with the credentials as they were', async () => {
+    pluginStore.errors = { codex: 'Failed to fetch dynamically imported module' }
+    mocks.patch.mockResolvedValue(savedAccount())
+    const w = render({ ...savedAccount(), type: 'codex_device', credentials: { access_token: '******' } } as unknown as Account, false, nativeType)
+    await flushPromises()
+    await w.get('[data-testid="plugin-component-retry"]').trigger('click')
+    expect(pluginStore.refresh).toHaveBeenCalledTimes(1)
+    await w.getComponent(ProxyPicker).vm.$emit('update:modelValue', 7)
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ proxy_id: 7, credentials: { access_token: '******' } }))
+  })
+
+  it('does not save while the native form says its value is invalid (expose validate, §23.5)', async () => {
+    let valid = false
+    pluginStore.component = () => ({ name: 'ValidatingForm', template: '<div />', setup: (_: unknown, { expose }: { expose: (e: object) => void }) => expose({ validate: async () => valid }) })
+    const w = render({ ...savedAccount(), type: 'codex_device' } as unknown as Account, false, nativeType)
+    await flushPromises()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).not.toHaveBeenCalled()
+    valid = true
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.anything())
   })
 
   // The form's proxy choice reaches an authorization flow as a proxy ticket
