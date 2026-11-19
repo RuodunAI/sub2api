@@ -14,7 +14,7 @@ const en: Messages = {
   apiKey: { help: 'Anthropic Console API key. Stored encrypted and never shown again.' },
   baseUrl: {
     placeholder: 'Leave empty to use https://api.anthropic.com',
-    help: 'Leave the default for Anthropic, or enter an Anthropic-compatible endpoint; requests go to <Base URL>/v1/messages, and an address already ending in /v1 does not get it again.'
+    help: 'Leave the default for Anthropic, or enter an Anthropic-compatible endpoint; requests go to <Base URL>/v1/messages; if the address already ends in /v1, it is not added again.'
   }
 }
 

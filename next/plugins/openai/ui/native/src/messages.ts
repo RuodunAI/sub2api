@@ -23,7 +23,7 @@ const en: Messages = {
   apiKey: { help: 'OpenAI Platform API key, sent as Authorization: Bearer. Stored encrypted and never shown again.' },
   baseUrl: {
     placeholder: 'Leave empty to use https://api.openai.com',
-    help: 'Leave the default for OpenAI, or enter an OpenAI-compatible endpoint; requests go to <Base URL>/v1/chat/completions, /v1/responses and /v1/embeddings; an address already ending in /v1 does not get it again.'
+    help: 'Leave the default for OpenAI, or enter an OpenAI-compatible endpoint; requests go to <Base URL>/v1/chat/completions, /v1/responses and /v1/embeddings; if the address already ends in /v1, it is not added again.'
   },
   advanced: 'Advanced (optional)',
   organization: {
