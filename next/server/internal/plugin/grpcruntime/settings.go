@@ -13,6 +13,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // System settings for plugins (CONTRACTS §107).
@@ -56,6 +57,18 @@ func (h *hostServer) GetSettings(ctx context.Context, in *pluginv1.GetSettingsRe
 		out.Sections = append(out.Sections, &pluginv1.SettingsSection{Name: name, Version: hex.EncodeToString(sum[:8]), ValuesJson: string(raw)})
 	}
 	return out, nil
+}
+
+// SettingsValidator is the plugin's check of its own settings; every
+// process serves PluginService (registry.addSettingsValidator).
+func (i *Instance) SettingsValidator() core.SettingsValidator { return settingsAdapter{i} }
+
+type settingsAdapter struct{ i *Instance }
+
+// ValidateSettings runs plugin code for somebody waiting in the console, so
+// it takes the console budget like ValidateCredentials.
+func (a settingsAdapter) ValidateSettings(ctx context.Context, in *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error) {
+	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, pluginOf, pluginv1.PluginServiceClient.ValidateSettings, in)
 }
 
 // SettingsChanged tells the plugin process that sections changed. The SDK

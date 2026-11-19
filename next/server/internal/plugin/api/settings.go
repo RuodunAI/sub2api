@@ -2,17 +2,22 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -42,10 +47,11 @@ type SettingsView struct {
 	// Secrets lists the masked fields as pointers below values ("a/b" for
 	// nested ones), credentials and sensitive addresses alike.
 	Secrets []string               `json:"secret_fields"`
-	fields  []manifest.SecretField // the schema's own, classified
-	// maskAll: every top-level setting is a credential, because no schema
-	// says which ones are (or the schema marks secrets where no top-level
-	// setting can be named for them).
+	fields  []manifest.SecretField // the schema's or ui.settings.secrets, classified
+	// maskAll: every top-level setting is a credential, because nothing says
+	// which ones are: no ui.settings, a mode this core does not know (an old
+	// package's), a schema file missing, or a schema marking secrets where
+	// no top-level setting can be named for them.
 	maskAll bool
 
 	// Permission is the RBAC key of ui.settings.permission: its holders may
@@ -78,8 +84,13 @@ func (a *API) settingsForm(c *gin.Context, key, corePerm string) (*SettingsView,
 		return v, true
 	}
 	v.Mode, v.Page, v.Component = f.Mode, f.Page, f.Component
-	// A schema form, or a native one that carries its schema (edited on the
-	// plugin's own page, §75.5): the schema validates and masks either way.
+	// A native or iframe form without a schema masks what ui.settings.secrets
+	// names. A schema form, or a native one that carries its schema (edited
+	// on the plugin's own page, §75.5), validates and masks with the schema.
+	if f.Schema == "" && (f.Mode == "native" || f.Mode == "iframe") {
+		v.fields, v.maskAll = f.SecretFields(), false
+		return v, true
+	}
 	if f.Mode != "schema" && f.Schema == "" {
 		return v, true
 	}
@@ -328,9 +339,13 @@ func (a *API) putSettings(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		var validate func(map[string]any) error
-		if len(form.Schema) > 0 && string(form.Schema) != "null" {
-			validate = func(v map[string]any) error { return validateSettings(form.Schema, v) }
+		validate := func(v map[string]any) error {
+			if len(form.Schema) > 0 && string(form.Schema) != "null" {
+				if err := validateSettings(form.Schema, v); err != nil {
+					return err
+				}
+			}
+			return a.pluginValidate(c.Request.Context(), key, v)
 		}
 		if changed, err = mergeSettings(form.secrets(old, in.Values), old, in.Values, manager, validate); err != nil {
 			return err
@@ -355,6 +370,57 @@ func (a *API) putSettings(c *gin.Context) {
 	}
 	install.Notify(c.Request.Context(), a.d.Bus, key)
 	a.renderSettings(c, key, form)
+}
+
+// pluginValidate has the plugin check values (PluginService.ValidateSettings)
+// and replaces them with what it normalized. A plugin that is not enabled is
+// not in the generation and not asked: Configure checks the stored values
+// when it loads, as for account credentials. One that does not implement the
+// call accepts.
+func (a *API) pluginValidate(ctx context.Context, key string, values map[string]any) error {
+	if a.d.Registry == nil || a.d.Registry.Current() == nil {
+		return nil
+	}
+	plugin, ok := a.d.Registry.Current().SettingsValidator(key)
+	if !ok {
+		return nil
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		return err
+	}
+	resp, err := plugin.ValidateSettings(ctx, &pluginv1.ValidateSettingsRequest{ConfigJson: string(raw)})
+	if status.Code(err) == codes.Unimplemented {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if errs := resp.GetErrors(); len(errs) > 0 {
+		fe := make([]core.FieldError, len(errs))
+		for i, e := range errs {
+			fe[i] = core.FieldError{Field: settingsField(e.GetField()), Code: e.GetCode(), Message: e.GetMessage()}
+		}
+		return core.InvalidFields(fe...)
+	}
+	if n := resp.GetNormalizedConfigJson(); n != "" {
+		var normalized map[string]any
+		if err := json.Unmarshal([]byte(n), &normalized); err != nil || normalized == nil {
+			return core.ErrPluginUnavailable.WithMessage("plugin returned invalid normalized settings").WithCause(err)
+		}
+		clear(values)
+		maps.Copy(values, normalized)
+	}
+	return nil
+}
+
+// settingsField is the error field of a JSON pointer below the values:
+// "values/a/b", or "values" for the whole object.
+func settingsField(pointer string) string {
+	if p := strings.TrimPrefix(pointer, "/"); p != "" {
+		return "values/" + p
+	}
+	return "values"
 }
 
 type denyLoader struct{}

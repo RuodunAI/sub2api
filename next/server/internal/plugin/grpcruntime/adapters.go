@@ -25,7 +25,7 @@ import (
 // Default call timeouts. The caller's context deadline applies when shorter.
 const (
 	TimeoutPlatformHot     = 2 * time.Second  // ClassifyError, ResolveModel, EstimateUsage
-	TimeoutPlatformConsole = 10 * time.Second // ValidateCredentials, BuildTestRequest
+	TimeoutPlatformConsole = 10 * time.Second // ValidateCredentials, BuildTestRequest, ValidateSettings
 	TimeoutHookDefault     = 300 * time.Millisecond
 	TimeoutHookMax         = 30 * time.Second // CONTRACTS §20.1
 	TimeoutHTTP            = 30 * time.Second
@@ -104,6 +104,7 @@ func invoke[C, Req, Resp any](i *Instance, ctx context.Context, class callClass,
 	return
 }
 
+func pluginOf(p *proc) pluginv1.PluginServiceClient     { return p.plugin }
 func platformOf(p *proc) pluginv1.PlatformServiceClient { return p.platform }
 func hookOf(p *proc) pluginv1.HookServiceClient         { return p.hook }
 func appOf(p *proc) pluginv1.AppServiceClient           { return p.app }
