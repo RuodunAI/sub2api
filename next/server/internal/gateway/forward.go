@@ -302,8 +302,10 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 }
 
 // forwardJSONConverted reads the whole upstream response, extracts usage
-// from it (upstream rules) and writes the converted body. Nothing is written
-// when reading or converting fails.
+// from it (upstream rules) and writes the converted body, or the client
+// error the converter made of it (convert.ClientError, CONTRACTS §121.8),
+// which the record keeps as a failure. Nothing is written when reading or
+// converting fails.
 func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usageCapture, conv convert.Converter) error {
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -311,18 +313,35 @@ func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usage
 	}
 	u.ApplyJSON(raw)
 	cap.setBody(raw)
+	status := resp.StatusCode
 	out, err := conv.Response(raw)
+	var ce *convert.ClientError
+	if errors.As(err, &ce) {
+		out, status, err = ce.Body, ce.Status, nil
+		c.recordClientError(ce)
+	}
 	if err != nil {
 		return &convertError{err: err}
 	}
 	w := c.relayWriter()
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(status)
 	if _, err := w.Write(out); err != nil {
 		return relayWriteError(err)
 	}
 	w.Flush()
 	return nil
+}
+
+// recordClientError records the client error a converter made of a
+// successful upstream answer (convert.ClientError, CONTRACTS §121.8) as the
+// request's failure; the usage read from the answer stays.
+func (c *call) recordClientError(ce *convert.ClientError) {
+	c.rec.StatusCode, c.rec.Success, c.rec.ErrorMessage = ce.Status, false, truncateUTF8(string(ce.Body), 1000)
+	c.rec.ErrorType = errTypeUpstream
+	if ce.Status < http.StatusInternalServerError {
+		c.rec.ErrorType = errTypeInvalidRequest
+	}
 }
 
 // forwardSSE relays the event stream, flushing at every event boundary and
@@ -455,6 +474,9 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 			derr := dispatch()
 			if sc != nil && derr == nil {
 				derr = emit(sc.Flush())
+			}
+			if f, ok := sc.(convert.StreamFailure); ok && derr == nil && f.Failure() != nil {
+				c.recordClientError(f.Failure())
 			}
 			if derr == nil && rerr == io.EOF {
 				// An interrupted stream leaves the array open, so the

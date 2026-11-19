@@ -1,10 +1,10 @@
 # codex 插件：ChatGPT 账号（Codex 设备码 / Sign in with Codex）
 
-日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。0.1.11 是线上最后发布的版本。下一个发布版本是 0.2.0（未发布，需核心 ≥0.1.304、UI 3.20）：按转发 V2 改写（第 18 节；开发中曾编号 0.1.12，从未发布，因为是不兼容的契约变化，与其他平台插件一样升次版本号），并且授权请求由核心经账号表单选的代理发出，插件不再联网（第 19 节，CONTRACTS §117）。核心契约见 CONTRACTS §83、§112（WebSocket 每轮见 §83.6），额度见 §44、§69。第 4 节按现状写；第 6–17 节是各版本当时的记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields` 都已被第 18 节取代。
+日期：2026-11-08（额度窗口 2026-11-09，官方用量重置次数 2026-11-10）。状态：已实现（插件 0.1.1 已上线；0.1.2 增加 `codex_device` 的 5h / 周额度窗口，见第 9 节，需核心 ≥0.1.257；0.1.3 接入官方用量重置次数，见第 10 节，需核心 ≥0.1.269；0.1.4 随权限加固发布，只改授权相关行为，见第 11 节，需核心 ≥0.1.286；0.1.7 的用量窗口只取自响应头，见第 13 节，同版新增 Sign in with Codex（`codex_oauth`）并删除 Sign in with ChatGPT（`chatgpt_siwc`），见第 14 节，需核心 ≥0.1.297）。0.1.11 是线上最后发布的版本。下一个发布版本是 0.2.0（未发布，需核心 ≥0.1.304、UI 3.20）：按转发 V2 改写（第 18 节；开发中曾编号 0.1.12，从未发布，因为是不兼容的契约变化，与其他平台插件一样升次版本号），并且授权请求由核心经账号表单选的代理发出，插件不再联网（第 19 节，CONTRACTS §117），以及经核心转换服务 OpenAI 生图接口（第 21 节，CONTRACTS §121）。核心契约见 CONTRACTS §83、§112（WebSocket 每轮见 §83.6），额度见 §44、§69。第 4 节按现状写；第 6–17 节是各版本当时的记录，其中的 `BuildUpstreamRequest`、补丁、`requestFields` 都已被第 18 节取代。
 
 ## 1. 目标与边界
 
-- 新增内置并默认启用的插件 `codex`，让运营者用**自己的** ChatGPT 订阅为**自己的**应用提供 OpenAI 兼容接口：`/v1/chat/completions`、`/v1/responses`、`/v1/responses`（WebSocket 模式）。
+- 新增内置并默认启用的插件 `codex`，让运营者用**自己的** ChatGPT 订阅为**自己的**应用提供 OpenAI 兼容接口：`/v1/chat/completions`、`/v1/responses`、`/v1/responses`（WebSocket 模式）；0.2.0 起另有 `/v1/images/generations`、`/v1/images/edits`（第 21 节）。
 - 两种建号方式（同一 `creationGroup: "codex"` 下的两个账号类型）：
   1. `codex_device`：Codex 设备码登录（与 Codex CLI `--device-auth`、OpenCode 等第三方工具相同的公开流程）。
   2. `codex_oauth`：Sign in with Codex，Codex CLI 自己的浏览器登录（授权码 + PKCE，2026-11-17 新增，见第 14 节）。
@@ -53,7 +53,7 @@
 ## 4. 插件 `codex`
 
 - 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.websocket.v1`、`http.routes.v1`。
-- 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
+- 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses；0.2.0 起要在 `adapted` 里显式列出 `chat_completions` 和两个生图端点，第 21 节），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
 - 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
@@ -217,7 +217,7 @@
 ## 12. 0.1.6：默认模型换成上游现有模型（2026-11-17，用户要求）
 
 - 用户反映内置模型和上游对不上，`gpt-6-astra` 请求在账号模型里没有它时被调度拒绝（`model_not_served`，503）。在 ec2pool 测试实例上对 Sign in with ChatGPT 账号获取模型（`GET /v1/models`，`visibility=="list"`）得到：`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra`。两种账号类型的 `defaultModels` 都换成这 8 个（新到旧），`DefaultTestModel` 由已不在列表里的 `gpt-5.1-codex-mini` 改为最便宜的 `gpt-6-luna`。`codex_device` 没有在线模型列表，沿用同一份；测试实例上没有设备码账号，未单独核实。
-- 生图（2026-11-18 改写）：上面这条 400 是已删除的 Sign in with ChatGPT（`chatgpt_siwc`，经 api.openai.com，第 14.3 节）账号的结果，不适用于现在的两种账号类型。Codex 后端的账号（设备码 `codex_device`、授权码 `codex_oauth`）**可以**经 Responses 的 `image_generation` 工具生图：2026-11-18 在设备码账号上实测流式、非流式都拿到图（授权码账号走同一上游，未实测）。上游的生图模型是 `gpt-image-2-codex`（应答 `tools` 回显里给出，请求没写 `model` 时也有）；Free 套餐不能用；生图消耗订阅额度比普通对话快（官方说法 3–5 倍）。生图工具的 token 计入这条请求自己的用量，按客户请求的模型的价格计（CONTRACTS §17.2、§118.10），插件不用改；`gpt-image-2-codex` 只是上游实际用的模型名，不参与计价，不需要价格。已知限制：官方 Codex 客户端 2026-07 起改为调用 Codex 后端的 `/images/generations` 专用接口生图，网关没有这个端点，用这条路径的客户端生图不经过我们。两种账号类型的 `endpoints` 仍只有 `responses`、`responses_websocket`，不服务 `/v1/images/*`（§118.5）。
+- 生图（2026-11-18 改写）：上面这条 400 是已删除的 Sign in with ChatGPT（`chatgpt_siwc`，经 api.openai.com，第 14.3 节）账号的结果，不适用于现在的两种账号类型。Codex 后端的账号（设备码 `codex_device`、授权码 `codex_oauth`）**可以**经 Responses 的 `image_generation` 工具生图：2026-11-18 在设备码账号上实测流式、非流式都拿到图（授权码账号走同一上游，未实测）。上游的生图模型是 `gpt-image-2-codex`（应答 `tools` 回显里给出，请求没写 `model` 时也有）；Free 套餐不能用；生图消耗订阅额度比普通对话快（官方说法 3–5 倍）。生图工具的 token 计入这条请求自己的用量，按客户请求的模型的价格计（CONTRACTS §17.2、§118.10），插件不用改；`gpt-image-2-codex` 只是上游实际用的模型名，不参与计价，不需要价格。已知限制：官方 Codex 客户端 2026-07 起改为调用 Codex 后端的 `/images/generations` 专用接口生图，网关没有这个端点，用这条路径的客户端生图不经过我们。两种账号类型的 `endpoints` 仍只有 `responses`、`responses_websocket`；0.2.0 起经 `adapted` 由核心转换服务 `/v1/images/*`（第 21 节，CONTRACTS §121）。
 - 计费为 0 的根因不在插件：上游 SSE 标成 `application/json`，由核心按正文嗅探修复（CONTRACTS §104.1）。
 
 ## 13. 0.1.7：用量窗口以响应头为准（2026-11-17，用户要求）
@@ -332,3 +332,23 @@
 ### 20.3 测试
 
 `execute_test.go`（会话头按账号 id 计算：同一账号同输入稳定、另一个账号 id 结果不同、与不加盐的旧值不同、请求的头、体、URL 都不含账号 id）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数的两个头；授权的设备码申请、轮询、两种登录的换令牌用路由调用带的表单值，六种组合同样成立；表单值不是字符串或含控制字符时四个路由都回 400 且不发请求；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有；两种登录的每次调用都带表单当前的值，中途改了下一次调用带新值；重新授权带账号已有的值）、`flow.spec.ts`（`withAgent`、`agentOf`、重新授权保留）。
+
+## 21. 0.2.0：经核心转换服务 OpenAI 生图接口（2026-11-19，所有者要求“Codex 要兼容 OpenAI 的生图协议去转成 response 生图”；需核心 ≥0.1.304；版本仍是未发布的 0.2.0；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md)，契约见 CONTRACTS §121）
+
+### 21.1 清单
+
+- 两种类型的 `openai` 平台加 `adapted`：`chat_completions: {}`（chat 适配从核心的隐式规则改为显式声明，CONTRACTS §83.3）、`images_generations` 与 `images_edits` 都是 `{"model": "gpt-6-luna"}`（驱动 `image_generation` 工具的对话模型，插件常量 `ImageChatModel`，与清单同值，清单测试钉住）。
+- `defaultModels` 末尾只加 `gpt-image-2`：Codex 后端只有一个生图模型 `gpt-image-2-codex`，工具里写什么名字都按它出图；不要把 2.5、2.6 等名字加进 codex 账号。
+- 描述里写明经核心转换提供 `/v1/images/generations`、`/v1/images/edits`，生图模型写 `gpt-image-2`。
+
+### 21.2 请求与上报的模型
+
+核心把生图请求转成 Responses（顶层 `model` 是驱动模型，客户端模型在 `tools[0].model`，CONTRACTS §121.2）后交给插件，`BuildUpstream` 照常改写（`store: false`、补 `instructions`、删不支持字段），照常上报请求体顶层的 `model`（驱动模型）作上游模型，没有生图专用的分支；账号映射过客户端模型时使用记录的上游模型也是驱动模型，映射后的名字只在请求体 `tools[0].model` 里。
+
+### 21.3 账号测试（CONTRACTS §122.3）
+
+`BuildTestRequest` 取 `protocols` 里第一个 `openai.responses`、`openai.chat`、`openai.images`：前两者发原来的流式 `ping`；`openai.images`（核心只在测试带了模型名时才给，排在原生协议之后，CONTRACTS §122.2）发转换后的最小生图请求——顶层 `ImageChatModel`，`tools: [{"type":"image_generation","model":<被测模型>,"output_format":"png","quality":"low"}]`，`tool_choice` 强制工具，一条用户消息“a small white dot”，`store: false`、`stream: true`；`usage_protocol` 报 `openai.responses`，`model` 报被测模型。会真实出一张图、消耗订阅额度。空列表发 `ping`；列表不空而没有这三个协议时回 `FailedPrecondition`（与 `standard` 库相同）。
+
+### 21.4 测试
+
+`manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportChatModel`（两个生图客户端协议上报驱动模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
