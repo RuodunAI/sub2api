@@ -4,5 +4,5 @@
     "stream": false,
     "adapt_model": "gpt-6-luna"
   },
-  "note": "the image call failed (moderation): 400 image_generation_user_error with the upstream's error"
+  "note": "the image call failed (moderation) and nothing else was generated: the upstream succeeded, so the client gets no images; the failed call and the message are response losses"
 }

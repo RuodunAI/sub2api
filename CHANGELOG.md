@@ -164,7 +164,7 @@
 ### Codex 账号服务 OpenAI 生图接口；同平台适配改为显式声明（核心、SDK 清单与 openai 平台、codex 0.2.0、azure-openai 0.1.0；无迁移）
 
 - **codex 账号能服务 `/v1/images/generations`、`/v1/images/edits`**：核心把生图请求转成带 `image_generation` 工具的 Responses 请求（顶层是驱动工具的对话模型 `gpt-6-luna`，客户端的生图模型在工具里；`size`、`quality`、`background` 另写进一句 `instructions`，Codex 后端只按它定尺寸），应答转回生图接口的 JSON 或事件流（`image_generation.*` / `image_edit.*`），非流式与流式都支持（CONTRACTS §121）。不支持：`n` 大于 1、`response_format: "url"`（400 `unsupported_conversion`），edits 的 multipart（§118.1）。
-- **计费**：整条请求（对话部分约 2300 输入 token 加生图工具的 token）都按客户端请求的生图模型（`gpt-image-2`）的价格算；使用记录的上游模型记驱动模型 `gpt-6-luna`；它和上游回显的 `gpt-image-2-codex` 都不参与计价、不需要价格。上游没有出图时回 502 `no_image_generated`、生图被拦截时回 400 `image_generation_user_error`（流式是一个 `error` 事件），记录为失败，用量照扣。
+- **计费与记录**：整条请求（对话部分约 2300 输入 token 加生图工具的 token）都按客户端请求的生图模型（`gpt-image-2`）的价格算；使用记录的上游模型记上游回显的生图模型 `gpt-image-2-codex`，它和驱动模型都不参与计价、不需要价格。成败以上游为准：上游成功完成就是成功，没出图时返回 200 和空的 `data`（流式没有 `completed` 事件），审核拦截的生图项也一样，记录成功、用量照扣、不算账号失败；上游自己报的错误照常处理。
 - **管理员要做的**：codex 账号的模型列表加 `gpt-image-2`（新账号默认模型已含它；列表为空的不用加），给 `gpt-image-2` 录表达式价格（CONTRACTS §118.6），建议在“模型的协议限定”里把它限定到两个生图协议。`protocols` 没指定过的 codex 账号升级后自动开放两个生图协议，不想出图的账号在“本平台协议”里取消。账号测试带模型名测 `gpt-image-2` 时会真实出一张图。
 - **同平台适配改为显式声明**：账号类型在平台上写了端点子集时，子集以外的端点只有在清单 `adapted` 里列出才经核心转换服务（此前对所有类型自动生效）。第一方插件已补声明：codex 列 chat 与两个生图端点，azure-openai 的“按部署”类型列 `/v1/responses`；行为与之前相同。**第三方插件**若依赖过隐式适配（子集里没有 chat 却服务 chat 之类），升级后那些端点不再服务，要在清单里补 `adapted`。
 - 清单新字段：`accountTypes[].platforms[].adapted`；插件协议仍是 2。用量照 Responses 端点自己的规则读（它已经把生图工具的 token 加进来）。

@@ -343,7 +343,7 @@
 
 ### 21.2 请求与上报的模型
 
-核心把生图请求转成 Responses（顶层 `model` 是驱动模型，客户端模型在 `tools[0].model`，CONTRACTS §121.2）后交给插件，`BuildUpstream` 照常改写（`store: false`、补 `instructions`、删不支持字段），照常上报请求体顶层的 `model`（驱动模型）作上游模型，没有生图专用的分支；账号映射过客户端模型时使用记录的上游模型也是驱动模型，映射后的名字只在请求体 `tools[0].model` 里。
+核心把生图请求转成 Responses（顶层 `model` 是驱动模型，客户端模型在 `tools[0].model`，CONTRACTS §121.2）后交给插件，`BuildUpstream` 照常改写（`store: false`、补 `instructions`、删不支持字段）。`meta.client_protocol` 是 `openai.images` 或 `openai.images_edit` 时插件不上报上游模型（`upstreamModel` 返回空串）：请求体顶层的 `model` 是驱动模型，上报了会覆盖核心从应答读到的回显生图模型（`gpt-image-2-codex`）；使用记录的上游模型按所有者“上游返回什么就是什么”记回显（CONTRACTS §121.4）。
 
 ### 21.3 账号测试（CONTRACTS §122.3）
 
@@ -351,4 +351,4 @@
 
 ### 21.4 测试
 
-`manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportChatModel`（两个生图客户端协议上报驱动模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
+`manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportNoModel`（两个生图客户端协议不上报模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
