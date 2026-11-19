@@ -15,20 +15,21 @@ import (
 // The shared api_key + base_url cases, then the two headers'.
 func TestCredentialsRefused(t *testing.T) {
 	form := apikeytest.Form{AccountType: TypeAPIKey, Key: "sk-proj-abcdef", BaseURL: "https://x.example.com", MinKey: 10}
-	with := func(name, fields, field string) apikeytest.Case {
-		return apikeytest.Case{Name: name, AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef"` + fields + `}`, Field: field}
+	with := func(name, fields, field, code string) apikeytest.Case {
+		return apikeytest.Case{Name: name, AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef"` + fields + `}`, Field: field, Code: code}
 	}
 	cases := append(form.Cases(),
 		apikeytest.Case{Name: "a key the form never sends", AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef", "legacy": "x"}`, Field: "legacy", Code: "unknown"},
-		with("organization and project of 128 characters", `, "organization": "`+strings.Repeat("o", 128)+`", "project": "`+strings.Repeat("p", 128)+`"`, ""),
-		with("empty organization and project", `, "organization": "", "project": ""`, ""),
+		with("organization and project of 128 characters", `, "organization": "`+strings.Repeat("o", 128)+`", "project": "`+strings.Repeat("p", 128)+`"`, "", ""),
+		with("empty organization and project", `, "organization": "", "project": ""`, "", ""),
 	)
 	for _, k := range []string{"organization", "project"} {
 		cases = append(cases,
-			with(k+" not a string", `, "`+k+`": 1`, k),
-			with(k+" longer than 128", `, "`+k+`": "`+strings.Repeat("o", 129)+`"`, k),
-			with(k+" with a space", `, "`+k+`": "org abc"`, k),
-			with(k+" not ASCII", `, "`+k+`": "org-组织"`, k),
+			with(k+" not a string", `, "`+k+`": 1`, k, "type"),
+			with(k+" null", `, "`+k+`": null`, k, "type"),
+			with(k+" longer than 128", `, "`+k+`": "`+strings.Repeat("o", 129)+`"`, k, "maxLength"),
+			with(k+" with a space", `, "`+k+`": "org abc"`, k, "pattern"),
+			with(k+" not ASCII", `, "`+k+`": "org-组织"`, k, "pattern"),
 		)
 	}
 	apikeytest.Run(t, New().ValidateCredentials, cases)

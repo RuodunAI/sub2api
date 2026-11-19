@@ -16,11 +16,14 @@ import (
 )
 
 // TestGolden replays the frozen answers of the released plugin against the
-// platform the plugin serves, except that it now refuses a key the account
-// form never sends.
+// platform the plugin serves (its ValidateCredentials included), except
+// where it now holds the account form's rules: a key the form never sends
+// is refused, and so is an api_key past 512 characters or not visible ASCII.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "openai", "../../manifest.json", New().Platform,
-		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"))
+	standardtest.Run(t, "openai", "../../manifest.json", New(),
+		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"),
+		goldentest.Except("validate too long key", "the account form's api_key: at most 512 characters"),
+		goldentest.Except("validate non-ascii key", "the account form's api_key: visible ASCII only"))
 }
 
 func TestCheck(t *testing.T) {
@@ -57,7 +60,7 @@ func build(t *testing.T, p *standard.Platform, protocol, settings string, inboun
 // preset, the type the golden cases were recorded with, so the client's own headers still pass through and the
 // golden cases hold for the plugin's type.
 func TestOrganizationAndProject(t *testing.T) {
-	plugin, baseline := New().Platform, standard.New(openai.APIKey("apikey"))
+	plugin, baseline := New(), standard.New(openai.APIKey("apikey"))
 	const body = `{"model":"gpt-4o-mini","stream":true}`
 	for _, protocol := range routes {
 		for _, inbound := range []map[string]string{nil, clientHeaders} {
@@ -86,7 +89,7 @@ func TestOrganizationAndProject(t *testing.T) {
 func TestForwardsEveryField(t *testing.T) {
 	const body = `{"model":"gpt-4o-mini", "service_tier":"priority","safety_identifier":"u1","input":[]}`
 	for _, protocol := range []string{openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings} {
-		if got := string(build(t, New().Platform, protocol, "", nil, body).GetBody()); got != body {
+		if got := string(build(t, New(), protocol, "", nil, body).GetBody()); got != body {
 			t.Errorf("%s body = %s, want %s", protocol, got, body)
 		}
 	}
@@ -105,7 +108,7 @@ func TestImages(t *testing.T) {
 	} {
 		for _, stream := range []string{"false", "true"} {
 			body := fmt.Sprintf(c.body, stream)
-			got := build(t, New().Platform, protocol, "", clientHeaders, body)
+			got := build(t, New(), protocol, "", clientHeaders, body)
 			if got.GetMethod() != "POST" || got.GetUrl() != "https://api.openai.com"+c.path || string(got.GetBody()) != body {
 				t.Errorf("%s stream %s: %s %s %s", protocol, stream, got.GetMethod(), got.GetUrl(), got.GetBody())
 			}
