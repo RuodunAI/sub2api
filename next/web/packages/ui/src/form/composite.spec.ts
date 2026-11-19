@@ -303,6 +303,23 @@ describe('createApiKeyForm: the anthropic form', () => {
     expect(free.w.find(URL).exists()).toBe(true)
   })
 
+  it('base URL first, with its own label and pattern message', async () => {
+    const Site = createApiKeyForm({
+      baseUrl: { required: true, first: true, label: () => 'Site address', message: () => 'The site root only', pattern: /^https:\/\/[^/\s?#]+\/?$/ }
+    })
+    const { w, validate } = editor(Site)
+    await flushPromises()
+    expect(w.findAll('label').map((l) => l.text())).toEqual(['Site address*', 'API key*'])
+    await type(w, KEY, 'sk-ant-api03-abcdef')
+    expect(await validate()).toBe(false)
+    expect(w.text()).not.toContain('The site root only')
+    await type(w, URL, 'https://site.example.com/v1/chat')
+    expect(await validate()).toBe(false)
+    expect(w.text()).toContain('The site root only')
+    await type(w, URL, 'https://site.example.com')
+    expect(await validate()).toBe(true)
+  })
+
   it('extra fields: select with defaults, sections, `when`, date-time in RFC 3339, no base URL', async () => {
     const Bedrock = createApiKeyForm({
       baseUrl: false,
