@@ -45,7 +45,7 @@
 - 生图部分按**生图模型**的价格计，而不是对话模型：作为一条附加用量（`usage.additional`），模型取请求 `tools[type=image_generation].model`，没写时用上游默认（目前 `gpt-image-1.5`，以文档为准），token 取 `response.tool_usage.image_gen`。
 - 现有 `AdditionalUsageRule` 只接受数组快照、模型从应答里取；这里是对象、模型从请求里取，需要扩展规则（契约改动，CONTRACTS 新一节）。
 - 结果：一条使用记录里对话部分按对话模型计、生图部分按生图模型计，明细里分开显示。
-- **落地（2026-11-18，CONTRACTS §120）**：附加用量规则加了对象形式（`object: true`）。模型的来源与这里设想的相反：先取**应答** `tools` 回显里的 `model`（实际用的生图模型），其次请求里的，都没有时用平台规则里的默认名 `gpt-image-2`（不是这里写的 `gpt-image-1.5`；OpenAI 文档对默认值的说法不一）。模型不在调度前准入，网关读完应答时取价；`reject` 策略下没有价格时整条记录不结算（`failed`），`free` 时生图部分不计费。
+- **落地（2026-11-18，CONTRACTS §120）**：附加用量规则加了对象形式（`object: true`）。模型的来源与这里设想的相反：先取**应答** `tools` 回显里的 `model`（实际用的生图模型），其次请求里的，都没有时用平台规则里的默认名 `gpt-image-2`（不是这里写的 `gpt-image-1.5`；OpenAI 文档对默认值的说法不一）。模型不在调度前准入，网关读完应答时取价；没有价格时对话部分照常扣费、生图部分不计费；`reject` 策略下记录另有 `additional_unpriced` 异常标记和一条 WARN。
 
 ### 3.4 codex
 

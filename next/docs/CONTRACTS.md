@@ -8541,7 +8541,8 @@ ALTER TABLE usage_logs
 `/v1/responses`（HTTP 流式、非流式）与 `responses_websocket` 的请求带 `tools: [{"type":"image_generation", …}]` 时，上游在同一个应答里给出对话模型的用量（`usage`）和生图工具的用量（`tool_usage.image_gen`）。对话部分照旧按请求的模型计；生图部分是一条**附加用量**（§120），按生图模型的价格另计，token 的含义与 118.2 相同：`input_tokens` → 输入、`input_tokens_details.image_tokens` → 图片输入、`output_tokens` → 输出、`output_tokens_details.image_tokens` → 图片输出（图片 token 是输入、输出的一部分；表达式写了 `img` / `img_o` 按图片价，没写留在 `p` / `c` 按文字价）。生图模型取应答 `tools` 回显里 `type == "image_generation"` 那一项的 `model`，没有则取请求里那一项的 `model`，都没有时是平台规则声明的默认名 `gpt-image-2`。实测（2026-11-18，设备码账号经 Codex 后端）：对话 2304 / 52 token，生图输入 39、图片输出 515，回显的模型是 `gpt-image-2-codex`。
 
 - 服务的账号：openai `apikey`、codex 两种类型，以及服务内置 `openai` 平台 `responses` 端点的其它插件（New API、Sub2API 中转等），用的是同一份平台规则；插件不用改。
-- 管理员要做什么：给实际出现的生图模型录价格（118.6 的表达式价格）。Codex 后端回显的是 `gpt-image-2-codex`，OpenAI 没有公布它的单价，按 `gpt-image-2` 的价录入或自定，由管理员决定。没有价格时的行为见 §120.4。
+- 管理员要做什么：给实际出现的生图模型录价格（118.6 的表达式价格）。Codex 后端回显的是 `gpt-image-2-codex`，OpenAI 没有公布它的单价，按 `gpt-image-2` 的价录入或自定，由管理员决定。没有价格时对话部分照常扣费、生图部分未计费，记录上有 `additional_unpriced` 异常标记，见 §120.4。
+- 已知限制：客户端在请求里给生图工具写的 `model` 不受分组模型白名单限制（§120.4），留给仓库所有者决定。
 - `/v1/chat/completions` 转成 Responses 时（`convert/req_responses.go`）丢掉 `image_generation` 工具（已知的转换损失），所以经 Chat Completions 的请求不会生图，也没有这条附加用量。
 - 官方 Codex 客户端 2026-07 起改用 Codex 后端的 `/images/generations` 专用接口生图；网关没有这个端点（已知限制，不在本节范围）。
 
@@ -8588,8 +8589,10 @@ ALTER TABLE usage_logs
 `missing_price_policy` 是在调度前按请求的模型判断的；对象形式的模型到应答回来才知道，所以策略在**这时**按同样的语义生效（`Resolve` 本身就按策略回答）：
 
 - `free`：附加用量没有价格，不计费；它照样出现在记录里（`billing_detail.additional[]` 有这一项、`price_id` 为 0），主用量照常计费。这是管理员选的“没有价格的模型不计费”。
-- `reject`（默认）：请求已经被服务，拒绝不了；记录的 `BillingError` 为 `additional usage <kind>/<模型>: model_price_not_configured: …`，整条记录**不结算**（`billing_status = failed`，`billing_detail.error` 写明原因，对话部分也不扣），与“应答报了没有准入的模型”的既定行为相同——生图部分**不会悄悄变成免费**。之后补上价格，已经 `failed` 的记录不会重新取价（价格冻结在请求时）。
+- `reject`（默认）：请求已经被服务，拒绝不了。最不坏的结果是：**对话部分照常结算扣费**（它的模型调度前准入过、有价格），附加用量与 `free` 时一样记为没有价格、未计费，记录照常是 `billed`（金额只含对话部分）；同时记录的 `usage_logs.anomalies` 多一个标记 `additional_unpriced`，值是没有价格的附加用量 `<kind>/<模型>`（多条以 `, ` 分隔，`core.AnomalyAdditionalUnpriced`、`UsageRecord.AdditionalUnpriced`），核心日志打一条 WARN（`gateway: additional usage has no price and is not charged…`，带 `usage`），同一条 `<kind>/<模型>` 每分钟至多一行（复用网关的 `warnSampler`，带被压掉的条数）。这个标记计入用量汇总的“异常”行数（`anomalies` 计数，§25.4），控制台使用记录详情的计费卡片在附加用量处显示警示文字；本人视图（`/me/usage`）照旧不返回 `anomalies`。所以生图部分**不会悄悄变成免费**：没有价格的那部分不收钱，但管理员看得见、日志里有。之后补上价格，已经结算的记录不会重新取价（价格冻结在请求时）。
+- 只有“应答回来才知道模型、记录时取不到价格”（`AdditionalUsage.ResponseModel`、`Resolve` 回 `model_price_not_configured`）这一种情况这样处理。取价本身出错（读不到价格表）、价格的计费类型不适用，仍是 `BillingError`，整条记录不结算；数组形式里“应答报了没有准入的模型”的既定行为（120.1）不变。
 - 管理员要做什么：在价格页给会出现的生图模型（Codex 后端是 `gpt-image-2-codex`；API Key 账号是请求或回显里的 `gpt-image-1.5`、`gpt-image-2` 等；都没有时是 `gpt-image-2`）录价格（§118.6 的参考价）。
+- **已知限制**（留给仓库所有者决定）：对象形式的模型不在调度前准入（120.2），所以客户端在请求里给生图工具写的 `model`（`tools[].model`）不受分组模型白名单、账号模型列表和协议绑定的限制；它只决定按哪个模型的价格计费。
 
 ### 120.5 预扣、截断与断开
 
@@ -8601,6 +8604,6 @@ ALTER TABLE usage_logs
 
 - `sdk/manifest`：`AdditionalUsageRule` 加 `object`、`modelSources`、`defaultModel`，新类型 `UsageModelSource`；`check/additional_usage.go` 按两种形式分别校验（`TestObjectAdditionalUsageRule`）。
 - `usagerules/additional.go`：`objectEntries`、`objectModel`；`Acc.WithRequest` 给 `request` 来源请求体；数组与对象共用计数读取（`additionalTokens`）；`Matches`（数组元素按字段匹配）由网关的引用模型检查共用。`core.AdditionalUsage.ResponseModel` 标出要在记录时取价的附加用量。
-- 网关：`recordAdditionalUsage` 多一个 `ctx`，对 `ResponseModel` 调 `priceResponseModel`；WebSocket 的每一轮现在也记录附加用量（以前不记）。
-- 测试：`usagerules/image_generation_test.go`（Codex 后端流式、JSON、WebSocket 一轮的实测形状；模型取回显 / 请求 / 默认；缺失、`null`、全 0、`{}` 都没有附加项；畸形计数与模型）；`gateway/image_generation_tool_test.go`（API Key 账号 JSON 与流式、只流式账号的流式与强制流式聚合、WebSocket 一轮；三种模型来源；`reject` 与 `free` 下没有价格；不用生图的请求没有附加项、不查别的价格）；`usage/image_tool_db_test.go`（结算金额：写与不写 `img_o` 两种价格、`free` 时只计对话、`reject` 时 `failed`）。现有测试（含钉住明细字节的）照旧通过：不带生图的请求没有附加项，记录逐字节不变。
-- 控制台：使用记录详情的计费卡片列出附加用量（种类、模型、各项 token 含图片输入 / 输出、金额，没有价格时写“没有价格，未计费”），列表的金额是合计；mock 有一条带生图附加用量的记录（`req_imagetool0001`）。
+- 网关：`recordAdditionalUsage` 多一个 `ctx`，对 `ResponseModel` 调 `priceResponseModel`（没有价格时 `noteUnpriced` 写标记、打节流的 WARN）；WebSocket 的每一轮现在也记录附加用量（以前不记）。
+- 测试：`usagerules/image_generation_test.go`（Codex 后端流式、JSON、WebSocket 一轮的实测形状；模型取回显 / 请求 / 默认；缺失、`null`、全 0、`{}` 都没有附加项；畸形计数与模型）；`gateway/image_generation_tool_test.go`（API Key 账号 JSON 与流式、只流式账号的流式与强制流式聚合、WebSocket 一轮；三种模型来源；`reject` 与 `free` 下没有价格（都只计对话、附加项未计价，`reject` 另有 `additional_unpriced` 标记）；不用生图的请求没有附加项、不查别的价格）；`usage/image_tool_db_test.go`（结算金额：写与不写 `img_o` 两种价格；没有价格时只计对话，`reject` 时行上有 `additional_unpriced` 标记、仍是 `billed`）。现有测试（含钉住明细字节的）照旧通过：不带生图的请求没有附加项，记录逐字节不变。
+- 控制台：使用记录详情的计费卡片列出附加用量（种类、模型、各项 token 含图片输入 / 输出、金额，没有价格时写“没有价格，未计费”，带 `additional_unpriced` 标记时另有一行警示），列表的金额是合计；mock 有一条带生图附加用量的记录（`req_imagetool0001`）。
