@@ -1163,6 +1163,7 @@ var HostPermissionRisk = map[string]string{
 	"ui.menu":              RiskMedium,
 	"ui.iframe":            RiskMedium,
 	"lock":                 RiskMedium, // not low: low is granted without the administrator (install/consent.go)
+	"fs.data":              RiskMedium, // read and write the plugin's own data directory (CONTRACTS §43.8)
 	"accounts.read":        RiskMedium,
 	"authz.read":           RiskMedium, // AuthzCheck on keys that are not the plugin's own
 	"accounts.auto_state":  RiskHigh,

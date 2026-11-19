@@ -52,7 +52,7 @@ sh deploy/gateway/package-release.sh ./stage ./publish v1.1.0 SOURCE_COMMIT SOUR
 - 心跳只续期Redis登记，不更换密钥。登记丢失时自动模式生成新值，配置模式登记原值，其他节点直接读取新登记。普通缓存过期不重启核心；Redis不可用时拒绝新的节点间请求，已通过鉴权的流式请求按原有生命周期收尾。登记失败（节点被停用、同 ID 实例仍在线或 Redis 不可用）时网关不退出，保持维护态并持续重试。
 - `plugin_max_bytes`（可选，默认 64 MiB，与核心的插件包上限同一常量 `runtimecontract.PluginPackageMaxBytes`）限制网关保存的单个插件包；`plugin_store_max_bytes`（可选，默认 16 GiB）限制整个 `plugin-blobs/` 目录，满了以后存包失败，直到 GC 清掉未引用的包。插件包保存在状态卷的 `plugin-blobs/`：每个节点保存自己接到的上传和自己用过的包，缺包时向任一在线的持有节点取，节点之间不推送；插件包与主节点无关，`set-primary` 不影响插件的安装与升级。持有某个包的节点都离线时，需要它的节点装不上，控制台显示 `package_gone` 与问过哪些节点（CONTRACTS §114）。
 - Redis 登记只保存节点密钥的 SHA-256（peer 协议 2，2026-11-05 起）。更换网关版本时集群内所有网关必须一起换，期间不要创建核心升级计划；旧网关与新网关互不接受。`REDIS_URL` 走 TCP 时必须带密码，否则网关拒绝启动（`allow_unauthenticated_redis: true` 仅供隔离测试）。
-- 网关默认为其核心设置 `SUB2API_PLUGIN_LANDLOCK=true`（Linux）：管理 socket 令牌文件对同 UID 的插件没有隔离作用，隔离来自 Landlock。`core_env` 里显式给出的值优先；`plugin_landlock_disabled: true` 关闭默认值。
+- 网关默认为其核心设置 `SUB2API_PLUGIN_LANDLOCK=true`（Linux）：管理 socket 令牌文件对同 UID 的插件没有隔离作用，隔离来自 Landlock（CONTRACTS §43.8）。核心 0.1.304 起自己也默认开启；网关仍显式写 `true`，是为了它可能启动的旧核心。`core_env` 里显式给出的值优先；`plugin_landlock_disabled: true` 写 `SUB2API_PLUGIN_LANDLOCK=false` 关闭它。核心启动日志里的 `plugin sandbox:` 几行和控制台节点页的“插件沙箱”一列说明这个节点的内核实际限制到哪一层（文件 5.13、截断 6.2、TCP 6.7、抽象 socket 与信号 6.12、路径型 unix socket 7.1、UDP 7.2），缺的层逐条记 WARN；容器的 seccomp 配置须放行 `landlock_*` 三个系统调用（Docker 默认配置放行）。
 - `release_origin` 下载使用系统根证书及 `ca.crt`，可用公开证书；内容由清单摘要约束，节点密钥不会发往发布源。
 - `trusted_proxies` 默认为空；若前置 TLS 终止代理，填入其实际连接源 CIDR，代理须覆盖客户端带来的转发头。仅这些直接代理的单值 `http` / `https` 协议头可信。
 - 每节点的 `certs/<node>/` 放置 `node.crt`、`node.key` 和 `ca.crt`，权限须允许容器 UID 1000 读取。不要挂载 CA 私钥。

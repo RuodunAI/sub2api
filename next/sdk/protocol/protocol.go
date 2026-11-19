@@ -89,5 +89,5 @@ const (
 	EnvPluginKey     = "SUB2API_PLUGIN_KEY"
 	EnvPluginVersion = "SUB2API_PLUGIN_VERSION"
 	EnvStrictNetwork = "SUB2API_PLUGIN_STRICT_NETWORK" // "1" when direct sockets are blocked
-	EnvDataDir       = "SUB2API_PLUGIN_DATA_DIR"       // writable scratch dir for the plugin
+	EnvDataDir       = "SUB2API_PLUGIN_DATA_DIR"       // the plugin's data directory, set only when it is granted "fs.data" (CONTRACTS §43.8)
 )

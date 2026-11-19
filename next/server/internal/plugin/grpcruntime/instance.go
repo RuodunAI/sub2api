@@ -88,16 +88,20 @@ type proc struct {
 	scopes     callScopes               // the Execute and Monitor calls in flight
 }
 
-// specLimits are the resource fields of a LaunchSpec.
+// specLimits are the fields of a LaunchSpec fixed for the life of a
+// process: resource limits and what the sandbox grants (a changed or
+// revoked "fs.data" or "net" grant restarts the process, LimitsStale).
 type specLimits struct {
 	MemoryMB     int
 	CPU          float64
 	MaxThreads   int
 	MaxOpenFiles int
+	DataDir      string
+	Net          bool
 }
 
 func limitsOf(s core.LaunchSpec) specLimits {
-	return specLimits{MemoryMB: s.MemoryMB, CPU: s.CPU, MaxThreads: s.MaxThreads, MaxOpenFiles: s.MaxOpenFiles}
+	return specLimits{MemoryMB: s.MemoryMB, CPU: s.CPU, MaxThreads: s.MaxThreads, MaxOpenFiles: s.MaxOpenFiles, DataDir: s.DataDir, Net: s.Net}
 }
 
 func newInstance(rt *Runtime, pkg *registry.Package, binPath, sum string, st *settings) *Instance {
@@ -189,9 +193,13 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		PluginKey:     i.pkg.Key,
 		Version:       i.pkg.Version,
 		BinaryPath:    i.binPath,
-		WorkDir:       filepath.Join(i.rt.o.DataDir, i.pkg.Key, "work"),
+		Net:           st.grants.Has("net"),
 		StrictNetwork: i.rt.o.StrictNetwork,
 		Seccomp:       i.rt.o.Seccomp,
+	}
+	// Only a plugin granted "fs.data" gets a data directory (CONTRACTS §43.8).
+	if st.grants.Has("fs.data") {
+		spec.DataDir = filepath.Join(i.rt.o.DataDir, i.pkg.Key, "work")
 	}
 	// The manifest's memory figure is what the plugin says it needs, not a
 	// limit: memory is limited only by the operator (core.EffectiveMemoryMB).
@@ -210,7 +218,6 @@ func (i *Instance) launchSpec() core.LaunchSpec {
 		protocol.EnvPluginKey + "=" + i.pkg.Key,
 		protocol.EnvPluginVersion + "=" + i.pkg.Version,
 		protocol.EnvStrictNetwork + "=" + strict,
-		protocol.EnvDataDir + "=" + spec.WorkDir,
 	}
 	return spec
 }
@@ -250,8 +257,10 @@ func (i *Instance) startProc(ctx context.Context) (_ *proc, err error) {
 		return nil, err
 	}
 	spec := i.launchSpec()
-	if err := os.MkdirAll(spec.WorkDir, 0o700); err != nil {
-		return nil, err
+	if spec.DataDir != "" {
+		if err := os.MkdirAll(spec.DataDir, 0o700); err != nil {
+			return nil, err
+		}
 	}
 	runDir, err := i.prepareRunDir()
 	if err != nil {
@@ -697,7 +706,8 @@ func (i *Instance) Refresh(ctx context.Context) error {
 }
 
 // LimitsStale reports whether the running process was started with other
-// resource limits than the current settings (as of the last Refresh).
+// resource limits or sandbox grants than the current settings (as of the
+// last Refresh).
 func (i *Instance) LimitsStale() bool {
 	p := i.proc.Load()
 	if p == nil {

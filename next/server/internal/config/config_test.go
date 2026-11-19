@@ -151,6 +151,14 @@ func TestPluginRunDirAndEgressDefaults(t *testing.T) {
 	if cfg.Plugins.EgressAllowPrivate {
 		t.Fatal("private egress allowed by default")
 	}
+	// The sandbox is on unless configured otherwise (CONTRACTS §43.8).
+	if p := cfg.Plugins; !p.StrictNetwork || !p.Seccomp || !p.Landlock || p.DevMode {
+		t.Fatalf("sandbox defaults %+v", p)
+	}
+	t.Setenv("SUB2API_PLUGIN_LANDLOCK", "false")
+	if cfg, err = config.Load("linux"); err != nil || cfg.Plugins.Landlock {
+		t.Fatalf("Landlock not turned off: %+v %v", cfg.Plugins, err)
+	}
 	t.Setenv("SUB2API_PLUGIN_RUN_DIR", "/run/s2p")
 	t.Setenv("SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE", "true")
 	if cfg, err = config.Load("linux"); err != nil || cfg.Plugins.RunDir != "/run/s2p" || !cfg.Plugins.EgressAllowPrivate {

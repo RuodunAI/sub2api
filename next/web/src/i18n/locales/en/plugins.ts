@@ -97,6 +97,7 @@ export default {
     authz_read: 'Check users\' core and other plugins\' permissions',
     accounts_auto_state: 'Change account automatic state',
     lock: 'Cross-node lock',
+    fs_data: 'Read and write its data directory',
     db_schema: 'Dedicated database schema',
     net: 'External network access',
     routes_public: 'Public API routes',
@@ -118,6 +119,7 @@ export default {
   },
 
   hpDesc: {
+    fs_data: 'Read and write files in the data directory the core gives this plugin (on this node only). Without it the plugin can read or write no files at all.',
     broadcast: 'Broadcast messages to the instances of this plugin on other nodes (e.g. reload rules right after they change).',
     lock: 'Keep the instances of this plugin on different nodes from doing the same work at the same time (e.g. a scheduled sync). Its locks are invisible to other plugins.'
   },

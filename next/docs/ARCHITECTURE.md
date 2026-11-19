@@ -142,7 +142,7 @@ flowchart TB
         rt["Runtime 抽象<br/>grpcRuntime（本期）· jsRuntime（预留）"]
         hs["HostService 实现<br/>插件权限检查在这一层"]
         egress["出口隧道<br/>EgressService · DNS · 访问日志"]
-        sandbox["插件启动器<br/>seccomp · rlimit · oom_score_adj · nice · 内存看门狗"]
+        sandbox["插件启动器<br/>Landlock · seccomp · rlimit · oom_score_adj · nice · 内存看门狗"]
       end
 
       agent["节点代理：心跳 · 对账 · 订阅广播"]
@@ -226,7 +226,7 @@ flowchart LR
 | `cluster` | 节点注册、心跳、广播、分布式锁 | 核心 |
 | `plugin` | 插件包、签名与信任、manifest、授权确认、迁移、注册表、发布、Runtime 抽象、市场索引 | 核心 |
 | `plugin/grpcruntime` | go-plugin 进程管理、HostService、EgressService | 核心 |
-| `plugin/sandbox` | 启动器：seccomp、rlimit、oom_score_adj、nice；内存看门狗 | 核心 |
+| `plugin/sandbox` | 启动器：Landlock、seccomp、rlimit、oom_score_adj、nice；内存看门狗 | 核心 |
 | anthropic 插件 | `apikey` 账号类型（支持内置平台 anthropic）：`Execute` 构造上游请求（`sdk/pluginsdk/standard`）、错误分类；默认价格、模型目录 | **插件** |
 | guard 插件 | 请求钩子（关键词拦截）、事件订阅（统计）、后台任务（汇总与清理）、对外告警、原生界面 | **插件** |
 
@@ -662,7 +662,7 @@ stateDiagram-v2
 | 等级 | 权限 |
 |---|---|
 | 🟢 低 | `kv`、`config`、`log`、`broadcast`、`secrets`（§72.2）、`prices`（只读按模型价格试算费用，§72.13.1） |
-| 🟡 中 | `routes.admin`、`routes.user`、`events`、`jobs`、`ui.menu`、`ui.iframe`、`accounts.read`、`authz.read`（`AuthzCheck` 查询非本插件的权限 key）、`lock`（CONTRACTS §27.3） |
+| 🟡 中 | `routes.admin`、`routes.user`、`events`、`jobs`、`ui.menu`、`ui.iframe`、`accounts.read`、`authz.read`（`AuthzCheck` 查询非本插件的权限 key）、`lock`（CONTRACTS §27.3）、`fs.data`（读写本插件的数据目录，不授予时插件不能读写任何文件，CONTRACTS §43.8） |
 | 🟠 高 | `accounts.auto_state`、`db.schema`、`net`（白名单模式下）、`routes.public`、`routes.webhook`、`gateway.hook`、`gateway.endpoint`、`gateway.observe`、`platform.register`、`scheduler.rank`、`sticky.clear`（§74.2）、`users.read`、`notify.send`（经其他插件的渠道向任意外部地址发通知，核心限速，§74.4） |
 | 🔴 极高 | `accounts.credentials`、`ledger.credit`、`ledger.debit`、`ui.native`、`users.write`、`db.core_views` |
 
@@ -1256,17 +1256,18 @@ http.Get / GORM（Host.DB）/ redis …
 
 插件由核心二进制的隐藏子命令 `sub2api plugin-exec` 启动，它在 `execve` 插件之前：
 
-1. `prctl(PR_SET_NO_NEW_PRIVS)`
-2. 加载 seccomp 规则：拒绝 `socket(AF_INET / AF_INET6 / AF_PACKET / AF_NETLINK)`、`io_uring_setup`、`ptrace`、`mount` 等；允许 `AF_UNIX`
-3. 设置 rlimit、`oom_score_adj`、nice（见第 10 章）
+1. `prctl(PR_SET_NO_NEW_PRIVS)`，设置 rlimit、`oom_score_adj`、nice（见第 10 章）
+2. Landlock（CONTRACTS §43.8，默认开启）：按内核支持的版本处理全部文件权限、抽象 unix socket 与信号作用域、路径型 unix socket、严格网络下的 TCP/UDP 端口，只放行插件二进制、go-plugin 的 socket 目录、`/dev/null`、时区文件，以及获授 `fs.data` 时的数据目录、获授 `net` 时的 CA 证书
+3. 加载 seccomp 规则：拒绝 `socket(AF_INET / AF_INET6 / AF_PACKET / AF_NETLINK)`、`io_uring_setup`、`ptrace`、`mount` 等；允许 `AF_UNIX`
 4. `execve` 插件二进制
 
-效果：插件只能通过 unix socket 与核心通信，**所有对外连接只能经过出口隧道**，自己建立的 TCP/UDP 连接会被内核拒绝。不需要 root。
+效果：插件只能通过 unix socket 与核心通信，**所有对外连接只能经过出口隧道**，自己建立的 TCP/UDP 连接会被内核拒绝；不申请 `fs.data` 的插件读写不了任何文件（包括同一系统用户的网关管理令牌），内核 6.12 起连不到沙箱外的抽象 socket、发不了信号，7.1 起连不到自己 socket 目录之外的路径型 socket。内核缺的层照常启动插件，核心启动时逐层记 WARN，节点页显示。不需要 root。
 
 | 配置 | 默认值 |
 |---|---|
 | `plugins.sandbox.strict_network` | Linux 上为 `true` |
 | `plugins.sandbox.seccomp` | Linux 上为 `true` |
+| `SUB2API_PLUGIN_LANDLOCK` | Linux 上为 `true` |
 | Windows / macOS | 只能运行在开发模式（`plugins.dev_mode=true`），不做严格模式 |
 
 UDP：严格模式下禁止；插件的 DNS 查询由核心代为解析。
@@ -1587,7 +1588,7 @@ next/
 │   │   ├── gateway/               # 流水线、调度、钩子执行、用量提取；convert/ 是协议转换
 │   │   ├── plugin/                # 包、签名与信任、manifest、授权、迁移、注册表、发布、市场
 │   │   │   ├── grpcruntime/       # 唯一允许引用 go-plugin 的包；HostService、EgressService
-│   │   │   └── sandbox/           # seccomp、rlimit、oom_score_adj、nice、看门狗（//go:build linux）
+│   │   │   └── sandbox/           # Landlock、seccomp、rlimit、oom_score_adj、nice、看门狗（//go:build linux）
 │   │   └── httpapi/               # gin 路由、handler、中间件
 │   └── web/                       # 嵌入前端构建产物（dist/index.html 是被跟踪的占位文件）
 ├── gateway/                       # 节点外壳（独立 Go module）

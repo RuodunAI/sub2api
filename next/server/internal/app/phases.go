@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -108,7 +109,12 @@ func (b *boot) openStorage() error {
 
 // startCluster joins the node registry and heartbeat.
 func (b *boot) startCluster() error {
-	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID})
+	// What the plugin sandbox enforces on this kernel: logged once and shown
+	// on the nodes page (CONTRACTS §43.8).
+	pc := b.cfg.Plugins
+	sb := sandbox.ProbeStatus(runtime.GOOS == "linux" && !pc.DevMode, pc.Landlock, pc.StrictNetwork)
+	sandbox.LogStatus(b.log, sb)
+	b.cl = cluster.New(b.rdb, b.db, cluster.Options{NodeID: b.cfg.NodeID, Addr: b.cfg.PublicURL, HostVersion: b.version, Logger: b.log, Managed: b.cfg.Managed.Enabled, CoreBootID: b.cfg.Managed.BootID, PluginSandbox: &sb})
 	if err := b.cl.Start(b.ctx); err != nil {
 		return fmt.Errorf("cluster: %w", err)
 	}

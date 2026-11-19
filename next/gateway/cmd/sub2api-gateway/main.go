@@ -21,6 +21,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -828,12 +829,14 @@ func readConfig(path string) (config, error) {
 // are what keeps a plugin of the same UID away from the management token and
 // the node state. A value the operator set explicitly wins: in core_env, in
 // the gateway's own environment (the core inherits it), or by
-// plugin_landlock_disabled.
+// plugin_landlock_disabled (which sets it false: cores from 0.1.304 on
+// default to true). The explicit true stays while this gateway may start a
+// core older than that (default false); drop it with their support.
 func (c config) coreEnvironment() []string {
 	env := append([]string(nil), c.CoreEnv...)
 	_, inherited := os.LookupEnv(pluginLandlockEnv)
-	if runtime.GOOS == "linux" && !c.PluginLandlockDisabled && !inherited && !hasEnv(env, pluginLandlockEnv) {
-		env = append(env, pluginLandlockEnv+"=true")
+	if runtime.GOOS == "linux" && !inherited && !hasEnv(env, pluginLandlockEnv) {
+		env = append(env, pluginLandlockEnv+"="+strconv.FormatBool(!c.PluginLandlockDisabled))
 	}
 	return append(env, "DATABASE_URL="+c.DatabaseURL, "REDIS_URL="+c.RedisURL)
 }

@@ -24,6 +24,7 @@ export const HOST_PERMISSION_RISK: Record<string, Risk> = {
   'accounts.read': 'medium',
   'authz.read': 'medium',
   lock: 'medium',
+  'fs.data': 'medium',
   'db.schema': 'high',
   net: 'high',
   'routes.public': 'high',

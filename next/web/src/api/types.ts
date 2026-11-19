@@ -1595,6 +1595,19 @@ export interface NodeInfo {
   started_at: string
   last_heartbeat: string
   plugins: Record<string, string | Record<string, any>>
+  /** What the node's plugin sandbox enforces (CONTRACTS §43.8); absent from older cores. */
+  plugin_sandbox?: PluginSandboxStatus
+}
+
+export interface PluginSandboxStatus {
+  /** Plugins run under plugin-exec (Linux, not development mode). */
+  wrapped: boolean
+  /** SUB2API_PLUGIN_LANDLOCK. */
+  landlock: boolean
+  landlock_abi: number
+  /** Landlock layers in force: fs, fs_truncate, tcp, scope, unix, udp. */
+  active: string[]
+  missing: string[]
 }
 
 export interface Publisher {

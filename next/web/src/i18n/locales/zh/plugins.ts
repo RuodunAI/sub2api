@@ -97,6 +97,7 @@ export default {
     authz_read: '查询用户的核心与其他插件权限',
     accounts_auto_state: '修改账号自动状态',
     lock: '跨节点锁',
+    fs_data: '读写本插件的数据目录',
     db_schema: '独立数据库 schema',
     net: '外部网络访问',
     routes_public: '公开接口',
@@ -118,6 +119,7 @@ export default {
   },
 
   hpDesc: {
+    fs_data: '读写核心分给本插件的数据目录里的文件（只在本节点）。不授予时插件不能读写任何文件。',
     broadcast: '向其他节点上的本插件实例广播消息（例如规则修改后让各节点立即重载）。',
     lock: '让不同节点上的本插件实例不同时做同一件事（例如定时同步）。它的锁对其他插件不可见。'
   },
