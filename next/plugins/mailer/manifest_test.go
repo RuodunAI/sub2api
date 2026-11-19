@@ -44,6 +44,16 @@ func TestManifest(t *testing.T) {
 			t.Errorf("unknown host permission %q", hp.ID)
 		}
 	}
+	// "secrets" is written out: without the key the core masks every
+	// setting (it cannot tell which are secrets).
+	var declared struct {
+		UI struct {
+			Settings map[string]json.RawMessage `json:"settings"`
+		} `json:"ui"`
+	}
+	if err := json.Unmarshal(manifestJSON, &declared); err != nil || declared.UI.Settings["secrets"] == nil {
+		t.Fatalf("ui.settings.secrets must be written out: %v", err)
+	}
 	// The settings' secrets as the JSON Schema form marked them (password:
 	// writeOnly), so that GET /plugins/mailer/settings masks it.
 	if got, want := m.UI.Settings.SecretFields(), []manifest.SecretField{{Path: []string{"password"}, Credential: true}}; !reflect.DeepEqual(got, want) {

@@ -176,7 +176,7 @@
       }
     ],
     "native": { "entry": "ui/native/entry.js" },
-    "settings": { "mode": "native", "component": "CodexSettings" }
+    "settings": { "mode": "native", "component": "CodexSettings", "secrets": [] }
   },
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
