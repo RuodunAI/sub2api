@@ -18,11 +18,13 @@ type boundPollProxy struct {
 	id     int64
 }
 
-func (p *boundPollProxy) HTTPClient(_ context.Context, id *int64) (*http.Client, error) {
+func (p *boundPollProxy) HTTPClient(_ context.Context, id *int64) (core.ProxyClient, error) {
+	pc := core.ProxyClient{Client: p.client}
 	if id != nil {
 		p.id = *id
+		pc.Proxy = &core.ProxyRef{ID: *id, ProxySpec: core.ProxySpec{Protocol: "http", Host: "proxy.test", Port: 3128, Password: "pw"}}
 	}
-	return p.client, nil
+	return pc, nil
 }
 
 func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
@@ -132,7 +134,10 @@ func TestMonitorUsesBoundAccountAndDefersWithoutBurningAttempts(t *testing.T) {
 	gen := f.svc.rec.Registry.Current().(*recGen)
 	mp := &monitorPlugin{recPlugin: rf.plugin}
 	mp.run = func(ctx context.Context, in *pluginv1.PollRequest, fetch core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
-		if in.GetEntry().GetRefId() != "bound-monitor" || in.GetAccount().GetId() != 7 {
+		// The account comes with the proxy its fetches go out through
+		// (CONTRACTS §124).
+		if in.GetEntry().GetRefId() != "bound-monitor" || in.GetAccount().GetId() != 7 ||
+			in.GetAccount().GetProxy().GetId() != 42 || in.GetAccount().GetProxy().GetPassword() != "pw" {
 			t.Errorf("wrong bound identity: %+v", in)
 		}
 		got, err := fetch(ctx, &pluginv1.ExecutionHTTPRequest{Url: rf.up.URL})

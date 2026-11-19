@@ -202,9 +202,8 @@ func (a recAccounts) Egress(ctx context.Context, id int64) (core.Egress, error) 
 	if p == nil {
 		p = recProxies{}
 	}
-	eg := core.Egress{Proxied: acc.ProxyID != nil}
-	eg.Client, err = p.HTTPClient(ctx, acc.ProxyID)
-	return eg, err
+	pc, err := p.HTTPClient(ctx, acc.ProxyID)
+	return core.Egress{Client: pc.Client, Proxied: acc.ProxyID != nil, Proxy: pc.Proxy}, err
 }
 func (a recAccounts) IsCoolingDown(context.Context, int64) (bool, error)          { return false, nil }
 func (a recAccounts) SetCooldown(context.Context, int64, time.Time, string) error { return nil }
@@ -219,8 +218,12 @@ func (a recAccounts) TouchLastUsed(context.Context, int64) {}
 
 type recProxies struct{}
 
-func (recProxies) HTTPClient(context.Context, *int64) (*http.Client, error) {
-	return &http.Client{Timeout: 5 * time.Second}, nil
+func (recProxies) HTTPClient(_ context.Context, id *int64) (core.ProxyClient, error) {
+	pc := core.ProxyClient{Client: &http.Client{Timeout: 5 * time.Second}}
+	if id != nil {
+		pc.Proxy = &core.ProxyRef{ID: *id, ProxySpec: core.ProxySpec{Protocol: "http", Host: "proxy.test", Port: 3128, Username: "u", Password: "pw"}}
+	}
+	return pc, nil
 }
 func (recProxies) HTTPClientFor(context.Context, core.ProxySpec) (*http.Client, error) {
 	return &http.Client{Timeout: 5 * time.Second}, nil

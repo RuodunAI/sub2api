@@ -700,9 +700,8 @@ func (a *fakeAccounts) Egress(ctx context.Context, id int64) (core.Egress, error
 	if p == nil {
 		p = fakeProxies{}
 	}
-	eg := core.Egress{Proxied: acc.ProxyID != nil}
-	eg.Client, err = p.HTTPClient(ctx, acc.ProxyID)
-	return eg, err
+	pc, err := p.HTTPClient(ctx, acc.ProxyID)
+	return core.Egress{Client: pc.Client, Proxied: acc.ProxyID != nil, Proxy: pc.Proxy}, err
 }
 
 func (a *fakeAccounts) IsCoolingDown(_ context.Context, id int64) (bool, error) {
@@ -794,8 +793,19 @@ func (s *fakeSlots) InUseMany(_ context.Context, kind string, ids []int64) (map[
 
 type fakeProxies struct{}
 
-func (fakeProxies) HTTPClient(context.Context, *int64) (*http.Client, error) {
-	return &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}, nil
+// HTTPClient hands out a direct client; proxy id goes out as fakeProxy(id).
+func (fakeProxies) HTTPClient(_ context.Context, id *int64) (core.ProxyClient, error) {
+	pc := core.ProxyClient{Client: &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}}
+	if id != nil {
+		ref := fakeProxy(*id)
+		pc.Proxy = &ref
+	}
+	return pc, nil
+}
+
+// fakeProxy is the proxy fakeProxies reports for id.
+func fakeProxy(id int64) core.ProxyRef {
+	return core.ProxyRef{ID: id, ProxySpec: core.ProxySpec{Protocol: "socks5", Host: "proxy" + itoa(id) + ".test", Port: 1080, Username: "u" + itoa(id), Password: "pw" + itoa(id)}}
 }
 
 func (fakeProxies) HTTPClientFor(context.Context, core.ProxySpec) (*http.Client, error) {

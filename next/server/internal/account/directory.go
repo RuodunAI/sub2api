@@ -310,11 +310,12 @@ func (s *Service) Egress(ctx context.Context, id int64) (core.Egress, error) {
 }
 
 // proxyEgress is the way out through proxy proxyID: its client (cached by
-// the proxy service), the direct one for nil. Proxied holds even when the
-// client cannot be had: the request then fails, never going out directly.
+// the proxy service) and the proxy itself, the direct client for nil.
+// Proxied holds even when the client cannot be had: the request then fails,
+// never going out directly, and Proxy is nil with the error.
 func (s *Service) proxyEgress(ctx context.Context, proxyID *int64) (core.Egress, error) {
-	client, err := s.d.Proxies.HTTPClient(ctx, proxyID)
-	return core.Egress{Client: client, Proxied: proxyID != nil}, err
+	pc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
+	return core.Egress{Client: pc.Client, Proxied: proxyID != nil, Proxy: pc.Proxy}, err
 }
 
 // loadLive is loadRow of any live account, unlocked, for Load: a miss of
