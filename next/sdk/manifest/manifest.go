@@ -666,6 +666,10 @@ type Form struct {
 	// userPermissions whose holders may read and edit the plugin settings
 	// through the core, besides plugin:read / plugin:manage (CONTRACTS §75.1).
 	Permission string `json:"permission,omitempty"`
+	// Secrets (ui.settings only, native or iframe) are the settings the core
+	// masks (CONTRACTS §75.1); an account type marks its secrets in
+	// sensitiveFields.
+	Secrets []SettingsSecret `json:"secrets,omitempty"`
 }
 
 // UsageRules tell the host how to read token usage from upstream responses.

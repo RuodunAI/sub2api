@@ -512,6 +512,44 @@ func (v *validator) maskableSecrets(field, schema string) {
 		manifest.MaxSecretDepth, manifest.MaxSecretRefDepth, strings.Join(unreachable, ", "))
 }
 
+// formSecrets validates ui.settings.secrets (manifest.SecretPath): only the
+// settings form takes them, a schema marks its secrets itself, and no path
+// repeats or lies inside another (a secret is masked as a whole).
+func (v *validator) formSecrets(field string, f manifest.Form, settings bool) {
+	switch {
+	case len(f.Secrets) == 0:
+		return
+	case !settings:
+		v.add(field, "unsupported", "only ui.settings takes secrets; an account type marks its secrets in sensitiveFields")
+		return
+	case f.Schema != "":
+		v.add(field, "unsupported", "a settings schema marks its secrets itself (writeOnly, format password, x-sensitive); secrets replace it")
+		return
+	}
+	seen := map[int][]string{}
+	for i, s := range f.Secrets {
+		path, ok := manifest.SecretPath(s.Path)
+		at := fmt.Sprintf("%s[%d].path", field, i)
+		if !ok {
+			v.add(at, "invalid", "path %q must be a JSON pointer below the values (\"a/b\", \"~0\" and \"~1\" escaped) of non-empty names, at most %d deep",
+				s.Path, manifest.MaxSecretDepth)
+			continue
+		}
+		for j := range i {
+			if p, ok := seen[j]; ok && (isPrefix(p, path) || isPrefix(path, p)) {
+				v.add(at, "duplicate", "path %q repeats or overlaps secrets[%d]: a secret is masked as a whole", s.Path, j)
+				break
+			}
+		}
+		seen[i] = path
+	}
+}
+
+// isPrefix reports whether prefix is the start of path (or path itself).
+func isPrefix(prefix, path []string) bool {
+	return len(prefix) <= len(path) && slices.Equal(prefix, path[:len(prefix)])
+}
+
 // form validates a console form; settings=true for ui.settings.
 func (v *validator) form(field string, f manifest.Form, settings bool) {
 	if f.Permission != "" && !settings {
@@ -526,6 +564,7 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 	if settings {
 		v.maskableSecrets(field+".schema", f.Schema)
 	}
+	v.formSecrets(field+".secrets", f, settings)
 	switch f.Mode {
 	case "schema":
 		v.needFile(field+".schema", f.Schema)
@@ -542,6 +581,9 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 		}
 		if f.Component == "" && !settings {
 			v.add(field+".component", "required", "component is required for native forms")
+		}
+		if settings && f.Component == "" && f.Page == "" {
+			v.add(field+".component", "required", "native settings need a component or a native page")
 		}
 		// A native settings form may carry the schema: the core validates
 		// and masks the stored values with it while the plugin's own page
