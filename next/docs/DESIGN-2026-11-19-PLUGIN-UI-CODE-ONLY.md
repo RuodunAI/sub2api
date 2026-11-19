@@ -146,7 +146,7 @@
 | 文件 | 内容 |
 |---|---|
 | `rules.ts` | `Rule`、`Rules`、内置规则的求值函数（从 `schema/schema.ts:278-327` 改写而来，原文件随后删除） |
-| `path.ts` | 点分路径 `a.b.0.c` 的 `getPath`、`setPath`（不可变写法，返回新对象；值为 `undefined` 时删掉这个键）、`expandPath`/`matchPath`（`*`）、`toPath`（把服务端的 `credentials.a.b`、`values/a/b`、`values.a.b` 都转换成 `a.b`；实现是 `@sub2api/host` 的 `toFieldPath`，与 `settingsFieldErrors` 共用） |
+| `path.ts` | 点分路径 `a.b.0.c` 的 `getPath`、`setPath`（不可变写法，返回新对象；值为 `undefined` 时删掉这个键）、`expandPath`/`matchPath`/`overlaps`（`*`；`set`、`touch`、`clearValidate` 判断"相关路径"都用 `overlaps`：相等、祖先或后代）、`fillMissing`（默认值）。服务端字段名转路径（`credentials.a.b`、`values/a/b`、`values.a.b` → `a.b`）只有 `@sub2api/host` 的 `toFieldPath` 一个名字，与 `settingsFieldErrors` 共用 |
 | `useForm.ts` | 表单状态：值、规则、本地错误、服务端错误、touched 状态、`validate` 等方法 |
 | `SForm.vue` | `<form novalidate>` 容器：provide 表单上下文，拦截提交；`disabled` 用 `<fieldset disabled>` |
 | `context.ts` | `FORM_KEY`、`IN_FORM_KEY`、`useFormItem`（`SField`、`SSettingRow` 共用的 `prop` 接线） |
@@ -202,7 +202,7 @@ export type Rules<M = Record<string, unknown>> = Record<string, Rule<any, M> | R
 - `required`
 - `whitespace`
 - `type.integer`、`type.number`、`type.url`、`type.email`、`type.dateTime`、`type.invalid`（string、boolean、array、object 不符时）
-- `minLength`、`maxLength`、`len`
+- `minLength`、`maxLength`、`lenString`、`lenItems`、`lenNumber`（`len` 按值的种类分三条文案）
 - `minimum`、`maximum`
 - `minItems`、`maxItems`
 - `pattern`
@@ -218,6 +218,8 @@ export type Rules<M = Record<string, unknown>> = Record<string, Rule<any, M> | R
 - 失焦事件的来源：
   - `FieldContext`（`packages/ui/src/field.ts`）增加可选方法 `touch?(kind: Trigger): void`。
   - `useFieldControl` 多返回一个 `blur`，控件把它接到自己的失焦事件上，经 `SField`/`SSettingRow` 的 `prop` 调到 `form.touch(path, 'blur')`。改值不经它上报（见上一条）。
+  - 失焦校验与这个路径重叠的全部字段：`<SField prop="tags">` 里的 `STagInput` 失焦时也校验 `tags.*`。判断 touched 时，路径本身或它的任一祖先被 touch 过都算。
+  - 写入某个路径时，与它重叠的路径上在途的一轮立即中止并丢弃（结果是旧值的），与 `clearValidate` 相同；组件卸载时中止全部在途校验。
   - SInput、STextarea、SSelect（原生和可搜索两种）、SSwitch、STagInput 接了 `blur`，**组件本身不改 props**。SSecretInput、SUrlPresetInput 包着 SInput/SSelect，自然接入。（原稿把 SDateTime 列为控件，它是只读的时间显示，不是输入。）
 
 ### 5.4 嵌套路径、数组、条件显示
@@ -266,9 +268,11 @@ export interface FormApi<M> {
   /** Whether a rule makes path required (SField's star). */
   required(path: string): boolean
   readonly errors: Readonly<Record<string, string>>
-  /** A control at path lost focus (SField / SSettingRow `prop`). */
+  /** v-model of the control at path: <SInput v-bind="form.bind('x')" /> (values pass unconverted). */
+  bind(path: string): { modelValue: any; 'onUpdate:modelValue': (v: unknown) => void }
+  /** @internal A control at path lost focus (SField / SSettingRow `prop`). */
   touch(path: string, kind: Trigger): void
-  /** Shows path's errors at a frame labelled `label` (SField / SSettingRow `prop`); returns the release. */
+  /** @internal Shows path's errors at a frame labelled `label` (SField / SSettingRow `prop`); returns the release. */
   claim(path: string, label?: () => string | undefined): () => void
 }
 export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<M>): FormApi<M>
@@ -277,7 +281,7 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
 - **只做补丁写入，从不重建整个对象。** `set` 永远基于当前值做浅拷贝补丁，校验框架也从不按规则表重组整个对象。所以规则表、界面上都没有的键（vertex 的 `access_token`、`expires_at`、`token_for`，moderation 留着用于遮蔽的 `api_key`）原样回到 `v-model`。这条写进 spec。
 - **密钥。** 编辑时控制台给的凭证里，密钥值是 `SECRET_MASK`（`******`）。规则把它当作"有值、未修改"：`required` 通过，其余规则跳过（沿用 `schema.ts:298`）。核心看到 `******` 会换回已存的值（`creds.go:118-141 unmask`）。所以"编辑时保留已存密钥"只要求界面在用户不碰时把 `******` 原样送回，`SSecretInput` 负责这一点（5.8）。
 - **同一拍里的多次写入。** 父组件经 `v-model` 交回新值要等下一次渲染，`useForm` 记着最后一次写出、还没交回的值，同一拍里连续的 `set` 都在它上面打补丁，不丢前一次。
-- **默认值。** `defaults` 只填缺失的键（嵌套对象逐层填）：父组件每交来一份新值（新建账号、切换账号类型、读到设置）填一次；`useForm` 自己写出的值不再填，所以用户清空的键不会被填回。它取代 `SchemaForm` 填默认值的行为，值必须和原 schema 的 `default` 一致，这是"同输入同输出"的验收项。
+- **默认值。** `defaults` 只填缺失的键（嵌套对象逐层填）：父组件每交来一份新值（新建账号、切换账号类型）填一次；`useForm` 自己写出的值不再填，所以用户清空的键不会被填回。"新值"按对象身份判断，父组件必须把收到的值原样存回（`v-model`），存成拷贝会让清空的默认键被填回。`usePluginSettings` 不靠这个判断，读到设置时自己填。它取代 `SchemaForm` 填默认值的行为，值必须和原 schema 的 `default` 一致，这是"同输入同输出"的验收项。
 
 ### 5.7 和后端字段错误的合并
 
@@ -326,7 +330,8 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
   - 值是 `SECRET_MASK` 时输入框显示为空，占位符显示 `******`，提示"已存，留空则保留"（`ui.form.secretKeep`）。
   - 输入就替换；清空后发出 `SECRET_MASK`。
   - `autocomplete="new-password"`。
-- 照搬 `schema/controls/InputControl.vue:15-40` 的逻辑；另外记住"有已存的值"：输入过再清空仍发回 `SECRET_MASK`（原控件此时会发出空串，已存的密钥被清掉）。父组件把值换成 `undefined`/`null`（换了账号）时忘掉。
+- 照搬 `schema/controls/InputControl.vue:15-40` 的逻辑；另外记住"有已存的值"：输入过再清空仍发回 `SECRET_MASK`。父组件把值换成 `undefined`/`null`（换了账号）时忘掉。
+- 可选的密钥（`mailer.password`、`moderation.notify_webhook_secret`、volcengine 的 `secret_key`）原来清空就能删掉，所以加 `clearable`：有已存值时显示带文字的按钮"清除已保存的值"，点了发 `''`、不再当作已存。`createApiKeyForm` 的 `secret` 字段在规则没有 `required` 时自动带上。
 - "已存，留空则保留"由组件自己用 `SHint` 显示在输入框下（外层 `SField` 的 hint 它碰不到）。
 
 **`SUrlPresetInput`**
@@ -464,6 +469,9 @@ export function usePluginSettings<M>(opts: {
   - 底部保存栏：未保存提示、重置、保存。照搬控制台 `SettingsTab.vue` + `StickyActionBar.vue` + `SettingsSaveBar.vue` 的行为（保存在没有改动时禁用，重置只在有改动时出现），样式写在组件里、颜色只用 CSS 变量，不依赖控制台全局类（CONTRACTS §23.4）。
   - 离开确认：用 `vue-router` 的 `onBeforeRouteLeave`，加上 `beforeunload`；文案照控制台 `common.unsaved` 搬进 `ui.form.leave`。现在的设置标签没有离开确认，这是新增的。
   - 另外：加载中、加载失败（带重试）；`title` 用 `SPageHeader`；不能编辑时 `SForm disabled`、不显示保存栏；Enter 也会保存（经 `SForm` 的 `submit`）。
+- 保存成功后重新读一遍设置（控制台也是保存后重读）：新填的密钥变回 `******`，重置回到保存后的值。重读不置 `loading`，`SSettingsPage` 不会换成转圈、表单不卸载。`SForm` 的提交（Enter）在没有改动时什么都不做，已经校验过时 `save({ validated: true })` 不再校验第二次。
+- 默认值由 `usePluginSettings` 在每次读到设置时自己填（不交给 `useForm` 的身份判断）。
+- 失败的文案用 `@sub2api/host` 新导出的 `errorMessage(e, t)` 和 `isSilentError(e)`：从控制台 `utils/errors.ts` 搬过去，控制台改为引用它们，不留两份。
 - `usePluginSettings` 的返回类型导出为 `PluginSettingsForm`；`canEdit` 用 `useHost().permissions.has`；保存成功、失败的提示用 `@sub2api/ui` 的 `toast`；reenter 文案搬进 `ui.form.reenter`。
 
 **`SResourcePage`**
@@ -480,7 +488,7 @@ export function usePluginSettings<M>(opts: {
   - `cell-<key>`
   - `toolbar`
   - `create`：放在 `SFormModal` 里，插槽参数是 `{ close, done }`
-- 多一个 prop `submit?: () => Promise<boolean | void>`：`SFormModal` 的保存按钮在弹窗的页脚、插槽内容碰不到，所以由页面传入保存函数（在里面 `form.validate()` 再提交；返回 `false` 不关弹窗），成功后等同 `done()`（Ant Design 的 Modal `onOk` 是同一做法）。插槽内容自己保存时仍可调用 `done()`。
+- 多一个 prop `submit?: () => Promise<boolean | void>`：`SFormModal` 的保存按钮在弹窗的页脚、插槽内容碰不到，所以由页面传入保存函数（在里面 `form.validate()` 再提交；返回 `false` 不关弹窗），成功后等同 `done()`（Ant Design 的 Modal `onOk` 是同一做法）；抛错时按 `errorMessage` 提示（`isSilentError` 的不提示），弹窗不关。插槽内容自己保存时仍可调用 `done()`。弹窗关闭时插槽内容卸载，写在插槽组件内部的表单状态下次打开就是空的；放在页面上的状态由作者清空。
 - 内部用 `useList` 和 `STable`（卡片形式，搜索框、`toolbar` 插槽和新建按钮在表格的工具栏里，分页在页脚）。新建成功后回到第一页并刷新，发出 `created`。
 
 ### 5.10 示例：anthropic 的账号表单（整个 `ui/native/src/entry.ts`）
@@ -833,6 +841,7 @@ SDK 拒绝未知键：
   - 默认值按"父组件交来的每一份新值"填一次，用户清空的不再填回（5.6）。
   - `SForm` 在已有 `<form>` 里不再渲染 `<form>`，`disabled` 用 `<fieldset>`；`SFormModal` 加一行 provide（5.8）。
   - `createApiKeyForm` 去掉 `t` 参数，`date-time` 用 `datetime-local` 输入框；`SResourcePage` 加 `submit` prop；`SSettingsPage` 新增离开确认（5.9）。
+  - 审查后补的：`FormApi.bind`；`SSecretInput` 的 `clearable`；保存后重读设置；控制台的报错文案搬进 `@sub2api/host`（5.6–5.9）。
 
 ## 15. 没能确认的事
 

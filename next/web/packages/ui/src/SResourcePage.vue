@@ -9,7 +9,7 @@
 // successful create goes back to page 1, reloads and emits `created`. A
 // slot that saves by itself calls `done()`.
 import { computed, ref, useSlots } from 'vue'
-import { useList, type ApiClient } from '@sub2api/host'
+import { errorMessage, isSilentError, useHost, useList, type ApiClient } from '@sub2api/host'
 import SButton from './SButton.vue'
 import SFormModal from './SFormModal.vue'
 import SInput from './SInput.vue'
@@ -34,9 +34,9 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'created'): void }>()
 const slots = useSlots()
 const t = useUiT()
-const list = useList<T>(props.client, () => props.path, props.search ? { [props.search]: '' } : {}, {
-  onError: (e) => toast(e instanceof Error ? e.message : String(e), 'error')
-})
+const host = useHost()
+const notify = (e: unknown) => isSilentError(e) || toast(errorMessage(e, host.i18n.t), 'error')
+const list = useList<T>(props.client, () => props.path, props.search ? { [props.search]: '' } : {}, { onError: notify })
 const cellSlots = computed(() => Object.keys(slots).filter((n) => n.startsWith('cell-')))
 const creating = ref(false)
 const saving = ref(false)
@@ -53,6 +53,8 @@ async function save() {
   saving.value = true
   try {
     if ((await props.submit()) !== false) done()
+  } catch (e) {
+    notify(e)
   } finally {
     saving.value = false
   }

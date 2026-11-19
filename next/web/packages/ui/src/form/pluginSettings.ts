@@ -2,16 +2,19 @@
 // CONTRACTS §75) as a form, taken from the console's settings tab
 // (views/plugins/detail/SettingsTab.vue): the loaded value with the
 // defaults filled is the "unchanged" baseline; saving validates, PUTs the
-// whole value, toasts, and on refusal shows the field errors at their
+// whole value, toasts, and reads the settings again (as the console does
+// after saving: kept and new secrets come back as "******"), without
+// switching to `loading`; on refusal it shows the field errors at their
 // fields (errors of the whole object as a toast). Secrets come back as
 // "******" and go back as is to keep them; a caller with only the plugin's
 // settings permission who changes something while keeping a secret is
 // asked to type it again (field code "reenter").
-import { computed, nextTick, ref, type ComputedRef, type Ref } from 'vue'
-import { isApiError, settingsFieldErrors, useHost, VERIFICATION_CANCELLED, type ApiClient } from '@sub2api/host'
+import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import { errorMessage, isApiError, isSilentError, settingsFieldErrors, useHost, type ApiClient } from '@sub2api/host'
 import { toast } from '../feedback'
 import { useUiT } from '../i18n'
 import { useForm, type FormApi } from './useForm'
+import { fillMissing } from './path'
 import type { Rules } from './rules'
 
 type Model = Record<string, unknown>
@@ -32,22 +35,20 @@ export interface PluginSettingsForm<M extends Model = Model> extends FormApi<M> 
   /** plugin:manage, or the plugin's ui.settings.permission. */
   canEdit: ComputedRef<boolean>
   reload(): Promise<void>
-  /** validate(), then PUT; true when saved. */
-  save(): Promise<boolean>
+  /** validate() (unless `validated`: the caller just ran it), then PUT and read again; true when saved. */
+  save(opts?: { validated?: boolean }): Promise<boolean>
   /** Back to the loaded value. */
   reset(): void
 }
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v ?? {}))
 
-/** Refusals worth no toast: the session ended, a dismissed verification, an aborted request (the console's notifyError). */
-const silent = (e: unknown) => (isApiError(e) && (e.code === 'unauthenticated' || e.code === VERIFICATION_CANCELLED)) || (e instanceof DOMException && e.name === 'AbortError')
-
 export function usePluginSettings<M extends Model = Model>(opts: {
   pluginKey: string
   /** host.api */
   api: ApiClient
   rules: Rules<M> | (() => Rules<M>)
+  /** Filled into the absent keys of every value read (part of the "unchanged" baseline). */
   defaults?: Partial<M>
 }): PluginSettingsForm<M> {
   const host = useHost()
@@ -60,24 +61,28 @@ export function usePluginSettings<M extends Model = Model>(opts: {
   const loading = ref(false)
   const saving = ref(false)
   const loadError = ref<unknown>(null)
-  const form = useForm<M>({ model: () => values.value, update: (v) => (values.value = v), rules: opts.rules, serverErrors: () => serverErrors.value, defaults: opts.defaults })
+  const form = useForm<M>({ model: () => values.value, update: (v) => (values.value = v), rules: opts.rules, serverErrors: () => serverErrors.value })
+  const notify = (e: unknown) => isSilentError(e) || toast(errorMessage(e, host.i18n.t), 'error')
 
-  /** Shows the loaded value; the baseline is taken once the defaults are filled in. */
-  async function show() {
-    values.value = clone(view.value?.values ?? {}) as M
+  /** Shows the value read, defaults filled in: the "unchanged" baseline. */
+  function show() {
+    values.value = fillMissing(clone(view.value?.values ?? {}) as M, opts.defaults ?? {})
     serverErrors.value = {}
     form.clearValidate()
-    baseline.value = ''
-    await nextTick()
     baseline.value = JSON.stringify(values.value)
+  }
+
+  /** Reads the settings and shows them; `loading` is the caller's. */
+  async function read() {
+    view.value = await opts.api.get<SettingsView>(path)
+    show()
   }
 
   async function reload() {
     loading.value = true
     loadError.value = null
     try {
-      view.value = await opts.api.get<SettingsView>(path)
-      await show()
+      await read()
     } catch (e) {
       loadError.value = e
     } finally {
@@ -85,26 +90,28 @@ export function usePluginSettings<M extends Model = Model>(opts: {
     }
   }
 
-  async function save(): Promise<boolean> {
-    if (!(await form.validate())) return false
+  async function save(o: { validated?: boolean } = {}): Promise<boolean> {
+    if (!o.validated && !(await form.validate())) return false
     saving.value = true
     serverErrors.value = {}
     try {
       await opts.api.put(path, { values: values.value })
-      toast(t('ui.form.saved'), 'success')
-      baseline.value = JSON.stringify(values.value)
-      return true
     } catch (e) {
       const fields = isApiError(e) && e.code === 'invalid_argument' ? Object.fromEntries(Object.entries(e.fields).map(([k, v]) => [k, e.fieldCodes[k] === 'reenter' ? t('ui.form.reenter') : v])) : {}
       const { fields: at, root } = settingsFieldErrors(fields)
       serverErrors.value = at
       // Errors of the whole object have no field to show at.
       if (root.length) toast(root.join('; '), 'error')
-      else if (!silent(e)) toast(e instanceof Error ? e.message : String(e), 'error')
-      return false
-    } finally {
+      else notify(e)
       saving.value = false
+      return false
     }
+    toast(t('ui.form.saved'), 'success')
+    baseline.value = JSON.stringify(values.value)
+    // The stored value as the core now shows it; the form stays mounted (no `loading`).
+    await read().catch(notify)
+    saving.value = false
+    return true
   }
 
   void reload()
@@ -116,6 +123,6 @@ export function usePluginSettings<M extends Model = Model>(opts: {
     canEdit: computed(() => host.permissions.has('plugin:manage') || (!!view.value?.permission && host.permissions.has(view.value.permission))),
     reload,
     save,
-    reset: () => void show()
+    reset: show
   })
 }

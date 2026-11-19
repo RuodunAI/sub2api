@@ -82,30 +82,31 @@ function specRules(spec: ApiKeyFormSpec): Rules<Model> {
 
 /** The control of an extra field, bound to the form. */
 function control(f: ExtraField, form: FormApi<Model>): VNode {
-  const value = form.get(f.key)
+  const bound = form.bind(f.key)
   const set = (v: unknown) => form.set(f.key, v)
   const placeholder = f.placeholder?.()
   switch (f.kind) {
     case 'secret':
-      return h(SSecretInput, { modelValue: value, placeholder, 'onUpdate:modelValue': set })
+      // An optional secret can be cleared; a required one only replaced.
+      return h(SSecretInput, { ...bound, placeholder, clearable: !toList(f.rules).some((r) => r.required) })
     case 'url':
-      return h(SUrlPresetInput, { modelValue: value, presets: f.presets, placeholder, 'onUpdate:modelValue': set })
+      return h(SUrlPresetInput, { ...bound, presets: f.presets, placeholder })
     case 'select':
       return h(SSelect, {
-        modelValue: value,
+        modelValue: bound.modelValue,
         options: (f.options ?? []).map((o) => ({ value: o.value, label: o.label() })),
         placeholder,
         'onUpdate:modelValue': (v: unknown) => set(v ?? undefined)
       })
     case 'textarea':
-      return h(STextarea, { modelValue: value, placeholder, 'onUpdate:modelValue': set })
+      return h(STextarea, { ...bound, placeholder })
     case 'date-time':
       // RFC 3339 in the value, local time in the box.
-      return h(SInput, { type: 'datetime-local', modelValue: toLocalInput(value as string), 'onUpdate:modelValue': (v: unknown) => set(fromLocalInput(String(v ?? '')) || undefined) })
+      return h(SInput, { type: 'datetime-local', modelValue: toLocalInput(bound.modelValue), 'onUpdate:modelValue': (v: unknown) => set(fromLocalInput(String(v ?? '')) || undefined) })
     case 'switch':
-      return h(SSwitch, { modelValue: !!value, 'onUpdate:modelValue': set })
+      return h(SSwitch, { ...bound, modelValue: !!bound.modelValue })
     default:
-      return h(SInput, { modelValue: value, placeholder, 'onUpdate:modelValue': set })
+      return h(SInput, { ...bound, placeholder })
   }
 }
 
@@ -132,7 +133,7 @@ export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
         const k = spec.apiKey ?? {}
         const b = spec.baseUrl ?? {}
         const nodes: VNode[] = [
-          field('api_key', t('ui.form.apiKey'), k.help, h(SSecretInput, { modelValue: form.get('api_key'), placeholder: k.placeholder?.(), 'onUpdate:modelValue': (v: string) => form.set('api_key', v) }))
+          field('api_key', t('ui.form.apiKey'), k.help, h(SSecretInput, { ...form.bind('api_key'), placeholder: k.placeholder?.() }))
         ]
         if (b) {
           nodes.push(
@@ -140,13 +141,7 @@ export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
               'base_url',
               t('ui.form.baseUrl'),
               b.help,
-              h(SUrlPresetInput, {
-                modelValue: form.get('base_url'),
-                presets: b.presets,
-                allowed: guard.allowed('base_url'),
-                placeholder: b.placeholder?.(),
-                'onUpdate:modelValue': (v: string | undefined) => form.set('base_url', v)
-              })
+              h(SUrlPresetInput, { ...form.bind('base_url'), presets: b.presets, allowed: guard.allowed('base_url'), placeholder: b.placeholder?.() })
             )
           )
         }

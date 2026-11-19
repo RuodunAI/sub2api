@@ -4,8 +4,11 @@
 // ("******"): the box stays empty with "******" as placeholder and a note
 // that leaving it empty keeps the value. Typing replaces the secret;
 // clearing the box again emits SECRET_MASK, so the core keeps the stored
-// value. Other attrs (data-testid, ...) go to the input.
+// value. An optional secret takes `clearable`: while a value is stored a
+// "Clear the saved value" button emits '' and the field no longer keeps it.
+// Other attrs (data-testid, ...) go to the input.
 import { computed, ref, watch } from 'vue'
+import SButton from './SButton.vue'
 import SHint from './SHint.vue'
 import SInput from './SInput.vue'
 import { SECRET_MASK } from './form/rules'
@@ -13,7 +16,7 @@ import { useUiT } from './i18n'
 import type { ControlSize } from './field'
 
 defineOptions({ inheritAttrs: false })
-const props = withDefaults(defineProps<{ modelValue?: string | null; placeholder?: string; disabled?: boolean; size?: ControlSize; revealable?: boolean }>(), {
+const props = withDefaults(defineProps<{ modelValue?: string | null; placeholder?: string; disabled?: boolean; size?: ControlSize; revealable?: boolean; clearable?: boolean }>(), {
   modelValue: undefined,
   placeholder: undefined,
   size: undefined,
@@ -31,6 +34,11 @@ watch(
     else if (v === undefined || v === null) stored.value = false
   }
 )
+
+function clearStored() {
+  stored.value = false
+  emit('update:modelValue', '')
+}
 
 function update(v: unknown) {
   const text = String(v ?? '')
@@ -51,7 +59,10 @@ function update(v: unknown) {
       v-bind="$attrs"
       @update:model-value="update"
     />
-    <SHint v-if="kept" size="xs">{{ t('ui.form.secretKeep') }}</SHint>
+    <div v-if="kept || (clearable && stored)" class="s-secret-input-note">
+      <SHint v-if="kept" size="xs">{{ t('ui.form.secretKeep') }}</SHint>
+      <SButton v-if="clearable && stored" size="sm" variant="ghost" :disabled="disabled" data-testid="secret-clear" @click="clearStored">{{ t('ui.form.secretClear') }}</SButton>
+    </div>
   </div>
 </template>
 
@@ -61,5 +72,12 @@ function update(v: unknown) {
   min-width: 0;
   flex-direction: column;
   gap: 0.25rem;
+}
+.s-secret-input-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
 }
 </style>

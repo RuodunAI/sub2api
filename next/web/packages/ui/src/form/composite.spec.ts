@@ -16,13 +16,20 @@ import { useCredentialForm, type NativeAccountFormProps } from './credential'
 import SCredentialForm from './SCredentialForm.vue'
 import { usePluginSettings, type PluginSettingsForm } from './pluginSettings'
 import SSettingsPage from './SSettingsPage.vue'
+import SchemaForm from '../schema/SchemaForm.vue'
+import anthropicSchema from '../../../../../plugins/anthropic/forms/apikey.schema.json'
+import anthropicUI from '../../../../../plugins/anthropic/forms/apikey.ui.json'
 import { SECRET_MASK } from './rules'
 
 type M = Record<string, any>
 
 /** A fake console: the permissions a test grants, everything else unused. */
 function fakeHost(granted: string[] = []) {
-  provideHost({ permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) } } as unknown as HostContext)
+  provideHost({
+    permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) },
+    // The console's translation: the key itself here.
+    i18n: { t: (k: string) => k }
+  } as unknown as HostContext)
 }
 
 beforeEach(() => {
@@ -91,6 +98,36 @@ describe('SSecretInput', () => {
     await w.find('input').setValue('x')
     await w.find('input').setValue('')
     expect(value.value).toBe('')
+  })
+})
+
+describe('SSecretInput clearable', () => {
+  function secret(props: M) {
+    const value = ref<string | undefined>(props.modelValue)
+    const w = mount(() => h(SSecretInput, { ...props, modelValue: value.value, 'onUpdate:modelValue': (v: string) => (value.value = v) }))
+    return { w, value }
+  }
+  it('clears an optional stored secret with its button, then forgets it', async () => {
+    const { w, value } = secret({ modelValue: SECRET_MASK, clearable: true })
+    expect(w.find('[data-testid="secret-clear"]').text()).toBe('Clear the saved value')
+    await w.find('[data-testid="secret-clear"]').trigger('click')
+    expect(value.value).toBe('')
+    await nextTick()
+    expect(w.find('[data-testid="secret-clear"]').exists()).toBe(false)
+    expect(w.text()).not.toContain('A value is stored')
+    await w.find('input').setValue('x')
+    await w.find('input').setValue('')
+    expect(value.value).toBe('')
+  })
+  it('without the button clearing the box keeps the stored value, as before', async () => {
+    const { w, value } = secret({ modelValue: SECRET_MASK, clearable: true })
+    await w.find('input').setValue('typed')
+    await w.find('input').setValue('')
+    expect(value.value).toBe(SECRET_MASK)
+  })
+  it('no button for a secret that is not clearable, or with nothing stored', () => {
+    expect(secret({ modelValue: SECRET_MASK }).w.find('[data-testid="secret-clear"]').exists()).toBe(false)
+    expect(secret({ modelValue: undefined, clearable: true }).w.find('[data-testid="secret-clear"]').exists()).toBe(false)
   })
 })
 
@@ -163,6 +200,16 @@ describe('createApiKeyForm: the anthropic form', () => {
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => 'Leave empty to use https://api.anthropic.com' },
     apiKey: { placeholder: () => 'sk-ant-…', help: () => 'Anthropic Console API key.' }
   })
+  /** The form it replaces, plugins/anthropic/forms/apikey.{schema,ui}.json in SchemaForm (§23.5 props). */
+  const SchemaAnthropic = defineComponent({
+    props: { modelValue: { type: Object, default: () => ({}) }, errors: { type: Object, default: undefined } },
+    emits: ['update:modelValue'],
+    setup(props, { emit, expose }) {
+      const inner = ref<{ validate: () => boolean }>()
+      expose({ validate: async () => inner.value!.validate() })
+      return () => h(SchemaForm, { ref: inner, schema: anthropicSchema, uiSchema: anthropicUI, modelValue: props.modelValue, errors: props.errors, 'onUpdate:modelValue': (v: M) => emit('update:modelValue', v) })
+    }
+  })
   const KEY = 'input[type="password"]'
   const URL = 'input[type="url"]'
   /** What the account editor would save (JSON, as sent). */
@@ -192,6 +239,27 @@ describe('createApiKeyForm: the anthropic form', () => {
       expect(await validate()).toBe(c.ok)
     })
   }
+
+  // Both forms side by side on the same inputs. The schema form goes in D1
+  // (plugins/anthropic/forms is deleted then): this test goes with it, and the
+  // cases above (the schema's verdicts written out) stay.
+  it('gives the same v-model and verdict as the schema form for every case', async () => {
+    for (const c of cases) {
+      const results = []
+      for (const form of [Anthropic, SchemaAnthropic]) {
+        const { w, credentials, validate } = editor(form)
+        await flushPromises()
+        if (c.key !== undefined) await type(w, KEY, c.key)
+        if (c.url !== undefined) {
+          await type(w, URL, 'https://tmp.example.com')
+          await type(w, URL, c.url)
+        }
+        results.push({ value: saved(credentials.value), ok: await validate() })
+        w.unmount()
+      }
+      expect(results[0], c.name).toEqual(results[1])
+    }
+  })
 
   it('labels, star, placeholders and the preset menu', async () => {
     const { w } = editor(Anthropic)
@@ -270,20 +338,25 @@ describe('createApiKeyForm: the anthropic form', () => {
 })
 
 /** A fake host.api for GET / PUT /plugins/demo/settings. */
-function settingsApi(view: M, put: (body: M) => Promise<unknown> = async () => null) {
+function settingsApi(view: M, put: (body: M) => Promise<unknown> = async () => null, secrets: string[] = ['password']) {
   const calls: M[] = []
+  let reads = 0
   const api = {
     get: async (path: string) => {
       expect(path).toBe('/plugins/demo/settings')
+      reads++
       return JSON.parse(JSON.stringify(view))
     },
     put: async (path: string, body: M) => {
       expect(path).toBe('/plugins/demo/settings')
       calls.push(body)
-      return put(body)
+      const out = await put(body)
+      // Stored; secrets read back masked.
+      view.values = Object.fromEntries(Object.entries(body.values).map(([k, v]) => [k, secrets.includes(k) && v ? SECRET_MASK : v]))
+      return out
     }
   } as unknown as ApiClient
-  return { api, calls }
+  return { api, calls, reads: () => reads }
 }
 
 function settingsPage(api: ApiClient, defaults: M = { port: 587, from_name: 'Sub2API' }) {
@@ -295,9 +368,9 @@ function settingsPage(api: ApiClient, defaults: M = { port: 587, from_name: 'Sub
         return () =>
           h(SSettingsPage, { settings, title: 'Mailer' }, () =>
             h(SSettingsGroup, { title: 'SMTP' }, () => [
-              h(SSettingRow, { prop: 'host', label: 'Host' }, () => h(SInput, { modelValue: settings.get('host'), 'onUpdate:modelValue': (v: any) => settings.set('host', v) })),
-              h(SSettingRow, { prop: 'port', label: 'Port' }, () => h(SInput, { type: 'number', modelValue: settings.get('port'), 'onUpdate:modelValue': (v: any) => settings.set('port', v) })),
-              h(SSettingRow, { prop: 'password', label: 'Password' }, () => h(SSecretInput, { modelValue: settings.get('password'), 'onUpdate:modelValue': (v: any) => settings.set('password', v) }))
+              h(SSettingRow, { prop: 'host', label: 'Host' }, () => h(SInput, settings.bind('host'))),
+              h(SSettingRow, { prop: 'port', label: 'Port' }, () => h(SInput, { type: 'number', ...settings.bind('port') })),
+              h(SSettingRow, { prop: 'password', label: 'Password' }, () => h(SSecretInput, { ...settings.bind('password'), clearable: true }))
             ])
           )
       }
@@ -327,6 +400,81 @@ describe('usePluginSettings / SSettingsPage', () => {
     expect(calls).toEqual([{ values: { host: 'mail.example.com', password: SECRET_MASK, extra: { keep: 1 }, port: 587, from_name: 'Sub2API' } }])
     expect(toastState.items.map((t) => t.message)).toEqual(['Saved'])
     expect(settings().dirty.value).toBe(false)
+  })
+
+  it('after a save, reset goes back to the saved value, and the settings are read again without unmounting the form', async () => {
+    fakeHost(['plugin:manage'])
+    const { api, reads } = settingsApi({ values: { host: 'a' } })
+    const { w, settings } = settingsPage(api)
+    await flushPromises()
+    const input = w.find('input').element
+    settings().set('host', 'b')
+    expect(await settings().save()).toBe(true)
+    expect(reads()).toBe(2)
+    expect(w.find('input').element).toBe(input)
+    settings().set('host', 'c')
+    await flushPromises()
+    expect(settings().dirty.value).toBe(true)
+    settings().reset()
+    await flushPromises()
+    expect(settings().get('host')).toBe('b')
+    expect(settings().dirty.value).toBe(false)
+  })
+
+  it('a secret typed in comes back masked after the save', async () => {
+    fakeHost(['plugin:manage'])
+    const { api } = settingsApi({ values: { host: 'a' } })
+    const { w, settings } = settingsPage(api)
+    await flushPromises()
+    await w.find('input[type="password"]').setValue('new-secret')
+    expect(await settings().save()).toBe(true)
+    await flushPromises()
+    expect(settings().get('password')).toBe(SECRET_MASK)
+    expect((w.find('input[type="password"]').element as HTMLInputElement).value).toBe('')
+    expect(settings().dirty.value).toBe(false)
+  })
+
+  it('Enter saves only with changes, validating once', async () => {
+    fakeHost(['plugin:manage'])
+    const { api, calls } = settingsApi({ values: { host: 'a' } })
+    let checks = 0
+    const { w, settings } = (() => {
+      let settings!: PluginSettingsForm<M>
+      const w = mount(
+        defineComponent({
+          setup() {
+            settings = usePluginSettings<M>({ pluginKey: 'demo', api, rules: { host: { validator: () => void checks++ } } })
+            return () => h(SSettingsPage, { settings }, () => h(SSettingRow, { prop: 'host', label: 'Host' }, () => h(SInput, settings.bind('host'))))
+          }
+        }),
+        { attachTo: document.body }
+      )
+      mounted.push(w)
+      return { w, settings: () => settings }
+    })()
+    await flushPromises()
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(calls).toEqual([])
+    settings().set('host', 'b')
+    await flushPromises()
+    checks = 0
+    await w.find('form').trigger('submit')
+    await flushPromises()
+    expect(calls).toEqual([{ values: { host: 'b' } }])
+    expect(checks).toBe(1)
+  })
+
+  it('a failed save is worded as the console words it; a cleared default stays cleared', async () => {
+    fakeHost(['plugin:manage'])
+    const { api } = settingsApi({ values: { host: 'a', port: 25 } }, () => Promise.reject(new TypeError('Failed to fetch')))
+    const { settings } = settingsPage(api, { from_name: 'Sub2API' })
+    await flushPromises()
+    settings().set('from_name', undefined)
+    await flushPromises()
+    expect(settings().get('from_name')).toBeUndefined()
+    expect(await settings().save()).toBe(false)
+    expect(toastState.items.map((t) => t.message)).toEqual(['auth.errors.network'])
   })
 
   it('reset goes back to the loaded value', async () => {
@@ -475,6 +623,23 @@ describe('SResourcePage', () => {
     expect(queries.at(-1)).toMatchObject({ page: 2 })
     expect(w.find('[data-testid="resource-create"]').exists()).toBe(false)
     w.unmount()
+  })
+
+  it('a create that throws keeps the dialog open and says why', async () => {
+    const { client } = fakeList()
+    const w = mount(SResourcePage, {
+      props: { client, path: '/assets', columns: [{ key: 'id', label: 'ID' }], canCreate: true, submit: () => Promise.reject(new ApiError(409, { code: 'conflict', message: 'name taken' })) },
+      slots: { create: () => h('p', 'form') },
+      attachTo: document.body
+    })
+    mounted.push(w)
+    await flushPromises()
+    await w.find('[data-testid="resource-create"]').trigger('click')
+    await flushPromises()
+    ;([...document.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Save') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(toastState.items.map((t) => t.message)).toEqual(['name taken'])
+    expect(document.body.textContent).toContain('form')
   })
 
   it('creates through the dialog, then reloads page 1 and emits created', async () => {

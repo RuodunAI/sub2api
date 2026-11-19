@@ -11,7 +11,7 @@ type Model = Record<string, unknown>
 export interface NativeAccountFormProps {
   modelValue: Record<string, unknown>
   mode: 'create' | 'edit'
-  account?: { id: number; type: string; credentials: Record<string, unknown> } | null
+  account?: { id: number; type: string; credentials: Record<string, unknown>; [key: string]: unknown } | null
   /** Includes guarded_settings, custom_upstream, sensitive_fields. */
   accountType?: AccountTypeView | null
   errors?: Record<string, string>

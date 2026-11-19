@@ -40,7 +40,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
       {{ (settings.loadError.value as Error)?.message }}
       <template #actions><SButton size="sm" @click="settings.reload()">{{ t('ui.retry') }}</SButton></template>
     </SAlert>
-    <SForm v-else :form="settings" :disabled="!settings.canEdit.value" @submit="settings.save()">
+    <SForm v-else :form="settings" :disabled="!settings.canEdit.value" @submit="settings.dirty.value && settings.save({ validated: true })">
       <div class="s-settings-page-body">
         <SAlert v-if="settings.unclaimed.value.length" tone="danger" dense data-testid="plugin-settings-errors">
           <p v-for="(msg, i) in settings.unclaimed.value" :key="i">{{ msg }}</p>
