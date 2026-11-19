@@ -7,7 +7,7 @@
 // follows useGuardedSettings: without account:settings:custom it offers the
 // type's official values only.
 import { defineComponent, h, type Component, type PropType, type VNode } from 'vue'
-import { useGuardedSettings, type AccountTypeView, type ProxyTicketSource } from '@sub2api/host'
+import { useGuardedSettings, type AccountTypeView, type GuardedSettings, type ProxyTicketSource } from '@sub2api/host'
 import SField from '../SField.vue'
 import SInput from '../SInput.vue'
 import SSecretInput from '../SSecretInput.vue'
@@ -54,7 +54,7 @@ export interface ExtraField {
   placeholder?: Text
   /** select: the choices. */
   options?: { value: string; label: Text }[]
-  /** url: suggestions. */
+  /** url: suggestions; a field in the type's guarded_settings offers its official values only, as base_url does. */
   presets?: string[]
   rules?: Rule | Rule[]
   /** SSectionTitle above the first field of a section. */
@@ -81,7 +81,7 @@ function specRules(spec: ApiKeyFormSpec): Rules<Model> {
 }
 
 /** The control of an extra field, bound to the form. */
-function control(f: ExtraField, form: FormApi<Model>): VNode {
+function control(f: ExtraField, form: FormApi<Model>, guard: GuardedSettings): VNode {
   const bound = form.bind(f.key)
   const set = (v: unknown) => form.set(f.key, v)
   const placeholder = f.placeholder?.()
@@ -90,7 +90,7 @@ function control(f: ExtraField, form: FormApi<Model>): VNode {
       // An optional secret can be cleared; a required one only replaced.
       return h(SSecretInput, { ...bound, placeholder, clearable: !toList(f.rules).some((r) => r.required) })
     case 'url':
-      return h(SUrlPresetInput, { ...bound, presets: f.presets, placeholder })
+      return h(SUrlPresetInput, { ...bound, presets: f.presets, allowed: guard.allowed(f.key), placeholder })
     case 'select':
       return h(SSelect, {
         modelValue: bound.modelValue,
@@ -151,7 +151,7 @@ export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
           const title = f.section?.()
           if (title && title !== section) nodes.push(h(SSectionTitle, { key: `section-${f.key}`, title, tag: 'h4' }))
           section = title ?? section
-          nodes.push(field(f.key, f.label(), f.help, control(f, form)))
+          nodes.push(field(f.key, f.label(), f.help, control(f, form, guard)))
         }
         return h(SCredentialForm, { form }, () => nodes)
       }

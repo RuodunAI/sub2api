@@ -303,6 +303,25 @@ describe('createApiKeyForm: the anthropic form', () => {
     expect(free.w.find(URL).exists()).toBe(true)
   })
 
+  it('a guarded url extra field offers the official values only, like base_url', async () => {
+    const Form = createApiKeyForm({
+      baseUrl: false,
+      extra: [{ key: 'asset_base_url', kind: 'url', label: () => 'Asset endpoint', presets: ['https://assets.example.com'] }]
+    })
+    const accountType = { plugin_key: 'demo', type: 'apikey', guarded_settings: [{ field: 'asset_base_url', allowed: ['https://assets.example.com'] }] }
+    const guarded = editor(Form, { accountType })
+    await flushPromises()
+    expect(guarded.w.find('select').attributes('disabled')).toBeDefined()
+    expect(guarded.w.find(URL).exists()).toBe(false)
+    guarded.w.unmount()
+    fakeHost(['account:settings:custom'])
+    const free = editor(Form, { accountType })
+    await flushPromises()
+    expect(free.w.find('select').exists()).toBe(false)
+    await type(free.w, URL, 'https://other.example.com')
+    expect(free.credentials.value).toEqual({ asset_base_url: 'https://other.example.com' })
+  })
+
   it('extra fields: select with defaults, sections, `when`, date-time in RFC 3339, no base URL', async () => {
     const Bedrock = createApiKeyForm({
       baseUrl: false,
