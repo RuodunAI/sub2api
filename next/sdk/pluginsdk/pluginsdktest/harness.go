@@ -169,27 +169,39 @@ func startPlugin(t testing.TB, p any, opts Options, fh *FakeHost, dialHost func(
 // Configure sends a Configure call and returns the field errors.
 func (h *Harness) Configure(config any, grants []*pluginv1.Grant) []*pluginv1.FieldError {
 	h.T.Helper()
-	raw := "{}"
-	switch v := config.(type) {
-	case nil:
-	case string:
-		raw = v
-	case json.RawMessage:
-		raw = string(v)
-	case []byte:
-		raw = string(v)
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			h.T.Fatalf("pluginsdktest: marshal config: %v", err)
-		}
-		raw = string(b)
-	}
-	resp, err := h.Plugin.Configure(context.Background(), &pluginv1.ConfigureRequest{ConfigJson: raw, Grants: grants})
+	resp, err := h.Plugin.Configure(context.Background(), &pluginv1.ConfigureRequest{ConfigJson: h.configJSON(config), Grants: grants})
 	if err != nil {
 		h.T.Fatalf("pluginsdktest: Configure: %v", err)
 	}
 	return resp.GetErrors()
+}
+
+// ValidateSettings sends a ValidateSettings call; config is what Configure
+// takes. A plugin without pluginsdk.SettingsValidator answers UNIMPLEMENTED.
+func (h *Harness) ValidateSettings(config any) (*pluginv1.ValidateSettingsResponse, error) {
+	h.T.Helper()
+	return h.Plugin.ValidateSettings(context.Background(), &pluginv1.ValidateSettingsRequest{ConfigJson: h.configJSON(config)})
+}
+
+// configJSON encodes config: nil is "{}", a string, json.RawMessage or
+// []byte is taken as written, anything else is marshaled.
+func (h *Harness) configJSON(config any) string {
+	h.T.Helper()
+	switch v := config.(type) {
+	case nil:
+		return "{}"
+	case string:
+		return v
+	case json.RawMessage:
+		return string(v)
+	case []byte:
+		return string(v)
+	}
+	b, err := json.Marshal(config)
+	if err != nil {
+		h.T.Fatalf("pluginsdktest: marshal config: %v", err)
+	}
+	return string(b)
 }
 
 // Do sends an HTTPService request. body may be nil, []byte, string or any
