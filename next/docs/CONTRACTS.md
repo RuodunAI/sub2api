@@ -1216,7 +1216,7 @@ manifest `accountTypes[].guardedSettings`（可选）：`[{field, allowed:[...],
 
 manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复（原来对 schema 表单的打包警告 `check.Warnings` 已随 schema 表单在 2026-11-19 删除）。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
 
-校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。声明了 `versions` 时，在上面的规范化之后再从路径末尾去掉至多一个版本段，提交值、`allowed` 各项、账号原值都这样做：在**转义形式**的路径上找能作为后缀的项，取最长的一个，整段匹配、区分大小写（`…/a%2Fv1` 不算以 `/v1` 结尾，`…/V1` 不算 `/v1`，`…/v1/v1` 只去一段）。所以 `https://API.openai.com/v1/` 与 `https://api.openai.com` 等价；PATCH 时原值带版本、新值不带（或反过来）也算等于原值。这条规则与插件 SDK `apikey.Spec.Versions` 在请求时算"根"的规则相同（核心不依赖 `pluginsdk`，各自实现）。没有 `versions` 的受限设置不受影响。旧核心不认识 `versions`（清单解码不严格）会忽略它，只是带版本的官方地址被拒，所以用到它的插件要提高 `hostCompat` 下限。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
+校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。声明了 `versions` 时，在上面的规范化之后再从路径末尾去掉至多一个版本段，提交值、`allowed` 各项、账号原值都这样做：在**转义形式**的路径上找能作为后缀的项，取最长的一个，整段匹配、区分大小写（`…/a%2Fv1` 不算以 `/v1` 结尾，`…/V1` 不算 `/v1`，`…/v1/v1` 只去一段）。所以 `https://API.openai.com/v1/` 与 `https://api.openai.com` 等价；PATCH 时原值带版本、新值不带（或反过来）也算等于原值。这条规则与插件 SDK `apikey.Spec.Versions` 在请求时算"根"的规则相同（核心不依赖 `pluginsdk`，各自实现；§127.3），只差一处：SDK 去掉版本段后再去掉剩下的末尾 `/`，核心不去，所以 `https://api.openai.com//v1` 在核心比较时是 `https://api.openai.com/`，不等于官方地址。没有 `versions` 的受限设置不受影响。旧核心不认识 `versions`（清单解码不严格）会忽略它，只是带版本的官方地址被拒，所以用到它的插件要提高 `hostCompat` 下限。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
 
 **默认地址由插件自己提示**：三个内置账号类型的表单不再给 `base_url` 设 `default`（不预填），`pattern` 允许空串，`ui:placeholder` 写"留空使用默认地址 …"；空值由插件 `ValidateCredentials` 归一化为默认地址。核心不为 base_url 做特判；控制台清空 `url-presets` 输入即不发该键；锁定（只读）时只显示"由管理员设置"，不再拼插件的帮助文案。
 
@@ -5194,8 +5194,8 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
     - 带 schema 的设置先按 schema 校验，再调用插件。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
     - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
-    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化、含去后缀，只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
-    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（各种被拒的 api_key、base_url，长度边界，去空白与 scheme 转小写），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
+    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化（不去版本段，§127），只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
+    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（只有空白的 api_key 被拒，带空格、非 ASCII、4096 位的接受；各种被拒的 base_url；带 `/v1`、带 `%2F` 的地址原样保存；去空白与 scheme 转小写；§127），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
   - **标记只能写在能掩码的位置**（2026-11-12）：只有沿 `properties` 嵌套对象能到达的属性（最多 8 层）能单独掩码；被标记的属性整体掩码，其下不再细分。`items`、`additionalProperties`、`patternProperties`、`allOf`/`anyOf`/`oneOf`、`if`/`then`/`else`、嵌套的 `$defs` 等其他位置的标记、超过 8 层的标记，打包校验报 `ui.settings.schema` `unmaskable_secret`。同文档的本地引用 `"$ref": "#/$defs/<名>"` 或 `"#/definitions/<名>"`（指向根上的 `$defs`/`definitions`，名字是一个 RFC 6901 记号，`~0` `~1` 解码，不接受百分号编码）按“目标写在引用处”处理：目标自身被标记则引用处的属性整体掩码，目标的 `properties` 接在引用处的路径下（同样最多 8 层）；根上的 `$defs`/`definitions` 只经引用读取，没被引用的定义不检查。引用成环、互相嵌套超过 32 层、全部展开累计超过 10000 个节点，或者从 `items` 等到不了的位置引用带标记的定义，都报错，位置写在引用下（如 `/properties/a/$ref/items`）。schema 里只要有任何标记，其他引用（`$dynamicRef`、`$recursiveRef`、外部引用、锚点、其他指针、嵌套 `$id` 之下的引用）照旧报错（2026-11-12 权限加固 FU4，此前任何引用都报错）；schema 文件不是 JSON 对象同样报错。校验之前已安装的包：含这类标记的顶层设置整块按凭据掩码；标记不属于某一个顶层设置时（根上的 `allOf`、`additionalProperties`、`$ref` 等），或 schema 文件不是 JSON 对象时，全部顶层设置按凭据掩码。
   - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；不带 schema 的 native / iframe 设置没有 `secrets` 键；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
   - `GET` 的回答多一个 `permission`：完整的 RBAC key（`plugin.<key>:<permission>`），没有声明时省略。
@@ -5847,8 +5847,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 86.1 API Key 类账号类型
 
-- “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、表单、凭证字段从声明式时起没有变过，账号数据不迁移。
-- 基础地址的规则（`apikey.NormalizeBaseURL`，保存时与每次请求时都用它）：去掉首尾空白、scheme 转小写、去掉类型声明的路径后缀；去掉首尾空白后仍含任何空白字符（`unicode.IsSpace`）、`?` 或 `#` 的地址拒绝（2026-11-19 U3a，与原表单 schema `^(https?://[^\s?#]+)?$` 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出（`u.String()`，`RawPath` 清空）：空格和所有非 ASCII 字节都被百分号转义，没有原样的空白、`?`、`#`，请求时重新规范化不受影响（原 schema 不是理由：RE2 的 `\s` 只认 ASCII，不换行空格之类当初能通过）（例外是原有行为：剥掉一个后缀后又以另一个后缀结尾的地址，如 gemini 的 `…/x/v1/v1beta` 存成 `…/x/v1`，请求时再剥成 `…/x`）。
+- “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、凭证字段从声明式时起没有变过（表单 2026-11-19 起是插件的 native 组件），账号数据不迁移。
+- 密钥与基础地址的规则见 §127（2026-11-20 起；此前保存时就去掉类型声明的路径后缀，密钥按各类型的格式检查）：`api_key` 只要求是非空字符串；基础地址经 `apikey.NormalizeBaseURL` 规范化后**按填写的保存**（去首尾空白、scheme 转小写、路径保留转义形式并去掉末尾的 `/`，不去任何后缀；去掉首尾空白后仍含空白字符（`unicode.IsSpace`）、`?`、`#`、userinfo，或不是绝对 http(s) 地址的拒绝），请求时 `Spec.FromAccount` 从存值末尾至多去掉一个类型声明的版本段（`Spec.Versions`）得到根，再接上路由的完整路径。
 - 原声明式引擎的 1498 条录制样例冻结在 `sdk/pluginsdk/standard/goldentest`，用 `standard` 写的插件逐条回放一致。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = 账号类型 `platforms[].endpoints` 覆盖到的协议加核心能转换到它们的协议（§110 起：跨平台转换到的端点要在账号上按模型开启才提供）。
@@ -7734,7 +7734,7 @@ WebSocket 轮次上给了 `response_stream` 的中继被拒绝（按插件不可
 **没有新增分类策略**：azure_openai 的两个类型用 openai 预设的分类策略。404 `DeploymentNotFound` 按该策略原样回客户端；要换号由管理员在失败策略（§69）里配重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`），不配账号规则则账号不动。失败策略发布后请求动作只由它决定，插件分类的 action 不参与。
 
 - **openai**：账号设置 `organization`、`project` 非空时以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端带的（默认头，运营方的请求头覆盖仍可改）；留空时不写，客户端经 passHeaders 带来的头保持原样。写在 openai 插件的类型里（`standard.Set(..., standard.Field(...))`），不在 `openai` 预设里。WebSocket 握手同样带上。
-- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发；基础地址必填、无默认值，保存时去掉末尾的 `/openai/v1`、`/openai`；鉴权头 `api-key`，key 不要求前缀；不拉模型列表；没有 `openai.responses_ws`。类型自己的 `PassHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；保留预设的过滤字段 `service_tier`、`safety_identifier`（在运营方改写之后执行，§112.14）。经典类型的路径是 `/openai/deployments/<部署名>/…?api-version=<设置 api_version>`，部署名是映射后的模型，没有 `openai.responses`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 openai 预设的策略：404 `DeploymentNotFound` 原样回客户端，换号靠失败策略的重试规则（见上）。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
+- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发；基础地址必填、无默认值，按填写的保存（2026-11-20 起；此前保存时去掉末尾的 `/openai/v1`、`/openai`），请求时末尾的 `/openai/v1` 或 `/openai` 当作版本段去掉一段再拼路由（§127；项目名恰好是 `openai` 的 Foundry 地址会因此少一段，与此前相同）；鉴权头 `api-key`，key 不限格式；不拉模型列表；没有 `openai.responses_ws`。类型自己的 `PassHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；保留预设的过滤字段 `service_tier`、`safety_identifier`（在运营方改写之后执行，§112.14）。经典类型的路径是 `/openai/deployments/<部署名>/…?api-version=<设置 api_version>`，部署名是映射后的模型，没有 `openai.responses`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 openai 预设的策略：404 `DeploymentNotFound` 原样回客户端，换号靠失败策略的重试规则（见上）。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；密钥文件由插件用 `encoding/json` 解析一次，检查和使用读同一份值；服务账号的断言用 `github.com/golang-jwt/jwt/v5` 以 RS256 签名（没有用 Google 的库：它没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated；见设计文档 16.10）。`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）：按解析后生效的值判断（键名不分大小写、重复的键取最后一个），这个值只检查，请求和断言的 `aud` 用常量。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstream` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
 - **bedrock**：插件不联网（`Fetch` 也不用）。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型由插件做 SigV4 签名（`service: bedrock`）。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`；请求体用 `jsonedit` 一次改完：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta` 里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`；清洗 Claude Code 写在深处、InvokeModel 不接受的内容（工具定义里的 `custom`、`cache_control` 的 `scope` 和模型不接受的 `ttl`、工具调用 ID 里的非法字符、模型不接受的 thinking 设置）。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstream` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用）。
 
@@ -8550,9 +8550,9 @@ ALTER TABLE usage_logs
 
 | 插件 | 账号类型 | 字段 | 地址 |
 |---|---|---|---|
-| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，8–512 个不含空格的可见字符，不限前缀） | 运营方填站点根地址；粘贴的 `/v1`、`/v1beta` 去掉。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
+| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，任意非空字符串，§127；2026-11-20 前要求 8–512 个不含空格的可见字符） | 运营方填站点根地址；按填写的保存，请求时末尾的 `/v1beta` 或 `/v1` 当作版本段去掉一段、各协议从根拼官方路径（填 `/v1` 时 Gemini 协议请求 `…/v1beta/…`，余额也从根拼），§127。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
 | `sub2api` | `apikey`（"Sub2API"） | 同上 | 同上 |
-| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`，粘贴的 `/v1` 去掉） | `guardedSettings` 只许官方地址、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
+| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`；按填写的保存，请求时末尾的 `/v1` 当作版本段去掉，§127） | `guardedSettings` 只许官方地址（`versions: ["/v1"]`，带 `/v1` 的官方地址也算官方，§21.3）、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
 
 - 默认模型：newapi、sub2api 不写（账号服务所有模型；"拉取模型"读站点 `GET /v1/models` 的 `data[].id`）；typesafe 是 `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`（"拉取模型"读 `GET /v1/models` 的 `models[].name`）。
 - 账号测试按绑定的协议测（§122）：核心按账号开放、绑定的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的；newapi、sub2api 用 `standard.Merge` 收集各份预设的全部测试（§122.3 的 OpenAI、Gemini 各协议，Messages `claude-haiku-4-5`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。账号测试不查价、不计费。
@@ -8892,3 +8892,61 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 `0118_volcengine_apikey_prefix_settings.sql`：`plugin_key = 'volcengine' AND type = 'apikey'` 且 `settings` 含其中任一键的账号（含已软删除的），从 `settings` 删掉 `api_prefix`、`video_api_prefix`，其余键不变；`relay` 账号和别的插件的账号不动；只写命中的行，可以重跑。不改 `updated_at`。请求行为不变：这两个键对 `apikey` 账号本来就不生效。加密的凭证部分迁移读不到，不处理（线上只查过 `settings`）。
 
 测试：`migrations.TestMigration0118DropsVolcengineAPIKeyPrefixes`（两个键删掉、其它键保留；`relay` 与别的插件的账号不变且没有被写；重跑不写任何行）。
+
+## 127. 密钥与基础地址（2026-11-20，所有者要求“密钥不要做任何限制”“地址里的 %2F 一起改了”“我们的插件自己处理兼容，不要去多也不要少”；方案 B；无迁移；插件协议、Host API 不变；清单加 `guardedSettings[].versions`，核心 0.1.304；设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md)）
+
+适用于用 `sdk/pluginsdk/apikey` 的 `Spec` 写的 API Key 加基础地址一类账号类型（anthropic、openai、gemini、relay、typesafe 的 `apikey`/`relay_key`，newapi、sub2api，azure_openai 的两个类型，volcengine 的 `apikey` 与 `relay`，vertex 的 `vertex_apikey`），以及 bedrock 的 `bedrock_apikey`（自己的代码，密钥规则相同）。本节取代 §86.1 原来的“基础地址的规则”。
+
+### 127.1 密钥
+
+- `api_key` 只要求是非空字符串：先读凭证、再读设置；缺省、`null`、去掉首尾空白后为空报 `required`；不是字符串报 `type`（类型可以用 `Spec.Texts.KeyNotString` 换文案和错误码：anthropic、openai、typesafe 的预设为 `pattern`，为与录制的样例一致）。此外不检查前缀、字符集和长度，保存去掉首尾空白后的值；`Spec.FromAccount` 读取时同样去空白，空值报 `missing api_key`。
+- 删除的：`apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`，各插件各自的长度与字符集检查（原来大多是 8–512 个不含空格的可见字符，openai 不超过 512 个可见 ASCII 字符，bedrock 8–2048 个可见字符）。bedrock 的 AK/SK、会话令牌，vertex 的密钥文件，volcengine 的 AK/SK 规则不变。
+- 控制字符不另外检查：密钥里带 CR、LF 等字符时，SDK、核心与 Go `net/http` 都拒绝把它写进请求头，不会注入；代价是这样的密钥能保存，但每次请求都失败（设计 Q1）。
+- 界面：`@sub2api/ui` 的 `createApiKeyForm` 默认只要求非空（`{required: true, whitespace: true}`），`spec.apiKey.min`/`max`/`pattern` 写了才检查（§23.3）；`@sub2api/ui/testing` 的 `keyAndUrlCases`、SDK 的 `apikey/apikeytest` 都按这条规则（只有空白的拒绝，1 位、4096 位、带空格、非 ASCII 的接受）。
+
+### 127.2 基础地址的保存
+
+`apikey.NormalizeBaseURL(base) (string, error)`（保存时由 `Spec.Validate` 调用，请求时 `FromAccount` 再调用一次）：
+
+1. 去掉首尾空白，空串报 `is required`（没有地址的可选类型取 `DefaultBaseURL`）。
+2. 拒绝：仍含任何空白字符（`unicode.IsSpace`）、含 `?` 或 `#`、解析失败或没有 host、scheme 不是 http/https、含 userinfo。
+3. 输出 = `url.URL{Scheme, Host}.String()`（scheme 小写，host 照写）+ 路径的转义形式（`EscapedPath()`）去掉末尾所有 `/`。用户写的合法转义原样保留（`%2F`、`%7E` 不还原），原样的非 ASCII 字符按 UTF-8 百分号编码。
+4. **不去任何后缀**：存下的就是填的地址（2026-11-20 前保存时去掉类型声明的后缀，并把转义还原成规范形式）。输出再规范化一次结果不变。
+
+`Spec.Fields` 里给 `base_url` 写的规则、azure 的 `EndpointPattern` 看到的都是这个存值（不去版本段），所以 Foundry 项目名里的 `%2F` 现在可以保存、原样发出。
+
+### 127.3 请求时的版本段
+
+`Spec.Versions` 是基础地址末尾可以带的版本段（原 `StripSuffixes` 改名，值不变）。每项以 `/` 开头、不以 `/` 结尾：
+
+| 类型 | `Versions` |
+|---|---|
+| openai、anthropic、relay、typesafe | `/v1` |
+| gemini、newapi、sub2api | `/v1beta`、`/v1` |
+| azure_v1、azure_deployment | `/openai/v1`、`/openai` |
+| volcengine `apikey` | `/api/v3` |
+| volcengine `relay`、vertex_apikey | 无 |
+
+`Spec.FromAccount` 从存值算出“根”放进 `Config.BaseURL`：在转义形式的存值上找 `Versions` 里能作为后缀的项，取最长的一个，整段匹配、区分大小写，至多去掉一段，再去掉剩下的末尾 `/`；找不到就用存值。路由、模型列表、余额的路径照旧完整接在根后面（`standard`、`ModelListRequest`、volcengine 的 `upstreamURL` 的拼接都没有变）。所以：
+
+- 填 `https://x/v1` 与填 `https://x` 请求同样的地址；地址本身以 `/v1` 结尾的站点填 `https://x/v1/v1`，请求发往 `https://x/v1/v1/<路由>`。
+- 带的是另一个版本时按路由的来：gemini、newapi、sub2api 填 `…/v1` 时 Gemini 协议请求 `…/v1beta/…`；newapi、sub2api 的余额也从根拼。
+- `…/a%2Fv1` 不算以 `/v1` 结尾（请求 `…/a%2Fv1/v1/…`），`…/V1`、`…/xv1` 也不算；只认类型自己声明的版本段（智谱 `…/api/paas/v4` 这类仍配不通，与此前相同，设计 Q7）。
+- azure 的 Foundry 项目名恰好是 `openai` 时（`…/api/projects/openai`），末尾被当作版本段 `/openai`，请求少了项目那一段，与此前相同（设计 Q11，接受现状）。
+- volcengine `relay` 的地址规则不变：基础地址是中转站根地址，路径以 `/v1` 或 `/api/v3` 结尾的在保存时拒绝并提示填 `api_prefix`（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.3）；只是它的密钥也按 127.1 放开。
+
+### 127.4 受限地址
+
+没有 `account:settings:custom` 的人提交带版本段的官方地址（如 `https://api.openai.com/v1`）照样接受：清单 `accountTypes[].guardedSettings[].versions` 写出与 `Spec.Versions` 相同的值，核心比较受限设置前对提交值、`allowed` 各项、账号原值都按 127.3 的规则去掉至多一个版本段（§21.3）。写了 `versions` 的清单：anthropic、openai、typesafe（`["/v1"]`），gemini（`["/v1beta", "/v1"]`），volcengine `apikey` 的 `base_url`（`["/api/v3"]`）；各插件的清单测试断言它与 Go 里的 `Spec.Versions` 一致。旧核心忽略这个字段（只是带版本的官方地址被拒），所以这些插件 `hostCompat` 要求核心 0.1.304 起。
+
+### 127.5 已存账号的等价边界
+
+已存账号的请求地址全部不变，不分类型（设计 6.5）：已存的值都是旧规范化的输出（scheme 小写、路径为规范转义、没有末尾 `/`），新规范化对它们原样返回；同一类型的各个版本段不会同时是同一地址的后缀，所以旧的“按顺序去掉第一个匹配的后缀”与新的“去掉最长的一个”是同一段；路由路径两边都原样接上。SDK 的性质测试 `apikey.TestStoredBaseURLsKeepTheirRequests` 对各类型的版本段、各路由和一组输入逐一比较改前改后的请求地址。
+
+前提是存值经过了插件的保存校验（核心保存账号、两个 `models/fetch` 都先调 `ValidateCredentials`，§21.3 的 `prepare`）。绕过它写入的值（直接改库、导入）里，只有路径带非规范转义（如 `%2F`、`%7E`）的会变：以前解码后发出，现在原样发出。
+
+### 127.6 已知的变化
+
+- 已存的、带其它版本段的地址不受影响（127.5），但**新保存**的地址不再被改写：控制台显示的、`GET /accounts/:id` 读到的就是填写的地址。
+- newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`，文案“api_key 必须是字符串”。
+- 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法（各插件 `ui/native/src/messages.ts`）。
