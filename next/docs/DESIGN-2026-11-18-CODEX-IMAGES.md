@@ -7,9 +7,11 @@
 ## 0. 结论
 
 1. **能生图**。Codex 账号（设备码登录，上游 `chatgpt.com/backend-api/codex/responses`）发带 `image_generation` 工具的 Responses 请求能出图：2026-11-18 在测试实例上两轮共 7 次出图请求全部成功（第 2 节），编辑图片（输入图片 + `action: "edit"`）也可以。之前文档里“Sign in with ChatGPT 账号经生图工具被上游拒绝”（§118.5 的表）说的是已删除的 `chatgpt_siwc` 类型（上游 `api.openai.com`），不适用于现在的两种 codex 账号；§118.5 的那一行要改。
-2. **转换可行，推荐方案 (a)**：在核心转换层加两对同平台转换 `openai.images → openai.responses`、`openai.images_edit → openai.responses`，账号类型在清单里**显式声明**要经适配服务这两个端点（codex 两种类型声明，别的类型不受影响）。请求侧把生图参数放进 `image_generation` 工具、强制调用；应答侧把 `image_generation_call` 的结果和 `tool_usage.image_gen` 转回生图接口的 JSON 或事件流。计费：生图部分是主用量，按客户端请求的生图模型计价；对话部分（Codex 后端约 2300 输入 token 的固定开销）作为附加用量按驱动对话的模型计价。
+2. **转换可行，推荐方案 (a)**：在核心转换层加两对同平台转换 `openai.images → openai.responses`、`openai.images_edit → openai.responses`，账号类型在清单里**显式声明**要经适配服务这两个端点（codex 两种类型声明，别的类型不受影响）。请求侧把生图参数放进 `image_generation` 工具、强制调用；应答侧把 `image_generation_call` 的结果和 `tool_usage.image_gen` 转回生图接口的 JSON 或事件流。计费：生图部分是主用量，**按上游回显的生图模型（实测恒为 `gpt-image-2-codex`）计价**（2026-11-18 所有者同意）；对话部分（Codex 后端约 2300 输入 token 的固定开销）作为附加用量按驱动对话的模型计价。
 3. **这一版的范围**：generations 的非流式与流式、edits（JSON 形式）的非流式与流式都做。不做：`n > 1`（400）、`response_format: "url"`（400）、edits 的 multipart（§118.1 既有限制）、Codex 后端的专用生图接口（未实测，第 7 节）。
-4. **已知限制**：Codex 后端不按工具参数里的 `size` 出图（由驱动模型决定，回显恒为 `auto`），实测在 `instructions` 里写明尺寸后按要求出图，转换器因此把尺寸等写进一句固定的 `instructions`；没有 `partial_image` 事件（请求了也不给）；每次多约 2300 个对话输入 token；上游回显的生图模型是 `gpt-image-2-codex`，没有公开单价；工具参数里写什么生图模型（包括不存在的名字）都按 `gpt-image-2-codex` 出图，`quality` 恒为 `low`（写 `high`、在 `instructions` 里要求 `high` 都不变）。
+4. **Codex 账号的生图入口名只有 `gpt-image-2`**：Codex 后端只有一个生图模型 `gpt-image-2-codex`，请求里写别的生图模型名不会换模型（1.2.1）。codex 清单的默认模型只加 `gpt-image-2`；管理员不要把 2.5 / 2.6 等名字加进 Codex 账号的模型列表（加了也只是别名）。
+5. **账号测试按绑定的协议测**（新增的包，3.11）：各预设补上 Responses、Embeddings、生图的测试请求；生图测试会真的出图，只在管理员明确对某个模型点测试时才发。
+6. **已知限制**：Codex 后端不按工具参数里的 `size` 出图（由驱动模型决定，回显恒为 `auto`），实测在 `instructions` 里写明尺寸后按要求出图，转换器因此把尺寸等写进一句固定的 `instructions`；没有 `partial_image` 事件（请求了也不给）；每次多约 2300 个对话输入 token；上游回显的生图模型是 `gpt-image-2-codex`，没有公开单价；工具参数里写什么生图模型（包括不存在的名字）都按 `gpt-image-2-codex` 出图，`quality` 恒为 `low`（写 `high`、在 `instructions` 里要求 `high` 都不变）。
 
 ## 1. 现状
 
@@ -150,13 +152,13 @@
 
 | 模型 | 例 | 调度：分组白名单、账号 `models`、`model_protocols` | 账号模型映射 | 价格 | 使用记录 |
 |---|---|---|---|---|---|
-| 客户端请求的生图模型 | `gpt-image-2` | **检查**（与所有请求一样按映射前的客户端模型） | 映射到的值写进 `tools[0].model` | **主用量**按它计价；调度前按 `missing_price_policy` 准入（`reject` 下没价 403） | `model` |
-| 上游回显的生图模型 | `gpt-image-2-codex` | 不检查 | — | 不用 | `upstream_model`（取自应答 `tools[0].model`） |
+| 客户端请求的生图模型 | `gpt-image-2` | **检查**（与所有请求一样按映射前的客户端模型） | 映射到的值写进 `tools[0].model` 调度前按 `missing_price_policy` 准入（`reject` 下没价 403）、预扣按它估算；**不用于结算** | `model` |
+| 上游回显的生图模型 | `gpt-image-2-codex` | 不检查 | — | **主用量按它结算**（记录时取价，3.5.1） | `upstream_model`（取自应答 `tools[0].model`） |
 | 驱动对话的模型 | `gpt-6-luna` | 不检查 | 不映射 | **附加用量** `conversation` 按它计价，记录时取价（§120.3、120.4） | `billing_detail.additional[].model` |
 
 - **模型位置**：`Converter` 加一个可选接口 `ModelLocator { ModelPath() string }`。生图转换器返回 `tools.0.model`；`addRoute` 在 `conv` 实现了它时用它作路由的 `modelPath`（代替上游端点的 `model`），`upstreamBody` 的映射因此写到工具里，顶层的驱动模型不被覆盖。chat 等现有转换器不实现它，行为不变。
 - **上报的上游模型**：codex 插件今天用 `pluginsdk.RequestModel`（读请求体顶层 `model`）上报上游模型，生图转换后那是驱动模型。插件在 `meta.client_protocol` 为 `openai.images`、`openai.images_edit` 时不上报（`Model("")`），网关就按用量规则读到的 `model`（应答回显 `response.tools.0.model`）写 `upstream_model`（`forward.go` 已有的取法）。
-- 管理员要做的：给 codex 账号的模型列表加上 `gpt-image-2`（账号模型列表为空的不用；codex 清单的 `defaultModels` 加上它，新账号预填）；给 `gpt-image-2` 录 §118.6 的表达式价格；驱动模型一般已有价格。建议在 codex 账号的“模型的协议限定”里把 `gpt-image-2` 限定到 `openai.images`、`openai.images_edit`，免得 `/v1/responses` 用这个名字打到 codex（上游会报模型不存在）。
+- 管理员要做的：给 codex 账号的模型列表加上 `gpt-image-2`（账号模型列表为空的不用；codex 清单的 `defaultModels` 只加它这一个，新账号预填）；给 `gpt-image-2`（准入、预扣用）和 `gpt-image-2-codex`（实际结算用）都录 §118.6 的表达式价格（后者没有官方价，按 `gpt-image-2` 录）；驱动模型一般已有价格。不要把 2.5 / 2.6 等名字加进 Codex 账号的模型列表：Codex 后端只有 `gpt-image-2-codex`，别的名字只是别名，而且会让客户端以为换了模型。建议在 codex 账号的“模型的协议限定”里把 `gpt-image-2` 限定到 `openai.images`、`openai.images_edit`，免得 `/v1/responses` 用这个名字打到 codex（上游会报模型不存在）。
 
 ### 3.5 用量规则：转换路由按客户端端点声明的规则读
 
@@ -198,13 +200,28 @@
 - 这份规则替代上游 Responses 规则里的 `image_generation` 附加用量（`feat/up-p10`）：转换路由用这份，就不会把生图部分既当主用量又当附加用量计两次。清单检查“同一路径不能被两条规则计两次”照常适用于这份规则内部。
 - `usage.json` 的 `model` 路径 `tools.0.model` 能通过路径检查（`check/usage.go` 的 sjson 探测）。
 
+### 3.5.1 主用量按回显模型结算（`priceByResponseModel`）
+
+所有者 2026-11-18 同意：生图部分按上游实际回显的生图模型取价，不按客户端请求里写的名字——上游对工具里的模型名一律改写成 `gpt-image-2-codex`（1.2.1），按请求名计价时客户端写一个便宜的名字（如 `gpt-image-1-mini`）就能低价拿到同一张图。
+
+- **清单**：`UsageRules` 加 `priceByResponseModel: true`，写在上面那份 `convertedUsage` 里。含义：主用量按规则 `map.model` 读到的模型（这里是回显的 `tools.0.model`）结算。清单校验：写了它的规则，`json` 与每条 `sse` 规则都必须映射 `model`。
+- **两个模型各自在什么时候起作用**：
+  - 请求模型 `gpt-image-2`：调度前，与所有请求一样——分组白名单、账号模型列表、协议绑定、`missing_price_policy` 准入（`reject` 下没价格 403，不调度）、预扣报价都按它。所以它必须有价格（`reject` 时）。
+  - 回显模型 `gpt-image-2-codex`：应答读完、记用量时（与附加用量取价同一时刻）。读到的模型与请求模型（映射后）不同时按它取价，取到的价格代替记录上的价格（`c.rec.Price`）并重新取价格输入（`priceInputsFrom`）；相同或读不到时沿用调度前的价格。
+- **回显模型没有价格时**：**不**沿用 §120.4 的“不计费”——那是给附加部分的，主用量是这条请求的主体，不能变成免费。改为**按调度前准入过的请求模型价格结算**（`gpt-image-2` 一定有价，或策略是 `free`），记录的 `anomalies` 加标记 `response_model_unpriced`，值是回显模型名，核心打一条节流的 WARN（复用 `warnSampler`，与 `additional_unpriced` 同一写法）。取价本身出错、价格的计费类型不适用于端点：与 §120.3 相同，`BillingError`，整条记录不结算。
+- **复用 P10 的部分**（`feat/upstream-plugins` 头 `942e200e8`，`gateway/model_references.go`）：`priceResponseModel` 的取价路径——`Pricer.Resolve(c.priceQuery(model))`（同样按调用者的分组、用户分群和倍率）、`ErrPriceNotConfigured` 的识别、计费类型检查、`priceInputsFrom(rule, c.body)`、`noteUnpriced` 的节流 WARN。要扩展的：一个记录主价格的小函数（`priceMainByResponseModel`，在 `forward` 里紧挨 `recordAdditionalUsage` 调用，WebSocket 不涉及），以及新的异常标记常量 `core.AnomalyResponseModelUnpriced`、`UsageRecord` 上对应的字段。`core.AdditionalUsage.ResponseModel` 这个标志本身不用（它属于附加用量）。价格冻结在记录里（`billing_detail` 的主价格 `price_id` 是回显模型的），重试和对账按冻结的价算（§97.4 不变）。
+- **为什么不把生图部分做成附加用量、主用量置空**：那样能原样复用 P10，但记录的 token 列会是 0，TPM、用量汇总、账号统计都看不到生图 token；不取。
+- **使用记录**：“模型”栏显示客户端请求的 `gpt-image-2`；“上游模型”栏显示回显的 `gpt-image-2-codex`；计费明细里主价格是 `gpt-image-2-codex` 的条目，附加项 `conversation` 是驱动模型的。
+
 ### 3.6 计费
 
 - 一条记录：`protocol = openai.images`（或 `openai.images_edit`）、`upstream_protocol = openai.responses`、`conversion` 的 hops 为 `[openai.images, openai.responses]`；`model = gpt-image-2`，`upstream_model = gpt-image-2-codex`；token 列是生图部分；`billing_detail.additional[]` 有一项 `conversation`（驱动模型）；`total_cost` 是两者之和（§120.3）。
 - 驱动模型没有价格时按 §120.4：`reject` 下对话部分不计、记录标 `additional_unpriced`；`free` 下不计。生图部分照常计。
-- 预扣只按客户端模型估算（§120.5 不变），对话部分在结算时按实际扣。
-- **算例**（`gpt-image-2` 价 `p*5 + cr*1.25 + img*8 + img_o*30 + c*30`；驱动模型价**假设**为 `p*1.25 + cr*0.125 + c*10`，以管理员录的为准；单位美元/百万 token，结果微美元）：
+- 预扣按请求模型（`gpt-image-2`）的价格估算（§120.5 不变）；结算按回显模型的价格和实际读数扣，对话部分同样在结算时按实际扣。
+- **算例**（结算价是 `gpt-image-2-codex` 的，管理员按 `gpt-image-2` 录：`p*5 + cr*1.25 + img*8 + img_o*30 + c*30`；驱动模型价**假设**为 `p*1.25 + cr*0.125 + c*10`，以管理员录的为准；单位美元/百万 token，结果微美元）：
   - 1.2 的请求 1（生成）：生图部分输入 56（全是文字）、输出 343（全是图片）→ `p = 56`、`img_o = 343`、`c = 0` → 56×5 + 343×30 = 280 + 10 290 = **10 570**；对话部分 2235 / 69 → 2235×1.25 + 69×10 = 2 793.75 + 690 = **3 483.75**；合计 14 053.75 微美元 ≈ 0.0141 美元，其中对话占约 25%。
+  - 同一请求，客户端写的是 `gpt-image-1-mini`（它在白名单与模型列表里、有价 `p*2 + cr*0.2 + img*2.5 + img_o*8 + c*8`）：按请求名计价会是 56×2 + 343×8 = 2 856；按回显模型结算仍是 **10 570**。差的就是这次改规则堵上的口子。
+  - 回显模型没有价格时（`reject`）：生图部分按请求模型 `gpt-image-2` 的价结算，仍是 10 570，记录带 `response_model_unpriced = gpt-image-2-codex`。
   - 请求 4（编辑）：生图部分输入 67（文字 51、图片 16）、输出 515 → 51×5 + 16×8 + 515×30 = 255 + 128 + 15 450 = **15 833**；对话 2306 / 56 → 2 882.5 + 560 = **3 442.5**；合计 19 275.5。
 - 对客户端：应答的 `usage` 只是生图部分（3.7），扣费里多出的对话部分在使用记录的计费明细里看得到。
 
@@ -254,19 +271,55 @@
 ### 3.10 协议绑定：管理员要做什么、默认开不开
 
 - 声明了 `adapted` 的端点对该类型是**本平台协议**（`via: adapted`），`protocols` 为 `null`（默认）的 codex 账号升级后**自动开放** `openai.images`、`openai.images_edit`（§110.2 的既定行为）。决定：默认开（第 5 节）。
-- 但实际能被调度还要过模型白名单与价格：账号模型列表里没有 `gpt-image-2`（codex 账号一般预填了对话模型），或 `gpt-image-2` 没有价格（`reject`），请求就不会到 codex。所以管理员要做的三件事是：账号模型列表加 `gpt-image-2`、给它录价、（建议）在“模型的协议限定”里把它限定到两个生图协议。
+- 但实际能被调度还要过模型白名单与价格：账号模型列表里没有 `gpt-image-2`（codex 账号一般预填了对话模型），或 `gpt-image-2` 没有价格（`reject`），请求就不会到 codex。所以管理员要做的是：账号模型列表加 `gpt-image-2`、给 `gpt-image-2` 和 `gpt-image-2-codex` 都录价、（建议）在“模型的协议限定”里把 `gpt-image-2` 限定到两个生图协议。
 - 不想让某个 codex 账号出图：在“本平台协议”里取消这两个协议（`protocols` 指定）。
 - 控制台：“本平台协议”卡里适配的协议已经显示“适配 → responses”（§110.9），账号详情的“可服务的端点”按 `served_protocols` 显示，都不用改；`GET /account-types` 的 `endpoints` 会多出两项 `native: false`。
+
+### 3.11 账号测试按绑定的协议测（新增的包 P6）
+
+所有者问：“测试模型的时候就能根据协议的绑定去调用对应的协议进行深度测试了，是吧？”答：机制已经有了，测试请求没补齐；所有者同意补齐。
+
+**现状**（`feat/upstream-plugins`）：
+- `POST /accounts/:id/test` 只收 `{model}`（可空）。核心（`account/testreq.go` `testProtocols`）把账号对这个模型提供的本平台协议按偏好排好（协议绑定已应用、去掉 WebSocket 与 count_tokens、**只取 `via == native`**），放进 `BuildTestRequestRequest.protocols`；没给模型时用 `defaultTestModel`（账号模型列表第一个，没有就取映射里字母序第一个）。
+- `standard.Type` 有 `Test`、`Tests`，按 `protocols` 选第一个有测试请求的协议（`sdk/pluginsdk/standard/platform.go` `test`）。但预设各只有一个：openai 只有 `ProtocolChat`、anthropic 只有 messages、gemini 只有 generate、typesafe 只有 systemone。只绑了 Responses、Embeddings 或生图协议的模型，会被拿去测 chat，误报不可用。
+- codex 插件 `BuildTestRequest` 固定发一个最小的流式 Responses（`input: "ping"`、`instructions: ""`、`store: false`），不看 `protocols`。
+- 控制台：“测试模型”（`AccountModelTest.vue`）逐个模型调用并带 `model`；批量测试（`useBatchTest.ts`）发 `{}`。
+- `TestResult` 没有“实际用的协议”字段。
+
+**补齐的测试请求**（每个协议用该协议下最小、最便宜的请求体）：
+
+| 预设 / 插件 | 协议 | 测试请求体 |
+|---|---|---|
+| openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） |
+| openai | `openai.embeddings` | `{"model":m,"input":"ping"}` |
+| openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` |
+| gemini | `gemini.stream_generate` | 与 generate 相同的请求体，走流式路径（只绑了流式生成的模型才会用到） |
+| codex | `openai.responses` | 不变 |
+| codex | `openai.images`（经适配） | 插件自己按 3.2 的形状组一个最小生图请求：顶层驱动模型（与清单 `adapted` 里写的同一个，插件内一个常量）、`tools:[{"type":"image_generation","model":m,"output_format":"png","quality":"low"}]`、强制工具、字符串 `input`；发往 Responses，`usage_protocol` 报 `openai.responses`。测试不经网关的转换层，所以由插件自己组 |
+| 各家 | `openai.images_edit` 等编辑协议 | 不测（需要输入图片；生成的测试已覆盖账号与模型） |
+
+**生图测试只在明确指定模型时发**：生图测试会真的出一张图、要花钱（Codex 账号还消耗订阅额度）。
+- 清单的端点加 `test: "explicit"`（`openai.json` 的 `images_generations`，以后别的贵端点同样写；`images_edits` 写 `"never"`）。不写是普通端点。
+- `testProtocols`：请求里**给了** `model`（`requested != ""`，控制台“测试模型”对某一行点测试）时，协议列表包含 `explicit` 的协议；**没给**（批量测试、“测试账号”）时去掉 `explicit` 和 `never` 的协议。`never` 的协议任何时候都去掉。不新加接口参数，沿用 `model` 入参的语义。
+- 没给模型时的默认模型改为：账号模型列表里第一个“去掉这些协议后仍有协议可测”的模型（例如 codex 账号列表里的 `gpt-image-2` 只开了生图协议，就跳过它）；都没有时照旧取第一个。
+- `testProtocols` 同时纳入 `via == adapted` 的协议（排在原生之后），codex 才能被要求测 `openai.images`。跨平台转换的协议仍不纳入（测试不经转换层）。
+- 顺序：模型在 `model_protocols` 里有条目时按**条目里写的协议顺序**，否则按类型端点的顺序。所以要测一个生图模型，管理员把它限定到生图协议（3.4、3.10 本来就建议这样做），列表第一个就是 `openai.images`；没有限定时 openai 预设会先测 chat（照现状），结果里能看到用的协议。
+
+**测试结果显示实际用的协议**：`TestResult` 加 `protocol`（插件回的 `usage_protocol`），`LastTest` 同样加；控制台在测试结果和账号的“最近测试”里显示。codex 的生图测试显示 `openai.responses`（它实际发的协议），并在消息里写“image_generation 工具”。
+
+**已知限制**：测试只读应答的前 8 KiB（`maxTestBody`）。生图应答是一张 base64 图（JSON 约 1.3 MB，流式同样），用量在末尾，所以生图测试的 `usage` 一般为空；状态码与正文前缀足以判断可用。不为此改读取长度。
 
 ## 4. 契约改动、测试、任务拆分
 
 ### 4.1 契约改动清单
 
-- **CONTRACTS**：新增一节（暂编 §121“codex 账号经适配服务 OpenAI 生图”）写 3.1–3.10；§83.3 改为“同平台适配只对 `adapted` 列出的端点”；§110.1 的“本平台协议”定义里同平台适配加这个前提；§118.5 的表改 codex 一行（经适配服务、旧说法“被上游拒绝”删掉）、§118.9 去掉相应的“以后”；§118.10 注明经生图接口转换的请求用 `convertedUsage`、不再有 `image_generation` 附加项；§88.1 的转换对列表。
-- **`sdk/manifest`**：`AccountPlatform.Adapted map[string]AdaptOptions`（`AdaptOptions{Model string}`）、`Endpoint.ConvertedUsage map[string]UsageRules`；`check` 的两组校验（3.1、3.5）。
-- **`sdk/platforms/openai.json`**：两个生图端点加 `convertedUsage`。
+- **CONTRACTS**：新增一节（暂编 §121“codex 账号经适配服务 OpenAI 生图”）写 3.1–3.10（含 3.5.1 的主用量按回显模型结算、新异常标记 `response_model_unpriced`，§25.4 的异常表同步）；新增一节（暂编 §122“账号测试按协议”）写 3.11，§50 的测试接口相应更新；§83.3 改为“同平台适配只对 `adapted` 列出的端点”；§110.1 的“本平台协议”定义里同平台适配加这个前提；§118.5 的表改 codex 一行（经适配服务、旧说法“被上游拒绝”删掉）、§118.9 去掉相应的“以后”；§118.10 注明经生图接口转换的请求用 `convertedUsage`、不再有 `image_generation` 附加项；§88.1 的转换对列表。
+- **`sdk/manifest`**：`AccountPlatform.Adapted map[string]AdaptOptions`（`AdaptOptions{Model string}`）、`Endpoint.ConvertedUsage map[string]UsageRules`、`UsageRules.PriceByResponseModel bool`；`check` 的两组校验（3.1、3.5）。
+- **`sdk/platforms/openai.json`**：两个生图端点加 `convertedUsage`（含 `priceByResponseModel`）；`images_generations` 加 `test: "explicit"`，`images_edits` 加 `test: "never"`。
+- **`sdk/manifest`（P6）**：`Endpoint.Test`（`explicit` / `never`）及校验。
+- **`sdk/pluginsdk/providers`（P6）**：openai 预设加三个 `Tests`，gemini 加流式生成；`TestResult.protocol`、`LastTest.protocol`（CONTRACTS §50 更新）。
 - **CONVERT-MATRIX**：§0 的转换对表加两行（同平台、`good`）；§9.9 逐对要点加生图一对（3.2、3.7 的表）；§5.1 写 `adapted`；§7 使用记录说明 hops。
-- **codex 插件**：清单 `adapted`（三项）、`defaultModels` 加 `gpt-image-2`、描述里写“经核心转换提供 /v1/images/generations、/v1/images/edits”；`BuildUpstream` 在生图客户端协议下不上报上游模型；版本 0.2.0 → 0.3.0，`hostCompat` 提到带本功能的核心；`plugins/released.json`。
+- **codex 插件**：清单 `adapted`（三项）、`defaultModels` 只加 `gpt-image-2`、`BuildTestRequest` 按 `protocols` 选 Responses 或生图测试、描述里写“经核心转换提供 /v1/images/generations、/v1/images/edits”；`BuildUpstream` 在生图客户端协议下不上报上游模型；版本 0.2.0 → 0.3.0，`hostCompat` 提到带本功能的核心；`plugins/released.json`。
 - 不改 proto、Host API、迁移。
 
 ### 4.2 测试计划
@@ -276,6 +329,8 @@
 - **网关**（`gateway/images_test.go` 扩充，用假插件与 mock 上游）：声明 `adapted` 的只流式类型服务非流式与流式生图（上游收到的请求体、`tools[0].model` 是映射后的模型、顶层是驱动模型）；未声明的类型（azure 式、volcengine 式子集）不是候选；原生类型优先；chat 适配改显式后 codex 仍服务 chat，未声明的类型不再适配；记录的 `protocol`/`upstream_protocol`/`model`/`upstream_model`/token 列/附加项/金额；驱动模型无价（`reject`、`free`）；`ClientError` 的状态码与记录；参数覆盖改驱动模型。
 - **账号模块**：`served_protocols` 与 `/account-types` 的 `endpoints` 跟随 `adapted`（`TestServedProtocolsMatchScheduling` 照常对拍）。
 - **codex 插件**：执行测试覆盖生图客户端协议下不上报模型、请求体改写照旧；合规套件不变。
+- **按回显模型结算**：请求名与回显名不同（价格不同）时按回显价结算、预扣按请求价；回显名没有价格时按请求价结算并带 `response_model_unpriced`；回显名与请求名相同、读不到回显时不变；`priceByResponseModel` 的清单校验。
+- **P6 账号测试**：`testProtocols` 在给 / 不给模型时是否包含 `explicit`、`never` 协议，`adapted` 协议纳入，`model_protocols` 条目顺序；默认模型跳过只开生图协议的模型；standard 选中 Responses、Embeddings、生图测试；codex 按 `protocols` 组生图测试请求；`TestResult.protocol`；控制台显示。
 - **e2e**：mock 上游的 Codex Responses 生图应答（流式事件序列取实测），一个用例走 `/v1/images/generations` 非流式与流式、一个走 `/v1/images/edits`。
 - **实测**：在测试实例上部署后，用临时 Key 各发一次 generations（非流式、流式）和 edits，核对出图、记录与金额（部署前需所有者允许）。
 
@@ -288,18 +343,21 @@
 | P3 网关与账号模块 | `planRoutes` 读 `adapted`；转换路由的用量规则与 `modelPath`；`prepareRoute` 的每路由选项；`forwardJSONConverted` 的 `ClientError`；注册表绑定检查；`servedEndpoints`/`typeProtocols` | `gateway/routing.go`、`convert_policy.go`、`forward.go`、`plugin/registry*`、`account/protocols.go`、`account/types.go` | P1、P2 |
 | P4 codex 插件 | 清单三项与默认模型、描述、版本；`BuildUpstream` 不上报模型；测试 | `plugins/codex/manifest.json`、`internal/codex/upstream.go`、`manifest_test.go`、`plugins/released.json` | P1 |
 | P5 测试与验收 | 网关测试、e2e 用例与 mock、测试实例验证 | `gateway/images_test.go`、`next/e2e/*` | P3、P4 |
+| P6 账号测试按协议 | `Endpoint.Test` 与校验；openai / gemini 预设补测试请求；`testProtocols` 的 `explicit`/`never`、`adapted`、条目顺序与默认模型；`TestResult.protocol`、`LastTest.protocol`；控制台显示协议；codex `BuildTestRequest` 的生图测试 | `sdk/manifest/*`、`sdk/platforms/openai.json`、`sdk/pluginsdk/providers/{openai,gemini}/preset.go`、`server/internal/account/testreq.go`、`handlers.go`、`web/src/views/accounts/AccountModelTest.vue` 等、`plugins/codex/internal/codex/upstream.go` | 预设与核心部分不依赖生图转换，可以**先做**（立即修好“只绑 Responses / Embeddings 的模型误报不可用”）；`adapted` 协议纳入与 codex 的生图测试依赖 P1、P3（`adapted` 的定义与 `served_protocols` 的 `via`），和 P4 合在同一个 codex 版本里发 |
 
 ## 5. 替所有者做的决定
 
 1. **走核心转换（方案 a），不走插件改写（b）**：转发 V2 下插件改不了应答，(b) 最终也要在核心做应答转换。
 2. **同平台适配改为账号类型显式声明（`adapted`），chat 适配一并改**：否则登记生图转换后 azure、volcengine 会自动成为生图候选并在上游失败；一条规则比“chat 自动、生图要声明”两条好；不留隐式适配的兼容。
 3. **对话模型由账号类型在清单里声明（codex 为 `gpt-6-luna`），账号层面用参数覆盖改**：它是上游特有的知识，客户端不该看到；不为它加界面。
-4. **主用量是生图部分、按客户端请求的生图模型计价**：客户端调的是生图接口、选的是生图模型，白名单与价格准入都按它；上游回显的 `gpt-image-2-codex` 只记在 `upstream_model`。
+4. **主用量是生图部分、按上游回显的生图模型结算**（2026-11-18 所有者同意，取代原来的“按客户端请求的生图模型计价”）：上游对任何名字都按 `gpt-image-2-codex` 出图，按请求名计价会被便宜名字钻空子；请求名仍管调度、白名单、准入和预扣。回显模型没有价格时按请求模型的价格结算并标记 `response_model_unpriced`，不变成免费。
 5. **对话部分照实计费，作为附加用量按驱动模型计价**：上游报了这些 token，就照上游的数计（“上游返回什么就是什么”）；没有价格时按 §120.4 不计并标记。
 6. **转换路由的用量规则由客户端端点声明（`convertedUsage`）**：生图接口怎么计费是生图端点的语义，不该由上游 Responses 端点的规则决定；不声明的转换（chat 等）不变。
 7. **`n > 1` 拒绝（400）**：工具没有 `n`，靠提示词让模型多次调用不保证张数（请求 7 虽然给了两张），且对话开销翻倍；与 chat 转换拒绝 `n > 1` 一致。
 8. **`size`、`quality`、`background` 同时写进工具参数和一句 `instructions`**：实测 Codex 后端只按 `instructions` 定尺寸（`quality` 写哪里都不生效，仍写进去，以后上游支持了就生效）；对守参数的上游是无害的重复。
-15. **客户端可以用任何生图模型名调 Codex 账号，不按名字拒绝**：上游对工具里的模型名一律改写成 `gpt-image-2-codex` 出图；准入和计价照常按客户端写的名字（第 1.2.1 节）。哪些名字放给 Codex 账号，由管理员用账号模型列表控制。
+15. **Codex 账号的生图入口名只有 `gpt-image-2`**（2026-11-18 所有者同意）：Codex 后端只有 `gpt-image-2-codex` 一个生图模型，工具里写别的名字不会换模型（1.2.1）；清单默认模型只加 `gpt-image-2`，管理员不要把 2.5 / 2.6 等名字加进 Codex 账号（加了也只是别名）。
+16. **生图测试只在管理员明确对某个模型点测试时才发，编辑协议不测**：生图测试要花钱、耗订阅额度；用现有 `model` 入参区分“明确测某个模型”和批量测试，不加开关；端点的 `test` 属性标出贵的端点。
+17. **测试顺序按模型在 `model_protocols` 条目里写的协议顺序**：管理员限定了协议的模型就按他写的测，不限定的照类型端点顺序。
 9. **`response_format: "url"` 拒绝**：上游只给 base64，网关不存图、不发链接。
 10. **其余生图参数原样搬进工具，值不检查**：上游认不认由上游答（如 `tools[0].n` 的 400），核心不复制上游的取值表。
 11. **没有出图时回 502、生图项失败时回 400**：200 加空 `data` 会让客户端以为成功；状态码对应“上游没做到”和“请求被审核拦下”。
