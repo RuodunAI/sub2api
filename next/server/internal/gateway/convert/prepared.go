@@ -6,4 +6,3 @@ type RequestError struct{ Cause error }
 
 func (e *RequestError) Error() string { return e.Cause.Error() }
 func (e *RequestError) Unwrap() error { return e.Cause }
-
