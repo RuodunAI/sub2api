@@ -510,7 +510,7 @@ defineExpose({ validate: form.validate })
 
 ### 测试辅助：`@sub2api/ui/testing`（UI SDK 4.0，开发中）
 
-**只能在 spec（`*.spec.ts` 及只被 spec 引用的测试辅助文件）里引用**：它不在控制台的 import map 里，插件的运行时代码引用它时构建不会报错（预设把 `@sub2api/ui` 的所有子路径都当作外部模块），要到控制台里加载插件时才失败，依赖 `vitest` 和 `@vue/test-utils`。插件工程的 vitest 配置继承控制台 `web/vitest.config.ts` 的别名，自动解析到 `web/packages/ui/src/testing/index.ts`；类型检查要在插件的 `tsconfig.json` `paths` 里加一行（写在 `@sub2api/ui` 之前）：`"@sub2api/ui/testing": ["../../../../web/packages/ui/src/testing/index.ts"]`。
+**只能在 spec（`*.spec.ts` 及只被 spec 引用的测试辅助文件）里引用**：它不在控制台的 import map 里，插件的运行时代码引用它时构建不会报错（预设把 `@sub2api/ui` 的所有子路径都当作外部模块），要到控制台里加载插件时才失败，依赖 `vitest` 和 `@vue/test-utils`。插件工程的 vitest 配置继承控制台 `web/vitest.config.ts` 的别名，自动解析到 `web/packages/ui/src/testing/index.ts`；类型检查时本仓库的插件工程继承的 `web/packages/vite-preset/tsconfig.plugin.json` 已经映射了它；自带 tsconfig 的工程在 `paths` 里加一行（写在 `@sub2api/ui` 之前）：`"@sub2api/ui/testing": ["../../../../web/packages/ui/src/testing/index.ts"]`。
 
 - `fakeHost({ granted?, messages?, plugin?, api? })`：**在 `beforeEach` 里调用**（`beforeEach(() => fakeHost())`），挂载账号表单之前必须调过：表单经 `useHost()` 读控制台（受限设置、权限），没调会抛 “host context not initialised”。它给接下来挂载的组件提供控制台（`provideHost`：只授予 `granted` 里的权限，控制台的翻译返回键本身），返回插件的 host（交给插件自己的 `setHost`：`t` 按 `messages.en` 查，没有 `messages` 时返回键本身；`plugin.key`、`api`）。`messagesT(messages)` 是其中的 `t`（点分键，填 `{name}` 参数）。
 - `mountAccountForm(form, { accountType, stored?, errors? })`：像账号编辑器那样挂载原生账号表单（`<form>` 里，v-model 凭证与 §23.5 的 props；有 `stored` 是编辑这个账号，否则是新建），返回 `{ w, credentials, validate(), saved() }`（`saved()` 是编辑器会保存的 JSON）。
