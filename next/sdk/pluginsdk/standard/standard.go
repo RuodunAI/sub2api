@@ -171,9 +171,11 @@ type Test struct {
 type Balance struct {
 	Requests []BalanceRequest
 	// Read reads the answers, one per request in the same order, into the
-	// result (BalanceFailure and USDMicros help). r holds the account, its
-	// key and base URL. It states the upstream's facts: an answer it cannot
-	// read is an ERROR_TYPE_TRANSIENT result, never an error.
+	// result (BalanceFailure and Micros help). r holds the account, its key
+	// and base URL. It states the upstream's facts: its number as it is,
+	// with the unit it gives if any, never converted (CONTRACTS §52); an
+	// answer it cannot read is an ERROR_TYPE_TRANSIENT result, never an
+	// error.
 	Read func(r *Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult
 }
 

@@ -22,7 +22,7 @@
 | `Type.Balance *Balance` | 账号余额：`Requests`（基础地址上的 GET，按顺序；`BalanceRequest.Auth` nil 用类型的鉴权，`&standard.Auth{}` 不带 Key）和 `Read`（把按顺序的回答读成 `BalanceResult`）。nil 时两个余额调用回 `UNIMPLEMENTED`；回答数与请求数不符时库直接给 TRANSIENT，`Read` 可以按下标取 |
 | `Merge(id, spec, parts...) Type` | 一个类型服务几份预设的路由，见例子四 |
 | `BalanceFailure(*BalanceAnswer) *BalanceResult` | 不是成功的回答的结果：传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED，信息带状态码和回答体开头；2xx 返回 nil |
-| `USDMicros(units, perUSD float64) int64` | 上游自己的额度单位（`perUSD` 个是 1 美元）折成微单位（四舍五入）；`perUSD` 为 1 就是把金额本身折成微单位 |
+| `Micros(number string) (int64, bool)` | 上游答的十进制数（`"7.25"`、`"1250000"`、`"-1"`；gjson 对 JSON 数字的 `String()` 就是）换成百万分之一的整数（`BalanceResult.amount_micros`）：同一个数换个写法，**不是换算**。第六位小数之内精确，第七位四舍五入（远离零）；不是普通十进制数（含指数写法、空串）或超出 int64（约 9.2 万亿）时第二个值为 false。余额是上游的数字本身，单位是上游给的原文（没有就空），不做任何单位、汇率换算（CONTRACTS §52） |
 
 ## 一次请求怎么构造
 
@@ -274,10 +274,9 @@ func APIKey() standard.Type {
 	t := standard.Merge("apikey", spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
 	t.Balance = &standard.Balance{
 		Requests: []standard.BalanceRequest{
-			{Path: "/api/usage/token/"},                   // the key's quota, with the key
-			{Path: "/api/status", Auth: &standard.Auth{}}, // the site's unit of account, public: no key
+			{Path: "/api/usage/token/"}, // the key's quota, with the key
 		},
-		Read: readBalance, // standard.BalanceFailure for each answer, then the site's fields, standard.USDMicros
+		Read: readBalance, // standard.BalanceFailure, then the site's number as it is, standard.Micros
 	}
 	return t
 }
@@ -290,7 +289,7 @@ func APIKey() standard.Type {
 - `spec` 换掉各份的凭证规则。
 - 两份有同一个协议、某份有 `FilterFields`（合并后会作用到所有协议）时 panic。
 
-Sub2API 一样，只是余额是一个请求（`{Path: "/v1/usage"}`），不合 TypeSafe。读法（站点的字段）留在各插件里，不进本库。
+Sub2API 一样，只是余额读 `{Path: "/v1/usage"}`，单位取应答的 `unit`（没有就不带），不合 TypeSafe。New API 的额度点数不带单位。读法（站点的字段）留在各插件里，不进本库。
 
 一个插件的类型服务别的插件声明的平台（New API 服务 TypeSafe 的 `typesafe` 平台）时，清单的 `platforms` 只列平台 id；平台定义只在 `providers/typesafe.Platform()`，TypeSafe 插件的清单测试断言自己清单里的平台与它相同，New API 的一致性测试把它交给 `conformance.Plugin.Platforms`。
 

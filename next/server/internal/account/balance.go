@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strconv"
 	"time"
 
@@ -36,15 +35,13 @@ const (
 	balanceQueryTimeout = 20 * time.Second
 )
 
-var (
-	errBalanceUnimplemented = errors.New("balance query is not implemented")
-	currencyCode            = regexp.MustCompile(`^[A-Z]{3}$`)
-)
+var errBalanceUnimplemented = errors.New("balance query is not implemented")
 
 // BalanceView is the API view of an account's balance (CONTRACTS §52.5).
-// Amount and Currency are those of the last successful read, absent before
-// one or when Unlimited; Error is the last failed read, cleared by the next
-// successful one.
+// Amount and Currency are the upstream's number and unit (as it gave them,
+// never converted; no unit when it gave none) of the last successful read,
+// absent before one or when Unlimited; Error is the last failed read,
+// cleared by the next successful one.
 type BalanceView struct {
 	Supported bool       `json:"supported"`
 	Amount    string     `json:"amount,omitempty"`
@@ -190,8 +187,8 @@ func (s *Service) runBalanceQuery(ctx context.Context, bt core.AccountTypeBindin
 	return out.GetResult(), nil
 }
 
-// normalizedBalance writes what the plugin read into snap, or returns the
-// failure to record: the plugin's, or a success without a valid currency.
+// normalizedBalance writes what the plugin read into snap, the amount and
+// the unit as they are, or returns the plugin's failure to record.
 func normalizedBalance(res *pluginv1.BalanceResult, snap *store.BalanceSnapshot) error {
 	if res.GetErrorType() != pluginv1.BalanceResult_ERROR_TYPE_UNSPECIFIED {
 		return queryFailure(res.GetErrorType() == pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED, res.GetErrorMessage(), "balance query failed")
@@ -199,9 +196,6 @@ func normalizedBalance(res *pluginv1.BalanceResult, snap *store.BalanceSnapshot)
 	if res.GetUnlimited() {
 		snap.Unlimited = true
 		return nil
-	}
-	if !currencyCode.MatchString(res.GetCurrency()) {
-		return queryFailure(false, "the plugin gave no valid currency code: "+strconv.Quote(res.GetCurrency()), "")
 	}
 	snap.AmountMicros, snap.Currency = res.GetAmountMicros(), res.GetCurrency()
 	return nil

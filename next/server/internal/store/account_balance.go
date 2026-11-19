@@ -14,9 +14,11 @@ import (
 // BalanceSnapshot is one account_balances row. The JSON form is the one
 // the account service caches in Redis (CONTRACTS §52.4).
 type BalanceSnapshot struct {
-	AccountID    int64  `json:"account_id"`
-	AmountMicros int64  `json:"amount_micros"`
-	Currency     string `json:"currency"`
+	AccountID    int64 `json:"account_id"`
+	AmountMicros int64 `json:"amount_micros"`
+	// Currency is the unit the upstream gave with the amount, as it gave
+	// it ('' for none): not necessarily a currency code (CONTRACTS §52).
+	Currency string `json:"currency"`
 	// Unlimited: the upstream reports no limit; amount and currency unset.
 	Unlimited bool `json:"unlimited"`
 	// UpdatedAt is the last successful read, nil before the first.

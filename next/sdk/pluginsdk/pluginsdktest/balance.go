@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -13,9 +12,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
-
-// currency is the form of BalanceResult.currency the host accepts.
-var currency = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // Balance makes one balance query of account the way the host does
 // (CONTRACTS §52): BuildBalanceRequest, then every request's URL checked
@@ -27,12 +23,12 @@ var currency = regexp.MustCompile(`^[A-Z]{3}$`)
 // ParseBalanceResponse with the answers in the same order.
 //
 // The error is the plugin's (UNIMPLEMENTED for an account type without a
-// balance), FAILED_PRECONDITION for an answer without requests or a result
-// the host records as a transient error (a success without unlimited and
-// without an ISO 4217 code), or PERMISSION_DENIED for a request the host
-// refuses to send: then answer is never called and nothing is parsed. The
-// SSRF policy and the account's proxy are not simulated. A request's
-// method defaults to GET, as on the host.
+// balance), FAILED_PRECONDITION for an answer without requests, or
+// PERMISSION_DENIED for a request the host refuses to send: then answer is
+// never called and nothing is parsed. The result is the plugin's as the
+// host stores it: the unit (currency) is whatever the plugin gives, empty
+// included. The SSRF policy and the account's proxy are not simulated. A
+// request's method defaults to GET, as on the host.
 func (h *Harness) Balance(ctx context.Context, account *pluginv1.Account, answer func(*pluginv1.BalanceRequest) *pluginv1.BalanceAnswer) (*pluginv1.BalanceResult, error) {
 	built, err := h.Platform.BuildBalanceRequest(ctx, &pluginv1.BuildBalanceRequestRequest{Account: account})
 	if err != nil {
@@ -61,11 +57,7 @@ func (h *Harness) Balance(ctx context.Context, account *pluginv1.Account, answer
 	if err != nil {
 		return nil, err
 	}
-	res := parsed.GetResult()
-	if res.GetErrorType() == pluginv1.BalanceResult_ERROR_TYPE_UNSPECIFIED && !res.GetUnlimited() && !currency.MatchString(res.GetCurrency()) {
-		return res, status.Errorf(codes.FailedPrecondition, "a balance without an ISO 4217 currency (%q): the host records it as a transient error", res.GetCurrency())
-	}
-	return res, nil
+	return parsed.GetResult(), nil
 }
 
 // admitBalance is the host's check of a balance request before it sends

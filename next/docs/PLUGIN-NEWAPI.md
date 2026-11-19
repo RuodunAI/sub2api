@@ -1,7 +1,7 @@
 # newapi 插件：New API 站点的 API Key
 
 > 状态：2026-11-18 按分支 `feat/up-p5` 的代码写成，**未发布**（插件 0.1.0，需核心 ≥0.1.304）。只用单元测试、合规套件和 openai / anthropic / gemini 三份冻结黄金样例验证过，**没有对真实 New API 站点验证**；站点的接口形状来自 New API 的官方文档与源码行为（只参考行为，不含它的代码）。
-> 设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.5.1、3.5.2、3.6、3.7 与 D6、D7、D11–D15、D20；写法是 SDK 的 `standard.Merge`（`sdk/pluginsdk/standard/README.md` 例子四）。
+> 设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.5.1、3.5.2、3.6、3.7 与 D7、D11–D15、D20（D3、D6 已由所有者改为不做任何换算，见第 4 节与 CONTRACTS §52）；写法是 SDK 的 `standard.Merge`（`sdk/pluginsdk/standard/README.md` 例子四）。
 
 ## 1. 它做什么
 
@@ -37,22 +37,21 @@
 
 ## 4. 余额
 
-两个请求，都在账号的 `base_url` 上（每 600 秒定时刷新一次，控制台可随时手动刷新）：
+**余额就是站点返回的额度数字本身，不折算、不带单位。** 2026-11-18 所有者："不要去折算，上游返回多少我们就是多少，我们不要做任何折算，就算数字不对也不管，汇率不对也不管。"（CONTRACTS §52；推翻了设计 D3"折成美元"、D6"用 `/api/status` 的 `quota_per_unit` 换算"。）
 
-1. `GET /api/usage/token/`（末尾带斜杠），带 `Authorization: Bearer <Key>`：令牌的额度（站点原始额度单位）。令牌过期或用尽也能查。
-2. `GET /api/status`，**不带 Key**（公开接口）：`data.quota_per_unit`，多少额度单位折 1 美元。
+一个请求，在账号的 `base_url` 上（每 600 秒定时刷新一次，控制台可随时手动刷新）：`GET /api/usage/token/`（末尾带斜杠），带 `Authorization: Bearer <Key>`：令牌的额度，站点自己的额度点数。令牌过期或用尽也能查。这个接口不返回单位，所以余额没有单位。
 
 | 情况 | 显示 |
 |---|---|
-| 令牌限额 | `total_available ÷ quota_per_unit` 美元；站点同时给了用户额度（`user_quota.total_available`）时取两者较小 |
-| 令牌不限额，站点给了用户额度 | 用户额度折成美元 |
+| 令牌限额 | `total_available` 原样（如 `1250000` 显示 `1,250,000`）；站点同时给了用户额度（`user_quota.total_available`）时取两者较小——这是在两个上游数字里选一个，不是换算 |
+| 令牌不限额，站点给了用户额度 | 用户额度原样 |
 | 令牌不限额，站点没给用户额度 | **不限**（D7）：令牌这一层确实不限，但用户自己的余额可能已经不多 |
 | `/api/usage/token/` 回 401 / 403 | 认证被拒 |
 | 应答 `code` 不为真 | 暂时失败，信息带站点的 `message` |
-| `/api/status` 读不到正数的 `quota_per_unit` | 暂时失败"无法读取站点的额度换算比例"——**不按 New API 的默认值 500000 猜**（D6），猜错会差几个数量级 |
+| 额度不是普通十进制数，或大到百万分之一放不进 int64（约 9.2 万亿） | 暂时失败"额度不是可读的数字" |
 | 传输错误、429、5xx、其它非 2xx | 暂时失败 |
 
-- 币种一律 `USD`：站点"额度显示为人民币 / token"只是它自己的显示设置，不影响这里。额度为负（透支）时显示负数。
+- 站点的"额度显示为美元 / 人民币 / token"只是它自己控制台的显示设置，这个接口始终给额度点数；本平台不读 `/api/status`，不知道也不猜多少点是一美元。额度为负（透支）时显示负数。
 - 余额只显示，不停用账号、不影响调度、不告警（D1）。
 - 要看到用户余额：在站点上给这个令牌开启"允许查询用户额度"（新建令牌默认开，旧令牌默认关）。
 

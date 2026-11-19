@@ -5,9 +5,10 @@ import { SBadge, SHint, SLink } from '@sub2api/ui'
 import type { AccountBalance } from '@/api/types'
 import { formatBalance, formatRelative } from '@/utils/format'
 
-// The balance of an account (CONTRACTS §52.6): never read yet, an amount, an
-// unlimited key, or a failed read (the last amount kept, marked stale). It is
-// only shown: no thresholds, no colours by amount.
+// The balance of an account (CONTRACTS §52.6): never read yet, an amount (the
+// upstream's number and unit as they are, never converted), an unlimited key,
+// or a failed read (the last amount kept, marked stale). It is only shown: no
+// thresholds, no colours by amount.
 
 const { t } = useI18n()
 
@@ -34,12 +35,12 @@ const failure = computed(() => {
       <span class="text-fg-subtle">{{ t('accounts.balance.label') }}</span>
       <span v-if="balance.unlimited" class="font-semibold" :title="t('accounts.balance.unlimitedHint')" data-testid="balance-value">{{ t('accounts.balance.unlimited') }}</span>
       <span
-        v-else-if="hasAmount"
+        v-else-if="balance.amount !== undefined"
         class="font-mono font-semibold tabular-nums"
         :class="{ 'text-fg-muted': failure }"
-        :title="failure ? t('accounts.balance.staleHint') : undefined"
+        :title="failure ? t('accounts.balance.staleHint') : t('accounts.balance.amountHint')"
         data-testid="balance-value"
-      >{{ formatBalance(balance.amount, balance.currency ?? '') }}</span>
+      >{{ formatBalance(balance.amount, balance.currency) }}</span>
       <span v-else-if="!failure" class="text-fg-muted" data-testid="balance-value">{{ t('accounts.balance.unread') }}</span>
     </div>
     <div v-if="failure" class="flex items-center justify-between gap-2">

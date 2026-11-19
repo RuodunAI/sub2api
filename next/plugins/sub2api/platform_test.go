@@ -159,7 +159,9 @@ func TestModels(t *testing.T) {
 const usageURL = site + "/v1/usage"
 
 // TestBalance: one GET /v1/usage with the key, read the same way for the
-// three kinds of key of the legacy release and the next release's answer.
+// three kinds of key of the legacy release and the next release's answer:
+// the number and the unit as the site gives them, none without unit, never
+// converted (CONTRACTS §52).
 func TestBalance(t *testing.T) {
 	h := pluginsdktest.Start(t, platform, pluginsdktest.Options{Manifest: manifestJSON})
 	transient := pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT
@@ -175,13 +177,16 @@ func TestBalance(t *testing.T) {
 		"legacy, the wallet":                    {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":42.125,"unit":"USD","balance":42.125}`, &pluginv1.BalanceResult{AmountMicros: 42125000, Currency: "USD"}},
 		"next": {`{"mode":"quota_limited","isValid":true,"status":"active","planName":"","remaining":0.5,"unit":"USD","balance":20,` +
 			`"quota":{"limit":1,"used":0.5,"remaining":0.5,"unit":"USD"},"rate_limits":[{"type":"rpm","window":"1m","limit":60,"used":0,"remaining":60}]}`, &pluginv1.BalanceResult{AmountMicros: 500000, Currency: "USD"}},
-		"balance only":        {`{"balance":3}`, &pluginv1.BalanceResult{AmountMicros: 3000000, Currency: "USD"}},
-		"quota only":          {`{"quota":{"remaining":7.25}}`, &pluginv1.BalanceResult{AmountMicros: 7250000, Currency: "USD"}},
+		"balance only":        {`{"balance":3}`, &pluginv1.BalanceResult{AmountMicros: 3000000}},
+		"quota only":          {`{"quota":{"remaining":7.25}}`, &pluginv1.BalanceResult{AmountMicros: 7250000}},
+		"many decimals":       {`{"remaining":0.1234567,"unit":"USD"}`, &pluginv1.BalanceResult{AmountMicros: 123457, Currency: "USD"}},
+		"a large amount":      {`{"remaining":123456789012.5,"unit":"CNY"}`, &pluginv1.BalanceResult{AmountMicros: 123456789012_500000, Currency: "CNY"}},
+		"any unit":            {`{"remaining":1,"unit":"dollars"}`, &pluginv1.BalanceResult{AmountMicros: 1000000, Currency: "dollars"}},
 		"in CNY":              {`{"isValid":true,"remaining":88.8,"unit":"CNY"}`, &pluginv1.BalanceResult{AmountMicros: 88800000, Currency: "CNY"}},
 		"overdrawn":           {`{"isValid":true,"remaining":-0.25,"unit":"USD"}`, &pluginv1.BalanceResult{AmountMicros: -250000, Currency: "USD"}},
 		"disabled or expired": {`{"mode":"quota_limited","isValid":false,"status":"disabled","remaining":1,"unit":"USD"}`, &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED, ErrorMessage: "the site reports the key disabled or expired / 上游报告此 Key 已停用或过期"}},
 		"no amount":           {`{"mode":"quota_limited","isValid":true,"status":"active"}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "no remaining, balance or quota.remaining in /v1/usage / 应答里没有余额"}},
-		"not a currency":      {`{"remaining":1,"unit":"dollars"}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "unit dollars is not a currency code / unit 不是币种代码"}},
+		"not a number":        {`{"remaining":"plenty","unit":"USD"}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: `amount "\"plenty\"" is not a number in range / 余额不是可读的数字`}},
 	} {
 		var seen []*pluginv1.BalanceRequest
 		got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`/v1"}`), func(r *pluginv1.BalanceRequest) *pluginv1.BalanceAnswer {

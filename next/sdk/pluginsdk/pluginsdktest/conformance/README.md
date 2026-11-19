@@ -92,4 +92,4 @@ Exceptions: []conformance.Exception{{
 - 第 6、7 条比较的是交回的请求，不比较取回（插件按账号缓存令牌是允许的）。第 7 条只能抓到请求随账号变化的复用。
 - 第 11 条没有元信息里的“传输”字段可用（`RequestMeta` 没有这个字段），WebSocket 轮次由用例的 `WebSocket` 标出，插件怎么认出它是插件自己的事（例如按 `meta.endpoint`）。
 - 不检查 `Monitor`，也不检查 `ValidateCredentials`、`ClassifyError`、`BuildTestRequest`、`BuildModelsRequest`（§14.1 第 12 条）和 SigV4（第 13 条）。
-- 第 12 条只用无法读的回答检查失败的一面；能读的回答读成什么（金额、币种、`unlimited`）由插件自己的测试钉住。
+- 第 12 条只用无法读的回答检查失败的一面；能读的回答读成什么（金额、单位、`unlimited`）由插件自己的测试钉住。
