@@ -535,6 +535,7 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 		}
 		payload = req.GetBody()
 	}
+	t.usage.WithRequest(payload)
 	err := s.up.Write(ctx, websocket.MessageText, payload)
 	if err != nil {
 		s.finish(ctx, t, wsOutcome{status: http.StatusBadGateway, errType: errTypeUpstream, msg: "upstream write failed: " + err.Error()})
@@ -924,6 +925,7 @@ func (s *wsSession) finish(ctx context.Context, t *wsTurn, out wsOutcome) {
 	cl := t.cl
 	rec := cl.rec
 	rec.Tokens = t.usage.Tokens()
+	cl.recordAdditionalUsage(ctx, t.usage, s.rt)
 	if len(t.usage.Metrics) > 0 {
 		rec.Metrics = t.usage.Metrics
 	}

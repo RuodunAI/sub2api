@@ -283,13 +283,16 @@ type UsageRecord struct {
 }
 
 // AdditionalUsage is an independently metered component, excluding the main
-// response counters. The gateway must authorize its model before pricing it.
+// response counters. The gateway must authorize its model before pricing it,
+// unless ResponseModel: the response (or the request) named a model nobody
+// admitted, which the gateway prices as it records it (CONTRACTS §120).
 type AdditionalUsage struct {
 	Metrics        map[string]any `json:",omitempty"`
 	Kind           string
 	Model          string
 	UsageSemantics string
 	Tokens         UsageTokens
+	ResponseModel  bool `json:",omitempty"`
 }
 
 // PricedUsage freezes every price input needed for a settlement retry.
