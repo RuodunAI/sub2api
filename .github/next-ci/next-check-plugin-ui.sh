@@ -27,17 +27,20 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
+# Runs the steps in order and stops at the first failing one, naming it. The
+# steps are chained explicitly: set -e has no effect inside the condition of
+# the caller's if.
+check() {
+  cd "$1" || return
+  for step in 'npm ci --no-audit --no-fund' 'npm run typecheck' 'npm test' 'npm run build'; do
+    $step || { echo "::error::$1: $step failed" >&2; return 1; }
+  done
+}
+
 failed=''
 for dir in "$@"; do
   echo "::group::$dir"
-  if (
-    set -e
-    cd "$dir"
-    npm ci --no-audit --no-fund
-    npm run typecheck
-    npm test
-    npm run build
-  ); then
+  if (check "$dir"); then
     echo "$dir: ok"
   else
     failed="$failed $dir"
