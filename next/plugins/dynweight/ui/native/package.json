@@ -6,6 +6,7 @@
   "description": "Native console UI of the dynamic weight plugin (built to dist/entry.js, packed as ui/native/).",
   "scripts": {
     "build": "vite build",
+    "typecheck": "node ../../../../web/node_modules/vue-tsc/bin/vue-tsc.js -p tsconfig.json --noEmit",
     "test": "node ../../../../web/node_modules/vitest/vitest.mjs run --root . --config ../../../../web/vitest.config.ts"
   },
   "devDependencies": {

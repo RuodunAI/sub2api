@@ -53,7 +53,9 @@ using the dedicated Compose project `sub2api-next-e2e` by default.
   signed with a **dev key** created on the first build and kept in the BuildKit
   cache mount `sub2api-next-devkeys` (stable across rebuilds, never in the
   image). `tools/sub2api-plugin/scripts/build-demo.sh` is used when present;
-  otherwise every `plugins/*/manifest.json` is packed generically.
+  otherwise every `plugins/*/manifest.json` is packed generically. Either way
+  a plugin whose manifest declares a native UI without `ui/native/dist/entry.js`
+  fails the build (the forms and settings pages exist only as that UI).
 - Runtime `debian:trixie-slim`, user `sub2api` (1000), `/usr/local/bin/sub2api`,
   `/usr/local/bin/sub2api-plugin`, `/opt/sub2api/market/`, data in `/var/lib/sub2api`.
 - The entrypoint derives `SUB2API_PLUGIN_OFFICIAL_KEYS=sub2api-dev=<pub>` and

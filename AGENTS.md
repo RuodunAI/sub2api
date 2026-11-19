@@ -168,7 +168,9 @@ npm run lint        # eslint .
 npm run build       # 产物写到 server/web/dist，提交前还原 index.html
 ```
 
-CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。插件的原生界面在 `plugins/<name>/ui/native` 下各自 `npm ci && npm run build`。
+CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。
+
+插件的原生界面（`plugins/<name>/ui/native`，每个是独立的 npm 工程，脚本统一为 `typecheck`、`test`、`build`，前两个借用控制台的 `node_modules`）：先在 `next/web` 下 `npm ci`，再在仓库根执行 `sh .github/next-ci/next-check-plugin-ui.sh`（不带参数检查全部工程，也可以只传一个目录），它对每个工程跑 `npm ci`、`typecheck`、`test`、`build`，CI 的 `plugin UIs` 任务就是它。镜像构建和发布打包要求每个声明了 native 界面的插件都有 `ui/native/dist/entry.js`，缺了直接失败，先跑 `deploy/docker/build-ui.sh`。
 
 ## Git 流程
 
