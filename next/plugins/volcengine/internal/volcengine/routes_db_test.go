@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -514,13 +515,15 @@ func TestFieldValidation(t *testing.T) {
 		params        map[string]string
 		body          any
 	}{
-		{"POST", "/asset-groups", nil, map[string]any{"name": "x"}},              // no account
-		{"POST", "/asset-groups", nil, map[string]any{"account_id": 1}},          // no name
-		{"POST", "/assets", nil, map[string]any{"group_id": 1}},                  // no url
-		{"POST", "/assets", nil, map[string]any{"url": "https://x.invalid/a"}},   // no group
-		{"PATCH", "/assets/:id", map[string]string{"id": "1"}, map[string]any{}}, // nothing to change
-		{"GET", "/asset-groups/:id", map[string]string{"id": "abc"}, nil},        // not an id
-		{"DELETE", "/assets/:id", map[string]string{"id": "0"}, nil},             // not an id
+		{"POST", "/asset-groups", nil, map[string]any{"name": "x"}},                                       // no account
+		{"POST", "/asset-groups", nil, map[string]any{"account_id": 1}},                                   // no name
+		{"POST", "/assets", nil, map[string]any{"group_id": 1}},                                           // no url
+		{"POST", "/assets", nil, map[string]any{"url": "https://x.invalid/a"}},                            // no group
+		{"POST", "/asset-groups", nil, map[string]any{"account_id": 1, "name": strings.Repeat("n", 129)}}, // name too long
+		{"POST", "/assets", nil, map[string]any{"group_id": 1, "url": "ftp://x.invalid/a"}},               // not an http(s) or tos URL
+		{"PATCH", "/assets/:id", map[string]string{"id": "1"}, map[string]any{}},                          // nothing to change
+		{"GET", "/asset-groups/:id", map[string]string{"id": "abc"}, nil},                                 // not an id
+		{"DELETE", "/assets/:id", map[string]string{"id": "0"}, nil},                                      // not an id
 	}
 	for _, tc := range cases {
 		resp := do(t, p, tc.method, tc.route, tc.params, nil, tc.body)

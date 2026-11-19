@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -59,11 +58,8 @@ func TestManifest(t *testing.T) {
 			t.Fatalf("host %s compatibility: %v %v", version, got, err)
 		}
 	}
-	// Stages one to three: one account type, the plugin's own volcengine
-	// platform, and the asset library (schema + admin routes + host-rendered
-	// pages). Still no jobs, no hooks and no scheduler extension - and no
-	// hostUICompat, because nothing here is a native page.
-	if len(m.Jobs) != 0 || len(m.Hooks) != 0 || m.Scheduler != nil || m.HostUICompat != "" {
+	// No jobs, no hooks and no scheduler extension.
+	if len(m.Jobs) != 0 || len(m.Hooks) != 0 || m.Scheduler != nil {
 		t.Fatalf("stage three declares no jobs, hooks or scheduler extension: %+v", m)
 	}
 	if m.Database == nil || m.Database.Schema != "plg_volcengine" || m.Database.Migrations != "migrations/" {
@@ -185,89 +181,21 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("relay guardedSettings = %+v, want none: a relay's address cannot be an allow-list", relay.GuardedSettings)
 	}
 
-	// The form's length limit and the plugin's must agree. They are written in
-	// two languages and nothing links them, so a change to one alone means the
-	// form accepts a value the plugin then refuses on every request.
-	var limits struct {
-		Properties map[string]struct {
-			MaxLength int `json:"maxLength"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(mustJSONFile(t, relay.Form.Schema), &limits); err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range []string{volcengine.FieldAPIPrefix, volcengine.FieldVideoAPIPrefix} {
-		if got := limits.Properties[f].MaxLength; got != volcengine.MaxPrefixLen {
-			t.Errorf("form %s maxLength = %d, plugin MaxPrefixLen = %d", f, got, volcengine.MaxPrefixLen)
-		}
-	}
-
-	// Both forms: the fields each type offers, and what each one requires.
+	// Both forms are native code (ui/native/src): the components entry.ts
+	// registers. What a field may hold is checked by ValidateCredentials
+	// (internal/volcengine/form_constraints_test.go); in particular neither
+	// half of the AK/SK pair is required, since an account without an asset
+	// library is legal.
 	for _, c := range []struct {
-		at       manifest.AccountType
-		required []string
-		fields   []string
-		absent   []string
-	}{
-		{official, []string{"api_key"},
-			[]string{"api_key", "base_url", volcengine.FieldAccessKey, volcengine.FieldSecretKey,
-				volcengine.FieldAssetBaseURL, volcengine.FieldAssetRegion},
-			[]string{volcengine.FieldAPIPrefix, volcengine.FieldVideoAPIPrefix, "video_endpoint", "asset_endpoint", "model_mapping"}},
-		// base_url is required on the relay form because relaySpec has no
-		// default: falling back to Ark's address would send a relay's key to
-		// Ark, which answers 401 - an error that says nothing about the
-		// missing setting.
-		{relay, []string{"api_key", "base_url"},
-			[]string{"api_key", "base_url", "video_endpoint", "asset_endpoint", volcengine.FieldAPIPrefix, volcengine.FieldVideoAPIPrefix,
-				volcengine.FieldAccessKey, volcengine.FieldSecretKey,
-				volcengine.FieldAssetBaseURL, volcengine.FieldAssetRegion},
-			[]string{"model_mapping"}},
-	} {
-		var schema struct {
-			Required   []string                   `json:"required"`
-			Properties map[string]json.RawMessage `json:"properties"`
+		at        manifest.AccountType
+		component string
+	}{{official, "VolcengineKeyForm"}, {relay, "VolcengineRelayForm"}} {
+		if c.at.Form != (manifest.Form{Mode: "native", Component: c.component}) {
+			t.Errorf("%s form = %+v, want the native %s", c.at.ID, c.at.Form, c.component)
 		}
-		if err := json.Unmarshal(mustJSONFile(t, c.at.Form.Schema), &schema); err != nil {
-			t.Fatal(err)
-		}
-		mustJSONFile(t, c.at.Form.UISchema)
-		if !slices.Equal(schema.Required, c.required) {
-			t.Fatalf("%s form: required %v, want %v", c.at.ID, schema.Required, c.required)
-		}
-		for _, f := range c.fields {
-			if _, ok := schema.Properties[f]; !ok {
-				t.Fatalf("%s form schema has no %s property", c.at.ID, f)
-			}
-		}
-		for _, f := range c.absent {
-			if _, bad := schema.Properties[f]; bad {
-				t.Fatalf("%s form schema must not declare %s", c.at.ID, f)
-			}
-		}
-		// The asset library is opt-in per account: neither half of the AK/SK
-		// pair may be a required form field, or every account would suddenly
-		// need one.
-		for _, f := range []string{volcengine.FieldAccessKey, volcengine.FieldSecretKey} {
-			if slices.Contains(schema.Required, f) {
-				t.Fatalf("%s: %s must not be required: an account without an asset library is legal", c.at.ID, f)
-			}
-		}
-		// ui:order must list every property, or a field the form offers has no
-		// defined position.
-		var ui struct {
-			Order []string `json:"ui:order"`
-		}
-		if err := json.Unmarshal(mustJSONFile(t, c.at.Form.UISchema), &ui); err != nil {
-			t.Fatal(err)
-		}
-		for f := range schema.Properties {
-			if !slices.Contains(ui.Order, f) {
-				t.Errorf("%s ui:order does not list %s", c.at.ID, f)
-			}
-		}
-		if len(ui.Order) != len(schema.Properties) {
-			t.Errorf("%s ui:order = %v, but the schema has %d properties", c.at.ID, ui.Order, len(schema.Properties))
-		}
+	}
+	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.HostUICompat != "^3.20" {
+		t.Fatalf("native UI = %+v, hostUICompat %q", m.UI, m.HostUICompat)
 	}
 
 	// Official Ark now serves Messages through its compatibility API. Existing
@@ -406,12 +334,11 @@ func TestManifest(t *testing.T) {
 		perms[p.ID] = p
 	}
 	// Every permission is what the administrator sees on the consent
-	// screen. Notably absent: ui.native (Critical) - the asset pages are
-	// rendered by the host from the manifest instead - and net: the asset
-	// library's requests are sent by the host (SendAccountRequest), the
-	// plugin opens no connection.
+	// screen. ui.native (Critical) is the plugin's own console code (the
+	// account forms). Notably absent: net - the asset library's requests are
+	// sent by the host (SendAccountRequest), the plugin opens no connection.
 	wantPerms := []string{
-		"platform.register", "gateway.endpoint", "db.schema", "routes.admin", "ui.menu",
+		"platform.register", "gateway.endpoint", "db.schema", "routes.admin", "ui.menu", "ui.native",
 	}
 	if len(perms) != len(wantPerms) {
 		t.Fatalf("host permissions = %v, want %v", perms, wantPerms)
@@ -420,9 +347,6 @@ func TestManifest(t *testing.T) {
 		if _, ok := perms[id]; !ok {
 			t.Fatalf("missing host permission %q", id)
 		}
-	}
-	if _, bad := perms["ui.native"]; bad {
-		t.Error("the asset library uses host-rendered pages; ui.native (Critical) must not be requested")
 	}
 	// The core sends the asset library's requests only to hosts the
 	// manifest allows: the default asset endpoint has to be an external
@@ -451,8 +375,8 @@ func hostOf(t *testing.T, raw string) string {
 
 // TestAssetRoutesAndPages pins the asset library's declared surface: every
 // route is an admin route behind one of the plugin's two permissions and
-// account:read (reads) or account:update (writes), and every host-rendered
-// page reads a route that actually exists. Only the routes naming an account
+// account:read (reads) or account:update (writes), and the two native pages
+// and the routes they use exist. Only the routes naming an account
 // directly pass the own level; the others reach accounts through rows of
 // this plugin, which the core cannot see.
 func TestAssetRoutesAndPages(t *testing.T) {
@@ -490,62 +414,25 @@ func TestAssetRoutesAndPages(t *testing.T) {
 		}
 		declared[r.Method+" "+r.Path] = true
 	}
-	if m.UI == nil || len(m.UI.Pages) == 0 {
-		t.Fatal("stage three declares the asset library pages")
+	// The two list pages are native (ui/native/src/pages.ts): the create
+	// dialogs live inside them, so there are no form pages any more.
+	wantPages := map[string]string{"assets": "VolcengineAssetsPage", "asset_groups": "VolcengineAssetGroupsPage"}
+	if m.UI == nil || len(m.UI.Pages) != len(wantPages) {
+		t.Fatalf("pages = %+v, want %v", m.UI, wantPages)
 	}
-	for id, pg := range m.UI.Pages {
-		switch pg.Type {
-		case "table":
-			if pg.Source == "" {
-				t.Fatalf("page %s has no source", id)
-			}
-			if !declared[pg.Source] {
-				t.Errorf("page %s reads %q, which is not a declared route", id, pg.Source)
-			}
-			if len(pg.Columns) == 0 {
-				t.Errorf("page %s has no columns", id)
-			}
-			// Both index tables are searchable, and the name they declare has
-			// to be the one the route reads. The console renders a search box
-			// only for a page that declares one and sends the text under that
-			// name, so a mismatch here is a box that filters nothing while
-			// looking like it does - which is what these two pages shipped
-			// with, and why the front end deleted the box.
-			if pg.Search != volcengine.SearchParam {
-				t.Errorf("page %s declares search %q, but the route reads %q",
-					id, pg.Search, volcengine.SearchParam)
-			}
-			for _, c := range pg.Columns {
-				switch c.Format {
-				case "text", "number", "datetime", "badge", "currency":
-				default:
-					// The console silently falls back to plain text for an
-					// unknown format, so a typo would never be noticed.
-					t.Errorf("page %s column %s: unsupported format %q", id, c.Key, c.Format)
-				}
-				if c.Label["en"] == "" || c.Label["zh"] == "" {
-					t.Errorf("page %s column %s needs an en and zh label", id, c.Key)
-				}
-			}
-		case "form":
-			if !declared[pg.Submit] {
-				t.Errorf("page %s submits to %q, which is not a declared route", id, pg.Submit)
-			}
-			mustJSONFile(t, pg.Schema)
-			// DeclarativeForm loads "<name>.ui.json" next to the schema.
-			mustJSONFile(t, strings.TrimSuffix(pg.Schema, ".schema.json")+".ui.json")
-		default:
-			t.Errorf("page %s type = %q; stage three only uses host-rendered pages", id, pg.Type)
+	for id, component := range wantPages {
+		pg := m.UI.Pages[id]
+		if pg.Type != "native" || pg.Component != component || pg.Title["en"] == "" || pg.Title["zh"] == "" {
+			t.Errorf("page %s = %+v, want the native %s with a title", id, pg, component)
 		}
 	}
-	// Every menu points at a declared page and carries the permission of the
-	// route behind it. The create forms are opened from their tables' "New"
-	// buttons, which need the manage permission.
-	for id, pg := range m.UI.Pages {
-		if pg.Create != nil && (pg.Create.Permission != volcengine.PermAssetsManage || m.UI.Pages[pg.Create.Page].Type != "form") {
-			t.Errorf("page %s create link = %+v", id, pg.Create)
+	// The routes the pages read and post to.
+	for _, r := range []string{"GET /assets", "POST /assets", "GET /asset-groups", "POST /asset-groups"} {
+		if !declared[r] {
+			t.Errorf("route %s is not declared", r)
 		}
 	}
+	// Every menu points at a declared page and carries the read permission.
 	for _, mn := range m.UI.Menus {
 		if _, ok := m.UI.Pages[mn.Page]; !ok {
 			t.Errorf("menu %s points at unknown page %q", mn.ID, mn.Page)
@@ -576,14 +463,7 @@ func TestValidate(t *testing.T) {
 		"manifest.json":                        manifestJSON,
 		"runtimes/linux-amd64/plugin":          []byte("elf"),
 		"runtimes/linux-arm64/plugin":          []byte("elf"),
-		"forms/apikey.schema.json":             mustJSONFile(t, "forms/apikey.schema.json"),
-		"forms/apikey.ui.json":                 mustJSONFile(t, "forms/apikey.ui.json"),
-		"forms/relay.schema.json":              mustJSONFile(t, "forms/relay.schema.json"),
-		"forms/relay.ui.json":                  mustJSONFile(t, "forms/relay.ui.json"),
-		"forms/asset-group.schema.json":        mustJSONFile(t, "forms/asset-group.schema.json"),
-		"forms/asset-group.ui.json":            mustJSONFile(t, "forms/asset-group.ui.json"),
-		"forms/asset.schema.json":              mustJSONFile(t, "forms/asset.schema.json"),
-		"forms/asset.ui.json":                  mustJSONFile(t, "forms/asset.ui.json"),
+		"ui/native/entry.js":                   []byte("export function register() {}"),
 		"migrations/0001_init.sql":             mustFile(t, "migrations/0001_init.sql"),
 		"migrations/0002_video_tasks.sql":      mustFile(t, "migrations/0002_video_tasks.sql"),
 		"migrations/0003_drop_video_tasks.sql": mustFile(t, "migrations/0003_drop_video_tasks.sql"),
@@ -911,15 +791,6 @@ func builtin(t *testing.T) *manifest.Platform {
 	return nil
 }
 
-func mustJSONFile(t *testing.T, p string) []byte {
-	t.Helper()
-	b := mustFile(t, p)
-	if !json.Valid(b) {
-		t.Fatalf("%s is not valid JSON", p)
-	}
-	return b
-}
-
 func mustFile(t *testing.T, p string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(filepath.FromSlash(p))
@@ -944,37 +815,8 @@ func builtinNamed(t *testing.T, id string) *manifest.Platform {
 // New endpoint settings are optional and have no defaults: merely editing an
 // old account must not override its existing video prefix or asset URL.
 func TestEndpointFormsPreserveLegacyAccounts(t *testing.T) {
-	raw := mustJSONFile(t, "forms/relay.schema.json")
-	var schema struct {
-		Properties map[string]struct {
-			Pattern   string          `json:"pattern"`
-			Default   json.RawMessage `json:"default"`
-			MaxLength int             `json:"maxLength"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	for _, field := range []string{"video_endpoint", "asset_endpoint"} {
-		property, ok := schema.Properties[field]
-		if !ok || len(property.Default) != 0 || property.MaxLength != 2048 {
-			t.Fatalf("%s needs bounded optional endpoint without a default", field)
-		}
-		pattern, err := regexp.Compile(property.Pattern)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, value := range []string{"", "/api/v3/contents/generations/tasks", "/api/support/v1/asset", "https://relay.example.com/tasks", "http://relay.example.com/assets"} {
-			if !pattern.MatchString(value) {
-				t.Errorf("%s rejected %q", field, value)
-			}
-		}
-		for _, value := range []string{"//other.example.com/tasks", "relative/path", "https://relay.example.com/tasks?query=1", "https://relay.example.com/tasks#fragment", "/a b"} {
-			if pattern.MatchString(value) {
-				t.Errorf("%s accepted malformed endpoint %q", field, value)
-			}
-		}
-	}
+	// The endpoint fields themselves are checked by ValidateCredentials
+	// (TestRelayFormConstraints): optional, no default, a URL or a path.
 	m := decodeManifest(t)
 	for _, at := range m.AccountTypes {
 		if at.ID == "apikey" && at.Label["zh"] != "字节火山方舟 · 官方通用" || at.ID == "relay" && at.Label["zh"] != "豆包视频" {

@@ -17,6 +17,7 @@
 - `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
 - `GET /plugins` 的 `has_settings` 改为"当前版本的 `ui.settings` 是 schema 或 native 模式"，不再只认 schema 模式；iframe 设置控制台不打开，仍为 false。
 - 清单检查：native 设置要有 `component` 或 `page`。
+- volcengine（仍是未发布的 0.13.0）：两个账号表单和素材库两个页面改为原生代码（`ui/native`，需要宿主权限 `ui.native`），原来的两个“新建”表单页并进列表页的新建弹窗；原表单 schema 的约束由插件 Go 保证，并补上了只有 schema 挡住的几条（URL 与路径前缀里的空白、素材库新建路由的长度和地址格式）。见 `next/docs/PLUGIN-VOLCENGINE-ARK.md` §19。
 
 ### 插件界面只用代码写：云厂商插件的账号表单
 

@@ -1101,3 +1101,9 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 - 素材库读账号改用 `Host.Account`（`HostService.GetAccount`，返回与平台调用相同的 `Account`，含代理；每次一条审计 `plugin.account.read`，审计失败即调用失败；代理拿不到时 `UNAVAILABLE`），`AssetConfigOf` 改为接收 `*pluginv1.Account`。每个请求每个账号仍最多读一次。签名后的请求照旧经 `SendAccountRequest` 由核心经账号代理发出，插件不联网。
 - 测试：`routes_db_test.go` 的假宿主改实现 `Account`；`assets_test.go`、`asset_endpoints_test.go` 改用 `pluginv1.Account`；`manifest_test.go` 的权限列表去掉这两项。e2e AC43 经 mock 的代理读上游素材组。
 
+## 19. 界面只用代码写（DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY，版本仍是未发布的 0.13.0）
+
+- **账号表单是原生代码**（`ui/native`，清单 `form.mode: "native"`、`ui.native.entry`、`hostUICompat: "^3.20"`、宿主权限 `ui.native`）：`apikey` 是 `createApiKeyForm`（`VolcengineKeyForm`；`base_url`、`asset_base_url` 按 `guardedSettings` 只给官方值），`relay` 是自己拼的 `VolcengineRelayForm`（素材库一节；兼容配置一节默认收起，有值或有错时自己展开）。`secret_key` 是可清除的密钥（已存时有“清除已保存的值”）。字段、键名、文案与原 `forms/{apikey,relay}.*.json` 相同，原表单删除。
+- **原 schema 的约束都由 `ValidateCredentials` 保证**（`internal/volcengine/form_constraints_test.go`，每条约束一个反例，写死在测试里）。原来只有 schema 挡住、这次补进 Go 的：`base_url`、`asset_base_url` 里不能有空白（`url.Parse` 接受路径里的空格，规范化后存成转义的地址），`api_prefix`、`video_api_prefix` 里不能有空白（`normalizePrefix`）。
+- **素材库两个页面是原生页**（`VolcengineAssetsPage`、`VolcengineAssetGroupsPage`，`SResourcePage`）：列、格式、`q` 搜索、分页与原 table 页相同；原来的两个 form 页并进各自列表页的“新建”弹窗（需要 `assets:manage`），清单删掉这两个页面和 `forms/asset*.json`。新建成功关弹窗、回第一页刷新；路由的字段错误显示在对应字段、弹窗不关。
+- **素材库新建路由自己校验长度和地址**（`route_checks.go`）：`POST /asset-groups` 的 `name` ≤128、`title` ≤256、`description` ≤1024、`group_type` ≤64；`POST /assets` 的 `name` ≤128、`asset_type` ≤64、`url` ≤2048 且是不含空白的 `http(s)://` 或 `tos://` 地址。原来这些只在控制台的 schema 表单里。

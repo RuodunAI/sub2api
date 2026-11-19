@@ -19,6 +19,7 @@
     }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
   "capabilities": [
     {
       "id": "platform.adapter.v1"
@@ -351,9 +352,8 @@
         "zh": "使用官方方舟 API Key 调用 OpenAI 兼容接口、Anthropic Messages、官方图片与豆包视频。Messages 使用 /api/compatible/v1/messages，暂不支持 count_tokens。选填 AK/SK 可启用官方素材库。"
       },
       "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
+        "mode": "native",
+        "component": "VolcengineKeyForm"
       },
       "sensitiveFields": [
         "api_key",
@@ -459,9 +459,8 @@
         "zh": "自定义 Base URL、视频任务集合端点与素材库端点。API Key 与素材库 AK/SK 分开保存。已有 OpenAI、Anthropic 中转接入保持兼容。"
       },
       "form": {
-        "mode": "schema",
-        "schema": "forms/relay.schema.json",
-        "uiSchema": "forms/relay.ui.json"
+        "mode": "native",
+        "component": "VolcengineRelayForm"
       },
       "sensitiveFields": [
         "api_key",
@@ -698,6 +697,9 @@
     }
   ],
   "ui": {
+    "native": {
+      "entry": "ui/native/entry.js"
+    },
     "sections": [
       {
         "id": "volcengine",
@@ -736,196 +738,20 @@
     ],
     "pages": {
       "assets": {
-        "type": "table",
+        "type": "native",
         "title": {
           "en": "Ark asset library",
           "zh": "方舟素材库"
         },
-        "source": "GET /assets",
-        "search": "q",
-        "create": {
-          "page": "new_asset",
-          "permission": "assets:manage"
-        },
-        "columns": [
-          {
-            "key": "id",
-            "label": {
-              "en": "#",
-              "zh": "#"
-            },
-            "format": "text"
-          },
-          {
-            "key": "account_name",
-            "label": {
-              "en": "Account",
-              "zh": "账号"
-            },
-            "format": "text"
-          },
-          {
-            "key": "group_name",
-            "label": {
-              "en": "Group",
-              "zh": "素材组"
-            },
-            "format": "text"
-          },
-          {
-            "key": "name",
-            "label": {
-              "en": "Name",
-              "zh": "名称"
-            },
-            "format": "text"
-          },
-          {
-            "key": "asset_type",
-            "label": {
-              "en": "Type",
-              "zh": "类型"
-            },
-            "format": "text"
-          },
-          {
-            "key": "status",
-            "label": {
-              "en": "Upstream status",
-              "zh": "上游状态"
-            },
-            "format": "badge"
-          },
-          {
-            "key": "index_status",
-            "label": {
-              "en": "Index",
-              "zh": "索引"
-            },
-            "format": "badge"
-          },
-          {
-            "key": "upstream_id",
-            "label": {
-              "en": "Ark id",
-              "zh": "方舟 id"
-            },
-            "format": "text"
-          },
-          {
-            "key": "updated_at",
-            "label": {
-              "en": "Updated",
-              "zh": "更新时间"
-            },
-            "format": "datetime"
-          }
-        ]
+        "component": "VolcengineAssetsPage"
       },
       "asset_groups": {
-        "type": "table",
+        "type": "native",
         "title": {
           "en": "Ark asset groups",
           "zh": "方舟素材组"
         },
-        "source": "GET /asset-groups",
-        "search": "q",
-        "create": {
-          "page": "new_asset_group",
-          "permission": "assets:manage"
-        },
-        "columns": [
-          {
-            "key": "id",
-            "label": {
-              "en": "#",
-              "zh": "#"
-            },
-            "format": "text"
-          },
-          {
-            "key": "account_name",
-            "label": {
-              "en": "Account",
-              "zh": "账号"
-            },
-            "format": "text"
-          },
-          {
-            "key": "name",
-            "label": {
-              "en": "Name",
-              "zh": "名称"
-            },
-            "format": "text"
-          },
-          {
-            "key": "title",
-            "label": {
-              "en": "Title",
-              "zh": "标题"
-            },
-            "format": "text"
-          },
-          {
-            "key": "group_type",
-            "label": {
-              "en": "Type",
-              "zh": "类型"
-            },
-            "format": "text"
-          },
-          {
-            "key": "asset_count",
-            "label": {
-              "en": "Assets",
-              "zh": "素材数"
-            },
-            "format": "number"
-          },
-          {
-            "key": "index_status",
-            "label": {
-              "en": "Index",
-              "zh": "索引"
-            },
-            "format": "badge"
-          },
-          {
-            "key": "upstream_id",
-            "label": {
-              "en": "Ark id",
-              "zh": "方舟 id"
-            },
-            "format": "text"
-          },
-          {
-            "key": "updated_at",
-            "label": {
-              "en": "Updated",
-              "zh": "更新时间"
-            },
-            "format": "datetime"
-          }
-        ]
-      },
-      "new_asset_group": {
-        "type": "form",
-        "title": {
-          "en": "New asset group",
-          "zh": "新建素材组"
-        },
-        "schema": "forms/asset-group.schema.json",
-        "submit": "POST /asset-groups"
-      },
-      "new_asset": {
-        "type": "form",
-        "title": {
-          "en": "New asset",
-          "zh": "新建素材"
-        },
-        "schema": "forms/asset.schema.json",
-        "submit": "POST /assets"
+        "component": "VolcengineAssetGroupsPage"
       }
     }
   },
@@ -967,8 +793,15 @@
     {
       "id": "ui.menu",
       "reason": {
-        "en": "Add the \"Volcengine Ark\" sidebar group with the asset and asset group pages. These pages are rendered by the console from the manifest (table and form), so the plugin ships no front-end code and does not need ui.native.",
-        "zh": "添加「火山方舟」侧边栏分组与素材、素材组页面。这些页面由控制台按 manifest 渲染（table 与 form），插件不带前端代码，因此不需要 ui.native 权限。"
+        "en": "Add the \"Volcengine Ark\" sidebar group with the asset and asset group pages",
+        "zh": "添加「火山方舟」侧边栏分组与素材、素材组页面"
+      }
+    },
+    {
+      "id": "ui.native",
+      "reason": {
+        "en": "The account forms of the \"Ark API key\" and \"Doubao relay key\" account types (VolcengineKeyForm, VolcengineRelayForm), and the asset and asset group pages with their create dialogs (VolcengineAssetsPage, VolcengineAssetGroupsPage)",
+        "zh": "「方舟 API Key」与「豆包中转 Key」两种账号类型的账号表单（VolcengineKeyForm、VolcengineRelayForm），以及素材、素材组页面和它们的新建弹窗（VolcengineAssetsPage、VolcengineAssetGroupsPage）"
       }
     }
   ],

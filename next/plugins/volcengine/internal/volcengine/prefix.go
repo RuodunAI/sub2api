@@ -183,6 +183,9 @@ func normalizePrefix(raw string) (string, error) {
 	if strings.ContainsAny(p, "?#") {
 		return "", fmt.Errorf("must not contain a query or fragment")
 	}
+	if hasSpace(p) {
+		return "", fmt.Errorf("must not contain whitespace")
+	}
 	for _, seg := range strings.Split(p, "/") {
 		if seg == ".." {
 			return "", fmt.Errorf("must not contain a %q segment", "..")
