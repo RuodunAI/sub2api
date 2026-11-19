@@ -282,7 +282,7 @@ func (s *Service) runQuotaQuery(ctx context.Context, bt core.AccountTypeBinding,
 	// not called.
 	eg, err := s.proxyEgress(ctx, a.ProxyID)
 	if err != nil {
-		return nil, errors.New(core.AsError(err).Message)
+		return nil, queryFailure(false, core.AsError(err).Message, "")
 	}
 	acct := a.pluginAccount(plain, eg.Proxy)
 	built, err := bt.Client.BuildQuotaRequest(ctx, &pluginv1.BuildQuotaRequestRequest{Account: acct})

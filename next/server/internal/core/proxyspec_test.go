@@ -14,9 +14,10 @@ func TestProxySpecRedacted(t *testing.T) {
 	var logged bytes.Buffer
 	slog.New(slog.NewJSONHandler(&logged, nil)).Info("x", "ref", ref, "spec", ref.ProxySpec, "ptr", &ref)
 	for _, out := range []string{
-		fmt.Sprintf("%v %+v %#v %s", ref, ref, ref, ref),
-		fmt.Sprintf("%v %+v %#v %s", ref.ProxySpec, ref.ProxySpec, ref.ProxySpec, ref.ProxySpec),
-		fmt.Sprintf("%v %+v %#v", &ref, &ref, &ref),
+		fmt.Sprintf("%v %+v %#v %s %d %x %q", ref, ref, ref, ref, ref, ref, ref),
+		fmt.Sprintf("%v %+v %#v %s %d %x %q", ref.ProxySpec, ref.ProxySpec, ref.ProxySpec, ref.ProxySpec, ref.ProxySpec, ref.ProxySpec, ref.ProxySpec),
+		fmt.Sprintf("%v %+v %#v %s %d %x %q", &ref, &ref, &ref, &ref, &ref, &ref, &ref),
+		fmt.Sprintf("%v %+v %#v %s %d %x %q", &ref.ProxySpec, &ref.ProxySpec, &ref.ProxySpec, &ref.ProxySpec, &ref.ProxySpec, &ref.ProxySpec, &ref.ProxySpec),
 		logged.String(),
 	} {
 		if strings.Contains(out, "s3cret-pw") || !strings.Contains(out, "proxy.example") {

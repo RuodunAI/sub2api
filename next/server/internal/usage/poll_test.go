@@ -187,3 +187,38 @@ func TestMonitorUsesBoundAccountAndDefersWithoutBurningAttempts(t *testing.T) {
 		t.Fatal("failed task did not refund")
 	}
 }
+
+// downPollProxy cannot hand out any proxy's client (disabled, gone).
+type downPollProxy struct{ core.ProxyDirectory }
+
+func (downPollProxy) HTTPClient(context.Context, *int64) (core.ProxyClient, error) {
+	return core.ProxyClient{}, core.ErrUnavailable.WithMessage("proxy disabled")
+}
+
+// Without the account's egress Monitor is not called (the plugin is never
+// handed the account without its proxy, CONTRACTS §124): the check waits
+// without spending an attempt, as for a cooldown.
+func TestMonitorWaitsWithoutEgress(t *testing.T) {
+	proxyID := int64(42)
+	acc := &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key", ProxyID: &proxyID}, Status: "active"}
+	rf := reconcileFixtureWith(t, acc)
+	f := rf.fixture
+	gen := f.svc.rec.Registry.Current().(*recGen)
+	mp := &monitorPlugin{recPlugin: rf.plugin, run: func(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
+		return &pluginv1.ReconcileResult{State: pluginv1.ReconcileResult_PENDING}, nil
+	}}
+	gen.client = mp
+	f.svc.rec.Accounts = recAccounts{acc: acc, proxies: downPollProxy{}}
+	f.svc.rec.Slots = &taskTestSlots{allow: true}
+	f.svc.rec.Limiter = &pollLimiter{allow: true}
+	r := f.reserved("req-no-egress", "no-egress", core.UsageTokens{Input: 1000, Output: 100})
+	f.svc.process(context.Background(), []*core.UsageRecord{r})
+	f.due()
+	f.svc.ReconcileDue(context.Background())
+	if mp.calls != 0 || rf.hits.Load() != 0 {
+		t.Fatalf("Monitor without an egress: calls %d, upstream hits %d", mp.calls, rf.hits.Load())
+	}
+	if a := f.scalar(`SELECT attempts::text || ' ' || poll_failures::text FROM pending_settlements WHERE ref_id='no-egress'`); a != "0 0" {
+		t.Fatalf("deferred attempt consumed: %s", a)
+	}
+}

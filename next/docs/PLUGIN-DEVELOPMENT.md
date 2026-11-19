@@ -215,7 +215,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 ### 2.8a 账号的全部信息与代理（CONTRACTS §124）
 
-- 插件收到的每个 `Account`（`Execute`、`Monitor`、`ClassifyError`、测试、模型、额度、续期、余额、用量观察）都是它自己账号类型的账号，带解密的凭证和这次调用出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码；直连时不设）。不需要任何宿主授权。WebSocket 会话里 `Account.proxy` 是上游连接走的代理，会话期间不变；同一轮里的取回按当时已保存的代理走，管理员中途改了代理时两者可以不同，新会话按新代理（CONTRACTS §124.2）。
+- 插件收到的每个 `Account`（`Execute`、`Monitor`、`ClassifyError`、测试、模型（已有账号的；建账号之前按表单拉模型时还没有账号，不给代理，请求经表单选的代理发出）、额度、续期、余额、用量观察）都是它自己账号类型的账号，带解密的凭证和这次调用出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码；直连时不设）。不需要任何宿主授权。WebSocket 会话里 `Account.proxy` 是上游连接走的代理，会话期间不变；同一轮里的取回按当时已保存的代理走，管理员中途改了代理时两者可以不同，新会话按新代理（CONTRACTS §124.2）。
 - 请求之外要读账号（插件自己的管理路由），用 `Host.Account(ctx, id)`（`HostService.GetAccount`）：别人的账号和不存在的一样 `NOT_FOUND`，代理拿不到时 `UNAVAILABLE`；每次调用写一条审计，所以每个请求每个账号最多读一次，不缓存明文、不写进插件自己的表。列账号用 `Host.ListAccounts`。
 - 代理只是数据：**不得用于自行联网**。账号的所有请求仍只经核心发出（`Relay`、`RelayAndWait`、`Fetch`、`SendAccountRequest`），核心强制这个代理；SDK 不提供把代理变成传输或拨号器的函数。
 - 读代理用 `pluginsdk.AccountProxyOf(acc)`，它打印、`slog` 时不出现密码；不要打印 `Account` 或 `AccountProxy` 消息本身。

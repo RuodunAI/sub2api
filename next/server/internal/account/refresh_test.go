@@ -469,8 +469,10 @@ func TestCredentialRefreshFollowsTheAccountsProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.prx.Invalidate(b)
+	builds, parses := e.plat.called("BuildRefreshRequest"), e.plat.called("ParseRefreshResponse")
 	e.do("POST", fmt.Sprintf("/accounts/%d/refresh-credentials", id), nil)
-	if up.calls.Load() != 2 || bHits.Load() != 1 {
-		t.Fatalf("renewal through a disabled proxy: upstream calls %d, proxy hits %d", up.calls.Load(), bHits.Load())
+	if up.calls.Load() != 2 || bHits.Load() != 1 || e.plat.called("BuildRefreshRequest") != builds || e.plat.called("ParseRefreshResponse") != parses {
+		t.Fatalf("renewal through a disabled proxy: upstream calls %d, proxy hits %d, builds %d -> %d, parses %d -> %d", up.calls.Load(), bHits.Load(),
+			builds, e.plat.called("BuildRefreshRequest"), parses, e.plat.called("ParseRefreshResponse"))
 	}
 }

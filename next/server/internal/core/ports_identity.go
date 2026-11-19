@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1116,6 +1117,9 @@ func (r ProxyRef) String() string { return fmt.Sprintf("proxy %d %s", r.ID, r.Pr
 // GoString keeps %#v from printing the password.
 func (r ProxyRef) GoString() string { return r.String() }
 
+// Format keeps every verb (%d, %x ...) from printing the password.
+func (r ProxyRef) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, r.String()) }
+
 // LogValue keeps slog from printing the password.
 func (r ProxyRef) LogValue() slog.Value {
 	return slog.GroupValue(slog.Int64("id", r.ID), slog.Any("spec", r.ProxySpec))
@@ -1142,8 +1146,8 @@ type ProxyDirectory interface {
 
 // ProxySpec is a parsed proxy address (proxy.ParseURL, CONTRACTS §21.4).
 // Protocol is http, https or socks5 (socks5h is normalised to socks5);
-// Host is lower-case without IPv6 brackets. String, GoString and LogValue
-// leave the password out, so a logged spec never shows it.
+// Host is lower-case without IPv6 brackets. String, GoString, Format and
+// LogValue leave the password out, so a logged spec never shows it.
 type ProxySpec struct {
 	Protocol string
 	Host     string
@@ -1159,6 +1163,9 @@ func (s ProxySpec) String() string {
 
 // GoString keeps %#v from printing the password.
 func (s ProxySpec) GoString() string { return s.String() }
+
+// Format keeps every verb (%d, %x ...) from printing the password.
+func (s ProxySpec) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, s.String()) }
 
 // LogValue keeps slog from printing the password.
 func (s ProxySpec) LogValue() slog.Value {
