@@ -483,6 +483,10 @@ func TestValidateRelayBaseURL(t *testing.T) {
 	if errs := validate(`{"base_url":"https://relay.test","video_api_prefix":"/doubao/api/v3"}`); len(errs) != 0 {
 		t.Errorf("the verified configuration must be accepted: %v", errs)
 	}
+	// An escaped slash stays escaped (saved and sent so): the path does not end in a /v1 segment.
+	if errs := validate(`{"base_url":"https://relay.test/a%2Fv1"}`); len(errs) != 0 {
+		t.Errorf("https://relay.test/a%%2Fv1 must be accepted: %v", errs)
+	}
 	// The official type keeps its own rules: base_url is optional there, and
 	// "https://ark.cn-beijing.volces.com/api/v3" is a paste of the SDK base URL
 	// that spec.Versions exists to accept.
