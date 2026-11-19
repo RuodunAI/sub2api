@@ -31,11 +31,12 @@ func TestCases(t *testing.T) {
 }
 
 // A form with a longer shortest key: the openai preset (sk- or sess-, at
-// least 10), bounded to 512 visible characters by a rule on api_key.
+// least 10), bounded to 512 visible characters by a rule on api_key (it sees
+// the key trimmed, as saved).
 func TestMinKey(t *testing.T) {
 	v := apikey.OpenAI
 	spec := apikey.Spec{AccountType: "apikey", KeyValidator: &v, Fields: fieldcheck.Fields{
-		"api_key":      fieldcheck.String().MaxLen(512).Pattern(`^\s*[!-~]*\s*$`),
+		"api_key":      fieldcheck.String().MaxLen(512).Pattern(`^[!-~]*$`),
 		"organization": fieldcheck.String().MaxLen(128).Pattern(`^[!-~]*$`),
 	}}
 	form := apikeytest.Form{AccountType: "apikey", Key: "sk-abcdefgh", BaseURL: "https://x.example.com", MinKey: 10}

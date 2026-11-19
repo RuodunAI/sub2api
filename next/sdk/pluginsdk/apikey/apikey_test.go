@@ -2,6 +2,7 @@ package apikey
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -99,7 +100,7 @@ func TestNormalizeBaseURL(t *testing.T) {
 		}
 	}
 	for _, in := range []string{"", "ftp://x.example", "https://u:p@x.example", "https://x.example/?", "https://x.example/?a=1", "https://x.example/#f", "/relative",
-		"https://x.example/a b", "https://x.example/a\tb", "https://x.example/a\nb", "https://x.example/a\u00a0b", "https://x.example/a\u3000b", "https://x .example"} {
+		"https://x.example/#", "https://x.example/a b", "https://x.example/a\tb", "https://x.example/a\nb", "https://x.example/a\u00a0b", "https://x.example/a\u3000b", "https://x .example"} {
 		if _, err := NormalizeBaseURL(in, strip); err == nil {
 			t.Errorf("%q accepted", in)
 		}
@@ -107,15 +108,19 @@ func TestNormalizeBaseURL(t *testing.T) {
 }
 
 // TestNormalizeBaseURLIsStable: requests normalize the stored base_url
-// again (Spec.FromAccount). A stored value is an output of NormalizeBaseURL
-// that also matched the former form schema (^(https?://[^\s?#]+)?$), so it
-// comes out unchanged and without an error.
+// again (Spec.FromAccount). A stored value is an output of NormalizeBaseURL,
+// u.String() with RawPath cleared: spaces, every non-ASCII byte, "?" and "#"
+// in it are percent-escaped, so it holds no raw whitespace, "?" or "#" and
+// comes out unchanged and without an error. (The former form schema is no
+// reason: RE2's \s is ASCII only, a no-break space passed it.)
 func TestNormalizeBaseURLIsStable(t *testing.T) {
 	strip := []string{"/v1beta", "/v1"}
 	for _, in := range []string{
 		" https://proxy.example.com/v1beta/ ", "HTTPS://Proxy.Example.com/x/v1", "https://proxy.example.com:8443/a/b/",
 		"http://127.0.0.1:8080", "https://x.example.com/a%20b", "https://x.example.com/a%2Fb/c", "https://[::1]:8080/p",
 		"https://x.example.com/ключ", "https://x.example.com/~user/v1/",
+		"https://x.example.com/a%C2%A0b", "https://x%C2%A0y.example", "https://x.example.com/a%E3%80%80b",
+		"https://x.example.com/a%C2%85b", "https://x.example.com/a%3Fb", "https://x.example.com/a%23b",
 	} {
 		stored, err := NormalizeBaseURL(in, strip)
 		if err != nil {
@@ -274,6 +279,23 @@ func TestSpecFields(t *testing.T) {
 	endpoint := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"base_url": fieldcheck.String().Pattern(`^https://[a-z.]+$`)}}
 	if got := errs(endpoint, `{"api_key":"sk-12345678","base_url":"https://u.example/p"}`, ""); !reflect.DeepEqual(got, map[string]string{"base_url": "pattern"}) {
 		t.Fatalf("base_url rule = %v", got)
+	}
+	// The rules see what Validate saves: the key trimmed, the base URL
+	// normalized, the one Spec read (settings before credentials) in both
+	// objects.
+	key := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"api_key": fieldcheck.String().MaxLen(512).Pattern(`^[!-~]*$`)}}
+	if got := errs(key, `{"api_key":" sk-`+strings.Repeat("k", 509)+` "}`, ""); len(got) != 0 {
+		t.Fatalf("a 512-character key with spaces around = %v", got)
+	}
+	root := Spec{AccountType: "apikey", StripSuffixes: []string{"/v1"}, Fields: fieldcheck.Fields{"base_url": fieldcheck.String().Pattern(`^https://good\.example$`)}}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":" HTTPS://good.example/v1/ "}`, ""); len(got) != 0 {
+		t.Fatalf("a base URL normalized onto the rule = %v", got)
+	}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":"https://bad.example"}`, `{"base_url":"https://good.example"}`); len(got) != 0 {
+		t.Fatalf("the rule checks the base URL Spec uses (settings first) = %v", got)
+	}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":"https://good.example"}`, `{"base_url":"https://bad.example"}`); !reflect.DeepEqual(got, map[string]string{"base_url": "pattern"}) {
+		t.Fatalf("the settings' base URL is the one saved = %v", got)
 	}
 	// One error per field: the Spec's own, not the rule's too.
 	if resp := endpoint.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"ftp://u"}`}); len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetCode() != "format" {
