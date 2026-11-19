@@ -474,11 +474,9 @@ export default {
   },
 
   settings: {
-    unsaved: 'You have unsaved changes',
     pageHint: 'Settings of this plugin. Your role may edit them through a permission the plugin declares.',
     denied: 'You cannot open the settings of this plugin.',
-    none: 'This plugin has no settings.',
-    reenter: 'Re-enter this secret to change other settings'
+    none: 'This plugin has no settings.'
   },
 
   retired: {
