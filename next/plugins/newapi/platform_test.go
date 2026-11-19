@@ -34,8 +34,9 @@ func account(settings string) *pluginv1.Account {
 
 // TestGolden: for the protocols the type serves, the bytes sent upstream
 // are what the official openai, anthropic and gemini plugins send (their
-// frozen golden cases on an account with its own base URL), except a
-// pasted /v1beta, which a site's address also drops on purpose.
+// frozen golden cases on an account with its own base URL), except on a
+// base URL ending in /v1beta, which a site's type takes for a version on
+// purpose (the openai and anthropic types do not).
 func TestGolden(t *testing.T) {
 	if err := standard.Check(newapi.APIKey()); err != nil {
 		t.Fatal(err)
@@ -57,7 +58,10 @@ func TestGolden(t *testing.T) {
 
 // TestRequest pins each protocol's request on the site: the official
 // method, path and auth header, the body as it is (a chat stream asks for
-// its usage, as the openai preset does), whatever suffix was pasted.
+// its usage, as the openai preset does) appended to the root of the saved
+// base URL: the address without the one /v1 or /v1beta it may end in, so
+// neither is doubled, a site under a /v1 of its own is reached at
+// .../v1/v1, and an escaped "/" goes out as it was written.
 func TestRequest(t *testing.T) {
 	bearer := map[string]string{"authorization": "Bearer " + apiKey}
 	json := map[string]string{"content-type": "application/json"}
@@ -92,7 +96,10 @@ func TestRequest(t *testing.T) {
 		{typesafe.ProtocolSystemOne, "jev-latest", `{"model":"jev-latest","state":"hi","questions":{}}`, false,
 			"/v1/systemone", "", bearer, json},
 	} {
-		for _, base := range []string{site, site + "/", site + "/v1", site + "/v1beta"} {
+		for base, root := range map[string]string{
+			site: site, site + "/": site, site + "/v1": site, site + "/v1beta": site,
+			site + "/v1/v1": site + "/v1", site + "/v1beta/v1beta": site + "/v1beta", site + "/p/a%2Fb": site + "/p/a%2Fb",
+		} {
 			out, err := platform.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 				Account: account(`{"base_url":"` + base + `"}`),
 				Meta:    &pluginv1.RequestMeta{Protocol: c.protocol, Model: c.model, Stream: c.stream},
@@ -102,7 +109,7 @@ func TestRequest(t *testing.T) {
 			if sent == "" {
 				sent = c.body
 			}
-			if err != nil || out.Method != "POST" || out.Url != site+c.url || string(out.Body) != sent ||
+			if err != nil || out.Method != "POST" || out.Url != root+c.url || string(out.Body) != sent ||
 				!reflect.DeepEqual(out.Headers, c.headers) || !reflect.DeepEqual(out.DefaultHeaders, c.defaults) {
 				t.Errorf("%s on %s: %v %s %s %s headers %v default %v", c.protocol, base, err, out.GetMethod(), out.GetUrl(), out.GetBody(), out.GetHeaders(), out.GetDefaultHeaders())
 			}
@@ -203,6 +210,13 @@ func TestBalance(t *testing.T) {
 		if len(seen) != 1 || seen[0].Url != tokenURL || seen[0].Method != "GET" ||
 			!reflect.DeepEqual(seen[0].Headers, map[string]string{"authorization": "Bearer " + apiKey}) {
 			t.Fatalf("%s: requests %v", name, seen)
+		}
+	}
+	// The request goes to the root of the base URL, like every protocol's.
+	for base, url := range map[string]string{site + "/v1beta": tokenURL, site + "/v1/v1": site + "/v1/api/usage/token/"} {
+		var seen []*pluginv1.BalanceRequest
+		if _, err := h.Balance(context.Background(), account(`{"base_url":"`+base+`"}`), answers(nil, &seen)); err != nil || len(seen) != 1 || seen[0].Url != url {
+			t.Errorf("%s: requests %v, %v, want %s", base, seen, err, url)
 		}
 	}
 	got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`"}`), func(*pluginv1.BalanceRequest) *pluginv1.BalanceAnswer {

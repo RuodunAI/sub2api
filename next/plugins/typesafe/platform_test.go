@@ -39,7 +39,9 @@ func coreFiltered(t *testing.T, client map[string]string) map[string]string {
 
 // TestRequest: every question type and an inline image go through as they
 // are, the client's two danger-zone headers too (never its authorization
-// or anything else), and a pasted /v1 is removed from the address.
+// or anything else), to the base URL less the one /v1 it may end in: a
+// pasted /v1 is not doubled, an address ending in a /v1 of its own is
+// reached at .../v1/v1, and an escaped "/" goes out as it was written.
 func TestRequest(t *testing.T) {
 	body := `{"model":"jev-latest","state":{"text":"hi"},"questions":{` +
 		`"a":{"type":"noul","instructions":"Greeting?"},` +
@@ -53,8 +55,10 @@ func TestRequest(t *testing.T) {
 	})
 	for settings, url := range map[string]string{
 		`{}`: "https://api.typesafe.ai/v1/systemone",
-		`{"base_url":"https://api.typesafe.ai/v1/"}`: "https://api.typesafe.ai/v1/systemone",
-		`{"base_url":"https://ts.example.com/v1"}`:   "https://ts.example.com/v1/systemone",
+		`{"base_url":"https://api.typesafe.ai/v1/"}`:    "https://api.typesafe.ai/v1/systemone",
+		`{"base_url":"https://ts.example.com/v1"}`:      "https://ts.example.com/v1/systemone",
+		`{"base_url":"https://ts.example.com/v1/v1"}`:   "https://ts.example.com/v1/v1/systemone",
+		`{"base_url":"https://ts.example.com/p/a%2Fb"}`: "https://ts.example.com/p/a%2Fb/v1/systemone",
 	} {
 		out, err := platform.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
 			Account: account(settings), Meta: &pluginv1.RequestMeta{Protocol: preset.ProtocolSystemOne, Model: "jev-latest"},

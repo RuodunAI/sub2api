@@ -16,8 +16,8 @@
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| 站点地址（`base_url`） | 是 | 站点根地址，如 `https://your-sub2api.example.com`；粘贴时带的 `/v1`、`/v1beta` 会被去掉 |
-| API Key（`api_key`） | 是 | 站点的 Key，8–512 个不含空格的可见字符（不限前缀）；加密保存 |
+| 站点地址（`base_url`） | 是 | 站点根地址，如 `https://your-sub2api.example.com`；按填写的保存。地址已以 `/v1` 或 `/v1beta` 结尾时不再重复添加：请求时先去掉这一段（只去一段），再拼各协议和余额查询的完整路径，所以站点本身在 `/v1` 之下时填 `…/v1/v1`；`%2F` 等转义原样保存、原样发出 |
+| API Key（`api_key`） | 是 | 站点的 Key，任意非空字符串（保存时去掉首尾空白）；加密保存 |
 
 - 地址由运营方填，插件不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。这是"可自定义上游"的类型：**只有 own 级权限的用户**新建或改地址时需要 `account:relay`（CONTRACTS §21.3.1，与 relay 插件相同）。
 - 默认模型：不写。用"拉取模型"读站点的 `GET /v1/models`（Bearer，取 `data[].id`；旧版对 Claude 分组返回 Anthropic 形状的 `data[]`，同样取得到 id）。旧版对 Gemini 分组的 Key 返回什么形状未核实，拉不到时手填。

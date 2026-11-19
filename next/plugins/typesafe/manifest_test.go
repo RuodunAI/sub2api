@@ -59,8 +59,11 @@ func TestManifest(t *testing.T) {
 	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) || at.CustomUpstream() {
 		t.Errorf("upstreamFields = %v, custom upstream %v", at.UpstreamFields, at.CustomUpstream())
 	}
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{preset.DefaultBaseURL}) {
-		t.Errorf("guardedSettings = %+v, want base_url -> [%s]", gs, preset.DefaultBaseURL)
+	// The official address may be used with or without one of the version
+	// segments of the type's base URL.
+	versions := typesafe.APIKey().Spec.Versions
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{preset.DefaultBaseURL}) || !slices.Equal(gs[0].Versions, versions) {
+		t.Errorf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, preset.DefaultBaseURL, versions)
 	}
 	if u, _ := url.Parse(preset.DefaultBaseURL); !slices.Equal(m.ExternalServices, []string{u.Host}) {
 		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, u.Host)

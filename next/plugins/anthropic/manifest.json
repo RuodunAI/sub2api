@@ -32,7 +32,7 @@
       "settingsFields": ["base_url"],
       "upstreamFields": ["base_url"],
       "guardedSettings": [
-        { "field": "base_url", "allowed": ["https://api.anthropic.com"] }
+        { "field": "base_url", "allowed": ["https://api.anthropic.com"], "versions": ["/v1"] }
       ],
       "defaultModels": [
         "claude-fable-5-2",

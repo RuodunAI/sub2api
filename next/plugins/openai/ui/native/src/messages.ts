@@ -4,7 +4,7 @@ const zh = {
   apiKey: { help: 'OpenAI 平台的 API Key，以 Authorization: Bearer 发送；加密保存，保存后不再明文显示。' },
   baseUrl: {
     placeholder: '留空使用默认地址 https://api.openai.com',
-    help: '使用 OpenAI 官方接口时保持默认；也可以填写 OpenAI 兼容端点，请求发往 <Base URL>/v1/chat/completions、/v1/responses、/v1/embeddings。末尾的 /v1 会被去掉。'
+    help: '使用 OpenAI 官方接口时保持默认；也可以填写 OpenAI 兼容端点，请求发往 <Base URL>/v1/chat/completions、/v1/responses、/v1/embeddings；地址已以 /v1 结尾时不再重复添加。'
   },
   advanced: '高级（可选）',
   organization: {
@@ -23,7 +23,7 @@ const en: Messages = {
   apiKey: { help: 'OpenAI Platform API key, sent as Authorization: Bearer. Stored encrypted and never shown again.' },
   baseUrl: {
     placeholder: 'Leave empty to use https://api.openai.com',
-    help: 'Leave the default for OpenAI, or enter an OpenAI-compatible endpoint; requests go to <Base URL>/v1/chat/completions, /v1/responses and /v1/embeddings. A trailing /v1 is removed.'
+    help: 'Leave the default for OpenAI, or enter an OpenAI-compatible endpoint; requests go to <Base URL>/v1/chat/completions, /v1/responses and /v1/embeddings; an address already ending in /v1 does not get it again.'
   },
   advanced: 'Advanced (optional)',
   organization: {

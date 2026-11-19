@@ -61,7 +61,7 @@
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
       "guardedSettings": [
-        { "field": "base_url", "allowed": ["https://api.typesafe.ai"] }
+        { "field": "base_url", "allowed": ["https://api.typesafe.ai"], "versions": ["/v1"] }
       ],
       "defaultModels": [
         "jev-latest",
