@@ -178,18 +178,23 @@ func checkExpiryHint(settings object) *pluginv1.FieldError {
 	return nil
 }
 
-// check validates what requests are built from: the credentials of an
-// account of type typ, its region and its prefix. It is the same for a
-// submitted form and for a stored account about to serve a request.
-func check(typ string, creds, settings object) (auth, *pluginv1.FieldError) {
+// authOf is the auth of an account type, or the error refusing the type.
+func authOf(typ string) (auth, *pluginv1.FieldError) {
 	a, ok := auths[typ]
 	if !ok {
 		return a, fieldError("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型")
 	}
+	return a, nil
+}
+
+// check validates what requests are built from: the credentials of an
+// account of the type, its region and its prefix. It is the same for a
+// submitted form and for a stored account about to serve a request.
+func (a auth) check(creds, settings object) *pluginv1.FieldError {
 	if bad := a.checkCredentials(creds); bad != nil {
-		return a, bad
+		return bad
 	}
-	return a, checkSettings(settings)
+	return checkSettings(settings)
 }
 
 // ValidateCredentials implements pluginsdk.Platform. An account without a
@@ -199,15 +204,16 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	if refused != nil {
 		return refused, nil
 	}
-	// Keys the form does not send are refused (code "unknown"), as the
-	// schema forms' additionalProperties:false did; an unsupported type is
-	// refused by check.
-	if a, ok := auths[in.GetAccountType()]; ok {
-		if refused := form.Only(a.keys()...); refused != nil {
-			return refused, nil
-		}
+	a, bad := authOf(in.GetAccountType())
+	if bad != nil {
+		return accountform.Invalid(bad), nil
 	}
-	_, bad := check(in.GetAccountType(), form.Creds, form.Settings)
+	// Keys the form does not send are refused (code "unknown"), as the
+	// schema forms' additionalProperties:false did.
+	if refused := form.Only(a.keys()...); refused != nil {
+		return refused, nil
+	}
+	bad = a.check(form.Creds, form.Settings)
 	if bad == nil {
 		bad = checkExpiryHint(form.Settings)
 	}
@@ -238,7 +244,10 @@ func readAccount(acc *pluginv1.Account) (account, error) {
 	if err != nil {
 		return account{}, err
 	}
-	a, bad := check(acc.GetType(), creds, settings)
+	a, bad := authOf(acc.GetType())
+	if bad == nil {
+		bad = a.check(creds, settings)
+	}
 	if bad != nil {
 		return account{}, status.Errorf(codes.FailedPrecondition, "account %d: %s: %s", acc.GetId(), bad.GetField(), bad.GetMessage())
 	}

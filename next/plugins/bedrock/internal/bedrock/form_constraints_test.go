@@ -94,7 +94,18 @@ func TestFormSchemaKeysAccepted(t *testing.T) {
 			}
 		})
 	}
-	if resp, _ := validate(t, TypeAPIKey, with(apiKeyCreds, map[string]any{fieldSessionToken: testSessionToken}), settings); !slices.Equal(fieldErrors(resp), []string{fieldSessionToken + ":unknown"}) {
-		t.Fatalf("apikey with a session token: errors = %v", fieldErrors(resp))
+	// A key only another type's form sends.
+	for _, c := range []struct {
+		typ   string
+		creds map[string]any
+		key   string
+	}{
+		{TypeAPIKey, with(apiKeyCreds, map[string]any{fieldSessionToken: testSessionToken}), fieldSessionToken},
+		{TypeAccessKey, with(akskCreds, map[string]any{fieldSessionToken: testSessionToken}), fieldSessionToken},
+		{TypeSTS, with(stsCreds, map[string]any{fieldAPIKey: testAPIKey}), fieldAPIKey},
+	} {
+		if resp, _ := validate(t, c.typ, c.creds, settings); !slices.Equal(fieldErrors(resp), []string{c.key + ":unknown"}) {
+			t.Errorf("%s with %s: errors = %v", c.typ, c.key, fieldErrors(resp))
+		}
 	}
 }
