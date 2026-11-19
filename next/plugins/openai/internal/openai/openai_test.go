@@ -2,6 +2,8 @@ package openai
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -24,7 +26,8 @@ func TestCheck(t *testing.T) {
 	}
 }
 
-var routes = []string{openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings}
+var routes = []string{openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings,
+	openai.ProtocolImages, openai.ProtocolImagesEdit}
 
 // clientHeaders are what a client of the two OpenAI SDK headers sends.
 var clientHeaders = map[string]string{"openai-organization": "org-client", "openai-project": "proj_client", "user-agent": "cli/1"}
@@ -82,6 +85,34 @@ func TestForwardsEveryField(t *testing.T) {
 	for _, protocol := range []string{openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings} {
 		if got := string(build(t, New(), protocol, "", nil, body).GetBody()); got != body {
 			t.Errorf("%s body = %s, want %s", protocol, got, body)
+		}
+	}
+}
+
+// TestImages pins the upstream requests of the two image protocols, which
+// the frozen golden cases predate: the official paths, the Bearer key, a JSON
+// content type and the body byte for byte, streaming or not (an image stream
+// reports its usage without stream_options, which the endpoint would refuse).
+func TestImages(t *testing.T) {
+	const generation = `{"model":"gpt-image-1.5","prompt":"a red fox","size":"1024x1024","stream":%s}`
+	const edit = `{"model":"gpt-image-1.5","prompt":"add a hat","images":[{"image_url":"data:image/png;base64,iVBORw0KGgo="}],"stream":%s}`
+	for protocol, c := range map[string]struct{ path, body string }{
+		openai.ProtocolImages:     {"/v1/images/generations", generation},
+		openai.ProtocolImagesEdit: {"/v1/images/edits", edit},
+	} {
+		for _, stream := range []string{"false", "true"} {
+			body := fmt.Sprintf(c.body, stream)
+			got := build(t, New(), protocol, "", clientHeaders, body)
+			if got.GetMethod() != "POST" || got.GetUrl() != "https://api.openai.com"+c.path || string(got.GetBody()) != body {
+				t.Errorf("%s stream %s: %s %s %s", protocol, stream, got.GetMethod(), got.GetUrl(), got.GetBody())
+			}
+			if want := map[string]string{"authorization": "Bearer sk-test-0123456789"}; !maps.Equal(got.GetHeaders(), want) {
+				t.Errorf("%s headers = %v, want %v", protocol, got.GetHeaders(), want)
+			}
+			want := map[string]string{"content-type": "application/json", "openai-organization": "org-client", "openai-project": "proj_client", "user-agent": "cli/1"}
+			if !maps.Equal(got.GetDefaultHeaders(), want) {
+				t.Errorf("%s default headers = %v, want %v", protocol, got.GetDefaultHeaders(), want)
+			}
 		}
 	}
 }

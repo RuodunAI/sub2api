@@ -1007,6 +1007,43 @@ func TestMigration0108ModelNameText(t *testing.T) {
 	require.Equal(t, want, state())
 }
 
+// 0112 adds the two image token columns of usage_logs (CONTRACTS §118):
+// bigint, NOT NULL, 0 on a row written before them; a rerun changes nothing.
+func TestMigration0112UsageImageTokens(t *testing.T) {
+	const id = "0112_usage_image_tokens.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, protocol, endpoint, status_code, success, input_tokens, output_tokens)
+		VALUES ('before-0112', 1, 1, 1, 'openai.images', '/v1/images/generations', 200, true, 70, 900)`)
+	require.NoError(t, err)
+	state := func() (cols, row string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(column_name || '=' || data_type || ',' || is_nullable || ',' || column_default, ' ' ORDER BY column_name)
+			FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'usage_logs'
+			AND column_name IN ('image_input_tokens', 'image_output_tokens')`).Scan(&cols))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT input_tokens || ' ' || output_tokens || ' ' || image_input_tokens || ' ' || image_output_tokens
+			FROM usage_logs WHERE request_id = 'before-0112'`).Scan(&row))
+		return cols, row
+	}
+	const wantCols = "image_input_tokens=bigint,NO,0 image_output_tokens=bigint,NO,0"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	cols, row := state()
+	require.Equal(t, wantCols, cols)
+	require.Equal(t, "70 900 0 0", row)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	cols, row = state()
+	require.Equal(t, wantCols, cols)
+	require.Equal(t, "70 900 0 0", row)
+}
+
 // 0111 removes the claude_oauth plugin (CONTRACTS §116) as an uninstall
 // with purge would: its row (cascading the versions and rollouts), its
 // permission and the grants of it, its egress domains, job tasks and a

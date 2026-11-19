@@ -1056,6 +1056,9 @@ export interface UsageLog {
   cache_read_tokens: number
   cache_creation_tokens: number
   cache_creation_1h_tokens?: number
+  /** The image share of input_tokens / output_tokens (image endpoints only, CONTRACTS §118). */
+  image_input_tokens?: number
+  image_output_tokens?: number
   total_cost: Money
   /** The cost at the list price, before the group's rate. */
   standard_cost?: Money

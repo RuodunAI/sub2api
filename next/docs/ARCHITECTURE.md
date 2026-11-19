@@ -934,7 +934,7 @@ flowchart LR
 | 平台 | 端点 | 协议 | 错误格式 | 用量口径 |
 |---|---|---|---|---|
 | anthropic | `POST /v1/messages` · `POST /v1/messages/count_tokens`（不计费） | `anthropic.messages` · `anthropic.count_tokens` | anthropic | exclusive |
-| openai | `POST /v1/chat/completions` · `POST /v1/responses` · `POST /v1/embeddings` | `openai.chat` · `openai.responses` · `openai.embeddings` | openai | inclusive |
+| openai | `POST /v1/chat/completions` · `POST /v1/responses` · `POST /v1/embeddings` · `POST /v1/images/generations` · `POST /v1/images/edits`（JSON，CONTRACTS §118） | `openai.chat` · `openai.responses` · `openai.embeddings` · `openai.images` · `openai.images_edit` | openai | inclusive |
 | gemini | `POST /v1beta/models/{model}:generateContent` · `POST /v1beta/models/{model}:streamGenerateContent` · `POST /v1beta/models/{model}:countTokens`（不计费） | `gemini.generate` · `gemini.stream_generate` · `gemini.count_tokens` | gemini | inclusive |
 
 内置平台同时提供：API Key 读取方式（anthropic：`x-api-key`/`Authorization`；openai：`Authorization: Bearer`；gemini：`x-goog-api-key` 或 `?key=`）、模型与流式标志的位置（gemini 的模型在路径里，流式由端点决定）、转发给插件的请求字段和请求头、用量提取规则、默认粘性规则（`source=builtin`）。
@@ -1051,7 +1051,7 @@ CREATE TABLE balance_ledger (
 
 | 类别 | 内容 |
 |---|---|
-| token 变量 | `p` 输入（已扣除单独计价的部分）· `c` 输出 · `cr` 缓存读 · `cc` 缓存写（5 分钟）· `cc1h` 缓存写（1 小时）· `len` 完整上下文长度（用于分档判断，不受缓存扣除影响）· 预留 `img` `img_o` `ai` `ao` |
+| token 变量 | `p` 输入（已扣除单独计价的部分）· `c` 输出 · `cr` 缓存读 · `cc` 缓存写（5 分钟）· `cc1h` 缓存写（1 小时）· `img` 图片输入 · `img_o` 图片输出（OpenAI 生图，CONTRACTS §118：图片 token 是输入、输出的一部分，表达式计了它们就从 `p`、`c` 里扣掉，没计就留在 `p`、`c` 里按文字价算）· `len` 完整上下文长度（用于分档判断，不受缓存扣除影响）· 预留 `ai` `ao` |
 | 插件计量值 | `u("key")`：平台插件在 manifest 里声明的其他计量值（张数、秒数等）；保存时校验 key 是否已声明 |
 | 单位约定 | token 系数是**每百万 token 的美元价格**；`flat(x)` 表示 x 美元的固定费用 |
 | 函数 | `tier(名称, 值)` 标记命中的档位 · `param(路径)` 读取请求体字段 · `header(名称)` · `has(字符串, 子串)` · `hour/weekday/day/month(时区)` · `max` `min` `abs` `ceil` `floor` |

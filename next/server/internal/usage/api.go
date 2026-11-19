@@ -59,6 +59,8 @@ type Record struct {
 	CacheReadTokens       int64           `json:"cache_read_tokens"`
 	CacheCreationTokens   int64           `json:"cache_creation_tokens"`
 	CacheCreation1hTokens int64           `json:"cache_creation_1h_tokens"`
+	ImageInputTokens      int64           `json:"image_input_tokens"`  // image share of input_tokens (CONTRACTS §118)
+	ImageOutputTokens     int64           `json:"image_output_tokens"` // image share of output_tokens
 	TotalCost             decimal.Decimal `json:"total_cost"`
 	RateMultiplier        decimal.Decimal `json:"rate_multiplier"`
 	BillingStatus         string          `json:"billing_status"`
@@ -157,7 +159,7 @@ const recordColumns = `u.id, u.request_id, u.client_request_id, u.created_at, u.
 	u.platform, u.protocol, u.account_type, u.upstream_protocol, u.endpoint, u.model, u.upstream_model, u.stream,
 	u.status_code, u.success,
 	u.error_type, u.error_message, u.attempts, u.input_tokens, u.output_tokens, u.cache_read_tokens,
-	u.cache_creation_tokens, u.cache_creation_1h_tokens, u.total_cost, u.rate_multiplier, u.billing_status,
+	u.cache_creation_tokens, u.cache_creation_1h_tokens, u.image_input_tokens, u.image_output_tokens, u.total_cost, u.rate_multiplier, u.billing_status,
 	u.billing_mode, u.matched_tier, u.latency_ms, u.first_token_ms, u.upload_ms, u.sticky_hit, u.client_ip, u.conversion,
 	CASE WHEN u.attempts > 1 THEN u.anomalies->>'` + core.AnomalyAttempts + `' END, ` + standardCost
 
@@ -172,7 +174,7 @@ func (r *Record) scanTargets() []any {
 		&r.AccountType, &r.UpstreamProtocol,
 		&r.Endpoint, &r.Model, &r.UpstreamModel, &r.Stream, &r.StatusCode, &r.Success, &r.ErrorType,
 		&r.ErrorMessage, &r.Attempts, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens,
-		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.TotalCost, &r.RateMultiplier, &r.BillingStatus,
+		&r.CacheCreationTokens, &r.CacheCreation1hTokens, &r.ImageInputTokens, &r.ImageOutputTokens, &r.TotalCost, &r.RateMultiplier, &r.BillingStatus,
 		&r.BillingMode, &r.MatchedTier, &r.LatencyMs, &r.FirstTokenMs, &r.UploadMs, &r.StickyHit, &r.ClientIP, (*store.Bytes)(&r.Conversion),
 		(*store.Bytes)(&r.AttemptTrail), &r.StandardCost}
 }
