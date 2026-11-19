@@ -8451,7 +8451,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - `ExecutionHTTPRequest.proxy_ticket`（字段 7）：路由调用里的取回**必须**带票据，`Execute`、`Monitor` 里的取回**不能**带（它们走账号自己的代理）；不符 `PERMISSION_DENIED`。路由调用里不能中继（`RelayUpstream` 仍只属于 `Execute`）。
 - 主机：与取回相同的规则 `core.CheckPluginUpstream`（§112.17）（`grpcruntime.requireFetchHost`）。路由调用没有账号，所以只能到清单 `externalServices` 之一或其子域，还要过管理员的插件联网设置（§113.3），否则 `PERMISSION_DENIED`。
 - 控制台把票据来源交给插件的原生界面（§23.5 的 `proxyTicket`）。插件界面**每次**调用自己的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都按表单当前的代理选择现取一张票据，放进请求体（约定字段名 `proxy_ticket`）；插件用**这次调用**带来的票据发这次调用里的取回（`pluginsdk.RouteProxyTicket` 读字段，缺了 400 `fields[{proxy_ticket, required}]`），不把票据存进授权会话沿用。所以授权开始后管理员改了代理，不用重新授权，后续每个请求都从新选的代理发出（2026-11-19，所有者：“代理修改了，后面的请求都用新的代理走就行了呀，重新授权干嘛呢？”）。界面不监听代理是否变化，每次都取新的。界面取了票据之后、这次调用的请求发出之前管理员又改了选择，这一次仍按取票据时的选择发出，下一次调用才用新的。
-- 核心拒绝发送（117.3 的 `PERMISSION_DENIED`、`INVALID_ARGUMENT` 等 RPC 错误）时请求没有发出，插件**不结束**授权会话（设备码、授权码都没用掉）：管理员把表单的代理改好后，下一次调用带着新票据就能继续。上游的回答（设备码过期、授权码无效等）照插件原来的规则处理。codex 回 400 `proxy_refused`（开始、换令牌）或轮询 `error`，会话保留（PLUGIN-CODEX.md 第 19 节）。
+- 核心拒绝发送（117.3 的 `PERMISSION_DENIED`、`INVALID_ARGUMENT` 等 RPC 错误）时请求没有发出，插件**不结束**授权会话（设备码、授权码都没用掉）：管理员把表单的代理改好后，下一次调用带着新票据就能继续。上游的回答（设备码过期、授权码无效等）照插件原来的规则处理。codex 回 400 `proxy_refused`（开始、换令牌）或轮询 `pending` 带拒绝原因，会话保留；设备码界面把原因显示为提示并照常轮询，表单代理要不到票据时同样显示原因、继续轮询（PLUGIN-CODEX.md 第 19 节）。
 
 ### 117.3 核心发送（`account.FetchWithProxyTicket`，`core.ProxyTicketFetcher`）
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -97,22 +98,63 @@ func TestAgentResetRequests(t *testing.T) {
 	}
 }
 
-// An authorization runs before the account exists: it sends the plugin
-// settings' client headers, else the built-in ones.
+// An authorization runs before the account is saved: every route call
+// carries the form's own client headers, and its requests (the device code,
+// each poll, both token exchanges) send them resolved as an account's.
 func TestAgentAuthorization(t *testing.T) {
 	iss := newFakeIssuer(t)
 	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
 	iss.on(pathUserCode, reply(200, `{"device_auth_id":"dev-1","user_code":"ABCD","interval":"5"}`))
+	iss.on(pathDeviceToken, reply(200, `{"authorization_code":"code-1","code_verifier":"ver-1"}`))
+	iss.on(pathOAuthToken, reply(200, `{"access_token":"at-1","refresh_token":"rt-1","expires_in":60}`))
+	// call is a route call's body: the ticket, the form's client headers and members.
+	call := func(c agentCase, members string) string {
+		return `{"proxy_ticket":"` + testTicket + `"` + c.account + members + `}`
+	}
+	sent := func(c agentCase, what, path string) {
+		t.Helper()
+		got := iss.headers[path]
+		checkAgent(t, what, c, got.Get("User-Agent"), got.Get("Originator"))
+	}
 	for _, c := range agentCases {
-		if c.account != `` {
-			continue // an account value does not exist yet
-		}
 		c.configure(t, h)
-		if r := h.Do("POST", "/auth/device/start", nil, startBody); r.GetStatus() != 200 {
-			t.Fatalf("%s: start = %d %s", c.name, r.GetStatus(), r.GetBody())
+		var device DeviceStartResponse
+		mustData(t, h.Do("POST", "/auth/device/start", nil, call(c, ``)).GetBody(), &device)
+		sent(c, "device code", pathUserCode)
+		var poll DevicePollResponse
+		mustData(t, h.Do("POST", "/auth/device/poll", nil, call(c, `,"session_id":"`+device.SessionID+`"`)).GetBody(), &poll)
+		if poll.Status != pollDone {
+			t.Fatalf("%s: poll = %+v", c.name, poll)
 		}
-		got := iss.headers[pathUserCode]
-		checkAgent(t, "authorization", c, got.Get("User-Agent"), got.Get("Originator"))
+		sent(c, "poll", pathDeviceToken)
+		sent(c, "device code exchange", pathOAuthToken)
+
+		var codex CodexStartResponse
+		mustData(t, h.Do("POST", "/auth/codex/start", nil, call(c, ``)).GetBody(), &codex)
+		u, _ := url.Parse(codex.AuthorizeURL)
+		cb := `,"session_id":"` + codex.SessionID + `","callback_url":"?code=code-2&state=` + u.Query().Get("state") + `"`
+		if r := h.Do("POST", "/auth/codex/exchange", nil, call(c, cb)); r.GetStatus() != 200 {
+			t.Fatalf("%s: exchange = %d %s", c.name, r.GetStatus(), r.GetBody())
+		}
+		sent(c, "Sign in with Codex exchange", pathOAuthToken)
+	}
+}
+
+// The form's client headers are checked as the account's are: a value that
+// is not a string or cannot be a header value refuses the call, nothing sent.
+func TestAgentAuthorizationRefusesBadValues(t *testing.T) {
+	iss := newFakeIssuer(t)
+	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
+	for _, bad := range []struct{ field, value string }{{"user_agent", `"ua\nx"`}, {"originator", `7`}} {
+		for _, path := range []string{"/auth/device/start", "/auth/device/poll", "/auth/codex/start", "/auth/codex/exchange"} {
+			r := h.Do("POST", path, nil, `{"proxy_ticket":"`+testTicket+`","session_id":"s","callback_url":"?code=c","`+bad.field+`":`+bad.value+`}`)
+			if e := decodeError(t, r); r.GetStatus() != 400 || len(e.Error.Details.Fields) != 1 || e.Error.Details.Fields[0].Field != bad.field {
+				t.Errorf("%s with %s %s = %d %s", path, bad.field, bad.value, r.GetStatus(), r.GetBody())
+			}
+		}
+	}
+	if n := iss.count(pathUserCode) + iss.count(pathDeviceToken) + iss.count(pathOAuthToken); n != 0 {
+		t.Fatalf("%d refused calls reached OpenAI", n)
 	}
 }
 

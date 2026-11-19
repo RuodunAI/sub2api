@@ -14,7 +14,8 @@ import (
 // account's own value (credentials user_agent / originator), else the
 // plugin settings' value, else the built-in one (UserAgent, Originator). An
 // empty value sets nothing and the next level applies. An authorization
-// runs before the account exists, so it has no account value.
+// runs before the account is saved: its account values are the form's, which
+// each route call carries (readCall).
 
 // agentFields are the credential fields of the account's own values.
 var agentFields = []string{"user_agent", "originator"}
@@ -25,8 +26,8 @@ type agent struct {
 	Originator string
 }
 
-// agent resolves the client headers of the account with credentials c
-// (credentials{} for an authorization).
+// agent resolves the client headers of the account with credentials c (for
+// an authorization, the form's values).
 func (p *Plugin) agent(c credentials) agent {
 	s := p.settings.Load()
 	return agent{

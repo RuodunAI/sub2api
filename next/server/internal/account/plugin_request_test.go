@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -183,5 +186,54 @@ func TestSendPluginAccountRequestHosts(t *testing.T) {
 	}
 	if n := len(e.auditRows(AuditPluginAccountRequest)); n != audited+1 {
 		t.Fatalf("audit rows %d, want %d: refused requests are not audited", n, audited+1)
+	}
+}
+
+// SendPluginAccountRequest sends through the proxy the account holds when
+// the request is made, read with its credentials (CONTRACTS §123): a proxy
+// set straight in the table carries the next request, and a disabled one is
+// a transport error with nothing sent directly.
+func TestSendPluginAccountRequestThroughAccountProxy(t *testing.T) {
+	e := setup(t)
+	ctx := context.Background()
+	var direct atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		direct.Add(1)
+		_, _ = w.Write([]byte(`{"via":"direct"}`))
+	}))
+	defer srv.Close()
+	var mu sync.Mutex
+	var via []string
+	prx := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		via = append(via, r.Method+" "+r.URL.String())
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"via":"proxy"}`))
+	}))
+	defer prx.Close()
+	id := e.mkRawAccount("anthropic", "apikey", "mine", "sk-mine", false)
+	port := prx.Listener.Addr().(*net.TCPAddr).Port
+	on := e.exec1(`INSERT INTO proxies (name, protocol, host, port) VALUES ('p', 'http', '127.0.0.1', $1) RETURNING id`, port)
+	off := e.exec1(`INSERT INTO proxies (name, protocol, host, port, status) VALUES ('off', 'http', '127.0.0.1', $1, 'disabled') RETURNING id`, port)
+	send := func(proxyID int64) *pluginv1.ExecutionHTTPResponse {
+		t.Helper()
+		e.exec1(`UPDATE accounts SET proxy_id = $1 WHERE id = $2 RETURNING id`, proxyID, id)
+		out, err := e.svc.SendPluginAccountRequest(ctx, "anthropic", testServers, &pluginv1.SendAccountRequestRequest{AccountId: id, Method: "POST", Url: srv.URL + "/reset"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	if out := send(on); out.GetStatus() != 200 || string(out.GetBody()) != `{"via":"proxy"}` {
+		t.Fatalf("via proxy: %v", out)
+	}
+	if out := send(off); out.GetStatus() != 0 || !strings.Contains(out.GetTransportError(), "disabled") {
+		t.Fatalf("disabled proxy: %v", out)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(via) != 1 || via[0] != "POST "+srv.URL+"/reset" || direct.Load() != 0 {
+		t.Fatalf("proxy saw %v, %d sent directly", via, direct.Load())
 	}
 }

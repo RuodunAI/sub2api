@@ -15,12 +15,13 @@
 //   sensitive fields go back as "******" and the core keeps the stored tokens.
 // - The account's own User-Agent and originator (credentials user_agent /
 //   originator, empty for the plugin settings' or built-in values), kept
-//   across re-authorizations.
+//   across re-authorizations. Every call of a login sends their current
+//   values too, so the authorization requests already use them.
 import { computed, nextTick, ref, watch } from 'vue'
 import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SField, SHint, SInput, STabs } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
 import { useCodexHost, type CodexCredentials } from './host'
-import { flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
+import { agentOf, flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
 import DeviceFlow from './DeviceFlow.vue'
 import OAuthFlow from './OAuthFlow.vue'
 
@@ -114,11 +115,8 @@ function again() {
   reauthOpen.value = editing.value && hasCurrent.value
 }
 
-/** The account's own client header k, "" for none. */
-function agentValue(k: AgentField): string {
-  const v = props.modelValue?.[k]
-  return typeof v === 'string' ? v : ''
-}
+/** The account's own client headers as the form holds them now. */
+const agent = computed(() => agentOf(props.modelValue))
 
 function setAgent(k: AgentField, v: string) {
   emit('update:modelValue', { ...(props.modelValue || {}), [k]: v })
@@ -184,8 +182,8 @@ defineExpose({ validate })
     <!-- The flows: creating, or re-authorizing -->
     <STabs v-if="showFlows" v-model="tab" :tabs="tabs" size="sm" :aria-label="t('tabsLabel')" data-testid="codex-flows">
       <template #default="{ active }">
-        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
-        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
+        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
+        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
       </template>
     </STabs>
 
@@ -193,10 +191,10 @@ defineExpose({ validate })
     <div class="cx-panel" data-testid="codex-agent">
       <span class="cx-title">{{ t('agent.title') }}</span>
       <SField :label="t('agent.userAgent')" :hint="t('agent.userAgentHint')" size="sm">
-        <SInput :model-value="agentValue('user_agent')" mono autocomplete="off" spellcheck="false" placeholder="sup2api-codex/<version>" data-testid="codex-user-agent" @update:model-value="setAgent('user_agent', String($event ?? ''))" />
+        <SInput :model-value="agent.user_agent" mono autocomplete="off" spellcheck="false" placeholder="sup2api-codex/<version>" data-testid="codex-user-agent" @update:model-value="setAgent('user_agent', String($event ?? ''))" />
       </SField>
       <SField :label="t('agent.originator')" :hint="t('agent.originatorHint')" size="sm">
-        <SInput :model-value="agentValue('originator')" mono autocomplete="off" spellcheck="false" placeholder="sup2api" data-testid="codex-originator" @update:model-value="setAgent('originator', String($event ?? ''))" />
+        <SInput :model-value="agent.originator" mono autocomplete="off" spellcheck="false" placeholder="sup2api" data-testid="codex-originator" @update:model-value="setAgent('originator', String($event ?? ''))" />
       </SField>
     </div>
 
