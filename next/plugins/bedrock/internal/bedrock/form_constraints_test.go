@@ -7,10 +7,11 @@ import (
 
 // TestFormSchemaConstraintsStillRefused keeps every constraint of the JSON
 // Schema forms the native account form replaced (forms/{apikey,aksk,sts}
-// .schema.json, deleted with UI 4.0): for each one, an input that schema
-// refused, written out here, is still refused by ValidateCredentials at the
-// same field. The core no longer checks a schema, so this is the save's only
-// check besides the SDK's refusal of unknown keys.
+// .schema.json, deleted when the native form came in): for each one, an
+// input that schema refused, written out here, is still refused by
+// ValidateCredentials at the same field. The core no longer checks a schema,
+// so this is the save's only check; the schemas' additionalProperties:false
+// has no counterpart here (keys the form does not send pass through).
 func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 	type input struct {
 		name            string

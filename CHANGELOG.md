@@ -42,6 +42,10 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - `@sub2api/ui`：新增 `SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）。
 - `@sub2api/ui/testing`：增加账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
 
+各插件改用补缺的公共接口（U3b）：
+
+- bedrock、vertex：表单的分节改用 `SFormSection`，props 改用 `nativeAccountFormProps`，bedrock 的到期时间改用 `SDateTimeInput`，`vertex_apikey` 改为直接用 `createApiKeyForm`（字段、文案、校验不变；项目 ID 与区域两个输入框不再用等宽字体）；spec 改用 `@sub2api/ui/testing`。bedrock 不认识的账号类型不再当作 `bedrock_apikey` 显示。vertex 拒绝表单没有声明的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和核心续期写回的 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
+
 ### 插件界面只用代码写：云厂商插件的账号表单
 
 - bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。

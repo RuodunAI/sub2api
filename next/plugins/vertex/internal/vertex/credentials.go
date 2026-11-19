@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
 // Credential and settings fields besides the key file (keyKinds).
@@ -42,8 +43,9 @@ var (
 )
 
 // apiKeySpec checks the api_key of an API key account the way every API key
-// form does: 8-512 visible characters. The type has no base_url.
-var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey}
+// form does: 8-512 visible characters. The type has no base_url; project_id
+// and location are its other keys (checked by target), any other is refused.
+var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey, Fields: fieldcheck.Fields{fieldProject: fieldcheck.Any(), fieldLocation: fieldcheck.Any()}}
 
 // expiry reads expires_at the way the core does.
 var expiry = &manifest.AccountRefresh{}
@@ -117,6 +119,10 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	kind, keyed := keyKinds[typ]
 	if !keyed {
 		return invalid(fieldError("account_type", "unsupported", "unsupported account type "+strconv.Quote(typ)+" / 不支持的账号类型")), nil
+	}
+	// The token state the core writes on renewal comes back with every edit.
+	if refused := form.Only(kind.field, fieldAccessToken, fieldExpiresAt, fieldTokenFor, fieldProject, fieldLocation); refused != nil {
+		return refused, nil
 	}
 	if bad := validateKeyAccount(kind, form.Creds, form.Settings); bad != nil {
 		return invalid(bad), nil
