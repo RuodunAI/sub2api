@@ -81,7 +81,8 @@
 
 契约见 CONTRACTS §124，设计见 [设计文档](next/docs/DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md)。
 
-- 平台调用（`Execute`、`Monitor`、`ClassifyError`、测试、模型、额度、续期、余额）里的 `Account` 带上这次出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码）；`AccountProperties.proxy_id` 删除。插件看到的代理就是核心这次发请求用的代理；取不到代理（停用、不存在）时核心不调用插件：网关换号，`Monitor` 推迟，测试、额度、余额、续期记失败。建账号之前（表单拉模型、授权票据）不给代理详情。
+- 平台调用（`Execute`、`Monitor`、`ClassifyError`、测试、模型、额度、续期、余额）里的 `Account` 带上这次出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码）；`AccountProperties.proxy_id` 删除。插件看到的代理就是核心这次发请求用的代理；取不到代理（停用、不存在）时核心不调用插件：网关换号，`Monitor` 推迟，测试、额度、余额、续期记失败。
+- 建账号之前在表单里拉模型：表单里填了代理（选已有的或粘贴代理串）就经它发出，插件收到的 `Account.proxy` 就是这条代理（粘贴的 id 为 0）；没填就直连，`Account.proxy` 为空；填了的代理不可用时报错，不直连、不调用插件。授权票据的路由调用不带 `Account`，插件仍看不到票据里的代理。
 - `HostService.GetAccount` 取代 `GetAccountCredentials`：返回与平台调用相同的完整账号，审计 action 改为 `plugin.account.read`（只记插件、类型、账号名）。用量观察里的账号就是 `Execute` 收到的那个（含凭证）。
 - 宿主授权 `accounts.credentials`、`accounts.read` 删除：声明账号类型只需 `platform.register`；`ListAccounts`、`SendAccountRequest`、`AccountScopeCheck` 不再检查授权。清单里还写着这两个授权的包按旧契约拒绝（与协议 1 的包同一条信息）。迁移 0116 删除这两个授权的全部授予行（含撤销的、暂存的）。
 - 安装审核的固定提示改为写明插件收到账号的全部信息（含代理密码）、请求都由核心发出。控制台去掉这两个授权的风险等级与文案。

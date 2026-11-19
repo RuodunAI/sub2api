@@ -36,7 +36,8 @@ const (
 
 // fetchTypeModels is POST /account-types/:plugin_key/:type/models/fetch:
 // lists the models reachable with credentials typed into the form (account
-// not saved yet).
+// not saved yet). The plugin is shown the form's proxy the request goes out
+// through, none when the form chose none (CONTRACTS §124.2).
 func (s *Service) fetchTypeModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	var in struct {
@@ -78,7 +79,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 		return
 	}
 	res, err := s.fetchModels(ctx, bt, &pluginv1.Account{Type: bt.Type.ID,
-		CredentialsJson: string(p.secret), SettingsJson: string(p.settings)}, eg)
+		CredentialsJson: string(p.secret), SettingsJson: string(p.settings), Proxy: core.PluginProxy(eg.Proxy)}, eg)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -21,7 +21,8 @@ import (
 // ProxyChoice is the proxy an account not saved yet would use, as the
 // account form sends it (models/fetch, proxy-ticket): an existing proxy, a
 // pasted proxy URL - only parsed and used, never looked up or stored
-// (CONTRACTS §21.2) - or neither, a direct connection.
+// (CONTRACTS §21.2), though models/fetch hands it to the plugin as
+// Account.proxy with id 0 (§124.2) - or neither, a direct connection.
 type ProxyChoice struct {
 	ProxyID  *int64  `json:"proxy_id,omitempty"`
 	ProxyURL *string `json:"proxy_url,omitempty"`
@@ -73,8 +74,8 @@ func (s *Service) checkChoice(ctx context.Context, c ProxyChoice, action perm.Ke
 }
 
 // egressClient is the way out through e: the proxy's client (cached), a
-// transient one for a pasted URL, or the direct one. release ends what a
-// transient client holds.
+// transient one for a pasted URL (Proxy is that URL's address, id 0), or the
+// direct one. release ends what a transient client holds.
 func (s *Service) egressClient(ctx context.Context, e egress) (eg core.Egress, release func(), err error) {
 	if e.spec == nil {
 		eg, err = s.proxyEgress(ctx, e.proxyID)
@@ -84,6 +85,7 @@ func (s *Service) egressClient(ctx context.Context, e egress) (eg core.Egress, r
 	if eg.Client, err = s.d.Proxies.HTTPClientFor(ctx, *e.spec); err != nil {
 		return eg, nil, err
 	}
+	eg.Proxy = &core.ProxyRef{ProxySpec: *e.spec}
 	return eg, eg.Client.CloseIdleConnections, nil
 }
 
