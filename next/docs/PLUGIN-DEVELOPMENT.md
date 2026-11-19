@@ -59,7 +59,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 自己写 `Execute`（实现 `Executor`）也可以，其中仍可调 `pluginsdk.ExecuteDefault(ctx, p, in)` 做默认的部分；返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
 
-可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform`（加上 `UpstreamBuilder` 或 `Executor`）就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
+可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`BalanceReader`（`BuildBalanceRequest` / `ParseBalanceResponse`，账号余额，CONTRACTS §52）、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform`（加上 `UpstreamBuilder` 或 `Executor`）就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
 
 ### 2.2 构造请求：`NewUpstream`
 
@@ -223,7 +223,9 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 ## 3. `standard` 库与厂商预设
 
-“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和三个风格的完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
+“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`、`BalanceReader`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
+
+一个上游同时说几家协议（中转站：New API、Sub2API）时，用 `standard.Merge(id, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), …)` 把几份预设合成一个类型：每条路由保留自己那份预设的鉴权头（OpenAI `Authorization: Bearer`、Anthropic `x-api-key` 加默认 `anthropic-version`、Gemini `x-goog-api-key`）、请求头和失败分类（路由级的 `Route.Auth`、`Route.Classify`）；`spec` 换掉各预设的凭证规则（中转站的地址必填、没有默认）。账号测试按核心给的协议顺序选（`Type.Tests`，合并时收集各份的测试）：运营方用协议绑定只开 Messages 的账号就测 Messages。账号余额写 `Type.Balance`：基础地址上的一个或几个 GET（`BalanceRequest.Auth: &standard.Auth{}` 的请求不带 Key），`Read` 把按顺序的回答读成结果，`standard.BalanceFailure`（传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED）和 `standard.USDMicros` 帮着读；清单里同时写 `"balance": {}`。TypeSafe 的平台定义与预设在 `sdk/pluginsdk/providers/typesafe`（`Platform()` 是平台的唯一来源，`APIKey(id)` 是预设）。
 
 旧的清单 `upstream` 声明（已删除）的每一项在库里的对应：
 
@@ -267,10 +269,11 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 - `Harness.Execute` / `Harness.Monitor` 像核心一样发执行令牌、调用、调用返回后作废令牌；返回 `*Execution`（`Response`、`MonitorResponse`、`Err`、`Relays()`、`RelayErrors()`、`Fetches()`、`Relayed(t)`）。
 - `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`Options.Manifest` 是插件的 `manifest.json`：harness 用它起插件（等于 `pluginsdk.WithManifest`），假宿主也知道它；`h.Host.Manifest` 是宿主知道的清单（没有事先设置时取 `Options.Manifest`），中继和取回能到哪些主机按它和这次调用的账号决定（`manifest.UpstreamHostAllowed`；中继到别的主机 `INVALID_ARGUMENT`），没有清单时只有 `h.Host.ExternalServices` 放行的主机（测试指向 `127.0.0.1` 的假上游时在这里写上它）；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、方法和头名按 `httpguts`、HTTP 协议上不许 ws(s) 地址、`Monitor` 的终态要有一次完整成功的取回）；和宿主一样不限请求体、不数取回、不截回答。不经 `Harness` 时用 `h.Host.Begin(in)` / `BeginMonitor(in)` 发令牌。仍与宿主不同的地方写在 `FakeHost` 的注释里。
 - 只测构造时直接调 `p.BuildUpstream(ctx, in)` 比较结果。
+- `h.Balance(ctx, account, answer)` 像核心一样做一次余额查询：`BuildBalanceRequest` 的每个请求先按清单的主机规则判断（有一个不行就都不发，`PERMISSION_DENIED`），再逐个交给 `answer`（不跟随重定向，nil 算传输错误），回答按顺序交给 `ParseBalanceResponse`，返回结果；成功又不是 `unlimited` 却没有合法币种时报 `FAILED_PRECONDITION`（核心把它记成 TRANSIENT）。
 
-**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。九个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。大请求体的大小（8 MiB）和取消的等待时限（2 秒）是套件内部的常量，`Plugin` 没有对应字段。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
+**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 12 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket、余额（清单声明 `balance` 的类型要读得出余额，请求的主机过主机规则，传输错误和空回答给出错误结果；没声明的回 `UNIMPLEMENTED`）。账号类型服务别的插件声明的平台时（New API 服务 TypeSafe 平台），把那个平台放进 `Plugin.Platforms`（`typesafe.Platform()`），套件就认得它的协议和客户端请求头。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。九个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。大请求体的大小（8 MiB）和取消的等待时限（2 秒）是套件内部的常量，`Plugin` 没有对应字段。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
 
-**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：转发 V2 之前（四个插件还由已删除的声明式引擎驱动时）录下的 1498 条样例（openai 441、anthropic 343、gemini 371、relay 343），转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, manifestPath, p)` 回放：它先核对插件清单交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致，再像核心一样按 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的（2.2）。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
+**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：转发 V2 之前（四个插件还由已删除的声明式引擎驱动时）录下的 1498 条样例（openai 441、anthropic 343、gemini 371、relay 343），转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, manifestPath, p)` 回放：它先核对插件清单交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致，再像核心一样按 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的（2.2）。用 `standard` 写的插件都要全部通过。样例不是本插件录的、但它也服务这些协议时（`Merge` 出的中转站类型），用选项只回放它必须答得一样的用例：`standardtest.Run(t, "openai", "../../manifest.json", p, goldentest.Select(goldentest.Forwarded("apikey", openai.ProtocolChat, …)))`（只取这些协议、账号自带基础地址的 `execute` 用例；凭证规则不同的 `validate` 等不取），清单交给类型的客户端请求头按样例协议所属的平台核对。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
 
 ## 5. 设置对照表
 
@@ -372,6 +375,7 @@ if !sticky.Enabled { ... }
 - 权威头只放鉴权头和签名头，其余放默认头；改请求体只用 `jsonedit`。
 - 用量规则：流式规则把输出数映射在指名的终止事件上；非流式规则映射响应体。规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`。
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine）。
+- 上游同时说几家协议时用 `standard.Merge`，每个协议保留它官方的鉴权头和失败分类；有余额接口的写 `Type.Balance` 并在清单写 `balance`。
 - 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写）；不设 `Host` 头。
 - 测试里调一致性套件；用 `standard` 写的插件另跑黄金样例。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。

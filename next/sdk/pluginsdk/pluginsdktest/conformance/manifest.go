@@ -4,20 +4,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 )
 
 // declared is what the suite reads from the plugin's manifest: its account
-// types, and the platforms their protocols belong to (the built-in ones
-// and the manifest's own).
+// types, and the platforms their protocols belong to (the built-in ones,
+// the manifest's own and Plugin.Platforms).
 type declared struct {
 	m         manifest.Manifest
 	platforms []manifest.Platform
 }
 
-func readManifest(raw []byte) (*declared, error) {
+func readManifest(raw []byte, others []manifest.Platform) (*declared, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("Plugin.Manifest is required: the plugin's manifest.json")
 	}
@@ -25,8 +26,13 @@ func readManifest(raw []byte) (*declared, error) {
 	if err := json.Unmarshal(raw, &d.m); err != nil {
 		return nil, fmt.Errorf("Plugin.Manifest: %w", err)
 	}
-	d.platforms = append(platforms.Builtin(), d.m.Platforms...)
+	d.platforms = append(append(platforms.Builtin(), d.m.Platforms...), others...)
 	return d, nil
+}
+
+// balanceDeclared reports whether accountType declares a balance.
+func (d *declared) balanceDeclared(accountType string) bool {
+	return slices.ContainsFunc(d.m.AccountTypes, func(at manifest.AccountType) bool { return at.ID == accountType && at.Balance != nil })
 }
 
 // platformOf is the platform with an endpoint of protocol, nil for none.

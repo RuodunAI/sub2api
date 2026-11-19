@@ -5,10 +5,12 @@
 // such types (docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md §7.3).
 //
 // A plugin describes each type as a Type, usually starting from a provider
-// preset (sdk/pluginsdk/providers/{openai,anthropic,gemini}), and serves
-// New(types...): the result is a pluginsdk.Platform and UpstreamBuilder, run
-// with pluginsdk.ExecuteDefault, plus BuildModelsRequest. README.md has complete
-// plugin main packages.
+// preset (sdk/pluginsdk/providers/{openai,anthropic,gemini,typesafe}), or
+// combining several with Merge (a relay site that speaks every vendor's
+// protocol), and serves New(types...): the result is a pluginsdk.Platform
+// and UpstreamBuilder, run with pluginsdk.ExecuteDefault, plus
+// BuildModelsRequest and the balance (pluginsdk.BalanceReader). README.md
+// has complete plugin main packages.
 //
 // The library holds only what every such type does the same way. What
 // differs between protocols - paths, the model in the path, body edits, the
@@ -17,6 +19,7 @@
 package standard
 
 import (
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
@@ -32,7 +35,8 @@ type Type struct {
 	// format, default base URL, whether it is required, the suffixes a
 	// pasted URL loses, the wording of the errors.
 	Spec apikey.Spec
-	// Auth is where the API key goes.
+	// Auth is where the API key goes: on every route without its own, the
+	// model listing and the balance.
 	Auth Auth
 	// Headers are written on every request of the type, in order, before
 	// the route's.
@@ -47,13 +51,21 @@ type Type struct {
 	// rewrites, so a field the operator's parameter override set is
 	// removed too (design §12.5).
 	FilterFields []string
-	// Classify classifies the upstream's errors.
+	// Classify classifies the upstream's errors of a protocol whose route
+	// has no policy of its own, and of a request without a known protocol.
 	Classify classify.Policy
 	// Test is the console's account test; nil answers UNIMPLEMENTED.
 	Test *Test
+	// Tests are further tests, one per protocol: the console's test uses
+	// the first protocol the core lists (BuildTestRequestRequest.protocols)
+	// that Test or one of Tests is on, else Test. Tests needs Test.
+	Tests []Test
 	// Models is the model listing on the base URL; nil answers
 	// UNIMPLEMENTED.
 	Models *apikey.ModelList
+	// Balance is the account's balance (manifest accountTypes[].balance);
+	// nil answers UNIMPLEMENTED.
+	Balance *Balance
 }
 
 // Auth is the header that carries the API key, the authoritative header of
@@ -78,6 +90,12 @@ type Route struct {
 	Model Model
 	// Headers are written after the type's.
 	Headers []Header
+	// Auth is where the key goes on this route; nil: the type's.
+	Auth *Auth
+	// Classify classifies the upstream's errors of this route's protocol;
+	// nil: the type's. Vendors differ in their error bodies and in what a
+	// 429 or a 529 means, and a relay answers each protocol in its own.
+	Classify *classify.Policy
 	// Edit changes the body after FilterFields are deleted, in the same
 	// jsonedit pass (nil: none). Not on a websocket route.
 	Edit func(d *jsonedit.Doc, r *Request)
@@ -146,4 +164,24 @@ type Test struct {
 	Model string
 	// Body is the request body for model.
 	Body func(model string) string
+}
+
+// Balance is the balance of an account: GETs on its base URL, sent in this
+// order, whose answers Read turns into the result.
+type Balance struct {
+	Requests []BalanceRequest
+	// Read reads the answers, one per request in the same order, into the
+	// result (BalanceFailure and USDMicros help). r holds the account, its
+	// key and base URL. It states the upstream's facts: an answer it cannot
+	// read is an ERROR_TYPE_TRANSIENT result, never an error.
+	Read func(r *Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult
+}
+
+// BalanceRequest is one GET of a balance.
+type BalanceRequest struct {
+	// Path is appended to the base URL, with an optional query.
+	Path string
+	// Auth is where the key goes; nil: the type's, &Auth{}: no key (a
+	// public endpoint).
+	Auth *Auth
 }

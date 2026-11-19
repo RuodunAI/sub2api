@@ -73,6 +73,20 @@ type QuotaReader interface {
 	ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error)
 }
 
+// BalanceReader is implemented by account types whose upstream reports the
+// balance of an account and that declare manifest accountTypes[].balance
+// (CONTRACTS §52). Like QuotaReader the plugin only describes the requests
+// (one or more, sent in order) and reads the answers (one per request, in
+// the same order); the host checks every URL against the manifest's upstream
+// host rules before it sends any, sends them through the account's proxy
+// without following redirects, decides when, and only shows the result.
+// Optional: a Platform without it answers both with UNIMPLEMENTED and the
+// host treats the account type as having no balance.
+type BalanceReader interface {
+	BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error)
+	ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error)
+}
+
 // CredentialRefresher is implemented by account types whose credentials
 // expire and that declare manifest accountTypes[].refresh (CONTRACTS §48),
 // e.g. an OAuth access token renewed from its refresh token. The plugin only

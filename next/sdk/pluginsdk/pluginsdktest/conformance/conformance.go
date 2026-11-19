@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
@@ -27,8 +28,14 @@ type Plugin struct {
 	// Manifest is the plugin's manifest.json. The suite serves the plugin
 	// with it (pluginsdk.WithManifest): the declared capabilities decide
 	// whether the WebSocket rule applies. It also reads from it the client
-	// headers the core hands over (rule 4).
+	// headers the core hands over (rule 4) and the account types that
+	// declare a balance (rule 12).
 	Manifest []byte
+	// Platforms are platforms another plugin declares that the manifest's
+	// account types serve (providers/typesafe.Platform() for a relay
+	// forwarding to TypeSafe): the suite reads their endpoints and client
+	// headers like the built-in platforms'.
+	Platforms []manifest.Platform
 	// SDK are further options of pluginsdk.Register.
 	SDK []pluginsdk.Option
 	// Config is the plugin settings sent with Configure (nil = "{}").
@@ -78,7 +85,8 @@ type Case struct {
 	// "<protocol> stream|non-stream" (" websocket" for a turn).
 	Name string
 	// Account is a sample account of the type, with credentials and
-	// settings JSON.
+	// settings JSON. The first case's account of each type is also the one
+	// rule 12 queries the balance of.
 	Account *pluginv1.Account
 	// Meta is the request meta: protocol, model, stream, endpoint ...
 	Meta *pluginv1.RequestMeta
@@ -170,7 +178,7 @@ type itemKey struct{ check, item string }
 
 func newSuite(p Plugin, cases []Case) (*suite, error) {
 	s := &suite{p: p, exceptions: map[itemKey]Exception{}, sockets: &sockets{}}
-	d, err := readManifest(p.Manifest)
+	d, err := readManifest(p.Manifest, p.Platforms)
 	if err != nil {
 		return nil, err
 	}

@@ -25,6 +25,13 @@
 //	NotificationChannel -> NotificationService.DeliverNotification ("notify.channel.v1")
 //	Migration  -> MigrationService  ("migration.data.v1")
 //
+// A Platform may also implement the optional PlatformService calls, found
+// by type assertion and answered UNIMPLEMENTED otherwise: ModelLister,
+// ModelResolver, ModelAvailabilityChecker, QuotaReader, CredentialRefresher
+// and BalanceReader. The last three only describe upstream requests and
+// read their answers; the host sends them. Package standard implements
+// ModelLister and BalanceReader for API key account types.
+//
 // "platform.tasks.v1" and "platform.websocket.v1" name no interface: they say
 // what Execute does on the endpoints of the manifest and are reported when
 // the manifest declares them.
@@ -227,5 +234,6 @@
 // The pluginsdktest sub-package runs a plugin in-process over bufconn with a
 // fake host, for unit tests: Harness.Execute and Harness.Monitor make the
 // calls the way the host does and return the relays and fetches the plugin
-// made.
+// made; Harness.Balance makes a balance query, checking the hosts of its
+// requests as the host does.
 package pluginsdk
