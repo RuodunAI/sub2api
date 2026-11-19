@@ -8,7 +8,9 @@ package apikey
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -130,10 +132,14 @@ type Spec struct {
 	// Texts overrides the wording of a few field errors (see Texts).
 	Texts Texts
 	// Fields are the keys other than api_key and base_url the form may
-	// send. When set (an empty list included), Validate refuses every other
-	// key of the credentials and settings with code "unknown", as the
-	// form's additionalProperties:false did; nil lets them through.
-	Fields []string
+	// send, each with its rules (fieldcheck.Any() for a key taking any
+	// value). When set (an empty map included), Validate checks them,
+	// reading each from the credentials, then the settings, and refuses
+	// every other key of either object with code "unknown", as the form's
+	// additionalProperties:false did; nil lets them through. A rule for
+	// api_key or base_url adds to the checks above and runs on the value as
+	// sent, only when those passed.
+	Fields fieldcheck.Fields
 }
 
 // Validate implements ValidateCredentials for the account type described by s.
@@ -163,7 +169,7 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
 	if s.Fields != nil {
-		errs = append(errs, fieldcheck.Unknown(append([]string{"api_key", "base_url"}, s.Fields...), creds, settings)...)
+		errs = s.checkFields(errs, creds, settings)
 	}
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
@@ -238,6 +244,19 @@ func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[st
 		return "", errs.Add("base_url", "format", placeholder(msg, "reason", err.Error()))
 	}
 	return normalized, errs
+}
+
+// checkFields adds the errors of s.Fields (api_key and base_url known),
+// except at a field that already has one.
+func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string]any) pluginsdk.FieldErrors {
+	fields := fieldcheck.Fields{"api_key": fieldcheck.Any(), "base_url": fieldcheck.Any()}
+	maps.Copy(fields, s.Fields)
+	for _, e := range fieldcheck.Check(fields, creds, settings) {
+		if !slices.ContainsFunc(errs, func(x *pluginv1.FieldError) bool { return x.GetField() == e.GetField() }) {
+			errs = append(errs, e)
+		}
+	}
+	return errs
 }
 
 // rewriteObject re-encodes obj with api_key and base_url normalized where the

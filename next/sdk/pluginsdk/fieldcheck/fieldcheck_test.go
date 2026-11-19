@@ -2,6 +2,7 @@ package fieldcheck_test
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -117,6 +118,37 @@ func TestUnknown(t *testing.T) {
 	}
 	if errs := fieldcheck.Unknown(nil); errs != nil {
 		t.Fatalf("nothing to check = %v", errs)
+	}
+}
+
+// DecodeSettings: checked first (a refused value never reaches out), then
+// decoded over the defaults out holds; anything but an object is
+// invalid_json.
+func TestDecodeSettings(t *testing.T) {
+	rules := fieldcheck.Fields{"host": fieldcheck.String().MaxLen(5), "port": fieldcheck.Integer().Range(1, 65535)}
+	type settings struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	}
+	s := settings{Port: 587}
+	if err := fieldcheck.DecodeSettings(pluginsdk.Config{JSON: json.RawMessage(`{"host":"smtp"}`)}, rules, &s); err != nil || s != (settings{Host: "smtp", Port: 587}) {
+		t.Fatalf("valid = %+v %v", s, err)
+	}
+	s = settings{Port: 587}
+	if err := fieldcheck.DecodeSettings(pluginsdk.Config{}, rules, &s); err != nil || s != (settings{Port: 587}) {
+		t.Fatalf("unset = %+v %v", s, err)
+	}
+	s = settings{Port: 587}
+	err := fieldcheck.DecodeSettings(pluginsdk.Config{JSON: json.RawMessage(`{"host":"smtp.example.com","port":0,"x":1}`)}, rules, &s)
+	var fe pluginsdk.FieldErrors
+	if !errors.As(err, &fe) || !reflect.DeepEqual(codes(fe), map[string]string{"host": "maxLength", "port": "minimum", "x": "unknown"}) || s != (settings{Port: 587}) {
+		t.Fatalf("refused = %v, %+v", err, s)
+	}
+	for _, raw := range []string{`[]`, `"x"`, `{`} {
+		err := fieldcheck.DecodeSettings(pluginsdk.Config{JSON: json.RawMessage(raw)}, rules, &s)
+		if !errors.As(err, &fe) || len(fe) != 1 || fe[0].GetField() != "" || fe[0].GetCode() != "invalid_json" {
+			t.Errorf("%s: %v", raw, err)
+		}
 	}
 }
 

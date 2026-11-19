@@ -1,9 +1,11 @@
 package apikey
 
 import (
+	"reflect"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
 func TestValidator(t *testing.T) {
@@ -233,30 +235,48 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 	}
 }
 
-// Fields, when set, refuses the keys the form does not send (in either
-// object); nil keeps letting them through.
+// Fields, when set, checks the keys it names and refuses the ones the form
+// does not send (in either object); nil keeps letting them through. A rule
+// on api_key or base_url runs only where the Spec's own check passed.
 func TestSpecFields(t *testing.T) {
 	req := &pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678","organization":"o","extra":1}`, SettingsJson: `{"base_url":"https://u.example","proxy":"p"}`}
 	if resp := (Spec{AccountType: "apikey"}).Validate(req); len(resp.GetErrors()) != 0 {
 		t.Fatalf("nil Fields = %v", resp.GetErrors())
 	}
-	resp := (Spec{AccountType: "apikey", Fields: []string{"organization"}}).Validate(req)
-	got := map[string]string{}
-	for _, e := range resp.GetErrors() {
-		got[e.GetField()] = e.GetCode()
+	errs := func(s Spec, creds, settings string) map[string]string {
+		resp := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: creds, SettingsJson: settings})
+		got := map[string]string{}
+		for _, e := range resp.GetErrors() {
+			got[e.GetField()] = e.GetCode()
+		}
+		return got
 	}
-	if len(got) != 2 || got["extra"] != "unknown" || got["proxy"] != "unknown" {
-		t.Fatalf("errors = %v", resp.GetErrors())
+	org := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"organization": fieldcheck.String().MaxLen(3)}}
+	if got := errs(org, req.CredentialsJson, req.SettingsJson); !reflect.DeepEqual(got, map[string]string{"extra": "unknown", "proxy": "unknown"}) {
+		t.Fatalf("unknown keys = %v", got)
 	}
-	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
-		CredentialsJson: `{"api_key":"sk-12345678","organization":"o"}`})
-	if len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "organization" {
-		t.Fatalf("an empty list allows api_key and base_url only: %v", resp.GetErrors())
+	if got := errs(org, `{"api_key":"sk-12345678","organization":"long"}`, ""); !reflect.DeepEqual(got, map[string]string{"organization": "maxLength"}) {
+		t.Fatalf("rule = %v", got)
 	}
-	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+	if got := errs(org, `{"api_key":"sk-12345678"}`, `{"organization":7}`); !reflect.DeepEqual(got, map[string]string{"organization": "type"}) {
+		t.Fatalf("rule on a setting = %v", got)
+	}
+	empty := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{}}
+	if got := errs(empty, `{"api_key":"sk-12345678","organization":"o"}`, ""); !reflect.DeepEqual(got, map[string]string{"organization": "unknown"}) {
+		t.Fatalf("an empty map allows api_key and base_url only: %v", got)
+	}
+	resp := empty.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"https://u.example/"}`})
 	if len(resp.GetErrors()) != 0 || resp.GetNormalizedSettingsJson() != `{"base_url":"https://u.example"}` {
 		t.Fatalf("valid = %v", resp)
+	}
+	endpoint := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"base_url": fieldcheck.String().Pattern(`^https://[a-z.]+$`)}}
+	if got := errs(endpoint, `{"api_key":"sk-12345678","base_url":"https://u.example/p"}`, ""); !reflect.DeepEqual(got, map[string]string{"base_url": "pattern"}) {
+		t.Fatalf("base_url rule = %v", got)
+	}
+	// One error per field: the Spec's own, not the rule's too.
+	if resp := endpoint.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"ftp://u"}`}); len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetCode() != "format" {
+		t.Fatalf("refused base_url = %v", resp.GetErrors())
 	}
 }

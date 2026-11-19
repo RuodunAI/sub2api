@@ -166,6 +166,26 @@ func Unknown(known []string, objs ...map[string]any) pluginsdk.FieldErrors {
 	return unknown(nil, "", func(k string) bool { return slices.Contains(known, k) }, objs)
 }
 
+// DecodeSettings is the settings check of ValidateSettings and Configure:
+// the object cfg holds is checked against fields (Check), then decoded into
+// out, whose values stay where a key is absent (the plugin's defaults).
+// Settings that are not a JSON object are refused at "" with code
+// "invalid_json". The error is a pluginsdk.FieldErrors one.
+func DecodeSettings(cfg pluginsdk.Config, fields Fields, out any) error {
+	invalid := pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
+	var values map[string]any
+	if err := cfg.Decode(&values); err != nil {
+		return invalid
+	}
+	if err := Check(fields, values).Err(); err != nil {
+		return err
+	}
+	if err := cfg.Decode(out); err != nil {
+		return invalid
+	}
+	return nil
+}
+
 func check(errs pluginsdk.FieldErrors, at string, fields Fields, objs []map[string]any) pluginsdk.FieldErrors {
 	for _, key := range slices.Sorted(maps.Keys(fields)) {
 		value, present := lookup(key, objs)
