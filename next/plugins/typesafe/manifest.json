@@ -14,6 +14,7 @@
     "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
 
   "capabilities": [
     { "id": "platform.adapter.v1" }
@@ -55,11 +56,7 @@
         "en": "A TypeSafe API key. Requests go to <Base URL>/v1/systemone (default https://api.typesafe.ai) with the key in Authorization: Bearer.",
         "zh": "TypeSafe 的 API Key。请求发往 <Base URL>/v1/systemone（默认 https://api.typesafe.ai），Key 放在 Authorization: Bearer 中。"
       },
-      "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
-      },
+      "form": { "mode": "native", "component": "TypesafeKeyForm" },
       "upstreamFields": ["base_url"],
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
@@ -80,13 +77,19 @@
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
 
+  "ui": {
+    "native": { "entry": "ui/native/entry.js" }
+  },
+
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the typesafe platform and its TypeSafe API key account type", "zh": "注册 typesafe 平台及其 TypeSafe API Key 账号类型" } },
     { "id": "gateway.endpoint",
       "reason": { "en": "Serve the TypeSafe Jev API at POST /v1/systemone, the path of the official TypeSafe API", "zh": "在 POST /v1/systemone 上提供 TypeSafe 的 Jev 接口，与 TypeSafe 官方路径一致" } },
     { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the API key and Base URL of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key 和 Base URL，用于构造上游请求（由核心发送）" } }
+      "reason": { "en": "Read the API key and Base URL of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key 和 Base URL，用于构造上游请求（由核心发送）" } },
+    { "id": "ui.native",
+      "reason": { "en": "The API key account form (TypesafeKeyForm)", "zh": "API Key 账号表单（TypesafeKeyForm）" } }
   ],
 
   "externalServices": ["api.typesafe.ai"]

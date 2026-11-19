@@ -81,7 +81,7 @@ func load(t *testing.T) manifest.Manifest {
 		t.Fatalf("manifest.json: %v", err)
 	}
 	files := map[string][]byte{"manifest.json": manifestJSON}
-	for _, dir := range []string{"forms", "assets"} {
+	for _, dir := range []string{"assets"} {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			p := path.Join(dir, e.Name())
