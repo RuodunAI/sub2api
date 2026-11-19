@@ -190,7 +190,7 @@ func TestManifest(t *testing.T) {
 		at        manifest.AccountType
 		component string
 	}{{official, "VolcengineKeyForm"}, {relay, "VolcengineRelayForm"}} {
-		if c.at.Form != (manifest.Form{Mode: "native", Component: c.component}) {
+		if !reflect.DeepEqual(c.at.Form, manifest.Form{Mode: "native", Component: c.component}) {
 			t.Errorf("%s form = %+v, want the native %s", c.at.ID, c.at.Form, c.component)
 		}
 	}
