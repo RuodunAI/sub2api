@@ -271,8 +271,10 @@ jobs:
   # -------------------------------------------------------------- plugin UIs
   # Each plugin's native UI (its account forms and settings pages): types,
   # specs and the production build the image packs. The projects are
-  # discovered by the script, like the plugin modules above; their typecheck
-  # and test use the console's toolchain, hence next/web's install first.
+  # discovered by the script, like the plugin modules above. The repository's
+  # projects take vite, vue-tsc and vitest from the console (build, typecheck
+  # and test alike), hence next/web's install first; npm ci runs only in a
+  # project with its own package-lock.json.
   plugin-ui:
     name: plugin UIs
     runs-on: ubuntu-latest

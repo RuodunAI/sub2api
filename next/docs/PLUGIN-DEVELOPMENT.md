@@ -160,7 +160,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 - 不限次数、不限大小：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`truncated` 字段已删除）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
-  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），**每次**调用插件的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都调用它现取一张票据，放进请求体（约定字段 `proxy_ticket`）；
+  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20 起），**每次**调用插件的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都调用它现取一张票据，放进请求体（约定字段 `proxy_ticket`）；
   - 插件用 `pluginsdk.RouteProxyTicket(req)` 读这次调用的票据（缺了回 400），这次调用里的请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单**此刻**选的代理发出（没选就直连），插件看不到代理（建账号之前；账号建好以后代理随 `Account` 下发，2.8a）。票据不要存进授权会话沿用：授权开始后管理员改了代理，下一次调用就该走新代理；
   - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不可用）：请求没有发出，不要因此结束授权会话，管理员把表单的代理改好后，下一次调用带着新票据就能发出；
   - 不需要 `net`。codex 是范例（`plugins/codex/internal/codex/oauth.go`）；测试里 `Harness.DoAs` 会给路由调用发执行令牌，假宿主要求路由取回带票据，用 `ExecuteHTTPFunc` 看到它。
@@ -240,7 +240,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 | 原清单写法 | `standard.Type` |
 |---|---|
 | `preset` | 从 `openai.APIKey`、`anthropic.APIKey`、`gemini.APIKey` 出发 |
-| `baseURL`（`default`、`required`、`stripSuffixes`）、`credentials.keyValidator`、`credentials.texts` | `Spec`（`apikey.Spec`：`DefaultBaseURL`、`RequireBaseURL`、`StripSuffixes`、`KeyValidator`、`Texts`） |
+| `baseURL`（`default`、`required`、`stripSuffixes`）、`credentials.texts` | `Spec`（`apikey.Spec`：`DefaultBaseURL`、`RequireBaseURL`、`Versions`、`Texts`）。`stripSuffixes` 对应 `Versions`，但含义变了：地址按填写的保存，请求时才去掉末尾至多一个版本段（CONTRACTS §127）。`credentials.keyValidator` 没有对应：密钥只要求是非空字符串（2026-11-20 起，`KeyValidator` 已删除） |
 | `auth`（header / none） | `Auth{Header, Prefix}`；`Header` 空 = 不带凭证。鉴权头是唯一的权威头。查询串里的 Key（`Auth.Query`）已删除：没有使用者 |
 | `headers` 的 `set` / `default` / `append` | `Headers []Header`：`standard.Set`、`standard.Default`、`standard.AppendTo`；值是 `standard.Fixed`、`standard.Field(账号字段)` 或自己的函数，空串不写 |
 | 模板 `{credentials.<k>}` | `standard.Field("k")`（先凭证后设置）；`Request.APIKey`、`Request.BaseURL` |
@@ -254,7 +254,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 两个例子：
 
-- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发，改了这几处：`Spec` 去掉默认地址、必填、去掉 `/openai/v1` 和 `/openai` 后缀、不校验 Key 前缀；`Auth{Header: "api-key"}`；路由逐条给出（v1 类型 `/openai/v1/...`，经典类型 `/openai/deployments/<部署名>/...?api-version=<设置>`，模型必填）；`Models = nil`；自己写过滤字段 `service_tier`、`safety_identifier`（预设不带）。客户端请求头的名单在清单里：openai 平台的列表去掉 `openai-organization`、`openai-project`。两个类型是因为路由不能按账号设置分支。验收断言在插件自己的 `platform_test.go`、`manifest_test.go`（SDK 里原来那份抄写的测试已删除）。
+- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发，改了这几处：`Spec` 去掉默认地址、必填、版本段是 `/openai/v1` 和 `/openai`（`Versions`，请求时从地址末尾去掉一段）；`Auth{Header: "api-key"}`；路由逐条给出（v1 类型 `/openai/v1/...`，经典类型 `/openai/deployments/<部署名>/...?api-version=<设置>`，模型必填）；`Models = nil`；自己写过滤字段 `service_tier`、`safety_identifier`（预设不带）。客户端请求头的名单在清单里：openai 平台的列表去掉 `openai-organization`、`openai-project`。两个类型是因为路由不能按账号设置分支。验收断言在插件自己的 `platform_test.go`、`manifest_test.go`（SDK 里原来那份抄写的测试已删除）。
 - **openai** 的组织与项目：`standard.Set("openai-organization", standard.Field("organization"))`、`project` 同样。账号没填时值为空、不写，客户端经透传带来的头保持原样；填了就以默认头覆盖客户端的（运营方的请求头覆盖仍可改它）。
 
 **顺序变化（与改写前不同的一处）**：过滤字段和路由改写现在在插件里，排在核心的改写（`claude_max_tokens`、账号参数覆盖）**之后**；以前声明式类型的过滤字段在核心里、排在账号参数覆盖之前。运营方在账号的参数覆盖里写了一个被过滤的字段时，以前发给上游，现在被插件删掉。目前只有 azure_openai 的两个类型写了过滤字段（`service_tier`、`safety_identifier`），所以只在 azure_openai 上可见（CONTRACTS §112.14）。
@@ -401,7 +401,14 @@ if !sticky.Enabled { ... }
 
 ## 9. SDK 里的账号表单辅助
 
-自己实现 `ValidateCredentials` 的插件可以用包 `sdk/pluginsdk/accountform`，不用各写一份（vertex、bedrock 在用）。给字段是自己一套的账号类型用（云凭证、密钥文件）；`api_key` + `base_url` 的表单仍由 `apikey.Spec` 整个实现。
+`api_key` + `base_url` 的表单由 `apikey.Spec` 整个实现（`Validate` 就是 `ValidateCredentials`，`FromAccount` 在请求时读出密钥和根地址），规则见 CONTRACTS §127：
+
+- `api_key` 只要求是非空字符串，保存去首尾空白后的值；没有格式、长度检查（`KeyValidator` 已删除）。
+- `base_url` 经 `NormalizeBaseURL` 规范化后按填写的保存（保留 `%2F` 等转义，不去后缀）；`Versions` 列出地址末尾可以带的版本段，`FromAccount` 在请求时去掉最长的一段（至多一段）得到根，路由路径接在根后面。类型声明了受限地址（`guardedSettings`）时，清单的 `versions` 写同样的值（CONTRACTS §21.3）。
+- `Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 以外表单会发的键和各自的规则，**其它键一律按未知键拒绝**（`unknown`）。`Fields` 为 `nil` 时同样检查，只允许 `api_key`、`base_url`（2026-11-19 起；此前 `nil` 不检查）：直接用预设或 `Spec` 而不写 `Fields` 的插件，重新编译后保存账号时会拒绝其它键，已存账号带着其它键的下次保存被拒，要把它们列进 `Fields`。
+- `NoBaseURL`：本类型没有地址字段（vertex 的 `vertex_apikey`），`base_url` 也按未知键拒绝。
+
+自己实现 `ValidateCredentials` 的插件可以用包 `sdk/pluginsdk/accountform`，不用各写一份（vertex、bedrock 在用）。给字段是自己一套的账号类型用（云凭证、密钥文件）。
 
 | 导出 | 用途 |
 |---|---|
@@ -410,6 +417,7 @@ if !sticky.Enabled { ... }
 | `FieldError(field, code, msg)` | 一条字段错误（`*pluginv1.FieldError`） |
 | `Invalid(e)` | 用一条字段错误拒绝表单的 `ValidateCredentials` 回答 |
 | `DecodeForm(in) (*Form, *ValidateCredentialsResponse)`，`Form{Creds, Settings}` | 解出 `ValidateCredentials` 请求的凭证和设置。有一个不是 JSON 对象时第二个返回值是拒绝的回答，直接返回它 |
+| `(*Form).Only(keys...)` | 凭证或设置里有 `keys` 以外的键时，返回拒绝的回答（`unknown`），否则 `nil`；拒绝表单不会发的键 |
 | `(*Form).Normalized()` | 接受表单的回答。校验过程可以直接改写 `Creds`、`Settings`（填默认值、归一化）；回答里只带被改过的那个对象的 JSON，没改的留空，核心保留提交的内容 |
 | `DecodeAccount(acc) (creds, settings Object, err error)` | 解出已存账号的凭证和设置（构造请求时用）；不是 JSON 对象时回 `INVALID_ARGUMENT` |
 

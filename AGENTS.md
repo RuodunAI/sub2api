@@ -77,7 +77,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 插件系统（ARCHITECTURE §5，CONTRACTS §26、§36）
 
 - 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 Landlock（默认开启：插件不申请 `fs.data` 就读写不了文件，CONTRACTS §43.8）、seccomp、rlimit、内存看门狗（只在管理员给插件设了内存上限或节点封顶时生效，默认不限，CONTRACTS §111.5）和出口隧道（插件的对外连接经核心转发）。
-- 插件包：`manifest.json`、`migrations/*.sql`、`forms/`、`i18n/`、`assets/`、`ui/`（schema、iframe 或原生微前端）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
+- 插件包：`manifest.json`、`migrations/*.sql`、`i18n/`、`assets/`、`ui/`（`ui/iframe/` 沙箱页面或 `ui/native/` 原生微前端）。插件界面只用代码写：没有声明式的 schema 表单与表格页，也没有 `forms/`；账号凭证与插件设置只由插件的 `ValidateCredentials`、`ValidateSettings` 把关，设置的密钥在清单 `ui.settings.secrets` 里声明（CONTRACTS §23、§75.1）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
 - 每个插件有自己的 schema `plg_<key>`，插件用核心的数据库用户访问它（没有插件专用的数据库角色，`search_path` 不是边界，CONTRACTS §115）。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
 - 一次请求上的超时和大小上限只有管理员配置的（请求体上限、上游超时、钩子和热路径超时等），加上安全、钱算对和防止崩溃的检查；不要在请求路径上加写死的超时、大小或次数上限（所有者决定，完整列表见 CONTRACTS §112.16）。
 - 平台插件（声明账号类型的插件）都是有进程的代码插件，没有只有清单的插件。每个网关请求只有一条路径（CONTRACTS §112）：核心做完协议转换和运营方的改写，把完整请求体交给账号类型插件的 `PlatformService.Execute`；插件构造最终请求，经 `HostService.RelayUpstream` 交给核心的 HTTP 客户端发出（插件不开套接字，账号代理、SSRF、超时、运营方的请求头设置由核心强制；插件随 `Account` 收到账号的凭证和代理详情，但代理只是数据，不得用于自行联网，CONTRACTS §124）；用量与任务事实只在 `Execute` / `Monitor` 的返回值里。插件写法、`sdk/pluginsdk/standard` 库、`jsonedit`、一致性套件见 `next/docs/PLUGIN-DEVELOPMENT.md`。
@@ -94,7 +94,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 前端（`next/web`）
 
 - 控制台构建产物输出到 `server/web/dist`，由核心用 `embed` 嵌入。`server/web/dist/index.html` 是被跟踪的占位文件，本地 `npm run build` 会覆盖它，**提交前 `git checkout` 还原**。
-- 插件的原生界面在各插件的 `ui/native/`，依赖 `@sub2api/ui`、`@sub2api/host`。改这三个包的公开接口要同步升级它们的版本（目前 3.20）和 CONTRACTS §23。
+- 插件的原生界面在各插件的 `ui/native/`，依赖 `@sub2api/ui`、`@sub2api/host`。改这三个包的公开接口要同步升级它们的版本（目前 4.0.0，`HOST_UI_VERSION`；带原生界面的插件声明 `hostUICompat: "^4.0"`）和 CONTRACTS §23、`web/packages/ui/README.md`。表单用 `@sub2api/ui` 的 `useForm`/`SForm`、`createApiKeyForm`、`usePluginSettings` 等写成代码，测试辅助在 `@sub2api/ui/testing`（只能在 spec 里引用）。
 - 插件 UI 与控制台的写法约定见 CONTRACTS §23.4：用 `@sub2api/ui` 组件，不用控制台全局类和 Tailwind 工具类，颜色只用契约里的 8 个 CSS 变量，操作按钮写文字，私有样式以插件 key 为前缀，接口走 `host.api` / `host.pluginApi`（原始字节类请求用 `fetchWithSession`）。
 
 ## 开发规则
@@ -170,7 +170,7 @@ npm run build       # 产物写到 server/web/dist，提交前还原 index.html
 
 CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。
 
-插件的原生界面（`plugins/<name>/ui/native`，每个是独立的 npm 工程，脚本统一为 `typecheck`、`test`、`build`，前两个借用控制台的 `node_modules`）：先在 `next/web` 下 `npm ci`，再在仓库根执行 `sh .github/next-ci/next-check-plugin-ui.sh`（不带参数检查全部工程，也可以只传一个目录），它对每个工程跑 `npm ci`、`typecheck`、`test`、`build`，CI 的 `plugin UIs` 任务就是它。镜像构建和发布打包要求每个声明了 native 界面的插件都有 `ui/native/dist/entry.js`，缺了直接失败，先跑 `deploy/docker/build-ui.sh`。
+插件的原生界面（`plugins/<name>/ui/native`，每个是独立的 npm 工程，脚本统一为 `typecheck`、`test`、`build`，三个都用控制台 `next/web/node_modules` 里的 vite、vue-tsc、vitest，配置继承 `web/packages/vite-preset` 的 `tsconfig.plugin.json`、`vite.plugin.config.js`；本仓库的工程没有自己的依赖和 lockfile）：先在 `next/web` 下 `npm ci`，再在仓库根执行 `sh .github/next-ci/next-check-plugin-ui.sh`（不带参数检查全部工程，也可以只传一个目录），它对每个工程跑 `typecheck`、`test`、`build`（工程有自己的 `package-lock.json` 时先 `npm ci`），任何一个工程的任何一步失败都以非零退出，CI 的 `plugin UIs` 任务就是它。镜像构建和发布打包要求每个声明了 native 界面的插件都有 `ui/native/dist/entry.js`，缺了直接失败，先跑 `deploy/docker/build-ui.sh`。
 
 ## Git 流程
 
@@ -183,7 +183,7 @@ CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。
 
 ## 读代码从哪里开始
 
-- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
+- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§126（迁移 0118 清理火山引擎陈旧键）、§127（密钥与基础地址）、§23 与 §75（插件界面只用代码写、界面包 4.0）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
 - 架构与数据模型：`next/docs/ARCHITECTURE.md` §2–§5、§13、§16。
 - 最近发生了什么：`CHANGELOG.md` 的“未发布”与最新几节。
 - 组装入口：`next/server/cmd/sub2api/main.go`、`next/server/internal/app`。

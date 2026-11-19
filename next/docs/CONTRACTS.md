@@ -286,7 +286,7 @@
 
 - `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。（核心 0.1.286 起）。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（不需要宿主授权（§124 起；此前要 `accounts.read`），`user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
 - **插件资源范围**（0.1.290，§21.0“插件资源范围”）：路由的 `permission` 若声明了 `scope`，持有它的**任意范围**即放行（`PermissionSet.HasSome`；全部范围照旧记入 `Granted`），核心把调用者在该权限上的范围随请求交给插件（`HTTPRequest.action_scope`）。admin/user 路由可声明 `scopeFrom: "path:<参数>"|"query:<名>"|"body:<顶层字段>"`（与 `accounts.from` 同一写法，`manifest.ParseAccountsFrom`；只能用在 permission 声明了 scope 的路由上，否则 `unsupported`；`path:` 必须是该路由的参数，否则 `unknown_param`；webhook/public 路由声明报 `unsupported`），核心转发前按 `core.AuthorizePluginScope` 判它指向的值：全部范围放行；否则请求须带值（不带 403 `details.permission`），持有 own 时一律放行、由插件按 `created_by` 判，只有列出的值时每个值都须在其中（否则 404）。值可以是字符串、数字、它们的数组或逗号分隔串；query 参数名与 body 顶层字段名都不分大小写匹配（与插件用 encoding/json 解码一致），query 的每个值都校验，body 同名字段（不分大小写）出现多次 400 `duplicate`（`accounts.from` 同样，二审 security #1/#3）；每个须是合法范围值（`[A-Za-z0-9_.-]{1,64}`，否则 400），去重后至多 `MaxAccountBatch` 个。不带值就只有全部范围能过，所以**列表路由不要声明 `scopeFrom`**，应读 `action_scope` 自己过滤（check 不猜哪些是列表路由）。反过来，permission 声明了 scope 的非 GET 路由必须写 `scopeFrom`（check 报 `required`）：任意范围都能进来，不写就只能靠插件拦住只持有一行的人改所有行；不针对具体行的写路由（如新建）改用不带 scope 的权限。这些声明（`userPermissions[].group/risk/requires/scope/defaults`、`permissionGroups`、`routes[].scopeFrom`）与 UI 3.16、3.17 都随核心 0.1.290 发布（0.1.289 没有发布）
-- `GET /plugin-ui/:key/:version_hash/*path`：插件包内 `ui/`、`forms/`、`i18n/` 下的文件；带长缓存头
+- `GET /plugin-ui/:key/:version_hash/*path`：插件包内 `ui/`、`i18n/` 下的文件；带长缓存头（2026-11-19 起不再提供 `forms/`，请求它返回 404）
 
 ### 5.9 网关端点（G）
 
@@ -759,7 +759,7 @@ GET `/plugins/:key/settings`（`plugin:read` 或插件的设置权限；路由�
 
 PUT `/plugins/:key/settings`（`plugin:manage` 或插件的设置权限；路由本身要 `self:plugin_ui`，§80.1）请求 `{values:{...}}`：
 - `values` 是**完整**配置，整体替换（省略的键会被删除）；敏感字段传 `"******"` 表示保留原值。
-- `mode=schema` 时按 Schema 校验，失败返回 `invalid_argument`，`details.fields[].field` 为 `values` + JSON Pointer（如 `values/api_key`），`code` 为 `schema`。
+- 保存前由插件校验（`PluginService.ValidateSettings`，可选，§75.1）：插件返回字段错误时为 `invalid_argument`，`details.fields[].field` 为 `values` + 插件给的 JSON Pointer（如 `values/api_key`），`code` 是插件给的错误码；插件返回归一化后的设置时存它。插件没实现这个调用、或不在当前 generation（未启用）时不校验，照常保存（启用时 `Configure` 读到已存的值自己检查）。核心不再按 JSON Schema 校验（2026-11-19 起，此前 `mode=schema` 按 schema 校验，`code` 为 `schema`）。
 - 成功后返回与 GET 相同的结构；审计只记录变更的键名；并在 `plugin:events` 广播配置变更。
 - 插件没有可用版本时 GET/PUT 都返回 404（`plugin has no version`）。
 
@@ -771,7 +771,7 @@ GET `/ui/plugins`（`self:plugin_ui`，会话天然持有，§80.1）→ 不分�
 | `name` | `{en, zh}` |
 | `asset_base` | `/plugin-ui/{key}/{version_hash}`，拼接包内相对路径加载资源 |
 | `menus` | `[{id, section, label, icon?, page, permission?, order?}]`；按调用者权限过滤（`permission` 为插件内 key，检查 `plugin.<key>:<permission>`）；`section` 为 manifest 原值（§22） |
-| `pages` | `{<page_id>: {type, title?, source?, columns?, schema?, submit?, src?, component?, search?, create?}}`；只被无权限菜单引用的页面被去掉；`create` 的权限调用者没有时，去掉该链接以及只靠它到达的表单页（§22.1） |
+| `pages` | `{<page_id>: {type, title?, src?, component?, nav?}}`（`type` 为 `iframe` 或 `native`）；只被无权限菜单引用的页面被去掉，`nav` 里调用者看不到的条目去掉（§22.1）。2026-11-19 起没有 `source`、`columns`、`schema`、`submit`、`search`、`create`（声明式表格、表单页已删除） |
 | `slots` | `[{slot, component, permission?, label?, icon?, accountTypes?}]`，按权限过滤，字段原样下发（`accountTypes` 缺省不补；UI 3.8 起 `account.detail.tabs`、`account.list.quota` 也可带，按账号类型匹配在控制台，见 §91b） |
 | `account_actions` | manifest `ui.accountActions` `[{id, label, icon?, permission, route, bulk?, confirm?, danger?, visibleFor?, accountTypes?}]`，按 `permission` 过滤，字段原样下发（`visibleFor`、`accountTypes` 缺省不补，前端按缺省 `editable`、所有类型处理）；每批大小不由插件声明，固定为 `manifest.MaxAccountBatch`（500；2026-11-08 决定）（UI 3.6，§23.3；`accountTypes` 是 UI 3.8，§91b） |
 | `native_entry` | 仅 `trust` 为 `official`/`verified` 时返回 manifest `ui.native.entry`，否则空串；加载方式与插件可用的共享库见 §23 |
@@ -977,7 +977,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
-| POST `/account-types/:plugin_key/:type/models/fetch` | `account:create` | `{credentials, proxy_id?}`：表单里填的凭证（先按表单 Schema 和插件 `ValidateCredentials` 校验，错误格式同创建账号），账号还没保存时用 |
+| POST `/account-types/:plugin_key/:type/models/fetch` | `account:create` | `{credentials, proxy_id?}`：表单里填的凭证（先由插件 `ValidateCredentials` 校验，错误格式同创建账号；2026-11-19 前还先按表单 Schema 校验），账号还没保存时用 |
 | POST `/accounts/:id/models/fetch` | `account:test` | 可选 `{credentials}` 覆盖已保存的凭证（敏感字段传 `"******"` 保留原值），编辑表单里改了 Key 还没保存时用 |
 
 响应 `{models:[...], skipped, status}`：`models` 去重、按字母排序、只含合法的完整模型 ID（§16），最多 5000 条；`skipped` 是被丢弃的非法 ID 数；`status` 是上游状态码。错误：插件不支持返回 501 `unsupported`；上游非 2xx 返回 503 `unavailable`，`details.status` 为上游状态码、message 含响应片段；网络错误、内网地址被拒同样是 503 `unavailable`；插件未启用 503 `plugin_unavailable`。整个拉取超时 30 秒，响应体最多读 8 MiB。
@@ -1002,16 +1002,16 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 任务：`cleanup`（`0 4 * * *`，按 `retention_days` 删旧记录、删已过期的封禁）。
 - 权限 `userPermissions`：`moderation:read`（查看概览、记录、封禁列表）、`moderation:manage`（删除记录、封禁/解封、在线测试）；下表"read/manage"即指这两个。另有 `moderation:exempt`（免于审核观察与封禁，不守任何路由或菜单，2026-11-12 权限加固 T60），工作人员判定看它。0.1.290起它是 `risk: "critical"`（A4）：不写 `defaults`、去掉 `inheritFrom`，新部署只有超管持有，由超管授给角色（§4“插件权限”）；线上已有的持有者保留（同步只更新 `risk` 列，不撤销）。同时 `moderation:read`（能看到被审核的原文）提为 `sensitive`；默认角色不变（read、manage 给 admin）。
 - 宿主权限：`kv`、`db.schema`、`gateway.hook`（上面的 fields）、`jobs`、`broadcast`、`routes.admin`、`ui.menu`、`ui.native`、`net`（`domains:["*"]`，optional）。
-- 界面：菜单"提示词审核"（section `plugins`，icon `shield`，permission `moderation:read`），native 页面 `ModerationDashboard`；设置用 schema 表单（插件详情"设置"页）。
+- 界面：菜单"提示词审核"（section `plugins`，icon `shield`，permission `moderation:read`），native 页面 `ModerationDashboard`；设置当时用 schema 表单（插件详情"设置"页）。现行：设置在 native 页面里编辑，清单声明 `ui.settings.secrets`，由插件 `ValidateSettings` 校验（§72.10、§72.15、§75.5）。
 - 内置：`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS` 默认加 `moderation`；首次安装即启用，但 `mode` 默认 `off`，不配置时钩子直接放行。
 
-### 20.3 设置（`forms/settings.schema.json`，`additionalProperties:false`）
+### 20.3 设置（0.1 的设置；当时写在 `forms/settings.schema.json`，`additionalProperties:false`。该文件已在 0.12.2 删除，现行设置与校验见 §72.10）
 
 | 字段 | 类型/范围 | 默认 | 说明 |
 |---|---|---|---|
 | `mode` | `off` \| `observe` \| `enforce` | `off` | observe：放行请求，异步审核并记录；enforce：同步审核，结论为 block 就拒绝 |
 | `base_url` | string，`^(https?://\S+)?$` | `""` | 以 `/v1` 结尾时直接拼 `/chat/completions`，否则拼 `/v1/chat/completions` |
-| `api_key` | string，`writeOnly`（secret） | `""` | 以 `Authorization: Bearer` 发送 |
+| `api_key` | string，密钥（当时 schema 写 `writeOnly`；现在是 `ui.settings.secrets` 里的凭据） | `""` | 以 `Authorization: Bearer` 发送 |
 | `model` | string ≤200 | `""` | base_url、api_key、model 任一为空时视同 `off` |
 | `system_prompt` | string ≤20000（textarea） | `""` | 空则用内置提示词；`{{categories}}` 替换为分类列表（每行 `- id：说明`） |
 | `categories` | `[{id:^[a-z0-9_]{1,32}$, description ≤500}]`，≤50 | `[]` | 空则用内置 12 类（见 20.5） |
@@ -1039,7 +1039,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 | `ban_window_hours` | 1–8760 | 24 | |
 | `ban_duration_hours` | 0–87600 | 24 | 0 = 直到手动解封 |
 
-策略版本 = sha256(model、展开后的系统提示词、分类、tool_choice)，参与缓存键；改了这些设置旧缓存自然失效。`Configure` 宽松：校验交给 Schema，异常值夹到范围内。
+策略版本 = sha256(model、展开后的系统提示词、分类、tool_choice)，参与缓存键；改了这些设置旧缓存自然失效。`Configure` 宽松：校验交给 Schema（现在保存时由插件 `ValidateSettings` 按同样的约束拒绝，§72.10），异常值夹到范围内。
 
 ### 20.4 钩子流程
 
@@ -1214,11 +1214,11 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 
 manifest `accountTypes[].guardedSettings`（可选）：`[{field, allowed:[...], versions?:[...]}]`。`field` 必须在 `settingsFields` 中；`allowed` 非空、每项为绝对 `http(s)` URL；`versions`（可选，2026-11-20 起）是该字段的值末尾可以带的版本段，每项非空、以 `/` 开头、不以 `/` 结尾、不重复（如 `["/v1"]`），应与插件 `apikey.Spec.Versions` 一致。三个内置账号类型插件声明 `[{field:"base_url", allowed:["https://api.anthropic.com"]}]`（openai `https://api.openai.com`，gemini `https://generativelanguage.googleapis.com`）；relay 不声明（它本来就是自定义地址），没声明的类型不受限。
 
-manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复（原来对 schema 表单的打包警告 `check.Warnings` 已随 schema 表单在 2026-11-19 删除）。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
+manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时地址字段未知，按旧规则处理（原来还能由声明式 `upstream` 推出 `base_url`，声明式上游已在转发 V2 删除，§112.1）；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复（原来对 schema 表单的打包警告 `check.Warnings` 已随 schema 表单在 2026-11-19 删除）。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
 
-校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。声明了 `versions` 时，在上面的规范化之后再从路径末尾去掉至多一个版本段，提交值、`allowed` 各项、账号原值都这样做：在**转义形式**的路径上找能作为后缀的项，取最长的一个，整段匹配、区分大小写（`…/a%2Fv1` 不算以 `/v1` 结尾，`…/V1` 不算 `/v1`，`…/v1/v1` 只去一段）。所以 `https://API.openai.com/v1/` 与 `https://api.openai.com` 等价；PATCH 时原值带版本、新值不带（或反过来）也算等于原值。这条规则与插件 SDK `apikey.Spec.Versions` 在请求时算"根"的规则相同（核心不依赖 `pluginsdk`，各自实现）。没有 `versions` 的受限设置不受影响。旧核心不认识 `versions`（清单解码不严格）会忽略它，只是带版本的官方地址被拒，所以用到它的插件要提高 `hostCompat` 下限。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
+校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。声明了 `versions` 时，在上面的规范化之后再从路径末尾去掉至多一个版本段，提交值、`allowed` 各项、账号原值都这样做：在**转义形式**的路径上找能作为后缀的项，取最长的一个，整段匹配、区分大小写（`…/a%2Fv1` 不算以 `/v1` 结尾，`…/V1` 不算 `/v1`，`…/v1/v1` 只去一段）。所以 `https://API.openai.com/v1/` 与 `https://api.openai.com` 等价；PATCH 时原值带版本、新值不带（或反过来）也算等于原值。这条规则与插件 SDK `apikey.Spec.Versions` 在请求时算"根"的规则相同（核心不依赖 `pluginsdk`，各自实现；§127.3），只差一处：SDK 去掉版本段后再去掉剩下的末尾 `/`，核心不去，所以 `https://api.openai.com//v1` 在核心比较时是 `https://api.openai.com/`，不等于官方地址。没有 `versions` 的受限设置不受影响。旧核心不认识 `versions`（清单解码不严格）会忽略它，只是带版本的官方地址被拒，所以用到它的插件要提高 `hostCompat` 下限。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
 
-**默认地址由插件自己提示**：三个内置账号类型的表单不再给 `base_url` 设 `default`（不预填），`pattern` 允许空串，`ui:placeholder` 写"留空使用默认地址 …"；空值由插件 `ValidateCredentials` 归一化为默认地址。核心不为 base_url 做特判；控制台清空 `url-presets` 输入即不发该键；锁定（只读）时只显示"由管理员设置"，不再拼插件的帮助文案。
+**默认地址由插件自己提示**：三个内置账号类型的表单不给 `base_url` 预填默认值，空值允许，占位符写"留空使用默认地址 …"；空值由插件 `ValidateCredentials` 归一化为默认地址。核心不为 base_url 做特判。表单是插件的 native 组件（`createApiKeyForm` 的 `baseUrl`，`SUrlPresetInput`）：清空输入即不发该键；锁定（只读）时只显示"由管理员设置"。（2026-11-19 前这些写在表单 schema 里：不设 `default`、`pattern` 允许空串、`ui:placeholder`，控件是 `url-presets`。）
 
 界面提示（2026-11-19 起）：`GET /account-types/:p/:t/form` 已删除，账号表单是插件的 native 组件，按 `GET /account-types` 的 `guarded_settings` 和调用者的 `account:settings:custom` 显示（`@sub2api/host` 的 `useGuardedSettings`）；服务端校验不变。
 
@@ -1273,7 +1273,7 @@ type ProxyResolver interface {
 - 角色页与访问密钥（R8）：`scope_type` 非空的动作勾选后展开范围选择（全部 / 自己创建的 / 指定分组 / 指定账号或代理 / 分组内的指定账号，可叠加；选全部时其余置灰；`account:create` 不指定账号，只有全部 / 自己创建的 / 指定分组），提交规范 key；候选按操作者（密钥为用户自己）的范围裁剪；id 经 `/lookup/*` 显示名称，已删除显示“#id（已删除）”。用户页角色徽章的提示为该角色的范围摘要。
 - 账号表单代理字段二选一：**选择已有**（`ProxyPicker`，列表来自 `/proxies`，后端已按范围过滤）| **粘贴代理串**（`proxy_url`，placeholder `socks5://user:pass@host:port`，前端只做形状提示）；保存后刷新代理缓存；`proxy_url` 的字段错误显示在该输入下。
 - 代理页表单加"粘贴代理串自动填充"（前端解析填到各字段，不依赖后端）。
-- `url-presets` 组件：schema 有 `enum` 时只能选预设；只读时显示"由管理员设置"提示。
+- 基础地址输入（`@sub2api/ui` 的 `SUrlPresetInput`；2026-11-19 前是 schema 部件 `url-presets`）：受限设置给出允许值时只能从中选（已存的、不在列表里的值也保留为可选项），只有一个允许值时只读并提示"由管理员设置"。
 - 角色页：见上文 R8 的范围选择（新 key 由 `/permissions` 带 label 与 `scope_type` 下发）。
 - 角色页“从角色复制”（0.1.293 起，0.1.294 改为合并/覆盖，只在控制台）：编辑器里按来源角色（不含超管角色、未读到权限的角色）改勾选，点保存才写入，保存走同一个 PUT `/roles/:id/permissions` 与风险确认。两种方式（`web/src/authz/copyGrants.ts`，按动作比较范围）：**合并**保留当前勾选，加上来源有、当前未蕴含的范围（同一动作留较宽的）；**覆盖**勾选变成和来源一样，当前蕴含的来源范围直接取（可以收窄，例如 `account:read` 覆盖成 `account:read:own`）；来源的某个范围勾不上时，保留当前被它蕴含的范围（来源 `account:read` 授不出时当前的 `account:read:own` 留着）。来源里已移除或目录里没有的、操作者不能授出的和关键（critical，操作者能授出的也与整组勾选一样只能单独勾）权限不勾，三类分别列在编辑器提示里；已移除或目录里没有的动作保留当前角色原有的 key（编辑器看不到也改不了）。
 
@@ -1316,7 +1316,7 @@ type ProxyResolver interface {
 - 用其他 id 声明的旧自有区不受影响，仍作为插件自己的区显示，例如 moderation 0.1.1–0.6.1 的 `safety`（order 350，排在 security 与 finance 之间，区名取声明的 label）；升级到 moderation 0.6.2 后它的菜单进入核心 `security` 区。
 - 核心区的 id 与 order 只有一处定义：`sdk/manifest` 的 `CoreMenuSections()`（另有 `PluginMenuSectionOrder` = 650）；manifest 校验（`sdk/manifest/check`）和 `GET /me/menus`（`server/internal/authz/menus.go`，`coreMenus` 只补标签和核心项，测试保证与 SDK 列表同序同 id）都读它。
 
-**表格页的"新建"按钮**：manifest `ui.pages.<id>.create: {page, permission?}` 只能写在 `type:"table"` 的页面上，`page` 必须是同一插件的 `type:"form"` 页面，`permission` 是 `userPermissions` 里的 key。控制台在表格上方画一个主按钮，文字取目标页的 `title`，点击打开 `/p/<插件>/<page>`。`GET /ui/plugins` 对没有该权限的调用者去掉 `create`，表单页如果没有可见菜单指向它也一并去掉；表格页本身因菜单权限对调用者不可见时，它的 `create` 链接同样不算可用，只靠这条链接到达的表单页也去掉（即使链接不要求权限）。校验错误：`ui.pages.<id>.create` invalid（非表格页）、`.create.page` unknown / invalid（不存在 / 不是表单）、`.create.permission` unknown。volcengine 0.12.6 用它替代了"新建素材组""新建素材"两个菜单项，需要核心 0.1.229。
+**表格页的"新建"按钮**（已删除，0.1.304）：原来 manifest `ui.pages.<id>.create: {page, permission?}` 在 `type:"table"` 页面上画一个打开 `type:"form"` 页面的按钮（volcengine 0.12.6 起用过）。声明式表格、表单页在 2026-11-19 删除（插件界面只用代码写），`create` 随之删除，上传时报 unknown field；volcengine 的新建改为原生列表页里的弹窗（`PLUGIN-VOLCENGINE-ARK.md` §19）。`GET /ui/plugins` 现在只按菜单权限去掉页面、按条目权限裁剪 `nav`（§15.8）。
 
 **控制台布局**：路由 `meta.parent` 指向上级页面，顶栏在标题前显示面包屑（价格详情、价格同步源、同步预览、插件详情、发布进度、安装授权、插件设置）。设置页改为左侧二级导航（网关 / 计费 / 通知 / 系统 / 插件设置），页面仍用 `?tab=` 选择；"插件设置"列出已启用且有设置表单的插件，选中为 `?tab=plugin:<key>`，内容即插件设置页。（§90 起二级导航改为侧栏的系统设置视图；插件设置不在其中，从已安装插件列表的“设置”按钮打开，`?tab=plugin:<key>` 跳到 `/plugins/<key>/settings`，见 90.2、90.4。）
 
@@ -1326,12 +1326,12 @@ type ProxyResolver interface {
 
 ### 23.1 加载方式与 import map
 
-- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `3.20.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
+- 控制台 `GET /ui/plugins` 后（`web/src/stores/plugins.ts`），对 `native_entry` 非空、`trust` 为 `official`/`verified`、且 `host_ui_compat` 匹配 `HOST_UI_VERSION`（当前 `4.0.0`，§90.7、§21；`satisfiesRange` 支持 `^1.0`、`~1.2`、`>=1.0.0 <2.0.0`、`1.x`、`*`、`||`）的插件执行 `import(asset_base + native_entry)`，调用模块导出的 `register(host)`；插件被禁用或 `native_entry` 的 URL 变化（版本升级）时调用 `unregister?()` 并丢弃已注册组件。不满足条件或 `register` 抛错的记在 `errors[key]`，页面显示原因。列表一到就置 `listed`（只要列表的地方看 `listed`，不等模块；菜单来自 `GET /me/menus`，不等插件）；各插件模块并行加载，`pending[key]` 标记仍在加载的插件，插件页只等自己插件的模块；`refresh()` 在本次启动的模块都加载或失败后返回，重叠的 `refresh()` 不重复加载仍在 `pending` 的插件。所有原生入口在控制台启动时都会加载，所以插件**页面**组件应在 `register` 里以 `defineAsyncComponent(() => import('./Page.vue'))` 注册（`@sub2api/ui` 导出的 `lazyPage`（UI 3.4，manifest 声明 `hostUICompat: "^3.4"`）封装了这一步，带加载占位和两次重试（间隔 500ms、1000ms；每次挂载重新计数，所以插件页的"重试"按钮和再次进入页面都会重新走完两次重试）），入口只保留 slot 组件、文案和 `register` 需要的代码。核心按 `hostCompat` 安装插件，不看 `hostUICompat`；核心 0.1.228 是最后一个带 UI 3.3 的版本，UI 3.4 从核心 0.1.229 起。（dynweight 0.4.1、growth 0.1.6 因此声明 `hostCompat >=0.1.229`）。
 - `entry.js` 的形状是 `NativePluginModule`：`register(host: PluginHost): void | Promise<void>`、`unregister?(): void | Promise<void>`。`register` 里用 `host.registerComponent(name, comp)` 注册 manifest `ui.pages[].component`、`ui.slots[].component` 引用的组件名，用 `host.addMessages({en, zh})` 注册文案；`unregister` 释放模块级状态（moderation 的 `entry.ts` 是最小样例）。
 - **import map**：控制台 `index.html` 注入 `<script type="importmap">`，把 `vue`、`vue-router`、`pinia`、`vue-i18n`、`@sub2api/ui`、`@sub2api/host` 映射到控制台自己构建出的 chunk（`web/vite.config.ts` 的 `SHARED`，`preserveEntrySignatures: 'strict'`，所有导出都保留；dev 下映射到源码，复用同样的预打包依赖）。插件用 `@sub2api/vite-preset` 构建时这些模块（`SHARED_MODULES`，前缀匹配 `vue/*` 之类的子路径）全部 external，**不得打进插件包**，否则页面里会出现第二份 Vue 运行时和第二套组件/状态：`toast`、`confirm`、i18n、路由、`theme` 都不再与控制台共享，组件的 `provide/inject` 也会失效。
-- 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（官方插件 growth、guard 用 `^3.4`，因为它们用到 3.4 的 `lazyPage`；dynweight 0.5.7、moderation 0.9.1 起用 `^3.11`，因为它们用到 `host.components.EntityPicker`（§96.6）；moderation 0.9.2 起用 `^3.12`（§96.7）；`sdk/manifest`：声明了 `ui.native` 时必填）。
+- 构建：`vite.config.ts` 写 `export default defineConfig(sub2apiPlugin({ entry: 'src/entry.ts' }))`；选项 `entry`（默认 `src/entry.ts`）、`outDir`（默认 `dist`）、`vue`（透传 `@vitejs/plugin-vue`）、`minify`（默认 true）。输出 `dist/entry.js`（ES module，target es2022）、`dist/entry.css`（有样式时；`entry.js` 头部自动按自身 URL 插一条 `<link rel="stylesheet">`，同源，CSP 不用改）、`dist/chunks/*`、`dist/assets/*`。打包成插件时放到 manifest `ui.native.entry` 指向的位置（moderation：`ui/native/entry.js`）。preset 也导出 `HOST_UI_VERSION`，manifest `hostUICompat` 按它声明（`sdk/manifest`：声明了 `ui.native` 时必填）。4.0.0 删掉了 schema 表单的导出（§23.3），所以 0.1.304 起全部带界面的官方插件（16 个，payment 没有界面）都声明 `^4.0`；此前按用到的最高小版本声明（guard 用 3.4 的 `lazyPage` 写 `^3.4`，dynweight 0.5.7、moderation 0.9.1 用 `host.components.EntityPicker` 写 `^3.11`（§96.6），moderation 0.9.2 写 `^3.12`（§96.7），用代理票据的写 `^3.20`（§117））。
 - 插件的 `package.json` 只需 devDependencies：`@sub2api/vite-preset`、`@vitejs/plugin-vue`、`vite`、`vue`（类型用）；`@sub2api/ui`、`@sub2api/host` 通过 import map 在运行时解析，本地开发用 tsconfig `paths` 指到 `web/packages/*/src` 取类型。
-- 本仓库 `plugins/*/ui/native` 的工程没有自己的依赖、lockfile 和 `node_modules`：`build`、`typecheck`、`test` 都用控制台（`web/`，先 `npm ci`）的 vite、vue-tsc、vitest；`tsconfig.json` 继承 `web/packages/vite-preset/tsconfig.plugin.json`（只写 `include`），构建用 `web/packages/vite-preset/vite.plugin.config.js`，spec 用 `web/vitest.config.ts`（脚本照 `plugins/codex/ui/native/package.json`）。这两个预设文件指向本仓库的目录结构，不在 preset 的 `files` 里。自带依赖的工程照上一条写 `package.json` 并提交 `package-lock.json`，镜像构建（`deploy/docker/build-ui.sh`）和 CI 有 lockfile 时先 `npm ci`。
+- 本仓库 `plugins/*/ui/native` 的工程没有自己的依赖和 lockfile，也不安装依赖：`build`、`typecheck`、`test` 都用控制台（`web/`，先 `npm ci`）的 vite、vue-tsc、vitest；`tsconfig.json` 继承 `web/packages/vite-preset/tsconfig.plugin.json`（只写 `include`），构建用 `web/packages/vite-preset/vite.plugin.config.js`，spec 用 `web/vitest.config.ts`（脚本照 `plugins/codex/ui/native/package.json`）。这两个预设文件指向本仓库的目录结构，不在 preset 的 `files` 里。自带依赖的工程照上一条写 `package.json` 并提交 `package-lock.json`（preset 按 `file:` 依赖时 `.npmrc` 写 `install-links=true`：npm 把它复制进 `node_modules`，它的 import 才会按插件自己的依赖解析），镜像构建（`deploy/docker/build-ui.sh`）和 CI（`.github/next-ci/next-check-plugin-ui.sh`）有 lockfile 时先 `npm ci`。
 
 ### 23.2 `@sub2api/host`
 
@@ -1460,21 +1460,18 @@ type ProxyResolver interface {
 
 图标：`ICON_NAMES`（全部可用名字，已排序；manifest `ui.menus[].icon` 的权威词表，Go 侧 `sdk/manifest/check/icons.json` 由 `npm run icons:json` 从 `icons.ts` 生成）、`ICON_PATHS`、`hasIcon(name)`、`iconPaths(name, context?)`。
 
-JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单页都用它，插件的原生 UI 也可以直接用）：
+表单（`form/`，UI 4.0；完整说明见 `web/packages/ui/README.md`“表单校验框架（UI SDK 4.0）”“组合组件（UI SDK 4.0）”“测试辅助”）。4.0 删除了 JSON Schema 表单（`SchemaForm`、`SchemaField`、`SCHEMA_WIDGETS_KEY`、`BUILTIN_WIDGETS` 和 `schema.ts` 的辅助函数、类型 `JSONSchema`/`UISchema`/`EnumOption`/`ValidateMessages`、文案 `ui.schema.*`；`localizedText`、`SECRET_MASK` 保留），账号表单、插件设置和插件页面都用下面的导出写成代码：
 
-| 组件 | 用途 | props（默认值） | emits / expose |
-|---|---|---|---|
-| `SchemaForm` | 按 JSON Schema（object）渲染整张表单，`v-model` 为对象值；schema 变化时按 `default` 补齐缺省值 | `schema: JSONSchema`（必填）、`uiSchema: UISchema \| null`（§21.3 的 uiSchema：`ui:order` `ui:widget` `ui:title` `ui:help` `ui:details` `ui:placeholder` `ui:options` `ui:enumNames` `ui:visibleWhen` `ui:section`（§41.3）`ui:errorMessages` `ui:readonly`）、`modelValue: Record<string, any> \| null`（必填）、`errors: Record<string, string>`（服务端字段错误，路径 → 文案，`a.b.0.c` 形式）、`disabled`、`widgets: Record<string, Component>`（与注入的宿主 widgets 合并，同名以 prop 为准）、`layout`（`stacked`/`settings`，stacked）、`fields`（别名 `only`；`string[]`，只渲染并校验这些顶层字段，其余值原样保留） | emits `update:modelValue`；expose `validate(): boolean`（校验可见字段：required / minLength / maxLength / pattern / format uri·email / minimum / maximum / integer / minItems / maxItems；pattern 与 uri 同时检查；文案在 `ui.schema.v.*`，`ui:errorMessages` 可按字段覆盖，失败时显示在字段下） |
-| `SchemaField` | 单个字段（`SchemaForm` 内部递归使用；一般不直接用） | `name`、`path`（点号路径，错误按它查 `errors`）、`schema`、`ui`、`modelValue`、`root`（整张表单的值，`ui:visibleWhen` 按它判断）、`errors`（必填）、`required`、`disabled`、`bare`（不画 label：数组项、根对象）、`widgets`、`layout` | emits `update:modelValue` |
+| 导出 | 用途 |
+|---|---|
+| `useForm({model, update, rules?, defaults?, serverErrors?})` + `SForm` | 表单状态与即时校验。规则是 async-validator 风格（`required` `whitespace` `type` `min` `max` `len` `pattern` `enum` `validator` `message` `trigger` `when`），键是点分路径、`*` 表示数组每一项；值为 `SECRET_MASK` 时只算 `required` 通过、其余跳过；先惰性（失焦或 `validate()` 后）再积极。返回 `value` `get` `set` `bind` `bindNumber` `validate` `validateField` `clearValidate` `error` `errors` `unclaimed` `required`。`SField` / `SSettingRow` 的 `prop` 显示该路径的错误与必填星号。内置文案 `ui.form.v.*` |
+| `useCredentialForm(props, emit, {rules, defaults?})` + `SCredentialForm`、`nativeAccountFormProps` | 原生账号表单（§23.5）：`props.errors` 作为服务端错误，`defaults` 只在新建时填，顶部列出没有字段认领的错误 |
+| `createApiKeyForm(spec)` | API Key 加基础地址一类账号类型的整个表单组件。`api_key` 默认只要求非空（去掉首尾空白后不为空，与插件后端一致，§127），`spec.apiKey.min`/`max`/`pattern` 写了才检查；`spec.baseUrl`（`false` 为没有）没有 `account:settings:custom` 时按 `guarded_settings` 只给官方值；`spec.extra` 加其它字段（`text` `secret` `url` `select` `textarea` `date-time` `switch`，可分节） |
+| `usePluginSettings({pluginKey, api, rules, defaults?})` + `SSettingsPage` | 插件设置（`GET/PUT /plugins/:key/settings`）：读入时填默认值、整份 PUT、保存后重读，字段错误显示在对应行，`reenter` 时提示重新填写密钥；自带保存栏与离开确认 |
+| `SSecretInput`、`SUrlPresetInput`、`SFormSection`、`SDateTimeInput`、`SResourcePage` | 密钥输入（`******` 表示沿用，`clearable` 清除已存值，`plain` 用于敏感地址）、基础地址（预设或受限设置的允许值）、表单分节（可折叠，有值或有错误时展开）、RFC 3339 时间输入、插件列表页（列表、搜索、新建弹窗） |
+| `@sub2api/ui/testing` | 只能在 spec 里引用的测试辅助：`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`、`fakeCore`、`mountSettings`、`checkMessages`、`cleanup` |
 
-- **布局**：`layout="stacked"` 为原样式（标签在上）。`layout="settings"`：根对象的每个 `ui:section`（以及第一个 section 之前的字段）渲染成一个 `SSettingsGroup`（`collapsed: true` 的 section 可折叠，有值或有错误时自动展开），每个字段渲染成 `SSettingRow`：`switch` `select` `segmented` `number` `text` `secret` `date-time` 等放在右侧（宽 `sm:w-64`），`textarea` `tags` `key-value` `model-mapping` `object-list` `multi-select` `json` `url-presets` `radio` 与嵌套对象放在标题下方；宿主 widget 默认放下方，`ui:options.stacked: false` 放右侧。
-- **内置 widget**：`text`（`format: email/uri` 用对应 type）`secret`（`******` 表示保留已存值，带显示/隐藏按钮）`textarea` `select`（`SSelect`，10 个及以上选项自动 `searchable`，`ui:options.searchable` 可强制开关）`segmented` `radio` `switch` `number`（`SInput type=number`，`minimum`/`maximum` → `min`/`max`）`date-time`（RFC 3339 ↔ 本地时间）`date` `time`（`format: date-time/date/time` 自动选用）`url-presets`（`schema.enum` 存在时只能选）`key-value` `model-mapping` `tags` `multi-select`（`SCheckbox` 组）`object-list`（每项带标题、上移/下移/删除按钮，`maxItems` 到上限时禁用添加）`json`（等宽；外部值变化时同步文本）`hidden`。
-- **`ui:options`**：`rows`（textarea/json）、`mono`（textarea/text 等宽；textarea 默认不再等宽）、`unit`（LocalizedText，数字/文本框右侧单位）、`presets`（url-presets）、`keyLabel` / `valueLabel` / `keyPlaceholder` / `valuePlaceholder`（key-value、model-mapping；model-mapping 不再内置具体模型名作占位）、`itemTitle`（object-list 每项标题，LocalizedText，`{n}` = 从 1 开始的序号，默认 `ui.item`）、`searchable`（select）、`inline`（radio 横排）、`stacked`（settings 布局下宿主 widget 的位置）。
-- **`ui:details`**：LocalizedText，字段的长说明，收在「查看说明」后。**`ui:errorMessages`**：`{required|minLength|maxLength|pattern|format|minimum|maximum|minItems|maxItems: LocalizedText}`。
-- **只读**：`schema.readOnly: true` 或 `ui:readonly: true` 时，文本类控件用 `readonly`（可选中复制），选择类控件禁用；`disabled` prop 禁用全部。
-- **宿主 widget**：`ui:widget` 命中 widgets（`SCHEMA_WIDGETS_KEY` 注入的 + `widgets` prop）时渲染该组件（包在 `SField`/`SSettingRow` 里，传 `modelValue`、`schema`、`ui`、`multiple`（schema 为 array）、`disabled`，组件要 emit `update:modelValue`）。控制台在启动时 `app.provide(SCHEMA_WIDGETS_KEY, schemaWidgets)` 注入 `proxy-select` / `group-select` / `entity-select`（后者 UI 3.12，§96.7），原生插件里的 `SchemaForm` 因此也能用；插件可再用 `widgets` prop 加自己的控件。**不认识的 widget 名**按 schema 类型推断（开发模式下控制台警告一次），不再一律退回文本框。
-
-`schema.ts` 的辅助导出：`type JSONSchema` / `UISchema`（都是 `Record<string, any>`）、`EnumOption {value, label}`、`ValidateMessages`（`required` `minLength(n)` `maxLength(n)` `pattern` `minimum(n)` `maximum(n)` `integer` `url`，可选 `email` `minItems(n)` `maxItems(n)` `text(v)`（解析 `ui:errorMessages`））、`SECRET_MASK`（`'******'`）、`BUILTIN_WIDGETS`、`SCHEMA_WIDGETS_KEY`、`localizedText(v, locale = 'en')`（`{en, zh}` 或字符串取 `locale`，回退 en；和 `host.i18n.text` 同义但显式传 locale）、`uiGet(ui, key)`（`ui:key` 或 `key`）、`childUI(ui, key)`、`schemaType(s)`、`isSecret(s, ui?)`、`enumOptions(s, ui?, locale?)`、`resolveWidget(s, ui?, known?)`（给了 `known` 时 `ui:widget` 不在其中就按类型推断）、`fieldLabel(key, s, ui?, locale?)`、`fieldHelp(s, ui?, locale?)`、`orderedKeys(s, ui?)`、`getPath(obj, 'a.b')`、`isVisible(ui, root)`、`schemaWithDefaults(s, value)`（递归补 `default`）、`validateSchema(s, ui, value, msgs) → {path: message}`。文案键 `ui.schema.secretKeep` `ui.schema.presets` `ui.schema.setByAdmin` `ui.schema.mappingFrom` `ui.schema.mappingTo` `ui.schema.invalidJSON` 及 `ui.schema.v.{required,minLength,maxLength,pattern,minimum,maximum,integer,url,email,minItems,maxItems}` 在 `uiMessages` 里。
+`@sub2api/host` 配套导出 `useGuardedSettings(accountType)`、`toFieldPath`、`settingsFieldErrors`、`errorMessage`、`isSilentError`。宿主控件改用 `host.components` 的 `ProxyPicker`、`EntityPicker`、`EntityMultiPicker`、`HeaderOverrideEditor`（原来的 schema 部件 `proxy-select`、`group-select`、`entity-select`、`header-override` 随 `SchemaForm` 删除）。表单校验只为即时提示，保存时的最终校验在插件后端（账号凭证 `ValidateCredentials`，插件设置 `ValidateSettings`，§75.1）。
 
 反馈与文案：
 
@@ -1533,7 +1530,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 
 | prop / 事件 | 类型 / 说明 |
 |---|---|
-| `v-model`（`modelValue` + `update:modelValue`） | 凭证对象 `Record<string, any>`（`credentials`）。新建时为空对象，编辑时为 `account.credentials` 的浅拷贝（与 schema 表单拿到的相同）。组件通过 `update:modelValue` 交回要保存的完整凭证对象 |
+| `v-model`（`modelValue` + `update:modelValue`） | 凭证对象 `Record<string, any>`（`credentials`）。新建时为空对象，编辑时为 `account.credentials` 的浅拷贝（敏感字段为 `"******"`，原样交回表示不修改）。组件通过 `update:modelValue` 交回要保存的完整凭证对象 |
 | `mode` | `'create'` \| `'edit'` |
 | `account` | 编辑时为账号对象（含 `id`、`type`、`credentials` 等）；新建时为 `null` / 未传 |
 | `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分 |
@@ -1788,7 +1785,7 @@ message RankedAccount {
 
 最后两行是要点：**CLI 打包绿灯 ≠ 能装进核心**，反过来也有漏。最讽刺的是「CLI 比核心严」这个印象在唯一真实存在的那条核心路由（`/healthz`）上恰好是反的。
 
-实证：切到共享实现后，CLI 自己的三个测试 fixture 立刻被判非法（声明 `ui.native` 却没有对应权限和 `hostUICompat`、`database` 没有 `db.schema` 权限、`form.mode:"schema"` 没有 `schema` 字段）——这些 manifest 打包一直是绿的，装进核心必然失败。
+实证：切到共享实现后，CLI 自己的三个测试 fixture 立刻被判非法（声明 `ui.native` 却没有对应权限和 `hostUICompat`、`database` 没有 `db.schema` 权限、`form.mode:"schema"` 没有 `schema` 字段；schema 模式已在 2026-11-19 删除，现在上传即报 `unsupported`）——这些 manifest 打包一直是绿的，装进核心必然失败。
 
 ### 26.4 顺带修掉的静默跳过
 
@@ -2369,7 +2366,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 | `Publish` 是 **best effort**：无确认、无顺序、无重放，**发布者所在节点自己收不到** | 缓存失效要「**本节点直接生效 + 广播通知其他节点 + 短周期轮询兜底**」三件都做：只广播，本节点不会失效；只靠广播，丢一条消息某个节点就一直是旧的 | `sdk/pluginsdk/host.go`（`Host.Publish` 注释），`server/internal/plugin/rollout/broadcast.go`（`broadcastHub.handle` 跳过 `SourceBootID` 为本节点的消息），`server/internal/core/ports_cluster.go`（`Bus` 注释「every consumer must also reconcile periodically」），§14.3 |
 | `OnEvents` **至少一次**：确认之前的批次会重投，持锁节点切换时也可能重投 | 按事件 `id` 去重（例如在自己的 schema 里对事件 id 建唯一索引） | `server/internal/event/delivery/delivery.go`（包注释），§11.7 |
 | `MigrateData` 在发布协调者被接管后**可能重复执行** | 必须幂等：重跑一遍得到同样的结果 | `server/internal/plugin/rollout/coordinator.go`（`takeOver`、`migrateData`），§11.7 |
-| 插件自己的并发、队列、内存限流等设置**按节点计**：集群总量 = 设置值 × 节点数 | 在设置说明里写明「每个节点」；需要全集群上限的，用数据库或 `lock` 协调，不要用进程内计数 | 例：`plugins/moderation/forms/settings.ui.json` 的 `max_concurrency`、`queue_size`（说明均为「每个节点」） |
+| 插件自己的并发、队列、内存限流等设置**按节点计**：集群总量 = 设置值 × 节点数 | 在设置说明里写明「每个节点」；需要全集群上限的，用数据库或 `lock` 协调，不要用进程内计数 | 例：moderation 设置页（`plugins/moderation/ui/native/src/messages.ts`）的 `max_concurrency`、`queue_size`（说明均为「每个节点」） |
 
 ## 28. 核心托管异步任务（2026-10-01）
 
@@ -2661,7 +2658,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 - 模型区按钮："填入预设模型（N）"（合并，已有的保留）、"从上游获取"（§19）、复制（逗号分隔）、清空（= 所有模型）。配置了映射的模型标签用紫色标出，悬停显示目标模型。
 - 映射区：表格编辑（请求模型 → 上游模型，输入时提示已知模型 ID）或 JSON 编辑；"填入预设映射（N）"合并映射（已有的请求模型不覆盖），模型列表非空时同时把这些请求模型加入列表。模型列表非空、而映射的请求模型不在其中时给出警告和"加入模型列表"。
 - 编辑器仍分"接入配置 / 模型配置 / 调度与限流"三块。左侧导航显示每块摘要（名称；模型与映射数量；优先级 · 权重 · 并发）和错误标记，上方展示账号类型（图标、插件与版本、平台）。同一 `creationGroup` 的认证方式改为单选卡片；限流输入框带单位；没有凭证字段的类型显示说明，不留空白。切换分块时回到顶部。
-- `SchemaForm` 新增 uiSchema 关键字 `ui:section`：值为 LocalizedText，或 `{title, description?, collapsed?}`。从该字段开始到下一个带 `ui:section` 的字段为一组，组前画标题；`collapsed: true` 的组默认折叠，组内任一字段有值或有错误时自动展开。只认带 `ui:` 前缀的写法（不带前缀的 `section` 可能是同名子字段）。旧控制台忽略该关键字，字段照常显示。
+- 表单分节：当时 `SchemaForm` 新增 uiSchema 关键字 `ui:section`（值为 LocalizedText 或 `{title, description?, collapsed?}`，`collapsed` 的组默认折叠，组内有值或有错误时自动展开）。UI 4.0 随 `SchemaForm` 删除（2026-11-19），同样的分节在原生表单里用 `@sub2api/ui` 的 `SFormSection`（`createApiKeyForm` 的 `section: {title, help?, collapsed?}`，§23.3）。
 
 ### 41.4 内置插件预设
 
@@ -2677,7 +2674,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 `defaultModelMapping` 字段与校验（41.1）、`default_model_mapping` 接口字段（41.2）和控制台的"填入预设映射"（41.3）都保留，供 volcengine 与第三方插件使用；预设映射为空时控制台不显示该按钮的数量提示即可。已经按旧预设建好的账号，映射仍保存在账号上，不受插件升级影响（§41 开头：预设与账号再无关联）。
 
-volcengine 0.12.2 的两个表单同时用 `ui:section` 把素材库字段归入"素材库（可选）"，`relay` 的旧前缀字段归入默认折叠的"兼容配置"。
+volcengine 0.12.2 的两个表单同时用 `ui:section` 把素材库字段归入"素材库（可选）"，`relay` 的旧前缀字段归入默认折叠的"兼容配置"（0.13.0 起表单是原生组件，同样的分节用 `SFormSection`，兼容配置仍默认折叠）。
 
 计费、分组白名单、粘性会话仍按**映射前**的请求模型（§18）：客户端使用映射里的别名时，需要为别名配置价格。
 
@@ -3934,7 +3931,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **一次性导入**：0.11.0 在 Configure 收到真实设置后的第一次刷新里（任一节点）把设置里的名单写成锁定条目：`allowlist_user_ids`（没有这个键时用 `exempt_user_ids`）和 `blocklist_user_ids`（黑名单优先）上的每个用户，没有锁定条目、级别不对或有过期时间的，改成对应的锁定条目（不过期，`source = manual`，级别变了开新计数窗口），每改一条写一条历史 `lock`（无操作人，reason 写"从设置导入…名单"）和一行日志（用户、名单、原来的条目），最后一行汇总日志；不在名单上的锁定条目（0.10.0 还没来得及对账的）解锁删除，同样写历史 `unlock` 和日志，导入后锁定条目与名单逐条一致。每个用户一个事务、先取用户锁，几个节点同时导入也只改一次；全部完成后置 `config_state.lists_imported = true`，失败的话下次刷新重试。之后插件不再读设置里的名单。`GET /status` 带 `lists_imported`；为 false 时控制台不允许保存设置（提示名单导入尚未完成），否则保存会去掉名单键、名单就丢了。同一处：`legacy_converted = false` 而设置里有 0.1 的 `base_url` 和 `model` 时记一条错误日志（"upgrade through moderation <= 0.10 first"）：0.1 的一次性转换（`legacy.go`）已删除。
 - **新接口（`moderation:manage`）**：`PUT /watchlist/:user_id/lock`，body `{"list": "allowlist" | "blocklist"}`：把用户的条目（或新建一条）改成该名单的锁定条目，不过期，`source = manual`，历史 `lock`（from 原级别或空，to 名单级别，reason 写名单名，`operator_id` = 调用者）；已经是该名单的锁定条目时不改、不写历史；返回条目（`Watch`，带 `locked: true`、`lock`）。字段错误 400：`list` / `enum`，版主 `user_id` / `staff`（与加入名单相同）；核心没有该用户 404 `user_not_found`。`DELETE /watchlist/:user_id/lock`：删除锁定条目，历史 `unlock`（from 原级别，`operator_id` = 调用者），返回 `{"user_id", "removed": true}`；用户没有锁定条目时 404 `not_locked`。`POST /watchlist`、`PATCH`/`DELETE /watchlist/:user_id` 对锁定条目照旧 409 `locked`。条目 JSON 照旧带 `locked` 和 `lock`（由级别得出，锁定条目总有）。自动升级的基线照旧把 `lock` / `unlock` 历史算作人工决定。
 - **`ban_window_seconds`**（1–31536000，默认 86400）取代 `ban_window_hours`；封禁原因按能整除的最大单位写窗口，与自动升级相同（`24h / 24 小时`、`10m / 10 分钟`、`90s / 90 秒`）。
-- **设置清理**：schema 和解码删除 `analysis_*`（10 个）、`on_error`、0.1 的 `base_url`、`model`、`system_prompt`、`categories`、`tool_choice`、`max_turns`、`temperature`、`max_tokens`、`timeout_ms`、`sample_rate`、`group_ids`、`model_patterns`、`retention_days`，以及 `exempt_user_ids`、`cache_ttl_seconds`、`allowlist_user_ids`、`blocklist_user_ids`、`ban_window_hours`。例外：`api_key` 留在 schema 里（隐藏、`writeOnly`，不解码），否则核心不再遮蔽，`GET` 设置会明文返回库里存着的 0.1 密钥。核心只在保存时按 schema 校验、用提交的文档整体替换（`plugin/api/settings.go` `putSettings`），插件写不了设置，所以：控制台保存时去掉 schema 没声明的键，并把旧值折算进新键；插件在保存之前仍按一张表（`settings.go` `retiredKeys`）读这几个旧键，新键在时不读：`cache_ttl_seconds` → `verdict_cache_days`（0 = 关，否则向上取整到天，最多 7）、`ban_window_hours` → `ban_window_seconds`（× 3600）、`retention_days` → `hit_retention_days`（与 0.10.0 相同：取 180 和它的较大值）、名单（只给一次性导入用）。其余旧键一概不读。控制台的折算表（`settingsForm.ts` `RETIRED`）与它相同。
+- **设置清理**：schema 和解码删除 `analysis_*`（10 个）、`on_error`、0.1 的 `base_url`、`model`、`system_prompt`、`categories`、`tool_choice`、`max_turns`、`temperature`、`max_tokens`、`timeout_ms`、`sample_rate`、`group_ids`、`model_patterns`、`retention_days`，以及 `exempt_user_ids`、`cache_ttl_seconds`、`allowlist_user_ids`、`blocklist_user_ids`、`ban_window_hours`。例外：`api_key` 留在 schema 里（隐藏、`writeOnly`，不解码），否则核心不再遮蔽，`GET` 设置会明文返回库里存着的 0.1 密钥（0.12.2 起没有 schema：`api_key` 写在清单 `ui.settings.secrets` 里，照样遮蔽，`ValidateSettings` 接受它、不解码，§72.10）。核心只在保存时按 schema 校验（0.12.2 起由插件 `ValidateSettings` 校验）、用提交的文档整体替换（`plugin/api/settings.go` `putSettings`），插件写不了设置，所以：控制台保存时去掉 schema 没声明的键，并把旧值折算进新键；插件在保存之前仍按一张表（`settings.go` `retiredKeys`）读这几个旧键，新键在时不读：`cache_ttl_seconds` → `verdict_cache_days`（0 = 关，否则向上取整到天，最多 7）、`ban_window_hours` → `ban_window_seconds`（× 3600）、`retention_days` → `hit_retention_days`（与 0.10.0 相同：取 180 和它的较大值）、名单（只给一次性导入用）。其余旧键一概不读。控制台的折算表（`settingsForm.ts` `RETIRED`）与它相同。
 - **rolling**：插件靠内置同步全集群切换，0.10.0 会在 0.11.0 的库上跑几秒：照常工作，它不碰删掉的对象。导入写的锁定条目与 0.10.0 对账的结果相同，0.10.0 节点不会再改。**rollout 期间不要保存设置，也不要用锁定接口**：保存后的设置没有名单，0.10.0 节点会把所有锁定条目解锁删除，0.11.0 不会再导入（已导入），名单就丢了；锁定接口改的条目 0.10.0 节点按它的名单改回去；0.11.0 节点导入完成之前（启动后几秒）锁定接口改的条目也会被导入按设置里的名单改回。
 - **发布步骤**：全部节点到 0.11.0 后，保存一次设置，库里就不再有旧键：控制台任一设置页保存（去掉不再接受的键和 `api_key`，把 `cache_ttl_seconds`、`ban_window_hours`、`retention_days` 折算进新键）。原来另有 `settings_cleanup.py clean` 做同样的事，它按 schema 声明的键保留设置，0.12.2 起插件没有 schema，它会存下空设置，已删除（2026-11-19）。
 - **回滚到 0.10.0**：库结构可以直接回滚（0.10.0 不碰删掉的对象，0013 已记录、不会撤销）。两处要处理：0.10.0 按设置里的名单决定并对账（一启动就把不在名单上的锁定条目解锁删除），而 0.11.0 的 schema 不声明名单键，回滚前写不进去；0.11.0 保存过的设置里有 `ban_window_seconds`、没有 `ban_window_hours`，0.10.0 的 schema 不认识前者（之后 0.10.0 下每次保存都会被核心拒绝），封禁窗口也会回到默认的 24 小时。用同一个工具：
@@ -4014,6 +4011,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **0.11.1**：版本 0.11.1，无迁移。没设范围的流程按 `input` 审、LLM 理由上限 2000 字（超出以“…”结尾）、逐级审核的理由整段显示，见 72 节开头"0.11.1"。封禁用户表的原因从单元格展开行，用到 UI 3.13，**`hostUICompat` 改为 `^3.13`，`hostCompat` 抬到 `>=0.1.281 <0.2.0`**。接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
 - **0.11.2**：版本 0.11.2，无迁移。审核器编辑直接显示默认内容并可查看、恢复，内置 Jev 题集换成线上 9 题，失败调用的 trace 带脱敏错误摘要 `err_detail`，连接阶段网络错误重试一次，见 72 节开头"0.11.2"。没有用到新的平台能力，`hostCompat`、`hostUICompat`、接口、能力、宿主权限、设置 schema 都不变，升级不需要管理员重新批准。
 - **0.12.1（2026-11-15）**：插件 SDK 改用 GORM，功能不变。表结构以 `internal/model` 的 GORM 模型为唯一描述（`model.All()`，16 张表），与 `migrations/0001`–`0013` 建出的表完全一致（`sub2api-plugin db check` 通过，2026-11-16 起按系统目录比对列类型、NOT NULL、默认值、主键和索引、约束定义）；全部 pgx 调用改为 GORM（`Host.DB` 返回 `*gorm.DB`），语句的条件、锁、`ON CONFLICT`、`RETURNING` 都不变：占位符从 `$n` 换成 `?`，重复的参数按出现次数传（只在类型推断会变的地方加 `::bigint`），引用审核器的 JSON path 改为参数传入（GORM 会把其中的 `?`、`@` 当占位符），数组参数按 `pgdb.Array` 传。原来 `pgx.Batch` 的两处批量写入改为一个事务里的多行 `INSERT`（每条至多 1000 行，仍按键排序，全成或全不成）：审核记录按模型写入并只 `RETURNING id`，统计（`stats_hourly`、`costs`、`user_daily`）的累加改为 `INSERT … ON CONFLICT DO UPDATE` 的同一组累加表达式；保留期清理的 advisory 锁仍是事务级的 `pg_try_advisory_xact_lock`（2026-11-16 起经 `pgdb.TryXactLock` 取，键不变，新旧节点混跑时仍互斥）。2026-11-16 起语句全部由 GORM 按模型生成（§2“插件数据库”），去掉了模仿 pgx 的 `queryRow`/`collect`/`eachRow` 等封装；到期封禁的“删除并记为解封”从一条数据修改 CTE 改为同一事务里的 `DELETE … RETURNING` 加 `INSERT … ON CONFLICT`（用户已先加锁，结果相同），批量清理按 `ctid` 的子查询由 GORM 生成。能力、授权、接口、设置 schema 都不变，没有新迁移；`hostUICompat` 不变（`^3.15`）。线上跑的 0.12.0 是 0.1.286 打的包（`hostCompat >=0.1.286`），develop 上的 0.12.0 之后又改了清单（`risk`/`defaults`，§4“插件权限”，`hostCompat >=0.1.289`），0.12.1 把 `hostCompat` 改为 `>=0.1.290 <0.2.0`（0.1.289 不单独发布）：**不能在线上的 0.1.288 上单独升级**，随核心 0.1.290 一起发布。
+- **0.12.2（0.1.304 批次，插件界面只用代码写）**：删掉 `forms/settings.schema.json`、`forms/settings.ui.json`；`ui.settings` 改为 `{"mode":"native","page":"dashboard","permission":"moderation:manage","secrets":[{"path":"api_key"},{"path":"notify_webhook_secret"},{"path":"notify_webhook_url","sensitive":true}]}`（§75.1、§75.5），保存时由插件 `ValidateSettings` 校验（§72.10）。**`hostUICompat` 改为 `^4.0`，`hostCompat` 是 `>=0.1.304 <0.2.0`**（与这一批全部插件相同）。能力、钩子、任务、路由、宿主权限不变。
 
 ### 72.4 抽取
 
@@ -4344,8 +4342,9 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - **以 KV 为准**：KV 同步写，用批量调用（先删或写命中条目，再读出、修改、写回片段键），**没有预算（0.8.1）**：同步用处理请求自己的 ctx，请求结束时停下，没写的不写、对应记录不计入 `cache_synced`。本节点先给这些键立不设期限的墓碑，等到轮到它改这些键（正在写这些键的运行先写完），写 KV，再把墓碑的期限定为此后 4 秒，然后才让出；收到广播 `verdict.changed` 的其他节点把这些键从内存里删掉并立 4 秒墓碑。墓碑期内查询读到的旧值和刚结束的运行都不能把旧结论放回内存或写回 KV；读 KV 用了比墓碑更久、期间又有键被立过墓碑的那次读，读到的值一个都不放进内存；运行的写同理按"它的请求问缓存的时刻"算——问缓存已超过 4 秒、期间本节点立过墓碑的运行什么都不写（规则和它的代价在 72.5 第 8 步的"写"）。之后都从 KV 重新读。响应的 `cache_synced` 是缓存改动全部写成功的记录数；写失败的不计入（各节点一致地沿用旧结论），再处理一次会重做。广播是尽力而为的。**漏收的节点（0.8.1）**继续按内存里的旧值回答——例如继续重放已被标为误报的命中——没有时限（72.5 第 8 步"其他节点何时看到一个新命中"），做处理的节点自己立即生效；清空缓存可以兜底（72.11）。同步里失败的批量调用各计一次 `runtime.kv_errors`；因为请求结束而停下的不计。
 - **最终结论只在前端计算**：有人工结论用人工结论；否则用 AI 结论，AI 判 unsure 时显示"待复核"；同时标注来源是人工还是 AI。
 
-### 72.10 设置（`forms/settings.schema.json` 改动）
+### 72.10 设置（0.12.2 起由插件 `ValidateSettings` 校验；此前是 `forms/settings.schema.json` 的改动）
 
+- **0.12.2（现行）**：`forms/settings.schema.json`、`forms/settings.ui.json` 删除，核心不再按 schema 校验。设置的键、类型、范围、选项、长度写在插件 `internal/moderation/settings_check.go` 的 `settingsRules`（`fieldcheck.Fields`，照原 schema 逐条搬过来），保存时由 `ValidateSettings` 检查：没列出的键一律拒绝（`unknown`，退役键也是，设置页保存前会去掉它们），各字段越界报 `minimum`/`maximum` 等 `fieldcheck` 错误码，路径为 `values/<键>`（§15.8）。0.1 的 `api_key` 不再读，只为让核心继续遮蔽而保留在规则和 `ui.settings.secrets` 里。`Configure`（`parseSettings`）对已存值保持宽松：越界值夹回范围、退役键只记不含值的警告，所以库里已存的越界值照常运行，但之后在任何设置页保存都会被拒，直到把它改回范围内。密钥：`api_key`、`notify_webhook_secret` 是凭据，`notify_webhook_url` 是敏感地址（§75.1）。下文 0.11.0 及以前各条里的"schema"指当时的 `forms/settings.schema.json`。
 - **0.11.0**：下面标退役、隐藏的旧键和 `ban_window_hours` 已从 schema 删除（`api_key` 除外），新增 `ban_window_seconds`，见 72 节开头"0.11.0（contract）"；本小节其余内容是 0.10.0 及以前的规则。
 - **保留**：`mode`、`exempt_user_ids`（0.8.0 退役，见下）、`input_max_chars`（默认改为 12000）、`min_chars`、`cache_ttl_seconds`（0.8.0 退役，见下）、`block_status`（沿用 400–599，默认 403；没有收窄，免得 0.1 的旧值升级后存不了）、`block_message`、`record_pass`、`store_text`、`max_concurrency`、`queue_size`、`ban_*`。
 - **新增**：
@@ -4625,7 +4624,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - **0.8.0**：异常率的分子是流程行的 `errors`，定义如上（有级失败的运行都算）。同样的阈值下告警会比 0.7.2 更容易触发；升级后按新的数值重新看一下阈值。
   - 告警状态的 KV 命名空间仍是 `pass`（0.7.x 的缓存也用过这个命名空间；0.8.0 的判定缓存改用 `verdict`，告警状态不跟着换）：滚动升级期间新旧节点共用同一份状态，正在持续的告警不会重发。
 - AI 分析自动调整名单级别时也会发通知。
-- 通知发到 `notify_webhook_url`：JSON POST，中英双语，可以用 `notify_webhook_secret` 做 HMAC 签名（请求头 `X-Signature: sha256=…`）。通知里不带被审核的原文。设置表单里，密钥是 `writeOnly`，URL 是 `x-sensitive`。
+- 通知发到 `notify_webhook_url`：JSON POST，中英双语，可以用 `notify_webhook_secret` 做 HMAC 签名（请求头 `X-Signature: sha256=…`）。通知里不带被审核的原文。清单 `ui.settings.secrets` 里密钥是凭据、URL 是敏感地址（`sensitive: true`，§75.1；0.12.2 之前在设置 schema 里分别标 `writeOnly`、`x-sensitive`）。
 - 核心现在有通知（§74.4 `Notify`），但它按"渠道 + 接收人"发送，不按权限找管理员。是否把 moderation 的签名 webhook 迁到核心通知，等用户决定；在此之前继续用 webhook。
 
 **用户信息**：
@@ -4696,16 +4695,16 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 **标签页**：概览、记录、观察名单、封禁、流程、绑定（0.7.0，72.17）、审核器、渠道、测试、设置。设置标签页对核心 `plugin:manage` 或 `moderation:manage`（§75.1）可见，没有设置权限的人看不到设置入口（标签页、概览里的设置链接都不显示）。设置标签页是表单页，自己限宽（约 56rem），页头的模式徽标放在 `#filters`，不用 `#title-extra`（后者会让页面说明留在页内）。
 
-**设置全部在这里编辑**（0.6.1 起，2026-10-31 用户要求；manifest `ui.settings` 为 `{"mode":"native","page":"dashboard",…}` 并带 schema 和 uiSchema，§75.5）。插件详情页不再有设置标签，`/plugins/moderation/settings` 转到本页 `?tab=settings`；插件页也不再有"完整设置"按钮或链接。存储不变：仍是核心的 `GET/PUT /plugins/moderation/settings`（核心加密保存、按 schema 校验并掩码密钥、改动后通知插件）。
+**设置全部在这里编辑**（0.6.1 起，2026-10-31 用户要求；manifest `ui.settings` 为 `{"mode":"native","page":"dashboard",…}`，§75.5；0.12.2 起不带 schema，改为声明 `secrets`）。插件详情页不再有设置标签，`/plugins/moderation/settings` 转到本页 `?tab=settings`；插件页也不再有"完整设置"按钮或链接。存储不变：仍是核心的 `GET/PUT /plugins/moderation/settings`（核心加密保存、按 `ui.settings.secrets` 掩码密钥、保存前交插件 `ValidateSettings` 校验、改动后通知插件）。
 
-- **分组**：按 `forms/settings.ui.json` 的 `ui:order` 和 `ui:section` 分成：运行模式与用户名单（0.8.0；此前叫"运行模式与豁免"）、拦截响应、观察名单与封禁、AI 分析、记录与保留、性能与缓存（默认折叠）、输入范围（默认折叠）、告警与通知、Jev 默认题集。每组一个 `SSettingsGroup`，每项一个 `SSettingRow`；有错误的折叠组自动展开。
-- **渲染**：一般的项用 `@sub2api/ui` 的 `SchemaField`（settings 布局）按 schema / uiSchema 渲染，显示值为已存值，没有存过的显示 schema 默认值。以下几项用本页自己的编辑器：拦截提示下面的拦截响应预览（OpenAI / Claude / Gemini 三种格式）、AI 分析渠道（只能选大模型渠道的下拉框，已存渠道不是可用的大模型渠道时提示）、通知 Webhook 地址和签名密钥（已设置时显示"已设置，留空保持不变"，可单独清除）、Jev 默认题集（内置 / 自定义，题集编辑器）。
+- **分组**（0.12.2 起）：设置分在页面侧栏的七个设置页里（`ui/native/src/settingsForm.ts` 的 `SECTIONS` 与 `nav.ts`）：执行策略（`mode`、`fail_policy`）、缓存与输入、名单规则（观察名单与封禁）、Jev 默认题集、拦截提示、记录与保留、高级（性能、告警与通知）。每组一个 `SSettingsGroup`，每项一个 `SSettingRow`。（0.12.2 之前按 `forms/settings.ui.json` 的 `ui:order`、`ui:section` 分组。）
+- **渲染**（0.12.2 起）：每项按 `SETTINGS` 里的种类（整数、时长、枚举、开关、文本、地址、密钥、题集）用 `@sub2api/ui` 的控件写成代码（`useForm`、`SForm`、`SSecretInput` 等），显示值为已存值，没有存过的显示默认值。以下几项用本页自己的编辑器：拦截提示下面的拦截响应预览（OpenAI / Claude / Gemini 三种格式）、判定缓存天数下的"清空判定缓存"、Jev 默认题集（内置 / 自定义，题集编辑器）。（0.12.2 之前一般的项用 `SchemaField` 按 schema / uiSchema 渲染。）
 - **0.8.0 的设置项**：第一组是 `mode`（标题"审核与默认级别"，选项"关闭 / 开启 · 默认观察 / 开启 · 默认拦截"）、白名单、黑名单；"记录与保留"组在 `store_text` 之后是 `record_pass_input_message`；"性能与缓存"组用 `verdict_cache_days` 取代 `cache_ttl_seconds`，下面有"清空判定缓存"按钮（只对 `moderation:manage` 显示，先确认）。退役的 `exempt_user_ids`、`cache_ttl_seconds` 隐藏。
   - 白名单的初始值：已存的 `allowlist_user_ids`，没有这个键时取已存的 `exempt_user_ids`（与后端读法一致）；白名单或黑名单有改动的保存同时把 `exempt_user_ids` 写成"白名单减去黑名单"（镜像；只改黑名单的保存也重写）。只保存黑名单而新键还从没存过、旧键里又有被加进黑名单的用户时，把旧键原样存成 `allowlist_user_ids`，旧键去掉这些用户。把白名单清空而旧键里还有用户时，写入空数组而不是删掉新键（旧键也写成空数组）。
   - 缓存天数的初始值：已存的 `verdict_cache_days`，没有时由 `cache_ttl_seconds` 换算（0 显示为关闭）；清空天数而旧键还在时写入默认值 7。
-- **0.1 旧字段**（`base_url`、`api_key`、`model`、`system_prompt`、`categories`、`tool_choice`、`max_turns`、`temperature`、`max_tokens`、`timeout_ms`、`on_error`、`sample_rate`、`group_ids`、`model_patterns`、`retention_days`）在 uiSchema 里是 `ui:widget: hidden`，不在界面出现，但留在 schema 里（`api_key` 必须留，否则核心不再把它当密钥掩码），保存时原样回传。仍存着 0.1 的 `api_key` 时页面顶部提示并提供"清除"（只持有 `moderation:manage` 的人在它存在时任何保存都会被要求重填它，§75.1，而它已无法重填）。
-- **密钥**：Webhook 地址（`x-sensitive`）和签名密钥（`writeOnly`）读到 `******`；输入框留空回传 `******` 表示沿用，点清除后回传时去掉该键；核心要求重填已存密钥（字段错误码 `reenter`）时在对应输入框下提示。
-- **校验与错误**：保存前按 schema 校验本页改过的项；核心返回的字段错误（`values/<key>/…`）显示在该项下面，不属于本页任何项的错误弹提示。数字项清空表示不保存，用 schema 默认值。
+- **0.1 旧字段与退役键**（0.12.2 起）：页面先把已存设置换成现行的键（`settingsForm.ts` 的 `currentSettings`）：退役键的值折算进取代它的键（新键没存过时），`SETTINGS` 没列的键和 0.1 的 `api_key` 在保存时去掉（`ValidateSettings` 会拒绝前者）。（0.12.2 之前 0.1 旧字段在 uiSchema 里隐藏、留在 schema 里原样回传，存着 `api_key` 时页面顶部提示并提供"清除"。）
+- **密钥**：Webhook 地址（`ui.settings.secrets` 里的敏感地址，`SSecretInput plain`）和签名密钥（凭据，`SSecretInput`）读到 `******`；输入框留空回传 `******` 表示沿用，点清除后回传 `''` 清掉已存值；核心要求重填已存密钥（字段错误码 `reenter`）时在对应输入框下提示。（0.12.2 之前这两项在 schema 里分别标 `x-sensitive`、`writeOnly`。）
+- **校验与错误**：输入时按 `settingsForm.ts` 的规则即时提示（与插件 `settings_check.go` 的上下限相同），保存时由插件 `ValidateSettings` 做最终校验；核心返回的字段错误（`values/<key>/…`）显示在该项下面，不属于本页任何项的错误弹提示。数字项清空表示不保存，用默认值。
 
 **设置的保存**（核心设置接口没有版本号，PUT 整体替换 values）：页面加载时记下已存的值和本页各项的初始值；保存时重新读取已存的设置，只把本页**相对加载时改过的项**写进最新值再写回，本页没动过的项（包括本页显示的项、隐藏的 0.1 旧字段）和其他设置都保持最新值，不会被打开页面时的旧值覆盖。没有改动时不发请求；有未保存的改动时保存栏提示。本页改过的项如果别人在此期间也改过（加载时的值 ≠ 最新值），先确认，确认后以本页的值为准，只覆盖这些项。限制：密钥类的项读到的是掩码，别人改了密钥看不出来；两次读取之间仍有很短的竞争窗口，要彻底解决需要核心设置接口支持版本号或按键 PATCH。
 
@@ -5170,34 +5169,35 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
   - `PUT`：`plugin:manage` **或** `plugin.<key>:<permission>`。
   - 都没有时 403 `permission_denied`，`details.permission` 为核心权限。权限先于其他检查：插件不存在时，没有核心权限的人同样得到 403（不暴露插件是否存在），有核心权限的人得到 404；`PUT` 的请求体也在权限检查之后才读。
   - 取的是插件当前版本的 manifest；插件没写这个字段时与以前相同。
-  - **掩码字段分两类**（2026-10-31 修订，原规则把 `x-sensitive` 地址也当密钥，持插件权限的人可以把 webhook 地址改成自己的，同时用掩码沿用原签名密钥）：
-    - **凭据**：`writeOnly: true` 或 `format: "password"`（同时写了 `x-sensitive` 也算凭据）。插件拿它向别人证明身份（签名密钥、API Key、SMTP 密码）。
-    - **敏感地址**：只有 `x-sensitive: true`。webhook、`base_url` 这类本身可能带令牌的地址，`GET` 时同样掩码，但不是凭据。
-    - 嵌套对象里的属性同样识别（沿 `properties` 往下，最多 8 层），掩码和校验都按完整路径。`GET` 回答的 `secret_fields` 是相对 `values` 的 JSON 指针（`upstream/api_key`；名字里的 `~`、`/` 按 RFC 6901 转义成 `~0`、`~1`），顶层字段与以前相同。
+  - **掩码字段分两类**（2026-10-31 修订，原规则把敏感地址也当密钥，持插件权限的人可以把 webhook 地址改成自己的，同时用掩码沿用原签名密钥）：
+    - **凭据**：`ui.settings.secrets` 里没写 `sensitive` 的项。插件拿它向别人证明身份（签名密钥、API Key、SMTP 密码）。
+    - **敏感地址**：`sensitive: true` 的项。webhook、`base_url` 这类本身可能带令牌的地址，`GET` 时同样掩码，但不是凭据。
+    - 嵌套对象里的属性可以单独声明（最多 8 层），掩码按完整路径。`GET` 回答的 `secret_fields` 是相对 `values` 的 JSON 指针（`upstream/api_key`；名字里的 `~`、`/` 按 RFC 6901 转义成 `~0`、`~1`），顶层字段与以前相同。
+    - 2026-11-19 之前这两类由设置的 JSON Schema 标记（凭据是 `writeOnly: true` 或 `format: "password"`，敏感地址是只有 `x-sensitive: true`）；schema 表单删除后只认清单的 `ui.settings.secrets`（下文）。
     - 回传掩码 `******` 表示沿用原值；原来没有值时该字段删去。
   - **只凭插件权限（没有 `plugin:manage`）修改时，凭据不能沿用**：本次只要有任何字段改变（普通字段、敏感地址、另一个凭据，或删掉了某个字段），所有回传掩码的凭据都不再沿用，回答 400 `invalid_argument`，`details.fields` 里每个这样的凭据一项（`field = "values/<路径>"`，`code = "reenter"`），要求重新填写。改的是敏感地址时也一样：新地址必须配上重新填写的凭据，否则持有插件权限的人可以把 webhook 或 `base_url` 改到自己的地址，让插件把保存的凭据发过去。
     - 什么都没改时照常沿用。
     - 回传掩码的敏感地址不受此限：它沿用原值，地址没有变，凭据也不会被发到别处；所以"凭据全部重填、地址保持掩码"可以保存。
     - `plugin:manage` 不受此限制。
-    - 实现：`sdk/manifest` `SettingsSecrets`（标记的唯一读法，打包校验与核心共用）、`plugin/api/settings.go` `schemaSecrets`、`mergeSettings`。
-  - **不带 schema 的 native / iframe 设置在清单里声明密钥**（2026-11-19，插件界面只用代码写，设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md) 6.1）：`ui.settings.secrets` 是 `[{path, sensitive?}]`。
-    - `path` 是相对 `values` 的 JSON 指针，写法与 `secret_fields` 相同（`upstream/api_key`，`~0`、`~1` 转义）；`sensitive: true` 是敏感地址（对应 `x-sensitive`），否则是凭据。
-    - 范围与 schema 标记相同：嵌套对象的属性，最多 8 层；被列出的字段整体掩码。数组元素不能单独声明：路径中途遇到数组（或任何不是对象的值）时，那个值整体按密钥处理，`GET` 时整块掩码、`secret_fields` 列出它，回传掩码时整块沿用原值（与列出的对象、数组值同一套逻辑，`settings.go` `wholeAtNonObjects`）。建议直接声明数组本身。
+    - 实现：`manifest.Form.SecretFields`（`ui.settings.secrets` 的唯一读法，打包校验与核心共用）、`plugin/api/settings.go` 的 `mergeSettings`。
+  - **设置的密钥在清单里声明**（2026-11-19，插件界面只用代码写，设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md) 6.1）：`ui.settings.secrets` 是 `[{path, sensitive?}]`。
+    - `path` 是相对 `values` 的 JSON 指针，写法与 `secret_fields` 相同（`upstream/api_key`，`~0`、`~1` 转义）；`sensitive: true` 是敏感地址，否则是凭据。
+    - 范围：嵌套对象的属性，最多 8 层；被列出的字段整体掩码。数组元素不能单独声明：路径中途遇到数组（或任何不是对象的值）时，那个值整体按密钥处理，`GET` 时整块掩码、`secret_fields` 列出它，回传掩码时整块沿用原值（与列出的对象、数组值同一套逻辑，`settings.go` `wholeAtNonObjects`）。建议直接声明数组本身。
     - **键在不在有区别**（2026-11-19，K1 审查 M1）：写了列表按列表掩码；写成 `[]` 表示没有密钥，什么都不掩码；**没有 `secrets` 键**表示不知道哪些是密钥，每个顶层键都按凭据掩码（同下文"不知道哪些是密钥的设置"）。清单以原始 JSON 存在 `plugin_versions.manifest`（jsonb），解码后键不存在是 `nil`、`[]` 是空切片；`Form.Secrets` 的 JSON 标签是 `omitzero`，Go 里构造的清单也保留 `[]`。
-    - 掩码、回传 `******` 沿用原值、只凭插件权限时的重填、字段错误的写法都与 schema 相同。实现：`manifest.Form.SecretFields`（返回与 `SettingsSecrets` 相同的 `[]SecretField`）。
-    - `manifest/check`：不带 schema 的 native / iframe 设置必须写 `secrets`（可以是 `[]`），缺了报 `ui.settings.secrets` `required`；只有 `ui.settings` 可以写（账号类型写了报 `unsupported`，账号的密钥用 `sensitiveFields`）；带 `schema` 的设置不能同时写（`unsupported`，密钥由 schema 标记，掩码照旧按 schema）；每个 `path` 由非空的名字组成、`~` 只能是 `~0`/`~1`、不超过 8 层（`manifest.SecretPath`，否则 `invalid`）；不能重复，也不能一个在另一个之下（`duplicate`）。native 设置要有 `component` 或 `page`（`ui.settings.component` `required`）。这些检查只在上传时做，已装的包照常加载（缺 `secrets` 的按上一条全部掩码）。
+    - 掩码、回传 `******` 沿用原值、只凭插件权限时的重填、字段错误的写法见上文。实现：`manifest.Form.SecretFields`（返回 `[]SecretField`）。
+    - `manifest/check`：native / iframe 设置必须写 `secrets`（可以是 `[]`），缺了报 `ui.settings.secrets` `required`；只有 `ui.settings` 可以写（账号类型写了报 `unsupported`，账号的密钥用 `sensitiveFields`）；`form.mode: "schema"` 上传时报 `ui.settings.mode` `unsupported`（2026-11-19 起）；每个 `path` 由非空的名字组成、`~` 只能是 `~0`/`~1`、不超过 8 层（`manifest.SecretPath`，否则 `invalid`）；不能重复，也不能一个在另一个之下（`duplicate`）。native 设置要有 `component` 或 `page`（`ui.settings.component` `required`）。这些检查只在上传时做，已装的包照常加载（缺 `secrets` 的按上一条全部掩码）。
   - **插件校验设置**（2026-11-19）：`PUT` 在换回保留的密钥之后、写库之前，调用插件的 `PluginService.ValidateSettings`（`config_json` 是换回密钥后的完整设置）。
     - 请求的 `grants` 是插件当前的授权，与 `Configure` 下发的同源（2026-11-19，K1 审查 S7；此前为空）。
     - 回答的 `errors` 非空时 400 `invalid_argument`，每项 `field` 是相对设置的 JSON 指针（`a/b`），核心写成 `values/a/b`，空串写成 `values`；`code`、`message` 原样返回给控制台，所以 **`message` 不得包含字段的值**（值可能是密钥）。`normalized_config_json` 非空时存它而不是提交的值（必须是 JSON 对象，否则 503 `plugin_unavailable`），`changed_keys`、重填规则都按它算。
     - 可选：插件没实现（SDK 默认回 `UNIMPLEMENTED`，旧插件对未知方法同样回它）视为接受。插件没启用（不在当前代里）时不调用，直接保存，加载时由 `Configure` 检查（与账号凭证相同）。插件已启用但运行不起来（进程起不来、崩溃）时调用失败，保存回答 503 `plugin_unavailable`，不当成接受：要改设置先停用插件。走控制台调用槽位和 `TimeoutPlatformConsole`（10 秒）。
     - 调用发生在锁住插件行（`SELECT … FOR UPDATE`）的事务里：这是取舍，保证校验的是与写入同一份已存值（换回的密钥、`changed_keys`、重填规则都基于它），代价是校验期间同一插件的启用、停用、升级等要锁这一行的操作要等校验返回（最长到上面的超时）。
-    - 带 schema 的设置先按 schema 校验，再调用插件。
+    - 核心自己不校验设置的内容（2026-11-19 前带 schema 的设置先按 schema 校验，再调用插件）。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
     - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
-    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化、含去后缀，只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
-    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（各种被拒的 api_key、base_url，长度边界，去空白与 scheme 转小写），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
-  - **标记只能写在能掩码的位置**（2026-11-12）：只有沿 `properties` 嵌套对象能到达的属性（最多 8 层）能单独掩码；被标记的属性整体掩码，其下不再细分。`items`、`additionalProperties`、`patternProperties`、`allOf`/`anyOf`/`oneOf`、`if`/`then`/`else`、嵌套的 `$defs` 等其他位置的标记、超过 8 层的标记，打包校验报 `ui.settings.schema` `unmaskable_secret`。同文档的本地引用 `"$ref": "#/$defs/<名>"` 或 `"#/definitions/<名>"`（指向根上的 `$defs`/`definitions`，名字是一个 RFC 6901 记号，`~0` `~1` 解码，不接受百分号编码）按“目标写在引用处”处理：目标自身被标记则引用处的属性整体掩码，目标的 `properties` 接在引用处的路径下（同样最多 8 层）；根上的 `$defs`/`definitions` 只经引用读取，没被引用的定义不检查。引用成环、互相嵌套超过 32 层、全部展开累计超过 10000 个节点，或者从 `items` 等到不了的位置引用带标记的定义，都报错，位置写在引用下（如 `/properties/a/$ref/items`）。schema 里只要有任何标记，其他引用（`$dynamicRef`、`$recursiveRef`、外部引用、锚点、其他指针、嵌套 `$id` 之下的引用）照旧报错（2026-11-12 权限加固 FU4，此前任何引用都报错）；schema 文件不是 JSON 对象同样报错。校验之前已安装的包：含这类标记的顶层设置整块按凭据掩码；标记不属于某一个顶层设置时（根上的 `allOf`、`additionalProperties`、`$ref` 等），或 schema 文件不是 JSON 对象时，全部顶层设置按凭据掩码。
-  - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；不带 schema 的 native / iframe 设置没有 `secrets` 键；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
+    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化（不去版本段，§127），只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
+    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（只有空白的 api_key 被拒，带空格、非 ASCII、4096 位的接受；各种被拒的 base_url；带 `/v1`、带 `%2F` 的地址原样保存；去空白与 scheme 转小写；§127），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
+  - **标记只能写在能掩码的位置**（2026-11-12；已删除，0.1.304）：原来是对设置 schema 里密钥标记位置的打包检查（`ui.settings.schema` `unmaskable_secret`，含 `$ref` 展开的规则），随 schema 表单删除。现在密钥只在 `ui.settings.secrets` 里按路径声明，路径的检查见上文（`manifest.SecretPath`）。原文见 `git show 99bc835a7:next/docs/CONTRACTS.md`。
+  - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值，包括已装旧包的 `schema`；native / iframe 设置没有 `secrets` 键）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
   - `GET` 的回答多一个 `permission`：完整的 RBAC key（`plugin.<key>:<permission>`），没有声明时省略。
 - **审计**：设置修改照旧写 `plugin.settings.update`（`changed_keys`，不记值），现在多记 `request_id`；用户是谁看 `user_id`。
 - **控制台**：
@@ -5254,15 +5254,15 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 
 插件通过 `app.events.v1` 订阅即可收到，载荷是 `{account_id, plugin_key, type, name, status（新状态）, reason, cooldown_until?, auto_disabled_until?}`。载荷里没有旧状态。
 
-### 75.5 插件自己页面里编辑的设置（`ui.settings.mode = "native"` 带 schema）
+### 75.5 插件自己页面里编辑的设置（`ui.settings.mode = "native"`）
 
 2026-10-31 用户要求：提示词审核的设置全部放到插件自己的「设置」标签里，插件详情页不再有设置。
 
-- manifest：`ui.settings` 写 `{"mode":"native","page":"<ui.pages 中的 native 页面>","schema":"…","uiSchema":"…","permission":"…"}`。`schema` / `uiSchema` 只有 `ui.settings` 在 native 模式下可以带，其它表单带了报 `unsupported`；`page` 必须是 `ui.pages` 里的 native 页面。
-- 核心：只要表单带 schema，不论模式，`GET/PUT /plugins/:key/settings` 都按它掩码密钥（§75.1）并校验；存储、通知插件、权限都与 schema 模式相同。不带 schema 的 native/iframe 设置按 `ui.settings.secrets` 掩码，没有列出的不掩码，写成 `[]` 什么都不掩码，没有 `secrets` 键时每个顶层键都按凭据掩码（2026-11-19 起；此前这里写"不掩码"，与当时的代码不符：当时它们和没有 `ui.settings` 一样，每个顶层键都按凭据掩码）。所以收尾时删掉 `Form.Schema` 后，已装的 native 带 schema 的旧包（如今天的 moderation）被读成"native、没有 `secrets`"，全部掩码，不会明文读回。
+- manifest：`ui.settings` 写 `{"mode":"native","page":"<ui.pages 中的 native 页面>","secrets":[…],"permission":"…"}`，或者不写 `page`、写 `component`（插件注册的设置组件，控制台放在插件详情页的设置标签里）；两者至少一个（`ui.settings.component` `required`）。`page` 必须是 `ui.pages` 里的 native 页面。`secrets` 必写（可以是 `[]`，§75.1）。2026-11-19 前这种设置另带 `schema`、`uiSchema`（核心按它掩码、校验），schema 表单删除后不再接受，旧字段 `sub2api-plugin` 报 unknown field。
+- 核心：`GET/PUT /plugins/:key/settings` 按 `ui.settings.secrets` 掩码（没有列出的不掩码，写成 `[]` 什么都不掩码，没有 `secrets` 键时每个顶层键都按凭据掩码），保存前交插件 `ValidateSettings`（§75.1）；存储、通知插件、权限与 iframe 设置相同。已装的 native 带 schema 的旧包（moderation 0.12.2 之前）被读成"native、没有 `secrets`"，全部掩码，不会明文读回。
 - `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本的 `ui.settings` 是 `native` 模式时为 true（最初只认 `schema`，过渡期认 `schema` 或 `native`，D1 删掉 schema 后只认 `native`）；`iframe` 模式控制台不打开，已装旧包的 `schema` 模式控制台不再渲染，都为 false。
-- 控制台：插件详情页只在 `mode` 为 `schema` 时显示设置标签；`/plugins/:key/settings`（只有插件权限的人用）遇到 native 设置时转到 `/p/:key/<page>?tab=settings`。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写，回传 `******` 表示沿用密钥。
-- 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。
+- 控制台：插件详情页只在 native 设置写了 `component`、没写 `page` 时显示设置标签（`pluginUtil.ts` 的 `consoleSettings`）；写了 `page` 时 `?tab=settings` 与 `/plugins/:key/settings`（只有插件权限的人用）转到 `/p/:key/<page>?tab=settings`（`nativeSettingsPath`）。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写（`@sub2api/ui` 的 `usePluginSettings`，§23.3），回传 `******` 表示沿用密钥。
+- 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以当时用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。
 
 ## 76. CCGateway guard 与 compose 部署（已删除）
 
@@ -5847,8 +5847,8 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 86.1 API Key 类账号类型
 
-- “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、表单、凭证字段从声明式时起没有变过，账号数据不迁移。
-- 基础地址的规则（`apikey.NormalizeBaseURL`，保存时与每次请求时都用它）：去掉首尾空白、scheme 转小写、去掉类型声明的路径后缀；去掉首尾空白后仍含任何空白字符（`unicode.IsSpace`）、`?` 或 `#` 的地址拒绝（2026-11-19 U3a，与原表单 schema `^(https?://[^\s?#]+)?$` 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出（`u.String()`，`RawPath` 清空）：空格和所有非 ASCII 字节都被百分号转义，没有原样的空白、`?`、`#`，请求时重新规范化不受影响（原 schema 不是理由：RE2 的 `\s` 只认 ASCII，不换行空格之类当初能通过）（例外是原有行为：剥掉一个后缀后又以另一个后缀结尾的地址，如 gemini 的 `…/x/v1/v1beta` 存成 `…/x/v1`，请求时再剥成 `…/x`）。
+- “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、凭证字段从声明式时起没有变过（表单 2026-11-19 起是插件的 native 组件），账号数据不迁移。
+- 密钥与基础地址的规则见 §127（2026-11-20 起；此前保存时就去掉类型声明的路径后缀，密钥按各类型的格式检查）：`api_key` 只要求是非空字符串；基础地址经 `apikey.NormalizeBaseURL` 规范化后**按填写的保存**（去首尾空白、scheme 转小写、路径保留转义形式并去掉末尾的 `/`，不去任何后缀；去掉首尾空白后仍含空白字符（`unicode.IsSpace`）、`?`、`#`、userinfo，或不是绝对 http(s) 地址的拒绝），请求时 `Spec.FromAccount` 从存值末尾至多去掉一个类型声明的版本段（`Spec.Versions`）得到根，再接上路由的完整路径。
 - 原声明式引擎的 1498 条录制样例冻结在 `sdk/pluginsdk/standard/goldentest`，用 `standard` 写的插件逐条回放一致。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = 账号类型 `platforms[].endpoints` 覆盖到的协议加核心能转换到它们的协议（§110 起：跨平台转换到的端点要在账号上按模型开启才提供）。
@@ -5887,7 +5887,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ### 87.3 核心编辑器开放给插件（UI 3.7）
 
 - `HOST_UI_VERSION` 3.7.0；`host.components`（只读）：`ParamOverrideEditor`、`RateLimitEditor`（`{rpm_limit, tpm_limit, spm_limit}`）、`ModelLimitsEditor`、`HeaderPassthroughEditor`、`ProxyPicker`、`ModelMappingEditor`（另有 `UpstreamEditor`，UI 3.18 删除，§106.4；UI 3.19 加 `HeaderOverrideEditor`，§108.3），v-model 即账号接口字段，都接受 `disabled`；较重的编辑器首次使用时加载。用到的插件声明 `hostUICompat: "^3.7"`，核心下限 ≥0.1.262（0.1.261 是最后一个带 UI 3.6 的核心）。
-- schema 表单控件：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`；UI 3.19 加 `header-override`，§108.3）。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
+- schema 表单控件（UI 4.0 随 `SchemaForm` 删除）：`param-override`、`header-passthrough`、`rate-limits`、`model-limits`、`model-mapping`（另有 `proxy-select`；UI 3.19 加 `header-override`，§108.3）。4.0 起原生表单直接用上面的 `host.components`。数据格式即核心执行格式，插件在自己的设置接口里用 SDK 同一套规则校验。
 - `SModal` / `SFormModal` 新增 `fixed`（只是新增属性，更早的核心忽略、平稳降级，见 §23 组件表）。
 
 ### 87.4 编辑页分区插槽 `account.editor.section`
@@ -6517,11 +6517,11 @@ kind: users | groups | api-keys | accounts | models | proxies
   - `EntityPicker`（多选里的“添加”选择器同）放在带标签的表单项（`SField` / `SSettingRow`）里时不再把占位文字设成 aria-label，可访问名称来自表单项的标签；不在表单项里时不变。空列表的“没有匹配的…”写实体名，不写占位文字。
   - `EntityPicker` 退化成的文本框（没有查找权限）在没绑 `text` 时，输入不是 id 的内容会清空已选（发 `update:id ''` 和 `change`，框清空），不再悄悄还原成原来的 id：表单不会按一个已经被改掉的 id 提交。绑了 `text` 时不变（其它输入是名称搜索）。
   - `HOST_COMPONENT_NAMES` 新增 `EntityMultiPicker`（`web/src/components/EntityMultiPicker.vue`）：`kind`、`v-model:ids`（`string[]`，添加顺序）、`placeholder?`、`size?`、`mine?`、`scope?`、`extra?`、`disabled?`、`max?`；事件 `update:ids`，随后 `change(ids)`（只在用户添加或移除后）。已选项是可关闭的标签，后面是只绑 id、排除已选的 `EntityPicker`；没有查找权限时那是个文本框，输入 id 回车追加（这个回车不提交外层表单）。粘贴一串 id（逗号、空白或换行分隔）一次全部追加。
-  - schema 部件 `entity-select`：`{ "ui:widget": "entity-select", "ui:options": { "kind": "user", "mine"?: true, "max"?: 3 } }`。schema 是 `array` → 多选，否则单选；值按 schema 的类型读写（`integer` / `number` → 数字，否则字符串；单选未选写 `null` 或 `''`，读时 `null`、`''`、`0` 都算未选）。
-- `GroupPicker`、`ProxyPicker`（后者也是宿主组件）和 `group-select` / `proxy-select` 部件对外不变，内部改成上面这套：候选和名称来自查找接口，不再只取 `/groups`、`/proxies` 的前 200 条；`ProxyPicker` 的 `null` 仍是“不使用代理”（占位文案不变，点 × 清除），调用者看不到的已选代理仍显示 `#id` 并保持选中。提交给后端的字段名、类型、空值都不变。接入处：账号编辑器（分组、代理）、批量编辑账号（分组、代理）、用户的“分配分组”、价格试算的分组。删除带 API Key 的分组时“迁移到哪个分组”也改成 `EntityPicker`（排除被删的分组自己，仍提交 `move_keys_to=<数字 id>`；“有没有别的分组可迁”仍看分组列表的第一页）。
+  - schema 部件 `entity-select`（UI 4.0 随 `SchemaForm` 删除，原生表单用 `EntityPicker` / `EntityMultiPicker`）：`{ "ui:widget": "entity-select", "ui:options": { "kind": "user", "mine"?: true, "max"?: 3 } }`。schema 是 `array` → 多选，否则单选；值按 schema 的类型读写（`integer` / `number` → 数字，否则字符串；单选未选写 `null` 或 `''`，读时 `null`、`''`、`0` 都算未选）。
+- `GroupPicker`、`ProxyPicker`（后者也是宿主组件）和 `group-select` / `proxy-select` 部件（部件在 UI 4.0 删除）对外不变，内部改成上面这套：候选和名称来自查找接口，不再只取 `/groups`、`/proxies` 的前 200 条；`ProxyPicker` 的 `null` 仍是“不使用代理”（占位文案不变，点 × 清除），调用者看不到的已选代理仍显示 `#id` 并保持选中。提交给后端的字段名、类型、空值都不变。接入处：账号编辑器（分组、代理）、批量编辑账号（分组、代理）、用户的“分配分组”、价格试算的分组。删除带 API Key 的分组时“迁移到哪个分组”也改成 `EntityPicker`（排除被删的分组自己，仍提交 `move_keys_to=<数字 id>`；“有没有别的分组可迁”仍看分组列表的第一页）。
 - 查找权限：分组要 `group:read`，代理要 `proxy:read` 或 `proxy:own:read`（§96.2）。没有权限、或核心没有这条路由（滚动更新中的旧核心返回 404）时是文本框，直接输入 id；改造前这种情况下拉是空的，只能保留或清除已有值。
 - 页面改了分组或代理后（`useGroupsLookup(true)` / `useProxiesLookup(true)`），选择器缓存的这类实体名称一并作废（`forgetEntityNames`），再显示时重新反查。
-- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。
+- 原生插件用到 3.12 任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。moderation 0.9.2 是第一个使用者（`hostUICompat: "^3.12"`、`hostCompat: ">=0.1.280 <0.2.0"`；设置表单用到 `entity-select`，见 §72 的版本记录）。`sdk/manifest/check` 不校验 `ui:widget` 的名字；UI 3.11 及更早的控制台遇到 `entity-select` 按 schema 类型推断控件（整数 → 数字框，字符串 → 文本框，数组 → 标签输入框，后者写字符串），所以用它的插件靠 `hostCompat` 下限挡住旧核心。（UI 4.0 起 schema 部件都已删除，这一条只是当时的记录。）
 - 回滚顺序：核心退回 0.1.279 之前先把 moderation 退回 0.9.1。
 
 
@@ -7549,7 +7549,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 ### 106.4 控制台（UI 3.18）
 
-- `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.18.0，`HOST_UI_VERSION` 3.18.0。`host.components` 与 `HOST_COMPONENT_NAMES` 不再有 `UpstreamEditor`（§87.3），schema 表单控件 `upstream-editor` 删除，账号类型的 API 类型去掉 `upstream`、`pass_headers`。3.18 删除了一个导出，不是只加不改；内置插件都没有用过它。
+- `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.18.0，`HOST_UI_VERSION` 3.18.0。`host.components` 与 `HOST_COMPONENT_NAMES` 不再有 `UpstreamEditor`（§87.3），schema 表单控件 `upstream-editor` 删除（其余 schema 控件随 UI 4.0 删除），账号类型的 API 类型去掉 `upstream`、`pass_headers`。3.18 删除了一个导出，不是只加不改；内置插件都没有用过它。
 - 新建账号不再有“自定义上游”一组；接兼容端点用 openai、anthropic、gemini 的 API Key 类型并填 Base URL。
 
 ### 106.5 数据库与升级
@@ -7659,7 +7659,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 - 通用配置项（§87）新增 `header_override`（kind `header_override`，默认值是对象，清单检查用同一个编译器）。
 - 控制台：账号编辑页“高级 › 请求转发”组，请求头透传与请求参数覆盖之间一行“请求头覆盖”，编辑弹窗为键值表格（值旁有占位符快捷项）和 JSON 文本两种模式，可直接粘贴 new-api 的配置；导航摘要加“请求头覆盖 N 项”。
-- UI 3.19（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.19.0，`HOST_UI_VERSION` 3.19.0，只加不改）：宿主组件 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`）、schema 控件 `header-override`；`ParamOverrideEditor` 另收可选的 `headerOverride`，试运行从它的结果开始。用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.302（最后一个带 UI 3.18 的核心）。
+- UI 3.19（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.19.0，`HOST_UI_VERSION` 3.19.0，只加不改）：宿主组件 `HeaderOverrideEditor`（v-model 为 `header_override` 对象或 `null`，接受 `disabled`）、schema 控件 `header-override`（UI 4.0 随 `SchemaForm` 删除）；`ParamOverrideEditor` 另收可选的 `headerOverride`，试运行从它的结果开始。用到的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 高于 0.1.302（最后一个带 UI 3.18 的核心）。
 
 ### 108.4 参数覆盖（§84）补齐
 
@@ -7720,7 +7720,7 @@ WebSocket 轮次上给了 `response_stream` 的中继被拒绝（按插件不可
 
 ### 109.6 插件
 
-三个新插件只进市场，不内置；账号表单都是 schema 表单，同一插件的类型用 `creationGroup` 合成一项、按鉴权方式切换。各字段的含义和填法见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)。
+三个新插件只进市场，不内置；账号表单首发时是 schema 表单，0.1.304 批次里改为插件自带的 native 组件（azure-openai 用 `createApiKeyForm`，vertex 的 `VertexKeyFileForm`、`VertexApiKeyForm`，bedrock 的 `BedrockAccountForm`；`hostUICompat ^4.0`），同一插件的类型用 `creationGroup` 合成一项、按鉴权方式切换。各字段的含义和填法见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)。
 
 | 插件（键） | 版本 | 形态 | `hostCompat` | 账号类型 | 平台与端点 |
 |---|---|---|---|---|---|
@@ -7734,7 +7734,7 @@ WebSocket 轮次上给了 `response_stream` 的中继被拒绝（按插件不可
 **没有新增分类策略**：azure_openai 的两个类型用 openai 预设的分类策略。404 `DeploymentNotFound` 按该策略原样回客户端；要换号由管理员在失败策略（§69）里配重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`），不配账号规则则账号不动。失败策略发布后请求动作只由它决定，插件分类的 action 不参与。
 
 - **openai**：账号设置 `organization`、`project` 非空时以 `OpenAI-Organization`、`OpenAI-Project` 发送并覆盖客户端带的（默认头，运营方的请求头覆盖仍可改）；留空时不写，客户端经 passHeaders 带来的头保持原样。写在 openai 插件的类型里（`standard.Set(..., standard.Field(...))`），不在 `openai` 预设里。WebSocket 握手同样带上。
-- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发；基础地址必填、无默认值，保存时去掉末尾的 `/openai/v1`、`/openai`；鉴权头 `api-key`，key 不要求前缀；不拉模型列表；没有 `openai.responses_ws`。类型自己的 `PassHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；保留预设的过滤字段 `service_tier`、`safety_identifier`（在运营方改写之后执行，§112.14）。经典类型的路径是 `/openai/deployments/<部署名>/…?api-version=<设置 api_version>`，部署名是映射后的模型，没有 `openai.responses`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 openai 预设的策略：404 `DeploymentNotFound` 原样回客户端，换号靠失败策略的重试规则（见上）。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
+- **azure_openai**（`plugins/azure-openai/internal/azureopenai`）：两个类型都从 openai 预设出发；基础地址必填、无默认值，按填写的保存（2026-11-20 起；此前保存时去掉末尾的 `/openai/v1`、`/openai`），请求时末尾的 `/openai/v1` 或 `/openai` 当作版本段去掉一段再拼路由（§127；项目名恰好是 `openai` 的 Foundry 地址会因此少一段，与此前相同）；鉴权头 `api-key`，key 不限格式；不拉模型列表；没有 `openai.responses_ws`。类型自己的 `PassHeaders` 是 openai 平台的列表去掉 `openai-organization`、`openai-project`；保留预设的过滤字段 `service_tier`、`safety_identifier`（在运营方改写之后执行，§112.14）。经典类型的路径是 `/openai/deployments/<部署名>/…?api-version=<设置 api_version>`，部署名是映射后的模型，没有 `openai.responses`（这类账号的 `/v1/responses` 请求由核心转成 chat）。分类用 openai 预设的策略：404 `DeploymentNotFound` 原样回客户端，换号靠失败策略的重试规则（见上）。没有 `guardedSettings`，所以 own 级用户建这类账号需要 `account:relay`（§21.3.1）。
 - **vertex**：插件不联网，只描述上游请求和令牌请求。两个带密钥文件的类型声明 `"refresh": {}`；密钥文件由插件用 `encoding/json` 解析一次，检查和使用读同一份值；服务账号的断言用 `github.com/golang-jwt/jwt/v5` 以 RS256 签名（没有用 Google 的库：它没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated；见设计文档 16.10）。`token_uri` 只接受 `https://oauth2.googleapis.com/token`（请求由核心代发，粘贴的文件不能把它指到别处）：按解析后生效的值判断（键名不分大小写、重复的键取最后一个），这个值只检查，请求和断言的 `aud` 用常量。校验时归一化：项目取密钥文件里的、区域缺省 `global`；令牌缺失、不属于当前密钥（`token_for` 指纹不同）或读不出过期时间时去掉令牌并写 `expires_at: 1`，由 §48.3 第 5 条或下一轮扫描换第一枚令牌。没有可用令牌（没有或已过期）时 `BuildUpstream` 回 `FAILED_PRECONDITION`，换号、不惩罚。用户凭证类型的请求带 `x-goog-user-project`。令牌端点的回答：400 `invalid_grant` / `invalid_client`、401、403 是 `AUTH_REJECTED`，但 `invalid_grant` 的说明指向断言时间戳（节点时钟）时是 `TRANSIENT`。
 - **bedrock**：插件不联网（`Fetch` 也不用）。`bedrock_apikey` 发 `Authorization: Bearer`；另两个类型由插件做 SigV4 签名（`service: bedrock`）。`anthropic.messages` 走 InvokeModel：路径 `/model/{模型 ID}/invoke` 或 `/invoke-with-response-stream`；请求体用 `jsonedit` 一次改完：删 `model`、`stream`，设 `anthropic_version: bedrock-2023-05-31`，删 `metadata`、`provider`；把客户端 `anthropic-beta` 头和请求体自带的 `anthropic_beta` 里 Bedrock 支持的项写进 `anthropic_beta`（别名改名、不支持的丢弃、去重，tool search 带上 tool examples；白名单 15 项，不分模型，设计文档 16.7 第 6 条），一项都不剩而请求体有这个字段时删掉它；结果里没有 `context-management-2025-06-27` 时删 `context_management`；清洗 Claude Code 写在深处、InvokeModel 不接受的内容（工具定义里的 `custom`、`cache_control` 的 `scope` 和模型不接受的 `ttl`、工具调用 ID 里的非法字符、模型不接受的 thinking 设置）。`output_config`、`output_format` 保留。流式时 `response_stream: aws-eventstream-chunk`。**只服务 anthropic 平台**：没有类型声明 openai 平台，Bedrock 的 OpenAI 兼容接口（`/openai/v1`）不用；OpenAI 协议的请求由核心转换成 Messages 请求后走同一条 InvokeModel 路，`BuildUpstream` 收到其他协议回 `INVALID_ARGUMENT`。模型 ID 前按账号设置加跨区域推理前缀（`us`、`eu`、`apac`、`jp`、`au`、`in`、`global`）；已带这些前缀之一或 `us-gov.` 的 ID 和 ARN 原样发送。区域 `cn-*` 和隔离分区（第二段以 `iso` 开头）保存时报 `region:unsupported`，已存的这类账号回 `FAILED_PRECONDITION`、换号；`us-gov-*` 接受。`externalServices` 是 `amazonaws.com`。没有自动续期。分类是插件自带的策略（设计文档 9.4）。账号表单的解码与归一化用 `sdk/pluginsdk/accountform`（vertex 也用）。
 
@@ -8550,9 +8550,9 @@ ALTER TABLE usage_logs
 
 | 插件 | 账号类型 | 字段 | 地址 |
 |---|---|---|---|
-| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，8–512 个不含空格的可见字符，不限前缀） | 运营方填站点根地址；粘贴的 `/v1`、`/v1beta` 去掉。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
+| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，任意非空字符串，§127；2026-11-20 前要求 8–512 个不含空格的可见字符） | 运营方填站点根地址；按填写的保存，请求时末尾的 `/v1beta` 或 `/v1` 当作版本段去掉一段、各协议从根拼官方路径（填 `/v1` 时 Gemini 协议请求 `…/v1beta/…`，余额也从根拼），§127。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
 | `sub2api` | `apikey`（"Sub2API"） | 同上 | 同上 |
-| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`，粘贴的 `/v1` 去掉） | `guardedSettings` 只许官方地址、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
+| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`；按填写的保存，请求时末尾的 `/v1` 当作版本段去掉，§127） | `guardedSettings` 只许官方地址（`versions: ["/v1"]`，带 `/v1` 的官方地址也算官方，§21.3）、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
 
 - 默认模型：newapi、sub2api 不写（账号服务所有模型；"拉取模型"读站点 `GET /v1/models` 的 `data[].id`）；typesafe 是 `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`（"拉取模型"读 `GET /v1/models` 的 `models[].name`）。
 - 账号测试按绑定的协议测（§122）：核心按账号开放、绑定的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的；newapi、sub2api 用 `standard.Merge` 收集各份预设的全部测试（§122.3 的 OpenAI、Gemini 各协议，Messages `claude-haiku-4-5`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。账号测试不查价、不计费。
@@ -8892,3 +8892,61 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 `0118_volcengine_apikey_prefix_settings.sql`：`plugin_key = 'volcengine' AND type = 'apikey'` 且 `settings` 含其中任一键的账号（含已软删除的），从 `settings` 删掉 `api_prefix`、`video_api_prefix`，其余键不变；`relay` 账号和别的插件的账号不动；只写命中的行，可以重跑。不改 `updated_at`。请求行为不变：这两个键对 `apikey` 账号本来就不生效。加密的凭证部分迁移读不到，不处理（线上只查过 `settings`）。
 
 测试：`migrations.TestMigration0118DropsVolcengineAPIKeyPrefixes`（两个键删掉、其它键保留；`relay` 与别的插件的账号不变且没有被写；重跑不写任何行）。
+
+## 127. 密钥与基础地址（2026-11-20，所有者要求“密钥不要做任何限制”“地址里的 %2F 一起改了”“我们的插件自己处理兼容，不要去多也不要少”；方案 B；无迁移；插件协议、Host API 不变；清单加 `guardedSettings[].versions`，核心 0.1.304；设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md)）
+
+适用于用 `sdk/pluginsdk/apikey` 的 `Spec` 写的 API Key 加基础地址一类账号类型（anthropic、openai、gemini、relay、typesafe 的 `apikey`/`relay_key`，newapi、sub2api，azure_openai 的两个类型，volcengine 的 `apikey` 与 `relay`，vertex 的 `vertex_apikey`），以及 bedrock 的 `bedrock_apikey`（自己的代码，密钥规则相同）。本节取代 §86.1 原来的“基础地址的规则”。
+
+### 127.1 密钥
+
+- `api_key` 只要求是非空字符串：先读凭证、再读设置；缺省、`null`、去掉首尾空白后为空报 `required`；不是字符串报 `type`（类型可以用 `Spec.Texts.KeyNotString` 换文案和错误码：anthropic、openai、typesafe 的预设为 `pattern`，为与录制的样例一致）。此外不检查前缀、字符集和长度，保存去掉首尾空白后的值；`Spec.FromAccount` 读取时同样去空白，空值报 `missing api_key`。
+- 删除的：`apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`，各插件各自的长度与字符集检查（原来大多是 8–512 个不含空格的可见字符，openai 不超过 512 个可见 ASCII 字符，bedrock 8–2048 个可见字符）。bedrock 的 AK/SK、会话令牌，vertex 的密钥文件，volcengine 的 AK/SK 规则不变。
+- 控制字符不另外检查：密钥里带 CR、LF 等字符时，SDK、核心与 Go `net/http` 都拒绝把它写进请求头，不会注入；代价是这样的密钥能保存，但每次请求都失败（设计 Q1）。
+- 界面：`@sub2api/ui` 的 `createApiKeyForm` 默认只要求非空（`{required: true, whitespace: true}`），`spec.apiKey.min`/`max`/`pattern` 写了才检查（§23.3）；`@sub2api/ui/testing` 的 `keyAndUrlCases`、SDK 的 `apikey/apikeytest` 都按这条规则（只有空白的拒绝，1 位、4096 位、带空格、非 ASCII 的接受）。
+
+### 127.2 基础地址的保存
+
+`apikey.NormalizeBaseURL(base) (string, error)`（保存时由 `Spec.Validate` 调用，请求时 `FromAccount` 再调用一次）：
+
+1. 去掉首尾空白，空串报 `is required`（没有地址的可选类型取 `DefaultBaseURL`）。
+2. 拒绝：仍含任何空白字符（`unicode.IsSpace`）、含 `?` 或 `#`、解析失败或没有 host、scheme 不是 http/https、含 userinfo。
+3. 输出 = `url.URL{Scheme, Host}.String()`（scheme 小写，host 照写）+ 路径的转义形式（`EscapedPath()`）去掉末尾所有 `/`。用户写的合法转义原样保留（`%2F`、`%7E` 不还原），原样的非 ASCII 字符按 UTF-8 百分号编码。
+4. **不去任何后缀**：存下的就是填的地址（2026-11-20 前保存时去掉类型声明的后缀，并把转义还原成规范形式）。输出再规范化一次结果不变。
+
+`Spec.Fields` 里给 `base_url` 写的规则、azure 的 `EndpointPattern` 看到的都是这个存值（不去版本段），所以 Foundry 项目名里的 `%2F` 现在可以保存、原样发出。
+
+### 127.3 请求时的版本段
+
+`Spec.Versions` 是基础地址末尾可以带的版本段（原 `StripSuffixes` 改名，值不变）。每项以 `/` 开头、不以 `/` 结尾：
+
+| 类型 | `Versions` |
+|---|---|
+| openai、anthropic、relay、typesafe | `/v1` |
+| gemini、newapi、sub2api | `/v1beta`、`/v1` |
+| azure_v1、azure_deployment | `/openai/v1`、`/openai` |
+| volcengine `apikey` | `/api/v3` |
+| volcengine `relay`、vertex_apikey | 无 |
+
+`Spec.FromAccount` 从存值算出“根”放进 `Config.BaseURL`：在转义形式的存值上找 `Versions` 里能作为后缀的项，取最长的一个，整段匹配、区分大小写，至多去掉一段，再去掉剩下的末尾 `/`；找不到就用存值。路由、模型列表、余额的路径照旧完整接在根后面（`standard`、`ModelListRequest`、volcengine 的 `upstreamURL` 的拼接都没有变）。所以：
+
+- 填 `https://x/v1` 与填 `https://x` 请求同样的地址；地址本身以 `/v1` 结尾的站点填 `https://x/v1/v1`，请求发往 `https://x/v1/v1/<路由>`。
+- 带的是另一个版本时按路由的来：gemini、newapi、sub2api 填 `…/v1` 时 Gemini 协议请求 `…/v1beta/…`；newapi、sub2api 的余额也从根拼。
+- `…/a%2Fv1` 不算以 `/v1` 结尾（请求 `…/a%2Fv1/v1/…`），`…/V1`、`…/xv1` 也不算；只认类型自己声明的版本段（智谱 `…/api/paas/v4` 这类仍配不通，与此前相同，设计 Q7）。
+- azure 的 Foundry 项目名恰好是 `openai` 时（`…/api/projects/openai`），末尾被当作版本段 `/openai`，请求少了项目那一段，与此前相同（设计 Q11，接受现状）。
+- volcengine `relay` 的地址规则不变：基础地址是中转站根地址，路径以 `/v1` 或 `/api/v3` 结尾的在保存时拒绝并提示填 `api_prefix`（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.3）；只是它的密钥也按 127.1 放开。
+
+### 127.4 受限地址
+
+没有 `account:settings:custom` 的人提交带版本段的官方地址（如 `https://api.openai.com/v1`）照样接受：清单 `accountTypes[].guardedSettings[].versions` 写出与 `Spec.Versions` 相同的值，核心比较受限设置前对提交值、`allowed` 各项、账号原值都按 127.3 的规则去掉至多一个版本段（§21.3）。写了 `versions` 的清单：anthropic、openai、typesafe（`["/v1"]`），gemini（`["/v1beta", "/v1"]`），volcengine `apikey` 的 `base_url`（`["/api/v3"]`）；各插件的清单测试断言它与 Go 里的 `Spec.Versions` 一致。旧核心忽略这个字段（只是带版本的官方地址被拒），所以这些插件 `hostCompat` 要求核心 0.1.304 起。
+
+### 127.5 已存账号的等价边界
+
+已存账号的请求地址全部不变，不分类型（设计 6.5）：已存的值都是旧规范化的输出（scheme 小写、路径为规范转义、没有末尾 `/`），新规范化对它们原样返回；同一类型的各个版本段不会同时是同一地址的后缀，所以旧的“按顺序去掉第一个匹配的后缀”与新的“去掉最长的一个”是同一段；路由路径两边都原样接上。SDK 的性质测试 `apikey.TestStoredBaseURLsKeepTheirRequests` 对各类型的版本段、各路由和一组输入逐一比较改前改后的请求地址。
+
+前提是存值经过了插件的保存校验（核心保存账号、两个 `models/fetch` 都先调 `ValidateCredentials`，§21.3 的 `prepare`）。绕过它写入的值（直接改库、导入）里，只有路径带非规范转义（如 `%2F`、`%7E`）的会变：以前解码后发出，现在原样发出。
+
+### 127.6 已知的变化
+
+- 已存的、带其它版本段的地址不受影响（127.5），但**新保存**的地址不再被改写：控制台显示的、`GET /accounts/:id` 读到的就是填写的地址。
+- newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`，文案“api_key 必须是字符串”。
+- 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法（各插件 `ui/native/src/messages.ts`）。

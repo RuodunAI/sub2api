@@ -1,6 +1,6 @@
 # 插件界面只用代码写（设计与任务，2026-11-19）
 
-状态：设计稿，未开工。对照的代码是 `develop` 的 `4d1dcfeb8`。文中 `文件:行号` 都以这个提交为准，路径省略开头的 `next/`。
+状态：已实现（集成分支 `integ/plugin-ui`，随核心 0.1.304 批次发布，尚未发布）；与实现的出入在文中就地注明，契约以 CONTRACTS §23、§75 为准。下文是设计时的记录，对照的代码是 `develop` 的 `4d1dcfeb8`。文中 `文件:行号` 都以这个提交为准，路径省略开头的 `next/`。
 
 ## 1. 结论
 
@@ -658,10 +658,10 @@ SDK 拒绝未知键：
 |---|---|
 | 账号 | 遮蔽来自 `sensitiveFields`，不受影响；校验来自它自己的 `ValidateCredentials`；编辑页的凭证卡片显示"请升级插件"，其它分区可以编辑 |
 | 设置 | schema 模式的旧包：模式不认识，于是全部遮蔽（6.1）。native 带 schema 的旧包（moderation 现在的清单）：收尾包删掉 `Form.Schema` 之前仍按 schema 遮蔽；删掉之后它被读成"native、没有 `secrets` 键"，同样全部遮蔽（6.1 的 M1 规则），不会明文读回。控制台不显示设置表单；没有 `ValidateSettings`，于是只能靠 `Configure` |
-| 页面 | volcengine 的 table 和 form 页面显示"页面不可用"，这是 `PluginPageView` 现有的兜底 |
+| 页面 | volcengine 的 table 和 form 页面显示"不支持的页面类型：table"（或 `form`），这是 `PluginPageView` 现有的兜底（`pluginHost.unsupported`；设计时误写成"页面不可用"） |
 | 网关、路由、任务、钩子 | 不受影响 |
 
-- 内置插件随核心镜像在计划完成后几秒内换成新包（§37）。非内置插件（relay、guard、payment、azure-openai、vertex、bedrock）要管理员重新安装新版本。
+- 内置插件随核心镜像在计划完成后几秒内换成新包（§37）。带界面的非内置插件（relay、guard、azure-openai、vertex、bedrock）要管理员重新安装新版本（payment 没有界面，这一批没有改它；设计时误列了它）。
 
 ### 7.2 版本
 

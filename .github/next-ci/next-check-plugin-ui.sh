@@ -27,12 +27,12 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
-# run <dir> <command...>: runs the command, naming the directory and the
-# command when it fails.
+# run <label> <command...>: runs the command, naming the label (the project
+# directory) and the command when it fails.
 run() {
-  dir=$1
+  label=$1
   shift
-  "$@" || { echo "::error::$dir: $* failed" >&2; return 1; }
+  "$@" || { echo "::error::$label: $* failed" >&2; return 1; }
 }
 
 # Runs the steps in order and stops at the first failing one. The steps are

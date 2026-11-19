@@ -20,7 +20,7 @@
 | 9 | 插件网络：出口隧道与严格模式 |
 | 10 | 插件资源限制 |
 | 11 | 插件签名、信任与插件市场 |
-| 12 | 前端：控制台、插件界面（schema / iframe / 原生微前端） |
+| 12 | 前端：控制台、插件界面（iframe / 原生微前端） |
 | 13 | 用户 / 角色 / 权限 |
 | 14 | 其他关键流程：账号录入、插件安装 |
 | 15 | 两个演示插件：anthropic、guard |
@@ -53,7 +53,7 @@
 | | 出口隧道 + 严格模式 | 插件的对外连接经过核心转发并记录；Linux 上用 seccomp 保证无法绕过；默认全部放行，按插件可切换为只去授权的域名；管理员可在“插件联网”里屏蔽域名或只允许列出的域名，同样管核心替插件发出的上游请求、取回和账号请求（CONTRACTS §113） |
 | | 资源限制 | 每个插件的内存、CPU、文件数限制：GOMEMLIMIT + 内存看门狗 + oom_score_adj + nice + rlimit，都不需要特权（cgroup 预留） |
 | | 签名与市场 | Ed25519 发布者签名、信任级别、发布者密钥管理与吊销；从插件市场索引（签名的静态 JSON）浏览、安装、检查更新 |
-| | 前端扩展 | schema 表单、沙箱 iframe、**原生微前端**（受信插件把 Vue 组件挂进控制台） |
+| | 前端扩展 | 沙箱 iframe、**原生微前端**（受信插件把 Vue 组件挂进控制台；2026-11-19 起不再有声明式的 schema 表单与表格页，CONTRACTS §23） |
 | 演示插件 | anthropic | API Key 账号类型 + 默认价格 + 模型目录（内置插件）；另有市场插件 relay（中转 Key 账号类型） |
 | | guard | 网关钩子（关键词拦截）+ 事件订阅 + 后台任务 + 出口访问 + 原生界面 + 资源限制 |
 | 部署 | docker compose | PostgreSQL、Redis、2 个节点、Caddy 负载均衡 |
@@ -441,7 +441,6 @@ guard-0.1.0.s2plugin
 ├── runtimes/
 │   ├── linux-amd64/plugin      # 生产环境只需要 Linux 版本
 │   └── linux-arm64/plugin
-├── forms/                      # schema 表单（账号录入、插件设置）
 ├── ui/
 │   ├── iframe/                 # 沙箱 iframe 页面（可选）
 │   └── native/                 # 原生微前端：entry.js + chunks + css（可选，需要受信）
@@ -514,7 +513,7 @@ guard-0.1.0.s2plugin
     "slots": [ { "slot": "dashboard.widgets", "component": "BlockedTodayCard",
                  "permission": "stats:read" } ],
     "native": { "entry": "ui/native/entry.js" },
-    "settings": { "type": "schema", "schema": "forms/settings.schema.json" }
+    "settings": { "mode": "native", "component": "GuardSettings", "secrets": [] }
   },
 
   "resources": { "memoryMB": 128, "cpu": 0.25, "maxProcs": 64, "maxOpenFiles": 256 },
@@ -1362,11 +1361,12 @@ Vue 3 + Vite + TypeScript + Pinia + Vue Router + Tailwind。菜单、路由权�
 - `GET /api/me/menus`：核心菜单 + 已启用插件的菜单（已按权限过滤）。插件菜单可进共享的"插件"区、追加到某个核心区，或放进插件自己声明的区（manifest `ui.sections`，按 `order` 与核心区穿插；CONTRACTS §22）
 - `GET /api/ui/plugins`：已启用插件的前端扩展声明（页面、插槽、原生入口地址）
 
-### 12.2 插件界面的三种方式
+### 12.2 插件界面的两种方式
+
+（2026-11-19 起，插件界面只用代码写：原来的第三种方式 schema——插件提供 JSON Schema / 表格定义、核心渲染——已删除，账号表单与设置的校验只在插件后端（`ValidateCredentials`、`ValidateSettings`），见 CONTRACTS §23、§75.1。）
 
 | 方式 | 适用 | 安全 | 说明 |
 |---|---|---|---|
-| **schema** | 表单、表格类页面 | 无代码执行 | 插件提供 JSON Schema / 表格定义，核心渲染；风格完全统一 |
 | **iframe** | 复杂但不受信的界面 | 沙箱隔离，拿不到登录态 | `sandbox="allow-scripts"`；通过 Bridge 调用插件接口（核心代为携带会话）、同步主题和语言、路由、提示框 |
 | **原生微前端** | 受信插件的复杂界面、嵌入核心页面 | **无隔离**，只允许 official / verified 且获批 `ui.native` | 插件的 Vue 组件直接挂进控制台 |
 
@@ -1484,18 +1484,14 @@ sequenceDiagram
   FE->>API: GET /api/account-types
   API-->>FE: 已启用插件声明的账号类型
   A->>FE: 选择"Anthropic / API Key"
-  alt form.mode = schema
-    FE->>API: GET /api/account-types/anthropic/apikey/form
-    API-->>FE: JSON Schema + uiSchema
-    FE->>FE: SchemaForm 渲染
-  else form.mode = iframe
+  alt form.mode = iframe
     FE->>FE: 沙箱 iframe 加载插件页面，通过 Bridge 取值和校验
   else form.mode = native（受信插件）
-    FE->>FE: 渲染插件注册到 account.form.widgets 的组件
+    FE->>FE: 渲染插件以 form.component 注册的表单组件（@sub2api/ui 的即时校验）
   end
   A->>FE: 填写并提交（名称、分组、代理、优先级、并发、凭证）
   FE->>API: POST /api/accounts
-  API->>API: 权限检查 account:create → JSON Schema 校验
+  API->>API: 权限检查 account:create
   API->>P: ValidateCredentials
   P-->>API: 通过 / 字段错误
   API->>API: 敏感字段加密
@@ -1558,7 +1554,7 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 | 后台任务 | `rollup` 每 5 分钟把分钟统计汇总为小时统计；`cleanup` 每天清理 30 天前的数据 |
 | 出口访问 | 命中规则时向配置的 webhook 地址发送告警（`http.Post`，经出口隧道，能在"外部访问"页看到） |
 | 原生界面 | "请求守卫"大盘页面（拦截趋势图、规则命中排行）+ 首页的"今日拦截"卡片 |
-| 设置 | schema 表单：webhook 地址、是否记录命中的文本片段 |
+| 设置 | 原生设置组件 `GuardSettings`（`ui.settings.mode: native`）：webhook 地址、冷却时间等，保存时由插件 `ValidateSettings` 校验 |
 | 资源 | 申请 128MB 内存、0.25 核 |
 | 用户权限 | `rules:read`、`rules:manage`、`stats:read` |
 | 测试用途 | 另有一个测试构建，会尝试直接 `net.Dial` 外部地址和申请超量内存，用来验证严格模式和资源限制 |
@@ -1636,7 +1632,7 @@ next/
 | 插件 | hashicorp/go-plugin + gRPC + protobuf |
 | seccomp | elastic/go-seccomp-bpf（纯 Go，不需要 cgo） |
 | 签名 | crypto/ed25519 |
-| JSON | gjson / sjson；santhosh-tekuri/jsonschema 做 schema 校验 |
+| JSON | gjson / sjson；santhosh-tekuri/jsonschema 只用于校验账号类型的 `extensionsSchema`（`server/internal/account/extensions.go`） |
 | 金额 | numeric(20,8) + shopspring/decimal |
 | 计费表达式 | expr-lang/expr（MIT）；设计参考 new-api 的 billingexpr，代码自行实现（new-api 是 AGPL-3.0，不能直接复制） |
 | 定时任务 | 定时任务框架（CONTRACTS §77）：`node` 任务用 gocron v2，`cluster` 任务用 River（`database/sql` 驱动，只轮询，新任务最多等 1 秒被取走）；robfig/cron v3 只负责解析 cron 表达式 |
@@ -1660,7 +1656,7 @@ flowchart LR
     c["C 插件运行时<br/>包 · 签名信任 · 授权 · 迁移<br/>注册表 · 发布 · 节点 · 市场"]
     d["D 沙箱与网络<br/>启动器 · seccomp · rlimit · oom_score_adj<br/>看门狗 · 出口隧道"]
     e["E SDK 与插件<br/>SDK · anthropic · guard<br/>命令行工具"]
-    f["F 前端<br/>控制台 · SchemaForm · iframe Bridge<br/>共享模块 · 原生加载器"]
+    f["F 前端<br/>控制台 · iframe Bridge<br/>共享模块 · 原生加载器"]
   end
   subgraph p2["阶段 2（并行）"]
     g["G 网关<br/>流水线 · 调度 · 钩子 · 计费接入"]
@@ -1837,7 +1833,7 @@ flowchart LR
 │ 凭证                                                      [插件]     │
 │   API Key * [ sk-ant-••••••••••••••••••      ] 👁                     │
 │   Base URL  [ https://api.anthropic.com    ▾ ]                       │
-│   （schema / iframe / 原生组件三种方式之一，由插件决定）              │
+│   （iframe 或原生组件，由插件决定）                                  │
 ├──────────────────────────────────────────────────────────────────────┤
 │                               [ 测试连接 ]  [ 取消 ]  [ 保存 ]       │
 └──────────────────────────────────────────────────────────────────────┘
