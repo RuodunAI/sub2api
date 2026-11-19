@@ -101,6 +101,24 @@ describe('SSecretInput', () => {
   })
 })
 
+describe('SSecretInput plain', () => {
+  it('types a sensitive address in a text box, masked and kept like a secret while stored', async () => {
+    const value = ref<string | undefined>(SECRET_MASK)
+    const w = mount(() => h(SSecretInput, { modelValue: value.value, 'onUpdate:modelValue': (v: any) => (value.value = v), plain: true, clearable: true }))
+    const input = w.find('input')
+    expect(input.attributes('type')).toBe('text')
+    expect(input.element.value).toBe('')
+    expect(input.attributes('placeholder')).toBe(SECRET_MASK)
+    expect(w.find('button[aria-pressed]').exists()).toBe(false)
+    await input.setValue('https://hooks.example/x')
+    expect(value.value).toBe('https://hooks.example/x')
+    await w.find('input').setValue('')
+    expect(value.value).toBe(SECRET_MASK)
+    await w.find('[data-testid="secret-clear"]').trigger('click')
+    expect(value.value).toBe('')
+  })
+})
+
 describe('SSecretInput clearable', () => {
   function secret(props: M) {
     const value = ref<string | undefined>(props.modelValue)

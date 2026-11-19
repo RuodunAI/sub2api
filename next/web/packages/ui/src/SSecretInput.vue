@@ -6,6 +6,8 @@
 // clearing the box again emits SECRET_MASK, so the core keeps the stored
 // value. An optional secret takes `clearable`: while a value is stored a
 // "Clear the saved value" button emits '' and the field no longer keeps it.
+// `plain` is for a sensitive address (ui.settings.secrets `sensitive`, a
+// webhook URL): masked the same way while stored, but typed in a text box.
 // Other attrs (data-testid, ...) go to the input.
 import { computed, ref, watch } from 'vue'
 import SButton from './SButton.vue'
@@ -16,7 +18,7 @@ import { useUiT } from './i18n'
 import type { ControlSize } from './field'
 
 defineOptions({ inheritAttrs: false })
-const props = withDefaults(defineProps<{ modelValue?: string | null; placeholder?: string; disabled?: boolean; size?: ControlSize; revealable?: boolean; clearable?: boolean }>(), {
+const props = withDefaults(defineProps<{ modelValue?: string | null; placeholder?: string; disabled?: boolean; size?: ControlSize; revealable?: boolean; clearable?: boolean; plain?: boolean }>(), {
   modelValue: undefined,
   placeholder: undefined,
   size: undefined,
@@ -49,9 +51,9 @@ function update(v: unknown) {
 <template>
   <div class="s-secret-input">
     <SInput
-      type="password"
+      :type="plain ? 'text' : 'password'"
       autocomplete="new-password"
-      :revealable="revealable"
+      :revealable="!plain && revealable"
       :model-value="kept ? '' : (modelValue ?? '')"
       :placeholder="kept ? SECRET_MASK : placeholder"
       :disabled="disabled"
