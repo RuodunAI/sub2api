@@ -5920,6 +5920,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ### 86.1 API Key 类账号类型
 
 - “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、表单、凭证字段从声明式时起没有变过，账号数据不迁移。
+- 基础地址的规则（`apikey.NormalizeBaseURL`，保存时与每次请求时都用它）：去掉首尾空白、scheme 转小写、去掉类型声明的路径后缀；去掉首尾空白后仍含任何空白字符（`unicode.IsSpace`）、`?` 或 `#` 的地址拒绝（2026-11-19 U3a，与原表单 schema `^(https?://[^\s?#]+)?$` 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出、又都通过过原 schema，不含这些字符，请求时重新规范化不受影响（例外是原有行为：剥掉一个后缀后又以另一个后缀结尾的地址，如 gemini 的 `…/x/v1/v1beta` 存成 `…/x/v1`，请求时再剥成 `…/x`）。
 - 原声明式引擎的 1498 条录制样例冻结在 `sdk/pluginsdk/standard/goldentest`，用 `standard` 写的插件逐条回放一致。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = 账号类型 `platforms[].endpoints` 覆盖到的协议加核心能转换到它们的协议（§110 起：跨平台转换到的端点要在账号上按模型开启才提供）。

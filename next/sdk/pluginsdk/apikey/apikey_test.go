@@ -96,9 +96,31 @@ func TestNormalizeBaseURL(t *testing.T) {
 			t.Errorf("%q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "ftp://x.example", "https://u:p@x.example", "https://x.example/?", "https://x.example/?a=1", "https://x.example/#f", "/relative"} {
+	for _, in := range []string{"", "ftp://x.example", "https://u:p@x.example", "https://x.example/?", "https://x.example/?a=1", "https://x.example/#f", "/relative",
+		"https://x.example/a b", "https://x.example/a\tb", "https://x.example/a\nb", "https://x.example/a\u00a0b", "https://x.example/a\u3000b", "https://x .example"} {
 		if _, err := NormalizeBaseURL(in, strip); err == nil {
 			t.Errorf("%q accepted", in)
+		}
+	}
+}
+
+// TestNormalizeBaseURLIsStable: requests normalize the stored base_url
+// again (Spec.FromAccount). A stored value is an output of NormalizeBaseURL
+// that also matched the former form schema (^(https?://[^\s?#]+)?$), so it
+// comes out unchanged and without an error.
+func TestNormalizeBaseURLIsStable(t *testing.T) {
+	strip := []string{"/v1beta", "/v1"}
+	for _, in := range []string{
+		" https://proxy.example.com/v1beta/ ", "HTTPS://Proxy.Example.com/x/v1", "https://proxy.example.com:8443/a/b/",
+		"http://127.0.0.1:8080", "https://x.example.com/a%20b", "https://x.example.com/a%2Fb/c", "https://[::1]:8080/p",
+		"https://x.example.com/ключ", "https://x.example.com/~user/v1/",
+	} {
+		stored, err := NormalizeBaseURL(in, strip)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if again, err := NormalizeBaseURL(stored, strip); err != nil || again != stored {
+			t.Errorf("%q: stored %q normalizes to %q %v", in, stored, again, err)
 		}
 	}
 }

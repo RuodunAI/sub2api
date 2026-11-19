@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -311,17 +312,27 @@ func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
 }
 
 // NormalizeBaseURL validates and normalizes a base URL, stripping the given suffixes.
-// Returns an error if baseStr is empty.
+// Returns an error if baseStr is empty. Surrounding whitespace is trimmed and
+// the scheme lower-cased; whitespace inside, "?" and "#" are refused (the
+// account forms' ^https?://[^\s?#]+$). A value it returns normalizes to
+// itself, except one that ends in another of stripSuffixes once one is
+// stripped ("/x/v1/v1beta" with /v1beta, /v1 gives "/x/v1", then "/x").
 func NormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error) {
 	baseStr = strings.TrimSpace(baseStr)
 	if baseStr == "" {
 		return "", fmt.Errorf("is required")
 	}
+	if strings.ContainsFunc(baseStr, unicode.IsSpace) {
+		return "", fmt.Errorf("must not contain whitespace")
+	}
+	if strings.ContainsAny(baseStr, "?#") {
+		return "", fmt.Errorf("must not contain credentials, query or fragment")
+	}
 	u, err := url.Parse(baseStr)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", fmt.Errorf("must be an absolute http(s) URL")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+	if u.User != nil {
 		return "", fmt.Errorf("must not contain credentials, query or fragment")
 	}
 	p := strings.TrimRight(u.Path, "/")

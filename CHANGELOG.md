@@ -35,6 +35,10 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，原来默认收起，现在直接显示。
 - 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径，原样匹配，前后有空格也拒绝），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
 
+公共组件与 SDK 的补缺（U3a；各插件改用它们在 U3b）：
+
+- SDK：`apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。去首尾空白、scheme 转小写照旧；已存的地址都是它的输出且通过过原 schema，请求时重新规范化结果不变。
+
 ### 插件界面只用代码写：云厂商插件的账号表单
 
 - bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。
