@@ -203,8 +203,8 @@ func keys(m map[string]any) string {
 
 // The balance of an account: read through the plugin when due or forced,
 // stored, shown in the account views; a failure keeps the last balance; an
-// unlimited key shows no amount; a success without a valid currency is a
-// failure; a rejected key changes nothing on the account.
+// unlimited key shows no amount; the unit is the plugin's as it is, none
+// or any text; a rejected key changes nothing on the account.
 func TestAccountBalanceAPI(t *testing.T) {
 	e := setup(t)
 	up := newBalanceUpstream(t)
@@ -275,11 +275,17 @@ func TestAccountBalanceAPI(t *testing.T) {
 	if _, d = e.getBalance(id, true); keys(d) != "3 supported,unlimited,updated_at" || d["unlimited"] != true {
 		t.Fatalf("unlimited: %v", d)
 	}
-	// A success without a valid currency is a failure.
-	fb.set(&pluginv1.BalanceResult{AmountMicros: 1, Currency: "usd"})
-	if _, d = e.getBalance(id, true); d["unlimited"] != true ||
-		d["error"] != `transient: the plugin gave no valid currency code: "usd"` {
-		t.Fatalf("invalid currency: %v", d)
+	// No unit: the number alone; any unit is kept as it is (CONTRACTS §52).
+	fb.set(&pluginv1.BalanceResult{AmountMicros: 1_250_000_000_000})
+	if _, d = e.getBalance(id, true); keys(d) != "3 amount,supported,updated_at" || d["amount"] != "1250000.000000" {
+		t.Fatalf("no unit: %v", d)
+	}
+	fb.set(&pluginv1.BalanceResult{AmountMicros: 7_500_000, Currency: "usd credits / 额度"})
+	if _, d = e.getBalance(id, true); d["amount"] != "7.500000" || d["currency"] != "usd credits / 额度" || d["error"] != nil {
+		t.Fatalf("a unit as it is: %v", d)
+	}
+	if b := e.balanceIn(id); b["currency"] != "usd credits / 额度" {
+		t.Fatalf("list, a unit as it is: %v", b)
 	}
 	fb.set(&pluginv1.BalanceResult{AmountMicros: -1_250_000, Currency: "CNY"})
 	if _, d = e.getBalance(id, true); d["amount"] != "-1.250000" || d["currency"] != "CNY" || d["unlimited"] != nil {
