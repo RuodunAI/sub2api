@@ -3322,6 +3322,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - 流式测试本轮不做：`BuildTestRequest` 没有 stream 参数，加参数要改 proto 并动所有插件。
+- 2026-11-18 价格检查（§17.2）：插件 `BuildTestRequest` 之后、发出之前，被测的模型（调用方的 `model`，否则账号的默认测试模型，都是映射前的名字；两者都没有时是插件报的模型）没有全局价格时，回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游；`last_test` 记为失败，`error_source` 为 `gateway`、`error_code` 为 `model_price_not_configured`。
 
 ## 51. CCGateway 订阅用量（已删除）
 

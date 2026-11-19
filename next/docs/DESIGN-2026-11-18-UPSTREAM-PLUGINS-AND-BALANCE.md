@@ -456,7 +456,7 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 - 请求的计价不用改：`prepareBilling` 本来就按客户请求的模型取价、调度前冻结（`missing_price_policy` 照旧），上游回显的 `model` 只记进 `upstream_model`。
 - **账号测试**（`POST /accounts/:id/test`）：插件构造好测试请求之后、核心发出之前，按被测的模型（调用方给的或账号的默认测试模型，取账号映射之前的名字；都没有时是插件报的模型）取全局价格，没有价格就回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游，记为这个账号最后一次测试的失败（`error_source: gateway`）。
 
-## 4. 替所有者做的决定## 4. 替所有者做的决定
+## 4. 替所有者做的决定
 
 | # | 决定 | 理由 | 想改时改哪里 |
 |---|---|---|---|
