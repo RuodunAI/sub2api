@@ -9,7 +9,7 @@
 1. **能生图**。Codex 账号（设备码登录，上游 `chatgpt.com/backend-api/codex/responses`）发带 `image_generation` 工具的 Responses 请求能出图：2026-11-18 在测试实例上两轮共 7 次出图请求全部成功（第 2 节），编辑图片（输入图片 + `action: "edit"`）也可以。之前文档里“Sign in with ChatGPT 账号经生图工具被上游拒绝”（§118.5 的表）说的是已删除的 `chatgpt_siwc` 类型（上游 `api.openai.com`），不适用于现在的两种 codex 账号；§118.5 的那一行要改。
 2. **转换可行，推荐方案 (a)**：在核心转换层加两对同平台转换 `openai.images → openai.responses`、`openai.images_edit → openai.responses`，账号类型在清单里**显式声明**要经适配服务这两个端点（codex 两种类型声明，别的类型不受影响）。请求侧把生图参数放进 `image_generation` 工具、强制调用；应答侧把 `image_generation_call` 的结果和 `tool_usage.image_gen` 转回生图接口的 JSON 或事件流。计费：生图部分是主用量，按客户端请求的生图模型计价；对话部分（Codex 后端约 2300 输入 token 的固定开销）作为附加用量按驱动对话的模型计价。
 3. **这一版的范围**：generations 的非流式与流式、edits（JSON 形式）的非流式与流式都做。不做：`n > 1`（400）、`response_format: "url"`（400）、edits 的 multipart（§118.1 既有限制）、Codex 后端的专用生图接口（未实测，第 7 节）。
-4. **已知限制**：Codex 后端不按工具参数里的 `size` 出图（由驱动模型决定，回显恒为 `auto`），实测在 `instructions` 里写明尺寸后按要求出图，转换器因此把尺寸等写进一句固定的 `instructions`；没有 `partial_image` 事件（请求了也不给）；每次多约 2300 个对话输入 token；上游回显的生图模型是 `gpt-image-2-codex`，没有公开单价。
+4. **已知限制**：Codex 后端不按工具参数里的 `size` 出图（由驱动模型决定，回显恒为 `auto`），实测在 `instructions` 里写明尺寸后按要求出图，转换器因此把尺寸等写进一句固定的 `instructions`；没有 `partial_image` 事件（请求了也不给）；每次多约 2300 个对话输入 token；上游回显的生图模型是 `gpt-image-2-codex`，没有公开单价；工具参数里写什么生图模型（包括不存在的名字）都按 `gpt-image-2-codex` 出图，`quality` 恒为 `low`（写 `high`、在 `instructions` 里要求 `high` 都不变）。
 
 ## 1. 现状
 
@@ -47,10 +47,29 @@
 - **没有 `partial_image` 事件**：请求 1（`partial_images: 1`）、4（`partial_images: 2`）都没有。
 - 图片之后总有一个 `phase: "final_answer"` 的 assistant 消息，文字为空串，或 “Done.”，或一句说明（请求 7）。
 - `response.created` 与 `response.completed` 的 `tools` 回显恒为 `{"type":"image_generation","background":"auto","model":"gpt-image-2-codex","moderation":"auto","n":1,"output_compression":100,"output_format":<请求的格式>,"quality":"auto","size":"auto"}`：`output_format` 按请求生效（jpeg、webp、png 都对），`model` 被改写，`size`、`quality` 回显为 `auto`。`image_generation_call` 项本身带 `action`、`background`（`opaque`）、`output_format`、`quality`、`size`、`revised_prompt`、`result`。
-- `size` 不按工具参数生效（请求 1、3、4），在 `instructions` 里写明后生效（请求 6）：尺寸是驱动模型发起工具调用时自己定的。`quality` 每次都是 `low`，与请求一致，但回显是 `auto`，不能确定是工具参数生效还是模型自己选的。
+- `size` 不按工具参数生效（请求 1、3、4），在 `instructions` 里写明后生效（请求 6）：尺寸是驱动模型发起工具调用时自己定的。`quality` 每次都是 `low`：第二轮写 `high`（工具参数，以及工具参数加 `instructions`）仍是 `low`，图片输出 token 只随尺寸变（1536x1024 为 343，1254x1254 为 515），所以 Codex 后端不接受画质参数。
 - `tool_usage.image_gen` 的形状与生图接口的 `usage` 一样：`{input_tokens, input_tokens_details{image_tokens, text_tokens}, output_tokens, output_tokens_details{image_tokens, text_tokens}, total_tokens}`。
 - 对话部分每次约 2235–2306 输入、54–77 输出；要两张图时翻倍（4340 / 167，第二次工具调用把第一次的结果带进了上下文）。这个实例的价格下对话部分每次记 0.000256–0.000266 美元（两张时 0.000518）。
 - 终态 `output` 为 `[]`，图片只在 `response.output_item.done` 里（与之前一致）。
+
+### 1.2.1 第二轮实测：生图模型名（2026-11-18，临时 Key，用完已删）
+
+测试实例上先录了生图模型价格、给 7 个 `codex_device` 账号的模型列表追加了生图模型（所有者要求保留）。每次 `model: gpt-6-luna`、`output_format: png`、`quality: low`（第 7、8 次除外）、强制工具、流式：
+
+| # | 请求里的生图模型 | 结果 / 账号 | 回显 | 图 | 对话 in/out | image_gen in/out |
+|---|---|---|---|---|---|---|
+| 1 | 顶层 `model: gpt-image-2` | **400** `model_not_found`：“The 'gpt-image-2' model is not supported when using Codex with a ChatGPT account.” / #2 | — | 无 | — | — |
+| 2 | 工具 `model: gpt-image-0`（不存在） | 200 / #5 | `gpt-image-2-codex` | png 1254x1254 | 2317/74 | 61/515 |
+| 3 | `gpt-image-2.5-sunburst` | 200 / #7 | `gpt-image-2-codex` | png 1536x1024 | 2239/73 | 60/343 |
+| 4 | `gpt-image-2.6-flare` | 200 / #5 | `gpt-image-2-codex` | png 1536x1024 | 2233/67 | 54/343 |
+| 5 | `gpt-image-1.5` | 200 / #7 | `gpt-image-2-codex` | png 1536x1024 | 2238/72 | 59/343 |
+| 6 | `gpt-image-1-mini` | 200 / #2 | `gpt-image-2-codex` | png 1536x1024 | 2231/65 | 52/343 |
+| 7 | 不写模型，`quality: high` | 200 / #4 | `gpt-image-2-codex`，图项 `quality: low` | png 1254x1254 | 2313/70 | 57/515 |
+| 8 | 同 7，另加 `instructions` 要求 quality high、size 1024x1024 | 200 / #7 | 同上，图项 `quality: low` | png 1254x1254（没有按 1024x1024） | 2358/83 | 70/515 |
+
+- 结论：Codex 后端的生图模型只有一个。工具参数里的 `model` 不校验、不生效，写什么都改写成 `gpt-image-2-codex`；顶层 `model` 写生图模型被拒（顶层只认对话模型）。`quality` 恒为 `low`。
+- `instructions` 指定尺寸：竖图 1024x1536 生效（第一轮请求 6），方图 1024x1024 不生效（给了 1254x1254）。可能只认几种宽高比，方图固定 1254x1254。
+- 都没有 `partial_image` 事件。事件计数与第一轮单张时相同。
 
 ### 1.3 公开资料（2026-11-19 抓取，`developers.openai.com`；`github.com/openai/codex` HEAD）
 
@@ -279,7 +298,8 @@
 5. **对话部分照实计费，作为附加用量按驱动模型计价**：上游报了这些 token，就照上游的数计（“上游返回什么就是什么”）；没有价格时按 §120.4 不计并标记。
 6. **转换路由的用量规则由客户端端点声明（`convertedUsage`）**：生图接口怎么计费是生图端点的语义，不该由上游 Responses 端点的规则决定；不声明的转换（chat 等）不变。
 7. **`n > 1` 拒绝（400）**：工具没有 `n`，靠提示词让模型多次调用不保证张数（请求 7 虽然给了两张），且对话开销翻倍；与 chat 转换拒绝 `n > 1` 一致。
-8. **`size`、`quality`、`background` 同时写进工具参数和一句 `instructions`**：实测 Codex 后端只按 `instructions` 定尺寸；对守参数的上游是无害的重复。
+8. **`size`、`quality`、`background` 同时写进工具参数和一句 `instructions`**：实测 Codex 后端只按 `instructions` 定尺寸（`quality` 写哪里都不生效，仍写进去，以后上游支持了就生效）；对守参数的上游是无害的重复。
+15. **客户端可以用任何生图模型名调 Codex 账号，不按名字拒绝**：上游对工具里的模型名一律改写成 `gpt-image-2-codex` 出图；准入和计价照常按客户端写的名字（第 1.2.1 节）。哪些名字放给 Codex 账号，由管理员用账号模型列表控制。
 9. **`response_format: "url"` 拒绝**：上游只给 base64，网关不存图、不发链接。
 10. **其余生图参数原样搬进工具，值不检查**：上游认不认由上游答（如 `tools[0].n` 的 400），核心不复制上游的取值表。
 11. **没有出图时回 502、生图项失败时回 400**：200 加空 `data` 会让客户端以为成功；状态码对应“上游没做到”和“请求被审核拦下”。
@@ -293,11 +313,9 @@
 - **`codex_oauth` 账号**：测试实例只有 `codex_device`；代码上同一上游、同一请求，推断相同。
 - **各套餐的生图额度**：官方说生图计入 Codex 通用额度、平均消耗快 3–5 倍、Free 不可用；源码里有单独的限额 id `image_gen`、`imagegen_premium`（429 `usage_limit_reached`，响应头 `x-codex-active-limit: image_gen`）。各套餐具体多少不知道；codex 插件的额度窗口只读 `x-codex-primary/secondary-*`，生图限额的响应头没有接。
 - **审核拦截在 Codex 后端的真实形状**：没测（不发违规内容），按官方文档设计。
-- **`quality` 是否按工具参数生效**：回显是 `auto`，图项里的 `quality` 每次都与请求一致（都是 `low`），没测别的值。
 - **`partial_images`**：两次请求都没有 partial 事件；是 Codex 后端不支持还是要别的条件，不知道。
 - **驱动模型的选择**：只测了 `gpt-6-luna`；更便宜的对话模型（如 `gpt-5.6-luna`）能否驱动工具没测。
 - **`gpt-image-2-codex` 的单价**：OpenAI 没公布；这里主用量按客户端模型计价，绕开了这个问题。
-- **顶层 `model` 直接写生图模型**：请求 5 被测试实例的价格准入拦下，没到上游；推断 Codex 后端会拒绝（它只认对话模型）。
 - **对象形式附加用量的 `map` 是否接受 `cache_read_tokens`**：实现时核对（3.5）。
 
 ## 7. 附：Codex 后端专用生图接口（源码，未实测）
