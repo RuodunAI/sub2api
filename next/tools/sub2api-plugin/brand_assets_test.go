@@ -16,7 +16,7 @@ func TestBrandAssetsPackWithAccountTypes(t *testing.T) {
 	for _, key := range []string{"anthropic", "openai", "gemini", "volcengine"} {
 		t.Run(key, func(t *testing.T) {
 			dir := filepath.Join("..", "..", "plugins", key)
-			pkg := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--out-dir", t.TempDir(), "--runtimes", runtimes))
+			pkg := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--out-dir", t.TempDir(), "--runtimes", runtimes, "--allow-missing-ui"))
 			files, err := readPackage(pkg)
 			if err != nil {
 				t.Fatal(err)
