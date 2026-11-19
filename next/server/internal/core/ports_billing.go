@@ -156,12 +156,19 @@ type Ledger interface {
 }
 
 // UsageTokens are normalized token counts (see ARCHITECTURE 7.3).
+// ImageInput and ImageOutput are the image share of Input and Output (an
+// image generation or edit, CONTRACTS §118): part of them, never added to
+// them, so Total and Throughput do not count them again. They are omitted
+// from JSON when 0, so the billing_detail of every other request (which
+// stores PricedUsage) keeps its bytes.
 type UsageTokens struct {
 	Input           int64
 	Output          int64
 	CacheRead       int64
 	CacheCreation   int64
 	CacheCreation1h int64
+	ImageInput      int64 `json:",omitempty"`
+	ImageOutput     int64 `json:",omitempty"`
 }
 
 // UsageRecord is produced by the gateway for every finished request and

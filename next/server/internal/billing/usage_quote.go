@@ -37,8 +37,7 @@ func (s *Service) PriceModelUsage(ctx context.Context, model, semantics string, 
 	}
 	cost, err = s.Quote(ctx, core.QuoteInputs{
 		Expression: rule.Expression, UsageSemantics: semantics, RateMultiplier: decimal.NewFromInt(1),
-		Tokens: core.UsageTokens{Input: t.Input, Output: t.Output, CacheRead: t.CacheRead,
-			CacheCreation: t.CacheCreation, CacheCreation1h: t.CacheCreation1h},
+		Tokens: core.UsageTokens(t),
 	})
 	if err != nil {
 		return false, decimal.Zero, UnpricedEvalError, nil

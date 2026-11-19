@@ -115,6 +115,17 @@ func TestPriceAPI(t *testing.T) {
 	if prev["base_cost"] != "0.015792" || prev["cost"] != "0.023688" || prev["rate_multiplier"] != "1.5" {
 		t.Fatalf("preview with group: %v", prev)
 	}
+	// Image tokens (CONTRACTS §118) are entered apart from p and c: priced,
+	// at img / img_o; unpriced, at the text rates (here 300*5 + 600*8 +
+	// 4000*32 + 200*10, then 900*5 + 4200*10). len counts the image input.
+	for src, cost := range map[string]string{`p*5 + img*8 + img_o*32 + c*10`: "0.1363", `p*5 + c*10`: "0.0465"} {
+		prev = data(e.mustCall(admin, 200, "POST", "/prices/preview", map[string]any{
+			"expression": src, "usage": map[string]any{"p": 300, "c": 200, "img": 600, "img_o": 4000},
+		}))
+		if prev["cost"] != cost || prev["breakdown"].(map[string]any)["vars"].(map[string]any)["len"].(float64) != 900 {
+			t.Fatalf("image preview %s: %v", src, prev)
+		}
+	}
 	e.mustCall(admin, 404, "POST", "/prices/preview", map[string]any{"price_id": 999999})
 
 	// list with filters and analysis.
