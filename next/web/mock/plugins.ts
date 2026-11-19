@@ -66,7 +66,7 @@ function guardManifest(version: string): Any {
     capabilities: [{ id: 'gateway.hook.v1' }, { id: 'app.events.v1' }, { id: 'app.jobs.v1' }, { id: 'http.routes.v1' }, { id: 'app.broadcast.v1' }],
     ui: {
       menus: [{ id: 'guard', section: 'plugins', label: { en: 'Guard', zh: '请求守卫' }, page: 'dashboard' }],
-      pages: { dashboard: { type: 'native', component: 'GuardDashboard' }, rules: { type: 'table' } },
+      pages: { dashboard: { type: 'native', component: 'GuardDashboard' } },
       slots: [{ slot: 'dashboard.widgets', component: 'BlockedTodayCard' }]
     },
     resources: { memoryMB: 128, cpu: 0.25, maxProcs: 64, maxOpenFiles: 256 }
@@ -84,7 +84,7 @@ function anthropicManifest(version: string): Any {
     // CONTRACTS §13: no platform of its own; its account type supports the
     // built-in anthropic platform.
     platforms: [],
-    account_types: [{ id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'schema', platforms: ['anthropic'] }],
+    account_types: [{ id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'native', platforms: ['anthropic'] }],
     gateway_endpoints: [],
     resources: { memoryMB: 256, cpu: 0.5, maxProcs: 128, maxOpenFiles: 1024 }
   }
@@ -92,18 +92,6 @@ function anthropicManifest(version: string): Any {
 
 function grant(permission: string, scope: Any | null = null, version = '0.1.0'): Any {
   return { permission, scope, status: 'active', plugin_version: version, granted_by: 1, granted_by_email: 'admin@example.com', granted_at: now(-86400 * 3) }
-}
-
-const guardSettingsSchema = {
-  type: 'object',
-  properties: {
-    mode: { type: 'string', title: 'Mode', enum: ['block', 'log'], default: 'block' },
-    max_prompt_kb: { type: 'integer', title: 'Max prompt size (KB)', minimum: 1, maximum: 256, default: 32 },
-    alert_webhook: { type: 'string', title: 'Alert webhook URL', format: 'uri' },
-    webhook_secret: { type: 'string', title: 'Webhook secret', format: 'password' },
-    notify_on_block: { type: 'boolean', title: 'Notify on block', default: true }
-  },
-  required: ['mode']
 }
 
 const plugins = new Map<string, MockPlugin>()
@@ -138,11 +126,10 @@ plugins.set('guard', {
   ],
   manifest: guardManifest('0.1.0'),
   settings: {
-    mode: 'schema',
-    schema: guardSettingsSchema,
-    ui_schema: { webhook_secret: { 'ui:widget': 'password' } },
-    secret_fields: ['webhook_secret'],
-    values: { mode: 'block', max_prompt_kb: 32, alert_webhook: 'https://hooks.example.com/guard', webhook_secret: '******', notify_on_block: true }
+    mode: 'native',
+    component: 'GuardSettings',
+    secret_fields: [],
+    values: { webhook_url: 'https://hooks.example.com/guard', record_snippets: false, alert_cooldown_sec: 60 }
   }
 })
 
@@ -191,7 +178,7 @@ plugins.set('mailer', {
     publisher: 'sub2api',
     description: { en: 'Sends notifications by email through an SMTP server.', zh: '通过 SMTP 服务器发送邮件通知。' },
     hostCompat: '>=0.1.0 <0.2.0',
-    hostUICompat: '^3.20',
+    hostUICompat: '^4.0',
     capabilities: [{ id: 'notify.channel.v1' }],
     ui: { native: { entry: 'ui/native/entry.js' }, settings: { mode: 'native', component: 'MailerSettings', secrets: [{ path: 'password' }] } }
   },
@@ -213,7 +200,7 @@ function builtinAdapterManifest(key: 'openai' | 'gemini', version: string): Any 
     hostCompat: '>=0.1.0 <0.2.0',
     capabilities: [{ id: 'platform.adapter.v1' }],
     platforms: [],
-    account_types: [{ id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'schema', platforms: [key] }],
+    account_types: [{ id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'native', platforms: [key] }],
     gateway_endpoints: [],
     resources: { memoryMB: 128, cpu: 0.5, maxProcs: 128, maxOpenFiles: 1024 }
   }
@@ -286,7 +273,7 @@ plugins.set('relay', {
     capabilities: [{ id: 'platform.adapter.v1' }],
     platforms: [],
     gateway_endpoints: [],
-    account_types: [{ id: 'relay_key', label: { en: 'Relay key', zh: '中转 Key' }, form_mode: 'schema', platforms: ['anthropic'] }]
+    account_types: [{ id: 'relay_key', label: { en: 'Relay key', zh: '中转 Key' }, form_mode: 'native', platforms: ['anthropic'] }]
   },
   settings: null
 })
@@ -314,7 +301,7 @@ function videogenManifest(version: string): Any {
       { method: 'POST', path: '/v1/video/generations', protocol: 'myvideo.generate' },
       { method: 'GET', path: '/v1/video/generations/:id', protocol: 'myvideo.status' }
     ],
-    account_types: [{ id: 'video_key', label: { en: 'MyVideo key', zh: 'MyVideo Key' }, form_mode: 'schema', platforms: ['myvideo'] }]
+    account_types: [{ id: 'video_key', label: { en: 'MyVideo key', zh: 'MyVideo Key' }, form_mode: 'native', platforms: ['myvideo'] }]
   }
 }
 
@@ -524,7 +511,7 @@ function genericReview(key: string, version: string, name: Any, publisher: strin
     ],
     account_types: [
       // manifest-shaped platform entries are accepted too
-      { id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'schema', platforms: [{ platform: pid }, 'openai'] }
+      { id: 'apikey', label: { en: 'API key', zh: 'API Key' }, form_mode: 'native', platforms: [{ platform: pid }, 'openai'] }
     ],
     hooks: [],
     jobs: [],
@@ -1092,15 +1079,15 @@ on('POST', '/plugins/:key/rollouts/:id/cancel', (req) => {
 on('GET', '/plugins/:key/settings', (req) => {
   const p = find(req.params.key)
   if (!p) return notFound(req.params.key)
-  return p.settings ?? { schema: null, ui_schema: null, values: {} }
+  return p.settings ?? { mode: 'none', values: {}, secret_fields: [] }
 })
 
 on('PUT', '/plugins/:key/settings', (req) => {
   const p = find(req.params.key)
   if (!p?.settings) return notFound(req.params.key)
   const values = { ...(req.body?.values || {}) }
-  if (values.max_prompt_kb !== undefined && (values.max_prompt_kb < 1 || values.max_prompt_kb > 256)) {
-    return fail(400, 'invalid_argument', 'invalid settings', { fields: [{ field: 'values.max_prompt_kb', code: 'range', message: 'must be between 1 and 256' }] })
+  if (values.alert_cooldown_sec !== undefined && values.alert_cooldown_sec < 0) {
+    return fail(400, 'invalid_argument', 'invalid settings', { fields: [{ field: 'values.alert_cooldown_sec', code: 'range', message: 'must be 0 or more' }] })
   }
   // "******" (or no value) keeps the stored secret, '' clears it; the mock stores it masked anyway.
   for (const k of p.settings.secret_fields ?? []) {

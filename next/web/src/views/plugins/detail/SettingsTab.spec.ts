@@ -32,7 +32,7 @@ function host(granted: string[]) {
 
 async function render() {
   const w = mount(SettingsTab, {
-    props: { pluginKey: 'mailer', settings: { mode: 'native', component: 'MailerSettings', schema: null, values: {} } },
+    props: { pluginKey: 'mailer', settings: { mode: 'native', component: 'MailerSettings', values: {} } },
     global: { plugins: [i18n] }
   })
   await flushPromises()

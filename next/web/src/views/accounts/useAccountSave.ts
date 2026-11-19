@@ -102,7 +102,7 @@ export function useAccountSave(deps: AccountSaveDeps) {
       return 'native'
     }
     if (!basic.name.trim()) {
-      errors.value = { name: t('ui.schema.v.required') }
+      errors.value = { name: t('ui.form.v.required') }
       return 'connection'
     }
     if (control('proxy').required && basic.proxy_id == null && !proxyUrlToSend.value) {

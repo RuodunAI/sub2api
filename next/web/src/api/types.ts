@@ -442,7 +442,8 @@ export interface ProxyProbeResult {
 // ------------------------------------------------------------------ accounts
 
 export interface AccountFormRef {
-  mode: 'schema' | 'iframe' | 'native'
+  /** An older package may still say "schema": the editor asks to upgrade the plugin. */
+  mode: 'iframe' | 'native'
   page?: string
   component?: string
 }
@@ -1273,7 +1274,7 @@ export interface ResourceConflict {
 }
 
 export interface PluginSummary {
-  /** The manifest declares schema or native ui.settings (not iframe): the plugins list links to them (consoleSettingsPath). */
+  /** The manifest declares native ui.settings: the plugins list links to them (consoleSettingsPath). */
   has_settings?: boolean
   /** Role grants an automatic (built-in) upgrade held back for review (CONTRACTS P4C). */
   role_grants_to_review?: PluginRoleGrant[]
@@ -1499,25 +1500,10 @@ export interface Rollout {
 }
 
 export interface UIPluginPage {
-  type: 'table' | 'form' | 'iframe' | 'native'
+  type: 'iframe' | 'native'
   title?: LText
-  source?: string
-  columns?: Array<{ key: string; label: LText; format?: string }>
-  schema?: string
-  submit?: string
   src?: string
   component?: string
-  /**
-   * Query parameter the `source` route honours as a free-text search (mirrors
-   * manifest.Page.Search). A table page renders a search box only when this is
-   * set; the typed text is sent as `?<search>=…`.
-   */
-  search?: string
-  /**
-   * A table page's "New" button: the form page it opens (manifest
-   * Page.Create). The core drops it for callers without its permission.
-   */
-  create?: { page: string; permission?: string }
   /**
    * The page's sections, shown in the sidebar while the page is open
    * (manifest Page.Nav, UI 3.14): each item opens `?tab=<key>`. The core has

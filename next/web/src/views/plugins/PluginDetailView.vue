@@ -287,7 +287,7 @@ onMounted(load)
         <EventsTab v-else-if="tab === 'events'" :detail="detail" />
         <EgressTab v-else-if="tab === 'egress'" :detail="detail" @changed="load" />
         <ResourcesTab v-else-if="tab === 'resources'" :detail="detail" @changed="load" />
-        <SettingsTab v-else-if="tab === 'settings' && settings" :plugin-key="detail.key" :settings="settings" @saved="loadSettings" />
+        <SettingsTab v-else-if="tab === 'settings' && settings" :plugin-key="detail.key" :settings="settings" />
         <div v-else-if="tab === 'audit'" class="space-y-3">
           <SHint>{{ t('plugins.detail.auditHint') }}</SHint>
           <AuditLogTable :query="{ target_type: 'plugin', target_id: detail.key }" hide-target />

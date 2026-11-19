@@ -6,10 +6,10 @@ import { resolveProxyURL, validateProxyURL } from './resources'
 import { nextPath } from './paths'
 import { codexAccountTypes, codexCredentialErrors } from './codex'
 import { groupServedProtocols, protocolFieldErrors, servedProtocols, typeEndpoints } from './protocols'
-import { checkControls, controlsAccountTypes, controlsForm } from './controls'
+import { checkControls, controlsAccountTypes } from './controls'
 import { placeholderProblem, rowMeaning } from '../src/views/accounts/headerOverride/model'
 
-// Mock handlers: accounts, account types (form modes schema + iframe) and
+// Mock handlers: accounts, account types (form modes native + iframe) and
 // GET /me/platforms (CONTRACTS §14.1). Scopes (CONTRACTS §21): a narrower
 // scope only reaches the accounts in it (own: those the caller created); sign
 // in as vendor@example.com to try it (see core.ts).
@@ -45,86 +45,6 @@ function checkGuarded(who: Identity, pluginKey: string, creds: Record<string, an
   }
   return fields.length ? fail(400, 'invalid_argument', 'restricted setting', { fields }) : null
 }
-
-/** Rewrites a form for a caller without account:settings:custom: enum (+ ui:readonly when one value). */
-function guardForm(who: Identity, pluginKey: string, form: { schema: Record<string, any>; ui_schema?: Record<string, any> }) {
-  const guards = GUARDED[pluginKey]
-  if (!guards || hasPerm(who, 'account:settings:custom')) return form
-  const schema = JSON.parse(JSON.stringify(form.schema))
-  const ui = JSON.parse(JSON.stringify(form.ui_schema || {}))
-  for (const g of guards) {
-    if (!schema.properties?.[g.field]) continue
-    schema.properties[g.field].enum = [...g.allowed]
-    if (g.allowed.length === 1) ui[g.field] = { ...(ui[g.field] || {}), 'ui:readonly': true }
-  }
-  return { schema, ui_schema: ui }
-}
-
-const anthropicSchema = {
-  type: 'object',
-  required: ['api_key'],
-  properties: {
-    api_key: { type: 'string', title: 'API Key', writeOnly: true, minLength: 10 },
-    base_url: { type: 'string', title: 'Base URL', format: 'uri', default: 'https://api.anthropic.com' },
-    auth_mode: { type: 'string', title: 'Auth header', enum: ['x-api-key', 'bearer'], default: 'x-api-key' },
-    beta_passthrough: { type: 'boolean', title: 'Pass anthropic-beta through', default: true },
-    organization: { type: 'string', title: 'Organization id' }
-  }
-}
-
-const anthropicUI = {
-  'ui:order': ['api_key', 'base_url', 'auth_mode', 'organization', 'beta_passthrough'],
-  api_key: { 'ui:widget': 'secret', 'ui:title': { en: 'API Key', zh: 'API Key' }, 'ui:placeholder': 'sk-ant-...' },
-  base_url: { 'ui:widget': 'url-presets', 'ui:title': { en: 'Base URL', zh: '接口地址' }, 'ui:options': { presets: ['https://api.anthropic.com'] } },
-  auth_mode: { 'ui:enumNames': [{ en: 'x-api-key header', zh: 'x-api-key 请求头' }, { en: 'Authorization: Bearer', zh: 'Authorization: Bearer' }] },
-  organization: { 'ui:visibleWhen': { field: 'auth_mode', equals: 'bearer' }, 'ui:help': { en: 'Only for bearer auth', zh: '仅 Bearer 方式需要' } },
-  beta_passthrough: { 'ui:widget': 'switch', 'ui:title': { en: 'Pass anthropic-beta through', zh: '透传 anthropic-beta' } }
-}
-
-const relaySchema = {
-  type: 'object',
-  required: ['api_key', 'base_url'],
-  properties: {
-    api_key: { type: 'string', title: 'API Key', writeOnly: true, minLength: 10 },
-    base_url: { type: 'string', title: 'Base URL', format: 'uri', default: 'https://relay.example.com/v1' }
-  }
-}
-
-const relayUI = {
-  api_key: { 'ui:widget': 'secret', 'ui:title': { en: 'Relay key', zh: '中转 Key' }, 'ui:placeholder': 'sk-...' },
-  base_url: { 'ui:title': { en: 'Relay base URL', zh: '中转地址' } }
-}
-
-const videoSchema = {
-  type: 'object',
-  required: ['api_key'],
-  properties: {
-    api_key: { type: 'string', title: 'API Key', writeOnly: true, minLength: 10 },
-    region: { type: 'string', title: 'Region', enum: ['us', 'eu', 'ap'], default: 'us' }
-  }
-}
-
-// Built-in openai / gemini plugins (CONTRACTS §14.1): api_key (sensitive) and
-// base_url. Model mapping is a core account field (§18), not a plugin field.
-function apiKeyForm(defaultBase: string, placeholder: string) {
-  return {
-    schema: {
-      type: 'object',
-      required: ['api_key'],
-      properties: {
-        api_key: { type: 'string', title: 'API Key', writeOnly: true, minLength: 10 },
-        base_url: { type: 'string', title: 'Base URL', format: 'uri', default: defaultBase }
-      }
-    },
-    ui_schema: {
-      'ui:order': ['api_key', 'base_url'],
-      api_key: { 'ui:widget': 'secret', 'ui:title': { en: 'API Key', zh: 'API Key' }, 'ui:placeholder': placeholder },
-      base_url: { 'ui:widget': 'url-presets', 'ui:title': { en: 'Base URL', zh: '接口地址' }, 'ui:options': { presets: [defaultBase] } }
-    }
-  }
-}
-const openaiForm = apiKeyForm('https://api.openai.com', 'sk-...')
-const geminiForm = apiKeyForm('https://generativelanguage.googleapis.com', 'AIza...')
 
 interface MockAccountType {
   plugin_key: string
@@ -165,7 +85,7 @@ const accountTypeDecls: MockAccountType[] = [
     type: 'apikey',
     label: { en: 'API Key', zh: 'API Key' },
     description: { en: 'Claude API key (x-api-key)', zh: 'Claude API 密钥' },
-    form: { mode: 'schema' },
+    form: { mode: 'native', component: 'AnthropicKeyForm' },
     sensitive_fields: ['api_key'],
     supports: ['anthropic']
   },
@@ -178,7 +98,7 @@ const accountTypeDecls: MockAccountType[] = [
     type: 'apikey',
     label: { en: 'API Key', zh: 'API Key' },
     description: { en: 'OpenAI API key (Authorization: Bearer)', zh: 'OpenAI API 密钥' },
-    form: { mode: 'schema' },
+    form: { mode: 'native', component: 'OpenAIKeyForm' },
     sensitive_fields: ['api_key'],
     supports: ['openai']
   },
@@ -191,7 +111,7 @@ const accountTypeDecls: MockAccountType[] = [
     type: 'apikey',
     label: { en: 'API Key', zh: 'API Key' },
     description: { en: 'Google AI Studio API key (x-goog-api-key)', zh: 'Google AI Studio API 密钥' },
-    form: { mode: 'schema' },
+    form: { mode: 'native', component: 'GeminiKeyForm' },
     sensitive_fields: ['api_key'],
     supports: ['gemini']
   },
@@ -204,7 +124,7 @@ const accountTypeDecls: MockAccountType[] = [
     type: 'relay_key',
     label: { en: 'Relay key', zh: '中转 Key' },
     description: { en: 'Key of an Anthropic-compatible relay', zh: 'Anthropic 兼容中转站的 Key' },
-    form: { mode: 'schema' },
+    form: { mode: 'native', component: 'RelayKeyForm' },
     sensitive_fields: ['api_key'],
     supports: ['anthropic']
   },
@@ -217,7 +137,7 @@ const accountTypeDecls: MockAccountType[] = [
     type: 'video_key',
     label: { en: 'MyVideo key', zh: 'MyVideo Key' },
     description: { en: 'Serves the myvideo platform declared by the same plugin', zh: '服务本插件声明的 myvideo 平台' },
-    form: { mode: 'schema' },
+    form: { mode: 'native', component: 'VideoKeyForm' },
     sensitive_fields: ['api_key'],
     supports: ['myvideo']
   },
@@ -247,7 +167,7 @@ function accountTypeOut(d: MockAccountType) {
     const p = platformById(id)
     return { id, label: p?.label ?? platformLabel(id), builtin: p?.builtin ?? false, available: !!p }
   })
-  return { ...rest, ...defaults, common_controls: d.common_controls ?? defaults.common_controls, platforms, endpoints: typeEndpoints(supports.filter((id) => platformById(id)), subset) }
+  return { ...rest, ...defaults, guarded_settings: GUARDED[d.plugin_key], common_controls: d.common_controls ?? defaults.common_controls, platforms, endpoints: typeEndpoints(supports.filter((id) => platformById(id)), subset) }
 }
 
 /** The type of an account as GET /account-types lists it; undefined for an orphaned account. */
@@ -624,17 +544,6 @@ on('PUT', '/settings/auto-disable', (req) => {
 })
 
 on('GET', '/account-types', () => accountTypeDecls.map(accountTypeOut))
-on('GET', '/account-types/:plugin_key/:type/form', (req) => {
-  const who = caller(req)
-  const k = req.params.plugin_key
-  if (k === 'anthropic') return guardForm(who, k, { schema: anthropicSchema, ui_schema: anthropicUI })
-  if (k === 'relay') return { schema: relaySchema, ui_schema: relayUI }
-  if (k === 'videogen') return { schema: videoSchema, ui_schema: { api_key: { 'ui:widget': 'secret' } } }
-  if (k === 'openai') return guardForm(who, k, openaiForm)
-  if (k === 'gemini') return guardForm(who, k, geminiForm)
-  if (k === 'controls_demo') return controlsForm
-  return fail(404, 'not_found', 'form not found')
-})
 
 /** A complete model id (CONTRACTS §16): no wildcards. */
 const MODEL_RE = /^[A-Za-z0-9._:/@+-]{1,200}$/

@@ -415,14 +415,12 @@ export function consoleSettingsPath(p: Pick<PluginSummary, 'key' | 'has_settings
 }
 
 export interface PluginSettings {
-  /** schema: the console renders the form; native: the plugin's component (on the settings tab), or its own page (ui.settings.page, §75.5). */
+  /** native: the plugin's component (on the settings tab), or its own page (ui.settings.page, §75.5). */
   mode?: string
   /** The plugin page (ui.pages key) holding native settings. */
   page?: string
   /** Native settings without a page: the component the plugin registered for them, shown on the settings tab. */
   component?: string
-  schema: Record<string, any> | null
-  ui_schema?: Record<string, any> | null
   values: Record<string, any> | null
   /** RBAC key of manifest ui.settings.permission: its holders may edit these settings too. */
   permission?: string
@@ -436,14 +434,11 @@ export function isPendingConsent(s: string | undefined): boolean {
 }
 
 /**
- * Settings the settings tab shows: a schema form, or the component of native
- * settings that have no page of their own; native settings with a page live
- * on that page (§75.5).
+ * Settings the settings tab shows: the component of native settings that have
+ * no page of their own; native settings with a page live on that page (§75.5).
  */
 export function consoleSettings(s: PluginSettings | null | undefined): PluginSettings | null {
-  if (!s) return null
-  const mode = s.mode ?? 'schema'
-  return (mode === 'schema' && s.schema) || (mode === 'native' && s.component && !s.page) ? s : null
+  return s?.mode === 'native' && s.component && !s.page ? s : null
 }
 
 /** A plugin's settings form on a page of its own: for holders of the plugin's settings permission alone, and for old links. */
