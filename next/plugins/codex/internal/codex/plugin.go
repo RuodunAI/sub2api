@@ -75,6 +75,14 @@ const (
 	// (the smallest model of manifest defaultModels: the test uses the
 	// owner's plan).
 	DefaultTestModel = "gpt-6-luna"
+	// ImageChatModel is the chat model driving the image_generation tool of
+	// an image request: manifest adapted.images_*.model, which the core puts
+	// at the top of the converted request, and the model of an image test.
+	ImageChatModel = "gpt-6-luna"
+	// Client protocols the core converts to Responses (manifest adapted).
+	ProtocolChat       = "openai.chat"
+	ProtocolImages     = "openai.images"
+	ProtocolImagesEdit = "openai.images_edit"
 )
 
 // Endpoints are the service roots the plugin talks to (no trailing slash).
