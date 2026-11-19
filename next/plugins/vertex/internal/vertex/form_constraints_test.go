@@ -50,6 +50,8 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 			{"location pattern", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: testProject, fieldLocation: "US"}, fieldLocation, ""},
 			{"unknown credentials key", map[string]any{fieldAPIKey: key, "legacy": "x"}, nil, "legacy", "unknown"},
 			{"unknown settings key", map[string]any{fieldAPIKey: key}, map[string]any{"legacy": "x"}, "legacy", "unknown"},
+			{"base_url in the credentials (the type has none)", map[string]any{fieldAPIKey: key, "base_url": "https://evil.example"}, nil, "base_url", "unknown"},
+			{"base_url in the settings (the type has none)", map[string]any{fieldAPIKey: key}, map[string]any{"base_url": "https://evil.example"}, "base_url", "unknown"},
 		},
 	}
 	for typ, inputs := range cases {
