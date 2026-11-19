@@ -63,7 +63,7 @@
   - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
   - 开始、轮询、换令牌路由都要 `proxy_ticket`（账号表单**当前**的代理选择，界面每次调用现取一张，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `pending` 并在 `message` 里带拒绝原因。请求没有到 OpenAI，设备码、授权码都没用掉，所以会话保留：代理改好后，下一次轮询或换令牌带着新票据就能继续。
   - `POST /auth/codex/exchange` `{session_id, callback_url, proxy_ticket}` → `{credentials}` 或错误。
-  - 四个路由的请求体另带可选的 `user_agent`、`originator`：账号表单此刻填的客户端标识（第 20.2 节），界面每次调用都带上，插件只用于这次调用的请求、不存进会话。校验与 `ValidateCredentials` 对这两个字段的相同（`credMap.agentError`：去掉首尾空白后必须是字符串、不能含控制字符），不合格时 400 `invalid_argument`（field `user_agent` / `originator`，code `pattern`），什么也不发。
+  - 四个路由的请求体另带可选的 `user_agent`、`originator`：账号表单此刻填的客户端标识（第 20.2 节），界面每次调用都带上，插件只用于这次调用的请求、不存进会话。校验与 `ValidateCredentials` 对这两个字段的相同（`credMap.agentError`：必须是字符串，去掉首尾空白后不能含控制字符），不合格时 400 `invalid_argument`（field `user_agent` / `originator`，code `pattern`），什么也不发。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。

@@ -170,11 +170,11 @@ func sendFailed(err error) *pluginv1.HTTPResponse {
 	return flowError("proxy_refused", refusedMessage(err))
 }
 
-// refusedMessage is the text of a request the core would not send. Nothing
-// reached OpenAI: the next call, with a fresh ticket of the form's proxy,
-// may go through.
+// refusedMessage is the text of a request that was not sent (the core
+// refused it, or the call to the core failed). Nothing reached OpenAI: the
+// next call, with a fresh ticket of the form's proxy, may go through.
 func refusedMessage(err error) string {
-	return "the core refused to send the request through the account form's proxy; check the proxy and try again / 核心拒绝经账号表单的代理发送请求，请检查代理后重试: " + status.Convert(err).Message()
+	return "the request was not sent; check the proxy in the account form and try again / 这次请求没有发出，请检查账号表单里的代理后重试: " + status.Convert(err).Message()
 }
 
 func (a authAnswer) ok() bool { return a.status >= 200 && a.status <= 299 }

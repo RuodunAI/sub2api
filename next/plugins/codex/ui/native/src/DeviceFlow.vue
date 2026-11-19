@@ -117,6 +117,7 @@ async function poll(gen: number) {
     }
   } catch (e) {
     if (gen !== generation) return
+    notice.value = ''
     // A dropped request or a restarting node: try again a few times before giving up.
     if (++failures < MAX_POLL_FAILURES) return schedule(gen)
     stop()

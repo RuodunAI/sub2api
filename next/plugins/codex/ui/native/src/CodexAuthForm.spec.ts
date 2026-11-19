@@ -210,13 +210,13 @@ describe('CodexAuthForm: device code', () => {
   })
 
   it('shows why a pending poll could not ask OpenAI and polls on', async () => {
-    deviceAnswers([{ status: 'pending', message: 'the core refused to send the request through the account form\'s proxy' }, { status: 'pending' }, { status: 'done', credentials: DEVICE_CREDS }])
+    deviceAnswers([{ status: 'pending', message: 'the request was not sent; check the proxy in the account form and try again' }, { status: 'pending' }, { status: 'done', credentials: DEVICE_CREDS }])
     const w = mountForm({ accountType: { type: 'codex_device' } })
     await w.get('[data-testid="codex-device-start"]').trigger('click')
     await flushPromises()
     expect(w.find('[data-testid="codex-device-notice"]').exists()).toBe(false)
     await vi.advanceTimersByTimeAsync(5000)
-    expect(w.get('[data-testid="codex-device-notice"]').text()).toContain('refused to send the request')
+    expect(w.get('[data-testid="codex-device-notice"]').text()).toContain('the request was not sent')
     expect(w.find('[data-testid="codex-device-error"]').exists()).toBe(false)
     // The operator fixed the proxy: the next pending answer has no message.
     await vi.advanceTimersByTimeAsync(5000)
@@ -244,6 +244,25 @@ describe('CodexAuthForm: device code', () => {
     await flushPromises()
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(1)
     expect(lastValue(w)).toEqual(DEVICE_CREDS)
+  })
+
+  it('drops the notice of a refused ticket when the next poll request fails', async () => {
+    answer = (path) => {
+      if (path === '/auth/device/start') return { session_id: 's1', verification_url: 'https://x', user_code: 'C', interval: 5, expires_in: 900 }
+      if (path === '/auth/device/poll') return new Error('network down')
+      throw new Error(`unexpected ${path}`)
+    }
+    const w = mountForm({ accountType: { type: 'codex_device' } })
+    await w.get('[data-testid="codex-device-start"]').trigger('click')
+    await flushPromises()
+    proxyTicket.mockRejectedValueOnce(new Error('the proxy is disabled'))
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(w.get('[data-testid="codex-device-notice"]').text()).toContain('the proxy is disabled')
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(1)
+    expect(w.find('[data-testid="codex-device-notice"]').exists()).toBe(false)
+    expect(w.find('[data-testid="codex-device-code"]').exists()).toBe(true)
   })
 
   it('treats a code past its lifetime as expired without asking', async () => {
