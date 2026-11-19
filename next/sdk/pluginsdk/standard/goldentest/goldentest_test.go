@@ -223,3 +223,45 @@ func TestCheckMessages(t *testing.T) {
 		t.Errorf("classify clock %v, want %s", asked, cl.Now)
 	}
 }
+
+// TestSelect: Forwarded keeps the execute cases of the protocols on an
+// account of the type with a base URL of its own; BaseURL reads it where
+// the presets do (settings first, a blank or non-string value is none).
+func TestSelect(t *testing.T) {
+	f, err := Load("openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keep := Forwarded("apikey", "openai.chat")
+	kept := 0
+	for i := range f.Cases {
+		c := &f.Cases[i]
+		if !keep(c) {
+			continue
+		}
+		kept++
+		in, _, _ := c.Execute()
+		if base, ok := c.BaseURL(); !ok || base == "" || in.Meta.Protocol != "openai.chat" || in.Account.Type != "apikey" {
+			t.Errorf("%s: kept with base URL %q %v", c.Name, base, ok)
+		}
+	}
+	if kept == 0 || kept == len(f.Cases) {
+		t.Fatalf("kept %d of %d cases", kept, len(f.Cases))
+	}
+	for doc, want := range map[[2]string]string{
+		{`{"base_url":"https://s"}`, `{"base_url":"https://c"}`}: "https://s",
+		{`{}`, `{"base_url":"https://c"}`}:                       "https://c",
+		{`{"base_url":"  "}`, `{"base_url":"https://c"}`}:        "",
+		{`{"base_url":123}`, `{}`}:                               "",
+		{`{}`, `{}`}:                                             "",
+	} {
+		input, _ := json.Marshal(ExecuteInput{Account: &Account{ID: 1, SettingsJSON: doc[0], CredentialsJSON: doc[1]}, Body: "{}"})
+		c := &Case{Kind: KindExecute, Input: input, Error: &Error{Message: "x"}}
+		if got, ok := c.BaseURL(); got != want || ok != (want != "") {
+			t.Errorf("%v: %q %v, want %q", doc, got, ok, want)
+		}
+	}
+	if _, ok := (&Case{Kind: KindTest}).BaseURL(); ok {
+		t.Error("a test case has a base URL")
+	}
+}

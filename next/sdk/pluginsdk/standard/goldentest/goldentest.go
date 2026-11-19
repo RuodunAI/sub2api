@@ -177,17 +177,67 @@ func Load(plugin string) (*File, error) {
 // Option adjusts Run.
 type Option func(*config)
 
-type config struct{ except map[string]string }
+type config struct {
+	except map[string]string
+	keep   []func(*Case) bool
+}
 
 // Except declares that the case called name is known to differ and why.
 // Run then requires it to differ: an exception for a case that passes, or
-// for one that does not exist, fails, so the list cannot outlive its reason.
+// for one that is not replayed (missing, or not selected), fails, so the
+// list cannot outlive its reason.
 func Except(name, reason string) Option {
 	return func(c *config) { c.except[name] = reason }
 }
 
-// Run replays every case of plugin against s and reports each difference.
-// Every function of s must be set: a kind is never skipped silently.
+// Select replays only the cases keep accepts (with several, those all
+// accept): an implementation that is not the file's plugin, such as a type
+// that also serves the file's protocols (standard.Merge), replays the
+// cases it must answer alike. Run fails when none is left.
+func Select(keep func(*Case) bool) Option {
+	return func(c *config) { c.keep = append(c.keep, keep) }
+}
+
+// Forwarded accepts the execute cases of one of protocols on an account of
+// accountType that names its own base URL (Case.BaseURL): what a type
+// serving those protocols on the account's address must build as the
+// file's plugin did, whatever its credential rules (validate, test and
+// models cases, a missing or default base URL, another account type) and
+// its default protocol.
+func Forwarded(accountType string, protocols ...string) func(*Case) bool {
+	return func(c *Case) bool {
+		in, _, err := c.Execute()
+		_, own := c.BaseURL()
+		return err == nil && own && in.Account.Type == accountType && slices.Contains(protocols, in.Meta.Protocol)
+	}
+}
+
+// BaseURL is the base_url an execute case's account names: a non-blank
+// string in its settings, else its credentials (where the presets read
+// it). ok is false for any other case.
+func (c *Case) BaseURL() (baseURL string, ok bool) {
+	in, _, err := c.Execute()
+	if err != nil || in.Account == nil {
+		return "", false
+	}
+	for _, doc := range []string{in.Account.SettingsJSON, in.Account.CredentialsJSON} {
+		var fields map[string]any
+		if json.Unmarshal([]byte(doc), &fields) != nil {
+			continue
+		}
+		if v, isString := fields["base_url"].(string); isString && strings.TrimSpace(v) != "" {
+			return v, true
+		}
+		if fields["base_url"] != nil {
+			return "", false
+		}
+	}
+	return "", false
+}
+
+// Run replays every case of plugin (the selected ones, see Select)
+// against s and reports each difference. Every function of s must be set:
+// a kind is never skipped silently.
 func Run(t *testing.T, plugin string, s Subject, opts ...Option) {
 	t.Helper()
 	f, err := Load(plugin)
@@ -198,8 +248,13 @@ func Run(t *testing.T, plugin string, s Subject, opts ...Option) {
 	for _, o := range opts {
 		o(&cfg)
 	}
+	replayed := 0
 	for i := range f.Cases {
 		c := &f.Cases[i]
+		if slices.ContainsFunc(cfg.keep, func(keep func(*Case) bool) bool { return !keep(c) }) {
+			continue
+		}
+		replayed++
 		diffs := c.Check(t.Context(), s)
 		reason, excepted := cfg.except[c.Name]
 		delete(cfg.except, c.Name)
@@ -215,7 +270,10 @@ func Run(t *testing.T, plugin string, s Subject, opts ...Option) {
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(cfg.except)) {
-		t.Errorf("exception for %q: %s has no such case", name, plugin)
+		t.Errorf("exception for %q: %s has no such case, or it is not selected", name, plugin)
+	}
+	if replayed == 0 {
+		t.Errorf("%s: no case selected", plugin)
 	}
 }
 
