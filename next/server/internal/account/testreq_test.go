@@ -655,3 +655,28 @@ func TestAccountTestProtocolsSubset(t *testing.T) {
 		}
 	}
 }
+
+// An account with neither models nor a mapping whose type serves only
+// protocols a test without a model may not use (an image generation, an
+// edit) is refused too: no empty protocol list goes to the plugin's
+// default test (CONTRACTS §122.2).
+func TestAccountTestNoModelsNoTestableProtocol(t *testing.T) {
+	e := setup(t)
+	openai := &e.gen.plats[1].Platform
+	images := ep("POST", "/v1/images/generations", "openai.images", "usage")
+	images.ID, images.Test = "images_generations", manifest.EndpointTestExplicit
+	edits := ep("POST", "/v1/images/edits", "openai.images_edit", "usage")
+	edits.ID, edits.Test = "images_edits", manifest.EndpointTestNever
+	openai.Endpoints = append(openai.Endpoints, images, edits)
+	e.gen.types[0].Type.Platforms = []manifest.AccountPlatform{{Platform: "openai", Endpoints: []string{"images_generations", "images_edits"}}}
+	id := e.mkAccount("sk-wrong-key-1")
+	code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), nil)
+	if code != http.StatusBadRequest || gjson.GetBytes(raw, "error.code").String() != "no_testable_protocol" {
+		t.Fatalf("test: %d %s", code, raw)
+	}
+	e.plat.mu.Lock()
+	defer e.plat.mu.Unlock()
+	if len(e.plat.tests) != 0 {
+		t.Fatalf("the plugin built a test request: %v", e.plat.tests)
+	}
+}

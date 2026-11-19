@@ -212,7 +212,8 @@ func (tp testProtocolSet) of(model string) []string {
 // testModel is the model a test asks for: the caller's, else the first of
 // models left with a protocol to test, else "" when there are no models
 // (the plugin picks its default, CONTRACTS §15.9). testable is false when
-// that model has no protocol to test, or none of models has one: the test
+// that model has no protocol to test, none of models has one, or there are
+// no models and the account has no protocol a test may use: the test
 // is refused, never sent with the plugin's default request (CONTRACTS §122.2).
 func (tp testProtocolSet) testModel(requested string, models []string) (model string, testable bool) {
 	if requested != "" {
@@ -223,7 +224,7 @@ func (tp testProtocolSet) testModel(requested string, models []string) (model st
 			return m, true
 		}
 	}
-	return "", len(models) == 0
+	return "", len(models) == 0 && len(tp.protocols) > 0
 }
 
 // errNoTestableProtocol refuses a test of a model the account serves on no
