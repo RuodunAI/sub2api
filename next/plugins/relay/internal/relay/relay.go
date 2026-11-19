@@ -4,6 +4,7 @@
 package relay
 
 import (
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -20,11 +21,13 @@ func New() *standard.Platform { return standard.New(RelayKey()) }
 // RelayKey is the anthropic preset on the relay's own address: the base URL
 // is required and has no default, a request must name its protocol, and the
 // plugin forwards every field. Which client headers reach the relay is the
-// manifest's passHeaders (the core filters them).
+// manifest's passHeaders (the core filters them). The credentials are
+// api_key and base_url only.
 func RelayKey() standard.Type {
 	t := anthropic.APIKey(TypeRelayKey)
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = BaseURLRequired
+	t.Spec.Fields = fieldcheck.Fields{}
 	t.DefaultProtocol = ""
 	return t
 }

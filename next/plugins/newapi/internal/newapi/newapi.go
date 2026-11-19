@@ -11,6 +11,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/gemini"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -29,11 +30,13 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 
 // APIKey is the four presets on the site's own address (required, a
 // pasted /v1beta or /v1 removed, any 8-512 printable characters as the
-// key), with the balance of the key in the site's own quota.
+// key, no other credentials), with the balance of the key in the site's
+// own quota.
 func APIKey() standard.Type {
 	spec := apikey.Spec{
 		RequireBaseURL: true,
 		StripSuffixes:  []string{"/v1beta", "/v1"},
+		Fields:         fieldcheck.Fields{},
 		Texts: apikey.Texts{
 			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 			KeyNotString:           "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符",

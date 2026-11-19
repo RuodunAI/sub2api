@@ -9,12 +9,15 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
-// TestGolden replays the frozen answers of the released plugin, all of them.
+// TestGolden replays the frozen answers of the released plugin, all of
+// them except that it now refuses a key the account form never sends.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "relay", "../../manifest.json", New())
+	standardtest.Run(t, "relay", "../../manifest.json", New(),
+		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"))
 }
 
 // TestDifferences pins, on the plugin's own output, the ways relay_key
