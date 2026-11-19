@@ -8,9 +8,68 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 火山引擎方舟 API Key 账号：清掉设置里不属于它的前缀键（核心；迁移 0118，随 0.1.304 发布）
+### 插件界面只用代码写：删掉声明式表单与页面，界面契约 4.0（核心、SDK、控制台、全部带界面的第一方插件；无迁移，随 0.1.304 发布；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
 
-- **迁移 0118**（`0118_volcengine_apikey_prefix_settings.sql`）：volcengine `apikey` 类型账号的 `settings` 里删掉 `api_prefix`、`video_api_prefix`。这两个键只属于中转（`relay`）类型，方舟官方账号不读它们；拆分类型之前保存的账号还留着它们，编辑凭证时被当作未知键拒绝、界面上又删不掉。线上有 2 个这样的账号（键 `video_api_prefix`），迁移后能正常编辑；请求行为不变。`relay` 账号和别的插件的账号不动，可以重跑。CONTRACTS §126。
+账号表单、插件设置和插件页面只能用代码写：插件自带的原生界面（`ui/native`，受信任发布者，宿主权限 `ui.native`）或 iframe。声明式的 JSON Schema 表单（`form.mode: "schema"`）和表格、表单页面（`type: "table" | "form"`）整个删除，核心不再读、不再校验 JSON Schema 表单。规则见 CONTRACTS §23、§75.1、§75.5。
+
+**核心与清单**
+
+- 删掉 `GET /account-types/:plugin_key/:type/form`；`GET /plugins/:key/settings` 不再返回 `schema`、`ui_schema`；插件包不再打包、核心不再提供 `forms/`（`/plugin-ui/.../forms/...` 返回 404）。保存账号凭证只由插件的 `ValidateCredentials` 把关，保存插件设置只由插件的 `ValidateSettings`（可选）把关。
+- 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。native、iframe 设置必须写这个键（上传时缺了报 `ui.settings.secrets` `required`）：写了列表只掩码列出的字段，写成 `[]` 不掩码；已装的包没有这个键时，和此前一样每个顶层键都被掩码。路径中途遇到数组时整个数组按密钥掩码和保留（CONTRACTS §75.1、§75.5）。
+- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存，插件已启用但运行不起来时保存失败（`plugin_unavailable`，先停用再改）。请求带插件当前的授权（与 `Configure` 相同）。插件线协议（2）和 Host API（10）不变。
+- `GET /plugins` 的 `has_settings` 只对当前版本是 native 设置的插件为 true（iframe 设置控制台不打开，仍为 false）。
+- 清单检查：账号表单或设置的 `form.mode: "schema"`、页面的 `type: "table" | "form"` 上传时报 `unsupported`；native 设置要有 `component` 或 `page`。`manifest.Form` 删掉 `schema`、`uiSchema`，`manifest.Page` 删掉 `source`、`columns`、`schema`、`submit`、`search`、`create`，`check.Warnings` 删除。`sub2api-plugin` 严格读清单，旧字段报 unknown field。
+
+**SDK**
+
+- 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`（`OneOf`、`Pattern` 只能用于 `String()`，用错在构造时 panic；必填字段收到 `null` 报 `required`）、`fieldcheck.DecodeSettings`（设置的“解码 → 检查 → 解码进带默认值的结构体”）；`pluginsdktest.Harness.ValidateSettings` 多一个 `grants` 参数，新增 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
+- `apikey.Spec.Fields` 改为 `fieldcheck.Fields`：一处声明既是允许的键又带规则（也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后、对将要保存的值即去空白的 key 和规范化后的地址运行），插件不必再包一层 `Platform` 改写 `ValidateCredentials`。`Fields` 为 `nil` 时也拒绝 `api_key`、`base_url` 以外的键（此前 `nil` 不检查），代替 schema 的 `additionalProperties:false`；`accountform.Form.Only` 同理。新增 `Spec.NoBaseURL`（vertex_apikey 用它拒绝 `base_url`）。新增测试辅助 `apikey/apikeytest`（api_key + base_url 类型共有的 `ValidateCredentials` 用例）。
+- `apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出，空格与非 ASCII 字节都已百分号转义，请求地址不变。
+
+**界面包与控制台**
+
+- 界面包 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升到 4.0.0（`HOST_UI_VERSION`），删掉 `SchemaForm`、`SchemaField` 等 schema 导出；控制台删掉声明式表单、表格、表单页的渲染。全部带原生界面的第一方插件（16 个，payment 没有界面）`hostUICompat` 都是 `^4.0`。
+- `@sub2api/ui` 新增：`SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）、`SSecretInput` 的 `plain`（敏感地址用文本框输入）；`createApiKeyForm` 的额外字段可写 `mono`（`text`、`textarea` 用等宽字体）。`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
+- `@sub2api/ui/testing`：账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
+- 仓库里的插件界面工程用控制台的 vite、vue-tsc、vitest 构建和测试（`@sub2api/vite-preset` 提供基础 tsconfig 与构建配置），CI 的插件界面检查任何一步失败都报错；工程有自己的 lockfile 时才 `npm ci`。
+
+**各插件**
+
+- API Key 类账号（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai）：表单改为插件的 `ui/native`（`createApiKeyForm`），字段名、默认值、文案与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址；清单改为 `form.mode: "native"`，加 `ui.native`。relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，默认收起，有值或有错误时自动展开。`ValidateCredentials` 拒绝表单不会发的键（`unknown`；openai 只另外允许 `organization`、`project`，`azure_deployment` 只另外允许 `api_version`），基础地址路径里的空格由转成 `%20` 改为拒绝。插件补上原来只写在 schema 里的校验：openai 的组织 ID、项目 ID 不超过 128 个可见 ASCII 字符（错误码随 `fieldcheck`：不是字符串报 `type`、超长报 `maxLength`、字符不对报 `pattern`；为 `null` 时由忽略改为报 `type`）；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期，新建时表单仍预填 `2024-10-21`，编辑已有账号不再补默认值。密钥与地址的规则见下一节。
+- bedrock：三种账号类型的表单改为原生组件 `BedrockAccountForm`，字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）；原 schema 的约束都由 `ValidateCredentials` 检查，拒绝表单没有的键（三种类型各按原 schema 的键）；不认识的账号类型不再当作 `bedrock_apikey` 显示。
+- vertex：表单改为原生组件 `VertexKeyFileForm`（服务账号、用户凭证）和 `VertexApiKeyForm`（直接用 `createApiKeyForm`），字段、默认值（密钥文件类型的区域 `global`）和文案不变；核心续期写回的 `access_token`、`expires_at`、`token_for` 不显示、保存时原样带回；编辑已有账号时不再自动补区域；密钥文件 32768 个字符的上限从 schema 搬进插件。拒绝表单没有声明的键（`unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
+- volcengine（仍是未发布的 0.13.0）：两个账号表单和素材库两个页面改为原生代码，原来的两个“新建”表单页并进列表页的新建弹窗；原 schema 的约束由插件 Go 保证，并补上了只有 schema 挡住的几条（URL 与路径前缀里的空白、素材库新建路由的长度和地址格式）；两个账号类型拒绝表单没有的键（`unknown`）。`api_prefix`、`video_api_prefix` 里的空白只在保存时拒绝：此前请求时读已存的前缀也查空白，含 `\v`、不换行空格等的已存前缀每次请求都报错。见 `next/docs/PLUGIN-VOLCENGINE-ARK.md` §19。
+- moderation 0.12.2：设置页不再用表单 JSON，改用 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。
+- 插件设置（mailer、codex、guard）改为原生组件，保存前由插件 Go 校验（`ValidateSettings`，与 `Configure` 共用一套规则，拒绝未知键）：mailer 新建界面工程，`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码；codex 的设置（`user_agent`、`originator`）由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件；guard 的设置由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`），webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`）。四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，moderation 见上，codex、guard 为 `[]`。
+
+#### 升级须知
+
+- **非内置的带界面插件要管理员装上新版本**：relay、guard、azure-openai、vertex、bedrock（payment 没有界面，本节不涉及它，但仍要按 0.1.304 的升级须知重装）。内置插件随核心升级。重装审查多一项“在控制台运行插件界面”（`ui.native`）。
+- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“不支持的页面类型：{type}”（`table` 或 `form`）。
+- **第三方插件作者**：表单与页面只能用 native（受信任发布者）或 iframe 写，设置的密钥在 `ui.settings.secrets` 里声明。schema 模式的第三方插件升级后没有界面（见上一条），新包上传时报 `unsupported`。直接用 SDK 预设或 `apikey.Spec` 而没写 `Fields` 的插件，用新 SDK 重新编译后保存账号时拒绝 `api_key`、`base_url` 以外的键（`unknown`）；已存账号带其它键的，下次保存会被拒，要在 `Fields` 里列出这些键。
+- **已存的越界设置值让升级后的第一次保存失败**：插件设置的校验从控制台搬到了插件（`ValidateSettings`），库里已存着越界或不合规则的值时（例如 mailer 的 `timeout_seconds`、guard 的冷却时间、moderation 的数值项，以及下面“审核题集”里那几种题集），之后在任何设置页保存都会被拒，直到把那个值改对；审核题集也可以改回用内置题集。请求时的行为不变。
+
+### 密钥与基础地址规则（SDK、核心、带 API Key 的十一个插件、界面包；无迁移，随 0.1.304 发布；设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](next/docs/DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md) 方案 B）
+
+所有者要求“密钥不要做任何限制”、地址里的 `%2F` 不再被还原、版本后缀“没有就加上，有就不管”。规则见 CONTRACTS §127。
+
+- **密钥不再限制格式和长度**：`apikey.Spec` 管的 `api_key`（anthropic、openai、gemini、typesafe、relay、newapi、sub2api、azure-openai、volcengine 两种类型、vertex_apikey）以及 bedrock 的 `api_key` 只要求是非空字符串，保存去掉首尾空白后的值；不再检查前缀、字符集和长度（原来 8–512 个可见 ASCII 字符，openai 另有 512 上限，bedrock 8–2048）。带 CR、LF 等控制字符的密钥能保存，但每次请求都以“请求头无效”失败，不会注入请求头。`createApiKeyForm` 的 `api_key` 默认规则改为只要求非空（`min`、`max`、`pattern` 仍可按需写）。newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`。bedrock 的 AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不变。
+- **基础地址按填写的保存**：只去首尾空白、scheme 转小写、去掉末尾的 `/`；路径的转义原样保留（`%2F`、`%7E` 不再还原成 `/`、`~`），保存时不再剥掉版本后缀（`/v1`、`/v1beta`、`/openai`、`/openai/v1`、`/api/v3`）。控制台显示的就是填写的地址。
+- **请求时至多去掉一个版本段**：插件按账号类型声明的版本段（`apikey.Spec.Versions`，原 `StripSuffixes`），在转义形式的地址末尾整段、区分大小写地去掉最长的一个，再把各接口的完整路径接上。所以 `https://x/v1/v1` 现在请求 `https://x/v1/v1/...`（以前少一段 `/v1`，配不通）；`…/a%2Fv1` 不算版本。gemini、newapi、sub2api 的地址带另一个版本时按接口换成它要的版本（如 gemini 填 `…/v1` 请求 `…/v1beta/...`）。volcengine 中转（`relay`）的地址规则不变，带 `/v1`、`/api/v3` 仍在保存时拒绝。
+- **受限地址比较认版本段**：清单 `accountTypes[].guardedSettings[]` 新增可选的 `versions`（如 `["/v1"]`）：核心比较受限设置时，提交值、`allowed` 各项、账号原值都先按同一规则去掉至多一个版本段，所以没有 `account:settings:custom` 的人填带版本的官方地址（如 `https://api.openai.com/v1`）也能保存。没写 `versions` 的受限设置行为不变。清单检查：每项非空、以 `/` 开头、不以 `/` 结尾、不重复。`GET /account-types` 的 `guarded_settings` 随之带出 `versions`（没写时不出现）。写了它的清单：anthropic、openai、typesafe、gemini、volcengine `apikey`（CONTRACTS §21.3）。
+- azure-openai：资源地址按填写的保存，`/openai`、`/openai/v1` 只在请求时去掉，请求地址不变；Foundry 项目名里转义的斜杠（`/api/projects/a%2Fb`）由拒绝改为接受，作为一段保存和发出。项目名恰好是 `openai` 时，请求仍少掉项目自己那一段（与此前相同）。
+- SDK：删掉 `apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`；`Spec.StripSuffixes` 改名 `Versions`；`NormalizeBaseURL` 去掉第二个参数；`apikeytest` 删掉 `MinKey`，改为接受带空格、非 ASCII、4096 位的密钥，并检查 `/v1`、`%2F` 原样保存。
+- 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法。
+
+#### 升级须知
+
+- **已存账号的请求地址全部不变**（SDK 性质测试 `apikey.TestStoredBaseURLsKeepTheirRequests` 逐一比较），不用核查线上数据；只有绕过插件校验直接写进库里、路径带非规范转义的值，会从解码后发出变为原样发出（CONTRACTS §127.5）。
+- 写了 `versions` 的插件要求核心 0.1.304 起（旧核心忽略这个字段，只是带版本的官方地址被拒）。
+- 第三方插件用到 `StripSuffixes`、`KeyValidator`、`apikey.OpenAI`、`NormalizeBaseURL` 的第二个参数或 `apikeytest.MinKey` 的，按上面改名或删掉后重新编译。
+
+### 审核题集：保存时拒绝运行时会丢弃的题集（moderation 0.12.2；无迁移，随 0.1.304 发布）
+
+- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；两边共用同一组判断，设置页在题集那一行提示第几题出错。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）。
 
 ### 删除 growth 插件（核心；迁移 0117，随 0.1.304 发布）
 
@@ -20,68 +79,15 @@
 - 插件键 `growth` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.2.x 包同样被拒）。
 - **迁移 0117**（`0117_drop_growth_plugin.sql`）：装过它的库像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予、事件游标）、它的权限（`growth:use`、`growth:stats:read` 与已标删除的 `growth:read`、`growth:manage`）与授予、出网域名、任务、插件迁移记录和 schema `plg_growth`（邀请码、返利记录、签到记录），键记入 `plugin_key_retirements`；没有它的库什么都不变，可以重跑。它记过的返利和签到奖励作为 `plugin_credit` 留在账本里，余额不变。
 
-### 插件界面只用代码写（进行中，分支 `feat/plugin-ui-code-only`；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
+**升级须知**：装过 growth 的库升级时会被卸载（同 purge），schema `plg_growth` 连同邀请、返利、签到记录删除；要留这些数据，升级前先备份这个 schema。没装过的库什么都不变。
 
-核心与 SDK 先加上 native 表单在后端需要的部分，旧的 schema 表单在第一方插件迁完之前照常工作：
+### 火山引擎方舟 API Key 账号：清掉设置里不属于它的前缀键（核心；迁移 0118，随 0.1.304 发布）
 
-- 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。不带 schema 的 native、iframe 设置必须写这个键（上传时缺了报 `ui.settings.secrets` `required`）：写了列表只掩码列出的字段，写成 `[]` 不掩码；已装的包没有这个键时，和此前一样每个顶层键都被掩码。路径中途遇到数组时整个数组按密钥掩码和保留（CONTRACTS §75.1、§75.5）。
-- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存，插件已启用但运行不起来时保存失败（`plugin_unavailable`，先停用再改）。请求带插件当前的授权（与 `Configure` 相同）。插件线协议（2）和 Host API（10）不变。SDK 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`（`OneOf`、`Pattern` 只能用于 `String()`，用错在构造时 panic；必填字段收到 `null` 报 `required`）；`pluginsdktest.Harness.ValidateSettings` 多一个 `grants` 参数。
-- `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
-- `GET /plugins` 的 `has_settings` 改为"当前版本的 `ui.settings` 是 schema 或 native 模式"，不再只认 schema 模式；iframe 设置控制台不打开，仍为 false。
-- 清单检查：native 设置要有 `component` 或 `page`。
-- volcengine（仍是未发布的 0.13.0）：两个账号表单和素材库两个页面改为原生代码（`ui/native`，需要宿主权限 `ui.native`），原来的两个“新建”表单页并进列表页的新建弹窗；原表单 schema 的约束由插件 Go 保证，并补上了只有 schema 挡住的几条（URL 与路径前缀里的空白、素材库新建路由的长度和地址格式）。见 `next/docs/PLUGIN-VOLCENGINE-ARK.md` §19。
-- moderation 0.12.2：设置页不再用表单 JSON（删掉 `forms/settings.*.json`），改用 `@sub2api/ui` 的 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 改为声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。`hostUICompat` 改为 `^3.20`。`@sub2api/ui` 的 `SSecretInput` 新增 `plain`（敏感地址用文本框输入）。
-- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；两边共用同一组判断，设置页在题集那一行提示第几题出错。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）。
-
-插件设置表单改为原生组件（插件自带 `ui/native`），保存前由插件 Go 校验（`ValidateSettings`，与 `Configure` 共用一套规则，拒绝未知键）：
-
-- mailer：新建界面工程；`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码。
-- codex：设置（`user_agent`、`originator`）改由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件。
-- guard：设置改由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`）；webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`），`hostUICompat` 升到 `^3.20`。
-- 四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，其余为 `[]`。
-- `@sub2api/ui`：`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
-
-API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai；无迁移）：
-
-- 账号表单不再是声明式 JSON（`forms/` 已删），改为插件的 `ui/native`（`@sub2api/ui` 的 `createApiKeyForm`）：字段名、默认值、文案、校验规则与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址。清单改为 `form.mode: "native"`，加 `ui.native`、`hostUICompat ^3.20`，装包审查多一项“在控制台运行插件界面”（`ui.native`）。保存时的最终校验只在插件的 `ValidateCredentials`。
-- relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，与原表单一样默认收起，有值或有错误时自动展开。
-- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径；与其它类型的基础地址一样先规范化再匹配，所以前后的空白、大写的 scheme、末尾多余的 `/` 去掉后接受；项目名里转义的斜杠如 `/api/projects/a%2Fb` 由接受改为拒绝，因为规范化把 `%2F` 变成了 `/`），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
-
-公共组件与 SDK 的补缺（U3a；各插件改用它们在 U3b）：
-
-- SDK：`apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。去首尾空白、scheme 转小写照旧；已存的地址都是它的输出，空格与非 ASCII 字节都已百分号转义，请求时重新规范化结果不变。
-- SDK：`apikey.Spec.Fields` 改为 `fieldcheck.Fields`：一处声明既是允许的键又带规则（也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后、对将要保存的值即去空白的 key 和规范化后的地址运行），插件不必再包一层 `Platform` 改写 `ValidateCredentials`。新增 `fieldcheck.DecodeSettings`（设置的"解码 → 检查 → 解码进带默认值的结构体"）、测试辅助 `apikey/apikeytest`（api_key + base_url 类型共有的 `ValidateCredentials` 用例）和 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
-- `@sub2api/ui`：新增 `SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）。`createApiKeyForm` 的额外字段可写 `mono`（`text`、`textarea` 用等宽字体）。
-- `@sub2api/ui/testing`：增加账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
-
-各插件改用补缺的公共接口（U3b）：
-
-- 八个 API Key 类插件（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai）跟进：`ValidateCredentials` 拒绝表单不会发的键（`unknown`；openai 只另外允许 `organization`、`project`，`azure_deployment` 只另外允许 `api_version`），黄金样例里"带其它字段的合法凭证"一条相应声明为预期差异；基础地址路径里的空格由转成 `%20` 改为拒绝；openai 去掉包在标准平台外的一层，API Key 上限与组织 ID、项目 ID 的规则写在 `Spec.Fields` 上（错误码随 `fieldcheck`：不是字符串报 `type`、超长报 `maxLength`、字符不对报 `pattern`，原来都是 `pattern`；组织 ID、项目 ID 为 `null` 时由忽略改为报 `type`），黄金样例改为回放插件实际的 `ValidateCredentials`；测试改用 `apikey/apikeytest` 与 `@sub2api/ui/testing`。
-- bedrock、vertex：表单的分节改用 `SFormSection`，props 改用 `nativeAccountFormProps`，bedrock 的到期时间改用 `SDateTimeInput`，`vertex_apikey` 改为直接用 `createApiKeyForm`（字段、文案、校验、等宽字体不变）；spec 改用 `@sub2api/ui/testing`。bedrock 不认识的账号类型不再当作 `bedrock_apikey` 显示。bedrock 拒绝表单没有的键（同下面的 vertex；三种类型各按原 schema 的键）。vertex 拒绝表单没有声明的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和核心续期写回的 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
-- volcengine：apikey 表单的“素材库（可选）”一节补回原表单的说明（迁移时丢了）；relay 表单的素材库一节和兼容配置一节改用 `SFormSection`（兼容配置 `collapsed`），props 改用 `nativeAccountFormProps`。`api_prefix`、`video_api_prefix` 里的空白只在保存时拒绝：此前请求时读已存的前缀也查空白，含 `\v`、不换行空格等的已存前缀每次请求都报错。两个账号类型拒绝表单没有的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`，`apikey.Spec.Fields` 声明素材库字段与 relay 的端点、前缀）。
-- mailer、codex、guard：数字框改用 `bindNumber`（清空仍是不发该键），设置解析改用 `fieldcheck.DecodeSettings`、清单测试改用 `pluginsdktest.SettingsSecrets`，spec 改用 `@sub2api/ui/testing`；字段、错误码与路径不变。
-
-### 插件界面只用代码写：云厂商插件的账号表单
-
-- bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。
-- vertex：三种账号类型的表单改为原生组件 `VertexKeyFileForm`（服务账号、用户凭证）和 `VertexApiKeyForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（密钥文件类型的区域 `global`）和文案不变；核心续期写回的 `access_token`、`expires_at`、`token_for` 不显示、保存时原样带回；编辑已有账号时不再自动补区域（保存时插件照旧补上）。密钥文件 32768 个字符的上限从 schema 搬进插件，其余约束原本就由插件检查，有测试逐条保留。
-
-### 插件界面只用代码写：删掉声明式表单与页面，界面契约 4.0（D1）
-
-- 核心不再读、不再校验 JSON Schema 表单：删掉 `GET /account-types/:plugin_key/:type/form`；`GET /plugins/:key/settings` 不再返回 `schema`、`ui_schema`；保存账号凭证只由插件的 `ValidateCredentials` 把关，保存插件设置只由插件的 `ValidateSettings`（可选）把关；插件包不再打包、核心不再提供 `forms/`。`has_settings` 只对 native 设置为 true。
-- 清单检查：账号表单或设置的 `form.mode: "schema"`、页面的 `type: "table" | "form"` 上传时报 `unsupported`；`manifest.Form` 删掉 `schema`、`uiSchema`，`manifest.Page` 删掉 `source`、`columns`、`schema`、`submit`、`search`、`create`，`check.Warnings` 删除。`sub2api-plugin` 严格读清单，旧字段报 unknown field。
-- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“页面不可用”。内置插件随核心升级；非内置插件（relay、guard、payment、azure-openai、vertex、bedrock）要管理员装上新版本。
-- SDK：`apikey.Spec.Fields` 为 `nil` 时也拒绝 `api_key`、`base_url` 以外的键（此前 `nil` 不检查）；新增 `Spec.NoBaseURL`（vertex_apikey 用它拒绝 `base_url`，替代插件里多包的一层 `Only`）。
-- 界面包 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升到 4.0.0（`HOST_UI_VERSION`），删掉 `SchemaForm`、`SchemaField` 等 schema 导出；控制台删掉声明式表单、表格、表单页的渲染。全部带原生界面的第一方插件 `hostUICompat` 改为 `^4.0`。
-- 第三方插件作者：表单与页面只能用 native（受信任发布者）或 iframe 写；设置的密钥在 `ui.settings.secrets` 里声明。
-
-### 密钥与基础地址的规则：受限地址认版本段（进行中，设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](next/docs/DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md) 方案 B、7.1 做法一）
-
-- 清单 `accountTypes[].guardedSettings[]` 新增可选的 `versions`（如 `["/v1"]`）：该字段的值末尾可以带的版本段。核心比较受限设置时，提交值、`allowed` 各项、账号原值都先按同一规则去掉至多一个版本段（转义形式的路径、整段、区分大小写、取最长），所以没有 `account:settings:custom` 的人填带版本的官方地址（如 `https://api.openai.com/v1`）也能保存；`…/a%2Fv1` 不算版本。没写 `versions` 的受限设置行为不变。清单检查：每项非空、以 `/` 开头、不以 `/` 结尾、不重复。`GET /account-types` 的 `guarded_settings` 随之带出 `versions`（没写时不出现）。旧核心忽略这个字段，用到它的插件要同时提高 `hostCompat` 下限（CONTRACTS §21.3）。
+- **迁移 0118**（`0118_volcengine_apikey_prefix_settings.sql`）：volcengine `apikey` 类型账号的 `settings` 里删掉 `api_prefix`、`video_api_prefix`。这两个键只属于中转（`relay`）类型，方舟官方账号不读它们；拆分类型之前保存的账号还留着它们，编辑凭证时被当作未知键拒绝、界面上又删不掉。线上有 2 个这样的账号（键 `video_api_prefix`），迁移后能正常编辑；请求行为不变。`relay` 账号和别的插件的账号不动，可以重跑。CONTRACTS §126。
 
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth 与 growth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0118；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
-这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0118（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删掉火山引擎方舟 API Key 账号设置里的前缀键），插件迁移只有 volcengine 的 0003。
+这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0118（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删掉火山引擎方舟 API Key 账号设置里的前缀键），插件迁移只有 volcengine 的 0003。
 
 内容：
 
@@ -98,6 +104,8 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - **账号余额接通**：声明了余额的账号类型（目前只有 newapi、sub2api）在账号列表显示上游返回的余额数字和单位本身（不做任何换算），手动刷新加定时刷新，只显示不联动（CONTRACTS §52）。
 - **OpenAI 生图**：内置 openai 平台新增 `/v1/images/generations`、`/v1/images/edits`（JSON），图片 token 单独计价（CONTRACTS §118）。
 - **插件按归属收到账号的全部信息**：插件收到它声明的账号类型下账号的凭证和代理详情（地址、用户名、密码），宿主授权 `accounts.credentials`、`accounts.read` 和 `GetAccountCredentials` 删除，换成 `GetAccount`；代理只是数据，请求仍全部由核心发出，插件不联网（CONTRACTS §124）。
+- **插件界面只用代码写**：声明式 JSON Schema 表单与表格、表单页面删除，界面只能是插件自带的原生代码或 iframe，界面契约 4.0（见上面“插件界面只用代码写”）。
+- **密钥与基础地址规则**：密钥不限格式和长度，地址按填写的保存，请求时至多去掉一个版本段（见上面“密钥与基础地址规则”）。
 - volcengine 0.13.0、协议清理、控制台与若干修正。
 
 #### 升级须知
@@ -142,6 +150,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - **清单的 `accountTypes[].balance.currency` 删除**：币种由插件每次读余额时给出。核心忽略这个未知字段；`sub2api-plugin` 严格解码，旧清单带它时 `build`、`pack` 等报未知字段，删掉这一行即可。
 - **生图模型要先录价格**：没有价格的生图模型与其他模型一样回 403 `model_price_not_configured`（缺价一律报错，见上面）。Responses 里用生图工具的请求按客户请求的模型计价，生图工具的 token 计入它（CONTRACTS §118.10），应答回显的 `gpt-image-2-codex` 等生图模型不需要价格。要按图片 token 正确计费，给生图模型录表达式价格（变量 `img`、`img_o`，参考价见 CONTRACTS §118.6）；models.dev 同步来的生图价只有文字价，会少收，要改成表达式价格。
 - **协议绑定“指定”过的 OpenAI 账号要手动勾选生图协议**：`protocols` 为空（默认）的 OpenAI API Key 账号升级后自动服务两个生图端点；指定过协议的账号不会自动开放，要的话在“协议与模型”里勾上 `openai.images`、`openai.images_edit`（CONTRACTS §118.5）。volcengine 账号在 openai 平台上改为显式端点子集，不服务 OpenAI 生图。
+- **界面、密钥与地址、审核题集、growth 的升级须知**见上面各自一节：带界面的非内置插件要重装，已存的越界设置值让第一次保存失败，装过的 growth 被卸载并删除 `plg_growth`。
 - 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见下文“对运维”）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
 
 #### 插件版本
