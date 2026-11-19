@@ -69,13 +69,18 @@ describe('GrowthSettings', () => {
     expect(['checkin-min', 'checkin-max', 'checkin-timezone'].map((id) => field(w, id).exists())).toEqual([false, false, false])
   })
 
-  it('a cleared number box sends no key', async () => {
+  it('a cleared number box sends no key, in every number box', async () => {
+    const boxes = {
+      'referral-rate': 'referral_rate_percent',
+      'referral-max': 'referral_max_per_invitee',
+      'referral-days': 'referral_duration_days',
+      'checkin-min': 'checkin_min_quota',
+      'checkin-max': 'checkin_max_quota'
+    }
     const { w, core, settings } = await mountSettings({})
-    await field(w, 'referral-days').setValue('')
-    await field(w, 'checkin-max').setValue('')
+    for (const id of Object.keys(boxes)) await field(w, id).setValue('')
     expect(await settings.save()).toBe(true)
-    expect(core.puts[0]).not.toHaveProperty('referral_duration_days')
-    expect(core.puts[0]).not.toHaveProperty('checkin_max_quota')
+    for (const key of Object.values(boxes)) expect(core.puts[0]).not.toHaveProperty(key)
   })
 
   it('without edit rights every control is disabled and there is no save bar', async () => {
