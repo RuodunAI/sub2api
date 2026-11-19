@@ -508,3 +508,24 @@ defineExpose({ validate: form.validate })
 - **`SResourcePage`**：插件的列表页（`client`（`host.pluginApi`）、`path`、`columns`、`search?`（查询参数名，有它才有搜索框）、`rowKey?`、`createLabel?`、`canCreate?`、`submit?`）。内部用 `useList` 和 `STable`（卡片形式）加分页，工具栏有刷新按钮；`cell-<key>` 插槽照传给 `STable`，`toolbar` 插槽放在搜索框后。`canCreate` 且有 `create` 插槽时显示新建按钮，打开 `SFormModal`，插槽参数 `{ close, done }`；弹窗的保存调用 `submit()`（在里面校验并提交，返回 `false` 则不关；抛错时按 `errorMessage` 提示，弹窗不关），成功后回到第一页刷新并发出 `created`。弹窗关闭时插槽内容会卸载：表单状态写在插槽里的组件内部时，下次打开自然是空的；状态放在页面上（比如页面上的一个 `ref`）的，要作者自己清空。
 - `@sub2api/host` 新导出 `useGuardedSettings(accountType)`（`allowed(field)`、`locked(field)`、`guarded`）、类型 `AccountTypeView`，以及 `settingsFieldErrors`、`toFieldPath`（服务端字段名转表单路径；本包不再另起名字导出）、`errorMessage(e, t)` 和 `isSilentError(e)`（控制台的报错文案与"哪些失败不提示"，控制台自己也用这两个）。
 
+### 测试辅助：`@sub2api/ui/testing`（UI SDK 4.0，开发中）
+
+**只能在 spec（`*.spec.ts` 及只被 spec 引用的测试辅助文件）里引用**：它不在控制台的 import map 里，插件的运行时代码引用它时构建不会报错（预设把 `@sub2api/ui` 的所有子路径都当作外部模块），要到控制台里加载插件时才失败，依赖 `vitest` 和 `@vue/test-utils`。插件工程的 vitest 配置继承控制台 `web/vitest.config.ts` 的别名，自动解析到 `web/packages/ui/src/testing/index.ts`；类型检查要在插件的 `tsconfig.json` `paths` 里加一行（写在 `@sub2api/ui` 之前）：`"@sub2api/ui/testing": ["../../../../web/packages/ui/src/testing/index.ts"]`。
+
+- `fakeHost({ granted?, messages?, plugin?, api? })`：给接下来挂载的组件提供控制台（`provideHost`：只授予 `granted` 里的权限，控制台的翻译返回键本身），返回插件的 host（交给插件自己的 `setHost`：`t` 按 `messages.en` 查，没有 `messages` 时返回键本身；`plugin.key`、`api`）。`messagesT(messages)` 是其中的 `t`（点分键，填 `{name}` 参数）。
+- `mountAccountForm(form, { accountType, stored?, errors? })`：像账号编辑器那样挂载原生账号表单（`<form>` 里，v-model 凭证与 §23.5 的 props；有 `stored` 是编辑这个账号，否则是新建），返回 `{ w, credentials, validate(), saved() }`（`saved()` 是编辑器会保存的 JSON）。
+- `fillControls(w, labels, input)`：按 `labels`（字段 → 标签文字）找到每个字段的控件，依次填入 `input`（字段 → 文字）：选择框按选项文字选，日期框填本地时间，`''` 先填一个字再清空；每个控件填完失焦。`control(w, label)` 是按标签找控件的那一步。
+- `keyAndUrlCases(key, url, required, fill?)`：API Key 类表单共有的 api_key、base_url 用例（`AccountFormCase`：`name`、`stored?`、`input?`、`out`、`ok`）；与 `mountAccountForm`、`fillControls` 合用：
+  ```ts
+  for (const c of keyAndUrlCases('sk-ant-api03-abcdef', 'https://x.example.com/anthropic', false)) {
+    it(c.name, async () => {
+      const { w, saved, validate } = mountAccountForm(AnthropicKeyForm, { accountType, stored: c.stored })
+      await fillControls(w, { api_key: 'API key', base_url: 'Base URL' }, c.input ?? {})
+      expect({ value: saved(), ok: await validate() }).toEqual({ value: c.out, ok: c.ok })
+    })
+  }
+  ```
+- `fakeCore(plugin, values, secrets?)`：`GET/PUT /plugins/<plugin>/settings` 的假核心（`secrets` 里的顶层键读回 `******`，PUT `******` 保留原值），返回 `{ api, puts, stored(), refuse(e) }`。`mountSettings(Settings, { plugin, setHost, values?, granted?, secrets? })`：挂载插件的设置组件并等它读完（默认授予 `plugin:manage`），返回 `{ w, core, settings }`（`settings` 是 `SSettingsPage` 拿到的表单）。
+- `checkMessages(messages, { sources, dynamic? })`：在 `describe` 里加三条用例：中英文键相同；文案里没有 vue-i18n 特殊字符（`@`、`|`、`{name}` 占位符以外的花括号）；每个键都在 `sources`（`import.meta.glob(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true })`）里以 `'a.b'` 出现，或在 `dynamic` 列出的前缀下（拼出来的键）。
+- `cleanup()`：卸载上面挂载的组件、撤销 `mountSettings` 的 `setHost`、清空 `<body>`：`afterEach(cleanup)`。
+- `mountPinned(component, options?, pin?)`：在固定的视口形态（默认手机）下挂载（控制台自己的 spec 用）。
