@@ -406,6 +406,7 @@ export interface ExtraField {
   rules?: Rule | Rule[]
   section?: (() => string) | { title: () => string; help?: () => string; collapsed?: boolean } // starts an SFormSection (U3a: help, collapsed)
   when?: (m: Record<string, unknown>) => boolean         // shown and validated only while true
+  mono?: boolean                                          // text, textarea: monospaced, as SInput's mono (U3b)
 }
 ```
 

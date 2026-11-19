@@ -71,6 +71,8 @@ export interface ExtraField {
   section?: Text | FieldSection
   /** Shown and validated only while true. */
   when?: (m: Model) => boolean
+  /** text, textarea: a monospaced box (keys, ids, paths), as SInput's `mono`. */
+  mono?: boolean
 }
 
 /** A section of extra fields (SFormSection): `collapsed` starts it closed unless one of its fields holds a value or an error. */
@@ -116,13 +118,13 @@ function control(f: ExtraField, form: FormApi<Model>, guard: GuardedSettings): V
         'onUpdate:modelValue': (v: unknown) => set(v ?? undefined)
       })
     case 'textarea':
-      return h(STextarea, { ...bound, placeholder })
+      return h(STextarea, { ...bound, placeholder, mono: f.mono })
     case 'date-time':
       return h(SDateTimeInput, bound)
     case 'switch':
       return h(SSwitch, { ...bound, modelValue: !!bound.modelValue })
     default:
-      return h(SInput, { ...bound, placeholder })
+      return h(SInput, { ...bound, placeholder, mono: f.mono })
   }
 }
 

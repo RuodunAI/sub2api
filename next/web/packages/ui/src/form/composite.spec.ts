@@ -415,6 +415,21 @@ describe('createApiKeyForm: the anthropic form', () => {
     expect(edited.w.findAll('[data-testid="form-section"]')[1].findAll('label').map((l) => l.text())).toEqual(['Organization', 'Project'])
   })
 
+  it('mono: a text or textarea extra field is monospaced when it asks', async () => {
+    const Form = createApiKeyForm({
+      baseUrl: false,
+      extra: [
+        { key: 'project_id', kind: 'text', label: () => 'Project', mono: true },
+        { key: 'name', kind: 'text', label: () => 'Name' },
+        { key: 'policy', kind: 'textarea', label: () => 'Policy', mono: true }
+      ]
+    })
+    const { w } = editor(Form)
+    await flushPromises()
+    expect(w.findAll('input[type="text"]').map((i) => i.classes('font-mono'))).toEqual([true, false])
+    expect(w.get('textarea').classes()).toContain('font-mono')
+  })
+
   it('extra fields: select with defaults, sections, `when`, date-time in RFC 3339, no base URL', async () => {
     const Bedrock = createApiKeyForm({
       baseUrl: false,
