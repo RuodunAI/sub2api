@@ -96,12 +96,13 @@ else
     "$CLI" build --dir "$dir" --out "$TMP/$name"
     # No PostgreSQL in the image build: the GORM models are compared with
     # migrations/ by the sub2api-plugin tests (TestDBCheck) in CI instead.
-    extra="--skip-db-check"
-    if grep -q '"native"' "$dir/manifest.json" && [ ! -d "$dir/ui/native/dist" ]; then
-      extra="$extra --allow-missing-ui"
+    # A plugin's forms and settings pages exist only as its native UI
+    # (build-ui.sh, the ui stage of next/Dockerfile): never pack without it.
+    if grep -q '"native"' "$dir/manifest.json" && [ ! -f "$dir/ui/native/dist/entry.js" ]; then
+      echo "::error::$name: ui/native/dist/entry.js missing; run deploy/docker/build-ui.sh first" >&2
+      exit 1
     fi
-    # shellcheck disable=SC2086
-    "$CLI" pack --dir "$dir" --runtimes "$TMP/$name" --out "$OUT/market/$name-$ver.s2plugin" $extra
+    "$CLI" pack --dir "$dir" --runtimes "$TMP/$name" --out "$OUT/market/$name-$ver.s2plugin" --skip-db-check
     "$CLI" sign --key "$KEYS/$KEY_ID.key" --key-id "$KEY_ID" "$OUT/market/$name-$ver.s2plugin"
     found=1
   done

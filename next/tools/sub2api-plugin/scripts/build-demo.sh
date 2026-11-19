@@ -7,6 +7,8 @@
 #   <keydir>/<keyid>.key must exist (create it once with
 #   `sub2api-plugin keygen --key-id <keyid> --out <keydir>`); it is reused,
 #   never regenerated. The same key signs the packages and the index.
+#   Every plugin with a native UI needs its ui/native/dist first
+#   (deploy/docker/build-ui.sh builds them all); a missing one fails.
 #
 # Output:
 #   <outdir>/<name>-<version>.s2plugin for every next/plugins/<name> that has a
@@ -25,8 +27,6 @@
 #                   from tools/sub2api-plugin into a temp dir).
 #   PLUGINS=...     space separated plugin names to package instead of every
 #                   plugins/*/manifest.json (debugging / partial rebuilds).
-#   REQUIRE_UI=1    fail when a plugin's ui/native/dist is missing (guard,
-#                   moderation); default: pack without the native UI and warn.
 #   PLATFORMS=...   override target platforms (default linux/amd64,linux/arm64).
 #   SKIP_DB_CHECK=1 pack without comparing the GORM models with migrations/
 #                   (pack --skip-db-check), where no PostgreSQL can run: the
@@ -87,13 +87,11 @@ package() {
     set -- "$@" --skip-db-check
   fi
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
+  # A plugin's forms and settings pages exist only as its native UI, so a
+  # package without it is a broken package: build the UIs first.
   if [ -f "$dir/manifest.json" ] && grep -q '"native"' "$dir/manifest.json" && [ ! -f "$dir/ui/native/dist/entry.js" ]; then
-    if [ "${REQUIRE_UI:-0}" = "1" ]; then
-      echo "$dir/ui/native/dist/entry.js missing (REQUIRE_UI=1)" >&2
-      exit 1
-    fi
-    echo "warning: $plugin: ui/native/dist missing, packing without native UI" >&2
-    set -- "$@" --allow-missing-ui
+    echo "$plugin: ui/native/dist/entry.js missing; build the native UIs first (sh deploy/docker/build-ui.sh <next> <out>)" >&2
+    exit 1
   fi
   pkg=$("$BIN" "$@")
   "$BIN" sign --key "$KEY" --key-id "$KEYID" --publisher "$PUBLISHER" "$pkg"
