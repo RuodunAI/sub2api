@@ -16,9 +16,6 @@ import { useCredentialForm, type NativeAccountFormProps } from './credential'
 import SCredentialForm from './SCredentialForm.vue'
 import { usePluginSettings, type PluginSettingsForm } from './pluginSettings'
 import SSettingsPage from './SSettingsPage.vue'
-import SchemaForm from '../schema/SchemaForm.vue'
-import anthropicSchema from '../../../../../plugins/anthropic/forms/apikey.schema.json'
-import anthropicUI from '../../../../../plugins/anthropic/forms/apikey.ui.json'
 import { SECRET_MASK } from './rules'
 
 type M = Record<string, any>
@@ -190,8 +187,8 @@ describe('useCredentialForm / SCredentialForm', () => {
   })
 })
 
-// The anthropic account form written with createApiKeyForm (DESIGN §5.10)
-// against the schema form it replaces, plugins/anthropic/forms/apikey.schema.json:
+// The anthropic account form written with createApiKeyForm (DESIGN §5.10),
+// with the verdicts of the schema form it replaced (plugins/anthropic/forms/apikey.schema.json, deleted):
 //   required: [api_key]; additionalProperties: false; no defaults;
 //   api_key: string 8–512, ^[!-~]+$ (ui: secret); base_url: ^(https?://[^\s?#]+)?$ (ui: url-presets,
 //   presets [https://api.anthropic.com]).
@@ -199,16 +196,6 @@ describe('createApiKeyForm: the anthropic form', () => {
   const Anthropic = createApiKeyForm({
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => 'Leave empty to use https://api.anthropic.com' },
     apiKey: { placeholder: () => 'sk-ant-…', help: () => 'Anthropic Console API key.' }
-  })
-  /** The form it replaces, plugins/anthropic/forms/apikey.{schema,ui}.json in SchemaForm (§23.5 props). */
-  const SchemaAnthropic = defineComponent({
-    props: { modelValue: { type: Object, default: () => ({}) }, errors: { type: Object, default: undefined } },
-    emits: ['update:modelValue'],
-    setup(props, { emit, expose }) {
-      const inner = ref<{ validate: () => boolean }>()
-      expose({ validate: async () => inner.value!.validate() })
-      return () => h(SchemaForm, { ref: inner, schema: anthropicSchema, uiSchema: anthropicUI, modelValue: props.modelValue, errors: props.errors, 'onUpdate:modelValue': (v: M) => emit('update:modelValue', v) })
-    }
   })
   const KEY = 'input[type="password"]'
   const URL = 'input[type="url"]'
@@ -239,27 +226,6 @@ describe('createApiKeyForm: the anthropic form', () => {
       expect(await validate()).toBe(c.ok)
     })
   }
-
-  // Both forms side by side on the same inputs. The schema form goes in D1
-  // (plugins/anthropic/forms is deleted then): this test goes with it, and the
-  // cases above (the schema's verdicts written out) stay.
-  it('gives the same v-model and verdict as the schema form for every case', async () => {
-    for (const c of cases) {
-      const results = []
-      for (const form of [Anthropic, SchemaAnthropic]) {
-        const { w, credentials, validate } = editor(form)
-        await flushPromises()
-        if (c.key !== undefined) await type(w, KEY, c.key)
-        if (c.url !== undefined) {
-          await type(w, URL, 'https://tmp.example.com')
-          await type(w, URL, c.url)
-        }
-        results.push({ value: saved(credentials.value), ok: await validate() })
-        w.unmount()
-      }
-      expect(results[0], c.name).toEqual(results[1])
-    }
-  })
 
   it('labels, star, placeholders and the preset menu', async () => {
     const { w } = editor(Anthropic)
