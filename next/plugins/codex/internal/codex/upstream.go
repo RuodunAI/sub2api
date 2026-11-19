@@ -2,7 +2,6 @@ package codex
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -74,29 +73,23 @@ var httpHeaders = map[string]string{"accept": "text/event-stream", "content-type
 // client's prompt_cache_key - the key the core's sticky rule already binds
 // the conversation to one account by - mixed with the API key, so two keys
 // sending the same prompt_cache_key never share an upstream session and the
-// client's value is not echoed, and keyed with the cluster's session salt
-// (salt.go), so the upstream, which sees prompt_cache_key in the body,
-// cannot recover the API key id from the session. A body without the key
-// (or with a key that is not a non-empty string) gets none and reads no
-// salt.
-func (p *Plugin) upstreamSession(ctx context.Context, apiKeyID int64, body []byte) (string, error) {
+// client's value is not echoed, and salted with the account id, so the
+// session differs per account. A body without the key (or with a key that is
+// not a non-empty string) gets none.
+func upstreamSession(accountID, apiKeyID int64, body []byte) string {
 	key := gjson.GetBytes(body, "prompt_cache_key")
 	if key.Type != gjson.String || key.Str == "" {
-		return "", nil
+		return ""
 	}
-	salt, err := p.sessionSalt(ctx)
-	if err != nil {
-		return "", err
-	}
-	return upstreamSessionID(salt, apiKeyID, key.Str), nil
+	return upstreamSessionID(accountID, apiKeyID, key.Str)
 }
 
-// upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the API key
-// id and the prompt cache key with HMAC-SHA256 keyed by salt.
-func upstreamSessionID(salt []byte, apiKeyID int64, key string) string {
-	mac := hmac.New(sha256.New, salt)
-	mac.Write([]byte(strconv.FormatInt(apiKeyID, 10) + ":" + key))
-	sum := mac.Sum(nil)
+// upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the account
+// id, the API key id and the prompt cache key: SHA-256 of
+// "<account id>:<api key id>:<prompt cache key>" (the two ids are decimal
+// integers, so the parts cannot run into each other).
+func upstreamSessionID(accountID, apiKeyID int64, key string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(accountID, 10) + ":" + strconv.FormatInt(apiKeyID, 10) + ":" + key))
 	sum[6] = sum[6]&0x0f | 0x80
 	sum[8] = sum[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
@@ -141,7 +134,7 @@ func userMessage(text string) []byte {
 // ws(s) URL with the beta header) and the edited message; the core opens
 // the connection with the handshake of the session's first turn and sends
 // every turn's message on it.
-func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
+func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	c, err := accountCredentials(in.GetAccount())
 	if err != nil {
 		return nil, err
@@ -154,10 +147,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 	if err != nil {
 		return nil, err
 	}
-	session, err := p.upstreamSession(ctx, in.GetMeta().GetApiKeyId(), body)
-	if err != nil {
-		return nil, err
-	}
+	session := upstreamSession(in.GetAccount().GetId(), in.GetMeta().GetApiKeyId(), body)
 	return u.HeaderMap(p.accountHeaders(c)).
 		Header("session_id", session).
 		Header("conversation_id", session).

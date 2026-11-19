@@ -2,8 +2,10 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -220,8 +222,7 @@ func TestExecuteWebSocket(t *testing.T) {
 		`{"type":"response.create","model":"gpt-5.4","input":` + userHello + `,"stream_options":{"include_usage":true},"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 		`{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_1","input":[{"role":"user","content":"more"}],"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 	}
-	seedSalt(t, h, testSalt)
-	session := upstreamSessionID([]byte(testSalt), 7, "conv-1")
+	session := upstreamSessionID(7, 7, "conv-1")
 	for _, typ := range accountTypes {
 		for i, turn := range turns {
 			r := relayed(t, h, execRequest(typ, ProtocolResponsesWS, turn))
@@ -277,6 +278,29 @@ func TestExecuteSession(t *testing.T) {
 	}
 	if next := build(ProtocolResponses, 7, `{"prompt_cache_key":"conv-2"}`); next["session_id"] == id {
 		t.Fatal("two conversations share an upstream session")
+	}
+	// The account id salts the session: another account gets another one,
+	// and neither is the unsalted hash of before.
+	in := execRequest(TypeDevice, ProtocolResponses, conv)
+	in.Account.Id = 8
+	r := relayed(t, h, in)
+	if other := r.GetHeaders()["session_id"]; other == id || other != upstreamSessionID(8, 7, "conv-1") || id != upstreamSessionID(7, 7, "conv-1") {
+		t.Fatalf("account 8 session %q, account 7 %q", other, id)
+	}
+	unsalted := sha256.Sum256([]byte("7:conv-1"))
+	if strings.HasPrefix(strings.ReplaceAll(id, "-", ""), fmt.Sprintf("%x", unsalted[0:4])) {
+		t.Fatal("the session is the unsalted hash")
+	}
+	// The account id is only a hash input: it appears nowhere in the request.
+	in.Account.Id = 987654321
+	r = relayed(t, h, in)
+	for k, v := range r.GetHeaders() {
+		if strings.Contains(k+v, "987654321") {
+			t.Fatalf("header %s carries the account id", k)
+		}
+	}
+	if strings.Contains(string(r.GetBody())+r.GetUrl(), "987654321") {
+		t.Fatal("the request carries the account id")
 	}
 	for _, body := range []string{`{}`, `{"prompt_cache_key":""}`, `{"prompt_cache_key":123}`} {
 		hd := build(ProtocolResponses, 7, body)

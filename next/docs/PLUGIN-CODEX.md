@@ -70,7 +70,7 @@
   - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填；空或没有时用插件设置的值。
   - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
 - 网络权限（与 manifest 一致）：0.2.0 起没有 `net`，插件不开任何对外连接。`auth.openai.com`、`chatgpt.com` 列在 `externalServices`：授权请求是带代理票据的取回（第 19 节），上游请求、令牌刷新与重置次数请求都由核心经账号代理发出。（0.2.0 之前 `net` 只有 `auth.openai.com`，授权请求由插件直连。）不访问 `api.openai.com`，没有模型列表（控制台用 manifest 默认模型），也没有用量查询（窗口由核心从响应头采样，第 13 节）。
-- 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话；会话盐，第 20 节）、`lock`（设备码轮询的会话锁，见上；会话盐只由一个节点生成）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
+- 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
 - `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与 `chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
 - 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 页签（2026-11-17 起取代 Sign in with ChatGPT 页签；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
@@ -308,18 +308,16 @@
 - 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
 - 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
 
-## 20. 0.2.0：上游会话 id 加盐；User-Agent 与 originator 可自定义（2026-11-18，审计结论，所有者决定；无迁移，版本仍是未发布的 0.2.0）
+## 20. 0.2.0：上游会话 id 以账号 id 加盐；User-Agent 与 originator 可自定义（2026-11-18/19，审计结论，所有者决定；无迁移，版本仍是未发布的 0.2.0）
 
-审计发现两点，所有者的决定：会话 id“加上盐进行适配”；User-Agent / originator“这个不管，但是账号上可以自定义，然后插件的设置中也可以自定义”。
+审计发现两点，所有者的决定：会话 id“加上盐进行适配”，盐“直接根据账号的 id 来做”；User-Agent / originator“这个不管，但是账号上可以自定义，然后插件的设置中也可以自定义”。
 
-### 20.1 会话 id 加盐
+### 20.1 会话 id 以账号 id 加盐
 
 - 问题：`session_id` / `conversation_id` 原来是 `sha256("<api_key_id>:<prompt_cache_key>")`，而 `prompt_cache_key` 原样在请求体里发给上游；上游枚举小整数就能反推出我们内部的 API Key 编号。
-- 现在：`HMAC-SHA256(盐, "<api_key_id>:<prompt_cache_key>")`，取前 16 字节排成 UUID（version 8），其余不变（同一 Key 的同一会话每轮相同，不同 Key 不同，没有可用的 `prompt_cache_key` 时不发，也不读盐）。
-- 盐：集群共用一份，存在插件 KV（命名空间 `session_salt`，键 `v1`，不过期），值是 `crypto/rand.Text()`（26 个 base32 字符，约 130 位）。第一个需要它的请求在集群锁 `codex-session-salt` 下“再读一次，没有才写”，所以几个节点同时开始也只写一份；之后每个请求都读 KV（不在进程里缓存），所有节点、重启前后都用同一份。锁被别的节点拿着而盐还没写好时，这个请求回 `UNAVAILABLE`（只在第一次生成的瞬间可能出现）。盐只在插件和 KV 里，不进任何请求头、请求体、日志。
-- 为什么用 KV：codex 已有 `kv`、`lock` 授权，不加新的宿主权限，升级不用管理员重新批准；插件没有数据库 schema，为一个值加 `db.schema`、迁移和模型不值得；插件设置由管理员填写，插件写不了；`SealSecret` 每次加密结果不同，不能当盐。
-- KV 丢失（Redis 数据被清）时：下一个请求生成新盐，所有会话的上游 session 变一次，上游提示缓存的落点随之重来一次；核心的粘性绑定同在 Redis，那时也一样丢失。因为每个请求都读 KV，各节点随即都用新盐，不会分叉。
-- **未改、留给所有者决定**：会话 id 只由盐、API Key、`prompt_cache_key` 决定，不含账号。同一个客户 Key 的同一会话换到另一个 ChatGPT 账号时（换号、粘性失效），新账号收到的 `session_id` / `conversation_id` 与原账号相同，上游仍能据此把这几个 ChatGPT 账号关联到同一个客户会话。加盐只去掉了“反推内部 Key 编号”，没有去掉这一点。
+- 所有者决定“直接根据账号的 id 来做盐”（2026-11-19；此前的集群随机盐与以邮箱做盐两种方案都没有采用）。现在：`sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")`，取前 16 字节排成 UUID（version 8）。账号 id 是核心里这个账号的编号（`ExecuteRequest.account.id`，HTTP 与 WebSocket 都由 `BuildUpstream` 从同一处读），不是发给上游的 `chatgpt_account_id`；两个编号都是十进制整数，用 `:` 隔开，各部分不会混淆。账号 id 只作哈希输入，不出现在请求里。没有可用的 `prompt_cache_key` 时照旧不发。
+- 结果：同一账号上同一 Key 的同一会话每轮相同；**标识随账号不同**，同一个客户 Key 的同一会话换到另一个 ChatGPT 账号时（换号、粘性失效）标识会变，新账号上的上游提示缓存从头开始；升级后每个会话的标识变一次。
+- 局限（照实写）：账号 id 和 API Key 编号都是小整数，上游若知道算法，同时枚举两者仍能对上，盐只是把要枚举的范围扩大到两个编号的组合。
 
 ### 20.2 User-Agent 与 originator
 
@@ -332,4 +330,4 @@
 
 ### 20.3 测试
 
-`salt_test.go`（第一次请求生成并存入 KV、之后不变；同盐的两个进程算出同一个 id、换盐则变、与不加盐的值不同；请求的头、体、URL 都不含盐；没有 `prompt_cache_key` 时不生成；锁被占且未写好时 `UNAVAILABLE`、不中继）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数、授权的两个头；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）、`execute_test.go`（WebSocket 握手的会话头按盐计算）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有）、`flow.spec.ts`（`withAgent`、重新授权保留）。
+`execute_test.go`（会话头按账号 id 计算：同一账号同输入稳定、另一个账号 id 结果不同、与不加盐的旧值不同、请求的头、体、URL 都不含账号 id）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数、授权的两个头；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有）、`flow.spec.ts`（`withAgent`、重新授权保留）。

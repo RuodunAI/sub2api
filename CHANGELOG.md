@@ -216,13 +216,12 @@
 - **codex 0.2.0**：清单去掉 `net`，插件不再联网；开始路由要 `proxy_ticket`；核心拒绝发送时回 400 `proxy_refused` 并结束会话。进行中的授权在升级后要重新开始。
 - **e2e AC38**：三种代理选择下 codex 设备码登录的全部请求经代理（或直连）到达 mock 扮演的 `auth.openai.com`，粘贴的代理串不留代理记录，令牌建成的账号能经网关用并计费；Sign in with Codex 的换令牌经代理。mock 为此新增授权服务器的三个接口和 HTTPS 的 `CONNECT` 代理（以前 https 地址经代理到不了 mock），e2e 网络给 mock 加别名 `auth.openai.com`。
 
-### codex：上游会话 id 加盐；User-Agent 与 originator 可自定义（codex 0.2.0；无迁移）
+### codex：上游会话 id 以账号 id 加盐；User-Agent 与 originator 可自定义（codex 0.2.0；无迁移）
 
-审计结论，所有者决定“加上盐进行适配”，以及 User-Agent / originator“账号上可以自定义，然后插件的设置中也可以自定义”。规则见 [PLUGIN-CODEX.md](next/docs/PLUGIN-CODEX.md) 第 20 节。
+审计结论，所有者决定会话 id“加上盐进行适配”、“直接根据账号的 id 来做盐”，以及 User-Agent / originator“账号上可以自定义，然后插件的设置中也可以自定义”。规则见 [PLUGIN-CODEX.md](next/docs/PLUGIN-CODEX.md) 第 20 节。
 
-- **会话 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为用集群共用的机密盐做 HMAC-SHA256，上游不能再从会话 id 和请求体里的 `prompt_cache_key` 反推出内部 API Key 编号。盐由第一个需要它的请求生成，存在插件 KV（不过期），只写一次，不随请求发出。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；之后各节点、重启前后都一致。Redis 数据丢失时同样会重来一次。
+- **会话 id 以账号 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为 `sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")` 排成的 UUID，账号 id 是核心里的账号编号，不发给上游。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；标识随账号不同，同一会话换到另一个 ChatGPT 账号时也会变。
 - **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数；授权时账号还不存在，用插件设置的值。默认值不变，不设就与以前一样。
-- 已知、未改：同一会话换到另一个 ChatGPT 账号时仍带同一个会话 id。
 
 ### 删除 Claude OAuth 插件及两种账号类型（迁移 0111）
 
