@@ -6,6 +6,7 @@ package azureopenai
 
 import (
 	"net/url"
+	"slices"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -41,7 +42,8 @@ func Deployment() standard.Type {
 
 // azure is what both types change in the openai preset: a required resource
 // endpoint without a default (a pasted /openai/v1 or /openai removed), any
-// key format, the key in api-key, the routes given, no model listing.
+// key format, the key in api-key, the routes given and the preset's tests
+// on them, no model listing.
 func azure(id string, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
@@ -50,6 +52,7 @@ func azure(id string, routes map[string]standard.Route) standard.Type {
 	t.Spec.Texts.BaseURLRequired = "Resource endpoint is required / 请填写资源地址"
 	t.Auth = standard.Auth{Header: "api-key"}
 	t.Routes = routes
+	t.Tests = slices.DeleteFunc(t.Tests, func(x standard.Test) bool { _, ok := routes[x.Protocol]; return !ok })
 	t.Models = nil
 	// service_tier and safety_identifier belong to a client's own OpenAI
 	// account. The plugin removes them after the operator's rewrites

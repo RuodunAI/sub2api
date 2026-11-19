@@ -776,6 +776,8 @@ export interface AccountLastTest {
   ok: boolean
   latency_ms: number
   model: string
+  /** Protocol the test used (CONTRACTS §122); absent for older tests. */
+  protocol?: string
   message: string
 }
 
@@ -875,6 +877,12 @@ export interface AccountTestResult {
   model?: string
   /** The model the caller asked for (before the account's model mapping); '' for the plugin default. */
   requested_model?: string
+  /**
+   * Protocol the plugin tested (CONTRACTS §122): the first of the account's
+   * protocols for the model it has a test for; an image generation only when
+   * a model was named.
+   */
+  protocol?: string
   /** Upstream address: scheme://host + path (the server strips the query). */
   upstream?: string
   /** Snippet of the upstream response, present on success and failure (~4 KiB max). */

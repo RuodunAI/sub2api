@@ -106,6 +106,19 @@ func TestProtocols(t *testing.T) {
 	}
 }
 
+// Only the image endpoints restrict the account test: a generation costs an
+// image (explicit), an edit needs an input image (never).
+func TestEndpointTests(t *testing.T) {
+	want := map[string]string{"openai.images": manifest.EndpointTestExplicit, "openai.images_edit": manifest.EndpointTestNever}
+	for _, p := range Builtin() {
+		for _, e := range p.Endpoints {
+			if e.Test != want[e.Protocol] {
+				t.Errorf("%s: test %q, want %q", e.Protocol, e.Test, want[e.Protocol])
+			}
+		}
+	}
+}
+
 // patternsOverlap reports whether some path matches both patterns (segments
 // "static", ":param", ":param:suffix").
 func patternsOverlap(a, b string) bool {

@@ -17,6 +17,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/typesafe"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // relaySpec is the credential rule of a relay site: its own base URL,
@@ -82,7 +84,8 @@ func TestMergeShape(t *testing.T) {
 		tests = append(tests, x.Protocol)
 	}
 	slices.Sort(tests)
-	if want := []string{anthropic.ProtocolMessages, gemini.ProtocolGenerate, openai.ProtocolChat, typesafe.ProtocolSystemOne}; !slices.Equal(tests, want) {
+	if want := []string{anthropic.ProtocolMessages, gemini.ProtocolGenerate, gemini.ProtocolStreamGenerate, openai.ProtocolChat,
+		openai.ProtocolEmbeddings, openai.ProtocolImages, openai.ProtocolResponses, typesafe.ProtocolSystemOne}; !slices.Equal(tests, want) {
 		t.Errorf("tests %v, want %v", tests, want)
 	}
 	if got, want := slices.Sorted(maps.Keys(m.Routes)), 4+2+3+1; len(got) != want {
@@ -183,30 +186,57 @@ func TestRouteAuthAndClassify(t *testing.T) {
 }
 
 // The console's test follows the protocols the core lists: the first one
-// with a test, else Test; usage_protocol says which.
+// with a test, else Test; usage_protocol says which. Every test of every
+// preset is pinned here, with what goes to the upstream: method, address,
+// credential header and body (CONTRACTS §122).
 func TestTestsByProtocol(t *testing.T) {
 	p := standard.New(relaySite())
+	const (
+		bearer = "authorization"
+		chat   = `{"max_tokens":1,"messages":[{"content":"ping","role":"user"}],"model":"gpt-4o-mini"}`
+		gen    = `{"contents":[{"parts":[{"text":"ping"}],"role":"user"}],"generationConfig":{"maxOutputTokens":1}}`
+	)
 	for _, c := range []struct {
 		protocols []string
 		model     string
 		want      string
 		url       string
 		header    string
+		body      string
 	}{
-		{nil, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", "authorization"},
-		{[]string{openai.ProtocolChat, anthropic.ProtocolMessages}, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", "authorization"},
-		{[]string{anthropic.ProtocolMessages}, "", anthropic.ProtocolMessages, "https://relay.example.com/v1/messages", "x-api-key"},
-		{[]string{openai.ProtocolEmbeddings, gemini.ProtocolStreamGenerate, gemini.ProtocolGenerate}, "models/g-2", gemini.ProtocolGenerate, "https://relay.example.com/v1beta/models/g-2:generateContent", "x-goog-api-key"},
-		{[]string{typesafe.ProtocolSystemOne}, "", typesafe.ProtocolSystemOne, "https://relay.example.com/v1/systemone", "authorization"},
-		{[]string{openai.ProtocolEmbeddings}, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", "authorization"},
+		{nil, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", bearer, chat},
+		{[]string{openai.ProtocolChat, anthropic.ProtocolMessages}, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", bearer, chat},
+		{[]string{openai.ProtocolResponses, openai.ProtocolChat}, "", openai.ProtocolResponses, "https://relay.example.com/v1/responses", bearer,
+			`{"input":"ping","max_output_tokens":16,"model":"gpt-4o-mini"}`},
+		{[]string{openai.ProtocolEmbeddings}, "", openai.ProtocolEmbeddings, "https://relay.example.com/v1/embeddings", bearer,
+			`{"input":"ping","model":"text-embedding-3-small"}`},
+		{[]string{openai.ProtocolImages}, "gpt-image-2", openai.ProtocolImages, "https://relay.example.com/v1/images/generations", bearer,
+			`{"model":"gpt-image-2","n":1,"prompt":"a small white dot","quality":"low","size":"1024x1024"}`},
+		{[]string{anthropic.ProtocolMessages}, "", anthropic.ProtocolMessages, "https://relay.example.com/v1/messages", "x-api-key",
+			`{"max_tokens":1,"messages":[{"content":"ping","role":"user"}],"model":"claude-haiku-4-5"}`},
+		{[]string{gemini.ProtocolGenerate, gemini.ProtocolStreamGenerate}, "models/g-2", gemini.ProtocolGenerate, "https://relay.example.com/v1beta/models/g-2:generateContent", "x-goog-api-key", gen},
+		{[]string{gemini.ProtocolStreamGenerate}, "", gemini.ProtocolStreamGenerate,
+			"https://relay.example.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse", "x-goog-api-key", gen},
+		{[]string{typesafe.ProtocolSystemOne}, "", typesafe.ProtocolSystemOne, "https://relay.example.com/v1/systemone", bearer, typesafe.PingBody("jev-latest")},
 	} {
 		out, err := p.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: relayAccount, Model: c.model, Protocols: c.protocols})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.UsageProtocol != c.want || out.Url != c.url || out.Headers[c.header] == "" || out.Model == "" {
-			t.Errorf("%v: %s %s %v model %q", c.protocols, out.UsageProtocol, out.Url, out.Headers, out.Model)
+		key := "site-key-0123"
+		if c.header == bearer {
+			key = "Bearer " + key
 		}
+		if out.UsageProtocol != c.want || out.Method != http.MethodPost || out.Url != c.url || out.Headers[c.header] != key ||
+			out.Headers["content-type"] != "application/json" || out.BodyJson != c.body || out.Model == "" {
+			t.Errorf("%v: %s %s %s %v %s model %q", c.protocols, out.UsageProtocol, out.Method, out.Url, out.Headers, out.BodyJson, out.Model)
+		}
+	}
+	// Protocols none of which has a test (an edit) fail: never the default
+	// test instead (CONTRACTS §122.3).
+	if _, err := p.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: relayAccount,
+		Protocols: []string{openai.ProtocolImagesEdit}}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("an edit only: %v", err)
 	}
 	for name, edit := range map[string]func(*standard.Type){
 		"tests without Test":      func(t *standard.Type) { t.Test = nil },
