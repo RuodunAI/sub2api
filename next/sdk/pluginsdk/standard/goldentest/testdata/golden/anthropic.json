@@ -8003,14 +8003,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "pattern",
-            "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden key-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate inner tab key",
@@ -8021,14 +8017,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "pattern",
-            "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden\\tkey-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate too short key",
@@ -8039,14 +8031,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "pattern",
-            "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-1234\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate nine character key",
@@ -8096,14 +8084,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "pattern",
-            "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate non-ascii key",
@@ -8114,14 +8098,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "pattern",
-            "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-gölden-key-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate non-string key",
@@ -8136,10 +8116,11 @@
           {
             "code": "pattern",
             "field": "api_key",
-            "message": "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符"
+            "message": "API key must be a string / api_key 必须是字符串"
           }
         ]
-      }
+      },
+      "note": "not the recorded answer: the non-string key message no longer names the dropped 8-512 rule (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.4)"
     },
     {
       "name": "validate key in settings",
@@ -8186,8 +8167,9 @@
       },
       "want": {
         "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\"}",
-        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
-      }
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url credentials",
@@ -8197,8 +8179,9 @@
         "credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com/v1/\"}"
       },
       "want": {
-        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com\"}"
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url both",
@@ -8209,9 +8192,10 @@
         "settings_json": "{\"base_url\":\"https://settings.example.com/v1\"}"
       },
       "want": {
-        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://settings.example.com\"}",
-        "normalized_settings_json": "{\"base_url\":\"https://settings.example.com\"}"
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://settings.example.com/v1\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://settings.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url v1beta",
@@ -8236,8 +8220,9 @@
       },
       "want": {
         "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\"}",
-        "normalized_settings_json": "{\"base_url\":\"http://upstream.example.com:8080/prefix\"}"
-      }
+        "normalized_settings_json": "{\"base_url\":\"http://upstream.example.com:8080/prefix/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url blank",

@@ -14,7 +14,7 @@ import (
 // ValidateCredentials, which is final: the core no longer checks a schema.
 // The shared api_key + base_url cases, then the two headers'.
 func TestCredentialsRefused(t *testing.T) {
-	form := apikeytest.Form{AccountType: TypeAPIKey, Key: "sk-proj-abcdef", BaseURL: "https://x.example.com", MinKey: 10}
+	form := apikeytest.Form{AccountType: TypeAPIKey, Key: "sk-proj-abcdef", BaseURL: "https://x.example.com"}
 	with := func(name, fields, field, code string) apikeytest.Case {
 		return apikeytest.Case{Name: name, AccountType: TypeAPIKey, Creds: `{"api_key": "sk-proj-abcdef"` + fields + `}`, Field: field, Code: code}
 	}

@@ -1,8 +1,11 @@
-// Package apikey validates API keys in plugin ValidateCredentials: stripping
-// whitespace, checking prefixes and rejecting keys with internal whitespace or
-// obviously wrong shape. Spec.Validate is the one implementation of the
-// api_key + base_url credential form (anthropic, openai, gemini, relay and
-// volcengine use it); Spec.Texts only overrides the wording each plugin shipped.
+// Package apikey validates and reads the api_key + base_url credential form.
+// Spec.Validate is its one ValidateCredentials (anthropic, openai, gemini,
+// relay, volcengine and the other key-based types use it): the key is any
+// non-empty string, saved trimmed; the base URL is saved as the user wrote it,
+// normalized only in ways that keep its meaning (NormalizeBaseURL).
+// Spec.FromAccount reads them for a request, the base URL without the one
+// trailing version segment it may carry (Spec.Versions). Spec.Texts only
+// overrides the wording each plugin shipped.
 package apikey
 
 import (
@@ -22,57 +25,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
-
-// Validator checks one API key format.
-type Validator struct {
-	// Prefixes are the accepted prefixes (e.g. "sk-ant-", "sk-relay-").
-	// Empty = no prefix check.
-	Prefixes []string
-	// MinLength is the minimum total length after trimming (0 = no check).
-	MinLength int
-	// Field is the credentials field name, for error messages.
-	Field string
-}
-
-// Check trims s, checks the prefix and length, and rejects keys containing
-// internal whitespace. Returns the normalized key and an error to add to
-// FieldErrors when invalid.
-func (v Validator) Check(s string) (string, *pluginv1.FieldError) {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return "", &pluginv1.FieldError{Field: v.Field, Code: "required", Message: v.Field + " is required / " + v.Field + " 不能为空"}
-	}
-	if v.MinLength > 0 && len(s) < v.MinLength {
-		return "", &pluginv1.FieldError{Field: v.Field, Code: "too_short", Message: v.Field + " is too short / " + v.Field + " 长度不足"}
-	}
-	if len(v.Prefixes) > 0 {
-		ok := false
-		for _, p := range v.Prefixes {
-			if strings.HasPrefix(s, p) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return "", &pluginv1.FieldError{Field: v.Field, Code: "invalid_prefix", Message: v.Field + " must start with a valid prefix / " + v.Field + " 前缀不正确"}
-		}
-	}
-	if strings.ContainsAny(s, " \t\r\n") {
-		return "", &pluginv1.FieldError{Field: v.Field, Code: "whitespace", Message: v.Field + " must not contain whitespace / " + v.Field + " 不能包含空格"}
-	}
-	return s, nil
-}
-
-// OpenAI accepts sk-* and sess-* (realtime session tokens). It is the only
-// preset in force: the anthropic and relay account types declare validators of
-// their own (see their Spec), because the account forms accept any 8-512
-// printable characters (CONTRACTS §21.3) and a stricter prefix rule would
-// reject keys those forms accept.
-var OpenAI = Validator{
-	Prefixes:  []string{"sk-", "sess-"},
-	MinLength: 10,
-	Field:     "api_key",
-}
 
 // Config is the normalized account configuration extracted from credentials
 // and settings JSON by Spec.FromAccount.
@@ -122,17 +74,18 @@ type Spec struct {
 	AccountType string
 	// DefaultBaseURL is used when base_url is empty or absent.
 	DefaultBaseURL string
-	// StripSuffixes are removed from the end of base_url (e.g. []string{"/v1"}).
-	StripSuffixes []string
+	// Versions are the version segments a base URL may end in (e.g.
+	// []string{"/v1beta", "/v1"}), each starting with "/" and not ending in
+	// one. They are kept on save; FromAccount removes the longest one the
+	// stored URL ends in, at most one, compared on the escaped form and
+	// case-sensitively, and every route path is appended to what is left.
+	Versions []string
 	// RequireBaseURL = true makes base_url mandatory (for relay).
 	RequireBaseURL bool
 	// NoBaseURL declares a type without base_url (vertex_apikey): Validate
 	// refuses one in either object as an unknown key, like any key Fields
 	// does not name.
 	NoBaseURL bool
-	// KeyValidator checks the api_key. If nil, any 8-512 printable non-space
-	// character string is accepted.
-	KeyValidator *Validator
 	// Texts overrides the wording of a few field errors (see Texts).
 	Texts Texts
 	// Fields are the keys other than api_key and base_url the form may
@@ -142,7 +95,7 @@ type Spec struct {
 	// "unknown"; nil is the same as empty: only api_key and base_url. A rule
 	// for api_key or base_url adds to the checks above, only when those
 	// passed, and sees the value Validate saves: the key trimmed, the base
-	// URL normalized (StripSuffixes included), wherever the key was sent.
+	// URL normalized (versions kept), wherever the key was sent.
 	Fields fieldcheck.Fields
 }
 
@@ -190,7 +143,8 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 }
 
 // validateKey reads api_key from credentials then settings and returns the
-// trimmed key. It appends exactly one api_key error when the key is unusable.
+// trimmed key: any non-empty string. It appends exactly one api_key error
+// when the key is missing, blank or not a string.
 func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string]any) (string, pluginsdk.FieldErrors) {
 	rawKey, _ := lookup("api_key", creds, settings)
 	key, isString := rawKey.(string)
@@ -207,13 +161,6 @@ func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string
 			return "", errs.Add("api_key", code, s.Texts.KeyNotString)
 		}
 		return "", errs.Add("api_key", "type", "api_key must be a string / api_key 必须是字符串")
-	}
-	if s.KeyValidator != nil {
-		if _, fieldErr := s.KeyValidator.Check(key); fieldErr != nil {
-			return "", append(errs, fieldErr)
-		}
-	} else if !validAPIKey(key) {
-		return "", errs.Add("api_key", "pattern", "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符")
 	}
 	return key, errs
 }
@@ -296,7 +243,9 @@ func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
 	return string(b)
 }
 
-// FromAccount extracts and validates the api_key and base_url from an Account proto.
+// FromAccount extracts and validates the api_key and base_url from an Account
+// proto. Config.BaseURL is the root: the base URL without the version segment
+// it ends in (Spec.Versions).
 func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	if acc == nil {
 		return nil, status.Error(codes.FailedPrecondition, "account required")
@@ -332,8 +281,24 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = s.DefaultBaseURL
 	}
+	cfg.BaseURL = s.root(cfg.BaseURL)
 
 	return cfg, nil
+}
+
+// root is base without the longest of s.Versions it ends in, at most one,
+// and the "/" left before it. base is a stored base URL (a NormalizeBaseURL
+// output, its path in escaped form) or the default: a version starts with
+// "/", so the match falls on a segment boundary of the path ("/xv1" does not
+// end in "/v1", nor does "/a%2Fv1"), never in the host.
+func (s Spec) root(base string) string {
+	version := ""
+	for _, v := range s.Versions {
+		if len(v) > len(version) && strings.HasSuffix(base, v) {
+			version = v
+		}
+	}
+	return strings.TrimRight(strings.TrimSuffix(base, version), "/")
 }
 
 func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
@@ -343,16 +308,17 @@ func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
 		}
 		return s.DefaultBaseURL, nil
 	}
-	return NormalizeBaseURL(baseStr, s.StripSuffixes)
+	return NormalizeBaseURL(baseStr)
 }
 
-// NormalizeBaseURL validates and normalizes a base URL, stripping the given suffixes.
-// Returns an error if baseStr is empty. Surrounding whitespace is trimmed and
-// the scheme lower-cased; whitespace inside, "?" and "#" are refused (the
-// account forms' ^https?://[^\s?#]+$). A value it returns normalizes to
-// itself, except one that ends in another of stripSuffixes once one is
-// stripped ("/x/v1/v1beta" with /v1beta, /v1 gives "/x/v1", then "/x").
-func NormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error) {
+// NormalizeBaseURL validates and normalizes a base URL without changing what
+// it means: surrounding whitespace trimmed, the scheme lower-cased, the path
+// in the escaped form the user wrote ("%2F" stays "%2F", raw non-ASCII is
+// percent-encoded) without trailing "/". No suffix is removed. Empty, whitespace
+// inside, "?", "#", userinfo and anything but an absolute http(s) URL are
+// refused (the account forms' ^https?://[^\s?#]+$). A value it returns
+// normalizes to itself.
+func NormalizeBaseURL(baseStr string) (string, error) {
 	baseStr = strings.TrimSpace(baseStr)
 	if baseStr == "" {
 		return "", fmt.Errorf("is required")
@@ -370,18 +336,8 @@ func NormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error) {
 	if u.User != nil {
 		return "", fmt.Errorf("must not contain credentials, query or fragment")
 	}
-	p := strings.TrimRight(u.Path, "/")
-	// Only the first matching suffix: "/x/v1/v1beta" with /v1beta, /v1 is
-	// "/x/v1", not "/x".
-	for _, suffix := range stripSuffixes {
-		if strings.HasSuffix(p, suffix) {
-			p = strings.TrimSuffix(p, suffix)
-			break
-		}
-	}
-	u.Path = strings.TrimRight(p, "/")
-	u.RawPath = ""
-	return u.String(), nil
+	origin := url.URL{Scheme: u.Scheme, Host: u.Host}
+	return origin.String() + strings.TrimRight(u.EscapedPath(), "/"), nil
 }
 
 // ModelList describes a model listing request: the path on base_url (with
@@ -466,16 +422,4 @@ func lookup(key string, objs ...map[string]any) (any, bool) {
 		}
 	}
 	return nil, false
-}
-
-func validAPIKey(k string) bool {
-	if len(k) < 8 || len(k) > 512 {
-		return false
-	}
-	for _, r := range k {
-		if r <= ' ' || r > '~' {
-			return false
-		}
-	}
-	return true
 }

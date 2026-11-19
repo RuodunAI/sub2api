@@ -34,7 +34,7 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 func APIKey() standard.Type {
 	spec := apikey.Spec{
 		RequireBaseURL: true,
-		StripSuffixes:  []string{"/v1beta", "/v1"},
+		Versions:       []string{"/v1beta", "/v1"},
 		Fields:         fieldcheck.Fields{},
 		Texts: apikey.Texts{
 			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",

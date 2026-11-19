@@ -6,7 +6,7 @@ import (
 )
 
 // APIKey is an Anthropic API key account type: x-api-key on
-// https://api.anthropic.com (a pasted /v1 removed), anthropic-version
+// https://api.anthropic.com (a trailing /v1 not repeated), anthropic-version
 // unless the client sends one, messages and count_tokens, the Anthropic
 // error policy, a one-token messages test and the model listing. It filters
 // no request field.
@@ -15,10 +15,10 @@ func APIKey(id string) standard.Type {
 		ID: id,
 		Spec: apikey.Spec{
 			DefaultBaseURL: "https://api.anthropic.com",
-			StripSuffixes:  []string{"/v1"},
+			Versions:       []string{"/v1"},
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-				KeyNotString:           "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符",
+				KeyNotString:           "API key must be a string / api_key 必须是字符串",
 				KeyNotStringCode:       "pattern",
 				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
 			},

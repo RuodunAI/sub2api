@@ -43,7 +43,7 @@ func (t *Type) check() error {
 	if t.Spec.DefaultBaseURL == "" && !t.Spec.RequireBaseURL {
 		add("a default base URL is required unless the base URL is required")
 	} else if t.Spec.DefaultBaseURL != "" {
-		if _, err := apikey.NormalizeBaseURL(t.Spec.DefaultBaseURL, nil); err != nil {
+		if _, err := apikey.NormalizeBaseURL(t.Spec.DefaultBaseURL); err != nil {
 			add("default base URL %v", err)
 		}
 	}

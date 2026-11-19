@@ -29,7 +29,7 @@
 `BuildUpstream`（SDK 的 `ExecuteDefault` 调它，然后不等待地中继、返回 `host_usage`）：
 
 1. 按 `account.type` 找类型。类型不符报 `unsupported account type "x"`；账号没有类型时，只有一个类型的平台用那个类型，多个类型的拒绝。
-2. `Spec.FromAccount`：取 Key 和基础地址（规范化、去后缀、必填、默认值），错误原样返回。
+2. `Spec.FromAccount`：取 Key 和基础地址（规范化、必填、默认值；存值末尾带类型声明的版本段 `Spec.Versions` 时去掉这一段，至多一段，得到“根”），错误原样返回。
 3. 按 `meta.protocol` 找路由（空协议用 `DefaultProtocol`），没有就 `unsupported upstream protocol "x"`。
 4. 按 `Route.Model` 取上游模型。
 5. 请求体：一次 `jsonedit` 里先删 `FilterFields`，再 `Route.Edit`；两者都没有就不读请求体。
@@ -247,7 +247,7 @@ func RelayKey() standard.Type {
 
 测试：`standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform)`、`standardtest.Run(t, "relay", "../../manifest.json", New())`。
 
-azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
+azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、版本段 `/openai/v1` 和 `/openai`（请求时去掉，再按路由拼接）、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
 ## 例子四：中转站（多平台 + 余额，New API、Sub2API 的形状）
 
@@ -270,7 +270,7 @@ import (
 func New() *standard.Platform { return standard.New(APIKey()) }
 
 func APIKey() standard.Type {
-	spec := apikey.Spec{RequireBaseURL: true, StripSuffixes: []string{"/v1beta", "/v1"}, Texts: …}
+	spec := apikey.Spec{RequireBaseURL: true, Versions: []string{"/v1beta", "/v1"}, Texts: …}
 	t := standard.Merge("apikey", spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
 	t.Balance = &standard.Balance{
 		Requests: []standard.BalanceRequest{
@@ -298,7 +298,7 @@ TypeSafe 本身（`providers/typesafe.APIKey(id)`）：Bearer、`content-type: a
 ## 测试
 
 - `standardtest.Run(t, plugin, manifestPath, p)` 先核对插件清单（`manifestPath`）交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致（清单改了而样例没跟上就在这里失败），再用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
-- 不是样例文件那个插件的实现（例子四的合并类型）回放它也服务的协议：`standardtest.Run(t, "openai", "../../manifest.json", p, goldentest.Select(goldentest.Forwarded("apikey", openai.ProtocolChat, …)))`，只取这些协议上、账号自带基础地址的 `execute` 用例。客户端请求头按样例协议所属的平台（这里是 openai）核对。凭证规则有意不同的用例（例如中转站也去掉粘贴的 `/v1beta`，openai 预设不去）再用一个 `Select` 排除（`Case.BaseURL`）。本包 `standardtest/merged_test.go` 就是这样回放三份文件的（291 条）。
+- 不是样例文件那个插件的实现（例子四的合并类型）回放它也服务的协议：`standardtest.Run(t, "openai", "../../manifest.json", p, goldentest.Select(goldentest.Forwarded("apikey", openai.ProtocolChat, …)))`，只取这些协议上、账号自带基础地址的 `execute` 用例。客户端请求头按样例协议所属的平台（这里是 openai）核对。凭证规则有意不同的用例（例如中转站请求时也把末尾的 `/v1beta` 当作版本段去掉，openai 预设不认它）再用一个 `Select` 排除（`Case.BaseURL`）。本包 `standardtest/merged_test.go` 就是这样回放三份文件的（291 条）。
 - 余额：`pluginsdktest.Start(t, p, …)` 后 `h.Balance(ctx, account, answer)`，`answer` 按 URL 给回答（本包 `balance_test.go` 有 New API、Sub2API 两种形状）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(types...)`：类型配置能通过检查（返回 error；`New` 遇到同样的问题会 panic）。

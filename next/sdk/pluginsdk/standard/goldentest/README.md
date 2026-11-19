@@ -38,7 +38,7 @@
 | `input` | 输入，见下 |
 | `want` | 期望的回答；与 `error` 恰好有一个 |
 | `error` | 期望失败：`message` 参与比较，`code` 只作记录不比较 |
-| `note` | 只在期望值不是当年录下的回答时出现，说明原因（共 49 条，见“与录制不同的样例”） |
+| `note` | 只在期望值不是当年录下的回答时出现，说明原因（共 88 条，见“与录制不同的样例”） |
 
 ### `execute`：一次网关请求的上游请求
 
@@ -99,14 +99,17 @@
 
 `error.message` 是去掉插件自己包装之后的消息：开头的 `account N: ` 和嵌套的 `rpc error: code = X desc = ` 两侧都先去掉再比（`Unwrap`）。`error.code` 是录制时插件回答的 gRPC 码，不比较：核心对这些调用的失败一视同仁，而且今天的码已经与录制的不同（anthropic 插件一律回 `FailedPrecondition`，公共的账号检查回 `InvalidArgument`）。
 
-## 与录制不同的样例（49 条）
+## 与录制不同的样例（88 条）
 
-1498 条全部转换，没有跳过。其中 49 条的期望值是**今天的行为**而不是当年录下的回答，每条带 `note`：
+1498 条全部转换，没有跳过。其中 88 条的期望值是**今天的行为**而不是当年录下的回答，每条带 `note`：
 
 | 条数 | 哪些 | 原因 |
 |---|---|---|
 | 40 | relay 成功的 `test` | 录制时 `model`、`usage_protocol` 是空的；现在 relay 的账号测试与其他类型一样带上这两项 |
 | 9 | 账号类型不是本插件类型的调用：openai 的 `models` 1 条；gemini 的 `execute` 3 条、`test` 4 条、`models` 1 条 | 录制时这两个插件对别的类型的账号照常作答；现在一律拒绝，消息是 `unsupported account type "oauth"`，与 anthropic、relay 相同。其余 23 条类型不符的样例按录制保留，这 9 条写成现在的回答。核心不会把别的类型的账号交给插件，这类输入在线上不出现 |
+| 20 | 四个文件各 5 条 `validate` 的密钥用例：`inner space key`、`inner tab key`、`too short key`，以及 openai 的 `nine character key`、`wrong prefix key`，其余三个文件的 `too long key`、`non-ascii key` | 密钥只要求是非空字符串，保存去首尾空白后的值（`docs/DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md` 5.1）。录制时它们被拒绝 |
+| 2 | anthropic、relay 的 `validate non-string key` | 消息改成“必须是字符串”，不再提已删掉的 8-512 规则（同上 5.4） |
+| 17 | `validate` 的 `base_url settings v1`、`base_url credentials`、`base_url both`、`base_url port prefix`（四个文件），以及 gemini 的 `base_url v1beta` | 基础地址按用户填写的保存，不再去掉版本段；请求时才去掉至多一段（同上 5.2、5.5）。同一设计下 `execute`、`test`、`models` 样例的请求地址都不变 |
 
 ## 怎么用
 

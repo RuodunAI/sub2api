@@ -10828,14 +10828,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "whitespace",
-            "field": "api_key",
-            "message": "api_key must not contain whitespace / api_key 不能包含空格"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden key-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate inner tab key",
@@ -10846,14 +10842,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "whitespace",
-            "field": "api_key",
-            "message": "api_key must not contain whitespace / api_key 不能包含空格"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden\\tkey-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate too short key",
@@ -10864,14 +10856,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "too_short",
-            "field": "api_key",
-            "message": "api_key is too short / api_key 长度不足"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-1234\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate nine character key",
@@ -10882,14 +10870,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "too_short",
-            "field": "api_key",
-            "message": "api_key is too short / api_key 长度不足"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-123456\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate wrong prefix key",
@@ -10900,14 +10884,10 @@
         "settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
       },
       "want": {
-        "errors": [
-          {
-            "code": "invalid_prefix",
-            "field": "api_key",
-            "message": "api_key must start with a valid prefix / api_key 前缀不正确"
-          }
-        ]
-      }
+        "normalized_credentials_json": "{\"api_key\":\"ak-golden-key-0123456789\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
+      },
+      "note": "not the recorded answer: the key is any non-empty string, saved trimmed (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.1)"
     },
     {
       "name": "validate sess- prefix key",
@@ -11011,8 +10991,9 @@
       },
       "want": {
         "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\"}",
-        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com\"}"
-      }
+        "normalized_settings_json": "{\"base_url\":\"https://upstream.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url credentials",
@@ -11022,8 +11003,9 @@
         "credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com/v1/\"}"
       },
       "want": {
-        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com\"}"
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://upstream.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url both",
@@ -11034,9 +11016,10 @@
         "settings_json": "{\"base_url\":\"https://settings.example.com/v1\"}"
       },
       "want": {
-        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://settings.example.com\"}",
-        "normalized_settings_json": "{\"base_url\":\"https://settings.example.com\"}"
-      }
+        "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\",\"base_url\":\"https://settings.example.com/v1\"}",
+        "normalized_settings_json": "{\"base_url\":\"https://settings.example.com/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url v1beta",
@@ -11061,8 +11044,9 @@
       },
       "want": {
         "normalized_credentials_json": "{\"api_key\":\"sk-golden-key-0123456789\"}",
-        "normalized_settings_json": "{\"base_url\":\"http://upstream.example.com:8080/prefix\"}"
-      }
+        "normalized_settings_json": "{\"base_url\":\"http://upstream.example.com:8080/prefix/v1\"}"
+      },
+      "note": "not the recorded answer: the base URL is saved as written, its version kept; requests drop it (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES 5.2, 5.5)"
     },
     {
       "name": "validate base_url blank",

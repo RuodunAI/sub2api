@@ -17,8 +17,8 @@ import (
 // cases of both types, then each type's own.
 func TestCredentialsRefused(t *testing.T) {
 	const key, endpoint = "0123456789abcdef", "https://res.openai.azure.com"
-	v1 := apikeytest.Form{AccountType: TypeV1, Key: key, BaseURL: endpoint, RequireBaseURL: true, MinKey: 8}
-	deployment := apikeytest.Form{AccountType: TypeDeployment, Key: key, BaseURL: endpoint, RequireBaseURL: true, MinKey: 8,
+	v1 := apikeytest.Form{AccountType: TypeV1, Key: key, BaseURL: endpoint, RequireBaseURL: true}
+	deployment := apikeytest.Form{AccountType: TypeDeployment, Key: key, BaseURL: endpoint, RequireBaseURL: true,
 		Fill: map[string]any{"api_version": "2024-10-21"}}
 	cases := append(v1.Cases(), deployment.Cases()...)
 	cases = append(cases, endpointCases(TypeV1, ``, `{"api_key":"`+key+`","base_url":"`+endpoint+`"}`)...)

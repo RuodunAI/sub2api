@@ -73,7 +73,7 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 	v, _ := apikey.Lookup("base_url", settings, creds)
 	base, _ := v.(string)
 	// A base URL NormalizeBaseURL refuses the standard check refused.
-	if n, err := apikey.NormalizeBaseURL(base, nil); err == nil && !EndpointPattern.MatchString(n) {
+	if n, err := apikey.NormalizeBaseURL(base); err == nil && !EndpointPattern.MatchString(n) {
 		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
 	}
 	if in.GetAccountType() == TypeDeployment {
@@ -119,8 +119,7 @@ func azure(id string, fields fieldcheck.Fields, routes map[string]standard.Route
 	t := openai.APIKey(id)
 	t.Spec.Fields = fields
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
-	t.Spec.StripSuffixes = []string{"/openai/v1", "/openai"}
-	t.Spec.KeyValidator = nil
+	t.Spec.Versions = []string{"/openai/v1", "/openai"}
 	t.Spec.Texts.BaseURLRequired = "Resource endpoint is required / 请填写资源地址"
 	t.Auth = standard.Auth{Header: "api-key"}
 	t.Routes = routes
