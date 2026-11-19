@@ -1075,3 +1075,39 @@ func TestMigration0111DropsClaudeOAuthPlugin(t *testing.T) {
 	require.Equal(t, want, state())
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }
+
+// 0113 lets a balance snapshot have no successful read yet (updated_at
+// NULL), adds unlimited (false for the rows there) and drops source; a
+// rerun changes nothing (CONTRACTS §52.3).
+func TestMigration0113AccountBalanceUnlimited(t *testing.T) {
+	const id = "0113_account_balance_unlimited.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('a', 'p', 't', '');
+		INSERT INTO account_balances (account_id, amount_micros, currency, source, updated_at)
+			SELECT id, 5, 'USD', 'active', now() FROM accounts WHERE name = 'a'`)
+	require.NoError(t, err)
+	state := func() string {
+		return read(`SELECT string_agg(column_name || '=' || is_nullable, ' ' ORDER BY column_name) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'account_balances'`) + " | " +
+			read(`SELECT amount_micros || ' ' || currency || ' ' || unlimited FROM account_balances`)
+	}
+	const want = "account_id=NO amount_micros=NO currency=NO error=YES error_at=YES unlimited=NO updated_at=YES | 5 USD false"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+}

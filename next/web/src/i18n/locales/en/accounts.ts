@@ -653,9 +653,14 @@ export default {
     refreshHint: 'Query the current account balance',
     refreshing: 'Querying',
     refreshDone: 'Balance refreshed',
-    refreshThrottled: 'Too many requests, try again in {n} seconds',
     updatedAt: 'updated {time}',
-    error: 'Query failed: {error}'
+    unread: 'Not read yet',
+    unlimited: 'Unlimited',
+    unlimitedHint: 'The upstream reports no limit for this key',
+    failed: 'Query failed',
+    errorHint: '{error} ({time})',
+    stale: 'Stale',
+    staleHint: 'The last query failed; this is the balance read before'
   },
   scopeErrors: {
     notInScope: 'Bind the account to a group you manage',

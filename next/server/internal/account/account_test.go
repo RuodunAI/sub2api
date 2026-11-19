@@ -56,6 +56,9 @@ type fakePlatform struct {
 	calls      []*pluginv1.ValidateCredentialsRequest
 	tests      []*pluginv1.BuildTestRequestRequest
 	classes    []*pluginv1.ClassifyErrorRequest
+	// balance is the balance query's plugin side (balance_test.go); nil
+	// answers Unimplemented.
+	balance *fakeBalance
 }
 
 func (p *fakePlatform) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {

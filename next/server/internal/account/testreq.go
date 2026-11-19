@@ -122,6 +122,7 @@ func (s *Service) test(c *gin.Context) {
 	if model == "" {
 		model = a.defaultTestModel()
 	}
+	protocols := s.testProtocols(a, model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
@@ -130,8 +131,9 @@ func (s *Service) test(c *gin.Context) {
 	// A test request is not served by a client endpoint, so Account.platform
 	// is empty; the declaring plugin builds a request for the account type.
 	req, err := bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
-		Account: acct,
-		Model:   model,
+		Account:   acct,
+		Model:     model,
+		Protocols: protocols,
 	})
 	if err != nil {
 		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: "plugin"})
@@ -142,6 +144,33 @@ func (s *Service) test(c *gin.Context) {
 	res.RequestedModel = requested
 	s.recordTest(ctx, a.ID, res)
 	httpapi.OK(c, res)
+}
+
+// testProtocols lists the protocols a test of account a may use, most
+// preferred first (BuildTestRequestRequest.protocols): the protocols of its
+// own platforms it serves natively, in the order of its type's platforms and
+// their endpoints, without WebSocket and token-counting ones and, for a test
+// of client model model, only those serving it.
+func (s *Service) testProtocols(a *row, model string) []string {
+	g := s.gen()
+	if g == nil {
+		return nil
+	}
+	webSocket := map[string]bool{}
+	for _, e := range g.Endpoints() {
+		webSocket[e.Endpoint.Protocol] = webSocket[e.Endpoint.Protocol] || e.Endpoint.WebSocket()
+	}
+	rules := a.protocolBinding().compile()
+	var out []string
+	for _, sp := range s.accountServedProtocols(a) {
+		if sp.Via != viaNative || webSocket[sp.Protocol] || core.CountTokensFamily(sp.Protocol) != "" {
+			continue
+		}
+		if _, serves := rules.Serves(model, sp.Protocol, false); model == "" || serves {
+			out = append(out, sp.Protocol)
+		}
+	}
+	return out
 }
 
 // LastTest is the last console test of an account (CONTRACTS §50), shown
@@ -269,7 +298,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		} else if errors.Is(err, context.Canceled) {
 			res.ErrorCode = "request_canceled"
 		}
-		res.Reason, res.Effect, _ = s.classifyTest(ctx, bt, acct, res.Model, 0, nil, nil, res.Message)
+		res.Reason, res.Effect, _ = s.classifyTest(ctx, bt, acct, res.Model, tr.GetUsageProtocol(), 0, nil, nil, res.Message)
 		return res
 	}
 	defer resp.Body.Close()
@@ -305,7 +334,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 			break
 		}
 	}
-	reason, effect, local := s.classifyTest(ctx, bt, acct, res.Model, resp.StatusCode, resp.Header, snippet, "")
+	reason, effect, local := s.classifyTest(ctx, bt, acct, res.Model, tr.GetUsageProtocol(), resp.StatusCode, resp.Header, snippet, "")
 	if local {
 		res.ErrorSource = "gateway"
 		res.Reason, res.Effect = reason, effect
@@ -386,7 +415,8 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 
 // classifyTest asks the plugin what a failed test means and returns the
 // reason and the account effect it would have in the gateway ("cooldown",
-// "disable" or empty), and whether the failure is local.
+// "disable" or empty), and whether the failure is local. protocol is the one
+// the plugin tested (its usage_protocol): its failure rules apply.
 //
 // It deliberately applies NO side effect: a console test never puts the
 // account into cooldown and never disables it (that is the gateway's
@@ -394,11 +424,11 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 // display only. Plugins that do not implement ClassifyError, or fail, leave
 // both values empty.
 func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
-	model string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
+	model, protocol string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), classifyTimeout)
 	defer cancel()
 	cls, err := bt.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
-		Meta:    &pluginv1.RequestMeta{Model: model},
+		Meta:    &pluginv1.RequestMeta{Model: model, Protocol: protocol},
 		Account: acct, Status: int32(status), Headers: execfetch.FirstHeaderValues(header),
 		BodyPrefix: core.ClassifyPrefix(body), TransportError: transportErr,
 	})

@@ -66,6 +66,14 @@ func (stub) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequ
 	return nil, nil
 }
 
+func (stub) BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return nil, nil
+}
+
+func (stub) ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return nil, nil
+}
+
 func (e ext) Package() *registry.Package { return e.pkg }
 func (e ext) Grants() registry.Grants    { return e.grants }
 func (e ext) Platform() core.PlatformPlugin {

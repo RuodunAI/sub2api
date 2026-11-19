@@ -246,6 +246,17 @@ func (a platformAdapter) ParseQuotaResponse(ctx context.Context, in *pluginv1.Pa
 	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.ParseQuotaResponse, in)
 }
 
+// BuildBalanceRequest and ParseBalanceResponse run in the account module
+// when the console asks for a balance or the balance sweep finds it due
+// (CONTRACTS §52): the console budget, as the quota query.
+func (a platformAdapter) BuildBalanceRequest(ctx context.Context, in *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.BuildBalanceRequest, in)
+}
+
+func (a platformAdapter) ParseBalanceResponse(ctx context.Context, in *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, platformOf, pluginv1.PlatformServiceClient.ParseBalanceResponse, in)
+}
+
 // BuildRefreshRequest and ParseRefreshResponse run in the account module's
 // refresh sweep or on an administrator's request (CONTRACTS §48), never on
 // the request path.

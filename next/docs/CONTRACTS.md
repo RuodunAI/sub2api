@@ -815,6 +815,7 @@ GET `/ui/plugins`（`self:plugin_ui`，会话天然持有，§80.1）→ 不分�
 
 POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
+- 交给插件的 `protocols`（2026-11-18 起，§52 同批）：账号在本平台上原生开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；测试有模型（调用方给的，或上一条按账号配置选的，映射之前）时只留账号协议绑定里服务这个模型的（`ProtocolRules.Serves`）。插件取第一个它有测试的协议，在 `usage_protocol` 回报实际用的；测试失败时核心把它作为 `ClassifyError` 的 `meta.protocol`，“效果”提示按这个协议的失败规则判断。列表为空表示没有偏好。
 - 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
 - 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错时返回错误状态。
 - 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理时域名交给代理解析，本机不解析，只拒绝字面的私网地址和 `localhost`（与网关同一条规则 `netguard.CheckHostVia`，§43.4）。
@@ -3300,162 +3301,92 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 
 0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-## 52. 账号余额展示与刷新（2026-10-05）
+## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
 
-与 §44 订阅配额并行，账号类型可以声明 `balance`（账号余额），插件实现余额查询，核心定期或按需查询并缓存结果（PG + Redis），前端显示余额和"刷新余额"按钮。
+账号类型可以声明余额（预付的金额），照额度主动查询（§44.4）的路走：插件描述请求，核心检查目标、经账号代理发出，插件解析应答。核心按清单的间隔定时查，管理员随时手动刷新。**余额只显示**：不停用账号、不影响调度、不告警（设计 D1）。此前核心从不调用两个 RPC，余额只来自核心里按账号类型注册的查询器（`BalanceProvider`），唯一的查询器随 claude-oauth 删除（§116）；0.1.304 删掉注册表，改为调插件。
 
-> **现状（0.1.304，§116）**：唯一的使用者 claude-oauth 已删除。核心从来没有调用下文的 `BuildBalanceRequest` / `ParseBalanceResponse`，余额只由核心里按账号类型注册的查询器（`account.RegisterBalanceProvider`）取得，而唯一的查询器（写死的 `balance_claudeoauth.go`）随插件删除。现在没有账号类型声明 `balance`，也没有注册任何查询器：声明了 `balance` 的类型只会显示“支持余额”而永远查不到数据。清单字段、两个 RPC、`account_balances` 表、接口和控制台暂时保留，是否删除由所有者决定（§116.3）。
-
-### 52.1 manifest 账号类型声明 `balance`
-
-账号类型的 `balance` 字段（可选）：
+### 52.1 清单：`accountTypes[].balance`
 
 ```json
-{
-  "accountTypes": [{
-    "id": "oauth",
-    "balance": {
-      "currency": "USD"
-    }
-  }]
-}
+"balance": {"updateInterval": 600}
 ```
 
-- `currency`（必需）：货币代码，ISO 4217 三字母大写（USD、CNY、EUR 等）。
-- manifest check（`next/sdk/manifest/check/validate.go`）校验：`currency` 必须是 3 个大写字母，匹配 `^[A-Z]{3}$`。
+- `"balance": {}` 就是完整的声明。`updateInterval`：秒，60–86400；0 或不写用核心的缺省值 **180 秒**（缺省值只在核心 `account.defaultBalanceInterval` 一处）。成功、失败都按同一间隔再查；管理员的手动刷新不受它限制。
+- 没有 `currency`：币种由插件按账号在每次结果里给（中转站可能记美元或人民币）。还写着 `currency` 的清单严格解码时报未知字段。
+- 校验在 `sdk/manifest/check/balance.go`（只查间隔的范围）。声明了 `balance` 的类型，插件应实现下面两个 RPC（SDK `pluginsdk.BalanceReader`；没实现时回 `UNIMPLEMENTED`，核心当作这个类型没有余额）。
 
-### 52.2 插件实现余额查询（gRPC）
+### 52.2 插件 RPC（`platform.proto`）
 
-账号类型声明 `balance` 后，插件必须实现 `BuildBalanceRequest` 和 `ParseBalanceResponse`（与 §44.4 的 quota 查询类似）：
+- `BuildBalanceRequest({account})` → `{requests[]}`：一次查询可以有**多个**请求，按顺序发出，至少一个（空列表按插件错误记）。`BalanceRequest{method（缺省 GET）, url, headers, body_json}`。账号带解密的凭证，`platform` 为空。头原样发出；**公开接口（如 New API 的 `/api/status`）不带凭证头，核心不自己加任何凭证**。有请求体而头里没有 `Content-Type` 时核心补 `application/json`。
+- `ParseBalanceResponse({account, answers[]})` → `{result}`：每个请求一个 `BalanceAnswer{status, headers（小写，取第一个值）, body（整份）, transport_error}`，顺序与请求相同；**每个请求都发**，前一个失败后面的照发。读不完整的应答按传输错误交给插件（`status` 0）。
+- `BalanceResult{amount_micros, currency, error_type, error_message, unlimited}`：`amount_micros` 以百万分之一为单位（1.23 → 1230000，可以为负）；成功且不是 `unlimited` 时 `currency` 必须是三个大写字母（`^[A-Z]{3}$`），否则按 `transient` 记错误；`unlimited` 为真表示上游报告这个账号不限额度，金额和币种忽略。`error_type`：`UNSPECIFIED` 成功；`AUTH_REJECTED` 凭证被拒——**只记在快照上，不停用、不冷却账号**（那是网关失败分类的事）；`TRANSIENT` 其他失败。`error_message` 去控制字符、合并空白，最多 256 字节（与额度相同，`quotaErrorDetail`）。
+- 两个 RPC 在运行时走控制台的预算（`classConsole`，每次 10 秒，与额度查询相同）。只加字段、改了从未被调用的消息，Host API 仍是 10，插件协议仍是 2。
 
-```go
-// BuildBalanceRequest: 核心调用，插件返回查询余额的 HTTP 请求
-func (s *Service) BuildBalanceRequest(
-    ctx context.Context,
-    req *pluginv1.BuildBalanceRequestRequest,
-) (*pluginv1.BuildBalanceRequestResponse, error)
+### 52.3 核心：一次查询（`server/internal/account/balance.go`）
 
-// ParseBalanceResponse: 核心调用，插件解析上游响应并返回余额
-func (s *Service) ParseBalanceResponse(
-    ctx context.Context,
-    req *pluginv1.ParseBalanceResponseRequest,
-) (*pluginv1.ParseBalanceResponseResponse, error)
+1. 插件 `BuildBalanceRequest`。
+2. **发出任何请求之前**，对每个 URL 调 `core.CheckPluginUpstream`：先是清单与账号的主机规则（§112.17：`externalServices` 或账号 `upstreamFields` 里的地址），再是管理员的插件联网（§113.3）。**任一被拒，一个都不发**，也不调 `ParseBalanceResponse`，快照记 `transient: <拒绝信息>`（如 `plugin newapi: host "x" is neither in the manifest's externalServices nor an upstream address of the account`、`plugin newapi: <host> is on the blocked list of plugin network access`）。插件联网的拒绝照常写进插件的出口日志（`denied`）。
+3. 逐个经 `sendPluginCall` 发出：账号代理（代理被停用是传输错误 `proxy disabled`，不会改成直连）、直连时的内网地址保护（`netguard`，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开）、`guardUpstream` 里再过一次插件联网，**不跟随重定向**（3xx 原样交给插件，带 `location`；否则重定向能把带 Key 的请求带到主机规则之外，设计 D9）。
+4. 插件 `ParseBalanceResponse`，核心归一化后写库并写穿 Redis。
+- 整次查询（插件调用与全部请求）限时 `balanceQueryTimeout` 20 秒，与额度查询相同，没有新的时限、次数或大小上限。
+- 同一节点上同一账号的查询经 `singleflight` 合并（手动刷新与定时任务共用），合并的调用方等同一个结果，不随第一个调用方取消。跨节点不加租约：定时任务同一时刻只在一个节点跑，重复的只可能是“某节点的手动刷新 + 任务”，代价是上游多一次只读请求（设计 D10）。
+- 插件回 `UNIMPLEMENTED`：不写库，`GET /balance` 回 404 `unsupported`。
+- 写库失败返回 500（不再吞掉）。
+
+**表 `account_balances`**（迁移 0034 建，0113 改）：每个账号一行。
+
+| 列 | 说明 |
+|---|---|
+| `account_id` | 主键，删账号级联 |
+| `amount_micros`、`currency` | 最近一次成功查询的金额与币种；不限或从未成功时为 0 与 `''` |
+| `unlimited` | 最近一次成功查询报告不限额度（0113 加） |
+| `updated_at` | 最近一次成功查询的时间；**从未成功时为 NULL**（0113 起可空，此前首次失败违反 NOT NULL、错误被吞） |
+| `error`、`error_at` | 最近一次失败：`auth_rejected: …` / `transient: …`（最多 512 字节）与时间；成功时清空 |
+
+失败时保留上次成功的金额、币种、`unlimited` 与 `updated_at`，只更新 `error`、`error_at`。`source` 列（只有 `active` 一种取值，没人读）由 0113 删除。GORM 模型由迁移生成（`model.AccountBalance`）；读写在 `store/account_balance.go`。
+
+**改凭证、设置或代理时**：`PATCH /accounts/:id` 带了凭证（含重新授权）、扩展设置或换了代理，在同一事务里删掉这一行，提交后删 Redis 键；下一次查询（定时任务把它当作从未查过）重新开始。只改名称、分组等不删。
+
+### 52.4 Redis 缓存与定时任务
+
+- 缓存键 `account:balance:<id>`，值是快照的 JSON（`{account_id, amount_micros, currency, unlimited, updated_at, error, error_at}`），TTL 10 分钟；每次写库后写穿，读不到时回 PG 并回填；Redis 不可用时读 PG、只记 WARN。删账号、重置状态（§44.5）、改凭证 / 设置 / 代理时删键。
+- **到期**：距最近一次查询（`updated_at` 与 `error_at` 的较晚者）达到类型的间隔；没有快照也算到期。非强制的 `GET /balance` 与定时任务都按它判断。
+- **集群任务 `core.account.balance_sweep`**（§77，`Every` 1 分钟，`Timeout` 15 分钟）：对每个声明了 `balance`、插件已加载的类型，选一页（64 个，`quotaSweepPage`）到期的账号逐个查询，最久没查的在前；没轮到的下一轮仍然到期。选法：未删除，且**可调度或从未查过**（没有快照行）；停用、关了调度的账号只在管理员手动刷新时查。
+
+### 52.5 接口
+
+**`GET /api/v1/accounts/:id/balance[?force=true]`**（`account:read` / `account:own:read`，范围外 404）：到期或 `force=true` 时先查一次，返回：
+
+```
+BalanceView = { supported: true, amount?: string, currency?: string, unlimited?: true,
+                updated_at?: string, error?: string, error_at?: string }
 ```
 
-**请求/响应结构**（`next/sdk/gen/pluginv1/plugin.proto`）：
+- `amount` 是六位小数的十进制串（`"12.500000"`），只在有成功查询且不是 `unlimited` 时出现；`unlimited` 只在为真时出现；`updated_at` 是最近一次成功的时间。
+- 上游或插件失败不让接口失败：200，`error` 说明原因，旧金额照常返回。
+- 类型没有声明 `balance`、插件未加载或回 `UNIMPLEMENTED`：404 `unsupported`。
 
-- `BuildBalanceRequestRequest`：包含 `account_id`、插件凭证 JSON。
-- `BuildBalanceRequestResponse`：返回 `method`、`url`、`headers`、`body`（与 BuildQuotaRequest 相同结构）。
-- `ParseBalanceResponseRequest`：包含 `account_id`、`status_code`、`headers`、`body`。
-- `ParseBalanceResponseResponse`：返回 `result`（oneof）：
-  - `ok`：`amount_micros`（int64，微单位，如美分 × 10000）、`currency`（三字母代码）
-  - `error`：`code`（枚举：`auth_rejected`、`rate_limited`、`transient`、`unsupported`）、`message`
+**账号列表与详情**（`GET /accounts`、`GET /accounts/:id` 等返回账号视图的接口）：声明了 `balance` 的类型每项带 `balance: BalanceView`（一次批量读 Redis / PG，**从不**请求上游；从未查过时是 `{supported: true}`）；其他类型没有这个字段。
 
-**错误码语义**（与 quota 一致）：
-- `auth_rejected`：凭证失效，核心自动禁用账号（§42.2）。
-- `rate_limited`：查询过于频繁，核心延长下次查询间隔。
-- `transient`：临时失败（网络、上游超时），核心重试。
-- `unsupported`：账号类型不支持余额查询（manifest 声明错误）。
+### 52.6 控制台
 
-### 52.3 核心：账号余额查询与快照存储
+账号列表“余额”列（与额度窗口同一格，`accounts.balance.column`）和账号详情的“账户余额”用同一个组件 `views/accounts/AccountBalanceCell.vue`：
 
-**数据模型**（`next/migrations/0034_account_balances.sql`）：
+| 状态 | 判断 | 显示 |
+|---|---|---|
+| 不支持 | 没有 `balance` 字段 | 不出现 |
+| 支持、未查 | 没有 `updated_at`、没有 `error` | “未查询” + “刷新余额” |
+| 有余额 | 有 `amount` | 金额与币种（`formatBalance`），“更新于 x 前” |
+| 不限 | `unlimited` | “不限”，提示“上游报告此 Key 不限额度” |
+| 查询失败 | 有 `error` | 红色徽标“查询失败”，提示里是 `error` 与 `error_at`；有旧金额（或旧的“不限”）时照常显示并标“旧值” |
 
-```sql
-CREATE TABLE IF NOT EXISTS account_balances (
-  account_id       BIGINT PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
-  amount_micros    BIGINT NOT NULL,
-  currency         VARCHAR(3) NOT NULL,
-  source           VARCHAR(20) NOT NULL,
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  error            TEXT,
-  error_at         TIMESTAMPTZ
-);
-CREATE INDEX IF NOT EXISTS idx_account_balances_updated_at ON account_balances(updated_at);
-```
+“刷新余额”调 `GET /balance?force=true`，与额度刷新相同：进行中的重复点击合并，没有冷却（此前前端有 2 秒的点击间隔，已删除）。没有颜色阈值、没有告警。类型在 `web/src/api/types.ts` 的 `AccountBalance`，mock 在 `web/mock/accounts.ts`（relay 类型与 demo token 带余额）。
 
-- `amount_micros`：余额微单位（如 USD: 1.23 → 12300000，即美分 × 10000）。
-- `source`：查询来源（`"active"` 主动查询、`""` 被动查询，目前余额只有主动查询）。
-- `error`：最近一次查询失败时的错误信息（成功时为 NULL）。
-- `error_at`：最近一次查询失败的时间（成功时为 NULL）。
+### 52.7 测试
 
-**核心逻辑**（`next/server/internal/account/balance.go`）：
-
-- 账号 View 增加 `Balance *BalanceView` 字段（`view.go`）：
-  ```go
-  type BalanceView struct {
-      Amount    string `json:"amount"`     // "1.23"
-      Currency  string `json:"currency"`   // "USD"
-      UpdatedAt string `json:"updated_at"` // ISO 8601
-      Source    string `json:"source"`     // "active"|""
-      Error     string `json:"error,omitempty"`
-  }
-  ```
-
-- 账号类型声明 `balance` 时，核心调用插件的 `BuildBalanceRequest` 和 `ParseBalanceResponse`，执行 HTTP 请求并解析结果。
-
-- 查询触发时机：
-  - **主动查询**：`GET /api/v1/accounts/:id/balance` 或 `POST /api/v1/accounts/:id/refresh-balance`（前端"刷新余额"按钮）。
-  - **查询间隔**：成功后 3 分钟内不重复查询（快照新鲜度）；失败后根据错误码决定间隔（`auth_rejected` 不再查、`rate_limited` 延长到 10 分钟、`transient` 1 分钟后重试）。
-  - 查询下限：每个账号 2 秒内最多查询一次（防止前端重复点击）。
-
-- 快照写入：查询成功后写入 `account_balances`，同时写穿到 Redis（见 §52.4）。
-
-### 52.4 余额快照 Redis 缓存
-
-与 §51.3 配额缓存并行实现（`next/server/internal/account/balance_cache.go`）：
-
-- **键格式**：`account:balance:<id>`
-- **值**：JSON `{"mtime":<pg_updated_at_nanos>,"snap":<BalanceSnapshot>}`
-  - `mtime`：PG `updated_at` 的 Unix 纳秒（用于判断新旧）
-  - `snap`：`{amount_micros, currency, source, updated_at, error, error_at}`
-- **TTL**：10 分钟（与 quota 一致）
-
-**读取流程**（`cachedAccountBalances(ids []int64)`）：
-1. 批量 MGET Redis 键（`account:balance:1`, `account:balance:2`, ...）
-2. 未命中：查 PG 并异步回填 Redis
-3. 命中但 `mtime` 早于 PG：以 PG 为准（避免延迟写入的旧值覆盖新值）
-4. Redis 不可用：退回 PG（不报错，日志 WARN）
-
-**写入流程**（`writeAccountBalance`）：
-1. 写入 PG `account_balances`（INSERT ... ON CONFLICT UPDATE）
-2. 写穿到 Redis SET `account:balance:<id>`，TTL 10 分钟
-3. Redis 写入失败不影响 PG 写入
-
-**一致性维护**（多节点环境）：
-- `POST /accounts/:id/reset-status`：DEL `account:balance:<id>`
-- 重新授权清空（§49.17）：DEL `account:balance:<id>`
-- 删除账号：DEL `account:balance:<id>`（CASCADE 会删 PG 行）
-- 每个节点独立写/删 Redis，PG `updated_at` 为权威时间戳
-
-**测试**（`balance_cache_test.go`）：写穿、批量读、PG fallback、mtime 排序、驱逐、损坏条目。
-
-### 52.5 路由与前端集成
-
-**核心路由**（`next/server/internal/account/handlers.go`）：
-
-- `GET /api/v1/accounts/:id/balance`：返回余额快照（有缓存返回缓存，否则主动查询）
-- `POST /api/v1/accounts/:id/refresh-balance`：强制刷新（忽略新鲜度，但仍受 2 秒查询下限约束）
-
-**账号列表/详情**：
-- `GET /api/v1/accounts`：列表加载时批量读取 balance 快照（Redis MGET + PG fallback），有数据的账号返回 `balance` 字段。
-- `GET /api/v1/accounts/:id`：详情同样返回 `balance`。
-
-**前端改动**（由主控或 web agent 完成）：
-1. 账号列表（`AccountsView.vue`）：支持 `balance` 的账号显示"余额"列（格式化为 `$1.23` / `¥1.23`）。
-2. 账号详情面板：账号状态区增加"余额"一行、"刷新余额"按钮（或与"刷新配额"合并为"刷新状态"按钮）。
-3. i18n（zh/en）：余额标签、货币格式化。
-4. types.ts：`Account.balance?: Money`（移除 `// assumed` 注释）。
-
-### 52.6 claude-oauth 插件实现（已删除）
-
-0.1.304 删除了 claude-oauth 插件（§116）。本节原文见 `git show 77158211c:next/docs/CONTRACTS.md`。
-
-### 52.7 测试覆盖
-
-- **SDK**：`manifest/check/balance_test.go`（manifest 校验、货币代码格式）。
-- **核心**：`account/balance_test.go`（查询流程、错误处理、新鲜度）、`account/balance_cache_test.go`（Redis 缓存）。
-- **集成**：PG 表迁移幂等性（`0034_account_balances.sql`）、账号列表/详情返回 balance。
+- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、币种不合法、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`。
+- 运行时 `grpcruntime` 的 `TestBalanceAcrossProcess`：经真实 gRPC 的测试插件（`testdata/testplugin`），请求与回答逐字段往返，`UNIMPLEMENTED` 经运行时的错误仍能被识别。
+- 控制台 `AccountBalanceCell.spec.ts`（五种状态）。
 
 ### 49.17 CCGateway 容器地址池（已删除）
 
@@ -8345,13 +8276,14 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 **3. 还要通过管理员的插件联网设置**（2026-11-18 起，§113.3）。通过上面规则的主机，还必须是管理员在“系统设置 → 插件联网”里允许插件访问的：两道都过才发。两道检查是核心里的一次调用 `core.CheckPluginUpstream`（先清单与账号的规则，再 `core.CheckPluginNetwork`），各调用点不另写判断；清单的规则拒绝时不再问管理员的设置。被拒的 `*core.Error` 是 `ErrPermissionDenied`，`details.reason` 为 `upstream_host_not_allowed`（清单与账号的规则）或 `upstream_host_blocked`（插件联网）。
 
-用在三处，都是核心用账号凭证代发的请求：
+用在四处，都是核心用账号凭证代发的请求：
 
 | 请求 | 判断的地方 | 被拒时 |
 |---|---|---|
 | 中继：HTTP（不等待、等待）与 WebSocket 握手（`ws(s)` 按同名主机判断） | 网关 `relay_check.go` 的 `allowHost`，在 SSRF 检查之前 | 与网关拒绝的其他中继一样（§112.5）：插件一侧 `INVALID_ARGUMENT`，什么都没发出；这次尝试按插件不可用换号（记录类型 `plugin_unavailable`，`NeutralReason` 为 `upstream_host_not_allowed` 或 `upstream_host_blocked`），账号不冷却、不禁用；信息写明主机与插件（进使用记录的尝试轨迹，管理员可见）；WARN 日志 `gateway: upstream host not allowed` 带请求 ID、插件 key、账号、主机、`reason`。所有账号都被拒时与其他核心拒绝的尝试一样，客户端得到 503 `no_available_account`（Anthropic 格式 529 `overloaded_error`），信息里没有主机 |
 | 取回（`ExecuteHTTP`，`Execute` 与 `Monitor` 里，以及路由调用里带代理票据的取回，§117） | 运行时 `requireFetchHost`（§112.6） | `PERMISSION_DENIED` |
 | `SendAccountRequest`（§91） | 账号模块读出账号（类型、设置、解密的凭证）后判断 | `PERMISSION_DENIED`，什么都没发、不写审计 |
+| 余额查询（§52，0.1.304 起） | 账号模块拿到插件的全部请求后、发出第一个之前，逐个判断 | 一个都不发、不调 `ParseBalanceResponse`，快照记 `transient: <拒绝信息>` |
 
 假宿主（`pluginsdktest.FakeHost`）对中继和取回执行同一条规则（中继 `INVALID_ARGUMENT`，取回 `PERMISSION_DENIED`）；它不知道清单时什么主机都不放行（`FakeHost.ExternalServices` 可以替换清单的）。`standardtest.Run` 回放黄金样例时同样检查每个请求的主机。九个平台插件的测试、一致性套件和 1498 条黄金样例都在这条规则下通过。
 
@@ -8385,9 +8317,9 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 所有者原话：“插件本身是不允许任何直连的，它的所有网络都需要通过核心发出。限制的域名也是核心必须通过，也是插件必须通过核心发出，然后这时候来进行域名限制。”所以这项设置管插件经核心发出的**全部**网络，不只是出口隧道：凡是目标地址由插件决定（或由插件清单、账号配置决定）、由核心替插件发出的请求，都要过它。
 
-- **范围**：中继（HTTP 等待与不等待、WebSocket 握手）、取回（`Execute`、`Monitor` 里的，路由调用里带代理票据的）、`SendAccountRequest`、配额查询、凭证续期、账号测试、拉取模型列表。前三类先过清单与账号的规则（§112.17），后四类没有那道规则，只过这项设置。不在范围内的是核心自己的请求：价格同步、插件市场与插件包下载、代理检测、协议转换时下载客户端给的媒体 URL、节点间通信，以及 `Notify`（发往管理员配置的通知渠道）。
+- **范围**：中继（HTTP 等待与不等待、WebSocket 握手）、取回（`Execute`、`Monitor` 里的，路由调用里带代理票据的）、`SendAccountRequest`、余额查询（§52）、配额查询、凭证续期、账号测试、拉取模型列表。前四类先过清单与账号的规则（§112.17），后四类没有那道规则，只过这项设置。不在范围内的是核心自己的请求：价格同步、插件市场与插件包下载、代理检测、协议转换时下载客户端给的媒体 URL、节点间通信，以及 `Notify`（发往管理员配置的通知渠道）。
 - **判断**：与出口隧道是同一个判断（`hostPolicies` 的缓存与 `HostPolicy.refusal`，匹配同 113.2，比较 URL 的主机名，端口不参与），经 `core.PluginNetworkAccess`（由 `egress.Provider` 实现，在 `internal/app` 里注入账号模块、网关和插件运行时）。缓存、失效、读失败沿用上次值、从未读成功时拒绝都与 113.2 相同；请求路径上不读数据库。插件自己的 `net` 授权与按插件的出口策略只管出口隧道，与这些请求无关（平台插件没有 `net`）。
-- **被拒时**：中继、取回、`SendAccountRequest` 见 §112.17 的表（`details.reason` / `NeutralReason` 为 `upstream_host_blocked`，信息为 `plugin <key>: <host> is on the blocked list of plugin network access` 或 `... is not on the allowed list ...`）。账号测试：测试结果失败，信息写明原因，什么都没发出；拉取模型列表：错误写明原因；配额查询、凭证续期：插件拿到的是传输错误（`status` 0、`transport_error` 写明原因），按插件对传输错误的处理（续期一般是暂时失败，凭证不变）。
+- **被拒时**：中继、取回、`SendAccountRequest` 见 §112.17 的表（`details.reason` / `NeutralReason` 为 `upstream_host_blocked`，信息为 `plugin <key>: <host> is on the blocked list of plugin network access` 或 `... is not on the allowed list ...`）。账号测试：测试结果失败，信息写明原因，什么都没发出；拉取模型列表：错误写明原因；配额查询、凭证续期：插件拿到的是传输错误（`status` 0、`transport_error` 写明原因），按插件对传输错误的处理（续期一般是暂时失败，凭证不变）；余额查询：发出前就逐个判断，一个被拒就都不发，快照记 `transient: <拒绝信息>`（§52.3）。
 - **记录**：每个被这项设置拒绝的请求在该插件的出口日志里写一行（`plugin_egress_logs`，`result = denied`，`error` 为原因，`network` 为 URL 的协议 `https`/`http`，以区别于隧道的 `tcp`，`host`、`port` 为 URL 的），与隧道的拒绝一样经批量异步的日志写入器（满了丢弃，不阻塞请求），管理员在插件详情“外部访问”页的明细和按目标汇总里看到。放行的请求不写（那是使用记录的事）；被拒的请求不计入访问过的域名（`plugin_egress_domains`），不发新域名事件。中继被拒另有网关的 WARN 日志和使用记录里的尝试轨迹。
 - **“屏蔽所有域名”的后果**：允许列表里没有某个平台的上游域名（如 `api.anthropic.com`、`chatgpt.com`、`googleapis.com`，或账号上自定义上游地址的域名），这个平台的全部请求被拒。控制台在切换到“屏蔽所有域名”前要求确认，选中时显示警告。
 
@@ -8454,9 +8386,9 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 ### 116.3 删掉它以后没有使用者、暂时保留的能力
 
-下面这些是给第三方插件作者的通用契约，删掉它们会改清单格式或插件协议，所以保留，由所有者决定是否删除：
+下面这些是给第三方插件作者的通用契约，删掉它们会改清单格式或插件协议，所以保留（账号余额后来由所有者决定接通）：
 
-- **账号余额（§52）**：清单 `accountTypes[].balance`（`manifest.AccountBalance`，`check/balance.go`）、`PlatformService.BuildBalanceRequest` / `ParseBalanceResponse` 与它们的消息、核心 `account/balance.go` 的 `BalanceProvider` 注册表、`balance_cache.go`、表 `account_balances`、`GET /accounts/:id/balance`、账号视图的 `balance`、控制台的余额显示。核心从来没有调用那两个 RPC，余额只来自核心里注册的查询器，而唯一的查询器随本次删除；现在没有类型声明 `balance`，声明了也只显示“支持余额”而查不到数据。
+- **账号余额（§52）**：0.1.304 起已接通（核心调插件的 `BuildBalanceRequest` / `ParseBalanceResponse`，定时任务 `core.account.balance_sweep`），`BalanceProvider` 注册表已删除，见 §52。
 - **额度主动查询（§44）**：清单 `quota.query`、`quota.autoRefresh`，`PlatformService.BuildQuotaRequest` / `ParseQuotaResponse`（`pluginsdk.QuotaReader`），核心的主动查询与自动复查。现在没有第一方插件声明 `query`（codex 只用响应头被动采样），机制本身完整可用。
 
 仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex、volcengine 等）。

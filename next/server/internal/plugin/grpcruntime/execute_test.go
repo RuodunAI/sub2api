@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
@@ -299,5 +302,36 @@ func TestOutdatedContractIsRefused(t *testing.T) {
 				t.Fatalf("process started: %v", started)
 			}
 		})
+	}
+}
+
+// The balance calls cross the process as they are: every request of the
+// query and every answer, in order; a plugin without them answers
+// Unimplemented, which the account module reads through the runtime's error.
+func TestBalanceAcrossProcess(t *testing.T) {
+	e := setupPackage(t, registrytest.DefaultGrants(), registrytest.TestPlugin(t), nil)
+	p := e.load(t, e.runtime(t, nil)).Platform()
+	ctx := context.Background()
+	acct := &pluginv1.Account{Id: 7, Type: "apikey", CredentialsJson: "k"}
+	built, err := p.BuildBalanceRequest(ctx, &pluginv1.BuildBalanceRequestRequest{Account: acct})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqs := built.GetRequests()
+	if len(reqs) != 2 || reqs[0].GetUrl() != "https://upstream.example.com/balance" || reqs[0].GetHeaders()["authorization"] != "Bearer k" ||
+		reqs[1].GetMethod() != "POST" || len(reqs[1].GetHeaders()) != 0 || reqs[1].GetBodyJson() != "{}" {
+		t.Fatalf("requests: %v", reqs)
+	}
+	out, err := p.ParseBalanceResponse(ctx, &pluginv1.ParseBalanceResponseRequest{Account: acct, Answers: []*pluginv1.BalanceAnswer{
+		{Status: 200, Headers: map[string]string{"x-currency": "USD"}, Body: []byte(`{}`)},
+		{Body: []byte("unlimited"), TransportError: "dial tcp: refused"},
+	}})
+	if r := out.GetResult(); err != nil || r.GetAmountMicros() != 200_000 || r.GetCurrency() != "USD" || !r.GetUnlimited() ||
+		r.GetErrorMessage() != "dial tcp: refused" {
+		t.Fatalf("result: %v %v", out, err)
+	}
+	_, err = p.BuildBalanceRequest(ctx, &pluginv1.BuildBalanceRequestRequest{Account: &pluginv1.Account{Type: "none"}})
+	if status.Code(err) != codes.Unimplemented || core.AsError(err).Code != core.ErrPluginUnavailable.Code {
+		t.Fatalf("unimplemented: %v", err)
 	}
 }

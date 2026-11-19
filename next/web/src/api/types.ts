@@ -763,7 +763,7 @@ export interface Account {
   refresh?: AccountRefresh | null
   /** Outcome of the latest test of the account (any model); null when never tested. */
   last_test?: AccountLastTest | null
-  /** Balance of the account (CONTRACTS §52); null when the type does not support balance. */
+  /** Balance of the account (CONTRACTS §52); absent when the type does not support balance. */
   balance?: AccountBalance | null
 }
 
@@ -791,18 +791,25 @@ export interface AccountRefresh {
   error: string
 }
 
-/** Balance snapshot of an account (CONTRACTS §52). */
+/**
+ * Balance of an account (CONTRACTS §52.5), read through its plugin. Only for
+ * account types that declare one; shown only, never acted on.
+ */
 export interface AccountBalance {
-  /** Decimal amount as a string (e.g., "1.23"). */
-  amount: Money
-  /** ISO 4217 currency code (e.g., "USD", "CNY"). */
-  currency: string
-  /** When the snapshot was taken. */
-  updated_at: string
-  /** Source of the balance: "active" (explicit query) or "" (passive). */
-  source: 'active' | ''
-  /** Last query error message if any. */
+  /** Always true: the account type reads balances. */
+  supported: boolean
+  /** Decimal amount of the last successful read (e.g. "1.230000"); absent before one and when unlimited. */
+  amount?: Money
+  /** ISO 4217 code of amount (e.g. "USD", "CNY"). */
+  currency?: string
+  /** The upstream reports no limit for this account. */
+  unlimited?: boolean
+  /** When the last successful read happened; absent before one. */
+  updated_at?: string
+  /** Why the last read failed ("auth_rejected: …" or "transient: …"), cleared by a successful one. */
   error?: string
+  /** When the last read failed. */
+  error_at?: string
 }
 
 /** Answer of POST /accounts/:id/refresh-credentials. */
