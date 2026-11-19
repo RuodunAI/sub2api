@@ -44,8 +44,8 @@ func TestManifest(t *testing.T) {
 	if !slices.ContainsFunc(m.Capabilities, func(c manifest.Capability) bool { return c.ID == manifest.CapPlatformAdapter }) {
 		t.Errorf("capabilities = %+v", m.Capabilities)
 	}
-	if i := slices.IndexFunc(m.HostPermissions, func(p manifest.HostPermission) bool { return p.ID == "accounts.credentials" }); i < 0 || m.HostPermissions[i].Scope["types"] != "own" {
-		t.Errorf("hostPermissions = %+v, want accounts.credentials on its own types", m.HostPermissions)
+	if len(m.HostPermissions) != 1 || m.HostPermissions[0].ID != "platform.register" {
+		t.Errorf("hostPermissions = %+v, want platform.register alone", m.HostPermissions)
 	}
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != 2 || m.AccountTypes[0].ID != typeV1 || m.AccountTypes[1].ID != typeDeployment {
 		t.Fatalf("platforms = %+v accountTypes = %+v, want %s then %s only", m.Platforms, m.AccountTypes, typeV1, typeDeployment)

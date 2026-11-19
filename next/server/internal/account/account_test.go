@@ -52,10 +52,13 @@ type fakePlatform struct {
 	quotaCalls int
 	// refreshURL is where BuildRefreshRequest points (empty: Unimplemented).
 	refreshURL string
-	mu         sync.Mutex
-	calls      []*pluginv1.ValidateCredentialsRequest
-	tests      []*pluginv1.BuildTestRequestRequest
-	classes    []*pluginv1.ClassifyErrorRequest
+	// pluginCalls counts BuildRefreshRequest, ParseRefreshResponse and
+	// ParseQuotaResponse calls by method name.
+	pluginCalls map[string]int
+	mu          sync.Mutex
+	calls       []*pluginv1.ValidateCredentialsRequest
+	tests       []*pluginv1.BuildTestRequestRequest
+	classes     []*pluginv1.ClassifyErrorRequest
 	// balance is the balance query's plugin side (balance_test.go); nil
 	// answers Unimplemented.
 	balance *fakeBalance
@@ -97,7 +100,8 @@ func (p *fakePlatform) BuildQuotaRequest(_ context.Context, in *pluginv1.BuildQu
 
 // ParseQuotaResponse reads {"5h": <percent>, "reset": <unix>} and reports a
 // non-200 answer as transient (401 as auth_rejected).
-func (*fakePlatform) ParseQuotaResponse(_ context.Context, in *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
+func (p *fakePlatform) ParseQuotaResponse(_ context.Context, in *pluginv1.ParseQuotaResponseRequest) (*pluginv1.QuotaResult, error) {
+	p.count("ParseQuotaResponse")
 	switch {
 	case in.GetStatus() == http.StatusUnauthorized:
 		return &pluginv1.QuotaResult{ErrorType: pluginv1.QuotaResult_ERROR_TYPE_AUTH_REJECTED, ErrorMessage: "token revoked"}, nil
@@ -123,6 +127,7 @@ func (p *fakePlatform) ClassifyError(_ context.Context, in *pluginv1.ClassifyErr
 // BuildRefreshRequest posts the account's refresh_token to refreshURL;
 // refreshURL empty answers Unimplemented.
 func (p *fakePlatform) BuildRefreshRequest(_ context.Context, in *pluginv1.BuildRefreshRequestRequest) (*pluginv1.BuildRefreshRequestResponse, error) {
+	p.count("BuildRefreshRequest")
 	p.mu.Lock()
 	u := p.refreshURL
 	p.mu.Unlock()
@@ -135,7 +140,8 @@ func (p *fakePlatform) BuildRefreshRequest(_ context.Context, in *pluginv1.Build
 
 // ParseRefreshResponse reads {"access_token","refresh_token","expires_in"};
 // 400 is auth_rejected (invalid_grant), anything else non-200 transient.
-func (*fakePlatform) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
+func (p *fakePlatform) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error) {
+	p.count("ParseRefreshResponse")
 	switch {
 	case in.GetStatus() == http.StatusBadRequest:
 		return &pluginv1.RefreshResult{ErrorType: pluginv1.RefreshResult_ERROR_TYPE_AUTH_REJECTED, ErrorMessage: "invalid_grant"}, nil
@@ -153,6 +159,23 @@ func (*fakePlatform) ParseRefreshResponse(_ context.Context, in *pluginv1.ParseR
 	}
 	b, _ := json.Marshal(patch)
 	return &pluginv1.RefreshResult{CredentialsPatchJson: string(b)}, nil
+}
+
+// count records one call of method.
+func (p *fakePlatform) count(method string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pluginCalls == nil {
+		p.pluginCalls = map[string]int{}
+	}
+	p.pluginCalls[method]++
+}
+
+// called is the number of calls of method.
+func (p *fakePlatform) called(method string) int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pluginCalls[method]
 }
 
 // BuildModelsRequest lists models from the fake upstream's /v1/models; the

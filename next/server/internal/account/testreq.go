@@ -137,7 +137,16 @@ func (s *Service) test(c *gin.Context) {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
 	}
-	acct := a.pluginAccount(plain)
+	// The test goes out through the row's proxy; without it nothing is
+	// built or sent.
+	eg, err := s.proxyEgress(ctx, a.ProxyID)
+	if err != nil {
+		res := TestResult{Model: model, RequestedModel: requested, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: "gateway"}
+		s.recordTest(ctx, a.ID, res)
+		httpapi.OK(c, res)
+		return
+	}
+	acct := a.pluginAccount(plain, eg.Proxy)
 	// A test request is not served by a client endpoint, so Account.platform
 	// is empty; the declaring plugin builds a request for the account type.
 	req, err := bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
@@ -150,7 +159,7 @@ func (s *Service) test(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	res := s.runTest(ctx, bt, acct, a.ProxyID, model, req)
+	res := s.runTest(ctx, bt, acct, eg, model, req)
 	res.RequestedModel = requested
 	s.recordTest(ctx, a.ID, res)
 	httpapi.OK(c, res)
@@ -298,13 +307,13 @@ func cutBytes(s string, n int) string {
 	return s
 }
 
-// runTest sends the request the plugin built through proxy proxyID, that of
-// the account's row the caller just read, and reports what came back: the
+// runTest sends the request the plugin built through eg, the egress of the
+// account's row the caller just read, and reports what came back: the
 // status and latency, the model and (credential-free) address it reached, a
 // prefix of the response body, the token usage the platform's rules find in
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
-	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
+	eg core.Egress, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
 	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
@@ -315,11 +324,6 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		return res
 	}
 	res.Upstream = upstreamAddr(u)
-	eg, err := s.proxyEgress(ctx, proxyID)
-	if err != nil {
-		res.Message, res.ErrorCode = core.AsError(err).Message, core.AsError(err).Code
-		return res
-	}
 	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, eg.Proxied); err != nil {
 		res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
 		return res

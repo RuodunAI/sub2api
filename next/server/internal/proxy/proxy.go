@@ -72,6 +72,7 @@ type Service struct {
 
 type entry struct {
 	client    *http.Client
+	ref       core.ProxyRef
 	status    string
 	updatedAt time.Time
 	checkedAt time.Time
@@ -236,6 +237,27 @@ func (s *Service) buildClient(r *row) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	return s.clientFor(r, u)
+}
+
+// buildEntry is buildClient together with the proxy it goes through (the
+// password decrypted once, for both).
+func (s *Service) buildEntry(id int64, r *row) (*entry, error) {
+	u, err := s.proxyURL(r)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.clientFor(r, u)
+	if err != nil {
+		return nil, err
+	}
+	pw, _ := u.User.Password()
+	return &entry{client: c, ref: core.ProxyRef{ID: id, ProxySpec: core.ProxySpec{
+		Protocol: r.Protocol, Host: r.Host, Port: r.Port, Username: r.Username, Password: pw}}}, nil
+}
+
+// clientFor is the client of r through proxy URL u.
+func (s *Service) clientFor(r *row, u *url.URL) (*http.Client, error) {
 	// A proxy saved under the own key must not itself be a private address
 	// unless the operator had proxy:manage (CONTRACTS §43.3): a literal
 	// address fails here, a name resolving to one fails when dialing.
@@ -286,11 +308,12 @@ func (s *Service) privateScope(ctx context.Context, host string) (scope core.Dat
 	return scope, allowPrivate, err
 }
 
-// HTTPClient returns the client for proxyID; nil means a direct connection.
-// The client has no overall timeout: callers bound requests with ctx.
-func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client, error) {
+// HTTPClient returns the client for proxyID and the proxy it goes through,
+// from one cache entry; nil means a direct connection. The client has no
+// overall timeout: callers bound requests with ctx.
+func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (core.ProxyClient, error) {
 	if proxyID == nil {
-		return s.direct, nil
+		return core.ProxyClient{Client: s.direct}, nil
 	}
 	id := *proxyID
 	now := time.Now()
@@ -307,14 +330,14 @@ func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client,
 		Where("id = ?", id).Take(&r).Error
 	if store.IsNoRows(err) {
 		s.Invalidate(id)
-		return nil, core.ErrNotFound.WithMessage("proxy not found")
+		return core.ProxyClient{}, core.ErrNotFound.WithMessage("proxy not found")
 	}
 	if err != nil {
 		if e != nil {
 			// Keep serving the last known client when the database hiccups.
 			return e.result()
 		}
-		return nil, err
+		return core.ProxyClient{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -327,26 +350,28 @@ func (s *Service) HTTPClient(ctx context.Context, proxyID *int64) (*http.Client,
 		return cur.result()
 	}
 	if s.epoch != epoch {
-		return nil, core.ErrUnavailable.WithMessage("proxy changed while resolving; retry")
+		return core.ProxyClient{}, core.ErrUnavailable.WithMessage("proxy changed while resolving; retry")
 	}
-	c, err := s.buildClient(&r)
+	ne, err := s.buildEntry(id, &r)
 	if err != nil {
-		return nil, err
+		return core.ProxyClient{}, err
 	}
 	if old := s.clients[id]; old != nil {
 		old.client.CloseIdleConnections()
 	}
-	ne := &entry{client: c, status: r.Status, updatedAt: r.UpdatedAt, checkedAt: now}
+	ne.status, ne.updatedAt, ne.checkedAt = r.Status, r.UpdatedAt, now
 	s.clients[id] = ne
 	return ne.result()
 }
 
-func (e *entry) result() (*http.Client, error) {
+// result is the entry's client and proxy; a disabled proxy gives neither.
+func (e *entry) result() (core.ProxyClient, error) {
 	if e.status != "active" {
 		// Never silently fall back to a direct connection.
-		return nil, core.ErrUnavailable.WithMessage("proxy disabled")
+		return core.ProxyClient{}, core.ErrUnavailable.WithMessage("proxy disabled")
 	}
-	return e.client, nil
+	ref := e.ref
+	return core.ProxyClient{Client: e.client, Proxy: &ref}, nil
 }
 
 // ---------------------------------------------------------------- HTTP

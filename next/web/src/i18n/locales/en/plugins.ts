@@ -93,7 +93,6 @@ export default {
     jobs: 'Background jobs',
     ui_menu: 'Console menus',
     ui_iframe: 'Sandboxed iframe pages',
-    accounts_read: 'Read accounts',
     authz_read: 'Check users\' core and other plugins\' permissions',
     accounts_auto_state: 'Change account automatic state',
     lock: 'Cross-node lock',
@@ -110,7 +109,6 @@ export default {
     sticky_clear: 'Clear sticky session bindings',
     gateway_observe: 'Observe gateway requests',
     users_read: 'Read users',
-    accounts_credentials: 'Account credentials',
     ledger_credit: 'Credit user balances',
     ledger_debit: 'Debit user balances',
     ui_native: 'Native console UI',
@@ -126,7 +124,6 @@ export default {
 
   hpWarn: {
     ui_native: 'The plugin code will run inside the console with your login identity.',
-    accounts_credentials: 'The plugin can read upstream account secrets (API keys, tokens) of the account types it declares.',
     ledger_credit: 'The plugin can add balance to users.',
     ledger_debit: 'The plugin can deduct user balance.',
     users_write: 'The plugin can create and modify users.',

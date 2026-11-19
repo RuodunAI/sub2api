@@ -89,8 +89,7 @@ func TestManifestShape(t *testing.T) {
 		if at.CreationGroup != "codex" || at.AuthMethodLabel["en"] != labels[at.ID] || at.AuthMethodLabel["zh"] != zhLabels[at.ID] {
 			t.Errorf("%s creationGroup/authMethodLabel = %q %v", at.ID, at.CreationGroup, at.AuthMethodLabel)
 		}
-		if !slices.Equal(at.SensitiveFields, []string{"access_token", "refresh_token", "id_token"}) ||
-			!slices.Equal(at.SettingsFields, []string{"proxy_id"}) {
+		if !slices.Equal(at.SensitiveFields, []string{"access_token", "refresh_token", "id_token"}) || len(at.SettingsFields) != 0 {
 			t.Errorf("%s sensitive/settings = %v %v", at.ID, at.SensitiveFields, at.SettingsFields)
 		}
 		if at.Refresh == nil {
@@ -149,18 +148,17 @@ func TestManifestShape(t *testing.T) {
 		}
 		perms[perm.ID] = perm
 	}
-	for _, id := range []string{"platform.register", "accounts.credentials", "accounts.auto_state", "kv", "lock", "routes.admin", "ui.native"} {
+	// No account grant: the plugin receives its own accounts (CONTRACTS §124).
+	for _, id := range []string{"platform.register", "accounts.auto_state", "kv", "lock", "routes.admin", "ui.native"} {
 		if _, ok := perms[id]; !ok {
 			t.Errorf("host permission %s missing", id)
 		}
 	}
-	if len(perms) != 7 {
+	if len(perms) != 6 {
 		t.Errorf("host permissions = %v", perms)
 	}
-	for _, id := range []string{"accounts.credentials", "accounts.auto_state"} {
-		if c := perms[id]; c.Scope["types"] != "own" || len(c.Scope) != 1 {
-			t.Errorf("%s scope = %v", id, c.Scope)
-		}
+	if c := perms["accounts.auto_state"]; c.Scope["types"] != "own" || len(c.Scope) != 1 {
+		t.Errorf("accounts.auto_state scope = %v", c.Scope)
 	}
 	// The plugin opens no connection: the core sends the authorization
 	// requests (through the account form's proxy, CONTRACTS §117), the

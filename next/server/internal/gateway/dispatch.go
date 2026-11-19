@@ -556,8 +556,6 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 	if c.rec.UsageSemantics == "" {
 		c.rec.UsageSemantics = "exclusive"
 	}
-	pacct := acc.PluginAccount(c.platform)
-
 	c.serveRoute(rt, ref)
 	if rt.local {
 		return c.countLocally(ctx)
@@ -578,7 +576,7 @@ func (c *call) attempt(ctx context.Context, ref *core.AccountRef, n int) attempt
 	if failure := c.guardAvailability(ctx, ref); failure != nil {
 		return attemptResult{kind: attemptFailover, err: failure}
 	}
-	return c.execute(ctx, rt, acc, pacct, upBody, upModel, n)
+	return c.execute(ctx, rt, acc, upBody, upModel, n)
 }
 
 // upstreamBody is body as the plugin receives it for attempt n on ref
@@ -738,10 +736,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if refused != nil {
 		return attemptResult{kind: attemptFailover, err: refused}
 	}
-	client, err := x.egress.Client, x.egressErr
-	if err != nil || client == nil {
-		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
-	}
+	client := x.egress.Client
 
 	// The upstream request does not hang off ctx: when the client goes the
 	// watcher cancels it - at once, or not at all when the answer is being

@@ -337,7 +337,7 @@ func (g *generation) registerPlugin(ext Extension, pkg *Package) {
 
 	pf := ext.Platform()
 	conflicts := g.addPluginPlatforms(info, pkg, pf)
-	g.addAccountTypes(info, pkg, pf, grants)
+	g.addAccountTypes(info, pkg, pf)
 	g.addHooks(ext, info, m, grants)
 	g.addRanker(ext, info, pkg, m)
 	g.addRoutes(ext, info, pkg, grants)
@@ -370,14 +370,10 @@ func (g *generation) addPluginPlatforms(info core.PluginInfo, pkg *Package, pf c
 }
 
 // addAccountTypes registers the account types the plugin declares. Each is
-// served by the declaring plugin, which must implement platform.adapter.v1
-// (ARCHITECTURE 6.6) and hold the accounts.credentials grant: without it the
-// plugin never receives credentials, so its account types are not offered or
-// scheduled.
-func (g *generation) addAccountTypes(info core.PluginInfo, pkg *Package, pf core.PlatformPlugin, grants Grants) {
-	if !grants.Has("accounts.credentials") {
-		pf = nil
-	}
+// served by the declaring plugin, which implements platform.adapter.v1
+// (ARCHITECTURE 6.6) and receives the accounts of its types (CONTRACTS
+// §124); without a platform client they are not offered or scheduled.
+func (g *generation) addAccountTypes(info core.PluginInfo, pkg *Package, pf core.PlatformPlugin) {
 	for i, at := range pkg.Manifest.AccountTypes {
 		key := core.AccountTypeKey{PluginKey: pkg.Key, Type: at.ID}
 		if _, dup := g.atByKey[key]; dup {

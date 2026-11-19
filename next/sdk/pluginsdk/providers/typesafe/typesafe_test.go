@@ -26,8 +26,7 @@ const skeleton = `{
     "platforms": [{"platform": "typesafe"}]}],
   "hostPermissions": [
     {"id": "platform.register", "reason": {"en": "r"}},
-    {"id": "gateway.endpoint", "reason": {"en": "r"}},
-    {"id": "accounts.credentials", "scope": {"types": "own"}, "reason": {"en": "r"}}
+    {"id": "gateway.endpoint", "reason": {"en": "r"}}
   ]
 }`
 

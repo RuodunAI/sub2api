@@ -10,9 +10,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
 )
 
-// credentialsScopeOwn is the only accepted scope of accounts.credentials:
-// the plugin reads credentials of its own account types (ARCHITECTURE 6.6).
-var credentialsScopeOwn = map[string]any{"types": "own"}
+// scopeOwn is the only accepted scope of accounts.auto_state: the plugin acts
+// on the accounts of its own account types (ARCHITECTURE 6.6).
+var scopeOwn = map[string]any{"types": "own"}
 
 // accountExtensions validates accountTypes[].extensionsSchema: a bounded,
 // closed object schema whose properties do not shadow core, credential or
@@ -66,7 +66,6 @@ func (v *validator) accountTypes() {
 	}
 	v.needCap("accountTypes", manifest.CapPlatformAdapter)
 	v.needPerm("accountTypes", "platform.register", "account types")
-	v.needPerm("accountTypes", "accounts.credentials", "account types")
 	ownPlatforms := map[string]*manifest.Platform{}
 	for i := range v.m.Platforms {
 		ownPlatforms[v.m.Platforms[i].ID] = &v.m.Platforms[i]

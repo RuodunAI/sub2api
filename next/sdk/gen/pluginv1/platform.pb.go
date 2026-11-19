@@ -1883,8 +1883,7 @@ type ExtractUsageRequest struct {
 	unknownFields protoimpl.UnknownFields
 
 	Meta *RequestMeta `protobuf:"bytes,1,opt,name=meta,proto3" json:"meta,omitempty"`
-	// The account that served the request, as in ExecuteRequest.account
-	// without the credentials.
+	// The account that served the request, as in ExecuteRequest.account.
 	Account *Account `protobuf:"bytes,2,opt,name=account,proto3" json:"account,omitempty"`
 	// Upstream HTTP status (always 2xx: a failed exchange comes back as
 	// RelayUpstreamResponse.error instead).

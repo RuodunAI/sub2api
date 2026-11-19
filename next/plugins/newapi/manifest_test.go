@@ -78,8 +78,7 @@ func TestManifest(t *testing.T) {
 		perms[perm.ID] = perm
 	}
 	// No net, no files: the core sends every request.
-	if len(perms) != 2 || perms["platform.register"].ID == "" ||
-		!reflect.DeepEqual(perms["accounts.credentials"].Scope, map[string]any{"types": "own"}) {
+	if len(perms) != 1 || perms["platform.register"].ID == "" {
 		t.Errorf("host permissions = %v", perms)
 	}
 }

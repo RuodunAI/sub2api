@@ -667,7 +667,7 @@ func TestEnableAndUpgradeRecheckResources(t *testing.T) {
 		if v != "0.1.0" {
 			continue // an upgrade asking for nothing new is approved on upload
 		}
-		consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "gateway.endpoint"}, {Permission: "platform.register"}, {Permission: "accounts.credentials"}}}
+		consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "gateway.endpoint"}, {Permission: "platform.register"}}}
 		if code, out := h.do("POST", "/plugins/video/versions/"+v+"/consent", "admin", consent); code != 200 {
 			t.Fatalf("consent %s = %d %v", v, code, out)
 		}

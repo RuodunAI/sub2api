@@ -58,7 +58,7 @@ type Options struct {
 	// Prices serves HostService.PriceUsage; nil makes it fail with UNAVAILABLE.
 	Prices  UsagePricer
 	Schemas SchemaDSN
-	// Accounts serves HostService.ListAccounts / GetAccountCredentials: the
+	// Accounts serves HostService.ListAccounts / GetAccount: the
 	// accounts of the calling plugin's own account types.
 	// Nil makes both calls fail with UNAVAILABLE.
 	Accounts core.PluginAccountReader

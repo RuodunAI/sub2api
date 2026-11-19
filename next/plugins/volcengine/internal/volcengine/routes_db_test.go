@@ -6,10 +6,10 @@ package volcengine
 // upstream call in here is a real signed HTTP request.
 //
 // The host is faked locally instead of with pluginsdktest.FakeHost because
-// that one does not serve ListAccounts / GetAccountCredentials /
-// SendAccountRequest (it embeds UnimplementedHostServiceServer). pluginsdktest.Options.Host takes the
+// that one does not serve ListAccounts / SendAccountRequest (it embeds
+// UnimplementedHostServiceServer). pluginsdktest.Options.Host takes the
 // concrete *FakeHost, so it cannot be substituted - hence testHost below,
-// which also lets these tests COUNT credential reads, which is the property
+// which also lets these tests COUNT account reads, which is the property
 // that matters most here.
 
 import (
@@ -27,6 +27,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -47,9 +48,9 @@ type testHost struct {
 	db *gorm.DB
 
 	mu sync.Mutex
-	// accounts of this plugin's account type, id -> (summary, credentials).
-	accounts map[int64]pluginsdk.AccountCredentials
-	// credReads counts GetAccountCredentials calls, one audit row each.
+	// accounts of this plugin's account type, as GetAccount answers.
+	accounts map[int64]*pluginv1.Account
+	// credReads counts GetAccount calls, one audit row each.
 	credReads map[int64]int
 	listCalls int
 
@@ -78,8 +79,8 @@ func (c hostClient) SendAccountRequest(ctx context.Context, in *pluginv1.SendAcc
 		return nil, statusNotFound()
 	}
 	u, err := url.Parse(in.GetUrl())
-	if err != nil || !c.h.manifest.UpstreamHostAllowed(u.Hostname(), a.Type, a.SettingsJSON, a.CredentialsJSON) {
-		return nil, status.Errorf(codes.PermissionDenied, "host of %q is not allowed for account %d", in.GetUrl(), a.ID)
+	if err != nil || !c.h.manifest.UpstreamHostAllowed(u.Hostname(), a.GetType(), a.GetSettingsJson(), a.GetCredentialsJson()) {
+		return nil, status.Errorf(codes.PermissionDenied, "host of %q is not allowed for account %d", in.GetUrl(), a.GetId())
 	}
 	return c.h.ark.send(ctx, in)
 }
@@ -92,26 +93,26 @@ func (h *testHost) ListAccounts(_ context.Context, q pluginsdk.AccountQuery) ([]
 	h.listCalls++
 	out := []pluginsdk.AccountSummary{}
 	for _, a := range h.accounts {
-		if q.Type != "" && q.Type != a.Type {
+		if q.Type != "" && q.Type != a.GetType() {
 			continue
 		}
-		out = append(out, a.AccountSummary)
+		out = append(out, pluginsdk.AccountSummary{ID: a.GetId(), Name: a.GetName(), Type: a.GetType(),
+			Status: a.GetProperties().GetStatus(), Enabled: a.GetProperties().GetSchedulable(), SettingsJSON: a.GetSettingsJson()})
 	}
 	return out, "", nil
 }
 
-func (h *testHost) AccountCredentials(_ context.Context, id int64) (*pluginsdk.AccountCredentials, error) {
+func (h *testHost) Account(_ context.Context, id int64) (*pluginv1.Account, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.credReads[id]++
 	a, ok := h.accounts[id]
 	if !ok {
 		// The real host answers the same NOT_FOUND for "no such account" and
-		// for "another plugin's account type" (CONTRACTS §26.6).
+		// for "another plugin's account type" (CONTRACTS §124).
 		return nil, statusNotFound()
 	}
-	cp := a
-	return &cp, nil
+	return proto.Clone(a).(*pluginv1.Account), nil
 }
 
 func (h *testHost) reads(id int64) int {
@@ -144,20 +145,15 @@ func startRoutes(t *testing.T) (*Plugin, *testHost, *fakeArk) {
 	if err := json.Unmarshal(manifestFile(t), &m); err != nil {
 		t.Fatal(err)
 	}
-	h := &testHost{db: db, accounts: map[int64]pluginsdk.AccountCredentials{}, credReads: map[int64]int{}, manifest: &m, ark: f}
-	h.accounts[1] = pluginsdk.AccountCredentials{
-		AccountSummary: pluginsdk.AccountSummary{
-			ID: 1, Name: "ark-with-assets", Type: AccountTypeAPIKey, Status: "active", Enabled: true,
-			SettingsJSON: `{"base_url":"` + DefaultBaseURL + `","asset_base_url":"` + f.srv.URL + `","asset_region":"` + DefaultAssetRegion + `"}`,
-		},
-		CredentialsJSON: `{"api_key":"ark-key-12345678","access_key":"` + testAK + `","secret_key":"` + testSK + `"}`,
+	h := &testHost{db: db, accounts: map[int64]*pluginv1.Account{}, credReads: map[int64]int{}, manifest: &m, ark: f}
+	active := &pluginv1.AccountProperties{Status: "active", Schedulable: true}
+	h.accounts[1] = &pluginv1.Account{Id: 1, Name: "ark-with-assets", Type: AccountTypeAPIKey, Properties: active,
+		SettingsJson:    `{"base_url":"` + DefaultBaseURL + `","asset_base_url":"` + f.srv.URL + `","asset_region":"` + DefaultAssetRegion + `"}`,
+		CredentialsJson: `{"api_key":"ark-key-12345678","access_key":"` + testAK + `","secret_key":"` + testSK + `"}`,
 	}
-	h.accounts[2] = pluginsdk.AccountCredentials{
-		AccountSummary: pluginsdk.AccountSummary{
-			ID: 2, Name: "ark-plain", Type: AccountTypeAPIKey, Status: "active", Enabled: true,
-			SettingsJSON: `{"base_url":"` + DefaultBaseURL + `"}`,
-		},
-		CredentialsJSON: `{"api_key":"ark-key-87654321"}`,
+	h.accounts[2] = &pluginv1.Account{Id: 2, Name: "ark-plain", Type: AccountTypeAPIKey, Properties: active,
+		SettingsJson:    `{"base_url":"` + DefaultBaseURL + `"}`,
+		CredentialsJson: `{"api_key":"ark-key-87654321"}`,
 	}
 
 	p := New()

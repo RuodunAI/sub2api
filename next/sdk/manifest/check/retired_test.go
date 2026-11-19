@@ -74,6 +74,14 @@ func TestOutdatedContract(t *testing.T) {
 			raw: func(root map[string]any) {
 				at(at(root, "accountTypes", 0), "platforms", 0)["requestFields"] = []string{"model"}
 			}},
+		{name: "accounts.credentials", field: "hostPermissions[2].id",
+			typed: func(m *manifest.Manifest) {
+				m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
+			}},
+		{name: "accounts.read", field: "hostPermissions[2].id",
+			typed: func(m *manifest.Manifest) {
+				m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.read"})
+			}},
 		{name: "endpoint maxBodyBytes", field: "platforms[0].endpoints[0].request.maxBodyBytes",
 			raw: func(root map[string]any) {
 				at(at(root, "platforms", 0), "endpoints", 0)["request"].(map[string]any)["maxBodyBytes"] = 1 << 20
@@ -117,11 +125,14 @@ func TestRuntimeUnsupported(t *testing.T) {
 	}
 }
 
-// Every account type is served by the plugin's own Execute, which receives
-// the credentials.
-func TestAccountTypesNeedCredentials(t *testing.T) {
+// Account types need platform.register and no account grant: the plugin
+// receives the accounts of the types it declares (CONTRACTS §124).
+func TestAccountTypesNeedNoAccountGrant(t *testing.T) {
 	m := controlsManifest(nil)
-	m.HostPermissions = m.HostPermissions[:2]
+	if got := controlCodes(m); len(got) != 0 {
+		t.Fatalf("codes = %v", got)
+	}
+	m.HostPermissions = m.HostPermissions[:1]
 	if got := controlCodes(m); got["accountTypes"] != "missing_host_permission" {
 		t.Fatalf("codes = %v", got)
 	}

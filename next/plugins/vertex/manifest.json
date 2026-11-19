@@ -238,16 +238,6 @@
         "en": "Register the Vertex AI account types (service account, user credentials, API key) for the built-in gemini platform",
         "zh": "为内置 gemini 平台注册 Vertex AI 账号类型（服务账号、用户凭证、API Key）"
       }
-    },
-    {
-      "id": "accounts.credentials",
-      "scope": {
-        "types": "own"
-      },
-      "reason": {
-        "en": "Read the key file, access token or API key of its own accounts to build upstream and token requests (the core sends them all)",
-        "zh": "读取本插件账号的密钥文件、访问令牌或 API Key，用于构造上游请求和令牌请求（均由核心发送）"
-      }
     }
   ],
   "externalServices": ["googleapis.com"]

@@ -138,8 +138,8 @@ func TestExecuteDefaultFormsAndReports(t *testing.T) {
 					return classified, nil
 				},
 				extract: func(in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
-					if in.GetMeta().GetModel() != "m" || in.GetAccount().GetId() != 7 || in.GetAccount().GetCredentialsJson() != "" {
-						t.Errorf("observation lacks the request's meta/account or leaks credentials: %v", in)
+					if in.GetMeta().GetModel() != "m" || in.GetAccount().GetId() != 7 || in.GetAccount().GetCredentialsJson() != "secret" {
+						t.Errorf("observation lacks the request's meta or account (as in ExecuteRequest.account): %v", in)
 					}
 					return report, tc.extractErr
 				},

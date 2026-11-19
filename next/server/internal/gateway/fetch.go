@@ -27,7 +27,7 @@ func (x *execution) fetch(ctx context.Context, in *pluginv1.ExecutionHTTPRequest
 	header, total := c.upstreamTimeouts(false)
 	out, err := execfetch.Do(ctx, in, execfetch.Binding{
 		CheckURL:      x.checkURL,
-		Client:        func(context.Context) (*http.Client, error) { return x.egress.Client, x.egressErr },
+		Client:        func(context.Context) (*http.Client, error) { return x.egress.Client, nil },
 		HeaderTimeout: header, TotalTimeout: total,
 	})
 	if err == nil && out.GetTransportError() == "" {

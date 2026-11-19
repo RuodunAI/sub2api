@@ -141,7 +141,6 @@ func Platform(key, version, publisher string) *manifest.Manifest {
 		HostPermissions: []manifest.HostPermission{
 			{ID: "gateway.endpoint"},
 			{ID: "platform.register"},
-			{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}},
 		},
 	}
 }
@@ -168,7 +167,6 @@ func Anthropic(key, version, publisher string) *manifest.Manifest {
 		}},
 		HostPermissions: []manifest.HostPermission{
 			{ID: "platform.register"},
-			{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}},
 		},
 	}
 }

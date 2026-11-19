@@ -222,7 +222,6 @@ func (f *FakeHost) relay(ctx context.Context, e *Execution, in *pluginv1.RelayUp
 		}
 		if o.Account == nil && e.request.GetAccount() != nil {
 			o.Account = proto.Clone(e.request.GetAccount()).(*pluginv1.Account)
-			o.Account.CredentialsJson = ""
 		}
 	}
 	return out, nil

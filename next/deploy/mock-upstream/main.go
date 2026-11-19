@@ -220,6 +220,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /__control", s.clearRules)
 	mux.HandleFunc("/__webhook/", s.webhook)
 	s.openAIAuthRoutes(mux)
+	s.arkRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			s.connect(w, r)

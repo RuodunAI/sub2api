@@ -161,7 +161,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
   - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），**每次**调用插件的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都调用它现取一张票据，放进请求体（约定字段 `proxy_ticket`）；
-  - 插件用 `pluginsdk.RouteProxyTicket(req)` 读这次调用的票据（缺了回 400），这次调用里的请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单**此刻**选的代理发出（没选就直连），插件看不到代理。票据不要存进授权会话沿用：授权开始后管理员改了代理，下一次调用就该走新代理；
+  - 插件用 `pluginsdk.RouteProxyTicket(req)` 读这次调用的票据（缺了回 400），这次调用里的请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单**此刻**选的代理发出（没选就直连），插件看不到代理（建账号之前；账号建好以后代理随 `Account` 下发，2.8a）。票据不要存进授权会话沿用：授权开始后管理员改了代理，下一次调用就该走新代理；
   - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不可用）：请求没有发出，不要因此结束授权会话，管理员把表单的代理改好后，下一次调用带着新票据就能发出；
   - 不需要 `net`。codex 是范例（`plugins/codex/internal/codex/oauth.go`）；测试里 `Harness.DoAs` 会给路由调用发执行令牌，假宿主要求路由取回带票据，用 `ExecuteHTTPFunc` 看到它。
 - 插件自己的其他对外连接（Webhook、SMTP 等，不是转发、不是取回、也不是建账号前的授权）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。这项设置同样管核心替插件发出的请求：中继、取回、`SendAccountRequest` 被它拒绝时与主机规则拒绝时一样（`Relay` 换号，取回和 `SendAccountRequest` 回 `PERMISSION_DENIED`，信息写明是插件联网的屏蔽或允许列表）；配额查询、凭证续期的请求被拒时插件拿到 `transport_error`（`status` 0），按传输失败处理；账号测试和拉取模型列表的失败显示给管理员。这类拒绝不要重试，也记在插件的外部访问日志里。
@@ -213,9 +213,17 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 - 提交：`ExecuteDefault` 做 `RelayAndWait` → `ParseTaskSubmission` → `ReportTask(task)`。解析失败时返回错误：任务不登记，客户端报错，预扣释放。`task.usage.reserve` 是更准的第二次预估，核心登记任务时原子地替换请求前的预扣。插件拿不到任务 ID 和回执。
 - 观察：核心认领到期任务后调 `Monitor`（租约、调度、原账号都归核心）。`Monitor` 只能 `Fetch`、不能中继；结果在返回值里，返回 `nil` 或报错算一次查询失败。终态只在这次调用里有一次完整、成功的 `Fetch`（拿到 HTTP 状态、没有传输错误）时才被接受。结果不限大小。`PollFailure`、`TaskNotFound` 构造对应的结果。
 
+### 2.8a 账号的全部信息与代理（CONTRACTS §124）
+
+- 插件收到的每个 `Account`（`Execute`、`Monitor`、`ClassifyError`、测试、模型（已有账号的；建账号之前按表单拉模型时还没有账号，不给代理，请求经表单选的代理发出）、额度、续期、余额、用量观察）都是它自己账号类型的账号，带解密的凭证和这次调用出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码；直连时不设）。不需要任何宿主授权。WebSocket 会话里 `Account.proxy` 是上游连接走的代理，会话期间不变；同一轮里的取回按当时已保存的代理走，管理员中途改了代理时两者可以不同，新会话按新代理（CONTRACTS §124.2）。
+- 请求之外要读账号（插件自己的管理路由），用 `Host.Account(ctx, id)`（`HostService.GetAccount`）：别人的账号和不存在的一样 `NOT_FOUND`，代理拿不到时 `UNAVAILABLE`；每次调用写一条审计，所以每个请求每个账号最多读一次，不缓存明文、不写进插件自己的表。列账号用 `Host.ListAccounts`。
+- 代理只是数据：**不得用于自行联网**。账号的所有请求仍只经核心发出（`Relay`、`RelayAndWait`、`Fetch`、`SendAccountRequest`），核心强制这个代理；SDK 不提供把代理变成传输或拨号器的函数。
+- 读代理用 `pluginsdk.AccountProxyOf(acc)`，它打印、`slog` 时不出现密码；不要打印 `Account` 或 `AccountProxy` 消息本身。
+- 测试：假宿主 `pluginsdktest.FakeHost.Accounts` 回答 `GetAccount`，`AccountReads` 记录调用。
+
 ### 2.9 不要做的事
 
-- 不开套接字、不用 `http.DefaultClient` 或厂商 SDK 客户端；对外只有 `Relay`、`RelayAndWait`、`Fetch`。
+- 不开套接字、不用 `http.DefaultClient` 或厂商 SDK 客户端；对外只有 `Relay`、`RelayAndWait`、`Fetch`（请求之外是 `SendAccountRequest`）。`Account.proxy` 不用来自己联网（2.8a）。
 - 不重试、不换号、不按请求缓存构造结果（`attempt > 0` 时从头构造）；按账号缓存令牌可以。
 - 构造里不直接 `time.Now()`、不遍历 map 拼字符串（确定性）；把 `ctx` 传给 `Fetch`、`Relay`，不要用 `context.Background()`（取消）。
 - 不在插件里实现限流、并发、粘性、价格、断开计费、自动禁用这类核心统一处理的逻辑；要让账号禁用到某个时刻，实现 `ClassifyError`。

@@ -33,7 +33,6 @@
       "creationGroup": "codex",
       "authMethodLabel": { "en": "Device Code", "zh": "设备码" },
       "sensitiveFields": ["access_token", "refresh_token", "id_token"],
-      "settingsFields": ["proxy_id"],
       "refresh": {},
       "quota": {
         "headers": [
@@ -84,7 +83,6 @@
       "creationGroup": "codex",
       "authMethodLabel": { "en": "Codex", "zh": "Codex" },
       "sensitiveFields": ["access_token", "refresh_token", "id_token"],
-      "settingsFields": ["proxy_id"],
       "refresh": {},
       "quota": {
         "headers": [
@@ -190,8 +188,6 @@
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the ChatGPT (Codex) account types (device code, Sign in with Codex) for the built-in openai platform", "zh": "为内置 openai 平台注册 ChatGPT（Codex）账号类型（设备码登录、Sign in with Codex）" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the tokens of its own accounts to build upstream and token refresh requests, and to list and spend the official usage resets through the account's proxy (the core sends them all)", "zh": "读取本插件账号的令牌，用于构造上游和令牌刷新请求，以及查询和使用官方重置次数（经账号代理，均由核心发送）" } },
     { "id": "accounts.auto_state", "scope": { "types": "own" },
       "reason": { "en": "After an official usage reset succeeds, clear the automatic disable and cool-down this plugin set on the account because a usage window was used up", "zh": "官方用量重置成功后，清除本插件因用量窗口用满而对账号设置的自动停用与冷却" } },
     { "id": "kv",

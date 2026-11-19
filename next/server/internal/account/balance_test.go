@@ -396,8 +396,8 @@ func TestBalanceHostChecksSendNothing(t *testing.T) {
 	}
 }
 
-// The requests leave through the account's proxy; a disabled proxy is a
-// transport failure, never a direct connection.
+// The requests leave through the account's proxy; with a disabled proxy
+// nothing is built or sent, never a direct connection.
 func TestBalanceThroughAccountProxy(t *testing.T) {
 	e := setup(t)
 	up := newBalanceUpstream(t)
@@ -426,8 +426,10 @@ func TestBalanceThroughAccountProxy(t *testing.T) {
 		t.Fatalf("via proxy: %v", d)
 	}
 	setProxy(off)
-	if _, d := e.getBalance(id, true); d["error"] != "transient: status 0 proxy disabled" || d["amount"] != "0.000007" {
-		t.Fatalf("disabled proxy: %v", d)
+	built := func() int { fb.mu.Lock(); defer fb.mu.Unlock(); return fb.builds }
+	before := built()
+	if _, d := e.getBalance(id, true); d["error"] != "transient: proxy disabled" || d["amount"] != "0.000007" || built() != before {
+		t.Fatalf("disabled proxy: %v, builds %d -> %d", d, before, built())
 	}
 	mu.Lock()
 	defer mu.Unlock()
