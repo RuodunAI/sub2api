@@ -104,6 +104,12 @@ func (u *wsUpstream) handle(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"type": "error", "status": 429, "error": map[string]any{"type": "usage_limit_reached", "message": "limit"},
 				"headers": map[string]any{"X-Codex-Primary-Used-Percent": "100.0", "x-codex-primary-window-minutes": 300, "x-flag": true}})
 			continue
+		case "image-fail": // a failed turn that still reports the turn's and the image tool's usage
+			send(map[string]any{"type": "response.failed", "response": map[string]any{"id": id, "model": model, "status": "failed",
+				"error":      map[string]any{"code": "server_error", "message": "boom"},
+				"usage":      map[string]any{"input_tokens": wsInput, "output_tokens": wsOutput, "input_tokens_details": map[string]any{"cached_tokens": wsCacheRead}},
+				"tool_usage": map[string]any{"image_gen": map[string]any{"input_tokens": 39, "output_tokens": 515, "output_tokens_details": map[string]any{"image_tokens": 515}}}}})
+			continue
 		case "fail":
 			send(map[string]any{"type": "response.failed", "response": map[string]any{"id": id, "model": model, "status": "failed",
 				"error": map[string]any{"code": "server_error", "message": "boom"}}})
