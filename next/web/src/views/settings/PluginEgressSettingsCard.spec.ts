@@ -7,9 +7,10 @@ import PluginEgressSettingsCard from './PluginEgressSettingsCard.vue'
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }))
 const toast = vi.hoisted(() => vi.fn())
+const confirm = vi.hoisted(() => vi.fn(async () => true))
 const perms = vi.hoisted(() => ({ manage: true }))
 vi.mock('@sub2api/host', async original => ({ ...(await original<object>()), api }))
-vi.mock('@sub2api/ui', async original => ({ ...(await original<object>()), toast }))
+vi.mock('@sub2api/ui', async original => ({ ...(await original<object>()), toast, confirm }))
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ has: (k: string) => k !== 'settings:manage' || perms.manage }) }))
 enableAutoUnmount(afterEach)
 
@@ -69,18 +70,52 @@ describe('plugin network access (CONTRACTS §113)', () => {
     expect(listText(w)).toContain('evil.com')
     expect(listText(w)).not.toContain('good.com')
 
+    expect(w.find('[data-testid="plugin-egress-block-all-warning"]').exists()).toBe(false)
+
     w.getComponent(SSelect).vm.$emit('update:modelValue', 'block_all')
     await flushPromises()
+    expect(confirm).toHaveBeenCalledTimes(1)
     expect(api.put).toHaveBeenCalledWith('/settings/plugin-egress', { mode: 'block_all' })
     expect(toast).toHaveBeenCalledWith('已保存', 'success')
     expect(w.get('[data-testid="plugin-egress-info"]').text()).toBe('插件只能访问您在下方允许的域名。')
     expect(listText(w)).toContain('已允许的域名')
     expect(listText(w)).toContain('good.com')
     expect(listText(w)).not.toContain('evil.com')
-    // The other list was not touched: switching back shows it again.
+    // The other list was not touched: switching back shows it again, and
+    // allowing all domains needs no confirmation.
     w.getComponent(SSelect).vm.$emit('update:modelValue', 'allow_all')
     await flushPromises()
     expect(listText(w)).toContain('evil.com')
+    expect(confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('confirms blocking all domains, which reaches the platform plugins upstreams too, and warns while it lasts', async () => {
+    const w = await render()
+    confirm.mockResolvedValueOnce(false)
+    w.getComponent(SSelect).vm.$emit('update:modelValue', 'block_all')
+    await flushPromises()
+    const ask = (confirm.mock.calls[0] as unknown as [{ title: string; message: string; danger: boolean }])[0]
+    expect(ask.title).toBe('屏蔽所有域名？')
+    expect(ask.message).toContain('平台插件发往上游的请求也一样')
+    expect(ask.danger).toBe(true)
+    // Cancelled: nothing saved, still allowing all domains.
+    expect(api.put).not.toHaveBeenCalled()
+    expect(w.getComponent(SSelect).props('modelValue')).toBe('allow_all')
+    expect(w.find('[data-testid="plugin-egress-block-all-warning"]').exists()).toBe(false)
+
+    w.getComponent(SSelect).vm.$emit('update:modelValue', 'block_all')
+    await flushPromises()
+    expect(api.put).toHaveBeenCalledWith('/settings/plugin-egress', { mode: 'block_all' })
+    const warning = w.get('[data-testid="plugin-egress-block-all-warning"]').text()
+    expect(warning).toContain('平台插件发往上游的请求同样只能去允许的域名')
+    expect(warning).toContain('api.anthropic.com')
+  })
+
+  it('warns on load when all domains are blocked already', async () => {
+    stored.mode = 'block_all'
+    const w = await render()
+    expect(w.find('[data-testid="plugin-egress-block-all-warning"]').exists()).toBe(true)
+    expect(w.get('[data-testid="plugin-egress-settings"]').text()).toContain('平台插件发往上游的请求')
   })
 
   it('says when the list is empty', async () => {

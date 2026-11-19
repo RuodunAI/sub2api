@@ -133,3 +133,86 @@ func TestAC37_PluginNetworkAccess(t *testing.T) {
 	setAccess(map[string]any{"allowed_domains": []string{host}})
 	allowed("block all, allowed")
 }
+
+// AC 37 (continued): plugin network access also rules the requests the core
+// sends for a platform plugin (CONTRACTS §113). With the mock's host - the
+// account's own upstream address - on the blocked list, or missing from the
+// allowed list, a request through the gateway never reaches the mock: the
+// attempt is refused before anything is sent, the client gets the answer of
+// a request no account could serve (without the host), and the refusal is
+// a denied row of the anthropic plugin's egress log with the list as the
+// reason. Taken off the list, requests reach the mock again. Saving and
+// sending both go to node 1 (the other node learns of a save from a
+// broadcast a moment later); the setting is the default again afterwards.
+func TestAC37_PluginNetworkAccessCoversUpstreamRequests(t *testing.T) {
+	e := Setup(t)
+	admin := e.Admin()
+	tn := e.NewTenant(admin, TenantOpts{})
+	mockURL, err := url.Parse(e.MockInternalURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := mockURL.Hostname()
+	node := *admin.Client
+	node.Base = e.NodeURLs[0]
+	setAccess := func(body map[string]any) {
+		t.Helper()
+		node.OK(t, http.MethodPut, "/settings/plugin-egress", body)
+	}
+	defaults := map[string]any{"mode": "allow_all", "blocked_domains": []string{}, "allowed_domains": []string{}}
+	t.Cleanup(func() { setAccess(defaults) })
+	setAccess(defaults)
+
+	m := e.Mock()
+	key := tn.Accounts[0].Key
+	reached := func(mark int64) bool {
+		for _, r := range m.Since(t, mark) {
+			if r.APIKey == key {
+				return true
+			}
+		}
+		return false
+	}
+	send := func() *GatewayResult {
+		t.Helper()
+		return e.Gateway(t, node.Base, "/v1/messages", tn.APIKey, MessagesBody(tn.Model, "network access "+e.RunID, false), nil)
+	}
+	served := func(what string) {
+		t.Helper()
+		mark := m.Mark(t)
+		if g := send(); g.Status != 200 || !reached(mark) {
+			t.Fatalf("%s: HTTP %d %s, reached the mock %v", what, g.Status, g.Body, reached(mark))
+		}
+	}
+	refused := func(what, reason string) {
+		t.Helper()
+		mark, since := m.Mark(t), time.Now().Add(-time.Second)
+		g := send()
+		if g.Status < 500 || strings.Contains(string(g.Body), host) {
+			t.Fatalf("%s: HTTP %d %s", what, g.Status, g.Body)
+		}
+		if reached(mark) {
+			t.Fatalf("%s: the request reached the mock", what)
+		}
+		Eventually(t, 30*time.Second, time.Second, what+": denied in the anthropic egress log", func() bool {
+			d := admin.OK(t, http.MethodGet, "/plugins/"+AnthropicPlugin+"/egress", nil, Query("from", since.UTC().Format(time.RFC3339),
+				"to", time.Now().Add(time.Minute).UTC().Format(time.RFC3339), "page_size", "200"))
+			for _, r := range d.Get("items").Array() {
+				if r.Get("host").String() == host && r.Get("result").String() == "denied" && strings.Contains(r.Get("error").String(), reason) {
+					return true
+				}
+			}
+			return false
+		})
+	}
+
+	served("default setting")
+	setAccess(map[string]any{"blocked_domains": []string{host}})
+	refused("blocked list", host+" is on the blocked list of plugin network access")
+	setAccess(map[string]any{"blocked_domains": []string{}})
+	served("off the blocked list")
+	setAccess(map[string]any{"mode": "block_all", "allowed_domains": []string{"api.anthropic.example"}})
+	refused("block all, the account's address not allowed", host+" is not on the allowed list of plugin network access")
+	setAccess(map[string]any{"allowed_domains": []string{host}})
+	served("block all, allowed")
+}

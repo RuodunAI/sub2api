@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -111,7 +112,10 @@ type Provider struct {
 	unsub    func()
 }
 
-var _ core.EgressProvider = (*Provider)(nil)
+var (
+	_ core.EgressProvider      = (*Provider)(nil)
+	_ core.PluginNetworkAccess = (*Provider)(nil)
+)
 
 // New builds a provider and starts its log writer. db may be nil (logs are
 // discarded). Call Close on shutdown to flush pending logs.
@@ -526,6 +530,28 @@ func (p *Provider) hostRefusal(ctx context.Context, host string) string {
 		return err.Error()
 	}
 	return h.refusal(host)
+}
+
+// PluginRequestRefusal implements core.PluginNetworkAccess: the tunnel's
+// decision (hostRefusal) for a request the core sends for the plugin. A
+// refusal is queued as a denied row of the plugin's egress log, its network
+// the URL's scheme (a tunnelled connection's is tcp); allowed requests are
+// not logged here (they are the usage records' and the gateway's).
+func (p *Provider) PluginRequestRefusal(ctx context.Context, pluginKey string, target *url.URL) string {
+	host := normalizeHost(target.Hostname())
+	msg := p.hostRefusal(ctx, host)
+	if msg != "" {
+		port, err := strconv.Atoi(target.Port())
+		if err != nil {
+			port = 443
+			if target.Scheme == "http" {
+				port = 80
+			}
+		}
+		p.logs.add(logEntry{PluginKey: pluginKey, NodeID: p.opts.NodeID, Network: target.Scheme, Host: truncate(host, 255),
+			Port: port, StartedAt: time.Now(), Result: ResultDenied, Error: msg})
+	}
+	return msg
 }
 
 // AllowedHost reports whether host may be reached under pol. In allowlist

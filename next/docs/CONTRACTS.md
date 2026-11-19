@@ -6212,7 +6212,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 | --- | --- |
 | 授权 | 与 `GetAccountCredentials` 相同（§26.6）：`accounts.credentials`，scope 必须恰好是 `{"types":"own"}`，调用时用 PG 复核授权行（`requireOwnCredentials`）。这类请求带的就是插件用 `GetAccountCredentials` 读到的凭证，所以不另设授权。不满足 → `PERMISSION_DENIED` |
 | 参数 | `account_id > 0`；`url` 非空；`method` 空 = `GET`，大小写不敏感；URL、方法、`body` 不限大小（转发 V2 收尾起，§112.17；此前 8 KiB、16 字节、64 KiB）。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
-| 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`manifest.UpstreamHostAllowed`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
+| 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`core.CheckPluginUpstream`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机，并且管理员的插件联网设置允许插件访问它（§113.3）；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
 | 账号 | account 模块按 `id`、`plugin_key`、未删除查询（`SendPluginAccountRequest`，可选接口 `core.PluginAccountRequester`）。别的插件的账号和不存在的 id 一样回 `NOT_FOUND`，不泄露 id 是否存在。账号状态不限：停用、`auto_disabled` 的账号也能发（重置次数正是给被停用的账号用的） |
 | 发送 | 复用配额查询、凭证刷新的 `sendPluginCall`：账号有 `proxy_id` 就走该代理（代理停用或不存在 → `transport_error`，不会回退直连）；目标按 `netguard.CheckHostVia`（§43.4）检查：直连时拒绝解析到私网的地址，经代理时本机不解析、只拒绝字面的私网地址和 `localhost`（`AllowPrivateUpstream` 时都不检查）。`body` 原样发送，请求头里没有 `Content-Type` 时默认 `application/json`。**不跟随重定向**，3xx 原样返回（配额、刷新路径照旧跟随，行为不变）。响应体整份交还（此前截到 64 KiB 并置 `truncated`，§112.17；该字段已删除），读不完整（例如连接中途断开）按传输错误交给插件：`status` 0、`transport_error`，不交出半截响应体；响应头名转小写，只取第一个值 |
 | 上限 | 单次 30 s（`refreshTimeout`），调用方 ctx 取消时立即中止；不另设并发上限 |
@@ -8343,21 +8343,23 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 为什么用 `upstreamFields` 识别“运营方填的上游地址”：它已经存在、按账号类型声明，账号的自定义上游判断（§21）和取回（§112.6）早就用它，不加新的清单字段；第三方插件作者只需要把写死的主机写进 `externalServices`、把让运营方填地址的字段写进 `upstreamFields`。没有采用“账号配置里所有形如 http(s) URL 的值”：设置和凭证里常有不是上游的 URL（vertex 的服务账号密钥文件里有 `auth_uri`、`token_uri`、`client_x509_cert_url` 等），它们是上传的内容而不是运营方填的地址，会放开没人审查过的主机。
 
+**3. 还要通过管理员的插件联网设置**（2026-11-18 起，§113.3）。通过上面规则的主机，还必须是管理员在“系统设置 → 插件联网”里允许插件访问的：两道都过才发。两道检查是核心里的一次调用 `core.CheckPluginUpstream`（先清单与账号的规则，再 `core.CheckPluginNetwork`），各调用点不另写判断；清单的规则拒绝时不再问管理员的设置。被拒的 `*core.Error` 是 `ErrPermissionDenied`，`details.reason` 为 `upstream_host_not_allowed`（清单与账号的规则）或 `upstream_host_blocked`（插件联网）。
+
 用在三处，都是核心用账号凭证代发的请求：
 
 | 请求 | 判断的地方 | 被拒时 |
 |---|---|---|
-| 中继：HTTP（不等待、等待）与 WebSocket 握手（`ws(s)` 按同名主机判断） | 网关 `relay_check.go` 的 `allowHost`，在 SSRF 检查之前 | 与网关拒绝的其他中继一样（§112.5）：插件一侧 `INVALID_ARGUMENT`，什么都没发出；这次尝试按插件不可用换号（记录类型 `plugin_unavailable`，`NeutralReason` 为 `upstream_host_not_allowed`），账号不冷却、不禁用；信息写明主机与插件；WARN 日志 `gateway: upstream host not allowed` 带请求 ID、插件 key、账号、主机 |
-| 取回（`ExecuteHTTP`，`Execute` 与 `Monitor` 里） | 运行时 `requireFetchHost`（§112.6） | `PERMISSION_DENIED` |
+| 中继：HTTP（不等待、等待）与 WebSocket 握手（`ws(s)` 按同名主机判断） | 网关 `relay_check.go` 的 `allowHost`，在 SSRF 检查之前 | 与网关拒绝的其他中继一样（§112.5）：插件一侧 `INVALID_ARGUMENT`，什么都没发出；这次尝试按插件不可用换号（记录类型 `plugin_unavailable`，`NeutralReason` 为 `upstream_host_not_allowed` 或 `upstream_host_blocked`），账号不冷却、不禁用；信息写明主机与插件（进使用记录的尝试轨迹，管理员可见）；WARN 日志 `gateway: upstream host not allowed` 带请求 ID、插件 key、账号、主机、`reason`。所有账号都被拒时与其他核心拒绝的尝试一样，客户端得到 503 `no_available_account`（Anthropic 格式 529 `overloaded_error`），信息里没有主机 |
+| 取回（`ExecuteHTTP`，`Execute` 与 `Monitor` 里，以及路由调用里带代理票据的取回，§117） | 运行时 `requireFetchHost`（§112.6） | `PERMISSION_DENIED` |
 | `SendAccountRequest`（§91） | 账号模块读出账号（类型、设置、解密的凭证）后判断 | `PERMISSION_DENIED`，什么都没发、不写审计 |
 
 假宿主（`pluginsdktest.FakeHost`）对中继和取回执行同一条规则（中继 `INVALID_ARGUMENT`，取回 `PERMISSION_DENIED`）；它不知道清单时什么主机都不放行（`FakeHost.ExternalServices` 可以替换清单的）。`standardtest.Run` 回放黄金样例时同样检查每个请求的主机。九个平台插件的测试、一致性套件和 1498 条黄金样例都在这条规则下通过。
 
-不在这条规则里的核心代发请求：配额查询（§44）、凭证续期（§48）、账号测试与模型列表（§19）由插件描述、核心发送，仍只受 SSRF 约束。
+不在清单与账号的规则里的核心代发请求：配额查询（§44）、凭证续期（§48）、账号测试与模型列表（§19）由插件描述、核心发送，不受清单与账号的规则约束；它们的目标同样由插件决定，所以要过管理员的插件联网设置（§113.3）和 SSRF 检查。
 
-**3. `SendAccountRequest` 的主机与大小。** 主机按上面的规则（此前只认 `externalServices`，账号自己的上游地址被拒，例如中转账号按自己的 `base_url` 解析的素材接口、正式账号的 `asset_base_url`）。请求体、URL、方法不限大小（此前 64 KiB、8 KiB、16 字节，超出 `INVALID_ARGUMENT`）；回答整份交还（此前截到 64 KiB 并置 `truncated`，素材列表一页就会超过，解析失败）。配额查询、凭证续期与它共用发送路径（`sendPluginCall`），回答同样不再截断：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）核心都不再设置，随后从协议删除（`reserved`），连同从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）；codex、vertex 对它的处理已删除。单次 30 秒（`refreshTimeout`）不变。
+**4. `SendAccountRequest` 的主机与大小。** 主机按上面的规则（此前只认 `externalServices`，账号自己的上游地址被拒，例如中转账号按自己的 `base_url` 解析的素材接口、正式账号的 `asset_base_url`）。请求体、URL、方法不限大小（此前 64 KiB、8 KiB、16 字节，超出 `INVALID_ARGUMENT`）；回答整份交还（此前截到 64 KiB 并置 `truncated`，素材列表一页就会超过，解析失败）。配额查询、凭证续期与它共用发送路径（`sendPluginCall`），回答同样不再截断：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）核心都不再设置，随后从协议删除（`reserved`），连同从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）；codex、vertex 对它的处理已删除。单次 30 秒（`refreshTimeout`）不变。
 
-**4. 空值的权威头表示删除。** 请求头分层（§112.4）里插件的权威头是最后一层；权威头的值为空表示“这个头不发”：核心删掉前面各层（插件的默认头、透传的客户端头、运营方的请求头覆盖和参数覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（网关 `layerHeaders`）。默认头的空值照旧写成空值的头。proto 不变（`map<string,string>` 本来就能表达空串）。SDK：`Upstream.RemoveHeader(name)` 写入空值的权威头（`Header(name, "")` 仍然什么都不写）；名字要在一致性第 4 条声明的集合里。bedrock 用它：签名里没有会话令牌（Access Key、API Key 账号）时删除 `x-amz-security-token`，运营方经请求头覆盖加的会话令牌不会到达 AWS 让签名校验失败；账号测试请求没有运营方的层，空值的头直接不发。
+**5. 空值的权威头表示删除。** 请求头分层（§112.4）里插件的权威头是最后一层；权威头的值为空表示“这个头不发”：核心删掉前面各层（插件的默认头、透传的客户端头、运营方的请求头覆盖和参数覆盖）设置的同名头，HTTP 与 WebSocket 握手相同（网关 `layerHeaders`）。默认头的空值照旧写成空值的头。proto 不变（`map<string,string>` 本来就能表达空串）。SDK：`Upstream.RemoveHeader(name)` 写入空值的权威头（`Header(name, "")` 仍然什么都不写）；名字要在一致性第 4 条声明的集合里。bedrock 用它：签名里没有会话令牌（Access Key、API Key 账号）时删除 `x-amz-security-token`，运营方经请求头覆盖加的会话令牌不会到达 AWS 让签名校验失败；账号测试请求没有运营方的层，空值的头直接不发。
 
 ## 113. 插件联网：管理员指定插件可访问、不可访问的域名（2026-11-18，所有者决定“默认放行，可以指定域名就行了”；无迁移；设计见 [DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md](DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md)）
 
@@ -8374,19 +8376,30 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 插件的 DNS 查询（`dns.sub2api`）同样过插件联网，被拒回 REFUSED。
 - 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。
 - 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
-- 只管出口隧道。核心替插件发的上游请求（`RelayUpstream`、`SendAccountRequest`）与取回（Fetch）不受影响。
 - **局限**（所有者接受）：
   - `allow_all` 下屏蔽的是名字：插件直接拨 IP 字面量时按 IP 比较，屏蔽某个域名挡不住插件直接拨它解析出的 IP。要彻底限住插件能去哪里，用 `block_all`。
   - 设置只管新建的连接和 DNS 查询：已建立的连接不断开，插件已有的空闲保活连接会继续被复用，要等它自己关闭（Go HTTP 客户端默认空闲 90 秒）后新设置才管到这个目标。
   - 多节点下保存的节点立即生效，其他节点收到 `config:changed` 广播才生效（漏收时最多 10 秒），中间有一小段仍按旧设置判断。
 
-### 113.3 控制台
+### 113.3 核心替插件发出的请求（2026-11-18 补，所有者决定）
 
-“系统设置 → 运行环境 → 插件联网”（`/settings?tab=plugin-egress`）：默认设置下拉框（允许所有域名 / 屏蔽所有域名），随模式变化的提示与一张列表（已屏蔽的域名 / 已允许的域名），添加对话框支持多行与批量（每行一个，逐行报错），每项可移除；每次改动立即保存。插件详情“外部访问”页有一行链接到这里。
+所有者原话：“插件本身是不允许任何直连的，它的所有网络都需要通过核心发出。限制的域名也是核心必须通过，也是插件必须通过核心发出，然后这时候来进行域名限制。”所以这项设置管插件经核心发出的**全部**网络，不只是出口隧道：凡是目标地址由插件决定（或由插件清单、账号配置决定）、由核心替插件发出的请求，都要过它。
 
-### 113.4 验收
+- **范围**：中继（HTTP 等待与不等待、WebSocket 握手）、取回（`Execute`、`Monitor` 里的，路由调用里带代理票据的）、`SendAccountRequest`、配额查询、凭证续期、账号测试、拉取模型列表。前三类先过清单与账号的规则（§112.17），后四类没有那道规则，只过这项设置。不在范围内的是核心自己的请求：价格同步、插件市场与插件包下载、代理检测、协议转换时下载客户端给的媒体 URL、节点间通信，以及 `Notify`（发往管理员配置的通知渠道）。
+- **判断**：与出口隧道是同一个判断（`hostPolicies` 的缓存与 `HostPolicy.refusal`，匹配同 113.2，比较 URL 的主机名，端口不参与），经 `core.PluginNetworkAccess`（由 `egress.Provider` 实现，在 `internal/app` 里注入账号模块、网关和插件运行时）。缓存、失效、读失败沿用上次值、从未读成功时拒绝都与 113.2 相同；请求路径上不读数据库。插件自己的 `net` 授权与按插件的出口策略只管出口隧道，与这些请求无关（平台插件没有 `net`）。
+- **被拒时**：中继、取回、`SendAccountRequest` 见 §112.17 的表（`details.reason` / `NeutralReason` 为 `upstream_host_blocked`，信息为 `plugin <key>: <host> is on the blocked list of plugin network access` 或 `... is not on the allowed list ...`）。账号测试：测试结果失败，信息写明原因，什么都没发出；拉取模型列表：错误写明原因；配额查询、凭证续期：插件拿到的是传输错误（`status` 0、`transport_error` 写明原因），按插件对传输错误的处理（续期一般是暂时失败，凭证不变）。
+- **记录**：每个被这项设置拒绝的请求在该插件的出口日志里写一行（`plugin_egress_logs`，`result = denied`，`error` 为原因，`network` 为 URL 的协议 `https`/`http`，以区别于隧道的 `tcp`，`host`、`port` 为 URL 的），与隧道的拒绝一样经批量异步的日志写入器（满了丢弃，不阻塞请求），管理员在插件详情“外部访问”页的明细和按目标汇总里看到。放行的请求不写（那是使用记录的事）；被拒的请求不计入访问过的域名（`plugin_egress_domains`），不发新域名事件。中继被拒另有网关的 WARN 日志和使用记录里的尝试轨迹。
+- **“屏蔽所有域名”的后果**：允许列表里没有某个平台的上游域名（如 `api.anthropic.com`、`chatgpt.com`、`googleapis.com`，或账号上自定义上游地址的域名），这个平台的全部请求被拒。控制台在切换到“屏蔽所有域名”前要求确认，选中时显示警告。
+
+### 113.4 控制台
+
+“系统设置 → 运行环境 → 插件联网”（`/settings?tab=plugin-egress`）：说明文字写明它管插件的全部对外访问（插件自己的连接和平台插件发往上游的请求）；默认设置下拉框（允许所有域名 / 屏蔽所有域名），切换到“屏蔽所有域名”前弹确认对话框（说明平台插件的上游同样受限），选中时显示警告提示；随模式变化的提示与一张列表（已屏蔽的域名 / 已允许的域名），添加对话框支持多行与批量（每行一个，逐行报错），每项可移除；每次改动立即保存。插件详情“外部访问”页有一行链接到这里，并说明被它拒绝的上游请求也记在该页明细里。
+
+### 113.5 验收
 
 `next/e2e/ac37_plugin_network_access_test.go`（`TestAC37_PluginNetworkAccess`）用 guard 的 webhook 告警验收：默认设置下送达 mock；把 mock 的主机加进屏蔽列表后连接被拒，出口日志有 `denied` 且原因是屏蔽列表；切到“屏蔽所有域名”、允许列表里没有它时被拒（原因是允许列表）；加进允许列表后送达。设置只对新连接生效，所以用例在默认阶段之后先等 guard 到 mock 的长连接关闭（出口日志里它的行不再是 `open`，空闲连接 90 秒后关闭）。guard 的告警冷却设为 0（默认 60 秒，被拒的告警也占用冷却期，会挡住下一阶段的告警）。设置的保存和触发告警的请求都固定发到节点 1：保存的节点在应答前丢掉缓存，另一个节点要等广播，中间有几十毫秒仍按旧设置判断（实测见过）。用例结束（含失败）经 `t.Cleanup` 把插件联网恢复成默认、清空 guard 规则、guard 设置恢复默认冷却。
+
+`TestAC37_PluginNetworkAccessCoversUpstreamRequests` 验收 113.3：anthropic 账号的上游地址（`base_url`）是 mock 的主机；默认设置下请求到达 mock；把它加进屏蔽列表后经网关的请求不到达 mock，客户端得到 5xx 且正文里没有主机名，anthropic 插件的出口日志里有 `denied` 行、原因是屏蔽列表；移出后恢复；“屏蔽所有域名”而允许列表里没有它（账号自己配置的主机同样被拒）时同样被拒、原因是允许列表；加进允许列表后恢复。保存与请求都发到节点 1，结束时恢复默认。
 
 ## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
 
@@ -8462,7 +8475,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - `HTTPRequest.execution_token`（字段 10）：核心给每个**有登录用户**的插件路由调用（`scope` 为 `admin` / `user`）登记一个调用范围（与 `Execute`、`Monitor` 的执行令牌同一套），调用返回即失效。公开路由和 Webhook 没有。SDK 把它绑在路由处理函数的 context 上，`pluginsdk.Fetch` 在路由里可用。
 - `ExecutionHTTPRequest.proxy_ticket`（字段 7）：路由调用里的取回**必须**带票据，`Execute`、`Monitor` 里的取回**不能**带（它们走账号自己的代理）；不符 `PERMISSION_DENIED`。路由调用里不能中继（`RelayUpstream` 仍只属于 `Execute`）。
-- 主机：与取回相同的规则 `manifest.Manifest.UpstreamHostAllowed`（§112.17）（`grpcruntime.requireFetchHost`）。路由调用没有账号，所以只能到清单 `externalServices` 之一或其子域，否则 `PERMISSION_DENIED`。
+- 主机：与取回相同的规则 `core.CheckPluginUpstream`（§112.17）（`grpcruntime.requireFetchHost`）。路由调用没有账号，所以只能到清单 `externalServices` 之一或其子域，还要过管理员的插件联网设置（§113.3），否则 `PERMISSION_DENIED`。
 - 控制台把票据交给插件的原生界面（§23.5 的 `proxyTicket`），插件界面在开始授权时把它交给插件自己的路由（约定字段名 `proxy_ticket`），插件存进自己的授权会话（`pluginsdk.SaveCallerSession`），此后这次授权的每个请求都带同一张票据，所以设备码的多次轮询都走同一个代理。
 
 ### 117.3 核心发送（`account.FetchWithProxyTicket`，`core.ProxyTicketFetcher`）

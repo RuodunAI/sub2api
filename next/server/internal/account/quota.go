@@ -286,7 +286,7 @@ func (s *Service) runQuotaQuery(ctx context.Context, bt core.AccountTypeBinding,
 	if err != nil || built == nil {
 		return nil, errors.New("quota request builder unavailable")
 	}
-	in := s.sendQuotaRequest(ctx, built, a.ProxyID)
+	in := s.sendQuotaRequest(ctx, bt.Plugin.Key, built, a.ProxyID)
 	in.Account = acct
 	res, err := bt.Client.ParseQuotaResponse(ctx, in)
 	if status.Code(err) == codes.Unimplemented {
@@ -382,8 +382,8 @@ func validQuotaKey(k string) bool {
 // proxy (behind netguard for a direct connection) and collects what the
 // plugin needs to read the answer. A failure is not an error: the plugin is
 // shown the transport error, as ClassifyError is.
-func (s *Service) sendQuotaRequest(ctx context.Context, b *pluginv1.BuildQuotaRequestResponse, proxyID *int64) *pluginv1.ParseQuotaResponseRequest {
-	a := s.sendPluginCall(ctx, pluginCall{what: "quota", method: b.GetMethod(), defaultMethod: http.MethodGet,
+func (s *Service) sendQuotaRequest(ctx context.Context, pluginKey string, b *pluginv1.BuildQuotaRequestResponse, proxyID *int64) *pluginv1.ParseQuotaResponseRequest {
+	a := s.sendPluginCall(ctx, pluginCall{plugin: pluginKey, what: "quota", method: b.GetMethod(), defaultMethod: http.MethodGet,
 		url: b.GetUrl(), headers: b.GetHeaders(), body: []byte(b.GetBodyJson())}, proxyID)
 	return &pluginv1.ParseQuotaResponseRequest{Status: a.status, Headers: a.headers, Body: a.body,
 		TransportError: a.transportError}
@@ -392,6 +392,7 @@ func (s *Service) sendQuotaRequest(ctx context.Context, b *pluginv1.BuildQuotaRe
 // pluginCall is an upstream request a plugin described (quota, refresh,
 // HostService.SendAccountRequest).
 type pluginCall struct {
+	plugin                string // the plugin's key, for plugin network access
 	what                  string // for the invalid-URL message
 	method, defaultMethod string
 	url                   string
@@ -420,7 +421,7 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 		out.transportError = "plugin built an invalid " + b.what + " URL"
 		return out
 	}
-	if err := s.guardUpstream(ctx, u, proxyID != nil); err != nil {
+	if err := s.guardUpstream(ctx, b.plugin, u, proxyID != nil); err != nil {
 		out.transportError = err.Error()
 		return out
 	}

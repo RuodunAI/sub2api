@@ -260,10 +260,11 @@ type PluginAccountReader interface {
 // serves HostService.SendAccountRequest: one HTTP request a plugin describes
 // for one of its OWN accounts, sent through that account's proxy the way the
 // quota and refresh requests are (CONTRACTS §91). The caller has checked the
-// grant and that the URL is http(s) with a host. The host must be one the
-// plugin's manifest m allows for the account (manifest.UpstreamHostAllowed
-// with the account's type, settings and credentials, CONTRACTS §112.17);
-// another is ErrPermissionDenied and nothing is sent. An account of another
+// grant and that the URL is http(s) with a host. The host must pass
+// CheckPluginUpstream with the account's type, settings and credentials (the
+// plugin's manifest m and the administrator's plugin network access,
+// CONTRACTS §112.17, §113); another is ErrPermissionDenied and nothing is
+// sent. An account of another
 // plugin's account type is ErrNotFound, as in ReadPluginAccountCredentials.
 // A transport failure is not an error: it is the answer's transport_error
 // with status 0. Neither the body nor the answer is bounded. Every request

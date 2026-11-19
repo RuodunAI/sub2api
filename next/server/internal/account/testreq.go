@@ -224,7 +224,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		return res
 	}
 	res.Upstream = upstreamAddr(u)
-	if err := s.guardUpstream(ctx, u, proxyID != nil); err != nil {
+	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, proxyID != nil); err != nil {
 		res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
 		return res
 	}
@@ -417,14 +417,19 @@ func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, 
 
 func truncate(s string, n int) string { return x.TruncateEllipsis(s, n) }
 
-// guardUpstream refuses a non-public host for the console's own upstream
-// calls (test account, fetch models, quota query) by the gateway's rule
-// (netguard.CheckHostVia): a direct connection checks the resolved
-// addresses; through a proxy, which receives the name, only a literal
-// private address is refused and nothing is resolved here.
-// SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM lifts the guard as it does for the
-// gateway.
-func (s *Service) guardUpstream(ctx context.Context, u *url.URL, proxied bool) error {
+// guardUpstream refuses the target of a request plugin pluginKey described
+// and the core sends (test account, fetch models, quota query, refresh,
+// SendAccountRequest): one the administrator's plugin network access does
+// not let the plugin reach (core.CheckPluginNetwork, CONTRACTS §113), then a
+// non-public host by the gateway's rule (netguard.CheckHostVia): a direct
+// connection checks the resolved addresses; through a proxy, which receives
+// the name, only a literal private address is refused and nothing is
+// resolved here. SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM lifts the latter as
+// it does for the gateway.
+func (s *Service) guardUpstream(ctx context.Context, pluginKey string, u *url.URL, proxied bool) error {
+	if ce := core.CheckPluginNetwork(ctx, s.d.NetworkAccess, pluginKey, u); ce != nil {
+		return ce
+	}
 	if s.d.AllowPrivateUpstream {
 		return nil
 	}

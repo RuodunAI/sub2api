@@ -618,10 +618,11 @@ func (h *hostServer) GetAccountCredentials(ctx context.Context, in *pluginv1.Get
 // of this plugin's own account types through that account's proxy (CONTRACTS
 // §91). It is authorised by the credential grant, since such a request is
 // made with what GetAccountCredentials hands out, and reaches only the hosts
-// a relay of the account may (manifest.UpstreamHostAllowed, §112.17): the
+// a relay of the account may (core.CheckPluginUpstream, §112.17, §113): the
 // manifest's externalServices, which the operator reviewed at install, or
 // the account's own upstream addresses, which the account module reads with
-// the account. Neither the body nor the answer is bounded.
+// the account, and only those the administrator's plugin network access
+// lets the plugin reach. Neither the body nor the answer is bounded.
 func (h *hostServer) SendAccountRequest(ctx context.Context, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
 	if err := h.requireOwnCredentials(ctx); err != nil {
 		return nil, err

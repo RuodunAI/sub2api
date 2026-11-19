@@ -67,7 +67,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 - `method` 为空是 POST；URL 是绝对地址，路径写成线上的样子（每段已百分号编码），核心发送前会再解析一次。
 - 头名一律小写（构造器替你转）；`host`、`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，不许出现：请求发往、并以之为 `Host` 的永远是 URL 的主机，插件和运营方都改不了（CONTRACTS §112.17）；`Header` / `DefaultHeader` 的空值不写入；同名时权威头生效。
-- **目标主机**：URL 的主机必须是清单 `externalServices` 之一（含子域），或这次调用的账号自己的上游地址的主机（账号类型 `upstreamFields` 声明的字段，只比主机名、不含子域）。别的主机核心拒绝（`INVALID_ARGUMENT`，这次尝试按插件不可用换号）。代码里写死的默认地址（如 `api.openai.com`、各区域的 `bedrock-runtime.<region>.amazonaws.com`）要写进 `externalServices`，让运营方填地址的字段写进 `upstreamFields`。规则是 `manifest.Manifest.UpstreamHostAllowed`，取回、`SendAccountRequest` 和假宿主用同一个（CONTRACTS §112.17）。
+- **目标主机**：URL 的主机必须是清单 `externalServices` 之一（含子域），或这次调用的账号自己的上游地址的主机（账号类型 `upstreamFields` 声明的字段，只比主机名、不含子域）。别的主机核心拒绝（`INVALID_ARGUMENT`，这次尝试按插件不可用换号）。代码里写死的默认地址（如 `api.openai.com`、各区域的 `bedrock-runtime.<region>.amazonaws.com`）要写进 `externalServices`，让运营方填地址的字段写进 `upstreamFields`。规则是 `manifest.Manifest.UpstreamHostAllowed`，取回、`SendAccountRequest` 和假宿主用同一个（CONTRACTS §112.17）。声明过的主机也可能被管理员在“系统设置 → 插件联网”里屏蔽（或在“屏蔽所有域名”下没列进允许列表，CONTRACTS §113.3）：核心同样什么都不发，这次尝试换号，信息是 `plugin <key>: <host> is on the blocked list of plugin network access`（或 `is not on the allowed list`）。假宿主不模拟这项设置。
 - `Body(b)` 是最终发出的字节，核心不再改；`Model(m)` 是记进使用记录的上游模型（类型声明了模型可用性时，核心核对它与自己算的上游模型一致，不一致按插件不可用换号）；`ResponseStream(f)` 见 2.5。超时、代理、TLS、重定向、重试不归插件（超时由管理员配置，SDK 不提供收紧它们的方法）。
 - `pluginsdk.RequestModel(in)`：请求体的 `model`，没有则 `meta.model`（都已经过账号的模型映射）。`pluginsdk.RequestStream(in)`：`meta.stream` 或请求体的 `"stream": true` 任一为真。
 - 请求体上限（网关设置 `max_request_body_mb`，CONTRACTS §111）只管网关读客户端的请求。核心交给插件的请求体可能因为自己的改写比它大，插件交回的中继请求体、取回的请求体也都不检查大小（CONTRACTS §112.16）。插件不设自己的大小上限。
@@ -164,7 +164,7 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
   - 插件把票据和授权会话存在一起（`pluginsdk.SaveCallerSession`），这次授权的每个请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单选的代理发出（没选就直连），插件看不到代理；
   - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不再可用，重试没用）；
   - 不需要 `net`。codex 是范例（`plugins/codex/internal/codex/oauth.go`）；测试里 `Harness.DoAs` 会给路由调用发执行令牌，假宿主要求路由取回带票据，用 `ExecuteHTTPFunc` 看到它。
-- 插件自己的其他对外连接（Webhook、SMTP 等，不是转发、不是取回、也不是建账号前的授权）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。取回和 `Relay` 不受这项设置影响。
+- 插件自己的其他对外连接（Webhook、SMTP 等，不是转发、不是取回、也不是建账号前的授权）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。这项设置同样管核心替插件发出的请求：中继、取回、`SendAccountRequest` 被它拒绝时与主机规则拒绝时一样（`Relay` 换号，取回和 `SendAccountRequest` 回 `PERMISSION_DENIED`，信息写明是插件联网的屏蔽或允许列表）；配额查询、凭证续期的请求被拒时插件拿到 `transport_error`（`status` 0），按传输失败处理；账号测试和拉取模型列表的失败显示给管理员。这类拒绝不要重试，也记在插件的外部访问日志里。
 
 ### 2.7 插件自己解析用量的端点
 

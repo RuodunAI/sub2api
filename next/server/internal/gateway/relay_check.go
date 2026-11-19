@@ -63,23 +63,29 @@ func (x *execution) validate(ctx context.Context, req *pluginv1.UpstreamRequest)
 
 // allowHost refuses a relay whose host is neither one of the plugin's
 // externalServices (or a subdomain of one) nor the host of one of the
-// account's upstream addresses (manifest.UpstreamHostAllowed, CONTRACTS
-// §112.17): the core sends the account's credentials only where the
-// operator reviewed at install or entered on the account. The refusal is
-// the plugin's, not the account's: the attempt fails over and nothing is
+// account's upstream addresses (CONTRACTS §112.17), or that the
+// administrator's plugin network access refuses (§113): the core sends the
+// account's credentials only where the operator reviewed at install or
+// entered on the account, and a plugin reaches only the hosts the
+// administrator lets plugins reach (core.CheckPluginUpstream). The refusal
+// is the plugin's, not the account's: the attempt fails over and nothing is
 // sent.
 func (x *execution) allowHost(ctx context.Context, raw string) *gwError {
+	key, acct := x.rt.binding.Plugin.Key, x.acct
+	ce := core.CheckPluginUpstream(ctx, x.c.g.d.NetworkAccess, key, x.rt.binding.Plugin.Manifest, raw,
+		acct.GetType(), acct.GetSettingsJson(), acct.GetCredentialsJson())
+	if ce == nil {
+		return nil
+	}
+	reason, _ := ce.Details["reason"].(string)
 	var host string
 	if u, err := url.Parse(raw); err == nil {
 		host = strings.ToLower(u.Hostname())
 	}
-	key, acct := x.rt.binding.Plugin.Key, x.acct
-	if x.rt.binding.Plugin.Manifest.UpstreamHostAllowed(host, acct.GetType(), acct.GetSettingsJson(), acct.GetCredentialsJson()) {
-		return nil
-	}
-	slog.WarnContext(ctx, "gateway: upstream host not allowed", "request_id", x.c.rid, "plugin", key, "account", x.acc.ID, "host", host)
-	e := relayRefused("upstream host " + strconvQuote(host) + " is neither in the externalServices of plugin " + key + " nor an upstream address of the account")
-	e.NeutralReason = "upstream_host_not_allowed"
+	slog.WarnContext(ctx, "gateway: upstream host not allowed", "request_id", x.c.rid, "plugin", key, "account", x.acc.ID,
+		"host", host, "reason", reason)
+	e := relayRefused(ce.Message)
+	e.NeutralReason = reason
 	return e
 }
 

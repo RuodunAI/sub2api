@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -148,9 +147,10 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 // account of pluginKey's own account types through that account's proxy, as
 // the quota and refresh requests are sent (sendPluginCall), except that a
 // redirect is answered as it is. It is bounded by refreshTimeout. The URL's
-// host must be one m allows for the account (manifest.UpstreamHostAllowed:
-// the plugin's externalServices or the account's own upstream addresses,
-// read from its settings and credentials); another is refused before
+// host must be one m allows for the account (the plugin's externalServices
+// or the account's own upstream addresses, read from its settings and
+// credentials) and the administrator's plugin network access lets the
+// plugin reach (core.CheckPluginUpstream); another is refused before
 // anything is sent or audited.
 //
 // Unlike a credential read, the audit row is written after the request: it
@@ -181,18 +181,13 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	if err != nil {
 		return nil, err
 	}
-	var host string
-	if u, err := url.Parse(in.GetUrl()); err == nil {
-		host = strings.ToLower(u.Hostname())
-	}
-	if !m.UpstreamHostAllowed(host, typ, string(settings), string(plain)) {
-		return nil, core.ErrPermissionDenied.WithMessage("plugin " + pluginKey + ": host " + strconv.Quote(host) +
-			" is neither in the manifest's externalServices nor an upstream address of the account")
+	if ce := core.CheckPluginUpstream(ctx, s.d.NetworkAccess, pluginKey, m, in.GetUrl(), typ, string(settings), string(plain)); ce != nil {
+		return nil, ce
 	}
 	method := cmp.Or(strings.ToUpper(in.GetMethod()), http.MethodGet)
 	sendCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
-	ans := s.sendPluginCall(sendCtx, pluginCall{what: "account request", method: method, url: in.GetUrl(),
+	ans := s.sendPluginCall(sendCtx, pluginCall{plugin: pluginKey, what: "account request", method: method, url: in.GetUrl(),
 		headers: in.GetHeaders(), body: in.GetBody(), noRedirects: true}, proxyID)
 	detail := map[string]any{"plugin_key": pluginKey, "method": method, "status": ans.status, "via": "host.SendAccountRequest"}
 	if u, err := url.Parse(in.GetUrl()); err == nil {
