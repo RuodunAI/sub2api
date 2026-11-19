@@ -101,6 +101,8 @@ Azure 上的“模型”是你自己起名的**部署**。
 
 ### 4.2 表单字段
 
+表单是插件自己的原生界面（`plugins/vertex/ui/native`：服务账号与用户凭证共用 `VertexKeyFileForm`，API Key 用 `VertexApiKeyForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。核心续期时写回的 `access_token`、`expires_at`、`token_for` 不在表单上显示，保存时原样带回。
+
 服务账号、用户凭证：
 
 | 字段 | 含义 | 默认 | 例子 |

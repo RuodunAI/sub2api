@@ -4,6 +4,7 @@ import (
 	"context"
 	"regexp"
 	"strconv"
+	"unicode/utf8"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,6 +26,10 @@ const (
 	fieldProject  = "project_id"
 	fieldLocation = "location"
 )
+
+// maxKeyFileLength bounds the key file of a submitted form, in characters
+// (the bound the account form has always had).
+const maxKeyFileLength = 32768
 
 // expiredAt is the expires_at of an account that has no access token yet: a
 // readable expiry in the past, so the core's next refresh pass fetches the
@@ -123,8 +128,11 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 // implies: the project, the default location and the token state.
 func validateKeyAccount(kind keyKind, creds, settings object) *pluginv1.FieldError {
 	raw := creds.Str(kind.field)
-	if raw == "" {
+	switch {
+	case raw == "":
 		return fieldError(kind.field, "required", "paste the JSON key file / 请粘贴 JSON 密钥文件的内容")
+	case utf8.RuneCountInString(raw) > maxKeyFileLength:
+		return fieldError(kind.field, "too_long", "the key file must be at most "+strconv.Itoa(maxKeyFileLength)+" characters / 密钥文件最多 "+strconv.Itoa(maxKeyFileLength)+" 个字符")
 	}
 	key, err := kind.parse(raw)
 	if err != nil {
