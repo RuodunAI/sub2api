@@ -6,7 +6,7 @@
 //
 // The constraints (internal/vertex/credentials.go holds the same on save):
 //   service_account_json / authorized_user_json  required, 2-32768 characters (secret)
-//   api_key      required, 8-512 visible ASCII characters (secret)
+//   api_key      required, not blank (secret)
 //   project_id   ^([a-z][a-z0-9-]{4,28}[a-z0-9])?$
 //   location     ^([a-z0-9-]{2,32})?$, default global for the key file types
 //   access_token, expires_at, token_for  the core's (token renewal): never shown, kept as they are
@@ -45,6 +45,8 @@ const SA = JSON.stringify({
 })
 const USER = JSON.stringify({ type: 'authorized_user', client_id: 'id.apps.googleusercontent.com', client_secret: 'secret', refresh_token: '1//0refresh', quota_project_id: 'my-project-123456' })
 const KEY = 'AQ.Ab8RN6-example-key'
+/** The schema form wanted 8-512 visible ASCII characters; any non-blank key is accepted now (DESIGN-2026-11-20 §5.1). */
+const ANY_KEY = { ok: false, why: 'a key only has to be non-blank, as the plugin checks it on save' }
 const GLOBAL = { location: 'global' }
 /** A key file account as the editor loads it: the file and the token masked, the token state as the core wrote it. */
 const TOKEN = { access_token: SECRET_MASK, expires_at: 1800000000, token_for: '9f86d081884c7d659a2feaa0c55ad015' }
@@ -94,10 +96,10 @@ export const CASES: FormCase[] = [
   // ---------------------------------------------------------------- vertex_apikey
   { name: 'apikey: new account, the key (express address)', type: 'vertex_apikey', input: { api_key: KEY }, out: { api_key: KEY }, ok: true },
   { name: 'apikey: nothing typed', type: 'vertex_apikey', out: {}, ok: false },
-  { name: 'apikey: key of 7 characters', type: 'vertex_apikey', input: { api_key: 'AQ.1234' }, out: { api_key: 'AQ.1234' }, ok: false },
-  { name: 'apikey: key of 512 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(512) }, out: { api_key: 'k'.repeat(512) }, ok: true },
-  { name: 'apikey: key of 513 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(513) }, out: { api_key: 'k'.repeat(513) }, ok: false },
-  { name: 'apikey: key with a space', type: 'vertex_apikey', input: { api_key: 'AQ.Ab8 RN6' }, out: { api_key: 'AQ.Ab8 RN6' }, ok: false },
+  { name: 'apikey: blank key', type: 'vertex_apikey', input: { api_key: '   ' }, out: { api_key: '   ' }, ok: false },
+  { name: 'apikey: key of 7 characters', type: 'vertex_apikey', input: { api_key: 'AQ.1234' }, out: { api_key: 'AQ.1234' }, ok: true, schemaForm: ANY_KEY },
+  { name: 'apikey: key of 513 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(513) }, out: { api_key: 'k'.repeat(513) }, ok: true, schemaForm: ANY_KEY },
+  { name: 'apikey: key with a space', type: 'vertex_apikey', input: { api_key: 'AQ.Ab8 RN6' }, out: { api_key: 'AQ.Ab8 RN6' }, ok: true, schemaForm: ANY_KEY },
   { name: 'apikey: project address', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, out: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, ok: true },
   // Both or neither is the plugin's rule on save (target.check), as the section says; the schema had none.
   { name: 'apikey: project only (refused on save)', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456' }, out: { api_key: KEY, project_id: 'my-project-123456' }, ok: true },

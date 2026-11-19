@@ -43,8 +43,9 @@ var (
 )
 
 // apiKeySpec checks the api_key of an API key account the way every API key
-// form does: 8-512 visible characters. The type has no base_url; project_id
-// and location are its other keys (checked by target), any other is refused.
+// form does: any non-blank string, saved trimmed. The type has no base_url;
+// project_id and location are its other keys (checked by target), any other
+// is refused.
 var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey, NoBaseURL: true,
 	Fields: fieldcheck.Fields{fieldProject: fieldcheck.Any(), fieldLocation: fieldcheck.Any()}}
 

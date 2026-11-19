@@ -11,6 +11,9 @@ import (
 // an input that schema refused, written out here, is still refused by
 // ValidateCredentials at the same field (with the code given, where one is).
 // The core no longer checks a schema, so this is the save's only check.
+// The api_key's minLength 8, maxLength 512 and visible ASCII pattern are
+// gone on purpose (any non-blank key, DESIGN-2026-11-20 §5.1);
+// TestValidateAPIKey checks those keys are accepted.
 func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 	type input struct {
 		name            string
@@ -43,9 +46,6 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 		TypeAPIKey: {
 			{"api_key required", map[string]any{}, nil, fieldAPIKey, ""},
 			{"api_key type string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey, ""},
-			{"api_key minLength 8", map[string]any{fieldAPIKey: "AQ.1234"}, nil, fieldAPIKey, ""},
-			{"api_key maxLength 512", map[string]any{fieldAPIKey: strings.Repeat("k", 513)}, nil, fieldAPIKey, ""},
-			{"api_key pattern (space)", map[string]any{fieldAPIKey: "AQ.Ab8 RN6"}, nil, fieldAPIKey, ""},
 			{"project_id pattern", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: "Bad_Project", fieldLocation: "us-central1"}, fieldProject, ""},
 			{"location pattern", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: testProject, fieldLocation: "US"}, fieldLocation, ""},
 			{"unknown credentials key", map[string]any{fieldAPIKey: key, "legacy": "x"}, nil, "legacy", "unknown"},
