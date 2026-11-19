@@ -522,6 +522,7 @@ export default {
   testConnection: 'Test connection',
   testActualModel: 'Model used',
   testUpstream: 'Upstream',
+  testProtocol: 'Protocol tested',
   testUsage: 'Token usage',
   testUsageInput: 'input',
   testUsageOutput: 'output',

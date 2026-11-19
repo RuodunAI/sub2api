@@ -113,6 +113,9 @@ func (p *Platform) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReq
 		return nil, status.Error(codes.Unimplemented, "the account type has no test request")
 	}
 	test := t.test(in.GetProtocols())
+	if test == nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "the account type has no test request for protocols %v", in.GetProtocols())
+	}
 	route := t.Routes[test.Protocol]
 	model := normalizeModel(in.GetModel(), route.Model.TrimPrefix)
 	if model == "" {
@@ -174,8 +177,9 @@ func (p *Platform) account(acc *pluginv1.Account) (*Type, *apikey.Config, error)
 	return t, cfg, nil
 }
 
-// test is the test of the first of protocols the type has one on, else
-// Test (Check: Tests needs Test).
+// test is the test of the first of protocols the type has one on; Test
+// for no protocols (no preference; Check: Tests needs Test); nil when the
+// type has a test for none of them (CONTRACTS §122.3).
 func (t *Type) test(protocols []string) *Test {
 	for _, protocol := range protocols {
 		if t.Test.Protocol == protocol {
@@ -184,6 +188,9 @@ func (t *Type) test(protocols []string) *Test {
 		if i := slices.IndexFunc(t.Tests, func(x Test) bool { return x.Protocol == protocol }); i >= 0 {
 			return &t.Tests[i]
 		}
+	}
+	if len(protocols) > 0 {
+		return nil
 	}
 	return t.Test
 }

@@ -939,7 +939,10 @@ on('POST', '/accounts/:id/test', async (req) => {
   const requested = typeof req.body?.model === 'string' ? req.body.model : ''
   const asked = requested || (a.plugin_key === 'openai' ? 'gpt-4o-mini' : a.plugin_key === 'gemini' ? 'gemini-2.5-flash' : 'claude-haiku-4-5')
   const model = (a.model_mapping || {})[asked] || asked
-  const upstream = `${String(a.credentials?.base_url || 'https://api.anthropic.com').replace(/\/+$/, '')}${a.plugin_key === 'openai' ? '/v1/chat/completions' : '/v1/messages'}`
+  // The protocol the plugin tested (§122): the first of the model's model_protocols entry, else chat / messages.
+  const protocol = (a.model_protocols || []).find((e: { models: string[] }) => e.models.includes(asked))?.protocols[0] || (a.plugin_key === 'openai' ? 'openai.chat' : 'anthropic.messages')
+  const path = ({ 'openai.chat': '/v1/chat/completions', 'openai.responses': '/v1/responses', 'openai.embeddings': '/v1/embeddings', 'openai.images': '/v1/images/generations' } as Record<string, string>)[protocol] || '/v1/messages'
+  const upstream = `${String(a.credentials?.base_url || 'https://api.anthropic.com').replace(/\/+$/, '')}${path}`
   // Mocked outcomes: disabled = 401 (would disable), *opus* = 429 (would cool down),
   // *unknown* / *gpt-5* = 404 model not found, otherwise OK with a random latency.
   const latency = a.status === 'disabled' ? 212 : 300 + Math.round(Math.random() * (model.includes('pro') ? 6000 : 2500))
@@ -963,8 +966,8 @@ on('POST', '/accounts/:id/test', async (req) => {
       body: JSON.stringify({ id: 'msg_mock', type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'pong' }], stop_reason: 'end_turn', usage: { input_tokens: 12, output_tokens: 8 } })
     }
   }
-  out = { ...out, model, requested_model: requested, upstream }
-  a.last_test = { at: now(), ok: out.ok, latency_ms: latency, model, message: String(out.message || '') }
+  out = { ...out, model, requested_model: requested, protocol, upstream }
+  a.last_test = { at: now(), ok: out.ok, latency_ms: latency, model, protocol, message: String(out.message || '') }
   return out
 })
 // Fetch models from the upstream (CONTRACTS §19). Per plugin a fixed list; a

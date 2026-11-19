@@ -18,7 +18,8 @@ const (
 // https://generativelanguage.googleapis.com (a pasted /v1beta or /v1
 // removed), the model of the request's metadata in the path of
 // generateContent, streamGenerateContent (SSE) and countTokens, the Gemini
-// error policy, a one-token generateContent test and the model listing.
+// error policy, a one-token generateContent test (streamed for an account
+// that only serves streamGenerateContent) and the model listing.
 func APIKey(id string) standard.Type {
 	return standard.Type{
 		ID:      id,
@@ -32,10 +33,20 @@ func APIKey(id string) standard.Type {
 		},
 		DefaultProtocol: ProtocolGenerate,
 		Classify:        Policy,
-		Test:            &standard.Test{Protocol: ProtocolGenerate, Model: "gemini-2.5-flash-lite", Body: func(string) string { return GenerateContentPingBody(1) }},
-		Models:          &apikey.ModelList{Path: "/v1beta/models?pageSize=1000", IdsPath: "models.#.name", StripPrefix: "models/"},
+		Test:            &standard.Test{Protocol: ProtocolGenerate, Model: testModel, Body: generatePing},
+		// The same request streamed, for an account whose model only
+		// streams (CONTRACTS §122).
+		Tests:  []standard.Test{{Protocol: ProtocolStreamGenerate, Model: testModel, Body: generatePing}},
+		Models: &apikey.ModelList{Path: "/v1beta/models?pageSize=1000", IdsPath: "models.#.name", StripPrefix: "models/"},
 	}
 }
+
+// testModel is the model a test names when the console names none.
+const testModel = "gemini-2.5-flash-lite"
+
+// generatePing is the test body of both generate protocols (the model is in
+// the path).
+func generatePing(string) string { return GenerateContentPingBody(1) }
 
 // modelRoute is a method of a model, /v1beta/models/<model><method>: the
 // model is the request's meta.model without a "models/" prefix, required.
