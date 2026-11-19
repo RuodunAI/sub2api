@@ -604,7 +604,7 @@ message ValidateSettingsResponse {
 
 ### 6.3 "插件有设置"和没有 page 的 native 设置
 
-- `plugin/api/plugins.go:115`：`manifest->'ui'->'settings'->>'mode' = 'schema'` 改为 `manifest->'ui'->'settings' IS NOT NULL`。语义从"控制台渲染设置"改为"插件有设置"。控制台用它决定显示设置标签，插件页里编辑的设置（moderation）由 `nativeSettingsPath` 转过去，`pluginUtil.ts:430-432` 的 `consoleSettingsPath` 不变。
+- `plugin/api/plugins.go:115`：`manifest->'ui'->'settings'->>'mode' = 'schema'` 改为 `manifest->'ui'->'settings'->>'mode' IN ('schema', 'native')`。语义从"控制台渲染设置"改为"插件有控制台能打开的设置"；iframe 设置控制台不打开，保持现状仍为 false。控制台用它决定显示设置标签，插件页里编辑的设置（moderation）由 `nativeSettingsPath` 转过去，`pluginUtil.ts:430-432` 的 `consoleSettingsPath` 不变。
 - 清单检查（`check/validate.go:525-570 form`）的 native 分支：`ui.settings` 必须有 `component` 或 `page`，二者至少一个。账号表单仍然要求 `component`。
 
 ### 6.4 删除与收紧

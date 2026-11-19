@@ -121,7 +121,7 @@ describe('plugin detail view', () => {
     )
   })
 
-  // has_settings: the manifest declares ui.settings (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY §6.3).
+  // has_settings: schema or native ui.settings (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY §6.3).
   it('shows native settings without a page on the settings tab', async () => {
     const { w } = await render('?tab=settings', {}, { mode: 'native', component: 'MailerSettings', schema: null, values: {} })
     expect(tabButton(w, 'Settings')).toBeDefined()

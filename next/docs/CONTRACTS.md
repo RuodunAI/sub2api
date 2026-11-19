@@ -5329,7 +5329,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 
 - manifest：`ui.settings` 写 `{"mode":"native","page":"<ui.pages 中的 native 页面>","schema":"…","uiSchema":"…","permission":"…"}`。`schema` / `uiSchema` 只有 `ui.settings` 在 native 模式下可以带，其它表单带了报 `unsupported`；`page` 必须是 `ui.pages` 里的 native 页面。
 - 核心：只要表单带 schema，不论模式，`GET/PUT /plugins/:key/settings` 都按它掩码密钥（§75.1）并校验；存储、通知插件、权限都与 schema 模式相同。不带 schema 的 native/iframe 设置按 `ui.settings.secrets` 掩码，没有列出的不掩码（2026-11-19 起；此前这里写"不掩码"，与当时的代码不符：当时它们和没有 `ui.settings` 一样，每个顶层键都按凭据掩码）。
-- `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本声明了 `ui.settings` 即为 true，不论模式（此前只在 `mode` 为 `schema` 时为 true）。
+- `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本的 `ui.settings` 是 `schema` 或 `native` 模式时为 true（此前只在 `mode` 为 `schema` 时为 true）；`iframe` 模式控制台不打开，仍为 false。
 - 控制台：插件详情页只在 `mode` 为 `schema` 时显示设置标签；`/plugins/:key/settings`（只有插件权限的人用）遇到 native 设置时转到 `/p/:key/<page>?tab=settings`。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写，回传 `******` 表示沿用密钥。
 - 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。
 

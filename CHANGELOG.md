@@ -15,7 +15,7 @@
 - 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。不带 schema 的 native、iframe 设置只掩码列出的字段，此前它们每个顶层键都被掩码（CONTRACTS §75.1、§75.5）。
 - 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存。插件线协议（2）和 Host API（10）不变。SDK 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`。
 - `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
-- `GET /plugins` 的 `has_settings` 改为"当前版本声明了 `ui.settings`"，不再只认 schema 模式。
+- `GET /plugins` 的 `has_settings` 改为"当前版本的 `ui.settings` 是 schema 或 native 模式"，不再只认 schema 模式；iframe 设置控制台不打开，仍为 false。
 - 清单检查：native 设置要有 `component` 或 `page`。
 
 ### 插件界面只用代码写：云厂商插件的账号表单

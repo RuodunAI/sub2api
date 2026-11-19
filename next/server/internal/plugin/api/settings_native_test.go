@@ -152,15 +152,23 @@ func TestSettingsValidatedByPlugin(t *testing.T) {
 	assert.JSONEq(t, `{"threshold":7,"webhook_secret":"s3cret"}`, h.storedSettings())
 }
 
-// has_settings: the current version declares ui.settings, whatever its mode.
-func TestHasSettingsAnyMode(t *testing.T) {
+// has_settings: the current version declares schema or native ui.settings;
+// the console does not open iframe settings, so they are not listed.
+func TestHasSettingsMode(t *testing.T) {
 	h, root := newHarness(t)
 	installNativeSettings(t, h, root)
-	code, out := h.do("GET", "/plugins", "admin", nil)
-	require.Equal(t, http.StatusOK, code, out)
-	list, _ := out["data"].([]any)
-	require.Len(t, list, 1)
-	assert.Equal(t, true, list[0].(map[string]any)["has_settings"])
-	raw, _ := json.Marshal(out)
-	assert.NotContains(t, string(raw), "s3cret")
+	hasSettings := func() any {
+		code, out := h.do("GET", "/plugins", "admin", nil)
+		require.Equal(t, http.StatusOK, code, out)
+		list, _ := out["data"].([]any)
+		require.Len(t, list, 1)
+		raw, _ := json.Marshal(out)
+		assert.NotContains(t, string(raw), "s3cret")
+		return list[0].(map[string]any)["has_settings"]
+	}
+	assert.Equal(t, true, hasSettings())
+
+	_, err := h.db.SQL.ExecContext(context.Background(), `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{ui,settings,mode}', '"iframe"') WHERE plugin_key = 'guard'`)
+	require.NoError(t, err)
+	assert.Equal(t, false, hasSettings())
 }
