@@ -118,7 +118,11 @@ func (d mediaDownloader) download(ctx context.Context, url string) (string, stri
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return "", "", d.clientError(ctx, err)
+		hop := u.String()
+		if uerr := (*neturl.Error)(nil); errors.As(err, &uerr) {
+			hop = uerr.URL // the hop that failed
+		}
+		return "", "", d.clientError(ctx, hop, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -131,7 +135,7 @@ func (d mediaDownloader) download(ctx context.Context, url string) (string, stri
 	data, err := io.ReadAll(io.LimitReader(resp.Body, d.maxBytes+1))
 	switch {
 	case err != nil:
-		return "", "", err
+		return "", "", d.clientError(ctx, resp.Request.URL.String(), err)
 	case int64(len(data)) > d.maxBytes:
 		return "", "", tooLarge
 	}
@@ -143,23 +147,22 @@ func (d mediaDownloader) download(ctx context.Context, url string) (string, stri
 // address, which is the operator's (CONTRACTS §88.5).
 var errViaProxy = errors.New("connection through the proxy failed")
 
-// clientError is err as the API client sees it: a network error on a hop
-// through the environment's proxy is logged and replaced by errViaProxy;
-// anything else is returned as is.
-func (d mediaDownloader) clientError(ctx context.Context, err error) error {
-	var uerr *neturl.Error
+// clientError is err, failing the request to hop, as the API client sees
+// it: a network error on a hop through the environment's proxy is logged
+// and replaced by errViaProxy; anything else is returned as is.
+func (d mediaDownloader) clientError(ctx context.Context, hop string, err error) error {
 	var operr *net.OpError
-	if d.proxy == nil || !errors.As(err, &uerr) || !errors.As(err, &operr) {
+	if d.proxy == nil || !errors.As(err, &operr) {
 		return err
 	}
-	u, perr := neturl.Parse(uerr.URL)
+	u, perr := neturl.Parse(hop)
 	if perr != nil {
 		return err
 	}
 	if p, _ := d.proxy(u); p == nil {
 		return err
 	}
-	slog.WarnContext(ctx, "gateway: media download through the environment's proxy failed", "url", uerr.URL, "err", err)
+	slog.WarnContext(ctx, "gateway: media download through the environment's proxy failed", "url", hop, "err", err)
 	return errViaProxy
 }
 

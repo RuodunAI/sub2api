@@ -302,3 +302,26 @@ func TestMediaDownloadEnvProxyErrorHidesProxy(t *testing.T) {
 		t.Fatalf("direct: %v", err)
 	}
 }
+
+// A connection through the environment's proxy reset while the body is
+// read does not show the proxy's address to the API client either.
+func TestMediaDownloadEnvProxyBodyErrorHidesProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, buf, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 1000\r\n\r\npartial")
+		_ = buf.Flush()
+		time.Sleep(100 * time.Millisecond) // the client is reading the body
+		_ = conn.(*net.TCPConn).SetLinger(0)
+		_ = conn.Close() // reset
+	}))
+	t.Cleanup(proxy.Close)
+	proxyAddr := proxy.Listener.Addr().String()
+	setProxyEnv(t, map[string]string{"HTTP_PROXY": proxy.URL})
+	_, _, err := proxiedDownloader(false, envProxy()).download(context.Background(), "http://media.example/png")
+	if !errors.Is(err, errViaProxy) || strings.Contains(err.Error(), proxyAddr) {
+		t.Fatalf("got %v", err)
+	}
+}
