@@ -6,14 +6,14 @@
 # package.json (discovered, so a new UI project needs no change here or in the
 # workflow), it runs
 #
-#   npm ci
+#   npm ci             (only a project with its own package-lock.json)
 #   npm run typecheck
 #   npm test
 #   npm run build      (the dist/entry.js the image packs, see build-ui.sh)
 #
-# typecheck and test use the console's vue-tsc and vitest, so next/web must be
-# installed first (`npm ci` in next/web). Run from the repository root; usable
-# locally: `sh .github/next-ci/next-check-plugin-ui.sh next/plugins/guard/ui/native`.
+# The repository's projects take vite, vue-tsc and vitest from the console, so
+# next/web must be installed first (`npm ci` in next/web). Run from the
+# repository root; usable locally: `sh .github/next-ci/next-check-plugin-ui.sh next/plugins/guard/ui/native`.
 # Every project is checked; the failing ones are listed at the end.
 set -u
 
@@ -27,17 +27,27 @@ if [ $# -eq 0 ]; then
   exit 1
 fi
 
+# run <dir> <command...>: runs the command, naming the directory and the
+# command when it fails.
+run() {
+  dir=$1
+  shift
+  "$@" || { echo "::error::$dir: $* failed" >&2; return 1; }
+}
+
+# Runs the steps in order and stops at the first failing one. The steps are
+# chained explicitly: set -e has no effect inside the condition of the
+# caller's if.
+check() {
+  cd "$1" || return
+  if [ -f package-lock.json ]; then run "$1" npm ci --no-audit --no-fund || return; fi
+  run "$1" npm run typecheck && run "$1" npm test && run "$1" npm run build
+}
+
 failed=''
 for dir in "$@"; do
   echo "::group::$dir"
-  if (
-    set -e
-    cd "$dir"
-    npm ci --no-audit --no-fund
-    npm run typecheck
-    npm test
-    npm run build
-  ); then
+  if (check "$dir"); then
     echo "$dir: ok"
   else
     failed="$failed $dir"

@@ -701,10 +701,11 @@ SDK 拒绝未知键：
     - 17 个工程时按平均每个 4.6 s、39 MB 估算：约 80 s、约 660 MB。CI 的 `plugin UIs` 任务（含 typecheck、spec）5 个工程实测 146 s，17 个约 8 分钟，与 Go 的 server 任务并行跑。
     - 改成 npm workspace 只能省掉每个工程约 2 s 的 `npm ci` 和大部分重复的 `node_modules`（磁盘），省不掉 typecheck、spec、build 的时间。上面这个量级可以接受，结论仍是不改；工程数再翻倍、或 ui 阶段的磁盘成为问题时再议。
     - 没有实测整个镜像改动前后的构建时间：T1 只改脚本里的检查，不改构建步骤，镜像构建时间不变。
-- **新工程统一照 codex 的模板**（`plugins/codex/ui/native/package.json`、`tsconfig.json`、`vitest.config.ts`）：`build`、`typecheck`、`test` 三个脚本；typecheck 和 test 借用控制台的 `node_modules`；提交 `package-lock.json`。growth、guard 补上 typecheck 和 test 脚本，以及 tsconfig。
+- **新工程统一照 codex 的模板**（`plugins/codex/ui/native/package.json`、`tsconfig.json`）：`build`、`typecheck`、`test` 三个脚本；typecheck 和 test 借用控制台的 `node_modules`；提交 `package-lock.json`。growth、guard 补上 typecheck 和 test 脚本，以及 tsconfig。
+  - 收尾（D1b）改为：build 也用控制台的 vite，工程不再有依赖、lockfile、`.npmrc`、`vite.config.ts`、`vitest.config.ts`；`tsconfig.json` 继承 `web/packages/vite-preset/tsconfig.plugin.json`，构建配置是 `web/packages/vite-preset/vite.plugin.config.js`，spec 用 `web/vitest.config.ts`（CONTRACTS §23）。17 个工程中 16 个的 `dist` 与改动前逐字节相同；codex 的 `proxyTicket` prop 多了 `type: Function`（插件自己的 vue 没有 typescript，解析不了从 `@sub2api/host` 导入的类型，原来输出 `{}`），其余是压缩后的变量名。
 - **`.github/workflows/next-ci.yml`：** 新增 `plugin-ui` 任务。
   - 先在 `next/web` 跑 `npm ci`。
-  - 再对每个 `plugins/*/ui/native` 依次跑 `npm ci`、`npm run typecheck`、`npm test`、`npm run build`。
+  - 再对每个 `plugins/*/ui/native` 依次跑 `npm ci`（只在工程有 `package-lock.json` 时）、`npm run typecheck`、`npm test`、`npm run build`。
   - 任务列表由 `ls next/plugins/*/ui/native/package.json` 生成，和 Go 模块的列表一样（`next-ci.yml:115-124`）。
 
 ## 9. 契约改动清单与删除清单
