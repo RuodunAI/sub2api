@@ -103,7 +103,7 @@ AssetLibraryRegion   string // 签名区域，空 = cn-beijing；BytePlus 海外
 
 ### 4.2 账号类型
 
-> **已被 §14 取代（0.7.0）。** 这里写的「只有一个账号类型」不再成立：0.7.0 把它拆成 `apikey`（方舟官方）与 `relay`（Ark 兼容中转站），下面这段是一期的原始设计记录。
+> **已被 §14 取代（0.7.0）。** 这里写的「只有一个账号类型」不再成立：0.7.0 把它拆成 `apikey`（方舟官方）与 `relay`（Ark 兼容中转站），下面这段是一期的原始设计记录。其中的 `form`（schema 表单）在 0.13.0 改为原生组件 `{"mode": "native", "component": "VolcengineKeyForm"}`（§19；schema 表单已从平台删除）。
 
 ```jsonc
 {
@@ -511,7 +511,7 @@ Ark 图片响应的 `data[]` 每条带 `size`（如 `"2848x1600"`），**按分�
 
 **2. 「没接后端参数 / 后端不认」两个选项都不对。** 核心是**全量转发** query 给插件的（`plugin/routes/routes.go` 把 `URL.Query()` 整个交出去），`anthropic` 的 `/models` 确实实现了 `?q=`（ILIKE，有测试）。真问题是三个 declarative table 页里**只有一个**认 `q`：volcengine 的 `GET /assets`、`GET /asset-groups` 只认 `index_status` / `group_id`。所以「接通」会让 2/3 的页面**返回全量却显示成搜索结果**——比空白更糟的谎。删掉的理由是这个。
 
-真正的修法（**排期**）：`manifest.Page` 加一条「这个 source 认哪个查询参数」的声明（如 `"search": "q"`），`check` 校验参数名；前端**声明了才渲染搜索框**，输入防抖发 `q=` 并回第 1 页。之后 volcengine 两个 assets 路由要么实现 `q` 要么不声明。顺带 `serverPaged` 也该从启发式改成声明式——服务端分页开没开应来自声明，不该靠比较 `total > len(items)` 猜。
+（2026-11-19：声明式表格页已从平台删除，这条排期作废，见 §19。）真正的修法（**排期**）：`manifest.Page` 加一条「这个 source 认哪个查询参数」的声明（如 `"search": "q"`），`check` 校验参数名；前端**声明了才渲染搜索框**，输入防抖发 `q=` 并回第 1 页。之后 volcengine 两个 assets 路由要么实现 `q` 要么不声明。顺带 `serverPaged` 也该从启发式改成声明式——服务端分页开没开应来自声明，不该靠比较 `total > len(items)` 猜。
 
 **3. 图标名写错的后果比「空白」严重。** 渲染不存在的图标**不空白、不报错、零控制台输出**，画一个 `M5 5h14v14H5z` 的空心方块——和真图标 `stop`（`M6 6h12v12H6z`）几乎一模一样。manifest 里写错名字**不像坏了，像故意的**。现在：名字表抽到 `packages/ui/src/icons.ts`（导出 `ICON_NAMES` / `hasIcon`），兜底换成方框加问号（没有任何真图标长这样），解析不到时 `console.warn` 一次并指名插件与菜单。
 
@@ -570,6 +570,7 @@ Ark 图片响应的 `data[]` 每条带 `size`（如 `"2848x1600"`），**按分�
 
 - **`type: "table"` 的页面是只读的**：`DeclarativeTable.vue` 只有搜索框、刷新、分页，**没有任何行操作**，`manifest.Page` 也没有 `actions` 字段。所以"素材库能在控制台管理"靠 table 做不到，只能再加 `form` 页把创建路径补上。
 - **`form` 页里的关联 id 只能手填数字**：schema 表单没有「选项来自插件路由」的能力，所以 `account_id` / `group_id` 要管理员自己抄。体验很糙。正确答案是给声明式表单加一个「选项来自插件路由」的 widget，或者做 native 页——不是现在这样凑。
+- （0.13.0 已解决：声明式 table、form 页从平台删除，素材库两个页面改为原生页，新建并进列表页的弹窗，§19。）
 
 ### 10.5 又两个"声明了但没人管"的形状
 
@@ -1103,7 +1104,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 
 ## 19. 界面只用代码写（DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY，版本仍是未发布的 0.13.0）
 
-- **账号表单是原生代码**（`ui/native`，清单 `form.mode: "native"`、`ui.native.entry`、`hostUICompat: "^3.20"`、宿主权限 `ui.native`）：`apikey` 是 `createApiKeyForm`（`VolcengineKeyForm`；`base_url`、`asset_base_url` 按 `guardedSettings` 只给官方值），`relay` 是自己拼的 `VolcengineRelayForm`（素材库一节；兼容配置一节默认收起，有值或有错时自己展开）。`secret_key` 是可清除的密钥（已存时有“清除已保存的值”）。字段、键名与原 `forms/{apikey,relay}.*.json` 相同，文案只改了一处：视频任务集合端点的帮助里，原来的 `/{task_id}`、`/{任务ID}` 写成 `/task_id`、`/任务ID`（花括号是 vue-i18n 的占位符语法）；原表单删除。两个表单的“素材库（可选）”一节带原来的说明（`SFormSection`）。
+- **账号表单是原生代码**（`ui/native`，清单 `form.mode: "native"`、`ui.native.entry`、`hostUICompat: "^4.0"`（起初 `^3.20`，界面契约 4.0 删除声明式写法后改为 `^4.0`）、宿主权限 `ui.native`）：`apikey` 是 `createApiKeyForm`（`VolcengineKeyForm`；`base_url`、`asset_base_url` 按 `guardedSettings` 只给官方值），`relay` 是自己拼的 `VolcengineRelayForm`（素材库一节；兼容配置一节默认收起，有值或有错时自己展开）。`secret_key` 是可清除的密钥（已存时有“清除已保存的值”）。字段、键名与原 `forms/{apikey,relay}.*.json` 相同，文案只改了一处：视频任务集合端点的帮助里，原来的 `/{task_id}`、`/{任务ID}` 写成 `/task_id`、`/任务ID`（花括号是 vue-i18n 的占位符语法）；原表单删除。两个表单的“素材库（可选）”一节带原来的说明（`SFormSection`）。
 - **原 schema 的约束都由 `ValidateCredentials` 保证**（`internal/volcengine/form_constraints_test.go`，每条约束一个反例，写死在测试里）。表单没有的键保存时被拒绝（错误码 `unknown`，同原 schema 的 `additionalProperties:false`，`apikey.Spec.Fields` 声明）：`apikey` 允许 `api_key`、`base_url` 和素材库四个字段（`access_key`、`secret_key`、`asset_base_url`、`asset_region`），`relay` 再加 `video_endpoint`、`asset_endpoint`、`api_prefix`、`video_api_prefix`。原来只有 schema 挡住、这次补进 Go 的：`base_url`、`asset_base_url` 里不能有空白（`url.Parse` 接受路径里的空格，规范化后存成转义的地址；现在由 SDK 的 `apikey.NormalizeBaseURL` 统一拒绝，插件不再另查），`api_prefix`、`video_api_prefix` 里不能有空白（只在保存时检查，`validatePrefixFields`；请求时读已存的前缀不查空白，已存的值照旧可用）。
 - **素材库两个页面是原生页**（`VolcengineAssetsPage`、`VolcengineAssetGroupsPage`，`SResourcePage`）：列、格式、`q` 搜索、分页与原 table 页相同；原来的两个 form 页并进各自列表页的“新建”弹窗（需要 `assets:manage`），清单删掉这两个页面和 `forms/asset*.json`。新建成功关弹窗、回第一页刷新；路由的字段错误显示在对应字段、弹窗不关。
 - **素材库新建路由自己校验长度和地址**（`route_checks.go`）：`POST /asset-groups` 的 `name` ≤128、`title` ≤256、`description` ≤1024、`group_type` ≤64；`POST /assets` 的 `name` ≤128、`asset_type` ≤64、`url` ≤2048 且是不含空白的 `http(s)://` 或 `tos://` 地址。原来这些只在控制台的 schema 表单里。
