@@ -52,12 +52,12 @@
 | 字段 | 含义 | 默认 | 例子 |
 |---|---|---|---|
 | 资源地址（`base_url`） | Azure OpenAI 资源的端点，必填 | 无 | `https://my-resource.openai.azure.com` |
-| API Key（`api_key`） | 资源的 Key，以 `api-key` 请求头发送；加密保存。8–512 个可见字符，不要求前缀 | 无 | Azure 门户“密钥和终结点”里的 KEY 1 |
+| API Key（`api_key`） | 资源的 Key，以 `api-key` 请求头发送；加密保存。不限格式和长度，只要求非空（去掉首尾空白后保存） | 无 | Azure 门户“密钥和终结点”里的 KEY 1 |
 | API 版本（`api_version`，仅经典类型） | 作为查询参数 `api-version` 发送 | `2024-10-21` | `2024-10-21`、`2025-04-01-preview` |
 
 **资源地址贴什么**：Azure 门户里资源的“终结点”，只要协议和主机这一段。
 
-- 可以填：`https://<资源名>.openai.azure.com`、`https://<资源名>.cognitiveservices.azure.com`；末尾带 `/`、`/openai`、`/openai/v1` 也行，保存时会去掉。Foundry 项目地址 `https://<资源名>.services.ai.azure.com/api/projects/<项目名>` 也接受（原样保留；这个域名下的路径没有验证过）。
+- 可以填：`https://<资源名>.openai.azure.com`、`https://<资源名>.cognitiveservices.azure.com`；末尾带 `/`、`/openai`、`/openai/v1` 也行：地址按填写的保存（只去掉末尾的 `/`），末尾的 `/openai/v1` 或 `/openai` 在请求时按接口重新拼接，请求地址与不带时相同。Foundry 项目地址 `https://<资源名>.services.ai.azure.com/api/projects/<项目名>` 也接受（原样保留，项目名里的 `%2F` 也原样保留和发出；这个域名下的路径没有验证过）。项目名恰好是 `openai` 时，末尾的 `/openai` 会被当作后缀，请求里少了项目这一段，这种项目暂不支持。
 - 会被拒绝（提示“只填资源地址，不要带 deployments、chat/completions 或 api-version”）：整条请求地址，例如 `…/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21`、`…/openai/v1/chat/completions`；带 `?` 查询串或 `#`；地址里带 `用户@`；`/OpenAI/V1` 这样大小写不同的后缀；前后有空格。
 - `http://` 地址目前也能保存（测试环境的模拟上游需要）。正式账号请填 `https://`。
 

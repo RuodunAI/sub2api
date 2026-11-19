@@ -26,14 +26,16 @@ const (
 )
 
 // EndpointPattern is the base_url both types accept: the address of the
-// resource and nothing else, optionally with the /openai or /openai/v1
-// suffix the types remove, or a Foundry project path. A pasted request URL
-// (a deployment, an operation, an api-version) is refused instead of being
-// saved and answering 404 on every request. It is matched against the URL
-// as apikey.NormalizeBaseURL gives it (trimmed, the scheme lower-cased), as
-// every type's base_url is checked; the suffixes in the case the types
-// remove them in. The account form (ui/native/src/forms.ts) shows the same
-// rule on the URL as typed.
+// resource and nothing else, optionally ending in /openai or /openai/v1 (the
+// types' Spec.Versions, rebuilt per route on each request), or a Foundry
+// project path. A pasted request URL (a deployment, an operation, an
+// api-version) is refused instead of being saved and answering 404 on every
+// request. It is matched against the value saved, apikey.NormalizeBaseURL's
+// output (trimmed, the scheme lower-cased, no trailing "/", the path in the
+// escaped form written, so a project name with %2F is one segment), as every
+// type's base_url is checked; the suffixes in the case Versions has them in.
+// The account form (ui/native/src/forms.ts) shows the same rule on the URL
+// as typed.
 var EndpointPattern = regexp.MustCompile(`^https?://[^\s/?#@]+(/|/openai/?|/openai/v1/?|/api/projects/[^\s/?#]+/?)?$`)
 
 // APIVersionPattern is the api_version of azure_deployment: a date, with
@@ -42,13 +44,10 @@ var APIVersionPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-preview)?$`)
 
 // Platform is the standard platform of both types, their credentials also
 // checked against EndpointPattern and, for azure_deployment, the
-// api_version (see ValidateCredentials). These rules are not Spec.Fields:
-// a Spec.Fields rule on base_url sees the saved value, its suffixes
-// stripped, where EndpointPattern takes the optional /openai or /openai/v1
-// itself, so /openai/v1/openai or /api/projects/p/openai/v1 would pass once
-// stripped; and both refusals carry their own message saying what to
-// enter, which fieldcheck's generic ones would lose. Spec.Fields only names
-// the keys each type accepts.
+// api_version (see ValidateCredentials). These rules are not Spec.Fields
+// because both refusals carry their own message saying what to enter,
+// which fieldcheck's generic ones would lose. Spec.Fields only names the
+// keys each type accepts.
 type Platform struct{ *standard.Platform }
 
 // New returns the platform of both account types.
@@ -111,9 +110,9 @@ func Deployment() standard.Type {
 }
 
 // azure is what both types change in the openai preset: a required resource
-// endpoint without a default (a pasted /openai/v1 or /openai removed), any
-// key format, the credentials api_key, base_url and fields only (their rules
-// in ValidateCredentials), the key in api-key, the routes given and the
+// endpoint without a default, saved as written, its trailing /openai/v1 or
+// /openai left out when each route's full path is appended, the credentials
+// api_key, base_url and fields only (their rules in ValidateCredentials), the key in api-key, the routes given and the
 // preset's tests on them, no model listing.
 func azure(id string, fields fieldcheck.Fields, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
