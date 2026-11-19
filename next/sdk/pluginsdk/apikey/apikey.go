@@ -22,6 +22,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
@@ -290,19 +291,11 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	return cfg, nil
 }
 
-// root is base without the longest of s.Versions it ends in, at most one,
-// and the "/" left before it. base is a stored base URL (a NormalizeBaseURL
-// output, its path in escaped form) or the default: a version starts with
-// "/", so the match falls on a segment boundary of the path ("/xv1" does not
-// end in "/v1", nor does "/a%2Fv1"), never in the host.
+// root is base without the version segment it ends in (manifest.TrimVersion
+// with s.Versions) and the "/" left before it. base is a stored base URL (a
+// NormalizeBaseURL output, its path in escaped form) or the default.
 func (s Spec) root(base string) string {
-	version := ""
-	for _, v := range s.Versions {
-		if len(v) > len(version) && strings.HasSuffix(base, v) {
-			version = v
-		}
-	}
-	return strings.TrimRight(strings.TrimSuffix(base, version), "/")
+	return strings.TrimRight(manifest.TrimVersion(base, s.Versions), "/")
 }
 
 func (s Spec) normalizeBaseURL(baseStr string) (string, error) {

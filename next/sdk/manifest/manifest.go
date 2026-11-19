@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/mail"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -546,12 +547,26 @@ const MaxAccountBatch = 500
 // with, each starting and not ending with "/" (e.g. "/v1"). Before comparing,
 // the host removes at most one of them from each side: the longest that ends
 // the escaped path, matched whole and case-sensitively, so ".../a%2Fv1" does
-// not end with "/v1". It is the rule of the plugin SDK's apikey.Spec.Versions
-// and should list the same segments.
+// not end with "/v1" (TrimVersion). It is the rule of the plugin SDK's
+// apikey.Spec.Versions and should list the same segments.
 type GuardedSetting struct {
 	Field    string   `json:"field"`
 	Allowed  []string `json:"allowed"`
 	Versions []string `json:"versions,omitempty"`
+}
+
+// TrimVersion is escapedPath without the longest of versions that ends it, at
+// most one, matched whole and case-sensitively on the escaped form: a version
+// starts with "/", so ".../xv1" and ".../a%2Fv1" do not end with "/v1". It is
+// the one rule behind GuardedSetting.Versions and apikey.Spec.Versions.
+func TrimVersion(escapedPath string, versions []string) string {
+	best := ""
+	for _, v := range versions {
+		if len(v) > len(best) && strings.HasSuffix(escapedPath, v) {
+			best = v
+		}
+	}
+	return strings.TrimSuffix(escapedPath, best)
 }
 
 // AccountPlatform is one platform an account type serves. Empty fields fall
