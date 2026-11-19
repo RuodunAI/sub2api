@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -167,26 +166,25 @@ func TestImageGenerationToolModel(t *testing.T) {
 	assertImageRecord(t, e.record(), "gpt-image-2", 23)
 }
 
-// Without a price for the image model, missing_price_policy decides as it
-// does for any model, now that the model is known: "free" leaves the image
-// usage unpriced (it shows in the record, nothing is charged for it);
-// "reject" cannot refuse a request already answered, so the record's billing
-// is blocked and says why - the image is never silently free.
+// Without a price for the image model the image usage is recorded unpriced
+// and the conversation is billed as usual, under either missing_price_policy:
+// "free" is the policy; "reject" can no longer refuse a request already
+// answered, so the record carries the additional_unpriced marker naming the
+// usage and a warning is logged - the image is never silently free.
 func TestImageGenerationToolWithoutPrice(t *testing.T) {
 	e, up := imageToolEnv(t, false)
 	delete(e.pricer.rules, "gpt-image-2-codex")
-	e.post("/v1/responses", imageToolBody(true, map[string]any{"type": "image_generation"}), bearer())
-	<-up.bodies
-	rec := e.record()
-	if !rec.Billable || len(rec.Additional) != 0 || !strings.Contains(rec.BillingError, "image_generation/gpt-image-2-codex") ||
-		!strings.Contains(rec.BillingError, core.ErrPriceNotConfigured.Code) {
-		t.Fatalf("reject: record %+v", rec)
+	for _, free := range []bool{false, true} {
+		e.pricer.free = free
+		e.post("/v1/responses", imageToolBody(!free, map[string]any{"type": "image_generation"}), bearer())
+		<-up.bodies
+		rec := e.record()
+		assertImageRecord(t, rec, "gpt-image-2-codex", 0)
+		marker := rec.Anomalies()[core.AnomalyAdditionalUnpriced]
+		if want := map[bool]string{false: "image_generation/gpt-image-2-codex", true: ""}[free]; rec.AdditionalUnpriced != want || marker != want {
+			t.Fatalf("free=%v: unpriced %q, anomaly %q", free, rec.AdditionalUnpriced, marker)
+		}
 	}
-	e.pricer.free = true
-	e.post("/v1/responses", imageToolBody(false, map[string]any{"type": "image_generation"}), bearer())
-	<-up.bodies
-	rec = e.record()
-	assertImageRecord(t, rec, "gpt-image-2-codex", 0)
 }
 
 // An ordinary conversation, whose answer carries an all-zero tool usage, has

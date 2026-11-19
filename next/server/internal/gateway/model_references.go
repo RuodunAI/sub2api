@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -194,6 +195,7 @@ func (c *call) mapReferencedModels(body []byte, account *core.AccountRef, rt *ty
 func (c *call) recordAdditionalUsage(ctx context.Context, u *usagerules.Acc, rt *typeRoute) {
 	c.rec.Additional = nil
 	c.rec.BillingError = u.AdditionalError
+	c.rec.AdditionalUnpriced = ""
 	for _, actual := range u.Additional() {
 		if actual.ResponseModel {
 			priced, err := c.priceResponseModel(ctx, actual)
@@ -224,11 +226,16 @@ func (c *call) recordAdditionalUsage(ctx context.Context, u *usagerules.Acc, rt 
 // (CONTRACTS §120) the way a referenced model is priced before scheduling
 // (prepareReferencedPrices), now that the model is known: the price of the
 // caller's group and segment, the request's rate, the price inputs read from
-// the client request. missing_price_policy applies as Resolve applies it:
-// "free" leaves the usage unpriced, "reject" is an error, which blocks the
-// settlement of the record rather than letting the usage go free.
+// the client request. Without a price the usage is recorded unpriced. Under
+// missing_price_policy "free" that is the policy; under "reject" the request
+// can no longer be refused, so the rest of it is billed as usual and the
+// record, and a throttled warning, say which usage went unpriced (§120.4).
 func (c *call) priceResponseModel(ctx context.Context, actual core.AdditionalUsage) (core.PricedUsage, error) {
 	rule, err := c.g.d.Pricer.Resolve(context.WithoutCancel(ctx), c.priceQuery(actual.Model))
+	if ce := core.AsError(err); err != nil && ce.Code == core.ErrPriceNotConfigured.Code {
+		c.noteUnpriced(ctx, actual.Kind+"/"+actual.Model)
+		err = nil
+	}
 	if err != nil {
 		return core.PricedUsage{}, err
 	}
@@ -239,6 +246,20 @@ func (c *call) priceResponseModel(ctx context.Context, actual core.AdditionalUsa
 		Tokens: actual.Tokens, UsageSemantics: actual.UsageSemantics, Metrics: actual.Metrics}
 	priced.PriceParams, priced.PriceHeaders = c.priceInputsFrom(rule, c.body)
 	return priced, nil
+}
+
+// noteUnpriced records on the usage record that usage (kind/model) had no
+// price and warns, at most once a minute per usage.
+func (c *call) noteUnpriced(ctx context.Context, usage string) {
+	if c.rec.AdditionalUnpriced == "" {
+		c.rec.AdditionalUnpriced = usage
+	} else {
+		c.rec.AdditionalUnpriced += ", " + usage
+	}
+	if ok, suppressed := c.g.unpricedWarns.allow(usage, c.g.now()); ok {
+		slog.WarnContext(ctx, "gateway: additional usage has no price and is not charged; configure a price for its model",
+			"request_id", c.rid, "usage", usage, "suppressed", suppressed)
+	}
 }
 
 func primaryUsageKind(rt *typeRoute, kind string) bool {

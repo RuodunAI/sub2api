@@ -23,10 +23,10 @@ func exprPrice(t *testing.T, id int64, model, src string) *core.PriceRule {
 // model's price, the image tool (39 input, 515 output tokens, all image) as
 // additional usage at the image model's price; the record's cost is the sum
 // and its billing detail shows each part. A price without img_o bills the
-// image output at the text output price c. A record whose image model had no
-// price under missing_price_policy "reject" is not settled: it fails, saying
-// why. Under "free" the image usage is unpriced and the conversation alone
-// is charged.
+// image output at the text output price c. Without a price for the image
+// model the image usage is unpriced and the conversation alone is charged;
+// under missing_price_policy "reject" the row also carries the
+// additional_unpriced marker (CONTRACTS §120.4).
 func TestImageToolSettledApart(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -38,30 +38,27 @@ func TestImageToolSettledApart(t *testing.T) {
 	for _, c := range []struct {
 		id, status, total, part string
 		additional              []core.PricedUsage
-		billingError            string
+		unpriced                string
 	}{
 		// 2304*1.25 + 52*10 = 3400; 39*5 + 515*30 = 15645 micro-USD.
 		{"img-o", "billed", "0.01904500", "0.015645", image(exprPrice(t, 0, "gpt-image-2-codex", `p*5 + cr*1.25 + img*8 + img_o*30 + c*30`)), ""},
 		// 39*5 + 515*10 = 5345.
 		{"text-only", "billed", "0.00874500", "0.005345", image(exprPrice(t, 0, "gpt-image-2-codex", `p*5 + c*10`)), ""},
 		{"free-policy", "billed", "0.00340000", "", image(nil), ""},
-		{"rejected", "failed", "0.00000000", "", nil, "additional usage image_generation/gpt-image-2-codex: model_price_not_configured"},
+		{"rejected", "billed", "0.00340000", "", image(nil), "image_generation/gpt-image-2-codex"},
 	} {
 		rec := f.record("req-"+c.id, true)
 		rec.Platform, rec.Protocol, rec.UpstreamProtocol, rec.Endpoint = "openai", "openai.responses", "openai.responses", "/v1/responses"
 		rec.Model, rec.UsageSemantics, rec.PriceHeaders, rec.Price = "gpt-5.6", "inclusive", nil, chat
 		rec.Tokens = core.UsageTokens{Input: 2304, Output: 52}
-		rec.Additional, rec.BillingError = c.additional, c.billingError
+		rec.Additional, rec.AdditionalUnpriced = c.additional, c.unpriced
 		f.svc.process(ctx, []*core.UsageRecord{rec})
 		where := `FROM usage_logs WHERE request_id = 'req-` + c.id + `'`
 		if s := f.scalar(`SELECT billing_status || ' ' || total_cost::text ` + where); s != c.status+" "+c.total {
 			t.Fatalf("%s: row %s", c.id, s)
 		}
-		if c.status != "billed" {
-			if s := f.scalar(`SELECT billing_detail->>'error' ` + where); s != "usage settlement blocked: "+c.billingError {
-				t.Fatalf("%s: error %s", c.id, s)
-			}
-			continue
+		if s := f.scalar(`SELECT COALESCE(anomalies->>'additional_unpriced', '-') ` + where); s != map[bool]string{true: c.unpriced, false: "-"}[c.unpriced != ""] {
+			t.Fatalf("%s: anomaly %s", c.id, s)
 		}
 		if s := f.scalar(`SELECT (billing_detail->'additional'->0->>'kind') || ' ' || (billing_detail->'additional'->0->>'model') || ' ' ||
 			COALESCE(billing_detail->'additional'->0->'detail'->>'total_cost', '-') || ' ' ||
