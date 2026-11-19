@@ -49,13 +49,14 @@ func TestManifest(t *testing.T) {
 		t.Error(err)
 	}
 	// base_url is the address field and guarded (CONTRACTS §21.3): without
-	// account:settings:custom only the default upstream may be used.
+	// account:settings:custom only the default upstream may be used, with or
+	// without one of the version segments of the type's base URL.
 	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) {
 		t.Errorf("upstreamFields = %v, want [base_url]", at.UpstreamFields)
 	}
 	def := typ.Spec.DefaultBaseURL
-	if gs := at.GuardedSettings; def != "https://generativelanguage.googleapis.com" || len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) {
-		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, def)
+	if gs := at.GuardedSettings; def != "https://generativelanguage.googleapis.com" || len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) || !slices.Equal(gs[0].Versions, typ.Spec.Versions) {
+		t.Fatalf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, def, typ.Spec.Versions)
 	}
 }
 

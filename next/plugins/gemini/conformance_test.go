@@ -24,8 +24,8 @@ func TestConformance(t *testing.T) {
 // core sends it in (generateContent and countTokens never stream,
 // streamGenerateContent always does), with the endpoint the core maps to it.
 func conformanceCases() []conformance.Case {
-	// The streaming case runs on a custom base URL (a pasted /v1beta is
-	// removed), the others on the default one.
+	// The streaming case runs on a custom base URL (a pasted /v1beta not
+	// doubled), the others on the default one.
 	settings := map[bool]string{false: `{}`, true: `{"base_url":"https://gemini.example.com/v1beta"}`}
 	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
 	var out []conformance.Case

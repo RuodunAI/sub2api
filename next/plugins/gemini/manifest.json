@@ -33,7 +33,7 @@
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
       "guardedSettings": [
-        { "field": "base_url", "allowed": ["https://generativelanguage.googleapis.com"] }
+        { "field": "base_url", "allowed": ["https://generativelanguage.googleapis.com"], "versions": ["/v1beta", "/v1"] }
       ],
       "defaultModels": [
         "gemini-4-carbon",
