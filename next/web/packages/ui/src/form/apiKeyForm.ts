@@ -27,7 +27,7 @@ type Model = Record<string, unknown>
 type Text = () => string
 
 export interface ApiKeyFormSpec {
-  /** Defaults: 8–512 visible ASCII characters (/^[!-~]+$/). */
+  /** By default the key only has to be non-blank; min, max and pattern apply only when given. */
   apiKey?: { min?: number; max?: number; pattern?: RegExp; placeholder?: Text; help?: Text }
   /** false: the type has no base_url. */
   baseUrl?:
@@ -82,14 +82,13 @@ export interface FieldSection {
   collapsed?: boolean
 }
 
-const API_KEY_PATTERN = /^[!-~]+$/
 const BASE_URL = /^(https?:\/\/[^\s?#]+)?$/
 const BASE_URL_REQUIRED = /^https?:\/\/[^\s?#]+$/
 
 /** The rules of the spec: api_key, base_url, then each extra field's (gated by its `when`). */
 function specRules(spec: ApiKeyFormSpec): Rules<Model> {
   const k = spec.apiKey ?? {}
-  const rules: Rules<Model> = { api_key: { required: true, min: k.min ?? 8, max: k.max ?? 512, pattern: k.pattern ?? API_KEY_PATTERN } }
+  const rules: Rules<Model> = { api_key: { required: true, whitespace: true, min: k.min, max: k.max, pattern: k.pattern } }
   const b = spec.baseUrl ?? {}
   if (b) rules.base_url = [{ required: b.required }, { pattern: b.pattern ?? (b.required ? BASE_URL_REQUIRED : BASE_URL), message: b.message }]
   for (const f of spec.extra ?? []) {

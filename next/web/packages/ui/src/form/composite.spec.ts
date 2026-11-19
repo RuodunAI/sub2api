@@ -272,10 +272,11 @@ describe('SFormSection', () => {
 })
 
 // The anthropic account form written with createApiKeyForm (DESIGN §5.10),
-// with the verdicts of the schema form it replaced (plugins/anthropic/forms/apikey.schema.json, deleted):
+// with the keys of the schema form it replaced (plugins/anthropic/forms/apikey.schema.json, deleted):
 //   required: [api_key]; additionalProperties: false; no defaults;
-//   api_key: string 8–512, ^[!-~]+$ (ui: secret); base_url: ^(https?://[^\s?#]+)?$ (ui: url-presets,
-//   presets [https://api.anthropic.com]).
+//   base_url: ^(https?://[^\s?#]+)?$ (ui: url-presets, presets [https://api.anthropic.com]).
+// The api_key verdicts follow DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES §5.1:
+// any non-blank string (the schema form wanted 8–512 visible ASCII characters).
 describe('createApiKeyForm: the anthropic form', () => {
   const Anthropic = createApiKeyForm({
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => 'Leave empty to use https://api.anthropic.com' },
@@ -291,14 +292,15 @@ describe('createApiKeyForm: the anthropic form', () => {
     { name: 'key and base URL', key: 'sk-ant-api03-abcdef', url: 'https://proxy.example.com/anthropic', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https://proxy.example.com/anthropic' }, ok: true },
     { name: 'a cleared base URL is not sent', key: 'sk-ant-api03-abcdef', url: '', out: { api_key: 'sk-ant-api03-abcdef' }, ok: true },
     { name: 'no key', out: {}, ok: false },
-    { name: 'short key', key: 'sk-1234', out: { api_key: 'sk-1234' }, ok: false },
-    { name: 'key with a space', key: 'sk-ant api03', out: { api_key: 'sk-ant api03' }, ok: false },
+    { name: 'blank key', key: '   ', out: { api_key: '   ' }, ok: false },
+    { name: 'short key', key: 'sk-1234', out: { api_key: 'sk-1234' }, ok: true },
+    { name: 'key with a space', key: 'sk-ant api03', out: { api_key: 'sk-ant api03' }, ok: true },
     { name: 'base URL with a query', key: 'sk-ant-api03-abcdef', url: 'https://x.example.com/?a=1', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https://x.example.com/?a=1' }, ok: false },
     { name: 'base URL not http', key: 'sk-ant-api03-abcdef', url: 'ftp://x.example.com', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'ftp://x.example.com' }, ok: false },
-    { name: 'key of 513 characters', key: 'k'.repeat(513), out: { api_key: 'k'.repeat(513) }, ok: false }
+    { name: 'key of 513 characters', key: 'k'.repeat(513), out: { api_key: 'k'.repeat(513) }, ok: true }
   ]
   for (const c of cases) {
-    it(`same keys and verdict as the schema form: ${c.name}`, async () => {
+    it(`saved keys and verdict: ${c.name}`, async () => {
       const { w, credentials, validate } = editor(Anthropic)
       await flushPromises()
       if (c.key !== undefined) await type(w, KEY, c.key)
@@ -461,6 +463,17 @@ describe('createApiKeyForm: the anthropic form', () => {
     await type(w, 'input[type="text"]', 'nowhere')
     expect(await validate()).toBe(false)
     expect(w.text()).toContain('Invalid format')
+  })
+
+  it('apiKey min, max and pattern apply when given', async () => {
+    const { w, validate } = editor(createApiKeyForm({ baseUrl: false, apiKey: { min: 4, max: 6, pattern: /^k+$/ } }))
+    await flushPromises()
+    const verdicts: boolean[] = []
+    for (const key of ['kkk', 'kkkk', 'kkkkkkk', 'kk kk']) {
+      await type(w, KEY, key)
+      verdicts.push(await validate())
+    }
+    expect(verdicts).toEqual([false, true, false, false])
   })
 })
 
