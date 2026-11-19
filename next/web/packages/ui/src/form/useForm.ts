@@ -172,7 +172,7 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     value: current,
     get: (path) => getPath(current(), path),
     bind: (path) => ({ modelValue: getPath(current(), path), 'onUpdate:modelValue': (v) => form.set(path, v) }),
-    bindNumber: (path) => ({ modelValue: getPath(current(), path), 'onUpdate:modelValue': (v) => form.set(path, v ?? undefined) }),
+    bindNumber: (path) => ({ ...form.bind(path), 'onUpdate:modelValue': (v) => form.set(path, v ?? undefined) }),
     set(path, value) {
       write(setPath(current(), path, value))
       // Checks of the old value are stale.
