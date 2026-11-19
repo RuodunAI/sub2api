@@ -35,11 +35,18 @@ describe('AccountBalanceCell', () => {
     expect(w.emitted('refresh')).toHaveLength(1)
   })
 
-  it('shows the amount with its currency and age', () => {
+  it('shows the amount with the upstream unit as it is, and its age', () => {
     const w = render({ supported: true, amount: '12.500000', currency: 'USD', updated_at: ago(180) })
-    expect(w.get('[data-testid="balance-value"]').text()).toBe('$12.50')
+    const v = w.get('[data-testid="balance-value"]')
+    expect(v.text()).toBe('12.5 USD')
+    expect(v.attributes('title')).toBe('上游返回的数字与单位，原样显示，未做换算')
     expect(w.text()).toContain('3 分钟前')
     expect(w.find('[data-testid="balance-error"]').exists()).toBe(false)
+  })
+
+  it('shows the number alone when the upstream gave no unit', () => {
+    const w = render({ supported: true, amount: '1250000.000000', updated_at: ago(60) })
+    expect(w.get('[data-testid="balance-value"]').text()).toBe('1,250,000')
   })
 
   it('shows an unlimited key without a made-up amount', () => {
@@ -55,7 +62,7 @@ describe('AccountBalanceCell', () => {
     const badge = w.get('[data-testid="balance-error"]')
     expect(badge.text()).toBe('查询失败')
     expect(badge.attributes('title')).toBe('transient: upstream answered 503（5 分钟前）')
-    expect(w.get('[data-testid="balance-value"]').text()).toBe('¥3.50')
+    expect(w.get('[data-testid="balance-value"]').text()).toBe('3.5 CNY')
     expect(w.text()).toContain('旧值')
   })
 

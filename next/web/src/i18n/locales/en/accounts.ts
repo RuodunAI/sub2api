@@ -656,6 +656,7 @@ export default {
     updatedAt: 'updated {time}',
     unread: 'Not read yet',
     unlimited: 'Unlimited',
+    amountHint: 'The number and unit the upstream returned, shown as they are, not converted',
     unlimitedHint: 'The upstream reports no limit for this key',
     failed: 'Query failed',
     errorHint: '{error} ({time})',

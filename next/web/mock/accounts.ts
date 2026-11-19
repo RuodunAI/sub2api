@@ -493,13 +493,15 @@ function usageOf(a: any) {
 // Balance of the account types that read one (CONTRACTS §52): the relay keys
 // and the demo token here. Types without one have no balance field. A read
 // (forced, or the first) asks the "upstream": relay-badkey's key is rejected,
-// the others succeed.
+// the others succeed. The amount and the unit are the upstream's as they are:
+// relay-1 reads like a New API site (a quota without a unit), relay-limited
+// like a Sub2API one (unit "USD").
 const BALANCE_TYPES = new Set(['relay/relay_key', 'demo/token'])
 interface BalanceState { amount?: string; currency?: string; unlimited?: boolean; updated_at?: string; error?: string; error_at?: string }
 const balanceState = new Map<number, BalanceState>([
-  [16, { amount: '42.180000', currency: 'USD', updated_at: now(-240) }],
+  [16, { amount: '1250000.000000', updated_at: now(-240) }],
   [18, { unlimited: true, updated_at: now(-90) }],
-  [31, { amount: '3.500000', currency: 'CNY', updated_at: now(-7200), error: 'transient: upstream answered 503', error_at: now(-300) }],
+  [31, { amount: '7.500000', currency: 'USD', updated_at: now(-7200), error: 'transient: upstream answered 503', error_at: now(-300) }],
   [33, { error: 'auth_rejected: the upstream rejected the key (401)', error_at: now(-600) }]
 ])
 
@@ -516,7 +518,7 @@ function readBalance(a: any) {
     balanceState.set(a.id, { ...st, error: 'auth_rejected: the upstream rejected the key (401)', error_at: now(0) })
     return
   }
-  const amount = st.unlimited ? {} : { amount: (Number(st.amount ?? 20) * 0.98).toFixed(6), currency: st.currency ?? 'USD' }
+  const amount = st.unlimited ? {} : { amount: (Number(st.amount ?? 20) * 0.98).toFixed(6), currency: st.currency }
   balanceState.set(a.id, { unlimited: st.unlimited, ...amount, updated_at: now(0) })
 }
 
