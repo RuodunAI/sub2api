@@ -62,7 +62,7 @@ sh next/deploy/e2e/test.sh
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
 
-用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC37、AC38 是同批的插件联网与授权代理票据，AC39–AC41 是上游插件一批的账号余额、OpenAI 生图与 Responses 生图工具：
+用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC37、AC38 是同批的插件联网与授权代理票据，AC39–AC41 是上游插件一批的账号余额、OpenAI 生图与 Responses 生图工具，AC42 是 Codex 账号经核心转换服务 OpenAI 生图：
 
 | 用例 | 内容 |
 |---|---|
@@ -75,8 +75,9 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 | AC37 | 插件联网（CONTRACTS §113）：guard 的 webhook 告警在默认设置下送达 mock；mock 的主机进屏蔽列表后连接被拒、出口日志记 `denied` 和屏蔽原因；切到“屏蔽所有域名”而允许列表没有它时被拒，加进允许列表后送达。设置只管新建连接，用例先等 guard 到 mock 的空闲连接关闭；另一个用例把 anthropic 账号的上游主机（mock）加进屏蔽列表或不列进允许列表，经网关的请求不再到达 mock、客户端得到 5xx、anthropic 的出口日志记 `denied` 和原因，移出或列入后恢复；保存与触发都发到节点 1（另一节点要等广播）；结束时恢复默认 |
 | AC38 | codex 授权走账号表单选的代理（CONTRACTS §117）：已有代理、粘贴的代理串、不用代理三种选择下，设备码登录的全部请求（申请、一次待批准的轮询、批准的轮询、换令牌）到达 `auth.openai.com` 时全部经过代理或全部直连，粘贴的代理串不留代理记录；令牌经 `POST /accounts` 建成账号后经网关发一条请求到 Codex 后端并计费；Sign in with Codex 的换令牌经已有代理 |
 | AC39 | 账号余额（CONTRACTS §52，显示上游的数字和单位本身、不换算）：New API 账号（额度点数 1250000、没有单位，用户额度更低时取它，不限额）与 Sub2API 账号（旧版额度 7.5 USD、没有 `unit` 时没有单位、任意文字的 `unit` 原样、订阅 `-1` 为不限、钱包、`isValid:false` 为认证被拒）手动刷新的结果，余额请求带 Bearer、不请求 `/api/status`、返回没有 `source`；新账号不刷新，由集群任务 `core.account.balance_sweep` 在几分钟内填上；站点回 401 时记失败、账号仍启用可调度；经账号代理（mock 记 `proxied`）；mock 主机进插件联网屏蔽列表后刷新失败、mock 收不到请求、newapi 的出口日志记 `denied`（设置的保存与刷新都发到节点 1，结束时恢复默认） |
-| AC40 | OpenAI 生图（CONTRACTS §118）：OpenAI API Key、New API、Sub2API 账号各转发 generations（JSON、流式）与 edits（JSON），使用记录有图片输入 / 输出 token，表达式价格 `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 按分组倍率 1.5 计费（算式在用例注释里）；multipart 的 edits 在网关回 400、留一条免费的 `invalid_request` 记录；codex、volcengine 账号不服务生图端点（404）；没有价格的模型 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3），都不到 mock |
+| AC40 | OpenAI 生图（CONTRACTS §118）：OpenAI API Key、New API、Sub2API 账号各转发 generations（JSON、流式）与 edits（JSON），使用记录有图片输入 / 输出 token，表达式价格 `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 按分组倍率 1.5 计费（算式在用例注释里）；multipart 的 edits 在网关回 400、留一条免费的 `invalid_request` 记录；volcengine、Azure 部署（`azure_deployment`）账号不服务生图端点（404；codex 账号经转换服务，见 AC42）；没有价格的模型 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3），都不到 mock |
 | AC41 | Responses 的 `image_generation` 工具（CONTRACTS §17.2、§118.10）：OpenAI API Key 账号（JSON、流式、WebSocket 一轮）与 codex 账号（客户端 JSON，网关强制流式再聚合，图片在应答里）的请求只有一条使用记录、一笔扣费，按客户请求的模型计价：token 是对话与 `tool_usage.image_gen` 之和（输入 159、输出 557、图片输出 515），金额按请求模型的表达式价格乘分组倍率（算式在用例注释里）；`billing_detail` 没有附加或替代分项、没有 `primary_*`；应答 `tools` 回显的生图模型和请求里工具点名的模型都不需要价格；不带工具的请求只有对话的用量 |
+| AC42 | Codex 账号经核心转换服务 OpenAI 生图（CONTRACTS §121）：经账号代理，generations（JSON、流式）与 edits（JSON）到达 Codex 后端时是流式的 Responses 请求（顶层 `gpt-6-luna`，强制的 `image_generation` 工具带客户端的模型，edits 带 `action: edit` 和输入图片）；客户端拿到 Images API 形状（`data[].b64_json`、生图部分的 `usage`；流式最后是 `image_generation.completed`）；一条记录：`openai.images` / `openai.images_edit`、上游协议 `openai.responses`、客户端模型、上游模型为上游回显的 `gpt-image-2-codex`，token 是对话与生图两部分之和，按客户端模型的表达式价格乘分组倍率（算式在用例注释里），一笔扣费；上游完成但没出图（mock 的 `MOCK-NO-IMAGE`）时 200、`data` 为空（流式没有 `completed` 事件），记录成功、照扣；`n: 2` 回 400、缺价 403，都不到 mock |
 
 插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 

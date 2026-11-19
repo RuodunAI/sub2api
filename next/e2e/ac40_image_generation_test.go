@@ -42,8 +42,8 @@ var (
 // (JSON and stream) and /v1/images/edits (JSON): the usage record has the
 // image input and output tokens, and the expression price bills them apart,
 // times the group rate. A multipart edits request is a 400 in the gateway
-// with a free invalid_request record and no account; codex and volcengine
-// accounts do not serve the endpoint; a model without a price is refused
+// with a free invalid_request record and no account; volcengine and Azure
+// deployment accounts do not serve the endpoint; a model without a price is refused
 // with 403 model_price_not_configured before any upstream call (CONTRACTS
 // §17.3: no price is always an error).
 func TestAC40_ImageGeneration(t *testing.T) {
@@ -130,11 +130,13 @@ func TestAC40_ImageGeneration(t *testing.T) {
 		}
 	})
 
-	// The codex backend and Ark serve no image endpoint: no account type of
-	// these groups declares it.
+	// Types with an endpoint subset on openai that neither lists the image
+	// endpoints nor adapts them (CONTRACTS §121.1) do not serve them: Ark,
+	// and an Azure deployment (chat, embeddings, responses adapted). Codex
+	// accounts serve them through the core's conversion (AC42).
 	for name, spec := range map[string]AccountSpec{
-		"codex":      {PluginKey: "codex", Type: "codex_oauth"},
-		"volcengine": {PluginKey: "volcengine", Type: "relay"},
+		"volcengine":       {PluginKey: "volcengine", Type: "relay"},
+		"azure_deployment": {PluginKey: AzurePlugin, Type: AzureDeploymentType, Settings: map[string]any{"api_version": azureAPIVersion}},
 	} {
 		t.Run(name+" not served", func(t *testing.T) {
 			e := e.With(t)

@@ -98,16 +98,16 @@ func (s *server) responsesTurn(ctx context.Context, conn *websocket.Conn, r *htt
 		}
 	}
 	output := []any{responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})}
-	tools, imageTool := imageToolOf(data)
-	if imageTool {
-		output = append(output, imageCallItem("ig_"+msgID))
-		if !ev("response.output_item.done", map[string]any{"output_index": 1, "item": output[1]}) {
+	tools, image := imageToolOf(data, "ig_"+msgID)
+	if image != nil {
+		output = append(output, image)
+		if !ev("response.output_item.done", map[string]any{"output_index": 1, "item": image}) {
 			return false
 		}
 	}
 	final := responsesEnvelope(respID, created, req.Model, "completed", output, openaiResponsesUsage(b.usage))
-	if imageTool {
-		withImageTool(final, tools)
+	if tools != nil {
+		withImageTool(final, tools, image)
 	}
 	return ev("response.completed", map[string]any{"response": final})
 }

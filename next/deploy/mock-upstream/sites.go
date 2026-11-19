@@ -134,35 +134,57 @@ var imageToolUsage = map[string]any{
 	"total_tokens": 554,
 }
 
-// imageToolOf reports whether a Responses request body offers the
-// image_generation tool, and the tools echo of its final response.
-func imageToolOf(body []byte) ([]any, bool) {
+// imageToolNoImage in a Responses request offering the image_generation
+// tool makes the answer text only, as when the driving model answers
+// without calling the tool: no image call and no tool_usage.
+const imageToolNoImage = "MOCK-NO-IMAGE"
+
+// imageToolOf returns, for a Responses request body offering the
+// image_generation tool, the tools echo of its final response and the
+// image call item id (the Codex backend's shape, DESIGN-2026-11-18-CODEX-
+// IMAGES 1.2: the request's output_format and action, its own size and
+// quality); image is nil when the body carries imageToolNoImage. tools is
+// nil when the tool is not offered.
+func imageToolOf(body []byte, id string) (tools []any, image map[string]any) {
 	var req struct {
 		Tools []struct {
-			Type string `json:"type"`
+			Type         string `json:"type"`
+			Action       string `json:"action"`
+			OutputFormat string `json:"output_format"`
 		} `json:"tools"`
 	}
 	if json.Unmarshal(body, &req) != nil {
-		return nil, false
+		return nil, nil
 	}
 	for _, t := range req.Tools {
 		if t.Type != "image_generation" {
 			continue
 		}
-		return []any{map[string]any{"type": "image_generation", "model": imageToolEchoModel, "quality": "auto", "size": "auto"}}, true
+		format := or(t.OutputFormat, "png")
+		tools = []any{map[string]any{"type": "image_generation", "model": imageToolEchoModel, "output_format": format, "quality": "auto", "size": "auto"}}
+		if strings.Contains(string(body), imageToolNoImage) {
+			return tools, nil
+		}
+		return tools, map[string]any{"type": "image_generation_call", "id": id, "status": "completed", "action": or(t.Action, "generate"),
+			"background": "opaque", "output_format": format, "quality": "low", "size": "1254x1254", "revised_prompt": "a mock image", "result": mockImage}
 	}
-	return nil, false
+	return nil, nil
 }
 
-// withImageTool adds the tools echo and the tool's usage to a final
-// response object.
-func withImageTool(final map[string]any, tools []any) map[string]any {
+// or is s, or def when s is empty.
+func or(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}
+
+// withImageTool adds the tools echo to a final response object, and the
+// tool's usage when it made an image.
+func withImageTool(final map[string]any, tools []any, image map[string]any) map[string]any {
 	final["tools"] = tools
-	final["tool_usage"] = map[string]any{"image_gen": imageToolUsage}
+	if image != nil {
+		final["tool_usage"] = map[string]any{"image_gen": imageToolUsage}
+	}
 	return final
-}
-
-// imageCallItem is the output item of the image the tool made.
-func imageCallItem(id string) map[string]any {
-	return map[string]any{"type": "image_generation_call", "id": id, "status": "completed", "result": mockImage}
 }

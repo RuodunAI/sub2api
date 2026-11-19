@@ -263,14 +263,16 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("x-request-id", fmt.Sprintf("req_mock_%d", id))
 	w.Header().Set("x-mock-request-id", strconv.FormatInt(id, 10))
 	message := responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})
-	tools, imageTool := imageToolOf(body)
-	output := []any{message}
-	if imageTool {
-		output = append(output, imageCallItem("ig_"+msgID))
+	// With the image_generation tool the image call comes first, the
+	// assistant's message after it (the Codex backend's order).
+	tools, image := imageToolOf(body, "ig_"+msgID)
+	output, msgIndex := []any{message}, 0
+	if image != nil {
+		output, msgIndex = []any{image, message}, 1
 	}
 	final := responsesEnvelope(respID, created, req.Model, "completed", output, openaiResponsesUsage(b.usage))
-	if imageTool {
-		withImageTool(final, tools)
+	if tools != nil {
+		withImageTool(final, tools, image)
 	}
 	if !req.Stream {
 		writeJSON(w, 200, final)
@@ -290,22 +292,31 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 		return sw.send(typ, fields)
 	}
 	if !ev("response.created", map[string]any{"response": responsesEnvelope(respID, created, req.Model, "in_progress", []any{}, nil)}) ||
-		!ev("response.in_progress", map[string]any{"response": responsesEnvelope(respID, created, req.Model, "in_progress", []any{}, nil)}) ||
-		!ev("response.output_item.added", map[string]any{"output_index": 0, "item": responsesMessageItem(msgID, "in_progress", []any{})}) ||
-		!ev("response.content_part.added", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "part": responsesTextPart("")}) {
+		!ev("response.in_progress", map[string]any{"response": responsesEnvelope(respID, created, req.Model, "in_progress", []any{}, nil)}) {
 		return
 	}
-	for _, part := range chunks(b.text) {
-		if !ev("response.output_text.delta", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "delta": part}) {
+	if image != nil {
+		callID := image["id"]
+		if !ev("response.output_item.added", map[string]any{"output_index": 0, "item": map[string]any{"type": "image_generation_call", "id": callID, "status": "in_progress"}}) ||
+			!ev("response.image_generation_call.in_progress", map[string]any{"output_index": 0, "item_id": callID}) ||
+			!ev("response.image_generation_call.generating", map[string]any{"output_index": 0, "item_id": callID}) ||
+			!ev("response.image_generation_call.completed", map[string]any{"output_index": 0, "item_id": callID}) ||
+			!ev("response.output_item.done", map[string]any{"output_index": 0, "item": image}) {
 			return
 		}
 	}
-	if !ev("response.output_text.done", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "text": b.text}) ||
-		!ev("response.content_part.done", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "part": responsesTextPart(b.text)}) ||
-		!ev("response.output_item.done", map[string]any{"output_index": 0, "item": message}) {
+	if !ev("response.output_item.added", map[string]any{"output_index": msgIndex, "item": responsesMessageItem(msgID, "in_progress", []any{})}) ||
+		!ev("response.content_part.added", map[string]any{"item_id": msgID, "output_index": msgIndex, "content_index": 0, "part": responsesTextPart("")}) {
 		return
 	}
-	if imageTool && !ev("response.output_item.done", map[string]any{"output_index": 1, "item": imageCallItem("ig_" + msgID)}) {
+	for _, part := range chunks(b.text) {
+		if !ev("response.output_text.delta", map[string]any{"item_id": msgID, "output_index": msgIndex, "content_index": 0, "delta": part}) {
+			return
+		}
+	}
+	if !ev("response.output_text.done", map[string]any{"item_id": msgID, "output_index": msgIndex, "content_index": 0, "text": b.text}) ||
+		!ev("response.content_part.done", map[string]any{"item_id": msgID, "output_index": msgIndex, "content_index": 0, "part": responsesTextPart(b.text)}) ||
+		!ev("response.output_item.done", map[string]any{"output_index": msgIndex, "item": message}) {
 		return
 	}
 	ev("response.completed", map[string]any{"response": final})
