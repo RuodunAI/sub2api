@@ -39,8 +39,6 @@ type SettingsValues interface {
 
 // BillingSettings is the "billing" section.
 type BillingSettings struct {
-	// MissingPricePolicy: "reject" or "free" for a model without a price.
-	MissingPricePolicy string `json:"missing_price_policy"`
 	// MinBalance is the balance (USD, decimal string) a request needs.
 	MinBalance string `json:"min_balance"`
 	// BigCostWarningUSD (decimal string) flags expensive price rules.

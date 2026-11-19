@@ -28,9 +28,8 @@ func TestAdditionalPriceSnapshotsSurviveRetryAndKeepMainSeparate(t *testing.T) {
 		t.Fatal("retry changed frozen price", again, err)
 	}
 	p.Expression = ""
-	freeMain, _, _, err := priceOf(p)
-	if err != nil || !freeMain.Equal(decimal.NewFromInt(120)) {
-		t.Fatal("free main lost extra fee", freeMain, err)
+	if amount, _, _, err := priceOf(p); err == nil || !amount.IsZero() {
+		t.Fatal("a main usage without its price was settled", amount, err)
 	}
 	p.Inputs.BillingError = "untrusted model"
 	if _, _, _, err := priceOf(p); err == nil {
@@ -39,9 +38,9 @@ func TestAdditionalPriceSnapshotsSurviveRetryAndKeepMainSeparate(t *testing.T) {
 }
 
 func TestAdditionalPricingFailureIsAtomicAndRecordedPending(t *testing.T) {
-	rec := &core.UsageRecord{Billable: true, Additional: []core.PricedUsage{{Kind: "advisor", Model: "extra", Price: &core.PriceRule{Expression: "invalid ("}, UsageSemantics: "exclusive", RateMultiplier: decimal.NewFromInt(1)}}}
+	rec := &core.UsageRecord{Billable: true, Price: &core.PriceRule{Expression: `tier("main",p)`}, Additional: []core.PricedUsage{{Kind: "advisor", Model: "extra", Price: &core.PriceRule{Expression: "invalid ("}, UsageSemantics: "exclusive", RateMultiplier: decimal.NewFromInt(1)}}}
 	if initialStatus(rec) != StatusPending {
-		t.Fatal("free primary hid additional work")
+		t.Fatal("additional work not pending")
 	}
 	if amount, _, _, err := priceOf(fromRecord(rec)); err == nil || !amount.IsZero() {
 		t.Fatal("partial amount returned on pricing failure", amount, err)

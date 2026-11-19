@@ -213,7 +213,7 @@
 | POST `/users/:id/balance/adjust` `{amount, credit:bool, note}`，支持请求头 `Idempotency-Key` | `balance:adjust`（访问密钥须显式带它）；目标须是操作者可管理的用户（可管理目标，§43.6），本人也按此判断：超管可以给自己和任何人调，admin 不能给自己、其他 admin、超管调；不可管理 → 403 `details.reason = not_manageable`。目标还持有 `user` 以外的角色（operator、supplier、自定义角色）时，操作者的角色还要有 `balance:adjust:any`（超管专属；经访问密钥时密钥也须显式带它，与 `balance:adjust` 相同），否则 403 `details = {reason: "not_plain_user", role, missing: ["balance:adjust:any"]}`；所以按默认值 admin 只能给普通用户调（2026-11-13，用户要求） |
 | GET `/me/usage`，GET `/me/usage/:id`，GET `/usage`，GET `/usage/:id`（筛选参数见 §15.2；`/me/usage` 不支持 `user_id`、`account_id`、`account_type`） | `usage:self:read` / `usage:all:read` |
 | GET `/usage/summary`（`/usage` 的全部筛选参数，加 `group_by=day\|model\|user\|ip`）；GET `/me/usage/summary`（限定当前用户，`group_by=day\|model\|ip`） | `usage:all:read` / `usage:self:read` |
-| GET/PUT `/settings/billing` `{missing_price_policy: reject\|free, min_balance, big_cost_warning_usd}` | `settings:read` / `settings:manage` |
+| GET/PUT `/settings/billing` `{min_balance, big_cost_warning_usd}`（`missing_price_policy` 2026-11-19 删除，§17.3） | `settings:read` / `settings:manage` |
 
 价格表达式校验失败时 `details.fields[].message` 为 `{en, zh}`；表达式错误额外带 `detail`（位置信息）。结算时捕获的参数、请求头和 usage 口径存在 `usage_logs.billing_detail.inputs`。
 
@@ -343,7 +343,7 @@
 
 | key | 值 | 默认 |
 |---|---|---|
-| `billing` | `{missing_price_policy, min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除，已存的值忽略） | `reject`、`"0"`、`"10"`、`continue` |
+| `billing` | `{min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除、`missing_price_policy` 2026-11-19 删除（§17.3），已存的值忽略） | `"0"`、`"10"`、`continue` |
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
 | `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`；后来加的字段见 §78、§84.1、§88、§111（`max_request_body_mb`，默认 128） | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
@@ -873,7 +873,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
   - `POST /prices/:id/override` 已删除；同一模型重复录入返回 409；
   - 修改同步价格的 model、mode、config 或 expression 后，它会变成 `manual`，`sync_source_id` 清空；只改 enabled 或 note 时保持 `sync`；
   - 使用记录详情的 `price` 为 `{id, model, source}`。
-- **匹配**：按完整模型 ID 精确匹配，只看启用的价格。找不到价格时按 `/settings/billing` 的 `missing_price_policy` 处理。这里的价格是全局价；§97 起，找到全局价之后还要按请求的分组和调用者所在的用户组取分组内定价或专属价（§97.3），没有全局价的模型仍按本条处理，规则不生效。
+- **匹配**：按完整模型 ID 精确匹配，只看启用的价格。找不到价格时请求被拒，403 `model_price_not_configured`（§17.3）。这里的价格是全局价；§97 起，找到全局价之后还要按请求的分组和调用者所在的用户组取分组内定价或专属价（§97.3），没有全局价的模型仍按本条处理，规则不生效。
 - **迁移 0008**：
   - 删除插件默认价格，原来的管理员价格改为 `manual`；
   - 加唯一索引 `model_prices_model_uq`，以及约束 `source IN ('manual','sync')`；
@@ -909,8 +909,18 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 一条请求只按一个模型计价：**客户请求的模型**（端点 `request.modelPath` / `modelParam` / 插件 `ResolveModel` 给出的、钩子改写之后的模型，`usage_logs.model`）。预扣与最终扣费都按它的价格；账号的模型映射、参数覆盖（§84）、插件自报的上游模型都不改变计价模型。使用记录的 `price_id`（详情的 `price.model`）就是它的价格。
 - **绝不按上游返回的任何东西取价**：应答里回显的模型名只记进 `upstream_model`，应答里的工具信息不读；只有 token 数（及声明的用量事实）取自上游应答。
 - 一条请求里各部分的 token 都是这条请求的用量，按这一个价格算；例如 Responses 里生图工具的 token（§118.10）。§120 的附加用量（Anthropic `usage.iterations` 的 `advisor` 等，按请求里声明、调度前准入的引用模型计价）是早已有的机制，本次没有改动。
-- 模型找不到价格时，请求按 `missing_price_policy` 处理（上文“匹配”）；没有默认模型名、兜底模型或改用别的价格。
-- **账号测试**（`POST /accounts/:id/test`）：被测的模型（调用方给的 `model`，否则账号的默认测试模型，都取账号映射之前的名字；两者都没有时是插件 `BuildTestRequest` 报的模型）没有全局价格时，回 403 `model_price_not_configured`，**不看** `missing_price_policy` 的 `free`；不向上游发测试请求，记为该账号最后一次测试的失败（`error_source: gateway`）。实现：`account/testreq.go` 的 `testPrice`，`account.Deps.Pricer`。
+- 模型找不到价格时，请求被拒（§17.3）；没有默认模型名、兜底模型或改用别的价格。
+- **账号测试**（`POST /accounts/:id/test`）不查价格、不计费，被测模型有没有价格都可以测（2026-11-19 所有者：“测试账号还是不要计费吧，放着就行了。”；2026-11-18 加的价格检查已撤掉）。
+
+### 17.3 没有价格一律拒绝（2026-11-19，所有者决定）
+
+所有者原话："删除。不要免费提供。"；此前的规则："如果模型找不到用量配置就报错。"
+
+- 模型没有启用的全局价格时一律报错，403 `model_price_not_configured`，没有任何放行途径。适用于：请求的主模型（调度前拒绝，不选账号、不发上游）；请求里经 `request.modelReferences` 声明的引用模型（§120，调度前拒绝）。账号测试不查价格、不计费（§17.2）。
+- `/settings/billing` 的 `missing_price_policy`（`reject` / `free`）整项删除：接口不再返回、`PUT` 时这个字段被忽略；插件读到的 `protocol.BillingSettings` 没有 `MissingPricePolicy`（§107.2）；控制台的设置项删除。数据库里已存的值不迁移、读取时忽略，下次保存计费设置时随整份文档重写而消失（与 §8 的 `client_disconnect_wait_seconds` 相同）。
+- `core.Pricer.Resolve` 要么返回价格、要么返回错误（找不到价格时是 `ErrPriceNotConfigured`），不再返回 `(nil, nil)`。所以计费的请求一定带着主模型的价格：预扣、结算里"主价格为空即免费"的分支删除；结算时主用量的价格表达式在价格历史里找不到，这条记录结算失败，不再按免费处理。升级前在免费放行下写入、还没结算完的记录（`usage_logs.billing_status` 为 `pending` / `failed` 且 `expr_hash = ''`）同样结算失败：价格为空的附加或替换分项报错，计入重试次数，用完后停在 `failed`，由管理员处理。
+- **价格为 0** 是管理员录入的价格，不受影响：请求照常转发、按 0 计费（记录为 `billed`，金额 0）。
+- 不变：`billing: "free"` 的端点（如 `count_tokens`）不取价、不计费；插件报的免费尝试（`Free` + `BillingReason`）；客户端断开策略的 `free`（§25.8）。
 
 ## 18. 账号的模型列表与模型映射、优先级与权重、RPM/TPM 限流（2026-09-25，ARCHITECTURE 4.3 / 6.2）
 
@@ -2067,7 +2077,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 **代价写在规则旁边**：「免费端点只想用插件算 token 做统计」也被拒了 —— 主机为每个请求付一次热路径 RPC，换一堆永远不参与定价的数字，这个组合本身就该重新想。前置关卡：三个内置平台 + 七个插件**原样通过**，全仓只有 volcengine 一个端点用 plugin 源且已是 `billing:"usage"`，零误伤。
 
-运行时补一道 `dropReservation()`：判出不可计费而插件确实返回了 `Reservation` 时，**warn 指名 plugin / platform / endpoint / protocol / request_id / ref_id / billing / reason**，并写 `usage_logs.anomalies` 的 `reservation` / `reservation_error`。三种原因分开记：端点 `free` / 没解析到价格 / **预估既无 token 又无 facts 且价格不是 per_request**（第三种是插件 bug，以前同样静默）。
+运行时补一道 `dropReservation()`：判出不可计费而插件确实返回了 `Reservation` 时，**warn 指名 plugin / platform / endpoint / protocol / request_id / ref_id / billing / reason**，并写 `usage_logs.anomalies` 的 `reservation` / `reservation_error`。两种原因分开记：端点 `free` / **预估既无 token 又无 facts 且价格不是 per_request**（后者是插件 bug，以前同样静默）。原来的第三种"没解析到价格"随 §17.3（2026-11-19）删除：计费端点上一定有价格。
 
 #### 5. `/usage/summary` 三列 + `max_reconcile_age_sec` 默认 7 天
 
@@ -3322,7 +3332,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - 流式测试本轮不做：`BuildTestRequest` 没有 stream 参数，加参数要改 proto 并动所有插件。
-- 2026-11-18 价格检查（§17.2）：插件 `BuildTestRequest` 之后、发出之前，被测的模型（调用方的 `model`，否则账号的默认测试模型，都是映射前的名字；两者都没有时是插件报的模型）没有全局价格时，回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游；`last_test` 记为失败，`error_source` 为 `gateway`、`error_code` 为 `model_price_not_configured`。
+- 2026-11-18 加过的价格检查（被测模型没有价格时回 403）已于 2026-11-19 撤掉：账号测试不查价格、不计费（§17.2）。
 
 ## 51. CCGateway 订阅用量（已删除）
 
@@ -4527,7 +4537,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 - 宿主调用 `PriceUsage`（权限 `prices`，风险 low，插件升级时自动授予）：请求 `{model, semantics: inclusive|exclusive, input, output, cache_read, cache_creation, cache_creation_1h}`，响应 `{priced, cost, reason}`。
   - `cost` 是十进制字符串（美元，8 位小数），按核心模型价格表（`model_prices`，只看完整模型名）和网关结算同一套表达式计算，不乘分组倍率。
-  - `reason` 取值：`no_price`（没有启用的价格；与"缺价格时按免费"的全局设置无关）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
+  - `reason` 取值：`no_price`（没有启用的价格）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
   - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。
 - 内置插件目录换成 moderation 0.3.0。
 
@@ -6614,7 +6624,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | 按倍数 `multiplier` | 标价 = 全局价 × N，全局价变化时跟着变 | N 不小于 0、小于 1000000、最多 4 位小数。0 表示免费。1 也合法：专属价设成 ×1 表示“这个用户组按全局价，不吃分组内定价” |
 | 自定义价 `custom` | 一个固定的价格，不随全局价变化 | 沿用全局价的计费方式：按 token（`p`、`c`、`cr`、`cc`、`cc1h`，其中 `p`、`c` 必填）或按次（`price`）。全局价是表达式计费的模型只能用按倍数的规则 |
 
-- 规则建立在全局价之上。模型没有启用的全局价时不能计费，规则不生效，照旧按 `missing_price_policy` 处理（§17）。
+- 规则建立在全局价之上。模型没有启用的全局价时不能计费，规则不生效，请求被拒（§17.3）。
 - 自定义价的计费方式与全局价**现在的**计费方式不同时（规则保存之后，全局价被改成了另一种方式），这条规则**失效**：解析时跳过它，往下一层找。规则不会被删除，接口里它带 `inactive: true`（97.6）。
 - 规则只能设在分组提供的模型上；删除规则不受这个限制。
 
@@ -6660,7 +6670,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 
 **标价**由 `core.Pricer.Resolve(ctx, core.PriceQuery{Model, GroupID, SegmentID})` 给出。`billing` 的价格快照同时载入 `price_rules`，与全局价用同一个 TTL、同一个 `config:changed` 失效。解析顺序：
 
-1. 模型没有启用的全局价：与之前相同，`missing_price_policy` 为 `reject` 时返回 `ErrPriceNotConfigured`，为 `free` 时返回 `(nil, nil)`；这时不看规则。
+1. 模型没有启用的全局价：返回 `ErrPriceNotConfigured`（§17.3）；这时不看规则。
 2. 取 `(分组, 用户组, 模型)` 的规则；没有或已失效，再取 `(分组, NULL, 模型)` 的规则；都没有就是全局价。
 3. `GroupID`、`SegmentID` 为 0 时只取全局价。
 
@@ -7625,7 +7635,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 | 分组 | 类型 | 字段 |
 | --- | --- | --- |
-| `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
+| `billing` | `BillingSettings` | `min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
 | `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`max_request_body_mb`（§111）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
 | `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
 | `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
@@ -8535,7 +8545,7 @@ ALTER TABLE usage_logs
 
 插件和核心都**不预置价格**（插件清单写 `pricing` 校验失败，§17）。
 
-- **没有价格时**：与其它模型相同，按 `/settings/billing` 的 `missing_price_policy`：默认 `reject` 时请求在调度前被拒，403 `model_price_not_configured`；`free` 时照常转发、不计费（§17）。
+- **没有价格时**：与其它模型相同，请求在调度前被拒，403 `model_price_not_configured`（§17.3）。
 - **要按图片 token 正确计费**：在价格页给生图模型录**表达式价格**（单位与其它表达式相同，美元 / 百万 token）。参考价（来源：OpenAI 官方价格页与 Images API 参考 `developers.openai.com/api/reference/resources/images`，标准档，2026-11-18 抓取；录入前以官方为准，模型名录入前核对拼写）：
 
 | 模型 | 文字输入 `p` | 缓存输入 `cr` | 图片输入 `img` | 图片输出 `img_o` | 文字输出 `c` | 表达式 |
@@ -8589,7 +8599,7 @@ ALTER TABLE usage_logs
 ### 120.1 规则
 
 - `jsonPath` / `ssePath`（`sseEvent` 限定事件）指向一个数组，每次读到都是**完整快照**（后到的整体替换先到的，不累加）；其中 `typePath` 等于 `typeValue` 的元素各是一条附加用量，模型取元素里的 `modelPath`，`map` 读 token（`input_tokens`、`output_tokens` 必须有；值必须是不超过 10¹² 的非负整数）。例：Anthropic 的 `usage.iterations`（`compaction`、`advisor`）。
-- 模型必须是**调度前准入过的**：`usePrimaryModel` 取请求的主模型（账号映射后），或者请求里经 `request.modelReferences` 声明、同名的引用模型（准入：分组允许、账号服务该模型、调度前按 `missing_price_policy` 取价，`reject` 时没价格的引用模型在调度前 403）。应答报了一个没有准入的模型，记录的 `BillingError` 为 `additional usage does not match an admitted model identity`，整条记录不结算（`failed`）。
+- 模型必须是**调度前准入过的**：`usePrimaryModel` 取请求的主模型（账号映射后），或者请求里经 `request.modelReferences` 声明、同名的引用模型（准入：分组允许、账号服务该模型、调度前取价，没价格的引用模型在调度前 403，§17.3）。应答报了一个没有准入的模型，记录的 `BillingError` 为 `additional usage does not match an admitted model identity`，整条记录不结算（`failed`）。
 - 预扣：引用模型按估算的同一份 token 预扣（`estimatedAdditional`）；结算按实际读数。
 
 ### 120.2 已删除：对象形式与按应答取价
