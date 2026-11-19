@@ -28,6 +28,12 @@
 - 四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，其余为 `[]`。
 - `@sub2api/ui`：`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
 
+API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai；无迁移）：
+
+- 账号表单不再是声明式 JSON（`forms/` 已删），改为插件的 `ui/native`（`@sub2api/ui` 的 `createApiKeyForm`）：字段名、默认值、文案、校验规则与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址。清单改为 `form.mode: "native"`，加 `ui.native`、`hostUICompat ^3.20`，装包审查多一项“在控制台运行插件界面”（`ui.native`）。保存时的最终校验只在插件的 `ValidateCredentials`。
+- relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，原来默认收起，现在直接显示。
+- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径，原样匹配，前后有空格也拒绝），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
+
 ### 插件界面只用代码写：云厂商插件的账号表单
 
 - bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。

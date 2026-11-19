@@ -37,8 +37,14 @@ export interface ApiKeyFormSpec {
         presets?: string[]
         /** Default /^(https?:\/\/[^\s?#]+)?$/, required: /^https?:\/\/[^\s?#]+$/. */
         pattern?: RegExp
+        /** The message of a value the pattern refuses (default: the generic "invalid format"). */
+        message?: Text
+        /** Default: this package's "Base URL". */
+        label?: Text
         placeholder?: Text
         help?: Text
+        /** Shown above the API key (a site's address before its key). */
+        first?: boolean
       }
   /** Further fields, in order; each is one SField. */
   extra?: ExtraField[]
@@ -72,7 +78,7 @@ function specRules(spec: ApiKeyFormSpec): Rules<Model> {
   const k = spec.apiKey ?? {}
   const rules: Rules<Model> = { api_key: { required: true, min: k.min ?? 8, max: k.max ?? 512, pattern: k.pattern ?? API_KEY_PATTERN } }
   const b = spec.baseUrl ?? {}
-  if (b) rules.base_url = { required: b.required, pattern: b.pattern ?? (b.required ? BASE_URL_REQUIRED : BASE_URL) }
+  if (b) rules.base_url = [{ required: b.required }, { pattern: b.pattern ?? (b.required ? BASE_URL_REQUIRED : BASE_URL), message: b.message }]
   for (const f of spec.extra ?? []) {
     const when = f.when
     rules[f.key] = toList(f.rules).map((r) => (when ? { ...r, when: (m: Model) => when(m) && (!r.when || r.when(m)) } : r))
@@ -136,14 +142,14 @@ export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
           field('api_key', t('ui.form.apiKey'), k.help, h(SSecretInput, { ...form.bind('api_key'), placeholder: k.placeholder?.() }))
         ]
         if (b) {
-          nodes.push(
-            field(
-              'base_url',
-              t('ui.form.baseUrl'),
-              b.help,
-              h(SUrlPresetInput, { ...form.bind('base_url'), presets: b.presets, allowed: guard.allowed('base_url'), placeholder: b.placeholder?.() })
-            )
+          const url = field(
+            'base_url',
+            b.label?.() ?? t('ui.form.baseUrl'),
+            b.help,
+            h(SUrlPresetInput, { ...form.bind('base_url'), presets: b.presets, allowed: guard.allowed('base_url'), placeholder: b.placeholder?.() })
           )
+          if (b.first) nodes.unshift(url)
+          else nodes.push(url)
         }
         let section: string | undefined
         for (const f of spec.extra ?? []) {

@@ -78,8 +78,8 @@ func TestManifest(t *testing.T) {
 		}
 		perms[perm.ID] = perm
 	}
-	// No net: the core sends every request.
-	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["gateway.endpoint"].ID == "" {
+	// No net: the core sends every request. ui.native: the account form.
+	if len(perms) != 3 || perms["platform.register"].ID == "" || perms["gateway.endpoint"].ID == "" || perms["ui.native"].ID == "" {
 		t.Errorf("host permissions = %v", perms)
 	}
 }

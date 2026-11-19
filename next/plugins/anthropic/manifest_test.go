@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -50,14 +51,14 @@ func TestManifest(t *testing.T) {
 	if !slices.Contains(at.SensitiveFields, "api_key") {
 		t.Fatal("api_key must be sensitive")
 	}
-	// Model mapping is a core account field (CONTRACTS §18): neither a
-	// settings field nor a form property.
-	var schema struct {
-		Properties map[string]json.RawMessage `json:"properties"`
+	// Model mapping is a core account field (CONTRACTS §18), not a
+	// settings field.
+	if slices.Contains(at.SettingsFields, "model_mapping") {
+		t.Fatal("model_mapping must not be a settings field")
 	}
-	_ = json.Unmarshal(mustJSONFile(t, at.Form.Schema), &schema)
-	if _, bad := schema.Properties["model_mapping"]; bad || slices.Contains(at.SettingsFields, "model_mapping") {
-		t.Fatal("model_mapping must be neither a settings field nor a form property")
+	// The form is the native AnthropicKeyForm (ui/native/src/forms.ts).
+	if at.Form.Mode != "native" || at.Form.Component != "AnthropicKeyForm" || at.Form.Schema != "" || at.Form.UISchema != "" {
+		t.Fatalf("form = %+v, want the native AnthropicKeyForm", at.Form)
 	}
 	// The released plugin declared the anthropic preset with no filter
 	// fields; the type keeps that (TestAPIKey, TestGolden in the package).
@@ -104,9 +105,13 @@ func TestManifest(t *testing.T) {
 	if _, ok := perms["accounts.credentials"]; ok {
 		t.Error("accounts.credentials was removed")
 	}
-	// The catalog is an admin route only: the console has no menu or page for it.
-	if _, ok := perms["ui.menu"]; ok || m.UI != nil {
-		t.Errorf("ui = %+v, want none and no ui.menu permission", m.UI)
+	// The console runs the account form only: the catalog is an admin route
+	// without a menu or page.
+	if _, ok := perms["ui.native"]; !ok {
+		t.Error("the native account form needs host permission ui.native")
+	}
+	if _, ok := perms["ui.menu"]; ok || !reflect.DeepEqual(m.UI, &manifest.UI{Native: &manifest.NativeUI{Entry: "ui/native/entry.js"}}) {
+		t.Errorf("ui = %+v, want ui.native only and no ui.menu permission", m.UI)
 	}
 	for _, r := range m.Routes {
 		found := false
@@ -161,7 +166,7 @@ func load(t *testing.T) manifest.Manifest {
 		t.Fatalf("manifest.json: %v", err)
 	}
 	files := map[string][]byte{"manifest.json": manifestJSON}
-	for _, dir := range []string{"forms", "assets", "migrations"} {
+	for _, dir := range []string{"assets", "migrations"} {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			p := path.Join(dir, e.Name())

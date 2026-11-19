@@ -14,6 +14,7 @@
     "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
 
   "capabilities": [
     { "id": "platform.adapter.v1" },
@@ -28,11 +29,7 @@
         "en": "An OpenAI Platform API key, or a key for an OpenAI-compatible endpoint (set Base URL).",
         "zh": "OpenAI 平台的 API Key，或 OpenAI 兼容端点的 Key（需填写 Base URL）。"
       },
-      "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
-      },
+      "form": { "mode": "native", "component": "OpenAIKeyForm" },
       "upstreamFields": ["base_url"],
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url", "organization", "project"],
@@ -132,9 +129,15 @@
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
 
+  "ui": {
+    "native": { "entry": "ui/native/entry.js" }
+  },
+
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the OpenAI API key account type for the built-in openai platform", "zh": "为内置 openai 平台注册 OpenAI API Key 账号类型" } }
+      "reason": { "en": "Register the OpenAI API key account type for the built-in openai platform", "zh": "为内置 openai 平台注册 OpenAI API Key 账号类型" } },
+    { "id": "ui.native",
+      "reason": { "en": "The API key account form (OpenAIKeyForm)", "zh": "API Key 账号表单（OpenAIKeyForm）" } }
   ],
 
   "externalServices": ["api.openai.com"]

@@ -68,7 +68,8 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	for _, platform := range []string{"linux-amd64", "linux-arm64"} {
 		writeFile(t, filepath.Join(runtimes, "runtimes", platform, "plugin"), "fake runtime for package contents")
 	}
-	release := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--runtimes", runtimes, "--out-dir", market))
+	// The package names only: the native UI is built separately.
+	release := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--runtimes", runtimes, "--out-dir", market, "--allow-missing-ui"))
 	before, err := os.ReadFile(release)
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +77,7 @@ func TestAnthropicReleaseAndUpgradeFixtureRemainDistinct(t *testing.T) {
 	// The fixture's migration has no model on purpose: db check, which
 	// includes the overlay's migrations, does not apply to it.
 	fixture := strings.TrimSpace(runOK(t, "pack", "--dir", dir, "--runtimes", runtimes,
-		"--overlay", "testdata/upgrade", "--skip-db-check", "--out-dir", market))
+		"--overlay", "testdata/upgrade", "--skip-db-check", "--out-dir", market, "--allow-missing-ui"))
 	var shipped struct {
 		Version string `json:"version"`
 	}

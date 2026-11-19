@@ -14,6 +14,7 @@
     "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
 
   "capabilities": [
     { "id": "platform.adapter.v1" }
@@ -28,11 +29,7 @@
         "en": "A Google AI Studio (Gemini API) key, or a key for a Gemini-compatible endpoint (set Base URL).",
         "zh": "Google AI Studio（Gemini API）的 Key，或 Gemini 兼容端点的 Key（需填写 Base URL）。"
       },
-      "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
-      },
+      "form": { "mode": "native", "component": "GeminiKeyForm" },
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
       "guardedSettings": [
@@ -81,9 +78,15 @@
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
 
+  "ui": {
+    "native": { "entry": "ui/native/entry.js" }
+  },
+
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the Gemini API key account type for the built-in gemini platform", "zh": "为内置 gemini 平台注册 Gemini API Key 账号类型" } }
+      "reason": { "en": "Register the Gemini API key account type for the built-in gemini platform", "zh": "为内置 gemini 平台注册 Gemini API Key 账号类型" } },
+    { "id": "ui.native",
+      "reason": { "en": "The API key account form (GeminiKeyForm)", "zh": "API Key 账号表单（GeminiKeyForm）" } }
   ],
 
   "externalServices": ["generativelanguage.googleapis.com"]
