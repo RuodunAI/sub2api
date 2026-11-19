@@ -112,6 +112,7 @@ func TestResourceEndpointForm(t *testing.T) {
 		resource + "/OpenAI/V1",
 		resource + "/Openai",
 		resource + "/openai/v1/openai",
+		resource + "/openai/openai",
 		resource + "?api-version=2024-10-21",
 		resource + "/?api-version=2024-10-21",
 		resource + "/openai?api-version=2024-10-21",

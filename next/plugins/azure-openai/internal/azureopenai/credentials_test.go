@@ -1,8 +1,10 @@
 package azureopenai
 
 import (
+	"context"
 	"testing"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 )
 
@@ -51,5 +53,16 @@ func endpointCases(typ, fill, saved string) []apikeytest.Case {
 		c("base_url with another path", "https://res.openai.azure.com/other", "base_url", ""),
 		c("a Foundry project endpoint", "https://res.services.ai.azure.com/api/projects/p1", "", ""),
 		c("base_url normalized, then matched", " HTTPS://res.openai.azure.com/openai/v1/ ", "", saved),
+	}
+}
+
+// Credentials that are not a JSON object reach the wrapper's early return:
+// the standard check's one error, nothing added.
+func TestCredentialsNotAnObject(t *testing.T) {
+	for _, typ := range []string{TypeV1, TypeDeployment} {
+		resp, err := New().ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: typ, CredentialsJson: "[1]"})
+		if errs := resp.GetErrors(); err != nil || len(errs) != 1 || errs[0].GetCode() != "invalid_json" {
+			t.Errorf("%s: %v %v, want one invalid_json error", typ, err, errs)
+		}
 	}
 }

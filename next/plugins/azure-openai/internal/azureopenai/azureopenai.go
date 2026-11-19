@@ -42,7 +42,13 @@ var APIVersionPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-preview)?$`)
 
 // Platform is the standard platform of both types, their credentials also
 // checked against EndpointPattern and, for azure_deployment, the
-// api_version (see ValidateCredentials).
+// api_version (see ValidateCredentials). These rules are not Spec.Fields:
+// a Spec.Fields rule on base_url sees the saved value, its suffixes
+// stripped, where EndpointPattern takes the optional /openai or /openai/v1
+// itself, so /openai/v1/openai or /api/projects/p/openai/v1 would pass once
+// stripped; and both refusals carry their own message saying what to
+// enter, which fieldcheck's generic ones would lose. Spec.Fields only names
+// the keys each type accepts.
 type Platform struct{ *standard.Platform }
 
 // New returns the platform of both account types.
