@@ -100,6 +100,11 @@ func TestPrefixCannotLeaveTheHost(t *testing.T) {
 func TestLayoutFollowsTheAccountType(t *testing.T) {
 	official := account(testKey, `{}`)                                 // empty base_url -> the official default
 	byteplus := account(testKey, `{"base_url":"`+BytePlusBaseURL+`"}`) // Ark's overseas endpoint, NOT a relay
+	// The Ark SDK base URL as pasted: its /api/v3 is left out for the root, so
+	// the Ark paths are not doubled and Messages goes to the root's
+	// /api/compatible/v1. Only one is left out of a doubled /api/v3.
+	pasted := account(testKey, `{"base_url":"`+DefaultBaseURL+`/api/v3"}`)
+	doubled := account(testKey, `{"base_url":"`+DefaultBaseURL+`/api/v3/api/v3"}`)
 	relay := relayAccount("", "")
 	for _, c := range []struct {
 		name     string
@@ -113,6 +118,12 @@ func TestLayoutFollowsTheAccountType(t *testing.T) {
 		{"official images", official, ProtocolImages, DefaultBaseURL + "/api/v3/images/generations"},
 		{"official video", official, ProtocolVideoSubmit, DefaultBaseURL + "/api/v3/contents/generations/tasks"},
 		{"byteplus chat", byteplus, ProtocolChat, BytePlusBaseURL + "/api/v3/chat/completions"},
+		{"pasted chat", pasted, ProtocolChat, DefaultBaseURL + "/api/v3/chat/completions"},
+		{"pasted images", pasted, ProtocolImages, DefaultBaseURL + "/api/v3/images/generations"},
+		{"pasted video", pasted, ProtocolVideoSubmit, DefaultBaseURL + "/api/v3/contents/generations/tasks"},
+		{"pasted messages", pasted, ProtocolMessages, DefaultBaseURL + "/api/compatible/v1/messages"},
+		{"doubled chat", doubled, ProtocolChat, DefaultBaseURL + "/api/v3/api/v3/chat/completions"},
+		{"doubled messages", doubled, ProtocolMessages, DefaultBaseURL + "/api/v3/api/compatible/v1/messages"},
 
 		{"relay chat", relay, ProtocolChat, "https://relay.test/v1/chat/completions"},
 		{"relay responses", relay, ProtocolResponses, "https://relay.test/v1/responses"},
@@ -474,7 +485,7 @@ func TestValidateRelayBaseURL(t *testing.T) {
 	}
 	// The official type keeps its own rules: base_url is optional there, and
 	// "https://ark.cn-beijing.volces.com/api/v3" is a paste of the SDK base URL
-	// that spec.StripSuffixes exists to accept.
+	// that spec.Versions exists to accept.
 	official := New().validateWithAssets(&pluginv1.ValidateCredentialsRequest{
 		AccountType: AccountTypeAPIKey, CredentialsJson: testKey,
 		SettingsJson: `{"base_url":"` + DefaultBaseURL + `/api/v3"}`,

@@ -1,7 +1,9 @@
 // The account forms (apikey: createApiKeyForm; relay: RelayForm) as the
 // account editor mounts them. The cases below are the inputs the retired
 // schema forms (forms/apikey, forms/relay) were compared on, with the value
-// and verdict both gave, written out; one case differs on purpose and says so.
+// and verdict both gave, written out; one case differs on purpose and says so,
+// and the relay's api_key cases follow the any-non-empty-key rule the schema
+// forms predate (a short, long, spaced or non-ASCII key is accepted).
 // The apikey form's api_key and base_url cases are the shared ones
 // (keyAndUrlCases).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -93,10 +95,11 @@ const APIKEY: Case[] = [
 const RELAY: Case[] = [
   { name: 'key only', typed: [['api_key', 'ark-key-12345678'], ['base_url', 'https://relay.example.com']], out: { api_key: 'ark-key-12345678', base_url: 'https://relay.example.com' }, ok: true },
   { name: 'no key', typed: [], out: {}, ok: false },
-  { name: 'short key', typed: [['api_key', '1234567'], ['base_url', 'https://relay.example.com']], out: { api_key: '1234567', base_url: 'https://relay.example.com' }, ok: false },
-  { name: 'key of 513 characters', typed: [['api_key', 'k'.repeat(513)], ['base_url', 'https://relay.example.com']], out: { api_key: 'k'.repeat(513), base_url: 'https://relay.example.com' }, ok: false },
-  { name: 'key with a space', typed: [['api_key', 'ark key 12345678'], ['base_url', 'https://relay.example.com']], out: { api_key: 'ark key 12345678', base_url: 'https://relay.example.com' }, ok: false },
-  { name: 'key not ASCII', typed: [['api_key', 'ark-密钥-12345678'], ['base_url', 'https://relay.example.com']], out: { api_key: 'ark-密钥-12345678', base_url: 'https://relay.example.com' }, ok: false },
+  { name: 'short key', typed: [['api_key', '1234567'], ['base_url', 'https://relay.example.com']], out: { api_key: '1234567', base_url: 'https://relay.example.com' }, ok: true },
+  { name: 'key of 4096 characters', typed: [['api_key', 'k'.repeat(4096)], ['base_url', 'https://relay.example.com']], out: { api_key: 'k'.repeat(4096), base_url: 'https://relay.example.com' }, ok: true },
+  { name: 'key with a space', typed: [['api_key', 'ark key 12345678'], ['base_url', 'https://relay.example.com']], out: { api_key: 'ark key 12345678', base_url: 'https://relay.example.com' }, ok: true },
+  { name: 'key not ASCII', typed: [['api_key', 'ark-密钥-12345678'], ['base_url', 'https://relay.example.com']], out: { api_key: 'ark-密钥-12345678', base_url: 'https://relay.example.com' }, ok: true },
+  { name: 'blank key', typed: [['api_key', '   '], ['base_url', 'https://relay.example.com']], out: { api_key: '   ', base_url: 'https://relay.example.com' }, ok: false },
   { name: 'cleared key', typed: [['api_key', ''], ['base_url', 'https://relay.example.com']], out: { api_key: '', base_url: 'https://relay.example.com' }, ok: false },
   { name: 'AK/SK pair', typed: [['api_key', 'ark-key-12345678'], ['base_url', 'https://relay.example.com'], ['access_key', 'AKLT12345678'], ['secret_key', 'secret12345678']], out: { api_key: 'ark-key-12345678', base_url: 'https://relay.example.com', access_key: 'AKLT12345678', secret_key: 'secret12345678' }, ok: true },
   { name: 'access key alone (the pair is the server rule)', typed: [['api_key', 'ark-key-12345678'], ['base_url', 'https://relay.example.com'], ['access_key', 'AKLT12345678']], out: { api_key: 'ark-key-12345678', base_url: 'https://relay.example.com', access_key: 'AKLT12345678' }, ok: true },

@@ -125,37 +125,53 @@ const (
 	project   = "https://res.services.ai.azure.com/api/projects/p"
 )
 
-// acceptedEndpoints are the base_url inputs the types accept, each with the
-// address requests are built on: the last four only once normalized (the
-// forms refuse them as typed).
-var acceptedEndpoints = map[string]string{
-	resource:                           resource,
-	resource + "/":                     resource,
-	resource + "/openai":               resource,
-	resource + "/openai/":              resource,
-	resource + "/openai/v1":            resource,
-	resource + "/openai/v1/":           resource,
-	cognitive:                          cognitive,
-	cognitive + "/openai/v1":           cognitive,
-	project:                            project,
-	project + "/":                      project,
-	"https://RES.OpenAI.Azure.com":     "https://RES.OpenAI.Azure.com",
-	"http://mock-upstream:8080":        "http://mock-upstream:8080",
-	"http://mock-upstream:8080/openai": "http://mock-upstream:8080",
-	resource + "/openai/v1//":          resource,
-	"HTTPS://res.openai.azure.com":     resource,
-	" " + resource:                     resource,
-	resource + " ":                     resource,
+// endpoint is what an accepted base_url input becomes: the value saved
+// (normalized: trimmed, the scheme lower-cased, no trailing "/", the path as
+// written) and the root every route's full path is appended to (the saved
+// value without a trailing /openai/v1 or /openai, Spec.Versions).
+type endpoint struct{ saved, root string }
+
+// acceptedEndpoints are the base_url inputs the types accept, each with
+// what it becomes: the inputs with a trailing "/" after /openai or a space
+// only once normalized (the forms refuse them as typed). The roots, and so
+// the request URLs, are those of the endpoint without the suffix.
+var acceptedEndpoints = map[string]endpoint{
+	resource:                           {resource, resource},
+	resource + "/":                     {resource, resource},
+	resource + "/openai":               {resource + "/openai", resource},
+	resource + "/openai/":              {resource + "/openai", resource},
+	resource + "/openai/v1":            {resource + "/openai/v1", resource},
+	resource + "/openai/v1/":           {resource + "/openai/v1", resource},
+	cognitive:                          {cognitive, cognitive},
+	cognitive + "/openai/v1":           {cognitive + "/openai/v1", cognitive},
+	project:                            {project, project},
+	project + "/":                      {project, project},
+	"https://RES.OpenAI.Azure.com":     {"https://RES.OpenAI.Azure.com", "https://RES.OpenAI.Azure.com"},
+	"http://mock-upstream:8080":        {"http://mock-upstream:8080", "http://mock-upstream:8080"},
+	"http://mock-upstream:8080/openai": {"http://mock-upstream:8080/openai", "http://mock-upstream:8080"},
+	resource + "/openai/v1//":          {resource + "/openai/v1", resource},
+	"HTTPS://res.openai.azure.com":     {resource, resource},
+	" " + resource:                     {resource, resource},
+	resource + " ":                     {resource, resource},
+	// A project name with an escaped "/" stays one segment, in the saved
+	// value and in every request URL.
+	"https://res.services.ai.azure.com/api/projects/a%2Fb": {"https://res.services.ai.azure.com/api/projects/a%2Fb", "https://res.services.ai.azure.com/api/projects/a%2Fb"},
+	// A project named openai: its name is taken for the /openai suffix, so
+	// requests go to .../api/projects/openai/v1/... without the project's
+	// own segment, as before the base URL was saved as written. Accepted as
+	// it is (design Q11): telling the two apart needs an azure-only
+	// exception.
+	"https://res.services.ai.azure.com/api/projects/openai": {"https://res.services.ai.azure.com/api/projects/openai", "https://res.services.ai.azure.com/api/projects"},
 }
 
 // TestResourceEndpoint covers the account's base_url: it is required (there
-// is no official address to fall back to), and a pasted /openai/v1 or
-// /openai suffix is removed, when the account is saved and when it is used.
+// is no official address to fall back to), saved as written once
+// normalized, and requests are built on its root.
 func TestResourceEndpoint(t *testing.T) {
 	ctx := context.Background()
 	for _, accountType := range []string{typeV1, typeDeployment} {
-		for in, base := range acceptedEndpoints {
-			assertEndpoint(t, accountType, in, base)
+		for in, e := range acceptedEndpoints {
+			assertEndpoint(t, accountType, in, e)
 		}
 
 		acc := account(accountType, "", formFields(accountType)...)
@@ -169,9 +185,17 @@ func TestResourceEndpoint(t *testing.T) {
 	}
 }
 
+// testPaths are the account test's paths (its default deployment) on each
+// type, appended to the root.
+var testPaths = map[string]string{
+	typeV1:         "/openai/v1/chat/completions",
+	typeDeployment: "/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-10-21",
+}
+
 // assertEndpoint checks that base_url in validates without errors, is saved
-// as base and gives an account test request on base/openai/.
-func assertEndpoint(t *testing.T, accountType, in, base string) {
+// as e.saved and that the account saved so gives its account test request
+// on e.root.
+func assertEndpoint(t *testing.T, accountType, in string, e endpoint) {
 	t.Helper()
 	ctx := context.Background()
 	acc := account(accountType, in, formFields(accountType)...)
@@ -180,12 +204,12 @@ func assertEndpoint(t *testing.T, accountType, in, base string) {
 		BaseURL string `json:"base_url"`
 	}
 	_ = json.Unmarshal([]byte(res.GetNormalizedSettingsJson()), &saved)
-	if err != nil || len(res.GetErrors()) != 0 || saved.BaseURL != base {
-		t.Errorf("%s %q: validate %v %v, saved %q, want %s", accountType, in, err, res.GetErrors(), saved.BaseURL, base)
+	if err != nil || len(res.GetErrors()) != 0 || saved.BaseURL != e.saved {
+		t.Errorf("%s %q: validate %v %v, saved %q, want %s", accountType, in, err, res.GetErrors(), saved.BaseURL, e.saved)
 	}
-	out, err := platform.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{Account: acc})
-	if err != nil || !strings.HasPrefix(out.Url, base+"/openai/") || strings.Contains(out.Url, "/openai/openai") {
-		t.Errorf("%s %q: test request %s (%v), want one on %s/openai/", accountType, in, out.GetUrl(), err, base)
+	out, err := platform.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{Account: account(accountType, saved.BaseURL, formFields(accountType)...)})
+	if want := e.root + testPaths[accountType]; err != nil || out.Url != want {
+		t.Errorf("%s %q: test request %s (%v), want %s", accountType, in, out.GetUrl(), err, want)
 	}
 }
 

@@ -370,7 +370,8 @@
           "allowed": [
             "https://ark.cn-beijing.volces.com",
             "https://ark.ap-southeast.bytepluses.com"
-          ]
+          ],
+          "versions": ["/api/v3"]
         },
         {
           "field": "asset_base_url",

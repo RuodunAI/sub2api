@@ -89,17 +89,16 @@ func TestManifest(t *testing.T) {
 
 // TestResourceEndpointForm is the base_url rule of both types
 // (azureopenai.EndpointPattern, which ValidateCredentials applies and the
-// forms show): the address
-// of the resource and nothing else, optionally with the /openai or
-// /openai/v1 suffix the types remove, or a Foundry project path. A pasted
+// forms show): the address of the resource and nothing else, optionally
+// ending in /openai or /openai/v1, or a Foundry project path. A pasted
 // request URL (a deployment, an operation, an api-version) is refused with a
 // message that says what to enter, instead of being saved and answering 404
 // on every request. The rule is matched on the URL as normalized (trimmed,
 // the scheme lower-cased, trailing slashes removed), as every type's base
-// URL is. The suffixes are matched in the case the types remove them in
-// (the removal is case-sensitive), so another casing is refused too rather
+// URL is. The suffixes are matched in the case of the types' Versions (the
+// root is found case-sensitively), so another casing is refused too rather
 // than accepted and left in the address. What the form accepts is saved as
-// the bare address and gives working request URLs.
+// written and gives working request URLs.
 func TestResourceEndpointForm(t *testing.T) {
 	rejected := []string{
 		"",
@@ -142,8 +141,8 @@ func TestResourceEndpointForm(t *testing.T) {
 				t.Errorf("%s %q: message %q", accountType, in, msg)
 			}
 		}
-		for in, base := range acceptedEndpoints {
-			assertEndpoint(t, accountType, in, base)
+		for in, e := range acceptedEndpoints {
+			assertEndpoint(t, accountType, in, e)
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
@@ -61,13 +63,16 @@ func TestValidateCredentials(t *testing.T) {
 		t.Fatalf("normalized = %s %s", r.GetNormalizedCredentialsJson(), r.GetNormalizedSettingsJson())
 	}
 
-	// The Ark SDK base URL and trailing slashes are normalized away, so the
-	// value matches guardedSettings (CONTRACTS §21.3) again.
-	for _, in := range []string{
-		DefaultBaseURL + "/api/v3",
-		DefaultBaseURL + "/api/v3/",
-		DefaultBaseURL + "/",
-		" " + DefaultBaseURL + " ",
+	// The base URL is saved as written, only trimmed and without trailing
+	// slashes: a pasted Ark SDK base URL keeps its /api/v3 (requests leave
+	// it out, TestLayoutFollowsTheAccountType; the core compares it with
+	// guardedSettings without it, CONTRACTS §21.3), BytePlus too.
+	for in, want := range map[string]string{
+		DefaultBaseURL + "/api/v3":  DefaultBaseURL + "/api/v3",
+		DefaultBaseURL + "/api/v3/": DefaultBaseURL + "/api/v3",
+		DefaultBaseURL + "/":        DefaultBaseURL,
+		" " + DefaultBaseURL + " ":  DefaultBaseURL,
+		BytePlusBaseURL + "/api/v3": BytePlusBaseURL + "/api/v3",
 	} {
 		r, err := h.Platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{
 			AccountType: AccountTypeAPIKey, CredentialsJson: testKey, SettingsJson: `{"base_url":"` + in + `"}`,
@@ -75,17 +80,9 @@ func TestValidateCredentials(t *testing.T) {
 		if err != nil || len(r.GetErrors()) != 0 {
 			t.Fatalf("%q: %v %v", in, r, err)
 		}
-		if r.GetNormalizedSettingsJson() != `{"base_url":"`+DefaultBaseURL+`"}` {
-			t.Fatalf("%q normalized to %s", in, r.GetNormalizedSettingsJson())
+		if r.GetNormalizedSettingsJson() != `{"base_url":"`+want+`"}` {
+			t.Fatalf("%q normalized to %s, want %s", in, r.GetNormalizedSettingsJson(), want)
 		}
-	}
-
-	// BytePlus, the other allowed address, survives untouched.
-	r, _ = h.Platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{
-		AccountType: AccountTypeAPIKey, CredentialsJson: testKey, SettingsJson: `{"base_url":"` + BytePlusBaseURL + `/api/v3"}`,
-	})
-	if len(r.GetErrors()) != 0 || r.GetNormalizedSettingsJson() != `{"base_url":"`+BytePlusBaseURL+`"}` {
-		t.Fatalf("byteplus: %v %s", r.GetErrors(), r.GetNormalizedSettingsJson())
 	}
 
 	// Errors: missing key, relative base_url, wrong account type.
@@ -449,4 +446,29 @@ func TestClassifyError(t *testing.T) {
 	// The shared decisions still apply on the image endpoint.
 	check("images 404 model not open", cls(404, nil, arkErr("ModelNotOpen", "model not open"), ""), failover, none, 0, "invalid_request_error")
 	check("images 429 overloaded", cls(429, nil, arkErr("ServerOverloaded", "busy"), ""), failover, cool, transientCooldown, "rate_limit_error")
+}
+
+// TestManifestVersions: the versions the core leaves out of a guarded
+// base_url before comparing it (manifest guardedSettings[].versions) are the
+// ones requests leave out (Spec.Versions), on each type.
+func TestManifestVersions(t *testing.T) {
+	var m manifest.Manifest
+	if err := json.Unmarshal(manifestFile(t), &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range m.AccountTypes {
+		sp, err := specFor(at.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versions []string
+		for _, g := range at.GuardedSettings {
+			if g.Field == "base_url" {
+				versions = g.Versions
+			}
+		}
+		if !slices.Equal(versions, sp.Versions) {
+			t.Errorf("%s: manifest base_url versions %v, Spec.Versions %v", at.ID, versions, sp.Versions)
+		}
+	}
 }

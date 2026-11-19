@@ -17,7 +17,7 @@ afterEach(cleanup)
 function endpointCases(fill: M = {}): AccountFormCase[] {
   const typed = (u: string, ok: boolean) => ({ name: `endpoint ${u}`, input: { api_key: '0123456789abcdef', base_url: u }, out: { ...fill, api_key: '0123456789abcdef', base_url: u }, ok })
   return [
-    ...['https://res.openai.azure.com/', 'https://res.openai.azure.com/openai', 'https://res.openai.azure.com/openai/v1/', 'https://res.services.ai.azure.com/api/projects/p1'].map((u) => typed(u, true)),
+    ...['https://res.openai.azure.com/', 'https://res.openai.azure.com/openai', 'https://res.openai.azure.com/openai/v1/', 'https://res.services.ai.azure.com/api/projects/p1', 'https://res.services.ai.azure.com/api/projects/a%2Fb'].map((u) => typed(u, true)),
     ...['https://res.openai.azure.com/openai/deployments/gpt/chat/completions', 'https://res.openai.azure.com/openai/v1/chat', 'https://user@res.openai.azure.com', 'https://res.openai.azure.com/other'].map((u) => typed(u, false))
   ]
 }
