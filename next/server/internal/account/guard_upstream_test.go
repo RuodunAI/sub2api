@@ -22,16 +22,16 @@ func TestGuardUpstreamFollowsTheGatewayRule(t *testing.T) {
 		"http://localhost:8080/v1": netguard.ErrPrivate,
 	} {
 		u, _ := url.Parse(raw)
-		if err := s.guardUpstream(ctx, u, true); !errors.Is(err, want) && !(want == nil && err == nil) {
+		if err := s.guardUpstream(ctx, "", u, true); !errors.Is(err, want) && !(want == nil && err == nil) {
 			t.Errorf("proxied %s: %v, want %v", raw, err, want)
 		}
 	}
 	u, _ := url.Parse("http://127.0.0.1:9/v1")
-	if err := s.guardUpstream(ctx, u, false); !errors.Is(err, netguard.ErrPrivate) {
+	if err := s.guardUpstream(ctx, "", u, false); !errors.Is(err, netguard.ErrPrivate) {
 		t.Errorf("direct loopback: %v", err)
 	}
 	s.d.AllowPrivateUpstream = true
-	if err := s.guardUpstream(ctx, u, true); err != nil {
+	if err := s.guardUpstream(ctx, "", u, true); err != nil {
 		t.Errorf("allow private: %v", err)
 	}
 }

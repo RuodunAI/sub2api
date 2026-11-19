@@ -31,8 +31,13 @@ type Deps struct {
 	Cipher   *secret.Cipher
 	Registry core.PluginRegistry
 	Proxies  core.ProxyDirectory
-	Events   core.EventPublisher
-	Slots    core.Slots // optional: in_use column is 0 without it
+	// NetworkAccess is the administrator's plugin network access (CONTRACTS
+	// §113): the host of every request a plugin describes and the core sends
+	// (SendAccountRequest, quota, refresh, test, model list) must pass it;
+	// nil = no such setting (tests).
+	NetworkAccess core.PluginNetworkAccess
+	Events        core.EventPublisher
+	Slots         core.Slots // optional: in_use column is 0 without it
 	// Limiter reports rpm/tpm usage (rate_usage column); optional.
 	Limiter core.AccountLimiter
 	Stats   *Stats

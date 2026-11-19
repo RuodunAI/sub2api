@@ -48,9 +48,13 @@ type Options struct {
 	Node     core.Node
 	Launcher core.PluginLauncher
 
-	Egress     core.EgressProvider
-	Authorizer core.Authorizer
-	Ledger     core.Ledger
+	Egress core.EgressProvider
+	// NetworkAccess is the administrator's plugin network access (CONTRACTS
+	// §113), which a fetch's host must pass as well (requireFetchHost); nil
+	// = no such setting (tests).
+	NetworkAccess core.PluginNetworkAccess
+	Authorizer    core.Authorizer
+	Ledger        core.Ledger
 	// Prices serves HostService.PriceUsage; nil makes it fail with UNAVAILABLE.
 	Prices  UsagePricer
 	Schemas SchemaDSN

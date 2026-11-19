@@ -170,7 +170,7 @@ func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, a
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, core.ErrPluginUnavailable.WithMessage("plugin built an invalid models URL")
 	}
-	if err := s.guardUpstream(ctx, u, proxied); err != nil {
+	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, proxied); err != nil {
 		return nil, core.ErrUnavailable.WithMessage(err.Error())
 	}
 	method := strings.ToUpper(mr.GetMethod())

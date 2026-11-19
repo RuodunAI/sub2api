@@ -218,8 +218,11 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.stats = account.NewStats(b.rdb, b.db, b.cl.Slots, b.cl.Bus)
 	b.stats.Start()
 	b.stopper.add("account-stats", b.stats.Close)
+	if err := b.startEgress(); err != nil {
+		return nil, err
+	}
 	b.acc = account.New(account.Deps{
-		DB: b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, Events: b.events,
+		DB: b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, NetworkAccess: b.egress, Events: b.events,
 		Slots: b.cl.Slots, Limiter: b.limiter, Stats: b.stats, Bus: b.cl.Bus, AllowPrivateUpstream: cfg.AllowPrivateUpstream, Converters: b.converters,
 		// Ownership checks and proxy_url resolution (CONTRACTS §21).
 		Authorizer: az, Resolver: b.prx, ScopeGrants: az,
@@ -257,10 +260,12 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	return trust, nil
 }
 
-// startPluginRuntime builds egress, the plugin runtime, the resource stores,
-// the gateway and the install/rollout services, and starts their loops. trust
-// comes from buildCoreServices: it is not boot state.
-func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
+// startEgress builds the plugin database schemas and the egress tunnel. It
+// runs before the account module is built: the administrator's plugin
+// network access, which the tunnel serves, rules the requests the account
+// module, the gateway and the runtime send for plugins as well (CONTRACTS
+// §113).
+func (b *boot) startEgress() error {
 	cfg := b.cfg
 	pgAddr, err := databaseAddr(cfg.DatabaseURL)
 	if err != nil {
@@ -282,11 +287,21 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 	schemas.ConvertLegacyRoles(b.ctx)
 	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, DatabaseProxy: schemas.ServeTunnel, CoreAddrs: coreAddrs,
 		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Bus: b.cl.Bus, Logger: b.log})
-	b.egress = egress
+	b.schemas, b.egress = schemas, egress
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
 	if err := b.tasks.Register(egress.LogsPruneTaskSpec()); err != nil {
 		return fmt.Errorf("egress log prune task: %w", err)
 	}
+	return nil
+}
+
+// startPluginRuntime builds the plugin runtime (on the egress of
+// startEgress), the resource stores, the gateway and the install/rollout
+// services, and starts their loops. trust comes from buildCoreServices: it
+// is not boot state.
+func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
+	cfg := b.cfg
+	schemas, egress := b.schemas, b.egress
 	launcher := sandbox.NewLauncher(sandbox.LauncherOptions{DisableWrap: cfg.Plugins.DevMode, Landlock: cfg.Plugins.Landlock, Logger: b.log})
 	settings, err := settingsReaders(b.bill.SettingsReaders(), gateway.SettingsReaders(b.db), b.env.SettingsReaders())
 	if err != nil {
@@ -295,7 +310,7 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 
 	rt, err := grpcruntime.New(grpcruntime.Options{
 		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Locker: b.cl.Locker, Cipher: b.cipher, Node: b.cl.Registry, Launcher: launcher,
-		Egress: egress, Authorizer: b.az, Ledger: b.bill, Prices: b.bill, Schemas: schemas, Accounts: b.acc, Sticky: gateway.NewStickyClearer(b.rdb), Environment: b.env, Notifier: b.ntf, Users: b.idm,
+		Egress: egress, NetworkAccess: egress, Authorizer: b.az, Ledger: b.bill, Prices: b.bill, Schemas: schemas, Accounts: b.acc, Sticky: gateway.NewStickyClearer(b.rdb), Environment: b.env, Notifier: b.ntf, Users: b.idm,
 		Settings: settings, Tasks: b.jobBridge(),
 		HostVersion: b.version, DataDir: cfg.Plugins.DataDir, RunDir: cfg.Plugins.RunDir,
 		StrictNetwork: cfg.Plugins.StrictNetwork, Seccomp: cfg.Plugins.Seccomp, MaxMemoryMB: cfg.Plugins.MaxMemoryMB,
@@ -318,7 +333,7 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Node: b.cl.Registry, Registry: b.reg, Events: b.events,
 		Auth: b.keys, Pricer: b.bill, Balance: b.bill, Slots: b.cl.Slots,
 		Environment: b.env,
-		Accounts:    b.acc, Proxies: b.prx, Settler: b.settler, Observations: observations, Tasks: b.settler, Limiter: b.limiter, KeyWindows: b.keys.Windows, KeyUsage: b.keys, Quota: b.acc, Config: cfg, Converters: b.converters,
+		Accounts:    b.acc, Proxies: b.prx, NetworkAccess: egress, Settler: b.settler, Observations: observations, Tasks: b.settler, Limiter: b.limiter, KeyWindows: b.keys.Windows, KeyUsage: b.keys, Quota: b.acc, Config: cfg, Converters: b.converters,
 		Draining: b.gate.isDraining,
 	})
 

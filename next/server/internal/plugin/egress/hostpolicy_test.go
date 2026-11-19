@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -308,5 +309,69 @@ func waitLogged(t *testing.T, st *memStore, host, network, msg string) {
 			t.Fatalf("no denied %s row for %s with %q: %+v", network, host, msg, st.find(host, network))
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// The requests the core sends for a plugin are decided by the same cached
+// setting as the tunnel (CONTRACTS §113): a refusal is a denied row of the
+// plugin's egress log, an allowed request is not logged, and no request
+// reads the setting again while the cached copy is fresh.
+func TestPluginRequestRefusal(t *testing.T) {
+	st := newMemStore()
+	box, bus := &hostBox{h: DefaultHostPolicy()}, &subBus{}
+	p := newProvider(st, Options{NodeID: "node-1", LoadHostPolicy: box.load, Bus: bus, FlushInterval: 20 * time.Millisecond, Logger: discardLogger()})
+	t.Cleanup(p.Close)
+	ctx := context.Background()
+	refusal := func(raw string) string {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p.PluginRequestRefusal(ctx, "demo", u)
+	}
+	if msg := refusal("https://api.upstream.test/v1/messages"); msg != "" {
+		t.Fatalf("default: %q", msg)
+	}
+	box.set(HostPolicy{Mode: HostAllowAll, BlockedDomains: []string{"upstream.test"}, AllowedDomains: []string{"upstream.test"}}, nil)
+	_ = bus.Publish(ctx, core.ChannelConfigChanged, []byte(`{"key":"settings.plugin_egress"}`))
+	reads := box.reads()
+	for _, raw := range []string{"https://API.upstream.test/v1/messages", "http://upstream.test:8080/x"} {
+		if msg := refusal(raw); !strings.Contains(msg, "is on the blocked list of plugin network access") {
+			t.Fatalf("%s: %q", raw, msg)
+		}
+	}
+	if msg := refusal("https://notupstream.test/"); msg != "" {
+		t.Fatalf("other host: %q", msg)
+	}
+	// block_all: only the allowed list (subdomains included) passes.
+	box.set(HostPolicy{Mode: HostBlockAll, AllowedDomains: []string{"upstream.test"}}, nil)
+	_ = bus.Publish(ctx, core.ChannelConfigChanged, []byte(`{"key":"settings.plugin_egress"}`))
+	if refusal("https://api.upstream.test/") != "" || !strings.Contains(refusal("https://relay.example.test/"), "not on the allowed list") {
+		t.Fatal("block_all")
+	}
+	if got := box.reads() - reads; got != 2 {
+		t.Fatalf("setting read %d times for five requests and two saves, want 2", got)
+	}
+	waitLogged(t, st, "api.upstream.test", "https", "api.upstream.test is on the blocked list of plugin network access")
+	waitLogged(t, st, "upstream.test", "http", "upstream.test is on the blocked list of plugin network access")
+	waitLogged(t, st, "relay.example.test", "https", "relay.example.test is not on the allowed list of plugin network access")
+	for _, r := range st.find("api.upstream.test", "https") {
+		if r.Port != 443 || r.PluginKey != "demo" || r.NodeID != "node-1" {
+			t.Fatalf("row %+v", r)
+		}
+	}
+	if rows := st.find("upstream.test", "http"); len(rows) != 1 || rows[0].Port != 8080 {
+		t.Fatalf("http rows %+v", rows)
+	}
+	for _, host := range []string{"notupstream.test", "api.upstream.test"} {
+		for _, r := range st.find(host, "https") {
+			if r.Result != ResultDenied {
+				t.Fatalf("an allowed request was logged: %+v", r)
+			}
+		}
+	}
+	// Requests are not external hosts of the domain list.
+	if d := st.domain("relay.example.test"); d != nil {
+		t.Fatalf("domain list: %+v", d)
 	}
 }
