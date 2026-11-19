@@ -1,5 +1,7 @@
 # 上游插件 New API、Sub2API、TypeSafe，账号余额接通，OpenAI 生图（设计稿）
 
+> 2026-11-19 修订（所有者决定）：`missing_price_policy` 删除，没有价格的模型一律拒绝（403 `model_price_not_configured`），没有免费放行；下文提到它的地方以 CONTRACTS §17.3 为准。同日另一决定：账号测试不查价格、不计费，下文“账号测试”的价格检查已撤掉（CONTRACTS §17.2）。
+
 2026-11-18，所有者要求（语音转写整理）：账号余额功能接通（参考 new-api 的渠道余额查询；Codex 显示周限制之类的用量窗口，能查余额的查余额，查不了的先不做）；新增上游插件 **New API**（站点的 API Key，能查余额，同协议自动转发 OpenAI Chat / Responses / 生图、Gemini、Anthropic Messages，并能转发 TypeSafe 的 Jev 模型）、**Sub2API**（"我们的旧版本"，能查余额，自动转发，可以经协议绑定指定模型，支持 OpenAI、Gemini、Anthropic Messages）、**TypeSafe**（直接接入 TypeSafe，支持它的协议和调用）。所有者的工作方式是"先按自己的理解做，做完一起汇报"，所以本文对每个取舍都给出决定，替他做的决定集中在第 4 节。
 
 本文只是设计与任务拆分，**没有实现**。事实来源：两份只读调查摘要（余额、三个上游插件）、外部公开资料摘要（TypeSafe 官方文档与 OpenAPI、OpenAI Images reference、New API 文档，抓取于 2026-11-18）和本文写作时对 develop `1fbe32aa9` 代码的逐处核对；摘要与代码不一致的地方以代码为准，列在 2.5。new-api 仓库是 AGPL，本文只描述它的行为和接口形状，实现时不得抄它的代码。
@@ -39,7 +41,7 @@
 | 余额联动：余额为 0 或低于阈值时告警、停用或降低调度权重（new-api 的批量刷新会自动停用余额 ≤ 0 的渠道） | 所有者的硬规矩：不自作主张加限制；联动要所有者另定规则 |
 | 其它账号类型的余额（见 3.1.9 的可行性表） | 官方 API Key 类没有可用接口；volcengine、relay 需要额外设计 |
 | `/v1/images/edits` 的 multipart 形式 | 网关只收 JSON（§112.16 保留的唯一请求体规则），收 multipart 要改网关读请求体、取模型、审核取提示词 |
-| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动。**已做**（同批另一个包，CONTRACTS §118.10、§120；模型先取应答回显） |
+| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动。**不做**：所有者定为一条请求一个计价模型，生图工具的 token 计入本条请求，见 3.8 |
 | codex 设备码账号能否生图的实测（旧设计稿 3.4） | 需要真实账号。**已实测**（2026-11-18，可以，PLUGIN-CODEX 第 12 节） |
 | 价格编辑器的结构化分档里加图片价、价格同步源导入图片 token 价、统计页（`usage_hourly`）汇总图片 token | 这一版管理员用表达式价格即可计对，见 3.4.5 |
 | 插件自报用量（`pluginv1.UsageTokens`）里的图片字段 | 没有插件自己解析生图用量 |
@@ -439,6 +441,22 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 - 每个代发请求都过：§112.17 主机规则（中继、余额；New API / Sub2API 只能到账号自己的 `base_url` 主机，TypeSafe 到 `api.typesafe.ai` 或管理员许可的自定义地址）→ 管理员插件联网（合并 `feat/plugin-domain-policy-core` 后）→ SSRF → 账号代理。余额请求不跟随重定向。
 - New API 的 `/api/status` 不带 Key：公开接口不需要凭据，不把 Key 发给不需要它的地址。
 - 自定义上游地址的账号（New API、Sub2API 总是，TypeSafe 改了地址时）照 §21.3 需要 `account:relay` 权限。
+
+### 3.8 一条请求一个计价模型（2026-11-18，所有者规则；取代同日的“生图工具另计”）
+
+同日合入的 P10（CONTRACTS 旧 §120）让 Responses 里生图工具的那部分按**另一个模型**计价，模型取自上游回显、工具参数或写死的默认名 `gpt-image-2`，没有价格时只记异常不扣费。所有者否掉了这种做法，定下的规则：
+
+1. 一条请求只有一个计价模型：**客户请求的模型**。预扣和实际扣费都按它。
+2. 绝不按上游返回的任何东西取价（应答里回显的模型名、工具信息都不算）；token 数仍取自上游应答。
+3. 模型找不到价格就报错；没有默认模型名、兜底模型、退回别的价格。
+4. 账号的模型测试也一样：被测的模型没有价格就直接报错，不向上游发测试请求。
+
+做法：
+
+- **删掉 P10 为另计生图加的东西**：附加用量规则的对象形式（`object`、`modelSources`、`defaultModel`）及只为它服务的代码（`Acc.WithRequest`、按应答取价 `priceResponseModel`、`AdditionalUsage.ResponseModel`、WebSocket 每轮记附加用量）、`additional_unpriced` 异常与控制台的警示、使用记录卡片里为它加的附加用量列表与 mock 记录。附加用量的数组形式（Anthropic `usage.iterations`，模型调度前准入）是 P10 之前就有的，不动。
+- **生图工具的 token 是这条请求自己的用量**：只改 `sdk/platforms/openai.json` 里 `responses`、`responses_websocket` 的用量规则，用已有的 `+` 求和：`input_tokens` = `usage.input_tokens + tool_usage.image_gen.input_tokens`，`output_tokens` = `usage.output_tokens + tool_usage.image_gen.output_tokens`，`image_input_tokens` / `image_output_tokens` = `tool_usage.image_gen.{input,output}_tokens_details.image_tokens`（流式与 WebSocket 读 `response.` 下的同名路径）。实测的上游形状里 `usage` 只含对话、`tool_usage.image_gen` 另列，所以要相加。图片 token 是输入、输出的一部分（§118.2），表达式写了 `img` / `img_o` 按图片价，否则留在 `p` / `c` 里，都按客户请求的模型的价格算。
+- 请求的计价不用改：`prepareBilling` 本来就按客户请求的模型取价、调度前冻结（`missing_price_policy` 照旧），上游回显的 `model` 只记进 `upstream_model`。
+- **账号测试**（`POST /accounts/:id/test`）：插件构造好测试请求之后、核心发出之前，按被测的模型（调用方给的或账号的默认测试模型，取账号映射之前的名字；都没有时是插件报的模型）取全局价格，没有价格就回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游，记为这个账号最后一次测试的失败（`error_source: gateway`）。
 
 ## 4. 替所有者做的决定
 

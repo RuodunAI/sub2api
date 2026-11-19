@@ -48,6 +48,28 @@ func CheckURL(ctx context.Context, raw string, allowPrivate bool, lookup Lookup)
 	return CheckURLVia(ctx, raw, allowPrivate, false, lookup)
 }
 
+// ProxyFunc picks the proxy of a request as http.Transport.Proxy does: nil
+// is a direct connection.
+type ProxyFunc func(*url.URL) (*url.URL, error)
+
+// CheckURLProxy is CheckURLVia for a request whose proxy, if any, proxy
+// picks (nil: always direct).
+func CheckURLProxy(ctx context.Context, raw string, allowPrivate bool, proxy ProxyFunc, lookup Lookup) (*url.URL, error) {
+	proxied := false
+	if proxy != nil {
+		u, err := url.Parse(strings.TrimSpace(raw))
+		if err != nil {
+			return nil, ErrBadURL
+		}
+		p, err := proxy(u)
+		if err != nil {
+			return nil, err
+		}
+		proxied = p != nil
+	}
+	return CheckURLVia(ctx, raw, allowPrivate, proxied, lookup)
+}
+
 // CheckURLVia validates a URL a plugin returned: http(s), a host, no
 // embedded credentials, and - unless allowPrivate - a public target as
 // CheckHostVia judges it for a connection made directly or, when proxied,

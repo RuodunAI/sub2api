@@ -452,13 +452,24 @@ func TestPriceNotConfigured403(t *testing.T) {
 	if rec := e.record(); rec.ErrorType != errTypePriceNotConfigured {
 		t.Fatalf("record %+v", rec)
 	}
-	// Free policy: served, not billable.
-	e.pricer.free = true
-	if r := e.messages(body("claude-unknown-1", false)); r.status != 200 {
-		t.Fatalf("free policy: %d", r.status)
+	if len(e.up.keys()) != 0 {
+		t.Fatal("upstream called for a model without a price")
 	}
-	if rec := e.record(); rec.Billable || rec.Price != nil {
-		t.Fatalf("free policy record %+v", rec)
+}
+
+// A price of 0 is a price: the request is served and billed at it.
+func TestZeroPriceServed(t *testing.T) {
+	e := newEnv(t)
+	zero := &core.PriceRule{ID: 31, Model: "claude-zero-1", Mode: "per_token", Expression: `tier("base", p*0)`}
+	e.pricer.rules["claude-zero-1"] = zero
+	if r := e.messages(body("claude-zero-1", false)); r.status != 200 {
+		t.Fatalf("zero price: %d %s", r.status, r.body)
+	}
+	if rec := e.record(); !rec.Billable || rec.Price != zero {
+		t.Fatalf("zero price record %+v", rec)
+	}
+	if len(e.balance.precharged) != 1 || e.balance.precharged[0] != zero {
+		t.Fatalf("zero price precharge %v", e.balance.precharged)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -46,6 +47,9 @@ type TestResult struct {
 	// RequestedModel is the model the caller chose, before the account's
 	// mapping; empty when none was given (the plugin's default).
 	RequestedModel string `json:"requested_model"`
+	// Protocol is the protocol the plugin tested (its usage_protocol); empty
+	// when it named none or failed to build the request.
+	Protocol string `json:"protocol,omitempty"`
 	// Upstream is the address the test reached, without query or fragment:
 	// they may carry the credential (Gemini style "?key=...").
 	Upstream string `json:"upstream,omitempty"`
@@ -118,11 +122,17 @@ func (s *Service) test(c *gin.Context) {
 	defer cancel()
 	// The account's model mapping applies to test calls too (CONTRACTS §18).
 	requested := strings.TrimSpace(in.Model)
-	model := requested
-	if model == "" {
-		model = a.defaultTestModel()
+	// Naming the model is what makes a test explicit (CONTRACTS §122).
+	tp := s.testProtocols(a, requested != "")
+	model, testable := tp.testModel(requested, a.testModels())
+	if !testable {
+		err := errNoTestableProtocol.WithMessage(t(ctx, "this model has no protocol to test on this account",
+			"这个模型在这个账号上没有可测试的协议")).WithDetails(map[string]any{"model": model})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: err.Message, ErrorCode: err.Code, ErrorSource: "gateway"})
+		httpapi.Fail(c, err)
+		return
 	}
-	protocols := s.testProtocols(a, model)
+	protocols := tp.of(model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
@@ -146,32 +156,80 @@ func (s *Service) test(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
-// testProtocols lists the protocols a test of account a may use, most
-// preferred first (BuildTestRequestRequest.protocols): the protocols of its
-// own platforms it serves natively, in the order of its type's platforms and
-// their endpoints, without WebSocket and token-counting ones and, for a test
-// of client model model, only those serving it.
-func (s *Service) testProtocols(a *row, model string) []string {
+// testProtocolSet is the protocols a test of an account may use: those of
+// its own platforms it serves natively, in the order of its type's
+// platforms and their endpoints, without WebSocket and token-counting ones,
+// those whose endpoint says test "never" and, unless the test is explicit
+// (the request names the model), those whose endpoint says "explicit"
+// (CONTRACTS §122).
+type testProtocolSet struct {
+	protocols []string
+	rules     *core.ProtocolRules
+}
+
+// testProtocols is the set of account a; explicit when the request names
+// the model.
+func (s *Service) testProtocols(a *row, explicit bool) testProtocolSet {
+	tp := testProtocolSet{rules: a.protocolBinding().compile()}
 	g := s.gen()
 	if g == nil {
-		return nil
+		return tp
 	}
-	webSocket := map[string]bool{}
+	skip := map[string]bool{}
 	for _, e := range g.Endpoints() {
-		webSocket[e.Endpoint.Protocol] = webSocket[e.Endpoint.Protocol] || e.Endpoint.WebSocket()
+		ep := e.Endpoint
+		skip[ep.Protocol] = skip[ep.Protocol] || ep.WebSocket() || ep.Test == manifest.EndpointTestNever ||
+			(ep.Test == manifest.EndpointTestExplicit && !explicit)
 	}
-	rules := a.protocolBinding().compile()
-	var out []string
 	for _, sp := range s.accountServedProtocols(a) {
-		if sp.Via != viaNative || webSocket[sp.Protocol] || core.CountTokensFamily(sp.Protocol) != "" {
-			continue
+		if sp.Via == viaNative && !skip[sp.Protocol] && core.CountTokensFamily(sp.Protocol) == "" {
+			tp.protocols = append(tp.protocols, sp.Protocol)
 		}
-		if _, serves := rules.Serves(model, sp.Protocol, false); model == "" || serves {
-			out = append(out, sp.Protocol)
+	}
+	return tp
+}
+
+// of lists the protocols a test of client model model is offered, most
+// preferred first (BuildTestRequestRequest.protocols): for a model, those
+// the account's protocol binding serves it on, in the order of the
+// model_protocols entry covering it when there is one.
+func (tp testProtocolSet) of(model string) []string {
+	if model == "" {
+		return tp.protocols
+	}
+	var out []string
+	for _, p := range tp.protocols {
+		if _, serves := tp.rules.Serves(model, p, false); serves {
+			out = append(out, p)
 		}
+	}
+	if order := tp.rules.ModelProtocols(model); order != nil {
+		slices.SortStableFunc(out, func(x, y string) int { return slices.Index(order, x) - slices.Index(order, y) })
 	}
 	return out
 }
+
+// testModel is the model a test asks for: the caller's, else the first of
+// models left with a protocol to test, else "" when there are no models
+// (the plugin picks its default, CONTRACTS §15.9). testable is false when
+// that model has no protocol to test, none of models has one, or there are
+// no models and the account has no protocol a test may use: the test
+// is refused, never sent with the plugin's default request (CONTRACTS §122.2).
+func (tp testProtocolSet) testModel(requested string, models []string) (model string, testable bool) {
+	if requested != "" {
+		return requested, len(tp.of(requested)) > 0
+	}
+	for _, m := range models {
+		if len(tp.of(m)) > 0 {
+			return m, true
+		}
+	}
+	return "", len(models) == 0 && len(tp.protocols) > 0
+}
+
+// errNoTestableProtocol refuses a test of a model the account serves on no
+// protocol a test may use (CONTRACTS §122.2).
+var errNoTestableProtocol = core.NewError(http.StatusBadRequest, "no_testable_protocol", "no protocol to test")
 
 // LastTest is the last console test of an account (CONTRACTS §50), shown
 // as last_test in the account views.
@@ -181,6 +239,8 @@ type LastTest struct {
 	LatencyMs int64     `json:"latency_ms"`
 	// Model actually requested (TestResult.model).
 	Model string `json:"model"`
+	// Protocol tested (TestResult.protocol); "" when unknown.
+	Protocol string `json:"protocol,omitempty"`
 	// Message is empty on success; on failure the plugin's reason, else the
 	// upstream message, at most maxLastTestMessage bytes.
 	Message     string `json:"message"`
@@ -220,6 +280,7 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 		"last_test_at": gorm.Expr("now()"), "last_test_ok": res.OK, "last_test_latency_ms": min(res.LatencyMs, math.MaxInt32),
 		"last_test_model": res.Model, "last_test_message": msg, "last_test_status": res.Status,
 		"last_test_error_code": cutBytes(res.ErrorCode, 128), "last_test_error_source": res.ErrorSource,
+		"last_test_protocol": res.Protocol,
 	}).Error; err != nil {
 		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
 	}
@@ -244,7 +305,7 @@ func cutBytes(s string, n int) string {
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	id int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
-	res := TestResult{Model: model, ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
+	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
 	}

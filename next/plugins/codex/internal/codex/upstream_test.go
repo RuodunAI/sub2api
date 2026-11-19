@@ -104,6 +104,9 @@ func TestValidateCredentials(t *testing.T) {
 		{TypeDevice, `{"access_token":"x","refresh_token":1}`, "refresh_token", "pattern"},
 		{"chatgpt_siwc", `{"access_token":"x"}`, "account_type", "unsupported"},
 		{TypeOAuth, `{"access_token":"x","email":1}`, "email", "pattern"},
+		{TypeDevice, `{"access_token":"x","user_agent":1}`, "user_agent", "pattern"},
+		{TypeOAuth, `{"access_token":"x","originator":"a\u0001b"}`, "originator", "pattern"},
+		{TypeOAuth, `{"access_token":"x","user_agent":"a\nb"}`, "user_agent", "pattern"},
 	} {
 		r := validate(tc.typ, tc.creds)
 		if len(r.GetErrors()) != 1 || r.GetErrors()[0].GetField() != tc.field || r.GetErrors()[0].GetCode() != tc.code {

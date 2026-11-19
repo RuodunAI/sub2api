@@ -17,41 +17,19 @@ const replacementTokenFields = {
   cache_creation_tokens: 'CacheCreation', cache_creation_1h_tokens: 'CacheCreation1h'
 } as const
 
-const pricedTokenFields = { ...replacementTokenFields, image_input_tokens: 'ImageInput', image_output_tokens: 'ImageOutput' } as const
-
-/** The token counts of a priced usage item kept in billing_detail.inputs (Go field names, no JSON tags). */
-function pricedTokens(facts: unknown): UsageTokenFacts {
-  const tokens: UsageTokenFacts = {}
-  if (!facts || typeof facts !== 'object') return tokens
-  for (const [field, source] of Object.entries(pricedTokenFields)) {
-    const value = (facts as Record<string, unknown>)[source]
-    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) tokens[field as keyof UsageTokenFacts] = value
-  }
-  return tokens
-}
-
-/** Additional usage of a record (CONTRACTS §120): usage priced at another model's price, such as the
- *  image_generation tool of a Responses request. `cost` and `priced` are known once the record is
- *  settled (billing_detail.additional, in the same order as inputs.additional). */
-export function additionalUsage(row: UsageRow): Array<{ kind: string; model: string; tokens: UsageTokenFacts; settled: boolean; priced: boolean; cost?: string | number }> {
-  const inputs: unknown = row.billing_detail?.inputs?.additional
-  if (!Array.isArray(inputs)) return []
-  const settled: unknown = row.billing_detail?.additional
-  const parts: Array<Record<string, any>> = Array.isArray(settled) ? settled : []
-  return inputs.map((item, index) => {
-    const part = parts[index]
-    return { kind: String(item?.Kind ?? ''), model: String(item?.Model ?? ''), tokens: pricedTokens(item?.Tokens),
-      settled: !!part, priced: !!part?.price_id, cost: part?.detail?.total_cost }
-  })
-}
-
 /** Recorded rounds are partial evidence, never a replacement request total. */
 export function knownUsageRounds(row: UsageRow): Array<{ round: number; tokens: UsageTokenFacts; metrics?: unknown }> {
   if (row.success || Object.keys(replacementTokenFields).some(key => Number(row[key as keyof UsageTokenFacts]) > 0)) return []
   const replacement: unknown = row.billing_detail?.inputs?.replacement
   if (!Array.isArray(replacement)) return []
   return replacement.flatMap((item, index) => {
-    const tokens = pricedTokens(item?.Tokens)
+    const facts: unknown = item?.Tokens
+    if (!facts || typeof facts !== 'object') return []
+    const tokens: UsageTokenFacts = {}
+    for (const [field, source] of Object.entries(replacementTokenFields)) {
+      const value = (facts as Record<string, unknown>)[source]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0) tokens[field as keyof UsageTokenFacts] = value
+    }
     return Object.keys(tokens).length ? [{ round: index + 1, tokens, metrics: item.Metrics }] : []
   })
 }

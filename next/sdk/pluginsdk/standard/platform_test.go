@@ -135,7 +135,7 @@ func TestSeveralTypes(t *testing.T) {
 
 func TestWithoutTestOrModels(t *testing.T) {
 	ty := openai.APIKey("apikey")
-	ty.Test, ty.Models = nil, nil
+	ty.Test, ty.Tests, ty.Models = nil, nil, nil
 	p := standard.New(ty)
 	acc := &pluginv1.Account{Type: "apikey", CredentialsJson: `{"api_key":"sk-0123456789"}`}
 	if _, err := p.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: acc}); status.Code(err) != codes.Unimplemented {

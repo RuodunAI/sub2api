@@ -82,6 +82,23 @@ describe('CodexAuthForm: flows by account type', () => {
   })
 })
 
+describe('CodexAuthForm: client headers', () => {
+  it('edits the account\'s own User-Agent and originator in the credentials', async () => {
+    const loaded = { access_token: '******', email: 'me@example.com', originator: 'or-acct' }
+    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'codex_device' }, accountType: { type: 'codex_device' }, modelValue: loaded })
+    expect((w.get('[data-testid="codex-originator"]').element as HTMLInputElement).value).toBe('or-acct')
+    expect((w.get('[data-testid="codex-user-agent"]').element as HTMLInputElement).value).toBe('')
+    await w.get('[data-testid="codex-user-agent"]').setValue('ua-acct')
+    expect(lastValue(w)).toEqual({ ...loaded, user_agent: 'ua-acct' })
+  })
+
+  it('shows the fields while creating, before any authorization', () => {
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    expect(w.find('[data-testid="codex-user-agent"]').exists()).toBe(true)
+    expect(w.find('[data-testid="codex-originator"]').exists()).toBe(true)
+  })
+})
+
 describe('CodexAuthForm: device code', () => {
   function deviceAnswers(polls: unknown[]) {
     answer = (path) => {

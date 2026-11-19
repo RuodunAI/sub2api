@@ -471,7 +471,6 @@ func (a *fakeAuth) Authenticate(_ context.Context, raw string) (*core.APIKeyPrin
 type fakePricer struct {
 	mu      sync.Mutex
 	rules   map[string]*core.PriceRule // model -> rule; missing = not configured
-	free    bool
 	params  []string
 	headers []string
 	calls   int
@@ -485,9 +484,6 @@ func (p *fakePricer) Resolve(_ context.Context, q core.PriceQuery) (*core.PriceR
 	p.queries = append(p.queries, q)
 	if r, ok := p.rules[q.Model]; ok {
 		return r, nil
-	}
-	if p.free {
-		return nil, nil
 	}
 	return nil, core.ErrPriceNotConfigured
 }
@@ -522,6 +518,8 @@ type fakeBalance struct {
 	disconnect string
 	// outputReserve is output_reserve_tokens; zero reserves nothing.
 	outputReserve int64
+	// precharged are the prices of the pre-charges made, in order.
+	precharged []*core.PriceRule
 }
 
 func (b *fakeBalance) OutputReserveTokens(context.Context) (int64, error) {
@@ -537,6 +535,7 @@ func (b *fakeBalance) ClientDisconnectPolicy(context.Context) (string, error) {
 
 func (b *fakeBalance) PreConsumeTokens(context.Context) (int64, error) { return 500, nil }
 func (b *fakeBalance) Precharge(ctx context.Context, r *core.UsageRecord) error {
+	b.precharged = append(b.precharged, r.Price)
 	return b.CheckBalance(ctx, r.UserID)
 }
 
