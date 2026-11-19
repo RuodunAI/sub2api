@@ -26,7 +26,7 @@ const SETTINGS: Rules = {
 }
 
 export const RULES: Record<BedrockType, Rules> = {
-  bedrock_apikey: { api_key: { required: true, min: 8, max: 2048, pattern: VISIBLE }, ...SETTINGS },
+  bedrock_apikey: { api_key: { required: true, whitespace: true }, ...SETTINGS },
   bedrock_aksk: { ...ACCESS_KEY, ...SETTINGS },
   bedrock_sts: {
     ...ACCESS_KEY,

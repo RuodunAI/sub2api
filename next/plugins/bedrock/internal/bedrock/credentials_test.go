@@ -62,6 +62,24 @@ func TestValidateCredentialsAccepts(t *testing.T) {
 			}
 		})
 	}
+	// Any non-blank API key is accepted (DESIGN-2026-11-20 §5.1), and the
+	// request carries it trimmed.
+	for name, key := range map[string]string{
+		"1 character":        "k",
+		"4096 characters":    strings.Repeat("k", 4096),
+		"inner space":        "ABSK key with spaces",
+		"not ASCII":          "ABSK-ключ",
+		"surrounding spaces": "  " + testAPIKey + "\n",
+	} {
+		creds := map[string]any{fieldAPIKey: key}
+		if resp, _ := validate(t, TypeAPIKey, creds, nil); len(resp.GetErrors()) != 0 {
+			t.Fatalf("api key %s: errors = %v", name, fieldErrors(resp))
+		}
+		up := build(t, executeRequest(stored(TypeAPIKey, creds, nil), testHaiku, false, claudeBody(testHaiku, false)))
+		if got := up.GetHeaders()["authorization"]; got != "Bearer "+strings.TrimSpace(key) {
+			t.Fatalf("api key %s: Authorization = %q", name, got)
+		}
+	}
 	// The expiry hint of temporary credentials is a date and time.
 	resp, settings := validate(t, TypeSTS, stsCreds, map[string]any{fieldRegion: "us-west-2", fieldSessionExpiresAt: "2026-11-18T08:30:00.000Z"})
 	if len(resp.GetErrors()) != 0 || settings[fieldSessionExpiresAt] != "2026-11-18T08:30:00.000Z" {
@@ -70,7 +88,6 @@ func TestValidateCredentialsAccepts(t *testing.T) {
 }
 
 func TestValidateCredentialsRejects(t *testing.T) {
-	longKey := strings.Repeat("k", 2049)
 	for _, tc := range []struct {
 		name     string
 		typ      string
@@ -83,9 +100,6 @@ func TestValidateCredentialsRejects(t *testing.T) {
 		{"api key missing", TypeAPIKey, map[string]any{}, nil, "api_key:required"},
 		{"api key blank", TypeAPIKey, map[string]any{fieldAPIKey: "   "}, nil, "api_key:required"},
 		{"api key not a string", TypeAPIKey, map[string]any{fieldAPIKey: 12345678}, nil, "api_key:required"},
-		{"api key too short", TypeAPIKey, map[string]any{fieldAPIKey: "short"}, nil, "api_key:pattern"},
-		{"api key too long", TypeAPIKey, map[string]any{fieldAPIKey: longKey}, nil, "api_key:pattern"},
-		{"api key with a space", TypeAPIKey, map[string]any{fieldAPIKey: "ABSK key with spaces"}, nil, "api_key:pattern"},
 		{"api key type given an access key ID: a key its form does not send", TypeAPIKey, map[string]any{fieldAccessKeyID: testAccessKeyID}, nil, "access_key_id:unknown"},
 
 		{"access key id missing", TypeAccessKey, with(akskCreds, map[string]any{fieldAccessKeyID: nil}), nil, "access_key_id:required"},
