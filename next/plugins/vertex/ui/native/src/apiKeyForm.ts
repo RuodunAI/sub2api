@@ -15,8 +15,8 @@ export function apiKeyForm(t: (key: string) => string) {
     apiKey: { help: () => t('apiKey.help') },
     baseUrl: false,
     extra: [
-      { key: 'project_id', kind: 'text', label: () => t('express.project'), placeholder, rules: TARGET.project_id, section },
-      { key: 'location', kind: 'text', label: () => t('express.location'), help: () => t('location.help'), placeholder, rules: TARGET.location }
+      { key: 'project_id', kind: 'text', label: () => t('express.project'), placeholder, rules: TARGET.project_id, section, mono: true },
+      { key: 'location', kind: 'text', label: () => t('express.location'), help: () => t('location.help'), placeholder, rules: TARGET.location, mono: true }
     ]
   })
 }

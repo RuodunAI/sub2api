@@ -74,6 +74,7 @@ describe('vertex forms: fields and texts', () => {
     expect(w.find('h4').text()).toBe('Project address (optional)')
     expect(w.text()).toContain('or leave both empty to use the express address')
     expect(w.findAll('input').map((i) => i.attributes('placeholder'))).toEqual([undefined, 'Leave empty for the express address', 'Leave empty for the express address'])
+    expect(w.findAll('input').map((i) => i.classes('font-mono'))).toEqual([false, true, true])
   })
 
   it('shows the server errors at their fields until the field changes', async () => {
