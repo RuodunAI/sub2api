@@ -8549,3 +8549,67 @@ ALTER TABLE usage_logs
 - `/v1/images/edits` 的 multipart 形式（118.1）。
 - Responses 里 `image_generation` 工具的生图部分按生图模型另计（`response.tool_usage.image_gen`，要扩展附加用量规则）。
 - 缓存的图片输入单独计价、价格同步源导入图片 token 价、结构化分档编辑器里的图片价、统计页汇总图片 token、插件自报用量里的图片字段。
+
+## 119. 上游插件 newapi、sub2api、typesafe（2026-11-18，所有者要求接入 New API、Sub2API 站点和 TypeSafe；无核心迁移；核心 0.1.304 批次；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.5、3.6 与 D6–D8、D11–D15、D20–D22；使用说明见 [PLUGIN-NEWAPI.md](PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](PLUGIN-TYPESAFE.md)）
+
+三个官方平台插件，都是 `0.1.0`、`hostCompat >=0.1.304 <0.2.0`、用 SDK 的 `standard` 库写成（newapi、sub2api 用 `standard.Merge` 把几份厂商预设合成一个账号类型，typesafe 用预设 `providers/typesafe`）。插件只构造请求，由核心发送（§112）。
+
+### 119.1 账号类型与字段
+
+| 插件 | 账号类型 | 字段 | 地址 |
+|---|---|---|---|
+| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，8–512 个不含空格的可见字符，不限前缀） | 运营方填站点根地址；粘贴的 `/v1`、`/v1beta` 去掉。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
+| `sub2api` | `apikey`（"Sub2API"） | 同上 | 同上 |
+| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`，粘贴的 `/v1` 去掉） | `guardedSettings` 只许官方地址、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
+
+- 默认模型：newapi、sub2api 不写（账号服务所有模型；"拉取模型"读站点 `GET /v1/models` 的 `data[].id`）；typesafe 是 `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`（"拉取模型"读 `GET /v1/models` 的 `models[].name`）。
+- 账号测试：核心按账号开放的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的：newapi、sub2api 依次是 OpenAI Chat（`gpt-4o-mini`）、Messages（`claude-haiku-4-5`）、Gemini `generateContent`（`gemini-2.5-flash-lite`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。
+
+### 119.2 服务的平台与协议
+
+| 账号类型 | 平台：端点 |
+|---|---|
+| newapi `apikey` | `openai`：全部（含 Responses WebSocket 与 §118 的生图两条）；`anthropic`：全部；`gemini`：`generate_content`、`stream_generate_content`（不含 `countTokens`，由核心本地估算，§88.2）；`typesafe`：全部（平台由 typesafe 插件声明，§119.3） |
+| sub2api `apikey` | `openai`、`anthropic`、`gemini`：全部 |
+| typesafe `apikey` | `typesafe`：`systemone` |
+
+- **同协议原样转发**，不做协议转换（跨平台转换按 §110 默认关闭）：请求体不改，OpenAI Chat 流式照 openai 预设补 `stream_options.include_usage`。每个协议用自己官方的鉴权头（路由级 `Auth`，§112.13）：OpenAI 系与 TypeSafe `Authorization: Bearer`，Anthropic `x-api-key`（没带 `anthropic-version` 时补默认值），Gemini 只用 `x-goog-api-key`。
+- 新建账号 `protocols` 为 `null`，上表的协议全部开放；上游 Key 只开通了部分协议时由运营方在协议绑定里收窄（§110.4）。上游不支持某协议时按该协议预设的失败分类（D20）：400 / 404 原样返回、5xx 换号并冷却、401 / 403 停用账号。
+- 能力：newapi、sub2api 是 `platform.adapter.v1`、`platform.websocket.v1`；typesafe 只有 `platform.adapter.v1`。
+
+### 119.3 typesafe 平台
+
+- 平台 `typesafe` 由 typesafe 插件声明，定义的唯一来源是 SDK 的 `providers/typesafe.Platform()`（清单与它逐字段相同，插件的清单测试钉住）：端点 `systemone` = `POST /v1/systemone`，协议 `typesafe.systemone`，只有非流式（`response.nonStream: json`），`errorFormat: openai`（网关自己的错误；上游错误原样透传），`billing: usage`，用量 `semantics: exclusive`、读 `usage.input_tokens`、`usage.output_tokens` 与上游模型 `model`。`passHeaders` 放行 `typesafe-danger-zone-images`、`typesafe-danger-zone-long-context`，值不改。钩子读 `state` 作提示词。
+- 平台 id `typesafe` 归 typesafe 插件所有（`reserved.go` 的 `reservedPlatforms`）。typesafe 插件没启用时这个平台和端点不存在：`/v1/systemone` 404，newapi 账号类型声明的 `typesafe` 平台每次注册表换代记一条警告。
+- 失败分类（`providers/typesafe.Policy`）：401、403 停用账号；429 按 `Retry-After` / `retry-after-ms` 冷却；529 与其它 5xx 短暂冷却并换号；400、413、415、422 原样返回、账号不动。
+- multipart 形式的请求在网关就以 400 拒绝（§25.9），只能用 JSON 里的 `assets[].data_base64`。
+- 价格不随插件带来：管理员按模型录 `per_token`（参考输入 $0.042 / 百万 token、输出 0）。经 newapi 账号转发 Jev 时按同一模型名计价。
+
+### 119.4 余额（§52）
+
+| 账号类型 | 请求（都在账号的 `base_url` 上，经账号代理，`updateInterval` 600 秒） | 结果 |
+|---|---|---|
+| newapi | `GET /api/usage/token/`（带 Bearer），只这一个请求 | 站点的额度点数 `data.total_available` 原样，**没有单位**；带 `user_quota.total_available` 时取两者较小；令牌不限额时取用户额度，没有用户额度时为不限。`code` 不为真为暂时失败 |
+| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`，`-1` 为不限；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
+| typesafe | 不声明 `balance` | TypeSafe 没有余额接口，控制台不查不显示 |
+
+- **余额显示上游返回的数字和单位本身，不做任何换算**（所有者 2026-11-18：“上游返回多少我们就是多少”）：不折算美元、不换汇率，数字或单位不对也照样显示。New API 显示的是站点的额度点数，没有单位。
+
+- 核心先对请求的目标过主机规则与插件联网（§113），被拒就不发，记暂时失败，插件出口日志记 `denied`；不跟随重定向。401 / 403 记认证被拒（`auth_rejected:`），不改账号状态，不影响调度。余额只显示，不停用、不告警（D1）。
+
+### 119.5 权限与沙箱
+
+- 宿主权限：三个插件都有 `platform.register`、`accounts.credentials {"types":"own"}`；typesafe 另有 `gateway.endpoint`（`/v1/systemone`）。**都不申请 `net`、`fs.data`、`db.schema`**：插件不联网（请求由核心发出），在默认开启的文件沙箱（Landlock，§43.8）、seccomp 下运行；资源 64 MB、0.1 CPU、32 线程、64 个文件。
+- 清单里不写价格（§17）。
+
+### 119.6 内置方式
+
+- 三个都在 `BUILTIN_PLUGINS_INSTALL_ONLY`（§26.8）：随镜像安装、批准、标为内置、不能卸载，**默认不启用**。现有部署升级后什么都不发生；管理员在插件页启用后才能建这些账号（typesafe 启用后各节点多一个端点）。key `newapi`、`sub2api`、`typesafe` 与平台 id `typesafe` 保留给官方插件（`server/internal/plugin/install/reserved.go`，`TestReservedCoverRepo` 对照 `next/plugins`），手动上传的包要官方签名。
+- 未发布：不在 `plugins/released.json`，发布后按 `TestReleasedPluginsBumped` 的说明写进去。
+
+### 119.7 已知限制
+
+- 都没有对真实站点或真实 TypeSafe 账号验证过；站点接口形状来自官方文档与源码行为。
+- newapi：余额是站点的额度点数，不是钱，不同站点的点数不可比；令牌不限额且站点没开"允许查询用户额度"时显示不限，看不到用户真实余额；Gemini `countTokens` 不转发；New API 对"分组里没有这个模型"回的状态码未核实，回 403 时会误停用账号（先用协议绑定或故障策略 §58 处理）。
+- sub2api：上游 Key 能用哪些协议取决于它在站点上的分组，插件看不出来，要运营方按分组收窄协议；旧版只配了速率限制、没配总额度的 Key 在 `/v1/usage` 里没有金额字段，余额显示为暂时失败；`rate_limits` 不读。
+- 生图只收 JSON 请求体（§118.1）。typesafe 的转发要本平台启用 typesafe 插件；经 newapi 转发还要上游站点装了 TypeSafe 扩展。
