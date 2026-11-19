@@ -2808,24 +2808,40 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 
 已部署的 `0046_proxy_real_ip.sql` 遗漏了 `ADD COLUMN IF NOT EXISTS`，不能通过修改历史文件或数据库校验和来修复，否则会破坏托管升级的 schema contract。核心 `CoreTracker` 仅在文件名和原始 SHA-256 `1b0719bb3a07caa74ca6ad5d92e8c605e9c4f0ebea3097b96a1226ef99c4897f` 同时匹配时，把执行语句中的两个 `ADD COLUMN` 转为 `ADD COLUMN IF NOT EXISTS`。校验、迁移记录和 schema contract 仍使用原文件字节；该兼容不作用于插件、其他文件或其他校验和。直接手工执行旧 SQL 不受此兼容保护；新迁移仍必须原生幂等。
 
-### 43.8 Landlock 文件系统限制（默认关闭）
+### 43.8 Landlock：插件的文件、unix socket、信号（2026-11-18 起 Linux 上默认开启）
 
-审计加的 Landlock（`sandbox/landlock_linux.go`）合并时**在 Linux 上编译不过**：它调用了 x/sys 并不存在的包装函数。因为本机是 Windows，CI 又先在 gofmt 一步失败，所以一直没被发现。2026-10-05 改为直接调用三个系统调用。
+插件进程与核心、网关外壳是同一个系统用户（容器里 uid 1000），文件权限和 socket 的属主分不开它们。Landlock 是这一层的隔离：`plugin-exec` 在 `execve` 插件之前给自己建一个 Landlock 规则集，插件继承它（`sandbox/landlock_linux.go`）。设计与取舍见 `docs/DESIGN-2026-11-18-PLUGIN-SANDBOX-FS.md`。
 
-- 开关：`SUB2API_PLUGIN_LANDLOCK`，**默认 false**。打开后 plugin-exec 带 `--landlock`，只在 Linux 5.13+ 生效；内核不支持时什么也不做。
-- 受限的权限：读文件、读目录、执行、写文件、建文件、建目录、删文件、删目录。socket、fifo、符号链接、设备不受限。
-- 放行的路径：
+- **开关**：`SUB2API_PLUGIN_LANDLOCK`，Linux 上**默认 true**（0.1.304 起；此前默认 false，只有网关托管的核心由网关打开）。`false` 回到不限制（只剩 seccomp、rlimit），开发模式（`SUB2API_PLUGIN_DEV_MODE=true`）不经过 `plugin-exec`，同样不限制。网关仍给它托管的核心写 `SUB2API_PLUGIN_LANDLOCK=true`（为了它可能启动的旧核心），`plugin_landlock_disabled: true` 写 `false`；`core_env` 或网关自身环境里的显式值优先。
+- **尽力而为**：规则集处理内核 Landlock 版本支持的**全部**权限（`landlockHandled`），比内核新的位自动去掉，只对下面的白名单放行需要的几项。各层与内核：
 
-  | 路径 | 权限 |
-  |---|---|
-  | 插件二进制 | 读、执行 |
-  | 插件工作目录与数据目录 | 读写 |
-  | 临时目录（go-plugin 在这里建 unix socket） | 读写 |
-  | `/dev/null` | 读写 |
-  | CA 证书、`/usr/share/zoneinfo`、`/etc/localtime`、`/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`、`/etc/services`、`/dev/urandom` | 只读，存在时才放行 |
+  | 层（节点页与日志里的名字） | Landlock ABI | 内核 | 限住什么 |
+  |---|---|---|---|
+  | 文件 `fs` | 1 | 5.13 | 读写执行文件、列目录、建删文件与目录、建 socket/fifo/符号链接/设备节点；第 2 版（5.19）起跨目录移动（refer），第 5 版（6.10）起设备 ioctl |
+  | 截断 `fs_truncate` | 3 | 6.2 | `truncate(2)`、`O_TRUNC`（第 3 版之前，插件能按路径截断同用户可写的任何文件） |
+  | TCP `tcp` | 4 | 6.7 | 只在严格网络下处理：不放行任何端口（seccomp 之下的第二道） |
+  | 作用域 `scope` | 6 | 6.12 | 连到沙箱外创建的抽象 unix socket（EPERM）、给沙箱外的进程发信号（EPERM） |
+  | 路径型 socket `unix` | 9 | 7.1 | `connect` / 带地址的 `sendmsg` 到沙箱外创建的路径型 unix socket（EACCES），只放行插件自己的 socket 目录 |
+  | UDP `udp` | 10 | 7.2 | 只在严格网络下处理：不放行任何端口 |
 
-- **默认关闭的原因**：还没有在真实插件上跑过。原稿只放行二进制和工作目录，打开后每个插件都会启动失败（go-plugin 要在 `/tmp` 建文件），也读不到证书和时区。要打开，先在 Linux 上让全部内置插件（含出网和时区相关功能）在开启状态下跑通。
-- **2026-10-29 线上两节点已打开**（同时打开插件签名校验，见 `deploy/gateway/ovh/README.md`）。6 个线上插件在 `plugin-exec --landlock --seccomp --strict-network` 下启动、握手正常；账号请求经两个节点都返回 200。代码默认值仍为 false。
+  第 7、8、11 版（日志、多线程同步、`no_new_privs` 标志）不涉及限制范围；第 12 版的命名空间与 capability 权限不处理（seccomp 已拒绝 `unshare`、`setns`，插件没有 capability）。抽象 socket 和信号作用域没有放行项：go-plugin、Go 运行时、SDK 都不给别的进程发信号（运行时只给自己的线程发），也不用抽象 socket。
+- **白名单**（`landlockRules`，路径不存在时跳过）：
+
+  | 路径 | 权限 | 谁有 | 为什么 |
+  |---|---|---|---|
+  | 插件二进制 | 读、执行 | 全部 | `plugin-exec` 在限制自己之后 `execve` 它。插件必须静态链接（`sub2api-plugin build` 用 `CGO_ENABLED=0`），没有放行动态链接器和库 |
+  | go-plugin 的 socket 目录（`PLUGIN_UNIX_SOCKET_DIR`，私有运行目录下的 `plugin-dir*`） | 读写文件、建文件、删文件、建 socket、连路径型 socket | 全部 | 插件在这里用 `os.CreateTemp` 占一个名字（建一个普通文件再删掉）、监听自己的 socket，并连核心在同一目录建的 broker socket（HostService、出口隧道） |
+  | `/dev/null` | 读写 | 全部 | 标准描述符被关掉时 Go 运行时打开它 |
+  | `/usr/share/zoneinfo`、`/etc/localtime` | 只读 | 全部 | `time.Local` 读 `/etc/localtime`；`time.LoadLocation` 读时区库（growth 不内嵌 `time/tzdata`） |
+  | 本插件的数据目录 `<SUB2API_PLUGIN_DIR>/<key>/work` | 读写文件与目录、截断、目录内移动；不能建 socket、fifo、链接、设备 | 获授 `fs.data` | 见下面的宿主权限 |
+  | CA 证书：`/etc/ssl/certs`、`/etc/ssl/cert.pem`、`/etc/ssl/ca-bundle.pem`、`/etc/pki/tls`、`/etc/pki/ca-trust/extracted`、`/usr/share/ca-certificates`、`/usr/local/share/ca-certificates`，以及 `SSL_CERT_FILE` 和 `SSL_CERT_DIR` 的每一项 | 只读 | 获授 `net` | 插件经出口隧道自己做 TLS，`crypto/x509` 读系统根证书（列表照它在 Linux 上的 `certFiles`、`certDirectories`，加上发行版链接到的信任库） |
+
+  不放行：私有运行目录本身和其中的 `tmp/`（插件的 `TMPDIR`：没有插件写临时文件；`os.CreateTemp("")` 得到 EACCES）、共享临时目录、其他插件的任何目录、`/proc`（包括其他进程）、`/etc` 的其余文件、`/dev/urandom`（Go 用 `getrandom(2)`）。比原来的白名单去掉了 `/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`、`/etc/services`（严格网络下 SDK 把 `net.DefaultResolver` 换成经隧道的解析，读不到这些文件时 Go 用默认值，拨号的主机名由核心解析；端口名 Go 有内置表）和 `/etc/ca-certificates`（配置目录，不是证书）。
+- **宿主权限 `fs.data`**（风险中，`sdk/manifest.HostPermissionRisk`；需要管理员在安装审查时同意，中风险不会自动授予）：读写核心分给本插件的数据目录（只在本节点，不跨节点同步）。只有获授它的插件，核心才创建这个目录、以 `SUB2API_PLUGIN_DATA_DIR` 交给插件、让插件在里面运行（工作目录），Landlock 才放行它；没有它的插件不再收到 `SUB2API_PLUGIN_DATA_DIR`，工作目录是私有运行目录，读写一律被拒。授予或撤销 `fs.data`、`net` 会重启插件进程（它们和资源上限一样在启动时固定，`LimitsStale`）。现有插件都不读写文件，没有一个申请它；以前留在磁盘上的 `work` 目录不动也不再交给插件。审查页文案：“读写本插件的数据目录” / “读写核心分给本插件的数据目录里的文件（只在本节点）。不授予时插件不能读写任何文件。”
+- **内核不支持时**：照常启动插件，不拒绝。核心在启动时（每个节点每次启动一次，`sandbox.ProbeStatus` + `LogStatus`，与 `plugin-exec` 同一内核、同一规则集）记日志：全部生效记一条 INFO `plugin sandbox: every Landlock layer in force`；否则记一条 INFO 列出生效的层，再给每个缺的层记一条 WARN `plugin sandbox: Landlock layer not in force`，带 `layer`、`consequence`（缺了会怎样）、`needs`（需要的内核与 ABI），关掉 Landlock 或开发模式时带 `reason`。没有 Landlock（内核太老、LSM 列表里没有 `landlock`、或容器的 seccomp 配置拦了这三个系统调用）时 `plugin-exec` 不限制。节点心跳带 `plugin_sandbox`（`core.PluginSandboxStatus`：`wrapped`、`landlock`、`landlock_abi`、`active`、`missing`），`GET /nodes` 原样返回，控制台节点页“插件沙箱”一列显示全部生效、缺几层（悬停列出各层和所需内核）或未开启；旧核心不报这个字段（显示“—”）。
+- **Docker**：Landlock 的三个系统调用在 Docker 20.10 以后的默认 seccomp 配置里是放行的（本仓库测试用的 Docker 29 实测可用）；自定义 seccomp 配置要放行 `landlock_create_ruleset`、`landlock_add_rule`、`landlock_restrict_self`。`no-new-privileges`、`cap_drop: [ALL]` 不影响它。
+- **测试**：`sandbox` 包的测试起受限子进程逐项尝试（`landlock_linux_test.go`、`goplugin_linux_test.go`：文件、socket、信号、TCP/UDP、真实的 go-plugin 握手与 broker 回调）；内核低于某层的 ABI 时，该项断言“仍放行”并记日志说明，不当作已限制。`next/deploy/ci/sandbox-kernel.sh` 在 QEMU 里用发行版内核包跑同一套测试，用来验证本机内核没有的层。
+- **历史**：审计加的 Landlock 合并时在 Linux 上编译不过（调了 x/sys 没有的包装函数），2026-10-05 改为直接调用系统调用、默认关闭；2026-10-29 线上两节点打开（网关注入）；2026-11-18 起默认开启并扩展为上面的规则集。
 
 ## 44. 订阅账号套餐额度：被动采样、主动查询与重置状态（2026-10-05，用户要求）
 

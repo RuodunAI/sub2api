@@ -352,6 +352,14 @@ if !sticky.Enabled { ... }
 - 所以不写 schema 前缀的表名都落在自己的 schema 里，但 `search_path` 不是边界：句柄能访问核心的用户能访问的所有表。只访问自己 schema 里的表是插件的义务；访问别处的数据走 Host API。
 - 迁移由核心执行（以核心的用户、`search_path` 为自己的 schema），脚本必须幂等（CONTRACTS §36）；表的属主是核心的用户。
 
+## 6.2 文件：默认没有，要用就申请 `fs.data`
+
+- Linux 上插件跑在 Landlock 沙箱里（CONTRACTS §43.8，默认开启）：除了自己的二进制、go-plugin 的 socket 目录、`/dev/null` 和时区文件，插件**读写不了任何文件**，包括 `TMPDIR`（`os.CreateTemp("", …)`、`os.MkdirTemp("", …)` 得到 EACCES）、`/etc` 下的配置、其他插件的目录和 `/proc`。获授 `net` 的插件另外能读 CA 证书（经出口隧道做 TLS 用）。
+- 要读写文件，在 manifest 申请宿主权限 `fs.data`（风险中，管理员在安装审查时同意）：`{"id": "fs.data", "reason": {"zh": "缓存下载的模型列表", "en": "Caches downloaded model lists"}}`。获授后插件从环境变量 `SUB2API_PLUGIN_DATA_DIR` 拿到数据目录（也是进程的工作目录），在里面读写文件和子目录、改名、截断；不能建 socket、fifo、符号链接。临时文件也放这里：`os.CreateTemp(os.Getenv("SUB2API_PLUGIN_DATA_DIR"), "…")`。没获授时这个变量不存在，代码要能在没有它时工作（或把它当成配置错误报告）。
+- 数据目录只在本节点，不跨节点同步、不备份；要在节点之间共享或长期保存的数据放进自己的 schema（6.1 节）或 `Host.KV`。
+- 插件必须静态链接（`sub2api-plugin build` 用 `CGO_ENABLED=0`）：沙箱不放行动态链接器和系统库。`time.LoadLocation` 能用（时区库放行），也可以内嵌 `time/tzdata`。
+- 只在开发模式（`SUB2API_PLUGIN_DEV_MODE=true`，`sub2api dev`）或 `SUB2API_PLUGIN_LANDLOCK=false` 时没有这些限制；在本机测通的读写文件，打包前确认清单申请了 `fs.data`。
+
 ## 7. 现有平台插件
 
 全部是 gRPC 代码插件，清单 `hostCompat` 下限 `>=0.1.304`。
@@ -374,6 +382,7 @@ if !sticky.Enabled { ... }
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine）。
 - 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写）；不设 `Host` 头。
 - 测试里调一致性套件；用 `standard` 写的插件另跑黄金样例。
+- 不读写文件；确实需要时申请 `fs.data`，只用 `SUB2API_PLUGIN_DATA_DIR` 下的路径（6.2 节）。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
 - 改了第 5 节表涉及的行为，同步本文和 CONTRACTS 对应章节，并在 HTTP 与 WebSocket 上补测试（参考 `gateway/disconnect_test.go`、`execute_test.go`）。
 

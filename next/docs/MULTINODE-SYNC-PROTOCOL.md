@@ -291,7 +291,7 @@ flowchart TD
 
 - Redis 登记只保存密钥的 SHA-256（`auth_key_sha256`），peer 协议号 1 → 2；旧登记和旧网关一律被拒，升级时所有网关一起更换，期间不创建核心升级计划。
 - 无密码的 TCP Redis 拒绝启动；`allow_unauthenticated_redis` 只用于隔离测试。
-- 网关默认把 `SUB2API_PLUGIN_LANDLOCK=true` 加入核心环境（Linux），`core_env` 的显式值优先，`plugin_landlock_disabled` 关闭。
+- 网关默认把 `SUB2API_PLUGIN_LANDLOCK=true` 加入核心环境（Linux），`core_env` 的显式值优先，`plugin_landlock_disabled` 写 `false` 关闭（核心 0.1.304 起自己也默认开启，CONTRACTS §43.8）。
 - 私有转发入口收窄转发头（单 IP、单协议，删除旁路头）。
 - 主节点插件包上传：必须声明 `Content-Length` 且不超过单包上限；每个来源节点最多 2 个并发上传（超出 429）；整个包目录有总量上限 `plugin_store_max_bytes`（默认 16 GiB，超出 507），已存在的摘要不再占用空间。（2026-11-18 起节点之间不再上传插件包，前两项随推送一起删除，总量上限保留，见 6.2。）
 - 插件包读取允许从任意启用节点读取被引用的包，主节点更换后的回退路径真正可用。

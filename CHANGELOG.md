@@ -156,6 +156,23 @@
 - **性能**：判断只是调度时的内存比较，不增加数据库和 Redis 访问；没有配置的账号只多一次空指针判断。没开转换的账号在转换请求体、下载媒体之前就被过滤，跨平台请求比以前便宜。
 - **已知限制**：`/v1/models` 不按协议过滤，客户端可能看到当前协议下调不通的模型；账号列表没有“开放协议”筛选。验收用例 `e2e/ac19_builtin_platforms_test.go` 改成先断言默认 404、在账号上为模型开启转换后断言 200，运行情况见“验证状态”。
 
+### 插件沙箱默认开启 Landlock：插件默认读写不了文件，也连不到不属于它的 unix socket（核心、SDK 清单、网关、控制台；无迁移）
+
+分支 `feat/plugin-sandbox-fs`。契约见 CONTRACTS §43.8，设计见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-SANDBOX-FS.md)。
+
+- **`SUB2API_PLUGIN_LANDLOCK` 在 Linux 上默认开启**（此前默认关闭，只有网关托管的核心由网关打开）。规则集按内核的 Landlock 版本处理它支持的全部限制：文件（含建 socket、fifo、链接、设备节点、跨目录移动、截断、设备 ioctl），内核 6.12 起抽象 unix socket 与给沙箱外进程发信号，7.1 起路径型 unix socket（只放行插件自己的 socket 目录），严格网络下 6.7 起 TCP、7.2 起 UDP（seccomp 之下的第二道）。
+- **插件默认没有文件访问**：只放行自己的二进制、go-plugin 的 socket 目录、`/dev/null`、时区文件，获授 `net` 的插件另外能读 CA 证书。去掉了 `/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`、`/etc/services`、`/etc/ca-certificates`、`/dev/urandom`，以及以前放行的工作目录和整个私有运行目录（插件的 `TMPDIR` 不再可写）。同用户的网关管理令牌、其他插件的目录、`/proc` 都读不到（e2e 栈里用探针核对过）。
+- **新宿主权限 `fs.data`**（风险中，审查页“读写本插件的数据目录”）：只有获授它的插件才有数据目录（`<SUB2API_PLUGIN_DIR>/<key>/work`，环境变量 `SUB2API_PLUGIN_DATA_DIR`，也是进程的工作目录）；授予或撤销它会重启插件进程。现有插件都不读写文件，没有插件申请它，插件版本都不变。
+- **内核不支持某一层时照常启动插件**：核心启动时每层记一条 WARN（缺什么、后果、需要的内核），全部生效时记 INFO；控制台节点页新增“插件沙箱”一列（全部生效 / 缺几层 / 未开启），`GET /nodes` 带 `plugin_sandbox`。
+- 网关的 `plugin_landlock_disabled: true` 现在写 `SUB2API_PLUGIN_LANDLOCK=false`（以前只是不写，核心默认开启以后就关不掉了）。
+- `next/deploy/ci/sandbox-kernel.sh`：在 QEMU 里用发行版内核包跑沙箱测试，验证本机内核没有的层。
+
+#### 升级须知
+
+- 升级后 Landlock 默认开启。各层需要的内核：文件 5.13，截断 6.2，TCP 6.7，抽象 socket 与信号 6.12，路径型 unix socket 7.1，UDP 7.2；内核还要在 LSM 列表里启用 landlock（`cat /sys/kernel/security/lsm`），容器的 seccomp 配置要放行 `landlock_*` 系统调用（Docker 默认配置放行）。看核心启动日志里的 `plugin sandbox:` 几行或节点页确认实际生效到哪一层。
+- 网关托管的节点（线上两节点）2026-10-29 起已经开着 Landlock；这次规则收得更紧（去掉工作目录、`TMPDIR`、DNS 配置文件），插件启动失败或行为异常时，先用 `SUB2API_PLUGIN_LANDLOCK=false`（网关：`plugin_landlock_disabled: true` 或 `core_env`）回到原来的不限制，再报告日志。
+- 第三方插件如果读写工作目录、`TMPDIR` 或 `/etc` 下的文件：在清单的 `hostPermissions` 加 `fs.data`、只用 `SUB2API_PLUGIN_DATA_DIR` 下的路径，升版本后重新上传，由管理员同意（中风险，不会自动授予）。插件必须静态链接（`CGO_ENABLED=0`，`sub2api-plugin build` 默认如此）。
+
 ### 插件联网：管理员可以指定插件能访问、不能访问的域名（无迁移；默认行为不变）
 
 分支 `feat/fv2-egress`。契约见 CONTRACTS §113，设计见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-NETWORK-ACCESS.md)。
