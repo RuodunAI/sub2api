@@ -8,7 +8,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
 // Every endpoint the asset library resolves is one the core sends
@@ -32,7 +31,7 @@ func TestAssetEndpointSelection(t *testing.T) {
 		{"official cannot bypass guard with relay field", AccountTypeAPIKey, `{"asset_endpoint":"https://untrusted.example"}`, DefaultAssetBaseURL},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg, err := AssetConfigOf(&pluginsdk.AccountCredentials{AccountSummary: pluginsdk.AccountSummary{ID: 1, Type: tc.kind, SettingsJSON: tc.settings}, CredentialsJSON: credentials})
+			cfg, err := AssetConfigOf(&pluginv1.Account{Id: 1, Type: tc.kind, SettingsJson: tc.settings, CredentialsJson: credentials})
 			if err != nil {
 				t.Fatal(err)
 			}

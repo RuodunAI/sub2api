@@ -84,9 +84,7 @@
     { "id": "platform.register",
       "reason": { "en": "Register the typesafe platform and its TypeSafe API key account type", "zh": "注册 typesafe 平台及其 TypeSafe API Key 账号类型" } },
     { "id": "gateway.endpoint",
-      "reason": { "en": "Serve the TypeSafe Jev API at POST /v1/systemone, the path of the official TypeSafe API", "zh": "在 POST /v1/systemone 上提供 TypeSafe 的 Jev 接口，与 TypeSafe 官方路径一致" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the API key and Base URL of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key 和 Base URL，用于构造上游请求（由核心发送）" } }
+      "reason": { "en": "Serve the TypeSafe Jev API at POST /v1/systemone, the path of the official TypeSafe API", "zh": "在 POST /v1/systemone 上提供 TypeSafe 的 Jev 接口，与 TypeSafe 官方路径一致" } }
   ],
 
   "externalServices": ["api.typesafe.ai"]

@@ -83,9 +83,7 @@
 
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the Gemini API key account type for the built-in gemini platform", "zh": "为内置 gemini 平台注册 Gemini API Key 账号类型" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the API key of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key，用于构造上游请求（由核心发送）" } }
+      "reason": { "en": "Register the Gemini API key account type for the built-in gemini platform", "zh": "为内置 gemini 平台注册 Gemini API Key 账号类型" } }
   ],
 
   "externalServices": ["generativelanguage.googleapis.com"]

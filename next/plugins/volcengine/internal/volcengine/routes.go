@@ -4,9 +4,9 @@ package volcengine
 // (manifest routes, scope admin). These routes are NOT gateway traffic: the
 // core only tells the plugin who the caller is, so the plugin reads the
 // accounts of its own account type through HostService.ListAccounts and
-// their credentials through GetAccountCredentials (CONTRACTS §26.6).
+// each account through GetAccount (CONTRACTS §124).
 //
-// CREDENTIAL READS ARE AUDITED. Every GetAccountCredentials call writes an
+// ACCOUNT READS ARE AUDITED. Every GetAccount call writes an
 // audit row in the core, on purpose: reading a secret without upstream
 // traffic to justify it is exactly what an administrator must be able to
 // review afterwards. Consequence for this file: credentials are fetched at
@@ -150,7 +150,7 @@ func (c *creds) config(ctx context.Context, accountID int64) (*AssetConfig, *plu
 		}
 		return cfg, nil
 	}
-	acc, err := c.p.host.AccountCredentials(ctx, accountID)
+	acc, err := c.p.host.Account(ctx, accountID)
 	if err != nil {
 		// The host answers NOT_FOUND both for "no such account" and for "an
 		// account of another plugin's account type", deliberately, so this

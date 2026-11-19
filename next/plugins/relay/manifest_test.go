@@ -50,7 +50,7 @@ func TestManifest(t *testing.T) {
 	for _, perm := range m.HostPermissions {
 		perms[perm.ID] = perm
 	}
-	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
+	if len(perms) != 1 || perms["platform.register"].ID == "" {
 		t.Fatalf("host permissions = %v", perms)
 	}
 }

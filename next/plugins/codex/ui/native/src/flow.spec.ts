@@ -38,9 +38,9 @@ describe('agentOf', () => {
 
 describe('mergeCredentials', () => {
   it('replaces every flow field and keeps the others', () => {
-    const current = { access_token: '******', refresh_token: '******', id_token: '******', plan_type: 'plus', chatgpt_account_id: 'acc', proxy_id: 3 }
+    const current = { access_token: '******', refresh_token: '******', id_token: '******', plan_type: 'plus', chatgpt_account_id: 'acc', note: 'kept' }
     const out = mergeCredentials(current, { access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', chatgpt_account_id: 'acc-2' })
-    expect(out).toEqual({ proxy_id: 3, access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', chatgpt_account_id: 'acc-2' })
+    expect(out).toEqual({ note: 'kept', access_token: 'at', refresh_token: 'rt', expires_at: 100, email: 'a@b.c', chatgpt_account_id: 'acc-2' })
     // A masked id_token must not survive a login that did not return one.
     expect(out).not.toHaveProperty('id_token')
     expect(current.access_token).toBe('******')
