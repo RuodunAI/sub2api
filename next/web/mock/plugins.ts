@@ -1178,6 +1178,14 @@ on('GET', '/plugins/:key/egress', (req) => {
       closed_at: open ? null : now(-i * 600)
     })
   }
+  if (p.key !== 'guard') {
+    // A request the core was to send for the plugin, refused by plugin network access (CONTRACTS §113).
+    items.push({
+      id: 8999, node_id: NODES[0], network: 'https', host: 'relay.example.org', port: 443, started_at: now(-905),
+      duration_ms: 0, bytes_in: 0, bytes_out: 0, result: 'denied', closed_at: null,
+      error: 'relay.example.org is not on the allowed list of plugin network access'
+    })
+  }
   const from = req.query.from ? new Date(req.query.from).getTime() : 0
   const inRange = items.filter((x) => new Date(x.started_at).getTime() >= from)
   const summary = new Map<string, Any>()

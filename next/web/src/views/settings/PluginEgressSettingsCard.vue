@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
-import { SAlert, SButton, SCard, SRowAction, SSelect, SSettingRow, SSettingsGroup, SSpinner, STable, toast, type TableColumn } from '@sub2api/ui'
+import { SAlert, SButton, SCard, SRowAction, SSelect, SSettingRow, SSettingsGroup, SSpinner, STable, confirm, toast, type TableColumn } from '@sub2api/ui'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
 import PluginEgressAddDialog from './PluginEgressAddDialog.vue'
@@ -12,7 +12,10 @@ import { listField, PLUGIN_EGRESS_PATH, type PluginEgressMode, type PluginEgress
 // a default for all domains and one list whose meaning follows it - the
 // blocked domains while everything else is allowed, the allowed domains
 // while everything else is blocked. Both lists are kept; every change is
-// saved at once, as the browser's site settings this page follows do.
+// saved at once, as the browser's site settings this page follows do. The
+// setting rules every request a plugin makes, the platform plugins' upstream
+// requests included, so blocking all domains is confirmed first and warned
+// about while it lasts.
 const { t } = useI18n()
 const auth = useAuthStore()
 const canManage = computed(() => auth.has('settings:manage'))
@@ -60,8 +63,18 @@ async function save(patch: Partial<PluginEgressPolicy>): Promise<boolean> {
   }
 }
 
-function setMode(v: unknown) {
-  if (v !== mode.value && (v === 'allow_all' || v === 'block_all')) void save({ mode: v })
+async function setMode(v: unknown) {
+  if (v === mode.value || (v !== 'allow_all' && v !== 'block_all')) return
+  if (v === 'block_all') {
+    const ok = await confirm({
+      title: t('pluginEgress.blockAllConfirm.title'),
+      message: t('pluginEgress.blockAllConfirm.message'),
+      confirmText: t('pluginEgress.modes.block_all'),
+      danger: true
+    })
+    if (!ok) return
+  }
+  void save({ mode: v })
 }
 
 async function add(list: string[]) {
@@ -96,6 +109,9 @@ onMounted(load)
           />
         </SSettingRow>
         <SAlert tone="info" dense class="mb-4" data-testid="plugin-egress-info">{{ t(`pluginEgress.info.${mode}`) }}</SAlert>
+        <SAlert v-if="mode === 'block_all'" tone="warning" :title="t('pluginEgress.blockAllWarning.title')" class="mb-4" data-testid="plugin-egress-block-all-warning">
+          {{ t('pluginEgress.blockAllWarning.message') }}
+        </SAlert>
       </template>
     </SSettingsGroup>
 
