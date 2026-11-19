@@ -19,7 +19,7 @@ export const moderationUIPlugin = {
   slots: [],
   native_entry: 'ui/native/entry.js',
   trust: 'official',
-  host_ui_compat: '^3.0'
+  host_ui_compat: '^4.0'
 }
 
 export function moderationAsset(path: string): { type: string; body: Buffer } | null {

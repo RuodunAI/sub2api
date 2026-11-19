@@ -33,7 +33,7 @@ func controlFiles(t *testing.T, m *manifest.Manifest, edit func(root map[string]
 	if b, err = json.Marshal(root); err != nil {
 		t.Fatal(err)
 	}
-	return map[string][]byte{"forms/k.json": []byte(`{}`), "manifest.json": b}
+	return map[string][]byte{"manifest.json": b}
 }
 
 // at returns the i-th object of the array root[key].
@@ -74,11 +74,11 @@ func TestOutdatedContract(t *testing.T) {
 			raw: func(root map[string]any) {
 				at(at(root, "accountTypes", 0), "platforms", 0)["requestFields"] = []string{"model"}
 			}},
-		{name: "accounts.credentials", field: "hostPermissions[2].id",
+		{name: "accounts.credentials", field: "hostPermissions[3].id",
 			typed: func(m *manifest.Manifest) {
 				m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
 			}},
-		{name: "accounts.read", field: "hostPermissions[2].id",
+		{name: "accounts.read", field: "hostPermissions[3].id",
 			typed: func(m *manifest.Manifest) {
 				m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.read"})
 			}},
@@ -157,7 +157,7 @@ func TestForeignFacts(t *testing.T) {
 	} {
 		m := controlsManifest(nil)
 		m.AccountTypes[0].Platforms = []manifest.AccountPlatform{{Platform: "foreign", Endpoints: tc.endpoints}}
-		err := Validate(m, map[string][]byte{"forms/k.json": []byte(`{}`)}, ValidateOptions{Tooling: true, OtherPlatforms: other})
+		err := Validate(m, map[string][]byte{}, ValidateOptions{Tooling: true, OtherPlatforms: other})
 		if got := hasCode(err, "accountTypes[0].platforms[0].platform", "foreign_facts"); got != tc.rejected {
 			t.Errorf("%s: rejected = %v, errors = %v", tc.name, got, err)
 		}

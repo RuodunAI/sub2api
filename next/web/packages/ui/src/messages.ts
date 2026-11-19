@@ -135,7 +135,7 @@ export default {
     goToPage: 'Go to page',
     go: 'Go',
     refreshNow: 'Refresh now',
-    // SchemaForm / SchemaField
+    // Forms (useForm, SForm and the form building blocks)
     form: {
       secretKeep: 'A value is stored. Leave empty to keep it.',
       secretClear: 'Clear the saved value',
@@ -176,27 +176,6 @@ export default {
         maxItems: 'At most {n} items',
         pattern: 'Invalid format',
         enum: 'Not one of the allowed values'
-      }
-    },
-    schema: {
-      secretKeep: 'A value is stored. Leave empty to keep it.',
-      presets: 'Presets',
-      setByAdmin: 'Set by an administrator',
-      mappingFrom: 'Requested model',
-      mappingTo: 'Upstream model',
-      invalidJSON: 'Invalid JSON',
-      v: {
-        required: 'This field is required',
-        minLength: 'At least {n} characters',
-        maxLength: 'At most {n} characters',
-        pattern: 'Invalid format',
-        minimum: 'Must be ≥ {n}',
-        maximum: 'Must be ≤ {n}',
-        integer: 'Must be an integer',
-        url: 'Must be an http(s) URL',
-        email: 'Must be an email address',
-        minItems: 'At least {n} items',
-        maxItems: 'At most {n} items'
       }
     }
   },
@@ -336,7 +315,7 @@ export default {
     goToPage: '跳转到页',
     go: '跳转',
     refreshNow: '立即刷新',
-    // SchemaForm / SchemaField
+    // Forms (useForm, SForm and the form building blocks)
     form: {
       secretKeep: '已保存值，留空表示不修改。',
       secretClear: '清除已保存的值',
@@ -377,27 +356,6 @@ export default {
         maxItems: '最多 {n} 项',
         pattern: '格式不正确',
         enum: '不是允许的值'
-      }
-    },
-    schema: {
-      secretKeep: '已保存值，留空表示不修改。',
-      presets: '预设',
-      setByAdmin: '由管理员设置',
-      mappingFrom: '请求模型',
-      mappingTo: '上游模型',
-      invalidJSON: 'JSON 格式错误',
-      v: {
-        required: '此项必填',
-        minLength: '至少 {n} 个字符',
-        maxLength: '最多 {n} 个字符',
-        pattern: '格式不正确',
-        minimum: '不能小于 {n}',
-        maximum: '不能大于 {n}',
-        integer: '必须是整数',
-        url: '必须是 http(s) 地址',
-        email: '必须是邮箱地址',
-        minItems: '至少 {n} 项',
-        maxItems: '最多 {n} 项'
       }
     }
   }

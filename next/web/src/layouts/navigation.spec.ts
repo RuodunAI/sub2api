@@ -8,10 +8,9 @@ import { useAppStore } from '@/stores/app'
 import AppSidebar from './AppSidebar.vue'
 import AppTopbar from './AppTopbar.vue'
 import { SIDEBAR_VIEWS, type ViewGroup } from './sidebarViews'
-import DeclarativeTable from '@/components/plugin/DeclarativeTable.vue'
 import { mountPinned } from '@sub2api/ui/testing'
 
-const api = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn() }))
+const api = vi.hoisted(() => ({ get: vi.fn() }))
 vi.mock('@sub2api/host', async original => ({ ...(await original<object>()), api }))
 vi.mock('@/stores/plugins', () => ({ usePluginStore: () => ({ refresh: () => Promise.resolve(), page: () => null }) }))
 const denied = vi.hoisted(() => new Set<string>())
@@ -354,39 +353,5 @@ describe('top bar', () => {
       if (!r.meta.parent) continue
       expect(router.resolve(r.meta.parent).meta.title, `${r.path} → ${r.meta.parent}`).toBeTruthy()
     }
-  })
-})
-
-describe('declarative table', () => {
-  const plugin = (create?: { page: string }) => ({
-    key: 'volcengine',
-    pages: {
-      assets: { type: 'table', source: 'GET /assets', columns: [], create },
-      new_asset: { type: 'form', title: { zh: '新建素材' } }
-    }
-  })
-
-  it('opens the create form from a "New" button when the core sends the link', async () => {
-    api.list.mockResolvedValue({ items: [], page: { total: 0 }, paged: false })
-    const p = plugin({ page: 'new_asset' })
-    const wrapper = mount(DeclarativeTable, {
-      props: { plugin: p as never, page: p.pages.assets as never },
-      global: { plugins: [i18n, makeRouter()] }
-    })
-    await flushPromises()
-    const btn = wrapper.get('[data-testid="table-create"]')
-    expect(btn.text()).toBe('新建素材')
-    expect(btn.attributes('href')).toBe('/p/volcengine/new_asset')
-  })
-
-  it('has no button without the link', async () => {
-    api.list.mockResolvedValue({ items: [], page: { total: 0 }, paged: false })
-    const p = plugin()
-    const wrapper = mount(DeclarativeTable, {
-      props: { plugin: p as never, page: p.pages.assets as never },
-      global: { plugins: [i18n, makeRouter()] }
-    })
-    await flushPromises()
-    expect(wrapper.find('[data-testid="table-create"]').exists()).toBe(false)
   })
 })

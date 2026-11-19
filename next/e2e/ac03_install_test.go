@@ -55,7 +55,7 @@ func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 	if !ok {
 		t.Fatalf("review lacks account type apikey: %s", rev.Get("account_types").Raw)
 	}
-	if ids := PlatformIDs(rat.Get("platforms")); len(ids) != 1 || ids[0] != "anthropic" || rat.Get("form_mode").String() != "schema" {
+	if ids := PlatformIDs(rat.Get("platforms")); len(ids) != 1 || ids[0] != "anthropic" || rat.Get("form_mode").String() != "native" {
 		t.Fatalf("review account type apikey: %s", rat.Raw)
 	}
 	if rat.Get("protocols").Exists() {

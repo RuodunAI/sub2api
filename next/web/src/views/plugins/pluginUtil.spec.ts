@@ -59,21 +59,18 @@ describe('HOST_PERMISSION_RISK', () => {
 })
 
 describe('settings modes (§75.5)', () => {
-  const schema = { type: 'object' }
-  it('shows schema settings and native settings without a page on the settings tab', () => {
-    expect(consoleSettings({ schema, values: {} })).not.toBeNull()
-    expect(consoleSettings({ mode: 'schema', schema, values: {} })).not.toBeNull()
-    expect(consoleSettings({ mode: 'native', component: 'MailerSettings', schema: null, values: {} })).not.toBeNull()
-    expect(consoleSettings({ mode: 'native', page: 'dashboard', schema, values: {} })).toBeNull()
-    expect(consoleSettings({ mode: 'native', page: 'dashboard', component: 'X', schema: null, values: {} })).toBeNull()
-    expect(consoleSettings({ mode: 'native', schema: null, values: {} })).toBeNull()
-    expect(consoleSettings({ mode: 'schema', schema: null, values: {} })).toBeNull()
-    expect(consoleSettings({ mode: 'none', schema: null, values: {} })).toBeNull()
+  it('shows native settings without a page on the settings tab', () => {
+    expect(consoleSettings({ mode: 'native', component: 'MailerSettings', values: {} })).not.toBeNull()
+    expect(consoleSettings({ mode: 'native', page: 'dashboard', values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'native', page: 'dashboard', component: 'X', values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'native', values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'iframe', component: 'X', values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'none', values: {} })).toBeNull()
   })
   it('points native settings to the plugin page', () => {
-    expect(nativeSettingsPath('moderation', { mode: 'native', page: 'dashboard', schema, values: {} })).toBe('/p/moderation/dashboard?tab=settings')
-    expect(nativeSettingsPath('moderation', { mode: 'native', schema, values: {} })).toBeNull()
-    expect(nativeSettingsPath('guard', { mode: 'schema', schema, values: {} })).toBeNull()
+    expect(nativeSettingsPath('moderation', { mode: 'native', page: 'dashboard', values: {} })).toBe('/p/moderation/dashboard?tab=settings')
+    expect(nativeSettingsPath('moderation', { mode: 'native', values: {} })).toBeNull()
+    expect(nativeSettingsPath('guard', { mode: 'iframe', page: 'x', values: {} })).toBeNull()
   })
 })
 

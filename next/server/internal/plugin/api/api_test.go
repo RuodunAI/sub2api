@@ -354,15 +354,12 @@ func TestAPIFlow(t *testing.T) {
 		t.Fatalf("enable = %d %v", code, out)
 	}
 
-	// Settings: schema validation, secret masking, keep-on-mask.
-	if code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": -1}}); code != 400 {
-		t.Fatalf("invalid settings = %d %v", code, out)
-	}
+	// Settings: secret masking, keep-on-mask.
 	if code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": 3, "webhook_secret": "s3cret"}}); code != 200 {
 		t.Fatalf("put settings = %d %v", code, out)
 	}
 	vals := data(out)["values"].(map[string]any)
-	if vals["webhook_secret"] != Mask || vals["threshold"] != float64(3) || data(out)["mode"] != "schema" {
+	if vals["webhook_secret"] != Mask || vals["threshold"] != float64(3) || data(out)["mode"] != "native" {
 		t.Fatalf("settings = %v", data(out))
 	}
 	// ui.settings.permission lets its holders read and edit the settings
@@ -510,7 +507,7 @@ func TestAPIFlow(t *testing.T) {
 		t.Fatalf("ui = %d %v", code, out)
 	}
 	u := ui[0].(map[string]any)
-	if len(u["menus"].([]any)) != 1 || u["native_entry"] != "ui/native/entry.js" || u["host_ui_compat"] != "^1.0" {
+	if len(u["menus"].([]any)) != 1 || u["native_entry"] != "ui/native/entry.js" || u["host_ui_compat"] != "^4.0" {
 		t.Fatalf("ui item = %v", u)
 	}
 
@@ -678,7 +675,7 @@ func TestEnableAndUpgradeRecheckResources(t *testing.T) {
 		if v != "0.1.0" {
 			continue // an upgrade asking for nothing new is approved on upload
 		}
-		consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "gateway.endpoint"}, {Permission: "platform.register"}}}
+		consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "gateway.endpoint"}, {Permission: "platform.register"}, {Permission: "ui.native"}}}
 		if code, out := h.do("POST", "/plugins/video/versions/"+v+"/consent", "admin", consent); code != 200 {
 			t.Fatalf("consent %s = %d %v", v, code, out)
 		}
@@ -705,29 +702,37 @@ func TestEnableAndUpgradeRecheckResources(t *testing.T) {
 	}
 }
 
-// A native settings form that carries its schema (the plugin edits its
-// settings on its own page, CONTRACTS §75.5) is validated and masked like a
-// schema form.
-func TestNativeSettingsKeepSchemaChecks(t *testing.T) {
-	h, root := newHarness(t)
-	guard := pkgtest.Guard("guard", "0.1.0", "sub2api")
-	guard.UI.Settings.Mode, guard.UI.Settings.Page = "native", "dashboard"
-	pkgBytes := pkgtest.Build(guard, root)
-	code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgBytes))
-	require.Equal(t, http.StatusOK, code, out)
-	consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "db.schema"}, {Permission: "gateway.hook"},
-		{Permission: "events"}, {Permission: "jobs"}, {Permission: "routes.admin"}, {Permission: "ui.menu"}, {Permission: "ui.native"}}}
-	code, out = h.do("POST", "/plugins/guard/versions/0.1.0/consent", "admin", consent)
-	require.Equal(t, http.StatusOK, code, out)
+// An installed package from before code-only forms (DESIGN-2026-11-19-
+// PLUGIN-UI-CODE-ONLY 7.1) keeps working: its settings in mode schema, or
+// native with the schema and no secrets key (moderation's old manifest), are
+// read as nothing saying which settings are secret, so every one is masked;
+// no schema is served, none is checked, and masks keep the stored values.
+func TestOldSchemaSettingsPackage(t *testing.T) {
+	for name, settings := range map[string]string{
+		"schema":        `{"mode":"schema","schema":"forms/settings.schema.json","uiSchema":"forms/settings.ui.json"}`,
+		"native+schema": `{"mode":"native","page":"dashboard","schema":"forms/settings.schema.json"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, root := newHarness(t)
+			installNativeSettings(t, h, root, guardSecrets)
+			code, out := h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": 3, "webhook_secret": "s3cret"}})
+			require.Equal(t, http.StatusOK, code, out)
+			_, err := h.db.SQL.ExecContext(context.Background(),
+				`UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{ui,settings}', $1::jsonb) WHERE plugin_key = 'guard'`, settings)
+			require.NoError(t, err)
 
-	code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": -1}})
-	require.Equal(t, http.StatusBadRequest, code, out)
-	code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": 3, "webhook_secret": "s3cret"}})
-	require.Equal(t, http.StatusOK, code, out)
-	assert.Equal(t, "native", data(out)["mode"])
-	assert.Equal(t, Mask, data(out)["values"].(map[string]any)["webhook_secret"])
-	assert.Contains(t, data(out)["secret_fields"], "webhook_secret")
-	assert.NotEqual(t, "null", string(mustJSON(t, data(out)["schema"])))
+			code, out = h.do("GET", "/plugins/guard/settings", "admin", nil)
+			require.Equal(t, http.StatusOK, code, out)
+			assert.Equal(t, map[string]any{"threshold": Mask, "webhook_secret": Mask}, data(out)["values"])
+			assert.Equal(t, []any{"threshold", "webhook_secret"}, data(out)["secret_fields"])
+			assert.NotContains(t, data(out), "schema")
+			assert.NotContains(t, data(out), "ui_schema")
+
+			code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": Mask, "webhook_secret": Mask, "note": "n"}})
+			require.Equal(t, http.StatusOK, code, out)
+			assert.JSONEq(t, `{"threshold":3,"webhook_secret":"s3cret","note":"n"}`, h.storedSettings())
+		})
+	}
 }
 
 func mustJSON(t *testing.T, v any) []byte {
@@ -737,10 +742,10 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// A plugin without a settings schema may still hold stored values: nothing
-// says which are secret, so every top-level value is masked, and a mask sent
-// back keeps the stored value.
-func TestSettingsWithoutSchemaAreAllMasked(t *testing.T) {
+// A plugin without ui.settings may still hold stored values: nothing says
+// which are secret, so every top-level value is masked, and a mask sent back
+// keeps the stored value.
+func TestSettingsWithoutFormAreAllMasked(t *testing.T) {
 	h, root := newHarness(t)
 	guard := pkgtest.Guard("guard", "0.1.0", "sub2api")
 	guard.UI.Settings = nil

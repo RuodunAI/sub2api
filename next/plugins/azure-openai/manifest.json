@@ -12,7 +12,7 @@
   "runtime": "grpc",
   "entry": { "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" } },
   "hostCompat": ">=0.1.304 <0.2.0",
-  "hostUICompat": "^3.20",
+  "hostUICompat": "^4.0",
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
 
   "capabilities": [

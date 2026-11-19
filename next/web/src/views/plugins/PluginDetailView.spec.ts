@@ -18,7 +18,7 @@ const matrixOf = (key: string) => ({
   roles: [{ id: 2, key: 'admin', name: 'Admin', builtin: true, superuser: false, editable: true, permission_keys: [] }]
 })
 
-async function render(query = '', extra: Record<string, unknown> = {}, settings: Record<string, unknown> = { mode: 'none', schema: null, values: {} }) {
+async function render(query = '', extra: Record<string, unknown> = {}, settings: Record<string, unknown> = { mode: 'none', values: {} }) {
   mocks.get.mockImplementation(async (path: string) => {
     if (path.endsWith('/settings')) return settings
     const matrix = path.match(/^\/permissions\/plugins\/(\w+)$/)?.[1]
@@ -121,15 +121,15 @@ describe('plugin detail view', () => {
     )
   })
 
-  // has_settings: schema or native ui.settings (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY §6.3).
+  // has_settings: native ui.settings (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY §6.3).
   it('shows native settings without a page on the settings tab', async () => {
-    const { w } = await render('?tab=settings', {}, { mode: 'native', component: 'MailerSettings', schema: null, values: {} })
+    const { w } = await render('?tab=settings', {}, { mode: 'native', component: 'MailerSettings', values: {} })
     expect(tabButton(w, 'Settings')).toBeDefined()
     expect(w.get('[data-testid="settings-tab"]').text()).toBe('MailerSettings')
   })
 
   it('sends ?tab=settings to the plugin page that edits the settings', async () => {
-    const { w, router } = await render('?tab=settings', {}, { mode: 'native', page: 'dashboard', schema: null, values: {} })
+    const { w, router } = await render('?tab=settings', {}, { mode: 'native', page: 'dashboard', values: {} })
     expect(router.currentRoute.value.fullPath).toBe('/p/guard/dashboard?tab=settings')
     expect(w.find('[data-testid="settings-tab"]').exists()).toBe(false)
   })

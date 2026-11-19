@@ -115,10 +115,10 @@ const columns: TableColumn[] = [
 - 只有一个标签时默认隐藏标签栏，恢复内容自身标题；需要显示单标签可用 `show-single`。`show-tabs=false` 同样恢复自身标题。
 - 嵌套容器使用最近层的标题，弹窗和抽屉重置上下文。折叠分组必须保留折叠按钮及名称；自定义标题插槽保持原样，避免误删其中的状态或交互。
 - `STabs` 不自动重建内容组件。需要保留草稿可继续用 `v-show` 或 `KeepAlive`，需要切换时重新创建则由调用方设置 `key`。
-- 控制台插件设置宿主已提供该上下文，声明式 `SchemaForm` 自动继承；原生插件自建标签页应使用上述容器。普通 HTML 标题、iframe 内部内容不自动处理。
+- 控制台插件设置宿主已提供该上下文；原生插件自建标签页应使用上述容器。普通 HTML 标题、iframe 内部内容不自动处理。
 - 新插件使用增强 `STabs` 时，`hostCompat` 最低核心版本应为 `>=0.1.154`（并保留项目要求的上界）。`hostUICompat` 声明 UI 3.0；使用旧入口的插件必须迁移，不提供兼容别名。
 
-验证至少覆盖：同名/不同名标题、单标签、语言切换、只读操作区、折叠分组、弹窗/抽屉、嵌套标签、声明式插件表单，以及保存功能。
+验证至少覆盖：同名/不同名标题、单标签、语言切换、只读操作区、折叠分组、弹窗/抽屉、嵌套标签，以及保存功能。
 
 ## 表格手柄排序
 
@@ -354,11 +354,11 @@ const columns: TableColumn[] = [
 
 ## 表单里的实体选择器（UI SDK 3.12）
 
-本包的组件没有变化；3.12 加的是核心交给插件的宿主组件和 schema 部件（都在控制台里实现，见 docs/COMMON-CONTROLS.md §6.1–6.3、docs/CONTRACTS.md §96.7）。原生插件用到任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。
+本包的组件没有变化；3.12 加的是核心交给插件的宿主组件和 schema 部件（schema 部件在 4.0 随 `SchemaForm` 删除；都在控制台里实现，见 docs/COMMON-CONTROLS.md §6.1–6.3、docs/CONTRACTS.md §96.7）。原生插件用到任一项时声明 `hostUICompat: "^3.12"`，`hostCompat` 要求核心 `>=0.1.280`（0.1.279 是最后一个带 UI 3.11 的核心）。
 
 - `host.components.EntityPicker` 新增 `exclude`：这些 id 不出现在候选里（多选里已选的、表单其它行已占用的）。
 - `host.components.EntityMultiPicker`：选多个同类实体。已选项是 `SChip` 标签（“名称 #id”），后面是“添加”用的 `EntityPicker`；`v-model:ids` 是 `string[]`，`max` 限制个数。
-- `SchemaForm` 的宿主部件 `entity-select`：`{ "ui:widget": "entity-select", "ui:options": { "kind": "user" } }`，数组 schema 是多选，其余单选，值的类型跟随 schema。与 `proxy-select`、`group-select` 一样由控制台注入（`SCHEMA_WIDGETS_KEY`），插件自己的 `SchemaForm` 也能用。
+- `SchemaForm` 的宿主部件 `entity-select`（4.0 删除）：`{ "ui:widget": "entity-select", "ui:options": { "kind": "user" } }`，数组 schema 是多选，其余单选，值的类型跟随 schema。与 `proxy-select`、`group-select` 一样由控制台注入（`SCHEMA_WIDGETS_KEY`），插件自己的 `SchemaForm` 也能用。
 
 ```vue
 <script setup lang="ts">
@@ -425,17 +425,24 @@ const { EntityMultiPicker } = host.components
 
 ## 去掉账号上游编辑器（UI SDK 3.18）
 
-内置插件 custom（自定义上游）删除后，账号上游层（账号设置字段 `upstream`）也一起删除：`host.components` 不再有账号上游编辑器，控制台的 SchemaForm 也不再有对应的部件。本包的组件没有变化，其他宿主组件和部件与 3.17 相同；没用到这两项的插件不用改，`hostUICompat` 照旧。UI 3.18 随核心 0.1.301 发布，0.1.298 是最后一个带 UI 3.17 的核心。
+内置插件 custom（自定义上游）删除后，账号上游层（账号设置字段 `upstream`）也一起删除：`host.components` 不再有账号上游编辑器，控制台的 SchemaForm（4.0 删除）也不再有对应的部件。本包的组件没有变化，其他宿主组件和部件与 3.17 相同；没用到这两项的插件不用改，`hostUICompat` 照旧。UI 3.18 随核心 0.1.301 发布，0.1.298 是最后一个带 UI 3.17 的核心。
 
 ## 账号请求头覆盖编辑器（UI SDK 3.19）
 
-`host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm 增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.302（0.1.302 是最后一个带 UI 3.18 的核心）。
+`host.components` 增加 `HeaderOverrideEditor`，控制台的 SchemaForm（4.0 删除）增加部件 `header-override`：编辑账号的请求头覆盖 `header_override`（CONTRACTS §108，与 new-api 渠道的请求头覆盖同一格式），v-model 是字符串到字符串的对象或 `null`，接受 `disabled`。`ParamOverrideEditor` 另收可选的 `headerOverride`（账号的 `header_override`），试运行时请求头从它的结果开始。本包的组件没有变化；用到新编辑器或部件的插件声明 `hostUICompat: "^3.19"`，`hostCompat` 要求高于 0.1.302（0.1.302 是最后一个带 UI 3.18 的核心）。
 
 ## 原生账号表单的代理票据（UI SDK 3.20）
 
 原生账号表单（CONTRACTS §23.5）多一个 prop `proxyTicket`，类型 `ProxyTicketSource`（`() => Promise<string>`，从 `@sub2api/host` 导出）。调用时控制台按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据（`POST /account-types/:plugin_key/:type/proxy-ticket`，CONTRACTS §117）：核心按调用者的权限检查这个选择，把它加密成只有核心能解开的不透明字符串。在账号建好之前要访问外部服务的授权流程（设备码、OAuth 换令牌）在开始时把票据交给自己插件的路由，插件用 `pluginsdk.Fetch` 带上它，核心就从这个代理把请求发出去；插件界面和插件都看不到代理地址和密码。要不到票据时 Promise 以核心的 `ApiError` 拒绝，控制台同时把字段错误显示在代理输入下。本包的组件没有变化；用到它的插件声明 `hostUICompat: "^3.20"`，`hostCompat` 要求高于 0.1.303（0.1.303 是最后一个带 UI 3.19 的核心）。
 
-## 表单校验框架（UI SDK 4.0，开发中）
+## 插件界面只用代码写（UI SDK 4.0）
+
+插件界面只用代码写（DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY）：账号表单、设置和页面都是原生组件（本包与 `@sub2api/host`），或者照旧用 iframe。4.0 删除了声明式的写法：
+- 本包删除 JSON Schema 表单：`SchemaForm`、`SchemaField`、`SCHEMA_WIDGETS_KEY`、`BUILTIN_WIDGETS`、`uiGet`、`childUI`、`schemaType`、`isSecret`、`enumOptions`、`resolveWidget`、`fieldLabel`、`fieldHelp`、`orderedKeys`、`isVisible`、`schemaWithDefaults`、`validateSchema`，类型 `JSONSchema`、`UISchema`、`EnumOption`、`ValidateMessages`，以及文案 `ui.schema.*`（必填等校验文案在 `ui.form.v.*`）。`localizedText` 保留。
+- 控制台不再渲染账号表单的 `form.mode: "schema"`（编辑账号时凭证卡片提示升级插件，其它分区照常编辑，凭证原样送回）、`schema` 模式的设置，以及 `ui.pages.*.type` 为 `table`、`form` 的页面（显示"不支持的页面类型"）。宿主部件 `proxy-select`、`group-select`、`entity-select`、`header-override` 随之删除；表单里改用 `host.components` 的 `ProxyPicker`、`EntityPicker`（`kind="group"` 等）、`EntityMultiPicker`、`HeaderOverrideEditor`。
+- 带原生界面的插件声明 `hostUICompat: "^4.0"`，`hostCompat` 要求高于 0.1.303（0.1.303 是最后一个带 UI 3.x 的核心）。3.x 的控制台不加载 `^4.0` 的插件；声明 `^3.N` 的插件 4.0 的控制台也不加载。
+
+## 表单校验框架（UI SDK 4.0）
 
 插件界面只用代码写（DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY），表单的即时校验用本包的 `useForm` + `SForm`，规则写法与 Element Plus、Ant Design Vue、Naive UI 共用的 async-validator 风格相同，由本包自己实现。后端（插件的 `ValidateCredentials` / `ValidateSettings`）仍是最终校验。
 
@@ -478,7 +485,7 @@ defineExpose({ validate: form.validate })
 - **`SField` / `SSettingRow` 的 `prop`**：在 `SForm` 里显示该路径的错误和必填星号（显式传入的 `error`、`required` 优先），控件失焦时校验它。自己写的控件用 `useFieldControl` 返回的 `blur` 接到失焦事件即可。
 - 内置文案在 `ui.form.v.*`（中英），占位符 `{n}`、`{label}`（`SField` 的 label）。
 
-### 组合组件（UI SDK 4.0，开发中）
+### 组合组件（UI SDK 4.0）
 
 - **`SSecretInput`**：密钥输入（`modelValue`、`placeholder`、`disabled`、`size`、`revealable`（默认 true）、`clearable`、`plain`）。值是 `SECRET_MASK` 时输入框为空、占位符显示 `******`，下方提示"已保存值，留空表示不修改"；输入即替换，清空后发回 `SECRET_MASK`（核心保留已存的值）；`autocomplete="new-password"`。可选的密钥加 `clearable`：有已存的值时显示"清除已保存的值"按钮，点了发 `''`（核心清掉这个密钥），之后不再当作已存。`createApiKeyForm` 的 `secret` 字段规则里没有 `required` 时自动带上它。敏感地址（`ui.settings.secrets` 里 `sensitive: true` 的字段，如 webhook 地址）加 `plain`：已存时同样遮蔽、留空沿用，但用普通文本框输入，没有显示/隐藏按钮。
 - **`SUrlPresetInput`**：Base URL（`modelValue`、`presets`、`allowed`、`placeholder`、`disabled`、`readonly`）。没有 `allowed` 时是 URL 输入框加 datalist 和"预设"菜单；有 `allowed`（`useGuardedSettings`）时是选择框，已存的、不在列表里的值也保留为可选项，只有一个允许值时只读并提示"由管理员设置"。清空发 `undefined`，即不发送这个键。
@@ -508,7 +515,7 @@ defineExpose({ validate: form.validate })
 - **`SResourcePage`**：插件的列表页（`client`（`host.pluginApi`）、`path`、`columns`、`search?`（查询参数名，有它才有搜索框）、`rowKey?`、`createLabel?`、`canCreate?`、`submit?`）。内部用 `useList` 和 `STable`（卡片形式）加分页，工具栏有刷新按钮；`cell-<key>` 插槽照传给 `STable`，`toolbar` 插槽放在搜索框后。`canCreate` 且有 `create` 插槽时显示新建按钮，打开 `SFormModal`，插槽参数 `{ close, done }`；弹窗的保存调用 `submit()`（在里面校验并提交，返回 `false` 则不关；抛错时按 `errorMessage` 提示，弹窗不关），成功后回到第一页刷新并发出 `created`。弹窗关闭时插槽内容会卸载：表单状态写在插槽里的组件内部时，下次打开自然是空的；状态放在页面上（比如页面上的一个 `ref`）的，要作者自己清空。
 - `@sub2api/host` 新导出 `useGuardedSettings(accountType)`（`allowed(field)`、`locked(field)`、`guarded`）、类型 `AccountTypeView`，以及 `settingsFieldErrors`、`toFieldPath`（服务端字段名转表单路径；本包不再另起名字导出）、`errorMessage(e, t)` 和 `isSilentError(e)`（控制台的报错文案与"哪些失败不提示"，控制台自己也用这两个）。
 
-### 测试辅助：`@sub2api/ui/testing`（UI SDK 4.0，开发中）
+### 测试辅助：`@sub2api/ui/testing`（UI SDK 4.0）
 
 **只能在 spec（`*.spec.ts` 及只被 spec 引用的测试辅助文件）里引用**：它不在控制台的 import map 里，插件的运行时代码引用它时构建不会报错（预设把 `@sub2api/ui` 的所有子路径都当作外部模块），要到控制台里加载插件时才失败，依赖 `vitest` 和 `@vue/test-utils`。插件工程的 vitest 配置继承控制台 `web/vitest.config.ts` 的别名，自动解析到 `web/packages/ui/src/testing/index.ts`；类型检查时本仓库的插件工程继承的 `web/packages/vite-preset/tsconfig.plugin.json` 已经映射了它；自带 tsconfig 的工程在 `paths` 里加一行（写在 `@sub2api/ui` 之前）：`"@sub2api/ui/testing": ["../../../../web/packages/ui/src/testing/index.ts"]`。
 

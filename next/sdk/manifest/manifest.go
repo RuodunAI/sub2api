@@ -657,10 +657,8 @@ func (a AccountPlatform) ServesPluginFacts(p Platform) bool {
 
 // Form describes a console form contributed by a plugin.
 type Form struct {
-	Mode      string `json:"mode"`               // schema | iframe | native
-	Schema    string `json:"schema,omitempty"`   // package path to JSON Schema (mode=schema)
-	UISchema  string `json:"uiSchema,omitempty"` // package path to UI hints (mode=schema)
-	Page      string `json:"page,omitempty"`     // ui/iframe/... entry (mode=iframe)
+	Mode      string `json:"mode"`           // iframe | native
+	Page      string `json:"page,omitempty"` // ui/iframe/... entry (mode=iframe); a native page (native ui.settings)
 	Component string `json:"component,omitempty"`
 	// Permission (ui.settings only) is one of the plugin's own
 	// userPermissions whose holders may read and edit the plugin settings
@@ -1037,39 +1035,13 @@ type Menu struct {
 	Order      int           `json:"order,omitempty"`
 }
 
-// Page is a plugin page. type=table|form are rendered by the host,
-// type=iframe loads Page.Src in a sandbox, type=native mounts Component.
+// Page is a plugin page: type=iframe loads Page.Src in a sandbox,
+// type=native mounts Component.
 type Page struct {
 	Type      string        `json:"type"`
 	Title     LocalizedText `json:"title,omitempty"`
-	Source    string        `json:"source,omitempty"` // "GET /models" (plugin route)
-	Columns   []Column      `json:"columns,omitempty"`
-	Schema    string        `json:"schema,omitempty"`
-	Submit    string        `json:"submit,omitempty"`
 	Src       string        `json:"src,omitempty"`
 	Component string        `json:"component,omitempty"`
-	// Search names the query parameter the page's Source route honours as a
-	// free-text search, e.g. "q". The host renders a search box on a table
-	// page only when it is set, and sends the typed text as
-	// "?<Search>=<text>" (resetting to page 1). Leaving it out means "this
-	// route cannot search": no box is rendered.
-	//
-	// It is a single parameter name, not a list, because it describes the one
-	// control the host has - one text box over one route. A list would let a
-	// manifest declare a filter set the renderer has no way to draw, which is
-	// the same "declared and nobody honours it" shape this field was added to
-	// close: before it existed the box was always drawn and filtered either
-	// the rows already on screen or nothing at all, depending on how much
-	// data there happened to be. A second parameter is not blocked by this
-	// choice - per-field filters need a label, a type and, for enums, the
-	// options, so they are a different field with a different shape
-	// (filters[]) rather than another string in this one, and adding them
-	// leaves "search" meaning exactly what it means now.
-	Search string `json:"search,omitempty"`
-	// Create puts a "New" button on a table page that opens another page of
-	// the plugin (a form page), so a create form needs no sidebar entry of
-	// its own. The button is shown only to callers holding Permission.
-	Create *PageLink `json:"create,omitempty"`
 	// Nav lists the sections of a native page so the console can draw them
 	// in its left sidebar, the way it draws the core system settings
 	// (UI 3.14). The page shows the section named by ?tab=<item key>, and
@@ -1103,20 +1075,6 @@ type NavItem struct {
 	// of the plugin's own permission, so the item shows when the caller
 	// holds either; with neither set it shows to everyone who sees the page.
 	CorePermission string `json:"corePermission,omitempty"`
-}
-
-// PageLink points at another page of the same plugin.
-type PageLink struct {
-	Page string `json:"page"`
-	// Permission is a plugin permission key (userPermissions) the caller
-	// needs to see the link; empty means everyone who sees the page.
-	Permission string `json:"permission,omitempty"`
-}
-
-type Column struct {
-	Key    string        `json:"key"`
-	Label  LocalizedText `json:"label"`
-	Format string        `json:"format,omitempty"` // text | number | datetime | badge | currency
 }
 
 type Slot struct {

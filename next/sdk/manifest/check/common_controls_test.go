@@ -19,7 +19,7 @@ func controlsManifest(controls map[string]manifest.AccountCommonControl) *manife
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
-		Form:           manifest.Form{Mode: "schema", Schema: "forms/k.json"},
+		Form:           keyForm(m),
 		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 		CommonControls: controls,
 	}}
@@ -27,7 +27,7 @@ func controlsManifest(controls map[string]manifest.AccountCommonControl) *manife
 }
 
 func controlCodes(m *manifest.Manifest) map[string]string {
-	return codes(Validate(m, map[string][]byte{"forms/k.json": []byte(`{}`)}, ValidateOptions{Tooling: true}))
+	return codes(Validate(m, map[string][]byte{}, ValidateOptions{Tooling: true}))
 }
 
 func TestCommonControls(t *testing.T) {

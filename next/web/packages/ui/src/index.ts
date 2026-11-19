@@ -130,26 +130,6 @@ export { usePluginSettings } from './form/pluginSettings'
 export type { PluginSettingsForm } from './form/pluginSettings'
 export { default as SSettingsPage } from './form/SSettingsPage.vue'
 export { default as SResourcePage } from './SResourcePage.vue'
-// JSON Schema form (console: account credentials, plugin settings, declarative
-// plugin pages; plugins: any schema-driven form)
-export { default as SchemaForm } from './schema/SchemaForm.vue'
-export { default as SchemaField } from './schema/SchemaField.vue'
-export { SCHEMA_WIDGETS_KEY } from './schema/widgets'
-export {
-  BUILTIN_WIDGETS,
-  localizedText,
-  uiGet,
-  childUI,
-  schemaType,
-  isSecret,
-  enumOptions,
-  resolveWidget,
-  fieldLabel,
-  fieldHelp,
-  orderedKeys,
-  isVisible,
-  withDefaults as schemaWithDefaults,
-  validate as validateSchema
-} from './schema/schema'
-export type { JSONSchema, UISchema, EnumOption, ValidateMessages } from './schema/schema'
+// LocalizedText ({en, zh} or a bare string) of the core's payloads.
+export { localizedText } from './i18n'
 export { useScrollClip } from './scrollClip'

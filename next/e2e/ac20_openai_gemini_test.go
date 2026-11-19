@@ -31,9 +31,9 @@ func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 	// 1. Built in, enabled, account types registered for their platforms.
 	types := admin.OK(t, http.MethodGet, "/account-types", nil).Array()
 	platforms := e.Platforms(admin)
-	for _, pl := range []struct{ plugin, platform, endpoint string }{
-		{OpenAIPlugin, "openai", "/v1/chat/completions"},
-		{GeminiPlugin, "gemini", "generateContent"},
+	for _, pl := range []struct{ plugin, platform, endpoint, form string }{
+		{OpenAIPlugin, "openai", "/v1/chat/completions", "OpenAIKeyForm"},
+		{GeminiPlugin, "gemini", "generateContent", "GeminiKeyForm"},
 	} {
 		d := e.WaitPlugin(admin, pl.plugin, "enabled", "")
 		if !d.Get("builtin").Bool() {
@@ -53,12 +53,7 @@ func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 		if !found {
 			t.Fatalf("%s/%s lacks native endpoint %s: %s", pl.plugin, APIKeyType, pl.endpoint, at.Get("endpoints").Raw)
 		}
-		form := admin.OK(t, http.MethodGet, "/account-types/"+pl.plugin+"/"+APIKeyType+"/form", nil)
-		for _, f := range []string{"api_key", "base_url"} {
-			if !form.Get("schema.properties." + f).Exists() {
-				t.Fatalf("%s form lacks %s: %s", pl.plugin, f, form.Raw)
-			}
-		}
+		ExpectNativeForm(t, admin.Client, at, pl.form)
 		p, _ := Find(platforms, "id", pl.platform)
 		if _, ok := PlatformAccountType(p, pl.plugin, APIKeyType); !ok {
 			t.Fatalf("/platforms %s lacks %s/%s: %s", pl.platform, pl.plugin, APIKeyType, p.Get("account_types").Raw)

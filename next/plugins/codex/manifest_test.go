@@ -89,7 +89,7 @@ func TestManifestShape(t *testing.T) {
 		t.Errorf("account type labels must tell the two logins apart: %v %v", m.AccountTypes[0].Label, m.AccountTypes[1].Label)
 	}
 	for _, at := range m.AccountTypes {
-		if at.Form.Mode != "native" || at.Form.Component != "CodexAuthForm" || at.Form.Schema != "" {
+		if at.Form.Mode != "native" || at.Form.Component != "CodexAuthForm" {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
 		}
 		if at.CreationGroup != "codex" || at.AuthMethodLabel["en"] != labels[at.ID] || at.AuthMethodLabel["zh"] != zhLabels[at.ID] {

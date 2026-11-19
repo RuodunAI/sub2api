@@ -11,10 +11,9 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
-import { SAlert, SBadge, SButton, SCard, SchemaForm, SChoiceCards, SField, SHint, SIcon, SInput, SLink, SSegmented, SSelect, SSettingRow, SSettingsGroup, SSpinner, SSwitch, toast } from '@sub2api/ui'
+import { SAlert, SBadge, SButton, SCard, SChoiceCards, SField, SHint, SIcon, SInput, SLink, SSegmented, SSelect, SSettingRow, SSettingsGroup, SSpinner, SSwitch, toast } from '@sub2api/ui'
 import type { Account, AccountType, ConversionLossPolicy, EnvironmentValues, ProxyProbeResult } from '@/api/types'
 import EnvironmentEditor from '@/components/environment/EnvironmentEditor.vue'
-import { schemaWidgets } from '@/components/schema/widgets'
 import PluginIframe from '@/components/plugin/PluginIframe.vue'
 import PluginSlot from '@/components/plugin/PluginSlot.vue'
 import PluginComponent from '@/components/plugin/PluginComponent.vue'
@@ -26,7 +25,7 @@ import { assetURL, usePluginStore } from '@/stores/plugins'
 import { useEnvironmentLayer, useGroupsWith, useProxiesLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { useAccountCaps } from '@/composables/useAccountCaps'
-import { errorMessage, fieldErrors, notifyError } from '@/utils/errors'
+import { fieldErrors, notifyError } from '@/utils/errors'
 import { looksLikeProxyURL, parseProxyURL } from '@/utils/proxyUrl'
 import { groupPolicies, policyLabel, policyOptions, policySourceHint } from '@/utils/conversion'
 import AccountEditorNav from './AccountEditorNav.vue'
@@ -65,7 +64,7 @@ const scope = useScope()
 const editing = computed(() => !!props.account?.id)
 const caps = useAccountCaps(editing)
 
-const mode = computed(() => props.accountType?.form.mode || 'schema')
+const mode = computed(() => props.accountType?.form.mode)
 // Row-level rights (CONTRACTS §21): editing an account needs a scope of
 // account:update that reaches it.
 const canEditAccount = computed(() => editing.value && scope.can(props.account, ACCOUNT_ACTIONS.update))
@@ -100,15 +99,10 @@ const basic = reactive({
 /** 指定模型限速 (CONTRACTS §68), edited as cards and saved as one entry per list. */
 const modelLimitCards = ref<ModelLimitCard[]>([])
 const credentials = ref<Record<string, unknown>>({})
-const schema = ref<Record<string, any> | null>(null)
-const uiSchema = ref<Record<string, any> | null>(null)
-const formLoading = ref(false)
-const formError = ref('')
 const errors = ref<Record<string, string>>({})
 const credErrors = ref<Record<string, string>>({})
 const saving = ref(false)
 
-const schemaForm = ref<InstanceType<typeof SchemaForm>>()
 const iframe = ref<InstanceType<typeof PluginIframe>>()
 const nativeRef = ref<{ validate?: () => boolean | Promise<boolean> }>()
 const uiPlugin = computed(() => (props.accountType ? plugins.plugin(props.accountType.plugin_key) : undefined))
@@ -491,27 +485,6 @@ function switchAuth(at: AccountType | null, previous: AccountType | null | undef
   applyValues(Object.fromEntries(Object.entries(newAccountValues(at, coreValues(), ownCaller())).filter(follows)))
 }
 
-/** The plugin's credential form (schema mode). */
-let formRequest = 0
-async function loadCredentialForm(at: AccountType | null) {
-  const request = ++formRequest
-  schema.value = null
-  uiSchema.value = null
-  formError.value = ''
-  formLoading.value = at?.form.mode === 'schema'
-  if (!at || !formLoading.value) return
-  try {
-    const f = await api.get<{ schema: Record<string, any>; ui_schema?: Record<string, any> }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/form`)
-    if (request !== formRequest) return
-    schema.value = f.schema
-    uiSchema.value = f.ui_schema || null
-  } catch (e) {
-    if (request === formRequest) formError.value = errorMessage(e)
-  } finally {
-    if (request === formRequest) formLoading.value = false
-  }
-}
-
 watch(
   () => [props.account, props.accountType] as const,
   ([a, at], previous) => {
@@ -522,7 +495,6 @@ watch(
     if (!a && !previous?.[0] && sameCreationGroup(at, previous?.[1])) switchAuth(at, previous?.[1])
     else fillForm(a, at)
     credentials.value = { ...(a?.credentials || {}) }
-    void loadCredentialForm(at)
   },
   { immediate: true }
 )
@@ -536,7 +508,6 @@ watch(credentials, () => {
 
 async function collectCredentials(): Promise<Record<string, unknown> | null> {
   if (!props.accountType) return credentials.value
-  if (mode.value === 'schema') return schemaForm.value?.validate() ? credentials.value : null
   if (mode.value === 'native') {
     const validate = nativeRef.value?.validate
     return typeof validate === 'function' && !(await validate()) ? null : credentials.value
@@ -636,12 +607,6 @@ const { save } = useAccountSave({
 
             <SHint v-if="settingsGuarded" size="xs" class="mb-3" data-testid="guarded-settings-hint">{{ t('accounts.guardedSettingsHint') }}</SHint>
             <SAlert v-if="account?.orphaned || !accountType" tone="warning">{{ t('accounts.orphanedEdit') }}</SAlert>
-            <template v-else-if="mode === 'schema'">
-              <SSpinner v-if="formLoading" block />
-              <SHint v-else-if="formError" tone="danger">{{ formError }}</SHint>
-              <SchemaForm v-else-if="schema" ref="schemaForm" v-model="credentials" :schema="schema" :ui-schema="uiSchema" :errors="credErrors" :widgets="schemaWidgets" />
-              <SAlert v-if="schema && !formLoading && !Object.keys(schema.properties || {}).length" tone="neutral">{{ t('accounts.editorUi.noCredentials') }}</SAlert>
-            </template>
             <template v-else-if="mode === 'iframe'">
               <PluginIframe
                 v-if="iframeSrc"
@@ -662,6 +627,8 @@ const { save } = useAccountSave({
                 <component :is="component" ref="nativeRef" v-model="credentials" :mode="editing ? 'edit' : 'create'" :account="account" :account-type="accountType" :errors="credErrors" :proxy-ticket="proxyTicket" />
               </PluginComponent>
             </template>
+            <!-- An older package's form mode: the credentials are sent back unchanged. -->
+            <SAlert v-else tone="warning" data-testid="form-unavailable-old">{{ t('accounts.formUnavailableOld') }}</SAlert>
 
             <div class="mt-4 space-y-3 empty:hidden">
               <PluginSlot name="account.form.widgets" :props="{ account, accountType, credentials }" />
@@ -768,7 +735,7 @@ const { save } = useAccountSave({
         <SLink as="button" class="text-xs" @click="clearPrefill">{{ t('accounts.editorUi.clearModels') }}</SLink>
       </SHint>
       <SButton @click="emit('cancel')">{{ t('common.cancel') }}</SButton>
-      <SButton type="submit" variant="primary" :loading="saving" :disabled="formLoading || !!formError" data-testid="account-save">{{ editing ? t('common.save') : t('accounts.editorUi.create') }}</SButton>
+      <SButton type="submit" variant="primary" :loading="saving" data-testid="account-save">{{ editing ? t('common.save') : t('accounts.editorUi.create') }}</SButton>
     </div>
   </form>
 </template>

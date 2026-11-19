@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"testing"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -242,6 +243,19 @@ func FindAccountType(items []gjson.Result, pluginKey, typ string) (gjson.Result,
 		}
 	}
 	return gjson.Result{}, false
+}
+
+// ExpectNativeForm fails t unless the account type (an item of GET
+// /account-types) is entered through the plugin's own native component and
+// the core serves no form schema for it (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY).
+func ExpectNativeForm(t testing.TB, c *Client, at gjson.Result, component string) {
+	t.Helper()
+	if at.Get("form.mode").String() != "native" || at.Get("form.component").String() != component {
+		t.Fatalf("%s/%s form = %s, want native %s", at.Get("plugin_key"), at.Get("type"), at.Get("form").Raw, component)
+	}
+	if r := c.API(t, http.MethodGet, "/account-types/"+at.Get("plugin_key").String()+"/"+at.Get("type").String()+"/form", nil); r.Status != http.StatusNotFound {
+		t.Fatalf("the form schema endpoint must be gone: %s", r)
+	}
 }
 
 // AccountTypeEndpoint returns the entry of an account type's "endpoints"

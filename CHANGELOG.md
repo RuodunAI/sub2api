@@ -54,6 +54,15 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。
 - vertex：三种账号类型的表单改为原生组件 `VertexKeyFileForm`（服务账号、用户凭证）和 `VertexApiKeyForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（密钥文件类型的区域 `global`）和文案不变；核心续期写回的 `access_token`、`expires_at`、`token_for` 不显示、保存时原样带回；编辑已有账号时不再自动补区域（保存时插件照旧补上）。密钥文件 32768 个字符的上限从 schema 搬进插件，其余约束原本就由插件检查，有测试逐条保留。
 
+### 插件界面只用代码写：删掉声明式表单与页面，界面契约 4.0（D1）
+
+- 核心不再读、不再校验 JSON Schema 表单：删掉 `GET /account-types/:plugin_key/:type/form`；`GET /plugins/:key/settings` 不再返回 `schema`、`ui_schema`；保存账号凭证只由插件的 `ValidateCredentials` 把关，保存插件设置只由插件的 `ValidateSettings`（可选）把关；插件包不再打包、核心不再提供 `forms/`。`has_settings` 只对 native 设置为 true。
+- 清单检查：账号表单或设置的 `form.mode: "schema"`、页面的 `type: "table" | "form"` 上传时报 `unsupported`；`manifest.Form` 删掉 `schema`、`uiSchema`，`manifest.Page` 删掉 `source`、`columns`、`schema`、`submit`、`search`、`create`，`check.Warnings` 删除。`sub2api-plugin` 严格读清单，旧字段报 unknown field。
+- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“页面不可用”。内置插件随核心升级；非内置插件（relay、guard、growth、payment、azure-openai、vertex、bedrock）要管理员装上新版本。
+- SDK：`apikey.Spec.Fields` 为 `nil` 时也拒绝 `api_key`、`base_url` 以外的键（此前 `nil` 不检查）；新增 `Spec.NoBaseURL`（vertex_apikey 用它拒绝 `base_url`，替代插件里多包的一层 `Only`）。
+- 界面包 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升到 4.0.0（`HOST_UI_VERSION`），删掉 `SchemaForm`、`SchemaField` 等 schema 导出；控制台删掉声明式表单、表格、表单页的渲染。全部带原生界面的第一方插件 `hostUICompat` 改为 `^4.0`。
+- 第三方插件作者：表单与页面只能用 native（受信任发布者）或 iframe 写；设置的密钥在 `ui.settings.secrets` 里声明。
+
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0116（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行），插件迁移只有 volcengine 的 0003。

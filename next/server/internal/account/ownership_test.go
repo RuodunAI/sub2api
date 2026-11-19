@@ -593,32 +593,19 @@ func TestGuardedSettings(t *testing.T) {
 		t.Fatalf("alice back to official: %d %v", code, out)
 	}
 
-	// The form is rewritten for suppliers only, and the cached original is
-	// untouched.
-	code, out := e.doAs(alice, "GET", "/account-types/anthropic/apikey/form", nil)
+	// The console's form reads the restriction from the type: guarded_settings
+	// on GET /account-types, the same for every caller (whether it applies is
+	// the caller's account:settings:custom, checked on save above).
+	code, out := e.doAs(alice, "GET", "/account-types", nil)
 	raw, _ := json.Marshal(out)
-	if code != 200 || gjson.GetBytes(raw, "data.schema.properties.base_url.enum").Raw != `["`+officialBaseURL+`"]` ||
-		gjson.GetBytes(raw, "data.ui_schema.base_url.ui:readonly").Bool() != true ||
-		gjson.GetBytes(raw, "data.ui_schema.api_key.ui:widget").String() != "password" ||
-		gjson.GetBytes(raw, "data.schema.properties.api_key.minLength").Int() != 8 {
-		t.Fatalf("supplier form: %d %s", code, raw)
-	}
-	_, out = e.doAs(admin, "GET", "/account-types/anthropic/apikey/form", nil)
-	raw, _ = json.Marshal(out)
-	if gjson.GetBytes(raw, "data.schema.properties.base_url.enum").Exists() || gjson.GetBytes(raw, "data.ui_schema.base_url").Exists() {
-		t.Fatalf("admin form rewritten: %s", raw)
-	}
-	if gjson.GetBytes(e.gen.types[0].FormSchema, "properties.base_url.enum").Exists() || gjson.GetBytes(e.gen.types[0].FormUI, "base_url").Exists() {
-		t.Fatal("cached form mutated")
-	}
-	_, out = e.doAs(alice, "GET", "/account-types/relay/relay_key/form", nil)
-	raw, _ = json.Marshal(out)
-	if gjson.GetBytes(raw, "data.schema.properties.base_url.enum").Exists() || gjson.GetBytes(raw, "data.ui_schema").Raw != "null" {
-		t.Fatalf("relay form: %s", raw)
+	if code != 200 || gjson.GetBytes(raw, `data.#(type=="apikey").guarded_settings.0.allowed`).Raw != `["`+officialBaseURL+`"]` ||
+		gjson.GetBytes(raw, `data.#(type=="apikey").guarded_settings.0.field`).String() != "base_url" ||
+		len(gjson.GetBytes(raw, `data.#(type=="relay_key").guarded_settings`).Array()) != 0 {
+		t.Fatalf("guarded settings: %d %s", code, raw)
 	}
 	// Suppliers reach the type endpoints through account:create:own alone.
 	authz.keys[alice] = []string{"account:create:own"}
-	for _, p := range []string{"/platforms", "/account-types", "/account-types/anthropic/apikey/form"} {
+	for _, p := range []string{"/platforms", "/account-types"} {
 		if code, _ := e.doAs(alice, "GET", p, nil); code != 200 {
 			t.Fatalf("own:create %s: %d", p, code)
 		}
@@ -688,47 +675,6 @@ func TestCheckGuarded(t *testing.T) {
 	}
 	if err := checkGuarded(ctx, nil, st(`"https://evil.example"`), nil); err != nil {
 		t.Errorf("no guards: %v", err)
-	}
-}
-
-func TestGuardForm(t *testing.T) {
-	schema := json.RawMessage(`{"type":"object","properties":{"api_key":{"type":"string"},"base_url":{"type":"string","title":"Base URL"}}}`)
-	one := []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{"https://a.example"}}}
-	two := []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{"https://a.example", "https://b.example"}}}
-
-	// null ui_schema becomes an object with the readonly flag.
-	s, u, err := guardForm(schema, json.RawMessage("null"), one)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gjson.GetBytes(s, "properties.base_url.enum").Raw != `["https://a.example"]` || gjson.GetBytes(s, "properties.base_url.title").String() != "Base URL" ||
-		gjson.GetBytes(s, "properties.api_key.type").String() != "string" || string(u) != `{"base_url":{"ui:readonly":true}}` {
-		t.Fatalf("one allowed: %s %s", s, u)
-	}
-	if strings.Contains(string(schema), "enum") {
-		t.Fatal("input mutated")
-	}
-	// Several allowed values: enum only, ui_schema untouched (still null);
-	// an existing ui entry keeps its other keys.
-	s, u, err = guardForm(schema, json.RawMessage("null"), two)
-	if err != nil || len(gjson.GetBytes(s, "properties.base_url.enum").Array()) != 2 || string(u) != "null" {
-		t.Fatalf("two allowed: %s %s %v", s, u, err)
-	}
-	_, u, err = guardForm(schema, json.RawMessage(`{"base_url":{"ui:widget":"url-presets"},"api_key":{"ui:widget":"password"}}`), one)
-	if err != nil || gjson.GetBytes(u, "base_url.ui:widget").String() != "url-presets" || gjson.GetBytes(u, "base_url.ui:readonly").Bool() != true ||
-		gjson.GetBytes(u, "api_key.ui:widget").String() != "password" {
-		t.Fatalf("merge ui: %s %v", u, err)
-	}
-	// A field missing from the schema is added; a non-object schema is left alone.
-	s, _, err = guardForm(json.RawMessage(`{"type":"object"}`), json.RawMessage("null"), one)
-	if err != nil || gjson.GetBytes(s, "properties.base_url.enum").Raw != `["https://a.example"]` {
-		t.Fatalf("missing property: %s %v", s, err)
-	}
-	if s, u, err = guardForm(json.RawMessage("null"), json.RawMessage("null"), one); err != nil || string(s) != "null" || string(u) != "null" {
-		t.Fatalf("null schema: %s %s %v", s, u, err)
-	}
-	if _, _, err = guardForm(json.RawMessage(`{bad`), json.RawMessage("null"), one); err == nil {
-		t.Fatal("invalid schema accepted")
 	}
 }
 
@@ -920,8 +866,7 @@ func TestOwnCustomUpstream(t *testing.T) {
 	e.gen.plugins = append(e.gen.plugins, oauth)
 	for _, id := range []string{"codex_oauth", "managed"} {
 		e.gen.types = append(e.gen.types, core.AccountTypeBinding{Plugin: oauth, Client: e.plat,
-			Type:       manifest.AccountType{ID: id, Form: manifest.Form{Mode: "schema"}, UpstreamFields: []string{}},
-			FormSchema: json.RawMessage(`{"type":"object"}`)})
+			Type: manifest.AccountType{ID: id, Form: manifest.Form{Mode: "native", Component: "KeyForm"}, UpstreamFields: []string{}}})
 	}
 	post := func(pk, typ string, creds map[string]any) (int, map[string]any) {
 		t.Helper()
@@ -995,8 +940,7 @@ func TestBuiltinSupplierRole(t *testing.T) {
 	oauth := core.PluginInfo{Key: "oauth", Manifest: &manifest.Manifest{Name: manifest.LocalizedText{"en": "OAuth"}}}
 	e.gen.plugins = append(e.gen.plugins, oauth)
 	e.gen.types = append(e.gen.types, core.AccountTypeBinding{Plugin: oauth, Client: e.plat,
-		Type:       manifest.AccountType{ID: "codex_oauth", Form: manifest.Form{Mode: "schema"}, UpstreamFields: []string{}},
-		FormSchema: json.RawMessage(`{"type":"object"}`)})
+		Type: manifest.AccountType{ID: "codex_oauth", Form: manifest.Form{Mode: "native", Component: "KeyForm"}, UpstreamFields: []string{}}})
 	code, out := e.doAs(alice, "POST", "/accounts", map[string]any{"name": "mine", "plugin_key": "oauth", "type": "codex_oauth", "credentials": map[string]any{}})
 	if code != 201 {
 		t.Fatalf("create codex_oauth: %d %v", code, out)

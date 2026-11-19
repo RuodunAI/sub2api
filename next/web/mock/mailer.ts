@@ -18,15 +18,13 @@ export const mailerUIPlugin = {
   slots: [],
   native_entry: 'ui/native/entry.js',
   trust: 'official',
-  host_ui_compat: '^3.20'
+  host_ui_compat: '^4.0'
 }
 
 /** GET /plugins/mailer/settings: native, no page; the password is the one secret. */
 export const mailerSettings = {
   mode: 'native',
   component: 'MailerSettings',
-  schema: null,
-  ui_schema: null,
   values: { host: 'smtp.example.com', port: 587, security: 'starttls', username: 'notify@example.com', password: '******', from_address: 'notify@example.com', from_name: 'Sub2API' },
   secret_fields: ['password']
 }

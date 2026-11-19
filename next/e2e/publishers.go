@@ -48,6 +48,9 @@ func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative 
 		if ui, ok := m["ui"].(map[string]any); ok {
 			delete(ui, "native")
 			delete(ui, "slots")
+			if s, ok := ui["settings"].(map[string]any); ok && s["mode"] == "native" {
+				delete(ui, "settings")
+			}
 			pages, _ := ui["pages"].(map[string]any)
 			for id, p := range pages {
 				if pm, ok := p.(map[string]any); ok && pm["type"] == "native" {

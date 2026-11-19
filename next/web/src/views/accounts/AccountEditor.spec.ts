@@ -36,6 +36,8 @@ vi.mock('@/composables/useScope', async original => ({ ...await original<typeof 
 vi.mock('@/composables/lookups', async (original) => ({ ...await original<object>(), useProxiesLookup: () => ({}) }))
 
 enableAutoUnmount(afterEach)
+// An older package's form mode (no native or iframe form): the editor asks to
+// upgrade the plugin and sends the credentials back unchanged.
 const accountType = { plugin_key: 'claude', type: 'apikey', creation_group: 'claude', form: { mode: 'schema' }, platforms: [], default_models: [], default_model_mapping: {} } as unknown as AccountType
 
 function render(account?: Account, realSelect = false, type: AccountType = accountType) {
@@ -54,7 +56,6 @@ function render(account?: Account, realSelect = false, type: AccountType = accou
     SSelect: realSelect ? false : { props: ['modelValue', 'options', 'disabled', 'searchable'], emits: ['update:modelValue'], template: '<input :value="modelValue" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />' },
     // Like SInput, type="number" emits a number (null when empty).
     SInput: { props: ['modelValue', 'type'], emits: ['update:modelValue'], template: '<input :type="type" :value="modelValue" @input="$emit(\'update:modelValue\', type === \'number\' ? ($event.target.value === \'\' ? null : Number($event.target.value)) : $event.target.value)" />' },
-    SchemaForm: { template: '<div />', methods: { validate: () => true } },
     // Mounts a native form the way plugin pages do: rendered for real.
     PluginComponent: false,
     // A native form whose expose (validate) the editor calls.
@@ -71,11 +72,28 @@ async function chooseProxy(w: ReturnType<typeof render>, id: number | null) {
   await flushPromises()
 }
 
+describe('a form mode this console does not render', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    i18n.global.locale.value = 'zh'
+    mocks.get.mockResolvedValue({ enabled: true })
+    mocks.patch.mockResolvedValue(savedAccount())
+  })
+
+  it('asks to upgrade the plugin and saves the other sections with the credentials as they were', async () => {
+    const w = render({ ...savedAccount(), credentials: { api_key: '******' } } as unknown as Account)
+    await flushPromises()
+    expect(w.find('[data-testid="form-unavailable-old"]').exists()).toBe(true)
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ credentials: { api_key: '******' } }))
+  })
+})
+
 describe('account forwarding and proxy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     mocks.patch.mockResolvedValue(savedAccount())
     mocks.post.mockResolvedValue(savedAccount())
   })
@@ -290,7 +308,7 @@ describe('account model limits', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     mocks.patch.mockResolvedValue(savedAccount())
   })
 
@@ -423,7 +441,7 @@ describe('account usage limit', () => {
     i18n.global.locale.value = 'zh'
     limitGet = () => Promise.resolve(saved)
     mocks.get.mockImplementation((path: string) =>
-      path.endsWith('/usage-limit') ? limitGet() : Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {})
+      path.endsWith('/usage-limit') ? limitGet() : Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {})
     )
     mocks.patch.mockResolvedValue(savedAccount())
     mocks.put.mockResolvedValue({})
@@ -581,7 +599,7 @@ describe('common controls of the account type (docs/COMMON-CONTROLS.md §2)', ()
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     mocks.post.mockResolvedValue(savedAccount())
     mocks.patch.mockResolvedValue(savedAccount())
   })
@@ -660,7 +678,7 @@ describe('plugin sections (account.editor.section)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     pluginStore.slotEntries = (slot: string) => (slot === 'account.editor.section' ? entries : [])
   })
   afterEach(() => {
@@ -696,7 +714,7 @@ describe('account field permissions', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     mocks.patch.mockResolvedValue(savedAccount())
     mocks.post.mockResolvedValue(savedAccount())
   })
@@ -761,7 +779,7 @@ describe('account protocols (DESIGN-2026-11-17-PROTOCOL-BINDING §5.1)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
-    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : path.endsWith('/form') ? { schema: { type: 'object' } } : {}))
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
     mocks.patch.mockResolvedValue(savedAccount())
     mocks.post.mockResolvedValue(savedAccount())
   })

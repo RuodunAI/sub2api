@@ -67,7 +67,7 @@ func TestManifest(t *testing.T) {
 	// hostCompat: the core of SDK 0.2.0 and of risk and defaults, 0.1.290.
 	// UI 3.20: the settings pages are written with useForm, SForm and
 	// SSecretInput (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY).
-	if m.Key != "moderation" || m.Version != "0.12.2" || m.HostCompat != ">=0.1.304 <0.2.0" || m.HostUICompat != "^3.20" || m.UI == nil || m.UI.Native == nil ||
+	if m.Key != "moderation" || m.Version != "0.12.2" || m.HostCompat != ">=0.1.304 <0.2.0" || m.HostUICompat != "^4.0" || m.UI == nil || m.UI.Native == nil ||
 		m.UI.Native.Entry != "ui/native/entry.js" || m.Database == nil || m.Database.Schema != "plg_moderation" {
 		t.Fatalf("manifest = %+v", m)
 	}
@@ -152,11 +152,10 @@ func TestManifest(t *testing.T) {
 		t.Error("users.read must be declared and optional")
 	}
 	// moderation:manage may edit the settings (§75.1), all of them on the
-	// plugin's own page (§72.15): native mode on the dashboard, without a
-	// form schema (ValidateSettings checks them, ui.settings.secrets says
-	// what the core masks).
-	if s := m.UI.Settings; s == nil || s.Permission != "moderation:manage" || s.Mode != "native" || s.Page != "dashboard" ||
-		s.Schema != "" || s.UISchema != "" {
+	// plugin's own page (§72.15): native mode on the dashboard
+	// (ValidateSettings checks them, ui.settings.secrets says what the core
+	// masks).
+	if s := m.UI.Settings; s == nil || s.Permission != "moderation:manage" || s.Mode != "native" || s.Page != "dashboard" {
 		t.Errorf("ui.settings = %+v", m.UI.Settings)
 	}
 	if len(m.Hooks) != 3 {

@@ -194,7 +194,7 @@ func TestManifest(t *testing.T) {
 			t.Errorf("%s form = %+v, want the native %s", c.at.ID, c.at.Form, c.component)
 		}
 	}
-	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.HostUICompat != "^3.20" {
+	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.HostUICompat != "^4.0" {
 		t.Fatalf("native UI = %+v, hostUICompat %q", m.UI, m.HostUICompat)
 	}
 

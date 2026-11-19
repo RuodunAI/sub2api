@@ -19,7 +19,7 @@
     }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
-  "hostUICompat": "^3.20",
+  "hostUICompat": "^4.0",
   "capabilities": [
     {
       "id": "platform.adapter.v1"

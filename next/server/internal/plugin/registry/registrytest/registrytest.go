@@ -89,7 +89,7 @@ func Manifest(key, version string) *manifest.Manifest {
 		}},
 		AccountTypes: []manifest.AccountType{{
 			ID: "apikey", Label: manifest.LocalizedText{"en": "API key", "zh": "API 密钥"},
-			Form:      manifest.Form{Mode: "schema", Schema: "forms/apikey.schema.json", UISchema: "forms/apikey.ui.json"},
+			Form:      manifest.Form{Mode: "native", Component: "ApiKeyForm"},
 			Platforms: []manifest.AccountPlatform{{Platform: "p_" + key}},
 		}},
 		Hooks:           []manifest.Hook{{Point: "gateway.request", Order: 10, Needs: []string{"model", "prompt_text"}, TimeoutMs: 500}},
@@ -156,8 +156,7 @@ func Package(t testing.TB, m *manifest.Manifest, bin []byte, extra map[string][]
 		name += ".exe"
 	}
 	files[name] = bin
-	files["forms/apikey.schema.json"] = []byte(`{"type":"object","properties":{"api_key":{"type":"string"}}}`)
-	files["forms/apikey.ui.json"] = []byte(`{"api_key":{"ui:widget":"password"}}`)
+	files["i18n/en.json"] = []byte(`{"hello":"Hello"}`)
 	files["ui/index.html"] = []byte(`<!doctype html><title>t</title>`)
 	files["ui/icon.svg"] = []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
 	files["secret.txt"] = []byte("not an asset")

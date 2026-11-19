@@ -73,7 +73,7 @@ func TestManifestShape(t *testing.T) {
 	if len(m.Platforms) != 0 || len(m.Routes) != 0 || m.Database != nil || len(m.UserPermissions) != 0 {
 		t.Fatalf("the manifest declares more than account types: %+v", m)
 	}
-	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.UI.Settings != nil || len(m.UI.Slots) != 0 || m.HostUICompat != "^3.20" {
+	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.UI.Settings != nil || len(m.UI.Slots) != 0 || m.HostUICompat != "^4.0" {
 		t.Fatalf("ui = %+v, hostUICompat = %q", m.UI, m.HostUICompat)
 	}
 
@@ -85,7 +85,7 @@ func TestManifestShape(t *testing.T) {
 		if at.ID != want.id {
 			t.Fatalf("accountTypes[%d] = %s, want %s", i, at.ID, want.id)
 		}
-		if at.Form.Mode != "native" || at.Form.Component != want.component || at.Form.Schema != "" || at.Form.UISchema != "" {
+		if at.Form.Mode != "native" || at.Form.Component != want.component {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
 		}
 		// One entry in the "new account" dialog, switched by auth method.

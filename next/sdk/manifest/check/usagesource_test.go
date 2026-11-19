@@ -263,14 +263,14 @@ func TestAccountTypeOverrideCannotReachUsageSource(t *testing.T) {
 	m.Platforms = []manifest.Platform{pluginSourcePlatform()}
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
-		Form: manifest.Form{Mode: "schema", Schema: "forms/k.json"},
+		Form: keyForm(m),
 		Platforms: []manifest.AccountPlatform{{Platform: "video", Usage: map[string]manifest.UsageRules{
 			// No source to write here, and the fact it declares needs no path
 			// because the endpoint it overrides is answered by the plugin.
 			"video.gen": {Facts: map[string]manifest.UsageFact{"images": {Type: "number"}}},
 		}}},
 	}}
-	files := map[string][]byte{"forms/k.json": []byte(`{}`)}
+	files := map[string][]byte{}
 	if err := Validate(m, files, ValidateOptions{Tooling: true}); err != nil {
 		t.Fatalf("account type override rejected: %v", codes(err))
 	}

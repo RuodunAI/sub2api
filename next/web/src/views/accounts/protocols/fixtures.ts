@@ -18,7 +18,7 @@ export const ep = (protocol: string, native: boolean, grade: ConversionGrade = '
 })
 
 export const type = (platforms: string[], endpoints: AccountTypeEndpoint[], over: Partial<AccountType> = {}) =>
-  ({ plugin_key: platforms[0], type: 'apikey', form: { mode: 'schema' }, default_models: [], platforms: platforms.map(id => ({ id, label: { en: id }, builtin: true, available: true })), endpoints, ...over }) as unknown as AccountType
+  ({ plugin_key: platforms[0], type: 'apikey', form: { mode: 'native', component: 'ApiKeyForm' }, default_models: [], platforms: platforms.map(id => ({ id, label: { en: id }, builtin: true, available: true })), endpoints, ...over }) as unknown as AccountType
 
 /** An OpenAI API key type: four own protocols, Anthropic and Gemini through conversion, count_tokens estimated. */
 export const openai = type(['openai'], [
