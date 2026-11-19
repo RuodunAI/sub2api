@@ -1,5 +1,7 @@
 # OpenAI 生图模型的接入与计费（设计稿，待用户确认）
 
+> 2026-11-18：3.1、3.2 已由 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.4 取代并实现（CONTRACTS §118：edits 只收 JSON 形式，multipart 以后做）；3.3、3.4 仍是以后的事。下文是当时的快照。
+
 2026-11-17，用户要求：“我们应该支持 openai 生图模型的计费，检查我们现在是否支持 gpt 的生图模型，codex 账号是否有接入生成图形的功能”。本文先写现状（ec2pool 测试实例实测），再给方案；**方案未实现，等用户确认第 4 节的决定后再开发**。
 
 ## 1. 现状（实测）

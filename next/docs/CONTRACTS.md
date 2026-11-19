@@ -298,7 +298,7 @@
 
 | 类型 | payload | 写入方 |
 |---|---|---|
-| `usage.recorded` | `{request_id, user_id, api_key_id, group_id, account_id, plugin_key, platform, protocol, model, success, status_code, error_type, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, total_cost, billing_status, latency_ms, created_at}` | B（结算后） |
+| `usage.recorded` | `{request_id, user_id, api_key_id, group_id, account_id, plugin_key, platform, protocol, model, success, status_code, error_type, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, image_input_tokens, image_output_tokens, total_cost, billing_status, latency_ms, created_at}`（两个图片字段见 §118） | B（结算后） |
 | `account.created` / `account.updated` / `account.deleted` | `{account_id, plugin_key, platform, type, name}` | A |
 | `account.status_changed` | `{account_id, platform, status, reason, cooldown_until?}`；status 含 `cooldown` | A |
 | `user.created` / `user.updated` | `{user_id, email, status}` | A |
@@ -613,7 +613,7 @@ POST `/me/api-keys/:id/rotate` 强制匹配当前登录用户 ID，不设管理�
 | GET `/plugins/:key/egress` | 明细分页 | `from`、`to`（默认最近 24 小时） | 汇总按连接数倒序（最多 200 条）；明细按 `started_at` 倒序 | `plugin/api/ops.go` |
 
 响应字段补充：
-- `/usage`、`/me/usage` 列表项：`id, request_id, created_at, user_id, user_email?, api_key_id, api_key_name?, group_id, group_name?, account_id, account_name?, plugin_key, platform, protocol, account_type, upstream_protocol, endpoint, model, upstream_model, stream, status_code, success, error_type, error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, total_cost, rate_multiplier, billing_status, billing_mode, matched_tier, latency_ms, first_token_ms, sticky_hit, client_ip`（`?` 为空串时省略）。`/me/usage`（列表与详情）把 `account_id` 置 `null`，`account_name`、`account_type`、`upstream_protocol`、`upstream_model`（账号的模型映射）置空，详情另把 `node_id` 置空；`error_message` 原样返回，5xx 也不清空（2026-11-02，用户规则：自助视图只隐藏字段，不改字段值；此前按审计 SEC-L3 清空 5xx 消息）。`/usage`（列表、详情、导出）对没有 `account:read` 的管理员同样把 `account_id` 置 `null`、`account_name` 置空，导出不含"账号 ID""账号"两列；这样的调用者带 `account_id` 或 `account_name` 筛选（列表、汇总、导出）返回 403 `permission_denied`（2026-11-02，用户决定：没有账号查看权限的管理员看不到使用记录里的账号）。控制台同样只对有 `account:read` 的管理员显示账号列和账号筛选。详情里结算条目的 `settlement.account_id`、`POST /usage/:id/reconcile` 返回的结算条目的 `account_id` 同样置 `null`。已删除插件（如 0.1.290 删除的 CCGateway）的行照常读出，`plugin_key` 保持写入时的值。详情的 `anomalies`（2026-11-02）：`/me/usage` 不返回；没有 `account:read` 的管理员，`anomalies.availability` 的样例与执行前检查记录、`anomalies.failure_policy[]` 都去掉 `account_id`（此前 `failure_policy` 的账号 id 会漏给这类管理员）；有 `account:read` 时 `availability` 样例补上 `account_name`。
+- `/usage`、`/me/usage` 列表项：`id, request_id, created_at, user_id, user_email?, api_key_id, api_key_name?, group_id, group_name?, account_id, account_name?, plugin_key, platform, protocol, account_type, upstream_protocol, endpoint, model, upstream_model, stream, status_code, success, error_type, error_message, attempts, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, image_input_tokens, image_output_tokens, total_cost, rate_multiplier, billing_status, billing_mode, matched_tier, latency_ms, first_token_ms, sticky_hit, client_ip`（`?` 为空串时省略；两个图片字段是输入、输出里图片的部分，§118）。`/me/usage`（列表与详情）把 `account_id` 置 `null`，`account_name`、`account_type`、`upstream_protocol`、`upstream_model`（账号的模型映射）置空，详情另把 `node_id` 置空；`error_message` 原样返回，5xx 也不清空（2026-11-02，用户规则：自助视图只隐藏字段，不改字段值；此前按审计 SEC-L3 清空 5xx 消息）。`/usage`（列表、详情、导出）对没有 `account:read` 的管理员同样把 `account_id` 置 `null`、`account_name` 置空，导出不含"账号 ID""账号"两列；这样的调用者带 `account_id` 或 `account_name` 筛选（列表、汇总、导出）返回 403 `permission_denied`（2026-11-02，用户决定：没有账号查看权限的管理员看不到使用记录里的账号）。控制台同样只对有 `account:read` 的管理员显示账号列和账号筛选。详情里结算条目的 `settlement.account_id`、`POST /usage/:id/reconcile` 返回的结算条目的 `account_id` 同样置 `null`。已删除插件（如 0.1.290 删除的 CCGateway）的行照常读出，`plugin_key` 保持写入时的值。详情的 `anomalies`（2026-11-02）：`/me/usage` 不返回；没有 `account:read` 的管理员，`anomalies.availability` 的样例与执行前检查记录、`anomalies.failure_policy[]` 都去掉 `account_id`（此前 `failure_policy` 的账号 id 会漏给这类管理员）；有 `account:read` 时 `availability` 样例补上 `account_name`。
 - `/usage/:id`、`/me/usage/:id` 详情另含：`plugin_version, metrics, sticky_rule, hook_decisions, price_id, price?:{id, model, source, plugin_key}, expr_hash, billing_detail, ledger_id, client_ip, user_agent, node_id`。`/me/usage/:id` 访问他人记录返回 404。`/me/usage/:id` 是本人视图（`Detail.redactForSelf`，2026-11-12）：除列表已隐藏的上游字段外，`plugin_version`、`sticky_rule`、`expr_hash`、`node_id` 为空，`plugin_detail`、`anomalies`、`settlement`、`request_log_account_id` 不返回；`metrics`（计价用的用量事实）、`hook_decisions`、`price_id`/`price`、`billing_detail`、`ledger_id` 照常返回，但 `billing_detail` 里的计价表达式与哈希去掉（`inputs.pricing.base.{expression,expr_hash}`、`additional[]/replacement[].expression_hash`、`inputs.additional[]/replacement[].Price`；`base` 保留为空对象，金额、档位、参数与各组件的 token 不动）。`hook_decisions` 各项的 `account_id`（`gateway.attempt` 钩子的尝试账号，§85）只给有 `account:read` 的 `/usage/:id`：本人视图和没有 `account:read` 的运营视图里都去掉（`Detail.hideAccounts`，与记录的 `account_id`、`settlement.account_id` 一起）。§97 起，倍率不是分组默认倍率或命中了定价规则的记录，`billing_detail` 多出 `inputs.pricing`（97.4），命中规则时另有 `list_cost`（97.5）；列表与详情的 `rate_multiplier` 是这次请求实际生效的倍率，不含规则倍数。
 - `usage_logs` 还有一列 `sched_decisions`（jsonb，迁移 0011，记录 `scheduler.rank` 插件对本次调度的改写，格式与语义见 §24.5），**接口不返回它**：它不在上面的详情字段里，`hook_decisions` 暴露而它不暴露是当前有意的取舍，排查请直接查库。
 - `/usage/summary` 每项：`{key, user_email?, requests, success, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, prompt_tokens, total_cost}`；`group_by=day` 时 `key` 为 UTC 日期 `YYYY-MM-DD`，`user` 时为用户 id 字符串并带 `user_email`；`ip` 时为调用 IP（没记录到 IP 的请求归入空串）并带该 IP 最近一次请求的时间 `last_at`；`cache_creation_tokens` 为 5 分钟与 1 小时缓存写入之和。`prompt_tokens` 按各请求保存的 usage semantics 归一化：inclusive 使用原始输入，exclusive 将输入、缓存读和两类缓存写入相加，再汇总；缓存命中率为 `cache_read_tokens / prompt_tokens`。历史记录若有缓存用量但缺少 semantics，所在汇总项的 `prompt_tokens` 返回 `null`，界面显示“—”，不按客户端协议猜测。新免费记录也保存 semantics，但不额外保存定价请求头或参数。
@@ -1803,7 +1803,7 @@ message RankedAccount {
 - **客户端同时发 `?Alt=1&alt=2` 时按 key 排序取最小的**。不定这条的话结果取决于 map 迭代顺序，同一次请求在不同节点可能不同，插件行为不可复现
 - 净化与 `path_params` 同（不限个数和长度，只去掉不合法的 UTF-8）
 
-**`usage.facts` 的键**：`^[a-z][a-z0-9_]{0,63}$`，且不得与 6 个标准 usage 字段同名。这个键同时是价格表达式里 `u("…")` 的字面量和 `usage_logs.metrics` 的 JSON 键，撞名会制造混淆。全仓只有 `gemini.json` 的 `thoughts_tokens` 和 volcengine 的 `images` 两处 facts，零误伤。
+**`usage.facts` 的键**：`^[a-z][a-z0-9_]{0,63}$`，且不得与标准 usage 字段（`check.UsageFields`；写这段时 6 个，§118 起 8 个）同名。这个键同时是价格表达式里 `u("…")` 的字面量和 `usage_logs.metrics` 的 JSON 键，撞名会制造混淆。全仓只有 `gemini.json` 的 `thoughts_tokens` 和 volcengine 的 `images` 两处 facts，零误伤。
 
 **`CheckPlatform` 的陷阱（新出现，已局部处理）**：`CheckPlatform(p)` 用的是空 `manifest.Manifest{}`，没有 capabilities。把 `needCap(platform.adapter.v1)` 无条件放进 `endpoint()`，会让一个**确实声明了该能力**的插件调 SDK 的 `CheckPlatform` 自检时被误报。现用 `validator.standalone` 只在该调用点关掉这条。
 
@@ -8481,3 +8481,110 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 核心：`account/proxyticket_test.go`（已有代理、粘贴的代理串、不用代理三种选择分别经哪个测试代理到达授权服务器；无代理权限、看不到的代理、冲突、解析错误、既不能新建也不能修改账号的用户；别的用户、没有用户、别的插件、篡改、编造、缺票据都 `PERMISSION_DENIED`；权限收回后票据失效；粘贴的代理串不落代理表、不进审计和日志）、`plugin/grpcruntime/route_fetch_internal_test.go`（路由调用的令牌、带票据才能取回、清单以外的主机、不能中继、调用返回后失效、没有用户没有令牌、`Execute` 的取回不能带票据）。SDK：`pluginsdk/route_fetch_test.go`、假宿主（`Harness.DoAs` 发令牌，`FakeHost.BeginRoute`，路由取回必须带票据）。控制台：`AccountEditor.spec.ts`（三种选择交给原生表单，拒绝时显示在代理输入下）。e2e：`next/e2e/ac38_codex_auth_proxy_test.go`（`TestAC38_CodexAuthorizationThroughFormProxy`）：已有代理、粘贴的代理串、不用代理三种选择下，codex 设备码登录的每个请求经代理（或直连）到达 mock 扮演的 `auth.openai.com`，粘贴的代理串不留代理记录，建成的账号经网关可用并计费；Sign in with Codex 的换令牌同样经代理。mock 为此提供授权服务器的接口和 HTTPS 的 `CONNECT` 代理（`next/deploy/e2e/README.md`）。
 
+## 118. OpenAI 生图：`/v1/images/generations`、`/v1/images/edits`（JSON），图片 token 计费（2026-11-18，所有者要求“支持 openai 生图模型的计费”；迁移 0112；核心 0.1.304 批次；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.4，取代 [DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md](DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md) 的 3.1、3.2）
+
+内置 `openai` 平台多了两个端点；用量规则新增两个标准字段，接到早已存在、一直恒为 0 的表达式变量 `img`、`img_o`；`usage_logs` 加两列保存它们。
+
+### 118.1 端点（`sdk/platforms/openai.json`）
+
+| id | 方法 路径 | 协议 | request | response |
+|---|---|---|---|---|
+| `images_generations` | `POST /v1/images/generations` | `openai.images` | `modelPath: model`、`streamPath: stream`、`promptTextPaths: ["prompt"]` | `stream: sse`、`nonStream: json` |
+| `images_edits` | `POST /v1/images/edits` | `openai.images_edit` | 同上 | 同上 |
+
+- 两个都是 `kind: proxy`、`auth.headers: ["authorization"]`、`errorFormat: openai`、`billing: usage`、`billingTypes: ["per_request","per_token","expression"]`。官方接口要求显式给 `model`，没给时网关照常回 400“model is required”。不带 `/v1` 的 `POST /images/generations`、`/images/edits` 按 §104.2 改写。
+- **只收 JSON 请求体**。官方 edits 也接受 JSON（`images: [{image_url | file_id}]`，`mask` 同理），这一形式与 generations 一样原样转发。**表单上传（`multipart/form-data`）形式暂不支持**：网关读完请求体后的第一道检查（`gateway/pipeline.go` 的 `checkBodyJSON`，§25.9）就回 400 `invalid_argument`，信息 `request body is not valid JSON`（OpenAI 错误形状里 `type` 为 `invalid_request_error`），不选账号、不预扣、不调插件、不发上游；与其它不是 JSON 的请求体一样留一条免费的使用记录，`error_type = invalid_request`、没有账号、token 为 0（鉴权失败时没有记录）。网关要收 multipart，得改读请求体、取模型和审核取提示词，放在以后。
+- 插件侧：`sdk/pluginsdk/providers/openai` 的预设加 `ProtocolImages`、`ProtocolImagesEdit` 两条路由（`/v1/images/generations`、`/v1/images/edits`，Bearer、`content-type: application/json`，请求体原样，流式也**不**加 `stream_options`：图片流不需要它就带用量）。openai 插件因此服务这两个协议（插件内容同批升到 0.5.0，默认模型加 `gpt-image-2`、`gpt-image-1.5`、`gpt-image-1-mini`，不加 2026-12-01 下线的 `chatgpt-image-latest`）。
+
+### 118.2 用量字段与规则
+
+- 标准用量字段（`check.UsageFields`）加 `image_input_tokens`、`image_output_tokens`（`manifest.UsageImageInputTokens` / `UsageImageOutputTokens`）：输入、输出 token 里图片的部分，**是 `input_tokens` / `output_tokens` 的一部分，不另外相加**，与规则的 `semantics` 无关。`usagerules.Acc` 把它们读进 `core.UsageTokens.ImageInput` / `ImageOutput`（与其它 token 字段同样：不是数字时记 0 并警告一次，负数记 0），不再落进 `usage_logs.metrics`。`UsageTokens.Total`、`Throughput`（TPM、实时 token 统计）、账号用量触发器、`usage_hourly` 和用量汇总都不另外计它们。
+- 两个端点的规则（`semantics: inclusive`；edits 只把事件名换成 `image_edit.completed`）：
+
+```json
+"json": {"map": {"model": "model", "input_tokens": "usage.input_tokens", "output_tokens": "usage.output_tokens",
+                 "image_input_tokens": "usage.input_tokens_details.image_tokens",
+                 "image_output_tokens": "usage.output_tokens_details.image_tokens"}},
+"sse": [{"event": "image_generation.completed",
+         "map": {"input_tokens": "usage.input_tokens", "output_tokens": "usage.output_tokens",
+                 "image_input_tokens": "usage.input_tokens_details.image_tokens",
+                 "image_output_tokens": "usage.output_tokens"}}]
+```
+
+- 非流式按官方字段读；应答不带 `output_tokens_details` 时图片输出读成 0，整个输出留在 `c` 里。官方应答目前没有顶层 `model`，规则映射它只为上游以后带上；没有时上游模型照旧取请求的模型。
+- 流式：只有 completed 事件带 `usage`（`partial_image` 事件没有，不列），官方参考里它的 usage 没有 `output_tokens_details`，所以**图片输出取整个 `output_tokens`**（这个端点的输出几乎全是图片；若有文字输出 token，按图片输出价计，略多收）。规则按事件名匹配（`event:` 行，没有时读 `data.type`，§25）；completed 事件给出 `output_tokens`，所以流在这里算“最终用量已到”（§25.8）。以后用真实流式应答核对到事件里有明细，就把这一条改成与 JSON 相同的路径。
+- 插件自报的用量（`pluginv1.UsageTokens`，`usageSource: "plugin"`、核对、`EstimateUsage`）和宿主调用 `PriceUsage`（§72.13）没有图片字段：现在没有插件自己解析生图用量，以后需要时另加。
+
+### 118.3 计费变量 `img`、`img_o`
+
+- 变量早已在 `billing/expr` 里（`TokenVars`、`Vars`），表达式里写它们校验能过；这一版给它们接上数据：`expr.Tokens` 加 `ImageInput`、`ImageOutput`（字段与 `core.UsageTokens` 一一对应，两处互相转换），结算（`usage/settler.go` 的 `priceOne`、`evaluate`）、`billing.Quote`、价格试算都带上。
+- `expr.Normalize` 的规则与缓存写入在 `inclusive` 下的做法一致（§104.3），**两种语义都适用**：
+  - 表达式用到 `img` 时 `img = ImageInput`，`p` 再扣掉它；用到 `img_o` 时 `img_o = ImageOutput`，`c` 扣掉它；`p`、`c` 都不小于 0。
+  - 没用到时图片 token 留在 `p`、`c` 里按文字价算——**不会变成免费，也不会重复计**。
+  - `len`（分档用的完整上下文）不受扣除影响，含图片输入。
+- 例（`gpt-image-1.5` 的参考价，见 118.6；输入 1000 其中图片 600、缓存读 100，输出 4200 其中图片 4000）：`p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 计 300×5 + 100×1.25 + 600×8 + 4000×32 + 200×10 = 136 425 微美元；只有文字价的 `p*5 + cr*1.25 + c*10` 计 900×5 + 100×1.25 + 4200×10 = 46 625 微美元（`billing/image_tokens_test.go`、`usage/image_tokens_db_test.go`）。
+- `POST /prices/preview` 的 `usage` 多两个可选字段 `img`、`img_o`。`usage` 是“分开”的形式：`p` 不含缓存和图片输入、`c` 不含图片输出；核心把 `p + img`、`c + img_o` 当作输入、输出总量，按结算同样的规则归一化，所以没计价的图片 token 按 `p`、`c` 的价算。`len` 缺省为 `p + cr + cc + cc1h + img`。`POST /pricing/quote`（§97）的用量不变（没有图片字段）。
+- 价格页的结构化分档编辑器、按 token 计价的 `config`（`p`、`c`、`cr`、`cc`、`cc1h`）不变：要单独给图片定价就写表达式价格。
+
+### 118.4 存储与接口（迁移 0112）
+
+```sql
+SET LOCAL lock_timeout = '10s';
+ALTER TABLE usage_logs
+    ADD COLUMN IF NOT EXISTS image_input_tokens  bigint NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS image_output_tokens bigint NOT NULL DEFAULT 0;
+```
+
+- 常量默认值的 `ADD COLUMN` 只改目录、不重写表；拿不到锁 10 秒后迁移失败，重试即可（0108 的先例）。旧行读出 0。旧核心忽略这两列。`internal/store/model` 由 `gen-models` 重新生成。
+- 使用记录写这两列（`usage/settler.go` 的 `usageLogRow`），待结算重读（`pendingColumns`）也带上。
+- `/usage`、`/me/usage` 的列表与详情多 `image_input_tokens`、`image_output_tokens`（§15.2 的列表字段）；`usage.recorded` 事件同样多这两个键（§6 的事件表）。账号侧视图 `/account-usage`（§103.5 的允许字段）、导出、用量汇总、`usage_hourly` 不变。
+- `core.UsageTokens` 的两个新字段在 JSON 里为 0 时省略（`json:",omitempty"`）：`billing_detail.inputs` 里保存的附加 / 替换用量（`PricedUsage`）对其它请求逐字节不变。
+
+### 118.5 哪些账号类型服务这两个端点（§110）
+
+新端点是 `openai` 平台的本平台协议。账号类型在 `openai` 平台上不写 `endpoints` 子集就服务该平台的全部端点，包括新加的；写了子集就只服务子集。
+
+| 账号类型 | 平台上的端点 | 生图 |
+|---|---|---|
+| openai `apikey` | 不写子集 | **服务**（预设有两条路由） |
+| codex `codex_oauth`、`codex_device` | `responses`、`responses_websocket` | 不服务，调度时不是候选（`gateway/images_test.go` 的 `TestOpenAIImages`）。Sign in with ChatGPT 账号经 Responses 的 `image_generation` 工具生图被上游拒绝（旧设计稿 1） |
+| azure-openai `azure_v1`（chat、responses、embeddings）、`azure_deployment`（chat、embeddings） | 写了子集 | 不服务；插件的路由表也没有这两个协议 |
+| volcengine `apikey`、`relay` | 本批改为显式 `chat_completions`、`responses`、`responses_websocket`、`embeddings`（与之前实际服务的相同） | 不服务：方舟的生图（Seedream）在插件自己的 `volcengine` 平台上（`volcengine.images`），形状不同；不写子集的话调度会把 OpenAI 生图请求交给它，插件没有这条路由而报 `unsupported upstream protocol` |
+| relay、anthropic、gemini、vertex、bedrock 的类型 | 不在 `openai` 平台上 | 不受影响 |
+
+- 账号层面：`protocols` 为 `null`（默认）的 OpenAI API Key 账号升级后**自动**开放 `openai.images`、`openai.images_edit`；`protocols` “指定”过的账号不会自动开放（§110.2 的既定行为），要的话运营方在“协议与模型”里勾上。`model_protocols` 照常可以把生图模型限定到这两个协议。
+- 第三方插件的账号类型在 `openai` 平台上没写子集时同样自动得到这两个端点；插件没有这两个协议的路由时，请求得到 `unsupported upstream protocol`（换号），这样的插件应写明子集。
+
+### 118.6 价格：管理员要做什么
+
+插件和核心都**不预置价格**（插件清单写 `pricing` 校验失败，§17）。
+
+- **没有价格时**：与其它模型相同，按 `/settings/billing` 的 `missing_price_policy`：默认 `reject` 时请求在调度前被拒，403 `model_price_not_configured`；`free` 时照常转发、不计费（§17）。
+- **要按图片 token 正确计费**：在价格页给生图模型录**表达式价格**（单位与其它表达式相同，美元 / 百万 token）。参考价（来源：OpenAI 官方价格页与 Images API 参考 `developers.openai.com/api/reference/resources/images`，标准档，2026-11-18 抓取；录入前以官方为准，模型名录入前核对拼写）：
+
+| 模型 | 文字输入 `p` | 缓存输入 `cr` | 图片输入 `img` | 图片输出 `img_o` | 文字输出 `c` | 表达式 |
+|---|---|---|---|---|---|---|
+| `gpt-image-2`，`gpt-image-2.5-sunburst`、`-2.5-flare`、`-2.6-sunburst`、`-2.6-flare` | 5.00 | 1.25 | 8.00 | 30.00 | 无（写 30） | `p*5 + cr*1.25 + img*8 + img_o*30 + c*30` |
+| `gpt-image-1.5`（`chatgpt-image-latest` 同价，2026-12-01 下线） | 5.00 | 1.25 | 8.00 | 32.00 | 10.00 | `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` |
+| `gpt-image-1-mini` | 2.00 | 0.20 | 2.50 | 8.00 | 无（写 8） | `p*2 + cr*0.2 + img*2.5 + img_o*8 + c*8` |
+
+  - 没有文字输出价的模型把 `c` 写成图片输出价：上游不给输出明细时 `c` 里其实就是图片输出，这样两种情况都算对。
+  - 缓存的图片输入（官方 2.00 / 0.25）没有单独变量，并入 `cr` 按文字缓存价算，略少收。
+  - `gpt-image-1`（2026-10-23 下线）、`dall-e-2/3`（2026-05-12 下线）不用录；官方已没有按张计价的表；应答里的 `svg_usage` 计费方式未查到，这一版不读。
+- **价格同步源**（§17.1）这一版不映射图片价：LiteLLM 源只导入 chat、completion、responses、embedding 模式，`image_generation` 模式的条目被跳过；models.dev 源只有 `cost.input` / `output` / `cache_read`，导入的生图模型价格是只有文字价的 `per_token`（旧设计稿实测 `gpt-image-1.5` 为 `{p:5, c:10, cr:1.25}`）。这样的价格不计 `img`、`img_o`，图片 token 按文字价算，**少收**（图片输出官方价是文字输出的数倍），管理员应把它改成上表的表达式价格（改过的同步价格变成 `manual`，下次同步不会覆盖）。
+
+### 118.7 控制台
+
+- 使用记录详情（`UsageTokenFacts.vue`）在图片 token 非 0 时多两行“图片输入”“图片输出”；价格试算面板多 `img`、`img_o` 两个输入；计费明细的条目名、协议绑定界面的协议名（“Images”“Image Edits”）有中英文。内置平台的备用目录（`composables/platforms.ts`）加这两个端点。
+
+### 118.8 测试
+
+- 核心：`usagerules/image_tokens_test.go`（两个字段进 `Tokens` 不进 `metrics`、非数字与负数；两个端点的规则对 JSON 带 / 不带输出明细、流式按文档与带明细、未命名事件）；`billing/expr` 的 `TestNormalizeImageTokens`（用到 / 没用到 `img`、`img_o` 时 `p`、`c` 的扣减、不为负，两种语义）；`billing/image_tokens_test.go`（两种表达式写法与流式的金额）；`billing` 的 `TestPriceAPI`（试算的 `img`、`img_o`）；`usage/image_tokens_db_test.go`（写两列、结算金额、事件、`/usage` 与 `/me/usage` 的列表和详情、其它请求的 `billing_detail` 不变）；`usage` 的 `TestInsertBatchMatchesValuesInsert`（两列逐列一致）；`gateway/images_test.go`（JSON 与流式、codex 子集不是候选、multipart 的 edits 在调度前 400 且只有免费的 `invalid_request` 记录）；迁移 `TestMigration0112UsageImageTokens`。
+- SDK 与插件：`sdk/platforms` 的协议表；openai 插件的合规套件覆盖两个新协议（非流式、流式），`TestImages` 钉住两条路由发给上游的字节，现有四个协议的黄金样例逐字节照旧；volcengine 的清单测试钉住 `openai` 平台上的端点子集。
+- e2e（P9）：mock 上游的两个接口与 AC40，见设计文档 6。
+
+### 118.9 以后
+
+- `/v1/images/edits` 的 multipart 形式（118.1）。
+- Responses 里 `image_generation` 工具的生图部分按生图模型另计（`response.tool_usage.image_gen`，要扩展附加用量规则）。
+- 缓存的图片输入单独计价、价格同步源导入图片 token 价、结构化分档编辑器里的图片价、统计页汇总图片 token、插件自报用量里的图片字段。
