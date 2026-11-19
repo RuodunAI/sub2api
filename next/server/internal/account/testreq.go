@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -46,6 +47,9 @@ type TestResult struct {
 	// RequestedModel is the model the caller chose, before the account's
 	// mapping; empty when none was given (the plugin's default).
 	RequestedModel string `json:"requested_model"`
+	// Protocol is the protocol the plugin tested (its usage_protocol); empty
+	// when it named none or failed to build the request.
+	Protocol string `json:"protocol,omitempty"`
 	// Upstream is the address the test reached, without query or fragment:
 	// they may carry the credential (Gemini style "?key=...").
 	Upstream string `json:"upstream,omitempty"`
@@ -118,11 +122,13 @@ func (s *Service) test(c *gin.Context) {
 	defer cancel()
 	// The account's model mapping applies to test calls too (CONTRACTS §18).
 	requested := strings.TrimSpace(in.Model)
+	// Naming the model is what makes a test explicit (CONTRACTS §122).
+	tp := s.testProtocols(a, requested != "")
 	model := requested
 	if model == "" {
-		model = a.defaultTestModel()
+		model = tp.defaultModel(a.testModels())
 	}
-	protocols := s.testProtocols(a, model)
+	protocols := tp.of(model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
@@ -146,31 +152,71 @@ func (s *Service) test(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
-// testProtocols lists the protocols a test of account a may use, most
-// preferred first (BuildTestRequestRequest.protocols): the protocols of its
-// own platforms it serves natively, in the order of its type's platforms and
-// their endpoints, without WebSocket and token-counting ones and, for a test
-// of client model model, only those serving it.
-func (s *Service) testProtocols(a *row, model string) []string {
+// testProtocolSet is the protocols a test of an account may use: those of
+// its own platforms it serves natively, in the order of its type's
+// platforms and their endpoints, without WebSocket and token-counting ones,
+// those whose endpoint says test "never" and, unless the test is explicit
+// (the console named the model), those whose endpoint says "explicit"
+// (CONTRACTS §122).
+type testProtocolSet struct {
+	protocols []string
+	rules     *core.ProtocolRules
+}
+
+// testProtocols is the set of account a; explicit when the console named
+// the model.
+func (s *Service) testProtocols(a *row, explicit bool) testProtocolSet {
+	tp := testProtocolSet{rules: a.protocolBinding().compile()}
 	g := s.gen()
 	if g == nil {
-		return nil
+		return tp
 	}
-	webSocket := map[string]bool{}
+	skip := map[string]bool{}
 	for _, e := range g.Endpoints() {
-		webSocket[e.Endpoint.Protocol] = webSocket[e.Endpoint.Protocol] || e.Endpoint.WebSocket()
+		ep := e.Endpoint
+		skip[ep.Protocol] = skip[ep.Protocol] || ep.WebSocket() || ep.Test == manifest.EndpointTestNever ||
+			(ep.Test == manifest.EndpointTestExplicit && !explicit)
 	}
-	rules := a.protocolBinding().compile()
-	var out []string
 	for _, sp := range s.accountServedProtocols(a) {
-		if sp.Via != viaNative || webSocket[sp.Protocol] || core.CountTokensFamily(sp.Protocol) != "" {
-			continue
+		if sp.Via == viaNative && !skip[sp.Protocol] && core.CountTokensFamily(sp.Protocol) == "" {
+			tp.protocols = append(tp.protocols, sp.Protocol)
 		}
-		if _, serves := rules.Serves(model, sp.Protocol, false); model == "" || serves {
-			out = append(out, sp.Protocol)
+	}
+	return tp
+}
+
+// of lists the protocols a test of client model model is offered, most
+// preferred first (BuildTestRequestRequest.protocols): for a model, those
+// the account's protocol binding serves it on, in the order of the
+// model_protocols entry covering it when there is one.
+func (tp testProtocolSet) of(model string) []string {
+	if model == "" {
+		return tp.protocols
+	}
+	var out []string
+	for _, p := range tp.protocols {
+		if _, serves := tp.rules.Serves(model, p, false); serves {
+			out = append(out, p)
 		}
+	}
+	if order := tp.rules.ModelProtocols(model); order != nil {
+		slices.SortStableFunc(out, func(x, y string) int { return slices.Index(order, x) - slices.Index(order, y) })
 	}
 	return out
+}
+
+// defaultModel is the model a test naming none uses: the first of models
+// left with a protocol to test, else the first; "" for no models.
+func (tp testProtocolSet) defaultModel(models []string) string {
+	for _, m := range models {
+		if len(tp.of(m)) > 0 {
+			return m
+		}
+	}
+	if len(models) > 0 {
+		return models[0]
+	}
+	return ""
 }
 
 // LastTest is the last console test of an account (CONTRACTS §50), shown
@@ -181,6 +227,8 @@ type LastTest struct {
 	LatencyMs int64     `json:"latency_ms"`
 	// Model actually requested (TestResult.model).
 	Model string `json:"model"`
+	// Protocol tested (TestResult.protocol); "" when unknown.
+	Protocol string `json:"protocol,omitempty"`
 	// Message is empty on success; on failure the plugin's reason, else the
 	// upstream message, at most maxLastTestMessage bytes.
 	Message     string `json:"message"`
@@ -220,6 +268,7 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 		"last_test_at": gorm.Expr("now()"), "last_test_ok": res.OK, "last_test_latency_ms": min(res.LatencyMs, math.MaxInt32),
 		"last_test_model": res.Model, "last_test_message": msg, "last_test_status": res.Status,
 		"last_test_error_code": cutBytes(res.ErrorCode, 128), "last_test_error_source": res.ErrorSource,
+		"last_test_protocol": res.Protocol,
 	}).Error; err != nil {
 		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
 	}
@@ -243,7 +292,7 @@ func cutBytes(s string, n int) string {
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
-	res := TestResult{Model: model, ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
+	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
 	}

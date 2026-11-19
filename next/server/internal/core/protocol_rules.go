@@ -96,6 +96,20 @@ func (r *ProtocolRules) ServesOthers(protocol string, cross bool) (reason string
 	return "", true
 }
 
+// ModelProtocols is the protocols of the rule covering the (client) model,
+// by name else under OtherModels, in the order the rule lists them; nil
+// when no rule covers it. The console's account test prefers them in this
+// order (CONTRACTS §122).
+func (r *ProtocolRules) ModelProtocols(model string) []string {
+	if r == nil {
+		return nil
+	}
+	if rule, named := r.models[model]; named {
+		return rule
+	}
+	return r.other
+}
+
 // serves judges protocol for a model whose rule is rule; listed is false for
 // a model without one.
 func (r *ProtocolRules) serves(rule []string, listed bool, protocol string, cross bool) (reason string, ok bool) {

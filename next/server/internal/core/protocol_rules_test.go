@@ -114,6 +114,25 @@ func benchCandidates(n int, rules *ProtocolRules) []AccountRef {
 
 // The decision runs for every candidate of every request: it must not
 // allocate, with or without a binding, served or not.
+// ModelProtocols is the covering entry's protocols as written: the model's
+// own entry, else the other models' entry, else none.
+func TestProtocolRulesModelProtocols(t *testing.T) {
+	rules := []ModelProtocolRule{{Models: []string{"m"}, Protocols: []string{"b.x", "a.y"}}}
+	if got := NewProtocolRules(nil, rules).ModelProtocols("m"); !slices.Equal(got, []string{"b.x", "a.y"}) {
+		t.Errorf("named: %v", got)
+	}
+	if got := NewProtocolRules(nil, rules).ModelProtocols("n"); got != nil {
+		t.Errorf("no entry: %v", got)
+	}
+	rules = append(rules, ModelProtocolRule{Models: []string{OtherModels}, Protocols: []string{"c.z"}})
+	if got := NewProtocolRules(nil, rules).ModelProtocols("n"); !slices.Equal(got, []string{"c.z"}) {
+		t.Errorf("other models: %v", got)
+	}
+	if got := (*ProtocolRules)(nil).ModelProtocols("m"); got != nil {
+		t.Errorf("no binding: %v", got)
+	}
+}
+
 func TestProtocolRulesServesDoesNotAllocate(t *testing.T) {
 	for name, rules := range map[string]*ProtocolRules{"no binding": nil, "50 rules": benchRules()} {
 		refs := benchCandidates(500, rules)

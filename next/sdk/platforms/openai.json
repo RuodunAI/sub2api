@@ -247,6 +247,7 @@
       "path": "/v1/images/generations",
       "protocol": "openai.images",
       "kind": "proxy",
+      "test": "explicit",
       "auth": {
         "headers": [
           "authorization"
@@ -300,6 +301,7 @@
       "path": "/v1/images/edits",
       "protocol": "openai.images_edit",
       "kind": "proxy",
+      "test": "never",
       "auth": {
         "headers": [
           "authorization"

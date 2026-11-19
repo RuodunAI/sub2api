@@ -239,7 +239,23 @@ type Endpoint struct {
 	// from. Values travel whole, of any size. Only read with UsageSource
 	// UsageSourcePlugin or TaskSubmit().
 	UsageRequestFields []string `json:"usageRequestFields,omitempty"`
+	// Test says when the console's account test may use this endpoint's
+	// protocol (CONTRACTS §122): "" whenever the account serves it,
+	// EndpointTestExplicit only when the administrator tests one model,
+	// EndpointTestNever not at all.
+	Test string `json:"test,omitempty"`
 }
+
+// Values of Endpoint.Test.
+const (
+	// EndpointTestExplicit is a protocol whose test costs real money (an
+	// image generation): tested only when the console names the model, never
+	// by a batch test or a test of the whole account.
+	EndpointTestExplicit = "explicit"
+	// EndpointTestNever is a protocol a test cannot exercise on its own (an
+	// image edit needs an input image).
+	EndpointTestNever = "never"
+)
 
 // PluginUsage reports whether this endpoint's usage is read by the plugin
 // declaring its platform (ExecuteRequest.extract_usage) instead of by the
