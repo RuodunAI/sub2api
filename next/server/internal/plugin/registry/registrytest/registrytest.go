@@ -6,6 +6,7 @@ package registrytest
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -243,7 +244,7 @@ func (l *Launcher) Command(_ context.Context, spec core.LaunchSpec) (*exec.Cmd, 
 	l.Commands++
 	l.mu.Unlock()
 	cmd := exec.Command(spec.BinaryPath)
-	cmd.Dir = spec.WorkDir
+	cmd.Dir = cmp.Or(spec.DataDir, spec.RunDir)
 	cmd.Env = append([]string(nil), spec.Env...)
 	return cmd, nil
 }

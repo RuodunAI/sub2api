@@ -126,10 +126,16 @@ type PluginDefaultsApplier interface {
 
 // LaunchSpec describes how to start one plugin process.
 type LaunchSpec struct {
-	PluginKey     string
-	Version       string
-	BinaryPath    string
-	WorkDir       string
+	PluginKey  string
+	Version    string
+	BinaryPath string
+	// DataDir is the plugin's data directory, set only when it is granted
+	// "fs.data": the core creates it, passes it as SUB2API_PLUGIN_DATA_DIR
+	// and Landlock grants it (CONTRACTS §43.8). "" = no file access.
+	DataDir string
+	// Net is set when the plugin is granted "net": Landlock lets it read the
+	// CA certificates for TLS through the egress tunnel.
+	Net           bool
 	Env           []string // extra env, e.g. SUB2API_PLUGIN_KEY
 	MemoryMB      int      // 0 = no limit
 	CPU           float64  // cores, informational without cgroup
@@ -138,9 +144,19 @@ type LaunchSpec struct {
 	StrictNetwork bool // seccomp denies AF_INET/AF_INET6 (Linux only)
 	Seccomp       bool
 	// RunDir is the private 0700 directory of this process: go-plugin
-	// sockets and the plugin's TMPDIR live there. Landlock grants it instead
-	// of the shared temporary directory.
+	// sockets and the plugin's TMPDIR live there. Landlock grants only the
+	// socket directory inside it, never the shared temporary directory.
 	RunDir string
+}
+
+// PluginSandboxStatus is what the plugin sandbox of a node enforces
+// (CONTRACTS §43.8), probed once at startup and shown on the nodes page.
+type PluginSandboxStatus struct {
+	Wrapped  bool     `json:"wrapped"`      // plugins run under plugin-exec (Linux, not development mode)
+	Landlock bool     `json:"landlock"`     // SUB2API_PLUGIN_LANDLOCK
+	ABI      int      `json:"landlock_abi"` // the kernel's Landlock ABI, 0 = none
+	Active   []string `json:"active"`       // Landlock layers in force
+	Missing  []string `json:"missing"`      // layers this kernel or configuration lacks
 }
 
 // ResourceEvent is reported by the watchdog.
