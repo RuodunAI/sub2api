@@ -7,6 +7,7 @@ import { addRoleKeys, bumpAuthz, managesRole } from './resources'
 import { pluginPlatforms } from './platforms'
 import { pluginAccountCount, uninstallPluginAccounts } from './accounts'
 import { invalid } from './resources'
+import { mailerSettings } from './mailer'
 
 type Any = Record<string, any>
 
@@ -137,8 +138,10 @@ plugins.set('guard', {
   ],
   manifest: guardManifest('0.1.0'),
   settings: {
+    mode: 'schema',
     schema: guardSettingsSchema,
     ui_schema: { webhook_secret: { 'ui:widget': 'password' } },
+    secret_fields: ['webhook_secret'],
     values: { mode: 'block', max_prompt_kb: 32, alert_webhook: 'https://hooks.example.com/guard', webhook_secret: '******', notify_on_block: true }
   }
 })
@@ -163,6 +166,36 @@ plugins.set('anthropic', {
   manifest: anthropicManifest('0.1.0'),
   settings: null,
   builtin: true
+})
+
+// Settings of its own and nothing else to show: native settings without a
+// page, mounted on the settings tab (mailer.ts has its native module).
+plugins.set('mailer', {
+  key: 'mailer',
+  name: { en: 'Mailer', zh: '邮件' },
+  description: { en: 'Sends notifications by email through an SMTP server.', zh: '通过 SMTP 服务器发送邮件通知。' },
+  status: 'enabled',
+  status_reason: '',
+  builtin: true,
+  active_version: '0.2.0',
+  desired_version: '0.2.0',
+  publisher: 'sub2api',
+  trust: 'official',
+  egress_policy: 'allow_all',
+  resources: { memory_mb: 64, cpu: 0.1 },
+  versions: [{ version: '0.2.0', consent_status: 'approved' }],
+  grants: [grant('net', { domains: ['*'] }, '0.2.0'), grant('ui.native', null, '0.2.0')],
+  manifest: {
+    key: 'mailer',
+    version: '0.2.0',
+    publisher: 'sub2api',
+    description: { en: 'Sends notifications by email through an SMTP server.', zh: '通过 SMTP 服务器发送邮件通知。' },
+    hostCompat: '>=0.1.0 <0.2.0',
+    hostUICompat: '^3.20',
+    capabilities: [{ id: 'notify.channel.v1' }],
+    ui: { native: { entry: 'ui/native/entry.js' }, settings: { mode: 'native', component: 'MailerSettings', secrets: [{ path: 'password' }] } }
+  },
+  settings: mailerSettings
 })
 
 // Built-in openai / gemini plugins (CONTRACTS §14.1): one account type each
@@ -812,7 +845,8 @@ function summary(p: MockPlugin): Any {
   const running = p.status === 'enabled' || p.status === 'upgrading'
   return {
     key: p.key,
-    has_settings: !!p.settings?.schema,
+    // Like the server (plugins.go): the manifest declares ui.settings.
+    has_settings: !!p.settings,
     name: p.name,
     description: p.description,
     status: p.status,
@@ -1068,9 +1102,11 @@ on('PUT', '/plugins/:key/settings', (req) => {
   if (values.max_prompt_kb !== undefined && (values.max_prompt_kb < 1 || values.max_prompt_kb > 256)) {
     return fail(400, 'invalid_argument', 'invalid settings', { fields: [{ field: 'values.max_prompt_kb', code: 'range', message: 'must be between 1 and 256' }] })
   }
-  // "******" keeps the stored secret (the mock stores it masked anyway)
-  if (values.webhook_secret === '******' || values.webhook_secret === undefined) values.webhook_secret = p.settings.values?.webhook_secret
-  else if (values.webhook_secret) values.webhook_secret = '******'
+  // "******" (or no value) keeps the stored secret, '' clears it; the mock stores it masked anyway.
+  for (const k of p.settings.secret_fields ?? []) {
+    if (values[k] === '******' || values[k] === undefined) values[k] = p.settings.values?.[k]
+    else if (values[k]) values[k] = '******'
+  }
   p.settings.values = values
   return p.settings
 })
