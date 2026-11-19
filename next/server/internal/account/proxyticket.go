@@ -73,8 +73,8 @@ func (s *Service) checkChoice(ctx context.Context, c ProxyChoice, action perm.Ke
 }
 
 // egressClient is the way out through e: the proxy's client (cached), a
-// transient one for a pasted URL, or the direct one. release ends what a
-// transient client holds.
+// transient one for a pasted URL (Proxy is that URL's address, id 0), or the
+// direct one. release ends what a transient client holds.
 func (s *Service) egressClient(ctx context.Context, e egress) (eg core.Egress, release func(), err error) {
 	if e.spec == nil {
 		eg, err = s.proxyEgress(ctx, e.proxyID)
@@ -84,6 +84,7 @@ func (s *Service) egressClient(ctx context.Context, e egress) (eg core.Egress, r
 	if eg.Client, err = s.d.Proxies.HTTPClientFor(ctx, *e.spec); err != nil {
 		return eg, nil, err
 	}
+	eg.Proxy = &core.ProxyRef{ProxySpec: *e.spec}
 	return eg, eg.Client.CloseIdleConnections, nil
 }
 
