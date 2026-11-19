@@ -61,11 +61,13 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		return resp, nil // the standard check refused it
 	}
 	var errs pluginsdk.FieldErrors
-	if base, ok := lookup("base_url", settings, creds).(string); ok && strings.TrimSpace(base) != "" && !EndpointPattern.MatchString(base) && !refused(resp, "base_url") {
+	baseRefused := slices.ContainsFunc(resp.GetErrors(), func(e *pluginv1.FieldError) bool { return e.GetField() == "base_url" })
+	v, _ := apikey.Lookup("base_url", settings, creds)
+	if base, ok := v.(string); ok && !baseRefused && strings.TrimSpace(base) != "" && !EndpointPattern.MatchString(base) {
 		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
 	}
 	if in.GetAccountType() == TypeDeployment {
-		v := lookup("api_version", settings, creds)
+		v, _ = apikey.Lookup("api_version", settings, creds)
 		s, _ := v.(string)
 		switch {
 		case v == nil || v == "":
@@ -78,21 +80,6 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		return resp, nil
 	}
 	return &pluginv1.ValidateCredentialsResponse{Errors: append(resp.GetErrors(), errs...)}, nil
-}
-
-// lookup is k's value in the first object holding it (nil: absent).
-func lookup(k string, objs ...map[string]any) any {
-	for _, o := range objs {
-		if v, ok := o[k]; ok {
-			return v
-		}
-	}
-	return nil
-}
-
-// refused reports whether resp already has an error at field.
-func refused(resp *pluginv1.ValidateCredentialsResponse, field string) bool {
-	return slices.ContainsFunc(resp.GetErrors(), func(e *pluginv1.FieldError) bool { return e.GetField() == field })
 }
 
 // V1 is the azure_v1 type: the v1 API under <resource>/openai/v1.

@@ -14,24 +14,34 @@ import (
 // ValidateCredentials, at the same field. The core no longer checks a
 // schema; the plugin's check is final.
 func TestCredentialsRefused(t *testing.T) {
-	long := "sk-" + strings.Repeat("k", 510) // 513 characters
-	for _, c := range []struct{ name, accountType, creds, field string }{
-		{"api_key missing", "apikey", `{}`, "api_key"},
-		{"api_key empty", "apikey", `{"api_key": ""}`, "api_key"},
-		{"api_key not a string", "apikey", `{"api_key": 123456789}`, "api_key"},
-		{"api_key shorter than 8", "apikey", `{"api_key": "sk-kkkk"}`, "api_key"},
-		{"api_key longer than 512", "apikey", `{"api_key": "` + long + `"}`, "api_key"},
-		{"api_key with a space", "apikey", `{"api_key": "sk-abc def"}`, "api_key"},
-		{"api_key not ASCII", "apikey", `{"api_key": "sk-ключ-abcdef"}`, "api_key"},
-		{"base_url not a string", "apikey", `{"api_key": "ts-abcdefgh", "base_url": 1}`, "base_url"},
-		{"base_url not http", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "ftp://x.example.com"}`, "base_url"},
-		{"base_url without a scheme", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "x.example.com"}`, "base_url"},
-		{"base_url without a host", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://"}`, "base_url"},
-		{"base_url with a query", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://x.example.com/?a=1"}`, "base_url"},
-		{"base_url with a fragment", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://x.example.com/#a"}`, "base_url"},
+	long, longest := "sk-"+strings.Repeat("k", 510), "sk-"+strings.Repeat("k", 509) // 513 and 512 characters
+	for _, c := range []struct{ name, accountType, creds, field, code string }{
+		{"api_key missing", "apikey", `{}`, "api_key", ""},
+		{"api_key empty", "apikey", `{"api_key": ""}`, "api_key", ""},
+		{"api_key not a string", "apikey", `{"api_key": 123456789}`, "api_key", ""},
+		{"api_key shorter than 8", "apikey", `{"api_key": "sk-kkkk"}`, "api_key", ""},
+		{"api_key longer than 512", "apikey", `{"api_key": "` + long + `"}`, "api_key", ""},
+		{"api_key with a space", "apikey", `{"api_key": "sk-abc def"}`, "api_key", ""},
+		{"api_key not ASCII", "apikey", `{"api_key": "sk-ключ-abcdef"}`, "api_key", ""},
+		{"base_url not a string", "apikey", `{"api_key": "ts-abcdefgh", "base_url": 1}`, "base_url", ""},
+		{"base_url not http", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "ftp://x.example.com"}`, "base_url", ""},
+		{"base_url without a scheme", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "x.example.com"}`, "base_url", ""},
+		{"base_url without a host", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://"}`, "base_url", ""},
+		{"base_url with a query", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://x.example.com/?a=1"}`, "base_url", ""},
+		{"base_url with a fragment", "apikey", `{"api_key": "ts-abcdefgh", "base_url": "https://x.example.com/#a"}`, "base_url", ""},
 	} {
-		if errs := validate(t, c.accountType, c.creds).GetErrors(); len(errs) == 0 || errs[0].GetField() != c.field {
-			t.Errorf("%s %s: errors = %v, want one at %s", c.accountType, c.name, errs, c.field)
+		errs := validate(t, c.accountType, c.creds).GetErrors()
+		if len(errs) == 0 || errs[0].GetField() != c.field || (c.code != "" && errs[0].GetCode() != c.code) {
+			t.Errorf("%s %s: errors = %v, want one at %s %s", c.accountType, c.name, errs, c.field, c.code)
+		}
+	}
+	// The values at the schema's limits are accepted.
+	for _, c := range []struct{ name, accountType, creds string }{
+		{"api_key of 512 characters", "apikey", `{"api_key": "` + longest + `"}`},
+		{"api_key of 8 characters", "apikey", `{"api_key": "sk-kkkkk"}`},
+	} {
+		if errs := validate(t, c.accountType, c.creds).GetErrors(); len(errs) != 0 {
+			t.Errorf("%s %s: errors = %v, want none", c.accountType, c.name, errs)
 		}
 	}
 	// What the schema refused for surrounding spaces, an upper-case scheme

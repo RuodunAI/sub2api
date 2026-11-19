@@ -4,6 +4,7 @@ package openai
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -50,16 +51,14 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		return resp, nil // the preset refused it
 	}
 	var errs pluginsdk.FieldErrors
-	keyRefused := false
-	for _, e := range resp.GetErrors() {
-		keyRefused = keyRefused || e.GetField() == "api_key"
-	}
-	if key, _ := lookup("api_key", creds, settings).(string); !keyRefused && !visible(strings.TrimSpace(key), 512) {
+	keyRefused := slices.ContainsFunc(resp.GetErrors(), func(e *pluginv1.FieldError) bool { return e.GetField() == "api_key" })
+	v, _ := apikey.Lookup("api_key", creds, settings)
+	if key, _ := v.(string); !keyRefused && !visible(strings.TrimSpace(key), 512) {
 		errs = errs.Add("api_key", "pattern", "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符")
 	}
 	for _, k := range []string{"organization", "project"} {
-		v := lookup(k, settings, creds)
-		if s, ok := v.(string); v != nil && (!ok || !visible(s, 128)) {
+		v, present := apikey.Lookup(k, settings, creds)
+		if s, ok := v.(string); present && (!ok || !visible(s, 128)) {
 			errs = errs.Add(k, "pattern", k+" must be at most 128 printable characters without spaces / "+k+" 须为不超过 128 个不含空格的可见字符")
 		}
 	}
@@ -67,18 +66,6 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		return resp, nil
 	}
 	return &pluginv1.ValidateCredentialsResponse{Errors: append(resp.GetErrors(), errs...)}, nil
-}
-
-// lookup is k's value in the first object holding it (nil: absent), in
-// the order apikey.Spec reads them: api_key from the credentials first,
-// the settings fields from the settings.
-func lookup(k string, objs ...map[string]any) any {
-	for _, o := range objs {
-		if v, ok := o[k]; ok {
-			return v
-		}
-	}
-	return nil
 }
 
 // visible reports whether s is at most max characters, each a visible
