@@ -1,0 +1,21 @@
+{
+  "ui:order": ["base_url", "api_key"],
+  "base_url": {
+    "ui:widget": "url-presets",
+    "ui:title": { "en": "Base URL", "zh": "站点地址" },
+    "ui:placeholder": "https://your-new-api.example.com",
+    "ui:help": {
+      "en": "Root address of the New API site; each protocol goes to its official path under it. A trailing /v1 or /v1beta is removed.",
+      "zh": "填 New API 站点的根地址，各协议按官方路径拼在它后面；末尾的 /v1 或 /v1beta 会被去掉。"
+    }
+  },
+  "api_key": {
+    "ui:widget": "secret",
+    "ui:title": { "en": "API key", "zh": "API Key" },
+    "ui:placeholder": "sk-...",
+    "ui:help": {
+      "en": "A token of the site. The balance includes the user's quota only if the token allows querying the user's quota on the site. Stored encrypted and never shown again.",
+      "zh": "站点的令牌。查用户余额需要在上游给这个令牌开启\"允许查询用户额度\"。加密保存，保存后不再明文显示。"
+    }
+  }
+}
