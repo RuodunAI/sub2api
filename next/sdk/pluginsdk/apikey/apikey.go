@@ -8,9 +8,12 @@ package apikey
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -129,10 +132,15 @@ type Spec struct {
 	// Texts overrides the wording of a few field errors (see Texts).
 	Texts Texts
 	// Fields are the keys other than api_key and base_url the form may
-	// send. When set (an empty list included), Validate refuses every other
-	// key of the credentials and settings with code "unknown", as the
-	// form's additionalProperties:false did; nil lets them through.
-	Fields []string
+	// send, each with its rules (fieldcheck.Any() for a key taking any
+	// value). When set (an empty map included), Validate checks them,
+	// reading each from the credentials, then the settings, and refuses
+	// every other key of either object with code "unknown", as the form's
+	// additionalProperties:false did; nil lets them through. A rule for
+	// api_key or base_url adds to the checks above, only when those passed,
+	// and sees the value Validate saves: the key trimmed, the base URL
+	// normalized (StripSuffixes included), wherever the key was sent.
+	Fields fieldcheck.Fields
 }
 
 // Validate implements ValidateCredentials for the account type described by s.
@@ -162,7 +170,7 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
 	if s.Fields != nil {
-		errs = append(errs, fieldcheck.Unknown(append([]string{"api_key", "base_url"}, s.Fields...), creds, settings)...)
+		errs = s.checkFields(errs, normalized(creds, key, baseURL), normalized(settings, key, baseURL))
 	}
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
@@ -239,12 +247,22 @@ func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[st
 	return normalized, errs
 }
 
-// rewriteObject re-encodes obj with api_key and base_url normalized where the
-// key already exists; an empty object stays empty ("" keeps the core's value).
-func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
-	if len(obj) == 0 {
-		return ""
+// checkFields adds the errors of s.Fields (api_key and base_url known) on
+// the normalized objects, except at a field that already has one.
+func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string]any) pluginsdk.FieldErrors {
+	fields := fieldcheck.Fields{"api_key": fieldcheck.Any(), "base_url": fieldcheck.Any()}
+	maps.Copy(fields, s.Fields)
+	for _, e := range fieldcheck.Check(fields, creds, settings) {
+		if !slices.ContainsFunc(errs, func(x *pluginv1.FieldError) bool { return x.GetField() == e.GetField() }) {
+			errs = append(errs, e)
+		}
 	}
+	return errs
+}
+
+// normalized is obj with api_key and base_url replaced by key and baseURL
+// where obj holds them; every other key as it is.
+func normalized(obj map[string]any, key, baseURL string) map[string]any {
 	out := make(map[string]any, len(obj))
 	for k, v := range obj {
 		switch k {
@@ -256,7 +274,16 @@ func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
 			out[k] = v
 		}
 	}
-	b, _ := json.Marshal(out)
+	return out
+}
+
+// rewriteObject re-encodes obj with api_key and base_url normalized where the
+// key already exists; an empty object stays empty ("" keeps the core's value).
+func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(normalized(obj, key, baseURL))
 	return string(b)
 }
 
@@ -311,17 +338,27 @@ func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
 }
 
 // NormalizeBaseURL validates and normalizes a base URL, stripping the given suffixes.
-// Returns an error if baseStr is empty.
+// Returns an error if baseStr is empty. Surrounding whitespace is trimmed and
+// the scheme lower-cased; whitespace inside, "?" and "#" are refused (the
+// account forms' ^https?://[^\s?#]+$). A value it returns normalizes to
+// itself, except one that ends in another of stripSuffixes once one is
+// stripped ("/x/v1/v1beta" with /v1beta, /v1 gives "/x/v1", then "/x").
 func NormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error) {
 	baseStr = strings.TrimSpace(baseStr)
 	if baseStr == "" {
 		return "", fmt.Errorf("is required")
 	}
+	if strings.ContainsFunc(baseStr, unicode.IsSpace) {
+		return "", fmt.Errorf("must not contain whitespace")
+	}
+	if strings.ContainsAny(baseStr, "?#") {
+		return "", fmt.Errorf("must not contain credentials, query or fragment")
+	}
 	u, err := url.Parse(baseStr)
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return "", fmt.Errorf("must be an absolute http(s) URL")
 	}
-	if u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+	if u.User != nil {
 		return "", fmt.Errorf("must not contain credentials, query or fragment")
 	}
 	p := strings.TrimRight(u.Path, "/")

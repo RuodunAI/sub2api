@@ -9,11 +9,11 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
-	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
@@ -29,9 +29,11 @@ const (
 // resource and nothing else, optionally with the /openai or /openai/v1
 // suffix the types remove, or a Foundry project path. A pasted request URL
 // (a deployment, an operation, an api-version) is refused instead of being
-// saved and answering 404 on every request. The suffixes are matched in the
-// case the types remove them in. The account form (ui/native/src/forms.ts)
-// shows the same rule.
+// saved and answering 404 on every request. It is matched against the URL
+// as apikey.NormalizeBaseURL gives it (trimmed, the scheme lower-cased), as
+// every type's base_url is checked; the suffixes in the case the types
+// remove them in. The account form (ui/native/src/forms.ts) shows the same
+// rule on the URL as typed.
 var EndpointPattern = regexp.MustCompile(`^https?://[^\s/?#@]+(/|/openai/?|/openai/v1/?|/api/projects/[^\s/?#]+/?)?$`)
 
 // APIVersionPattern is the api_version of azure_deployment: a date, with
@@ -40,7 +42,13 @@ var APIVersionPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-preview)?$`)
 
 // Platform is the standard platform of both types, their credentials also
 // checked against EndpointPattern and, for azure_deployment, the
-// api_version (see ValidateCredentials).
+// api_version (see ValidateCredentials). These rules are not Spec.Fields:
+// a Spec.Fields rule on base_url sees the saved value, its suffixes
+// stripped, where EndpointPattern takes the optional /openai or /openai/v1
+// itself, so /openai/v1/openai or /api/projects/p/openai/v1 would pass once
+// stripped; and both refusals carry their own message saying what to
+// enter, which fieldcheck's generic ones would lose. Spec.Fields only names
+// the keys each type accepts.
 type Platform struct{ *standard.Platform }
 
 // New returns the platform of both account types.
@@ -48,6 +56,7 @@ func New() *Platform { return &Platform{standard.New(V1(), Deployment())} }
 
 // ValidateCredentials is the standard check (a key, a required base URL)
 // plus the account forms' other rules: a base_url matching EndpointPattern
+// once normalized (trimmed, the scheme lower-cased: apikey.NormalizeBaseURL)
 // and, on azure_deployment, a required api_version matching
 // APIVersionPattern.
 func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
@@ -61,9 +70,10 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		return resp, nil // the standard check refused it
 	}
 	var errs pluginsdk.FieldErrors
-	baseRefused := slices.ContainsFunc(resp.GetErrors(), func(e *pluginv1.FieldError) bool { return e.GetField() == "base_url" })
 	v, _ := apikey.Lookup("base_url", settings, creds)
-	if base, ok := v.(string); ok && !baseRefused && strings.TrimSpace(base) != "" && !EndpointPattern.MatchString(base) {
+	base, _ := v.(string)
+	// A base URL NormalizeBaseURL refuses the standard check refused.
+	if n, err := apikey.NormalizeBaseURL(base, nil); err == nil && !EndpointPattern.MatchString(n) {
 		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
 	}
 	if in.GetAccountType() == TypeDeployment {
@@ -84,7 +94,7 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 
 // V1 is the azure_v1 type: the v1 API under <resource>/openai/v1.
 func V1() standard.Type {
-	return azure(TypeV1, map[string]standard.Route{
+	return azure(TypeV1, fieldcheck.Fields{}, map[string]standard.Route{
 		openai.ProtocolChat:       {Path: standard.Path("/openai/v1/chat/completions"), Edit: openai.IncludeStreamUsage},
 		openai.ProtocolResponses:  {Path: standard.Path("/openai/v1/responses")},
 		openai.ProtocolEmbeddings: {Path: standard.Path("/openai/v1/embeddings")},
@@ -94,7 +104,7 @@ func V1() standard.Type {
 // Deployment is the azure_deployment type: the classic API, chat
 // completions and embeddings of a deployment.
 func Deployment() standard.Type {
-	return azure(TypeDeployment, map[string]standard.Route{
+	return azure(TypeDeployment, fieldcheck.Fields{"api_version": fieldcheck.Any()}, map[string]standard.Route{
 		openai.ProtocolChat:       deployment("/chat/completions", openai.IncludeStreamUsage),
 		openai.ProtocolEmbeddings: deployment("/embeddings", nil),
 	})
@@ -102,10 +112,12 @@ func Deployment() standard.Type {
 
 // azure is what both types change in the openai preset: a required resource
 // endpoint without a default (a pasted /openai/v1 or /openai removed), any
-// key format, the key in api-key, the routes given and the preset's tests
-// on them, no model listing.
-func azure(id string, routes map[string]standard.Route) standard.Type {
+// key format, the credentials api_key, base_url and fields only (their rules
+// in ValidateCredentials), the key in api-key, the routes given and the
+// preset's tests on them, no model listing.
+func azure(id string, fields fieldcheck.Fields, routes map[string]standard.Route) standard.Type {
 	t := openai.APIKey(id)
+	t.Spec.Fields = fields
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.StripSuffixes = []string{"/openai/v1", "/openai"}
 	t.Spec.KeyValidator = nil

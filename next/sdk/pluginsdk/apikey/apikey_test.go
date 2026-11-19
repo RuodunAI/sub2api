@@ -1,9 +1,12 @@
 package apikey
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
 func TestValidator(t *testing.T) {
@@ -96,9 +99,35 @@ func TestNormalizeBaseURL(t *testing.T) {
 			t.Errorf("%q: %q %v, want %q", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"", "ftp://x.example", "https://u:p@x.example", "https://x.example/?", "https://x.example/?a=1", "https://x.example/#f", "/relative"} {
+	for _, in := range []string{"", "ftp://x.example", "https://u:p@x.example", "https://x.example/?", "https://x.example/?a=1", "https://x.example/#f", "/relative",
+		"https://x.example/#", "https://x.example/a b", "https://x.example/a\tb", "https://x.example/a\nb", "https://x.example/a\u00a0b", "https://x.example/a\u3000b", "https://x .example"} {
 		if _, err := NormalizeBaseURL(in, strip); err == nil {
 			t.Errorf("%q accepted", in)
+		}
+	}
+}
+
+// TestNormalizeBaseURLIsStable: requests normalize the stored base_url
+// again (Spec.FromAccount). A stored value is an output of NormalizeBaseURL,
+// u.String() with RawPath cleared: spaces, every non-ASCII byte, "?" and "#"
+// in it are percent-escaped, so it holds no raw whitespace, "?" or "#" and
+// comes out unchanged and without an error. (The former form schema is no
+// reason: RE2's \s is ASCII only, a no-break space passed it.)
+func TestNormalizeBaseURLIsStable(t *testing.T) {
+	strip := []string{"/v1beta", "/v1"}
+	for _, in := range []string{
+		" https://proxy.example.com/v1beta/ ", "HTTPS://Proxy.Example.com/x/v1", "https://proxy.example.com:8443/a/b/",
+		"http://127.0.0.1:8080", "https://x.example.com/a%20b", "https://x.example.com/a%2Fb/c", "https://[::1]:8080/p",
+		"https://x.example.com/ключ", "https://x.example.com/~user/v1/",
+		"https://x.example.com/a%C2%A0b", "https://x%C2%A0y.example", "https://x.example.com/a%E3%80%80b",
+		"https://x.example.com/a%C2%85b", "https://x.example.com/a%3Fb", "https://x.example.com/a%23b",
+	} {
+		stored, err := NormalizeBaseURL(in, strip)
+		if err != nil {
+			t.Fatalf("%q: %v", in, err)
+		}
+		if again, err := NormalizeBaseURL(stored, strip); err != nil || again != stored {
+			t.Errorf("%q: stored %q normalizes to %q %v", in, stored, again, err)
 		}
 	}
 }
@@ -211,30 +240,65 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 	}
 }
 
-// Fields, when set, refuses the keys the form does not send (in either
-// object); nil keeps letting them through.
+// Fields, when set, checks the keys it names and refuses the ones the form
+// does not send (in either object); nil keeps letting them through. A rule
+// on api_key or base_url runs only where the Spec's own check passed.
 func TestSpecFields(t *testing.T) {
 	req := &pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678","organization":"o","extra":1}`, SettingsJson: `{"base_url":"https://u.example","proxy":"p"}`}
 	if resp := (Spec{AccountType: "apikey"}).Validate(req); len(resp.GetErrors()) != 0 {
 		t.Fatalf("nil Fields = %v", resp.GetErrors())
 	}
-	resp := (Spec{AccountType: "apikey", Fields: []string{"organization"}}).Validate(req)
-	got := map[string]string{}
-	for _, e := range resp.GetErrors() {
-		got[e.GetField()] = e.GetCode()
+	errs := func(s Spec, creds, settings string) map[string]string {
+		resp := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: creds, SettingsJson: settings})
+		got := map[string]string{}
+		for _, e := range resp.GetErrors() {
+			got[e.GetField()] = e.GetCode()
+		}
+		return got
 	}
-	if len(got) != 2 || got["extra"] != "unknown" || got["proxy"] != "unknown" {
-		t.Fatalf("errors = %v", resp.GetErrors())
+	org := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"organization": fieldcheck.String().MaxLen(3)}}
+	if got := errs(org, req.CredentialsJson, req.SettingsJson); !reflect.DeepEqual(got, map[string]string{"extra": "unknown", "proxy": "unknown"}) {
+		t.Fatalf("unknown keys = %v", got)
 	}
-	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
-		CredentialsJson: `{"api_key":"sk-12345678","organization":"o"}`})
-	if len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "organization" {
-		t.Fatalf("an empty list allows api_key and base_url only: %v", resp.GetErrors())
+	if got := errs(org, `{"api_key":"sk-12345678","organization":"long"}`, ""); !reflect.DeepEqual(got, map[string]string{"organization": "maxLength"}) {
+		t.Fatalf("rule = %v", got)
 	}
-	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+	if got := errs(org, `{"api_key":"sk-12345678"}`, `{"organization":7}`); !reflect.DeepEqual(got, map[string]string{"organization": "type"}) {
+		t.Fatalf("rule on a setting = %v", got)
+	}
+	empty := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{}}
+	if got := errs(empty, `{"api_key":"sk-12345678","organization":"o"}`, ""); !reflect.DeepEqual(got, map[string]string{"organization": "unknown"}) {
+		t.Fatalf("an empty map allows api_key and base_url only: %v", got)
+	}
+	resp := empty.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"https://u.example/"}`})
 	if len(resp.GetErrors()) != 0 || resp.GetNormalizedSettingsJson() != `{"base_url":"https://u.example"}` {
 		t.Fatalf("valid = %v", resp)
+	}
+	endpoint := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"base_url": fieldcheck.String().Pattern(`^https://[a-z.]+$`)}}
+	if got := errs(endpoint, `{"api_key":"sk-12345678","base_url":"https://u.example/p"}`, ""); !reflect.DeepEqual(got, map[string]string{"base_url": "pattern"}) {
+		t.Fatalf("base_url rule = %v", got)
+	}
+	// The rules see what Validate saves: the key trimmed, the base URL
+	// normalized, the one Spec read (settings before credentials) in both
+	// objects.
+	key := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{"api_key": fieldcheck.String().MaxLen(512).Pattern(`^[!-~]*$`)}}
+	if got := errs(key, `{"api_key":" sk-`+strings.Repeat("k", 509)+` "}`, ""); len(got) != 0 {
+		t.Fatalf("a 512-character key with spaces around = %v", got)
+	}
+	root := Spec{AccountType: "apikey", StripSuffixes: []string{"/v1"}, Fields: fieldcheck.Fields{"base_url": fieldcheck.String().Pattern(`^https://good\.example$`)}}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":" HTTPS://good.example/v1/ "}`, ""); len(got) != 0 {
+		t.Fatalf("a base URL normalized onto the rule = %v", got)
+	}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":"https://bad.example"}`, `{"base_url":"https://good.example"}`); len(got) != 0 {
+		t.Fatalf("the rule checks the base URL Spec uses (settings first) = %v", got)
+	}
+	if got := errs(root, `{"api_key":"sk-12345678","base_url":"https://good.example"}`, `{"base_url":"https://bad.example"}`); !reflect.DeepEqual(got, map[string]string{"base_url": "pattern"}) {
+		t.Fatalf("the settings' base URL is the one saved = %v", got)
+	}
+	// One error per field: the Spec's own, not the rule's too.
+	if resp := endpoint.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"ftp://u"}`}); len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetCode() != "format" {
+		t.Fatalf("refused base_url = %v", resp.GetErrors())
 	}
 }

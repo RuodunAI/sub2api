@@ -471,7 +471,7 @@ defineExpose({ validate: form.validate })
 - **已存密钥**：值是 `SECRET_MASK`（`******`）时 `required` 通过，其余检查和 `validator` 都跳过；原样送回，核心换回已存的值。
 - **触发**：先惰性后积极。字段第一次失焦（控件经 `SField` / `SSettingRow` 的 `prop` 上报）或 `validate()` 之后算 touched，之后每次经 `form.set` 改值都校验。写了 `trigger` 的规则只在列出的时机运行；`validate()` 运行全部规则。
 - **异步**：同一字段新一轮开始时中止上一轮（`ctx.signal`），迟到的结果丢弃；`validate()` 等全部字段跑完，跑的过程中又开始的新一轮以新一轮为准。不另设超时。
-- **`useForm` 返回**：`value()`（整个当前值，含本拍还没交回的写入）、`get(path)`、`set(path, value)`（只在当前值上打补丁，规则和界面都没有的键原样保留；`undefined` 删掉这个键）、`bind(path)`（`{ modelValue, 'onUpdate:modelValue' }`，写成 `<SInput v-bind="form.bind('x')" />`；值原样传递，不做类型转换：`SInput type="number"` 清空时发 `null`，可选的数字字段要发 `undefined`（不发这个键）就自己写 `@update:model-value="form.set('x', $event ?? undefined)"`）、`validate()`（`Promise<boolean>`，不 reject）、`validateField(paths)`、`clearValidate(paths?)`、`error(path)`、`errors`、`unclaimed`（没有 `SField` / `SSettingRow` 认领的错误）、`required(path)`。
+- **`useForm` 返回**：`value()`（整个当前值，含本拍还没交回的写入）、`get(path)`、`set(path, value)`（只在当前值上打补丁，规则和界面都没有的键原样保留；`undefined` 删掉这个键）、`bind(path)`（`{ modelValue, 'onUpdate:modelValue' }`，写成 `<SInput v-bind="form.bind('x')" />`；值原样传递，不做类型转换）、`bindNumber(path)`（数字框用：`<SInput type="number" v-bind="form.bindNumber('port')" />`，`SInput` 清空时发的 `null` 变成删掉这个键，即不发送，插件用自己的默认值；`bind` 会把 `null` 原样存下，插件 Go 收到后报 `type`）、`validate()`（`Promise<boolean>`，不 reject）、`validateField(paths)`、`clearValidate(paths?)`、`error(path)`、`errors`、`unclaimed`（没有 `SField` / `SSettingRow` 认领的错误）、`required(path)`。
 - **默认值**：`defaults` 只填父组件交来的值里缺失的键（新建时、换账号类型时），不覆盖已有的键，用户清空的也不再填回。"交来的新值"按对象身份判断：**父组件必须把 `update` 收到的值原样存回**（`v => (model.value = v)`、`v-model`），存成拷贝（`{...v}`）的话用户清空的默认键会被填回。`usePluginSettings` 不靠这个判断，它在每次读到设置时自己填。
 - **服务端错误**：`serverErrors` 的键可以是 `a.b`、`credentials.a.b`、`values/a/b`、`values.a.b`（`@sub2api/host` 的 `toFieldPath` 转成 `a.b`）。同一路径本地错误优先；改了某个路径就清掉它（以及它里面、外面的路径）的服务端错误；父组件换一份新的错误后重新全部显示。
 - **`SForm`**：`form`、`disabled`（`<fieldset disabled>`，禁用里面的全部控件）；`submit` 只在 `validate()` 通过后触发。已经在 `<form>` 里（`SFormModal`、`SCredentialForm`）时不再渲染第二个 `<form>`，由外层提交。
@@ -482,8 +482,52 @@ defineExpose({ validate: form.validate })
 
 - **`SSecretInput`**：密钥输入（`modelValue`、`placeholder`、`disabled`、`size`、`revealable`（默认 true）、`clearable`、`plain`）。值是 `SECRET_MASK` 时输入框为空、占位符显示 `******`，下方提示"已保存值，留空表示不修改"；输入即替换，清空后发回 `SECRET_MASK`（核心保留已存的值）；`autocomplete="new-password"`。可选的密钥加 `clearable`：有已存的值时显示"清除已保存的值"按钮，点了发 `''`（核心清掉这个密钥），之后不再当作已存。`createApiKeyForm` 的 `secret` 字段规则里没有 `required` 时自动带上它。敏感地址（`ui.settings.secrets` 里 `sensitive: true` 的字段，如 webhook 地址）加 `plain`：已存时同样遮蔽、留空沿用，但用普通文本框输入，没有显示/隐藏按钮。
 - **`SUrlPresetInput`**：Base URL（`modelValue`、`presets`、`allowed`、`placeholder`、`disabled`、`readonly`）。没有 `allowed` 时是 URL 输入框加 datalist 和"预设"菜单；有 `allowed`（`useGuardedSettings`）时是选择框，已存的、不在列表里的值也保留为可选项，只有一个允许值时只读并提示"由管理员设置"。清空发 `undefined`，即不发送这个键。
-- **`useCredentialForm(props, emit, { rules, defaults? })`** + **`SCredentialForm`**：原生账号表单（CONTRACTS §23.5）。`props.errors` 作为服务端错误，`defaults` 只在新建时填；组件写 `defineExpose({ validate: form.validate })`。`SCredentialForm`（`form`、`disabled`）在顶部用 `SAlert` 列出没有字段认领的错误，不再渲染 `<form>`（账号编辑器本身就是表单）。类型 `NativeAccountFormProps`。
-- **`createApiKeyForm(spec)`**：返回整个账号表单组件，`host.registerComponent(name, createApiKeyForm({...}))`。`spec.apiKey`（`min`/`max`/`pattern` 默认 8–512 个可见 ASCII 字符，`placeholder`、`help`）、`spec.baseUrl`（`false` 表示没有；`required`、`presets`、`pattern`、`message`（不符合 `pattern` 时的提示）、`label`（默认本包的“Base URL”）、`placeholder`、`help`、`first`（放在 API Key 前面）；没有 `account:settings:custom` 时按 `guarded_settings` 只给官方值）、`spec.extra`（`key`、`kind`：`text` `secret` `url` `select` `textarea` `date-time` `switch`，`label`、`help`、`placeholder`、`options`、`presets`、`rules`、`section`、`when`）、`spec.defaults`；`url` 字段若在类型的 `guarded_settings` 里，和 Base URL 一样只给官方值。文字都写成函数（`() => host.t('…')`），随语言切换；API Key、Base URL 的标签用本包的文案，Base URL 的标签可用 `baseUrl.label` 替换。`date-time` 存 RFC 3339，输入框按本地时间显示。
+- **`useCredentialForm(props, emit, { rules, defaults? })`** + **`SCredentialForm`**：原生账号表单（CONTRACTS §23.5）。`props.errors` 作为服务端错误，`defaults` 只在新建时填；组件写 `defineExpose({ validate: form.validate })`。`SCredentialForm`（`form`、`disabled`）在顶部用 `SAlert` 列出没有字段认领的错误，不再渲染 `<form>`（账号编辑器本身就是表单）。类型 `NativeAccountFormProps`；props 用运行时对象 **`nativeAccountFormProps`** 声明：插件工程里 `defineProps<NativeAccountFormProps>()` 编译不了（SFC 编译器解析不了从别的包导入的类型），`defineProps(nativeAccountFormProps)` 可以：
+
+  ```vue
+  <script setup lang="ts">
+  import { nativeAccountFormProps, SCredentialForm, SDateTimeInput, SField, SFormSection, SInput, useCredentialForm } from '@sub2api/ui'
+  const props = defineProps(nativeAccountFormProps)
+  const emit = defineEmits<{ 'update:modelValue': [Record<string, unknown>] }>()
+  const form = useCredentialForm(props, emit, { rules: { region: { pattern: /^[a-z]{2}(-[a-z]+)+-\d$/ } } })
+  defineExpose({ validate: form.validate })
+  </script>
+  <template>
+    <SCredentialForm :form="form">
+      <SField prop="session_expires_at" label="Expires at"><SDateTimeInput v-bind="form.bind('session_expires_at')" /></SField>
+      <SFormSection title="Region" help="Where requests go." collapsed :fields="['region']">
+        <SField prop="region" label="Region"><SInput v-bind="form.bind('region')" /></SField>
+      </SFormSection>
+    </SCredentialForm>
+  </template>
+  ```
+- **`SFormSection`**：表单里的一节（`title`、`help?`、`collapsed?`、`fields?`，默认插槽放字段）：上边线、`h4` 标题、下面一行小字说明，再是字段。`collapsed` 时标题可点开收起（`SDisclosure variant="section"`）：一开始收起，`fields`（外层 `SForm` 的路径）里有值或有错误时自动展开（`validate()` 报出节里的错误也会展开），用户点过之后按用户的选择。手拼表单写 `collapsed` 时**必须同时传 `:fields`**（节里各字段的路径），否则永远不会自动展开，节里的错误也看不到；`createApiKeyForm` 自己会传。
+- **`SDateTimeInput`**：日期时间输入（`modelValue?: string`，RFC 3339）：输入框按本地时间显示，选好的时间发 RFC 3339（UTC），清空发 `undefined`（不发这个键）；其余属性（`placeholder`、`disabled`、`size` 等）落到里面的 `SInput`。只读的时间显示用 `SDateTime`。
+- **`createApiKeyForm(spec)`**：返回整个账号表单组件，`host.registerComponent(name, createApiKeyForm({...}))`。`spec.apiKey`（`min`/`max`/`pattern` 默认 8–512 个可见 ASCII 字符，`placeholder`、`help`）、`spec.baseUrl`（`false` 表示没有；`required`、`presets`、`pattern`、`message`（不符合 `pattern` 时的提示）、`label`（默认本包的“Base URL”）、`placeholder`、`help`、`first`（放在 API Key 前面）；没有 `account:settings:custom` 时按 `guarded_settings` 只给官方值）、`spec.extra`（`key`、`kind`：`text` `secret` `url` `select` `textarea` `date-time` `switch`，`label`、`help`、`placeholder`、`options`、`presets`、`rules`、`section`、`when`；`section` 写标题函数，或 `{ title, help?, collapsed? }`（类型 `FieldSection`），从这个字段起是一个 `SFormSection`，之后标题相同或没写 `section` 的字段都在这一节里）、`spec.defaults`；`url` 字段若在类型的 `guarded_settings` 里，和 Base URL 一样只给官方值。文字都写成函数（`() => host.t('…')`），随语言切换；API Key、Base URL 的标签用本包的文案，Base URL 的标签可用 `baseUrl.label` 替换。`date-time` 是 `SDateTimeInput`。
 - **`usePluginSettings({ pluginKey, api, rules, defaults? })`** + **`SSettingsPage`**：插件设置（`GET/PUT /plugins/:key/settings`），行为与控制台的设置标签相同：每次读到设置都填一次默认值，填好后的值是"未修改"的基准；保存先 `validate()`，再整份 PUT，成功后重新读一遍（和控制台一样：刚填的密钥变回 `******`，重置回到保存后的值），重读期间不进入 `loading`，表单不会被卸掉；失败的文案与控制台相同（`@sub2api/host` 的 `errorMessage`），会话结束、取消验证、请求中止不提示；字段错误显示在对应行，整体的错误用提示条；只有插件设置权限的人改了别的设置又保留着密钥时，那个密钥显示"要修改其他设置，需要重新填写这个密钥"。返回 `useForm` 的全部方法，外加 `loading`、`saving`、`loadError`、`dirty`、`canEdit`（`plugin:manage` 或清单 `ui.settings.permission`）、`reload()`、`save()`、`reset()`。`SSettingsPage`（`settings`、`title?`、`description?`，默认插槽放 `SSettingsGroup`）自带加载与重试、底部保存栏（未保存提示、重置、保存）、离开确认（路由离开与关闭页面）；在输入框里按 Enter 也会保存，但没有改动时什么都不做；不能编辑时控件全部禁用、不显示保存栏。
 - **`SResourcePage`**：插件的列表页（`client`（`host.pluginApi`）、`path`、`columns`、`search?`（查询参数名，有它才有搜索框）、`rowKey?`、`createLabel?`、`canCreate?`、`submit?`）。内部用 `useList` 和 `STable`（卡片形式）加分页，工具栏有刷新按钮；`cell-<key>` 插槽照传给 `STable`，`toolbar` 插槽放在搜索框后。`canCreate` 且有 `create` 插槽时显示新建按钮，打开 `SFormModal`，插槽参数 `{ close, done }`；弹窗的保存调用 `submit()`（在里面校验并提交，返回 `false` 则不关；抛错时按 `errorMessage` 提示，弹窗不关），成功后回到第一页刷新并发出 `created`。弹窗关闭时插槽内容会卸载：表单状态写在插槽里的组件内部时，下次打开自然是空的；状态放在页面上（比如页面上的一个 `ref`）的，要作者自己清空。
 - `@sub2api/host` 新导出 `useGuardedSettings(accountType)`（`allowed(field)`、`locked(field)`、`guarded`）、类型 `AccountTypeView`，以及 `settingsFieldErrors`、`toFieldPath`（服务端字段名转表单路径；本包不再另起名字导出）、`errorMessage(e, t)` 和 `isSilentError(e)`（控制台的报错文案与"哪些失败不提示"，控制台自己也用这两个）。
+
+### 测试辅助：`@sub2api/ui/testing`（UI SDK 4.0，开发中）
+
+**只能在 spec（`*.spec.ts` 及只被 spec 引用的测试辅助文件）里引用**：它不在控制台的 import map 里，插件的运行时代码引用它时构建不会报错（预设把 `@sub2api/ui` 的所有子路径都当作外部模块），要到控制台里加载插件时才失败，依赖 `vitest` 和 `@vue/test-utils`。插件工程的 vitest 配置继承控制台 `web/vitest.config.ts` 的别名，自动解析到 `web/packages/ui/src/testing/index.ts`；类型检查要在插件的 `tsconfig.json` `paths` 里加一行（写在 `@sub2api/ui` 之前）：`"@sub2api/ui/testing": ["../../../../web/packages/ui/src/testing/index.ts"]`。
+
+- `fakeHost({ granted?, messages?, plugin?, api? })`：**在 `beforeEach` 里调用**（`beforeEach(() => fakeHost())`），挂载账号表单之前必须调过：表单经 `useHost()` 读控制台（受限设置、权限），没调会抛 “host context not initialised”。它给接下来挂载的组件提供控制台（`provideHost`：只授予 `granted` 里的权限，控制台的翻译返回键本身），返回插件的 host（交给插件自己的 `setHost`：`t` 按 `messages.en` 查，没有 `messages` 时返回键本身；`plugin.key`、`api`）。`messagesT(messages)` 是其中的 `t`（点分键，填 `{name}` 参数）。
+- `mountAccountForm(form, { accountType, stored?, errors? })`：像账号编辑器那样挂载原生账号表单（`<form>` 里，v-model 凭证与 §23.5 的 props；有 `stored` 是编辑这个账号，否则是新建），返回 `{ w, credentials, validate(), saved() }`（`saved()` 是编辑器会保存的 JSON）。
+- `fillControls(w, labels, input)`：按 `labels`（字段 → 标签文字）找到每个字段的控件，依次填入 `input`（字段 → 文字）：选择框按选项文字选，日期框填本地时间，`''` 清空；每个控件填完失焦。`control(w, label)` 是按标签找控件的那一步。
+- `keyAndUrlCases(key, url, required, fill?)`：API Key 类表单共有的 api_key、base_url 用例（`AccountFormCase`：`name`、`stored?`、`input?`、`out`、`ok`）；与 `mountAccountForm`、`fillControls` 合用：
+  ```ts
+  beforeEach(() => fakeHost())
+  afterEach(cleanup)
+  for (const c of keyAndUrlCases('sk-ant-api03-abcdef', 'https://x.example.com/anthropic', false)) {
+    it(c.name, async () => {
+      const { w, saved, validate } = mountAccountForm(AnthropicKeyForm, { accountType, stored: c.stored })
+      await fillControls(w, { api_key: 'API key', base_url: 'Base URL' }, c.input ?? {})
+      expect({ value: saved(), ok: await validate() }).toEqual({ value: c.out, ok: c.ok })
+    })
+  }
+  ```
+- `fakeCore(plugin, values, secrets?)`：`GET/PUT /plugins/<plugin>/settings` 的假核心（`secrets` 里的顶层键读回 `******`，PUT `******` 保留原值），返回 `{ api, puts, stored(), refuse(e) }`。`mountSettings(Settings, { plugin, setHost, values?, granted?, secrets? })`：挂载插件的设置组件并等它读完（默认授予 `plugin:manage`），返回 `{ w, core, settings }`（`settings` 是 `SSettingsPage` 拿到的表单）。
+- `checkMessages(messages, { sources, dynamic? })`：在 `describe` 里加三条用例：中英文键相同；文案里没有 vue-i18n 特殊字符（`@`、`|`、`{name}` 占位符以外的花括号）；每个键都在 `sources`（`import.meta.glob(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true })`）里以 `'a.b'` 出现，或在 `dynamic` 列出的前缀下（拼出来的键）。
+- `cleanup()`：卸载上面挂载的组件、撤销 `mountSettings` 的 `setHost`、撤销 `fakeHost` 提供的控制台（之后 `useHost()` 再次抛错，上一条用例授予的权限不会带到下一条）、清空 `<body>`：`afterEach(cleanup)`。
+- `mountPinned(component, options?, pin?)`：在固定的视口形态（默认手机）下挂载（控制台自己的 spec 用）。

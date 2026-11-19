@@ -316,6 +316,22 @@ describe('useForm', () => {
     expect(model.value).toEqual({ a: null })
   })
 
+  it('bindNumber leaves a cleared number box out of the value', async () => {
+    const { form, model } = setup({}, { port: 587, keep: 1 })
+    const b = form.bindNumber('port')
+    expect(b.modelValue).toBe(587)
+    b['onUpdate:modelValue'](25)
+    await nextTick()
+    expect(model.value).toEqual({ port: 25, keep: 1 })
+    form.bindNumber('port')['onUpdate:modelValue'](null)
+    await nextTick()
+    expect(model.value).toEqual({ keep: 1 })
+    expect('port' in model.value).toBe(false)
+    form.bindNumber('port')['onUpdate:modelValue'](0)
+    await nextTick()
+    expect(model.value).toEqual({ keep: 1, port: 0 })
+  })
+
   it('aborts the in-flight checks when the form goes away', async () => {
     let signal!: AbortSignal
     const { form, w } = setup({ a: { validator: (_v, c) => ((signal = c.signal), new Promise<void>(() => {})) } })

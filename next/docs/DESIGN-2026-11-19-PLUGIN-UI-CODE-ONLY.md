@@ -304,7 +304,7 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
   - 控件通过 `FieldContext.touch` 报告失焦和改值，`SField` 据此调用 `form.validateField(prop)`。
   - 改动范围是 `SField.vue:14-33` 和 `SSettingRow.vue:20-29` 的 props 与 `provideField` 调用，各十来行。
 - `SFormModal`：只加一行 `provide(IN_FORM_KEY, true)`（它本身是 `<form>`），在默认插槽里放 `SForm`；提交写 `@submit="form.validate().then(ok => ok && save())"`。
-- 分节：用现有的 `SSettingsGroup`、`SSectionTitle`，不新增组件。
+- 分节：设置页用现有的 `SSettingsGroup`；账号表单等表单里的分节用 `SFormSection`（`title`、`help?`、`collapsed?`、`fields?`：上边线、`h4` 标题、`SHint size="xs"` 说明；`collapsed` 时是 `SDisclosure variant="section"`，默认收起，`fields` 里有值或有错误时自动展开，用户点过后按用户的选择，规则同原 `SchemaObject`）。`createApiKeyForm` 的 `section` 也渲染成它（U3a；原稿说不新增组件，三个插件各手写了一份带说明的分节、volcengine 手写了一份折叠）。
 
 ### 5.9 组合组件
 
@@ -404,14 +404,14 @@ export interface ExtraField {
   options?: { value: string; label: () => string }[]   // select: replaces ui:enumNames
   presets?: string[]                                     // url
   rules?: Rule | Rule[]
-  section?: () => string                                 // SSectionTitle above the first field of a section
+  section?: (() => string) | { title: () => string; help?: () => string; collapsed?: boolean } // starts an SFormSection (U3a: help, collapsed)
   when?: (m: Record<string, unknown>) => boolean         // shown and validated only while true
 }
 ```
 
 - `base_url` 自动接 `useGuardedSettings`：没有 `account:settings:custom` 时传 `allowed`。
 - 不要 `t` 参数：插件的文字都写成函数（`() => host.t('…')`），api_key、base_url 的标签用 `@sub2api/ui` 自己的文案（`ui.form.apiKey`、`ui.form.baseUrl`）。（原稿的 `t` 没有用处。）
-- `date-time` 用 `SInput type="datetime-local"`，值存 RFC 3339，和原 `InputControl` 的转换一致（`toLocalInput`/`fromLocalInput`）。原稿写的 `SDateTime` 是只读的时间显示组件，不能输入。
+- `date-time` 用 `SDateTimeInput`（`SInput type="datetime-local"` 与 RFC 3339 互转，和原 `InputControl` 的转换一致；清空时不发这个键），手拼的表单同样用它（U3a）。原稿写的 `SDateTime` 是只读的时间显示组件，不能输入。
 - `select` 选回占位项时删掉这个键（不发 `null`）。
 - 能覆盖的类型：
   - anthropic、gemini、typesafe：base_url 选填，带预设
@@ -511,7 +511,8 @@ export function register(host: PluginHost) {
 
 ```vue
 <script setup lang="ts">
-const props = defineProps<NativeAccountFormProps>()
+// The runtime props object: a plugin's SFC compiler cannot resolve a props type imported from @sub2api/ui.
+const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ 'update:modelValue': [Record<string, unknown>] }>()
 const t = useHost().i18n.t
 const form = useCredentialForm(props, emit, {
@@ -777,7 +778,7 @@ SDK 拒绝未知键：
 | azure-openai / azure_deployment | 同上，extra 加 api_version，默认 `2024-10-21` | 同上；api_version 必填 `^\d{4}-\d{2}-\d{2}(-preview)?$` | 没有 | api_version 必填加 pattern；`Fields: api_version` |
 | bedrock / bedrock_apikey | `createApiKeyForm`，`baseUrl: false`，加 region、inference_profile_prefix（选择框） | api_key 必填，8–2048 个可见字符；region `^([a-z]{2}(-[a-z]+)+-\d)?$`，默认 us-east-1；prefix 枚举 none/us/eu/apac/jp/au/in/global，默认 global | region pattern（`bedrock/internal/bedrock/credentials.go:40`） | 逐条核对 key 长度、prefix 枚举；`Only(...)` |
 | bedrock / bedrock_aksk | 自己拼 | access_key_id 必填 `^[A-Z0-9]{16,128}$`；secret 必填 1–1024 个可见字符；region、prefix 同上 | `accountform` | 逐条核对；`Only` |
-| bedrock / bedrock_sts | 自己拼，用 `SDateTime` | 在 aksk 的基础上：session_token 必填 1–8192；session_expires_at 是 date-time | `accountform` | 逐条核对；`Only` |
+| bedrock / bedrock_sts | 自己拼，用 `SDateTimeInput`（原稿写成只读显示的 `SDateTime`，U3a 改正） | 在 aksk 的基础上：session_token 必填 1–8192；session_expires_at 是 date-time | `accountform` | 逐条核对；`Only` |
 | vertex / vertex_apikey | `createApiKeyForm`，`baseUrl: false`，加 project_id、location | api_key 同上；project_id `^([a-z][a-z0-9-]{4,28}[a-z0-9])?$`；location `^([a-z0-9-]{2,32})?$` | `accountform` 加 `apikey` | 逐条核对；`Only` |
 | vertex / vertex_sa | 自己拼，JSON 用 `SSecretInput` 多行，或 `STextarea` 加遮蔽 | service_account_json 必填 2–32768；project_id、location 同上，location 默认 global；**hidden 键 access_token、expires_at、token_for 原样保留** | `accountform` | 逐条核对；`Only` 里包含这 3 个 hidden 键 |
 | vertex / vertex_authorized_user | 同上 | authorized_user_json 必填 2–32768；其余同 sa | 同上 | 同上 |

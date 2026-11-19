@@ -94,10 +94,12 @@ func TestManifest(t *testing.T) {
 // /openai/v1 suffix the types remove, or a Foundry project path. A pasted
 // request URL (a deployment, an operation, an api-version) is refused with a
 // message that says what to enter, instead of being saved and answering 404
-// on every request. The suffixes are matched in the case the types remove
-// them in (the removal is case-sensitive), so another casing is refused too
-// rather than accepted and left in the address. What the form accepts is
-// saved as the bare address and gives working request URLs.
+// on every request. The rule is matched on the URL as normalized (trimmed,
+// the scheme lower-cased, trailing slashes removed), as every type's base
+// URL is. The suffixes are matched in the case the types remove them in
+// (the removal is case-sensitive), so another casing is refused too rather
+// than accepted and left in the address. What the form accepts is saved as
+// the bare address and gives working request URLs.
 func TestResourceEndpointForm(t *testing.T) {
 	rejected := []string{
 		"",
@@ -109,8 +111,8 @@ func TestResourceEndpointForm(t *testing.T) {
 		resource + "/models",
 		resource + "/OpenAI/V1",
 		resource + "/Openai",
-		resource + "/openai/v1//",
 		resource + "/openai/v1/openai",
+		resource + "/openai/openai",
 		resource + "?api-version=2024-10-21",
 		resource + "/?api-version=2024-10-21",
 		resource + "/openai?api-version=2024-10-21",
@@ -122,16 +124,13 @@ func TestResourceEndpointForm(t *testing.T) {
 		resource + "/api/Projects/p",
 		"https://key@res.openai.azure.com",
 		"https://",
-		"HTTPS://res.openai.azure.com",
 		"res.openai.azure.com",
 		"ftp://res.openai.azure.com",
-		" " + resource,
-		resource + " ",
 	}
 	ctx := context.Background()
 	for _, accountType := range []string{typeV1, typeDeployment} {
 		for _, in := range rejected {
-			acc := account(accountType, in, `"api_version":"2024-10-21"`)
+			acc := account(accountType, in, formFields(accountType)...)
 			res, err := platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{AccountType: accountType, CredentialsJson: acc.CredentialsJson, SettingsJson: acc.SettingsJson})
 			if err != nil || len(res.GetErrors()) != 1 || res.Errors[0].Field != "base_url" {
 				t.Errorf("%s %q: validate %v %v, want a base_url error", accountType, in, err, res.GetErrors())

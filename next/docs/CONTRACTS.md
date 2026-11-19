@@ -1544,6 +1544,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
 - **兼容**：`accountType` 是后加的 prop（与 codex 内置插件同批加入，未提升 `HOST_UI_VERSION`），旧控制台不传。插件读账号类型时应写成 `accountType?.type || account?.type`：编辑时旧控制台下退回 `account.type`；新建时旧控制台两者都没有，插件需要有不依赖类型的默认行为（或只把该组件用于一个账号类型）。codex 的 `ui/native/src/flow.ts` `typeOf` 即按此实现。
 - 组件同样遵守 §23.4 的约定（用 `@sub2api/ui` 组件、`SField` 显示 `errors` 等）。
+- 这些 props 由 `@sub2api/ui` 的运行时对象 `nativeAccountFormProps` 声明（`defineProps(nativeAccountFormProps)`；默认值：`modelValue` `{}`、`mode` `'create'`、`account` / `accountType` `null`），类型是 `NativeAccountFormProps`。插件工程里写 `defineProps<NativeAccountFormProps>()` 编译不了（SFC 编译器解析不了别的包导出的类型）（2026-11-19 U3a）。
 
 ## 24. 插件改写候选账号的调度参数（priority / weight）（2026-09-29，用户要求）
 
@@ -5267,7 +5268,8 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
     - 带 schema 的设置先按 schema 校验，再调用插件。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
     - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
-    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields` 列出 `api_key`、`base_url` 之外表单会发的键，设置了（空列表也算）就拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 不检查；自己实现表单的插件用 `accountform.Form.Only(keys...)`。
+    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），设置了（空 map 也算）就按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 不检查；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化、含去后缀，只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
+    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（各种被拒的 api_key、base_url，长度边界，去空白与 scheme 转小写），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
   - **标记只能写在能掩码的位置**（2026-11-12）：只有沿 `properties` 嵌套对象能到达的属性（最多 8 层）能单独掩码；被标记的属性整体掩码，其下不再细分。`items`、`additionalProperties`、`patternProperties`、`allOf`/`anyOf`/`oneOf`、`if`/`then`/`else`、嵌套的 `$defs` 等其他位置的标记、超过 8 层的标记，打包校验报 `ui.settings.schema` `unmaskable_secret`。同文档的本地引用 `"$ref": "#/$defs/<名>"` 或 `"#/definitions/<名>"`（指向根上的 `$defs`/`definitions`，名字是一个 RFC 6901 记号，`~0` `~1` 解码，不接受百分号编码）按“目标写在引用处”处理：目标自身被标记则引用处的属性整体掩码，目标的 `properties` 接在引用处的路径下（同样最多 8 层）；根上的 `$defs`/`definitions` 只经引用读取，没被引用的定义不检查。引用成环、互相嵌套超过 32 层、全部展开累计超过 10000 个节点，或者从 `items` 等到不了的位置引用带标记的定义，都报错，位置写在引用下（如 `/properties/a/$ref/items`）。schema 里只要有任何标记，其他引用（`$dynamicRef`、`$recursiveRef`、外部引用、锚点、其他指针、嵌套 `$id` 之下的引用）照旧报错（2026-11-12 权限加固 FU4，此前任何引用都报错）；schema 文件不是 JSON 对象同样报错。校验之前已安装的包：含这类标记的顶层设置整块按凭据掩码；标记不属于某一个顶层设置时（根上的 `allOf`、`additionalProperties`、`$ref` 等），或 schema 文件不是 JSON 对象时，全部顶层设置按凭据掩码。
   - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；不带 schema 的 native / iframe 设置没有 `secrets` 键；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
   - `GET` 的回答多一个 `permission`：完整的 RBAC key（`plugin.<key>:<permission>`），没有声明时省略。
@@ -5920,6 +5922,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 ### 86.1 API Key 类账号类型
 
 - “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、表单、凭证字段从声明式时起没有变过，账号数据不迁移。
+- 基础地址的规则（`apikey.NormalizeBaseURL`，保存时与每次请求时都用它）：去掉首尾空白、scheme 转小写、去掉类型声明的路径后缀；去掉首尾空白后仍含任何空白字符（`unicode.IsSpace`）、`?` 或 `#` 的地址拒绝（2026-11-19 U3a，与原表单 schema `^(https?://[^\s?#]+)?$` 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出（`u.String()`，`RawPath` 清空）：空格和所有非 ASCII 字节都被百分号转义，没有原样的空白、`?`、`#`，请求时重新规范化不受影响（原 schema 不是理由：RE2 的 `\s` 只认 ASCII，不换行空格之类当初能通过）（例外是原有行为：剥掉一个后缀后又以另一个后缀结尾的地址，如 gemini 的 `…/x/v1/v1beta` 存成 `…/x/v1`，请求时再剥成 `…/x`）。
 - 原声明式引擎的 1498 条录制样例冻结在 `sdk/pluginsdk/standard/goldentest`，用 `standard` 写的插件逐条回放一致。
 - passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
 - 可服务的端点 = 账号类型 `platforms[].endpoints` 覆盖到的协议加核心能转换到它们的协议（§110 起：跨平台转换到的端点要在账号上按模型开启才提供）。

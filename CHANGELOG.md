@@ -32,8 +32,16 @@
 API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai；无迁移）：
 
 - 账号表单不再是声明式 JSON（`forms/` 已删），改为插件的 `ui/native`（`@sub2api/ui` 的 `createApiKeyForm`）：字段名、默认值、文案、校验规则与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址。清单改为 `form.mode: "native"`，加 `ui.native`、`hostUICompat ^3.20`，装包审查多一项“在控制台运行插件界面”（`ui.native`）。保存时的最终校验只在插件的 `ValidateCredentials`。
-- relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，原来默认收起，现在直接显示。
-- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径，原样匹配，前后有空格也拒绝），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
+- relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，与原表单一样默认收起，有值或有错误时自动展开。
+- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径；与其它类型的基础地址一样先规范化再匹配，所以前后的空白、大写的 scheme、末尾多余的 `/` 去掉后接受；项目名里转义的斜杠如 `/api/projects/a%2Fb` 由接受改为拒绝，因为规范化把 `%2F` 变成了 `/`），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
+
+公共组件与 SDK 的补缺（U3a；各插件改用它们在 U3b）：
+
+- SDK：`apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。去首尾空白、scheme 转小写照旧；已存的地址都是它的输出，空格与非 ASCII 字节都已百分号转义，请求时重新规范化结果不变。
+- SDK：`apikey.Spec.Fields` 改为 `fieldcheck.Fields`：一处声明既是允许的键又带规则（也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后、对将要保存的值即去空白的 key 和规范化后的地址运行），插件不必再包一层 `Platform` 改写 `ValidateCredentials`。新增 `fieldcheck.DecodeSettings`（设置的"解码 → 检查 → 解码进带默认值的结构体"）、测试辅助 `apikey/apikeytest`（api_key + base_url 类型共有的 `ValidateCredentials` 用例）和 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
+- `@sub2api/ui`：新增 `SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）。
+- 八个 API Key 类插件（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai）跟进：`ValidateCredentials` 拒绝表单不会发的键（`unknown`；openai 只另外允许 `organization`、`project`，`azure_deployment` 只另外允许 `api_version`），黄金样例里"带其它字段的合法凭证"一条相应声明为预期差异；基础地址路径里的空格由转成 `%20` 改为拒绝；openai 去掉包在标准平台外的一层，API Key 上限与组织 ID、项目 ID 的规则写在 `Spec.Fields` 上（错误码随 `fieldcheck`：不是字符串报 `type`、超长报 `maxLength`、字符不对报 `pattern`，原来都是 `pattern`；组织 ID、项目 ID 为 `null` 时由忽略改为报 `type`），黄金样例改为回放插件实际的 `ValidateCredentials`；测试改用 `apikey/apikeytest` 与 `@sub2api/ui/testing`。
+- `@sub2api/ui/testing`：增加账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
 
 ### 插件界面只用代码写：云厂商插件的账号表单
 

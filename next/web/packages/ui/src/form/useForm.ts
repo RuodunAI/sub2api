@@ -45,6 +45,8 @@ export interface FormApi<M extends Model = Model> {
   get<T = any>(path: string): T
   /** v-model of the control at path: `<SInput v-bind="form.bind('x')" />` (values pass unconverted). */
   bind(path: string): { modelValue: any; 'onUpdate:modelValue': (v: unknown) => void }
+  /** bind for `<SInput type="number">`: its null (a cleared box) removes the key, so the key is not sent. */
+  bindNumber(path: string): { modelValue: any; 'onUpdate:modelValue': (v: unknown) => void }
   /** Writes one path: a patch of the current value, every other key kept as it is (hidden keys too). */
   set(path: string, value: unknown): void
   /** Runs every rule; true when nothing failed. Marks every field touched. Never rejects. */
@@ -170,6 +172,7 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     value: current,
     get: (path) => getPath(current(), path),
     bind: (path) => ({ modelValue: getPath(current(), path), 'onUpdate:modelValue': (v) => form.set(path, v) }),
+    bindNumber: (path) => ({ ...form.bind(path), 'onUpdate:modelValue': (v) => form.set(path, v ?? undefined) }),
     set(path, value) {
       write(setPath(current(), path, value))
       // Checks of the old value are stale.
