@@ -263,7 +263,7 @@ type Writer interface {
    - 客户端非流式：`e.Request.Stream != true` 且 `e.Response.NonStream == "json"`，或 b 对 `e.Protocol` 声明了 streamOnly（§83.1 照旧）。
    所以 chat 流式请求到 Gemini 选 `gemini.stream_generate`，非流式选 `gemini.generate`；Gemini 流式客户端到 chat 上游带 `stream: true`。
 4. 在候选里取 (grade, 跳数, 声明顺序) 最小者；声明顺序 = b 的 `platforms` 顺序，其次平台的 `endpoints` 顺序。完全确定，等级相同时就是今天的“first match”。
-5. `typeRoute` 新增 `grade Grade`、`hops []string`；`rt.upstream` 仍是最后一跳协议（使用记录 `upstream_protocol`、用量规则、`meta.protocol` 都按它）。转换路由另取：客户端端点为上游协议声明的 `convertedUsage`（有就代替用量规则，CONTRACTS §121.5）、转换器的 `ModelLocator.ModelPath()`（有就代替上游端点的 `modelPath`，§121.4）、本平台路由上 `adapted` 选项的 `model`（`adaptModel`，交给 `Options.AdaptModel`，§121.3）。
+5. `typeRoute` 新增 `grade Grade`、`hops []string`；`rt.upstream` 仍是最后一跳协议（使用记录 `upstream_protocol`、用量规则、`meta.protocol` 都按它）。转换路由另取：转换器的 `ModelLocator.ModelPath()`（有就代替上游端点的 `modelPath`，§121.4）、本平台路由上 `adapted` 选项的 `model`（`adaptModel`，交给 `Options.AdaptModel`，§121.3）。
 6. WebSocket、异步任务提交端点的过滤不变（只要原生）。
 7. count_tokens 端点另见 §8。
 
@@ -342,7 +342,7 @@ NULL 表示继承：账号 NULL → 分组；分组 NULL → `allow`。三列都
 - 写入条件：最终路由是转换或本地估算，或有 `rejected`。原生且无事发生时为 NULL。
 - 上限：路径合计 40 条、每条 160 字节，超出计入 `omitted`；`rejected` 最多 5 条。组合时路径前加跳标记 `"1:tools[0]"`（第 2 跳的路径是 Responses 请求里的路径）。
 - `policy` 是最终服务账号的生效策略；本地估算为 `{"v":1,"grade":"local","hops":["anthropic.count_tokens"]}`。
-- 用量与计费：照旧由上游端点的用量规则从**上游**响应读取（`routing.go` `usagerules.For` 按最后一跳），转换后给客户端看的 usage 只是换算展示，不参与计费。客户端端点声明了 `convertedUsage` 时（生图两个端点对 `openai.responses`，CONTRACTS §121.5）用它的规则，仍读上游响应。
+- 用量与计费：照旧由上游端点的用量规则从**上游**响应读取（`routing.go` `usagerules.For` 按最后一跳），转换后给客户端看的 usage 只是换算展示，不参与计费。生图两对也是：Responses 端点的规则本来就把生图工具的用量加进来（CONTRACTS §118.10、§121.5）。
 - 生图转换的记录：`hops` 为 `["openai.images", "openai.responses"]`（edits 为 `openai.images_edit`），`grade` good；应答里 assistant 的文字等非图片输出项记 `response_lost.other`（`response.output[i]`）。
 - `dispatch.go` 原来的 debug 日志 `request conversion dropped fields` 换成带类别的同名日志。
 
@@ -500,7 +500,7 @@ NULL 表示继承：账号 NULL → 分组；分组 NULL → `allow`。三列都
 - **chat / responses → gemini（fair）**：assistant → role `model`；连续 tool 结果合并为一条 user 内容的多个 `functionResponse`；所有系统消息进 `systemInstruction`；`response_format.json_object` → `responseMimeType` 无 schema；不加 safetySettings；URL 媒体下载内联（9.2）；model 轮次写 thoughtSignature 旁路值（§3.2）。
 - **gemini → chat / responses（fair）**：`contents[].role` `model` → assistant、`user`/`function` → user；`thought:true` 历史部件与 `thoughtSignature` → 丢 reasoning；`fileData` http(s) 图片 → URL 图片，`files/…` URI → 丢 image（非图片丢 other）；`functionResponse` → tool 消息 / `function_call_output`（`tool_call_id` 按 id，没有 id 按同名调用的出现顺序配对）；`toolConfig` 见 9.3。
 - **anthropic ↔ gemini（discouraged）**：组合，损失为两跳之和；无专门映射。
-- **images / images_edit → responses（good，2026-11-19）**：请求、应答、流式事件与错误的映射表见 CONTRACTS §121.2、§121.7、§121.8。要点：顶层 `model` 是账号类型 `adapted` 选项的驱动模型（`Options.AdaptModel`，没有时转换器报配置错误），客户端模型与其余参数原样进 `tools[0]`（`ModelLocator` 指向 `tools.0.model`），`size`、`quality`、`background` 另写进一句 `instructions`；`n` ≠ 1、`response_format` 不是 `b64_json` 为 `RequestError`；`user`、`safety_identifier`、`style` 丢 other。应答没有图时转换器返回 `ClientError`（失败的生图项 400 `image_generation_user_error`，只有文字 502 `no_image_generated`），流式发同一对象的 `error` 事件。
+- **images / images_edit → responses（good，2026-11-19）**：请求、应答、流式事件与错误的映射表见 CONTRACTS §121.2、§121.7、§121.8。要点：顶层 `model` 是账号类型 `adapted` 选项的驱动模型（`Options.AdaptModel`，没有时转换器报配置错误），客户端模型与其余参数原样进 `tools[0]`（`ModelLocator` 指向 `tools.0.model`），`size`、`quality`、`background` 另写进一句 `instructions`；`n` ≠ 1、`response_format` 不是 `b64_json` 为 `RequestError`；`user`、`safety_identifier`、`style` 丢 other。应答没有图时转换器返回 `ClientError`（失败的生图项 400 `image_generation_user_error`，只有文字 502 `no_image_generated`），流式发同一对象的 `error` 事件，并经可选接口 `StreamFailure` 交出同一个 `ClientError`，网关两种情况记录相同。
 
 ## 10. 测试
 
@@ -521,7 +521,7 @@ testdata/ir/<upstream protocol>/<case>.{json,sse}.txt   reader 输出的 IR 快�
 ```
 
 - 驱动 `golden_test.go`：遍历目录，跑 `Prepare` / `Response` / `NewStream`（逐事件喂），比对；`-update` 重写 `want.*`（人工审阅后提交）。规范化：32 位以上十六进制 id、`created`/`created_at` 等时间戳。媒体下载用 `case.json` 的 `media` 映射到本地文件的假 `MediaFetcher`，不联网。
-- 生图两对的必备样例是另一张表（`goldenImagesRequired`）：`text_basic`、`no_instructions`、`two_images`、`partial_image`、`no_image`、`image_failed`、`error_midstream`、`lossy`（只要求 other）、`impossible`；`case.json` 的 `options.adapt_model` 给驱动模型。
+- 生图两对的必备样例是另一张表（`goldenImagesRequired`）：`text_basic`、`no_instructions`、`two_images`、`partial_image`、`no_image`、`image_failed`、`image_and_failed`、`no_usage`、`error_midstream`、`error_event`、`lossy`（只要求 other）、`impossible`；`case.json` 的 `options.adapt_model` 给驱动模型。
 - 每对必备样例（缺一项测试失败，由 `golden_coverage_test.go` 按清单检查）：`text_basic`、`image_input`（到 gemini 的对含 URL 图片下载）、`tools_call`（两个并行调用、参数分 ≥3 个增量）、`tool_roundtrip`（历史里有调用和结果）、`reasoning`（请求推理 + 响应推理文本 + 响应侧签名丢失记录 + 历史推理丢弃）、`finish_length`、`usage_cache`、`error_midstream`、`lossy`（每个类别至少一条）、`impossible`。到 anthropic 的对另有 `max_tokens_default`（含 thinking 时抬高）与 `thinking_tool_loop`；组合对另有 `compose_equals_chain`。
 - 录制工具 `next/server/cmd/convert-record`（Go；放在 server 模块里才能引用 `internal/` 包）：按 `recorded/<protocol>/<case>.request.json` 用测试环境账号（环境变量给 base_url/key）请求真实上游，写 `response.json`/`stream.sse`；脱敏 id、签名换成固定假值。手动运行，不进 CI。`-live <from>~<to>` 模式把转换后的请求发给真实上游，只断言 2xx 与流完整：发布前在测试环境跑一遍（尤其 anthropic 工具循环 + thinking、Gemini 3 functionCall 的旁路签名）。
 - strict 等价：`protocol-codec/strict/*_test.go` 里 strict 接受的输入（推理信封相关的除外）全部移植，新 chat/responses → anthropic 在 `strict` 策略下零损失、`want.request.json` 与 strict 输出语义等价（差异逐条写进样例的 `note`）。

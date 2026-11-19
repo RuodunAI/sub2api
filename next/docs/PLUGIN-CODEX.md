@@ -342,12 +342,12 @@
 
 ### 21.2 请求与上报的模型
 
-核心把生图请求转成 Responses（顶层 `model` 是驱动模型，客户端模型在 `tools[0].model`，CONTRACTS §121.2）后交给插件，`BuildUpstream` 照常改写（`store: false`、补 `instructions`、删不支持字段）。`meta.client_protocol` 是 `openai.images` 或 `openai.images_edit` 时插件不上报上游模型（`upstreamModel` 返回空串）：请求体顶层的 `model` 是驱动模型，不是这次请求的模型；核心改记应答回显的 `gpt-image-2-codex`。
+核心把生图请求转成 Responses（顶层 `model` 是驱动模型，客户端模型在 `tools[0].model`，CONTRACTS §121.2）后交给插件，`BuildUpstream` 照常改写（`store: false`、补 `instructions`、删不支持字段），照常上报请求体顶层的 `model`（驱动模型）作上游模型，没有生图专用的分支。
 
 ### 21.3 账号测试（CONTRACTS §122.3）
 
-`BuildTestRequest` 取 `protocols` 里第一个 `openai.responses`、`openai.chat`、`openai.images`：前两者发原来的流式 `ping`；`openai.images`（核心只在测试带了模型名时才给，排在原生协议之后，CONTRACTS §122.2）发转换后的最小生图请求——顶层 `ImageChatModel`，`tools: [{"type":"image_generation","model":<被测模型>,"output_format":"png","quality":"low"}]`，`tool_choice` 强制工具，一条用户消息“a small white dot”，`store: false`、`stream: true`；`usage_protocol` 报 `openai.responses`，`model` 报被测模型。会真实出一张图、消耗订阅额度。空列表发 `ping`；列表不空而没有这三个协议时回 `InvalidArgument`。
+`BuildTestRequest` 取 `protocols` 里第一个 `openai.responses`、`openai.chat`、`openai.images`：前两者发原来的流式 `ping`；`openai.images`（核心只在测试带了模型名时才给，排在原生协议之后，CONTRACTS §122.2）发转换后的最小生图请求——顶层 `ImageChatModel`，`tools: [{"type":"image_generation","model":<被测模型>,"output_format":"png","quality":"low"}]`，`tool_choice` 强制工具，一条用户消息“a small white dot”，`store: false`、`stream: true`；`usage_protocol` 报 `openai.responses`，`model` 报被测模型。会真实出一张图、消耗订阅额度。空列表发 `ping`；列表不空而没有这三个协议时回 `FailedPrecondition`（与 `standard` 库相同）。
 
 ### 21.4 测试
 
-`manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportNoModel`（两个生图客户端协议不上报模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
+`manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportChatModel`（两个生图客户端协议上报驱动模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
