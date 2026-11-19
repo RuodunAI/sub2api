@@ -15,10 +15,10 @@
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
-| API Key（`api_key`） | 是 | TypeSafe 的 Key，8–512 个不含空格的可见字符；加密保存 |
-| Base URL（`base_url`） | 否 | 留空用官方地址 `https://api.typesafe.ai`；粘贴时带的 `/v1` 会被去掉 |
+| API Key（`api_key`） | 是 | TypeSafe 的 Key，任意非空字符串（保存时去掉首尾空白）；加密保存 |
+| Base URL（`base_url`） | 否 | 留空用官方地址 `https://api.typesafe.ai`；按填写的保存，地址已以 `/v1` 结尾时不再重复添加（请求时去掉这一段再拼 `/v1/systemone`） |
 
-- 没有 `account:settings:custom` 权限的人只能用官方地址（`guardedSettings`）；改成别的地址的账号照 §21.3 需要 `account:relay`。
+- 没有 `account:settings:custom` 权限的人只能用官方地址（`guardedSettings`，官方地址后带 `/v1` 也算，清单的 `versions`）；改成别的地址的账号照 §21.3 需要 `account:relay`。
 - 默认模型：`jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`。"拉取模型"读 `GET /v1/models` 的 `models[].name`。
 - 账号测试：用 `jev-latest` 发一条 `noul` 问题（`state: "ping"`）。
 
