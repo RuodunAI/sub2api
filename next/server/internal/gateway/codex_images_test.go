@@ -27,8 +27,9 @@ type codexImageUpstream struct {
 	srv    *httptest.Server
 	mu     sync.Mutex
 	bodies [][]byte
-	// textOnly answers with a message and no image.
-	textOnly bool
+	// textOnly answers with a message and no image; noEcho leaves the
+	// image model out of the response's tools.
+	textOnly, noEcho bool
 }
 
 // The tokens the upstream reports: the chat part and the image tool's.
@@ -60,7 +61,7 @@ func (u *codexImageUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.bodies = append(u.bodies, raw)
-	textOnly := u.textOnly
+	textOnly, noEcho := u.textOnly, u.noEcho
 	u.mu.Unlock()
 	if !gjson.GetBytes(raw, "stream").Bool() {
 		w.Header().Set("Content-Type", "application/json")
@@ -74,8 +75,12 @@ func (u *codexImageUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", v["type"], b)
 	}
 	resp := func(status string) map[string]any {
+		tool := map[string]any{"type": "image_generation", "model": "gpt-image-2-codex", "size": "auto"}
+		if noEcho {
+			delete(tool, "model")
+		}
 		return map[string]any{"id": "resp_1", "object": "response", "created_at": 1763452800, "status": status, "model": "gpt-6-luna",
-			"output": []any{}, "tools": []any{map[string]any{"type": "image_generation", "model": "gpt-image-2-codex", "size": "auto"}}}
+			"output": []any{}, "tools": []any{tool}}
 	}
 	send(map[string]any{"type": "response.created", "response": resp("in_progress")})
 	n := 0
@@ -166,7 +171,7 @@ func TestCodexImages(t *testing.T) {
 			}
 			rec := e.record()
 			if !rec.Success || rec.Protocol != protocol || rec.UpstreamProtocol != "openai.responses" || rec.Model != "gpt-image-2" ||
-				rec.UpstreamModel != "gpt-6-luna" || rec.Price == nil || rec.Price.ID != 21 || !rec.Billable || rec.Stream != stream ||
+				rec.UpstreamModel != "gpt-image-2-codex" || rec.Price == nil || rec.Price.ID != 21 || !rec.Billable || rec.Stream != stream ||
 				rec.Tokens != (core.UsageTokens{Input: itChatIn + itImageIn, Output: itChatOut + itImageOut, ImageOutput: itImageOut}) ||
 				rec.Conversion == nil || strings.Join(rec.Conversion.Hops, ",") != protocol+",openai.responses" {
 				t.Fatalf("%s stream=%v record %+v conversion %+v", path, stream, rec, rec.Conversion)
@@ -176,29 +181,57 @@ func TestCodexImages(t *testing.T) {
 }
 
 // The account's model mapping goes into the tool, where the client's model
-// is; the chat model at the top stays. A plugin reporting the body's model
-// (codex) has the chat model recorded as the upstream model: the mapped
-// name is only in the tool.
+// is; the chat model at the top stays. The upstream model recorded is the
+// one the response echoes, over the mapping; without an echo it is what the
+// gateway had: the mapped name, or none when the model is not mapped.
 func TestCodexImagesModelMapping(t *testing.T) {
-	e, plat, up := codexImagesEnv(t)
-	plat.reportModel = true
-	e.accounts.accounts[10].ModelMapping = map[string]string{"gpt-image-2": "gpt-image-2-alias"}
-	path, body := imageRequest(false, false)
-	if r := e.post(path, body, bearer()); r.status != 200 {
-		t.Fatalf("%d %s", r.status, r.body)
-	}
-	if ub := up.last(); ub.Get("model").String() != "gpt-6-luna" || ub.Get("tools.0.model").String() != "gpt-image-2-alias" {
-		t.Fatalf("upstream body %s", ub.Raw)
-	}
-	if rec := e.record(); rec.Model != "gpt-image-2" || rec.UpstreamModel != "gpt-6-luna" || rec.Price.ID != 21 {
-		t.Fatalf("record %+v", rec)
+	for _, tc := range []struct {
+		mapped, noEcho bool
+		want           string
+	}{
+		{true, false, "gpt-image-2-codex"},
+		{true, true, "gpt-image-2-alias"},
+		{false, true, ""},
+	} {
+		e, _, up := codexImagesEnv(t)
+		up.noEcho = tc.noEcho
+		if tc.mapped {
+			e.accounts.accounts[10].ModelMapping = map[string]string{"gpt-image-2": "gpt-image-2-alias"}
+		}
+		path, body := imageRequest(false, false)
+		if r := e.post(path, body, bearer()); r.status != 200 {
+			t.Fatalf("%+v: %d %s", tc, r.status, r.body)
+		}
+		if ub := up.last(); ub.Get("model").String() != "gpt-6-luna" || tc.mapped && ub.Get("tools.0.model").String() != "gpt-image-2-alias" {
+			t.Fatalf("%+v: upstream body %s", tc, ub.Raw)
+		}
+		if rec := e.record(); rec.Model != "gpt-image-2" || rec.UpstreamModel != tc.want || rec.Price.ID != 21 {
+			t.Fatalf("%+v: record %+v", tc, rec)
+		}
 	}
 }
 
-// An upstream that answered with text and no image: 502 no_image_generated
-// for a JSON client, an error event for a stream, and either way a failed
-// record; the upstream did answer, so its usage is billed and the account
-// is not failed over.
+// The echoed image model is only recorded: a price it has is never used,
+// for the pre-charge or the charge (CONTRACTS §17.2).
+func TestCodexImagesEchoNotPriced(t *testing.T) {
+	e, _, _ := codexImagesEnv(t)
+	e.pricer.rules["gpt-image-2-codex"] = &core.PriceRule{ID: 99, Model: "gpt-image-2-codex", Mode: "per_token", Expression: "p*1000", ExprHash: "echo"}
+	e.pricer.rules["gpt-6-luna"] = &core.PriceRule{ID: 98, Model: "gpt-6-luna", Mode: "per_token", Expression: "p*1000", ExprHash: "chat"}
+	path, body := imageRequest(false, true)
+	if r := e.post(path, body, bearer()); r.status != 200 {
+		t.Fatalf("%d %s", r.status, r.body)
+	}
+	rec := e.record()
+	if rec.UpstreamModel != "gpt-image-2-codex" || rec.Price == nil || rec.Price.ID != 21 ||
+		len(e.balance.precharged) != 1 || e.balance.precharged[0] == nil || e.balance.precharged[0].ID != 21 {
+		t.Fatalf("record %+v price %+v pre-charged %+v", rec, rec.Price, e.balance.precharged)
+	}
+}
+
+// An upstream that answered with text and no image succeeded: the client
+// gets the Images API's answer without images (an empty data, a stream
+// without completed events), the record is a success and the usage billed
+// (the owner: what the upstream returns is what it is).
 func TestCodexImagesNoImage(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		e, _, up := codexImagesEnv(t)
@@ -207,16 +240,14 @@ func TestCodexImagesNoImage(t *testing.T) {
 		r := e.post(path, body, bearer())
 		rec := e.record()
 		if stream {
-			if r.status != 200 || !strings.Contains(string(r.body), "event: error") || !strings.Contains(string(r.body), "no_image_generated") {
+			if r.status != 200 || strings.Contains(string(r.body), "completed") || strings.Contains(string(r.body), "error") {
 				t.Fatalf("stream: %d %s", r.status, r.body)
 			}
-		} else if r.status != 502 || r.json().Get("error.code").String() != "no_image_generated" || r.json().Get("error.message").String() != "no image for you" {
+		} else if d := r.json().Get("data"); r.status != 200 || !d.IsArray() || len(d.Array()) != 0 || r.json().Get("error").Exists() {
 			t.Fatalf("json: %d %s", r.status, r.body)
 		}
-		if rec.Success || rec.StatusCode != 502 || rec.ErrorType != errTypeUpstream || !strings.Contains(rec.ErrorMessage, "no_image_generated") {
-			t.Fatalf("stream=%v record %+v", stream, rec)
-		}
-		if up.calls() != 1 || !rec.Billable || rec.Tokens != (core.UsageTokens{Input: itChatIn, Output: itChatOut}) {
+		if !rec.Success || rec.StatusCode != 200 || rec.ErrorType != "" || up.calls() != 1 || !rec.Billable ||
+			rec.Tokens != (core.UsageTokens{Input: itChatIn, Output: itChatOut}) {
 			t.Fatalf("stream=%v record %+v after %d calls", stream, rec, up.calls())
 		}
 	}
