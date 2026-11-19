@@ -1,8 +1,5 @@
-// Inputs of the account forms and what they must make of them: the v-model
-// they hand back and validate()'s verdict. The verdicts are those of the JSON
-// Schema forms the native forms replaced (forms/*.schema.json, deleted),
-// written out; the rows marked `schemaForm` are where the native form differs
-// from that form on purpose.
+// The cases of the account forms: each row is an input and what the form
+// must make of it, the v-model it hands back and validate()'s verdict.
 //
 // The constraints (internal/vertex/credentials.go holds the same on save):
 //   service_account_json / authorized_user_json  required, 2-32768 characters (secret)
@@ -11,22 +8,12 @@
 //   location     ^([a-z0-9-]{2,32})?$, default global for the key file types
 //   access_token, expires_at, token_for  the core's (token renewal): never shown, kept as they are
 import { SECRET_MASK } from '@sub2api/ui'
+import type { AccountFormCase } from '@sub2api/ui/testing'
 
-type M = Record<string, unknown>
 export type VertexType = 'vertex_sa' | 'vertex_authorized_user' | 'vertex_apikey'
 
-export interface FormCase {
-  name: string
-  type: VertexType
-  /** Edit an account holding these credentials (secrets masked); create when absent. */
-  stored?: M
-  /** Typed into the controls: field -> text. */
-  input?: Record<string, string>
-  out: M
-  ok: boolean
-  /** What the schema form made of the case, where it differs (and why the native form is right). */
-  schemaForm?: { out?: M; ok?: boolean; why: string }
-}
+/** stored: secrets masked. */
+export type FormCase = AccountFormCase & { type: VertexType }
 
 /** The labels of each type's fields (fillControls). */
 export const LABELS: Record<VertexType, Record<string, string>> = {
@@ -45,8 +32,6 @@ const SA = JSON.stringify({
 })
 const USER = JSON.stringify({ type: 'authorized_user', client_id: 'id.apps.googleusercontent.com', client_secret: 'secret', refresh_token: '1//0refresh', quota_project_id: 'my-project-123456' })
 const KEY = 'AQ.Ab8RN6-example-key'
-/** The schema form wanted 8-512 visible ASCII characters; any non-blank key is accepted now (DESIGN-2026-11-20 §5.1). */
-const ANY_KEY = { ok: false, why: 'a key only has to be non-blank, as the plugin checks it on save' }
 const GLOBAL = { location: 'global' }
 /** A key file account as the editor loads it: the file and the token masked, the token state as the core wrote it. */
 const TOKEN = { access_token: SECRET_MASK, expires_at: 1800000000, token_for: '9f86d081884c7d659a2feaa0c55ad015' }
@@ -71,17 +56,8 @@ export const CASES: FormCase[] = [
   { name: 'sa: edit, project changed: the token state is kept', type: 'vertex_sa', stored: STORED_SA, input: { project_id: 'other-project-1' }, out: { ...STORED_SA, project_id: 'other-project-1' }, ok: true },
   { name: 'sa: edit, key file replaced: the token state is kept for the plugin to judge', type: 'vertex_sa', stored: STORED_SA, input: { service_account_json: SA }, out: { ...STORED_SA, service_account_json: SA }, ok: true },
   { name: 'sa: edit, an unknown key goes back as it is', type: 'vertex_sa', stored: { ...STORED_SA, legacy: 'x' }, out: { ...STORED_SA, legacy: 'x' }, ok: true },
-  {
-    name: 'sa: edit, an account stored without a location',
-    type: 'vertex_sa',
-    stored: { service_account_json: SECRET_MASK, ...TOKEN },
-    out: { service_account_json: SECRET_MASK, ...TOKEN },
-    ok: true,
-    schemaForm: {
-      out: { service_account_json: SECRET_MASK, ...TOKEN, ...GLOBAL },
-      why: 'defaults fill a new account only (useCredentialForm); ValidateCredentials stores a missing location as global, so the saved account is the same'
-    }
-  },
+  // The defaults fill a new account only (useCredentialForm); ValidateCredentials stores a missing location as global.
+  { name: 'sa: edit, an account stored without a location', type: 'vertex_sa', stored: { service_account_json: SECRET_MASK, ...TOKEN }, out: { service_account_json: SECRET_MASK, ...TOKEN }, ok: true },
 
   // ---------------------------------------------------------------- vertex_authorized_user
   { name: 'user: new account, the credentials file', type: 'vertex_authorized_user', input: { authorized_user_json: USER }, out: { authorized_user_json: USER, ...GLOBAL }, ok: true },
@@ -97,11 +73,12 @@ export const CASES: FormCase[] = [
   { name: 'apikey: new account, the key (express address)', type: 'vertex_apikey', input: { api_key: KEY }, out: { api_key: KEY }, ok: true },
   { name: 'apikey: nothing typed', type: 'vertex_apikey', out: {}, ok: false },
   { name: 'apikey: blank key', type: 'vertex_apikey', input: { api_key: '   ' }, out: { api_key: '   ' }, ok: false },
-  { name: 'apikey: key of 7 characters', type: 'vertex_apikey', input: { api_key: 'AQ.1234' }, out: { api_key: 'AQ.1234' }, ok: true, schemaForm: ANY_KEY },
-  { name: 'apikey: key of 513 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(513) }, out: { api_key: 'k'.repeat(513) }, ok: true, schemaForm: ANY_KEY },
-  { name: 'apikey: key with a space', type: 'vertex_apikey', input: { api_key: 'AQ.Ab8 RN6' }, out: { api_key: 'AQ.Ab8 RN6' }, ok: true, schemaForm: ANY_KEY },
+  // any key that is not blank, as ValidateCredentials checks on save
+  { name: 'apikey: key of 7 characters', type: 'vertex_apikey', input: { api_key: 'AQ.1234' }, out: { api_key: 'AQ.1234' }, ok: true },
+  { name: 'apikey: key of 513 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(513) }, out: { api_key: 'k'.repeat(513) }, ok: true },
+  { name: 'apikey: key with a space', type: 'vertex_apikey', input: { api_key: 'AQ.Ab8 RN6' }, out: { api_key: 'AQ.Ab8 RN6' }, ok: true },
   { name: 'apikey: project address', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, out: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, ok: true },
-  // Both or neither is the plugin's rule on save (target.check), as the section says; the schema had none.
+  // Both or neither is the plugin's rule on save (target.check), as the section says; the form leaves it to the plugin.
   { name: 'apikey: project only (refused on save)', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456' }, out: { api_key: KEY, project_id: 'my-project-123456' }, ok: true },
   { name: 'apikey: bad location', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456', location: 'us_central1' }, out: { api_key: KEY, project_id: 'my-project-123456', location: 'us_central1' }, ok: false },
   { name: 'apikey: edit, stored key kept', type: 'vertex_apikey', stored: { api_key: SECRET_MASK, project_id: 'my-project-123456', location: 'global' }, out: { api_key: SECRET_MASK, project_id: 'my-project-123456', location: 'global' }, ok: true },
