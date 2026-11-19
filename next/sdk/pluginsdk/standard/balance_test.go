@@ -1,10 +1,9 @@
 package standard_test
 
 import (
-	"cmp"
 	"context"
+	"math"
 	"reflect"
-	"regexp"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -28,57 +27,55 @@ const relayManifest = `{
     "platforms": [{"platform": "openai"}, {"platform": "anthropic"}, {"platform": "gemini"}]}]
 }`
 
-// newAPISite is the New API shape (design §3.5.2): two requests, the key's
-// quota with the key, the site's unit of account without it.
+// newAPISite is the New API shape (design §3.5.2): one request, the key's
+// quota with the key, in the site's own units.
 func newAPISite() standard.Type {
 	t := standard.Merge("apikey", relaySpec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""))
-	t.Balance = &standard.Balance{
-		Requests: []standard.BalanceRequest{{Path: "/api/usage/token/"}, {Path: "/api/status", Auth: &standard.Auth{}}},
-		Read:     readNewAPI,
-	}
+	t.Balance = &standard.Balance{Requests: []standard.BalanceRequest{{Path: "/api/usage/token/"}}, Read: readNewAPI}
 	return t
 }
 
+// readNewAPI reads the number the site answers as it is, without a unit:
+// the key's quota, the lower of the key's and its user's when the site
+// gives both, no limit when it gives neither.
 func readNewAPI(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
-	for _, a := range answers {
-		if f := standard.BalanceFailure(a); f != nil {
-			return f
-		}
+	if f := standard.BalanceFailure(answers[0]); f != nil {
+		return f
 	}
-	token, site := gjson.ParseBytes(answers[0].GetBody()), gjson.ParseBytes(answers[1].GetBody())
-	perUnit := site.Get("data.quota_per_unit").Float()
-	switch {
-	case !token.Get("code").Bool():
+	token := gjson.ParseBytes(answers[0].GetBody())
+	if !token.Get("code").Bool() {
 		return transientResult("token usage: " + token.Get("message").String())
-	case perUnit <= 0:
-		return transientResult("no quota_per_unit")
 	}
-	d, user := token.Get("data"), token.Get("data.user_quota.total_available")
-	var available float64
-	switch {
-	case !d.Get("unlimited_quota").Bool():
-		available = d.Get("total_available").Float()
-		if user.Exists() {
-			available = min(available, user.Float())
-		}
-	case user.Exists():
-		available = user.Float()
-	default:
+	var quotas []gjson.Result
+	if !token.Get("data.unlimited_quota").Bool() {
+		quotas = append(quotas, token.Get("data.total_available"))
+	}
+	if user := token.Get("data.user_quota.total_available"); user.Exists() {
+		quotas = append(quotas, user)
+	}
+	if len(quotas) == 0 {
 		return &pluginv1.BalanceResult{Unlimited: true}
 	}
-	return &pluginv1.BalanceResult{AmountMicros: standard.USDMicros(available, perUnit), Currency: "USD"}
+	lowest := int64(math.MaxInt64)
+	for _, q := range quotas {
+		m, ok := standard.Micros(q.String())
+		if !ok {
+			return transientResult("quota " + q.Raw)
+		}
+		lowest = min(lowest, m)
+	}
+	return &pluginv1.BalanceResult{AmountMicros: lowest}
 }
 
 // sub2APISite is the Sub2API shape: one request, the amount under one of
-// three names, -1 for no limit, the unit in the answer.
+// three names, -1 for no limit, the unit in the answer if any.
 func sub2APISite() standard.Type {
 	t := standard.Merge("apikey", relaySpec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""))
 	t.Balance = &standard.Balance{Requests: []standard.BalanceRequest{{Path: "/v1/usage"}}, Read: readSub2API}
 	return t
 }
 
-var currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
-
+// readSub2API reads the number and the unit the site answers as they are.
 func readSub2API(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	if f := standard.BalanceFailure(answers[0]); f != nil {
 		return f
@@ -93,16 +90,14 @@ func readSub2API(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 			break
 		}
 	}
-	unit := cmp.Or(b.Get("unit").String(), "USD")
-	switch {
-	case !amount.Exists():
-		return transientResult("no amount")
-	case amount.Float() == -1:
+	if amount.Float() == -1 {
 		return &pluginv1.BalanceResult{Unlimited: true}
-	case !currencyCode.MatchString(unit):
-		return transientResult("unit " + unit)
 	}
-	return &pluginv1.BalanceResult{AmountMicros: standard.USDMicros(amount.Float(), 1), Currency: unit}
+	m, ok := standard.Micros(amount.String())
+	if !ok {
+		return transientResult("amount " + amount.Raw)
+	}
+	return &pluginv1.BalanceResult{AmountMicros: m, Currency: b.Get("unit").String()}
 }
 
 func transientResult(msg string) *pluginv1.BalanceResult {
@@ -124,33 +119,30 @@ func answers(bodies map[string]string, seen *[]*pluginv1.BalanceRequest) func(*p
 
 func TestBalanceNewAPI(t *testing.T) {
 	h := pluginsdktest.Start(t, standard.New(newAPISite()), pluginsdktest.Options{Manifest: []byte(relayManifest)})
-	const tokenURL, statusURL = "https://relay.example.com/api/usage/token/", "https://relay.example.com/api/status"
-	site := `{"success":true,"data":{"quota_per_unit":500000}}`
+	const tokenURL = "https://relay.example.com/api/usage/token/"
 	for name, c := range map[string]struct {
 		token string
 		want  *pluginv1.BalanceResult
 	}{
-		"limited":               {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false}}`, &pluginv1.BalanceResult{AmountMicros: 2500000, Currency: "USD"}},
-		"the lower of two":      {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, &pluginv1.BalanceResult{AmountMicros: 500000, Currency: "USD"}},
-		"unlimited, user quota": {`{"code":true,"data":{"unlimited_quota":true,"user_quota":{"total_available":50000}}}`, &pluginv1.BalanceResult{AmountMicros: 100000, Currency: "USD"}},
+		"limited":               {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false}}`, &pluginv1.BalanceResult{AmountMicros: 1250000_000000}},
+		"the lower of two":      {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, &pluginv1.BalanceResult{AmountMicros: 250000_000000}},
+		"unlimited, user quota": {`{"code":true,"data":{"unlimited_quota":true,"user_quota":{"total_available":50000}}}`, &pluginv1.BalanceResult{AmountMicros: 50000_000000}},
+		"a large quota":         {`{"code":true,"data":{"total_available":123456789012}}`, &pluginv1.BalanceResult{AmountMicros: 123456789012_000000}},
+		"beyond int64":          {`{"code":true,"data":{"total_available":9007199254740993}}`, transientResult("quota 9007199254740993")},
 		"unlimited":             {`{"code":true,"data":{"unlimited_quota":true}}`, &pluginv1.BalanceResult{Unlimited: true}},
+		"no quota":              {`{"code":true,"data":{}}`, transientResult("quota ")},
 		"code false":            {`{"code":false,"message":"no such token"}`, transientResult("token usage: no such token")},
 	} {
 		var seen []*pluginv1.BalanceRequest
-		got, err := h.Balance(context.Background(), relayAccount, answers(map[string]string{tokenURL: c.token, statusURL: site}, &seen))
+		got, err := h.Balance(context.Background(), relayAccount, answers(map[string]string{tokenURL: c.token}, &seen))
 		if err != nil || got.String() != c.want.String() {
 			t.Errorf("%s: %v %v, want %v", name, got, err, c.want)
 		}
-		// Both requests, in order, GET; the key only on the first.
-		if len(seen) != 2 || seen[0].Url != tokenURL || seen[1].Url != statusURL || seen[0].Method != "GET" ||
-			!reflect.DeepEqual(seen[0].Headers, map[string]string{"authorization": "Bearer site-key-0123"}) || len(seen[1].Headers) != 0 {
+		// One GET, with the key.
+		if len(seen) != 1 || seen[0].Url != tokenURL || seen[0].Method != "GET" ||
+			!reflect.DeepEqual(seen[0].Headers, map[string]string{"authorization": "Bearer site-key-0123"}) {
 			t.Fatalf("%s: requests %v", name, seen)
 		}
-	}
-	var seen []*pluginv1.BalanceRequest
-	got, err := h.Balance(context.Background(), relayAccount, answers(map[string]string{tokenURL: `{"code":true,"data":{}}`}, &seen))
-	if err != nil || got.GetErrorType() != pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT || got.GetErrorMessage() != "upstream returned HTTP 404" {
-		t.Errorf("status failed: %v %v", got, err)
 	}
 }
 
@@ -159,11 +151,12 @@ func TestBalanceSub2API(t *testing.T) {
 	const usageURL = "https://relay.example.com/v1/usage"
 	for body, want := range map[string]*pluginv1.BalanceResult{
 		`{"isValid":true,"remaining":12.5,"unit":"USD"}`: {AmountMicros: 12500000, Currency: "USD"},
-		`{"balance":3}`: {AmountMicros: 3000000, Currency: "USD"},
+		`{"balance":3}`: {AmountMicros: 3000000},
 		`{"quota":{"remaining":7.25},"unit":"CNY"}`: {AmountMicros: 7250000, Currency: "CNY"},
+		`{"remaining":1,"unit":"dollars"}`:          {AmountMicros: 1000000, Currency: "dollars"},
 		`{"remaining":-1}`:                          {Unlimited: true},
 		`{"isValid":false,"remaining":1}`:           {ErrorType: pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED, ErrorMessage: "key disabled or expired"},
-		`{"remaining":1,"unit":"dollars"}`:          transientResult("unit dollars"),
+		`{"isValid":true}`:                          transientResult("amount "),
 	} {
 		var seen []*pluginv1.BalanceRequest
 		got, err := h.Balance(context.Background(), relayAccount, answers(map[string]string{usageURL: body}, &seen))
@@ -202,9 +195,10 @@ func TestBalanceHostRules(t *testing.T) {
 // Read sees one answer per request; another count is a transient result.
 func TestBalanceAnswerCount(t *testing.T) {
 	p := standard.New(newAPISite())
-	out, err := p.ParseBalanceResponse(context.Background(), &pluginv1.ParseBalanceResponseRequest{Account: relayAccount, Answers: []*pluginv1.BalanceAnswer{{Status: 200}}})
-	if err != nil || out.GetResult().GetErrorType() != pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT {
-		t.Errorf("one answer to two requests: %v %v", out, err)
+	ok := &pluginv1.BalanceAnswer{Status: 200, Body: []byte(`{"code":true,"data":{"total_available":1}}`)}
+	out, err := p.ParseBalanceResponse(context.Background(), &pluginv1.ParseBalanceResponseRequest{Account: relayAccount, Answers: []*pluginv1.BalanceAnswer{ok, ok}})
+	if err != nil || out.GetResult().GetErrorMessage() != "2 answers to 1 balance requests" {
+		t.Errorf("two answers to one request: %v %v", out, err)
 	}
 }
 
@@ -225,12 +219,39 @@ func TestBalanceFailure(t *testing.T) {
 			t.Errorf("%v: %v, want %v", c.answer, got, c.want)
 		}
 	}
+}
+
+// Micros is the number in millionths: exact to the sixth decimal, a large
+// quota included, the seventh rounded half away from zero; false for what
+// is not a plain decimal number or does not fit.
+func TestMicros(t *testing.T) {
 	for _, c := range []struct {
-		units, perUSD float64
-		want          int64
-	}{{1250000, 500000, 2500000}, {1, 3, 333333}, {2, 3, 666667}, {12.5, 1, 12500000}, {0, 500000, 0}} {
-		if got := standard.USDMicros(c.units, c.perUSD); got != c.want {
-			t.Errorf("USDMicros(%v, %v) = %d, want %d", c.units, c.perUSD, got, c.want)
+		number string
+		want   int64
+		ok     bool
+	}{
+		{"1250000", 1250000_000000, true},
+		{"123456789012", 123456789012_000000, true},
+		{"1234567890.123456", 1234567890123456, true},
+		{"9223372036854.775807", math.MaxInt64, true},
+		{"-9223372036854.775808", math.MinInt64, true},
+		{"9223372036854.775808", 0, false},
+		{"7.25", 7250000, true},
+		{"0.123456", 123456, true},
+		{"0.1234565", 123457, true},
+		{"0.1234564", 123456, true},
+		{"-0.0000005", -1, true},
+		{"-1", -1000000, true},
+		{"0", 0, true},
+		{"", 0, false},
+		{"1e3", 0, false},
+		{"abc", 0, false},
+		{"1.", 0, false},
+		{".5", 0, false},
+	} {
+		got, ok := standard.Micros(c.number)
+		if ok != c.ok || (ok && got != c.want) {
+			t.Errorf("Micros(%q) = %d %v, want %d %v", c.number, got, ok, c.want, c.ok)
 		}
 	}
 }

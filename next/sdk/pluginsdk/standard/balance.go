@@ -3,8 +3,9 @@ package standard
 import (
 	"context"
 	"fmt"
-	"math"
+	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -84,11 +85,29 @@ func BalanceFailure(a *pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	return transient(msg)
 }
 
-// USDMicros is units of an upstream's own unit of account, perUSD of which
-// make one US dollar, in micro-dollars (BalanceResult.amount_micros),
-// rounded to the nearest. perUSD 1 converts dollars.
-func USDMicros(units, perUSD float64) int64 {
-	return int64(math.Round(units / perUSD * 1e6))
+// decimalNumber is a plain decimal number: a sign, digits, a fraction.
+var decimalNumber = regexp.MustCompile(`^(-?)(\d+)(?:\.(\d+))?$`)
+
+// Micros is the plain decimal number an upstream answered (e.g. "7.25",
+// "1250000", "-1"; gjson's String of a JSON number is one) in millionths,
+// BalanceResult.amount_micros: the same number in another form, not a
+// conversion (CONTRACTS §52). It is exact to the sixth decimal, a further
+// one rounded half away from zero; false for anything else or a number
+// whose millionths do not fit an int64 (beyond about 9.2 trillion).
+func Micros(number string) (int64, bool) {
+	m := decimalNumber.FindStringSubmatch(number)
+	if m == nil {
+		return 0, false
+	}
+	frac := m[3] + "0000000" // the sixth decimal and the one after
+	n, _ := new(big.Int).SetString(m[2]+frac[:6], 10)
+	if frac[6] >= '5' {
+		n.Add(n, big.NewInt(1))
+	}
+	if m[1] == "-" {
+		n.Neg(n)
+	}
+	return n.Int64(), n.IsInt64()
 }
 
 func transient(msg string) *pluginv1.BalanceResult {
