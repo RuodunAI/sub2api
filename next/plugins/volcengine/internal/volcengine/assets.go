@@ -261,9 +261,9 @@ func validateAssetFields(errs pluginsdk.FieldErrors, credentialsJSON, settingsJS
 		}
 	}
 	if base != "" {
-		if _, err := apikey.NormalizeBaseURL(base, nil); err != nil {
+		if _, err := apikey.NormalizeBaseURL(base, nil); err != nil || hasSpace(base) {
 			errs = errs.Add(FieldAssetBaseURL, "format",
-				"asset_base_url "+err.Error()+" / asset_base_url 必须是不含账号、查询参数的 http(s) 地址")
+				"asset_base_url must be an http(s) URL without credentials, query, fragment or whitespace / asset_base_url 必须是不含账号、查询参数、空白字符的 http(s) 地址")
 		}
 	}
 	if region != "" && !assetRegionOK(region) {
@@ -276,6 +276,21 @@ func validateAssetFields(errs pluginsdk.FieldErrors, credentialsJSON, settingsJS
 	if ak == "" && sk == "" && (base != "" || region != "") {
 		errs = errs.Add(FieldAccessKey, "required",
 			"asset_base_url/asset_region only take effect with an access_key and secret_key / 填了素材端点或区域就必须填 Access Key 与 Secret Key")
+	}
+	return errs
+}
+
+// validateBaseURLSpace refuses a base_url with whitespace inside it, which
+// apikey.Spec takes and stores escaped (hasSpace). A base_url already refused
+// is left at that one error.
+func validateBaseURLSpace(errs pluginsdk.FieldErrors, credentialsJSON, settingsJSON string) pluginsdk.FieldErrors {
+	for _, e := range errs {
+		if e.GetField() == "base_url" {
+			return errs
+		}
+	}
+	if base, err := assetSetting(credentialsJSON, settingsJSON, "base_url"); err == nil && hasSpace(base) {
+		return errs.Add("base_url", "format", "base_url must not contain whitespace / base_url 不能包含空白字符")
 	}
 	return errs
 }
@@ -343,6 +358,7 @@ func (p *Plugin) validateWithAssets(in *pluginv1.ValidateCredentialsRequest) *pl
 			return resp
 		}
 	}
+	errs = validateBaseURLSpace(errs, in.GetCredentialsJson(), in.GetSettingsJson())
 	errs = validateAssetFields(errs, in.GetCredentialsJson(), in.GetSettingsJson())
 	if in.GetAccountType() == AccountTypeRelay {
 		errs = validateRelayBaseURL(errs, in.GetCredentialsJson(), in.GetSettingsJson())
