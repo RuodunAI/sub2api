@@ -214,7 +214,7 @@ func (p *Plugin) Configure(_ context.Context, cfg pluginsdk.Config) error {
 	if err != nil {
 		return pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
 	}
-	if len(refused) > 0 && p.log != nil {
+	if len(refused) > 0 {
 		p.log.Warn("moderation: stored settings the settings check refuses are applied as read", "error", refused.Error())
 	}
 	c := compile(s)

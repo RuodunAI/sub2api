@@ -186,7 +186,7 @@ const jevOptions = computed(() => [
               />
               <div v-else-if="specOf(k).kind === 'jev'" class="mod-form mod-setting-wide">
                 <SSegmented v-model="jevMode" :options="jevOptions" size="sm" />
-                <JevQuestionsEditor v-if="jev" :model-value="jev" @update:model-value="form.set(k, $event)">
+                <JevQuestionsEditor v-if="jev" :model-value="jev">
                   <template #toolbar>
                     <SButton size="sm" @click="jevMode = 'custom'">{{ t('settingsTab.jevCopyBuiltin') }}</SButton>
                   </template>

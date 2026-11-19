@@ -271,7 +271,6 @@ const settingsApiPath = () => `/plugins/${encodeURIComponent(useModHost().plugin
 export const fetchPluginSettings = () => useModHost().api.get<PluginSettings>(settingsApiPath())
 export const savePluginSettings = (values: Record<string, unknown>) => useModHost().api.put<PluginSettings>(settingsApiPath(), { values })
 
-
 /**
  * May read accounts of the console at any scope (all, own, groups, ids): a
  * caller who may not is not sent for a 403. Every console this plugin runs

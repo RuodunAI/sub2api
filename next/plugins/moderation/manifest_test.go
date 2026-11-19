@@ -272,3 +272,17 @@ func TestValidateSettings(t *testing.T) {
 		t.Fatalf("errors = %v, want %v", got, want)
 	}
 }
+
+// TestConfigureAppliesStoredSettings: stored settings that ValidateSettings
+// would refuse - saved before it existed, with retired keys and values of
+// older bounds - still configure (read and clamped), so the plugin starts.
+func TestConfigureAppliesStoredSettings(t *testing.T) {
+	h := pluginsdktest.Start(t, moderation.New(), pluginsdktest.Options{Manifest: manifestJSON})
+	stored := `{"mode":"observe","cache_ttl_seconds":0,"ban_window_hours":2,"allowlist_user_ids":["8"],"base_url":"https://old.example","pass_retention_days":9,"watch_days":0}`
+	if resp, err := h.ValidateSettings(stored); err != nil || len(resp.GetErrors()) == 0 {
+		t.Fatalf("ValidateSettings must refuse them: %v %v", resp, err)
+	}
+	if errs := h.Configure(stored, nil); len(errs) > 0 {
+		t.Fatalf("Configure refused stored settings: %v", errs)
+	}
+}

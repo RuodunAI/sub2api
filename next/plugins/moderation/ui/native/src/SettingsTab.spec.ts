@@ -254,36 +254,50 @@ describe('the webhook address and secret', () => {
 })
 
 describe('the Jev default set', () => {
-  const jevTable = (table: unknown): Edit => (w) => w.findComponent(JevQuestionsEditor).vm.$emit('update:modelValue', structuredClone(table))
-  it('copies the built-in set, sends thresholds typed as text as numbers, and goes back to the built-in one', async () => {
+  // The editor changes the table in place (JevQuestionsEditor defineModel):
+  // edits go through its inputs and buttons as a user makes them.
+  const editor = (w: W) => w.findComponent(JevQuestionsEditor)
+  /** The text inputs of row 0: category, label, threshold, answer yes, answer no. */
+  const input = (w: W, i: number) => editor(w).findAll('input')[i]
+  const textarea = (w: W, i: number) => editor(w).findAll('textarea')[i]
+  const button = (w: W, text: string) => editor(w).findAll('button').find((b) => b.text() === text)!
+  const PREAMBLE = 0
+  const QUESTION = 1
+  const CATEGORY = 0
+  const THRESHOLD = 2
+
+  it('goes back to the built-in set, copies it, and sends what is typed into the table', async () => {
     stored = STORED
-    const custom: Edit = (w) => w.findAllComponents(SSegmented)[0].vm.$emit('update:modelValue', 'builtin')
-    expect((await save('jev', custom)).put).toEqual({ ...STORED, jev_default_set: null })
+    const builtin: Edit = (w) => w.findAllComponents(SSegmented)[0].vm.$emit('update:modelValue', 'builtin')
+    expect((await save('jev', builtin)).put).toEqual({ ...STORED, jev_default_set: null })
     stored = { ...STORED, jev_default_set: null }
     const copy: Edit = (w) => w.findAllComponents(SSegmented)[0].vm.$emit('update:modelValue', 'custom')
     expect((await save('jev', copy)).put).toEqual({ ...STORED, jev_default_set: BUILTIN })
     stored = STORED
-    expect((await save('jev', jevTable({ preamble: 'x', items: [{ ...ROW, threshold: '0.7' }] }))).put).toEqual({ ...STORED, jev_default_set: { preamble: 'x', items: [{ ...ROW, threshold: 0.7 }] } })
+    const typed = await save(
+      'jev',
+      (w) => textarea(w, PREAMBLE).setValue('x'),
+      (w) => input(w, THRESHOLD).setValue('0.7'),
+      (w) => textarea(w, QUESTION).setValue('new question?')
+    )
+    expect(typed.put).toEqual({ ...STORED, jev_default_set: { preamble: 'x', items: [{ ...ROW, question: 'new question?', threshold: 0.7 }] } })
   })
 
   it('refuses the tables the settings form refused', async () => {
-    const bad = [
-      { preamble: '', items: [] },
-      { preamble: '', items: Array(33).fill(ROW) },
-      { preamble: 'x'.repeat(2001), items: [ROW] },
-      { preamble: '', items: [{ ...ROW, category: 'Bad' }] },
-      { preamble: '', items: [{ ...ROW, label: 'x'.repeat(65) }] },
-      { preamble: '', items: [{ ...ROW, question: '' }] },
-      { preamble: '', items: [{ ...ROW, answer_yes: 'x'.repeat(1001) }] },
-      { preamble: '', items: [{ ...ROW, threshold: 0 }] },
-      { preamble: '', items: [{ ...ROW, threshold: 1.5 }] }
+    const bad: [string, Edit][] = [
+      ['no question', (w) => button(w, 'delete').trigger('click')],
+      ['a new row left empty', (w) => button(w, 'auditors.addQuestion').trigger('click')],
+      ['a bad category', (w) => input(w, CATEGORY).setValue('Bad')],
+      ['an empty question', (w) => textarea(w, QUESTION).setValue('')],
+      ['threshold 0', (w) => input(w, THRESHOLD).setValue('0')],
+      ['threshold above 1', (w) => input(w, THRESHOLD).setValue('1.5')]
     ]
-    for (const table of bad) {
+    for (const [name, edit] of bad) {
       stored = STORED
       corePut.mockClear()
-      const { w, put } = await save('jev', jevTable(table))
-      expect(put, JSON.stringify(table).slice(0, 80)).toBeNull()
-      expect(row(w, 'jev_default_set').find('.input-error-text').exists()).toBe(true)
+      const { w, put } = await save('jev', edit)
+      expect(put, name).toBeNull()
+      expect(row(w, 'jev_default_set').find('.input-error-text').exists(), name).toBe(true)
       w.unmount()
     }
   })
