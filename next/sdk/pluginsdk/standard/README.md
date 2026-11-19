@@ -293,7 +293,7 @@ Sub2API 一样，只是余额读 `{Path: "/v1/usage"}`，单位取应答的 `uni
 
 一个插件的类型服务别的插件声明的平台（New API 服务 TypeSafe 的 `typesafe` 平台）时，清单的 `platforms` 只列平台 id；平台定义只在 `providers/typesafe.Platform()`，TypeSafe 插件的清单测试断言自己清单里的平台与它相同，New API 的一致性测试把它交给 `conformance.Plugin.Platforms`。
 
-TypeSafe 本身（`providers/typesafe.APIKey(id)`）：Bearer、`content-type: application/json`、`typesafe.systemone` → `/v1/systemone`（请求体原样）、默认地址 `https://api.typesafe.ai`（去掉粘贴的 `/v1`）、`typesafe.Policy`、`jev-latest` 上的一题测试、模型列表 `GET /v1/models`（`models.#.name`）、没有余额。`typesafe.Policy` 不给客户端信息和错误类型，所以上游的错误体原样回给客户端；`detail` 只写进账号上的原因。
+TypeSafe 本身（`providers/typesafe.APIKey(id)`）：Bearer、`content-type: application/json`、`typesafe.systemone` → `/v1/systemone`（请求体原样）、默认地址 `https://api.typesafe.ai`（末尾的 `/v1` 当作版本段，请求时去掉）、`typesafe.Policy`、`jev-latest` 上的一题测试、模型列表 `GET /v1/models`（`models.#.name`）、没有余额。`typesafe.Policy` 不给客户端信息和错误类型，所以上游的错误体原样回给客户端；`detail` 只写进账号上的原因。
 
 ## 测试
 

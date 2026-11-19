@@ -93,10 +93,9 @@ func DecodeForm(in *pluginv1.ValidateCredentialsRequest) (*Form, *pluginv1.Valid
 }
 
 // Only is the answer refusing the form when its credentials or settings hold
-// a key other than keys (code "unknown", as the form's
-// additionalProperties:false did), nil when they hold none. Call it before
-// validating the fields: keys a plugin keeps without showing them (tokens it
-// refreshed) belong in keys too.
+// a key other than keys (code "unknown"), nil when they hold none. Call it
+// before validating the fields: keys a plugin keeps without showing them
+// (tokens it refreshed) belong in keys too.
 func (f *Form) Only(keys ...string) *pluginv1.ValidateCredentialsResponse {
 	if errs := fieldcheck.Unknown(keys, f.Creds, f.Settings); len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}

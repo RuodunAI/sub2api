@@ -86,8 +86,7 @@ func TestDecodeAccount(t *testing.T) {
 	}
 }
 
-// Only refuses keys outside the list in either object, as
-// additionalProperties:false did.
+// Only refuses keys outside the list in either object.
 func TestOnly(t *testing.T) {
 	f, bad := DecodeForm(&pluginv1.ValidateCredentialsRequest{
 		CredentialsJson: `{"access_key_id":"A","token_for":"x"}`, SettingsJson: `{"region":"r","proxy":1}`})

@@ -3,7 +3,6 @@ package manifest
 import "testing"
 
 func TestTrimVersion(t *testing.T) {
-	gemini := []string{"/v1", "/v1beta"}
 	cases := []struct {
 		name, path string
 		versions   []string
@@ -18,9 +17,9 @@ func TestTrimVersion(t *testing.T) {
 		{"escaped slash", "/a%2Fv1", []string{"/v1"}, "/a%2Fv1"},
 		{"escaped slash then a segment", "/a%2F/v1", []string{"/v1"}, "/a%2F"},
 		{"case-sensitive", "/api/V1", []string{"/v1"}, "/api/V1"},
-		{"longest", "/api/v1beta", gemini, "/api"},
-		{"longest whatever the order", "/api/v1beta", []string{"/v1beta", "/v1"}, "/api"},
-		{"multi-segment version", "/api/openai/v1", []string{"/v1", "/openai/v1"}, "/api"},
+		{"multi-segment version", "/api/openai/v1", []string{"/openai/v1"}, "/api"},
+		{"longest", "/api/openai/v1", []string{"/openai/v1", "/v1"}, "/api"},
+		{"longest whatever the order", "/api/openai/v1", []string{"/v1", "/openai/v1"}, "/api"},
 		{"at most one", "/api/v1/v1", []string{"/v1"}, "/api/v1"},
 		{"trailing slash is not a version", "/api/v1/", []string{"/v1"}, "/api/v1/"},
 	}
