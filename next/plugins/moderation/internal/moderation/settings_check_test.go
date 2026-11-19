@@ -69,8 +69,18 @@ func check(t *testing.T, m map[string]any) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return byField(t, CheckSettings(b))
+}
+
+// byField is the code of each error by its field; a field with two errors
+// fails the test (CheckSettings reports one per field).
+func byField(t *testing.T, errs pluginsdk.FieldErrors) map[string]string {
+	t.Helper()
 	out := map[string]string{}
-	for _, e := range CheckSettings(b) {
+	for _, e := range errs {
+		if c, ok := out[e.GetField()]; ok {
+			t.Errorf("%s reported twice: %s and %s", e.GetField(), c, e.GetCode())
+		}
 		out[e.GetField()] = e.GetCode()
 	}
 	return out
@@ -163,6 +173,7 @@ func TestCheckSettingsRefusesWhatTheFormRefused(t *testing.T) {
 		{"jev_default_set", `{"items":[` + jevRow + `,` + jevRow + `]}`, "jev_default_set/items/1/category", "duplicate"},
 		{"jev_default_set", `{"items":[{"category":"custom/x","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/label", "required"},
 		{"jev_default_set", `{"items":[{"category":"custom/x","label":" \t","question":"q","threshold":0.5}]}`, "jev_default_set/items/0/label", "required"},
+		{"jev_default_set", `{"items":[{"category":"custom/x","label":1,"question":"q","threshold":0.5}]}`, "jev_default_set/items/0/label", "type"},
 		{"jev_default_set", `{"items":[{"category":"violence","question":" \n ","threshold":0.5}]}`, "jev_default_set/items/0/question", "required"},
 	}
 	for k, b := range schemaIntegers {
@@ -337,10 +348,7 @@ func TestStoredJevSetRefusedOnSaveOnly(t *testing.T) {
 	}
 	_, err := p.ValidateSettings(context.Background(), pluginsdk.Config{JSON: stored})
 	errs, _ := pluginsdk.AsFieldErrors(err)
-	got := map[string]string{}
-	for _, e := range errs {
-		got[e.GetField()] = e.GetCode()
-	}
+	got := byField(t, errs)
 	want := map[string]string{
 		"jev_default_set/items/1/category": "duplicate",
 		"jev_default_set/items/2/label":    "required",
