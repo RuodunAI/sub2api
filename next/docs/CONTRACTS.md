@@ -213,7 +213,7 @@
 | POST `/users/:id/balance/adjust` `{amount, credit:bool, note}`，支持请求头 `Idempotency-Key` | `balance:adjust`（访问密钥须显式带它）；目标须是操作者可管理的用户（可管理目标，§43.6），本人也按此判断：超管可以给自己和任何人调，admin 不能给自己、其他 admin、超管调；不可管理 → 403 `details.reason = not_manageable`。目标还持有 `user` 以外的角色（operator、supplier、自定义角色）时，操作者的角色还要有 `balance:adjust:any`（超管专属；经访问密钥时密钥也须显式带它，与 `balance:adjust` 相同），否则 403 `details = {reason: "not_plain_user", role, missing: ["balance:adjust:any"]}`；所以按默认值 admin 只能给普通用户调（2026-11-13，用户要求） |
 | GET `/me/usage`，GET `/me/usage/:id`，GET `/usage`，GET `/usage/:id`（筛选参数见 §15.2；`/me/usage` 不支持 `user_id`、`account_id`、`account_type`） | `usage:self:read` / `usage:all:read` |
 | GET `/usage/summary`（`/usage` 的全部筛选参数，加 `group_by=day\|model\|user\|ip`）；GET `/me/usage/summary`（限定当前用户，`group_by=day\|model\|ip`） | `usage:all:read` / `usage:self:read` |
-| GET/PUT `/settings/billing` `{missing_price_policy: reject\|free, min_balance, big_cost_warning_usd}` | `settings:read` / `settings:manage` |
+| GET/PUT `/settings/billing` `{min_balance, big_cost_warning_usd}`（`missing_price_policy` 2026-11-19 删除，§17.3） | `settings:read` / `settings:manage` |
 
 价格表达式校验失败时 `details.fields[].message` 为 `{en, zh}`；表达式错误额外带 `detail`（位置信息）。结算时捕获的参数、请求头和 usage 口径存在 `usage_logs.billing_detail.inputs`。
 
@@ -343,7 +343,7 @@
 
 | key | 值 | 默认 |
 |---|---|---|
-| `billing` | `{missing_price_policy, min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除，已存的值忽略） | `reject`、`"0"`、`"10"`、`continue` |
+| `billing` | `{min_balance, big_cost_warning_usd, client_disconnect_policy}`（最后一项见 §25.8；`client_disconnect_wait_seconds` 2026-11-14 删除、`missing_price_policy` 2026-11-19 删除（§17.3），已存的值忽略） | `"0"`、`"10"`、`continue` |
 | `sticky` | `{enabled, default_ttl_seconds, keep_on_account_disabled}` | `true`、3600、`false` |
 | `gateway` | `{max_attempts, platform_call_timeout_ms, default_hook_timeout_ms}`；后来加的字段见 §78、§84.1、§88、§111（`max_request_body_mb`，默认 128） | 3、2000、300 |
 | `auto_disable` | `{enabled, status_codes, keywords}`（§42.2） | `true`、`"401"`、new-api 的 7 条关键词 |
@@ -817,7 +817,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。2026-11-19 起跳过下一条去掉协议后已无协议可测的模型（§122.2）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
 - 交给插件的 `protocols`（2026-11-18 起，§52 同批）：账号在本平台上原生开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；测试有模型（调用方给的，或上一条按账号配置选的，映射之前）时只留账号协议绑定里服务这个模型的（`ProtocolRules.Serves`）。插件取第一个它有测试的协议，在 `usage_protocol` 回报实际用的；测试失败时核心把它作为 `ClassifyError` 的 `meta.protocol`，“效果”提示按这个协议的失败规则判断。列表为空表示没有偏好（只在没有被测模型时出现）。2026-11-19 起（§122）：去掉端点 `test` 为 `never` 的协议，不带 `model` 时再去掉 `explicit` 的；模型在 `model_protocols` 里有条目时按条目的协议顺序排；不带 `model` 时默认模型取第一个仍有协议可测的；被测模型没有可测协议时不调用插件，回 400 `no_testable_protocol`；结果带 `protocol`。
 - 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
-- 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错、被测模型没有价格（403，§50）或没有可测协议（400 `no_testable_protocol`，§122.2）时返回错误状态。
+- 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错、被测模型没有可测协议（400 `no_testable_protocol`，§122.2）时返回错误状态。
 - 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理时域名交给代理解析，本机不解析，只拒绝字面的私网地址和 `localhost`（与网关同一条规则 `netguard.CheckHostVia`，§43.4）。
 - 2026-10-05 起：响应另含 `model`（实际请求的模型：插件报告的，否则为映射后的模型）、`requested_model`（调用方选的模型、映射前；未给时为空串，字段总在）、`upstream`、`body`、`usage`、`reason`、`effect`（2026-11-19 起另有 `protocol`，§122.4）；每次测试结束写入账号的 `last_test`（§50）。测试仍**不改变账号状态**（不冷却、不禁用、不改 `updated_at`）。
 
@@ -873,7 +873,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
   - `POST /prices/:id/override` 已删除；同一模型重复录入返回 409；
   - 修改同步价格的 model、mode、config 或 expression 后，它会变成 `manual`，`sync_source_id` 清空；只改 enabled 或 note 时保持 `sync`；
   - 使用记录详情的 `price` 为 `{id, model, source}`。
-- **匹配**：按完整模型 ID 精确匹配，只看启用的价格。找不到价格时按 `/settings/billing` 的 `missing_price_policy` 处理。这里的价格是全局价；§97 起，找到全局价之后还要按请求的分组和调用者所在的用户组取分组内定价或专属价（§97.3），没有全局价的模型仍按本条处理，规则不生效。
+- **匹配**：按完整模型 ID 精确匹配，只看启用的价格。找不到价格时请求被拒，403 `model_price_not_configured`（§17.3）。这里的价格是全局价；§97 起，找到全局价之后还要按请求的分组和调用者所在的用户组取分组内定价或专属价（§97.3），没有全局价的模型仍按本条处理，规则不生效。
 - **迁移 0008**：
   - 删除插件默认价格，原来的管理员价格改为 `manual`；
   - 加唯一索引 `model_prices_model_uq`，以及约束 `source IN ('manual','sync')`；
@@ -909,8 +909,18 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 一条请求只按一个模型计价：**客户请求的模型**（端点 `request.modelPath` / `modelParam` / 插件 `ResolveModel` 给出的、钩子改写之后的模型，`usage_logs.model`）。预扣与最终扣费都按它的价格；账号的模型映射、参数覆盖（§84）、插件自报的上游模型都不改变计价模型。使用记录的 `price_id`（详情的 `price.model`）就是它的价格。
 - **绝不按上游返回的任何东西取价**：应答里回显的模型名只记进 `upstream_model`，应答里的工具信息不读；只有 token 数（及声明的用量事实）取自上游应答。
 - 一条请求里各部分的 token 都是这条请求的用量，按这一个价格算；例如 Responses 里生图工具的 token（§118.10）。§120 的附加用量（Anthropic `usage.iterations` 的 `advisor` 等，按请求里声明、调度前准入的引用模型计价）是早已有的机制，本次没有改动。
-- 模型找不到价格时，请求按 `missing_price_policy` 处理（上文“匹配”）；没有默认模型名、兜底模型或改用别的价格。
-- **账号测试**（`POST /accounts/:id/test`）：被测的模型（调用方给的 `model`，否则账号的默认测试模型，都取账号映射之前的名字；两者都没有时是插件 `BuildTestRequest` 报的模型）没有全局价格时，回 403 `model_price_not_configured`，**不看** `missing_price_policy` 的 `free`；不向上游发测试请求，记为该账号最后一次测试的失败（`error_source: gateway`）。实现：`account/testreq.go` 的 `testPrice`，`account.Deps.Pricer`。
+- 模型找不到价格时，请求被拒（§17.3）；没有默认模型名、兜底模型或改用别的价格。
+- **账号测试**（`POST /accounts/:id/test`）不查价格、不计费，被测模型有没有价格都可以测（2026-11-19 所有者：“测试账号还是不要计费吧，放着就行了。”；2026-11-18 加的价格检查已撤掉）。
+
+### 17.3 没有价格一律拒绝（2026-11-19，所有者决定）
+
+所有者原话："删除。不要免费提供。"；此前的规则："如果模型找不到用量配置就报错。"
+
+- 模型没有启用的全局价格时一律报错，403 `model_price_not_configured`，没有任何放行途径。适用于：请求的主模型（调度前拒绝，不选账号、不发上游）；请求里经 `request.modelReferences` 声明的引用模型（§120，调度前拒绝）。账号测试不查价格、不计费（§17.2）。
+- `/settings/billing` 的 `missing_price_policy`（`reject` / `free`）整项删除：接口不再返回、`PUT` 时这个字段被忽略；插件读到的 `protocol.BillingSettings` 没有 `MissingPricePolicy`（§107.2）；控制台的设置项删除。数据库里已存的值不迁移、读取时忽略，下次保存计费设置时随整份文档重写而消失（与 §8 的 `client_disconnect_wait_seconds` 相同）。
+- `core.Pricer.Resolve` 要么返回价格、要么返回错误（找不到价格时是 `ErrPriceNotConfigured`），不再返回 `(nil, nil)`。所以计费的请求一定带着主模型的价格：预扣、结算里"主价格为空即免费"的分支删除；结算时主用量的价格表达式在价格历史里找不到，这条记录结算失败，不再按免费处理。升级前在免费放行下写入、还没结算完的记录（`usage_logs.billing_status` 为 `pending` / `failed` 且 `expr_hash = ''`）同样结算失败：价格为空的附加或替换分项报错，计入重试次数，用完后停在 `failed`，由管理员处理。
+- **价格为 0** 是管理员录入的价格，不受影响：请求照常转发、按 0 计费（记录为 `billed`，金额 0）。
+- 不变：`billing: "free"` 的端点（如 `count_tokens`）不取价、不计费；插件报的免费尝试（`Free` + `BillingReason`）；客户端断开策略的 `free`（§25.8）。
 
 ## 18. 账号的模型列表与模型映射、优先级与权重、RPM/TPM 限流（2026-09-25，ARCHITECTURE 4.3 / 6.2）
 
@@ -2067,7 +2077,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 **代价写在规则旁边**：「免费端点只想用插件算 token 做统计」也被拒了 —— 主机为每个请求付一次热路径 RPC，换一堆永远不参与定价的数字，这个组合本身就该重新想。前置关卡：三个内置平台 + 七个插件**原样通过**，全仓只有 volcengine 一个端点用 plugin 源且已是 `billing:"usage"`，零误伤。
 
-运行时补一道 `dropReservation()`：判出不可计费而插件确实返回了 `Reservation` 时，**warn 指名 plugin / platform / endpoint / protocol / request_id / ref_id / billing / reason**，并写 `usage_logs.anomalies` 的 `reservation` / `reservation_error`。三种原因分开记：端点 `free` / 没解析到价格 / **预估既无 token 又无 facts 且价格不是 per_request**（第三种是插件 bug，以前同样静默）。
+运行时补一道 `dropReservation()`：判出不可计费而插件确实返回了 `Reservation` 时，**warn 指名 plugin / platform / endpoint / protocol / request_id / ref_id / billing / reason**，并写 `usage_logs.anomalies` 的 `reservation` / `reservation_error`。两种原因分开记：端点 `free` / **预估既无 token 又无 facts 且价格不是 per_request**（后者是插件 bug，以前同样静默）。原来的第三种"没解析到价格"随 §17.3（2026-11-19）删除：计费端点上一定有价格。
 
 #### 5. `/usage/summary` 三列 + `max_reconcile_age_sec` 默认 7 天
 
@@ -3322,7 +3332,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - `BuildTestRequest` 没有 stream 参数；是否流式由插件按协议定：2026-11-19 起（§122）账号对某模型只开放 Gemini 流式生成时，gemini 预设走 `streamGenerateContent?alt=sse` 测，codex 一直发流式 Responses。
-- 2026-11-18 价格检查（§17.2）：插件 `BuildTestRequest` 之后、发出之前，被测的模型（调用方的 `model`，否则账号的默认测试模型，都是映射前的名字；两者都没有时是插件报的模型）没有全局价格时，回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游；`last_test` 记为失败，`error_source` 为 `gateway`、`error_code` 为 `model_price_not_configured`。
+- 2026-11-18 加过的价格检查（被测模型没有价格时回 403）已于 2026-11-19 撤掉：账号测试不查价格、不计费（§17.2）。
 - 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0116 加列 `last_test_protocol`。
 
 ## 51. CCGateway 订阅用量（已删除）
@@ -3444,7 +3454,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 - **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
 - ~~**数据库角色隔离不再降级**~~：每个插件一个数据库角色的做法已在 2026-11-18 删除，插件用核心的数据库用户，`plugin_db_isolation_unavailable`、`plugin_db_role_conflict`、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 都不再存在，见 §115。
 - **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；托管核心（`SUB2API_MANAGED=true`）没有这个变量、文件读不到或内容不是 64 位十六进制时启动失败，非托管核心不读它。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
-- **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。
+- **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。进程基础变量含 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及小写写法，核心里用到它们的是到 Gemini 的媒体下载（§88.5）和插件市场、插件包下载。
 - **部署**：Redis/Valkey 必须 `requirepass`，`REDIS_URL` 带密码（建议十六进制密码免转义）；网关容器 `no-new-privileges`、`cap_drop: [ALL]`。迁移顺序见 `deploy/gateway/ovh/README.md`。
 
 ## 55. 插件独享资源的分配与归属 P1（2026-10-10，审查 `docs/audits/2026-10-09-plugin-resources.md` 的 P1）
@@ -4528,7 +4538,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 - 宿主调用 `PriceUsage`（权限 `prices`，风险 low，插件升级时自动授予）：请求 `{model, semantics: inclusive|exclusive, input, output, cache_read, cache_creation, cache_creation_1h}`，响应 `{priced, cost, reason}`。
   - `cost` 是十进制字符串（美元，8 位小数），按核心模型价格表（`model_prices`，只看完整模型名）和网关结算同一套表达式计算，不乘分组倍率。
-  - `reason` 取值：`no_price`（没有启用的价格；与"缺价格时按免费"的全局设置无关）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
+  - `reason` 取值：`no_price`（没有启用的价格）、`video_only`（视频价格不能按 token 计）、`eval_error`。`priced=false` 时 `cost` 为空。
   - 只读，不扣费、不写用量记录。SDK：`Host.PriceUsage`；`FakeHost` 用可注入的价格表实现。
 - 内置插件目录换成 moderation 0.3.0。
 
@@ -5976,6 +5986,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - `GET/POST/PATCH /accounts`、`/accounts/:id` 与 `/groups`、`/groups/:id`：`conversion_loss_policy`：`"allow"|"safe"|"strict"|null`；PATCH 缺省保持、null 清除；非法值 400 `invalid_argument`，`details.fields[{field: "conversion_loss_policy", code: "invalid"}]`。权限与该资源的其他字段相同。账号的策略经调度快照（`core.AccountRef`）、分组的经 API Key 认证（`core.GroupInfo`）到达网关，随既有缓存失效。
 - `GET /account-types`：`endpoints[]` 增加 `grade`（native / good / fair / discouraged / local）与 `via`（经过的协议，客户端在前；组合时三项；原生与 local 省略）；`native` 保留（等于 grade 为 native）。按 88.2 计算，不区分流式（同等级的兄弟端点由网关按请求选）。
 - `GET/PUT /settings/gateway`：`claude_max_tokens`（2026-11-14 取代 `claude_default_max_tokens`，见 §84.1）；`media_download_max_mb`（1–1024，默认 64）——转换到 Gemini 时下载单个媒体文件的上限（D6）。
+- 到 Gemini 的媒体下载（`gateway/convert_media.go`）不走账号代理。核心进程环境里有 `HTTP_PROXY` / `HTTPS_PROXY`（或小写写法）、且目标不在 `NO_PROXY` / `no_proxy` 里时经这个环境代理下载，否则直连；取哪个代理按 Go `http.ProxyFromEnvironment` 的规则（`http://` 目标看 `HTTP_PROXY`，`https://` 看 `HTTPS_PROXY`；`localhost` 与回环地址从不经代理），进程内只读一次，在第一次下载时（2026-11-19，所有者：“图片直连下载（或者环境http代理）”）。SSRF 检查（`netguard`）：直连时照旧（URL 检查、对解析出的地址检查、拨号时检查）；经环境代理时与经账号代理同一条规则 `netguard.CheckHostVia(proxied)`（§43.4）：本机不解析目标，只拒绝字面私网地址与 `localhost`；到代理本身的连接不做私网检查（代理是运营方配的，同管理员保存的 `allow_private` 账号代理）。每跳重定向按该跳自己走直连还是代理重新检查。经环境代理时本机只能拦字面私网地址，域名（包括 `10.1`、`0x0a000001`、十进制整数这类非规范的 IPv4 写法）交给代理解析：**环境代理应当自行拒绝访问内网地址；这一层核心无法检查**。经环境代理的一跳出现网络错误时，给 API 客户的原因只写 `connection through the proxy failed`（底层错误含代理的地址），原始错误记在服务端日志 `gateway: media download through the environment's proxy failed`；直连的错误文字不变。核心里其他读这些变量的只有插件市场与插件包下载（默认 Transport）；账号代理客户端（直连与经账号代理）、`netguard` 的其他客户端、插件进程都不读（插件进程的环境是白名单，不含这些变量）。
 - 使用记录列表与详情：`conversion`（`/me/usage` 为 null，与 `upstream_protocol` 一致）；筛选 `conversion=native|converted|good|fair|discouraged|local|lossy`（`native` 含 NULL 与 grade native；`converted` 为三个转换等级；`lossy` 为有请求或响应侧损失），只对管理员视图。
 
 ### 88.6 使用记录 `conversion`
@@ -6614,7 +6625,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 | 按倍数 `multiplier` | 标价 = 全局价 × N，全局价变化时跟着变 | N 不小于 0、小于 1000000、最多 4 位小数。0 表示免费。1 也合法：专属价设成 ×1 表示“这个用户组按全局价，不吃分组内定价” |
 | 自定义价 `custom` | 一个固定的价格，不随全局价变化 | 沿用全局价的计费方式：按 token（`p`、`c`、`cr`、`cc`、`cc1h`，其中 `p`、`c` 必填）或按次（`price`）。全局价是表达式计费的模型只能用按倍数的规则 |
 
-- 规则建立在全局价之上。模型没有启用的全局价时不能计费，规则不生效，照旧按 `missing_price_policy` 处理（§17）。
+- 规则建立在全局价之上。模型没有启用的全局价时不能计费，规则不生效，请求被拒（§17.3）。
 - 自定义价的计费方式与全局价**现在的**计费方式不同时（规则保存之后，全局价被改成了另一种方式），这条规则**失效**：解析时跳过它，往下一层找。规则不会被删除，接口里它带 `inactive: true`（97.6）。
 - 规则只能设在分组提供的模型上；删除规则不受这个限制。
 
@@ -6660,7 +6671,7 @@ kind: users | groups | api-keys | accounts | models | proxies
 
 **标价**由 `core.Pricer.Resolve(ctx, core.PriceQuery{Model, GroupID, SegmentID})` 给出。`billing` 的价格快照同时载入 `price_rules`，与全局价用同一个 TTL、同一个 `config:changed` 失效。解析顺序：
 
-1. 模型没有启用的全局价：与之前相同，`missing_price_policy` 为 `reject` 时返回 `ErrPriceNotConfigured`，为 `free` 时返回 `(nil, nil)`；这时不看规则。
+1. 模型没有启用的全局价：返回 `ErrPriceNotConfigured`（§17.3）；这时不看规则。
 2. 取 `(分组, 用户组, 模型)` 的规则；没有或已失效，再取 `(分组, NULL, 模型)` 的规则；都没有就是全局价。
 3. `GroupID`、`SegmentID` 为 0 时只取全局价。
 
@@ -7625,7 +7636,7 @@ type Error string                           // ErrSelf, ErrCycle, ErrTooDeep, Er
 
 | 分组 | 类型 | 字段 |
 | --- | --- | --- |
-| `billing` | `BillingSettings` | `missing_price_policy`（`reject` / `free`）、`min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
+| `billing` | `BillingSettings` | `min_balance`（十进制字符串，美元）、`big_cost_warning_usd`（十进制字符串）、`pre_consume_tokens`、`output_reserve_tokens`（§25.8）、`client_disconnect_policy`（`continue` / `precharge` / `free`，§25.8） |
 | `gateway` | `GatewaySettings` | `max_attempts`、`platform_call_timeout_ms`、`default_hook_timeout_ms`、`platform_hotpath_timeout_ms`、`queue_sticky_max_waiting`、`queue_sticky_wait_seconds`、`queue_fallback_max_waiting`、`queue_fallback_wait_seconds`（§78）、`media_download_max_mb`（§88）、`max_request_body_mb`（§111）、`claude_max_tokens{enabled, models}`（§84.1，`models` 含 `default`） |
 | `scheduling` | `SchedulingSettings` | `metric`（`sessions` / `rpm` / `tpm` / `concurrency`）、`limit_load`、`model_limits`（§89） |
 | `sticky` | `StickySettings` | `enabled`（false 时核心既不绑定会话也不读绑定）、`default_ttl_seconds`、`keep_on_account_disabled`（§15.5） |
@@ -8535,7 +8546,7 @@ ALTER TABLE usage_logs
 
 插件和核心都**不预置价格**（插件清单写 `pricing` 校验失败，§17）。
 
-- **没有价格时**：与其它模型相同，按 `/settings/billing` 的 `missing_price_policy`：默认 `reject` 时请求在调度前被拒，403 `model_price_not_configured`；`free` 时照常转发、不计费（§17）。
+- **没有价格时**：与其它模型相同，请求在调度前被拒，403 `model_price_not_configured`（§17.3）。
 - **要按图片 token 正确计费**：在价格页给生图模型录**表达式价格**（单位与其它表达式相同，美元 / 百万 token）。参考价（来源：OpenAI 官方价格页与 Images API 参考 `developers.openai.com/api/reference/resources/images`，标准档，2026-11-18 抓取；录入前以官方为准，模型名录入前核对拼写）：
 
 | 模型 | 文字输入 `p` | 缓存输入 `cr` | 图片输入 `img` | 图片输出 `img_o` | 文字输出 `c` | 表达式 |
@@ -8589,7 +8600,7 @@ ALTER TABLE usage_logs
 ### 120.1 规则
 
 - `jsonPath` / `ssePath`（`sseEvent` 限定事件）指向一个数组，每次读到都是**完整快照**（后到的整体替换先到的，不累加）；其中 `typePath` 等于 `typeValue` 的元素各是一条附加用量，模型取元素里的 `modelPath`，`map` 读 token（`input_tokens`、`output_tokens` 必须有；值必须是不超过 10¹² 的非负整数）。例：Anthropic 的 `usage.iterations`（`compaction`、`advisor`）。
-- 模型必须是**调度前准入过的**：`usePrimaryModel` 取请求的主模型（账号映射后），或者请求里经 `request.modelReferences` 声明、同名的引用模型（准入：分组允许、账号服务该模型、调度前按 `missing_price_policy` 取价，`reject` 时没价格的引用模型在调度前 403）。应答报了一个没有准入的模型，记录的 `BillingError` 为 `additional usage does not match an admitted model identity`，整条记录不结算（`failed`）。
+- 模型必须是**调度前准入过的**：`usePrimaryModel` 取请求的主模型（账号映射后），或者请求里经 `request.modelReferences` 声明、同名的引用模型（准入：分组允许、账号服务该模型、调度前取价，没价格的引用模型在调度前 403，§17.3）。应答报了一个没有准入的模型，记录的 `BillingError` 为 `additional usage does not match an admitted model identity`，整条记录不结算（`failed`）。
 - 预扣：引用模型按估算的同一份 token 预扣（`estimatedAdditional`）；结算按实际读数。
 
 ### 120.2 已删除：对象形式与按应答取价
@@ -8607,7 +8618,7 @@ ALTER TABLE usage_logs
 | 值 | 含义 |
 |---|---|
 | 不写 | 普通端点：账号开放就可以测 |
-| `explicit` | 测试要花真钱（生成一张图）：只在控制台**点名某个模型**测试时才用（请求带 `model`）；批量测试、“测试账号”（不带 `model`）不用 |
+| `explicit` | 测试要花真钱（生成一张图）：只在请求**带了模型名**（`model`）时才用。控制台的单独测试、“测试所选”“测试全部”都逐个带模型名调用，所以绑了生图协议的模型都会按生图协议测、真实出图（2026-11-19 所有者：“批量也测试啊，又不影响。”）；只有不带模型名的默认测试（账号列表的“批量测试”、“测试账号”）不会选这个协议 |
 | `never` | 测试发不出来（编辑图片要输入图片）：任何时候都不用 |
 
 其他值清单检查报 `endpoints[i].test` `invalid`（`sdk/manifest/check`）。内置 `openai` 平台的 `images_generations` 写 `explicit`、`images_edits` 写 `never`，其余端点不写。
@@ -8615,10 +8626,9 @@ ALTER TABLE usage_logs
 ### 122.2 核心：交给插件的协议（`server/internal/account/testreq.go`）
 
 - 候选协议照 §15.9：账号在本平台上原生（`via: native`）开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；另外去掉 `test: never` 的协议，请求没带 `model` 时再去掉 `test: explicit` 的协议。同一协议有几个端点时，任一端点这样标就算。经适配（`via: adapted`）和跨平台转换的协议不纳入：测试请求不经网关的转换层。
-- 测某个模型（调用方给的，或下一条选出的，映射之前）时只留账号协议绑定里服务它的协议（`ProtocolRules.Serves`）；这个模型在 `model_protocols` 里有条目（按名字，否则“其他模型”的条目）时，按**条目里写的协议顺序**排（`ProtocolRules.ModelProtocols`），否则按上一条的顺序。所以要测一个生图模型，管理员把它限定到生图协议，点名测它时列表第一个就是 `openai.images`。点名一个**没有**在 `model_protocols` 里限定协议的生图模型时，会按端点顺序用排在前面的协议（通常是对话）去测；要测生图，必须先把它限定到生图协议。
+- 测某个模型（调用方给的，或下一条选出的，映射之前）时只留账号协议绑定里服务它的协议（`ProtocolRules.Serves`）；这个模型在 `model_protocols` 里有条目（按名字，否则“其他模型”的条目）时，按**条目里写的协议顺序**排（`ProtocolRules.ModelProtocols`），否则按上一条的顺序。所以要测一个生图模型，管理员把它限定到生图协议，带它的名字测（单独测试、测试所选、测试全部都带）时列表第一个就是 `openai.images`。带名字测一个**没有**在 `model_protocols` 里限定协议的生图模型时，会按端点顺序用排在前面的协议（通常是对话）去测；要测生图，必须先把它限定到生图协议。
 - 被测模型（调用方给的）没有剩下任何可测的协议时（例如只开了 `never` 的编辑图片，或绑的协议账号没有开放），核心**不调用插件、不发上游**，回 400 `no_testable_protocol`（“这个模型在这个账号上没有可测试的协议”，`details.model`），`last_test` 记为失败、`error_source` 为 `gateway`。不会退回插件的默认测试请求：拿对话请求测一个生图模型，成败都说明不了问题。
 - 没带 `model` 时的默认模型：候选模型照 §15.9（账号模型列表，没有列表时是映射里的请求模型按字典序），取第一个**去掉上面这些协议后仍有协议可测**的。例如列表第一个模型只开了生图协议，批量测试就跳过它测下一个。有候选模型而都没有可测协议时，同样回 400 `no_testable_protocol`（`details.model` 为空串）；只有模型列表与映射都为空时，才交空模型和全部候选协议，由插件选默认模型（§15.9）。
-- 价格检查（§50、§17.2）照旧在插件 `BuildTestRequest` 之后、发出之前，查被测模型映射前的名字；每次测试一个模型，“测试全部模型”逐个调用本接口，每个模型都过这一检查。没有价格时 403 `model_price_not_configured`，不发上游，`last_test` 照样记下插件报的协议。
 
 ### 122.3 插件：按协议的测试请求
 
@@ -8629,7 +8639,7 @@ ALTER TABLE usage_logs
 | openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}` | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
-| openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在点名模型时用到）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |
+| openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在请求带了模型名时用到，这时用的是那个模型名）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |
 | gemini | `gemini.generate`（`Type.Test`） | 一个 token 的 generateContent | `gemini-2.5-flash-lite` |
 | gemini | `gemini.stream_generate` | 同一个请求体，走 `streamGenerateContent?alt=sse` | 同上 |
 

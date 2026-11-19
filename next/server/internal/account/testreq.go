@@ -1,7 +1,6 @@
 package account
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -126,36 +125,28 @@ func (s *Service) test(c *gin.Context) {
 	// Naming the model is what makes a test explicit (CONTRACTS §122).
 	tp := s.testProtocols(a, requested != "")
 	model, testable := tp.testModel(requested, a.testModels())
-	tested := model
+	if !testable {
+		err := errNoTestableProtocol.WithMessage(t(ctx, "this model has no protocol to test on this account",
+			"这个模型在这个账号上没有可测试的协议")).WithDetails(map[string]any{"model": model})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: err.Message, ErrorCode: err.Code, ErrorSource: "gateway"})
+		httpapi.Fail(c, err)
+		return
+	}
 	protocols := tp.of(model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
 	}
 	acct := a.pluginAccount(plain)
-	var req *pluginv1.BuildTestRequestResponse
-	source := "gateway"
-	if !testable {
-		err = errNoTestableProtocol.WithMessage(t(ctx, "this model has no protocol to test on this account",
-			"这个模型在这个账号上没有可测试的协议")).WithDetails(map[string]any{"model": tested})
-	} else {
-		// A test request is not served by a client endpoint, so
-		// Account.platform is empty; the declaring plugin builds a request
-		// for the account type.
-		source = "plugin"
-		req, err = bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
-			Account:   acct,
-			Model:     model,
-			Protocols: protocols,
-		})
-	}
-	if err == nil {
-		if err = s.testPrice(ctx, cmp.Or(tested, req.GetModel())); err != nil {
-			source = "gateway"
-		}
-	}
+	// A test request is not served by a client endpoint, so Account.platform
+	// is empty; the declaring plugin builds a request for the account type.
+	req, err := bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
+		Account:   acct,
+		Model:     model,
+		Protocols: protocols,
+	})
 	if err != nil {
-		s.recordTest(ctx, a.ID, TestResult{Model: model, Protocol: usageProtocol(req), Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: "plugin"})
 		httpapi.Fail(c, err)
 		return
 	}
@@ -165,29 +156,18 @@ func (s *Service) test(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
-// testPrice refuses to test a model without a price, whatever
-// missing_price_policy says (CONTRACTS §17): model is the one tested, before
-// the account's mapping, else the one the plugin chose.
-func (s *Service) testPrice(ctx context.Context, model string) error {
-	rule, err := s.d.Pricer.Resolve(ctx, core.PriceQuery{Model: model})
-	if err == nil && rule == nil {
-		err = core.ErrPriceNotConfigured.WithDetails(map[string]any{"model": model})
-	}
-	return err
-}
-
 // testProtocolSet is the protocols a test of an account may use: those of
 // its own platforms it serves natively, in the order of its type's
 // platforms and their endpoints, without WebSocket and token-counting ones,
 // those whose endpoint says test "never" and, unless the test is explicit
-// (the console named the model), those whose endpoint says "explicit"
+// (the request names the model), those whose endpoint says "explicit"
 // (CONTRACTS §122).
 type testProtocolSet struct {
 	protocols []string
 	rules     *core.ProtocolRules
 }
 
-// testProtocols is the set of account a; explicit when the console named
+// testProtocols is the set of account a; explicit when the request names
 // the model.
 func (s *Service) testProtocols(a *row, explicit bool) testProtocolSet {
 	tp := testProtocolSet{rules: a.protocolBinding().compile()}
@@ -249,12 +229,6 @@ func (tp testProtocolSet) testModel(requested string, models []string) (model st
 // errNoTestableProtocol refuses a test of a model the account serves on no
 // protocol a test may use (CONTRACTS §122.2).
 var errNoTestableProtocol = core.NewError(http.StatusBadRequest, "no_testable_protocol", "no protocol to test")
-
-// usageProtocol is the protocol the plugin says the test request uses; ""
-// without a request.
-func usageProtocol(tr *pluginv1.BuildTestRequestResponse) string {
-	return strings.TrimSpace(tr.GetUsageProtocol())
-}
 
 // LastTest is the last console test of an account (CONTRACTS §50), shown
 // as last_test in the account views.
@@ -329,7 +303,7 @@ func cutBytes(s string, n int) string {
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
-	res := TestResult{Model: model, Protocol: usageProtocol(tr), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
+	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
 	}

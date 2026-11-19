@@ -241,7 +241,7 @@ type Endpoint struct {
 	UsageRequestFields []string `json:"usageRequestFields,omitempty"`
 	// Test says when the console's account test may use this endpoint's
 	// protocol (CONTRACTS §122): "" whenever the account serves it,
-	// EndpointTestExplicit only when the administrator tests one model,
+	// EndpointTestExplicit only when the test names a model,
 	// EndpointTestNever not at all.
 	Test string `json:"test,omitempty"`
 }
@@ -249,8 +249,9 @@ type Endpoint struct {
 // Values of Endpoint.Test.
 const (
 	// EndpointTestExplicit is a protocol whose test costs real money (an
-	// image generation): tested only when the console names the model, never
-	// by a batch test or a test of the whole account.
+	// image generation): tested only when the test request names the model
+	// (the console's model tests, one, selected or all, each name theirs),
+	// never by a test of the account's default model.
 	EndpointTestExplicit = "explicit"
 	// EndpointTestNever is a protocol a test cannot exercise on its own (an
 	// image edit needs an input image).

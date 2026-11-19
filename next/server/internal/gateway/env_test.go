@@ -471,7 +471,6 @@ func (a *fakeAuth) Authenticate(_ context.Context, raw string) (*core.APIKeyPrin
 type fakePricer struct {
 	mu      sync.Mutex
 	rules   map[string]*core.PriceRule // model -> rule; missing = not configured
-	free    bool
 	params  []string
 	headers []string
 	calls   int
@@ -485,9 +484,6 @@ func (p *fakePricer) Resolve(_ context.Context, q core.PriceQuery) (*core.PriceR
 	p.queries = append(p.queries, q)
 	if r, ok := p.rules[q.Model]; ok {
 		return r, nil
-	}
-	if p.free {
-		return nil, nil
 	}
 	return nil, core.ErrPriceNotConfigured
 }

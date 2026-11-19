@@ -218,19 +218,19 @@ func TestBalanceAndSettingsAPI(t *testing.T) {
 
 	// settings
 	st := data(e.mustCall(admin, 200, "GET", "/settings/billing", nil))
-	if st["missing_price_policy"] != "reject" || st["min_balance"] != "0" || st["big_cost_warning_usd"] != "10" {
+	if _, ok := st["missing_price_policy"]; ok || st["min_balance"] != "0" || st["big_cost_warning_usd"] != "10" {
 		t.Fatalf("settings: %v", st)
 	}
-	st = data(e.mustCall(admin, 200, "PUT", "/settings/billing", map[string]any{"missing_price_policy": "free", "min_balance": "1.5"}))
-	if st["missing_price_policy"] != "free" || st["min_balance"] != "1.5" || st["big_cost_warning_usd"] != "10" {
+	st = data(e.mustCall(admin, 200, "PUT", "/settings/billing", map[string]any{"min_balance": "1.5"}))
+	if st["min_balance"] != "1.5" || st["big_cost_warning_usd"] != "10" {
 		t.Fatalf("put settings: %v", st)
 	}
-	_, resp = e.call(admin, "PUT", "/settings/billing", map[string]any{"missing_price_policy": "maybe"})
+	_, resp = e.call(admin, "PUT", "/settings/billing", map[string]any{"big_cost_warning_usd": "0"})
 	if errCode(resp) != "invalid_argument" {
-		t.Fatalf("bad policy: %v", resp)
+		t.Fatalf("bad warning: %v", resp)
 	}
 	s, _ := e.svc.Settings(context.Background())
-	if s.MissingPricePolicy != PolicyFree || s.MinBalance.String() != "1.5" {
+	if s.MinBalance.String() != "1.5" {
 		t.Fatalf("service settings: %+v", s)
 	}
 }

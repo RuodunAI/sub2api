@@ -54,7 +54,7 @@ func EmbeddingsPingBody(model string) string {
 
 // ImagesPingBody is the body of the cheapest image generation: one image of
 // the smallest common size at the lowest quality. It generates (and costs)
-// a real image, so the core only offers it when the console names the model
+// a real image, so the core only offers it when the test names the model
 // (endpoint test "explicit", CONTRACTS §122).
 func ImagesPingBody(model string) string {
 	return pingJSON(map[string]any{"model": model, "prompt": "a small white dot", "n": 1, "size": "1024x1024", "quality": "low"})
