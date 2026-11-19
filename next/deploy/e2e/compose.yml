@@ -157,13 +157,15 @@ services:
         # codex) address these hosts in the tests; inside the isolated
         # network they are the mock, over TLS with a certificate the mock
         # issues per host name from the CA above. auth.openai.com is the
-        # codex logins' authorization server (AC38).
+        # codex logins' authorization server (AC38); api.typesafe.ai is the
+        # official address a typesafe account uses by default (AC30).
         aliases:
           - chatgpt.com
           - auth.openai.com
           - aiplatform.googleapis.com
           - oauth2.googleapis.com
           - bedrock-runtime.us-east-1.amazonaws.com
+          - api.typesafe.ai
 
   market-init:
     image: ${E2E_APP_IMAGE:-sup2api-e2e:local}
