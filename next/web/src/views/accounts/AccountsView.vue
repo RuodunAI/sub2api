@@ -434,7 +434,6 @@ const quotaRefresh = useQuotaRefresh({
 // Similar to quota refresh, but for account balance (CONTRACTS §52).
 const balanceRefresh = useBalanceRefresh({
   onSnapshot: (id, balance) => patchAccount(id, { balance }),
-  onThrottled: (_id, n) => toast(t('accounts.balance.refreshThrottled', { n }), 'info'),
   onError: (_id, e) => notifyError(e)
 })
 
@@ -705,7 +704,7 @@ function resetFilters() {
       <template #cell-quota="{ row }">
         <div v-if="hasQuotaCell(row)" class="space-y-2">
           <AccountQuotaCell v-if="hasQuota(row.quota)" compact :quota="row.quota" :refreshing="quotaRefresh.refreshing.has(row.id)" @refresh="quotaRefresh.refresh(row.id)" />
-          <AccountBalanceCell v-if="hasBalance(row.balance)" :balance="row.balance" :refreshing="balanceRefresh.refreshing.has(row.id)" @refresh="balanceRefresh.refresh(row.id, row.balance)" />
+          <AccountBalanceCell v-if="hasBalance(row.balance)" :balance="row.balance" :refreshing="balanceRefresh.refreshing.has(row.id)" @refresh="balanceRefresh.refresh(row.id)" />
           <!-- Plugin decorations share one line under the windows, so a decorated row grows by one line at most. -->
           <div v-if="quotaSlotFor(row)" class="flex items-center gap-1.5">
             <PluginSlot name="account.list.quota" :props="{ account: row }" :only="(e) => forAccountType(e, row)" item-class="flex shrink-0 items-center" />
@@ -803,7 +802,7 @@ function resetFilters() {
               </SDescItem>
               <SDescItem :label="t('accounts.usage.column')"><AccountUsageCell :account-id="detail.id" :usage="detail.usage" /></SDescItem>
               <SDescItem v-if="hasQuota(detail.quota)" :label="t('accounts.quota.column')"><AccountQuotaCell :quota="detail.quota" :refreshing="quotaRefresh.refreshing.has(detail.id)" @refresh="quotaRefresh.refresh(detail.id)" /></SDescItem>
-              <SDescItem v-if="hasBalance(detail.balance)" :label="t('accounts.balance.accountLabel')"><AccountBalanceCell :balance="detail.balance" :refreshing="balanceRefresh.refreshing.has(detail.id)" @refresh="balanceRefresh.refresh(detail.id, detail.balance)" /></SDescItem>
+              <SDescItem v-if="hasBalance(detail.balance)" :label="t('accounts.balance.accountLabel')"><AccountBalanceCell :balance="detail.balance" :refreshing="balanceRefresh.refreshing.has(detail.id)" @refresh="balanceRefresh.refresh(detail.id)" /></SDescItem>
               <SDescItem :label="t('accounts.models')">
                 <span v-if="detail.models?.length" class="flex flex-wrap gap-1">
                   <SBadge v-for="m in detail.models" :key="m" tone="gray"><span class="font-mono">{{ m }}</span></SBadge>
