@@ -386,10 +386,6 @@ func (g *generation) addAccountTypes(info core.PluginInfo, pkg *Package, pf core
 			continue
 		}
 		atb := core.AccountTypeBinding{Plugin: info, Type: at, DeclIndex: i, Client: pf}
-		if at.Form.Mode == "schema" {
-			atb.FormSchema = readJSON(pkg, at.Form.Schema)
-			atb.FormUI = readJSON(pkg, at.Form.UISchema)
-		}
 		g.atByKey[key] = atb
 		g.accTypes = append(g.accTypes, atb)
 	}
@@ -797,17 +793,6 @@ func ContentType(name string) string {
 		return ct
 	}
 	return "application/octet-stream"
-}
-
-func readJSON(pkg *Package, name string) json.RawMessage {
-	if name == "" {
-		return nil
-	}
-	data, err := pkg.ReadFile(name)
-	if err != nil || !json.Valid(data) {
-		return nil
-	}
-	return json.RawMessage(data)
 }
 
 func contains(list []string, s string) bool {

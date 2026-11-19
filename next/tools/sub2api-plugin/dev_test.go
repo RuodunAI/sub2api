@@ -153,8 +153,8 @@ func TestDevFingerprint(t *testing.T) {
 	if touch("node_modules/x/index.js", "dep") != base {
 		t.Error("node_modules triggered a rebuild")
 	}
-	if touch("forms/s.json", `{"type":"object"}`) == base {
-		t.Error("form change not detected")
+	if touch("i18n/en.json", `{"title":"Demo"}`) == base {
+		t.Error("package file change not detected")
 	}
 	base = d.fingerprint()
 	if touch("ui/native/dist/entry.js", "export function register() { /* v2 */ }") == base {

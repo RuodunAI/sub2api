@@ -247,7 +247,7 @@ func TestGenerationBuildAndSwitch(t *testing.T) {
 		t.Fatalf("subscriptions = %+v", subs)
 	}
 
-	// Platforms and account types with forms read from the package.
+	// Platforms and account types.
 	for _, key := range []string{"alpha", "beta"} {
 		pb, ok := g.PlatformForProtocol("p_" + key + ".test")
 		if !ok || pb.Builtin || pb.Plugin.Key != key || pb.Platform.ID != "p_"+key {
@@ -255,7 +255,7 @@ func TestGenerationBuildAndSwitch(t *testing.T) {
 		}
 	}
 	at, ok := g.AccountType("alpha", "apikey")
-	if !ok || len(at.FormSchema) == 0 || len(at.FormUI) == 0 || at.Client == nil || at.Key() != (core.AccountTypeKey{PluginKey: "alpha", Type: "apikey"}) {
+	if !ok || at.Client == nil || at.Key() != (core.AccountTypeKey{PluginKey: "alpha", Type: "apikey"}) {
 		t.Fatalf("account type = %+v", at)
 	}
 	if _, ok := g.AccountType("p_alpha", "apikey"); ok {

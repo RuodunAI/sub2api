@@ -80,7 +80,7 @@ const (
 type Service struct {
 	d Deps
 
-	schemas sync.Map // sha256(schema) -> *jsonschema.Schema
+	schemas sync.Map // sha256(extensionsSchema) -> *jsonschema.Schema
 
 	sf       singleflight.Group
 	cacheMu  sync.Mutex
@@ -166,7 +166,6 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("GET", "/platforms", s.listPlatforms, browse...)
 	r.AuthedRead("/me/platforms", s.listMyPlatforms)
 	r.PermScoped("GET", "/account-types", s.listTypes, browse...)
-	r.PermScoped("GET", "/account-types/:plugin_key/:type/form", s.typeForm, browse...).Uses(perm.AccountSettingsCustom)
 	r.PermScoped("GET", "/accounts", s.list, perm.AccountRead)
 	// Group binding, custom upstreams and guarded settings are checked per
 	// field (checkOwnChange, customSettings).

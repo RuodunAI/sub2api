@@ -494,44 +494,19 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// maskableSecrets refuses a settings schema that marks secrets where the core
-// cannot mask them one by one (manifest.SettingsSecrets). A missing file is
-// reported by needFile.
-func (v *validator) maskableSecrets(field, schema string) {
-	raw, ok := v.files[schema]
-	if !ok {
-		return
-	}
-	_, unreachable := manifest.SettingsSecrets(raw)
-	if len(unreachable) == 0 {
-		return
-	}
-	for i, loc := range unreachable {
-		if loc == "" {
-			unreachable[i] = "(the schema itself, which must be a JSON object without a marker)"
-		}
-	}
-	v.add(field, "unmaskable_secret", "writeOnly, format password and x-sensitive are only masked on properties of nested objects (at most %d deep), and a schema using them takes no reference other than a local \"#/$defs/<name>\" or \"#/definitions/<name>\" where a value path leads (no cycle, at most %d inside one another); found at %s",
-		manifest.MaxSecretDepth, manifest.MaxSecretRefDepth, strings.Join(unreachable, ", "))
-}
-
 // formSecrets validates ui.settings.secrets (manifest.SecretPath): native or
-// iframe settings without a schema must write them ([] for none: without the
-// key the core masks every setting), only the settings form takes them, a
-// schema marks its secrets itself, and no path repeats or lies inside another
-// (a secret is masked as a whole).
+// iframe settings must write them ([] for none: without the key the core
+// masks every setting), only the settings form takes them, and no path
+// repeats or lies inside another (a secret is masked as a whole).
 func (v *validator) formSecrets(field string, f manifest.Form, settings bool) {
 	switch {
-	case settings && f.Secrets == nil && f.Schema == "" && (f.Mode == "native" || f.Mode == "iframe"):
+	case settings && f.Secrets == nil && (f.Mode == "native" || f.Mode == "iframe"):
 		v.add(field, "required", "secrets is required: list the settings to mask, [] for none")
 		return
 	case len(f.Secrets) == 0:
 		return
 	case !settings:
 		v.add(field, "unsupported", "only ui.settings takes secrets; an account type marks its secrets in sensitiveFields")
-		return
-	case f.Schema != "":
-		v.add(field, "unsupported", "a settings schema marks its secrets itself (writeOnly, format password, x-sensitive); secrets replace it")
 		return
 	}
 	seen := map[int][]string{}
@@ -569,16 +544,10 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 		// whole, so a scope would mean nothing there.
 		v.add(field+".permission", "unsupported", "permission %q declares a scope; settings take an unscoped permission", f.Permission)
 	}
-	if settings {
-		v.maskableSecrets(field+".schema", f.Schema)
-	}
 	v.formSecrets(field+".secrets", f, settings)
 	switch f.Mode {
 	case "schema":
-		v.needFile(field+".schema", f.Schema)
-		if f.UISchema != "" {
-			v.needFile(field+".uiSchema", f.UISchema)
-		}
+		v.add(field+".mode", "unsupported", "form mode schema is no longer supported: write the form as a native component (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY)")
 	case "iframe":
 		v.needPerm(field, "ui.iframe", "an iframe form")
 		v.needFile(field+".page", f.Page)
@@ -593,24 +562,11 @@ func (v *validator) form(field string, f manifest.Form, settings bool) {
 		if settings && f.Component == "" && f.Page == "" {
 			v.add(field+".component", "required", "native settings need a component or a native page")
 		}
-		// A native settings form may carry the schema: the core validates
-		// and masks the stored values with it while the plugin's own page
-		// edits them (CONTRACTS §75.5).
-		if f.Schema != "" || f.UISchema != "" {
-			if !settings {
-				v.add(field+".schema", "unsupported", "only ui.settings may carry a schema in native mode")
-			} else {
-				v.needFile(field+".schema", f.Schema)
-				if f.UISchema != "" {
-					v.needFile(field+".uiSchema", f.UISchema)
-				}
-			}
-		}
 		if settings && f.Page != "" && (v.m.UI == nil || v.m.UI.Pages[f.Page].Type != "native") {
 			v.add(field+".page", "unknown", "page %q is not a native page of ui.pages", f.Page)
 		}
 	default:
-		v.add(field+".mode", "invalid", "form mode must be schema, iframe or native")
+		v.add(field+".mode", "invalid", "form mode must be iframe or native")
 	}
 }
 

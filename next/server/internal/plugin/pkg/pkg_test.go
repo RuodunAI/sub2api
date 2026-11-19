@@ -309,7 +309,11 @@ func TestValidateConsistency(t *testing.T) {
 		{"native perm", dropPerm("ui.native"), "ui.native", "missing_host_permission"},
 		{"native ui compat", func(m *manifest.Manifest, _ map[string][]byte) { m.HostUICompat = "" }, "hostUICompat", "required"},
 		{"native entry missing", func(_ *manifest.Manifest, f map[string][]byte) { delete(f, "ui/native/entry.js") }, "ui.native.entry", "file_missing"},
-		{"settings schema missing", func(_ *manifest.Manifest, f map[string][]byte) { delete(f, "forms/settings.schema.json") }, "ui.settings.schema", "file_missing"},
+		{"settings secrets missing", func(m *manifest.Manifest, _ map[string][]byte) { m.UI.Settings.Secrets = nil }, "ui.settings.secrets", "required"},
+		{"settings schema mode", func(m *manifest.Manifest, _ map[string][]byte) { m.UI.Settings = &manifest.Form{Mode: "schema"} }, "ui.settings.mode", "unsupported"},
+		{"table page", func(m *manifest.Manifest, _ map[string][]byte) {
+			m.UI.Pages["assets"] = manifest.Page{Type: "table"}
+		}, "ui.pages.assets.type", "unsupported"},
 		{"iframe page", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.UI.Pages["frame"] = manifest.Page{Type: "iframe", Src: "ui/iframe/index.html"}
 		}, "ui.pages.frame", "missing_host_permission"},
@@ -379,6 +383,7 @@ func TestValidatePlatformAndAccountTypes(t *testing.T) {
 	noTypes.AccountTypes = nil
 	noTypes.Capabilities = nil
 	noTypes.HostPermissions = noTypes.HostPermissions[:2]
+	noTypes.UI, noTypes.HostUICompat = nil, ""
 	if err := Validate(noTypes, pkgtest.Files(noTypes), opts()); err != nil {
 		t.Fatalf("platform without account types: %v", fieldCodes(err))
 	}
@@ -433,8 +438,10 @@ func TestValidatePlatformAndAccountTypes(t *testing.T) {
 		{"usage override", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.AccountTypes[0].Platforms[0].Usage = map[string]manifest.UsageRules{"video.generate": {Semantics: "both"}}
 		}, "accountTypes[0].platforms[0].usage.video.generate.semantics", "invalid"},
-		{"form file", func(_ *manifest.Manifest, f map[string][]byte) { delete(f, "forms/apikey.schema.json") }, "accountTypes[0].form.schema", "file_missing"},
-		{"form ui file", func(_ *manifest.Manifest, f map[string][]byte) { delete(f, "forms/apikey.ui.json") }, "accountTypes[0].form.uiSchema", "file_missing"},
+		{"form component", func(m *manifest.Manifest, _ map[string][]byte) { m.AccountTypes[0].Form.Component = "" }, "accountTypes[0].form.component", "required"},
+		{"schema form", func(m *manifest.Manifest, _ map[string][]byte) {
+			m.AccountTypes[0].Form = manifest.Form{Mode: "schema"}
+		}, "accountTypes[0].form.mode", "unsupported"},
 		// Guarded settings (CONTRACTS §21.3).
 		{"guarded field required", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.AccountTypes[0].SettingsFields = []string{"base_url"}
@@ -484,7 +491,7 @@ func TestValidatePlatformAndAccountTypes(t *testing.T) {
 		}, "accountTypes", "missing_host_permission"},
 		{"removed account grant", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
-		}, "hostPermissions[2].id", "outdated_contract"},
+		}, "hostPermissions[3].id", "outdated_contract"},
 		// Platforms.
 		{"platform id format", func(m *manifest.Manifest, _ map[string][]byte) { m.Platforms[0].ID = "Video" }, "platforms[0].id", "invalid_format"},
 		{"platform id built-in", func(m *manifest.Manifest, _ map[string][]byte) {

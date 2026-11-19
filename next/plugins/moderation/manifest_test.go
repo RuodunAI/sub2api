@@ -152,11 +152,10 @@ func TestManifest(t *testing.T) {
 		t.Error("users.read must be declared and optional")
 	}
 	// moderation:manage may edit the settings (§75.1), all of them on the
-	// plugin's own page (§72.15): native mode on the dashboard, without a
-	// form schema (ValidateSettings checks them, ui.settings.secrets says
-	// what the core masks).
-	if s := m.UI.Settings; s == nil || s.Permission != "moderation:manage" || s.Mode != "native" || s.Page != "dashboard" ||
-		s.Schema != "" || s.UISchema != "" {
+	// plugin's own page (§72.15): native mode on the dashboard
+	// (ValidateSettings checks them, ui.settings.secrets says what the core
+	// masks).
+	if s := m.UI.Settings; s == nil || s.Permission != "moderation:manage" || s.Mode != "native" || s.Page != "dashboard" {
 		t.Errorf("ui.settings = %+v", m.UI.Settings)
 	}
 	if len(m.Hooks) != 3 {

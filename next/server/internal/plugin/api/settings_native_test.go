@@ -39,7 +39,7 @@ func (s *settingsCheck) ValidateSettings(_ context.Context, in *pluginv1.Validat
 var guardSecrets = []manifest.SettingsSecret{{Path: "webhook_secret"}, {Path: "notify/url", Sensitive: true}}
 
 // installNativeSettings installs guard with native settings that declare
-// secrets in ui.settings.secrets (no schema).
+// secrets in ui.settings.secrets.
 func installNativeSettings(t *testing.T, h *harness, root pkgtest.Key, secrets []manifest.SettingsSecret) {
 	t.Helper()
 	guard := pkgtest.Guard("guard", "0.1.0", "sub2api")
@@ -74,9 +74,9 @@ func fieldsOf(out map[string]any) map[string]string {
 	return got
 }
 
-// Native settings without a schema mask what ui.settings.secrets names and
-// nothing else; masks keep the stored values and the plugin-permission
-// holder re-enters a kept credential like with a schema (§75.1).
+// Native settings mask what ui.settings.secrets names and nothing else; masks
+// keep the stored values and the plugin-permission holder re-enters a kept
+// credential (§75.1).
 func TestNativeSettingsMaskDeclaredSecrets(t *testing.T) {
 	h, root := newHarness(t)
 	installNativeSettings(t, h, root, guardSecrets)
@@ -203,8 +203,9 @@ func TestSettingsValidatedByPlugin(t *testing.T) {
 	assert.JSONEq(t, `{"threshold":7,"webhook_secret":"s3cret"}`, h.storedSettings())
 }
 
-// has_settings: the current version declares schema or native ui.settings;
-// the console does not open iframe settings, so they are not listed.
+// has_settings: the current version declares native ui.settings; the
+// console does not open iframe settings, nor an old package's schema
+// settings, so they are not listed.
 func TestHasSettingsMode(t *testing.T) {
 	h, root := newHarness(t)
 	installNativeSettings(t, h, root, guardSecrets)
@@ -219,7 +220,9 @@ func TestHasSettingsMode(t *testing.T) {
 	}
 	assert.Equal(t, true, hasSettings())
 
-	_, err := h.db.SQL.ExecContext(context.Background(), `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{ui,settings,mode}', '"iframe"') WHERE plugin_key = 'guard'`)
-	require.NoError(t, err)
-	assert.Equal(t, false, hasSettings())
+	for _, mode := range []string{"iframe", "schema"} {
+		_, err := h.db.SQL.ExecContext(context.Background(), `UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{ui,settings,mode}', to_jsonb($1::text)) WHERE plugin_key = 'guard'`, mode)
+		require.NoError(t, err)
+		assert.Equal(t, false, hasSettings(), mode)
+	}
 }

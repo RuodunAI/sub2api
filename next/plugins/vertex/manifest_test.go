@@ -85,7 +85,7 @@ func TestManifestShape(t *testing.T) {
 		if at.ID != want.id {
 			t.Fatalf("accountTypes[%d] = %s, want %s", i, at.ID, want.id)
 		}
-		if at.Form.Mode != "native" || at.Form.Component != want.component || at.Form.Schema != "" || at.Form.UISchema != "" {
+		if at.Form.Mode != "native" || at.Form.Component != want.component {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
 		}
 		// One entry in the "new account" dialog, switched by auth method.

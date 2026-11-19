@@ -214,9 +214,9 @@ func TestFetchModels(t *testing.T) {
 		out["data"].(map[string]any)["skipped"] != 2.0 {
 		t.Fatalf("type fetch: %d %v", code, out)
 	}
-	// Invalid credentials fail the schema before any upstream call.
+	// Credentials the plugin refuses fail before any upstream call.
 	if code, out = e.do("POST", "/account-types/anthropic/apikey/models/fetch", map[string]any{
-		"credentials": map[string]any{"api_key": "short"}}); code != 400 || fmt.Sprint(fieldsOf(out)) != "[credentials.api_key:minLength]" {
+		"credentials": map[string]any{"api_key": "sk-bad-key"}}); code != 400 || fmt.Sprint(fieldsOf(out)) != "[credentials.api_key:rejected]" {
 		t.Fatalf("type fetch validation: %d %v", code, out)
 	}
 	// Bad key: the upstream answers 401 -> 503 unavailable with the status.

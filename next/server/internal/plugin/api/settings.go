@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -12,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/santhosh-tekuri/jsonschema/v6"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"gorm.io/gorm"
@@ -38,21 +36,18 @@ func isNoRows(err error) bool { return store.IsNoRows(err) }
 
 // SettingsView is GET /plugins/:key/settings.
 type SettingsView struct {
-	Mode      string          `json:"mode"` // schema | iframe | native | none
-	Schema    json.RawMessage `json:"schema"`
-	UISchema  json.RawMessage `json:"ui_schema"`
-	Page      string          `json:"page,omitempty"`
-	Component string          `json:"component,omitempty"`
-	Values    map[string]any  `json:"values"`
+	Mode      string         `json:"mode"` // iframe | native | none
+	Page      string         `json:"page,omitempty"`
+	Component string         `json:"component,omitempty"`
+	Values    map[string]any `json:"values"`
 	// Secrets lists the masked fields as pointers below values ("a/b" for
 	// nested ones), credentials and sensitive addresses alike.
 	Secrets []string               `json:"secret_fields"`
-	fields  []manifest.SecretField // the schema's or ui.settings.secrets, classified
+	fields  []manifest.SecretField // ui.settings.secrets, classified
 	// maskAll: every top-level setting is a credential, because nothing says
 	// which ones are: no ui.settings, a mode this core does not know (an old
-	// package's), native or iframe settings without a schema and without
-	// ui.settings.secrets, a schema file missing, or a schema marking secrets
-	// where no top-level setting can be named for them.
+	// package's schema settings), or native or iframe settings without
+	// ui.settings.secrets.
 	maskAll bool
 
 	// Permission is the RBAC key of ui.settings.permission: its holders may
@@ -65,8 +60,8 @@ type SettingsView struct {
 // The permission check comes first: a caller holding neither gets 403 whether
 // or not the plugin exists.
 func (a *API) settingsForm(c *gin.Context, key, corePerm string) (*SettingsView, bool) {
-	m, version, err := a.loadCurrentManifest(c.Request.Context(), key)
-	v := &SettingsView{Mode: "none", Schema: json.RawMessage("null"), UISchema: json.RawMessage("null"), Values: map[string]any{}, Secrets: []string{}, maskAll: true}
+	m, _, err := a.loadCurrentManifest(c.Request.Context(), key)
+	v := &SettingsView{Mode: "none", Values: map[string]any{}, Secrets: []string{}, maskAll: true}
 	var f *manifest.Form
 	if m != nil && m.UI != nil {
 		f = m.UI.Settings
@@ -85,53 +80,13 @@ func (a *API) settingsForm(c *gin.Context, key, corePerm string) (*SettingsView,
 		return v, true
 	}
 	v.Mode, v.Page, v.Component = f.Mode, f.Page, f.Component
-	// A native or iframe form without a schema masks what ui.settings.secrets
-	// names ([] = nothing); without the key nothing says which settings are
-	// secret and maskAll stays. A schema form, or a native one that carries
-	// its schema (edited on the plugin's own page, §75.5), validates and
-	// masks with the schema.
-	if f.Schema == "" && (f.Mode == "native" || f.Mode == "iframe") {
-		if f.Secrets != nil {
-			v.fields, v.maskAll = f.SecretFields(), false
-		}
-		return v, true
-	}
-	if f.Mode != "schema" && f.Schema == "" {
-		return v, true
-	}
-	p, err := a.d.Install.Package(c.Request.Context(), key, version)
-	if err != nil {
-		httpapi.Fail(c, err)
-		return nil, false
-	}
-	if b, ok := p.Files[f.Schema]; ok {
-		v.Schema = b
-		v.fields, v.maskAll = schemaSecrets(b)
-	}
-	if f.UISchema != "" {
-		if b, ok := p.Files[f.UISchema]; ok {
-			v.UISchema = b
-		}
+	// Native or iframe settings mask what ui.settings.secrets names ([] =
+	// nothing); without the key nothing says which settings are secret and
+	// maskAll stays, as for any other mode.
+	if (f.Mode == "native" || f.Mode == "iframe") && f.Secrets != nil {
+		v.fields, v.maskAll = f.SecretFields(), false
 	}
 	return v, true
-}
-
-// schemaSecrets is what a settings schema masks (manifest.SettingsSecrets).
-// The packaging check refuses a schema with markers no value path leads to;
-// for a package installed before that check, the top-level settings holding
-// such markers are masked whole as credentials, and all settings are when a
-// marker belongs to no single one or the file is no JSON object.
-func schemaSecrets(schema []byte) (fields []manifest.SecretField, maskAll bool) {
-	fields, unreachable := manifest.SettingsSecrets(schema)
-	whole, all := manifest.UnmaskableFields(unreachable)
-	if all {
-		return nil, true
-	}
-	if len(whole) == 0 {
-		return fields, false
-	}
-	fields = slices.DeleteFunc(fields, func(f manifest.SecretField) bool { return slices.Contains(whole, f.Path[0]) })
-	return sortSecrets(append(fields, topLevelCredentials(whole)...)), false
 }
 
 // topLevelCredentials makes each named top-level setting a credential.
@@ -383,14 +338,7 @@ func (a *API) putSettings(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		validate := func(v map[string]any) error {
-			if len(form.Schema) > 0 && string(form.Schema) != "null" {
-				if err := validateSettings(form.Schema, v); err != nil {
-					return err
-				}
-			}
-			return a.pluginValidate(c.Request.Context(), key, v)
-		}
+		validate := func(v map[string]any) error { return a.pluginValidate(c.Request.Context(), key, v) }
 		if changed, err = mergeSettings(form.secrets(old, in.Values), old, in.Values, manager, validate); err != nil {
 			return err
 		}
@@ -465,62 +413,4 @@ func settingsField(pointer string) string {
 		return "values/" + p
 	}
 	return "values"
-}
-
-type denyLoader struct{}
-
-func (denyLoader) Load(url string) (any, error) {
-	return nil, fmt.Errorf("external schema references are not allowed: %s", url)
-}
-
-// validateSettings checks values against the plugin's JSON Schema.
-func validateSettings(schema []byte, values map[string]any) error {
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
-	if err != nil {
-		return core.ErrInternal.WithMessage("plugin settings schema is invalid").WithCause(err)
-	}
-	comp := jsonschema.NewCompiler()
-	comp.UseLoader(denyLoader{})
-	const loc = "plugin-settings.json"
-	if err := comp.AddResource(loc, doc); err != nil {
-		return core.ErrInternal.WithMessage("plugin settings schema is invalid").WithCause(err)
-	}
-	sch, err := comp.Compile(loc)
-	if err != nil {
-		return core.ErrInternal.WithMessage("plugin settings schema is invalid").WithCause(err)
-	}
-	raw, _ := json.Marshal(values)
-	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
-	if err != nil {
-		return err
-	}
-	if err := sch.Validate(inst); err != nil {
-		var ve *jsonschema.ValidationError
-		if errors.As(err, &ve) {
-			return core.InvalidFields(schemaErrors(ve)...)
-		}
-		return core.ErrInvalidArgument.WithMessage(err.Error())
-	}
-	return nil
-}
-
-func schemaErrors(ve *jsonschema.ValidationError) []core.FieldError {
-	out := ve.BasicOutput()
-	var errs []core.FieldError
-	for _, u := range out.Errors {
-		if u.Error == nil {
-			continue
-		}
-		field := u.InstanceLocation
-		if field == "" {
-			field = "values"
-		} else {
-			field = "values" + field
-		}
-		errs = append(errs, core.FieldError{Field: field, Code: "schema", Message: u.Error.String()})
-	}
-	if len(errs) == 0 {
-		errs = append(errs, core.FieldError{Field: "values", Code: "schema", Message: ve.Error()})
-	}
-	return errs
 }

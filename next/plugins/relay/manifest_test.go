@@ -69,9 +69,6 @@ func load(t *testing.T) manifest.Manifest {
 	if err := check.Validate(&m, files, check.ValidateOptions{Tooling: true}); err != nil {
 		t.Fatal(err)
 	}
-	if w := check.Warnings(&m, files); len(w) != 0 {
-		t.Fatalf("warnings: %v", w)
-	}
 	return m
 }
 

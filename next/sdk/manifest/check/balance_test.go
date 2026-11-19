@@ -17,10 +17,10 @@ func TestAccountTypeBalance(t *testing.T) {
 	m.AccountTypes = []manifest.AccountType{{
 		ID:        "oauth",
 		Label:     manifest.LocalizedText{"en": "OAuth"},
-		Form:      manifest.Form{Mode: "schema", Schema: "forms/k.json"},
+		Form:      keyForm(m),
 		Platforms: []manifest.AccountPlatform{{Platform: "video"}},
 	}}
-	files := map[string][]byte{"forms/k.json": []byte(`{}`)}
+	files := map[string][]byte{}
 
 	// "balance": {} is a complete declaration (the host's default interval),
 	// and the bounds themselves are accepted.

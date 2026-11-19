@@ -440,26 +440,23 @@ func testGen(plat core.PlatformPlugin) *fakeGen {
 		types: []core.AccountTypeBinding{{
 			Plugin: anthropic,
 			Type: manifest.AccountType{ID: "apikey", Label: manifest.LocalizedText{"en": "API Key", "zh": "API Key"},
-				Form: manifest.Form{Mode: "schema", Schema: "forms/apikey.json"}, SensitiveFields: []string{"api_key"},
+				Form: manifest.Form{Mode: "native", Component: "AnthropicKeyForm"}, SensitiveFields: []string{"api_key"},
 				SettingsFields:  []string{"base_url"},
 				GuardedSettings: []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{officialBaseURL}}},
 				Platforms:       []manifest.AccountPlatform{{Platform: "anthropic"}}},
-			FormSchema: json.RawMessage(formSchema), FormUI: json.RawMessage(`{"api_key":{"ui:widget":"password"}}`),
 			Client: plat,
 		}, {
 			Plugin: relay,
 			Type: manifest.AccountType{ID: "relay_key", Label: manifest.LocalizedText{"en": "Relay key"},
-				Form: manifest.Form{Mode: "schema"}, SensitiveFields: []string{"api_key"},
+				Form: manifest.Form{Mode: "native", Component: "RelayKeyForm"}, SensitiveFields: []string{"api_key"},
 				SettingsFields: []string{"base_url"},
 				Platforms:      []manifest.AccountPlatform{{Platform: "anthropic"}, {Platform: "ghost"}}},
-			FormSchema: json.RawMessage(formSchema),
-			Client:     plat,
+			Client: plat,
 		}, {
 			Plugin: video,
 			Type: manifest.AccountType{ID: "vkey", Label: manifest.LocalizedText{"en": "Video key"},
-				Form: manifest.Form{Mode: "schema"}, Platforms: []manifest.AccountPlatform{{Platform: "aivideo"}}},
-			FormSchema: json.RawMessage(formSchema),
-			Client:     plat,
+				Form: manifest.Form{Mode: "native", Component: "VideoKeyForm"}, Platforms: []manifest.AccountPlatform{{Platform: "aivideo"}}},
+			Client: plat,
 		}},
 		// Plugin platform first: /platforms must still list built-ins first.
 		plats: []core.PlatformBinding{
@@ -684,16 +681,6 @@ func TestPayloads(t *testing.T) {
 
 // ---------------------------------------------------------------- harness
 
-const formSchema = `{
-  "type": "object",
-  "required": ["api_key"],
-  "properties": {
-    "api_key": {"type": "string", "minLength": 8},
-    "base_url": {"type": "string"},
-    "org": {"type": "string"}
-  }
-}`
-
 // officialBaseURL is the only base_url the guarded anthropic/apikey type
 // accepts from callers without account:settings:custom.
 const officialBaseURL = "https://api.anthropic.com"
@@ -858,7 +845,7 @@ func TestAccountTypes(t *testing.T) {
 	}
 	list := out["data"].([]any)
 	ty := list[0].(map[string]any)
-	if len(list) != 3 || ty["plugin_key"] != "anthropic" || ty["type"] != "apikey" || ty["form"].(map[string]any)["mode"] != "schema" ||
+	if len(list) != 3 || ty["plugin_key"] != "anthropic" || ty["type"] != "apikey" || ty["form"].(map[string]any)["mode"] != "native" ||
 		ty["plugin_name"].(map[string]any)["en"] != "Anthropic" || ty["sensitive_fields"].([]any)[0] != "api_key" ||
 		ty["trust"] != "official" || ty["protocols"] != nil || ty["platform"] != nil || ty["custom_upstream"] != false ||
 		ty["platforms"].([]any)[0].(map[string]any)["id"] != "anthropic" {
@@ -872,16 +859,9 @@ func TestAccountTypes(t *testing.T) {
 	if rl := list[1].(map[string]any); rl["plugin_key"] != "relay" || rl["type"] != "relay_key" || rl["custom_upstream"] != true {
 		t.Fatalf("relay type: %v", rl)
 	}
-	code, out = e.do("GET", "/account-types/anthropic/apikey/form", nil)
-	if code != 200 || out["data"].(map[string]any)["schema"].(map[string]any)["type"] != "object" ||
-		out["data"].(map[string]any)["ui_schema"] == nil {
-		t.Fatalf("form: %d %v", code, out)
-	}
-	if code, _ = e.do("GET", "/account-types/anthropic/oauth/form", nil); code != 404 {
-		t.Fatalf("unknown form: %d", code)
-	}
-	if code, _ = e.do("GET", "/account-types/relay/apikey/form", nil); code != 404 {
-		t.Fatalf("type of another plugin: %d", code)
+	// Forms are the plugins' own components: the core serves no form schema.
+	if code, _ = e.do("GET", "/account-types/anthropic/apikey/form", nil); code != 404 {
+		t.Fatalf("form schema endpoint: %d", code)
 	}
 	e.reg.set(nil)
 	if _, out = e.do("GET", "/account-types", nil); len(out["data"].([]any)) != 0 {
@@ -906,17 +886,8 @@ func TestAccountLifecycle(t *testing.T) {
 		return m
 	}
 
-	// Schema violations.
-	code, out := e.do("POST", "/accounts", with(map[string]any{"base_url": "x"}))
-	if code != 400 || fmt.Sprint(fieldsOf(out)) != "[credentials.api_key:required]" {
-		t.Fatalf("schema required: %d %v", code, out)
-	}
-	code, out = e.do("POST", "/accounts", with(map[string]any{"api_key": "short"}))
-	if code != 400 || fmt.Sprint(fieldsOf(out)) != "[credentials.api_key:minLength]" {
-		t.Fatalf("schema minLength: %d %v", code, out)
-	}
-	// Plugin validation.
-	code, out = e.do("POST", "/accounts", with(map[string]any{"api_key": "sk-bad-key"}))
+	// Plugin validation, the only check of the credentials.
+	code, out := e.do("POST", "/accounts", with(map[string]any{"api_key": "sk-bad-key"}))
 	if code != 400 || fmt.Sprint(fieldsOf(out)) != "[credentials.api_key:rejected]" {
 		t.Fatalf("plugin validation: %d %v", code, out)
 	}

@@ -57,7 +57,7 @@ func TestManifest(t *testing.T) {
 		t.Fatal("model_mapping must not be a settings field")
 	}
 	// The form is the native AnthropicKeyForm (ui/native/src/forms.ts).
-	if at.Form.Mode != "native" || at.Form.Component != "AnthropicKeyForm" || at.Form.Schema != "" || at.Form.UISchema != "" {
+	if at.Form.Mode != "native" || at.Form.Component != "AnthropicKeyForm" {
 		t.Fatalf("form = %+v, want the native AnthropicKeyForm", at.Form)
 	}
 	// The released plugin declared the anthropic preset with no filter
@@ -179,9 +179,6 @@ func load(t *testing.T) manifest.Manifest {
 	}
 	if err := check.Validate(&m, files, check.ValidateOptions{Tooling: true}); err != nil {
 		t.Fatal(err)
-	}
-	if w := check.Warnings(&m, files); len(w) != 0 {
-		t.Fatalf("warnings: %v", w)
 	}
 	return m
 }

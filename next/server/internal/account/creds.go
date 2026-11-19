@@ -3,21 +3,14 @@ package account
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 
-	"github.com/santhosh-tekuri/jsonschema/v6"
-	"github.com/santhosh-tekuri/jsonschema/v6/kind"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -187,92 +180,6 @@ func reenterRequired(ctx context.Context, restored []string) error {
 	return core.InvalidFields(fe...)
 }
 
-// ---------------------------------------------------------------- JSON Schema
-
-var printer = message.NewPrinter(language.English)
-
-func (s *Service) compiled(schema []byte) (*jsonschema.Schema, error) {
-	sum := sha256.Sum256(schema)
-	key := hex.EncodeToString(sum[:])
-	if v, ok := s.schemas.Load(key); ok {
-		return v.(*jsonschema.Schema), nil
-	}
-	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(schema))
-	if err != nil {
-		return nil, err
-	}
-	c := jsonschema.NewCompiler()
-	loc := "https://sub2api.invalid/forms/" + key + ".json"
-	if err := c.AddResource(loc, doc); err != nil {
-		return nil, err
-	}
-	sch, err := c.Compile(loc)
-	if err != nil {
-		return nil, err
-	}
-	s.schemas.Store(key, sch)
-	return sch, nil
-}
-
-// validateSchema checks credentials against the account type's form schema.
-func (s *Service) validateSchema(ctx context.Context, bt core.AccountTypeBinding, creds []byte) error {
-	if bt.Type.Form.Mode != "schema" || len(bytes.TrimSpace(bt.FormSchema)) == 0 {
-		return nil
-	}
-	sch, err := s.compiled(bt.FormSchema)
-	if err != nil {
-		return core.ErrPluginUnavailable.WithMessage(t(ctx, "the account form schema of the plugin is invalid",
-			"插件的账号表单 schema 无效")).WithCause(err)
-	}
-	inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(creds))
-	if err != nil {
-		return core.ErrInvalidArgument.WithMessage("invalid credentials JSON")
-	}
-	err = sch.Validate(inst)
-	if err == nil {
-		return nil
-	}
-	var ve *jsonschema.ValidationError
-	if !errors.As(err, &ve) {
-		return core.ErrInvalidArgument.WithMessage(err.Error())
-	}
-	var fe []core.FieldError
-	collect(ve, &fe)
-	if len(fe) == 0 {
-		fe = append(fe, core.FieldError{Field: "credentials", Code: "invalid", Message: ve.Error()})
-	}
-	return core.InvalidFields(fe...)
-}
-
-func collect(ve *jsonschema.ValidationError, out *[]core.FieldError) {
-	if len(ve.Causes) > 0 {
-		for _, c := range ve.Causes {
-			collect(c, out)
-		}
-		return
-	}
-	loc := ve.InstanceLocation
-	code := "invalid"
-	if kp := ve.ErrorKind.KeywordPath(); len(kp) > 0 {
-		code = kp[0]
-	}
-	msg := ve.ErrorKind.LocalizedString(printer)
-	if r, ok := ve.ErrorKind.(*kind.Required); ok && len(r.Missing) > 0 {
-		for _, m := range r.Missing {
-			*out = append(*out, core.FieldError{Field: credField(append(slices.Clone(loc), m)), Code: "required", Message: msg})
-		}
-		return
-	}
-	*out = append(*out, core.FieldError{Field: credField(loc), Code: code, Message: msg})
-}
-
-func credField(path []string) string {
-	if len(path) == 0 {
-		return "credentials"
-	}
-	return "credentials." + strings.Join(path, ".")
-}
-
 // ---------------------------------------------------------------- preparation
 
 // prepared is the storable form of submitted credentials.
@@ -315,7 +222,7 @@ func (s *Service) credBase(ctx context.Context, a *row) (*credBase, error) {
 	return &credBase{secret: plain, old: mustJSON(all), reveal: reveal}, nil
 }
 
-// prepare validates credentials (schema, then plugin, then the guarded
+// prepare validates credentials (the plugin, then the guarded
 // settings without account:settings:custom) and encrypts the non-settings
 // part. base is the stored account (nil on create): Mask values are replaced
 // from it, guarded fields equal to their old value pass, and restoring a
@@ -349,9 +256,6 @@ func (s *Service) prepare(ctx context.Context, bt core.AccountTypeBinding, raw j
 			delete(all, key)
 		}
 		b = mustJSON(all)
-	}
-	if err := s.validateSchema(ctx, bt, b); err != nil {
-		return nil, err
 	}
 	all, err := parseObject(b)
 	if err != nil {

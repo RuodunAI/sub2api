@@ -18,15 +18,17 @@ import (
 const skeleton = `{
   "apiVersion": 1, "key": "typesafe_check", "name": {"en": "TypeSafe"}, "version": "0.1.0", "publisher": "test",
   "icon": "text:T", "runtime": "grpc", "entry": {"grpc": {"binaries": "runtimes/{os}-{arch}/plugin"}}, "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^4.0", "ui": {"native": {"entry": "ui/native/entry.js"}},
   "capabilities": [{"id": "platform.adapter.v1"}],
   "externalServices": ["api.typesafe.ai"],
   "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "upstreamFields": ["base_url"],
-    "form": {"mode": "schema", "schema": "forms/apikey.schema.json"},
+    "form": {"mode": "native", "component": "TypeSafeKeyForm"},
     "sensitiveFields": ["api_key"], "settingsFields": ["base_url"],
     "platforms": [{"platform": "typesafe"}]}],
   "hostPermissions": [
     {"id": "platform.register", "reason": {"en": "r"}},
-    {"id": "gateway.endpoint", "reason": {"en": "r"}}
+    {"id": "gateway.endpoint", "reason": {"en": "r"}},
+    {"id": "ui.native", "reason": {"en": "r"}}
   ]
 }`
 
@@ -39,8 +41,7 @@ func TestPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Platforms = []manifest.Platform{typesafe.Platform()}
-	files := map[string][]byte{"forms/apikey.schema.json": []byte(`{"type":"object","properties":{"api_key":{"type":"string"},"base_url":{"type":"string"}}}`)}
-	if err := check.Validate(&m, files, check.ValidateOptions{Tooling: true}); err != nil {
+	if err := check.Validate(&m, nil, check.ValidateOptions{Tooling: true}); err != nil {
 		t.Fatal(err)
 	}
 	p := typesafe.Platform()

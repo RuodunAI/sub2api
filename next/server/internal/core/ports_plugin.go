@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -166,12 +165,10 @@ type AccountTypeKey struct {
 // process. It validates credentials, executes gateway requests (ExecutePlugin)
 // and classifies errors for accounts of this type.
 type AccountTypeBinding struct {
-	Plugin     PluginInfo
-	Type       manifest.AccountType
-	DeclIndex  int             // index in the plugin's manifest.AccountTypes (preserves declaration order)
-	FormSchema json.RawMessage // resolved from the package when form.mode=schema
-	FormUI     json.RawMessage
-	Client     PlatformPlugin
+	Plugin    PluginInfo
+	Type      manifest.AccountType
+	DeclIndex int // index in the plugin's manifest.AccountTypes (preserves declaration order)
+	Client    PlatformPlugin
 }
 
 // Key returns the account type key.

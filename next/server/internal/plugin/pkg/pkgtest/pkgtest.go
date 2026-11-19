@@ -45,7 +45,7 @@ func Guard(key, version, publisher string) *manifest.Manifest {
 		Runtime:      "grpc",
 		Entry:        manifest.Entry{GRPC: &manifest.GRPCEntry{Binaries: "runtimes/{os}-{arch}/plugin"}},
 		HostCompat:   ">=0.1.0 <0.2.0",
-		HostUICompat: "^1.0",
+		HostUICompat: "^4.0",
 		Capabilities: []manifest.Capability{
 			{ID: manifest.CapGatewayHook}, {ID: manifest.CapAppEvents}, {ID: manifest.CapAppJobs}, {ID: manifest.CapHTTPRoutes},
 		},
@@ -71,7 +71,7 @@ func Guard(key, version, publisher string) *manifest.Manifest {
 			Pages:    map[string]manifest.Page{"dashboard": {Type: "native", Component: "GuardDashboard"}},
 			Slots:    []manifest.Slot{{Slot: "dashboard.widgets", Component: "BlockedTodayCard", Permission: "stats:read"}},
 			Native:   &manifest.NativeUI{Entry: "ui/native/entry.js"},
-			Settings: &manifest.Form{Mode: "schema", Schema: "forms/settings.schema.json"},
+			Settings: &manifest.Form{Mode: "native", Component: "GuardSettings", Secrets: []manifest.SettingsSecret{{Path: "webhook_secret"}}},
 		},
 		Resources: &manifest.Resources{MemoryMB: 128, CPU: 0.25},
 		HostPermissions: []manifest.HostPermission{
@@ -118,6 +118,7 @@ func Platform(key, version, publisher string) *manifest.Manifest {
 		Runtime:      "grpc",
 		Entry:        manifest.Entry{GRPC: &manifest.GRPCEntry{Binaries: "runtimes/{os}-{arch}/plugin"}},
 		HostCompat:   ">=0.1.0 <0.2.0",
+		HostUICompat: "^4.0",
 		Capabilities: []manifest.Capability{{ID: manifest.CapPlatformAdapter}},
 		Platforms: []manifest.Platform{{
 			ID:    key,
@@ -134,13 +135,15 @@ func Platform(key, version, publisher string) *manifest.Manifest {
 		}},
 		AccountTypes: []manifest.AccountType{{
 			ID: "apikey", Label: manifest.LocalizedText{"en": "API Key"},
-			Form:            manifest.Form{Mode: "schema", Schema: "forms/apikey.schema.json", UISchema: "forms/apikey.ui.json"},
+			Form:            manifest.Form{Mode: "native", Component: "VideoKeyForm"},
 			SensitiveFields: []string{"api_key"},
 			Platforms:       []manifest.AccountPlatform{{Platform: key}},
 		}},
+		UI: &manifest.UI{Native: &manifest.NativeUI{Entry: "ui/native/entry.js"}},
 		HostPermissions: []manifest.HostPermission{
 			{ID: "gateway.endpoint"},
 			{ID: "platform.register"},
+			{ID: "ui.native"},
 		},
 	}
 }
@@ -158,28 +161,21 @@ func Anthropic(key, version, publisher string) *manifest.Manifest {
 		Runtime:      "grpc",
 		Entry:        manifest.Entry{GRPC: &manifest.GRPCEntry{Binaries: "runtimes/{os}-{arch}/plugin"}},
 		HostCompat:   ">=0.1.0 <0.2.0",
+		HostUICompat: "^4.0",
 		Capabilities: []manifest.Capability{{ID: manifest.CapPlatformAdapter}},
 		AccountTypes: []manifest.AccountType{{
 			ID: "apikey", Label: manifest.LocalizedText{"en": "API Key"},
-			Form:            manifest.Form{Mode: "schema", Schema: "forms/apikey.schema.json", UISchema: "forms/apikey.ui.json"},
+			Form:            manifest.Form{Mode: "native", Component: "AnthropicKeyForm"},
 			SensitiveFields: []string{"api_key"},
 			Platforms:       []manifest.AccountPlatform{{Platform: manifest.PlatformAnthropic}},
 		}},
+		UI: &manifest.UI{Native: &manifest.NativeUI{Entry: "ui/native/entry.js"}},
 		HostPermissions: []manifest.HostPermission{
 			{ID: "platform.register"},
+			{ID: "ui.native"},
 		},
 	}
 }
-
-// SettingsSchema is the default forms/settings.schema.json.
-const SettingsSchema = `{
-  "type": "object",
-  "properties": {
-    "threshold": {"type": "integer", "minimum": 0},
-    "webhook_secret": {"type": "string", "writeOnly": true}
-  },
-  "additionalProperties": false
-}`
 
 // Files returns manifest.json plus every file the manifest references.
 func Files(m *manifest.Manifest) map[string][]byte {
@@ -196,21 +192,8 @@ func Files(m *manifest.Manifest) map[string][]byte {
 	if m.Database != nil {
 		files[m.Database.Migrations+"0001_init.sql"] = []byte("CREATE TABLE rules (id bigserial PRIMARY KEY);")
 	}
-	if m.UI != nil {
-		if m.UI.Native != nil {
-			files[m.UI.Native.Entry] = []byte("export default {}")
-		}
-		if m.UI.Settings != nil && m.UI.Settings.Schema != "" {
-			files[m.UI.Settings.Schema] = []byte(SettingsSchema)
-		}
-	}
-	for _, at := range m.AccountTypes {
-		if at.Form.Schema != "" {
-			files[at.Form.Schema] = []byte(`{"type":"object"}`)
-		}
-		if at.Form.UISchema != "" {
-			files[at.Form.UISchema] = []byte(`{}`)
-		}
+	if m.UI != nil && m.UI.Native != nil {
+		files[m.UI.Native.Entry] = []byte("export default {}")
 	}
 	return files
 }
