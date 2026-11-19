@@ -176,13 +176,12 @@ func (p *fakePlatform) BuildTestRequest(_ context.Context, in *pluginv1.BuildTes
 		Model: p.testModel, UsageProtocol: p.usageProtocol}, nil
 }
 
-// fakePricer prices every model but those in unpriced, which have none
-// under missing_price_policy free (Resolve answers nil, nil).
+// fakePricer prices every model but those in unpriced, which have none.
 type fakePricer struct{ unpriced map[string]bool }
 
 func (p *fakePricer) Resolve(_ context.Context, q core.PriceQuery) (*core.PriceRule, error) {
 	if p.unpriced[q.Model] {
-		return nil, nil
+		return nil, core.ErrPriceNotConfigured.WithDetails(map[string]any{"model": q.Model})
 	}
 	return &core.PriceRule{ID: 1, Model: q.Model, Mode: "per_token", Expression: "p"}, nil
 }

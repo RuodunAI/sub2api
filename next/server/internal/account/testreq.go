@@ -154,14 +154,11 @@ func (s *Service) test(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
-// testPrice refuses to test a model without a price, whatever
-// missing_price_policy says (CONTRACTS §17): model is the one tested, before
-// the account's mapping, else the one the plugin chose.
+// testPrice refuses to test a model without a price (CONTRACTS §17): model
+// is the one tested, before the account's mapping, else the one the plugin
+// chose.
 func (s *Service) testPrice(ctx context.Context, model string) error {
-	rule, err := s.d.Pricer.Resolve(ctx, core.PriceQuery{Model: model})
-	if err == nil && rule == nil {
-		err = core.ErrPriceNotConfigured.WithDetails(map[string]any{"model": model})
-	}
+	_, err := s.d.Pricer.Resolve(ctx, core.PriceQuery{Model: model})
 	return err
 }
 

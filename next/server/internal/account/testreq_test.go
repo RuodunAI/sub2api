@@ -537,8 +537,7 @@ func TestAccountTestProtocols(t *testing.T) {
 }
 
 // A model without a price is not tested: the test answers the missing price
-// error, whatever missing_price_policy says (the fake answers as under
-// "free"), records it as the gateway's, and nothing goes upstream. The model
+// error, records it as the gateway's, and nothing goes upstream. The model
 // priced is the one tested before the account's mapping: the caller's, else
 // the account's default test model, else the one the plugin reports.
 func TestAccountTestRefusesModelWithoutPrice(t *testing.T) {
