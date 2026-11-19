@@ -1605,7 +1605,7 @@ next/
 ├── plugins/                       # 官方插件，每个是独立 Go module；released.json 记录线上版本
 │   ├── anthropic/  openai/  gemini/  volcengine/  relay/
 │   ├── codex/                     # 含 ui/native
-│   ├── dynweight/  growth/  guard/  moderation/   # 含 ui/native
+│   ├── dynweight/  guard/  moderation/   # 含 ui/native
 │   └── mailer/  payment/
 ├── protocol-codec/                # 早期的协议转换库；next/ 内无人引用，只剩旧版 backend/ 依赖
 ├── tools/

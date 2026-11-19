@@ -10,7 +10,6 @@ use (
 	./plugins/codex
 	./plugins/dynweight
 	./plugins/gemini
-	./plugins/growth
 	./plugins/guard
 	./plugins/mailer
 	./plugins/moderation

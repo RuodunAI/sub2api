@@ -98,14 +98,14 @@ describe('sidebar', () => {
     overview,
     { section: 'gateway', items: [item('accounts', '/accounts'), item('proxies', '/proxies')] },
     { section: 'security', items: [item('guard', '/p/guard/dashboard')] },
-    { section: 'finance', items: [item('growth', '/p/growth/dashboard')] },
+    { section: 'finance', items: [item('recharge', '/p/payment/recharge')] },
     { section: 'users', items: [item('users', '/users'), item('roles', '/roles')] },
     { section: 'plugins', items: [item('plugins', '/plugins'), item('market', '/market'), item('inbox', '/p/mailer/inbox')] },
     { section: 'vol:ark', label: { zh: '火山方舟' }, items: [item('assets', '/p/vol/assets'), item('sets', '/p/vol/sets')] },
     { section: 'system', items: [item('nodes', '/nodes'), item('tasks', '/system/tasks'), settings] },
     { section: 'me', items: [item('wallet', '/me/wallet')] }
   ]
-  const flat = ['dashboard', 'wallet', 'accounts', 'proxies', 'guard', 'growth']
+  const flat = ['dashboard', 'wallet', 'accounts', 'proxies', 'guard', 'recharge']
 
   it('lists gateway, security and finance flat, folds the other admin sections and ends with system settings', async () => {
     const { wrapper, app } = await mountSidebar(operatorMenu)

@@ -111,7 +111,7 @@
 | settings | `settings:read` `settings:manage`🔐🔑 |
 | system_update | `system:update:read` `system:update:execute`🔐🔑👑 `system:update:recover`🔐🔑👑 |
 
-内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除；0.1.290 起是唯一能带 superuser 标志的角色，授予存为 `casbin_rule` 的 `p, r:super_admin, *, *`，§99.1）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`usage:account:read`（0.1.292）、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），0.1.292 加 `usage:account:read:own`（自己账号的使用记录，`rev` 2），核心默认权限只有这些（插件权限按 manifest `defaults` 授予，payment 的 `recharge:use`、growth 的 `growth:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`supplier_agent`（代理供应商，0.1.292：user 与 supplier 的默认权限加下级的账号与使用记录只读、下级用户的读建改与角色分配，可分配 supplier、supplier_agent，§103.1）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。六个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库同步后的结果（各角色存下的权限、可分配清单、单独持有时可见的核心菜单）由 `authz/testdata/builtin_roles.golden` 固定（`TestBuiltinRolesGolden`；有意改动后 `UPDATE_GOLDEN=1` 重写，并同步本段与 §103.1），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、supplier_agent、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`casbin_rule` 里有该角色的 g 行、且未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的权限授予哪些角色、移除与复活、风险等级见下文“插件权限”。
+内置角色：`super_admin`（superuser，等同 `*`，含以后新增的权限，名称、描述、权限都不可编辑，不可重置或删除；0.1.290 起是唯一能带 superuser 标志的角色，授予存为 `casbin_rule` 的 `p, r:super_admin, *, *`，§99.1）、`admin`（除超管专属 👑 以外的全部核心权限）、`operator`（运维，2026-11-12 起为显式白名单，决策 D3：`user:read` `user:create` `user:update`、`role:read` `role:assign`、`group:read` `group:manage`、`segment:read` `segment:manage`、`account:read` `account:create` `account:update` `account:delete` `account:test`、`proxy:read` `proxy:manage`、`price:read`、`balance:all:read`、`usage:all:read`、`usage:account:read`（0.1.292）、`node:read`、`audit:read`、`task:read` `task:run`，加上 `account:credential:view:own` 与 `user` 角色的默认权限（全量 key 蕴含 own 范围，因此能授出 supplier）；不含 `role:define`、`balance:adjust`、`usage:settle`、`user:delete`、`user:password:reset`、`account:credential:view`、`account:settings:custom`、`account:group:bind`、`account:relay`、`price:manage`、`task:manage` 以及 sticky、settings、plugin、publisher、system_update 各模块；以后新增的核心权限不会自动进入，要加进白名单）、`supplier`（供应商，2026-11-12；`account:read:own` `account:create:own` `account:update:own` `account:delete:own` `account:test:own` `account:credential:view:own` `proxy:read:own` `proxy:manage:own`，2026-11-13 加 `usage:self:read`（看自己的用量），0.1.292 加 `usage:account:read:own`（自己账号的使用记录，`rev` 2），核心默认权限只有这些（插件权限按 manifest `defaults` 授予，payment 的 `recharge:use` 列了 supplier），暂不含 `account:group:bind`；附加型角色，供应商用户同时持有 `user` 与 `supplier`，控制台新建用户勾选 supplier 时自动勾上 user，§21）、`supplier_agent`（代理供应商，0.1.292：user 与 supplier 的默认权限加下级的账号与使用记录只读、下级用户的读建改与角色分配，可分配 supplier、supplier_agent，§103.1）、`user`（`apikey:self:manage` `balance:self:read` `usage:self:read` `gateway:use`）。六个内置角色开箱即有，默认权限与可分配清单只在代码里定义一处（`authz/catalog.go` `builtinRoles`），新库同步后的结果（各角色存下的权限、可分配清单、单独持有时可见的核心菜单）由 `authz/testdata/builtin_roles.golden` 固定（`TestBuiltinRolesGolden`；有意改动后 `UPDATE_GOLDEN=1` 重写，并同步本段与 §103.1），新库由启动同步 `SyncCore` 直接写入，升级时的重置、补缺与恢复默认都用它（2026-11-13，用户要求“新系统自带的角色，可以进行修改、重置”）。除 `super_admin` 外，内置角色的名称、描述、权限、可分配清单可以修改：有 `role:define`、角色在操作者的可分配清单内、且角色当前的授予不超出操作者（与有持有者的自定义角色同一口径，§43.6 角色写入口），新增部分仍须在操作者之内；按默认清单 admin 能改 operator、supplier、supplier_agent、user，不能改 admin（超管都能改）。内置角色不能删除（409），key 不能改（没有改 key 的接口，PATCH `/roles/:id` 带不同的 `key` 400 `immutable`，§15.7）。`POST /roles/:id/reset` 恢复默认（§15.7，权限检查同修改，另须覆盖全部默认值）。新增的核心权限只自动授予默认集合包含它的内置角色。**默认值在升级时只应用一次**（`roles.defaults_rev`，迁移 0097 加列，存量为 0）：内置角色（`super_admin` 除外）的 `defaults_rev` 落后于代码里该角色的 `rev`（升级到 0.1.286，或以后某个已有权限、角色加入了默认值、代码提升了 `rev`）时，`SyncCore` 按角色有没有持有者（`casbin_rule` 里有该角色的 g 行、且未软删除的用户，即角色的 `user_count`）处理：**无人持有**的整体重置为默认值，与恢复默认同一套写入：核心权限（含范围权限）、可分配清单与 `assign_custom` 按默认值写入，默认值以外的核心授予删除，角色上的插件权限不动，名称、描述不改，审计一条 `role.reset`（系统操作者，`detail.via = "sync"`、`defaults_rev`、`before`、`after`）；**有人持有**的只补缺不覆盖：把默认值里缺的权限（含范围默认值，已有同动作全量 key 时不补 own 范围）、可分配角色与 `assign_custom` 补上，不删除角色上已有的其他授予，每项写审计 `authz.sync.grant`（`detail.defaults_rev`）。两种都把 `defaults_rev` 置为 `rev`；之后重启不再处理，管理员之后的修改（含删掉的默认权限）不会被改回来。恢复默认同样把 `defaults_rev` 置为当前 `rev`。新用户默认分配 `user` 角色。插件权限的 key 为 `plugin.<插件key>:<插件内 key>`，模块为 `plugin.<插件key>`。插件权限的状态跟随插件：新登记的权限在插件运行中（`plugins.status` 为 `enabled`、`upgrading`）时为 `active`，否则为 `disabled`，每次激活（启用或升级提交）整体置为 `active`、禁用时整体置为 `disabled`；已有的行在同步时不改状态（2026-11-12 权限加固 W4-P8）。升级失败时，同意新版本时登记的新权限保留到激活另一个版本时再按其 manifest 清理（W4-P9）。新登记的权限授予哪些角色、移除与复活、风险等级见下文“插件权限”。
 
 插件权限（2026-11-15 0.1.290，设计 `docs/plugin-permissions/`；manifest 字段见 §5.8 与 §21.0“插件资源范围”）：
 
@@ -1303,11 +1303,11 @@ type ProxyResolver interface {
 | overview 概览（§90 起叫“控制台”） | 100 | 仪表盘（§90 起还有 API 密钥、模型与价格、用量概览、使用日志、全站概览、全站日志；§103 起还有账号用量概览、账号日志） | |
 | gateway 网关 | 200 | 分组、账号、平台、代理、模型价格（§90 起使用记录移到控制台；§90 第四版起只剩账号、代理） | 模型目录（anthropic 0.2.9–0.3.0，0.3.1 删除）、动态权重（dynweight；只有 0.5.4 在 `system` 区） |
 | security 安全 | 300 | 无（空区不返回） | 请求守卫（guard 0.2.7）、提示词审核（moderation 0.6.2） |
-| finance 财务 | 400 | 余额流水 `/ledger`（`balance:all:read`；§90 第四版取消、2026-11-13 T80 恢复） | 增长管理（growth 0.1.5，去掉了自己的 growth 区） |
+| finance 财务 | 400 | 余额流水 `/ledger`（`balance:all:read`；§90 第四版取消、2026-11-13 T80 恢复） | ~~增长管理（growth 0.1.5，去掉了自己的 growth 区）~~（growth 0.1.304 删除，§125） |
 | users 用户与权限（§90 起叫“用户”） | 500 | 用户、角色与权限 | |
 | plugins 插件 | 600 | 已安装插件、插件市场、发布者；`section:"plugins"` 的插件菜单接在后面 | |
 | system 系统 | 700 | 集群节点、定时任务、核心升级、审计日志、设置（§90 起设置排在最后，侧栏单独显示为“系统设置”，分组、模型价格从它进入） | 动态权重（只有 dynweight 0.5.4） |
-| me 我的账户（§90 起叫“个人中心”） | 800 | API 密钥、使用记录（§90 起只剩钱包、个人设置） | 我的邀请、每日签到 |
+| me 我的账户（§90 起叫“个人中心”） | 800 | API 密钥、使用记录（§90 起只剩钱包、个人设置） | ~~我的邀请、每日签到~~（growth 0.1.304 删除，§125） |
 
 - ~~只有概览和我的账户的用户，控制台把"我的账户"排到仪表盘之后并且不画它的标题~~（§90 起所有人都按三组显示）。
 - 侧栏收起时分区标题隐藏，各区之间画一条分隔线（§90 起分隔线画在三组之间）。
@@ -2855,7 +2855,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
   | 插件二进制 | 读、执行 | 全部 | `plugin-exec` 在限制自己之后 `execve` 它。插件必须静态链接（`sub2api-plugin build` 用 `CGO_ENABLED=0`），没有放行动态链接器和库 |
   | go-plugin 的 socket 目录（`PLUGIN_UNIX_SOCKET_DIR`，私有运行目录下的 `plugin-dir*`） | 读写文件、建文件、删文件、建 socket、连路径型 socket | 全部 | 插件在这里用 `os.CreateTemp` 占一个名字（建一个普通文件再删掉）、监听自己的 socket，并连核心在同一目录建的 broker socket（HostService、出口隧道） |
   | `/dev/null` | 读写 | 全部 | 标准描述符被关掉时 Go 运行时打开它 |
-  | `/usr/share/zoneinfo`、`/etc/localtime` | 只读 | 全部 | `time.Local` 读 `/etc/localtime`；`time.LoadLocation` 读时区库（growth 不内嵌 `time/tzdata`） |
+  | `/usr/share/zoneinfo`、`/etc/localtime` | 只读 | 全部 | `time.Local` 读 `/etc/localtime`；`time.LoadLocation` 读时区库（不内嵌 `time/tzdata` 的插件） |
   | 本插件的数据目录 `<SUB2API_PLUGIN_DIR>/<key>/work` | 读写文件与目录、截断、目录内移动；不能建 socket、fifo、链接、设备 | 获授 `fs.data` | 见下面的宿主权限 |
   | CA 证书：`/etc/ssl/certs`、`/etc/ssl/cert.pem`、`/etc/ssl/ca-bundle.pem`、`/etc/pki/tls`、`/etc/pki/ca-trust/extracted`、`/usr/share/ca-certificates`、`/usr/local/share/ca-certificates`，以及 `SSL_CERT_FILE` 和 `SSL_CERT_DIR` 的每一项 | 只读 | 获授 `net` | 插件经出口隧道自己做 TLS，`crypto/x509` 读系统根证书（列表照它在 Linux 上的 `certFiles`、`certDirectories`，加上发行版链接到的信任库） |
 
@@ -2971,84 +2971,9 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 - **快照读取（2026-11-02 起）**：预检与执行前检查读的是每个节点的额度快照内存镜像（`account/quota_mirror.go`），请求路径不查 PG。镜像按账号失效：写额度的节点立即失效本机，其他节点收到 `account:changed` 后失效（额度写入发 `{"account_id":id,"kind":"quota"}`，只失效镜像，不清分组快照；不带 `account_id` 的消息全部失效），总线重连、插件代次切换时全部失效。失效后保留旧值并在后台回填（独立 3 s 时限，不受请求时限影响）；请求遇到旧值最多等 40 ms，之后用旧值（标为旧值，见上一条的执行前检查规则）；没有任何值时等到读快照时限，之后按「快照缺失」放行。数据库出错时旧值最多再用 10 分钟。每 60 s 全量重载一次作为兜底，节点启动时预热。单行无效只跳过这一个账号。§51.3 的 Redis 缓存只服务控制台。
 - **可观测性（2026-11-02 起）**：有账号被拦或检查失败放行时，使用记录的 `anomalies.availability`（JSON 字符串，与 `failure_policy` 同构）记下结论：`outcome`（`blocked_all`/`partial`/`fail_open`）、候选数、放行数、按原因计数、最早可重试时刻、最多 20 个账号样例（账号、模型、拦截或放行、原因码、重试时刻）及执行前检查的拦截。全部放行时不记。全部候选被拦时 `account_id` 仍为空（它表示服务或尝试过的账号），账号在样例里。日志：全部被拦与失败放行记 WARN，按原因每 60 s 合并一行并带被压掉的条数；部分拦截记 DEBUG。汇总统计不把 `availability` 算作异常。
 
-## 45. 增长插件 growth：邀请返利与每日签到（0.1.0，2026-10-04 合并，2026-10-05 按代码补记）
+## 45. 增长插件 growth：邀请返利与每日签到（已删除）
 
-原稿 `docs/audits/2026-10-04/CONTRACTS-section-growth.md` 与实现有多处不符（路由、权限、表结构、默认值），本节按 `next/plugins/growth/` 重写。余额变动只走核心账本 `ledger.credit`（§25），插件不改核心表。
-
-### 45.1 manifest
-
-- 能力：`app.events.v1`、`app.jobs.v1`、`http.routes.v1`；原生 UI（`ui/native/entry.js`）。
-- 订阅事件：`user.created`、`usage.recorded`、`balance.changed`，每批 50 条。
-- 任务：`cleanup`，`0 3 * * *`，删除 90 天前的签到记录。
-- 数据库：`plg_growth`，迁移 `migrations/0001_init.sql`（全部 `IF NOT EXISTS`）。
-- 用户权限（2026-11-12 权限加固 T60 改名，`inheritFrom` 保留存量授权）：`growth:use`（我的邀请、签到；`defaults` user/supplier/operator/admin，继承 `growth:read`），`growth:stats:read`（“查看增长后台”，`risk: "sensitive"`；继承 `growth:manage`）。旧的 `growth:read`、`growth:manage` 在同步后删除（0.1.290起改为标 removed，授予保留不生效，§4）。
-- host 权限：`db.schema`、`events`（scope 同上三种事件）、`jobs`、`routes.user`、`routes.admin`、`ui.menu`、`ui.native`、`ledger.credit`（`{"maxPerTx": "10", "maxPerDay": "100"}`）。
-- 菜单：`me` 区的"我的邀请""每日签到"（`growth:use`），插件自己的 `growth` 区里的"增长管理"（`growth:stats:read`）。
-
-### 45.2 表
-
-| 表 | 内容 |
-|---|---|
-| `referral_codes` | 每个用户一行：`code`（8 位大写字母数字，唯一）、`inviter_user_id`（NULL = 没有邀请人）、`bound_at` |
-| `commissions` | 每笔返利一行：邀请人、被邀请人、`event_type` + `event_id`（来源事件）、`base_amount`、`rate_percent`、`commission`、`ledger_id`（唯一） |
-| `checkins` | 每人每天一行：`checkin_date`（按配置时区的日期）、`quota_awarded`、`ledger_id`（唯一），`(user_id, checkin_date)` 唯一 |
-
-### 45.3 接口（`/api/v1/p/growth`）
-
-| 方法 | 路径 | 权限 | 说明 |
-|---|---|---|---|
-| GET | `/me/referral` | `growth:use` | 我的邀请码（没有就生成）、邀请人、邀请人数、累计返利、返利最多的被邀请人、最近返利 |
-| POST | `/me/referral/bind` | `growth:use` | `{code}` 绑定邀请人；只能绑一次 |
-| GET | `/me/checkin/status` | `growth:use` | 今天是否已签到、今日奖励、连续天数、累计次数与金额、最近记录 |
-| POST | `/me/checkin` | `growth:use` | 签到 |
-| GET | `/admin/referrals`、`/admin/referrals/:user_id` | `growth:stats:read` | 邀请关系列表、单个用户详情 |
-| GET | `/admin/commissions`、`/admin/checkins` | `growth:stats:read` | 返利、签到记录 |
-| GET | `/admin/stats` | `growth:stats:read` | 汇总 |
-
-绑定的规则：
-- 不能绑自己；
-- 不能绑自己邀请的人，否则两人会互相返利；
-- 已绑定再绑返回 400。
-
-没有自己邀请码的老用户（插件启用前注册、没打开过邀请页）绑定时会先生成一行。2026-10-05 修正：之前这种情况返回"already bound"。
-
-### 45.4 返利
-
-- **来源**：
-  - `usage.recorded` 且 `billing_status = billed`：按 `total_cost` 计算；
-  - `balance.changed` 且 `delta > 0`、`kind` 不是 `usage`、`plugin_credit`、`plugin_debit`、`refund`：按 `delta` 计算。实际上就是管理员调整余额。插件入账（包括 payment 的兑换码，以及 growth 自己的返利和签到）都是 `plugin_credit`，不会触发返利。
-- **金额**：`base × rate_percent / 100`，保留 8 位。
-  - 每个被邀请人累计返利不超过 `referral_max_per_invitee`，超过的部分截掉；
-  - `referral_duration_days > 0` 时，只算**绑定后** N 天内的事件。
-- **入账**：`LedgerCredit`，幂等键 `commission:<event_type>:<event_id>`（核心再加前缀 `plugin:growth:`），`ref_type = referral`。同一事件只记一次：
-  - 先查 `commissions` 里是否已有这个事件；
-  - 账本幂等键兜底；
-  - 账本已有（Duplicate）也补写 `commissions` 行，否则上限会少算。2026-10-05 修正。
-- **失败处理**（2026-10-05 修正：之前不管成败都确认整批，失败的返利就永久丢了）：
-  - 数据库或账本暂时不可用：这一条和之后的事件不确认，前面成功的照常确认，核心按 §6 退避重投，一直失败就进死信。
-  - 账本按授权范围拒绝（`PermissionDenied`、`InvalidArgument`，即单笔超过 `maxPerTx` $10、插件当天入账超过 `maxPerDay` $100）：记错误日志，跳过这一条。重试改变不了结果，还会堵住后面的事件。**这笔返利不发**，见 45.7。
-  - payload 解析不了：记警告，跳过。
-
-### 45.5 签到
-
-- 每人每天一次，日期按 `checkin_timezone`；奖励在 `[checkin_min_quota, checkin_max_quota]` 之间随机。
-- `LedgerCredit`，幂等键 `checkin:<user_id>:<YYYY-MM-DD>`，`ref_type = checkin`。重复签到返回错误。
-- 连续天数从昨天往前数，不含今天（今天签了要到明天才计入），最多查 365 天，每天一次查询。
-
-### 45.6 设置（`forms/settings.schema.json`）
-
-`referral_enabled`、`referral_rate_percent`（0–100）、`referral_max_per_invitee`（0 = 不限）、`referral_duration_days`（0 = 永久）、`checkin_enabled`、`checkin_min_quota`、`checkin_max_quota`（≥ min）、`checkin_timezone`（IANA 名，默认 UTC）。
-
-注意两处默认值不一致：
-- 表单里 `referral_max_per_invitee` 默认 0（不限）；
-- 管理员从没保存过设置时，插件内置默认是返利比例 10%、每个被邀请人上限 $100、签到 $0.01–0.05。
-
-### 45.7 已知缺口
-
-1. **授权上限偏小**：`ledger.credit` 只有单笔 $10、整个插件每天 $100（UTC 日，所有用户合计），超出的返利和签到都不发。用户多了很快就会触顶。需要按运营规模调大 scope，或者把大额返利拆成多笔。
-2. **注册归因**：没有"注册时带邀请码"的入口。任何已登录用户随时都能绑定一次邀请人，不限于新用户。
-3. **默认可见性**：2026-11-12 起新装时 `growth:use` 默认授予 user、supplier、operator、admin（manifest `defaults`，此前为 `defaultRoles`）；此前普通用户角色默认没有 `growth:read`，需要管理员授予后才能看到菜单。升级到带 `growth:use` 的版本时它是 `growth:read` 的改名：只授予存量 `growth:read` 的持有者，不叠加 `defaults`（§4）。
-4. 原生 UI 的 `dist/` 不在仓库里，打包前要先构建 `ui/native`。
+0.1.304 删除了 growth 插件（§125）。本节原文见 `git show d466a6daa:next/docs/CONTRACTS.md`，插件最后的源码见 `git show d466a6daa:next/plugins/growth/manifest.json`。
 
 ## 46. 充值支付与兑换码插件 payment（0.1.0，2026-10-04 起草，2026-10-05 按合并后实现修正）
 
@@ -8443,7 +8368,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 它任务的 `scheduled_tasks` 行（这张表没有到 `plugins` 的外键）；
 - 它的权限 `plugin.claude_oauth:claude_oauth:manage` 和这条权限的授予（`casbin_rule` 按键引用权限，没有外键级联；持有它的角色升 `revision`），插件存在时 `authz_meta` 的两个版本各加一；
 - 键记入 `plugin_key_retirements`（归原发布者）；
-- 插件行，级联删除版本（含暂存的授予）、宿主权限授予、事件游标与死信、任务运行、发布状态（`plugin_rollouts`，连同节点结果和清理屏障）、运行节点、卸载屏障、插件迁移记录和粘性规则；`plugin_egress_domains` 没有外键，单独删除；
+- 插件行，级联删除版本（含暂存的授予）、宿主权限授予、事件游标与死信、任务运行、发布状态（`plugin_rollouts`，连同节点结果和清理屏障）、运行节点、卸载屏障和粘性规则；`plugin_egress_domains` 没有外键，单独删除（`plugin_migrations` 自 0002 起也没有外键，它没有数据库，所以没有这种记录；§125 的 0117 单独删除）；
 - 它没有申请数据库权限，所以没有 `plg_claude_oauth` schema 和角色；迁移仍然 `DROP SCHEMA IF EXISTS plg_claude_oauth CASCADE`，角色只在带着核心的标记时删除（同 `dbschema.DropTx`），只为手工建过的情况。
 
 保留：`plugin_key = 'claude_oauth'` 的账号（连同分组关系、使用记录、账本、余额快照），在控制台显示为插件已卸载，由管理员删除；`usage_logs`、`balance_ledger`、`audit_logs`；`plugin_executions`、`plugin_history`、`plugin_egress_logs`。它在 Valkey 里的 KV（OAuth 授权会话）不在数据库里，30 分钟内自己过期。
@@ -8932,3 +8857,30 @@ ALTER TABLE usage_logs
 - 12 个声明账号类型的插件（anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine）删掉 `accounts.credentials`，volcengine 另删 `accounts.read`；volcengine 素材库与 codex 重置次数改用 `GetAccount`。codex 删掉没有写入方的 `settingsFields: ["proxy_id"]`（账号的代理是 `accounts.proxy_id` 列）。版本号在这一批未发布的版本上继续累计，`hostCompat` 不动。
 - 0.1.304 本来就是停机、核心和全部插件一起换（§112.11）。按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（只有 volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可。
 - 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`；`TestWebSocketTurnsKeepTheConnectionsProxy`：建连于代理 7 或直连、改到 8 后下一轮插件仍收到 7 或空、帧经原连接、这一轮的出口是 8，重连后都是 8）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：volcengine 账号经 mock 代理读上游素材组，审计行不含值，素材请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
+
+## 125. 删除 growth 插件（2026-11-19，所有者同意删除；迁移 0117，核心 0.1.304）
+
+插件 `growth`（“用户增长”：邀请返利与每日签到，目录 `next/plugins/growth`，非内置的官方插件，未发布的 0.2.2，线上记录的版本 0.2.1）整体删除，不留兼容。它在 2026-10-05 随 claude-oauth、codex-oauth 一起合入，没有需求记录；仓库记录显示线上没有安装过（0.1.288 时没有装，之后没有再核实，发布前要确认）。最后的源码是 `d466a6daa`（`git show d466a6daa:next/plugins/growth/manifest.json`）。§45 只留标题。
+
+### 125.1 删除了什么
+
+- 插件目录、`plugins/released.json` 里它那一条、`go.work` 的模块。CI、镜像构建和市场打包都按 `plugins/*` 发现插件，内置清单（`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）里本来就没有它，不用改。
+- 插件键 `growth` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.304）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`，错误信息指向 CHANGELOG 0.1.304。
+- 核心里没有只为它存在的代码。读它真实清单的测试改为：`authz.TestSyncPluginSplitsAndRenamesKeys`（真实的 moderation 清单，加一份用 `inheritFrom` 改名的内联清单，覆盖原来由 growth 承担的“改名的新键不从目录得到持有者、旧键标删除并保留授予”），`plugin/api.TestFirstPartyNativeSettingsSecrets` 去掉它那一行。
+- 账本：它声明的 `ledger.credit` 只是宿主权限，核心的入账接口是通用的（§25），不变。
+
+### 125.2 数据库：迁移 0117
+
+`0117_drop_growth_plugin.sql` 照 0111（§116.2）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障：发布迁移时所有节点都已停下），可以重跑：
+
+- 它任务（`cleanup`）的 `scheduled_tasks` 行；
+- 它的全部权限（`plugin.growth:growth:use`、`plugin.growth:growth:stats:read`，以及 0.1.290 起标为删除、授予保留的 `growth:read`、`growth:manage`）和这些权限的授予，持有者角色升 `revision`，插件存在时 `authz_meta` 的两个版本各加一；
+- 键记入 `plugin_key_retirements`（归原发布者）；
+- 插件行，级联删除版本（含暂存的授予）、宿主权限授予、事件游标与死信、任务运行、发布状态、运行节点、卸载屏障和粘性规则；`plugin_egress_domains` 单独删除；
+- 它申请过数据库权限：`DROP SCHEMA IF EXISTS plg_growth CASCADE`（邀请码、返利记录、签到记录随之删除），`plugin_migrations` 里它的记录单独删除（这张表自 0002 起没有外键，同 `dbschema.DropTx`）；旧的插件角色 `plg_growth` 只在带着核心的标记时删除。
+
+保留：`balance_ledger` 里它记过的返利与签到奖励（`kind = plugin_credit`，`ref_type` 为 `referral`、`checkin`，用户余额不变）、`usage_logs`、`audit_logs`；`plugin_executions`、`plugin_history`、`plugin_egress_logs`。它没有账号类型，没有账号要处理；它不用 KV，`ledger.credit` 每日上限的计数在 Valkey 里，48 小时内自己过期。
+
+### 125.3 装过它的实例
+
+升级到 0.1.304 时迁移 0117 把它卸载干净（上一节），升级后插件列表里没有它，菜单“我的邀请”“每日签到”“增长管理”消失，`/api/v1/p/growth/*` 与任何没有安装的插件一样回 503 `plugin_unavailable`；再上传它的任何包都被 `removedKeys` 拒绝。邀请关系和返利、签到明细只在 `plg_growth` 里，迁移后只能从升级前的备份找回，要保留的在升级前导出。没装过的实例什么都不变。

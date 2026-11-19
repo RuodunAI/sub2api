@@ -16,7 +16,7 @@
   - 账号凭证由各插件已有的 `ValidateCredentials` 校验。
   - 插件设置由新增的、可选实现的 `PluginService.ValidateSettings` 校验。
   - 原 schema 的约束都要搬进插件的 Go 代码：必填、长度、pattern、上下限、枚举、`additionalProperties:false`（拒绝未知键）。
-- **一步做完。** 核心、SDK、界面包（4.0.0）、18 个第一方插件在 `feat/plugin-ui-code-only` 分支上逐包合入，全部完成后一次合回 `develop`，随同一个核心版本发布。不发"新旧写法都支持"的过渡核心。
+- **一步做完。** 核心、SDK、界面包（4.0.0）、17 个第一方插件（设计时 18 个，growth 后来删除）在 `feat/plugin-ui-code-only` 分支上逐包合入，全部完成后一次合回 `develop`，随同一个核心版本发布。不发"新旧写法都支持"的过渡核心。
 - **装着旧包也不拒绝加载。** 新核心上，清单仍是 `mode: "schema"` 的已装旧包照常加载，网关、路由、定时任务都照常运行。表单处显示"此插件版本的界面已不受支持，请升级插件"，设置的值全部遮蔽。新上传的 schema 包会以 `unsupported` 被拒（不是 `outdated_contract`，见 7.1）。
 - 插件线协议 `ProtocolVersion`（2）和 Host API（10）都不变。
 - 未验证（community 或 unsigned）的第三方插件没有 native 界面，这一点接受。iframe 模式保持现状，不删也不扩。
@@ -42,6 +42,7 @@
 - iframe：没有插件使用，代码还在（`components/plugin/PluginIframe.vue`、`AccountEditor.vue:644-658`）。
 - `runtime: none`：已经取消，`sdk/manifest/check/retired.go:45`、`check/validate.go:349-350` 把它当作旧契约拒绝。
 - claude-oauth：已在 0.1.304 删除（CONTRACTS §116）。
+- growth：设计之后也在 0.1.304 删除（CONTRACTS §125），现在是 17 个第一方插件。下文第 3、8、10 节里关于 growth 的行是设计时的盘点，保留作记录。
 
 ### 3.2 真实的迁移范围（`plugins/*/manifest.json`）
 
@@ -660,20 +661,20 @@ SDK 拒绝未知键：
 | 页面 | volcengine 的 table 和 form 页面显示"页面不可用"，这是 `PluginPageView` 现有的兜底 |
 | 网关、路由、任务、钩子 | 不受影响 |
 
-- 内置插件随核心镜像在计划完成后几秒内换成新包（§37）。非内置插件（relay、guard、growth、payment、azure-openai、vertex、bedrock）要管理员重新安装新版本。
+- 内置插件随核心镜像在计划完成后几秒内换成新包（§37）。非内置插件（relay、guard、payment、azure-openai、vertex、bedrock）要管理员重新安装新版本。
 
 ### 7.2 版本
 
 - **界面包**：`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 一起升到 **4.0.0**（`web/packages/*/package.json`），`HOST_UI_VERSION = '4.0.0'`（`packages/host/src/index.ts:15`）。`ui-contract.spec.ts` 同步改。
 - **hostUICompat**：所有带 `ui.native` 的插件写 `^4.0`。包括已有的 5 个（codex `^3.20`、dynweight `^3.15`、growth `^3.4`、guard `^3.4`、moderation `^3.15`）和新建的 12 个。旧控制台（3.x）不会加载它们（`stores/plugins.ts:51-57`），但新插件包的 hostCompat 本来就要求新核心。
 - **hostCompat**：所有改动的插件把下限提到发布这批改动的核心版本。如果随 0.1.304 一起发，就保持现在的 `>=0.1.304 <0.2.0`。
-- **插件版本号**：`TestReleasedPluginsBumped` 对照的是 `plugins/released.json`。现在 18 个插件的版本都已经比 released.json 高（0.1.304 那批还没发布）。如果这批改动随 0.1.304 一起发，就不用再升；如果 0.1.304 先发，每个改动过的插件再升一个 minor。发布后按测试说明重写 `released.json`。
+- **插件版本号**：`TestReleasedPluginsBumped` 对照的是 `plugins/released.json`。现在 17 个插件的版本都已经比 released.json 高（0.1.304 那批还没发布）。如果这批改动随 0.1.304 一起发，就不用再升；如果 0.1.304 先发，每个改动过的插件再升一个 minor。发布后按测试说明重写 `released.json`。
 - **核心**：没有迁移。`ProtocolVersion`、Host API 都不变。
 
 ### 7.3 升级须知（写进 CHANGELOG 的"未发布"）
 
 - 插件表单全部改成插件自己的代码。装着旧版本的插件，在升级前编辑账号凭证会提示"请升级插件"，设置会全部遮蔽。
-- 内置插件随核心自动升级。非内置插件要逐个装上新版本，列出 relay、guard、growth、azure-openai、vertex、bedrock。
+- 内置插件随核心自动升级。非内置插件要逐个装上新版本，列出 relay、guard、azure-openai、vertex、bedrock。
 - 第三方插件作者：`form.mode: "schema"`、`ui.pages.*.type: "table" | "form"`、`forms/` 都不再支持，上传会报 `unsupported`。设置的密钥改为在 `ui.settings.secrets` 里声明。community 和 unsigned 的发布者不能带 native 界面（这是现有规则），只能用 iframe。
 
 ## 8. 构建与 CI

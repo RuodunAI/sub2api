@@ -8,6 +8,14 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 删除 growth 插件（核心；迁移 0117，随 0.1.304 发布）
+
+所有者同意整个删除（原话“同意”），不留兼容。仓库记录显示线上从未安装过它（0.1.288 时没有装，之后没有再核实，**发布前要确认**）。规则见 CONTRACTS §125。
+
+- 插件 `growth`（“用户增长”：邀请返利与每日签到，`next/plugins/growth`）删除，市场里不再有它；它的菜单“我的邀请”“每日签到”“增长管理”随之消失。
+- 插件键 `growth` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.2.x 包同样被拒）。
+- **迁移 0117**（`0117_drop_growth_plugin.sql`）：装过它的库像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予、事件游标）、它的权限（`growth:use`、`growth:stats:read` 与已标删除的 `growth:read`、`growth:manage`）与授予、出网域名、任务、插件迁移记录和 schema `plg_growth`（邀请码、返利记录、签到记录），键记入 `plugin_key_retirements`；没有它的库什么都不变，可以重跑。它记过的返利和签到奖励作为 `plugin_credit` 留在账本里，余额不变。
+
 ### 插件界面只用代码写（进行中，分支 `feat/plugin-ui-code-only`；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
 
 核心与 SDK 先加上 native 表单在后端需要的部分，旧的 schema 表单在第一方插件迁完之前照常工作：
@@ -25,7 +33,6 @@
 
 - mailer：新建界面工程；`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码。
 - codex：设置（`user_agent`、`originator`）改由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件。
-- growth：设置改由 `GrowthSettings` 显示（两个分节，关掉的分节隐藏其字段）；数值的上下限、类型和未知键由插件拒绝，`hostUICompat` 升到 `^3.20`。
 - guard：设置改由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`）；webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`），`hostUICompat` 升到 `^3.20`。
 - 四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，其余为 `[]`。
 - `@sub2api/ui`：`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
@@ -48,7 +55,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - 八个 API Key 类插件（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai）跟进：`ValidateCredentials` 拒绝表单不会发的键（`unknown`；openai 只另外允许 `organization`、`project`，`azure_deployment` 只另外允许 `api_version`），黄金样例里"带其它字段的合法凭证"一条相应声明为预期差异；基础地址路径里的空格由转成 `%20` 改为拒绝；openai 去掉包在标准平台外的一层，API Key 上限与组织 ID、项目 ID 的规则写在 `Spec.Fields` 上（错误码随 `fieldcheck`：不是字符串报 `type`、超长报 `maxLength`、字符不对报 `pattern`，原来都是 `pattern`；组织 ID、项目 ID 为 `null` 时由忽略改为报 `type`），黄金样例改为回放插件实际的 `ValidateCredentials`；测试改用 `apikey/apikeytest` 与 `@sub2api/ui/testing`。
 - bedrock、vertex：表单的分节改用 `SFormSection`，props 改用 `nativeAccountFormProps`，bedrock 的到期时间改用 `SDateTimeInput`，`vertex_apikey` 改为直接用 `createApiKeyForm`（字段、文案、校验、等宽字体不变）；spec 改用 `@sub2api/ui/testing`。bedrock 不认识的账号类型不再当作 `bedrock_apikey` 显示。bedrock 拒绝表单没有的键（同下面的 vertex；三种类型各按原 schema 的键）。vertex 拒绝表单没有声明的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和核心续期写回的 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
 - volcengine：apikey 表单的“素材库（可选）”一节补回原表单的说明（迁移时丢了）；relay 表单的素材库一节和兼容配置一节改用 `SFormSection`（兼容配置 `collapsed`），props 改用 `nativeAccountFormProps`。`api_prefix`、`video_api_prefix` 里的空白只在保存时拒绝：此前请求时读已存的前缀也查空白，含 `\v`、不换行空格等的已存前缀每次请求都报错。两个账号类型拒绝表单没有的键（代替原 schema 的 `additionalProperties:false`，错误码 `unknown`，`apikey.Spec.Fields` 声明素材库字段与 relay 的端点、前缀）。
-- mailer、codex、growth、guard：数字框改用 `bindNumber`（清空仍是不发该键），设置解析改用 `fieldcheck.DecodeSettings`、清单测试改用 `pluginsdktest.SettingsSecrets`，spec 改用 `@sub2api/ui/testing`；字段、错误码与路径不变。growth 的设置不是 JSON 对象时，错误文案由 `settings must be a JSON object` 改为与其它插件相同的 `settings must be a JSON object / 设置必须是 JSON 对象`。
+- mailer、codex、guard：数字框改用 `bindNumber`（清空仍是不发该键），设置解析改用 `fieldcheck.DecodeSettings`、清单测试改用 `pluginsdktest.SettingsSecrets`，spec 改用 `@sub2api/ui/testing`；字段、错误码与路径不变。
 
 ### 插件界面只用代码写：云厂商插件的账号表单
 
@@ -59,7 +66,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 
 - 核心不再读、不再校验 JSON Schema 表单：删掉 `GET /account-types/:plugin_key/:type/form`；`GET /plugins/:key/settings` 不再返回 `schema`、`ui_schema`；保存账号凭证只由插件的 `ValidateCredentials` 把关，保存插件设置只由插件的 `ValidateSettings`（可选）把关；插件包不再打包、核心不再提供 `forms/`。`has_settings` 只对 native 设置为 true。
 - 清单检查：账号表单或设置的 `form.mode: "schema"`、页面的 `type: "table" | "form"` 上传时报 `unsupported`；`manifest.Form` 删掉 `schema`、`uiSchema`，`manifest.Page` 删掉 `source`、`columns`、`schema`、`submit`、`search`、`create`，`check.Warnings` 删除。`sub2api-plugin` 严格读清单，旧字段报 unknown field。
-- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“页面不可用”。内置插件随核心升级；非内置插件（relay、guard、growth、payment、azure-openai、vertex、bedrock）要管理员装上新版本。
+- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“页面不可用”。内置插件随核心升级；非内置插件（relay、guard、payment、azure-openai、vertex、bedrock）要管理员装上新版本。
 - SDK：`apikey.Spec.Fields` 为 `nil` 时也拒绝 `api_key`、`base_url` 以外的键（此前 `nil` 不检查）；新增 `Spec.NoBaseURL`（vertex_apikey 用它拒绝 `base_url`，替代插件里多包的一层 `Only`）。
 - 界面包 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升到 4.0.0（`HOST_UI_VERSION`），删掉 `SchemaForm`、`SchemaField` 等 schema 导出；控制台删掉声明式表单、表格、表单页的渲染。全部带原生界面的第一方插件 `hostUICompat` 改为 `^4.0`。
 - 第三方插件作者：表单与页面只能用 native（受信任发布者）或 iframe 写；设置的密钥在 `ui.settings.secrets` 里声明。
@@ -92,8 +99,8 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 - **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件逐个装上新版本。
 - **旧插件包装不上。** 按旧契约构建的包以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心；控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），插件列表和插件详情显示拒绝原因（`refusal`）。拒绝发生在两个时点：
   - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
-  - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、growth、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
-- **非内置插件升级后停用，直到装上新版本。** 内置插件随核心镜像升级（anthropic、openai、gemini、moderation、codex 启用；volcengine、mailer、dynweight、newapi、sub2api、typesafe 只安装，见 `deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）。其余插件——relay、guard、growth、payment，以及装过的 azure_openai、vertex、bedrock——的旧版本在新核心上加载被拒，它们的账号不可用、功能不运行，直到逐个装上新版本。**guard 停着期间它的请求检查静默不运行**：没加载的插件不注册钩子，请求照常放行，只有插件列表上能看到拒绝原因。
+  - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
+- **非内置插件升级后停用，直到装上新版本。** 内置插件随核心镜像升级（anthropic、openai、gemini、moderation、codex 启用；volcengine、mailer、dynweight、newapi、sub2api、typesafe 只安装，见 `deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）。其余插件——relay、guard、payment，以及装过的 azure_openai、vertex、bedrock——的旧版本在新核心上加载被拒，它们的账号不可用、功能不运行，直到逐个装上新版本。**guard 停着期间它的请求检查静默不运行**：没加载的插件不注册钩子，请求照常放行，只有插件列表上能看到拒绝原因。
 - **重装 relay、azure_openai 时审查多一项 `accounts.credentials`**：声明了账号类型就必须申请它（CONTRACTS §112.12）。develop 上这两个插件的清单只有 `platform.register`。内置的 anthropic、openai、gemini 清单同样新增了这一项，由内置同步自动批准；vertex、bedrock、codex、volcengine 原本就有。codex、volcengine 的清单去掉了 `net`，审查里少了这一项。
 - **网关也要换。** 插件包不再依赖主节点是网关二进制的改动，单发核心不会生效（核心只改了 `package_gone` 的文案）。网关滚动更新期间不要上传插件：旧网关节点上的上传仍要推主节点，主节点换新后会被拒；旧网关的主节点取不到在新网关节点上传的包。全部换完再上传、启用。
 
@@ -106,7 +113,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 
 - **导出存量的跨平台协议转换**：升级后跨平台转换默认关闭，迁移不回填，依赖它的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启；新字段升级后才存在，没法提前配置。升级前按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。原生请求、同一平台内的转换、声明了多个平台的账号类型（volcengine）不受影响。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）。迁移 0107 把全局层的值搬进网关设置，**分组层的值丢弃**；升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。
-- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 7 个官方插件用数据库：anthropic、dynweight、growth、guard、moderation、payment、volcengine）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
+- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 6 个官方插件用数据库：anthropic、dynweight、guard、moderation、payment、volcengine）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
 - **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样）。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
 - **检查旧策略下留下的未结算记录**（只读）：`SELECT count(*) FROM usage_logs WHERE billing_status IN ('pending','failed') AND expr_hash = '';` 结果不为 0，表示有“免费放行”下留下、还没结算完的记录。升级后它们不会被当作免费：结算报错，计入重试次数，用完重试次数后停在 `failed`，不会自动处理，需要管理员处理。
 - **进行中的 Codex 授权要重来**：codex 0.2.0 的开始路由要 `proxy_ticket`，升级前开始、没完成的设备码或 Sign in with Codex 授权在升级后重新开始。
@@ -131,7 +138,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 
 #### 插件版本
 
-全部 `hostCompat >=0.1.304 <0.2.0`（以各插件 `manifest.json` 为准；`next/plugins/released.json` 发布后按测试说明重写）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.2.0、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），newapi / sub2api / typesafe 0.1.0（首发，内置只安装），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。codex 发给上游和授权服务器的 `User-Agent` 是 `sup2api-codex/<版本>`，随之从 `sup2api-codex/0.1.11` 变成 `sup2api-codex/0.2.0`。
+全部 `hostCompat >=0.1.304 <0.2.0`（以各插件 `manifest.json` 为准；`next/plugins/released.json` 发布后按测试说明重写）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.2.0、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），newapi / sub2api / typesafe 0.1.0（首发，内置只安装），以及只因 SDK 重新构建的 dynweight 0.5.12、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。codex 发给上游和授权服务器的 `User-Agent` 是 `sup2api-codex/<版本>`，随之从 `sup2api-codex/0.1.11` 变成 `sup2api-codex/0.2.0`。
 
 ### 插件按归属收到账号的全部信息，删除两个账号授权（核心、SDK、12 个平台插件、控制台；迁移 0116）
 
