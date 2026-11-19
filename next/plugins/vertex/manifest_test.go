@@ -10,8 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
-
 	"github.com/Sub2API-Devs/sup2api/next/plugins/vertex/internal/vertex"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
@@ -35,27 +33,22 @@ func TestManifestPassesCoreChecks(t *testing.T) {
 // wantType is what the manifest must declare of an account type
 // (docs/DESIGN-2026-11-17-CLOUD-PROVIDERS.md §7).
 type wantType struct {
-	id, form, authEN, authZH string
-	sensitive                []string
-	refresh                  bool
-	// credentialFields are the schema properties besides project_id and
-	// location; hidden are those the form does not show.
-	credentialFields, hidden []string
-	required                 string
+	// component is the native account form (ui/native/src/entry.ts).
+	id, component, authEN, authZH string
+	// sensitive: the secret the form shows (masked when read back), and the
+	// access token the core writes for a key file type.
+	sensitive []string
+	refresh   bool
 }
-
-var tokenFields = []string{"access_token", "expires_at", "token_for"}
 
 var wantTypes = []wantType{
-	{vertex.TypeServiceAccount, "sa", "Service Account", "服务账号", []string{"service_account_json", "access_token"}, true,
-		append([]string{"service_account_json"}, tokenFields...), tokenFields, "service_account_json"},
-	{vertex.TypeAuthorizedUser, "authorized_user", "User Credentials", "用户凭证", []string{"authorized_user_json", "access_token"}, true,
-		append([]string{"authorized_user_json"}, tokenFields...), tokenFields, "authorized_user_json"},
-	{vertex.TypeAPIKey, "apikey", "API Key", "API Key", []string{"api_key"}, false, []string{"api_key"}, nil, "api_key"},
+	{vertex.TypeServiceAccount, "VertexKeyFileForm", "Service Account", "服务账号", []string{"service_account_json", "access_token"}, true},
+	{vertex.TypeAuthorizedUser, "VertexKeyFileForm", "User Credentials", "用户凭证", []string{"authorized_user_json", "access_token"}, true},
+	{vertex.TypeAPIKey, "VertexApiKeyForm", "API Key", "API Key", []string{"api_key"}, false},
 }
 
-// TestManifestShape pins manifest.json and the forms to the design and to
-// the constants the code uses.
+// TestManifestShape pins manifest.json to the design and to the constants
+// the code uses.
 func TestManifestShape(t *testing.T) {
 	dec := json.NewDecoder(bytes.NewReader(manifestJSON))
 	dec.DisallowUnknownFields()
@@ -72,25 +65,27 @@ func TestManifestShape(t *testing.T) {
 	if m.Name["en"] == "" || m.Name["zh"] == "" || m.Description["en"] == "" || m.Description["zh"] == "" {
 		t.Fatal("name and description need en and zh")
 	}
-	// An ordinary forwarding plugin: no platform, routes, jobs, UI or
-	// database of its own.
+	// An ordinary forwarding plugin: no platform, routes, jobs or database
+	// of its own; its UI is the account forms.
 	if len(m.Capabilities) != 1 || m.Capabilities[0].ID != manifest.CapPlatformAdapter {
 		t.Fatalf("capabilities = %+v", m.Capabilities)
 	}
-	if len(m.Platforms) != 0 || len(m.Routes) != 0 || m.UI != nil || m.Database != nil || len(m.UserPermissions) != 0 {
+	if len(m.Platforms) != 0 || len(m.Routes) != 0 || m.Database != nil || len(m.UserPermissions) != 0 {
 		t.Fatalf("the manifest declares more than account types: %+v", m)
+	}
+	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" || m.UI.Settings != nil || len(m.UI.Slots) != 0 || m.HostUICompat != "^3.20" {
+		t.Fatalf("ui = %+v, hostUICompat = %q", m.UI, m.HostUICompat)
 	}
 
 	if len(m.AccountTypes) != len(wantTypes) {
 		t.Fatalf("accountTypes = %d", len(m.AccountTypes))
 	}
-	files := packageFiles(t)
 	for i, want := range wantTypes {
 		at := m.AccountTypes[i]
 		if at.ID != want.id {
 			t.Fatalf("accountTypes[%d] = %s, want %s", i, at.ID, want.id)
 		}
-		if at.Form.Mode != "schema" || at.Form.Schema != "forms/"+want.form+".schema.json" || at.Form.UISchema != "forms/"+want.form+".ui.json" {
+		if at.Form.Mode != "native" || at.Form.Component != want.component || at.Form.Schema != "" || at.Form.UISchema != "" {
 			t.Errorf("%s form = %+v", at.ID, at.Form)
 		}
 		// One entry in the "new account" dialog, switched by auth method.
@@ -126,7 +121,10 @@ func TestManifestShape(t *testing.T) {
 		if !slices.Equal(at.DefaultModels, m.AccountTypes[0].DefaultModels) {
 			t.Errorf("%s default models differ from %s", at.ID, m.AccountTypes[0].ID)
 		}
-		checkForm(t, want, files[at.Form.Schema], files[at.Form.UISchema])
+	}
+	// The forms' default location of a key file account (ui/native/src/fields.ts).
+	if vertex.LocationGlobal != "global" {
+		t.Errorf("LocationGlobal = %q: update ui/native/src/fields.ts with it", vertex.LocationGlobal)
 	}
 
 	perms := map[string]manifest.HostPermission{}
@@ -137,7 +135,7 @@ func TestManifestShape(t *testing.T) {
 		perms[perm.ID] = perm
 	}
 	// No "net": the core sends the upstream and token requests.
-	if len(perms) != 1 || perms["platform.register"].ID == "" {
+	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["ui.native"].ID == "" {
 		t.Errorf("host permissions = %v", perms)
 	}
 	// externalServices is googleapis.com: the global and the regional
@@ -148,67 +146,6 @@ func TestManifestShape(t *testing.T) {
 	if !slices.Equal(m.ExternalServices, []string{"googleapis.com"}) {
 		t.Errorf("externalServices = %v, want [googleapis.com]", m.ExternalServices)
 	}
-}
-
-// checkForm pins a form: a closed schema whose properties are exactly the
-// fields the plugin reads, with the token fields present but hidden (the
-// editor sends the whole credential object back, so they must be allowed).
-func checkForm(t *testing.T, want wantType, schema, ui []byte) {
-	t.Helper()
-	if len(schema) == 0 || len(ui) == 0 {
-		t.Fatalf("%s: form files missing", want.id)
-	}
-	s := gjson.ParseBytes(schema)
-	if s.Get("additionalProperties").Type != gjson.False || compact(s.Get("required").Raw) != `["`+want.required+`"]` {
-		t.Errorf("%s schema additionalProperties/required = %s %s", want.id, s.Get("additionalProperties").Raw, s.Get("required").Raw)
-	}
-	var props []string
-	s.Get("properties").ForEach(func(k, _ gjson.Result) bool { props = append(props, k.String()); return true })
-	slices.Sort(props)
-	wantProps := append(slices.Clone(want.credentialFields), "location", "project_id")
-	slices.Sort(wantProps)
-	if !slices.Equal(props, wantProps) {
-		t.Errorf("%s schema properties = %v, want %v", want.id, props, wantProps)
-	}
-	// The patterns are the plugin's own, with the empty string allowed.
-	if s.Get("properties.project_id.pattern").String() != `^([a-z][a-z0-9-]{4,28}[a-z0-9])?$` ||
-		s.Get("properties.location.pattern").String() != `^([a-z0-9-]{2,32})?$` {
-		t.Errorf("%s project/location patterns = %s %s", want.id, s.Get("properties.project_id.pattern"), s.Get("properties.location.pattern"))
-	}
-	wantDefault := ""
-	if want.refresh {
-		wantDefault = vertex.LocationGlobal
-	}
-	if s.Get("properties.location.default").String() != wantDefault {
-		t.Errorf("%s location default = %q, want %q", want.id, s.Get("properties.location.default").String(), wantDefault)
-	}
-	if want.refresh && s.Get("properties.expires_at.type").String() != "integer" {
-		t.Errorf("%s expires_at must be an integer", want.id)
-	}
-	u := gjson.ParseBytes(ui)
-	if u.Get(want.required+".ui:widget").String() != "secret" {
-		t.Errorf("%s: %s must be a secret", want.id, want.required)
-	}
-	for _, p := range props {
-		isHidden := u.Get(p+".ui:widget").String() == "hidden"
-		if isHidden != slices.Contains(want.hidden, p) {
-			t.Errorf("%s: %s hidden = %v", want.id, p, isHidden)
-		}
-		if isHidden {
-			continue
-		}
-		if title := u.Get(p + ".ui:title"); title.Get("en").String() == "" || title.Get("zh").String() == "" {
-			t.Errorf("%s: %s needs an en and zh title", want.id, p)
-		}
-	}
-}
-
-func compact(raw string) string {
-	var buf bytes.Buffer
-	if json.Compact(&buf, []byte(raw)) != nil {
-		return raw
-	}
-	return buf.String()
 }
 
 // TestManifestServes runs the plugin with its embedded manifest.
@@ -222,7 +159,8 @@ func TestManifestServes(t *testing.T) {
 	}
 }
 
-// packageFiles collects the files a package would carry.
+// packageFiles collects the files a package would carry (the native UI's
+// sources are not packaged, only its build output).
 func packageFiles(t *testing.T) map[string][]byte {
 	t.Helper()
 	files := map[string][]byte{}
@@ -232,7 +170,7 @@ func packageFiles(t *testing.T) map[string][]byte {
 			return err
 		case p == ".":
 			return nil
-		case strings.HasPrefix(d.Name(), "."):
+		case strings.HasPrefix(d.Name(), ".") || d.Name() == "node_modules":
 			if d.IsDir() {
 				return filepath.SkipDir
 			}

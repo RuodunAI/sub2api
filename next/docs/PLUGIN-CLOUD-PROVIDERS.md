@@ -101,6 +101,8 @@ Azure 上的“模型”是你自己起名的**部署**。
 
 ### 4.2 表单字段
 
+表单是插件自己的原生界面（`plugins/vertex/ui/native`：服务账号与用户凭证共用 `VertexKeyFileForm`，API Key 用 `VertexApiKeyForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。核心续期时写回的 `access_token`、`expires_at`、`token_for` 不在表单上显示，保存时原样带回。
+
 服务账号、用户凭证：
 
 | 字段 | 含义 | 默认 | 例子 |
@@ -173,6 +175,8 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 **三种都不会自动续期**。短期 Key 或临时凭证到期后上游拒绝请求，账号被禁用或冷却，要在账号上换新凭证并重新启用。
 
 ### 5.2 表单字段
+
+表单是插件自己的原生界面（`plugins/bedrock/ui/native`，三种类型共用 `BedrockAccountForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。
 
 各类型自己的凭证字段：
 

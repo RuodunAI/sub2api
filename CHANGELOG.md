@@ -18,6 +18,11 @@
 - `GET /plugins` 的 `has_settings` 改为"当前版本声明了 `ui.settings`"，不再只认 schema 模式。
 - 清单检查：native 设置要有 `component` 或 `page`。
 
+### 插件界面只用代码写：云厂商插件的账号表单
+
+- bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。
+- vertex：三种账号类型的表单改为原生组件 `VertexKeyFileForm`（服务账号、用户凭证）和 `VertexApiKeyForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（密钥文件类型的区域 `global`）和文案不变；核心续期写回的 `access_token`、`expires_at`、`token_for` 不显示、保存时原样带回；编辑已有账号时不再自动补区域（保存时插件照旧补上）。密钥文件 32768 个字符的上限从 schema 搬进插件，其余约束原本就由插件检查，有测试逐条保留。
+
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0116（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行），插件迁移只有 volcengine 的 0003。

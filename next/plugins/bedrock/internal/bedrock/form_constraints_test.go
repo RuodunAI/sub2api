@@ -1,0 +1,73 @@
+package bedrock
+
+import (
+	"strings"
+	"testing"
+)
+
+// TestFormSchemaConstraintsStillRefused keeps every constraint of the JSON
+// Schema forms the native account form replaced (forms/{apikey,aksk,sts}
+// .schema.json, deleted with UI 4.0): for each one, an input that schema
+// refused, written out here, is still refused by ValidateCredentials at the
+// same field. The core no longer checks a schema, so this is the save's only
+// check besides the SDK's refusal of unknown keys.
+func TestFormSchemaConstraintsStillRefused(t *testing.T) {
+	type input struct {
+		name            string
+		creds, settings map[string]any
+		field           string
+	}
+	// Constraints of the credential fields shared by aksk and sts.
+	accessKey := func(base map[string]any) []input {
+		return []input{
+			{"access_key_id required", with(base, map[string]any{fieldAccessKeyID: nil}), nil, fieldAccessKeyID},
+			{"access_key_id type string", with(base, map[string]any{fieldAccessKeyID: 1234567890123456}), nil, fieldAccessKeyID},
+			{"access_key_id pattern (lower case)", with(base, map[string]any{fieldAccessKeyID: "akiaiosfodnn7example"}), nil, fieldAccessKeyID},
+			{"access_key_id pattern (15 characters)", with(base, map[string]any{fieldAccessKeyID: "AKIA12345678901"}), nil, fieldAccessKeyID},
+			{"access_key_id pattern (129 characters)", with(base, map[string]any{fieldAccessKeyID: strings.Repeat("A", 129)}), nil, fieldAccessKeyID},
+			{"secret_access_key required", with(base, map[string]any{fieldSecretAccessKey: nil}), nil, fieldSecretAccessKey},
+			{"secret_access_key minLength 1", with(base, map[string]any{fieldSecretAccessKey: ""}), nil, fieldSecretAccessKey},
+			{"secret_access_key maxLength 1024", with(base, map[string]any{fieldSecretAccessKey: strings.Repeat("s", 1025)}), nil, fieldSecretAccessKey},
+			{"secret_access_key pattern (space)", with(base, map[string]any{fieldSecretAccessKey: "wJalr XUtn"}), nil, fieldSecretAccessKey},
+			{"secret_access_key pattern (non-ASCII)", with(base, map[string]any{fieldSecretAccessKey: "wJalrXUtné"}), nil, fieldSecretAccessKey},
+		}
+	}
+	// Constraints of the settings every type shares.
+	settings := func(creds map[string]any) []input {
+		return []input{
+			{"region pattern (upper case)", creds, settingsOf("US-EAST-1", ""), fieldRegion},
+			{"region pattern (no number)", creds, settingsOf("us-east", ""), fieldRegion},
+			{"region pattern (a host)", creds, settingsOf("us-east-1.example.com", ""), fieldRegion},
+			{"inference_profile_prefix enum", creds, settingsOf("us-east-1", "cn"), fieldProfilePrefix},
+			{"inference_profile_prefix enum (with the dot)", creds, settingsOf("us-east-1", "global."), fieldProfilePrefix},
+		}
+	}
+	cases := map[string][]input{
+		TypeAPIKey: append([]input{
+			{"api_key required", map[string]any{}, nil, fieldAPIKey},
+			{"api_key type string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey},
+			{"api_key minLength 8", map[string]any{fieldAPIKey: "ABSK123"}, nil, fieldAPIKey},
+			{"api_key maxLength 2048", map[string]any{fieldAPIKey: strings.Repeat("k", 2049)}, nil, fieldAPIKey},
+			{"api_key pattern (space)", map[string]any{fieldAPIKey: "ABSK Qmed rock"}, nil, fieldAPIKey},
+		}, settings(apiKeyCreds)...),
+		TypeAccessKey: append(accessKey(akskCreds), settings(akskCreds)...),
+		TypeSTS: append(append(accessKey(stsCreds),
+			input{"session_token required", with(stsCreds, map[string]any{fieldSessionToken: nil}), nil, fieldSessionToken},
+			input{"session_token minLength 1", with(stsCreds, map[string]any{fieldSessionToken: ""}), nil, fieldSessionToken},
+			input{"session_token maxLength 8192", with(stsCreds, map[string]any{fieldSessionToken: strings.Repeat("t", 8193)}), nil, fieldSessionToken},
+			input{"session_token pattern (line break)", with(stsCreds, map[string]any{fieldSessionToken: "IQoJ\nb3Jp"}), nil, fieldSessionToken},
+			input{"session_expires_at format date-time", stsCreds, map[string]any{fieldSessionExpiresAt: "2026-11-20 10:30"}, fieldSessionExpiresAt},
+		), settings(stsCreds)...),
+	}
+	for typ, inputs := range cases {
+		for _, in := range inputs {
+			t.Run(typ+"/"+in.name, func(t *testing.T) {
+				resp, _ := validate(t, typ, in.creds, in.settings)
+				got := fieldErrors(resp)
+				if len(got) != 1 || !strings.HasPrefix(got[0], in.field+":") {
+					t.Fatalf("errors = %v, want one at %s", got, in.field)
+				}
+			})
+		}
+	}
+}
