@@ -8607,7 +8607,7 @@ ALTER TABLE usage_logs
 | `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`，粘贴的 `/v1` 去掉） | `guardedSettings` 只许官方地址、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
 
 - 默认模型：newapi、sub2api 不写（账号服务所有模型；"拉取模型"读站点 `GET /v1/models` 的 `data[].id`）；typesafe 是 `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`（"拉取模型"读 `GET /v1/models` 的 `models[].name`）。
-- 账号测试：核心按账号开放的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的：newapi、sub2api 依次是 OpenAI Chat（`gpt-4o-mini`）、Messages（`claude-haiku-4-5`）、Gemini `generateContent`（`gemini-2.5-flash-lite`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。
+- 账号测试按绑定的协议测（§122）：核心按账号开放、绑定的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的；newapi、sub2api 用 `standard.Merge` 收集各份预设的全部测试（§122.3 的 OpenAI、Gemini 各协议，Messages `claude-haiku-4-5`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。账号测试不查价、不计费。
 
 ### 119.2 服务的平台与协议
 

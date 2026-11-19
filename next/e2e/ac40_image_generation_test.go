@@ -44,7 +44,8 @@ var (
 // times the group rate. A multipart edits request is a 400 in the gateway
 // with a free invalid_request record and no account; codex and volcengine
 // accounts do not serve the endpoint; a model without a price is refused
-// (missing_price_policy reject, the default) before any upstream call.
+// with 403 model_price_not_configured before any upstream call (CONTRACTS
+// §17.3: no price is always an error).
 func TestAC40_ImageGeneration(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()

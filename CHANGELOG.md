@@ -68,8 +68,7 @@
 - **迁移 0112–0115**：0112 给 `usage_logs` 加 `image_input_tokens`、`image_output_tokens` 两列（常量默认值，只改目录；`lock_timeout` 10 秒，拿不到锁迁移失败、重试即可）；0113 改 `account_balances`（`updated_at` 可空、加 `unlimited`、删 `source`；线上这张表是空的）；0114 把 `account_balances.currency` 从 `VARCHAR(3)` 改为 `text`（只改目录）；0115 给 `accounts` 加可空列 `last_test_protocol`（只改目录）。四条都不妨碍旧核心读写，回退仍按上面“单向”的做法。
 - **三个新内置插件默认不启用**：newapi、sub2api、typesafe 随镜像安装、批准，但不启用，升级后什么都不发生；要用时在插件页启用，再建账号（typesafe 启用后各节点多一个 `POST /v1/systemone`）。key `newapi`、`sub2api`、`typesafe` 和平台 id `typesafe` 从此保留给官方插件，没有官方签名的手动上传不能占用。
 - **清单的 `accountTypes[].balance.currency` 删除**：币种由插件每次读余额时给出。核心忽略这个未知字段；`sub2api-plugin` 严格解码，旧清单带它时 `build`、`pack` 等报未知字段，删掉这一行即可。
-- **升级前给 `gpt-image-2-codex`（Codex 账号）和 API Key 账号会用到的生图模型录入价格。**
-- **生图模型要先录价格**：没有价格的生图模型按 `/settings/billing` 的 `missing_price_policy` 处理，默认 `reject` 时回 403 `model_price_not_configured`。要按图片 token 正确计费，给生图模型录表达式价格（变量 `img`、`img_o`，参考价见 CONTRACTS §118.6）；models.dev 同步来的生图价只有文字价，会少收，要改成表达式价格。
+- **生图模型要先录价格**：没有价格的生图模型与其他模型一样回 403 `model_price_not_configured`（缺价一律报错，见上面）。Responses 里用生图工具的请求按客户请求的模型计价，生图工具的 token 计入它（CONTRACTS §118.10），应答回显的 `gpt-image-2-codex` 等生图模型不需要价格。要按图片 token 正确计费，给生图模型录表达式价格（变量 `img`、`img_o`，参考价见 CONTRACTS §118.6）；models.dev 同步来的生图价只有文字价，会少收，要改成表达式价格。
 - **协议绑定“指定”过的 OpenAI 账号要手动勾选生图协议**：`protocols` 为空（默认）的 OpenAI API Key 账号升级后自动服务两个生图端点；指定过协议的账号不会自动开放，要的话在“协议与模型”里勾上 `openai.images`、`openai.images_edit`（CONTRACTS §118.5）。volcengine 账号在 openai 平台上改为显式端点子集，不服务 OpenAI 生图。
 - 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见下文“对运维”）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
 
@@ -297,7 +296,7 @@
 - **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，`-1` 为不限，`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。
-- **模拟上游与 e2e**：mock 新增两个站点的余额接口、OpenAI 生图接口、TypeSafe 主机名下的模型列表（`api.typesafe.ai` 加进 e2e 网络别名）；AC30 加 newapi、sub2api、typesafe 三行和 New API 账号转发 Jev，新增 AC39（账号余额）、AC40（OpenAI 生图）、AC41（Responses 生图工具另计）；mock 的 Responses 对 `image_generation` 工具回 `tools` 与 `tool_usage.image_gen`。
+- **模拟上游与 e2e**：mock 新增两个站点的余额接口、OpenAI 生图接口、TypeSafe 主机名下的模型列表（`api.typesafe.ai` 加进 e2e 网络别名）；AC30 加 newapi、sub2api、typesafe 三行和 New API 账号转发 Jev，新增 AC39（账号余额）、AC40（OpenAI 生图）、AC41（Responses 生图工具的 token 计入请求模型，一条记录、一笔扣费、没有另计分项）；mock 的 Responses 对 `image_generation` 工具回 `tools`（模型 `gpt-image-2-codex`）与 `tool_usage.image_gen`。
 
 ### 账号余额接通（核心；迁移 0113、0114）
 
@@ -311,10 +310,9 @@
 
 - 内置 openai 平台新增 `POST /v1/images/generations`、`POST /v1/images/edits`（协议 `openai.images`、`openai.images_edit`）。**只收 JSON 请求体**，表单上传（multipart）形式在网关回 400 `request body is not valid JSON`、留一条免费记录，暂不支持。OpenAI API Key 账号可转发；codex、azure_openai、volcengine 的账号不服务这两个端点。
 - 用量记录图片输入 / 输出 token（迁移 0112，`usage_logs` 两列，`/usage` 列表与详情返回），价格表达式变量 `img`、`img_o` 生效：用到时从 `p`、`c` 里扣出，没用到时按文字价算，不会免费也不会重复计。控制台用量详情显示图片 token 行，价格试算可填 `img`、`img_o`。
-- 没有价格的生图模型按 `missing_price_policy` 处理（默认拒绝）；参考价见 CONTRACTS §118.6，models.dev 同步的生图价只有文字价，会少收。Responses 生图工具的生图模型没有价格时：`missing_price_policy=reject` 下对话部分照常扣费、生图部分未计费，记录带 `additional_unpriced` 异常标记并打 WARN；`free` 下同样只计对话部分、没有标记。
-- 已知限制：客户端在请求里给生图工具指定的 `model` 不受分组模型白名单限制（CONTRACTS §120.4）。
+- 没有价格的生图模型回 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3）；参考价见 CONTRACTS §118.6，models.dev 同步的生图价只有文字价，会少收。
 - volcengine 账号在 openai 平台上改为显式端点子集（与之前实际服务的相同），不服务 OpenAI 生图。openai 插件默认模型加 gpt-image-2、gpt-image-1.5、gpt-image-1-mini。已经手工指定过协议的 OpenAI 账号升级后要手动勾选两个生图协议。
-- Responses（含 WebSocket）请求使用 `image_generation` 工具时，生图部分按生图模型另计（读 `tool_usage.image_gen`；模型取应答 `tools` 回显，其次请求，默认 `gpt-image-2`）；使用记录详情列出附加用量。管理员需给 `gpt-image-2-codex` 等生图模型录价格（CONTRACTS §118.10、§120）。用量规则的附加用量支持对象形式（`object`、`modelSources`、`defaultModel`）。WebSocket 每一轮现在也记录附加用量。ChatGPT（Codex 登录）账号经 Responses 的生图工具可以生图（2026-11-18 在设备码账号上实测）。
+- Responses（含 WebSocket）请求使用 `image_generation` 工具时，工具的 token（`tool_usage.image_gen`）计入这条请求的用量，按客户请求的模型计价（见上文“计费：一条请求一个计价模型”，CONTRACTS §118.10）。ChatGPT（Codex 登录）账号经 Responses 的生图工具可以生图（2026-11-18 在设备码账号上实测）。
 
 ### volcengine 0.13.0：删除旧的视频任务表，素材库调用改由核心经账号代理发出（插件迁移 0003）
 

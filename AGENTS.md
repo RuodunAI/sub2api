@@ -155,7 +155,7 @@ cd next/plugins/<name> && go test -count=1 ./...
 
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
 - 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
-- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（十二个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据），AC39 是账号余额，AC40 是 OpenAI 生图，AC41 是 Responses 生图工具另计。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
+- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（十二个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据），AC39 是账号余额，AC40 是 OpenAI 生图，AC41 是 Responses 生图工具的 token 计入请求模型。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
 
 ### 控制台（`next/web`，Node 24，npm）
 

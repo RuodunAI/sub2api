@@ -128,10 +128,6 @@ func TestResponsesImageTool(t *testing.T) {
 		num(get(m, "tool_usage", "image_gen", "input_tokens")) != 39 || len(get(m, "output").([]any)) != 2 || num(get(m, "usage", "input_tokens")) != 120 {
 		t.Fatalf("responses with the image tool = %v", m)
 	}
-	m = decode(t, post(t, srv, "/v1/responses", auth, `{"model":"gpt-x","input":"`+imageToolNoEchoModel+`","tools":[{"type":"image_generation","model":"gpt-image-1"}]}`))
-	if _, ok := get(m, "tools").([]any)[0].(map[string]any)["model"]; ok {
-		t.Fatalf("echo without model = %v", m)
-	}
 	if m := decode(t, post(t, srv, "/v1/responses", auth, `{"model":"gpt-x","input":"hi"}`)); get(m, "tool_usage") != nil || get(m, "tools") != nil {
 		t.Fatalf("responses without the tool = %v", m)
 	}

@@ -122,13 +122,10 @@ func orDefault(v, def json.RawMessage) json.RawMessage {
 	return def
 }
 
-// Responses with the image_generation tool. The echo names the model
-// imageToolEchoModel unless the request carries imageToolNoEchoModel (then
-// the echo has no model and the core falls back to the request's).
-const (
-	imageToolEchoModel   = "gpt-image-2-codex"
-	imageToolNoEchoModel = "MOCK-IMAGE-ECHO-NO-MODEL"
-)
+// imageToolEchoModel is the image model the tools echo of a Responses
+// answer names, as the Codex backend's does. The core never prices it
+// (CONTRACTS §118.10).
+const imageToolEchoModel = "gpt-image-2-codex"
 
 // imageToolUsage is response.tool_usage.image_gen of a turn using the tool.
 var imageToolUsage = map[string]any{
@@ -152,11 +149,7 @@ func imageToolOf(body []byte) ([]any, bool) {
 		if t.Type != "image_generation" {
 			continue
 		}
-		echo := map[string]any{"type": "image_generation", "quality": "auto", "size": "auto"}
-		if !strings.Contains(string(body), imageToolNoEchoModel) {
-			echo["model"] = imageToolEchoModel
-		}
-		return []any{echo}, true
+		return []any{map[string]any{"type": "image_generation", "model": imageToolEchoModel, "quality": "auto", "size": "auto"}}, true
 	}
 	return nil, false
 }
