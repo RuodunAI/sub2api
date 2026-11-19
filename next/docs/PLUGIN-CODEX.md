@@ -10,7 +10,7 @@
   2. `codex_oauth`：Sign in with Codex，Codex CLI 自己的浏览器登录（授权码 + PKCE，2026-11-17 新增，见第 14 节）。
   - ~~`chatgpt_siwc`：OpenAI 官方第三方入口 Sign in with ChatGPT · ChatGPT plan usage~~（2026-11-17 删除，见第 14 节；下文涉及 `chatgpt_siwc` 的内容只作历史记录）。
 - 守线（写进插件说明，不做技术强制）：
-  - 请求如实标明来源：`originator: sup2api`、`User-Agent: sup2api-codex/<版本>`；**不**伪装 Codex CLI 的 UA、TLS 指纹、`x-codex-*` 头，**不**注入 Codex 官方系统提示词。
+  - 请求默认如实标明来源：`originator: sup2api`、`User-Agent: sup2api-codex/<版本>`；两者可以在账号上或插件设置里由运营方自定义（第 20 节，2026-11-18 所有者决定）。插件**不**发 `x-codex-*` 头、不仿 TLS 指纹，**不**注入 Codex 官方系统提示词。
   - 仅供账号所有者自用；把多人 ChatGPT 账号做成号池对外出售违反 OpenAI 条款（付费/托管应用需先通过 OpenAI 的 Sign in with ChatGPT 候补审批）。
 - 不做：连接池/预热、`previous_response_id` 跨连接恢复。
 
@@ -26,7 +26,7 @@
 4. 换令牌：`POST https://auth.openai.com/oauth/token`，form：`grant_type=authorization_code`、`code`、`redirect_uri=https://auth.openai.com/deviceauth/callback`、`client_id`、`code_verifier` → `{id_token, access_token, refresh_token, expires_in}`。
 5. 刷新：`POST https://auth.openai.com/oauth/token`，JSON `{"client_id", "grant_type":"refresh_token", "refresh_token", "scope":"openid profile email"}`（与旧版 `backend/internal/pkg/openai/oauth.go` 一致）；refresh token 会轮换。
 6. 身份：id_token 的 `https://api.openai.com/auth` 声明里有 `chatgpt_account_id`、`chatgpt_plan_type`；`email` 在顶层。
-7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator: sup2api`、`user-agent`、`accept: text/event-stream`，请求体带 `prompt_cache_key` 时另加 `session_id` / `conversation_id`（§16）；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
+7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator`、`user-agent`（取值见第 20 节，默认 `sup2api` 与 `sup2api-codex/<版本>`）、`accept: text/event-stream`，请求体带 `prompt_cache_key` 时另加 `session_id` / `conversation_id`（§16）；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
 
 ### 2.2 Sign in with ChatGPT（`chatgpt_siwc`，已删除，见第 14 节）
 
@@ -67,9 +67,10 @@
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
   - `chatgpt_account_id`（两种类型都有）。
+  - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填；空或没有时用插件设置的值。
   - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
 - 网络权限（与 manifest 一致）：0.2.0 起没有 `net`，插件不开任何对外连接。`auth.openai.com`、`chatgpt.com` 列在 `externalServices`：授权请求是带代理票据的取回（第 19 节），上游请求、令牌刷新与重置次数请求都由核心经账号代理发出。（0.2.0 之前 `net` 只有 `auth.openai.com`，授权请求由插件直连。）不访问 `api.openai.com`，没有模型列表（控制台用 manifest 默认模型），也没有用量查询（窗口由核心从响应头采样，第 13 节）。
-- 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
+- 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话；会话盐，第 20 节）、`lock`（设备码轮询的会话锁，见上；会话盐只由一个节点生成）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
 - `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与 `chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
 - 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 页签（2026-11-17 起取代 Sign in with ChatGPT 页签；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
@@ -307,3 +308,28 @@
 - 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
 - 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
 
+## 20. 0.2.0：上游会话 id 加盐；User-Agent 与 originator 可自定义（2026-11-18，审计结论，所有者决定；无迁移，版本仍是未发布的 0.2.0）
+
+审计发现两点，所有者的决定：会话 id“加上盐进行适配”；User-Agent / originator“这个不管，但是账号上可以自定义，然后插件的设置中也可以自定义”。
+
+### 20.1 会话 id 加盐
+
+- 问题：`session_id` / `conversation_id` 原来是 `sha256("<api_key_id>:<prompt_cache_key>")`，而 `prompt_cache_key` 原样在请求体里发给上游；上游枚举小整数就能反推出我们内部的 API Key 编号。
+- 现在：`HMAC-SHA256(盐, "<api_key_id>:<prompt_cache_key>")`，取前 16 字节排成 UUID（version 8），其余不变（同一 Key 的同一会话每轮相同，不同 Key 不同，没有可用的 `prompt_cache_key` 时不发，也不读盐）。
+- 盐：集群共用一份，存在插件 KV（命名空间 `session_salt`，键 `v1`，不过期），值是 `crypto/rand.Text()`（26 个 base32 字符，约 130 位）。第一个需要它的请求在集群锁 `codex-session-salt` 下“再读一次，没有才写”，所以几个节点同时开始也只写一份；之后每个请求都读 KV（不在进程里缓存），所有节点、重启前后都用同一份。锁被别的节点拿着而盐还没写好时，这个请求回 `UNAVAILABLE`（只在第一次生成的瞬间可能出现）。盐只在插件和 KV 里，不进任何请求头、请求体、日志。
+- 为什么用 KV：codex 已有 `kv`、`lock` 授权，不加新的宿主权限，升级不用管理员重新批准；插件没有数据库 schema，为一个值加 `db.schema`、迁移和模型不值得；插件设置由管理员填写，插件写不了；`SealSecret` 每次加密结果不同，不能当盐。
+- KV 丢失（Redis 数据被清）时：下一个请求生成新盐，所有会话的上游 session 变一次，上游提示缓存的落点随之重来一次；核心的粘性绑定同在 Redis，那时也一样丢失。因为每个请求都读 KV，各节点随即都用新盐，不会分叉。
+- **未改、留给所有者决定**：会话 id 只由盐、API Key、`prompt_cache_key` 决定，不含账号。同一个客户 Key 的同一会话换到另一个 ChatGPT 账号时（换号、粘性失效），新账号收到的 `session_id` / `conversation_id` 与原账号相同，上游仍能据此把这几个 ChatGPT 账号关联到同一个客户会话。加盐只去掉了“反推内部 Key 编号”，没有去掉这一点。
+
+### 20.2 User-Agent 与 originator
+
+- 取值（每个头各自）：账号凭证里的 `user_agent` / `originator` → 插件设置的 `user_agent` / `originator` → 内置 `sup2api-codex/<版本>` / `sup2api`。空字符串（去掉首尾空白后）表示不自定义，沿用上一级。只在 `agent.go` 一处解析（`Plugin.agent`），用在这个账号发往 OpenAI 的全部请求：转发（HTTP 与 WebSocket 握手）、账号测试（`BuildTestRequest`）、令牌刷新（`BuildRefreshRequest`）、重置次数（`SendAccountRequest`）、授权（设备码申请与轮询、两种登录的换令牌）。
+- 授权时账号还不存在（重新授权也是表单里的新令牌，路由不知道是哪个账号），所以授权请求用插件设置的值，没有时用内置值。
+- 账号上：凭证的两个普通字段（不在 `sensitiveFields`，编辑时原样显示；不在 `settingsFields`，所以和令牌一起进 `credentials_json`，刷新、测试、重置读到的都是它）。`ValidateCredentials` 只做格式校验：必须是字符串、不能含控制字符（水平制表符除外，与发送前的检查相同）。原生表单 `CodexAuthForm` 多一块“客户端标识”，两个输入框，新建和编辑都有；重新授权保留它们（`mergeCredentials` 只替换令牌字段，`withAgent` 在“重新授权”撤回时保留表单里改过的值）。原生表单的凭证控制台不会自动渲染，所以这两个输入框写在插件的表单里；账号的 `extensionsSchema` 控制台没有渲染，也不进 `credentials_json`，没有用它。
+- 插件设置：清单 `ui.settings`（`mode: "schema"`，`forms/settings.schema.json` 与 `settings.ui.json`），控制台自动渲染；两个字符串，默认空，schema 的 `pattern` 只拒绝控制字符。`Configure` 去掉首尾空白后保存在进程里，各节点各自收到。
+- 现有机制查过，不能直接满足：账号请求头覆盖（CONTRACTS §108）和参数覆盖（§84）只作用在转发上，而 codex 的头全部是权威头（§112.4，所有者定的例外），覆盖改不了；刷新、测试、重置次数、授权这些请求核心按插件交回的头原样发送，不套覆盖。
+- 内置默认值、请求头黑名单没有改。
+
+### 20.3 测试
+
+`salt_test.go`（第一次请求生成并存入 KV、之后不变；同盐的两个进程算出同一个 id、换盐则变、与不加盐的值不同；请求的头、体、URL 都不含盐；没有 `prompt_cache_key` 时不生成；锁被占且未写好时 `UNAVAILABLE`、不中继）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数、授权的两个头；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）、`execute_test.go`（WebSocket 握手的会话头按盐计算）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有）、`flow.spec.ts`（`withAgent`、重新授权保留）。

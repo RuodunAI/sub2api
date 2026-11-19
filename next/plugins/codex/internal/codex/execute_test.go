@@ -220,7 +220,8 @@ func TestExecuteWebSocket(t *testing.T) {
 		`{"type":"response.create","model":"gpt-5.4","input":` + userHello + `,"stream_options":{"include_usage":true},"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 		`{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_1","input":[{"role":"user","content":"more"}],"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 	}
-	session := upstreamSessionID(7, "conv-1")
+	seedSalt(t, h, testSalt)
+	session := upstreamSessionID([]byte(testSalt), 7, "conv-1")
 	for _, typ := range accountTypes {
 		for i, turn := range turns {
 			r := relayed(t, h, execRequest(typ, ProtocolResponsesWS, turn))

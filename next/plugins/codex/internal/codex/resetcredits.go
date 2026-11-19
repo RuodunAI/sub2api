@@ -235,8 +235,8 @@ func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad
 
 // backendHeaders are the headers of a request to the ChatGPT backend's JSON
 // endpoints (reset credits).
-func backendHeaders(c credentials) map[string]string {
-	h := accountHeaders(c)
+func (p *Plugin) backendHeaders(c credentials) map[string]string {
+	h := p.accountHeaders(c)
 	h["accept"] = "application/json"
 	return h
 }
@@ -245,7 +245,7 @@ func backendHeaders(c credentials) map[string]string {
 // account, with backendHeaders. r is the backend's answer; bad is the route
 // answer when it is not a usable 2xx (r is still returned then).
 func (p *Plugin) sendBackend(ctx context.Context, id int64, c credentials, method, path string, body []byte) (r *pluginv1.ExecutionHTTPResponse, bad *pluginv1.HTTPResponse) {
-	h := backendHeaders(c)
+	h := p.backendHeaders(c)
 	if body != nil {
 		h["content-type"] = "application/json"
 	}

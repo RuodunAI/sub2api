@@ -20,6 +20,13 @@ const zh = {
     reauthHint: '重新授权成功后保存账号才会替换令牌；未完成时保存，保留原有凭证。',
     kept: '未重新授权，保存时保留原有凭证。'
   },
+  agent: {
+    title: '客户端标识',
+    userAgent: 'User-Agent',
+    userAgentHint: '这个账号发往 OpenAI 的全部请求（上游、测试、令牌刷新、用量重置）使用的 User-Agent。留空沿用插件设置，插件设置也留空时为 sup2api-codex/插件版本。授权时用插件设置的值。',
+    originator: 'originator',
+    originatorHint: '同上，originator 请求头。留空沿用插件设置，插件设置也留空时为 sup2api。'
+  },
   done: {
     title: '已授权',
     titleReauth: '已重新授权，保存账号后生效',
@@ -136,6 +143,13 @@ const en: Messages = {
     cancelReauth: 'Cancel re-authorization',
     reauthHint: 'The tokens are replaced when you save the account after re-authorizing; saving before that keeps the current credentials.',
     kept: 'Not re-authorized: saving keeps the current credentials.'
+  },
+  agent: {
+    title: 'Client identification',
+    userAgent: 'User-Agent',
+    userAgentHint: "The User-Agent of every request of this account to OpenAI (upstream, test, token refresh, usage resets). Leave empty for the plugin settings' value, or sup2api-codex/plugin version when that is empty too. Authorizations use the plugin settings' value.",
+    originator: 'originator',
+    originatorHint: "The same for the originator header. Leave empty for the plugin settings' value, or sup2api when that is empty too."
   },
   done: {
     title: 'Authorized',
