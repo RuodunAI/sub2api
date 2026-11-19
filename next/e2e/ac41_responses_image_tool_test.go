@@ -41,7 +41,11 @@ const imageToolNoEchoModel = "MOCK-IMAGE-ECHO-NO-MODEL"
 // of kind image_generation for the model the answer's tools echo names
 // (else the request's tool model, else gpt-image-2), with its price and
 // the tool's 515 image output tokens; the record's cost is the sum of both
-// parts at the group rate. Over an OpenAI API key (JSON, stream, a
+// parts at the group rate. An image model without a price leaves the
+// image part unbilled and the conversation billed: under
+// missing_price_policy reject (the default) the record carries the
+// additional_unpriced anomaly (administrators only), under free it does
+// not. Over an OpenAI API key (JSON, stream, a
 // WebSocket turn) and a codex account (a client JSON request the gateway
 // streams and gathers back, the image in it). A request without the tool
 // has no additional item.
@@ -103,6 +107,40 @@ func TestAC41_ResponsesImageTool(t *testing.T) {
 			}
 			u := e.UsageByRequest(admin, c.tn.User.UserID, g.RequestID)
 			expectImageToolUsage(t, u, c.tn.Accounts[0].ID, c.wantModel, total(c.wantModel != ""))
+		})
+	}
+
+	// An unpriced image model, named by the request's tool (the echo
+	// without a model): the setting is saved on node 1 and the request sent
+	// there (the other node learns of a save from a broadcast).
+	for _, policy := range []string{"reject", "free"} {
+		t.Run("unpriced image model, "+policy, func(t *testing.T) {
+			e := e.With(t)
+			node := *admin.Client
+			node.Base = e.NodeURLs[0]
+			prev := node.OK(t, http.MethodGet, "/settings/billing", nil).Get("missing_price_policy").String()
+			t.Cleanup(func() { node.OK(t, http.MethodPut, "/settings/billing", map[string]any{"missing_price_policy": prev}) })
+			node.OK(t, http.MethodPut, "/settings/billing", map[string]any{"missing_price_policy": policy})
+			unpriced := fmt.Sprintf("gpt-image-e2e-%s-unpriced-%s", e.RunID, policy)
+			g := e.Gateway(t, node.Base, "/v1/responses", "", map[string]any{"model": openai.Model, "input": "draw " + imageToolNoEchoModel,
+				"tools": []any{tool(unpriced)}}, map[string]string{"Authorization": "Bearer " + openai.APIKey})
+			if g.Status != 200 {
+				t.Fatalf("HTTP %d %s", g.Status, g.Body)
+			}
+			u := e.UsageByRequest(admin, openai.User.UserID, g.RequestID)
+			add := u.Get("billing_detail.additional").Array()
+			if u.Get("billing_status").String() != "billed" || len(add) != 1 || add[0].Get("model").String() != unpriced || add[0].Get("price_id").Int() != 0 {
+				t.Fatalf("unpriced image part: %s", u.Raw)
+			}
+			AssertMoney(t, "total_cost", u.Get("total_cost").String(), total(false))
+			wantAnomaly := map[string]string{"reject": "image_generation/" + unpriced, "free": ""}[policy]
+			if got := u.Get("anomalies.additional_unpriced").String(); got != wantAnomaly {
+				t.Fatalf("anomalies.additional_unpriced = %q, want %q: %s", got, wantAnomaly, u.Get("anomalies").Raw)
+			}
+			own := openai.User.OK(t, http.MethodGet, fmt.Sprintf("/me/usage/%d", u.Get("id").Int()), nil)
+			if own.Get("anomalies").Exists() {
+				t.Fatalf("/me/usage shows anomalies: %s", own.Raw)
+			}
 		})
 	}
 

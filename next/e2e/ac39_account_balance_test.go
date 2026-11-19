@@ -3,7 +3,6 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 	"testing"
@@ -55,14 +54,15 @@ func TestAC39_AccountBalance(t *testing.T) {
 		want                  balanceWant
 	}{
 		// The site's quota points as they are: no unit, no conversion.
-		{name: "newapi limited", plugin: NewAPIPlugin, want: balanceWant{amount: "1250000"}},
+		{name: "newapi limited", plugin: NewAPIPlugin, want: balanceWant{amount: "1250000.000000"}},
 		{name: "newapi limited, user quota lower", plugin: NewAPIPlugin,
-			balance: `{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, want: balanceWant{amount: "250000"}},
+			balance: `{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, want: balanceWant{amount: "250000.000000"}},
 		{name: "newapi unlimited", plugin: NewAPIPlugin, balance: `{"code":true,"data":{"total_available":0,"unlimited_quota":true}}`, want: balanceWant{unlimited: true}},
-		{name: "sub2api legacy quota", plugin: Sub2APIPlugin, want: balanceWant{amount: "7.5", currency: "USD"}},
-		{name: "sub2api without unit", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":7.5}`, want: balanceWant{amount: "7.5"}},
+		{name: "sub2api legacy quota", plugin: Sub2APIPlugin, want: balanceWant{amount: "7.500000", currency: "USD"}},
+		{name: "sub2api without unit", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":7.5}`, want: balanceWant{amount: "7.500000"}},
+		{name: "sub2api any unit", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":12,"unit":"site credits"}`, want: balanceWant{amount: "12.000000", currency: "site credits"}},
 		{name: "sub2api subscription without limits", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":-1,"unit":"USD"}`, want: balanceWant{unlimited: true}},
-		{name: "sub2api wallet", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":3.25,"balance":3.25,"unit":"USD"}`, want: balanceWant{amount: "3.25", currency: "USD"}},
+		{name: "sub2api wallet", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":3.25,"balance":3.25,"unit":"USD"}`, want: balanceWant{amount: "3.250000", currency: "USD"}},
 		{name: "sub2api key invalid", plugin: Sub2APIPlugin, balance: `{"isValid":false,"remaining":0,"unit":"USD"}`, want: balanceWant{errPrefix: "auth_rejected: "}},
 	}
 	for _, c := range cases {
@@ -85,7 +85,7 @@ func TestAC39_AccountBalance(t *testing.T) {
 		// GET /accounts/:id shows the stored balance and never reads one.
 		Eventually(t, 3*time.Minute, 5*time.Second, "balance_sweep reads the new account's balance", func() bool {
 			b := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", id), nil).Get("balance")
-			return b.Get("updated_at").Exists() && sameAmount(b.Get("amount").String(), "1250000")
+			return b.Get("updated_at").Exists() && b.Get("amount").String() == newAPIDefault.amount
 		})
 	})
 
@@ -120,7 +120,7 @@ func TestAC39_AccountBalance(t *testing.T) {
 		mark, since := m.Mark(t), time.Now().Add(-time.Second)
 		b := e.AccountBalance(node, id, true)
 		reason := host + " is on the blocked list of plugin network access"
-		if !strings.HasPrefix(b.Get("error").String(), "transient: plugin "+NewAPIPlugin+": "+reason) || !sameAmount(b.Get("amount").String(), "1250000") {
+		if !strings.HasPrefix(b.Get("error").String(), "transient: plugin "+NewAPIPlugin+": "+reason) || b.Get("amount").String() != newAPIDefault.amount {
 			t.Fatalf("blocked read: want the transient refusal over the last amount: %s", b.Raw)
 		}
 		for _, r := range m.Since(t, mark) {
@@ -134,33 +134,23 @@ func TestAC39_AccountBalance(t *testing.T) {
 	})
 }
 
-// balanceWant is an expected balance view: amount ("" = none) and
-// currency ("" = none) as the site answered them, no limit, or a failure
-// starting with errPrefix.
+// balanceWant is an expected balance view: amount ("" = none; six
+// decimals) and currency (the unit as the site gave it, "" = no currency
+// field), no limit, or a failure starting with errPrefix.
 type balanceWant struct {
 	amount, currency, errPrefix string
 	unlimited                   bool
 }
 
 // newAPIDefault is the mock's default New API answer: 1250000 quota points.
-var newAPIDefault = balanceWant{amount: "1250000"}
-
-// sameAmount compares two decimal amounts by value ("" only equals "").
-func sameAmount(got, want string) bool {
-	if got == "" || want == "" {
-		return got == want
-	}
-	g, ok1 := new(big.Rat).SetString(got)
-	w, ok2 := new(big.Rat).SetString(want)
-	return ok1 && ok2 && g.Cmp(w) == 0
-}
+var newAPIDefault = balanceWant{amount: "1250000.000000"}
 
 // expectBalance checks a balance view against want: supported, never a
 // source field.
 func expectBalance(t testing.TB, b gjson.Result, want balanceWant) {
 	t.Helper()
-	ok := b.Get("supported").Bool() && !b.Get("source").Exists() && sameAmount(b.Get("amount").String(), want.amount) &&
-		b.Get("unlimited").Bool() == want.unlimited && b.Get("currency").String() == want.currency &&
+	ok := b.Get("supported").Bool() && !b.Get("source").Exists() && b.Get("amount").String() == want.amount &&
+		b.Get("unlimited").Bool() == want.unlimited && b.Get("currency").String() == want.currency && b.Get("currency").Exists() == (want.currency != "") &&
 		strings.HasPrefix(b.Get("error").String(), want.errPrefix)
 	if want.errPrefix != "" {
 		ok = ok && b.Get("error").String() != "" && b.Get("error_at").Exists()
