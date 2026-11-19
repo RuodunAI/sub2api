@@ -151,6 +151,8 @@ type NodeView struct {
 	StartedAt     time.Time                  `json:"started_at"`
 	LastHeartbeat time.Time                  `json:"last_heartbeat"`
 	Plugins       map[string]json.RawMessage `json:"plugins"`
+	// PluginSandbox is what the node's plugin sandbox enforces (CONTRACTS §43.8).
+	PluginSandbox *core.PluginSandboxStatus `json:"plugin_sandbox,omitempty"`
 }
 
 func (a *API) nodes(c *gin.Context) {
@@ -166,7 +168,7 @@ func (a *API) nodes(c *gin.Context) {
 	out := make([]NodeView, 0, len(nodes))
 	for _, n := range nodes {
 		v := NodeView{NodeID: n.NodeID, BootID: n.BootID, Addr: n.Addr, HostVersion: n.HostVersion, StartedAt: n.StartedAt,
-			LastHeartbeat: n.LastHeartbeat, Plugins: map[string]json.RawMessage{}}
+			LastHeartbeat: n.LastHeartbeat, Plugins: map[string]json.RawMessage{}, PluginSandbox: n.PluginSandbox}
 		for k, s := range n.Plugins {
 			v.Plugins[k] = stateJSON(s)
 		}
