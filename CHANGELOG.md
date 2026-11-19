@@ -8,6 +8,16 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 插件界面只用代码写（进行中，分支 `feat/plugin-ui-code-only`；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
+
+核心与 SDK 先加上 native 表单在后端需要的部分，旧的 schema 表单在第一方插件迁完之前照常工作：
+
+- 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。不带 schema 的 native、iframe 设置只掩码列出的字段，此前它们每个顶层键都被掩码（CONTRACTS §75.1、§75.5）。
+- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存。插件线协议（2）和 Host API（10）不变。SDK 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`。
+- `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
+- `GET /plugins` 的 `has_settings` 改为"当前版本声明了 `ui.settings`"，不再只认 schema 模式。
+- 清单检查：native 设置要有 `component` 或 `page`。
+
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0116（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行），插件迁移只有 volcengine 的 0003。

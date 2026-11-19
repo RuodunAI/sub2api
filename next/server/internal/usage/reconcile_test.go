@@ -1110,3 +1110,5 @@ func TestSettlementHidesAccountWithoutAccountRead(t *testing.T) {
 func (*recPlugin) Execute(context.Context, *pluginv1.ExecuteRequest, core.ExecutionClient) (core.ExecutionResult, error) {
 	return core.ExecutionResult{}, errors.New("recPlugin does not execute requests")
 }
+
+func (g *recGen) SettingsValidator(string) (core.SettingsValidator, bool) { return nil, false }

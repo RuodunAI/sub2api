@@ -1323,3 +1323,5 @@ func (p *fakePlatform) ParseRefreshResponse(context.Context, *pluginv1.ParseRefr
 func (*fakePlatform) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
 	return nil, errors.New("the fake platform does not monitor tasks")
 }
+
+func (g *fakeGen) SettingsValidator(string) (core.SettingsValidator, bool) { return nil, false }

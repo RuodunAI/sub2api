@@ -1,6 +1,7 @@
 package check
 
 import (
+	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
@@ -760,5 +761,65 @@ func TestSettingsSecretsMustBeMaskable(t *testing.T) {
 		if c := validate(schema); c["ui.settings.schema"] != "unmaskable_secret" {
 			t.Fatalf("%s: a secret that cannot be masked must be rejected: %v", name, c)
 		}
+	}
+}
+
+// ui.settings.secrets: only the settings form takes them, not next to a
+// schema, each path a maskable pointer, none repeating or inside another.
+func TestSettingsSecretsCheck(t *testing.T) {
+	m := uiManifest()
+	m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "ui.native"})
+	m.UI.Native = &manifest.NativeUI{Entry: "ui/native/entry.js"}
+	m.HostUICompat = "^3.3"
+	files := map[string][]byte{"settings.schema.json": []byte("{}"), "ui/native/entry.js": []byte("")}
+	validate := func() map[string]string { return codes(Validate(m, files, ValidateOptions{Tooling: true})) }
+
+	m.UI.Settings = &manifest.Form{Mode: "native", Component: "Settings", Secrets: []manifest.SettingsSecret{
+		{Path: "password"}, {Path: "notify/url", Sensitive: true}, {Path: "notify/secret"}, {Path: "a~1b"}}}
+	if c := validate(); len(c) > 0 {
+		t.Fatalf("valid secrets: %v", c)
+	}
+	m.UI.Settings.Secrets = []manifest.SettingsSecret{{Path: "ok"}, {Path: ""}, {Path: "a//b"}, {Path: "x~2"},
+		{Path: strings.Repeat("p/", manifest.MaxSecretDepth) + "p"}}
+	c := validate()
+	for i := 1; i <= 4; i++ {
+		if f := fmt.Sprintf("ui.settings.secrets[%d].path", i); c[f] != "invalid" {
+			t.Errorf("%s = %q: %v", f, c[f], c)
+		}
+	}
+	m.UI.Settings.Secrets = []manifest.SettingsSecret{{Path: "notify"}, {Path: "other"}, {Path: "notify/url"}, {Path: "other"}}
+	c = validate()
+	if c["ui.settings.secrets[2].path"] != "duplicate" || c["ui.settings.secrets[3].path"] != "duplicate" || c["ui.settings.secrets[1].path"] != "" {
+		t.Fatalf("overlapping paths: %v", c)
+	}
+
+	m.UI.Settings = &manifest.Form{Mode: "native", Component: "Settings", Schema: "settings.schema.json",
+		Secrets: []manifest.SettingsSecret{{Path: "password"}}}
+	if c := validate(); c["ui.settings.secrets"] != "unsupported" {
+		t.Fatalf("secrets next to a schema: %v", c)
+	}
+	m.UI.Settings = nil
+	m.AccountTypes = []manifest.AccountType{{Form: manifest.Form{Mode: "native", Component: "X",
+		Secrets: []manifest.SettingsSecret{{Path: "api_key"}}}}}
+	if c := validate(); c["accountTypes[0].form.secrets"] != "unsupported" {
+		t.Fatalf("account types use sensitiveFields: %v", c)
+	}
+}
+
+// Native settings are mounted from a component on the settings tab, or
+// edited on one of the plugin's native pages: one of the two is needed.
+func TestNativeSettingsNeedComponentOrPage(t *testing.T) {
+	m := uiManifest()
+	m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "ui.native"})
+	m.UI.Native = &manifest.NativeUI{Entry: "ui/native/entry.js"}
+	m.HostUICompat = "^3.3"
+	files := map[string][]byte{"ui/native/entry.js": []byte("")}
+	m.UI.Settings = &manifest.Form{Mode: "native"}
+	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.component"] != "required" {
+		t.Fatalf("neither component nor page: %v", c)
+	}
+	m.UI.Settings.Component = "Settings"
+	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); len(c) > 0 {
+		t.Fatalf("a component is enough: %v", c)
 	}
 }

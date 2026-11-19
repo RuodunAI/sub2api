@@ -162,7 +162,15 @@ func (nodes) IsAlive(context.Context, string) (bool, error)      { return true, 
 func (nodes) ReportPlugin(context.Context, string, string) error { return nil }
 func (nodes) Healthy() bool                                      { return true }
 
-type gen struct{ plugins []core.PluginInfo }
+type gen struct {
+	plugins  []core.PluginInfo
+	settings map[string]core.SettingsValidator
+}
+
+func (g gen) SettingsValidator(k string) (core.SettingsValidator, bool) {
+	v, ok := g.settings[k]
+	return v, ok
+}
 
 func (g gen) Number() uint64             { return 1 }
 func (g gen) Plugins() []core.PluginInfo { return g.plugins }
@@ -207,6 +215,8 @@ type harness struct {
 	db     *store.DB
 	guard  *manifest.Manifest // the registry's copy; tests mutate it in place
 	api    *API
+	// validators are the settings checks of the registry's generation.
+	validators map[string]core.SettingsValidator
 }
 
 // jobRuns records manual job runs as "plugin/job by actor".
@@ -281,14 +291,15 @@ func newHarness(t *testing.T, guardConflicts ...core.ResourceConflict) (*harness
 		install.Options{HostVersion: testHostVersion, Plugins: cfg})
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
 	m := pkgtest.Guard("guard", "0.1.0", "sub2api")
+	validators := map[string]core.SettingsValidator{}
 	reg := registry{gen{plugins: []core.PluginInfo{{Key: "guard", Version: "0.1.0", Manifest: m, Trust: "official", AssetBase: "/plugin-ui/guard/0.1.0-abc",
-		Conflicts: guardConflicts}}}}
+		Conflicts: guardConflicts}}, settings: validators}}
 	a := New(Deps{DB: db, Install: svc, Rollout: rollout{db}, Nodes: nodes{}, Registry: reg, Authz: authz{}, Cipher: cipher, Plugins: cfg})
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	r := httpapi.NewRouter(engine, tokens{}, authz{})
 	a.RegisterRoutes(r)
-	return &harness{t: t, engine: engine, db: db, guard: m, api: a}, root
+	return &harness{t: t, engine: engine, db: db, guard: m, api: a, validators: validators}, root
 }
 
 func data(out map[string]any) map[string]any {
@@ -700,7 +711,7 @@ func TestEnableAndUpgradeRecheckResources(t *testing.T) {
 func TestNativeSettingsKeepSchemaChecks(t *testing.T) {
 	h, root := newHarness(t)
 	guard := pkgtest.Guard("guard", "0.1.0", "sub2api")
-	guard.UI.Settings.Mode = "native"
+	guard.UI.Settings.Mode, guard.UI.Settings.Page = "native", "dashboard"
 	pkgBytes := pkgtest.Build(guard, root)
 	code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgBytes))
 	require.Equal(t, http.StatusOK, code, out)

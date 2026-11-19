@@ -2,11 +2,15 @@ package pluginsdk_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"testing"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
@@ -182,5 +186,49 @@ func TestLedgerAndAuthz(t *testing.T) {
 func TestRegisterRequiresInfo(t *testing.T) {
 	if err := pluginsdk.Register(nil, newDemo(), nil); err == nil {
 		t.Fatal("expected error without key/version")
+	}
+}
+
+// validating is demo with settings validation: the name must not be "bad",
+// and "trim" is stored trimmed.
+type validating struct{ *demo }
+
+func (v validating) ValidateSettings(_ context.Context, cfg pluginsdk.Config) (json.RawMessage, error) {
+	var in struct {
+		Name string `json:"name"`
+	}
+	if err := cfg.Decode(&in); err != nil {
+		return nil, err
+	}
+	switch in.Name {
+	case "bad":
+		return nil, pluginsdk.FieldErrors{}.Add("name", "invalid", "bad name").Err()
+	case " trim ":
+		return json.RawMessage(`{"name":"trim"}`), nil
+	}
+	return nil, nil
+}
+
+func TestValidateSettings(t *testing.T) {
+	h := pluginsdktest.Start(t, validating{newDemo()}, pluginsdktest.Options{Manifest: []byte(testManifest)})
+	resp, err := h.ValidateSettings(map[string]string{"name": "bad"})
+	if err != nil || len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "name" {
+		t.Fatalf("field errors = %v %v", resp, err)
+	}
+	if resp, err = h.ValidateSettings(`not json`); err != nil || len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "" {
+		t.Fatalf("other errors reject the whole object = %v %v", resp, err)
+	}
+	if resp, err = h.ValidateSettings(map[string]string{"name": " trim "}); err != nil || resp.GetNormalizedConfigJson() != `{"name":"trim"}` {
+		t.Fatalf("normalized = %v %v", resp, err)
+	}
+	if resp, err = h.ValidateSettings(nil); err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
+		t.Fatalf("accepted = %v %v", resp, err)
+	}
+
+	// Without SettingsValidator the call is UNIMPLEMENTED: the host stores
+	// the settings as they are.
+	plain := pluginsdktest.Start(t, newDemo(), pluginsdktest.Options{Manifest: []byte(testManifest)})
+	if _, err := plain.ValidateSettings(nil); status.Code(err) != codes.Unimplemented {
+		t.Fatalf("without a validator = %v", err)
 	}
 }

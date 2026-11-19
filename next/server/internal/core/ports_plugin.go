@@ -94,6 +94,13 @@ type HTTPPlugin interface {
 	HandleHTTP(ctx context.Context, in *pluginv1.HTTPRequest) (*pluginv1.HTTPResponse, error)
 }
 
+// SettingsValidator is a plugin's check of its own settings before the core
+// stores them (PluginService.ValidateSettings, CONTRACTS §75.1). Optional for
+// plugins: one without it answers UNIMPLEMENTED, which means accepted.
+type SettingsValidator interface {
+	ValidateSettings(ctx context.Context, in *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error)
+}
+
 // SchedulerPlugin is a plugin's part in scheduling. Plugins take no part in
 // sticky sessions (CONTRACTS §5.6).
 type SchedulerPlugin interface {
@@ -259,6 +266,9 @@ type Generation interface {
 	// plugin's runtime tasks (HostService.SyncTasks ...), which no manifest
 	// job describes.
 	JobRunner(pluginKey string) (AppPlugin, bool)
+	// SettingsValidator checks the settings of an enabled plugin before
+	// PUT /plugins/:key/settings stores them.
+	SettingsValidator(pluginKey string) (SettingsValidator, bool)
 	Subscriptions() []SubscriptionBinding
 	// ReadAsset reads a file from the active package of a plugin.
 	ReadAsset(pluginKey, path string) (data []byte, contentType string, err error)

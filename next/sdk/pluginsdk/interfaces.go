@@ -2,6 +2,7 @@ package pluginsdk
 
 import (
 	"context"
+	"encoding/json"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
@@ -177,6 +178,19 @@ type Initializer interface {
 // field; any other error rejects it as a whole.
 type Configurer interface {
 	Configure(ctx context.Context, cfg Config) error
+}
+
+// SettingsValidator checks plugin settings before the host stores them
+// (PluginService.ValidateSettings, CONTRACTS §75.1). Optional: without it
+// the host stores what the console submits and Configure is the only check.
+// cfg.JSON holds the submitted settings with masked secrets replaced by the
+// stored values; cfg.Grants is empty. Return a FieldErrors value (fields are
+// JSON pointers below the settings, "a/b") to reject field by field, any
+// other error to reject the settings as a whole, and a non-empty normalized
+// to store it instead of what was submitted. Share the decoding and checks
+// with Configure so that whatever is stored configures.
+type SettingsValidator interface {
+	ValidateSettings(ctx context.Context, cfg Config) (normalized json.RawMessage, err error)
 }
 
 // HealthChecker overrides the default health report (always healthy once

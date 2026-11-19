@@ -396,12 +396,30 @@ func (rt *runtime) Configure(ctx context.Context, in *pluginv1.ConfigureRequest)
 		return &pluginv1.ConfigureResponse{}, nil
 	}
 	if err := c.Configure(ctx, configFromProto(in)); err != nil {
-		if fe, ok := AsFieldErrors(err); ok {
-			return &pluginv1.ConfigureResponse{Errors: fe}, nil
-		}
-		return &pluginv1.ConfigureResponse{Errors: []*pluginv1.FieldError{{Field: "", Code: "invalid", Message: err.Error()}}}, nil
+		return &pluginv1.ConfigureResponse{Errors: fieldErrorsOf(err)}, nil
 	}
 	return &pluginv1.ConfigureResponse{}, nil
+}
+
+func (rt *runtime) ValidateSettings(ctx context.Context, in *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error) {
+	v, ok := rt.p.(SettingsValidator)
+	if !ok {
+		return nil, status.Error(codes.Unimplemented, "plugin does not validate its settings")
+	}
+	normalized, err := v.ValidateSettings(ctx, configFromProto(&pluginv1.ConfigureRequest{ConfigJson: in.GetConfigJson()}))
+	if err != nil {
+		return &pluginv1.ValidateSettingsResponse{Errors: fieldErrorsOf(err)}, nil
+	}
+	return &pluginv1.ValidateSettingsResponse{NormalizedConfigJson: string(normalized)}, nil
+}
+
+// fieldErrorsOf is err as field errors: a FieldErrors value field by field,
+// any other error on the whole object.
+func fieldErrorsOf(err error) []*pluginv1.FieldError {
+	if fe, ok := AsFieldErrors(err); ok {
+		return fe
+	}
+	return []*pluginv1.FieldError{{Field: "", Code: "invalid", Message: err.Error()}}
 }
 
 func (rt *runtime) Health(ctx context.Context, _ *pluginv1.HealthRequest) (*pluginv1.HealthResponse, error) {

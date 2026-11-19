@@ -165,6 +165,7 @@ type generation struct {
 	routes    map[string][]core.RouteBinding
 	jobs      []core.JobBinding
 	runners   map[string]core.AppPlugin
+	settings  map[string]core.SettingsValidator
 	subs      []core.SubscriptionBinding
 	observers []core.ObservationBinding
 	channels  []core.NotificationChannelBinding
@@ -284,6 +285,7 @@ func build(number uint64, exts []Extension, conv core.ProtocolConverters) *gener
 		hooks:    map[string][]core.HookBinding{},
 		scheds:   map[string]core.SchedulerPlugin{},
 		routes:   map[string][]core.RouteBinding{},
+		settings: map[string]core.SettingsValidator{},
 	}
 	// Built-in platforms always exist (ARCHITECTURE 6.6).
 	for _, p := range platforms.Builtin() {
@@ -343,6 +345,7 @@ func (g *generation) registerPlugin(ext Extension, pkg *Package) {
 	g.addRoutes(ext, info, pkg, grants)
 	g.addObserver(ext, info, m, grants)
 	g.addJobsAndEvents(ext, info, m, grants)
+	g.addSettingsValidator(ext, info)
 	conflicts = append(conflicts, g.addNotificationChannels(ext, info, m)...)
 	if len(conflicts) > 0 {
 		info.Conflicts = conflicts
@@ -489,6 +492,15 @@ func (g *generation) addNotificationChannels(ext Extension, info core.PluginInfo
 		g.channels = append(g.channels, core.NotificationChannelBinding{Plugin: info, Channel: c, Client: client})
 	}
 	return conflicts
+}
+
+// addSettingsValidator registers the plugin's check of its settings: every
+// plugin process serves PluginService, so the extension offers it whether
+// or not the plugin implements the call.
+func (g *generation) addSettingsValidator(ext Extension, info core.PluginInfo) {
+	if source, ok := ext.(interface{ SettingsValidator() core.SettingsValidator }); ok {
+		g.settings[info.Key] = source.SettingsValidator()
+	}
 }
 
 // addJobsAndEvents registers the plugin's jobs and event subscriptions, each
@@ -667,6 +679,11 @@ func (g *generation) Subscriptions() []core.SubscriptionBinding { return g.subs 
 func (g *generation) JobRunner(key string) (core.AppPlugin, bool) {
 	app, ok := g.runners[key]
 	return app, ok
+}
+
+func (g *generation) SettingsValidator(key string) (core.SettingsValidator, bool) {
+	v, ok := g.settings[key]
+	return v, ok
 }
 
 func (g *generation) Plugin(key string) (core.PluginInfo, bool) {

@@ -37,6 +37,55 @@ var (
 // may sit at most this many properties deep to be masked on its own.
 const MaxSecretDepth = 8
 
+// SettingsSecret is one entry of ui.settings.secrets: Path is the setting's
+// JSON pointer below the values, written like SecretField.Pointer ("a/b",
+// "~0" and "~1" escaped); Sensitive marks an address that is masked but is
+// not a credential (CONTRACTS §75.1).
+type SettingsSecret struct {
+	Path      string `json:"path"`
+	Sensitive bool   `json:"sensitive,omitempty"`
+}
+
+// SecretPath splits a SettingsSecret path into its property names. ok is
+// false for a path the core cannot mask one by one: empty, with an empty
+// name, with a "~" that does not start "~0" or "~1", or deeper than
+// MaxSecretDepth.
+func SecretPath(pointer string) (path []string, ok bool) {
+	path = splitPointer(pointer)
+	if len(path) > MaxSecretDepth {
+		return nil, false
+	}
+	for _, token := range strings.Split(pointer, "/") {
+		if !escapedName(token) {
+			return nil, false
+		}
+	}
+	return path, true
+}
+
+// splitPointer splits a JSON pointer below the values into its names, "~1"
+// and "~0" decoded.
+func splitPointer(pointer string) []string {
+	path := strings.Split(pointer, "/")
+	for i, p := range path {
+		path[i] = pointerUnescaper.Replace(p)
+	}
+	return path
+}
+
+// SecretFields are the masked settings ui.settings.secrets declares, sorted
+// by pointer: the declared form of what SettingsSecrets reads from a schema.
+// The manifest check refuses a path SecretPath does not accept, so every
+// declared path is taken as written.
+func (f Form) SecretFields() []SecretField {
+	out := make([]SecretField, 0, len(f.Secrets))
+	for _, s := range f.Secrets {
+		out = append(out, SecretField{Path: splitPointer(s.Path), Credential: !s.Sensitive})
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Pointer() < out[j].Pointer() })
+	return out
+}
+
 // Bounds of following local references (SettingsSecrets): how many may be
 // followed inside one another, and how many schema nodes all expansions may
 // visit together. Past either, the reference is unreachable.
@@ -197,7 +246,12 @@ func localRef(ref string) string {
 // validToken: one non-empty RFC 6901 reference token whose every "~" starts
 // "~0" or "~1", not percent-encoded.
 func validToken(token string) bool {
-	if token == "" || strings.ContainsAny(token, "/%") {
+	return !strings.ContainsAny(token, "/%") && escapedName(token)
+}
+
+// escapedName: a non-empty name whose every "~" starts "~0" or "~1".
+func escapedName(token string) bool {
+	if token == "" {
 		return false
 	}
 	for i := range len(token) {

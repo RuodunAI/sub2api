@@ -719,3 +719,32 @@ func TestAdaptedNeedsConverter(t *testing.T) {
 		t.Fatal("without converters a type listing adapted endpoints was bound")
 	}
 }
+
+// settingsExt is an extension whose process checks settings, as every
+// grpcruntime instance does.
+type settingsExt struct{ ext }
+
+func (settingsExt) SettingsValidator() core.SettingsValidator { return settingsStub{} }
+
+type settingsStub struct{}
+
+func (settingsStub) ValidateSettings(context.Context, *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error) {
+	return &pluginv1.ValidateSettingsResponse{}, nil
+}
+
+// Every enabled plugin whose extension offers the settings check has it in
+// the generation, whatever its grants or capabilities.
+func TestSettingsValidator(t *testing.T) {
+	m, other := registrytest.Manifest("mailer", "1.0.0"), registrytest.Manifest("plain", "1.0.0")
+	m.Platforms, other.Platforms = nil, nil
+	g := registry.New().Publish([]registry.Extension{settingsExt{ext{pkg: load(t, m)}}, ext{pkg: load(t, other)}})
+	if v, ok := g.SettingsValidator("mailer"); !ok || v == nil {
+		t.Fatalf("mailer = %v %v", v, ok)
+	}
+	if _, ok := g.SettingsValidator("plain"); ok {
+		t.Fatal("an extension without the check has none")
+	}
+	if _, ok := g.SettingsValidator("missing"); ok {
+		t.Fatal("a plugin not in the generation has none")
+	}
+}
