@@ -8388,15 +8388,15 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 `next/e2e/ac37_plugin_network_access_test.go`（`TestAC37_PluginNetworkAccess`）用 guard 的 webhook 告警验收：默认设置下送达 mock；把 mock 的主机加进屏蔽列表后连接被拒，出口日志有 `denied` 且原因是屏蔽列表；切到“屏蔽所有域名”、允许列表里没有它时被拒（原因是允许列表）；加进允许列表后送达。设置只对新连接生效，所以用例在默认阶段之后先等 guard 到 mock 的长连接关闭（出口日志里它的行不再是 `open`，空闲连接 90 秒后关闭）。guard 的告警冷却设为 0（默认 60 秒，被拒的告警也占用冷却期，会挡住下一阶段的告警）。设置的保存和触发告警的请求都固定发到节点 1：保存的节点在应答前丢掉缓存，另一个节点要等广播，中间有几十毫秒仍按旧设置判断（实测见过）。用例结束（含失败）经 `t.Cleanup` 把插件联网恢复成默认、清空 guard 规则、guard 设置恢复默认冷却。
 
-## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
+## 114. 插件包不再依赖主节点：每个节点留一份，缺包时向任一持有者取（2026-11-18，所有者决定“每个节点都要安装，保留插件吧?”，“并不需要做分布式一致性”；无迁移；只改网关二进制和核心的错误文案；设计见 [DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md](DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)）
 
 取代 §34“插件包分发”里“上传和首装的包由主节点网关保存”与 `plugin-upload` 范围，以及 [规约 §6.2](MULTINODE-SYNC-PROTOCOL.md) 的旧写法。
 
 - **存放**：每个节点的网关在 `<root>/plugin-blobs/<前两位>/<sha256>` 保存本节点存过、用过的包；PG 仍只记 `package_sha256` 与市场的 `package_url`。核心经本机管理 socket `PUT/GET /system/plugin-blobs/<sha256>`（`blobs.Shell`）存取，没有网关时用本机目录（只支持单节点）。
 - **写**：`install.Upload`（上传、市场安装、内置插件导入）把包写进接到请求的那个节点的网关就返回，再写版本行；不推给其他节点。存不进去时 503 `unavailable`，信息 `store the plugin package on this node`。节点间 `PUT /internal/plugin-blobs/`、范围 `plugin-upload`、每个来源节点 2 个并发上传的限制一并删除；`plugin_store_max_bytes` 总量上限保留，对本机上传和从别的节点取来的包都生效。
-- **读**：本机没有的包，网关逐个问其他启用且心跳新鲜（`Node.Fresh`，与路由、准入同一个存活判断）的节点 `GET /internal/plugin-blobs/<sha256>`（范围 `plugin-artifact`，任意两个启用节点之间，摘要须被某个版本引用），第一个给出摘要与大小都正确的字节的节点胜出，取到的包留在本机。对方 404 表示它没有；摘要不符、出错就记下并问下一个。不登记谁持有哪个包，主节点没有特殊地位，`set-primary` 与插件包无关。
-- **取不到**：所有在线节点都答没有时，管理 socket 返回 404，正文是 `no online node holds the plugin package (asked: <节点>; offline, not asked: <节点>)`；核心得到 `blobs.ErrNotFound`（带这段正文），审查、同意接口 410 `package_gone`（信息改为“没有在线节点持有这个安装包：让持有它的节点恢复在线，或重新上传”），节点加载失败的错误文本（节点页、`plugin_rollout_nodes.error`）带上这段原因。有节点出错、且没人给出正确的包时返回 502，逐个列出错误，核心按一般错误处理，不当作包不存在。
-- **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都离线时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
+- **读**：本机没有的包，网关逐个问其他启用的节点 `GET /internal/plugin-blobs/<sha256>`（范围 `plugin-artifact`，任意两个启用节点之间，摘要须被某个版本引用），心跳新鲜（`Node.Fresh`，与路由、准入同一个存活判断）的先问，不新鲜的后问：心跳只排顺序，不排除节点（集群冷启动、从节点在主节点的心跳循环开始前加入、主节点刚恢复时，持有包的节点心跳还没写或已过期，2026-11-18 修正）。第一个给出摘要与大小都正确的字节的节点胜出，取到的包留在本机。对方 404 表示它没有；连不上记为“连不上”；摘要不符、出错就记下并问下一个。不另设超时与重试，连一个已经宕机的节点只受已有的传输超时约束，新鲜的节点在前，常见路径不等它。不登记谁持有哪个包，主节点没有特殊地位，`set-primary` 与插件包无关。
+- **取不到**：每个启用节点都问过，各自答没有或连不上时，管理 socket 返回 404，正文是 `no reachable node holds the plugin package (<节点>: not held; <节点>: unreachable: <原因>)`，只有本节点时是 `(no other node to ask)`；核心得到 `blobs.ErrNotFound`（带这段正文），审查、同意接口 410 `package_gone`（信息 `no reachable node holds the package of this version; bring a node that holds it back online, or upload it again`，控制台“没有能连上的节点持有这个安装包”），节点加载失败的错误文本（节点页、`plugin_rollout_nodes.error`）带上这段原因。有节点答了别的（摘要不符、错误状态）、且没人给出正确的包时返回 502，逐个列出错误，核心按一般错误处理，不当作包不存在。
+- **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都连不上时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
 - **升级**：没有迁移。旧主节点上已有的包原地保留，和其他节点一样被问到。网关滚动更新期间，旧网关节点上的上传仍要推给主节点；主节点换成新网关后不再接受（403），在旧网关节点上上传会失败；旧网关的主节点自己缺包时不问别人，在新网关节点上传的包它取不到。换完网关再上传、启用即可。
 
 ## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0110；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）
@@ -8413,6 +8413,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
 - **打包工具**：`sub2api-plugin db diff|check`（`sdk/pgdb/pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 在临时 schema 里执行迁移（整个事务回滚）；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（看本事务写过的系统目录行，以前靠临时角色的属主判断）。以前因为临时角色没有权限而在工具里失败、宿主却能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
 - **单向**：0110 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
+- **网关外壳仍传 `SUB2API_PLUGIN_DB_ROLE_ISOLATION`**：核心不再读它，但外壳与核心分开换，先换外壳的集群在新外壳下继续运行 0.1.303 核心，直到核心重新部署；设成 `false` 的部署（数据库用户没有 `CREATEROLE`）若拿不到它，旧核心按默认打开角色隔离，持有 `db.schema` 的插件起不来。所以它留在 `supervisor.legacyCoreEnv`（`allowlist_test.go` 只按这份名单接受核心不读的 `SUB2API_` 名字，核心又读它时报错），全部集群运行 0.1.304 或更新的核心后，在下一个外壳版本删除。
 
 ## 116. 删除 Claude OAuth 插件（2026-11-18，所有者决定“删除掉！”；迁移 0111，核心 0.1.304）
 

@@ -1,6 +1,6 @@
 // Package pluginblob keeps plugin packages for the cores of a cluster. Each
 // node's shell keeps the packages its core stored or used; a package a node
-// lacks is fetched from any online node that holds it over the
+// lacks is fetched from any other enabled node that holds it over the
 // authenticated node network. Packages are addressed by sha256 and verified
 // on every write.
 package pluginblob
@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -204,7 +205,8 @@ func (s *Store) GC(referenced map[string]bool, grace time.Duration) (int, error)
 type Service struct {
 	Store *Store
 	// Peers lists the other enabled nodes, each marked online when its
-	// heartbeat is fresh; a missing package is asked from the online ones.
+	// heartbeat is fresh; a missing package is asked from all of them, the
+	// online ones first.
 	Peers func(context.Context) ([]NodeRef, error)
 	// Client is the authenticated node client; it may reach any enabled node.
 	Client *http.Client
@@ -214,7 +216,9 @@ type Service struct {
 type NodeRef struct {
 	ID      string
 	PeerURL string
-	Online  bool
+	// Online reports a fresh heartbeat; it orders the nodes asked, it does
+	// not exclude any.
+	Online bool
 }
 
 func sumFrom(path, prefix string) (string, bool) {
@@ -273,50 +277,61 @@ func (s *Service) Peer() http.Handler {
 	})
 }
 
-var errNotFound = errors.New("no online node holds the plugin package")
+var errNotFound = errors.New("no reachable node holds the plugin package")
 
-// pull fetches a package this node lacks from the online nodes, one after
-// the other, until one serves bytes matching its digest. It reports
-// errNotFound, naming the nodes asked and the offline ones, when every
-// online node answered that it does not hold it.
+// errUnreachable marks a peer the request never reached.
+var errUnreachable = errors.New("unreachable")
+
+// pull fetches a package this node lacks from the other enabled nodes, one
+// after the other, until one serves bytes matching its digest. Nodes with a
+// fresh heartbeat are asked first; a stale heartbeat does not exclude a node,
+// since one that is starting, or has not run its heartbeat yet, still holds
+// its packages. It reports errNotFound, naming each node and its answer,
+// when every node either does not hold the package or cannot be reached; a
+// node that answers with anything else (bytes that fail the digest, an error
+// status) fails the pull.
 func (s *Service) pull(ctx context.Context, sum string) error {
 	nodes, err := s.Peers(ctx)
 	if err != nil {
 		return fmt.Errorf("list the nodes to fetch the package from: %w", err)
 	}
-	var asked, offline []string
+	slices.SortStableFunc(nodes, func(a, b NodeRef) int {
+		if a.Online == b.Online {
+			return 0
+		}
+		if a.Online {
+			return -1
+		}
+		return 1
+	})
+	var answers []string
 	var failures []error
 	for _, node := range nodes {
-		if !node.Online {
-			offline = append(offline, node.ID)
-			continue
-		}
-		asked = append(asked, node.ID)
 		found, err := s.fetch(ctx, node.PeerURL, sum)
-		if err != nil {
-			failures = append(failures, fmt.Errorf("node %s: %w", node.ID, err))
-			continue
-		}
-		if found {
+		switch {
+		case err == nil && found:
 			return nil
+		case errors.Is(err, errUnreachable):
+			answers = append(answers, node.ID+": "+err.Error())
+		case err != nil:
+			failures = append(failures, fmt.Errorf("node %s: %w", node.ID, err))
+		default:
+			answers = append(answers, node.ID+": not held")
 		}
 	}
 	if len(failures) > 0 {
 		return errors.Join(failures...)
 	}
-	return fmt.Errorf("%w (asked: %s; offline, not asked: %s)", errNotFound, names(asked), names(offline))
-}
-
-func names(ids []string) string {
-	if len(ids) == 0 {
-		return "none"
+	if len(answers) == 0 {
+		answers = []string{"no other node to ask"}
 	}
-	return strings.Join(ids, ", ")
+	return fmt.Errorf("%w (%s)", errNotFound, strings.Join(answers, "; "))
 }
 
 // fetch downloads the package from one peer and stores it. A peer that does
-// not hold it returns found=false, err=nil; bytes that fail the digest or
-// size checks, and any other failure, return the error.
+// not hold it returns found=false, err=nil; one the request does not reach
+// returns errUnreachable; bytes that fail the digest or size checks, and any
+// other failure, return the error.
 func (s *Service) fetch(ctx context.Context, origin, sum string) (found bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/internal/plugin-blobs/"+sum, nil)
 	if err != nil {
@@ -324,7 +339,7 @@ func (s *Service) fetch(ctx context.Context, origin, sum string) (found bool, er
 	}
 	res, err := s.Client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("fetch package from %s: %w", origin, err)
+		return false, fmt.Errorf("%w: fetch package from %s: %w", errUnreachable, origin, err)
 	}
 	defer res.Body.Close()
 	switch {

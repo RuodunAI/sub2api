@@ -59,7 +59,7 @@
 - **“未上报”的请求不续粘性会话、不刷新账号的最后使用时间**：未上报的记录是失败记录（`success = false`），粘性绑定只在成功时续期，`TouchLastUsed` 也只在成功时调用。
 - **WebSocket 首轮的参数覆盖失败改为换号**：以前握手时忽略参数覆盖的失败、照常在这个账号上建立连接，失败留给这一轮报告；现在首轮与 HTTP 一样在发出前改写，失败时换下一个账号（`return_error` 照常回给客户端）。
 - **经代理的账号不在本机解析上游域名**：只拒字面的私网、回环、链路本地地址和 `localhost`，其余由代理检查。以前本机 DNS 失败会拒绝所有经代理的账号，只有代理能解析的名字能通过账号测试、之后每个请求都失败；账号测试、拉取模型、额度查询以前经代理时完全不检查，现在按同一条规则（`netguard.CheckHostVia`，CONTRACTS §43.4）。
-- 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（设了也不读）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
+- 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见下文“对运维”）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
 
 #### 插件版本
 
@@ -166,13 +166,13 @@
 - 以前没有全局的插件联网设置，按插件的出口策略（`allow_all` / `allowlist`）保持原样，没有要迁移的旧选项。升级要做的见升级须知。
 - e2e AC37 覆盖屏蔽列表、允许列表对 guard webhook 的效果与出口日志里的拒绝原因（CONTRACTS §113.4）。
 
-### 插件包不再依赖主节点：每个节点留一份，缺包时向任一在线持有者取（网关；核心只改错误文案；无迁移）
+### 插件包不再依赖主节点：每个节点留一份，缺包时向任一持有者取（网关；核心只改错误文案；无迁移）
 
 见 CONTRACTS §114、[设计](next/docs/DESIGN-2026-11-18-PLUGIN-PACKAGE-ANY-NODE.md)。
 
 - 上传、市场安装、内置插件导入只把包存在接到请求的那个节点，不再推给主节点；主节点宕机时，在其他节点上传、安装、升级插件照常进行。
-- 节点缺包（新节点、丢了缓存的节点、主节点自己）时，逐个问其他心跳在线的节点，第一个给出摘要正确的包的节点胜出；摘要不符的字节被拒，继续问下一个。主节点不再特殊，`set-primary` 与插件包无关。
-- 持有某个包的节点都离线时装不了：控制台 `package_gone` 的文案改为“没有在线节点持有这个安装包”，节点加载失败的错误里写明问过哪些节点、哪些离线。
+- 节点缺包（新节点、丢了缓存的节点、主节点自己）时，逐个问其他启用的节点，心跳新鲜的先问、不新鲜的后问（心跳只排顺序，不排除节点：集群冷启动、从节点加入时持有包的节点心跳可能还没写或已过期），第一个给出摘要正确的包的节点胜出；摘要不符的字节被拒，继续问下一个。主节点不再特殊，`set-primary` 与插件包无关。
+- 持有某个包的节点都连不上时装不了：控制台 `package_gone` 的文案改为“没有能连上的节点持有这个安装包”，节点加载失败的错误里逐个写明每个节点的结果（没有这个包，或连不上及原因）。
 - 删除节点间插件包上传（`PUT /internal/plugin-blobs/`、范围 `plugin-upload`、每节点 2 个并发上传的限制）。`plugin_store_max_bytes` 总量上限保留。
 - 升级要换网关二进制，滚动更新期间不要上传插件（见升级须知）。
 
@@ -180,7 +180,7 @@
 
 所有者决定：“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”。设计见 `next/docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md`，契约 CONTRACTS §115。
 
-- **对运维**：新版本第一次启动时，核心把旧版本为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`。多个节点同时启动只转换一次；某个角色还有会话（旧插件进程未退出）时留下并记一次警告 `legacy plugin database role still has sessions`，下次该插件取 DSN、迁移或下次启动时再转换；转换失败只记日志，不阻止启动。核心的数据库用户不再需要 `CREATEROLE`；配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（设了也不读），错误 `plugin_db_isolation_unavailable`、`plugin_db_role_conflict` 不再出现。
+- **对运维**：新版本第一次启动时，核心把旧版本为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`。多个节点同时启动只转换一次；某个角色还有会话（旧插件进程未退出）时留下并记一次警告 `legacy plugin database role still has sessions`，下次该插件取 DSN、迁移或下次启动时再转换；转换失败只记日志，不阻止启动。核心的数据库用户不再需要 `CREATEROLE`；配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读），错误 `plugin_db_isolation_unavailable`、`plugin_db_role_conflict` 不再出现。**设过 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false` 的部署先别删它**：网关外壳与核心分开换，先换上这一版外壳时它启动的仍是 0.1.303 核心，旧核心没有这个值就重新打开角色隔离，数据库用户没有 `CREATEROLE` 时持有 `db.schema` 的插件起不来；所以外壳继续把它传给核心（`supervisor.legacyCoreEnv`），全部集群换上 0.1.304 之后的下一个外壳版本删除。
 - **备份与恢复不再依赖属主**：插件的 schema 和表都属于核心的用户。不带属主恢复（`--no-owner`）后直接可用；带属主恢复的库有旧角色，启动时照上面转换。
 - **连接数**：见升级须知。
 - **隔离（直说）**：持有 `db.schema` 的插件现在能读写核心的用户能访问的所有表，包括核心自己的表和其他插件的表；分隔只靠约定和安装时对 `db.schema` 的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、可还原的 API Key、TOTP、插件加密设置）读不出明文，API Key 与用户密码只存哈希，但余额、授权等都能被改写。因此非官方插件授予 `db.schema` 一律要求超管专属的 `plugin:grant:db_schema_unconfined`（以前只在关闭角色隔离时要求），官方插件不变。
