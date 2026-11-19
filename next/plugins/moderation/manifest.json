@@ -19,7 +19,7 @@
     }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
-  "hostUICompat": "^3.15",
+  "hostUICompat": "^3.20",
   "capabilities": [
     {
       "id": "gateway.hook.v1"
@@ -725,9 +725,19 @@
     "settings": {
       "mode": "native",
       "page": "dashboard",
-      "schema": "forms/settings.schema.json",
-      "uiSchema": "forms/settings.ui.json",
-      "permission": "moderation:manage"
+      "permission": "moderation:manage",
+      "secrets": [
+        {
+          "path": "api_key"
+        },
+        {
+          "path": "notify_webhook_secret"
+        },
+        {
+          "path": "notify_webhook_url",
+          "sensitive": true
+        }
+      ]
     }
   },
   "resources": {
