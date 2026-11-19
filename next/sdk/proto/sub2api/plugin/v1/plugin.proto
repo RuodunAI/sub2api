@@ -94,6 +94,8 @@ message ValidateSettingsRequest {
   // The submitted settings, masked secrets already replaced by the stored
   // values.
   string config_json = 1;
+  // Host permissions the administrator granted, as in ConfigureRequest.
+  repeated Grant grants = 2;
 }
 
 message ValidateSettingsResponse {

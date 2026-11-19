@@ -50,8 +50,9 @@ type SettingsView struct {
 	fields  []manifest.SecretField // the schema's or ui.settings.secrets, classified
 	// maskAll: every top-level setting is a credential, because nothing says
 	// which ones are: no ui.settings, a mode this core does not know (an old
-	// package's), a schema file missing, or a schema marking secrets where
-	// no top-level setting can be named for them.
+	// package's), native or iframe settings without a schema and without
+	// ui.settings.secrets, a schema file missing, or a schema marking secrets
+	// where no top-level setting can be named for them.
 	maskAll bool
 
 	// Permission is the RBAC key of ui.settings.permission: its holders may
@@ -85,10 +86,14 @@ func (a *API) settingsForm(c *gin.Context, key, corePerm string) (*SettingsView,
 	}
 	v.Mode, v.Page, v.Component = f.Mode, f.Page, f.Component
 	// A native or iframe form without a schema masks what ui.settings.secrets
-	// names. A schema form, or a native one that carries its schema (edited
-	// on the plugin's own page, §75.5), validates and masks with the schema.
+	// names ([] = nothing); without the key nothing says which settings are
+	// secret and maskAll stays. A schema form, or a native one that carries
+	// its schema (edited on the plugin's own page, §75.5), validates and
+	// masks with the schema.
 	if f.Schema == "" && (f.Mode == "native" || f.Mode == "iframe") {
-		v.fields, v.maskAll = f.SecretFields(), false
+		if f.Secrets != nil {
+			v.fields, v.maskAll = f.SecretFields(), false
+		}
 		return v, true
 	}
 	if f.Mode != "schema" && f.Schema == "" {
@@ -144,10 +149,13 @@ func sortSecrets(fields []manifest.SecretField) []manifest.SecretField {
 }
 
 // secrets are the masked fields of the form given the values at hand (stored,
-// submitted): the schema's, or under maskAll every top-level key of them.
+// submitted): the declared ones, or under maskAll every top-level key of them.
+// A declared path that meets a value other than an object on its way (an
+// array, whose elements cannot be named) in any of values masks and keeps
+// that value whole instead.
 func (v *SettingsView) secrets(values ...map[string]any) []manifest.SecretField {
 	if !v.maskAll {
-		return v.fields
+		return wholeAtNonObjects(v.fields, values)
 	}
 	seen := map[string]bool{}
 	for _, m := range values {
@@ -156,6 +164,42 @@ func (v *SettingsView) secrets(values ...map[string]any) []manifest.SecretField 
 		}
 	}
 	return sortSecrets(topLevelCredentials(slices.Collect(maps.Keys(seen))))
+}
+
+// wholeAtNonObjects cuts each field's path at the first value on its way that
+// is not an object in any of values; fields cut to the same path become one,
+// a credential if any of them is.
+func wholeAtNonObjects(fields []manifest.SecretField, values []map[string]any) []manifest.SecretField {
+	out := make([]manifest.SecretField, 0, len(fields))
+	for _, f := range fields {
+		f.Path = f.Path[:objectDepth(f.Path, values)]
+		if i := slices.IndexFunc(out, func(o manifest.SecretField) bool { return slices.Equal(o.Path, f.Path) }); i >= 0 {
+			out[i].Credential = out[i].Credential || f.Credential
+			continue
+		}
+		out = append(out, f)
+	}
+	return sortSecrets(out)
+}
+
+// objectDepth is how much of path leads through objects: len(path), or the
+// depth of the first value on its way that is not an object in one of values.
+func objectDepth(path []string, values []map[string]any) int {
+	n := len(path)
+	for _, m := range values {
+		var cur any = m
+		for i := 0; i < n; i++ {
+			obj, ok := cur.(map[string]any)
+			if !ok {
+				n = i
+				break
+			}
+			if cur = obj[path[i]]; cur == nil {
+				break
+			}
+		}
+	}
+	return n
 }
 
 // valueAt returns the value at path inside nested objects.

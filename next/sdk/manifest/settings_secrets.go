@@ -40,7 +40,10 @@ const MaxSecretDepth = 8
 // SettingsSecret is one entry of ui.settings.secrets: Path is the setting's
 // JSON pointer below the values, written like SecretField.Pointer ("a/b",
 // "~0" and "~1" escaped); Sensitive marks an address that is masked but is
-// not a credential (CONTRACTS §75.1).
+// not a credential (CONTRACTS §75.1). An array element cannot be declared on
+// its own: a path that meets an array (or any other value that is not an
+// object) on its way masks and keeps that value whole, so declare the array
+// itself.
 type SettingsSecret struct {
 	Path      string `json:"path"`
 	Sensitive bool   `json:"sensitive,omitempty"`

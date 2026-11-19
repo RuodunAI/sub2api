@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"testing"
@@ -205,30 +206,40 @@ func (v validating) ValidateSettings(_ context.Context, cfg pluginsdk.Config) (j
 		return nil, pluginsdk.FieldErrors{}.Add("name", "invalid", "bad name").Err()
 	case " trim ":
 		return json.RawMessage(`{"name":"trim"}`), nil
+	case "grants":
+		if len(cfg.Grants) != 1 || string(cfg.Grants[0].Scope) != `{"domains":["a.test"]}` {
+			return nil, fmt.Errorf("grants = %v", cfg.Grants)
+		}
+		return json.RawMessage(`{"name":"` + cfg.Grants[0].Permission + `"}`), nil
 	}
 	return nil, nil
 }
 
 func TestValidateSettings(t *testing.T) {
 	h := pluginsdktest.Start(t, validating{newDemo()}, pluginsdktest.Options{Manifest: []byte(testManifest)})
-	resp, err := h.ValidateSettings(map[string]string{"name": "bad"})
+	resp, err := h.ValidateSettings(map[string]string{"name": "bad"}, nil)
 	if err != nil || len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "name" {
 		t.Fatalf("field errors = %v %v", resp, err)
 	}
-	if resp, err = h.ValidateSettings(`not json`); err != nil || len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "" {
+	if resp, err = h.ValidateSettings(`not json`, nil); err != nil || len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "" {
 		t.Fatalf("other errors reject the whole object = %v %v", resp, err)
 	}
-	if resp, err = h.ValidateSettings(map[string]string{"name": " trim "}); err != nil || resp.GetNormalizedConfigJson() != `{"name":"trim"}` {
+	if resp, err = h.ValidateSettings(map[string]string{"name": " trim "}, nil); err != nil || resp.GetNormalizedConfigJson() != `{"name":"trim"}` {
 		t.Fatalf("normalized = %v %v", resp, err)
 	}
-	if resp, err = h.ValidateSettings(nil); err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
+	if resp, err = h.ValidateSettings(nil, nil); err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
 		t.Fatalf("accepted = %v %v", resp, err)
+	}
+	// The grants reach the plugin as Configure gets them.
+	grants := []*pluginv1.Grant{{Permission: "net", ScopeJson: `{"domains":["a.test"]}`}}
+	if resp, err = h.ValidateSettings(map[string]string{"name": "grants"}, grants); err != nil || resp.GetNormalizedConfigJson() != `{"name":"net"}` {
+		t.Fatalf("grants = %v %v", resp, err)
 	}
 
 	// Without SettingsValidator the call is UNIMPLEMENTED: the host stores
 	// the settings as they are.
 	plain := pluginsdktest.Start(t, newDemo(), pluginsdktest.Options{Manifest: []byte(testManifest)})
-	if _, err := plain.ValidateSettings(nil); status.Code(err) != codes.Unimplemented {
+	if _, err := plain.ValidateSettings(nil, nil); status.Code(err) != codes.Unimplemented {
 		t.Fatalf("without a validator = %v", err)
 	}
 }

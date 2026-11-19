@@ -184,11 +184,13 @@ type Configurer interface {
 // (PluginService.ValidateSettings, CONTRACTS §75.1). Optional: without it
 // the host stores what the console submits and Configure is the only check.
 // cfg.JSON holds the submitted settings with masked secrets replaced by the
-// stored values; cfg.Grants is empty. Return a FieldErrors value (fields are
-// JSON pointers below the settings, "a/b") to reject field by field, any
-// other error to reject the settings as a whole, and a non-empty normalized
-// to store it instead of what was submitted. Share the decoding and checks
-// with Configure so that whatever is stored configures.
+// stored values; cfg.Grants are the plugin's current grants, as Configure
+// gets them. Return a FieldErrors value (fields are JSON pointers below the
+// settings, "a/b") to reject field by field, any other error to reject the
+// settings as a whole, and a non-empty normalized to store it instead of what
+// was submitted. The console shows error messages as they are, so a message
+// must not hold a field's value (it may be a secret). Share the decoding and
+// checks with Configure so that whatever is stored configures.
 type SettingsValidator interface {
 	ValidateSettings(ctx context.Context, cfg Config) (normalized json.RawMessage, err error)
 }

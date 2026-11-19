@@ -25,6 +25,12 @@
 //
 // Credentials and account settings arrive as two objects; Check takes both
 // and reads each field from the first that holds it.
+//
+// Two differences from the JSON Schema rules worth knowing: Integer without
+// Range does not check the size, so a whole number past what the plugin's Go
+// type holds passes here and fails only when Configure decodes it; and
+// Required refuses an empty string (and null), stricter than JSON Schema's
+// required, which only asks for the key.
 package fieldcheck
 
 import (
@@ -71,7 +77,7 @@ const (
 	kindObject
 )
 
-var kindNames = map[kind]string{kindString: "a string", kindInteger: "an integer", kindNumber: "a number",
+var kindNames = map[kind]string{kindAny: "any value", kindString: "a string", kindInteger: "an integer", kindNumber: "a number",
 	kindBool: "true or false", kindArray: "an array", kindObject: "an object"}
 
 // String is a JSON string; lengths count characters (code points), as JSON
@@ -98,7 +104,7 @@ func Object(fields Fields) Field { return Field{kind: kindObject, fields: fields
 // free-form object).
 func Any() Field { return Field{kind: kindAny} }
 
-// Required: the key must be present, and a string not empty.
+// Required: the key must be present, not null, and a string not empty.
 func (f Field) Required() Field { f.required = true; return f }
 
 // MinLen is the least length of a string or array.
@@ -121,11 +127,29 @@ func (f Field) Range(min, max float64) Field { return f.Min(min).Max(max) }
 
 // Pattern is a regular expression (Go RE2 syntax) a string must match
 // somewhere, as JSON Schema's pattern: anchor it with ^ and $ to match the
-// whole string. It panics on an invalid expression, when the rule is built.
-func (f Field) Pattern(expr string) Field { f.pattern = regexp.MustCompile(expr); return f }
+// whole string. It panics on an invalid expression, or on a rule that is
+// not String, when the rule is built.
+func (f Field) Pattern(expr string) Field {
+	f.mustBeString("Pattern")
+	f.pattern = regexp.MustCompile(expr)
+	return f
+}
 
-// OneOf are the values a string may take.
-func (f Field) OneOf(values ...string) Field { f.enum = values; return f }
+// OneOf are the values a string may take. It panics on a rule that is not
+// String, when the rule is built.
+func (f Field) OneOf(values ...string) Field {
+	f.mustBeString("OneOf")
+	f.enum = values
+	return f
+}
+
+// mustBeString panics when a string-only rule is put on another kind: it
+// would never be checked.
+func (f Field) mustBeString(rule string) {
+	if f.kind != kindString {
+		panic(fmt.Sprintf("fieldcheck: %s applies to String only, not %s", rule, kindNames[f.kind]))
+	}
+}
 
 // Check checks objs against fields: each field is read from the first object
 // holding its key; a key of any object that fields does not name is refused
@@ -169,7 +193,7 @@ func unknown(errs pluginsdk.FieldErrors, at string, known func(string) bool, obj
 
 // check adds the first problem of the value at path p.
 func (f Field) check(errs pluginsdk.FieldErrors, p string, value any, present bool) pluginsdk.FieldErrors {
-	if !present || (f.required && value == "") {
+	if !present || (f.required && (value == nil || value == "")) {
 		if f.required {
 			return errs.Add(p, "required", fmt.Sprintf("%s is required / %s 不能为空", p, p))
 		}

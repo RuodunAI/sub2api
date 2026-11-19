@@ -818,8 +818,34 @@ func TestNativeSettingsNeedComponentOrPage(t *testing.T) {
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); c["ui.settings.component"] != "required" {
 		t.Fatalf("neither component nor page: %v", c)
 	}
-	m.UI.Settings.Component = "Settings"
+	m.UI.Settings.Component, m.UI.Settings.Secrets = "Settings", []manifest.SettingsSecret{}
 	if c := codes(Validate(m, files, ValidateOptions{Tooling: true})); len(c) > 0 {
 		t.Fatalf("a component is enough: %v", c)
+	}
+}
+
+// Native or iframe settings without a schema say which settings are secret:
+// without the key the core masks them all, so it is required; [] declares
+// none. Settings with a schema mark their secrets in it.
+func TestSettingsSecretsRequired(t *testing.T) {
+	m := uiManifest()
+	m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "ui.native"}, manifest.HostPermission{ID: "ui.iframe"})
+	m.UI.Native = &manifest.NativeUI{Entry: "ui/native/entry.js"}
+	m.HostUICompat = "^3.3"
+	files := map[string][]byte{"ui/native/entry.js": []byte(""), "ui/iframe/s.html": []byte(""), "settings.schema.json": []byte("{}")}
+	validate := func() map[string]string { return codes(Validate(m, files, ValidateOptions{Tooling: true})) }
+	for _, f := range []*manifest.Form{{Mode: "native", Component: "Settings"}, {Mode: "iframe", Page: "ui/iframe/s.html"}} {
+		m.UI.Settings = f
+		if c := validate(); c["ui.settings.secrets"] != "required" {
+			t.Fatalf("%s without secrets: %v", f.Mode, c)
+		}
+		f.Secrets = []manifest.SettingsSecret{}
+		if c := validate(); len(c) > 0 {
+			t.Fatalf("%s with secrets []: %v", f.Mode, c)
+		}
+	}
+	m.UI.Settings = &manifest.Form{Mode: "native", Component: "Settings", Schema: "settings.schema.json"}
+	if c := validate(); len(c) > 0 {
+		t.Fatalf("a schema marks the secrets: %v", c)
 	}
 }

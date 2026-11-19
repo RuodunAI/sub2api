@@ -406,7 +406,7 @@ func (rt *runtime) ValidateSettings(ctx context.Context, in *pluginv1.ValidateSe
 	if !ok {
 		return nil, status.Error(codes.Unimplemented, "plugin does not validate its settings")
 	}
-	normalized, err := v.ValidateSettings(ctx, configFromProto(&pluginv1.ConfigureRequest{ConfigJson: in.GetConfigJson()}))
+	normalized, err := v.ValidateSettings(ctx, configFromProto(&pluginv1.ConfigureRequest{ConfigJson: in.GetConfigJson(), Grants: in.GetGrants()}))
 	if err != nil {
 		return &pluginv1.ValidateSettingsResponse{Errors: fieldErrorsOf(err)}, nil
 	}

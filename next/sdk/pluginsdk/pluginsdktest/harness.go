@@ -176,11 +176,12 @@ func (h *Harness) Configure(config any, grants []*pluginv1.Grant) []*pluginv1.Fi
 	return resp.GetErrors()
 }
 
-// ValidateSettings sends a ValidateSettings call; config is what Configure
-// takes. A plugin without pluginsdk.SettingsValidator answers UNIMPLEMENTED.
-func (h *Harness) ValidateSettings(config any) (*pluginv1.ValidateSettingsResponse, error) {
+// ValidateSettings sends a ValidateSettings call; config and grants are what
+// Configure takes. A plugin without pluginsdk.SettingsValidator answers
+// UNIMPLEMENTED.
+func (h *Harness) ValidateSettings(config any, grants []*pluginv1.Grant) (*pluginv1.ValidateSettingsResponse, error) {
 	h.T.Helper()
-	return h.Plugin.ValidateSettings(context.Background(), &pluginv1.ValidateSettingsRequest{ConfigJson: h.configJSON(config)})
+	return h.Plugin.ValidateSettings(context.Background(), &pluginv1.ValidateSettingsRequest{ConfigJson: h.configJSON(config), Grants: grants})
 }
 
 // configJSON encodes config: nil is "{}", a string, json.RawMessage or

@@ -35,13 +35,15 @@ func (s *settingsCheck) ValidateSettings(_ context.Context, in *pluginv1.Validat
 	return s.answer, nil
 }
 
+// guardSecrets are the ui.settings.secrets most tests install guard with.
+var guardSecrets = []manifest.SettingsSecret{{Path: "webhook_secret"}, {Path: "notify/url", Sensitive: true}}
+
 // installNativeSettings installs guard with native settings that declare
-// their secrets in ui.settings.secrets (no schema).
-func installNativeSettings(t *testing.T, h *harness, root pkgtest.Key) {
+// secrets in ui.settings.secrets (no schema).
+func installNativeSettings(t *testing.T, h *harness, root pkgtest.Key, secrets []manifest.SettingsSecret) {
 	t.Helper()
 	guard := pkgtest.Guard("guard", "0.1.0", "sub2api")
-	guard.UI.Settings = &manifest.Form{Mode: "native", Component: "GuardSettings", Permission: "stats:read", Secrets: []manifest.SettingsSecret{
-		{Path: "webhook_secret"}, {Path: "notify/url", Sensitive: true}}}
+	guard.UI.Settings = &manifest.Form{Mode: "native", Component: "GuardSettings", Permission: "stats:read", Secrets: secrets}
 	code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(guard, root)))
 	require.Equal(t, http.StatusOK, code, out)
 	consent := install.ConsentRequest{Grants: []install.GrantInput{{Permission: "db.schema"}, {Permission: "gateway.hook"},
@@ -77,7 +79,7 @@ func fieldsOf(out map[string]any) map[string]string {
 // holder re-enters a kept credential like with a schema (§75.1).
 func TestNativeSettingsMaskDeclaredSecrets(t *testing.T) {
 	h, root := newHarness(t)
-	installNativeSettings(t, h, root)
+	installNativeSettings(t, h, root, guardSecrets)
 
 	code, out := h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{
 		"threshold": 3, "webhook_secret": "s3cret", "notify": map[string]any{"url": "https://hooks.example/x", "name": "n"}}})
@@ -96,14 +98,46 @@ func TestNativeSettingsMaskDeclaredSecrets(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, code, out)
 	assert.Equal(t, map[string]string{"values/webhook_secret": "reenter"}, fieldsOf(out))
 
-	// Declaring no secrets masks nothing.
+	// Without the secrets key nothing says which settings are secret: every
+	// top-level one is masked as a credential.
 	_, err := h.db.SQL.ExecContext(context.Background(),
 		`UPDATE plugin_versions SET manifest = manifest #- '{ui,settings,secrets}' WHERE plugin_key = 'guard'`)
 	require.NoError(t, err)
 	code, out = h.do("GET", "/plugins/guard/settings", "admin", nil)
 	require.Equal(t, http.StatusOK, code, out)
+	assert.Equal(t, map[string]any{"threshold": Mask, "webhook_secret": Mask, "notify": Mask}, data(out)["values"])
+	assert.Equal(t, []any{"notify", "threshold", "webhook_secret"}, data(out)["secret_fields"])
+
+	// secrets: [] declares that none is.
+	_, err = h.db.SQL.ExecContext(context.Background(),
+		`UPDATE plugin_versions SET manifest = jsonb_set(manifest, '{ui,settings,secrets}', '[]') WHERE plugin_key = 'guard'`)
+	require.NoError(t, err)
+	code, out = h.do("GET", "/plugins/guard/settings", "admin", nil)
+	require.Equal(t, http.StatusOK, code, out)
 	assert.Equal(t, "s3cret", data(out)["values"].(map[string]any)["webhook_secret"])
 	assert.Equal(t, []any{}, data(out)["secret_fields"])
+}
+
+// A declared path that meets an array masks and keeps the array whole: its
+// elements cannot be named one by one (§75.1).
+func TestNativeSettingsSecretThroughArray(t *testing.T) {
+	h, root := newHarness(t)
+	installNativeSettings(t, h, root, []manifest.SettingsSecret{{Path: "hooks/0/secret"}})
+
+	code, out := h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{
+		"threshold": 3, "hooks": []any{map[string]any{"url": "u", "secret": "s3cret"}}}})
+	require.Equal(t, http.StatusOK, code, out)
+	assert.Equal(t, map[string]any{"threshold": 3.0, "hooks": Mask}, data(out)["values"])
+	assert.Equal(t, []any{"hooks"}, data(out)["secret_fields"])
+
+	code, out = h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{"threshold": 4, "hooks": Mask}})
+	require.Equal(t, http.StatusOK, code, out)
+	assert.JSONEq(t, `{"threshold":4,"hooks":[{"url":"u","secret":"s3cret"}]}`, h.storedSettings())
+
+	// The plugin-permission holder re-enters it like any kept credential.
+	code, out = h.do("PUT", "/plugins/guard/settings", "viewer", map[string]any{"values": map[string]any{"threshold": 5, "hooks": Mask}})
+	require.Equal(t, http.StatusBadRequest, code, out)
+	assert.Equal(t, map[string]string{"values/hooks": "reenter"}, fieldsOf(out))
 }
 
 // PUT /plugins/:key/settings asks the enabled plugin (ValidateSettings) with
@@ -112,7 +146,7 @@ func TestNativeSettingsMaskDeclaredSecrets(t *testing.T) {
 // generation accept.
 func TestSettingsValidatedByPlugin(t *testing.T) {
 	h, root := newHarness(t)
-	installNativeSettings(t, h, root)
+	installNativeSettings(t, h, root, guardSecrets)
 	put := func(values map[string]any) (int, map[string]any) {
 		return h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": values})
 	}
@@ -156,7 +190,7 @@ func TestSettingsValidatedByPlugin(t *testing.T) {
 // the console does not open iframe settings, so they are not listed.
 func TestHasSettingsMode(t *testing.T) {
 	h, root := newHarness(t)
-	installNativeSettings(t, h, root)
+	installNativeSettings(t, h, root, guardSecrets)
 	hasSettings := func() any {
 		code, out := h.do("GET", "/plugins", "admin", nil)
 		require.Equal(t, http.StatusOK, code, out)

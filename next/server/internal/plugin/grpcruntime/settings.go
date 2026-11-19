@@ -66,9 +66,11 @@ func (i *Instance) SettingsValidator() core.SettingsValidator { return settingsA
 type settingsAdapter struct{ i *Instance }
 
 // ValidateSettings runs plugin code for somebody waiting in the console, so
-// it takes the console budget like ValidateCredentials.
+// it takes the console budget like ValidateCredentials. The plugin gets its
+// current grants, as Configure does.
 func (a settingsAdapter) ValidateSettings(ctx context.Context, in *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error) {
-	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, pluginOf, pluginv1.PluginServiceClient.ValidateSettings, in)
+	req := &pluginv1.ValidateSettingsRequest{ConfigJson: in.GetConfigJson(), Grants: a.i.settings.Load().protoGrants()}
+	return invoke(a.i, ctx, classConsole, TimeoutPlatformConsole, pluginOf, pluginv1.PluginServiceClient.ValidateSettings, req)
 }
 
 // SettingsChanged tells the plugin process that sections changed. The SDK
