@@ -666,11 +666,27 @@ SDK 拒绝未知键：
 
 - **`deploy/docker/build-go.sh:100-102`：** 去掉自动加 `--allow-missing-ui`。清单声明了 native 却没有 `ui/native/dist` 时直接失败。没有 schema 表单之后，缺 dist 就等于发出一个"没有账号表单"的包。
   - `tools/sub2api-plugin/scripts/build-demo.sh:28-29,90-96` 的 `REQUIRE_UI` 改为默认 1，或者删掉这个开关。演示脚本仍保留 `--allow-missing-ui` 参数供本地开发使用。
+  - T1 的做法：`REQUIRE_UI` 删掉（发布工作流里的 `REQUIRE_UI: '1'` 随之删除），`build-demo.sh` 与 `build-go.sh` 的通用分支缺 `ui/native/dist/entry.js` 时都报出插件名并退出。`sub2api-plugin pack` 和 `dev` 的 `--allow-missing-ui` 保留，只供本地手工打包和 `dev` 调试用（`pack` 不带它时本来就拒绝缺界面的包）；没有脚本再自动加它。
+  - 调用 `pack` 的路径：镜像（`Dockerfile` 的 ui 阶段先跑 `build-ui.sh`）、e2e 栈（同一个镜像）、发布工作流（先跑 `build-ui.sh`）都先构建了全部插件界面；`deploy/ci/check.sh` 的 `plugins` 阶段在 golang 容器里没有 node，注释写明要先在检出上跑 `build-ui.sh`（它打的 guard，以及迁移后的 anthropic、openai、volcengine、relay 都带 native 界面）；`build-go.sh` 的 `GO_BINARIES_ONLY=1` 不打包，不受影响。
 - **`deploy/docker/build-ui.sh` 已经遍历 `plugins/*/ui/native`，新工程自动纳入。** 结论是不改成 npm workspace，原因有三：
   - 插件界面对外是独立工程，第三方也这样写。
   - 现有 5 个工程只有 4 个 devDependency，约 87 个包，lockfile 约 45KB；`vue` 和 `@sub2api/*` 走 import map（`packages/vite-preset/index.js:15,77`）。
   - Docker 构建有 npm 缓存挂载（`next/Dockerfile:38`），下载只发生一次。
-  - 构建耗时没有数据：在任务 T1 里实测改动前后的镜像构建时间，写进交付说明。
+  - T1 实测（2026-11-19，开发机，npm 缓存已热，Node 26 / npm 11）：按 `build-ui.sh` 的方式逐个 `npm ci && npm run build`。
+
+    | 工程 | `npm ci` | `build` | `node_modules` | `dist` |
+    |---|---|---|---|---|
+    | codex | 2.4 s | 1.8 s | 39 MB | 56 KB |
+    | dynweight | 2.1 s | 2.8 s | 40 MB | 248 KB |
+    | growth | 1.9 s | 1.7 s | 37 MB | 44 KB |
+    | guard | 2.2 s | 1.4 s | 38 MB | 32 KB |
+    | moderation | 1.9 s | 4.5 s | 38 MB | 544 KB |
+
+    - 5 个工程的 lockfile 都是 86–87 个包、约 45KB，依赖完全相同；冷缓存时一次 `npm ci` 2.8 s，下载进缓存 12 MB，之后的工程全部命中缓存。
+    - 镜像 ui 阶段里插件界面合计约 23 s、`node_modules` 约 200 MB（只在 ui 阶段，不进最终镜像）。
+    - 17 个工程时按平均每个 4.6 s、39 MB 估算：约 80 s、约 660 MB。CI 的 `plugin UIs` 任务（含 typecheck、spec）5 个工程实测 146 s，17 个约 8 分钟，与 Go 的 server 任务并行跑。
+    - 改成 npm workspace 只能省掉每个工程约 2 s 的 `npm ci` 和大部分重复的 `node_modules`（磁盘），省不掉 typecheck、spec、build 的时间。上面这个量级可以接受，结论仍是不改；工程数再翻倍、或 ui 阶段的磁盘成为问题时再议。
+    - 没有实测整个镜像改动前后的构建时间：T1 只改脚本里的检查，不改构建步骤，镜像构建时间不变。
 - **新工程统一照 codex 的模板**（`plugins/codex/ui/native/package.json`、`tsconfig.json`、`vitest.config.ts`）：`build`、`typecheck`、`test` 三个脚本；typecheck 和 test 借用控制台的 `node_modules`；提交 `package-lock.json`。growth、guard 补上 typecheck 和 test 脚本，以及 tsconfig。
 - **`.github/workflows/next-ci.yml`：** 新增 `plugin-ui` 任务。
   - 先在 `next/web` 跑 `npm ci`。
