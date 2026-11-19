@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -40,7 +41,7 @@ func (c *call) checkReferencedModels() *gwError {
 		}
 		for _, location := range locations {
 			item := location.item
-			if !matchesModelReference(item, rule.Match) {
+			if !usagerules.Matches(item, rule.Match) {
 				continue
 			}
 			value := item.Get(rule.ModelPath)
@@ -64,19 +65,6 @@ func (c *call) checkReferencedModels() *gwError {
 		}
 	}
 	return nil
-}
-
-func matchesModelReference(item gjson.Result, match map[string]string) bool {
-	if !item.IsObject() {
-		return false
-	}
-	for path, expected := range match {
-		value := item.Get(path)
-		if value.Type != gjson.String || value.Str != expected {
-			return false
-		}
-	}
-	return true
 }
 
 func invalidModelReference(message string) *gwError {
@@ -204,10 +192,20 @@ func (c *call) mapReferencedModels(body []byte, account *core.AccountRef, rt *ty
 	return body, nil
 }
 
-func (c *call) recordAdditionalUsage(u *usagerules.Acc, rt *typeRoute) {
+func (c *call) recordAdditionalUsage(ctx context.Context, u *usagerules.Acc, rt *typeRoute) {
 	c.rec.Additional = nil
 	c.rec.BillingError = u.AdditionalError
+	c.rec.AdditionalUnpriced = ""
 	for _, actual := range u.Additional() {
+		if actual.ResponseModel {
+			priced, err := c.priceResponseModel(ctx, actual)
+			if err != nil {
+				c.rec.BillingError = fmt.Sprintf("additional usage %s/%s: %v", actual.Kind, actual.Model, err)
+				continue
+			}
+			c.rec.Additional = append(c.rec.Additional, priced)
+			continue
+		}
 		priced, ok := c.upstreamRefs[actual.Kind+"\x00"+actual.Model]
 		if !ok && actual.Model == c.upstreamPrimaryModel && primaryUsageKind(rt, actual.Kind) {
 			priced = core.PricedUsage{Kind: actual.Kind, Model: c.model, Price: c.rec.Price.Clone(),
@@ -221,6 +219,46 @@ func (c *call) recordAdditionalUsage(u *usagerules.Acc, rt *typeRoute) {
 		priced.Tokens, priced.UsageSemantics = actual.Tokens, actual.UsageSemantics
 		priced.Metrics = actual.Metrics
 		c.rec.Additional = append(c.rec.Additional, priced)
+	}
+}
+
+// priceResponseModel prices additional usage whose model the response named
+// (CONTRACTS §120) the way a referenced model is priced before scheduling
+// (prepareReferencedPrices), now that the model is known: the price of the
+// caller's group and segment, the request's rate, the price inputs read from
+// the client request. Without a price the usage is recorded unpriced. Under
+// missing_price_policy "free" that is the policy; under "reject" the request
+// can no longer be refused, so the rest of it is billed as usual and the
+// record, and a throttled warning, say which usage went unpriced (§120.4).
+func (c *call) priceResponseModel(ctx context.Context, actual core.AdditionalUsage) (core.PricedUsage, error) {
+	rule, err := c.g.d.Pricer.Resolve(context.WithoutCancel(ctx), c.priceQuery(actual.Model))
+	if ce := core.AsError(err); err != nil && ce.Code == core.ErrPriceNotConfigured.Code {
+		c.noteUnpriced(ctx, actual.Kind+"/"+actual.Model)
+		err = nil
+	}
+	if err != nil {
+		return core.PricedUsage{}, err
+	}
+	if rule != nil && (rule.VideoOnly || !c.ep.SupportsBillingType(rule.Mode)) {
+		return core.PricedUsage{}, fmt.Errorf("the model's price has an incompatible billing type")
+	}
+	priced := core.PricedUsage{Kind: actual.Kind, Model: actual.Model, Price: rule, RateMultiplier: c.rec.RateMultiplier,
+		Tokens: actual.Tokens, UsageSemantics: actual.UsageSemantics, Metrics: actual.Metrics}
+	priced.PriceParams, priced.PriceHeaders = c.priceInputsFrom(rule, c.body)
+	return priced, nil
+}
+
+// noteUnpriced records on the usage record that usage (kind/model) had no
+// price and warns, at most once a minute per usage.
+func (c *call) noteUnpriced(ctx context.Context, usage string) {
+	if c.rec.AdditionalUnpriced == "" {
+		c.rec.AdditionalUnpriced = usage
+	} else {
+		c.rec.AdditionalUnpriced += ", " + usage
+	}
+	if ok, suppressed := c.g.unpricedWarns.allow(usage, c.g.now()); ok {
+		slog.WarnContext(ctx, "gateway: additional usage has no price and is not charged; configure a price for its model",
+			"request_id", c.rid, "usage", usage, "suppressed", suppressed)
 	}
 }
 
@@ -276,7 +314,7 @@ func modelReferenceSnapshotIn(root gjson.Result, rules []manifest.RequestModelRe
 		}
 		for _, location := range locations {
 			item := location.item
-			if !matchesModelReference(item, rule.Match) {
+			if !usagerules.Matches(item, rule.Match) {
 				continue
 			}
 			model := item.Get(rule.ModelPath)

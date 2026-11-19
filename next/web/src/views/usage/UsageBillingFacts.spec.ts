@@ -72,3 +72,42 @@ describe('group pricing of a usage record', () => {
     expect(text('usage-list-cost')).toBe('$0.006912')
   })
 })
+
+// A Responses request that used the image_generation tool (CONTRACTS §120).
+describe('additional usage of a usage record', () => {
+  const imageTokens = { Input: 39, Output: 515, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0, ImageOutput: 515 }
+  function withImage(part?: Record<string, unknown>): UsageRow {
+    const u = record({ rate: '1', total: '0.019045' })
+    u.billing_detail = { ...u.billing_detail, ...(part ? { additional: [part] } : {}),
+      inputs: { additional: [{ Kind: 'image_generation', Model: 'gpt-image-2-codex', Tokens: imageTokens }] } }
+    return u
+  }
+
+  it('shows the image tool with its model, image tokens and amount', () => {
+    const { text, has } = render(withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 21, detail: { total_cost: '0.015645' } }))
+    expect(has('usage-additional')).toBe(true)
+    const item = text('usage-additional-item')
+    expect(item).toContain('生图工具')
+    expect(item).toContain('gpt-image-2-codex')
+    expect(item).toContain('图片输出')
+    expect(item).toContain('515')
+    expect(item).toContain('$0.015645')
+  })
+
+  it('says when the image model had no price', () => {
+    const { text } = render(withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 0, detail: {} }), 'en')
+    expect(text('usage-additional-item')).toContain('No price, not charged')
+  })
+
+  it('warns when the image model had no price under the reject policy', () => {
+    const u = withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 0, detail: {} })
+    u.anomalies = { additional_unpriced: 'image_generation/gpt-image-2-codex' }
+    const { text } = render(u)
+    expect(text('usage-additional-unpriced')).toContain('附加用量 image_generation/gpt-image-2-codex 没有价格，未计费')
+    expect(render(withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 0, detail: {} })).has('usage-additional-unpriced')).toBe(false)
+  })
+
+  it('shows nothing for a record without additional usage', () => {
+    expect(render(record({ rate: '1', total: '0.00576' })).has('usage-additional')).toBe(false)
+  })
+})
