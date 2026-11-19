@@ -1635,7 +1635,6 @@ on('GET', '/me/ledger', (req) => paginate(ledgerFilter(ledgerRows.filter((l) => 
 
 const billingSettings = {
   pre_consume_tokens: 500,
-  missing_price_policy: 'reject',
   min_balance: '0',
   big_cost_warning_usd: '10',
   client_disconnect_policy: 'continue'
@@ -1661,15 +1660,12 @@ on('PUT', '/settings/billing', (req) => {
   // A null pointer field binds as left out, as in Go.
   if (b.client_disconnect_policy === null) delete b.client_disconnect_policy
   if (!disconnectBinds(b)) return fail(400, 'invalid_argument', 'invalid request body')
-  if (!['reject', 'free'].includes(b.missing_price_policy)) {
-    return fail(400, 'invalid_argument', 'invalid', { fields: [{ field: 'missing_price_policy', code: 'enum', message: 'must be reject or free' }] })
-  }
   if (!Number.isInteger(b.pre_consume_tokens) || b.pre_consume_tokens < 0 || b.pre_consume_tokens > 100000000) {
     return fail(400, 'invalid_argument', 'invalid', { fields: [{ field: 'pre_consume_tokens', code: 'invalid', message: 'must be an integer from 0 to 100000000' }] })
   }
   const fields = disconnectFields(b)
   if (fields.length) return fail(400, 'invalid_argument', 'invalid', { fields })
-  Object.assign(billingSettings, { pre_consume_tokens: b.pre_consume_tokens, missing_price_policy: b.missing_price_policy, min_balance: String(b.min_balance), big_cost_warning_usd: String(b.big_cost_warning_usd) })
+  Object.assign(billingSettings, { pre_consume_tokens: b.pre_consume_tokens, min_balance: String(b.min_balance), big_cost_warning_usd: String(b.big_cost_warning_usd) })
   if (b.client_disconnect_policy !== undefined) billingSettings.client_disconnect_policy = b.client_disconnect_policy
   return billingSettings
 })

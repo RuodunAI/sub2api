@@ -151,15 +151,6 @@ export default {
     preConsumeHint: 'Minimum input tokens reserved for text requests, default 500. Larger local estimates take precedence. Zero disables the minimum. Final billing uses actual usage; video uses plugin estimates.',
     preConsumeInvalid: 'Enter an integer from 0 to 100000000',
     title: 'Billing',
-    missingPolicy: 'When a model has no price',
-    policy: {
-      reject: 'Reject the request',
-      free: 'Allow for free'
-    },
-    policyHint: {
-      reject: 'Return 403 model_price_not_configured. Recommended: nothing is served without a price.',
-      free: 'Serve the request and record it with billing status "free".'
-    },
     minBalance: 'Minimum balance',
     minBalanceHint: 'Requests are rejected with 402 when the balance is at or below this value (default 0).',
     bigCost: 'High-cost warning threshold',
