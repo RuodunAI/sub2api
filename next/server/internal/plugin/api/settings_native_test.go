@@ -140,6 +140,23 @@ func TestNativeSettingsSecretThroughArray(t *testing.T) {
 	assert.Equal(t, map[string]string{"values/hooks": "reenter"}, fieldsOf(out))
 }
 
+// A credential and a sensitive address cut to the same value through an array
+// are one secret, a credential: the plugin-permission holder re-enters it.
+func TestNativeSettingsCredentialWinsAtOneValue(t *testing.T) {
+	h, root := newHarness(t)
+	installNativeSettings(t, h, root, []manifest.SettingsSecret{{Path: "hooks/0/secret"}, {Path: "hooks/0/url", Sensitive: true}})
+
+	code, out := h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": map[string]any{
+		"threshold": 3, "hooks": []any{map[string]any{"url": "u", "secret": "s3cret"}}}})
+	require.Equal(t, http.StatusOK, code, out)
+	assert.Equal(t, []any{"hooks"}, data(out)["secret_fields"])
+
+	code, out = h.do("PUT", "/plugins/guard/settings", "viewer", map[string]any{"values": map[string]any{"threshold": 4, "hooks": Mask}})
+	require.Equal(t, http.StatusBadRequest, code, out)
+	assert.Equal(t, map[string]string{"values/hooks": "reenter"}, fieldsOf(out))
+	assert.JSONEq(t, `{"threshold":3,"hooks":[{"url":"u","secret":"s3cret"}]}`, h.storedSettings())
+}
+
 // PUT /plugins/:key/settings asks the enabled plugin (ValidateSettings) with
 // the masked secrets restored: its field errors come back below values, its
 // normalized object is stored; UNIMPLEMENTED and a plugin that is not in the
