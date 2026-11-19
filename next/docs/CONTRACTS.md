@@ -186,7 +186,7 @@
 | 方法 路径 | 权限 | 说明 |
 |---|---|---|
 | GET `/account-types` | `account:read` | `[{plugin_key, plugin_name, plugin_version, asset_base, platform, type, label, description, form:{mode, page?, component?}, sensitive_fields, guarded_settings:[{field, allowed[]}], custom_upstream}]`（`guarded_settings` 来自 manifest `guardedSettings`，§21.3；未声明时为 `[]`；`custom_upstream` 见 §21.3） |
-| GET `/account-types/:platform/:type/form` | `account:read` | `{schema, ui_schema}` |
+| ~~GET `/account-types/:platform/:type/form`~~ | | 已删除（2026-11-19，插件界面只用代码写）：账号表单是插件的 native 组件，核心不再提供表单 schema |
 | GET `/accounts`（`?plugin_key=&type=&group_id=&status=&q=&model=&created_by=&mine=&orphaned=`） | `account:read` | 列表含 `in_use`（实时并发）、`cooldown_until`、`orphaned`、`rate_usage`（§18）、`created_by`、`created_by_email`（§21）。**默认不列出孤立账号**（所属插件已禁用/卸载，数据仍在）；`orphaned=true` 只列孤立的，`orphaned=all` 都列；详情 `GET /accounts/:id` 不受影响 |
 | GET `/accounts/summary` | `account:read` 的任意范围 | 调用者 `account:read` 范围内未删除账号的状态计数 `{total, available, auto_disabled, disabled}`，口径同 `GET /usage/overview` 的 `accounts`（`available` = active 且可调度；`auto_disabled` 含 active 但不可调度；不区分孤立账号）；供应商仪表盘账号状态卡片（T81，2026-11-13 权限加固期 4 P4F5） |
 | POST `/accounts` | `account:create` | `{name, plugin_key, type, group_ids[], proxy_id \| proxy_url, priority, weight, max_concurrency, schedulable, auto_disable, models[], model_mapping{}, rpm_limit, tpm_limit, credentials:{...}}`（§18、§21.4、§42.3）；响应另带 `proxy_created` |
@@ -275,7 +275,7 @@
 - **撤销过的宿主权限不自动恢复**（2026-11-14 0.1.287 候选，无迁移）：`DELETE /plugins/:key/grants/:permission` 撤销的权限，此后的同意（`decide`）不再按“低风险默认授予”给回，也不算沿用；只有同意请求的 `grants` 里显式列出才恢复（低风险不要授予权限，高风险、极高风险照旧按风险要 `plugin:grant:high`/`plugin:grant:critical`）。必需的未列出 400 `consent_required`（`permission %q was revoked and must be granted explicitly`），列在 `denied` 400 `required`（不变）；可选的未列出或列在 `denied` 时记为 `revoked`（不是 `denied`），撤销一直保持到有人显式授予。“撤销过”由 `grants.Revoked` 判断：插件授予表与各版本待生效授予里，该权限最新（`granted_at` 最大，相同时撤销优先）的一行是 `revoked`；所以一次显式授予（写在待生效授予里也算）之后，旧的待生效集合里残留的 `revoked` 不再生效。为让撤销跨版本保留：激活一个不再申请该权限的版本时 `ApplyDefaults` 不删 `revoked` 行（其他照旧删除）；升级失败或取消撤回待生效授予（`grants.Withdraw`）时，集合里 `revoked` 的行在插件授予表没有该权限的行时移入插件授予表。因此插件详情与 `GET /plugins/:key/grants` 可能列出当前版本不再申请、状态为 `revoked` 的权限（不授予任何实例：实例只拿 manifest 声明的、`granted` 的权限）。申请了撤销过的权限的升级包不会上传即沿用（diff 里它算新增），`review.host_permissions[].revoked` 为 `true`（上传返回的 review 与 GET review 都带）；同意页把这类低风险权限从“自动”改为默认不勾选、标“已撤销，勾选才重新授予”，必需的必须勾选才能提交。审计不变：`plugin.consent` 的 `decisions[]` 如实记录 `granted`/`revoked` 与 `carried`。内置插件随镜像升级时系统同意照旧显式授予全部宿主权限（见上面“内置插件”），不受此限。
 - 升级包的宿主权限没有新增或扩大时，上传即沿用原授权（版本直接为 `approved`）；否则进入 `awaiting_consent`，旧版本继续运行。另一个例外（2026-11-13 权限加固期 4 P4C）：新版本新建的插件权限经 `defaults` 或 `inheritFrom` 授予角色时，只要其中有风险不是 `low` 的权限，或授予对象不是内置 `admin`、`operator`、`supplier`（如 `user`、自定义角色），就不沿用，留在 `awaiting_consent` 由人在同意页确认；同意者不能指定的角色（§4“能否指定角色”）上的这些授予挂起待复核（D2，0.1.290起，此前 403），其余照常写入；沿用时上传者不能指定的角色上的授予同样挂起；否则沿用并写 `plugin.consent.auto` 审计（`detail`：`version`、`granted`、`pending: []`、`review_required: false`；每条授予照常有 `authz.sync.grant`）。`review` 增加 `new_role_grants: [RoleGrant]`（不覆盖角色时这次同意会做的授予，按查看者标 `nameable`、`withheld`）与 `role_grants_need_consent`；另有 `needs_db_schema_unconfined`（同意会授予 db.schema 且需要 `plugin:grant:db_schema_unconfined`：未启用角色隔离、不是官方发布者，与同意时的检查同一函数）和 `user_permissions[].new`（目录里还没有、这次同意才登记的权限；`new_permission_roles` 只对它们生效）（期 4 T82）。`RoleGrant` = `{version?, permission（完整 key）, role, scope（规范后缀，`""` 为全部行）, risk, via: default|override|inherit, needs_consent, nameable（同意者能指定该角色）, withheld（挂起待复核）}`（0.1.290起，去掉 `sensitive`）。同意返回 `ConsentResult` 另含 `withheld: [RoleGrant]`（本次挂起的授予）。操作者同意的 `plugin.consent` 审计另记 `role_grants`（计划）、`pending`（挂起）、`inherit_skipped`；系统与沿用的同意写 `plugin.consent.auto`（`granted`、`pending`、`review_required`、`inherit_skipped`）
 - 内置插件自动升级（系统同意，节点就绪与托管升级提交需要版本 `approved`）同样判断，但需要同意的授予不写入，记在 `plugin.consent.auto` 审计的 `pending` 里（`review_required: true`），其余照常写入；插件列表与详情的 `role_grants_to_review: [RoleGrant]` 列出各版本仍待确认的授予（读 `plugin.consent.auto`、`plugin.consent` 与 `plugin.role_grants.carry`（§4 改名继承）的 `pending`，按 (permission, role, scope) 去重，`risk` 取目录；权限仍是本插件的、存在且不是 removed、当前声明仍接受该范围、角色仍存在且尚未持有该范围，且该版本之后没有 `plugin.role_grants.confirm`/`plugin.role_grants.reject` 审计），由上面的 confirm/reject 处理（两者要求相同资格；只计插件本次安装之后的审计）；继承与默认值一样在同意时按计划算好（§4），激活时才新建的权限不授予任何角色（也不继承）；confirm 经权限目录 `GrantPluginPermission` 写入（带范围，critical 只有超管能确认），`authz.sync.grant` 的 `via` 为 `review`
-- 插件设置：GET `/plugins/:key/settings` → `{mode, schema, ui_schema, values, page, component, secret_fields}`（`schema` 在非 schema 模式为 `null`）；PUT 请求体 `{values:{...}}`，整体替换（§15.8）
+- 插件设置：GET `/plugins/:key/settings` → `{mode, values, page, component, secret_fields, permission}`（2026-11-19 起不再有 `schema`、`ui_schema`）；PUT 请求体 `{values:{...}}`，整体替换（§15.8）
 - `/ui/plugins` 每项另含 `name`、`host_ui_compat`
 
 `review` 结构：`{plugin_key, version, name, publisher, trust, signature_status, host_compat_ok, capabilities[], gateway_endpoints:[{id, platform, method, path, protocol, billing}], platforms:[{id, label, endpoints:[{method, path, protocol, billing}], sticky_rules}], account_types:[{id, label, platforms, form_mode}], hooks[], jobs[], events[], routes[], menus[], user_permissions[], permission_groups[], role_columns[], removed_user_permissions[], database:{schema, migrations[]}, resources, external_services[], host_permissions:[{id, risk, scope, reason, optional, requires:"plugin:grant:high|critical", current_status?, current_scope?, revoked}], diff?:{added[], widened[], removed[]}}`；`diff` 的每项为 `{id, risk, scope?, previous_scope?}`（`previous_scope` 只在 widened、removed）。
@@ -466,7 +466,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 | 接口 | 变更 |
 |---|---|
 | GET `/account-types` | 每项 `{plugin_key, plugin_name, plugin_version, asset_base, trust, type, label, description, form, sensitive_fields, protocols:[protocol], endpoints:[{method, path, protocol, platform, native}]}`；`endpoints` 为该类型当前可服务的已启用端点（`native=false` 表示经核心转换） |
-| GET `/account-types/:plugin_key/:type/form` | 取代 `/:platform/:type/form` |
+| GET `/account-types/:plugin_key/:type/form` | 取代 `/:platform/:type/form`（2026-11-19 删除，见 §21.3） |
 | GET `/accounts` | 筛选参数 `?plugin_key=&type=&group_id=&status=&q=`（去掉 `platform`）；每项返回 `plugin_key`、`type`、`type_label`，不再有 `platform` |
 | POST `/accounts` | `{name, plugin_key, type, group_ids[], proxy_id, priority, max_concurrency, schedulable, credentials}` |
 | GET/POST `/prices`、preview、validate | 去掉 `platform`（请求与响应） |
@@ -751,13 +751,11 @@ GET `/plugins/:key/settings`（`plugin:read` 或插件的设置权限；路由�
 
 | 字段 | 说明 |
 |---|---|
-| `mode` | `schema` \| `iframe` \| `native` \| `none`（manifest 未声明 `ui.settings` 时为 `none`） |
-| `schema` | `mode=schema` 时为包内 JSON Schema 文件的**内容**（JSON），否则 `null` |
-| `ui_schema` | `mode=schema` 且声明了 `uiSchema` 时为其内容，否则 `null` |
+| `mode` | `iframe` \| `native` \| `none`（manifest 未声明 `ui.settings` 时为 `none`）；已装旧包可能仍报 `schema`（2026-11-19 起不再支持，值全部遮蔽） |
 | `page` | `mode=iframe` 的入口（省略表示无） |
 | `component` | `mode=native` 的组件名（省略表示无） |
 | `values` | 当前配置值（解密后）；敏感字段非空时为 `"******"` |
-| `secret_fields` | 敏感字段名（Schema 顶层属性中 `writeOnly: true`、`format: "password"` 或 `x-sensitive: true` 的），排序 |
+| `secret_fields` | 遮蔽的字段（值下面的 JSON 指针），来自 `ui.settings.secrets`；native/iframe 没写 `secrets` 键、或模式不认识（旧包的 schema）时全部顶层字段都遮蔽，排序 |
 
 PUT `/plugins/:key/settings`（`plugin:manage` 或插件的设置权限；路由本身要 `self:plugin_ui`，§80.1）请求 `{values:{...}}`：
 - `values` 是**完整**配置，整体替换（省略的键会被删除）；敏感字段传 `"******"` 表示保留原值。
@@ -1203,7 +1201,7 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 | POST `/accounts/:id/test`、POST `/accounts/:id/models/fetch` | `account:test` / `account:own:test` | |
 | POST `/account-types/:plugin_key/:type/models/fetch` | `account:create` / `account:own:create` | 可带 `proxy_url`：只解析、临时用它发请求，**不查找不创建**代理、不需要代理权限；与 `proxy_id` 同时给出 400 `fields[{proxy_url, conflict}]`；`proxy_id` 的可见性规则同 POST `/accounts` |
 | POST `/accounts/:id/credentials/reveal` | `account:credential:view`🔐🔑 / `account:own:credential:view`🔐🔑 | 二次验证 `credential.reveal`（§80.2） |
-| GET `/account-types`、GET `/account-types/:p/:t/form`、GET `/platforms` | `account:read` / `account:own:read` / `account:own:create` | form 按调用者权限改写（§21.3） |
+| GET `/account-types`、GET `/platforms` | `account:read` / `account:own:read` / `account:own:create` | 受限设置见 `guarded_settings`（§21.3） |
 | GET `/proxies`、GET `/proxies/:id` | `proxy:read` 的任意范围 | 只返回范围内的；筛选 `created_by=<id>`（在范围内收窄，期 4 R4 起；此前自己级下忽略；非正整数 400 `fields[{field:"created_by", code:"invalid"}]`）、`mine=true`（`strconv.ParseBool`） |
 | POST `/proxies` | `proxy:manage` / `proxy:own:manage` | `created_by` = 调用者 |
 | PATCH/DELETE `/proxies/:id`、POST `/proxies/:id/test` | `proxy:manage` / `proxy:own:manage` | 范围外（含 `created_by` 为空的历史行）一律 404，**先判可见再判占用**；自己级下删除时 409 的 `account_count` 仍是引用它的全部账号数；自己级下 PATCH 改了连接字段（`protocol`、`host`、`port`、`username`、`password` 任一与现值不同，原样带回不算，`host` 只有大小写不同也不算且不写入）而代理正被他人创建的账号（含 `created_by` 为空的）使用时，返回 409 `proxy_in_use`，`details.account_count` 为这些账号的数量（2026-11-12 权限加固 T31）；改名称、状态不受限，`proxy:manage` 不受限 |
@@ -1216,13 +1214,13 @@ mock-upstream：`/v1/chat/completions` 请求里带名为 `submit_verdict` 的�
 
 manifest `accountTypes[].guardedSettings`（可选）：`[{field, allowed:[...]}]`。`field` 必须在 `settingsFields` 中；`allowed` 非空、每项为绝对 `http(s)` URL。三个内置账号类型插件声明 `[{field:"base_url", allowed:["https://api.anthropic.com"]}]`（openai `https://api.openai.com`，gemini `https://generativelanguage.googleapis.com`）；relay 不声明（它本来就是自定义地址），没声明的类型不受限。
 
-manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复；schema 表单里出现 `base_url` 或 `*_endpoint` 却未声明也推不出时，打包工具给警告（`check.Warnings`），不阻止安装。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
+manifest `accountTypes[].upstreamFields`（可选）：决定请求发往哪里的顶层凭证/设置字段（`base_url`、各类 endpoint）。未声明时由声明式 `upstream` 推出（`base_url`），也推不出则按旧规则；`[]` 表示调用者无法设置地址（OAuth、managed 类型）。校验：非空串、不重复（原来对 schema 表单的打包警告 `check.Warnings` 已随 schema 表单在 2026-11-19 删除）。`manifest.AccountType.CustomUpstream()`：地址字段已知时，存在未被 `guardedSettings` 钉住的地址字段即为 true；未知时沿用旧规则（未声明 `guardedSettings` 即为 true）。`GET /account-types` 的 `custom_upstream` 就是它的结果。
 
 校验（`account/creds.go` `prepare`，在插件 `ValidateCredentials` 归一化**之后**；`prepare` 的每个调用方都会做，所以 POST/PATCH `/accounts` 和两个 `models/fetch` 接口里带的 `credentials` 都受限）：调用者没有 `account:settings:custom` 且类型声明了 guard 时，每个受限字段的值必须满足其一：为空/缺省/`null`（由插件归一化为默认）；等于 `allowed` 之一；PATCH（以及 `/accounts/:id/models/fetch`）时等于该账号原来的值（管理员建的自定义地址，供应商编辑其他字段不被卡死）。比较前两边都做：去首尾空白、去尾部 `/`（全部）、值能按绝对 URL 解析（有 scheme 和 host）时 scheme 与 host 小写，否则原样比；非字符串值（数字、对象）一律不满足。不满足返回 400 `invalid_argument`，`details.fields[{field:"credentials.base_url", code:"forbidden"}]`。
 
 **默认地址由插件自己提示**：三个内置账号类型的表单不再给 `base_url` 设 `default`（不预填），`pattern` 允许空串，`ui:placeholder` 写"留空使用默认地址 …"；空值由插件 `ValidateCredentials` 归一化为默认地址。核心不为 base_url 做特判；控制台清空 `url-presets` 输入即不发该键；锁定（只读）时只显示"由管理员设置"，不再拼插件的帮助文案。
 
-`GET /account-types/:p/:t/form`：调用者没有 `account:settings:custom` 时，对每个受限字段把 `schema.properties.<field>.enum` 设为 `allowed`（`properties` 或该字段不存在时创建），`allowed` 只有一项时再加 `ui_schema.<field>["ui:readonly"] = true`（`ui_schema` 为 `null` 时创建对象，已有的其他 `ui:*` 键保留）；改写在解码后的副本上做，缓存的原件不变；前端 `url-presets` 组件遇到 `enum` 只允许从预设里选。iframe/native 表单模式不改写，只靠服务端校验。
+界面提示（2026-11-19 起）：`GET /account-types/:p/:t/form` 已删除，账号表单是插件的 native 组件，按 `GET /account-types` 的 `guarded_settings` 和调用者的 `account:settings:custom` 显示（`@sub2api/host` 的 `useGuardedSettings`）；服务端校验不变。
 
 ### 21.3.1 own 级用户的账号创建限制
 
@@ -5268,7 +5266,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
     - 带 schema 的设置先按 schema 校验，再调用插件。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
     - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
-    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），设置了（空 map 也算）就按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 不检查；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化、含去后缀，只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
+    - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化、含去后缀，只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
     - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（各种被拒的 api_key、base_url，长度边界，去空白与 scheme 转小写），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
   - **标记只能写在能掩码的位置**（2026-11-12）：只有沿 `properties` 嵌套对象能到达的属性（最多 8 层）能单独掩码；被标记的属性整体掩码，其下不再细分。`items`、`additionalProperties`、`patternProperties`、`allOf`/`anyOf`/`oneOf`、`if`/`then`/`else`、嵌套的 `$defs` 等其他位置的标记、超过 8 层的标记，打包校验报 `ui.settings.schema` `unmaskable_secret`。同文档的本地引用 `"$ref": "#/$defs/<名>"` 或 `"#/definitions/<名>"`（指向根上的 `$defs`/`definitions`，名字是一个 RFC 6901 记号，`~0` `~1` 解码，不接受百分号编码）按“目标写在引用处”处理：目标自身被标记则引用处的属性整体掩码，目标的 `properties` 接在引用处的路径下（同样最多 8 层）；根上的 `$defs`/`definitions` 只经引用读取，没被引用的定义不检查。引用成环、互相嵌套超过 32 层、全部展开累计超过 10000 个节点，或者从 `items` 等到不了的位置引用带标记的定义，都报错，位置写在引用下（如 `/properties/a/$ref/items`）。schema 里只要有任何标记，其他引用（`$dynamicRef`、`$recursiveRef`、外部引用、锚点、其他指针、嵌套 `$id` 之下的引用）照旧报错（2026-11-12 权限加固 FU4，此前任何引用都报错）；schema 文件不是 JSON 对象同样报错。校验之前已安装的包：含这类标记的顶层设置整块按凭据掩码；标记不属于某一个顶层设置时（根上的 `allOf`、`additionalProperties`、`$ref` 等），或 schema 文件不是 JSON 对象时，全部顶层设置按凭据掩码。
   - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；不带 schema 的 native / iframe 设置没有 `secrets` 键；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
@@ -5334,7 +5332,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 
 - manifest：`ui.settings` 写 `{"mode":"native","page":"<ui.pages 中的 native 页面>","schema":"…","uiSchema":"…","permission":"…"}`。`schema` / `uiSchema` 只有 `ui.settings` 在 native 模式下可以带，其它表单带了报 `unsupported`；`page` 必须是 `ui.pages` 里的 native 页面。
 - 核心：只要表单带 schema，不论模式，`GET/PUT /plugins/:key/settings` 都按它掩码密钥（§75.1）并校验；存储、通知插件、权限都与 schema 模式相同。不带 schema 的 native/iframe 设置按 `ui.settings.secrets` 掩码，没有列出的不掩码，写成 `[]` 什么都不掩码，没有 `secrets` 键时每个顶层键都按凭据掩码（2026-11-19 起；此前这里写"不掩码"，与当时的代码不符：当时它们和没有 `ui.settings` 一样，每个顶层键都按凭据掩码）。所以收尾时删掉 `Form.Schema` 后，已装的 native 带 schema 的旧包（如今天的 moderation）被读成"native、没有 `secrets`"，全部掩码，不会明文读回。
-- `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本的 `ui.settings` 是 `schema` 或 `native` 模式时为 true（此前只在 `mode` 为 `schema` 时为 true）；`iframe` 模式控制台不打开，仍为 false。
+- `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本的 `ui.settings` 是 `native` 模式时为 true（最初只认 `schema`，过渡期认 `schema` 或 `native`，D1 删掉 schema 后只认 `native`）；`iframe` 模式控制台不打开，已装旧包的 `schema` 模式控制台不再渲染，都为 false。
 - 控制台：插件详情页只在 `mode` 为 `schema` 时显示设置标签；`/plugins/:key/settings`（只有插件权限的人用）遇到 native 设置时转到 `/p/:key/<page>?tab=settings`。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写，回传 `******` 表示沿用密钥。
 - 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。
 

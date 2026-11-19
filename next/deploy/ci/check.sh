@@ -75,8 +75,11 @@ plugins() {
   # (anthropic, volcengine, guard) with its migrations, on PostgreSQL: the pg
   # service of isolated-compose.yml, whose DSN the gotest container has. The
   # embedded fallback cannot run here (initdb refuses root).
-  # pack also refuses a plugin whose native UI is not built, and this
-  # container has no node: run deploy/docker/build-ui.sh on the checkout first.
+  # pack also refuses a plugin whose native UI is not built (every plugin
+  # below has one: account and settings forms are native components), and
+  # this container has no node: on the checkout, with node, run
+  # `sh next/deploy/docker/build-ui.sh next <any out dir>` first; it builds
+  # each plugins/*/ui/native/dist in place, which pack reads.
   : "${TEST_DATABASE_URL:?pack runs sub2api-plugin db check: run this phase in the gotest container of isolated-compose.yml}"
   checks=/src/checks
   mkdir -p "$checks/builtin"
