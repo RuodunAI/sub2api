@@ -157,3 +157,19 @@ func TestResponsesImageTool(t *testing.T) {
 		t.Fatalf("no image stream = %v", data)
 	}
 }
+
+// The Ark asset library answers every Action with an empty result and
+// records it.
+func TestArkAsset(t *testing.T) {
+	s, srv := newTestServer(t)
+	m := decode(t, post(t, srv, arkAssetPath+"?Action=ListAssetGroups&Version=2024-01-01", nil, `{}`))
+	if get(m, "ResponseMetadata", "Action") != "ListAssetGroups" || num(get(m, "Result", "TotalCount")) != 0 {
+		t.Fatalf("answer = %v", m)
+	}
+	s.mu.Lock()
+	rec := s.log[len(s.log)-1]
+	s.mu.Unlock()
+	if rec.Path != arkAssetPath || rec.Query != "Action=ListAssetGroups&Version=2024-01-01" || rec.Status != 200 {
+		t.Fatalf("recorded = %+v", rec)
+	}
+}
