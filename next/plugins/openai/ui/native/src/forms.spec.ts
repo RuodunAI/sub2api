@@ -153,6 +153,8 @@ describe('OpenAIKeyForm', () => {
     expect(control(w, 'api_key').attributes('placeholder')).toBe('sk-...')
     expect(control(w, 'base_url').attributes('placeholder')).toBe(messages.en.baseUrl.placeholder)
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help, messages.en.organization.help, messages.en.project.help]) expect(w.text()).toContain(help)
+    // The presets of the former form (ui:options.presets).
+    expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://api.openai.com'])
   })
 
   it('organization and project under one section', async () => {

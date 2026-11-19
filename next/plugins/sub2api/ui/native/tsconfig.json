@@ -15,7 +15,6 @@
       "@sub2api/ui": ["../../../../web/packages/ui/src/index.ts"],
       "@sub2api/host": ["../../../../web/packages/host/src/index.ts"],
       "vue": ["../../../../web/node_modules/vue"],
-      "vite": ["../../../../web/node_modules/vite"],
       "vitest": ["../../../../web/node_modules/vitest"],
       "@vue/test-utils": ["../../../../web/node_modules/@vue/test-utils"]
     }

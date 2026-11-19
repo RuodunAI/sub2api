@@ -141,6 +141,8 @@ describe('GeminiKeyForm', () => {
     expect(control(w, 'api_key').attributes('placeholder')).toBe('AIza...')
     expect(control(w, 'base_url').attributes('placeholder')).toBe(messages.en.baseUrl.placeholder)
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help]) expect(w.text()).toContain(help)
+    // The presets of the former form (ui:options.presets).
+    expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://generativelanguage.googleapis.com'])
   })
 
   it('guarded base URL: the official value only, unless the caller holds account:settings:custom', async () => {
