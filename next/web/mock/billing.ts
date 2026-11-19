@@ -1179,33 +1179,6 @@ for (let i = 0; i < 90; i++) {
     })
   })
 }
-// A Responses request that used the image_generation tool (CONTRACTS §120): the
-// conversation at its model's price, the image tool as additional usage at the
-// image model's (2304*1.25 + 52*10 = 3400 and 39*5 + 515*30 = 15645 micro-USD).
-{
-  const at = new Date(Date.now() - 6 * 60000)
-  const chat = { model: 'gpt-5.6', expression: 'p*1.25 + c*10' }
-  const image = { model: 'gpt-image-2-codex', expression: 'p*5 + cr*1.25 + img*8 + img_o*30 + c*30' }
-  const imageTokens = { Input: 39, Output: 515, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0, ImageOutput: 515 }
-  usageRows.push({
-    id: 4996, request_id: 'req_imagetool0001', client_request_id: '', created_at: at.toISOString(),
-    user_id: 1, user_email: USERS[0].email, api_key_id: 1, api_key_name: `${USERS[0].name}-key`, client_ip: CLIENT_IPS[1][0],
-    group_id: GROUPS[0].id, group_name: GROUPS[0].name, account_id: 19, account_name: 'openai-main', plugin_key: 'openai', account_type: 'apikey',
-    platform: 'openai', protocol: 'openai.responses', upstream_protocol: 'openai.responses', conversion: null, endpoint: '/v1/responses',
-    model: chat.model, upstream_model: chat.model, stream: true, status_code: 200, success: true, error_type: '', error_message: '',
-    input_tokens: 2304, output_tokens: 52, cache_read_tokens: 0, cache_creation_tokens: 0, cache_creation_1h_tokens: 0,
-    total_cost: money(0.019045), rate_multiplier: '1.00', billing_status: 'billed', billing_mode: 'expression', matched_tier: '',
-    price_id: null, expr_hash: remember(chat.expression), latency_ms: 21400, first_token_ms: 900, upload_ms: 40,
-    sticky_rule: '', sticky_hit: false, hook_decisions: [],
-    _detail: {
-      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 2304, c: 52, len: 2304 } }, cost: '0.019045', rate_multiplier: '1', total_cost: '0.019045',
-      additional: [{ kind: 'image_generation', model: image.model, price_id: 9001, expression_hash: remember(image.expression),
-        detail: { expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 39, img_o: 515, c: 0, len: 39 } }, cost: '0.015645', rate_multiplier: '1', total_cost: '0.015645' } }],
-      inputs: { semantics: 'inclusive', additional: [{ Kind: 'image_generation', Model: image.model, UsageSemantics: 'inclusive', Tokens: imageTokens, RateMultiplier: '1' }] }
-    },
-    _price: null
-  })
-}
 usageRows.sort((a, b) => b.created_at.localeCompare(a.created_at))
 
 // Retried requests (attempt_trail, CONTRACTS §98), among the console user's

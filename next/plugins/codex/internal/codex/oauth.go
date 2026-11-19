@@ -107,9 +107,10 @@ var errUnreachable = errors.New("cannot reach the OpenAI authorization server / 
 // the proxy of ticket (pluginsdk.Fetch). The method, headers and body are
 // what the plugin sent itself before.
 func (p *Plugin) post(ctx context.Context, ticket, rawURL, contentType string, body []byte) (authAnswer, error) {
+	a := p.agent(credentials{})
 	out, err := pluginsdk.Fetch(ctx, &pluginv1.ExecutionHTTPRequest{
 		Method: http.MethodPost, Url: rawURL, Body: body, ProxyTicket: ticket,
-		Headers: map[string]string{"Content-Type": contentType, "Accept": "application/json", "User-Agent": UserAgent, "Originator": Originator},
+		Headers: map[string]string{"Content-Type": contentType, "Accept": "application/json", "User-Agent": a.UserAgent, "Originator": a.Originator},
 	})
 	if err != nil {
 		return authAnswer{}, err

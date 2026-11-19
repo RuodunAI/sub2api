@@ -266,13 +266,6 @@ type UsageRecord struct {
 	// started upstream, never pre-charged, never reconciled, and nothing
 	// anywhere saying so - is the silent kind of wrong (CONTRACTS §25.5).
 	ReservationDropped string
-	// AdditionalUnpriced names the additional usage whose model the response
-	// named (AdditionalUsage.ResponseModel) and that had no price under
-	// missing_price_policy "reject" ("kind/model", comma separated): the
-	// request was already answered, so it is billed without that usage, which
-	// is recorded unpriced, and usage_logs.anomalies says so
-	// (AnomalyAdditionalUnpriced, CONTRACTS §120.4). Empty in the ordinary case.
-	AdditionalUnpriced string
 	Billable           bool              // false for endpoint billing=free or zero usage
 	Price              *PriceRule        // nil when not billable or free policy
 	PriceParams        map[string]string // body path -> raw JSON value captured at request time
@@ -290,16 +283,13 @@ type UsageRecord struct {
 }
 
 // AdditionalUsage is an independently metered component, excluding the main
-// response counters. The gateway must authorize its model before pricing it,
-// unless ResponseModel: the response (or the request) named a model nobody
-// admitted, which the gateway prices as it records it (CONTRACTS §120).
+// response counters. The gateway must authorize its model before pricing it.
 type AdditionalUsage struct {
 	Metrics        map[string]any `json:",omitempty"`
 	Kind           string
 	Model          string
 	UsageSemantics string
 	Tokens         UsageTokens
-	ResponseModel  bool `json:",omitempty"`
 }
 
 // PricedUsage freezes every price input needed for a settlement retry.
@@ -398,7 +388,7 @@ const UsageErrorUnreported = "usage_unreported"
 func (r *UsageRecord) SetUnreported(reason string) {
 	r.Success, r.ErrorType, r.ErrorMessage = false, UsageErrorUnreported, x.Truncate(reason, 1000)
 	r.Tokens, r.Metrics, r.Additional, r.Replacement = UsageTokens{}, nil, nil, nil
-	r.Billable, r.Price, r.BillingError, r.Reservation, r.ReservationDropped, r.AdditionalUnpriced = false, nil, "", nil, "", ""
+	r.Billable, r.Price, r.BillingError, r.Reservation, r.ReservationDropped = false, nil, "", nil, ""
 	r.UsageExtract = UsageExtractUnreported
 }
 
@@ -430,10 +420,6 @@ const (
 	// ordinary one, i.e. for a free endpoint not at all.
 	AnomalyReservation      = "reservation"
 	AnomalyReservationError = "reservation_error"
-	// AnomalyAdditionalUnpriced: UsageRecord.AdditionalUnpriced - additional
-	// usage named by the response that had no price and was not charged
-	// although missing_price_policy is "reject" (CONTRACTS §120.4).
-	AnomalyAdditionalUnpriced = "additional_unpriced"
 	// AnomalyAvailability: the JSON of an AvailabilityTrace - which accounts
 	// the model availability precheck (or the per-attempt guard) blocked or
 	// let through without an answer, and why. Like failure_policy it is a
@@ -666,7 +652,6 @@ func (r *UsageRecord) Anomalies() map[string]string {
 			put(AnomalyAttempts, string(raw))
 		}
 	}
-	put(AnomalyAdditionalUnpriced, r.AdditionalUnpriced)
 	if r.ReservationDropped != "" {
 		put(AnomalyReservation, ReservationDropped)
 		put(AnomalyReservationError, r.ReservationDropped)

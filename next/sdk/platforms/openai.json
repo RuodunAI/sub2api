@@ -67,51 +67,36 @@
             "event": "response.completed",
             "map": {
               "model": "response.model",
-              "input_tokens": "response.usage.input_tokens",
-              "output_tokens": "response.usage.output_tokens",
+              "input_tokens": "response.usage.input_tokens+response.tool_usage.image_gen.input_tokens",
+              "output_tokens": "response.usage.output_tokens+response.tool_usage.image_gen.output_tokens",
               "cache_read_tokens": "response.usage.input_tokens_details.cached_tokens",
-              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens"
+              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens",
+              "image_input_tokens": "response.tool_usage.image_gen.input_tokens_details.image_tokens",
+              "image_output_tokens": "response.tool_usage.image_gen.output_tokens_details.image_tokens"
             }
           },
           {
             "event": "response.incomplete",
             "map": {
               "model": "response.model",
-              "input_tokens": "response.usage.input_tokens",
-              "output_tokens": "response.usage.output_tokens",
+              "input_tokens": "response.usage.input_tokens+response.tool_usage.image_gen.input_tokens",
+              "output_tokens": "response.usage.output_tokens+response.tool_usage.image_gen.output_tokens",
               "cache_read_tokens": "response.usage.input_tokens_details.cached_tokens",
-              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens"
-            }
-          }
-        ],
-        "additional": [
-          {
-            "name": "image_generation",
-            "object": true,
-            "jsonPath": "tool_usage.image_gen",
-            "ssePath": "response.tool_usage.image_gen",
-            "modelSources": [
-              {"from": "sse", "arrayPath": "response.tools", "match": {"type": "image_generation"}, "modelPath": "model"},
-              {"from": "json", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"},
-              {"from": "request", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"}
-            ],
-            "defaultModel": "gpt-image-2",
-            "semantics": "inclusive",
-            "map": {
-              "input_tokens": "input_tokens",
-              "output_tokens": "output_tokens",
-              "image_input_tokens": "input_tokens_details.image_tokens",
-              "image_output_tokens": "output_tokens_details.image_tokens"
+              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens",
+              "image_input_tokens": "response.tool_usage.image_gen.input_tokens_details.image_tokens",
+              "image_output_tokens": "response.tool_usage.image_gen.output_tokens_details.image_tokens"
             }
           }
         ],
         "json": {
           "map": {
             "model": "model",
-            "input_tokens": "usage.input_tokens",
-            "output_tokens": "usage.output_tokens",
+            "input_tokens": "usage.input_tokens+tool_usage.image_gen.input_tokens",
+            "output_tokens": "usage.output_tokens+tool_usage.image_gen.output_tokens",
             "cache_read_tokens": "usage.input_tokens_details.cached_tokens",
-            "cache_creation_tokens": "usage.input_tokens_details.cache_write_tokens"
+            "cache_creation_tokens": "usage.input_tokens_details.cache_write_tokens",
+            "image_input_tokens": "tool_usage.image_gen.input_tokens_details.image_tokens",
+            "image_output_tokens": "tool_usage.image_gen.output_tokens_details.image_tokens"
           }
         }
       },
@@ -146,54 +131,41 @@
       "billing": "usage",
       "usage": {
         "semantics": "inclusive",
-        "additional": [
-          {
-            "name": "image_generation",
-            "object": true,
-            "ssePath": "response.tool_usage.image_gen",
-            "modelSources": [
-              {"from": "sse", "arrayPath": "response.tools", "match": {"type": "image_generation"}, "modelPath": "model"},
-              {"from": "request", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"}
-            ],
-            "defaultModel": "gpt-image-2",
-            "semantics": "inclusive",
-            "map": {
-              "input_tokens": "input_tokens",
-              "output_tokens": "output_tokens",
-              "image_input_tokens": "input_tokens_details.image_tokens",
-              "image_output_tokens": "output_tokens_details.image_tokens"
-            }
-          }
-        ],
         "sse": [
           {
             "event": "response.completed",
             "map": {
               "model": "response.model",
-              "input_tokens": "response.usage.input_tokens",
-              "output_tokens": "response.usage.output_tokens",
+              "input_tokens": "response.usage.input_tokens+response.tool_usage.image_gen.input_tokens",
+              "output_tokens": "response.usage.output_tokens+response.tool_usage.image_gen.output_tokens",
               "cache_read_tokens": "response.usage.input_tokens_details.cached_tokens",
-              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens"
+              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens",
+              "image_input_tokens": "response.tool_usage.image_gen.input_tokens_details.image_tokens",
+              "image_output_tokens": "response.tool_usage.image_gen.output_tokens_details.image_tokens"
             }
           },
           {
             "event": "response.incomplete",
             "map": {
               "model": "response.model",
-              "input_tokens": "response.usage.input_tokens",
-              "output_tokens": "response.usage.output_tokens",
+              "input_tokens": "response.usage.input_tokens+response.tool_usage.image_gen.input_tokens",
+              "output_tokens": "response.usage.output_tokens+response.tool_usage.image_gen.output_tokens",
               "cache_read_tokens": "response.usage.input_tokens_details.cached_tokens",
-              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens"
+              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens",
+              "image_input_tokens": "response.tool_usage.image_gen.input_tokens_details.image_tokens",
+              "image_output_tokens": "response.tool_usage.image_gen.output_tokens_details.image_tokens"
             }
           },
           {
             "event": "response.failed",
             "map": {
               "model": "response.model",
-              "input_tokens": "response.usage.input_tokens",
-              "output_tokens": "response.usage.output_tokens",
+              "input_tokens": "response.usage.input_tokens+response.tool_usage.image_gen.input_tokens",
+              "output_tokens": "response.usage.output_tokens+response.tool_usage.image_gen.output_tokens",
               "cache_read_tokens": "response.usage.input_tokens_details.cached_tokens",
-              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens"
+              "cache_creation_tokens": "response.usage.input_tokens_details.cache_write_tokens",
+              "image_input_tokens": "response.tool_usage.image_gen.input_tokens_details.image_tokens",
+              "image_output_tokens": "response.tool_usage.image_gen.output_tokens_details.image_tokens"
             }
           }
         ]

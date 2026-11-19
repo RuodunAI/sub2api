@@ -2,8 +2,11 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -20,8 +23,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
-// The client's own headers never reach the upstream: the plugin names
-// sup2api, truthfully, and nothing else.
+// The client's own headers never reach the upstream: the plugin sends the
+// account's client headers (agent.go) and nothing of the client's.
 var clientHeaders = map[string]string{"user-agent": "codex_cli_rs/0.99", "openai-beta": "responses=experimental", "x-stainless-lang": "js", "session_id": "client-session"}
 
 // userHello is userMessage("hello") as it goes upstream.
@@ -61,8 +64,8 @@ const keptAbove = "written above operator settings before forwarding v2; behavio
 var authoritativeHeaders = map[string]string{
 	"authorization":      "credential",
 	"chatgpt-account-id": "credential: the ChatGPT account the token acts for",
-	"originator":         keptAbove + "; truthful identification",
-	"user-agent":         keptAbove + "; truthful identification",
+	"originator":         keptAbove + "; the account's client headers (agent.go)",
+	"user-agent":         keptAbove + "; the account's client headers (agent.go)",
 	"accept":             keptAbove,
 	"content-type":       keptAbove,
 	"openai-beta":        keptAbove,
@@ -220,7 +223,7 @@ func TestExecuteWebSocket(t *testing.T) {
 		`{"type":"response.create","model":"gpt-5.4","input":` + userHello + `,"stream_options":{"include_usage":true},"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 		`{"type":"response.create","model":"gpt-5.4","previous_response_id":"resp_1","input":[{"role":"user","content":"more"}],"prompt_cache_key":"conv-1","store":false,"instructions":""}`,
 	}
-	session := upstreamSessionID(7, "conv-1")
+	session := upstreamSessionID(7, 7, "conv-1")
 	for _, typ := range accountTypes {
 		for i, turn := range turns {
 			r := relayed(t, h, execRequest(typ, ProtocolResponsesWS, turn))
@@ -276,6 +279,37 @@ func TestExecuteSession(t *testing.T) {
 	}
 	if next := build(ProtocolResponses, 7, `{"prompt_cache_key":"conv-2"}`); next["session_id"] == id {
 		t.Fatal("two conversations share an upstream session")
+	}
+	// The account id salts the session: another account gets another one,
+	// and neither is the unsalted hash of before.
+	in := execRequest(TypeDevice, ProtocolResponses, conv)
+	in.Account.Id = 8
+	r := relayed(t, h, in)
+	if other := r.GetHeaders()["session_id"]; other == id || other != upstreamSessionID(8, 7, "conv-1") || id != upstreamSessionID(7, 7, "conv-1") {
+		t.Fatalf("account 8 session %q, account 7 %q", other, id)
+	}
+	// The formula, computed here: SHA-256 of "<account id>:<api key id>:<key>",
+	// version 8 and variant bits set, laid out as a UUID.
+	want := sha256.Sum256([]byte("7:7:conv-1"))
+	want[6] = want[6]&0x0f | 0x80
+	want[8] = want[8]&0x3f | 0x80
+	if h := hex.EncodeToString(want[:16]); id != h[0:8]+"-"+h[8:12]+"-"+h[12:16]+"-"+h[16:20]+"-"+h[20:32] {
+		t.Fatalf("session %q, want the formula's %s", id, h)
+	}
+	unsalted := sha256.Sum256([]byte("7:conv-1"))
+	if strings.HasPrefix(strings.ReplaceAll(id, "-", ""), fmt.Sprintf("%x", unsalted[0:4])) {
+		t.Fatal("the session is the unsalted hash")
+	}
+	// The account id is only a hash input: it appears nowhere in the request.
+	in.Account.Id = 987654321
+	r = relayed(t, h, in)
+	for k, v := range r.GetHeaders() {
+		if strings.Contains(k+v, "987654321") {
+			t.Fatalf("header %s carries the account id", k)
+		}
+	}
+	if strings.Contains(string(r.GetBody())+r.GetUrl(), "987654321") {
+		t.Fatal("the request carries the account id")
 	}
 	for _, body := range []string{`{}`, `{"prompt_cache_key":""}`, `{"prompt_cache_key":123}`} {
 		hd := build(ProtocolResponses, 7, body)

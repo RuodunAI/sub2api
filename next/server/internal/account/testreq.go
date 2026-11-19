@@ -1,6 +1,7 @@
 package account
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -128,6 +129,7 @@ func (s *Service) test(c *gin.Context) {
 	if model == "" {
 		model = tp.defaultModel(a.testModels())
 	}
+	tested := model
 	protocols := tp.of(model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
@@ -141,8 +143,14 @@ func (s *Service) test(c *gin.Context) {
 		Model:     model,
 		Protocols: protocols,
 	})
+	source := "plugin"
+	if err == nil {
+		if err = s.testPrice(ctx, cmp.Or(tested, req.GetModel())); err != nil {
+			source = "gateway"
+		}
+	}
 	if err != nil {
-		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: "plugin"})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
 		httpapi.Fail(c, err)
 		return
 	}
@@ -150,6 +158,17 @@ func (s *Service) test(c *gin.Context) {
 	res.RequestedModel = requested
 	s.recordTest(ctx, a.ID, res)
 	httpapi.OK(c, res)
+}
+
+// testPrice refuses to test a model without a price, whatever
+// missing_price_policy says (CONTRACTS §17): model is the one tested, before
+// the account's mapping, else the one the plugin chose.
+func (s *Service) testPrice(ctx context.Context, model string) error {
+	rule, err := s.d.Pricer.Resolve(ctx, core.PriceQuery{Model: model})
+	if err == nil && rule == nil {
+		err = core.ErrPriceNotConfigured.WithDetails(map[string]any{"model": model})
+	}
+	return err
 }
 
 // testProtocolSet is the protocols a test of an account may use: those of
