@@ -12,7 +12,7 @@ import (
 // final: the core no longer checks a schema. The shared api_key + base_url
 // cases, and a key the form never sends.
 func TestCredentialsRefused(t *testing.T) {
-	form := apikeytest.Form{AccountType: "relay_key", Key: "sk-relay-abcdef", BaseURL: "https://site.example.com", RequireBaseURL: true, MinKey: 8}
+	form := apikeytest.Form{AccountType: "relay_key", Key: "sk-relay-abcdef", BaseURL: "https://site.example.com", RequireBaseURL: true}
 	apikeytest.Run(t, New().ValidateCredentials, append(form.Cases(),
 		apikeytest.Case{Name: "a key the form never sends", AccountType: "relay_key", Creds: `{"api_key": "sk-relay-abcdef", "base_url": "https://site.example.com", "legacy": "x"}`, Field: "legacy", Code: "unknown"},
 	))

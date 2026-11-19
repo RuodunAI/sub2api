@@ -231,7 +231,7 @@ func effectiveAssetEndpoint(accountType, credentialsJSON, settingsJSON, legacyBa
 	if legacyBase == "" {
 		legacyBase = DefaultAssetBaseURL
 	}
-	return apikey.NormalizeBaseURL(legacyBase, nil)
+	return apikey.NormalizeBaseURL(legacyBase)
 }
 
 // validateAssetFields adds the asset library field errors to errs: the AK/SK
@@ -262,7 +262,7 @@ func validateAssetFields(errs pluginsdk.FieldErrors, credentialsJSON, settingsJS
 		}
 	}
 	if base != "" {
-		if _, err := apikey.NormalizeBaseURL(base, nil); err != nil {
+		if _, err := apikey.NormalizeBaseURL(base); err != nil {
 			errs = errs.Add(FieldAssetBaseURL, "format",
 				"asset_base_url must be an http(s) URL without credentials, query, fragment or whitespace / asset_base_url 必须是不含账号、查询参数、空白字符的 http(s) 地址")
 		}
@@ -306,7 +306,7 @@ func normalizeAssetFields(objJSON string) string {
 			// with the default: guardedSettings treats "absent or empty" as
 			// allowed, and an account that never opted in must not end up
 			// carrying an endpoint it did not ask for.
-			if n, err := apikey.NormalizeBaseURL(s, nil); err == nil && strings.TrimSpace(s) != "" {
+			if n, err := apikey.NormalizeBaseURL(s); err == nil && strings.TrimSpace(s) != "" {
 				obj[FieldAssetBaseURL] = n
 			} else {
 				obj[FieldAssetBaseURL] = strings.TrimSpace(s)

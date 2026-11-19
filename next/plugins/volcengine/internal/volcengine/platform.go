@@ -174,7 +174,7 @@ const (
 // ("https://ark.cn-beijing.volces.com/api/v3"), while guardedSettings
 // (CONTRACTS §21.3) compares against the bare host, and the paths below add
 // the prefix themselves.
-var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBaseURL, StripSuffixes: []string{APIPrefix}, Fields: assetKeys}
+var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBaseURL, Versions: []string{APIPrefix}, Fields: assetKeys}
 
 // assetKeys are the asset library keys both account forms send besides
 // api_key and base_url; validateAssetFields checks them. A spec's Fields
