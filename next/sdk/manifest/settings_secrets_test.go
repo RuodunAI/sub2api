@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -306,6 +307,20 @@ func TestFormSecretFields(t *testing.T) {
 	}
 	if fields := (Form{}).SecretFields(); fields == nil || len(fields) != 0 {
 		t.Fatalf("no secrets = %v", fields)
+	}
+}
+
+// An absent secrets key (masks everything) and an empty list (masks nothing)
+// stay apart through JSON both ways.
+func TestFormSecretsAbsentOrEmpty(t *testing.T) {
+	for raw, wantNil := range map[string]bool{`{"mode":"native"}`: true, `{"mode":"native","secrets":[]}`: false} {
+		var f Form
+		if err := json.Unmarshal([]byte(raw), &f); err != nil || (f.Secrets == nil) != wantNil {
+			t.Fatalf("%s: secrets = %#v (%v)", raw, f.Secrets, err)
+		}
+		if b, _ := json.Marshal(f); string(b) != raw {
+			t.Fatalf("%s: marshaled %s", raw, b)
+		}
 	}
 }
 

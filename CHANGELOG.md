@@ -12,8 +12,8 @@
 
 核心与 SDK 先加上 native 表单在后端需要的部分，旧的 schema 表单在第一方插件迁完之前照常工作：
 
-- 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。不带 schema 的 native、iframe 设置只掩码列出的字段，此前它们每个顶层键都被掩码（CONTRACTS §75.1、§75.5）。
-- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存。插件线协议（2）和 Host API（10）不变。SDK 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`。
+- 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。不带 schema 的 native、iframe 设置必须写这个键（上传时缺了报 `ui.settings.secrets` `required`）：写了列表只掩码列出的字段，写成 `[]` 不掩码；已装的包没有这个键时，和此前一样每个顶层键都被掩码。路径中途遇到数组时整个数组按密钥掩码和保留（CONTRACTS §75.1、§75.5）。
+- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存，插件已启用但运行不起来时保存失败（`plugin_unavailable`，先停用再改）。请求带插件当前的授权（与 `Configure` 相同）。插件线协议（2）和 Host API（10）不变。SDK 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`（`OneOf`、`Pattern` 只能用于 `String()`，用错在构造时 panic；必填字段收到 `null` 报 `required`）；`pluginsdktest.Harness.ValidateSettings` 多一个 `grants` 参数。
 - `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
 - `GET /plugins` 的 `has_settings` 改为"当前版本声明了 `ui.settings`"，不再只认 schema 模式。
 - 清单检查：native 设置要有 `component` 或 `page`。

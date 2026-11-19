@@ -559,16 +559,18 @@ defineExpose({ validate: form.validate })
 - **类型。** `sdk/manifest/manifest.go` 的 `Form` 增加 `Secrets []SettingsSecret`，结构是 `{Path string; Sensitive bool}`。
   - `Path` 是值下面的 JSON 指针：嵌套对象用 `a/b`，`~0`、`~1` 转义。它和 `SecretField.Pointer` 写法相同（`settings_secrets.go:21-28`），也和 `GET /settings` 的 `secret_fields` 相同。
   - `sensitive: true` 对应原来的 `x-sensitive`：只遮蔽，不当作凭证。
-- **范围。** 沿用现有能逐个遮蔽的范围：嵌套对象的属性，最深 `MaxSecretDepth`（8）层。数组里的元素不支持，现在也不支持。
+- **范围。** 沿用现有能逐个遮蔽的范围：嵌套对象的属性，最深 `MaxSecretDepth`（8）层。数组里的元素不能单独声明：路径中途遇到数组（或任何不是对象的值）时，那个值整体遮蔽、回传掩码时整体保留（K1 审查 S1，2026-11-19），建议直接声明数组本身。
 - **构造。** 新增 `func (f Form) SecretFields() []manifest.SecretField`，返回类型不变。所以 `settings.go` 下游的 `maskValues`、`mergeSettings`、reenter 都不用改。
 - **删除。** `SettingsSecrets(schema)` 的整个 schema 遍历、`MaxSecretRefDepth`、`MaxSecretRefNodes`、`UnmaskableFields`（`settings_secrets.go:40-…`），以及 `settings.go:103-120 schemaSecrets`。
 - **检查**（替换 `check/validate.go:495-512`）：
   - 只有 `ui.settings` 可以带 `secrets`，账号类型带了报 `unsupported`，账号的密钥用 `sensitiveFields`。
   - `path` 非空，每段非空，不超过 8 层。
   - 不重复，也不能一个是另一个的前缀。
-- **`settings.go` 的规则改为：**
-  - `ui.settings` 是 native 或 iframe 时，按 `secrets` 遮蔽；列表为空就什么都不遮蔽。
+- **`settings.go` 的规则改为**（K1 审查 M1 修订，2026-11-19）：
+  - `ui.settings` 是 native 或 iframe 时，按 `secrets` 遮蔽：写了列表按列表，写成 `[]` 就什么都不遮蔽。
+  - **没有 `secrets` 这个键**表示"不知道哪些是密钥"，`maskAll` 全部遮蔽。清单在库里存的是原始 JSON（jsonb），`json.Unmarshal` 后键不存在是 `nil`、`[]` 是空切片，二者可以区分；`Form.Secrets` 用 `omitzero`，Go 里构造的清单 `[]` 也不会丢。
   - 没有 `ui.settings`，或者模式是新核心不认识的值（已装的旧 schema 包）时，`maskAll` 全部遮蔽。这是核心对未知模式的安全默认，不是兼容分支。
+  - 清单检查：native、iframe 的 `ui.settings`（不带 schema 时）必须写 `secrets`，缺了报 `ui.settings.secrets` `required`。它和 `component` 必填一样只在上传时检查，已装的包照常加载，按上一条全部遮蔽。
   - `secrets` 不读包里的任何文件，所以 `settingsForm` 不再调用 `a.d.Install.Package`（`settings.go:87-90`）。
 
 ### 6.2 设置校验：新增 `PluginService.ValidateSettings`
@@ -599,7 +601,9 @@ message ValidateSettingsResponse {
   - `core.Generation` 增加 `SettingsValidator(pluginKey string) (SettingsValidator, bool)`，与 `Scheduler`、`JobRunner` 同一模式（`core/ports_plugin.go:252-261`）。
   - `grpcruntime.Instance` 增加 `ValidateSettings`，照 `grpcruntime/settings.go:63` 的 `SettingsChanged` 的写法。
   - `plugin/api/settings.go:330-334` 的校验换成：先 `mergeSettings` 换回保留的密钥，再调用插件，有 `normalized` 就用它，字段错误加上 `values/` 前缀返回。
-  - 插件没有启用时，`Generation` 里没有它，于是不调用插件，直接保存；之后加载时 `Configure` 照常检查（`instance.go:502-504`）。这和账号凭证的规则一致：账号类型只属于已启用的插件。
+  - 插件不在当前代里（没有启用）时，不调用插件校验，直接保存；之后加载时 `Configure` 照常检查（`instance.go:502-504`）。这和账号凭证的规则一致：账号类型只属于已启用的插件。
+  - 插件已启用（在当前代里）但进程运行不起来时，调用失败，保存返回 503 `plugin_unavailable`：要改设置先停用插件（K1 审查 S3，不当成接受）。
+  - 请求带上插件当前的授权（`grants`，与 `Configure` 下发的同源，K1 审查 S7）。
 - **契约版本。** 这是新增、可选的 RPC：`ProtocolVersion` 不升（仍是 2），Host API 不变（`HostService` 没改）。重新生成 proto（`cd sdk && buf generate`）。
 
 ### 6.3 "插件有设置"和没有 page 的 native 设置
@@ -650,7 +654,7 @@ SDK 拒绝未知键：
 | 方面 | 表现 |
 |---|---|
 | 账号 | 遮蔽来自 `sensitiveFields`，不受影响；校验来自它自己的 `ValidateCredentials`；编辑页的凭证卡片显示"请升级插件"，其它分区可以编辑 |
-| 设置 | 模式不认识，于是全部遮蔽（6.1）；控制台不显示设置表单；没有 `ValidateSettings`，于是只能靠 `Configure` |
+| 设置 | schema 模式的旧包：模式不认识，于是全部遮蔽（6.1）。native 带 schema 的旧包（moderation 现在的清单）：收尾包删掉 `Form.Schema` 之前仍按 schema 遮蔽；删掉之后它被读成"native、没有 `secrets` 键"，同样全部遮蔽（6.1 的 M1 规则），不会明文读回。控制台不显示设置表单；没有 `ValidateSettings`，于是只能靠 `Configure` |
 | 页面 | volcengine 的 table 和 form 页面显示"页面不可用"，这是 `PluginPageView` 现有的兜底 |
 | 网关、路由、任务、钩子 | 不受影响 |
 
@@ -725,7 +729,7 @@ SDK 拒绝未知键：
   - `api/types.ts` 里 FormView 的 schema 字段，以及设置的 `schema`、`ui_schema`
   - `pluginUtil.ts:434-441` 的 `PluginSettings.schema`、`ui_schema`
 - **`@sub2api/ui`：** `src/schema/` 整个目录，以及 `messages.ts` 的 `schema` 段（保留的文案搬到 `form`）。
-- **核心、SDK、工具：** 6.4 列出的全部内容；`pkgtest.go:74,137,165,176,205-215`；`registrytest.go:92,160-161`；`typesafe_test.go:24,43`；`cli_test.go`、`dev_test.go` 里 schema 模式的用例。
+- **核心、SDK、工具：** 6.4 列出的全部内容；随 `Form.Schema` 一起删掉"有 schema 时掩码按 schema、`secrets` 不必写"的分支：`plugin/api/settings.go` `settingsForm` 里 `f.Schema == ""` 的条件（之后 native、iframe 一律按 `secrets` 键在不在决定）和 `check/validate.go` `formSecrets` 里 `f.Schema` 的两处判断（K1 审查 M1）；`apikey.Spec.Fields` 改成总是检查（K1 审查 S5）；`pkgtest.go:74,137,165,176,205-215`；`registrytest.go:92,160-161`；`typesafe_test.go:24,43`；`cli_test.go`、`dev_test.go` 里 schema 模式的用例。
 - **e2e：** AC04、AC18、AC20 对 `.../form` 的断言；AC23 改成 3.3 第 13 行所写的断言。
 - **插件：** 16 个插件的 `forms/` 目录（48 个文件）；各插件 `manifest_test.go` 里读 forms 的部分（azure-openai、bedrock、vertex、volcengine、moderation）。
 - **文档：**

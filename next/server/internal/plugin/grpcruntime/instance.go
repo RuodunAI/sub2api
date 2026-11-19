@@ -490,11 +490,18 @@ func verifyHealth(ctx context.Context, p *proc) error {
 	return nil
 }
 
-func (i *Instance) configure(ctx context.Context, p *proc, st *settings) error {
-	req := &pluginv1.ConfigureRequest{ConfigJson: st.configJSON}
+// protoGrants are the grants as the plugin receives them (Configure,
+// ValidateSettings).
+func (st *settings) protoGrants() []*pluginv1.Grant {
+	out := make([]*pluginv1.Grant, 0, len(st.grants))
 	for perm, scope := range st.grants {
-		req.Grants = append(req.Grants, &pluginv1.Grant{Permission: perm, ScopeJson: string(scope)})
+		out = append(out, &pluginv1.Grant{Permission: perm, ScopeJson: string(scope)})
 	}
+	return out
+}
+
+func (i *Instance) configure(ctx context.Context, p *proc, st *settings) error {
+	req := &pluginv1.ConfigureRequest{ConfigJson: st.configJSON, Grants: st.protoGrants()}
 	resp, err := p.plugin.Configure(ctx, req)
 	if err != nil {
 		return fmt.Errorf("Configure: %w", err)

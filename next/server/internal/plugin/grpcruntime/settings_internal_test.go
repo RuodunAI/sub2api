@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -117,22 +118,27 @@ func TestInstanceSettingsChanged(t *testing.T) {
 }
 
 func (p *settingsPlugin) ValidateSettings(_ context.Context, in *pluginv1.ValidateSettingsRequest, _ ...grpc.CallOption) (*pluginv1.ValidateSettingsResponse, error) {
-	p.got = append(p.got, []string{in.GetConfigJson()})
+	got := []string{in.GetConfigJson()}
+	for _, g := range in.GetGrants() {
+		got = append(got, g.GetPermission()+"="+g.GetScopeJson())
+	}
+	p.got = append(p.got, got)
 	return &pluginv1.ValidateSettingsResponse{Errors: []*pluginv1.FieldError{{Field: "a"}}}, p.err
 }
 
 // ValidateSettings reaches the plugin's PluginService; its status keeps its
 // code through the core error, so UNIMPLEMENTED (an older plugin, or one
-// without SettingsValidator) is told apart.
+// without SettingsValidator) is told apart. The plugin's grants go with it,
+// as with Configure.
 func TestInstanceValidateSettings(t *testing.T) {
 	ctx := context.Background()
-	i, _ := testInstance(t, nil, nil, registry.Grants{})
+	i, _ := testInstance(t, nil, nil, registry.Grants{"net": json.RawMessage(`{"domains":["a.test"]}`)})
 	sp := &settingsPlugin{}
 	p := *i.proc.Load()
 	p.plugin = sp
 	i.proc.Store(&p)
 	resp, err := i.SettingsValidator().ValidateSettings(ctx, &pluginv1.ValidateSettingsRequest{ConfigJson: `{"a":1}`})
-	if err != nil || len(resp.GetErrors()) != 1 || len(sp.got) != 1 || sp.got[0][0] != `{"a":1}` {
+	if err != nil || len(resp.GetErrors()) != 1 || len(sp.got) != 1 || !slices.Equal(sp.got[0], []string{`{"a":1}`, `net={"domains":["a.test"]}`}) {
 		t.Fatalf("validate = %v %v %v", resp, err, sp.got)
 	}
 	sp.err = status.Error(codes.Unimplemented, "no")

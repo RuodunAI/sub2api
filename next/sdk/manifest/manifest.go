@@ -668,8 +668,10 @@ type Form struct {
 	Permission string `json:"permission,omitempty"`
 	// Secrets (ui.settings only, native or iframe) are the settings the core
 	// masks (CONTRACTS §75.1); an account type marks its secrets in
-	// sensitiveFields.
-	Secrets []SettingsSecret `json:"secrets,omitempty"`
+	// sensitiveFields. nil (the key absent) says nothing about which settings
+	// are secret, so the core masks every one; empty ([]) says none is.
+	// omitzero keeps an empty list when a manifest is built in Go.
+	Secrets []SettingsSecret `json:"secrets,omitzero"`
 }
 
 // UsageRules tell the host how to read token usage from upstream responses.

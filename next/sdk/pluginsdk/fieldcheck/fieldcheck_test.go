@@ -59,6 +59,7 @@ func TestCheckRefuses(t *testing.T) {
 	}{
 		"required":         {`{}`, map[string]string{"name": "required"}},
 		"required empty":   {`{"name":""}`, map[string]string{"name": "required"}},
+		"required null":    {`{"name":null}`, map[string]string{"name": "required"}},
 		"min length":       {`{"name":"x"}`, map[string]string{"name": "minLength"}},
 		"max length runes": {`{"name":"日本語です!"}`, map[string]string{"name": "maxLength"}},
 		"string type":      {`{"name":"ab","host":5}`, map[string]string{"host": "type"}},
@@ -116,5 +117,25 @@ func TestUnknown(t *testing.T) {
 	}
 	if errs := fieldcheck.Unknown(nil); errs != nil {
 		t.Fatalf("nothing to check = %v", errs)
+	}
+}
+
+// String-only rules on another kind would never be checked: building one
+// panics, like an invalid pattern.
+func TestStringRulesOnOtherKinds(t *testing.T) {
+	for name, build := range map[string]func(){
+		"OneOf on Integer":  func() { fieldcheck.Integer().OneOf("1") },
+		"Pattern on Number": func() { fieldcheck.Number().Pattern(`^1$`) },
+		"OneOf on Any":      func() { fieldcheck.Any().OneOf("a") },
+		"bad pattern":       func() { fieldcheck.String().Pattern(`(`) },
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: no panic", name)
+				}
+			}()
+			build()
+		}()
 	}
 }

@@ -5255,18 +5255,21 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
     - 实现：`sdk/manifest` `SettingsSecrets`（标记的唯一读法，打包校验与核心共用）、`plugin/api/settings.go` `schemaSecrets`、`mergeSettings`。
   - **不带 schema 的 native / iframe 设置在清单里声明密钥**（2026-11-19，插件界面只用代码写，设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md) 6.1）：`ui.settings.secrets` 是 `[{path, sensitive?}]`。
     - `path` 是相对 `values` 的 JSON 指针，写法与 `secret_fields` 相同（`upstream/api_key`，`~0`、`~1` 转义）；`sensitive: true` 是敏感地址（对应 `x-sensitive`），否则是凭据。
-    - 范围与 schema 标记相同：嵌套对象的属性，最多 8 层，数组元素不行；被列出的字段整体掩码。
-    - 核心按列表掩码，列表为空就什么都不掩码；掩码、回传 `******` 沿用原值、只凭插件权限时的重填、字段错误的写法都与 schema 相同。实现：`manifest.Form.SecretFields`（返回与 `SettingsSecrets` 相同的 `[]SecretField`）。
-    - `manifest/check`：只有 `ui.settings` 可以写（账号类型写了报 `unsupported`，账号的密钥用 `sensitiveFields`）；带 `schema` 的设置不能同时写（`unsupported`，密钥由 schema 标记）；每个 `path` 由非空的名字组成、`~` 只能是 `~0`/`~1`、不超过 8 层（`manifest.SecretPath`，否则 `invalid`）；不能重复，也不能一个在另一个之下（`duplicate`）。native 设置要有 `component` 或 `page`（`ui.settings.component` `required`）。
+    - 范围与 schema 标记相同：嵌套对象的属性，最多 8 层；被列出的字段整体掩码。数组元素不能单独声明：路径中途遇到数组（或任何不是对象的值）时，那个值整体按密钥处理，`GET` 时整块掩码、`secret_fields` 列出它，回传掩码时整块沿用原值（与列出的对象、数组值同一套逻辑，`settings.go` `wholeAtNonObjects`）。建议直接声明数组本身。
+    - **键在不在有区别**（2026-11-19，K1 审查 M1）：写了列表按列表掩码；写成 `[]` 表示没有密钥，什么都不掩码；**没有 `secrets` 键**表示不知道哪些是密钥，每个顶层键都按凭据掩码（同下文"不知道哪些是密钥的设置"）。清单以原始 JSON 存在 `plugin_versions.manifest`（jsonb），解码后键不存在是 `nil`、`[]` 是空切片；`Form.Secrets` 的 JSON 标签是 `omitzero`，Go 里构造的清单也保留 `[]`。
+    - 掩码、回传 `******` 沿用原值、只凭插件权限时的重填、字段错误的写法都与 schema 相同。实现：`manifest.Form.SecretFields`（返回与 `SettingsSecrets` 相同的 `[]SecretField`）。
+    - `manifest/check`：不带 schema 的 native / iframe 设置必须写 `secrets`（可以是 `[]`），缺了报 `ui.settings.secrets` `required`；只有 `ui.settings` 可以写（账号类型写了报 `unsupported`，账号的密钥用 `sensitiveFields`）；带 `schema` 的设置不能同时写（`unsupported`，密钥由 schema 标记，掩码照旧按 schema）；每个 `path` 由非空的名字组成、`~` 只能是 `~0`/`~1`、不超过 8 层（`manifest.SecretPath`，否则 `invalid`）；不能重复，也不能一个在另一个之下（`duplicate`）。native 设置要有 `component` 或 `page`（`ui.settings.component` `required`）。这些检查只在上传时做，已装的包照常加载（缺 `secrets` 的按上一条全部掩码）。
   - **插件校验设置**（2026-11-19）：`PUT` 在换回保留的密钥之后、写库之前，调用插件的 `PluginService.ValidateSettings`（`config_json` 是换回密钥后的完整设置）。
-    - 回答的 `errors` 非空时 400 `invalid_argument`，每项 `field` 是相对设置的 JSON 指针（`a/b`），核心写成 `values/a/b`，空串写成 `values`；`code`、`message` 原样。`normalized_config_json` 非空时存它而不是提交的值（必须是 JSON 对象，否则 503 `plugin_unavailable`），`changed_keys`、重填规则都按它算。
-    - 可选：插件没实现（SDK 默认回 `UNIMPLEMENTED`，旧插件对未知方法同样回它）视为接受。插件没启用（不在当前代里）时不调用，直接保存，加载时由 `Configure` 检查（与账号凭证相同）。走控制台调用槽位和 `TimeoutPlatformConsole`（10 秒），调用发生在锁住插件行的事务里。
+    - 请求的 `grants` 是插件当前的授权，与 `Configure` 下发的同源（2026-11-19，K1 审查 S7；此前为空）。
+    - 回答的 `errors` 非空时 400 `invalid_argument`，每项 `field` 是相对设置的 JSON 指针（`a/b`），核心写成 `values/a/b`，空串写成 `values`；`code`、`message` 原样返回给控制台，所以 **`message` 不得包含字段的值**（值可能是密钥）。`normalized_config_json` 非空时存它而不是提交的值（必须是 JSON 对象，否则 503 `plugin_unavailable`），`changed_keys`、重填规则都按它算。
+    - 可选：插件没实现（SDK 默认回 `UNIMPLEMENTED`，旧插件对未知方法同样回它）视为接受。插件没启用（不在当前代里）时不调用，直接保存，加载时由 `Configure` 检查（与账号凭证相同）。插件已启用但运行不起来（进程起不来、崩溃）时调用失败，保存回答 503 `plugin_unavailable`，不当成接受：要改设置先停用插件。走控制台调用槽位和 `TimeoutPlatformConsole`（10 秒）。
+    - 调用发生在锁住插件行（`SELECT … FOR UPDATE`）的事务里：这是取舍，保证校验的是与写入同一份已存值（换回的密钥、`changed_keys`、重填规则都基于它），代价是校验期间同一插件的启用、停用、升级等要锁这一行的操作要等校验返回（最长到上面的超时）。
     - 带 schema 的设置先按 schema 校验，再调用插件。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
-    - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。测试用 `pluginsdktest.Harness.ValidateSettings`。
+    - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
     - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields` 列出 `api_key`、`base_url` 之外表单会发的键，设置了（空列表也算）就拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 不检查；自己实现表单的插件用 `accountform.Form.Only(keys...)`。
   - **标记只能写在能掩码的位置**（2026-11-12）：只有沿 `properties` 嵌套对象能到达的属性（最多 8 层）能单独掩码；被标记的属性整体掩码，其下不再细分。`items`、`additionalProperties`、`patternProperties`、`allOf`/`anyOf`/`oneOf`、`if`/`then`/`else`、嵌套的 `$defs` 等其他位置的标记、超过 8 层的标记，打包校验报 `ui.settings.schema` `unmaskable_secret`。同文档的本地引用 `"$ref": "#/$defs/<名>"` 或 `"#/definitions/<名>"`（指向根上的 `$defs`/`definitions`，名字是一个 RFC 6901 记号，`~0` `~1` 解码，不接受百分号编码）按“目标写在引用处”处理：目标自身被标记则引用处的属性整体掩码，目标的 `properties` 接在引用处的路径下（同样最多 8 层）；根上的 `$defs`/`definitions` 只经引用读取，没被引用的定义不检查。引用成环、互相嵌套超过 32 层、全部展开累计超过 10000 个节点，或者从 `items` 等到不了的位置引用带标记的定义，都报错，位置写在引用下（如 `/properties/a/$ref/items`）。schema 里只要有任何标记，其他引用（`$dynamicRef`、`$recursiveRef`、外部引用、锚点、其他指针、嵌套 `$id` 之下的引用）照旧报错（2026-11-12 权限加固 FU4，此前任何引用都报错）；schema 文件不是 JSON 对象同样报错。校验之前已安装的包：含这类标记的顶层设置整块按凭据掩码；标记不属于某一个顶层设置时（根上的 `allOf`、`additionalProperties`、`$ref` 等），或 schema 文件不是 JSON 对象时，全部顶层设置按凭据掩码。
-  - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置按 `ui.settings.secrets` 掩码（上文），不再全部掩码。
+  - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值；不带 schema 的 native / iframe 设置没有 `secrets` 键；schema 模式缺 schema 文件）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。不带 schema 的 native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
   - `GET` 的回答多一个 `permission`：完整的 RBAC key（`plugin.<key>:<permission>`），没有声明时省略。
 - **审计**：设置修改照旧写 `plugin.settings.update`（`changed_keys`，不记值），现在多记 `request_id`；用户是谁看 `user_id`。
 - **控制台**：
@@ -5328,7 +5331,7 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
 2026-10-31 用户要求：提示词审核的设置全部放到插件自己的「设置」标签里，插件详情页不再有设置。
 
 - manifest：`ui.settings` 写 `{"mode":"native","page":"<ui.pages 中的 native 页面>","schema":"…","uiSchema":"…","permission":"…"}`。`schema` / `uiSchema` 只有 `ui.settings` 在 native 模式下可以带，其它表单带了报 `unsupported`；`page` 必须是 `ui.pages` 里的 native 页面。
-- 核心：只要表单带 schema，不论模式，`GET/PUT /plugins/:key/settings` 都按它掩码密钥（§75.1）并校验；存储、通知插件、权限都与 schema 模式相同。不带 schema 的 native/iframe 设置按 `ui.settings.secrets` 掩码，没有列出的不掩码（2026-11-19 起；此前这里写"不掩码"，与当时的代码不符：当时它们和没有 `ui.settings` 一样，每个顶层键都按凭据掩码）。
+- 核心：只要表单带 schema，不论模式，`GET/PUT /plugins/:key/settings` 都按它掩码密钥（§75.1）并校验；存储、通知插件、权限都与 schema 模式相同。不带 schema 的 native/iframe 设置按 `ui.settings.secrets` 掩码，没有列出的不掩码，写成 `[]` 什么都不掩码，没有 `secrets` 键时每个顶层键都按凭据掩码（2026-11-19 起；此前这里写"不掩码"，与当时的代码不符：当时它们和没有 `ui.settings` 一样，每个顶层键都按凭据掩码）。所以收尾时删掉 `Form.Schema` 后，已装的 native 带 schema 的旧包（如今天的 moderation）被读成"native、没有 `secrets`"，全部掩码，不会明文读回。
 - `GET /plugins` 的 `has_settings`（2026-11-19 起）：当前版本声明了 `ui.settings` 即为 true，不论模式（此前只在 `mode` 为 `schema` 时为 true）。
 - 控制台：插件详情页只在 `mode` 为 `schema` 时显示设置标签；`/plugins/:key/settings`（只有插件权限的人用）遇到 native 设置时转到 `/p/:key/<page>?tab=settings`。插件页面自己用 `GET/PUT /plugins/:key/settings` 读写，回传 `******` 表示沿用密钥。
 - 兼容：0.1.222 及更早的核心对 native 设置不读 schema，GET 会把密钥明文返回，所以用这种写法的插件 `hostCompat` 要求 ≥ 0.1.223（moderation 0.6.1 起）。

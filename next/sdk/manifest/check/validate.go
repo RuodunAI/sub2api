@@ -515,11 +515,16 @@ func (v *validator) maskableSecrets(field, schema string) {
 		manifest.MaxSecretDepth, manifest.MaxSecretRefDepth, strings.Join(unreachable, ", "))
 }
 
-// formSecrets validates ui.settings.secrets (manifest.SecretPath): only the
-// settings form takes them, a schema marks its secrets itself, and no path
-// repeats or lies inside another (a secret is masked as a whole).
+// formSecrets validates ui.settings.secrets (manifest.SecretPath): native or
+// iframe settings without a schema must write them ([] for none: without the
+// key the core masks every setting), only the settings form takes them, a
+// schema marks its secrets itself, and no path repeats or lies inside another
+// (a secret is masked as a whole).
 func (v *validator) formSecrets(field string, f manifest.Form, settings bool) {
 	switch {
+	case settings && f.Secrets == nil && f.Schema == "" && (f.Mode == "native" || f.Mode == "iframe"):
+		v.add(field, "required", "secrets is required: list the settings to mask, [] for none")
+		return
 	case len(f.Secrets) == 0:
 		return
 	case !settings:
