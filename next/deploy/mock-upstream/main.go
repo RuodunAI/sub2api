@@ -9,7 +9,8 @@
 //	                                stream_options.include_usage is true; a non-streaming
 //	                                request offering the tool "submit_verdict" gets a
 //	                                simulated moderation verdict (moderation.go)
-//	POST /v1/responses              OpenAI Responses (usage in response.completed)
+//	POST /v1/responses              OpenAI Responses (usage in response.completed); with the image_generation
+//	                                tool, its tools echo and tool_usage.image_gen (sites.go)
 //	GET  /v1/responses              Responses WebSocket mode (ws.go)
 //	POST /v1/embeddings             OpenAI embeddings (usage.prompt_tokens)
 //	POST /v1/moderations            OpenAI moderation scores; MOD-HIT-<category> scores 0.99 (moderation_api.go)
@@ -34,6 +35,9 @@
 //	CONNECT host:port               HTTPS through the mock as a forward proxy (connect.go)
 //	GET  /v1/models                 Anthropic/OpenAI style list {"data":[{"id":...}]}
 //	GET  /v1beta/models             Gemini style list {"models":[{"name":"models/..."}]}
+//	GET  /api/usage/token/, /api/status, /v1/usage
+//	                                New API and Sub2API balances (sites.go)
+//	POST /v1/images/{generations,edits}  OpenAI image generation, JSON or SSE (sites.go)
 //	GET  /__requests[?since=ID]     last 100 recorded requests (newest last)
 //	DELETE /__requests              clear the request log
 //	GET/POST/DELETE /__control      per-API-key behaviour rules (see controlRule)
@@ -117,6 +121,8 @@ type controlRule struct {
 	Usage     *Usage `json:"usage,omitempty"`
 	// Text overrides the assistant text.
 	Text string `json:"text,omitempty"`
+	// Balance replaces the answer of the balance endpoints (sites.go).
+	Balance json.RawMessage `json:"balance,omitempty"`
 }
 
 // recorded is one entry of GET /__requests.
@@ -202,6 +208,7 @@ func (s *server) handler() http.Handler {
 	s.cloudRoutes(mux)
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("GET /v1beta/models", s.listGeminiModels)
+	s.siteRoutes(mux)
 	mux.HandleFunc("POST /api/v3/contents/generations/tasks", s.submitVideo)
 	mux.HandleFunc("GET /api/v3/contents/generations/tasks/{id}", s.queryVideo)
 	mux.HandleFunc("POST /__video/control", s.controlVideo)
@@ -346,6 +353,7 @@ type behaviour struct {
 	chunkDelay time.Duration
 	usage      Usage
 	text       string
+	balance    json.RawMessage
 }
 
 var keyMarker = regexp.MustCompile(`-(status|delay)-(\d+)`)
@@ -408,6 +416,9 @@ func applyRule(rules map[string]*controlRule, key string, b *behaviour) {
 	}
 	if rule.Text != "" {
 		b.text = rule.Text
+	}
+	if len(rule.Balance) > 0 {
+		b.balance = rule.Balance
 	}
 	if rule.Remaining > 0 {
 		rule.Remaining--
@@ -598,10 +609,14 @@ func (s *server) countTokens(w http.ResponseWriter, r *http.Request) {
 // MockModels are the ids returned by the model list endpoints.
 var MockModels = []string{"claude-sonnet-4-5", "claude-opus-4-1", "gpt-4.1", "gemini-2.5-pro"}
 
-// listModels answers GET /v1/models (Anthropic and OpenAI share the shape).
-// A rule or key marker with a 4xx/5xx status applies, so tests can check
-// how the console reports upstream failures.
+// listModels answers GET /v1/models (Anthropic and OpenAI share the shape;
+// TypeSafe's host gets its own). A rule or key marker with a 4xx/5xx status
+// applies, so tests can check how the console reports upstream failures.
 func (s *server) listModels(w http.ResponseWriter, r *http.Request) {
+	if isTypeSafe(r) {
+		s.typesafeModels(w, r)
+		return
+	}
 	id := s.record(r, nil, "", false, "")
 	b := s.resolve(r, nil)
 	if b.status >= 400 {

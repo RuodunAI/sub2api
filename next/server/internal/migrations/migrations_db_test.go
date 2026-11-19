@@ -1149,11 +1149,11 @@ func TestMigration0113AccountBalanceUnlimited(t *testing.T) {
 	require.Equal(t, want, state())
 }
 
-// 0115 widens account_balances.currency to text, keeping the rows there,
+// 0114 widens account_balances.currency to text, keeping the rows there,
 // so a unit of any length is stored as the upstream gave it; a rerun
 // changes nothing (CONTRACTS §52.3).
-func TestMigration0115AccountBalanceUnitText(t *testing.T) {
-	const id = "0115_account_balance_unit_text.sql"
+func TestMigration0114AccountBalanceUnitText(t *testing.T) {
+	const id = "0114_account_balance_unit_text.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
 	ctx := t.Context()
 	migrate := func() []string {

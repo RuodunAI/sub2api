@@ -24,6 +24,7 @@ const (
 	usageAnthropic usageFamily = iota // exclusive input, cache read and creation
 	usageOpenAI                       // inclusive input of which cached
 	usageGemini                       // inclusive input, output + thoughts
+	usageInputOnly                    // input only, output 0 (TypeSafe)
 )
 
 // expectBilled checks the usage record of requestID: the account, billed at
@@ -54,6 +55,11 @@ func (e *Env) expectBilled(admin *Session, userID int64, requestID string, accou
 			e.T.Fatalf("usage tokens (gemini): %s", u.Raw)
 		}
 		want = ExpectedTokenCost(RunPrice, MockInputTokens-MockCacheReadTokens, out, MockCacheReadTokens, 0, 0, 1)
+	case usageInputOnly:
+		if u.Get("input_tokens").Int() != MockInputTokens || u.Get("output_tokens").Int() != 0 || u.Get("cache_read_tokens").Int() != 0 {
+			e.T.Fatalf("usage tokens (input only): %s", u.Raw)
+		}
+		want = ExpectedTokenCost(RunPrice, MockInputTokens, 0, 0, 0, 0, 1)
 	default:
 		e.T.Fatalf("expectBilled: unknown usage family %d", fam)
 	}
@@ -78,17 +84,23 @@ func (e *Env) expectOneDebit(admin *Session, userID int64, requestID string, wan
 	AssertMoney(e.T, "ledger debit", new(big.Rat).Neg(Money(e.T, rows[0].Get("delta").String())).FloatString(8), want)
 }
 
-// mockCallsOf returns the mock requests since mark carrying upstream key.
+// mockCallsOf returns the mock requests since mark carrying upstream key,
+// other than balance reads (the balance sweep reads a new account's
+// balance at any time, CONTRACTS §52).
 func mockCallsOf(t testing.TB, m *Mock, mark int64, key string) []MockRequest {
 	t.Helper()
 	var out []MockRequest
 	for _, r := range m.Since(t, mark) {
-		if r.Key() == key {
+		if r.Key() == key && !balancePaths[r.Path] {
 			out = append(out, r)
 		}
 	}
 	return out
 }
+
+// balancePaths are the paths of the upstream sites' balance reads
+// (newapi, sub2api).
+var balancePaths = map[string]bool{"/api/usage/token/": true, "/v1/usage": true}
 
 // oneMockCall requires exactly one mock request with key since mark.
 func oneMockCall(t testing.TB, m *Mock, mark int64, key, what string) MockRequest {
@@ -177,17 +189,28 @@ func (e *Env) setMaxRequestBodyMB(admin *Session, mb int) int {
 	return prev
 }
 
-// notServedMessage is the 404 of a request no account of the group serves
-// on its endpoint (protocol binding, CONTRACTS 110).
-const notServedMessage = "no account in this group serves this model on this endpoint"
+// The 404 messages of a request no account of the group serves: on its
+// endpoint for the model (protocol binding, CONTRACTS 110), or on the
+// endpoint at all (no account type of the group declares it).
+const (
+	notServedMessage         = "no account in this group serves this model on this endpoint"
+	endpointNotServedMessage = "no account in this group serves this endpoint"
+)
 
-// expectNotServed requires that 404, in the endpoint's error format
-// ("openai" or "anthropic").
+// expectNotServed requires the 404 of notServedMessage, in the endpoint's
+// error format ("openai" or "anthropic").
 func expectNotServed(t testing.TB, g *GatewayResult, format string) {
+	t.Helper()
+	expectNotFound(t, g, format, notServedMessage)
+}
+
+// expectNotFound requires a 404 with message want in the endpoint's error
+// format.
+func expectNotFound(t testing.TB, g *GatewayResult, format, want string) {
 	t.Helper()
 	j := g.JSON()
 	msg := j.Get("error.message").String()
-	ok := g.Status == http.StatusNotFound && msg == notServedMessage
+	ok := g.Status == http.StatusNotFound && msg == want
 	switch format {
 	case "openai":
 		ok = ok && j.Get("error.type").String() != "" && !j.Get("type").Exists()
@@ -197,6 +220,6 @@ func expectNotServed(t testing.TB, g *GatewayResult, format string) {
 		t.Fatalf("expectNotServed: unknown error format %q", format)
 	}
 	if !ok {
-		t.Fatalf("want 404 %q in %s format, got HTTP %d %s", notServedMessage, format, g.Status, g.Body)
+		t.Fatalf("want 404 %q in %s format, got HTTP %d %s", want, format, g.Status, g.Body)
 	}
 }

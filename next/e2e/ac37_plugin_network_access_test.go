@@ -2,7 +2,6 @@ package e2e
 
 import (
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -24,25 +23,13 @@ func TestAC37_PluginNetworkAccess(t *testing.T) {
 	tn := e.NewTenant(admin, TenantOpts{})
 	e.EnsurePlugin(admin, "guard", "")
 
-	mockURL, err := url.Parse(e.MockInternalURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	host := mockURL.Hostname()
+	host := e.mockHost()
 	hookPath := "/__webhook/guard-netaccess-" + e.RunID
-	node := *admin.Client
-	node.Base = e.NodeURLs[0]
-	setAccess := func(body map[string]any) {
-		t.Helper()
-		node.OK(t, http.MethodPut, "/settings/plugin-egress", body)
-	}
-	defaults := map[string]any{"mode": "allow_all", "blocked_domains": []string{}, "allowed_domains": []string{}}
+	node, setAccess := e.nodeOneNetworkAccess(admin)
 	t.Cleanup(func() {
-		setAccess(defaults)
 		e.SetGuardRules(admin)
 		e.SetGuardSettings(admin, e.MockInternalURL+hookPath) // the default alert cooldown again
 	})
-	setAccess(defaults)
 	// Every blocked request alerts: the default cooldown (60 s, used up by a
 	// refused alert too) would hold back the alerts of the next phase.
 	admin.OK(t, http.MethodPut, "/plugins/guard/settings", map[string]any{
@@ -148,20 +135,8 @@ func TestAC37_PluginNetworkAccessCoversUpstreamRequests(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
 	tn := e.NewTenant(admin, TenantOpts{})
-	mockURL, err := url.Parse(e.MockInternalURL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	host := mockURL.Hostname()
-	node := *admin.Client
-	node.Base = e.NodeURLs[0]
-	setAccess := func(body map[string]any) {
-		t.Helper()
-		node.OK(t, http.MethodPut, "/settings/plugin-egress", body)
-	}
-	defaults := map[string]any{"mode": "allow_all", "blocked_domains": []string{}, "allowed_domains": []string{}}
-	t.Cleanup(func() { setAccess(defaults) })
-	setAccess(defaults)
+	host := e.mockHost()
+	node, setAccess := e.nodeOneNetworkAccess(admin)
 
 	m := e.Mock()
 	key := tn.Accounts[0].Key
@@ -195,14 +170,7 @@ func TestAC37_PluginNetworkAccessCoversUpstreamRequests(t *testing.T) {
 			t.Fatalf("%s: the request reached the mock", what)
 		}
 		Eventually(t, 30*time.Second, time.Second, what+": denied in the anthropic egress log", func() bool {
-			d := admin.OK(t, http.MethodGet, "/plugins/"+AnthropicPlugin+"/egress", nil, Query("from", since.UTC().Format(time.RFC3339),
-				"to", time.Now().Add(time.Minute).UTC().Format(time.RFC3339), "page_size", "200"))
-			for _, r := range d.Get("items").Array() {
-				if r.Get("host").String() == host && r.Get("result").String() == "denied" && strings.Contains(r.Get("error").String(), reason) {
-					return true
-				}
-			}
-			return false
+			return e.deniedInEgressLog(admin, AnthropicPlugin, host, reason, since)
 		})
 	}
 

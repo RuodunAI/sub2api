@@ -2229,9 +2229,9 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 | 列表 | 默认值 | 含义 |
 |---|---|---|
 | `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex` | 安装，首次安装即启用 |
-| `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
+| `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight newapi sub2api typesafe` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
-（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节；`custom` 在 0.1.301 删除，见 §106。）
+（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节，`newapi`、`sub2api`、`typesafe` 见 §119；`custom` 在 0.1.301 删除，见 §106。）
 
 同一个插件同时出现在两份列表里时构建失败。第二份列表写进内建目录的 **`install-only.txt`**（每行一个 key，`#` 注释、空行、CRLF 都容忍），核心的 `EnsureBuiltin`（`server/internal/plugin/install/builtin.go`）读它。
 
@@ -3333,13 +3333,13 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - `BuildTestRequest` 没有 stream 参数；是否流式由插件按协议定：2026-11-19 起（§122）账号对某模型只开放 Gemini 流式生成时，gemini 预设走 `streamGenerateContent?alt=sse` 测，codex 一直发流式 Responses。
 - 2026-11-18 加过的价格检查（被测模型没有价格时回 403）已于 2026-11-19 撤掉：账号测试不查价格、不计费（§17.2）。
-- 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0116 加列 `last_test_protocol`。
+- 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0115 加列 `last_test_protocol`。
 
 ## 51. CCGateway 订阅用量（已删除）
 
 0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；同日改为不做任何换算，迁移 0115；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
+## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；同日改为不做任何换算，迁移 0114；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
 
 **余额是上游返回的数字本身，单位是上游给的原文，不做任何换算。** 2026-11-18 所有者原话："我现在给你明确，不要去折算，上游返回多少我们就是多少，我们不要做任何折算，就算数字不对也不管，汇率不对也不管。"——插件不做单位换算、汇率换算，不替上游补单位；上游没给单位就没有单位（界面只显示数字）；核心不校验单位的格式。这推翻了设计的 D3（统一折成美元）与 D6（New API 用 `quota_per_unit` 换算）。字段名仍叫 `currency`（proto、数据库列、接口），语义是"上游给的单位，可以没有"。
 
@@ -3373,12 +3373,12 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - 插件回 `UNIMPLEMENTED`：不写库，`GET /balance` 回 404 `unsupported`。
 - 写库失败返回 500（不再吞掉）。
 
-**表 `account_balances`**（迁移 0034 建，0113、0115 改）：每个账号一行。
+**表 `account_balances`**（迁移 0034 建，0113、0114 改）：每个账号一行。
 
 | 列 | 说明 |
 |---|---|
 | `account_id` | 主键，删账号级联 |
-| `amount_micros`、`currency` | 最近一次成功查询的金额与单位（上游原文，`text`，0115 起；此前 `VARCHAR(3)`）；上游没给单位、不限或从未成功时单位为 `''`，不限或从未成功时金额为 0 |
+| `amount_micros`、`currency` | 最近一次成功查询的金额与单位（上游原文，`text`，0114 起；此前 `VARCHAR(3)`）；上游没给单位、不限或从未成功时单位为 `''`，不限或从未成功时金额为 0 |
 | `unlimited` | 最近一次成功查询报告不限额度（0113 加） |
 | `updated_at` | 最近一次成功查询的时间；**从未成功时为 NULL**（0113 起可空，此前首次失败违反 NOT NULL、错误被吞） |
 | `error`、`error_at` | 最近一次失败：`auth_rejected: …` / `transient: …`（最多 512 字节）与时间；成功时清空 |
@@ -3424,7 +3424,7 @@ BalanceView = { supported: true, amount?: string, currency?: string, unlimited?:
 
 ### 52.7 测试
 
-- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、没有单位与任意文字的单位原样保存、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`、`TestMigration0115AccountBalanceUnitText`。
+- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、没有单位与任意文字的单位原样保存、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`、`TestMigration0114AccountBalanceUnitText`。
 - 运行时 `grpcruntime` 的 `TestBalanceAcrossProcess`：经真实 gRPC 的测试插件（`testdata/testplugin`），请求与回答逐字段往返，`UNIMPLEMENTED` 经运行时的错误仍能被识别。
 - 控制台 `AccountBalanceCell.spec.ts`（五种状态，有单位与没有单位）、`utils/format.spec.ts`（`formatBalance` 的千分位、小数位与大数）。
 - 插件：`plugins/newapi`、`plugins/sub2api` 的 `platform_test.go`（每个分支、大数与带小数的数）；SDK `standard/balance_test.go`（两种示例读法与 `Micros`）。
@@ -8595,6 +8595,70 @@ ALTER TABLE usage_logs
 - 官方 Codex 客户端 2026-07 起改用 Codex 后端的 `/images/generations` 专用接口生图；网关没有这个端点（已知限制，不在本节范围）。
 - `/v1/images/generations`、`/v1/images/edits` 经转换由 Responses 服务时（§121）用的就是这份规则，只是 `model` 读应答回显的生图模型（§121.4、§121.5）。
 
+## 119. 上游插件 newapi、sub2api、typesafe（2026-11-18，所有者要求接入 New API、Sub2API 站点和 TypeSafe；无核心迁移；核心 0.1.304 批次；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.5、3.6 与 D6–D8、D11–D15、D20–D22；使用说明见 [PLUGIN-NEWAPI.md](PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](PLUGIN-TYPESAFE.md)）
+
+三个官方平台插件，都是 `0.1.0`、`hostCompat >=0.1.304 <0.2.0`、用 SDK 的 `standard` 库写成（newapi、sub2api 用 `standard.Merge` 把几份厂商预设合成一个账号类型，typesafe 用预设 `providers/typesafe`）。插件只构造请求，由核心发送（§112）。
+
+### 119.1 账号类型与字段
+
+| 插件 | 账号类型 | 字段 | 地址 |
+|---|---|---|---|
+| `newapi` | `apikey`（"New API"） | `base_url`（必填）、`api_key`（敏感，8–512 个不含空格的可见字符，不限前缀） | 运营方填站点根地址；粘贴的 `/v1`、`/v1beta` 去掉。不声明 `guardedSettings`、`externalServices`：转发和余额请求只能发往账号自己的 `base_url` 主机（§112.17）。可自定义上游：own 级用户新建或改地址要 `account:relay`（§21.3.1） |
+| `sub2api` | `apikey`（"Sub2API"） | 同上 | 同上 |
+| `typesafe` | `apikey`（"TypeSafe"） | `api_key`（必填，同上）、`base_url`（可选，缺省 `https://api.typesafe.ai`，粘贴的 `/v1` 去掉） | `guardedSettings` 只许官方地址、`externalServices: ["api.typesafe.ai"]`：没有 `account:settings:custom` 的人只能用官方地址，改成别的地址照 §21.3 需要 `account:relay` |
+
+- 默认模型：newapi、sub2api 不写（账号服务所有模型；"拉取模型"读站点 `GET /v1/models` 的 `data[].id`）；typesafe 是 `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview`（"拉取模型"读 `GET /v1/models` 的 `models[].name`）。
+- 账号测试按绑定的协议测（§122）：核心按账号开放、绑定的协议给出顺序（`BuildTestRequestRequest.protocols`），插件取第一个有测试请求的；newapi、sub2api 用 `standard.Merge` 收集各份预设的全部测试（§122.3 的 OpenAI、Gemini 各协议，Messages `claude-haiku-4-5`），newapi 另有 systemone（`jev-latest`）；typesafe 发一条 `noul` 问题。账号测试不查价、不计费。
+
+### 119.2 服务的平台与协议
+
+| 账号类型 | 平台：端点 |
+|---|---|
+| newapi `apikey` | `openai`：全部（含 Responses WebSocket 与 §118 的生图两条）；`anthropic`：全部；`gemini`：`generate_content`、`stream_generate_content`（不含 `countTokens`，由核心本地估算，§88.2）；`typesafe`：全部（平台由 typesafe 插件声明，§119.3） |
+| sub2api `apikey` | `openai`、`anthropic`、`gemini`：全部 |
+| typesafe `apikey` | `typesafe`：`systemone` |
+
+- **同协议原样转发**，不做协议转换（跨平台转换按 §110 默认关闭）：请求体不改，OpenAI Chat 流式照 openai 预设补 `stream_options.include_usage`。每个协议用自己官方的鉴权头（路由级 `Auth`，§112.13）：OpenAI 系与 TypeSafe `Authorization: Bearer`，Anthropic `x-api-key`（没带 `anthropic-version` 时补默认值），Gemini 只用 `x-goog-api-key`。
+- 新建账号 `protocols` 为 `null`，上表的协议全部开放；上游 Key 只开通了部分协议时由运营方在协议绑定里收窄（§110.4）。上游不支持某协议时按该协议预设的失败分类（D20）：400 / 404 原样返回、5xx 换号并冷却、401 / 403 停用账号。
+- 能力：newapi、sub2api 是 `platform.adapter.v1`、`platform.websocket.v1`；typesafe 只有 `platform.adapter.v1`。
+
+### 119.3 typesafe 平台
+
+- 平台 `typesafe` 由 typesafe 插件声明，定义的唯一来源是 SDK 的 `providers/typesafe.Platform()`（清单与它逐字段相同，插件的清单测试钉住）：端点 `systemone` = `POST /v1/systemone`，协议 `typesafe.systemone`，只有非流式（`response.nonStream: json`），`errorFormat: openai`（网关自己的错误；上游错误原样透传），`billing: usage`，用量 `semantics: exclusive`、读 `usage.input_tokens`、`usage.output_tokens` 与上游模型 `model`。`passHeaders` 放行 `typesafe-danger-zone-images`、`typesafe-danger-zone-long-context`，值不改。钩子读 `state` 作提示词。
+- 平台 id `typesafe` 归 typesafe 插件所有（`reserved.go` 的 `reservedPlatforms`）。typesafe 插件没启用时这个平台和端点不存在：`/v1/systemone` 404，newapi 账号类型声明的 `typesafe` 平台每次注册表换代记一条警告。
+- 失败分类（`providers/typesafe.Policy`）：401、403 停用账号；429 按 `Retry-After` / `retry-after-ms` 冷却；529 与其它 5xx 短暂冷却并换号；400、413、415、422 原样返回、账号不动。
+- multipart 形式的请求在网关就以 400 拒绝（§25.9），只能用 JSON 里的 `assets[].data_base64`。
+- 价格不随插件带来：管理员按模型录 `per_token`（参考输入 $0.042 / 百万 token、输出 0）。经 newapi 账号转发 Jev 时按同一模型名计价。
+
+### 119.4 余额（§52）
+
+| 账号类型 | 请求（都在账号的 `base_url` 上，经账号代理，`updateInterval` 600 秒） | 结果 |
+|---|---|---|
+| newapi | `GET /api/usage/token/`（带 Bearer），只这一个请求 | 站点的额度点数 `data.total_available` 原样，**没有单位**；带 `user_quota.total_available` 时取两者较小；令牌不限额时取用户额度，没有用户额度时为不限。`code` 不为真为暂时失败 |
+| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`，`-1` 为不限；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
+| typesafe | 不声明 `balance` | TypeSafe 没有余额接口，控制台不查不显示 |
+
+- **余额显示上游返回的数字和单位本身，不做任何换算**（所有者 2026-11-18：“上游返回多少我们就是多少”）：不折算美元、不换汇率，数字或单位不对也照样显示。New API 显示的是站点的额度点数，没有单位。
+
+- 核心先对请求的目标过主机规则与插件联网（§113），被拒就不发，记暂时失败，插件出口日志记 `denied`；不跟随重定向。401 / 403 记认证被拒（`auth_rejected:`），不改账号状态，不影响调度。余额只显示，不停用、不告警（D1）。
+
+### 119.5 权限与沙箱
+
+- 宿主权限：三个插件都有 `platform.register`、`accounts.credentials {"types":"own"}`；typesafe 另有 `gateway.endpoint`（`/v1/systemone`）。**都不申请 `net`、`fs.data`、`db.schema`**：插件不联网（请求由核心发出），在默认开启的文件沙箱（Landlock，§43.8）、seccomp 下运行；资源 64 MB、0.1 CPU、32 线程、64 个文件。
+- 清单里不写价格（§17）。
+
+### 119.6 内置方式
+
+- 三个都在 `BUILTIN_PLUGINS_INSTALL_ONLY`（§26.8）：随镜像安装、批准、标为内置、不能卸载，**默认不启用**。现有部署升级后什么都不发生；管理员在插件页启用后才能建这些账号（typesafe 启用后各节点多一个端点）。key `newapi`、`sub2api`、`typesafe` 与平台 id `typesafe` 保留给官方插件（`server/internal/plugin/install/reserved.go`，`TestReservedCoverRepo` 对照 `next/plugins`），手动上传的包要官方签名。
+- 未发布：不在 `plugins/released.json`，发布后按 `TestReleasedPluginsBumped` 的说明写进去。
+
+### 119.7 已知限制
+
+- 都没有对真实站点或真实 TypeSafe 账号验证过；站点接口形状来自官方文档与源码行为。
+- newapi：余额是站点的额度点数，不是钱，不同站点的点数不可比；令牌不限额且站点没开"允许查询用户额度"时显示不限，看不到用户真实余额；Gemini `countTokens` 不转发；New API 对"分组里没有这个模型"回的状态码未核实，回 403 时会误停用账号（先用协议绑定或故障策略 §58 处理）。
+- sub2api：上游 Key 能用哪些协议取决于它在站点上的分组，插件看不出来，要运营方按分组收窄协议；旧版只配了速率限制、没配总额度的 Key 在 `/v1/usage` 里没有金额字段，余额显示为暂时失败；`rate_limits` 不读。
+- 生图只收 JSON 请求体（§118.1）。typesafe 的转发要本平台启用 typesafe 插件；经 newapi 转发还要上游站点装了 TypeSafe 扩展。
+
 ## 120. 附加用量（2026-11-18 整理；同日加入的“对象形式、模型取自应答”已删除，见 120.2；无迁移；Host API 仍是 10；插件协议仍是 2）
 
 附加用量（`UsageRules.additional`，`manifest.AdditionalUsageRule`）是一条请求里按请求中**声明并在调度前准入**的模型计价的用量：它不计进主用量（`usage_logs` 的 token 列是主用量），在 `usage_logs.billing_detail` 里单独保存和计价，记录的 `total_cost` 是主用量与全部附加用量之和（§97.6 的三个数都累加）。
@@ -8740,7 +8804,7 @@ ALTER TABLE usage_logs
 - codex 插件：清单测试钉住 `adapted` 与唯一的生图默认模型；`TestExecuteImagesReportNoModel`；`TestBuildTestRequestByProtocol`。azure-openai 清单测试钉住 `azure_deployment` 的 `adapted`。
 - e2e 与测试实例实测留给集成包。
 
-## 122. 账号测试按绑定的协议测（2026-11-19，所有者同意“测试模型的时候就能根据模型协议的绑定去调用对应的协议进行深度测试”；迁移 0116；清单加端点字段 `test`；插件协议仍是 2、Host API 仍是 10；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md) 3.11；同一设计里 Codex 账号经适配服务生图的部分见 §121）
+## 122. 账号测试按绑定的协议测（2026-11-19，所有者同意“测试模型的时候就能根据模型协议的绑定去调用对应的协议进行深度测试”；迁移 0115；清单加端点字段 `test`；插件协议仍是 2、Host API 仍是 10；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md) 3.11；同一设计里 Codex 账号经适配服务生图的部分见 §121）
 
 此前 `POST /accounts/:id/test` 已把账号对被测模型开放的协议交给插件（§15.9 的 `protocols`），但预设各只有一个测试请求：只绑了 Responses、Embeddings 或生图协议的模型被拿去测 chat，误报不可用。本节补齐测试请求，并规定哪些协议可以拿来测、按什么顺序。
 
@@ -8783,7 +8847,7 @@ ALTER TABLE usage_logs
 ### 122.4 结果与最近一次测试
 
 - TestResult 加 `protocol`：插件报的 `usage_protocol`（去首尾空白）；插件没报或构造请求失败时省略。
-- 迁移 0116：`accounts` 加可空列 `last_test_protocol text`（只加列，旧核心跑在新表上不受影响）；每次测试写入，`last_test` 加 `protocol`（未知时省略，迁移之前的记录没有）。
+- 迁移 0115：`accounts` 加可空列 `last_test_protocol text`（只加列，旧核心跑在新表上不受影响）；每次测试写入，`last_test` 加 `protocol`（未知时省略，迁移之前的记录没有）。
 - 控制台：模型测试弹窗每个模型的结果旁显示所测协议，展开的详情里有“测试协议”；账号列表“最近测试”的提示里同样显示。
 - 已知限制：测试只读应答的前 8 KiB（`maxTestBody`），生图应答的用量在一张 base64 图之后，生图测试的 `usage` 一般为空；状态码与正文前缀足以判断可用，不为此改读取长度。
 
