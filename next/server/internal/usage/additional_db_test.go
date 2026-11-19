@@ -75,3 +75,28 @@ func TestSettleZeroPrice(t *testing.T) {
 		t.Fatal("a zero price moved the balance", before, f.balance())
 	}
 }
+
+// A row left by the removed free missing-price policy (CONTRACTS §17.3): no
+// primary price and a replacement attempt without one. Settling it is an
+// error that counts as an attempt and leaves the row failed, not a panic.
+func TestSettleLegacyUnpricedReplacementFails(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	r := f.record("legacy-unpriced", true)
+	r.CreatedAt = time.Now().Add(-time.Hour)
+	r.Replacement = []core.PricedUsage{{Kind: "fallback", Model: "other-model", Price: &core.PriceRule{Expression: `tier("x",p)`, Mode: "expression"},
+		UsageSemantics: "exclusive", Tokens: core.UsageTokens{Input: 1000}, RateMultiplier: decimal.NewFromInt(1)}}
+	f.ledger.fail.Store(1)
+	f.svc.process(ctx, []*core.UsageRecord{r})
+	if _, err := f.db.SQL.ExecContext(ctx, `UPDATE usage_logs SET expr_hash = '', price_id = NULL,
+		billing_detail = jsonb_set(billing_detail, '{inputs,replacement,0,Price}', 'null') WHERE request_id = 'legacy-unpriced'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.RetryPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := f.scalar(`SELECT billing_status || ' ' || (billing_detail->>'attempts') || ' ' || (billing_detail->>'error') FROM usage_logs WHERE request_id = 'legacy-unpriced'`)
+	if got != "failed 2 additional usage fallback/other-model has no price" {
+		t.Fatal(got)
+	}
+}

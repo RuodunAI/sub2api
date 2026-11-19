@@ -56,6 +56,11 @@ func priceComponents(p *pending, price func(*pending) (amounts, BillingDetail, s
 		if err := core.ValidatePricedUsage(item); err != nil {
 			return amounts{}, BillingDetail{}, "", err
 		}
+		// Only a row written under the removed free missing-price policy
+		// holds an item without a price (CONTRACTS §17.3): it fails.
+		if item.Price == nil {
+			return amounts{}, BillingDetail{}, "", fmt.Errorf("additional usage %s/%s has no price", item.Kind, item.Model)
+		}
 		if item.Free {
 			d := AdditionalBillingDetail{Kind: item.Kind, Model: item.Model, PriceID: item.Price.ID, Free: true, BillingReason: item.BillingReason}
 			if index < len(p.Inputs.Replacement) {
