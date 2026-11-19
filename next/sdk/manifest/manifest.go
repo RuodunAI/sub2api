@@ -361,7 +361,7 @@ type AccountType struct {
 	// shows nothing for it.
 	Quota *AccountQuota `json:"quota,omitempty"`
 	// Balance declares that accounts of this type have a prepaid balance
-	// (credits) the plugin can query (CONTRACTS §51). nil: the type has no
+	// (credits) the plugin can query (CONTRACTS §52). nil: the type has no
 	// balance or the plugin does not track it; the console shows nothing.
 	Balance *AccountBalance `json:"balance,omitempty"`
 	// Refresh declares that the credentials of this type expire and that the
@@ -421,16 +421,17 @@ type QuotaWindowDefinition struct {
 	ShortLabel LocalizedText `json:"shortLabel,omitempty"`
 }
 
-// AccountBalance declares that an account type has a prepaid balance and that
-// the host queries it from the plugin (CONTRACTS §51). The host never reads
-// the balance from headers; the plugin must register a BalanceProvider.
+// AccountBalance declares that an account type has a balance the host reads
+// through the plugin's BuildBalanceRequest / ParseBalanceResponse (CONTRACTS
+// §52); "balance": {} is a complete declaration. The host never reads the
+// balance from headers, and only shows it: it does not disable, reschedule or
+// alert on it. The currency is not declared here: the plugin gives it per
+// account in each result (a relay site may count in USD or CNY).
 type AccountBalance struct {
-	// Currency is the ISO 4217 three-letter currency code (e.g. "USD", "EUR").
-	// Required.
-	Currency string `json:"currency"`
-	// UpdateInterval is how often the host queries the balance, in seconds.
-	// 60-86400 (default 180). The host may query sooner when forced or on
-	// state changes.
+	// UpdateInterval is how often the host reads the balance of each
+	// account, in seconds: 60-86400, 0 meaning the host's default (180). A
+	// failed read waits the same interval; an administrator's refresh does
+	// not wait at all.
 	UpdateInterval int `json:"updateInterval,omitempty"`
 }
 
@@ -695,6 +696,13 @@ const (
 	UsageCacheReadTokens     = "cache_read_tokens"
 	UsageCacheCreationTokens = "cache_creation_tokens"
 	UsageCacheCreation1h     = "cache_creation_1h_tokens"
+	// UsageImageInputTokens and UsageImageOutputTokens are the image tokens
+	// among the input and output tokens (an image generation or edit). They
+	// are part of input_tokens / output_tokens, not added to them, whatever
+	// the rules' semantics; a price expression using img / img_o bills them
+	// at the image price and the rest of p / c at the text price.
+	UsageImageInputTokens  = "image_input_tokens"
+	UsageImageOutputTokens = "image_output_tokens"
 )
 
 type UsageFact struct {

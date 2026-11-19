@@ -202,6 +202,19 @@ func TestUsageRules(t *testing.T) {
 	}
 }
 
+// The image token fields are standard fields: a rule may map them, and a fact
+// may not take their names.
+func TestUsageImageTokenFields(t *testing.T) {
+	p := validPlatform()
+	p.Usage.JSON.Map[manifest.UsageImageInputTokens] = "usage.input_tokens_details.image_tokens"
+	p.Usage.SSE[0].Map[manifest.UsageImageOutputTokens] = "usage.output_tokens"
+	require.Empty(t, platformCodes(p))
+
+	p = validPlatform()
+	p.Usage.Facts[manifest.UsageImageOutputTokens] = manifest.UsageFact{Type: "number", Path: "usage.n"}
+	require.Equal(t, "reserved", platformCodes(p)["usage.facts.image_output_tokens"])
+}
+
 // TestStreamingEndpointNeedsSSERules pins the shape that silently swallows
 // usage: response.stream declared, billing not "free", and no non-empty sse
 // rule in the usage rules that are actually in effect for the endpoint.
