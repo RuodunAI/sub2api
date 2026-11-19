@@ -8,9 +8,11 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### API Key 类账号表单改为插件自带的原生界面（anthropic；无迁移）
+### API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai；无迁移）
 
 - 账号表单不再是声明式 JSON（`forms/` 已删），改为插件的 `ui/native`（`@sub2api/ui` 的 `createApiKeyForm`）：字段名、默认值、文案、校验规则与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址。清单改为 `form.mode: "native"`，加 `ui.native`、`hostUICompat ^3.20`，装包审查多一项“在控制台运行插件界面”（`ui.native`）。保存时的最终校验只在插件的 `ValidateCredentials`。
+- relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，原来默认收起，现在直接显示。
+- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径，原样匹配，前后有空格也拒绝），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
 
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0115；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 

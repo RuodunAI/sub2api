@@ -2,16 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"maps"
 	"os"
 	"path"
 	"reflect"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/platforms"
@@ -86,7 +87,9 @@ func TestManifest(t *testing.T) {
 	}
 }
 
-// TestResourceEndpointForm is the base_url rule of both forms: the address
+// TestResourceEndpointForm is the base_url rule of both types
+// (azureopenai.EndpointPattern, which ValidateCredentials applies and the
+// forms show): the address
 // of the resource and nothing else, optionally with the /openai or
 // /openai/v1 suffix the types remove, or a Foundry project path. A pasted
 // request URL (a deployment, an operation, an api-version) is refused with a
@@ -125,85 +128,23 @@ func TestResourceEndpointForm(t *testing.T) {
 		" " + resource,
 		resource + " ",
 	}
-	var patterns []string
+	ctx := context.Background()
 	for _, accountType := range []string{typeV1, typeDeployment} {
-		var schema struct {
-			Properties map[string]struct {
-				Pattern string `json:"pattern"`
-			} `json:"properties"`
-		}
-		readJSON(t, path.Join("forms", accountType+".schema.json"), &schema)
-		pattern := schema.Properties["base_url"].Pattern
-		patterns = append(patterns, pattern)
-		re := regexp.MustCompile(pattern) // RE2, as the core compiles it
 		for _, in := range rejected {
-			if re.MatchString(in) {
-				t.Errorf("%s: %q is accepted", accountType, in)
+			acc := account(accountType, in, `"api_version":"2024-10-21"`)
+			res, err := platform.ValidateCredentials(ctx, &pluginv1.ValidateCredentialsRequest{AccountType: accountType, CredentialsJson: acc.CredentialsJson, SettingsJson: acc.SettingsJson})
+			if err != nil || len(res.GetErrors()) != 1 || res.Errors[0].Field != "base_url" {
+				t.Errorf("%s %q: validate %v %v, want a base_url error", accountType, in, err, res.GetErrors())
+				continue
+			}
+			// A refusal of the rule itself (not of a malformed URL) says
+			// what to enter, in both languages.
+			if msg := res.Errors[0].Message; strings.Contains(in, "/deployments/") && !strings.Contains(in, "?") && msg != "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version" {
+				t.Errorf("%s %q: message %q", accountType, in, msg)
 			}
 		}
 		for in, base := range acceptedEndpoints {
-			if !re.MatchString(in) {
-				t.Errorf("%s: %q is refused", accountType, in)
-				continue
-			}
 			assertEndpoint(t, accountType, in, base)
-		}
-
-		// The refusal says what to enter, in both languages.
-		var ui struct {
-			BaseURL struct {
-				Messages map[string]map[string]string `json:"ui:errorMessages"`
-			} `json:"base_url"`
-		}
-		readJSON(t, path.Join("forms", accountType+".ui.json"), &ui)
-		msg := ui.BaseURL.Messages["pattern"]
-		if !strings.Contains(msg["en"], "resource endpoint only") || msg["zh"] != "只填资源地址，不要带 deployments、chat/completions 或 api-version" {
-			t.Errorf("%s: base_url pattern message = %v", accountType, msg)
-		}
-	}
-	if patterns[0] != patterns[1] {
-		t.Errorf("the two forms check base_url differently: %q, %q", patterns[0], patterns[1])
-	}
-}
-
-// TestForms pins the form rules the types rely on: the classic type always
-// has an api-version (required, prefilled with the GA version), and both
-// take a key without a vendor prefix.
-func TestForms(t *testing.T) {
-	type property struct {
-		Default   string `json:"default"`
-		Pattern   string `json:"pattern"`
-		MinLength int    `json:"minLength"`
-		MaxLength int    `json:"maxLength"`
-	}
-	type schema struct {
-		Required             []string            `json:"required"`
-		AdditionalProperties bool                `json:"additionalProperties"`
-		Properties           map[string]property `json:"properties"`
-	}
-	for accountType, required := range map[string][]string{
-		typeV1:         {"base_url", "api_key"},
-		typeDeployment: {"base_url", "api_key", "api_version"},
-	} {
-		var s schema
-		readJSON(t, path.Join("forms", accountType+".schema.json"), &s)
-		if !slices.Equal(s.Required, required) || s.AdditionalProperties || len(s.Properties) != len(required) {
-			t.Errorf("%s: required %v, properties %v", accountType, s.Required, s.Properties)
-		}
-		if k := s.Properties["api_key"]; k.MinLength != 8 || k.MaxLength != 512 || !regexp.MustCompile(k.Pattern).MatchString(apiKey) {
-			t.Errorf("%s: api_key %+v", accountType, k)
-		}
-	}
-	var s schema
-	readJSON(t, path.Join("forms", typeDeployment+".schema.json"), &s)
-	v := s.Properties["api_version"]
-	if v.Default != "2024-10-21" {
-		t.Errorf("api_version default %q", v.Default)
-	}
-	re := regexp.MustCompile(v.Pattern)
-	for value, ok := range map[string]bool{"2024-10-21": true, "2025-04-01-preview": true, "": false, "latest": false, "2024-10-21&x=1": false} {
-		if re.MatchString(value) != ok {
-			t.Errorf("api_version %q: match %v, want %v", value, !ok, ok)
 		}
 	}
 }
@@ -229,18 +170,6 @@ func builtinPlatform(id string) *manifest.Platform {
 	return nil
 }
 
-// readJSON decodes a package file into v.
-func readJSON(t *testing.T, name string, v any) {
-	t.Helper()
-	raw, err := os.ReadFile(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, v); err != nil {
-		t.Fatalf("%s: %v", name, err)
-	}
-}
-
 // load decodes the embedded manifest strictly and checks it with the files
 // a package carries, as the core does before it installs a package
 // (tooling mode: the binaries come from the build).
@@ -253,7 +182,7 @@ func load(t *testing.T) manifest.Manifest {
 		t.Fatalf("manifest.json: %v", err)
 	}
 	files := map[string][]byte{"manifest.json": manifestJSON}
-	for _, dir := range []string{"forms", "assets"} {
+	for _, dir := range []string{"assets"} {
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			p := path.Join(dir, e.Name())

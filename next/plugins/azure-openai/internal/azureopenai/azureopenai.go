@@ -5,9 +5,15 @@
 package azureopenai
 
 import (
+	"context"
 	"net/url"
+	"regexp"
 	"slices"
+	"strings"
 
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
@@ -19,8 +25,75 @@ const (
 	TypeDeployment = "azure_deployment"
 )
 
+// EndpointPattern is the base_url both types accept: the address of the
+// resource and nothing else, optionally with the /openai or /openai/v1
+// suffix the types remove, or a Foundry project path. A pasted request URL
+// (a deployment, an operation, an api-version) is refused instead of being
+// saved and answering 404 on every request. The suffixes are matched in the
+// case the types remove them in. The account form (ui/native/src/forms.ts)
+// shows the same rule.
+var EndpointPattern = regexp.MustCompile(`^https?://[^\s/?#@]+(/|/openai/?|/openai/v1/?|/api/projects/[^\s/?#]+/?)?$`)
+
+// APIVersionPattern is the api_version of azure_deployment: a date, with
+// -preview for a preview version.
+var APIVersionPattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-preview)?$`)
+
+// Platform is the standard platform of both types, their credentials also
+// checked against EndpointPattern and, for azure_deployment, the
+// api_version (see ValidateCredentials).
+type Platform struct{ *standard.Platform }
+
 // New returns the platform of both account types.
-func New() *standard.Platform { return standard.New(V1(), Deployment()) }
+func New() *Platform { return &Platform{standard.New(V1(), Deployment())} }
+
+// ValidateCredentials is the standard check (a key, a required base URL)
+// plus the account forms' other rules: a base_url matching EndpointPattern
+// and, on azure_deployment, a required api_version matching
+// APIVersionPattern.
+func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
+	resp, err := p.Platform.ValidateCredentials(ctx, in)
+	if err != nil {
+		return resp, err
+	}
+	creds, errC := apikey.DecodeObject(in.GetCredentialsJson())
+	settings, errS := apikey.DecodeObject(in.GetSettingsJson())
+	if errC != nil || errS != nil {
+		return resp, nil // the standard check refused it
+	}
+	var errs pluginsdk.FieldErrors
+	if base, ok := lookup("base_url", settings, creds).(string); ok && strings.TrimSpace(base) != "" && !EndpointPattern.MatchString(base) && !refused(resp, "base_url") {
+		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
+	}
+	if in.GetAccountType() == TypeDeployment {
+		v := lookup("api_version", settings, creds)
+		s, _ := v.(string)
+		switch {
+		case v == nil || v == "":
+			errs = errs.Add("api_version", "required", "API version is required / 请填写 API 版本")
+		case !APIVersionPattern.MatchString(s):
+			errs = errs.Add("api_version", "pattern", "API version must be a date such as 2024-10-21 or 2025-04-01-preview / API 版本须为日期，例如 2024-10-21、2025-04-01-preview")
+		}
+	}
+	if len(errs) == 0 {
+		return resp, nil
+	}
+	return &pluginv1.ValidateCredentialsResponse{Errors: append(resp.GetErrors(), errs...)}, nil
+}
+
+// lookup is k's value in the first object holding it (nil: absent).
+func lookup(k string, objs ...map[string]any) any {
+	for _, o := range objs {
+		if v, ok := o[k]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+// refused reports whether resp already has an error at field.
+func refused(resp *pluginv1.ValidateCredentialsResponse, field string) bool {
+	return slices.ContainsFunc(resp.GetErrors(), func(e *pluginv1.FieldError) bool { return e.GetField() == field })
+}
 
 // V1 is the azure_v1 type: the v1 API under <resource>/openai/v1.
 func V1() standard.Type {
