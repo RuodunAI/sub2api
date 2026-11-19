@@ -420,7 +420,6 @@ func TestBalanceThroughAccountProxy(t *testing.T) {
 		if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET proxy_id = $1 WHERE id = $2`, p, id); err != nil {
 			t.Fatal(err)
 		}
-		e.svc.invalidate() // as the account:changed of a console edit
 	}
 	setProxy(pid)
 	if _, d := e.getBalance(id, true); d["amount"] != "0.000007" {

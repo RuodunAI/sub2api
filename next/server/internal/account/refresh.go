@@ -317,7 +317,7 @@ func (s *Service) callRefresh(ctx context.Context, bt core.AccountTypeBinding, a
 		return nil, store.RefreshTransient, "plugin: " + err.Error()
 	}
 	ans := s.sendPluginCall(ctx, pluginCall{plugin: bt.Plugin.Key, what: "refresh", method: built.GetMethod(), defaultMethod: http.MethodPost,
-		url: built.GetUrl(), headers: built.GetHeaders(), body: []byte(built.GetBodyJson())}, a.ID)
+		url: built.GetUrl(), headers: built.GetHeaders(), body: []byte(built.GetBodyJson())}, a.ProxyID)
 	res, err := bt.Client.ParseRefreshResponse(ctx, &pluginv1.ParseRefreshResponseRequest{Account: acct,
 		Status: ans.status, Headers: ans.headers, Body: ans.body, TransportError: ans.transportError})
 	if err == nil && res == nil {

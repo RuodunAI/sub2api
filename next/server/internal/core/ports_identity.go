@@ -1041,8 +1041,10 @@ type AccountDirectory interface {
 	Load(ctx context.Context, id int64) (*Account, error)
 	// Egress is how a request on behalf of account id leaves the core: its
 	// proxy as the account stands when asked (read from the snapshot Load
-	// serves, which account:changed invalidates), never one a caller kept.
-	// Every outbound request of an existing account takes its client here.
+	// serves, which account:changed and a reconnected bus invalidate), never
+	// one a caller kept. Every outbound request of an existing account made
+	// outside the account service takes its client here; the service itself
+	// goes by the account row it has just read.
 	Egress(ctx context.Context, id int64) (Egress, error)
 	IsCoolingDown(ctx context.Context, id int64) (bool, error)
 	SetCooldown(ctx context.Context, id int64, until time.Time, reason string) error

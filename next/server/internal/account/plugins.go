@@ -164,11 +164,12 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	}
 	id := in.GetAccountId()
 	var (
+		proxyID       *int64
 		typ           string
 		settings, enc []byte
 	)
-	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("type, settings, credentials_enc").Row().
-		Scan(&typ, &settings, &enc)
+	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id, type, settings, credentials_enc").Row().
+		Scan(&proxyID, &typ, &settings, &enc)
 	if store.IsNoRows(err) {
 		// The same answer as for a missing id (ReadPluginAccountCredentials).
 		return nil, notFound(ctx)
@@ -187,7 +188,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	sendCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
 	ans := s.sendPluginCall(sendCtx, pluginCall{plugin: pluginKey, what: "account request", method: method, url: in.GetUrl(),
-		headers: in.GetHeaders(), body: in.GetBody(), noRedirects: true}, id)
+		headers: in.GetHeaders(), body: in.GetBody(), noRedirects: true}, proxyID)
 	detail := map[string]any{"plugin_key": pluginKey, "method": method, "status": ans.status, "via": "host.SendAccountRequest"}
 	if u, err := url.Parse(in.GetUrl()); err == nil {
 		// Escaped: a decoded %00 would make the jsonb insert fail and leave

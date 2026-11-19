@@ -89,7 +89,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 // fetchAccountModels is POST /accounts/:id/models/fetch. An optional
 // credentials object (Mask keeps stored secrets) overrides the stored one,
 // so the edit form can list models with values not saved yet; the request
-// goes out through the account's saved proxy (Egress).
+// goes out through the account's saved proxy (that of the row read here).
 func (s *Service) fetchAccountModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	id, ok := httpapi.PathID(c, "id")
@@ -138,7 +138,7 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 		}
 		secret, settings = p.secret, p.settings
 	}
-	eg, err := s.Egress(ctx, a.ID)
+	eg, err := s.proxyEgress(ctx, a.ProxyID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return

@@ -287,7 +287,7 @@ func (s *Service) runQuotaQuery(ctx context.Context, bt core.AccountTypeBinding,
 	if err != nil || built == nil {
 		return nil, errors.New("quota request builder unavailable")
 	}
-	in := s.sendQuotaRequest(ctx, bt.Plugin.Key, built, a.ID)
+	in := s.sendQuotaRequest(ctx, bt.Plugin.Key, built, a.ProxyID)
 	in.Account = acct
 	res, err := bt.Client.ParseQuotaResponse(ctx, in)
 	if status.Code(err) == codes.Unimplemented {
@@ -382,13 +382,13 @@ func validQuotaKey(k string) bool {
 	return true
 }
 
-// sendQuotaRequest sends the request the plugin built for account id
-// through its proxy (behind netguard for a direct connection) and collects
-// what the plugin needs to read the answer. A failure is not an error: the
-// plugin is shown the transport error, as ClassifyError is.
-func (s *Service) sendQuotaRequest(ctx context.Context, pluginKey string, b *pluginv1.BuildQuotaRequestResponse, id int64) *pluginv1.ParseQuotaResponseRequest {
+// sendQuotaRequest sends the request the plugin built through the account's
+// proxy (behind netguard for a direct connection) and collects what the
+// plugin needs to read the answer. A failure is not an error: the plugin is
+// shown the transport error, as ClassifyError is.
+func (s *Service) sendQuotaRequest(ctx context.Context, pluginKey string, b *pluginv1.BuildQuotaRequestResponse, proxyID *int64) *pluginv1.ParseQuotaResponseRequest {
 	a := s.sendPluginCall(ctx, pluginCall{plugin: pluginKey, what: "quota", method: b.GetMethod(), defaultMethod: http.MethodGet,
-		url: b.GetUrl(), headers: b.GetHeaders(), body: []byte(b.GetBodyJson())}, id)
+		url: b.GetUrl(), headers: b.GetHeaders(), body: []byte(b.GetBodyJson())}, proxyID)
 	return &pluginv1.ParseQuotaResponseRequest{Status: a.status, Headers: a.headers, Body: a.body,
 		TransportError: a.transportError}
 }
@@ -414,19 +414,23 @@ type pluginAnswer struct {
 	transportError string
 }
 
-// sendPluginCall sends a request a plugin described for account id through
-// its proxy as the account stands now (Egress; behind netguard for a direct
-// connection). A failure is not an
-// error: the plugin is shown the transport error, as ClassifyError is; an
-// answer that cannot be read whole is such a failure.
-func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, id int64) pluginAnswer {
+// sendPluginCall sends a request a plugin described through proxy proxyID,
+// that of the account's row the caller just read (behind netguard for a
+// direct connection). A failure is not an error: the plugin is shown the
+// transport error, as ClassifyError is; an answer that cannot be read whole
+// is such a failure.
+func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int64) pluginAnswer {
 	var out pluginAnswer
 	u, err := url.Parse(b.url)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		out.transportError = "plugin built an invalid " + b.what + " URL"
 		return out
 	}
-	eg, egErr := s.Egress(ctx, id)
+	eg, err := s.proxyEgress(ctx, proxyID)
+	if err != nil {
+		out.transportError = core.AsError(err).Message
+		return out
+	}
 	if err := s.guardUpstream(ctx, b.plugin, u, eg.Proxied); err != nil {
 		out.transportError = err.Error()
 		return out
@@ -449,10 +453,6 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, id int64) pl
 	}
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
-	}
-	if egErr != nil {
-		out.transportError = core.AsError(egErr).Message
-		return out
 	}
 	hc := eg.Client
 	if b.noRedirects {
