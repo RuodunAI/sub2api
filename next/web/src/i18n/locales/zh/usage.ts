@@ -163,6 +163,11 @@ export default {
     inputs: '计费条件取值',
     statusLabel: '结算状态',
     ledger: '账本 #{id}',
+    components: {
+      additional: '附加用量（按各自模型的价格计，已计入合计）',
+      replacement: '替代计费用量（代替主请求的用量计费，已计入合计）'
+    },
+    componentKinds: { advisor: '顾问模型', fallback: '备用模型' },
     freeNote: '被钩子拒绝、上游失败且没有用量的请求不计费。',
     status: {
       billed: '已结算',

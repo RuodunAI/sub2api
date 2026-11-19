@@ -164,6 +164,11 @@ export default {
     inputs: 'Billing condition values',
     statusLabel: 'Billing status',
     ledger: 'ledger #{id}',
+    components: {
+      additional: 'Additional usage (each at its own model\'s price, included in the total)',
+      replacement: 'Replacement usage (billed instead of the primary usage, included in the total)'
+    },
+    componentKinds: { advisor: 'Advisor model', fallback: 'Fallback model' },
     freeNote: 'Requests rejected by hooks or failing upstream without usage are not billed.',
     status: {
       billed: 'Billed',

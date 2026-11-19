@@ -10,7 +10,8 @@ import { formatMoney, formatNumber } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
 import BillingBreakdown from '@/views/prices/BillingBreakdown.vue'
 import ExprHistoryModal from '@/views/prices/ExprHistoryModal.vue'
-import { billingTone, factText, type UsageRow } from './usage'
+import UsageTokenFacts from './UsageTokenFacts.vue'
+import { billingTone, factText, usageComponents, type UsageRow } from './usage'
 
 // Billing half of an expanded usage record (billing_detail, A.14).
 const props = defineProps<{ u: UsageRow }>()
@@ -38,6 +39,10 @@ const listRule = computed(() => {
   const multiplier = scale === undefined ? '' : ruleText(t, { kind: 'multiplier', multiplier: scale })
   return { source, text: base ? t('pricing.rule.custom') : multiplier }
 })
+// Items priced separately from the primary usage, such as an advisor model at its own price.
+const components = computed(() => (['additional', 'replacement'] as const)
+  .map(list => ({ list, items: usageComponents(props.u, list) }))
+  .filter(group => group.items.length))
 const inputs = computed(() => [
   ...Object.entries(bd.value.inputs?.params || {}).map(([key, value]) => ({ name: `param("${key}")`, value })),
   ...Object.entries(bd.value.inputs?.headers || {}).map(([key, value]) => ({ name: `header("${key}")`, value }))
@@ -104,6 +109,18 @@ function label(prefix: string, value: string) {
       />
       <SHint v-else inline>—</SHint>
       <SHint v-if="ledgerId" size="xs" class="mt-2">{{ t('usage.billing.ledger', { id: ledgerId }) }}</SHint>
+    </div>
+
+    <div v-for="group in components" :key="group.list" class="mt-3 space-y-3 border-t border-line pt-3" :data-testid="`usage-${group.list}`">
+      <h4 class="text-sm font-medium">{{ t(`usage.billing.components.${group.list}`) }}</h4>
+      <div v-for="(item, i) in group.items" :key="i" class="space-y-2" :data-testid="`usage-${group.list}-item`">
+        <div class="flex flex-wrap items-center gap-2">
+          <SBadge tone="info">{{ label('usage.billing.componentKinds', item.kind) }}</SBadge>
+          <ModelBadge :model="item.model" plain />
+          <span class="ml-auto font-mono text-sm">{{ formatMoney(item.cost ?? 0, 8) }}</span>
+        </div>
+        <UsageTokenFacts :tokens="item.tokens" />
+      </div>
     </div>
 
     <SDisclosure v-if="rules.length" :label="t('usage.billing.rules')" :open-label="t('usage.billing.rules')" class="mt-3">

@@ -72,3 +72,45 @@ describe('group pricing of a usage record', () => {
     expect(text('usage-list-cost')).toBe('$0.006912')
   })
 })
+
+// A Messages request that declared an advisor model, priced at the advisor model's own price.
+describe('separately priced items of a usage record', () => {
+  function withAdvisor(): UsageRow {
+    const u = record({ rate: '1', total: '0.096' })
+    u.billing_detail = { ...u.billing_detail,
+      additional: [{ kind: 'advisor', model: 'claude-opus-4-1', price_id: 5, detail: { total_cost: '0.075' } }],
+      inputs: { additional: [{ Kind: 'advisor', Model: 'claude-opus-4-1', Tokens: { Input: 3000, Output: 400, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0 } }] } }
+    return u
+  }
+
+  it('lists each additional item with its kind, model, tokens and amount', () => {
+    const { w, text, has } = render(withAdvisor())
+    expect(has('usage-additional')).toBe(true)
+    expect(has('usage-replacement')).toBe(false)
+    expect(w.findAll('[data-testid="usage-additional-item"]')).toHaveLength(1)
+    const item = text('usage-additional-item')
+    expect(item).toContain('顾问模型')
+    expect(item).toContain('claude-opus-4-1')
+    expect(item).toContain('3,000')
+    expect(item).toContain('400')
+    expect(item).toContain('$0.075')
+  })
+
+  it('lists replacement items under their own heading', () => {
+    const u = record({ rate: '1', total: '0.01' })
+    u.billing_detail = { ...u.billing_detail,
+      replacement: [{ kind: 'fallback', model: 'claude-sonnet-4-5', price_id: 1, detail: { total_cost: '0.01' } }],
+      inputs: { replacement: [{ Kind: 'fallback', Model: 'claude-sonnet-4-5', Tokens: { Input: 1000, Output: 200 } }] } }
+    const { text, has } = render(u, 'en')
+    expect(has('usage-additional')).toBe(false)
+    expect(text('usage-replacement')).toContain('Replacement usage')
+    expect(text('usage-replacement-item')).toContain('Fallback model')
+    expect(text('usage-replacement-item')).toContain('$0.01')
+  })
+
+  it('shows nothing for a record without separately priced items', () => {
+    const { has } = render(record({ rate: '1', total: '0.00576' }))
+    expect(has('usage-additional')).toBe(false)
+    expect(has('usage-replacement')).toBe(false)
+  })
+})
