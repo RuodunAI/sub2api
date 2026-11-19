@@ -910,13 +910,13 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - **绝不按上游返回的任何东西取价**：应答里回显的模型名只记进 `upstream_model`，应答里的工具信息不读；只有 token 数（及声明的用量事实）取自上游应答。
 - 一条请求里各部分的 token 都是这条请求的用量，按这一个价格算；例如 Responses 里生图工具的 token（§118.10）。§120 的附加用量（Anthropic `usage.iterations` 的 `advisor` 等，按请求里声明、调度前准入的引用模型计价）是早已有的机制，本次没有改动。
 - 模型找不到价格时，请求被拒（§17.3）；没有默认模型名、兜底模型或改用别的价格。
-- **账号测试**（`POST /accounts/:id/test`）：被测的模型（调用方给的 `model`，否则账号的默认测试模型，都取账号映射之前的名字；两者都没有时是插件 `BuildTestRequest` 报的模型）没有全局价格时，回 403 `model_price_not_configured`（§17.3）；不向上游发测试请求，记为该账号最后一次测试的失败（`error_source: gateway`）。实现：`account/testreq.go` 的 `testPrice`，`account.Deps.Pricer`。
+- **账号测试**（`POST /accounts/:id/test`）不查价格、不计费，被测模型有没有价格都可以测（2026-11-19 所有者：“测试账号还是不要计费吧，放着就行了。”；2026-11-18 加的价格检查已撤掉）。
 
 ### 17.3 没有价格一律拒绝（2026-11-19，所有者决定）
 
 所有者原话："删除。不要免费提供。"；此前的规则："如果模型找不到用量配置就报错。"
 
-- 模型没有启用的全局价格时一律报错，403 `model_price_not_configured`，没有任何放行途径。适用于：请求的主模型（调度前拒绝，不选账号、不发上游）；请求里经 `request.modelReferences` 声明的引用模型（§120，调度前拒绝）；账号测试的被测模型（§17.2）。
+- 模型没有启用的全局价格时一律报错，403 `model_price_not_configured`，没有任何放行途径。适用于：请求的主模型（调度前拒绝，不选账号、不发上游）；请求里经 `request.modelReferences` 声明的引用模型（§120，调度前拒绝）。账号测试不查价格、不计费（§17.2）。
 - `/settings/billing` 的 `missing_price_policy`（`reject` / `free`）整项删除：接口不再返回、`PUT` 时这个字段被忽略；插件读到的 `protocol.BillingSettings` 没有 `MissingPricePolicy`（§107.2）；控制台的设置项删除。数据库里已存的值不迁移、读取时忽略，下次保存计费设置时随整份文档重写而消失（与 §8 的 `client_disconnect_wait_seconds` 相同）。
 - `core.Pricer.Resolve` 要么返回价格、要么返回错误（找不到价格时是 `ErrPriceNotConfigured`），不再返回 `(nil, nil)`。所以计费的请求一定带着主模型的价格：预扣、结算里"主价格为空即免费"的分支删除；结算时主用量的价格表达式在价格历史里找不到，这条记录结算失败，不再按免费处理。升级前在免费放行下写入、还没结算完的记录（`usage_logs.billing_status` 为 `pending` / `failed` 且 `expr_hash = ''`）同样结算失败：价格为空的附加或替换分项报错，计入重试次数，用完后停在 `failed`，由管理员处理。
 - **价格为 0** 是管理员录入的价格，不受影响：请求照常转发、按 0 计费（记录为 `billed`，金额 0）。
@@ -3332,7 +3332,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - 流式测试本轮不做：`BuildTestRequest` 没有 stream 参数，加参数要改 proto 并动所有插件。
-- 2026-11-18 价格检查（§17.2）：插件 `BuildTestRequest` 之后、发出之前，被测的模型（调用方的 `model`，否则账号的默认测试模型，都是映射前的名字；两者都没有时是插件报的模型）没有全局价格时，回 403 `model_price_not_configured`（§17.3），不发上游；`last_test` 记为失败，`error_source` 为 `gateway`、`error_code` 为 `model_price_not_configured`。
+- 2026-11-18 加过的价格检查（被测模型没有价格时回 403）已于 2026-11-19 撤掉：账号测试不查价格、不计费（§17.2）。
 
 ## 51. CCGateway 订阅用量（已删除）
 

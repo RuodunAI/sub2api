@@ -46,7 +46,7 @@
 - **导出存量的跨平台协议转换**：升级后跨平台转换默认关闭，迁移不回填，依赖它的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启；新字段升级后才存在，没法提前配置。升级前按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。原生请求、同一平台内的转换、声明了多个平台的账号类型（volcengine）不受影响。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）。迁移 0107 把全局层的值搬进网关设置，**分组层的值丢弃**；升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。
 - **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 7 个官方插件用数据库：anthropic、dynweight、growth、guard、moderation、payment、volcengine）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
-- **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样），账号测试同样报错。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
+- **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样）。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
 - **检查旧策略下留下的未结算记录**（只读）：`SELECT count(*) FROM usage_logs WHERE billing_status IN ('pending','failed') AND expr_hash = '';` 结果不为 0，表示有“免费放行”下留下、还没结算完的记录。升级后它们不会被当作免费：结算报错，计入重试次数，用完重试次数后停在 `failed`，不会自动处理，需要管理员处理。
 - **进行中的 Codex 授权要重来**：codex 0.2.0 的开始路由要 `proxy_ticket`，升级前开始、没完成的设备码或 Sign in with Codex 授权在升级后重新开始。
 
@@ -61,7 +61,6 @@
 - **“未上报”的请求不续粘性会话、不刷新账号的最后使用时间**：未上报的记录是失败记录（`success = false`），粘性绑定只在成功时续期，`TouchLastUsed` 也只在成功时调用。
 - **WebSocket 首轮的参数覆盖失败改为换号**：以前握手时忽略参数覆盖的失败、照常在这个账号上建立连接，失败留给这一轮报告；现在首轮与 HTTP 一样在发出前改写，失败时换下一个账号（`return_error` 照常回给客户端）。
 - **经代理的账号不在本机解析上游域名**：只拒字面的私网、回环、链路本地地址和 `localhost`，其余由代理检查。以前本机 DNS 失败会拒绝所有经代理的账号，只有代理能解析的名字能通过账号测试、之后每个请求都失败；账号测试、拉取模型、额度查询以前经代理时完全不检查，现在按同一条规则（`netguard.CheckHostVia`，CONTRACTS §43.4）。
-- **账号测试现在要求被测模型有价格**：没有价格时回 403 `model_price_not_configured`，不发测试请求。测试时不选模型，就用账号的默认测试模型（模型列表的第一个，或模型映射里排第一的名字）；账号也没有时，用插件报的测试模型（多为上游的模型名）。这些模型要先录价，或者给账号配上有价格的默认测试模型（CONTRACTS §17.2、§50）。
 - 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见下文“对运维”）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
 
 #### 插件版本
@@ -139,16 +138,15 @@
 - 启用 install-only 的内置插件（volcengine、mailer、dynweight）、重新启用被禁用的内置插件时，以前所有节点的 `/healthz` 同时变成 503，负载均衡在这段时间（发布期间加最多 5 秒；抢到内置插件安装锁的节点约 20 秒）把全部请求答成空的 503（develop 上同样存在）。内置插件的就绪检查现在只决定节点启动后何时第一次就绪，之后不再撤回（CONTRACTS §29.1）。同一个误判还让一个节点在发布期间每 5 秒跑一整轮内置插件安装，每次上传都占集群变更锁，管理员这时提交插件变更会收到 409；发布进行中的内置插件现在算已装好，不再触发安装。
 - 发布了失败策略时插件和核心自己的失败换号、未上报的请求不续粘性会话、WebSocket 首轮参数覆盖失败换号、经代理的账号不在本机解析域名：见升级须知。
 
-### 计费：一条请求一个计价模型，Responses 生图工具的 token 计入本条请求，没有价格的模型不能测试（核心、SDK 平台规则；无迁移）
+### 计费：一条请求一个计价模型，Responses 生图工具的 token 计入本条请求（核心、SDK 平台规则；无迁移）
 
 - **一条请求只按客户请求的模型计价**，预扣和最终扣费都是它；绝不按上游返回的模型名或工具信息取价（CONTRACTS §17.2）。
 - **Responses 里生图工具的 token 是这条请求自己的用量**：上游在 `tool_usage.image_gen` 里报的输入、输出加进这条请求的输入、输出，其中的图片 token 记为图片输入 / 图片输出（`img` / `img_o`），按客户请求的模型的价格算（CONTRACTS §118.10）。请求所用模型的价格表达式要按图片价计时，写上 `img` / `img_o`。应答回显的生图模型（例如 Codex 后端的 `gpt-image-2-codex`）不需要价格。
 - 同一批里曾加入的“生图部分按另一个模型另计”（附加用量对象形式、按应答回显或默认名 `gpt-image-2` 取价、`additional_unpriced` 异常与控制台警示）在发布前删除（CONTRACTS §120.2）。
-- **账号测试遇到没有价格的模型直接报错**：被测的模型（未映射的名字）没有价格时回 403 `model_price_not_configured`，不发测试请求（CONTRACTS §17.2）。
 
 ### 计费：删除“模型没有配置价格时”设置，没有价格一律拒绝（核心、SDK 设置结构、控制台；无迁移）
 
-- 所有者决定：“删除。不要免费提供。”没有价格的模型一律报错，403 `model_price_not_configured`，没有放行途径：请求的主模型、请求里声明的引用模型（调度前）、账号测试的被测模型都一样（CONTRACTS §17.3）。
+- 所有者决定：“删除。不要免费提供。”没有价格的模型一律报错，403 `model_price_not_configured`，没有放行途径：请求的主模型、请求里声明的引用模型都在调度前拒绝（CONTRACTS §17.3）。账号测试不查价格、不计费（所有者：“测试账号还是不要计费吧，放着就行了。”），被测模型有没有价格都可以测。
 - `/settings/billing` 的 `missing_price_policy` 整项删除：接口不再返回，`PUT` 时忽略这个字段；插件读到的 `protocol.BillingSettings` 去掉 `MissingPricePolicy`；控制台“系统设置 → 计费”去掉这一项。数据库里已存的值不迁移，读取时忽略，下次保存计费设置时消失。
 - 价格为 0 不受影响：照常转发，按 0 计费。
 - 结算里“主价格为空即免费”的分支随之删除：带附加用量的记录，主用量的价格表达式在价格历史里找不到时结算失败，不再把主用量当免费。

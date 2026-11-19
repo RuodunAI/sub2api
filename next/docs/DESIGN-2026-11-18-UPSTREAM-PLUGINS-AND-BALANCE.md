@@ -1,6 +1,6 @@
 # 上游插件 New API、Sub2API、TypeSafe，账号余额接通，OpenAI 生图（设计稿）
 
-> 2026-11-19 修订（所有者决定）：`missing_price_policy` 删除，没有价格的模型一律拒绝（403 `model_price_not_configured`），没有免费放行；下文提到它的地方以 CONTRACTS §17.3 为准。
+> 2026-11-19 修订（所有者决定）：`missing_price_policy` 删除，没有价格的模型一律拒绝（403 `model_price_not_configured`），没有免费放行；下文提到它的地方以 CONTRACTS §17.3 为准。同日另一决定：账号测试不查价格、不计费，下文“账号测试”的价格检查已撤掉（CONTRACTS §17.2）。
 
 2026-11-18，所有者要求（语音转写整理）：账号余额功能接通（参考 new-api 的渠道余额查询；Codex 显示周限制之类的用量窗口，能查余额的查余额，查不了的先不做）；新增上游插件 **New API**（站点的 API Key，能查余额，同协议自动转发 OpenAI Chat / Responses / 生图、Gemini、Anthropic Messages，并能转发 TypeSafe 的 Jev 模型）、**Sub2API**（"我们的旧版本"，能查余额，自动转发，可以经协议绑定指定模型，支持 OpenAI、Gemini、Anthropic Messages）、**TypeSafe**（直接接入 TypeSafe，支持它的协议和调用）。所有者的工作方式是"先按自己的理解做，做完一起汇报"，所以本文对每个取舍都给出决定，替他做的决定集中在第 4 节。
 

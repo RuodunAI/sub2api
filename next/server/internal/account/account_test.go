@@ -176,18 +176,6 @@ func (p *fakePlatform) BuildTestRequest(_ context.Context, in *pluginv1.BuildTes
 		Model: p.testModel, UsageProtocol: p.usageProtocol}, nil
 }
 
-// fakePricer prices every model but those in unpriced, which have none.
-type fakePricer struct{ unpriced map[string]bool }
-
-func (p *fakePricer) Resolve(_ context.Context, q core.PriceQuery) (*core.PriceRule, error) {
-	if p.unpriced[q.Model] {
-		return nil, core.ErrPriceNotConfigured.WithDetails(map[string]any{"model": q.Model})
-	}
-	return &core.PriceRule{ID: 1, Model: q.Model, Mode: "per_token", Expression: "p"}, nil
-}
-
-func (p *fakePricer) Inputs(*core.PriceRule) ([]string, []string) { return nil, nil }
-
 type fakeGen struct {
 	plugins []core.PluginInfo
 	types   []core.AccountTypeBinding
@@ -694,7 +682,6 @@ type env struct {
 	mr       *miniredis.Miniredis
 	bus      *fakeBus
 	reg      *fakeRegistry
-	pricer   *fakePricer
 	gen      *fakeGen
 	plat     *fakePlatform
 	upstream *httptest.Server
@@ -718,7 +705,7 @@ func setupWith(t *testing.T, az fakeAuthz) *env {
 	_, _ = rand.Read(key)
 	cipher, _ := secret.New(key)
 
-	e := &env{t: t, db: db, mr: mr, bus: &fakeBus{}, reg: &fakeRegistry{}, pricer: &fakePricer{}}
+	e := &env{t: t, db: db, mr: mr, bus: &fakeBus{}, reg: &fakeRegistry{}}
 	e.upstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("x-api-key") != "sk-good-key-123" {
 			w.WriteHeader(401)
@@ -740,7 +727,7 @@ func setupWith(t *testing.T, az fakeAuthz) *env {
 	// The real proxy service serves as directory and resolver so proxy_url
 	// tests exercise FindOrCreate / AuditAutoCreate end to end.
 	e.prx = proxy.New(db, cipher, e.bus, proxy.Options{AllowPrivate: true})
-	e.svc = New(Deps{DB: db, Redis: rdb, Cipher: cipher, Registry: e.reg, Proxies: e.prx, Pricer: e.pricer, Resolver: e.prx, Authorizer: az, ScopeGrants: authz.New(authz.Deps{}),
+	e.svc = New(Deps{DB: db, Redis: rdb, Cipher: cipher, Registry: e.reg, Proxies: e.prx, Resolver: e.prx, Authorizer: az, ScopeGrants: authz.New(authz.Deps{}),
 		Events: dbEvents{}, Slots: fakeSlots{}, Limiter: NewLimiter(rdb), Bus: e.bus, Converters: fakeConverters{}, AllowPrivateUpstream: true})
 	// Run warms the quota mirror, which reads the account types: wait for that
 	// first read so it does not race the types a test adds.
