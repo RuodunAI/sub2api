@@ -8,6 +8,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/goldentest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
@@ -27,9 +28,11 @@ func TestCapabilities(t *testing.T) {
 }
 
 // TestGolden replays the frozen golden cases of the anthropic plugin
-// against the platform the plugin serves.
+// against the platform the plugin serves, which now refuses a key the
+// account form never sends.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform)
+	standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform,
+		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"))
 }
 
 // TestAPIKey: the type passes the library's checks and keeps what the

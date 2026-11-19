@@ -4,6 +4,7 @@
 package gemini
 
 import (
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/gemini"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -14,5 +15,10 @@ const TypeAPIKey = "apikey"
 // New returns the platform of the apikey account type.
 func New() *standard.Platform { return standard.New(APIKey()) }
 
-// APIKey is the apikey type: the gemini preset unchanged.
-func APIKey() standard.Type { return gemini.APIKey(TypeAPIKey) }
+// APIKey is the apikey type: the gemini preset, its credentials api_key and
+// base_url only.
+func APIKey() standard.Type {
+	t := gemini.APIKey(TypeAPIKey)
+	t.Spec.Fields = fieldcheck.Fields{}
+	return t
+}
