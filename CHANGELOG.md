@@ -33,7 +33,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 
 - 账号表单不再是声明式 JSON（`forms/` 已删），改为插件的 `ui/native`（`@sub2api/ui` 的 `createApiKeyForm`）：字段名、默认值、文案、校验规则与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址。清单改为 `form.mode: "native"`，加 `ui.native`、`hostUICompat ^3.20`，装包审查多一项“在控制台运行插件界面”（`ui.native`）。保存时的最终校验只在插件的 `ValidateCredentials`。
 - relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面（与原表单相同）；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，与原表单一样默认收起，有值或有错误时自动展开。
-- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径；与其它类型的基础地址一样先规范化再匹配，所以前后的空白、大写的 scheme、末尾多余的 `/` 去掉后接受），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
+- 插件补上原来只写在 JSON Schema 里的校验：openai 的 API Key 不超过 512 个可见 ASCII 字符，组织 ID、项目 ID 不超过 128 个可见 ASCII 字符；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径；与其它类型的基础地址一样先规范化再匹配，所以前后的空白、大写的 scheme、末尾多余的 `/` 去掉后接受；项目名里转义的斜杠如 `/api/projects/a%2Fb` 由接受改为拒绝，因为规范化把 `%2F` 变成了 `/`），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期。新建 `azure_deployment` 账号时表单仍预填 `2024-10-21`；编辑已有账号不再补默认值。
 
 公共组件与 SDK 的补缺（U3a；各插件改用它们在 U3b）：
 

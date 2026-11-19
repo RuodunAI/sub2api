@@ -52,6 +52,10 @@ func endpointCases(typ, fill, saved string) []apikeytest.Case {
 		c("base_url with an operation", "https://res.openai.azure.com/openai/v1/chat/completions", "base_url", ""),
 		c("base_url with another path", "https://res.openai.azure.com/other", "base_url", ""),
 		c("a Foundry project endpoint", "https://res.services.ai.azure.com/api/projects/p1", "", ""),
+		// An escaped slash in the project name: NormalizeBaseURL clears
+		// RawPath, so %2F becomes "/" and the path no longer matches. A known
+		// SDK issue, kept until the owner decides whether to fix it.
+		c("a project name with an escaped slash", "https://res.services.ai.azure.com/api/projects/a%2Fb", "base_url", ""),
 		c("base_url normalized, then matched", " HTTPS://res.openai.azure.com/openai/v1/ ", "", saved),
 	}
 }

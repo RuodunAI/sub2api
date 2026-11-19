@@ -319,8 +319,6 @@ func coreFiltered(t *testing.T, accountType string, client map[string]string) ma
 	return out
 }
 
-// account is an account of accountType on baseURL ("" = not set) with
-// extra settings members.
 // formFields are the account form's fields of the type besides api_key and
 // base_url (the type refuses any other).
 func formFields(accountType string) []string {
@@ -330,6 +328,8 @@ func formFields(accountType string) []string {
 	return nil
 }
 
+// account is an account of accountType on baseURL ("" = not set) with
+// extra settings members.
 func account(accountType, baseURL string, settings ...string) *pluginv1.Account {
 	if baseURL != "" {
 		b, _ := json.Marshal(baseURL)
