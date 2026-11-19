@@ -68,9 +68,9 @@ func TestManifest(t *testing.T) {
 	if !hasBroadcast {
 		t.Error("guard must declare capability app.broadcast.v1 (rules.changed)")
 	}
-	// The settings are the native GuardSettings form; the JSON Schema form it
-	// replaced marked no secret (webhook_url included), so ui.settings.secrets
-	// is written out empty: without the key the core masks every setting.
+	// The settings are the native GuardSettings form and hold no secret
+	// (webhook_url included), so ui.settings.secrets is written out empty:
+	// without the key the core masks every setting.
 	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GuardSettings" || st.Page != "" {
 		t.Errorf("ui.settings = %+v", st)
 	}

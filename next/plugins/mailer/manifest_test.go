@@ -43,8 +43,8 @@ func TestManifest(t *testing.T) {
 			t.Errorf("unknown host permission %q", hp.ID)
 		}
 	}
-	// The settings' secrets as the JSON Schema form marked them (password:
-	// writeOnly), so that GET /plugins/mailer/settings masks it.
+	// The password is the settings' one secret, so that
+	// GET /plugins/mailer/settings masks it.
 	pluginsdktest.SettingsSecrets(t, manifestJSON, manifest.SecretField{Path: []string{"password"}, Credential: true})
 	if m.UI.Settings.Mode != "native" || m.UI.Settings.Component != "MailerSettings" || m.UI.Settings.Page != "" || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" {
 		t.Errorf("ui = %+v", m.UI)
