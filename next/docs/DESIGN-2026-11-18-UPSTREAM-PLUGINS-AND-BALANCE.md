@@ -39,8 +39,8 @@
 | 余额联动：余额为 0 或低于阈值时告警、停用或降低调度权重（new-api 的批量刷新会自动停用余额 ≤ 0 的渠道） | 所有者的硬规矩：不自作主张加限制；联动要所有者另定规则 |
 | 其它账号类型的余额（见 3.1.9 的可行性表） | 官方 API Key 类没有可用接口；volcengine、relay 需要额外设计 |
 | `/v1/images/edits` 的 multipart 形式 | 网关只收 JSON（§112.16 保留的唯一请求体规则），收 multipart 要改网关读请求体、取模型、审核取提示词 |
-| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动 |
-| codex 设备码账号能否生图的实测（旧设计稿 3.4） | 需要真实账号 |
+| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动。**已做**（同批另一个包，CONTRACTS §118.10、§120；模型先取应答回显） |
+| codex 设备码账号能否生图的实测（旧设计稿 3.4） | 需要真实账号。**已实测**（2026-11-18，可以，PLUGIN-CODEX 第 12 节） |
 | 价格编辑器的结构化分档里加图片价、价格同步源导入图片 token 价、统计页（`usage_hourly`）汇总图片 token | 这一版管理员用表达式价格即可计对，见 3.4.5 |
 | 插件自报用量（`pluginv1.UsageTokens`）里的图片字段 | 没有插件自己解析生图用量 |
 | TypeSafe `/v1/systemone` 的 multipart 形式（JSON 请求放在名为 `request` 的 part、图片各一个 part） | 同 edits，网关只收 JSON；JSON 形式用 `data_base64` 带图，功能等价 |

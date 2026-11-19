@@ -84,6 +84,27 @@
             }
           }
         ],
+        "additional": [
+          {
+            "name": "image_generation",
+            "object": true,
+            "jsonPath": "tool_usage.image_gen",
+            "ssePath": "response.tool_usage.image_gen",
+            "modelSources": [
+              {"from": "sse", "arrayPath": "response.tools", "match": {"type": "image_generation"}, "modelPath": "model"},
+              {"from": "json", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"},
+              {"from": "request", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"}
+            ],
+            "defaultModel": "gpt-image-2",
+            "semantics": "inclusive",
+            "map": {
+              "input_tokens": "input_tokens",
+              "output_tokens": "output_tokens",
+              "image_input_tokens": "input_tokens_details.image_tokens",
+              "image_output_tokens": "output_tokens_details.image_tokens"
+            }
+          }
+        ],
         "json": {
           "map": {
             "model": "model",
@@ -125,6 +146,25 @@
       "billing": "usage",
       "usage": {
         "semantics": "inclusive",
+        "additional": [
+          {
+            "name": "image_generation",
+            "object": true,
+            "ssePath": "response.tool_usage.image_gen",
+            "modelSources": [
+              {"from": "sse", "arrayPath": "response.tools", "match": {"type": "image_generation"}, "modelPath": "model"},
+              {"from": "request", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"}
+            ],
+            "defaultModel": "gpt-image-2",
+            "semantics": "inclusive",
+            "map": {
+              "input_tokens": "input_tokens",
+              "output_tokens": "output_tokens",
+              "image_input_tokens": "input_tokens_details.image_tokens",
+              "image_output_tokens": "output_tokens_details.image_tokens"
+            }
+          }
+        ],
         "sse": [
           {
             "event": "response.completed",

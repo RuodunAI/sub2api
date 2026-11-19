@@ -45,7 +45,7 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 	core.ApplyProviderHeaders(c.c.Writer.Header(), resp.Header)
 	u := newUsageAcc(rt.usage).WithLog("request_id", c.rid, "plugin", rt.binding.Plugin.Key,
 		"platform", rt.platform, "protocol", rt.upstream)
-	u.WithPrimaryModel(c.upstreamPrimaryModel)
+	u.WithPrimaryModel(c.upstreamPrimaryModel).WithRequest(upBody)
 	u.WithAttemptAccounting(c.hasRequestedAttemptUsage(rt, upBody))
 	c.upstreamResponded = true
 	c.rec.StatusCode = resp.StatusCode
@@ -82,7 +82,7 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 		err = errClientGone
 	}
 	c.rec.Tokens = u.Tokens()
-	c.recordAdditionalUsage(u, rt)
+	c.recordAdditionalUsage(ctx, u, rt)
 	c.recordReplacementUsage(u, rt)
 	if len(u.Metrics) > 0 {
 		c.rec.Metrics = u.Metrics
