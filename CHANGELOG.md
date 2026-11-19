@@ -23,6 +23,9 @@
 - mailer：新建界面工程；`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码。
 - codex：设置（`user_agent`、`originator`）改由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件。
 - growth：设置改由 `GrowthSettings` 显示（两个分节，关掉的分节隐藏其字段）；数值的上下限、类型和未知键由插件拒绝，`hostUICompat` 升到 `^3.20`。
+- guard：设置改由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`）；webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`），`hostUICompat` 升到 `^3.20`。
+- 四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，其余为 `[]`。
+- `@sub2api/ui`：`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
 
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
