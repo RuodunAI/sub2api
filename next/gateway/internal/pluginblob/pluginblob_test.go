@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -23,6 +24,7 @@ type testNode struct {
 	svc    *Service
 	srv    *httptest.Server
 	online bool
+	asked  atomic.Int64 // requests its private endpoint received
 }
 
 // cluster wires nodes the way the shells are wired: each node's Peers lists
@@ -33,7 +35,11 @@ func cluster(t *testing.T, ids ...string) map[string]*testNode {
 	nodes := map[string]*testNode{}
 	for _, id := range ids {
 		n := &testNode{id: id, online: true, svc: &Service{Store: &Store{Dir: t.TempDir()}, Client: http.DefaultClient}}
-		n.srv = httptest.NewServer(n.svc.Peer())
+		peer := n.svc.Peer()
+		n.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n.asked.Add(1)
+			peer.ServeHTTP(w, r)
+		}))
 		t.Cleanup(n.srv.Close)
 		nodes[id] = n
 	}
@@ -115,19 +121,56 @@ func TestFetchFromAnotherNodeWhileThePrimaryIsDown(t *testing.T) {
 	}
 }
 
-func TestNoOnlineNodeHoldsThePackage(t *testing.T) {
+// A holder whose heartbeat is stale (starting, restarted, or not yet run)
+// is still asked: freshness orders the nodes, it excludes none.
+func TestStaleHolderIsStillAsked(t *testing.T) {
 	c := cluster(t, "a", "b", "c")
-	data := []byte("held by an offline node")
+	data := []byte("held by a node without a fresh heartbeat")
+	sum := digest(data)
+	if err := c["a"].svc.Store.Write(sum, bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	c["a"].online = false
+	if w := call(t, c["c"].svc.Local(), http.MethodGet, sum, nil); w.Code != 200 || w.Body.String() != string(data) || !c["c"].svc.Store.Has(sum) {
+		t.Fatalf("fetch from a stale holder: %d %q", w.Code, w.Body)
+	}
+}
+
+// Nodes with a fresh heartbeat are asked before the stale ones, so a node
+// that is down does not delay a package a live node holds.
+func TestFreshNodesAreAskedFirst(t *testing.T) {
+	c := cluster(t, "a", "b", "c")
+	data := []byte("held by a and b")
+	sum := digest(data)
+	for _, id := range []string{"a", "b"} {
+		if err := c[id].svc.Store.Write(sum, bytes.NewReader(data)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c["a"].online = false
+	if w := call(t, c["c"].svc.Local(), http.MethodGet, sum, nil); w.Code != 200 || w.Body.String() != string(data) {
+		t.Fatalf("fetch: %d %q", w.Code, w.Body)
+	}
+	if a, b := c["a"].asked.Load(), c["b"].asked.Load(); a != 0 || b != 1 {
+		t.Fatalf("stale a asked %d times, fresh b %d; want 0 and 1", a, b)
+	}
+}
+
+func TestNoNodeHoldsThePackage(t *testing.T) {
+	c := cluster(t, "a", "b", "c")
+	data := []byte("held by a node that is down")
 	sum := digest(data)
 	if err := c["a"].svc.Store.Write(sum, bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	c["a"].srv.Close()
 	c["a"].online = false
+	// Every enabled node is asked: b does not hold it, a cannot be reached.
 	w := call(t, c["c"].svc.Local(), http.MethodGet, sum, nil)
-	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "no online node holds the plugin package") ||
-		!strings.Contains(w.Body.String(), "asked: b") || !strings.Contains(w.Body.String(), "not asked: a") {
-		t.Fatalf("no holder online: %d %q", w.Code, w.Body)
+	body := w.Body.String()
+	if w.Code != http.StatusNotFound || !strings.Contains(body, "no reachable node holds the plugin package") ||
+		!strings.Contains(body, "b: not held") || !strings.Contains(body, "a: unreachable") || strings.Index(body, "b: not held") > strings.Index(body, "a: unreachable") {
+		t.Fatalf("no holder reachable: %d %q", w.Code, body)
 	}
 	// The probe a core uses (Range 0-0) gets the same answer.
 	q := httptest.NewRequest(http.MethodGet, "/system/plugin-blobs/"+sum, nil)
@@ -139,7 +182,7 @@ func TestNoOnlineNodeHoldsThePackage(t *testing.T) {
 	}
 	// A single node has nobody to ask.
 	alone := cluster(t, "x")
-	if w := call(t, alone["x"].svc.Local(), http.MethodGet, sum, nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "asked: none") {
+	if w := call(t, alone["x"].svc.Local(), http.MethodGet, sum, nil); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "no other node to ask") {
 		t.Fatalf("single node: %d %q", w.Code, w.Body)
 	}
 	if w := call(t, alone["x"].svc.Local(), http.MethodGet, "../../etc/passwd", nil); w.Code != http.StatusNotFound {

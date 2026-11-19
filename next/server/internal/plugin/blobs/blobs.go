@@ -1,6 +1,6 @@
 // Package blobs keeps plugin package bytes outside PostgreSQL. PostgreSQL
 // records each version's sha256 and, for market installs, its download URL;
-// the bytes come from the market or from any online node that holds them.
+// the bytes come from the market or from any other node that holds them.
 package blobs
 
 import (
@@ -21,7 +21,8 @@ import (
 )
 
 // ErrNotFound reports that no reachable store holds the package; under the
-// shell, that no online node does (the wrapped text says which were asked).
+// shell, that no node it could reach does (the wrapped text gives each
+// node's answer).
 var ErrNotFound = errors.New("plugin package is not available on this node")
 
 // Store holds packages by lower-case hex sha256. Put returns once the
@@ -113,7 +114,7 @@ func (d Dir) Has(_ context.Context, sum string) (bool, error) {
 
 // Shell stores packages through the local shell's management socket. The
 // shell keeps them on this node; a Get of a package this node lacks is
-// fetched from any online node that holds it over the authenticated node
+// fetched from any other enabled node that holds it over the authenticated node
 // network.
 type Shell struct {
 	socket string

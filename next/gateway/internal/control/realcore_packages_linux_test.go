@@ -198,8 +198,13 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 
 	// ---- primary down: a node that lost its package copies fetches them
 	// from the other online node when it restarts
-	if err = os.RemoveAll(filepath.Join(c.roots["c"], "plugin-blobs")); err != nil {
-		t.Fatal(err)
+	// Both copies go: the shell's store and the core's unpacked packages
+	// (SUB2API_PLUGIN_DIR), from which a restarted core would otherwise load
+	// without asking for the package.
+	for _, dir := range []string{"plugin-blobs", "plugins"} {
+		if err = os.RemoveAll(filepath.Join(c.roots["c"], dir)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	bootC := ""
 	if st, _, err := c.node("c").runtime.Status(ctx); err == nil {

@@ -28,8 +28,8 @@ func PluginBlobs(store *Store, node, root string, client *http.Client, maxBytes,
 
 // packagePeers lists the enabled nodes other than self, each marked online
 // by its heartbeat (Node.Fresh). Which node holds which package is not
-// recorded: the online ones are asked and one without the package answers
-// 404.
+// recorded: every listed node may be asked, the online ones first, and one
+// without the package answers 404.
 func packagePeers(ctx context.Context, store *Store, self string) ([]pluginblob.NodeRef, error) {
 	nodes, err := store.Nodes(ctx)
 	if err != nil {

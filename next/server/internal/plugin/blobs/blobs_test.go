@@ -107,7 +107,7 @@ func TestShellStoreSpeaksTheManagementSocket(t *testing.T) {
 		case http.MethodGet:
 			b, ok := stored[sum]
 			if !ok {
-				http.Error(w, "no online node holds the plugin package (asked: b; offline, not asked: a)", http.StatusNotFound)
+				http.Error(w, "no reachable node holds the plugin package (b: not held; a: unreachable)", http.StatusNotFound)
 				return
 			}
 			ranges = append(ranges, r.Header.Get("Range"))
@@ -125,8 +125,8 @@ func TestShellStoreSpeaksTheManagementSocket(t *testing.T) {
 	if got, err := s.Get(ctx, sumOf(data)); err != nil || string(got) != string(data) {
 		t.Fatalf("get: %q %v", got, err)
 	}
-	// A package no online node holds is ErrNotFound with the shell's reason.
-	if _, err = s.Get(ctx, sumOf([]byte("absent"))); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "offline, not asked: a") {
+	// A package no reachable node holds is ErrNotFound with the shell's reason.
+	if _, err = s.Get(ctx, sumOf([]byte("absent"))); !errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "a: unreachable") {
 		t.Fatalf("missing: %v", err)
 	}
 	// Has asks for one byte, not the package.

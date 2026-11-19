@@ -187,7 +187,7 @@ export default {
     titleInstall: 'Install plugin',
     titleUpgrade: 'Upgrade plugin',
     notFound: 'Review information for this version is not available. Upload the package again or install it from the market.',
-    packageGone: 'No online node holds the package of version {version} (the nodes holding it may be down, or it was cleaned up after a failed upgrade), so it cannot be reviewed or approved. Bring a node that holds it back online, upload the package again, or install it from the market.',
+    packageGone: 'No reachable node holds the package of version {version} (the nodes holding it may be down, or it was cleaned up after a failed upgrade), so it cannot be reviewed or approved. Bring a node that holds it back online, upload the package again, or install it from the market.',
     fromCache: 'Showing the review returned at upload time.',
     signature: 'Signature',
     hostCompat: 'Host compat',
@@ -566,7 +566,7 @@ export default {
     hint: 'Another plugin claimed these first, or the core holds them now (for example after a core upgrade). The plugin runs without them: its endpoints below are not served. Disable or uninstall the conflicting plugin, or upgrade this one, then re-enable it.'
   },
   errors: {
-    packageGone: 'No online node holds the package of this plugin version (the nodes holding it may be down, or it was cleaned up after a failed upgrade). Bring a node that holds it back online, upload it again, or install it from the market.',
+    packageGone: 'No reachable node holds the package of this plugin version (the nodes holding it may be down, or it was cleaned up after a failed upgrade). Bring a node that holds it back online, upload it again, or install it from the market.',
     clusterChangeBusy: 'Another cluster change (a plugin or core change) is being submitted. Try again in a moment.'
   }
 }

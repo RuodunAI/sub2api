@@ -7,12 +7,12 @@ const invalid = (fields: { field: string; code?: string; message: string }[]) =>
 
 describe('errorMessage', () => {
   it('words a version whose package is gone (410 package_gone) in both languages', () => {
-    const e = new ApiError(410, { code: 'package_gone', message: 'no online node holds the package of this version; bring a node that holds it back online, or upload it again' })
+    const e = new ApiError(410, { code: 'package_gone', message: 'no reachable node holds the package of this version; bring a node that holds it back online, or upload it again' })
     i18n.global.locale.value = 'zh'
     expect(errorMessage(e)).toBe(i18n.global.t('plugins.errors.packageGone'))
-    expect(errorMessage(e)).toContain('没有在线节点持有该插件版本的安装包')
+    expect(errorMessage(e)).toContain('没有能连上的节点持有该插件版本的安装包')
     i18n.global.locale.value = 'en'
-    expect(errorMessage(e)).toContain('No online node holds the package')
+    expect(errorMessage(e)).toContain('No reachable node holds the package')
   })
 
   it('words a busy cluster change (409 cluster_change_busy) in both languages', () => {
