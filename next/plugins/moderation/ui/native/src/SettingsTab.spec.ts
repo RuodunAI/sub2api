@@ -9,13 +9,9 @@ import { setHost } from './host'
 import { resetSessionCaches } from './session'
 
 // The settings pages as a user edits them: what each save PUTs and what it
-// refuses. The values below are those of the settings form removed in
-// 0.12.2 (forms/settings.schema.json): its defaults, values it accepted and
-// values it refused, written out so that the pages keep to them. Compared
-// with the form-rendered pages before they were removed (222 cases; the 10
-// that differed - an unknown option value, an invalid Jev table and a stored
-// value out of range while another key changed - the old page left to the
-// core, which refused them; these pages refuse them first).
+// refuses. The values below - the defaults, values the rules accept and
+// values they refuse - are written out so that the pages keep to them (the
+// plugin's ValidateSettings holds the same rules).
 
 type Call = (path: string, body?: unknown) => Promise<unknown>
 const coreGet = vi.fn<Call>()
@@ -23,7 +19,6 @@ const corePut = vi.fn<Call>()
 const pluginGet = vi.fn<Call>()
 const toast = vi.fn()
 let stored: Record<string, unknown> = {}
-vi.setConfig({ testTimeout: 120000 })
 const MASK = '******'
 const ROW = { category: 'violence', label: '', question: 'q?', answer_yes: '', answer_no: '', threshold: 0.5 }
 const BUILTIN = { preamble: 'builtin', items: [ROW] }
@@ -53,7 +48,7 @@ afterEach(() => {
 })
 enableAutoUnmount(afterEach)
 
-/** The defaults of the settings form. */
+/** The defaults of the settings. */
 const DEFAULTS = {
   mode: 'off', fail_policy: 'open', block_status: 403, block_message: 'Your request was blocked by content moderation. Please revise your input and try again.',
   auto_watch: true, watch_days: 30, escalate_violations: 0, escalate_window_seconds: 3600, ban_threshold: 0, ban_window_seconds: 86400, ban_duration_hours: 24,
@@ -77,7 +72,7 @@ const PAGES = {
 } as const
 type Page = keyof typeof PAGES
 
-/** A value the form accepted for each key, other than its default. */
+/** A value the rules accept for each key, other than its default. */
 const LEGAL: Record<string, unknown> = {
   mode: 'enforce', fail_policy: 'close_pre', block_status: 451, block_message: 'blocked', auto_watch: false, watch_days: 60, escalate_violations: 5,
   escalate_window_seconds: 7200, ban_threshold: 3, ban_window_seconds: 600, ban_duration_hours: 0, error_rate_alert_percent: 50,
@@ -87,7 +82,7 @@ const LEGAL: Record<string, unknown> = {
   hit_replay: 'whole', cache_entries: 5000, input_max_chars: 1000, input_max_chunks: 4, input_overflow: 'block', input_max_images: 0,
   max_inflight_mb: 256, error_text_max_chars: 0, min_chars: 10
 }
-/** Values the form refused (a switch offers no such value). */
+/** Values the rules refuse (a switch offers no such value). */
 const ILLEGAL: Record<string, unknown[]> = {
   mode: ['bogus'],
   fail_policy: ['bogus'],
@@ -125,6 +120,9 @@ const SWITCHES = ['auto_watch', 'record_pass', 'record_overturned', 'record_erro
 const ENUMS = ['mode', 'fail_policy', 'hit_replay', 'input_overflow']
 const DURATIONS = ['escalate_window_seconds', 'ban_window_seconds']
 const SECRETS = ['notify_webhook_url', 'notify_webhook_secret']
+/** [page, key] of each key that table has values for. */
+const pageKeysIn = (table: Record<string, unknown>) =>
+  (Object.keys(PAGES) as Page[]).flatMap((page) => PAGES[page].filter((k) => k in table).map((k): [Page, string] => [page, k]))
 
 type W = VueWrapper<any>
 const row = (w: W, k: string) => w.findAllComponents(SSettingRow).find((r) => r.props('prop') === k)!
@@ -165,13 +163,10 @@ describe('a settings page over settings of every key', () => {
     expect(toast).toHaveBeenCalledWith('settingsTab.noChanges', 'info')
   })
 
-  it.each(Object.keys(PAGES) as Page[])('PUTs every stored value key by key, secrets as ******, with the one key changed on the %s page', async (page) => {
-    for (const k of PAGES[page].filter((k) => k in LEGAL)) {
-      stored = STORED
-      corePut.mockClear()
-      const { put } = await save(page, typeIn(k, LEGAL[k]))
-      expect(put).toEqual({ ...STORED, [k]: LEGAL[k] })
-    }
+  it.each(pageKeysIn(LEGAL))('PUTs every stored value key by key, secrets as ******, with the one key changed on the %s page: %s', async (page, k) => {
+    stored = STORED
+    const { put } = await save(page, typeIn(k, LEGAL[k]))
+    expect(put).toEqual({ ...STORED, [k]: LEGAL[k] })
   })
 
   it('drops the stored 0.1 API key, and only it, on any save', async () => {
@@ -191,37 +186,26 @@ describe('a settings page over settings of every key', () => {
 })
 
 describe('a settings page over nothing stored', () => {
-  it('shows the defaults and saves only the key changed', async () => {
-    for (const page of Object.keys(PAGES) as Page[]) {
-      for (const k of PAGES[page].filter((k) => k in LEGAL)) {
-        stored = {}
-        corePut.mockClear()
-        const { w, put } = await save(page, typeIn(k, LEGAL[k]))
-        expect(put).toEqual({ [k]: LEGAL[k] })
-        w.unmount()
-      }
-      stored = {}
-      const { w } = await save(page)
-      for (const k of PAGES[page]) expect((w.vm as any).$.setupState.values[k]).toEqual(DEFAULTS[k as keyof typeof DEFAULTS])
-    }
+  it.each(Object.keys(PAGES) as Page[])('shows the defaults on the %s page', async (page) => {
+    const { w } = await save(page)
+    for (const k of PAGES[page]) expect((w.vm as any).$.setupState.values[k]).toEqual(DEFAULTS[k as keyof typeof DEFAULTS])
+  })
+
+  it.each(pageKeysIn(LEGAL))('saves only the key changed on the %s page: %s', async (page, k) => {
+    expect((await save(page, typeIn(k, LEGAL[k]))).put).toEqual({ [k]: LEGAL[k] })
   })
 })
 
 describe('the rules', () => {
-  it('refuse every value the settings form refused, at its row, without a request', async () => {
-    for (const page of Object.keys(PAGES) as Page[]) {
-      for (const k of PAGES[page].filter((k) => k in ILLEGAL)) {
-        for (const v of ILLEGAL[k]) {
-          stored = STORED
-          corePut.mockClear()
-          const { w, put } = await save(page, typeIn(k, v))
-          expect(put, `${k} = ${v}`).toBeNull()
-          expect(row(w, k).find('.input-error-text').exists(), `${k} = ${v}`).toBe(true)
-          w.unmount()
-        }
-      }
+  it.each(pageKeysIn(ILLEGAL).flatMap(([page, k]) => ILLEGAL[k].map((v) => [page, k, v] as const)))(
+    'refuse on the %s page %s = %s, at its row, without a request',
+    async (page, k, v) => {
+      stored = STORED
+      const { w, put } = await save(page, typeIn(k, v))
+      expect(put).toBeNull()
+      expect(row(w, k).find('.input-error-text').exists()).toBe(true)
     }
-  })
+  )
 })
 
 describe('the webhook address and secret', () => {
@@ -297,7 +281,7 @@ describe('the Jev default set', () => {
   const ROW1_CATEGORY = 5
   const ROW1_QUESTION = 2
 
-  it('refuses the tables the settings form refused, each at its cell', async () => {
+  it('refuses an invalid table, each message at its cell', async () => {
     const bad: [string, Record<string, string>, Edit][] = [
       ['a new row left empty', { [at(1, 'label')]: 'settingsTab.jev.labelRequired', [at(1, 'question')]: 'settingsTab.jev.question {"n":2000}' }, add],
       ['a bad category', { [at(0, 'category')]: 'settingsTab.jev.category' }, (w) => input(w, CATEGORY).setValue('Bad')],
@@ -345,15 +329,26 @@ describe('the Jev default set', () => {
     expect(put).toEqual({ ...STORED, jev_default_set: { preamble: 'p', items: [{ ...ROW, category: 'custom/x', label: 'X' }] } })
   })
 
-  it('shows a refusal of the plugin at the cell its pointer names', async () => {
+  const refuse = (field: string, message: string) =>
+    corePut.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'invalid argument', details: { fields: [{ field: `values/jev_default_set/${field}`, code: 'invalid', message }] } }))
+
+  it('shows a refusal of the plugin at the cell its pointer names, until the table is edited', async () => {
     stored = STORED
-    corePut.mockRejectedValueOnce(
-      new ApiError(400, { code: 'invalid_argument', message: 'invalid argument', details: { fields: [{ field: 'values/jev_default_set/items/0/question', code: 'required', message: 'question is required' }] } })
-    )
+    refuse('items/0/question', 'question is required')
     const { w } = await save('jev', (w) => textarea(w, QUESTION).setValue('new?'))
     expect(corePut).toHaveBeenCalled()
     expect(cellErrors(w)).toEqual({ [at(0, 'question')]: 'question is required' })
     expect(toast).not.toHaveBeenCalledWith(expect.anything(), 'error')
+    await textarea(w, QUESTION).setValue('newer?')
+    await flushPromises()
+    expect(cellErrors(w)).toEqual({})
+  })
+
+  it('shows a refusal at a field the editor has no cell for at the set', async () => {
+    stored = STORED
+    refuse('items/0/legacy', 'unknown')
+    const { w } = await save('jev', (w) => textarea(w, QUESTION).setValue('new?'))
+    expect(row(w, 'jev_default_set').find('.input-error-text').text()).toBe('unknown')
   })
 
   it('leaves no message at another question once a question is removed', async () => {
@@ -375,8 +370,8 @@ describe('the Jev default set', () => {
   })
 })
 
-describe('a stored setting of another page that breaks the rules', () => {
-  it('is named when it refuses the save of this page', async () => {
+describe('a stored setting of another page that refuses the save of this page', () => {
+  it('is named as a value that breaks the rules', async () => {
     stored = STORED
     corePut.mockRejectedValueOnce(
       new ApiError(400, { code: 'invalid_argument', message: 'invalid argument', details: { fields: [{ field: 'values/jev_default_set/items/1/category', code: 'duplicate', message: 'repeated' }] } })
@@ -385,5 +380,13 @@ describe('a stored setting of another page that breaks the rules', () => {
     expect(toast).toHaveBeenCalledWith('settingsTab.storedInvalid {"keys":"settingsTab.field.jev_default_set.label"}', 'error')
     expect(toast).not.toHaveBeenCalledWith(expect.stringContaining('invalid argument'), 'error')
     expect(w.findAll('.input-error-text')).toHaveLength(0)
+  })
+
+  it('is named as a secret to re-enter, not as a value that breaks the rules', async () => {
+    stored = STORED
+    corePut.mockRejectedValueOnce(new ApiError(400, { code: 'invalid_argument', message: 'x', details: { fields: [{ field: 'values/notify_webhook_secret', code: 'reenter', message: 'x' }] } }))
+    await save('policy', typeIn('mode', 'enforce'))
+    expect(toast).toHaveBeenCalledWith('settingsTab.reenterElsewhere {"keys":"settingsTab.field.notify_webhook_secret.label"}', 'error')
+    expect(toast).not.toHaveBeenCalledWith(expect.stringContaining('settingsTab.storedInvalid'), 'error')
   })
 })

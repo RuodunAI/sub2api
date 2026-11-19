@@ -218,13 +218,14 @@ export const settingsKey = (path: string) =>
     .split(/[.[]/)[0]
 
 export const JEV_KEY = 'jev_default_set'
-/** The paths of the question set's preamble and cells ('jev_default_set.items.<i>.<field>'). */
-const JEV_CELL = new RegExp(`^${JEV_KEY}\\.(preamble$|items\\.\\d+\\.\\w+$)`)
+/** The paths of the question set's preamble and cells ('jev_default_set.items.<i>.<field>', a field the editor has a cell for). */
+const JEV_CELL = new RegExp(`^${JEV_KEY}\\.(preamble|items\\.\\d+\\.(category|label|question|answer_yes|answer_no|threshold))$`)
 
 /**
  * The form path of an API field path: the preamble and the cells of the
  * question set keep their whole path (the editor shows each at its cell,
- * jevRules), every other path is its settings key.
+ * jevRules), every other path - an unknown field of a question too - is its
+ * settings key.
  */
 export function settingsField(path: string): string {
   const p = toFieldPath(path)

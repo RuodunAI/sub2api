@@ -246,6 +246,8 @@ describe('settingsField', () => {
     expect(settingsField('values/jev_default_set/preamble')).toBe('jev_default_set.preamble')
     expect(settingsField('values/jev_default_set/items')).toBe('jev_default_set')
     expect(settingsField('values/jev_default_set/items/3')).toBe('jev_default_set')
+    // a field the editor has no cell for (a stored table edited by hand)
+    expect(settingsField('values/jev_default_set/items/0/legacy')).toBe('jev_default_set')
     expect(settingsField('values/block_status')).toBe('block_status')
   })
 })
