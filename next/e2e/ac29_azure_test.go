@@ -27,7 +27,10 @@ const (
 // api-key, the upstream model is the deployment the account maps the
 // client's model to, the client's OpenAI-Organization / OpenAI-Project and
 // service_tier are not sent, and the usage is billed at the price of the
-// client's model. A pasted request URL is refused as the resource endpoint.
+// client's model. The resource endpoint is saved as written; a trailing
+// version segment (/openai/v1, /openai) is dropped per request, so the
+// request path does not repeat it (CONTRACTS §127). A pasted request URL is
+// refused as the resource endpoint.
 func TestAC29_AzureOpenAI(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -56,8 +59,10 @@ func TestAC29_AzureOpenAI(t *testing.T) {
 	tn := e.NewTenant(admin, TenantOpts{Balance: "20"})
 	model := e.RunModelOf(admin, "gpt", "azure")
 	type variant struct {
-		typ, baseURL string
-		settings     map[string]any
+		// baseURL is what the account form sends, saved what GET
+		// /accounts/:id returns.
+		typ, baseURL, saved string
+		settings            map[string]any
 		// path and query are where a chat request for deployment goes.
 		path  func(deployment string) string
 		query string
@@ -66,10 +71,12 @@ func TestAC29_AzureOpenAI(t *testing.T) {
 		accountID                       int64
 	}
 	variants := []*variant{
-		// The pasted /openai/v1 suffix is removed when the account is saved.
-		{typ: AzureV1Type, baseURL: e.MockInternalURL + "/openai/v1",
+		// Saved with its /openai/v1; the request does not repeat it.
+		{typ: AzureV1Type, baseURL: e.MockInternalURL + "/openai/v1", saved: e.MockInternalURL + "/openai/v1",
 			path: func(string) string { return "/openai/v1/chat/completions" }},
-		{typ: AzureDeploymentType, baseURL: e.MockInternalURL + "/", settings: map[string]any{"api_version": azureAPIVersion},
+		// Saved without the trailing slash, with its /openai; the request
+		// does not repeat it either.
+		{typ: AzureDeploymentType, baseURL: e.MockInternalURL + "/openai/", saved: e.MockInternalURL + "/openai", settings: map[string]any{"api_version": azureAPIVersion},
 			path:  func(deployment string) string { return "/openai/deployments/" + deployment + "/chat/completions" },
 			query: "api-version=" + azureAPIVersion},
 	}
@@ -84,8 +91,8 @@ func TestAC29_AzureOpenAI(t *testing.T) {
 			PluginKey: AzurePlugin, Type: v.typ, GroupIDs: []int64{gid}, APIKey: v.upstreamKey,
 			BaseURL: v.baseURL, Settings: v.settings, ModelMapping: map[string]string{model: v.deployment},
 		})
-		if got := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", v.accountID), nil).Get("credentials.base_url").String(); got != e.MockInternalURL {
-			t.Fatalf("%s: saved base_url %q, want %s", v.typ, got, e.MockInternalURL)
+		if got := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", v.accountID), nil).Get("credentials.base_url").String(); got != v.saved {
+			t.Fatalf("%s: saved base_url %q, want %s", v.typ, got, v.saved)
 		}
 	}
 	e.GrantGroups(admin, tn.User.UserID, append([]int64{tn.GroupID}, groups...))

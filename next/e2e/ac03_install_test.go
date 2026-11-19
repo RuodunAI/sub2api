@@ -7,9 +7,9 @@ import (
 
 // AC 3: anthropic is a built-in plugin: the core installs and enables it at
 // startup (signed as official, every host permission granted), it is active
-// on both nodes, it cannot be uninstalled, it declares no console UI and its
-// model catalog route serves data from the plugin schema. The market still
-// lists it.
+// on both nodes, it cannot be uninstalled, its only console UI is the native
+// API key form and its model catalog route serves data from the plugin
+// schema. The market still lists it.
 func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -82,16 +82,29 @@ func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 	}
 	e.WaitPlugin(admin, "anthropic", "enabled", version)
 
-	// The plugin declares no console UI: no menu of its own, and it is not
-	// among the plugins the console loads UI for.
+	// The plugin's only console UI is its native API key form: the console
+	// loads its native entry (it is official), and it adds no menu, page,
+	// slot or account action.
 	for _, it := range admin.Menus(t) {
 		if it.Get("plugin_key").String() == "anthropic" {
 			t.Fatalf("anthropic menu in /me/menus: %s", it.Raw)
 		}
 	}
 	ui := admin.OK(t, http.MethodGet, "/ui/plugins", nil).Array()
-	if _, ok := Find(ui, "key", "anthropic"); ok {
-		t.Fatalf("anthropic in /ui/plugins: %v", ui)
+	pu, ok := Find(ui, "key", "anthropic")
+	if !ok {
+		t.Fatalf("anthropic missing from /ui/plugins: %v", ui)
+	}
+	if pu.Get("trust").String() != "official" || pu.Get("native_entry").String() == "" || pu.Get("asset_base").String() == "" || pu.Get("version").String() != version {
+		t.Fatalf("anthropic ui entry: %s", pu.Raw)
+	}
+	for _, f := range []string{"menus", "slots", "account_actions"} {
+		if n := len(pu.Get(f).Array()); n != 0 {
+			t.Fatalf("anthropic ui entry has %s: %s", f, pu.Raw)
+		}
+	}
+	if n := len(pu.Get("pages").Map()); n != 0 {
+		t.Fatalf("anthropic ui entry has pages: %s", pu.Raw)
 	}
 
 	// Data served by the plugin from plg_anthropic.model_catalog, on every node.
