@@ -321,9 +321,9 @@
 
 ### 20.2 User-Agent 与 originator
 
-- 取值（每个头各自）：账号凭证里的 `user_agent` / `originator` → 插件设置的 `user_agent` / `originator` → 内置 `sup2api-codex/<版本>` / `sup2api`。空字符串（去掉首尾空白后）表示不自定义，沿用上一级。只在 `agent.go` 一处解析（`Plugin.agent`），用在这个账号发往 OpenAI 的全部请求：转发（HTTP 与 WebSocket 握手）、账号测试（`BuildTestRequest`）、令牌刷新（`BuildRefreshRequest`）、重置次数（`SendAccountRequest`）、授权（设备码申请与轮询、两种登录的换令牌）。
-- 授权时账号还不存在（重新授权也是表单里的新令牌，路由不知道是哪个账号），所以授权请求用插件设置的值，没有时用内置值。
-- 账号上：凭证的两个普通字段（不在 `sensitiveFields`，编辑时原样显示；不在 `settingsFields`，所以和令牌一起进 `credentials_json`，刷新、测试、重置读到的都是它）。`ValidateCredentials` 只做格式校验：必须是字符串、不能含控制字符（水平制表符除外，与发送前的检查相同）。原生表单 `CodexAuthForm` 多一块“客户端标识”，两个输入框，新建和编辑都有；重新授权保留它们（`mergeCredentials` 只替换令牌字段，`withAgent` 在“重新授权”撤回时保留表单里改过的值）。原生表单的凭证控制台不会自动渲染，所以这两个输入框写在插件的表单里；账号的 `extensionsSchema` 控制台没有渲染，也不进 `credentials_json`，没有用它。
+- 取值（每个头各自）：账号凭证里的 `user_agent` / `originator` → 插件设置的 `user_agent` / `originator` → 内置 `sup2api-codex/<版本>` / `sup2api`。空字符串（去掉首尾空白后）表示不自定义，沿用上一级。只在 `agent.go` 一处解析（`Plugin.agent`），用在账号建好后发往 OpenAI 的全部请求：转发（HTTP 与 WebSocket 握手）、账号测试（`BuildTestRequest`）、令牌刷新（`BuildRefreshRequest`）、重置次数（`SendAccountRequest`）。
+- 授权请求（设备码申请与轮询、两种登录的换令牌）目前对所有账号——新建和重新授权都一样——只用插件设置的值，没有时用内置值，不读表单里填的账号值：授权路由不知道是哪个账号，也收不到表单的值。
+- 账号上：凭证的两个普通字段（不在 `sensitiveFields`，编辑时原样显示；不在 `settingsFields`，所以和令牌一起进 `credentials_json`，刷新、测试、重置读到的都是它）。`ValidateCredentials` 只做格式校验：必须是字符串、不能含控制字符（水平制表符除外，与发送前的检查相同）。原生表单 `CodexAuthForm` 多一块“客户端标识”，两个输入框，新建和编辑都有；重新授权保留它们（`mergeCredentials` 只替换令牌字段，`withAgent` 在“重新授权”撤回时保留表单里改过的值）。原生表单的凭证控制台不会自动渲染，所以这两个输入框写在插件的表单里；账号的 `extensionsSchema` 控制台没有渲染（`web/src` 里只有类型声明 `extensions_schema`，没有组件读它），值存进账号设置、不进 `credentials_json`（`account/creds.go` 把扩展键从凭证里拿掉），所以没有用它。
 - 插件设置：清单 `ui.settings`（`mode: "schema"`，`forms/settings.schema.json` 与 `settings.ui.json`），控制台自动渲染；两个字符串，默认空，schema 的 `pattern` 只拒绝控制字符。`Configure` 去掉首尾空白后保存在进程里，各节点各自收到。
 - 现有机制查过，不能直接满足：账号请求头覆盖（CONTRACTS §108）和参数覆盖（§84）只作用在转发上，而 codex 的头全部是权威头（§112.4，所有者定的例外），覆盖改不了；刷新、测试、重置次数、授权这些请求核心按插件交回的头原样发送，不套覆盖。
 - 内置默认值、请求头黑名单没有改。

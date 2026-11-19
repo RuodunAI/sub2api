@@ -28,8 +28,8 @@ import (
 // type: both hold Codex tokens).
 //
 // The plugin describes each request; the core sends it through the account's
-// proxy (pluginsdk.SendAccountRequest), identified truthfully as sup2api like
-// every other request. The account list reads cached counts instead
+// proxy (pluginsdk.SendAccountRequest), with the account's client headers
+// (agent.go) like every other request. The account list reads cached counts instead
 // (resetcache.go). Answers follow the authorization routes (oauth.go):
 // {"data": ...} on success, {"error":{"code","message"}} otherwise, messages
 // "English / 中文".

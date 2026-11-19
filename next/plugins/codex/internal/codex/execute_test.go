@@ -22,8 +22,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
-// The client's own headers never reach the upstream: the plugin names
-// sup2api, truthfully, and nothing else.
+// The client's own headers never reach the upstream: the plugin sends the
+// account's client headers (agent.go) and nothing of the client's.
 var clientHeaders = map[string]string{"user-agent": "codex_cli_rs/0.99", "openai-beta": "responses=experimental", "x-stainless-lang": "js", "session_id": "client-session"}
 
 // userHello is userMessage("hello") as it goes upstream.
@@ -63,8 +63,8 @@ const keptAbove = "written above operator settings before forwarding v2; behavio
 var authoritativeHeaders = map[string]string{
 	"authorization":      "credential",
 	"chatgpt-account-id": "credential: the ChatGPT account the token acts for",
-	"originator":         keptAbove + "; truthful identification",
-	"user-agent":         keptAbove + "; truthful identification",
+	"originator":         keptAbove + "; the account's client headers (agent.go)",
+	"user-agent":         keptAbove + "; the account's client headers (agent.go)",
 	"accept":             keptAbove,
 	"content-type":       keptAbove,
 	"openai-beta":        keptAbove,
