@@ -67,6 +67,8 @@ type ClientOptions struct {
 // ErrTooManyRedirects is returned when a guarded client stops following.
 var ErrTooManyRedirects = errors.New("too many redirects")
 
+var errNoProxy = errors.New("no proxy for a request routed through one")
+
 // NewClient returns an http.Client for server-side fetches of addresses an
 // operator or a plugin supplied: direct connections only unless o.Proxy
 // (never the environment's proxy by itself), every direct dial refused for
@@ -82,7 +84,14 @@ func NewClient(o ClientOptions) *http.Client {
 	var rt http.RoundTripper = newTransport(o.Timeout, o.AllowPrivate)
 	if o.Proxy != nil {
 		proxied := newTransport(o.Timeout, true)
-		proxied.Proxy = func(r *http.Request) (*url.URL, error) { return o.Proxy(r.URL) }
+		proxied.Proxy = func(r *http.Request) (*url.URL, error) {
+			// This transport's dials are unguarded: going direct here is
+			// never right, even if o.Proxy changed its mind.
+			if p, err := o.Proxy(r.URL); err != nil || p != nil {
+				return p, err
+			}
+			return nil, errNoProxy
+		}
 		rt = splitTransport{proxy: o.Proxy, direct: rt, proxied: proxied, allowPrivate: o.AllowPrivate}
 	}
 	return &http.Client{Transport: rt, Timeout: o.Timeout, CheckRedirect: redirectCheck(o)}
@@ -111,12 +120,16 @@ type splitTransport struct {
 func (s splitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	p, err := s.proxy(req.URL)
 	switch {
-	case err != nil:
-		return nil, err
-	case p == nil:
+	case err == nil && p == nil:
 		return s.direct.RoundTrip(req)
-	case !s.allowPrivate && LiteralPrivate(req.URL.Hostname()):
-		return nil, ErrPrivate
+	case err == nil && !s.allowPrivate && LiteralPrivate(req.URL.Hostname()):
+		err = ErrPrivate
+	}
+	if err != nil {
+		if req.Body != nil {
+			_ = req.Body.Close() // a RoundTripper always closes it
+		}
+		return nil, err
 	}
 	return s.proxied.RoundTrip(req)
 }

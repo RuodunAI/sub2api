@@ -279,3 +279,26 @@ func TestMediaConversionToGemini(t *testing.T) {
 		t.Fatal("the gateway gives conversions no fetcher")
 	}
 }
+
+// A network error through the environment's proxy does not show the
+// proxy's address to the API client; the direct path's errors are kept.
+func TestMediaDownloadEnvProxyErrorHidesProxy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyAddr := ln.Addr().String()
+	ln.Close() // nothing listens: the connection to the proxy fails
+	setProxyEnv(t, map[string]string{"HTTP_PROXY": "http://" + proxyAddr})
+	d := proxiedDownloader(false, envProxy())
+	_, _, err = d.download(context.Background(), "http://media.example/png")
+	if !errors.Is(err, errViaProxy) || strings.Contains(err.Error(), proxyAddr) {
+		t.Fatalf("got %v", err)
+	}
+	// The same failure direct keeps its details.
+	d = testDownloader(true)
+	_, _, err = d.download(context.Background(), "http://"+proxyAddr+"/png")
+	if err == nil || errors.Is(err, errViaProxy) || !strings.Contains(err.Error(), proxyAddr) {
+		t.Fatalf("direct: %v", err)
+	}
+}

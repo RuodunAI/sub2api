@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -279,10 +280,36 @@ func TestClientIgnoresEnvironmentProxy(t *testing.T) {
 	t.Setenv("NO_PROXY", "")
 	t.Setenv("no_proxy", "")
 	c := NewClient(ClientOptions{AllowPrivate: true, Timeout: 5 * time.Second})
+	if tr, ok := c.Transport.(*http.Transport); !ok || tr.Proxy != nil {
+		t.Fatalf("transport %T has a proxy", c.Transport)
+	}
 	if err := get(c, "http://target.invalid/"); err == nil {
 		t.Fatal("reached an unresolvable name")
 	}
 	if got := hits(); len(got) != 0 {
 		t.Fatalf("proxy saw %v", got)
+	}
+}
+
+// A request routed to the proxy never goes direct (its dial would be
+// unguarded), even when the proxy func picks no proxy the second time.
+func TestClientProxyNeverFallsBackToDirect(t *testing.T) {
+	t.Parallel()
+	proxy, proxyHits := recorder(t)
+	target, targetHits := recorder(t)
+	pu, _ := url.Parse(proxy.URL)
+	var calls atomic.Int32
+	fickle := func(*url.URL) (*url.URL, error) {
+		if calls.Add(1) == 1 {
+			return pu, nil
+		}
+		return nil, nil
+	}
+	c := NewClient(ClientOptions{AllowPrivate: true, Proxy: fickle})
+	if err := get(c, target.URL+"/x"); !errors.Is(err, errNoProxy) {
+		t.Fatalf("got %v", err)
+	}
+	if len(targetHits()) != 0 || len(proxyHits()) != 0 {
+		t.Fatalf("target saw %v, proxy saw %v", targetHits(), proxyHits())
 	}
 }

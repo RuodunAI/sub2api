@@ -3,10 +3,14 @@ package gateway
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
+	"net"
 	"net/http"
+	neturl "net/url"
 	"path"
 	"strings"
 	"sync"
@@ -114,7 +118,7 @@ func (d mediaDownloader) download(ctx context.Context, url string) (string, stri
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", "", d.clientError(ctx, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
@@ -132,6 +136,31 @@ func (d mediaDownloader) download(ctx context.Context, url string) (string, stri
 		return "", "", tooLarge
 	}
 	return mediaType(resp.Header.Get("Content-Type"), data, u.Path), base64.StdEncoding.EncodeToString(data), nil
+}
+
+// errViaProxy is what the API client learns of a network error on a hop
+// through the environment's proxy: the error itself names the proxy's
+// address, which is the operator's (CONTRACTS §88.5).
+var errViaProxy = errors.New("connection through the proxy failed")
+
+// clientError is err as the API client sees it: a network error on a hop
+// through the environment's proxy is logged and replaced by errViaProxy;
+// anything else is returned as is.
+func (d mediaDownloader) clientError(ctx context.Context, err error) error {
+	var uerr *neturl.Error
+	var operr *net.OpError
+	if d.proxy == nil || !errors.As(err, &uerr) || !errors.As(err, &operr) {
+		return err
+	}
+	u, perr := neturl.Parse(uerr.URL)
+	if perr != nil {
+		return err
+	}
+	if p, _ := d.proxy(u); p == nil {
+		return err
+	}
+	slog.WarnContext(ctx, "gateway: media download through the environment's proxy failed", "url", uerr.URL, "err", err)
+	return errViaProxy
 }
 
 // mediaExtTypes are media types by extension Go's table may lack.

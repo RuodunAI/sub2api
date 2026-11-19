@@ -32,6 +32,9 @@ func TestAccountClientsIgnoreEnvironmentProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if tr, ok := direct.Transport.(*http.Transport); !ok || tr.Proxy != nil {
+		t.Fatalf("direct transport %T has a proxy", direct.Transport)
+	}
 	if resp, err := direct.Get("http://target.invalid/"); err == nil {
 		resp.Body.Close()
 		t.Fatal("direct client reached an unresolvable name")
@@ -41,6 +44,10 @@ func TestAccountClientsIgnoreEnvironmentProxy(t *testing.T) {
 	viaOwn, err := svc.HTTPClientFor(t.Context(), Spec{Protocol: "http", Host: host, Port: p})
 	if err != nil {
 		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://target.invalid/", nil)
+	if pu, err := viaOwn.Transport.(*http.Transport).Proxy(req); err != nil || pu.Host != own.Listener.Addr().String() {
+		t.Fatalf("own proxy client picks %v, %v", pu, err)
 	}
 	resp, err := viaOwn.Get("http://target.invalid/")
 	if err != nil {
