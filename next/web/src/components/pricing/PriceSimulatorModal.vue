@@ -160,9 +160,7 @@ const groupName = computed(() => groups.value.find((g) => g.id === groupId.value
       </SField>
       <SGrid :cols="2">
         <SField :label="t('common.group')" :error="providers.error.value">
-          <div data-testid="price-sim-group">
-            <GroupPicker :model-value="groupId" @update:model-value="groupId = typeof $event === 'number' ? $event : null" />
-          </div>
+          <GroupPicker :model-value="groupId" data-testid="price-sim-group" @update:model-value="groupId = typeof $event === 'number' ? $event : null" />
         </SField>
         <SField :label="t('common.model')" :hint="t('pricingTools.sim.modelHint')" :error="groupModels.error.value">
           <SSelect
