@@ -139,7 +139,9 @@ func (s *Service) test(c *gin.Context) {
 	})
 	source := "plugin"
 	if err == nil {
-		source, err = "gateway", s.testPrice(ctx, cmp.Or(tested, req.GetModel()))
+		if err = s.testPrice(ctx, cmp.Or(tested, req.GetModel())); err != nil {
+			source = "gateway"
+		}
 	}
 	if err != nil {
 		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})

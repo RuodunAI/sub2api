@@ -538,27 +538,45 @@ func TestAccountTestProtocols(t *testing.T) {
 
 // A model without a price is not tested: the test answers the missing price
 // error, whatever missing_price_policy says (the fake answers as under
-// "free"), and nothing goes upstream. The model priced is the one tested,
-// before the account's mapping.
+// "free"), records it as the gateway's, and nothing goes upstream. The model
+// priced is the one tested before the account's mapping: the caller's, else
+// the account's default test model, else the one the plugin reports.
 func TestAccountTestRefusesModelWithoutPrice(t *testing.T) {
 	e := setup(t)
 	var calls atomic.Int32
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1) }))
 	t.Cleanup(up.Close)
-	e.plat.testURL = up.URL + "/v1/messages"
+	e.plat.testURL, e.plat.testModel = up.URL+"/v1/messages", "plug-m"
 	id := e.mkAccount("sk-good-key-123")
-	e.pricer.unpriced = map[string]bool{"claude-x": true}
-	code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"})
-	if code != http.StatusForbidden || gjson.GetBytes(raw, "error.code").String() != core.ErrPriceNotConfigured.Code {
-		t.Fatalf("test: %d %s", code, raw)
+	refused := func(what string, unpriced string, body map[string]any) {
+		t.Helper()
+		e.pricer.unpriced = map[string]bool{unpriced: true}
+		code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), body)
+		if code != http.StatusForbidden || gjson.GetBytes(raw, "error.code").String() != core.ErrPriceNotConfigured.Code {
+			t.Fatalf("%s: %d %s", what, code, raw)
+		}
+		_, raw = e.doRaw(e.uid, "GET", fmt.Sprintf("/accounts/%d", id), nil)
+		if last := gjson.GetBytes(raw, "data.last_test"); last.Get("ok").Bool() || last.Get("error_source").String() != "gateway" ||
+			last.Get("error_code").String() != core.ErrPriceNotConfigured.Code {
+			t.Fatalf("%s: last test %s", what, last)
+		}
+		if calls.Load() != 0 {
+			t.Fatalf("%s: the test request went upstream", what)
+		}
 	}
-	if calls.Load() != 0 {
-		t.Fatal("the test request went upstream")
+	patch := func(body map[string]any) {
+		t.Helper()
+		if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), body); code != 200 {
+			t.Fatalf("patch: %d %v", code, out)
+		}
 	}
+	refused("no model, no default: the plugin's", "plug-m", nil)
+	refused("the caller's model", "claude-x", map[string]any{"model": "claude-x"})
+	patch(map[string]any{"models": []string{"m-def"}})
+	refused("no model: the account's default", "m-def", nil)
+
 	e.pricer.unpriced = map[string]bool{"up-x": true}
-	if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"model_mapping": map[string]string{"claude-x": "up-x"}}); code != 200 {
-		t.Fatalf("patch: %d %v", code, out)
-	}
+	patch(map[string]any{"models": []string{}, "model_mapping": map[string]string{"claude-x": "up-x"}})
 	if code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"}); code != 200 || calls.Load() != 1 {
 		t.Fatalf("mapped test: %d %s", code, raw)
 	}
