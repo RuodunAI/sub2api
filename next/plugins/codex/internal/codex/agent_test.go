@@ -158,10 +158,37 @@ func TestAgentAuthorizationRefusesBadValues(t *testing.T) {
 	}
 }
 
-// Settings that are not a JSON object are refused.
-func TestConfigureRefusesBadSettings(t *testing.T) {
-	p := mustPlugin(DefaultEndpoints)
-	if _, ok := pluginsdk.AsFieldErrors(p.Configure(context.Background(), pluginsdk.Config{JSON: []byte(`[1]`)})); !ok {
-		t.Fatal("array settings accepted")
+// TestValidateSettings: every value the settings JSON Schema refused (one
+// counterexample per constraint, written out here) is still refused, at its
+// field, by ValidateSettings and Configure alike; the default set (both
+// empty) and real values pass.
+func TestValidateSettings(t *testing.T) {
+	h := startPlugin(t, mustPlugin(DefaultEndpoints))
+	refused := []struct{ settings, field, code string }{
+		{`{"user_agent":"a\nb"}`, "user_agent", "pattern"},
+		{`{"user_agent":"a\u0000"}`, "user_agent", "pattern"},
+		{`{"originator":"x\u007f"}`, "originator", "pattern"},
+		{`{"originator":"x\u001f"}`, "originator", "pattern"},
+		{`{"user_agent":1}`, "user_agent", "type"},
+		{`{"originator":null}`, "originator", "type"},
+		{`{"user-agent":"x"}`, "user-agent", "unknown"},
+		{`[1]`, "", "invalid_json"},
+	}
+	for _, c := range refused {
+		resp, err := h.ValidateSettings(c.settings)
+		if err != nil {
+			t.Fatalf("%s: %v", c.settings, err)
+		}
+		if errs := resp.GetErrors(); len(errs) != 1 || errs[0].GetField() != c.field || errs[0].GetCode() != c.code {
+			t.Errorf("%s: errors = %v, want %s %s", c.settings, errs, c.field, c.code)
+		}
+		if _, ok := pluginsdk.AsFieldErrors(mustPlugin(DefaultEndpoints).Configure(context.Background(), pluginsdk.Config{JSON: []byte(c.settings)})); !ok {
+			t.Errorf("%s: Configure accepted it", c.settings)
+		}
+	}
+	for _, ok := range []string{`{}`, `{"user_agent":"","originator":""}`, `{"user_agent":"sup2api-codex/0.2.0\tx","originator":"codex_cli_rs"}`} {
+		if resp, err := h.ValidateSettings(ok); err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
+			t.Errorf("%s: %v %v", ok, resp.GetErrors(), err)
+		}
 	}
 }

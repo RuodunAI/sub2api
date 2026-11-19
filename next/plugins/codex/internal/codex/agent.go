@@ -3,9 +3,11 @@ package codex
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"strings"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
 // The client headers (User-Agent, originator) every request of an account
@@ -36,9 +38,8 @@ func (p *Plugin) agent(c credentials) agent {
 	}
 }
 
-// Settings are the plugin settings (forms/settings.schema.json): the client
-// headers of the accounts that set none, "" for the built-in ones. The host
-// checks them against the schema before saving.
+// Settings are the plugin settings: the client headers of the accounts that
+// set none, "" for the built-in ones.
 type Settings struct {
 	UserAgent  string `json:"user_agent"`
 	Originator string `json:"originator"`
@@ -46,11 +47,44 @@ type Settings struct {
 
 // Configure implements pluginsdk.Configurer.
 func (p *Plugin) Configure(_ context.Context, cfg pluginsdk.Config) error {
-	var s Settings
-	if err := cfg.Decode(&s); err != nil {
-		return pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
+	s, err := parseSettings(cfg)
+	if err != nil {
+		return err
 	}
-	s.UserAgent, s.Originator = strings.TrimSpace(s.UserAgent), strings.TrimSpace(s.Originator)
-	p.settings.Store(&s)
+	p.settings.Store(s)
 	return nil
+}
+
+// ValidateSettings implements pluginsdk.SettingsValidator: the console's
+// settings are refused before they are stored when Configure would refuse
+// them.
+func (p *Plugin) ValidateSettings(_ context.Context, cfg pluginsdk.Config) (json.RawMessage, error) {
+	_, err := parseSettings(cfg)
+	return nil, err
+}
+
+// settingsRules are the keys of the settings (the console form,
+// ui/native CodexSettings); every other key is refused. Their values are
+// checked as an account's own (agentError).
+var settingsRules = fieldcheck.Fields{
+	"user_agent": fieldcheck.String(),
+	"originator": fieldcheck.String(),
+}
+
+// parseSettings decodes and checks the settings: the one check of Configure
+// and ValidateSettings.
+func parseSettings(cfg pluginsdk.Config) (*Settings, error) {
+	var m credMap
+	if err := cfg.Decode(&m); err != nil {
+		return nil, pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
+	}
+	if err := fieldcheck.Check(settingsRules, m).Err(); err != nil {
+		return nil, err
+	}
+	if k, code, msg := m.agentError(); k != "" {
+		return nil, pluginsdk.FieldErrors{}.Add(k, code, msg).Err()
+	}
+	ua, _ := m.str("user_agent")
+	originator, _ := m.str("originator")
+	return &Settings{UserAgent: strings.TrimSpace(ua), Originator: strings.TrimSpace(originator)}, nil
 }

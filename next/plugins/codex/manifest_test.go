@@ -65,6 +65,11 @@ func TestManifestShape(t *testing.T) {
 	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" {
 		t.Fatalf("ui.native = %+v", m.UI)
 	}
+	// The settings (user_agent, originator) hold no secret: the JSON Schema
+	// form marked none, so ui.settings.secrets masks nothing.
+	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "CodexSettings" || st.Page != "" || len(st.SecretFields()) != 0 {
+		t.Fatalf("ui.settings = %+v", st)
+	}
 	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes}
 	var caps []string
 	for _, c := range m.Capabilities {
