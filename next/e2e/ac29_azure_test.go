@@ -100,18 +100,20 @@ func TestAC29_AzureOpenAI(t *testing.T) {
 		_, v.apiKey = e.CreateAPIKey(tn.User, groups[i])
 	}
 
-	// 3. A request URL pasted as the resource endpoint is refused.
-	for _, pasted := range []string{
-		"/openai/deployments/gpt-4o",
-		"/openai/deployments/gpt-4o/chat/completions?api-version=" + azureAPIVersion,
-		"/openai/v1/chat/completions",
+	// 3. A request URL pasted as the resource endpoint is refused: a path
+	// that is no endpoint by the plugin's pattern, an address with a query
+	// by the shared base URL rule before that (CONTRACTS §127.2).
+	for pasted, code := range map[string]string{
+		"/openai/deployments/gpt-4o": "pattern",
+		"/openai/deployments/gpt-4o/chat/completions?api-version=" + azureAPIVersion: "format",
+		"/openai/v1/chat/completions": "pattern",
 	} {
 		r := admin.API(t, http.MethodPost, "/accounts", map[string]any{
 			"name": e.Name("acct-azure-bad"), "plugin_key": AzurePlugin, "type": AzureV1Type, "group_ids": groups[:1],
 			"priority": 10, "max_concurrency": 5, "schedulable": true,
 			"credentials": map[string]any{"api_key": variants[0].upstreamKey, "base_url": e.MockInternalURL + pasted},
 		})
-		ExpectFieldError(t, r, "credentials.base_url", "pattern")
+		ExpectFieldError(t, r, "credentials.base_url", code)
 	}
 
 	// 4. Chat completions through each type, non-stream then stream.
