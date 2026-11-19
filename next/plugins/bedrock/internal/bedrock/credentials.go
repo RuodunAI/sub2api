@@ -100,6 +100,19 @@ var auths = map[string]auth{
 	TypeSTS:       {signed: true, session: true},
 }
 
+// keys are the keys the form of the type sends, credentials and settings
+// (the schema forms' properties); ValidateCredentials refuses any other.
+func (a auth) keys() []string {
+	keys := []string{fieldRegion, fieldProfilePrefix}
+	switch {
+	case !a.signed:
+		return append(keys, fieldAPIKey)
+	case a.session:
+		return append(keys, fieldAccessKeyID, fieldSecretAccessKey, fieldSessionToken, fieldSessionExpiresAt)
+	}
+	return append(keys, fieldAccessKeyID, fieldSecretAccessKey)
+}
+
 // credential checks a credential field that must be present and valid.
 func credential(creds object, field string, valid func(string) bool, required, malformed string) *pluginv1.FieldError {
 	switch v := creds.Str(field); {
@@ -185,6 +198,14 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	form, refused := accountform.DecodeForm(in)
 	if refused != nil {
 		return refused, nil
+	}
+	// Keys the form does not send are refused (code "unknown"), as the
+	// schema forms' additionalProperties:false did; an unsupported type is
+	// refused by check.
+	if a, ok := auths[in.GetAccountType()]; ok {
+		if refused := form.Only(a.keys()...); refused != nil {
+			return refused, nil
+		}
 	}
 	_, bad := check(in.GetAccountType(), form.Creds, form.Settings)
 	if bad == nil {
