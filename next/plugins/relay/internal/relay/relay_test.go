@@ -69,3 +69,26 @@ func TestDifferences(t *testing.T) {
 		t.Errorf("default headers = %v", headers)
 	}
 }
+
+// TestBaseURL: a request appends the route's whole path to the saved base
+// URL less the one /v1 it may end in, so a pasted /v1 is not doubled, a
+// relay whose own address ends in /v1 is reached at .../v1/v1, and an
+// escaped "/" goes out as it was written (and is no version segment).
+func TestBaseURL(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://relay.example.com":         "https://relay.example.com/v1/messages",
+		"https://relay.example.com/v1":      "https://relay.example.com/v1/messages",
+		"https://relay.example.com/v1/v1":   "https://relay.example.com/v1/v1/messages",
+		"https://relay.example.com/p/a%2Fb": "https://relay.example.com/p/a%2Fb/v1/messages",
+		"https://relay.example.com/a%2Fv1":  "https://relay.example.com/a%2Fv1/v1/messages",
+	} {
+		out, err := New().BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{
+			Account: &pluginv1.Account{Id: 1, Type: TypeRelayKey, CredentialsJson: `{"api_key":"sk-relay-test"}`, SettingsJson: `{"base_url":"` + base + `"}`},
+			Meta:    &pluginv1.RequestMeta{Protocol: anthropic.ProtocolMessages, Model: "m"},
+			Body:    []byte(`{}`),
+		})
+		if err != nil || out.GetUrl() != want {
+			t.Errorf("%s: url %s, %v, want %s", base, out.GetUrl(), err, want)
+		}
+	}
+}
