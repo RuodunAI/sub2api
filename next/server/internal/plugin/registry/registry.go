@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"mime"
 	"path"
 	"slices"
@@ -83,17 +84,31 @@ func Info(p *Package) core.PluginInfo {
 
 // Registry implements core.PluginRegistry.
 type Registry struct {
-	cur atomic.Pointer[generation]
-	seq atomic.Uint64
+	cur  atomic.Pointer[generation]
+	seq  atomic.Uint64
+	conv core.ProtocolConverters
 
 	mu        sync.Mutex // serializes Publish and listener changes
 	listeners map[int]func(core.Generation)
 	nextID    int
 }
 
-func New() *Registry {
+// Option configures a Registry.
+type Option func(*Registry)
+
+// WithConverters gives the registry the core's protocol converters, which
+// an account type's adapted endpoints must have (CONTRACTS §121.1). Without
+// them no account type listing adapted endpoints is bound.
+func WithConverters(conv core.ProtocolConverters) Option {
+	return func(r *Registry) { r.conv = conv }
+}
+
+func New(opts ...Option) *Registry {
 	r := &Registry{listeners: map[int]func(core.Generation){}}
-	r.cur.Store(build(0, nil))
+	for _, o := range opts {
+		o(r)
+	}
+	r.cur.Store(build(0, nil, r.conv))
 	return r
 }
 
@@ -117,7 +132,7 @@ func (r *Registry) OnChange(fn func(core.Generation)) (cancel func()) {
 func (r *Registry) Publish(exts []Extension) core.Generation {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	g := build(r.seq.Add(1), exts)
+	g := build(r.seq.Add(1), exts, r.conv)
 	r.cur.Store(g)
 	ids := make([]int, 0, len(r.listeners))
 	for id := range r.listeners {
@@ -154,6 +169,9 @@ type generation struct {
 	observers []core.ObservationBinding
 	channels  []core.NotificationChannelBinding
 	assets    sync.Map // key + "\x00" + path -> asset
+	// conv are the core's converters an account type's adapted endpoints
+	// need (unservedAdapted).
+	conv core.ProtocolConverters
 }
 
 func (g *generation) Observers() []core.ObservationBinding { return g.observers }
@@ -253,9 +271,10 @@ func hasCapability(m *manifest.Manifest, capID string) bool {
 	return false
 }
 
-func build(number uint64, exts []Extension) *generation {
+func build(number uint64, exts []Extension, conv core.ProtocolConverters) *generation {
 	g := &generation{
 		number:   number,
+		conv:     conv,
 		byKey:    map[string]core.PluginInfo{},
 		packages: map[string]*Package{},
 		platByID: map[string]core.PlatformBinding{},
@@ -552,11 +571,46 @@ func (g *generation) finish() {
 		}
 		return a.DeclIndex < b.DeclIndex
 	})
-	for i := range g.accTypes {
-		atb := g.withoutForeignFacts(g.accTypes[i])
-		g.accTypes[i], g.atByKey[atb.Key()] = atb, atb
+	kept := g.accTypes[:0]
+	for _, atb := range g.accTypes {
+		atb = g.withoutForeignFacts(atb)
+		if id := g.unservedAdapted(atb); id != "" {
+			slog.Error("plugin registry: account type skipped, the core converts no adapted endpoint to its endpoints",
+				"plugin", atb.Plugin.Key, "accountType", atb.Type.ID, "endpoint", id)
+			delete(g.atByKey, atb.Key())
+			continue
+		}
+		kept = append(kept, atb)
+		g.atByKey[atb.Key()] = atb
 		g.indexAccountType(atb)
 	}
+	g.accTypes = kept
+}
+
+// unservedAdapted is the first endpoint an account type lists in adapted
+// (manifest.AccountPlatform.Adapted) that no core conversion serves with an
+// endpoint of its subset on the same platform, "" when there is none. The
+// endpoints of a platform this generation lacks are not judged: the type
+// serves nothing there.
+func (g *generation) unservedAdapted(atb core.AccountTypeBinding) string {
+	for _, ap := range atb.Type.Platforms {
+		pb, ok := g.platByID[ap.Platform]
+		if !ok {
+			continue
+		}
+		for _, id := range slices.Sorted(maps.Keys(ap.Adapted)) {
+			i := slices.IndexFunc(pb.Platform.Endpoints, func(e manifest.Endpoint) bool { return e.ID == id })
+			if i < 0 {
+				return id
+			}
+			if _, ok := core.BestConvertTarget(g, atb, g.conv, pb.Platform.Endpoints[i].Protocol, func(p manifest.AccountPlatform, _ manifest.Endpoint) bool {
+				return p.Platform == ap.Platform
+			}); !ok {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // withoutForeignFacts drops from the type's platforms each one whose usage

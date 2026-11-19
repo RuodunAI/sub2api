@@ -373,7 +373,8 @@ func (a fakeAuthz) PermissionSet(ctx context.Context, uid int64) (core.Permissio
 }
 func (fakeAuthz) CanGrant(context.Context, int64, []string) error { return nil }
 
-// fakeConverters converts openai.chat requests to anthropic.messages, and
+// fakeConverters converts openai.chat requests to anthropic.messages,
+// openai.images to openai.responses (for a type declaring it adapted), and
 // (unused, the platform is unavailable) openai.embeddings to ghost.embed.
 type fakeConverters struct{}
 
@@ -383,6 +384,7 @@ func (f fakeConverters) Conversion(client, upstream string) (core.Conversion, bo
 
 func (fakeConverters) canConvert(client, upstream string) bool {
 	return client == "openai.chat" && upstream == "anthropic.messages" ||
+		client == "openai.images" && upstream == "openai.responses" ||
 		client == "openai.embeddings" && upstream == "ghost.embed"
 }
 

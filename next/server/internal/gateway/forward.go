@@ -302,8 +302,10 @@ func (c *call) forwardJSON(resp *http.Response, u *usageAcc, cap *usageCapture) 
 }
 
 // forwardJSONConverted reads the whole upstream response, extracts usage
-// from it (upstream rules) and writes the converted body. Nothing is written
-// when reading or converting fails.
+// from it (upstream rules) and writes the converted body, or the client
+// error the converter made of it (convert.ClientError, CONTRACTS §121.8),
+// which the record keeps as a failure. Nothing is written when reading or
+// converting fails.
 func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usageCapture, conv convert.Converter) error {
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -311,13 +313,23 @@ func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usage
 	}
 	u.ApplyJSON(raw)
 	cap.setBody(raw)
+	status := resp.StatusCode
 	out, err := conv.Response(raw)
+	var ce *convert.ClientError
+	if errors.As(err, &ce) {
+		out, status, err = ce.Body, ce.Status, nil
+		c.rec.StatusCode, c.rec.Success, c.rec.ErrorMessage = status, false, truncateUTF8(string(out), 1000)
+		c.rec.ErrorType = errTypeUpstream
+		if status < http.StatusInternalServerError {
+			c.rec.ErrorType = errTypeInvalidRequest
+		}
+	}
 	if err != nil {
 		return &convertError{err: err}
 	}
 	w := c.relayWriter()
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
+	w.WriteHeader(status)
 	if _, err := w.Write(out); err != nil {
 		return relayWriteError(err)
 	}

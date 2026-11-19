@@ -656,6 +656,34 @@ func TestAccountTestProtocolsSubset(t *testing.T) {
 	}
 }
 
+// A protocol the type serves adapted is tested after the native ones, by
+// the plugin (the test does not go through the conversion): an image
+// generation adapted to Responses is offered when the test names the
+// model (CONTRACTS §122.2).
+func TestAccountTestProtocolsAdapted(t *testing.T) {
+	e := setup(t)
+	openai := &e.gen.plats[1].Platform
+	responses := ep("POST", "/v1/responses", "openai.responses", "usage")
+	responses.ID = "responses"
+	images := ep("POST", "/v1/images/generations", "openai.images", "usage")
+	images.ID, images.Test = "images_generations", manifest.EndpointTestExplicit
+	openai.Endpoints = append(openai.Endpoints, responses, images)
+	e.gen.types[0].Type.Platforms = []manifest.AccountPlatform{{Platform: "openai", Endpoints: []string{"responses"},
+		Adapted: map[string]manifest.AdaptOptions{"images_generations": {Model: "gpt-6-luna"}}}}
+	id := e.mkAccount("sk-wrong-key-1")
+	for model, want := range map[string]string{"": "openai.responses", "gpt-image-2": "openai.responses,openai.images"} {
+		if code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": model}); code != 200 {
+			t.Fatalf("test %q: %d %s", model, code, raw)
+		}
+		e.plat.mu.Lock()
+		got := strings.Join(e.plat.tests[len(e.plat.tests)-1].GetProtocols(), ",")
+		e.plat.mu.Unlock()
+		if got != want {
+			t.Errorf("model %q: %s, want %s", model, got, want)
+		}
+	}
+}
+
 // An account with neither models nor a mapping whose type serves only
 // protocols a test without a model may not use (an image generation, an
 // edit) is refused too: no empty protocol list goes to the plugin's

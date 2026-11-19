@@ -129,7 +129,11 @@ func (b *boot) startCluster() error {
 func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	cfg := b.cfg
 	b.events = event.NewPublisher(b.db)
-	b.reg = registry.New()
+	// One converter registry for the gateway (conversion), the account
+	// module (endpoints an account type can serve) and the plugin registry
+	// (adapted endpoints need one), ARCHITECTURE 6.6.
+	b.converters = convert.Default()
+	b.reg = registry.New(registry.WithConverters(b.converters))
 	trust, err := pkg.NewTrustStore(cfg.Plugins.OfficialRootKeys, cfg.Plugins.AllowUnsigned)
 	if err != nil {
 		return nil, fmt.Errorf("plugin trust: %w", err)
@@ -216,9 +220,6 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	b.keys.Windows, b.keys.Slots = ratelimit.NewMinute(b.rdb, "apikey"), b.cl.Slots
 	b.keys.Balances = b.bill
 	b.prx = proxy.New(b.db, b.cipher, b.cl.Bus, proxy.Options{AllowPrivate: cfg.AllowPrivateUpstream, Registry: b.reg, Events: b.events, ScopeGrants: az})
-	// One converter registry for the gateway (conversion) and the account
-	// module (endpoints an account type can serve), ARCHITECTURE 6.6.
-	b.converters = convert.Default()
 	// Per-account rpm/tpm limits (CONTRACTS §18).
 	b.limiter = account.NewLimiter(b.rdb)
 	b.stats = account.NewStats(b.rdb, b.db, b.cl.Slots, b.cl.Bus)

@@ -67,8 +67,13 @@ type typeRoute struct {
 	resp         manifest.EndpointResp
 	respDeclared bool
 	// modelPath is the body path of the model in the upstream protocol
-	// (empty when the model travels in the path).
+	// (empty when the model travels in the path); a converter placing the
+	// client's model elsewhere names its own (convert.ModelLocator).
 	modelPath string
+	// adaptModel is the model the account type declares for the adapted
+	// client endpoint (manifest.AdaptOptions.Model), handed to the
+	// converter (convert.Options.AdaptModel).
+	adaptModel string
 	// streamOnly is set when the account type declares the upstream protocol
 	// in AccountPlatform.streamOnly (CONTRACTS §83): a non-streaming request
 	// is sent upstream with streamPath set to true and its SSE answer is
@@ -94,8 +99,8 @@ const upstreamLocal = "local"
 // supporting the endpoint's platform P (native), then those reaching it
 // through a core converter to a protocol of another platform they support.
 // A type supporting P is converted only when its endpoint subset on P
-// leaves the endpoint out, and then only to another endpoint of P in the
-// subset (CONTRACTS §83.3). A count_tokens request is never converted: the
+// leaves the endpoint out and its adapted entry lists it, and then only to
+// another endpoint of P in the subset (CONTRACTS §83.3). A count_tokens request is never converted: the
 // types without a native route estimate it locally when they serve the
 // generation protocol of its family (CONVERT-MATRIX §8).
 func (c *call) planRoutes() {
@@ -218,7 +223,9 @@ func (c *call) crossPlatform(b core.AccountTypeBinding) bool {
 // addRoute records the route of b to upstream protocol y of platform q:
 // pass headers come from the account type's entry for q, else the platform;
 // usage rules from the account type (per protocol), else the endpoint
-// speaking y, else the platform. q is the client endpoint's platform unless
+// speaking y, else the platform - except on a converting route the client
+// endpoint declares rules for y on (convertedUsage, CONTRACTS §121.5). q is
+// the client endpoint's platform unless
 // b does not declare it (planRoutes). (An endpoint whose usage or task the
 // platform's plugin states reaches only that plugin's account types: the
 // registry binds no other, design §4.3.)
@@ -251,6 +258,15 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	rt.requiredAttempts = append(rt.requiredAttempts, pf.Usage.Attempts)
 	if conv != nil {
 		rt.grade, rt.hops = conv.Grade(), convert.Hops(conv)
+		if u, ok := c.ep.ConvertedUsage[y]; ok {
+			rt.usage = u
+		}
+		if ml, ok := conv.(convert.ModelLocator); ok {
+			rt.modelPath = ml.ModelPath()
+		}
+		if !rt.cross {
+			rt.adaptModel = ap.Adapted[c.ep.ID].Model
+		}
 	}
 	c.routes[k] = rt
 	c.routeKeys = append(c.routeKeys, k)
