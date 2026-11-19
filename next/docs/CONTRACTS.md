@@ -3317,7 +3317,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 
 0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；同日改为不做任何换算，迁移 0115；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
+## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；同日改为不做任何换算，迁移 0114；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
 
 **余额是上游返回的数字本身，单位是上游给的原文，不做任何换算。** 2026-11-18 所有者原话："我现在给你明确，不要去折算，上游返回多少我们就是多少，我们不要做任何折算，就算数字不对也不管，汇率不对也不管。"——插件不做单位换算、汇率换算，不替上游补单位；上游没给单位就没有单位（界面只显示数字）；核心不校验单位的格式。这推翻了设计的 D3（统一折成美元）与 D6（New API 用 `quota_per_unit` 换算）。字段名仍叫 `currency`（proto、数据库列、接口），语义是"上游给的单位，可以没有"。
 
@@ -3351,12 +3351,12 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - 插件回 `UNIMPLEMENTED`：不写库，`GET /balance` 回 404 `unsupported`。
 - 写库失败返回 500（不再吞掉）。
 
-**表 `account_balances`**（迁移 0034 建，0113、0115 改）：每个账号一行。
+**表 `account_balances`**（迁移 0034 建，0113、0114 改）：每个账号一行。
 
 | 列 | 说明 |
 |---|---|
 | `account_id` | 主键，删账号级联 |
-| `amount_micros`、`currency` | 最近一次成功查询的金额与单位（上游原文，`text`，0115 起；此前 `VARCHAR(3)`）；上游没给单位、不限或从未成功时单位为 `''`，不限或从未成功时金额为 0 |
+| `amount_micros`、`currency` | 最近一次成功查询的金额与单位（上游原文，`text`，0114 起；此前 `VARCHAR(3)`）；上游没给单位、不限或从未成功时单位为 `''`，不限或从未成功时金额为 0 |
 | `unlimited` | 最近一次成功查询报告不限额度（0113 加） |
 | `updated_at` | 最近一次成功查询的时间；**从未成功时为 NULL**（0113 起可空，此前首次失败违反 NOT NULL、错误被吞） |
 | `error`、`error_at` | 最近一次失败：`auth_rejected: …` / `transient: …`（最多 512 字节）与时间；成功时清空 |
@@ -3402,7 +3402,7 @@ BalanceView = { supported: true, amount?: string, currency?: string, unlimited?:
 
 ### 52.7 测试
 
-- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、没有单位与任意文字的单位原样保存、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`、`TestMigration0115AccountBalanceUnitText`。
+- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、没有单位与任意文字的单位原样保存、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`、`TestMigration0114AccountBalanceUnitText`。
 - 运行时 `grpcruntime` 的 `TestBalanceAcrossProcess`：经真实 gRPC 的测试插件（`testdata/testplugin`），请求与回答逐字段往返，`UNIMPLEMENTED` 经运行时的错误仍能被识别。
 - 控制台 `AccountBalanceCell.spec.ts`（五种状态，有单位与没有单位）、`utils/format.spec.ts`（`formatBalance` 的千分位、小数位与大数）。
 - 插件：`plugins/newapi`、`plugins/sub2api` 的 `platform_test.go`（每个分支、大数与带小数的数）；SDK `standard/balance_test.go`（两种示例读法与 `Micros`）。
