@@ -346,7 +346,7 @@ type View struct {
 	// Quota is the subscription quota snapshot (CONTRACTS §44), read from
 	// the database only; null for account types without quota (API keys).
 	Quota *QuotaSnapshot `json:"quota"`
-	// Balance is the account balance snapshot (CONTRACTS §51); null for
+	// Balance is the account balance snapshot (CONTRACTS §52); absent for
 	// account types without balance support.
 	Balance *BalanceView `json:"balance,omitempty"`
 	// Refresh is the credential refresh state (CONTRACTS §48); null for
@@ -1864,6 +1864,13 @@ func (s *Service) update(c *gin.Context) {
 		if in.Name != nil {
 			name = *in.Name
 		}
+		// Another key, address or proxy may read another balance: the next
+		// read starts afresh (CONTRACTS §52.3).
+		if p != nil || extensionSettings != nil || setProxy {
+			if err := store.DeleteBalance(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		payload := basicPayload(id, locked.PluginKey, locked.Type, name)
 		payload["changed_fields"] = in.changedFields()
 		evs := []core.Event{{Type: core.EventAccountUpdated, Payload: payload}}
@@ -1880,6 +1887,7 @@ func (s *Service) update(c *gin.Context) {
 	if p != nil || extensionSettings != nil || setProxy {
 		s.quota.forget(id)
 		s.evictQuotaCache(ctx, id)
+		s.evictBalanceCache(ctx, id)
 	}
 	if usageLimitConverged {
 		if err := s.EnforceUsageLimits(ctx, []int64{id}); err != nil {
