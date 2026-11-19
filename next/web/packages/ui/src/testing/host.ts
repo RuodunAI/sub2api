@@ -47,9 +47,15 @@ export function track(w: VueWrapper, reset?: () => void): VueWrapper {
   return w
 }
 
-/** Unmounts what mountAccountForm / mountSettings mounted, undoes their setHost and empties <body>: `afterEach(cleanup)`. */
+/**
+ * Unmounts what mountAccountForm / mountSettings mounted, undoes their
+ * setHost, withdraws the console fakeHost provided (useHost() throws until
+ * the next fakeHost(), so no permission carries over to the next case) and
+ * empties <body>: `afterEach(cleanup)`.
+ */
 export function cleanup() {
   mounted.splice(0).forEach((w) => w.unmount())
   resets.splice(0).forEach((r) => r())
+  provideHost(null as unknown as HostContext)
   document.body.innerHTML = ''
 }
