@@ -58,7 +58,8 @@ func TestDevPrepare(t *testing.T) {
 	demoPkg := strings.TrimSpace(runOK(t, "pack", "--dir", demo, "--out-dir", t.TempDir()))
 
 	state := t.TempDir()
-	d := &devSession{state: state, builtin: filepath.Join(state, "builtin"), work: filepath.Join(state, "work"), stderr: io.Discard}
+	// anthropic's native UI is built separately.
+	d := &devSession{state: state, builtin: filepath.Join(state, "builtin"), work: filepath.Join(state, "work"), stderr: io.Discard, allowMissingUI: true}
 	for _, p := range []string{filepath.Join("..", "..", "plugins", "anthropic"), demoPkg} {
 		s, err := newDevSource(p, "")
 		if err != nil {
