@@ -240,15 +240,12 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 	}
 }
 
-// Fields, when set, checks the keys it names and refuses the ones the form
-// does not send (in either object); nil keeps letting them through. A rule
-// on api_key or base_url runs only where the Spec's own check passed.
+// Fields checks the keys it names and refuses the ones the form does not
+// send (in either object); nil is the same as empty. A rule on api_key or
+// base_url runs only where the Spec's own check passed.
 func TestSpecFields(t *testing.T) {
 	req := &pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678","organization":"o","extra":1}`, SettingsJson: `{"base_url":"https://u.example","proxy":"p"}`}
-	if resp := (Spec{AccountType: "apikey"}).Validate(req); len(resp.GetErrors()) != 0 {
-		t.Fatalf("nil Fields = %v", resp.GetErrors())
-	}
 	errs := func(s Spec, creds, settings string) map[string]string {
 		resp := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: creds, SettingsJson: settings})
 		got := map[string]string{}
@@ -267,10 +264,12 @@ func TestSpecFields(t *testing.T) {
 	if got := errs(org, `{"api_key":"sk-12345678"}`, `{"organization":7}`); !reflect.DeepEqual(got, map[string]string{"organization": "type"}) {
 		t.Fatalf("rule on a setting = %v", got)
 	}
-	empty := Spec{AccountType: "apikey", Fields: fieldcheck.Fields{}}
-	if got := errs(empty, `{"api_key":"sk-12345678","organization":"o"}`, ""); !reflect.DeepEqual(got, map[string]string{"organization": "unknown"}) {
-		t.Fatalf("an empty map allows api_key and base_url only: %v", got)
+	for _, empty := range []Spec{{AccountType: "apikey"}, {AccountType: "apikey", Fields: fieldcheck.Fields{}}} {
+		if got := errs(empty, req.CredentialsJson, req.SettingsJson); !reflect.DeepEqual(got, map[string]string{"organization": "unknown", "extra": "unknown", "proxy": "unknown"}) {
+			t.Fatalf("nil or empty Fields (%v) allow api_key and base_url only: %v", empty.Fields == nil, got)
+		}
 	}
+	empty := Spec{AccountType: "apikey"}
 	resp := empty.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"https://u.example/"}`})
 	if len(resp.GetErrors()) != 0 || resp.GetNormalizedSettingsJson() != `{"base_url":"https://u.example"}` {
@@ -300,5 +299,24 @@ func TestSpecFields(t *testing.T) {
 	// One error per field: the Spec's own, not the rule's too.
 	if resp := endpoint.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"ftp://u"}`}); len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetCode() != "format" {
 		t.Fatalf("refused base_url = %v", resp.GetErrors())
+	}
+}
+
+// NoBaseURL: a type without base_url refuses one in either object as an
+// unknown key, whatever its value, and saves the others as they are.
+func TestSpecNoBaseURL(t *testing.T) {
+	s := Spec{AccountType: "apikey", NoBaseURL: true, Fields: fieldcheck.Fields{"project_id": fieldcheck.Any()}}
+	for _, req := range []*pluginv1.ValidateCredentialsRequest{
+		{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678","base_url":"https://u.example"}`},
+		{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"not a url"}`},
+	} {
+		if errs := s.Validate(req).GetErrors(); len(errs) != 1 || errs[0].GetField() != "base_url" || errs[0].GetCode() != "unknown" {
+			t.Fatalf("%s %s: %v", req.CredentialsJson, req.SettingsJson, errs)
+		}
+	}
+	resp := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+		CredentialsJson: `{"api_key":" sk-12345678 "}`, SettingsJson: `{"project_id":"p"}`})
+	if len(resp.GetErrors()) != 0 || resp.GetNormalizedCredentialsJson() != `{"api_key":"sk-12345678"}` || resp.GetNormalizedSettingsJson() != `{"project_id":"p"}` {
+		t.Fatalf("valid = %v", resp)
 	}
 }

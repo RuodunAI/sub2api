@@ -126,6 +126,10 @@ type Spec struct {
 	StripSuffixes []string
 	// RequireBaseURL = true makes base_url mandatory (for relay).
 	RequireBaseURL bool
+	// NoBaseURL declares a type without base_url (vertex_apikey): Validate
+	// refuses one in either object as an unknown key, like any key Fields
+	// does not name.
+	NoBaseURL bool
 	// KeyValidator checks the api_key. If nil, any 8-512 printable non-space
 	// character string is accepted.
 	KeyValidator *Validator
@@ -133,13 +137,12 @@ type Spec struct {
 	Texts Texts
 	// Fields are the keys other than api_key and base_url the form may
 	// send, each with its rules (fieldcheck.Any() for a key taking any
-	// value). When set (an empty map included), Validate checks them,
-	// reading each from the credentials, then the settings, and refuses
-	// every other key of either object with code "unknown", as the form's
-	// additionalProperties:false did; nil lets them through. A rule for
-	// api_key or base_url adds to the checks above, only when those passed,
-	// and sees the value Validate saves: the key trimmed, the base URL
-	// normalized (StripSuffixes included), wherever the key was sent.
+	// value). Validate checks them, reading each from the credentials, then
+	// the settings, and refuses every other key of either object with code
+	// "unknown"; nil is the same as empty: only api_key and base_url. A rule
+	// for api_key or base_url adds to the checks above, only when those
+	// passed, and sees the value Validate saves: the key trimmed, the base
+	// URL normalized (StripSuffixes included), wherever the key was sent.
 	Fields fieldcheck.Fields
 }
 
@@ -169,9 +172,7 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
-	if s.Fields != nil {
-		errs = s.checkFields(errs, normalized(creds, key, baseURL), normalized(settings, key, baseURL))
-	}
+	errs = s.checkFields(errs, normalized(creds, key, baseURL), normalized(settings, key, baseURL))
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
 	}
@@ -218,8 +219,12 @@ func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string
 }
 
 // validateBaseURL reads base_url from settings then credentials and returns
-// the normalized URL (s.DefaultBaseURL when absent).
+// the normalized URL (s.DefaultBaseURL when absent). A type without base_url
+// leaves it to checkFields.
 func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[string]any) (string, pluginsdk.FieldErrors) {
+	if s.NoBaseURL {
+		return "", errs
+	}
 	rawBase, _ := lookup("base_url", settings, creds)
 	baseStr, isStr := rawBase.(string)
 	baseStr = strings.TrimSpace(baseStr)
@@ -247,10 +252,14 @@ func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[st
 	return normalized, errs
 }
 
-// checkFields adds the errors of s.Fields (api_key and base_url known) on
-// the normalized objects, except at a field that already has one.
+// checkFields adds the errors of s.Fields (api_key and, unless NoBaseURL,
+// base_url known) on the normalized objects, except at a field that already
+// has one.
 func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string]any) pluginsdk.FieldErrors {
-	fields := fieldcheck.Fields{"api_key": fieldcheck.Any(), "base_url": fieldcheck.Any()}
+	fields := fieldcheck.Fields{"api_key": fieldcheck.Any()}
+	if !s.NoBaseURL {
+		fields["base_url"] = fieldcheck.Any()
+	}
 	maps.Copy(fields, s.Fields)
 	for _, e := range fieldcheck.Check(fields, creds, settings) {
 		if !slices.ContainsFunc(errs, func(x *pluginv1.FieldError) bool { return x.GetField() == e.GetField() }) {

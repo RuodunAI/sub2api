@@ -45,7 +45,8 @@ var (
 // apiKeySpec checks the api_key of an API key account the way every API key
 // form does: 8-512 visible characters. The type has no base_url; project_id
 // and location are its other keys (checked by target), any other is refused.
-var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey, Fields: fieldcheck.Fields{fieldProject: fieldcheck.Any(), fieldLocation: fieldcheck.Any()}}
+var apiKeySpec = apikey.Spec{AccountType: TypeAPIKey, NoBaseURL: true,
+	Fields: fieldcheck.Fields{fieldProject: fieldcheck.Any(), fieldLocation: fieldcheck.Any()}}
 
 // expiry reads expires_at the way the core does.
 var expiry = &manifest.AccountRefresh{}
@@ -114,12 +115,6 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	}
 	typ := in.GetAccountType()
 	if typ == TypeAPIKey {
-		// Only as well as apiKeySpec.Fields: the spec always takes base_url,
-		// which this type has none of; Fields keeps project_id and location
-		// known to the spec's own check.
-		if refused := form.Only(fieldAPIKey, fieldProject, fieldLocation); refused != nil {
-			return refused, nil
-		}
 		return validateAPIKeyAccount(in, form.Settings), nil
 	}
 	kind, keyed := keyKinds[typ]
