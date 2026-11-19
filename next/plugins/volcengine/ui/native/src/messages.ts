@@ -42,6 +42,43 @@ const zh = {
     baseUrl: '素材端点',
     region: '素材库区域',
     regionPlaceholder: '留空使用 cn-beijing'
+  },
+  pages: {
+    assets: '方舟素材库',
+    groups: '方舟素材组',
+    newAsset: '新建素材',
+    newGroup: '新建素材组'
+  },
+  col: {
+    account: '账号',
+    group: '素材组',
+    name: '名称',
+    title: '标题',
+    type: '类型',
+    status: '上游状态',
+    index: '索引',
+    assetCount: '素材数',
+    upstreamId: '方舟 id',
+    updated: '更新时间'
+  },
+  newGroup: {
+    account: '账号',
+    accountHelp: '在哪个方舟账号上创建素材组，填账号的数字 id。只有填了 Access Key / Secret Key 的账号才能用素材库；账号 id 见 GET /api/v1/p/volcengine/accounts。',
+    name: '名称',
+    nameHelp: '发给方舟的素材组名称。上游不要求唯一，请起一个自己能认出来的名字。',
+    title: '标题',
+    description: '描述',
+    groupType: '素材组类型',
+    groupTypeHelp: '方舟的素材组类型。除非火山文档另有说明，保持 AIGC 即可。'
+  },
+  newAsset: {
+    group: '素材组',
+    groupHelp: '素材组页面里的 # 列（本站自己的 id，不是方舟 id）。账号由素材组决定，因此素材不会落到别的账号的素材组里。',
+    name: '名称',
+    assetType: '素材类型',
+    assetTypeHelp: '该素材在方舟里的类型（如 Image、Video）。留空则由方舟按地址判断。',
+    url: '素材地址',
+    urlHelp: '方舟从哪里取这个素材。方舟是异步下载的，所以素材一开始处于处理中状态；重新打开可以看到最新状态。'
   }
 }
 
@@ -94,6 +131,46 @@ const en: typeof zh = {
     baseUrl: 'Asset endpoint',
     region: 'Asset region',
     regionPlaceholder: 'Leave empty to use cn-beijing'
+  },
+  pages: {
+    assets: 'Ark asset library',
+    groups: 'Ark asset groups',
+    newAsset: 'New asset',
+    newGroup: 'New asset group'
+  },
+  col: {
+    account: 'Account',
+    group: 'Group',
+    name: 'Name',
+    title: 'Title',
+    type: 'Type',
+    status: 'Upstream status',
+    index: 'Index',
+    assetCount: 'Assets',
+    upstreamId: 'Ark id',
+    updated: 'Updated'
+  },
+  newGroup: {
+    account: 'Account',
+    accountHelp:
+      'Numeric id of the Ark account the group is created on. Only accounts with an access key and secret key can hold asset groups; GET /api/v1/p/volcengine/accounts lists the ids.',
+    name: 'Name',
+    nameHelp: 'The group name sent to Ark. It is not unique upstream, so pick something you will recognize.',
+    title: 'Title',
+    description: 'Description',
+    groupType: 'Group type',
+    groupTypeHelp: "Ark's asset group type. Leave AIGC unless the Volcengine documentation tells you otherwise."
+  },
+  newAsset: {
+    group: 'Asset group',
+    groupHelp:
+      "The # column of the asset groups page (this site's own id, not the Ark id). The account is taken from the group, so an asset can never land under another account's group.",
+    name: 'Name',
+    assetType: 'Asset type',
+    assetTypeHelp: "Ark's asset type for this material (e.g. Image, Video). Leave empty to let Ark decide from the URL.",
+    url: 'URL',
+    urlHelp:
+      'Where Ark fetches the material. Ark downloads it asynchronously, so the asset starts out in a processing state; reopen it to see the current status.'
   }
 }
 

@@ -384,8 +384,8 @@ func hostOf(t *testing.T, raw string) string {
 
 // TestAssetRoutesAndPages pins the asset library's declared surface: every
 // route is an admin route behind one of the plugin's two permissions and
-// account:read (reads) or account:update (writes), and every host-rendered
-// page reads a route that actually exists. Only the routes naming an account
+// account:read (reads) or account:update (writes), and the two native pages
+// and the routes they use exist. Only the routes naming an account
 // directly pass the own level; the others reach accounts through rows of
 // this plugin, which the core cannot see.
 func TestAssetRoutesAndPages(t *testing.T) {
@@ -423,62 +423,25 @@ func TestAssetRoutesAndPages(t *testing.T) {
 		}
 		declared[r.Method+" "+r.Path] = true
 	}
-	if m.UI == nil || len(m.UI.Pages) == 0 {
-		t.Fatal("stage three declares the asset library pages")
+	// The two list pages are native (ui/native/src/pages.ts): the create
+	// dialogs live inside them, so there are no form pages any more.
+	wantPages := map[string]string{"assets": "VolcengineAssetsPage", "asset_groups": "VolcengineAssetGroupsPage"}
+	if m.UI == nil || len(m.UI.Pages) != len(wantPages) {
+		t.Fatalf("pages = %+v, want %v", m.UI, wantPages)
 	}
-	for id, pg := range m.UI.Pages {
-		switch pg.Type {
-		case "table":
-			if pg.Source == "" {
-				t.Fatalf("page %s has no source", id)
-			}
-			if !declared[pg.Source] {
-				t.Errorf("page %s reads %q, which is not a declared route", id, pg.Source)
-			}
-			if len(pg.Columns) == 0 {
-				t.Errorf("page %s has no columns", id)
-			}
-			// Both index tables are searchable, and the name they declare has
-			// to be the one the route reads. The console renders a search box
-			// only for a page that declares one and sends the text under that
-			// name, so a mismatch here is a box that filters nothing while
-			// looking like it does - which is what these two pages shipped
-			// with, and why the front end deleted the box.
-			if pg.Search != volcengine.SearchParam {
-				t.Errorf("page %s declares search %q, but the route reads %q",
-					id, pg.Search, volcengine.SearchParam)
-			}
-			for _, c := range pg.Columns {
-				switch c.Format {
-				case "text", "number", "datetime", "badge", "currency":
-				default:
-					// The console silently falls back to plain text for an
-					// unknown format, so a typo would never be noticed.
-					t.Errorf("page %s column %s: unsupported format %q", id, c.Key, c.Format)
-				}
-				if c.Label["en"] == "" || c.Label["zh"] == "" {
-					t.Errorf("page %s column %s needs an en and zh label", id, c.Key)
-				}
-			}
-		case "form":
-			if !declared[pg.Submit] {
-				t.Errorf("page %s submits to %q, which is not a declared route", id, pg.Submit)
-			}
-			mustJSONFile(t, pg.Schema)
-			// DeclarativeForm loads "<name>.ui.json" next to the schema.
-			mustJSONFile(t, strings.TrimSuffix(pg.Schema, ".schema.json")+".ui.json")
-		default:
-			t.Errorf("page %s type = %q; stage three only uses host-rendered pages", id, pg.Type)
+	for id, component := range wantPages {
+		pg := m.UI.Pages[id]
+		if pg.Type != "native" || pg.Component != component || pg.Title["en"] == "" || pg.Title["zh"] == "" {
+			t.Errorf("page %s = %+v, want the native %s with a title", id, pg, component)
 		}
 	}
-	// Every menu points at a declared page and carries the permission of the
-	// route behind it. The create forms are opened from their tables' "New"
-	// buttons, which need the manage permission.
-	for id, pg := range m.UI.Pages {
-		if pg.Create != nil && (pg.Create.Permission != volcengine.PermAssetsManage || m.UI.Pages[pg.Create.Page].Type != "form") {
-			t.Errorf("page %s create link = %+v", id, pg.Create)
+	// The routes the pages read and post to.
+	for _, r := range []string{"GET /assets", "POST /assets", "GET /asset-groups", "POST /asset-groups"} {
+		if !declared[r] {
+			t.Errorf("route %s is not declared", r)
 		}
 	}
+	// Every menu points at a declared page and carries the read permission.
 	for _, mn := range m.UI.Menus {
 		if _, ok := m.UI.Pages[mn.Page]; !ok {
 			t.Errorf("menu %s points at unknown page %q", mn.ID, mn.Page)
@@ -510,10 +473,6 @@ func TestValidate(t *testing.T) {
 		"runtimes/linux-amd64/plugin":          []byte("elf"),
 		"runtimes/linux-arm64/plugin":          []byte("elf"),
 		"ui/native/entry.js":                   []byte("export function register() {}"),
-		"forms/asset-group.schema.json":        mustJSONFile(t, "forms/asset-group.schema.json"),
-		"forms/asset-group.ui.json":            mustJSONFile(t, "forms/asset-group.ui.json"),
-		"forms/asset.schema.json":              mustJSONFile(t, "forms/asset.schema.json"),
-		"forms/asset.ui.json":                  mustJSONFile(t, "forms/asset.ui.json"),
 		"migrations/0001_init.sql":             mustFile(t, "migrations/0001_init.sql"),
 		"migrations/0002_video_tasks.sql":      mustFile(t, "migrations/0002_video_tasks.sql"),
 		"migrations/0003_drop_video_tasks.sql": mustFile(t, "migrations/0003_drop_video_tasks.sql"),
@@ -839,15 +798,6 @@ func builtin(t *testing.T) *manifest.Platform {
 	}
 	t.Fatalf("no built-in platform %q", volcengine.PlatformID)
 	return nil
-}
-
-func mustJSONFile(t *testing.T, p string) []byte {
-	t.Helper()
-	b := mustFile(t, p)
-	if !json.Valid(b) {
-		t.Fatalf("%s is not valid JSON", p)
-	}
-	return b
 }
 
 func mustFile(t *testing.T, p string) []byte {
