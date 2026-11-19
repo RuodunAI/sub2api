@@ -52,7 +52,8 @@ const codexImageEchoModel = "gpt-image-2-codex"
 // answer is taken as it is: a completed answer without an image is a 200
 // with an empty data array and no usage (the mock reports no
 // tool_usage then; a stream ends without a completed or error event), a
-// successful record without an error type, charged once.
+// successful record without an error type, charged once, and the account
+// not failed (active, schedulable, no cooldown).
 // n: 2 is a 400 that does not reach the backend; an unpriced model is a
 // 403 before any upstream call.
 func TestAC42_CodexImages(t *testing.T) {
@@ -166,6 +167,9 @@ func TestAC42_CodexImages(t *testing.T) {
 			}
 			upstream(t, mark, what, "generate")
 			record(t, g, "openai.images", false, rated(imageNoToolCost))
+			if a := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", accountID), nil); a.Get("status").String() != "active" || !a.Get("schedulable").Bool() || a.Get("cooldown_until").String() != "" {
+				t.Fatalf("%s: account %s", what, a.Raw)
+			}
 		}
 	})
 
