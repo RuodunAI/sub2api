@@ -164,6 +164,7 @@ export default {
     statusLabel: '结算状态',
     ledger: '账本 #{id}',
     additional: '附加用量（按各自模型的价格计，已计入合计）',
+    additionalUnpricedAnomaly: '附加用量 {usage} 没有价格，未计费（计费设置的缺价策略是拒绝，但请求已经完成）。请给该模型录入价格。',
     additionalUnpriced: '没有价格，未计费',
     additionalKinds: { image_generation: '生图工具', advisor: '顾问模型', compaction: '上下文压缩' },
     freeNote: '被钩子拒绝、上游失败且没有用量的请求不计费。',

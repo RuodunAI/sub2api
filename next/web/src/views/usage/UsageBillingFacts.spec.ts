@@ -99,6 +99,14 @@ describe('additional usage of a usage record', () => {
     expect(text('usage-additional-item')).toContain('No price, not charged')
   })
 
+  it('warns when the image model had no price under the reject policy', () => {
+    const u = withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 0, detail: {} })
+    u.anomalies = { additional_unpriced: 'image_generation/gpt-image-2-codex' }
+    const { text } = render(u)
+    expect(text('usage-additional-unpriced')).toContain('附加用量 image_generation/gpt-image-2-codex 没有价格，未计费')
+    expect(render(withImage({ kind: 'image_generation', model: 'gpt-image-2-codex', price_id: 0, detail: {} })).has('usage-additional-unpriced')).toBe(false)
+  })
+
   it('shows nothing for a record without additional usage', () => {
     expect(render(record({ rate: '1', total: '0.00576' })).has('usage-additional')).toBe(false)
   })
