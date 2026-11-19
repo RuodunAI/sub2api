@@ -3,6 +3,7 @@ package volcengine
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"strings"
 	"testing"
 
@@ -183,4 +184,41 @@ func TestRelayFormConstraints(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestFormUnknownKeys: each type takes every key its schema form listed,
+// all at once, and refuses any other (code "unknown", the schemas'
+// additionalProperties:false), in the credentials and in the settings.
+func TestFormUnknownKeys(t *testing.T) {
+	assets := map[string]any{"api_key": "ark-key-12345678", "access_key": "AKLT12345678", "secret_key": "secret12345678", "asset_region": "cn-beijing"}
+	full := map[string]map[string]any{
+		AccountTypeAPIKey: withKeys(assets, map[string]any{"base_url": "https://ark.cn-beijing.volces.com", "asset_base_url": "https://ark.cn-beijing.volcengineapi.com"}),
+		AccountTypeRelay: withKeys(assets, map[string]any{
+			"base_url": "https://relay.example.com", "video_endpoint": "/api/v3/contents/generations/tasks", "asset_endpoint": "/api/support/v1/asset",
+			"api_prefix": "/api/v3", "video_api_prefix": "/doubao/api/v3", "asset_base_url": "https://relay.example.com/api/support/v1/asset",
+		}),
+	}
+	p := New()
+	for typ, base := range full {
+		in := formInput(typ, base, nil)
+		if r, err := p.ValidateCredentials(context.Background(), in); err != nil || len(r.GetErrors()) != 0 {
+			t.Errorf("%s: every schema key at once refused: %v %v", typ, r.GetErrors(), err)
+		}
+		for name, req := range map[string]*pluginv1.ValidateCredentialsRequest{
+			"credentials": formInput(typ, base, map[string]any{"legacy": "x"}),
+			"settings":    {AccountType: typ, CredentialsJson: in.GetCredentialsJson(), SettingsJson: strings.TrimSuffix(in.GetSettingsJson(), "}") + `,"legacy":"x"}`},
+		} {
+			r, err := p.ValidateCredentials(context.Background(), req)
+			if errs := r.GetErrors(); err != nil || len(errs) != 1 || errs[0].GetField() != "legacy" || errs[0].GetCode() != "unknown" {
+				t.Errorf("%s: an unknown %s key: errors = %v (%v), want legacy:unknown", typ, name, errs, err)
+			}
+		}
+	}
+}
+
+// withKeys is base with more keys.
+func withKeys(base, more map[string]any) map[string]any {
+	out := maps.Clone(base)
+	maps.Copy(out, more)
+	return out
 }

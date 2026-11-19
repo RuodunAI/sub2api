@@ -10,13 +10,11 @@
 // as the editor loaded them (the token masked) and a save does not drop the
 // token; ValidateCredentials drops it when the key file changed.
 import { computed } from 'vue'
-import { SCredentialForm, SField, SSecretInput, useCredentialForm } from '@sub2api/ui'
+import { nativeAccountFormProps, SCredentialForm, SField, SInput, SSecretInput, useCredentialForm } from '@sub2api/ui'
 import { useVertexHost } from './host'
 import { KEY_FIELD, KEY_FILE_DEFAULTS, keyFileRules, keyFileType } from './fields'
-import { accountFormProps } from './props'
-import TargetFields from './TargetFields.vue'
 
-const props = defineProps(accountFormProps)
+const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown>): void }>()
 const t = useVertexHost().t
 
@@ -24,13 +22,6 @@ const type = computed(() => keyFileType(props.accountType, props.account))
 const field = computed(() => KEY_FIELD[type.value])
 const form = useCredentialForm(props, emit, { rules: () => keyFileRules(type.value), defaults: KEY_FILE_DEFAULTS })
 defineExpose({ validate: form.validate })
-
-const project = computed(() => ({
-  label: t('project.label'),
-  hint: t(`project.help.${type.value}`),
-  placeholder: type.value === 'vertex_sa' ? t('project.fromKeyFile') : 'my-project-123456'
-}))
-const location = computed(() => ({ label: t('location.label'), hint: t('location.help'), placeholder: 'global' }))
 </script>
 
 <template>
@@ -38,6 +29,11 @@ const location = computed(() => ({ label: t('location.label'), hint: t('location
     <SField :prop="field" :label="t(`keyFile.${type}.label`)" :hint="t(`keyFile.${type}.help`)">
       <SSecretInput v-bind="form.bind(field)" :placeholder="t(`keyFile.${type}.placeholder`)" />
     </SField>
-    <TargetFields :form="form" :project="project" :location="location" />
+    <SField prop="project_id" :label="t('project.label')" :hint="t(`project.help.${type}`)">
+      <SInput v-bind="form.bind('project_id')" :placeholder="type === 'vertex_sa' ? t('project.fromKeyFile') : 'my-project-123456'" mono />
+    </SField>
+    <SField prop="location" :label="t('location.label')" :hint="t('location.help')">
+      <SInput v-bind="form.bind('location')" placeholder="global" mono />
+    </SField>
   </SCredentialForm>
 </template>

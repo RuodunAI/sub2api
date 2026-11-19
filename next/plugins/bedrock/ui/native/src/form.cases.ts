@@ -19,8 +19,7 @@ type M = Record<string, unknown>
 export interface FormCase {
   name: string
   type: 'bedrock_apikey' | 'bedrock_aksk' | 'bedrock_sts'
-  mode?: 'create' | 'edit'
-  /** The credentials the editor hands in (edit: the stored account's, secrets masked). */
+  /** Edit an account holding these credentials (secrets masked); create when absent. */
   stored?: M
   /** Typed into the controls: field -> text, or the option label of a select. */
   input?: Record<string, string>
@@ -30,11 +29,15 @@ export interface FormCase {
   schemaForm?: { out?: M; ok?: boolean; why: string }
 }
 
-/** The fields of each type, in the order of their controls. */
-export const ORDER: Record<FormCase['type'], string[]> = {
-  bedrock_apikey: ['api_key', 'region', 'inference_profile_prefix'],
-  bedrock_aksk: ['access_key_id', 'secret_access_key', 'region', 'inference_profile_prefix'],
-  bedrock_sts: ['access_key_id', 'secret_access_key', 'session_token', 'session_expires_at', 'region', 'inference_profile_prefix']
+/** The label of each field's control (fillControls). */
+export const LABELS = {
+  api_key: 'API key',
+  access_key_id: 'Access key ID',
+  secret_access_key: 'Secret access key',
+  session_token: 'Session token',
+  session_expires_at: 'Credentials expire at (optional)',
+  region: 'Region',
+  inference_profile_prefix: 'Cross-region inference prefix'
 }
 
 const DEFAULTS = { region: 'us-east-1', inference_profile_prefix: 'global' }
@@ -69,14 +72,13 @@ export const CASES: FormCase[] = [
   { name: 'aksk: region cleared (the default)', type: 'bedrock_aksk', input: { ...AKSK, region: '' }, out: { ...AKSK, ...DEFAULTS, region: '' }, ok: true },
   { name: 'aksk: upper-case region', type: 'bedrock_aksk', input: { ...AKSK, region: 'US-EAST-1' }, out: { ...AKSK, ...DEFAULTS, region: 'US-EAST-1' }, ok: false },
   { name: 'aksk: region without its number', type: 'bedrock_aksk', input: { ...AKSK, region: 'us-east' }, out: { ...AKSK, ...DEFAULTS, region: 'us-east' }, ok: false },
-  { name: 'aksk: edit, nothing changed', type: 'bedrock_aksk', mode: 'edit', stored: STORED_AKSK, out: STORED_AKSK, ok: true },
-  { name: 'aksk: edit, secret replaced', type: 'bedrock_aksk', mode: 'edit', stored: STORED_AKSK, input: { secret_access_key: 'newSecret' }, out: { ...STORED_AKSK, secret_access_key: 'newSecret' }, ok: true },
-  { name: 'aksk: edit, region changed', type: 'bedrock_aksk', mode: 'edit', stored: STORED_AKSK, input: { region: 'eu-west-3' }, out: { ...STORED_AKSK, region: 'eu-west-3' }, ok: true },
-  { name: 'aksk: edit, an unknown key goes back as it is', type: 'bedrock_aksk', mode: 'edit', stored: { ...STORED_AKSK, legacy: 'x' }, out: { ...STORED_AKSK, legacy: 'x' }, ok: true },
+  { name: 'aksk: edit, nothing changed', type: 'bedrock_aksk', stored: STORED_AKSK, out: STORED_AKSK, ok: true },
+  { name: 'aksk: edit, secret replaced', type: 'bedrock_aksk', stored: STORED_AKSK, input: { secret_access_key: 'newSecret' }, out: { ...STORED_AKSK, secret_access_key: 'newSecret' }, ok: true },
+  { name: 'aksk: edit, region changed', type: 'bedrock_aksk', stored: STORED_AKSK, input: { region: 'eu-west-3' }, out: { ...STORED_AKSK, region: 'eu-west-3' }, ok: true },
+  { name: 'aksk: edit, an unknown key goes back as it is', type: 'bedrock_aksk', stored: { ...STORED_AKSK, legacy: 'x' }, out: { ...STORED_AKSK, legacy: 'x' }, ok: true },
   {
     name: 'aksk: edit, an account stored without region and prefix',
     type: 'bedrock_aksk',
-    mode: 'edit',
     stored: { access_key_id: AKID, secret_access_key: SECRET_MASK },
     out: { access_key_id: AKID, secret_access_key: SECRET_MASK },
     ok: true,
@@ -85,7 +87,6 @@ export const CASES: FormCase[] = [
   {
     name: 'aksk: edit, a stored prefix outside the list',
     type: 'bedrock_aksk',
-    mode: 'edit',
     stored: { ...STORED_AKSK, inference_profile_prefix: 'xx' },
     out: { ...STORED_AKSK, inference_profile_prefix: 'xx' },
     ok: false,
@@ -101,7 +102,7 @@ export const CASES: FormCase[] = [
   { name: 'apikey: key with a space', type: 'bedrock_apikey', input: { api_key: 'ABSK Qmed rock' }, out: { api_key: 'ABSK Qmed rock', ...DEFAULTS }, ok: false },
   { name: 'apikey: key with a non-ASCII character', type: 'bedrock_apikey', input: { api_key: 'ABSKQmedröck' }, out: { api_key: 'ABSKQmedröck', ...DEFAULTS }, ok: false },
   { name: 'apikey: bad region', type: 'bedrock_apikey', input: { api_key: KEY, region: 'east' }, out: { api_key: KEY, ...DEFAULTS, region: 'east' }, ok: false },
-  { name: 'apikey: edit, stored key kept', type: 'bedrock_apikey', mode: 'edit', stored: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, out: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, ok: true },
+  { name: 'apikey: edit, stored key kept', type: 'bedrock_apikey', stored: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, out: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, ok: true },
 
   // ---------------------------------------------------------------- bedrock_sts
   { name: 'sts: new account, valid credentials', type: 'bedrock_sts', input: { ...AKSK, session_token: TOKEN }, out: { ...AKSK, session_token: TOKEN, ...DEFAULTS }, ok: true },
@@ -112,7 +113,6 @@ export const CASES: FormCase[] = [
   {
     name: 'sts: edit, expiry cleared (the key is not sent)',
     type: 'bedrock_sts',
-    mode: 'edit',
     stored: { ...STORED_AKSK, session_token: SECRET_MASK, session_expires_at: RFC3339 },
     input: { session_expires_at: '' },
     out: { ...STORED_AKSK, session_token: SECRET_MASK },
@@ -121,11 +121,10 @@ export const CASES: FormCase[] = [
   {
     name: 'sts: edit, a stored expiry that is not a date-time',
     type: 'bedrock_sts',
-    mode: 'edit',
     stored: { ...STORED_AKSK, session_token: SECRET_MASK, session_expires_at: 'tomorrow' },
     out: { ...STORED_AKSK, session_token: SECRET_MASK, session_expires_at: 'tomorrow' },
     ok: false,
     schemaForm: { ok: true, why: "the schema form's client check left format out; ValidateCredentials refuses it (checkExpiryHint)" }
   },
-  { name: 'sts: edit, stored secrets kept', type: 'bedrock_sts', mode: 'edit', stored: { ...STORED_AKSK, session_token: SECRET_MASK }, out: { ...STORED_AKSK, session_token: SECRET_MASK }, ok: true }
+  { name: 'sts: edit, stored secrets kept', type: 'bedrock_sts', stored: { ...STORED_AKSK, session_token: SECRET_MASK }, out: { ...STORED_AKSK, session_token: SECRET_MASK }, ok: true }
 ]

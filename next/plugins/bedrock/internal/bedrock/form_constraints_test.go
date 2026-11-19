@@ -1,16 +1,18 @@
 package bedrock
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
 
 // TestFormSchemaConstraintsStillRefused keeps every constraint of the JSON
 // Schema forms the native account form replaced (forms/{apikey,aksk,sts}
-// .schema.json, deleted with UI 4.0): for each one, an input that schema
-// refused, written out here, is still refused by ValidateCredentials at the
-// same field. The core no longer checks a schema, so this is the save's only
-// check besides the SDK's refusal of unknown keys.
+// .schema.json, deleted when the native form came in): for each one, an
+// input that schema refused, written out here, is still refused by
+// ValidateCredentials at the same field. The core no longer checks a schema,
+// so this is the save's only check, the schemas' additionalProperties:false
+// included (code "unknown").
 func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 	type input struct {
 		name            string
@@ -40,6 +42,8 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 			{"region pattern (a host)", creds, settingsOf("us-east-1.example.com", ""), fieldRegion},
 			{"inference_profile_prefix enum", creds, settingsOf("us-east-1", "cn"), fieldProfilePrefix},
 			{"inference_profile_prefix enum (with the dot)", creds, settingsOf("us-east-1", "global."), fieldProfilePrefix},
+			{"additionalProperties (credentials)", with(creds, map[string]any{"legacy": "x"}), nil, "legacy"},
+			{"additionalProperties (settings)", creds, map[string]any{"legacy": "x"}, "legacy"},
 		}
 	}
 	cases := map[string][]input{
@@ -64,10 +68,44 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 			t.Run(typ+"/"+in.name, func(t *testing.T) {
 				resp, _ := validate(t, typ, in.creds, in.settings)
 				got := fieldErrors(resp)
-				if len(got) != 1 || !strings.HasPrefix(got[0], in.field+":") {
+				if len(got) != 1 || !strings.HasPrefix(got[0], in.field+":") || (in.field == "legacy") != (got[0] == "legacy:unknown") {
 					t.Fatalf("errors = %v, want one at %s", got, in.field)
 				}
 			})
+		}
+	}
+}
+
+// TestFormSchemaKeysAccepted: every key the schema form of a type listed,
+// all submitted at once (credentials and settings split as the manifest's
+// settingsFields do), passes the unknown-key check: a key another type's
+// form sends does not.
+func TestFormSchemaKeysAccepted(t *testing.T) {
+	settings := map[string]any{fieldRegion: "us-east-1", fieldProfilePrefix: "global"}
+	cases := map[string]struct{ creds, settings map[string]any }{
+		TypeAPIKey:    {apiKeyCreds, settings},
+		TypeAccessKey: {akskCreds, settings},
+		TypeSTS:       {stsCreds, with(settings, map[string]any{fieldSessionExpiresAt: "2026-11-20T10:30:00Z"})},
+	}
+	for typ, c := range cases {
+		t.Run(typ, func(t *testing.T) {
+			if resp, _ := validate(t, typ, c.creds, c.settings); len(resp.GetErrors()) != 0 {
+				t.Fatalf("errors = %v, want none", fieldErrors(resp))
+			}
+		})
+	}
+	// A key only another type's form sends.
+	for _, c := range []struct {
+		typ   string
+		creds map[string]any
+		key   string
+	}{
+		{TypeAPIKey, with(apiKeyCreds, map[string]any{fieldSessionToken: testSessionToken}), fieldSessionToken},
+		{TypeAccessKey, with(akskCreds, map[string]any{fieldSessionToken: testSessionToken}), fieldSessionToken},
+		{TypeSTS, with(stsCreds, map[string]any{fieldAPIKey: testAPIKey}), fieldAPIKey},
+	} {
+		if resp, _ := validate(t, c.typ, c.creds, settings); !slices.Equal(fieldErrors(resp), []string{c.key + ":unknown"}) {
+			t.Errorf("%s with %s: errors = %v", c.typ, c.key, fieldErrors(resp))
 		}
 	}
 }

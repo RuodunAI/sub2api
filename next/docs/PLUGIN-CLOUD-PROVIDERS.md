@@ -101,7 +101,7 @@ Azure 上的“模型”是你自己起名的**部署**。
 
 ### 4.2 表单字段
 
-表单是插件自己的原生界面（`plugins/vertex/ui/native`：服务账号与用户凭证共用 `VertexKeyFileForm`，API Key 用 `VertexApiKeyForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。核心续期时写回的 `access_token`、`expires_at`、`token_for` 不在表单上显示，保存时原样带回。
+表单是插件自己的原生界面（`plugins/vertex/ui/native`：服务账号与用户凭证共用 `VertexKeyFileForm`，API Key 用 `createApiKeyForm` 生成的 `VertexApiKeyForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。核心续期时写回的 `access_token`、`expires_at`、`token_for` 不在表单上显示，保存时原样带回。表单没有的键保存时被拒绝（错误码 `unknown`，同原 schema 的 `additionalProperties:false`）：密钥文件类型允许密钥文件、`project_id`、`location` 和上面三个续期写回的键，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
 
 服务账号、用户凭证：
 
@@ -176,7 +176,7 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 
 ### 5.2 表单字段
 
-表单是插件自己的原生界面（`plugins/bedrock/ui/native`，三种类型共用 `BedrockAccountForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。
+表单是插件自己的原生界面（`plugins/bedrock/ui/native`，三种类型共用 `BedrockAccountForm`）：填写时即时检查下表的格式，保存时以插件的 `ValidateCredentials` 为准（核心不再按 JSON Schema 检查）。表单没有的键保存时被拒绝（错误码 `unknown`，同原 schema 的 `additionalProperties:false`）：三种类型都允许 `region`、`inference_profile_prefix`，另外 `bedrock_apikey` 允许 `api_key`，`bedrock_aksk` 允许 `access_key_id`、`secret_access_key`，`bedrock_sts` 再加 `session_token`、`session_expires_at`。
 
 各类型自己的凭证字段：
 

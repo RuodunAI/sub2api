@@ -6,6 +6,8 @@ import { ASSET_KEY, ASSET_REGION, OPTIONAL_URL } from './rules'
 // key, the official base URL, and the optional asset library fields. base_url
 // and asset_base_url are guarded settings: without account:settings:custom
 // only the official values are offered.
+const assets = { title: text('asset.section'), help: text('asset.sectionHelp') }
+
 export const ApiKeyForm = createApiKeyForm({
   apiKey: { placeholder: () => 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx', help: text('apikey.keyHelp') },
   baseUrl: {
@@ -17,7 +19,7 @@ export const ApiKeyForm = createApiKeyForm({
     {
       key: 'access_key',
       kind: 'text',
-      section: text('asset.section'),
+      section: assets,
       label: text('asset.accessKey'),
       placeholder: text('asset.accessKeyPlaceholder'),
       help: text('apikey.accessKeyHelp'),
@@ -26,7 +28,7 @@ export const ApiKeyForm = createApiKeyForm({
     {
       key: 'secret_key',
       kind: 'secret',
-      section: text('asset.section'),
+      section: assets,
       label: text('asset.secretKey'),
       placeholder: text('asset.secretKeyPlaceholder'),
       help: text('apikey.secretKeyHelp'),
@@ -35,7 +37,7 @@ export const ApiKeyForm = createApiKeyForm({
     {
       key: 'asset_base_url',
       kind: 'url',
-      section: text('asset.section'),
+      section: assets,
       presets: ['https://ark.cn-beijing.volcengineapi.com'],
       label: text('asset.baseUrl'),
       placeholder: text('apikey.assetBaseUrlPlaceholder'),
@@ -45,7 +47,7 @@ export const ApiKeyForm = createApiKeyForm({
     {
       key: 'asset_region',
       kind: 'text',
-      section: text('asset.section'),
+      section: assets,
       label: text('asset.region'),
       placeholder: text('asset.regionPlaceholder'),
       help: text('apikey.regionHelp'),

@@ -28,6 +28,7 @@ package volcengine
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +39,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
 	sdkanthropic "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	openaiprovider "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -172,7 +174,18 @@ const (
 // ("https://ark.cn-beijing.volces.com/api/v3"), while guardedSettings
 // (CONTRACTS §21.3) compares against the bare host, and the paths below add
 // the prefix themselves.
-var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBaseURL, StripSuffixes: []string{APIPrefix}}
+var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBaseURL, StripSuffixes: []string{APIPrefix}, Fields: assetKeys}
+
+// assetKeys are the asset library keys both account forms send besides
+// api_key and base_url; validateAssetFields checks them. A spec's Fields
+// also refuse every other key (code "unknown"), as the schema forms'
+// additionalProperties:false did.
+var assetKeys = fieldcheck.Fields{
+	FieldAccessKey:    fieldcheck.Any(),
+	FieldSecretKey:    fieldcheck.Any(),
+	FieldAssetBaseURL: fieldcheck.Any(),
+	FieldAssetRegion:  fieldcheck.Any(),
+}
 
 // relaySpec describes the relay account type. Two deliberate differences from
 // spec:
@@ -188,7 +201,18 @@ var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBa
 //     would become "https://r/v1/...". validateRelayBaseURL refuses that shape
 //     with a message pointing at api_prefix, which is the value that expresses
 //     it.
-var relaySpec = apikey.Spec{AccountType: AccountTypeRelay}
+//
+// Its form also sends the relay's endpoints and the legacy prefixes
+// (checked by validatePrefixFields and the endpoint checks).
+var relaySpec = apikey.Spec{AccountType: AccountTypeRelay, Fields: relayFields()}
+
+func relayFields() fieldcheck.Fields {
+	fields := maps.Clone(assetKeys)
+	for _, k := range []string{FieldVideoEndpoint, FieldAssetEndpoint, FieldAPIPrefix, FieldVideoAPIPrefix} {
+		fields[k] = fieldcheck.Any()
+	}
+	return fields
+}
 
 // specFor returns the credential spec of an account type. An empty type means
 // the official one: that is what an account row carried before the split, and

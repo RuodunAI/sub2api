@@ -86,14 +86,14 @@ func TestValidateCredentialsRejects(t *testing.T) {
 		{"api key too short", TypeAPIKey, map[string]any{fieldAPIKey: "short"}, nil, "api_key:pattern"},
 		{"api key too long", TypeAPIKey, map[string]any{fieldAPIKey: longKey}, nil, "api_key:pattern"},
 		{"api key with a space", TypeAPIKey, map[string]any{fieldAPIKey: "ABSK key with spaces"}, nil, "api_key:pattern"},
-		{"api key type given an access key", TypeAPIKey, akskCreds, nil, "api_key:required"},
+		{"api key type given an access key ID: a key its form does not send", TypeAPIKey, map[string]any{fieldAccessKeyID: testAccessKeyID}, nil, "access_key_id:unknown"},
 
 		{"access key id missing", TypeAccessKey, with(akskCreds, map[string]any{fieldAccessKeyID: nil}), nil, "access_key_id:required"},
 		{"access key id lower case", TypeAccessKey, with(akskCreds, map[string]any{fieldAccessKeyID: "akiaiosfodnn7example"}), nil, "access_key_id:pattern"},
 		{"access key id too short", TypeAccessKey, with(akskCreds, map[string]any{fieldAccessKeyID: "AKIA123"}), nil, "access_key_id:pattern"},
 		{"secret missing", TypeAccessKey, with(akskCreds, map[string]any{fieldSecretAccessKey: nil}), nil, "secret_access_key:required"},
 		{"secret with a line break", TypeAccessKey, with(akskCreds, map[string]any{fieldSecretAccessKey: "wJalr\nXUtnFEMI"}), nil, "secret_access_key:pattern"},
-		{"access key type given an api key", TypeAccessKey, apiKeyCreds, nil, "access_key_id:required"},
+		{"access key type given an api key: a key its form does not send", TypeAccessKey, apiKeyCreds, nil, "api_key:unknown"},
 
 		{"sts access key id missing", TypeSTS, with(stsCreds, map[string]any{fieldAccessKeyID: nil}), nil, "access_key_id:required"},
 		{"sts secret missing", TypeSTS, with(stsCreds, map[string]any{fieldSecretAccessKey: nil}), nil, "secret_access_key:required"},

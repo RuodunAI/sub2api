@@ -13,7 +13,7 @@ export const KEY_FIELD: Record<KeyFileType, string> = {
 }
 
 /** Project and location, empty allowed: the key file's project / the default location, or the express address. */
-const TARGET: Rules = {
+export const TARGET: Rules = {
   project_id: { pattern: /^([a-z][a-z0-9-]{4,28}[a-z0-9])?$/ },
   location: { pattern: /^([a-z0-9-]{2,32})?$/ }
 }
@@ -21,9 +21,7 @@ const TARGET: Rules = {
 /** The rules of a key file type. */
 export const keyFileRules = (type: KeyFileType): Rules => ({ [KEY_FIELD[type]]: { required: true, min: 2, max: 32768 }, ...TARGET })
 
-export const API_KEY_RULES: Rules = { api_key: { required: true, min: 8, max: 512, pattern: /^[!-~]+$/ }, ...TARGET }
-
-/** Filled into a new key file account: vertex.LocationGlobal. An API key account has no default (the express address). */
+/** Filled into a new key file account: vertex.LocationGlobal. An API key account has no default (the express address, apiKeyForm). */
 export const KEY_FILE_DEFAULTS = { location: 'global' }
 
 /** The key file type of the form (CONTRACTS §23.5: accountType, else the edited account's). */

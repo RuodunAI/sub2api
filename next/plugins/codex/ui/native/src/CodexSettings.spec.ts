@@ -1,54 +1,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
-import { provideHost, type HostContext, type PluginHost } from '@sub2api/host'
-import { SSettingsPage, type PluginSettingsForm } from '@sub2api/ui'
+import type { VueWrapper } from '@vue/test-utils'
+import { cleanup, mountSettings as mount } from '@sub2api/ui/testing'
 import CodexSettings from './CodexSettings.vue'
 import { setHost } from './host'
 
 type M = Record<string, any>
-const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
-/** A fake core for GET / PUT /plugins/codex/settings (no secrets: ui.settings.secrets is empty). */
-function fakeCore(values: M) {
-  let stored: M = clone(values)
-  const puts: M[] = []
-  const api = {
-    get: async (path: string) => {
-      expect(path).toBe('/plugins/codex/settings')
-      return { values: clone(stored) }
-    },
-    put: async (path: string, body: { values: M }) => {
-      expect(path).toBe('/plugins/codex/settings')
-      puts.push(clone(body.values))
-      stored = clone(body.values)
-      return null
-    }
-  }
-  return { api, puts }
-}
+/** CodexSettings over a fake core holding `values` (no secrets: ui.settings.secrets is empty). */
+const mountSettings = (values: M = {}, granted = ['plugin:manage']) => mount(CodexSettings, { plugin: 'codex', setHost, values, granted })
+const input = (w: VueWrapper, id: string) => w.get(`[data-testid="codex-settings-${id}"]`)
 
-let wrapper: { unmount(): void } | null = null
-async function mountSettings(values: M = {}, granted = ['plugin:manage']) {
-  const core = fakeCore(values)
-  provideHost({
-    permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) },
-    i18n: { t: (k: string) => k }
-  } as unknown as HostContext)
-  setHost({ t: (k: string) => k, plugin: { key: 'codex' }, api: core.api } as unknown as PluginHost)
-  const w = mount(CodexSettings, { attachTo: document.body })
-  wrapper = w
-  await flushPromises()
-  const settings = w.findComponent(SSettingsPage).props('settings') as PluginSettingsForm<M>
-  return { w, core, settings }
-}
-const input = (w: Awaited<ReturnType<typeof mountSettings>>['w'], id: string) => w.get(`[data-testid="codex-settings-${id}"]`)
-
-afterEach(() => {
-  wrapper?.unmount()
-  wrapper = null
-  setHost(null)
-  document.body.innerHTML = ''
-})
+afterEach(cleanup)
 
 describe('CodexSettings', () => {
   it('fills both headers empty (the built-in ones) and saves the whole value', async () => {

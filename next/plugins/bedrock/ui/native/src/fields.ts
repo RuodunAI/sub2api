@@ -36,8 +36,3 @@ export const RULES: Record<BedrockType, Rules> = {
   }
 }
 
-/** The account type of the form (CONTRACTS §23.5: accountType, else the edited account's). */
-export function typeOf(accountType?: { type?: string } | null, account?: { type?: string } | null): BedrockType {
-  const t = accountType?.type || account?.type
-  return t && t in RULES ? (t as BedrockType) : 'bedrock_apikey'
-}

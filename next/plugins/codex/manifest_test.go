@@ -65,19 +65,10 @@ func TestManifestShape(t *testing.T) {
 	if m.UI == nil || m.UI.Native == nil || m.UI.Native.Entry != "ui/native/entry.js" {
 		t.Fatalf("ui.native = %+v", m.UI)
 	}
-	// "secrets" is written out: without the key the core masks every
-	// setting (it cannot tell which are secrets).
-	var declared struct {
-		UI struct {
-			Settings map[string]json.RawMessage `json:"settings"`
-		} `json:"ui"`
-	}
-	if err := json.Unmarshal(manifestJSON, &declared); err != nil || declared.UI.Settings["secrets"] == nil {
-		t.Fatalf("ui.settings.secrets must be written out: %v", err)
-	}
 	// The settings (user_agent, originator) hold no secret: the JSON Schema
 	// form marked none, so ui.settings.secrets masks nothing.
-	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "CodexSettings" || st.Page != "" || len(st.SecretFields()) != 0 {
+	pluginsdktest.SettingsSecrets(t, manifestJSON)
+	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "CodexSettings" || st.Page != "" {
 		t.Fatalf("ui.settings = %+v", st)
 	}
 	wantCaps := []string{manifest.CapPlatformAdapter, manifest.CapPlatformWebSocket, manifest.CapHTTPRoutes}

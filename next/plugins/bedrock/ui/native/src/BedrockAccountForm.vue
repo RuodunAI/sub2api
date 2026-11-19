@@ -11,26 +11,16 @@
 // keeps it) until replaced. Every key the form does not show goes back as it
 // is.
 import { computed } from 'vue'
-import { fromLocalInput, SCredentialForm, SField, SHint, SInput, SSecretInput, SSectionTitle, SSelect, toLocalInput, useCredentialForm } from '@sub2api/ui'
-import type { AccountTypeView, ProxyTicketSource } from '@sub2api/host'
+import { nativeAccountFormProps, SCredentialForm, SDateTimeInput, SField, SFormSection, SInput, SSecretInput, SSelect, useCredentialForm } from '@sub2api/ui'
 import { useBedrockHost } from './host'
-import { DEFAULTS, PREFIXES, RULES, typeOf } from './fields'
+import { DEFAULTS, PREFIXES, RULES, type BedrockType } from './fields'
 
-const props = withDefaults(
-  defineProps<{
-    modelValue: Record<string, unknown>
-    mode?: 'create' | 'edit'
-    account?: { id: number; type: string; credentials: Record<string, unknown>; [key: string]: unknown } | null
-    accountType?: AccountTypeView | null
-    errors?: Record<string, string>
-    proxyTicket?: ProxyTicketSource
-  }>(),
-  { mode: 'create', account: null, accountType: null, errors: undefined, proxyTicket: undefined }
-)
+const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown>): void }>()
 const t = useBedrockHost().t
 
-const type = computed(() => typeOf(props.accountType, props.account))
+// CONTRACTS §23.5: accountType, else the edited account's.
+const type = computed(() => (props.accountType?.type || props.account?.type) as BedrockType)
 const signed = computed(() => type.value !== 'bedrock_apikey')
 const form = useCredentialForm(props, emit, { rules: () => RULES[type.value], defaults: DEFAULTS })
 defineExpose({ validate: form.validate })
@@ -56,36 +46,23 @@ const prefixes = computed(() => PREFIXES.map((p) => ({ value: p, label: p === 'n
         <SSecretInput v-bind="form.bind('session_token')" />
       </SField>
       <SField prop="session_expires_at" :label="t('sessionExpiresAt.label')" :hint="t('sessionExpiresAt.help')">
-        <!-- RFC 3339 in the value, local time in the box; cleared: the key is not sent. -->
-        <SInput
-          type="datetime-local"
-          :model-value="toLocalInput(form.get('session_expires_at'))"
-          @update:model-value="form.set('session_expires_at', fromLocalInput(String($event ?? '')) || undefined)"
-        />
+        <SDateTimeInput v-bind="form.bind('session_expires_at')" />
       </SField>
     </template>
 
-    <div class="bedrock-section">
-      <SSectionTitle :title="t('regionSection.title')" tag="h4" />
-      <SHint size="xs">{{ t('regionSection.description') }}</SHint>
-    </div>
-    <SField prop="region" :label="t('region.label')" :hint="t('region.help')">
-      <SInput v-bind="form.bind('region')" placeholder="us-east-1" mono />
-    </SField>
-    <SField prop="inference_profile_prefix" :label="t('prefix.label')" :hint="t('prefix.help')">
-      <!-- Picking the placeholder again leaves the key out (no null). -->
-      <SSelect
-        :model-value="form.get('inference_profile_prefix')"
-        :options="prefixes"
-        @update:model-value="form.set('inference_profile_prefix', $event ?? undefined)"
-      />
-    </SField>
+    <SFormSection :title="t('regionSection.title')" :help="t('regionSection.description')">
+      <SField prop="region" :label="t('region.label')" :hint="t('region.help')">
+        <SInput v-bind="form.bind('region')" placeholder="us-east-1" mono />
+      </SField>
+      <SField prop="inference_profile_prefix" :label="t('prefix.label')" :hint="t('prefix.help')">
+        <!-- Picking the placeholder again leaves the key out (no null). -->
+        <SSelect
+          :model-value="form.get('inference_profile_prefix')"
+          :options="prefixes"
+          @update:model-value="form.set('inference_profile_prefix', $event ?? undefined)"
+        />
+      </SField>
+    </SFormSection>
   </SCredentialForm>
 </template>
 
-<style scoped>
-.bedrock-section {
-  border-top: 1px solid rgb(var(--line));
-  padding-top: 1rem;
-}
-</style>

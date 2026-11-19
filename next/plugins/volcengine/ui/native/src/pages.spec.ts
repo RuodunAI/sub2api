@@ -152,6 +152,19 @@ describe('asset groups page', () => {
     expect(posts).toHaveLength(1)
   })
 
+  it('the account id alone stops the save: an integer of at least 1', async () => {
+    const w = await page(AssetGroupsPage)
+    await w.get('[data-testid="resource-create"]').trigger('click')
+    await flushPromises()
+    await fill('Name', 'logos')
+    await fill('Account', '0')
+    await save()
+    expect(posts).toEqual([])
+    await fill('Account', '1')
+    await save()
+    expect(posts).toHaveLength(1)
+  })
+
   it('a refused create keeps the dialog open: field errors at the field, others as a toast', async () => {
     const w = await page(AssetGroupsPage)
     await w.get('[data-testid="resource-create"]').trigger('click')
@@ -211,6 +224,23 @@ describe('assets page', () => {
     await save()
     expect(posts).toEqual([{ path: '/assets', body: { url: 'tos://bucket/cat.png', group_id: 7, name: 'cat', asset_type: 'Image' } }])
     expect(dialog()).toBeNull()
+  })
+
+  it('each length rule alone stops the save: url at most 2048, asset type at most 64', async () => {
+    const w = await page(AssetsPage)
+    await w.get('[data-testid="resource-create"]').trigger('click')
+    await flushPromises()
+    await fill('Asset group', '7')
+    await fill('URL', 'https://x/' + 'u'.repeat(2039))
+    await save()
+    expect(posts).toEqual([])
+    await fill('URL', 'https://x/' + 'u'.repeat(2038))
+    await fill('Asset type', 'a'.repeat(65))
+    await save()
+    expect(posts).toEqual([])
+    await fill('Asset type', 'a'.repeat(64))
+    await save()
+    expect(posts).toEqual([{ path: '/assets', body: { group_id: 7, url: 'https://x/' + 'u'.repeat(2038), asset_type: 'a'.repeat(64) } }])
   })
 
   it('a dialog opened again starts empty', async () => {

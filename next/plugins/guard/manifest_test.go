@@ -71,17 +71,10 @@ func TestManifest(t *testing.T) {
 	// The settings are the native GuardSettings form; the JSON Schema form it
 	// replaced marked no secret (webhook_url included), so ui.settings.secrets
 	// is written out empty: without the key the core masks every setting.
-	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GuardSettings" || st.Page != "" || len(st.SecretFields()) != 0 {
+	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GuardSettings" || st.Page != "" {
 		t.Errorf("ui.settings = %+v", st)
 	}
-	var declared struct {
-		UI struct {
-			Settings map[string]json.RawMessage `json:"settings"`
-		} `json:"ui"`
-	}
-	if err := json.Unmarshal(manifestJSON, &declared); err != nil || declared.UI.Settings["secrets"] == nil {
-		t.Errorf("ui.settings.secrets must be written out: %v", err)
-	}
+	pluginsdktest.SettingsSecrets(t, manifestJSON)
 	var patch map[string]any
 	b, err := os.ReadFile(filepath.Join("testdata", "guardtest", "manifest.patch.json"))
 	if err != nil || json.Unmarshal(b, &patch) != nil || patch["version"] != m.Version+"-test" {

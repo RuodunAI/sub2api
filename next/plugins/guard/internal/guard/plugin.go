@@ -156,17 +156,9 @@ var settingsRules = fieldcheck.Fields{
 // parseSettings decodes and checks the settings, an absent cooldown taking
 // its default: the one check of Configure and ValidateSettings.
 func parseSettings(cfg pluginsdk.Config) (*Settings, error) {
-	invalid := pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
-	var values map[string]any
-	if err := cfg.Decode(&values); err != nil {
-		return nil, invalid
-	}
-	if err := fieldcheck.Check(settingsRules, values).Err(); err != nil {
-		return nil, err
-	}
 	s := Settings{AlertCooldownSec: defaultAlertCooldownSec} // kept when the key is absent
-	if err := cfg.Decode(&s); err != nil {
-		return nil, invalid
+	if err := fieldcheck.DecodeSettings(cfg, settingsRules, &s); err != nil {
+		return nil, err
 	}
 	s.WebhookURL = strings.TrimSpace(s.WebhookURL)
 	if s.WebhookURL != "" {

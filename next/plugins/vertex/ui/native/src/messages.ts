@@ -15,7 +15,6 @@ const zh = {
     }
   },
   apiKey: {
-    label: 'API Key',
     help: 'Vertex AI 的 API Key（Google Cloud 控制台 → Vertex AI → API 密钥）。加密保存。'
   },
   project: {
@@ -55,7 +54,6 @@ const en: typeof zh = {
     }
   },
   apiKey: {
-    label: 'API key',
     help: 'A Vertex AI API key (Google Cloud console → Vertex AI → API keys). Stored encrypted.'
   },
   project: {
