@@ -8680,7 +8680,7 @@ ALTER TABLE usage_logs
 ### 121.4 模型：客户端模型在工具里
 
 - `convert.ModelLocator`（可选接口，`ModelPath() string`）：转换器把客户端模型放在上游端点 `modelPath` 以外的地方时实现它。生图转换器返回 `tools.0.model`；`addRoute` 在转换路由上用它作 `typeRoute.modelPath`，账号模型映射（`upstreamBody`）因此写进工具，顶层驱动模型不被覆盖。其他转换器不实现，行为不变。
-- 上游模型（所有者 2026-11-19：“上游返回什么就是什么”）：`upstream_model` 记上游应答回显的生图模型（Codex 后端为 `gpt-image-2-codex`）。`convert.ResponseModelLocator`（可选接口，`ResponseModelPaths() (json, sse string)`）说应答里这个模型在哪：生图转换器返回 `tools.0.model`、`response.tools.0.model`。`addRoute` 在转换路由上把上游端点用量规则里 `model` 的路径换成这两个（只换这一项，其余规则与覆盖链不变，规则复制后改，不动平台的），并标记路由 `echoModel`：读到的回显模型覆盖网关按账号映射写的上游模型（`forward`）。codex 插件在 `meta.client_protocol` 为 `openai.images`、`openai.images_edit` 时不上报上游模型（`UpstreamRequest.upstream_model` 为空），否则请求体顶层的驱动模型会覆盖回显（`dispatch.go` 的 `send`）。应答没有回显时按既有规则落下：账号映射过客户端模型时是映射后的名字，没映射时为空。回显模型只进使用记录与统计，不进任何取价路径（121.6）。
+- 上游模型（所有者 2026-11-19：“上游返回什么就是什么”）：`upstream_model` 记上游应答回显的生图模型（Codex 后端为 `gpt-image-2-codex`）。`convert.ResponseModelLocator`（可选接口，`ResponseModelPaths() (json, sse string)`）说应答里这个模型在哪：生图转换器返回 `tools.0.model`、`response.tools.0.model`。`addRoute` 在转换路由上把上游端点用量规则里 `model` 的路径换成这两个（只换这一项，其余规则与覆盖链不变，规则复制后改，不动平台的），并标记路由 `echoModel`：读到的回显模型覆盖网关按账号映射写的上游模型（`forward`；回显与客户端请求的模型同名时也记回显）。codex 插件在 `meta.client_protocol` 为 `openai.images`、`openai.images_edit` 时不上报上游模型（`UpstreamRequest.upstream_model` 为空），否则请求体顶层的驱动模型会覆盖回显（`dispatch.go` 的 `send`）。应答没有回显时按既有规则落下：账号映射过客户端模型时是映射后的名字，没映射时为空。回显模型只进使用记录与统计，不进任何取价路径（121.6）。
 
 ### 121.5 用量：上游 Responses 端点自己的规则
 

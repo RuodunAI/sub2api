@@ -87,7 +87,7 @@ func (c *call) forward(ctx context.Context, rt *typeRoute, acct *pluginv1.Accoun
 	if len(u.Metrics) > 0 {
 		c.rec.Metrics = u.Metrics
 	}
-	if (c.rec.UpstreamModel == "" || rt.echoModel) && u.Model != "" && u.Model != c.model {
+	if u.Model != "" && (rt.echoModel || c.rec.UpstreamModel == "" && u.Model != c.model) {
 		c.rec.UpstreamModel = u.Model
 	}
 	var cerr *convertError

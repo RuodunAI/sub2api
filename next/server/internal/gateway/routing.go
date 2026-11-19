@@ -282,18 +282,25 @@ func withModelPaths(rules manifest.UsageRules, rl convert.ResponseModelLocator) 
 	jsonPath, ssePath := rl.ResponseModelPaths()
 	if rules.JSON != nil {
 		j := *rules.JSON
-		j.Map = maps.Clone(j.Map)
-		j.Map[manifest.UsageModel] = jsonPath
+		j.Map = withModel(j.Map, jsonPath)
 		rules.JSON = &j
 	}
 	sse := make([]manifest.SSEUsageMap, len(rules.SSE))
 	for i, s := range rules.SSE {
-		s.Map = maps.Clone(s.Map)
-		s.Map[manifest.UsageModel] = ssePath
+		s.Map = withModel(s.Map, ssePath)
 		sse[i] = s
 	}
 	rules.SSE = sse
 	return rules
+}
+
+// withModel is a copy of a usage map (nil included) reading the model at
+// path.
+func withModel(m map[string]string, path string) map[string]string {
+	out := make(map[string]string, len(m)+1)
+	maps.Copy(out, m)
+	out[manifest.UsageModel] = path
+	return out
 }
 
 // route returns the route of an account, nil when its type cannot serve

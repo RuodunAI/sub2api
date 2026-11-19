@@ -28,8 +28,9 @@ type codexImageUpstream struct {
 	mu     sync.Mutex
 	bodies [][]byte
 	// textOnly answers with a message and no image; noEcho leaves the
-	// image model out of the response's tools.
+	// image model out of the response's tools, echo replaces it.
 	textOnly, noEcho bool
+	echo             string
 }
 
 // The tokens the upstream reports: the chat part and the image tool's.
@@ -61,7 +62,7 @@ func (u *codexImageUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	raw, _ := io.ReadAll(r.Body)
 	u.mu.Lock()
 	u.bodies = append(u.bodies, raw)
-	textOnly, noEcho := u.textOnly, u.noEcho
+	textOnly, noEcho, echo := u.textOnly, u.noEcho, u.echo
 	u.mu.Unlock()
 	if !gjson.GetBytes(raw, "stream").Bool() {
 		w.Header().Set("Content-Type", "application/json")
@@ -76,6 +77,9 @@ func (u *codexImageUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := func(status string) map[string]any {
 		tool := map[string]any{"type": "image_generation", "model": "gpt-image-2-codex", "size": "auto"}
+		if echo != "" {
+			tool["model"] = echo
+		}
 		if noEcho {
 			delete(tool, "model")
 		}
@@ -187,14 +191,15 @@ func TestCodexImages(t *testing.T) {
 func TestCodexImagesModelMapping(t *testing.T) {
 	for _, tc := range []struct {
 		mapped, noEcho bool
-		want           string
+		echo, want     string
 	}{
-		{true, false, "gpt-image-2-codex"},
-		{true, true, "gpt-image-2-alias"},
-		{false, true, ""},
+		{true, false, "", "gpt-image-2-codex"},
+		{true, false, "gpt-image-2", "gpt-image-2"}, // the echo is the client's model: still the echo
+		{true, true, "", "gpt-image-2-alias"},
+		{false, true, "", ""},
 	} {
 		e, _, up := codexImagesEnv(t)
-		up.noEcho = tc.noEcho
+		up.noEcho, up.echo = tc.noEcho, tc.echo
 		if tc.mapped {
 			e.accounts.accounts[10].ModelMapping = map[string]string{"gpt-image-2": "gpt-image-2-alias"}
 		}
@@ -268,4 +273,26 @@ func TestCodexImagesWithoutAdaptModel(t *testing.T) {
 		t.Fatal("the request went upstream")
 	}
 	e.record()
+}
+
+// modelPaths is a converter locating the response model.
+type modelPaths struct{}
+
+func (modelPaths) ResponseModelPaths() (json, sse string) {
+	return "tools.0.model", "response.tools.0.model"
+}
+
+// withModelPaths reads the model at the converter's paths on a copy, also
+// from rules whose maps are absent, and leaves the rules it was given alone.
+func TestWithModelPaths(t *testing.T) {
+	rules := manifest.UsageRules{Semantics: "inclusive", JSON: &manifest.UsageMap{},
+		SSE: []manifest.SSEUsageMap{{Event: "response.completed"}, {Event: "x", Map: map[string]string{"model": "response.model", "input_tokens": "a"}}}}
+	got := withModelPaths(rules, modelPaths{})
+	if got.JSON.Map["model"] != "tools.0.model" || got.SSE[0].Map["model"] != "response.tools.0.model" ||
+		got.SSE[1].Map["model"] != "response.tools.0.model" || got.SSE[1].Map["input_tokens"] != "a" {
+		t.Fatalf("rules %+v", got)
+	}
+	if rules.JSON.Map != nil || rules.SSE[0].Map != nil || rules.SSE[1].Map["model"] != "response.model" {
+		t.Fatalf("the given rules changed: %+v", rules)
+	}
 }
