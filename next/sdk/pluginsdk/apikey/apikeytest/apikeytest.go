@@ -45,11 +45,12 @@ type Form struct {
 	Fill           map[string]any
 }
 
-// Cases are the shared cases: each way api_key and base_url are refused,
-// any non-empty key accepted (spaces, non-ASCII, 4096 characters), the key
-// and the URL trimmed and the scheme lower-cased on save, and a base URL
-// with a /v1 or an escaped "/" saved as written. The other fields are
-// Fill's; the key cases carry the base URL.
+// Cases are the shared cases: each way api_key and base_url are refused, a
+// key the form never sends refused (code "unknown"), any non-empty key
+// accepted (spaces, non-ASCII, 4096 characters), the key and the URL trimmed
+// and the scheme lower-cased on save, and a base URL with a /v1 or an
+// escaped "/" saved as written. The other fields are Fill's; the key cases
+// carry the base URL.
 func (f Form) Cases() []Case {
 	withKey := func(key any) map[string]any { return f.with(map[string]any{"api_key": key, "base_url": f.BaseURL}) }
 	withURL := func(url any) map[string]any { return f.with(map[string]any{"api_key": f.Key, "base_url": url}) }
@@ -65,6 +66,8 @@ func (f Form) Cases() []Case {
 	}
 	missingKey := withKey(nil)
 	delete(missingKey, "api_key")
+	unknownKey := withURL(f.BaseURL)
+	unknownKey["legacy"] = "x"
 	cases := []Case{
 		refused("api_key missing", "api_key", missingKey),
 		refused("api_key empty", "api_key", withKey("")),
@@ -77,6 +80,7 @@ func (f Form) Cases() []Case {
 		refused("base_url with a query", "base_url", withURL("https://x.example.com/?a=1")),
 		refused("base_url with a fragment", "base_url", withURL("https://x.example.com/#a")),
 		refused("base_url with a space", "base_url", withURL("https://x.example.com/a b")),
+		{Name: "a key the form never sends", AccountType: f.AccountType, Creds: encode(unknownKey), Field: "legacy", Code: "unknown"},
 		accepted("api_key with a space", withKey("sk-abc def"), withKey("sk-abc def")),
 		accepted("api_key not ASCII", withKey("sk-ключ"), withKey("sk-ключ")),
 		accepted("api_key of 4096 characters", withKey(strings.Repeat("k", 4096)), nil),

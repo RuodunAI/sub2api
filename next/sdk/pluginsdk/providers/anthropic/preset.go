@@ -16,8 +16,9 @@ func APIKey(id string) standard.Type {
 		Spec: apikey.Spec{
 			DefaultBaseURL: "https://api.anthropic.com",
 			Versions:       []string{"/v1"},
-			// The non-string key keeps code "pattern" and this wording: the
-			// frozen golden cases ("validate non-string key") pin them.
+			// The non-string key keeps the recorded code "pattern"; the
+			// wording is openai's, written into the golden case ("validate
+			// non-string key", with its note) when the 8-512 rule went.
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 				KeyNotString:           "API key must be a string / api_key 必须是字符串",

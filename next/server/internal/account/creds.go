@@ -157,6 +157,8 @@ func addressChanged(b, old []byte, at manifest.AccountType) bool {
 
 // addressValue is the comparison form of field f of b: strings after
 // guardNorm, other values compacted; absent, null and "" are all "".
+// Versions are not applied: a value differing only by a version segment is a
+// changed address.
 func addressValue(b []byte, f string) string {
 	r := gjson.GetBytes(b, f)
 	if r.Type != gjson.JSON {
@@ -375,17 +377,20 @@ func checkGuarded(ctx context.Context, guards []manifest.GuardedSetting, setting
 // guardNorm is the comparison form of a guarded value: trimmed, without
 // trailing slashes, and (when it parses as an absolute URL) with lower-case
 // scheme and host and without one of versions ending the path
-// (manifest.TrimVersion).
+// (manifest.TrimVersion) and the "/" left before it, as the SDK's request
+// root.
 // The version is looked for after the trailing slashes are gone, so
-// "https://API.example.com/v1/" compares as "https://api.example.com".
+// "https://API.example.com/v1/" compares as "https://api.example.com", and
+// "https://x//v1" as "https://x".
 func guardNorm(v string, versions []string) string {
 	v = strings.TrimRight(strings.TrimSpace(v), "/")
 	if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
-		if p := manifest.TrimVersion(u.EscapedPath(), versions); p != u.EscapedPath() {
-			u.RawPath = p
-			u.Path, _ = url.PathUnescape(p) // p is a prefix of a valid escaped path
+		esc := u.EscapedPath()
+		if p := manifest.TrimVersion(esc, versions); p != esc {
+			u.RawPath = strings.TrimRight(p, "/")
+			u.Path, _ = url.PathUnescape(u.RawPath) // a prefix of a valid escaped path
 		}
 		return u.String()
 	}

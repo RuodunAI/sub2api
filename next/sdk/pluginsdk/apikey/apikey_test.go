@@ -153,12 +153,18 @@ func TestFromAccountRoot(t *testing.T) {
 		{azure, "https://x.example/openai", "https://x.example"},
 		{azure, "https://x.example/api/projects/a%2Fb", "https://x.example/api/projects/a%2Fb"},
 		{nil, "https://x.example/v1", "https://x.example/v1"},
+		// The host is never taken for a version segment.
+		{[]string{"/v1"}, "http://v1", "http://v1"},
+		{gemini, "http://v1beta", "http://v1beta"},
+		{[]string{"/api/v3"}, "http://api/v3", "http://api/v3"},
+		{azure, "https://openai/v1", "https://openai/v1"},
+		{azure, "https://openai", "https://openai"},
 	} {
 		if got := fromAccount(t, c.versions, c.stored); got != c.root {
 			t.Errorf("%v %q: root %q, want %q", c.versions, c.stored, got, c.root)
 		}
 	}
-	// The default base URL is used as it is.
+	// The default base URL goes through the same rule; none ends in a version.
 	cfg, err := Spec{AccountType: "apikey", DefaultBaseURL: "https://api.example.com", Versions: gemini}.FromAccount(&pluginv1.Account{CredentialsJson: `{"api_key":" k "}`})
 	if err != nil || cfg.BaseURL != "https://api.example.com" || cfg.APIKey != "k" {
 		t.Fatalf("default = %+v %v", cfg, err)
@@ -168,7 +174,8 @@ func TestFromAccountRoot(t *testing.T) {
 // oldNormalizeBaseURL is the base URL rule before 2026-11-20, kept here only
 // as the reference of TestStoredBaseURLsKeepTheirRequests: it stripped the
 // first of stripSuffixes the path ended in and cleared RawPath (decoding
-// "%2F"). It ran on save, and again on every request.
+// "%2F"). It ran on save, and again on every request. Delete it with that
+// test once core 0.1.304 is released.
 func oldNormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error) {
 	baseStr = strings.TrimSpace(baseStr)
 	if baseStr == "" || strings.ContainsFunc(baseStr, unicode.IsSpace) || strings.ContainsAny(baseStr, "?#") {
@@ -191,10 +198,10 @@ func oldNormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error)
 }
 
 // TestStoredBaseURLsKeepTheirRequests: every base URL saved under the old
-// rule goes to the same address under the new one, for every account
-// type's versions and route (design 2026-11-20 §6.5). The old request was
-// old(S) + P on the stored S = old(input); the new one is the root
-// FromAccount takes from S, + P.
+// rule gives the same request root under the new one, for every account
+// type's versions (design 2026-11-20 §6.5). The old root was old(S) on the
+// stored S = old(input); the new one is the root FromAccount takes from S.
+// Every route is appended to that root, so equal roots are equal requests.
 func TestStoredBaseURLsKeepTheirRequests(t *testing.T) {
 	versions := [][]string{
 		nil,                       // volcengine relay
@@ -203,19 +210,17 @@ func TestStoredBaseURLsKeepTheirRequests(t *testing.T) {
 		{"/openai/v1", "/openai"}, // azure_v1, azure_deployment
 		{"/api/v3"},               // volcengine apikey
 	}
-	routes := []string{
-		"/v1/chat/completions", "/v1/messages", "/v1/models?limit=1000", "/v1/systemone", "/v1/usage",
-		"/v1beta/models/m:generateContent", "/v1beta/models?pageSize=1000", "/api/usage/token/",
-		"/openai/v1/chat/completions", "/openai/deployments/d/chat/completions?api-version=V",
-		"/api/v3/chat/completions", "/api/compatible/v1/messages",
-	}
 	paths := []string{
 		"", "/", "/v1", "/v1/", "/v1/v1", "/v1/v1beta", "/v1beta", "/v1beta/v1", "/v1beta/v1beta", "/V1", "/xv1",
 		"/proxy", "/proxy/v1", "/proxy/v1beta/", "/p/a%2Fb", "/a%2Fv1", "/a%2Fv1/v1", "/a%7Eb/v1", "/%76%31", "/ключ/v1",
 		"/openai", "/openai/v1", "/openai/v1/openai/v1", "/openai/openai", "/api/projects/openai", "/api/projects/p/openai/v1",
-		"/api/v3", "/api/v3/", "/api/v3/api/v3", "//v1", "//v1//v1", "/v1//v1", "/a%20b/v1",
+		"/api/v3", "/api/v3/", "/api/v3/api/v3", "//v1", "//v1//v1", "/v1//v1", "/a%20b/v1", "/v3",
 	}
-	for _, host := range []string{"https://x.example", "HTTP://127.0.0.1:8080", "https://[::1]:8443", "https://x%C2%A0y.example"} {
+	hosts := []string{
+		"https://x.example", "HTTP://127.0.0.1:8080", "https://[::1]:8443", "https://x%C2%A0y.example",
+		"http://v1", "http://v1beta", "https://openai", "http://api",
+	}
+	for _, host := range hosts {
 		for _, path := range paths {
 			for _, l := range versions {
 				stored, err := oldNormalizeBaseURL(host+path, l)
@@ -223,11 +228,8 @@ func TestStoredBaseURLsKeepTheirRequests(t *testing.T) {
 					t.Fatalf("%q: %v", host+path, err)
 				}
 				before, _ := oldNormalizeBaseURL(stored, l)
-				after := fromAccount(t, l, stored)
-				for _, p := range routes {
-					if before+p != after+p {
-						t.Errorf("%v: input %q stored %q: %q before, %q now", l, host+path, stored, before+p, after+p)
-					}
+				if after := fromAccount(t, l, stored); before != after {
+					t.Errorf("%v: input %q stored %q: %q before, %q now", l, host+path, stored, before, after)
 				}
 			}
 		}

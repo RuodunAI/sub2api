@@ -2,8 +2,7 @@
 // native settings or account form shows in the console (required, length,
 // pattern, bounds, enum) written once more in Go, where they are final
 // (PluginService.ValidateSettings, PlatformService.ValidateCredentials).
-// Every key the rules do not name is refused, as additionalProperties:false
-// did in the JSON Schema forms this replaces.
+// Every key the rules do not name is refused.
 //
 // Declare the rules once, as a package variable (patterns compile when the
 // rule is built), and check the decoded object:

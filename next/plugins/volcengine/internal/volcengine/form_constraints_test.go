@@ -10,17 +10,17 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
-// The account forms are native code (ui/native), so nothing on the way in
-// checks the constraints the old JSON Schema forms carried. These tests pin
-// that ValidateCredentials refuses one counterexample of each of them. The
-// constraints are written out here, not read from the deleted schema files.
+// The account forms are native code (ui/native) and the core checks nothing
+// else on save, so ValidateCredentials is the only check of the credential
+// constraints. These tests pin that it refuses one counterexample of each,
+// written out here.
 //
 // The core splits the form's object by the type's settingsFields before it
 // calls ValidateCredentials (server account/creds.go prepare), and so do these
 // tests.
 
-// rejectCase is one input the old schema refused: base with `set` applied
-// (a nil value deletes the key), refused at `field`.
+// rejectCase is one input ValidateCredentials refuses: base with `set`
+// applied (a nil value deletes the key), refused at `field`.
 type rejectCase struct {
 	name  string
 	set   map[string]any
@@ -74,7 +74,7 @@ func assertRefused(t *testing.T, accountType string, base map[string]any, cases 
 			fields = append(fields, e.GetField())
 		}
 		if len(fields) == 0 {
-			t.Errorf("%s %s: accepted, the old form refused it", accountType, c.name)
+			t.Errorf("%s %s: accepted, want refused", accountType, c.name)
 		} else if !strings.Contains(","+strings.Join(fields, ",")+",", ","+c.field+",") {
 			t.Errorf("%s %s: refused at %v, want %s", accountType, c.name, fields, c.field)
 		}
@@ -114,8 +114,8 @@ var apiKeyCases = []rejectCase{
 	{"api_key not a string", map[string]any{"api_key": 12345678}, "api_key"},
 }
 
-// acceptedKeys are api_key values the old forms refused and both types now
-// accept: any non-empty string.
+// acceptedKeys are api_key values both types accept: any non-empty string,
+// whatever its length or characters.
 var acceptedKeys = []string{"1234567", strings.Repeat("k", 4096), "ark key 12345678", "ark-密钥-12345678"}
 
 // assertKeysAccepted checks that each of acceptedKeys on base is accepted.
@@ -201,9 +201,9 @@ func TestRelayFormConstraints(t *testing.T) {
 	}
 }
 
-// TestFormUnknownKeys: each type takes every key its schema form listed,
-// all at once, and refuses any other (code "unknown", the schemas'
-// additionalProperties:false), in the credentials and in the settings.
+// TestFormUnknownKeys: each type takes every key its form sends, all at
+// once, and refuses any other (code "unknown"), in the credentials and in the
+// settings.
 func TestFormUnknownKeys(t *testing.T) {
 	assets := map[string]any{"api_key": "ark-key-12345678", "access_key": "AKLT12345678", "secret_key": "secret12345678", "asset_region": "cn-beijing"}
 	full := map[string]map[string]any{
@@ -217,7 +217,7 @@ func TestFormUnknownKeys(t *testing.T) {
 	for typ, base := range full {
 		in := formInput(typ, base, nil)
 		if r, err := p.ValidateCredentials(context.Background(), in); err != nil || len(r.GetErrors()) != 0 {
-			t.Errorf("%s: every schema key at once refused: %v %v", typ, r.GetErrors(), err)
+			t.Errorf("%s: every form key at once refused: %v %v", typ, r.GetErrors(), err)
 		}
 		for name, req := range map[string]*pluginv1.ValidateCredentialsRequest{
 			"credentials": formInput(typ, base, map[string]any{"legacy": "x"}),

@@ -27,7 +27,6 @@ func TestCases(t *testing.T) {
 	spec := apikey.Spec{AccountType: "relay", RequireBaseURL: true, Fields: fieldcheck.Fields{"api_version": fieldcheck.String().Required()}}
 	apikeytest.Run(t, validate(spec), append(required.Cases(),
 		apikeytest.Case{Name: "api_version missing", AccountType: "relay", Creds: `{"api_key":"sk-abcdefgh","base_url":"http://relay.example.com"}`, Field: "api_version", Code: "required"},
-		apikeytest.Case{Name: "unknown key", AccountType: "relay", Creds: `{"api_key":"sk-abcdefgh","base_url":"http://relay.example.com","api_version":"v","x":1}`, Field: "x", Code: "unknown"},
 	))
 }
 

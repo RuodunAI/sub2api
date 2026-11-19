@@ -7,9 +7,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
-// The create dialogs of the asset pages are native code, so the limits the
-// old form schemas (asset-group, asset) carried are pinned here: each one
-// refused, the boundary accepted. Written out, not read from the schemas.
+// The create dialogs of the asset pages are native code and the routes are
+// the only check of what they send, so each limit of the create bodies is
+// pinned here: each one refused, the boundary accepted.
 func TestCreateBodyChecks(t *testing.T) {
 	group := createGroupBody{AccountID: 1, Name: strings.Repeat("名", 128), Title: strings.Repeat("t", 256), Description: strings.Repeat("d", 1024), GroupType: strings.Repeat("g", 64)}
 	if errs := group.check(); len(errs) != 0 {

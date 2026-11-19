@@ -118,8 +118,10 @@ func TestCheckSettingsAcceptsTheDefaults(t *testing.T) {
 	}
 }
 
-// Every constraint of the settings form, one value it refused: still refused.
-func TestCheckSettingsRefusesWhatTheFormRefused(t *testing.T) {
+// TestCheckSettingsRefusals: a key settingsRules does not list (retired ones
+// included) and one value breaking each of its rules, each refused at its
+// key with its code.
+func TestCheckSettingsRefusals(t *testing.T) {
 	type tc struct {
 		key   string
 		value string // JSON

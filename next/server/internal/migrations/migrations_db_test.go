@@ -1234,10 +1234,10 @@ func TestMigration0114AccountBalanceUnitText(t *testing.T) {
 }
 
 // 0117 removes the growth plugin (CONTRACTS §125) as an uninstall with
-// purge would: its row (cascading the versions, rollouts and plugin
-// migration records), its permissions (removed ones included) and their
-// grants, its egress domains, job tasks and its schema. The other plugins
-// stay; a rerun changes nothing.
+// purge would: its row (cascading the versions and rollouts), its migration
+// records, its permissions (removed ones included) and their grants, its
+// egress domains, job tasks and its schema. The other plugins stay; a rerun
+// changes nothing.
 func TestMigration0117DropsGrowthPlugin(t *testing.T) {
 	const id = "0117_drop_growth_plugin.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))

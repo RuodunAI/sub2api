@@ -15,9 +15,9 @@ import (
 // required, any non-empty key; base_url an http(s) URL without whitespace,
 // query or fragment that matches EndpointPattern once normalized;
 // azure_deployment also api_version, required, matching APIVersionPattern;
-// no other key) hold in ValidateCredentials, which is final: the core no
-// longer checks a schema. The shared api_key + base_url cases of both
-// types, then each type's own.
+// no other key) hold in ValidateCredentials, which is final: the core
+// checks nothing else. The shared api_key + base_url cases of both types,
+// then each type's own.
 func TestCredentialsRefused(t *testing.T) {
 	const key, endpoint = "0123456789abcdef", "https://res.openai.azure.com"
 	v1 := apikeytest.Form{AccountType: TypeV1, Key: key, BaseURL: endpoint, RequireBaseURL: true}
@@ -36,7 +36,6 @@ func TestCredentialsRefused(t *testing.T) {
 	}
 	apikeytest.Run(t, New().ValidateCredentials, append(cases,
 		apikeytest.Case{Name: "api_version, a key of azure_deployment only", AccountType: TypeV1, Creds: `{"api_key": "` + key + `", "base_url": "` + endpoint + `", "api_version": "2024-10-21"}`, Field: "api_version", Code: "unknown"},
-		deploymentCase("a key the form never sends", `, "api_version": "2024-10-21", "legacy": "x"`, "legacy", "unknown"),
 		deploymentCase("api_version missing", ``, "api_version", "required"),
 		deploymentCase("api_version empty", `, "api_version": ""`, "api_version", "required"),
 		deploymentCase("api_version not a string", `, "api_version": 20241021`, "api_version", ""),

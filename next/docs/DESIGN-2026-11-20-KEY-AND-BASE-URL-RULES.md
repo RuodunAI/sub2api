@@ -5,7 +5,8 @@
 实现与本文的出入（以实现为准）：
 - 第 11 节各问题的取舍：Q0 选方案 B；Q2 bedrock 的 `api_key` 一起放开；Q3 用 7.1 做法一（manifest 的 `guardedSettings[].versions`），这是按建议先做的，所有者尚未明确确认；Q1、Q6、Q7 按建议写定；Q4、Q5、Q8、Q9、Q10 在方案 B 下不存在；Q11 按建议接受，已写进 CONTRACTS §127。
 - 5.2 第 3 步：scheme 和 host 由 `url.URL{Scheme, Host}.String()` 输出，再接 `EscapedPath()` 去掉末尾 `/` 的结果（`url.Parse` 已把 scheme 转成小写，host 保持用户写的样子）。结果与本文“小写 scheme + `://` + `u.Host`”相同，只是写法不同。
-- 5.5 第 3 步：去掉版本段之后，还要再去一次剩下的末尾 `/`（旧存值 `https://x//v1` 的等价性需要）。核心的受限地址比较（`server/internal/account/creds.go` 的 `guardNorm`）去掉版本段后**不**再去末尾 `/`，与 SDK 不同，见 CONTRACTS §21.3。
+- 5.5 第 3 步：去掉版本段之后，还要再去一次剩下的末尾 `/`（旧存值 `https://x//v1` 的等价性需要）。核心的受限地址比较（`server/internal/account/creds.go` 的 `guardNorm`）同样再去一次，与 SDK 相同；两边都调 `manifest.TrimVersion`，只在路径上找版本段，不碰 scheme 和主机（`http://v1`、`http://api/v3` 的根是它们本身，6.5 的论证依赖这一点），见 CONTRACTS §21.3。
+- 7.1 做法一之外：核心判断地址是否改动（`creds.go` 的 `addressValue`，决定是否要重新输入密钥、是否需要 `account:relay`）不认版本段，只差一个版本段也算改了地址（CONTRACTS §21.3）。
 - 第 8 节：`@sub2api/ui` 没有为 `createApiKeyForm` 的默认规则另升小版本，因为同一批改动里界面包已升到未发布的 4.0.0。
 - 第 9 节：gemini 的 `execute` 类 golden 不变（改成 `…/v1/v1beta` 是方案 A 的结论）；方案 B 只改了 validate 类。第 9 节说 anthropic、relay、typesafe、gemini、newapi、sub2api 的 `credentials_test.go` 有 8–512 用例要改，实际这些测试跟随公共助手 `apikeytest` 后都通过。
 - 第 12 节：“含去后缀”那句实际在 CONTRACTS §75.1，不在 §112。

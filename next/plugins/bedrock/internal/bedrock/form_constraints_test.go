@@ -6,17 +6,13 @@ import (
 	"testing"
 )
 
-// TestFormSchemaConstraintsStillRefused keeps every constraint of the JSON
-// Schema forms the native account form replaced (forms/{apikey,aksk,sts}
-// .schema.json, deleted when the native form came in): for each one, an
-// input that schema refused, written out here, is still refused by
-// ValidateCredentials at the same field. The core no longer checks a schema,
-// so this is the save's only check, the schemas' additionalProperties:false
-// included (code "unknown"). The api_key's minLength 8, maxLength 2048 and
-// visible ASCII pattern are gone on purpose (any non-blank key,
-// DESIGN-2026-11-20 §5.1); TestValidateCredentialsAccepts checks those keys
-// are accepted.
-func TestFormSchemaConstraintsStillRefused(t *testing.T) {
+// TestCredentialConstraintsRefused: for every constraint ValidateCredentials
+// puts on a field, an input breaking it, written out here, is refused at that
+// field, and a key the type's form does not send is refused with code
+// "unknown". The core checks nothing else on save. The api_key takes any
+// non-blank string (DESIGN-2026-11-20 §5.1); TestValidateCredentialsAccepts
+// checks such keys are accepted.
+func TestCredentialConstraintsRefused(t *testing.T) {
 	type input struct {
 		name            string
 		creds, settings map[string]any
@@ -26,41 +22,41 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 	accessKey := func(base map[string]any) []input {
 		return []input{
 			{"access_key_id required", with(base, map[string]any{fieldAccessKeyID: nil}), nil, fieldAccessKeyID},
-			{"access_key_id type string", with(base, map[string]any{fieldAccessKeyID: 1234567890123456}), nil, fieldAccessKeyID},
-			{"access_key_id pattern (lower case)", with(base, map[string]any{fieldAccessKeyID: "akiaiosfodnn7example"}), nil, fieldAccessKeyID},
-			{"access_key_id pattern (15 characters)", with(base, map[string]any{fieldAccessKeyID: "AKIA12345678901"}), nil, fieldAccessKeyID},
-			{"access_key_id pattern (129 characters)", with(base, map[string]any{fieldAccessKeyID: strings.Repeat("A", 129)}), nil, fieldAccessKeyID},
+			{"access_key_id not a string", with(base, map[string]any{fieldAccessKeyID: 1234567890123456}), nil, fieldAccessKeyID},
+			{"access_key_id in lower case", with(base, map[string]any{fieldAccessKeyID: "akiaiosfodnn7example"}), nil, fieldAccessKeyID},
+			{"access_key_id of 15 characters", with(base, map[string]any{fieldAccessKeyID: "AKIA12345678901"}), nil, fieldAccessKeyID},
+			{"access_key_id of 129 characters", with(base, map[string]any{fieldAccessKeyID: strings.Repeat("A", 129)}), nil, fieldAccessKeyID},
 			{"secret_access_key required", with(base, map[string]any{fieldSecretAccessKey: nil}), nil, fieldSecretAccessKey},
-			{"secret_access_key minLength 1", with(base, map[string]any{fieldSecretAccessKey: ""}), nil, fieldSecretAccessKey},
-			{"secret_access_key maxLength 1024", with(base, map[string]any{fieldSecretAccessKey: strings.Repeat("s", 1025)}), nil, fieldSecretAccessKey},
-			{"secret_access_key pattern (space)", with(base, map[string]any{fieldSecretAccessKey: "wJalr XUtn"}), nil, fieldSecretAccessKey},
-			{"secret_access_key pattern (non-ASCII)", with(base, map[string]any{fieldSecretAccessKey: "wJalrXUtné"}), nil, fieldSecretAccessKey},
+			{"secret_access_key empty", with(base, map[string]any{fieldSecretAccessKey: ""}), nil, fieldSecretAccessKey},
+			{"secret_access_key over 1024 characters", with(base, map[string]any{fieldSecretAccessKey: strings.Repeat("s", 1025)}), nil, fieldSecretAccessKey},
+			{"secret_access_key with a space", with(base, map[string]any{fieldSecretAccessKey: "wJalr XUtn"}), nil, fieldSecretAccessKey},
+			{"secret_access_key with non-ASCII", with(base, map[string]any{fieldSecretAccessKey: "wJalrXUtné"}), nil, fieldSecretAccessKey},
 		}
 	}
 	// Constraints of the settings every type shares.
 	settings := func(creds map[string]any) []input {
 		return []input{
-			{"region pattern (upper case)", creds, settingsOf("US-EAST-1", ""), fieldRegion},
-			{"region pattern (no number)", creds, settingsOf("us-east", ""), fieldRegion},
-			{"region pattern (a host)", creds, settingsOf("us-east-1.example.com", ""), fieldRegion},
-			{"inference_profile_prefix enum", creds, settingsOf("us-east-1", "cn"), fieldProfilePrefix},
-			{"inference_profile_prefix enum (with the dot)", creds, settingsOf("us-east-1", "global."), fieldProfilePrefix},
-			{"additionalProperties (credentials)", with(creds, map[string]any{"legacy": "x"}), nil, "legacy"},
-			{"additionalProperties (settings)", creds, map[string]any{"legacy": "x"}, "legacy"},
+			{"region in upper case", creds, settingsOf("US-EAST-1", ""), fieldRegion},
+			{"region without a number", creds, settingsOf("us-east", ""), fieldRegion},
+			{"region is a host", creds, settingsOf("us-east-1.example.com", ""), fieldRegion},
+			{"inference_profile_prefix not listed", creds, settingsOf("us-east-1", "cn"), fieldProfilePrefix},
+			{"inference_profile_prefix with the dot", creds, settingsOf("us-east-1", "global."), fieldProfilePrefix},
+			{"unknown key (credentials)", with(creds, map[string]any{"legacy": "x"}), nil, "legacy"},
+			{"unknown key (settings)", creds, map[string]any{"legacy": "x"}, "legacy"},
 		}
 	}
 	cases := map[string][]input{
 		TypeAPIKey: append([]input{
 			{"api_key required", map[string]any{}, nil, fieldAPIKey},
-			{"api_key type string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey},
+			{"api_key not a string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey},
 		}, settings(apiKeyCreds)...),
 		TypeAccessKey: append(accessKey(akskCreds), settings(akskCreds)...),
 		TypeSTS: append(append(accessKey(stsCreds),
 			input{"session_token required", with(stsCreds, map[string]any{fieldSessionToken: nil}), nil, fieldSessionToken},
-			input{"session_token minLength 1", with(stsCreds, map[string]any{fieldSessionToken: ""}), nil, fieldSessionToken},
-			input{"session_token maxLength 8192", with(stsCreds, map[string]any{fieldSessionToken: strings.Repeat("t", 8193)}), nil, fieldSessionToken},
-			input{"session_token pattern (line break)", with(stsCreds, map[string]any{fieldSessionToken: "IQoJ\nb3Jp"}), nil, fieldSessionToken},
-			input{"session_expires_at format date-time", stsCreds, map[string]any{fieldSessionExpiresAt: "2026-11-20 10:30"}, fieldSessionExpiresAt},
+			input{"session_token empty", with(stsCreds, map[string]any{fieldSessionToken: ""}), nil, fieldSessionToken},
+			input{"session_token over 8192 characters", with(stsCreds, map[string]any{fieldSessionToken: strings.Repeat("t", 8193)}), nil, fieldSessionToken},
+			input{"session_token with a line break", with(stsCreds, map[string]any{fieldSessionToken: "IQoJ\nb3Jp"}), nil, fieldSessionToken},
+			input{"session_expires_at not a date and time", stsCreds, map[string]any{fieldSessionExpiresAt: "2026-11-20 10:30"}, fieldSessionExpiresAt},
 		), settings(stsCreds)...),
 	}
 	for typ, inputs := range cases {
@@ -76,11 +72,11 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 	}
 }
 
-// TestFormSchemaKeysAccepted: every key the schema form of a type listed,
-// all submitted at once (credentials and settings split as the manifest's
-// settingsFields do), passes the unknown-key check: a key another type's
-// form sends does not.
-func TestFormSchemaKeysAccepted(t *testing.T) {
+// TestFormKeysAccepted: every key the form of a type sends, all submitted
+// at once (credentials and settings split as the manifest's settingsFields
+// do), passes the unknown-key check; a key only another type's form sends
+// does not.
+func TestFormKeysAccepted(t *testing.T) {
 	settings := map[string]any{fieldRegion: "us-east-1", fieldProfilePrefix: "global"}
 	cases := map[string]struct{ creds, settings map[string]any }{
 		TypeAPIKey:    {apiKeyCreds, settings},
