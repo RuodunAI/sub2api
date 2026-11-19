@@ -25,8 +25,12 @@ const failure = ref('')
 // 'session': the exchange failed because the session is gone (expired, or
 // the consent was denied); only a new link helps.
 const failedStep = ref<'' | 'start' | 'exchange' | 'session'>('')
-/** Exchange refusals that end the session (the plugin's error codes). */
-const SESSION_GONE = new Set(['session_expired', 'access_denied', 'proxy_refused'])
+/**
+ * Exchange refusals that end the session (the plugin's error codes). A
+ * proxy_refused keeps it: completing again sends the next call with a fresh
+ * ticket of the form's proxy.
+ */
+const SESSION_GONE = new Set(['session_expired', 'access_denied'])
 const shape = computed(() => callbackShape(callback.value))
 const shapeHint = computed(() => (shape.value === 'invalid' || shape.value === 'denied' || shape.value === 'no_code' ? t(`oauth.shape.${shape.value}`) : ''))
 // A failed exchange is stale once the operator pastes another address.

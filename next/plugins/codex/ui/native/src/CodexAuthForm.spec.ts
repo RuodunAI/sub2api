@@ -265,20 +265,22 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     })
   }
 
-  it('keeps a plain exchange error without a new-link button', async () => {
-    answer = (path) => {
-      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
-      return new ApiError(400, { code: 'state_mismatch', message: 'state mismatch' })
-    }
-    const w = mountForm({ accountType: { type: 'codex_oauth' } })
-    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
-    await flushPromises()
-    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
-    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
-    await flushPromises()
-    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('state mismatch')
-    expect(w.find('[data-testid="codex-oauth-retry"]').exists()).toBe(false)
-  })
+  for (const code of ['state_mismatch', 'proxy_refused']) {
+    it(`keeps a plain exchange error (${code}) without a new-link button`, async () => {
+      answer = (path) => {
+        if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
+        return new ApiError(400, { code, message: `${code} message` })
+      }
+      const w = mountForm({ accountType: { type: 'codex_oauth' } })
+      await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+      await flushPromises()
+      await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+      await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
+      await flushPromises()
+      expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain(`${code} message`)
+      expect(w.find('[data-testid="codex-oauth-retry"]').exists()).toBe(false)
+    })
+  }
 })
 
 describe('CodexAuthForm: editing', () => {

@@ -140,9 +140,11 @@ func sendFailed(err error) *pluginv1.HTTPResponse {
 	return flowError("proxy_refused", refusedMessage(err))
 }
 
-// refusedMessage is the text of a request the core would not send.
+// refusedMessage is the text of a request the core would not send. Nothing
+// reached OpenAI: the next call, with a fresh ticket of the form's proxy,
+// may go through.
 func refusedMessage(err error) string {
-	return "the core refused to send the request through the account form's proxy, start again / 核心拒绝经账号表单的代理发送请求，请重新开始: " + status.Convert(err).Message()
+	return "the core refused to send the request through the account form's proxy; check the proxy and try again / 核心拒绝经账号表单的代理发送请求，请检查代理后重试: " + status.Convert(err).Message()
 }
 
 func (a authAnswer) ok() bool { return a.status >= 200 && a.status <= 299 }
@@ -577,9 +579,9 @@ func (p *Plugin) pollDevice(ctx context.Context, req *pluginv1.HTTPRequest, id, 
 		return pending("cannot reach the OpenAI authorization server, retrying / 暂时无法连接 OpenAI 授权服务器，稍后重试")
 	}
 	if err != nil {
-		// The core will not send it (the proxy is no longer the caller's to
-		// use, ...): asking again cannot help.
-		p.deleteSession(ctx, kvDevice, id)
+		// The core would not send it (the form's proxy, the host): nothing
+		// reached OpenAI and the device code is unspent, so the session
+		// stays; the next poll carries a fresh ticket of the form's proxy.
 		p.log.Warn("codex: device code status request refused by the core", "error", status.Convert(err).Message())
 		return pollFailed(refusedMessage(err))
 	}
@@ -766,8 +768,8 @@ func (p *Plugin) handleCodexExchange(ctx context.Context, req *pluginv1.HTTPRequ
 	}
 	c, f := p.redeemCode(ctx, "Sign in with Codex", ticket, cb.Code, s.Verifier, CodexRedirectURI)
 	if f != nil && f.code == "proxy_refused" {
-		// The core will not send it through the form's proxy: start again.
-		p.deleteSession(ctx, kvCodex, id)
+		// Nothing reached OpenAI and the code is unspent: the session stays,
+		// and the next call carries a fresh ticket of the form's proxy.
 		return flowError(f.code, f.msg), nil
 	}
 	if f != nil {
