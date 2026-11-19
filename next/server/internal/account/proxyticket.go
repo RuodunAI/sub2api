@@ -21,7 +21,8 @@ import (
 // ProxyChoice is the proxy an account not saved yet would use, as the
 // account form sends it (models/fetch, proxy-ticket): an existing proxy, a
 // pasted proxy URL - only parsed and used, never looked up or stored
-// (CONTRACTS §21.2) - or neither, a direct connection.
+// (CONTRACTS §21.2), though models/fetch hands it to the plugin as
+// Account.proxy with id 0 (§124.2) - or neither, a direct connection.
 type ProxyChoice struct {
 	ProxyID  *int64  `json:"proxy_id,omitempty"`
 	ProxyURL *string `json:"proxy_url,omitempty"`

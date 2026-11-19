@@ -308,6 +308,13 @@ func TestTypeModelsFetchCarriesTheFormProxy(t *testing.T) {
 			p.GetId(), p.GetHost(), p.GetPort(), p.GetUsername(), p.GetPassword() == password, hits.Load())
 	}
 
+	if code, _ := fetch(map[string]any{"proxy_url": "ftp://x:1"}); code == http.StatusOK || hits.Load() != 2 {
+		t.Fatalf("invalid pasted proxy: %d, proxy hits %d", code, hits.Load())
+	}
+	if code, _ := fetch(map[string]any{"proxy_id": pid + 1000}); code == http.StatusOK || hits.Load() != 2 {
+		t.Fatalf("missing proxy_id: %d, proxy hits %d", code, hits.Load())
+	}
+
 	if _, err := e.db.SQL.ExecContext(t.Context(), `UPDATE proxies SET status = 'disabled', updated_at = clock_timestamp() WHERE id = $1`, pid); err != nil {
 		t.Fatal(err)
 	}
