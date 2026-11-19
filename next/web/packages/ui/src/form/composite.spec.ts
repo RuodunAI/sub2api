@@ -421,6 +421,38 @@ describe('usePluginSettings / SSettingsPage', () => {
     expect(settings().dirty.value).toBe(false)
   })
 
+  it('a failed re-read after a save still resets to the saved value', async () => {
+    fakeHost(['plugin:manage'])
+    const { api } = settingsApi({ values: { host: 'a', port: 25 } })
+    const { settings } = settingsPage(api)
+    await flushPromises()
+    api.get = () => Promise.reject(new TypeError('Failed to fetch'))
+    settings().set('host', 'b')
+    expect(await settings().save()).toBe(true)
+    settings().set('host', 'c')
+    await flushPromises()
+    settings().reset()
+    await flushPromises()
+    expect(settings().get('host')).toBe('b')
+    expect(settings().dirty.value).toBe(false)
+  })
+
+  it('disables the controls while saving', async () => {
+    fakeHost(['plugin:manage'])
+    let finish!: () => void
+    const { api } = settingsApi({ values: { host: 'a', port: 25 } }, () => new Promise<void>((r) => (finish = r)))
+    const { w, settings } = settingsPage(api)
+    await flushPromises()
+    settings().set('host', 'b')
+    const saving = settings().save()
+    await flushPromises()
+    expect(w.find('fieldset').attributes('disabled')).toBeDefined()
+    finish()
+    expect(await saving).toBe(true)
+    await flushPromises()
+    expect(w.find('fieldset').attributes('disabled')).toBeUndefined()
+  })
+
   it('a secret typed in comes back masked after the save', async () => {
     fakeHost(['plugin:manage'])
     const { api } = settingsApi({ values: { host: 'a' } })

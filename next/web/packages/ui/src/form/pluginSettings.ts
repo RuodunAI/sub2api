@@ -108,6 +108,8 @@ export function usePluginSettings<M extends Model = Model>(opts: {
     }
     toast(t('ui.form.saved'), 'success')
     baseline.value = JSON.stringify(values.value)
+    // What was stored, should the read below fail (reset goes back to it).
+    view.value = { ...view.value, values: clone(values.value) }
     // The stored value as the core now shows it; the form stays mounted (no `loading`).
     await read().catch(notify)
     saving.value = false

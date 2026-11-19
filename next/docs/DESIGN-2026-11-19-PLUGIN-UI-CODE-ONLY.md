@@ -285,7 +285,7 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
 
 ### 5.7 和后端字段错误的合并
 
-- 账号凭证的服务端错误，由控制台去掉 `credentials.` 前缀后作为 `errors` 传入（`views/accounts/editorErrors.ts`）。插件设置的错误是 `values/a/b` 或 `values.a.b`（`plugin/api/settings.go:405-410`、`pluginUtil.ts:189-200`）。两者都由 `path.ts` 的 `toPath` 转成 `a.b`。
+- 账号凭证的服务端错误，由控制台去掉 `credentials.` 前缀后作为 `errors` 传入（`views/accounts/editorErrors.ts`）。插件设置的错误是 `values/a/b` 或 `values.a.b`（`plugin/api/settings.go:405-410`、`pluginUtil.ts:189-200`）。两者都由 `@sub2api/host` 的 `toFieldPath` 转成 `a.b`。
 - **显示规则：** 同一路径上，本地错误优先于服务端错误。用户改了某个路径的值，就清掉这个路径的服务端错误（控制台在任何改动时都会清空 `credErrors`，见 `AccountEditor.vue:528-530`，这里再细到单个路径）。
 - 没有任何 `SField` 认领的错误进 `unclaimed`，由 `SCredentialForm` 或 `SSettingsPage` 显示在表单顶部（和 codex 的 `errorList` 做法一样，见 `CodexAuthForm.vue:86`）。
 - `settingsFieldErrors`（`pluginUtil.ts:189-200`）搬进 `@sub2api/host`（`fields.ts`，另导出它用的 `toFieldPath`），控制台和插件共用；控制台改用它、删掉 `pluginUtil.ts` 里的那份由 K2 做。
