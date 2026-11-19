@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -79,6 +80,7 @@ type row struct {
 	LastTestStatus      *int
 	LastTestErrorCode   *string
 	LastTestErrorSource *string
+	LastTestProtocol    *string
 	// AutoDisabledSource says who wrote an automatic disable (0070):
 	// usageLimitSource or '' (plugins and failure policies).
 	AutoDisabledSource string
@@ -100,7 +102,7 @@ const rowColumns = `a.id, a.name, a.plugin_key, a.type, a.credentials_enc, a.set
 	a.created_by, u.email, a.owner_id, o.email, a.created_at, a.updated_at,
 	a.last_test_at, a.last_test_ok, a.last_test_latency_ms::bigint, a.last_test_model, a.last_test_message, a.auto_disabled_until,
 	a.last_test_status,a.last_test_error_code,a.last_test_error_source,a.auto_disabled_source,a.header_passthrough,a.param_override,a.conversion_loss_policy,a.admin_locked,a.header_override,
-	a.protocols, a.model_protocols`
+	a.protocols, a.model_protocols, a.last_test_protocol`
 
 // rowJoins join the users whose emails rowColumns read: u the creator, o
 // the owner.
@@ -123,7 +125,7 @@ func scanRow(r interface{ Scan(dest ...any) error }) (*row, error) {
 		&a.CreatedBy, &a.CreatedByEmail, &a.OwnerID, &a.OwnerEmail, &a.CreatedAt, &a.UpdatedAt,
 		&a.LastTestAt, &a.LastTestOK, &a.LastTestLatencyMs, &a.LastTestModel, &a.LastTestMessage, &a.AutoDisabledUntil,
 		&a.LastTestStatus, &a.LastTestErrorCode, &a.LastTestErrorSource, &a.AutoDisabledSource, (*store.Strings)(&a.HeaderPassthrough), &a.ParamOverride, &a.LossPolicy, &a.AdminLocked, &a.HeaderOverride,
-		(*store.Strings)(&a.Protocols), &a.ModelProtocols)
+		(*store.Strings)(&a.Protocols), &a.ModelProtocols, &a.LastTestProtocol)
 	a.Environment = env.V
 	return &a, err
 }
@@ -152,6 +154,9 @@ func (a *row) lastTest() *LastTest {
 	if a.LastTestMessage != nil {
 		lt.Message = *a.LastTestMessage
 	}
+	if a.LastTestProtocol != nil {
+		lt.Protocol = *a.LastTestProtocol
+	}
 	return lt
 }
 
@@ -164,20 +169,15 @@ func (a *row) mapping() map[string]string {
 	return m
 }
 
-// defaultTestModel is the model a test that names none asks for: the first
-// of the account's model list, else the smallest request model of its
-// mapping, else "" (the plugin picks its default, CONTRACTS §15.9).
-func (a *row) defaultTestModel() string {
+// testModels are the models a test that names none chooses from, in order:
+// the account's model list, else the request models of its mapping in
+// lexical order; none when it lists neither (the plugin picks its default,
+// CONTRACTS §15.9).
+func (a *row) testModels() []string {
 	if len(a.Models) > 0 {
-		return a.Models[0]
+		return a.Models
 	}
-	first := ""
-	for m := range a.mapping() {
-		if first == "" || m < first {
-			first = m
-		}
-	}
-	return first
+	return slices.Sorted(maps.Keys(a.mapping()))
 }
 
 func (a *row) modelLimits() []core.ModelLimit { return parseModelLimits(a.ModelLimits) }
@@ -346,7 +346,7 @@ type View struct {
 	// Quota is the subscription quota snapshot (CONTRACTS §44), read from
 	// the database only; null for account types without quota (API keys).
 	Quota *QuotaSnapshot `json:"quota"`
-	// Balance is the account balance snapshot (CONTRACTS §51); null for
+	// Balance is the account balance snapshot (CONTRACTS §52); absent for
 	// account types without balance support.
 	Balance *BalanceView `json:"balance,omitempty"`
 	// Refresh is the credential refresh state (CONTRACTS §48); null for
@@ -1864,6 +1864,13 @@ func (s *Service) update(c *gin.Context) {
 		if in.Name != nil {
 			name = *in.Name
 		}
+		// Another key, address or proxy may read another balance: the next
+		// read starts afresh (CONTRACTS §52.3).
+		if p != nil || extensionSettings != nil || setProxy {
+			if err := store.DeleteBalance(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		payload := basicPayload(id, locked.PluginKey, locked.Type, name)
 		payload["changed_fields"] = in.changedFields()
 		evs := []core.Event{{Type: core.EventAccountUpdated, Payload: payload}}
@@ -1880,6 +1887,7 @@ func (s *Service) update(c *gin.Context) {
 	if p != nil || extensionSettings != nil || setProxy {
 		s.quota.forget(id)
 		s.evictQuotaCache(ctx, id)
+		s.evictBalanceCache(ctx, id)
 	}
 	if usageLimitConverged {
 		if err := s.EnforceUsageLimits(ctx, []int64{id}); err != nil {

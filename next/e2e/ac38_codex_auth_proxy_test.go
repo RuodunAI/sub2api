@@ -31,9 +31,9 @@ func codexProxyTicket(t testing.TB, admin *Session, typ string, choice map[strin
 	return tk
 }
 
-// codexDeviceLogin runs the device code login as the console does: start
-// with the ticket, then poll at the interval the plugin answers until it is
-// no longer pending (the session's own lifetime ends a login that never
+// codexDeviceLogin runs the device code login as the console does: start,
+// then poll at the interval the plugin answers until it is no longer
+// pending, each call with a fresh ticket of the choice (the session's own lifetime ends a login that never
 // finishes). It returns the credentials.
 func codexDeviceLogin(t testing.TB, admin *Session, choice map[string]any) gjson.Result {
 	t.Helper()
@@ -42,7 +42,8 @@ func codexDeviceLogin(t testing.TB, admin *Session, choice map[string]any) gjson
 	sid, interval := start.Get("session_id").String(), start.Get("interval").Int()
 	for {
 		time.Sleep(time.Duration(interval) * time.Second)
-		p := admin.OK(t, http.MethodPost, "/p/codex/auth/device/poll", map[string]any{"session_id": sid})
+		p := admin.OK(t, http.MethodPost, "/p/codex/auth/device/poll",
+			map[string]any{"session_id": sid, "proxy_ticket": codexProxyTicket(t, admin, "codex_device", choice)})
 		switch p.Get("status").String() {
 		case "pending":
 			if n := p.Get("interval").Int(); n > 0 {
@@ -163,7 +164,8 @@ func TestAC38_CodexAuthorizationThroughFormProxy(t *testing.T) {
 		callback := "http://localhost:1455/auth/callback?" + url.Values{"code": {code}, "state": {authorize.Query().Get("state")}}.Encode()
 		mark := m.Mark(t)
 		x := admin.OK(t, http.MethodPost, "/p/codex/auth/codex/exchange",
-			map[string]any{"session_id": start.Get("session_id").String(), "callback_url": callback})
+			map[string]any{"session_id": start.Get("session_id").String(), "callback_url": callback,
+				"proxy_ticket": codexProxyTicket(t, admin, "codex_oauth", map[string]any{"proxy_id": proxyID})})
 		calls := expectAuthCalls(t, m, mark, true, "/oauth/token")
 		if x.Get("credentials.access_token").String() != "at-"+code || !strings.Contains(calls[0].Body, "code="+code) {
 			t.Fatalf("credentials %s from the exchange %s", x.Raw, calls[0].Body)

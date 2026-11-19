@@ -9,10 +9,11 @@
 //   - codex_oauth: Sign in with Codex, the Codex CLI's browser login
 //     (authorization code + PKCE).
 //
-// Requests identify themselves truthfully: originator "sup2api" and
-// User-Agent "sup2api-codex/<version>". The plugin does not imitate the
-// Codex CLI (no Codex user agent, x-codex-* headers or TLS fingerprint) and
-// does not add the Codex system prompt.
+// Requests identify themselves by default truthfully: originator "sup2api"
+// and User-Agent "sup2api-codex/<version>"; the operator may set others per
+// account or in the plugin settings (agent.go). The plugin does not imitate
+// the Codex CLI (no x-codex-* headers or TLS fingerprint) and does not add
+// the Codex system prompt.
 package codex
 
 import (
@@ -22,10 +23,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/paramoverride"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
@@ -33,7 +36,8 @@ const (
 	// Version is the plugin version (manifest.json "version"); it is part of
 	// the User-Agent every request sends.
 	Version = "0.2.0"
-	// UserAgent and Originator name sup2api as the client, truthfully.
+	// UserAgent and Originator name sup2api as the client, truthfully: the
+	// built-in values of the client headers (agent.go).
 	UserAgent  = "sup2api-codex/" + Version
 	Originator = "sup2api"
 
@@ -71,6 +75,14 @@ const (
 	// (the smallest model of manifest defaultModels: the test uses the
 	// owner's plan).
 	DefaultTestModel = "gpt-6-luna"
+	// ImageChatModel is the chat model driving the image_generation tool of
+	// an image request: manifest adapted.images_*.model, which the core puts
+	// at the top of the converted request, and the model of an image test.
+	ImageChatModel = "gpt-6-luna"
+	// Client protocols the core converts to Responses (manifest adapted).
+	ProtocolChat       = "openai.chat"
+	ProtocolImages     = "openai.images"
+	ProtocolImagesEdit = "openai.images_edit"
 )
 
 // Endpoints are the service roots the plugin talks to (no trailing slash).
@@ -99,6 +111,8 @@ type Plugin struct {
 	// log is the host log (Init); it discards until then. Never log tokens,
 	// authorization codes, PKCE verifiers, state or session ids.
 	log *slog.Logger
+	// settings are the plugin settings (Configure).
+	settings atomic.Pointer[Settings]
 }
 
 // New returns the plugin talking to the production endpoints.
@@ -125,6 +139,7 @@ func NewWithEndpoints(ep Endpoints, manifestJSON []byte) (*Plugin, error) {
 		now:   time.Now,
 		log:   slog.New(slog.DiscardHandler),
 	}
+	p.settings.Store(&Settings{})
 	p.Handle(http.MethodPost, "/auth/device/start", p.handleDeviceStart)
 	p.Handle(http.MethodPost, "/auth/device/poll", p.handleDevicePoll)
 	p.Handle(http.MethodPost, "/auth/codex/start", p.handleCodexStart)
@@ -153,6 +168,10 @@ type credentials struct {
 	RefreshToken     string `json:"refresh_token"`
 	IDToken          string `json:"id_token"`
 	ChatGPTAccountID string `json:"chatgpt_account_id"`
+	// UserAgent and Originator are the account's own client headers, ""
+	// for none (agent.go).
+	UserAgent  string `json:"user_agent"`
+	Originator string `json:"originator"`
 }
 
 func parseCredentials(raw string) (credentials, error) {
@@ -165,6 +184,8 @@ func parseCredentials(raw string) (credentials, error) {
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
 	c.IDToken = strings.TrimSpace(c.IDToken)
 	c.ChatGPTAccountID = strings.TrimSpace(c.ChatGPTAccountID)
+	c.UserAgent = strings.TrimSpace(c.UserAgent)
+	c.Originator = strings.TrimSpace(c.Originator)
 	return c, err
 }
 
@@ -211,7 +232,8 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 // normalizes in place.
 type credMap map[string]any
 
-// stringFields are the optional credential fields that must be strings.
+// stringFields are the optional credential fields that must be strings
+// besides the client headers (agentError).
 var stringFields = []string{"refresh_token", "id_token", "email", "chatgpt_account_id", "plan_type"}
 
 // str reads a string field: ("", true) when absent or null, ok=false when
@@ -237,8 +259,8 @@ func (m credMap) trimStrings() bool {
 	return changed
 }
 
-// checkStrings requires a non-empty access_token and string-typed optional
-// fields.
+// checkStrings requires a non-empty access_token, string-typed optional
+// fields and client headers (agentFields) that can be sent as header values.
 func (m credMap) checkStrings() *pluginv1.ValidateCredentialsResponse {
 	at, ok := m.str("access_token")
 	if !ok {
@@ -252,7 +274,27 @@ func (m credMap) checkStrings() *pluginv1.ValidateCredentialsResponse {
 			return invalid(k, "pattern", k+" must be a string / "+k+" 必须是字符串")
 		}
 	}
+	if k, code, msg := m.agentError(); k != "" {
+		return invalid(k, code, msg)
+	}
 	return nil
+}
+
+// agentError names the first client header (agentFields) of m that is not a
+// string or cannot be sent as a header value: its field, code and message,
+// k "" when there is none. The account's credentials and the authorization
+// routes, which carry the form's values (readCall), are checked alike.
+func (m credMap) agentError() (k, code, msg string) {
+	for _, k := range agentFields {
+		v, ok := m.str(k)
+		if !ok {
+			return k, "pattern", k + " must be a string / " + k + " 必须是字符串"
+		}
+		if !paramoverride.ValidHeaderValue(v) {
+			return k, "pattern", k + " must not contain control characters / " + k + " 不能包含控制字符"
+		}
+	}
+	return "", "", ""
 }
 
 // normalizeExpiresAt turns a string expires_at into a number (an empty one is

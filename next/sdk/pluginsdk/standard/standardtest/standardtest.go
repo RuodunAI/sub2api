@@ -25,12 +25,13 @@ import (
 )
 
 // Run replays every golden case of plugin against p (goldentest.Run with
-// Golden). The cases are replayed on the frozen file's passHeaders, so Run
-// first requires the plugin's manifest.json (at manifestPath) to hand the
-// file's account type exactly those client headers: a manifest that
-// changes them fails here instead of passing the replay unnoticed. Every
-// request built must also go to a host the core relays to for the manifest
-// (hostChecked).
+// Golden; opts may select cases, goldentest.Select). The cases are
+// replayed on the frozen file's passHeaders, so Run first requires the
+// plugin's manifest.json (at manifestPath) to hand the file's account type
+// exactly those client headers on the platform of the file's protocols: a
+// manifest that changes them fails here instead of passing the replay
+// unnoticed. Every request built must also go to a host the core relays
+// to for the manifest (hostChecked).
 func Run(t *testing.T, plugin, manifestPath string, p *standard.Platform, opts ...goldentest.Option) {
 	t.Helper()
 	f, err := goldentest.Load(plugin)
@@ -45,7 +46,7 @@ func Run(t *testing.T, plugin, manifestPath string, p *standard.Platform, opts .
 	if err := json.Unmarshal(rawManifest, &m); err != nil {
 		t.Fatalf("manifest: %v", err)
 	}
-	if got := manifestPassHeaders(t, &m, f.AccountType); !slices.Equal(got, f.PassHeaders) {
+	if got := manifestPassHeaders(t, &m, f); !slices.Equal(got, f.PassHeaders) {
 		t.Fatalf("the manifest hands account type %q the client headers %v, the golden cases were recorded with %v", f.AccountType, got, f.PassHeaders)
 	}
 	goldentest.Run(t, plugin, hostChecked(&m, f.AccountType, Golden(p, f.PassHeaders)), opts...)
@@ -75,26 +76,46 @@ func hostChecked(m *manifest.Manifest, accountType string, s goldentest.Subject)
 	return s
 }
 
-// manifestPassHeaders are the client headers the core hands accountType of
-// the manifest, over all the platforms it serves (built-in or the
-// manifest's own).
-func manifestPassHeaders(t *testing.T, m *manifest.Manifest, accountType string) []string {
+// manifestPassHeaders are the client headers the core hands the file's
+// account type of the manifest on the platform (built-in or the
+// manifest's own) of the file's protocols
+// (manifest.AccountPlatform.ClientHeaders).
+func manifestPassHeaders(t *testing.T, m *manifest.Manifest, f *goldentest.File) []string {
 	t.Helper()
-	known := append(platforms.Builtin(), m.Platforms...)
-	lookup := func(id string) *manifest.Platform {
-		for i := range known {
-			if known[i].ID == id {
-				return &known[i]
+	p := filePlatform(f, append(platforms.Builtin(), m.Platforms...))
+	if p == nil {
+		t.Fatalf("no platform has an endpoint of the protocols of the %s cases", f.Plugin)
+	}
+	for _, at := range m.AccountTypes {
+		if at.ID != f.AccountType {
+			continue
+		}
+		for _, ap := range at.Platforms {
+			if ap.Platform == p.ID {
+				return ap.ClientHeaders(p)
 			}
 		}
-		return nil
+		t.Fatalf("account type %q of the manifest does not serve platform %s", f.AccountType, p.ID)
 	}
-	for i := range m.AccountTypes {
-		if m.AccountTypes[i].ID == accountType {
-			return m.AccountTypes[i].PassHeaders(lookup)
+	t.Fatalf("the manifest declares no account type %q", f.AccountType)
+	return nil
+}
+
+// filePlatform is the platform with an endpoint of the protocol of one of
+// f's execute cases (a file records one platform; its unknown protocols
+// belong to none).
+func filePlatform(f *goldentest.File, known []manifest.Platform) *manifest.Platform {
+	for i := range f.Cases {
+		in, _, err := f.Cases[i].Execute()
+		if err != nil {
+			continue
+		}
+		for j := range known {
+			if slices.Contains(known[j].Protocols(), in.Meta.Protocol) {
+				return &known[j]
+			}
 		}
 	}
-	t.Fatalf("the manifest declares no account type %q", accountType)
 	return nil
 }
 

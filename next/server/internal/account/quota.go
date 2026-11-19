@@ -2,6 +2,7 @@ package account
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"io"
@@ -316,20 +317,23 @@ func quotaErrorDetail(message string) string {
 	return message
 }
 
+// queryFailure is the error recorded on the snapshot of a quota or balance
+// query the plugin reports failed: "auth_rejected: " or "transient: ", then
+// the plugin's reason (quotaErrorDetail), fallback when it gives none.
+func queryFailure(authRejected bool, message, fallback string) error {
+	kind := "transient: "
+	if authRejected {
+		kind = "auth_rejected: "
+	}
+	return errors.New(kind + cmp.Or(quotaErrorDetail(message), fallback))
+}
+
 func normalizedQuota(res *pluginv1.QuotaResult) (map[string]store.QuotaWindow, error) {
 	if res == nil {
 		return nil, errors.New("empty quota observation")
 	}
 	if res.GetErrorType() != pluginv1.QuotaResult_ERROR_TYPE_UNSPECIFIED {
-		kind := "transient"
-		if res.GetErrorType() == pluginv1.QuotaResult_ERROR_TYPE_AUTH_REJECTED {
-			kind = "auth_rejected"
-		}
-		detail := quotaErrorDetail(res.GetErrorMessage())
-		if detail == "" {
-			detail = "quota query failed"
-		}
-		return nil, errors.New(kind + ": " + detail)
+		return nil, queryFailure(res.GetErrorType() == pluginv1.QuotaResult_ERROR_TYPE_AUTH_REJECTED, res.GetErrorMessage(), "quota query failed")
 	}
 	if len(res.Windows) > 64 {
 		return nil, errors.New("too many quota windows")
@@ -389,8 +393,8 @@ func (s *Service) sendQuotaRequest(ctx context.Context, pluginKey string, b *plu
 		TransportError: a.transportError}
 }
 
-// pluginCall is an upstream request a plugin described (quota, refresh,
-// HostService.SendAccountRequest).
+// pluginCall is an upstream request a plugin described (quota, balance,
+// refresh, HostService.SendAccountRequest).
 type pluginCall struct {
 	plugin                string // the plugin's key, for plugin network access
 	what                  string // for the invalid-URL message
@@ -410,10 +414,11 @@ type pluginAnswer struct {
 	transportError string
 }
 
-// sendPluginCall sends a request a plugin described through the account's
-// proxy (behind netguard for a direct connection). A failure is not an
-// error: the plugin is shown the transport error, as ClassifyError is; an
-// answer that cannot be read whole is such a failure.
+// sendPluginCall sends a request a plugin described through proxy proxyID,
+// that of the account's row the caller just read (behind netguard for a
+// direct connection). A failure is not an error: the plugin is shown the
+// transport error, as ClassifyError is; an answer that cannot be read whole
+// is such a failure.
 func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int64) pluginAnswer {
 	var out pluginAnswer
 	u, err := url.Parse(b.url)
@@ -421,7 +426,12 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 		out.transportError = "plugin built an invalid " + b.what + " URL"
 		return out
 	}
-	if err := s.guardUpstream(ctx, b.plugin, u, proxyID != nil); err != nil {
+	eg, err := s.proxyEgress(ctx, proxyID)
+	if err != nil {
+		out.transportError = core.AsError(err).Message
+		return out
+	}
+	if err := s.guardUpstream(ctx, b.plugin, u, eg.Proxied); err != nil {
 		out.transportError = err.Error()
 		return out
 	}
@@ -444,11 +454,7 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	hc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
-	if err != nil {
-		out.transportError = core.AsError(err).Message
-		return out
-	}
+	hc := eg.Client
 	if b.noRedirects {
 		c := *hc
 		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

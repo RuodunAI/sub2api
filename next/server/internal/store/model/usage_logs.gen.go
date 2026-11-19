@@ -62,6 +62,8 @@ type UsageLog struct {
 	UploadMs              int              `gorm:"column:upload_ms;default:(-)"`                       // integer default 0
 	Conversion            json.RawMessage  `gorm:"column:conversion"`                                  // jsonb
 	BaseCost              *decimal.Decimal `gorm:"column:base_cost"`                                   // numeric(20,8)
+	ImageInputTokens      int64            `gorm:"column:image_input_tokens;default:(-)"`              // bigint default 0
+	ImageOutputTokens     int64            `gorm:"column:image_output_tokens;default:(-)"`             // bigint default 0
 }
 
 // TableName implements gorm's schema.Tabler.

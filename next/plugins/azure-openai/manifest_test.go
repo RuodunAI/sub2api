@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"path"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -57,12 +58,18 @@ func TestManifest(t *testing.T) {
 	notForwarded := []string{"openai-organization", "openai-project"}
 	fromPlatform := slices.DeleteFunc(slices.Clone(builtinPlatform("openai").PassHeaders), func(h string) bool { return slices.Contains(notForwarded, h) })
 	types := map[string]standard.Type{typeV1: azureopenai.V1(), typeDeployment: azureopenai.Deployment()}
+	adapted := map[string]map[string]manifest.AdaptOptions{typeDeployment: {"responses": {}}}
 	for _, at := range m.AccountTypes {
 		if at.CreationGroup != "azure-openai" || at.AuthMethodLabel["en"] == "" || at.AuthMethodLabel["zh"] == "" {
 			t.Errorf("%s: creationGroup %q authMethodLabel %v", at.ID, at.CreationGroup, at.AuthMethodLabel)
 		}
 		if len(at.Platforms) != 1 || at.Platforms[0].Platform != "openai" || !slices.Equal(at.Platforms[0].Endpoints, endpoints[at.ID]) {
 			t.Fatalf("%s: platforms = %+v, want openai %v", at.ID, at.Platforms, endpoints[at.ID])
+		}
+		// The classic deployment API has no Responses: /v1/responses reaches
+		// it converted to chat, which the type declares (CONTRACTS §83.3).
+		if !reflect.DeepEqual(at.Platforms[0].Adapted, adapted[at.ID]) {
+			t.Errorf("%s: adapted = %+v", at.ID, at.Platforms[0].Adapted)
 		}
 		if !slices.Equal(at.Platforms[0].PassHeaders, fromPlatform) {
 			t.Errorf("%s: passHeaders = %v, want the openai platform's without %v: %v", at.ID, at.Platforms[0].PassHeaders, notForwarded, fromPlatform)

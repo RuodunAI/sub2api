@@ -23,7 +23,7 @@ func (g *Gateway) checkUpstream(ctx context.Context, raw string, proxied bool) (
 }
 
 // checkURL is checkUpstream for a request of x, made through its account's
-// proxy when it has one.
+// proxy when it has one (x.egress).
 func (x *execution) checkURL(ctx context.Context, raw string) (*url.URL, error) {
-	return x.c.g.checkUpstream(ctx, raw, x.acc.ProxyID != nil)
+	return x.c.g.checkUpstream(ctx, raw, x.egress.Proxied)
 }

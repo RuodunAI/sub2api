@@ -59,7 +59,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 自己写 `Execute`（实现 `Executor`）也可以，其中仍可调 `pluginsdk.ExecuteDefault(ctx, p, in)` 做默认的部分；返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
 
-可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform`（加上 `UpstreamBuilder` 或 `Executor`）就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
+可选接口：`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor`（`Monitor`）、`ModelLister`（`BuildModelsRequest`）、`ModelResolver`、`QuotaReader`、`CredentialRefresher`、`BalanceReader`（`BuildBalanceRequest` / `ParseBalanceResponse`，账号余额，CONTRACTS §52）、`ModelAvailabilityChecker`、`UsageEstimator`（`EstimateUsage`；见 `interfaces.go`、`estimate.go`）。能力由 `Serve` 推断：`Platform`（加上 `UpstreamBuilder` 或 `Executor`）就是 `platform.adapter.v1`，`TaskMonitor` 就是 `platform.monitor.v1`；`platform.tasks.v1`、`platform.websocket.v1` 在清单里声明，任务插件三个都要声明。
 
 ### 2.2 构造请求：`NewUpstream`
 
@@ -160,9 +160,9 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 - 不限次数、不限大小：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`truncated` 字段已删除）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
-  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），开始授权时调用它拿一张票据，交给插件的开始路由（约定字段 `proxy_ticket`）；
-  - 插件把票据和授权会话存在一起（`pluginsdk.SaveCallerSession`），这次授权的每个请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单选的代理发出（没选就直连），插件看不到代理；
-  - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不再可用，重试没用）；
+  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），**每次**调用插件的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都调用它现取一张票据，放进请求体（约定字段 `proxy_ticket`）；
+  - 插件用 `pluginsdk.RouteProxyTicket(req)` 读这次调用的票据（缺了回 400），这次调用里的请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单**此刻**选的代理发出（没选就直连），插件看不到代理。票据不要存进授权会话沿用：授权开始后管理员改了代理，下一次调用就该走新代理；
+  - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不可用）：请求没有发出，不要因此结束授权会话，管理员把表单的代理改好后，下一次调用带着新票据就能发出；
   - 不需要 `net`。codex 是范例（`plugins/codex/internal/codex/oauth.go`）；测试里 `Harness.DoAs` 会给路由调用发执行令牌，假宿主要求路由取回带票据，用 `ExecuteHTTPFunc` 看到它。
 - 插件自己的其他对外连接（Webhook、SMTP 等，不是转发、不是取回、也不是建账号前的授权）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。这项设置同样管核心替插件发出的请求：中继、取回、`SendAccountRequest` 被它拒绝时与主机规则拒绝时一样（`Relay` 换号，取回和 `SendAccountRequest` 回 `PERMISSION_DENIED`，信息写明是插件联网的屏蔽或允许列表）；配额查询、凭证续期的请求被拒时插件拿到 `transport_error`（`status` 0），按传输失败处理；账号测试和拉取模型列表的失败显示给管理员。这类拒绝不要重试，也记在插件的外部访问日志里。
 
@@ -223,7 +223,9 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 ## 3. `standard` 库与厂商预设
 
-“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和三个风格的完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
+“账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`、`BalanceReader`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
+
+一个上游同时说几家协议（中转站：New API、Sub2API）时，用 `standard.Merge(id, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), …)` 把几份预设合成一个类型：每条路由保留自己那份预设的鉴权头（OpenAI `Authorization: Bearer`、Anthropic `x-api-key` 加默认 `anthropic-version`、Gemini `x-goog-api-key`）、请求头和失败分类（路由级的 `Route.Auth`、`Route.Classify`）；`spec` 换掉各预设的凭证规则（中转站的地址必填、没有默认）。账号测试按核心给的协议顺序选（`Type.Tests`，合并时收集各份的测试）：运营方用协议绑定只开 Messages 的账号就测 Messages。预设按协议带了最小的测试请求（CONTRACTS §122.3：openai 的 chat、Responses、Embeddings、生图，gemini 的 generate 与流式 generate）；只改路由的类型要同时去掉没有路由的协议的测试（azure-openai 的做法）。核心交给插件的协议已去掉清单端点 `test: never` 的协议，没点名模型时也去掉 `test: explicit` 的（生成一张图要花钱）；自己写 `BuildTestRequest` 的插件同样取 `protocols` 里第一个它会测的协议，在 `usage_protocol` 报实际用的，控制台会显示它；列表不空而一个都不会测时返回 `FailedPrecondition`，不要退回别的协议的测试（`standard` 就这样做），空列表才表示没有偏好。账号余额写 `Type.Balance`：基础地址上的一个或几个 GET（`BalanceRequest.Auth: &standard.Auth{}` 的请求不带 Key），`Read` 把按顺序的回答读成结果，`standard.BalanceFailure`（传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED）和 `standard.Micros`（把上游答的十进制数换成 `amount_micros` 的百万分之一整数，同一个数换个写法）帮着读；**余额是上游的数字本身，单位（`currency` 字段）是上游给的原文、没给就留空，不做任何单位或汇率换算**（CONTRACTS §52）；清单里同时写 `"balance": {}`。TypeSafe 的平台定义与预设在 `sdk/pluginsdk/providers/typesafe`（`Platform()` 是平台的唯一来源，`APIKey(id)` 是预设）。
 
 旧的清单 `upstream` 声明（已删除）的每一项在库里的对应：
 
@@ -267,10 +269,11 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 - `Harness.Execute` / `Harness.Monitor` 像核心一样发执行令牌、调用、调用返回后作废令牌；返回 `*Execution`（`Response`、`MonitorResponse`、`Err`、`Relays()`、`RelayErrors()`、`Fetches()`、`Relayed(t)`）。
 - `h.Host.RelayFunc` 编排等待形式的回答（`pluginsdktest.Observed(200, body)`、`pluginsdktest.UpstreamFailed(429, body, "")`）；`h.Host.ExecuteHTTPFunc` 编排取回；`Options.Manifest` 是插件的 `manifest.json`：harness 用它起插件（等于 `pluginsdk.WithManifest`），假宿主也知道它；`h.Host.Manifest` 是宿主知道的清单（没有事先设置时取 `Options.Manifest`），中继和取回能到哪些主机按它和这次调用的账号决定（`manifest.UpstreamHostAllowed`；中继到别的主机 `INVALID_ARGUMENT`），没有清单时只有 `h.Host.ExternalServices` 放行的主机（测试指向 `127.0.0.1` 的假上游时在这里写上它）；`h.Host.ExpireExecutions()` 模拟核心中途放弃调用。假宿主自己执行核心的检查（令牌、一个中继、没有标志不许等待、`Monitor` 不许中继、方法和头名按 `httpguts`、HTTP 协议上不许 ws(s) 地址、`Monitor` 的终态要有一次完整成功的取回）；和宿主一样不限请求体、不数取回、不截回答。不经 `Harness` 时用 `h.Host.Begin(in)` / `BeginMonitor(in)` 发令牌。仍与宿主不同的地方写在 `FakeHost` 的注释里。
 - 只测构造时直接调 `p.BuildUpstream(ctx, in)` 比较结果。
+- `h.Balance(ctx, account, answer)` 像核心一样做一次余额查询：`BuildBalanceRequest` 的每个请求先按清单的主机规则判断（有一个不行就都不发，`PERMISSION_DENIED`），再逐个交给 `answer`（不跟随重定向，nil 算传输错误），回答按顺序交给 `ParseBalanceResponse`，返回结果（单位照插件给的原样，可以为空，与核心相同）。
 
-**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 11 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。九个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。大请求体的大小（8 MiB）和取消的等待时限（2 秒）是套件内部的常量，`Plugin` 没有对应字段。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
+**一致性套件**（`sdk/pluginsdk/pluginsdktest/conformance`）：平台插件在自己的测试里调一次 `conformance.Run(t, plugin, cases...)`，逐条检查 12 条规则：恰好一次中继、形式与返回种类、交回的请求体、请求头（声明的集合）、不重试、确定性、换号、不开套接字、取消、大请求体（额外分配不超过请求体的 4 倍）、WebSocket、余额（清单声明 `balance` 的类型要读得出余额，请求的主机过主机规则，传输错误和空回答给出错误结果；没声明的回 `UNIMPLEMENTED`）。账号类型服务别的插件声明的平台时（New API 服务 TypeSafe 平台），把那个平台放进 `Plugin.Platforms`（`typesafe.Platform()`），套件就认得它的协议和客户端请求头。输入表、例外的写法和套件证明不了的事见 [它的 README](../sdk/pluginsdk/pluginsdktest/conformance/README.md)。九个平台插件都调用它（`Plugin.Manifest` 必填，交给插件的客户端请求头从清单读）。大请求体的大小（8 MiB）和取消的等待时限（2 秒）是套件内部的常量，`Plugin` 没有对应字段。每个 HTTP 协议要在核心会发的每种形式下都有用例，形式由套件从协议的端点读出，插件不能声明自己不服务某种形式；WebSocket 协议不列在 `Protocols` 里，它的轮次只归第 11 条。只有 bedrock 声明了例外，都是 InvokeModel 本身的性质：流式用例的 `03_body`（InvokeModel 按 URL `invoke-with-response-stream` 选流式，请求体里带 `stream` 会被拒绝）和全部用例的 `04_headers`（客户端的 `anthropic-beta` 放进请求体的 `anthropic_beta`，Bedrock 不收这个请求头）。
 
-**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：转发 V2 之前（四个插件还由已删除的声明式引擎驱动时）录下的 1498 条样例（openai 441、anthropic 343、gemini 371、relay 343），转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, manifestPath, p)` 回放：它先核对插件清单交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致，再像核心一样按 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的（2.2）。用 `standard` 写的插件都要全部通过。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
+**黄金样例**（`sdk/pluginsdk/standard/goldentest`）：转发 V2 之前（四个插件还由已删除的声明式引擎驱动时）录下的 1498 条样例（openai 441、anthropic 343、gemini 371、relay 343），转换成不依赖引擎的 `execute`、`test`、`models`、`validate`、`classify` 样例并冻结，用 `standardtest.Run(t, plugin, manifestPath, p)` 回放：它先核对插件清单交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致，再像核心一样按 `pass_headers` 过滤样例里故意多给的客户端请求头，并检查每个请求的主机是核心会中继的（2.2）。用 `standard` 写的插件都要全部通过。样例不是本插件录的、但它也服务这些协议时（`Merge` 出的中转站类型），用选项只回放它必须答得一样的用例：`standardtest.Run(t, "openai", "../../manifest.json", p, goldentest.Select(goldentest.Forwarded("apikey", openai.ProtocolChat, …)))`（只取这些协议、账号自带基础地址的 `execute` 用例；凭证规则不同的 `validate` 等不取），清单交给类型的客户端请求头按样例协议所属的平台核对。结构和例外见 [它的 README](../sdk/pluginsdk/standard/goldentest/README.md)。
 
 ## 5. 设置对照表
 
@@ -280,7 +283,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 设置 | 归属 | HTTP / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
+| 最低余额、高额费用警告（没有价格的模型一律拒绝，不是设置，CONTRACTS §17.3） | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
 | 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致（等待形式同样） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（三种策略都一样）；等待形式下插件放弃中继调用（被终止、进程退出）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`（第 2.7 节） | 一致 / WebSocket 不支持 `usageSource: "plugin"`（清单检查拒绝） | `forward.go`、`waited.go`、`sdk/manifest/check/websocket.go` |
@@ -323,7 +326,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 分组 | SDK 类型 | 典型用途 |
 |---|---|---|
-| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、缺价策略、断开计费策略处理 |
+| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、断开计费策略处理 |
 | `gateway` | `protocol.GatewaySettings` | 自己调上游的后台任务参照重试次数、超时、媒体下载上限、请求体上限 |
 | `scheduling` | `protocol.SchedulingSettings` | 排序插件（`RankAccounts`）参照均衡负载的指标 |
 | `sticky` | `protocol.StickySettings` | 粘性会话关闭时放弃排队的绑定清理（dynweight 0.5.11） |
@@ -380,6 +383,8 @@ if !sticky.Enabled { ... }
 - 权威头只放鉴权头和签名头，其余放默认头；改请求体只用 `jsonedit`。
 - 用量规则：流式规则把输出数映射在指名的终止事件上；非流式规则映射响应体。规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`。
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine）。
+- 在一个平台上写了 `endpoints` 子集时，子集以外的端点**不服务**，除非在 `adapted` 里列出它：核心把它转换成子集内某个端点的协议再交给插件（同平台适配，CONTRACTS §83.3、§121.1）。例：只有 Responses 的上游写 `"endpoints": ["responses"], "adapted": {"chat_completions": {}}` 来服务 chat；核心没有对应转换器时清单能装上，但注册表不绑定这个类型。生图端点经 Responses 的 `image_generation` 工具服务时还要写驱动工具的对话模型：`"images_generations": {"model": "<对话模型>"}`（codex 的写法）；插件在 `meta.client_protocol` 是生图协议时不报上游模型（请求体顶层的 `model` 是这个对话模型，报了会覆盖核心从应答读到的回显生图模型）。没有隐式适配：旧插件依赖过它的要补声明。
+- 上游同时说几家协议时用 `standard.Merge`，每个协议保留它官方的鉴权头和失败分类；有余额接口的写 `Type.Balance` 并在清单写 `balance`。
 - 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写）；不设 `Host` 头。
 - 测试里调一致性套件；用 `standard` 写的插件另跑黄金样例。
 - 不读写文件；确实需要时申请 `fs.data`，只用 `SUB2API_PLUGIN_DATA_DIR` 下的路径（6.2 节）。

@@ -4,14 +4,25 @@
 
 它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `Type`（通常从厂商预设出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 就是 `pluginsdk.Platform`。
 
-库里只放每个协议都一样的东西。路径、路径里的模型、请求体的改写、测试请求体、错误分类策略这些协议差异，是 `Type` 里的 Go 值和函数，由 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设写好。**库里不按厂商分支**：需要 `if openai` 的东西放进预设或插件，不放进这里。
+库里只放每个协议都一样的东西。路径、路径里的模型、请求体的改写、测试请求体、错误分类策略这些协议差异，是 `Type` 里的 Go 值和函数，由 `sdk/pluginsdk/providers/{openai,anthropic,gemini,typesafe}` 的预设写好。**库里不按厂商分支**：需要 `if openai` 的东西放进预设或插件，不放进这里。
 
 ## 接口
 
-`Type`、`Auth`、`Route`、`Model`、`Header`、`Test`、`Request` 和预设（`sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的 `APIKey(id)`）的定义和说明在 Go 文档里（`go doc github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard`），这里只说怎么用：
+`Type`、`Auth`、`Route`、`Model`、`Header`、`Test`、`Balance`、`BalanceRequest`、`Request` 和预设（`sdk/pluginsdk/providers/{openai,anthropic,gemini,typesafe}` 的 `APIKey(id)`）的定义和说明在 Go 文档里（`go doc github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard`），这里只说怎么用：
 
 - 从预设出发得到一个 `standard.Type`（每次调用返回新的值，可以随意改），改 `ID`、`Spec`、`Routes`、`Headers` 等几处；
-- `standard.New(types...)` 得到 `*standard.Platform`：它实现 `pluginsdk.Platform`、`pluginsdk.UpstreamBuilder`、`pluginsdk.ModelLister`，SDK 用 `pluginsdk.ExecuteDefault` 跑它的 `Execute`；配置不一致时 `New` panic，插件测试里可以先调 `standard.Check(types...)`。
+- 上游同时说几家协议（中转站）时，`standard.Merge(id, spec, parts...)` 把几份预设合成一个类型（例子四）；
+- `standard.New(types...)` 得到 `*standard.Platform`：它实现 `pluginsdk.Platform`、`pluginsdk.UpstreamBuilder`、`pluginsdk.ModelLister`、`pluginsdk.BalanceReader`，SDK 用 `pluginsdk.ExecuteDefault` 跑它的 `Execute`；配置不一致时 `New` panic，插件测试里可以先调 `standard.Check(types...)`。
+
+| 字段 / 函数 | 用途 |
+|---|---|
+| `Route.Auth *Auth` | 这条路由的鉴权头；nil 用 `Type.Auth`。`Check` 对它做与类型级相同的检查 |
+| `Route.Classify *classify.Policy` | 这条路由所属协议的失败分类；nil 用 `Type.Classify`。`ClassifyError` 按 `meta.protocol` 找路由，没有协议或协议不认识时用类型的 |
+| `Type.Tests []Test` | 按协议的测试请求（每个协议至多一个，要有 `Test`）：`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个在 `Test` 或 `Tests` 里有测试的协议；列表为空（没有偏好）用 `Test`，列表不空而都没有测试时回 `FailedPrecondition`，不退回 `Test`（CONTRACTS §122.3）；`usage_protocol` 回报用的协议 |
+| `Type.Balance *Balance` | 账号余额：`Requests`（基础地址上的 GET，按顺序；`BalanceRequest.Auth` nil 用类型的鉴权，`&standard.Auth{}` 不带 Key）和 `Read`（把按顺序的回答读成 `BalanceResult`）。nil 时两个余额调用回 `UNIMPLEMENTED`；回答数与请求数不符时库直接给 TRANSIENT，`Read` 可以按下标取 |
+| `Merge(id, spec, parts...) Type` | 一个类型服务几份预设的路由，见例子四 |
+| `BalanceFailure(*BalanceAnswer) *BalanceResult` | 不是成功的回答的结果：传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED，信息带状态码和回答体开头；2xx 返回 nil |
+| `Micros(number string) (int64, bool)` | 上游答的十进制数（`"7.25"`、`"1250000"`、`"-1"`；gjson 对 JSON 数字的 `String()` 就是）换成百万分之一的整数（`BalanceResult.amount_micros`）：同一个数换个写法，**不是换算**。第六位小数之内精确，第七位四舍五入（远离零）；不是普通十进制数（含指数写法、空串）或超出 int64（约 9.2 万亿）时第二个值为 false。余额是上游的数字本身，单位是上游给的原文（没有就空），不做任何单位、汇率换算（CONTRACTS §52） |
 
 ## 一次请求怎么构造
 
@@ -27,7 +38,9 @@
    - **权威头**（运营方改不掉）：只有鉴权头（`Auth.Header`）。
 7. URL：基础地址 + `Path`，WebSocket 路由换成 ws/wss（`pluginsdk.WebSocketURL`，codex 用同一个函数）。
 
-账号测试走 `Test.Protocol` 的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表只带类型的头和鉴权，不带 `content-type`。
+第 6 步的鉴权头是路由的 `Auth`，路由没有就是类型的。
+
+账号测试走选中的测试（`Tests` 按核心给的协议顺序，核心没给协议时 `Test`）的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表和余额请求只带类型的头和鉴权（余额请求可以不带），不带 `content-type`。
 
 ## 请求体
 
@@ -236,10 +249,58 @@ func RelayKey() standard.Type {
 
 azure_openai 的两个类型从 openai 预设出发（`api-key` 鉴权、必填的资源地址、去掉 `/openai/v1` 和 `/openai`、不校验 Key 前缀、按部署名的经典路由带 `api-version`、没有模型列表、十个客户端请求头），配置在 `plugins/azure-openai/internal/azureopenai/azureopenai.go`，验收断言在同一插件的 `platform_test.go`。
 
+## 例子四：中转站（多平台 + 余额，New API、Sub2API 的形状）
+
+站点同时转发 OpenAI、Anthropic、Gemini（New API 再加 TypeSafe）协议，各协议用各自官方的鉴权头；余额是站点的接口。插件只写类型和余额的读法：
+
+```go
+// Package newapi is the platform of New API sites: one apikey type serving
+// the OpenAI, Anthropic, Gemini and TypeSafe protocols, and the key's balance.
+package newapi
+
+import (
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/gemini"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/typesafe"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+)
+
+func New() *standard.Platform { return standard.New(APIKey()) }
+
+func APIKey() standard.Type {
+	spec := apikey.Spec{RequireBaseURL: true, StripSuffixes: []string{"/v1beta", "/v1"}, Texts: …}
+	t := standard.Merge("apikey", spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
+	t.Balance = &standard.Balance{
+		Requests: []standard.BalanceRequest{
+			{Path: "/api/usage/token/"}, // the key's quota, with the key
+		},
+		Read: readBalance, // standard.BalanceFailure, then the site's number as it is, standard.Micros
+	}
+	return t
+}
+```
+
+`Merge` 做的事：
+
+- 每份预设的类型级 `Headers` 前置到它每条路由的 `Headers`，类型级 `Auth`、`Classify` 写进它每条路由的 `Auth`、`Classify`。所以 `openai.chat` 带 `Authorization: Bearer` 和 `stream_options.include_usage` 的改写，`anthropic.messages` 带 `x-api-key` 和默认的 `anthropic-version`，`gemini.generate` 带 `x-goog-api-key`、模型在路径里，各自按自己的策略分类（Anthropic 的 529 冷却 30 秒、OpenAI 的 `insufficient_quota` 停用……）。
+- 结果的类型级 `Headers` 为空、`DefaultProtocol` 为空（网关请求总带协议）；`Auth`、`Classify`、`Test`、`Models`、`Balance` 取第一份的（模型列表因此是 OpenAI 的 `GET /v1/models`、Bearer）；`Tests` 收集每一份的测试，账号测试按核心给的协议顺序选。
+- `spec` 换掉各份的凭证规则。
+- 两份有同一个协议、某份有 `FilterFields`（合并后会作用到所有协议）时 panic。
+
+Sub2API 一样，只是余额读 `{Path: "/v1/usage"}`，单位取应答的 `unit`（没有就不带），不合 TypeSafe。New API 的额度点数不带单位。读法（站点的字段）留在各插件里，不进本库。
+
+一个插件的类型服务别的插件声明的平台（New API 服务 TypeSafe 的 `typesafe` 平台）时，清单的 `platforms` 只列平台 id；平台定义只在 `providers/typesafe.Platform()`，TypeSafe 插件的清单测试断言自己清单里的平台与它相同，New API 的一致性测试把它交给 `conformance.Plugin.Platforms`。
+
+TypeSafe 本身（`providers/typesafe.APIKey(id)`）：Bearer、`content-type: application/json`、`typesafe.systemone` → `/v1/systemone`（请求体原样）、默认地址 `https://api.typesafe.ai`（去掉粘贴的 `/v1`）、`typesafe.Policy`、`jev-latest` 上的一题测试、模型列表 `GET /v1/models`（`models.#.name`）、没有余额。`typesafe.Policy` 不给客户端信息和错误类型，所以上游的错误体原样回给客户端；`detail` 只写进账号上的原因。
+
 ## 测试
 
 - `standardtest.Run(t, plugin, manifestPath, p)` 先核对插件清单（`manifestPath`）交给样例账号类型的客户端请求头与文件的 `pass_headers` 完全一致（清单改了而样例没跟上就在这里失败），再用一个 `*standard.Platform` 回放 `plugin` 的全部样例（`goldentest.Run` 加 `standardtest.Golden(p, 文件的 PassHeaders)`）：`Execute` 先像核心那样只留下文件 `pass_headers` 里的客户端请求头（样例故意多给），再调 `BuildUpstream`（`ExecuteDefault` 中继的就是它）；其余四类是同名方法，分类用样例的时钟（`ClassifyAt`）。
+- 不是样例文件那个插件的实现（例子四的合并类型）回放它也服务的协议：`standardtest.Run(t, "openai", "../../manifest.json", p, goldentest.Select(goldentest.Forwarded("apikey", openai.ProtocolChat, …)))`，只取这些协议上、账号自带基础地址的 `execute` 用例。客户端请求头按样例协议所属的平台（这里是 openai）核对。凭证规则有意不同的用例（例如中转站也去掉粘贴的 `/v1beta`，openai 预设不去）再用一个 `Select` 排除（`Case.BaseURL`）。本包 `standardtest/merged_test.go` 就是这样回放三份文件的（291 条）。
+- 余额：`pluginsdktest.Start(t, p, …)` 后 `h.Balance(ctx, account, answer)`，`answer` 按 URL 给回答（本包 `balance_test.go` 有 New API、Sub2API 两种形状）。
 - 想连同“恰好一次中继、不等待、返回 `host_usage`”一起验，用假宿主：`pluginsdktest.Start(t, p, …)` 后 `h.Execute(ctx, in).Relayed(t)`（本包 `platform_test.go` 的 `TestExecute`）。
 - `standard.Check(types...)`：类型配置能通过检查（返回 error；`New` 遇到同样的问题会 panic）。
 
-本包自己的验收只测库和预设本身：`platform_test.go`、`body_test.go`（请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键），`providers/gemini/golden_test.go` 用原样的 gemini 预设回放 gemini 的样例。插件的类型配置不在 SDK 里复制：1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）由各插件用自己的构造函数回放，azure_openai 的断言在它自己的 `platform_test.go`，CI 测试每个 `plugins/*` 模块。
+本包自己的验收只测库和预设本身：`platform_test.go`、`body_test.go`（请求体逐字节保持、改写只动自己的字节、非法 JSON 与重复键）、`merge_test.go`（路由级鉴权与分类、合并、按协议的测试）、`balance_test.go`（余额与两个辅助函数）、`providers/typesafe/typesafe_test.go`（请求字节、分类、平台定义过清单检查），`providers/gemini/golden_test.go` 用原样的 gemini 预设回放 gemini 的样例。插件的类型配置不在 SDK 里复制：1498 条冻结样例（openai 441、anthropic 343、gemini 371、relay 343）由各插件用自己的构造函数回放，azure_openai 的断言在它自己的 `platform_test.go`，CI 测试每个 `plugins/*` 模块。

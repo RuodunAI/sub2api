@@ -133,6 +133,9 @@ func TestGolden(t *testing.T) {
 ```go
 func Run(t *testing.T, plugin string, s Subject, opts ...Option) // 回放一个文件的全部样例，逐条报告差异
 func Except(name, reason string) Option                          // 声明一条已知的差异
+func Select(keep func(*Case) bool) Option                         // 只回放 keep 接受的用例（几个 Select 取交集）
+func Forwarded(accountType string, protocols ...string) func(*Case) bool // 这些协议上、该类型且自带基础地址的 execute 用例
+func (c *Case) BaseURL() (string, bool)                          // execute 用例的账号自带的 base_url
 func Load(plugin string) (*File, error)                          // 只读样例，自己遍历
 func Plugins() []string
 func (c *Case) Check(ctx context.Context, s Subject) []string    // 回放一条，返回差异
@@ -145,4 +148,5 @@ func Unwrap(message string) string
 - `Subject` 的五个函数都要给。缺一个，那一类的每条样例都报错，不会悄悄跳过。
 - `Classify` 收到样例的时钟 `now`，实现必须用它而不是系统时间（冷却到期时间在期望值里）。
 - `Execute` 的适配器负责像核心那样过滤客户端请求头：只把 `client_headers` 里 `pass_headers`（`File.PassHeaders`）列出的交给被测实现。线上是核心按清单的 `passHeaders` 过滤之后才调插件，插件不再筛；样例故意多给的头（`authorization`、`cookie` 等）因此由适配器挡掉，不出现在上游请求里仍然是被比较的结果。`standardtest.Run(t, plugin, manifestPath, p)` 就是这样做的，并且先核对插件清单（`manifestPath`）交给文件账号类型的客户端请求头与 `pass_headers` 完全一致，清单改了而样例没跟上时直接失败。
-- `Except(name, reason)` 声明的样例必须**真的不同**：声明了却与样例一致、或者名字不存在，测试失败。这样例外清单不会比它的理由活得久。
+- `Except(name, reason)` 声明的样例必须**真的不同**：声明了却与样例一致、或者名字不存在（或没被选中），测试失败。这样例外清单不会比它的理由活得久。
+- `Select` 给不是这个文件的插件、但也服务这些协议的实现用（`standard.Merge` 出的中转站类型）：`Select(Forwarded("apikey", 协议...))` 只回放这些协议上、账号自带基础地址（`Case.BaseURL`：设置里先、凭证里后，非空字符串）的 `execute` 用例，不回放凭证规则、默认地址、默认协议、别的账号类型这些本来就该不同的用例。一个用例都没选中时测试失败。样例本身不变。

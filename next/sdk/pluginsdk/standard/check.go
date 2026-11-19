@@ -14,9 +14,10 @@ import (
 // Check reports what makes types inconsistent: an empty or repeated id, a
 // base URL that is neither valid by default nor required, a header name
 // that is not a lower-case HTTP name or that only the credential may use, a
-// default or test protocol without a route, an edit on a websocket route,
-// an incomplete route, test or model listing. New calls it; a plugin's
-// tests may too.
+// default or test protocol without a route, two tests of one protocol or
+// tests without Test, an edit on a websocket route, an incomplete route,
+// test, model listing or balance. Route and balance request Auth are
+// checked like the type's. New calls it; a plugin's tests may too.
 func Check(types ...Type) error {
 	if len(types) == 0 {
 		return errors.New("no account type")
@@ -64,16 +65,52 @@ func (t *Type) check() error {
 	if slices.Contains(t.FilterFields, "") {
 		add("an empty filter field")
 	}
-	if test := t.Test; test != nil {
-		if r, ok := t.Routes[test.Protocol]; !ok || r.WebSocket {
-			add("test protocol %q has no http route", test.Protocol)
+	if t.Test != nil {
+		errs = append(errs, t.checkTest(*t.Test))
+	}
+	if len(t.Tests) > 0 && t.Test == nil {
+		add("tests without a Test")
+	}
+	seenTests := map[string]bool{}
+	for _, test := range t.Tests {
+		if seenTests[test.Protocol] {
+			add("two tests of protocol %q", test.Protocol)
 		}
-		if strings.TrimSpace(test.Model) == "" || test.Body == nil {
-			add("the test needs a model and a body")
-		}
+		seenTests[test.Protocol] = true
+		errs = append(errs, t.checkTest(test))
 	}
 	if m := t.Models; m != nil && (!strings.HasPrefix(m.Path, "/") || m.IdsPath == "") {
 		add("the model listing needs a path from / and an ids path")
+	}
+	if b := t.Balance; b != nil {
+		errs = append(errs, b.check())
+	}
+	return errors.Join(errs...)
+}
+
+func (t *Type) checkTest(test Test) error {
+	var errs []error
+	if r, ok := t.Routes[test.Protocol]; !ok || r.WebSocket {
+		errs = append(errs, fmt.Errorf("test protocol %q has no http route", test.Protocol))
+	}
+	if strings.TrimSpace(test.Model) == "" || test.Body == nil {
+		errs = append(errs, fmt.Errorf("the test of %q needs a model and a body", test.Protocol))
+	}
+	return errors.Join(errs...)
+}
+
+func (b *Balance) check() error {
+	var errs []error
+	if len(b.Requests) == 0 || b.Read == nil {
+		errs = append(errs, errors.New("the balance needs a request and Read"))
+	}
+	for _, r := range b.Requests {
+		if !strings.HasPrefix(r.Path, "/") {
+			errs = append(errs, fmt.Errorf("balance request path %q does not start with /", r.Path))
+		}
+		if r.Auth != nil {
+			errs = append(errs, r.Auth.check())
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -113,6 +150,9 @@ func (t *Type) checkRoute(r Route) error {
 	}
 	if r.WebSocket && r.Edit != nil {
 		errs = append(errs, errors.New("a websocket route has no body edit"))
+	}
+	if r.Auth != nil {
+		errs = append(errs, r.Auth.check())
 	}
 	return errors.Join(append(errs, checkHeaders("headers", r.Headers))...)
 }

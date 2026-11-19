@@ -32,6 +32,8 @@ var UsageFields = []string{
 	manifest.UsageCacheReadTokens,
 	manifest.UsageCacheCreationTokens,
 	manifest.UsageCacheCreation1h,
+	manifest.UsageImageInputTokens,
+	manifest.UsageImageOutputTokens,
 }
 
 // UsageFactTypes are the fact types usagerules.Acc.setMetric distinguishes;

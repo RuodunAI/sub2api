@@ -500,6 +500,20 @@ func (s platformServer) ParseRefreshResponse(ctx context.Context, in *pluginv1.P
 	return nil, status.Error(codes.Unimplemented, "this account type cannot refresh its credentials")
 }
 
+func (s platformServer) BuildBalanceRequest(ctx context.Context, in *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	if b, ok := s.impl.(BalanceReader); ok {
+		return b.BuildBalanceRequest(ctx, in)
+	}
+	return nil, status.Error(codes.Unimplemented, "this account type cannot read its balance")
+}
+
+func (s platformServer) ParseBalanceResponse(ctx context.Context, in *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	if b, ok := s.impl.(BalanceReader); ok {
+		return b.ParseBalanceResponse(ctx, in)
+	}
+	return nil, status.Error(codes.Unimplemented, "this account type cannot read its balance")
+}
+
 type hookServer struct {
 	pluginv1.UnimplementedHookServiceServer
 	impl Hook

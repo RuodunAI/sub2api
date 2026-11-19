@@ -1007,6 +1007,43 @@ func TestMigration0108ModelNameText(t *testing.T) {
 	require.Equal(t, want, state())
 }
 
+// 0112 adds the two image token columns of usage_logs (CONTRACTS §118):
+// bigint, NOT NULL, 0 on a row written before them; a rerun changes nothing.
+func TestMigration0112UsageImageTokens(t *testing.T) {
+	const id = "0112_usage_image_tokens.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO usage_logs (request_id, user_id, api_key_id, group_id, protocol, endpoint, status_code, success, input_tokens, output_tokens)
+		VALUES ('before-0112', 1, 1, 1, 'openai.images', '/v1/images/generations', 200, true, 70, 900)`)
+	require.NoError(t, err)
+	state := func() (cols, row string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(column_name || '=' || data_type || ',' || is_nullable || ',' || column_default, ' ' ORDER BY column_name)
+			FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'usage_logs'
+			AND column_name IN ('image_input_tokens', 'image_output_tokens')`).Scan(&cols))
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT input_tokens || ' ' || output_tokens || ' ' || image_input_tokens || ' ' || image_output_tokens
+			FROM usage_logs WHERE request_id = 'before-0112'`).Scan(&row))
+		return cols, row
+	}
+	const wantCols = "image_input_tokens=bigint,NO,0 image_output_tokens=bigint,NO,0"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	cols, row := state()
+	require.Equal(t, wantCols, cols)
+	require.Equal(t, "70 900 0 0", row)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	cols, row = state()
+	require.Equal(t, wantCols, cols)
+	require.Equal(t, "70 900 0 0", row)
+}
+
 // 0111 removes the claude_oauth plugin (CONTRACTS §116) as an uninstall
 // with purge would: its row (cascading the versions and rollouts), its
 // permission and the grants of it, its egress domains, job tasks and a
@@ -1074,4 +1111,78 @@ func TestMigration0111DropsClaudeOAuthPlugin(t *testing.T) {
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, want, state())
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
+}
+
+// 0113 lets a balance snapshot have no successful read yet (updated_at
+// NULL), adds unlimited (false for the rows there) and drops source; a
+// rerun changes nothing (CONTRACTS §52.3).
+func TestMigration0113AccountBalanceUnlimited(t *testing.T) {
+	const id = "0113_account_balance_unlimited.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('a', 'p', 't', '');
+		INSERT INTO account_balances (account_id, amount_micros, currency, source, updated_at)
+			SELECT id, 5, 'USD', 'active', now() FROM accounts WHERE name = 'a'`)
+	require.NoError(t, err)
+	state := func() string {
+		return read(`SELECT string_agg(column_name || '=' || is_nullable, ' ' ORDER BY column_name) FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'account_balances'`) + " | " +
+			read(`SELECT amount_micros || ' ' || currency || ' ' || unlimited FROM account_balances`)
+	}
+	const want = "account_id=NO amount_micros=NO currency=NO error=YES error_at=YES unlimited=NO updated_at=YES | 5 USD false"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+}
+
+// 0114 widens account_balances.currency to text, keeping the rows there,
+// so a unit of any length is stored as the upstream gave it; a rerun
+// changes nothing (CONTRACTS §52.3).
+func TestMigration0114AccountBalanceUnitText(t *testing.T) {
+	const id = "0114_account_balance_unit_text.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('a', 'p', 't', '');
+		INSERT INTO account_balances (account_id, amount_micros, currency, updated_at) SELECT id, 5, 'USD', now() FROM accounts WHERE name = 'a'`)
+	require.NoError(t, err)
+	const unit = "usd credits / 额度"
+	state := func() string {
+		return read(`SELECT data_type FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'account_balances' AND column_name = 'currency'`) + " | " +
+			read(`SELECT string_agg(amount_micros || ' ' || currency, ',' ORDER BY amount_micros) FROM account_balances`)
+	}
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, "text | 5 USD", state())
+	_, err = db.SQL.ExecContext(ctx, `WITH a AS (INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('b', 'p', 't', '') RETURNING id)
+		INSERT INTO account_balances (account_id, amount_micros, currency, updated_at) SELECT id, 7, $1, now() FROM a`, unit)
+	require.NoError(t, err)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "text | 5 USD,7 "+unit, state())
 }

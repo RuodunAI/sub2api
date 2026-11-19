@@ -168,7 +168,7 @@ export default {
   },
   protocols: {
     names: {
-      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings' },
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images', images_edit: 'Image Edits' },
       anthropic: { messages: 'Messages' },
       gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
     },
@@ -522,6 +522,7 @@ export default {
   testConnection: 'Test connection',
   testActualModel: 'Model used',
   testUpstream: 'Upstream',
+  testProtocol: 'Protocol tested',
   testUsage: 'Token usage',
   testUsageInput: 'input',
   testUsageOutput: 'output',
@@ -653,9 +654,15 @@ export default {
     refreshHint: 'Query the current account balance',
     refreshing: 'Querying',
     refreshDone: 'Balance refreshed',
-    refreshThrottled: 'Too many requests, try again in {n} seconds',
     updatedAt: 'updated {time}',
-    error: 'Query failed: {error}'
+    unread: 'Not read yet',
+    unlimited: 'Unlimited',
+    amountHint: 'The number and unit the upstream returned, shown as they are, not converted',
+    unlimitedHint: 'The upstream reports no limit for this key',
+    failed: 'Query failed',
+    errorHint: '{error} ({time})',
+    stale: 'Stale',
+    staleHint: 'The last query failed; this is the balance read before'
   },
   scopeErrors: {
     notInScope: 'Bind the account to a group you manage',

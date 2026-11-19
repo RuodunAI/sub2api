@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"maps"
+
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/gateway/convert"
@@ -67,8 +69,17 @@ type typeRoute struct {
 	resp         manifest.EndpointResp
 	respDeclared bool
 	// modelPath is the body path of the model in the upstream protocol
-	// (empty when the model travels in the path).
+	// (empty when the model travels in the path); a converter placing the
+	// client's model elsewhere names its own (convert.ModelLocator).
 	modelPath string
+	// adaptModel is the model the account type declares for the adapted
+	// client endpoint (manifest.AdaptOptions.Model), handed to the
+	// converter (convert.Options.AdaptModel).
+	adaptModel string
+	// echoModel is set when the converter says where the upstream response
+	// names the model that ran (convert.ResponseModelLocator): that model is
+	// the record's upstream_model, over the account's mapping.
+	echoModel bool
 	// streamOnly is set when the account type declares the upstream protocol
 	// in AccountPlatform.streamOnly (CONTRACTS §83): a non-streaming request
 	// is sent upstream with streamPath set to true and its SSE answer is
@@ -94,8 +105,8 @@ const upstreamLocal = "local"
 // supporting the endpoint's platform P (native), then those reaching it
 // through a core converter to a protocol of another platform they support.
 // A type supporting P is converted only when its endpoint subset on P
-// leaves the endpoint out, and then only to another endpoint of P in the
-// subset (CONTRACTS §83.3). A count_tokens request is never converted: the
+// leaves the endpoint out and its adapted entry lists it, and then only to
+// another endpoint of P in the subset (CONTRACTS §83.3). A count_tokens request is never converted: the
 // types without a native route estimate it locally when they serve the
 // generation protocol of its family (CONVERT-MATRIX §8).
 func (c *call) planRoutes() {
@@ -251,9 +262,45 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	rt.requiredAttempts = append(rt.requiredAttempts, pf.Usage.Attempts)
 	if conv != nil {
 		rt.grade, rt.hops = conv.Grade(), convert.Hops(conv)
+		if ml, ok := conv.(convert.ModelLocator); ok {
+			rt.modelPath = ml.ModelPath()
+		}
+		if rl, ok := conv.(convert.ResponseModelLocator); ok {
+			rt.usage, rt.echoModel = withModelPaths(rt.usage, rl), true
+		}
+		if !rt.cross {
+			rt.adaptModel = ap.Adapted[c.ep.ID].Model
+		}
 	}
 	c.routes[k] = rt
 	c.routeKeys = append(c.routeKeys, k)
+}
+
+// withModelPaths is rules reading the model at the converter's paths; the
+// rest of the rules, the maps of the platform included, stays as it is.
+func withModelPaths(rules manifest.UsageRules, rl convert.ResponseModelLocator) manifest.UsageRules {
+	jsonPath, ssePath := rl.ResponseModelPaths()
+	if rules.JSON != nil {
+		j := *rules.JSON
+		j.Map = withModel(j.Map, jsonPath)
+		rules.JSON = &j
+	}
+	sse := make([]manifest.SSEUsageMap, len(rules.SSE))
+	for i, s := range rules.SSE {
+		s.Map = withModel(s.Map, ssePath)
+		sse[i] = s
+	}
+	rules.SSE = sse
+	return rules
+}
+
+// withModel is a copy of a usage map (nil included) reading the model at
+// path.
+func withModel(m map[string]string, path string) map[string]string {
+	out := make(map[string]string, len(m)+1)
+	maps.Copy(out, m)
+	out[manifest.UsageModel] = path
+	return out
 }
 
 // route returns the route of an account, nil when its type cannot serve

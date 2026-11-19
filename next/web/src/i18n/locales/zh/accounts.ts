@@ -167,7 +167,7 @@ export default {
   },
   protocols: {
     names: {
-      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings' },
+      openai: { chat: 'Chat Completions', responses: 'Responses', responses_ws: 'Responses WebSocket', embeddings: 'Embeddings', images: 'Images', images_edit: 'Image Edits' },
       anthropic: { messages: 'Messages' },
       gemini: { generate: 'generateContent', stream_generate: 'streamGenerateContent' }
     },
@@ -520,6 +520,7 @@ export default {
   testConnection: '测试连接',
   testActualModel: '实际模型',
   testUpstream: '上游地址',
+  testProtocol: '测试协议',
   testUsage: 'Token 用量',
   testUsageInput: '输入',
   testUsageOutput: '输出',
@@ -644,9 +645,15 @@ export default {
     refreshHint: '查询账号当前余额',
     refreshing: '正在查询',
     refreshDone: '余额已刷新',
-    refreshThrottled: '请求过于频繁，请 {n} 秒后再试',
     updatedAt: '更新于 {time}',
-    error: '查询失败：{error}'
+    unread: '未查询',
+    unlimited: '不限',
+    amountHint: '上游返回的数字与单位，原样显示，未做换算',
+    unlimitedHint: '上游报告此 Key 不限额度',
+    failed: '查询失败',
+    errorHint: '{error}（{time}）',
+    stale: '旧值',
+    staleHint: '最近一次查询失败，显示的是上次查到的余额'
   },
   scopeErrors: {
     notInScope: '账号必须绑定到你管理的分组',

@@ -66,6 +66,14 @@ func (stub) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResponseRequ
 	return nil, nil
 }
 
+func (stub) BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return nil, nil
+}
+
+func (stub) ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return nil, nil
+}
+
 func (e ext) Package() *registry.Package { return e.pkg }
 func (e ext) Grants() registry.Grants    { return e.grants }
 func (e ext) Platform() core.PlatformPlugin {
@@ -679,4 +687,39 @@ func (stub) Execute(context.Context, *pluginv1.ExecuteRequest, core.ExecutionCli
 
 func (stub) Monitor(context.Context, *pluginv1.PollRequest, core.ExecutionHTTP) (*pluginv1.ReconcileResult, error) {
 	return nil, errors.New("stub does not monitor tasks")
+}
+
+// chatToResponses converts openai.chat to openai.responses only.
+type chatToResponses struct{}
+
+func (chatToResponses) Conversion(client, upstream string) (core.Conversion, bool) {
+	return core.Conversion{Rank: 1, Grade: "good", Hops: []string{client, upstream}}, client == "openai.chat" && upstream == "openai.responses"
+}
+
+// An account type's adapted endpoints need a core conversion to an endpoint
+// of its subset: a type listing one the core cannot convert is not bound
+// (CONTRACTS §121.1); without converters none listing any is.
+func TestAdaptedNeedsConverter(t *testing.T) {
+	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
+	bound := func(reg *registry.Registry, adapted ...string) bool {
+		m := registrytest.Manifest("cx", "1.0.0")
+		ap := manifest.AccountPlatform{Platform: manifest.PlatformOpenAI, Endpoints: []string{"responses"}, Adapted: map[string]manifest.AdaptOptions{}}
+		for _, id := range adapted {
+			ap.Adapted[id] = manifest.AdaptOptions{}
+		}
+		m.AccountTypes[0].Platforms = []manifest.AccountPlatform{ap}
+		g := reg.Publish([]registry.Extension{ext{pkg: load(t, m), grants: creds}})
+		_, ok := g.AccountType("cx", m.AccountTypes[0].ID)
+		return ok && len(g.AccountTypesForPlatform(manifest.PlatformOpenAI)) == 1
+	}
+	conv := registry.WithConverters(chatToResponses{})
+	if !bound(registry.New(conv)) || !bound(registry.New(conv), "chat_completions") {
+		t.Fatal("a type whose adapted endpoints convert must be bound")
+	}
+	if bound(registry.New(conv), "chat_completions", "images_generations") {
+		t.Fatal("a type with an adapted endpoint the core does not convert was bound")
+	}
+	if bound(registry.New(), "chat_completions") {
+		t.Fatal("without converters a type listing adapted endpoints was bound")
+	}
 }

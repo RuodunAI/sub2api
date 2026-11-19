@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, typeOf } from './flow'
+import { agentOf, callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, typeOf, withAgent } from './flow'
 
 describe('flowsFor / typeOf', () => {
   it('shows only the flow of a known type, both otherwise', () => {
@@ -14,6 +14,25 @@ describe('flowsFor / typeOf', () => {
     expect(typeOf({ type: 'codex_oauth' }, { type: 'codex_device' })).toBe('codex_oauth')
     expect(typeOf(null, { type: 'codex_device' })).toBe('codex_device')
     expect(typeOf(undefined, null)).toBe('')
+  })
+})
+
+describe('withAgent', () => {
+  it('takes the client headers the source has and keeps the rest of the base', () => {
+    const base = { access_token: '******', user_agent: 'old-ua', originator: 'old-or' }
+    expect(withAgent(base, { access_token: 'x', user_agent: 'new-ua' })).toEqual({ access_token: '******', user_agent: 'new-ua', originator: 'old-or' })
+    expect(withAgent(base, null)).toEqual(base)
+  })
+
+  it('a re-authorization keeps them', () => {
+    expect(mergeCredentials({ access_token: '******', user_agent: 'ua', originator: 'or' }, { access_token: 'at' })).toEqual({ access_token: 'at', user_agent: 'ua', originator: 'or' })
+  })
+})
+
+describe('agentOf', () => {
+  it('reads the client headers, "" where there is none or not a string', () => {
+    expect(agentOf({ access_token: 'x', user_agent: 'ua', originator: 7 })).toEqual({ user_agent: 'ua', originator: '' })
+    expect(agentOf(null)).toEqual({ user_agent: '', originator: '' })
   })
 })
 

@@ -97,6 +97,9 @@ type Service struct {
 	quotaFlight     singleflight.Group
 	quotaSweepMu    sync.Mutex
 	quotaSweepAfter int64
+	// balanceFlight merges the balance reads of one account on this node:
+	// a manual refresh and the sweep (CONTRACTS §52).
+	balanceFlight singleflight.Group
 
 	// quotaMirror is this node's copy of the quota snapshots the model
 	// availability precheck reads (quota_mirror.go); built on first use.
@@ -181,7 +184,7 @@ func (s *Service) RegisterRoutes(r *httpapi.Router) {
 	r.PermScoped("POST", "/account-types/:plugin_key/:type/proxy-ticket", s.issueProxyTicket, perm.AccountCreate, perm.AccountUpdate)
 	// Plain-text credentials: a step-up proof each time (CONTRACTS §80.2).
 	r.StepUp(core.StepUpCredentialReveal).PermScoped("POST", "/accounts/:id/credentials/reveal", s.reveal, perm.AccountCredentialView)
-	// Subscription quota and balance (CONTRACTS §44, §51).
+	// Subscription quota and balance (CONTRACTS §44, §52).
 	r.PermScoped("GET", "/accounts/:id/quota", s.getQuota, perm.AccountRead)
 	r.PermScoped("GET", "/accounts/:id/balance", s.getBalance, perm.AccountRead)
 	r.PermScoped("POST", "/accounts/:id/reset-status", s.resetStatus, perm.AccountUpdate)
@@ -228,7 +231,10 @@ func (s *Service) watchChanges(ctx context.Context) (cancel func()) {
 	if s.d.Bus != nil {
 		cancels = append(cancels, s.d.Bus.Subscribe(core.ChannelAccountChanged, s.onAccountChanged))
 		if r, ok := s.d.Bus.(core.BusReconnects); ok {
-			cancels = append(cancels, r.OnReconnect(func() { s.invalidateQuota(0) }))
+			cancels = append(cancels, r.OnReconnect(func() {
+				s.invalidate()
+				s.invalidateQuota(0)
+			}))
 		}
 	}
 	if s.d.Registry != nil {

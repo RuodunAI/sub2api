@@ -338,6 +338,9 @@ export const accounts: any[] = [
   { id: 30, name: 'chatgpt-codex', plugin_key: 'codex', type: 'codex_oauth', created_by: 1, group_ids: [1], proxy_id: null, priority: 3, weight: 1, max_concurrency: 3, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-86400), credentials: { access_token: '******', refresh_token: '******', id_token: '******', expires_at: Math.floor(Date.now() / 1000) - 600, email: 'owner@example.com', chatgpt_account_id: '8b0e6f2a-1c4d-4e9b-a7f3-5d2c9e1b0a64', plan_type: 'pro' } },
   // Automatically disabled until a release time (yellow badge); the list switch reads off and turning it on enables it by hand.
   { id: 31, name: 'relay-limited', plugin_key: 'relay', type: 'relay_key', created_by: 1, group_ids: [1], proxy_id: null, priority: 4, weight: 1, max_concurrency: 10, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'auto_disabled', status_reason: 'matched auto-disable rule: status 429', auto_disabled_until: now(3 * 3600), in_use: 0, cooldown_until: null, orphaned: false, last_used_at: now(-1800), created_at: now(-86400 * 8), credentials: { api_key: '******', base_url: 'https://relay.example.com' } },
+  // Balance (CONTRACTS §52): relay-new was never read; relay-badkey's first read failed.
+  { id: 32, name: 'relay-new', plugin_key: 'relay', type: 'relay_key', created_by: 1, group_ids: [1], proxy_id: null, priority: 5, weight: 1, max_concurrency: 10, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-120), credentials: { api_key: '******', base_url: 'https://relay.example.com' } },
+  { id: 33, name: 'relay-badkey', plugin_key: 'relay', type: 'relay_key', created_by: 1, group_ids: [1], proxy_id: null, priority: 6, weight: 1, max_concurrency: 10, schedulable: true, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, cooldown_until: null, orphaned: false, last_used_at: null, created_at: now(-3600), credentials: { api_key: '******', base_url: 'https://relay.example.com' } },
   // Its plugin was uninstalled without purge_accounts: kept as an orphaned account.
   { id: 15, name: 'legacy-vendor', plugin_key: 'legacy_vendor', type: 'apikey', created_by: null, type_label: { en: 'API key', zh: 'API Key' }, group_ids: [], proxy_id: null, priority: 10, weight: 1, max_concurrency: 5, schedulable: false, models: [], model_mapping: {}, rpm_limit: 0, tpm_limit: 0, status: 'active', status_reason: '', in_use: 0, orphaned: true, created_at: now(-86400 * 90) }
 ]
@@ -486,6 +489,39 @@ function usageOf(a: any) {
   }
 }
 
+// ---------------------------------------------------------------- balance
+// Balance of the account types that read one (CONTRACTS §52): the relay keys
+// and the demo token here. Types without one have no balance field. A read
+// (forced, or the first) asks the "upstream": relay-badkey's key is rejected,
+// the others succeed. The amount and the unit are the upstream's as they are:
+// relay-1 reads like a New API site (a quota without a unit), relay-limited
+// like a Sub2API one (unit "USD").
+const BALANCE_TYPES = new Set(['relay/relay_key', 'demo/token'])
+interface BalanceState { amount?: string; currency?: string; unlimited?: boolean; updated_at?: string; error?: string; error_at?: string }
+const balanceState = new Map<number, BalanceState>([
+  [16, { amount: '1250000.000000', updated_at: now(-240) }],
+  [18, { unlimited: true, updated_at: now(-90) }],
+  [31, { amount: '7.500000', currency: 'USD', updated_at: now(-7200), error: 'transient: upstream answered 503', error_at: now(-300) }],
+  [33, { error: 'auth_rejected: the upstream rejected the key (401)', error_at: now(-600) }]
+])
+
+/** The account's balance view; undefined when its type reads none. */
+function balanceOf(a: any) {
+  if (!BALANCE_TYPES.has(`${a.plugin_key}/${a.type}`)) return undefined
+  return { supported: true, ...balanceState.get(a.id) }
+}
+
+/** One read of the balance of a: stored on success, the failure on top of the last balance otherwise. */
+function readBalance(a: any) {
+  const st = balanceState.get(a.id) || {}
+  if (a.id === 33) {
+    balanceState.set(a.id, { ...st, error: 'auth_rejected: the upstream rejected the key (401)', error_at: now(0) })
+    return
+  }
+  const amount = st.unlimited ? {} : { amount: (Number(st.amount ?? 20) * 0.98).toFixed(6), currency: st.currency }
+  balanceState.set(a.id, { unlimited: st.unlimited, ...amount, updated_at: now(0) })
+}
+
 const withGroups = (a: any) => ({
   ...a,
   models: a.models || [],
@@ -507,6 +543,7 @@ const withGroups = (a: any) => ({
   outcomes: outcomesOf(a),
   usage: usageOf(a),
   quota: quotaOf(a),
+  balance: balanceOf(a),
   refresh: refreshOf(a),
   last_test: a.last_test ?? null,
   groups: (a.group_ids || []).map((id: number) => ({ id, name: GROUP_NAMES[id] ?? `group-${id}` }))
@@ -902,7 +939,10 @@ on('POST', '/accounts/:id/test', async (req) => {
   const requested = typeof req.body?.model === 'string' ? req.body.model : ''
   const asked = requested || (a.plugin_key === 'openai' ? 'gpt-4o-mini' : a.plugin_key === 'gemini' ? 'gemini-2.5-flash' : 'claude-haiku-4-5')
   const model = (a.model_mapping || {})[asked] || asked
-  const upstream = `${String(a.credentials?.base_url || 'https://api.anthropic.com').replace(/\/+$/, '')}${a.plugin_key === 'openai' ? '/v1/chat/completions' : '/v1/messages'}`
+  // The protocol the plugin tested (§122): the first of the model's model_protocols entry, else chat / messages.
+  const protocol = (a.model_protocols || []).find((e: { models: string[] }) => e.models.includes(asked))?.protocols[0] || (a.plugin_key === 'openai' ? 'openai.chat' : 'anthropic.messages')
+  const path = ({ 'openai.chat': '/v1/chat/completions', 'openai.responses': '/v1/responses', 'openai.embeddings': '/v1/embeddings', 'openai.images': '/v1/images/generations' } as Record<string, string>)[protocol] || '/v1/messages'
+  const upstream = `${String(a.credentials?.base_url || 'https://api.anthropic.com').replace(/\/+$/, '')}${path}`
   // Mocked outcomes: disabled = 401 (would disable), *opus* = 429 (would cool down),
   // *unknown* / *gpt-5* = 404 model not found, otherwise OK with a random latency.
   const latency = a.status === 'disabled' ? 212 : 300 + Math.round(Math.random() * (model.includes('pro') ? 6000 : 2500))
@@ -926,8 +966,8 @@ on('POST', '/accounts/:id/test', async (req) => {
       body: JSON.stringify({ id: 'msg_mock', type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'pong' }], stop_reason: 'end_turn', usage: { input_tokens: 12, output_tokens: 8 } })
     }
   }
-  out = { ...out, model, requested_model: requested, upstream }
-  a.last_test = { at: now(), ok: out.ok, latency_ms: latency, model, message: String(out.message || '') }
+  out = { ...out, model, requested_model: requested, protocol, upstream }
+  a.last_test = { at: now(), ok: out.ok, latency_ms: latency, model, protocol, message: String(out.message || '') }
   return out
 })
 // Fetch models from the upstream (CONTRACTS §19). Per plugin a fixed list; a
@@ -1046,6 +1086,14 @@ on('GET', '/accounts/:id/quota', (req) => {
   const r = scopedAccount(req, 'read')
   if (!('a' in r)) return r
   return quotaOf(r.a) || { supported: false, source: '', updated_at: null, error: '', windows: [] }
+})
+on('GET', '/accounts/:id/balance', (req) => {
+  const r = scopedAccount(req, 'read')
+  if (!('a' in r)) return r
+  const b = balanceOf(r.a)
+  if (!b) return fail(404, 'unsupported', 'account type does not support balance')
+  if (req.query.force === 'true' || (!b.updated_at && !b.error)) readBalance(r.a)
+  return balanceOf(r.a)
 })
 // Renews the credentials of an OAuth account now (CONTRACTS §48).
 on('POST', '/accounts/:id/refresh-credentials', (req) => {

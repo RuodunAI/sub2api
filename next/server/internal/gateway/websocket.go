@@ -529,7 +529,7 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 	payload := s.opening
 	s.opening = nil
 	if !opensUpstream {
-		req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt, s.pacct)
+		_, req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt, s.pacct)
 		if req == nil {
 			return reject(cl, res.err)
 		}
@@ -666,11 +666,11 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 	s.recordAccount(cl, acc.ID, rt)
 	cl.env = cl.environment(&acc.AccountRef)
 	pacct := acc.PluginAccount(cl.platform)
-	req, target, res := s.executeTurn(ctx, cl, ref, acc, rt, pacct)
+	x, req, target, res := s.executeTurn(ctx, cl, ref, acc, rt, pacct)
 	if req == nil {
 		return res
 	}
-	client, err := s.g.d.Proxies.HTTPClient(ctx, acc.ProxyID)
+	client, err := x.egress.Client, x.egressErr
 	if err != nil || client == nil {
 		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
 	}
@@ -717,32 +717,34 @@ func (s *wsSession) dial(ctx context.Context, cl *call, ref *core.AccountRef) at
 
 // executeTurn asks the session's plugin for the turn of cl on ref: the
 // message after the rewrites of an HTTP body (upstreamBody), the
-// availability guard, then Execute. It returns the relay with the address
-// check accepted for it (the handshake's, on the turn opening the
-// connection), or, without one, the result saying why.
+// availability guard, then Execute. It returns the execution, whose egress
+// the handshake goes out by, and the relay with the address check accepted
+// for it (the handshake's, on the turn opening the connection), or, without
+// one, the result saying why.
 func (s *wsSession) executeTurn(ctx context.Context, cl *call, ref *core.AccountRef, acc *core.Account, rt *typeRoute,
-	pacct *pluginv1.Account) (*pluginv1.UpstreamRequest, *url.URL, attemptResult) {
+	pacct *pluginv1.Account) (*execution, *pluginv1.UpstreamRequest, *url.URL, attemptResult) {
 	n := max(0, cl.rec.Attempts-1)
 	body, upModel, failure := cl.upstreamBody(ctx, acc, ref, rt, cl.body, n)
 	if failure != nil {
-		return nil, nil, *failure
+		return nil, nil, nil, *failure
 	}
 	if e := cl.guardAvailability(ctx, ref); e != nil {
-		return nil, nil, attemptResult{kind: attemptFailover, err: e}
+		return nil, nil, nil, attemptResult{kind: attemptFailover, err: e}
 	}
-	x := &execution{c: cl, rt: rt, acc: acc, acct: pacct, body: body, network: ctx, turn: true, opens: s.up == nil}
+	x := cl.newExecution(ctx, rt, acc, pacct, body)
+	x.turn, x.opens = true, s.up == nil
 	res, err := x.run(ctx, upModel, n)
 	if err != nil || res.Relay == nil {
-		return nil, nil, x.unrelayed(ctx, res, err)
+		return x, nil, nil, x.unrelayed(ctx, res, err)
 	}
 	target, refused := x.targetOf(ctx, res.Relay)
 	if refused != nil {
-		return nil, nil, attemptResult{kind: attemptFailover, err: refused}
+		return x, nil, nil, attemptResult{kind: attemptFailover, err: refused}
 	}
 	if m := res.Relay.GetUpstreamModel(); m != "" && m != cl.model {
 		cl.rec.UpstreamModel = m
 	}
-	return res.Relay, target, attemptResult{}
+	return x, res.Relay, target, attemptResult{}
 }
 
 // reuse admits a later turn on the session's account: it must still serve

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -46,6 +47,9 @@ type TestResult struct {
 	// RequestedModel is the model the caller chose, before the account's
 	// mapping; empty when none was given (the plugin's default).
 	RequestedModel string `json:"requested_model"`
+	// Protocol is the protocol the plugin tested (its usage_protocol); empty
+	// when it named none or failed to build the request.
+	Protocol string `json:"protocol,omitempty"`
 	// Upstream is the address the test reached, without query or fragment:
 	// they may carry the credential (Gemini style "?key=...").
 	Upstream string `json:"upstream,omitempty"`
@@ -118,10 +122,17 @@ func (s *Service) test(c *gin.Context) {
 	defer cancel()
 	// The account's model mapping applies to test calls too (CONTRACTS §18).
 	requested := strings.TrimSpace(in.Model)
-	model := requested
-	if model == "" {
-		model = a.defaultTestModel()
+	// Naming the model is what makes a test explicit (CONTRACTS §122).
+	tp := s.testProtocols(a, requested != "")
+	model, testable := tp.testModel(requested, a.testModels())
+	if !testable {
+		err := errNoTestableProtocol.WithMessage(t(ctx, "this model has no protocol to test on this account",
+			"这个模型在这个账号上没有可测试的协议")).WithDetails(map[string]any{"model": model})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: err.Message, ErrorCode: err.Code, ErrorSource: "gateway"})
+		httpapi.Fail(c, err)
+		return
 	}
+	protocols := tp.of(model)
 	if model != "" {
 		ref := core.AccountRef{ModelMapping: a.mapping()}
 		model = ref.MapModel(model)
@@ -130,8 +141,9 @@ func (s *Service) test(c *gin.Context) {
 	// A test request is not served by a client endpoint, so Account.platform
 	// is empty; the declaring plugin builds a request for the account type.
 	req, err := bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
-		Account: acct,
-		Model:   model,
+		Account:   acct,
+		Model:     model,
+		Protocols: protocols,
 	})
 	if err != nil {
 		s.recordTest(ctx, a.ID, TestResult{Model: model, Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: "plugin"})
@@ -144,6 +156,81 @@ func (s *Service) test(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
+// testProtocolSet is the protocols a test of an account may use: those of
+// its own platforms it serves natively, then those it serves adapted, in
+// the order of its type's platforms and their endpoints, without WebSocket and token-counting ones,
+// those whose endpoint says test "never" and, unless the test is explicit
+// (the request names the model), those whose endpoint says "explicit"
+// (CONTRACTS §122).
+type testProtocolSet struct {
+	protocols []string
+	rules     *core.ProtocolRules
+}
+
+// testProtocols is the set of account a; explicit when the request names
+// the model.
+func (s *Service) testProtocols(a *row, explicit bool) testProtocolSet {
+	tp := testProtocolSet{rules: a.protocolBinding().compile()}
+	g := s.gen()
+	if g == nil {
+		return tp
+	}
+	skip := map[string]bool{}
+	for _, e := range g.Endpoints() {
+		ep := e.Endpoint
+		skip[ep.Protocol] = skip[ep.Protocol] || ep.WebSocket() || ep.Test == manifest.EndpointTestNever ||
+			(ep.Test == manifest.EndpointTestExplicit && !explicit)
+	}
+	for _, sp := range s.accountServedProtocols(a) {
+		if sp.Via != viaConverted && !skip[sp.Protocol] && core.CountTokensFamily(sp.Protocol) == "" {
+			tp.protocols = append(tp.protocols, sp.Protocol)
+		}
+	}
+	return tp
+}
+
+// of lists the protocols a test of client model model is offered, most
+// preferred first (BuildTestRequestRequest.protocols): for a model, those
+// the account's protocol binding serves it on, in the order of the
+// model_protocols entry covering it when there is one.
+func (tp testProtocolSet) of(model string) []string {
+	if model == "" {
+		return tp.protocols
+	}
+	var out []string
+	for _, p := range tp.protocols {
+		if _, serves := tp.rules.Serves(model, p, false); serves {
+			out = append(out, p)
+		}
+	}
+	if order := tp.rules.ModelProtocols(model); order != nil {
+		slices.SortStableFunc(out, func(x, y string) int { return slices.Index(order, x) - slices.Index(order, y) })
+	}
+	return out
+}
+
+// testModel is the model a test asks for: the caller's, else the first of
+// models left with a protocol to test, else "" when there are no models
+// (the plugin picks its default, CONTRACTS §15.9). testable is false when
+// that model has no protocol to test, none of models has one, or there are
+// no models and the account has no protocol a test may use: the test
+// is refused, never sent with the plugin's default request (CONTRACTS §122.2).
+func (tp testProtocolSet) testModel(requested string, models []string) (model string, testable bool) {
+	if requested != "" {
+		return requested, len(tp.of(requested)) > 0
+	}
+	for _, m := range models {
+		if len(tp.of(m)) > 0 {
+			return m, true
+		}
+	}
+	return "", len(models) == 0 && len(tp.protocols) > 0
+}
+
+// errNoTestableProtocol refuses a test of a model the account serves on no
+// protocol a test may use (CONTRACTS §122.2).
+var errNoTestableProtocol = core.NewError(http.StatusBadRequest, "no_testable_protocol", "no protocol to test")
+
 // LastTest is the last console test of an account (CONTRACTS §50), shown
 // as last_test in the account views.
 type LastTest struct {
@@ -152,6 +239,8 @@ type LastTest struct {
 	LatencyMs int64     `json:"latency_ms"`
 	// Model actually requested (TestResult.model).
 	Model string `json:"model"`
+	// Protocol tested (TestResult.protocol); "" when unknown.
+	Protocol string `json:"protocol,omitempty"`
 	// Message is empty on success; on failure the plugin's reason, else the
 	// upstream message, at most maxLastTestMessage bytes.
 	Message     string `json:"message"`
@@ -191,6 +280,7 @@ func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
 		"last_test_at": gorm.Expr("now()"), "last_test_ok": res.OK, "last_test_latency_ms": min(res.LatencyMs, math.MaxInt32),
 		"last_test_model": res.Model, "last_test_message": msg, "last_test_status": res.Status,
 		"last_test_error_code": cutBytes(res.ErrorCode, 128), "last_test_error_source": res.ErrorSource,
+		"last_test_protocol": res.Protocol,
 	}).Error; err != nil {
 		slog.WarnContext(ctx, "account: record last test", "account_id", id, "err", err)
 	}
@@ -208,13 +298,14 @@ func cutBytes(s string, n int) string {
 	return s
 }
 
-// runTest sends the request the plugin built and reports what came back: the
+// runTest sends the request the plugin built through proxy proxyID, that of
+// the account's row the caller just read, and reports what came back: the
 // status and latency, the model and (credential-free) address it reached, a
 // prefix of the response body, the token usage the platform's rules find in
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
-	res := TestResult{Model: model, ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
+	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
 	}
@@ -224,7 +315,12 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		return res
 	}
 	res.Upstream = upstreamAddr(u)
-	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, proxyID != nil); err != nil {
+	eg, err := s.proxyEgress(ctx, proxyID)
+	if err != nil {
+		res.Message, res.ErrorCode = core.AsError(err).Message, core.AsError(err).Code
+		return res
+	}
+	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, eg.Proxied); err != nil {
 		res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
 		return res
 	}
@@ -247,13 +343,8 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	hc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
-	if err != nil {
-		res.Message, res.ErrorCode = core.AsError(err).Message, core.AsError(err).Code
-		return res
-	}
 	start := time.Now()
-	resp, err := hc.Do(req)
+	resp, err := eg.Client.Do(req)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.Message = transportError(res.Upstream, err)
@@ -269,7 +360,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		} else if errors.Is(err, context.Canceled) {
 			res.ErrorCode = "request_canceled"
 		}
-		res.Reason, res.Effect, _ = s.classifyTest(ctx, bt, acct, res.Model, 0, nil, nil, res.Message)
+		res.Reason, res.Effect, _ = s.classifyTest(ctx, bt, acct, res.Model, tr.GetUsageProtocol(), 0, nil, nil, res.Message)
 		return res
 	}
 	defer resp.Body.Close()
@@ -305,7 +396,7 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 			break
 		}
 	}
-	reason, effect, local := s.classifyTest(ctx, bt, acct, res.Model, resp.StatusCode, resp.Header, snippet, "")
+	reason, effect, local := s.classifyTest(ctx, bt, acct, res.Model, tr.GetUsageProtocol(), resp.StatusCode, resp.Header, snippet, "")
 	if local {
 		res.ErrorSource = "gateway"
 		res.Reason, res.Effect = reason, effect
@@ -386,7 +477,8 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 
 // classifyTest asks the plugin what a failed test means and returns the
 // reason and the account effect it would have in the gateway ("cooldown",
-// "disable" or empty), and whether the failure is local.
+// "disable" or empty), and whether the failure is local. protocol is the one
+// the plugin tested (its usage_protocol): its failure rules apply.
 //
 // It deliberately applies NO side effect: a console test never puts the
 // account into cooldown and never disables it (that is the gateway's
@@ -394,11 +486,11 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 // display only. Plugins that do not implement ClassifyError, or fail, leave
 // both values empty.
 func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
-	model string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
+	model, protocol string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), classifyTimeout)
 	defer cancel()
 	cls, err := bt.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
-		Meta:    &pluginv1.RequestMeta{Model: model},
+		Meta:    &pluginv1.RequestMeta{Model: model, Protocol: protocol},
 		Account: acct, Status: int32(status), Headers: execfetch.FirstHeaderValues(header),
 		BodyPrefix: core.ClassifyPrefix(body), TransportError: transportErr,
 	})

@@ -471,7 +471,6 @@ func (a *fakeAuth) Authenticate(_ context.Context, raw string) (*core.APIKeyPrin
 type fakePricer struct {
 	mu      sync.Mutex
 	rules   map[string]*core.PriceRule // model -> rule; missing = not configured
-	free    bool
 	params  []string
 	headers []string
 	calls   int
@@ -485,9 +484,6 @@ func (p *fakePricer) Resolve(_ context.Context, q core.PriceQuery) (*core.PriceR
 	p.queries = append(p.queries, q)
 	if r, ok := p.rules[q.Model]; ok {
 		return r, nil
-	}
-	if p.free {
-		return nil, nil
 	}
 	return nil, core.ErrPriceNotConfigured
 }
@@ -506,6 +502,14 @@ func (p *fakePlatform) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaR
 	return nil, status.Error(codes.Unimplemented, "no")
 }
 
+func (p *fakePlatform) BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "no")
+}
+
+func (p *fakePlatform) ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "no")
+}
+
 type fakeBalance struct {
 	broke map[int64]bool
 	// disconnect is the client_disconnect_policy. Zero is "precharge", not
@@ -514,6 +518,8 @@ type fakeBalance struct {
 	disconnect string
 	// outputReserve is output_reserve_tokens; zero reserves nothing.
 	outputReserve int64
+	// precharged are the prices of the pre-charges made, in order.
+	precharged []*core.PriceRule
 }
 
 func (b *fakeBalance) OutputReserveTokens(context.Context) (int64, error) {
@@ -529,6 +535,7 @@ func (b *fakeBalance) ClientDisconnectPolicy(context.Context) (string, error) {
 
 func (b *fakeBalance) PreConsumeTokens(context.Context) (int64, error) { return 500, nil }
 func (b *fakeBalance) Precharge(ctx context.Context, r *core.UsageRecord) error {
+	b.precharged = append(b.precharged, r.Price)
 	return b.CheckBalance(ctx, r.UserID)
 }
 
@@ -552,6 +559,8 @@ type fakeAccounts struct {
 	lastTypes     []core.AccountTypeKey
 	// releases holds the release time of temporary disables (CONTRACTS §69).
 	releases map[int64]time.Time
+	// proxies hands out the clients of Egress (fakeProxies when nil).
+	proxies core.ProxyDirectory
 }
 
 func newFakeAccounts() *fakeAccounts {
@@ -677,6 +686,23 @@ func (a *fakeAccounts) Load(_ context.Context, id int64) (*core.Account, error) 
 	}
 	cp := *acc
 	return &cp, nil
+}
+
+// Egress is the client of the account's proxy as the fake holds it now.
+func (a *fakeAccounts) Egress(ctx context.Context, id int64) (core.Egress, error) {
+	acc, err := a.Load(ctx, id)
+	if err != nil {
+		return core.Egress{}, err
+	}
+	a.mu.Lock()
+	p := a.proxies
+	a.mu.Unlock()
+	if p == nil {
+		p = fakeProxies{}
+	}
+	eg := core.Egress{Proxied: acc.ProxyID != nil}
+	eg.Client, err = p.HTTPClient(ctx, acc.ProxyID)
+	return eg, err
 }
 
 func (a *fakeAccounts) IsCoolingDown(_ context.Context, id int64) (bool, error) {
@@ -1143,7 +1169,7 @@ func newEnv(t *testing.T, opts ...envOpt) *env {
 	}
 	e.gw = New(Deps{
 		Redis: e.rdb, Registry: e.reg, Node: fakeNode{}, Auth: e.auth, Pricer: e.pricer, Balance: e.balance,
-		Slots: e.slots, Accounts: e.accounts, Proxies: fakeProxies{}, Settler: e.settler,
+		Slots: e.slots, Accounts: e.accounts, Settler: e.settler,
 		KeyWindows: ratelimit.NewMinute(e.rdb, "apikey"),
 		Config:     &config.Config{AllowPrivateUpstream: true}, Converters: e.conv,
 		Environment: fakeEnvironment{global: e.envGlobal},

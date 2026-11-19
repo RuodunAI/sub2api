@@ -46,7 +46,6 @@ type Deps struct {
 	Balance     core.BalanceGate
 	Slots       core.Slots
 	Accounts    core.AccountDirectory
-	Proxies     core.ProxyDirectory
 	// NetworkAccess is the administrator's plugin network access (CONTRACTS
 	// §113), which a relay's host must pass as well (allowHost); nil = no
 	// such setting (tests).

@@ -123,6 +123,7 @@ func (v *validator) accountPlatform(pf string, ap manifest.AccountPlatform, seen
 	v.accountEndpoints(pf, ap, own)
 	v.foreignFacts(pf, ap, own)
 	v.accountStreamOnly(pf, ap, own)
+	v.accountAdapted(pf, ap, own)
 	for _, proto := range sortedKeys(ap.Usage) {
 		uf := pf + ".usage." + proto
 		if own != nil {
@@ -247,6 +248,39 @@ func (v *validator) accountStreamOnly(field string, ap manifest.AccountPlatform,
 			v.add(f, "unknown_protocol", "protocol %q is not served by an endpoint of platform %q this account type supports", proto, ap.Platform)
 		case !streams:
 			v.add(f, "not_streamable", "protocol %q needs a proxy endpoint with response.stream \"sse\" and request.streamPath", proto)
+		}
+	}
+}
+
+// accountAdapted validates accountTypes[].platforms[].adapted (CONTRACTS
+// §121.1): each key is an endpoint of the platform the account type's
+// subset leaves out that the core may convert at all (neither a WebSocket
+// nor a task endpoint), and a model, when given, is a complete model id.
+// Offline packaging that cannot resolve an external platform checks the
+// models only; the install check resolves it. Whether the core converts the
+// endpoint to one of the subset is the registry's check.
+func (v *validator) accountAdapted(field string, ap manifest.AccountPlatform, own *manifest.Platform) {
+	field += ".adapted"
+	p := v.referencedPlatform(ap.Platform, own)
+	if p == nil && !v.opt.Tooling && len(ap.Adapted) > 0 {
+		v.add(field, "unknown_platform", "platform %q must be installed to validate adapted endpoints", ap.Platform)
+	}
+	for _, id := range sortedKeys(ap.Adapted) {
+		f := field + "." + id
+		if m := ap.Adapted[id].Model; m != "" && !manifest.ValidModelID(m) {
+			v.add(f+".model", "invalid", "%q is not a complete model id", m)
+		}
+		if p == nil {
+			continue
+		}
+		i := slices.IndexFunc(p.Endpoints, func(e manifest.Endpoint) bool { return e.ID == id })
+		switch {
+		case i < 0:
+			v.add(f, "unknown_endpoint", "endpoint %q does not belong to platform %q", id, ap.Platform)
+		case ap.SupportsEndpoint(id):
+			v.add(f, "native", "endpoint %q is in the account type's endpoints; only an endpoint left out is adapted", id)
+		case p.Endpoints[i].WebSocket() || p.Endpoints[i].Task != nil:
+			v.add(f, "not_convertible", "endpoint %q is a WebSocket or task endpoint, which the core never converts", id)
 		}
 	}
 }

@@ -13,6 +13,9 @@
 //     "-X main.infoProtocol=1" it reports it in GetInfo.
 //   - ValidateCredentials with credentials_json containing "crash" exits.
 //   - BuildTestRequest with model "sleep:<ms>" sleeps before answering.
+//   - BuildBalanceRequest builds a keyed GET of /balance and a public GET of
+//     /status, or answers Unimplemented for account type "none";
+//     ParseBalanceResponse echoes what it got (see ParseBalanceResponse).
 //   - Configure rejects {"reject": true}.
 //   - HTTP POST /publish publishes the body as broadcast topic "t.ping";
 //     OnBroadcast stores "<topic>:<payload>:<source node>" in KV t/broadcast.
@@ -189,6 +192,31 @@ func (s *server) BuildTestRequest(ctx context.Context, in *pluginv1.BuildTestReq
 		}
 	}
 	return &pluginv1.BuildTestRequestResponse{Method: "POST", Url: "https://upstream.example.com/test", BodyJson: "{}"}, nil
+}
+
+func (s *server) BuildBalanceRequest(_ context.Context, in *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	if in.GetAccount().GetType() == "none" {
+		return nil, status.Error(codes.Unimplemented, "test plugin reads no balance")
+	}
+	return &pluginv1.BuildBalanceRequestResponse{Requests: []*pluginv1.BalanceRequest{
+		{Url: "https://upstream.example.com/balance", Headers: map[string]string{"authorization": "Bearer " + in.GetAccount().GetCredentialsJson()}},
+		{Method: "POST", Url: "https://upstream.example.com/status", BodyJson: "{}"},
+	}}, nil
+}
+
+// ParseBalanceResponse reads the answers: amount_micros is the first
+// status times 1000 plus the second, currency the first's x-currency header,
+// unlimited a second body "unlimited", and the error message the second's
+// transport error.
+func (s *server) ParseBalanceResponse(_ context.Context, in *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	a := in.GetAnswers()
+	if len(a) != 2 {
+		return nil, status.Errorf(codes.InvalidArgument, "%d answers", len(a))
+	}
+	return &pluginv1.ParseBalanceResponseResponse{Result: &pluginv1.BalanceResult{
+		AmountMicros: int64(a[0].GetStatus())*1000 + int64(a[1].GetStatus()), Currency: a[0].GetHeaders()["x-currency"],
+		Unlimited: string(a[1].GetBody()) == "unlimited", ErrorMessage: a[1].GetTransportError(),
+	}}, nil
 }
 
 func (s *server) OnGatewayRequest(_ context.Context, in *pluginv1.GatewayRequestHookRequest) (*pluginv1.GatewayRequestHookResponse, error) {

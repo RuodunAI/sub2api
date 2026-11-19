@@ -65,6 +65,7 @@
         {
           "platform": "openai",
           "endpoints": ["chat_completions", "embeddings"],
+          "adapted": { "responses": {} },
           "passHeaders": ["openai-beta", "user-agent", "x-stainless-arch", "x-stainless-lang", "x-stainless-os", "x-stainless-package-version", "x-stainless-retry-count", "x-stainless-runtime", "x-stainless-runtime-version", "x-stainless-timeout"]
         }
       ]

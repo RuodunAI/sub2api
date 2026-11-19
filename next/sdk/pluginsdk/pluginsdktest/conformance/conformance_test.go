@@ -14,8 +14,11 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
@@ -196,6 +199,27 @@ func (f *fake) BuildTestRequest(context.Context, *pluginv1.BuildTestRequestReque
 	return &pluginv1.BuildTestRequestResponse{}, nil
 }
 
+// BuildBalanceRequest reads the balance of an apikey account (the type
+// declaring it) from the upstream's /balance.
+func (f *fake) BuildBalanceRequest(_ context.Context, in *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	if in.GetAccount().GetType() != "apikey" && f.violate != "undeclared balance" {
+		return nil, status.Error(codes.Unimplemented, "no balance")
+	}
+	host := "upstream.conformance.invalid"
+	if f.violate == "balance off the host rules" {
+		host = "elsewhere.conformance.invalid"
+	}
+	return &pluginv1.BuildBalanceRequestResponse{Requests: []*pluginv1.BalanceRequest{{Url: "https://" + host + "/balance"}}}, nil
+}
+
+func (f *fake) ParseBalanceResponse(_ context.Context, in *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	a := in.GetAnswers()[0]
+	if b := gjson.GetBytes(a.GetBody(), "balance"); (a.GetStatus() == 200 && b.Exists()) || f.violate == "reads nothing as a balance" {
+		return &pluginv1.ParseBalanceResponseResponse{Result: &pluginv1.BalanceResult{AmountMicros: b.Int(), Currency: "USD"}}, nil
+	}
+	return &pluginv1.ParseBalanceResponseResponse{Result: &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT, ErrorMessage: "unreadable"}}, nil
+}
+
 const fakeManifest = `{
   "key": "conformance-fake", "version": "1.0.0", "externalServices": ["auth.conformance.invalid", "upstream.conformance.invalid"],
   "capabilities": [{"id": "platform.adapter.v1"}, {"id": "platform.websocket.v1"}],
@@ -208,7 +232,7 @@ const fakeManifest = `{
      "request": {"modelPath": "model"}, "response": {"stream": "websocket", "nonStream": "json"}}
   ]}],
   "accountTypes": [
-    {"id": "apikey", "platforms": [{"platform": "conformance"}]},
+    {"id": "apikey", "balance": {}, "platforms": [{"platform": "conformance"}]},
     {"id": "oauth", "platforms": [{"platform": "conformance", "passHeaders": ["x-conformance-beta", "x-conformance-oauth"]}]}
   ]
 }`
@@ -294,6 +318,9 @@ func TestEveryRuleCatchesItsViolation(t *testing.T) {
 		{"ignores cancellation", "09_cancellation"},
 		{"copies the body", "10_large_body"},
 		{"response stream on a turn", "11_websocket"},
+		{"reads nothing as a balance", "12_balance"},
+		{"balance off the host rules", "12_balance"},
+		{"undeclared balance", "12_balance"},
 	} {
 		t.Run(v.violate, func(t *testing.T) {
 			if v.rule == "10_large_body" && raceEnabled {
@@ -442,3 +469,55 @@ func TestDuplicateKey(t *testing.T) {
 
 // TestRun is the one line a plugin's test needs.
 func TestRun(t *testing.T) { Run(t, fakePlugin(""), fakeCases()...) }
+
+// A platform another plugin declares (Plugin.Platforms) is known like a
+// built-in one: its protocols may be listed and its client headers are
+// handed over; without it the suite refuses the protocol.
+func TestOtherPluginsPlatform(t *testing.T) {
+	foreign := manifest.Platform{ID: "foreign", PassHeaders: []string{"x-foreign"}, Endpoints: []manifest.Endpoint{{
+		ID: "ask", Method: "POST", Path: "/v1/ask", Protocol: "foreign.ask", Kind: manifest.EndpointKindProxy,
+		Request: manifest.EndpointRequest{ModelPath: "model"}, Response: manifest.EndpointResp{NonStream: "json"},
+	}}}
+	serving := strings.Replace(fakeManifest, `{"id": "apikey", "balance": {}, "platforms": [{"platform": "conformance"}]}`,
+		`{"id": "apikey", "balance": {}, "platforms": [{"platform": "conformance"}, {"platform": "foreign"}]}`, 1)
+	if serving == fakeManifest {
+		t.Fatal("the replacement did not apply")
+	}
+	p := fakePlugin("")
+	p.Manifest = []byte(serving)
+	p.Protocols = append(p.Protocols, "foreign.ask")
+	cases := append(fakeCases(), Case{Name: "ask", Account: fakeCases()[0].Account, Body: []byte(`{"model":"m1"}`),
+		Meta: &pluginv1.RequestMeta{Protocol: "foreign.ask", Model: "m1", Endpoint: "/v1/ask"}})
+	setup := runItem(t, "setup", "", true, func(tb testing.TB) { run(tb, p, cases, func(string, func(testing.TB)) {}) })
+	if got := strings.Join(setup.failures, "\n"); !strings.Contains(got, `"foreign.ask" belongs to no endpoint`) {
+		t.Errorf("an unknown platform: %q", got)
+	}
+	p.Platforms = []manifest.Platform{foreign}
+	s, err := newSuite(p, cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.cases[len(s.cases)-1].inbound; len(got) != 1 || got["x-foreign"] == "" {
+		t.Errorf("client headers of the foreign platform: %v", got)
+	}
+}
+
+// The balance rule: a declared type is queried with unreadable answers, a
+// type without a case account fails, an undeclared one must answer
+// UNIMPLEMENTED.
+func TestBalanceRule(t *testing.T) {
+	if got := record(t, fakePlugin(""), "12_balance")["12_balance"]; len(got) != 0 {
+		t.Fatalf("a conforming balance: %v", got)
+	}
+	noOAuth := strings.Replace(fakeManifest, `{"id": "oauth", "platforms"`, `{"id": "oauth", "balance": {}, "platforms"`, 1)
+	p := fakePlugin("")
+	p.Manifest = []byte(noOAuth)
+	if got := strings.Join(record(t, p, "12_balance")["12_balance"], "\n"); !strings.Contains(got, "does not read it") {
+		t.Errorf("a declared type the plugin cannot read: %q", got)
+	}
+	spare := strings.Replace(fakeManifest, `"accountTypes": [`, `"accountTypes": [{"id": "spare", "balance": {}, "platforms": [{"platform": "conformance"}]},`, 1)
+	p.Manifest = []byte(spare)
+	if got := strings.Join(record(t, p, "12_balance")["12_balance"], "\n"); !strings.Contains(got, "no case has an account of it") {
+		t.Errorf("a declared type without a case: %q", got)
+	}
+}

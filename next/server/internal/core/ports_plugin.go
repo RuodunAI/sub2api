@@ -69,6 +69,16 @@ type PlatformPlugin interface {
 	// Unimplemented and nothing is refreshed.
 	BuildRefreshRequest(ctx context.Context, in *pluginv1.BuildRefreshRequestRequest) (*pluginv1.BuildRefreshRequestResponse, error)
 	ParseRefreshResponse(ctx context.Context, in *pluginv1.ParseRefreshResponseRequest) (*pluginv1.RefreshResult, error)
+	// BalanceQuery reads the balance of one account (CONTRACTS §52): the
+	// plugin declaring the account type builds the requests and parses the
+	// answers, the account module checks every target against the upstream
+	// host rules (CheckPluginUpstream) and sends them through the account's
+	// proxy behind netguard without following redirects. Called on the
+	// AccountTypeBinding.Client, only for types declaring manifest balance.
+	// Optional for plugins: one without them answers gRPC Unimplemented and
+	// the type has no balance.
+	BuildBalanceRequest(ctx context.Context, in *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error)
+	ParseBalanceResponse(ctx context.Context, in *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error)
 }
 
 type HookPlugin interface {

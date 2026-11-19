@@ -25,7 +25,9 @@ export const BUILTIN_PLATFORMS: Platform[] = [
     endpoints: [
       ep('chat_completions', 'POST', '/v1/chat/completions', 'openai.chat'),
       ep('responses', 'POST', '/v1/responses', 'openai.responses'),
-      ep('embeddings', 'POST', '/v1/embeddings', 'openai.embeddings')
+      ep('embeddings', 'POST', '/v1/embeddings', 'openai.embeddings'),
+      ep('images_generations', 'POST', '/v1/images/generations', 'openai.images'),
+      ep('images_edits', 'POST', '/v1/images/edits', 'openai.images_edit')
     ]
   },
   {

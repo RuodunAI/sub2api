@@ -1,4 +1,5 @@
 import { isApiError, type PluginHost } from '@sub2api/host'
+import type { FormAgent } from './flow'
 
 // Plugin-scoped host handed to register(); shared by the codex components.
 // All plugin route shapes (docs/PLUGIN-CODEX.md §4) live in this file.
@@ -60,9 +61,16 @@ export interface DevicePoll {
   interval?: number
 }
 
-/** Both logins start with the proxy ticket of the account form (CONTRACTS §117): every request of the login leaves through that proxy. */
-export const startDevice = (proxyTicket: string) => api().post<DeviceStart>('/auth/device/start', { proxy_ticket: proxyTicket })
-export const pollDevice = (sessionId: string) => api().post<DevicePoll>('/auth/device/poll', { session_id: sessionId })
+/**
+ * Every call of both logins carries a fresh proxy ticket of the account
+ * form's current proxy choice (CONTRACTS §117) and the form's current client
+ * headers: the requests of that call leave through the proxy the form names
+ * at that moment and send its User-Agent and originator ("" for the plugin
+ * settings' or built-in ones).
+ */
+export const startDevice = (proxyTicket: string, agent: FormAgent) => api().post<DeviceStart>('/auth/device/start', { proxy_ticket: proxyTicket, ...agent })
+export const pollDevice = (sessionId: string, proxyTicket: string, agent: FormAgent) =>
+  api().post<DevicePoll>('/auth/device/poll', { session_id: sessionId, proxy_ticket: proxyTicket, ...agent })
 
 // ------------------------------------------------------------------ Sign in with Codex (codex_oauth)
 
@@ -71,9 +79,9 @@ export interface OAuthStart {
   authorize_url: string
 }
 
-export const startOAuth = (proxyTicket: string) => api().post<OAuthStart>('/auth/codex/start', { proxy_ticket: proxyTicket })
-export const exchangeOAuth = (sessionId: string, callbackUrl: string) =>
-  api().post<{ credentials: CodexCredentials }>('/auth/codex/exchange', { session_id: sessionId, callback_url: callbackUrl })
+export const startOAuth = (proxyTicket: string, agent: FormAgent) => api().post<OAuthStart>('/auth/codex/start', { proxy_ticket: proxyTicket, ...agent })
+export const exchangeOAuth = (sessionId: string, callbackUrl: string, proxyTicket: string, agent: FormAgent) =>
+  api().post<{ credentials: CodexCredentials }>('/auth/codex/exchange', { session_id: sessionId, callback_url: callbackUrl, proxy_ticket: proxyTicket, ...agent })
 
 // ------------------------------------------------------------------ official usage resets
 

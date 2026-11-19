@@ -1,0 +1,21 @@
+{
+  "ui:order": ["api_key", "base_url"],
+  "api_key": {
+    "ui:widget": "secret",
+    "ui:title": { "en": "API key", "zh": "API Key" },
+    "ui:help": {
+      "en": "TypeSafe API key, sent as Authorization: Bearer. Stored encrypted and never shown again.",
+      "zh": "TypeSafe 的 API Key，以 Authorization: Bearer 发送；加密保存，保存后不再明文显示。"
+    }
+  },
+  "base_url": {
+    "ui:widget": "url-presets",
+    "ui:placeholder": { "en": "Leave empty to use https://api.typesafe.ai", "zh": "留空使用默认地址 https://api.typesafe.ai" },
+    "ui:title": { "en": "Base URL", "zh": "Base URL" },
+    "ui:options": { "presets": ["https://api.typesafe.ai"] },
+    "ui:help": {
+      "en": "Leave the default for TypeSafe; requests go to <Base URL>/v1/systemone. A trailing /v1 is removed.",
+      "zh": "使用 TypeSafe 官方接口时保持默认；请求发往 <Base URL>/v1/systemone。末尾的 /v1 会被去掉。"
+    }
+  }
+}

@@ -934,7 +934,7 @@ flowchart LR
 | 平台 | 端点 | 协议 | 错误格式 | 用量口径 |
 |---|---|---|---|---|
 | anthropic | `POST /v1/messages` · `POST /v1/messages/count_tokens`（不计费） | `anthropic.messages` · `anthropic.count_tokens` | anthropic | exclusive |
-| openai | `POST /v1/chat/completions` · `POST /v1/responses` · `POST /v1/embeddings` | `openai.chat` · `openai.responses` · `openai.embeddings` | openai | inclusive |
+| openai | `POST /v1/chat/completions` · `POST /v1/responses` · `POST /v1/embeddings` · `POST /v1/images/generations` · `POST /v1/images/edits`（JSON，CONTRACTS §118） | `openai.chat` · `openai.responses` · `openai.embeddings` · `openai.images` · `openai.images_edit` | openai | inclusive |
 | gemini | `POST /v1beta/models/{model}:generateContent` · `POST /v1beta/models/{model}:streamGenerateContent` · `POST /v1beta/models/{model}:countTokens`（不计费） | `gemini.generate` · `gemini.stream_generate` · `gemini.count_tokens` | gemini | inclusive |
 
 内置平台同时提供：API Key 读取方式（anthropic：`x-api-key`/`Authorization`；openai：`Authorization: Bearer`；gemini：`x-goog-api-key` 或 `?key=`）、模型与流式标志的位置（gemini 的模型在路径里，流式由端点决定）、转发给插件的请求字段和请求头、用量提取规则、默认粘性规则（`source=builtin`）。
@@ -1051,7 +1051,7 @@ CREATE TABLE balance_ledger (
 
 | 类别 | 内容 |
 |---|---|
-| token 变量 | `p` 输入（已扣除单独计价的部分）· `c` 输出 · `cr` 缓存读 · `cc` 缓存写（5 分钟）· `cc1h` 缓存写（1 小时）· `len` 完整上下文长度（用于分档判断，不受缓存扣除影响）· 预留 `img` `img_o` `ai` `ao` |
+| token 变量 | `p` 输入（已扣除单独计价的部分）· `c` 输出 · `cr` 缓存读 · `cc` 缓存写（5 分钟）· `cc1h` 缓存写（1 小时）· `img` 图片输入 · `img_o` 图片输出（OpenAI 生图，CONTRACTS §118：图片 token 是输入、输出的一部分，表达式计了它们就从 `p`、`c` 里扣掉，没计就留在 `p`、`c` 里按文字价算）· `len` 完整上下文长度（用于分档判断，不受缓存扣除影响）· 预留 `ai` `ao` |
 | 插件计量值 | `u("key")`：平台插件在 manifest 里声明的其他计量值（张数、秒数等）；保存时校验 key 是否已声明 |
 | 单位约定 | token 系数是**每百万 token 的美元价格**；`flat(x)` 表示 x 美元的固定费用 |
 | 函数 | `tier(名称, 值)` 标记命中的档位 · `param(路径)` 读取请求体字段 · `header(名称)` · `has(字符串, 子串)` · `hour/weekday/day/month(时区)` · `max` `min` `abs` `ceil` `floor` |
@@ -1120,7 +1120,7 @@ CREATE TABLE model_price_history (
 
 - 匹配：先按完整模型 ID 精确匹配全局价（每个模型只有一条）；再按请求的分组和 Key 所有者所在的用户组取定价规则（专属价 → 分组内定价），没有规则就用全局价
 - 费用 = 表达式结果 × 倍率。倍率是 Key 所有者在该分组的实际倍率，鉴权时算出；命中按倍数的规则时另乘规则倍数，这两个数只在一处相乘（`PriceRule.Multiplier`），预扣和结算用的是同一个乘数。命中自定义价时执行的是规则自己的表达式
-- 找不到全局价：默认拒绝请求（返回 403 `model_price_not_configured`），可配置为免费放行；这时定价规则不生效
+- 找不到全局价：拒绝请求（返回 403 `model_price_not_configured`），没有放行途径（CONTRACTS §17.3）；这时定价规则不生效
 - 编译结果按 `expr_hash` 缓存；价格变更通过 `config:changed` 广播，各节点立即生效。定价规则与全局价在同一个价格快照里，同样失效；授权、全场折扣和专属倍率不经缓存，每个请求鉴权时读库
 - 价格试算接口 `POST /api/prices/preview`：输入用量样本、请求头、请求参数，返回费用、命中档位、加价规则；页面上的计算器和保存前的预览都用它。它试的是一条全局价；“某个用户在某个分组调用某个模型实际付多少”用 `POST /pricing/quote`，它走真实计费的同一条路径（CONTRACTS §97.6）
 
@@ -1740,7 +1740,7 @@ flowchart LR
 | # | 问题 | 默认做法 |
 |---|---|---|
 | 6 | 计费币种和精度 | USD，`numeric(20,8)` |
-| 7 | 找不到模型价格 | 拒绝请求（可配置为免费放行） |
+| 7 | 找不到模型价格 | 拒绝请求（2026-11-19 起不能再配置为免费放行，CONTRACTS §17.3） |
 | 8 | 最低余额和透支 | 最低余额 0，允许短暂透支（受 API Key 并发上限约束） |
 | 9 | 旧系统数据 | 本期不导入 |
 | 10 | 敏感操作的二次验证 | ~~本期再次输入密码，以后换成 TOTP~~ 已取消（2026-10-05 用户决定）：只看登录态与 RBAC 权限，CONTRACTS §3.3 |

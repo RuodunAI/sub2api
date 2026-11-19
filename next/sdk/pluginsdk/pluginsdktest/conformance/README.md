@@ -1,6 +1,6 @@
 # 平台插件一致性套件
 
-依据 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` §14.1。每个平台插件在自己的测试里调用一次 `conformance.Run`，套件用假宿主（`pluginsdktest`）逐条检查第 1 到第 11 条规则。第 12、13 条（`ValidateCredentials` 等的标准输入、bedrock 的 SigV4 校验）不在本套件里。
+依据 `docs/DESIGN-2026-11-18-PLUGIN-FORWARDING-V2.md` §14.1。每个平台插件在自己的测试里调用一次 `conformance.Run`，套件用假宿主（`pluginsdktest`）逐条检查第 1 到第 11 条规则，外加余额设计（`docs/DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md` 3.1.7）加的 `12_balance`。转发设计 §14.1 的第 12、13 条（`ValidateCredentials` 等的标准输入、bedrock 的 SigV4 校验）不在本套件里。
 
 ## 一行调用
 
@@ -19,7 +19,8 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | 字段 | 含义 |
 |---|---|
 | `Platform` | 被测实现。`TaskMonitor`、`UsageExtractor`、`TaskSubmissionParser` 由 SDK 照常按类型断言找到 |
-| `Manifest` | 插件的 `manifest.json`，必填。套件用它起插件（`WithManifest`），清单里声明的能力决定第 11 条是否适用；第 4 条交给插件的客户端请求头也从它读 |
+| `Manifest` | 插件的 `manifest.json`，必填。套件用它起插件（`WithManifest`），清单里声明的能力决定第 11 条是否适用；第 4 条交给插件的客户端请求头、第 12 条哪些类型声明了余额也从它读 |
+| `Platforms` | 别的插件声明、本插件的账号类型服务的平台（例如 New API 服务 TypeSafe 的平台：`[]manifest.Platform{typesafe.Platform()}`）。套件像对内置平台一样从它们读端点的形式和客户端请求头；不给时这些协议在 `Run` 开始时就被拒绝 |
 | `SDK` | 传给 `pluginsdk.Register` 的其余选项，通常不用 |
 | `Config` | `Configure` 的插件设置，nil 为 `{}` |
 | `Protocols` | 插件声明的 HTTP 上游协议（不含 WebSocket 协议，它的轮次归第 11 条）。每个协议在核心会发的每种形式下都要有 HTTP 用例；有哪些形式由套件从协议的端点（内置平台的或清单里的）读出：有 `request.streamPath`（或模型由插件解析）的流式、非流式都有，`request.stream` 为真的只有流式，其余只有非流式。列了 WebSocket 协议或没有端点的协议，`Run` 在开始时就失败 |
@@ -34,7 +35,7 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | 字段 | 含义 |
 |---|---|
 | `Name` | 失败信息和例外里用的名字；默认 `<协议> stream` / `<协议> non-stream`，WebSocket 轮次再加 ` websocket` |
-| `Account` | 样例账号：类型、`credentials_json`、`settings_json` |
+| `Account` | 样例账号：类型、`credentials_json`、`settings_json`。每种类型第一个用例的账号也是第 12 条查余额的账号 |
 | `Meta` | 请求元信息：协议、模型、流式、端点等 |
 | `Body` | 核心交给插件的请求体（上游协议，改写已完成）；WebSocket 轮次是这一轮的消息 |
 | `Endpoint` | `Ordinary`（默认，不等待 + `host_usage`）、`PluginUsage`（`usageSource: "plugin"`，置 `extract_usage`）、`TaskSubmission`（任务提交，置 `task_submission`） |
@@ -45,7 +46,7 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 
 客户端请求头不由用例给：套件像核心一样，按用例账号的类型在清单里找它对协议所属平台的那一项，取那一项的 `passHeaders`，没写就取平台的（`AccountPlatform.ClientHeaders`），每个头以 `conformance-client-<名字>` 的值交给插件。核心在调插件之前已经过滤，所以套件不再交白名单外的头。账号类型不在清单里、或者它不服务协议所属的平台，`Run` 在开始时就失败。
 
-## 十一条检查
+## 十二条检查
 
 每条是一个子测试，子测试里每个用例一项。失败信息的格式是 `<用例>: <看到了什么，怎么改>`，下一行 `rule:` 写规则和设计里的章节。`08_no_sockets` 最后运行，因为它判断整个套件期间有没有拨号。
 
@@ -62,6 +63,7 @@ func TestConformance(t *testing.T) { conformance.Run(t, conformancePlugin(), con
 | `09_cancellation` | 假宿主让第一次中继或取回阻塞到它的 context 结束；插件进入后取消 `Execute` 的 context，用插件侧 gRPC 服务端的拦截器看 `Execute` 在插件一侧何时返回，必须在 2 秒内（套件自己的界限，宿主不给插件在 `Execute` 里的工作计时） |
 | `10_large_body` | 在请求体里加顶层字段 `conformance_padding` 把它补到 8 MiB（只决定计量用多大的请求体，宿主不限制请求体）；`Execute` 要完成且恰好一次中继。用 `testing.AllocsPerRun` 驱动、`runtime.MemStats.TotalAlloc` 计量每次 `Execute` 的分配，减去同样输入下一个原样转交请求体的参照插件的分配，差值不超过请求体的 4 倍。`-race` 下跳过：竞态检测会改变分配，4 倍的界限在不带它的构建里测 |
 | `11_websocket` | 声明了 `platform.websocket.v1` 就必须有 WebSocket 用例（反之亦然，`declaration` 项）。每一轮：恰好一次中继、不等待、返回 `host_usage`；URL 是 ws(s) 或 http(s) 的绝对地址；至少一个握手头；消息是合法 JSON；没有 `response_stream` |
+| `12_balance` | 每个声明了 `balance` 或有用例的账号类型一项（`balance: <类型>`），用这种类型第一个用例的账号查。声明了的：用 `Harness.Balance` 查两次，请求的主机要过清单的主机规则，回答一次全是传输错误、一次全是空的 200，两次都必须是错误结果（`error_type` 不为 0），不许 panic、不许当成余额；插件不实现 `BalanceReader`（回 `UNIMPLEMENTED`）失败；没有用例的账号可查也失败。没声明的：`BuildBalanceRequest` 必须回 `UNIMPLEMENTED`（否则读出来的余额核心从不显示） |
 
 ## 例外
 
@@ -90,3 +92,4 @@ Exceptions: []conformance.Exception{{
 - 第 6、7 条比较的是交回的请求，不比较取回（插件按账号缓存令牌是允许的）。第 7 条只能抓到请求随账号变化的复用。
 - 第 11 条没有元信息里的“传输”字段可用（`RequestMeta` 没有这个字段），WebSocket 轮次由用例的 `WebSocket` 标出，插件怎么认出它是插件自己的事（例如按 `meta.endpoint`）。
 - 不检查 `Monitor`，也不检查 `ValidateCredentials`、`ClassifyError`、`BuildTestRequest`、`BuildModelsRequest`（§14.1 第 12 条）和 SigV4（第 13 条）。
+- 第 12 条只用无法读的回答检查失败的一面；能读的回答读成什么（金额、单位、`unlimited`）由插件自己的测试钉住。

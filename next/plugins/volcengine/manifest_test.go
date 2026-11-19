@@ -371,18 +371,24 @@ func TestManifest(t *testing.T) {
 		if len(ap.Usage) != 0 {
 			t.Errorf("%s: usage must stay inherited: %+v", id, ap)
 		}
+		// The endpoints Ark serves on the built-in platform are listed, so an
+		// endpoint the core adds there (OpenAI's image generations and edits)
+		// does not reach Ark; Ark's own images are on the volcengine platform.
+		if want := []string{"chat_completions", "responses", "responses_websocket", "embeddings"}; !slices.Equal(ap.Endpoints, want) {
+			t.Errorf("%s openai endpoints = %v, want %v", id, ap.Endpoints, want)
+		}
 	}
 	if b := builtin(t); b != nil {
 		// WebSocket endpoints are only routed to plugins declaring
 		// platform.websocket.v1, which this one does not.
 		var got []string
-		for _, p := range b.Protocols() {
-			if !slices.ContainsFunc(b.Endpoints, func(e manifest.Endpoint) bool { return e.Protocol == p && e.WebSocket() }) {
-				got = append(got, p)
+		for _, e := range b.Endpoints {
+			if officialPlatforms[volcengine.PlatformID].SupportsEndpoint(e.ID) && !e.WebSocket() {
+				got = append(got, e.Protocol)
 			}
 		}
 		if !slices.Equal(got, volcengine.Protocols) {
-			t.Fatalf("built-in openai protocols %v, implemented %v", got, volcengine.Protocols)
+			t.Fatalf("served built-in openai protocols %v, implemented %v", got, volcengine.Protocols)
 		}
 		if b.Usage.Semantics != "inclusive" {
 			t.Errorf("built-in openai usage semantics = %q; Ark is inclusive too, check the override", b.Usage.Semantics)

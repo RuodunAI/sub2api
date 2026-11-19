@@ -763,7 +763,7 @@ export interface Account {
   refresh?: AccountRefresh | null
   /** Outcome of the latest test of the account (any model); null when never tested. */
   last_test?: AccountLastTest | null
-  /** Balance of the account (CONTRACTS §52); null when the type does not support balance. */
+  /** Balance of the account (CONTRACTS §52); absent when the type does not support balance. */
   balance?: AccountBalance | null
 }
 
@@ -776,6 +776,8 @@ export interface AccountLastTest {
   ok: boolean
   latency_ms: number
   model: string
+  /** Protocol the test used (CONTRACTS §122); absent for older tests. */
+  protocol?: string
   message: string
 }
 
@@ -791,18 +793,25 @@ export interface AccountRefresh {
   error: string
 }
 
-/** Balance snapshot of an account (CONTRACTS §52). */
+/**
+ * Balance of an account (CONTRACTS §52.5), read through its plugin. Only for
+ * account types that declare one; shown only, never acted on.
+ */
 export interface AccountBalance {
-  /** Decimal amount as a string (e.g., "1.23"). */
-  amount: Money
-  /** ISO 4217 currency code (e.g., "USD", "CNY"). */
-  currency: string
-  /** When the snapshot was taken. */
-  updated_at: string
-  /** Source of the balance: "active" (explicit query) or "" (passive). */
-  source: 'active' | ''
-  /** Last query error message if any. */
+  /** Always true: the account type reads balances. */
+  supported: boolean
+  /** Decimal amount of the last successful read (e.g. "1.230000"); absent before one and when unlimited. */
+  amount?: Money
+  /** The unit the upstream gave with amount, as it gave it (e.g. "USD", any text); absent when it gave none. Never converted. */
+  currency?: string
+  /** The upstream reports no limit for this account. */
+  unlimited?: boolean
+  /** When the last successful read happened; absent before one. */
+  updated_at?: string
+  /** Why the last read failed ("auth_rejected: …" or "transient: …"), cleared by a successful one. */
   error?: string
+  /** When the last read failed. */
+  error_at?: string
 }
 
 /** Answer of POST /accounts/:id/refresh-credentials. */
@@ -868,6 +877,12 @@ export interface AccountTestResult {
   model?: string
   /** The model the caller asked for (before the account's model mapping); '' for the plugin default. */
   requested_model?: string
+  /**
+   * Protocol the plugin tested (CONTRACTS §122): the first of the account's
+   * protocols for the model it has a test for; an image generation only when
+   * a model was named.
+   */
+  protocol?: string
   /** Upstream address: scheme://host + path (the server strips the query). */
   upstream?: string
   /** Snippet of the upstream response, present on success and failure (~4 KiB max). */
@@ -1049,6 +1064,9 @@ export interface UsageLog {
   cache_read_tokens: number
   cache_creation_tokens: number
   cache_creation_1h_tokens?: number
+  /** The image share of input_tokens / output_tokens (image endpoints only, CONTRACTS §118). */
+  image_input_tokens?: number
+  image_output_tokens?: number
   total_cost: Money
   /** The cost at the list price, before the group's rate. */
   standard_cost?: Money
@@ -1134,7 +1152,6 @@ export interface UsageOverview {
 
 export interface BillingSettings {
 	pre_consume_tokens: number
-  missing_price_policy: 'reject' | 'free'
   min_balance: Money
   big_cost_warning_usd: Money
   /** What a request pays when its client hangs up mid-answer (CONTRACTS §25.8). */

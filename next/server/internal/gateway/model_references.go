@@ -91,7 +91,7 @@ func (c *call) prepareReferencedPrices(ctx context.Context) *gwError {
 		if err != nil {
 			return fromCore(core.AsError(err), errTypePriceNotConfigured)
 		}
-		if rule != nil && (rule.VideoOnly || !c.ep.SupportsBillingType(rule.Mode)) {
+		if rule.VideoOnly || !c.ep.SupportsBillingType(rule.Mode) {
 			return invalidModelReference("referenced model " + ref.model + " has an incompatible billing type")
 		}
 		ref.priced = core.PricedUsage{Kind: ref.kind, Model: ref.model, Price: rule.Clone(),
@@ -247,15 +247,6 @@ func (c *call) estimatedAdditional(tokens core.UsageTokens, semantics string) []
 		out = append(out, priced)
 	}
 	return out
-}
-
-func (c *call) hasReferencedPrice() bool {
-	for _, ref := range c.modelRefs {
-		if ref.priced.Price != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func modelReferenceSnapshot(body []byte, rules []manifest.RequestModelReference) ([]string, error) {

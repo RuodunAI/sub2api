@@ -3,8 +3,9 @@
 // {mode: "native", component: "CodexAuthForm"}). The account editor mounts it
 // as <component v-model="credentials" :mode :account :errors> (plus
 // :account-type and, UI 3.20, :proxy-ticket) and calls validate() before
-// saving. Each login asks proxyTicket for the form's current proxy choice
-// when it starts, so the requests to OpenAI leave through that proxy.
+// saving. Every call of a login (start, each poll, the exchange) asks
+// proxyTicket for the form's current proxy choice, so each request to OpenAI
+// leaves through the proxy the form names at that moment.
 //
 // - Only the flow of the account type is shown (codex_device: device code,
 //   codex_oauth: Sign in with Codex); both, as tabs, when the type is not known.
@@ -12,11 +13,15 @@
 // - Editing: the current email / plan / expiry and "Re-authorize". Until a
 //   re-authorization finishes v-model is left as loaded, so the masked
 //   sensitive fields go back as "******" and the core keeps the stored tokens.
+// - The account's own User-Agent and originator (credentials user_agent /
+//   originator, empty for the plugin settings' or built-in values), kept
+//   across re-authorizations. Every call of a login sends their current
+//   values too, so the authorization requests already use them.
 import { computed, nextTick, ref, watch } from 'vue'
-import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SHint, STabs } from '@sub2api/ui'
+import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SField, SHint, SInput, STabs } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
 import { useCodexHost, type CodexCredentials } from './host'
-import { flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, type Flow } from './flow'
+import { agentOf, flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
 import DeviceFlow from './DeviceFlow.vue'
 import OAuthFlow from './OAuthFlow.vue'
 
@@ -106,8 +111,15 @@ function onAuthorized(creds: CodexCredentials) {
 function again() {
   fresh.value = null
   localError.value = ''
-  emit('update:modelValue', { ...original.value })
+  emit('update:modelValue', withAgent(original.value, props.modelValue))
   reauthOpen.value = editing.value && hasCurrent.value
+}
+
+/** The account's own client headers as the form holds them now. */
+const agent = computed(() => agentOf(props.modelValue))
+
+function setAgent(k: AgentField, v: string) {
+  emit('update:modelValue', { ...(props.modelValue || {}), [k]: v })
 }
 
 function openReauth() {
@@ -170,10 +182,21 @@ defineExpose({ validate })
     <!-- The flows: creating, or re-authorizing -->
     <STabs v-if="showFlows" v-model="tab" :tabs="tabs" size="sm" :aria-label="t('tabsLabel')" data-testid="codex-flows">
       <template #default="{ active }">
-        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
-        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" @authorized="onAuthorized" @busy="onBusy" />
+        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
+        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
       </template>
     </STabs>
+
+    <!-- The account's own client headers -->
+    <div class="cx-panel" data-testid="codex-agent">
+      <span class="cx-title">{{ t('agent.title') }}</span>
+      <SField :label="t('agent.userAgent')" :hint="t('agent.userAgentHint')" size="sm">
+        <SInput :model-value="agent.user_agent" mono autocomplete="off" spellcheck="false" placeholder="sup2api-codex/<version>" data-testid="codex-user-agent" @update:model-value="setAgent('user_agent', String($event ?? ''))" />
+      </SField>
+      <SField :label="t('agent.originator')" :hint="t('agent.originatorHint')" size="sm">
+        <SInput :model-value="agent.originator" mono autocomplete="off" spellcheck="false" placeholder="sup2api" data-testid="codex-originator" @update:model-value="setAgent('originator', String($event ?? ''))" />
+      </SField>
+    </div>
 
     <SAlert v-if="localError" tone="danger" dense data-testid="codex-validate-error">{{ localError }}</SAlert>
     <SAlert v-if="errorList.length" tone="danger" dense :title="t('serverErrors')" data-testid="codex-server-errors">

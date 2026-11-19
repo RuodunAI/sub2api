@@ -48,7 +48,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 ### 数据库：PostgreSQL 16 + GORM
 
 - 驱动是 pgx v5 的 `stdlib`，连接池是 `database/sql`，GORM 跑在上面。连接由 `runtime-contract/gormpg` 一处打开，核心、网关、插件 SDK 共用；连接池大小只由环境变量（核心 `SUB2API_PG_MAX_CONNS`、网关 `SUB2API_GATEWAY_POOL_MAX_CONNS`）或默认值决定，DSN 里不写 `pool_*` 参数。PostgreSQL 错误的 SQLSTATE、约束名也只经 `gormpg`（核心经 `store` 的同名函数）读取。
-- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0111），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
+- **表结构只以 SQL 迁移为准**：核心迁移在 `server/internal/migrations/NNNN_*.sql`（目前到 0115），已应用的文件不许再改。核心的 GORM 模型由迁移生成（`store/modelgen`，加或改迁移后在 `next/server` 下跑 `go run ./cmd/gen-models`），生成的 `internal/store/model` 不手改。运行时不跑 AutoMigrate。
 - **只用 GORM 的模型和查询构造器写语句**（`Create`、`Updates`、`Where`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()` 等；子查询和 `UNION ALL` 用 `(?)` 组合）。整条手写的 SQL 只允许出现在允许列表登记过的地方：账本的 4 条 data-modifying CTE（`billing` 的 precharge、apply、release、settle）、`store` 里非数据语句的小助手（事务级 advisory 锁、`SetLocal`、`ClockTimestamp` 等）、`DDL`、迁移执行器、`modelgen`，以及 `gormpg` 的薄组合器（`Exists`、`InsertSelect`、`NextIDs`、`RelationExists`、`TryXactLock`）。
 - 交给 GORM 的 SQL 文本必须由常量构成，**值只走 `?` 参数**；运行时选的列名经固定白名单变成 `clause.Column`/`clause.OrderByColumn`。
 - 这些规则由源码检查强制执行，检查器是 `runtime-contract/gormpg/sqlcheck`，各模块只保留自己的允许列表：核心是 `server/internal/store/gormguard`（`[raw-sql]`、`[sql-const]`、`[tx-lock]`、`[gorm-tx]`、`[pgx-import]`、`[casbin-api]` 等，说明见 `gormguard/doc.go`，允许列表在 `rawsql_test.go`），网关是 `gateway/internal/sqlguard`，SDK 与插件是 `sdk/pgdb` 的 `TestNoRawSQL`、`TestNoPgxImports`。允许列表里没有命中的条目也算失败。
@@ -155,7 +155,7 @@ cd next/plugins/<name> && go test -count=1 ./...
 
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
 - 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
-- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（九个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据）。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
+- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（十二个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据），AC39 是账号余额，AC40 是 OpenAI 生图，AC41 是 Responses 生图工具的 token 计入请求模型，AC42 是 Codex 账号经核心转换服务 OpenAI 生图。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
 
 ### 控制台（`next/web`，Node 24，npm）
 
@@ -181,7 +181,7 @@ CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。插件的�
 
 ## 读代码从哪里开始
 
-- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
+- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
 - 架构与数据模型：`next/docs/ARCHITECTURE.md` §2–§5、§13、§16。
 - 最近发生了什么：`CHANGELOG.md` 的“未发布”与最新几节。
 - 组装入口：`next/server/cmd/sub2api/main.go`、`next/server/internal/app`。
