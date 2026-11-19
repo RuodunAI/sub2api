@@ -115,14 +115,8 @@ func (u *wsUpstream) handle(w http.ResponseWriter, r *http.Request) {
 			send(map[string]any{"type": "response.created", "response": map[string]any{"id": id, "model": model}})
 		}
 		send(map[string]any{"type": "response.output_text.delta", "delta": "hi"})
-		completed := map[string]any{"id": id, "model": model, "status": "completed",
-			"usage": map[string]any{"input_tokens": wsInput, "output_tokens": wsOutput, "input_tokens_details": map[string]any{"cached_tokens": wsCacheRead}}}
-		if gjson.GetBytes(data, "input").String() == "image" { // the image tool's usage beside the turn's (CONTRACTS §120)
-			completed["tools"] = []any{map[string]any{"type": "image_generation", "model": "gpt-image-2-codex"}}
-			completed["tool_usage"] = map[string]any{"image_gen": map[string]any{"input_tokens": 39, "output_tokens": 515,
-				"output_tokens_details": map[string]any{"image_tokens": 515}}}
-		}
-		send(map[string]any{"type": "response.completed", "response": completed})
+		send(map[string]any{"type": "response.completed", "response": map[string]any{"id": id, "model": model, "status": "completed",
+			"usage": map[string]any{"input_tokens": wsInput, "output_tokens": wsOutput, "input_tokens_details": map[string]any{"cached_tokens": wsCacheRead}}}})
 	}
 }
 

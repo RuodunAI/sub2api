@@ -649,44 +649,16 @@ type AdditionalUsageRule struct {
 	// host. A conflicting model reported by the response is rejected.
 	UsePrimaryModel bool `json:"usePrimaryModel,omitempty"`
 	// Non-null request fields requiring this contract through account overrides.
-	RequiredBy []string `json:"requiredBy,omitempty"`
-	Name       string   `json:"name"`
-	// Object makes JSONPath / SSEPath name one usage object instead of an
-	// array of typed entries (CONTRACTS §120). Its model is the first one
-	// ModelSources find, else DefaultModel; it is not admitted before
-	// scheduling, so the host prices it when it reads the response. An
-	// object whose counters are all 0 is no usage.
-	Object    bool              `json:"object,omitempty"`
-	JSONPath  string            `json:"jsonPath,omitempty"`
-	SSEPath   string            `json:"ssePath,omitempty"`
-	SSEEvent  string            `json:"sseEvent,omitempty"`
-	TypePath  string            `json:"typePath"`
-	TypeValue string            `json:"typeValue"`
-	ModelPath string            `json:"modelPath"`
-	Map       map[string]string `json:"map"`
-	Semantics string            `json:"semantics"`
-	// ModelSources (object rules only) are tried in order; DefaultModel is
-	// the model when none of them names one.
-	ModelSources []UsageModelSource `json:"modelSources,omitempty"`
-	DefaultModel string             `json:"defaultModel,omitempty"`
-}
-
-// Values of UsageModelSource.From: the document a source reads.
-const (
-	UsageModelFromJSON    = "json"    // the non-streaming response body
-	UsageModelFromSSE     = "sse"     // the event carrying the usage object
-	UsageModelFromRequest = "request" // the request body as sent upstream
-)
-
-// UsageModelSource locates a model name in one document: ModelPath of the
-// first object of the array at ArrayPath whose Match fields equal the given
-// strings, or ModelPath from the document root without ArrayPath. Paths are
-// simple object paths, as in RequestModelReference.
-type UsageModelSource struct {
-	From      string            `json:"from"`
-	ArrayPath string            `json:"arrayPath,omitempty"`
-	Match     map[string]string `json:"match,omitempty"`
-	ModelPath string            `json:"modelPath"`
+	RequiredBy []string          `json:"requiredBy,omitempty"`
+	Name       string            `json:"name"`
+	JSONPath   string            `json:"jsonPath,omitempty"`
+	SSEPath    string            `json:"ssePath,omitempty"`
+	SSEEvent   string            `json:"sseEvent,omitempty"`
+	TypePath   string            `json:"typePath"`
+	TypeValue  string            `json:"typeValue"`
+	ModelPath  string            `json:"modelPath"`
+	Map        map[string]string `json:"map"`
+	Semantics  string            `json:"semantics"`
 }
 
 // Values of Endpoint.UsageSource.

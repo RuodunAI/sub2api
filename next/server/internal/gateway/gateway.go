@@ -125,9 +125,6 @@ type Gateway struct {
 	// fail; availabilityWarns throttles the precheck's logs.
 	availabilityBreakers availabilityBreakers
 	availabilityWarns    warnSampler
-	// unpricedWarns throttles the warning about additional usage the
-	// response named a model without a price for (priceResponseModel).
-	unpricedWarns warnSampler
 
 	stop chan struct{}
 	// readsAbandoned ends when AbandonReads is called (disconnect.go).
