@@ -46,7 +46,6 @@ type Deps struct {
 	Balance     core.BalanceGate
 	Slots       core.Slots
 	Accounts    core.AccountDirectory
-	Proxies     core.ProxyDirectory
 	// NetworkAccess is the administrator's plugin network access (CONTRACTS
 	// §113), which a relay's host must pass as well (allowHost); nil = no
 	// such setting (tests).
@@ -125,9 +124,6 @@ type Gateway struct {
 	// fail; availabilityWarns throttles the precheck's logs.
 	availabilityBreakers availabilityBreakers
 	availabilityWarns    warnSampler
-	// unpricedWarns throttles the warning about additional usage the
-	// response named a model without a price for (priceResponseModel).
-	unpricedWarns warnSampler
 
 	stop chan struct{}
 	// readsAbandoned ends when AbandonReads is called (disconnect.go).

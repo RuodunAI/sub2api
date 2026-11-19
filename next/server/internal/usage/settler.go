@@ -325,7 +325,7 @@ func logLost(rec *core.UsageRecord, err error) {
 }
 
 func initialStatus(rec *core.UsageRecord) string {
-	if !rec.Billable || rec.Price == nil && len(rec.Additional) == 0 && len(rec.Replacement) == 0 && rec.BillingError == "" {
+	if !rec.Billable {
 		return StatusFree
 	}
 	// A reservation charges the estimate and then waits: the row is settled
@@ -653,14 +653,12 @@ func newUsageLogRow(rec *core.UsageRecord) usageLogRow {
 	// Only billable requests retain pricing headers and parameters below.
 	detail := jsonOr(pendingDetail{Inputs: pendingInputs{Semantics: rec.UsageSemantics}}, "{}")
 	if status == StatusPending || status == StatusReserved {
-		if rec.Price != nil {
-			exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
-			if rec.Price.ID > 0 {
-				priceID = &rec.Price.ID
-			}
-			if exprHash == "" {
-				exprHash = expr.Hash(rec.Price.Expression)
-			}
+		exprHash, mode = rec.Price.ExprHash, rec.Price.Mode
+		if rec.Price.ID > 0 {
+			priceID = &rec.Price.ID
+		}
+		if exprHash == "" {
+			exprHash = expr.Hash(rec.Price.Expression)
 		}
 		detail = jsonOr(pendingDetail{Inputs: recordInputs(rec)}, "{}")
 	}
@@ -857,9 +855,15 @@ type BillingDetail struct {
 	ListCost       *decimal.Decimal          `json:"list_cost,omitempty"` // at the list price, before the rate; only when a price rule applied
 	RateMultiplier decimal.Decimal           `json:"rate_multiplier"`
 	TotalCost      decimal.Decimal           `json:"total_cost"` // charged
-	LedgerID       *int64                    `json:"ledger_id,omitempty"`
-	Inputs         pendingInputs             `json:"inputs"`
-	Attempts       int                       `json:"attempts"`
+	// The primary usage's own Cost, ListCost and TotalCost, when the record
+	// has additional items and its primary usage is priced (not replaced):
+	// Cost, ListCost and TotalCost above then sum it with every item.
+	PrimaryCost      *decimal.Decimal `json:"primary_cost,omitempty"`
+	PrimaryListCost  *decimal.Decimal `json:"primary_list_cost,omitempty"`
+	PrimaryTotalCost *decimal.Decimal `json:"primary_total_cost,omitempty"`
+	LedgerID         *int64           `json:"ledger_id,omitempty"`
+	Inputs           pendingInputs    `json:"inputs"`
+	Attempts         int              `json:"attempts"`
 }
 
 var errNotPending = errors.New("usage row is not pending")

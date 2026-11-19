@@ -10,7 +10,7 @@
   2. `codex_oauth`：Sign in with Codex，Codex CLI 自己的浏览器登录（授权码 + PKCE，2026-11-17 新增，见第 14 节）。
   - ~~`chatgpt_siwc`：OpenAI 官方第三方入口 Sign in with ChatGPT · ChatGPT plan usage~~（2026-11-17 删除，见第 14 节；下文涉及 `chatgpt_siwc` 的内容只作历史记录）。
 - 守线（写进插件说明，不做技术强制）：
-  - 请求如实标明来源：`originator: sup2api`、`User-Agent: sup2api-codex/<版本>`；**不**伪装 Codex CLI 的 UA、TLS 指纹、`x-codex-*` 头，**不**注入 Codex 官方系统提示词。
+  - 请求默认如实标明来源：`originator: sup2api`、`User-Agent: sup2api-codex/<版本>`；两者可以在账号上或插件设置里由运营方自定义（第 20 节，2026-11-18 所有者决定）。插件**不**发 `x-codex-*` 头、不仿 TLS 指纹，**不**注入 Codex 官方系统提示词。
   - 仅供账号所有者自用；把多人 ChatGPT 账号做成号池对外出售违反 OpenAI 条款（付费/托管应用需先通过 OpenAI 的 Sign in with ChatGPT 候补审批）。
 - 不做：连接池/预热、`previous_response_id` 跨连接恢复。
 
@@ -26,7 +26,7 @@
 4. 换令牌：`POST https://auth.openai.com/oauth/token`，form：`grant_type=authorization_code`、`code`、`redirect_uri=https://auth.openai.com/deviceauth/callback`、`client_id`、`code_verifier` → `{id_token, access_token, refresh_token, expires_in}`。
 5. 刷新：`POST https://auth.openai.com/oauth/token`，JSON `{"client_id", "grant_type":"refresh_token", "refresh_token", "scope":"openid profile email"}`（与旧版 `backend/internal/pkg/openai/oauth.go` 一致）；refresh token 会轮换。
 6. 身份：id_token 的 `https://api.openai.com/auth` 声明里有 `chatgpt_account_id`、`chatgpt_plan_type`；`email` 在顶层。
-7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator: sup2api`、`user-agent`、`accept: text/event-stream`，请求体带 `prompt_cache_key` 时另加 `session_id` / `conversation_id`（§16）；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
+7. 上游：`POST https://chatgpt.com/backend-api/codex/responses`，头 `authorization: Bearer <access_token>`、`chatgpt-account-id`、`originator`、`user-agent`（取值见第 20 节，默认 `sup2api` 与 `sup2api-codex/<版本>`）、`accept: text/event-stream`，请求体带 `prompt_cache_key` 时另加 `session_id` / `conversation_id`（§16）；请求体须 `store:false`、`stream:true`、带 `instructions` 字段（缺省时补空串）。WebSocket：`wss://chatgpt.com/backend-api/codex/responses` + `openai-beta: responses_websockets=2026-02-06`。
 
 ### 2.2 Sign in with ChatGPT（`chatgpt_siwc`，已删除，见第 14 节）
 
@@ -58,15 +58,16 @@
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
-  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id 与代理票据，15 分钟过期）。
-  - `POST /auth/device/poll` `{session_id}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
-  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 与代理票据存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
-  - 两个开始路由都要 `proxy_ticket`（账号表单的代理选择，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`，会话随之结束。
-  - `POST /auth/codex/exchange` `{session_id, callback_url}` → `{credentials}` 或错误。
+  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id，15 分钟过期）。
+  - `POST /auth/device/poll` `{session_id, proxy_ticket}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
+  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
+  - 开始、轮询、换令牌路由都要 `proxy_ticket`（账号表单**当前**的代理选择，界面每次调用现取一张，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`。请求没有到 OpenAI，设备码、授权码都没用掉，所以会话保留：代理改好后，下一次轮询或换令牌带着新票据就能继续。
+  - `POST /auth/codex/exchange` `{session_id, callback_url, proxy_ticket}` → `{credentials}` 或错误。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
   - `chatgpt_account_id`（两种类型都有）。
+  - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填；空或没有时用插件设置的值。
   - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
 - 网络权限（与 manifest 一致）：0.2.0 起没有 `net`，插件不开任何对外连接。`auth.openai.com`、`chatgpt.com` 列在 `externalServices`：授权请求是带代理票据的取回（第 19 节），上游请求、令牌刷新与重置次数请求都由核心经账号代理发出。（0.2.0 之前 `net` 只有 `auth.openai.com`，授权请求由插件直连。）不访问 `api.openai.com`，没有模型列表（控制台用 manifest 默认模型），也没有用量查询（窗口由核心从响应头采样，第 13 节）。
 - 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
@@ -215,7 +216,7 @@
 ## 12. 0.1.6：默认模型换成上游现有模型（2026-11-17，用户要求）
 
 - 用户反映内置模型和上游对不上，`gpt-6-astra` 请求在账号模型里没有它时被调度拒绝（`model_not_served`，503）。在 ec2pool 测试实例上对 Sign in with ChatGPT 账号获取模型（`GET /v1/models`，`visibility=="list"`）得到：`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra`。两种账号类型的 `defaultModels` 都换成这 8 个（新到旧），`DefaultTestModel` 由已不在列表里的 `gpt-5.1-codex-mini` 改为最便宜的 `gpt-6-luna`。`codex_device` 没有在线模型列表，沿用同一份；测试实例上没有设备码账号，未单独核实。
-- 生图（2026-11-18 改写）：上面这条 400 是已删除的 Sign in with ChatGPT（`chatgpt_siwc`，经 api.openai.com，第 14.3 节）账号的结果，不适用于现在的两种账号类型。Codex 后端的账号（设备码 `codex_device`、授权码 `codex_oauth`）**可以**经 Responses 的 `image_generation` 工具生图：2026-11-18 在设备码账号上实测流式、非流式都拿到图（授权码账号走同一上游，未实测）。上游的生图模型是 `gpt-image-2-codex`（应答 `tools` 回显里给出，请求没写 `model` 时也有）；Free 套餐不能用；生图消耗订阅额度比普通对话快（官方说法 3–5 倍）。生图部分按生图模型另计，是一条附加用量（CONTRACTS §118.10、§120），插件不用改；管理员要给 `gpt-image-2-codex` 录价格（OpenAI 没有公布它的单价，按 `gpt-image-2` 的价录入或自定），没有价格时对话部分照常扣费、生图部分未计费并在记录上留异常标记（§120.4）。已知限制：官方 Codex 客户端 2026-07 起改为调用 Codex 后端的 `/images/generations` 专用接口生图，网关没有这个端点，用这条路径的客户端生图不经过我们。两种账号类型的 `endpoints` 仍只有 `responses`、`responses_websocket`，不服务 `/v1/images/*`（§118.5）。
+- 生图（2026-11-18 改写）：上面这条 400 是已删除的 Sign in with ChatGPT（`chatgpt_siwc`，经 api.openai.com，第 14.3 节）账号的结果，不适用于现在的两种账号类型。Codex 后端的账号（设备码 `codex_device`、授权码 `codex_oauth`）**可以**经 Responses 的 `image_generation` 工具生图：2026-11-18 在设备码账号上实测流式、非流式都拿到图（授权码账号走同一上游，未实测）。上游的生图模型是 `gpt-image-2-codex`（应答 `tools` 回显里给出，请求没写 `model` 时也有）；Free 套餐不能用；生图消耗订阅额度比普通对话快（官方说法 3–5 倍）。生图工具的 token 计入这条请求自己的用量，按客户请求的模型的价格计（CONTRACTS §17.2、§118.10），插件不用改；`gpt-image-2-codex` 只是上游实际用的模型名，不参与计价，不需要价格。已知限制：官方 Codex 客户端 2026-07 起改为调用 Codex 后端的 `/images/generations` 专用接口生图，网关没有这个端点，用这条路径的客户端生图不经过我们。两种账号类型的 `endpoints` 仍只有 `responses`、`responses_websocket`，不服务 `/v1/images/*`（§118.5）。
 - 计费为 0 的根因不在插件：上游 SSE 标成 `application/json`，由核心按正文嗅探修复（CONTRACTS §104.1）。
 
 ## 13. 0.1.7：用量窗口以响应头为准（2026-11-17，用户要求）
@@ -300,10 +301,33 @@
 通用机制见 CONTRACTS §117 与 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)。
 
 - 现象：账号配了代理（本机 IP 到 OpenAI 不通或会被风控），但设备码申请、轮询和两种登录的换令牌是插件用自己的 `http.Client` 直连 `auth.openai.com`，从服务器本机 IP 出去。账号建好后的上游、刷新（`BuildRefreshRequest`，核心按账号 `proxy_id` 发）、重置次数（`SendAccountRequest`）一直走账号代理，不受影响；vertex 的刷新同样由核心经账号代理发。
-- 现在：`CodexAuthForm` 收到编辑器的 `proxyTicket`，两种登录开始时各要一张票据（表单当前的代理选择：已有代理、粘贴的代理串、不用代理），交给 `/auth/device/start` 或 `/auth/codex/start`，插件存进授权会话。四类请求（`/api/accounts/deviceauth/usercode`、`/api/accounts/deviceauth/token`、两种登录的 `/oauth/token`）都改成 `pluginsdk.Fetch` 带会话里的票据，核心解开票据、确认是同一个管理员、复查他能用这个代理后从代理发出；设备码的每次轮询都走同一个代理。
+- 现在：`CodexAuthForm` 收到编辑器的 `proxyTicket`，两种登录的每次调用（开始、每次轮询、换令牌）之前都调它现取一张票据（表单此刻的代理选择：已有代理、粘贴的代理串、不用代理）放进请求体；插件用这次调用的票据（`pluginsdk.RouteProxyTicket`），授权会话里不存票据。四类请求（`/api/accounts/deviceauth/usercode`、`/api/accounts/deviceauth/token`、两种登录的 `/oauth/token`）都改成 `pluginsdk.Fetch` 带这次调用的票据，核心解开票据、确认是同一个管理员、复查他能用这个代理后从代理发出。授权开始后改了代理，不中断、不用重新授权，下一次轮询或换令牌就走新代理（2026-11-19 所有者：“代理修改了，后面的请求都用新的代理走就行了呀，重新授权干嘛呢？”；最初的做法是开始时取一张存进会话，见 CONTRACTS §117.2）。
 - 发给 OpenAI 的内容不变：方法 POST、路径、请求头（`Content-Type`、`Accept: application/json`、`User-Agent: sup2api-codex/<版本>`、`Originator: sup2api`）和请求体逐字节相同（`oauth_proxy_test.go` 钉住），变的只有出口。`User-Agent` 里的版本取自代码常量 `Version`（与清单一致），所以相对线上的 0.1.11，0.2.0 发出的授权、上游、刷新、重置次数请求都带 `User-Agent: sup2api-codex/0.2.0`（原为 `sup2api-codex/0.1.11`），这是版本号本身的变化。
-- 错误：传输失败（核心发了但连不上）与以前一样：开始、换令牌回 502 `upstream_unavailable`，轮询回 `pending` 下次再问。核心拒绝发送（票据不是这个管理员的、权限被收回、代理被删）是新的 400 `proxy_refused`，轮询回 `error`，会话结束（重试没用）；界面把 `proxy_refused` 当成会话已结束，提示重新生成链接。
+- 错误：传输失败（核心发了但连不上）与以前一样：开始、换令牌回 502 `upstream_unavailable`，轮询回 `pending` 下次再问。核心拒绝发送（票据不是这个管理员的、权限被收回、代理被删）是新的 400 `proxy_refused`（开始、换令牌），轮询回 `error`。请求没有到 OpenAI，设备码、授权码都没用掉，所以**会话保留**：代理改好后，下一次轮询或再提交一次回调就带着新票据发出。界面：换令牌的 `proxy_refused` 显示为普通错误（不提示重新生成链接），再点“完成”即可；设备码界面收到轮询的 `error` 停止轮询，只提供“重新开始”（新的设备码）。OpenAI 的回答（设备码过期、授权码无效等）照旧处理。
 - 删除：插件自己的 `http.Client`、20 秒 `authTimeout`、1 MiB 读上限；清单的 `net`（沙箱不再让插件联网）。轮询锁的 ttl 原来写成 `2*authTimeout+10s`，改成同值的 50 秒。
-- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
-- 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
+- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。
+- 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；开始、轮询、换令牌各用不同的票据，每个请求带的是自己那次调用的；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答，以及拒绝后会话仍在、改好后同一会话完成）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求；开始后换一张票据，轮询和换令牌的请求体带新的；换令牌的 `proxy_refused` 不提示重新生成链接）。
 
+## 20. 0.2.0：上游会话 id 以账号 id 加盐；User-Agent 与 originator 可自定义（2026-11-18/19，审计结论，所有者决定；无迁移，版本仍是未发布的 0.2.0）
+
+审计发现两点，所有者的决定：会话 id“加上盐进行适配”，盐“直接根据账号的 id 来做”；User-Agent / originator“这个不管，但是账号上可以自定义，然后插件的设置中也可以自定义”。
+
+### 20.1 会话 id 以账号 id 加盐
+
+- 问题：`session_id` / `conversation_id` 原来是 `sha256("<api_key_id>:<prompt_cache_key>")`，而 `prompt_cache_key` 原样在请求体里发给上游；上游枚举小整数就能反推出我们内部的 API Key 编号。
+- 所有者决定“直接根据账号的 id 来做盐”（2026-11-19；此前的集群随机盐与以邮箱做盐两种方案都没有采用）。现在：`sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")`，取前 16 字节排成 UUID（version 8）。账号 id 是核心里这个账号的编号（`ExecuteRequest.account.id`，HTTP 与 WebSocket 都由 `BuildUpstream` 从同一处读），不是发给上游的 `chatgpt_account_id`；两个编号都是十进制整数，用 `:` 隔开，各部分不会混淆。账号 id 只作哈希输入，不出现在请求里。没有可用的 `prompt_cache_key` 时照旧不发。
+- 结果：同一账号上同一 Key 的同一会话每轮相同；**标识随账号不同**，同一个客户 Key 的同一会话换到另一个 ChatGPT 账号时（换号、粘性失效）标识会变，新账号上的上游提示缓存从头开始；升级后每个会话的标识变一次。
+- 局限（照实写）：账号 id 和 API Key 编号都是小整数，上游若知道算法，同时枚举两者仍能对上，盐只是把要枚举的范围扩大到两个编号的组合。
+
+### 20.2 User-Agent 与 originator
+
+- 取值（每个头各自）：账号凭证里的 `user_agent` / `originator` → 插件设置的 `user_agent` / `originator` → 内置 `sup2api-codex/<版本>` / `sup2api`。空字符串（去掉首尾空白后）表示不自定义，沿用上一级。只在 `agent.go` 一处解析（`Plugin.agent`），用在账号建好后发往 OpenAI 的全部请求：转发（HTTP 与 WebSocket 握手）、账号测试（`BuildTestRequest`）、令牌刷新（`BuildRefreshRequest`）、重置次数（`SendAccountRequest`）。
+- 授权请求（设备码申请与轮询、两种登录的换令牌）目前对所有账号——新建和重新授权都一样——只用插件设置的值，没有时用内置值，不读表单里填的账号值：授权路由不知道是哪个账号，也收不到表单的值。
+- 账号上：凭证的两个普通字段（不在 `sensitiveFields`，编辑时原样显示；不在 `settingsFields`，所以和令牌一起进 `credentials_json`，刷新、测试、重置读到的都是它）。`ValidateCredentials` 只做格式校验：必须是字符串、不能含控制字符（水平制表符除外，与发送前的检查相同）。原生表单 `CodexAuthForm` 多一块“客户端标识”，两个输入框，新建和编辑都有；重新授权保留它们（`mergeCredentials` 只替换令牌字段，`withAgent` 在“重新授权”撤回时保留表单里改过的值）。原生表单的凭证控制台不会自动渲染，所以这两个输入框写在插件的表单里；账号的 `extensionsSchema` 控制台没有渲染（`web/src` 里只有类型声明 `extensions_schema`，没有组件读它），值存进账号设置、不进 `credentials_json`（`account/creds.go` 把扩展键从凭证里拿掉），所以没有用它。
+- 插件设置：清单 `ui.settings`（`mode: "schema"`，`forms/settings.schema.json` 与 `settings.ui.json`），控制台自动渲染；两个字符串，默认空，schema 的 `pattern` 只拒绝控制字符。`Configure` 去掉首尾空白后保存在进程里，各节点各自收到。
+- 现有机制查过，不能直接满足：账号请求头覆盖（CONTRACTS §108）和参数覆盖（§84）只作用在转发上，而 codex 的头全部是权威头（§112.4，所有者定的例外），覆盖改不了；刷新、测试、重置次数、授权这些请求核心按插件交回的头原样发送，不套覆盖。
+- 内置默认值、请求头黑名单没有改。
+
+### 20.3 测试
+
+`execute_test.go`（会话头按账号 id 计算：同一账号同输入稳定、另一个账号 id 结果不同、与不加盐的旧值不同、请求的头、体、URL 都不含账号 id）、`agent_test.go`（六种组合下转发 HTTP 与 WebSocket、测试、刷新、重置次数、授权的两个头；设置不是对象时拒绝）、`upstream_test.go`（两个字段的格式校验）；界面 `CodexAuthForm.spec.ts`（编辑时显示并写回凭证、新建时就有）、`flow.spec.ts`（`withAgent`、重新授权保留）。

@@ -320,16 +320,26 @@ func withoutAccountIDs(raw json.RawMessage) json.RawMessage {
 }
 
 // Where usage_logs.billing_detail holds price expressions and their hashes:
-// in the global price behind a custom rule (core.PricingTrace), and in every
-// additional or replacement component (AdditionalBillingDetail, and the whole
-// price rule of its core.PricedUsage under inputs).
+// in the global price behind a custom rule (core.PricingTrace), at the top and
+// in the detail of every additional or replacement component
+// (AdditionalBillingDetail), and in the whole price rule of its
+// core.PricedUsage under inputs.
 var (
-	billingExpressionPaths = []string{"inputs.pricing.base.expression", "inputs.pricing.base.expr_hash"}
-	billingComponentFields = map[string]string{
-		"additional": "expression_hash", "replacement": "expression_hash",
-		"inputs.additional": "Price", "inputs.replacement": "Price",
+	billingExpressionPaths    = []string{"inputs.pricing.base.expression", "inputs.pricing.base.expr_hash"}
+	componentExpressionFields = append([]string{"expression_hash"}, prefixed("detail.", billingExpressionPaths)...)
+	billingComponentFields    = map[string][]string{
+		"additional": componentExpressionFields, "replacement": componentExpressionFields,
+		"inputs.additional": {"Price"}, "inputs.replacement": {"Price"},
 	}
 )
+
+func prefixed(prefix string, paths []string) []string {
+	out := make([]string, len(paths))
+	for i, path := range paths {
+		out[i] = prefix + path
+	}
+	return out
+}
 
 // withoutExpressions is billing_detail without the price expressions and
 // hashes in it; what the amounts were computed from stays. A detail that
@@ -342,9 +352,9 @@ func withoutExpressions(raw json.RawMessage) json.RawMessage {
 		return nil
 	}
 	paths := slices.Clone(billingExpressionPaths)
-	for list, field := range billingComponentFields {
+	for list, fields := range billingComponentFields {
 		for i := range gjson.GetBytes(raw, list).Array() {
-			paths = append(paths, list+"."+strconv.Itoa(i)+"."+field)
+			paths = append(paths, prefixed(list+"."+strconv.Itoa(i)+".", fields)...)
 		}
 	}
 	for _, path := range paths {

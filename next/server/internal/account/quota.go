@@ -414,10 +414,11 @@ type pluginAnswer struct {
 	transportError string
 }
 
-// sendPluginCall sends a request a plugin described through the account's
-// proxy (behind netguard for a direct connection). A failure is not an
-// error: the plugin is shown the transport error, as ClassifyError is; an
-// answer that cannot be read whole is such a failure.
+// sendPluginCall sends a request a plugin described through proxy proxyID,
+// that of the account's row the caller just read (behind netguard for a
+// direct connection). A failure is not an error: the plugin is shown the
+// transport error, as ClassifyError is; an answer that cannot be read whole
+// is such a failure.
 func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int64) pluginAnswer {
 	var out pluginAnswer
 	u, err := url.Parse(b.url)
@@ -425,7 +426,12 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 		out.transportError = "plugin built an invalid " + b.what + " URL"
 		return out
 	}
-	if err := s.guardUpstream(ctx, b.plugin, u, proxyID != nil); err != nil {
+	eg, err := s.proxyEgress(ctx, proxyID)
+	if err != nil {
+		out.transportError = core.AsError(err).Message
+		return out
+	}
+	if err := s.guardUpstream(ctx, b.plugin, u, eg.Proxied); err != nil {
 		out.transportError = err.Error()
 		return out
 	}
@@ -448,11 +454,7 @@ func (s *Service) sendPluginCall(ctx context.Context, b pluginCall, proxyID *int
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	hc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
-	if err != nil {
-		out.transportError = core.AsError(err).Message
-		return out
-	}
+	hc := eg.Client
 	if b.noRedirects {
 		c := *hc
 		c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }

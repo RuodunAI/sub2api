@@ -149,15 +149,6 @@ export default {
     preConsumeHint: '文本请求预占的输入 Token 下限，默认 500；本地估算超过此值时使用估算值。0 表示不设下限，最终仍按实际用量结算。视频使用插件自己的用量估算。',
     preConsumeInvalid: '请输入 0 到 100000000 之间的整数',
     title: '计费',
-    missingPolicy: '模型没有配置价格时',
-    policy: {
-      reject: '拒绝请求',
-      free: '免费放行'
-    },
-    policyHint: {
-      reject: '返回 403 model_price_not_configured。推荐：没有价格的模型不对外提供。',
-      free: '照常转发，使用记录的结算状态为"免费"。'
-    },
     minBalance: '最低余额',
     minBalanceHint: '余额不高于该值时，请求返回 402 余额不足（默认 0）。',
     bigCost: '高额费用警告阈值',

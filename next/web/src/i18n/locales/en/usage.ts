@@ -164,10 +164,14 @@ export default {
     inputs: 'Billing condition values',
     statusLabel: 'Billing status',
     ledger: 'ledger #{id}',
-    additional: 'Additional usage (each at its own model\'s price, included in the total)',
-    additionalUnpricedAnomaly: 'Additional usage {usage} has no price and was not charged (the missing price policy is reject, but the request had already been served). Configure a price for the model.',
-    additionalUnpriced: 'No price, not charged',
-    additionalKinds: { image_generation: 'Image generation tool', advisor: 'Advisor model', compaction: 'Context compaction' },
+    components: {
+      additional: 'Additional usage (each at its own model\'s price, included in the total)',
+      replacement: 'Replacement usage (each attempt round priced on its own, billed instead of the primary usage, included in the total)'
+    },
+    componentKinds: { advisor: 'Advisor model' },
+    componentRound: 'Round {round}',
+    primaryUsage: 'Primary usage',
+    componentsTotal: 'Total',
     freeNote: 'Requests rejected by hooks or failing upstream without usage are not billed.',
     status: {
       billed: 'Billed',

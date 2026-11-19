@@ -1179,29 +1179,30 @@ for (let i = 0; i < 90; i++) {
     })
   })
 }
-// A Responses request that used the image_generation tool (CONTRACTS §120): the
-// conversation at its model's price, the image tool as additional usage at the
-// image model's (2304*1.25 + 52*10 = 3400 and 39*5 + 515*30 = 15645 micro-USD).
+// A Messages request that declared an advisor model: the conversation at its
+// model's price, the advisor's tokens as additional usage at the advisor
+// model's (12000*1 + 1800*5 = 21000 and 3000*15 + 400*75 = 75000 micro-USD).
 {
   const at = new Date(Date.now() - 6 * 60000)
-  const chat = { model: 'gpt-5.6', expression: 'p*1.25 + c*10' }
-  const image = { model: 'gpt-image-2-codex', expression: 'p*5 + cr*1.25 + img*8 + img_o*30 + c*30' }
-  const imageTokens = { Input: 39, Output: 515, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0, ImageOutput: 515 }
+  const chat = { model: 'claude-haiku-4-5', expression: 'p*1 + c*5' }
+  const advisor = { model: 'claude-opus-4-1', expression: 'p*15 + c*75' }
+  const term = (label: string, quantity: number, rate: number, cost: string) => ({ tier: '', label, quantity, rate, expr: `${label}*${rate}`, cost })
+  const advisorTokens = { Input: 3000, Output: 400, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0 }
   usageRows.push({
-    id: 4996, request_id: 'req_imagetool0001', client_request_id: '', created_at: at.toISOString(),
+    id: 4996, request_id: 'req_advisor0001', client_request_id: '', created_at: at.toISOString(),
     user_id: 1, user_email: USERS[0].email, api_key_id: 1, api_key_name: `${USERS[0].name}-key`, client_ip: CLIENT_IPS[1][0],
-    group_id: GROUPS[0].id, group_name: GROUPS[0].name, account_id: 19, account_name: 'openai-main', plugin_key: 'openai', account_type: 'apikey',
-    platform: 'openai', protocol: 'openai.responses', upstream_protocol: 'openai.responses', conversion: null, endpoint: '/v1/responses',
+    group_id: GROUPS[0].id, group_name: GROUPS[0].name, account_id: 12, account_name: 'claude-main', plugin_key: 'anthropic', account_type: 'apikey',
+    platform: 'anthropic', protocol: 'anthropic.messages', upstream_protocol: 'anthropic.messages', conversion: null, endpoint: '/v1/messages',
     model: chat.model, upstream_model: chat.model, stream: true, status_code: 200, success: true, error_type: '', error_message: '',
-    input_tokens: 2304, output_tokens: 52, cache_read_tokens: 0, cache_creation_tokens: 0, cache_creation_1h_tokens: 0,
-    total_cost: money(0.019045), rate_multiplier: '1.00', billing_status: 'billed', billing_mode: 'expression', matched_tier: '',
-    price_id: null, expr_hash: remember(chat.expression), latency_ms: 21400, first_token_ms: 900, upload_ms: 40,
+    input_tokens: 12000, output_tokens: 1800, cache_read_tokens: 0, cache_creation_tokens: 0, cache_creation_1h_tokens: 0,
+    total_cost: money(0.096), rate_multiplier: '1.00', billing_status: 'billed', billing_mode: 'expression', matched_tier: '',
+    price_id: 2, expr_hash: remember(chat.expression), latency_ms: 18400, first_token_ms: 900, upload_ms: 40,
     sticky_rule: '', sticky_hit: false, hook_decisions: [],
     _detail: {
-      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 2304, c: 52, len: 2304 } }, cost: '0.019045', rate_multiplier: '1', total_cost: '0.019045',
-      additional: [{ kind: 'image_generation', model: image.model, price_id: 9001, expression_hash: remember(image.expression),
-        detail: { expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 39, img_o: 515, c: 0, len: 39 } }, cost: '0.015645', rate_multiplier: '1', total_cost: '0.015645' } }],
-      inputs: { semantics: 'inclusive', additional: [{ Kind: 'image_generation', Model: image.model, UsageSemantics: 'inclusive', Tokens: imageTokens, RateMultiplier: '1' }] }
+      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 12000, c: 1800, len: 12000 }, items: [term('p', 12000, 1, '0.012'), term('c', 1800, 5, '0.009')], subtotal: '0.021', base: '0.021', rules_multiplier: '1' }, cost: '0.096', rate_multiplier: '1', total_cost: '0.096', primary_cost: '0.021', primary_total_cost: '0.021',
+      additional: [{ kind: 'advisor', model: advisor.model, price_id: 5, expression_hash: remember(advisor.expression),
+        detail: { expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 3000, c: 400, len: 3000 }, items: [term('p', 3000, 15, '0.045'), term('c', 400, 75, '0.03')], subtotal: '0.075', base: '0.075', rules_multiplier: '1' }, cost: '0.075', rate_multiplier: '1', total_cost: '0.075' } }],
+      inputs: { semantics: 'inclusive', additional: [{ Kind: 'advisor', Model: advisor.model, UsageSemantics: 'inclusive', Tokens: advisorTokens, RateMultiplier: '1' }] }
     },
     _price: null
   })
@@ -1662,7 +1663,6 @@ on('GET', '/me/ledger', (req) => paginate(ledgerFilter(ledgerRows.filter((l) => 
 
 const billingSettings = {
   pre_consume_tokens: 500,
-  missing_price_policy: 'reject',
   min_balance: '0',
   big_cost_warning_usd: '10',
   client_disconnect_policy: 'continue'
@@ -1688,15 +1688,12 @@ on('PUT', '/settings/billing', (req) => {
   // A null pointer field binds as left out, as in Go.
   if (b.client_disconnect_policy === null) delete b.client_disconnect_policy
   if (!disconnectBinds(b)) return fail(400, 'invalid_argument', 'invalid request body')
-  if (!['reject', 'free'].includes(b.missing_price_policy)) {
-    return fail(400, 'invalid_argument', 'invalid', { fields: [{ field: 'missing_price_policy', code: 'enum', message: 'must be reject or free' }] })
-  }
   if (!Number.isInteger(b.pre_consume_tokens) || b.pre_consume_tokens < 0 || b.pre_consume_tokens > 100000000) {
     return fail(400, 'invalid_argument', 'invalid', { fields: [{ field: 'pre_consume_tokens', code: 'invalid', message: 'must be an integer from 0 to 100000000' }] })
   }
   const fields = disconnectFields(b)
   if (fields.length) return fail(400, 'invalid_argument', 'invalid', { fields })
-  Object.assign(billingSettings, { pre_consume_tokens: b.pre_consume_tokens, missing_price_policy: b.missing_price_policy, min_balance: String(b.min_balance), big_cost_warning_usd: String(b.big_cost_warning_usd) })
+  Object.assign(billingSettings, { pre_consume_tokens: b.pre_consume_tokens, min_balance: String(b.min_balance), big_cost_warning_usd: String(b.big_cost_warning_usd) })
   if (b.client_disconnect_policy !== undefined) billingSettings.client_disconnect_policy = b.client_disconnect_policy
   return billingSettings
 })

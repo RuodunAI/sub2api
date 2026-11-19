@@ -160,9 +160,9 @@ return pluginsdk.NewUpstream(req.Method, req.URL.String()). // the URL as signed
 - 不限次数、不限大小：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`truncated` 字段已删除）；URL、请求头、请求体也不限大小（CONTRACTS §112.16；`FetchLimit`、`FetchResponseLimit` 已删除）。没有了次数上限，循环取回的插件要自己保证会停。传输失败不是错误：回答的 `status` 为 0、`transport_error` 有值（文字固定，原因只进核心日志）。
 - 不需要 `net` 授权。取回在主请求之前失败时可以安全换号：返回 `Classified(c)`（或自己 `ReportClassification(c)`）让核心按分类裁决。
 - **建账号之前的授权**（设备码、OAuth 换令牌等，账号还不存在）也用 `Fetch`，在插件自己的管理路由里发，带上账号表单的代理票据（CONTRACTS §117）：
-  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），开始授权时调用它拿一张票据，交给插件的开始路由（约定字段 `proxy_ticket`）；
-  - 插件把票据和授权会话存在一起（`pluginsdk.SaveCallerSession`），这次授权的每个请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单选的代理发出（没选就直连），插件看不到代理；
-  - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不再可用，重试没用）；
+  - 原生账号表单收到 prop `proxyTicket`（`@sub2api/host` 的 `ProxyTicketSource`，UI 3.20），**每次**调用插件的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都调用它现取一张票据，放进请求体（约定字段 `proxy_ticket`）；
+  - 插件用 `pluginsdk.RouteProxyTicket(req)` 读这次调用的票据（缺了回 400），这次调用里的请求都 `Fetch(ctx, &pluginv1.ExecutionHTTPRequest{..., ProxyTicket: ticket})`，核心从表单**此刻**选的代理发出（没选就直连），插件看不到代理。票据不要存进授权会话沿用：授权开始后管理员改了代理，下一次调用就该走新代理；
+  - 路由调用里的取回只能到 `externalServices`，必须带票据；票据只对发它的那个用户、这个插件有效，核心每次按该用户当时的权限复查。传输失败是 `transport_error`（可以重试），RPC 错误是核心拒绝发送（票据或代理不可用）：请求没有发出，不要因此结束授权会话，管理员把表单的代理改好后，下一次调用带着新票据就能发出；
   - 不需要 `net`。codex 是范例（`plugins/codex/internal/codex/oauth.go`）；测试里 `Harness.DoAs` 会给路由调用发执行令牌，假宿主要求路由取回带票据，用 `ExecuteHTTPFunc` 看到它。
 - 插件自己的其他对外连接（Webhook、SMTP 等，不是转发、不是取回、也不是建账号前的授权）走出口隧道，需要 `net` 授权，还要通过管理员在“系统设置 → 插件联网”里的域名设置（默认放行，可以屏蔽某些域名，或改为只允许列出的域名，CONTRACTS §113）。被拒的拨号返回错误、在插件的外部访问日志里写明原因；插件要把这类错误当成配置问题报告，不要重试。这项设置同样管核心替插件发出的请求：中继、取回、`SendAccountRequest` 被它拒绝时与主机规则拒绝时一样（`Relay` 换号，取回和 `SendAccountRequest` 回 `PERMISSION_DENIED`，信息写明是插件联网的屏蔽或允许列表）；配额查询、凭证续期的请求被拒时插件拿到 `transport_error`（`status` 0），按传输失败处理；账号测试和拉取模型列表的失败显示给管理员。这类拒绝不要重试，也记在插件的外部访问日志里。
 
@@ -225,7 +225,7 @@ func (p *Plugin) Monitor(ctx context.Context, in *pluginv1.PollRequest) (*plugin
 
 “账号 = API Key + 基础地址，请求 = 基础地址上按上游协议选的路由，Key 在请求头里”这一类账号类型，用 `sdk/pluginsdk/standard` 实现全部平台接口：openai、gemini、relay、azure_openai 四个插件和 anthropic 的 `apikey` 类型都是这样写的。它是链接进插件自己进程的 Go 库，不是运行器，也没有清单字段：插件用 Go 写一个 `standard.Type`（通常从 `sdk/pluginsdk/providers/{openai,anthropic,gemini}` 的预设 `APIKey(id)` 出发再改几处），交给 `standard.New`，得到的 `*standard.Platform` 实现 `Platform`、`UpstreamBuilder`、`ModelLister`、`BalanceReader`，SDK 用 `ExecuteDefault` 跑它的 `Execute`。接口、构造步骤和完整例子见 [`sdk/pluginsdk/standard/README.md`](../sdk/pluginsdk/standard/README.md)。
 
-一个上游同时说几家协议（中转站：New API、Sub2API）时，用 `standard.Merge(id, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), …)` 把几份预设合成一个类型：每条路由保留自己那份预设的鉴权头（OpenAI `Authorization: Bearer`、Anthropic `x-api-key` 加默认 `anthropic-version`、Gemini `x-goog-api-key`）、请求头和失败分类（路由级的 `Route.Auth`、`Route.Classify`）；`spec` 换掉各预设的凭证规则（中转站的地址必填、没有默认）。账号测试按核心给的协议顺序选（`Type.Tests`，合并时收集各份的测试）：运营方用协议绑定只开 Messages 的账号就测 Messages。账号余额写 `Type.Balance`：基础地址上的一个或几个 GET（`BalanceRequest.Auth: &standard.Auth{}` 的请求不带 Key），`Read` 把按顺序的回答读成结果，`standard.BalanceFailure`（传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED）和 `standard.Micros`（把上游答的十进制数换成 `amount_micros` 的百万分之一整数，同一个数换个写法）帮着读；**余额是上游的数字本身，单位（`currency` 字段）是上游给的原文、没给就留空，不做任何单位或汇率换算**（CONTRACTS §52）；清单里同时写 `"balance": {}`。TypeSafe 的平台定义与预设在 `sdk/pluginsdk/providers/typesafe`（`Platform()` 是平台的唯一来源，`APIKey(id)` 是预设）。
+一个上游同时说几家协议（中转站：New API、Sub2API）时，用 `standard.Merge(id, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), …)` 把几份预设合成一个类型：每条路由保留自己那份预设的鉴权头（OpenAI `Authorization: Bearer`、Anthropic `x-api-key` 加默认 `anthropic-version`、Gemini `x-goog-api-key`）、请求头和失败分类（路由级的 `Route.Auth`、`Route.Classify`）；`spec` 换掉各预设的凭证规则（中转站的地址必填、没有默认）。账号测试按核心给的协议顺序选（`Type.Tests`，合并时收集各份的测试）：运营方用协议绑定只开 Messages 的账号就测 Messages。预设按协议带了最小的测试请求（CONTRACTS §122.3：openai 的 chat、Responses、Embeddings、生图，gemini 的 generate 与流式 generate）；只改路由的类型要同时去掉没有路由的协议的测试（azure-openai 的做法）。核心交给插件的协议已去掉清单端点 `test: never` 的协议，没点名模型时也去掉 `test: explicit` 的（生成一张图要花钱）；自己写 `BuildTestRequest` 的插件同样取 `protocols` 里第一个它会测的协议，在 `usage_protocol` 报实际用的，控制台会显示它；列表不空而一个都不会测时返回 `FailedPrecondition`，不要退回别的协议的测试（`standard` 就这样做），空列表才表示没有偏好。账号余额写 `Type.Balance`：基础地址上的一个或几个 GET（`BalanceRequest.Auth: &standard.Auth{}` 的请求不带 Key），`Read` 把按顺序的回答读成结果，`standard.BalanceFailure`（传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED）和 `standard.Micros`（把上游答的十进制数换成 `amount_micros` 的百万分之一整数，同一个数换个写法）帮着读；**余额是上游的数字本身，单位（`currency` 字段）是上游给的原文、没给就留空，不做任何单位或汇率换算**（CONTRACTS §52）；清单里同时写 `"balance": {}`。TypeSafe 的平台定义与预设在 `sdk/pluginsdk/providers/typesafe`（`Platform()` 是平台的唯一来源，`APIKey(id)` 是预设）。
 
 旧的清单 `upstream` 声明（已删除）的每一项在库里的对应：
 
@@ -283,7 +283,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 设置 | 归属 | HTTP / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
+| 最低余额、高额费用警告（没有价格的模型一律拒绝，不是设置，CONTRACTS §17.3） | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
 | 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致（等待形式同样） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（三种策略都一样）；等待形式下插件放弃中继调用（被终止、进程退出）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`（第 2.7 节） | 一致 / WebSocket 不支持 `usageSource: "plugin"`（清单检查拒绝） | `forward.go`、`waited.go`、`sdk/manifest/check/websocket.go` |
@@ -326,7 +326,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 分组 | SDK 类型 | 典型用途 |
 |---|---|---|
-| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、缺价策略、断开计费策略处理 |
+| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、断开计费策略处理 |
 | `gateway` | `protocol.GatewaySettings` | 自己调上游的后台任务参照重试次数、超时、媒体下载上限、请求体上限 |
 | `scheduling` | `protocol.SchedulingSettings` | 排序插件（`RankAccounts`）参照均衡负载的指标 |
 | `sticky` | `protocol.StickySettings` | 粘性会话关闭时放弃排队的绑定清理（dynweight 0.5.11） |

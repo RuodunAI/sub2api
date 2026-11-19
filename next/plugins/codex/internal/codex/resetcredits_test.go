@@ -174,8 +174,8 @@ func (e *resetEnv) consumeAnswer(status int, body string) {
 	}
 }
 
-// checkHeaders asserts the truthful sup2api identification and the account's
-// bearer token, and that nothing imitates the Codex CLI.
+// checkHeaders asserts the account's client headers (agent.go; built-in
+// here) and bearer token, and that no x-codex-* header is sent.
 func checkHeaders(t *testing.T, h map[string]string) {
 	t.Helper()
 	if h["authorization"] != "Bearer "+resetToken || h["chatgpt-account-id"] != "acc-1" ||

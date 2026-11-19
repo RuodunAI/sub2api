@@ -520,6 +520,7 @@ export default {
   testConnection: '测试连接',
   testActualModel: '实际模型',
   testUpstream: '上游地址',
+  testProtocol: '测试协议',
   testUsage: 'Token 用量',
   testUsageInput: '输入',
   testUsageOutput: '输出',

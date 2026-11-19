@@ -40,7 +40,6 @@ type Acc struct {
 	cacheEvidence   *core.CacheWriteEvidence
 	attempts        *attemptMeter
 	primaryModel    string
-	request         []byte
 	additional      map[string][]core.AdditionalUsage
 	AdditionalError string
 	rules           manifest.UsageRules

@@ -54,7 +54,7 @@ beforeEach(() => {
   api.list.mockResolvedValue({ items: [], total: 0 })
   api.put.mockImplementation((_path, body) => Promise.resolve(body))
   api.get.mockImplementation(path => Promise.resolve({
-    '/settings/billing': { pre_consume_tokens: 500, missing_price_policy: 'reject', min_balance: '0', big_cost_warning_usd: '10' },
+    '/settings/billing': { pre_consume_tokens: 500, min_balance: '0', big_cost_warning_usd: '10' },
     '/settings/gateway': { max_attempts: 3, platform_call_timeout_ms: 30000, default_hook_timeout_ms: 30000, platform_hotpath_timeout_ms: 30000 },
     '/settings/sticky': { enabled: true, default_ttl_seconds: 3600, keep_on_account_disabled: false },
     '/sticky-rules/stats': [],
@@ -109,7 +109,6 @@ describe('the settings page', () => {
         path === '/settings/billing'
           ? {
               pre_consume_tokens: 500,
-              missing_price_policy: 'reject',
               min_balance: '0',
               big_cost_warning_usd: '10',
               client_disconnect_policy: 'continue'
@@ -126,6 +125,8 @@ describe('the settings page', () => {
     const body = api.put.mock.calls.find(([path]) => path === '/settings/billing')?.[1] as Record<string, unknown>
     expect(body).toMatchObject({ pre_consume_tokens: 502, client_disconnect_policy: 'continue' })
     expect(body).not.toHaveProperty('client_disconnect_wait_seconds')
+    expect(body).not.toHaveProperty('missing_price_policy')
+    expect(wrapper.find('[data-testid="missing-price-policy"]').exists()).toBe(false)
     wrapper.unmount()
   })
 

@@ -82,6 +82,23 @@ describe('CodexAuthForm: flows by account type', () => {
   })
 })
 
+describe('CodexAuthForm: client headers', () => {
+  it('edits the account\'s own User-Agent and originator in the credentials', async () => {
+    const loaded = { access_token: '******', email: 'me@example.com', originator: 'or-acct' }
+    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'codex_device' }, accountType: { type: 'codex_device' }, modelValue: loaded })
+    expect((w.get('[data-testid="codex-originator"]').element as HTMLInputElement).value).toBe('or-acct')
+    expect((w.get('[data-testid="codex-user-agent"]').element as HTMLInputElement).value).toBe('')
+    await w.get('[data-testid="codex-user-agent"]').setValue('ua-acct')
+    expect(lastValue(w)).toEqual({ ...loaded, user_agent: 'ua-acct' })
+  })
+
+  it('shows the fields while creating, before any authorization', () => {
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
+    expect(w.find('[data-testid="codex-user-agent"]').exists()).toBe(true)
+    expect(w.find('[data-testid="codex-originator"]').exists()).toBe(true)
+  })
+})
+
 describe('CodexAuthForm: device code', () => {
   function deviceAnswers(polls: unknown[]) {
     answer = (path) => {
@@ -102,12 +119,15 @@ describe('CodexAuthForm: device code', () => {
     expect(w.find('[data-testid="codex-device-url-copy"]').exists()).toBe(true)
     expect(w.get('[data-testid="codex-device-countdown"]').text()).toBe('device.expiresIn')
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
-    // The login starts with the editor's proxy choice; the polls use the session's.
+    // Every call carries a fresh ticket of the editor's current proxy choice.
     expect(calls[0]).toEqual({ path: '/auth/device/start', body: { proxy_ticket: 'sealed-ticket' } })
     expect(proxyTicket).toHaveBeenCalledTimes(1)
 
+    // The operator picks another proxy after starting: the next poll has it.
+    proxyTicket.mockResolvedValue('changed-ticket')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1' } }])
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1', proxy_ticket: 'changed-ticket' } }])
+    expect(proxyTicket).toHaveBeenCalledTimes(2)
     expect(lastValue(w)).toBeUndefined()
 
     await vi.advanceTimersByTimeAsync(5000)
@@ -192,12 +212,14 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     await flushPromises()
     expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('bad callback')
 
+    proxyTicket.mockResolvedValue('changed-ticket')
     await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
     // The error of the previous paste goes away with the new one.
     expect(w.find('[data-testid="codex-oauth-error"]').exists()).toBe(false)
     await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s` } })
+    // The exchange carries the ticket of the proxy chosen since the start.
+    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s`, proxy_ticket: 'changed-ticket' } })
     expect(lastValue(w)).toEqual(OAUTH_CREDS)
     expect(w.find('[data-testid="codex-authorized"]').exists()).toBe(true)
   })
@@ -243,20 +265,22 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     })
   }
 
-  it('keeps a plain exchange error without a new-link button', async () => {
-    answer = (path) => {
-      if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
-      return new ApiError(400, { code: 'state_mismatch', message: 'state mismatch' })
-    }
-    const w = mountForm({ accountType: { type: 'codex_oauth' } })
-    await w.get('[data-testid="codex-oauth-start"]').trigger('click')
-    await flushPromises()
-    await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
-    await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
-    await flushPromises()
-    expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('state mismatch')
-    expect(w.find('[data-testid="codex-oauth-retry"]').exists()).toBe(false)
-  })
+  for (const code of ['state_mismatch', 'proxy_refused']) {
+    it(`keeps a plain exchange error (${code}) without a new-link button`, async () => {
+      answer = (path) => {
+        if (path === '/auth/codex/start') return { session_id: 'w1', authorize_url: 'https://auth.openai.com/oauth/authorize?x=1' }
+        return new ApiError(400, { code, message: `${code} message` })
+      }
+      const w = mountForm({ accountType: { type: 'codex_oauth' } })
+      await w.get('[data-testid="codex-oauth-start"]').trigger('click')
+      await flushPromises()
+      await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
+      await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
+      await flushPromises()
+      expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain(`${code} message`)
+      expect(w.find('[data-testid="codex-oauth-retry"]').exists()).toBe(false)
+    })
+  }
 })
 
 describe('CodexAuthForm: editing', () => {
@@ -332,7 +356,7 @@ describe('CodexAuthForm: validate()', () => {
 })
 
 // The editor's proxy choice reaches the plugin as a proxy ticket asked for
-// when a login starts (CONTRACTS §117); a refused choice stops the start.
+// at every call of a login (CONTRACTS §117); a refused choice stops it.
 describe('CodexAuthForm: proxy ticket', () => {
   it('asks for a ticket at every start and shows why it was refused', async () => {
     answer = (path) => {

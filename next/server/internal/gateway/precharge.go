@@ -34,10 +34,6 @@ func localTokenizerEstimate(ctx context.Context, prompt string, floor int64) (*p
 // precharge runs only after billing type admission and before scheduling.
 // The plugin reports units; the core owns the price snapshot and ledger.
 func (c *call) precharge(ctx context.Context) error {
-	if c.price == nil && !c.hasReferencedPrice() {
-		// Resolve returns nil only for the explicit missing_price_policy=free.
-		return nil
-	}
 	gate := c.g.d.Balance
 	if gate == nil {
 		return fmt.Errorf("billing precharger unavailable")

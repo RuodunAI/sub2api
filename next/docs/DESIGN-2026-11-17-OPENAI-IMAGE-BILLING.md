@@ -1,6 +1,6 @@
 # OpenAI 生图模型的接入与计费（设计稿，待用户确认）
 
-> 2026-11-18：3.1、3.2 已由 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.4 取代并实现（CONTRACTS §118：edits 只收 JSON 形式，multipart 以后做）；3.3、3.4 也已落地（CONTRACTS §118.10、§120），与下文的差别写在这两节末尾。下文是当时的快照。
+> 2026-11-18：3.1、3.2 已由 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.4 取代并实现（CONTRACTS §118：edits 只收 JSON 形式，multipart 以后做）；3.3、3.4 也已落地（CONTRACTS §17.2、§118.10），与下文的差别写在这两节末尾：3.3 没有按设想另计，生图 token 计入请求本身。下文是当时的快照。
 
 2026-11-17，用户要求：“我们应该支持 openai 生图模型的计费，检查我们现在是否支持 gpt 的生图模型，codex 账号是否有接入生成图形的功能”。本文先写现状（ec2pool 测试实例实测），再给方案；**方案未实现，等用户确认第 4 节的决定后再开发**。
 
@@ -45,7 +45,7 @@
 - 生图部分按**生图模型**的价格计，而不是对话模型：作为一条附加用量（`usage.additional`），模型取请求 `tools[type=image_generation].model`，没写时用上游默认（目前 `gpt-image-1.5`，以文档为准），token 取 `response.tool_usage.image_gen`。
 - 现有 `AdditionalUsageRule` 只接受数组快照、模型从应答里取；这里是对象、模型从请求里取，需要扩展规则（契约改动，CONTRACTS 新一节）。
 - 结果：一条使用记录里对话部分按对话模型计、生图部分按生图模型计，明细里分开显示。
-- **落地（2026-11-18，CONTRACTS §120）**：附加用量规则加了对象形式（`object: true`）。模型的来源与这里设想的相反：先取**应答** `tools` 回显里的 `model`（实际用的生图模型），其次请求里的，都没有时用平台规则里的默认名 `gpt-image-2`（不是这里写的 `gpt-image-1.5`；OpenAI 文档对默认值的说法不一）。模型不在调度前准入，网关读完应答时取价；没有价格时对话部分照常扣费、生图部分不计费；`reject` 策略下记录另有 `additional_unpriced` 异常标记和一条 WARN。
+- **落地（2026-11-18，CONTRACTS §17.2、§118.10）**：所有者否掉了“生图部分按生图模型另计”：一条请求只有一个计价模型，即客户请求的模型，绝不按上游返回取价，没有默认模型名。`tool_usage.image_gen` 的 token 计入这条请求自己的用量（图片 token 记为 `img` / `img_o`），按客户请求的模型的价格算。同日曾实现过的附加用量对象形式已删除（CONTRACTS §120.2）。
 
 ### 3.4 codex
 

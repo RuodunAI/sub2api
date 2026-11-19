@@ -22,7 +22,9 @@ const (
 // usage of a stream requested, responses over HTTP and websocket,
 // embeddings, image generations and edits (JSON bodies, forwarded as they
 // are: their stream reports its usage unasked), the OpenAI error policy, a
-// one-token chat test and the model listing. It filters no request field.
+// one-token chat test (and the cheapest request of responses, embeddings and
+// image generations for an account serving those) and the model listing. It
+// filters no request field.
 func APIKey(id string) standard.Type {
 	return standard.Type{
 		ID: id,
@@ -53,7 +55,12 @@ func APIKey(id string) standard.Type {
 		DefaultProtocol: ProtocolChat,
 		Classify:        Policy,
 		Test:            &standard.Test{Protocol: ProtocolChat, Model: "gpt-4o-mini", Body: func(m string) string { return ChatPingBody(m, 1) }},
-		Models:          &apikey.ModelList{Path: "/v1/models", IdsPath: "data.#.id"},
+		Tests: []standard.Test{
+			{Protocol: ProtocolResponses, Model: "gpt-4o-mini", Body: ResponsesPingBody},
+			{Protocol: ProtocolEmbeddings, Model: "text-embedding-3-small", Body: EmbeddingsPingBody},
+			{Protocol: ProtocolImages, Model: "gpt-image-1-mini", Body: ImagesPingBody},
+		},
+		Models: &apikey.ModelList{Path: "/v1/models", IdsPath: "data.#.id"},
 	}
 }
 

@@ -30,19 +30,18 @@ function pricedTokens(facts: unknown): UsageTokenFacts {
   return tokens
 }
 
-/** Additional usage of a record (CONTRACTS §120): usage priced at another model's price, such as the
- *  image_generation tool of a Responses request. `cost` and `priced` are known once the record is
- *  settled (billing_detail.additional, in the same order as inputs.additional). */
-export function additionalUsage(row: UsageRow): Array<{ kind: string; model: string; tokens: UsageTokenFacts; settled: boolean; priced: boolean; cost?: string | number }> {
-  const inputs: unknown = row.billing_detail?.inputs?.additional
-  if (!Array.isArray(inputs)) return []
-  const settled: unknown = row.billing_detail?.additional
-  const parts: Array<Record<string, any>> = Array.isArray(settled) ? settled : []
-  return inputs.map((item, index) => {
-    const part = parts[index]
-    return { kind: String(item?.Kind ?? ''), model: String(item?.Model ?? ''), tokens: pricedTokens(item?.Tokens),
-      settled: !!part, priced: !!part?.price_id, cost: part?.detail?.total_cost }
-  })
+export type UsageComponent = { kind: string; model: string; free: boolean; reason: string; tokens: UsageTokenFacts; detail: NonNullable<UsageRow['billing_detail']> }
+
+/** The separately priced items of a settled record (billing_detail.additional / replacement, e.g. an
+ *  advisor model at its own price), each with its tokens from inputs at the same index. */
+export function usageComponents(row: UsageRow, list: 'additional' | 'replacement'): UsageComponent[] {
+  const settled: unknown = row.billing_detail?.[list]
+  if (!Array.isArray(settled)) return []
+  const inputs: unknown = row.billing_detail?.inputs?.[list]
+  return settled.map((part, index) => ({
+    kind: String(part?.kind ?? ''), model: String(part?.model ?? ''), free: !!part?.free, reason: String(part?.billing_reason ?? ''), detail: part?.detail || {},
+    tokens: pricedTokens(Array.isArray(inputs) ? inputs[index]?.Tokens : undefined)
+  }))
 }
 
 /** Recorded rounds are partial evidence, never a replacement request total. */
