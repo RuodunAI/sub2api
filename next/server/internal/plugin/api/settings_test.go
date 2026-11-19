@@ -87,8 +87,9 @@ func TestMergeSettingsPluginPermission(t *testing.T) {
 		assert.Equal(t, allCreds, reenterFields(t, err))
 	})
 	t.Run("redirecting the webhook needs its secret", func(t *testing.T) {
-		// The reported attack: point the x-sensitive URL elsewhere and keep
-		// the signing secret through the mask.
+		// The reported attack: point the sensitive URL (a secret with
+		// sensitive set) elsewhere and keep the signing secret through the
+		// mask.
 		_, err := mergeSettings(fields, stored(), in(func(v map[string]any) { v["notify_webhook_url"] = "https://evil.example/" }), false, nil)
 		assert.Equal(t, allCreds, reenterFields(t, err))
 	})
