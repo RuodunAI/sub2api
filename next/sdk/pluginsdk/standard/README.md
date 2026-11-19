@@ -18,7 +18,7 @@
 |---|---|
 | `Route.Auth *Auth` | 这条路由的鉴权头；nil 用 `Type.Auth`。`Check` 对它做与类型级相同的检查 |
 | `Route.Classify *classify.Policy` | 这条路由所属协议的失败分类；nil 用 `Type.Classify`。`ClassifyError` 按 `meta.protocol` 找路由，没有协议或协议不认识时用类型的 |
-| `Type.Tests []Test` | 按协议的测试请求（每个协议至多一个，要有 `Test`）：`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个在 `Test` 或 `Tests` 里有测试的协议，都没有用 `Test`；`usage_protocol` 回报用的协议 |
+| `Type.Tests []Test` | 按协议的测试请求（每个协议至多一个，要有 `Test`）：`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个在 `Test` 或 `Tests` 里有测试的协议；列表为空（没有偏好）用 `Test`，列表不空而都没有测试时回 `FailedPrecondition`，不退回 `Test`（CONTRACTS §122.3）；`usage_protocol` 回报用的协议 |
 | `Type.Balance *Balance` | 账号余额：`Requests`（基础地址上的 GET，按顺序；`BalanceRequest.Auth` nil 用类型的鉴权，`&standard.Auth{}` 不带 Key）和 `Read`（把按顺序的回答读成 `BalanceResult`）。nil 时两个余额调用回 `UNIMPLEMENTED`；回答数与请求数不符时库直接给 TRANSIENT，`Read` 可以按下标取 |
 | `Merge(id, spec, parts...) Type` | 一个类型服务几份预设的路由，见例子四 |
 | `BalanceFailure(*BalanceAnswer) *BalanceResult` | 不是成功的回答的结果：传输错误、429、5xx、其它非 2xx → TRANSIENT，401/403 → AUTH_REJECTED，信息带状态码和回答体开头；2xx 返回 nil |
@@ -40,7 +40,7 @@
 
 第 6 步的鉴权头是路由的 `Auth`，路由没有就是类型的。
 
-账号测试走选中的测试（`Tests` 按核心给的协议顺序，否则 `Test`）的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表和余额请求只带类型的头和鉴权（余额请求可以不带），不带 `content-type`。
+账号测试走选中的测试（`Tests` 按核心给的协议顺序，核心没给协议时 `Test`）的路由，不带客户端请求头，鉴权头与其余头放在同一个 map 里（`BuildTestRequestResponse` 只有一个 map）；模型列表和余额请求只带类型的头和鉴权（余额请求可以不带），不带 `content-type`。
 
 ## 请求体
 

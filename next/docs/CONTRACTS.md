@@ -192,7 +192,7 @@
 | POST `/accounts` | `account:create` | `{name, plugin_key, type, group_ids[], proxy_id \| proxy_url, priority, weight, max_concurrency, schedulable, auto_disable, models[], model_mapping{}, rpm_limit, tpm_limit, credentials:{...}}`（§18、§21.4、§42.3）；响应另带 `proxy_created` |
 | GET/PATCH `/accounts/:id` | `account:read` / `account:update` | 凭证中的敏感字段返回 `"******"`；PATCH 时敏感字段传 `"******"` 表示不修改 |
 | DELETE `/accounts/:id` | `account:delete` | |
-| POST `/accounts/:id/test` | `account:test` | `{model?}` → TestResult `{ok, status, latency_ms, message, model, requested_model, upstream, body, usage, reason, effect}`（§15.9、§50）；结果记入账号的 `last_test` |
+| POST `/accounts/:id/test` | `account:test` | `{model?}` → TestResult `{ok, status, latency_ms, message, model, requested_model, protocol, upstream, body, usage, reason, effect}`（§15.9、§50、§122）；结果记入账号的 `last_test` |
 | POST `/accounts/:id/models/fetch`、POST `/account-types/:plugin_key/:type/models/fetch` | `account:test` / `account:create` | 从上游拉取模型列表（§19） |
 | POST `/account-types/:plugin_key/:type/proxy-ticket` | `account:create` / `account:update`（任意范围） | 账号表单的代理选择（`proxy_id` / `proxy_url` / 都不给）按上一行同样检查后加密成代理票据，给建账号之前的授权流程用（§117） |
 | POST `/accounts/:id/credentials/reveal` | `account:credential:view` | 明文凭证 |
@@ -815,11 +815,11 @@ GET `/ui/plugins`（`self:plugin_ui`，会话天然持有，§80.1）→ 不分�
 
 POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。2026-11-19 起跳过下一条去掉协议后已无协议可测的模型（§122.2）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
-- 交给插件的 `protocols`（2026-11-18 起，§52 同批）：账号在本平台上原生开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；测试有模型（调用方给的，或上一条按账号配置选的，映射之前）时只留账号协议绑定里服务这个模型的（`ProtocolRules.Serves`）。插件取第一个它有测试的协议，在 `usage_protocol` 回报实际用的；测试失败时核心把它作为 `ClassifyError` 的 `meta.protocol`，“效果”提示按这个协议的失败规则判断。列表为空表示没有偏好。2026-11-19 起（§122）：去掉端点 `test` 为 `never` 的协议，不带 `model` 时再去掉 `explicit` 的；模型在 `model_protocols` 里有条目时按条目的协议顺序排；不带 `model` 时默认模型取第一个仍有协议可测的；结果带 `protocol`。
+- 交给插件的 `protocols`（2026-11-18 起，§52 同批）：账号在本平台上原生开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；测试有模型（调用方给的，或上一条按账号配置选的，映射之前）时只留账号协议绑定里服务这个模型的（`ProtocolRules.Serves`）。插件取第一个它有测试的协议，在 `usage_protocol` 回报实际用的；测试失败时核心把它作为 `ClassifyError` 的 `meta.protocol`，“效果”提示按这个协议的失败规则判断。列表为空表示没有偏好（只在没有被测模型时出现）。2026-11-19 起（§122）：去掉端点 `test` 为 `never` 的协议，不带 `model` 时再去掉 `explicit` 的；模型在 `model_protocols` 里有条目时按条目的协议顺序排；不带 `model` 时默认模型取第一个仍有协议可测的；被测模型没有可测协议时不调用插件，回 400 `no_testable_protocol`；结果带 `protocol`。
 - 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
-- 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错时返回错误状态。
+- 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错、被测模型没有价格（403，§50）或没有可测协议（400 `no_testable_protocol`，§122.2）时返回错误状态。
 - 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理时域名交给代理解析，本机不解析，只拒绝字面的私网地址和 `localhost`（与网关同一条规则 `netguard.CheckHostVia`，§43.4）。
-- 2026-10-05 起：响应另含 `model`（实际请求的模型：插件报告的，否则为映射后的模型）、`requested_model`（调用方选的模型、映射前；未给时为空串，字段总在）、`upstream`、`body`、`usage`、`reason`、`effect`；每次测试结束写入账号的 `last_test`（§50）。测试仍**不改变账号状态**（不冷却、不禁用、不改 `updated_at`）。
+- 2026-10-05 起：响应另含 `model`（实际请求的模型：插件报告的，否则为映射后的模型）、`requested_model`（调用方选的模型、映射前；未给时为空串，字段总在）、`upstream`、`body`、`usage`、`reason`、`effect`（2026-11-19 起另有 `protocol`，§122.4）；每次测试结束写入账号的 `last_test`（§50）。测试仍**不改变账号状态**（不冷却、不禁用、不改 `updated_at`）。
 
 ### 15.10 与前文不一致的裁定（2026-09-25）
 
@@ -3315,13 +3315,13 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
   - `ok`、`latency_ms` 同 TestResult；`model` 为 TestResult 的 `model`（实际请求的模型，映射后）；
   - `message`：成功为空串；失败时为插件的 `reason` 加上游返回（`reason: message`，两者相同或缺一则只取有的那个；只有 reason 会看不到真实原因，2026-10-05 改），按字节截到 512（不截断半个字符）。控制台模型测试的"结果"列同样先显示 reason，再显示上游返回的错误内容。
   - 写入不改 `updated_at`、不发 `account:changed` / 事件、不影响调度；写入失败只记日志，不影响测试响应。
-- 账号 JSON（`GET /accounts` 列表与 `GET /accounts/:id`、创建/修改的响应）新增 `last_test`：从未测试时为 `null`，否则 `{at, ok, latency_ms, model, message}`（`at` 为 RFC 3339）。
-- TestResult 新增 `requested_model`（映射前用户选的模型；未给时为空串，字段总在），`model` 仍为实际请求的模型。
+- 账号 JSON（`GET /accounts` 列表与 `GET /accounts/:id`、创建/修改的响应）新增 `last_test`：从未测试时为 `null`，否则 `{at, ok, latency_ms, model, message}`（`at` 为 RFC 3339；2026-11-19 起另有 `protocol`，§122.4）。
+- TestResult 新增 `requested_model`（映射前用户选的模型；未给时为空串，字段总在），`model` 仍为实际请求的模型。2026-11-19 起另有 `protocol`（插件报的 `usage_protocol`，§122.4）。
 - 2026-10-11 错误诊断：TestResult 返回 `error_code` 与 `error_source`（`gateway` 网关/运行环境、`transport` 传输失败、`response` 实际 HTTP 响应、`plugin` 插件构建失败）。`status` 始终保留实际收到的 HTTP 状态，未收到响应为 0，不把本地拒绝伪造为上游 401。响应体的 `error.code` 优先，其次 `error.type` / `code`，没有机器码时用 `http_<status>`。
 - 迁移 `0050_account_test_diagnostics.sql` 新增可空的 `last_test_status/last_test_error_code/last_test_error_source`，新测试保存上述诊断并通过 `last_test` 返回。旧记录不猜测 HTTP 状态；完整原因已包含返回消息时不重复拼接。界面直接显示错误代码与来源，HTTP 0 显示无响应提示，重新授权清空整组最近测试字段。
 - "测试全部模型""批量测试账号"由控制台并发调用单模型测试实现，后端不提供批量接口；同一账号并发测试时 `last_test` 为最后写入的那次。
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
-- 流式测试本轮不做：`BuildTestRequest` 没有 stream 参数，加参数要改 proto 并动所有插件。
+- `BuildTestRequest` 没有 stream 参数；是否流式由插件按协议定：2026-11-19 起（§122）账号对某模型只开放 Gemini 流式生成时，gemini 预设走 `streamGenerateContent?alt=sse` 测，codex 一直发流式 Responses。
 - 2026-11-18 价格检查（§17.2）：插件 `BuildTestRequest` 之后、发出之前，被测的模型（调用方的 `model`，否则账号的默认测试模型，都是映射前的名字；两者都没有时是插件报的模型）没有全局价格时，回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游；`last_test` 记为失败，`error_source` 为 `gateway`、`error_code` 为 `model_price_not_configured`。
 - 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0116 加列 `last_test_protocol`。
 
@@ -8219,7 +8219,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 包 | 内容 |
 |---|---|
 | `sdk/pluginsdk` | `Platform`（`ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）加 `UpstreamBuilder`（`BuildUpstream`）：SDK 替它跑 `ExecuteDefault`；`Executor`（自己的 `Execute`）可选，实现了就用它，两者都没有时注册失败（转发 V2 收尾起；此前 `Platform` 必须实现 `Execute`，多数插件写一行转给 `ExecuteDefault`）；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`WithManifest`（清单原文，`pluginsdk.ManifestOf` 已删除）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认、`RemoveHeader` 不发某个头，§112.17）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`）。可选接口 `BalanceReader`（`BuildBalanceRequest` / `ParseBalanceResponse`，§52）照 `QuotaReader` 的方式按类型断言发现，没实现的回 `UNIMPLEMENTED` |
-| `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini,typesafe}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游。路由可以有自己的鉴权（`Route.Auth`）和失败分类（`Route.Classify`，`ClassifyError` 按 `meta.protocol` 找路由，没有就用类型的）；`Merge(id, spec, parts...)` 把几份预设合成一个多平台类型（每条路由保留自己那份的鉴权、请求头和分类；模型列表、余额、默认测试取第一份；同一协议出现两次或某份有 `FilterFields` 时 panic）；`Type.Tests` 是按协议的测试请求，`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个有测试的协议，都没有用 `Test`；`Type.Balance`（`Requests` 是基础地址上的 GET，`BalanceRequest.Auth` 为 `&Auth{}` 时不带 Key，`Read` 读按顺序的回答）使 `Platform` 实现 `BalanceReader`，回答数与请求数不符时按 TRANSIENT 记，辅助函数 `BalanceFailure`、`Micros`（上游的十进制数换成百万分之一，不是换算）。`providers/typesafe` 是 TypeSafe 平台定义的唯一来源（`Platform()`，嵌入的 JSON）与它的预设、失败分类 |
+| `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini,typesafe}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游。路由可以有自己的鉴权（`Route.Auth`）和失败分类（`Route.Classify`，`ClassifyError` 按 `meta.protocol` 找路由，没有就用类型的）；`Merge(id, spec, parts...)` 把几份预设合成一个多平台类型（每条路由保留自己那份的鉴权、请求头和分类；模型列表、余额、默认测试取第一份；同一协议出现两次或某份有 `FilterFields` 时 panic）；`Type.Tests` 是按协议的测试请求，`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个有测试的协议，列表为空时用 `Test`，列表不空而都没有测试时回 `FailedPrecondition`（§122.3）；`Type.Balance`（`Requests` 是基础地址上的 GET，`BalanceRequest.Auth` 为 `&Auth{}` 时不带 Key，`Read` 读按顺序的回答）使 `Platform` 实现 `BalanceReader`，回答数与请求数不符时按 TRANSIENT 记，辅助函数 `BalanceFailure`、`Micros`（上游的十进制数换成百万分之一，不是换算）。`providers/typesafe` 是 TypeSafe 平台定义的唯一来源（`Platform()`，嵌入的 JSON）与它的预设、失败分类 |
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
 | `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（来自 `pluginsdktest.Options{Manifest: manifestJSON}`，Harness 同时用它 `WithManifest` 启动插件；按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`、`Harness.Balance`（一次余额查询：先对每个请求按 `UpstreamHostAllowed` 判断，有一个不行就都不发、`PERMISSION_DENIED`；每个请求都交给测试的回答函数，不跟随重定向；回答按顺序交给 `ParseBalanceResponse`；单位照插件给的原样，可以为空，与核心相同）。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
@@ -8615,8 +8615,9 @@ ALTER TABLE usage_logs
 ### 122.2 核心：交给插件的协议（`server/internal/account/testreq.go`）
 
 - 候选协议照 §15.9：账号在本平台上原生（`via: native`）开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；另外去掉 `test: never` 的协议，请求没带 `model` 时再去掉 `test: explicit` 的协议。同一协议有几个端点时，任一端点这样标就算。经适配（`via: adapted`）和跨平台转换的协议不纳入：测试请求不经网关的转换层。
-- 测某个模型（调用方给的，或下一条选出的，映射之前）时只留账号协议绑定里服务它的协议（`ProtocolRules.Serves`）；这个模型在 `model_protocols` 里有条目（按名字，否则“其他模型”的条目）时，按**条目里写的协议顺序**排（`ProtocolRules.ModelProtocols`），否则按上一条的顺序。所以要测一个生图模型，管理员把它限定到生图协议，点名测它时列表第一个就是 `openai.images`。
-- 没带 `model` 时的默认模型：候选模型照 §15.9（账号模型列表，没有列表时是映射里的请求模型按字典序），取第一个**去掉上面这些协议后仍有协议可测**的；都没有时照旧取第一个（这时列表为空，插件用它的默认测试请求）。例如列表第一个模型只开了生图协议，批量测试就跳过它测下一个。
+- 测某个模型（调用方给的，或下一条选出的，映射之前）时只留账号协议绑定里服务它的协议（`ProtocolRules.Serves`）；这个模型在 `model_protocols` 里有条目（按名字，否则“其他模型”的条目）时，按**条目里写的协议顺序**排（`ProtocolRules.ModelProtocols`），否则按上一条的顺序。所以要测一个生图模型，管理员把它限定到生图协议，点名测它时列表第一个就是 `openai.images`。点名一个**没有**在 `model_protocols` 里限定协议的生图模型时，会按端点顺序用排在前面的协议（通常是对话）去测；要测生图，必须先把它限定到生图协议。
+- 被测模型（调用方给的）没有剩下任何可测的协议时（例如只开了 `never` 的编辑图片，或绑的协议账号没有开放），核心**不调用插件、不发上游**，回 400 `no_testable_protocol`（“这个模型在这个账号上没有可测试的协议”，`details.model`），`last_test` 记为失败、`error_source` 为 `gateway`。不会退回插件的默认测试请求：拿对话请求测一个生图模型，成败都说明不了问题。
+- 没带 `model` 时的默认模型：候选模型照 §15.9（账号模型列表，没有列表时是映射里的请求模型按字典序），取第一个**去掉上面这些协议后仍有协议可测**的。例如列表第一个模型只开了生图协议，批量测试就跳过它测下一个。有候选模型而都没有可测协议时，同样回 400 `no_testable_protocol`（`details.model` 为空串）；只有模型列表与映射都为空时，才交空模型和全部候选协议，由插件选默认模型（§15.9）。
 - 价格检查（§50、§17.2）照旧在插件 `BuildTestRequest` 之后、发出之前，查被测模型映射前的名字；每次测试一个模型，“测试全部模型”逐个调用本接口，每个模型都过这一检查。没有价格时 403 `model_price_not_configured`，不发上游，`last_test` 照样记下插件报的协议。
 
 ### 122.3 插件：按协议的测试请求
@@ -8628,11 +8629,11 @@ ALTER TABLE usage_logs
 | openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}` | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
-| openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在点名模型时用到） |
+| openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在点名模型时用到）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |
 | gemini | `gemini.generate`（`Type.Test`） | 一个 token 的 generateContent | `gemini-2.5-flash-lite` |
 | gemini | `gemini.stream_generate` | 同一个请求体，走 `streamGenerateContent?alt=sse` | 同上 |
 
-- 没有测试请求的协议（`openai.images_edit` 等）跳过，看下一个；都没有时用 `Type.Test`。
+- 没有测试请求的协议（`openai.images_edit` 等）跳过，看下一个；列表不空而都没有测试请求时回 `FailedPrecondition`，**不退回** `Type.Test`；只有空列表（没有偏好）才用 `Type.Test`。
 - 合并多份预设的中转站类型（`standard.Merge`，newapi、sub2api 插件）收集各份的全部测试；azure-openai 只保留它有路由的协议的测试（它不服务 Responses 时不会用 Responses 的测试）。
 - 自己写 `BuildTestRequest` 的插件不受影响：codex 仍发它的流式 Responses（codex 账号原生只开放 `openai.responses`）；经适配的生图测试随 §121 实现。
 

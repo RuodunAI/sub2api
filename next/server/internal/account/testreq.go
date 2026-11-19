@@ -125,10 +125,7 @@ func (s *Service) test(c *gin.Context) {
 	requested := strings.TrimSpace(in.Model)
 	// Naming the model is what makes a test explicit (CONTRACTS §122).
 	tp := s.testProtocols(a, requested != "")
-	model := requested
-	if model == "" {
-		model = tp.defaultModel(a.testModels())
-	}
+	model, testable := tp.testModel(requested, a.testModels())
 	tested := model
 	protocols := tp.of(model)
 	if model != "" {
@@ -136,21 +133,29 @@ func (s *Service) test(c *gin.Context) {
 		model = ref.MapModel(model)
 	}
 	acct := a.pluginAccount(plain)
-	// A test request is not served by a client endpoint, so Account.platform
-	// is empty; the declaring plugin builds a request for the account type.
-	req, err := bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
-		Account:   acct,
-		Model:     model,
-		Protocols: protocols,
-	})
-	source := "plugin"
+	var req *pluginv1.BuildTestRequestResponse
+	source := "gateway"
+	if !testable {
+		err = errNoTestableProtocol.WithMessage(t(ctx, "this model has no protocol to test on this account",
+			"这个模型在这个账号上没有可测试的协议")).WithDetails(map[string]any{"model": tested})
+	} else {
+		// A test request is not served by a client endpoint, so
+		// Account.platform is empty; the declaring plugin builds a request
+		// for the account type.
+		source = "plugin"
+		req, err = bt.Client.BuildTestRequest(ctx, &pluginv1.BuildTestRequestRequest{
+			Account:   acct,
+			Model:     model,
+			Protocols: protocols,
+		})
+	}
 	if err == nil {
 		if err = s.testPrice(ctx, cmp.Or(tested, req.GetModel())); err != nil {
 			source = "gateway"
 		}
 	}
 	if err != nil {
-		s.recordTest(ctx, a.ID, TestResult{Model: model, Protocol: strings.TrimSpace(req.GetUsageProtocol()), Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
+		s.recordTest(ctx, a.ID, TestResult{Model: model, Protocol: usageProtocol(req), Message: core.AsError(err).Message, ErrorCode: core.AsError(err).Code, ErrorSource: source})
 		httpapi.Fail(c, err)
 		return
 	}
@@ -224,18 +229,31 @@ func (tp testProtocolSet) of(model string) []string {
 	return out
 }
 
-// defaultModel is the model a test naming none uses: the first of models
-// left with a protocol to test, else the first; "" for no models.
-func (tp testProtocolSet) defaultModel(models []string) string {
+// testModel is the model a test asks for: the caller's, else the first of
+// models left with a protocol to test, else "" when there are no models
+// (the plugin picks its default, CONTRACTS §15.9). testable is false when
+// that model has no protocol to test, or none of models has one: the test
+// is refused, never sent with the plugin's default request (CONTRACTS §122.2).
+func (tp testProtocolSet) testModel(requested string, models []string) (model string, testable bool) {
+	if requested != "" {
+		return requested, len(tp.of(requested)) > 0
+	}
 	for _, m := range models {
 		if len(tp.of(m)) > 0 {
-			return m
+			return m, true
 		}
 	}
-	if len(models) > 0 {
-		return models[0]
-	}
-	return ""
+	return "", len(models) == 0
+}
+
+// errNoTestableProtocol refuses a test of a model the account serves on no
+// protocol a test may use (CONTRACTS §122.2).
+var errNoTestableProtocol = core.NewError(http.StatusBadRequest, "no_testable_protocol", "no protocol to test")
+
+// usageProtocol is the protocol the plugin says the test request uses; ""
+// without a request.
+func usageProtocol(tr *pluginv1.BuildTestRequestResponse) string {
+	return strings.TrimSpace(tr.GetUsageProtocol())
 }
 
 // LastTest is the last console test of an account (CONTRACTS §50), shown
@@ -311,7 +329,7 @@ func cutBytes(s string, n int) string {
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
-	res := TestResult{Model: model, Protocol: strings.TrimSpace(tr.GetUsageProtocol()), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
+	res := TestResult{Model: model, Protocol: usageProtocol(tr), ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
 	}

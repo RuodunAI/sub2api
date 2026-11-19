@@ -17,6 +17,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/typesafe"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // relaySpec is the credential rule of a relay site: its own base URL,
@@ -210,8 +212,6 @@ func TestTestsByProtocol(t *testing.T) {
 			`{"input":"ping","model":"text-embedding-3-small"}`},
 		{[]string{openai.ProtocolImages}, "gpt-image-2", openai.ProtocolImages, "https://relay.example.com/v1/images/generations", bearer,
 			`{"model":"gpt-image-2","n":1,"prompt":"a small white dot","quality":"low","size":"1024x1024"}`},
-		// An edit has no test: the default one.
-		{[]string{openai.ProtocolImagesEdit}, "", openai.ProtocolChat, "https://relay.example.com/v1/chat/completions", bearer, chat},
 		{[]string{anthropic.ProtocolMessages}, "", anthropic.ProtocolMessages, "https://relay.example.com/v1/messages", "x-api-key",
 			`{"max_tokens":1,"messages":[{"content":"ping","role":"user"}],"model":"claude-haiku-4-5"}`},
 		{[]string{gemini.ProtocolGenerate, gemini.ProtocolStreamGenerate}, "models/g-2", gemini.ProtocolGenerate, "https://relay.example.com/v1beta/models/g-2:generateContent", "x-goog-api-key", gen},
@@ -231,6 +231,12 @@ func TestTestsByProtocol(t *testing.T) {
 			out.Headers["content-type"] != "application/json" || out.BodyJson != c.body || out.Model == "" {
 			t.Errorf("%v: %s %s %s %v %s model %q", c.protocols, out.UsageProtocol, out.Method, out.Url, out.Headers, out.BodyJson, out.Model)
 		}
+	}
+	// Protocols none of which has a test (an edit) fail: never the default
+	// test instead (CONTRACTS §122.3).
+	if _, err := p.BuildTestRequest(context.Background(), &pluginv1.BuildTestRequestRequest{Account: relayAccount,
+		Protocols: []string{openai.ProtocolImagesEdit}}); status.Code(err) != codes.FailedPrecondition {
+		t.Errorf("an edit only: %v", err)
 	}
 	for name, edit := range map[string]func(*standard.Type){
 		"tests without Test":      func(t *standard.Type) { t.Test = nil },

@@ -112,8 +112,6 @@ func benchCandidates(n int, rules *ProtocolRules) []AccountRef {
 	return refs
 }
 
-// The decision runs for every candidate of every request: it must not
-// allocate, with or without a binding, served or not.
 // ModelProtocols is the covering entry's protocols as written: the model's
 // own entry, else the other models' entry, else none.
 func TestProtocolRulesModelProtocols(t *testing.T) {
@@ -133,6 +131,8 @@ func TestProtocolRulesModelProtocols(t *testing.T) {
 	}
 }
 
+// The decision runs for every candidate of every request: it must not
+// allocate, with or without a binding, served or not.
 func TestProtocolRulesServesDoesNotAllocate(t *testing.T) {
 	for name, rules := range map[string]*ProtocolRules{"no binding": nil, "50 rules": benchRules()} {
 		refs := benchCandidates(500, rules)

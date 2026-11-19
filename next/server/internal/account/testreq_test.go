@@ -539,7 +539,8 @@ func TestAccountTestProtocols(t *testing.T) {
 // An image generation (endpoint test "explicit") is only offered when the
 // console names the model, an edit ("never") not at all; a model's
 // model_protocols entry orders its protocols; a test naming no model skips
-// the models left with nothing to test; the result and last_test say which
+// the models left with nothing to test and a model with nothing to test is
+// refused (CONTRACTS §122.2); the result and last_test say which
 // protocol the plugin used (CONTRACTS §122).
 func TestAccountTestProtocolsByEndpointTest(t *testing.T) {
 	e := setup(t)
@@ -599,11 +600,36 @@ func TestAccountTestProtocolsByEndpointTest(t *testing.T) {
 	if got, model := test(""); model != "m-order" || got != "openai.embeddings,anthropic.messages,openai.chat" {
 		t.Fatalf("default model %q: %s", model, got)
 	}
-	// Every model is image only: the first, with nothing to prefer.
-	patch(map[string]any{"models": []string{"m-img"}})
-	if got, model := test(""); model != "m-img" || got != "" {
-		t.Fatalf("image models only %q: %s", model, got)
+	// A model with no protocol to test (an edit only; an image generation
+	// when the model is not named) is refused, never tested with the
+	// plugin's default request: nothing reaches the plugin.
+	refused := func(what string, body map[string]any) {
+		t.Helper()
+		e.plat.mu.Lock()
+		before := len(e.plat.tests)
+		e.plat.mu.Unlock()
+		code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), body)
+		if code != http.StatusBadRequest || gjson.GetBytes(raw, "error.code").String() != "no_testable_protocol" {
+			t.Fatalf("%s: %d %s", what, code, raw)
+		}
+		e.plat.mu.Lock()
+		after := len(e.plat.tests)
+		e.plat.mu.Unlock()
+		if after != before {
+			t.Fatalf("%s: the plugin built a test request", what)
+		}
+		_, raw = e.doRaw(e.uid, "GET", fmt.Sprintf("/accounts/%d", id), nil)
+		if last := gjson.GetBytes(raw, "data.last_test"); last.Get("ok").Bool() || last.Get("error_source").String() != "gateway" ||
+			last.Get("error_code").String() != "no_testable_protocol" {
+			t.Fatalf("%s: last test %s", what, last)
+		}
 	}
+	patch(map[string]any{"models": []string{"m-img", "m-edit"}, "model_protocols": []map[string]any{
+		{"models": []string{"m-img"}, "protocols": []string{"openai.images"}},
+		{"models": []string{"m-edit"}, "protocols": []string{"openai.images_edit"}},
+	}})
+	refused("an edit only, named", map[string]any{"model": "m-edit"})
+	refused("every model image only, none named", nil)
 }
 
 // A type serving one protocol of a platform (codex: Responses only) is
