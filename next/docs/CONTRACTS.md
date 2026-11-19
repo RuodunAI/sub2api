@@ -3333,7 +3333,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 - 控制台（前端实现）：账号的"测试"打开模型测试弹窗，可选一个模型测试，也可"测试全部 / 所选"模型（逐个模型并发调用本接口，显示每个模型的结果、延迟与失败原因）；账号列表可勾选多个账号"批量测试"（每个账号测默认模型）。列表显示 `last_test`（上次测试时间、结果、延迟）。测试不改变账号状态。
 - `BuildTestRequest` 没有 stream 参数；是否流式由插件按协议定：2026-11-19 起（§122）账号对某模型只开放 Gemini 流式生成时，gemini 预设走 `streamGenerateContent?alt=sse` 测，codex 一直发流式 Responses。
 - 2026-11-18 加过的价格检查（被测模型没有价格时回 403）已于 2026-11-19 撤掉：账号测试不查价格、不计费（§17.2）。
-- 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0116 加列 `last_test_protocol`。
+- 2026-11-19 按协议测（§122）：TestResult 与 `last_test` 加 `protocol`（插件报的 `usage_protocol`），迁移 0115 加列 `last_test_protocol`。
 
 ## 51. CCGateway 订阅用量（已删除）
 
@@ -8688,7 +8688,7 @@ ALTER TABLE usage_logs
 
 控制台使用记录详情：主用量公式以 `primary_total_cost` 结尾（历史记录没有时只显示算式不显示金额，不在前端相减），每一项显示它自己的公式，再列一行“主用量小计 + 各项金额 = 合计”；被替换时不显示主用量公式。替代计费用量的每一项按尝试轮次显示“第 N 轮”（每一轮的 `kind` 都是清单 attempts 规则的名字，主模型那一轮也是）。
 
-## 122. 账号测试按绑定的协议测（2026-11-19，所有者同意“测试模型的时候就能根据模型协议的绑定去调用对应的协议进行深度测试”；迁移 0116；清单加端点字段 `test`；插件协议仍是 2、Host API 仍是 10；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md) 3.11。§121 留给同一设计里 Codex 账号经适配服务生图的部分，尚未实现）
+## 122. 账号测试按绑定的协议测（2026-11-19，所有者同意“测试模型的时候就能根据模型协议的绑定去调用对应的协议进行深度测试”；迁移 0115；清单加端点字段 `test`；插件协议仍是 2、Host API 仍是 10；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md) 3.11。§121 留给同一设计里 Codex 账号经适配服务生图的部分，尚未实现）
 
 此前 `POST /accounts/:id/test` 已把账号对被测模型开放的协议交给插件（§15.9 的 `protocols`），但预设各只有一个测试请求：只绑了 Responses、Embeddings 或生图协议的模型被拿去测 chat，误报不可用。本节补齐测试请求，并规定哪些协议可以拿来测、按什么顺序。
 
@@ -8731,7 +8731,7 @@ ALTER TABLE usage_logs
 ### 122.4 结果与最近一次测试
 
 - TestResult 加 `protocol`：插件报的 `usage_protocol`（去首尾空白）；插件没报或构造请求失败时省略。
-- 迁移 0116：`accounts` 加可空列 `last_test_protocol text`（只加列，旧核心跑在新表上不受影响）；每次测试写入，`last_test` 加 `protocol`（未知时省略，迁移之前的记录没有）。
+- 迁移 0115：`accounts` 加可空列 `last_test_protocol text`（只加列，旧核心跑在新表上不受影响）；每次测试写入，`last_test` 加 `protocol`（未知时省略，迁移之前的记录没有）。
 - 控制台：模型测试弹窗每个模型的结果旁显示所测协议，展开的详情里有“测试协议”；账号列表“最近测试”的提示里同样显示。
 - 已知限制：测试只读应答的前 8 KiB（`maxTestBody`），生图应答的用量在一张 base64 图之后，生图测试的 `usage` 一般为空；状态码与正文前缀足以判断可用，不为此改读取长度。
 
