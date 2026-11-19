@@ -1,0 +1,19 @@
+{
+  "ui:order": ["user_agent", "originator"],
+  "user_agent": {
+    "ui:title": { "en": "User-Agent", "zh": "User-Agent" },
+    "ui:placeholder": "sup2api-codex/<version>",
+    "ui:help": {
+      "en": "The User-Agent header of every request to OpenAI (upstream, account test, token refresh, usage resets) of the accounts that set none of their own. Authorization requests use this value for every account. Leave empty for the built-in sup2api-codex/<plugin version>.",
+      "zh": "未自定义 User-Agent 的账号发往 OpenAI 的全部请求（上游、账号测试、令牌刷新、用量重置）使用的 User-Agent 请求头。授权请求对所有账号都用这里的值。留空使用内置的 sup2api-codex/<插件版本>。"
+    }
+  },
+  "originator": {
+    "ui:title": { "en": "originator", "zh": "originator" },
+    "ui:placeholder": "sup2api",
+    "ui:help": {
+      "en": "The originator header of the same requests, for the accounts that set none of their own. Authorization requests use this value for every account. Leave empty for the built-in sup2api.",
+      "zh": "未自定义 originator 的账号在上述请求中使用的 originator 请求头。授权请求对所有账号都用这里的值。留空使用内置的 sup2api。"
+    }
+  }
+}

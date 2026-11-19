@@ -8129,7 +8129,7 @@ message UpstreamRequest {
 
 - 两个 map 的键都小写；`host`、`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝（`Host` 永远是 URL 的主机，§112.17）；同名时权威头生效；名或值不合法拒绝。
 - 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉；值为空表示删掉同名的头、不发，§112.17）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
-- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
+- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们；codex 的 `User-Agent`、`originator` 改为在账号凭证或插件设置里自定义，见 [PLUGIN-CODEX.md](PLUGIN-CODEX.md) 第 20 节）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
 - 插件交回的权威头能盖掉运营方设置的同名头，这是代码插件一直以来的行为，签名需要它。
 
 ### 112.5 发送前的检查

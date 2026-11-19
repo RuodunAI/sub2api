@@ -44,16 +44,17 @@ func removedFields(ws bool) []string {
 }
 
 // accountHeaders are the bearer token, the ChatGPT account it acts for and
-// sup2api's own, truthful identification. Every header of the plugin
+// the account's client headers (agent). Every header of the plugin
 // (these, httpHeaders, the WebSocket beta and the session) is authoritative,
 // written after the operator's header settings, as every header of a code
 // plugin was before forwarding v2: no passthrough or override changes what
 // the plugin sends. No client header is forwarded.
-func accountHeaders(c credentials) map[string]string {
+func (p *Plugin) accountHeaders(c credentials) map[string]string {
+	a := p.agent(c)
 	h := map[string]string{
 		"authorization": "Bearer " + c.AccessToken,
-		"originator":    Originator,
-		"user-agent":    UserAgent,
+		"originator":    a.Originator,
+		"user-agent":    a.UserAgent,
 	}
 	if c.ChatGPTAccountID != "" {
 		h["chatgpt-account-id"] = c.ChatGPTAccountID
@@ -72,20 +73,23 @@ var httpHeaders = map[string]string{"accept": "text/event-stream", "content-type
 // client's prompt_cache_key - the key the core's sticky rule already binds
 // the conversation to one account by - mixed with the API key, so two keys
 // sending the same prompt_cache_key never share an upstream session and the
-// client's value is not echoed. A body without the key (or with a key that
-// is not a non-empty string) gets none.
-func upstreamSession(apiKeyID int64, body []byte) string {
+// client's value is not echoed, and salted with the account id, so the
+// session differs per account. A body without the key (or with a key that is
+// not a non-empty string) gets none.
+func upstreamSession(accountID, apiKeyID int64, body []byte) string {
 	key := gjson.GetBytes(body, "prompt_cache_key")
 	if key.Type != gjson.String || key.Str == "" {
 		return ""
 	}
-	return upstreamSessionID(apiKeyID, key.Str)
+	return upstreamSessionID(accountID, apiKeyID, key.Str)
 }
 
-// upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the API key
-// id and the prompt cache key.
-func upstreamSessionID(apiKeyID int64, key string) string {
-	sum := sha256.Sum256([]byte(strconv.FormatInt(apiKeyID, 10) + ":" + key))
+// upstreamSessionID is a UUID (version 8, RFC 9562) hashed from the account
+// id, the API key id and the prompt cache key: SHA-256 of
+// "<account id>:<api key id>:<prompt cache key>" (the two ids are decimal
+// integers, so the parts cannot run into each other).
+func upstreamSessionID(accountID, apiKeyID int64, key string) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(accountID, 10) + ":" + strconv.FormatInt(apiKeyID, 10) + ":" + key))
 	sum[6] = sum[6]&0x0f | 0x80
 	sum[8] = sum[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[0:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
@@ -143,8 +147,8 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 	if err != nil {
 		return nil, err
 	}
-	session := upstreamSession(in.GetMeta().GetApiKeyId(), body)
-	return u.HeaderMap(accountHeaders(c)).
+	session := upstreamSession(in.GetAccount().GetId(), in.GetMeta().GetApiKeyId(), body)
+	return u.HeaderMap(p.accountHeaders(c)).
 		Header("session_id", session).
 		Header("conversation_id", session).
 		Body(body).
@@ -237,7 +241,7 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 		"store":        false,
 		"stream":       true,
 	})
-	h := accountHeaders(c)
+	h := p.accountHeaders(c)
 	maps.Copy(h, httpHeaders)
 	return &pluginv1.BuildTestRequestResponse{
 		Method:        http.MethodPost,
