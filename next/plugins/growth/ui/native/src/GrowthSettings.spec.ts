@@ -1,13 +1,12 @@
+/// <reference types="vite/client" />
 import { afterEach, describe, expect, it } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
-import { provideHost, type HostContext, type PluginHost } from '@sub2api/host'
-import { SSettingsPage, type PluginSettingsForm } from '@sub2api/ui'
+import { flushPromises, type VueWrapper } from '@vue/test-utils'
+import { checkMessages, cleanup, mountSettings as mount } from '@sub2api/ui/testing'
 import GrowthSettings from './GrowthSettings.vue'
 import messages from './messages'
 import { setHost } from './host'
 
 type M = Record<string, any>
-const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
 /** The value the form fills into empty settings (the JSON Schema defaults it replaces). */
 const DEFAULTS = {
@@ -21,47 +20,11 @@ const DEFAULTS = {
   checkin_timezone: 'UTC'
 }
 
-/** A fake core for GET / PUT /plugins/growth/settings (no secrets: ui.settings.secrets is []). */
-function fakeCore(values: M) {
-  let stored: M = clone(values)
-  const puts: M[] = []
-  const api = {
-    get: async (path: string) => {
-      expect(path).toBe('/plugins/growth/settings')
-      return { values: clone(stored) }
-    },
-    put: async (path: string, body: { values: M }) => {
-      expect(path).toBe('/plugins/growth/settings')
-      puts.push(clone(body.values))
-      stored = clone(body.values)
-      return null
-    }
-  }
-  return { api, puts }
-}
+/** GrowthSettings over a fake core holding `values` (no secrets: ui.settings.secrets is []). */
+const mountSettings = (values: M = {}, granted = ['plugin:manage']) => mount(GrowthSettings, { plugin: 'growth', setHost, values, granted })
+const field = (w: VueWrapper, id: string) => w.find(`[data-testid="growth-${id}"]`)
 
-let wrapper: { unmount(): void } | null = null
-async function mountSettings(values: M = {}, granted = ['plugin:manage']) {
-  const core = fakeCore(values)
-  provideHost({
-    permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) },
-    i18n: { t: (k: string) => k }
-  } as unknown as HostContext)
-  setHost({ t: (k: string) => k, plugin: { key: 'growth' }, api: core.api } as unknown as PluginHost)
-  const w = mount(GrowthSettings, { attachTo: document.body })
-  wrapper = w
-  await flushPromises()
-  const settings = w.findComponent(SSettingsPage).props('settings') as PluginSettingsForm<M>
-  return { w, core, settings }
-}
-const field = (w: Awaited<ReturnType<typeof mountSettings>>['w'], id: string) => w.find(`[data-testid="growth-${id}"]`)
-
-afterEach(() => {
-  wrapper?.unmount()
-  wrapper = null
-  setHost(null)
-  document.body.innerHTML = ''
-})
+afterEach(cleanup)
 
 describe('GrowthSettings', () => {
   it('fills the defaults into unset settings and saves the whole value', async () => {
@@ -140,6 +103,7 @@ describe('GrowthSettings rules', () => {
     { name: 'rewards with cents', set: { checkin_min_quota: 0.1, checkin_max_quota: 2.5, checkin_timezone: 'Asia/Shanghai' }, ok: true },
     { name: 'referral off: its fields are not checked', set: { referral_enabled: false, referral_rate_percent: 150 }, ok: true },
     { name: 'check-in off: its fields are not checked', set: { checkin_enabled: false, checkin_min_quota: -1 }, ok: true },
+    { name: 'check-in off: a time zone that is not a string is not checked', set: { checkin_enabled: false, checkin_timezone: 8 }, ok: true },
     // Kept as it is; the plugin's ValidateSettings refuses it (code unknown).
     { name: 'a key the form does not know', set: { other: 'x' }, ok: true }
   ]
@@ -153,10 +117,9 @@ describe('GrowthSettings rules', () => {
   }
 })
 
-describe('settings messages', () => {
-  const keys = (o: unknown, prefix = ''): string[] =>
-    o && typeof o === 'object' ? Object.entries(o).flatMap(([k, v]) => keys(v, prefix ? `${prefix}.${k}` : k)) : [prefix]
-  it('zh and en have the same keys', () => {
-    expect(keys(messages.zh).sort()).toEqual(keys(messages.en).sort())
-  })
-})
+describe('messages', () =>
+  checkMessages(messages, {
+    sources: import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true }),
+    // Looked up with the event type as suffix: host.t('event.' + row.event_type).
+    dynamic: ['event.']
+  }))

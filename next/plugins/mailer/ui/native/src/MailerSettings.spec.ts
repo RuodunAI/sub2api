@@ -1,67 +1,24 @@
+/// <reference types="vite/client" />
 import { afterEach, describe, expect, it } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
-import { ApiError, provideHost, type HostContext, type PluginHost } from '@sub2api/host'
-import { SECRET_MASK, SSettingsPage, type PluginSettingsForm } from '@sub2api/ui'
+import { flushPromises, type VueWrapper } from '@vue/test-utils'
+import { ApiError } from '@sub2api/host'
+import { SECRET_MASK } from '@sub2api/ui'
+import { checkMessages, cleanup, mountSettings as mount } from '@sub2api/ui/testing'
 import MailerSettings from './MailerSettings.vue'
 import messages from './messages'
 import { setHost } from './host'
 
 type M = Record<string, any>
-const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
 /** The value the form fills into empty settings (the plugin's own defaults, mailer.parseSettings). */
 const DEFAULTS = { host: '', port: 587, security: 'starttls', username: '', password: '', from_address: '', from_name: 'Sub2API', timeout_seconds: 20 }
 
-/**
- * A fake core for GET / PUT /plugins/mailer/settings: it stores what is put
- * ("******" keeps the stored value, as the core does) and reads the password
- * back masked (manifest ui.settings.secrets).
- */
-function fakeCore(values: M) {
-  let stored: M = clone(values)
-  const puts: M[] = []
-  let refusal: unknown = null
-  const masked = () => Object.fromEntries(Object.entries(stored).map(([k, v]) => [k, k === 'password' && v ? SECRET_MASK : v]))
-  const api = {
-    get: async (path: string) => {
-      expect(path).toBe('/plugins/mailer/settings')
-      return { values: masked() }
-    },
-    put: async (path: string, body: { values: M }) => {
-      expect(path).toBe('/plugins/mailer/settings')
-      puts.push(clone(body.values))
-      if (refusal) throw refusal
-      stored = { ...body.values, password: body.values.password === SECRET_MASK ? stored.password : body.values.password }
-      if (stored.password === undefined) delete stored.password
-      return null
-    }
-  }
-  return { api, puts, stored: () => stored, refuse: (e: unknown) => (refusal = e) }
-}
+/** MailerSettings over a fake core holding `values`; the password is a secret (manifest ui.settings.secrets). */
+const mountSettings = (values: M = {}, granted = ['plugin:manage']) => mount(MailerSettings, { plugin: 'mailer', setHost, values, granted, secrets: ['password'] })
 
-let wrapper: { unmount(): void } | null = null
-async function mountSettings(values: M = {}, granted = ['plugin:manage']) {
-  const core = fakeCore(values)
-  provideHost({
-    permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) },
-    i18n: { t: (k: string) => k }
-  } as unknown as HostContext)
-  setHost({ t: (k: string) => k, plugin: { key: 'mailer' }, api: core.api } as unknown as PluginHost)
-  const w = mount(MailerSettings, { attachTo: document.body })
-  wrapper = w
-  await flushPromises()
-  const settings = w.findComponent(SSettingsPage).props('settings') as PluginSettingsForm<M>
-  return { w, core, settings }
-}
+afterEach(cleanup)
 
-afterEach(() => {
-  wrapper?.unmount()
-  wrapper = null
-  setHost(null)
-  document.body.innerHTML = ''
-})
-
-const input = (w: Awaited<ReturnType<typeof mountSettings>>['w'], id: string) => w.get(`[data-testid="mailer-${id}"]`)
+const input = (w: VueWrapper, id: string) => w.get(`[data-testid="mailer-${id}"]`)
 
 describe('MailerSettings', () => {
   it('fills the defaults into unset settings and saves the whole value', async () => {
@@ -197,12 +154,9 @@ describe('MailerSettings rules', () => {
   }
 })
 
-describe('messages', () => {
-  const keys = (o: unknown, prefix = ''): string[] =>
-    o && typeof o === 'object' ? Object.entries(o).flatMap(([k, v]) => keys(v, prefix ? `${prefix}.${k}` : k)) : [prefix]
-  it('zh and en have the same keys, without vue-i18n special characters', () => {
-    expect(keys(messages.zh)).toEqual(keys(messages.en))
-    const leaves = (o: unknown): string[] => (o && typeof o === 'object' ? Object.values(o).flatMap(leaves) : [String(o)])
-    for (const lang of [messages.zh, messages.en]) expect(leaves(lang).filter((s) => /[@|{}]/.test(s))).toEqual([])
-  })
-})
+describe('messages', () =>
+  checkMessages(messages, {
+    sources: import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true }),
+    // Looked up with the mode as suffix: t(`security.${value}`).
+    dynamic: ['security.']
+  }))

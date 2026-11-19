@@ -146,17 +146,9 @@ var settingsRules = fieldcheck.Fields{
 // parseSettings decodes and checks the settings: the one check of Configure
 // and ValidateSettings.
 func parseSettings(cfg pluginsdk.Config) (config, error) {
-	invalid := pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object").Err()
-	var values map[string]any
-	if err := cfg.Decode(&values); err != nil {
-		return config{}, invalid
-	}
-	if err := fieldcheck.Check(settingsRules, values).Err(); err != nil {
-		return config{}, err
-	}
 	var s Settings
-	if err := cfg.Decode(&s); err != nil {
-		return config{}, invalid
+	if err := fieldcheck.DecodeSettings(cfg, settingsRules, &s); err != nil {
+		return config{}, err
 	}
 	c, errs := compileSettings(s)
 	return c, errs.Err()

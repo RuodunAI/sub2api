@@ -1,58 +1,21 @@
+/// <reference types="vite/client" />
 import { afterEach, describe, expect, it } from 'vitest'
-import { flushPromises, mount } from '@vue/test-utils'
-import { provideHost, type HostContext, type PluginHost } from '@sub2api/host'
-import { SSettingsPage, type PluginSettingsForm } from '@sub2api/ui'
+import type { VueWrapper } from '@vue/test-utils'
+import { checkMessages, cleanup, mountSettings as mount } from '@sub2api/ui/testing'
 import GuardSettings from './GuardSettings.vue'
 import messages from './messages'
 import { setHost } from './host'
 
 type M = Record<string, any>
-const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
 /** The value the form fills into empty settings (the plugin's own defaults). */
 const DEFAULTS = { webhook_url: '', record_snippets: false, alert_cooldown_sec: 60 }
 
-/** A fake core for GET / PUT /plugins/guard/settings (no secrets: ui.settings.secrets is []). */
-function fakeCore(values: M) {
-  let stored: M = clone(values)
-  const puts: M[] = []
-  const api = {
-    get: async (path: string) => {
-      expect(path).toBe('/plugins/guard/settings')
-      return { values: clone(stored) }
-    },
-    put: async (path: string, body: { values: M }) => {
-      expect(path).toBe('/plugins/guard/settings')
-      puts.push(clone(body.values))
-      stored = clone(body.values)
-      return null
-    }
-  }
-  return { api, puts }
-}
+/** GuardSettings over a fake core holding `values` (no secrets: ui.settings.secrets is []). */
+const mountSettings = (values: M = {}, granted = ['plugin:manage']) => mount(GuardSettings, { plugin: 'guard', setHost, values, granted })
+const field = (w: VueWrapper, id: string) => w.get(`[data-testid="guard-${id}"]`)
 
-let wrapper: { unmount(): void } | null = null
-async function mountSettings(values: M = {}, granted = ['plugin:manage']) {
-  const core = fakeCore(values)
-  provideHost({
-    permissions: { superuser: () => false, has: (k: string) => granted.includes(k), any: (...k: string[]) => k.some((x) => granted.includes(x)) },
-    i18n: { t: (k: string) => k }
-  } as unknown as HostContext)
-  setHost({ t: (k: string) => k, plugin: { key: 'guard' }, api: core.api } as unknown as PluginHost)
-  const w = mount(GuardSettings, { attachTo: document.body })
-  wrapper = w
-  await flushPromises()
-  const settings = w.findComponent(SSettingsPage).props('settings') as PluginSettingsForm<M>
-  return { w, core, settings }
-}
-const field = (w: Awaited<ReturnType<typeof mountSettings>>['w'], id: string) => w.get(`[data-testid="guard-${id}"]`)
-
-afterEach(() => {
-  wrapper?.unmount()
-  wrapper = null
-  setHost(null)
-  document.body.innerHTML = ''
-})
+afterEach(cleanup)
 
 describe('GuardSettings', () => {
   it('fills the defaults into unset settings and saves the whole value', async () => {
@@ -122,12 +85,7 @@ describe('GuardSettings rules', () => {
   }
 })
 
-describe('messages', () => {
-  const keys = (o: unknown, prefix = ''): string[] =>
-    o && typeof o === 'object' ? Object.entries(o).flatMap(([k, v]) => keys(v, prefix ? `${prefix}.${k}` : k)) : [prefix]
-  it('zh and en have the same keys; the settings texts hold no vue-i18n special characters', () => {
-    expect(keys(messages.zh).sort()).toEqual(keys(messages.en).sort())
-    const leaves = (o: unknown): string[] => (o && typeof o === 'object' ? Object.values(o).flatMap(leaves) : [String(o)])
-    for (const lang of [messages.zh.settings, messages.en.settings]) expect(leaves(lang).filter((s) => /[@|{}]/.test(s))).toEqual([])
-  })
-})
+describe('messages', () =>
+  checkMessages(messages, {
+    sources: import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true })
+  }))

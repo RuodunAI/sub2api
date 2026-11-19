@@ -40,5 +40,3 @@ export const SETTINGS_RULES: Rules<GrowthSettingsValue> = {
   checkin_timezone: { type: 'string', when: checkin }
 }
 
-/** The number settings: a cleared box sends no key, as the JSON Schema form did. */
-export type NumberSetting = 'referral_rate_percent' | 'referral_max_per_invitee' | 'referral_duration_days' | 'checkin_min_quota' | 'checkin_max_quota'

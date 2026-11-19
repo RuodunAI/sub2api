@@ -13,8 +13,6 @@ const host = useMailerHost()
 const t = host.t
 const settings = usePluginSettings<MailerSettingsValue>({ pluginKey: host.plugin.key, api: host.api, rules: RULES, defaults: DEFAULTS })
 const securityOptions = computed(() => SECURITY.map((value) => ({ value, label: t(`security.${value}`) })))
-/** A cleared number box sends no key (the plugin's default applies), as the schema form did. */
-const setNumber = (key: 'port' | 'timeout_seconds', v: number | null) => settings.set(key, v ?? undefined)
 </script>
 
 <template>
@@ -24,14 +22,8 @@ const setNumber = (key: 'port' | 'timeout_seconds', v: number | null) => setting
         <SInput v-bind="settings.bind('host')" :placeholder="PLACEHOLDERS.host" mono data-testid="mailer-host" />
       </SSettingRow>
       <SSettingRow prop="port" :label="t('port.label')" :description="t('port.help')">
-        <SInput
-          type="number"
-          :model-value="settings.get('port') as number | undefined"
-          :min="1"
-          :max="65535"
-          data-testid="mailer-port"
-          @update:model-value="setNumber('port', $event as number | null)"
-        />
+        <!-- A cleared number box sends no key (the plugin's default applies), as the schema form did. -->
+        <SInput type="number" v-bind="settings.bindNumber('port')" :min="1" :max="65535" data-testid="mailer-port" />
       </SSettingRow>
       <SSettingRow prop="security" :label="t('security.label')">
         <SSelect v-bind="settings.bind('security')" :options="securityOptions" data-testid="mailer-security" />
@@ -49,15 +41,7 @@ const setNumber = (key: 'port' | 'timeout_seconds', v: number | null) => setting
         <SInput v-bind="settings.bind('from_name')" data-testid="mailer-from-name" />
       </SSettingRow>
       <SSettingRow prop="timeout_seconds" :label="t('timeout.label')" :description="t('timeout.help')">
-        <SInput
-          type="number"
-          :model-value="settings.get('timeout_seconds') as number | undefined"
-          :min="5"
-          :max="25"
-          :suffix="t('timeout.unit')"
-          data-testid="mailer-timeout"
-          @update:model-value="setNumber('timeout_seconds', $event as number | null)"
-        />
+        <SInput type="number" v-bind="settings.bindNumber('timeout_seconds')" :min="5" :max="25" :suffix="t('timeout.unit')" data-testid="mailer-timeout" />
       </SSettingRow>
     </SSettingsGroup>
   </SSettingsPage>

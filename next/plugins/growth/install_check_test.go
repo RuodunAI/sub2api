@@ -10,6 +10,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
 // TestManifestPassesCoreChecks runs manifest.json through the checks the
@@ -62,17 +63,8 @@ func TestSettingsForm(t *testing.T) {
 	if err := json.Unmarshal(rawManifest, &m); err != nil {
 		t.Fatalf("manifest.json: %v", err)
 	}
-	// "secrets" is written out: without the key the core masks every
-	// setting (it cannot tell which are secrets).
-	var declared struct {
-		UI struct {
-			Settings map[string]json.RawMessage `json:"settings"`
-		} `json:"ui"`
-	}
-	if err := json.Unmarshal(rawManifest, &declared); err != nil || declared.UI.Settings["secrets"] == nil {
-		t.Fatalf("ui.settings.secrets must be written out: %v", err)
-	}
-	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GrowthSettings" || st.Page != "" || len(st.SecretFields()) != 0 {
+	pluginsdktest.SettingsSecrets(t, rawManifest)
+	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GrowthSettings" || st.Page != "" {
 		t.Fatalf("ui.settings = %+v", st)
 	}
 }

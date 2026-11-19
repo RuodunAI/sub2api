@@ -75,10 +75,7 @@ var settingsRules = fieldcheck.Fields{
 // and ValidateSettings.
 func parseSettings(cfg pluginsdk.Config) (*Settings, error) {
 	var m credMap
-	if err := cfg.Decode(&m); err != nil {
-		return nil, pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
-	}
-	if err := fieldcheck.Check(settingsRules, m).Err(); err != nil {
+	if err := fieldcheck.DecodeSettings(cfg, settingsRules, &m); err != nil {
 		return nil, err
 	}
 	if k, code, msg := m.agentError(); k != "" {

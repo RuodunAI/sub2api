@@ -18,16 +18,8 @@ const settings = usePluginSettings<GuardSettingsValue>({ pluginKey: host.plugin.
         <SUrlPresetInput v-bind="settings.bind('webhook_url')" placeholder="https://hooks.example.com/guard" data-testid="guard-webhook-url" />
       </SSettingRow>
       <SSettingRow prop="alert_cooldown_sec" :label="t('settings.cooldown.label')" :description="t('settings.cooldown.help')">
-        <SInput
-          type="number"
-          :model-value="settings.get('alert_cooldown_sec') as number | undefined"
-          :min="0"
-          :max="COOLDOWN_MAX"
-          :step="1"
-          :suffix="t('settings.cooldown.unit')"
-          data-testid="guard-cooldown"
-          @update:model-value="settings.set('alert_cooldown_sec', ($event as number | null) ?? undefined)"
-        />
+        <!-- A cleared box sends no key: the plugin's 60 s applies. -->
+        <SInput type="number" v-bind="settings.bindNumber('alert_cooldown_sec')" :min="0" :max="COOLDOWN_MAX" :step="1" :suffix="t('settings.cooldown.unit')" data-testid="guard-cooldown" />
       </SSettingRow>
       <SSettingRow prop="record_snippets" :label="t('settings.snippets.label')" :description="t('settings.snippets.help')">
         <SSwitch :model-value="!!settings.get('record_snippets')" data-testid="guard-snippets" @update:model-value="settings.set('record_snippets', $event)" />
