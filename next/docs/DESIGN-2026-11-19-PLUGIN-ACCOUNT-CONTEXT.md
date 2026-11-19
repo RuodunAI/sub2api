@@ -332,11 +332,8 @@ message AccountProxy {
 
 **两个特例给不给**
 
-- `account/models.go:80-81`（建号前，按表单的选择拉模型）：**不给**。理由：
-  - 这时还没有账号；
-  - §117 已定"建账号之前插件看不到代理地址和密码"；
-  - 粘贴的代理串照 §21.4、§117.3 不进日志、审计和代理表，也不应交给插件。
-  
+- `account/models.go:80-81`（建号前，按表单的选择拉模型）：**给**，所有者决定“代理这时候已经填进去了就用 没填进去就不用”（第 7 节第 5 条）。表单的选择经 `egressClient` 取出口，`Egress.Proxy` 是这次出站用的代理（粘贴的代理串照样只解析、不入库、不进日志和审计，`id` 为 0），经 `core.PluginProxy` 放进 `Account.proxy`；没选为空、直连；选了的代理取不到时报错，不调插件。测试 `account/models_test.go` `TestTypeModelsFetchCarriesTheFormProxy`。
+
   建好账号之后的所有调用都带代理。
 - `gateway/usageplugin.go:99-107` 的 `small`：删掉，见第 4.4 节。
 
@@ -490,7 +487,7 @@ CONTRACTS §124 写明以下三点：
 2. `AccountScopeCheck` 改为不需要授权（方案甲，第 4.1 节）。所有者已确认。
 3. 旧包按 §112.10 的旧契约信息拒绝，不新造错误码；并加迁移 0116 删掉残留的授予行。
 4. 删掉 `AccountProperties.proxy_id`，`Account.proxy.id` 是唯一来源。
-5. 建账号之前的拉模型（`models.go:80`）不给代理详情，保持 §117"建账号之前插件看不到代理"。
+5. 建账号之前的拉模型（`models.go:80`）：所有者已定（2026-11-19）：“代理这时候已经填进去了就用 没填进去就不用”。表单填了代理（已有的或粘贴的）就经它发出，插件收到的 `Account.proxy` 就是这条代理（粘贴的 id 为 0）；没填就直连，`Account.proxy` 为空；填了的代理不可用时报错，不直连、不调用插件。原来代定的“不给代理详情”作废。授权票据（§117）的路由调用不交 `Account`，不受影响。
 6. 网关出口取不到时不调用 `Execute`，直接失败转移；账号包里取不到出口时不调 Build。
 7. 审计 action 改名为 `plugin.account.read`。
 8. 插件协议、Host API 不升，理由是协议 2、Host API 10 都还没发布。

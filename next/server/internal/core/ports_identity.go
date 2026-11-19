@@ -1105,7 +1105,8 @@ type Egress struct {
 	Proxy   *ProxyRef
 }
 
-// ProxyRef is a stored proxy: its id and address, password included.
+// ProxyRef is a proxy: its id and address, password included. ID is 0 for a
+// proxy URL an account form pasted, which is not stored.
 type ProxyRef struct {
 	ID int64
 	ProxySpec

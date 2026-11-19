@@ -58,6 +58,7 @@ type fakePlatform struct {
 	mu          sync.Mutex
 	calls       []*pluginv1.ValidateCredentialsRequest
 	tests       []*pluginv1.BuildTestRequestRequest
+	models      []*pluginv1.BuildModelsRequestRequest
 	classes     []*pluginv1.ClassifyErrorRequest
 	// balance is the balance query's plugin side (balance_test.go); nil
 	// answers Unimplemented.
@@ -179,8 +180,11 @@ func (p *fakePlatform) called(method string) int {
 }
 
 // BuildModelsRequest lists models from the fake upstream's /v1/models; the
-// "vkey" account type is not a ModelLister.
+// "vkey" account type is not a ModelLister. Each call is kept in models.
 func (p *fakePlatform) BuildModelsRequest(_ context.Context, in *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error) {
+	p.mu.Lock()
+	p.models = append(p.models, in)
+	p.mu.Unlock()
 	if in.GetAccount().GetType() == "vkey" {
 		return nil, status.Error(codes.Unimplemented, "no")
 	}
