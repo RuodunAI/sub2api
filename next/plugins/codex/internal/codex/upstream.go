@@ -152,8 +152,20 @@ func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (
 		Header("session_id", session).
 		Header("conversation_id", session).
 		Body(body).
-		Model(pluginsdk.RequestModel(in)).
+		Model(upstreamModel(in)).
 		Build()
+}
+
+// upstreamModel is the model the request reports going upstream with: the
+// body's, except for an image request, whose body's model is the chat model
+// driving the image tool (ImageChatModel); the core then records the image
+// model the response echoes (CONTRACTS §121.4).
+func upstreamModel(in *pluginv1.ExecuteRequest) string {
+	switch in.GetMeta().GetClientProtocol() {
+	case ProtocolImages, ProtocolImagesEdit:
+		return ""
+	}
+	return pluginsdk.RequestModel(in)
 }
 
 // transport starts the request of an upstream protocol: the HTTP request

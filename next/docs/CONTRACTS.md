@@ -5956,7 +5956,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 
 ### 88.1 转换器与注册表（`server/internal/gateway/convert`）
 
-- `Converter`：`From`、`To`、`Grade`（good / fair / discouraged）、`Prepare(body, Options)` 返回绑定本请求的转换器与上游请求体、`Response`、`NewStream`。`Options`：`Ctx`、`Model`（客户端模型）、`Stream`、`Fetch`（媒体下载，网关提供）、`ClaudeDefaultMaxTokens`、`AdaptModel`（路由的适配选项，§121.3）。可选接口 `ModelLocator`（客户端模型在上游请求体里的位置，§121.4）；`Response` 可以返回 `ClientError`（客户端协议的错误应答，§121.8）。
+- `Converter`：`From`、`To`、`Grade`（good / fair / discouraged）、`Prepare(body, Options)` 返回绑定本请求的转换器与上游请求体、`Response`、`NewStream`。`Options`：`Ctx`、`Model`（客户端模型）、`Stream`、`Fetch`（媒体下载，网关提供）、`ClaudeDefaultMaxTokens`、`AdaptModel`（路由的适配选项，§121.3）。可选接口 `ModelLocator`（客户端模型在上游请求体里的位置）与 `ResponseModelLocator`（上游应答里服务了它的模型的位置），§121.4。
 - 转换器不判断策略：每个请求成员要么映射，要么记一条 `Loss{Category, Path, Hop}`（类别 `tool`、`reasoning`、`image`、`other`，判定规则见 CONVERT-MATRIX §2.3），要么返回 `RequestError`（请求无法表达）。绑定的转换器实现 `LossReporter`：Prepare 后列请求侧损失，Response / 流 Flush 后追加响应侧损失（路径以 `response.` 开头）。
 - 注册表 `Resolve(from, to)`：有直接转换器就用它，否则 `from → openai.responses` 与 `openai.responses → to` 都有时用二者的组合（`compose.go`）：等级 discouraged，`Hops` 为三项，第二跳的损失 `Hop = 1`，任一跳的 `RequestError` 原样返回，流式逐事件串接。两端属于同一平台（协议名第一个 `.` 之前相同，如 `gemini.generate` 与 `gemini.stream_generate`）时不组合；生图两对（§121.2）不作第一跳。组合在注册时生成；`Pairs()` 含组合。
 - `core.ProtocolConverters.Conversion(client, upstream)` 返回 `core.Conversion{Rank, Grade, Hops}`（取代 `CanConvert`）。
@@ -8593,7 +8593,7 @@ ALTER TABLE usage_logs
 - 管理员要做什么：请求用到生图工具的模型，价格表达式按需要写 `img` / `img_o`（118.3、118.6）。
 - `/v1/chat/completions` 转成 Responses 时（`convert/req_responses.go`）丢掉 `image_generation` 工具（已知的转换损失），所以经 Chat Completions 的请求不会生图。
 - 官方 Codex 客户端 2026-07 起改用 Codex 后端的 `/images/generations` 专用接口生图；网关没有这个端点（已知限制，不在本节范围）。
-- `/v1/images/generations`、`/v1/images/edits` 经转换由 Responses 服务时（§121）用的就是这份规则（§121.5）。
+- `/v1/images/generations`、`/v1/images/edits` 经转换由 Responses 服务时（§121）用的就是这份规则，只是 `model` 读应答回显的生图模型（§121.4、§121.5）。
 
 ## 120. 附加用量（2026-11-18 整理；同日加入的“对象形式、模型取自应答”已删除，见 120.2；无迁移；Host API 仍是 10；插件协议仍是 2）
 
@@ -8680,23 +8680,23 @@ ALTER TABLE usage_logs
 ### 121.4 模型：客户端模型在工具里
 
 - `convert.ModelLocator`（可选接口，`ModelPath() string`）：转换器把客户端模型放在上游端点 `modelPath` 以外的地方时实现它。生图转换器返回 `tools.0.model`；`addRoute` 在转换路由上用它作 `typeRoute.modelPath`，账号模型映射（`upstreamBody`）因此写进工具，顶层驱动模型不被覆盖。其他转换器不实现，行为不变。
-- 上报的上游模型：codex 插件照常上报请求体顶层的 `model`（`pluginsdk.RequestModel`），生图转换后那是驱动模型，所以 `upstream_model` 记驱动模型（codex 为 `gpt-6-luna`）。插件上报的值覆盖网关按映射写的值，账号映射过客户端模型时也是驱动模型；映射后的名字只出现在发往上游的请求体 `tools[0].model` 里。应答回显的生图模型（Codex 后端恒为 `gpt-image-2-codex`）不记。
+- 上游模型（所有者 2026-11-19：“上游返回什么就是什么”）：`upstream_model` 记上游应答回显的生图模型（Codex 后端为 `gpt-image-2-codex`）。`convert.ResponseModelLocator`（可选接口，`ResponseModelPaths() (json, sse string)`）说应答里这个模型在哪：生图转换器返回 `tools.0.model`、`response.tools.0.model`。`addRoute` 在转换路由上把上游端点用量规则里 `model` 的路径换成这两个（只换这一项，其余规则与覆盖链不变，规则复制后改，不动平台的），并标记路由 `echoModel`：读到的回显模型覆盖网关按账号映射写的上游模型（`forward`；回显与客户端请求的模型同名时也记回显）。codex 插件在 `meta.client_protocol` 为 `openai.images`、`openai.images_edit` 时不上报上游模型（`UpstreamRequest.upstream_model` 为空），否则请求体顶层的驱动模型会覆盖回显（`dispatch.go` 的 `send`）。应答没有回显时按既有规则落下：账号映射过客户端模型时是映射后的名字，没映射时为空。回显模型只进使用记录与统计，不进任何取价路径（121.6）。
 
 ### 121.5 用量：上游 Responses 端点自己的规则
 
-转换路由照常用上游 `openai.responses` 端点的用量规则（§13 的覆盖链，账号类型对 `openai.responses` 的覆盖同样生效）。这份规则本来就把生图工具的用量加进来（§118.10）：`input_tokens = usage.input_tokens + tool_usage.image_gen.input_tokens`、`output_tokens` 同理、`image_input_tokens` / `image_output_tokens` 取 `tool_usage.image_gen.*_details.image_tokens`、缓存读写取 `usage`，SSE 读 `response.completed` 与 `response.incomplete`。非流式客户端经强制流式聚合后按 `json` 规则读。规则读到的 `model` 是驱动模型（应答顶层 `model`）。
+转换路由照常用上游 `openai.responses` 端点的用量规则（§13 的覆盖链，账号类型对 `openai.responses` 的覆盖同样生效），只有 `model` 的路径按 121.4 换成回显的生图模型。这份规则本来就把生图工具的用量加进来（§118.10）：`input_tokens = usage.input_tokens + tool_usage.image_gen.input_tokens`、`output_tokens` 同理、`image_input_tokens` / `image_output_tokens` 取 `tool_usage.image_gen.*_details.image_tokens`、缓存读写取 `usage`，SSE 读 `response.completed` 与 `response.incomplete`。非流式客户端经强制流式聚合后按 `json` 规则读。
 
-设计稿曾让生图端点另声明一份 `convertedUsage` 规则，只为把 `upstream_model` 记成回显的生图模型；它取代整条覆盖链、会绕过账号类型的覆盖，实现后审查删除（2026-11-19），没有发布过。
+设计稿曾让生图端点另声明一份完整的 `convertedUsage` 规则；它取代整条覆盖链、会绕过账号类型的覆盖，实现后审查删除（2026-11-19），没有发布过。现在只换 `model` 一项（121.4）。
 
 ### 121.6 计价与使用记录
 
 - 按 §17.2：调度前、预扣、结算都按客户端请求的模型（`gpt-image-2`）的价格；`gpt-image-2-codex`、驱动模型都不参与计价、不需要价格。客户端写别的生图模型名时它要在分组白名单与账号模型列表里、有自己的价格，并按它计价（Codex 后端对任何名字都按 `gpt-image-2-codex` 出图）。
-- 一条记录：`protocol = openai.images`（或 `openai.images_edit`）、`upstream_protocol = openai.responses`、`conversion.hops = [客户端协议, openai.responses]`、`model = gpt-image-2`、`upstream_model = gpt-6-luna`（驱动模型）；token 列是生图与对话两部分之和；没有附加项。算例（`p*5 + cr*1.25 + img*8 + img_o*30 + c*30`）：对话 2235 / 69、生图输入 56、图片输出 343 → `p = 2291`、`img_o = 343`、`c = 69` → 23 815 微美元。
+- 一条记录：`protocol = openai.images`（或 `openai.images_edit`）、`upstream_protocol = openai.responses`、`conversion.hops = [客户端协议, openai.responses]`、`model = gpt-image-2`、`upstream_model = gpt-image-2-codex`（回显）；token 列是生图与对话两部分之和；没有附加项。算例（`p*5 + cr*1.25 + img*8 + img_o*30 + c*30`）：对话 2235 / 69、生图输入 56、图片输出 343 → `p = 2291`、`img_o = 343`、`c = 69` → 23 815 微美元。
 - 应答给客户端的 `usage` 只是生图部分（121.7），扣费里的对话 token 在使用记录的 token 列里。
 
 ### 121.7 应答转换
 
-**非流式**：`{"created": response.created_at, "background", "output_format", "quality", "size"（第一张图项的值）, "data": [{"b64_json": result, "revised_prompt"}…], "usage": tool_usage.image_gen 原样（没有时不写）}`。`data` 按 `output` 顺序取每个带 `result` 的 `image_generation_call`（上游给两张就是两项）；其余输出项（assistant 的 `message` 等）不进应答，记应答损失 `response.output[i]`（`other`）。
+**非流式**：`{"created": response.created_at, "background", "output_format", "quality", "size"（第一张图项的值）, "data": [{"b64_json": result, "revised_prompt"}…], "usage": tool_usage.image_gen 原样（没有时不写）}`。`data` 按 `output` 顺序取每个带 `result` 的 `image_generation_call`（上游给两张就是两项）；其余输出项（assistant 的 `message`、失败的生图项等）不进应答，记应答损失 `response.output[i]`（`other`）。一张图都没有时 `data` 为 `[]`，不写 `background` 等四项。
 
 **流式**（不发 `[DONE]`，每个事件带 `event:` 行；edits 把 `image_generation.` 换成 `image_edit.`）：
 
@@ -8705,19 +8705,20 @@ ALTER TABLE usage_logs
 | `response.created` | 不输出，记 `created_at` |
 | `response.image_generation_call.partial_image` | `image_generation.partial_image`：`b64_json`（`partial_image_b64`）、`partial_image_index`、`background`、`output_format`、`quality`、`size`、`created_at`（Codex 后端实测不发） |
 | `response.output_item.done` | 暂存输出项（Codex 后端终态 `output` 为 `[]`） |
-| `response.completed` / `.incomplete` | 终态 `output` 不空时用它，否则用暂存的项：每张图一个 `image_generation.completed`（`b64_json`、`background`、`output_format`、`quality`、`size`、`created_at`），最后一个带 `usage`；没有图时一个 `error` 事件（121.8） |
+| `response.completed` / `.incomplete` | 终态 `output` 不空时用它，否则用暂存的项：每张图一个 `image_generation.completed`（`b64_json`、`background`、`output_format`、`quality`、`size`、`created_at`），最后一个带 `usage`；没有图时什么都不发，流照常结束（121.8） |
 | `response.failed`、`error` | `error`：`{"type":"error","error":<上游的 error 对象>}` |
 | 其它 | 不输出 |
 
 没有终态就结束的流是转换失败（`Flush` 报错，§12）。
 
-### 121.8 错误
+### 121.8 错误：以上游的结果为准
 
-- 上游 HTTP 错误照现有路径原样交给客户端、按故障策略处理，不经转换器。流里的失败：非流式由强制流式聚合处理（§83.1），流式转成 `error` 事件。
-- `convert.ClientError{Status, Body}`：转换器把一个成功的上游应答转成客户端协议的错误应答。`forwardJSONConverted` 遇到它按其状态码写正文；流式时转换器发 `error` 事件，并经 `StreamFailure.Failure()` 交出同一个 `ClientError`。两条路径都记录 `success = false`、`status_code`、`error_type`（4xx 为 `invalid_request`，5xx 为 `upstream_error`）、`error_message`（正文前 1000 字节）；不算转换失败，不换号，用量照读照扣（已到达上游，§25）。
-- 没有图、但有失败的生图项（`status: failed`，带 `error{code, message, moderation_details}`）：**400** `{"error":{"type":"image_generation_user_error", …上游 error 对象的成员}}`；流式发同一对象的 `error` 事件。有图时失败的项只记应答损失，图照常返回。
-- 没有图也没有失败项（驱动模型只回了文字）：**502** `{"error":{"type":"server_error","code":"no_image_generated","message":<assistant 的文字，没有时 the upstream generated no image>}}`；流式发同一对象的 `error` 事件。两种情况的记录相同：`success = false`、状态码 502（或上一条的 400）、`error_type`、`error_message`，用量照扣（流式由转换器的可选接口 `convert.StreamFailure` 在流结束后交出这个 `ClientError`，`forwardSSE` 与 `forwardJSONConverted` 同样记录）。
-- 记账号统计时，没出图的 502 记 `error_type = upstream_error`，计入账号失败率（账号成功率统计、dynweight 权重），不触发换号与冷却；审核拦截的 400 记 `invalid_request`，不计入。
+所有者 2026-11-19：“上游返回什么就是什么，成功就是成功，以上游返回状态为主。”核心不自己把上游的成功应答改成错误：
+
+- 上游这次 Responses 调用成功完成（HTTP 2xx，终态 `response.completed` 或 `response.incomplete`，或强制流式聚合出的等价结果）时，请求就是成功：客户端得到 200 和生图接口的形状，有几张图给几张，一张都没有时非流式 `data` 为 `[]`、流式正常结束而没有 `completed` 事件；失败的生图项（`status: failed`，如审核拦截）、assistant 的文字只记应答损失。使用记录 `success = true`、状态码取上游的，用量照读照扣，不计入账号失败。
+- 上游自己报的失败照现有路径处理，不经改写：HTTP 错误原样交给客户端、按故障策略处理；流里的 `response.failed`、`error` 事件——非流式由强制流式聚合处理（§83.1），流式转成客户端的 `error` 事件 `{"type":"error","error":<上游的 error 对象>}`。
+- 只有请求侧仍由核心拒绝：`n` ≠ 1、`response_format` 不是 `b64_json` 时 `RequestError`（400 `unsupported_conversion`，121.2），这是不能表达的客户端请求，不是改写上游的回答。
+- 2026-11-19 曾实现的“没有图回 502 `no_image_generated`、生图项失败回 400 `image_generation_user_error`”（`convert.ClientError`、`StreamFailure`）按这条决定删除，没有发布过。
 
 ### 121.9 协议绑定与管理员要做什么
 
@@ -8733,10 +8734,10 @@ ALTER TABLE usage_logs
 
 ### 121.11 测试
 
-- 转换器：黄金样例 `convert/testdata/golden/openai.images~openai.responses/*`、`openai.images_edit~openai.responses/*`（字段映射与 `instructions`、`n` 与 `response_format` 拒绝、损失、一张与两张图、有图同时有失败项、没有用量、partial、只有文字 502、生图项失败 400、流中 `response.failed` 与 `error` 事件），覆盖测试登记这两对的样例表（`goldenImagesRequired`）；`TestImagesPairs`（不组合、模型位置）、`TestImagesNeedAdaptModel`。
+- 转换器：黄金样例 `convert/testdata/golden/openai.images~openai.responses/*`、`openai.images_edit~openai.responses/*`（字段映射与 `instructions`、`n` 与 `response_format` 拒绝、损失、一张与两张图、有图同时有失败项、没有用量、partial、只有文字与生图项失败（都是空 `data`）、流中 `response.failed` 与 `error` 事件），覆盖测试登记这两对的样例表（`goldenImagesRequired`）；`TestImagesPairs`（不组合、模型位置）、`TestImagesNeedAdaptModel`。
 - 清单：`check/adapted_test.go`（`adapted` 每个错误码、`Adapts`）；注册表 `TestAdaptedNeedsConverter`。
-- 网关：`gateway/codex_images_test.go`（只流式的类型服务 generations、edits 的非流式与流式，上游请求体、记录的协议、模型、上游模型、token、价格与 hops；账号映射写进工具；只有文字时 502 与流式 `error` 事件，两者都记失败、照扣；没写驱动模型时不服务）；`TestSamePlatformConversionScope` 加“没声明适配不服务 chat”；账号模块 `TestServedEndpointsSamePlatformConversion`、`TestAccountTestProtocolsAdapted`。
-- codex 插件：清单测试钉住 `adapted` 与唯一的生图默认模型；`TestExecuteImagesReportChatModel`；`TestBuildTestRequestByProtocol`。azure-openai 清单测试钉住 `azure_deployment` 的 `adapted`。
+- 网关：`gateway/codex_images_test.go`（只流式的类型服务 generations、edits 的非流式与流式，上游请求体、记录的协议、模型、上游模型、token、价格与 hops；账号映射写进工具，上游模型取回显、没回显时落回映射名或空；回显模型有价格也不用于取价；只有文字时 200、空 `data` 或没有 `completed` 事件，记成功、照扣；没写驱动模型时不服务）；`TestSamePlatformConversionScope` 加“没声明适配不服务 chat”；账号模块 `TestServedEndpointsSamePlatformConversion`、`TestAccountTestProtocolsAdapted`。
+- codex 插件：清单测试钉住 `adapted` 与唯一的生图默认模型；`TestExecuteImagesReportNoModel`；`TestBuildTestRequestByProtocol`。azure-openai 清单测试钉住 `azure_deployment` 的 `adapted`。
 - e2e 与测试实例实测留给集成包。
 
 ## 122. 账号测试按绑定的协议测（2026-11-19，所有者同意“测试模型的时候就能根据模型协议的绑定去调用对应的协议进行深度测试”；迁移 0116；清单加端点字段 `test`；插件协议仍是 2、Host API 仍是 10；设计见 [DESIGN-2026-11-18-CODEX-IMAGES.md](DESIGN-2026-11-18-CODEX-IMAGES.md) 3.11；同一设计里 Codex 账号经适配服务生图的部分见 §121）

@@ -80,8 +80,9 @@ const (
 	// at the top of the converted request, and the model of an image test.
 	ImageChatModel = "gpt-6-luna"
 	// Client protocols the core converts to Responses (manifest adapted).
-	ProtocolChat   = "openai.chat"
-	ProtocolImages = "openai.images"
+	ProtocolChat       = "openai.chat"
+	ProtocolImages     = "openai.images"
+	ProtocolImagesEdit = "openai.images_edit"
 )
 
 // Endpoints are the service roots the plugin talks to (no trailing slash).
