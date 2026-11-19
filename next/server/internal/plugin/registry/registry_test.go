@@ -13,8 +13,10 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/platforms"
+	pluginpkg "github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 )
@@ -746,5 +748,54 @@ func TestSettingsValidator(t *testing.T) {
 	}
 	if _, ok := g.SettingsValidator("missing"); ok {
 		t.Fatal("a plugin not in the generation has none")
+	}
+}
+
+// oldUIManifest is an installed package of the contract before the
+// declarative UI was removed: a schema account form, schema settings and
+// table and form pages.
+const oldUIManifest = `{
+  "apiVersion": 1, "key": "oldui", "version": "0.4.0", "publisher": "sub2api", "runtime": "grpc",
+  "entry": {"grpc": {"binaries": "runtimes/{os}-{arch}/plugin"}},
+  "hostCompat": ">=0.1.0",
+  "capabilities": [{"id": "platform.adapter.v1"}],
+  "hostPermissions": [{"id": "platform.register"}],
+  "accountTypes": [{"id": "relay_key", "label": {"en": "Relay key"},
+    "form": {"mode": "schema", "schema": "forms/relay_key.schema.json", "uiSchema": "forms/relay_key.ui.json"},
+    "platforms": [{"platform": "anthropic"}]}],
+  "ui": {
+    "pages": {
+      "assets": {"type": "table", "title": {"en": "Assets"}, "source": "GET /assets",
+        "create": {"page": "new_asset"}, "columns": [{"key": "id", "label": {"en": "#"}, "format": "text"}]},
+      "new_asset": {"type": "form", "title": {"en": "New asset"}, "schema": "forms/asset.schema.json", "submit": "POST /assets"}
+    },
+    "settings": {"mode": "schema", "schema": "forms/settings.schema.json", "uiSchema": "forms/settings.ui.json"}
+  }
+}`
+
+// An installed package with the removed declarative UI still loads: it is
+// not refused as an outdated contract, the core's lenient decoding reads it
+// and it takes part in a generation (only its forms and pages are not
+// rendered).
+func TestOldUIPackageLoads(t *testing.T) {
+	raw := []byte(oldUIManifest)
+	m, err := pluginpkg.ParseManifest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg, outdated := check.OutdatedPackage(m, raw, "0.1.400"); outdated {
+		t.Fatalf("refused as outdated: %s", msg)
+	}
+	p, err := registry.LoadPackage(t.TempDir(), registrytest.Package(t, m, []byte("bin"), map[string][]byte{"manifest.json": raw}), "sub2api", "official")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	g := registry.New().Publish([]registry.Extension{ext{pkg: p}})
+	if info, ok := g.Plugin("oldui"); !ok || len(info.Conflicts) != 0 {
+		t.Fatalf("plugin = %+v %v", info, ok)
+	}
+	if b, ok := g.AccountType("oldui", "relay_key"); !ok || b.Type.Form.Mode != "schema" {
+		t.Fatalf("account type = %+v %v", b, ok)
 	}
 }
