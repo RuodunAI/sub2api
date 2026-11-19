@@ -58,11 +58,11 @@
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
-  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id 与代理票据，15 分钟过期）。
-  - `POST /auth/device/poll` `{session_id}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
-  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 与代理票据存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
-  - 两个开始路由都要 `proxy_ticket`（账号表单的代理选择，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`，会话随之结束。
-  - `POST /auth/codex/exchange` `{session_id, callback_url}` → `{credentials}` 或错误。
+  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id，15 分钟过期）。
+  - `POST /auth/device/poll` `{session_id, proxy_ticket}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
+  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
+  - 开始、轮询、换令牌路由都要 `proxy_ticket`（账号表单**当前**的代理选择，界面每次调用现取一张，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`，会话随之结束。
+  - `POST /auth/codex/exchange` `{session_id, callback_url, proxy_ticket}` → `{credentials}` 或错误。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
@@ -306,4 +306,5 @@
 - 删除：插件自己的 `http.Client`、20 秒 `authTimeout`、1 MiB 读上限；清单的 `net`（沙箱不再让插件联网）。轮询锁的 ttl 原来写成 `2*authTimeout+10s`，改成同值的 50 秒。
 - 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
 - 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
+- 2026-11-19 起票据不存进会话（所有者：“代理修改了，后面的请求都用新的代理走就行了呀，重新授权干嘛呢？”）：界面每次调用（开始、每次轮询、换令牌）都调 `proxyTicket` 现取一张放进请求体，插件用这次调用的票据（`pluginsdk.RouteProxyTicket`）。授权开始后改了代理，不中断、不用重新授权，下一次轮询或换令牌就走新代理。核心拒绝发送时的处理不变（开始、换令牌 400 `proxy_refused` 且会话结束，轮询 `error`）。测试：`oauth_proxy_test.go` 开始、轮询、换令牌各用不同的票据，每个请求带的是自己那次调用的；`CodexAuthForm.spec.ts` 开始后换一张票据，轮询和换令牌的请求体带新的。
 
