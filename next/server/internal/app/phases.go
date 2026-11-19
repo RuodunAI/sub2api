@@ -256,7 +256,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 	// its own. The sweep is core.usage.reconcile (one node at a time).
 	b.settler.StartReconcile(b.ctx, usage.ReconcileDeps{
 		Executor: b.work,
-		Registry: b.reg, Accounts: b.acc, Proxies: b.prx,
+		Registry: b.reg, Accounts: b.acc,
 		Slots: b.cl.Slots, Limiter: b.limiter,
 		AllowPrivateUpstream: cfg.AllowPrivateUpstream, NodeID: cfg.NodeID, Logger: b.log,
 	})
@@ -339,7 +339,7 @@ func (b *boot) startPluginRuntime(trust *pkg.TrustStore) error {
 		DB: b.db, Redis: b.rdb, Bus: b.cl.Bus, Node: b.cl.Registry, Registry: b.reg, Events: b.events,
 		Auth: b.keys, Pricer: b.bill, Balance: b.bill, Slots: b.cl.Slots,
 		Environment: b.env,
-		Accounts:    b.acc, Proxies: b.prx, NetworkAccess: egress, Settler: b.settler, Observations: observations, Tasks: b.settler, Limiter: b.limiter, KeyWindows: b.keys.Windows, KeyUsage: b.keys, Quota: b.acc, Config: cfg, Converters: b.converters,
+		Accounts:    b.acc, NetworkAccess: egress, Settler: b.settler, Observations: observations, Tasks: b.settler, Limiter: b.limiter, KeyWindows: b.keys.Windows, KeyUsage: b.keys, Quota: b.acc, Config: cfg, Converters: b.converters,
 		Draining: b.gate.isDraining,
 	})
 

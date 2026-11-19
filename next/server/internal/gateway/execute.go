@@ -37,6 +37,11 @@ type execution struct {
 	rt   *typeRoute
 	acc  *core.Account
 	acct *pluginv1.Account
+	// egress is the account's way out as it stood when the call began
+	// (AccountDirectory.Egress), egressErr why its client cannot be had:
+	// the relay, the fetches and the checks of their URLs all go by it.
+	egress    core.Egress
+	egressErr error
 	// body is what the plugin was handed: the request in the upstream
 	// protocol after the core's rewrites. The usage rules read the
 	// requested operation from it, never from the plugin's bytes.
@@ -67,10 +72,18 @@ type execution struct {
 // is still there.
 var errExecutionAborted = errors.New("plugin execution aborted")
 
+// newExecution is an Execute call on acc with body, bound to the account's
+// egress as it stands now.
+func (c *call) newExecution(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte) *execution {
+	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
+	x.egress, x.egressErr = c.g.d.Accounts.Egress(ctx, acc.ID)
+	return x
+}
+
 // execute runs attempt n on rt's account with body, the request the core
 // rewrote for it, and upModel, the model it goes upstream with.
 func (c *call) execute(ctx context.Context, rt *typeRoute, acc *core.Account, acct *pluginv1.Account, body []byte, upModel string, n int) attemptResult {
-	x := &execution{c: c, rt: rt, acc: acc, acct: acct, body: body, network: ctx}
+	x := c.newExecution(ctx, rt, acc, acct, body)
 	// Whatever happens below - a commit, a close, an error, a panic - the
 	// waited relay's heartbeat stops and its held-back answer is removed.
 	defer func() {

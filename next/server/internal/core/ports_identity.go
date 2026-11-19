@@ -1039,6 +1039,13 @@ type AccountDirectory interface {
 	Unschedulable(ctx context.Context, groupID int64) ([]UnschedulableAccount, error)
 	// Load returns one account with decrypted credentials.
 	Load(ctx context.Context, id int64) (*Account, error)
+	// Egress is how a request on behalf of account id leaves the core: its
+	// proxy as the account stands when asked (read from the snapshot Load
+	// serves, which account:changed and a reconnected bus invalidate), never
+	// one a caller kept. Every outbound request of an existing account made
+	// outside the account service takes its client here; the service itself
+	// goes by the account row it has just read.
+	Egress(ctx context.Context, id int64) (Egress, error)
 	IsCoolingDown(ctx context.Context, id int64) (bool, error)
 	SetCooldown(ctx context.Context, id int64, until time.Time, reason string) error
 	// AutoDisable sets status=auto_disabled with a reason and emits
@@ -1066,6 +1073,16 @@ type AccountDirectory interface {
 // to an asynchronous, throttled writer.
 type QuotaObserver interface {
 	ObserveQuotaHeaders(accountID int64, headers []manifest.QuotaHeader, status int, h http.Header)
+}
+
+// Egress is the way out of one outbound request: the HTTP client (the
+// proxy's, or the direct one) and whether it goes through a proxy, which
+// the SSRF guard needs (netguard.CheckURLVia). Proxied is set even when the
+// proxy's client cannot be had (disabled, gone): the request then fails, it
+// never goes out directly.
+type Egress struct {
+	Client  *http.Client
+	Proxied bool
 }
 
 // ProxyDirectory hands out HTTP clients per proxy (nil = direct), cached and

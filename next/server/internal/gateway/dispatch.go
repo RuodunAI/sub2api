@@ -738,7 +738,7 @@ func (c *call) send(ctx context.Context, x *execution, req *pluginv1.UpstreamReq
 	if refused != nil {
 		return attemptResult{kind: attemptFailover, err: refused}
 	}
-	client, err := c.g.d.Proxies.HTTPClient(ctx, acc.ProxyID)
+	client, err := x.egress.Client, x.egressErr
 	if err != nil || client == nil {
 		return attemptResult{kind: attemptFailover, err: fromCore(core.ErrUnavailable.WithCause(err), errTypeInternal)}
 	}

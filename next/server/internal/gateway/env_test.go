@@ -559,6 +559,8 @@ type fakeAccounts struct {
 	lastTypes     []core.AccountTypeKey
 	// releases holds the release time of temporary disables (CONTRACTS §69).
 	releases map[int64]time.Time
+	// proxies hands out the clients of Egress (fakeProxies when nil).
+	proxies core.ProxyDirectory
 }
 
 func newFakeAccounts() *fakeAccounts {
@@ -684,6 +686,23 @@ func (a *fakeAccounts) Load(_ context.Context, id int64) (*core.Account, error) 
 	}
 	cp := *acc
 	return &cp, nil
+}
+
+// Egress is the client of the account's proxy as the fake holds it now.
+func (a *fakeAccounts) Egress(ctx context.Context, id int64) (core.Egress, error) {
+	acc, err := a.Load(ctx, id)
+	if err != nil {
+		return core.Egress{}, err
+	}
+	a.mu.Lock()
+	p := a.proxies
+	a.mu.Unlock()
+	if p == nil {
+		p = fakeProxies{}
+	}
+	eg := core.Egress{Proxied: acc.ProxyID != nil}
+	eg.Client, err = p.HTTPClient(ctx, acc.ProxyID)
+	return eg, err
 }
 
 func (a *fakeAccounts) IsCoolingDown(_ context.Context, id int64) (bool, error) {
@@ -1150,7 +1169,7 @@ func newEnv(t *testing.T, opts ...envOpt) *env {
 	}
 	e.gw = New(Deps{
 		Redis: e.rdb, Registry: e.reg, Node: fakeNode{}, Auth: e.auth, Pricer: e.pricer, Balance: e.balance,
-		Slots: e.slots, Accounts: e.accounts, Proxies: fakeProxies{}, Settler: e.settler,
+		Slots: e.slots, Accounts: e.accounts, Settler: e.settler,
 		KeyWindows: ratelimit.NewMinute(e.rdb, "apikey"),
 		Config:     &config.Config{AllowPrivateUpstream: true}, Converters: e.conv,
 		Environment: fakeEnvironment{global: e.envGlobal},

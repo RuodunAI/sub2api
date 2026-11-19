@@ -40,10 +40,12 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 	var sharedRedirect atomic.Int32
 	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { sharedRedirect.Add(1); return nil }}
 	proxy := &boundPollProxy{client: client}
-	s := &Service{rec: &reconciler{ReconcileDeps: ReconcileDeps{Proxies: proxy, AllowPrivateUpstream: true}}}
-	id := int64(42)
+	proxyID := int64(42)
+	acc := &core.Account{AccountRef: core.AccountRef{ID: 7, ProxyID: &proxyID}}
+	s := &Service{rec: &reconciler{ReconcileDeps: ReconcileDeps{Accounts: recAccounts{acc: acc, proxies: proxy}, AllowPrivateUpstream: true}}}
+	id := acc.ID
 	admit := func(context.Context) error { admitted.Add(1); return nil }
-	out, err := s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, &id, admit)
+	out, err := s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, id, admit)
 	if err != nil || out.GetStatus() != 302 || destinationHits.Load() != 0 || sharedRedirect.Load() != 0 || proxy.id != 42 {
 		t.Fatalf("redirect/proxy boundary: %+v %v destination=%d proxy=%d", out, err, destinationHits.Load(), proxy.id)
 	}
@@ -54,7 +56,7 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 	if sharedRedirect.Load() != 1 {
 		t.Fatal("shared redirect policy changed")
 	}
-	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL + "/large"}, &id, admit)
+	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL + "/large"}, id, admit)
 	if err != nil || len(out.GetBody()) != 20<<20 { // no size limit: whole
 		t.Fatalf("large answer: %d %v", len(out.GetBody()), err)
 	}
@@ -62,7 +64,7 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 		{Url: up.URL, Headers: map[string]string{"Upgrade": "websocket"}},
 		{Url: up.URL, Headers: map[string]string{"Proxy-Authorization": "secret"}},
 	} {
-		out, err := s.fetchExecutionHTTP(context.Background(), req, &id, admit)
+		out, err := s.fetchExecutionHTTP(context.Background(), req, id, admit)
 		if err != nil || out.GetTransportError() == "" {
 			t.Fatalf("invalid request accepted: %+v %v", out, err)
 		}
@@ -71,9 +73,27 @@ func TestPollHTTPBoundsRedirectsAndPreservesProxyClient(t *testing.T) {
 		t.Fatalf("invalid request consumed admission: %d", admitted.Load())
 	}
 	s.rec.AllowPrivateUpstream = false
-	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, &id, admit)
+	out, err = s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, id, admit)
 	if err != nil || out.GetTransportError() == "" || admitted.Load() != 2 {
 		t.Fatal("private destination accepted")
+	}
+}
+
+// Each Monitor fetch goes out through the account's proxy as it stands
+// then: a proxy changed between two fetches carries the second.
+func TestPollHTTPFollowsTheAccountsCurrentProxy(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer up.Close()
+	proxy := &boundPollProxy{client: up.Client()}
+	first, second := int64(42), int64(43)
+	acc := &core.Account{AccountRef: core.AccountRef{ID: 7, ProxyID: &first}}
+	s := &Service{rec: &reconciler{ReconcileDeps: ReconcileDeps{Accounts: recAccounts{acc: acc, proxies: proxy}, AllowPrivateUpstream: true}}}
+	for _, want := range []*int64{&first, &second} {
+		acc.ProxyID = want
+		out, err := s.fetchExecutionHTTP(context.Background(), &pluginv1.ExecutionHTTPRequest{Url: up.URL}, acc.ID, nil)
+		if err != nil || out.GetStatus() != http.StatusOK || proxy.id != *want {
+			t.Fatalf("fetch through proxy %d: %+v %v, went through %d", *want, out, err, proxy.id)
+		}
 	}
 }
 
@@ -106,7 +126,8 @@ func (l *pollLimiter) TryHit(_ context.Context, a core.AccountRef, _, _ string) 
 // whatever the plugin answered.
 func TestMonitorUsesBoundAccountAndDefersWithoutBurningAttempts(t *testing.T) {
 	proxyID := int64(42)
-	rf := reconcileFixtureWith(t, &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key", ProxyID: &proxyID}, Status: "active"})
+	acc := &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key", ProxyID: &proxyID}, Status: "active"}
+	rf := reconcileFixtureWith(t, acc)
 	f := rf.fixture
 	gen := f.svc.rec.Registry.Current().(*recGen)
 	mp := &monitorPlugin{recPlugin: rf.plugin}
@@ -122,7 +143,7 @@ func TestMonitorUsesBoundAccountAndDefersWithoutBurningAttempts(t *testing.T) {
 	}
 	gen.client = mp
 	proxy := &boundPollProxy{client: rf.up.Client()}
-	f.svc.rec.Proxies = proxy
+	f.svc.rec.Accounts = recAccounts{acc: acc, proxies: proxy}
 	slots := &taskTestSlots{allow: false}
 	f.svc.rec.Slots = slots
 	limits := &pollLimiter{allow: false}

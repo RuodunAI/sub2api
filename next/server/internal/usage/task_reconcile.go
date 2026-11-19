@@ -73,21 +73,21 @@ var claimedColumns = clause.Returning{Columns: []clause.Column{{Name: "public_id
 	{Name: "attempts"}, {Name: "poll_failures"}, {Name: "created_at"}, {Name: "deadline_at"}, {Name: "group_id"},
 	{Name: `COALESCE((SELECT min(p.id) FROM pending_settlements p WHERE p.task_public_id = async_tasks.public_id), 0) AS entry_id`, Raw: true}}}
 
-func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, *int64, func(), error) {
+func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (context.Context, *pluginv1.Account, func(), error) {
 	if e.accountID == nil {
-		return ctx, nil, nil, nil, errTaskAccountGone
+		return ctx, nil, nil, errTaskAccountGone
 	}
 	a, err := s.rec.Accounts.Load(ctx, *e.accountID)
 	// A disabled account is only kept out of scheduling: its tasks still settle.
 	switch {
 	case err != nil && core.AsError(err).Code != core.ErrNotFound.Code:
-		return ctx, nil, nil, nil, errTaskDeferred
+		return ctx, nil, nil, errTaskDeferred
 	case err != nil || a == nil || a.PluginKey != e.pluginKey:
-		return ctx, nil, nil, nil, errTaskAccountGone
+		return ctx, nil, nil, errTaskAccountGone
 	}
 	cooling, err := s.rec.Accounts.IsCoolingDown(ctx, a.ID)
 	if err != nil || cooling {
-		return ctx, nil, nil, nil, errTaskDeferred
+		return ctx, nil, nil, errTaskDeferred
 	}
 	release := func() {}
 	ok := true
@@ -95,10 +95,10 @@ func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (conte
 		ctx, release, ok, err = core.AcquireSlot(ctx, s.rec.Slots, "account", a.ID, a.MaxConcurrency, "poll:"+e.pluginKey+":"+e.refID)
 	}
 	if err != nil || !ok {
-		return ctx, nil, nil, nil, errTaskDeferred
+		return ctx, nil, nil, errTaskDeferred
 	}
 	e.account = a.AccountRef
-	return ctx, a.PluginAccount(""), a.ProxyID, release, nil
+	return ctx, a.PluginAccount(""), release, nil
 }
 
 func (s *Service) reconcileTask(ctx context.Context, e *settleEntry) bool {

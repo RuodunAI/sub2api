@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -15,9 +16,10 @@ import (
 )
 
 // Every request of both logins is a fetch the core sends through the
-// account form's proxy (CONTRACTS §117): the ticket the start route got
-// goes with each of them, and the method, URL, headers and body are exactly
-// those the plugin sent itself before.
+// account form's proxy (CONTRACTS §117): each carries the ticket of its own
+// route call, so a proxy the operator changed after the login started
+// carries the next request, and the method, URL, headers and body are
+// exactly those the plugin sent itself before.
 func TestAuthRequestsCarryTheTicket(t *testing.T) {
 	iss := newFakeIssuer(t)
 	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
@@ -37,14 +39,15 @@ func TestAuthRequestsCarryTheTicket(t *testing.T) {
 	var device DeviceStartResponse
 	mustData(t, h.Do("POST", "/auth/device/start", nil, startBody).GetBody(), &device)
 	var poll DevicePollResponse
-	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": device.SessionID}).GetBody(), &poll)
+	// The operator picked another proxy after starting: the poll's ticket.
+	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": "poll-ticket", "session_id": device.SessionID}).GetBody(), &poll)
 	if poll.Status != pollDone {
 		t.Fatalf("device login = %+v", poll)
 	}
 	var codex CodexStartResponse
 	mustData(t, h.Do("POST", "/auth/codex/start", nil, map[string]string{"proxy_ticket": "another-ticket"}).GetBody(), &codex)
 	u, _ := url.Parse(codex.AuthorizeURL)
-	r := h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"session_id": codex.SessionID, "callback_url": "?code=code-2&state=" + u.Query().Get("state")})
+	r := h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"proxy_ticket": "exchange-ticket", "session_id": codex.SessionID, "callback_url": "?code=code-2&state=" + u.Query().Get("state")})
 	if r.GetStatus() != 200 {
 		t.Fatalf("codex login = %d %s", r.GetStatus(), r.GetBody())
 	}
@@ -57,9 +60,9 @@ func TestAuthRequestsCarryTheTicket(t *testing.T) {
 	}
 	want := []struct{ ticket, url, headers, body string }{
 		{testTicket, iss.srv.URL + pathUserCode, headers("application/json"), `{"client_id":"` + CodexClientID + `"}`},
-		{testTicket, iss.srv.URL + pathDeviceToken, headers("application/json"), `{"device_auth_id":"dev-1","user_code":"ABCD"}`},
-		{testTicket, iss.srv.URL + pathOAuthToken, headers("application/x-www-form-urlencoded"), form("code-1", "ver-1", iss.srv.URL+"/deviceauth/callback")},
-		{"another-ticket", iss.srv.URL + pathOAuthToken, headers("application/x-www-form-urlencoded"), ""},
+		{"poll-ticket", iss.srv.URL + pathDeviceToken, headers("application/json"), `{"device_auth_id":"dev-1","user_code":"ABCD"}`},
+		{"poll-ticket", iss.srv.URL + pathOAuthToken, headers("application/x-www-form-urlencoded"), form("code-1", "ver-1", iss.srv.URL+"/deviceauth/callback")},
+		{"exchange-ticket", iss.srv.URL + pathOAuthToken, headers("application/x-www-form-urlencoded"), ""},
 	}
 	if len(fetches) != len(want) {
 		t.Fatalf("%d fetches, want %d", len(fetches), len(want))
@@ -85,14 +88,18 @@ func TestAuthRequestsCarryTheTicket(t *testing.T) {
 	}
 }
 
-// A start route needs a caller and the proxy ticket; a request the core
-// refuses to send ends the login with proxy_refused, while one that fails in
-// transport keeps it.
+// Every route of a login needs the proxy ticket of its call, a start route
+// a caller too. A request the core refuses to send is answered with
+// proxy_refused and keeps the login: nothing reached OpenAI, so once the
+// operator fixes the proxy the next call, with its fresh ticket, completes it.
 func TestAuthProxyRefused(t *testing.T) {
 	iss := newFakeIssuer(t)
-	h := startPlugin(t, newTestPlugin(testEndpoints(iss.srv.URL)))
-	for _, path := range []string{"/auth/device/start", "/auth/codex/start"} {
-		r := h.Do("POST", path, nil, map[string]string{"proxy_ticket": " "})
+	clk := &clock{t: testNow}
+	p := newTestPlugin(testEndpoints(iss.srv.URL))
+	p.now = clk.now
+	h := startPlugin(t, p)
+	for _, path := range []string{"/auth/device/start", "/auth/codex/start", "/auth/device/poll", "/auth/codex/exchange"} {
+		r := h.Do("POST", path, nil, map[string]string{"proxy_ticket": " ", "session_id": "s", "callback_url": "?code=c"})
 		if e := decodeError(t, r); r.GetStatus() != 400 || len(e.Error.Details.Fields) != 1 || e.Error.Details.Fields[0].Field != "proxy_ticket" {
 			t.Errorf("%s without a ticket = %d %s", path, r.GetStatus(), r.GetBody())
 		}
@@ -112,24 +119,30 @@ func TestAuthProxyRefused(t *testing.T) {
 		t.Fatalf("refused start = %d %s", r.GetStatus(), r.GetBody())
 	}
 	var poll DevicePollResponse
-	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": device.SessionID}).GetBody(), &poll)
+	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": device.SessionID}).GetBody(), &poll)
 	if poll.Status != pollError || !strings.Contains(poll.Message, "not issued to the caller") {
 		t.Fatalf("refused poll = %+v", poll)
 	}
-	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": device.SessionID}).GetBody(), &poll)
-	if poll.Status != pollExpired {
-		t.Fatalf("poll after a refusal = %+v", poll)
-	}
 	u, _ := url.Parse(codex.AuthorizeURL)
-	r = h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"session_id": codex.SessionID, "callback_url": "?code=c&state=" + u.Query().Get("state")})
+	exchange := map[string]string{"proxy_ticket": testTicket, "session_id": codex.SessionID, "callback_url": "?code=c&state=" + u.Query().Get("state")}
+	r = h.Do("POST", "/auth/codex/exchange", nil, exchange)
 	if r.GetStatus() != 400 || decodeError(t, r).Error.Code != "proxy_refused" {
 		t.Fatalf("refused exchange = %d %s", r.GetStatus(), r.GetBody())
 	}
-	r = h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"session_id": codex.SessionID, "callback_url": "?code=c&state=" + u.Query().Get("state")})
-	if r.GetStatus() != 404 {
-		t.Fatalf("exchange after a refusal = %d %s", r.GetStatus(), r.GetBody())
-	}
 	if n := iss.count(pathDeviceToken) + iss.count(pathOAuthToken); n != 0 {
 		t.Fatalf("%d refused requests reached OpenAI", n)
+	}
+
+	// The proxy is fixed: the same sessions complete.
+	h.Host.ExecuteHTTPFunc = sendFetch
+	iss.on(pathDeviceToken, reply(200, `{"authorization_code":"code-1","code_verifier":"ver-1"}`))
+	iss.on(pathOAuthToken, reply(200, `{"access_token":"at-1","refresh_token":"rt-1","id_token":"`+idToken("me@example.com", "acct-1", "plus")+`","expires_in":60}`))
+	clk.add(5 * time.Second)
+	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": device.SessionID}).GetBody(), &poll)
+	if poll.Status != pollDone {
+		t.Fatalf("poll after a refusal = %+v", poll)
+	}
+	if r = h.Do("POST", "/auth/codex/exchange", nil, exchange); r.GetStatus() != 200 {
+		t.Fatalf("exchange after a refusal = %d %s", r.GetStatus(), r.GetBody())
 	}
 }

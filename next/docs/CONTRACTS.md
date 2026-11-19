@@ -1538,7 +1538,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 | `mode` | `'create'` \| `'edit'` |
 | `account` | 编辑时为账号对象（含 `id`、`type`、`credentials` 等）；新建时为 `null` / 未传 |
 | `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分 |
-| `proxyTicket` | `ProxyTicketSource`（`() => Promise<string>`，UI 3.20，§117）：按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据。在账号建好之前要访问外部服务的授权流程，在开始时调用它，把票据交给自己插件的路由；插件的取回带上它，核心从这个代理发出。要不到时以核心的 `ApiError` 拒绝，编辑器同时把字段错误显示在代理输入下。对所有原生表单都传 |
+| `proxyTicket` | `ProxyTicketSource`（`() => Promise<string>`，UI 3.20，§117）：按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据。在账号建好之前要访问外部服务的授权流程，**每次**调用自己插件的路由（开始、每次轮询、换令牌）之前都调用它，把这次的票据交给路由；插件这次调用的取回带上它，核心从这个代理发出，所以授权开始后改了代理，下一次调用就走新代理（§117.2）。要不到时以核心的 `ApiError` 拒绝，编辑器同时把字段错误显示在代理输入下。对所有原生表单都传 |
 | `errors` | `Record<string, string>`：保存或拉取模型被服务端拒绝时，`invalid_argument` 的 `details.fields[]`（§3.1）中 `credentials.<字段>` 的那些，键去掉 `credentials.` 前缀（`web/src/views/accounts/editorErrors.ts` `splitFieldErrors`）；用户再改凭证即清空。组件应显示在对应输入旁 |
 
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
@@ -8450,7 +8450,8 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - `HTTPRequest.execution_token`（字段 10）：核心给每个**有登录用户**的插件路由调用（`scope` 为 `admin` / `user`）登记一个调用范围（与 `Execute`、`Monitor` 的执行令牌同一套），调用返回即失效。公开路由和 Webhook 没有。SDK 把它绑在路由处理函数的 context 上，`pluginsdk.Fetch` 在路由里可用。
 - `ExecutionHTTPRequest.proxy_ticket`（字段 7）：路由调用里的取回**必须**带票据，`Execute`、`Monitor` 里的取回**不能**带（它们走账号自己的代理）；不符 `PERMISSION_DENIED`。路由调用里不能中继（`RelayUpstream` 仍只属于 `Execute`）。
 - 主机：与取回相同的规则 `core.CheckPluginUpstream`（§112.17）（`grpcruntime.requireFetchHost`）。路由调用没有账号，所以只能到清单 `externalServices` 之一或其子域，还要过管理员的插件联网设置（§113.3），否则 `PERMISSION_DENIED`。
-- 控制台把票据交给插件的原生界面（§23.5 的 `proxyTicket`），插件界面在开始授权时把它交给插件自己的路由（约定字段名 `proxy_ticket`），插件存进自己的授权会话（`pluginsdk.SaveCallerSession`），此后这次授权的每个请求都带同一张票据，所以设备码的多次轮询都走同一个代理。
+- 控制台把票据来源交给插件的原生界面（§23.5 的 `proxyTicket`）。插件界面**每次**调用自己的授权路由（开始、每次轮询、换令牌、粘贴回调）之前都按表单当前的代理选择现取一张票据，放进请求体（约定字段名 `proxy_ticket`）；插件用**这次调用**带来的票据发这次调用里的取回（`pluginsdk.RouteProxyTicket` 读字段，缺了 400 `fields[{proxy_ticket, required}]`），不把票据存进授权会话沿用。所以授权开始后管理员改了代理，不用重新授权，后续每个请求都从新选的代理发出（2026-11-19，所有者：“代理修改了，后面的请求都用新的代理走就行了呀，重新授权干嘛呢？”）。界面不监听代理是否变化，每次都取新的。界面取了票据之后、这次调用的请求发出之前管理员又改了选择，这一次仍按取票据时的选择发出，下一次调用才用新的。
+- 核心拒绝发送（117.3 的 `PERMISSION_DENIED`、`INVALID_ARGUMENT` 等 RPC 错误）时请求没有发出，插件**不结束**授权会话（设备码、授权码都没用掉）：管理员把表单的代理改好后，下一次调用带着新票据就能继续。上游的回答（设备码过期、授权码无效等）照插件原来的规则处理。codex 回 400 `proxy_refused`（开始、换令牌）或轮询 `error`，会话保留（PLUGIN-CODEX.md 第 19 节）。
 
 ### 117.3 核心发送（`account.FetchWithProxyTicket`，`core.ProxyTicketFetcher`）
 
@@ -8462,7 +8463,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - Host API 不升，仍是 10（照 §91.3：只加字段和形式，升版会让 rolling-v1 不可用）。旧核心不给路由调用发执行令牌，插件在路由里 `Fetch` 得到 `FAILED_PRECONDITION`；依赖本节的插件靠 `hostCompat` 要求核心 ≥0.1.304（与转发 V2 同批）。
 - UI 3.20（`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20.0，`HOST_UI_VERSION` 3.20.0，只加不改）：`@sub2api/host` 导出类型 `ProxyTicketSource`，原生账号表单多一个 prop `proxyTicket`。用到的插件声明 `hostUICompat: "^3.20"`，`hostCompat` 高于 0.1.303（最后一个带 UI 3.19 的核心）。
-- codex 0.2.0：四类授权请求（申请设备码、轮询、两种换令牌）改为带票据的取回，清单去掉 `net`，开始路由要 `proxy_ticket`（PLUGIN-CODEX.md 第 19 节）。没有别的插件在建账号前联网。
+- codex 0.2.0：四类授权请求（申请设备码、轮询、两种换令牌）改为带票据的取回，清单去掉 `net`，开始、轮询、换令牌路由都要 `proxy_ticket`，每次调用一张（PLUGIN-CODEX.md 第 19 节）。没有别的插件在建账号前联网。
 
 ### 117.5 测试
 
@@ -8669,3 +8670,22 @@ ALTER TABLE usage_logs
 - 迁移 0116：`accounts` 加可空列 `last_test_protocol text`（只加列，旧核心跑在新表上不受影响）；每次测试写入，`last_test` 加 `protocol`（未知时省略，迁移之前的记录没有）。
 - 控制台：模型测试弹窗每个模型的结果旁显示所测协议，展开的详情里有“测试协议”；账号列表“最近测试”的提示里同样显示。
 - 已知限制：测试只读应答的前 8 KiB（`maxTestBody`），生图应答的用量在一张 base64 图之后，生图测试的 `usage` 一般为空；状态码与正文前缀足以判断可用，不为此改读取长度。
+
+## 123. 已有账号的出站一律按账号取客户端（2026-11-19，所有者要求“每次都保证最新的代理就行了呀。获取 HTTP 客户端的时候，直接就绑定一个账号呗，用这个账号对应的代理”“用已保存的代理，那就正确应用”“代理配置了就走，没配置就不走，配置了就不要泄露 IP”；无迁移；Host API、插件协议不变）
+
+账号存在以后，核心代表它发出的每个请求都按账号**当前保存的**代理取 HTTP 客户端，调用方不再自己拿着一个 `proxy_id` 传来传去。账号包以外只有一个入口：`core.AccountDirectory.Egress(ctx, accountID) (core.Egress, error)`，调用方给的是“哪个账号”，返回该账号代理的客户端（没有代理是直连客户端）和 `Proxied`（SSRF 检查要用：经代理时本机不解析上游域名，§43.4）。
+
+- 实现：账号包里只有一个由代理 id 构造出口的函数（`account.Service.proxyEgress`，取代理服务缓存的客户端 `ProxyDirectory.HTTPClient`），两种入口共用：
+  - `Egress(ctx, id)`：读 `Load` 的账号快照，再交给 `proxyEgress`。快照在本节点改账号时立即作废；其他节点收到 `account:changed`（`PATCH /accounts/:id` 广播）时作废，bus 断线重连后也整份作废（重连期间的消息可能丢了）；最长 30 秒（`snapshotTTL`）兜底。快照命中时不查数据库。
+  - 账号包里已经握着刚从数据库读出的账号行的路径（账号测试、编辑页“获取模型”（`POST /accounts/:id/models/fetch`）、额度查询、余额、凭证续期、`SendAccountRequest`）直接用这一行的 `proxy_id` 调 `proxyEgress`，不读快照：凭据与代理出自同一行，也不受其他节点丢消息的影响，且不多发查询（`SendAccountRequest` 在读凭据的同一条 SELECT 里带上 `proxy_id`）。
+  - 账号的代理只能经账号接口改（代理在用时不能删除，`proxy_in_use`）。代理本身的改动（地址、停用）照旧由代理服务的客户端缓存按 `updated_at` 复查。
+- 语义不变：账号没绑代理就直连（不强制选代理）；代理停用、不存在时报错，**绝不退回直连**。`Proxied` 在拿不到客户端时也照实给出，请求随之失败；拿不到客户端时先报错，不再做 SSRF 检查（不为一个发不出的请求在本机解析域名）。
+- 走 `Egress` 的路径：
+  - 网关：每次 `Execute` 调用（一次尝试、WebSocket 的一轮）开始时取一次，中继、这次调用里的取回（`pluginsdk.Fetch`）和它们的 SSRF 检查都用这一份，保证检查与发送一致；WebSocket 的握手同样。下一次请求（新的尝试）重新取。一次尝试里网关先 `Load` 账号（换号策略据此判断代理在选号之后是否变了，`account proxy changed during selection`），开始 `Execute` 时再取 `Egress`，两处各读一次快照：通常是同一份；两次读之间账号恰好改了代理、快照被作废时，换号策略看到的是旧代理，请求按新代理发出，不会经账号已经不用的代理发出。
+  - `Monitor`（用量对账、任务查询）：每次取回各取一次。
+  - 网关和对账循环不再依赖 `ProxyDirectory`（`gateway.Deps.Proxies`、`usage.ReconcileDeps.Proxies` 已删）。
+- 已存在的账号**一律用已保存的代理**：编辑页上改了代理但还没保存时，“获取模型”、测试等仍走已保存的代理（表单里未保存的选择只用于建账号之前，§117）。重新授权（编辑页里的原生表单）不经账号，走 §117 的票据，即表单当前的选择。
+- 改代理时已经在进行的请求：
+  - 进行中的 HTTP / SSE 流用已建立的连接走完，下一次请求才用新代理。
+  - 已建立的 WebSocket 上游连接**不断开、不重连**（所有者决定：“不要”断）：它保持建立时的出口直到会话结束。原来直连、后来配了代理，老连接继续直连；换了代理，老连接继续走旧代理。同一会话后续各轮里 `Execute` 的取回（`pluginsdk.Fetch`）按每轮开始时的代理走，所以同一轮里上游连接和取回的出口可能不同。新建的 WebSocket 会话按新代理。
+- 测试：`gateway/egress_test.go`（同一账号连发三次，代理改成另一个、再去掉，中继依次走 7、8、直连）、`usage/poll_test.go` `TestPollHTTPFollowsTheAccountsCurrentProxy`（两次 Monitor 取回之间改代理，第二次走新代理）、`account/egress_test.go` `TestEgressFollowsTheAccountsSavedProxy`（真实账号服务：经 `PATCH /accounts/:id` 改代理后 `Egress` 立刻给出新代理的客户端，去掉代理后直连；另一个节点的 bus 丢了 `account:changed` 时仍是快照里的旧代理，bus 重连后即是新代理）、`account/refresh_test.go` `TestCredentialRefreshFollowsTheAccountsProxy`（经控制台改代理后，下一次续期经新代理）、`account/balance_test.go`（停用的代理是传输错误，不直连）。

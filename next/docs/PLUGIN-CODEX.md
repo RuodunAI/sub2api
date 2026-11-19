@@ -58,11 +58,11 @@
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
-  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id 与代理票据，15 分钟过期）。
-  - `POST /auth/device/poll` `{session_id}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
-  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 与代理票据存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
-  - 两个开始路由都要 `proxy_ticket`（账号表单的代理选择，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`，会话随之结束。
-  - `POST /auth/codex/exchange` `{session_id, callback_url}` → `{credentials}` 或错误。
+  - `POST /auth/device/start` `{proxy_ticket}` → `{session_id, verification_url, user_code, interval, expires_in}`；会话存 KV（含 device_auth_id，15 分钟过期）。
+  - `POST /auth/device/poll` `{session_id, proxy_ticket}` → `{status: "pending"|"done"|"expired"|"error", credentials?, message?, interval?}`；`interval` 为 pending 时的轮询间隔（秒，OpenAI 返回 429 时加长）；done 时返回完整凭证对象（见下），同时删除会话。同一会话的“读会话 → 问 OpenAI → 写回/删除”在集群锁（`Host.Locks`，锁名为会话 id 的哈希，ttl 50 秒）下进行：两个标签页或两个节点并发轮询时，拿不到锁的一方直接回 `pending`，不会两边都去用一次性授权码换令牌；锁服务不可用时回 503 `unavailable`。
+  - `POST /auth/codex/start` `{proxy_ticket}` → `{session_id, authorize_url}`；PKCE verifier、state 存 KV（30 分钟）。2026-11-17 起取代 `/auth/siwc/start`，见第 14 节。
+  - 开始、轮询、换令牌路由都要 `proxy_ticket`（账号表单**当前**的代理选择，界面每次调用现取一张，第 19 节）：缺了 400 `invalid_argument`（field `proxy_ticket`）；核心拒绝发送（票据或代理不再可用）时开始、换令牌回 400 `proxy_refused`，轮询回 `error`。请求没有到 OpenAI，设备码、授权码都没用掉，所以会话保留：代理改好后，下一次轮询或换令牌带着新票据就能继续。
+  - `POST /auth/codex/exchange` `{session_id, callback_url, proxy_ticket}` → `{credentials}` 或错误。
   - 两种会话都绑定发起它的登录用户（`pluginsdk.SaveCallerSession`，2026-11-12）：其他用户拿到 `session_id` 也无法继续，得到的回答与会话不存在时相同（轮询 `expired`，exchange 404 `session_expired`）；没有登录用户时 start 回 401。
 - 凭证对象：
   - 共有：`access_token`、`refresh_token`、`id_token`、`expires_at`（Unix 秒）、`email`、`plan_type`（从令牌读出，两种类型都可能有）；除 `access_token` 外缺值时省略。
@@ -301,12 +301,12 @@
 通用机制见 CONTRACTS §117 与 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)。
 
 - 现象：账号配了代理（本机 IP 到 OpenAI 不通或会被风控），但设备码申请、轮询和两种登录的换令牌是插件用自己的 `http.Client` 直连 `auth.openai.com`，从服务器本机 IP 出去。账号建好后的上游、刷新（`BuildRefreshRequest`，核心按账号 `proxy_id` 发）、重置次数（`SendAccountRequest`）一直走账号代理，不受影响；vertex 的刷新同样由核心经账号代理发。
-- 现在：`CodexAuthForm` 收到编辑器的 `proxyTicket`，两种登录开始时各要一张票据（表单当前的代理选择：已有代理、粘贴的代理串、不用代理），交给 `/auth/device/start` 或 `/auth/codex/start`，插件存进授权会话。四类请求（`/api/accounts/deviceauth/usercode`、`/api/accounts/deviceauth/token`、两种登录的 `/oauth/token`）都改成 `pluginsdk.Fetch` 带会话里的票据，核心解开票据、确认是同一个管理员、复查他能用这个代理后从代理发出；设备码的每次轮询都走同一个代理。
+- 现在：`CodexAuthForm` 收到编辑器的 `proxyTicket`，两种登录的每次调用（开始、每次轮询、换令牌）之前都调它现取一张票据（表单此刻的代理选择：已有代理、粘贴的代理串、不用代理）放进请求体；插件用这次调用的票据（`pluginsdk.RouteProxyTicket`），授权会话里不存票据。四类请求（`/api/accounts/deviceauth/usercode`、`/api/accounts/deviceauth/token`、两种登录的 `/oauth/token`）都改成 `pluginsdk.Fetch` 带这次调用的票据，核心解开票据、确认是同一个管理员、复查他能用这个代理后从代理发出。授权开始后改了代理，不中断、不用重新授权，下一次轮询或换令牌就走新代理（2026-11-19 所有者：“代理修改了，后面的请求都用新的代理走就行了呀，重新授权干嘛呢？”；最初的做法是开始时取一张存进会话，见 CONTRACTS §117.2）。
 - 发给 OpenAI 的内容不变：方法 POST、路径、请求头（`Content-Type`、`Accept: application/json`、`User-Agent: sup2api-codex/<版本>`、`Originator: sup2api`）和请求体逐字节相同（`oauth_proxy_test.go` 钉住），变的只有出口。`User-Agent` 里的版本取自代码常量 `Version`（与清单一致），所以相对线上的 0.1.11，0.2.0 发出的授权、上游、刷新、重置次数请求都带 `User-Agent: sup2api-codex/0.2.0`（原为 `sup2api-codex/0.1.11`），这是版本号本身的变化。
-- 错误：传输失败（核心发了但连不上）与以前一样：开始、换令牌回 502 `upstream_unavailable`，轮询回 `pending` 下次再问。核心拒绝发送（票据不是这个管理员的、权限被收回、代理被删）是新的 400 `proxy_refused`，轮询回 `error`，会话结束（重试没用）；界面把 `proxy_refused` 当成会话已结束，提示重新生成链接。
+- 错误：传输失败（核心发了但连不上）与以前一样：开始、换令牌回 502 `upstream_unavailable`，轮询回 `pending` 下次再问。核心拒绝发送（票据不是这个管理员的、权限被收回、代理被删）是新的 400 `proxy_refused`（开始、换令牌），轮询回 `error`。请求没有到 OpenAI，设备码、授权码都没用掉，所以**会话保留**：代理改好后，下一次轮询或再提交一次回调就带着新票据发出。界面：换令牌的 `proxy_refused` 显示为普通错误（不提示重新生成链接），再点“完成”即可；设备码界面收到轮询的 `error` 停止轮询，只提供“重新开始”（新的设备码）。OpenAI 的回答（设备码过期、授权码无效等）照旧处理。
 - 删除：插件自己的 `http.Client`、20 秒 `authTimeout`、1 MiB 读上限；清单的 `net`（沙箱不再让插件联网）。轮询锁的 ttl 原来写成 `2*authTimeout+10s`，改成同值的 50 秒。
-- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。会话里多了票据，升级时进行中的授权要重新开始。
-- 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答与会话结束）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求）。
+- 清单：`hostUICompat` `^3.20`（`proxyTicket`），`hostCompat` 仍是 `>=0.1.304 <0.2.0`（同批核心），版本是未发布的 0.2.0（与第 18 节同一个版本）。
+- 测试：`oauth_proxy_test.go`（四类请求都是带票据的取回、方法 URL 请求头请求体与以前相同、到达 OpenAI 的头没有代理的东西；开始、轮询、换令牌各用不同的票据，每个请求带的是自己那次调用的；缺票据、没有调用者、核心拒绝时开始/轮询/换令牌的回答，以及拒绝后会话仍在、改好后同一会话完成）、`oauth_test.go`（原有流程改为经假宿主的取回）、`manifest_test.go`（没有 `net`）；界面 `CodexAuthForm.spec.ts`（开始时要票据并放进请求体、要不到时显示原因且不发请求；开始后换一张票据，轮询和换令牌的请求体带新的；换令牌的 `proxy_refused` 不提示重新生成链接）。
 
 ## 20. 0.2.0：上游会话 id 以账号 id 加盐；User-Agent 与 originator 可自定义（2026-11-18/19，审计结论，所有者决定；无迁移，版本仍是未发布的 0.2.0）
 
