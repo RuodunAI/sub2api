@@ -76,6 +76,9 @@ const (
 	ownerEndpoint
 	// ownerAccountType is AccountPlatform.usage[protocol].
 	ownerAccountType
+	// ownerConverted is Endpoint.convertedUsage[protocol]: whole rules, as
+	// a platform's.
+	ownerConverted
 )
 
 // usageRules validates usage extraction rules. pluginSource says whether the
@@ -89,9 +92,10 @@ func (v *validator) usageRules(field string, u manifest.UsageRules, owner usageO
 	v.attemptUsageRule(field+".attempts", u.Attempts)
 	switch {
 	case u.Semantics == "":
-		// A platform's own rules are the only place semantics is required:
-		// an endpoint or account type override inherits it from the platform.
-		if owner == ownerPlatform {
+		// A platform's own rules and an endpoint's converted usage are whole
+		// rules: an endpoint or account type override inherits semantics
+		// from the platform.
+		if owner == ownerPlatform || owner == ownerConverted {
 			v.add(field+".semantics", "required", "semantics is required (%s)", strings.Join(UsageSemantics, " or "))
 		}
 	case !slices.Contains(UsageSemantics, u.Semantics):
