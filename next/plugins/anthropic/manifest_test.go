@@ -66,12 +66,13 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("apikey filters %v; the plugin forwards every field", typ.FilterFields)
 	}
 	// base_url says where requests go and is guarded (CONTRACTS §21.3):
-	// without account:settings:custom only the default upstream may be used.
+	// without account:settings:custom only the default upstream may be used,
+	// with or without one of the version segments of the type's base URL.
 	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) {
 		t.Fatalf("upstreamFields = %v, want [base_url]", at.UpstreamFields)
 	}
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != typ.Spec.DefaultBaseURL {
-		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, typ.Spec.DefaultBaseURL)
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != typ.Spec.DefaultBaseURL || !slices.Equal(gs[0].Versions, typ.Spec.Versions) {
+		t.Fatalf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, typ.Spec.DefaultBaseURL, typ.Spec.Versions)
 	}
 
 	caps := map[string]bool{}
