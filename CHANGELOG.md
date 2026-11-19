@@ -144,6 +144,14 @@
 - 同一批里曾加入的“生图部分按另一个模型另计”（附加用量对象形式、按应答回显或默认名 `gpt-image-2` 取价、`additional_unpriced` 异常与控制台警示）在发布前删除（CONTRACTS §120.2）。
 - **账号测试遇到没有价格的模型直接报错**：被测的模型（未映射的名字）没有价格时回 403 `model_price_not_configured`，不发测试请求，不受“模型没有配置价格时”设置的影响（CONTRACTS §17.2）。
 
+### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0116）
+
+- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。
+- **生图只在点名模型时测**：清单端点新字段 `test`，`openai.json` 的生成图片标 `explicit`（会真的出一张图、花钱），编辑图片标 `never`（要输入图片）。批量测试、“测试账号”不测生图；在“测试模型”里对某个模型点测试才会测。
+- 模型在“模型的协议限定”里有条目时按条目里写的协议顺序测；不点名模型时跳过只剩生图协议的模型。
+- 测试结果和账号“最近测试”显示实际测的协议（`protocol`；迁移 0116 加列 `accounts.last_test_protocol`，只加可空列）。
+- 每个被测模型照旧先过价格检查，没有价格不发上游。
+
 ### 账号协议绑定与模型的协议限定，跨平台协议转换改为默认关闭（迁移 0106）
 
 分支 `feat/protocol-binding`，已合并进 `feat/forwarding-v2`（合并提交 `6bef447cf`）。规则见 CONTRACTS §110，设计与实现的差异见 [设计文档](next/docs/DESIGN-2026-11-17-PROTOCOL-BINDING.md) 的“实现记录”。这一项本身只改了核心和控制台。升级影响见升级须知。
