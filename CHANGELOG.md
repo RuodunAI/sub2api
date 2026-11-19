@@ -277,7 +277,8 @@
 - `GET /me/groups` 每行带 `served_protocols`（`[{protocol}]`，与分组详情同一计算，不带账号数，整页一次查询）。密钥页的手动配置说明和密钥编辑窗口里的分组说明改按它列端点，与分组详情一致，不再列出账号没开放、实际会 404 的端点。
 - **网关设置读出来原样保存不再 409**（分支 `feat/fv2-rdfix`，真实数据测试发现）：发布了失败策略后，`PUT /settings/gateway` 带着与当前值相同的 `max_attempts`（例如把 GET 的结果原样写回）照常保存；改成别的值仍返回 409 `managed by settings/failure-policy`（CONTRACTS §58、§14.4）。控制台的网关设置页本来就不提交这个字段，不受影响。
 - **账号测试不指定模型时用账号自己的模型**：以前一律交给插件选默认模型（Anthropic API Key 是 `claude-haiku-4-5`），账号的模型列表里没有它时测试必然失败。现在账号有模型列表时测列表里第一个，没有列表但有模型映射时测映射里按字典序最小的请求模型（再经映射），两者都没有才由插件选（CONTRACTS §15.9）。账号列表的“测试”、批量测试和模型测试对话框里的“用默认模型测试”都按这个规则；对话框里这个按钮改名“用默认模型测试”。
-- **使用记录详情重新逐条显示另算的分项**：计费详情里列出 `billing_detail.additional`（如请求里声明的 advisor 顾问模型）和 `billing_detail.replacement` 的每一项：种类、模型、该项的 token 用量和金额。数据一直在记录里，之前随“生图另计价”一起删掉了这块显示；没有分项的记录不显示。只改控制台。
+- **使用记录详情重新逐条显示另算的分项**：计费详情里列出 `billing_detail.additional`（如请求里声明的 advisor 顾问模型）和 `billing_detail.replacement` 的每一项：种类（替代计费项按尝试轮次显示“第 N 轮”）、模型、该项的 token 用量、它自己的计算公式和金额；免费项标“免费”并显示原因。数据一直在记录里，之前随“生图另计价”一起删掉了这块显示；没有分项的记录不显示。
+- **`/me/usage` 不再露出分项背后的全局价**：分项按分组自定义价格计价时，它明细里的 `detail.inputs.pricing.base`（全局价表达式与哈希）现在和顶层的一样在普通用户的使用记录详情里删去。
 - **用 http 打开控制台时“系统 → 升级”页不再空白**：页面用了只在 HTTPS / localhost 下才有的 `crypto.randomUUID`。升级页和余额调整的幂等键改用 `@sub2api/ui` 已有的 `createItemId`（`crypto.getRandomValues`，非安全上下文可用），eslint 禁止再直接用 `crypto.randomUUID`。
 
 ### 插件作者须知：SDK、清单与 proto 的变化
