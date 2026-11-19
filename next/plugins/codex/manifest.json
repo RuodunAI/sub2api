@@ -176,11 +176,7 @@
       }
     ],
     "native": { "entry": "ui/native/entry.js" },
-    "settings": {
-      "mode": "schema",
-      "schema": "forms/settings.schema.json",
-      "uiSchema": "forms/settings.ui.json"
-    }
+    "settings": { "mode": "native", "component": "CodexSettings", "secrets": [] }
   },
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
@@ -197,7 +193,7 @@
     { "id": "routes.admin",
       "reason": { "en": "Authorization endpoints the account form calls (device code start/poll, Sign in with Codex start/exchange; the core sends their requests to OpenAI through the proxy chosen in the account form) and the official usage reset endpoints (list, spend, cached counts)", "zh": "账号表单调用的授权端点（设备码开始/轮询、Sign in with Codex 开始/换取；它们发往 OpenAI 的请求由核心经账号表单选择的代理发送）与官方用量重置端点（查询、使用、缓存次数）" } },
     { "id": "ui.native",
-      "reason": { "en": "The account form (CodexAuthForm) that runs the device code and Sign in with Codex flows, and the official usage reset decoration and detail tab of the accounts (CodexResetBadge, CodexResetTab)", "zh": "执行设备码登录与 Sign in with Codex 流程的账号表单（CodexAuthForm），以及账号的官方重置次数装饰、详情标签页（CodexResetBadge、CodexResetTab）" } }
+      "reason": { "en": "The account form (CodexAuthForm) that runs the device code and Sign in with Codex flows, the official usage reset decoration and detail tab of the accounts (CodexResetBadge, CodexResetTab), and the settings form (CodexSettings)", "zh": "执行设备码登录与 Sign in with Codex 流程的账号表单（CodexAuthForm），账号的官方重置次数装饰、详情标签页（CodexResetBadge、CodexResetTab），以及设置表单（CodexSettings）" } }
   ],
 
   "externalServices": ["auth.openai.com", "chatgpt.com"]

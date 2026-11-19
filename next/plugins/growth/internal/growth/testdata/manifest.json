@@ -109,11 +109,7 @@
       }
     },
     "native": { "entry": "ui/native/entry.js" },
-    "settings": {
-      "mode": "schema",
-      "schema": "forms/settings.schema.json",
-      "uiSchema": "forms/settings.ui.json"
-    }
+    "settings": { "mode": "native", "component": "GrowthSettings", "secrets": [] }
   },
 
   "resources": { "memoryMB": 128, "cpu": 0.25, "maxThreads": 64, "maxOpenFiles": 256 },

@@ -12,7 +12,7 @@
   "runtime": "grpc",
   "entry": { "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" } },
   "hostCompat": ">=0.1.304 <0.2.0",
-  "hostUICompat": "^3.4",
+  "hostUICompat": "^3.20",
 
   "capabilities": [
     { "id": "app.events.v1" },
@@ -109,11 +109,7 @@
       }
     },
     "native": { "entry": "ui/native/entry.js" },
-    "settings": {
-      "mode": "schema",
-      "schema": "forms/settings.schema.json",
-      "uiSchema": "forms/settings.ui.json"
-    }
+    "settings": { "mode": "native", "component": "GrowthSettings", "secrets": [] }
   },
 
   "resources": { "memoryMB": 128, "cpu": 0.25, "maxThreads": 64, "maxOpenFiles": 256 },
@@ -146,7 +142,7 @@
     },
     {
       "id": "ui.native",
-      "reason": { "en": "Provide console UI pages", "zh": "提供控制台页面" }
+      "reason": { "en": "Provide console UI pages and the settings form (GrowthSettings)", "zh": "提供控制台页面与设置表单（GrowthSettings）" }
     },
     {
       "id": "ledger.credit",

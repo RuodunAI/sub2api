@@ -9,10 +9,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base32"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"math/big"
 	"strings"
 	"sync/atomic"
@@ -24,14 +24,15 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/growth/internal/model"
 )
 
 const JobCleanup = "cleanup"
 
-// Plugin implements pluginsdk.App, pluginsdk.HTTP, pluginsdk.JobRunner and
-// lifecycle interfaces.
+// Plugin implements pluginsdk.App, pluginsdk.HTTP, pluginsdk.JobRunner,
+// pluginsdk.SettingsValidator and lifecycle interfaces.
 type Plugin struct {
 	*pluginsdk.Router
 
@@ -70,16 +71,20 @@ func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
 }
 
 func (p *Plugin) Configure(_ context.Context, cfg pluginsdk.Config) error {
-	var s Settings
-	if err := cfg.Decode(&s); err != nil {
-		return pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object").Err()
-	}
-	c, errs := compileSettings(s)
-	if len(errs) > 0 {
-		return errs.Err()
+	c, err := parseSettings(cfg)
+	if err != nil {
+		return err
 	}
 	p.cfg.Store(&c)
 	return nil
+}
+
+// ValidateSettings implements pluginsdk.SettingsValidator: the console's
+// settings are refused before they are stored when Configure would refuse
+// them.
+func (p *Plugin) ValidateSettings(_ context.Context, cfg pluginsdk.Config) (json.RawMessage, error) {
+	_, err := parseSettings(cfg)
+	return nil, err
 }
 
 func (p *Plugin) Shutdown(context.Context) error {
@@ -125,35 +130,50 @@ func defaultConfig() config {
 	}
 }
 
+// settingsRules are the settings the console form edits (ui/native
+// GrowthSettings shows the same bounds); every other key is refused.
+var settingsRules = fieldcheck.Fields{
+	"referral_enabled":         fieldcheck.Bool(),
+	"referral_rate_percent":    fieldcheck.Number().Range(0, 100),
+	"referral_max_per_invitee": fieldcheck.Number().Min(0),
+	"referral_duration_days":   fieldcheck.Integer().Min(0),
+	"checkin_enabled":          fieldcheck.Bool(),
+	"checkin_min_quota":        fieldcheck.Number().Min(0),
+	"checkin_max_quota":        fieldcheck.Number().Min(0),
+	"checkin_timezone":         fieldcheck.String(),
+}
+
+// parseSettings decodes and checks the settings: the one check of Configure
+// and ValidateSettings.
+func parseSettings(cfg pluginsdk.Config) (config, error) {
+	invalid := pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object").Err()
+	var values map[string]any
+	if err := cfg.Decode(&values); err != nil {
+		return config{}, invalid
+	}
+	if err := fieldcheck.Check(settingsRules, values).Err(); err != nil {
+		return config{}, err
+	}
+	var s Settings
+	if err := cfg.Decode(&s); err != nil {
+		return config{}, invalid
+	}
+	c, errs := compileSettings(s)
+	return c, errs.Err()
+}
+
+// compileSettings turns settings that passed settingsRules into the config:
+// the checks across fields and of the time zone.
 func compileSettings(s Settings) (config, pluginsdk.FieldErrors) {
 	var errs pluginsdk.FieldErrors
 	c := config{
-		ReferralEnabled:      s.ReferralEnabled,
-		ReferralDurationDays: s.ReferralDurationDays,
-		CheckinEnabled:       s.CheckinEnabled,
-	}
-	if s.ReferralRatePercent < 0 || s.ReferralRatePercent > 100 || math.IsNaN(s.ReferralRatePercent) || math.IsInf(s.ReferralRatePercent, 0) {
-		errs = errs.Add("referral_rate_percent", "out_of_range", "must be 0-100")
-	} else {
-		c.ReferralRatePercent = decimal.NewFromFloat(s.ReferralRatePercent)
-	}
-	if s.ReferralMaxPerInvitee < 0 || math.IsNaN(s.ReferralMaxPerInvitee) || math.IsInf(s.ReferralMaxPerInvitee, 0) {
-		errs = errs.Add("referral_max_per_invitee", "invalid", "must be >= 0")
-	} else {
-		c.ReferralMaxPerInvitee = decimal.NewFromFloat(s.ReferralMaxPerInvitee)
-	}
-	if s.ReferralDurationDays < 0 {
-		errs = errs.Add("referral_duration_days", "invalid", "must be >= 0")
-	}
-	if s.CheckinMinQuota < 0 || math.IsNaN(s.CheckinMinQuota) || math.IsInf(s.CheckinMinQuota, 0) {
-		errs = errs.Add("checkin_min_quota", "invalid", "must be >= 0")
-	} else {
-		c.CheckinMinQuota = decimal.NewFromFloat(s.CheckinMinQuota)
-	}
-	if s.CheckinMaxQuota < 0 || math.IsNaN(s.CheckinMaxQuota) || math.IsInf(s.CheckinMaxQuota, 0) {
-		errs = errs.Add("checkin_max_quota", "invalid", "must be >= 0")
-	} else {
-		c.CheckinMaxQuota = decimal.NewFromFloat(s.CheckinMaxQuota)
+		ReferralEnabled:       s.ReferralEnabled,
+		ReferralRatePercent:   decimal.NewFromFloat(s.ReferralRatePercent),
+		ReferralMaxPerInvitee: decimal.NewFromFloat(s.ReferralMaxPerInvitee),
+		ReferralDurationDays:  s.ReferralDurationDays,
+		CheckinEnabled:        s.CheckinEnabled,
+		CheckinMinQuota:       decimal.NewFromFloat(s.CheckinMinQuota),
+		CheckinMaxQuota:       decimal.NewFromFloat(s.CheckinMaxQuota),
 	}
 	if c.CheckinMaxQuota.LessThan(c.CheckinMinQuota) {
 		errs = errs.Add("checkin_max_quota", "invalid", "must be >= checkin_min_quota")

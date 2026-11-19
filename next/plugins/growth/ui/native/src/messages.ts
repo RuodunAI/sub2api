@@ -44,7 +44,20 @@ export default {
     daysValue: '{n} 天',
     checkinSuccessAmount: '签到成功：{amount}',
     loadFailed: '加载失败',
-    retry: '重试'
+    retry: '重试',
+    settings: {
+      referral: { title: '邀请返利', description: '被邀请人消费或充值时，邀请人按比例获得返利。' },
+      referralEnabled: '启用邀请返利',
+      referralRate: { label: '返利比例', help: '被邀请人消费或充值时，邀请人获得的返利百分比' },
+      referralMax: { label: '单个被邀请人返利上限', help: '从单个被邀请人获得的累计返利上限，0 表示无限制' },
+      referralDuration: { label: '返利有效期', help: '被邀请人注册后多少天内产生的消费才计入返利，0 表示永久有效' },
+      checkin: { title: '每日签到', description: '用户每天签到一次，获得最小与最大额度之间的随机奖励。' },
+      checkinEnabled: '启用每日签到',
+      checkinMin: '最小奖励额度',
+      checkinMax: '最大奖励额度',
+      checkinTimezone: { label: '签到时区', help: '用于判断签到日期的时区，如 UTC、Asia/Shanghai' },
+      unit: { percent: '%', usd: '$', days: '天' }
+    }
   },
   en: {
     myReferral: 'My Referrals',
@@ -91,6 +104,19 @@ export default {
     daysValue: '{n} days',
     checkinSuccessAmount: 'Checked in: {amount}',
     loadFailed: 'Failed to load',
-    retry: 'Retry'
+    retry: 'Retry',
+    settings: {
+      referral: { title: 'Referral commission', description: 'Inviters earn a share of what the users they invited spend or top up.' },
+      referralEnabled: 'Enable referral commission',
+      referralRate: { label: 'Commission rate', help: "Share of an invitee's spending or top-up credited to the inviter" },
+      referralMax: { label: 'Commission cap per invitee', help: 'Total commission earned from one invitee; 0 means unlimited' },
+      referralDuration: { label: 'Commission period', help: 'Only spending within this many days after the invitee signs up counts; 0 means forever' },
+      checkin: { title: 'Daily check-in', description: 'Users check in once a day for a random reward between the minimum and the maximum.' },
+      checkinEnabled: 'Enable daily check-in',
+      checkinMin: 'Minimum reward',
+      checkinMax: 'Maximum reward',
+      checkinTimezone: { label: 'Check-in time zone', help: 'Time zone that decides the check-in date, e.g. UTC or Asia/Shanghai' },
+      unit: { percent: '%', usd: '$', days: 'days' }
+    }
   }
 }

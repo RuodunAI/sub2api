@@ -19,6 +19,15 @@
 - 清单检查：native 设置要有 `component` 或 `page`。
 - volcengine（仍是未发布的 0.13.0）：两个账号表单和素材库两个页面改为原生代码（`ui/native`，需要宿主权限 `ui.native`），原来的两个“新建”表单页并进列表页的新建弹窗；原表单 schema 的约束由插件 Go 保证，并补上了只有 schema 挡住的几条（URL 与路径前缀里的空白、素材库新建路由的长度和地址格式）。见 `next/docs/PLUGIN-VOLCENGINE-ARK.md` §19。
 
+插件设置表单改为原生组件（插件自带 `ui/native`），保存前由插件 Go 校验（`ValidateSettings`，与 `Configure` 共用一套规则，拒绝未知键）：
+
+- mailer：新建界面工程；`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码。
+- codex：设置（`user_agent`、`originator`）改由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件。
+- growth：设置改由 `GrowthSettings` 显示（两个分节，关掉的分节隐藏其字段）；数值的上下限、类型和未知键由插件拒绝，`hostUICompat` 升到 `^3.20`。
+- guard：设置改由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`）；webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`），`hostUICompat` 升到 `^3.20`。
+- 四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，其余为 `[]`。
+- `@sub2api/ui`：`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
+
 ### 插件界面只用代码写：云厂商插件的账号表单
 
 - bedrock：三种账号类型的表单从声明式 JSON（`forms/`，已删除）改为原生组件 `BedrockAccountForm`（`ui/native`，`hostUICompat ^3.20`、宿主权限 `ui.native`），字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）。原 schema 的约束都由插件的 `ValidateCredentials` 检查，有测试逐条保留。

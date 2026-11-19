@@ -444,3 +444,28 @@ describe('SForm with SField / SSettingRow prop', () => {
     w.unmount()
   })
 })
+
+describe('get() in a render', () => {
+  it('a render that runs while a write is pending still follows later changes', async () => {
+    const model = ref<M>({ on: true })
+    let form!: FormApi<M>
+    const w = mount(
+      defineComponent({
+        setup() {
+          form = useForm<M>({ model: () => model.value, update: (v) => (model.value = v), rules: {} })
+          return () => h('p', String(form.get('on')))
+        }
+      })
+    )
+    form.set('on', false)
+    // The re-render runs before the draft is dropped (it reads the draft).
+    await flushPromises()
+    expect(w.text()).toBe('false')
+    model.value = { on: true }
+    await flushPromises()
+    expect(w.text()).toBe('true')
+    form.set('on', false)
+    await flushPromises()
+    expect(w.text()).toBe('false')
+  })
+})

@@ -78,7 +78,13 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
   let draft: M | undefined
   let emitted: M | undefined
 
-  const current = () => draft ?? opts.model() ?? ({} as M)
+  // The model is read even while a draft stands in for it, so a render or
+  // computed that runs in the same tick as a write (reading the draft) still
+  // depends on the model and follows the next change.
+  const current = () => {
+    const model = opts.model()
+    return draft ?? model ?? ({} as M)
+  }
   const ruleTable = () => (typeof opts.rules === 'function' ? opts.rules() : opts.rules)
 
   function write(next: M) {

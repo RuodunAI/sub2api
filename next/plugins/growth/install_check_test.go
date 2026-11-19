@@ -49,3 +49,30 @@ func TestManifestPassesCoreChecks(t *testing.T) {
 		t.Errorf("%s: %s (%s)", f.Field, f.Message, f.Code)
 	}
 }
+
+// TestSettingsForm: the settings are the native GrowthSettings form; the
+// JSON Schema form it replaced marked no secret, so ui.settings.secrets
+// masks nothing.
+func TestSettingsForm(t *testing.T) {
+	rawManifest, err := os.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m manifest.Manifest
+	if err := json.Unmarshal(rawManifest, &m); err != nil {
+		t.Fatalf("manifest.json: %v", err)
+	}
+	// "secrets" is written out: without the key the core masks every
+	// setting (it cannot tell which are secrets).
+	var declared struct {
+		UI struct {
+			Settings map[string]json.RawMessage `json:"settings"`
+		} `json:"ui"`
+	}
+	if err := json.Unmarshal(rawManifest, &declared); err != nil || declared.UI.Settings["secrets"] == nil {
+		t.Fatalf("ui.settings.secrets must be written out: %v", err)
+	}
+	if st := m.UI.Settings; st == nil || st.Mode != "native" || st.Component != "GrowthSettings" || st.Page != "" || len(st.SecretFields()) != 0 {
+		t.Fatalf("ui.settings = %+v", st)
+	}
+}

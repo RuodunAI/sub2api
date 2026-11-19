@@ -27,6 +27,12 @@ const zh = {
     originator: 'originator',
     originatorHint: '同上，originator 请求头。留空沿用插件设置，插件设置也留空时为 sup2api。'
   },
+  settings: {
+    userAgent: 'User-Agent',
+    userAgentHint: '未自定义 User-Agent 的账号发往 OpenAI 的全部请求（授权、上游、账号测试、令牌刷新、用量重置）使用的 User-Agent 请求头；授权时账号表单里填了值就用表单的值。留空使用内置的 sup2api-codex/<插件版本>。',
+    originator: 'originator',
+    originatorHint: '未自定义 originator 的账号在上述请求中使用的 originator 请求头。留空使用内置的 sup2api。'
+  },
   done: {
     title: '已授权',
     titleReauth: '已重新授权，保存账号后生效',
@@ -150,6 +156,12 @@ const en: Messages = {
     userAgentHint: "The User-Agent of every request of this account to OpenAI (authorization, upstream, test, token refresh, usage resets); an authorization uses the value entered here at that moment. Leave empty for the plugin settings' value, or sup2api-codex/plugin version when that is empty too.",
     originator: 'originator',
     originatorHint: "The same for the originator header. Leave empty for the plugin settings' value, or sup2api when that is empty too."
+  },
+  settings: {
+    userAgent: 'User-Agent',
+    userAgentHint: "The User-Agent header of every request to OpenAI (authorization, upstream, account test, token refresh, usage resets) of the accounts that set none of their own; an authorization uses the account form's value when it has one. Leave empty for the built-in sup2api-codex/<plugin version>.",
+    originator: 'originator',
+    originatorHint: 'The originator header of the same requests, for the accounts that set none of their own. Leave empty for the built-in sup2api.'
   },
   done: {
     title: 'Authorized',

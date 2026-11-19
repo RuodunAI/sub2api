@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -122,41 +121,6 @@ func TestManifestValid(t *testing.T) {
 	for _, mn := range m.UI.Menus {
 		if want := map[string]string{"me": "growth:use", "finance": "growth:stats:read"}[mn.Section]; mn.Permission != want {
 			t.Errorf("menu %s: permission %q, want %q", mn.ID, mn.Permission, want)
-		}
-	}
-}
-
-func TestSettingsForms(t *testing.T) {
-	var m manifest.Manifest
-	if err := json.Unmarshal(manifestJSON, &m); err != nil {
-		t.Fatal(err)
-	}
-	var schema struct {
-		AdditionalProperties *bool                     `json:"additionalProperties"`
-		Properties           map[string]map[string]any `json:"properties"`
-	}
-	schemaPath := filepath.Join("..", "..", m.UI.Settings.Schema)
-	b, err := os.ReadFile(schemaPath)
-	if err != nil || json.Unmarshal(b, &schema) != nil {
-		t.Fatalf("schema: %v", err)
-	}
-	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
-		t.Fatal("schema must set additionalProperties:false")
-	}
-	var ui map[string]json.RawMessage
-	uiPath := filepath.Join("..", "..", m.UI.Settings.UISchema)
-	b, err = os.ReadFile(uiPath)
-	if err != nil || json.Unmarshal(b, &ui) != nil {
-		t.Fatalf("ui schema: %v", err)
-	}
-	var order []string
-	_ = json.Unmarshal(ui["ui:order"], &order)
-	if len(order) != len(schema.Properties) {
-		t.Fatalf("ui:order has %d fields, schema %d", len(order), len(schema.Properties))
-	}
-	for _, k := range order {
-		if _, ok := schema.Properties[k]; !ok {
-			t.Errorf("ui:order field %s not in schema", k)
 		}
 	}
 }
