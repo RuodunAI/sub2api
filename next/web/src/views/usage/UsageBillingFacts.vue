@@ -22,16 +22,15 @@ const historyOpen = ref(false)
 
 type Rule = { cond: string; multiplier: number | string; matched: boolean }
 // billing_detail is free-form JSON (api/types: Record<string, any>).
-const bd = computed<NonNullable<UsageRow['billing_detail']>>(() => props.u.billing_detail || {})
-const breakdown = computed<Record<string, unknown>>(() => bd.value.breakdown || {})
+type Detail = NonNullable<UsageRow['billing_detail']>
+const bd = computed<Detail>(() => props.u.billing_detail || {})
 const tierLen = computed<number | undefined>(() => bd.value.breakdown?.vars?.len)
 const tierName = computed(() => props.u.matched_tier || bd.value.tier || '')
 const rules = computed<Rule[]>(() => (Array.isArray(bd.value.rules) ? bd.value.rules : []))
 const ledgerId = computed(() => props.u.ledger_id ?? bd.value.ledger_id ?? null)
 const rate = computed(() => bd.value.rate_multiplier ?? props.u.rate_multiplier ?? null)
 // Group pricing (inputs.pricing, list_cost): a record at the global price and the group's default rate has neither.
-const pricing = computed<UsagePricing>(() => bd.value.inputs?.pricing || {})
-const rateSource = computed(() => (pricing.value.rate_source ? label('pricingAccess.source', pricing.value.rate_source) : undefined))
+const pricing = computed<UsagePricing>(() => pricingOf(bd.value))
 /** The rule that gave the list price, when one did: whose it is and what it makes of the global price. */
 const listRule = computed(() => {
   const { price_source: source, scale, base } = pricing.value
@@ -47,6 +46,21 @@ const inputs = computed(() => [
   ...Object.entries(bd.value.inputs?.params || {}).map(([key, value]) => ({ name: `param("${key}")`, value })),
   ...Object.entries(bd.value.inputs?.headers || {}).map(([key, value]) => ({ name: `header("${key}")`, value }))
 ])
+
+function pricingOf(detail: Detail): UsagePricing {
+  return detail.inputs?.pricing || {}
+}
+
+/** BillingBreakdown's props for one priced part of a record (the primary usage or an item): its own breakdown, rules, rates and amount. */
+function breakdownOf(detail: Detail, rateMultiplier: string | number | null, total: string | number | null) {
+  const { scale, rate_source: source } = pricingOf(detail)
+  return {
+    breakdown: detail.breakdown || {}, scale, rateMultiplier, total,
+    rateSource: source ? label('pricingAccess.source', source) : undefined,
+    rules: Array.isArray(detail.rules) ? detail.rules : [],
+    cacheWriteLabels: { default: t('usage.tokens.cacheDefaultBucket'), oneHour: t('usage.tokens.cache1hBucket') }
+  }
+}
 
 /** The translation of `prefix.value` when there is one, else the raw value. */
 function label(prefix: string, value: string) {
@@ -97,16 +111,7 @@ function label(prefix: string, value: string) {
     </SDescriptions>
 
     <div class="mt-3 border-t border-line pt-3">
-      <BillingBreakdown
-        v-if="Object.keys(breakdown).length || u.total_cost"
-        :breakdown="breakdown"
-        :scale="pricing.scale"
-        :rate-multiplier="rate"
-        :rate-source="rateSource"
-        :total="u.total_cost"
-        :rules="rules"
-        :cache-write-labels="{ default: t('usage.tokens.cacheDefaultBucket'), oneHour: t('usage.tokens.cache1hBucket') }"
-      />
+      <BillingBreakdown v-if="Object.keys(bd.breakdown || {}).length || u.total_cost" v-bind="breakdownOf(bd, rate, u.total_cost)" />
       <SHint v-else inline>—</SHint>
       <SHint v-if="ledgerId" size="xs" class="mt-2">{{ t('usage.billing.ledger', { id: ledgerId }) }}</SHint>
     </div>
@@ -115,11 +120,15 @@ function label(prefix: string, value: string) {
       <h4 class="text-sm font-medium">{{ t(`usage.billing.components.${group.list}`) }}</h4>
       <div v-for="(item, i) in group.items" :key="i" class="space-y-2" :data-testid="`usage-${group.list}-item`">
         <div class="flex flex-wrap items-center gap-2">
-          <SBadge tone="info">{{ label('usage.billing.componentKinds', item.kind) }}</SBadge>
+          <SBadge v-if="group.list === 'replacement'" tone="info">{{ t('usage.billing.componentRound', { round: i + 1 }) }}</SBadge>
+          <SBadge v-else tone="info">{{ label('usage.billing.componentKinds', item.kind) }}</SBadge>
           <ModelBadge :model="item.model" plain />
-          <span class="ml-auto font-mono text-sm">{{ formatMoney(item.cost ?? 0, 8) }}</span>
+          <SBadge v-if="item.free" tone="gray" data-testid="usage-component-free">{{ t('usage.free') }}</SBadge>
+          <SHint v-if="item.free && item.reason" inline size="xs" class="font-mono" data-testid="usage-component-reason">{{ item.reason }}</SHint>
+          <span class="ml-auto font-mono text-sm">{{ formatMoney(item.detail.total_cost ?? 0, 8) }}</span>
         </div>
         <UsageTokenFacts :tokens="item.tokens" />
+        <BillingBreakdown v-if="!item.free" v-bind="breakdownOf(item.detail, item.detail.rate_multiplier ?? null, item.detail.total_cost ?? null)" data-testid="usage-component-breakdown" />
       </div>
     </div>
 

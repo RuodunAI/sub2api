@@ -30,7 +30,7 @@ function pricedTokens(facts: unknown): UsageTokenFacts {
   return tokens
 }
 
-export type UsageComponent = { kind: string; model: string; tokens: UsageTokenFacts; cost?: string | number }
+export type UsageComponent = { kind: string; model: string; free: boolean; reason: string; tokens: UsageTokenFacts; detail: NonNullable<UsageRow['billing_detail']> }
 
 /** The separately priced items of a settled record (billing_detail.additional / replacement, e.g. an
  *  advisor model at its own price), each with its tokens from inputs at the same index. */
@@ -39,7 +39,7 @@ export function usageComponents(row: UsageRow, list: 'additional' | 'replacement
   if (!Array.isArray(settled)) return []
   const inputs: unknown = row.billing_detail?.inputs?.[list]
   return settled.map((part, index) => ({
-    kind: String(part?.kind ?? ''), model: String(part?.model ?? ''), cost: part?.detail?.total_cost,
+    kind: String(part?.kind ?? ''), model: String(part?.model ?? ''), free: !!part?.free, reason: String(part?.billing_reason ?? ''), detail: part?.detail || {},
     tokens: pricedTokens(Array.isArray(inputs) ? inputs[index]?.Tokens : undefined)
   }))
 }

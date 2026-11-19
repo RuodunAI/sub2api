@@ -75,37 +75,87 @@ describe('group pricing of a usage record', () => {
 
 // A Messages request that declared an advisor model, priced at the advisor model's own price.
 describe('separately priced items of a usage record', () => {
-  function withAdvisor(): UsageRow {
+  const tokens = (Input: number, Output: number) => ({ Input, Output, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0 })
+  const advisorDetail = {
+    breakdown: { items: [{ label: 'p', quantity: 3000, rate: 15, expr: 'p*15', cost: '0.045' }, { label: 'c', quantity: 400, rate: 75, expr: 'c*75', cost: '0.03' }],
+      subtotal: '0.075', base: '0.075', rules_multiplier: '1' },
+    rate_multiplier: '1', total_cost: '0.075'
+  }
+  function withItems(list: 'additional' | 'replacement', parts: Array<Record<string, unknown>>, inputs: Array<Record<string, unknown>>): UsageRow {
     const u = record({ rate: '1', total: '0.096' })
-    u.billing_detail = { ...u.billing_detail,
-      additional: [{ kind: 'advisor', model: 'claude-opus-4-1', price_id: 5, detail: { total_cost: '0.075' } }],
-      inputs: { additional: [{ Kind: 'advisor', Model: 'claude-opus-4-1', Tokens: { Input: 3000, Output: 400, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0 } }] } }
+    u.billing_detail = { ...u.billing_detail, [list]: parts, inputs: { [list]: inputs } }
     return u
   }
+  const advisor = () => withItems('additional',
+    [{ kind: 'advisor', model: 'claude-opus-4-1', price_id: 5, detail: advisorDetail }],
+    [{ Kind: 'advisor', Model: 'claude-opus-4-1', Tokens: tokens(3000, 400) }])
+  /** The value of a token row of an item, by its label. */
+  function tokenValue(item: { text(): string }, label: string) {
+    return item.text().replace(/\s+/g, ' ').match(new RegExp(`${label} ?([\\d,]+)`))?.[1]
+  }
 
-  it('lists each additional item with its kind, model, tokens and amount', () => {
-    const { w, text, has } = render(withAdvisor())
+  it('lists each additional item with its kind, model, tokens, own formula and amount', () => {
+    const { w, has } = render(advisor())
     expect(has('usage-additional')).toBe(true)
     expect(has('usage-replacement')).toBe(false)
-    expect(w.findAll('[data-testid="usage-additional-item"]')).toHaveLength(1)
-    const item = text('usage-additional-item')
-    expect(item).toContain('顾问模型')
-    expect(item).toContain('claude-opus-4-1')
-    expect(item).toContain('3,000')
-    expect(item).toContain('400')
-    expect(item).toContain('$0.075')
+    const items = w.findAll('[data-testid="usage-additional-item"]')
+    expect(items).toHaveLength(1)
+    const item = items[0]
+    expect(item.find('.ml-auto').text()).toBe('$0.075')
+    expect(item.text()).toContain('顾问模型')
+    expect(item.text()).toContain('claude-opus-4-1')
+    expect(tokenValue(item, '输入')).toBe('3,000')
+    expect(tokenValue(item, '输出')).toBe('400')
+    const formula = item.find('[data-testid="usage-component-breakdown"]').text().replace(/\s+/g, ' ')
+    expect(formula).toContain('3,000 × $15/M = $0.045')
+    expect(formula).toContain('400 × $75/M = $0.03')
+    expect(formula).toContain('基础费用 $0.075 × 条件总倍率 1 × 分组倍率 1 = $0.075')
   })
 
-  it('lists replacement items under their own heading', () => {
-    const u = record({ rate: '1', total: '0.01' })
-    u.billing_detail = { ...u.billing_detail,
-      replacement: [{ kind: 'fallback', model: 'claude-sonnet-4-5', price_id: 1, detail: { total_cost: '0.01' } }],
-      inputs: { replacement: [{ Kind: 'fallback', Model: 'claude-sonnet-4-5', Tokens: { Input: 1000, Output: 200 } }] } }
-    const { text, has } = render(u, 'en')
+  it('keeps each item\'s tokens and amount together, a free one first and a priced one after', () => {
+    const u = withItems('additional',
+      [{ kind: 'advisor', model: 'claude-haiku-4-5', price_id: 2, free: true, billing_reason: 'cached_answer', detail: { total_cost: '0', rate_multiplier: '0', breakdown: { subtotal: '0', base: '0', rules_multiplier: '0' } } },
+        { kind: 'advisor', model: 'claude-opus-4-1', price_id: 5, detail: advisorDetail }],
+      [{ Kind: 'advisor', Model: 'claude-haiku-4-5', Tokens: tokens(120, 30) }, { Kind: 'advisor', Model: 'claude-opus-4-1', Tokens: tokens(3000, 400) }])
+    const { w } = render(u)
+    const [free, priced] = w.findAll('[data-testid="usage-additional-item"]')
+    expect(free.text()).toContain('claude-haiku-4-5')
+    expect(free.find('[data-testid="usage-component-free"]').text()).toBe('免费')
+    expect(free.find('[data-testid="usage-component-reason"]').text()).toBe('cached_answer')
+    expect(free.find('.ml-auto').text()).toBe('$0.00')
+    expect(free.find('[data-testid="usage-component-breakdown"]').exists()).toBe(false)
+    expect(tokenValue(free, '输入')).toBe('120')
+    expect(tokenValue(free, '输出')).toBe('30')
+    expect(priced.text()).toContain('claude-opus-4-1')
+    expect(priced.find('[data-testid="usage-component-free"]').exists()).toBe(false)
+    expect(priced.find('.ml-auto').text()).toBe('$0.075')
+    expect(tokenValue(priced, '输入')).toBe('3,000')
+    expect(tokenValue(priced, '输出')).toBe('400')
+  })
+
+  it('names replacement items by their attempt round, not by their kind', () => {
+    const u = withItems('replacement',
+      [{ kind: 'fallback', model: 'claude-sonnet-4-5', price_id: 1, billing_reason: 'completed_attempt', detail: { ...advisorDetail, total_cost: '0.01' } },
+        { kind: 'fallback', model: 'claude-haiku-4-5', price_id: 2, billing_reason: 'completed_attempt', detail: { ...advisorDetail, total_cost: '0.02' } }],
+      [{ Kind: 'fallback', Model: 'claude-sonnet-4-5', Tokens: tokens(1000, 200) }, { Kind: 'fallback', Model: 'claude-haiku-4-5', Tokens: tokens(500, 100) }])
+    const { w, has, text } = render(u, 'en')
     expect(has('usage-additional')).toBe(false)
-    expect(text('usage-replacement')).toContain('Replacement usage')
-    expect(text('usage-replacement-item')).toContain('Fallback model')
-    expect(text('usage-replacement-item')).toContain('$0.01')
+    expect(text('usage-replacement')).toContain('each attempt round priced on its own')
+    const [first, second] = w.findAll('[data-testid="usage-replacement-item"]')
+    expect(first.text()).toContain('Round 1')
+    expect(first.text()).toContain('claude-sonnet-4-5')
+    expect(first.find('.ml-auto').text()).toBe('$0.01')
+    expect(second.text()).toContain('Round 2')
+    expect(second.find('.ml-auto').text()).toBe('$0.02')
+    expect(w.text()).not.toContain('fallback')
+    expect(w.text()).not.toContain('completed_attempt')
+  })
+
+  it('renders an item of a self view, without expression hashes or prices in inputs', () => {
+    const u = advisor()
+    expect(() => render(u)).not.toThrow()
+    const { w } = render(u)
+    expect(w.text()).not.toContain('hash')
   })
 
   it('shows nothing for a record without separately priced items', () => {
