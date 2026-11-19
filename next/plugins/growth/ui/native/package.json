@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "node ../../../../web/node_modules/vue-tsc/bin/vue-tsc.js -p tsconfig.json --noEmit",
-    "test": "node ../../../../web/node_modules/vitest/vitest.mjs run --config vitest.config.ts --passWithNoTests"
+    "test": "node ../../../../web/node_modules/vitest/vitest.mjs run --config vitest.config.ts"
   },
   "devDependencies": {
     "@sub2api/vite-preset": "file:../../../../web/packages/vite-preset",

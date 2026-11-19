@@ -1,5 +1,6 @@
 import type { PluginHost } from '@sub2api/host'
 import { lazyPage } from '@sub2api/ui'
+import GrowthSettings from './GrowthSettings.vue'
 import messages from './messages'
 import { setHost } from './host'
 import './growth.css'
@@ -10,6 +11,8 @@ export function register(host: PluginHost) {
   host.registerComponent('MyReferral', lazyPage(() => import('./MyReferral.vue')))
   host.registerComponent('Checkin', lazyPage(() => import('./Checkin.vue')))
   host.registerComponent('GrowthAdmin', lazyPage(() => import('./GrowthAdmin.vue')))
+  // The settings tab (manifest ui.settings.component).
+  host.registerComponent('GrowthSettings', GrowthSettings)
 }
 
 export function unregister() {
