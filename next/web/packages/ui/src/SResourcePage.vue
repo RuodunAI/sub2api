@@ -1,7 +1,7 @@
 <script setup lang="ts" generic="T extends Record<string, any>">
 // A plugin's list page over one of its routes: STable (as a card) with a
 // search box (`search` names the query parameter; none without it), the
-// #toolbar slot, a create button, and the pager; rows come from useList
+// #toolbar slot, a refresh button, a create button, and the pager; rows come from useList
 // (`client` host.pluginApi, `path`). Cells take `cell-<key>` slots as in
 // STable. With `canCreate` and a #create slot the button opens an
 // SFormModal holding the slot ({ close, done }); its Save runs `submit`
@@ -68,6 +68,7 @@ async function save() {
         <div class="s-resource-toolbar">
           <SInput v-if="search" v-model="list.filters[search]" type="search" icon="search" :placeholder="t('ui.search')" :aria-label="t('ui.search')" class="s-resource-search" />
           <slot name="toolbar" />
+          <SButton icon="refresh" :loading="list.loading.value" data-testid="resource-refresh" @click="list.reload()">{{ t('ui.refreshNow') }}</SButton>
           <SButton v-if="canCreate && $slots.create" variant="primary" class="s-resource-create" data-testid="resource-create" @click="creating = true">
             {{ createLabel || t('ui.form.create') }}
           </SButton>

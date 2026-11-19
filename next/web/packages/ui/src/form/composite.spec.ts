@@ -641,6 +641,11 @@ describe('SResourcePage', () => {
     await flushPromises()
     expect(queries.at(-1)).toMatchObject({ page: 2 })
     expect(w.find('[data-testid="resource-create"]').exists()).toBe(false)
+    const before = queries.length
+    await w.get('[data-testid="resource-refresh"]').trigger('click')
+    await flushPromises()
+    expect(queries.length).toBe(before + 1)
+    expect(queries.at(-1)).toEqual({ page: 2, page_size: 20, q: 'cat' })
     w.unmount()
   })
 
