@@ -28,9 +28,10 @@ const BaseURLRequired = "Base URL of the New API site is required / 请填写 Ne
 // New returns the platform of the apikey account type.
 func New() *standard.Platform { return standard.New(APIKey()) }
 
-// APIKey is the four presets on the site's own address (required, a
-// pasted /v1beta or /v1 removed, any 8-512 printable characters as the
-// key, no other credentials), with the balance of the key in the site's
+// APIKey is the four presets on the site's own address (required, saved
+// as written, a request appending each protocol's whole path to it less
+// the one /v1beta or /v1 it may end in; any non-empty key; no other
+// credentials), with the balance of the key in the site's
 // own quota.
 func APIKey() standard.Type {
 	spec := apikey.Spec{
@@ -39,8 +40,6 @@ func APIKey() standard.Type {
 		Fields:         fieldcheck.Fields{},
 		Texts: apikey.Texts{
 			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-			KeyNotString:           "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符",
-			KeyNotStringCode:       "pattern",
 			BaseURLRequired:        BaseURLRequired,
 			BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
 		},
