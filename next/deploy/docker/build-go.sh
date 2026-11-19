@@ -159,11 +159,19 @@ ls -l "$OUT/market"
 # (CONTRACTS §74.4) and does nothing until an operator sets its SMTP server.
 # dynweight is install-only: once enabled it is called on every scheduled
 # request, so it is enabled on purpose (CONTRACTS §74.5).
+# newapi is install-only: its account type serves the built-in platforms
+# with a site's key and address, so it does nothing until an operator adds
+# an account; enabled on purpose (CONTRACTS §119).
+# sub2api is install-only for the same reason: a Sub2API site's key and
+# address per account (CONTRACTS §119).
+# typesafe is install-only: enabling it adds the typesafe platform and the
+# POST /v1/systemone endpoint to every node, which a deployment opts into
+# (CONTRACTS §119).
 #
 # Intentionally NOT built in: relay (a market-only account type), guard (an
 # optional gateway hook).
 BUILTIN_PLUGINS=${BUILTIN_PLUGINS:-anthropic openai gemini moderation codex}
-BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-volcengine mailer dynweight}
+BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-volcengine mailer dynweight newapi sub2api typesafe}
 for name in $BUILTIN_PLUGINS_INSTALL_ONLY; do
   case " $BUILTIN_PLUGINS " in
     *" $name "*)
