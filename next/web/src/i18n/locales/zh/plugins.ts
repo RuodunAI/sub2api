@@ -93,7 +93,6 @@ export default {
     jobs: '后台任务',
     ui_menu: '控制台菜单',
     ui_iframe: '沙箱 iframe 页面',
-    accounts_read: '读取账号',
     authz_read: '查询用户的核心与其他插件权限',
     accounts_auto_state: '修改账号自动状态',
     lock: '跨节点锁',
@@ -110,7 +109,6 @@ export default {
     sticky_clear: '清除粘性会话绑定',
     gateway_observe: '观测网关请求',
     users_read: '读取用户',
-    accounts_credentials: '账号凭证',
     ledger_credit: '余额入账',
     ledger_debit: '余额扣款',
     ui_native: '原生界面',
@@ -126,7 +124,6 @@ export default {
 
   hpWarn: {
     ui_native: '插件代码将以你的登录身份在控制台中运行。',
-    accounts_credentials: '插件可以读取其自己声明的账号类型下上游账号的密钥（API Key、Token）。',
     ledger_credit: '插件可以给用户增加余额。',
     ledger_debit: '插件可以扣减用户余额。',
     users_write: '插件可以创建和修改用户。',

@@ -131,17 +131,16 @@ func TestEndpoint(key string) manifest.Endpoint {
 // DefaultGrants approves everything the test manifest asks for.
 func DefaultGrants() map[string]string {
 	return map[string]string{
-		"kv":                   `{}`,
-		"db.schema":            `{}`,
-		"gateway.hook":         `{"points":["gateway.request"],"fields":["model"]}`,
-		"routes.admin":         `{}`,
-		"routes.webhook":       `{}`,
-		"routes.public":        `{}`,
-		"accounts.credentials": `{"types":"own"}`,
-		"gateway.endpoint":     `{}`,
-		"platform.register":    `{}`,
-		"broadcast":            `{}`,
-		"lock":                 `{}`,
+		"kv":                `{}`,
+		"db.schema":         `{}`,
+		"gateway.hook":      `{"points":["gateway.request"],"fields":["model"]}`,
+		"routes.admin":      `{}`,
+		"routes.webhook":    `{}`,
+		"routes.public":     `{}`,
+		"gateway.endpoint":  `{}`,
+		"platform.register": `{}`,
+		"broadcast":         `{}`,
+		"lock":              `{}`,
 	}
 }
 

@@ -233,22 +233,14 @@ type PluginAccountSummary struct {
 	Settings json.RawMessage
 }
 
-// PluginAccountCredentials is one account with its decrypted credentials.
-type PluginAccountCredentials struct {
-	PluginAccountSummary
-	// Credentials is the decrypted non-settings part of the account, the same
-	// JSON the plugin receives as Account.credentials_json on the gateway path.
-	Credentials json.RawMessage
-}
-
 type AccountAutomaticStateController interface {
 	ApplyAccountAutomaticState(ctx context.Context, id int64, state *pluginv1.AccountAutomaticState) (*pluginv1.SetAccountAutomaticStateResponse, error)
 	ApplyPluginAccountAutomaticState(ctx context.Context, pluginKey string, id int64, state *pluginv1.AccountAutomaticState) (*pluginv1.SetAccountAutomaticStateResponse, error)
 }
 
 // PluginAccountReader (owner: account) serves HostService.ListAccounts and
-// HostService.GetAccountCredentials: it lets a plugin read the accounts of its
-// OWN account types outside a gateway request.
+// HostService.GetAccount: it lets a plugin read the accounts of its OWN
+// account types outside a gateway request (CONTRACTS §124), with no grant.
 //
 // Both methods take the calling plugin's key and filter on accounts.plugin_key
 // in SQL, which is by construction the plugin that declared the account type.
@@ -260,28 +252,31 @@ type PluginAccountReader interface {
 	// ListPluginAccounts returns one page of the plugin's own accounts,
 	// ordered by id. It never returns credentials.
 	ListPluginAccounts(ctx context.Context, pluginKey string, q PluginAccountQuery) ([]PluginAccountSummary, error)
-	// ReadPluginAccountCredentials returns one of the plugin's own accounts
-	// with its decrypted credentials, and writes exactly one audit_logs row
-	// per successful call. An account that exists but belongs to another
-	// plugin's account type is reported as ErrNotFound, like one that does not
-	// exist at all: telling the two apart would leak which account ids exist.
+	// ReadPluginAccount returns one account of pluginKey's own account types
+	// as the plugin sees it on PlatformService calls (credentials, settings,
+	// properties, the saved proxy), after writing the audit row: exactly one
+	// audit_logs row per successful call. An account that exists but belongs
+	// to another plugin's account type is reported as ErrNotFound, like one
+	// that does not exist at all: telling the two apart would leak which
+	// account ids exist. An account whose proxy cannot be had is
+	// ErrUnavailable: it is never handed out without its proxy.
 	//
 	// The audit row is the price of the pull-style access, so it is not best
-	// effort: when it cannot be written the call fails and no credential is
-	// handed out.
-	ReadPluginAccountCredentials(ctx context.Context, pluginKey string, id int64) (*PluginAccountCredentials, error)
+	// effort: when it cannot be written the call fails and nothing is handed
+	// out.
+	ReadPluginAccount(ctx context.Context, pluginKey string, id int64) (*pluginv1.Account, error)
 }
 
 // PluginAccountRequester (owner: account, optional on the PluginAccountReader)
 // serves HostService.SendAccountRequest: one HTTP request a plugin describes
 // for one of its OWN accounts, sent through that account's proxy the way the
-// quota and refresh requests are (CONTRACTS §91). The caller has checked the
-// grant and that the URL is http(s) with a host. The host must pass
+// quota and refresh requests are (CONTRACTS §91). The caller has checked
+// that the URL is http(s) with a host. The host must pass
 // CheckPluginUpstream with the account's type, settings and credentials (the
 // plugin's manifest m and the administrator's plugin network access,
 // CONTRACTS §112.17, §113); another is ErrPermissionDenied and nothing is
 // sent. An account of another
-// plugin's account type is ErrNotFound, as in ReadPluginAccountCredentials.
+// plugin's account type is ErrNotFound, as in ReadPluginAccount.
 // A transport failure is not an error: it is the answer's transport_error
 // with status 0. Neither the body nor the answer is bounded. Every request
 // sent is audited (never its headers or bodies).

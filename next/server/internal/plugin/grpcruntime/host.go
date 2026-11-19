@@ -397,13 +397,12 @@ func (h *hostServer) AuthzCheck(ctx context.Context, in *pluginv1.AuthzCheckRequ
 
 // AccountScopeCheck answers which accounts the caller of a request may act
 // on: core.AccountAccess, the rule the core proxy enforces on plugin routes,
-// with its errors mapped like every other core error. It needs the
-// "accounts.read" grant, and user_id must be the caller of an HTTP request
-// this plugin is serving right now, so a plugin cannot survey other users.
+// with its errors mapped like every other core error. It needs no grant: it
+// hands out no field of any account, only which of the caller's own view
+// the caller may act on, as AuthzCheck answers for the plugin's own keys.
+// user_id must be the caller of an HTTP request this plugin is serving right
+// now, so a plugin cannot survey other users.
 func (h *hostServer) AccountScopeCheck(ctx context.Context, in *pluginv1.AccountScopeCheckRequest) (*pluginv1.AccountScopeCheckResponse, error) {
-	if err := h.require(ctx, "accounts.read"); err != nil {
-		return nil, err
-	}
 	ids := in.GetAccountIds()
 	if in.GetUserId() <= 0 || in.GetAction() == "" || len(ids) > manifest.MaxAccountBatch ||
 		slices.ContainsFunc(ids, func(id int64) bool { return id <= 0 }) {
@@ -534,28 +533,15 @@ func (h *hostServer) ledger(ctx context.Context, in *pluginv1.LedgerChangeReques
 
 // ------------------------------------------------------------------ accounts
 
-// accountsScopeOwn is the only approved scope of accounts.credentials: the
-// plugin's own account types. Validate rejects any other scope at install
-// time; this re-checks it at call time so a grant row edited or migrated into
-// something else cannot silently widen the call.
-func (h *hostServer) requireOwnCredentials(ctx context.Context) error {
-	if err := h.require(ctx, "accounts.credentials"); err != nil {
-		return err
-	}
-	if v, _ := h.i.Grants().Scope("accounts.credentials")["types"].(string); v != "own" {
-		return status.Errorf(codes.PermissionDenied,
-			`plugin %s: accounts.credentials scope must be {"types":"own"}`, h.key())
-	}
-	return nil
-}
+// The account calls need no grant: a plugin receives the accounts of the
+// account types it declares (CONTRACTS §124). The account module filters by
+// plugin key in SQL, so a plugin declaring none gets nothing, and an account
+// of another plugin is NOT_FOUND, not PERMISSION_DENIED: these calls cannot
+// be used to probe which ids exist.
 
 // ListAccounts returns the metadata of the accounts of this plugin's own
-// account types. The response has no credential field: this call is authorised
-// by accounts.read, which is not a credential grant.
+// account types.
 func (h *hostServer) ListAccounts(ctx context.Context, in *pluginv1.ListAccountsRequest) (*pluginv1.ListAccountsResponse, error) {
-	if err := h.require(ctx, "accounts.read"); err != nil {
-		return nil, err
-	}
 	if h.i.rt.o.Accounts == nil {
 		return nil, status.Error(codes.Unavailable, "accounts unavailable")
 	}
@@ -590,43 +576,32 @@ func (h *hostServer) ListAccounts(ctx context.Context, in *pluginv1.ListAccounts
 	return out, nil
 }
 
-// GetAccountCredentials returns the decrypted credentials of one account of
-// this plugin's own account types. The account module filters by plugin key in
-// SQL and writes the audit row; an account of another plugin is NOT_FOUND, not
-// PERMISSION_DENIED, so this call cannot be used to probe which ids exist.
-func (h *hostServer) GetAccountCredentials(ctx context.Context, in *pluginv1.GetAccountCredentialsRequest) (*pluginv1.GetAccountCredentialsResponse, error) {
-	if err := h.requireOwnCredentials(ctx); err != nil {
-		return nil, err
-	}
+// GetAccount returns one account of this plugin's own account types as
+// PlatformService calls receive it, proxy included; the account module
+// writes the audit row first.
+func (h *hostServer) GetAccount(ctx context.Context, in *pluginv1.GetAccountRequest) (*pluginv1.GetAccountResponse, error) {
 	if h.i.rt.o.Accounts == nil {
 		return nil, status.Error(codes.Unavailable, "accounts unavailable")
 	}
 	if in.GetAccountId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "account_id is required")
 	}
-	a, err := h.i.rt.o.Accounts.ReadPluginAccountCredentials(ctx, h.key(), in.GetAccountId())
+	a, err := h.i.rt.o.Accounts.ReadPluginAccount(ctx, h.key(), in.GetAccountId())
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &pluginv1.GetAccountCredentialsResponse{
-		Account:         accountSummary(a.PluginAccountSummary),
-		CredentialsJson: string(a.Credentials),
-	}, nil
+	return &pluginv1.GetAccountResponse{Account: a}, nil
 }
 
 // SendAccountRequest has the account module send one request for one account
 // of this plugin's own account types through that account's proxy (CONTRACTS
-// §91). It is authorised by the credential grant, since such a request is
-// made with what GetAccountCredentials hands out, and reaches only the hosts
+// §91), and reaches only the hosts
 // a relay of the account may (core.CheckPluginUpstream, §112.17, §113): the
 // manifest's externalServices, which the operator reviewed at install, or
 // the account's own upstream addresses, which the account module reads with
 // the account, and only those the administrator's plugin network access
 // lets the plugin reach. Neither the body nor the answer is bounded.
 func (h *hostServer) SendAccountRequest(ctx context.Context, in *pluginv1.SendAccountRequestRequest) (*pluginv1.ExecutionHTTPResponse, error) {
-	if err := h.requireOwnCredentials(ctx); err != nil {
-		return nil, err
-	}
 	if in.GetAccountId() <= 0 || in.GetUrl() == "" {
 		return nil, status.Error(codes.InvalidArgument, "account_id and url are required")
 	}

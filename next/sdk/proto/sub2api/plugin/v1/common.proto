@@ -33,12 +33,28 @@ message Account {
   string name = 2;
   string platform = 3;         // platform of the client endpoint serving this request
   string type = 4;             // account type id, declared by the called plugin
-  // Decrypted credentials, only present when the plugin holds the
-  // accounts.credentials grant (its own account types).
+  // Decrypted credentials. A plugin receives the accounts of the account
+  // types it declares, and only those (CONTRACTS §124).
   string credentials_json = 5;
   // Non-sensitive settings (base_url, model_mapping ...).
   string settings_json = 6;
   AccountProperties properties = 7;
+  // The proxy this call's requests go out through, password included; unset
+  // when the account has none (direct). Data only: every request of the
+  // account is sent by the host, which enforces this proxy; a plugin never
+  // connects through it itself (CONTRACTS §124).
+  AccountProxy proxy = 8;
+}
+
+// AccountProxy is the proxy of an Account (CONTRACTS §124). Never log it:
+// the password is in clear.
+message AccountProxy {
+  int64 id = 1;
+  string protocol = 2;   // http | https | socks5
+  string host = 3;
+  int32 port = 4;
+  string username = 5;
+  string password = 6;
 }
 
 message AccountProperties {
@@ -50,7 +66,8 @@ message AccountProperties {
   int32 max_concurrency = 6;
   int32 rpm_limit = 7;
   int64 tpm_limit = 8;
-  optional int64 proxy_id = 9;
+  reserved 9;
+  reserved "proxy_id";
   repeated string models = 10;
   map<string, string> model_mapping = 11;
   reserved 12;

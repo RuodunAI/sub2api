@@ -84,8 +84,6 @@
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the Anthropic API key account type for the built-in anthropic platform", "zh": "为内置 anthropic 平台注册 Anthropic API Key 账号类型" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the API key and Base URL of its own accounts to build their upstream requests (the core sends them)", "zh": "读取本插件账号的 API Key 与 Base URL，用于构造上游请求（由核心发送）" } },
     { "id": "db.schema",
       "reason": { "en": "Store the model catalog", "zh": "保存模型目录" } },
     { "id": "routes.admin",

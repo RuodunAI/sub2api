@@ -67,8 +67,6 @@
 
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the \"Relay key\" account type for the built-in anthropic platform", "zh": "为内置 anthropic 平台注册\"中转 Key\"账号类型" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the base URL and key of its own accounts to build upstream requests (the core sends them)", "zh": "读取本插件账号的 Base URL 和 Key，用于构造上游请求（由核心发送）" } }
+      "reason": { "en": "Register the \"Relay key\" account type for the built-in anthropic platform", "zh": "为内置 anthropic 平台注册\"中转 Key\"账号类型" } }
   ]
 }

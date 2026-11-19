@@ -235,7 +235,7 @@ func TestPackChecks(t *testing.T) {
 
 // Account types are top-level (ARCHITECTURE 6.6): their form files are
 // packed, and they need platforms, the platform adapter capability and the
-// platform.register / accounts.credentials host permissions.
+// platform.register host permission.
 func TestPackAccountTypes(t *testing.T) {
 	const m = `{
   "apiVersion": 1, "key": "relayx", "name": {"en": "Relay"}, "version": "0.1.0",
@@ -244,7 +244,7 @@ func TestPackAccountTypes(t *testing.T) {
   "accountTypes": [{"id": "relay_key", "label": {"en": "Relay key"},
     "form": {"mode": "schema", "schema": "forms/k.schema.json", "uiSchema": "forms/k.ui.json"},
     "sensitiveFields": ["api_key"], "platforms": [{"platform": "anthropic", "passHeaders": ["anthropic-version"]}]}],
-  "hostPermissions": [{"id": "platform.register"}, {"id": "accounts.credentials", "scope": {"types": "own"}}]
+  "hostPermissions": [{"id": "platform.register"}]
 }`
 	dir := t.TempDir()
 	out := t.TempDir()
@@ -277,8 +277,8 @@ func TestPackAccountTypes(t *testing.T) {
 	if msg := runFail(t, "pack", "--dir", dir, "--out-dir", out); !strings.Contains(msg, "platform.adapter.v1") {
 		t.Fatalf("msg = %s", msg)
 	}
-	writeFile(t, filepath.Join(dir, "manifest.json"), strings.Replace(m, `{"types": "own"}`, `{"types": "all"}`, 1))
-	if msg := runFail(t, "pack", "--dir", dir, "--out-dir", out); !strings.Contains(msg, "accounts.credentials") {
+	writeFile(t, filepath.Join(dir, "manifest.json"), strings.Replace(m, `[{"id": "platform.register"}]`, `[]`, 1))
+	if msg := runFail(t, "pack", "--dir", dir, "--out-dir", out); !strings.Contains(msg, "platform.register") {
 		t.Fatalf("msg = %s", msg)
 	}
 	// The pre-6.6 layouts (protocols on account types, top-level gateway and
@@ -295,10 +295,10 @@ func TestPackAccountTypes(t *testing.T) {
 	}
 }
 
-// A manifest of the plugin contract before the single Execute path - runtime
-// "none", a declared upstream, request fields, an endpoint body limit or a
-// removed capability - gets the host's one outdated-contract message from
-// every command that reads it, not a field or decode error.
+// A manifest of an older plugin contract - runtime "none", a declared
+// upstream, request fields, an endpoint body limit, a removed capability or
+// a removed account grant - gets the host's one outdated-contract message
+// from every command that reads it, not a field or decode error.
 func TestOutdatedContract(t *testing.T) {
 	want := protocol.OutdatedContractMessage("demo", "0.1.0", protocol.FirstCoreVersion)
 	grpc := `"runtime": "grpc"`
@@ -308,6 +308,7 @@ func TestOutdatedContract(t *testing.T) {
 		"request fields":     strings.Replace(demoManifest, `"database"`, `"platforms": [{"id": "p", "requestFields": ["model"]}], "database"`, 1),
 		"max body bytes":     strings.Replace(demoManifest, `"database"`, `"platforms": [{"id": "p", "endpoints": [{"id": "e", "request": {"maxBodyBytes": 1}}]}], "database"`, 1),
 		"execute capability": strings.Replace(demoManifest, `{"id": "http.routes.v1"}`, `{"id": "platform.execute.v1"}`, 1),
+		"account grant":      strings.Replace(demoManifest, `{"id": "ui.native"}`, `{"id": "ui.native"}, {"id": "accounts.read"}`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := demoPlugin(t)
@@ -352,7 +353,7 @@ func TestPackPlatforms(t *testing.T) {
     "usage": {"semantics": "inclusive", "json": {"map": {"input_tokens": "usage.input"}}}}],
   "accountTypes": [{"id": "vkey", "label": {"en": "Key"}, "form": {"mode": "schema", "schema": "forms/v.json"},
     "platforms": [{"platform": "myvideo", "usage": {"myvideo.gen": {"semantics": "inclusive"}}}]}],
-  "hostPermissions": [{"id": "gateway.endpoint"}, {"id": "platform.register"}, {"id": "accounts.credentials", "scope": {"types": "own"}}]
+  "hostPermissions": [{"id": "gateway.endpoint"}, {"id": "platform.register"}]
 }`
 	dir := t.TempDir()
 	out := t.TempDir()

@@ -8,11 +8,12 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
-// CodeOutdatedContract marks what only a package built for the plugin
-// contract before the single Execute path declares: runtime "none", the
-// capabilities platform.execute.v1 and platform.poll.v1, and the manifest
-// fields that contract read (retiredContractFields). The host answers such a
-// package with protocol.OutdatedContractMessage instead of the field errors.
+// CodeOutdatedContract marks what only a package built for an older plugin
+// contract declares: runtime "none", the capabilities platform.execute.v1
+// and platform.poll.v1, the manifest fields the contract before the single
+// Execute path read (retiredContractFields) and the account host permissions
+// (retiredAccountPermissions). The host answers such a package with
+// protocol.OutdatedContractMessage instead of the field errors.
 const CodeOutdatedContract = "outdated_contract"
 
 // OutdatedContract reports whether err is a manifest validation error that
@@ -47,6 +48,13 @@ const retiredRuntimeNone = "none"
 var retiredCapabilities = map[string]bool{
 	"platform.execute.v1": true,
 	"platform.poll.v1":    true,
+}
+
+// retiredAccountPermissions are the host permissions that gated a plugin's
+// own accounts: it receives them without a grant now (CONTRACTS §124).
+var retiredAccountPermissions = map[string]bool{
+	"accounts.credentials": true,
+	"accounts.read":        true,
 }
 
 // retiredContractFields rejects the manifest fields the single Execute path

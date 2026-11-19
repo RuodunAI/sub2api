@@ -53,7 +53,7 @@
 ## 4. 插件 `codex`
 
 - 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.websocket.v1`、`http.routes.v1`。
-- 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses；0.2.0 起要在 `adapted` 里显式列出 `chat_completions` 和两个生图端点，第 21 节），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`，`settingsFields: ["proxy_id"]`，表单 `mode: "native"`、组件 `CodexAuthForm`。
+- 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses；0.2.0 起要在 `adapted` 里显式列出 `chat_completions` 和两个生图端点，第 21 节），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`（没有 `settingsFields`：账号的代理是账号的 `proxy_id` 列，原来写的 `settingsFields: ["proxy_id"]` 没有写入方，已删，第 22 节），表单 `mode: "native"`、组件 `CodexAuthForm`。
 - 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
@@ -71,7 +71,7 @@
   - `user_agent`、`originator`：账号自己的客户端标识（第 20 节），授权流程不写，表单里填（授权时每次调用也带上表单此刻的值）；空或没有时用插件设置的值。
   - ~~`chatgpt_siwc`：`client_id`、`ext_agent_host_id`、`scopes`~~（已删除）。
 - 网络权限（与 manifest 一致）：0.2.0 起没有 `net`，插件不开任何对外连接。`auth.openai.com`、`chatgpt.com` 列在 `externalServices`：授权请求是带代理票据的取回（第 19 节），上游请求、令牌刷新与重置次数请求都由核心经账号代理发出。（0.2.0 之前 `net` 只有 `auth.openai.com`，授权请求由插件直连。）不访问 `api.openai.com`，没有模型列表（控制台用 manifest 默认模型），也没有用量查询（窗口由核心从响应头采样，第 13 节）。
-- 其他宿主权限：`platform.register`、`accounts.credentials`（`types: own`）、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
+- 其他宿主权限：`platform.register`、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
 - `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与 `chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
 - 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 页签（2026-11-17 起取代 Sign in with ChatGPT 页签；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
@@ -352,3 +352,11 @@
 ### 21.4 测试
 
 `manifest_test.go`（`adapted` 与唯一的生图默认模型）、`execute_test.go` `TestExecuteImagesReportNoModel`（两个生图客户端协议不上报模型、请求体改写照旧）、`upstream_test.go` `TestBuildTestRequestByProtocol`（chat 测 Responses、生图测试的请求体、没有可测协议）。
+
+## 22. 账号的全部信息随调用下发，删掉账号授权（2026-11-19，所有者要求“调度的那个账号 让插件执行，就给哪个账号”“旧的两个权限和旧接口：移除”；需核心 ≥0.1.304；版本仍是未发布的 0.2.0；契约见 CONTRACTS §124）
+
+- 清单删掉 `accounts.credentials`：插件收到自己账号类型的账号（凭证、代理）不需要授权。
+- 重置次数的路由读账号改用 `Host.Account`（`HostService.GetAccount`，每次一条审计 `plugin.account.read`），取代 `GetAccountCredentials`；请求照旧经 `SendAccountRequest` 由核心经账号代理发出，插件不联网。
+- 删掉两个账号类型的 `settingsFields: ["proxy_id"]`：代理是账号的 `proxy_id` 列，Go 代码和界面都没有写入它；`flow.spec.ts` 的样例改用别的普通键。
+- 测试：`resetcredits_test.go` 的假宿主改实现 `Account`；`manifest_test.go` 断言没有 `accounts.credentials`、没有 `settingsFields`。
+

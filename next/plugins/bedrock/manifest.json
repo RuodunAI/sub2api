@@ -287,16 +287,6 @@
         "en": "Register the AWS Bedrock account types (API key, access key, temporary credentials) for the built-in anthropic platform",
         "zh": "为内置 anthropic 平台注册 AWS Bedrock 账号类型（API Key、Access Key、临时凭证）"
       }
-    },
-    {
-      "id": "accounts.credentials",
-      "scope": {
-        "types": "own"
-      },
-      "reason": {
-        "en": "Read the API key or access key of its own accounts to build and sign upstream requests (the core sends them)",
-        "zh": "读取本插件账号的 API Key 或 Access Key，用于构造上游请求并签名（由核心发送）"
-      }
     }
   ],
   "externalServices": ["amazonaws.com"]

@@ -202,12 +202,11 @@ func TestGenerationBuildAndSwitch(t *testing.T) {
 
 	pa, pb := load(t, a), load(t, b)
 	grantsA := registry.Grants{
-		"gateway.hook":         []byte(`{"points":["gateway.request"],"fields":["model"]}`),
-		"routes.admin":         []byte(`{}`),
-		"routes.public":        []byte(`{}`),
-		"jobs":                 []byte(`{}`),
-		"events":               []byte(`{"subscribe":["usage.recorded"]}`),
-		"accounts.credentials": []byte(`{"types":"own"}`),
+		"gateway.hook":  []byte(`{"points":["gateway.request"],"fields":["model"]}`),
+		"routes.admin":  []byte(`{}`),
+		"routes.public": []byte(`{}`),
+		"jobs":          []byte(`{}`),
+		"events":        []byte(`{"subscribe":["usage.recorded"]}`),
 	}
 	g := reg.Publish([]registry.Extension{ext{pkg: pb, grants: registry.Grants{}}, ext{pkg: pa, grants: grantsA}})
 	if g.Number() != 1 || len(seen) != 1 || reg.Current() != g {
@@ -309,13 +308,12 @@ func TestAccountTypesManyToMany(t *testing.T) {
 	noAdapter := registrytest.Manifest("noadapter", "1.0.0")
 
 	reg := registry.New()
-	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
-	// Without the accounts.credentials grant the account types are not
-	// registered either (the plugin would never receive credentials).
+	// No grant is needed: the plugin receives the accounts of the types it
+	// declares (CONTRACTS §124).
 	noGrant := registrytest.Manifest("nogrant", "1.0.0")
 	g := reg.Publish([]registry.Extension{
-		ext{pkg: load(t, relay), grants: creds}, ext{pkg: load(t, noAdapter), noPlatform: true, grants: creds},
-		ext{pkg: load(t, platform), grants: creds}, ext{pkg: load(t, noGrant)},
+		ext{pkg: load(t, relay)}, ext{pkg: load(t, noAdapter), noPlatform: true},
+		ext{pkg: load(t, platform)}, ext{pkg: load(t, noGrant)},
 	})
 
 	var keys []string
@@ -325,14 +323,14 @@ func TestAccountTypesManyToMany(t *testing.T) {
 			t.Fatalf("%v: client is nil", b.Key())
 		}
 	}
-	if want := "anth/apikey anth/oauth relay/zkey relay/akey"; strings.Join(keys, " ") != want {
+	if want := "anth/apikey anth/oauth nogrant/apikey relay/zkey relay/akey"; strings.Join(keys, " ") != want {
 		t.Fatalf("account types = %v, want %s", keys, want)
 	}
 	if _, ok := g.AccountType("noadapter", "apikey"); ok {
 		t.Fatal("account types of a plugin without platform.adapter.v1 must not be registered")
 	}
-	if _, ok := g.AccountType("nogrant", "apikey"); ok {
-		t.Fatal("account types of a plugin without the accounts.credentials grant must not be registered")
+	if _, ok := g.AccountType("nogrant", "apikey"); !ok {
+		t.Fatal("account types of a plugin holding no grant must be registered")
 	}
 	if b, ok := g.AccountType("relay", "zkey"); !ok || b.Plugin.Key != "relay" {
 		t.Fatalf("relay/zkey = %+v %v", b, ok)
@@ -606,7 +604,7 @@ func TestUnknownPlatformOfAccountTypeWarns(t *testing.T) {
 	log := captureWarnings(t)
 	reg := registry.New()
 	g := reg.Publish([]registry.Extension{
-		ext{pkg: load(t, m), grants: registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}},
+		ext{pkg: load(t, m)},
 	})
 	// The binding is kept either way: the platform may arrive later.
 	if len(g.AccountTypesForPlatform("volcegnine")) != 1 {
@@ -649,9 +647,8 @@ func TestForeignFactsAccountTypeSkipped(t *testing.T) {
 	video.Platforms[0].Endpoints[0].UsageSource = manifest.UsageSourcePlugin
 	relay := registrytest.Manifest("relay", "1.0.0")
 	relay.AccountTypes[0].Platforms = append(relay.AccountTypes[0].Platforms, manifest.AccountPlatform{Platform: "p_video"})
-	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
 	g := registry.New().Publish([]registry.Extension{
-		ext{pkg: load(t, video), grants: creds}, ext{pkg: load(t, relay), grants: creds},
+		ext{pkg: load(t, video)}, ext{pkg: load(t, relay)},
 	})
 	typesFor := func(platformID string) (out []string) {
 		for _, b := range g.AccountTypesForPlatform(platformID) {
@@ -700,7 +697,6 @@ func (chatToResponses) Conversion(client, upstream string) (core.Conversion, boo
 // of its subset: a type listing one the core cannot convert is not bound
 // (CONTRACTS §121.1); without converters none listing any is.
 func TestAdaptedNeedsConverter(t *testing.T) {
-	creds := registry.Grants{"accounts.credentials": []byte(`{"types":"own"}`)}
 	bound := func(reg *registry.Registry, adapted ...string) bool {
 		m := registrytest.Manifest("cx", "1.0.0")
 		ap := manifest.AccountPlatform{Platform: manifest.PlatformOpenAI, Endpoints: []string{"responses"}, Adapted: map[string]manifest.AdaptOptions{}}
@@ -708,7 +704,7 @@ func TestAdaptedNeedsConverter(t *testing.T) {
 			ap.Adapted[id] = manifest.AdaptOptions{}
 		}
 		m.AccountTypes[0].Platforms = []manifest.AccountPlatform{ap}
-		g := reg.Publish([]registry.Extension{ext{pkg: load(t, m), grants: creds}})
+		g := reg.Publish([]registry.Extension{ext{pkg: load(t, m)}})
 		_, ok := g.AccountType("cx", m.AccountTypes[0].ID)
 		return ok && len(g.AccountTypesForPlatform(manifest.PlatformOpenAI)) == 1
 	}

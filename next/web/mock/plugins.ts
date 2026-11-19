@@ -159,7 +159,7 @@ plugins.set('anthropic', {
     { version: '0.1.0', consent_status: 'approved' },
     { version: '0.2.0', consent_status: 'pending' }
   ],
-  grants: [grant('kv'), grant('platform.register'), grant('accounts.credentials', { types: 'own' }), grant('net')],
+  grants: [grant('kv'), grant('platform.register'), grant('net')],
   manifest: anthropicManifest('0.1.0'),
   settings: null,
   builtin: true
@@ -202,7 +202,7 @@ for (const key of ['openai', 'gemini'] as const) {
     egress_policy: 'allow_all',
     resources: { memory_mb: 128, cpu: 0.5, max_threads: 128, max_open_files: 1024 },
     versions: [{ version: '0.1.0', consent_status: 'approved' }],
-    grants: [grant('kv'), grant('platform.register'), grant('accounts.credentials', { types: 'own' }), grant('net')],
+    grants: [grant('kv'), grant('platform.register'), grant('net')],
     manifest: m,
     settings: null
   })
@@ -243,7 +243,7 @@ plugins.set('relay', {
   versions: [{ version: '0.3.0', consent_status: 'approved' }],
   // Built for the older plugin contract: the nodes refuse to load it.
   refused_version: '0.3.0',
-  grants: [grant('kv', null, '0.3.0'), grant('platform.register', null, '0.3.0'), grant('accounts.credentials', { types: 'own' }, '0.3.0'), grant('net', null, '0.3.0')],
+  grants: [grant('kv', null, '0.3.0'), grant('platform.register', null, '0.3.0'), grant('net', null, '0.3.0')],
   manifest: {
     key: 'relay',
     version: '0.3.0',
@@ -306,7 +306,6 @@ plugins.set('videogen', {
     grant('kv', null, '0.2.0'),
     grant('platform.register', null, '0.2.0'),
     grant('gateway.endpoint', null, '0.2.0'),
-    grant('accounts.credentials', { types: 'own' }, '0.2.0'),
     grant('net', null, '0.2.0')
   ],
   manifest: videogenManifest('0.2.0'),
@@ -457,7 +456,6 @@ function anthropicReview(version: string): Any {
     host_permissions: [
       { id: 'kv', risk: 'low' },
       { id: 'platform.register', risk: 'high', requires: 'plugin:grant:high' },
-      { id: 'accounts.credentials', risk: 'critical', scope: { types: 'own' }, reason: { en: 'Call the upstream API with account keys', zh: '使用账号密钥调用上游接口' }, requires: 'plugin:grant:critical' },
       { id: 'db.schema', risk: 'high', requires: 'plugin:grant:high' },
       { id: 'jobs', risk: 'medium' },
       { id: 'routes.webhook', risk: 'high', scope: { paths: ['/oauth/callback'] }, requires: 'plugin:grant:high' },
@@ -509,7 +507,6 @@ function genericReview(key: string, version: string, name: Any, publisher: strin
       { id: 'log', risk: 'low' },
       { id: 'platform.register', risk: 'high', requires: 'plugin:grant:high' },
       { id: 'gateway.endpoint', risk: 'high', requires: 'plugin:grant:high' },
-      { id: 'accounts.credentials', risk: 'critical', scope: { types: 'own' }, requires: 'plugin:grant:critical' },
       { id: 'net', risk: 'high', scope: { domains: ['api.foo.dev'] }, optional: true, requires: 'plugin:grant:high' }
     ]
   }

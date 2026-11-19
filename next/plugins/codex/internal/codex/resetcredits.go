@@ -219,14 +219,14 @@ func (p *Plugin) resetAccount(ctx context.Context, id int64) (c credentials, bad
 	if p.host == nil {
 		return c, errNotReady()
 	}
-	acc, err := p.host.AccountCredentials(ctx, id)
+	acc, err := p.host.Account(ctx, id)
 	if status.Code(err) == codes.NotFound {
 		return c, pluginsdk.ErrorResponse(http.StatusNotFound, "account_not_found", "no such ChatGPT (Codex) account / 找不到该 ChatGPT（Codex）账号")
 	}
 	if err != nil {
 		return c, pluginsdk.Unavailable("read the account / 读取账号失败: " + err.Error())
 	}
-	c, err = parseCredentials(acc.CredentialsJSON)
+	c, err = parseCredentials(acc.GetCredentialsJson())
 	if err != nil || c.AccessToken == "" {
 		return c, pluginsdk.ErrorResponse(http.StatusConflict, "not_authorized", "the account has no usable access_token; authorize it again / 账号没有可用的 access_token，请重新授权")
 	}

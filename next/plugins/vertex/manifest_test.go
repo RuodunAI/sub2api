@@ -137,7 +137,7 @@ func TestManifestShape(t *testing.T) {
 		perms[perm.ID] = perm
 	}
 	// No "net": the core sends the upstream and token requests.
-	if len(perms) != 2 || perms["platform.register"].ID == "" || perms["accounts.credentials"].Scope["types"] != "own" {
+	if len(perms) != 1 || perms["platform.register"].ID == "" {
 		t.Errorf("host permissions = %v", perms)
 	}
 	// externalServices is googleapis.com: the global and the regional

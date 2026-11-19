@@ -2,7 +2,6 @@ package grpcruntime
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -30,25 +29,19 @@ func (f *fakeAccounts) SendPluginAccountRequest(_ context.Context, key string, m
 	return nil, core.ErrNotFound.WithMessage("account not found")
 }
 
-var ownCredentials = registry.Grants{"accounts.credentials": json.RawMessage(`{"types":"own"}`)}
-
-func TestHostSendAccountRequestNeedsOwnCredentials(t *testing.T) {
-	in := &pluginv1.SendAccountRequestRequest{AccountId: 1, Url: "https://chatgpt.com/reset"}
-	for _, grants := range []registry.Grants{
-		{}, {"accounts.read": json.RawMessage(`{}`)},
-		{"accounts.credentials": json.RawMessage(`{"types":"all"}`)},
-	} {
-		h, acc := accountsEnv(t, grants)
-		if _, err := h.SendAccountRequest(t.Context(), in); status.Code(err) != codes.PermissionDenied || len(acc.calls) != 0 {
-			t.Fatalf("grant %v: %v, calls %v", grants, err, acc.calls)
-		}
+// A plugin holding no grant sends for its own accounts (CONTRACTS §124).
+func TestHostSendAccountRequestNeedsNoGrant(t *testing.T) {
+	h, acc := accountsEnv(t, registry.Grants{})
+	if out, err := h.SendAccountRequest(t.Context(), &pluginv1.SendAccountRequestRequest{AccountId: 1, Url: "https://chatgpt.com/reset"}); err != nil ||
+		out.GetStatus() != 200 || len(acc.calls) != 1 {
+		t.Fatalf("send: %v %v, calls %v", out, err, acc.calls)
 	}
 }
 
 // Only an account and an http(s) URL with a host are required: the body,
 // the URL and the method are not bounded.
 func TestHostSendAccountRequestArguments(t *testing.T) {
-	h, acc := accountsEnv(t, ownCredentials)
+	h, acc := accountsEnv(t, registry.Grants{})
 	for name, in := range map[string]*pluginv1.SendAccountRequestRequest{
 		"no account": {Url: "https://chatgpt.com/reset"},
 		"no url":     {AccountId: 1},
@@ -77,7 +70,7 @@ func TestHostSendAccountRequestArguments(t *testing.T) {
 }
 
 func TestHostSendAccountRequestOwnAccountsOnly(t *testing.T) {
-	h, acc := accountsEnv(t, ownCredentials)
+	h, acc := accountsEnv(t, registry.Grants{})
 	if _, err := h.SendAccountRequest(t.Context(), &pluginv1.SendAccountRequestRequest{AccountId: 9, Url: "https://chatgpt.com/x"}); status.Code(err) != codes.NotFound {
 		t.Fatalf("another plugin's account: %v", err)
 	}

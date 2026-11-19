@@ -50,8 +50,6 @@
 
   "hostPermissions": [
     { "id": "platform.register",
-      "reason": { "en": "Register the \"New API\" account type for the built-in openai, anthropic and gemini platforms and the typesafe platform", "zh": "为内置 openai、anthropic、gemini 平台和 typesafe 平台注册\"New API\"账号类型" } },
-    { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the Base URL and key of its own accounts to build upstream and balance requests (the core sends them)", "zh": "读取本插件账号的 Base URL 和 Key，用于构造上游请求和余额查询（由核心发送）" } }
+      "reason": { "en": "Register the \"New API\" account type for the built-in openai, anthropic and gemini platforms and the typesafe platform", "zh": "为内置 openai、anthropic、gemini 平台和 typesafe 平台注册\"New API\"账号类型" } }
   ]
 }

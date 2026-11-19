@@ -1094,3 +1094,10 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
   - **目标主机**：核心只发往清单允许的主机（`manifest.UpstreamHostAllowed`，CONTRACTS §112.17）。默认的官方控制面 `ark.cn-beijing.volcengineapi.com` 在 `externalServices` 里；运营方填的 `asset_base_url`（两种类型）、中转的 `asset_endpoint`（完整地址）和它所相对的 `base_url` 都在类型的 `upstreamFields` 里（原本就在，没有改清单），所以正式账号指向 BytePlus 等别的控制面、中转按自己的 `base_url` 解析的素材路径都能发出。`asset_endpoints_test.go` 对每种配置断言核心会放行。
   - **发给上游的内容不变**：`arkapi_test.go` 的 `TestRequestIsTheReleasedOne` 用改写前的插件客户端在固定时刻录下一次 `ListAssets` 的完整请求（方法、路径、查询、全部请求头、请求体、签名），新实现交给核心的内容与之逐字节相同，经仿照核心 `sendPluginCall` 的发送到达假上游后同样逐字节相同（`User-Agent`、`Accept-Encoding`、`Content-Length` 由 Go 的 HTTP 客户端自己加，核心与原插件的传输层设置相同）。核心对 `SendAccountRequest` 只在没有 `Content-Type` 时补 `application/json`（插件总是自己设置并签名），不增改别的头，所以签名有效。其余签名测试（独立重算、换 SK / 区域 / 请求体签名都变、十个 Action 都验签、取消一直传到上游）照旧经这条路径通过。
 - 测试：`internal/volcengine/execute_test.go`（经假宿主的中继形式与返回种类）；测试把 `manifest.json` 交给假宿主（`pluginsdktest.Options{Manifest: ...}`），取回能到的主机按清单判断；`TestConformance` 调一致性套件（chat 流式与非流式、responses、embeddings、两种类型的 messages、图片、视频提交），11 条全部通过，没有例外。
+
+## 18. 账号的全部信息随调用下发，删掉账号授权（2026-11-19，需核心 ≥0.1.304；版本仍是未发布的 0.13.0；契约见 CONTRACTS §124）
+
+- 清单删掉 `accounts.credentials` 和 `accounts.read`：插件收到、列出自己账号类型的账号都不需要授权。前面各节提到这两个授权和 `GetAccountCredentials` 的地方是当时的记录。
+- 素材库读账号改用 `Host.Account`（`HostService.GetAccount`，返回与平台调用相同的 `Account`，含代理；每次一条审计 `plugin.account.read`，审计失败即调用失败；代理拿不到时 `UNAVAILABLE`），`AssetConfigOf` 改为接收 `*pluginv1.Account`。每个请求每个账号仍最多读一次。签名后的请求照旧经 `SendAccountRequest` 由核心经账号代理发出，插件不联网。
+- 测试：`routes_db_test.go` 的假宿主改实现 `Account`；`assets_test.go`、`asset_endpoints_test.go` 改用 `pluginv1.Account`；`manifest_test.go` 的权限列表去掉这两项。e2e AC43 经 mock 的代理读上游素材组。
+

@@ -153,7 +153,13 @@ func (s *Service) runBalanceQuery(ctx context.Context, bt core.AccountTypeBindin
 	if err != nil {
 		return nil, queryFailure(false, "balance credentials unavailable", "")
 	}
-	acct := a.pluginAccount(plain)
+	// The queries go out through the row's proxy; without it the plugin is
+	// not called.
+	eg, err := s.proxyEgress(ctx, a.ProxyID)
+	if err != nil {
+		return nil, queryFailure(false, core.AsError(err).Message, "")
+	}
+	acct := a.pluginAccount(plain, eg.Proxy)
 	built, err := bt.Client.BuildBalanceRequest(ctx, &pluginv1.BuildBalanceRequestRequest{Account: acct})
 	if status.Code(err) == codes.Unimplemented {
 		return nil, errBalanceUnimplemented
@@ -174,7 +180,7 @@ func (s *Service) runBalanceQuery(ctx context.Context, bt core.AccountTypeBindin
 	answers := make([]*pluginv1.BalanceAnswer, len(reqs))
 	for i, r := range reqs {
 		ans := s.sendPluginCall(ctx, pluginCall{plugin: bt.Plugin.Key, what: "balance", method: r.GetMethod(), defaultMethod: http.MethodGet,
-			url: r.GetUrl(), headers: r.GetHeaders(), body: []byte(r.GetBodyJson()), noRedirects: true}, a.ProxyID)
+			url: r.GetUrl(), headers: r.GetHeaders(), body: []byte(r.GetBodyJson()), noRedirects: true}, eg)
 		answers[i] = &pluginv1.BalanceAnswer{Status: ans.status, Headers: ans.headers, Body: ans.body, TransportError: ans.transportError}
 	}
 	out, err := bt.Client.ParseBalanceResponse(ctx, &pluginv1.ParseBalanceResponseRequest{Account: acct, Answers: answers})

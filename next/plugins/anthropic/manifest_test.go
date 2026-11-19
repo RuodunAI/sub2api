@@ -99,10 +99,10 @@ func TestManifest(t *testing.T) {
 	if _, ok := perms["gateway.endpoint"]; ok {
 		t.Error("gateway.endpoint is only for plugins that declare platforms")
 	}
-	// The plugin builds the requests, so it reads the credentials of its
-	// own accounts, and only those.
-	if perm, ok := perms["accounts.credentials"]; !ok || perm.Scope["types"] != "own" || len(perm.Scope) != 1 {
-		t.Errorf("accounts.credentials = %+v, want scope {types: own}", perm)
+	// The plugin builds the requests with its own accounts, which it
+	// receives without a grant (CONTRACTS §124).
+	if _, ok := perms["accounts.credentials"]; ok {
+		t.Error("accounts.credentials was removed")
 	}
 	// The catalog is an admin route only: the console has no menu or page for it.
 	if _, ok := perms["ui.menu"]; ok || m.UI != nil {

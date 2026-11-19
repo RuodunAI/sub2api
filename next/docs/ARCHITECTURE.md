@@ -544,7 +544,7 @@ guard-0.1.0.s2plugin
 flowchart LR
   subgraph host["核心"]
     rt["grpcRuntime"]
-    hs["HostService<br/>Log · KVGet/KVSet/KVDelete/KVList · KVGetMany/KVSetMany/KVDeleteMany（CONTRACTS §93） · GetDSN<br/>AuthzCheck · AccountScopeCheck · LedgerCredit/LedgerDebit · Publish<br/>ListAccounts · GetAccountCredentials<br/>LockAcquire/LockRenew/LockRelease（CONTRACTS §27.3）<br/>RelayUpstream · ExecuteHTTP（CONTRACTS §112）"]
+    hs["HostService<br/>Log · KVGet/KVSet/KVDelete/KVList · KVGetMany/KVSetMany/KVDeleteMany（CONTRACTS §93） · GetDSN<br/>AuthzCheck · AccountScopeCheck · LedgerCredit/LedgerDebit · Publish<br/>ListAccounts · GetAccount（CONTRACTS §124）<br/>LockAcquire/LockRenew/LockRelease（CONTRACTS §27.3）<br/>RelayUpstream · ExecuteHTTP（CONTRACTS §112）"]
     eg["EgressService<br/>Dial（双向流）"]
   end
   subgraph plugin["插件进程"]
@@ -662,9 +662,9 @@ stateDiagram-v2
 | 等级 | 权限 |
 |---|---|
 | 🟢 低 | `kv`、`config`、`log`、`broadcast`、`secrets`（§72.2）、`prices`（只读按模型价格试算费用，§72.13.1） |
-| 🟡 中 | `routes.admin`、`routes.user`、`events`、`jobs`、`ui.menu`、`ui.iframe`、`accounts.read`、`authz.read`（`AuthzCheck` 查询非本插件的权限 key）、`lock`（CONTRACTS §27.3）、`fs.data`（读写本插件的数据目录，不授予时插件不能读写任何文件，CONTRACTS §43.8） |
+| 🟡 中 | `routes.admin`、`routes.user`、`events`、`jobs`、`ui.menu`、`ui.iframe`、`authz.read`（`AuthzCheck` 查询非本插件的权限 key）、`lock`（CONTRACTS §27.3）、`fs.data`（读写本插件的数据目录，不授予时插件不能读写任何文件，CONTRACTS §43.8） |
 | 🟠 高 | `accounts.auto_state`、`db.schema`、`net`（白名单模式下）、`routes.public`、`routes.webhook`、`gateway.hook`、`gateway.endpoint`、`gateway.observe`、`platform.register`、`scheduler.rank`、`sticky.clear`（§74.2）、`users.read`、`notify.send`（经其他插件的渠道向任意外部地址发通知，核心限速，§74.4） |
-| 🔴 极高 | `accounts.credentials`、`ledger.credit`、`ledger.debit`、`ui.native`、`users.write`、`db.core_views` |
+| 🔴 极高 | `ledger.credit`、`ledger.debit`、`ui.native`、`users.write`、`db.core_views` |
 
 - 高和极高风险需要逐项勾选；极高风险只能由拥有 `plugin:grant:critical` 的用户批准（2026-10-05 起不再要求再次输入密码，CONTRACTS §3.3）
 - 批准结果写入 `plugin_permission_grants(plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)`；管理员可以把范围改得比申请的更小（比如入账上限）
@@ -959,7 +959,7 @@ flowchart LR
 
 顶层 `gateway` 与 `platform` 字段删除（端点归属平台）。
 
-**计费**：全局价只按模型设置，不区分平台和账号类型；全局价之上可以按分组、按用户组另设标价（7.3）。**凭证授权**：`accounts.credentials`（`{"types":"own"}`）授权后，插件的账号类型才注册。**控制台**：账号类型显示支持的平台和可服务的端点；分组可放任意类型账号，并显示分组能服务哪些平台（由其账号类型推出）；API Key 显示所属分组能访问的平台和端点。
+**计费**：全局价只按模型设置，不区分平台和账号类型；全局价之上可以按分组、按用户组另设标价（7.3）。**账号归属**：插件收到它声明的账号类型下账号的全部信息（凭证、代理），不需要宿主授权；账号的请求都由核心发出（CONTRACTS §124，此前要 `accounts.credentials` 授权后账号类型才注册）。**控制台**：账号类型显示支持的平台和可服务的端点；分组可放任意类型账号，并显示分组能服务哪些平台（由其账号类型推出）；API Key 显示所属分组能访问的平台和端点。
 
 
 ---

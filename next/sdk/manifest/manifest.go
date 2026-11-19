@@ -1190,41 +1190,39 @@ const (
 )
 
 var HostPermissionRisk = map[string]string{
-	"kv":                   RiskLow,
-	"secrets":              RiskLow,
-	"prices":               RiskLow, // read-only pricing of token usage (CONTRACTS §72.13.1)
-	"config":               RiskLow,
-	"log":                  RiskLow,
-	"broadcast":            RiskLow,
-	"routes.admin":         RiskMedium,
-	"routes.user":          RiskMedium,
-	"events":               RiskMedium,
-	"jobs":                 RiskMedium,
-	"ui.menu":              RiskMedium,
-	"ui.iframe":            RiskMedium,
-	"lock":                 RiskMedium, // not low: low is granted without the administrator (install/consent.go)
-	"fs.data":              RiskMedium, // read and write the plugin's own data directory (CONTRACTS §43.8)
-	"accounts.read":        RiskMedium,
-	"authz.read":           RiskMedium, // AuthzCheck on keys that are not the plugin's own
-	"accounts.auto_state":  RiskHigh,
-	"db.schema":            RiskHigh,
-	"net":                  RiskHigh,
-	"routes.public":        RiskHigh,
-	"routes.webhook":       RiskHigh,
-	"gateway.hook":         RiskHigh,
-	"gateway.endpoint":     RiskHigh,
-	"platform.register":    RiskHigh,
-	"scheduler.rank":       RiskHigh,
-	"sticky.clear":         RiskHigh,
-	"notify.send":          RiskHigh, // free-form mail from the deployment to any recipient (phishing), even rate limited
-	"gateway.observe":      RiskHigh,
-	"users.read":           RiskHigh,
-	"accounts.credentials": RiskCritical,
-	"ledger.credit":        RiskCritical,
-	"ledger.debit":         RiskCritical,
-	"ui.native":            RiskCritical,
-	"users.write":          RiskCritical,
-	"db.core_views":        RiskCritical,
+	"kv":                  RiskLow,
+	"secrets":             RiskLow,
+	"prices":              RiskLow, // read-only pricing of token usage (CONTRACTS §72.13.1)
+	"config":              RiskLow,
+	"log":                 RiskLow,
+	"broadcast":           RiskLow,
+	"routes.admin":        RiskMedium,
+	"routes.user":         RiskMedium,
+	"events":              RiskMedium,
+	"jobs":                RiskMedium,
+	"ui.menu":             RiskMedium,
+	"ui.iframe":           RiskMedium,
+	"lock":                RiskMedium, // not low: low is granted without the administrator (install/consent.go)
+	"fs.data":             RiskMedium, // read and write the plugin's own data directory (CONTRACTS §43.8)
+	"authz.read":          RiskMedium, // AuthzCheck on keys that are not the plugin's own
+	"accounts.auto_state": RiskHigh,
+	"db.schema":           RiskHigh,
+	"net":                 RiskHigh,
+	"routes.public":       RiskHigh,
+	"routes.webhook":      RiskHigh,
+	"gateway.hook":        RiskHigh,
+	"gateway.endpoint":    RiskHigh,
+	"platform.register":   RiskHigh,
+	"scheduler.rank":      RiskHigh,
+	"sticky.clear":        RiskHigh,
+	"notify.send":         RiskHigh, // free-form mail from the deployment to any recipient (phishing), even rate limited
+	"gateway.observe":     RiskHigh,
+	"users.read":          RiskHigh,
+	"ledger.credit":       RiskCritical,
+	"ledger.debit":        RiskCritical,
+	"ui.native":           RiskCritical,
+	"users.write":         RiskCritical,
+	"db.core_views":       RiskCritical,
 }
 
 // Values of Endpoint.Kind.

@@ -1113,6 +1113,52 @@ func TestMigration0111DropsClaudeOAuthPlugin(t *testing.T) {
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }
 
+// 0116 deletes every grant of accounts.credentials and accounts.read, granted,
+// revoked or staged, and keeps the others (CONTRACTS §124); a rerun changes
+// nothing.
+func TestMigration0116DropsAccountGrants(t *testing.T) {
+	const id = "0116_drop_account_grants.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO plugins (key, name, status) VALUES ('volcengine', '{"en":"v"}', 'enabled');
+		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('volcengine', '0.13.0', '{}', 'x', 'x', 1, 'valid');
+		INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash) VALUES
+			('volcengine', 'accounts.credentials', '{"types":"own"}', 'granted', '0.12.8', 'x'),
+			('volcengine', 'accounts.read', '{}', 'revoked', '0.12.8', 'x'),
+			('volcengine', 'platform.register', '{}', 'granted', '0.12.8', 'x');
+		INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash) VALUES
+			('volcengine', '0.13.0', 'accounts.credentials', '{"types":"own"}', 'granted', 'x'),
+			('volcengine', '0.13.0', 'db.schema', '{}', 'granted', 'x')`)
+	state := func() string {
+		return read(`SELECT concat_ws(' | ',
+			(SELECT string_agg(permission, ' ' ORDER BY permission) FROM plugin_permission_grants),
+			(SELECT string_agg(permission, ' ' ORDER BY permission) FROM plugin_staged_grants))`)
+	}
+	const want = "platform.register | db.schema"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+}
+
 // 0113 lets a balance snapshot have no successful read yet (updated_at
 // NULL), adds unlimited (false for the rows there) and drops source; a
 // rerun changes nothing (CONTRACTS §52.3).

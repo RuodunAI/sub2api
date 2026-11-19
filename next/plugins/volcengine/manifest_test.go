@@ -411,8 +411,7 @@ func TestManifest(t *testing.T) {
 	// library's requests are sent by the host (SendAccountRequest), the
 	// plugin opens no connection.
 	wantPerms := []string{
-		"platform.register", "gateway.endpoint", "accounts.credentials",
-		"accounts.read", "db.schema", "routes.admin", "ui.menu",
+		"platform.register", "gateway.endpoint", "db.schema", "routes.admin", "ui.menu",
 	}
 	if len(perms) != len(wantPerms) {
 		t.Fatalf("host permissions = %v, want %v", perms, wantPerms)
@@ -424,14 +423,6 @@ func TestManifest(t *testing.T) {
 	}
 	if _, bad := perms["ui.native"]; bad {
 		t.Error("the asset library uses host-rendered pages; ui.native (Critical) must not be requested")
-	}
-	if c, ok := perms["accounts.credentials"]; !ok || c.Scope["types"] != "own" || len(c.Scope) != 1 {
-		t.Fatalf("accounts.credentials scope = %v", c.Scope)
-	}
-	// accounts.read is what lets the plugin list its own accounts without
-	// touching credentials (CONTRACTS §26.6); it carries no scope.
-	if c := perms["accounts.read"]; len(c.Scope) != 0 {
-		t.Errorf("accounts.read scope = %v, want none", c.Scope)
 	}
 	// The core sends the asset library's requests only to hosts the
 	// manifest allows: the default asset endpoint has to be an external

@@ -62,8 +62,14 @@ func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 		t.Fatalf("review account type still lists protocols: %s", rat.Raw)
 	}
 	grants := admin.OK(t, http.MethodGet, "/plugins/anthropic/grants", nil).Array()
-	if g, ok := Find(grants, "permission", "accounts.credentials"); !ok || g.Get("status").String() != "granted" {
-		t.Fatalf("grant accounts.credentials: %v", grants)
+	if g, ok := Find(grants, "permission", "platform.register"); !ok || g.Get("status").String() != "granted" {
+		t.Fatalf("grant platform.register: %v", grants)
+	}
+	// A plugin receives its own accounts without a grant (CONTRACTS §124).
+	for _, removed := range []string{"accounts.credentials", "accounts.read"} {
+		if _, ok := Find(grants, "permission", removed); ok {
+			t.Fatalf("removed grant %s still present: %v", removed, grants)
+		}
 	}
 	if _, ok := Find(grants, "permission", "gateway.endpoint"); ok {
 		t.Fatalf("anthropic no longer asks for gateway.endpoint: %v", grants)

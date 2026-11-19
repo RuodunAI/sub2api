@@ -28,7 +28,8 @@ func TestAccountClientsIgnoreEnvironmentProxy(t *testing.T) {
 	t.Setenv("no_proxy", "")
 	svc := New(nil, nil, nil, Options{AllowPrivate: true})
 
-	direct, err := svc.HTTPClient(t.Context(), nil)
+	pc, err := svc.HTTPClient(t.Context(), nil)
+	direct := pc.Client
 	if err != nil {
 		t.Fatal(err)
 	}

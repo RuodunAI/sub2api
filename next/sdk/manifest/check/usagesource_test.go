@@ -259,7 +259,6 @@ func TestAccountTypeOverrideCannotReachUsageSource(t *testing.T) {
 	m.Capabilities = []manifest.Capability{{ID: manifest.CapPlatformAdapter}}
 	m.HostPermissions = []manifest.HostPermission{
 		{ID: "gateway.endpoint"}, {ID: "platform.register"},
-		{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}},
 	}
 	m.Platforms = []manifest.Platform{pluginSourcePlatform()}
 	m.AccountTypes = []manifest.AccountType{{

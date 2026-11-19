@@ -89,6 +89,13 @@ func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (conte
 	if err != nil || cooling {
 		return ctx, nil, nil, errTaskDeferred
 	}
+	// The plugin is handed the account with its proxy as the call begins
+	// (CONTRACTS §124); each fetch of the call takes the egress again
+	// (poll_http.go). Without one the call waits, as for a cooldown.
+	eg, err := s.rec.Accounts.Egress(ctx, a.ID)
+	if err != nil {
+		return ctx, nil, nil, errTaskDeferred
+	}
 	release := func() {}
 	ok := true
 	if s.rec.Slots != nil {
@@ -98,7 +105,7 @@ func (s *Service) acquireTaskAccount(ctx context.Context, e *settleEntry) (conte
 		return ctx, nil, nil, errTaskDeferred
 	}
 	e.account = a.AccountRef
-	return ctx, a.PluginAccount(""), release, nil
+	return ctx, a.PluginAccount("", eg.Proxy), release, nil
 }
 
 func (s *Service) reconcileTask(ctx context.Context, e *settleEntry) bool {

@@ -97,16 +97,9 @@ func (c *call) armUsageExtraction(rt *typeRoute, acct *pluginv1.Account, resp *h
 		return
 	}
 	headers := execfetch.FirstHeaderValues(resp.Header)
-	// The response is read, not built: credentials are never sent. Settings
-	// travel only to the plugin that owns the account type, which is the one
-	// that already sees them on every upstream attempt.
-	small := &pluginv1.Account{Id: acct.GetId(), Name: acct.GetName(),
-		Platform: acct.GetPlatform(), Type: acct.GetType()}
-	if pb, ok := c.gen.Platform(rt.platform); ok && pb.Plugin.Key != "" && pb.Plugin.Key == rt.binding.Plugin.Key {
-		small.SettingsJson = acct.GetSettingsJson()
-		small.Properties = acct.GetProperties()
-	}
-	c.usage = &pendingExtract{cap: cap, meta: c.metaFor(rt), account: small,
+	// The observation goes back to the plugin running Execute, the account
+	// type's: the account is the one it was handed (CONTRACTS §124).
+	c.usage = &pendingExtract{cap: cap, meta: c.metaFor(rt), account: acct,
 		headers: headers, status: resp.StatusCode, fields: usageRequestFields(rt.usageRequestFields, upBody)}
 }
 

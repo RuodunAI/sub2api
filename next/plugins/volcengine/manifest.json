@@ -951,23 +951,6 @@
       }
     },
     {
-      "id": "accounts.credentials",
-      "scope": {
-        "types": "own"
-      },
-      "reason": {
-        "en": "Read the Base URL and API key of Ark API key accounts to build upstream requests, and their asset library access key / secret key to sign asset library calls. Every read of an account's credentials outside gateway traffic is written to the audit log.",
-        "zh": "读取方舟 API Key 账号的 Base URL 与 API Key 以构造上游请求，并读取素材库的 Access Key / Secret Key 为素材库调用签名。网关流量之外的每一次凭证读取都会写入审计日志。"
-      }
-    },
-    {
-      "id": "accounts.read",
-      "reason": {
-        "en": "List this plugin's own Ark accounts (names and settings only, never credentials) so the asset library pages can show which account an asset belongs to and which accounts have an asset endpoint configured",
-        "zh": "列出本插件自己的方舟账号（只有名称与设置，绝不含凭证），素材库页面才能显示素材属于哪个账号、哪些账号配置了素材端点"
-      }
-    },
-    {
       "id": "db.schema",
       "reason": {
         "en": "Keep the local index of asset groups and assets (account id, Ark id, name, type, status, timestamps) in plg_volcengine, so a list page does not need one signed upstream call - and one audited credential read - per account",
