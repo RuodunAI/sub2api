@@ -195,6 +195,28 @@ func TestExecuteHTTP(t *testing.T) {
 	}
 }
 
+// An image request reaches the plugin converted to Responses with the chat
+// model driving the image tool at the top: the plugin reports it as the
+// upstream model, as for any request, and edits the body as any other
+// (CONTRACTS §121.4).
+func TestExecuteImagesReportChatModel(t *testing.T) {
+	h := startExecuting(t, DefaultEndpoints)
+	const body = `{"model":"gpt-6-luna","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"a dot"}]}],` +
+		`"tools":[{"type":"image_generation","model":"gpt-image-2","action":"generate"}],"tool_choice":{"type":"image_generation"},"stream":true}`
+	for _, client := range []string{ProtocolImages, "openai.images_edit"} {
+		in := execRequest(TypeDevice, ProtocolResponses, body)
+		in.Meta.ClientProtocol = client
+		r := relayed(t, h, in)
+		if r.GetUpstreamModel() != ImageChatModel {
+			t.Errorf("%s: upstream model = %q", client, r.GetUpstreamModel())
+		}
+		if gjson.GetBytes(r.GetBody(), "store").Raw != "false" || gjson.GetBytes(r.GetBody(), "instructions").Raw != `""` ||
+			gjson.GetBytes(r.GetBody(), "tools.0.model").Str != "gpt-image-2" {
+			t.Errorf("%s: body = %s", client, r.GetBody())
+		}
+	}
+}
+
 // A Sign in with Codex account holds the same tokens: its request is the
 // device code account's.
 func TestExecuteOAuthIsDevice(t *testing.T) {

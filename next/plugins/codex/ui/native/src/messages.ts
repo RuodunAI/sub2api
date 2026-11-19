@@ -23,7 +23,7 @@ const zh = {
   agent: {
     title: '客户端标识',
     userAgent: 'User-Agent',
-    userAgentHint: '这个账号发往 OpenAI 的全部请求（上游、测试、令牌刷新、用量重置）使用的 User-Agent。留空沿用插件设置，插件设置也留空时为 sup2api-codex/插件版本。授权时用插件设置的值。',
+    userAgentHint: '这个账号发往 OpenAI 的全部请求（授权、上游、测试、令牌刷新、用量重置）使用的 User-Agent，授权时用这里当前填的值。留空沿用插件设置，插件设置也留空时为 sup2api-codex/插件版本。',
     originator: 'originator',
     originatorHint: '同上，originator 请求头。留空沿用插件设置，插件设置也留空时为 sup2api。'
   },
@@ -147,7 +147,7 @@ const en: Messages = {
   agent: {
     title: 'Client identification',
     userAgent: 'User-Agent',
-    userAgentHint: "The User-Agent of every request of this account to OpenAI (upstream, test, token refresh, usage resets). Leave empty for the plugin settings' value, or sup2api-codex/plugin version when that is empty too. Authorizations use the plugin settings' value.",
+    userAgentHint: "The User-Agent of every request of this account to OpenAI (authorization, upstream, test, token refresh, usage resets); an authorization uses the value entered here at that moment. Leave empty for the plugin settings' value, or sup2api-codex/plugin version when that is empty too.",
     originator: 'originator',
     originatorHint: "The same for the originator header. Leave empty for the plugin settings' value, or sup2api when that is empty too."
   },

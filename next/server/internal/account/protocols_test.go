@@ -53,7 +53,8 @@ func protocolGen() (g *fakeGen, chatgpt, full core.AccountTypeBinding) {
 	}
 	codex := core.PluginInfo{Key: "codex"}
 	chatgpt = core.AccountTypeBinding{Plugin: codex, Type: manifest.AccountType{ID: "chatgpt",
-		Platforms: []manifest.AccountPlatform{{Platform: "openai", Endpoints: []string{"responses"}}}}}
+		Platforms: []manifest.AccountPlatform{{Platform: "openai", Endpoints: []string{"responses"},
+			Adapted: map[string]manifest.AdaptOptions{"chat_completions": {}}}}}}
 	full = core.AccountTypeBinding{Plugin: codex, Type: manifest.AccountType{ID: "full",
 		Platforms: []manifest.AccountPlatform{{Platform: "openai"}}}}
 	g.plugins = append(g.plugins, codex)

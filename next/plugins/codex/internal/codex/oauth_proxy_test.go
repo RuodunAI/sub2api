@@ -89,9 +89,10 @@ func TestAuthRequestsCarryTheTicket(t *testing.T) {
 }
 
 // Every route of a login needs the proxy ticket of its call, a start route
-// a caller too. A request the core refuses to send is answered with
-// proxy_refused and keeps the login: nothing reached OpenAI, so once the
-// operator fixes the proxy the next call, with its fresh ticket, completes it.
+// a caller too. A request the core refuses to send keeps the login (a start
+// or an exchange answers proxy_refused, a poll "pending" with the reason):
+// nothing reached OpenAI, so once the operator fixes the proxy the next
+// call, with its fresh ticket, completes it.
 func TestAuthProxyRefused(t *testing.T) {
 	iss := newFakeIssuer(t)
 	clk := &clock{t: testNow}
@@ -120,7 +121,7 @@ func TestAuthProxyRefused(t *testing.T) {
 	}
 	var poll DevicePollResponse
 	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": device.SessionID}).GetBody(), &poll)
-	if poll.Status != pollError || !strings.Contains(poll.Message, "not issued to the caller") {
+	if poll.Status != pollPending || !strings.Contains(poll.Message, "not issued to the caller") {
 		t.Fatalf("refused poll = %+v", poll)
 	}
 	u, _ := url.Parse(codex.AuthorizeURL)

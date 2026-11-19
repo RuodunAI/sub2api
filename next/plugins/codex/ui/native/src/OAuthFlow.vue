@@ -8,11 +8,13 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { isApiError, type ProxyTicketSource } from '@sub2api/host'
 import { SAlert, SButton, SCopyButton, SField, SHint, SIcon, SInput, SLink, SSteps } from '@sub2api/ui'
 import { errorMessage, exchangeOAuth, startOAuth, useCodexHost, type CodexCredentials, type OAuthStart } from './host'
-import { callbackShape } from './flow'
+import { callbackShape, type FormAgent } from './flow'
 
 const props = defineProps<{
   /** A proxy ticket of the account form's current proxy choice (UI 3.20), taken afresh for every call of the login. */
   proxyTicket: ProxyTicketSource
+  /** The account form's current User-Agent and originator, sent with every call of the login. */
+  agent: FormAgent
 }>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
 const host = useCodexHost()
@@ -59,7 +61,7 @@ async function generate() {
   failedStep.value = ''
   setBusy('start')
   try {
-    const s = await startOAuth(await props.proxyTicket())
+    const s = await startOAuth(await props.proxyTicket(), props.agent)
     if (!alive || gen !== generation) return
     session.value = s
     callback.value = ''
@@ -79,7 +81,7 @@ async function complete() {
   failedStep.value = ''
   setBusy('exchange')
   try {
-    const r = await exchangeOAuth(session.value.session_id, callback.value.trim(), await props.proxyTicket())
+    const r = await exchangeOAuth(session.value.session_id, callback.value.trim(), await props.proxyTicket(), props.agent)
     if (!alive || gen !== generation) return
     session.value = null
     callback.value = ''

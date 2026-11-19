@@ -147,7 +147,7 @@ func streamOnlyEnv(t *testing.T, sp manifest.AccountPlatform, opts ...envOpt) (*
 
 func openAIStreamOnly() manifest.AccountPlatform {
 	return manifest.AccountPlatform{Platform: manifest.PlatformOpenAI, Endpoints: []string{"responses"},
-		StreamOnly: []string{"openai.responses"}}
+		StreamOnly: []string{"openai.responses"}, Adapted: map[string]manifest.AdaptOptions{"chat_completions": {}}}
 }
 
 func (e *env) responses(stream bool) result {
@@ -737,5 +737,14 @@ func TestSamePlatformConversionScope(t *testing.T) {
 	e3, _, _ := sameChatEnv(t, manifest.AccountPlatform{Platform: manifest.PlatformOpenAI, Endpoints: []string{"embeddings"}})
 	if r := e3.chat(false); r.status != 404 {
 		t.Fatalf("embeddings only: %d %s", r.status, r.body)
+	}
+
+	// The subset without adapted: the converter exists, but the type does
+	// not declare the adaptation, so chat is not served (CONTRACTS §83.3).
+	sp := openAIStreamOnly()
+	sp.Adapted = nil
+	e4, plat, _ := sameChatEnv(t, sp)
+	if r := e4.chat(false); r.status != 404 || plat.buildCount() != 0 {
+		t.Fatalf("not adapted: %d %s", r.status, r.body)
 	}
 }

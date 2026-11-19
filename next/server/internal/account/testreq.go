@@ -157,8 +157,8 @@ func (s *Service) test(c *gin.Context) {
 }
 
 // testProtocolSet is the protocols a test of an account may use: those of
-// its own platforms it serves natively, in the order of its type's
-// platforms and their endpoints, without WebSocket and token-counting ones,
+// its own platforms it serves natively, then those it serves adapted, in
+// the order of its type's platforms and their endpoints, without WebSocket and token-counting ones,
 // those whose endpoint says test "never" and, unless the test is explicit
 // (the request names the model), those whose endpoint says "explicit"
 // (CONTRACTS §122).
@@ -182,7 +182,7 @@ func (s *Service) testProtocols(a *row, explicit bool) testProtocolSet {
 			(ep.Test == manifest.EndpointTestExplicit && !explicit)
 	}
 	for _, sp := range s.accountServedProtocols(a) {
-		if sp.Via == viaNative && !skip[sp.Protocol] && core.CountTokensFamily(sp.Protocol) == "" {
+		if sp.Via != viaConverted && !skip[sp.Protocol] && core.CountTokensFamily(sp.Protocol) == "" {
 			tp.protocols = append(tp.protocols, sp.Protocol)
 		}
 	}

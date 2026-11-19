@@ -570,6 +570,29 @@ type AccountPlatform struct {
 	// endpoint of Platform the type serves, with response.stream "sse" and a
 	// request.streamPath.
 	StreamOnly []string `json:"streamOnly,omitempty"`
+	// Adapted lists the endpoints of Platform outside Endpoints the account
+	// type serves through a core conversion to an endpoint of its subset,
+	// keyed by endpoint id (CONTRACTS §83.3, §121.1). An endpoint of
+	// Platform neither in the subset nor listed here is not served.
+	Adapted map[string]AdaptOptions `json:"adapted,omitempty"`
+}
+
+// AdaptOptions are an account type's options for the conversion serving
+// an adapted endpoint.
+type AdaptOptions struct {
+	// Model is the upstream model the conversion uses where the client's
+	// model does not go (the chat model driving an image generation tool,
+	// CONTRACTS §121.3); "" when the conversion needs none.
+	Model string `json:"model,omitempty"`
+}
+
+// Adapts reports whether the account type serves the endpoint of p, its
+// platform, speaking protocol through a conversion (Adapted).
+func (a AccountPlatform) Adapts(p *Platform, protocol string) bool {
+	return slices.ContainsFunc(p.Endpoints, func(e Endpoint) bool {
+		_, ok := a.Adapted[e.ID]
+		return ok && e.Protocol == protocol
+	})
 }
 
 // StreamsOnly reports whether the upstream of protocol only accepts

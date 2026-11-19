@@ -33,6 +33,14 @@ export const CODEX_FIELDS = ['access_token', 'refresh_token', 'id_token', 'expir
  */
 export const AGENT_FIELDS = ['user_agent', 'originator'] as const
 export type AgentField = (typeof AGENT_FIELDS)[number]
+/** The account's own client headers, "" for none. */
+export type FormAgent = Record<AgentField, string>
+
+/** The client headers of creds ("" where it has none or not a string). */
+export function agentOf(creds: Record<string, unknown> | null | undefined): FormAgent {
+  const v = (k: AgentField) => (typeof creds?.[k] === 'string' ? (creds[k] as string) : '')
+  return { user_agent: v('user_agent'), originator: v('originator') }
+}
 
 /** base with the client headers of from (where from has them). */
 export function withAgent(base: Record<string, unknown>, from: Record<string, unknown> | null | undefined): Record<string, unknown> {

@@ -75,6 +75,13 @@ const (
 	// (the smallest model of manifest defaultModels: the test uses the
 	// owner's plan).
 	DefaultTestModel = "gpt-6-luna"
+	// ImageChatModel is the chat model driving the image_generation tool of
+	// an image request: manifest adapted.images_*.model, which the core puts
+	// at the top of the converted request, and the model of an image test.
+	ImageChatModel = "gpt-6-luna"
+	// Client protocols the core converts to Responses (manifest adapted).
+	ProtocolChat   = "openai.chat"
+	ProtocolImages = "openai.images"
 )
 
 // Endpoints are the service roots the plugin talks to (no trailing slash).
@@ -224,8 +231,9 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 // normalizes in place.
 type credMap map[string]any
 
-// stringFields are the optional credential fields that must be strings.
-var stringFields = append([]string{"refresh_token", "id_token", "email", "chatgpt_account_id", "plan_type"}, agentFields...)
+// stringFields are the optional credential fields that must be strings
+// besides the client headers (agentError).
+var stringFields = []string{"refresh_token", "id_token", "email", "chatgpt_account_id", "plan_type"}
 
 // str reads a string field: ("", true) when absent or null, ok=false when
 // the value is not a string.
@@ -265,12 +273,27 @@ func (m credMap) checkStrings() *pluginv1.ValidateCredentialsResponse {
 			return invalid(k, "pattern", k+" must be a string / "+k+" 必须是字符串")
 		}
 	}
-	for _, k := range agentFields {
-		if v, _ := m.str(k); !paramoverride.ValidHeaderValue(v) {
-			return invalid(k, "pattern", k+" must not contain control characters / "+k+" 不能包含控制字符")
-		}
+	if k, code, msg := m.agentError(); k != "" {
+		return invalid(k, code, msg)
 	}
 	return nil
+}
+
+// agentError names the first client header (agentFields) of m that is not a
+// string or cannot be sent as a header value: its field, code and message,
+// k "" when there is none. The account's credentials and the authorization
+// routes, which carry the form's values (readCall), are checked alike.
+func (m credMap) agentError() (k, code, msg string) {
+	for _, k := range agentFields {
+		v, ok := m.str(k)
+		if !ok {
+			return k, "pattern", k + " must be a string / " + k + " 必须是字符串"
+		}
+		if !paramoverride.ValidHeaderValue(v) {
+			return k, "pattern", k + " must not contain control characters / " + k + " 不能包含控制字符"
+		}
+	}
+	return "", "", ""
 }
 
 // normalizeExpiresAt turns a string expires_at into a number (an empty one is

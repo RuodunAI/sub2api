@@ -222,9 +222,16 @@ func systemRole(item gjson.Result) (gjson.Result, bool) {
 	return role, role.Type == gjson.String && role.Str == "system"
 }
 
-// BuildTestRequest implements pluginsdk.Platform: the smallest streaming
-// Responses request (store=false, stream=true, an input array, empty
-// instructions). Its usage is read with the openai.responses rules.
+// BuildTestRequest implements pluginsdk.Platform: a streaming Responses
+// request (store=false, stream=true, an input array, empty instructions)
+// for the first of the offered protocols the plugin tests (CONTRACTS
+// §122; as with the standard library, none offered is the Responses test
+// and none of them among those offered FailedPrecondition):
+// openai.responses, or openai.chat that reaches it converted, is
+// the smallest one ("ping"); openai.images is the image request the core
+// converts an image generation to (CONTRACTS §121.2): the model in the
+// image tool, forced, driven by ImageChatModel. Its usage is read with
+// the openai.responses rules.
 func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
 	c, err := accountCredentials(in.GetAccount())
 	if err != nil {
@@ -234,13 +241,27 @@ func (p *Plugin) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestReque
 	if model == "" {
 		model = DefaultTestModel
 	}
-	b, _ := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model":        model,
 		"instructions": "",
 		"input":        json.RawMessage(userMessage("ping")),
 		"store":        false,
 		"stream":       true,
+	}
+	protocols := in.GetProtocols()
+	i := slices.IndexFunc(protocols, func(p string) bool {
+		return p == ProtocolResponses || p == ProtocolChat || p == ProtocolImages
 	})
+	switch {
+	case len(protocols) == 0:
+	case i < 0:
+		return nil, status.Errorf(codes.FailedPrecondition, "no test request for protocols %v", protocols)
+	case protocols[i] == ProtocolImages:
+		body["model"], body["input"] = ImageChatModel, json.RawMessage(userMessage("a small white dot"))
+		body["tools"] = []map[string]any{{"type": "image_generation", "model": model, "output_format": "png", "quality": "low"}}
+		body["tool_choice"] = map[string]string{"type": "image_generation"}
+	}
+	b, _ := json.Marshal(body)
 	h := p.accountHeaders(c)
 	maps.Copy(h, httpHeaders)
 	return &pluginv1.BuildTestRequestResponse{

@@ -20,7 +20,7 @@
 - **插件联网**：管理员可以指定插件能访问、不能访问的域名，管插件经核心发出的全部网络（插件自己的连接和平台插件发往上游的请求），默认行为不变（CONTRACTS §113）。
 - **插件包不再依赖主节点**（网关；CONTRACTS §114）。
 - **授权请求走账号表单选的代理**（代理票据，codex 0.2.0；CONTRACTS §117）。
-- **代理始终按最新**：已有账号的所有出站请求（转发、取回、Monitor、测试、获取模型、额度、余额、续期、`SendAccountRequest`）都在发出时按账号**当前保存**的代理取客户端，改代理后下一次请求就走新代理（CONTRACTS §123）；建账号前的授权每次调用都取一张新票据，授权中途改代理不用重新授权，后续请求即走新代理（codex 0.2.0；CONTRACTS §117.2）。
+- **代理始终按最新**：已有账号的所有出站请求（转发、取回、Monitor、测试、获取模型、额度、余额、续期、`SendAccountRequest`）都在发出时按账号**当前保存**的代理取客户端，改代理后下一次请求就走新代理（CONTRACTS §123）；建账号前的授权每次调用都取一张新票据，授权中途改代理不用重新授权，后续请求即走新代理（codex 0.2.0；CONTRACTS §117.2）。设备码授权时核心拒绝经表单代理发送、或表单代理暂不可用，界面显示原因并继续轮询，代理改好后同一个设备码接着完成，不用重新开始。
 - **删除 Claude OAuth 插件**及两种账号类型（CONTRACTS §116）。
 - **云厂商上游**：azure_openai、vertex、bedrock 三个新插件（首发 0.1.0），openai 账号可填组织与项目。
 - **上游站点插件**：newapi、sub2api、typesafe 三个新插件（首发 0.1.0，内置、只安装、默认不启用；CONTRACTS §119）。
@@ -161,6 +161,14 @@
 - 结算里“主价格为空即免费”的分支随之删除：带附加用量的记录，主用量的价格表达式在价格历史里找不到时结算失败，不再把主用量当免费。
 - 升级须知见上文“升级前要做的”。
 
+### Codex 账号服务 OpenAI 生图接口；同平台适配改为显式声明（核心、SDK 清单与 openai 平台、codex 0.2.0、azure-openai 0.1.0；无迁移）
+
+- **codex 账号能服务 `/v1/images/generations`、`/v1/images/edits`**：核心把生图请求转成带 `image_generation` 工具的 Responses 请求（顶层是驱动工具的对话模型 `gpt-6-luna`，客户端的生图模型在工具里；`size`、`quality`、`background` 另写进一句 `instructions`，Codex 后端只按它定尺寸），应答转回生图接口的 JSON 或事件流（`image_generation.*` / `image_edit.*`），非流式与流式都支持（CONTRACTS §121）。不支持：`n` 大于 1、`response_format: "url"`（400 `unsupported_conversion`），edits 的 multipart（§118.1）。
+- **计费**：整条请求（对话部分约 2300 输入 token 加生图工具的 token）都按客户端请求的生图模型（`gpt-image-2`）的价格算；使用记录的上游模型记驱动模型 `gpt-6-luna`；它和上游回显的 `gpt-image-2-codex` 都不参与计价、不需要价格。上游没有出图时回 502 `no_image_generated`、生图被拦截时回 400 `image_generation_user_error`（流式是一个 `error` 事件），记录为失败，用量照扣。
+- **管理员要做的**：codex 账号的模型列表加 `gpt-image-2`（新账号默认模型已含它；列表为空的不用加），给 `gpt-image-2` 录表达式价格（CONTRACTS §118.6），建议在“模型的协议限定”里把它限定到两个生图协议。`protocols` 没指定过的 codex 账号升级后自动开放两个生图协议，不想出图的账号在“本平台协议”里取消。账号测试带模型名测 `gpt-image-2` 时会真实出一张图。
+- **同平台适配改为显式声明**：账号类型在平台上写了端点子集时，子集以外的端点只有在清单 `adapted` 里列出才经核心转换服务（此前对所有类型自动生效）。第一方插件已补声明：codex 列 chat 与两个生图端点，azure-openai 的“按部署”类型列 `/v1/responses`；行为与之前相同。**第三方插件**若依赖过隐式适配（子集里没有 chat 却服务 chat 之类），升级后那些端点不再服务，要在清单里补 `adapted`。
+- 清单新字段：`accountTypes[].platforms[].adapted`；插件协议仍是 2。用量照 Responses 端点自己的规则读（它已经把生图工具的 token 加进来）。
+
 ### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0115）
 
 - **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。
@@ -243,10 +251,10 @@
 
 所有者要求“账号授权时的第一次换令牌不走代理：修复bug”，粘贴的代理串也要支持。规则见 CONTRACTS §117，设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](next/docs/DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)。
 
-- **修复**：codex 的设备码申请、轮询和两种登录的换令牌以前由插件直连 OpenAI，从服务器本机 IP 出去，账号表单上选的代理不起作用。现在由核心经表单选的代理发出（已有代理、粘贴的代理串、不用代理三种都支持），设备码的每次轮询都走同一个代理；发给 OpenAI 的方法、路径、请求体不变，请求头除 `User-Agent` 里的插件版本（`sup2api-codex/0.2.0`）外不变。账号建好后的上游、刷新和重置次数本来就走账号代理（codex、vertex 已核对），不变。
+- **修复**：codex 的设备码申请、轮询和两种登录的换令牌以前由插件直连 OpenAI，从服务器本机 IP 出去，账号表单上选的代理不起作用。现在由核心经表单选的代理发出（已有代理、粘贴的代理串、不用代理三种都支持），开始、每次轮询和换令牌都按表单当时的代理选择发出；发给 OpenAI 的方法、路径、请求体不变，请求头除 `User-Agent` 里的插件版本（`sup2api-codex/0.2.0`）外不变。账号建好后的上游、刷新和重置次数本来就走账号代理（codex、vertex 已核对），不变。
 - **核心**：新接口 `POST /account-types/:plugin_key/:type/proxy-ticket`（`account:create` 或 `account:update`）：与“拉取模型列表”同一段代码检查代理选择，加密成只有核心能解开的票据；粘贴的代理串只解析使用，不建代理记录，不进日志和审计。插件路由调用（有登录用户的）带执行令牌，插件在路由里可以 `Fetch`，但必须带票据、只能到清单 `externalServices`；票据只对发它的管理员和这个插件有效，每次使用按该管理员当时的权限复查。
 - **@sub2api/ui、@sub2api/host、@sub2api/vite-preset 3.20**：原生账号表单多一个 prop `proxyTicket`（类型 `ProxyTicketSource`），按表单当前的代理选择要一张票据。只加不改；用到的插件声明 `hostUICompat: "^3.20"`。
-- **codex 0.2.0**：清单去掉 `net`，插件不再联网；开始路由要 `proxy_ticket`；核心拒绝发送时回 400 `proxy_refused` 并结束会话。进行中的授权在升级后要重新开始。
+- **codex 0.2.0**：清单去掉 `net`，插件不再联网；开始路由要 `proxy_ticket`；请求没有发出时会话保留（开始、换令牌回 400 `proxy_refused`，轮询回带原因的 `pending`），代理改好后接着完成。进行中的授权在升级后要重新开始。
 - **e2e AC38**：三种代理选择下 codex 设备码登录的全部请求经代理（或直连）到达 mock 扮演的 `auth.openai.com`，粘贴的代理串不留代理记录，令牌建成的账号能经网关用并计费；Sign in with Codex 的换令牌经代理。mock 为此新增授权服务器的三个接口和 HTTPS 的 `CONNECT` 代理（以前 https 地址经代理到不了 mock），e2e 网络给 mock 加别名 `auth.openai.com`。
 
 ### codex：上游会话 id 以账号 id 加盐；User-Agent 与 originator 可自定义（codex 0.2.0；无迁移）
@@ -254,7 +262,7 @@
 审计结论，所有者决定会话 id“加上盐进行适配”、“直接根据账号的 id 来做盐”，以及 User-Agent / originator“账号上可以自定义，然后插件的设置中也可以自定义”。规则见 [PLUGIN-CODEX.md](next/docs/PLUGIN-CODEX.md) 第 20 节。
 
 - **会话 id 以账号 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为 `sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")` 排成的 UUID，账号 id 是核心里的账号编号，不发给上游。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；标识随账号不同，同一会话换到另一个 ChatGPT 账号时也会变。
-- **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数；授权时账号还不存在，用插件设置的值。默认值不变，不设就与以前一样。
+- **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数，以及授权（设备码申请、轮询、换令牌）——授权时账号还没保存，每次调用都带上表单此刻填的值。默认值不变，不设就与以前一样。
 
 ### 删除 Claude OAuth 插件及两种账号类型（迁移 0111）
 

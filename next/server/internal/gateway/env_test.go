@@ -259,6 +259,9 @@ type fakePlatform struct {
 	urlFor   func(acct *pluginv1.Account) string
 	// route overrides the upstream URL from the whole request.
 	route func(in *pluginv1.ExecuteRequest) string
+	// reportModel reports the body's top-level model as the upstream model,
+	// as a plugin using pluginsdk.RequestModel does.
+	reportModel bool
 	// resolve answers ResolveModel; nil = UNIMPLEMENTED, like a plugin that
 	// never wrote the optional method. resolves counts every call, so a test
 	// can prove an endpoint without request.modelSource never triggers one.
@@ -340,7 +343,7 @@ func (p *fakePlatform) Execute(ctx context.Context, in *pluginv1.ExecuteRequest,
 func (p *fakePlatform) buildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	p.mu.Lock()
 	p.builds = append(p.builds, in)
-	hook, base, urlFor, patches, route := p.buildHook, p.base, p.urlFor, p.patches, p.route
+	hook, base, urlFor, patches, route, reportModel := p.buildHook, p.base, p.urlFor, p.patches, p.route, p.reportModel
 	p.mu.Unlock()
 	if hook != nil {
 		if err := hook(ctx, in); err != nil {
@@ -366,7 +369,11 @@ func (p *fakePlatform) buildUpstream(ctx context.Context, in *pluginv1.ExecuteRe
 	if err != nil {
 		return nil, err
 	}
-	return &pluginv1.UpstreamRequest{Method: "POST", Url: u, Headers: h, Body: body}, nil
+	out := &pluginv1.UpstreamRequest{Method: "POST", Url: u, Headers: h, Body: body}
+	if reportModel {
+		out.UpstreamModel = gjson.GetBytes(body, "model").String()
+	}
+	return out, nil
 }
 
 // ClassifyError mimics the anthropic plugin: 429/5xx cool down and fail

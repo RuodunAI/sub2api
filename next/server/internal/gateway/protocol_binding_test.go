@@ -55,7 +55,8 @@ func TestRouteCrossPlatform(t *testing.T) {
 	onOpenAI, onAnthropic := manifest.AccountPlatform{Platform: "openai"}, manifest.AccountPlatform{Platform: "anthropic"}
 	types := []core.AccountTypeBinding{
 		typeOn("openai", onOpenAI),
-		typeOn("codex", manifest.AccountPlatform{Platform: "openai", Endpoints: []string{"responses"}}),
+		typeOn("codex", manifest.AccountPlatform{Platform: "openai", Endpoints: []string{"responses"},
+			Adapted: map[string]manifest.AdaptOptions{"chat_completions": {}}}),
 		typeOn("claude", onAnthropic),
 		typeOn("messages", manifest.AccountPlatform{Platform: "anthropic", Endpoints: []string{"messages"}}),
 		typeOn("both", onOpenAI, onAnthropic),
