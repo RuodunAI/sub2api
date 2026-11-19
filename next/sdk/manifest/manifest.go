@@ -541,9 +541,17 @@ const MaxAccountBatch = 500
 // compares values after trimming whitespace and a trailing "/" and
 // lower-casing scheme and host; an empty value (the plugin default) and, on
 // update, the account's previous value are always accepted.
+//
+// Versions (optional) are the version segments a value of the field may end
+// with, each starting and not ending with "/" (e.g. "/v1"). Before comparing,
+// the host removes at most one of them from each side: the longest that ends
+// the escaped path, matched whole and case-sensitively, so ".../a%2Fv1" does
+// not end with "/v1". It is the rule of the plugin SDK's apikey.Spec.Versions
+// and should list the same segments.
 type GuardedSetting struct {
-	Field   string   `json:"field"`
-	Allowed []string `json:"allowed"`
+	Field    string   `json:"field"`
+	Allowed  []string `json:"allowed"`
+	Versions []string `json:"versions,omitempty"`
 }
 
 // AccountPlatform is one platform an account type serves. Empty fields fall

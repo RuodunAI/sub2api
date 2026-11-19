@@ -285,8 +285,9 @@ func (v *validator) accountAdapted(field string, ap manifest.AccountPlatform, ow
 }
 
 // guardedSettings validates accountTypes[].guardedSettings (CONTRACTS §21.3):
-// each field is a distinct settings field of the same account type and its
-// allowed list holds at least one absolute http(s) URL.
+// each field is a distinct settings field of the same account type, its
+// allowed list holds at least one absolute http(s) URL and its versions are
+// distinct segments that start and do not end with "/".
 func (v *validator) guardedSettings(f string, at manifest.AccountType) {
 	seen := map[string]bool{}
 	for i, gs := range at.GuardedSettings {
@@ -306,6 +307,17 @@ func (v *validator) guardedSettings(f string, at manifest.AccountType) {
 		for j, raw := range gs.Allowed {
 			if !isAbsoluteHTTPURL(raw) {
 				v.add(fmt.Sprintf("%s.allowed[%d]", gf, j), "invalid_url", "%q is not an absolute http(s) URL", raw)
+			}
+		}
+		for j, ver := range gs.Versions {
+			vf := fmt.Sprintf("%s.versions[%d]", gf, j)
+			switch {
+			case ver == "":
+				v.add(vf, "required", "version segment is required")
+			case !strings.HasPrefix(ver, "/") || strings.HasSuffix(ver, "/"):
+				v.add(vf, "invalid", "version segment %q must start and not end with \"/\"", ver)
+			case slices.Contains(gs.Versions[:j], ver):
+				v.add(vf, "duplicate", "version segment %q is listed twice", ver)
 			}
 		}
 	}
