@@ -138,6 +138,7 @@ export default {
     // SchemaForm / SchemaField
     form: {
       secretKeep: 'A value is stored. Leave empty to keep it.',
+      secretClear: 'Clear the saved value',
       presets: 'Presets',
       setByAdmin: 'Set by an administrator',
       unsaved: 'You have unsaved changes',
@@ -166,7 +167,9 @@ export default {
         },
         minLength: 'At least {n} characters',
         maxLength: 'At most {n} characters',
-        len: 'Must be exactly {n} long',
+        lenString: 'Must be exactly {n} characters',
+        lenItems: 'Must have exactly {n} items',
+        lenNumber: 'Must be {n}',
         minimum: 'Must be ≥ {n}',
         maximum: 'Must be ≤ {n}',
         minItems: 'At least {n} items',
@@ -336,6 +339,7 @@ export default {
     // SchemaForm / SchemaField
     form: {
       secretKeep: '已保存值，留空表示不修改。',
+      secretClear: '清除已保存的值',
       presets: '预设',
       setByAdmin: '由管理员设置',
       unsaved: '有未保存的修改',
@@ -364,7 +368,9 @@ export default {
         },
         minLength: '至少 {n} 个字符',
         maxLength: '最多 {n} 个字符',
-        len: '长度必须为 {n}',
+        lenString: '必须是 {n} 个字符',
+        lenItems: '必须是 {n} 项',
+        lenNumber: '必须等于 {n}',
         minimum: '不能小于 {n}',
         maximum: '不能大于 {n}',
         minItems: '至少 {n} 项',

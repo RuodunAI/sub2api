@@ -115,7 +115,7 @@ export { useForm } from './form/useForm'
 export type { FormApi, UseFormOptions } from './form/useForm'
 export { SECRET_MASK } from './form/rules'
 export type { Rule, Rules, RuleContext, RuleMessage, RuleType, Trigger } from './form/rules'
-export { getPath, setPath, toPath } from './form/path'
+export { getPath, setPath } from './form/path'
 // Form building blocks over useForm (native account forms, plugin settings, list pages).
 export { default as SSecretInput } from './SSecretInput.vue'
 export { default as SUrlPresetInput } from './SUrlPresetInput.vue'

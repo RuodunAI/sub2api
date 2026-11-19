@@ -74,11 +74,13 @@ describe('host UI 3 contract', () => {
     expect([hostPackage.version, uiPackage.version, presetPackage.version]).toEqual([HOST_UI_VERSION, HOST_UI_VERSION, HOST_UI_VERSION])
   })
   it('exports the form validation framework (UI 4.0)', async () => {
-    for (const name of ['SForm', 'useForm', 'setPath', 'toPath', 'getPath', 'SECRET_MASK'] as const) expect(ui[name]).toBeDefined()
+    for (const name of ['SForm', 'useForm', 'setPath', 'getPath', 'SECRET_MASK'] as const) expect(ui[name]).toBeDefined()
     expect(ui.SECRET_MASK).toBe('******')
     expectTypeOf<ui.Trigger>().toEqualTypeOf<'change' | 'blur'>()
     expectTypeOf<ReturnType<ui.FormApi['validate']>>().toEqualTypeOf<Promise<boolean>>()
     const host = await import('@sub2api/host')
+    expect(host.toFieldPath('credentials.a.b')).toBe('a.b')
+    expect(host.errorMessage(new TypeError('x'), (k) => k)).toBe('auth.errors.network')
     expect(host.settingsFieldErrors({ 'values/a/b': 'x', values: 'y' })).toEqual({ fields: { 'a.b': 'x' }, root: ['y'] })
   })
   it('exports the form building blocks (UI 4.0)', async () => {

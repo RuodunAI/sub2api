@@ -99,9 +99,9 @@ const TYPE_MESSAGE: Partial<Record<RuleType, string>> = { integer: 'integer', nu
 
 /** Message keys (ui.form.v.*) of a range check by the kind of value. */
 const RANGE_KEYS = {
-  string: { min: 'minLength', max: 'maxLength' },
-  array: { min: 'minItems', max: 'maxItems' },
-  number: { min: 'minimum', max: 'maximum' }
+  string: { min: 'minLength', max: 'maxLength', len: 'lenString' },
+  array: { min: 'minItems', max: 'maxItems', len: 'lenItems' },
+  number: { min: 'minimum', max: 'maximum', len: 'lenNumber' }
 } as const
 
 function measure(v: unknown): { kind: keyof typeof RANGE_KEYS; size: number } | null {
@@ -120,7 +120,7 @@ function builtinFailure(rule: Rule<any, any>, value: unknown): [string, Record<s
   if (rule.type && !TYPE_CHECK[rule.type](value)) return [`type.${TYPE_MESSAGE[rule.type] ?? 'invalid'}`]
   const m = measure(value)
   if (m && rule.len !== undefined) {
-    if (m.size !== rule.len) return ['len', { n: rule.len }]
+    if (m.size !== rule.len) return [RANGE_KEYS[m.kind].len, { n: rule.len }]
   } else if (m) {
     if (rule.min !== undefined && m.size < rule.min) return [RANGE_KEYS[m.kind].min, { n: rule.min }]
     if (rule.max !== undefined && m.size > rule.max) return [RANGE_KEYS[m.kind].max, { n: rule.max }]

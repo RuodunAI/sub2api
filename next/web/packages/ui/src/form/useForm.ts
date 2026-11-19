@@ -12,9 +12,10 @@
 // Errors: per path the local message wins over the server's; a write to a
 // path drops the server error of that path (and the paths inside or around
 // it). Errors no SField / SSettingRow claims are listed in `unclaimed`.
-import { computed, reactive, toRaw, watch, type ComputedRef } from 'vue'
+import { computed, onScopeDispose, reactive, toRaw, watch, type ComputedRef } from 'vue'
+import { toFieldPath } from '@sub2api/host'
 import { useUiT } from '../i18n'
-import { expandPath, getPath, matchPath, overlaps, setPath, toPath } from './path'
+import { expandPath, fillMissing, getPath, matchPath, overlaps, setPath } from './path'
 import { checkValue, requires, toList, runsOn, type Rule, type Rules, type Trigger } from './rules'
 
 type Model = Record<string, unknown>
@@ -29,8 +30,10 @@ export interface UseFormOptions<M extends Model> {
   serverErrors?: () => Record<string, string> | undefined
   /**
    * Filled into absent keys (nested objects too) of each value the parent
-   * hands in (create mode, loaded settings); never overwrites a present key
-   * and never refills what the user clears.
+   * hands in (create mode, another account type); never overwrites a
+   * present key and never refills what the user clears. A value counts as
+   * handed in when it is not the object useForm emitted: the parent must
+   * store the emitted value as it is (no copy), or cleared keys come back.
    */
   defaults?: Partial<M>
 }
@@ -40,6 +43,8 @@ export interface FormApi<M extends Model = Model> {
   value(): M
   /** Value at path. */
   get<T = any>(path: string): T
+  /** v-model of the control at path: `<SInput v-bind="form.bind('x')" />` (values pass unconverted). */
+  bind(path: string): { modelValue: any; 'onUpdate:modelValue': (v: unknown) => void }
   /** Writes one path: a patch of the current value, every other key kept as it is (hidden keys too). */
   set(path: string, value: unknown): void
   /** Runs every rule; true when nothing failed. Marks every field touched. Never rejects. */
@@ -54,23 +59,10 @@ export interface FormApi<M extends Model = Model> {
   /** Whether a rule makes path required (SField's star). */
   required(path: string): boolean
   readonly errors: Readonly<Record<string, string>>
-  /** A control at path lost focus (SField / SSettingRow `prop`). */
+  /** @internal A control at path lost focus (SField / SSettingRow `prop`). */
   touch(path: string, kind: Trigger): void
-  /** Shows path's errors at a frame labelled `label`; returns the release. */
+  /** @internal Shows path's errors at a frame labelled `label` (SField / SSettingRow `prop`); returns the release. */
   claim(path: string, label?: () => string | undefined): () => void
-}
-
-const isPlain = (v: unknown): v is Model => !!v && typeof v === 'object' && !Array.isArray(v)
-
-/** `value` with the absent keys of `defaults` filled (the same object when nothing was missing). */
-function fillMissing(value: Model, defaults: Model): Model {
-  let out = value
-  for (const [k, d] of Object.entries(defaults)) {
-    const cur = value[k]
-    const next = cur === undefined ? structuredClone(toRaw(d)) : isPlain(cur) && isPlain(d) ? fillMissing(cur, d) : cur
-    if (next !== cur) out = { ...out, [k]: next }
-  }
-  return out
 }
 
 export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
@@ -100,7 +92,7 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     () => toRaw(opts.model()),
     (v) => {
       if (!opts.defaults || (emitted && v === toRaw(emitted))) return
-      const filled = fillMissing(v ?? {}, opts.defaults as Model) as M
+      const filled = fillMissing((v ?? {}) as M, opts.defaults as Model)
       if (filled !== v) write(filled)
     },
     { immediate: true }
@@ -122,9 +114,22 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     return [...new Set(Object.keys(ruleTable()).flatMap((p) => expandPath(p, current())))]
   }
 
+  /** The path, or a path holding it, was blurred or validated. */
+  const isTouched = (path: string) => [...touched].some((t) => t === path || path.startsWith(t + '.'))
+
+  /** Drops the in-flight runs of the paths `hit` picks (their results are stale). */
+  function cancel(hit: (p: string) => boolean) {
+    for (const [p, r] of runs) {
+      if (!hit(p)) continue
+      r.abort.abort()
+      runs.delete(p)
+    }
+  }
+  onScopeDispose(() => cancel(() => true))
+
   function run(path: string, trigger?: Trigger): Promise<boolean> {
     const rules = rulesOf(path)
-    const picked = rules.filter((r) => runsOn(r, trigger, touched.has(path)))
+    const picked = rules.filter((r) => runsOn(r, trigger, isTouched(path)))
     if (!rules.length) delete local[path]
     if (!picked.length) return Promise.resolve(!local[path])
     runs.get(path)?.abort.abort()
@@ -145,10 +150,10 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     return done
   }
 
-    const serverErrors = computed(() => {
+  const serverErrors = computed(() => {
     const out: Record<string, string> = {}
     for (const [k, v] of Object.entries(opts.serverErrors?.() ?? {})) {
-      const p = toPath(k)
+      const p = toFieldPath(k)
       if (!cleared.has(p)) out[p] = v
     }
     return out
@@ -158,8 +163,11 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
   const form: FormApi<M> = {
     value: current,
     get: (path) => getPath(current(), path),
+    bind: (path) => ({ modelValue: getPath(current(), path), 'onUpdate:modelValue': (v) => form.set(path, v) }),
     set(path, value) {
       write(setPath(current(), path, value))
+      // Checks of the old value are stale.
+      cancel((p) => overlaps(p, path))
       for (const p of Object.keys(serverErrors.value)) if (overlaps(p, path)) cleared.add(p)
       for (const p of allPaths()) if (overlaps(p, path)) void run(p, 'change')
       // Errors elsewhere go once a `when` switched their rules off.
@@ -178,15 +186,11 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     },
     clearValidate(paths) {
       const only = paths === undefined ? undefined : toList(paths)
-      const hit = (p: string) => !only || only.some((o) => matchPath(o, p))
+      const hit = (p: string) => !only || only.some((o) => overlaps(o, p))
       for (const p of Object.keys(local)) if (hit(p)) delete local[p]
       for (const p of Object.keys(serverErrors.value)) if (hit(p)) cleared.add(p)
       for (const p of [...touched]) if (hit(p)) touched.delete(p)
-      for (const [p, r] of runs) {
-        if (!hit(p)) continue
-        r.abort.abort()
-        runs.delete(p)
-      }
+      cancel(hit)
     },
     error: (path) => errors.value[path],
     unclaimed: computed(() => Object.entries(errors.value).flatMap(([p, msg]) => (claims.has(p) ? [] : [msg]))),
@@ -196,7 +200,8 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
     },
     touch(path, kind) {
       if (kind === 'blur') touched.add(path)
-      void run(path, kind)
+      // A frame of a list or an object checks its items too ('tags' -> 'tags.*').
+      for (const p of allPaths()) if (overlaps(p, path)) void run(p, kind)
     },
     claim(path, label) {
       const c = claims.get(path)

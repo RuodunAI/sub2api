@@ -3,7 +3,8 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick, ref } from 'vue'
 import { useForm, type FormApi, type UseFormOptions } from './useForm'
 import { SECRET_MASK, type Rules } from './rules'
-import { expandPath, setPath, toPath } from './path'
+import { toFieldPath as toPath } from '@sub2api/host'
+import { expandPath, overlaps, setPath } from './path'
 import SForm from './SForm.vue'
 import SField from '../SField.vue'
 import SSettingRow from '../SSettingRow.vue'
@@ -71,7 +72,9 @@ describe('built-in rules', () => {
     expect(await check({ min: 1 }, 0)).toBe('Must be ≥ 1')
     expect(await check({ max: 65535 }, 70000)).toBe('Must be ≤ 65535')
     expect(await check({ len: 2, min: 5 }, 'ab')).toBeUndefined()
-    expect(await check({ len: 2 }, 'abc')).toBe('Must be exactly 2 long')
+    expect(await check({ len: 2 }, 'abc')).toBe('Must be exactly 2 characters')
+    expect(await check({ len: 2 }, [1])).toBe('Must have exactly 2 items')
+    expect(await check({ len: 3 }, 4)).toBe('Must be 3')
   })
   it('pattern (strings only; a stored secret is never matched), enum', async () => {
     expect(await check({ pattern: /^[!-~]+$/ }, 'a b')).toBe('Invalid format')
@@ -276,6 +279,52 @@ describe('useForm', () => {
     expect(form.error('api_key')).toBe('again')
   })
 
+  it('a write drops the in-flight check of the old value (a blur-only async rule)', async () => {
+    const pending: Array<(m?: string) => void> = []
+    const { form } = setup({ a: { trigger: 'blur', validator: () => new Promise<string | void>((done) => pending.push(done)) } })
+    form.touch('a', 'blur')
+    form.set('a', 'fixed')
+    pending[0]('old value is bad')
+    await flushPromises()
+    expect(form.error('a')).toBeUndefined()
+  })
+
+  it('the blur of a list frame checks its items, and touches them', async () => {
+    const { form } = setup({ 'tags.*': { pattern: /^[a-z]+$/ } }, { tags: ['ok', 'Bad'] })
+    form.touch('tags', 'blur')
+    await flushPromises()
+    expect(form.errors).toEqual({ 'tags.1': 'Invalid format' })
+    form.set('tags', ['ok', 'fine', 'NO'])
+    await flushPromises()
+    expect(form.errors).toEqual({ 'tags.2': 'Invalid format' })
+  })
+
+  it('clearValidate of a path clears the paths inside it', async () => {
+    const { form } = setup({ 'items.*.url': { required: true } }, { items: [{}, {}] })
+    await form.validate()
+    expect(Object.keys(form.errors)).toEqual(['items.0.url', 'items.1.url'])
+    form.clearValidate('items')
+    expect(form.errors).toEqual({})
+  })
+
+  it('bind gives the v-model of a path, unconverted', async () => {
+    const { form, model } = setup({}, { a: 1 })
+    const b = form.bind('a')
+    expect(b.modelValue).toBe(1)
+    b['onUpdate:modelValue'](null)
+    await nextTick()
+    expect(model.value).toEqual({ a: null })
+  })
+
+  it('aborts the in-flight checks when the form goes away', async () => {
+    let signal!: AbortSignal
+    const { form, w } = setup({ a: { validator: (_v, c) => ((signal = c.signal), new Promise<void>(() => {})) } })
+    void form.validate()
+    expect(signal.aborted).toBe(false)
+    w.unmount()
+    expect(signal.aborted).toBe(true)
+  })
+
   it('lists errors no frame claims', async () => {
     const { form } = setup({ a: { required: true } }, {}, { serverErrors: () => ({ b: 'server b', credentials: 'whole' }) })
     await form.validate()
@@ -294,6 +343,14 @@ describe('paths', () => {
     expect(out.keep).toBe(src.keep)
     expect(src.a.b).toBe(1)
     expect(setPath({}, 'list.0.url', 'u')).toEqual({ list: [{ url: 'u' }] })
+  })
+  it('overlaps: ancestors, descendants and * steps', () => {
+    expect(overlaps('items', 'items.0.url')).toBe(true)
+    expect(overlaps('items.0.url', 'items')).toBe(true)
+    expect(overlaps('items.*.url', 'items.3.url')).toBe(true)
+    expect(overlaps('items.*', 'items.3.url')).toBe(true)
+    expect(overlaps('items.1', 'items.3.url')).toBe(false)
+    expect(overlaps('item', 'items')).toBe(false)
   })
   it('toPath reads the server field forms', () => {
     expect(toPath('credentials.a.b')).toBe('a.b')

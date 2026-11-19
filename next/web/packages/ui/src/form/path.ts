@@ -1,9 +1,9 @@
 // Dotted paths ('a.b.0.c') into a form value. Rule keys may hold '*' for
 // every item of an array (or key of an object): 'items.*.url'.
+import { toRaw } from 'vue'
 import { getPath } from '../value'
 
 export { getPath }
-export { toFieldPath as toPath } from '@sub2api/host'
 
 const isIndex = (k: string) => /^\d+$/.test(k)
 
@@ -38,12 +38,28 @@ export function expandPath(pattern: string, model: unknown): string[] {
 
 /** `pattern` (with '*' steps) names `path`. */
 export function matchPath(pattern: string, path: string): boolean {
-  const a = pattern.split('.')
-  const b = path.split('.')
-  return a.length === b.length && a.every((k, i) => k === '*' || k === b[i])
+  return pattern.split('.').length === path.split('.').length && overlaps(pattern, path)
 }
 
-/** One path holds the other (equal, ancestor or descendant): a write to one changes the other. */
+/**
+ * One path holds the other (equal, ancestor or descendant; '*' matches any
+ * step): a write to one changes the other.
+ */
 export function overlaps(a: string, b: string): boolean {
-  return a === b || a.startsWith(b + '.') || b.startsWith(a + '.')
+  const x = a.split('.')
+  const y = b.split('.')
+  return x.slice(0, y.length).every((k, i) => k === y[i] || k === '*' || y[i] === '*')
+}
+
+const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/** `value` with the absent keys of `defaults` filled, nested objects too (the same object when nothing was missing). */
+export function fillMissing<T extends Record<string, unknown>>(value: T, defaults: Record<string, unknown>): T {
+  let out = value
+  for (const [k, d] of Object.entries(defaults)) {
+    const cur = value[k]
+    const next = cur === undefined ? structuredClone(toRaw(d)) : isPlain(cur) && isPlain(d) ? fillMissing(cur, d) : cur
+    if (next !== cur) out = { ...out, [k]: next }
+  }
+  return out
 }
