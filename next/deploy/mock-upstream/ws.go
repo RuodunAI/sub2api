@@ -97,8 +97,19 @@ func (s *server) responsesTurn(ctx context.Context, conn *websocket.Conn, r *htt
 			return false
 		}
 	}
-	return ev("response.completed", map[string]any{"response": responsesEnvelope(respID, created, req.Model, "completed",
-		[]any{responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})}, openaiResponsesUsage(b.usage))})
+	output := []any{responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})}
+	tools, imageTool := imageToolOf(data)
+	if imageTool {
+		output = append(output, imageCallItem("ig_"+msgID))
+		if !ev("response.output_item.done", map[string]any{"output_index": 1, "item": output[1]}) {
+			return false
+		}
+	}
+	final := responsesEnvelope(respID, created, req.Model, "completed", output, openaiResponsesUsage(b.usage))
+	if imageTool {
+		withImageTool(final, tools)
+	}
+	return ev("response.completed", map[string]any{"response": final})
 }
 
 func openaiErrorType(status int) string {

@@ -10,24 +10,24 @@ import (
 // Upstream sites and OpenAI image generation (CONTRACTS §52, §118, §119):
 //
 //	GET  /api/usage/token/        New API: the key's quota (Bearer)
-//	GET  /api/status              New API: the site's quota_per_unit (public)
 //	GET  /v1/usage                Sub2API: the key's balance (Bearer)
 //	POST /v1/images/generations   OpenAI image generation, JSON or SSE
 //	POST /v1/images/edits         the same with the image_edit events
 //	GET  /v1/models on Host api.typesafe.ai: TypeSafe's {"models":[{"name":...}]}
 //
 // A balance answer is a default (below) or a control rule's balance body;
-// a rule's status answers that error instead. /api/status has no key: it
-// always answers quota_per_unit 500000.
+// a rule's status answers that error instead.
+//
+// A Responses request offering the image_generation tool gets the tool's
+// usage and echo (imageToolOf, below).
 
 // typesafeHost is the vendor host name of TypeSafe (an e2e network alias).
 const typesafeHost = "api.typesafe.ai"
 
-// Default balance answers: 1250000 site units at 500000 per dollar (2.5
-// USD) for New API, 7.5 USD of a legacy Sub2API key's quota.
+// Default balance answers: 1250000 site quota units for New API, 7.5 USD
+// of a legacy Sub2API key's quota.
 var (
 	defaultNewAPITokenUsage = json.RawMessage(`{"code":true,"message":"ok","data":{"object":"token_usage","name":"mock","total_granted":2000000,"total_used":750000,"total_available":1250000,"unlimited_quota":false,"expires_at":0}}`)
-	newAPIStatus            = map[string]any{"success": true, "message": "", "data": map[string]any{"quota_per_unit": 500000, "system_name": "mock"}}
 	defaultSub2APIUsage     = json.RawMessage(`{"isValid":true,"mode":"quota_limited","quota":{"limit":10,"used":2.5,"remaining":7.5,"unit":"USD"},"remaining":7.5,"unit":"USD"}`)
 )
 
@@ -51,10 +51,6 @@ const mockImage = "bW9jaw=="
 
 func (s *server) siteRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/usage/token/", s.balanceAnswer(defaultNewAPITokenUsage))
-	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
-		s.setStatus(s.record(r, nil, "", false, ""), 200)
-		writeJSON(w, 200, newAPIStatus)
-	})
 	mux.HandleFunc("GET /v1/usage", s.balanceAnswer(defaultSub2APIUsage))
 	mux.HandleFunc("POST /v1/images/generations", s.images("image_generation"))
 	mux.HandleFunc("POST /v1/images/edits", s.images("image_edit"))
@@ -124,4 +120,56 @@ func orDefault(v, def json.RawMessage) json.RawMessage {
 		return v
 	}
 	return def
+}
+
+// Responses with the image_generation tool. The echo names the model
+// imageToolEchoModel unless the request carries imageToolNoEchoModel (then
+// the echo has no model and the core falls back to the request's).
+const (
+	imageToolEchoModel   = "gpt-image-2-codex"
+	imageToolNoEchoModel = "MOCK-IMAGE-ECHO-NO-MODEL"
+)
+
+// imageToolUsage is response.tool_usage.image_gen of a turn using the tool.
+var imageToolUsage = map[string]any{
+	"input_tokens": 39, "input_tokens_details": map[string]any{"text_tokens": 39, "image_tokens": 0},
+	"output_tokens": 515, "output_tokens_details": map[string]any{"text_tokens": 0, "image_tokens": 515},
+	"total_tokens": 554,
+}
+
+// imageToolOf reports whether a Responses request body offers the
+// image_generation tool, and the tools echo of its final response.
+func imageToolOf(body []byte) ([]any, bool) {
+	var req struct {
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(body, &req) != nil {
+		return nil, false
+	}
+	for _, t := range req.Tools {
+		if t.Type != "image_generation" {
+			continue
+		}
+		echo := map[string]any{"type": "image_generation", "quality": "auto", "size": "auto"}
+		if !strings.Contains(string(body), imageToolNoEchoModel) {
+			echo["model"] = imageToolEchoModel
+		}
+		return []any{echo}, true
+	}
+	return nil, false
+}
+
+// withImageTool adds the tools echo and the tool's usage to a final
+// response object.
+func withImageTool(final map[string]any, tools []any) map[string]any {
+	final["tools"] = tools
+	final["tool_usage"] = map[string]any{"image_gen": imageToolUsage}
+	return final
+}
+
+// imageCallItem is the output item of the image the tool made.
+func imageCallItem(id string) map[string]any {
+	return map[string]any{"type": "image_generation_call", "id": id, "status": "completed", "result": mockImage}
 }

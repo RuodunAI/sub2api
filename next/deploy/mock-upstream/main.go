@@ -9,7 +9,8 @@
 //	                                stream_options.include_usage is true; a non-streaming
 //	                                request offering the tool "submit_verdict" gets a
 //	                                simulated moderation verdict (moderation.go)
-//	POST /v1/responses              OpenAI Responses (usage in response.completed)
+//	POST /v1/responses              OpenAI Responses (usage in response.completed); with the image_generation
+//	                                tool, its tools echo and tool_usage.image_gen (sites.go)
 //	GET  /v1/responses              Responses WebSocket mode (ws.go)
 //	POST /v1/embeddings             OpenAI embeddings (usage.prompt_tokens)
 //	POST /v1/moderations            OpenAI moderation scores; MOD-HIT-<category> scores 0.99 (moderation_api.go)

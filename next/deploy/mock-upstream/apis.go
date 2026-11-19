@@ -262,11 +262,24 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 	created := time.Now().Unix()
 	w.Header().Set("x-request-id", fmt.Sprintf("req_mock_%d", id))
 	w.Header().Set("x-mock-request-id", strconv.FormatInt(id, 10))
-	final := responsesEnvelope(respID, created, req.Model, "completed",
-		[]any{responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})}, openaiResponsesUsage(b.usage))
+	message := responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})
+	tools, imageTool := imageToolOf(body)
+	output := []any{message}
+	if imageTool {
+		output = append(output, imageCallItem("ig_"+msgID))
+	}
+	final := responsesEnvelope(respID, created, req.Model, "completed", output, openaiResponsesUsage(b.usage))
+	if imageTool {
+		withImageTool(final, tools)
+	}
 	if !req.Stream {
 		writeJSON(w, 200, final)
 		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/backend-api/") {
+		// The Codex backend's completed response lists no output: the items
+		// are only in the output_item.done events.
+		final["output"] = []any{}
 	}
 	sw := startSSE(w, r, b.chunkDelay)
 	seq := 0
@@ -289,7 +302,10 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ev("response.output_text.done", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "text": b.text}) ||
 		!ev("response.content_part.done", map[string]any{"item_id": msgID, "output_index": 0, "content_index": 0, "part": responsesTextPart(b.text)}) ||
-		!ev("response.output_item.done", map[string]any{"output_index": 0, "item": responsesMessageItem(msgID, "completed", []any{responsesTextPart(b.text)})}) {
+		!ev("response.output_item.done", map[string]any{"output_index": 0, "item": message}) {
+		return
+	}
+	if imageTool && !ev("response.output_item.done", map[string]any{"output_index": 1, "item": imageCallItem("ig_" + msgID)}) {
 		return
 	}
 	ev("response.completed", map[string]any{"response": final})

@@ -36,20 +36,19 @@ func TestBalances(t *testing.T) {
 	s, srv := newTestServer(t)
 	bearer := map[string]string{"Authorization": "Bearer sk-site-1"}
 
-	// New API: the default token usage, the public status without a key.
+	// New API: the default token usage; there is no /api/status.
 	m := decode(t, getReq(t, srv, "/api/usage/token/", "", bearer))
 	if get(m, "code") != true || num(get(m, "data", "total_available")) != 1250000 || get(m, "data", "unlimited_quota") != false {
 		t.Fatalf("token usage = %v", m)
 	}
-	m = decode(t, getReq(t, srv, "/api/status", "", nil))
-	if get(m, "success") != true || num(get(m, "data", "quota_per_unit")) != 500000 {
-		t.Fatalf("status = %v", m)
+	if resp := getReq(t, srv, "/api/status", "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("/api/status = %d", resp.StatusCode)
 	}
 	s.mu.Lock()
 	rec := s.log[len(s.log)-1]
 	s.mu.Unlock()
-	if rec.Path != "/api/status" || rec.Authorization != "" || rec.Status != 200 {
-		t.Fatalf("recorded status = %+v", rec)
+	if rec.Path != "/api/usage/token/" || rec.Authorization != "Bearer sk-site-1" || rec.Status != 200 {
+		t.Fatalf("recorded = %+v", rec)
 	}
 
 	// Sub2API: the legacy quota shape by default.
@@ -116,5 +115,35 @@ func TestTypeSafe(t *testing.T) {
 	if resp := post(t, srv, "/v1/systemone", map[string]string{"Authorization": "Bearer ts-x-status-429"}, `{"model":"m"}`); resp.StatusCode != 429 ||
 		!strings.Contains(resp.Header.Get("Content-Type"), "json") {
 		t.Fatalf("systemone error = %d", resp.StatusCode)
+	}
+}
+
+func TestResponsesImageTool(t *testing.T) {
+	_, srv := newTestServer(t)
+	auth := map[string]string{"Authorization": "Bearer sk-imgtool", "x-mock-chunk-delay-ms": "1"}
+	tool := `{"model":"gpt-x","input":"draw","tools":[{"type":"image_generation"}]}`
+	m := decode(t, post(t, srv, "/v1/responses", auth, tool))
+	tools, _ := get(m, "tools").([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["model"] != imageToolEchoModel || num(get(m, "tool_usage", "image_gen", "output_tokens")) != 515 ||
+		num(get(m, "tool_usage", "image_gen", "input_tokens")) != 39 || len(get(m, "output").([]any)) != 2 || num(get(m, "usage", "input_tokens")) != 120 {
+		t.Fatalf("responses with the image tool = %v", m)
+	}
+	m = decode(t, post(t, srv, "/v1/responses", auth, `{"model":"gpt-x","input":"`+imageToolNoEchoModel+`","tools":[{"type":"image_generation","model":"gpt-image-1"}]}`))
+	if _, ok := get(m, "tools").([]any)[0].(map[string]any)["model"]; ok {
+		t.Fatalf("echo without model = %v", m)
+	}
+	if m := decode(t, post(t, srv, "/v1/responses", auth, `{"model":"gpt-x","input":"hi"}`)); get(m, "tool_usage") != nil || get(m, "tools") != nil {
+		t.Fatalf("responses without the tool = %v", m)
+	}
+	// Stream: the image call item, then completed; the Codex backend lists no output.
+	for path, outputs := range map[string]int{"/v1/responses": 2, "/backend-api/codex/responses": 0} {
+		events, data := sseData(t, post(t, srv, path, auth, `{"model":"gpt-x","input":"draw","stream":true,"tools":[{"type":"image_generation"}]}`))
+		var call, done map[string]any
+		_ = json.Unmarshal([]byte(data[len(data)-2]), &call)
+		_ = json.Unmarshal([]byte(data[len(data)-1]), &done)
+		if events[len(events)-2] != "response.output_item.done" || get(call, "item", "type") != "image_generation_call" ||
+			num(get(done, "response", "tool_usage", "image_gen", "output_tokens")) != 515 || len(get(done, "response", "output").([]any)) != outputs {
+			t.Fatalf("%s stream = %v", path, data)
+		}
 	}
 }
