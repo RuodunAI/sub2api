@@ -1,5 +1,7 @@
 # Codex 账号服务 OpenAI 生图接口：`/v1/images/*` 经核心转换成 Responses 生图
 
+> 2026-11-19 实现（`feat/codex-images-impl`，契约见 CONTRACTS §121）与本文不同的地方，以 CONTRACTS 为准：(1) 3.1 说“仓库里别的插件都原生服务 chat，不受影响”不对：azure-openai `azure_deployment`（子集 chat、embeddings）靠隐式适配把 `/v1/responses` 转成 chat，已补 `adapted: {"responses": {}}`；(2) 3.5 写“转换路由用上游 Responses 规则时主用量只有对话部分”已过时：§118.10 起 Responses 端点的规则本身就把 `tool_usage.image_gen` 加进来，`convertedUsage` 现在只改 `model` 的读法（回显的生图模型），另外照 Responses 规则也读 `response.incomplete` 和缓存写入；(3) 4.1 的“codex 0.2.0 → 0.3.0”不升：0.2.0 尚未发布，与本功能同属 0.1.304 批次，`hostCompat` 不变；(4) 3.11 codex 生图测试的 `input` 用一条用户消息的数组，不是字符串（Codex 后端要求数组，测试请求不经 `codexBody`）；(5) 3.7、3.8 未写的情形：有图时失败的生图项只记应答损失、图照常返回，没有图才回 400；流式没有出图时客户端收到 `error` 事件，记录照常是成功。
+
 > 2026-11-19 修订（所有者决定）：`missing_price_policy` 删除，没有价格的模型一律拒绝（403 `model_price_not_configured`），没有免费放行；下文提到它的地方以 CONTRACTS §17.3 为准。
 
 2026-11-18，所有者问：“现在我们的 codex 账号里面，我觉得是可以使用 response 协议，然后带上生图工具，就能调用服务端生成图片了，是吗？如果是的话呢，那我们的 Codex 它就要兼容 OpenAI 的生图协议去转成 response 生图，你确定一下呢？”
@@ -300,7 +302,7 @@
 - **`sdk/manifest`（P6）**：`Endpoint.Test`（`explicit` / `never`）及校验。
 - **`sdk/pluginsdk/providers`（P6）**：openai 预设加三个 `Tests`，gemini 加流式生成；`TestResult.protocol`、`LastTest.protocol`（CONTRACTS §50 更新）。
 - **CONVERT-MATRIX**：§0 的转换对表加两行（同平台、`good`）；§9.9 逐对要点加生图一对（3.2、3.7 的表）；§5.1 写 `adapted`；§7 使用记录说明 hops。
-- **codex 插件**：清单 `adapted`（三项）、`defaultModels` 只加 `gpt-image-2`、`BuildTestRequest` 按 `protocols` 选 Responses 或生图测试、描述里写“经核心转换提供 /v1/images/generations、/v1/images/edits”；`BuildUpstream` 在生图客户端协议下不上报上游模型；版本 0.2.0 → 0.3.0，`hostCompat` 提到带本功能的核心；`plugins/released.json`。
+- **codex 插件**：清单 `adapted`（三项）、`defaultModels` 只加 `gpt-image-2`、`BuildTestRequest` 按 `protocols` 选 Responses 或生图测试、描述里写“经核心转换提供 /v1/images/generations、/v1/images/edits”；`BuildUpstream` 在生图客户端协议下不上报上游模型；版本仍是未发布的 0.2.0（实现时修订：0.2.0 与本功能同属 0.1.304 批次，`hostCompat >=0.1.304` 不变）。
 - 不改 proto、Host API、迁移。
 
 ### 4.2 测试计划

@@ -383,6 +383,7 @@ if !sticky.Enabled { ... }
 - 权威头只放鉴权头和签名头，其余放默认头；改请求体只用 `jsonedit`。
 - 用量规则：流式规则把输出数映射在指名的终止事件上；非流式规则映射响应体。规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`。
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（volcengine 声明了 openai、anthropic、volcengine）。
+- 在一个平台上写了 `endpoints` 子集时，子集以外的端点**不服务**，除非在 `adapted` 里列出它：核心把它转换成子集内某个端点的协议再交给插件（同平台适配，CONTRACTS §83.3、§121.1）。例：只有 Responses 的上游写 `"endpoints": ["responses"], "adapted": {"chat_completions": {}}` 来服务 chat；核心没有对应转换器时清单能装上，但注册表不绑定这个类型。生图端点经 Responses 的 `image_generation` 工具服务时还要写驱动工具的对话模型：`"images_generations": {"model": "<对话模型>"}`（codex 的写法），插件在 `meta.client_protocol` 是生图协议时不报上游模型（请求体顶层的 `model` 是这个对话模型）。没有隐式适配：旧插件依赖过它的要补声明。
 - 上游同时说几家协议时用 `standard.Merge`，每个协议保留它官方的鉴权头和失败分类；有余额接口的写 `Type.Balance` 并在清单写 `balance`。
 - 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写）；不设 `Host` 头。
 - 测试里调一致性套件；用 `standard` 写的插件另跑黄金样例。
