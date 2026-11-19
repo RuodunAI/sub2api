@@ -1,6 +1,6 @@
 # 设计：插件按归属收到账号的全部信息（含代理），删除 `accounts.credentials` / `accounts.read` 与 `GetAccountCredentials`
 
-日期 2026-11-19。对照 `develop` `4d1dcfeb8`（核心 0.1.304 批次，尚未发布）。状态：设计稿，未开工。
+日期 2026-11-19。对照 `develop` `4d1dcfeb8`（核心 0.1.304 批次，尚未发布）。状态：已实现（分支 `feat/plugin-account-context`，契约见 CONTRACTS §124）；实现与本文不同的地方见第 9 节。
 
 取代 `.claude/worktrees/NOTES-design-plugin-ui-account-context.md` 的第二部分（第 9–14 节）。原稿是对着转发 V2（CONTRACTS §112）、删除 Claude OAuth（§116）、代理票据（§117）和 §123 之前的代码写的，它的 E9、`pluginsdk.ProxyTransport`、`GetProxy`、"废弃但保留"等内容全部作废，本文不再复述。
 
@@ -80,7 +80,7 @@
   - `GetAccountCredentials`：volcengine `plugins/volcengine/internal/volcengine/routes.go:153`、codex `plugins/codex/internal/codex/resetcredits.go:222`。
   - `ListAccounts`：只有 volcengine（routes.go:192,293）。
   - `AccountScopeCheck`、`pluginsdk.RequireAccounts`、`ResolveAccountScope`：**没有任何第一方插件调用**（在 `plugins/`、`server/`、`tools/` 里搜过）。
-- **13 个声明账号类型的插件**：anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine 共 12 个，全部持有 `accounts.credentials {"types":"own"}`；只有 volcengine 另持有 `accounts.read`。持有 `net` 的只有 guard、mailer、moderation（逐个读过各 `manifest.json`）。
+- **12 个声明账号类型的插件**：anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine 共 12 个，全部持有 `accounts.credentials {"types":"own"}`；只有 volcengine 另持有 `accounts.read`。持有 `net` 的只有 guard、mailer、moderation（逐个读过各 `manifest.json`）。
 
 ### 3.2 代理
 
@@ -130,12 +130,12 @@
 | `grpcruntime/host.go:537-551` `requireOwnCredentials` 与 :593-613 `GetAccountCredentials` | — | 删掉，换成 `GetAccount`（第 4.2 节） |
 | `grpcruntime/host.go:626-629` `SendAccountRequest` | 先调 `requireOwnCredentials` | 删掉这次调用。归属已由 `SendPluginAccountRequest` 的 SQL 保证（`account/plugins.go:171`，别人的账号是 NOT_FOUND） |
 | `grpcruntime/host.go:555-557` `ListAccounts` | 需要 `accounts.read` | 不检查授权。只返回自己账号类型的账号；不声明账号类型的插件得到空列表 |
-| `grpcruntime/host.go:403-405` `AccountScopeCheck` | 需要 `accounts.read` | **待所有者确认**，推荐不检查授权（见下面的说明） |
+| `grpcruntime/host.go:403-405` `AccountScopeCheck` | 需要 `accounts.read` | 不检查授权（所有者选了方案甲） |
 | `grpcruntime/runtime.go:61` | 注释提到两个接口 | 跟着改 |
 | 控制台 `pluginUtil.ts:24,41`、`i18n/locales/{en,zh}/plugins.ts:96,113,129` | 风险等级和文案 | 删掉这两项 |
 | 测试夹具 `registry/registrytest/registrytest.go:140`、`plugin/pkg/pkgtest/pkgtest.go:144,171`、`tools/sub2api-plugin/cli_test.go`、`sdk/manifest/check/*_test.go`（quota、balance、usage、usagesource、common_controls）、`sdk/pluginsdk/providers/typesafe/typesafe_test.go`、e2e `ac03_install_test.go:65-66` | 写着这两个授权 | 去掉，改成断言没有这两个授予；ac03 改为断言 `platform.register` |
 
-**`AccountScopeCheck`（待所有者确认）**
+**`AccountScopeCheck`（所有者已确认方案甲）**
 
 - 它回答的是"这次请求的调用者能对哪些账号做某个动作"，按核心的账号范围规则判断（§21.0）。
 - 它不交出账号的任何字段，只在调用者有请求在途时可用，而且按访问密钥收窄。
@@ -326,7 +326,7 @@ message AccountProxy {
   这些路径改为先用这一行的 `proxy_id` 调 `proxyEgress`，再构造 `Account`，再把同一个 `Egress` 交给发送函数：`sendPluginCall`（`quota.go:417-429`）、`runTest`（`testreq.go:301-318`）的参数从 `proxyID` 改成 `core.Egress`。取不到出口时：
   - 测试：结果失败，信息写明原因，什么都没发出（同现在）；
   - 拉模型：返回错误；
-  - 额度、续期：不调 Build，直接按现在的传输错误交给 `Parse*`（`status` 0、`transport_error` 为原因）；
+  - 额度、续期：不调 Build，也不调 `Parse*`（`Parse*` 同样带 `Account`，而出口拿不到时不调用插件）：额度记失败，原因写进快照；续期按 transient 失败（第 9 节）；
   - 余额：快照记 `transient: <原因>`（同 §52.3 被拒的处理）。
 - **不进账号快照**：`account/directory.go:275-296` 的快照照旧只有 `ProxyID`。代理明文只在代理服务的缓存里。
 
@@ -487,7 +487,7 @@ CONTRACTS §124 写明以下三点：
 ## 7. 替所有者做的决定（可否决）
 
 1. "全部信息"这次只在现有 `Account` 上加代理详情，不扩其它字段（最近测试、额度窗口、余额、协议绑定、分组、tpd_limit 等），等有插件真要用再加。（主控代定）
-2. `AccountScopeCheck` 改为不需要授权（推荐方案甲，第 4.1 节）。**需要所有者确认**；备选方案乙是只给声明了账号类型的插件。
+2. `AccountScopeCheck` 改为不需要授权（方案甲，第 4.1 节）。所有者已确认。
 3. 旧包按 §112.10 的旧契约信息拒绝，不新造错误码；并加迁移 0116 删掉残留的授予行。
 4. 删掉 `AccountProperties.proxy_id`，`Account.proxy.id` 是唯一来源。
 5. 建账号之前的拉模型（`models.go:80`）不给代理详情，保持 §117"建账号之前插件看不到代理"。
@@ -500,3 +500,14 @@ CONTRACTS §124 写明以下三点：
 - 线上或测试实例上是否装有持有 `accounts.credentials`/`accounts.read` 的第三方包，或按当前协议 2 构建的 volcengine、codex 测试包：不联网，看不到实例上的安装。
 - 线上是否有账号的凭证或设置里留着 `proxy_id` 键：代码里没有写入方，但没有查线上数据。即使有，也只影响这个键在下一次保存时是否加密，不影响代理。
 - protobuf-go 将来是否会在 `String()` 里支持 `debug_redact`：本机 v1.36.12 没有实现，所以本文不依赖它。
+
+## 9. 实现记录（与上文不同的地方）
+
+- 额度、续期在出口拿不到时不调用 `Parse*`（上文原写“按传输错误交给 `Parse*`”）：`Parse*` 也带 `Account`，所有者的规则是出口拿不到时不调用插件。额度记失败（原因进快照），续期按 transient 失败。余额记 `transient: <原因>`，测试记失败，与上文相同。
+- `ReadPluginAccount` 用与网关同一套列的 `selectRows` + `scanRow`，条件是 `id`、`plugin_key`、未删除（`loadRow` 带的是调用者的 DataScope，不适用于插件调用）。
+- `grpcruntime/testdata/testplugin` 没有加逐个调用回写 `Account` 的用例：`Account` 经 gRPC 原样传递，回写只测 protobuf 序列化。改为在构造 `Account` 的地方测：`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；出口取不到时不调用 `Execute`）、`usage/poll_test.go`（`Monitor`）、`account/testreq_test.go`、`account/refresh_test.go`、`account/balance_test.go`、`account/plugins_test.go`（`GetAccount` 的代理、审计、审计失败、代理停用）。
+- `ProxySpec`/`ProxyRef` 的遮蔽测试在 `core/proxyspec_test.go`（类型在 core）。
+- volcengine、codex 的路由测试仍用各自的本地假宿主（`routes_db_test.go` 头部写明 `pluginsdktest.Options.Host` 只接受 `*FakeHost`，不能替换），只把方法换成 `Account`；`FakeHost.Accounts` 供其他插件测试用。
+- e2e AC43 需要 mock 回答方舟素材库：mock 加了 `POST /__ark/asset`（`deploy/mock-upstream/ark.go`），AC43 的账号是 volcengine 中转类型、`asset_endpoint` 指向它。
+- `host.proto` 要 `import "sub2api/plugin/v1/common.proto"` 才能用 `Account`。
+

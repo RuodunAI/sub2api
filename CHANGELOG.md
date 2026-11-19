@@ -8,9 +8,9 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
-### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0115；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
+### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
-这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0115（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议），插件迁移只有 volcengine 的 0003。
+这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0115（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行），插件迁移只有 volcengine 的 0003。
 
 内容：
 
@@ -26,6 +26,7 @@
 - **上游站点插件**：newapi、sub2api、typesafe 三个新插件（首发 0.1.0，内置、只安装、默认不启用；CONTRACTS §119）。
 - **账号余额接通**：声明了余额的账号类型（目前只有 newapi、sub2api）在账号列表显示上游返回的余额数字和单位本身（不做任何换算），手动刷新加定时刷新，只显示不联动（CONTRACTS §52）。
 - **OpenAI 生图**：内置 openai 平台新增 `/v1/images/generations`、`/v1/images/edits`（JSON），图片 token 单独计价（CONTRACTS §118）。
+- **插件按归属收到账号的全部信息**：插件收到它声明的账号类型下账号的凭证和代理详情（地址、用户名、密码），宿主授权 `accounts.credentials`、`accounts.read` 和 `GetAccountCredentials` 删除，换成 `GetAccount`；代理只是数据，请求仍全部由核心发出，插件不联网（CONTRACTS §124）。
 - volcengine 0.13.0、协议清理、控制台与若干修正。
 
 #### 升级须知
@@ -75,6 +76,17 @@
 #### 插件版本
 
 全部 `hostCompat >=0.1.304 <0.2.0`（以各插件 `manifest.json` 为准；`next/plugins/released.json` 发布后按测试说明重写）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.2.0、volcengine 0.13.0、azure_openai / vertex / bedrock 0.1.0（首发），newapi / sub2api / typesafe 0.1.0（首发，内置只安装），以及只因 SDK 重新构建的 dynweight 0.5.12、growth 0.2.2、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。codex 发给上游和授权服务器的 `User-Agent` 是 `sup2api-codex/<版本>`，随之从 `sup2api-codex/0.1.11` 变成 `sup2api-codex/0.2.0`。
+
+### 插件按归属收到账号的全部信息，删除两个账号授权（核心、SDK、12 个平台插件、控制台；迁移 0116）
+
+契约见 CONTRACTS §124，设计见 [设计文档](next/docs/DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md)。
+
+- 平台调用（`Execute`、`Monitor`、`ClassifyError`、测试、模型、额度、续期、余额）里的 `Account` 带上这次出站用的代理（`Account.proxy`：id、协议、地址、端口、用户名、密码）；`AccountProperties.proxy_id` 删除。插件看到的代理就是核心这次发请求用的代理；取不到代理（停用、不存在）时核心不调用插件：网关换号，`Monitor` 推迟，测试、额度、余额、续期记失败。建账号之前（表单拉模型、授权票据）不给代理详情。
+- `HostService.GetAccount` 取代 `GetAccountCredentials`：返回与平台调用相同的完整账号，审计 action 改为 `plugin.account.read`（只记插件、类型、账号名）。用量观察里的账号就是 `Execute` 收到的那个（含凭证）。
+- 宿主授权 `accounts.credentials`、`accounts.read` 删除：声明账号类型只需 `platform.register`；`ListAccounts`、`SendAccountRequest`、`AccountScopeCheck` 不再检查授权。清单里还写着这两个授权的包按旧契约拒绝（与协议 1 的包同一条信息）。迁移 0116 删除这两个授权的全部授予行（含撤销的、暂存的）。
+- 安装审核的固定提示改为写明插件收到账号的全部信息（含代理密码）、请求都由核心发出。控制台去掉这两个授权的风险等级与文案。
+- 12 个平台插件的清单去掉这两个授权，volcengine 素材库、codex 重置次数改用 `GetAccount`；codex 去掉没有写入方的 `settingsFields: ["proxy_id"]`。版本在这一批未发布的版本上继续累计。
+- 升级须知：按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可；第三方平台插件本来就要用新 SDK 重新构建，清单里删掉这两个授权。
 
 ### 平台插件转发 V2：每个平台插件都是代码插件，只有 `Execute` 一条请求路径
 

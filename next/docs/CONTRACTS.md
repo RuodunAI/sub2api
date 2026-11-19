@@ -284,7 +284,7 @@
 
 ### 5.8 插件自己的接口与静态资源（C）
 
-- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。（核心 0.1.286 起）。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（需要宿主授权 `accounts.read`，且 `user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；两条任一不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。插件没有 `accounts.read` 或请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
+- `ANY /api/v1/p/:key/*path`：按 manifest `routes` 匹配；`scope=admin|user` 需要登录（会话或访问密钥）并检查 `plugin.<key>:<permission>`（访问密钥按其权限收窄，须勾选该插件权限，2026-11-13 期 4 S4；此前访问密钥一律 403；插件拿到的仍是用户 id，不知道经由密钥；未声明 permission 的路由对所有人 403，2026-11-12 权限加固 W5-A1/W1-F15）；`webhook` 和 `public` 不鉴权；转发给插件 `HTTPService.HandleHTTP`。admin/user 路由可声明 `accounts: {action: read|update|test, from?: ["path:<参数>"|"query:<名>"|"body:<顶层字段>"]}`（`manifest.RouteAccounts`，只有这三种前缀，`path:` 必须是该路由的参数）声明它作用的账号；被 `ui.accountActions` 指向的路由未声明时推断为 `{update（指向它的操作都是 visibleFor=all 时 read）, ["body:account_ids"]}`，显式声明则必须含 `body:account_ids`（校验码 `accounts_mismatch`），见 `manifest.EffectiveRouteAccounts`。核心转发前按 `core.AuthorizeAccounts` 检查：全部范围的 `account:<action>` 放行；只有更窄的范围（own、分组、指定账号，§21.0）时请求须带账号 id 且全部落在范围内（否则 404，不带 id 403）；任何范围都没有 403。（核心 0.1.286 起）。id 取自 from 指向的 path 参数、query 参数（全部取值）或 JSON 顶层字段（字段名大小写不敏感），可以是数字、数字数组或逗号分隔字符串，格式不对 400，去重后超过 `MaxAccountBatch` 400；未接入账号检查的节点对这些路由一律 503（2026-11-12 权限加固 M1）。manifest 说不出账号 id 的路由（id 在请求体深处、来自插件自己的表）由插件自己问核心：`HostService.AccountScopeCheck{user_id, action, account_ids≤500}` → `{all, allowed_ids}`（不需要宿主授权（§124 起；此前要 `accounts.read`），`user_id` 必须是该插件此刻正在处理的某个 `HandleHTTP` 请求的 `Caller.user_id`——宿主在转发请求期间按实例记下调用者，请求结束即失效，所以只能在处理请求的过程中调用，不能在后台任务里或替别的用户问；不满足 `PERMISSION_DENIED`，不进入账号模块。通过后转给 `core.AccountAccess`，错误码与其他核心错误同一映射：任何范围都没有 `PERMISSION_DENIED`，未知 action `INVALID_ARGUMENT`）；SDK `pluginsdk.ResolveAccountScope`（得到 `AccountScope`，`Allows`/`Filter`，用于列表过滤）与 `pluginsdk.RequireAccounts`（与核心同样的回答：无登录 401，任何范围都没有 403，只有窄范围时不带 id 403，含范围外的账号 404；未知 action 或非正数 id 400，宿主答不了 503）。请求已结束时 `RequireAccounts` 同样回 403（失败收紧）。另有 `pluginsdk.RequirePermission(host, perm, next)` 给单个路由追加权限检查（401/403/503）（2026-11-12 权限加固 M1-b）。`webhook`/`public` 路由不带调用者，声明 `permission` 或 `accounts` 打包校验报 `unsupported`（2026-11-12 权限加固 W5-C6）
 - **插件资源范围**（0.1.290，§21.0“插件资源范围”）：路由的 `permission` 若声明了 `scope`，持有它的**任意范围**即放行（`PermissionSet.HasSome`；全部范围照旧记入 `Granted`），核心把调用者在该权限上的范围随请求交给插件（`HTTPRequest.action_scope`）。admin/user 路由可声明 `scopeFrom: "path:<参数>"|"query:<名>"|"body:<顶层字段>"`（与 `accounts.from` 同一写法，`manifest.ParseAccountsFrom`；只能用在 permission 声明了 scope 的路由上，否则 `unsupported`；`path:` 必须是该路由的参数，否则 `unknown_param`；webhook/public 路由声明报 `unsupported`），核心转发前按 `core.AuthorizePluginScope` 判它指向的值：全部范围放行；否则请求须带值（不带 403 `details.permission`），持有 own 时一律放行、由插件按 `created_by` 判，只有列出的值时每个值都须在其中（否则 404）。值可以是字符串、数字、它们的数组或逗号分隔串；query 参数名与 body 顶层字段名都不分大小写匹配（与插件用 encoding/json 解码一致），query 的每个值都校验，body 同名字段（不分大小写）出现多次 400 `duplicate`（`accounts.from` 同样，二审 security #1/#3）；每个须是合法范围值（`[A-Za-z0-9_.-]{1,64}`，否则 400），去重后至多 `MaxAccountBatch` 个。不带值就只有全部范围能过，所以**列表路由不要声明 `scopeFrom`**，应读 `action_scope` 自己过滤（check 不猜哪些是列表路由）。反过来，permission 声明了 scope 的非 GET 路由必须写 `scopeFrom`（check 报 `required`）：任意范围都能进来，不写就只能靠插件拦住只持有一行的人改所有行；不针对具体行的写路由（如新建）改用不带 scope 的权限。这些声明（`userPermissions[].group/risk/requires/scope/defaults`、`permissionGroups`、`routes[].scopeFrom`）与 UI 3.16、3.17 都随核心 0.1.290 发布（0.1.289 没有发布）
 - `GET /plugin-ui/:key/:version_hash/*path`：插件包内 `ui/`、`forms/`、`i18n/` 下的文件；带长缓存头
 
@@ -459,7 +459,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 
 **计费**：`Resolve(model)` 只按模型匹配：管理员价格优先，其次插件默认价格；按完整模型 ID 精确匹配（0007 起不支持通配符，见 §16），同一模型有多个插件默认价格时取最早安装的插件（插件默认价格已由 §17 取消，每个模型只有一条全局价）。§97 起，全局价之上还有两层按分组设置的标价，`Resolve(ctx, PriceQuery{Model, GroupID, SegmentID})` 按“专属价（用户组 × 分组 × 模型）→ 分组内定价（分组 × 模型）→ 全局价”取先命中的一条；模型没有启用的全局价时不能计费，规则不生效。费用 = 表达式结果 × 倍率。这里的倍率是 Key 所有者在该分组的**实际倍率**（专属倍率 → 分组默认倍率 × 用户组的全场折扣 → 分组默认倍率，先命中者生效，鉴权时算出），不再一律是分组倍率；命中按倍数的规则时另乘规则倍数，两个数只在 `PriceRule.Multiplier` 相乘（§97.3）。
 
-**凭证授权**：`accounts.credentials` 的范围为 `{"types": "own"}`：插件只能拿到自己声明的账号类型的账号凭证。
+**账号归属**：插件只拿得到自己声明的账号类型的账号（凭证、代理等全部信息），不需要宿主授权（§124；此前是 `accounts.credentials {"types": "own"}`）。
 
 **REST 变更**
 
@@ -490,7 +490,7 @@ compose 里的 `mock-upstream` 服务模拟 Anthropic `/v1/messages` 与 `/v1/me
 
 **manifest**：删除顶层 `gateway`、`platform`；新增 `platforms: [Platform]`（插件自己的新平台）：`{id, label, endpoints:[Endpoint], passHeaders, usage, stickyRules}`，平台协议由端点推出（`Platform.Protocols()`）。`Endpoint` 新增 `usage`（覆盖平台用量规则）、`request.modelParam`（模型取自路径参数）、`request.stream`（端点固定为流式）；路径段可以是 `:param` 或 `:param:suffix`（如 `/v1beta/models/:model:generateContent`）。端点协议必须是 `<平台 id>.<名称>`。`AccountType.protocols` 改为 `platforms: [{platform, passHeaders?, usage?: {<protocol>: UsageRules}}]`。
 
-**校验与冲突**：插件平台 id 不能是内置 id，也不能与其他已安装插件的平台 id 重复；插件平台的端点（method + 路径模式重叠）不能与内置平台或其他插件平台冲突；声明平台需要 `gateway.endpoint`、`platform.register`；声明账号类型需要 `platform.adapter.v1`、`platform.register`、`accounts.credentials {"types":"own"}`；账号类型的 `platforms` 非空，引用的平台可以是内置平台、本插件平台或其他插件平台（未启用时该类型暂时不服务它）。
+**校验与冲突**：插件平台 id 不能是内置 id，也不能与其他已安装插件的平台 id 重复；插件平台的端点（method + 路径模式重叠）不能与内置平台或其他插件平台冲突；声明平台需要 `gateway.endpoint`、`platform.register`；声明账号类型需要 `platform.adapter.v1`、`platform.register`（§124 起不再需要 `accounts.credentials`）；账号类型的 `platforms` 非空，引用的平台可以是内置平台、本插件平台或其他插件平台（未启用时该类型暂时不服务它）。
 
 **core**：`EndpointBinding{Plugin, Platform, Endpoint}`；`PlatformBinding{Plugin, Builtin, Platform}`（去掉 `Client`）；`Generation.Platforms()`、`Platform(id)`、`PlatformForProtocol(protocol)`、`AccountTypesForPlatform(platformID)`（取代 `PlatformsForProtocol`、`AccountTypesForProtocol`）；`AccountTypeBinding.Supports(platformID)`（取代 `Protocol()`）。`Generation.Endpoints()` 包含内置平台和已启用插件平台的端点。
 
@@ -1779,7 +1779,7 @@ message RankedAccount {
 | HTTP method 大小写 | `ToUpper` 后比较 | 精确比较 → `"post"` 被 CLI 拒、核心接受 |
 | catch-all `*rest` | 支持尾段 | 见 `*` 一律拒 |
 | 路径重叠算法 | 支持 catch-all、TrimSuffix `/` | 要求段数相同、不 trim → `/v1/a` vs `/v1/a/` 结论相反 |
-| `accounts.credentials` scope | 深度等于 `{"types":"own"}` | 只看 `["types"]=="own"`，允许多余 key |
+| `accounts.credentials` scope（§124 起该授权已删除） | 深度等于 `{"types":"own"}` | 只看 `["types"]=="own"`，允许多余 key |
 | `billing` 空串 | 放行 | 报错（方向相反） |
 | `/healthz` | 拒绝 | **放行**（CLI 拦的是 `/health` 前缀，而 `/healthz` 既不等于也不以 `/health/` 开头） |
 | 账号类型 id / 端点 id / protocol 字符集 | 有正则 | 只查空与重复 |
@@ -1871,6 +1871,8 @@ message RankedAccount {
 - **非法值直接丢弃回落到通用码，不截断**。截断出来的是**另一个码**，按它分支的客户端会分支错；回落是诚实答案，同时 warn 指名是哪个插件该修
 
 #### 2. `HostService.ListAccounts` / `GetAccountCredentials`
+
+> §124 起：`GetAccountCredentials` 换成 `GetAccount`（返回与平台调用相同的完整 `Account`，含代理），审计 action 改为 `plugin.account.read`；`accounts.read`、`accounts.credentials` 两个授权删除，三个账号接口都不检查授权。下文是当时的记录。
 
 插件的 HTTP 路由只拿到 `Caller`，`HostService` 里没有任何账号接口，所以插件做不了「账号相关的管理界面」（第一个真实需求是火山方舟素材库要用账号上的 AK/SK 做 V4 签名）。
 
@@ -2237,7 +2239,7 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 **语义**（都有测试钉住，`builtin_test.go`）：
 
-- 只安装类与另一类的**唯一区别是首次安装后不调用 `Enable`**。上传、自动授予全部宿主权限（含高危的 `platform.register` / `accounts.credentials`）、`builtin = true`、不能卸载，全部相同。所以管理员启用时**不需要再走授权**。
+- 只安装类与另一类的**唯一区别是首次安装后不调用 `Enable`**。上传、自动授予全部宿主权限（含高危的 `platform.register`；`accounts.credentials` 已由 §124 删除）、`builtin = true`、不能卸载，全部相同。所以管理员启用时**不需要再走授权**。
 - 这份列表**只管从未启用过的插件**（`status = installed` 且 `active_version IS NULL`）。管理员一旦启用或禁用过，以后每次启动都不再改动它；把一个 key 从只安装挪到启用列表，会在下次启动时启用（因为它仍是「从未启用」）。
 - 从未启用过的只安装插件，镜像带来新版本时**不走升级**（没有在跑的版本可升）。管理员启用时 `Rollout.Enable` 取最新一个已批准的版本，所以拿到的就是镜像里的新版本。
 - **`install-only.txt` 读不出来 ≠ 空列表**：读失败时 `EnsureBuiltin` 报错并**一个内建插件都不装**。当成空列表的后果是每个部署都把本该关着的插件启用了。文件**不存在**才等于空（兼容没有这个文件的旧镜像）。注意 `app.go` 调用处丢弃了返回的错误，只有 ERROR 日志可见。
@@ -6183,7 +6185,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 
 | 项 | 约定 |
 | --- | --- |
-| 授权 | 与 `GetAccountCredentials` 相同（§26.6）：`accounts.credentials`，scope 必须恰好是 `{"types":"own"}`，调用时用 PG 复核授权行（`requireOwnCredentials`）。这类请求带的就是插件用 `GetAccountCredentials` 读到的凭证，所以不另设授权。不满足 → `PERMISSION_DENIED` |
+| 授权 | 不检查宿主授权（§124 起；此前与 `GetAccountCredentials` 相同，要 `accounts.credentials {"types":"own"}`）：账号的归属由下面“账号”一行的 SQL 保证 |
 | 参数 | `account_id > 0`；`url` 非空；`method` 空 = `GET`，大小写不敏感；URL、方法、`body` 不限大小（转发 V2 收尾起，§112.17；此前 8 KiB、16 字节、64 KiB）。不满足或 URL 解析不了 → `INVALID_ARGUMENT` |
 | 允许的主机 | scheme 必须是 `http` 或 `https`，否则 `PERMISSION_DENIED`。主机按中继的同一条规则（`core.CheckPluginUpstream`，§112.17）：manifest `externalServices` 的某一项或它的子域，或者是这个账号自己的上游地址（类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读）的主机，并且管理员的插件联网设置允许插件访问它（§113.3）；账号模块读出账号后判断，否则 → `PERMISSION_DENIED`，不发送、不写审计（此前只认 `externalServices`，在读账号之前判断） |
 | 账号 | account 模块按 `id`、`plugin_key`、未删除查询（`SendPluginAccountRequest`，可选接口 `core.PluginAccountRequester`）。别的插件的账号和不存在的 id 一样回 `NOT_FOUND`，不泄露 id 是否存在。账号状态不限：停用、`auto_disabled` 的账号也能发（重置次数正是给被停用的账号用的） |
@@ -8213,14 +8215,14 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - 核心与**全部**第一方插件一起换：升级后还是旧包的插件被拒绝加载，它的账号不可用，直到装上新版本。第三方平台插件要由作者用新 SDK 重新构建。
 - Host API 变了，网关外壳不允许新旧核心滚动并存；托管升级在这次升级上走不通（节点就绪检查要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级，§37）。已有部署要停机，用新核心和新插件集重新部署，再把非内置插件逐个装上新版本。
-- 安装与升级的审查（`review.request_access`）对声明账号类型的插件固定显示一句：插件会收到经它的账号发出的每个请求的完整内容和与响应有关的数据，并决定请求发往哪个地址；不是权限，不能取消。
+- 安装与升级的审查（`review.request_access`）对声明账号类型的插件固定显示一句：插件会收到经它的账号发出的每个请求的完整内容和与响应有关的数据，并决定请求发往哪个地址；不是权限，不能取消。§124 起这句还写明插件收到这些账号的全部信息（含代理的地址、用户名和密码），以及请求都由核心发出、插件自己不联网。
 - 插件进程的内存默认不限，只有管理员设置的上限生效（§111.5）；请求体上限只在网关设置里（§111）。
 
 ### 112.12 清单
 
 - `runtime` 只有 `grpc`（`js` 仍是保留值）；`manifest.RuntimeGRPC` 在 `manifest.go`（没有使用者的 `TransportHTTP`、`TransportWebSocket` 已删除）。
 - 账号类型在某个平台上的 `passHeaders`：**没写**（解码后为 nil）取平台的列表；**写成 `[]`** 表示不交给插件任何客户端请求头；非空按写的用（`AccountPlatform.ClientHeaders`）。此前空列表也回落到平台的列表，清单没法说“一个都不要”。字段的 JSON 标签是 `omitzero`，重新编码时“没写”和“空”仍然分得开。codex 的两个类型写的是 `[]`。
-- 声明了账号类型就必须有 `accounts.credentials {"types": "own"}`（原来声明式类型可以没有）。
+- 声明了账号类型就必须有 `accounts.credentials {"types": "own"}`（原来声明式类型可以没有）。§124 起这个授权删除，清单里再写它按旧契约拒绝。
 - `AccountType.AddressFields()` 只认 `upstreamFields`：原来声明了 `upstream` 的类型自动得到 `["base_url"]`，现在要在清单里写出（五个改写的插件都写了）。它决定账号的自定义上游判断（§21）和取回允许的账号地址（§112.6）。
 - `usageSource: "plugin"`、`usageStreamEvents`、`usageRequestFields`（`EstimateUsage` 的入参，预扣不变，§25.8）、`endpoint.task` 不变（`usageMaxBytes` 在转发 V2 收尾删除：没有插件声明过它，见下一条）：`extract_usage` 来自端点的 `PluginUsage()`，`task_submission` 来自 `TaskSubmit()`。
 - 端点的 `usageMaxBytes`（读用量的观察的字节预算，以及任务提交时的上限检查）删除：没有插件声明过它，核心按它截停的分支、清单检查（下限 1 KiB、任务提交不超过 256 KiB）和观察的 `ExtractUsageRequest.truncated`（字段 7，`reserved`）一起去掉，观察总是整份。旧清单里还写着它时：核心解码清单时忽略未知字段（`pkg.ParseManifest`），上传、安装、加载都照常，这个值不起作用（等于不设预算）；`sub2api-plugin` 严格解码（`DisallowUnknownFields`），`build`、`pack`、`sign`、`verify`、`index`、`dev` 报 `manifest.json: json: unknown field "usageMaxBytes"`。它不是旧插件协议的标志，所以不报 `outdated_contract`。
@@ -8360,7 +8362,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 所有者原话：“插件本身是不允许任何直连的，它的所有网络都需要通过核心发出。限制的域名也是核心必须通过，也是插件必须通过核心发出，然后这时候来进行域名限制。”所以这项设置管插件经核心发出的**全部**网络，不只是出口隧道：凡是目标地址由插件决定（或由插件清单、账号配置决定）、由核心替插件发出的请求，都要过它。
 
 - **范围**：中继（HTTP 等待与不等待、WebSocket 握手）、取回（`Execute`、`Monitor` 里的，路由调用里带代理票据的）、`SendAccountRequest`、余额查询（§52）、配额查询、凭证续期、账号测试、拉取模型列表。前四类先过清单与账号的规则（§112.17），后四类没有那道规则，只过这项设置。不在范围内的是核心自己的请求：价格同步、插件市场与插件包下载、代理检测、协议转换时下载客户端给的媒体 URL、节点间通信，以及 `Notify`（发往管理员配置的通知渠道）。
-- **判断**：与出口隧道是同一个判断（`hostPolicies` 的缓存与 `HostPolicy.refusal`，匹配同 113.2，比较 URL 的主机名，端口不参与），经 `core.PluginNetworkAccess`（由 `egress.Provider` 实现，在 `internal/app` 里注入账号模块、网关和插件运行时）。缓存、失效、读失败沿用上次值、从未读成功时拒绝都与 113.2 相同；请求路径上不读数据库。插件自己的 `net` 授权与按插件的出口策略只管出口隧道，与这些请求无关（平台插件没有 `net`）。
+- **判断**：与出口隧道是同一个判断（`hostPolicies` 的缓存与 `HostPolicy.refusal`，匹配同 113.2，比较 URL 的主机名，端口不参与），经 `core.PluginNetworkAccess`（由 `egress.Provider` 实现，在 `internal/app` 里注入账号模块、网关和插件运行时）。缓存、失效、读失败沿用上次值、从未读成功时拒绝都与 113.2 相同；请求路径上不读数据库。插件自己的 `net` 授权与按插件的出口策略只管出口隧道，与这些请求无关（平台插件没有 `net`）。平台插件随 `Account` 收到的代理详情（§124）只是数据，不用于自行联网：账号的请求只经这些核心发出的请求出去，核心强制账号代理。
 - **被拒时**：中继、取回、`SendAccountRequest` 见 §112.17 的表（`details.reason` / `NeutralReason` 为 `upstream_host_blocked`，信息为 `plugin <key>: <host> is on the blocked list of plugin network access` 或 `... is not on the allowed list ...`）。账号测试：测试结果失败，信息写明原因，什么都没发出；拉取模型列表：错误写明原因；配额查询、凭证续期：插件拿到的是传输错误（`status` 0、`transport_error` 写明原因），按插件对传输错误的处理（续期一般是暂时失败，凭证不变）；余额查询：发出前就逐个判断，一个被拒就都不发，快照记 `transient: <拒绝信息>`（§52.3）。
 - **记录**：每个被这项设置拒绝的请求在该插件的出口日志里写一行（`plugin_egress_logs`，`result = denied`，`error` 为原因，`network` 为 URL 的协议 `https`/`http`，以区别于隧道的 `tcp`，`host`、`port` 为 URL 的），与隧道的拒绝一样经批量异步的日志写入器（满了丢弃，不阻塞请求），管理员在插件详情“外部访问”页的明细和按目标汇总里看到。放行的请求不写（那是使用记录的事）；被拒的请求不计入访问过的域名（`plugin_egress_domains`），不发新域名事件。中继被拒另有网关的 WARN 日志和使用记录里的尝试轨迹。
 - **“屏蔽所有域名”的后果**：允许列表里没有某个平台的上游域名（如 `api.anthropic.com`、`chatgpt.com`、`googleapis.com`，或账号上自定义上游地址的域名），这个平台的全部请求被拒。控制台在切换到“屏蔽所有域名”前要求确认，选中时显示警告。
@@ -8396,7 +8398,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **核心代理**：出口隧道只对策略有 Database 的插件接受 `db.sub2api:5432`（否则拒绝 `egress: the plugin has no database`），交给 `dbschema.Manager.ServeTunnel` → `runtime-contract/gormpg/pgproxy`：插件侧 SSL/GSS 请求回 `N`，启动消息的 `user`、`database`、`options`、`replication`、`_pq_.*` 忽略，其余运行参数带上；核心用自己的数据库配置（同一 DSN 解析，含 TLS、SCRAM/MD5）登录，固定 `search_path=plg_<key>`、`application_name=sub2api plugin <key>`，协议版本与插件请求的一致；回插件 `AuthenticationOk`、服务器的全部 `ParameterStatus`、服务器的 `BackendKeyData`、`ReadyForQuery`，之后两向原样转发。连不上时回 `FATAL`：服务器的 PgError 原样，其他只说 `the host could not open the database connection`。插件的 CancelRequest（pgx 在 ctx 结束时经同一隧道发出）按进程号与密钥找到该插件自己的会话，按会话的加密方式转发给服务器；其他忽略。每条插件连接是核心对 PostgreSQL 的一条连接，不在核心池里，不设上限，数量由插件的池决定（默认每节点每插件 4 个）。
 - **数据库连接不是外部访问**：经 `db.sub2api:5432` 的连接（含没有 Database 被拒绝的）不计入插件的外部主机名单 `plugin_egress_domains`，不记“新外部主机”的 WARN、不发 `plugin.egress_new_domain`，`GET /plugins/:key/egress` 的 `domains` 里没有它。出口日志 `plugin_egress_logs` 照旧每条连接一行（主机 `db.sub2api`，也进按目标汇总 `summary`），与改造前插件经隧道直连真实数据库地址时一样。判断只在隧道的 `Dial` 一处（虚拟地址）；`StrictAlways` 插件在非严格核心上拨真实数据库地址（`Options.DatabaseAddrs`）仍按普通连接计入名单。
 - **清除数据**：`DROP SCHEMA plg_<key> CASCADE` 并删除迁移记录（`DropTx`，与插件行的删除同一事务）。
-- **隔离**：插件拿不到数据库密码（严格网络下），但能执行核心的用户能执行的任何 SQL，能访问全部表并能写入，插件之间、插件与核心之间的分隔只靠约定和安装时对 `db.schema`（high）的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、`api_keys.key_cipher`、TOTP、插件加密设置与 secrets、价格同步源密钥）读不出明文，API Key、访问密钥、用户密码只存哈希；其余数据可读，所有表可写。非官方插件授予 `db.schema` 一律要求 `plugin:grant:db_schema_unconfined`（`needs_db_schema_unconfined` 同步），官方插件不要求。
+- **隔离**：插件拿不到数据库密码（严格网络下），但能执行核心的用户能执行的任何 SQL，能访问全部表并能写入，插件之间、插件与核心之间的分隔只靠约定和安装时对 `db.schema`（high）的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、`api_keys.key_cipher`、TOTP、插件加密设置与 secrets、价格同步源密钥）读不出明文，API Key、访问密钥、用户密码只存哈希；其余数据可读，所有表可写（例如 `accounts`、`proxies` 的非加密列，含代理的 host、port、username；凭证明文与代理密码只有声明该账号类型的插件经 `Account` 拿得到，§124）。非官方插件授予 `db.schema` 一律要求 `plugin:grant:db_schema_unconfined`（`needs_db_schema_unconfined` 同步），官方插件不要求。
 - **旧角色的转换**：核心启动时一次（`ConvertLegacyRoles`），以及每次 Ensure/DropTx 某插件时，对本库为该插件建的旧角色 `plg_<key>`（注释等于 `sub2api plugin role; database=<本库>; plugin=<key>`，或拥有本库的 `plg_<key>` schema）在插件的 schema 锁里执行 `REASSIGN OWNED BY … TO CURRENT_USER`、`DROP OWNED BY …`、`DROP ROLE …`，不同插件之间另取全局锁 `plugin-role-conversion`。依赖核心对该角色的成员关系与 `CREATEROLE`（旧代码建角色时已具备），不需要超级用户。角色在 `pg_stat_activity` 里还有会话时整个跳过并记一次警告，下次 Ensure 或启动再试；转换失败只记日志，不阻止启动。其他库或运维自建的同名角色不动。没有角色（新库、不带属主的恢复）时什么也不做。
 - **打包工具**：`sub2api-plugin db diff|check`（`sdk/pgdb/pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 在临时 schema 里执行迁移（整个事务回滚）；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（看本事务写过的系统目录行，以前靠临时角色的属主判断）。以前因为临时角色没有权限而在工具里失败、宿主却能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
 - **单向**：0110 之后旧核心无法再给插件建角色（授予已删除的函数失败），回退只能连同数据库回到升级前的备份。
@@ -8437,7 +8439,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 ## 117. 代理票据：建账号之前的授权流程走账号表单选的代理（2026-11-18，所有者要求“账号授权时的第一次换令牌不走代理：修复bug”“在创建账号的时候通过代理获取授权”“如果是粘贴的代理串呢？”；无迁移；Host API 仍是 10；UI 3.20；设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)）
 
-账号建好以后，上游请求、令牌刷新、额度和 `SendAccountRequest` 都由核心经账号代理发出。建账号**之前**的授权（设备码、OAuth 换令牌）此前由插件在管理路由里自己联网，账号表单上选的代理用不上。本节让核心按账号表单的代理选择替插件发这些请求，插件看不到代理地址和密码，也换不了代理。通用能力，不限于 codex。
+账号建好以后，上游请求、令牌刷新、额度和 `SendAccountRequest` 都由核心经账号代理发出。建账号**之前**的授权（设备码、OAuth 换令牌）此前由插件在管理路由里自己联网，账号表单上选的代理用不上。本节让核心按账号表单的代理选择替插件发这些请求，插件看不到代理地址和密码（只限建账号之前；账号建好以后插件随 `Account` 收到代理详情，§124），也换不了代理。通用能力，不限于 codex。
 
 ### 117.1 发票据：`POST /account-types/:plugin_key/:type/proxy-ticket`
 
@@ -8644,7 +8646,7 @@ ALTER TABLE usage_logs
 
 ### 119.5 权限与沙箱
 
-- 宿主权限：三个插件都有 `platform.register`、`accounts.credentials {"types":"own"}`；typesafe 另有 `gateway.endpoint`（`/v1/systemone`）。**都不申请 `net`、`fs.data`、`db.schema`**：插件不联网（请求由核心发出），在默认开启的文件沙箱（Landlock，§43.8）、seccomp 下运行；资源 64 MB、0.1 CPU、32 线程、64 个文件。
+- 宿主权限：三个插件都有 `platform.register`（`accounts.credentials` 已由 §124 删除）；typesafe 另有 `gateway.endpoint`（`/v1/systemone`）。**都不申请 `net`、`fs.data`、`db.schema`**：插件不联网（请求由核心发出），在默认开启的文件沙箱（Landlock，§43.8）、seccomp 下运行；资源 64 MB、0.1 CPU、32 线程、64 个文件。
 - 清单里不写价格（§17）。
 
 ### 119.6 内置方式
@@ -8853,7 +8855,7 @@ ALTER TABLE usage_logs
 
 ## 123. 已有账号的出站一律按账号取客户端（2026-11-19，所有者要求“每次都保证最新的代理就行了呀。获取 HTTP 客户端的时候，直接就绑定一个账号呗，用这个账号对应的代理”“用已保存的代理，那就正确应用”“代理配置了就走，没配置就不走，配置了就不要泄露 IP”；无迁移；Host API、插件协议不变）
 
-账号存在以后，核心代表它发出的每个请求都按账号**当前保存的**代理取 HTTP 客户端，调用方不再自己拿着一个 `proxy_id` 传来传去。账号包以外只有一个入口：`core.AccountDirectory.Egress(ctx, accountID) (core.Egress, error)`，调用方给的是“哪个账号”，返回该账号代理的客户端（没有代理是直连客户端）和 `Proxied`（SSRF 检查要用：经代理时本机不解析上游域名，§43.4）。
+账号存在以后，核心代表它发出的每个请求都按账号**当前保存的**代理取 HTTP 客户端，调用方不再自己拿着一个 `proxy_id` 传来传去。账号包以外只有一个入口：`core.AccountDirectory.Egress(ctx, accountID) (core.Egress, error)`，调用方给的是“哪个账号”，返回该账号代理的客户端（没有代理是直连客户端）、`Proxied`（SSRF 检查要用：经代理时本机不解析上游域名，§43.4）和 `Proxy`（§124 起：这个客户端走的代理的 id、地址、用户名和密码，与客户端出自代理服务的同一个缓存条目；直连或拿不到客户端时为 nil）。
 
 - 实现：账号包里只有一个由代理 id 构造出口的函数（`account.Service.proxyEgress`，取代理服务缓存的客户端 `ProxyDirectory.HTTPClient`），两种入口共用：
   - `Egress(ctx, id)`：读 `Load` 的账号快照，再交给 `proxyEgress`。快照在本节点改账号时立即作废；其他节点收到 `account:changed`（`PATCH /accounts/:id` 广播）时作废，bus 断线重连后也整份作废（重连期间的消息可能丢了）；最长 30 秒（`snapshotTTL`）兜底。快照命中时不查数据库。
@@ -8869,3 +8871,43 @@ ALTER TABLE usage_logs
   - 进行中的 HTTP / SSE 流用已建立的连接走完，下一次请求才用新代理。
   - 已建立的 WebSocket 上游连接**不断开、不重连**（所有者决定：“不要”断）：它保持建立时的出口直到会话结束。原来直连、后来配了代理，老连接继续直连；换了代理，老连接继续走旧代理。同一会话后续各轮里 `Execute` 的取回（`pluginsdk.Fetch`）按每轮开始时的代理走，所以同一轮里上游连接和取回的出口可能不同。新建的 WebSocket 会话按新代理。
 - 测试：`gateway/egress_test.go`（同一账号连发三次，代理改成另一个、再去掉，中继依次走 7、8、直连）、`usage/poll_test.go` `TestPollHTTPFollowsTheAccountsCurrentProxy`（两次 Monitor 取回之间改代理，第二次走新代理）、`account/egress_test.go` `TestEgressFollowsTheAccountsSavedProxy`（真实账号服务：经 `PATCH /accounts/:id` 改代理后 `Egress` 立刻给出新代理的客户端，去掉代理后直连；另一个节点的 bus 丢了 `account:changed` 时仍是快照里的旧代理，bus 重连后即是新代理）、`account/refresh_test.go` `TestCredentialRefreshFollowsTheAccountsProxy`（经控制台改代理后，下一次续期经新代理）、`account/balance_test.go`（停用的代理是传输错误，不直连）。
+
+## 124. 插件按归属收到账号的全部信息（2026-11-19，所有者要求“调度的那个账号 让插件执行，就给哪个账号”“还是要通过核心的 http /socks 客户端去连接，插件严禁联网”“旧的两个权限和旧接口：移除”；迁移 0116；插件协议仍是 2、Host API 仍是 10（都属于未发布的 0.1.304 批次）；设计见 [DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md](DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md)）
+
+### 124.1 规则
+
+- 核心把哪个账号的请求交给插件执行，就把这个账号的全部信息给这个插件：属性、设置、解密的凭证，以及代理的地址、用户名和密码（`Account.proxy`）。收到的插件就是声明该账号类型的插件（“归属”：账号的 `plugin_key` 等于这个插件）。
+- 这次的“全部信息”只在已有的 `Account` 上加代理详情，不扩其它字段。
+- 没有宿主授权：`accounts.credentials`、`accounts.read` 删除，声明账号类型只需要 `platform.adapter.v1` 和 `platform.register`。清单里还写着这两个授权的包按旧契约拒绝（`check.CodeOutdatedContract`，上传、安装、加载同一条 `protocol.OutdatedContractMessage`，§112.10）。迁移 0116 删除 `plugin_permission_grants`、`plugin_staged_grants` 里这两个授权的全部行（含撤销状态和暂存的）。
+- **插件严禁联网**：代理信息只是数据。账号的请求只经核心的客户端发出（`RelayUpstream`；`Execute`/`Monitor` 里的 `Fetch`；路由调用里带代理票据的 `Fetch`；`SendAccountRequest`；核心代发的测试、模型、额度、续期、余额请求），核心强制账号代理，配了代理绝不直连。任何平台插件都不申请 `net`，出口隧道拒绝它们的连接（§113.3）。SDK 不提供把代理变成传输或拨号器的函数。
+
+### 124.2 `Account.proxy`
+
+- `common.proto`：`Account.proxy = 8`（`AccountProxy{id, protocol, host, port, username, password}`），账号没有代理时不设。`AccountProperties.proxy_id`（字段 9）删除，改为 `reserved`：`Account.proxy.id` 是唯一来源。
+- 插件看到的代理就是这次出站用的代理：核心先取出口（`core.Egress`，§123，`Proxy` 与客户端出自同一个缓存条目），再用 `core.(*Account).PluginAccount(platform, eg.Proxy)` 构造 `Account`（转换只有 `core.PluginProxy` 一处）。各路径：
+  - 网关每次尝试、WebSocket 每一轮：开始时取一次出口，同一次调用里的 `Execute`、中继、取回、`ClassifyError` 和用量观察都用这一份。**取不到出口时不调用 `Execute`**，按出口失败的同一结果失败转移：请求本来发不出去，插件也不会拿到一个缺了代理的账号。已建立的 WebSocket 上游连接照 §123 不断开，所以同一会话里连接的出口可能比这一轮 `Account.proxy` 旧。
+  - `Monitor`：取任务账号时取一次出口放进 `Account`，取不到时推迟（同冷却）；调用里的每次取回仍各取一次出口（§123），两者之间改了代理时插件看到的是调用开始时的代理，请求按新代理发出。
+  - 账号包里握着实时行的路径（测试、编辑页拉模型、额度、余额、续期、`GetAccount`）：先用这一行的 `proxy_id` 取出口，再构造 `Account`，发送用同一份出口。取不到出口时不调用插件：测试记失败（原因写在结果里，`error_source` 为 gateway）；拉模型返回错误；额度、续期记失败（续期按 transient）；余额快照记 `transient: <原因>`；`GetAccount` 返回 `UNAVAILABLE`。`SendAccountRequest` 照旧把代理不可用作为 `transport_error` 交还（它不交出账号）。
+  - 建账号之前（按表单的代理选择拉模型、授权票据，§117）**不给**代理详情：这时还没有账号，粘贴的代理串也不交给插件。
+- 用量观察（`ExtractUsageRequest.account`）就是这次 `Execute` 收到的 `Account`（含凭证和代理）：观察只交回执行 `Execute` 的插件。
+- 日志：`core.ProxySpec`、`core.ProxyRef` 的 `String`、`GoString`、`LogValue` 不含密码；核心不打印 `pluginv1.Account`（与凭证同一条约定）。插件用 `pluginsdk.AccountProxyOf(acc)` 读代理，它的 `String`、`GoString`、`Format`、`LogValue` 不含密码；不要打印 `Account` 或 `AccountProxy` 消息本身（protobuf-go 的 `String()` 不支持 `debug_redact`）。
+- 热路径：每次尝试多带一个 `AccountProxy`；缓存命中时不查库、不解密；网关路径照旧不逐条审计（§26.6：随请求下发的不审计，主动读取的审计）。
+
+### 124.3 HostService
+
+- `GetAccount{account_id}` → `{account}`：本插件账号类型的一个账号，与平台调用收到的相同（属性、设置、解密的凭证、代理）。不检查授权；参数非正 `INVALID_ARGUMENT`；别人的账号、已删除的、不存在的一律 `NOT_FOUND`；代理拿不到 `UNAVAILABLE`。每次成功调用先写 `audit_logs`（action `plugin.account.read`，target `account`/`<id>`，`user_id` 为空，detail 只有 `plugin_key`、`account_type`、`account_name`、`via: "host.GetAccount"`，不记任何值），写不进去调用失败。历史的 `plugin.account.credentials.read` 行保留。SDK：`Host.Account(ctx, id) (*pluginv1.Account, error)`；假核心 `pluginsdktest.FakeHost.Accounts`（不在表里 `NOT_FOUND`）、`AccountReads`。
+- `GetAccountCredentials` 和 SDK 的 `Host.AccountCredentials`、`AccountCredentials` 删除，不留兼容。
+- `ListAccounts`、`SendAccountRequest`、`AccountScopeCheck` 不检查授权。前两个按 `plugin_key` 在 SQL 里过滤，不声明账号类型的插件得到空列表 / `NOT_FOUND`。`AccountScopeCheck` 不交出账号的任何字段，只回答调用者（必须是正在处理的请求的调用者）能对哪些账号做某个动作，和 `AuthzCheck` 问本插件自己的权限一样不需要授权。
+- 账号类型注册（`registry.addAccountTypes`）不再看授权。
+
+### 124.4 如实写明的边界
+
+- “只有声明者拿得到”只对凭证明文和代理密码成立：持有 `db.schema` 的插件用核心的数据库用户，能读 `accounts`、`proxies` 的全部非加密列，包括代理的 host、port、username（§115）。安装提示不暗示“其他插件看不到账号信息”。
+- `GetEnvironment` 不检查授权（§74.3“always granted”），返回任意分组和账号的数值环境变量，不存在的返回 `{}`。
+- 安装审核对声明账号类型的包固定显示（`install.requestAccessStatement`）：插件会收到它声明的账号类型下账号的全部信息（设置、解密的凭证、代理的地址、用户名和密码）以及经这些账号发出的每个请求的完整内容和与响应有关的数据，并决定请求发往哪个地址；请求都由核心发出，插件自己不联网；不是权限，不能取消。不按信任级别加限制。
+
+### 124.5 插件与升级
+
+- 12 个声明账号类型的插件（anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine）删掉 `accounts.credentials`，volcengine 另删 `accounts.read`；volcengine 素材库与 codex 重置次数改用 `GetAccount`。codex 删掉没有写入方的 `settingsFields: ["proxy_id"]`（账号的代理是 `accounts.proxy_id` 列）。版本号在这一批未发布的版本上继续累计，`hostCompat` 不动。
+- 0.1.304 本来就是停机、核心和全部插件一起换（§112.11）。按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（只有 volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可。
+- 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：volcengine 账号经 mock 代理读上游素材组，审计行不含值，素材请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
