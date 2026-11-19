@@ -160,7 +160,7 @@ func addressChanged(b, old []byte, at manifest.AccountType) bool {
 func addressValue(b []byte, f string) string {
 	r := gjson.GetBytes(b, f)
 	if r.Type != gjson.JSON {
-		return guardNorm(r.String())
+		return guardNorm(r.String(), nil)
 	}
 	var buf bytes.Buffer
 	if json.Compact(&buf, []byte(r.Raw)) != nil {
@@ -333,7 +333,7 @@ func (s *Service) prepare(ctx context.Context, bt core.AccountTypeBinding, raw j
 // normalized settings of a caller without account:settings:custom: each
 // guarded field must be empty/absent, one of the allowed values or (on
 // update) the value the account already had. Values are compared after
-// guardNorm. Violations are invalid_argument with
+// guardNorm with the setting's versions. Violations are invalid_argument with
 // fields[{credentials.<field>, forbidden}].
 func checkGuarded(ctx context.Context, guards []manifest.GuardedSetting, settings fields, old []byte) error {
 	var fe []core.FieldError
@@ -354,12 +354,12 @@ func checkGuarded(ctx context.Context, guards []manifest.GuardedSetting, setting
 		if strings.TrimSpace(v) == "" {
 			continue
 		}
-		want := guardNorm(v)
-		if slices.ContainsFunc(g.Allowed, func(a string) bool { return guardNorm(a) == want }) {
+		want := guardNorm(v, g.Versions)
+		if slices.ContainsFunc(g.Allowed, func(a string) bool { return guardNorm(a, g.Versions) == want }) {
 			continue
 		}
 		if old != nil {
-			if prev := gjson.GetBytes(old, g.Field); prev.Type == gjson.String && guardNorm(prev.Str) == want {
+			if prev := gjson.GetBytes(old, g.Field); prev.Type == gjson.String && guardNorm(prev.Str, g.Versions) == want {
 				continue
 			}
 		}
@@ -374,15 +374,35 @@ func checkGuarded(ctx context.Context, guards []manifest.GuardedSetting, setting
 
 // guardNorm is the comparison form of a guarded value: trimmed, without
 // trailing slashes, and (when it parses as an absolute URL) with lower-case
-// scheme and host.
-func guardNorm(v string) string {
+// scheme and host and without one of versions ending the path (trimVersion).
+// The version is looked for after the trailing slashes are gone, so
+// "https://API.example.com/v1/" compares as "https://api.example.com".
+func guardNorm(v string, versions []string) string {
 	v = strings.TrimRight(strings.TrimSpace(v), "/")
 	if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
+		if p, ok := trimVersion(u.EscapedPath(), versions); ok {
+			u.RawPath = p
+			u.Path, _ = url.PathUnescape(p) // p is a prefix of a valid escaped path
+		}
 		return u.String()
 	}
 	return v
+}
+
+// trimVersion removes from the escaped path p the longest of versions that
+// ends it, at most one, matched whole and case-sensitively (each version
+// starts with "/", so ".../a%2Fv1" does not end with "/v1"). It is the rule
+// of the plugin SDK's apikey.Spec.Versions (manifest.GuardedSetting.Versions).
+func trimVersion(p string, versions []string) (string, bool) {
+	best := ""
+	for _, v := range versions {
+		if len(v) > len(best) && strings.HasSuffix(p, v) {
+			best = v
+		}
+	}
+	return strings.TrimSuffix(p, best), best != ""
 }
 
 // decrypt returns the plaintext secret part of an account.

@@ -616,6 +616,70 @@ func TestGuardedSettings(t *testing.T) {
 	}
 }
 
+// TestGuardedSettingVersions: with versions on the guarded setting, a
+// versioned official address passes for a caller without
+// account:settings:custom, an escaped "/" does not make a version, PATCH
+// compares with the stored value without its version, and GET
+// /account-types shows the versions. Without versions nothing changes.
+func TestGuardedSettingVersions(t *testing.T) {
+	authz := fakeAuthz{keys: map[int64][]string{}}
+	e := setupWith(t, authz)
+	admin := e.uid
+	alice := e.addUser("alice@x.com")
+	authz.keys[admin], authz.keys[alice] = adminKeys, supplierKeys
+	key := "sk-good-key-123"
+	post := func(base string) (int, map[string]any) {
+		t.Helper()
+		return e.doAs(alice, "POST", "/accounts", map[string]any{"name": "g", "plugin_key": "anthropic", "type": "apikey",
+			"credentials": map[string]any{"api_key": key, "base_url": base}})
+	}
+	forbidden := func(code int, out map[string]any) bool {
+		return code == 400 && fmt.Sprint(fieldsOf(out)) == "[credentials.base_url:forbidden]"
+	}
+
+	if code, out := post(officialBaseURL + "/v1"); !forbidden(code, out) {
+		t.Fatalf("versioned official without versions: %d %v", code, out)
+	}
+	e.gen.types[0].Type.GuardedSettings[0].Versions = []string{"/v1"}
+	for _, v := range []string{officialBaseURL + "/v1", " HTTPS://API.Anthropic.COM/v1/ ", officialBaseURL} {
+		if code, out := post(v); code != 201 {
+			t.Fatalf("base_url %q: %d %v", v, code, out)
+		}
+	}
+	for _, v := range []string{officialBaseURL + "/a%2Fv1", officialBaseURL + "/v1/v1", officialBaseURL + "/V1"} {
+		if code, out := post(v); !forbidden(code, out) {
+			t.Fatalf("base_url %q: %d %v", v, code, out)
+		}
+	}
+
+	// PATCH: the stored custom value with or without its version is "no
+	// change"; the stored value is kept as typed.
+	acc := e.createAs(alice, "a", map[string]any{"credentials": map[string]any{"api_key": key, "base_url": officialBaseURL}})
+	path := fmt.Sprintf("/accounts/%d", int64(acc["id"].(float64)))
+	if code, out := e.doAs(admin, "PATCH", path, map[string]any{"credentials": map[string]any{"api_key": Mask, "base_url": "https://custom.example/v1"}}); code != 200 {
+		t.Fatalf("admin custom patch: %d %v", code, out)
+	}
+	patch := func(base string) (int, map[string]any) {
+		t.Helper()
+		return e.doAs(alice, "PATCH", path, map[string]any{"credentials": map[string]any{"api_key": Mask, "base_url": base}})
+	}
+	if code, out := patch("https://custom.example"); code != 200 || data(out)["settings"].(map[string]any)["base_url"] != "https://custom.example" {
+		t.Fatalf("old with version: %d %v", code, out)
+	}
+	if code, out := patch("https://custom.example/v1"); code != 200 {
+		t.Fatalf("new with version: %d %v", code, out)
+	}
+	if code, out := patch("https://custom.example/a%2Fv1"); !forbidden(code, out) {
+		t.Fatalf("escaped slash against old: %d %v", code, out)
+	}
+
+	code, out := e.doAs(alice, "GET", "/account-types", nil)
+	raw, _ := json.Marshal(out)
+	if code != 200 || gjson.GetBytes(raw, `data.#(type=="apikey").guarded_settings.0.versions`).Raw != `["/v1"]` {
+		t.Fatalf("account types: %d %s", code, raw)
+	}
+}
+
 // ---------------------------------------------------------------- unit (no DB)
 
 func TestGuardNorm(t *testing.T) {
@@ -628,8 +692,33 @@ func TestGuardNorm(t *testing.T) {
 		"relative/path/":                   "relative/path",
 		"https://api.anthropic.com:443/":   "https://api.anthropic.com:443",
 	} {
-		if got := guardNorm(in); got != want {
+		if got := guardNorm(in, nil); got != want {
 			t.Errorf("guardNorm(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// With versions: trailing slashes go first, then at most one version
+	// segment of the escaped path, the longest, matched whole and
+	// case-sensitively.
+	versions := []string{"/v1", "/v1beta", "/openai", "/openai/v1"}
+	for in, want := range map[string]string{
+		"https://API.openai.com/v1/":         "https://api.openai.com",
+		"https://api.openai.com/v1":          "https://api.openai.com",
+		"https://x/v1beta":                   "https://x",
+		"https://x/openai/v1":                "https://x",
+		"https://x/openai":                   "https://x",
+		"https://x/v1/v1":                    "https://x/v1",
+		"https://x/p/v1":                     "https://x/p",
+		"https://x/a%2Fv1":                   "https://x/a%2Fv1",
+		"https://x/a%2Fb/v1":                 "https://x/a%2Fb",
+		"https://x/V1":                       "https://x/V1",
+		"https://x/xv1":                      "https://x/xv1",
+		"https://x/v1x":                      "https://x/v1x",
+		"https://x":                          "https://x",
+		"not a url/v1":                       "not a url/v1",
+		"https://api.anthropic.com:443/v1//": "https://api.anthropic.com:443",
+	} {
+		if got := guardNorm(in, versions); got != want {
+			t.Errorf("guardNorm(%q, versions) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -675,6 +764,33 @@ func TestCheckGuarded(t *testing.T) {
 	}
 	if err := checkGuarded(ctx, nil, st(`"https://evil.example"`), nil); err != nil {
 		t.Errorf("no guards: %v", err)
+	}
+
+	// Versions: the submitted value, the allowed ones and the old value are
+	// all compared without one version segment; without versions a
+	// versioned official address is a custom value.
+	versioned := []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{"https://api.openai.com"}, Versions: []string{"/v1"}}}
+	allowedV1 := []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{"https://api.openai.com/v1"}, Versions: []string{"/v1"}}}
+	for _, c := range []struct {
+		name   string
+		guards []manifest.GuardedSetting
+		st     fields
+		old    []byte
+		want   string
+	}{
+		{"versioned official", versioned, st(`"https://API.openai.com/v1/"`), nil, ""},
+		{"allowed carries the version", allowedV1, st(`"https://api.openai.com"`), nil, ""},
+		{"escaped slash is no version", versioned, st(`"https://api.openai.com/a%2Fv1"`), nil, "credentials.base_url:forbidden"},
+		{"one version only", versioned, st(`"https://api.openai.com/v1/v1"`), nil, "credentials.base_url:forbidden"},
+		{"case-sensitive", versioned, st(`"https://api.openai.com/V1"`), nil, "credentials.base_url:forbidden"},
+		{"old with version", versioned, st(`"https://custom.example"`), []byte(`{"base_url":"https://custom.example/v1"}`), ""},
+		{"new with version", versioned, st(`"https://custom.example/v1"`), []byte(`{"base_url":"https://custom.example"}`), ""},
+		{"old with other path", versioned, st(`"https://custom.example/v1"`), []byte(`{"base_url":"https://custom.example/p"}`), "credentials.base_url:forbidden"},
+		{"no versions", guards, st(`"https://api.anthropic.com/v1"`), nil, "credentials.base_url:forbidden"},
+	} {
+		if got := codes(checkGuarded(ctx, c.guards, c.st, c.old)); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
 	}
 }
 
