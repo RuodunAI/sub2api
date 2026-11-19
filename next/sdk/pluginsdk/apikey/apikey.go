@@ -137,8 +137,9 @@ type Spec struct {
 	// reading each from the credentials, then the settings, and refuses
 	// every other key of either object with code "unknown", as the form's
 	// additionalProperties:false did; nil lets them through. A rule for
-	// api_key or base_url adds to the checks above and runs on the value as
-	// sent, only when those passed.
+	// api_key or base_url adds to the checks above, only when those passed,
+	// and sees the value Validate saves: the key trimmed, the base URL
+	// normalized (StripSuffixes included), wherever the key was sent.
 	Fields fieldcheck.Fields
 }
 
@@ -169,7 +170,7 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
 	if s.Fields != nil {
-		errs = s.checkFields(errs, creds, settings)
+		errs = s.checkFields(errs, normalized(creds, key, baseURL), normalized(settings, key, baseURL))
 	}
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
@@ -246,8 +247,8 @@ func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[st
 	return normalized, errs
 }
 
-// checkFields adds the errors of s.Fields (api_key and base_url known),
-// except at a field that already has one.
+// checkFields adds the errors of s.Fields (api_key and base_url known) on
+// the normalized objects, except at a field that already has one.
 func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string]any) pluginsdk.FieldErrors {
 	fields := fieldcheck.Fields{"api_key": fieldcheck.Any(), "base_url": fieldcheck.Any()}
 	maps.Copy(fields, s.Fields)
@@ -259,12 +260,9 @@ func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string
 	return errs
 }
 
-// rewriteObject re-encodes obj with api_key and base_url normalized where the
-// key already exists; an empty object stays empty ("" keeps the core's value).
-func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
-	if len(obj) == 0 {
-		return ""
-	}
+// normalized is obj with api_key and base_url replaced by key and baseURL
+// where obj holds them; every other key as it is.
+func normalized(obj map[string]any, key, baseURL string) map[string]any {
 	out := make(map[string]any, len(obj))
 	for k, v := range obj {
 		switch k {
@@ -276,7 +274,16 @@ func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
 			out[k] = v
 		}
 	}
-	b, _ := json.Marshal(out)
+	return out
+}
+
+// rewriteObject re-encodes obj with api_key and base_url normalized where the
+// key already exists; an empty object stays empty ("" keeps the core's value).
+func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
+	if len(obj) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(normalized(obj, key, baseURL))
 	return string(b)
 }
 
