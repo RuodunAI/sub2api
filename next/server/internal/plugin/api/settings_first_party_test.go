@@ -16,7 +16,7 @@ import (
 )
 
 // The ui.settings of the first-party plugins whose settings moved from JSON
-// Schema forms to native components (mailer, codex, growth, guard), read from
+// Schema forms to native components (mailer, codex, guard), read from
 // their real manifests: GET /plugins/:key/settings masks exactly the secrets
 // the schema forms marked (mailer's password) and nothing else, and a masked
 // value sent back keeps the stored one. Each form is installed on the test
@@ -30,8 +30,6 @@ func TestFirstPartyNativeSettingsSecrets(t *testing.T) {
 		{"mailer", map[string]any{"host": "smtp.example.com", "port": 587.0, "security": "starttls", "username": "ops", "password": "smtp-secret",
 			"from_address": "noreply@example.com", "from_name": "Ops", "timeout_seconds": 20.0}, []any{"password"}},
 		{"codex", map[string]any{"user_agent": "ua/1", "originator": "or"}, []any{}},
-		{"growth", map[string]any{"referral_enabled": true, "referral_rate_percent": 10.0, "referral_max_per_invitee": 0.0, "referral_duration_days": 0.0,
-			"checkin_enabled": true, "checkin_min_quota": 0.01, "checkin_max_quota": 0.05, "checkin_timezone": "UTC"}, []any{}},
 		{"guard", map[string]any{"webhook_url": "https://hooks.example.com/guard?token=x", "record_snippets": true, "alert_cooldown_sec": 60.0}, []any{}},
 	} {
 		t.Run(c.plugin, func(t *testing.T) {

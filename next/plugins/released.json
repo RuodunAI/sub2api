@@ -17,10 +17,6 @@
       "version": "0.3.2",
       "digest": "sha256:98ddcb191e4fbc0301f728ad78923f8293e6efebd4c8286f8868b0009c5f2778"
     },
-    "growth": {
-      "version": "0.2.1",
-      "digest": "sha256:074915610eb632730ec4612837be510bd57aae1667d215bebe8486994c117106"
-    },
     "guard": {
       "version": "0.2.10",
       "digest": "sha256:ef2987b6fa4659d24fdc0afa54d5c96009d1cf8677573a03164f3945b584af3f"

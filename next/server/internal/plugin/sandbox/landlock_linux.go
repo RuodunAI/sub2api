@@ -91,7 +91,7 @@ const (
 
 // timeZoneFiles are read by every plugin: time.Local comes from
 // /etc/localtime, and time.LoadLocation reads /usr/share/zoneinfo unless the
-// plugin embeds time/tzdata (growth does not).
+// plugin embeds time/tzdata.
 var timeZoneFiles = []string{"/usr/share/zoneinfo", "/etc/localtime"}
 
 // caCertPaths are crypto/x509's system roots on Linux (its certFiles and

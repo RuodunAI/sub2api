@@ -1232,3 +1232,124 @@ func TestMigration0114AccountBalanceUnitText(t *testing.T) {
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, "text | 5 USD,7 "+unit, state())
 }
+
+// 0117 removes the growth plugin (CONTRACTS §125) as an uninstall with
+// purge would: its row (cascading the versions, rollouts and plugin
+// migration records), its permissions (removed ones included) and their
+// grants, its egress domains, job tasks and its schema. The other plugins
+// stay; a rerun changes nothing.
+func TestMigration0117DropsGrowthPlugin(t *testing.T) {
+	const id = "0117_drop_growth_plugin.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO roles (key, name, superuser) VALUES ('ops', '{}', false), ('other', '{}', false);
+		INSERT INTO plugins (key, name, status, builtin) VALUES ('growth', '{"en":"Growth & Engagement"}', 'enabled', false), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('growth', '0.2.2', '{}', 'x', 'x', 1, 'valid'), ('guard', '0.2.10', '{}', 'y', 'y', 1, 'valid');
+		INSERT INTO plugin_rollouts (plugin_key, action, target_version, phase) VALUES ('growth', 'enable', '0.2.2', 'active');
+		INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ('growth', '0001_init.sql', 'c');
+		INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+			('plugin.growth:growth:use', 'growth', '{}', 'plugin', 'growth'), ('plugin.growth:growth:read', 'growth', '{}', 'plugin', 'growth'),
+			('guard:x', 'guard', '{}', 'plugin', 'guard');
+		UPDATE permissions SET status = 'removed' WHERE key = 'plugin.growth:growth:read';
+		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'plugin.growth:growth:use', '*'), ('p', 'r:ops', 'plugin.growth:growth:read', '*'),
+			('p', 'r:other', 'guard:x', '*');
+		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('growth', 'example.org'), ('guard', 'example.com');
+		INSERT INTO scheduled_tasks (name, source, timeout_ms, plugin_key) VALUES ('plugin.growth.cleanup', 'plugin_manifest', 1000, 'growth'),
+			('core.usage.rollup', 'core', 1000, NULL);
+		CREATE SCHEMA plg_growth; CREATE TABLE plg_growth.checkins (id int)`)
+	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
+	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
+
+	state := func() string {
+		return read(`SELECT concat_ws(' | ',
+			(SELECT string_agg(key, ' ') FROM plugins),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_versions),
+			(SELECT count(*)::text FROM plugin_rollouts),
+			(SELECT count(*)::text FROM plugin_migrations),
+			(SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL),
+			(SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_egress_domains),
+			(SELECT string_agg(name, ' ') FROM scheduled_tasks),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements),
+			(SELECT count(*)::text FROM pg_namespace WHERE nspname = 'plg_growth'))`)
+	}
+	const want = "guard | guard | 0 | 0 | guard:x | r:other guard:x | guard | core.usage.rollup | growth | 0"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	after := read(revisions)
+	require.NotEqual(t, before, after, "the role that held the permissions keeps its revision")
+	require.Equal(t, strings.Split(before, " ")[1], strings.Split(after, " ")[1], "another role moved")
+	require.NotEqual(t, version, read(`SELECT policy_version::text FROM authz_meta`))
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	version = read(`SELECT policy_version::text FROM authz_meta`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
+}
+
+// 0118 drops api_prefix and video_api_prefix from the settings of volcengine
+// apikey accounts and keeps their other keys (CONTRACTS §126); relay
+// accounts, which use both keys, and other plugins' accounts keep theirs. A
+// rerun changes nothing.
+func TestMigration0118DropsVolcengineAPIKeyPrefixes(t *testing.T) {
+	const id = "0118_volcengine_apikey_prefix_settings.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, settings) VALUES
+		('ark', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example", "video_api_prefix": "/api/v3", "api_prefix": "/api/v3", "asset_region": "cn-beijing"}'),
+		('ark-video', 'volcengine', 'apikey', '', '{"video_api_prefix": "/api/v3"}'),
+		('ark-clean', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example"}'),
+		('relay', 'volcengine', 'relay', '', '{"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}'),
+		('other', 'newapi', 'apikey', '', '{"api_prefix": "/x", "video_api_prefix": "/y"}')`)
+	require.NoError(t, err)
+	state := func() string {
+		var v string
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(name || '=' || settings::text, ' ' ORDER BY name) FROM accounts`).Scan(&v))
+		return v
+	}
+	// The row versions show which rows an UPDATE wrote.
+	versions := func(names string) string {
+		var v string
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ' ' ORDER BY name) FROM accounts WHERE name = ANY(string_to_array($1, ' '))`, names).Scan(&v))
+		return v
+	}
+	const untouched = "ark-clean other relay"
+	const want = `ark={"base_url": "https://ark.example", "asset_region": "cn-beijing"} ark-clean={"base_url": "https://ark.example"} ark-video={} ` +
+		`other={"api_prefix": "/x", "video_api_prefix": "/y"} relay={"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}`
+	before := versions(untouched)
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, before, versions(untouched), "a row without the keys was written")
+
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	all := "ark ark-video " + untouched
+	before = versions(all)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, before, versions(all), "a rerun wrote a row")
+}
