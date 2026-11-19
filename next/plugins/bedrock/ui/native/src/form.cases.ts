@@ -5,7 +5,7 @@
 // that form on purpose.
 //
 // The constraints (internal/bedrock/credentials.go holds the same on save):
-//   api_key            required, 8-2048 visible ASCII characters (secret)
+//   api_key            required, not blank (secret)
 //   access_key_id      required, ^[A-Z0-9]{16,128}$
 //   secret_access_key  required, 1-1024 visible ASCII characters (secret)
 //   session_token      required, 1-8192 visible ASCII characters (secret, bedrock_sts)
@@ -45,6 +45,8 @@ const AKID = 'AKIAIOSFODNN7EXAMPLE'
 const SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
 const TOKEN = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ=='
 const KEY = 'ABSKQmVkcm9ja0FQSUtleS1leGFtcGxl'
+/** The schema form wanted 8-2048 visible ASCII characters; any non-blank key is accepted now (DESIGN-2026-11-20 §5.1). */
+const ANY_KEY = { ok: false, why: 'an API key only has to be non-blank, as the plugin checks it on save' }
 const AKSK = { access_key_id: AKID, secret_access_key: SECRET }
 /** A datetime-local value and the RFC 3339 the form stores for it (this machine's zone). */
 const LOCAL = '2026-11-20T10:30'
@@ -96,11 +98,11 @@ export const CASES: FormCase[] = [
   // ---------------------------------------------------------------- bedrock_apikey
   { name: 'apikey: new account, valid key', type: 'bedrock_apikey', input: { api_key: KEY }, out: { api_key: KEY, ...DEFAULTS }, ok: true },
   { name: 'apikey: nothing typed', type: 'bedrock_apikey', out: DEFAULTS, ok: false },
-  { name: 'apikey: key of 7 characters', type: 'bedrock_apikey', input: { api_key: 'ABSK123' }, out: { api_key: 'ABSK123', ...DEFAULTS }, ok: false },
-  { name: 'apikey: key of 2048 characters', type: 'bedrock_apikey', input: { api_key: 'k'.repeat(2048) }, out: { api_key: 'k'.repeat(2048), ...DEFAULTS }, ok: true },
-  { name: 'apikey: key of 2049 characters', type: 'bedrock_apikey', input: { api_key: 'k'.repeat(2049) }, out: { api_key: 'k'.repeat(2049), ...DEFAULTS }, ok: false },
-  { name: 'apikey: key with a space', type: 'bedrock_apikey', input: { api_key: 'ABSK Qmed rock' }, out: { api_key: 'ABSK Qmed rock', ...DEFAULTS }, ok: false },
-  { name: 'apikey: key with a non-ASCII character', type: 'bedrock_apikey', input: { api_key: 'ABSKQmedröck' }, out: { api_key: 'ABSKQmedröck', ...DEFAULTS }, ok: false },
+  { name: 'apikey: blank key', type: 'bedrock_apikey', input: { api_key: '   ' }, out: { api_key: '   ', ...DEFAULTS }, ok: false },
+  { name: 'apikey: key of 7 characters', type: 'bedrock_apikey', input: { api_key: 'ABSK123' }, out: { api_key: 'ABSK123', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
+  { name: 'apikey: key of 2049 characters', type: 'bedrock_apikey', input: { api_key: 'k'.repeat(2049) }, out: { api_key: 'k'.repeat(2049), ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
+  { name: 'apikey: key with a space', type: 'bedrock_apikey', input: { api_key: 'ABSK Qmed rock' }, out: { api_key: 'ABSK Qmed rock', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
+  { name: 'apikey: key with a non-ASCII character', type: 'bedrock_apikey', input: { api_key: 'ABSKQmedröck' }, out: { api_key: 'ABSKQmedröck', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
   { name: 'apikey: bad region', type: 'bedrock_apikey', input: { api_key: KEY, region: 'east' }, out: { api_key: KEY, ...DEFAULTS, region: 'east' }, ok: false },
   { name: 'apikey: edit, stored key kept', type: 'bedrock_apikey', stored: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, out: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, ok: true },
 

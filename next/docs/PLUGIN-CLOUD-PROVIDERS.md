@@ -115,7 +115,7 @@ API Key：
 
 | 字段 | 含义 | 默认 | 例子 |
 |---|---|---|---|
-| API Key（`api_key`） | 以 `x-goog-api-key` 发送；加密保存。8–512 个可见字符 | 无 | Google Cloud 控制台 → Vertex AI → API 密钥 |
+| API Key（`api_key`） | 以 `x-goog-api-key` 发送；加密保存。不能为空，不限格式与长度，保存时去掉首尾空白 | 无 | Google Cloud 控制台 → Vertex AI → API 密钥 |
 | 项目 ID（可选） | 见下 | 空 | `my-project-123456` |
 | 区域（可选） | 见下 | 空 | `us-central1` |
 
@@ -182,7 +182,7 @@ Vertex 上的 Gemini 模型名和 Gemini Developer API 相同（例如 `gemini-2
 
 | 类型 | 字段 | 含义 | 例子 |
 |---|---|---|---|
-| API Key | API Key（`api_key`） | Bedrock 控制台 → API keys 里生成的 Key；加密保存。8–2048 个可见字符 | — |
+| API Key | API Key（`api_key`） | Bedrock 控制台 → API keys 里生成的 Key；加密保存。不能为空，不限格式与长度，保存时去掉首尾空白 | — |
 | Access Key、临时凭证 | Access Key ID（`access_key_id`） | 16–128 位大写字母和数字；明文显示 | 长期 `AKIA…`，临时 `ASIA…` |
 | Access Key、临时凭证 | Secret Access Key（`secret_access_key`） | 加密保存，只用来签名，不发给上游 | — |
 | 临时凭证 | Session Token（`session_token`） | 与临时凭证一起签发的令牌；加密保存；单行密码框，整段粘贴，不能有空格和换行 | — |

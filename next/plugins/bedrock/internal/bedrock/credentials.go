@@ -47,9 +47,9 @@ func visible(min, max int) func(string) bool {
 	return func(s string) bool { return len(s) >= min && len(s) <= max && visiblePattern.MatchString(s) }
 }
 
-// The shapes of the credentials (the account form checks the same bounds).
+// The shapes of the signing credentials (the account form checks the same
+// bounds). AWS defines them and they take part in SigV4.
 var (
-	validAPIKey       = visible(8, 2048)
 	validAccessKeyID  = accessKeyIDPattern.MatchString
 	validSecretKey    = visible(1, 1024)
 	validSessionToken = visible(1, 8192)
@@ -127,8 +127,14 @@ func credential(creds object, field string, valid func(string) bool, required, m
 // checkCredentials checks the credential fields of a type.
 func (a auth) checkCredentials(creds object) *pluginv1.FieldError {
 	if !a.signed {
-		return credential(creds, fieldAPIKey, validAPIKey,
-			"API key is required / 请填写 API Key", "API key must be 8-2048 visible characters / API Key 必须是 8–2048 个可见字符")
+		// Any non-blank key, as apikey.Spec takes an api_key
+		// (DESIGN-2026-11-20 §5.1): it only goes into the Authorization
+		// header, and a value holding control characters is never sent
+		// (the core and net/http refuse such a header).
+		if creds.Str(fieldAPIKey) == "" {
+			return fieldError(fieldAPIKey, "required", "API key is required / 请填写 API Key")
+		}
+		return nil
 	}
 	if bad := credential(creds, fieldAccessKeyID, validAccessKeyID,
 		"access key ID is required / 请填写 Access Key ID", "not an AWS access key ID (16-128 upper-case letters and digits) / 不是合法的 AWS Access Key ID（16–128 位大写字母和数字）"); bad != nil {
