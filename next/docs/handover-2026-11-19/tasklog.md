@@ -715,3 +715,26 @@
 ## 2026-11-19 密钥与地址设计补充完成
 - `feat/plugin-key-url-rules` `701df0d01`：方案 B 写入并验证——已存账号对所有类型等价（不需线上核查）；B 与现在不同的只有三类输入（连续两个版本段、带 %2F 的地址、无自定义权限者提交带版本官方地址需核心按根比较）。新增待确认：Q3 清单 GuardedSetting 加 `versions`（契约改动）；Q11 azure 项目名为 openai 的缺陷（建议接受）。任务拆分 T1–T7（按 B）。
 - 交接文档 `HANDOVER-2026-11-19.md` 已起草，等 D1a、D1b 完成后补第 13 节。
+
+## 2026-11-19 交接文档进仓库
+- 用户："这个文档一起后续提交上去吧因为我在其他地方拉取项目并让它继续做"；问推送远端与范围，答：远端 **upstream**；范围："现在你先提交文档就行了 其他的慢慢等合并 后面文档一起提交上去就行了"。
+- 我的理解：现在只把文档提交进仓库（本地），不推送；等收尾完成后，文档随分支一起推到 upstream（推之前把要推的分支清单再跟用户确认一次）。
+- 已提交到本地 develop：`1d46a6aff` `next/docs/HANDOVER-2026-11-19-PLUGIN-UI-AND-ACCOUNT-CONTEXT.md` + `next/docs/handover-2026-11-19/`（owner-design-draft、brief-ui-migration、brief-u3、u3a-interfaces、brief-d1、tasklog（本文件的快照）、gotest.sh、pgtest.sh）。提交前扫过：无密钥、无 IP、无内部域名；只有仓库提交身份的邮箱出现在 tasklog 里一次。
+- 收尾时要做：补交接文档第 13 节（D1a、D1b 最终状态、清理结果、推送记录），刷新 `tasklog.md` 快照，再提交一次；然后推送。
+
+## 2026-11-19 D1a 完成（未审查、未合并）`ab25aab0f94efd834`
+- `feat/plugin-ui-d1a`（工作树 `ui-d1a`，基于 `ef1413472`）：`e8d261f55`（Spec 总是检查未知键 + `Spec.NoBaseURL`，vertex_apikey 用它、去掉多包的 form.Only）、`496b9e233`（核心/sdk manifest/CLI 删 schema 表单与声明式页面）、`e45f744a7`（控制台删声明式渲染；三个界面包 4.0.0；17 个插件 hostUICompat ^4.0）、`87be4233a`（e2e）、`5edc0d1d6`（docs、ci）、`775028cb6`（两处 SDK 测试）。头 `775028cb6`。166 文件 +788/−4647。控制台部分由它再派的子代理做。
+- 自报验证：sdk、server（64 包）、tools、18 插件 Go 全过；e2e 只 vet；web typecheck/test(277 文件)/lint/build 过；openai、volcengine、moderation、mailer 的 ui/native 在 4.0 下过。
+- 保留：jsonschema 依赖（`accountTypes[].extensionsSchema` 还在用，`account/extensions.go`）。
+- 旧包表现：能加载；设置全部掩码、不返回 schema（`TestOldSchemaSettingsPackage`）；账号表单显示"此插件版本的界面已不受支持，请升级插件"；table/form 页面落到"不支持的页面类型"；新上传报 unsupported。
+- e2e 改动：AC04/18/20（native + 组件名、`GET …/form` 404，辅助 `ExpectNativeForm`）、AC23（读 guarded_settings）、AC03、AC21（注释）、AC27（stats 菜单改 iframe 页，包加 `ui/iframe/stats.html` 重签）；`DerivedGuardPackage` 同时删 native 的 ui.settings。整套 e2e 没起。
+- 待决：是否整体 `go work sync`（会把 52 个 go.mod/go.sum 升到工作区更高版本，是分支原有漂移，已撤销）。
+- 注意：mock 现在依赖 anthropic、openai、gemini、relay、volcengine 的 `ui/native/dist`，跑 mock 前要先构建；`check.sh plugins` 前先 `sh next/deploy/docker/build-ui.sh next <out>`。
+- 留给 D2：CONTRACTS 约 22 处（§5.4、§12、§15.8、§20.2、§21.3、§23、§45.6、§72.10、§75.1、§75.5、§96.7、2372/4012/4088/4780）、COMMON-CONTROLS §6.3 与第 55 行、PLUGIN-DEVELOPMENT 6 处、ARCHITECTURE 声明式 UI 部分、AGENTS.md 第 80、97 行。
+- 审查要点：NoBaseURL 的语义；SDK 预设不写 Fields 的第三方插件现在拒绝多余键（行为变化）；AC27 改成 iframe 页是否等价；SettingsTab 去掉 saved 事件、ProxyPicker/GroupPicker 属性透传等控制台子代理的决定。
+
+## 2026-11-19 D1b 完成（未审查、未合并）`a2d3f318d56e857ae`；全部在跑任务结束，进入收尾
+- `feat/plugin-ui-d1b`（工作树 `ui-d1b`，基于 `ef1413472`，头 `2962eb1f0`）：`9c124139f`（CI 脚本：任何一步失败都非零退出，`::error::<目录>: <命令> failed`）、`e1a9ec032`（dynweight spec 顶部 `import '@sub2api/ui'`，让冷编译发生在收集阶段）、`f11a7bfd7`（preset 新增 `tsconfig.plugin.json`、`vite.plugin.config.js`）、`9fb8737b7`（两个脚本：有 lockfile 才 npm ci）、`2a15dba7b`、`a4eaddc63`（17 个工程改用控制台工具链；删 lockfile、.npmrc、vite/vitest 配置共 66 个文件约 2.4 万行）、`2962eb1f0`（CONTRACTS §23、设计第 8 节、ui README）。
+- 自报：dynweight 超时根因是用例在测试体内第一次 import 触发冷编译整个 @sub2api/ui（约 6.5 s > 5 s），不是回归；修后单跑 10 次、整套 10 次全过。CI 脚本用故意弄坏的 guard spec 证明能拦住。17 个工程产物 16 个逐字节相同，codex 的差异是 `proxyTicket` prop 类型由 `{}` 变 `{type: Function}`（等于修好"插件工程解析不了导入类型"的已知问题）。Node 24 与 26 产物一致。preset 是 private、从未发布，第三方本来就按 `file:` 依赖 + tsconfig paths 写，不受影响。
+- 合并提示：D1b 与 D1a 都改了 CONTRACTS §23、设计文档、ui README 的不同位置；D1b 没动版本号与 manifest，D1a 没动工程配置与 lockfile（D1a 改了各插件 package.json 里的版本相关字段吗？——合并时核对 `ui/native/package.json` 的冲突）。`next-ci.yml` 的 `cache-dependency-path` 里插件 lockfile 通配现在匹配不到文件（无害）。
+- 收尾核对：六个相关工作树全部干净；没有残留的测试容器和 node_modules；磁盘 15G。

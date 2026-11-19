@@ -20,7 +20,7 @@
 | 附带：密钥不限格式 + 地址规则（`%2F`、版本后缀） | **只有设计文档**，方案 A/B 待所有者选，未实现 |
 | 附带：删除 growth 插件；清理火山引擎 2 个账号的陈旧键 | 所有者已同意，**未开始** |
 
-**全部在本地，没有推送，没有发布。** 本地 `develop` 比 `origin/develop` 多 565 个提交、比 `upstream/develop` 多 616 个提交（含这批之前就没推的工作）。推送和发布都必须先问所有者。
+**暂停时全部在本地，没有推送，没有发布（推送安排见 13.5）。** 本地 `develop` 比 `origin/develop` 多 565 个提交、比 `upstream/develop` 多 616 个提交（含这批之前就没推的工作）。推送和发布都必须先问所有者。
 
 **接手后第一步**：读第 2 节的状态表，然后按第 6 节的顺序往下做。
 
@@ -43,12 +43,12 @@
 
 | 分支 | 工作树 | 头 | 内容 | 审查 | 合并去向 |
 |---|---|---|---|---|---|
-| `develop` | 主检出 | `e5c18571c` | 已合入：账号上下文、表单代理、AC42，以及更早的上游插件/生图/计费等 | 各项均已审查 | — |
+| `develop` | 主检出 | `e5c18571c` 之上只多交接文档的提交 | 已合入：账号上下文、表单代理、AC42，以及更早的上游插件/生图/计费等 | 各项均已审查 | — |
 | `feat/plugin-ui-code-only` | `ui-code-only` | `ef1413472` | 问题一的主干：校验框架、核心/SDK、控制台挂载、构建与 CI、18 个插件迁移、公共接口补缺 | 各包均已独立审查并修复 | 最终合回 `develop`（落后 develop 6 个提交，见 6.6） |
-| `feat/plugin-ui-d1a` | `ui-d1a` | 见第 13 节 | 收尾包第一路：删除全部 JSON Schema / 声明式路径，`apikey.Spec` 总是拒绝未知键，界面包升 4.0，e2e | **未审查** | → `feat/plugin-ui-code-only` |
-| `feat/plugin-ui-d1b` | `ui-d1b` | 见第 13 节 | 收尾包第二路：修 CI 脚本、dynweight 不稳定用例、插件前端工程样板由 preset 承接 | **未审查** | → `feat/plugin-ui-code-only` |
+| `feat/plugin-ui-d1a` | `ui-d1a` | `775028cb6` | 收尾包第一路：删除全部 JSON Schema / 声明式路径，`apikey.Spec` 总是拒绝未知键，界面包升 4.0，e2e | **未审查** | → `feat/plugin-ui-code-only` |
+| `feat/plugin-ui-d1b` | `ui-d1b` | `2962eb1f0` | 收尾包第二路：修 CI 脚本、dynweight 不稳定用例、插件前端工程样板由 preset 承接 | **未审查** | → `feat/plugin-ui-code-only` |
 | `feat/plugin-ui-jev` | `ui-jev` | `e68c5c8a1` | 审核题集三条规则保存时拒绝 | **未审查** | → `feat/plugin-ui-code-only` |
-| `feat/plugin-key-url-rules` | `ui-keyurl` | `701df0d01` | 只有设计文档 `DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md` | 方案待所有者选 | 实现后 → `feat/plugin-ui-code-only` |
+| `feat/plugin-key-url-rules` | `ui-keyurl` | `701df0d01` | 只有设计文档 `DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md`（方案 A、B 并列） | 方案待所有者选 | 实现后 → `feat/plugin-ui-code-only` |
 | `feat/upstream-plugins` | `upstream-plugins` | `9c31f9233` | 更早的集成分支，内容已全部在 `develop` | — | 工作树可删 |
 | `feat/host-kv-batch`、`docs/sdk-account-requests` | `agent-abf352a42724d5cec`、`sdk-acct-conn` | — | **不是这批工作的**，别的会话留下的，不要动 | — | — |
 
@@ -129,7 +129,7 @@
 
 ### 5.2 `feat/plugin-ui-d1a` 收尾包第一路
 
-任务说明：`next/docs/handover-2026-11-19/brief-d1.md`（一、二、三、五节）。**最终状态见第 13 节。**
+任务说明：`next/docs/handover-2026-11-19/brief-d1.md`（一、二、三、五节）。**结果与审查要点见 13.1。**
 
 审查重点：
 - 删核心的 schema 校验之后，各插件的 `ValidateCredentials` 是保存账号时唯一的把关——全部第一方账号类型都要拒绝未知键且允许键齐全（U3b 审查已逐类核对过一遍，D1a 改了 `Spec` 的语义后要再核一遍）。
@@ -145,7 +145,7 @@
 2. `next/plugins/dynweight/ui/native` 的 `permissions.spec.ts > DegradedBadge > asks nothing and stays hidden without account:read` 间歇超时；要求查根因，不许用调大超时掩盖。
 3. 17 个 `ui/native` 的配置样板由 `@sub2api/vite-preset` 承接。要求先核实不破坏第三方作者在仓库外独立构建，没把握就停在评估。
 
-**最终状态见第 13 节。** 审查重点：第三方独立构建路径、CI 的 node 版本、构建产物是否与改前一致。
+**结果与审查要点见 13.2。**
 
 **合并顺序建议**：D1b 先（它删 lockfile、改工程配置），再 D1a（它改版本号与清单），最后 Jev；每次合并后跑第 9 节的验证。
 
@@ -316,6 +316,60 @@
 
 ---
 
-## 13. 暂停时的最终状态（收尾时补写）
+## 13. 暂停时的最终状态（2026-11-19 收尾）
 
-（待补：D1a、D1b、密钥与地址设计补充三项的最终提交、自报结果、遗留问题；工作树与临时容器的清理结果。）
+所有子代理都已结束。相关工作树全部干净（`git status` 为空），没有残留的测试容器、依赖目录；没有推送任何东西。下面三项的结果**都是实现方自报，没有经过独立审查**。
+
+### 13.1 `feat/plugin-ui-d1a`（头 `775028cb6`，基于 `ef1413472`，6 个提交，166 个文件，+788 / −4647）
+
+| 提交 | 内容 |
+|---|---|
+| `e8d261f55` | `apikey.Spec.Fields` 为 nil 时也拒绝未知键；新增 `Spec.NoBaseURL`（本类型没有地址字段），`vertex_apikey` 用它，去掉 vertex 里多包的那层 `form.Only` |
+| `496b9e233` | 核心、`sdk/manifest`、打包工具：删除 schema 表单与声明式页面 |
+| `e45f744a7` | 控制台删除声明式渲染；`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升 4.0.0；17 个带界面的插件 `hostUICompat` 改 `^4.0`（payment 没有界面） |
+| `87be4233a` | e2e 用例按新契约改 |
+| `5edc0d1d6` | CONTRACTS 里与代码强绑定的几条、CHANGELOG 未发布段、`check.sh` 说明 |
+| `775028cb6` | 两处 SDK 测试跟上"总是检查未知键" |
+
+- 自报验证：`next/sdk`、`next/server`（64 个包）、`next/tools/sub2api-plugin`、18 个插件的 `gofmt`/`go vet`/`go test` 全过；`next/e2e` 只 `go vet`（整套环境没起）；`next/web` 的 typecheck、test（277 个文件）、lint、build 通过；openai、volcengine、moderation、mailer 四个插件前端在 4.0 下通过。`next/gateway` 没改、没跑。
+- 保留没删的：`santhosh-tekuri/jsonschema` 依赖（`accountTypes[].extensionsSchema` 的校验还在用，`next/server/internal/account/extensions.go`）。
+- 已安装旧包的表现：能加载；设置全部遮蔽、不返回 schema（`TestOldSchemaSettingsPackage`）；账号表单显示"此插件版本的界面已不受支持，请升级插件"，其余分区照常保存、凭证原样送回；table/form 页面落到已有的"不支持的页面类型"；新上传报 `unsupported`。
+- e2e 改了：AC04、AC18、AC20（断言 `form.mode=native` 与组件名、`GET …/form` 返回 404，新辅助 `ExpectNativeForm`）、AC23（改读 `guarded_settings`）、AC03、AC21（只改注释）、AC27（stats 菜单由 table 页改为 iframe 页，包里加 `ui/iframe/stats.html` 并重签）；`DerivedGuardPackage` 同时删掉 native 的 `ui.settings`。
+- 控制台部分（约 −2479 行）是它再派的子代理做的。
+- **审查要点**：`NoBaseURL` 的语义与命名；直接用 SDK 预设又不写 `Fields` 的第三方插件现在会拒绝多余键（行为变化，是否要写进升级须知）；AC27 改成 iframe 页是否仍在测原来要测的东西；控制台子代理自己做的决定（`SettingsTab` 去掉 `saved` 事件、`ProxyPicker`/`GroupPicker` 恢复默认的属性透传、mock 里 guard 的 `host_ui_compat` 改 `^4.0`）；旧包表现是否与设计文档第 7 节一致；删除清单（设计 9.2、`brief-d1.md`）有没有漏。
+- **留给文档包 D2 的位置**（实现方列的）：CONTRACTS 约 22 处（§5.4、§12、§15.8 正文、§20.2、§21.3"表单不设 default"一段、§23、§45.6、§72.10、§75.1、§75.5、§96.7，及 2372/4012/4088/4780 行附近 moderation 的 `writeOnly`/`x-sensitive`）；`COMMON-CONTROLS` §6.3 与第 55 行；`PLUGIN-DEVELOPMENT` 6 处；`ARCHITECTURE` 讲声明式 UI 的部分；`AGENTS.md` 第 80 行（`forms/`）与第 97 行（"目前 3.20"）。
+- **待决**：要不要整体 `go work sync`。在这个工作树里跑会把 52 个 `go.mod`/`go.sum` 升到工作区里的更高版本，是分支上原有的漂移，与本包无关，实现方已撤销，只提交了 `next/server` 的 `go mod tidy` 结果。
+- **使用提示**：控制台的 mock 现在依赖 anthropic、openai、gemini、relay、volcengine 的 `ui/native/dist`，跑 mock 前要先构建这些插件；`check.sh plugins` 之前先执行 `sh next/deploy/docker/build-ui.sh next <out>`。
+
+### 13.2 `feat/plugin-ui-d1b`（头 `2962eb1f0`，基于 `ef1413472`，7 个提交）
+
+| 提交 | 内容 |
+|---|---|
+| `9c124139f` | `.github/next-ci/next-check-plugin-ui.sh`：任何一步失败都让该目录记为失败、脚本非零退出，并打印 `::error::<目录>: <命令> failed` |
+| `e1a9ec032` | dynweight `permissions.spec.ts` 顶部加 `import '@sub2api/ui'`，让冷编译发生在收集阶段 |
+| `f11a7bfd7` | `@sub2api/vite-preset` 新增 `tsconfig.plugin.json`、`vite.plugin.config.js` |
+| `9fb8737b7` | `build-ui.sh` 与 CI 脚本：有 `package-lock.json` 才 `npm ci` |
+| `2a15dba7b`、`a4eaddc63` | 17 个插件前端工程改用控制台的工具链：只剩 `package.json`、`tsconfig.json`、`src`、`.gitignore`；删掉 lockfile、`.npmrc`、`vite.config.ts`、`vitest.config.ts` 共 66 个文件、约 2.4 万行 |
+| `2962eb1f0` | CONTRACTS §23、设计文档第 8 节、ui README |
+
+- CI 脚本：原来 `set -e` 写在 `if ( … )` 的条件里不生效，只要最后一步成功就报通过。实现方用故意弄坏的 guard 用例证明：旧脚本退出码 0，新脚本退出码 1 并指出目录。
+- dynweight 间歇超时的根因（自报）：那条用例在测试体内第一次 `import` 组件，触发对整个 `@sub2api/ui` 源码的冷编译（约 6.5 秒），计入 5 秒的单测超时；是否失败取决于别的文件有没有先把它编译过，所以表现为间歇。不是产品代码的问题，也不是这批改动引入的回归（区间内每个提交单跑都超时）。修后单跑 10 次、整套 10 次全过。没有调大超时。
+- 配置样板：17 个工程的产物里 16 个与改前逐字节相同；codex 的差异是一个 prop 的类型声明由 `{}` 变成 `{ type: Function }`——原来插件工程解析不了从别的包导入的类型，现在能解析了。Node 24 与 26 的产物一致。`@sub2api/vite-preset` 是私有包、从未发布，第三方作者本来就是按 `file:` 依赖加 tsconfig `paths` 的写法，自带依赖的工程带着 lockfile 仍会先 `npm ci`，所以不受影响。
+- 自报验证：`next/web` typecheck、test（279 个文件、2536 条）通过；修好的 CI 脚本逐个检查 17 个工程全过；按 Dockerfile 的方式完整构建一遍通过；`next/tools/sub2api-plugin` 的 Go 测试通过。
+- **审查要点**：第三方独立构建的说法是否属实（CONTRACTS §23 的写法）；`tsconfig.plugin.json` 用 `typeRoots`/`types: []` 的理由；插件工程的三个脚本直接引用 `../../../../web/node_modules` 下的可执行文件是否可接受；`next-ci.yml` 的 `cache-dependency-path` 里插件 lockfile 的通配现在匹配不到文件（实现方认为无害，保留）。
+
+### 13.3 `feat/plugin-key-url-rules`（头 `701df0d01`，2 个提交，只有文档）
+
+见 6.2。文档里方案 A、B 并列；设计者验证了方案 B：已存地址对所有类型等价，不需要查生产库。
+
+### 13.4 合并这四个分支时要注意
+
+- 建议顺序：D1b → D1a → Jev →（实现后）密钥与地址规则。
+- D1a 与 D1b 的分工：D1a 改版本号与 `manifest.json`，不动工程配置与 lockfile；D1b 相反。两者都改了 `CONTRACTS.md` §23、设计文档、`next/web/packages/ui/README.md` 的不同位置，预计有文本冲突；各插件 `ui/native/package.json` 若两边都动过也要核对。
+- Jev 改了 `CONTRACTS.md` §72.10；D1a 把 §72.10 列进了留给 D2 的清单。
+- D1a 把 `Spec.Fields` 改成总是检查后，各插件里显式写的 `Fields = fieldcheck.Fields{}` 成了多余的写法，实现方没删（删了算插件内容变化）；终审时决定去留。
+- 合并 D1a 之后再跑一次第 6.7 节的全量验证；特别是整套 e2e（D1a 改了 7 条用例，但从没实际跑过）。
+
+### 13.5 推送状态
+
+暂停时**什么都没推**。所有者的指示：远端用 `upstream`；"现在你先提交文档就行了 其他的慢慢等合并 后面文档一起提交上去就行了"。要在别处接着做，除了 `develop`（含本文），还需要 `feat/plugin-ui-code-only`、`feat/plugin-ui-d1a`、`feat/plugin-ui-d1b`、`feat/plugin-ui-jev`、`feat/plugin-key-url-rules` 这五个分支；推之前跟所有者确认清单。只推分支、不打标签（标签 `core-v<版本>` 推到 upstream 会触发发布）。
