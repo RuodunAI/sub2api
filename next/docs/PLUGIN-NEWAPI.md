@@ -57,7 +57,7 @@
 
 ## 5. 权限
 
-- 宿主权限：`platform.register`、`accounts.credentials {"types":"own"}`；没有 `net`、没有文件权限、没有 `gateway.endpoint`（不声明端点）。
+- 宿主权限：`platform.register`、`accounts.credentials {"types":"own"}`、`ui.native`（账号表单 `NewAPIKeyForm`，插件自带的原生界面 `ui/native`，用 `@sub2api/ui` 的 `createApiKeyForm`；保存时的校验在插件的 `ValidateCredentials`）；没有 `net`、没有文件权限、没有 `gateway.endpoint`（不声明端点）。
 - 能力：`platform.adapter.v1`、`platform.websocket.v1`（Responses 的 WebSocket 模式）。
 - 不在清单里写价格：模型价格由管理员在核心录入；生图模型按设计 3.4.5 录表达式价格；转发 Jev 时按 TypeSafe 的价格（PLUGIN-TYPESAFE.md 第 4 节）。
 

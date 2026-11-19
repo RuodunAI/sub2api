@@ -14,6 +14,7 @@
     "grpc": { "binaries": "runtimes/{os}-{arch}/plugin" }
   },
   "hostCompat": ">=0.1.304 <0.2.0",
+  "hostUICompat": "^3.20",
 
   "capabilities": [
     { "id": "platform.adapter.v1" },
@@ -28,11 +29,7 @@
         "en": "An API key of a New API site. Each protocol goes to <Base URL> with its official path and auth header (OpenAI Authorization: Bearer, Anthropic x-api-key, Gemini x-goog-api-key).",
         "zh": "New API 站点的 API Key。各协议按官方路径和鉴权头发往 <Base URL>（OpenAI 用 Authorization: Bearer，Anthropic 用 x-api-key，Gemini 用 x-goog-api-key）。"
       },
-      "form": {
-        "mode": "schema",
-        "schema": "forms/apikey.schema.json",
-        "uiSchema": "forms/apikey.ui.json"
-      },
+      "form": { "mode": "native", "component": "NewAPIKeyForm" },
       "upstreamFields": ["base_url"],
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url"],
@@ -48,10 +45,16 @@
 
   "resources": { "memoryMB": 64, "cpu": 0.1, "maxThreads": 32, "maxOpenFiles": 64 },
 
+  "ui": {
+    "native": { "entry": "ui/native/entry.js" }
+  },
+
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the \"New API\" account type for the built-in openai, anthropic and gemini platforms and the typesafe platform", "zh": "为内置 openai、anthropic、gemini 平台和 typesafe 平台注册\"New API\"账号类型" } },
     { "id": "accounts.credentials", "scope": { "types": "own" },
-      "reason": { "en": "Read the Base URL and key of its own accounts to build upstream and balance requests (the core sends them)", "zh": "读取本插件账号的 Base URL 和 Key，用于构造上游请求和余额查询（由核心发送）" } }
+      "reason": { "en": "Read the Base URL and key of its own accounts to build upstream and balance requests (the core sends them)", "zh": "读取本插件账号的 Base URL 和 Key，用于构造上游请求和余额查询（由核心发送）" } },
+    { "id": "ui.native",
+      "reason": { "en": "The API key account form (NewAPIKeyForm)", "zh": "API Key 账号表单（NewAPIKeyForm）" } }
   ]
 }
