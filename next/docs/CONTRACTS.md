@@ -3317,9 +3317,11 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 
 0.1.290 删除了 CCGateway（CHANGELOG 0.1.290，迁移 0102）。本节原文见 `git show 317b0c331:next/docs/CONTRACTS.md`。
 
-## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
+## 52. 账号余额：插件描述、核心经账号代理查询、只显示（2026-10-05；2026-11-18 重写并接通，核心 0.1.304，迁移 0113；同日改为不做任何换算，迁移 0115；设计见 [DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md](DESIGN-2026-11-18-UPSTREAM-PLUGINS-AND-BALANCE.md) 3.1）
 
-账号类型可以声明余额（预付的金额），照额度主动查询（§44.4）的路走：插件描述请求，核心检查目标、经账号代理发出，插件解析应答。核心按清单的间隔定时查，管理员随时手动刷新。**余额只显示**：不停用账号、不影响调度、不告警（设计 D1）。此前核心从不调用两个 RPC，余额只来自核心里按账号类型注册的查询器（`BalanceProvider`），唯一的查询器随 claude-oauth 删除（§116）；0.1.304 删掉注册表，改为调插件。
+**余额是上游返回的数字本身，单位是上游给的原文，不做任何换算。** 2026-11-18 所有者原话："我现在给你明确，不要去折算，上游返回多少我们就是多少，我们不要做任何折算，就算数字不对也不管，汇率不对也不管。"——插件不做单位换算、汇率换算，不替上游补单位；上游没给单位就没有单位（界面只显示数字）；核心不校验单位的格式。这推翻了设计的 D3（统一折成美元）与 D6（New API 用 `quota_per_unit` 换算）。字段名仍叫 `currency`（proto、数据库列、接口），语义是"上游给的单位，可以没有"。
+
+账号类型可以声明余额（上游报告的剩余额度），照额度主动查询（§44.4）的路走：插件描述请求，核心检查目标、经账号代理发出，插件解析应答。核心按清单的间隔定时查，管理员随时手动刷新。**余额只显示**：不停用账号、不影响调度、不告警（设计 D1）。此前核心从不调用两个 RPC，余额只来自核心里按账号类型注册的查询器（`BalanceProvider`），唯一的查询器随 claude-oauth 删除（§116）；0.1.304 删掉注册表，改为调插件。
 
 ### 52.1 清单：`accountTypes[].balance`
 
@@ -3328,14 +3330,14 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 ```
 
 - `"balance": {}` 就是完整的声明。`updateInterval`：秒，60–86400；0 或不写用核心的缺省值 **180 秒**（缺省值只在核心 `account.defaultBalanceInterval` 一处）。成功、失败都按同一间隔再查；管理员的手动刷新不受它限制。
-- 没有 `currency`：币种由插件按账号在每次结果里给（中转站可能记美元或人民币）。还写着 `currency` 的清单严格解码时报未知字段。
+- 没有 `currency`：单位由插件按账号在每次结果里给（上游答什么就是什么，可以没有）。还写着 `currency` 的清单严格解码时报未知字段。
 - 校验在 `sdk/manifest/check/balance.go`（只查间隔的范围）。声明了 `balance` 的类型，插件应实现下面两个 RPC（SDK `pluginsdk.BalanceReader`；没实现时回 `UNIMPLEMENTED`，核心当作这个类型没有余额）。
 
 ### 52.2 插件 RPC（`platform.proto`）
 
-- `BuildBalanceRequest({account})` → `{requests[]}`：一次查询可以有**多个**请求，按顺序发出，至少一个（空列表按插件错误记）。`BalanceRequest{method（缺省 GET）, url, headers, body_json}`。账号带解密的凭证，`platform` 为空。头原样发出；**公开接口（如 New API 的 `/api/status`）不带凭证头，核心不自己加任何凭证**。有请求体而头里没有 `Content-Type` 时核心补 `application/json`。
+- `BuildBalanceRequest({account})` → `{requests[]}`：一次查询可以有**多个**请求，按顺序发出，至少一个（空列表按插件错误记）。`BalanceRequest{method（缺省 GET）, url, headers, body_json}`。账号带解密的凭证，`platform` 为空。头原样发出；**公开接口的请求不带凭证头，核心不自己加任何凭证**。有请求体而头里没有 `Content-Type` 时核心补 `application/json`。
 - `ParseBalanceResponse({account, answers[]})` → `{result}`：每个请求一个 `BalanceAnswer{status, headers（小写，取第一个值）, body（整份）, transport_error}`，顺序与请求相同；**每个请求都发**，前一个失败后面的照发。读不完整的应答按传输错误交给插件（`status` 0）。
-- `BalanceResult{amount_micros, currency, error_type, error_message, unlimited}`：`amount_micros` 以百万分之一为单位（1.23 → 1230000，可以为负）；成功且不是 `unlimited` 时 `currency` 必须是三个大写字母（`^[A-Z]{3}$`），否则按 `transient` 记错误；`unlimited` 为真表示上游报告这个账号不限额度，金额和币种忽略。`error_type`：`UNSPECIFIED` 成功；`AUTH_REJECTED` 凭证被拒——**只记在快照上，不停用、不冷却账号**（那是网关失败分类的事）；`TRANSIENT` 其他失败。`error_message` 去控制字符、合并空白，最多 256 字节（与额度相同，`quotaErrorDetail`）。
+- `BalanceResult{amount_micros, currency, error_type, error_message, unlimited}`：`amount_micros` 是上游的数字本身、以百万分之一为单位传（1.23 → 1230000，1250000 → 1250000000000，可以为负；这是表示形式，不是换算，第七位小数起四舍五入，SDK `standard.Micros`）；`currency` 是上游随数字给的单位原文（如 `USD`，也可以是任何文字），**没有单位时为空**，核心不校验格式、原样保存原样显示（此前要求 `^[A-Z]{3}$`，2026-11-18 删除）；`unlimited` 为真表示上游报告这个账号不限额度，金额和单位忽略。`error_type`：`UNSPECIFIED` 成功；`AUTH_REJECTED` 凭证被拒——**只记在快照上，不停用、不冷却账号**（那是网关失败分类的事）；`TRANSIENT` 其他失败。`error_message` 去控制字符、合并空白，最多 256 字节（与额度相同，`quotaErrorDetail`）。
 - 两个 RPC 在运行时走控制台的预算（`classConsole`，每次 10 秒，与额度查询相同）。只加字段、改了从未被调用的消息，Host API 仍是 10，插件协议仍是 2。
 
 ### 52.3 核心：一次查询（`server/internal/account/balance.go`）
@@ -3343,23 +3345,23 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 1. 插件 `BuildBalanceRequest`。
 2. **发出任何请求之前**，对每个 URL 调 `core.CheckPluginUpstream`：先是清单与账号的主机规则（§112.17：`externalServices` 或账号 `upstreamFields` 里的地址），再是管理员的插件联网（§113.3）。**任一被拒，一个都不发**，也不调 `ParseBalanceResponse`，快照记 `transient: <拒绝信息>`（如 `plugin newapi: host "x" is neither in the manifest's externalServices nor an upstream address of the account`、`plugin newapi: <host> is on the blocked list of plugin network access`）。插件联网的拒绝照常写进插件的出口日志（`denied`）。
 3. 逐个经 `sendPluginCall` 发出：账号代理（代理被停用是传输错误 `proxy disabled`，不会改成直连）、直连时的内网地址保护（`netguard`，`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` 放开）、`guardUpstream` 里再过一次插件联网，**不跟随重定向**（3xx 原样交给插件，带 `location`；否则重定向能把带 Key 的请求带到主机规则之外，设计 D9）。
-4. 插件 `ParseBalanceResponse`，核心归一化后写库并写穿 Redis。
+4. 插件 `ParseBalanceResponse`，核心归一化（只看 `error_type` 与 `unlimited`，金额与单位原样）后写库并写穿 Redis。
 - 整次查询（插件调用与全部请求）限时 `balanceQueryTimeout` 20 秒，与额度查询相同，没有新的时限、次数或大小上限。
 - 同一节点上同一账号的查询经 `singleflight` 合并（手动刷新与定时任务共用），合并的调用方等同一个结果，不随第一个调用方取消。跨节点不加租约：定时任务同一时刻只在一个节点跑，重复的只可能是“某节点的手动刷新 + 任务”，代价是上游多一次只读请求（设计 D10）。
 - 插件回 `UNIMPLEMENTED`：不写库，`GET /balance` 回 404 `unsupported`。
 - 写库失败返回 500（不再吞掉）。
 
-**表 `account_balances`**（迁移 0034 建，0113 改）：每个账号一行。
+**表 `account_balances`**（迁移 0034 建，0113、0115 改）：每个账号一行。
 
 | 列 | 说明 |
 |---|---|
 | `account_id` | 主键，删账号级联 |
-| `amount_micros`、`currency` | 最近一次成功查询的金额与币种；不限或从未成功时为 0 与 `''` |
+| `amount_micros`、`currency` | 最近一次成功查询的金额与单位（上游原文，`text`，0115 起；此前 `VARCHAR(3)`）；上游没给单位、不限或从未成功时单位为 `''`，不限或从未成功时金额为 0 |
 | `unlimited` | 最近一次成功查询报告不限额度（0113 加） |
 | `updated_at` | 最近一次成功查询的时间；**从未成功时为 NULL**（0113 起可空，此前首次失败违反 NOT NULL、错误被吞） |
 | `error`、`error_at` | 最近一次失败：`auth_rejected: …` / `transient: …`（最多 512 字节）与时间；成功时清空 |
 
-失败时保留上次成功的金额、币种、`unlimited` 与 `updated_at`，只更新 `error`、`error_at`。`source` 列（只有 `active` 一种取值，没人读）由 0113 删除。GORM 模型由迁移生成（`model.AccountBalance`）；读写在 `store/account_balance.go`。
+失败时保留上次成功的金额、单位、`unlimited` 与 `updated_at`，只更新 `error`、`error_at`。`source` 列（只有 `active` 一种取值，没人读）由 0113 删除。GORM 模型由迁移生成（`model.AccountBalance`）；读写在 `store/account_balance.go`。
 
 **改凭证、设置或代理时**：`PATCH /accounts/:id` 带了凭证（含重新授权）、扩展设置或换了代理，在同一事务里删掉这一行，提交后删 Redis 键；下一次查询（定时任务把它当作从未查过）重新开始。只改名称、分组等不删。
 
@@ -3378,7 +3380,7 @@ BalanceView = { supported: true, amount?: string, currency?: string, unlimited?:
                 updated_at?: string, error?: string, error_at?: string }
 ```
 
-- `amount` 是六位小数的十进制串（`"12.500000"`），只在有成功查询且不是 `unlimited` 时出现；`unlimited` 只在为真时出现；`updated_at` 是最近一次成功的时间。
+- `amount` 是六位小数的十进制串（`"12.500000"`），只在有成功查询且不是 `unlimited` 时出现；`currency` 是上游给的单位原文，上游没给时不出现；`unlimited` 只在为真时出现；`updated_at` 是最近一次成功的时间。
 - 上游或插件失败不让接口失败：200，`error` 说明原因，旧金额照常返回。
 - 类型没有声明 `balance`、插件未加载或回 `UNIMPLEMENTED`：404 `unsupported`。
 
@@ -3392,7 +3394,7 @@ BalanceView = { supported: true, amount?: string, currency?: string, unlimited?:
 |---|---|---|
 | 不支持 | 没有 `balance` 字段 | 不出现 |
 | 支持、未查 | 没有 `updated_at`、没有 `error` | “未查询” + “刷新余额” |
-| 有余额 | 有 `amount` | 金额与币种（`formatBalance`），“更新于 x 前” |
+| 有余额 | 有 `amount` | 数字加上游给的单位原文（`formatBalance`：千分位，去掉末尾无意义的零、不四舍五入，如 `7.5 USD`、`1,250,000`；不把 `USD`、`CNY` 换成符号，不替上游解释单位），“更新于 x 前” |
 | 不限 | `unlimited` | “不限”，提示“上游报告此 Key 不限额度” |
 | 查询失败 | 有 `error` | 红色徽标“查询失败”，提示里是 `error` 与 `error_at`；有旧金额（或旧的“不限”）时照常显示并标“旧值” |
 
@@ -3400,9 +3402,10 @@ BalanceView = { supported: true, amount?: string, currency?: string, unlimited?:
 
 ### 52.7 测试
 
-- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、币种不合法、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`。
+- 核心 `account/balance_test.go`：单个与多个请求（第二个不带凭证、按序、一个失败其余照发、传输错误也是回答）、不跟随重定向、主机规则与插件联网拒绝时一个都不发、经账号代理与代理停用、`unlimited`、没有单位与任意文字的单位原样保存、`AUTH_REJECTED` 不动账号、首次失败入库、失败保留旧值、`singleflight`、`UNIMPLEMENTED`、定时任务按间隔只查到期的（含从未查过的停用账号，不含查过的停用账号与已删账号）、手动刷新不受间隔限制、改凭证 / 代理后删除快照与缓存；`balance_cache_test.go`；`store/account_balance_test.go`；迁移 `TestMigration0113AccountBalanceUnlimited`、`TestMigration0115AccountBalanceUnitText`。
 - 运行时 `grpcruntime` 的 `TestBalanceAcrossProcess`：经真实 gRPC 的测试插件（`testdata/testplugin`），请求与回答逐字段往返，`UNIMPLEMENTED` 经运行时的错误仍能被识别。
-- 控制台 `AccountBalanceCell.spec.ts`（五种状态）。
+- 控制台 `AccountBalanceCell.spec.ts`（五种状态，有单位与没有单位）、`utils/format.spec.ts`（`formatBalance` 的千分位、小数位与大数）。
+- 插件：`plugins/newapi`、`plugins/sub2api` 的 `platform_test.go`（每个分支、大数与带小数的数）；SDK `standard/balance_test.go`（两种示例读法与 `Micros`）。
 
 ### 49.17 CCGateway 容器地址池（已删除）
 
@@ -8204,10 +8207,10 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 包 | 内容 |
 |---|---|
 | `sdk/pluginsdk` | `Platform`（`ClassifyError` + `ValidateCredentials` + `BuildTestRequest`）加 `UpstreamBuilder`（`BuildUpstream`）：SDK 替它跑 `ExecuteDefault`；`Executor`（自己的 `Execute`）可选，实现了就用它，两者都没有时注册失败（转发 V2 收尾起；此前 `Platform` 必须实现 `Execute`，多数插件写一行转给 `ExecuteDefault`）；`UsageExtractor`、`TaskSubmissionParser`、`TaskMonitor` 是 `ExecuteDefault` 和 `Monitor` 在插件进程内调用的接口；`Relay`、`RelayAndWait`、`Fetch`（不限次数和大小，`FetchLimit`、`FetchResponseLimit` 已删除）；`ValidateUpstreamRequest`（与宿主同一套判断：方法和请求头按 `httpguts`）；`WithManifest`（清单原文，`pluginsdk.ManifestOf` 已删除）；`NewUpstream`（构造器，`Header*` 权威、`DefaultHeader*` 默认、`RemoveHeader` 不发某个头，§112.17）；`ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`、`Classified`；`RequestModel`、`RequestStream`（`meta.stream`，或请求体里的 `stream` 为真）。能力推断只给 `platform.adapter.v1`（`Platform`）和 `platform.monitor.v1`（`TaskMonitor`）。可选接口 `BalanceReader`（`BuildBalanceRequest` / `ParseBalanceResponse`，§52）照 `QuotaReader` 的方式按类型断言发现，没实现的回 `UNIMPLEMENTED` |
-| `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini,typesafe}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游。路由可以有自己的鉴权（`Route.Auth`）和失败分类（`Route.Classify`，`ClassifyError` 按 `meta.protocol` 找路由，没有就用类型的）；`Merge(id, spec, parts...)` 把几份预设合成一个多平台类型（每条路由保留自己那份的鉴权、请求头和分类；模型列表、余额、默认测试取第一份；同一协议出现两次或某份有 `FilterFields` 时 panic）；`Type.Tests` 是按协议的测试请求，`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个有测试的协议，都没有用 `Test`；`Type.Balance`（`Requests` 是基础地址上的 GET，`BalanceRequest.Auth` 为 `&Auth{}` 时不带 Key，`Read` 读按顺序的回答）使 `Platform` 实现 `BalanceReader`，回答数与请求数不符时按 TRANSIENT 记，辅助函数 `BalanceFailure`、`USDMicros`。`providers/typesafe` 是 TypeSafe 平台定义的唯一来源（`Platform()`，嵌入的 JSON）与它的预设、失败分类 |
+| `sdk/pluginsdk/standard`、`providers/{openai,anthropic,gemini,typesafe}` | API Key 加基础地址一类账号类型的公共实现与厂商预设（`APIKey(id)`），取代声明式上游。路由可以有自己的鉴权（`Route.Auth`）和失败分类（`Route.Classify`，`ClassifyError` 按 `meta.protocol` 找路由，没有就用类型的）；`Merge(id, spec, parts...)` 把几份预设合成一个多平台类型（每条路由保留自己那份的鉴权、请求头和分类；模型列表、余额、默认测试取第一份；同一协议出现两次或某份有 `FilterFields` 时 panic）；`Type.Tests` 是按协议的测试请求，`BuildTestRequest` 取 `BuildTestRequestRequest.protocols` 里第一个有测试的协议，都没有用 `Test`；`Type.Balance`（`Requests` 是基础地址上的 GET，`BalanceRequest.Auth` 为 `&Auth{}` 时不带 Key，`Read` 读按顺序的回答）使 `Platform` 实现 `BalanceReader`，回答数与请求数不符时按 TRANSIENT 记，辅助函数 `BalanceFailure`、`Micros`（上游的十进制数换成百万分之一，不是换算）。`providers/typesafe` 是 TypeSafe 平台定义的唯一来源（`Platform()`，嵌入的 JSON）与它的预设、失败分类 |
 | `sdk/pluginsdk/jsonedit` | 唯一的请求体改写工具：按路径改，未动的字节原样保留，一批改写拷贝一次；同一成员上的改写按调用顺序生效（先 `Set` 后 `Delete` 就是删掉）；插件不写自己的 JSON 编辑器 |
 | `sdk/reqsign`、`sdk/awseventstream` | 插件自己签名；响应流格式的解码（核心中继时用） |
-| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（来自 `pluginsdktest.Options{Manifest: manifestJSON}`，Harness 同时用它 `WithManifest` 启动插件；按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`、`Harness.Balance`（一次余额查询：先对每个请求按 `UpstreamHostAllowed` 判断，有一个不行就都不发、`PERMISSION_DENIED`；每个请求都交给测试的回答函数，不跟随重定向；回答按顺序交给 `ParseBalanceResponse`；成功又不是 `unlimited` 却没有合法币种时按核心记 TRANSIENT 的规则报 `FAILED_PRECONDITION`）。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
+| `sdk/pluginsdk/pluginsdktest` | 假宿主：`Harness.Execute` / `Harness.Monitor`、`FakeHost.Begin` / `BeginMonitor`、`Execution`、`RelayFunc`、`ExecuteHTTPFunc`、`Manifest`（来自 `pluginsdktest.Options{Manifest: manifestJSON}`，Harness 同时用它 `WithManifest` 启动插件；按 `manifest.UpstreamHostAllowed` 决定中继和取回能到的主机，§112.17）、`ExternalServices`（替换清单的）、`ExpireExecutions`、`Harness.Balance`（一次余额查询：先对每个请求按 `UpstreamHostAllowed` 判断，有一个不行就都不发、`PERMISSION_DENIED`；每个请求都交给测试的回答函数，不跟随重定向；回答按顺序交给 `ParseBalanceResponse`；单位照插件给的原样，可以为空，与核心相同）。和宿主一样不限中继和取回的请求体、不数取回、不截回答；`Monitor` 的终态要有这次调用里一次完整、成功的取回。仍与宿主不同的地方写在 `FakeHost` 的注释里 |
 | `sdk/pluginsdk/pluginsdktest/conformance` | 一致性套件，12 条检查，九个平台插件都在自己的测试里调 `conformance.Run`（`Plugin.Manifest` 必填；HTTP 协议的形式从端点定义读出；WebSocket 协议只在第 11 条；`Plugin.Platforms` 是别的插件声明、本插件类型服务的平台；`12_balance`：声明 `balance` 的类型必须读得出余额，无法读的回答给错误结果，没声明的回 `UNIMPLEMENTED`） |
 | `sdk/pluginsdk/standard/goldentest` | 原声明式引擎的 1498 条录制样例，转换后冻结。`Select`、`Forwarded`、`Case.BaseURL` 让别的实现（例如 `Merge` 出的中转站类型）只回放它必须答得一样的用例 |
 

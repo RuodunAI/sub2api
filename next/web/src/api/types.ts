@@ -800,7 +800,7 @@ export interface AccountBalance {
   supported: boolean
   /** Decimal amount of the last successful read (e.g. "1.230000"); absent before one and when unlimited. */
   amount?: Money
-  /** ISO 4217 code of amount (e.g. "USD", "CNY"). */
+  /** The unit the upstream gave with amount, as it gave it (e.g. "USD", any text); absent when it gave none. Never converted. */
   currency?: string
   /** The upstream reports no limit for this account. */
   unlimited?: boolean

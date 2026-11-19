@@ -647,6 +647,7 @@ export default {
     updatedAt: '更新于 {time}',
     unread: '未查询',
     unlimited: '不限',
+    amountHint: '上游返回的数字与单位，原样显示，未做换算',
     unlimitedHint: '上游报告此 Key 不限额度',
     failed: '查询失败',
     errorHint: '{error}（{time}）',

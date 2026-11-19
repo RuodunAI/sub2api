@@ -10,7 +10,7 @@ import (
 type AccountBalance struct {
 	AccountID    int64      `gorm:"column:account_id;primaryKey;autoIncrement:false"` // bigint
 	AmountMicros int64      `gorm:"column:amount_micros"`                             // bigint
-	Currency     string     `gorm:"column:currency"`                                  // character varying(3)
+	Currency     string     `gorm:"column:currency"`                                  // text
 	UpdatedAt    *time.Time `gorm:"column:updated_at;autoUpdateTime:false"`           // timestamp with time zone
 	Error        *string    `gorm:"column:error"`                                     // text
 	ErrorAt      *time.Time `gorm:"column:error_at"`                                  // timestamp with time zone

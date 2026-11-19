@@ -4,6 +4,9 @@
 package newapi
 
 import (
+	"math"
+	"strconv"
+
 	"github.com/tidwall/gjson"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -26,7 +29,7 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 
 // APIKey is the four presets on the site's own address (required, a
 // pasted /v1beta or /v1 removed, any 8-512 printable characters as the
-// key), with the balance of the key in US dollars.
+// key), with the balance of the key in the site's own quota.
 func APIKey() standard.Type {
 	spec := apikey.Spec{
 		RequireBaseURL: true,
@@ -40,49 +43,42 @@ func APIKey() standard.Type {
 		},
 	}
 	t := standard.Merge(TypeAPIKey, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
-	t.Balance = &standard.Balance{
-		Requests: []standard.BalanceRequest{
-			{Path: "/api/usage/token/"},                   // the key's quota, with the key
-			{Path: "/api/status", Auth: &standard.Auth{}}, // the site's unit of account, public: no key
-		},
-		Read: readBalance,
-	}
+	t.Balance = &standard.Balance{Requests: []standard.BalanceRequest{{Path: "/api/usage/token/"}}, Read: readBalance}
 	return t
 }
 
-// readBalance reads the key's available quota (the lower of the key's and
-// its user's when the site reports the user's; the user's for a key
-// without a limit; no limit when neither has one) in the site's units, of
-// which quota_per_unit make one US dollar. Without quota_per_unit there is
-// no balance: the default of the site's software is never assumed.
+// readBalance reads the key's available quota as the site answers it,
+// without a unit (the answer has none) and never converted (CONTRACTS
+// §52): the lower of the key's and its user's when the site reports the
+// user's, the user's for a key without a limit, no limit when neither has
+// one.
 func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
-	for _, a := range answers {
-		if f := standard.BalanceFailure(a); f != nil {
-			return f
-		}
+	if f := standard.BalanceFailure(answers[0]); f != nil {
+		return f
 	}
-	token, site := gjson.ParseBytes(answers[0].GetBody()), gjson.ParseBytes(answers[1].GetBody())
-	perUnit := site.Get("data.quota_per_unit").Float()
-	switch {
-	case !token.Get("code").Bool():
+	token := gjson.ParseBytes(answers[0].GetBody())
+	if !token.Get("code").Bool() {
 		return transient("token usage refused: " + token.Get("message").String() + " / 站点拒绝查询令牌额度")
-	case perUnit <= 0:
-		return transient("no quota_per_unit in /api/status / 无法读取站点的额度换算比例")
 	}
-	d, user := token.Get("data"), token.Get("data.user_quota.total_available")
-	var available float64
-	switch {
-	case !d.Get("unlimited_quota").Bool():
-		available = d.Get("total_available").Float()
-		if user.Exists() {
-			available = min(available, user.Float())
-		}
-	case user.Exists():
-		available = user.Float()
-	default:
+	var quotas []gjson.Result
+	if !token.Get("data.unlimited_quota").Bool() {
+		quotas = append(quotas, token.Get("data.total_available"))
+	}
+	if user := token.Get("data.user_quota.total_available"); user.Exists() {
+		quotas = append(quotas, user)
+	}
+	if len(quotas) == 0 {
 		return &pluginv1.BalanceResult{Unlimited: true}
 	}
-	return &pluginv1.BalanceResult{AmountMicros: standard.USDMicros(available, perUnit), Currency: "USD"}
+	lowest := int64(math.MaxInt64)
+	for _, q := range quotas {
+		m, ok := standard.Micros(q.String())
+		if !ok {
+			return transient("total_available " + strconv.Quote(q.Raw) + " is not a number in range / 额度不是可读的数字")
+		}
+		lowest = min(lowest, m)
+	}
+	return &pluginv1.BalanceResult{AmountMicros: lowest}
 }
 
 func transient(msg string) *pluginv1.BalanceResult {

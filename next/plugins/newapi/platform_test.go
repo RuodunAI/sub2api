@@ -158,11 +158,7 @@ func TestModels(t *testing.T) {
 	}
 }
 
-const (
-	tokenURL  = site + "/api/usage/token/"
-	statusURL = site + "/api/status"
-	status    = `{"success":true,"data":{"quota_per_unit":500000,"quota_display_type":"CNY"}}`
-)
+const tokenURL = site + "/api/usage/token/"
 
 // answers serves the balance requests from bodies by URL (404 for any
 // other), recording what was asked.
@@ -177,46 +173,40 @@ func answers(bodies map[string]string, seen *[]*pluginv1.BalanceRequest) func(*p
 	}
 }
 
-// TestBalance: every branch of the reading, on two requests in order, the
-// key only on the first (the trailing slash kept), none on the public one.
+// TestBalance: every branch of the reading, on one request with the key
+// (the trailing slash kept); the amount is the site's quota as it is,
+// without a unit and never converted (CONTRACTS §52).
 func TestBalance(t *testing.T) {
 	h := pluginsdktest.Start(t, platform, pluginsdktest.Options{Manifest: manifestJSON})
 	transient := pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT
 	for name, c := range map[string]struct {
-		token, status string
-		want          *pluginv1.BalanceResult
+		token string
+		want  *pluginv1.BalanceResult
 	}{
-		"limited":                 {`{"code":true,"data":{"total_granted":2000000,"total_used":750000,"total_available":1250000,"unlimited_quota":false}}`, status, &pluginv1.BalanceResult{AmountMicros: 2500000, Currency: "USD"}},
-		"the user's is lower":     {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, status, &pluginv1.BalanceResult{AmountMicros: 500000, Currency: "USD"}},
-		"the key's is lower":      {`{"code":true,"data":{"total_available":250000,"unlimited_quota":false,"user_quota":{"total_available":1250000}}}`, status, &pluginv1.BalanceResult{AmountMicros: 500000, Currency: "USD"}},
-		"overdrawn":               {`{"code":true,"data":{"total_available":-50000,"unlimited_quota":false}}`, status, &pluginv1.BalanceResult{AmountMicros: -100000, Currency: "USD"}},
-		"unlimited, user's":       {`{"code":true,"data":{"unlimited_quota":true,"user_quota":{"total_available":50000}}}`, status, &pluginv1.BalanceResult{AmountMicros: 100000, Currency: "USD"}},
-		"unlimited, no user's":    {`{"code":true,"data":{"total_available":0,"unlimited_quota":true}}`, status, &pluginv1.BalanceResult{Unlimited: true}},
-		"another unit":            {`{"code":true,"data":{"total_available":1000,"unlimited_quota":false}}`, `{"data":{"quota_per_unit":1000}}`, &pluginv1.BalanceResult{AmountMicros: 1000000, Currency: "USD"}},
-		"no quota_per_unit":       {`{"code":true,"data":{"total_available":1250000}}`, `{"success":true,"data":{}}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "no quota_per_unit in /api/status / 无法读取站点的额度换算比例"}},
-		"a zero quota_per_unit":   {`{"code":true,"data":{"total_available":1250000}}`, `{"data":{"quota_per_unit":0}}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "no quota_per_unit in /api/status / 无法读取站点的额度换算比例"}},
-		"code false":              {`{"code":false,"message":"令牌无效","data":null}`, status, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "token usage refused: 令牌无效 / 站点拒绝查询令牌额度"}},
-		"status not served (404)": {`{"code":true,"data":{"total_available":1}}`, "", &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "upstream returned HTTP 404"}},
+		"limited":              {`{"code":true,"data":{"total_granted":2000000,"total_used":750000,"total_available":1250000,"unlimited_quota":false}}`, &pluginv1.BalanceResult{AmountMicros: 1250000_000000}},
+		"the user's is lower":  {`{"code":true,"data":{"total_available":1250000,"unlimited_quota":false,"user_quota":{"total_available":250000}}}`, &pluginv1.BalanceResult{AmountMicros: 250000_000000}},
+		"the key's is lower":   {`{"code":true,"data":{"total_available":250000,"unlimited_quota":false,"user_quota":{"total_available":1250000}}}`, &pluginv1.BalanceResult{AmountMicros: 250000_000000}},
+		"overdrawn":            {`{"code":true,"data":{"total_available":-50000,"unlimited_quota":false}}`, &pluginv1.BalanceResult{AmountMicros: -50000_000000}},
+		"unlimited, user's":    {`{"code":true,"data":{"unlimited_quota":true,"user_quota":{"total_available":50000}}}`, &pluginv1.BalanceResult{AmountMicros: 50000_000000}},
+		"unlimited, no user's": {`{"code":true,"data":{"total_available":0,"unlimited_quota":true}}`, &pluginv1.BalanceResult{Unlimited: true}},
+		"billions":             {`{"code":true,"data":{"total_available":8765432109,"unlimited_quota":false}}`, &pluginv1.BalanceResult{AmountMicros: 8765432109_000000}},
+		"a fraction":           {`{"code":true,"data":{"total_available":1250.75}}`, &pluginv1.BalanceResult{AmountMicros: 1250750000}},
+		"beyond the range":     {`{"code":true,"data":{"total_available":10000000000000}}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: `total_available "10000000000000" is not a number in range / 额度不是可读的数字`}},
+		"no total_available":   {`{"code":true,"data":{"unlimited_quota":false}}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: `total_available "" is not a number in range / 额度不是可读的数字`}},
+		"code false":           {`{"code":false,"message":"令牌无效","data":null}`, &pluginv1.BalanceResult{ErrorType: transient, ErrorMessage: "token usage refused: 令牌无效 / 站点拒绝查询令牌额度"}},
 	} {
-		bodies := map[string]string{tokenURL: c.token}
-		if c.status != "" {
-			bodies[statusURL] = c.status
-		}
 		var seen []*pluginv1.BalanceRequest
-		got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`/v1"}`), answers(bodies, &seen))
+		got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`/v1"}`), answers(map[string]string{tokenURL: c.token}, &seen))
 		if err != nil || got.String() != c.want.String() {
 			t.Errorf("%s: %v %v, want %v", name, got, err, c.want)
 		}
-		if len(seen) != 2 || seen[0].Url != tokenURL || seen[1].Url != statusURL || seen[0].Method != "GET" || seen[1].Method != "GET" ||
-			!reflect.DeepEqual(seen[0].Headers, map[string]string{"authorization": "Bearer " + apiKey}) || len(seen[1].Headers) != 0 {
+		if len(seen) != 1 || seen[0].Url != tokenURL || seen[0].Method != "GET" ||
+			!reflect.DeepEqual(seen[0].Headers, map[string]string{"authorization": "Bearer " + apiKey}) {
 			t.Fatalf("%s: requests %v", name, seen)
 		}
 	}
-	got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`"}`), func(r *pluginv1.BalanceRequest) *pluginv1.BalanceAnswer {
-		if r.Url == tokenURL {
-			return &pluginv1.BalanceAnswer{Status: 401, Body: []byte(`{"code":false,"message":"无效的令牌"}`)}
-		}
-		return &pluginv1.BalanceAnswer{Status: 200, Body: []byte(status)}
+	got, err := h.Balance(context.Background(), account(`{"base_url":"`+site+`"}`), func(*pluginv1.BalanceRequest) *pluginv1.BalanceAnswer {
+		return &pluginv1.BalanceAnswer{Status: 401, Body: []byte(`{"code":false,"message":"无效的令牌"}`)}
 	})
 	if err != nil || got.GetErrorType() != pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED || !strings.HasPrefix(got.GetErrorMessage(), "upstream returned HTTP 401") {
 		t.Errorf("401: %v %v", got, err)

@@ -1148,3 +1148,41 @@ func TestMigration0113AccountBalanceUnlimited(t *testing.T) {
 	require.Equal(t, []string{id}, migrate())
 	require.Equal(t, want, state())
 }
+
+// 0115 widens account_balances.currency to text, keeping the rows there,
+// so a unit of any length is stored as the upstream gave it; a rerun
+// changes nothing (CONTRACTS §52.3).
+func TestMigration0115AccountBalanceUnitText(t *testing.T) {
+	const id = "0115_account_balance_unit_text.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('a', 'p', 't', '');
+		INSERT INTO account_balances (account_id, amount_micros, currency, updated_at) SELECT id, 5, 'USD', now() FROM accounts WHERE name = 'a'`)
+	require.NoError(t, err)
+	const unit = "usd credits / 额度"
+	state := func() string {
+		return read(`SELECT data_type FROM information_schema.columns
+			WHERE table_schema = current_schema() AND table_name = 'account_balances' AND column_name = 'currency'`) + " | " +
+			read(`SELECT string_agg(amount_micros || ' ' || currency, ',' ORDER BY amount_micros) FROM account_balances`)
+	}
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, "text | 5 USD", state())
+	_, err = db.SQL.ExecContext(ctx, `WITH a AS (INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('b', 'p', 't', '') RETURNING id)
+		INSERT INTO account_balances (account_id, amount_micros, currency, updated_at) SELECT id, 7, $1, now() FROM a`, unit)
+	require.NoError(t, err)
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, "text | 5 USD,7 "+unit, state())
+}

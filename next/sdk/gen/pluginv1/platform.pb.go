@@ -424,7 +424,7 @@ const (
 	// or cool down the account - the gateway's own classification does that.
 	BalanceResult_ERROR_TYPE_AUTH_REJECTED BalanceResult_ErrorType = 1
 	// Any other failure: transport error, 429, 5xx, unreadable body, a
-	// value the plugin cannot convert. The host records it, keeps the last
+	// value the plugin cannot read. The host records it, keeps the last
 	// successful amount (shown as stale) and asks again at the next update
 	// interval.
 	BalanceResult_ERROR_TYPE_TRANSIENT BalanceResult_ErrorType = 2
@@ -3881,12 +3881,13 @@ type BalanceResult struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	// Balance in micro-units (1,000,000 = 1.00 currency unit). For example,
-	// $1.23 USD = 1230000 micros. Ignored when unlimited is set.
+	// The number the upstream reports, in millionths (7.25 = 7250000), as it
+	// is: never converted to another unit or currency. Ignored when
+	// unlimited is set.
 	AmountMicros int64 `protobuf:"varint,1,opt,name=amount_micros,json=amountMicros,proto3" json:"amount_micros,omitempty"`
-	// ISO 4217 currency code (3 uppercase letters, e.g. "USD", "CNY"), chosen
-	// by the plugin per account. Required on success unless unlimited is set;
-	// a success without a valid code is recorded as a transient error.
+	// The unit the upstream gives with the number, as it gives it (e.g.
+	// "USD"; any text, not checked), empty when it gives none. Stored and
+	// shown as it is. Ignored when unlimited is set.
 	Currency  string                  `protobuf:"bytes,2,opt,name=currency,proto3" json:"currency,omitempty"`
 	ErrorType BalanceResult_ErrorType `protobuf:"varint,3,opt,name=error_type,json=errorType,proto3,enum=sub2api.plugin.v1.BalanceResult_ErrorType" json:"error_type,omitempty"`
 	// Why, shown with the snapshot. At most 512 bytes are kept.

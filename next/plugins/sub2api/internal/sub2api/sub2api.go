@@ -5,8 +5,7 @@
 package sub2api
 
 import (
-	"cmp"
-	"regexp"
+	"strconv"
 
 	"github.com/tidwall/gjson"
 
@@ -47,13 +46,12 @@ func APIKey() standard.Type {
 	return t
 }
 
-var currencyCode = regexp.MustCompile(`^[A-Z]{3}$`)
-
-// readBalance reads both releases' answer: the amount is remaining, else
-// balance, else quota.remaining (the first present), -1 meaning no limit
-// (a legacy subscription without any limit); the currency is unit, USD
-// when absent. A key the site reports invalid (disabled or expired) is
-// rejected.
+// readBalance reads both releases' answer as it is, never converted
+// (CONTRACTS §52): the amount is remaining, else balance, else
+// quota.remaining (the first present), -1 meaning no limit (a legacy
+// subscription without any limit); the unit is unit as the site gives it,
+// none when it gives none. A key the site reports invalid (disabled or
+// expired) is rejected.
 func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	if f := standard.BalanceFailure(answers[0]); f != nil {
 		return f
@@ -69,16 +67,17 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 			break
 		}
 	}
-	unit := cmp.Or(b.Get("unit").String(), "USD")
-	switch {
-	case !amount.Exists():
+	if !amount.Exists() {
 		return transient("no remaining, balance or quota.remaining in /v1/usage / 应答里没有余额")
-	case amount.Float() == -1:
-		return &pluginv1.BalanceResult{Unlimited: true}
-	case !currencyCode.MatchString(unit):
-		return transient("unit " + unit + " is not a currency code / unit 不是币种代码")
 	}
-	return &pluginv1.BalanceResult{AmountMicros: standard.USDMicros(amount.Float(), 1), Currency: unit}
+	if amount.Float() == -1 {
+		return &pluginv1.BalanceResult{Unlimited: true}
+	}
+	m, ok := standard.Micros(amount.String())
+	if !ok {
+		return transient("amount " + strconv.Quote(amount.Raw) + " is not a number in range / 余额不是可读的数字")
+	}
+	return &pluginv1.BalanceResult{AmountMicros: m, Currency: b.Get("unit").String()}
 }
 
 func transient(msg string) *pluginv1.BalanceResult {

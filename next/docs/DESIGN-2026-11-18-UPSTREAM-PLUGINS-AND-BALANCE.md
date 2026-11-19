@@ -99,6 +99,8 @@
 
 ### 3.1 余额接通
 
+> 2026-11-18 注：所有者改为不做任何换算（推翻 D3、D6）：余额是上游的数字本身，单位是上游给的原文、没给就没有，核心不校验单位格式，New API 不再读 `/api/status`，SDK 的 `USDMicros` 改为 `Micros`。现行规则见 CONTRACTS §52；本节以下是原设计。
+
 #### 3.1.1 数据流
 
 ```
@@ -444,10 +446,10 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 |---|---|---|---|
 | D1 | 余额只显示，不停用、不影响调度、不告警 | 所有者规矩：不自作主张加限制 | 以后另加一节；联动逻辑放 `account` 模块 |
 | D2 | 定时刷新用清单 `updateInterval`；两个新插件写 600 秒（10 分钟） | 余额只是展示，10 分钟够看，手动刷新随时可用；不新造间隔 | 各插件清单的 `updateInterval` |
-| D3 | 删掉清单 `balance.currency`，币种由插件按账号在结果里给；New API、Sub2API 都折成 USD | 中转站币种因站而异；统一美元便于比较 | `sdk/manifest` 与两个插件的读法 |
+| D3 | 删掉清单 `balance.currency`，币种由插件按账号在结果里给；New API、Sub2API 都折成 USD（**2026-11-18 所有者改为不做任何换算，见 CONTRACTS §52**：余额是上游的数字本身，单位是上游给的原文、没给就没有；清单删 `currency` 保留） | 中转站币种因站而异；统一美元便于比较 | `sdk/manifest` 与两个插件的读法 |
 | D4 | "无限额度"用 `BalanceResult.unlimited`，控制台显示"不限" | 不显示假数字 | proto 与 `AccountBalanceCell.vue` |
-| D5 | 一次余额查询可以有多个请求（改 proto） | New API 要先后读令牌额度和换算比例；两个 RPC 从未被使用，改形状没有兼容成本 | 3.1.2 |
-| D6 | New API 读不到 `quota_per_unit` 时报错，不按 500000 猜 | 猜错会差几个数量级 | newapi 插件 |
+| D5 | 一次余额查询可以有多个请求（改 proto；2026-11-18 起 New API 只发一个，见 D6 的注） | New API 要先后读令牌额度和换算比例；两个 RPC 从未被使用，改形状没有兼容成本 | 3.1.2 |
+| D6 | New API 读不到 `quota_per_unit` 时报错，不按 500000 猜（**2026-11-18 所有者改为不做任何换算，见 CONTRACTS §52**：不再读 `/api/status`，额度点数原样显示、不带单位） | 猜错会差几个数量级 | newapi 插件 |
 | D7 | New API 令牌不限额且站点不给用户额度时显示"不限"（new-api 自己在这种情况下报错，提示去开"允许查询用户额度"） | 所有者给的方向；令牌这一层确实不限 | newapi 插件，改成报错只要一行 |
 | D8 | Sub2API 应答 `isValid` 为假时记"认证被拒" | 停用或过期的 Key 显示金额没有意义 | sub2api 插件 |
 | D9 | 余额请求不跟随重定向 | 否则 3xx 能把带 Key 的请求带到主机规则之外 | `account/balance.go` |
