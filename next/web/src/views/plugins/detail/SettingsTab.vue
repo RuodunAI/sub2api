@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { api } from '@sub2api/host'
+import { api, settingsFieldErrors } from '@sub2api/host'
 import { SchemaForm, SHint, toast } from '@sub2api/ui'
 import SettingsSaveBar from '@/components/SettingsSaveBar.vue'
 import StickyActionBar from '@/components/StickyActionBar.vue'
+import PluginComponent from '@/components/plugin/PluginComponent.vue'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
-import { settingsFieldErrors, type PluginSettings } from '../pluginUtil'
+import type { PluginSettings } from '../pluginUtil'
 import { P } from '@/generated/permissions'
 
-// Plugin settings rendered from the plugin's JSON Schema in the settings
+// Native settings without a page of their own: the component the plugin
+// registered for them (ui.settings.component), which reads, checks and saves
+// them itself (SSettingsPage over usePluginSettings, with its own save bar).
+// Schema settings: rendered from the plugin's JSON Schema in the settings
 // layout (one SSettingsGroup per ui:section, one SSettingRow per field).
 // Secret values come back as "******"; sending "******" keeps the stored value.
 // Host widgets (proxy-select, group-select) are injected app-wide.
@@ -81,7 +85,10 @@ async function save() {
 </script>
 
 <template>
-  <div class="max-w-4xl space-y-4" data-testid="plugin-settings">
+  <PluginComponent v-if="settings.mode === 'native'" v-slot="{ component }" :plugin-key="pluginKey" :name="settings.component">
+    <component :is="component" />
+  </PluginComponent>
+  <div v-else class="max-w-4xl space-y-4" data-testid="plugin-settings">
     <SchemaForm
       ref="form"
       v-model="values"

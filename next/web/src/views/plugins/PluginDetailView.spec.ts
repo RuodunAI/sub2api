@@ -18,8 +18,9 @@ const matrixOf = (key: string) => ({
   roles: [{ id: 2, key: 'admin', name: 'Admin', builtin: true, superuser: false, editable: true, permission_keys: [] }]
 })
 
-async function render(query = '', extra: Record<string, unknown> = {}) {
+async function render(query = '', extra: Record<string, unknown> = {}, settings: Record<string, unknown> = { mode: 'none', schema: null, values: {} }) {
   mocks.get.mockImplementation(async (path: string) => {
+    if (path.endsWith('/settings')) return settings
     const matrix = path.match(/^\/permissions\/plugins\/(\w+)$/)?.[1]
     if (matrix) return matrixOf(matrix)
     const key = path.match(/^\/plugins\/(\w+)$/)?.[1]
@@ -29,11 +30,12 @@ async function render(query = '', extra: Record<string, unknown> = {}) {
     history: createMemoryHistory(),
     routes: [
       { path: '/plugins/:key', component: PluginDetailView },
-      { path: '/plugins', component: { template: '<div />' } }
+      { path: '/plugins', component: { template: '<div />' } },
+      { path: '/p/:plugin/:page', component: { template: '<div />' } }
     ]
   })
   await router.push('/plugins/guard' + query)
-  const w = mount({ template: '<router-view />' }, { global: { plugins: [i18n, router], stubs: { OverviewTab: true, NodesTab: true } } })
+  const w = mount({ template: '<router-view />' }, { global: { plugins: [i18n, router], stubs: { OverviewTab: true, NodesTab: true, SettingsTab: { props: ['pluginKey', 'settings'], template: '<div data-testid="settings-tab">{{ settings.component }}</div>' } } } })
   await flushPromises()
   return { w, router }
 }
@@ -117,5 +119,24 @@ describe('plugin detail view', () => {
     expect(w.get('[data-testid="plugin-refusal"]').text()).toBe(
       'Plugin guard@0.1.0 was built for an older plugin protocol and cannot be loaded by this core (0.9.4, plugin protocol 2). Install a version built for core 0.9.0 or later.'
     )
+  })
+
+  // has_settings: the manifest declares ui.settings (DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY §6.3).
+  it('shows native settings without a page on the settings tab', async () => {
+    const { w } = await render('?tab=settings', {}, { mode: 'native', component: 'MailerSettings', schema: null, values: {} })
+    expect(tabButton(w, 'Settings')).toBeDefined()
+    expect(w.get('[data-testid="settings-tab"]').text()).toBe('MailerSettings')
+  })
+
+  it('sends ?tab=settings to the plugin page that edits the settings', async () => {
+    const { w, router } = await render('?tab=settings', {}, { mode: 'native', page: 'dashboard', schema: null, values: {} })
+    expect(router.currentRoute.value.fullPath).toBe('/p/guard/dashboard?tab=settings')
+    expect(w.find('[data-testid="settings-tab"]').exists()).toBe(false)
+  })
+
+  it('has no settings tab for a plugin without settings', async () => {
+    const { w, router } = await render('?tab=settings')
+    expect(w.findAll('[role="tab"]').some((b) => b.text().startsWith('Settings'))).toBe(false)
+    expect(router.currentRoute.value.query.tab).toBe('overview')
   })
 })

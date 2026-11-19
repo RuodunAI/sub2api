@@ -6,6 +6,7 @@ import { moderationAsset, moderationUIPlugin } from './moderation'
 import { dynweightAsset, dynweightUIPlugin } from './dynweight'
 import { codexAsset, codexUIPlugin } from './codex'
 import { controlsAsset, controlsUIPlugin } from './controls'
+import { mailerAsset, mailerUIPlugin } from './mailer'
 
 // Mock handlers: GET /ui/plugins, plugin-owned routes (/p/<key>/...) and the
 // /plugin-ui/<key>/<hash>/... static files (guard native UI from its dist
@@ -26,6 +27,7 @@ const uiPlugins = [
   dynweightUIPlugin,
   codexUIPlugin,
   controlsUIPlugin,
+  mailerUIPlugin,
   {
     key: 'guard',
     version: '0.1.0',
@@ -189,6 +191,7 @@ export function pluginAsset(pathname: string): { type: string; body: string | Bu
   if (key === 'dynweight') return dynweightAsset(path)
   if (key === 'codex') return codexAsset(path)
   if (key === 'controls_demo') return controlsAsset(path)
+  if (key === 'mailer') return mailerAsset(path)
   if (key === 'guard' && path.startsWith('ui/native/')) {
     const rel = normalize(path.slice('ui/native/'.length))
     if (rel.startsWith('..')) return null

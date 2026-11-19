@@ -1273,6 +1273,7 @@ export interface ResourceConflict {
 }
 
 export interface PluginSummary {
+  /** The manifest declares ui.settings: the plugins list links to them (consoleSettingsPath). */
   has_settings?: boolean
   /** Role grants an automatic (built-in) upgrade held back for review (CONTRACTS P4C). */
   role_grants_to_review?: PluginRoleGrant[]

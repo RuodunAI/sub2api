@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import en from '@/i18n/locales/en/plugins'
 import zh from '@/i18n/locales/zh/plugins'
 import { i18n } from '@/i18n'
-import { HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, refusalText, settingsFieldErrors } from './pluginUtil'
+import { HOST_PERMISSION_RISK, accountTypesOf, consoleSettings, consoleSettingsPath, endpointText, hpKey, isPluginKey, nativeSettingsPath, platformsOf, pluginSettingsPath, pluginStatusTone, refusalText } from './pluginUtil'
 
 describe('plugin endpoint declarations', () => {
   it('preserves the same subset in manifests and installation reviews', () => {
@@ -29,15 +29,6 @@ describe('plugin endpoint declarations', () => {
         platforms: [{ id: 'video', endpoints: [{ id: 'generate', method: 'POST', path: '/video', protocol: 'video.generate' }] }]
       })[0].endpoints[0].id
     ).toBe('generate')
-  })
-})
-
-describe('settingsFieldErrors', () => {
-  it('maps JSON pointer and dotted paths under values, root errors apart', () => {
-    expect(settingsFieldErrors({ 'values/a/0/b': 'x', 'values.c': 'y', values: 'missing property d' })).toEqual({
-      fields: { 'a.0.b': 'x', c: 'y' },
-      root: ['missing property d']
-    })
   })
 })
 
@@ -69,11 +60,15 @@ describe('HOST_PERMISSION_RISK', () => {
 
 describe('settings modes (§75.5)', () => {
   const schema = { type: 'object' }
-  it('renders only schema settings in the console', () => {
+  it('shows schema settings and native settings without a page on the settings tab', () => {
     expect(consoleSettings({ schema, values: {} })).not.toBeNull()
     expect(consoleSettings({ mode: 'schema', schema, values: {} })).not.toBeNull()
+    expect(consoleSettings({ mode: 'native', component: 'MailerSettings', schema: null, values: {} })).not.toBeNull()
     expect(consoleSettings({ mode: 'native', page: 'dashboard', schema, values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'native', page: 'dashboard', component: 'X', schema: null, values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'native', schema: null, values: {} })).toBeNull()
     expect(consoleSettings({ mode: 'schema', schema: null, values: {} })).toBeNull()
+    expect(consoleSettings({ mode: 'none', schema: null, values: {} })).toBeNull()
   })
   it('points native settings to the plugin page', () => {
     expect(nativeSettingsPath('moderation', { mode: 'native', page: 'dashboard', schema, values: {} })).toBe('/p/moderation/dashboard?tab=settings')
@@ -83,7 +78,7 @@ describe('settings modes (§75.5)', () => {
 })
 
 describe('where the installed plugins list opens settings', () => {
-  it('is the settings tab of the detail page for a plugin with a form', () => {
+  it('is the settings tab of the detail page for a plugin with settings', () => {
     expect(consoleSettingsPath({ key: 'mailer', has_settings: true })).toBe('/plugins/mailer?tab=settings')
     expect(consoleSettingsPath({ key: 'relay' })).toBeUndefined()
   })
