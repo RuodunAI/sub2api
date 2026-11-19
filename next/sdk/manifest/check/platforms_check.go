@@ -211,7 +211,6 @@ func (v *validator) endpoint(f string, p manifest.Platform, e manifest.Endpoint)
 	if e.Usage != nil {
 		v.usageRules(f+".usage", *e.Usage, ownerEndpoint, e.PluginUsage() || e.TaskSubmit())
 	}
-	v.convertedUsage(f, e)
 	// The other half of the §25.1 rule the modelSource branch above covers:
 	// ExtractUsage goes to the PlatformService of the plugin declaring the
 	// platform too, so an endpoint that reads its usage from a plugin needs
@@ -225,23 +224,6 @@ func (v *validator) endpoint(f string, p manifest.Platform, e manifest.Endpoint)
 	}
 	v.streamUsage(f, p, e)
 	return ok
-}
-
-// convertedUsage validates endpoint.convertedUsage (CONTRACTS §121.5): each
-// key is a protocol other than the endpoint's own, and its rules are whole
-// (semantics included: nothing is inherited) usage rules read from that
-// protocol's responses.
-func (v *validator) convertedUsage(f string, e manifest.Endpoint) {
-	for _, proto := range sortedKeys(e.ConvertedUsage) {
-		uf := f + ".convertedUsage." + proto
-		switch {
-		case !protocolRe.MatchString(proto) || !strings.Contains(proto, "."):
-			v.add(uf, "invalid_format", "protocol %q must be <platform>.<name>", proto)
-		case proto == e.Protocol:
-			v.add(uf, "invalid", "protocol %q is the endpoint's own; its usage is endpoint.usage", proto)
-		}
-		v.usageRules(uf, e.ConvertedUsage[proto], ownerConverted, false)
-	}
 }
 
 // streamUsage catches the shape that silently swallows usage: an endpoint that

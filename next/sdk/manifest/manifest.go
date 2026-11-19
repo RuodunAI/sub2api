@@ -239,11 +239,6 @@ type Endpoint struct {
 	// from. Values travel whole, of any size. Only read with UsageSource
 	// UsageSourcePlugin or TaskSubmit().
 	UsageRequestFields []string `json:"usageRequestFields,omitempty"`
-	// ConvertedUsage are the usage rules of this endpoint served through a
-	// core conversion, keyed by the upstream protocol: the rules read the
-	// upstream's response (CONTRACTS §121.5). A conversion to a protocol
-	// not listed reads the upstream endpoint's rules.
-	ConvertedUsage map[string]UsageRules `json:"convertedUsage,omitempty"`
 	// Test says when the console's account test may use this endpoint's
 	// protocol (CONTRACTS §122): "" whenever the account serves it,
 	// EndpointTestExplicit only when the test names a model,

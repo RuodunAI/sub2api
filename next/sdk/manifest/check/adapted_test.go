@@ -63,63 +63,6 @@ func TestAccountPlatformAdapts(t *testing.T) {
 	}
 }
 
-// endpoint.convertedUsage is keyed by another protocol and holds whole
-// rules: semantics is required (CONTRACTS §121.5).
-func TestEndpointConvertedUsage(t *testing.T) {
-	rules := manifest.UsageRules{Semantics: "inclusive", JSON: &manifest.UsageMap{Map: map[string]string{
-		"model": "tools.0.model", "input_tokens": "tool_usage.image_gen.input_tokens+usage.input_tokens"}}}
-	for _, tc := range []struct {
-		name  string
-		key   string
-		edit  func(*manifest.UsageRules)
-		field string
-		code  string
-	}{
-		{"valid", "openai.responses", nil, "", ""},
-		{"own protocol", "video.gen", nil, "", "invalid"},
-		{"no platform", "responses", nil, "", "invalid_format"},
-		{"semantics", "openai.responses", func(u *manifest.UsageRules) { u.Semantics = "" }, ".semantics", "required"},
-		{"bad path", "openai.responses", func(u *manifest.UsageRules) {
-			u.JSON = &manifest.UsageMap{Map: map[string]string{"input_tokens": "usage..x"}}
-		}, ".json.map.input_tokens", "invalid_path"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			u := rules
-			if tc.edit != nil {
-				tc.edit(&u)
-			}
-			p := validPlatform()
-			p.Endpoints[0].ConvertedUsage = map[string]manifest.UsageRules{tc.key: u}
-			got := platformCodes(p)
-			field := "endpoints[0].convertedUsage." + tc.key + tc.field
-			if tc.code == "" {
-				if len(got) != 0 {
-					t.Fatalf("unexpected errors: %v", got)
-				}
-				return
-			}
-			if got[field] != tc.code {
-				t.Fatalf("errors = %v, want %s at %s", got, tc.code, field)
-			}
-		})
-	}
-}
-
-// The built-in openai platform declares the image endpoints' rules for
-// a Responses upstream and passes the check.
-func TestOpenAIImagesConvertedUsage(t *testing.T) {
-	p := builtinPlatform(t, manifest.PlatformOpenAI)
-	for _, e := range p.Endpoints {
-		_, has := e.ConvertedUsage["openai.responses"]
-		if has != (e.ID == "images_generations" || e.ID == "images_edits") {
-			t.Errorf("%s: convertedUsage[openai.responses] = %v", e.ID, has)
-		}
-	}
-	if errs := CheckPlatform(p); len(errs) > 0 {
-		t.Fatalf("openai platform: %v", errs)
-	}
-}
-
 func builtinPlatform(t *testing.T, id string) manifest.Platform {
 	t.Helper()
 	for _, p := range platforms.Builtin() {
