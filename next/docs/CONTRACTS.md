@@ -8884,3 +8884,11 @@ ALTER TABLE usage_logs
 ### 125.3 装过它的实例
 
 升级到 0.1.304 时迁移 0117 把它卸载干净（上一节），升级后插件列表里没有它，菜单“我的邀请”“每日签到”“增长管理”消失，`/api/v1/p/growth/*` 与任何没有安装的插件一样回 503 `plugin_unavailable`；再上传它的任何包都被 `removedKeys` 拒绝。邀请关系和返利、签到明细只在 `plg_growth` 里，迁移后只能从升级前的备份找回，要保留的在升级前导出。没装过的实例什么都不变。
+
+## 126. 迁移 0118：删掉火山引擎 `apikey` 账号设置里的前缀键（2026-11-19，所有者同意“升级时清理”；迁移 0118，核心 0.1.304；插件、清单、接口不变）
+
+volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFields` 只有 `base_url`、`asset_base_url`、`asset_region`；`api_prefix`、`video_api_prefix` 只属于 `relay` 类型（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.2）。拆分类型之前保存的 `apikey` 账号可能在 `settings` 里留着这两个键：插件不读它们（`prefixesOf`），但编辑凭证时它们随已存的字段一起回到校验，不在 `settingsFields` 里的键被插件的 `apikey.Spec.Fields` 按未知键拒绝（`unknown`），界面又没有删掉它们的办法，账号凭证于是改不了。2026-11-19 只读查询线上有 2 个这样的账号（键 `video_api_prefix`）。
+
+`0118_volcengine_apikey_prefix_settings.sql`：`plugin_key = 'volcengine' AND type = 'apikey'` 且 `settings` 含其中任一键的账号（含已软删除的），从 `settings` 删掉 `api_prefix`、`video_api_prefix`，其余键不变；`relay` 账号和别的插件的账号不动；只写命中的行，可以重跑。不改 `updated_at`。请求行为不变：这两个键对 `apikey` 账号本来就不生效。加密的凭证部分迁移读不到，不处理（线上只查过 `settings`）。
+
+测试：`migrations.TestMigration0118DropsVolcengineAPIKeyPrefixes`（两个键删掉、其它键保留；`relay` 与别的插件的账号不变且没有被写；重跑不写任何行）。

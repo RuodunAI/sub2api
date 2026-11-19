@@ -1304,3 +1304,52 @@ func TestMigration0117DropsGrowthPlugin(t *testing.T) {
 	require.Equal(t, want, state())
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }
+
+// 0118 drops api_prefix and video_api_prefix from the settings of volcengine
+// apikey accounts and keeps their other keys (CONTRACTS §126); relay
+// accounts, which use both keys, and other plugins' accounts keep theirs. A
+// rerun changes nothing.
+func TestMigration0118DropsVolcengineAPIKeyPrefixes(t *testing.T) {
+	const id = "0118_volcengine_apikey_prefix_settings.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, settings) VALUES
+		('ark', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example", "video_api_prefix": "/api/v3", "api_prefix": "/api/v3", "asset_region": "cn-beijing"}'),
+		('ark-video', 'volcengine', 'apikey', '', '{"video_api_prefix": "/api/v3"}'),
+		('ark-clean', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example"}'),
+		('relay', 'volcengine', 'relay', '', '{"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}'),
+		('other', 'newapi', 'apikey', '', '{"api_prefix": "/x", "video_api_prefix": "/y"}')`)
+	require.NoError(t, err)
+	state := func() string {
+		var v string
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(name || '=' || settings::text, ' ' ORDER BY name) FROM accounts`).Scan(&v))
+		return v
+	}
+	// The row versions show which rows an UPDATE wrote.
+	versions := func(names string) string {
+		var v string
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ' ' ORDER BY name) FROM accounts WHERE name = ANY(string_to_array($1, ' '))`, names).Scan(&v))
+		return v
+	}
+	const untouched = "ark-clean other relay"
+	const want = `ark={"base_url": "https://ark.example", "asset_region": "cn-beijing"} ark-clean={"base_url": "https://ark.example"} ark-video={} ` +
+		`other={"api_prefix": "/x", "video_api_prefix": "/y"} relay={"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}`
+	before := versions(untouched)
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, before, versions(untouched), "a row without the keys was written")
+
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	all := "ark ark-video " + untouched
+	before = versions(all)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, before, versions(all), "a rerun wrote a row")
+}

@@ -1107,3 +1107,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 - **原 schema 的约束都由 `ValidateCredentials` 保证**（`internal/volcengine/form_constraints_test.go`，每条约束一个反例，写死在测试里）。表单没有的键保存时被拒绝（错误码 `unknown`，同原 schema 的 `additionalProperties:false`，`apikey.Spec.Fields` 声明）：`apikey` 允许 `api_key`、`base_url` 和素材库四个字段（`access_key`、`secret_key`、`asset_base_url`、`asset_region`），`relay` 再加 `video_endpoint`、`asset_endpoint`、`api_prefix`、`video_api_prefix`。原来只有 schema 挡住、这次补进 Go 的：`base_url`、`asset_base_url` 里不能有空白（`url.Parse` 接受路径里的空格，规范化后存成转义的地址；现在由 SDK 的 `apikey.NormalizeBaseURL` 统一拒绝，插件不再另查），`api_prefix`、`video_api_prefix` 里不能有空白（只在保存时检查，`validatePrefixFields`；请求时读已存的前缀不查空白，已存的值照旧可用）。
 - **素材库两个页面是原生页**（`VolcengineAssetsPage`、`VolcengineAssetGroupsPage`，`SResourcePage`）：列、格式、`q` 搜索、分页与原 table 页相同；原来的两个 form 页并进各自列表页的“新建”弹窗（需要 `assets:manage`），清单删掉这两个页面和 `forms/asset*.json`。新建成功关弹窗、回第一页刷新；路由的字段错误显示在对应字段、弹窗不关。
 - **素材库新建路由自己校验长度和地址**（`route_checks.go`）：`POST /asset-groups` 的 `name` ≤128、`title` ≤256、`description` ≤1024、`group_type` ≤64；`POST /assets` 的 `name` ≤128、`asset_type` ≤64、`url` ≤2048 且是不含空白的 `http(s)://` 或 `tos://` 地址。原来这些只在控制台的 schema 表单里。
+
+## 20. 核心迁移 0118 清理 `apikey` 账号设置里的前缀键（2026-11-19，核心 0.1.304；插件不变；契约见 CONTRACTS §126）
+
+`api_prefix`、`video_api_prefix` 只属于 `relay` 类型（14.2）。线上有 2 个 `apikey` 账号的 `settings` 里还留着 `video_api_prefix`（大概是 14.4 那种原先指向中转站、拆分前保存的账号）：`prefixesOf` 对 `apikey` 不读它，但 19 节起表单没有的键保存时报 `unknown`，于是这两个账号每次编辑凭证都被拒，界面上又删不掉这个键。核心迁移 `0118_volcengine_apikey_prefix_settings.sql` 删掉 `apikey` 账号 `settings` 里的这两个键，其余键和 `relay` 账号不动；请求路径不变。
