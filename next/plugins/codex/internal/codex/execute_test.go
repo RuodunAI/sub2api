@@ -3,6 +3,7 @@ package codex
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -286,6 +287,14 @@ func TestExecuteSession(t *testing.T) {
 	r := relayed(t, h, in)
 	if other := r.GetHeaders()["session_id"]; other == id || other != upstreamSessionID(8, 7, "conv-1") || id != upstreamSessionID(7, 7, "conv-1") {
 		t.Fatalf("account 8 session %q, account 7 %q", other, id)
+	}
+	// The formula, computed here: SHA-256 of "<account id>:<api key id>:<key>",
+	// version 8 and variant bits set, laid out as a UUID.
+	want := sha256.Sum256([]byte("7:7:conv-1"))
+	want[6] = want[6]&0x0f | 0x80
+	want[8] = want[8]&0x3f | 0x80
+	if h := hex.EncodeToString(want[:16]); id != h[0:8]+"-"+h[8:12]+"-"+h[12:16]+"-"+h[16:20]+"-"+h[20:32] {
+		t.Fatalf("session %q, want the formula's %s", id, h)
 	}
 	unsalted := sha256.Sum256([]byte("7:conv-1"))
 	if strings.HasPrefix(strings.ReplaceAll(id, "-", ""), fmt.Sprintf("%x", unsalted[0:4])) {
