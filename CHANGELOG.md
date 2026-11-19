@@ -78,6 +78,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 ### 密钥与基础地址的规则：受限地址认版本段（进行中，设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](next/docs/DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md) 方案 B、7.1 做法一）
 
 - 清单 `accountTypes[].guardedSettings[]` 新增可选的 `versions`（如 `["/v1"]`）：该字段的值末尾可以带的版本段。核心比较受限设置时，提交值、`allowed` 各项、账号原值都先按同一规则去掉至多一个版本段（转义形式的路径、整段、区分大小写、取最长），所以没有 `account:settings:custom` 的人填带版本的官方地址（如 `https://api.openai.com/v1`）也能保存；`…/a%2Fv1` 不算版本。没写 `versions` 的受限设置行为不变。清单检查：每项非空、以 `/` 开头、不以 `/` 结尾、不重复。`GET /account-types` 的 `guarded_settings` 随之带出 `versions`（没写时不出现）。旧核心忽略这个字段，用到它的插件要同时提高 `hostCompat` 下限（CONTRACTS §21.3）。
+
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth 与 growth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0118；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 3.20，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0118（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删掉火山引擎方舟 API Key 账号设置里的前缀键），插件迁移只有 volcengine 的 0003。
