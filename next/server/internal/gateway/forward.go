@@ -318,11 +318,7 @@ func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usage
 	var ce *convert.ClientError
 	if errors.As(err, &ce) {
 		out, status, err = ce.Body, ce.Status, nil
-		c.rec.StatusCode, c.rec.Success, c.rec.ErrorMessage = status, false, truncateUTF8(string(out), 1000)
-		c.rec.ErrorType = errTypeUpstream
-		if status < http.StatusInternalServerError {
-			c.rec.ErrorType = errTypeInvalidRequest
-		}
+		c.recordClientError(ce)
 	}
 	if err != nil {
 		return &convertError{err: err}
@@ -335,6 +331,17 @@ func (c *call) forwardJSONConverted(resp *http.Response, u *usageAcc, cap *usage
 	}
 	w.Flush()
 	return nil
+}
+
+// recordClientError records the client error a converter made of a
+// successful upstream answer (convert.ClientError, CONTRACTS §121.8) as the
+// request's failure; the usage read from the answer stays.
+func (c *call) recordClientError(ce *convert.ClientError) {
+	c.rec.StatusCode, c.rec.Success, c.rec.ErrorMessage = ce.Status, false, truncateUTF8(string(ce.Body), 1000)
+	c.rec.ErrorType = errTypeUpstream
+	if ce.Status < http.StatusInternalServerError {
+		c.rec.ErrorType = errTypeInvalidRequest
+	}
 }
 
 // forwardSSE relays the event stream, flushing at every event boundary and
@@ -467,6 +474,9 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 			derr := dispatch()
 			if sc != nil && derr == nil {
 				derr = emit(sc.Flush())
+			}
+			if f, ok := sc.(convert.StreamFailure); ok && derr == nil && f.Failure() != nil {
+				c.recordClientError(f.Failure())
 			}
 			if derr == nil && rerr == io.EOF {
 				// An interrupted stream leaves the array open, so the

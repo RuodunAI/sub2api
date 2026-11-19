@@ -228,6 +228,12 @@ func (c *imagesResponses) answer(items []jobject, indexes []int) imagesAnswer {
 	return ans
 }
 
+// clientError is the client error of an answer without images.
+func (a imagesAnswer) clientError() *ClientError {
+	b, _ := json.Marshal(jobject{"error": a.err})
+	return &ClientError{Status: a.status, Body: b}
+}
+
 // messageText is the output text of a message item.
 func messageText(item jobject) string {
 	parts, _ := item["content"].([]any)
@@ -295,8 +301,7 @@ func (c *imagesResponses) Response(body []byte) ([]byte, error) {
 	}
 	ans := c.answer(items, indexes)
 	if ans.err != nil {
-		b, _ := json.Marshal(jobject{"error": ans.err})
-		return nil, &ClientError{Status: ans.status, Body: b}
+		return nil, ans.clientError()
 	}
 	out := jobject{"created": responseCreated(r)}
 	copyMembers(out, ans.images[0], imageMeta)
@@ -338,7 +343,12 @@ type imagesStream struct {
 	items        []jobject
 	indexes      []int
 	done, failed bool
+	// failure is the client error the terminal response amounted to.
+	failure *ClientError
 }
+
+// Failure implements StreamFailure.
+func (s *imagesStream) Failure() *ClientError { return s.failure }
 
 func (s *imagesStream) Event(ev Event) ([]Event, error) {
 	if !s.p.prepared {
@@ -435,6 +445,7 @@ func (s *imagesStream) complete(v any) ([]Event, error) {
 	}
 	ans := s.p.answer(items, indexes)
 	if ans.err != nil {
+		s.failure = ans.clientError()
 		return []Event{s.event("error", jobject{"error": ans.err})}, nil
 	}
 	out := make([]Event, len(ans.images))

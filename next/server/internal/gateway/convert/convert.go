@@ -199,6 +199,15 @@ type ModelLocator interface {
 	ModelPath() string
 }
 
+// StreamFailure is implemented by a stream converter that may end a
+// successful upstream stream with an error of the client protocol (an error
+// event): after Flush, Failure is that error as a ClientError, which the
+// gateway records like the non-stream one (CONTRACTS §121.8); nil when the
+// stream ended otherwise.
+type StreamFailure interface {
+	Failure() *ClientError
+}
+
 // terminal is implemented by a converter whose upstream request uses what
 // only its upstream protocol has (the Responses image_generation tool): it
 // is never the first hop of a composition.

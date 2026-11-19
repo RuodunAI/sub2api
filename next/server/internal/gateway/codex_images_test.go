@@ -128,7 +128,8 @@ func imageRequest(edit, stream bool) (string, map[string]any) {
 // (CONTRACTS §121): the upstream gets the chat model at the top and the
 // client's model in the tool; the client gets the Images API's shape; the
 // record is the image request, priced by the client's model, with the chat
-// and image tokens added, and the image model the upstream names.
+// and image tokens added (the Responses endpoint's own rules), and the chat
+// model the upstream ran as the upstream model.
 func TestCodexImages(t *testing.T) {
 	for _, edit := range []bool{false, true} {
 		for _, stream := range []bool{false, true} {
@@ -165,7 +166,7 @@ func TestCodexImages(t *testing.T) {
 			}
 			rec := e.record()
 			if !rec.Success || rec.Protocol != protocol || rec.UpstreamProtocol != "openai.responses" || rec.Model != "gpt-image-2" ||
-				rec.UpstreamModel != "gpt-image-2-codex" || rec.Price == nil || rec.Price.ID != 21 || !rec.Billable || rec.Stream != stream ||
+				rec.UpstreamModel != "gpt-6-luna" || rec.Price == nil || rec.Price.ID != 21 || !rec.Billable || rec.Stream != stream ||
 				rec.Tokens != (core.UsageTokens{Input: itChatIn + itImageIn, Output: itChatOut + itImageOut, ImageOutput: itImageOut}) ||
 				rec.Conversion == nil || strings.Join(rec.Conversion.Hops, ",") != protocol+",openai.responses" {
 				t.Fatalf("%s stream=%v record %+v conversion %+v", path, stream, rec, rec.Conversion)
@@ -192,8 +193,9 @@ func TestCodexImagesModelMapping(t *testing.T) {
 }
 
 // An upstream that answered with text and no image: 502 no_image_generated
-// for a JSON client, an error event for a stream; the upstream did answer,
-// so its usage is billed and the account is not failed over.
+// for a JSON client, an error event for a stream, and either way a failed
+// record; the upstream did answer, so its usage is billed and the account
+// is not failed over.
 func TestCodexImagesNoImage(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		e, _, up := codexImagesEnv(t)
@@ -205,13 +207,11 @@ func TestCodexImagesNoImage(t *testing.T) {
 			if r.status != 200 || !strings.Contains(string(r.body), "event: error") || !strings.Contains(string(r.body), "no_image_generated") {
 				t.Fatalf("stream: %d %s", r.status, r.body)
 			}
-		} else {
-			if r.status != 502 || r.json().Get("error.code").String() != "no_image_generated" || r.json().Get("error.message").String() != "no image for you" {
-				t.Fatalf("json: %d %s", r.status, r.body)
-			}
-			if rec.Success || rec.StatusCode != 502 || rec.ErrorType != errTypeUpstream {
-				t.Fatalf("json record %+v", rec)
-			}
+		} else if r.status != 502 || r.json().Get("error.code").String() != "no_image_generated" || r.json().Get("error.message").String() != "no image for you" {
+			t.Fatalf("json: %d %s", r.status, r.body)
+		}
+		if rec.Success || rec.StatusCode != 502 || rec.ErrorType != errTypeUpstream || !strings.Contains(rec.ErrorMessage, "no_image_generated") {
+			t.Fatalf("stream=%v record %+v", stream, rec)
 		}
 		if up.calls() != 1 || !rec.Billable || rec.Tokens != (core.UsageTokens{Input: itChatIn, Output: itChatOut}) {
 			t.Fatalf("stream=%v record %+v after %d calls", stream, rec, up.calls())

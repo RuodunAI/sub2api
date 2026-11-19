@@ -223,9 +223,7 @@ func (c *call) crossPlatform(b core.AccountTypeBinding) bool {
 // addRoute records the route of b to upstream protocol y of platform q:
 // pass headers come from the account type's entry for q, else the platform;
 // usage rules from the account type (per protocol), else the endpoint
-// speaking y, else the platform - except on a converting route the client
-// endpoint declares rules for y on (convertedUsage, CONTRACTS §121.5). q is
-// the client endpoint's platform unless
+// speaking y, else the platform. q is the client endpoint's platform unless
 // b does not declare it (planRoutes). (An endpoint whose usage or task the
 // platform's plugin states reaches only that plugin's account types: the
 // registry binds no other, design §4.3.)
@@ -258,9 +256,6 @@ func (c *call) addRoute(b core.AccountTypeBinding, ap manifest.AccountPlatform, 
 	rt.requiredAttempts = append(rt.requiredAttempts, pf.Usage.Attempts)
 	if conv != nil {
 		rt.grade, rt.hops = conv.Grade(), convert.Hops(conv)
-		if u, ok := c.ep.ConvertedUsage[y]; ok {
-			rt.usage = u
-		}
 		if ml, ok := conv.(convert.ModelLocator); ok {
 			rt.modelPath = ml.ModelPath()
 		}
