@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"syscall"
 	"time"
 )
@@ -55,15 +56,22 @@ type ClientOptions struct {
 	// Lookup resolves names for the per-hop redirect check (default
 	// DefaultLookup).
 	Lookup Lookup
+	// Proxy picks the proxy of each request as http.Transport.Proxy does
+	// (default: none, every request direct). The proxy resolves a proxied
+	// request's target, so only a literal private target is refused
+	// (CheckHostVia), and the dial to the proxy is not guarded: the proxy is
+	// the operator's, like an account proxy saved with allow_private.
+	Proxy ProxyFunc
 }
 
 // ErrTooManyRedirects is returned when a guarded client stops following.
 var ErrTooManyRedirects = errors.New("too many redirects")
 
 // NewClient returns an http.Client for server-side fetches of addresses an
-// operator or a plugin supplied: direct connections only (no environment
-// proxy), every dial refused for non-public addresses, and every redirect
-// target checked again before it is followed.
+// operator or a plugin supplied: direct connections only unless o.Proxy
+// (never the environment's proxy by itself), every direct dial refused for
+// non-public addresses, and every redirect target checked again before it
+// is followed.
 func NewClient(o ClientOptions) *http.Client {
 	if o.Timeout <= 0 {
 		o.Timeout = 30 * time.Second
@@ -71,15 +79,46 @@ func NewClient(o ClientOptions) *http.Client {
 	if o.MaxRedirects == 0 {
 		o.MaxRedirects = 5
 	}
-	tr := &http.Transport{
-		DialContext:           Dialer(15*time.Second, o.AllowPrivate).DialContext,
+	var rt http.RoundTripper = newTransport(o.Timeout, o.AllowPrivate)
+	if o.Proxy != nil {
+		proxied := newTransport(o.Timeout, true)
+		proxied.Proxy = func(r *http.Request) (*url.URL, error) { return o.Proxy(r.URL) }
+		rt = splitTransport{proxy: o.Proxy, direct: rt, proxied: proxied, allowPrivate: o.AllowPrivate}
+	}
+	return &http.Client{Transport: rt, Timeout: o.Timeout, CheckRedirect: redirectCheck(o)}
+}
+
+func newTransport(timeout time.Duration, allowPrivate bool) *http.Transport {
+	return &http.Transport{
+		DialContext:           Dialer(15*time.Second, allowPrivate).DialContext,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          16,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   15 * time.Second,
-		ResponseHeaderTimeout: o.Timeout,
+		ResponseHeaderTimeout: timeout,
 	}
-	return &http.Client{Transport: tr, Timeout: o.Timeout, CheckRedirect: redirectCheck(o)}
+}
+
+// splitTransport sends a request through proxied when proxy picks a proxy
+// for it (refusing a literal private target unless allowPrivate), else
+// through direct, whose dials are guarded.
+type splitTransport struct {
+	proxy           ProxyFunc
+	direct, proxied http.RoundTripper
+	allowPrivate    bool
+}
+
+func (s splitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	p, err := s.proxy(req.URL)
+	switch {
+	case err != nil:
+		return nil, err
+	case p == nil:
+		return s.direct.RoundTrip(req)
+	case !s.allowPrivate && LiteralPrivate(req.URL.Hostname()):
+		return nil, ErrPrivate
+	}
+	return s.proxied.RoundTrip(req)
 }
 
 func redirectCheck(o ClientOptions) func(*http.Request, []*http.Request) error {
@@ -91,7 +130,7 @@ func redirectCheck(o ClientOptions) func(*http.Request, []*http.Request) error {
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		_, err := CheckURL(ctx, req.URL.String(), o.AllowPrivate, o.Lookup)
+		_, err := CheckURLProxy(ctx, req.URL.String(), o.AllowPrivate, o.Proxy, o.Lookup)
 		return err
 	}
 }
