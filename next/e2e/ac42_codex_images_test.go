@@ -50,8 +50,10 @@ const codexImageEchoModel = "gpt-image-2-codex"
 // the backend's echo gpt-image-2-codex, the two parts' tokens summed, the
 // client's model's price times the group rate and one debit. The upstream's
 // answer is taken as it is: a completed answer without an image is a 200
-// with an empty data array (a stream that ends without an
-// image_generation.completed event), a successful record, charged once.
+// with an empty data array and no usage (the mock reports no
+// tool_usage then; a stream ends without a completed or error event), a
+// successful record without an error type, charged once, and the account
+// not failed (active, schedulable, no cooldown).
 // n: 2 is a 400 that does not reach the backend; an unpriced model is a
 // 403 before any upstream call.
 func TestAC42_CodexImages(t *testing.T) {
@@ -96,7 +98,7 @@ func TestAC42_CodexImages(t *testing.T) {
 		if image {
 			input, output, imageOutput = imageToolInput, imageToolOutput, imageToolImageOutput
 		}
-		if u.Get("account_id").Int() != accountID || u.Get("billing_status").String() != "billed" || !u.Get("success").Bool() || u.Get("status_code").Int() != 200 ||
+		if u.Get("account_id").Int() != accountID || u.Get("billing_status").String() != "billed" || !u.Get("success").Bool() || u.Get("status_code").Int() != 200 || u.Get("error_type").String() != "" ||
 			u.Get("protocol").String() != protocol || u.Get("upstream_protocol").String() != "openai.responses" ||
 			u.Get("model").String() != model || u.Get("upstream_model").String() != codexImageEchoModel ||
 			u.Get("input_tokens").Int() != input || u.Get("output_tokens").Int() != output || u.Get("cache_read_tokens").Int() != MockCacheReadTokens ||
@@ -156,15 +158,18 @@ func TestAC42_CodexImages(t *testing.T) {
 			}
 			if stream {
 				for _, ev := range g.Events {
-					if ev.Event == "image_generation.completed" || ev.Event == "error" {
+					if strings.HasSuffix(ev.Event, ".completed") || ev.Event == "error" {
 						t.Fatalf("%s: events %v", what, g.EventTypes())
 					}
 				}
-			} else if d := g.JSON().Get("data"); !d.IsArray() || len(d.Array()) != 0 {
+			} else if j := g.JSON(); !j.Get("data").IsArray() || len(j.Get("data").Array()) != 0 || !j.Get("created").Exists() || j.Get("usage").Exists() {
 				t.Fatalf("%s: %s", what, g.Body)
 			}
 			upstream(t, mark, what, "generate")
 			record(t, g, "openai.images", false, rated(imageNoToolCost))
+			if a := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", accountID), nil); a.Get("status").String() != "active" || !a.Get("schedulable").Bool() || a.Get("cooldown_until").String() != "" {
+				t.Fatalf("%s: account %s", what, a.Raw)
+			}
 		}
 	})
 
