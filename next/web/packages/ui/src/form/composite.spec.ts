@@ -12,7 +12,8 @@ import SField from '../SField.vue'
 import { confirmState, settleConfirm, toastState } from '../feedback'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { createApiKeyForm } from './apiKeyForm'
-import { useCredentialForm, type NativeAccountFormProps } from './credential'
+import { nativeAccountFormProps, useCredentialForm, type NativeAccountFormProps } from './credential'
+import SFormSection from './SFormSection.vue'
 import SCredentialForm from './SCredentialForm.vue'
 import { usePluginSettings, type PluginSettingsForm } from './pluginSettings'
 import SSettingsPage from './SSettingsPage.vue'
@@ -175,10 +176,10 @@ describe('SUrlPresetInput', () => {
 
 describe('useCredentialForm / SCredentialForm', () => {
   const Form = defineComponent({
-    props: { modelValue: Object, mode: String, account: Object, accountType: Object, errors: Object, proxyTicket: Function },
+    props: nativeAccountFormProps,
     emits: ['update:modelValue'],
     setup(props, { emit, expose }) {
-      const form = useCredentialForm(props as unknown as NativeAccountFormProps, (_e, v) => emit('update:modelValue', v), {
+      const form = useCredentialForm(props, (_e, v) => emit('update:modelValue', v), {
         defaults: { region: 'us-east-1' },
         rules: { access_key_id: { required: true, pattern: /^[A-Z0-9]{16,128}$/ } }
       })
@@ -202,6 +203,71 @@ describe('useCredentialForm / SCredentialForm', () => {
     await flushPromises()
     expect(edited.credentials.value).toEqual({ access_key_id: 'AKIAABCDEFGHIJKLMNOP', token_for: 'kept' })
     expect(await edited.validate()).toBe(true)
+  })
+
+  it('nativeAccountFormProps: the §23.5 props, a new account by default', () => {
+    let seen!: Record<string, unknown>
+    const Probe = defineComponent({ props: nativeAccountFormProps, setup: (props) => () => ((seen = { ...props }), h('i')) })
+    mounted.push(mount(Probe))
+    expect(seen).toEqual({ modelValue: {}, mode: 'create', account: null, accountType: null, errors: undefined, proxyTicket: undefined })
+  })
+})
+
+describe('SFormSection', () => {
+  /** A form of three fields, b and c in a section. */
+  function sectioned(section: Record<string, unknown>, modelValue: M = {}, errors?: Record<string, string>) {
+    const Form = defineComponent({
+      props: nativeAccountFormProps,
+      emits: ['update:modelValue'],
+      setup(props, { emit, expose }) {
+        const form = useCredentialForm(props, (_e, v) => emit('update:modelValue', v), { rules: { b: { max: 3 }, c: { required: true } } })
+        expose({ validate: form.validate })
+        const input = (k: string) => h(SField, { prop: k, label: k.toUpperCase() }, () => h(SInput, form.bind(k)))
+        return () => h(SCredentialForm, { form }, () => [input('a'), h(SFormSection, { title: 'More', fields: ['b', 'c'], ...section }, () => [input('b'), input('c')])])
+      }
+    })
+    return editor(Form, { mode: 'edit', modelValue, errors })
+  }
+  const labels = (w: VueWrapper) => w.findAll('label').map((l) => l.text())
+
+  it('a title with its help above the fields, a rule on top', async () => {
+    const { w } = sectioned({ help: 'Only when needed' })
+    await flushPromises()
+    const section = w.get('[data-testid="form-section"]')
+    expect(section.get('h4').text()).toBe('More')
+    expect(section.get('p').text()).toBe('Only when needed')
+    expect(section.classes()).toContain('s-form-section')
+    expect(labels(w)).toEqual(['A', 'B', 'C*'])
+  })
+
+  it('collapsed: closed while empty, open with a value or an error, then as the user left it', async () => {
+    const empty = sectioned({ collapsed: true })
+    await flushPromises()
+    expect(labels(empty.w)).toEqual(['A'])
+    expect(empty.w.text()).toContain('More')
+    await empty.w.get('[data-testid="form-section"] button').trigger('click')
+    expect(labels(empty.w)).toEqual(['A', 'B', 'C*'])
+    await empty.w.get('[data-testid="form-section"] button').trigger('click')
+    expect(labels(empty.w)).toEqual(['A'])
+
+    const valued = sectioned({ collapsed: true }, { c: 'x' })
+    await flushPromises()
+    expect(labels(valued.w)).toEqual(['A', 'B', 'C*'])
+
+    const refused = sectioned({ collapsed: true }, {}, { b: 'not allowed' })
+    await flushPromises()
+    expect(refused.w.text()).toContain('not allowed')
+    await refused.w.get('[data-testid="form-section"] button').trigger('click')
+    expect(labels(refused.w)).toEqual(['A'])
+  })
+
+  it('collapsed: opens by itself when validate() finds an error inside', async () => {
+    const { w, validate } = sectioned({ collapsed: true })
+    await flushPromises()
+    expect(labels(w)).toEqual(['A'])
+    expect(await validate()).toBe(false)
+    await flushPromises()
+    expect(labels(w)).toEqual(['A', 'B', 'C*'])
   })
 })
 
@@ -321,6 +387,32 @@ describe('createApiKeyForm: the anthropic form', () => {
     expect(w.text()).toContain('The site root only')
     await type(w, URL, 'https://site.example.com')
     expect(await validate()).toBe(true)
+  })
+
+  it('sections: a title with help, a collapsed one that opens with a value, fields grouped until the next title', async () => {
+    const asset = { title: () => 'Asset library (optional)', help: () => 'Fill these to use the asset library.' }
+    const advanced = { title: () => 'Advanced', collapsed: true }
+    const Form = createApiKeyForm({
+      extra: [
+        { key: 'access_key', kind: 'text', label: () => 'Access key', section: asset },
+        { key: 'asset_region', kind: 'text', label: () => 'Region' },
+        { key: 'organization', kind: 'text', label: () => 'Organization', section: advanced },
+        { key: 'project', kind: 'text', label: () => 'Project', section: advanced }
+      ]
+    })
+    const created = editor(Form)
+    await flushPromises()
+    const sections = created.w.findAll('[data-testid="form-section"]')
+    expect(sections.map((x) => x.findAll('label').map((l) => l.text()))).toEqual([['Access key', 'Region'], []])
+    expect(sections[0].get('h4').text()).toBe('Asset library (optional)')
+    expect(sections[0].text()).toContain('Fill these to use the asset library.')
+    expect(sections[1].text()).toBe('Advanced')
+    await sections[1].get('button').trigger('click')
+    expect(sections[1].findAll('label').map((l) => l.text())).toEqual(['Organization', 'Project'])
+
+    const edited = editor(Form, { mode: 'edit', modelValue: { api_key: SECRET_MASK, project: 'proj_abc' } })
+    await flushPromises()
+    expect(edited.w.findAll('[data-testid="form-section"]')[1].findAll('label').map((l) => l.text())).toEqual(['Organization', 'Project'])
   })
 
   it('extra fields: select with defaults, sections, `when`, date-time in RFC 3339, no base URL', async () => {

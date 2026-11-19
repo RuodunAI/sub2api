@@ -39,6 +39,7 @@ API Key 类账号表单改为插件自带的原生界面（anthropic、gemini、
 
 - SDK：`apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。去首尾空白、scheme 转小写照旧；已存的地址都是它的输出且通过过原 schema，请求时重新规范化结果不变。
 - SDK：`apikey.Spec.Fields` 改为 `fieldcheck.Fields`：一处声明既是允许的键又带规则（也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行），插件不必再包一层 `Platform` 改写 `ValidateCredentials`。新增 `fieldcheck.DecodeSettings`（设置的"解码 → 检查 → 解码进带默认值的结构体"）、测试辅助 `apikey/apikeytest`（api_key + base_url 类型共有的 `ValidateCredentials` 用例）和 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
+- `@sub2api/ui`：新增 `SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）。
 
 ### 插件界面只用代码写：云厂商插件的账号表单
 

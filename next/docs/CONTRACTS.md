@@ -1544,6 +1544,7 @@ JSON Schema 表单（`schema/`；账号凭据、插件设置、声明式表单�
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
 - **兼容**：`accountType` 是后加的 prop（与 codex 内置插件同批加入，未提升 `HOST_UI_VERSION`），旧控制台不传。插件读账号类型时应写成 `accountType?.type || account?.type`：编辑时旧控制台下退回 `account.type`；新建时旧控制台两者都没有，插件需要有不依赖类型的默认行为（或只把该组件用于一个账号类型）。codex 的 `ui/native/src/flow.ts` `typeOf` 即按此实现。
 - 组件同样遵守 §23.4 的约定（用 `@sub2api/ui` 组件、`SField` 显示 `errors` 等）。
+- 这些 props 由 `@sub2api/ui` 的运行时对象 `nativeAccountFormProps` 声明（`defineProps(nativeAccountFormProps)`；默认值：`modelValue` `{}`、`mode` `'create'`、`account` / `accountType` `null`），类型是 `NativeAccountFormProps`。插件工程里写 `defineProps<NativeAccountFormProps>()` 编译不了（SFC 编译器解析不了别的包导出的类型）（2026-11-19 U3a）。
 
 ## 24. 插件改写候选账号的调度参数（priority / weight）（2026-09-29，用户要求）
 

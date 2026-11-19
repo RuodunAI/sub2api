@@ -6,20 +6,20 @@
 // The component takes the §23.5 props and exposes validate(). base_url
 // follows useGuardedSettings: without account:settings:custom it offers the
 // type's official values only.
-import { defineComponent, h, type Component, type PropType, type VNode } from 'vue'
-import { useGuardedSettings, type AccountTypeView, type GuardedSettings, type ProxyTicketSource } from '@sub2api/host'
+import { defineComponent, h, type Component, type VNode } from 'vue'
+import { useGuardedSettings, type GuardedSettings } from '@sub2api/host'
+import SDateTimeInput from '../SDateTimeInput.vue'
 import SField from '../SField.vue'
 import SInput from '../SInput.vue'
 import SSecretInput from '../SSecretInput.vue'
-import SSectionTitle from '../SSectionTitle.vue'
 import SSelect from '../SSelect.vue'
 import SSwitch from '../SSwitch.vue'
 import STextarea from '../STextarea.vue'
 import SUrlPresetInput from '../SUrlPresetInput.vue'
 import { useUiT } from '../i18n'
-import { fromLocalInput, toLocalInput } from '../timeRange'
 import SCredentialForm from './SCredentialForm.vue'
-import { useCredentialForm, type NativeAccountFormProps } from './credential'
+import SFormSection from './SFormSection.vue'
+import { nativeAccountFormProps, useCredentialForm } from './credential'
 import { toList, type Rule, type Rules } from './rules'
 import type { FormApi } from './useForm'
 
@@ -63,10 +63,21 @@ export interface ExtraField {
   /** url: suggestions; a field in the type's guarded_settings offers its official values only, as base_url does. */
   presets?: string[]
   rules?: Rule | Rule[]
-  /** SSectionTitle above the first field of a section. */
-  section?: Text
+  /**
+   * Starts a section (SFormSection) at this field: its title, or the title
+   * with a help line and `collapsed`. The fields after it with the same
+   * title or none belong to it too.
+   */
+  section?: Text | FieldSection
   /** Shown and validated only while true. */
   when?: (m: Model) => boolean
+}
+
+/** A section of extra fields (SFormSection): `collapsed` starts it closed unless one of its fields holds a value or an error. */
+export interface FieldSection {
+  title: Text
+  help?: Text
+  collapsed?: boolean
 }
 
 const API_KEY_PATTERN = /^[!-~]+$/
@@ -107,8 +118,7 @@ function control(f: ExtraField, form: FormApi<Model>, guard: GuardedSettings): V
     case 'textarea':
       return h(STextarea, { ...bound, placeholder })
     case 'date-time':
-      // RFC 3339 in the value, local time in the box.
-      return h(SInput, { type: 'datetime-local', modelValue: toLocalInput(bound.modelValue), 'onUpdate:modelValue': (v: unknown) => set(fromLocalInput(String(v ?? '')) || undefined) })
+      return h(SDateTimeInput, bound)
     case 'switch':
       return h(SSwitch, { ...bound, modelValue: !!bound.modelValue })
     default:
@@ -116,17 +126,25 @@ function control(f: ExtraField, form: FormApi<Model>, guard: GuardedSettings): V
   }
 }
 
+type Group = { section?: FieldSection; title?: string; fields: ExtraField[] }
+
+/** The shown extra fields grouped by section: a field with a new title starts one, the others join the current. */
+function sections(fields: ExtraField[]): Group[] {
+  const out: Group[] = []
+  for (const f of fields) {
+    const section = typeof f.section === 'function' ? { title: f.section } : f.section
+    const title = section?.title()
+    const last = out.at(-1)
+    if (last && (title === undefined || title === last.title)) last.fields.push(f)
+    else out.push({ section, title, fields: [f] })
+  }
+  return out
+}
+
 export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
   return defineComponent({
     name: 'ApiKeyForm',
-    props: {
-      modelValue: { type: Object as PropType<Model>, default: () => ({}) },
-      mode: { type: String as PropType<'create' | 'edit'>, default: 'create' },
-      account: { type: Object as PropType<NativeAccountFormProps['account']>, default: null },
-      accountType: { type: Object as PropType<AccountTypeView | null>, default: null },
-      errors: { type: Object as PropType<Record<string, string>>, default: undefined },
-      proxyTicket: { type: Function as PropType<ProxyTicketSource>, default: undefined }
-    },
+    props: nativeAccountFormProps,
     emits: { 'update:modelValue': (_v: Model) => true },
     setup(props, { emit, expose }) {
       const t = useUiT()
@@ -151,13 +169,17 @@ export function createApiKeyForm(spec: ApiKeyFormSpec): Component {
           if (b.first) nodes.unshift(url)
           else nodes.push(url)
         }
-        let section: string | undefined
-        for (const f of spec.extra ?? []) {
-          if (f.when && !f.when(form.value())) continue
-          const title = f.section?.()
-          if (title && title !== section) nodes.push(h(SSectionTitle, { key: `section-${f.key}`, title, tag: 'h4' }))
-          section = title ?? section
-          nodes.push(field(f.key, f.label(), f.help, control(f, form, guard)))
+        const extra = (f: ExtraField) => field(f.key, f.label(), f.help, control(f, form, guard))
+        for (const g of sections((spec.extra ?? []).filter((f) => !f.when || f.when(form.value())))) {
+          if (!g.section) nodes.push(...g.fields.map(extra))
+          else
+            nodes.push(
+              h(
+                SFormSection,
+                { key: `section-${g.title}`, title: g.section.title(), help: g.section.help?.(), collapsed: g.section.collapsed, fields: g.fields.map((f) => f.key) },
+                () => g.fields.map(extra)
+              )
+            )
         }
         return h(SCredentialForm, { form }, () => nodes)
       }
