@@ -140,7 +140,7 @@ func (s *Service) test(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	res := s.runTest(ctx, bt, acct, a.ProxyID, model, req)
+	res := s.runTest(ctx, bt, acct, a.ID, model, req)
 	res.RequestedModel = requested
 	s.recordTest(ctx, a.ID, res)
 	httpapi.OK(c, res)
@@ -237,12 +237,13 @@ func cutBytes(s string, n int) string {
 	return s
 }
 
-// runTest sends the request the plugin built and reports what came back: the
+// runTest sends the request the plugin built for account id, through its
+// proxy as the account stands now (Egress), and reports what came back: the
 // status and latency, the model and (credential-free) address it reached, a
 // prefix of the response body, the token usage the platform's rules find in
 // it and, for a failure, the plugin's classification.
 func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
-	proxyID *int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
+	id int64, model string, tr *pluginv1.BuildTestRequestResponse) TestResult {
 	res := TestResult{Model: model, ErrorCode: "invalid_test_request", ErrorSource: "gateway"}
 	if m := strings.TrimSpace(tr.GetModel()); m != "" {
 		res.Model = m
@@ -253,7 +254,8 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 		return res
 	}
 	res.Upstream = upstreamAddr(u)
-	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, proxyID != nil); err != nil {
+	eg, egErr := s.Egress(ctx, id)
+	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, eg.Proxied); err != nil {
 		res.Message, res.ErrorCode = err.Error(), "upstream_validation_failed"
 		return res
 	}
@@ -276,13 +278,12 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	hc, err := s.d.Proxies.HTTPClient(ctx, proxyID)
-	if err != nil {
-		res.Message, res.ErrorCode = core.AsError(err).Message, core.AsError(err).Code
+	if egErr != nil {
+		res.Message, res.ErrorCode = core.AsError(egErr).Message, core.AsError(egErr).Code
 		return res
 	}
 	start := time.Now()
-	resp, err := hc.Do(req)
+	resp, err := eg.Client.Do(req)
 	res.LatencyMs = time.Since(start).Milliseconds()
 	if err != nil {
 		res.Message = transportError(res.Upstream, err)

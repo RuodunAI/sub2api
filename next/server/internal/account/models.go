@@ -66,7 +66,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	hc, release, err := s.egressClient(ctx, e)
+	eg, release, err := s.egressClient(ctx, e)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -78,7 +78,7 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 		return
 	}
 	res, err := s.fetchModels(ctx, bt, &pluginv1.Account{Type: bt.Type.ID,
-		CredentialsJson: string(p.secret), SettingsJson: string(p.settings)}, hc, e.proxied())
+		CredentialsJson: string(p.secret), SettingsJson: string(p.settings)}, eg)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -88,7 +88,8 @@ func (s *Service) fetchTypeModels(c *gin.Context) {
 
 // fetchAccountModels is POST /accounts/:id/models/fetch. An optional
 // credentials object (Mask keeps stored secrets) overrides the stored one,
-// so the edit form can list models with values not saved yet.
+// so the edit form can list models with values not saved yet; the request
+// goes out through the account's saved proxy (Egress).
 func (s *Service) fetchAccountModels(c *gin.Context) {
 	ctx := c.Request.Context()
 	id, ok := httpapi.PathID(c, "id")
@@ -137,14 +138,14 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 		}
 		secret, settings = p.secret, p.settings
 	}
-	hc, err := s.d.Proxies.HTTPClient(ctx, a.ProxyID)
+	eg, err := s.Egress(ctx, a.ID)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	account := a.pluginAccount(secret)
 	account.SettingsJson = string(settings)
-	res, err := s.fetchModels(ctx, bt, account, hc, a.ProxyID != nil)
+	res, err := s.fetchModels(ctx, bt, account, eg)
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -152,10 +153,10 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 	httpapi.OK(c, res)
 }
 
-// fetchModels asks the plugin for the models request, sends it with hc (the
-// account's proxy client, a transient proxy_url client or the direct one;
-// proxied tells the private-address guard) and extracts the ids.
-func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account, hc *http.Client, proxied bool) (*ModelsResult, error) {
+// fetchModels asks the plugin for the models request, sends it through eg
+// (the account's proxy, the form's proxy choice or the direct client;
+// eg.Proxied tells the private-address guard) and extracts the ids.
+func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account, eg core.Egress) (*ModelsResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	mr, err := bt.Client.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{Account: acct})
@@ -170,7 +171,7 @@ func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, a
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, core.ErrPluginUnavailable.WithMessage("plugin built an invalid models URL")
 	}
-	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, proxied); err != nil {
+	if err := s.guardUpstream(ctx, bt.Plugin.Key, u, eg.Proxied); err != nil {
 		return nil, core.ErrUnavailable.WithMessage(err.Error())
 	}
 	method := strings.ToUpper(mr.GetMethod())
@@ -191,7 +192,7 @@ func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, a
 	if body != nil && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := hc.Do(req)
+	resp, err := eg.Client.Do(req)
 	if err != nil {
 		return nil, core.ErrUnavailable.WithMessage(t(ctx, "upstream request failed: ", "上游请求失败：") + transportError(upstreamAddr(u), err))
 	}

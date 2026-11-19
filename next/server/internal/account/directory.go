@@ -297,6 +297,19 @@ func (s *Service) Load(ctx context.Context, id int64) (*core.Account, error) {
 	return &acc, nil
 }
 
+// Egress implements core.AccountDirectory: the client of account id's proxy
+// as the account stands now (Load's snapshot, dropped on account:changed),
+// the direct client when it has none.
+func (s *Service) Egress(ctx context.Context, id int64) (core.Egress, error) {
+	a, err := s.Load(ctx, id)
+	if err != nil {
+		return core.Egress{}, err
+	}
+	eg := core.Egress{Proxied: a.ProxyID != nil}
+	eg.Client, err = s.d.Proxies.HTTPClient(ctx, a.ProxyID)
+	return eg, err
+}
+
 // loadLive is loadRow of any live account, unlocked, for Load: a miss of
 // its cache runs it on a gateway request, so it is scanned through Row.
 func (s *Service) loadLive(ctx context.Context, id int64) (*row, error) {

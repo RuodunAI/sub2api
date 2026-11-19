@@ -72,18 +72,19 @@ func (s *Service) checkChoice(ctx context.Context, c ProxyChoice, action perm.Ke
 	return egress{proxyID: c.ProxyID}, nil
 }
 
-// egressClient is e's HTTP client: the proxy's (cached), a transient one for
-// a pasted URL, or the direct one. release ends what a transient client
-// holds.
-func (s *Service) egressClient(ctx context.Context, e egress) (hc *http.Client, release func(), err error) {
+// egressClient is the way out through e: the proxy's client (cached), a
+// transient one for a pasted URL, or the direct one. release ends what a
+// transient client holds.
+func (s *Service) egressClient(ctx context.Context, e egress) (eg core.Egress, release func(), err error) {
+	eg.Proxied = e.proxied()
 	if e.spec == nil {
-		hc, err = s.d.Proxies.HTTPClient(ctx, e.proxyID)
-		return hc, func() {}, err
+		eg.Client, err = s.d.Proxies.HTTPClient(ctx, e.proxyID)
+		return eg, func() {}, err
 	}
-	if hc, err = s.d.Proxies.HTTPClientFor(ctx, *e.spec); err != nil {
-		return nil, nil, err
+	if eg.Client, err = s.d.Proxies.HTTPClientFor(ctx, *e.spec); err != nil {
+		return eg, nil, err
 	}
-	return hc, hc.CloseIdleConnections, nil
+	return eg, eg.Client.CloseIdleConnections, nil
 }
 
 // ---------------------------------------------------------------- proxy tickets (CONTRACTS §117)
@@ -190,15 +191,15 @@ func (s *Service) FetchWithProxyTicket(ctx context.Context, pluginKey string, in
 	if err != nil {
 		return nil, err
 	}
-	hc, release, err := s.egressClient(ctx, e)
+	eg, release, err := s.egressClient(ctx, e)
 	if err == nil {
 		defer release()
 	}
 	return execfetch.Do(ctx, in, execfetch.Binding{
 		CheckURL: func(ctx context.Context, raw string) (*url.URL, error) {
-			return netguard.CheckURLVia(ctx, raw, s.d.AllowPrivateUpstream, e.proxied(), netguard.DefaultLookup)
+			return netguard.CheckURLVia(ctx, raw, s.d.AllowPrivateUpstream, eg.Proxied, netguard.DefaultLookup)
 		},
-		Client: func(context.Context) (*http.Client, error) { return hc, err },
+		Client: func(context.Context) (*http.Client, error) { return eg.Client, err },
 	})
 }
 

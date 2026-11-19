@@ -62,13 +62,11 @@ type ReconcileDeps struct {
 	Registry core.PluginRegistry
 	// Accounts loads the account that served the original request, with its
 	// credentials - the same account the plugin already saw when it built the
-	// upstream request.
+	// upstream request - and gives its way out (Egress): a reconcile leaves
+	// the deployment through the account's proxy as it stands now.
 	Accounts core.AccountDirectory
-	// Proxies gives the account's HTTP client, so a reconcile leaves the
-	// deployment by the same route the request did.
-	Proxies core.ProxyDirectory
-	Slots   core.Slots
-	Limiter core.AccountLimiter
+	Slots    core.Slots
+	Limiter  core.AccountLimiter
 	// AllowPrivateUpstream mirrors the gateway's setting for the SSRF guard.
 	AllowPrivateUpstream bool
 	NodeID               string
@@ -86,7 +84,7 @@ type reconciler struct {
 // a deployment without a plugin registry has no pre-charged rows to close
 // either.
 func (s *Service) StartReconcile(ctx context.Context, d ReconcileDeps) {
-	if d.Registry == nil || d.Accounts == nil || d.Proxies == nil {
+	if d.Registry == nil || d.Accounts == nil {
 		return
 	}
 	if d.Logger == nil {
@@ -326,7 +324,7 @@ func (s *Service) askPlugin(ctx context.Context, e *settleEntry, row *reservedRo
 			return nil, err
 		}
 	}
-	ctx, acct, proxyID, release, err := s.acquireTaskAccount(ctx, e)
+	ctx, acct, release, err := s.acquireTaskAccount(ctx, e)
 	if err != nil {
 		return nil, err
 	}
@@ -339,17 +337,15 @@ func (s *Service) askPlugin(ctx context.Context, e *settleEntry, row *reservedRo
 	if e.task != nil {
 		entry.TaskKind = e.task.kind
 	}
-	return s.askMonitor(ctx, e, observationCall{client: client, entry: entry, acct: acct, proxyID: proxyID})
+	return s.askMonitor(ctx, e, observationCall{client: client, entry: entry, acct: acct})
 }
 
 // observationCall is one observation sent to a plugin: the platform client,
-// the entry describing the request, and the account (with the proxy the core's
-// own HTTP request goes through) the plugin may act for.
+// the entry describing the request, and the account the plugin may act for.
 type observationCall struct {
-	client  core.PlatformPlugin
-	entry   *pluginv1.ReconcileEntry
-	acct    *pluginv1.Account
-	proxyID *int64
+	client core.PlatformPlugin
+	entry  *pluginv1.ReconcileEntry
+	acct   *pluginv1.Account
 }
 
 // platformClientOf finds the PlatformService of the plugin that declared the
