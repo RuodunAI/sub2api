@@ -105,6 +105,14 @@ func (p *recPlugin) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaResp
 	return nil, nil
 }
 
+func (p *recPlugin) BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return nil, nil
+}
+
+func (p *recPlugin) ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return nil, nil
+}
+
 // recGen is a generation holding exactly one plugin platform.
 type recGen struct {
 	info   core.PluginInfo

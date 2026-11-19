@@ -506,6 +506,14 @@ func (p *fakePlatform) ParseQuotaResponse(context.Context, *pluginv1.ParseQuotaR
 	return nil, status.Error(codes.Unimplemented, "no")
 }
 
+func (p *fakePlatform) BuildBalanceRequest(context.Context, *pluginv1.BuildBalanceRequestRequest) (*pluginv1.BuildBalanceRequestResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "no")
+}
+
+func (p *fakePlatform) ParseBalanceResponse(context.Context, *pluginv1.ParseBalanceResponseRequest) (*pluginv1.ParseBalanceResponseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "no")
+}
+
 type fakeBalance struct {
 	broke map[int64]bool
 	// disconnect is the client_disconnect_policy. Zero is "precharge", not
