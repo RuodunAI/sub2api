@@ -161,7 +161,7 @@
 | 驱动对话的模型 | `gpt-6-luna` | 不检查 | 不映射 | 不参与计价，不需要价格；它的 token 计入本条请求，按 `gpt-image-2` 的价格算 | `upstream_model` |
 
 - **模型位置**：`Converter` 加一个可选接口 `ModelLocator { ModelPath() string }`。生图转换器返回 `tools.0.model`；`addRoute` 在 `conv` 实现了它时用它作路由的 `modelPath`（代替上游端点的 `model`），`upstreamBody` 的映射因此写到工具里，顶层的驱动模型不被覆盖。chat 等现有转换器不实现它，行为不变。
-- **上报的上游模型**：codex 插件照常用 `pluginsdk.RequestModel`（读请求体顶层 `model`）上报上游模型，生图转换后那是驱动模型，`upstream_model` 就记它（实现时修订，见开头 (2)）。
+- **上报的上游模型**：codex 插件照常用 `pluginsdk.RequestModel`（读请求体顶层 `model`）上报上游模型，生图转换后那是驱动模型，`upstream_model` 就记它；插件上报的值覆盖网关按映射写的值，所以账号映射过客户端模型时也是驱动模型，映射后的名字只在请求体 `tools[0].model` 里（实现时修订，见开头 (2)）。
 - 管理员要做的：给 codex 账号的模型列表加上 `gpt-image-2`（账号模型列表为空的不用；codex 清单的 `defaultModels` 只加它这一个，新账号预填）；给 `gpt-image-2` 录 §118.6 的表达式价格（准入、预扣、结算都按它）；`gpt-image-2-codex` 和驱动模型不需要价格。不要把 2.5 / 2.6 等名字加进 Codex 账号的模型列表：Codex 后端只有 `gpt-image-2-codex`，别的名字只是别名，而且会让客户端以为换了模型。建议在 codex 账号的“模型的协议限定”里把 `gpt-image-2` 限定到 `openai.images`、`openai.images_edit`，免得 `/v1/responses` 用这个名字打到 codex（上游会报模型不存在）。
 
 ### 3.5 用量规则：沿用上游 Responses 端点的规则

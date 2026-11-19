@@ -8663,7 +8663,7 @@ ALTER TABLE usage_logs
 ### 121.4 模型：客户端模型在工具里
 
 - `convert.ModelLocator`（可选接口，`ModelPath() string`）：转换器把客户端模型放在上游端点 `modelPath` 以外的地方时实现它。生图转换器返回 `tools.0.model`；`addRoute` 在转换路由上用它作 `typeRoute.modelPath`，账号模型映射（`upstreamBody`）因此写进工具，顶层驱动模型不被覆盖。其他转换器不实现，行为不变。
-- 上报的上游模型：codex 插件照常上报请求体顶层的 `model`（`pluginsdk.RequestModel`），生图转换后那是驱动模型，所以 `upstream_model` 记驱动模型（codex 为 `gpt-6-luna`；账号映射过客户端模型时照旧记映射后的模型）。应答回显的生图模型（Codex 后端恒为 `gpt-image-2-codex`）不记。
+- 上报的上游模型：codex 插件照常上报请求体顶层的 `model`（`pluginsdk.RequestModel`），生图转换后那是驱动模型，所以 `upstream_model` 记驱动模型（codex 为 `gpt-6-luna`）。插件上报的值覆盖网关按映射写的值，账号映射过客户端模型时也是驱动模型；映射后的名字只出现在发往上游的请求体 `tools[0].model` 里。应答回显的生图模型（Codex 后端恒为 `gpt-image-2-codex`）不记。
 
 ### 121.5 用量：上游 Responses 端点自己的规则
 
@@ -8700,6 +8700,7 @@ ALTER TABLE usage_logs
 - `convert.ClientError{Status, Body}`：转换器把一个成功的上游应答转成客户端协议的错误应答。`forwardJSONConverted` 遇到它按其状态码写正文；流式时转换器发 `error` 事件，并经 `StreamFailure.Failure()` 交出同一个 `ClientError`。两条路径都记录 `success = false`、`status_code`、`error_type`（4xx 为 `invalid_request`，5xx 为 `upstream_error`）、`error_message`（正文前 1000 字节）；不算转换失败，不换号，用量照读照扣（已到达上游，§25）。
 - 没有图、但有失败的生图项（`status: failed`，带 `error{code, message, moderation_details}`）：**400** `{"error":{"type":"image_generation_user_error", …上游 error 对象的成员}}`；流式发同一对象的 `error` 事件。有图时失败的项只记应答损失，图照常返回。
 - 没有图也没有失败项（驱动模型只回了文字）：**502** `{"error":{"type":"server_error","code":"no_image_generated","message":<assistant 的文字，没有时 the upstream generated no image>}}`；流式发同一对象的 `error` 事件。两种情况的记录相同：`success = false`、状态码 502（或上一条的 400）、`error_type`、`error_message`，用量照扣（流式由转换器的可选接口 `convert.StreamFailure` 在流结束后交出这个 `ClientError`，`forwardSSE` 与 `forwardJSONConverted` 同样记录）。
+- 记账号统计时，没出图的 502 记 `error_type = upstream_error`，计入账号失败率（账号成功率统计、dynweight 权重），不触发换号与冷却；审核拦截的 400 记 `invalid_request`，不计入。
 
 ### 121.9 协议绑定与管理员要做什么
 
