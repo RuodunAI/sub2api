@@ -60,7 +60,7 @@ func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.D
 func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observationCall) (*pluginv1.ReconcileResult, error) {
 	var deferred atomic.Bool
 	fetch := func(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
-		return s.fetchExecutionHTTP(ctx, in, call.proxyID, func(ctx context.Context) error {
+		return s.fetchExecutionHTTP(ctx, in, e.account.ID, func(ctx context.Context) error {
 			if s.rec.Limiter == nil {
 				return nil
 			}

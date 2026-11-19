@@ -368,9 +368,8 @@ func TestSSRFCheckFollowsTheAccountProxy(t *testing.T) {
 		return nil, errors.New("no such host")
 	}}
 	c := &call{g: g}
-	proxy := int64(4)
-	proxied := &execution{c: c, acc: &core.Account{AccountRef: core.AccountRef{ID: 1, ProxyID: &proxy}}}
-	direct := &execution{c: c, acc: &core.Account{AccountRef: core.AccountRef{ID: 2}}}
+	proxied := &execution{c: c, egress: core.Egress{Proxied: true}}
+	direct := &execution{c: c}
 	ctx := context.Background()
 	if _, err := proxied.checkURL(ctx, "https://upstream.proxy-side.example/v1"); err != nil || lookups.Load() != 0 {
 		t.Fatalf("proxied name: %v, %d local lookups", err, lookups.Load())

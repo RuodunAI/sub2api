@@ -48,6 +48,10 @@ func priceComponents(p *pending, price func(*pending) (amounts, BillingDetail, s
 		if err != nil {
 			return amounts{}, BillingDetail{}, "", err
 		}
+		// The top of the detail sums every component below; what the
+		// primary usage itself cost is kept beside it.
+		cost, total := detail.Cost, detail.TotalCost
+		detail.PrimaryCost, detail.PrimaryListCost, detail.PrimaryTotalCost = &cost, detail.ListCost, &total
 	}
 	detail.Inputs = p.Inputs
 	ruled := detail.ListCost != nil

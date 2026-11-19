@@ -149,7 +149,7 @@ func TestDeviceFlow(t *testing.T) {
 	}
 	poll := func() DevicePollResponse {
 		t.Helper()
-		r := h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": start.SessionID})
+		r := h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": start.SessionID})
 		if r.GetStatus() != 200 {
 			t.Fatalf("poll = %d %s", r.GetStatus(), r.GetBody())
 		}
@@ -270,7 +270,7 @@ func TestDevicePollStates(t *testing.T) {
 	poll := func(id string) DevicePollResponse {
 		t.Helper()
 		var out DevicePollResponse
-		mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": id}).GetBody(), &out)
+		mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": id}).GetBody(), &out)
 		return out
 	}
 
@@ -343,7 +343,7 @@ func TestRouteRequestErrors(t *testing.T) {
 		code  string
 	}{
 		{"/auth/device/poll", map[string]string{}, "session_id", "required"},
-		{"/auth/device/poll", map[string]string{"session_id": "  "}, "session_id", "required"},
+		{"/auth/device/poll", map[string]string{"proxy_ticket": testTicket, "session_id": "  "}, "session_id", "required"},
 		{"/auth/device/poll", "{not json", "body", "invalid_json"},
 		{"/auth/codex/exchange", map[string]string{"callback_url": "?code=x"}, "session_id", "required"},
 		{"/auth/codex/exchange", "{not json", "body", "invalid_json"},
@@ -372,7 +372,7 @@ func TestDevicePollLocked(t *testing.T) {
 	poll := func() DevicePollResponse {
 		t.Helper()
 		var out DevicePollResponse
-		mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": start.SessionID}).GetBody(), &out)
+		mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": start.SessionID}).GetBody(), &out)
 		return out
 	}
 
@@ -455,7 +455,7 @@ func TestCodexExchange(t *testing.T) {
 		return s.SessionID, u.Query()
 	}
 	exchange := func(id, cb string) *pluginv1.HTTPResponse {
-		return h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
+		return h.Do("POST", "/auth/codex/exchange", nil, map[string]string{"proxy_ticket": testTicket, "session_id": id, "callback_url": cb})
 	}
 	tok := idToken("me@example.com", "acct-1", "plus")
 	iss.on(pathOAuthToken, func(w http.ResponseWriter, body []byte) {
@@ -624,7 +624,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 	for _, uid := range []int64{2, 0} {
 		for _, id := range []string{device.SessionID, "no-such-session"} {
 			var out DevicePollResponse
-			r := h.DoAs(uid, "POST", "/auth/device/poll", nil, map[string]string{"session_id": id})
+			r := h.DoAs(uid, "POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": id})
 			mustData(t, r.GetBody(), &out)
 			if r.GetStatus() != 200 || out.Status != pollExpired {
 				t.Fatalf("user %d poll of %q = %d %s, want expired", uid, id, r.GetStatus(), r.GetBody())
@@ -633,7 +633,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 		u, _ := url.Parse(codex.AuthorizeURL)
 		cb := "?code=code-1&state=" + u.Query().Get("state")
 		for _, id := range []string{codex.SessionID, "no-such-session"} {
-			r := h.DoAs(uid, "POST", "/auth/codex/exchange", nil, map[string]string{"session_id": id, "callback_url": cb})
+			r := h.DoAs(uid, "POST", "/auth/codex/exchange", nil, map[string]string{"proxy_ticket": testTicket, "session_id": id, "callback_url": cb})
 			if r.GetStatus() != 404 || decodeError(t, r).Error.Code != "session_expired" {
 				t.Fatalf("user %d exchange of %q = %d %s, want 404 session_expired", uid, id, r.GetStatus(), r.GetBody())
 			}
@@ -650,7 +650,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 		t.Fatalf("hold the lock: %v %v", r, err)
 	}
 	var locked DevicePollResponse
-	mustData(t, h.DoAs(2, "POST", "/auth/device/poll", nil, map[string]string{"session_id": device.SessionID}).GetBody(), &locked)
+	mustData(t, h.DoAs(2, "POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": device.SessionID}).GetBody(), &locked)
 	if locked.Status != pollExpired {
 		t.Fatalf("another user's poll of a locked session = %+v, want expired", locked)
 	}
@@ -668,7 +668,7 @@ func TestSessionsBelongToTheirCaller(t *testing.T) {
 	// The owner goes on as if nothing happened.
 	iss.on(pathDeviceToken, reply(403, `{"error":"authorization_pending"}`))
 	var out DevicePollResponse
-	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"session_id": device.SessionID}).GetBody(), &out)
+	mustData(t, h.Do("POST", "/auth/device/poll", nil, map[string]string{"proxy_ticket": testTicket, "session_id": device.SessionID}).GetBody(), &out)
 	if out.Status != pollPending {
 		t.Fatalf("owner poll after foreign attempts = %+v", out)
 	}

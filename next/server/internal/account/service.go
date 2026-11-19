@@ -231,7 +231,10 @@ func (s *Service) watchChanges(ctx context.Context) (cancel func()) {
 	if s.d.Bus != nil {
 		cancels = append(cancels, s.d.Bus.Subscribe(core.ChannelAccountChanged, s.onAccountChanged))
 		if r, ok := s.d.Bus.(core.BusReconnects); ok {
-			cancels = append(cancels, r.OnReconnect(func() { s.invalidateQuota(0) }))
+			cancels = append(cancels, r.OnReconnect(func() {
+				s.invalidate()
+				s.invalidateQuota(0)
+			}))
 		}
 	}
 	if s.d.Registry != nil {

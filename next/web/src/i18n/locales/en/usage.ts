@@ -164,6 +164,14 @@ export default {
     inputs: 'Billing condition values',
     statusLabel: 'Billing status',
     ledger: 'ledger #{id}',
+    components: {
+      additional: 'Additional usage (each at its own model\'s price, included in the total)',
+      replacement: 'Replacement usage (each attempt round priced on its own, billed instead of the primary usage, included in the total)'
+    },
+    componentKinds: { advisor: 'Advisor model' },
+    componentRound: 'Round {round}',
+    primaryUsage: 'Primary usage',
+    componentsTotal: 'Total',
     freeNote: 'Requests rejected by hooks or failing upstream without usage are not billed.',
     status: {
       billed: 'Billed',

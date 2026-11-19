@@ -168,8 +168,12 @@ type recRegistry struct{ gen core.Generation }
 func (r recRegistry) Current() core.Generation              { return r.gen }
 func (r recRegistry) OnChange(func(core.Generation)) func() { return func() {} }
 
-// recAccounts hands out one account.
-type recAccounts struct{ acc *core.Account }
+// recAccounts hands out one account; its egress goes through proxies
+// (recProxies when nil).
+type recAccounts struct {
+	acc     *core.Account
+	proxies core.ProxyDirectory
+}
 
 func (a recAccounts) Candidates(context.Context, int64, []core.AccountTypeKey) ([]core.AccountRef, error) {
 	return nil, nil
@@ -188,6 +192,19 @@ func (a recAccounts) Load(_ context.Context, id int64) (*core.Account, error) {
 		return nil, core.ErrNotFound
 	}
 	return a.acc, nil
+}
+func (a recAccounts) Egress(ctx context.Context, id int64) (core.Egress, error) {
+	acc, err := a.Load(ctx, id)
+	if err != nil {
+		return core.Egress{}, err
+	}
+	p := a.proxies
+	if p == nil {
+		p = recProxies{}
+	}
+	eg := core.Egress{Proxied: acc.ProxyID != nil}
+	eg.Client, err = p.HTTPClient(ctx, acc.ProxyID)
+	return eg, err
 }
 func (a recAccounts) IsCoolingDown(context.Context, int64) (bool, error)          { return false, nil }
 func (a recAccounts) SetCooldown(context.Context, int64, time.Time, string) error { return nil }
@@ -246,7 +263,6 @@ func reconcileFixtureWith(t *testing.T, acc *core.Account) *recFixture {
 	f.svc.StartReconcile(context.Background(), ReconcileDeps{
 		Registry:             recRegistry{gen: reconcileGen(rf.plugin)},
 		Accounts:             recAccounts{acc: acc},
-		Proxies:              recProxies{},
 		AllowPrivateUpstream: true, // the upstream double listens on 127.0.0.1
 		NodeID:               "node-a",
 	})
@@ -879,7 +895,6 @@ func TestReconcileRunsOnOneNodeOnly(t *testing.T) {
 		s.StartReconcile(ctx, ReconcileDeps{
 			Registry:             recRegistry{gen: reconcileGen(rf.plugin)},
 			Accounts:             acc,
-			Proxies:              recProxies{},
 			AllowPrivateUpstream: true, NodeID: node,
 		})
 		svcs = append(svcs, s)

@@ -106,6 +106,12 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// The way out first: without it nothing is sent, and the URL check
+	// would resolve the host here for nothing.
+	hc, err := b.Client(ctx)
+	if err != nil || hc == nil {
+		return failure("execution account proxy is unavailable")
+	}
 	u, err := b.CheckURL(ctx, in.GetUrl())
 	if err != nil {
 		return failure("execution URL rejected by host policy")
@@ -121,10 +127,6 @@ func Do(ctx context.Context, in *pluginv1.ExecutionHTTPRequest, b Binding) (*plu
 	}
 	if len(in.GetBody()) > 0 && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", "application/json")
-	}
-	hc, err := b.Client(ctx)
-	if err != nil || hc == nil {
-		return failure("execution account proxy is unavailable")
 	}
 	client := NoRedirects(hc)
 	if ctx.Err() != nil {

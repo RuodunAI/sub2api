@@ -24,9 +24,11 @@ export const MAX_ACCOUNT_BATCH = 500
  * Prop `proxyTicket` of a native account form (UI 3.20, CONTRACTS §23.5,
  * §117): asks the core for a proxy ticket of the form's CURRENT proxy choice
  * (an existing proxy, a pasted proxy URL or none). A form that runs an
- * authorization flow before the account exists hands the opaque ticket to
- * its plugin's start route; the plugin's fetches with it then leave through
- * that proxy. Rejects with the core's ApiError (the proxy field shows it too).
+ * authorization flow before the account exists calls it before EVERY call of
+ * the flow to its plugin's routes (start, each poll, the exchange) and hands
+ * the opaque ticket along; the plugin's fetches of that call leave through
+ * that proxy, so a proxy changed mid-flow carries the next call. Rejects
+ * with the core's ApiError (the proxy field shows it too).
  */
 export type ProxyTicketSource = () => Promise<string>
 

@@ -1179,6 +1179,34 @@ for (let i = 0; i < 90; i++) {
     })
   })
 }
+// A Messages request that declared an advisor model: the conversation at its
+// model's price, the advisor's tokens as additional usage at the advisor
+// model's (12000*1 + 1800*5 = 21000 and 3000*15 + 400*75 = 75000 micro-USD).
+{
+  const at = new Date(Date.now() - 6 * 60000)
+  const chat = { model: 'claude-haiku-4-5', expression: 'p*1 + c*5' }
+  const advisor = { model: 'claude-opus-4-1', expression: 'p*15 + c*75' }
+  const term = (label: string, quantity: number, rate: number, cost: string) => ({ tier: '', label, quantity, rate, expr: `${label}*${rate}`, cost })
+  const advisorTokens = { Input: 3000, Output: 400, CacheRead: 0, CacheCreation: 0, CacheCreation1h: 0 }
+  usageRows.push({
+    id: 4996, request_id: 'req_advisor0001', client_request_id: '', created_at: at.toISOString(),
+    user_id: 1, user_email: USERS[0].email, api_key_id: 1, api_key_name: `${USERS[0].name}-key`, client_ip: CLIENT_IPS[1][0],
+    group_id: GROUPS[0].id, group_name: GROUPS[0].name, account_id: 12, account_name: 'claude-main', plugin_key: 'anthropic', account_type: 'apikey',
+    platform: 'anthropic', protocol: 'anthropic.messages', upstream_protocol: 'anthropic.messages', conversion: null, endpoint: '/v1/messages',
+    model: chat.model, upstream_model: chat.model, stream: true, status_code: 200, success: true, error_type: '', error_message: '',
+    input_tokens: 12000, output_tokens: 1800, cache_read_tokens: 0, cache_creation_tokens: 0, cache_creation_1h_tokens: 0,
+    total_cost: money(0.096), rate_multiplier: '1.00', billing_status: 'billed', billing_mode: 'expression', matched_tier: '',
+    price_id: 2, expr_hash: remember(chat.expression), latency_ms: 18400, first_token_ms: 900, upload_ms: 40,
+    sticky_rule: '', sticky_hit: false, hook_decisions: [],
+    _detail: {
+      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 12000, c: 1800, len: 12000 }, items: [term('p', 12000, 1, '0.012'), term('c', 1800, 5, '0.009')], subtotal: '0.021', base: '0.021', rules_multiplier: '1' }, cost: '0.096', rate_multiplier: '1', total_cost: '0.096', primary_cost: '0.021', primary_total_cost: '0.021',
+      additional: [{ kind: 'advisor', model: advisor.model, price_id: 5, expression_hash: remember(advisor.expression),
+        detail: { expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 3000, c: 400, len: 3000 }, items: [term('p', 3000, 15, '0.045'), term('c', 400, 75, '0.03')], subtotal: '0.075', base: '0.075', rules_multiplier: '1' }, cost: '0.075', rate_multiplier: '1', total_cost: '0.075' } }],
+      inputs: { semantics: 'inclusive', additional: [{ Kind: 'advisor', Model: advisor.model, UsageSemantics: 'inclusive', Tokens: advisorTokens, RateMultiplier: '1' }] }
+    },
+    _price: null
+  })
+}
 usageRows.sort((a, b) => b.created_at.localeCompare(a.created_at))
 
 // Retried requests (attempt_trail, CONTRACTS §98), among the console user's
