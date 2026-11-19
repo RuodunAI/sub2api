@@ -144,7 +144,8 @@ func validateRelayBaseURL(errs pluginsdk.FieldErrors, credentialsJSON, settingsJ
 		// apikey.Spec.Validate has already reported this shape.
 		return errs
 	}
-	p := strings.TrimRight(u.Path, "/")
+	// The escaped path, as the address is saved and sent: "a%2Fv1" does not end in a /v1 segment.
+	p := strings.TrimRight(u.EscapedPath(), "/")
 	for _, known := range []string{RelayAPIPrefix, APIPrefix} {
 		if !strings.HasSuffix(p, known) {
 			continue

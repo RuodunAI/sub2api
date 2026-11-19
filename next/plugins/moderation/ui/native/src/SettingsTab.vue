@@ -143,27 +143,30 @@ async function save() {
     // to re-enter (§75.1) says so in the plugin's words.
     const errs: FieldErrors = {}
     applyFieldErrors(errs, e, undefined, settingsField)
-    if (isApiError(e)) {
-      for (const [path, code] of Object.entries(e.fieldCodes)) if (code === 'reenter') errs[settingsKey(path)] = t('settingsTab.reenter')
-    }
+    const reenter = isApiError(e) ? Object.keys(e.fieldCodes).filter((p) => e.fieldCodes[p] === 'reenter').map(settingsKey) : []
+    for (const k of reenter) errs[k] = t('settingsTab.reenter')
     serverErrors.value = errs
-    reportElsewhere(errs, e)
+    reportElsewhere(errs, reenter, e)
   } finally {
     saving.value = false
   }
 }
 
 /**
- * Toasts the refusal of a save that no row of this page shows: a stored
- * setting of another page that breaks the current rules is named (it is
- * corrected there), any other error is toasted as it is.
+ * Toasts the refusal of a save that no row of this page shows, naming the
+ * settings of other pages: a kept secret to re-enter (reenter; re-entering
+ * it on its page does not let this page save) apart from a stored value that
+ * breaks the current rules (corrected on its page). Any other error is
+ * toasted as it is.
  */
-function reportElsewhere(errs: FieldErrors, e: unknown) {
+function reportElsewhere(errs: FieldErrors, reenter: readonly string[], e: unknown) {
   const owners = [...new Set(Object.keys(errs).map(settingsKey))]
   const onPage = (k: string) => (keys.value as readonly string[]).includes(k)
   const elsewhere = owners.filter((k) => !onPage(k) && k in SETTINGS)
-  if (elsewhere.length) host.toast(t('settingsTab.storedInvalid', { keys: joinList(elsewhere.map(label)) }), 'error')
-  else if (!owners.some(onPage)) toastError(e)
+  const name = (message: string, ks: string[]) => ks.length && host.toast(t(message, { keys: joinList(ks.map(label)) }), 'error')
+  name('settingsTab.reenterElsewhere', elsewhere.filter((k) => reenter.includes(k)))
+  name('settingsTab.storedInvalid', elsewhere.filter((k) => !reenter.includes(k)))
+  if (!elsewhere.length && !owners.some(onPage)) toastError(e)
 }
 
 const format = ref<BlockFormat>('openai')
@@ -173,14 +176,22 @@ const preview = computed(() =>
   blockResponse(format.value, Number(values.value.block_status || settingDefault('block_status')), String(values.value.block_message || settingDefault('block_message')))
 )
 
-const jev = computed(() => (values.value.jev_default_set as JevQuestions | null | undefined) ?? null)
+const jev = computed(() => (values.value[JEV_KEY] as JevQuestions | null | undefined) ?? null)
 const jevMode = computed({
   get: () => (jev.value ? 'custom' : 'builtin'),
-  set: (m: string) => form.set('jev_default_set', m === 'custom' && defaults.value ? copyQuestions(defaults.value.builtin) : null)
+  set: (m: string) => form.set(JEV_KEY, m === 'custom' && defaults.value ? copyQuestions(defaults.value.builtin) : null)
 })
-// The editor changes the table in place, not through form.set: a question
-// added or removed drops the table's messages, which would stay at the old
-// indexes.
+// The editor changes the table in place, not through form.set: an edit
+// drops the plugin's messages on the table (in place: a new object would
+// bring back the messages the form cleared), and a question added or
+// removed drops all of its messages, which would stay at the old indexes.
+watch(
+  jev,
+  () => {
+    for (const p of Object.keys(serverErrors.value)) if (settingsKey(p) === JEV_KEY) delete serverErrors.value[p]
+  },
+  { deep: true }
+)
 watch(
   () => jev.value?.items.length,
   () => form.clearValidate(JEV_KEY)

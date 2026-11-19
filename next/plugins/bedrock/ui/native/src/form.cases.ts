@@ -1,8 +1,5 @@
-// Inputs of the account form and what it must make of them: the v-model it
-// hands back and validate()'s verdict. The verdicts are those of the JSON
-// Schema form the native form replaced (forms/*.schema.json, deleted), written
-// out; the rows marked `schemaForm` are where the native form differs from
-// that form on purpose.
+// The cases of the account form: each row is an input and what the form must
+// make of it, the v-model it hands back and validate()'s verdict.
 //
 // The constraints (internal/bedrock/credentials.go holds the same on save):
 //   api_key            required, not blank (secret)
@@ -13,21 +10,10 @@
 //   region             ^([a-z]{2}(-[a-z]+)+-\d)?$, default us-east-1
 //   inference_profile_prefix  none|us|eu|apac|jp|au|in|global, default global
 import { SECRET_MASK } from '@sub2api/ui'
+import type { AccountFormCase } from '@sub2api/ui/testing'
 
-type M = Record<string, unknown>
-
-export interface FormCase {
-  name: string
-  type: 'bedrock_apikey' | 'bedrock_aksk' | 'bedrock_sts'
-  /** Edit an account holding these credentials (secrets masked); create when absent. */
-  stored?: M
-  /** Typed into the controls: field -> text, or the option label of a select. */
-  input?: Record<string, string>
-  out: M
-  ok: boolean
-  /** What the schema form made of the case, where it differs (and why the native form is right). */
-  schemaForm?: { out?: M; ok?: boolean; why: string }
-}
+/** stored: secrets masked; input: a select takes its option label. */
+export type FormCase = AccountFormCase & { type: 'bedrock_apikey' | 'bedrock_aksk' | 'bedrock_sts' }
 
 /** The label of each field's control (fillControls). */
 export const LABELS = {
@@ -45,15 +31,12 @@ const AKID = 'AKIAIOSFODNN7EXAMPLE'
 const SECRET = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
 const TOKEN = 'IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ=='
 const KEY = 'ABSKQmVkcm9ja0FQSUtleS1leGFtcGxl'
-/** The schema form wanted 8-2048 visible ASCII characters; any non-blank key is accepted now (DESIGN-2026-11-20 §5.1). */
-const ANY_KEY = { ok: false, why: 'an API key only has to be non-blank, as the plugin checks it on save' }
 const AKSK = { access_key_id: AKID, secret_access_key: SECRET }
 /** A datetime-local value and the RFC 3339 the form stores for it (this machine's zone). */
 const LOCAL = '2026-11-20T10:30'
 const RFC3339 = new Date(LOCAL).toISOString()
 
 const STORED_AKSK = { access_key_id: AKID, secret_access_key: SECRET_MASK, region: 'eu-central-1', inference_profile_prefix: 'eu' }
-const DEFAULTS_ON_EDIT = 'defaults fill a new account only (useCredentialForm); ValidateCredentials stores a missing region / prefix as us-east-1 / global, so the saved account is the same'
 
 export const CASES: FormCase[] = [
   // ---------------------------------------------------------------- bedrock_aksk
@@ -78,31 +61,27 @@ export const CASES: FormCase[] = [
   { name: 'aksk: edit, secret replaced', type: 'bedrock_aksk', stored: STORED_AKSK, input: { secret_access_key: 'newSecret' }, out: { ...STORED_AKSK, secret_access_key: 'newSecret' }, ok: true },
   { name: 'aksk: edit, region changed', type: 'bedrock_aksk', stored: STORED_AKSK, input: { region: 'eu-west-3' }, out: { ...STORED_AKSK, region: 'eu-west-3' }, ok: true },
   { name: 'aksk: edit, an unknown key goes back as it is', type: 'bedrock_aksk', stored: { ...STORED_AKSK, legacy: 'x' }, out: { ...STORED_AKSK, legacy: 'x' }, ok: true },
+  // The defaults fill a new account only (useCredentialForm); ValidateCredentials
+  // stores a missing region / prefix as us-east-1 / global.
   {
     name: 'aksk: edit, an account stored without region and prefix',
     type: 'bedrock_aksk',
     stored: { access_key_id: AKID, secret_access_key: SECRET_MASK },
     out: { access_key_id: AKID, secret_access_key: SECRET_MASK },
-    ok: true,
-    schemaForm: { out: { access_key_id: AKID, secret_access_key: SECRET_MASK, ...DEFAULTS }, why: DEFAULTS_ON_EDIT }
+    ok: true
   },
-  {
-    name: 'aksk: edit, a stored prefix outside the list',
-    type: 'bedrock_aksk',
-    stored: { ...STORED_AKSK, inference_profile_prefix: 'xx' },
-    out: { ...STORED_AKSK, inference_profile_prefix: 'xx' },
-    ok: false,
-    schemaForm: { ok: true, why: "the schema form's client check left enum out; the core's schema check refused the value on save, as ValidateCredentials does" }
-  },
+  // ValidateCredentials refuses it too.
+  { name: 'aksk: edit, a stored prefix outside the list', type: 'bedrock_aksk', stored: { ...STORED_AKSK, inference_profile_prefix: 'xx' }, out: { ...STORED_AKSK, inference_profile_prefix: 'xx' }, ok: false },
 
   // ---------------------------------------------------------------- bedrock_apikey
   { name: 'apikey: new account, valid key', type: 'bedrock_apikey', input: { api_key: KEY }, out: { api_key: KEY, ...DEFAULTS }, ok: true },
   { name: 'apikey: nothing typed', type: 'bedrock_apikey', out: DEFAULTS, ok: false },
   { name: 'apikey: blank key', type: 'bedrock_apikey', input: { api_key: '   ' }, out: { api_key: '   ', ...DEFAULTS }, ok: false },
-  { name: 'apikey: key of 7 characters', type: 'bedrock_apikey', input: { api_key: 'ABSK123' }, out: { api_key: 'ABSK123', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
-  { name: 'apikey: key of 2049 characters', type: 'bedrock_apikey', input: { api_key: 'k'.repeat(2049) }, out: { api_key: 'k'.repeat(2049), ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
-  { name: 'apikey: key with a space', type: 'bedrock_apikey', input: { api_key: 'ABSK Qmed rock' }, out: { api_key: 'ABSK Qmed rock', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
-  { name: 'apikey: key with a non-ASCII character', type: 'bedrock_apikey', input: { api_key: 'ABSKQmedröck' }, out: { api_key: 'ABSKQmedröck', ...DEFAULTS }, ok: true, schemaForm: ANY_KEY },
+  // any key that is not blank, as ValidateCredentials checks on save
+  { name: 'apikey: key of 7 characters', type: 'bedrock_apikey', input: { api_key: 'ABSK123' }, out: { api_key: 'ABSK123', ...DEFAULTS }, ok: true },
+  { name: 'apikey: key of 2049 characters', type: 'bedrock_apikey', input: { api_key: 'k'.repeat(2049) }, out: { api_key: 'k'.repeat(2049), ...DEFAULTS }, ok: true },
+  { name: 'apikey: key with a space', type: 'bedrock_apikey', input: { api_key: 'ABSK Qmed rock' }, out: { api_key: 'ABSK Qmed rock', ...DEFAULTS }, ok: true },
+  { name: 'apikey: key with a non-ASCII character', type: 'bedrock_apikey', input: { api_key: 'ABSKQmedröck' }, out: { api_key: 'ABSKQmedröck', ...DEFAULTS }, ok: true },
   { name: 'apikey: bad region', type: 'bedrock_apikey', input: { api_key: KEY, region: 'east' }, out: { api_key: KEY, ...DEFAULTS, region: 'east' }, ok: false },
   { name: 'apikey: edit, stored key kept', type: 'bedrock_apikey', stored: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, out: { api_key: SECRET_MASK, region: 'us-west-2', inference_profile_prefix: 'us' }, ok: true },
 
@@ -120,13 +99,13 @@ export const CASES: FormCase[] = [
     out: { ...STORED_AKSK, session_token: SECRET_MASK },
     ok: true
   },
+  // ValidateCredentials refuses it too (checkExpiryHint).
   {
     name: 'sts: edit, a stored expiry that is not a date-time',
     type: 'bedrock_sts',
     stored: { ...STORED_AKSK, session_token: SECRET_MASK, session_expires_at: 'tomorrow' },
     out: { ...STORED_AKSK, session_token: SECRET_MASK, session_expires_at: 'tomorrow' },
-    ok: false,
-    schemaForm: { ok: true, why: "the schema form's client check left format out; ValidateCredentials refuses it (checkExpiryHint)" }
+    ok: false
   },
   { name: 'sts: edit, stored secrets kept', type: 'bedrock_sts', stored: { ...STORED_AKSK, session_token: SECRET_MASK }, out: { ...STORED_AKSK, session_token: SECRET_MASK }, ok: true }
 ]

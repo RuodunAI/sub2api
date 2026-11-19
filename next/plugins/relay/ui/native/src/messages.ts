@@ -11,7 +11,7 @@ type Messages = typeof zh
 
 const en: Messages = {
   baseUrl: {
-    help: 'Address of the Anthropic-compatible relay; requests go to <Base URL>/v1/messages, and an address already ending in /v1 does not get it again.'
+    help: 'Address of the Anthropic-compatible relay; requests go to <Base URL>/v1/messages; if the address already ends in /v1, it is not added again.'
   },
   apiKey: { help: 'Key issued by the relay, sent as x-api-key. Stored encrypted and never shown again.' }
 }

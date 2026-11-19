@@ -12,8 +12,7 @@ afterEach(cleanup)
 
 describe('TypesafeKeyForm', () => {
   const accountType = { plugin_key: 'typesafe', type: 'apikey' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   for (const c of keyAndUrlCases('ts-abcdefgh', 'https://x.example.com/typesafe', false)) {
     it(c.name, async () => {
       const { w, saved, validate } = mountAccountForm(TypesafeKeyForm, { accountType, stored: c.stored })
@@ -28,7 +27,7 @@ describe('TypesafeKeyForm', () => {
     expect(w.findAll('label').map((l) => l.text())).toEqual(['API key*', 'Base URL'])
     expect(control(w, LABELS.base_url).attributes('placeholder')).toBe(messages.en.baseUrl.placeholder)
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help]) expect(w.text()).toContain(help)
-    // The presets of the former form (ui:options.presets).
+    // The official address, offered as a preset.
     expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://api.typesafe.ai'])
   })
 

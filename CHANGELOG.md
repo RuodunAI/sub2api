@@ -55,7 +55,7 @@
 
 - **密钥不再限制格式和长度**：`apikey.Spec` 管的 `api_key`（anthropic、openai、gemini、typesafe、relay、newapi、sub2api、azure-openai、volcengine 两种类型、vertex_apikey）以及 bedrock 的 `api_key` 只要求是非空字符串，保存去掉首尾空白后的值；不再检查前缀、字符集和长度（原来 8–512 个可见 ASCII 字符，openai 另有 512 上限，bedrock 8–2048）。带 CR、LF 等控制字符的密钥能保存，但每次请求都以“请求头无效”失败，不会注入请求头。`createApiKeyForm` 的 `api_key` 默认规则改为只要求非空（`min`、`max`、`pattern` 仍可按需写）。newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`。bedrock 的 AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不变。
 - **基础地址按填写的保存**：只去首尾空白、scheme 转小写、去掉末尾的 `/`；路径的转义原样保留（`%2F`、`%7E` 不再还原成 `/`、`~`），保存时不再剥掉版本后缀（`/v1`、`/v1beta`、`/openai`、`/openai/v1`、`/api/v3`）。控制台显示的就是填写的地址。
-- **请求时至多去掉一个版本段**：插件按账号类型声明的版本段（`apikey.Spec.Versions`，原 `StripSuffixes`），在地址转义形式的路径末尾整段、区分大小写地去掉最长的一个（scheme 和主机不参与），再把各接口的完整路径接上。所以 `https://x/v1/v1` 现在请求 `https://x/v1/v1/...`（以前少一段 `/v1`，配不通）；`…/a%2Fv1` 不算版本。gemini、newapi、sub2api 的地址带另一个版本时按接口换成它要的版本（如 gemini 填 `…/v1` 请求 `…/v1beta/...`）。volcengine 中转（`relay`）的地址规则不变，带 `/v1`、`/api/v3` 仍在保存时拒绝。
+- **请求时至多去掉一个版本段**：插件按账号类型声明的版本段（`apikey.Spec.Versions`，原 `StripSuffixes`），在地址转义形式的路径末尾整段、区分大小写地去掉最长的一个（scheme 和主机不参与），再把各接口的完整路径接上。所以 `https://x/v1/v1` 现在请求 `https://x/v1/v1/...`（以前少一段 `/v1`，配不通）；`…/a%2Fv1` 不算版本。gemini、newapi、sub2api 的地址带另一个版本时按接口换成它要的版本（如 gemini 填 `…/v1` 请求 `…/v1beta/...`）。volcengine 中转（`relay`）的地址规则不变，带 `/v1`、`/api/v3` 仍在保存时拒绝，也按转义形式判断（`…/a%2Fv1` 接受，此前误拒）。
 - **受限地址比较认版本段**：清单 `accountTypes[].guardedSettings[]` 新增可选的 `versions`（如 `["/v1"]`）：核心比较受限设置时，提交值、`allowed` 各项、账号原值都先按同一规则去掉至多一个版本段，所以没有 `account:settings:custom` 的人填带版本的官方地址（如 `https://api.openai.com/v1`）也能保存。没写 `versions` 的受限设置行为不变。清单检查：每项非空、以 `/` 开头、不以 `/` 结尾、不重复。`GET /account-types` 的 `guarded_settings` 随之带出 `versions`（没写时不出现）。写了它的清单：anthropic、openai、typesafe、gemini、volcengine `apikey`（CONTRACTS §21.3）。
 - azure-openai：资源地址按填写的保存，`/openai`、`/openai/v1` 只在请求时去掉，请求地址不变；Foundry 项目名里转义的斜杠（`/api/projects/a%2Fb`）由拒绝改为接受，作为一段保存和发出。项目名恰好是 `openai` 时，请求仍少掉项目自己那一段（与此前相同）。
 - SDK：删掉 `apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`；`Spec.StripSuffixes` 改名 `Versions`；`NormalizeBaseURL` 去掉第二个参数；`apikeytest` 删掉 `MinKey`，改为接受带空格、非 ASCII、4096 位的密钥，并检查 `/v1`、`%2F` 原样保存。
@@ -69,7 +69,7 @@
 
 ### 审核题集：保存时拒绝运行时会丢弃的题集（moderation 0.12.2；无迁移，随 0.1.304 发布）
 
-- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；名称与问题两条与运行时共用 `engine.go` 的函数，三条的等价由测试保证。设置页把错误逐格显示在出错那一题的对应格子里（类别、名称、问题、回答、阈值，开头说明也一样；题数不对仍显示在题集那一行），服务端拒绝的指针也落到对应格子。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）；这时别的设置页的提示会点名是哪项已存设置不符合现在的规则、要先到它所在的设置页改对，不再只弹一条 `invalid argument`。
+- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；名称与问题两条与运行时共用 `engine.go` 的函数，三条的等价由测试保证。设置页把错误逐格显示在出错那一题的对应格子里（类别、名称、问题、回答、阈值，开头说明也一样；题数不对、题里有编辑器没有的字段仍显示在题集那一行），服务端拒绝的指针也落到对应格子，改动题集后消失。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）；这时别的设置页的提示会点名是哪项已存设置不符合现在的规则、要先到它所在的设置页改对，不再只弹一条 `invalid argument`。只有 `moderation:manage`、没有核心插件管理权限的人存着 Webhook 签名密钥时，核心要求修改设置时重新填写它（`reenter`），而它只在“高级”页：在别的设置页保存时，提示如实说明本页因此无法保存，不再说成那项设置不符合规则（到“高级”页重填也不能让别的页保存，这是原有的限制）。
 
 ### 删除 growth 插件（核心；迁移 0117，随 0.1.304 发布）
 

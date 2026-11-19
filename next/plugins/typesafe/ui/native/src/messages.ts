@@ -14,7 +14,7 @@ const en: Messages = {
   apiKey: { help: 'TypeSafe API key, sent as Authorization: Bearer. Stored encrypted and never shown again.' },
   baseUrl: {
     placeholder: 'Leave empty to use https://api.typesafe.ai',
-    help: 'Leave the default for TypeSafe; requests go to <Base URL>/v1/systemone, and an address already ending in /v1 does not get it again.'
+    help: 'Leave the default for TypeSafe; requests go to <Base URL>/v1/systemone; if the address already ends in /v1, it is not added again.'
   }
 }
 

@@ -56,10 +56,8 @@ describe('GuardSettings', () => {
   })
 })
 
-// One case per constraint of the JSON Schema form it replaces (written out:
-// the schema file is gone): the value the form saves and whether it lets it
-// be saved. Checked against that form on 45 inputs before it was deleted:
-// the same values and verdicts.
+// One case per constraint of the settings: the value the form saves and
+// whether it lets it be saved.
 describe('GuardSettings rules', () => {
   const cases: Array<{ name: string; set: M; ok: boolean }> = [
     { name: 'defaults', set: {}, ok: true },

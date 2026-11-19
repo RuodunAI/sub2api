@@ -22,7 +22,7 @@ const securityOptions = computed(() => SECURITY.map((value) => ({ value, label: 
         <SInput v-bind="settings.bind('host')" :placeholder="PLACEHOLDERS.host" mono data-testid="mailer-host" />
       </SSettingRow>
       <SSettingRow prop="port" :label="t('port.label')" :description="t('port.help')">
-        <!-- A cleared number box sends no key (the plugin's default applies), as the schema form did. -->
+        <!-- A cleared number box sends no key: the plugin's default applies. -->
         <SInput type="number" v-bind="settings.bindNumber('port')" :min="1" :max="65535" data-testid="mailer-port" />
       </SSettingRow>
       <SSettingRow prop="security" :label="t('security.label')">

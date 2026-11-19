@@ -36,7 +36,7 @@ const addRow = () => model.value.items.push({ category: 'custom/', label: '', qu
         <SField :label="t('auditors.category')" size="sm" :prop="at('category', i)"><SInput v-model="q.category" size="sm" :maxlength="64" /></SField>
         <SField :label="t('auditors.label')" size="sm" :prop="at('label', i)"><SInput v-model="q.label" size="sm" :maxlength="64" :placeholder="categoryLabel(q.category)" /></SField>
         <SField v-if="!hideThreshold" :label="t('auditors.threshold')" size="sm" :prop="at('threshold', i)"><SInput v-model="q.threshold" type="number" min="0.01" max="1" step="0.01" size="sm" /></SField>
-        <SButton size="sm" variant="ghost" tone="danger" @click="model.items.splice(i, 1)">{{ t('delete') }}</SButton>
+        <SButton size="sm" variant="ghost" tone="danger" class="mod-form-row-unlabeled" @click="model.items.splice(i, 1)">{{ t('delete') }}</SButton>
       </div>
       <SField :prop="at('question', i)"><STextarea v-model="q.question" :rows="2" :maxlength="2000" :placeholder="t('auditors.question')" /></SField>
       <div class="mod-form-row">

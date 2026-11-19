@@ -8933,7 +8933,7 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 - 带的是另一个版本时按路由的来：gemini、newapi、sub2api 填 `…/v1` 时 Gemini 协议请求 `…/v1beta/…`；newapi、sub2api 的余额也从根拼。
 - `…/a%2Fv1` 不算以 `/v1` 结尾（请求 `…/a%2Fv1/v1/…`），`…/V1`、`…/xv1` 也不算；只认类型自己声明的版本段（智谱 `…/api/paas/v4` 这类仍配不通，与此前相同，设计 Q7）。
 - azure 的 Foundry 项目名恰好是 `openai` 时（`…/api/projects/openai`），末尾被当作版本段 `/openai`，请求少了项目那一段，与此前相同（设计 Q11，接受现状）。
-- volcengine `relay` 的地址规则不变：基础地址是中转站根地址，路径以 `/v1` 或 `/api/v3` 结尾的在保存时拒绝并提示填 `api_prefix`（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.3）；只是它的密钥也按 127.1 放开。
+- volcengine `relay` 的地址规则不变：基础地址是中转站根地址，转义形式的路径以 `/v1` 或 `/api/v3` 结尾的在保存时拒绝（`…/a%2Fv1` 不算）并提示填 `api_prefix`（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.3）；只是它的密钥也按 127.1 放开。
 
 ### 127.4 受限地址
 

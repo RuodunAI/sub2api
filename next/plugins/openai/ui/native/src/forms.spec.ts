@@ -21,8 +21,7 @@ async function openAdvanced(w: VueWrapper) {
 
 describe('OpenAIKeyForm', () => {
   const accountType = { plugin_key: 'openai', type: 'apikey' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   const cases: AccountFormCase[] = [
     ...keyAndUrlCases('sk-proj-abcdef', 'https://x.example.com/openai', false),
     { name: 'organization and project', input: { api_key: 'sk-proj-abcdef', organization: 'org-abc', project: 'proj_abc' }, out: { api_key: 'sk-proj-abcdef', organization: 'org-abc', project: 'proj_abc' }, ok: true },
@@ -52,7 +51,7 @@ describe('OpenAIKeyForm', () => {
     expect(control(w, LABELS.organization).attributes('placeholder')).toBe('org-...')
     expect(control(w, LABELS.project).attributes('placeholder')).toBe('proj_...')
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help, messages.en.organization.help, messages.en.project.help]) expect(w.text()).toContain(help)
-    // The presets of the former form (ui:options.presets).
+    // The official address, offered as a preset.
     expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://api.openai.com'])
   })
 

@@ -37,10 +37,8 @@ describe('CodexSettings', () => {
   })
 })
 
-// One case per constraint of the JSON Schema form it replaces (written out:
-// the schema file is gone): the value the form saves and whether it lets it
-// be saved. Checked against that form before it was deleted (see the
-// commit): the same values and verdicts.
+// One case per constraint of the settings: the value the form saves and
+// whether it lets it be saved.
 describe('CodexSettings rules', () => {
   const cases: Array<{ name: string; set: M; ok: boolean }> = [
     { name: 'defaults', set: {}, ok: true },

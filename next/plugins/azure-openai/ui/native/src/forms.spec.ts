@@ -24,8 +24,7 @@ function endpointCases(fill: M = {}): AccountFormCase[] {
 
 describe('AzureV1Form', () => {
   const accountType = { plugin_key: 'azure-openai', type: 'azure_v1' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases) and the endpoint cases.
   const cases = [...keyAndUrlCases('0123456789abcdef', 'https://res.openai.azure.com', true), ...endpointCases()]
   for (const c of cases) {
     it(c.name, async () => {
@@ -63,8 +62,7 @@ describe('AzureDeploymentForm', () => {
     input: { api_key: '0123456789abcdef', base_url: 'https://res.openai.azure.com', api_version: apiVersion },
     out: { api_key: '0123456789abcdef', base_url: 'https://res.openai.azure.com', api_version: apiVersion }
   })
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases) and the endpoint cases.
   const cases: AccountFormCase[] = [
     ...keyAndUrlCases('0123456789abcdef', 'https://res.openai.azure.com', true, { api_version: '2024-10-21' }),
     ...endpointCases({ api_version: '2024-10-21' }),

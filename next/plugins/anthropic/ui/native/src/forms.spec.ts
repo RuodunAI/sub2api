@@ -12,8 +12,7 @@ afterEach(cleanup)
 
 describe('AnthropicKeyForm', () => {
   const accountType = { plugin_key: 'anthropic', type: 'apikey' }
-  // The verdicts of the schema form it replaced, compared side by side with
-  // it before forms/ was deleted.
+  // The shared api_key and base_url cases (keyAndUrlCases).
   for (const c of keyAndUrlCases('sk-ant-api03-abcdef', 'https://x.example.com/anthropic', false)) {
     it(c.name, async () => {
       const { w, saved, validate } = mountAccountForm(AnthropicKeyForm, { accountType, stored: c.stored })
@@ -29,7 +28,7 @@ describe('AnthropicKeyForm', () => {
     expect(control(w, LABELS.api_key).attributes('placeholder')).toBe('sk-ant-...')
     expect(control(w, LABELS.base_url).attributes('placeholder')).toBe(messages.en.baseUrl.placeholder)
     for (const help of [messages.en.apiKey.help, messages.en.baseUrl.help]) expect(w.text()).toContain(help)
-    // The presets of the former form (ui:options.presets).
+    // The official address, offered as a preset.
     expect(w.findAll('datalist option').map((o) => o.attributes('value'))).toEqual(['https://api.anthropic.com'])
   })
 

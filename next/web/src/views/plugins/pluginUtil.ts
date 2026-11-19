@@ -406,7 +406,7 @@ export interface PluginDetail {
 /**
  * Where the installed plugins list opens a plugin's settings; neither the
  * sidebar nor system settings lists them (CONTRACTS §90): the settings tab of
- * the detail page (has_settings: schema or native ui.settings; settings
+ * the detail page (has_settings: native ui.settings; settings
  * edited on a plugin page of their own are sent there, nativeSettingsPath);
  * undefined without settings.
  */
