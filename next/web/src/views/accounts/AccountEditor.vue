@@ -313,9 +313,9 @@ const proxyChoice = () => (proxyUrlToSend.value ? { proxy_url: proxyUrlToSend.va
 
 /**
  * The native form's `proxyTicket` (CONTRACTS §23.5, §117): a proxy ticket of
- * the form's current proxy choice, for an authorization flow that runs
- * before the account exists. A refused choice is shown under the proxy field
- * too, and the error goes back to the form.
+ * the form's current proxy choice, taken by an authorization flow for every
+ * call it makes to its plugin before the account exists. A refused choice is
+ * shown under the proxy field too, and the error goes back to the form.
  */
 async function proxyTicket(): Promise<string> {
   const at = props.accountType!

@@ -10,7 +10,7 @@ import { errorMessage, pollDevice, startDevice, useCodexHost, type CodexCredenti
 import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay } from './flow'
 
 const props = defineProps<{
-  /** The account form's proxy choice as a proxy ticket (UI 3.20): every request of the login goes through it. */
+  /** A proxy ticket of the account form's current proxy choice (UI 3.20), taken afresh for every call of the login. */
   proxyTicket: ProxyTicketSource
 }>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
@@ -78,7 +78,7 @@ async function poll(gen: number) {
     return
   }
   try {
-    const r = await pollDevice(session.value.session_id)
+    const r = await pollDevice(session.value.session_id, await props.proxyTicket())
     if (gen !== generation) return
     failures = 0
     if (r.interval) delay = pollDelay(r.interval)

@@ -11,7 +11,7 @@ import { errorMessage, exchangeOAuth, startOAuth, useCodexHost, type CodexCreden
 import { callbackShape } from './flow'
 
 const props = defineProps<{
-  /** The account form's proxy choice as a proxy ticket (UI 3.20): the exchange goes through it. */
+  /** A proxy ticket of the account form's current proxy choice (UI 3.20), taken afresh for every call of the login. */
   proxyTicket: ProxyTicketSource
 }>()
 const emit = defineEmits<{ (e: 'authorized', creds: CodexCredentials): void; (e: 'busy', busy: boolean): void }>()
@@ -75,7 +75,7 @@ async function complete() {
   failedStep.value = ''
   setBusy('exchange')
   try {
-    const r = await exchangeOAuth(session.value.session_id, callback.value.trim())
+    const r = await exchangeOAuth(session.value.session_id, callback.value.trim(), await props.proxyTicket())
     if (!alive || gen !== generation) return
     session.value = null
     callback.value = ''

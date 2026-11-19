@@ -102,12 +102,15 @@ describe('CodexAuthForm: device code', () => {
     expect(w.find('[data-testid="codex-device-url-copy"]').exists()).toBe(true)
     expect(w.get('[data-testid="codex-device-countdown"]').text()).toBe('device.expiresIn')
     expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
-    // The login starts with the editor's proxy choice; the polls use the session's.
+    // Every call carries a fresh ticket of the editor's current proxy choice.
     expect(calls[0]).toEqual({ path: '/auth/device/start', body: { proxy_ticket: 'sealed-ticket' } })
     expect(proxyTicket).toHaveBeenCalledTimes(1)
 
+    // The operator picks another proxy after starting: the next poll has it.
+    proxyTicket.mockResolvedValue('changed-ticket')
     await vi.advanceTimersByTimeAsync(5000)
-    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1' } }])
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toEqual([{ path: '/auth/device/poll', body: { session_id: 's1', proxy_ticket: 'changed-ticket' } }])
+    expect(proxyTicket).toHaveBeenCalledTimes(2)
     expect(lastValue(w)).toBeUndefined()
 
     await vi.advanceTimersByTimeAsync(5000)
@@ -192,12 +195,14 @@ describe('CodexAuthForm: Sign in with Codex', () => {
     await flushPromises()
     expect(w.get('[data-testid="codex-oauth-error"]').text()).toContain('bad callback')
 
+    proxyTicket.mockResolvedValue('changed-ticket')
     await w.get('[data-testid="codex-oauth-callback"]').setValue(`${CALLBACK}?code=c&state=s`)
     // The error of the previous paste goes away with the new one.
     expect(w.find('[data-testid="codex-oauth-error"]').exists()).toBe(false)
     await w.get('[data-testid="codex-oauth-complete"]').trigger('click')
     await flushPromises()
-    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s` } })
+    // The exchange carries the ticket of the proxy chosen since the start.
+    expect(calls.at(-1)).toEqual({ path: '/auth/codex/exchange', body: { session_id: 'w1', callback_url: `${CALLBACK}?code=c&state=s`, proxy_ticket: 'changed-ticket' } })
     expect(lastValue(w)).toEqual(OAUTH_CREDS)
     expect(w.find('[data-testid="codex-authorized"]').exists()).toBe(true)
   })
@@ -332,7 +337,7 @@ describe('CodexAuthForm: validate()', () => {
 })
 
 // The editor's proxy choice reaches the plugin as a proxy ticket asked for
-// when a login starts (CONTRACTS §117); a refused choice stops the start.
+// at every call of a login (CONTRACTS §117); a refused choice stops it.
 describe('CodexAuthForm: proxy ticket', () => {
   it('asks for a ticket at every start and shows why it was refused', async () => {
     answer = (path) => {

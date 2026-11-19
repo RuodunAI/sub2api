@@ -3,8 +3,9 @@
 // {mode: "native", component: "CodexAuthForm"}). The account editor mounts it
 // as <component v-model="credentials" :mode :account :errors> (plus
 // :account-type and, UI 3.20, :proxy-ticket) and calls validate() before
-// saving. Each login asks proxyTicket for the form's current proxy choice
-// when it starts, so the requests to OpenAI leave through that proxy.
+// saving. Every call of a login (start, each poll, the exchange) asks
+// proxyTicket for the form's current proxy choice, so each request to OpenAI
+// leaves through the proxy the form names at that moment.
 //
 // - Only the flow of the account type is shown (codex_device: device code,
 //   codex_oauth: Sign in with Codex); both, as tabs, when the type is not known.
