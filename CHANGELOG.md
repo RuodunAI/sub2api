@@ -17,6 +17,7 @@
 - `apikey.Spec.Fields`、`accountform.Form.Only`：账号表单可以拒绝没有声明的键，代替 schema 的 `additionalProperties:false`。
 - `GET /plugins` 的 `has_settings` 改为"当前版本声明了 `ui.settings`"，不再只认 schema 模式。
 - 清单检查：native 设置要有 `component` 或 `page`。
+- moderation 0.12.2：设置页不再用表单 JSON（删掉 `forms/settings.*.json`），改用 `@sub2api/ui` 的 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 改为声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。`hostUICompat` 改为 `^3.20`。`@sub2api/ui` 的 `SSecretInput` 新增 `plain`（敏感地址用文本框输入）。
 
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0116；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
