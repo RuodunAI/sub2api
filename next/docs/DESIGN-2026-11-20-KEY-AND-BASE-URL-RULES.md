@@ -4,21 +4,28 @@
 
 ## 1. 结论
 
-- **密钥（决定 A）**：`apikey.Spec` 管的 `api_key` 只要求是非空字符串。去掉首尾空白后为空就报"必填"，不是字符串就报类型错误，此外不检查前缀、字符集和长度。前端规则同步改成 `required` 加 `whitespace`。不保留任何格式检查，理由见 3.2：密钥里带 CR、LF 等控制字符时，SDK、核心和 Go `net/http` 都会拒绝发出，不存在请求头注入。
-- **地址的转义（决定 B）**：`NormalizeBaseURL` 不再清空 `RawPath`，路径按用户填写的转义形式保存。存下的 `%2F` 原样保留，请求时也原样拼接发出。
-- **版本后缀（决定 C）**：保存时不再剥后缀。拼接请求地址时，只有两种情况：
-  - 基础地址已经以这条路由的版本段结尾，就不再重复加；
-  - 否则把完整路径加上去。
-  - 版本段沿用每个账号类型原来 `StripSuffixes` 里的那几个，按整段、区分大小写比较。原来剥哪些，现在就认哪些，这一点是"已存账号的请求地址不变"的基础。
-- **已存账号的等价性**：
-  - openai、anthropic、relay、typesafe、azure_v1、azure_deployment：任何已存的值，改前改后请求地址都相同，第 6.2 节逐类论证。
-  - gemini、newapi、sub2api、volcengine apikey：只有一种已存值会改变请求地址，即值本身以 `/v1`、`/v1beta`、`/api/v3` 结尾。这种值要么来自"连续两个后缀"的输入（例如 `…/v1/v1beta`），要么来自没经过保存时规范化的数据。
-  - 发布前用一条只读查询确认线上有没有这种账号（6.3）。
+- **密钥（决定 A）**：`apikey.Spec` 管的 `api_key` 只要求是非空字符串。去掉首尾空白后为空报"必填"，不是字符串报类型错误，此外不检查前缀、字符集和长度。前端规则同步改为 `required` 加 `whitespace`。不保留任何格式检查（3.2）：密钥里带 CR、LF 等控制字符时，SDK、核心和 Go `net/http` 都会拒绝发出，不存在请求头注入。
+- **地址的转义（决定 B）**：`NormalizeBaseURL` 不再清空 `RawPath`，路径按用户填写的转义形式保存。`%2F` 原样保留，请求时也原样发出。两个方案都这样做。
+- **版本后缀（决定 C）有两个方案，请所有者选。推荐方案 B。**
+  - 两个方案的存储相同：保存用户填的地址，只做去首尾空白、scheme 小写、去末尾 `/`；保存时**不剥**后缀。
+  - 两个方案都认同一组版本段：每个账号类型原来 `StripSuffixes` 里的那几个（改名为 `Versions`），整段匹配、区分大小写，按转义形式比较。
+  - **方案 A（字面规则，5.3）**：只有基础地址末尾正好是**这条路由**的版本段时，才不重复加；否则把完整路径接上去。
+  - **方案 B（5.5）**：基础地址末尾是本类型声明的任一版本段时，请求时把这一段看作"版本"、去掉（至多一段），剩下的部分是"根"，再把路由的完整路径接到根上。也就是说：已经带了版本就不重复；带的是另一个版本（例如 gemini 填了 `/v1`，路由要 `/v1beta`），就按路由的来；没带就加上。
+- **方案 B 的要点**：
+  - 已存账号的请求地址**全部**不变，不分类型（6.5 有证明），所以不再需要上线前的线上核查。
+  - 地址本身以 `/v1` 结尾的站点可以配通：填 `https://x/v1/v1`，请求发往 `https://x/v1/v1/messages`。这是所有者要修的问题。
+  - 现在能用的常见填法都继续能用：newapi、sub2api、gemini 填 `/v1`，volcengine 填 `/api/v3`，azure_deployment 填 `/openai/v1`。
+  - 实现上，只是把现在保存时那一次剥后缀删掉，请求时那一次保留；`Join` 和路由拼接代码都不用改。
+  - 代价有一处契约改动：核心的受限地址比较（guardedSettings）要学会先去掉至多一个版本段，否则带版本的官方地址会被拒（7.1、Q3）。
+- **方案 A 的问题**：上面那些常见填法会变得配不通（Q4、Q5、Q8、Q9）。另外 gemini、newapi、sub2api、volcengine apikey 有一部分已存值的请求地址会改变，所以需要上线前做线上核查（6.2、6.3）。
+- **线上现状（所有者授权的一次只读核对，只看了键名与数量，没看地址的值）**：
+  - 密钥类账号共有 anthropic 15、gemini 2、openai 2、relay 2、volcengine apikey 2、volcengine relay 2；
+  - 其中设置了 `base_url` 的：anthropic 9、gemini 2、openai 2、relay 2，volcengine 两类各 2；
+  - 没有 azure、newapi、sub2api、typesafe、bedrock、vertex 的账号。
 - **与所有者说法的出入（第 4 节）**：
-  - new-api 的转发不做"已有就不加"，只在前端提示不要带 `/v1`。唯一的例外是豆包视频的旧接口。
-  - 旧版 Sub2API 只有 OpenAI 系做了这件事，而且认的是"任何版本段"，不区分大小写。
-  - 本方案取两者里与现有数据等价的那一种：只认类型声明的版本段，整段匹配，区分大小写。这一点在第 11 节请所有者确认。
-- 多协议站点类型（newapi、sub2api、volcengine apikey）的同一个基础地址要服务版本不同的几组路由。按"有就不管"的字面规则，用户填了 `/v1` 时，Gemini 路由和余额会多出这一段。本方案不为它们另开例外，只改帮助文案，同样在第 11 节确认。
+  - new-api 的转发不做"已有就不加"，只有前端提示不要带 `/v1`，唯一的例外是豆包视频的旧接口。
+  - 旧版 Sub2API 只在 OpenAI 系做了这件事，而且认的是"任何版本段、不区分大小写"。
+  - 两个方案都只认类型声明的版本段（Q7）。
 
 ## 2. 所有者的决定（原话）与理解
 
@@ -255,7 +262,7 @@ guardedSettings（CONTRACTS §21.3）在插件规范化**之后**比较地址，
 
 **已存的值**是旧函数的输出，即 `u.String()`，路径已是规范转义。新函数对它们原样返回，因为规范转义下 `RawPath` 为空，`EscapedPath` 等于原路径。所以在决定 B 上，已存账号逐字等价。
 
-### 5.3 版本段与拼接
+### 5.3 方案 A：版本段与拼接
 
 **声明**：`apikey.Spec.StripSuffixes` 改名为 `Versions []string`，值不变：
 
@@ -295,7 +302,36 @@ guardedSettings（CONTRACTS §21.3）在插件规范化**之后**比较地址，
 - `standard/check.go:46` 校验默认地址时，改调新签名。
 - `Texts` 的几句旧文案（"8-512 个不含空格的可见字符"）改成"必须是字符串"，具体在 `KeyNotString` 字段。
 
-## 6. 改前与改后
+### 5.5 方案 B：请求时至多去掉一个版本段
+
+5.1 的密钥规则、5.2 的存储规范化，两个方案相同。版本段的处理不同：
+
+1. `Versions`（原 `StripSuffixes`）的含义改为"可以出现在基础地址末尾的版本段"，各类型的值与 5.3 的表相同。volcengine relay 仍然没有。
+2. 保存时（`Spec.Validate`）不去任何版本段，存 5.2 的输出。
+3. 请求时（`Spec.FromAccount`），从存值算出"根"，放进 `Config.BaseURL`：
+   - 在存值的**转义形式**路径（已去掉末尾 `/`）上找 `Versions` 里能作为后缀的项，取最长的那个。因为每项都以 `/` 开头，后缀判断本身就落在段边界上。
+   - 找到就去掉这一段，只去一段；找不到就原样用。
+   - 比较区分大小写。
+4. 路由、模型列表、余额的路径照旧完整接到根上：`standard.upstreamURL`、`ModelListRequest`、volcengine 的 `upstreamURL` 都不改。
+
+用转义形式判断，是为了保证 `…/a%2Fv1` 不会被当成以 `/v1` 结尾。它的转义路径末尾是 `%2Fv1`，不是 `/v1`。如果先解码再判断，就会变成 `/a/v1` 而误判。`…/a%2Fv1` 在方案 B 下请求 `…/a%2Fv1/v1/chat/completions`，与方案 A 相同。
+
+同一类型的各项版本段不会同时成为同一个地址的后缀：
+- `/v1beta` 与 `/v1`：以 `/v1beta` 结尾的地址末尾是 `beta`，不是 `/v1`；
+- `/openai/v1` 与 `/openai`：两者末尾分别是 `v1` 和 `openai`。
+
+所以"取最长"与现在"按顺序取第一个匹配"结果相同（6.5 要用到这一点）。
+
+方案 B 中，基础地址上带的另一个版本会在请求时被换成路由要的版本，例如 gemini 的 `…/v1` → `…/v1beta/…`，newapi 余额从根上拼。这正是"插件自己处理兼容"。它不是保存时的剥离：存值始终是用户填的，控制台显示的也是用户填的。
+
+**`Spec.Fields`、azure `EndpointPattern` 看到的值**：
+- 都是存值（5.2 的输出，没去版本段），与方案 A 相同；
+- azure 的 `EndpointPattern` 本来就把 `/openai`、`/openai/v1` 列为可选后缀，不用改；
+- `/api/projects/a%2Fb` 因为保留了转义，可以通过。
+
+## 6. 改前与改后（方案 A）
+
+本节是方案 A 的对照与论证；方案 B 见 6.4、6.5。
 
 下面四张表都是实测与推导的结果。"改前"一列来自 3.5 的实测，"改后"一列按第 5 节的规则推导。路径中的 `x` 代表 `https://x`，`chat` 代表 `/chat/completions`，`gen` 代表 `/models/m:generateContent`。
 
@@ -395,7 +431,7 @@ guardedSettings（CONTRACTS §21.3）在插件规范化**之后**比较地址，
 
 第一种来源下，新结果恰好就是用户填写的地址。例如 `…/v1/v1beta` 会发往 `…/v1/v1beta/models/...`。也就是说，改变的正是所有者要修的那类错误。
 
-### 6.3 发布前的只读核查
+### 6.3 发布前的只读核查（只在选方案 A 时需要）
 
 上线前请所有者在线上执行一次（只读）：
 
@@ -417,7 +453,82 @@ WHERE deleted_at IS NULL
 
 不写"旧值走旧逻辑"的代码。
 
-## 7. azure 与 volcengine 怎么纳入
+### 6.4 现在、方案 A、方案 B 对照
+
+记号说明：
+- `x` 代表 `https://x`；
+- `chat` 代表 `/v1/chat/completions`，anthropic 的 `/v1/messages` 结果相同；
+- `gen` 代表 `/v1beta/models/m:generateContent`；
+- `tok` 代表 newapi 余额 `/api/usage/token/`；
+- `use` 代表 sub2api 余额 `/v1/usage`；
+- `ark` 代表 `/api/v3/chat/completions`，`msg` 代表 volcengine 的 `/api/compatible/v1/messages`；
+- `v1c` 代表 `/openai/v1/chat/completions`，`dep` 代表 `/openai/deployments/d/chat/completions?api-version=V`。
+
+"现在"一列是对 `ef1413472` 实测的结果（3.5）。方案 B 一列逐行按 5.5 推导，并与"现在"核对过。粗体表示与"现在"不同。
+
+| 类型 / 输入 | 现在 | 方案 A | 方案 B |
+|---|---|---|---|
+| openai 系 `x`、`x/` | `x/chat` | `x/chat` | `x/chat` |
+| openai 系 `x/v1`、`x/v1/` | `x/chat` | `x/v1` + `/chat/completions`，即 `x/chat` | 根 `x`，`x/chat` |
+| openai 系 `x/v1/v1` | `x/chat` | **`x/v1/v1/chat/completions`** | 根 `x/v1`，**`x/v1/v1/chat/completions`** |
+| openai 系 `x/proxy/v1` | `x/proxy/chat` | 同现在 | 同现在 |
+| openai 系 `x/v1beta`、`x/V1` | `x/v1beta/chat`、`x/V1/chat` | 同现在 | 同现在 |
+| openai 系 `x/p/a%2Fb` | `x/p/a/b/chat` | **`x/p/a%2Fb/chat`** | **`x/p/a%2Fb/chat`** |
+| openai 系 `x/a%2Fv1` | `x/a/v1/chat/completions`（解码后被当作 `/v1` 剥掉） | **`x/a%2Fv1/chat`** | **`x/a%2Fv1/chat`** |
+| gemini `x/v1beta` | `x/gen` | `x/gen` | `x/gen` |
+| gemini `x/v1`、`x/proxy/v1` | `x/gen`、`x/proxy/gen` | **`x/v1/gen`、`x/proxy/v1/gen`** | 同现在 |
+| gemini `x/v1/v1beta` | `x/gen` | **`x/v1/gen`** | 根 `x/v1`，**`x/v1/gen`**（即用户填的地址） |
+| gemini `x/v1/v1` | `x/gen` | **`x/v1/v1/gen`** | 根 `x/v1`，**`x/v1/gen`** |
+| gemini `x/v1beta/v1` | `x/gen` | **`x/v1beta/v1/gen`** | 根 `x/v1beta`，**`x/v1beta/gen`**，即 `x/v1beta/v1beta/models/…` |
+| newapi、sub2api `x/v1` | `x/chat`、`x/gen`、`x/tok`、`x/use` | `x/chat`、**`x/v1/gen`**、**`x/v1/tok`**、`x/use` | 同现在 |
+| newapi、sub2api `x/v1beta` | 同上 | **`x/v1beta/chat`**、`x/gen`、**`x/v1beta/tok`**、**`x/v1beta/use`** | 同现在 |
+| newapi、sub2api `x/v1/v1` | 同上 | **全部在 `x/v1/v1` 之后** | 根 `x/v1`：**`x/v1/chat`**、**`x/v1/gen`**、**`x/v1/tok`**、**`x/v1/use`**（即站点在 `x/v1` 下） |
+| volcengine apikey `x`、`x/api/v3` | `x/ark`、`x/msg` | `x/api/v3`：`x/ark`、**`x/api/v3/msg`** | 同现在 |
+| volcengine apikey `x/api/v3/api/v3` | `x/ark`、`x/msg` | **在 `x/api/v3/api/v3` 之后** | 根 `x/api/v3`：**`x/api/v3/ark`**、**`x/api/v3/msg`** |
+| azure_v1 `x`、`x/openai`、`x/openai/v1` | `x/v1c` | `x/v1c` | `x/v1c` |
+| azure_deployment `x/openai/v1` | `x/dep` | **`x/openai/v1/dep`**（404） | 同现在 |
+| azure `x/api/projects/a%2Fb` | 拒绝保存 | **接受**，`x/api/projects/a%2Fb/v1c` | **接受**，同 A |
+| azure_v1 `x/api/projects/openai`（项目名叫 openai） | `x/api/projects/v1c`，少了项目自己那段 | **`x/api/projects/openai/v1c`**（修正） | 同现在，仍然少一段（见 Q11） |
+| 无自定义权限者提交 `https://api.openai.com/v1` | 通过 | **拒绝**（Q3） | 通过（核心按根比较，7.1） |
+
+协调者列出的预期，逐条核对如下：
+- `https://x` → 加上：成立。
+- `https://x/v1` + `/v1/messages` → `https://x/v1/messages`：成立。
+- `https://x/v1/v1` → `https://x/v1/v1/messages`：成立。
+- gemini、newapi、sub2api 填 `/v1` 或 `/v1beta` 全部可用（含余额）：成立。
+- volcengine apikey 填 `/api/v3`、azure_deployment 填 `/openai/v1` 可用：成立。
+
+和"现在"不同的输入只有三类：
+- 末尾连续带两个版本段：B 只去一段，现在会去两段（保存一次、请求一次）；
+- 带 `%2F` 等转义；
+- azure 项目名恰好是 `openai`，A 能修正，B 不能。
+
+前两类正是本次要修的问题。
+
+### 6.5 方案 B 的已存账号等价性
+
+**结论：对所有类型成立，不需要 6.3 的线上核查。**
+
+论证。记已存值为 S，路由路径为 P，旧后缀表为 L（等于新的 `Versions`）。
+- 现在的请求地址是 `strip1_L(N旧(S)) + P`：`N旧` 去掉末尾的 `/` 并把转义还原成规范形式，`strip1_L` 去掉 L 中按顺序第一个匹配的后缀。
+- 方案 B 的请求地址是 `root_L(N新(S)) + P`：`N新` 是 5.2 的规范化，`root_L` 按转义形式取最长的一个匹配后缀去掉。
+
+逐项看：
+1. 已存值都是旧规范化的输出 `u.String()`（CONTRACTS §86.1："已存的地址都是它的输出"）：scheme 是小写，路径是规范转义，`RawPath` 为空，没有末尾 `/`。对这样的 S，`N旧(S) = S` 和 `N新(S) = S` 都成立：`EscapedPath` 返回规范形式，也就是 S 自己的路径。
+2. L 中任意两项不会同时是同一个字符串的后缀（5.5），所以"按顺序第一个匹配"和"最长匹配"是同一项。加上 S 中没有非规范的转义，"按解码形式判断"和"按转义形式判断"结果也相同。所以 `strip1_L(S) = root_L(S)`。
+3. 两边都把 P 原样接上，WebSocket 换 scheme 的方式也相同。所以对任意 P 结果都相等，包括多协议类型的每条路由、模型列表、余额路径，以及 volcengine 的 `upstreamURL`。
+
+这里不需要区分 S 是否以版本段结尾，所以 6.2 里方案 A 的那些例外，在方案 B 下都不存在。
+
+唯一的前提是第 1 条："已存值都是旧规范化的输出"。不满足的只有绕过 `Spec.Validate` 写入的值（直接改库、导入）。即使是这种值：
+- 首尾空白、末尾 `/`、大写 scheme，两边处理相同；
+- 只有路径里带非规范转义（例如 `%2F`、`%7E`）时，B 会照原样发出，而现在会解码后发出。
+
+线上核对显示只有 15 个账号设置了 `base_url`。核心保存账号时，无论走控制台还是 API，都要先经插件的 `ValidateCredentials` 规范化（CONTRACTS §21.3 的 `prepare`），只有直接改库或导入的值会绕过这一步。所以我认为不需要核查。所有者如果仍想确认，可以查 `settings->>'base_url' LIKE '%\%%'`，这一条同样是只读的。
+
+**golden 回放**：execute、test、models 三类用例的结果在方案 B 下全部不变，因为这些用例的存值本身带 `/v1`、`/v1beta`，正好落在第 2 条上。只有 validate 类里，密钥的几个拒绝用例和 base_url 去后缀的保存值会变。
+
+## 7. azure 与 volcengine 怎么纳入（方案 A）
 
 **azure**：
 - 纳入新规则，`Versions = /openai/v1, /openai`，与原来的 `StripSuffixes` 相同。
@@ -441,6 +552,26 @@ WHERE deleted_at IS NULL
 - 基础地址以 `/v1`、`/api/v3` 结尾时，保存时就明确拒绝，并提示用户去填 `api_prefix`（`prefix.go:109-158`）。
 
 这是"拒绝并告诉用户该填哪里"，不是剥后缀；它防的是视频轮询 404 导致按预估计费，原因写在该处注释里。按"有就不管"把它改成去重，会让文本和视频前缀不同的中转站重新踩坑。列为 Q6，建议不动。它的 `api_prefix` 与端点覆盖（`endpoint.go`）都不受本次改动影响。
+
+### 7.1 方案 B 下的 azure、volcengine 与受限地址
+
+- **azure**：
+  - `Versions = /openai/v1, /openai`；
+  - `EndpointPattern` 不改，仍匹配存值（保留转义）；
+  - 两个类型填 `/openai`、`/openai/v1` 都和现在一样能用；
+  - 帮助文案改成"地址末尾的 /openai/v1 或 /openai 在请求时按接口重新拼接"；
+  - 项目名恰好是 `openai` 的 Foundry 地址，仍和现在一样少一段（Q11）。
+- **volcengine apikey**：`Versions = /api/v3`，根由 `FromAccount` 算出，`prefix.go:293` 的 `upstreamURL` 和同源检查都不改。
+- **volcengine relay**：不动（Q6）。
+- **受限地址（guardedSettings）**：
+  - 比较点在核心 `server/internal/account/creds.go:434-469` 的 `checkGuarded`。它在插件规范化之后，把每个受限字段经 `guardNorm`（`:474-482`：去首尾空白、去末尾 `/`、scheme 与 host 小写）与 `allowed` 及账号原值比较。
+  - 核心不知道插件 Go 代码里的 `Versions`，所以要么核心学会这件事，要么扩大允许列表。两种做法：
+  - **做法一（推荐）**：manifest 的 `GuardedSetting` 增加可选的 `versions: []string`，即该字段末尾可以带的版本段。`guardNorm` 在比较前对两边去掉至多一个（转义形式、最长、区分大小写）。
+    - 改动位置：`sdk/manifest/manifest.go:544-547` 加字段；`sdk/manifest/check/account_check.go:287` 起校验每项以 `/` 开头、不以 `/` 结尾；`creds.go` 的 `guardNorm` 多一个参数，约 15 行；五个插件的 `manifest.json`（anthropic、openai、gemini、typesafe、volcengine apikey）写上与 `Versions` 相同的值；CONTRACTS §21.3。
+    - 每个插件加一个测试，断言 manifest 里的 `versions` 等于 Go 里的 `Spec.Versions`，防止两边写得不一致。
+    - 界面不变：允许值仍只有一项，表单照旧锁定。
+    - 旧核心不认识这个字段时会忽略它，manifest 解码不严格。这时只是带版本的官方地址被拒，所以插件的 `hostCompat` 下限要随核心版本提高。
+  - **做法二**：把带版本的官方地址加进 `allowed`，例如 openai 加 `https://api.openai.com/v1`。只改 manifest，不改契约。但允许值变成两项后，`guarded.ts:36` 的锁定条件（只有一项时锁定）不再成立，没有自定义权限的人会看到一个两项的下拉框，界面变了。
 
 ## 8. 前端
 
@@ -515,38 +646,63 @@ WHERE deleted_at IS NULL
 
 **前端包**：`web/packages/ui/src/form/apiKeyForm.ts`；`composite.spec.ts:277` 的注释；`useForm.spec.ts` 不受影响（它测的是规则引擎本身）；`ui-contract.spec.ts` 按需改。
 
-**核心**：不改。guardedSettings 的比较规则不变，影响见 Q3。
+**核心**：方案 A 不改核心，影响见 Q3。方案 B 按 7.1 做法一改 `checkGuarded` 和 manifest 的 `GuardedSetting`（契约改动）。
+
+**方案 B 下 SDK 的改动更小**：
+- `NormalizeBaseURL` 去掉 strip 参数并保留转义；
+- `FromAccount` 用 `Versions` 算根；
+- `Validate` 不再剥后缀；
+- 不需要 `Join`，也不改 `standard` 的拼接；
+- golden 只改 validate 类。
 
 ## 10. 任务拆分
 
-T1 是其余任务的接口前提，先做。T2–T5 在 T1 合入功能分支后并行。T6 最后做。
+按推荐的方案 B 拆分；选方案 A 时的差异写在最后。
+
+T1、T2 先做，可以并行。T3–T6 在 T1 合入功能分支后并行。T7 最后做。
 
 | 任务 | 输入 | 产出 | 验证 |
 |---|---|---|---|
-| **T1 SDK 规则** | 第 5 节 | `apikey`、`standard`、四个 `providers` 的改动；`apikey_test`、`apikeytest`、`TestJoin`、等价性性质测试；golden 数据和 note | `gotest.sh <wt> sdk go test -count=1 ./pluginsdk/...` 全过；`gofmt`、`go vet` |
-| **T2 简单插件** | T1 | openai、anthropic、relay、typesafe、gemini、newapi、sub2api 的 Go 改动、测试、UI 文案 | 各插件 `go test ./...`（含 golden、conformance）；UI 用 `next-check-plugin-ui.sh` 检查 |
-| **T3 azure** | T1、Q5 | `azureopenai.go`、测试（`%2F` 项目路径、`/openai` 在 v1 类型上、项目名 `openai`）、UI 文案 | `go test ./...`；第 6 节 azure 表逐行有用例 |
-| **T4 volcengine** | T1、Q4、Q6 | apikey 拼接改用 `Join`，relay 不动；测试、两个表单、文案、PLUGIN-VOLCENGINE-ARK.md | `go test ./...`，原有的同源检查和视频用例全过 |
-| **T5 前端包与 vertex/bedrock** | 第 8 节、Q2 | `createApiKeyForm` 默认规则、README、`@sub2api/ui` 升版本；vertex 用例；bedrock（如同意） | `npm run typecheck && npm test && npm run lint`（`next/web`）；插件 UI 检查脚本 |
-| **T6 文档、版本与收尾** | T1–T5 | 第 12 节所列文档；`released.json` 体系下各插件升版本；CHANGELOG | `tools/sub2api-plugin` 的 `TestReleasedPluginsBumped`；6.3 的核查 SQL 交给所有者 |
+| **T1 SDK** | 5.1、5.2、5.5 | 见下 | `gotest.sh <wt> sdk go test -count=1 ./pluginsdk/...`；`gofmt`、`go vet` |
+| **T2 核心受限地址** | 7.1 做法一 | 见下 | `gotest.sh <wt> sdk go test ./manifest/...`；`gotest.sh <wt> server go test -race ./internal/account/...`（PG 测试必须真的跑了） |
+| **T3 简单插件** | T1、T2 | 见下 | 各插件 `go test ./...`（含 golden、conformance）；UI 用 `next-check-plugin-ui.sh` 检查 |
+| **T4 azure** | T1 | `Versions`，删掉 `KeyValidator = nil` 那一行；测试覆盖 6.4 azure 各行（`%2F` 项目路径、两个类型 × `/openai`、`/openai/v1`）；UI 文案 | `go test ./...` |
+| **T5 volcengine** | T1、T2 | apikey 的 `Versions` 和 manifest 的 `versions`；relay 不动；测试；两个表单的密钥规则；文案；PLUGIN-VOLCENGINE-ARK.md | `go test ./...`，原有的同源检查和视频用例全过 |
+| **T6 前端包与 vertex、bedrock** | 第 8 节、Q2 | `createApiKeyForm` 的默认规则、README、`@sub2api/ui` 升版本；vertex 用例；bedrock（Q2 同意后才做） | `next/web` 下 `npm run typecheck && npm test && npm run lint`；插件 UI 检查脚本 |
+| **T7 文档、版本、收尾** | T1–T6 | 第 12 节的文档（含 CONTRACTS §21.3）；各插件升版本、提高 `hostCompat`；CHANGELOG | `tools/sub2api-plugin` 的 `TestReleasedPluginsBumped` |
+
+各任务的产出：
+- **T1 SDK**：
+  - 密钥规则；`NormalizeBaseURL(base)` 保留转义、不剥后缀；`StripSuffixes` 改名 `Versions`；`FromAccount` 算根；四个 `providers` 跟着改；
+  - 测试：`apikey_test`、`apikeytest`；
+  - "旧存值在新规则下请求地址不变"的性质测试：用一组输入算出旧存值，对所有类型和路由比较 `strip1(S)+P` 与新结果，要求全部相等；
+  - golden 的 validate 用例和说明。
+- **T2 核心受限地址**：manifest 的 `GuardedSetting.versions` 及其检查；`checkGuarded`、`guardNorm` 按根比较；核心测试：带版本的官方地址通过、`…/a%2Fv1` 不当作版本、PATCH 与原值比较。
+- **T3 简单插件**：openai、anthropic、relay、typesafe、gemini、newapi、sub2api 的 Go 改动、测试、UI 文案；四个受限插件的 manifest 写 `versions`，并加"manifest 与 `Spec.Versions` 一致"的测试。
+
+选方案 A 时：
+- T1 改为实现 5.3 的 `Join` 和 `standard` 拼接，golden 的 execute、test、models 类也要改；
+- 取消 T2；
+- T4、T5 的输入加上 Q4、Q5；
+- T7 加上把 6.3 的核查交给所有者。
 
 所有任务都只用本地测试和 mock 上游，不向任何真实上游发请求。
 
 ## 11. 需要所有者确认的问题
 
-- **Q1 控制字符**：是否保留一条"不能含控制字符（CR、LF、NUL 等）"的密钥检查？
-  - 技术上不需要：SDK、核心、Go `net/http` 都拒绝发送，不会造成注入（3.2）。
-  - 不保留的代价：这种密钥能保存，但每次请求都以"请求头无效"失败。
-  - **建议不保留**，按原话"不要对格式有任何要求"。
-- **Q2 bedrock**：bedrock 的 `api_key`（现在 8–2048 位可见字符）不走 `apikey.Spec`，是否一起放开？**建议一起放开**：它同样只放在请求头里，理由与决定 A 相同。AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不动。
-- **Q3 受限地址**：没有 `account:settings:custom` 的调用者，经 API 提交 `https://api.openai.com/v1` 这类带版本的官方地址时，现在会被规范化为允许值并通过，改后会以 `forbidden` 拒绝。控制台对这些人只给预设，界面上没有变化。**建议接受**，不扩大允许列表。
-- **Q4 volcengine apikey 填 `/api/v3`**：只有有自定义权限的人能填。填了之后，Anthropic Messages 会发往 `…/api/v3/api/compatible/v1/messages`。**建议接受，并改帮助文案**。不另做"Anthropic 面先剥 `/api/v3`"的特殊处理，因为那就是剥后缀。
-- **Q5 azure_deployment 填 `…/openai/v1`**：改后会得到 404。是否在该类型的 `EndpointPattern` 里去掉 `/openai/v1` 这一选项，改为保存时拒绝？**建议不拒绝**，只改帮助文案，账号测试会立刻显示 404；"不擅自加限制"优先。
-- **Q6 volcengine relay**：基础地址带 `/v1`、`/api/v3` 时保存就被拒绝（因为有 `api_prefix` 字段）。是否改为"有就不管"？**建议不动**，理由见第 7 节。
-- **Q7 版本段的认法**：本方案只认类型声明的版本段，整段匹配，区分大小写。旧版 Sub2API 的 OpenAI 系认任何版本段且不区分大小写，例如智谱 `…/api/paas/v4` 会拼成 `…/v4/chat/completions`。改用那种认法，会让 `…/v1beta`、`…/V1`、`…/v4` 这类已存值的请求地址改变，不满足等价。**建议用本方案**。代价是：智谱这类版本段不是 `/v1` 的 OpenAI 兼容站点，在新规则下填 `…/api/paas/v4` 会拼成 `…/v4/v1/chat/completions`，仍然配不通（现在也一样配不通）。所有者如果要支持这类站点，需要改用"任意版本段"的认法，并接受上面那些已存值的请求地址改变。
-- **Q8 多协议站点（newapi、sub2api）填 `/v1`**：按字面规则，openai、anthropic 路由正常，Gemini 路由和 newapi 余额会多出 `/v1`。改前这些都会被悄悄修正。**建议按字面规则执行**，帮助文案写明"填站点根地址"。另一个办法是这两个类型继续剥后缀，但那与"不要去多"相悖。
-- **Q9 gemini 填 `/v1`**：改前 `…/v1` 会被当成 `/v1beta` 处理；改后发往 `…/v1/v1beta/...`。**建议按字面规则执行**。Google 文档给的地址是 `…/v1beta`，不受影响。
-- **Q10 6.3 的核查**：请所有者在发布前执行那条只读查询。结果不为空时，逐个决定改地址还是接受。
+- **Q0 选方案 A 还是方案 B**：**建议选 B**。B 下已存账号的请求地址全部不变，现在能用的常见填法都继续能用，所有者要修的"地址本身以 /v1 结尾"也能修。A 会让 Q4、Q5、Q8、Q9 那些填法配不通，而且需要线上核查。
+- **Q1 控制字符**（按建议写定）：密钥不加"不含控制字符"的检查。SDK、核心、Go `net/http` 都会拒绝发送，不存在注入（3.2）。代价是这种密钥能保存，但每次请求都以"请求头无效"失败。
+- **Q2 bedrock**（**待所有者确认**）：bedrock 的 `api_key`（现在要求 8–2048 位可见字符）不走 `apikey.Spec`。建议一起放开，它同样只放在请求头里。AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不动。
+- **Q3 受限地址**：
+  - 选 B：建议用 7.1 做法一（manifest 增加 `versions`，核心按根比较）。这是契约改动，请确认；也可以选做法二（扩大允许列表，但界面会从锁定变成下拉）。
+  - 选 A：带版本的官方地址会被拒，建议接受。
+- **Q4 volcengine apikey 填 `/api/v3`**：选 B 时这个问题不存在。选 A 时，Anthropic Messages 会拼到 `/api/v3` 后面，建议接受并改文案。
+- **Q5 azure_deployment 填 `/openai/v1`**：选 B 时这个问题不存在。选 A 时请求会 404，建议不在保存时拒绝，只改文案。
+- **Q6 volcengine relay**（按建议写定）：不动。基础地址带 `/v1`、`/api/v3` 时继续在保存时拒绝，并提示去填 `api_prefix`。
+- **Q7 版本段的认法**（按建议写定）：只认类型声明的版本段，整段匹配，区分大小写，按转义形式判断。"任意版本段"的认法（旧版 Sub2API 的 OpenAI 系）会改变 `…/v1beta`、`…/V1`、`…/v4` 这类已存值的请求地址。代价是智谱 `…/api/paas/v4` 这类站点仍然配不通，现在也配不通。
+- **Q8 newapi、sub2api 填 `/v1`** 和 **Q9 gemini 填 `/v1`**：选 B 时这两个问题不存在。选 A 时，Gemini 路由和余额会多出 `/v1`。
+- **Q10 线上核查**：选 B 时不需要（6.5）。选 A 时请执行 6.3 的只读查询。
+- **Q11 azure 项目名恰好是 `openai`**：只在选 B 时存在。地址 `…/api/projects/openai` 的末尾被当作版本段 `/openai`，请求少了项目自己那一段，和现在一样。线上没有 azure 账号。建议接受，并在文档里注明；要修就得给 azure 单独加例外，我不建议这样做。
 
 ## 12. 要改的文档与 CHANGELOG
 
@@ -563,4 +719,5 @@ T1 是其余任务的接口前提，先做。T2–T5 在 T1 合入功能分支�
 - `CHANGELOG.md` 的"未发布"，写用户可见的三点：
   - 密钥不再限制格式和长度；
   - 地址里的转义原样保存；
-  - 不再剥版本后缀，已有就不重复添加，并附上第 6 节里会变的输入。
+  - 不再剥版本后缀，保存用户填的地址；按所选方案说明请求时怎么处理版本段，并附上 6.4 里会变的输入。
+- 选方案 B 时另改 CONTRACTS §21.3（`guardedSettings[].versions` 与按根比较）。
