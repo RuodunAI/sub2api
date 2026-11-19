@@ -67,9 +67,8 @@ func (r *PriceRule) Clone() *PriceRule {
 // expression reads (param()/header()), so they can be captured at request
 // time and evaluated later during settlement.
 type Pricer interface {
-	// Resolve returns the list price q asks for. ErrPriceNotConfigured when
-	// the model has no global price and the missing-price policy is "reject";
-	// (nil, nil) when policy is "free".
+	// Resolve returns the list price q asks for, never nil without an error:
+	// ErrPriceNotConfigured when the model has no global price.
 	Resolve(ctx context.Context, q PriceQuery) (*PriceRule, error)
 	Inputs(rule *PriceRule) (bodyPaths []string, headerNames []string)
 }
@@ -260,14 +259,14 @@ type UsageRecord struct {
 	Reservation *UsageReservation
 	// ReservationDropped says why a Reservation the plugin DID return is not
 	// on this record: the gateway found the record unbillable (the endpoint
-	// bills "free", no price, an empty estimate on a per-token price) and
+	// bills "free", an empty estimate on a per-token price) and
 	// cleared it. Empty in the ordinary case. It is recorded in
 	// usage_logs.anomalies because the alternative - a job that was really
 	// started upstream, never pre-charged, never reconciled, and nothing
 	// anywhere saying so - is the silent kind of wrong (CONTRACTS §25.5).
 	ReservationDropped string
 	Billable           bool              // false for endpoint billing=free or zero usage
-	Price              *PriceRule        // nil when not billable or free policy
+	Price              *PriceRule        // nil when not billable
 	PriceParams        map[string]string // body path -> raw JSON value captured at request time
 	PriceHeaders       map[string]string // lower-case header -> value captured at request time
 	RateMultiplier     decimal.Decimal

@@ -1144,7 +1144,6 @@ export interface UsageOverview {
 
 export interface BillingSettings {
 	pre_consume_tokens: number
-  missing_price_policy: 'reject' | 'free'
   min_balance: Money
   big_cost_warning_usd: Money
   /** What a request pays when its client hangs up mid-answer (CONTRACTS §25.8). */

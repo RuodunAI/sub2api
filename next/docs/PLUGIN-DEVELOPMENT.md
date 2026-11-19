@@ -283,7 +283,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 设置 | 归属 | HTTP / WebSocket | 说明与位置 |
 |---|---|---|---|
-| 模型没有配置价格时、最低余额、高额费用警告 | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
+| 最低余额、高额费用警告（没有价格的模型一律拒绝，不是设置，CONTRACTS §17.3） | 核心统一 | 一致 / 每轮检查 | `pipeline.go` `prepareBilling` |
 | 请求预扣 Token 数、输出预留 | 核心统一；**插件配合**：可实现 `EstimateUsage` 给出更准的估算，返回 `Unimplemented` 时核心用本地 tokenizer（`task.submit` 端点必须实现） | 一致 / 每轮 | `precharge.go`，CONTRACTS §25.8 |
 | 客户端中途断开时（读完再计费 / 按预扣计费 / 不计费） | 核心统一 | 一致（等待形式同样） / 不续读，按预扣（契约规定） | `disconnect.go`；CONTRACTS §25.8。终止用量事件送达客户端之后才断开的请求按成功计费（三种策略都一样）；等待形式下插件放弃中继调用（被终止、进程退出）记为上游中断，不算客户端断开 |
 | 用量来源 | **插件配合**：在端点或账号类型上声明 `usage` 规则；规则表达不了时声明 `usageSource: "plugin"` 并实现 `UsageExtractor`（第 2.7 节） | 一致 / WebSocket 不支持 `usageSource: "plugin"`（清单检查拒绝） | `forward.go`、`waited.go`、`sdk/manifest/check/websocket.go` |
@@ -326,7 +326,7 @@ if relay.Wait || !proto.Equal(ex.Response, pluginsdk.ReportHostUsage()) { ... }
 
 | 分组 | SDK 类型 | 典型用途 |
 |---|---|---|
-| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、缺价策略、断开计费策略处理 |
+| `billing` | `protocol.BillingSettings` | 自己结算或预估费用的插件按同样的最低余额、断开计费策略处理 |
 | `gateway` | `protocol.GatewaySettings` | 自己调上游的后台任务参照重试次数、超时、媒体下载上限、请求体上限 |
 | `scheduling` | `protocol.SchedulingSettings` | 排序插件（`RankAccounts`）参照均衡负载的指标 |
 | `sticky` | `protocol.StickySettings` | 粘性会话关闭时放弃排队的绑定清理（dynweight 0.5.11） |

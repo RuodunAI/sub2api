@@ -7,15 +7,14 @@ import (
 )
 
 func TestReviewAdditionalRouteAndPriceBoundaries(t *testing.T) {
-	t.Run("free primary retains paid extra", func(t *testing.T) {
+	t.Run("unpriced primary is refused despite a priced extra", func(t *testing.T) {
 		e := pricedAdvisorEnv(t)
-		e.pricer.free = true
 		delete(e.pricer.rules, testModel)
-		e.up.set("acc-1", &upstreamRule{status: 200, body: `{"type":"message","role":"assistant","content":[],"usage":{"input_tokens":1,"output_tokens":0,"iterations":[{"type":"advisor_message","model":"` + advisorModel + `","input_tokens":2,"output_tokens":3}]}}`})
 		res := e.messages(advisorBody(false))
 		rec := e.record()
-		if res.status != 200 || rec.Price != nil || len(rec.Additional) != 1 || rec.Additional[0].Price == nil || !rec.Billable {
-			t.Fatalf("free primary erased extra pricing: %+v", rec)
+		if res.status != 403 || res.json().Get("error.code").String() != core.ErrPriceNotConfigured.Code ||
+			rec.ErrorType != errTypePriceNotConfigured || len(e.up.keys()) != 0 {
+			t.Fatalf("unpriced primary served: %d %s %+v", res.status, res.body, rec)
 		}
 	})
 	t.Run("account override missing extra metering excluded", func(t *testing.T) {

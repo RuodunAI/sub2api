@@ -81,7 +81,7 @@ type call struct {
 	// (convert_policy.go)
 	conversion conversionState
 
-	// billing: the model's global price (nil = free policy or free endpoint)
+	// billing: the model's global price (nil on a free endpoint)
 	price                *core.PriceRule
 	modelRefs            []modelReference
 	upstreamRefs         map[string]core.PricedUsage
@@ -562,16 +562,14 @@ func (c *call) prepareBilling(ctx context.Context) *gwError {
 		}
 		return fromCore(e, rt)
 	}
-	if rule != nil {
-		kind := rule.Mode
-		if rule.VideoOnly {
-			kind = "video"
-		}
-		if !c.ep.SupportsBillingType(kind) {
-			return &gwError{Status: http.StatusBadRequest, Code: "billing_type_not_supported",
-				Message:    "endpoint " + c.ep.Protocol + " does not support " + kind + " pricing for model " + c.model,
-				RecordType: errTypeInvalidRequest}
-		}
+	kind := rule.Mode
+	if rule.VideoOnly {
+		kind = "video"
+	}
+	if !c.ep.SupportsBillingType(kind) {
+		return &gwError{Status: http.StatusBadRequest, Code: "billing_type_not_supported",
+			Message:    "endpoint " + c.ep.Protocol + " does not support " + kind + " pricing for model " + c.model,
+			RecordType: errTypeInvalidRequest}
 	}
 	c.price = rule
 	c.rec.Price = rule
@@ -846,7 +844,7 @@ func (c *call) settleCanceled(ctx context.Context, rec *core.UsageRecord, billin
 	if rec.ErrorType != errTypeClientCanceled || !c.upstreamResponded {
 		return false, false
 	}
-	if strings.EqualFold(billing, "free") || rec.Price == nil || rec.Reservation != nil || len(rec.Replacement) > 0 {
+	if strings.EqualFold(billing, "free") || rec.Reservation != nil || len(rec.Replacement) > 0 {
 		return false, false
 	}
 	if c.drained {
@@ -905,9 +903,9 @@ func canceledTokens(reported, est core.UsageTokens) core.UsageTokens {
 // the first plugin to reserve, where the submit endpoint had been marked
 // billing "free" because "the submit itself has no final usage". The manifest
 // check now refuses that combination; this is what stands for packages
-// installed before it did, and for the other two ways here: a price the
-// request did not resolve, and an estimate with no tokens and no facts on a
-// per-token price, which is a plugin bug the plugin author has to hear about.
+// installed before it did, and for the other way here: an estimate with no
+// tokens and no facts on a per-token price, which is a plugin bug the plugin
+// author has to hear about.
 func (c *call) dropReservation(ctx context.Context, rec *core.UsageRecord, billing string, hasUsage bool) {
 	rv := rec.Reservation
 	if rv == nil {
@@ -917,8 +915,6 @@ func (c *call) dropReservation(ctx context.Context, rec *core.UsageRecord, billi
 	switch {
 	case strings.EqualFold(billing, "free"):
 		why = "endpoint billing is \"free\""
-	case rec.Price == nil:
-		why = "no price was resolved for the request"
 	case !hasUsage:
 		why = "the estimate has no tokens and no facts, and the price is not per-request"
 	default:
