@@ -580,10 +580,10 @@ func (p *Plugin) pollDevice(ctx context.Context, req *pluginv1.HTTPRequest, id, 
 	}
 	if err != nil {
 		// The core would not send it (the form's proxy, the host): nothing
-		// reached OpenAI and the device code is unspent, so the session
-		// stays; the next poll carries a fresh ticket of the form's proxy.
+		// reached OpenAI and the device code is unspent, so the login goes
+		// on; the next poll carries a fresh ticket of the form's proxy.
 		p.log.Warn("codex: device code status request refused by the core", "error", status.Convert(err).Message())
-		return pollFailed(refusedMessage(err))
+		return pending(refusedMessage(err))
 	}
 	switch {
 	case a.status == http.StatusForbidden || a.status == http.StatusNotFound:

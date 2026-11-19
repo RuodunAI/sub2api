@@ -2,7 +2,9 @@
 // Codex device code login (codex_device): Start → POST /auth/device/start →
 // the verification page and the code, a countdown, and POST
 // /auth/device/poll every `interval` seconds until done / expired / error.
-// Polling stops when the component unmounts or reset() is called.
+// A poll that could not ask OpenAI (the form's proxy refused or unusable, the
+// network) shows why and polls on. Polling stops when the code expires, the
+// component unmounts or reset() is called.
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { SAlert, SButton, SCopyButton, SHint, SIcon, SLink, SSpinner, SSteps, useNow } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
@@ -22,6 +24,8 @@ const phase = ref<Phase>('idle')
 const session = ref<DeviceStart | null>(null)
 const expiresAt = ref(0)
 const failure = ref('')
+/** Why the last poll could not ask OpenAI (the form's proxy, the network); polling goes on. */
+const notice = ref('')
 const now = useNow(() => (phase.value === 'waiting' ? COUNTDOWN_TICK_MS : 0))
 const left = computed(() => Math.max(0, Math.round((expiresAt.value - now.value) / 1000)))
 
@@ -47,6 +51,7 @@ async function start() {
   stop()
   const gen = generation
   failure.value = ''
+  notice.value = ''
   session.value = null
   setPhase('starting')
   try {
@@ -77,12 +82,26 @@ async function poll(gen: number) {
     setPhase('expired')
     return
   }
+  const id = session.value.session_id
+  let ticket: string
   try {
-    const r = await pollDevice(session.value.session_id, await props.proxyTicket())
+    ticket = await props.proxyTicket()
+  } catch (e) {
+    if (gen !== generation) return
+    // The form's proxy cannot be used, not a dropped request: say so and
+    // poll on, so the login continues once the operator fixes the proxy.
+    notice.value = errorMessage(e, t('actionFailed'))
+    return schedule(gen)
+  }
+  try {
+    const r = await pollDevice(id, ticket)
     if (gen !== generation) return
     failures = 0
     if (r.interval) delay = pollDelay(r.interval)
-    if (r.status === 'pending') return schedule(gen)
+    if (r.status === 'pending') {
+      notice.value = r.message || ''
+      return schedule(gen)
+    }
     stop()
     if (r.status === 'done' && r.credentials) {
       setPhase('idle')
@@ -108,6 +127,7 @@ function cancel() {
   stop()
   session.value = null
   failure.value = ''
+  notice.value = ''
   setPhase('idle')
 }
 
@@ -157,6 +177,7 @@ const steps = computed(() => [
           </div>
         </template>
       </SSteps>
+      <SAlert v-if="notice" tone="warning" dense data-testid="codex-device-notice"><span class="cx-break">{{ notice }}</span></SAlert>
       <div class="cx-status" role="status">
         <SSpinner size="sm" decorative />
         <span>{{ t('device.waiting') }}</span>

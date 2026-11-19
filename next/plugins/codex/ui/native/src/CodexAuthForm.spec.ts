@@ -179,6 +179,43 @@ describe('CodexAuthForm: device code', () => {
     expect(w.get('[data-testid="codex-device-error"]').text()).toContain('device code login is not enabled')
   })
 
+  it('shows why a pending poll could not ask OpenAI and polls on', async () => {
+    deviceAnswers([{ status: 'pending', message: 'the core refused to send the request through the account form\'s proxy' }, { status: 'pending' }, { status: 'done', credentials: DEVICE_CREDS }])
+    const w = mountForm({ accountType: { type: 'codex_device' } })
+    await w.get('[data-testid="codex-device-start"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-testid="codex-device-notice"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(w.get('[data-testid="codex-device-notice"]').text()).toContain('refused to send the request')
+    expect(w.find('[data-testid="codex-device-error"]').exists()).toBe(false)
+    // The operator fixed the proxy: the next pending answer has no message.
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(w.find('[data-testid="codex-device-notice"]').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(lastValue(w)).toEqual(DEVICE_CREDS)
+  })
+
+  it('shows a refused proxy ticket and polls on without counting a failure', async () => {
+    deviceAnswers([{ status: 'done', credentials: DEVICE_CREDS }])
+    const w = mountForm({ accountType: { type: 'codex_device' } })
+    await w.get('[data-testid="codex-device-start"]').trigger('click')
+    await flushPromises()
+    // More refusals in a row than a dropped request may fail.
+    const refused = new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [{ field: 'proxy_id', code: 'disabled', message: 'the proxy is disabled' }] } })
+    for (let i = 0; i < 4; i++) proxyTicket.mockRejectedValueOnce(refused)
+    for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(5000)
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(0)
+    expect(w.get('[data-testid="codex-device-notice"]').text()).toContain('the proxy is disabled')
+    expect(w.find('[data-testid="codex-device-error"]').exists()).toBe(false)
+    expect(w.find('[data-testid="codex-device-code"]').exists()).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(5000)
+    await flushPromises()
+    expect(calls.filter((c) => c.path === '/auth/device/poll')).toHaveLength(1)
+    expect(lastValue(w)).toEqual(DEVICE_CREDS)
+  })
+
   it('treats a code past its lifetime as expired without asking', async () => {
     answer = (path) => (path === '/auth/device/start' ? { session_id: 's1', verification_url: 'https://x', user_code: 'C', interval: 5, expires_in: 4 } : { status: 'pending' })
     const w = mountForm({ accountType: { type: 'codex_device' } })
