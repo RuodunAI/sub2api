@@ -164,6 +164,9 @@ export default {
     inputs: 'Billing condition values',
     statusLabel: 'Billing status',
     ledger: 'ledger #{id}',
+    additional: 'Additional usage (each at its own model\'s price, included in the total)',
+    additionalUnpriced: 'No price, not charged',
+    additionalKinds: { image_generation: 'Image generation tool', advisor: 'Advisor model', compaction: 'Context compaction' },
     freeNote: 'Requests rejected by hooks or failing upstream without usage are not billed.',
     status: {
       billed: 'Billed',

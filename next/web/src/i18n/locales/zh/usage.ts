@@ -163,6 +163,9 @@ export default {
     inputs: '计费条件取值',
     statusLabel: '结算状态',
     ledger: '账本 #{id}',
+    additional: '附加用量（按各自模型的价格计，已计入合计）',
+    additionalUnpriced: '没有价格，未计费',
+    additionalKinds: { image_generation: '生图工具', advisor: '顾问模型', compaction: '上下文压缩' },
     freeNote: '被钩子拒绝、上游失败且没有用量的请求不计费。',
     status: {
       billed: '已结算',
