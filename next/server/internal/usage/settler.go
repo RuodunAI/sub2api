@@ -855,9 +855,15 @@ type BillingDetail struct {
 	ListCost       *decimal.Decimal          `json:"list_cost,omitempty"` // at the list price, before the rate; only when a price rule applied
 	RateMultiplier decimal.Decimal           `json:"rate_multiplier"`
 	TotalCost      decimal.Decimal           `json:"total_cost"` // charged
-	LedgerID       *int64                    `json:"ledger_id,omitempty"`
-	Inputs         pendingInputs             `json:"inputs"`
-	Attempts       int                       `json:"attempts"`
+	// The primary usage's own Cost, ListCost and TotalCost, when the record
+	// has additional items and its primary usage is priced (not replaced):
+	// Cost, ListCost and TotalCost above then sum it with every item.
+	PrimaryCost      *decimal.Decimal `json:"primary_cost,omitempty"`
+	PrimaryListCost  *decimal.Decimal `json:"primary_list_cost,omitempty"`
+	PrimaryTotalCost *decimal.Decimal `json:"primary_total_cost,omitempty"`
+	LedgerID         *int64           `json:"ledger_id,omitempty"`
+	Inputs           pendingInputs    `json:"inputs"`
+	Attempts         int              `json:"attempts"`
 }
 
 var errNotPending = errors.New("usage row is not pending")

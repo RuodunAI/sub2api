@@ -100,3 +100,31 @@ func TestSettleLegacyUnpricedReplacementFails(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// A retried settlement stores the primary usage's own amounts beside the
+// total, and the owner of the request sees them.
+func TestPrimaryAmountsSurviveRetry(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	r := f.record("primary-amounts", true)
+	r.CreatedAt = time.Now().Add(-time.Hour)
+	r.Additional = []core.PricedUsage{{Kind: "advisor", Model: "other-model", Price: &core.PriceRule{Expression: `tier("extra",p)`, Mode: "expression"}, UsageSemantics: "exclusive", Tokens: core.UsageTokens{Input: 1_000_000}, RateMultiplier: decimal.NewFromInt(1)}}
+	if err := f.bill.Precharge(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	f.ledger.fail.Store(1)
+	f.svc.process(ctx, []*core.UsageRecord{r})
+	if _, err := f.svc.RetryPending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := f.scalar(`SELECT billing_status || ' ' || ((billing_detail->>'primary_total_cost')::numeric + (billing_detail->'additional'->0->'detail'->>'total_cost')::numeric = total_cost)::text
+		|| ' ' || (billing_detail->>'primary_total_cost') || ' ' || (billing_detail->>'primary_cost') FROM usage_logs WHERE request_id = 'primary-amounts'`)
+	if got != "billed true 0.708 0.708" {
+		t.Fatal(got)
+	}
+	id := f.scalar(`SELECT id::text FROM usage_logs WHERE request_id = 'primary-amounts'`)
+	self := f.get(f.user, "/me/usage/"+id, 200)["data"].(map[string]any)["billing_detail"].(map[string]any)
+	if self["primary_total_cost"] != "0.708" || self["primary_cost"] != "0.708" {
+		t.Fatal("not in the owner's detail", self["primary_total_cost"], self["primary_cost"])
+	}
+}
