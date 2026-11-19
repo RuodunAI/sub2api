@@ -62,6 +62,16 @@ func TestManifest(t *testing.T) {
 	if u, _ := url.Parse(def); !slices.Equal(m.ExternalServices, []string{u.Host}) {
 		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, u.Host)
 	}
+	// The image models are a form's suggestion like the rest; the alias
+	// OpenAI retires on 2026-12-01 is left out.
+	for _, m := range []string{"gpt-image-2", "gpt-image-1.5", "gpt-image-1-mini"} {
+		if !slices.Contains(at.DefaultModels, m) {
+			t.Errorf("defaultModels lack %s", m)
+		}
+	}
+	if slices.Contains(at.DefaultModels, "chatgpt-image-latest") {
+		t.Error("defaultModels list chatgpt-image-latest")
+	}
 	perms := map[string]manifest.HostPermission{}
 	for _, perm := range m.HostPermissions {
 		perms[perm.ID] = perm
@@ -101,7 +111,7 @@ func TestConformance(t *testing.T) {
 	}, conformanceCases()...)
 }
 
-var httpProtocols = []string{preset.ProtocolChat, preset.ProtocolResponses, preset.ProtocolEmbeddings}
+var httpProtocols = []string{preset.ProtocolChat, preset.ProtocolResponses, preset.ProtocolEmbeddings, preset.ProtocolImages, preset.ProtocolImagesEdit}
 
 const wsTurn = "openai.responses_ws turn"
 
@@ -114,12 +124,16 @@ func conformanceCases() []conformance.Case {
 			if stream && protocol == preset.ProtocolEmbeddings {
 				continue // embeddings never stream (no streamPath)
 			}
-			body := `{"model":"gpt-4o-mini","input":"hi"}`
+			model, field := "gpt-4o-mini", "input"
+			if protocol == preset.ProtocolImages || protocol == preset.ProtocolImagesEdit {
+				model, field = "gpt-image-1.5", "prompt"
+			}
+			body := `{"model":"` + model + `","` + field + `":"hi"}`
 			if stream {
-				body = `{"model":"gpt-4o-mini","input":"hi","stream":true}`
+				body = `{"model":"` + model + `","` + field + `":"hi","stream":true}`
 			}
 			cases = append(cases, conformance.Case{Account: account, Body: []byte(body),
-				Meta: &pluginv1.RequestMeta{Protocol: protocol, Model: "gpt-4o-mini", Stream: stream}})
+				Meta: &pluginv1.RequestMeta{Protocol: protocol, Model: model, Stream: stream}})
 		}
 	}
 	return append(cases, conformance.Case{Name: wsTurn, Account: account, WebSocket: true,

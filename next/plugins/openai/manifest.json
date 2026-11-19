@@ -3,8 +3,8 @@
   "key": "openai",
   "name": { "en": "OpenAI", "zh": "OpenAI" },
   "description": {
-    "en": "OpenAI API key account type for the built-in openai platform (/v1/chat/completions, /v1/responses including its WebSocket mode, /v1/embeddings). The plugin builds the upstream requests; the core sends them, so the plugin itself makes no network connection. Model prices are set by administrators in the core.",
-    "zh": "为内置 openai 平台提供 OpenAI API Key 账号类型（/v1/chat/completions、/v1/responses（含 WebSocket 模式）、/v1/embeddings）。插件构造上游请求，由核心发送，插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
+    "en": "OpenAI API key account type for the built-in openai platform (/v1/chat/completions, /v1/responses including its WebSocket mode, /v1/embeddings, /v1/images/generations and the JSON form of /v1/images/edits). The plugin builds the upstream requests; the core sends them, so the plugin itself makes no network connection. Model prices are set by administrators in the core.",
+    "zh": "为内置 openai 平台提供 OpenAI API Key 账号类型（/v1/chat/completions、/v1/responses（含 WebSocket 模式）、/v1/embeddings、/v1/images/generations 和 JSON 形式的 /v1/images/edits）。插件构造上游请求，由核心发送，插件自身不发起任何网络连接。模型价格由管理员在核心中配置。"
   },
   "version": "0.5.0",
   "publisher": "sub2api",
@@ -119,7 +119,10 @@
         "computer-use-preview-2025-03-11",
         "text-embedding-3-small",
         "text-embedding-3-large",
-        "text-embedding-ada-002"
+        "text-embedding-ada-002",
+        "gpt-image-2",
+        "gpt-image-1.5",
+        "gpt-image-1-mini"
       ],
       "platforms": [
         { "platform": "openai" }

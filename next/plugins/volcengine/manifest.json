@@ -420,6 +420,12 @@
       "platforms": [
         {
           "platform": "openai",
+          "endpoints": [
+            "chat_completions",
+            "responses",
+            "responses_websocket",
+            "embeddings"
+          ],
           "passHeaders": [
             "user-agent"
           ]
@@ -511,6 +517,12 @@
       "platforms": [
         {
           "platform": "openai",
+          "endpoints": [
+            "chat_completions",
+            "responses",
+            "responses_websocket",
+            "embeddings"
+          ],
           "passHeaders": [
             "user-agent"
           ]
