@@ -34,7 +34,7 @@
       "sensitiveFields": ["api_key"],
       "settingsFields": ["base_url", "organization", "project"],
       "guardedSettings": [
-        { "field": "base_url", "allowed": ["https://api.openai.com"] }
+        { "field": "base_url", "allowed": ["https://api.openai.com"], "versions": ["/v1"] }
       ],
       "defaultModels": [
         "gpt-6.2-astra",

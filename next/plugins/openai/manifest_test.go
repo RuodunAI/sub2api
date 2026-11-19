@@ -54,10 +54,12 @@ func TestManifest(t *testing.T) {
 		t.Errorf("sensitive/settings fields = %v %v", at.SensitiveFields, at.SettingsFields)
 	}
 	// base_url is guarded (CONTRACTS §21.3): without account:settings:custom
-	// only the default upstream of the plugin's type may be used.
-	def := openai.APIKey().Spec.DefaultBaseURL
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) {
-		t.Errorf("guardedSettings = %+v, want base_url -> [%s]", gs, def)
+	// only the default upstream of the plugin's type may be used, with or
+	// without one of the version segments of the type's base URL.
+	spec := openai.APIKey().Spec
+	def := spec.DefaultBaseURL
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) || !slices.Equal(gs[0].Versions, spec.Versions) {
+		t.Errorf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, def, spec.Versions)
 	}
 	if u, _ := url.Parse(def); !slices.Equal(m.ExternalServices, []string{u.Host}) {
 		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, u.Host)

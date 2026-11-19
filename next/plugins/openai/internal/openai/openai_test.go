@@ -17,13 +17,10 @@ import (
 
 // TestGolden replays the frozen answers of the released plugin against the
 // platform the plugin serves (its ValidateCredentials included), except
-// where it now holds the account form's rules: a key the form never sends
-// is refused, and so is an api_key past 512 characters or not visible ASCII.
+// that it now refuses a key the account form never sends.
 func TestGolden(t *testing.T) {
 	standardtest.Run(t, "openai", "../../manifest.json", New(),
-		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"),
-		goldentest.Except("validate too long key", "the account form's api_key: at most 512 characters"),
-		goldentest.Except("validate non-ascii key", "the account form's api_key: visible ASCII only"))
+		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"))
 }
 
 func TestCheck(t *testing.T) {
@@ -119,6 +116,24 @@ func TestImages(t *testing.T) {
 			if !maps.Equal(got.GetDefaultHeaders(), want) {
 				t.Errorf("%s default headers = %v, want %v", protocol, got.GetDefaultHeaders(), want)
 			}
+		}
+	}
+}
+
+// TestBaseURL: a request appends the route's whole path to the saved base
+// URL less the one /v1 it may end in, so a pasted /v1 is not doubled, a
+// site whose own address ends in /v1 is reached at .../v1/v1, and an
+// escaped "/" goes out as it was written (and is no version segment).
+func TestBaseURL(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://x.example.com":         "https://x.example.com/v1/chat/completions",
+		"https://x.example.com/v1":      "https://x.example.com/v1/chat/completions",
+		"https://x.example.com/v1/v1":   "https://x.example.com/v1/v1/chat/completions",
+		"https://x.example.com/p/a%2Fb": "https://x.example.com/p/a%2Fb/v1/chat/completions",
+		"https://x.example.com/a%2Fv1":  "https://x.example.com/a%2Fv1/v1/chat/completions",
+	} {
+		if got := build(t, New(), openai.ProtocolChat, `{"base_url":"`+base+`"}`, nil, `{}`).GetUrl(); got != want {
+			t.Errorf("%s: url %s, want %s", base, got, want)
 		}
 	}
 }
