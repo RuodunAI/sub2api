@@ -1676,6 +1676,8 @@ message RankedAccount {
 
 分 A / B / C / D 四期落地，本节按期补写。
 
+声明式用量规则里的**附加用量**（`usage.additional`：按另一个模型计价的用量，数组与对象两种形式、模型的准入与取价、没有价格时的行为）见 §120。
+
 ### 25.1 A 期：请求上下文与平台插件句柄（已实现）
 
 **`RequestMeta` 新增两个字段**（`sdk/proto/sub2api/plugin/v1/common.proto`）：
@@ -8492,7 +8494,7 @@ ALTER TABLE usage_logs
 | 账号类型 | 平台上的端点 | 生图 |
 |---|---|---|
 | openai `apikey` | 不写子集 | **服务**（预设有两条路由） |
-| codex `codex_oauth`、`codex_device` | `responses`、`responses_websocket` | 不服务，调度时不是候选（`gateway/images_test.go` 的 `TestOpenAIImages`）。Sign in with ChatGPT 账号经 Responses 的 `image_generation` 工具生图被上游拒绝（旧设计稿 1） |
+| codex `codex_oauth`、`codex_device` | `responses`、`responses_websocket` | 不服务这两个端点，调度时不是候选（`gateway/images_test.go` 的 `TestOpenAIImages`）。经 Responses 的 `image_generation` 工具**可以**生图，生图部分另计，见 118.10 |
 | azure-openai `azure_v1`（chat、responses、embeddings）、`azure_deployment`（chat、embeddings） | 写了子集 | 不服务；插件的路由表也没有这两个协议 |
 | volcengine `apikey`、`relay` | 本批改为显式 `chat_completions`、`responses`、`responses_websocket`、`embeddings`（与之前实际服务的相同） | 不服务：方舟的生图（Seedream）在插件自己的 `volcengine` 平台上（`volcengine.images`），形状不同；不写子集的话调度会把 OpenAI 生图请求交给它，插件没有这条路由而报 `unsupported upstream protocol` |
 | relay、anthropic、gemini、vertex、bedrock 的类型 | 不在 `openai` 平台上 | 不受影响 |
@@ -8515,6 +8517,7 @@ ALTER TABLE usage_logs
 
   - 没有文字输出价的模型把 `c` 写成图片输出价：上游不给输出明细时 `c` 里其实就是图片输出，这样两种情况都算对。
   - 缓存的图片输入（官方 2.00 / 0.25）没有单独变量，并入 `cr` 按文字缓存价算，略少收。
+  - `gpt-image-2-codex`（Codex 后端经 Responses 生图工具使用的模型，118.10）：OpenAI 没有公布单价，表里没有它；按 `gpt-image-2` 的价录入或自定，由管理员决定。
   - `gpt-image-1`（2026-10-23 下线）、`dall-e-2/3`（2026-05-12 下线）不用录；官方已没有按张计价的表；应答里的 `svg_usage` 计费方式未查到，这一版不读。
 - **价格同步源**（§17.1）这一版不映射图片价：LiteLLM 源只导入 chat、completion、responses、embedding 模式，`image_generation` 模式的条目被跳过；models.dev 源只有 `cost.input` / `output` / `cache_read`，导入的生图模型价格是只有文字价的 `per_token`（旧设计稿实测 `gpt-image-1.5` 为 `{p:5, c:10, cr:1.25}`）。这样的价格不计 `img`、`img_o`，图片 token 按文字价算，**少收**（图片输出官方价是文字输出的数倍），管理员应把它改成上表的表达式价格（改过的同步价格变成 `manual`，下次同步不会覆盖）。
 
@@ -8531,5 +8534,73 @@ ALTER TABLE usage_logs
 ### 118.9 以后
 
 - `/v1/images/edits` 的 multipart 形式（118.1）。
-- Responses 里 `image_generation` 工具的生图部分按生图模型另计（`response.tool_usage.image_gen`，要扩展附加用量规则）。
 - 缓存的图片输入单独计价、价格同步源导入图片 token 价、结构化分档编辑器里的图片价、统计页汇总图片 token、插件自报用量里的图片字段。
+
+### 118.10 Responses 里的生图工具（2026-11-18，见 §120）
+
+`/v1/responses`（HTTP 流式、非流式）与 `responses_websocket` 的请求带 `tools: [{"type":"image_generation", …}]` 时，上游在同一个应答里给出对话模型的用量（`usage`）和生图工具的用量（`tool_usage.image_gen`）。对话部分照旧按请求的模型计；生图部分是一条**附加用量**（§120），按生图模型的价格另计，token 的含义与 118.2 相同：`input_tokens` → 输入、`input_tokens_details.image_tokens` → 图片输入、`output_tokens` → 输出、`output_tokens_details.image_tokens` → 图片输出（图片 token 是输入、输出的一部分；表达式写了 `img` / `img_o` 按图片价，没写留在 `p` / `c` 按文字价）。生图模型取应答 `tools` 回显里 `type == "image_generation"` 那一项的 `model`，没有则取请求里那一项的 `model`，都没有时是平台规则声明的默认名 `gpt-image-2`。实测（2026-11-18，设备码账号经 Codex 后端）：对话 2304 / 52 token，生图输入 39、图片输出 515，回显的模型是 `gpt-image-2-codex`。
+
+- 服务的账号：openai `apikey`、codex 两种类型，以及服务内置 `openai` 平台 `responses` 端点的其它插件（New API、Sub2API 中转等），用的是同一份平台规则；插件不用改。
+- 管理员要做什么：给实际出现的生图模型录价格（118.6 的表达式价格）。Codex 后端回显的是 `gpt-image-2-codex`，OpenAI 没有公布它的单价，按 `gpt-image-2` 的价录入或自定，由管理员决定。没有价格时的行为见 §120.4。
+- `/v1/chat/completions` 转成 Responses 时（`convert/req_responses.go`）丢掉 `image_generation` 工具（已知的转换损失），所以经 Chat Completions 的请求不会生图，也没有这条附加用量。
+- 官方 Codex 客户端 2026-07 起改用 Codex 后端的 `/images/generations` 专用接口生图；网关没有这个端点（已知限制，不在本节范围）。
+
+## 120. 附加用量：对象快照、模型取自应答（2026-11-18，所有者要求 Responses 里生图工具的生图部分按生图模型另计；无迁移；Host API 仍是 10；插件协议仍是 2）
+
+附加用量（`UsageRules.additional`，`manifest.AdditionalUsageRule`）是一条请求里按**另一个模型**计价的用量：它不计进主用量（`usage_logs` 的 token 列是主用量），在 `usage_logs.billing_detail` 里单独保存和计价，记录的 `total_cost` 是主用量与全部附加用量之和（§97.6 的三个数都累加）。本节先写既有的数组形式，再写新增的对象形式。
+
+### 120.1 数组形式（既有）
+
+- `jsonPath` / `ssePath`（`sseEvent` 限定事件）指向一个数组，每次读到都是**完整快照**（后到的整体替换先到的，不累加）；其中 `typePath` 等于 `typeValue` 的元素各是一条附加用量，模型取元素里的 `modelPath`，`map` 读 token（`input_tokens`、`output_tokens` 必须有；值必须是不超过 10¹² 的非负整数）。例：Anthropic 的 `usage.iterations`（`compaction`、`advisor`）。
+- 模型必须是**调度前准入过的**：`usePrimaryModel` 取请求的主模型（账号映射后），或者请求里经 `request.modelReferences` 声明、同名的引用模型（准入：分组允许、账号服务该模型、调度前按 `missing_price_policy` 取价，`reject` 时没价格的引用模型在调度前 403）。应答报了一个没有准入的模型，记录的 `BillingError` 为 `additional usage does not match an admitted model identity`，整条记录不结算（`failed`）。
+- 预扣：引用模型按估算的同一份 token 预扣（`estimatedAdditional`）；结算按实际读数。
+
+### 120.2 对象形式（新增）
+
+```json
+{"name": "image_generation", "object": true,
+ "jsonPath": "tool_usage.image_gen", "ssePath": "response.tool_usage.image_gen",
+ "modelSources": [
+   {"from": "sse", "arrayPath": "response.tools", "match": {"type": "image_generation"}, "modelPath": "model"},
+   {"from": "json", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"},
+   {"from": "request", "arrayPath": "tools", "match": {"type": "image_generation"}, "modelPath": "model"}],
+ "defaultModel": "gpt-image-2",
+ "semantics": "inclusive",
+ "map": {"input_tokens": "input_tokens", "output_tokens": "output_tokens",
+         "image_input_tokens": "input_tokens_details.image_tokens",
+         "image_output_tokens": "output_tokens_details.image_tokens"}}
+```
+
+- `object: true`：`jsonPath` / `ssePath` 指向**一个对象**，它是一条附加用量的完整快照（同样后到的替换先到的）。路径缺失或为 `null` 时不改变已读到的值；对象的计数**全为 0 或都缺失时没有附加用量**（普通对话的应答也可能带全 0 的对象，不会因此多一行 0 元的附加项）。缺失的计数按 0（数组元素缺 `input_tokens` / `output_tokens` 仍是错误）；计数不是非负整数、值不是对象时与数组形式一样记 `AdditionalError`，整条记录不结算。
+- `map` 可以映射 `image_input_tokens`、`image_output_tokens`（两种形式都可以），语义同 §118.2。
+- 模型：按 `modelSources` 的顺序找第一个给出模型的来源，跳过另一种应答形式的来源（流式读 `sse`，非流式读 `json`，WebSocket 一轮按流式），`request` 读**发往上游的请求体**（HTTP 是插件交回、核心发出的字节；WebSocket 是这一轮发往上游的消息）。每个来源：有 `arrayPath` 时在该数组里找第一个 `match` 全部相等（字符串）的对象，读其 `modelPath`；没有 `arrayPath` 时从文档根读 `modelPath`。找到的值不是非空字符串（或含控制字符）是错误；都没找到时用 `defaultModel`；也没有默认名是错误（`no model named`）。
+- 对象形式的模型**不在调度前准入**（它要到应答回来才知道），所以不检查分组的模型白名单、账号的模型列表和协议绑定，也不经账号的模型映射：取到的是上游的模型名，直接用它查价格。
+- 清单校验（`sdk/manifest/check`）：对象规则不能写 `usePrimaryModel`、`requiredBy`、`typePath`、`typeValue`、`modelPath`；必须有 `modelSources` 或 `defaultModel`；最多 8 个来源；`from` 是 `json`、`sse`、`request` 之一；`arrayPath`、`modelPath`、`match` 的键是简单对象路径（与 `modelReferences` 相同的写法），`match` 至多 8 项、只能和 `arrayPath` 一起写；`defaultModel` 不超过 200 字节、首尾无空白、无控制字符。数组规则不能写 `modelSources`、`defaultModel`。同一路径不能被两条规则计两次（与数组形式同一检查）。
+- 不在核心里写任何具体名字：`image_generation`、`tool_usage`、`gpt-image-2` 只出现在 `sdk/platforms/openai.json`。
+
+### 120.3 计价
+
+- 网关读完应答记录用量时（`gateway/model_references.go` 的 `recordAdditionalUsage`，HTTP 在 `forward`，WebSocket 在每一轮的 `finish`）给对象形式的每条附加用量取价：`Pricer.Resolve`，与请求的主模型同样按调用者的分组和用户分群取价格（§97 的定价规则适用），倍率是这次请求的倍率，价格表达式的 `param()` / `header()` 从客户端请求里取。这个价格与其它附加用量一样冻结在记录里（`billing_detail.inputs.additional[].Price`），重试和对账按冻结的价格算（§97.4）。价格的计费类型不是端点支持的（`billingTypes`）或是视频价时，记录不结算（`BillingError`）。
+- 结算（`usage/additional.go` 的 `priceComponents`）、预扣报价（`billing/additional.go`）不变：主用量与每条附加用量各按自己的价格和语义算，金额相加；`billing_detail.additional[]` 按顺序列出每一条的 `kind`、`model`、`price_id`、`expression_hash` 和它自己的 `detail`（含 `total_cost`）。
+
+### 120.4 生图模型没有价格时
+
+`missing_price_policy` 是在调度前按请求的模型判断的；对象形式的模型到应答回来才知道，所以策略在**这时**按同样的语义生效（`Resolve` 本身就按策略回答）：
+
+- `free`：附加用量没有价格，不计费；它照样出现在记录里（`billing_detail.additional[]` 有这一项、`price_id` 为 0），主用量照常计费。这是管理员选的“没有价格的模型不计费”。
+- `reject`（默认）：请求已经被服务，拒绝不了；记录的 `BillingError` 为 `additional usage <kind>/<模型>: model_price_not_configured: …`，整条记录**不结算**（`billing_status = failed`，`billing_detail.error` 写明原因，对话部分也不扣），与“应答报了没有准入的模型”的既定行为相同——生图部分**不会悄悄变成免费**。之后补上价格，已经 `failed` 的记录不会重新取价（价格冻结在请求时）。
+- 管理员要做什么：在价格页给会出现的生图模型（Codex 后端是 `gpt-image-2-codex`；API Key 账号是请求或回显里的 `gpt-image-1.5`、`gpt-image-2` 等；都没有时是 `gpt-image-2`）录价格（§118.6 的参考价）。
+
+### 120.5 预扣、截断与断开
+
+- 预扣不变：只按对话模型估算（生图会不会发生、多大事先不知道）；结算时按实际读数扣全部金额，超出预扣的部分照常扣（§25.8 的“预留不保证不透支”），余额不足时按现有的结算规则走。没有为此加上限、拒绝或守卫。
+- 生图附加用量**只在读到带 `tool_usage` 的终态时才有**（`response.completed`；`response.incomplete`、WebSocket 的 `response.failed` 若带非 0 的 `tool_usage` 同样计）：客户端断开、流被截断、上游在生图完成前出错，读不到它就没有这一项，不估算。对话部分的“未上报 / 按已读到的计 / 按预扣估算”规则（§25.8、§112）不变；按预扣估算计费时附加用量是预扣时的估算（对象形式没有估算，即没有这一项）。
+- 只接受流式的账号（codex，§83）收到非流式请求时，核心强制流式再把终态事件的 `response` 对象聚合成 JSON：按 JSON 规则读，`tool_usage.image_gen` 与 `tools` 回显都在这个对象里。Codex 后端终态的 `output` 是 `[]`，图片在 `response.output_item.done` 里，聚合会把它补回 JSON 应答（§83，已有）。
+
+### 120.6 实现与测试
+
+- `sdk/manifest`：`AdditionalUsageRule` 加 `object`、`modelSources`、`defaultModel`，新类型 `UsageModelSource`；`check/additional_usage.go` 按两种形式分别校验（`TestObjectAdditionalUsageRule`）。
+- `usagerules/additional.go`：`objectEntries`、`objectModel`；`Acc.WithRequest` 给 `request` 来源请求体；数组与对象共用计数读取（`additionalTokens`）；`Matches`（数组元素按字段匹配）由网关的引用模型检查共用。`core.AdditionalUsage.ResponseModel` 标出要在记录时取价的附加用量。
+- 网关：`recordAdditionalUsage` 多一个 `ctx`，对 `ResponseModel` 调 `priceResponseModel`；WebSocket 的每一轮现在也记录附加用量（以前不记）。
+- 测试：`usagerules/image_generation_test.go`（Codex 后端流式、JSON、WebSocket 一轮的实测形状；模型取回显 / 请求 / 默认；缺失、`null`、全 0、`{}` 都没有附加项；畸形计数与模型）；`gateway/image_generation_tool_test.go`（API Key 账号 JSON 与流式、只流式账号的流式与强制流式聚合、WebSocket 一轮；三种模型来源；`reject` 与 `free` 下没有价格；不用生图的请求没有附加项、不查别的价格）；`usage/image_tool_db_test.go`（结算金额：写与不写 `img_o` 两种价格、`free` 时只计对话、`reject` 时 `failed`）。现有测试（含钉住明细字节的）照旧通过：不带生图的请求没有附加项，记录逐字节不变。
+- 控制台：使用记录详情的计费卡片列出附加用量（种类、模型、各项 token 含图片输入 / 输出、金额，没有价格时写“没有价格，未计费”），列表的金额是合计；mock 有一条带生图附加用量的记录（`req_imagetool0001`）。

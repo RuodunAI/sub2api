@@ -215,7 +215,7 @@
 ## 12. 0.1.6：默认模型换成上游现有模型（2026-11-17，用户要求）
 
 - 用户反映内置模型和上游对不上，`gpt-6-astra` 请求在账号模型里没有它时被调度拒绝（`model_not_served`，503）。在 ec2pool 测试实例上对 Sign in with ChatGPT 账号获取模型（`GET /v1/models`，`visibility=="list"`）得到：`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-6-astra`、`gpt-6-luna`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6.1-terra`。两种账号类型的 `defaultModels` 都换成这 8 个（新到旧），`DefaultTestModel` 由已不在列表里的 `gpt-5.1-codex-mini` 改为最便宜的 `gpt-6-luna`。`codex_device` 没有在线模型列表，沿用同一份；测试实例上没有设备码账号，未单独核实。
-- 生图：同一账号带 `tools:[{"type":"image_generation"}]` 请求，上游回 400 `subscription_sharing_unsupported_capability`（“User subscription sharing currently supports only 'web_search' and developer-defined 'function' and 'custom' tools … tool 'image_generation' is not supported”），所以 SIWC 账号不能生图，不加生图模型。`codex_device`（ChatGPT Codex 后端）是否支持需要真实设备码账号验证，见 [DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md](DESIGN-2026-11-17-OPENAI-IMAGE-BILLING.md)。
+- 生图（2026-11-18 改写）：上面这条 400 是已删除的 Sign in with ChatGPT（`chatgpt_siwc`，经 api.openai.com，第 14.3 节）账号的结果，不适用于现在的两种账号类型。Codex 后端的账号（设备码 `codex_device`、授权码 `codex_oauth`）**可以**经 Responses 的 `image_generation` 工具生图：2026-11-18 在设备码账号上实测流式、非流式都拿到图（授权码账号走同一上游，未实测）。上游的生图模型是 `gpt-image-2-codex`（应答 `tools` 回显里给出，请求没写 `model` 时也有）；Free 套餐不能用；生图消耗订阅额度比普通对话快（官方说法 3–5 倍）。生图部分按生图模型另计，是一条附加用量（CONTRACTS §118.10、§120），插件不用改；管理员要给 `gpt-image-2-codex` 录价格（OpenAI 没有公布它的单价，按 `gpt-image-2` 的价录入或自定），没有价格时见 §120.4。已知限制：官方 Codex 客户端 2026-07 起改为调用 Codex 后端的 `/images/generations` 专用接口生图，网关没有这个端点，用这条路径的客户端生图不经过我们。两种账号类型的 `endpoints` 仍只有 `responses`、`responses_websocket`，不服务 `/v1/images/*`（§118.5）。
 - 计费为 0 的根因不在插件：上游 SSE 标成 `application/json`，由核心按正文嗅探修复（CONTRACTS §104.1）。
 
 ## 13. 0.1.7：用量窗口以响应头为准（2026-11-17，用户要求）
