@@ -10,8 +10,7 @@ import { formatMoney, formatNumber } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
 import BillingBreakdown from '@/views/prices/BillingBreakdown.vue'
 import ExprHistoryModal from '@/views/prices/ExprHistoryModal.vue'
-import UsageTokenFacts from './UsageTokenFacts.vue'
-import { additionalUsage, billingTone, factText, type UsageRow } from './usage'
+import { billingTone, factText, type UsageRow } from './usage'
 
 // Billing half of an expanded usage record (billing_detail, A.14).
 const props = defineProps<{ u: UsageRow }>()
@@ -39,9 +38,6 @@ const listRule = computed(() => {
   const multiplier = scale === undefined ? '' : ruleText(t, { kind: 'multiplier', multiplier: scale })
   return { source, text: base ? t('pricing.rule.custom') : multiplier }
 })
-const additional = computed(() => additionalUsage(props.u))
-// Additional usage the response named a model without a price for, under missing_price_policy reject (CONTRACTS §120.4).
-const unpriced = computed(() => props.u.anomalies?.additional_unpriced || '')
 const inputs = computed(() => [
   ...Object.entries(bd.value.inputs?.params || {}).map(([key, value]) => ({ name: `param("${key}")`, value })),
   ...Object.entries(bd.value.inputs?.headers || {}).map(([key, value]) => ({ name: `header("${key}")`, value }))
@@ -108,20 +104,6 @@ function label(prefix: string, value: string) {
       />
       <SHint v-else inline>—</SHint>
       <SHint v-if="ledgerId" size="xs" class="mt-2">{{ t('usage.billing.ledger', { id: ledgerId }) }}</SHint>
-    </div>
-
-    <div v-if="additional.length" class="mt-3 space-y-3 border-t border-line pt-3" data-testid="usage-additional">
-      <h4 class="text-sm font-medium">{{ t('usage.billing.additional') }}</h4>
-      <SHint v-if="unpriced" tone="warning" data-testid="usage-additional-unpriced">{{ t('usage.billing.additionalUnpricedAnomaly', { usage: unpriced }) }}</SHint>
-      <div v-for="(item, i) in additional" :key="i" class="space-y-2" data-testid="usage-additional-item">
-        <div class="flex flex-wrap items-center gap-2">
-          <SBadge tone="info">{{ label('usage.billing.additionalKinds', item.kind) }}</SBadge>
-          <ModelBadge :model="item.model" plain />
-          <span v-if="item.priced" class="ml-auto font-mono text-sm">{{ formatMoney(item.cost ?? 0, 8) }}</span>
-          <SHint v-else-if="item.settled" inline size="xs" class="ml-auto">{{ t('usage.billing.additionalUnpriced') }}</SHint>
-        </div>
-        <UsageTokenFacts :tokens="item.tokens" />
-      </div>
     </div>
 
     <SDisclosure v-if="rules.length" :label="t('usage.billing.rules')" :open-label="t('usage.billing.rules')" class="mt-3">
