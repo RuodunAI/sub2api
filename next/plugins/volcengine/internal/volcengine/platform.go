@@ -179,8 +179,7 @@ var spec = apikey.Spec{AccountType: AccountTypeAPIKey, DefaultBaseURL: DefaultBa
 
 // assetKeys are the asset library keys both account forms send besides
 // api_key and base_url; validateAssetFields checks them. A spec's Fields
-// also refuse every other key (code "unknown"), as the schema forms'
-// additionalProperties:false did.
+// also refuse every other key (code "unknown").
 var assetKeys = fieldcheck.Fields{
 	FieldAccessKey:    fieldcheck.Any(),
 	FieldSecretKey:    fieldcheck.Any(),

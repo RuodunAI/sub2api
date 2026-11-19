@@ -5,36 +5,33 @@ import (
 	"testing"
 )
 
-// TestFormSchemaConstraintsStillRefused keeps every constraint of the JSON
-// Schema forms the native account forms replaced (forms/{sa,authorized_user,
-// apikey}.schema.json, deleted when the native forms came in): for each one,
-// an input that schema refused, written out here, is still refused by
-// ValidateCredentials at the same field (with the code given, where one is).
-// The core no longer checks a schema, so this is the save's only check.
-// The api_key's minLength 8, maxLength 512 and visible ASCII pattern are
-// gone on purpose (any non-blank key, DESIGN-2026-11-20 §5.1);
-// TestValidateAPIKey checks those keys are accepted.
-func TestFormSchemaConstraintsStillRefused(t *testing.T) {
+// TestCredentialConstraintsRefused: for every constraint ValidateCredentials
+// puts on a field, an input breaking it, written out here, is refused at that
+// field (with the code given, where one is), and a key the type's form does
+// not send is refused with code "unknown". The core checks nothing else on
+// save. The api_key takes any non-blank string (DESIGN-2026-11-20 §5.1);
+// TestValidateAPIKey checks such keys are accepted.
+func TestCredentialConstraintsRefused(t *testing.T) {
 	type input struct {
 		name            string
 		creds, settings map[string]any
 		field, code     string
 	}
 	// The constraints of a key file type: the file, then project and
-	// location, then additionalProperties:false. fileOf writes a valid file,
-	// so only the length refuses the long one.
+	// location, then unknown keys. fileOf writes a valid file, so only the
+	// length refuses the long one.
 	keyFile := func(field string, fileOf func(map[string]any) string) []input {
 		file := fileOf(nil)
 		long := fileOf(map[string]any{"padding": strings.Repeat("x", maxKeyFileLength)})
 		return []input{
 			{field + " required", map[string]any{}, nil, field, ""},
-			{field + " type string", map[string]any{field: 12}, nil, field, ""},
-			{field + " minLength 2", map[string]any{field: "{"}, nil, field, ""},
-			{field + " maxLength 32768", map[string]any{field: long}, nil, field, "too_long"},
-			{"project_id pattern", map[string]any{field: file}, map[string]any{fieldProject: "Bad_Project"}, fieldProject, ""},
-			{"project_id pattern (too short)", map[string]any{field: file}, map[string]any{fieldProject: "abc"}, fieldProject, ""},
-			{"location pattern", map[string]any{field: file}, map[string]any{fieldLocation: "US"}, fieldLocation, ""},
-			{"location pattern (a host)", map[string]any{field: file}, map[string]any{fieldLocation: "evil.example/x"}, fieldLocation, ""},
+			{field + " not a string", map[string]any{field: 12}, nil, field, ""},
+			{field + " of 1 character", map[string]any{field: "{"}, nil, field, ""},
+			{field + " over 32768 characters", map[string]any{field: long}, nil, field, "too_long"},
+			{"project_id malformed", map[string]any{field: file}, map[string]any{fieldProject: "Bad_Project"}, fieldProject, ""},
+			{"project_id too short", map[string]any{field: file}, map[string]any{fieldProject: "abc"}, fieldProject, ""},
+			{"location malformed", map[string]any{field: file}, map[string]any{fieldLocation: "US"}, fieldLocation, ""},
+			{"location is a host", map[string]any{field: file}, map[string]any{fieldLocation: "evil.example/x"}, fieldLocation, ""},
 			{"unknown credentials key", map[string]any{field: file, "legacy": "x"}, nil, "legacy", "unknown"},
 			{"unknown settings key", map[string]any{field: file}, map[string]any{"legacy": "x"}, "legacy", "unknown"},
 		}
@@ -45,9 +42,9 @@ func TestFormSchemaConstraintsStillRefused(t *testing.T) {
 		TypeAuthorizedUser: keyFile("authorized_user_json", userJSON),
 		TypeAPIKey: {
 			{"api_key required", map[string]any{}, nil, fieldAPIKey, ""},
-			{"api_key type string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey, ""},
-			{"project_id pattern", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: "Bad_Project", fieldLocation: "us-central1"}, fieldProject, ""},
-			{"location pattern", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: testProject, fieldLocation: "US"}, fieldLocation, ""},
+			{"api_key not a string", map[string]any{fieldAPIKey: 123456789}, nil, fieldAPIKey, ""},
+			{"project_id malformed", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: "Bad_Project", fieldLocation: "us-central1"}, fieldProject, ""},
+			{"location malformed", map[string]any{fieldAPIKey: key}, map[string]any{fieldProject: testProject, fieldLocation: "US"}, fieldLocation, ""},
 			{"unknown credentials key", map[string]any{fieldAPIKey: key, "legacy": "x"}, nil, "legacy", "unknown"},
 			{"unknown settings key", map[string]any{fieldAPIKey: key}, map[string]any{"legacy": "x"}, "legacy", "unknown"},
 			{"base_url in the credentials (the type has none)", map[string]any{fieldAPIKey: key, "base_url": "https://evil.example"}, nil, "base_url", "unknown"},

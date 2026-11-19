@@ -100,8 +100,8 @@ var auths = map[string]auth{
 	TypeSTS:       {signed: true, session: true},
 }
 
-// keys are the keys the form of the type sends, credentials and settings
-// (the schema forms' properties); ValidateCredentials refuses any other.
+// keys are the keys the form of the type sends, credentials and settings;
+// ValidateCredentials refuses any other.
 func (a auth) keys() []string {
 	keys := []string{fieldRegion, fieldProfilePrefix}
 	switch {
@@ -214,8 +214,7 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	if bad != nil {
 		return accountform.Invalid(bad), nil
 	}
-	// Keys the form does not send are refused (code "unknown"), as the
-	// schema forms' additionalProperties:false did.
+	// Keys the form does not send are refused (code "unknown").
 	if refused := form.Only(a.keys()...); refused != nil {
 		return refused, nil
 	}

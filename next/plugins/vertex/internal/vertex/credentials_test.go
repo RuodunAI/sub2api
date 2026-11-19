@@ -317,11 +317,10 @@ func TestValidateAPIKey(t *testing.T) {
 	}
 	// The key is checked and trimmed by apikey.Spec, as in every API key form:
 	// any non-blank string is saved trimmed (DESIGN-2026-11-20 §5.1). That
-	// takes the keys the deleted apikey.schema.json refused (minLength 8,
-	// maxLength 512, visible ASCII only) and a key holding CR or LF: the SDK,
-	// the core and net/http all refuse to send a header value with control
-	// characters, so such a key fails every request instead of injecting a
-	// header (§3.2, Q1).
+	// takes the keys the old 8-512 visible ASCII rule refused and a key
+	// holding CR or LF: the SDK, the core and net/http all refuse to send a
+	// header value with control characters, so such a key fails every
+	// request instead of injecting a header (§3.2, Q1).
 	for name, k := range map[string]string{
 		"trimmed":            "  AQ.Ab8RN6-example\n",
 		"7 characters":       "AQ.1234",
