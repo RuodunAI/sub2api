@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -35,16 +36,27 @@ func (n reportingNodes) LiveNodes(context.Context) ([]core.NodeStatus, error) {
 	return []core.NodeStatus{{NodeID: "node-1", BootID: "boot-1", HostVersion: n.host, Plugins: n.states}}, nil
 }
 
-// An upload of a package built for the older plugin contract answers the
-// runtime's one message.
+// An upload of a package built for an older plugin contract answers the
+// runtime's one message: runtime "none", or a removed account grant
+// (CONTRACTS §124).
 func TestUploadAnswersOutdatedContract(t *testing.T) {
 	h, root := newHarness(t)
-	m := pkgtest.Platform("video", "0.1.0", "sub2api")
-	m.Runtime = "none"
-	code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(m, root)))
-	msg, _ := out["error"].(map[string]any)["message"].(string)
-	if want := protocol.OutdatedContractMessage("video", "0.1.0", testHostVersion); code != http.StatusBadRequest || msg != want {
-		t.Fatalf("upload = %d %v, want the message %q", code, out, want)
+	for name, outdated := range map[string]func(m *manifest.Manifest){
+		"runtime none": func(m *manifest.Manifest) { m.Runtime = "none" },
+		"accounts.credentials": func(m *manifest.Manifest) {
+			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
+		},
+		"accounts.read": func(m *manifest.Manifest) {
+			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.read"})
+		},
+	} {
+		m := pkgtest.Platform("video", "0.1.0", "sub2api")
+		outdated(m)
+		code, out := h.do("POST", "/plugins/upload", "admin", fileBody(t, pkgtest.Build(m, root)))
+		msg, _ := out["error"].(map[string]any)["message"].(string)
+		if want := protocol.OutdatedContractMessage("video", "0.1.0", testHostVersion); code != http.StatusBadRequest || msg != want {
+			t.Fatalf("%s: upload = %d %v, want the message %q", name, code, out, want)
+		}
 	}
 }
 

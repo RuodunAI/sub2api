@@ -150,13 +150,13 @@ func TestOverrideGrants(t *testing.T) {
 // not; one wider than the current grant, or on a first install, is new.
 func TestDecideCarriesCoveredGrants(t *testing.T) {
 	m := &manifest.Manifest{Key: "demo", HostPermissions: []manifest.HostPermission{
-		{ID: "ui.native"}, {ID: "accounts.credentials"},
+		{ID: "ui.native"}, {ID: "users.read"},
 		{ID: "events", Scope: map[string]any{"subscribe": []any{"a", "b"}}},
 	}}
 	current := map[string]Grant{
-		"ui.native":            {Status: GrantGranted},
-		"accounts.credentials": {Status: GrantGranted},
-		"events":               {Status: GrantGranted, Scope: map[string]any{"subscribe": []any{"a"}}},
+		"ui.native":  {Status: GrantGranted},
+		"users.read": {Status: GrantGranted},
+		"events":     {Status: GrantGranted, Scope: map[string]any{"subscribe": []any{"a"}}},
 	}
 	req := ConsentRequest{Grants: []GrantInput{{Permission: "ui.native"}, {Permission: "events"}}}
 	carried := func(ds []decision) map[string]bool {
@@ -167,11 +167,11 @@ func TestDecideCarriesCoveredGrants(t *testing.T) {
 		return out
 	}
 	ds, errs := decide(m, req, current, nil, true)
-	if len(errs) != 0 || fmt.Sprint(carried(ds)) != "map[accounts.credentials:true events:false ui.native:true]" {
+	if len(errs) != 0 || fmt.Sprint(carried(ds)) != "map[events:false ui.native:true users.read:true]" {
 		t.Fatalf("upgrade: %v %+v", carried(ds), errs)
 	}
-	req.Grants = append(req.Grants, GrantInput{Permission: "accounts.credentials"})
-	if ds, _ := decide(m, req, current, nil, false); fmt.Sprint(carried(ds)) != "map[accounts.credentials:false events:false ui.native:false]" {
+	req.Grants = append(req.Grants, GrantInput{Permission: "users.read"})
+	if ds, _ := decide(m, req, current, nil, false); fmt.Sprint(carried(ds)) != "map[events:false ui.native:false users.read:false]" {
 		t.Fatalf("first install: %v", carried(ds))
 	}
 }

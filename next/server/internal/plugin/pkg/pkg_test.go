@@ -337,15 +337,8 @@ func TestValidateConsistency(t *testing.T) {
 		{"affinity capability", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.Capabilities = append(m.Capabilities, manifest.Capability{ID: "scheduler.affinity.v1"})
 		}, "capabilities[" + strconv.Itoa(len(pkgtest.Guard("guard", "0.1.0", "sub2api").Capabilities)) + "]", "sticky_not_for_plugins"},
-		{"account types need credentials", func(m *manifest.Manifest, _ map[string][]byte) {
-			m.Capabilities = append(m.Capabilities, manifest.Capability{ID: manifest.CapPlatformAdapter})
-			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "platform.register"})
-			m.AccountTypes = []manifest.AccountType{{ID: "apikey", Label: manifest.LocalizedText{"en": "API key"},
-				Form: manifest.Form{Mode: "native", Component: "X"}, Platforms: []manifest.AccountPlatform{{Platform: "anthropic"}}}}
-		}, "accountTypes", "missing_host_permission"},
 		{"account types need adapter", func(m *manifest.Manifest, _ map[string][]byte) {
-			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "platform.register"},
-				manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
+			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "platform.register"})
 			m.AccountTypes = []manifest.AccountType{{ID: "apikey", Label: manifest.LocalizedText{"en": "API key"},
 				Form: manifest.Form{Mode: "native", Component: "X"}, Platforms: []manifest.AccountPlatform{{Platform: "anthropic"}}}}
 		}, "accountTypes", "missing_capability"},
@@ -487,14 +480,11 @@ func TestValidatePlatformAndAccountTypes(t *testing.T) {
 		{"needs platform.register", func(m *manifest.Manifest, _ map[string][]byte) {
 			m.Platforms = nil
 			m.AccountTypes[0].Platforms = []manifest.AccountPlatform{{Platform: "anthropic"}}
-			m.HostPermissions = []manifest.HostPermission{{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}}}
+			m.HostPermissions = nil
 		}, "accountTypes", "missing_host_permission"},
-		{"old credentials scope", func(m *manifest.Manifest, _ map[string][]byte) {
-			m.HostPermissions[2].Scope = map[string]any{"platform": "own"}
-		}, "hostPermissions[2].scope", "invalid"},
-		{"missing credentials scope", func(m *manifest.Manifest, _ map[string][]byte) {
-			m.HostPermissions[2].Scope = nil
-		}, "hostPermissions[2].scope", "invalid"},
+		{"removed account grant", func(m *manifest.Manifest, _ map[string][]byte) {
+			m.HostPermissions = append(m.HostPermissions, manifest.HostPermission{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}})
+		}, "hostPermissions[2].id", "outdated_contract"},
 		// Platforms.
 		{"platform id format", func(m *manifest.Manifest, _ map[string][]byte) { m.Platforms[0].ID = "Video" }, "platforms[0].id", "invalid_format"},
 		{"platform id built-in", func(m *manifest.Manifest, _ map[string][]byte) {

@@ -21,7 +21,7 @@ import (
 )
 
 // core.PluginAccountReader: the accounts a plugin may read about its own
-// account types (HostService.ListAccounts / GetAccountCredentials).
+// account types (HostService.ListAccounts / GetAccount).
 //
 // The security boundary of both methods is one SQL predicate: plugin_key =
 // $pluginKey. accounts.plugin_key is the plugin that declared the account
@@ -42,9 +42,8 @@ const PluginAccountsMaxLimit = 200
 // PluginAccountsDefaultLimit is used for Limit <= 0.
 const PluginAccountsDefaultLimit = 100
 
-// AuditPluginCredentialsRead is the audit_logs action of one
-// GetAccountCredentials call.
-const AuditPluginCredentialsRead = "plugin.account.credentials.read"
+// AuditPluginAccountRead is the audit_logs action of one GetAccount call.
+const AuditPluginAccountRead = "plugin.account.read"
 
 // AuditPluginAccountRequest is the audit_logs action of one
 // SendAccountRequest call.
@@ -96,25 +95,22 @@ type pluginAccount struct {
 	Settings    []byte
 }
 
-// ReadPluginAccountCredentials returns one account of pluginKey's own account
-// types with its decrypted credentials, after writing the audit row.
+// ReadPluginAccount returns one account of pluginKey's own account types as
+// the plugin receives it on PlatformService calls (CONTRACTS §124):
+// properties, settings, decrypted credentials and the proxy it goes out
+// through, after writing the audit row. The row is read like the gateway's
+// (scanRow), its proxy through proxyEgress: an account whose proxy cannot be
+// had is not handed out without it (Unavailable).
 //
 // Order matters: the audit row is committed before the plaintext leaves this
 // function. An audit failure is a call failure - the record of "this plugin
-// read this credential at this time" is the reason the pull-style access is
-// allowed at all, so handing out the secret without it would quietly remove
-// the condition the capability was granted under.
-func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey string, id int64) (*core.PluginAccountCredentials, error) {
+// read this account at this time" is what makes a read outside traffic
+// reviewable, so handing out the secret without it would quietly remove it.
+func (s *Service) ReadPluginAccount(ctx context.Context, pluginKey string, id int64) (*pluginv1.Account, error) {
 	if pluginKey == "" {
 		return nil, core.ErrInvalidArgument.WithMessage("plugin key is required")
 	}
-	var (
-		out      core.PluginAccountCredentials
-		enc      []byte
-		settings []byte
-	)
-	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("id, name, type, status, schedulable, settings, credentials_enc").Row().
-		Scan(&out.ID, &out.Name, &out.Type, &out.Status, &out.Schedulable, &settings, &enc)
+	a, err := scanRow(selectRows(store.G(ctx, s.d.DB.Gorm)).Where("a.id = ? AND a.plugin_key = ? AND a.deleted_at IS NULL", id, pluginKey).Row())
 	if store.IsNoRows(err) {
 		// Deliberately the same answer for "no such account" and "an account
 		// of another plugin's account type": a distinguishable error would
@@ -124,23 +120,25 @@ func (s *Service) ReadPluginAccountCredentials(ctx context.Context, pluginKey st
 	if err != nil {
 		return nil, err
 	}
-	out.Settings = settingsOrEmpty(settings)
-	plain, err := s.decrypt(pluginKey, enc)
+	plain, err := s.decrypt(pluginKey, a.CredEnc)
 	if err != nil {
 		return nil, err
 	}
-	if err := audit.Audit(ctx, s.d.DB.Gorm, 0, AuditPluginCredentialsRead, "account", itoa(id), map[string]any{
+	eg, err := s.proxyEgress(ctx, a.ProxyID)
+	if err != nil {
+		return nil, core.ErrUnavailable.WithMessage(core.AsError(err).Message)
+	}
+	if err := audit.Audit(ctx, s.d.DB.Gorm, 0, AuditPluginAccountRead, "account", itoa(id), map[string]any{
 		// No console user is in this chain: the plugin process asks the host
 		// directly, so the actor is the plugin, recorded here.
 		"plugin_key":   pluginKey,
-		"account_type": out.Type,
-		"account_name": out.Name,
-		"via":          "host.GetAccountCredentials",
+		"account_type": a.Type,
+		"account_name": a.Name,
+		"via":          "host.GetAccount",
 	}); err != nil {
-		return nil, fmt.Errorf("audit plugin credential read: %w", err)
+		return nil, fmt.Errorf("audit plugin account read: %w", err)
 	}
-	out.Credentials = json.RawMessage(plain)
-	return &out, nil
+	return a.pluginAccount(plain, eg.Proxy), nil
 }
 
 // SendPluginAccountRequest sends one request a plugin described for one
@@ -171,7 +169,7 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	err := pluginAccountByID(store.G(ctx, s.d.DB.Gorm), id, pluginKey).Select("proxy_id, type, settings, credentials_enc").Row().
 		Scan(&proxyID, &typ, &settings, &enc)
 	if store.IsNoRows(err) {
-		// The same answer as for a missing id (ReadPluginAccountCredentials).
+		// The same answer as for a missing id (ReadPluginAccount).
 		return nil, notFound(ctx)
 	}
 	if err != nil {
@@ -187,8 +185,13 @@ func (s *Service) SendPluginAccountRequest(ctx context.Context, pluginKey string
 	method := cmp.Or(strings.ToUpper(in.GetMethod()), http.MethodGet)
 	sendCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
 	defer cancel()
-	ans := s.sendPluginCall(sendCtx, pluginCall{plugin: pluginKey, what: "account request", method: method, url: in.GetUrl(),
-		headers: in.GetHeaders(), body: in.GetBody(), noRedirects: true}, proxyID)
+	var ans pluginAnswer
+	if eg, err := s.proxyEgress(sendCtx, proxyID); err != nil {
+		ans.transportError = core.AsError(err).Message
+	} else {
+		ans = s.sendPluginCall(sendCtx, pluginCall{plugin: pluginKey, what: "account request", method: method, url: in.GetUrl(),
+			headers: in.GetHeaders(), body: in.GetBody(), noRedirects: true}, eg)
+	}
 	detail := map[string]any{"plugin_key": pluginKey, "method": method, "status": ans.status, "via": "host.SendAccountRequest"}
 	if u, err := url.Parse(in.GetUrl()); err == nil {
 		// Escaped: a decoded %00 would make the jsonb insert fail and leave
