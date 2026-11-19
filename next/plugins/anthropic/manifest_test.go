@@ -16,6 +16,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/anthropic/internal/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 )
 
 // TestManifest runs manifest.json through the checks the core runs before
@@ -71,9 +72,10 @@ func TestManifest(t *testing.T) {
 	if !slices.Equal(at.UpstreamFields, []string{"base_url"}) {
 		t.Fatalf("upstreamFields = %v, want [base_url]", at.UpstreamFields)
 	}
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != typ.Spec.DefaultBaseURL || !slices.Equal(gs[0].Versions, typ.Spec.Versions) {
-		t.Fatalf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, typ.Spec.DefaultBaseURL, typ.Spec.Versions)
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || len(gs[0].Allowed) != 1 || gs[0].Allowed[0] != typ.Spec.DefaultBaseURL {
+		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, typ.Spec.DefaultBaseURL)
 	}
+	apikeytest.GuardedVersions(t, at, typ.Spec)
 
 	caps := map[string]bool{}
 	for _, c := range m.Capabilities {

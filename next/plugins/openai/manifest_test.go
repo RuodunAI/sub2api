@@ -13,6 +13,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest/conformance"
 	preset "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -58,9 +59,10 @@ func TestManifest(t *testing.T) {
 	// without one of the version segments of the type's base URL.
 	spec := openai.APIKey().Spec
 	def := spec.DefaultBaseURL
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) || !slices.Equal(gs[0].Versions, spec.Versions) {
-		t.Errorf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, def, spec.Versions)
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) {
+		t.Errorf("guardedSettings = %+v, want base_url -> [%s]", gs, def)
 	}
+	apikeytest.GuardedVersions(t, at, spec)
 	if u, _ := url.Parse(def); !slices.Equal(m.ExternalServices, []string{u.Host}) {
 		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, u.Host)
 	}

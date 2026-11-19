@@ -11,6 +11,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/gemini/internal/gemini"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -55,9 +56,10 @@ func TestManifest(t *testing.T) {
 		t.Errorf("upstreamFields = %v, want [base_url]", at.UpstreamFields)
 	}
 	def := typ.Spec.DefaultBaseURL
-	if gs := at.GuardedSettings; def != "https://generativelanguage.googleapis.com" || len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) || !slices.Equal(gs[0].Versions, typ.Spec.Versions) {
-		t.Fatalf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, def, typ.Spec.Versions)
+	if gs := at.GuardedSettings; def != "https://generativelanguage.googleapis.com" || len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{def}) {
+		t.Fatalf("guardedSettings = %+v, want base_url -> [%s]", gs, def)
 	}
+	apikeytest.GuardedVersions(t, at, typ.Spec)
 }
 
 // TestManifestServes runs the plugin with its embedded manifest.
