@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -88,6 +89,8 @@ type MockRule struct {
 	Remaining    int             `json:"remaining,omitempty"`
 	Usage        *map[string]int `json:"usage,omitempty"`
 	Text         string          `json:"text,omitempty"`
+	// Balance replaces the answer of the upstream sites' balance reads.
+	Balance json.RawMessage `json:"balance,omitempty"`
 }
 
 // SetRule installs a behaviour rule for one upstream API key.

@@ -150,6 +150,13 @@ const (
 	OpenAIPlugin = "openai"
 	GeminiPlugin = "gemini"
 	APIKeyType   = "apikey"
+	// Built-in, install-only upstream plugins (CONTRACTS §119), each with
+	// an "apikey" account type: New API and Sub2API sites serve the
+	// built-in platforms (api_key, base_url); typesafe adds its own
+	// platform (api_key, base_url defaulting to the official address).
+	NewAPIPlugin   = "newapi"
+	Sub2APIPlugin  = "sub2api"
+	TypeSafePlugin = "typesafe"
 )
 
 // AccountSpec describes an account pointing at the mock. The default type

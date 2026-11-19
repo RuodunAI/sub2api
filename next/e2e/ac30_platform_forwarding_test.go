@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,7 +16,11 @@ type platformCase struct {
 	family            string      // model family of the run price ("claude", "gpt", "gemini")
 	usage             usageFamily // how the mock's usage is billed
 	streamOnly        bool        // the upstream only streams: a non-stream request is sent as a stream
+	nonStreamOnly     bool        // the endpoint does not stream: only a non-stream request is sent
 	keyPrefix         string      // a vendor prefix the key must start with
+	// platformPlugin is a plugin declaring the platform the case calls,
+	// enabled first ("" = a built-in platform or the case's own plugin).
+	platformPlugin string
 	// creds is the account's credentials for upstream key k.
 	creds func(e *Env, k string) map[string]any
 	// call sends the request for model through the gateway.
@@ -34,6 +39,34 @@ func chatCall(e *Env, apiKey, model, prompt string, stream bool) *GatewayResult 
 
 func responsesCall(e *Env, apiKey, model, prompt string, stream bool) *GatewayResult {
 	return e.OpenAI(apiKey, "/v1/responses", map[string]any{"model": model, "input": prompt, "stream": stream})
+}
+
+// systemoneBody is the TypeSafe System One request of model and prompt.
+func systemoneBody(model, prompt string) map[string]any {
+	return map[string]any{"model": model, "state": prompt, "questions": map[string]any{"is_greeting": map[string]any{"type": "noul"}}}
+}
+
+// systemoneCall calls POST /v1/systemone (non-stream only) with the danger
+// zone header a request with images needs.
+func systemoneCall(e *Env, apiKey, model, prompt string, _ bool) *GatewayResult {
+	return e.Gateway(e.T, e.BaseURL, "/v1/systemone", "", systemoneBody(model, prompt),
+		map[string]string{"Authorization": "Bearer " + apiKey, "TypeSafe-Danger-Zone-Images": "true"})
+}
+
+// systemoneCheck requires the systemone request on host ("" = the mock's
+// own) with the key as Bearer, the client's body byte for byte (GatewayTry
+// encodes it with encoding/json) and the danger zone header passed through.
+func systemoneCheck(host string) func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
+	return func(t *testing.T, r MockRequest, k, model, prompt string, _ bool) {
+		expectPath(t, r, host, "/v1/systemone")
+		sent, _ := json.Marshal(systemoneBody(model, prompt))
+		if r.Header("authorization") != "Bearer "+k || r.Header("typesafe-danger-zone-images") != "true" || r.TLS != (host != "") {
+			t.Fatalf("systemone headers: %s", r.Headers.Raw)
+		}
+		if r.Body != string(sent) {
+			t.Fatalf("systemone body changed:\n sent %s\n got  %s", sent, r.Body)
+		}
+	}
 }
 
 func geminiCall(e *Env, apiKey, model, prompt string, stream bool) *GatewayResult {
@@ -134,6 +167,43 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, model, prompt, "volcengine")
 			}},
+		// The upstream sites (CONTRACTS §119): one key type on the built-in
+		// platforms, each protocol forwarded as it is with its own auth header.
+		{name: "newapi", plugin: NewAPIPlugin, typ: APIKeyType, family: "gpt", usage: usageOpenAI,
+			creds: keyURL, call: chatCall,
+			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
+				expectPath(t, r, "", "/v1/chat/completions")
+				if r.Header("authorization") != "Bearer "+k {
+					t.Fatalf("newapi headers: %s", r.Headers.Raw)
+				}
+				validJSONBody(t, r, model, prompt, "newapi")
+				if stream && !gjson.Get(r.Body, "stream_options.include_usage").Bool() {
+					t.Fatalf("newapi stream without include_usage: %s", r.Body)
+				}
+			}},
+		// The route's own auth: Gemini takes the key in x-goog-api-key only.
+		{name: "sub2api", plugin: Sub2APIPlugin, typ: APIKeyType, family: "gemini", usage: usageGemini,
+			creds: keyURL, call: geminiCall,
+			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
+				action, query := "generateContent", ""
+				if stream {
+					action, query = "streamGenerateContent", "alt=sse"
+				}
+				expectPath(t, r, "", "/v1beta/models/"+model+":"+action)
+				if r.Header("x-goog-api-key") != k || r.Header("authorization") != "" || r.Query != query {
+					t.Fatalf("sub2api gemini headers/query %q: %s", r.Query, r.Headers.Raw)
+				}
+				validJSONBody(t, r, "", prompt, "sub2api")
+			}},
+		// typesafe's own platform on its default, official address (the
+		// mock under TypeSafe's host name), billed on usage.input_tokens.
+		{name: "typesafe", plugin: TypeSafePlugin, typ: APIKeyType, family: "jev", usage: usageInputOnly, nonStreamOnly: true,
+			creds: func(_ *Env, k string) map[string]any { return map[string]any{"api_key": k} }, call: systemoneCall,
+			check: systemoneCheck("api.typesafe.ai")},
+		// A New API key forwards Jev once the typesafe plugin declares the
+		// platform: to the site's own address.
+		{name: "newapi_jev", plugin: NewAPIPlugin, typ: APIKeyType, family: "jev", usage: usageInputOnly, nonStreamOnly: true,
+			platformPlugin: TypeSafePlugin, creds: keyURL, call: systemoneCall, check: systemoneCheck("")},
 		// No configurable address: the plugins call the vendor hosts, which
 		// the e2e network resolves to the mock (TLS, the mock's CA).
 		{name: "vertex", plugin: "vertex", typ: "vertex_apikey", family: "gemini", usage: usageGemini,
@@ -183,10 +253,13 @@ func platformCases() []platformCase {
 }
 
 // AC 30: every platform plugin forwards through Execute (forwarding v2).
-// For each of the nine plugins, a non-stream and a stream request reach the
-// mock as the request the plugin built (address, credential header, body),
-// the client gets a complete answer, and the request is billed once from
-// the usage the core read under the facts the plugin returned (host_usage).
+// For each of the twelve plugins (and a New API key on TypeSafe's
+// platform), a non-stream and a stream request (non-stream only on
+// /v1/systemone) reach the mock as the request the plugin built (address,
+// credential header, body), the client gets a complete answer, and the
+// request is billed once from the usage the core read under the facts the
+// plugin returned (host_usage). The three upstream plugins run with no file
+// or network permission under the default sandbox.
 func TestAC30_PlatformPluginsForwardThroughExecute(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -194,10 +267,16 @@ func TestAC30_PlatformPluginsForwardThroughExecute(t *testing.T) {
 	for _, pc := range platformCases() {
 		t.Run(pc.name, func(t *testing.T) {
 			e := e.With(t)
+			if pc.platformPlugin != "" {
+				e.EnsurePlugin(admin, pc.platformPlugin, "")
+			}
 			k := pc.keyPrefix + fmt.Sprintf("AKIAE2E%s%d%s", strings.ToUpper(e.RunID), nextSeq(), "MOCKKEY")
 			tn := e.singleAccount(admin, "grp-fwd-"+pc.name, pc.account(e, k), k, pc.family, "fwd-"+strings.ReplaceAll(pc.name, "_", "-"))
 			model, accountID := tn.Model, tn.Accounts[0].ID
 			for _, stream := range []bool{false, true} {
+				if stream && pc.nonStreamOnly {
+					continue
+				}
 				what := fmt.Sprintf("%s stream=%v", pc.name, stream)
 				prompt := "fwd-" + e.Name(pc.name)
 				mark := m.Mark(t)
