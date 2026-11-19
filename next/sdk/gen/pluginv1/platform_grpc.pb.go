@@ -126,18 +126,26 @@ type PlatformServiceClient interface {
 	// credentials (other fields are kept), encrypts and saves them, and only if
 	// nobody changed the account in the meantime.
 	ParseRefreshResponse(ctx context.Context, in *ParseRefreshResponseRequest, opts ...grpc.CallOption) (*RefreshResult, error)
-	// Builds the request that queries the account balance, for account types
-	// declaring manifest accountTypes[].balance. Same division of labour as
-	// BuildQuotaRequest: the plugin DESCRIBES the request, the host sends it
-	// through the account's proxy, and hands the answer to ParseBalanceResponse.
-	// The host decides when: on demand (GET /accounts/:id/balance) and
-	// periodically if the manifest declares update_interval.
+	// Builds the requests that read the balance of one account (CONTRACTS
+	// §52), for account types declaring manifest accountTypes[].balance. Same
+	// division of labour as BuildQuotaRequest: the plugin DESCRIBES the
+	// requests, the host sends them and hands all the answers to
+	// ParseBalanceResponse. A balance may take several requests (the key's
+	// quota, then the site's unit of account); the host checks every URL
+	// against the manifest's upstream host rules before it sends any, then
+	// sends them one after the other, in order, through the account's proxy,
+	// behind its SSRF guard and without following redirects. The host decides
+	// when: when an administrator asks (GET /accounts/:id/balance) and every
+	// manifest balance.updateInterval seconds, so the plugin needs no "net"
+	// permission and no cache of its own.
 	//
 	// Called on the plugin declaring the account type; the account carries its
-	// credentials. Optional: answer UNIMPLEMENTED and the host returns
-	// "unsupported".
+	// credentials as in BuildTestRequest. Optional: answer UNIMPLEMENTED and
+	// the host treats the account type as having no balance.
 	BuildBalanceRequest(ctx context.Context, in *BuildBalanceRequestRequest, opts ...grpc.CallOption) (*BuildBalanceRequestResponse, error)
-	// Reads the upstream's answer to the request above into a balance amount.
+	// Reads the upstream's answers to the requests above into a balance. It
+	// states upstream facts only; the host stores and shows them, and never
+	// acts on them (no disabling, no scheduling change, no alert).
 	ParseBalanceResponse(ctx context.Context, in *ParseBalanceResponseRequest, opts ...grpc.CallOption) (*ParseBalanceResponseResponse, error)
 }
 
@@ -392,18 +400,26 @@ type PlatformServiceServer interface {
 	// credentials (other fields are kept), encrypts and saves them, and only if
 	// nobody changed the account in the meantime.
 	ParseRefreshResponse(context.Context, *ParseRefreshResponseRequest) (*RefreshResult, error)
-	// Builds the request that queries the account balance, for account types
-	// declaring manifest accountTypes[].balance. Same division of labour as
-	// BuildQuotaRequest: the plugin DESCRIBES the request, the host sends it
-	// through the account's proxy, and hands the answer to ParseBalanceResponse.
-	// The host decides when: on demand (GET /accounts/:id/balance) and
-	// periodically if the manifest declares update_interval.
+	// Builds the requests that read the balance of one account (CONTRACTS
+	// §52), for account types declaring manifest accountTypes[].balance. Same
+	// division of labour as BuildQuotaRequest: the plugin DESCRIBES the
+	// requests, the host sends them and hands all the answers to
+	// ParseBalanceResponse. A balance may take several requests (the key's
+	// quota, then the site's unit of account); the host checks every URL
+	// against the manifest's upstream host rules before it sends any, then
+	// sends them one after the other, in order, through the account's proxy,
+	// behind its SSRF guard and without following redirects. The host decides
+	// when: when an administrator asks (GET /accounts/:id/balance) and every
+	// manifest balance.updateInterval seconds, so the plugin needs no "net"
+	// permission and no cache of its own.
 	//
 	// Called on the plugin declaring the account type; the account carries its
-	// credentials. Optional: answer UNIMPLEMENTED and the host returns
-	// "unsupported".
+	// credentials as in BuildTestRequest. Optional: answer UNIMPLEMENTED and
+	// the host treats the account type as having no balance.
 	BuildBalanceRequest(context.Context, *BuildBalanceRequestRequest) (*BuildBalanceRequestResponse, error)
-	// Reads the upstream's answer to the request above into a balance amount.
+	// Reads the upstream's answers to the requests above into a balance. It
+	// states upstream facts only; the host stores and shows them, and never
+	// acts on them (no disabling, no scheduling change, no alert).
 	ParseBalanceResponse(context.Context, *ParseBalanceResponseRequest) (*ParseBalanceResponseResponse, error)
 	mustEmbedUnimplementedPlatformServiceServer()
 }
