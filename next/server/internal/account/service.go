@@ -31,6 +31,9 @@ type Deps struct {
 	Cipher   *secret.Cipher
 	Registry core.PluginRegistry
 	Proxies  core.ProxyDirectory
+	// Pricer prices the model of an account test, which is refused without
+	// a price (CONTRACTS §17).
+	Pricer core.Pricer
 	// NetworkAccess is the administrator's plugin network access (CONTRACTS
 	// §113): the host of every request a plugin describes and the core sends
 	// (SendAccountRequest, quota, refresh, test, model list) must pass it;

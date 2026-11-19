@@ -228,7 +228,7 @@ func (b *boot) buildCoreServices() (*pkg.TrustStore, error) {
 		return nil, err
 	}
 	b.acc = account.New(account.Deps{
-		DB: b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, NetworkAccess: b.egress, Events: b.events,
+		DB: b.db, Redis: b.rdb, Cipher: b.cipher, Registry: b.reg, Proxies: b.prx, Pricer: b.bill, NetworkAccess: b.egress, Events: b.events,
 		Slots: b.cl.Slots, Limiter: b.limiter, Stats: b.stats, Bus: b.cl.Bus, AllowPrivateUpstream: cfg.AllowPrivateUpstream, Converters: b.converters,
 		// Ownership checks and proxy_url resolution (CONTRACTS §21).
 		Authorizer: az, Resolver: b.prx, ScopeGrants: az,

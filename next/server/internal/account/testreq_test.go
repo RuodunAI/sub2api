@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -16,6 +17,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // anthropicUsage mirrors the JSON usage rules of the built-in anthropic
@@ -531,5 +533,33 @@ func TestAccountTestProtocols(t *testing.T) {
 	}
 	if got := offered("m-other"); got != "openai.chat,openai.embeddings" {
 		t.Fatalf("other model: %s", got)
+	}
+}
+
+// A model without a price is not tested: the test answers the missing price
+// error, whatever missing_price_policy says (the fake answers as under
+// "free"), and nothing goes upstream. The model priced is the one tested,
+// before the account's mapping.
+func TestAccountTestRefusesModelWithoutPrice(t *testing.T) {
+	e := setup(t)
+	var calls atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { calls.Add(1) }))
+	t.Cleanup(up.Close)
+	e.plat.testURL = up.URL + "/v1/messages"
+	id := e.mkAccount("sk-good-key-123")
+	e.pricer.unpriced = map[string]bool{"claude-x": true}
+	code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"})
+	if code != http.StatusForbidden || gjson.GetBytes(raw, "error.code").String() != core.ErrPriceNotConfigured.Code {
+		t.Fatalf("test: %d %s", code, raw)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("the test request went upstream")
+	}
+	e.pricer.unpriced = map[string]bool{"up-x": true}
+	if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), map[string]any{"model_mapping": map[string]string{"claude-x": "up-x"}}); code != 200 {
+		t.Fatalf("patch: %d %v", code, out)
+	}
+	if code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": "claude-x"}); code != 200 || calls.Load() != 1 {
+		t.Fatalf("mapped test: %d %s", code, raw)
 	}
 }
