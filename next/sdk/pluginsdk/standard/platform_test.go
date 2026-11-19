@@ -194,7 +194,7 @@ const manifest = `{
   "capabilities": [{"id": "platform.adapter.v1"}],
   "hostPermissions": [{"id": "platform.register"}],
   "externalServices": ["api.openai.com"],
-  "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "schema"}, "platforms": [{"platform": "openai"}]}]
+  "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "native", "component": "KeyForm"}, "platforms": [{"platform": "openai"}]}]
 }`
 
 // Through the fake host: one relay, not waited for, what BuildUpstream

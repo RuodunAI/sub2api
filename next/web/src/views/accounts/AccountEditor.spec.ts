@@ -36,9 +36,12 @@ vi.mock('@/composables/useScope', async original => ({ ...await original<typeof 
 vi.mock('@/composables/lookups', async (original) => ({ ...await original<object>(), useProxiesLookup: () => ({}) }))
 
 enableAutoUnmount(afterEach)
-// An older package's form mode (no native or iframe form): the editor asks to
-// upgrade the plugin and sends the credentials back unchanged.
-const accountType = { plugin_key: 'claude', type: 'apikey', creation_group: 'claude', form: { mode: 'schema' }, platforms: [], default_models: [], default_model_mapping: {} } as unknown as AccountType
+// The plugin's native credentials form; each test starts with it registered.
+const KeyForm = { name: 'KeyForm', template: '<div />' }
+beforeEach(() => {
+  Object.assign(pluginStore, { listed: true, pending: {}, errors: {}, component: () => KeyForm })
+})
+const accountType = { plugin_key: 'claude', type: 'apikey', creation_group: 'claude', form: { mode: 'native', component: 'KeyForm' }, platforms: [], default_models: [], default_model_mapping: {} } as unknown as AccountType
 
 function render(account?: Account, realSelect = false, type: AccountType = accountType) {
   return shallowMount(AccountEditor, { props: { accountType: type, account }, global: { plugins: [i18n], stubs: {
@@ -80,8 +83,12 @@ describe('a form mode this console does not render', () => {
     mocks.patch.mockResolvedValue(savedAccount())
   })
 
+  // An older package's form mode (no native or iframe form): the editor asks
+  // to upgrade the plugin and sends the credentials back unchanged.
+  const oldType = { ...accountType, form: { mode: 'schema' } } as unknown as AccountType
+
   it('asks to upgrade the plugin and saves the other sections with the credentials as they were', async () => {
-    const w = render({ ...savedAccount(), credentials: { api_key: '******' } } as unknown as Account)
+    const w = render({ ...savedAccount(), credentials: { api_key: '******' } } as unknown as Account, false, oldType)
     await flushPromises()
     expect(w.find('[data-testid="form-unavailable-old"]').exists()).toBe(true)
     await w.get('form').trigger('submit'); await flushPromises()
@@ -215,7 +222,7 @@ describe('native plugin account form', () => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'zh'
     mocks.get.mockResolvedValue({ enabled: true })
-    Object.assign(pluginStore, { listed: true, pending: {}, errors: {}, component: () => null })
+    pluginStore.component = () => null
   })
 
   it('waits for the plugin list and the plugin module instead of reporting the form unavailable', async () => {

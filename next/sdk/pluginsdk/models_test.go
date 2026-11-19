@@ -18,7 +18,7 @@ const platformManifest = `{
   "capabilities": [{"id": "platform.adapter.v1"}],
   "hostPermissions": [{"id": "platform.register"}],
   "externalServices": ["up.example.com"],
-  "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "schema"}, "platforms": [{"platform": "anthropic"}]}]
+  "accountTypes": [{"id": "apikey", "label": {"en": "API key"}, "form": {"mode": "native", "component": "KeyForm"}, "platforms": [{"platform": "anthropic"}]}]
 }`
 
 // minimalPlatform implements Platform but not ModelLister.

@@ -27,16 +27,16 @@ describe('errorMessage', () => {
 describe('fieldErrors', () => {
   it('translates the codes a form knows and keeps the server message otherwise', () => {
     const e = invalid([
-      { field: 'values/api_key', code: 'reenter', message: 're-enter this secret to change other settings' },
+      { field: 'values/key', code: 'reserved', message: 'reserved key' },
       { field: 'values/url', code: 'format', message: 'must be a URL' },
       { field: 'name', message: 'required' }
     ])
-    const codes = { reenter: 'plugins.settings.reenter' }
+    const codes = { reserved: 'roles.keyReserved' }
     i18n.global.locale.value = 'zh'
-    expect(fieldErrors(e, undefined, codes)).toEqual({ 'values/api_key': '要修改其他设置，需要重新填写这个密钥', 'values/url': 'must be a URL', name: 'required' })
+    expect(fieldErrors(e, undefined, codes)).toEqual({ 'values/key': '这是内置角色保留的标识，请换一个', 'values/url': 'must be a URL', name: 'required' })
     i18n.global.locale.value = 'en'
-    expect(fieldErrors(e, 'values/', codes)).toEqual({ api_key: 'Re-enter this secret to change other settings', url: 'must be a URL' })
-    expect(fieldErrors(e)).toEqual({ 'values/api_key': 're-enter this secret to change other settings', 'values/url': 'must be a URL', name: 'required' })
+    expect(fieldErrors(e, 'values/', codes)).toEqual({ key: 'This key is reserved for a built-in role; choose another', url: 'must be a URL' })
+    expect(fieldErrors(e)).toEqual({ 'values/key': 'reserved key', 'values/url': 'must be a URL', name: 'required' })
   })
 
   it('maps the notification test codes in both languages, falling back for the old "invalid"', () => {

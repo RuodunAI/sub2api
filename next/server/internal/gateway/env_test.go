@@ -45,7 +45,7 @@ func init() { gin.SetMode(gin.TestMode) }
 const testManifestJSON = `{
   "apiVersion": 1, "key": "anthropic", "version": "0.1.0", "publisher": "sub2api", "runtime": "grpc",
   "externalServices": ["127.0.0.1"],
-  "accountTypes": [ { "id": "apikey", "label": { "en": "API key" }, "form": { "mode": "schema" },
+  "accountTypes": [ { "id": "apikey", "label": { "en": "API key" }, "form": { "mode": "native", "component": "KeyForm" },
     "platforms": [ { "platform": "anthropic" } ] } ]
 }`
 

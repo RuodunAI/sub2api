@@ -83,8 +83,9 @@ type Spec struct {
 	// RequireBaseURL = true makes base_url mandatory (for relay).
 	RequireBaseURL bool
 	// NoBaseURL declares a type without base_url (vertex_apikey): Validate
-	// refuses one in either object as an unknown key, like any key Fields
-	// does not name.
+	// refuses one in either object as an unknown key, even when Fields names
+	// it, and FromAccount leaves Config.BaseURL empty. It is not used with
+	// RequireBaseURL, DefaultBaseURL or Versions.
 	NoBaseURL bool
 	// Texts overrides the wording of a few field errors (see Texts).
 	Texts Texts
@@ -92,10 +93,11 @@ type Spec struct {
 	// send, each with its rules (fieldcheck.Any() for a key taking any
 	// value). Validate checks them, reading each from the credentials, then
 	// the settings, and refuses every other key of either object with code
-	// "unknown"; nil is the same as empty: only api_key and base_url. A rule
-	// for api_key or base_url adds to the checks above, only when those
-	// passed, and sees the value Validate saves: the key trimmed, the base
-	// URL normalized (versions kept), wherever the key was sent.
+	// "unknown"; nil is the same as empty: only api_key and base_url (only
+	// api_key under NoBaseURL). A rule for api_key or base_url adds to the
+	// checks above, only when those passed, and sees the value Validate
+	// saves: the key trimmed, the base URL normalized (versions kept),
+	// wherever the key was sent.
 	Fields fieldcheck.Fields
 }
 
@@ -131,8 +133,7 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 	}
 
 	// Normalize each object in place: api_key and base_url are rewritten
-	// where they are, every other key passes through untouched (CONTRACTS
-	// §18: a legacy model_mapping, plugin-specific settings). Moving
+	// where they are, the keys Fields names pass through untouched. Moving
 	// base_url from settings into credentials would take it out of reach of
 	// the core's guardedSettings check and the console form. An empty object
 	// stays empty: "" tells the core to keep what it has.
@@ -203,11 +204,11 @@ func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[st
 // base_url known) on the normalized objects, except at a field that already
 // has one.
 func (s Spec) checkFields(errs pluginsdk.FieldErrors, creds, settings map[string]any) pluginsdk.FieldErrors {
-	fields := fieldcheck.Fields{"api_key": fieldcheck.Any()}
-	if !s.NoBaseURL {
-		fields["base_url"] = fieldcheck.Any()
-	}
+	fields := fieldcheck.Fields{"api_key": fieldcheck.Any(), "base_url": fieldcheck.Any()}
 	maps.Copy(fields, s.Fields)
+	if s.NoBaseURL {
+		delete(fields, "base_url")
+	}
 	for _, e := range fieldcheck.Check(fields, creds, settings) {
 		if !slices.ContainsFunc(errs, func(x *pluginv1.FieldError) bool { return x.GetField() == e.GetField() }) {
 			errs = append(errs, e)
@@ -245,7 +246,7 @@ func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
 
 // FromAccount extracts and validates the api_key and base_url from an Account
 // proto. Config.BaseURL is the root: the base URL without the version segment
-// it ends in (Spec.Versions).
+// it ends in (Spec.Versions); empty under NoBaseURL, which reads no base_url.
 func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	if acc == nil {
 		return nil, status.Error(codes.FailedPrecondition, "account required")
@@ -266,6 +267,9 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
 	if cfg.APIKey == "" {
 		return nil, status.Error(codes.InvalidArgument, "missing api_key")
+	}
+	if s.NoBaseURL {
+		return cfg, nil
 	}
 
 	base := ""
