@@ -169,6 +169,8 @@ export default {
     },
     componentKinds: { advisor: '顾问模型' },
     componentRound: '第 {round} 轮',
+    primaryUsage: '主用量',
+    componentsTotal: '合计',
     freeNote: '被钩子拒绝、上游失败且没有用量的请求不计费。',
     status: {
       billed: '已结算',

@@ -158,9 +158,46 @@ describe('separately priced items of a usage record', () => {
     expect(w.text()).not.toContain('hash')
   })
 
-  it('shows nothing for a record without separately priced items', () => {
-    const { has } = render(record({ rate: '1', total: '0.00576' }))
+  it('shows nothing for a record without separately priced items, its formula ending in the record\'s amount', () => {
+    const { has, text } = render(record({ rate: '1', total: '0.00576' }))
     expect(has('usage-additional')).toBe(false)
     expect(has('usage-replacement')).toBe(false)
+    expect(has('usage-components-total')).toBe(false)
+    expect(text('usage-primary-breakdown')).toContain('基础费用 $0.00576 × 条件总倍率 1 × 分组倍率 1 = $0.00576')
+  })
+})
+
+// The top of billing_detail sums the primary usage and every item; primary_total_cost is the primary usage's own amount.
+describe('primary usage and total of a record with items', () => {
+  const advisorPart = { kind: 'advisor', model: 'claude-opus-4-1', price_id: 5, detail: { breakdown: { items: [], subtotal: '0.075', base: '0.075', rules_multiplier: '1' }, rate_multiplier: '1', total_cost: '0.075' } }
+  function withAdvisor(primary?: string): UsageRow {
+    const u = record({ rate: '1', total: '0.08076' })
+    u.billing_detail = { ...u.billing_detail, ...(primary ? { primary_cost: primary, primary_total_cost: primary } : {}), additional: [advisorPart] }
+    return u
+  }
+
+  it('ends the primary formula in its own amount and adds the items up to the total', () => {
+    const { text } = render(withAdvisor('0.00576'))
+    expect(text('usage-primary-breakdown')).toContain('基础费用 $0.00576 × 条件总倍率 1 × 分组倍率 1 = $0.00576')
+    expect(text('usage-components-total')).toBe('主用量 $0.00576 + 顾问模型 $0.075 = 合计 $0.08076')
+  })
+
+  it('shows no primary formula when the rounds replaced the primary usage', () => {
+    const u = record({ rate: '1', total: '0.03' })
+    const round = (model: string, total: string) => ({ kind: 'fallback', model, price_id: 1, detail: { ...advisorPart.detail, total_cost: total } })
+    u.billing_detail = { cost: '0.03', total_cost: '0.03', rate_multiplier: '1', breakdown: { vars: null, items: null, subtotal: '0', base: '0', rules_multiplier: '0' },
+      replacement: [round('claude-sonnet-4-5', '0.01'), round('claude-haiku-4-5', '0.02')] }
+    const { has, text, w } = render(u, 'en')
+    expect(has('usage-primary-breakdown')).toBe(false)
+    expect(w.text()).not.toContain('× combined rule multiplier 0')
+    expect(text('usage-components-total')).toBe('Round 1 $0.01 + Round 2 $0.02 = Total $0.03')
+  })
+
+  it('leaves the primary amount out of a record settled before it was kept', () => {
+    const { text } = render(withAdvisor())
+    const primary = text('usage-primary-breakdown')
+    expect(primary).toContain('基础费用 $0.00576 × 条件总倍率 1 × 分组倍率 1')
+    expect(primary).not.toContain('=')
+    expect(text('usage-components-total')).toBe('主用量 — + 顾问模型 $0.075 = 合计 $0.08076')
   })
 })

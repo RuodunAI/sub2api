@@ -42,6 +42,16 @@ const listRule = computed(() => {
 const components = computed(() => (['additional', 'replacement'] as const)
   .map(list => ({ list, items: usageComponents(props.u, list) }))
   .filter(group => group.items.length))
+// A replaced primary usage is not priced: its rounds are.
+const replaced = computed(() => components.value.some(group => group.list === 'replacement'))
+// With items the top of billing_detail sums them all; the primary usage's own amount is primary_total_cost
+// (absent on records settled before it was kept, whose primary formula then shows no amount).
+const primaryTotal = computed(() => (components.value.length ? bd.value.primary_total_cost ?? null : props.u.total_cost))
+/** primary + every item = total, for a record with items. */
+const sumTerms = computed(() => [
+  ...(replaced.value ? [] : [{ label: t('usage.billing.primaryUsage'), amount: primaryTotal.value }]),
+  ...components.value.flatMap(group => group.items.map((item, i) => ({ label: itemLabel(group.list, item.kind, i), amount: item.detail.total_cost ?? 0 })))
+])
 const inputs = computed(() => [
   ...Object.entries(bd.value.inputs?.params || {}).map(([key, value]) => ({ name: `param("${key}")`, value })),
   ...Object.entries(bd.value.inputs?.headers || {}).map(([key, value]) => ({ name: `header("${key}")`, value }))
@@ -60,6 +70,11 @@ function breakdownOf(detail: Detail, rateMultiplier: string | number | null, tot
     rules: Array.isArray(detail.rules) ? detail.rules : [],
     cacheWriteLabels: { default: t('usage.tokens.cacheDefaultBucket'), oneHour: t('usage.tokens.cache1hBucket') }
   }
+}
+
+/** A replacement item is an attempt round (every round has the attempts rule's kind); an additional item is its kind. */
+function itemLabel(list: 'additional' | 'replacement', kind: string, index: number) {
+  return list === 'replacement' ? t('usage.billing.componentRound', { round: index + 1 }) : label('usage.billing.componentKinds', kind)
 }
 
 /** The translation of `prefix.value` when there is one, else the raw value. */
@@ -111,8 +126,10 @@ function label(prefix: string, value: string) {
     </SDescriptions>
 
     <div class="mt-3 border-t border-line pt-3">
-      <BillingBreakdown v-if="Object.keys(bd.breakdown || {}).length || u.total_cost" v-bind="breakdownOf(bd, rate, u.total_cost)" />
-      <SHint v-else inline>—</SHint>
+      <template v-if="!replaced">
+        <BillingBreakdown v-if="Object.keys(bd.breakdown || {}).length || u.total_cost" v-bind="breakdownOf(bd, rate, primaryTotal)" data-testid="usage-primary-breakdown" />
+        <SHint v-else inline>—</SHint>
+      </template>
       <SHint v-if="ledgerId" size="xs" class="mt-2">{{ t('usage.billing.ledger', { id: ledgerId }) }}</SHint>
     </div>
 
@@ -120,8 +137,7 @@ function label(prefix: string, value: string) {
       <h4 class="text-sm font-medium">{{ t(`usage.billing.components.${group.list}`) }}</h4>
       <div v-for="(item, i) in group.items" :key="i" class="space-y-2" :data-testid="`usage-${group.list}-item`">
         <div class="flex flex-wrap items-center gap-2">
-          <SBadge v-if="group.list === 'replacement'" tone="info">{{ t('usage.billing.componentRound', { round: i + 1 }) }}</SBadge>
-          <SBadge v-else tone="info">{{ label('usage.billing.componentKinds', item.kind) }}</SBadge>
+          <SBadge tone="info">{{ itemLabel(group.list, item.kind, i) }}</SBadge>
           <ModelBadge :model="item.model" plain />
           <SBadge v-if="item.free" tone="gray" data-testid="usage-component-free">{{ t('usage.free') }}</SBadge>
           <SHint v-if="item.free && item.reason" inline size="xs" class="font-mono" data-testid="usage-component-reason">{{ item.reason }}</SHint>
@@ -131,6 +147,13 @@ function label(prefix: string, value: string) {
         <BillingBreakdown v-if="!item.free" v-bind="breakdownOf(item.detail, item.detail.rate_multiplier ?? null, item.detail.total_cost ?? null)" data-testid="usage-component-breakdown" />
       </div>
     </div>
+
+    <p v-if="components.length" class="mt-3 border-t border-line pt-3 font-mono text-xs" data-testid="usage-components-total">
+      <template v-for="(term, i) in sumTerms" :key="i">
+        <template v-if="i"> + </template>{{ term.label }} {{ term.amount == null ? '—' : formatMoney(term.amount, 8) }}
+      </template>
+      = {{ t('usage.billing.componentsTotal') }} <span class="font-semibold">{{ formatMoney(u.total_cost ?? 0, 8) }}</span>
+    </p>
 
     <SDisclosure v-if="rules.length" :label="t('usage.billing.rules')" :open-label="t('usage.billing.rules')" class="mt-3">
       <ul class="space-y-1">

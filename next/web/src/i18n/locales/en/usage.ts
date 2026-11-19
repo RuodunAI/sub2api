@@ -170,6 +170,8 @@ export default {
     },
     componentKinds: { advisor: 'Advisor model' },
     componentRound: 'Round {round}',
+    primaryUsage: 'Primary usage',
+    componentsTotal: 'Total',
     freeNote: 'Requests rejected by hooks or failing upstream without usage are not billed.',
     status: {
       billed: 'Billed',

@@ -1199,7 +1199,7 @@ for (let i = 0; i < 90; i++) {
     price_id: 2, expr_hash: remember(chat.expression), latency_ms: 18400, first_token_ms: 900, upload_ms: 40,
     sticky_rule: '', sticky_hit: false, hook_decisions: [],
     _detail: {
-      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 12000, c: 1800, len: 12000 }, items: [term('p', 12000, 1, '0.012'), term('c', 1800, 5, '0.009')], subtotal: '0.021', base: '0.021', rules_multiplier: '1' }, cost: '0.096', rate_multiplier: '1', total_cost: '0.096',
+      expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 12000, c: 1800, len: 12000 }, items: [term('p', 12000, 1, '0.012'), term('c', 1800, 5, '0.009')], subtotal: '0.021', base: '0.021', rules_multiplier: '1' }, cost: '0.096', rate_multiplier: '1', total_cost: '0.096', primary_cost: '0.021', primary_total_cost: '0.021',
       additional: [{ kind: 'advisor', model: advisor.model, price_id: 5, expression_hash: remember(advisor.expression),
         detail: { expr_version: 1, tier: '', rules: [], breakdown: { vars: { p: 3000, c: 400, len: 3000 }, items: [term('p', 3000, 15, '0.045'), term('c', 400, 75, '0.03')], subtotal: '0.075', base: '0.075', rules_multiplier: '1' }, cost: '0.075', rate_multiplier: '1', total_cost: '0.075' } }],
       inputs: { semantics: 'inclusive', additional: [{ Kind: 'advisor', Model: advisor.model, UsageSemantics: 'inclusive', Tokens: advisorTokens, RateMultiplier: '1' }] }
