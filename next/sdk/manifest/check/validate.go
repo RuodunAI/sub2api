@@ -415,6 +415,9 @@ func (v *validator) hostPermissions() {
 		f := fmt.Sprintf("hostPermissions[%d]", i)
 		if hp.ID == removedAffinityPermission {
 			v.add(f+".id", "sticky_not_for_plugins", "host permission %q was removed: plugins take no part in sticky sessions", hp.ID)
+		} else if retiredAccountPermissions[hp.ID] {
+			v.add(f+".id", CodeOutdatedContract, "host permission %q was removed: a plugin receives the accounts of the account types it declares", hp.ID)
+			continue
 		} else if _, ok := manifest.HostPermissionRisk[hp.ID]; !ok {
 			v.add(f+".id", "unknown", "unknown host permission %q", hp.ID)
 			continue
@@ -424,7 +427,7 @@ func (v *validator) hostPermissions() {
 			continue
 		}
 		v.perms[hp.ID] = hp
-		if (hp.ID == "accounts.credentials" || hp.ID == "accounts.auto_state") && !reflect.DeepEqual(NormalizeScope(hp.Scope), credentialsScopeOwn) {
+		if hp.ID == "accounts.auto_state" && !reflect.DeepEqual(NormalizeScope(hp.Scope), scopeOwn) {
 			v.add(f+".scope", "invalid", `%s scope must be {"types": "own"}`, hp.ID)
 		}
 		if hp.ID == "net" {

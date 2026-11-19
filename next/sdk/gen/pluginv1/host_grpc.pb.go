@@ -127,7 +127,7 @@ type HostServiceClient interface {
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
 	AuthzCheck(ctx context.Context, in *AuthzCheckRequest, opts ...grpc.CallOption) (*AuthzCheckResponse, error)
-	// accounts.read: which accounts may the caller of a request act on? The
+	// Always granted: which accounts may the caller of a request act on? The
 	// answer is the core's own account scope rule (CONTRACTS §21.0), so a
 	// plugin route applies it instead of deciding by itself. user_id must be
 	// the Caller of an HTTPService.HandleHTTP request this plugin is serving
@@ -209,14 +209,18 @@ type HostServiceClient interface {
 	// never taken is not an error. UNAVAILABLE means the host could not tell
 	// whether it was released; it then lapses after its ttl (or retry).
 	LockRelease(ctx context.Context, in *LockReleaseRequest, opts ...grpc.CallOption) (*LockReleaseResponse, error)
-	// accounts.read (Medium): metadata of the accounts of this plugin's account
-	// types. The response carries no credential field of any kind; it is the
-	// list a plugin needs to offer "pick an account" in its own console page.
-	// Paginated: at most 200 rows per call (100 by default).
+	// Metadata of the accounts of this plugin's account types; a plugin that
+	// declares none gets an empty list. It is the list a plugin needs to offer
+	// "pick an account" in its own console page. Paginated: at most 200 rows
+	// per call (100 by default).
 	ListAccounts(ctx context.Context, in *ListAccountsRequest, opts ...grpc.CallOption) (*ListAccountsResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): the decrypted credentials
-	// of ONE account of this plugin's account types. Audited on every call.
-	GetAccountCredentials(ctx context.Context, in *GetAccountCredentialsRequest, opts ...grpc.CallOption) (*GetAccountCredentialsResponse, error)
+	// The account of this plugin's own account types, as PlatformService calls
+	// receive it: properties, settings, decrypted credentials and the proxy
+	// (CONTRACTS §124). Another plugin's account, a deleted one or none at all
+	// is NOT_FOUND. Audited on every call: the audit_logs row is written before
+	// the account is returned, and a failed write fails the call. The proxy is
+	// data: the plugin never connects through it itself.
+	GetAccount(ctx context.Context, in *GetAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error)
 	// The fetch form of the host's HTTP client: one non-streaming
 	// HTTP exchange whose answer goes back to the plugin. For the auxiliary
 	// requests of an Execute call (token exchange, upload, preflight) and the
@@ -246,14 +250,13 @@ type HostServiceClient interface {
 	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
 	// §117).
 	ExecuteHTTP(ctx context.Context, in *ExecutionHTTPRequest, opts ...grpc.CallOption) (*ExecutionHTTPResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): one HTTP request for
-	// ONE account of this plugin's account types, sent by the host through
-	// that account's proxy (behind netguard for a direct connection), the same
-	// way as the quota and refresh requests the plugin describes (CONTRACTS
-	// §91). The URL must be http(s) and its host one of the manifest's
-	// externalServices (or a subdomain of one) or the host of one of the
-	// account's own upstream addresses (manifest upstreamFields; CONTRACTS
-	// §112.17). Redirects are not followed; the answer body comes back whole.
+	// One HTTP request for ONE account of this plugin's account types, sent
+	// by the host through that account's proxy (behind netguard for a direct
+	// connection), the same way as the quota and refresh requests the plugin
+	// describes (CONTRACTS §91). The URL must be http(s) and its host one of
+	// the manifest's externalServices (or a subdomain of one) or the host of
+	// one of the account's own upstream addresses (manifest upstreamFields;
+	// CONTRACTS §112.17). Redirects are not followed; the answer body comes back whole.
 	// A transport failure is not an RPC error: it comes back in
 	// transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
@@ -593,9 +596,9 @@ func (c *hostServiceClient) ListAccounts(ctx context.Context, in *ListAccountsRe
 	return out, nil
 }
 
-func (c *hostServiceClient) GetAccountCredentials(ctx context.Context, in *GetAccountCredentialsRequest, opts ...grpc.CallOption) (*GetAccountCredentialsResponse, error) {
-	out := new(GetAccountCredentialsResponse)
-	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.HostService/GetAccountCredentials", in, out, opts...)
+func (c *hostServiceClient) GetAccount(ctx context.Context, in *GetAccountRequest, opts ...grpc.CallOption) (*GetAccountResponse, error) {
+	out := new(GetAccountResponse)
+	err := c.cc.Invoke(ctx, "/sub2api.plugin.v1.HostService/GetAccount", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +732,7 @@ type HostServiceServer interface {
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
 	AuthzCheck(context.Context, *AuthzCheckRequest) (*AuthzCheckResponse, error)
-	// accounts.read: which accounts may the caller of a request act on? The
+	// Always granted: which accounts may the caller of a request act on? The
 	// answer is the core's own account scope rule (CONTRACTS §21.0), so a
 	// plugin route applies it instead of deciding by itself. user_id must be
 	// the Caller of an HTTPService.HandleHTTP request this plugin is serving
@@ -811,14 +814,18 @@ type HostServiceServer interface {
 	// never taken is not an error. UNAVAILABLE means the host could not tell
 	// whether it was released; it then lapses after its ttl (or retry).
 	LockRelease(context.Context, *LockReleaseRequest) (*LockReleaseResponse, error)
-	// accounts.read (Medium): metadata of the accounts of this plugin's account
-	// types. The response carries no credential field of any kind; it is the
-	// list a plugin needs to offer "pick an account" in its own console page.
-	// Paginated: at most 200 rows per call (100 by default).
+	// Metadata of the accounts of this plugin's account types; a plugin that
+	// declares none gets an empty list. It is the list a plugin needs to offer
+	// "pick an account" in its own console page. Paginated: at most 200 rows
+	// per call (100 by default).
 	ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): the decrypted credentials
-	// of ONE account of this plugin's account types. Audited on every call.
-	GetAccountCredentials(context.Context, *GetAccountCredentialsRequest) (*GetAccountCredentialsResponse, error)
+	// The account of this plugin's own account types, as PlatformService calls
+	// receive it: properties, settings, decrypted credentials and the proxy
+	// (CONTRACTS §124). Another plugin's account, a deleted one or none at all
+	// is NOT_FOUND. Audited on every call: the audit_logs row is written before
+	// the account is returned, and a failed write fails the call. The proxy is
+	// data: the plugin never connects through it itself.
+	GetAccount(context.Context, *GetAccountRequest) (*GetAccountResponse, error)
 	// The fetch form of the host's HTTP client: one non-streaming
 	// HTTP exchange whose answer goes back to the plugin. For the auxiliary
 	// requests of an Execute call (token exchange, upload, preflight) and the
@@ -848,14 +855,13 @@ type HostServiceServer interface {
 	// ticket the console issued (ExecutionHTTPRequest.proxy_ticket, CONTRACTS
 	// §117).
 	ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error)
-	// accounts.credentials {"types":"own"} (Critical): one HTTP request for
-	// ONE account of this plugin's account types, sent by the host through
-	// that account's proxy (behind netguard for a direct connection), the same
-	// way as the quota and refresh requests the plugin describes (CONTRACTS
-	// §91). The URL must be http(s) and its host one of the manifest's
-	// externalServices (or a subdomain of one) or the host of one of the
-	// account's own upstream addresses (manifest upstreamFields; CONTRACTS
-	// §112.17). Redirects are not followed; the answer body comes back whole.
+	// One HTTP request for ONE account of this plugin's account types, sent
+	// by the host through that account's proxy (behind netguard for a direct
+	// connection), the same way as the quota and refresh requests the plugin
+	// describes (CONTRACTS §91). The URL must be http(s) and its host one of
+	// the manifest's externalServices (or a subdomain of one) or the host of
+	// one of the account's own upstream addresses (manifest upstreamFields;
+	// CONTRACTS §112.17). Redirects are not followed; the answer body comes back whole.
 	// A transport failure is not an RPC error: it comes back in
 	// transport_error with status 0.
 	// Audited on every call (account, method, host and path; never headers or
@@ -976,8 +982,8 @@ func (UnimplementedHostServiceServer) LockRelease(context.Context, *LockReleaseR
 func (UnimplementedHostServiceServer) ListAccounts(context.Context, *ListAccountsRequest) (*ListAccountsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListAccounts not implemented")
 }
-func (UnimplementedHostServiceServer) GetAccountCredentials(context.Context, *GetAccountCredentialsRequest) (*GetAccountCredentialsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetAccountCredentials not implemented")
+func (UnimplementedHostServiceServer) GetAccount(context.Context, *GetAccountRequest) (*GetAccountResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAccount not implemented")
 }
 func (UnimplementedHostServiceServer) ExecuteHTTP(context.Context, *ExecutionHTTPRequest) (*ExecutionHTTPResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ExecuteHTTP not implemented")
@@ -1646,20 +1652,20 @@ func _HostService_ListAccounts_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _HostService_GetAccountCredentials_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetAccountCredentialsRequest)
+func _HostService_GetAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAccountRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(HostServiceServer).GetAccountCredentials(ctx, in)
+		return srv.(HostServiceServer).GetAccount(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/sub2api.plugin.v1.HostService/GetAccountCredentials",
+		FullMethod: "/sub2api.plugin.v1.HostService/GetAccount",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(HostServiceServer).GetAccountCredentials(ctx, req.(*GetAccountCredentialsRequest))
+		return srv.(HostServiceServer).GetAccount(ctx, req.(*GetAccountRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1852,8 +1858,8 @@ var HostService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _HostService_ListAccounts_Handler,
 		},
 		{
-			MethodName: "GetAccountCredentials",
-			Handler:    _HostService_GetAccountCredentials_Handler,
+			MethodName: "GetAccount",
+			Handler:    _HostService_GetAccount_Handler,
 		},
 		{
 			MethodName: "ExecuteHTTP",

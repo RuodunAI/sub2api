@@ -56,8 +56,7 @@ type FakeHost struct {
 	// (known action, positive ids, batch size) before it is called. As on
 	// the host, the call is PERMISSION_DENIED unless the user is the caller
 	// of a request in flight: Harness.Do and DoAs see to that, a test that
-	// calls a handler by itself uses Serve. The fake has no grants, so the
-	// "accounts.read" grant the host also asks for is not simulated.
+	// calls a handler by itself uses Serve.
 	AccountScope func(userID int64, action string, ids []int64) (all bool, allowed []int64, err error)
 	// DialFunc is used by EgressService.Dial (default net.Dialer).
 	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
@@ -122,6 +121,12 @@ type FakeHost struct {
 	// Users answers GetUsers: the users among the requested ids, once each,
 	// in request order. Set it before Start.
 	Users map[int64]*pluginv1.UserInfo
+	// Accounts answers GetAccount: the plugin's own accounts by id, as the
+	// host returns them (credentials, settings, properties, proxy); any other
+	// id is NOT_FOUND, as on the host. Each call is recorded in AccountReads,
+	// the calls the host would audit. Set it before Start.
+	Accounts     map[int64]*pluginv1.Account
+	AccountReads []int64
 	// OnPublish, when set, is called (outside the lock) for every accepted
 	// Publish, e.g. to relay it to another Harness with Harness.Deliver and
 	// simulate a second node. PublishErr, when set, fails every Publish.

@@ -92,26 +92,32 @@ type Host interface {
 	// while running besides manifest jobs[] (grant "jobs"). See Tasks.
 	Tasks() Tasks
 	// ListAccounts returns one page of the accounts of THIS plugin's own
-	// account types (grant "accounts.read"), ordered by id and never
-	// carrying credentials. Pass the returned cursor to continue; "" means
+	// account types, ordered by id and never carrying credentials; a plugin
+	// that declares no account type gets none. Pass the returned cursor to continue; "" means
 	// there is no further page. Limit is capped by the host at 200.
 	//
 	// Use it in the plugin's own HTTP routes, where the host tells it only
 	// who the caller is: on the gateway path the account arrives with the
 	// request and this call is unnecessary.
 	ListAccounts(ctx context.Context, q AccountQuery) (accounts []AccountSummary, next string, err error)
-	// AccountCredentials returns one of THIS plugin's own accounts with its
-	// decrypted credentials (grant "accounts.credentials" with scope
-	// {"types":"own"}).
+	// Account returns one of THIS plugin's own accounts as PlatformService
+	// calls receive it: properties, settings, decrypted credentials and the
+	// proxy (CONTRACTS §124). No grant: a plugin receives the accounts of
+	// the account types it declares.
 	//
 	// EVERY call is written to the host's audit log, by design: reading a
 	// credential without upstream traffic to justify it is exactly what an
 	// administrator has to be able to review afterwards. Fetch on use, do not
 	// cache the plaintext, and never persist it in the plugin's own schema.
+	// The proxy is data: every request of the account goes out through the
+	// host (SendAccountRequest, Fetch, RelayUpstream), never through a
+	// connection of the plugin's own. Read it with AccountProxyOf and never
+	// log the Account message.
 	//
 	// An account of another plugin's account type answers NOT_FOUND, the same
-	// as an id that does not exist.
-	AccountCredentials(ctx context.Context, accountID int64) (*AccountCredentials, error)
+	// as an id that does not exist; an account whose proxy is unavailable
+	// answers UNAVAILABLE.
+	Account(ctx context.Context, accountID int64) (*pluginv1.Account, error)
 
 	// Client exposes the raw HostService client.
 	Client() pluginv1.HostServiceClient
@@ -193,14 +199,6 @@ type AccountSummary struct {
 	Enabled bool
 	// SettingsJSON holds the non-sensitive settings (base_url ...).
 	SettingsJSON string
-}
-
-// AccountCredentials is one account with its decrypted credentials.
-type AccountCredentials struct {
-	AccountSummary
-	// CredentialsJSON is the same JSON the plugin gets as
-	// ExecuteRequest.account.credentials_json.
-	CredentialsJSON string
 }
 
 // KV is the per-plugin key/value store. Every call is one host call with
@@ -399,12 +397,12 @@ func (h *host) ListAccounts(ctx context.Context, q AccountQuery) ([]AccountSumma
 	return out, r.GetNextCursor(), nil
 }
 
-func (h *host) AccountCredentials(ctx context.Context, accountID int64) (*AccountCredentials, error) {
-	r, err := h.client.GetAccountCredentials(ctx, &pluginv1.GetAccountCredentialsRequest{AccountId: accountID})
+func (h *host) Account(ctx context.Context, accountID int64) (*pluginv1.Account, error) {
+	r, err := h.client.GetAccount(ctx, &pluginv1.GetAccountRequest{AccountId: accountID})
 	if err != nil {
 		return nil, err
 	}
-	return &AccountCredentials{AccountSummary: accountSummary(r.GetAccount()), CredentialsJSON: r.GetCredentialsJson()}, nil
+	return r.GetAccount(), nil
 }
 
 func accountSummary(a *pluginv1.AccountSummary) AccountSummary {

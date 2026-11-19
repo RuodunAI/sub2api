@@ -12,7 +12,6 @@ func TestAccountTypeQuota(t *testing.T) {
 	m.Capabilities = []manifest.Capability{{ID: manifest.CapPlatformAdapter}}
 	m.HostPermissions = []manifest.HostPermission{
 		{ID: "gateway.endpoint"}, {ID: "platform.register"},
-		{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}},
 	}
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
@@ -99,7 +98,6 @@ func TestAccountTypeRefresh(t *testing.T) {
 	m.Capabilities = []manifest.Capability{{ID: manifest.CapPlatformAdapter}}
 	m.HostPermissions = []manifest.HostPermission{
 		{ID: "gateway.endpoint"}, {ID: "platform.register"},
-		{ID: "accounts.credentials", Scope: map[string]any{"types": "own"}},
 	}
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
