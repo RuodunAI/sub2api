@@ -10,7 +10,7 @@ export type UsageRow = UsageLog & {
   metrics?: Record<string, unknown> | null
 }
 
-export type UsageTokenFacts = Partial<Pick<UsageRow, 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens' | 'cache_creation_1h_tokens'>>
+export type UsageTokenFacts = Partial<Pick<UsageRow, 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens' | 'cache_creation_1h_tokens' | 'image_input_tokens' | 'image_output_tokens'>>
 
 const replacementTokenFields = {
   input_tokens: 'Input', output_tokens: 'Output', cache_read_tokens: 'CacheRead',
