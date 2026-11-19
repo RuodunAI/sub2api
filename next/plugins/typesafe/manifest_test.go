@@ -15,6 +15,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/plugins/typesafe/internal/typesafe"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	preset "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/typesafe"
 )
@@ -61,10 +62,10 @@ func TestManifest(t *testing.T) {
 	}
 	// The official address may be used with or without one of the version
 	// segments of the type's base URL.
-	versions := typesafe.APIKey().Spec.Versions
-	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{preset.DefaultBaseURL}) || !slices.Equal(gs[0].Versions, versions) {
-		t.Errorf("guardedSettings = %+v, want base_url -> [%s] versions %v", gs, preset.DefaultBaseURL, versions)
+	if gs := at.GuardedSettings; len(gs) != 1 || gs[0].Field != "base_url" || !slices.Equal(gs[0].Allowed, []string{preset.DefaultBaseURL}) {
+		t.Errorf("guardedSettings = %+v, want base_url -> [%s]", gs, preset.DefaultBaseURL)
 	}
+	apikeytest.GuardedVersions(t, at, typesafe.APIKey().Spec)
 	if u, _ := url.Parse(preset.DefaultBaseURL); !slices.Equal(m.ExternalServices, []string{u.Host}) {
 		t.Errorf("externalServices = %v, want [%s]", m.ExternalServices, u.Host)
 	}

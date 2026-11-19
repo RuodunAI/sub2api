@@ -13,10 +13,13 @@ import (
 	"context"
 	"encoding/json"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 )
 
 // Case is one ValidateCredentials request (credentials only) and its
@@ -130,5 +133,18 @@ func Run(t *testing.T, validate func(context.Context, *pluginv1.ValidateCredenti
 				t.Errorf("%s: saved %s, want %s", c.Creds, resp.GetNormalizedCredentialsJson(), c.Want)
 			}
 		})
+	}
+}
+
+// GuardedVersions fails t unless every guarded setting of at whose field is
+// base_url lists spec.Versions as its versions: the core leaves out of a
+// guarded base URL the version segments requests leave out. A type without a
+// guarded base_url passes; nil and empty versions are the same.
+func GuardedVersions(t testing.TB, at manifest.AccountType, spec apikey.Spec) {
+	t.Helper()
+	for _, g := range at.GuardedSettings {
+		if g.Field == "base_url" && !slices.Equal(g.Versions, spec.Versions) {
+			t.Errorf("%s: guarded base_url versions %q, Spec.Versions %q", at.ID, g.Versions, spec.Versions)
+		}
 	}
 }

@@ -3,7 +3,6 @@
 package typesafe
 
 import (
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/typesafe"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -16,8 +15,4 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 
 // APIKey is the apikey type: the typesafe preset, its credentials api_key
 // and base_url only.
-func APIKey() standard.Type {
-	t := typesafe.APIKey(TypeAPIKey)
-	t.Spec.Fields = fieldcheck.Fields{}
-	return t
-}
+func APIKey() standard.Type { return typesafe.APIKey(TypeAPIKey) }

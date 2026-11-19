@@ -4,7 +4,6 @@
 package relay
 
 import (
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -27,7 +26,6 @@ func RelayKey() standard.Type {
 	t := anthropic.APIKey(TypeRelayKey)
 	t.Spec.DefaultBaseURL, t.Spec.RequireBaseURL = "", true
 	t.Spec.Texts.BaseURLRequired = BaseURLRequired
-	t.Spec.Fields = fieldcheck.Fields{}
 	t.DefaultProtocol = ""
 	return t
 }

@@ -93,7 +93,7 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 
 // V1 is the azure_v1 type: the v1 API under <resource>/openai/v1.
 func V1() standard.Type {
-	return azure(TypeV1, fieldcheck.Fields{}, map[string]standard.Route{
+	return azure(TypeV1, nil, map[string]standard.Route{
 		openai.ProtocolChat:       {Path: standard.Path("/openai/v1/chat/completions"), Edit: openai.IncludeStreamUsage},
 		openai.ProtocolResponses:  {Path: standard.Path("/openai/v1/responses")},
 		openai.ProtocolEmbeddings: {Path: standard.Path("/openai/v1/embeddings")},

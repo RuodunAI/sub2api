@@ -11,7 +11,6 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/gemini"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
@@ -37,7 +36,6 @@ func APIKey() standard.Type {
 	spec := apikey.Spec{
 		RequireBaseURL: true,
 		Versions:       []string{"/v1beta", "/v1"},
-		Fields:         fieldcheck.Fields{},
 		Texts: apikey.Texts{
 			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 			BaseURLRequired:        BaseURLRequired,

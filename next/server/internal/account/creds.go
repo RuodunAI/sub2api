@@ -374,7 +374,8 @@ func checkGuarded(ctx context.Context, guards []manifest.GuardedSetting, setting
 
 // guardNorm is the comparison form of a guarded value: trimmed, without
 // trailing slashes, and (when it parses as an absolute URL) with lower-case
-// scheme and host and without one of versions ending the path (trimVersion).
+// scheme and host and without one of versions ending the path
+// (manifest.TrimVersion).
 // The version is looked for after the trailing slashes are gone, so
 // "https://API.example.com/v1/" compares as "https://api.example.com".
 func guardNorm(v string, versions []string) string {
@@ -382,27 +383,13 @@ func guardNorm(v string, versions []string) string {
 	if u, err := url.Parse(v); err == nil && u.Scheme != "" && u.Host != "" {
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
-		if p, ok := trimVersion(u.EscapedPath(), versions); ok {
+		if p := manifest.TrimVersion(u.EscapedPath(), versions); p != u.EscapedPath() {
 			u.RawPath = p
 			u.Path, _ = url.PathUnescape(p) // p is a prefix of a valid escaped path
 		}
 		return u.String()
 	}
 	return v
-}
-
-// trimVersion removes from the escaped path p the longest of versions that
-// ends it, at most one, matched whole and case-sensitively (each version
-// starts with "/", so ".../a%2Fv1" does not end with "/v1"). It is the rule
-// of the plugin SDK's apikey.Spec.Versions (manifest.GuardedSetting.Versions).
-func trimVersion(p string, versions []string) (string, bool) {
-	best := ""
-	for _, v := range versions {
-		if len(v) > len(best) && strings.HasSuffix(p, v) {
-			best = v
-		}
-	}
-	return strings.TrimSuffix(p, best), best != ""
 }
 
 // decrypt returns the plaintext secret part of an account.

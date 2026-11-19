@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"maps"
 	"net/http"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey/apikeytest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/classify"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
@@ -461,14 +461,6 @@ func TestManifestVersions(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var versions []string
-		for _, g := range at.GuardedSettings {
-			if g.Field == "base_url" {
-				versions = g.Versions
-			}
-		}
-		if !slices.Equal(versions, sp.Versions) {
-			t.Errorf("%s: manifest base_url versions %v, Spec.Versions %v", at.ID, versions, sp.Versions)
-		}
+		apikeytest.GuardedVersions(t, at, sp)
 	}
 }

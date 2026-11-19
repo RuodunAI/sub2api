@@ -8,7 +8,6 @@ import (
 	"context"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -30,11 +29,7 @@ func New() *Plugin {
 
 // APIKey is the apikey type: the anthropic preset (every request field is
 // forwarded), its credentials api_key and base_url only.
-func APIKey() standard.Type {
-	t := anthropic.APIKey("apikey")
-	t.Spec.Fields = fieldcheck.Fields{}
-	return t
-}
+func APIKey() standard.Type { return anthropic.APIKey("apikey") }
 
 // Init implements pluginsdk.Initializer.
 func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
