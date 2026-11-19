@@ -17,6 +17,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
 // Validator checks one API key format.
@@ -127,6 +128,11 @@ type Spec struct {
 	KeyValidator *Validator
 	// Texts overrides the wording of a few field errors (see Texts).
 	Texts Texts
+	// Fields are the keys other than api_key and base_url the form may
+	// send. When set (an empty list included), Validate refuses every other
+	// key of the credentials and settings with code "unknown", as the
+	// form's additionalProperties:false did; nil lets them through.
+	Fields []string
 }
 
 // Validate implements ValidateCredentials for the account type described by s.
@@ -155,6 +161,9 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
+	if s.Fields != nil {
+		errs = append(errs, fieldcheck.Unknown(append([]string{"api_key", "base_url"}, s.Fields...), creds, settings)...)
+	}
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
 	}

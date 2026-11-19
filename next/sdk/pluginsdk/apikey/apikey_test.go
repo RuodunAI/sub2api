@@ -210,3 +210,31 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 		t.Fatalf("format error = %v", e)
 	}
 }
+
+// Fields, when set, refuses the keys the form does not send (in either
+// object); nil keeps letting them through.
+func TestSpecFields(t *testing.T) {
+	req := &pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+		CredentialsJson: `{"api_key":"sk-12345678","organization":"o","extra":1}`, SettingsJson: `{"base_url":"https://u.example","proxy":"p"}`}
+	if resp := (Spec{AccountType: "apikey"}).Validate(req); len(resp.GetErrors()) != 0 {
+		t.Fatalf("nil Fields = %v", resp.GetErrors())
+	}
+	resp := (Spec{AccountType: "apikey", Fields: []string{"organization"}}).Validate(req)
+	got := map[string]string{}
+	for _, e := range resp.GetErrors() {
+		got[e.GetField()] = e.GetCode()
+	}
+	if len(got) != 2 || got["extra"] != "unknown" || got["proxy"] != "unknown" {
+		t.Fatalf("errors = %v", resp.GetErrors())
+	}
+	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+		CredentialsJson: `{"api_key":"sk-12345678","organization":"o"}`})
+	if len(resp.GetErrors()) != 1 || resp.GetErrors()[0].GetField() != "organization" {
+		t.Fatalf("an empty list allows api_key and base_url only: %v", resp.GetErrors())
+	}
+	resp = (Spec{AccountType: "apikey", Fields: []string{}}).Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+		CredentialsJson: `{"api_key":"sk-12345678"}`, SettingsJson: `{"base_url":"https://u.example/"}`})
+	if len(resp.GetErrors()) != 0 || resp.GetNormalizedSettingsJson() != `{"base_url":"https://u.example"}` {
+		t.Fatalf("valid = %v", resp)
+	}
+}
