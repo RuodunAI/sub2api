@@ -479,3 +479,57 @@ func TestAccountTestDefaultModel(t *testing.T) {
 		t.Fatalf("model list: %q", got)
 	}
 }
+
+// A test is offered the protocols the account serves natively on its own
+// platforms, most preferred first and without WebSocket and token-counting
+// protocols; its protocol binding and, for the tested model, its model
+// protocols narrow them. A failed test is classified under the protocol
+// the plugin used.
+func TestAccountTestProtocols(t *testing.T) {
+	e := setup(t)
+	at := &e.gen.types[0]
+	at.Type.Platforms = []manifest.AccountPlatform{{Platform: "anthropic"}, {Platform: "openai"}}
+	openai := &e.gen.plats[1].Platform
+	ws := ep("GET", "/v1/responses", "openai.responses_ws", "usage")
+	ws.Kind = manifest.EndpointKindWebSocket
+	openai.Endpoints = append(openai.Endpoints, ws)
+	e.plat.usageProtocol = "openai.chat"
+	e.plat.classify = &pluginv1.ClassifyErrorResponse{Reason: "rejected"}
+	id := e.mkAccount("sk-wrong-key-1")
+	offered := func(model string) string {
+		t.Helper()
+		if code, raw := e.doRaw(e.uid, "POST", fmt.Sprintf("/accounts/%d/test", id), map[string]any{"model": model}); code != 200 ||
+			gjson.GetBytes(raw, "data.ok").Bool() {
+			t.Fatalf("test: %d %s", code, raw)
+		}
+		e.plat.mu.Lock()
+		defer e.plat.mu.Unlock()
+		return strings.Join(e.plat.tests[len(e.plat.tests)-1].GetProtocols(), ",")
+	}
+	patch := func(body map[string]any) {
+		t.Helper()
+		if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id), body); code != 200 {
+			t.Fatalf("patch: %d %v", code, out)
+		}
+	}
+	if got := offered(""); got != "anthropic.messages,openai.chat,openai.embeddings" {
+		t.Fatalf("default: %s", got)
+	}
+	e.plat.mu.Lock()
+	meta := e.plat.classes[len(e.plat.classes)-1].GetMeta()
+	e.plat.mu.Unlock()
+	if meta.GetProtocol() != "openai.chat" {
+		t.Fatalf("classified under %q", meta.GetProtocol())
+	}
+	patch(map[string]any{"protocols": []string{"openai.embeddings", "openai.chat"}})
+	if got := offered(""); got != "openai.chat,openai.embeddings" {
+		t.Fatalf("bound: %s", got)
+	}
+	patch(map[string]any{"model_protocols": []map[string]any{{"models": []string{"m-embed"}, "protocols": []string{"openai.embeddings"}}}})
+	if got := offered("m-embed"); got != "openai.embeddings" {
+		t.Fatalf("model bound: %s", got)
+	}
+	if got := offered("m-other"); got != "openai.chat,openai.embeddings" {
+		t.Fatalf("other model: %s", got)
+	}
+}
