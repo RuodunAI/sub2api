@@ -19,8 +19,6 @@ func APIKey(id string) standard.Type {
 			Versions:       []string{"/v1"},
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-				KeyNotString:           "API key must be a string / api_key 必须是字符串",
-				KeyNotStringCode:       "pattern",
 				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
 			},
 		},
