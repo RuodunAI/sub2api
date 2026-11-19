@@ -471,9 +471,19 @@ defineExpose({ validate: form.validate })
 - **已存密钥**：值是 `SECRET_MASK`（`******`）时 `required` 通过，其余检查和 `validator` 都跳过；原样送回，核心换回已存的值。
 - **触发**：先惰性后积极。字段第一次失焦（控件经 `SField` / `SSettingRow` 的 `prop` 上报）或 `validate()` 之后算 touched，之后每次经 `form.set` 改值都校验。写了 `trigger` 的规则只在列出的时机运行；`validate()` 运行全部规则。
 - **异步**：同一字段新一轮开始时中止上一轮（`ctx.signal`），迟到的结果丢弃；`validate()` 等全部字段跑完，跑的过程中又开始的新一轮以新一轮为准。不另设超时。
-- **`useForm` 返回**：`get(path)`、`set(path, value)`（只在当前值上打补丁，规则和界面都没有的键原样保留；`undefined` 删掉这个键）、`validate()`（`Promise<boolean>`，不 reject）、`validateField(paths)`、`clearValidate(paths?)`、`error(path)`、`errors`、`unclaimed`（没有 `SField` / `SSettingRow` 认领的错误）、`required(path)`。
+- **`useForm` 返回**：`value()`（整个当前值，含本拍还没交回的写入）、`get(path)`、`set(path, value)`（只在当前值上打补丁，规则和界面都没有的键原样保留；`undefined` 删掉这个键）、`validate()`（`Promise<boolean>`，不 reject）、`validateField(paths)`、`clearValidate(paths?)`、`error(path)`、`errors`、`unclaimed`（没有 `SField` / `SSettingRow` 认领的错误）、`required(path)`。
 - **默认值**：`defaults` 只填父组件交来的值里缺失的键（新建时、读到设置时各一次），不覆盖已有的键，用户清空的也不再填回。
 - **服务端错误**：`serverErrors` 的键可以是 `a.b`、`credentials.a.b`、`values/a/b`、`values.a.b`（`toPath` 转成 `a.b`）。同一路径本地错误优先；改了某个路径就清掉它（以及它里面、外面的路径）的服务端错误；父组件换一份新的错误后重新全部显示。
 - **`SForm`**：`form`、`disabled`（`<fieldset disabled>`，禁用里面的全部控件）；`submit` 只在 `validate()` 通过后触发。已经在 `<form>` 里（`SFormModal`、`SCredentialForm`）时不再渲染第二个 `<form>`，由外层提交。
 - **`SField` / `SSettingRow` 的 `prop`**：在 `SForm` 里显示该路径的错误和必填星号（显式传入的 `error`、`required` 优先），控件失焦时校验它。自己写的控件用 `useFieldControl` 返回的 `blur` 接到失焦事件即可。
 - 内置文案在 `ui.form.v.*`（中英），占位符 `{n}`、`{label}`（`SField` 的 label）。
+
+### 组合组件（UI SDK 4.0，开发中）
+
+- **`SSecretInput`**：密钥输入（`modelValue`、`placeholder`、`disabled`、`size`、`revealable`（默认 true））。值是 `SECRET_MASK` 时输入框为空、占位符显示 `******`，下方提示"已保存值，留空表示不修改"；输入即替换，清空后发回 `SECRET_MASK`（核心保留已存的值）；`autocomplete="new-password"`。
+- **`SUrlPresetInput`**：Base URL（`modelValue`、`presets`、`allowed`、`placeholder`、`disabled`、`readonly`）。没有 `allowed` 时是 URL 输入框加 datalist 和"预设"菜单；有 `allowed`（`useGuardedSettings`）时是选择框，已存的、不在列表里的值也保留为可选项，只有一个允许值时只读并提示"由管理员设置"。清空发 `undefined`，即不发送这个键。
+- **`useCredentialForm(props, emit, { rules, defaults? })`** + **`SCredentialForm`**：原生账号表单（CONTRACTS §23.5）。`props.errors` 作为服务端错误，`defaults` 只在新建时填；组件写 `defineExpose({ validate: form.validate })`。`SCredentialForm`（`form`、`disabled`）在顶部用 `SAlert` 列出没有字段认领的错误，不再渲染 `<form>`（账号编辑器本身就是表单）。类型 `NativeAccountFormProps`。
+- **`createApiKeyForm(spec)`**：返回整个账号表单组件，`host.registerComponent(name, createApiKeyForm({...}))`。`spec.apiKey`（`min`/`max`/`pattern` 默认 8–512 个可见 ASCII 字符，`placeholder`、`help`）、`spec.baseUrl`（`false` 表示没有；`required`、`presets`、`pattern`、`placeholder`、`help`；没有 `account:settings:custom` 时按 `guarded_settings` 只给官方值）、`spec.extra`（`key`、`kind`：`text` `secret` `url` `select` `textarea` `date-time` `switch`，`label`、`help`、`placeholder`、`options`、`presets`、`rules`、`section`、`when`）、`spec.defaults`。文字都写成函数（`() => host.t('…')`），随语言切换；API Key、Base URL 的标签用本包的文案。`date-time` 存 RFC 3339，输入框按本地时间显示。
+- **`usePluginSettings({ pluginKey, api, rules, defaults? })`** + **`SSettingsPage`**：插件设置（`GET/PUT /plugins/:key/settings`），行为与控制台的设置标签相同：填好默认值后的值是"未修改"的基准；保存先 `validate()`，再整份 PUT；字段错误显示在对应行，整体的错误用提示条；只有插件设置权限的人改了别的设置又保留着密钥时，那个密钥显示"要修改其他设置，需要重新填写这个密钥"。返回 `useForm` 的全部方法，外加 `loading`、`saving`、`loadError`、`dirty`、`canEdit`（`plugin:manage` 或清单 `ui.settings.permission`）、`reload()`、`save()`、`reset()`。`SSettingsPage`（`settings`、`title?`、`description?`，默认插槽放 `SSettingsGroup`）自带加载与重试、底部保存栏（未保存提示、重置、保存）、离开确认（路由离开与关闭页面）；不能编辑时控件全部禁用、不显示保存栏。
+- **`SResourcePage`**：插件的列表页（`client`（`host.pluginApi`）、`path`、`columns`、`search?`（查询参数名，有它才有搜索框）、`rowKey?`、`createLabel?`、`canCreate?`、`submit?`）。内部用 `useList` 和 `STable`（卡片形式）加分页；`cell-<key>` 插槽照传给 `STable`，`toolbar` 插槽放在搜索框后。`canCreate` 且有 `create` 插槽时显示新建按钮，打开 `SFormModal`，插槽参数 `{ close, done }`；弹窗的保存调用 `submit()`（在里面校验并提交，返回 `false` 则不关），成功后回到第一页刷新并发出 `created`。
+- `@sub2api/host` 新导出 `useGuardedSettings(accountType)`（`allowed(field)`、`locked(field)`、`guarded`）、类型 `AccountTypeView`，以及 `settingsFieldErrors`、`toFieldPath`。

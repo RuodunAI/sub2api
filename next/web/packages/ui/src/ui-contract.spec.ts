@@ -81,6 +81,13 @@ describe('host UI 3 contract', () => {
     const host = await import('@sub2api/host')
     expect(host.settingsFieldErrors({ 'values/a/b': 'x', values: 'y' })).toEqual({ fields: { 'a.b': 'x' }, root: ['y'] })
   })
+  it('exports the form building blocks (UI 4.0)', async () => {
+    for (const name of ['SSecretInput', 'SUrlPresetInput', 'SCredentialForm', 'useCredentialForm', 'createApiKeyForm', 'usePluginSettings', 'SSettingsPage', 'SResourcePage'] as const) {
+      expect(ui[name]).toBeDefined()
+    }
+    expect((await import('@sub2api/host')).useGuardedSettings).toBeTypeOf('function')
+    expectTypeOf<ui.NativeAccountFormProps['mode']>().toEqualTypeOf<'create' | 'edit'>()
+  })
   it('exports the horizontal clip probe the permission matrix uses (UI 3.16)', () => {
     expect(ui.useScrollClip).toBeDefined()
   })

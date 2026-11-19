@@ -144,6 +144,8 @@ export default {
       reset: 'Reset',
       saved: 'Saved',
       create: 'Create',
+      apiKey: 'API key',
+      baseUrl: 'Base URL',
       reenter: 'Re-enter this secret to change other settings',
       leave: {
         title: 'Discard unsaved changes?',
@@ -340,6 +342,8 @@ export default {
       reset: '重置',
       saved: '已保存',
       create: '新建',
+      apiKey: 'API Key',
+      baseUrl: 'Base URL',
       reenter: '要修改其他设置，需要重新填写这个密钥',
       leave: {
         title: '放弃未保存的改动？',

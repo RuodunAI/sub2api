@@ -36,6 +36,8 @@ export interface UseFormOptions<M extends Model> {
 }
 
 export interface FormApi<M extends Model = Model> {
+  /** The whole current value (with this tick's writes). */
+  value(): M
   /** Value at path. */
   get<T = any>(path: string): T
   /** Writes one path: a patch of the current value, every other key kept as it is (hidden keys too). */
@@ -154,6 +156,7 @@ export function useForm<M extends Model>(opts: UseFormOptions<M>): FormApi<M> {
   const errors = computed<Record<string, string>>(() => ({ ...serverErrors.value, ...local }))
 
   const form: FormApi<M> = {
+    value: current,
     get: (path) => getPath(current(), path),
     set(path, value) {
       write(setPath(current(), path, value))

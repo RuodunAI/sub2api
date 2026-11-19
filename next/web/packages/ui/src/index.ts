@@ -116,6 +116,18 @@ export type { FormApi, UseFormOptions } from './form/useForm'
 export { SECRET_MASK } from './form/rules'
 export type { Rule, Rules, RuleContext, RuleMessage, RuleType, Trigger } from './form/rules'
 export { getPath, setPath, toPath } from './form/path'
+// Form building blocks over useForm (native account forms, plugin settings, list pages).
+export { default as SSecretInput } from './SSecretInput.vue'
+export { default as SUrlPresetInput } from './SUrlPresetInput.vue'
+export { default as SCredentialForm } from './form/SCredentialForm.vue'
+export { useCredentialForm } from './form/credential'
+export type { NativeAccountFormProps } from './form/credential'
+export { createApiKeyForm } from './form/apiKeyForm'
+export type { ApiKeyFormSpec, ExtraField } from './form/apiKeyForm'
+export { usePluginSettings } from './form/pluginSettings'
+export type { PluginSettingsForm } from './form/pluginSettings'
+export { default as SSettingsPage } from './form/SSettingsPage.vue'
+export { default as SResourcePage } from './SResourcePage.vue'
 // JSON Schema form (console: account credentials, plugin settings, declarative
 // plugin pages; plugins: any schema-driven form)
 export { default as SchemaForm } from './schema/SchemaForm.vue'

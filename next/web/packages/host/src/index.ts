@@ -11,6 +11,7 @@ export * from './routes'
 export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
 export { toFieldPath, settingsFieldErrors } from './fields'
+export { useGuardedSettings, CUSTOM_SETTINGS_PERMISSION, type AccountTypeView, type GuardedSettings } from './guarded'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
 export const HOST_UI_VERSION = '3.20.0'

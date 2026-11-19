@@ -249,6 +249,8 @@ export interface UseFormOptions<M extends Record<string, unknown>> {
 }
 
 export interface FormApi<M> {
+  /** The whole current value (with this tick's writes). */
+  value(): M
   /** Value at path. */
   get<T = unknown>(path: string): T
   /** Writes one path: a shallow patch of the current value, every other key kept as it is (hidden keys too). */
@@ -324,7 +326,8 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
   - 值是 `SECRET_MASK` 时输入框显示为空，占位符显示 `******`，提示"已存，留空则保留"（`ui.form.secretKeep`）。
   - 输入就替换；清空后发出 `SECRET_MASK`。
   - `autocomplete="new-password"`。
-- 照搬 `schema/controls/InputControl.vue:15-40` 的逻辑。
+- 照搬 `schema/controls/InputControl.vue:15-40` 的逻辑；另外记住"有已存的值"：输入过再清空仍发回 `SECRET_MASK`（原控件此时会发出空串，已存的密钥被清掉）。父组件把值换成 `undefined`/`null`（换了账号）时忘掉。
+- "已存，留空则保留"由组件自己用 `SHint` 显示在输入框下（外层 `SField` 的 hint 它碰不到）。
 
 **`SUrlPresetInput`**
 - props：
@@ -339,7 +342,7 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
   - 有 `allowed` 时变成选择框；已存值不在列表里时也保留为可选项。
   - 只有一个允许值时只读，显示"由管理员设置"。
   - 没有 `allowed` 时是 URL 输入框，带 datalist 和"预设"选择。
-- 照搬 `schema/controls/UrlPresetsControl.vue`。
+- 照搬 `schema/controls/UrlPresetsControl.vue`；"预设"从原生 `<select class="input">`（控制台全局类）改成带文字按钮的 `SDropdown` 菜单。
 
 **`useCredentialForm`**
 
@@ -386,8 +389,6 @@ export interface ApiKeyFormSpec {
   /** Further fields, in order; each is one SField. */
   extra?: ExtraField[]
   defaults?: Record<string, unknown>
-  /** Labels and help via host.t; the form never carries inline {en, zh}. */
-  t: (key: string, params?: Record<string, unknown>) => string
 }
 export interface ExtraField {
   key: string
@@ -404,7 +405,9 @@ export interface ExtraField {
 ```
 
 - `base_url` 自动接 `useGuardedSettings`：没有 `account:settings:custom` 时传 `allowed`。
-- `date-time` 用现有的 `SDateTime`，存 RFC 3339，和原 `InputControl` 的转换一致。
+- 不要 `t` 参数：插件的文字都写成函数（`() => host.t('…')`），api_key、base_url 的标签用 `@sub2api/ui` 自己的文案（`ui.form.apiKey`、`ui.form.baseUrl`）。（原稿的 `t` 没有用处。）
+- `date-time` 用 `SInput type="datetime-local"`，值存 RFC 3339，和原 `InputControl` 的转换一致（`toLocalInput`/`fromLocalInput`）。原稿写的 `SDateTime` 是只读的时间显示组件，不能输入。
+- `select` 选回占位项时删掉这个键（不发 `null`）。
 - 能覆盖的类型：
   - anthropic、gemini、typesafe：base_url 选填，带预设
   - openai：多 organization、project
@@ -427,6 +430,7 @@ export function useGuardedSettings(accountType: () => AccountTypeView | null | u
 ```
 
 - 依据是 `accountType.guarded_settings` 和 `!useHost().permissions.has('account:settings:custom')`，没有新的数据来源。
+- `AccountTypeView` 原稿没有定义，`@sub2api/host` 里新加：`plugin_key`、`type`、`guarded_settings?`、`custom_upstream?`、`sensitive_fields?`，其余字段放开（`[key: string]: unknown`）。
 - 它只管控件怎么显示，**后端的 `checkGuarded` 不变**。
 
 **`usePluginSettings`**
@@ -457,8 +461,10 @@ export function usePluginSettings<M>(opts: {
   - `description?: string`
 - 插槽：默认插槽，放各个 `SSettingsGroup`
 - 自带两样东西：
-  - 底部保存栏：未保存提示、保存、撤销。照搬控制台 `components/SettingsSaveBar.vue` 的行为，做成 `@sub2api/ui` 的组件，不依赖控制台全局类（CONTRACTS §23.4）。
-  - 离开确认：用 `vue-router` 的 `onBeforeRouteLeave`，加上 `beforeunload`。
+  - 底部保存栏：未保存提示、重置、保存。照搬控制台 `SettingsTab.vue` + `StickyActionBar.vue` + `SettingsSaveBar.vue` 的行为（保存在没有改动时禁用，重置只在有改动时出现），样式写在组件里、颜色只用 CSS 变量，不依赖控制台全局类（CONTRACTS §23.4）。
+  - 离开确认：用 `vue-router` 的 `onBeforeRouteLeave`，加上 `beforeunload`；文案照控制台 `common.unsaved` 搬进 `ui.form.leave`。现在的设置标签没有离开确认，这是新增的。
+  - 另外：加载中、加载失败（带重试）；`title` 用 `SPageHeader`；不能编辑时 `SForm disabled`、不显示保存栏；Enter 也会保存（经 `SForm` 的 `submit`）。
+- `usePluginSettings` 的返回类型导出为 `PluginSettingsForm`；`canEdit` 用 `useHost().permissions.has`；保存成功、失败的提示用 `@sub2api/ui` 的 `toast`；reenter 文案搬进 `ui.form.reenter`。
 
 **`SResourcePage`**
 - props：
@@ -474,7 +480,8 @@ export function usePluginSettings<M>(opts: {
   - `cell-<key>`
   - `toolbar`
   - `create`：放在 `SFormModal` 里，插槽参数是 `{ close, done }`
-- 内部用 `useList` 和 `STable`。新建成功后调用 `done()`，回到第一页并刷新。
+- 多一个 prop `submit?: () => Promise<boolean | void>`：`SFormModal` 的保存按钮在弹窗的页脚、插槽内容碰不到，所以由页面传入保存函数（在里面 `form.validate()` 再提交；返回 `false` 不关弹窗），成功后等同 `done()`（Ant Design 的 Modal `onOk` 是同一做法）。插槽内容自己保存时仍可调用 `done()`。
+- 内部用 `useList` 和 `STable`（卡片形式，搜索框、`toolbar` 插槽和新建按钮在表格的工具栏里，分页在页脚）。新建成功后回到第一页并刷新，发出 `created`。
 
 ### 5.10 示例：anthropic 的账号表单（整个 `ui/native/src/entry.ts`）
 
@@ -486,7 +493,6 @@ import messages from './messages'
 export function register(host: PluginHost) {
   host.addMessages(messages)
   host.registerComponent('AnthropicKeyForm', createApiKeyForm({
-    t: host.t,
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => host.t('baseUrl.placeholder') },
     apiKey: { placeholder: () => 'sk-ant-…' }
   }))
@@ -820,6 +826,13 @@ SDK 拒绝未知键：
 - volcengine 的两个 form 页面并进 SResourcePage 的新建弹窗，清单里删掉这两个页面（第 10 节）。
 - 不改 npm workspace，构建耗时在 T1 实测（第 8 节）。
 - `has_settings` 改为"插件有设置"（6.3）。
+- U1、U2 实现时补充的（2026-11-19）：
+  - `validate()` 失败时 resolve `false`，不 reject（第 4 节）。
+  - `validator` 在空值时也运行，抛错或 reject 算不通过；`whitespace` 不要求同时写 `required`（5.2）。
+  - "改值"以 `form.set` 为准，控件只上报失焦（5.3）。
+  - 默认值按"父组件交来的每一份新值"填一次，用户清空的不再填回（5.6）。
+  - `SForm` 在已有 `<form>` 里不再渲染 `<form>`，`disabled` 用 `<fieldset>`；`SFormModal` 加一行 provide（5.8）。
+  - `createApiKeyForm` 去掉 `t` 参数，`date-time` 用 `datetime-local` 输入框；`SResourcePage` 加 `submit` prop；`SSettingsPage` 新增离开确认（5.9）。
 
 ## 15. 没能确认的事
 
