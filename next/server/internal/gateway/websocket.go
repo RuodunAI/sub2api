@@ -125,7 +125,9 @@ type wsSession struct {
 
 	// The upstream connection and the account the first turn chose; every
 	// later turn of the session uses them. pacct is the account as the
-	// plugin was handed it for the current turn (its proxy that turn's).
+	// plugin was handed it when the connection opened: its proxy is the one
+	// the connection goes through, so every later turn is handed it too
+	// (CONTRACTS §124).
 	up              *websocket.Conn
 	ref             *core.AccountRef
 	acc             *core.Account
@@ -530,11 +532,10 @@ func (s *wsSession) begin(ctx context.Context, m wsMessage) (_ *wsTurn, fatal bo
 	payload := s.opening
 	s.opening = nil
 	if !opensUpstream {
-		x, req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt)
+		_, req, _, res := s.executeTurn(ctx, cl, s.ref, s.acc, s.rt)
 		if req == nil {
 			return reject(cl, res.err)
 		}
-		s.pacct = x.acct
 		payload = req.GetBody()
 	}
 	err := s.up.Write(ctx, websocket.MessageText, payload)
@@ -733,6 +734,13 @@ func (s *wsSession) executeTurn(ctx context.Context, cl *call, ref *core.Account
 		return nil, nil, nil, *failed
 	}
 	x.turn, x.opens = true, s.up == nil
+	if !x.opens {
+		// The turn's frame goes out over the session's connection: the
+		// plugin is shown the account as it was handed when that opened,
+		// with the proxy the connection goes through. The turn's fetches
+		// still take the account's egress as it stands now (§123).
+		x.acct = s.pacct
+	}
 	res, err := x.run(ctx, upModel, n)
 	if err != nil || res.Relay == nil {
 		return x, nil, nil, x.unrelayed(ctx, res, err)

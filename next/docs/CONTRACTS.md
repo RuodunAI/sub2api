@@ -8869,7 +8869,7 @@ ALTER TABLE usage_logs
 - 已存在的账号**一律用已保存的代理**：编辑页上改了代理但还没保存时，“获取模型”、测试等仍走已保存的代理（表单里未保存的选择只用于建账号之前，§117）。重新授权（编辑页里的原生表单）不经账号，走 §117 的票据，即表单当前的选择。
 - 改代理时已经在进行的请求：
   - 进行中的 HTTP / SSE 流用已建立的连接走完，下一次请求才用新代理。
-  - 已建立的 WebSocket 上游连接**不断开、不重连**（所有者决定：“不要”断）：它保持建立时的出口直到会话结束。原来直连、后来配了代理，老连接继续直连；换了代理，老连接继续走旧代理。同一会话后续各轮里 `Execute` 的取回（`pluginsdk.Fetch`）按每轮开始时的代理走，所以同一轮里上游连接和取回的出口可能不同。新建的 WebSocket 会话按新代理。
+  - 已建立的 WebSocket 上游连接**不断开、不重连**（所有者决定：“不要”断）：它保持建立时的出口直到会话结束。原来直连、后来配了代理，老连接继续直连；换了代理，老连接继续走旧代理。同一会话后续各轮里 `Execute` 的取回（`pluginsdk.Fetch`）按每轮开始时的代理走，所以同一轮里上游连接和取回的出口可能不同；这些轮次交给插件的 `Account.proxy` 是上游连接的代理（§124.2）。新建的 WebSocket 会话按新代理。
 - 测试：`gateway/egress_test.go`（同一账号连发三次，代理改成另一个、再去掉，中继依次走 7、8、直连）、`usage/poll_test.go` `TestPollHTTPFollowsTheAccountsCurrentProxy`（两次 Monitor 取回之间改代理，第二次走新代理）、`account/egress_test.go` `TestEgressFollowsTheAccountsSavedProxy`（真实账号服务：经 `PATCH /accounts/:id` 改代理后 `Egress` 立刻给出新代理的客户端，去掉代理后直连；另一个节点的 bus 丢了 `account:changed` 时仍是快照里的旧代理，bus 重连后即是新代理）、`account/refresh_test.go` `TestCredentialRefreshFollowsTheAccountsProxy`（经控制台改代理后，下一次续期经新代理）、`account/balance_test.go`（停用的代理是传输错误，不直连）。
 
 ## 124. 插件按归属收到账号的全部信息（2026-11-19，所有者要求“调度的那个账号 让插件执行，就给哪个账号”“还是要通过核心的 http /socks 客户端去连接，插件严禁联网”“旧的两个权限和旧接口：移除”；迁移 0116；插件协议仍是 2、Host API 仍是 10（都属于未发布的 0.1.304 批次）；设计见 [DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md](DESIGN-2026-11-19-PLUGIN-ACCOUNT-CONTEXT.md)）
@@ -8885,7 +8885,8 @@ ALTER TABLE usage_logs
 
 - `common.proto`：`Account.proxy = 8`（`AccountProxy{id, protocol, host, port, username, password}`），账号没有代理时不设。`AccountProperties.proxy_id`（字段 9）删除，改为 `reserved`：`Account.proxy.id` 是唯一来源。
 - 插件看到的代理就是这次出站用的代理：核心先取出口（`core.Egress`，§123，`Proxy` 与客户端出自同一个缓存条目），再用 `core.(*Account).PluginAccount(platform, eg.Proxy)` 构造 `Account`（转换只有 `core.PluginProxy` 一处）。各路径：
-  - 网关每次尝试、WebSocket 每一轮：开始时取一次出口，同一次调用里的 `Execute`、中继、取回、`ClassifyError` 和用量观察都用这一份。**取不到出口时不调用 `Execute`**，按出口失败的同一结果失败转移：请求本来发不出去，插件也不会拿到一个缺了代理的账号。已建立的 WebSocket 上游连接照 §123 不断开，所以同一会话里连接的出口可能比这一轮 `Account.proxy` 旧。
+  - 网关每次尝试、开新上游连接的 WebSocket 轮次（首轮、重连）：开始时取一次出口，同一次调用里的 `Execute`、中继（握手）、取回、`ClassifyError` 和用量观察都用这一份。**取不到出口时不调用 `Execute`**，按出口失败的同一结果失败转移：请求本来发不出去，插件也不会拿到一个缺了代理的账号。
+  - WebSocket 不开新连接的轮次：这一轮的帧经会话已建立的上游连接发出，已建立的连接照 §123 不断开、不重连，所以交给插件的 `Account` 是建连时的那份（`Account.proxy` 是上游连接实际走的代理，建连时直连就为空），会话期间不变。这一轮里 `Execute` 的取回仍按这一轮开始时取到的出口走（账号**当前保存**的代理，§123），取不到时这一轮照旧失败。所以管理员在会话中途改了代理时，`Account.proxy`（连接的代理）与这一轮取回的出口可以不同；新会话三者都按新代理。
   - `Monitor`：取任务账号时取一次出口放进 `Account`，取不到时推迟（同冷却）；调用里的每次取回仍各取一次出口（§123），两者之间改了代理时插件看到的是调用开始时的代理，请求按新代理发出。
   - 账号包里握着实时行的路径（测试、编辑页拉模型、额度、余额、续期、`GetAccount`）：先用这一行的 `proxy_id` 取出口，再构造 `Account`，发送用同一份出口。取不到出口时不调用插件：测试记失败（原因写在结果里，`error_source` 为 gateway）；拉模型返回错误；额度、续期记失败（续期按 transient）；余额快照记 `transient: <原因>`；`GetAccount` 返回 `UNAVAILABLE`。`SendAccountRequest` 照旧把代理不可用作为 `transport_error` 交还（它不交出账号）。
   - 建账号之前（按表单的代理选择拉模型、授权票据，§117）**不给**代理详情：这时还没有账号，粘贴的代理串也不交给插件。
@@ -8910,4 +8911,4 @@ ALTER TABLE usage_logs
 
 - 12 个声明账号类型的插件（anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine）删掉 `accounts.credentials`，volcengine 另删 `accounts.read`；volcengine 素材库与 codex 重置次数改用 `GetAccount`。codex 删掉没有写入方的 `settingsFields: ["proxy_id"]`（账号的代理是 `accounts.proxy_id` 列）。版本号在这一批未发布的版本上继续累计，`hostCompat` 不动。
 - 0.1.304 本来就是停机、核心和全部插件一起换（§112.11）。按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（只有 volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可。
-- 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：volcengine 账号经 mock 代理读上游素材组，审计行不含值，素材请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
+- 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`；`TestWebSocketTurnsKeepTheConnectionsProxy`：建连于代理 7 或直连、改到 8 后下一轮插件仍收到 7 或空、帧经原连接、这一轮的出口是 8，重连后都是 8）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：volcengine 账号经 mock 代理读上游素材组，审计行不含值，素材请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
