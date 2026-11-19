@@ -65,11 +65,12 @@ func TestBuiltinValidators(t *testing.T) {
 
 // Normalization stays in the object each field came from: base_url in
 // settings remains a setting (the core's guardedSettings check and the
-// console form read it there), and keys the validator does not know pass
-// through. The stage 1 refactor once merged everything into the
+// console form read it there), and the other keys Fields names pass through
+// as they are. The stage 1 refactor once merged everything into the
 // credentials and returned "{}" settings.
 func TestValidateNormalizesInPlace(t *testing.T) {
-	s := Spec{AccountType: "apikey", DefaultBaseURL: "https://api.example.com", StripSuffixes: []string{"/v1"}}
+	s := Spec{AccountType: "apikey", DefaultBaseURL: "https://api.example.com", StripSuffixes: []string{"/v1"},
+		Fields: fieldcheck.Fields{"note": fieldcheck.Any(), "region": fieldcheck.Any()}}
 	r := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
 		CredentialsJson: `{"api_key":"  sk-example-123  ","note":"keep"}`,
 		SettingsJson:    `{"base_url":"https://proxy.example.com/v1/","region":"eu"}`})
