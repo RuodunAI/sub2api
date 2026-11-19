@@ -39,7 +39,7 @@
 | 余额联动：余额为 0 或低于阈值时告警、停用或降低调度权重（new-api 的批量刷新会自动停用余额 ≤ 0 的渠道） | 所有者的硬规矩：不自作主张加限制；联动要所有者另定规则 |
 | 其它账号类型的余额（见 3.1.9 的可行性表） | 官方 API Key 类没有可用接口；volcengine、relay 需要额外设计 |
 | `/v1/images/edits` 的 multipart 形式 | 网关只收 JSON（§112.16 保留的唯一请求体规则），收 multipart 要改网关读请求体、取模型、审核取提示词 |
-| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动。**已做**（同批另一个包，CONTRACTS §118.10、§120；模型先取应答回显） |
+| Responses 里 `image_generation` 工具的生图部分另计（旧设计稿 3.3） | 要扩展 `AdditionalUsageRule`（对象快照、模型从请求取），是单独的契约改动。**不做**：所有者定为一条请求一个计价模型，生图工具的 token 计入本条请求，见 3.8 |
 | codex 设备码账号能否生图的实测（旧设计稿 3.4） | 需要真实账号。**已实测**（2026-11-18，可以，PLUGIN-CODEX 第 12 节） |
 | 价格编辑器的结构化分档里加图片价、价格同步源导入图片 token 价、统计页（`usage_hourly`）汇总图片 token | 这一版管理员用表达式价格即可计对，见 3.4.5 |
 | 插件自报用量（`pluginv1.UsageTokens`）里的图片字段 | 没有插件自己解析生图用量 |
@@ -440,7 +440,23 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 - New API 的 `/api/status` 不带 Key：公开接口不需要凭据，不把 Key 发给不需要它的地址。
 - 自定义上游地址的账号（New API、Sub2API 总是，TypeSafe 改了地址时）照 §21.3 需要 `account:relay` 权限。
 
-## 4. 替所有者做的决定
+### 3.8 一条请求一个计价模型（2026-11-18，所有者规则；取代同日的“生图工具另计”）
+
+同日合入的 P10（CONTRACTS 旧 §120）让 Responses 里生图工具的那部分按**另一个模型**计价，模型取自上游回显、工具参数或写死的默认名 `gpt-image-2`，没有价格时只记异常不扣费。所有者否掉了这种做法，定下的规则：
+
+1. 一条请求只有一个计价模型：**客户请求的模型**。预扣和实际扣费都按它。
+2. 绝不按上游返回的任何东西取价（应答里回显的模型名、工具信息都不算）；token 数仍取自上游应答。
+3. 模型找不到价格就报错；没有默认模型名、兜底模型、退回别的价格。
+4. 账号的模型测试也一样：被测的模型没有价格就直接报错，不向上游发测试请求。
+
+做法：
+
+- **删掉 P10 为另计生图加的东西**：附加用量规则的对象形式（`object`、`modelSources`、`defaultModel`）及只为它服务的代码（`Acc.WithRequest`、按应答取价 `priceResponseModel`、`AdditionalUsage.ResponseModel`、WebSocket 每轮记附加用量）、`additional_unpriced` 异常与控制台的警示、使用记录卡片里为它加的附加用量列表与 mock 记录。附加用量的数组形式（Anthropic `usage.iterations`，模型调度前准入）是 P10 之前就有的，不动。
+- **生图工具的 token 是这条请求自己的用量**：只改 `sdk/platforms/openai.json` 里 `responses`、`responses_websocket` 的用量规则，用已有的 `+` 求和：`input_tokens` = `usage.input_tokens + tool_usage.image_gen.input_tokens`，`output_tokens` = `usage.output_tokens + tool_usage.image_gen.output_tokens`，`image_input_tokens` / `image_output_tokens` = `tool_usage.image_gen.{input,output}_tokens_details.image_tokens`（流式与 WebSocket 读 `response.` 下的同名路径）。实测的上游形状里 `usage` 只含对话、`tool_usage.image_gen` 另列，所以要相加。图片 token 是输入、输出的一部分（§118.2），表达式写了 `img` / `img_o` 按图片价，否则留在 `p` / `c` 里，都按客户请求的模型的价格算。
+- 请求的计价不用改：`prepareBilling` 本来就按客户请求的模型取价、调度前冻结（`missing_price_policy` 照旧），上游回显的 `model` 只记进 `upstream_model`。
+- **账号测试**（`POST /accounts/:id/test`）：插件构造好测试请求之后、核心发出之前，按被测的模型（调用方给的或账号的默认测试模型，取账号映射之前的名字；都没有时是插件报的模型）取全局价格，没有价格就回 403 `model_price_not_configured`，不看 `missing_price_policy` 的 `free`，不发上游，记为这个账号最后一次测试的失败（`error_source: gateway`）。
+
+## 4. 替所有者做的决定## 4. 替所有者做的决定
 
 | # | 决定 | 理由 | 想改时改哪里 |
 |---|---|---|---|
