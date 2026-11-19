@@ -176,9 +176,12 @@ func TestCodexImages(t *testing.T) {
 }
 
 // The account's model mapping goes into the tool, where the client's model
-// is; the chat model at the top stays.
+// is; the chat model at the top stays. A plugin reporting the body's model
+// (codex) has the chat model recorded as the upstream model: the mapped
+// name is only in the tool.
 func TestCodexImagesModelMapping(t *testing.T) {
-	e, _, up := codexImagesEnv(t)
+	e, plat, up := codexImagesEnv(t)
+	plat.reportModel = true
 	e.accounts.accounts[10].ModelMapping = map[string]string{"gpt-image-2": "gpt-image-2-alias"}
 	path, body := imageRequest(false, false)
 	if r := e.post(path, body, bearer()); r.status != 200 {
@@ -187,7 +190,7 @@ func TestCodexImagesModelMapping(t *testing.T) {
 	if ub := up.last(); ub.Get("model").String() != "gpt-6-luna" || ub.Get("tools.0.model").String() != "gpt-image-2-alias" {
 		t.Fatalf("upstream body %s", ub.Raw)
 	}
-	if rec := e.record(); rec.Model != "gpt-image-2" || rec.UpstreamModel != "gpt-image-2-alias" || rec.Price.ID != 21 {
+	if rec := e.record(); rec.Model != "gpt-image-2" || rec.UpstreamModel != "gpt-6-luna" || rec.Price.ID != 21 {
 		t.Fatalf("record %+v", rec)
 	}
 }
