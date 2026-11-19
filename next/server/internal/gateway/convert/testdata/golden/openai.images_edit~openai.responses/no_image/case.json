@@ -1,0 +1,8 @@
+{
+  "options": {
+    "model": "gpt-image-2",
+    "stream": false,
+    "adapt_model": "gpt-6-luna"
+  },
+  "note": "the driving model answered with text only: 502 no_image_generated with its text"
+}
