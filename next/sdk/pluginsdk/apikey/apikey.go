@@ -78,8 +78,8 @@ type Spec struct {
 	// Versions are the version segments a base URL may end in (e.g.
 	// []string{"/v1beta", "/v1"}), each starting with "/" and not ending in
 	// one. They are kept on save; FromAccount removes the longest one the
-	// stored URL ends in, at most one, compared on the escaped form and
-	// case-sensitively, and every route path is appended to what is left.
+	// stored URL's path ends in, at most one, compared on the escaped form
+	// and case-sensitively, and every route path is appended to what is left.
 	Versions []string
 	// RequireBaseURL = true makes base_url mandatory (for relay).
 	RequireBaseURL bool
@@ -291,11 +291,23 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	return cfg, nil
 }
 
-// root is base without the version segment it ends in (manifest.TrimVersion
-// with s.Versions) and the "/" left before it. base is a stored base URL (a
+// root is base without the version segment its path ends in
+// (manifest.TrimVersion with s.Versions) and the "/" left before it; the
+// scheme and host are never looked at. base is a stored base URL (a
 // NormalizeBaseURL output, its path in escaped form) or the default.
 func (s Spec) root(base string) string {
-	return strings.TrimRight(manifest.TrimVersion(base, s.Versions), "/")
+	i := pathStart(base)
+	return base[:i] + strings.TrimRight(manifest.TrimVersion(base[i:], s.Versions), "/")
+}
+
+// pathStart is the index of the path in an absolute URL: the first "/" after
+// "://", or len(u) when there is none.
+func pathStart(u string) int {
+	_, rest, _ := strings.Cut(u, "://")
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return len(u) - len(rest) + i
+	}
+	return len(u)
 }
 
 func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
