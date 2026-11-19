@@ -11,6 +11,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/openai"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
@@ -27,9 +28,11 @@ type Platform struct{ *standard.Platform }
 func New() *Platform { return &Platform{standard.New(APIKey())} }
 
 // APIKey is the apikey type: the preset, plus the organization and project
-// an account may set, which replace the client's headers.
+// an account may set, which replace the client's headers. No other key is
+// accepted; Platform.ValidateCredentials checks the two.
 func APIKey() standard.Type {
 	t := openai.APIKey(TypeAPIKey)
+	t.Spec.Fields = fieldcheck.Fields{"organization": fieldcheck.Any(), "project": fieldcheck.Any()}
 	t.Headers = append(t.Headers,
 		standard.Set("openai-organization", standard.Field("organization")),
 		standard.Set("openai-project", standard.Field("project")))

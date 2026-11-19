@@ -10,7 +10,8 @@ import { createApiKeyForm } from '@sub2api/ui'
 export function forms(t: (key: string) => string): Record<string, Component> {
   // Organization and project: up to 128 visible ASCII characters, empty allowed.
   const header = [{ max: 128 }, { pattern: /^[!-~]*$/ }]
-  const advanced = () => t('advanced')
+  // Closed at first (as the former form's), open while either holds a value or an error.
+  const advanced = { title: () => t('advanced'), collapsed: true }
   return {
     OpenAIKeyForm: createApiKeyForm({
       apiKey: { placeholder: () => 'sk-...', help: () => t('apiKey.help') },
