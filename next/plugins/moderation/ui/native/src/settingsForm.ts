@@ -216,15 +216,21 @@ export const settingsKey = (path: string) =>
     .replace(/\//g, '.')
     .split(/[.[]/)[0]
 
-/** Limits of the question set (the plugin's ValidateSettings checks the same). */
+/** Limits of the question set (the plugin's ValidateSettings checks the same, with JevQuestions.Validate's row rules). */
 export const JEV_LIMITS = { items: { min: 1, max: 32 }, preamble: 2000, label: 64, question: 2000, answer: 1000 } as const
 const JEV_CATEGORY = /^[a-z0-9/_-]{1,64}$/
 
 type Translate = (key: string, params?: Record<string, unknown>) => string
 const length = (s: unknown) => (typeof s === 'string' ? [...s].length : 0)
 
-/** The first problem of a question set as the page sends it (null is the built-in set), or undefined. */
-export function jevIssue(v: JevQuestions | null | undefined, t: Translate): string | undefined {
+const blank = (s: unknown) => (typeof s === 'string' ? s.trim() : '') === ''
+
+/**
+ * The first problem of a question set as the page sends it (null is the
+ * built-in set), or undefined. openaiCategories (GET /jev/default-questions)
+ * are the categories that need no label; every other one is custom.
+ */
+export function jevIssue(v: JevQuestions | null | undefined, t: Translate, openaiCategories: readonly string[]): string | undefined {
   if (!v) return undefined
   const { items, preamble } = jevPayload(v)
   const L = JEV_LIMITS
@@ -232,17 +238,20 @@ export function jevIssue(v: JevQuestions | null | undefined, t: Translate): stri
   if (length(preamble) > L.preamble) return t('settingsTab.jev.preamble', { n: L.preamble })
   for (const [i, q] of items.entries()) {
     const at = { row: i + 1 }
+    const first = items.findIndex((x) => x.category === q.category)
     if (!JEV_CATEGORY.test(q.category ?? '')) return t('settingsTab.jev.category', at)
+    if (first < i) return t('settingsTab.jev.duplicate', { ...at, first: first + 1 })
+    if (!openaiCategories.includes(q.category) && blank(q.label)) return t('settingsTab.jev.labelRequired', at)
     if (length(q.label) > L.label) return t('settingsTab.jev.label', { ...at, n: L.label })
-    if (length(q.question) < 1 || length(q.question) > L.question) return t('settingsTab.jev.question', { ...at, n: L.question })
+    if (blank(q.question) || length(q.question) > L.question) return t('settingsTab.jev.question', { ...at, n: L.question })
     if (length(q.answer_yes) > L.answer || length(q.answer_no) > L.answer) return t('settingsTab.jev.answer', { ...at, n: L.answer })
     if (!(q.threshold > 0 && q.threshold <= 1)) return t('settingsTab.jev.threshold', at)
   }
   return undefined
 }
 
-/** The rule of one key: its kind and limits. */
-function ruleOf(key: string, t: Translate): Rule | Rule[] {
+/** The rule of one key: its kind and limits (openaiCategories: jevIssue). */
+function ruleOf(key: string, t: Translate, openaiCategories: readonly string[]): Rule | Rule[] {
   const s = specOf(key)
   switch (s.kind) {
     case 'integer':
@@ -255,10 +264,11 @@ function ruleOf(key: string, t: Translate): Rule | Rule[] {
     case 'url':
       return [{ type: 'string', max: s.maxLength }, { validator: (v) => (typeof v === 'string' && !WEBHOOK_URL.test(v.trim()) ? t('settingsTab.invalidUrl') : undefined) }]
     case 'jev':
-      return { validator: (v) => jevIssue(v as JevQuestions | null, t) }
+      return { validator: (v) => jevIssue(v as JevQuestions | null, t, openaiCategories) }
   }
   return { type: 'string', max: s.maxLength }
 }
 
 /** The rules of a page's keys. */
-export const settingRules = (keys: readonly string[], t: Translate): Rules => Object.fromEntries(keys.map((k) => [k, ruleOf(k, t)]))
+export const settingRules = (keys: readonly string[], t: Translate, openaiCategories: readonly string[]): Rules =>
+  Object.fromEntries(keys.map((k) => [k, ruleOf(k, t, openaiCategories)]))

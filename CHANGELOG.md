@@ -19,6 +19,7 @@
 - 清单检查：native 设置要有 `component` 或 `page`。
 - volcengine（仍是未发布的 0.13.0）：两个账号表单和素材库两个页面改为原生代码（`ui/native`，需要宿主权限 `ui.native`），原来的两个“新建”表单页并进列表页的新建弹窗；原表单 schema 的约束由插件 Go 保证，并补上了只有 schema 挡住的几条（URL 与路径前缀里的空白、素材库新建路由的长度和地址格式）。见 `next/docs/PLUGIN-VOLCENGINE-ARK.md` §19。
 - moderation 0.12.2：设置页不再用表单 JSON（删掉 `forms/settings.*.json`），改用 `@sub2api/ui` 的 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 改为声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。`hostUICompat` 改为 `^3.20`。`@sub2api/ui` 的 `SSecretInput` 新增 `plain`（敏感地址用文本框输入）。
+- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；两边共用同一组判断，设置页在题集那一行提示第几题出错。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）。
 
 插件设置表单改为原生组件（插件自带 `ui/native`），保存前由插件 Go 校验（`ValidateSettings`，与 `Configure` 共用一套规则，拒绝未知键）：
 

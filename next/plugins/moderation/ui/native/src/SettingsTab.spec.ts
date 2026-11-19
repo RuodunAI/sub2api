@@ -33,7 +33,7 @@ beforeEach(() => {
   for (const f of [coreGet, corePut, pluginGet, toast]) f.mockReset()
   coreGet.mockImplementation(async () => ({ values: structuredClone(stored), secret_fields: ['api_key', 'notify_webhook_secret', 'notify_webhook_url'] }))
   corePut.mockImplementation(async () => ({ values: stored }))
-  pluginGet.mockImplementation(async (path) => (path === '/jev/default-questions' ? { builtin: BUILTIN, builtin_version: 'v3' } : path === '/status' ? { lists_imported: true } : []))
+  pluginGet.mockImplementation(async (path) => (path === '/jev/default-questions' ? { builtin: BUILTIN, builtin_version: 'v3', openai_categories: ['violence', 'hate'] } : path === '/status' ? { lists_imported: true } : []))
   const t = (key: string) => key
   setHost({
     t,
@@ -300,5 +300,32 @@ describe('the Jev default set', () => {
       expect(row(w, 'jev_default_set').find('.input-error-text').exists(), name).toBe(true)
       w.unmount()
     }
+  })
+
+  it('refuses the tables JevQuestions.Validate refuses, naming the question', async () => {
+    /** Row 1 (added) inputs: category, label, threshold, answer yes, answer no. */
+    const ROW1_CATEGORY = 5
+    const ROW1_QUESTION = 2
+    const bad: [string, string, Edit[]][] = [
+      [
+        'a repeated category',
+        'settingsTab.jev.duplicate',
+        [(w) => button(w, 'auditors.addQuestion').trigger('click'), (w) => input(w, ROW1_CATEGORY).setValue('violence'), (w) => textarea(w, ROW1_QUESTION).setValue('again?')]
+      ],
+      ['a custom category without a label', 'settingsTab.jev.labelRequired', [(w) => input(w, CATEGORY).setValue('custom/x')]],
+      ['a question of only spaces', 'settingsTab.jev.question', [(w) => textarea(w, QUESTION).setValue('  \n ')]]
+    ]
+    for (const [name, message, edits] of bad) {
+      stored = STORED
+      corePut.mockClear()
+      const { w, put } = await save('jev', ...edits)
+      expect(put, name).toBeNull()
+      expect(row(w, 'jev_default_set').find('.input-error-text').text(), name).toBe(message)
+      w.unmount()
+    }
+    // a custom category with a label, an OpenAI one without: saved
+    stored = STORED
+    const { put } = await save('jev', (w) => input(w, CATEGORY).setValue('custom/x'), (w) => input(w, 1).setValue('X'))
+    expect(put).toEqual({ ...STORED, jev_default_set: { preamble: 'p', items: [{ ...ROW, category: 'custom/x', label: 'X' }] } })
   })
 })
