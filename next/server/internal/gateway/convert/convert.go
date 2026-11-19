@@ -199,13 +199,13 @@ type ModelLocator interface {
 	ModelPath() string
 }
 
-// StreamFailure is implemented by a stream converter that may end a
-// successful upstream stream with an error of the client protocol (an error
-// event): after Flush, Failure is that error as a ClientError, which the
-// gateway records like the non-stream one (CONTRACTS §121.8); nil when the
-// stream ended otherwise.
-type StreamFailure interface {
-	Failure() *ClientError
+// ResponseModelLocator is implemented by a converter whose upstream
+// response names the model that served the client's model elsewhere than
+// the upstream endpoint's usage rules read it: the paths in a JSON
+// response and in an SSE event, which replace the rules' model paths
+// (the upstream model recorded, never a price; CONTRACTS §121.4).
+type ResponseModelLocator interface {
+	ResponseModelPaths() (json, sse string)
 }
 
 // terminal is implemented by a converter whose upstream request uses what

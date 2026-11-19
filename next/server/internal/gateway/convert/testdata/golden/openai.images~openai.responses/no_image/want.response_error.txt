@@ -1,1 +1,0 @@
-502 {"error":{"code":"no_image_generated","message":"I can't create that image.","type":"server_error"}}

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"slices"
 	"strings"
 )
@@ -46,6 +45,13 @@ func (c *imagesResponses) Grade() Grade { return GradeGood }
 // ModelPath implements ModelLocator: the client's image model travels in
 // the tool.
 func (c *imagesResponses) ModelPath() string { return "tools.0.model" }
+
+// ResponseModelPaths implements ResponseModelLocator: the image model the
+// upstream ran is echoed in the response's tools, its top-level model is
+// the chat model.
+func (c *imagesResponses) ResponseModelPaths() (json, sse string) {
+	return "tools.0.model", "response.tools.0.model"
+}
 
 // terminal implements terminal: the image_generation tool is the relay's
 // own, so the pair is never composed with a hop to another platform.
@@ -178,73 +184,21 @@ func imagesInstructions(tool jobject) string {
 
 // ---------------------------------------------------------------- response
 
-// imagesAnswer is what the output items of a finished response amount to:
-// the generated images, else the status and error object of the client
-// error.
-type imagesAnswer struct {
-	images []jobject
-	status int
-	err    jobject
-}
-
-// answer reads the output items of a finished response (index i at
-// indexes[i]). Each image_generation_call with a result is an image; the
-// other items are response losses. Without images, the error of the first
-// failed image call is a 400 image_generation_user_error, and no failed
-// call a 502 no_image_generated carrying the assistant's text.
-func (c *imagesResponses) answer(items []jobject, indexes []int) imagesAnswer {
-	var ans imagesAnswer
-	var failed jobject
-	var text strings.Builder
+// images are the images among the output items of a finished response
+// (index i at indexes[i]): each image_generation_call with a result. The
+// other items (a failed image call, the assistant's message) are response
+// losses. The upstream's answer is the answer: with no image, there are
+// none (CONTRACTS §121.7).
+func (c *imagesResponses) images(items []jobject, indexes []int) []jobject {
+	var out []jobject
 	for i, item := range items {
-		if item["type"] == "image_generation_call" {
-			if r, ok := item["result"].(string); ok && r != "" {
-				ans.images = append(ans.images, item)
-				continue
-			}
-			if e, ok := item["error"].(map[string]any); ok && failed == nil {
-				failed = e
-			}
-		}
-		if item["type"] == "message" {
-			text.WriteString(messageText(item))
+		if r, ok := item["result"].(string); ok && r != "" && item["type"] == "image_generation_call" {
+			out = append(out, item)
+			continue
 		}
 		c.lost.add(LossOther, jpos("response.output", indexes[i]))
 	}
-	switch {
-	case len(ans.images) > 0:
-	case failed != nil:
-		ans.status, ans.err = http.StatusBadRequest, jobject{"type": "image_generation_user_error"}
-		for k, v := range failed {
-			ans.err[k] = v
-		}
-	default:
-		msg := strings.TrimSpace(text.String())
-		if msg == "" {
-			msg = "the upstream generated no image"
-		}
-		ans.status, ans.err = http.StatusBadGateway, jobject{"type": "server_error", "code": "no_image_generated", "message": msg}
-	}
-	return ans
-}
-
-// clientError is the client error of an answer without images.
-func (a imagesAnswer) clientError() *ClientError {
-	b, _ := json.Marshal(jobject{"error": a.err})
-	return &ClientError{Status: a.status, Body: b}
-}
-
-// messageText is the output text of a message item.
-func messageText(item jobject) string {
-	parts, _ := item["content"].([]any)
-	var b strings.Builder
-	for _, p := range parts {
-		if o, ok := p.(map[string]any); ok && o["type"] == "output_text" {
-			s, _ := o["text"].(string)
-			b.WriteString(s)
-		}
-	}
-	return b.String()
+	return out
 }
 
 // imageMeta are the members of an image_generation_call item the reply
@@ -283,9 +237,8 @@ func outputItems(r jobject) ([]jobject, []int, error) {
 }
 
 // Response converts a complete Responses reply: the images in output order
-// as data, the first image's background, format, quality and size, and the
-// image tool's usage (CONTRACTS §121.7). A reply without an image is a
-// ClientError.
+// as data (empty without one), the first image's background, format,
+// quality and size, and the image tool's usage (CONTRACTS §121.7).
 func (c *imagesResponses) Response(body []byte) ([]byte, error) {
 	if !c.prepared {
 		return nil, errUnprepared
@@ -299,14 +252,13 @@ func (c *imagesResponses) Response(body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	ans := c.answer(items, indexes)
-	if ans.err != nil {
-		return nil, ans.clientError()
-	}
+	images := c.images(items, indexes)
 	out := jobject{"created": responseCreated(r)}
-	copyMembers(out, ans.images[0], imageMeta)
-	data := make([]any, len(ans.images))
-	for i, img := range ans.images {
+	if len(images) > 0 {
+		copyMembers(out, images[0], imageMeta)
+	}
+	data := make([]any, len(images))
+	for i, img := range images {
 		d := jobject{"b64_json": img["result"]}
 		copyMembers(d, img, []string{"revised_prompt"})
 		data[i] = d
@@ -343,12 +295,7 @@ type imagesStream struct {
 	items        []jobject
 	indexes      []int
 	done, failed bool
-	// failure is the client error the terminal response amounted to.
-	failure *ClientError
 }
-
-// Failure implements StreamFailure.
-func (s *imagesStream) Failure() *ClientError { return s.failure }
 
 func (s *imagesStream) Event(ev Event) ([]Event, error) {
 	if !s.p.prepared {
@@ -424,8 +371,8 @@ func (s *imagesStream) itemDone(o jobject) error {
 	return nil
 }
 
-// complete ends the stream with the images, or the client error, of the
-// terminal response: its output when it lists any, else the items the
+// complete ends the stream with the images of the terminal response, one
+// completed event each (none without an image): its output when it lists any, else the items the
 // stream finished (the Codex backend ends with an empty output).
 func (s *imagesStream) complete(v any) ([]Event, error) {
 	r, err := jobj(v, "stream.response")
@@ -443,16 +390,12 @@ func (s *imagesStream) complete(v any) ([]Event, error) {
 	if s.created == nil {
 		s.created = r["created_at"]
 	}
-	ans := s.p.answer(items, indexes)
-	if ans.err != nil {
-		s.failure = ans.clientError()
-		return []Event{s.event("error", jobject{"error": ans.err})}, nil
-	}
-	out := make([]Event, len(ans.images))
-	for i, img := range ans.images {
+	images := s.p.images(items, indexes)
+	out := make([]Event, len(images))
+	for i, img := range images {
 		o := jobject{"b64_json": img["result"], "created_at": s.created}
 		copyMembers(o, img, imageMeta)
-		if i == len(ans.images)-1 {
+		if i == len(images)-1 {
 			imagesUsage(o, r)
 		}
 		out[i] = s.event(s.p.eventPrefix()+"completed", o)
