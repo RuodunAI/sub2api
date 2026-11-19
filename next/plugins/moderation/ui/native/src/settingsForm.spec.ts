@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { currentSettings, displayValues, JEV_LIMITS, jevIssue, LEGACY_KEY, pageKeys, RETIRED, SECTIONS, sectionsOf, sentValue, SETTINGS, settingDefault, settingsKey, specOf } from './settingsForm'
+import { effectScope } from 'vue'
+import { useForm } from '@sub2api/ui'
+import { currentSettings, displayValues, JEV_KEY, JEV_LIMITS, LEGACY_KEY, pageKeys, RETIRED, SECTIONS, sectionsOf, sentValue, SETTINGS, settingDefault, settingRules, settingsField, settingsKey, specOf } from './settingsForm'
 import { NAV_GROUPS } from './nav'
 import { mergeSettings, type PageValues } from './settingsMerge'
 
@@ -190,34 +192,61 @@ describe('the defaults', () => {
   })
 })
 
-describe('jevIssue', () => {
+describe('the question set rules', () => {
   const t = (k: string, p?: Record<string, unknown>) => `${k}${p ? ' ' + JSON.stringify(p) : ''}`
   const row = { category: 'violence', label: '', question: 'q?', answer_yes: '', answer_no: '', threshold: 0.5 }
   const OPENAI = ['violence', 'hate']
   const set = (over: Record<string, unknown> = {}, rows = [row]) => ({ preamble: '', items: rows, ...over })
-  it('accepts the built-in set (null) and a valid table, thresholds typed as text too', () => {
-    expect(jevIssue(null, t, OPENAI)).toBeUndefined()
-    expect(jevIssue(set({}, [{ ...row, threshold: '1' as unknown as number }]), t, OPENAI)).toBeUndefined()
+  /** The messages of the page's rules on a question set, by form path. */
+  async function issues(v: unknown, openai = OPENAI): Promise<Record<string, string>> {
+    const scope = effectScope()
+    const form = scope.run(() => useForm({ model: () => ({ [JEV_KEY]: v }), update: () => {}, rules: settingRules([JEV_KEY], t, openai) }))!
+    await form.validate()
+    scope.stop()
+    return { ...form.errors }
+  }
+  const cell = (i: number, field: string) => `${JEV_KEY}.items.${i}.${field}`
+
+  it('accepts the built-in set (null) and a valid table, thresholds typed as text too', async () => {
+    expect(await issues(null)).toEqual({})
+    expect(await issues(set({}, [{ ...row, threshold: '1' as unknown as number }]))).toEqual({})
   })
-  it('refuses what the settings form refused', () => {
-    expect(jevIssue(set({}, []), t, OPENAI)).toBe('settingsTab.jev.items {"min":1,"max":32}')
-    expect(jevIssue(set({}, Array(JEV_LIMITS.items.max + 1).fill(row)), t, OPENAI)).toContain('settingsTab.jev.items')
-    expect(jevIssue(set({ preamble: 'x'.repeat(2001) }), t, OPENAI)).toContain('settingsTab.jev.preamble')
-    expect(jevIssue(set({}, [{ ...row, category: 'Bad' }]), t, OPENAI)).toBe('settingsTab.jev.category {"row":1}')
-    expect(jevIssue(set({}, [{ ...row, category: 'x'.repeat(65) }]), t, OPENAI)).toContain('settingsTab.jev.category')
-    expect(jevIssue(set({}, [{ ...row, label: 'x'.repeat(65) }]), t, OPENAI)).toContain('settingsTab.jev.label')
-    expect(jevIssue(set({}, [{ ...row, question: '' }]), t, OPENAI)).toContain('settingsTab.jev.question')
-    expect(jevIssue(set({}, [{ ...row, question: 'x'.repeat(2001) }]), t, OPENAI)).toContain('settingsTab.jev.question')
-    expect(jevIssue(set({}, [{ ...row, answer_no: 'x'.repeat(1001) }]), t, OPENAI)).toContain('settingsTab.jev.answer')
-    for (const threshold of [0, 1.01, Number.NaN]) expect(jevIssue(set({}, [{ ...row, threshold }]), t, OPENAI)).toContain('settingsTab.jev.threshold')
+  it('refuses what the settings form refused, the number of questions at the set and the rest at its cell', async () => {
+    expect(await issues(set({}, []))).toEqual({ [JEV_KEY]: 'settingsTab.jev.items {"min":1,"max":32}' })
+    const many = Array.from({ length: JEV_LIMITS.items.max + 1 }, (_, i) => ({ ...row, category: `c${i}`, label: 'L' }))
+    expect(await issues(set({}, many))).toEqual({ [JEV_KEY]: 'settingsTab.jev.items {"min":1,"max":32}' })
+    expect(await issues(set({ preamble: 'x'.repeat(2001) }))).toEqual({ [`${JEV_KEY}.preamble`]: 'settingsTab.jev.preamble {"n":2000}' })
+    const at = async (i: number, field: string, over: Record<string, unknown>, message: string) =>
+      expect(await issues(set({}, [row, { ...row, category: 'hate', ...over }]))).toEqual({ [cell(i, field)]: message })
+    await at(1, 'category', { category: 'Bad' }, 'settingsTab.jev.category')
+    await at(1, 'category', { category: 'x'.repeat(65) }, 'settingsTab.jev.category')
+    await at(1, 'category', { category: '' }, 'settingsTab.jev.category')
+    await at(1, 'label', { label: 'x'.repeat(65) }, 'settingsTab.jev.label {"n":64}')
+    await at(1, 'question', { question: '' }, 'settingsTab.jev.question {"n":2000}')
+    await at(1, 'question', { question: 'x'.repeat(2001) }, 'settingsTab.jev.question {"n":2000}')
+    await at(1, 'answer_yes', { answer_yes: 'x'.repeat(1001) }, 'settingsTab.jev.answer {"n":1000}')
+    await at(1, 'answer_no', { answer_no: 'x'.repeat(1001) }, 'settingsTab.jev.answer {"n":1000}')
+    for (const threshold of [0, 1.01, Number.NaN, '']) await at(1, 'threshold', { threshold }, 'settingsTab.jev.threshold')
   })
-  it('refuses what JevQuestions.Validate refuses: a repeated category, a custom one without a label, a blank question', () => {
-    expect(jevIssue(set({}, [row, { ...row, category: 'hate' }, row]), t, OPENAI)).toBe('settingsTab.jev.duplicate {"row":3,"first":1}')
-    expect(jevIssue(set({}, [row, { ...row, category: 'custom/x' }]), t, OPENAI)).toBe('settingsTab.jev.labelRequired {"row":2}')
-    expect(jevIssue(set({}, [{ ...row, category: 'custom/x', label: ' \t' }]), t, OPENAI)).toBe('settingsTab.jev.labelRequired {"row":1}')
-    expect(jevIssue(set({}, [{ ...row, category: 'custom/x', label: 'X' }]), t, OPENAI)).toBeUndefined()
-    expect(jevIssue(set({}, [row]), t, [])).toBe('settingsTab.jev.labelRequired {"row":1}')
-    expect(jevIssue(set({}, [{ ...row, question: ' \n ' }]), t, OPENAI)).toBe('settingsTab.jev.question {"row":1,"n":2000}')
+  it('refuses what JevQuestions.Validate refuses: a repeated category, a custom one without a label, a blank question', async () => {
+    expect(await issues(set({}, [row, { ...row, category: 'hate' }, row]))).toEqual({ [cell(2, 'category')]: 'settingsTab.jev.duplicate {"first":1}' })
+    expect(await issues(set({}, [row, { ...row, category: 'custom/x' }]))).toEqual({ [cell(1, 'label')]: 'settingsTab.jev.labelRequired' })
+    expect(await issues(set({}, [{ ...row, category: 'custom/x', label: ' \t' }]))).toEqual({ [cell(0, 'label')]: 'settingsTab.jev.labelRequired' })
+    expect(await issues(set({}, [{ ...row, category: 'custom/x', label: 'X' }]))).toEqual({})
+    expect(await issues(set({}, [row]), [])).toEqual({ [cell(0, 'label')]: 'settingsTab.jev.labelRequired' })
+    expect(await issues(set({}, [{ ...row, question: ' \n ' }]))).toEqual({ [cell(0, 'question')]: 'settingsTab.jev.question {"n":2000}' })
+    // as checkJevRow: a bad category is not checked for repeats, nor asks for a label
+    expect(await issues(set({}, [{ ...row, category: 'Bad' }, { ...row, category: 'Bad' }]))).toEqual({ [cell(0, 'category')]: 'settingsTab.jev.category', [cell(1, 'category')]: 'settingsTab.jev.category' })
+  })
+})
+
+describe('settingsField', () => {
+  it('keeps the path of a cell of the question set, and maps every other to its settings key', () => {
+    expect(settingsField('values/jev_default_set/items/2/label')).toBe('jev_default_set.items.2.label')
+    expect(settingsField('values/jev_default_set/preamble')).toBe('jev_default_set.preamble')
+    expect(settingsField('values/jev_default_set/items')).toBe('jev_default_set')
+    expect(settingsField('values/jev_default_set/items/3')).toBe('jev_default_set')
+    expect(settingsField('values/block_status')).toBe('block_status')
   })
 })
 

@@ -9,13 +9,28 @@ import { copyQuestions } from './questions'
 import VerdictCacheRow from './VerdictCacheRow.vue'
 import { BLOCK_FORMATS, blockResponse, type BlockFormat } from './blockPreview'
 import { enumOptions, joinList } from './format'
-import { applyErrorsOrToast, type FieldErrors } from './forms'
+import { applyFieldErrors, type FieldErrors } from './forms'
 import { mergeSettings, type PageValues } from './settingsMerge'
-import { CACHE_DAYS_KEY, currentSettings, displayValues, pageKeys, sectionsOf, sentValue, settingDefault, settingRules, settingsKey, specOf, type SettingSection } from './settingsForm'
+import {
+  CACHE_DAYS_KEY,
+  currentSettings,
+  displayValues,
+  JEV_KEY,
+  pageKeys,
+  sectionsOf,
+  sentValue,
+  SETTINGS,
+  settingDefault,
+  settingRules,
+  settingsField,
+  settingsKey,
+  specOf,
+  type SettingSection
+} from './settingsForm'
 import type { SectionKey } from './nav'
 import { useAsync } from './useAsync'
 import { listsImportPending, useStatus } from './status'
-import { fetchDefaults, fetchPluginSettings, savePluginSettings, useModHost } from './host'
+import { fetchDefaults, fetchPluginSettings, savePluginSettings, toastError, useModHost } from './host'
 import type { JevQuestions } from './types'
 
 // One page of the moderation settings (CONTRACTS §72.15; the plugin page is
@@ -123,18 +138,32 @@ async function save() {
     host.toast(t('saved'), 'success')
     await reload()
   } catch (e) {
-    // The first error of a key is shown at its row; others are toasted. A
-    // kept secret the core asks to re-enter (§75.1) says so in the plugin's
-    // words.
+    // The first error of a key is shown at its row, of a cell of the
+    // question set at its cell (settingsField). A kept secret the core asks
+    // to re-enter (§75.1) says so in the plugin's words.
     const errs: FieldErrors = {}
-    applyErrorsOrToast(errs, e, keys.value, settingsKey)
+    applyFieldErrors(errs, e, undefined, settingsField)
     if (isApiError(e)) {
       for (const [path, code] of Object.entries(e.fieldCodes)) if (code === 'reenter') errs[settingsKey(path)] = t('settingsTab.reenter')
     }
     serverErrors.value = errs
+    reportElsewhere(errs, e)
   } finally {
     saving.value = false
   }
+}
+
+/**
+ * Toasts the refusal of a save that no row of this page shows: a stored
+ * setting of another page that breaks the current rules is named (it is
+ * corrected there), any other error is toasted as it is.
+ */
+function reportElsewhere(errs: FieldErrors, e: unknown) {
+  const owners = [...new Set(Object.keys(errs).map(settingsKey))]
+  const onPage = (k: string) => (keys.value as readonly string[]).includes(k)
+  const elsewhere = owners.filter((k) => !onPage(k) && k in SETTINGS)
+  if (elsewhere.length) host.toast(t('settingsTab.storedInvalid', { keys: joinList(elsewhere.map(label)) }), 'error')
+  else if (!owners.some(onPage)) toastError(e)
 }
 
 const format = ref<BlockFormat>('openai')
@@ -149,6 +178,13 @@ const jevMode = computed({
   get: () => (jev.value ? 'custom' : 'builtin'),
   set: (m: string) => form.set('jev_default_set', m === 'custom' && defaults.value ? copyQuestions(defaults.value.builtin) : null)
 })
+// The editor changes the table in place, not through form.set: a question
+// added or removed drops the table's messages, which would stay at the old
+// indexes.
+watch(
+  () => jev.value?.items.length,
+  () => form.clearValidate(JEV_KEY)
+)
 const jevOptions = computed(() => [
   { value: 'builtin', label: t('settingsTab.jevBuiltin', { v: defaults.value?.builtin_version || '' }) },
   { value: 'custom', label: t('settingsTab.jevCustom') }
@@ -191,7 +227,7 @@ const jevOptions = computed(() => [
               />
               <div v-else-if="specOf(k).kind === 'jev'" class="mod-form mod-setting-wide">
                 <SSegmented v-model="jevMode" :options="jevOptions" size="sm" />
-                <JevQuestionsEditor v-if="jev" :model-value="jev">
+                <JevQuestionsEditor v-if="jev" :model-value="jev" :prop="JEV_KEY">
                   <template #toolbar>
                     <SButton size="sm" @click="jevMode = 'custom'">{{ t('settingsTab.jevCopyBuiltin') }}</SButton>
                   </template>
