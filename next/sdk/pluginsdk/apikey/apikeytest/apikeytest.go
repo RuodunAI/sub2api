@@ -2,7 +2,7 @@
 // base_url account type shares, so a plugin's test lists only its own:
 //
 //	func TestCredentialsRefused(t *testing.T) {
-//		form := apikeytest.Form{AccountType: "apikey", Key: "sk-ant-api03-abcdef", BaseURL: "https://x.example.com", MinKey: 8}
+//		form := apikeytest.Form{AccountType: "apikey", Key: "sk-ant-api03-abcdef", BaseURL: "https://x.example.com"}
 //		apikeytest.Run(t, New().ValidateCredentials, append(form.Cases(),
 //			apikeytest.Case{Name: "organization not a string", AccountType: "apikey", Creds: `{"api_key": "sk-proj-abcdef", "organization": 1}`, Field: "organization"},
 //		))
@@ -33,23 +33,21 @@ type Case struct {
 
 // Form is an account type with api_key and base_url: a key and a base URL
 // it accepts (the URL as the type normalizes it), whether base_url is
-// required, the shortest key it accepts (the longest is 512 characters, the
-// SDK's rule) and the other fields of a valid account.
+// required and the other fields of a valid account.
 type Form struct {
 	AccountType    string
 	Key            string
 	BaseURL        string
 	RequireBaseURL bool
-	MinKey         int
 	Fill           map[string]any
 }
 
 // Cases are the shared cases: each way api_key and base_url are refused,
-// the key lengths at the bounds accepted, and the key and the URL trimmed
-// and the scheme lower-cased on save. The other fields are Fill's; the
-// key cases carry the base URL.
+// any non-empty key accepted (spaces, non-ASCII, 4096 characters), the key
+// and the URL trimmed and the scheme lower-cased on save, and a base URL
+// with a /v1 or an escaped "/" saved as written. The other fields are
+// Fill's; the key cases carry the base URL.
 func (f Form) Cases() []Case {
-	keyOf := func(n int) string { return "sk-" + strings.Repeat("k", n-3) }
 	withKey := func(key any) map[string]any { return f.with(map[string]any{"api_key": key, "base_url": f.BaseURL}) }
 	withURL := func(url any) map[string]any { return f.with(map[string]any{"api_key": f.Key, "base_url": url}) }
 	refused := func(name, field string, creds map[string]any) Case {
@@ -67,11 +65,8 @@ func (f Form) Cases() []Case {
 	cases := []Case{
 		refused("api_key missing", "api_key", missingKey),
 		refused("api_key empty", "api_key", withKey("")),
+		refused("api_key blank", "api_key", withKey(" \t ")),
 		refused("api_key not a string", "api_key", withKey(123456789)),
-		refused("api_key shorter than the shortest", "api_key", withKey(keyOf(f.MinKey-1))),
-		refused("api_key longer than 512", "api_key", withKey(keyOf(513))),
-		refused("api_key with a space", "api_key", withKey("sk-abc def")),
-		refused("api_key not ASCII", "api_key", withKey("sk-ключ-abcdef")),
 		refused("base_url not a string", "base_url", withURL(1)),
 		refused("base_url not http", "base_url", withURL("ftp://x.example.com")),
 		refused("base_url without a scheme", "base_url", withURL("x.example.com")),
@@ -79,11 +74,14 @@ func (f Form) Cases() []Case {
 		refused("base_url with a query", "base_url", withURL("https://x.example.com/?a=1")),
 		refused("base_url with a fragment", "base_url", withURL("https://x.example.com/#a")),
 		refused("base_url with a space", "base_url", withURL("https://x.example.com/a b")),
-		accepted("api_key of the shortest length", withKey(keyOf(f.MinKey)), nil),
-		accepted("api_key of 512 characters", withKey(keyOf(512)), nil),
+		accepted("api_key with a space", withKey("sk-abc def"), withKey("sk-abc def")),
+		accepted("api_key not ASCII", withKey("sk-ключ"), withKey("sk-ключ")),
+		accepted("api_key of 4096 characters", withKey(strings.Repeat("k", 4096)), nil),
 		accepted("api_key trimmed", withKey(" "+f.Key+" "), withURL(f.BaseURL)),
 		accepted("base_url trimmed", withURL(" "+f.BaseURL+" "), withURL(f.BaseURL)),
 		accepted("base_url scheme lower-cased", withURL(strings.ToUpper(f.BaseURL[:5])+f.BaseURL[5:]), withURL(f.BaseURL)),
+		accepted("base_url with /v1 saved as written", withURL(f.BaseURL+"/v1/"), withURL(f.BaseURL+"/v1")),
+		accepted("base_url with an escaped slash saved as written", withURL(f.BaseURL+"/p/a%2Fb"), withURL(f.BaseURL+"/p/a%2Fb")),
 	}
 	if f.RequireBaseURL {
 		missingURL := withURL(nil)

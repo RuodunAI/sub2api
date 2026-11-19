@@ -18,8 +18,8 @@ const (
 )
 
 // APIKey is an OpenAI API key account type: Bearer key on
-// https://api.openai.com (a pasted /v1 removed), chat completions with the
-// usage of a stream requested, responses over HTTP and websocket,
+// https://api.openai.com (a trailing /v1 not repeated), chat completions
+// with the usage of a stream requested, responses over HTTP and websocket,
 // embeddings, image generations and edits (JSON bodies, forwarded as they
 // are: their stream reports its usage unasked), the OpenAI error policy, a
 // one-token chat test (and the cheapest request of responses, embeddings and
@@ -30,8 +30,7 @@ func APIKey(id string) standard.Type {
 		ID: id,
 		Spec: apikey.Spec{
 			DefaultBaseURL: "https://api.openai.com",
-			StripSuffixes:  []string{"/v1"},
-			KeyValidator:   &apikey.Validator{Prefixes: []string{"sk-", "sess-"}, MinLength: 10, Field: "api_key"},
+			Versions:       []string{"/v1"},
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 				KeyNotString:           "API key must be a string / api_key 必须是字符串",

@@ -6,20 +6,20 @@ import (
 )
 
 // APIKey is a TypeSafe API key account type: Bearer key on
-// https://api.typesafe.ai (a pasted /v1 removed; any 8-512 printable
-// characters without spaces), systemone with the body as it is, the
-// TypeSafe error policy, a one-question systemone test on jev-latest and
-// the model listing (GET /v1/models, models.#.name). It filters no request
-// field and has no balance: TypeSafe has no balance endpoint.
+// https://api.typesafe.ai (a trailing /v1 not repeated; any non-empty key),
+// systemone with the body as it is, the TypeSafe error policy, a
+// one-question systemone test on jev-latest and the model listing (GET
+// /v1/models, models.#.name). It filters no request field and has no
+// balance: TypeSafe has no balance endpoint.
 func APIKey(id string) standard.Type {
 	return standard.Type{
 		ID: id,
 		Spec: apikey.Spec{
 			DefaultBaseURL: DefaultBaseURL,
-			StripSuffixes:  []string{"/v1"},
+			Versions:       []string{"/v1"},
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-				KeyNotString:           "API key must be 8-512 printable characters without spaces / API Key 须为 8-512 个不含空格的可见字符",
+				KeyNotString:           "API key must be a string / api_key 必须是字符串",
 				KeyNotStringCode:       "pattern",
 				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
 			},

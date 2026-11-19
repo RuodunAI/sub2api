@@ -103,7 +103,6 @@ func TestWebSocketHandshake(t *testing.T) {
 func TestSeveralTypes(t *testing.T) {
 	a, b := openai.APIKey("a"), openai.APIKey("b")
 	b.Auth = standard.Auth{Header: "api-key"}
-	b.Spec.KeyValidator = nil
 	p := standard.New(a, b)
 	build := func(accountType string) (*pluginv1.UpstreamRequest, error) {
 		return p.BuildUpstream(context.Background(), &pluginv1.ExecuteRequest{

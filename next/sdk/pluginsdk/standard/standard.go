@@ -31,9 +31,9 @@ type Type struct {
 	// ID is the account type id (accountTypes[].id); New copies it into
 	// Spec.AccountType.
 	ID string
-	// Spec validates the credentials and normalizes the base URL: key
-	// format, default base URL, whether it is required, the suffixes a
-	// pasted URL loses, the wording of the errors.
+	// Spec validates the credentials and normalizes the base URL: default
+	// base URL, whether it is required, the version segments a base URL may
+	// end in, the wording of the errors.
 	Spec apikey.Spec
 	// Auth is where the API key goes: on every route without its own, the
 	// model listing and the balance.

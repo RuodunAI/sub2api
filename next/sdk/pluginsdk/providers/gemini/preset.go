@@ -15,15 +15,15 @@ const (
 )
 
 // APIKey is a Gemini API key account type: x-goog-api-key on
-// https://generativelanguage.googleapis.com (a pasted /v1beta or /v1
-// removed), the model of the request's metadata in the path of
-// generateContent, streamGenerateContent (SSE) and countTokens, the Gemini
-// error policy, a one-token generateContent test (streamed for an account
-// that only serves streamGenerateContent) and the model listing.
+// https://generativelanguage.googleapis.com (a trailing /v1beta or /v1
+// replaced by the route's /v1beta), the model of the request's metadata in
+// the path of generateContent, streamGenerateContent (SSE) and countTokens,
+// the Gemini error policy, a one-token generateContent test (streamed for an
+// account that only serves streamGenerateContent) and the model listing.
 func APIKey(id string) standard.Type {
 	return standard.Type{
 		ID:      id,
-		Spec:    apikey.Spec{DefaultBaseURL: "https://generativelanguage.googleapis.com", StripSuffixes: []string{"/v1beta", "/v1"}},
+		Spec:    apikey.Spec{DefaultBaseURL: "https://generativelanguage.googleapis.com", Versions: []string{"/v1beta", "/v1"}},
 		Auth:    standard.Auth{Header: "x-goog-api-key"},
 		Headers: []standard.Header{standard.Set("content-type", standard.Fixed("application/json"))},
 		Routes: map[string]standard.Route{

@@ -26,14 +26,14 @@ const relayManifest = `{
 // A type merged from the three presets builds, for each file's protocols,
 // what that file's plugin built: every forwarded case on an account with
 // its own base URL, except where the relay's base URL rule differs on
-// purpose (it also strips a pasted /v1beta, which the OpenAI and Anthropic
-// presets keep).
+// purpose (it also takes a trailing /v1beta for a version, which the OpenAI
+// and Anthropic presets keep).
 func TestMergedReplay(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "manifest.json")
 	if err := os.WriteFile(path, []byte(relayManifest), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	spec := apikey.Spec{RequireBaseURL: true, StripSuffixes: []string{"/v1beta", "/v1"}}
+	spec := apikey.Spec{RequireBaseURL: true, Versions: []string{"/v1beta", "/v1"}}
 	p := standard.New(standard.Merge("apikey", spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey("")))
 	keepsV1beta := func(c *goldentest.Case) bool {
 		base, _ := c.BaseURL()

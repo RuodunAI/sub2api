@@ -23,7 +23,7 @@ import (
 
 // relaySpec is the credential rule of a relay site: its own base URL,
 // required, any key.
-var relaySpec = apikey.Spec{RequireBaseURL: true, StripSuffixes: []string{"/v1beta", "/v1"}}
+var relaySpec = apikey.Spec{RequireBaseURL: true, Versions: []string{"/v1beta", "/v1"}}
 
 // relaySite is a relay site in the shape of the New API plugin (design
 // §3.5.2): one type serving the OpenAI, Anthropic, Gemini and TypeSafe
