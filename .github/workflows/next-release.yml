@@ -53,7 +53,7 @@ env:
 jobs:
   meta:
     name: validate tag
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
@@ -122,7 +122,7 @@ jobs:
     name: build core
     needs: [meta, gate]
     if: needs.meta.outputs.line == 'core'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     # Plugins are packed with the GORM model check (sub2api-plugin db check).
@@ -132,23 +132,18 @@ jobs:
         env:
           POSTGRES_PASSWORD: sub2api
         ports:
-          - 5432/tcp
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
     env:
+      TEST_DATABASE_URL: postgres://postgres:sub2api@127.0.0.1:5432/postgres?sslmode=disable
       VERSION: ${{ needs.meta.outputs.version }}
     outputs:
       schema: ${{ steps.core.outputs.schema }}
     steps:
-      # The host port is assigned by Docker: the self-hosted runner's machine
-      # already has its own PostgreSQL on 5432.
-      - name: Point the model check at the service container
-        env:
-          PG_PORT: ${{ job.services.postgres.ports['5432'] }}
-        run: echo "TEST_DATABASE_URL=postgres://postgres:sub2api@127.0.0.1:${PG_PORT}/postgres?sslmode=disable" >> "$GITHUB_ENV"
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ needs.meta.outputs.sha }}
@@ -206,7 +201,7 @@ jobs:
     name: build gateway
     needs: [meta, gate]
     if: needs.meta.outputs.line == 'gateway'
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
@@ -273,7 +268,7 @@ jobs:
     name: package
     needs: [meta, core-build, gateway-build]
     if: ${{ !cancelled() && (needs.core-build.result == 'success' || needs.gateway-build.result == 'success') }}
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: read
@@ -344,7 +339,7 @@ jobs:
     name: publish
     needs: [meta, gateway-build, package]
     if: ${{ !cancelled() && needs.package.result == 'success' && needs.meta.outputs.dry_run != 'true' }}
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write

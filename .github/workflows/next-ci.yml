@@ -56,7 +56,7 @@ jobs:
   # -------------------------------------------------------------- sdk / tools
   sdk-tools:
     name: sdk, tools and e2e
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -96,7 +96,7 @@ jobs:
   # ---------------------------------------------------------------- plugins
   plugins:
     name: plugins
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -148,7 +148,7 @@ jobs:
   # ----------------------------------------------------------------- server
   server:
     name: server (with PostgreSQL and Redis)
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     # Image versions follow the test deployment: the sub2api-next-testdb
     # compose project (~/sub2api-next-test/testdb, per docs/PROGRESS.md §7) and
     # deploy/single/compose.yml both run postgres:16 with the password sub2api
@@ -161,7 +161,7 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_DB: postgres
         ports:
-          - 5432/tcp
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 5s
@@ -170,25 +170,19 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379/tcp
+          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 20
-    steps:
+    env:
       # testutil.DB(t) needs a superuser DSN (it creates a role and a database
       # per test). Without it the ~70 database cases skip -- which is exactly
       # how they would keep looking green -- so they are wired up here.
-      # The host ports are assigned by Docker: the self-hosted runner's machine
-      # already has its own PostgreSQL and Redis on 5432 and 6379.
-      - name: Point the tests at the service containers
-        env:
-          PG_PORT: ${{ job.services.postgres.ports['5432'] }}
-          REDIS_PORT: ${{ job.services.redis.ports['6379'] }}
-        run: |
-          echo "TEST_DATABASE_URL=postgres://postgres:sub2api@127.0.0.1:${PG_PORT}/postgres?sslmode=disable" >> "$GITHUB_ENV"
-          echo "TEST_REDIS_URL=redis://127.0.0.1:${REDIS_PORT}/0" >> "$GITHUB_ENV"
+      TEST_DATABASE_URL: postgres://postgres:sub2api@127.0.0.1:5432/postgres?sslmode=disable
+      TEST_REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref }}
@@ -232,7 +226,7 @@ jobs:
         working-directory: next
         run: go test -race -count=1 -timeout=10m ./gateway/... ./runtime-contract/... ./server/internal/app/... ./server/internal/background/...
       # The server has //go:build linux code (seccomp, /proc, cgroups) with
-      # stubs for other platforms (CONTRACTS §2). The runner already builds
+      # stubs for other platforms (CONTRACTS §2). ubuntu-latest already builds
       # for linux, so GOOS=linux only restates the contract explicitly;
       # GOOS=windows and GOOS=darwin are the checks that actually catch a stub
       # that stopped compiling -- until now that surfaced only when a developer
@@ -252,7 +246,7 @@ jobs:
   # The console: types and unit tests.
   web:
     name: web console
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:

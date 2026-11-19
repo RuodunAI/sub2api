@@ -34,7 +34,7 @@ env:
 
 jobs:
   prepare:
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
       owner_lower: ${{ steps.plan.outputs.owner_lower }}
@@ -82,7 +82,7 @@ jobs:
 
   build-frontend:
     needs: prepare
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
@@ -107,7 +107,7 @@ jobs:
 
   build-binaries:
     needs: [prepare, build-frontend]
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -192,7 +192,7 @@ jobs:
 
   release:
     needs: [prepare, build-binaries]
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
@@ -378,7 +378,7 @@ jobs:
   sync-version-file:
     needs: [prepare, release]
     if: ${{ needs.release.result == 'success' && needs.prepare.outputs.dry_run != 'true' }}
-    runs-on: [self-hosted, linux, x64]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
