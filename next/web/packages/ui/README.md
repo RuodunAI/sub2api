@@ -434,3 +434,46 @@ const { EntityMultiPicker } = host.components
 ## 原生账号表单的代理票据（UI SDK 3.20）
 
 原生账号表单（CONTRACTS §23.5）多一个 prop `proxyTicket`，类型 `ProxyTicketSource`（`() => Promise<string>`，从 `@sub2api/host` 导出）。调用时控制台按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据（`POST /account-types/:plugin_key/:type/proxy-ticket`，CONTRACTS §117）：核心按调用者的权限检查这个选择，把它加密成只有核心能解开的不透明字符串。在账号建好之前要访问外部服务的授权流程（设备码、OAuth 换令牌）在开始时把票据交给自己插件的路由，插件用 `pluginsdk.Fetch` 带上它，核心就从这个代理把请求发出去；插件界面和插件都看不到代理地址和密码。要不到票据时 Promise 以核心的 `ApiError` 拒绝，控制台同时把字段错误显示在代理输入下。本包的组件没有变化；用到它的插件声明 `hostUICompat: "^3.20"`，`hostCompat` 要求高于 0.1.303（0.1.303 是最后一个带 UI 3.19 的核心）。
+
+## 表单校验框架（UI SDK 4.0，开发中）
+
+插件界面只用代码写（DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY），表单的即时校验用本包的 `useForm` + `SForm`，规则写法与 Element Plus、Ant Design Vue、Naive UI 共用的 async-validator 风格相同，由本包自己实现。后端（插件的 `ValidateCredentials` / `ValidateSettings`）仍是最终校验。
+
+```vue
+<script setup lang="ts">
+import { SForm, SField, SInput, useForm } from '@sub2api/ui'
+const props = defineProps<{ modelValue: Record<string, unknown>; errors?: Record<string, string> }>()
+const emit = defineEmits<{ 'update:modelValue': [Record<string, unknown>] }>()
+const form = useForm({
+  model: () => props.modelValue,
+  update: (v) => emit('update:modelValue', v),
+  serverErrors: () => props.errors,
+  defaults: { region: 'us-east-1' },
+  rules: {
+    api_key: { required: true, min: 8, max: 512, pattern: /^[!-~]+$/ },
+    'items.*.url': { type: 'url' },
+    webhook_url: { required: true, when: (m) => !!m.notify }
+  }
+})
+defineExpose({ validate: form.validate })
+</script>
+<template>
+  <SForm :form="form">
+    <SField prop="api_key" label="API key">
+      <SInput :model-value="form.get('api_key')" @update:model-value="form.set('api_key', $event)" />
+    </SField>
+  </SForm>
+</template>
+```
+
+- **规则**（`Rule`）：`required`（`undefined`、`null`、`''`、`[]` 不通过）、`whitespace`（只有空格不通过）、`type`（`string` `number` `integer` `boolean` `array` `object` `url` `email` `date-time`）、`min` / `max` / `len`（字符串按字符数、数组按项数、数字按数值；有 `len` 时不看 `min` / `max`）、`pattern`（只对字符串）、`enum`、`validator(value, ctx)`（同步或异步，返回出错文案，`true` / 不返回为通过；抛错或 reject 也算不通过，文案取错误信息）、`message`（字符串或函数，覆盖内置文案）、`trigger`（`'blur'` / `'change'` 或数组）、`when(model)`（条件成立才校验，不成立时清掉错误）。规则表的键是点分路径，`*` 表示数组的每一项（`items.*.url`）。
+- **顺序**：同一字段按规则的先后，每条规则先 `required`、`whitespace`，空值且不必填时跳过其余内置检查，再 `type`、`len`、`min`、`max`、`pattern`、`enum`，最后 `validator`（空值时它也运行）。只显示第一条失败。
+- **已存密钥**：值是 `SECRET_MASK`（`******`）时 `required` 通过，其余检查和 `validator` 都跳过；原样送回，核心换回已存的值。
+- **触发**：先惰性后积极。字段第一次失焦（控件经 `SField` / `SSettingRow` 的 `prop` 上报）或 `validate()` 之后算 touched，之后每次经 `form.set` 改值都校验。写了 `trigger` 的规则只在列出的时机运行；`validate()` 运行全部规则。
+- **异步**：同一字段新一轮开始时中止上一轮（`ctx.signal`），迟到的结果丢弃；`validate()` 等全部字段跑完，跑的过程中又开始的新一轮以新一轮为准。不另设超时。
+- **`useForm` 返回**：`get(path)`、`set(path, value)`（只在当前值上打补丁，规则和界面都没有的键原样保留；`undefined` 删掉这个键）、`validate()`（`Promise<boolean>`，不 reject）、`validateField(paths)`、`clearValidate(paths?)`、`error(path)`、`errors`、`unclaimed`（没有 `SField` / `SSettingRow` 认领的错误）、`required(path)`。
+- **默认值**：`defaults` 只填父组件交来的值里缺失的键（新建时、读到设置时各一次），不覆盖已有的键，用户清空的也不再填回。
+- **服务端错误**：`serverErrors` 的键可以是 `a.b`、`credentials.a.b`、`values/a/b`、`values.a.b`（`toPath` 转成 `a.b`）。同一路径本地错误优先；改了某个路径就清掉它（以及它里面、外面的路径）的服务端错误；父组件换一份新的错误后重新全部显示。
+- **`SForm`**：`form`、`disabled`（`<fieldset disabled>`，禁用里面的全部控件）；`submit` 只在 `validate()` 通过后触发。已经在 `<form>` 里（`SFormModal`、`SCredentialForm`）时不再渲染第二个 `<form>`，由外层提交。
+- **`SField` / `SSettingRow` 的 `prop`**：在 `SForm` 里显示该路径的错误和必填星号（显式传入的 `error`、`required` 优先），控件失焦时校验它。自己写的控件用 `useFieldControl` 返回的 `blur` 接到失焦事件即可。
+- 内置文案在 `ui.form.v.*`（中英），占位符 `{n}`、`{label}`（`SField` 的 label）。

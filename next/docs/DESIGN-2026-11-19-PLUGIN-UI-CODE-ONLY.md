@@ -119,20 +119,21 @@
 
 ## 4. 主流 UI 框架的校验做法与取舍
 
-下面按各框架文档的通行写法整理，没有逐项联网核对具体版本的细节。
+下面按各框架的官方文档和源码整理，2026-11-19 实现 U1 时联网核对过（Element Plus `form.vue` 源码与 Form 文档、async-validator README、Ant Design Form 文档（Ant Design Vue 沿用同一套 rc-field-form 语义）、Naive UI Form 文档、VeeValidate v4 文档）。
 
 | 框架 | 规则写法 | 触发 | 方法 | 路径 | 文案 |
 |---|---|---|---|---|---|
-| Element Plus（`el-form`） | `rules: { [prop]: FormItemRule[] }`，底层是 async-validator：`required`、`type`、`min`/`max`/`len`、`pattern`、`enum`、`whitespace`、`validator(rule, value, callback)`、`message` | 每条规则带 `trigger: 'blur' \| 'change'` | `validate()` 返回 Promise\<boolean\>（也接受回调）、`validateField(props)`、`clearValidate(props)`、`resetFields()`、`scrollToField()` | `prop="a.b.0.c"` 点分路径 | 写在每条规则的 `message` 上；内置文案来自 async-validator |
-| Ant Design Vue（`a-form`） | 同样基于 async-validator，另有 `validateFirst` | `validateTrigger` | `validate()` 成功时返回值对象，失败时 reject 出 `errorFields`；`validateFields`、`clearValidate` | `name` 写成数组路径 `['a', 0, 'b']` | 表单级 `validateMessages` 模板（`${label}`），可整体替换做 i18n |
-| Naive UI（`n-form`） | `FormItemRule` 继承 async-validator，多了 `renderMessage` 和 `level: 'warning'` | `trigger` | `validate(cb, shouldRuleBeApplied)`、`restoreValidation()` | `path` 点分路径 | 写在规则上 |
-| VeeValidate + zod/yup | 表单级 schema，或字段级函数规则 | 积极或惰性两种模式（失焦后才校验，出错后改值即校验） | `useForm().validate()`、`useField` | 点分或方括号路径 | 由 schema 库提供，或自定义 |
+| Element Plus（`el-form`） | `rules: { [prop]: FormItemRule[] }`，底层是 async-validator：`required`、`type`、`min`/`max`/`len`、`pattern`、`enum`、`whitespace`、`validator(rule, value, callback)`、`message` | 每条规则带 `trigger: 'blur' \| 'change'`（可写数组）；控件在失焦和值变化时通知表单项 | `validate()` 类型是 `Promise<boolean>`，但**不传回调时校验失败会 reject 出 invalidFields**（源码 `shouldThrow && Promise.reject(invalidFields)`），通过时 resolve `true`；`validateField(props)`、`clearValidate(props)`、`resetFields()`、`scrollToField()`；表单项的 `error` prop "设了就立即显示"，`required` 不写时由规则决定 | `prop="a.b.0.c"` 点分路径 | 写在每条规则的 `message` 上；内置文案来自 async-validator |
+| Ant Design Vue（`a-form`） | 同样基于 async-validator 的规则字段，另有表单项的 `validateFirst`（默认 false，即全部规则都跑、全部文案都显示）；`validator` 返回 Promise，reject 即不通过 | `validateTrigger`（默认 change），规则上也可写 | `validate()` 成功时 resolve 值对象，失败时 reject 出 `{ values, errorFields, outOfDate }`（`outOfDate`：校验期间值又变了）；`validateFields`、`clearValidate` | `name` 写成数组路径 `['a', 0, 'b']` | 表单级 `validateMessages` 模板（`${label}`），可整体替换做 i18n |
+| Naive UI（`n-form`） | `FormItemRule` 继承 async-validator，多了 `renderMessage`、`key` 和 `level: 'warning'` | `trigger`；`validate()` 默认不看 trigger、运行全部规则 | `validate(cb?, filter?)` resolve `{ warnings }`，失败时 reject 出错误数组；`restoreValidation()`；表单项的 `required` 只管星号 | `path` 点分路径 | 写在规则上 |
+| VeeValidate + zod/yup | 表单级 schema，或字段级函数规则 | v4 默认 `validateOnBlur`、`validateOnChange`、`validateOnModelUpdate` 都开，`validateOnInput` 关；失焦时置 `meta.touched`。"先惰性、出错后积极"（eager）是 v3 的交互模式 | `useForm().validate()` resolve `{ valid, errors }`，不 reject；`validateField(path)` 同理；`useField` | 点分或方括号路径 | 由 schema 库提供，或自定义 |
 
 我们的取舍：
 - **规则采用 async-validator 风格的声明式子集**（`required`、`type`、`min`/`max`/`len`、`pattern`、`enum`、`whitespace`、`validator`、`message`、`trigger`）。这是 Element Plus、Ant Design Vue、Naive UI 的共同写法，插件作者最熟悉，写法也最短。
-- **触发采用 VeeValidate 的"惰性转积极"。** 第一次失焦或提交前不报错，出过错之后每次改值都重新校验。这比固定的 blur 或 change 更少打扰用户，也能及时消除报错。
-- **方法和返回值取 Element Plus 的形状：** `validate()` 返回 `Promise<boolean>`。它正好就是 native 账号表单 expose 的 `validate(): boolean | Promise<boolean>`（CONTRACTS §23.5），控制台不用改。
+- **触发采用"惰性转积极"**（VeeValidate v3 的 eager 模式一类做法，v4 默认是每次改值都校验）。第一次失焦或提交前不报错；之后（字段已 touched）每次改值都重新校验（5.3）。这比固定的 blur 或 change 更少打扰用户，也能及时消除报错。
+- **方法名取 Element Plus 的（`validate`、`validateField`、`clearValidate`），返回值取 VeeValidate 的做法：失败时 resolve，不 reject。** Element Plus、Ant Design Vue、Naive UI 不传回调时校验失败都会 reject；我们的 `validate()` 总是 resolve `boolean`，因为它要直接作为 native 账号表单 expose 的 `validate(): boolean | Promise<boolean>`（CONTRACTS §23.5），控制台按返回 `false` 不保存，reject 会变成保存时的未处理异常。
 - **文案取 Ant Design Vue 的做法：** 内置规则的默认文案集中放一处、带占位符、走 i18n，规则上的 `message` 可以覆盖。
+- **一个字段只显示第一条失败**（相当于 Ant Design Vue 的 `validateFirst: true`；Element Plus 的表单项也只显示第一条）。
 - **不引入 async-validator，也不引入 zod、yup、VeeValidate。** 要用到的规则只有十来种，现有 `packages/ui/src/schema/schema.ts:278-327` 的 `validate` 才五十行，自己实现更小。也避免第二套 i18n 文案和回调式 API。插件包本来就从 import map 共享 `@sub2api/ui`（`packages/vite-preset/index.js:15`），校验框架放在 `@sub2api/ui` 里，插件不增加打包体积。
 - **不做表单级的 schema 校验**（zod 那类）。那等于换一种形式保留 schema，和所有者"不保留 json 字段校验"的方向不一致。
 
@@ -145,9 +146,10 @@
 | 文件 | 内容 |
 |---|---|
 | `rules.ts` | `Rule`、`Rules`、内置规则的求值函数（从 `schema/schema.ts:278-327` 改写而来，原文件随后删除） |
-| `path.ts` | 点分路径 `a.b.0.c` 的 `getPath`、`setPath`（不可变写法，返回新对象）、`toPath`（把服务端的 `credentials.a.b`、`values/a/b`、`values.a.b` 都转换成 `a.b`） |
+| `path.ts` | 点分路径 `a.b.0.c` 的 `getPath`、`setPath`（不可变写法，返回新对象；值为 `undefined` 时删掉这个键）、`expandPath`/`matchPath`（`*`）、`toPath`（把服务端的 `credentials.a.b`、`values/a/b`、`values.a.b` 都转换成 `a.b`；实现是 `@sub2api/host` 的 `toFieldPath`，与 `settingsFieldErrors` 共用） |
 | `useForm.ts` | 表单状态：值、规则、本地错误、服务端错误、touched 状态、`validate` 等方法 |
-| `SForm.vue` | `<form novalidate>` 容器：provide 表单上下文，拦截提交 |
+| `SForm.vue` | `<form novalidate>` 容器：provide 表单上下文，拦截提交；`disabled` 用 `<fieldset disabled>` |
+| `context.ts` | `FORM_KEY`、`IN_FORM_KEY`、`useFormItem`（`SField`、`SSettingRow` 共用的 `prop` 接线） |
 | `messages.ts` 新增 `ui.form.v.*` | 内置文案（中英），从现有 `ui.schema.v.*`（`messages.ts:146-158`、`:305-317`）搬过来 |
 
 ### 5.2 规则类型
@@ -168,7 +170,7 @@ export interface RuleContext<M = Record<string, unknown>> {
 
 export interface Rule<V = unknown, M = Record<string, unknown>> {
   required?: boolean          // '', null, undefined, [] fail; SECRET_MASK passes (a stored secret)
-  whitespace?: boolean        // with required: a string of spaces only fails
+  whitespace?: boolean        // a string of spaces only fails (async-validator: not tied to required)
   type?: RuleType
   /** string / array: length; number / integer: value. */
   min?: number
@@ -187,16 +189,19 @@ export interface Rule<V = unknown, M = Record<string, unknown>> {
 export type Rules<M = Record<string, unknown>> = Record<string, Rule<any, M> | Rule<any, M>[]>
 ```
 
-内置规则的求值顺序：
-- 先 `required`、`whitespace`。
-- 值为空且不是必填时，跳过其余规则。
-- 然后 `type`、`len`、`min`、`max`、`pattern`、`enum`，最后 `validator`。
+内置规则的求值顺序（同一字段按规则的先后逐条求值）：
+- 值是 `SECRET_MASK` 时整个字段通过，`validator` 也不跑（值未知）。
+- 每条规则先 `required`、`whitespace`。
+- 值为空且不是必填时，跳过其余**内置**检查；`validator` 仍然运行（async-validator 的做法，Element Plus 常用它写"两项至少填一项"之类的检查）。
+- 然后 `type`、`len`（有它时不看 `min`/`max`，同 async-validator）、`min`、`max`、`pattern`、`enum`，最后 `validator`。
+- `validator` 抛错或 reject 也算不通过（Ant Design 的写法），文案取规则的 `message`，没有就取错误信息；被新一轮中止的不算。
 - 同一字段只报第一条失败的规则（Ant Design Vue 的 `validateFirst`）。
+- 字符串长度按字符（code point）数，与 JSON Schema 和 Go 的 `utf8.RuneCountInString` 一致。
 
 内置默认文案（`ui.form.v.*`，占位符写法 `{n}`、`{label}`）：
 - `required`
 - `whitespace`
-- `type.integer`、`type.number`、`type.url`、`type.email`、`type.dateTime`
+- `type.integer`、`type.number`、`type.url`、`type.email`、`type.dateTime`、`type.invalid`（string、boolean、array、object 不符时）
 - `minLength`、`maxLength`、`len`
 - `minimum`、`maximum`
 - `minItems`、`maxItems`
@@ -208,11 +213,12 @@ export type Rules<M = Record<string, unknown>> = Record<string, Rule<any, M> | R
 - 默认是惰性转积极：
   - 字段第一次失焦、或表单调用了 `validate()` 之后，这个字段才算 touched。
   - touched 之前只在失焦时校验，之后每次改值都校验。
-- 规则写了 `trigger` 时，只在列出的时机运行（失焦、改值），`validate()` 运行全部规则。
+- 规则写了 `trigger` 时，只在列出的时机运行（失焦、改值），`validate()` 运行全部规则（Naive UI 同样如此）。
+- "改值"就是经 `form.set(path)` 的写入（Element Plus 的控件也是在值变化时通知表单项，包括程序改值）。写入会校验与这个路径重叠的字段（它自己、它里面的、包含它的）。
 - 失焦事件的来源：
   - `FieldContext`（`packages/ui/src/field.ts`）增加可选方法 `touch?(kind: Trigger): void`。
-  - `useFieldControl` 返回的控件绑定里，在 `blur` 和 `update:modelValue` 时调用它。
-  - SInput、STextarea、SSelect、SSwitch、SDateTime、STagInput、SSecretInput、SUrlPresetInput 都通过 `useFieldControl` 接入，**组件本身不改 props**。
+  - `useFieldControl` 多返回一个 `blur`，控件把它接到自己的失焦事件上，经 `SField`/`SSettingRow` 的 `prop` 调到 `form.touch(path, 'blur')`。改值不经它上报（见上一条）。
+  - SInput、STextarea、SSelect（原生和可搜索两种）、SSwitch、STagInput 接了 `blur`，**组件本身不改 props**。SSecretInput、SUrlPresetInput 包着 SInput/SSelect，自然接入。（原稿把 SDateTime 列为控件，它是只读的时间显示，不是输入。）
 
 ### 5.4 嵌套路径、数组、条件显示
 
@@ -223,7 +229,7 @@ export type Rules<M = Record<string, unknown>> = Record<string, Rule<any, M> | R
 ### 5.5 异步规则与竞态
 
 - 每个字段维护一个运行序号和一个 `AbortController`。新一轮开始时中止上一轮，迟到的结果按序号丢弃（和 `packages/host/src/useList.ts` 丢弃过期响应的做法一样）。
-- `validate()` 等全部字段（包括异步规则）跑完才返回。
+- `validate()` 等全部字段（包括异步规则）跑完才返回；跑的过程中某个字段又开始了新一轮（用户在改值），以新一轮的结果为准（相当于 Ant Design 的 `outOfDate` 不再出现）。
 - 不另设超时：异步校验通常是请求插件路由，超时由请求本身决定。
 
 ### 5.6 `useForm`：值、默认值、密钥、hidden 键
@@ -247,7 +253,7 @@ export interface FormApi<M> {
   get<T = unknown>(path: string): T
   /** Writes one path: a shallow patch of the current value, every other key kept as it is (hidden keys too). */
   set(path: string, value: unknown): void
-  /** Runs every rule; true when nothing failed. Marks every field touched. */
+  /** Runs every rule; true when nothing failed. Marks every field touched. Never rejects. */
   validate(): Promise<boolean>
   validateField(paths: string | string[]): Promise<boolean>
   clearValidate(paths?: string | string[]): void
@@ -258,20 +264,25 @@ export interface FormApi<M> {
   /** Whether a rule makes path required (SField's star). */
   required(path: string): boolean
   readonly errors: Readonly<Record<string, string>>
+  /** A control at path lost focus (SField / SSettingRow `prop`). */
+  touch(path: string, kind: Trigger): void
+  /** Shows path's errors at a frame labelled `label` (SField / SSettingRow `prop`); returns the release. */
+  claim(path: string, label?: () => string | undefined): () => void
 }
 export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<M>): FormApi<M>
 ```
 
 - **只做补丁写入，从不重建整个对象。** `set` 永远基于当前值做浅拷贝补丁，校验框架也从不按规则表重组整个对象。所以规则表、界面上都没有的键（vertex 的 `access_token`、`expires_at`、`token_for`，moderation 留着用于遮蔽的 `api_key`）原样回到 `v-model`。这条写进 spec。
 - **密钥。** 编辑时控制台给的凭证里，密钥值是 `SECRET_MASK`（`******`）。规则把它当作"有值、未修改"：`required` 通过，其余规则跳过（沿用 `schema.ts:298`）。核心看到 `******` 会换回已存的值（`creds.go:118-141 unmask`）。所以"编辑时保留已存密钥"只要求界面在用户不碰时把 `******` 原样送回，`SSecretInput` 负责这一点（5.8）。
-- **默认值。** `defaults` 只填缺失的键：新建账号时填一次，插件设置在读到的值里缺这个键时填一次。它取代 `SchemaForm` 填默认值的行为，值必须和原 schema 的 `default` 一致，这是"同输入同输出"的验收项。
+- **同一拍里的多次写入。** 父组件经 `v-model` 交回新值要等下一次渲染，`useForm` 记着最后一次写出、还没交回的值，同一拍里连续的 `set` 都在它上面打补丁，不丢前一次。
+- **默认值。** `defaults` 只填缺失的键（嵌套对象逐层填）：父组件每交来一份新值（新建账号、切换账号类型、读到设置）填一次；`useForm` 自己写出的值不再填，所以用户清空的键不会被填回。它取代 `SchemaForm` 填默认值的行为，值必须和原 schema 的 `default` 一致，这是"同输入同输出"的验收项。
 
 ### 5.7 和后端字段错误的合并
 
 - 账号凭证的服务端错误，由控制台去掉 `credentials.` 前缀后作为 `errors` 传入（`views/accounts/editorErrors.ts`）。插件设置的错误是 `values/a/b` 或 `values.a.b`（`plugin/api/settings.go:405-410`、`pluginUtil.ts:189-200`）。两者都由 `path.ts` 的 `toPath` 转成 `a.b`。
 - **显示规则：** 同一路径上，本地错误优先于服务端错误。用户改了某个路径的值，就清掉这个路径的服务端错误（控制台在任何改动时都会清空 `credErrors`，见 `AccountEditor.vue:528-530`，这里再细到单个路径）。
 - 没有任何 `SField` 认领的错误进 `unclaimed`，由 `SCredentialForm` 或 `SSettingsPage` 显示在表单顶部（和 codex 的 `errorList` 做法一样，见 `CodexAuthForm.vue:86`）。
-- `settingsFieldErrors`（`pluginUtil.ts:189-200`）搬进 `@sub2api/host`，控制台和插件共用。
+- `settingsFieldErrors`（`pluginUtil.ts:189-200`）搬进 `@sub2api/host`（`fields.ts`，另导出它用的 `toFieldPath`），控制台和插件共用；控制台改用它、删掉 `pluginUtil.ts` 里的那份由 K2 做。
 
 ### 5.8 表单容器与表单项（复用现有组件）
 
@@ -279,13 +290,14 @@ export function useForm<M extends Record<string, unknown>>(opts: UseFormOptions<
   - props：`form: FormApi`、`disabled?: boolean`
   - 事件：`submit`，只在 `validate()` 通过后触发
   - 插槽：默认插槽
-  - 它 provide 一个 `FORM_KEY`，不画任何样式。
+  - 它 provide 一个 `FORM_KEY`，不画任何样式。`disabled` 用 `<fieldset disabled>` 实现，里面的原生控件全部禁用。
+  - 已经在 `<form>` 里时（`SFormModal` 和 `SCredentialForm` provide `IN_FORM_KEY`；账号编辑器本身就是 `<form>`）不渲染第二个 `<form>`，避免表单嵌套，提交交给外层。
 - `SField` 和 `SSettingRow` 各加一个 prop：`prop?: string`。在 `SForm` 里写了 `prop` 时：
   - `error` 取 `form.error(prop)`；显式传入的 `error` prop 优先。
   - 必填星号取 `form.required(prop)`；显式传入的 `required` 优先。
   - 控件通过 `FieldContext.touch` 报告失焦和改值，`SField` 据此调用 `form.validateField(prop)`。
   - 改动范围是 `SField.vue:14-33` 和 `SSettingRow.vue:20-29` 的 props 与 `provideField` 调用，各十来行。
-- `SFormModal`：不改，在默认插槽里放 `SForm`；提交按钮写 `@submit="form.validate().then(ok => ok && save())"`。
+- `SFormModal`：只加一行 `provide(IN_FORM_KEY, true)`（它本身是 `<form>`），在默认插槽里放 `SForm`；提交写 `@submit="form.validate().then(ok => ok && save())"`。
 - 分节：用现有的 `SSettingsGroup`、`SSectionTitle`，不新增组件。
 
 ### 5.9 组合组件
@@ -815,5 +827,4 @@ SDK 拒绝未知键：
 - bedrock、vertex、volcengine、codex 的 Go 校验对第 10 节每条约束的覆盖程度，只抽查了 bedrock 的 region 和 `apikey.Spec`。G 系列任务第一步就是逐条核对。
 - `plugin:events` 的 `config` 事件在哪里触发重新 `Configure`：只看到发布端（`plugin/install/service.go:325`）。
 - 镜像构建时间：没有数据（T1 实测）。
-- 主流框架的细节（第 4 节）按各框架文档的通行写法整理，没有逐项联网核对版本。
 - 生产环境有没有装非第一方插件：没有查。

@@ -136,6 +136,43 @@ export default {
     go: 'Go',
     refreshNow: 'Refresh now',
     // SchemaForm / SchemaField
+    form: {
+      secretKeep: 'A value is stored. Leave empty to keep it.',
+      presets: 'Presets',
+      setByAdmin: 'Set by an administrator',
+      unsaved: 'You have unsaved changes',
+      reset: 'Reset',
+      saved: 'Saved',
+      create: 'Create',
+      reenter: 'Re-enter this secret to change other settings',
+      leave: {
+        title: 'Discard unsaved changes?',
+        message: 'Some changes here are not saved yet and are lost if you leave.',
+        stay: 'Keep editing',
+        discard: 'Discard changes'
+      },
+      v: {
+        required: 'This field is required',
+        whitespace: 'Cannot be only spaces',
+        type: {
+          integer: 'Must be an integer',
+          number: 'Must be a number',
+          url: 'Must be an http(s) URL',
+          email: 'Must be an email address',
+          dateTime: 'Must be a date and time',
+          invalid: 'Invalid value'
+        },
+        minLength: 'At least {n} characters',
+        maxLength: 'At most {n} characters',
+        len: 'Must be exactly {n} long',
+        minimum: 'Must be ≥ {n}',
+        maximum: 'Must be ≤ {n}',
+        minItems: 'At least {n} items',
+        maxItems: 'At most {n} items',
+        pattern: 'Invalid format',
+        enum: 'Not one of the allowed values'
+      }
+    },
     schema: {
       secretKeep: 'A value is stored. Leave empty to keep it.',
       presets: 'Presets',
@@ -295,6 +332,43 @@ export default {
     go: '跳转',
     refreshNow: '立即刷新',
     // SchemaForm / SchemaField
+    form: {
+      secretKeep: '已保存值，留空表示不修改。',
+      presets: '预设',
+      setByAdmin: '由管理员设置',
+      unsaved: '有未保存的修改',
+      reset: '重置',
+      saved: '已保存',
+      create: '新建',
+      reenter: '要修改其他设置，需要重新填写这个密钥',
+      leave: {
+        title: '放弃未保存的改动？',
+        message: '这里有改动还没保存，离开后会丢失。',
+        stay: '继续编辑',
+        discard: '放弃改动'
+      },
+      v: {
+        required: '此项必填',
+        whitespace: '不能只有空格',
+        type: {
+          integer: '必须是整数',
+          number: '必须是数字',
+          url: '必须是 http(s) 地址',
+          email: '必须是邮箱地址',
+          dateTime: '必须是日期时间',
+          invalid: '值不正确'
+        },
+        minLength: '至少 {n} 个字符',
+        maxLength: '最多 {n} 个字符',
+        len: '长度必须为 {n}',
+        minimum: '不能小于 {n}',
+        maximum: '不能大于 {n}',
+        minItems: '至少 {n} 项',
+        maxItems: '最多 {n} 项',
+        pattern: '格式不正确',
+        enum: '不是允许的值'
+      }
+    },
     schema: {
       secretKeep: '已保存值，留空表示不修改。',
       presets: '预设',

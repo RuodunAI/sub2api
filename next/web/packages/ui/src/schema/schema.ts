@@ -37,10 +37,9 @@
 // argument (SchemaField passes vue-i18n's current locale).
 
 import { getPath, isBlank } from '../value'
+import { SECRET_MASK } from '../form/rules'
 
-export { getPath }
-
-export const SECRET_MASK = '******'
+export { getPath, SECRET_MASK }
 
 export type JSONSchema = Record<string, any>
 export type UISchema = Record<string, any>

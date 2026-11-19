@@ -73,6 +73,14 @@ describe('host UI 3 contract', () => {
     expect(PRESET_UI_VERSION).toBe(HOST_UI_VERSION)
     expect([hostPackage.version, uiPackage.version, presetPackage.version]).toEqual([HOST_UI_VERSION, HOST_UI_VERSION, HOST_UI_VERSION])
   })
+  it('exports the form validation framework (UI 4.0)', async () => {
+    for (const name of ['SForm', 'useForm', 'setPath', 'toPath', 'getPath', 'SECRET_MASK'] as const) expect(ui[name]).toBeDefined()
+    expect(ui.SECRET_MASK).toBe('******')
+    expectTypeOf<ui.Trigger>().toEqualTypeOf<'change' | 'blur'>()
+    expectTypeOf<ReturnType<ui.FormApi['validate']>>().toEqualTypeOf<Promise<boolean>>()
+    const host = await import('@sub2api/host')
+    expect(host.settingsFieldErrors({ 'values/a/b': 'x', values: 'y' })).toEqual({ fields: { 'a.b': 'x' }, root: ['y'] })
+  })
   it('exports the horizontal clip probe the permission matrix uses (UI 3.16)', () => {
     expect(ui.useScrollClip).toBeDefined()
   })

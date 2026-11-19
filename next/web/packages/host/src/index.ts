@@ -10,6 +10,7 @@ export * from './http'
 export * from './routes'
 export * from './bridge-protocol'
 export { useList, type UseListOptions, type UseListResult } from './useList'
+export { toFieldPath, settingsFieldErrors } from './fields'
 
 /** Version of the host UI contract; plugins declare hostUICompat against it. */
 export const HOST_UI_VERSION = '3.20.0'
