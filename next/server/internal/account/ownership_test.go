@@ -698,7 +698,7 @@ func TestGuardNorm(t *testing.T) {
 	}
 	// With versions: trailing slashes go first, then at most one version
 	// segment of the escaped path, the longest, matched whole and
-	// case-sensitively.
+	// case-sensitively, and the "/" left before it.
 	versions := []string{"/v1", "/v1beta", "/openai", "/openai/v1"}
 	for in, want := range map[string]string{
 		"https://API.openai.com/v1/":         "https://api.openai.com",
@@ -716,6 +716,7 @@ func TestGuardNorm(t *testing.T) {
 		"https://x":                          "https://x",
 		"not a url/v1":                       "not a url/v1",
 		"https://api.anthropic.com:443/v1//": "https://api.anthropic.com:443",
+		"https://x//v1":                      "https://x",
 	} {
 		if got := guardNorm(in, versions); got != want {
 			t.Errorf("guardNorm(%q, versions) = %q, want %q", in, got, want)
@@ -894,6 +895,7 @@ func TestMaskedSecretToNewAddress(t *testing.T) {
 func TestAddressChanged(t *testing.T) {
 	declared := manifest.AccountType{UpstreamFields: []string{"endpoint"}}
 	legacy := manifest.AccountType{GuardedSettings: []manifest.GuardedSetting{{Field: "region"}}}
+	versioned := manifest.AccountType{GuardedSettings: []manifest.GuardedSetting{{Field: "base_url", Versions: []string{"/v1"}}}}
 	cases := []struct {
 		at      manifest.AccountType
 		b, old  string
@@ -904,6 +906,8 @@ func TestAddressChanged(t *testing.T) {
 		{legacy, `{"base_url":"https://a","region":"eu"}`, `{"base_url":"https://a","region":"us"}`, true},
 		{legacy, `{"base_url":null}`, `{}`, false},
 		{legacy, `{"base_url":"https://a"}`, ``, true},
+		// Versions are not applied: only a version segment apart is a change.
+		{versioned, `{"base_url":"https://x/v1"}`, `{"base_url":"https://x"}`, true},
 		{manifest.AccountType{UpstreamFields: []string{}}, `{"base_url":"https://b"}`, `{"base_url":"https://a"}`, false},
 		{manifest.AccountType{UpstreamFields: []string{"upstream"}}, `{"upstream":{ "url": "u" }}`, `{"upstream":{"url":"u"}}`, false},
 		{manifest.AccountType{UpstreamFields: []string{"upstream"}}, `{"upstream":{"url":"v"}}`, `{"upstream":{"url":"u"}}`, true},
