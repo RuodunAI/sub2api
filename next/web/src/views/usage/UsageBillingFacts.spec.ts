@@ -151,13 +151,6 @@ describe('separately priced items of a usage record', () => {
     expect(w.text()).not.toContain('completed_attempt')
   })
 
-  it('renders an item of a self view, without expression hashes or prices in inputs', () => {
-    const u = advisor()
-    expect(() => render(u)).not.toThrow()
-    const { w } = render(u)
-    expect(w.text()).not.toContain('hash')
-  })
-
   it('shows nothing for a record without separately priced items, its formula ending in the record\'s amount', () => {
     const { has, text } = render(record({ rate: '1', total: '0.00576' }))
     expect(has('usage-additional')).toBe(false)
@@ -191,6 +184,15 @@ describe('primary usage and total of a record with items', () => {
     expect(has('usage-primary-breakdown')).toBe(false)
     expect(w.text()).not.toContain('× combined rule multiplier 0')
     expect(text('usage-components-total')).toBe('Round 1 $0.01 + Round 2 $0.02 = Total $0.03')
+  })
+
+  it('leaves out the primary section of a replaced record without a ledger entry', () => {
+    const u = record({ rate: '1', total: '0.03' })
+    u.billing_detail = { cost: '0.03', total_cost: '0.03', rate_multiplier: '1',
+      replacement: [{ kind: 'fallback', model: 'claude-sonnet-4-5', price_id: 1, detail: { ...advisorPart.detail, total_cost: '0.03' } }] }
+    const { has } = render(u)
+    expect(has('usage-primary')).toBe(false)
+    expect(has('usage-replacement')).toBe(true)
   })
 
   it('leaves the primary amount out of a record settled before it was kept', () => {

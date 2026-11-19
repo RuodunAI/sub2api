@@ -50,7 +50,7 @@ const primaryTotal = computed(() => (components.value.length ? bd.value.primary_
 /** primary + every item = total, for a record with items. */
 const sumTerms = computed(() => [
   ...(replaced.value ? [] : [{ label: t('usage.billing.primaryUsage'), amount: primaryTotal.value }]),
-  ...components.value.flatMap(group => group.items.map((item, i) => ({ label: itemLabel(group.list, item.kind, i), amount: item.detail.total_cost ?? 0 })))
+  ...components.value.flatMap(group => group.items.map((item, i) => ({ label: itemLabel(group.list, item.kind, i), amount: item.detail.total_cost ?? null })))
 ])
 const inputs = computed(() => [
   ...Object.entries(bd.value.inputs?.params || {}).map(([key, value]) => ({ name: `param("${key}")`, value })),
@@ -125,7 +125,7 @@ function label(prefix: string, value: string) {
       </SDescItem>
     </SDescriptions>
 
-    <div class="mt-3 border-t border-line pt-3">
+    <div v-if="!replaced || ledgerId" class="mt-3 border-t border-line pt-3" data-testid="usage-primary">
       <template v-if="!replaced">
         <BillingBreakdown v-if="Object.keys(bd.breakdown || {}).length || u.total_cost" v-bind="breakdownOf(bd, rate, primaryTotal)" data-testid="usage-primary-breakdown" />
         <SHint v-else inline>—</SHint>
@@ -141,7 +141,7 @@ function label(prefix: string, value: string) {
           <ModelBadge :model="item.model" plain />
           <SBadge v-if="item.free" tone="gray" data-testid="usage-component-free">{{ t('usage.free') }}</SBadge>
           <SHint v-if="item.free && item.reason" inline size="xs" class="font-mono" data-testid="usage-component-reason">{{ item.reason }}</SHint>
-          <span class="ml-auto font-mono text-sm">{{ formatMoney(item.detail.total_cost ?? 0, 8) }}</span>
+          <span class="ml-auto font-mono text-sm">{{ formatMoney(item.detail.total_cost, 8) }}</span>
         </div>
         <UsageTokenFacts :tokens="item.tokens" />
         <BillingBreakdown v-if="!item.free" v-bind="breakdownOf(item.detail, item.detail.rate_multiplier ?? null, item.detail.total_cost ?? null)" data-testid="usage-component-breakdown" />
@@ -152,7 +152,7 @@ function label(prefix: string, value: string) {
       <template v-for="(term, i) in sumTerms" :key="i">
         <template v-if="i"> + </template>{{ term.label }} {{ term.amount == null ? '—' : formatMoney(term.amount, 8) }}
       </template>
-      = {{ t('usage.billing.componentsTotal') }} <span class="font-semibold">{{ formatMoney(u.total_cost ?? 0, 8) }}</span>
+      = {{ t('usage.billing.componentsTotal') }} <span class="font-semibold">{{ formatMoney(u.total_cost, 8) }}</span>
     </p>
 
     <SDisclosure v-if="rules.length" :label="t('usage.billing.rules')" :open-label="t('usage.billing.rules')" class="mt-3">
