@@ -12,13 +12,14 @@
 import { computed } from 'vue'
 import { nativeAccountFormProps, SCredentialForm, SField, SInput, SSecretInput, useCredentialForm } from '@sub2api/ui'
 import { useVertexHost } from './host'
-import { KEY_FIELD, KEY_FILE_DEFAULTS, keyFileRules, keyFileType } from './fields'
+import { KEY_FIELD, KEY_FILE_DEFAULTS, keyFileRules, type KeyFileType } from './fields'
 
 const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown>): void }>()
 const t = useVertexHost().t
 
-const type = computed(() => keyFileType(props.accountType, props.account))
+// CONTRACTS §23.5: the editor always passes accountType.
+const type = computed(() => props.accountType!.type as KeyFileType)
 const field = computed(() => KEY_FIELD[type.value])
 const form = useCredentialForm(props, emit, { rules: () => keyFileRules(type.value, t), defaults: KEY_FILE_DEFAULTS })
 defineExpose({ validate: form.validate })

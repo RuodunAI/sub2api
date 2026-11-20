@@ -54,4 +54,30 @@ describe('plugin database tab', () => {
     expect(mocks.get).toHaveBeenCalledTimes(2)
     expect(mocks.get).toHaveBeenLastCalledWith('/plugins/guard/database')
   })
+
+  it('shows the latest load when an earlier one answers after it', async () => {
+    let answerOld!: (v: unknown) => void
+    let failOld!: (e: unknown) => void
+    mocks.get.mockReturnValueOnce(new Promise((resolve) => (answerOld = resolve)))
+    const w = render()
+    mocks.get.mockResolvedValueOnce({ ...DATABASE, role: 'plg713988_guard_new' })
+    await w.setProps({ detail: detail({ desired_version: '0.2.0' }) })
+    await flushPromises()
+    answerOld({ ...DATABASE, role: 'plg713988_guard_old' })
+    await flushPromises()
+    expect(w.get('[data-testid="plugin-database"]').text()).toContain('plg713988_guard_new')
+    expect(w.text()).not.toContain('plg713988_guard_old')
+
+    // An earlier load failing late neither hides the data nor shows its error.
+    mocks.get.mockReturnValueOnce(new Promise((_, reject) => (failOld = reject)))
+    await w.get('[data-testid="plugin-database"] button').trigger('click')
+    mocks.get.mockResolvedValueOnce({ ...DATABASE, role: 'plg713988_guard_newer' })
+    await w.setProps({ detail: detail({ desired_version: '0.2.0', active_version: '0.2.0' }) })
+    await flushPromises()
+    failOld(new Error('stale failure'))
+    await flushPromises()
+    expect(w.get('[data-testid="plugin-database"]').text()).toContain('plg713988_guard_newer')
+    expect(w.text()).not.toContain('stale failure')
+    expect(w.get('[data-testid="plugin-database"] button').attributes('disabled')).toBeUndefined()
+  })
 })

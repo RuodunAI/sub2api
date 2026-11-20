@@ -8,7 +8,7 @@ import PluginPageView from './PluginPageView.vue'
 
 // The plugin store as the page and PluginComponent read it.
 const store = vi.hoisted(() => ({
-  state: null as unknown as { listed: boolean; pending: Record<string, boolean>; errors: Record<string, string>; outdated: string[]; pages: Record<string, unknown>; components: Record<string, unknown> }
+  state: null as unknown as { listed: boolean; pending: Record<string, boolean>; errors: Record<string, string>; mismatch: Record<string, 'plugin' | 'core'>; pages: Record<string, unknown>; components: Record<string, unknown> }
 }))
 vi.mock('@/stores/plugins', () => ({
   assetURL: (p: { asset_base: string }, path: string) => `${p.asset_base}/${path}`,
@@ -16,7 +16,7 @@ vi.mock('@/stores/plugins', () => ({
     get listed() { return store.state.listed },
     get pending() { return store.state.pending },
     get errors() { return store.state.errors },
-    outdated: (key: string) => store.state.outdated.includes(key),
+    uiMismatch: (key: string) => store.state.mismatch[key] ?? null,
     page: (key: string, id: string) => (store.state.pages[id] ? { plugin: { key, version: '1.0.0', name: { en: 'Demo' }, asset_base: '/a', menus: [] }, page: store.state.pages[id] } : null),
     component: (_key: string, name?: string) => (name ? store.state.components[name] : undefined),
     refresh: vi.fn()
@@ -36,7 +36,7 @@ async function open(page: string) {
 describe('plugin page', () => {
   beforeEach(() => {
     i18n.global.locale.value = 'en'
-    store.state = reactive({ listed: true, pending: {}, errors: {}, outdated: [], pages: {}, components: {} })
+    store.state = reactive({ listed: true, pending: {}, errors: {}, mismatch: {}, pages: {}, components: {} })
   })
 
   it('waits for the plugin list, then mounts a native page without the console header', async () => {
@@ -53,7 +53,7 @@ describe('plugin page', () => {
 
   it('shows why a native page has no component the way native forms do', async () => {
     store.state.pages.dash = { type: 'native', component: 'Dash' }
-    store.state.outdated.push('demo')
+    store.state.mismatch.demo = 'plugin'
     const w = await open('dash')
     expect(w.get('[data-testid="plugin-component-failed"]').text()).toBe("This plugin version's interface is no longer supported. Upgrade the plugin.")
   })

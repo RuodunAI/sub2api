@@ -7,7 +7,7 @@ import { KNOWN_PLANS } from './flow'
 describe('messages', () => {
   checkMessages(messages, {
     sources: import.meta.glob<string>(['./*.vue', './*.ts', '!./*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true }),
-    // Keys looked up with a computed suffix: t(`tabs.${f}`), t(`plan.${p}`), t(`oauth.shape.${s}`), t(`reset.window${key}`).
+    // Keys looked up with a computed suffix: the console's plugin.codex.tabs.<component>, t(`plan.${p}`), t(`oauth.shape.${s}`), t(`reset.window${key}`).
     dynamic: ['tabs.', 'plan.', 'oauth.shape.', 'reset.window']
   })
 

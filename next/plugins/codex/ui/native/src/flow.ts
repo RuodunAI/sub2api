@@ -1,23 +1,12 @@
-// Pure helpers of the codex account form (no host, no DOM): which flows an
-// account type shows, how fresh credentials replace the old ones, and the
-// checks on what the operator pastes. Covered by flow.spec.ts.
+// Pure helpers of the codex account form (no host, no DOM): the flow of each
+// account type, how fresh credentials replace the old ones, and the checks
+// on what the operator pastes. Covered by flow.spec.ts.
 import type { CodexCredentials } from './host'
 
 export type Flow = 'device' | 'oauth'
 
-/** The flow of each account type (manifest accountTypes[].id). */
-const FLOW_OF: Record<string, Flow> = { codex_device: 'device', codex_oauth: 'oauth' }
-
-/** Flows of an account type; both when the type is not known. */
-export function flowsFor(type: string | null | undefined): Flow[] {
-  const f = type ? FLOW_OF[type] : undefined
-  return f ? [f] : ['device', 'oauth']
-}
-
-/** The account type the form is for: the editor's accountType prop, else the account's own. */
-export function typeOf(accountType: { type?: string } | null | undefined, account: { type?: string } | null | undefined): string {
-  return accountType?.type || account?.type || ''
-}
+/** The login flow of each account type (manifest accountTypes[].id); the editor always passes the type (CONTRACTS §23.5). */
+export const FLOW_OF: Record<string, Flow> = { codex_device: 'device', codex_oauth: 'oauth' }
 
 /**
  * Credential keys the flows write. A fresh authorization replaces all of

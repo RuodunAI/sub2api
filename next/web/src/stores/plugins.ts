@@ -1,9 +1,17 @@
 import { defineStore } from 'pinia'
 import { computed, markRaw, reactive, ref, type Component } from 'vue'
-import { api, createPluginHost, HOST_UI_VERSION, satisfiesRange, useHost, type NativePluginModule } from '@sub2api/host'
+import { api, belowRange, createPluginHost, HOST_UI_VERSION, satisfiesRange, useHost, type NativePluginModule } from '@sub2api/host'
 import type { PluginAccountAction, UIPlugin, UIPluginPage, UIPluginSlot } from '@/api/types'
 
 const TRUSTED = new Set(['official', 'verified'])
+
+/**
+ * Why a trusted plugin's native UI is not loaded for its host UI contract:
+ * 'plugin' when it was built for an older contract (upgrading the plugin
+ * fixes it), 'core' when for a newer one than this console (the core installs
+ * by hostCompat only; upgrading the core fixes it).
+ */
+export type UIMismatch = 'plugin' | 'core'
 
 export interface SlotEntry extends Pick<UIPluginSlot, 'label' | 'icon' | 'accountTypes'> {
   pluginKey: string
@@ -48,15 +56,16 @@ export const usePluginStore = defineStore('plugins', () => {
     return assetURL(p, p.native_entry)
   }
 
-  /** A trusted plugin's native UI built for another host UI contract (an older package): it is not loaded; upgrading the plugin fixes it. */
-  function uiOutdated(p: UIPlugin): boolean {
-    return !!p.native_entry && TRUSTED.has(String(p.trust)) && !satisfiesRange(HOST_UI_VERSION, p.host_ui_compat)
+  /** The mismatch of a trusted plugin's native UI built for another host UI contract (it is not loaded), null otherwise. */
+  function mismatchOf(p: UIPlugin): UIMismatch | null {
+    if (!p.native_entry || !TRUSTED.has(String(p.trust)) || satisfiesRange(HOST_UI_VERSION, p.host_ui_compat)) return null
+    return belowRange(HOST_UI_VERSION, p.host_ui_compat) ? 'core' : 'plugin'
   }
 
   function nativeAllowed(p: UIPlugin): { ok: boolean; reason?: string } {
     if (!p.native_entry) return { ok: false }
     if (!TRUSTED.has(String(p.trust))) return { ok: false, reason: `untrusted publisher (${p.trust})` }
-    if (uiOutdated(p)) return { ok: false, reason: `hostUICompat ${p.host_ui_compat} does not match host UI ${HOST_UI_VERSION}` }
+    if (mismatchOf(p)) return { ok: false, reason: `hostUICompat ${p.host_ui_compat} does not match host UI ${HOST_UI_VERSION}` }
     return { ok: true }
   }
 
@@ -169,10 +178,10 @@ export const usePluginStore = defineStore('plugins', () => {
     return p && pg ? { plugin: p, page: pg } : null
   }
 
-  /** The listed plugin's native UI is outdated (see uiOutdated). */
-  function outdated(key: string): boolean {
+  /** Why the listed plugin's native UI is not loaded for its contract (UIMismatch), null when it is not that. */
+  function uiMismatch(key: string): UIMismatch | null {
     const p = plugin(key)
-    return !!p && uiOutdated(p)
+    return p ? mismatchOf(p) : null
   }
 
   function component(key: string, name: string | undefined): Component | undefined {
@@ -209,7 +218,7 @@ export const usePluginStore = defineStore('plugins', () => {
     reset,
     plugin,
     page,
-    outdated,
+    uiMismatch,
     component,
     slotEntries,
     nativeAllowed

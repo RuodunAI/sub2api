@@ -1,19 +1,10 @@
 import { ref } from 'vue'
-import { MAX_ACCOUNT_BATCH, type ApiClient, type PluginHost, type UseListResult } from '@sub2api/host'
+import { definePluginHost, MAX_ACCOUNT_BATCH, type ApiClient, type UseListResult } from '@sub2api/host'
 import type { SelectOption, StatusTone, Tone } from '@sub2api/ui'
 
 // Plugin-scoped host handed to register(); shared by all dynweight components.
 // All API shapes (CONTRACTS §74.5) live in this file.
-let host: PluginHost | null = null
-
-export function setHost(h: PluginHost | null) {
-  host = h
-}
-
-export function useDwHost(): PluginHost {
-  if (!host) throw new Error('dynweight UI used before register(host)')
-  return host
-}
+export const { setHost, useHost: useDwHost } = definePluginHost('dynweight')
 
 /** Manifest userPermission (host.can prefixes it with plugin.dynweight:). */
 export function canManage(): boolean {

@@ -38,7 +38,7 @@ const NO_AGENT = { user_agent: '', originator: '' }
 let proxyTicket: ReturnType<typeof vi.fn<() => Promise<string>>>
 
 let wrapper: VueWrapper | null = null
-function mountForm(props: Record<string, unknown>) {
+function mountForm(props: { accountType: { type: string } } & Record<string, unknown>) {
   wrapper = mount(CodexAuthForm, { props: { modelValue: {}, mode: 'create', proxyTicket, ...props }, attachTo: document.body })
   return wrapper
 }
@@ -62,25 +62,18 @@ afterEach(() => {
 })
 
 describe('CodexAuthForm: flows by account type', () => {
-  it('shows only the device flow for codex_device, without a tab bar', () => {
+  it('shows only the device flow for codex_device', () => {
     const w = mountForm({ accountType: { type: 'codex_device' } })
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(true)
     // Where to turn device code sign-in on, shown before the flow starts.
     expect(w.get('[data-testid="codex-device-guide-link"]').attributes('href')).toBe('https://chatgpt.com/settings/security')
     expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(false)
-    expect(w.find('[role="tablist"]').exists()).toBe(false)
   })
 
-  it('takes the type from the account when the editor gives none', () => {
-    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'codex_oauth' }, modelValue: {} })
+  it('shows only the sign-in flow for codex_oauth', () => {
+    const w = mountForm({ accountType: { type: 'codex_oauth' } })
     expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(true)
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(false)
-  })
-
-  it('offers both flows as tabs when the type is unknown', async () => {
-    const w = mountForm({})
-    expect(w.find('[role="tablist"]').exists()).toBe(true)
-    expect(w.findAll('[role="tab"]').map((t) => t.text())).toEqual(['tabs.device', 'tabs.oauth'])
   })
 })
 
@@ -112,7 +105,7 @@ describe('CodexAuthForm: client headers', () => {
       if (path === '/auth/codex/exchange') return { credentials: OAUTH_CREDS }
       throw new Error(`unexpected ${path}`)
     }
-    const w = mountForm({ modelValue: { user_agent: 'ua-1' } })
+    const w = mountForm({ accountType: { type: 'codex_device' }, modelValue: { user_agent: 'ua-1' } })
     await w.get('[data-testid="codex-device-start"]').trigger('click')
     await flushPromises()
     expect(calls.at(-1)?.body).toEqual({ proxy_ticket: 'sealed-ticket', user_agent: 'ua-1', originator: '' })
@@ -121,7 +114,8 @@ describe('CodexAuthForm: client headers', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(calls.at(-1)?.body).toEqual({ session_id: 's1', proxy_ticket: 'sealed-ticket', user_agent: 'ua-2', originator: 'or-2' })
 
-    await w.findAll('[role="tab"]')[1].trigger('click')
+    // The other auth method picked: its login sends them too.
+    await w.setProps({ accountType: { type: 'codex_oauth' } })
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
     expect(calls.at(-1)?.body).toEqual({ proxy_ticket: 'sealed-ticket', user_agent: 'ua-2', originator: 'or-2' })
@@ -383,7 +377,7 @@ describe('CodexAuthForm: editing', () => {
   const masked = { access_token: '******', refresh_token: '******', id_token: '******', email: 'old@example.com', expires_at: 1700000000, chatgpt_account_id: 'acc-2' }
 
   it('shows the current authorization and keeps the masked credentials until re-authorized', async () => {
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, accountType: { type: 'codex_oauth' }, modelValue: { ...masked } })
     expect(w.get('[data-testid="codex-current"]').text()).toContain('old@example.com')
     expect(w.find('[data-testid="codex-oauth-flow"]').exists()).toBe(false)
     expect(await (w.vm as unknown as { validate: () => Promise<boolean> }).validate()).toBe(true)
@@ -396,7 +390,7 @@ describe('CodexAuthForm: editing', () => {
       if (path === '/auth/codex/exchange') return { credentials: { ...OAUTH_CREDS, email: 'old@example.com' } }
       throw new Error(`unexpected ${path}`)
     }
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, modelValue: { ...masked, proxy_note: 'kept', originator: 'or-acct' } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_oauth' }, accountType: { type: 'codex_oauth' }, modelValue: { ...masked, proxy_note: 'kept', originator: 'or-acct' } })
     await w.get('[data-testid="codex-reauth"]').trigger('click')
     await w.get('[data-testid="codex-oauth-start"]').trigger('click')
     await flushPromises()
@@ -414,7 +408,7 @@ describe('CodexAuthForm: editing', () => {
   })
 
   it('cancelling a re-authorization hides the flow', async () => {
-    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_device' }, modelValue: { ...masked } })
+    const w = mountForm({ mode: 'edit', account: { id: 7, type: 'codex_device' }, accountType: { type: 'codex_device' }, modelValue: { ...masked } })
     await w.get('[data-testid="codex-reauth"]').trigger('click')
     expect(w.find('[data-testid="codex-device-flow"]').exists()).toBe(true)
     await w.get('[data-testid="codex-reauth-cancel"]').trigger('click')

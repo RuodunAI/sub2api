@@ -1,4 +1,4 @@
-import { isApiError, type PluginHost } from '@sub2api/host'
+import { definePluginHost, isApiError } from '@sub2api/host'
 import type { FormAgent } from './flow'
 
 // Plugin-scoped host handed to register(); shared by the codex components.
@@ -10,16 +10,7 @@ import type { FormAgent } from './flow'
 // request is 400 invalid_argument with details.fields; a refusal of the flow
 // keeps its own code (device_auth_disabled, state_mismatch, ...). Every
 // message is "English / 中文", so the form shows it as given.
-let host: PluginHost | null = null
-
-export function setHost(h: PluginHost | null) {
-  host = h
-}
-
-export function useCodexHost(): PluginHost {
-  if (!host) throw new Error('codex UI used before register(host)')
-  return host
-}
+export const { setHost, useHost: useCodexHost } = definePluginHost('codex')
 
 const api = () => useCodexHost().pluginApi
 
