@@ -11,7 +11,7 @@ const zh = {
   },
   username: { label: '用户名', help: '服务器不需要登录时留空。' },
   password: { label: '密码', help: '加密保存。留空时保留已存储的密码；换成不需要登录的服务器时可清除。' },
-  fromAddress: { label: '发件地址' },
+  fromAddress: { label: '发件地址', invalid: '填了 SMTP 服务器时要填发件地址，例如 {example}' },
   fromName: { label: '发件人名称' },
   timeout: { label: '超时', unit: '秒', help: '一次投递的最长耗时，包含建立连接。' }
 }
@@ -27,7 +27,7 @@ const en: typeof zh = {
   },
   username: { label: 'Username', help: 'Leave empty when the server needs no login.' },
   password: { label: 'Password', help: 'Stored encrypted. Leave empty to keep the stored password; clear it when the server needs no login.' },
-  fromAddress: { label: 'From address' },
+  fromAddress: { label: 'From address', invalid: 'With an SMTP host set, enter a plain from address such as {example}' },
   fromName: { label: 'From name' },
   timeout: { label: 'Timeout', unit: 's', help: 'Longest time one delivery may take, connection included.' }
 }

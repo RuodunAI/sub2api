@@ -101,8 +101,11 @@ describe('MailerSettings', () => {
       details: { fields: [{ field: 'values/from_address', code: 'invalid', message: 'a plain address such as noreply@example.com' }] }
     }))
     await input(w, 'host').setValue('smtp.example.com')
+    // passes the form's rough check of the shape, not the plugin's
+    await input(w, 'from-address').setValue('<noreply@example.com>')
     expect(await settings.save()).toBe(false)
     await flushPromises()
+    expect(core.puts).toHaveLength(1)
     expect(settings.error('from_address')).toBe('a plain address such as noreply@example.com')
     expect(w.text()).toContain('a plain address such as noreply@example.com')
   })
@@ -120,8 +123,15 @@ describe('MailerSettings rules', () => {
   const cases: Array<{ name: string; set: M; ok: boolean }> = [
     { name: 'defaults', set: {}, ok: true },
     { name: 'a full SMTP setup', set: { host: 'smtp.example.com', port: 465, security: 'tls', username: 'ops', password: 'secret', from_address: 'noreply@example.com', from_name: '运维', timeout_seconds: 5 }, ok: true },
-    { name: 'host of 253 characters', set: { host: 'h'.repeat(253) }, ok: true },
-    { name: 'host of 254 characters', set: { host: 'h'.repeat(254) }, ok: false },
+    { name: 'host of 253 characters', set: { host: 'h'.repeat(253), from_address: 'noreply@example.com' }, ok: true },
+    { name: 'host of 254 characters', set: { host: 'h'.repeat(254), from_address: 'noreply@example.com' }, ok: false },
+    // With a host the plugin sends mail and needs a plain sender address (mailer.parseSettings, which trims both).
+    { name: 'a host without a from address', set: { host: 'smtp.example.com' }, ok: false },
+    { name: 'a blank host without a from address', set: { host: '  ' }, ok: true },
+    { name: 'a host and a from address without @', set: { host: 'smtp.example.com', from_address: 'noreply' }, ok: false },
+    { name: 'a host and a from address with a display name', set: { host: 'smtp.example.com', from_address: 'Ops noreply@example.com' }, ok: false },
+    { name: 'a host and a from address in spaces', set: { host: 'smtp.example.com', from_address: ' noreply@example.com ' }, ok: true },
+    { name: 'no host and a from address without @', set: { from_address: 'noreply' }, ok: true },
     { name: 'port 0', set: { port: 0 }, ok: false },
     { name: 'port 65536', set: { port: 65536 }, ok: false },
     { name: 'port 1.5', set: { port: 1.5 }, ok: false },
@@ -148,6 +158,14 @@ describe('MailerSettings rules', () => {
       expect(await settings.validate()).toBe(c.ok)
     })
   }
+
+  it('says at the from address that a host needs one, before asking the plugin', async () => {
+    const { w, core, settings } = await mountSettings({})
+    await input(w, 'host').setValue('smtp.example.com')
+    expect(await settings.save()).toBe(false)
+    expect(core.puts).toEqual([])
+    expect(settings.error('from_address')).toBe('fromAddress.invalid')
+  })
 })
 
 describe('messages', () =>
