@@ -16,8 +16,9 @@ func TestAccountTypeQuota(t *testing.T) {
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "oauth", Label: manifest.LocalizedText{"en": "OAuth"},
-		Form:      keyForm(m),
-		Platforms: []manifest.AccountPlatform{{Platform: "video"}},
+		Form:           keyForm(m),
+		UpstreamFields: []string{},
+		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 		Quota: &manifest.AccountQuota{Query: true, Headers: []manifest.QuotaHeader{
 			{Key: "5h", Utilization: "anthropic-ratelimit-unified-5h-utilization",
 				Reset: "anthropic-ratelimit-unified-5h-reset", Status: "anthropic-ratelimit-unified-5h-status"},
@@ -103,6 +104,7 @@ func TestAccountTypeRefresh(t *testing.T) {
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "oauth", Label: manifest.LocalizedText{"en": "OAuth"},
 		Form:           keyForm(m),
+		UpstreamFields: []string{},
 		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 		SettingsFields: []string{"region"},
 		Refresh:        &manifest.AccountRefresh{},

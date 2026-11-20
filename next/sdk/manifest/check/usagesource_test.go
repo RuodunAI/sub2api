@@ -263,7 +263,8 @@ func TestAccountTypeOverrideCannotReachUsageSource(t *testing.T) {
 	m.Platforms = []manifest.Platform{pluginSourcePlatform()}
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
-		Form: keyForm(m),
+		Form:           keyForm(m),
+		UpstreamFields: []string{},
 		Platforms: []manifest.AccountPlatform{{Platform: "video", Usage: map[string]manifest.UsageRules{
 			// No source to write here, and the fact it declares needs no path
 			// because the endpoint it overrides is answered by the plugin.

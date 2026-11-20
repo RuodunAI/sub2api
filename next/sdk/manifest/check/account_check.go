@@ -323,9 +323,12 @@ func (v *validator) guardedSettings(f string, at manifest.AccountType) {
 	}
 }
 
-// upstreamFields validates accountTypes[].upstreamFields: non-empty,
-// distinct keys.
+// upstreamFields validates accountTypes[].upstreamFields: required ([] for
+// a type without a caller-set address), non-empty, distinct keys.
 func (v *validator) upstreamFields(f string, at manifest.AccountType) {
+	if at.UpstreamFields == nil {
+		v.add(f+".upstreamFields", "required", "upstreamFields is required: the fields that say where requests go, [] when there are none")
+	}
 	seen := map[string]bool{}
 	for i, name := range at.UpstreamFields {
 		uf := fmt.Sprintf("%s.upstreamFields[%d]", f, i)

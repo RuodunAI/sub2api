@@ -15,10 +15,11 @@ func TestAccountTypeBalance(t *testing.T) {
 	}
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
-		ID:        "oauth",
-		Label:     manifest.LocalizedText{"en": "OAuth"},
-		Form:      keyForm(m),
-		Platforms: []manifest.AccountPlatform{{Platform: "video"}},
+		ID:             "oauth",
+		Label:          manifest.LocalizedText{"en": "OAuth"},
+		Form:           keyForm(m),
+		UpstreamFields: []string{},
+		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 	}}
 	files := map[string][]byte{}
 

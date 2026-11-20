@@ -43,13 +43,12 @@ func ExternalServiceHost(services []string, host string) bool {
 }
 
 // AddressHosts returns the lower-case host names of the account's upstream
-// addresses: the string values of the type's address fields (AddressFields)
-// in docs, JSON objects such as the account's settings and credentials. An
-// address is a URL or a bare host[:port]. A type that declares no address
-// fields has none.
+// addresses: the string values of the type's UpstreamFields in docs, JSON
+// objects such as the account's settings and credentials. An address is a
+// URL or a bare host[:port]. A type that declares no upstream fields has
+// none.
 func (at AccountType) AddressHosts(docs ...string) []string {
-	fields, _ := at.AddressFields()
-	if len(fields) == 0 {
+	if len(at.UpstreamFields) == 0 {
 		return nil
 	}
 	var hosts []string
@@ -58,7 +57,7 @@ func (at AccountType) AddressHosts(docs ...string) []string {
 		if json.Unmarshal([]byte(doc), &values) != nil {
 			continue
 		}
-		for _, f := range fields {
+		for _, f := range at.UpstreamFields {
 			address, _ := values[f].(string)
 			if host := addressHost(address); host != "" {
 				hosts = append(hosts, host)

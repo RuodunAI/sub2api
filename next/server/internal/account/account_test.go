@@ -447,6 +447,7 @@ func testGen(plat core.PlatformPlugin) *fakeGen {
 				Form: manifest.Form{Mode: "native", Component: "AnthropicKeyForm"}, SensitiveFields: []string{"api_key"},
 				SettingsFields:  []string{"base_url"},
 				GuardedSettings: []manifest.GuardedSetting{{Field: "base_url", Allowed: []string{officialBaseURL}}},
+				UpstreamFields:  []string{"base_url"},
 				Platforms:       []manifest.AccountPlatform{{Platform: "anthropic"}}},
 			Client: plat,
 		}, {
@@ -454,12 +455,14 @@ func testGen(plat core.PlatformPlugin) *fakeGen {
 			Type: manifest.AccountType{ID: "relay_key", Label: manifest.LocalizedText{"en": "Relay key"},
 				Form: manifest.Form{Mode: "native", Component: "RelayKeyForm"}, SensitiveFields: []string{"api_key"},
 				SettingsFields: []string{"base_url"},
+				UpstreamFields: []string{"base_url"},
 				Platforms:      []manifest.AccountPlatform{{Platform: "anthropic"}, {Platform: "ghost"}}},
 			Client: plat,
 		}, {
 			Plugin: video,
 			Type: manifest.AccountType{ID: "vkey", Label: manifest.LocalizedText{"en": "Video key"},
-				Form: manifest.Form{Mode: "native", Component: "VideoKeyForm"}, Platforms: []manifest.AccountPlatform{{Platform: "aivideo"}}},
+				Form: manifest.Form{Mode: "native", Component: "VideoKeyForm"}, UpstreamFields: []string{},
+				Platforms: []manifest.AccountPlatform{{Platform: "aivideo"}}},
 			Client: plat,
 		}},
 		// Plugin platform first: /platforms must still list built-ins first.

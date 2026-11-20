@@ -350,7 +350,7 @@ func TestFetchAccountAddressHosts(t *testing.T) {
 	}
 	// Another account, or a type that declares no address field, has only
 	// the external services.
-	i.pkg.Manifest.AccountTypes[0].UpstreamFields = nil
+	i.pkg.Manifest.AccountTypes[0].UpstreamFields = []string{}
 	side.execute = func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
 		if _, err := fetch(ctx, h, in.GetExecutionToken(), "https://relay.operator.example/v1", 0); status.Code(err) != codes.PermissionDenied {
 			t.Errorf("no address fields: %v", err)

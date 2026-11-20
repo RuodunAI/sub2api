@@ -234,9 +234,9 @@ func TestPackChecks(t *testing.T) {
 }
 
 // Account types are top-level (ARCHITECTURE 6.6): their form is a native
-// component, packed with the native UI, and they need platforms, the platform
-// adapter capability and the platform.register host permission. A schema
-// form is refused.
+// component, packed with the native UI, and they need platforms,
+// upstreamFields, the platform adapter capability and the platform.register
+// host permission. A schema form is refused.
 func TestPackAccountTypes(t *testing.T) {
 	const m = `{
   "apiVersion": 1, "key": "relayx", "name": {"en": "Relay"}, "version": "0.1.0",
@@ -245,7 +245,8 @@ func TestPackAccountTypes(t *testing.T) {
   "ui": {"native": {"entry": "ui/native/entry.js"}},
   "accountTypes": [{"id": "relay_key", "label": {"en": "Relay key"},
     "form": {"mode": "native", "component": "RelayKeyForm"},
-    "sensitiveFields": ["api_key"], "platforms": [{"platform": "anthropic", "passHeaders": ["anthropic-version"]}]}],
+    "sensitiveFields": ["api_key"], "upstreamFields": ["base_url"],
+    "platforms": [{"platform": "anthropic", "passHeaders": ["anthropic-version"]}]}],
   "hostPermissions": [{"id": "platform.register"}, {"id": "ui.native"}]
 }`
 	dir := t.TempDir()
@@ -364,7 +365,7 @@ func TestPackPlatforms(t *testing.T) {
     "usage": {"semantics": "inclusive", "json": {"map": {"input_tokens": "usage.input"}}}}],
   "hostUICompat": "^4.0", "ui": {"native": {"entry": "ui/native/entry.js"}},
   "accountTypes": [{"id": "vkey", "label": {"en": "Key"}, "form": {"mode": "native", "component": "VideoKeyForm"},
-    "platforms": [{"platform": "myvideo", "usage": {"myvideo.gen": {"semantics": "inclusive"}}}]}],
+    "upstreamFields": [], "platforms": [{"platform": "myvideo", "usage": {"myvideo.gen": {"semantics": "inclusive"}}}]}],
   "hostPermissions": [{"id": "gateway.endpoint"}, {"id": "platform.register"}, {"id": "ui.native"}]
 }`
 	dir := t.TempDir()

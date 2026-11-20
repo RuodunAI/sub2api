@@ -20,6 +20,7 @@ func controlsManifest(controls map[string]manifest.AccountCommonControl) *manife
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
 		Form:           keyForm(m),
+		UpstreamFields: []string{},
 		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 		CommonControls: controls,
 	}}

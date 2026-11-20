@@ -8,7 +8,6 @@ func TestUpstreamHostAllowed(t *testing.T) {
 		AccountTypes: []AccountType{
 			{ID: "relay", UpstreamFields: []string{"base_url", "video_endpoint"}},
 			{ID: "oauth", UpstreamFields: []string{}},
-			{ID: "legacy"},
 		},
 	}
 	settings := `{"base_url":"https://Relay.Test:9443/v1","video_endpoint":"video.test","other":"https://other.test"}`
@@ -28,7 +27,6 @@ func TestUpstreamHostAllowed(t *testing.T) {
 		{"other.test", "relay", false},
 		{"sub.relay.test", "relay", false},
 		{"relay.test", "oauth", false},
-		{"relay.test", "legacy", false},
 		{"relay.test", "unknown", false},
 		{"", "relay", false},
 	} {

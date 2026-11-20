@@ -78,8 +78,8 @@ func TestManifest(t *testing.T) {
 		if !slices.Equal(at.SensitiveFields, []string{"api_key"}) || len(at.GuardedSettings) != 0 || len(at.DefaultModels) != 0 {
 			t.Errorf("%s: sensitiveFields %v guardedSettings %v defaultModels %v", at.ID, at.SensitiveFields, at.GuardedSettings, at.DefaultModels)
 		}
-		if fields, known := at.AddressFields(); !known || !slices.Equal(fields, []string{"base_url"}) || !at.CustomUpstream() {
-			t.Errorf("%s: upstreamFields %v (declared %v), custom upstream %v", at.ID, fields, known, at.CustomUpstream())
+		if !slices.Equal(at.UpstreamFields, []string{"base_url"}) || !at.CustomUpstream() {
+			t.Errorf("%s: upstreamFields %v, custom upstream %v", at.ID, at.UpstreamFields, at.CustomUpstream())
 		}
 		if got, want := slices.Sorted(maps.Keys(types[at.ID].Routes)), endpointProtocols(at.Platforms[0].Endpoints); !slices.Equal(got, want) {
 			t.Errorf("%s: routes %v, the endpoints need %v", at.ID, got, want)

@@ -67,7 +67,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 
 - `method` 为空是 POST；URL 是绝对地址，路径写成线上的样子（每段已百分号编码），核心发送前会再解析一次。
 - 头名一律小写（构造器替你转）；`host`、`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，不许出现：请求发往、并以之为 `Host` 的永远是 URL 的主机，插件和运营方都改不了（CONTRACTS §112.17）；`Header` / `DefaultHeader` 的空值不写入；同名时权威头生效。
-- **目标主机**：URL 的主机必须是清单 `externalServices` 之一（含子域），或这次调用的账号自己的上游地址的主机（账号类型 `upstreamFields` 声明的字段，只比主机名、不含子域）。别的主机核心拒绝（`INVALID_ARGUMENT`，这次尝试按插件不可用换号）。代码里写死的默认地址（如 `api.openai.com`、各区域的 `bedrock-runtime.<region>.amazonaws.com`）要写进 `externalServices`，让运营方填地址的字段写进 `upstreamFields`。规则是 `manifest.Manifest.UpstreamHostAllowed`，取回、`SendAccountRequest` 和假宿主用同一个（CONTRACTS §112.17）。声明过的主机也可能被管理员在“系统设置 → 插件联网”里屏蔽（或在“屏蔽所有域名”下没列进允许列表，CONTRACTS §113.3）：核心同样什么都不发，这次尝试换号，信息是 `plugin <key>: <host> is on the blocked list of plugin network access`（或 `is not on the allowed list`）。假宿主不模拟这项设置。
+- **目标主机**：URL 的主机必须是清单 `externalServices` 之一（含子域），或这次调用的账号自己的上游地址的主机（账号类型 `upstreamFields` 声明的字段，只比主机名、不含子域）。别的主机核心拒绝（`INVALID_ARGUMENT`，这次尝试按插件不可用换号）。代码里写死的默认地址（如 `api.openai.com`、各区域的 `bedrock-runtime.<region>.amazonaws.com`）要写进 `externalServices`，让运营方填地址的字段写进 `upstreamFields`。每个账号类型都必须写 `upstreamFields`，没有运营方填的地址（OAuth、云厂商按区域拼地址的类型）写 `[]`，没写的清单装不上（CONTRACTS §21.3）。规则是 `manifest.Manifest.UpstreamHostAllowed`，取回、`SendAccountRequest` 和假宿主用同一个（CONTRACTS §112.17）。声明过的主机也可能被管理员在“系统设置 → 插件联网”里屏蔽（或在“屏蔽所有域名”下没列进允许列表，CONTRACTS §113.3）：核心同样什么都不发，这次尝试换号，信息是 `plugin <key>: <host> is on the blocked list of plugin network access`（或 `is not on the allowed list`）。假宿主不模拟这项设置。
 - `Body(b)` 是最终发出的字节，核心不再改；`Model(m)` 是记进使用记录的上游模型（类型声明了模型可用性时，核心核对它与自己算的上游模型一致，不一致按插件不可用换号）；`ResponseStream(f)` 见 2.5。超时、代理、TLS、重定向、重试不归插件（超时由管理员配置，SDK 不提供收紧它们的方法）。
 - `pluginsdk.RequestModel(in)`：请求体的 `model`，没有则 `meta.model`（都已经过账号的模型映射）。`pluginsdk.RequestStream(in)`：`meta.stream` 或请求体的 `"stream": true` 任一为真。
 - 请求体上限（网关设置 `max_request_body_mb`，CONTRACTS §111）只管网关读客户端的请求。核心交给插件的请求体可能因为自己的改写比它大，插件交回的中继请求体、取回的请求体也都不检查大小（CONTRACTS §112.16）。插件不设自己的大小上限。
@@ -392,7 +392,7 @@ if !sticky.Enabled { ... }
 - 账号类型声明的平台决定什么算“本平台协议”：只声明一个平台的类型，其他平台的客户端协议默认不调度到它的账号，管理员要在账号上按模型开启转换（CONTRACTS §110）。上游本身兼容多种协议的类型可以把这些平台都声明出来（sub2api 声明了 openai、anthropic、gemini）。
 - 在一个平台上写了 `endpoints` 子集时，子集以外的端点**不服务**，除非在 `adapted` 里列出它：核心把它转换成子集内某个端点的协议再交给插件（同平台适配，CONTRACTS §83.3、§121.1）。例：只有 Responses 的上游写 `"endpoints": ["responses"], "adapted": {"chat_completions": {}}` 来服务 chat；核心没有对应转换器时清单能装上，但注册表不绑定这个类型。生图端点经 Responses 的 `image_generation` 工具服务时还要写驱动工具的对话模型：`"images_generations": {"model": "<对话模型>"}`（codex 的写法）；插件在 `meta.client_protocol` 是生图协议时不报上游模型（请求体顶层的 `model` 是这个对话模型，报了会覆盖核心从应答读到的回显生图模型）。没有隐式适配：旧插件依赖过它的要补声明。
 - 上游同时说几家协议时用 `standard.Merge`，每个协议保留它官方的鉴权头和失败分类；有余额接口的写 `Type.Balance` 并在清单写 `balance`。
-- 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写）；不设 `Host` 头。
+- 主请求和辅助请求（`Fetch`）的主机：写死的写进清单 `externalServices`，运营方填的地址字段写进 `upstreamFields`（账号自己的上游地址不用另写；每个账号类型都要写这个键，没有就写 `[]`）；不设 `Host` 头。
 - 测试里调一致性套件；用 `standard` 写的插件另跑黄金样例。
 - 不读写文件；确实需要时申请 `fs.data`，只用 `SUB2API_PLUGIN_DATA_DIR` 下的路径（6.2 节）。
 - 新增第一方插件时，把插件键加进 `server/internal/plugin/install/reserved.go` 的 `reservedKeys`（`TestReservedCoverRepo` 会检查）。
