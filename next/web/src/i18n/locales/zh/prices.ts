@@ -172,7 +172,6 @@ export default {
   sources: {
     title: '价格同步源',
     description: '从公开价格库或上游 sup2api 实例导入价格。同步由管理员手动触发：先预览差异，勾选要导入的模型，再应用。',
-    back: '返回价格列表',
     create: '新建同步源',
     editTitle: '编辑同步源 · {name}',
     kindCol: '类型',

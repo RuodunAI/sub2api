@@ -172,7 +172,6 @@ export default {
   sources: {
     title: 'Price sync sources',
     description: 'Import prices from public price catalogs or an upstream sup2api instance. Syncs are started by an admin: preview the differences, tick the models to import, then apply.',
-    back: 'Back to prices',
     create: 'New source',
     editTitle: 'Edit source · {name}',
     kindCol: 'Type',

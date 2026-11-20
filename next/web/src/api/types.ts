@@ -491,8 +491,8 @@ export interface AccountType {
   auth_method_label?: LText
   form: AccountFormRef
   sensitive_fields: string[]
-  /** Settings fields restricted to official values without account:settings:custom (CONTRACTS §21.3). */
-  guarded_settings?: { field: string; allowed: string[] }[]
+  /** Settings fields restricted to official values without account:settings:custom; `versions`: version segments an official value may end with (CONTRACTS §21.3). */
+  guarded_settings?: { field: string; allowed: string[]; versions?: string[] }[]
   /** An account of the type can be pointed at any upstream: an own-level caller needs account:relay (§21.3.1). */
   custom_upstream?: boolean
   /** Plugin suggestions prefilled into a new account's models / model_mapping (CONTRACTS §41). */
@@ -501,7 +501,6 @@ export interface AccountType {
   default_limits?: AccountDefaultLimits
   /** How the editor shows the common controls (docs/COMMON-CONTROLS.md §1); absent names keep the core behaviour. */
   common_controls?: Partial<Record<CommonControlName, CommonControlDecl>>
-  extensions_schema?: { type: 'object'; properties: Record<string, unknown> }
   /** Platforms the type supports (built-in or plugin platforms). */
   platforms: AccountTypePlatform[]
   /** Endpoints of available supported platforms (native) plus converted ones. */

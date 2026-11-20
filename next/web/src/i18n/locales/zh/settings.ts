@@ -86,7 +86,6 @@ export default {
     title: '环境变量',
     subtitle: '转发的通用运行参数，由核心声明，插件读取生效后的值。账号、分组可以覆盖这里的值；留空表示跟随下一层（账号 → 分组 → 全局 → 进程环境变量）。修改后各节点对新请求生效。',
     groupHint: '覆盖全局环境变量；留空跟随全局。',
-    accountHint: '覆盖分组与全局的环境变量；留空跟随分组。',
     range: '范围 {min}–{max}。',
     processSet: '进程环境变量 {name} = {value}。',
     processUnset: '可用进程环境变量 {name} 兜底。',

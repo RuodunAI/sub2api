@@ -5,7 +5,7 @@ export default {
     clear: 'Clear filters ({count})', compact: 'Compact rows', refresh: 'Refresh accounts',
     loadFailed: 'Refresh failed; showing the previous results',
     emptyFiltered: 'No accounts match these filters. Adjust or clear the filters.', empty: 'No visible accounts.', limitsColumn: 'Concurrency / RPM / TPM / Sessions',
-    numberRange: '{label} must be a whole number from {min} to {max}', saved: 'Saved', clearIds: 'Clear the account id filter', idsTruncated: '{label} (first {n})',
+    numberRange: '{label} must be a whole number from {min} to {max}', clearIds: 'Clear the account id filter', idsTruncated: '{label} (first {n})',
     enableAccount: 'Enable: {name}', disableAccount: 'Disable: {name}', disableHint: 'Disable the account: it is no longer scheduled',
     adminLockedHint: 'Disabled by an administrator. Only an administrator can enable it',
     enableHint: 'Enable the account',
@@ -68,7 +68,7 @@ export default {
     noModelMatch: 'No matching models',
     addModels: 'Add',
     groupModelHint: 'Account models and group allowlists apply separately. The API Key group must also allow the request model.',
- authMethod: 'Authentication method', connection: 'Connection', connectionHint: 'Name, groups and credentials', models: 'Protocols & models', modelsHint: 'Protocols served, available models and aliases', scheduling: 'Scheduling & limits', schedulingHint: 'Priority, concurrency and usage', advanced: 'Advanced', navigation: 'Account configuration', searchTypes: 'Search providers or account types',
+ authMethod: 'Authentication method', connection: 'Connection', models: 'Protocols & models', scheduling: 'Scheduling & limits', advanced: 'Advanced', navigation: 'Account configuration', searchTypes: 'Search providers or account types',
     unnamed: 'No name yet', allModels: 'All models', modelsSummary: '{n} models', mappingSummary: '{n} mappings', summaryPriority: 'Priority {n}', summaryWeight: 'Weight {n}', summaryConcurrency: 'Concurrency {n}', pluginSectionAfterSave: 'Available after the account is saved', sectionHasErrors: 'Something here needs fixing',
     basicHint: 'Account name, groups and egress proxy', namePlaceholder: 'e.g. claude-main', groupsHint: 'Accounts outside every group are never scheduled', credentialsHint: 'Credentials are validated and stored by the {plugin} plugin',
     modelsCardHint: 'Request models the account serves; empty means no restriction', mappingCardHint: 'Rewrites request models to upstream models; billing and allowlists still use the request model', prefilled: 'Prefilled with the plugin preset: {what}. Save as is or adjust; an empty model list serves every model.',
@@ -79,7 +79,7 @@ export default {
     schedulingCardHint: 'Decides the order accounts are picked in, whether they take requests and whether errors disable them', schedulableHint: 'When off the account is kept but receives no requests', autoDisableHint: 'Disable the account when the upstream reports invalid credentials, exhausted quota and similar errors (rules under Settings → Scheduling policy → Automatic disabling). When off the account is only cooled down for 60 seconds', limitsHint: 'Concurrency counts the requests in progress, RPM and TPM the last 60 seconds, sessions their period: once any limit is reached the account is skipped until its usage falls back; 0 means unlimited',
     commonControlFixed: 'The plugin makes this read-only. Existing accounts keep their current setting.', commonControlLocked: 'The plugin fixes this to its preset value.', commonControlLockedPending: 'The plugin fixes this to its preset value; saving changes it to {value}.',
     autoDisableGlobalOff: 'Automatic disabling is globally off. This switch has no effect and cannot be changed; the account preference is preserved.', autoDisableUnavailable: 'Unable to load the global automatic disabling setting. This switch cannot be changed for now; the account preference is preserved.',
-    unitConcurrency: 'requests', unitRpm: 'req / min', unitTpm: 'tokens / min', unitTpd: 'tokens / day', create: 'Create account', modelsInputHint: 'Type or pick a model, Enter or comma adds it, paste comma or line separated lists; click a tag to copy it, mapped models show → target' },
+    unitConcurrency: 'requests', unitRpm: 'req / min', unitTpm: 'tokens / min', create: 'Create account', modelsInputHint: 'Type or pick a model, Enter or comma adds it, paste comma or line separated lists; click a tag to copy it, mapped models show → target' },
   title: 'Accounts',
   subtitle: 'Upstream accounts used by the gateway. Account types are declared by plugins; a group can mix accounts of different types.',
   new: 'New account',
@@ -478,7 +478,6 @@ export default {
     short: { second: '{n}s', minute: '{n}m', hour: '{n}h' }
   },
   models: 'Models',
-  modelsHint: 'Empty = all models. Enter complete model ids; Enter or comma adds one.',
   modelsPlaceholder: 'Model id, press Enter',
   modelsTextPlaceholder: 'One model id per line, or comma separated',
   allModels: 'All models',
@@ -539,7 +538,7 @@ export default {
   },
   testEffectNotApplied: "the plugin's verdict only — this test did not change the account",
   modelTest: {
-    title: 'Model test', model: 'Model', detail: 'Result', duration: 'Request time {time}',
+    title: 'Model test', model: 'Model', duration: 'Request time {time}',
     total: '{n} models', okCount: '{n} passed', failCount: '{n} failed', testingCount: '{n} running',
     copyOk: 'Copy passed', copyFail: 'Copy failed',
     removeFailed: 'Remove failed from the model list ({n})', removeTitle: 'Remove failed models',
@@ -558,7 +557,7 @@ export default {
     stop: 'Stop', testSelected: 'Test selected ({n})', testAll: 'Test all ({n})', doneToast: 'Tests finished: {ok} passed, {fail} failed'
   },
   lastTest: { column: 'Last test', never: 'Never', failed: 'Failed', testing: 'Testing', model: 'Model' },
-  batchTest: { pickPage: 'Select page', run: 'Test selected ({n})', progress: 'Testing {done}/{total}', clear: 'Clear selection', hint: 'Each account is tested once with its plugin default model, at most 3 at a time', done: 'Batch test finished: {ok} passed, {fail} failed' },
+  batchTest: { run: 'Test selected ({n})', progress: 'Testing {done}/{total}', hint: 'Each account is tested once with its plugin default model, at most 3 at a time', done: 'Batch test finished: {ok} passed, {fail} failed' },
   bulk: {
     edit: 'Bulk edit ({n})', more: 'More bulk actions', delete: 'Delete ({n})',
     enable: 'Enable ({n})', disable: 'Disable ({n})', reset: 'Reset status ({n})', pluginAction: '{name} ({n})',
@@ -602,12 +601,7 @@ export default {
     rejectedHint: 'The upstream rejects requests in this window until it resets',
     warningHint: 'The upstream warns that this window is almost used up',
     resetsAt: 'resets {time}',
-    /**
-     * Time until the window resets: "2d 3h", "4h 12m", "35m", "<1m". A reset time
-     * in the past is "now" when nothing is used, else "pending" (the snapshot has
-     * not seen the new window yet).
-     */
-    resetNow: 'reset',
+    /** A reset time in the past: the snapshot has not seen the new window yet. */
     resetPending: 'Pending verification',
     noData: 'No usage data yet',
     initialPending: 'No usage yet: updated by the next request, or click to refresh',
@@ -615,13 +609,11 @@ export default {
     queryFailed: 'Quota query failed',
     queryFailedDetail: 'Quota query failed: {error}',
     lastObserved: 'Last observed {time}',
-    nextCheck: 'Next check: {time}',
     passive: 'Passive',
     passiveHint: 'Read from the headers of recent responses; the upstream is not queried',
     refresh: 'Refresh',
     refreshing: 'Refreshing',
-    refreshHint: 'Click quota to refresh usage now',
-    refreshed: 'Usage updated'
+    refreshHint: 'Click quota to refresh usage now'
   },
   autoReleaseAt: 'Auto-enables at {time}',
   resetStatus: 'Reset status',
@@ -654,7 +646,6 @@ export default {
     refresh: 'Refresh balance',
     refreshHint: 'Query the current account balance',
     refreshing: 'Querying',
-    refreshDone: 'Balance refreshed',
     updatedAt: 'updated {time}',
     unread: 'Not read yet',
     unlimited: 'Unlimited',

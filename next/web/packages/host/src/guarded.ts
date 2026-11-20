@@ -8,8 +8,8 @@ import { useHost } from './index'
 export interface AccountTypeView {
   plugin_key: string
   type: string
-  /** Settings fields restricted to official values without account:settings:custom. */
-  guarded_settings?: { field: string; allowed: string[] }[]
+  /** Settings fields restricted to official values without account:settings:custom; `versions`: version segments an official value may end with (CONTRACTS §21.3). */
+  guarded_settings?: { field: string; allowed: string[]; versions?: string[] }[]
   custom_upstream?: boolean
   sensitive_fields?: string[]
   [key: string]: unknown

@@ -414,6 +414,7 @@ export function consoleSettingsPath(p: Pick<PluginSummary, 'key' | 'has_settings
   return p.has_settings ? `/plugins/${encodeURIComponent(p.key)}?tab=settings` : undefined
 }
 
+/** GET /plugins/:key/settings: the fields the console reads (the plugin's own component reads and saves the values). */
 export interface PluginSettings {
   /** native: the plugin's component (on the settings tab), or its own page (ui.settings.page, §75.5). */
   mode?: string
@@ -421,9 +422,6 @@ export interface PluginSettings {
   page?: string
   /** Native settings without a page: the component the plugin registered for them, shown on the settings tab. */
   component?: string
-  values: Record<string, any> | null
-  /** RBAC key of manifest ui.settings.permission: its holders may edit these settings too. */
-  permission?: string
 }
 
 export const ROLLOUT_RUNNING = new Set(['preparing', 'activating'])

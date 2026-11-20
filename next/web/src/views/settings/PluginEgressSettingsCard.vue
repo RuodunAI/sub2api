@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SAlert, SButton, SCard, SRowAction, SSelect, SSettingRow, SSettingsGroup, SSpinner, STable, confirm, toast, type TableColumn } from '@sub2api/ui'
 import { errorMessage, notifyError } from '@/utils/errors'
+import { P } from '@/generated/permissions'
 import { useAuthStore } from '@/stores/auth'
 import PluginEgressAddDialog from './PluginEgressAddDialog.vue'
 import { listField, PLUGIN_EGRESS_PATH, type PluginEgressMode, type PluginEgressPolicy } from './pluginEgress'
@@ -18,7 +19,7 @@ import { listField, PLUGIN_EGRESS_PATH, type PluginEgressMode, type PluginEgress
 // about while it lasts.
 const { t } = useI18n()
 const auth = useAuthStore()
-const canManage = computed(() => auth.has('settings:manage'))
+const canManage = computed(() => auth.has(P.SettingsManage))
 
 const policy = ref<PluginEgressPolicy | null>(null)
 const loading = ref(false)

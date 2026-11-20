@@ -7,8 +7,7 @@ import ProxyPicker from '@/components/ProxyPicker.vue'
  * multiple one 3.12) handed to plugins as `host.components`
  * (docs/COMMON-CONTROLS.md §3; props in HOST_COMPONENT_NAMES). The editors
  * load on first use, so the console's startup bundle does not carry them. The
- * proxy picker is in it already as a schema widget, and with it the entity
- * pickers it is made of.
+ * proxy picker is in it already (the console's account editor uses it).
  */
 export const hostComponents: HostComponents = Object.freeze({
   ParamOverrideEditor: defineAsyncComponent(() => import('@/views/accounts/paramOverride/ParamOverrideInput.vue')),
