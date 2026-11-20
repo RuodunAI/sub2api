@@ -448,7 +448,7 @@ func (c *call) forwardSSE(ctx context.Context, resp *http.Response, u *usageAcc,
 			// An event ends at its blank line, and has been flushed by now
 			// in every framing (emit flushes its own output).
 			if len(t) == 0 && u.Final() {
-				c.drain.serve(ctx)
+				c.drain.serve()
 			}
 		}
 		if rerr != nil {

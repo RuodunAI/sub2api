@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -464,5 +465,22 @@ func TestCanceledTokens(t *testing.T) {
 		if got := canceledTokens(tc.reported, est); got != tc.want {
 			t.Errorf("%s: %+v, want %+v", name, got, tc.want)
 		}
+	}
+}
+
+// A client whose leaving is recorded between the final usage event's write
+// and serve was still served: the exchange ends instead of being read on
+// for a usage it already reported.
+func TestClientLeavingAsTheFinalUsageIsWrittenWasServed(t *testing.T) {
+	var canceled error
+	d := &upstreamDrain{cancel: func(err error) { canceled = err }, keep: true}
+	d.arm()
+	d.clientLeft()
+	if canceled != nil {
+		t.Fatal("an armed exchange was canceled before its final usage")
+	}
+	d.serve()
+	if !d.served() || !errors.Is(canceled, context.Canceled) {
+		t.Fatalf("served %v, canceled %v", d.served(), canceled)
 	}
 }

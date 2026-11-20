@@ -108,15 +108,21 @@ func (d *upstreamDrain) leave() {
 }
 
 // serve records that forward relayed the event reporting the answer's final
-// usage (usagerules.Acc.Final) and flushed it. It counts only while the
-// client, whose context is ctx, is still there and has missed nothing.
-func (d *upstreamDrain) serve(ctx context.Context) {
+// usage (usagerules.Acc.Final) and flushed it. It counts unless output was
+// withheld from the client: every write checks dropOutput first, so a client
+// recorded as gone by now left after that event was written, like one that
+// closes right after the last byte. Such a client was served, and with the
+// final usage read there is nothing left to read on for.
+func (d *upstreamDrain) serve() {
 	if d == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.delivered = d.delivered || !d.left && !d.dropped && ctx.Err() == nil
+	d.delivered = d.delivered || !d.dropped
+	if d.left && d.delivered {
+		d.cancel(context.Canceled)
+	}
 }
 
 // served reports whether the answer's final usage reached the client: a
