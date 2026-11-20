@@ -36,3 +36,30 @@ func TestConsoleRouteOf(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRouteRef(t *testing.T) {
+	cases := []struct {
+		ref, def     string
+		method, path string
+		ok           bool
+	}{
+		{"GET /models", "GET", "GET", "/models", true},
+		{"get /models", "GET", "GET", "/models", true},
+		{"  POST   /assets  ", "GET", "POST", "/assets", true},
+		{"/models", "GET", "GET", "/models", true},
+		{"/assets", "POST", "POST", "/assets", true},
+		{"DELETE /assets/:id", "GET", "DELETE", "/assets/:id", true},
+		{"", "GET", "", "", false},
+		{"models", "GET", "", "", false},
+		{"HEAD /models", "GET", "", "", false},
+		{"GET /a b", "GET", "", "", false},
+		{"GET", "GET", "", "", false},
+	}
+	for _, tc := range cases {
+		method, path, ok := ParseRouteRef(tc.ref, tc.def)
+		if ok != tc.ok || method != tc.method || path != tc.path {
+			t.Errorf("ParseRouteRef(%q, %q) = (%q, %q, %v), want (%q, %q, %v)",
+				tc.ref, tc.def, method, path, ok, tc.method, tc.path, tc.ok)
+		}
+	}
+}

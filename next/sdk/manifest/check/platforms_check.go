@@ -212,13 +212,12 @@ func (v *validator) endpoint(f string, p manifest.Platform, e manifest.Endpoint)
 		v.usageRules(f+".usage", *e.Usage, ownerEndpoint, e.PluginUsage() || e.TaskSubmit())
 	}
 	// The other half of the §25.1 rule the modelSource branch above covers:
-	// ExtractUsage goes to the PlatformService of the plugin declaring the
-	// platform too, so an endpoint that reads its usage from a plugin needs
-	// that plugin to declare platform.adapter.v1 as well. Since the source
-	// moved onto the endpoint this reads the endpoint and nothing else - no
-	// override chain to walk, no way for another plugin's account type to
-	// arm or disarm it. Skipped in a standalone CheckPlatform (and for
-	// built-in platforms): there is no manifest to read.
+	// an endpoint whose usage a plugin reads is served only by the Execute
+	// of the plugin declaring the platform (CONTRACTS §112.8), so that
+	// plugin needs platform.adapter.v1 as well. This reads the endpoint and
+	// nothing else: no account type's override can change the source.
+	// Skipped in a standalone CheckPlatform (and for built-in platforms):
+	// there is no manifest to read.
 	if !v.standalone && e.PluginUsage() {
 		v.needCap(f+".usageSource", manifest.CapPlatformAdapter)
 	}
@@ -257,12 +256,12 @@ func (v *validator) streamUsage(f string, p manifest.Platform, e manifest.Endpoi
 	if e.Usage != nil {
 		u, owner = *e.Usage, "this endpoint's usage"
 	}
-	// usage.source "plugin" is the declared way out of the gjson rules - an
+	// usageSource "plugin" is the declared way out of the gjson rules - an
 	// endpoint takes it precisely because no sse map can express its usage,
-	// so requiring one here would forbid the feature. The cost is real and
-	// deliberate: when ExtractUsage fails the host falls back to these (then
-	// empty) rules and counts zero. That fallback is never silent - it warns
-	// and marks the usage record - which is the trade this rule cannot make.
+	// so requiring one here would forbid the feature. The cost is
+	// deliberate: a plugin answering host_usage is billed on these (then
+	// empty) rules, and an empty reading is closed as unreported, never
+	// billed as zero (CONTRACTS §112.7), with the usage record marked.
 	if e.PluginUsage() {
 		return
 	}
