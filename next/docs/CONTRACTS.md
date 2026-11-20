@@ -8295,7 +8295,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 每个节点缓存设置 10 秒（与网关设置相同）；收到上述广播立即失效，过期时先用旧值、后台重读。读失败沿用上次的值；本节点从未读成功时拒绝连接（`plugin network access settings could not be read`），不按默认放行。
 - 新连接的检查顺序（`Provider.check`）：数据库例外（核心 DSN 里的真实地址，只给有 Database 的插件；严格网络下插件拿到的是虚拟地址 `db.sub2api:5432`，用到它的只有在不要求严格网络的核心上用 `pluginsdk.WithStrictNetwork(StrictAlways)` 自己装隧道的插件，§115）→ `net` 授权 → 本插件的出口策略（`allowlist` 时只能去 `net` 授权的域名）→ **插件联网** → 核心服务地址 → 解析结果必须是公网地址。目标要同时通过插件自己的授权、策略和管理员的设置；管理员的允许列表不放宽任何插件的授权。数据库例外不受插件联网影响。
 - 插件的 DNS 查询（`dns.sub2api`）同样过插件联网，被拒回 REFUSED。
-- 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。
+- 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。比较前名字按列表条目保存时的规则（`NormalizeDomain`）规范化：国际化域名转 punycode，IPv6 按规范写法，所以 `bücher.example` 与 `xn--bcher-kva.example`、`2001:db8:0:0::1` 与 `2001:db8::1` 是同一个目标；规范化不了的名字原样比较。
 - 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
 - **局限**（所有者接受）：
   - `allow_all` 下屏蔽的是名字：插件直接拨 IP 字面量时按 IP 比较，屏蔽某个域名挡不住插件直接拨它解析出的 IP。要彻底限住插件能去哪里，用 `block_all`。

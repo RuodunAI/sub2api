@@ -43,10 +43,13 @@ func TestNormalizeDomain(t *testing.T) {
 }
 
 func TestHostPolicyRefusal(t *testing.T) {
-	h := HostPolicy{Mode: HostAllowAll, BlockedDomains: []string{"example.com", "[2001:db8::1]", "93.184.216.34"}, AllowedDomains: []string{"other.org"}}
+	h := HostPolicy{Mode: HostAllowAll, BlockedDomains: []string{"example.com", "[2001:db8::1]", "93.184.216.34", "xn--bcher-kva.example"}, AllowedDomains: []string{"other.org", "xn--bcher-kva.example"}}
+	// A host is compared in the entries' stored form: an internationalized
+	// name as punycode, an IPv6 literal however it is written.
 	refused := map[string]bool{
 		"example.com": true, "api.example.com": true, "a.b.example.com": true, "badexample.com": false,
-		"other.org": false, "2001:db8::1": true, "93.184.216.34": true, "93.184.216.35": false,
+		"other.org": false, "2001:db8::1": true, "2001:db8:0:0::1": true, "93.184.216.34": true, "93.184.216.35": false,
+		"bücher.example": true, "api.bücher.example": true, "xn--bcher-kva.example": true,
 	}
 	for host, want := range refused {
 		if msg := h.refusal(host); (msg != "") != want || (want && !strings.Contains(msg, "blocked list")) {
@@ -54,7 +57,7 @@ func TestHostPolicyRefusal(t *testing.T) {
 		}
 	}
 	h.Mode = HostBlockAll
-	refused = map[string]bool{"other.org": false, "x.other.org": false, "example.com": true, "notother.org": true}
+	refused = map[string]bool{"other.org": false, "x.other.org": false, "example.com": true, "notother.org": true, "bücher.example": false}
 	for host, want := range refused {
 		if msg := h.refusal(host); (msg != "") != want || (want && !strings.Contains(msg, "not on the allowed list")) {
 			t.Errorf("block_all %q: %q", host, msg)
