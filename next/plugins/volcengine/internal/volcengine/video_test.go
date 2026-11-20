@@ -48,7 +48,7 @@ func TestBuildUpstreamVideo(t *testing.T) {
 func TestVideoUsageReservation(t *testing.T) {
 	p := New() // no host: estimation is pure parsing
 
-	rep := p.videoUsage(&pluginv1.ExtractUsageRequest{
+	rep := mustVideoUsage(t, p, &pluginv1.ExtractUsageRequest{
 		Meta:    &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-0-260128", UserId: 42},
 		Account: &pluginv1.Account{Id: 7},
 		Status:  200,
@@ -89,7 +89,7 @@ func TestVideoUsageReservation(t *testing.T) {
 	}
 	// And with no request fields at all it falls back to the model's bounds,
 	// which must be STRICTLY more expensive - never less.
-	bare := p.videoUsage(&pluginv1.ExtractUsageRequest{
+	bare := mustVideoUsage(t, p, &pluginv1.ExtractUsageRequest{
 		Meta:   &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-0-260128"},
 		Status: 200, Body: []byte(`{"id":"cgt-778"}`),
 	})
@@ -106,7 +106,7 @@ func TestVideoUsageReservation(t *testing.T) {
 	// A submit with no task id does not reserve (it could never be reconciled)
 	// and does not panic on a malformed body.
 	for _, body := range []string{`{}`, `{"id":""}`, `not json`, ``, `[1,2,3]`} {
-		rep := p.videoUsage(&pluginv1.ExtractUsageRequest{
+		rep := mustVideoUsage(t, p, &pluginv1.ExtractUsageRequest{
 			Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "m"}, Status: 200, Body: []byte(body),
 		})
 		if rep.GetReserve() != nil {
@@ -115,7 +115,7 @@ func TestVideoUsageReservation(t *testing.T) {
 	}
 
 	// A relay that wraps the id is still read.
-	rep = p.videoUsage(&pluginv1.ExtractUsageRequest{
+	rep = mustVideoUsage(t, p, &pluginv1.ExtractUsageRequest{
 		Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "m"}, Status: 200, Body: []byte(`{"data":{"id":"cgt-wrapped"}}`),
 	})
 	if rep.GetReserve().GetRefId() != "cgt-wrapped" {
@@ -252,4 +252,13 @@ func TestReadTaskQuery(t *testing.T) {
 	if r := parse(200, "", `not json at all`); r.GetState() != pluginv1.ReconcileResult_POLL_FAILED {
 		t.Fatalf("garbage body -> %v", r)
 	}
+}
+
+func mustVideoUsage(t *testing.T, p *Plugin, in *pluginv1.ExtractUsageRequest) *pluginv1.UsageReport {
+	t.Helper()
+	rep, err := p.videoUsage(in)
+	if err != nil {
+		t.Fatalf("video usage: %v", err)
+	}
+	return rep
 }

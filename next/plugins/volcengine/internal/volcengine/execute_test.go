@@ -202,7 +202,7 @@ func TestExecuteEndpointClasses(t *testing.T) {
 				return
 			}
 			task := ex.Response.GetTask()
-			est := estimateVideo(videoModel, readVideoSpec(requested(Res720, Ratio169, 5)))
+			est := mustEstimate(t, videoModel, readVideoSpec(requested(Res720, Ratio169, 5)))
 			if task.GetUpstreamRefId() != submittedID || task.GetUsage().GetReserve().GetRefId() != submittedID ||
 				task.GetUsage().GetReserve().GetTokens().GetOutputTokens() != est.Tokens ||
 				task.GetUsage().GetTokens().GetOutputTokens() != est.Tokens || task.GetNextCheckAfterSec() != firstCheckSec {

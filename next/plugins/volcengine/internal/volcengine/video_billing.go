@@ -19,7 +19,10 @@ func (p *Plugin) EstimateUsage(ctx context.Context, in *pluginv1.EstimateUsageRe
 		// local tokenizer for image/text protocols.
 		return nil, pluginsdk.ErrUnimplemented("usage estimation only available for video protocol")
 	}
-	est := estimateVideo(in.GetMeta().GetModel(), readVideoSpec(in.GetFields()))
+	est, err := estimateVideo(in.GetMeta().GetModel(), readVideoSpec(in.GetFields()))
+	if err != nil {
+		return nil, err
+	}
 	return &pluginv1.UsageReport{Tokens: &pluginv1.UsageTokens{OutputTokens: est.Tokens}, Facts: estimatedVideoFacts(est, in.GetFields())}, nil
 }
 

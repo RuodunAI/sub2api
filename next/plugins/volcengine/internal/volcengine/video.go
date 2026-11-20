@@ -152,7 +152,10 @@ func (p *Plugin) ParseTaskSubmission(_ context.Context, in *pluginv1.ExtractUsag
 	if in.GetStatus() < 200 || in.GetStatus() >= 300 || !gjson.ValidBytes(in.GetBody()) || !gjson.ParseBytes(in.GetBody()).IsObject() {
 		return nil, status.Error(codes.DataLoss, "video submission did not return a complete successful JSON object")
 	}
-	usage := p.videoUsage(in)
+	usage, err := p.videoUsage(in)
+	if err != nil {
+		return nil, err
+	}
 	rv := usage.GetReserve()
 	ref := rv.GetRefId()
 	if ref == "" {
@@ -196,8 +199,9 @@ func videoSnapshot(body []byte, ref, model string, initial bool) (string, error)
 // {"id": "..."} and carries nothing billable, so this reads the task id and
 // returns a Reservation: the core pre-charges the estimate now and reconciles
 // the real usage later. A response without a task id gets no reservation, and
-// ParseTaskSubmission refuses it.
-func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageReport {
+// ParseTaskSubmission refuses it. The estimate's error is that of
+// estimateVideo, which EstimateUsage already returned before the submit.
+func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) (*pluginv1.UsageReport, error) {
 	taskID := ""
 	for _, path := range taskIDPaths {
 		v := gjson.GetBytes(in.GetBody(), path)
@@ -210,11 +214,13 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 		// A submit that returned no id can never be polled or reconciled.
 		p.log.Warn("volcengine: video submit response carried no task id, not reserving",
 			"request_id", in.GetMeta().GetRequestId(), "status", in.GetStatus())
-		return &pluginv1.UsageReport{}
+		return &pluginv1.UsageReport{}, nil
 	}
 	model := in.GetMeta().GetModel()
-	spec := readVideoSpec(in.GetFields())
-	est := estimateVideo(model, spec)
+	est, err := estimateVideo(model, readVideoSpec(in.GetFields()))
+	if err != nil {
+		return nil, err
+	}
 	if len(est.Assumed) > 0 {
 		// The one line that explains an unexpectedly large pre-charge. An
 		// estimate that had to bound something is not an error - a client may
@@ -244,7 +250,7 @@ func (p *Plugin) videoUsage(in *pluginv1.ExtractUsageRequest) *pluginv1.UsageRep
 			NextCheckAfterSec: firstCheckSec,
 			DeadlineSec:       DeadlineSec,
 		},
-	}
+	}, nil
 }
 
 // ---------------------------------------------------------------- reconcile

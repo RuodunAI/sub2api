@@ -12,7 +12,7 @@ import (
 
 func TestVideoBillingFacts(t *testing.T) {
 	p := New()
-	r := p.videoUsage(&pluginv1.ExtractUsageRequest{
+	r := mustVideoUsage(t, p, &pluginv1.ExtractUsageRequest{
 		Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-5"}, Status: 200, Body: []byte(`{"id":"task"}`),
 		Fields: map[string]string{"resolution": `"720p"`, "ratio": `"16:9"`, "duration": "5", "content.#.type": `["video_url"]`, "draft": "true"},
 	})
