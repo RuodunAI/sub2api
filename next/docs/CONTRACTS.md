@@ -8097,7 +8097,7 @@ message UpstreamRequest {
 - 请求头的名和值能被传输层发送；方法合法。
 - `response_stream` 是核心认识的格式（现有 `aws-eventstream-chunk`，§109.2）；WebSocket 轮次上给了任何格式都拒绝。
 - 类型声明了模型可用性时，`upstream_model`（非空时）必须等于核心算的上游模型，不一致按模型可用性的失配处理。
-- URL 的主机必须是清单 `externalServices` 之一（含子域）或账号自己的上游地址的主机（`manifest.UpstreamHostAllowed`，§112.17），之后过 SSRF 规则（§43.4 的 `netguard.CheckHostVia`：直连检查解析出的地址；经代理时本机不解析，只拒绝字面的私网地址和 `localhost`；“允许私网”按账号所在范围）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
+- URL 的主机必须是清单 `externalServices` 之一（含子域）或账号自己的上游地址的主机（`manifest.UpstreamHostAllowed`，§112.17），之后过 SSRF 规则（§43.4 的 `netguard.CheckHostVia`：直连检查解析出的地址；经代理时本机不解析，只拒绝字面的私网地址和 `localhost`；“允许私网”只看全局的 `SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM`（`AllowPrivateUpstream`），不按账号或它所在的范围放开，与 §43.4、§117 一致）。WebSocket 的握手必须是 GET，地址是 `ws(s)://` 或 `http(s)://`；之后的轮次不用 URL 和头。
 - **不检查请求体**：核心不再解析插件交回的字节，不比较模型引用、流式标志或可计量性。这些是插件的责任，由一致性套件第 3 条检查（模型引用与交入的一致、交入时流式为真交回仍为真、合法 JSON、没有重复键）。
 
 网关拒绝的请求在插件一侧是 `INVALID_ARGUMENT`，`Execute` 若随后失败，这次尝试按插件不可用换号，什么都没发出。
@@ -8108,7 +8108,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 
 - 主机：清单 `externalServices` 之一或其子域，**或者是这次调用的账号自己的上游地址的主机**（账号类型 `upstreamFields` 声明的字段，从账号的设置和凭证里读；只比主机名，不比端口，不含子域）。其他主机 `PERMISSION_DENIED`。
 - 主机规则是 `manifest.Manifest.UpstreamHostAllowed`（中继与 `SendAccountRequest` 用同一个，§112.17），核心（`grpcruntime/execute.go` 的 `requireFetchHost`）和 SDK 的假宿主共用。
-- 核心经账号代理、过 SSRF（账号地址指向私网时按账号所在范围的“允许私网”判断）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；插件不能设超时（`ExecutionHTTPRequest.options` 字段 6 与 `UpstreamOptions` 已删除，`reserved`）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
+- 核心经账号代理、过 SSRF（同 §112.5：账号地址指向私网时只有全局的 `AllowPrivateUpstream` 放行，没有按账号范围的“允许私网”）、不跟随重定向、不重试；**不套**运营方的透传和覆盖；拒绝 `Host`、hop-by-hop、代理认证头和不是 HTTP 的头名或值。超时：`Execute` 期间是这次尝试的响应头超时和 `relay_timeout_seconds`（未设置时没有整体超时，此前默认 5 分钟），`Monitor` 期间 20 秒；插件不能设超时（`ExecutionHTTPRequest.options` 字段 6 与 `UpstreamOptions` 已删除，`reserved`）。网关和用量模块的取回是同一份实现 `internal/execfetch`（此前两份各自漂移：`Execute` 的取回允许插件设 `Host`、把传输错误原文交给插件）；传输失败的文字固定为 `execution HTTP request failed`，原因只进核心日志。
 - 不限次数、不限大小（转发 V2 收尾起，所有者决定，§112.16）：一次调用取回多少次都行，回答整份交还（读不完整是传输错误；`ExecutionHTTPResponse.truncated` 已删除）；请求体、URL、请求头不限大小，方法不按名单检查（`net/http` 自己拒绝不合法的方法）。此前每次调用最多 8 个、回答 8 MiB 截断、请求体不超过请求体上限、URL 8 KiB、请求头 64 个 / 32 KiB、回答头截到 64 个 / 32 KiB，`pluginsdk.FetchLimit`、`FetchResponseLimit` 已删除。传输失败回 `status = 0` 加 `transport_error`，不是 RPC 错误。不需要 `net` 授权。
 - 签名：`sdk/reqsign.SignAWSSigV4` 对插件构造的 `*http.Request` 签名，`reqsign.AWSSigV4Headers(req)` 给出签名写入或覆盖的头（`Authorization`、`X-Amz-Date`、有会话令牌时的 `X-Amz-Security-Token`、被签名的 `Content-Type`），插件把它们作为权威头、把签过的 URL 交给中继。核心发送前重新解析 URL，路径要写成线上的样子。
 
