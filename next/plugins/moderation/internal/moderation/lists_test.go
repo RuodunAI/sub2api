@@ -3,7 +3,6 @@ package moderation
 import (
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -324,32 +323,6 @@ func TestBusyUsesHandling(t *testing.T) {
 		t.Fatalf("in flight = %d after the busy answers", p.inflightBytes.Load())
 	}
 	p.inflightBytes.Store(0)
-}
-
-// The retired user lists are read for the one-time import only:
-// exempt_user_ids while allowlist_user_ids is absent (null counts as
-// absent), entries that are no user id counted.
-func TestRetiredListsDecoding(t *testing.T) {
-	for _, tc := range []struct {
-		raw          string
-		allow, block []int64
-		invalid      int
-	}{
-		{`{"exempt_user_ids":["7",8," 9 ","x","",1.5,"0"]}`, []int64{7, 8, 9}, nil, 3},
-		{`{"exempt_user_ids":["7"],"allowlist_user_ids":["11","12"]}`, []int64{11, 12}, nil, 0},
-		{`{"exempt_user_ids":["7"],"allowlist_user_ids":[]}`, nil, nil, 0},
-		{`{"exempt_user_ids":["7"],"allowlist_user_ids":null}`, []int64{7}, nil, 0},
-		{`{"allowlist_user_ids":["3"],"blocklist_user_ids":["4",5,"y","12345678901234567890"]}`, []int64{3}, []int64{4, 5}, 2},
-		{`{}`, nil, nil, 0},
-	} {
-		s, err := DecodeSettings([]byte(tc.raw))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(s.lists.allow, tc.allow) || !slices.Equal(s.lists.block, tc.block) || s.lists.invalid != tc.invalid {
-			t.Errorf("%s: %+v", tc.raw, s.lists)
-		}
-	}
 }
 
 // A simulation without a user state follows the default level; an explicit

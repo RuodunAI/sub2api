@@ -285,13 +285,11 @@ func startNode(t *testing.T, fh *pluginsdktest.FakeHost, cfg any, opts ...nodeOp
 }
 
 // startDB starts a plugin instance with settings on a host of its own with
-// a fresh database (newDBHost), once its one-time upgrade is done: the list
-// import would otherwise remove the entries a test locks meanwhile.
+// a fresh database (newDBHost).
 func startDB(t *testing.T, settings map[string]any, opts ...nodeOpt) (*Plugin, *pluginsdktest.Harness, *pluginsdktest.FakeHost) {
 	t.Helper()
 	fh := newDBHost(t)
 	p, h := startNode(t, fh, settings, opts...)
-	waitFor(t, "the one-time upgrade", p.upgraded.Load)
 	return p, h, fh
 }
 
@@ -740,12 +738,12 @@ func TestConfigValidation(t *testing.T) {
 
 func TestBansExemptAndModeOff(t *testing.T) {
 	mod := newFakeMod(t)
-	// exempt_user_ids is the older name of the allowlist, imported on the
-	// first start (upgradeOnce): user 8 is moderated after the request and
-	// recorded, but never watched automatically, refused or banned.
-	p, h, _ := startDB(t, map[string]any{"mode": ModeObserve, "ban_threshold": 2, "exempt_user_ids": []string{"8"}})
+	// User 8 is on the background-only list (allowlist): moderated after
+	// the request and recorded, but never watched automatically, refused or
+	// banned.
+	p, h, _ := startDB(t, map[string]any{"mode": ModeObserve, "ban_threshold": 2})
 	setupFlow(t, h, mod.srv.URL, []int64{0}, CombineAny, []string{AuditorOpenAI})
-	waitFor(t, "the imported list", func() bool { return p.userLock(8) == LockAllowlist })
+	lockUser(t, h, 8, LockAllowlist)
 	mustHook(t, h, hookReq("MOD-HIT-sexual 1"))
 	mustHook(t, h, hookReq("MOD-HIT-sexual 2"))
 	waitFor(t, "auto ban", func() bool { return p.isBlocked(3) })

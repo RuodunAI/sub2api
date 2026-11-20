@@ -347,7 +347,6 @@ on('GET', '/p/moderation/status', () => {
     today_from: DAY_START(),
     watch: { watching: observe.length, watching_with_new: observe.filter((w) => w.hits_since_seen).length, blocking: watch.filter((w) => w.level === 'enforce').length },
     stale_bindings: allBindings().filter((b) => fallbackReason(b.flow_id)).length,
-    lists_imported: true,
     auditors: [health(1, 1820, 64, 2), health(2, 64, 41, 9, 3), health(4, 0, 0, 0)],
     channels: [health(1, 1820, 0, 2), health(2, 64, 0, 9), health(5, 2, 0, 0)],
     funnels: [
@@ -446,7 +445,7 @@ const SETTINGS_KEYS = [
   'ban_window_seconds', 'ban_duration_hours', 'error_rate_alert_percent', 'notify_webhook_url', 'notify_webhook_secret', 'record_pass', 'record_overturned',
   'record_errors', 'store_text', 'record_pass_input_message', 'hit_retention_days', 'overturned_retention_days', 'error_retention_days', 'pass_retention_days',
   'stats_retention_days', 'max_concurrency', 'queue_size', 'ttft_timeout_ms', 'verdict_cache_days', 'hit_replay', 'cache_entries', 'input_max_chars',
-  'input_max_chunks', 'input_overflow', 'input_max_images', 'max_inflight_mb', 'error_text_max_chars', 'min_chars', 'jev_default_set', 'api_key'
+  'input_max_chunks', 'input_overflow', 'input_max_images', 'max_inflight_mb', 'error_text_max_chars', 'min_chars', 'jev_default_set'
 ]
 // Native settings edited on the plugin's own page (CONTRACTS §75.5).
 const settingsView = () => ({

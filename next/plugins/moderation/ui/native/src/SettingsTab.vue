@@ -29,7 +29,6 @@ import {
 } from './settingsForm'
 import type { SectionKey } from './nav'
 import { useAsync } from './useAsync'
-import { listsImportPending, useStatus } from './status'
 import { fetchDefaults, fetchPluginSettings, savePluginSettings, toastError, useModHost } from './host'
 import type { JevQuestions } from './types'
 
@@ -45,8 +44,6 @@ import type { JevQuestions } from './types'
 // currentSettings): retired keys are shown folded into their new keys and
 // any save drops the keys the plugin no longer accepts and the 0.1 API key.
 // The user lists are the locked entries of the watch list (userLock.ts).
-// Until the status says the one-time import of the lists of the stored
-// settings is done, the page does not save (a save would drop them).
 // Under the cache days, moderation:manage users can empty the verdict cache
 // of every node (VerdictCacheRow).
 //
@@ -75,9 +72,6 @@ const form = useForm({
   serverErrors: () => serverErrors.value
 })
 const saving = ref(false)
-/** The status (loaded by the dashboard) says the lists are not imported yet: no save. */
-const status = useStatus()
-const listsPending = computed(() => listsImportPending(status.data.value))
 
 /** The stored values when the page loaded (currentSettings), and this page's values then (what a save compares with). */
 let loaded: Record<string, unknown> = {}
@@ -117,7 +111,6 @@ const unit = (k: string) => {
 
 /** Called by the form's submit once its rules passed (the plugin checks again). */
 async function save() {
-  if (listsPending.value) return
   serverErrors.value = {}
   const current = pageValues()
   saving.value = true
@@ -208,7 +201,6 @@ const jevOptions = computed(() => [
     <SAlert v-else-if="error" tone="danger">{{ error }}</SAlert>
     <SForm v-else :form="form" @submit="save">
       <div class="mod-form mod-form-page">
-        <SAlert v-if="listsPending" tone="warning">{{ t('settingsTab.listsPending') }}</SAlert>
         <SSettingsGroup v-for="g in sections" :key="g.id" :title="t(`settingsTab.section.${g.id}.title`)" :description="sectionDescription(g)">
           <template v-for="k in g.keys" :key="k">
             <SSettingRow :prop="k" :label="label(k)" :description="help(k)" :stacked="['url', 'secret', 'jev'].includes(specOf(k).kind)" :data-testid="`mod-setting-${k}`">
@@ -259,7 +251,7 @@ const jevOptions = computed(() => [
 
         <div class="mod-editor-footer">
           <SHint v-if="dirty" size="xs" tone="warning" class="mod-mr-auto">{{ t('settingsTab.unsaved') }}</SHint>
-          <SButton type="submit" variant="primary" :loading="saving" :disabled="listsPending">{{ t('save') }}</SButton>
+          <SButton type="submit" variant="primary" :loading="saving">{{ t('save') }}</SButton>
         </div>
       </div>
     </SForm>

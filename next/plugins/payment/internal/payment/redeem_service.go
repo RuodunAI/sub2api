@@ -38,15 +38,19 @@ func GenerateRedeemCode() (string, error) {
 	return strings.ToUpper(hex.EncodeToString(b)), nil
 }
 
-// GenerateCodesRequest represents batch code generation request
+// GenerateCodesRequest represents batch code generation request. Type
+// defaults to balance, the only type a redemption grants.
 type GenerateCodesRequest struct {
-	Count        int             `json:"count"`
-	Type         string          `json:"type"`
-	Value        decimal.Decimal `json:"value"`
-	GroupID      *int64          `json:"group_id,omitempty"`
-	ValidityDays int             `json:"validity_days,omitempty"`
-	ExpiresAt    *time.Time      `json:"expires_at,omitempty"`
-	Notes        string          `json:"notes,omitempty"`
+	Count     int             `json:"count"`
+	Type      string          `json:"type"`
+	Value     decimal.Decimal `json:"value"`
+	ExpiresAt *time.Time      `json:"expires_at,omitempty"`
+	Notes     string          `json:"notes,omitempty"`
+}
+
+// errUnsupportedRedeemType refuses a code type no redemption grants.
+func errUnsupportedRedeemType(t string) error {
+	return fmt.Errorf("unsupported code type %q: only %q is supported", t, RedeemTypeBalance)
 }
 
 // GenerateCodes generates multiple redeem codes
@@ -62,6 +66,12 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 	if req.Value.LessThanOrEqual(decimal.Zero) {
 		return nil, fmt.Errorf("invalid value: must be positive")
 	}
+	if req.Type == "" {
+		req.Type = RedeemTypeBalance
+	}
+	if req.Type != RedeemTypeBalance {
+		return nil, errUnsupportedRedeemType(req.Type)
+	}
 
 	var codes []RedeemCode
 	err = inTx(db, func(tx *gorm.DB) error {
@@ -73,11 +83,8 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 
 			codeHash := HashRedeemCode(code)
 
-			// A map rather than a model: GORM would store the column
-			// default for an empty type ('balance'), this stores ''.
 			row := map[string]any{"code": code, "code_hash": codeHash, "type": req.Type, "value": req.Value,
-				"group_id": req.GroupID, "validity_days": req.ValidityDays, "status": RedeemStatusUnused,
-				"expires_at": req.ExpiresAt, "notes": req.Notes}
+				"status": RedeemStatusUnused, "expires_at": req.ExpiresAt, "notes": req.Notes}
 			err = tx.Model(&model.RedeemCode{}).
 				Clauses(clause.Returning{Columns: []clause.Column{{Name: "id"}, {Name: "created_at"}}}).Create(row).Error
 			if err != nil {
@@ -85,17 +92,15 @@ func (s *RedeemService) GenerateCodes(ctx context.Context, req GenerateCodesRequ
 			}
 
 			rc := RedeemCode{
-				ID:           row["id"].(int64),
-				Code:         code,
-				CodeHash:     codeHash,
-				Type:         req.Type,
-				Value:        req.Value,
-				GroupID:      req.GroupID,
-				ValidityDays: req.ValidityDays,
-				Status:       RedeemStatusUnused,
-				ExpiresAt:    req.ExpiresAt,
-				Notes:        req.Notes,
-				CreatedAt:    row["created_at"].(time.Time),
+				ID:        row["id"].(int64),
+				Code:      code,
+				CodeHash:  codeHash,
+				Type:      req.Type,
+				Value:     req.Value,
+				Status:    RedeemStatusUnused,
+				ExpiresAt: req.ExpiresAt,
+				Notes:     req.Notes,
+				CreatedAt: row["created_at"].(time.Time),
 			}
 			codes = append(codes, rc)
 		}
@@ -140,6 +145,10 @@ func (s *RedeemService) RedeemCode(ctx context.Context, userID int64, code strin
 			}
 			return fmt.Errorf("code not available")
 		}
+		// A code a redemption grants nothing for stays unused.
+		if rc.Type != RedeemTypeBalance {
+			return errUnsupportedRedeemType(rc.Type)
+		}
 
 		// Mark as used
 		now = time.Now()
@@ -149,10 +158,6 @@ func (s *RedeemService) RedeemCode(ctx context.Context, userID int64, code strin
 			return fmt.Errorf("update code: %w", err)
 		}
 
-		// Credit balance (only for balance type)
-		if rc.Type != RedeemTypeBalance {
-			return nil
-		}
 		resp, err := s.credit(ctx, pluginsdk.LedgerChange{
 			UserID:         userID,
 			Amount:         rc.Value.String(),
@@ -205,7 +210,7 @@ func (s *RedeemService) ListCodes(ctx context.Context, status string, limit, off
 
 // selectRedeemCodes is the column list shared by the admin list statements
 // and the redemption.
-const selectRedeemCodes = `id, code_hash, type, value, group_id, validity_days,
+const selectRedeemCodes = `id, code_hash, type, value,
 	status, used_by, used_at, expires_at, notes, created_at`
 
 // GetUserRedeemHistory returns user's redeem history
@@ -229,30 +234,27 @@ func (s *RedeemService) GetUserRedeemHistory(ctx context.Context, userID int64, 
 }
 
 // selectUserRedeemHistory is the column list of the user's own history: fewer
-// columns than the admin list, and no group/validity/expiry detail.
+// columns than the admin list, and no expiry detail.
 const selectUserRedeemHistory = `id, code_hash, type, value, status, used_at, notes, created_at`
 
 // redeemCodes selects from redeem_codes.
 func redeemCodes(db *gorm.DB) *gorm.DB { return db.Model(&model.RedeemCode{}) }
 
-// redeemCodeOf is the redeem code of a row; NULL validity and notes read as
-// zero values.
+// redeemCodeOf is the redeem code of a row; NULL notes read as empty.
 func redeemCodeOf(r model.RedeemCode) RedeemCode {
 	return RedeemCode{
-		ID:           r.ID,
-		Code:         r.Code,
-		CodeHash:     r.CodeHash,
-		Type:         r.Type,
-		Value:        r.Value,
-		GroupID:      r.GroupID,
-		ValidityDays: deref(r.ValidityDays),
-		Status:       r.Status,
-		UsedBy:       r.UsedBy,
-		UsedAt:       r.UsedAt,
-		ExpiresAt:    r.ExpiresAt,
-		Notes:        deref(r.Notes),
-		CreatedAt:    r.CreatedAt,
-		UpdatedAt:    r.UpdatedAt,
+		ID:        r.ID,
+		Code:      r.Code,
+		CodeHash:  r.CodeHash,
+		Type:      r.Type,
+		Value:     r.Value,
+		Status:    r.Status,
+		UsedBy:    r.UsedBy,
+		UsedAt:    r.UsedAt,
+		ExpiresAt: r.ExpiresAt,
+		Notes:     deref(r.Notes),
+		CreatedAt: r.CreatedAt,
+		UpdatedAt: r.UpdatedAt,
 	}
 }
 

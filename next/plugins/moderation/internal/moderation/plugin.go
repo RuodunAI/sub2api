@@ -62,16 +62,8 @@ type Plugin struct {
 	watchMu      sync.Mutex
 	watchVersion atomic.Int64
 
-	// upgraded: the one-time steps of the 0.11.0 upgrade ran (upgradeOnce).
-	upgraded atomic.Bool
-	// parityDone: the one-time 0.8.0 conversion of the watch list ran
-	// (convertParityOnce).
-	parityDone atomic.Bool
-	// parityEnd: when the conversion stops looking for entries added by
-	// 0.7.x nodes (unix nanoseconds; read once parityDone is set).
-	parityEnd atomic.Int64
-	// configured: Configure ran at least once, so the one-time conversions
-	// see the real settings and not the defaults.
+	// configured: Configure ran at least once, so the config replaced is
+	// the real settings and not the defaults.
 	configured atomic.Bool
 
 	// Post queue: workers = max_concurrency, capacity = queue_size.

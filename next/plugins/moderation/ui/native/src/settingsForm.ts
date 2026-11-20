@@ -139,8 +139,13 @@ export const pageKeys = (page: string): SettingKey[] => sectionsOf(page).flatMap
  * The stored 0.1 API key: no longer read, listed in the manifest's
  * ui.settings.secrets only so the core keeps masking it in GET /settings.
  * currentSettings drops it, so every save removes it (a key absent from the
- * PUT is deleted; it cannot be typed again, and a caller with only
+ * PUT is deleted; the plugin refuses it, and a caller with only
  * moderation:manage would otherwise be asked to re-enter it, §75.1).
+ *
+ * Transitional: 0.12.1's settings form declared it and kept a stored one on
+ * every save, so stored settings may still hold it. Remove it, and the
+ * manifest's secret, in the first release after every deployment has saved
+ * its moderation settings once under 0.13.0 (CONTRACTS §72.10).
  */
 export const LEGACY_KEY = 'api_key'
 export const CACHE_DAYS_KEY = 'verdict_cache_days'
@@ -156,7 +161,9 @@ const numberTo = (f: (n: number) => number) => (v: unknown) => (typeof v === 'nu
 /**
  * Retired keys and the key that replaced each, with the conversion of a
  * stored value; the plugin reads them the same way until they are saved
- * (settings.go retiredKeys).
+ * (settings.go retiredKeys). Transitional, removed with retiredKeys: in the
+ * first release after every deployment has saved its moderation settings
+ * once under 0.13.0 (CONTRACTS §72.10).
  */
 export const RETIRED: Readonly<Record<string, { key: SettingKey; convert: (v: unknown) => unknown }>> = {
   // 0 = cache off, else whole days, rounded up, at most 7 (the old maximum of 604800 s)

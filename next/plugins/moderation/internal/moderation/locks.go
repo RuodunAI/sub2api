@@ -29,20 +29,16 @@ const (
 
 // lockList is a list: the level of its entries and the history reasons.
 type lockList struct {
-	level                              string
-	added, imported, unlisted, removed string
+	level          string
+	added, removed string
 }
 
 var lockLists = map[string]lockList{
 	LockAllowlist: {LevelObserve,
 		"加入只后台审核名单 / added to the background-only list",
-		"从设置导入只后台审核名单 / imported from the background-only list of the settings",
-		"从设置导入名单：不在只后台审核名单上 / imported from the settings: not on the background-only list",
 		"移出只后台审核名单 / removed from the background-only list"},
 	LockBlocklist: {LevelEnforce,
 		"加入总是先审名单 / added to the always-check-first list",
-		"从设置导入总是先审名单 / imported from the always-check-first list of the settings",
-		"从设置导入名单：不在总是先审名单上 / imported from the settings: not on the always-check-first list",
 		"移出总是先审名单 / removed from the always-check-first list"},
 }
 

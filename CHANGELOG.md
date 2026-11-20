@@ -8,6 +8,25 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 审核插件删掉更早版本的升级代码（moderation 0.13.0；无迁移，随 0.1.304 发布）
+
+- 删除 0.8.0 的观察名单转换、0.11.0 从设置导入名单（连同只给它读的 `allowlist_user_ids`、`exempt_user_ids`、`blocklist_user_ids`）和 0.1 单模型设置的错误日志；`GET /status` 不再有 `lists_imported`，设置页也不再因“名单导入尚未完成”而不能保存。线上的 0.12.1 早已做完这些一次性步骤（两个部署都以 0.12.1 运行过，代码与删除前相同）。
+- 设置接口不再接受 0.1 的 `api_key`（`ValidateSettings` 回 `unknown`；控制台保存时本来就去掉它）。
+- 保留为过渡代码：已存设置里的 `cache_ttl_seconds`、`ban_window_hours`、`retention_days` 仍在新键不存在时读（控制台保存时折算进新键），已存的 `api_key` 仍由核心遮蔽。所有部署都在 0.13.0 下保存过一次审核设置之后的下一个版本删除。规则见 CONTRACTS §72.10。
+- **升级须知**：只能从 moderation 0.12.1 升级（更早的版本先升到 0.12.1）。升级后在审核设置的任一页点一次“保存”（不用改值：没有改动时页面照样写回去掉、折算后的设置），已存设置里的旧键与 `api_key` 就被去掉；之后 `GET /api/v1/plugins/moderation/settings` 的 `values` 里应没有上面四个键。
+
+### 兑换码只有余额一种，兑换不了的码不再被用掉（payment 0.2.0；无迁移）
+
+- 生成兑换码（`POST /redeem-codes`）时 `type` 不写即为 `balance`，写了别的值 400 `unsupported code type`；不再接受 `group_id`、`validity_days`（从没生效过），管理员列表不再返回 `validity_days`。此前不写 `type` 存成空串，`subscription`、`invitation` 或任意字符串也照收。
+- 兑换时先查类型：不是 `balance` 的码返回 400 `unsupported code type`，码保持未使用。此前这样的码被标成已用、接口返回成功，余额却没有变化。new-api 的兑换码同样只给额度。规则见 CONTRACTS §46.6。
+- **升级须知**：库里已有类型不是 `balance` 的未用兑换码（直接调接口生成时没带 `type`，或带了别的类型）的，升级后兑换会被拒、码不再被消耗；需要时作废它们，按 `balance` 重新生成。查询：`SELECT id, type, value FROM plg_payment__redeem_codes WHERE status = 'unused' AND type <> 'balance'`。
+
+### 审核 OpenAI 生图的提示词（moderation 0.13.0；无迁移，随 0.1.304 发布）
+
+- 审核钩子（调度前的 `moderation` 与按账号的 `moderation_attempt`）加上 `openai.images`、`openai.images_edit`：审 `prompt`，JSON 形式的 edits 另审 `images[].image_url` 的图片（`file_id` 引用和 `mask` 不审）。此前删除 volcengine 时一并删掉了生图提示词的审核，而本批新开放的 OpenAI 生图（OpenAI API Key 账号、codex 账号经转换）只经过封禁钩子，拦截级用户发到 `/v1/images/generations`、`/v1/images/edits` 的违规提示词不审、也不留记录。new-api 对生图请求同样检查提示词。规则见 CONTRACTS §72.3、72.4。
+- 钩子 `needs` 与 `gateway.hook` 的 `scope.fields` 加 `prompt|@this`、`images|@this`。moderation 是内置插件，随镜像升级时由系统同意，不需要管理员重新批准。
+- 生图请求的审核记录 `input_format` 为 `openai.images` / `openai.images_edit`；审核按流程的范围照常执行，提示词和图片都算用户内容，三种范围都审。
+
 ### 一个事务里多次升授权版本时，节点不再先等自己还没提交的版本（核心；无迁移，随 0.1.304 发布）
 
 插件升级的激活（`ApplyDefaults` 的 `SyncPlugin` 加 `SetPluginActive`）、带角色授予的同意（`CanGrantToRoles` 加 `SyncPlugin`）、复核授予多个键等，在同一个事务里升两次以上版本。第二次升版本时节点把第一次（同一事务、尚未提交）的版本当成已提交，enforcer 读不到它，反复记 `casbinx: … the database is at authz version N, below M heard of`，本节点的权限判断等到提交才恢复；事务回滚时这个版本永远不会出现，本节点所有判断返回 503，直到另有授权写入提交到该版本或重启核心。现在只把别的事务提交的版本当成已知（CONTRACTS §99.4 原本的约定）。与数据库是否从备份恢复无关。
@@ -127,7 +146,7 @@
 - 插件键 `volcengine` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.12.x 包同样被拒）；平台 `volcengine` 不再保留给它。
 - **迁移 0119**（`0119_drop_volcengine_plugin.sql`）：装过它的库像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予、事件游标）、它的权限（`assets:read`、`assets:manage`）与授予、出网域名、任务、插件迁移记录和 schema `plg_volcengine`（素材库的本地索引；素材本身还在火山引擎），键记入 `plugin_key_retirements`；可以重跑。它的账号、使用记录、账本、审计日志保留。
 - 原来随这一批发布的迁移 0118（清掉方舟 API Key 账号设置里的前缀键）一并撤回，原 0119 改号为 0118。
-- moderation 0.13.0：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `prompt`、`content`、`image` 三个字段（`gateway.hook` 的字段范围随之变小）。
+- moderation 0.13.0：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `content`、`image` 两个字段（`gateway.hook` 的字段范围随之变小）；`prompt` 改为审 OpenAI 生图时读取（见上面“审核 OpenAI 生图的提示词”）。
 - SDK：`providers/volcengine` 删除；`providers/openai.StreamUsage` 并入 `IncludeStreamUsage`。e2e 的异步视频任务用例 AC24 删除，AC43 改用 codex 账号。
 
 **升级须知**：

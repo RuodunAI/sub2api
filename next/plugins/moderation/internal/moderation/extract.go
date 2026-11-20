@@ -28,12 +28,14 @@ const (
 	FieldContents           = "contents|@this"
 	FieldSystemInstruction  = "systemInstruction|@this"
 	FieldSystemInstruction2 = "system_instruction|@this"
+	FieldPrompt             = "prompt|@this"
+	FieldImages             = "images|@this"
 )
 
 // HookFields are the needs of the moderation hook, in manifest order.
 var HookFields = []string{
 	FieldModel, FieldSystem, FieldMessages, FieldTools, FieldInput, FieldInstructions,
-	FieldContents, FieldSystemInstruction, FieldSystemInstruction2,
+	FieldContents, FieldSystemInstruction, FieldSystemInstruction2, FieldPrompt, FieldImages,
 }
 
 // Hook ids (manifest hooks[].id).
@@ -58,6 +60,7 @@ const (
 	familyChat      = "chat"
 	familyResponses = "responses"
 	familyGemini    = "gemini"
+	familyImages    = "images"
 )
 
 var protocolFamilies = map[string]string{
@@ -67,13 +70,15 @@ var protocolFamilies = map[string]string{
 	"openai.responses_ws":    familyResponses,
 	"gemini.generate":        familyGemini,
 	"gemini.stream_generate": familyGemini,
+	"openai.images":          familyImages,
+	"openai.images_edit":     familyImages,
 }
 
 // ModeratedProtocols are the protocols whose content is moderated (the
 // moderation hook's match.protocols).
 var ModeratedProtocols = []string{
 	"anthropic.messages", "openai.chat", "openai.responses", "openai.responses_ws",
-	"gemini.generate", "gemini.stream_generate",
+	"gemini.generate", "gemini.stream_generate", "openai.images", "openai.images_edit",
 }
 
 // Message formats of a saved input_message (record detail).
@@ -198,6 +203,13 @@ func extractPieces(protocol string, f map[string]string) (pieces []piece, modera
 			e.geminiParts(geminiRole(c.Get("role").String()), c.Get("parts"))
 		}
 		e.tools(get(FieldTools))
+	case familyImages:
+		// The prompt, and the input images of a JSON edit
+		// (images: [{image_url | file_id}]; a file_id is not readable).
+		e.content(RoleUser, get(FieldPrompt))
+		for _, img := range arr(get(FieldImages)) {
+			e.image(RoleUser, imageFromURL(img.Get("image_url").String()))
+		}
 	default:
 		return nil, false
 	}

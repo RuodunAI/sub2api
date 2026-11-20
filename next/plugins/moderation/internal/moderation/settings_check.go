@@ -57,8 +57,6 @@ var settingsRules = fieldcheck.Fields{
 	"min_chars":                 fieldcheck.Integer().Range(0, 1000),
 	// null (the built-in set) or a question table: checkJevSet.
 	"jev_default_set": fieldcheck.Any(),
-	// The 0.1 API key: no longer read, kept only so the core masks it.
-	"api_key": fieldcheck.String().MaxLen(1000),
 }
 
 // jevSetRules and jevItemRules are a jev_default_set table and one of its

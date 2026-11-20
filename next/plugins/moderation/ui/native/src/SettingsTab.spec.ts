@@ -28,7 +28,7 @@ beforeEach(() => {
   for (const f of [coreGet, corePut, pluginGet, toast]) f.mockReset()
   coreGet.mockImplementation(async () => ({ values: structuredClone(stored), secret_fields: ['api_key', 'notify_webhook_secret', 'notify_webhook_url'] }))
   corePut.mockImplementation(async () => ({ values: stored }))
-  pluginGet.mockImplementation(async (path) => (path === '/jev/default-questions' ? { builtin: BUILTIN, builtin_version: 'v3', openai_categories: ['violence', 'hate'] } : path === '/status' ? { lists_imported: true } : []))
+  pluginGet.mockImplementation(async (path) => (path === '/jev/default-questions' ? { builtin: BUILTIN, builtin_version: 'v3', openai_categories: ['violence', 'hate'] } : []))
   const t = (key: string, p?: Record<string, unknown>) => (p ? `${key} ${JSON.stringify(p)}` : key)
   setHost({
     t,

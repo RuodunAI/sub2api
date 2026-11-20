@@ -649,8 +649,6 @@ func (p *Plugin) refreshLoop(ctx context.Context) {
 		case <-p.refreshNow:
 		}
 		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		p.upgradeOnce(rctx)
-		p.convertParityOnce(rctx)
 		if err := p.reloadBlocks(rctx); err != nil && ctx.Err() == nil {
 			p.log.Debug("moderation: block list reload failed", "error", err.Error())
 		}

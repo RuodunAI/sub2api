@@ -67,6 +67,14 @@ var scopeCases = []struct {
 		input: []string{"system:SYS", "user:U1"},
 		tools: []string{"system:SYS", "user:U1", "tool:OUT"},
 		all:   []string{"system:SYS", "user:U1", "assistant:CODE", "tool:OUT"}},
+	{protocol: "openai.images", body: `{"model":"gpt-image-2","prompt":"P","size":"1024x1024"}`,
+		input: []string{"user:P"}, tools: []string{"user:P"}, all: []string{"user:P"}},
+	// A JSON edit: an image by data URL or URL is read, a file_id is not.
+	{protocol: "openai.images_edit", body: `{"model":"gpt-image-2","prompt":"P","images":[{"image_url":"data:image/png;base64,AAAA"},
+		{"image_url":"https://x/y.png"},{"file_id":"file-1"}],"mask":{"image_url":"data:image/png;base64,MASK"}}`,
+		input: []string{"user:P", "user:image", "user:image"},
+		tools: []string{"user:P", "user:image", "user:image"},
+		all:   []string{"user:P", "user:image", "user:image"}},
 	// A role the client made up is kept by every scope.
 	{protocol: "openai.chat", body: `{"messages":[{"role":"narrator","content":"N"}]}`,
 		input: []string{"narrator:N"}, tools: []string{"narrator:N"}, all: []string{"narrator:N"}},

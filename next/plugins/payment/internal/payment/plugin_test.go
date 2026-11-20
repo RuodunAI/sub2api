@@ -3,6 +3,7 @@ package payment
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 	"github.com/shopspring/decimal"
+
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 )
 
 func TestPlugin_OrderCreationAndFulfillment(t *testing.T) {
@@ -181,6 +184,47 @@ func TestPlugin_RedeemCode(t *testing.T) {
 	}
 
 	t.Log("Redeem code test passed")
+}
+
+// A code is generated as balance, the only type a redemption grants, and a
+// code of any other type (stored by an older version) is refused at
+// redemption without being used up.
+func TestPlugin_RedeemCodeType(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	p, fakeHost := startDB(t)
+	ctx := context.Background()
+
+	codes, err := p.redeemService.GenerateCodes(ctx, GenerateCodesRequest{Count: 1, Value: decimal.NewFromInt(5)})
+	if err != nil || codes[0].Type != RedeemTypeBalance {
+		t.Fatalf("no type: codes %+v, err %v", codes, err)
+	}
+	if _, err := p.redeemService.RedeemCode(ctx, 4001, codes[0].Code); err != nil || len(hostCredits(fakeHost)) != 1 {
+		t.Fatalf("a code generated without a type: err %v, credits %d", err, len(hostCredits(fakeHost)))
+	}
+	if _, err := p.redeemService.GenerateCodes(ctx, GenerateCodesRequest{Count: 1, Type: "subscription", Value: decimal.NewFromInt(5)}); err == nil {
+		t.Fatal("a subscription code was generated")
+	}
+
+	for _, typ := range []string{"", "subscription"} {
+		code := "LEGACY" + strings.ToUpper(typ)
+		if err := mustDB(t, p).Model(&model.RedeemCode{}).Create(map[string]any{
+			"code": code, "code_hash": HashRedeemCode(code), "type": typ, "value": decimal.NewFromInt(5), "status": RedeemStatusUnused,
+		}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.redeemService.RedeemCode(ctx, 4002, code); err == nil || !strings.Contains(err.Error(), "unsupported code type") {
+			t.Fatalf("type %q redeemed: %v", typ, err)
+		}
+		var status string
+		if err := mustDB(t, p).Model(&model.RedeemCode{}).Where("code_hash = ?", HashRedeemCode(code)).Pluck("status", &status).Error; err != nil || status != RedeemStatusUnused {
+			t.Fatalf("type %q: status %q, err %v", typ, status, err)
+		}
+	}
+	if n := len(hostCredits(fakeHost)); n != 1 {
+		t.Fatalf("credits = %d, want 1", n)
+	}
 }
 
 func TestPlugin_RedeemCodeConcurrency(t *testing.T) {

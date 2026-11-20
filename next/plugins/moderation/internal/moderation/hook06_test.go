@@ -65,6 +65,8 @@ func TestHookModeratesWholeRequestWithSegmentCache(t *testing.T) {
 		{"tool result", "openai.chat", `{"messages":[{"role":"user","content":"go"},{"role":"tool","tool_call_id":"c","content":"MOD-HIT-hate tool"}]}`},
 		{"responses with a decoy messages array", "openai.responses", `{"messages":[{"role":"user","content":"benign"}],"input":"MOD-HIT-sexual real"}`},
 		{"gemini with a decoy messages array", "gemini.generate", `{"messages":[{"role":"user","content":"benign"}],"contents":[{"parts":[{"text":"MOD-HIT-sexual g"}]}]}`},
+		{"image prompt", "openai.images", `{"model":"gpt-image-2","prompt":"MOD-HIT-sexual picture"}`},
+		{"image edit prompt", "openai.images_edit", `{"model":"gpt-image-2","prompt":"MOD-HIT-violence edit","images":[{"image_url":"https://x/y.png"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if r := mustHook(t, h, rawReq(3, "", tc.protocol, tc.body)); !denied(r) || r.GetDenyCode() != DenyBlocked {
@@ -73,7 +75,7 @@ func TestHookModeratesWholeRequestWithSegmentCache(t *testing.T) {
 		})
 	}
 	// The record keeps the chunk that hit, with roles.
-	ev := waitEvents(t, h, map[string]string{"result": "block", "user_id": "3"}, 6)
+	ev := waitEvents(t, h, map[string]string{"result": "block", "user_id": "3"}, 8)
 	var prefill *EventListItem
 	for i := range ev {
 		if ev[i].InputFormat == "anthropic.messages" && ev[i].InputMessageSize > 0 {
