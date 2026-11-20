@@ -486,9 +486,8 @@ func (c *call) observeStreamEvent(u *usageAcc, cap *usageCapture, event string, 
 		c.observeRequest(observation.FirstStreamEvent, c.rec)
 	}
 	u.ApplySSE(event, data)
-	// Only the events the endpoint named are kept, and only while the caps
-	// allow: the stream itself is relayed and dropped, never accumulated
-	// (usageplugin.go).
+	// Only the events the endpoint named are kept: the stream itself is
+	// relayed and dropped, never accumulated (usageplugin.go).
 	if cap != nil && gjson.ValidBytes(data) {
 		cap.addEvent(usagerules.EventName(event, data), data)
 	}

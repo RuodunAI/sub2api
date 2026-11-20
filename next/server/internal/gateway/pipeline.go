@@ -121,7 +121,7 @@ type call struct {
 	session string
 	rec     *core.UsageRecord
 
-	// metaPathParams and metaQuery are the bounded maps handed to plugins in
+	// metaPathParams and metaQuery are the maps handed to plugins in
 	// RequestMeta; built once per request because meta() runs for every hook,
 	// ranker and upstream attempt. nil when the pattern has no parameters /
 	// the endpoint declares no request.queryParams.

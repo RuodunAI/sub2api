@@ -16,7 +16,7 @@ package gateway
 //     the attempt fails over without blaming the account.
 //   - Waiting (an endpoint whose usage the plugin reads, a task
 //     submission): Relay sends now, inside the plugin's call, and hands the
-//     bounded observation back (waited.go); the facts Execute returns are
+//     observation back (waited.go); the facts Execute returns are
 //     committed through core.ExecutionRecords before the buffered answer is
 //     published.
 

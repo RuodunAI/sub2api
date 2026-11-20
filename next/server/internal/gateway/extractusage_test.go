@@ -20,7 +20,7 @@ import (
 // Plugin-reported usage: an endpoint declaring usage.source "plugin" is
 // served in the wait form of Execute (CONTRACTS §25.3, design §4.3). The
 // plugin relays through ExecutionClient.Relay, which sends the request,
-// relays the answer and hands the plugin the bounded observation; the plugin
+// relays the answer and hands the plugin the observation; the plugin
 // reads the usage from it inside Execute (here fakeExecute calls the fake's
 // ExtractUsage) and returns it. The gateway commits those facts through
 // core.ExecutionRecords (the committed record lands on e.settler.ch like a
