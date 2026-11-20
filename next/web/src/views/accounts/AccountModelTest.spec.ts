@@ -50,7 +50,7 @@ describe('account model test without a time limit', () => {
     expect(signals).toHaveLength(1)
     expect(timeout).not.toHaveBeenCalled()
     expect(signals[0].aborted).toBe(false)
-    expect(w.get('[data-testid="model-test-stop"]').exists()).toBe(true)
+    expect(w.find('[data-testid="model-test-stop"]').exists()).toBe(true)
 
     await w.get('[data-row="gpt-image-1"] [data-testid="model-test-cancel"]').trigger('click')
     await flushPromises()
