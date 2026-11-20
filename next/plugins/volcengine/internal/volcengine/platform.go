@@ -190,10 +190,9 @@ var assetKeys = fieldcheck.Fields{
 // relaySpec describes the relay account type. Two deliberate differences from
 // spec:
 //
-//   - No DefaultBaseURL. A relay has no default address, so an account with no
-//     base_url is a misconfiguration rather than an official account, and
-//     relayBaseURL below says so instead of quietly sending a relay's key to
-//     Ark.
+//   - No DefaultBaseURL but RequireBaseURL. A relay has no default address,
+//     so an account with no base_url is refused instead of quietly sending a
+//     relay's key to Ark.
 //   - No Versions. On the apikey type, leaving a trailing /api/v3 out undoes
 //     a paste of Ark's documented SDK base URL. Here the base URL is the
 //     relay's root and the layout is named by api_prefix, so leaving anything
@@ -204,7 +203,9 @@ var assetKeys = fieldcheck.Fields{
 //
 // Its form also sends the relay's endpoints and the legacy prefixes
 // (checked by validatePrefixFields and the endpoint checks).
-var relaySpec = apikey.Spec{AccountType: AccountTypeRelay, Fields: relayFields()}
+var relaySpec = apikey.Spec{AccountType: AccountTypeRelay, RequireBaseURL: true, Fields: relayFields(),
+	Texts: apikey.Texts{BaseURLRequired: "base_url is required for a relay account - there is no default relay address / " +
+		"中转账号必须填写 base_url —— 中转站没有默认地址"}}
 
 func relayFields() fieldcheck.Fields {
 	fields := maps.Clone(assetKeys)
@@ -238,10 +239,6 @@ func accountConfig(acc *pluginv1.Account) (*apikey.Config, prefixes, error) {
 	cfg, err := sp.FromAccount(acc)
 	if err != nil {
 		return nil, prefixes{}, err
-	}
-	if acc.GetType() == AccountTypeRelay && cfg.BaseURL == "" {
-		return nil, prefixes{}, status.Errorf(codes.FailedPrecondition,
-			"account %d: a %s account needs a base_url - there is no default relay address", acc.GetId(), AccountTypeRelay)
 	}
 	px, err := prefixesOf(acc.GetType(), acc.GetSettingsJson())
 	if err != nil {
