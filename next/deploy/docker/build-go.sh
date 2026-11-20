@@ -103,9 +103,6 @@ ls -l "$OUT/market"
 # Sign in with Codex, docs/PLUGIN-CODEX.md) on the built-in openai platform:
 # enabled at install; it does nothing until an operator authorizes an account.
 #
-# volcengine is install-only: it does nothing until an operator adds an Ark
-# account (per-deployment credentials and base URL), so it ships with every
-# image but is enabled on purpose.
 # mailer is install-only: it provides the "email" notification channel
 # (CONTRACTS §74.4) and does nothing until an operator sets its SMTP server.
 # dynweight is install-only: once enabled it is called on every scheduled
@@ -122,7 +119,7 @@ ls -l "$OUT/market"
 # Intentionally NOT built in: relay (a market-only account type), guard (an
 # optional gateway hook).
 BUILTIN_PLUGINS=${BUILTIN_PLUGINS:-anthropic openai gemini moderation codex}
-BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-volcengine mailer dynweight newapi sub2api typesafe}
+BUILTIN_PLUGINS_INSTALL_ONLY=${BUILTIN_PLUGINS_INSTALL_ONLY:-mailer dynweight newapi sub2api typesafe}
 for name in $BUILTIN_PLUGINS_INSTALL_ONLY; do
   case " $BUILTIN_PLUGINS " in
     *" $name "*)

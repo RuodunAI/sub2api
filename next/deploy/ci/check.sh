@@ -68,11 +68,11 @@ mutation() {
   [ "$rc" -ne 0 ]
 }
 
-# Signed test packages for the bundled-plugin bootstrap (anthropic, volcengine).
+# Signed test packages for the bundled-plugin bootstrap (anthropic, openai).
 plugins() {
   set -e
   # pack compares the GORM models of every plugin with internal/model
-  # (anthropic, volcengine, guard) with its migrations, on PostgreSQL: the pg
+  # (anthropic, guard) with its migrations, on PostgreSQL: the pg
   # service of isolated-compose.yml, whose DSN the gotest container has. The
   # embedded fallback cannot run here (initdb refuses root).
   # pack also refuses a plugin whose native UI is not built (every plugin
@@ -86,8 +86,8 @@ plugins() {
   CGO_ENABLED=0 go build -o "$checks/sub2api-plugin" ./tools/sub2api-plugin
   [ -f "$checks/keys/managed-test.key" ] || "$checks/sub2api-plugin" keygen --key-id managed-test --out "$checks/keys" > "$out/plugin-keygen.log"
   mkdir -p "$checks/upload" "$checks/market"
-  # anthropic, volcengine and openai are bundled, guard is uploaded, relay comes from a market.
-  for spec in anthropic:builtin volcengine:builtin openai:builtin guard:upload relay:market; do
+  # anthropic and openai are bundled, guard is uploaded, relay comes from a market.
+  for spec in anthropic:builtin openai:builtin guard:upload relay:market; do
     p=${spec%%:*}; dest="$checks/${spec#*:}"
     "$checks/sub2api-plugin" build --dir "plugins/$p" --out "$checks/$p-runtime" > "$out/plugin-build-$p.log"
     pkg=$("$checks/sub2api-plugin" pack --dir "plugins/$p" --runtimes "$checks/$p-runtime" --out-dir "$dest")

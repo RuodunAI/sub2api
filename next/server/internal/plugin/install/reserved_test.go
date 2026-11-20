@@ -148,7 +148,7 @@ func TestReservedKeysAndPlatforms(t *testing.T) {
 		t.Fatalf("official upload of a reserved key: %v", err)
 	}
 	// A reserved platform id belongs to its plugin, whatever the channel.
-	m := renamePlatform(pkgtest.Platform("acme_video", "1.0.0", "acme"), "volcengine")
+	m := renamePlatform(pkgtest.Platform("acme_video", "1.0.0", "acme"), "typesafe")
 	if _, err := e.svc.Upload(ctx, pkgtest.Build(m, acme), e.admin, UploadOptions{Source: "market:1"}); errCode(err) != "plugin_key_reserved" {
 		t.Fatalf("reserved platform id: %v", err)
 	}
@@ -269,6 +269,16 @@ func TestReservedCoverRepo(t *testing.T) {
 	for key := range reservedKeys {
 		if !keys[key] {
 			t.Errorf("reserved key %q is no first-party plugin: remove it, or move it to removedKeys", key)
+		}
+	}
+	for id, owner := range reservedPlatforms {
+		if !keys[owner] {
+			t.Errorf("platform %q is reserved for %q, which is no first-party plugin", id, owner)
+		}
+	}
+	for id, owner := range reservedChannels {
+		if !keys[owner] {
+			t.Errorf("notification channel %q is reserved for %q, which is no first-party plugin", id, owner)
 		}
 	}
 }

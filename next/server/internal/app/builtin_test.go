@@ -25,7 +25,7 @@ type fakeBuiltins struct {
 }
 
 func (f *fakeBuiltins) BuiltinRequirements(string) (map[string]install.BuiltinRequirement, error) {
-	return map[string]install.BuiltinRequirement{"volcengine": {Version: semver.MustParse("1.0.0")}}, nil
+	return map[string]install.BuiltinRequirement{"mailer": {Version: semver.MustParse("1.0.0")}}, nil
 }
 
 func (f *fakeBuiltins) BuiltinsReady(context.Context, map[string]install.BuiltinRequirement, core.Generation) (bool, error) {

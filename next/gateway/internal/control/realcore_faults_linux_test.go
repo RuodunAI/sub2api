@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"os"
 	"strings"
@@ -24,9 +23,9 @@ import (
 // first update of three nodes while injecting the faults the clean run does
 // not: a stopped follower's shell restarts, a new node joins, the primary's
 // migration is interrupted by SIGKILL, and Redis is partitioned while the
-// cluster is down. A real async video task submitted before the update, a
-// slow SSE response across registration expiry and key replacement, and a
-// Redis partition while serving are checked against a mock upstream.
+// cluster is down. A slow SSE response across registration expiry and key
+// replacement and a Redis partition while serving are checked against a
+// mock upstream.
 //
 // Besides the real-core variables it needs TEST_MOCK_URL (mock-upstream as
 // seen from this host and the cores) and R2's test migration to contain
@@ -49,8 +48,8 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	for _, b := range c.bundled {
 		names = append(names, b.name)
 	}
-	if joined := strings.Join(names, ","); !strings.Contains(joined, "volcengine") || !strings.Contains(joined, "anthropic") {
-		t.Fatalf("TEST_BUILTIN_DIR must contain signed volcengine and anthropic packages: %s", joined)
+	if joined := strings.Join(names, ","); !strings.Contains(joined, "openai") || !strings.Contains(joined, "anthropic") {
+		t.Fatalf("TEST_BUILTIN_DIR must contain signed openai and anthropic packages: %s", joined)
 	}
 	db, store, target := c.db, c.store, c.target
 	tick := time.NewTicker(200 * time.Millisecond)
@@ -100,7 +99,7 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	}
 	wait("bundled plugins enabled", 3*time.Minute, func() bool {
 		var n int
-		_ = db.WithContext(ctx).Raw(`SELECT count(*) FROM plugins WHERE key IN ('anthropic','volcengine') AND status='enabled'`).Row().Scan(&n)
+		_ = db.WithContext(ctx).Raw(`SELECT count(*) FROM plugins WHERE key IN ('anthropic','openai') AND status='enabled'`).Row().Scan(&n)
 		return n == 2
 	})
 
@@ -288,22 +287,6 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 	}
 	t.Logf("SSE through forwarding node lasted %s across TTL %s and a key replacement", elapsed.Round(time.Millisecond), ttl)
 
-	// ---- an async video task whose upstream observation is held open
-	video := newVideoTenant(t, admin, mockURL, c.dbname)
-	mock.video(video.accountKey, "running", true)
-	submit := newAPIClient(t, c.node("b").public.URL).do(http.MethodPost, "/api/v3/contents/generations/tasks", map[string]any{
-		"model": video.model, "content": []map[string]string{{"type": "text", "text": "A mock clip"}}, "resolution": "480p", "ratio": "16:9", "duration": 4,
-	}, map[string]string{"Authorization": "Bearer " + video.apiKey})
-	publicID, requestID := submit.str("id"), submit.header.Get("X-Request-Id")
-	if submit.status != 200 || !strings.HasPrefix(publicID, "s2task_") || requestID == "" {
-		t.Fatalf("video submit: %s", submit)
-	}
-	wait("held video observation", 2*time.Minute, func() bool {
-		tasks := mock.videoTasks(video.accountKey)
-		return len(tasks) == 1 && tasks[0].Active == 1
-	})
-	t.Logf("video task %s submitted; an upstream observation is held open", publicID)
-
 	// ---- the update with faults
 	var pf Preflight
 	wait("clean preflight after the forwarding check", time.Minute, func() bool {
@@ -397,51 +380,6 @@ func TestRealCoreFaultsDuringPrimaryFirstUpgrade(t *testing.T) {
 		t.Fatalf("retried migration must apply exactly once: rows=%d err=%v", rows, err)
 	}
 	t.Log("update completed; the retried migration applied once; d serves the target")
-
-	// ---- the video task resumes on the original account and settles once
-	mock.video(video.accountKey, "succeeded", false)
-	reader2 := newAPIClient(t, c.node("c").public.URL)
-	wait("video task succeeded", 6*time.Minute, func() bool {
-		r := reader2.do(http.MethodGet, "/api/v3/contents/generations/tasks/"+publicID, nil, map[string]string{"Authorization": "Bearer " + video.apiKey})
-		if r.status != 200 {
-			t.Fatalf("task lookup: %s", r)
-		}
-		return r.str("status") == "succeeded"
-	})
-	tasks := mock.videoTasks(video.accountKey)
-	if len(tasks) != 1 {
-		t.Fatalf("video submission repeated upstream: %+v", tasks)
-	}
-	canceled := 0
-	for _, q := range tasks[0].Queries {
-		if q.APIKey != video.accountKey {
-			t.Fatalf("observation used another account: %+v", q)
-		}
-		if q.Canceled {
-			canceled++
-		}
-	}
-	if tasks[0].MaxActive > 1 || canceled == 0 {
-		t.Fatalf("the update must cancel the held observation without parallel monitors: %+v", tasks[0])
-	}
-	var status, cost string
-	var output, failures, usageRows int64
-	var accountID int64
-	var failureCode string
-	if err = db.WithContext(ctx).Raw(`SELECT u.billing_status,u.total_cost::text,u.output_tokens,u.account_id,t.poll_failures,t.failure_code,(SELECT count(*) FROM usage_logs WHERE request_id=?)
-		FROM async_tasks t JOIN usage_logs u ON u.id=t.usage_log_id WHERE t.public_id=?`, requestID, publicID).Row().Scan(&status, &cost, &output, &accountID, &failures, &failureCode, &usageRows); err != nil {
-		t.Fatal(err)
-	}
-	if status != "billed" || output != 17 || accountID != video.accountID || failures != 0 || failureCode != "" || usageRows != 1 {
-		t.Fatalf("video settlement: status=%s output=%d account=%d failures=%d code=%q usage rows=%d", status, output, accountID, failures, failureCode, usageRows)
-	}
-	balance := video.user.ok(http.MethodGet, "/me/balance", nil).str("data.balance")
-	spent, ok1 := new(big.Rat).SetString(cost)
-	left, ok2 := new(big.Rat).SetString(balance)
-	if !ok1 || !ok2 || spent.Sign() <= 0 || new(big.Rat).Add(left, spent).Cmp(big.NewRat(20, 1)) != 0 {
-		t.Fatalf("balance %s after cost %s does not settle 20 exactly once", balance, cost)
-	}
-	t.Logf("video task settled once on its account: cost=%s, %d upstream observations (%d canceled by the update), 0 poll failures", cost, len(tasks[0].Queries), canceled)
 
 	// ---- a Redis partition while serving does not restart any core
 	boots := map[string]string{}

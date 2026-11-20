@@ -48,7 +48,7 @@ const statusClientClosed = 499
 const codeUpstreamError = "upstream_error"
 
 // maxClientErrorCode is the longest client error code a plugin may set. The
-// longest real upstream code seen so far is Volcengine Ark's
+// longest real upstream code seen so far is
 // "InputTextSensitiveContentDetected" (33 bytes); 64 leaves room without
 // letting an upstream string of unbounded length into the client body.
 const maxClientErrorCode = 64
