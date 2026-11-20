@@ -98,7 +98,7 @@ func TestNewMigration(t *testing.T) {
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`, `ALTER TABLE "t" ALTER COLUMN "s" TYPE varchar(9) USING "s"::varchar(9)`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint NOT NULL`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Unmapped: []string{"column t.old"}},
-		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Misnamed: []string{"table t (not named plg_x__...)"}},
+		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Refused: []string{"0001_init.sql: table t (not named plg_x__...)"}},
 		// What AutoMigrate does not change, e.g. a NOT NULL it never adds.
 		{Differences: []string{"column t.n: migrations: bigint; models: bigint NOT NULL"}},
 	} {
@@ -293,8 +293,8 @@ func TestDBDiffDifferences(t *testing.T) {
 	}
 }
 
-// Functions, views and the like that the migrations create are declared by
-// the model package's Unmanaged (review 1116 F4).
+// Views, sequences and types that the migrations create are declared by
+// the model package's Unmanaged (review 1116 F4); a function is refused.
 func TestDBCheckUnmanaged(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs go run on a plugin module and needs PostgreSQL")
@@ -302,13 +302,18 @@ func TestDBCheckUnmanaged(t *testing.T) {
 	dir := gormPlugin(t)
 	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
 		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
-CREATE FUNCTION plg_demo__t_count() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM plg_demo__t';`)
-	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "function plg_demo__t_count()") {
+CREATE VIEW plg_demo__t_count AS SELECT count(*) FROM plg_demo__t;`)
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "view plg_demo__t_count") {
 		t.Fatalf("check: %s", msg)
 	}
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "unmanaged.go"),
-		"package model\n\nfunc Unmanaged() []string { return []string{\"function plg_demo__t_count()\"} }\n")
+		"package model\n\nfunc Unmanaged() []string { return []string{\"view plg_demo__t_count\"} }\n")
 	runOK(t, "db", "check", "--dir", dir)
+	writeFile(t, filepath.Join(dir, "migrations", "0002_count.sql"),
+		`CREATE FUNCTION plg_demo__count() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM plg_demo__t';`)
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "0002_count.sql: function plg_demo__count (not allowed)") {
+		t.Fatalf("check with a function: %s", msg)
+	}
 }
 
 // The plugin's tables share the core's schema: check and diff fail on a
@@ -324,8 +329,8 @@ func TestDBCheckPrefix(t *testing.T) {
 CREATE TABLE extra (id serial PRIMARY KEY);`)
 	for _, args := range [][]string{{"db", "check"}, {"db", "diff"}} {
 		msg := runFail(t, append(args, "--dir", dir)...)
-		for _, want := range []string{misnamedTitle, "table extra (not named plg_demo__...)", "index extra_pkey (not named plg_demo__...)",
-			"sequence extra_id_seq (not named plg_demo__...)"} {
+		for _, want := range []string{refusedTitle, "0001_init.sql: table extra (not named plg_demo__...)",
+			"0001_init.sql: index extra_pkey (not named plg_demo__...)", "0001_init.sql: sequence extra_id_seq (not named plg_demo__...)"} {
 			if !strings.Contains(msg, want) {
 				t.Errorf("%v: no %q in %s", args, want, msg)
 			}
@@ -338,5 +343,27 @@ CREATE TABLE extra (id serial PRIMARY KEY);`)
 		strings.Replace(demoModel(""), `return "plg_demo__t"`, `return "t"`, 1))
 	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, `is not named with the plugin's prefix "plg_demo__"`) {
 		t.Fatalf("check with an unprefixed model table: %s", msg)
+	}
+}
+
+// Migrations that use the core tables of database.access cannot be checked:
+// the scratch schema has none of them. check says so.
+func TestDBCheckAccessHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go run on a plugin module and needs PostgreSQL")
+	}
+	dir := gormPlugin(t)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
+CREATE VIEW plg_demo__names AS SELECT id FROM users;`)
+	if msg := runFail(t, "db", "check", "--dir", dir); strings.Contains(msg, accessHint) {
+		t.Fatalf("hint without database.access: %s", msg)
+	}
+	m := strings.Replace(demoManifest, `"database": {"migrations": "migrations/"},`,
+		`"database": {"migrations": "migrations/", "access": [{"table": "users", "columns": ["id"], "privileges": ["select"]}]},`, 1)
+	m = strings.Replace(m, `{"id": "db.schema"}, `, `{"id": "db.schema"}, {"id": "db.core_read"}, `, 1)
+	writeFile(t, filepath.Join(dir, "manifest.json"), m)
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, accessHint) {
+		t.Fatalf("no hint with database.access: %s", msg)
 	}
 }

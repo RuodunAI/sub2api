@@ -23,12 +23,6 @@ import (
 // DNSAddress is the host-provided DNS-over-TCP endpoint.
 const DNSAddress = "dns.sub2api:53"
 
-// DatabaseAddress is the virtual address of the plugin's database, which
-// the DSN of HostService.GetDSN names: the core serves it at the tunnel's
-// end, logged in as the plugin's database identity, strict network mode or
-// not. Host.DB dials it through the tunnel (Dial).
-const DatabaseAddress = "db.sub2api:5432"
-
 // ErrNotInstalled is returned by DialContext before Install.
 var ErrNotInstalled = errors.New("egress: not installed")
 

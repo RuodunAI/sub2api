@@ -183,7 +183,6 @@ CREATE FUNCTION item_count(least_id bigint) RETURNS bigint LANGUAGE sql AS 'SELE
 		"constraint child.child_id_check CHECK ((id > 0))",
 		"constraint child.child_item_id_fkey FOREIGN KEY (item_id) REFERENCES item(id)",
 		"constraint item.item_name_len CHECK ((length(name) < 100))",
-		"function item_count(least_id bigint)",
 		"index item.item_lower_name_idx",
 		"sequence item_seq",
 		"view item_names",
@@ -431,24 +430,23 @@ func TestDriftListsWhatMigrationsTouchOutsideTheSchema(t *testing.T) {
 		`CREATE TABLE drift_inside (id int); ALTER TABLE drift_inside SET SCHEMA public`: "relation public.drift_inside",
 	} {
 		r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrate(t, sql), nil, nil)
-		if err != nil || !slices.Contains(r.Unmapped, want+" (outside the plugin schema)") {
+		if err != nil || !slices.Contains(r.Unmapped, want+" (outside the core's schema)") {
 			t.Errorf("%s: drift = %+v, %v", sql, r, err)
 		}
 	}
 }
 
-const touchSQL = `CREATE TABLE t (id bigserial PRIMARY KEY, x text);
-CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';
-CREATE TRIGGER t_touch BEFORE UPDATE ON t FOR EACH ROW EXECUTE FUNCTION touch();
+const unmanagedSQL = `CREATE TABLE t (id bigserial PRIMARY KEY, x text);
+CREATE SEQUENCE t_seq;
 CREATE VIEW t_x AS SELECT x FROM t;
 CREATE TYPE mood AS ENUM ('ok');`
 
 // What no model describes is declared unmanaged by the model package.
 func TestDriftUnmanaged(t *testing.T) {
-	m := migrate(t, touchSQL)
-	unmanaged := []string{"function touch()", "trigger t.t_touch", "view t_x", "type mood"}
+	m := migrate(t, unmanagedSQL)
+	unmanaged := []string{"sequence t_seq", "type mood", "view t_x"}
 	r := drift(t, m, &bigintKeyModel{})
-	if !slices.Equal(r.Unmapped, unmanaged) && !slices.Equal(r.Unmapped, []string{"function touch()", "trigger t.t_touch", "type mood", "view t_x"}) {
+	if !slices.Equal(r.Unmapped, unmanaged) {
 		t.Fatalf("without unmanaged: %+v", r)
 	}
 	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, []any{&bigintKeyModel{}}, unmanaged)
@@ -459,8 +457,10 @@ func TestDriftUnmanaged(t *testing.T) {
 	if err != nil || !slices.Equal(r.Differences, []string{"unmanaged view gone: not in migrations"}) {
 		t.Fatalf("stale unmanaged: %+v, %v", r, err)
 	}
-	if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, nil, []string{"table t"}); err == nil {
-		t.Fatal("a table cannot be unmanaged")
+	for _, u := range []string{"table t", "function touch()", "trigger t.t_touch"} {
+		if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, nil, []string{u}); err == nil {
+			t.Fatalf("%s cannot be unmanaged", u)
+		}
 	}
 }
 
@@ -480,18 +480,30 @@ type longTable struct{ ID int64 }
 
 func (longTable) TableName() string { return "plg_x__" + strings.Repeat("t", 57) }
 
-// The plugin's tables share the core's schema (CONTRACTS §130): everything
-// its migrations name, PostgreSQL's own names for a primary key's and a
-// unique constraint's index and a serial column's sequence included, starts
-// with its prefix and fits the 63 bytes PostgreSQL keeps of a name.
+// unnamedIndex gets GORM's name idx_plg_x__p_code, without the prefix.
+type unnamedIndex struct {
+	ID   int64
+	Code string `gorm:"type:text;index"`
+}
+
+func (unnamedIndex) TableName() string { return "plg_x__p" }
+
+// The plugin's tables share the core's schema (CONTRACTS §130): after each
+// file, every relation and type its migrations leave starts with its
+// prefix, PostgreSQL's own names for a primary key's and a unique
+// constraint's index and a serial column's sequence included, and fits the
+// 63 bytes PostgreSQL keeps of a name; no other kind of object is allowed,
+// prefixed or not.
 func TestDriftPrefix(t *testing.T) {
 	const prefix = "plg_x__"
 	ok := `CREATE TABLE plg_x__p (id bigserial PRIMARY KEY, code text NOT NULL, CONSTRAINT plg_x__p_code_key UNIQUE (code));
 -- a comment may say anything: ` + strings.Repeat("c", 70) + `
-CREATE INDEX IF NOT EXISTS plg_x__p_code_idx ON plg_x__p (code) WHERE code <> '` + strings.Repeat("s", 70) + `';
-DROP INDEX plg_x__p_code_idx;`
-	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t, ok), []any{&prefixed{}}, nil)
-	if err != nil || !r.Clean() {
+CREATE INDEX IF NOT EXISTS plg_x__p_code_idx ON plg_x__p (code) WHERE code <> '` + strings.Repeat("s", 70) + `' AND code <> E'it\'s ` + strings.Repeat("e", 70) + `';
+DROP INDEX plg_x__p_code_idx;
+CREATE TYPE plg_x__range AS RANGE (subtype = int8);
+DO $$ BEGIN ALTER TABLE plg_x__p ADD CONSTRAINT plg_x__p_code_len CHECK (length(code) < 100); EXCEPTION WHEN duplicate_object THEN NULL; END $$;`
+	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t, ok), []any{&prefixed{}}, []string{"type plg_x__range"})
+	if err != nil || len(r.Refused) != 0 {
 		t.Fatalf("prefixed: %+v, %v", r, err)
 	}
 
@@ -502,29 +514,39 @@ CREATE INDEX q_id_idx ON plg_x__q (id);
 CREATE SEQUENCE s;
 CREATE VIEW v AS SELECT 1 AS one;
 CREATE TYPE mood AS ENUM ('ok');
-CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1';
-DO $$ BEGIN CREATE TABLE "plg_x__`+long+`" (id int); END $$;`), nil, nil)
+CREATE FUNCTION plg_x__f() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN RETURN NEW; END';
+CREATE TRIGGER plg_x__t BEFORE UPDATE ON plg_x__q FOR EACH ROW EXECUTE FUNCTION plg_x__f();
+DO $$ BEGIN CREATE TABLE "plg_x__`+long+`" (id int); END $$;`,
+		// Gone by the end, refused all the same: the host checks after each
+		// file (and so does not see what one file creates and drops).
+		`CREATE TABLE gone (id int); CREATE TABLE dropped (id int); DROP TABLE dropped;`, `DROP TABLE p, gone;`), nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
-		"function f (not named plg_x__...)",
-		"identifier plg_x__" + long + " in 0001_m.sql: 71 bytes, PostgreSQL keeps 63",
-		"index p_code_key (not named plg_x__...)",
-		"index p_pkey (not named plg_x__...)",
-		"index q_id_idx (not named plg_x__...)",
-		"index q_pkey (not named plg_x__...)",
-		"sequence p_id_seq (not named plg_x__...)",
-		"sequence s (not named plg_x__...)",
-		"table p (not named plg_x__...)",
-		"type mood (not named plg_x__...)",
-		"view v (not named plg_x__...)",
+		"0001_m.sql: identifier plg_x__" + long + ": 71 bytes, PostgreSQL keeps 63",
+		"0001_m.sql: function plg_x__f (not allowed)",
+		"0001_m.sql: index p_code_key (not named plg_x__...)",
+		"0001_m.sql: index p_pkey (not named plg_x__...)",
+		"0001_m.sql: index q_id_idx (not named plg_x__...)",
+		"0001_m.sql: index q_pkey (not named plg_x__...)",
+		"0001_m.sql: sequence p_id_seq (not named plg_x__...)",
+		"0001_m.sql: sequence s (not named plg_x__...)",
+		"0001_m.sql: table p (not named plg_x__...)",
+		"0001_m.sql: trigger plg_x__q.plg_x__t (not allowed)",
+		"0001_m.sql: type mood (not named plg_x__...)",
+		"0001_m.sql: view v (not named plg_x__...)",
+		"0002_m.sql: table gone (not named plg_x__...)",
 	}
-	if !slices.Equal(r.Misnamed, want) || r.Clean() {
-		t.Fatalf("misnamed = %q", r.Misnamed)
+	if !slices.Equal(r.Refused, want) || r.Clean() {
+		t.Fatalf("refused = %q", r.Refused)
 	}
 
-	for model, msg := range map[any]string{&unprefixed{}: `table "p" is not named with the plugin's prefix "plg_x__"`, &longTable{}: "is 64 bytes, PostgreSQL keeps 63"} {
+	for model, msg := range map[any]string{
+		&unprefixed{}:   `table "p" is not named with the plugin's prefix "plg_x__"`,
+		&longTable{}:    "is 64 bytes, PostgreSQL keeps 63",
+		&unnamedIndex{}: `index "idx_plg_x__p_code" is not named with the plugin's prefix "plg_x__"`,
+	} {
 		if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t), []any{model}, nil); err == nil || !strings.Contains(err.Error(), msg) {
 			t.Errorf("model %T: %v", model, err)
 		}

@@ -457,7 +457,8 @@ var (
 
 // purgeLock names the advisory lock that keeps the retention purge on one
 // node at a time (Configure starts it on every node); pgdb.TryXactLock
-// adds the schema, which tells installs sharing a database apart.
+// adds the plugin's database identity, which tells plugins and installs
+// sharing a server apart.
 const purgeLock = "moderation.retention_purge"
 
 // purgeRetention deletes the records past their keep_until or older than

@@ -764,8 +764,12 @@ func (v *validator) databaseAccess(access []manifest.DatabaseAccess) {
 				v.add(fmt.Sprintf("%s.columns[%d]", f, j), "invalid", "must be a distinct column name matching %s", sqlIdentRe)
 			}
 		}
-		if len(a.Privileges) == 0 {
+		switch {
+		case len(a.Privileges) == 0:
 			v.add(f+".privileges", "required", "at least one privilege")
+		case len(a.Columns) > 0 && slices.Contains(a.Privileges, "delete"):
+			// PostgreSQL grants DELETE on whole rows only.
+			v.add(f+".privileges", "invalid", "delete applies to whole rows: ask for it in an entry without columns")
 		}
 		for j, p := range a.Privileges {
 			if !slices.Contains(manifest.DatabasePrivileges, p) || slices.Contains(a.Privileges[:j], p) {

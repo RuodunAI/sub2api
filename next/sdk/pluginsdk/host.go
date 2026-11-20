@@ -56,7 +56,7 @@ type Host interface {
 	PriceUsage(ctx context.Context, u PriceUsage) (*PriceQuote, error)
 
 	// DSN returns the plugin's database DSN (grant "db.schema"): the
-	// virtual address egress.DatabaseAddress, without a password.
+	// virtual address protocol.DatabaseAddress, without a password.
 	DSN(ctx context.Context) (*DSNInfo, error)
 	// DB returns the plugin's GORM handle, bound to ctx: use it for the call
 	// at hand and ask again for the next one (cheap: the connections are
@@ -303,7 +303,7 @@ func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 // host's tunnel, installed or not; any other, which only a plugin's unit
 // test hands out (a real test database), directly.
 func (h *host) dialDB(ctx context.Context, network, addr string) (net.Conn, error) {
-	if addr == egress.DatabaseAddress {
+	if addr == protocol.DatabaseAddress {
 		return egress.Dial(ctx, h.egress, network, addr)
 	}
 	return pgdb.DialDirect(ctx, network, addr)

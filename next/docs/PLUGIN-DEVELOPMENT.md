@@ -360,11 +360,11 @@ if !sticky.Enabled { ... }
 插件的表放在核心所用的模式里（线上是 `public`），和核心的表、别的插件的表并列；隔离靠名字前缀和数据库身份，不靠 schema（CONTRACTS §130）。
 
 - **声明**：manifest 声明 `database`（`{"migrations": "migrations/"}`，没有 `schema` 字段）并获授 `db.schema`。
-- **名字前缀**：插件的表、索引、序列、视图、类型、函数一律命名 `plg_<key>__<本地名>`（`manifest.TablePrefix(key)`，例如 `plg_moderation__rules`），名字不超过 63 字节（PostgreSQL 会不报错地截断更长的名字）。PostgreSQL 自动起的名字也算：主键索引 `<表>_pkey`、唯一约束的索引 `<表>_<列>_key`、`serial`/`bigserial`/identity 列的序列 `<表>_<列>_seq`，表名带了前缀它们也就带上；自己起名的索引和约束（`CREATE INDEX`、`CONSTRAINT ... UNIQUE`）要自己写上前缀，GORM 模型里的 `index:<名字>`、`uniqueIndex:<名字>` 同样写带前缀的名字（不带名字的 `unique` 让 GORM 起名 `uni_<表>_<列>`，没有前缀，`db diff` 生成的迁移过不了检查）。插件键不含 `__`、不以 `_` 结尾、最多 30 字节，所以一个插件的前缀不会是另一个插件前缀的开头。
+- **只能建表、索引、序列、视图和类型，名字带前缀**：迁移能建的对象只有关系（表、索引、序列、视图、物化视图）和类型（枚举、域、范围、复合类型），一律命名 `plg_<key>__<本地名>`（`manifest.TablePrefix(key)`，例如 `plg_moderation__rules`），名字不超过 63 字节（PostgreSQL 会不报错地截断更长的名字）。函数、过程、触发器、运算符、规则、策略等其他对象一律不允许，带前缀也不行；`DO` 块可以用（`db diff` 用它包新约束），它建的对象照样要守这条规则。PostgreSQL 自动起的名字也算：主键索引 `<表>_pkey`、唯一约束的索引 `<表>_<列>_key`、`serial`/`bigserial`/identity 列的序列 `<表>_<列>_seq`，表名带了前缀它们也就带上；自己起名的索引和约束（`CREATE INDEX`、`CONSTRAINT ... UNIQUE`）要自己写上前缀。GORM 模型里的索引必须写带前缀的名字（`index:<名字>`、`uniqueIndex:<名字>`）：不写名字的 `index`、`uniqueIndex` 由 GORM 起名 `idx_<表>_<列>`，没有前缀，`db check` 直接报错；不带名字的 `unique` 在迁移里已有该列的唯一约束时没问题，否则 GORM 起的 `uni_<表>_<列>` 也没有前缀，`db diff` 生成的迁移过不了检查。插件键不含 `__`、不以 `_` 结尾、最多 30 字节，所以一个插件的前缀不会是另一个插件前缀的开头。
 - **一个身份**：每个插件有一个自己的数据库身份（登录角色 `plg<库OID>_<key>`），密码由核心主密钥派生，只在核心进程里。插件的表归这个身份所有；核心的表、别的插件的表它没有任何权限，漏写前缀去改核心的表会被数据库拒绝。
 - **连接**：`Host.DB(ctx)` 拿 GORM 句柄，每次调用重新取（CONTRACTS §2“插件数据库”）。句柄背后的 DSN 来自 `HostService.GetDSN`，不论是否开严格网络都是虚拟地址 `postgres://plugin@db.sub2api:5432/...?sslmode=disable`，没有密码；SDK 按地址选路，虚拟地址一律经出口隧道到核心的数据库代理，核心以插件的身份登录（TLS、密码认证都在核心），把会话的 `search_path` 固定为核心模式，之后原样转发协议；语句的 ctx 结束时 pgx 发的取消请求也由核心转给服务器。`GetDSN` 返回的 `schema` 是核心模式。插件进程里没有数据库凭据。
 - **连接数**：由插件自己的池决定（默认每节点 4 个，`pluginsdk.WithDBPoolSize`），每条都是插件身份对数据库的一条连接，运维按它规划 `max_connections`。
-- **迁移以插件身份执行**：核心在跑脚本前临时给身份核心模式上的 `CREATE`，以该身份另开连接登录，每个脚本一个事务，全部跑完或中途失败都立刻收回。事务提交前核心检查本事务新建的对象，名字不带本插件前缀就回滚整个脚本。脚本必须幂等、对旧版本向后兼容（CONTRACTS §36）。迁移记录写在插件自己的表 `plg_<key>__schema_migrations`（`migration_id`、`checksum`、`applied_at`），由核心以插件身份建表、与每个脚本同一事务写入；脚本内容变了会重跑并更新记录。插件自己不要建、不要改这张表。
+- **迁移以插件身份执行**：核心在跑脚本前临时给身份核心模式上的 `CREATE`，以该身份另开连接登录，每个脚本一个事务，全部跑完或中途失败都立刻收回。每个脚本的事务提交前，核心检查这个身份在核心模式里拥有的全部对象（不只是本事务新建的）：有不带本插件前缀的关系或类型、或任何其他种类的对象，就回滚整个脚本。脚本必须幂等、对旧版本向后兼容（CONTRACTS §36）。迁移记录写在插件自己的表 `plg_<key>__schema_migrations`（`migration_id`、`checksum`、`applied_at`），由核心以插件身份建表、与每个脚本同一事务写入；脚本内容变了会重跑并更新记录。插件自己不要建、不要改这张表。
 - **运行时没有建表权限**：插件进程连上来时身份没有 `CREATE`，只能对自己的表增删改查；建表、加列、加索引都写进迁移。
 - **插件以外的表**：迁移或运行时要用核心的表，在清单 `database.access` 逐表申请，需要宿主权限 `db.core_read`（critical，只有超管能批）：
 
@@ -377,7 +377,9 @@ if !sticky.Enabled { ... }
 
   `privileges` 取 `select`、`insert`、`update`、`delete`、`references`；`columns` 省略时是整张表。管理员在安装确认页看到每一条（表、列、权限），同意即照申请授予（列级或表级 GRANT）；每次安装、升级、启动先收回再按当前清单重授。别的插件的表（`plg_` 开头）不能申请。直接写核心的表会绕过核心的缓存、权限版本和审计：有对应 Host API 的用 Host API，确实没有时才申请写权限。
 - **卸载**：卸载并清除数据时删掉身份拥有的全部对象（含迁移记录表）和身份本身；保留数据时表留在库里，重装时交还给新身份。
-- **单元测试**：`pluginsdktest.NewSchema` 建一个临时模式当作核心模式，`ApplyMigrations` 在里面跑真实的迁移（以测试库的用户），`FakeHost.SetDSN(dsn, schema)` 把它交给 `Host.DB`；测试库的地址不是虚拟地址，SDK 直接连。带前缀的表名在临时模式里照常使用。脚本里的名字是否都带前缀由 `sub2api-plugin db check` 检查（`pack` 默认先跑它）：脚本建出的表、索引、序列等名字（含 PostgreSQL 自动起的）不带 `manifest.TablePrefix(key)` 或超过 63 字节、GORM 模型的表名不带前缀，都会失败。
+- **单元测试**：`pluginsdktest.NewSchema` 建一个临时模式当作核心模式，`ApplyMigrations` 在里面跑真实的迁移（以测试库的用户），`FakeHost.SetDSN(dsn, schema)` 把它交给 `Host.DB`；测试库的地址不是虚拟地址，SDK 直接连。带前缀的表名在临时模式里照常使用。
+- **`sub2api-plugin db check`**（`pack` 默认先跑它）按核心的规则逐个脚本检查：每个脚本跑完后，留下的关系或类型名字不带 `manifest.TablePrefix(key)`（含 PostgreSQL 自动起的名字）、有其他种类的对象、脚本里有超过 63 字节的名字，都列出来并注明脚本文件名，检查失败。GORM 模型的表名或索引名不带前缀，直接报错。
+- **db check 的限制**：它在一个空的临时模式里跑迁移，里面没有核心的表，所以迁移里用到 `database.access` 申请的核心表（例如建一个读 `users` 的视图）时检查跑不通，会报“relation does not exist”，并附上这条限制的说明。工具没有为核心表做替身。现在没有官方插件这样用。真有这种插件时只能用 `pack --skip-db-check` 打包，迁移要在装好核心的库上自己验证。
 
 ## 6.2 文件：默认没有，要用就申请 `fs.data`
 

@@ -262,7 +262,8 @@ func (c *comparer) objects(table string, have, want []object) {
 }
 
 // readOthers lists what no model can describe in schema, by the names of
-// DriftReport.Unmapped. A sequence of a serial or
+// DriftReport.Unmapped (functions, triggers and other kinds are
+// DriftReport.Refused). A sequence of a serial or
 // identity column belongs to its column, objects of an extension to the
 // extension, a multirange type to its range.
 func readOthers(tx *gorm.DB, schema string) ([]string, error) {
@@ -274,15 +275,6 @@ func readOthers(tx *gorm.DB, schema string) ([]string, error) {
 		FROM pg_class c
 		WHERE c.relnamespace = current_schema()::regnamespace AND c.relkind IN ('S', 'v', 'm')
 			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.deptype IN ('a', 'i', 'e'))
-		UNION ALL
-		SELECT 'function ' || p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')'
-		FROM pg_proc p
-		WHERE p.pronamespace = current_schema()::regnamespace
-			AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')
-		UNION ALL
-		SELECT 'trigger ' || c.relname || '.' || g.tgname
-		FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid
-		WHERE c.relnamespace = current_schema()::regnamespace AND NOT g.tgisinternal
 		UNION ALL
 		SELECT 'type ' || t.typname
 		FROM pg_type t

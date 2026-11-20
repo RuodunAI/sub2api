@@ -894,7 +894,7 @@ type Database struct {
 // DatabaseAccess asks for privileges on one table outside the plugin.
 type DatabaseAccess struct {
 	Table      string   `json:"table"`
-	Columns    []string `json:"columns,omitempty"` // none: the whole table
+	Columns    []string `json:"columns,omitempty"` // none: the whole table (what "delete" needs)
 	Privileges []string `json:"privileges"`        // DatabasePrivileges
 }
 
