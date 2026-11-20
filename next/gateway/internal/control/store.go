@@ -1152,7 +1152,7 @@ func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 	if s.Redis == nil {
 		return nil, errors.New("core registry verification unavailable")
 	}
-	boots, err := s.Redis.ZRange(ctx, "node:live", 0, -1).Result()
+	cores, err := s.liveCores(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1165,16 +1165,32 @@ func (s *Store) UnmanagedBlockers(ctx context.Context) ([]string, error) {
 		known[n.NodeID] = n.CoreBootID
 	}
 	out := []string{}
+	for _, info := range cores {
+		if info["managed"] != "true" || info["core_boot_id"] == "" || known[info["node_id"]] != info["core_boot_id"] {
+			out = append(out, "unmanaged or unrecognized active core: "+info["node_id"])
+		}
+	}
+	return out, nil
+}
+
+// liveCores reads the core registry: the node:info of every core boot in
+// node:live whose registration has not expired. Each core writes its own,
+// whatever its gateway does, so a core still draining after its gateway's
+// heartbeat stopped is listed. A Redis failure is returned, never read as
+// "no core".
+func (s *Store) liveCores(ctx context.Context) ([]map[string]string, error) {
+	boots, err := s.Redis.ZRange(ctx, "node:live", 0, -1).Result()
+	if err != nil {
+		return nil, err
+	}
+	var out []map[string]string
 	for _, boot := range boots {
 		info, err := s.Redis.HGetAll(ctx, "node:info:"+boot).Result()
 		if err != nil {
 			return nil, err
 		}
-		if len(info) == 0 {
-			continue
-		}
-		if info["managed"] != "true" || info["core_boot_id"] == "" || known[info["node_id"]] != info["core_boot_id"] {
-			out = append(out, "unmanaged or unrecognized active core: "+info["node_id"])
+		if len(info) > 0 {
+			out = append(out, info)
 		}
 	}
 	return out, nil
@@ -1424,18 +1440,23 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 }
 
 // Redeploy points the cluster at the core release digest for a
-// stop-and-redeploy (CONTRACTS §34): a release no plan can carry (one
-// that changes the Host API) goes in with every gateway of the cluster
-// stopped. It refuses while a plan is running or paused and while any node
-// is still fresh; then it makes digest the baseline and forgets the nodes'
-// admissions, so the primary's next `serve -bootstrap` starts the release
-// as on a first start (migrations allowed, bundled plugins imported) and
-// the other nodes follow it with a plain `serve`.
+// stop-and-redeploy (CONTRACTS §34): a release no plan can carry (one that
+// changes the Host API) goes in with every gateway of the cluster stopped.
+// It refuses while a node's gateway is still fresh, while any core is still
+// registered as live (a core outlives its gateway's heartbeat while it
+// drains), and while a plan is running or paused; then it makes digest the
+// baseline and forgets the nodes' admissions, so the primary's next
+// `serve -bootstrap` starts the release as on a first start (migrations
+// allowed, bundled plugins imported) and the other nodes follow it with a
+// plain `serve`.
 func (s *Store) Redeploy(ctx context.Context, digest string) error {
 	if s.Redis == nil {
-		return errors.New("redeploy reads node liveness from Redis")
+		return errors.New("redeploy reads node and core liveness from Redis")
 	}
 	if _, err := s.Release(ctx, digest); err != nil {
+		if gormpg.IsNoRows(err) {
+			return fmt.Errorf("core release %s is not imported", digest)
+		}
 		return err
 	}
 	return s.withChange(ctx, func(ctx context.Context) error {
@@ -1447,6 +1468,13 @@ func (s *Store) Redeploy(ctx context.Context, digest string) error {
 			if n.Fresh(time.Now()) {
 				return fmt.Errorf("node %q was seen %v ago; stop every gateway of the cluster and wait %v", n.ID, time.Since(n.LastSeen).Round(time.Second), nodeFreshness)
 			}
+		}
+		cores, err := s.liveCores(ctx)
+		if err != nil {
+			return err
+		}
+		if len(cores) > 0 {
+			return fmt.Errorf("the core of node %q is still running; wait until every gateway has exited", cores[0]["node_id"])
 		}
 		return s.withTx(ctx, func(tx *gorm.DB) error {
 			return s.redeployTx(tx, digest)

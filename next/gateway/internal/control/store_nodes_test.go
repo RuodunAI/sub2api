@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/redis/go-redis/v9"
 )
 
 // remove-node, set-primary and the plugin package sources used tables that
@@ -105,6 +107,30 @@ func TestPostgresRedeployStartsTheReleaseAsAFirstStart(t *testing.T) {
 		if err := s.Redis.Del(ctx, s.telemetryKey(e.Node)).Err(); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// A core registered as live (draining after its gateway's heartbeat
+	// stopped) blocks the redeploy until its registration goes.
+	if err := s.Redis.ZAdd(ctx, "node:live", redis.Z{Score: 1, Member: "core-a"}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Redis.HSet(ctx, "node:info:core-a", "node_id", a.Node.ID).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Redeploy(ctx, target.Digest); err == nil || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("redeploy with a live core: %v", err)
+	}
+	if err := s.Redis.Del(ctx, "node:info:core-a").Err(); err != nil {
+		t.Fatal(err)
+	}
+	// So does a plan in flight; it has to be finished or cancelled first.
+	if err := s.createUpgrade(s.db(ctx), "plan-in-flight", target.Digest, []byte(`[]`), "test", "redeploy-test", "", Rolling); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Redeploy(ctx, target.Digest); err == nil || !strings.Contains(err.Error(), "running or paused") {
+		t.Fatalf("redeploy with a plan in flight: %v", err)
+	}
+	if err := s.db(ctx).Table("updater.upgrades").Where("id = ?", "plan-in-flight").Update("status", "cancelled").Error; err != nil {
+		t.Fatal(err)
 	}
 	if err := s.Redeploy(ctx, "sha256:"+strings.Repeat("0", 64)); err == nil {
 		t.Fatal("redeploy to a release never imported")

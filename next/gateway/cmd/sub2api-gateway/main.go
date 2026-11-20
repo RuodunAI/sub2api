@@ -353,8 +353,8 @@ func (s *shell) importRelease(ctx context.Context, manifestURL string) error {
 	return nil
 }
 
-// putRelease fetches, verifies and stores the release named by the manifest
-// command requires.
+// putRelease fetches, verifies and stores the release a manifest URL names;
+// command names the caller in the error when the URL is missing.
 func (s *shell) putRelease(ctx context.Context, command, manifestURL string) (control.Release, error) {
 	if manifestURL == "" {
 		return control.Release{}, fmt.Errorf("%s requires -manifest", command)
@@ -381,12 +381,11 @@ func (s *shell) redeploy(ctx context.Context, manifestURL, digest string) error 
 		}
 		digest = r.Digest
 	}
-	redisClient, err := openRedis(s.c)
+	closeRedis, err := coordinate(s.store, s.c)
 	if err != nil {
 		return err
 	}
-	defer redisClient.Close()
-	s.store.Redis, s.store.Locks = redisClient, control.NewRedisLocks(redisClient)
+	defer closeRedis()
 	if err = s.store.Redeploy(ctx, digest); err != nil {
 		return err
 	}
@@ -994,6 +993,17 @@ func localCommand(command, socket, tokenFile, id string) error {
 	return nil
 }
 
+// coordinate gives a one-shot command's store the cluster's Redis: the
+// cluster change lock and the nodes' live state. The returned func closes it.
+func coordinate(store *control.Store, c config) (func(), error) {
+	redisClient, err := openRedis(c)
+	if err != nil {
+		return nil, err
+	}
+	store.Redis, store.Locks = redisClient, control.NewRedisLocks(redisClient)
+	return func() { _ = redisClient.Close() }, nil
+}
+
 func clusterCommand(command string, c config, node string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1002,17 +1012,12 @@ func clusterCommand(command string, c config, node string) error {
 		return err
 	}
 	defer closePool(db)
-	redisClient, err := openRedis(c)
+	store := &control.Store{DB: db, Cluster: c.ClusterID}
+	closeRedis, err := coordinate(store, c)
 	if err != nil {
 		return err
 	}
-	defer redisClient.Close()
-	store := &control.Store{
-		DB:      db,
-		Cluster: c.ClusterID,
-		Locks:   control.NewRedisLocks(redisClient),
-		Redis:   redisClient,
-	}
+	defer closeRedis()
 	if command == "set-primary" {
 		return store.SetPrimary(ctx, node)
 	}
