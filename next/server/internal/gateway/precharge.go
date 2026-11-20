@@ -88,7 +88,7 @@ func (c *call) precharge(ctx context.Context) error {
 	}
 	t := report.GetTokens()
 	for _, n := range []int64{t.GetInputTokens(), t.GetOutputTokens(), t.GetCacheReadTokens(), t.GetCacheCreationTokens(), t.GetCacheCreation_1HTokens()} {
-		if n < 0 || n > 1_000_000_000_000 {
+		if !core.ValidTokenCount(n) {
 			return fmt.Errorf("invalid estimated token count")
 		}
 	}
