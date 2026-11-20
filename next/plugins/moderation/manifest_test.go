@@ -176,7 +176,7 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("hook = %+v", hook)
 	}
 	// Every protocol whose content is moderated, including the per-turn
-	// Responses WebSocket and the volcengine image and video prompts.
+	// Responses WebSocket.
 	if !slices.Equal(hook.Match.Protocols, moderation.ModeratedProtocols) {
 		t.Fatalf("hook protocols = %v, want %v", hook.Match.Protocols, moderation.ModeratedProtocols)
 	}

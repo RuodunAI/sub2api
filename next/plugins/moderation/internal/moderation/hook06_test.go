@@ -65,8 +65,6 @@ func TestHookModeratesWholeRequestWithSegmentCache(t *testing.T) {
 		{"tool result", "openai.chat", `{"messages":[{"role":"user","content":"go"},{"role":"tool","tool_call_id":"c","content":"MOD-HIT-hate tool"}]}`},
 		{"responses with a decoy messages array", "openai.responses", `{"messages":[{"role":"user","content":"benign"}],"input":"MOD-HIT-sexual real"}`},
 		{"gemini with a decoy messages array", "gemini.generate", `{"messages":[{"role":"user","content":"benign"}],"contents":[{"parts":[{"text":"MOD-HIT-sexual g"}]}]}`},
-		{"volcengine image prompt", "volcengine.images", `{"model":"seedream","prompt":"MOD-HIT-sexual picture"}`},
-		{"volcengine video prompt", "volcengine.video_submit", `{"model":"seedance","content":[{"type":"text","text":"MOD-HIT-violence clip"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if r := mustHook(t, h, rawReq(3, "", tc.protocol, tc.body)); !denied(r) || r.GetDenyCode() != DenyBlocked {
@@ -75,7 +73,7 @@ func TestHookModeratesWholeRequestWithSegmentCache(t *testing.T) {
 		})
 	}
 	// The record keeps the chunk that hit, with roles.
-	ev := waitEvents(t, h, map[string]string{"result": "block", "user_id": "3"}, 8)
+	ev := waitEvents(t, h, map[string]string{"result": "block", "user_id": "3"}, 6)
 	var prefill *EventListItem
 	for i := range ev {
 		if ev[i].InputFormat == "anthropic.messages" && ev[i].InputMessageSize > 0 {
@@ -204,7 +202,7 @@ func TestBanHookAllProtocols(t *testing.T) {
 	p, h, _ := startDB(t, map[string]any{"mode": ModeObserve})
 	decodeData[map[string]any](t, h.Do("POST", "/blocks", nil, map[string]any{"user_id": 5, "reason": "test"}))
 	waitFor(t, "ban", func() bool { return p.isBlocked(5) })
-	for _, protocol := range []string{"openai.embeddings", "anthropic.count_tokens", "gemini.count_tokens", "volcengine.video_query", "someplugin.custom"} {
+	for _, protocol := range []string{"openai.embeddings", "anthropic.count_tokens", "gemini.count_tokens", "openai.images", "someplugin.custom"} {
 		req := &pluginv1.GatewayRequestHookRequest{HookId: HookBan, Meta: &pluginv1.RequestMeta{UserId: 5, Protocol: protocol, ClientProtocol: protocol}}
 		if r := mustHook(t, h, req); !denied(r) || r.GetDenyCode() != DenyUserBlocked || r.GetDenyStatus() != http.StatusForbidden {
 			t.Fatalf("%s banned = %+v", protocol, r)

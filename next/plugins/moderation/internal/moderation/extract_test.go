@@ -139,8 +139,6 @@ func TestExtractCoversClientControlledContent(t *testing.T) {
 			`{"contents":[{"role":"model","parts":[{"text":"MOD-HIT-model"}]},{"parts":[{"text":"ok"}]}]}`, "[assistant] MOD-HIT-model"},
 		{"tool definitions", "openai.chat",
 			`{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","description":"MOD-HIT-tooldef","parameters":{"type":"object"}}}]}`, "[tools] f MOD-HIT-tooldef"},
-		{"volcengine image prompt", "volcengine.images", `{"model":"seedream","prompt":"MOD-HIT-image"}`, "MOD-HIT-image"},
-		{"volcengine video content", "volcengine.video_submit", `{"model":"seedance","content":[{"type":"text","text":"MOD-HIT-video"}]}`, "MOD-HIT-video"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := allText(extractReq(t, tc.protocol, tc.body)); !strings.Contains(got, tc.want) {
