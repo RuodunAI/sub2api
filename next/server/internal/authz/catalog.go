@@ -186,7 +186,7 @@ var coreModules = []coreModule{
 		{key: perm.PluginGrantCritical, en: "Grant critical plugin permissions", zh: "授予插件关键权限", sensitive: true, superOnly: true, stepUp: true,
 			desc: lt("Approve critical plugin permissions at install time.", "安装时批准插件的关键权限。"), requires: req(perm.PluginInstall)},
 		{key: perm.PluginGrantDBSchemaUnconfined, en: "Grant db.schema to non-official plugins", zh: "授予非官方插件 db.schema", sensitive: true, superOnly: true, stepUp: true,
-			desc: lt("Approve db.schema for a non-official plugin: it uses the core's database user and can reach every table the core can.", "批准非官方插件的 db.schema：插件使用核心的数据库用户，能访问核心能访问的所有表。"), requires: req(perm.PluginInstall)},
+			desc: lt("Approve db.schema for a non-official plugin: it gets a database identity of its own, its tables in the core's database and its own connections to it. Tables outside the plugin take db.core_read on top.", "批准非官方插件的 db.schema：插件在核心的数据库里获得自己的数据库身份、自己的表和自己的连接；访问插件以外的表另需 db.core_read。"), requires: req(perm.PluginInstall)},
 		{key: perm.PluginEgressRead, en: "View plugin egress traffic", zh: "查看插件出口流量",
 			desc: lt("View the outbound traffic of plugins.", "查看插件的出站流量。"), requires: req(perm.PluginRead)},
 		{key: perm.PluginMarketRead, en: "Browse the plugin market", zh: "浏览插件市场",

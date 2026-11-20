@@ -201,9 +201,11 @@ var inheritedEnv = append([]string{
 // takes this shell first keeps running its 0.1.303 core under it until the
 // core is redeployed. SUB2API_PLUGIN_DB_ROLE_ISOLATION=false is how such a
 // core runs on a database user without CREATEROLE; without it the old core
-// turns role isolation back on and its db.schema plugins fail to start
-// (CONTRACTS §115). Delete it in the first shell release after every cluster
-// runs core 0.1.304 or later.
+// turns role isolation back on and its db.schema plugins fail to start.
+// Cores from 0.1.304 ignore it: every plugin with a database has its own
+// identity and the core's user needs CREATEROLE (CONTRACTS §130, plugin
+// database isolation). Delete it in the first shell release after every
+// cluster runs core 0.1.304 or later.
 var legacyCoreEnv = []string{"SUB2API_PLUGIN_DB_ROLE_ISOLATION"}
 
 // coreEnvironment builds a core's environment: the allowlisted part of the
