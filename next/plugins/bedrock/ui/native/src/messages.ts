@@ -34,7 +34,8 @@ const zh = {
   },
   region: {
     label: '区域',
-    help: 'Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com；不支持中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）。留空使用 us-east-1。'
+    help: 'Bedrock 运行时所在的 AWS 区域，例如 us-east-1、us-west-2、eu-central-1、ap-northeast-1。请求发往 bedrock-runtime.<区域>.amazonaws.com；不支持中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）。留空使用 us-east-1。',
+    unsupported: '不支持 AWS 中国区（cn-*）和隔离分区（us-iso-*、us-isob-* 等）：其接入地址不在 amazonaws.com 下'
   },
   prefix: {
     label: '跨区域推理前缀',
@@ -77,7 +78,8 @@ const en: typeof zh = {
   },
   region: {
     label: 'Region',
-    help: 'The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com; the China regions (cn-*) and the isolated regions (us-iso-*, us-isob-* and the like) are not supported. Leave empty for us-east-1.'
+    help: 'The AWS region of the Bedrock runtime, e.g. us-east-1, us-west-2, eu-central-1, ap-northeast-1. Requests go to bedrock-runtime.<region>.amazonaws.com; the China regions (cn-*) and the isolated regions (us-iso-*, us-isob-* and the like) are not supported. Leave empty for us-east-1.',
+    unsupported: 'The AWS China regions (cn-*) and the isolated regions (us-iso-*, us-isob-* and the like) are not supported: their endpoints are not under amazonaws.com'
   },
   prefix: {
     label: 'Cross-region inference prefix',
