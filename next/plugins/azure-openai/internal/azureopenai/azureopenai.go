@@ -57,7 +57,8 @@ func New() *Platform { return &Platform{standard.New(V1(), Deployment())} }
 // plus the account forms' other rules: a base_url matching EndpointPattern
 // once normalized (trimmed, the scheme lower-cased: apikey.NormalizeBaseURL)
 // and, on azure_deployment, a required api_version matching
-// APIVersionPattern.
+// APIVersionPattern, read where requests read it (the credentials, then the
+// settings: standard.Request.Field).
 func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	resp, err := p.Platform.ValidateCredentials(ctx, in)
 	if err != nil {
@@ -76,7 +77,7 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
 	}
 	if in.GetAccountType() == TypeDeployment {
-		v, _ = apikey.Lookup("api_version", settings, creds)
+		v, _ = apikey.Lookup("api_version", creds, settings)
 		s, _ := v.(string)
 		switch {
 		case v == nil || v == "":

@@ -89,3 +89,30 @@ func TestCredentialsNotAnObject(t *testing.T) {
 		}
 	}
 }
+
+// TestAPIVersionCheckedWhereRead: with api_version in both the credentials
+// and the settings, the check reads the one requests use (the credentials',
+// standard.Request.Field).
+func TestAPIVersionCheckedWhereRead(t *testing.T) {
+	const key, endpoint = "0123456789abcdef", "https://res.openai.azure.com"
+	for _, c := range []struct {
+		creds, settings string
+		want            []string
+	}{
+		{"latest", "2024-10-21", []string{"api_version pattern"}},
+		{"2024-10-21", "latest", nil},
+	} {
+		resp, err := New().ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{
+			AccountType:     TypeDeployment,
+			CredentialsJson: `{"api_key":"` + key + `","api_version":"` + c.creds + `"}`,
+			SettingsJson:    `{"base_url":"` + endpoint + `","api_version":"` + c.settings + `"}`,
+		})
+		var codes []string
+		for _, e := range resp.GetErrors() {
+			codes = append(codes, e.GetField()+" "+e.GetCode())
+		}
+		if err != nil || !slices.Equal(codes, c.want) {
+			t.Errorf("credentials %q, settings %q: %v %v, want %v", c.creds, c.settings, codes, err, c.want)
+		}
+	}
+}
