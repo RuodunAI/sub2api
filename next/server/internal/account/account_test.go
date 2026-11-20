@@ -63,6 +63,17 @@ type fakePlatform struct {
 	// balance is the balance query's plugin side (balance_test.go); nil
 	// answers Unimplemented.
 	balance *fakeBalance
+	// deadline is set when BuildTestRequest or BuildModelsRequest got a
+	// context with a deadline.
+	deadline bool
+}
+
+// noteDeadline records whether ctx carries a deadline (deadline).
+func (p *fakePlatform) noteDeadline(ctx context.Context) {
+	_, ok := ctx.Deadline()
+	p.mu.Lock()
+	p.deadline = p.deadline || ok
+	p.mu.Unlock()
 }
 
 func (p *fakePlatform) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
@@ -181,7 +192,8 @@ func (p *fakePlatform) called(method string) int {
 
 // BuildModelsRequest lists models from the fake upstream's /v1/models; the
 // "vkey" account type is not a ModelLister. Each call is kept in models.
-func (p *fakePlatform) BuildModelsRequest(_ context.Context, in *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error) {
+func (p *fakePlatform) BuildModelsRequest(ctx context.Context, in *pluginv1.BuildModelsRequestRequest) (*pluginv1.BuildModelsRequestResponse, error) {
+	p.noteDeadline(ctx)
 	p.mu.Lock()
 	p.models = append(p.models, in)
 	p.mu.Unlock()
@@ -193,7 +205,8 @@ func (p *fakePlatform) BuildModelsRequest(_ context.Context, in *pluginv1.BuildM
 		Headers: map[string]string{"x-api-key": key}, IdsPath: "data.#.id", StripPrefix: "models/"}, nil
 }
 
-func (p *fakePlatform) BuildTestRequest(_ context.Context, in *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
+func (p *fakePlatform) BuildTestRequest(ctx context.Context, in *pluginv1.BuildTestRequestRequest) (*pluginv1.BuildTestRequestResponse, error) {
+	p.noteDeadline(ctx)
 	p.mu.Lock()
 	p.tests = append(p.tests, in)
 	p.mu.Unlock()
@@ -805,11 +818,17 @@ func (e *env) doRaw(uid int64, method, path string, body any) (int, []byte) {
 // callRaw calls the API with bearer as the token and returns the raw body.
 func (e *env) callRaw(bearer, method, path string, body any) (int, []byte) {
 	e.t.Helper()
+	return e.callCtx(context.Background(), bearer, method, path, body)
+}
+
+// callCtx is callRaw with the request context ctx (canceling it is the
+// client leaving).
+func (e *env) callCtx(ctx context.Context, bearer, method, path string, body any) (int, []byte) {
 	var b []byte
 	if body != nil {
 		b, _ = json.Marshal(body)
 	}
-	req := httptest.NewRequest(method, "/api/v1"+path, bytes.NewReader(b))
+	req := httptest.NewRequestWithContext(ctx, method, "/api/v1"+path, bytes.NewReader(b))
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	w := httptest.NewRecorder()
 	e.h.ServeHTTP(w, req)

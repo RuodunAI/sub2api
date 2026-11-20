@@ -158,8 +158,6 @@ func (s *Service) fetchAccountModels(c *gin.Context) {
 // (the account's proxy, the form's proxy choice or the direct client;
 // eg.Proxied tells the private-address guard) and extracts the ids.
 func (s *Service) fetchModels(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account, eg core.Egress) (*ModelsResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, testTimeout)
-	defer cancel()
 	mr, err := bt.Client.BuildModelsRequest(ctx, &pluginv1.BuildModelsRequestRequest{Account: acct})
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {

@@ -70,7 +70,6 @@ type Deps struct {
 const (
 	snapshotTTL   = 30 * time.Second
 	flushInterval = 10 * time.Second
-	testTimeout   = 30 * time.Second
 	// Mask replaces sensitive credential values in responses; sending it back
 	// in a PATCH keeps the stored value.
 	Mask = "******"
