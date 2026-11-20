@@ -69,7 +69,7 @@ func TestManagedTaskFencingAndFreePolling(t *testing.T) {
 		return es[0]
 	}
 	q := func(id string) core.TaskQuery {
-		return core.TaskQuery{ID: id, PluginKey: "vid", Kind: "video", UserID: f.user, GroupID: f.group, SubmitProtocol: "vid.gen", IDPaths: []string{"id"}}
+		return core.TaskQuery{ID: id, PluginKey: "vid", Kind: "video", UserID: f.user, GroupID: f.group}
 	}
 
 	id := prepare("managed-fence", "up-fence", false)
@@ -164,11 +164,9 @@ func TestManagedTaskFencingAndFreePolling(t *testing.T) {
 	if f.scalar(`SELECT state FROM async_tasks WHERE public_id=$1`, freeID) != "succeeded" || f.scalar(`SELECT count(*) FROM pending_settlements WHERE task_public_id=$1`, freeID) != "0" {
 		t.Fatal("free task required a reservation or failed to finish")
 	}
-	// Reading a terminal snapshot uses its saved paths, independent of a new
-	// manifest that changes where later observations carry their ID.
-	query := q(freeID)
-	query.IDPaths = []string{"data.id"}
-	snap, err := f.svc.FindTask(ctx, query)
+	// Reading a terminal snapshot uses its saved paths, whatever the
+	// manifest now says about where observations carry their ID.
+	snap, err := f.svc.FindTask(ctx, q(freeID))
 	if err != nil || len(snap.IDPaths) != 1 || snap.IDPaths[0] != "id" {
 		t.Fatal("stored path contract lost", err)
 	}

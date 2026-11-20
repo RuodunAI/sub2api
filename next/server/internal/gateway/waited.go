@@ -432,7 +432,7 @@ func (w *waitedRelay) task(ctx context.Context, parsed *pluginv1.TaskSubmission)
 	if err != nil {
 		return nil, nil, err
 	}
-	query, ok := c.taskPair(true)
+	query, ok := c.taskQueryEndpoint()
 	if !ok {
 		return nil, nil, errors.New("missing task query contract")
 	}

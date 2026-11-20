@@ -30,9 +30,8 @@ type TaskRegistration struct {
 }
 
 type TaskQuery struct {
-	ID, PluginKey, Kind, SubmitProtocol string
-	UserID, GroupID                     int64
-	IDPaths                             []string
+	ID, PluginKey, Kind string
+	UserID, GroupID     int64
 }
 
 type TaskSnapshot struct {
