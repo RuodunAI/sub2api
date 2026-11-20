@@ -77,3 +77,56 @@ func TestPostgresPreflightLeavesDisabledNodesOut(t *testing.T) {
 		t.Fatalf("preflight nodes %v, blockers %v", pf.Nodes, pf.Blockers)
 	}
 }
+
+// A stop-and-redeploy (CONTRACTS §34) waits for every gateway to stop and for
+// no plan to be in flight; then the primary's serve -bootstrap starts the new
+// release as a first start (migrations allowed) and a follower starts it as
+// it is, no plan involved.
+func TestPostgresRedeployStartsTheReleaseAsAFirstStart(t *testing.T) {
+	s, a, b, target := setupEngines(t)
+	ctx := context.Background()
+	// The cluster first runs the old baseline: both nodes admitted it.
+	if err := a.Recover(ctx, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Recover(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range []*Engine{a, b} {
+		if err := e.Heartbeat(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Redeploy(ctx, target.Digest); err == nil || !strings.Contains(err.Error(), "stop every gateway") {
+		t.Fatalf("redeploy with live nodes: %v", err)
+	}
+	// The gateways stop: their telemetry expires.
+	for _, e := range []*Engine{a, b} {
+		if err := s.Redis.Del(ctx, s.telemetryKey(e.Node)).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Redeploy(ctx, "sha256:"+strings.Repeat("0", 64)); err == nil {
+		t.Fatal("redeploy to a release never imported")
+	}
+	if err := s.Redeploy(ctx, target.Digest); err != nil {
+		t.Fatal(err)
+	}
+	if _, baseline, _, _ := s.ClusterState(ctx); baseline != target.Digest {
+		t.Fatalf("baseline %s", baseline)
+	}
+	primary, follower := a.Runtime.(*fakeRuntime), b.Runtime.(*fakeRuntime)
+	primary.options, follower.options = nil, nil
+	if err := a.Recover(ctx, true); err != nil {
+		t.Fatal("primary", err)
+	}
+	if err := b.Recover(ctx, false); err != nil {
+		t.Fatal("follower", err)
+	}
+	if len(primary.options) != 1 || !primary.options[0].Bootstrap || !primary.options[0].AllowMigration {
+		t.Fatalf("primary start %+v", primary.options)
+	}
+	if len(follower.options) != 1 || follower.options[0].AllowMigration || follower.status.ReleaseDigest != target.Digest {
+		t.Fatalf("follower start %+v on %s", follower.options, follower.status.ReleaseDigest)
+	}
+}

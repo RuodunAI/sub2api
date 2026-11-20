@@ -1423,6 +1423,57 @@ func (s *Store) RemoveNode(ctx context.Context, node string) error {
 	})
 }
 
+// Redeploy points the cluster at the core release digest for a
+// stop-and-redeploy (CONTRACTS §34): a release no plan can carry (one
+// that changes the Host API) goes in with every gateway of the cluster
+// stopped. It refuses while a plan is running or paused and while any node
+// is still fresh; then it makes digest the baseline and forgets the nodes'
+// admissions, so the primary's next `serve -bootstrap` starts the release
+// as on a first start (migrations allowed, bundled plugins imported) and
+// the other nodes follow it with a plain `serve`.
+func (s *Store) Redeploy(ctx context.Context, digest string) error {
+	if s.Redis == nil {
+		return errors.New("redeploy reads node liveness from Redis")
+	}
+	if _, err := s.Release(ctx, digest); err != nil {
+		return err
+	}
+	return s.withChange(ctx, func(ctx context.Context) error {
+		nodes, err := s.Nodes(ctx)
+		if err != nil {
+			return err
+		}
+		for _, n := range nodes {
+			if n.Fresh(time.Now()) {
+				return fmt.Errorf("node %q was seen %v ago; stop every gateway of the cluster and wait %v", n.ID, time.Since(n.LastSeen).Round(time.Second), nodeFreshness)
+			}
+		}
+		return s.withTx(ctx, func(tx *gorm.DB) error {
+			return s.redeployTx(tx, digest)
+		})
+	})
+}
+
+// redeployTx makes digest the baseline and forgets the admissions, unless a
+// plan is running or paused.
+func (s *Store) redeployTx(tx *gorm.DB, digest string) error {
+	var planned bool
+	if err := gormpg.ExistsQuery(tx, s.activeUpgrade(tx)).Row().Scan(&planned); err != nil {
+		return err
+	}
+	if planned {
+		return errors.New("a plan is running or paused; finish or cancel it first")
+	}
+	res := s.clusterRow(tx).Updates(map[string]any{"baseline": digest, "revision": gorm.Expr("revision+1")})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected != 1 {
+		return errors.New("cluster is not initialized; run init")
+	}
+	return tx.Table("updater.node_admissions").Where("cluster_id = ?", s.Cluster).Delete(map[string]any{}).Error
+}
+
 // PlanStatus returns the current upgrade plan status including blocked reason.
 func (s *Store) PlanStatus(ctx context.Context) (id, status, blockedReason string, err error) {
 	err = s.activeUpgrade(s.db(ctx)).Select("id,status,blocked_reason").Limit(1).Row().Scan(&id, &status, &blockedReason)

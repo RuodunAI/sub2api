@@ -166,6 +166,14 @@
 
 **升级须知**：角色里的“查看模型目录”消失；目录是插件自带的种子数据，删除不影响调度、价格和账号的模型列表，要留的话升级前备份 schema `plg_anthropic`。
 
+### 网关 0.1.139：停机重新部署命令 `redeploy`、插件包不再依赖主节点（随核心 0.1.304 发布；核心 0.1.304 要求这一版网关）
+
+- **`sub2api-gateway redeploy -manifest <核心清单 URL>`（或 `-digest <摘要>`，版本已由 `import` 或更新源导入）**：计划带不过去的核心版本（Host API 变了，例如 0.1.304）停机换用。全部网关停掉后，在任一节点上以同一份配置执行一次：导入清单（同 `import`），任一节点心跳还新鲜（20 秒内，读 Redis 的实时心跳）或有 running/paused 计划时拒绝；否则把集群基线换成这个版本、删掉本集群的 `updater.node_admissions`，接着以 `serve -bootstrap` 启动主节点（按首次启动处理：允许迁移、内置插件随包导入），主节点就绪后以 `serve` 启动其余节点。计划、步骤和事件照旧留作记录；它不停任何进程，也不碰核心的库（CONTRACTS §34“停机重新部署”）。此前这一步只能手工改 `updater.clusters.baseline` 和 `updater.node_admissions`。
+- **插件包不再依赖主节点**：每个节点留一份自己存过、用过的包，缺包时向任一启用节点取，心跳新鲜的先问；只把网络上连不上的节点记为“连不上”，本机拒绝对方身份（节点目录还不认识它）记为认证失败（CONTRACTS §114）。删除节点间上传 `PUT /internal/plugin-blobs/` 与范围 `plugin-upload`。
+- **`plugin_landlock_disabled`** 写 `SUB2API_PLUGIN_LANDLOCK=false` 给核心（核心 0.1.304 默认开 Landlock）。
+- **仍把 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 传给 0.1.303 核心**（`supervisor.legacyCoreEnv`），先换网关、核心还是 0.1.303 时行为不变；全部集群换上 0.1.304 之后的下一个网关版本删除。
+- **升级**：可以先单独换网关（`sub2api-shell yield` 后换镜像，核心 0.1.303 照常运行）；核心 0.1.304 只能按它的升级须知停机重新部署，网关 0.1.138 过不了它的预检。网关不能回退到 0.1.135 及更早。
+
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库隔离（每插件一个身份）、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0120；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0120（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删除没有读者的 `plugin_monitor_receipts`，0119 删除 volcengine 插件，0120 删除 anthropic 的模型目录），没有新的插件迁移（已有脚本随插件数据库隔离加了前缀，搬迁后不重跑）。
@@ -194,7 +202,7 @@
 
 **部署方式**
 
-- **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件逐个装上新版本。
+- **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法（网关 0.1.139）：停掉全部网关并换成 0.1.139 的镜像；等 20 秒，在任一节点执行 `sub2api-gateway redeploy`（`-manifest` 给 core-v0.1.304 的清单 URL，或 `-digest` 给已由更新源导入的摘要）；以 `serve -bootstrap` 启动主节点，`/readyz` 200 后启动其余节点；再把非内置插件逐个装上新版本。在生产库副本上演练过：主节点启动到迁移完成约 2 秒，到内置插件全部加载约 9 秒，到 `/readyz` 200 约 13 秒，从节点约 2 秒就绪。
 - **旧插件包装不上。** 按旧契约构建的包以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心；控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），插件列表和插件详情显示拒绝原因（`refusal`）。拒绝发生在两个时点：
   - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`、宿主授权 `accounts.credentials` / `accounts.read`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
   - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。

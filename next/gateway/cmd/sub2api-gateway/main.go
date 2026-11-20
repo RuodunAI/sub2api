@@ -110,13 +110,14 @@ type cliOptions struct {
 	tokenFile   string
 	upgradeID   string
 	node        string
+	digest      string
 	bootstrap   bool
 }
 
 // parseCLI parses argv into the command and its flags.
 func parseCLI(args []string) (cliOptions, error) {
 	if len(args) < 1 {
-		return cliOptions{}, errors.New("usage: sub2api-gateway version|init|import|serve|status|pause|resume|cancel|rollback|enable-node|disable-node|yield|unyield|yield-status|set-primary|remove-node")
+		return cliOptions{}, errors.New("usage: sub2api-gateway version|init|import|redeploy|serve|status|pause|resume|cancel|rollback|enable-node|disable-node|yield|unyield|yield-status|set-primary|remove-node")
 	}
 	command := args[0]
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -126,6 +127,7 @@ func parseCLI(args []string) (cliOptions, error) {
 	tokenFile := fs.String("token-file", "", "management token file (default: from -config, or shell.token beside -socket)")
 	id := fs.String("id", "", "upgrade ID")
 	node := fs.String("node", "", "node ID for set-primary or remove-node")
+	digest := fs.String("digest", "", "redeploy: digest of a core release already imported (by import or an update source)")
 	bootstrap := fs.Bool("bootstrap", false, "explicitly initialize the first core database on the primary")
 	if err := fs.Parse(args[1:]); err != nil {
 		return cliOptions{}, err
@@ -138,6 +140,7 @@ func parseCLI(args []string) (cliOptions, error) {
 		tokenFile:   *tokenFile,
 		upgradeID:   *id,
 		node:        *node,
+		digest:      *digest,
 		bootstrap:   *bootstrap,
 	}, nil
 }
@@ -215,6 +218,8 @@ func runCommand(opts cliOptions) error {
 		return s.initCluster(ctx, opts.manifestURL)
 	case "import":
 		return s.importRelease(ctx, opts.manifestURL)
+	case "redeploy":
+		return s.redeploy(ctx, opts.manifestURL, opts.digest)
 	}
 	return errors.New("unknown command")
 }
@@ -305,7 +310,7 @@ func newShell(ctx context.Context, c config, command string) (*shell, error) {
 	}
 	// A newer gateway adds its columns before serving; the schema is additive and
 	// idempotent, so older gateways still running are unaffected.
-	if command == "init" || command == "serve" {
+	if command == "init" || command == "serve" || command == "redeploy" {
 		if err = s.store.EnsureSchema(ctx); err != nil {
 			s.close()
 			return nil, err
@@ -319,11 +324,8 @@ func newShell(ctx context.Context, c config, command string) (*shell, error) {
 func (s *shell) initCluster(ctx context.Context, manifestURL string) error {
 	c := s.c
 	if manifestURL != "" {
-		r, err := importRelease(ctx, c, s.releases, manifestURL)
+		r, err := s.putRelease(ctx, "init", manifestURL)
 		if err != nil {
-			return err
-		}
-		if err = s.store.PutRelease(ctx, r); err != nil {
 			return err
 		}
 		if c.BaselineDigest == "" {
@@ -343,17 +345,52 @@ func (s *shell) initCluster(ctx context.Context, manifestURL string) error {
 // importRelease records the release named by a manifest without touching
 // the cluster baseline.
 func (s *shell) importRelease(ctx context.Context, manifestURL string) error {
-	if manifestURL == "" {
-		return errors.New("import requires -manifest")
-	}
-	r, err := importRelease(ctx, s.c, s.releases, manifestURL)
+	r, err := s.putRelease(ctx, "import", manifestURL)
 	if err != nil {
 		return err
 	}
-	if err = s.store.PutRelease(ctx, r); err != nil {
+	fmt.Println(r.Digest)
+	return nil
+}
+
+// putRelease fetches, verifies and stores the release named by the manifest
+// command requires.
+func (s *shell) putRelease(ctx context.Context, command, manifestURL string) (control.Release, error) {
+	if manifestURL == "" {
+		return control.Release{}, fmt.Errorf("%s requires -manifest", command)
+	}
+	r, err := importRelease(ctx, s.c, s.releases, manifestURL)
+	if err != nil {
+		return control.Release{}, err
+	}
+	return r, s.store.PutRelease(ctx, r)
+}
+
+// redeploy makes a core release the cluster's baseline for a
+// stop-and-redeploy (Store.Redeploy): the one -manifest imports, or the one
+// -digest names that is imported already (by import, or by an update source
+// such as GitHub Releases). The primary's next `serve -bootstrap` starts it.
+func (s *shell) redeploy(ctx context.Context, manifestURL, digest string) error {
+	if (manifestURL == "") == (digest == "") {
+		return errors.New("redeploy requires exactly one of -manifest and -digest")
+	}
+	if manifestURL != "" {
+		r, err := s.putRelease(ctx, "redeploy", manifestURL)
+		if err != nil {
+			return err
+		}
+		digest = r.Digest
+	}
+	redisClient, err := openRedis(s.c)
+	if err != nil {
 		return err
 	}
-	fmt.Println(r.Digest)
+	defer redisClient.Close()
+	s.store.Redis, s.store.Locks = redisClient, control.NewRedisLocks(redisClient)
+	if err = s.store.Redeploy(ctx, digest); err != nil {
+		return err
+	}
+	fmt.Printf("baseline %s; start the primary with serve -bootstrap, then the other nodes\n", digest)
 	return nil
 }
 

@@ -148,6 +148,24 @@ docker compose exec node-a sub2api-gateway import -manifest https://releases.exa
 
 带迁移 0106（账号协议绑定，CONTRACTS §110）的核心版本升级后，跨平台协议转换默认关闭，依赖转换的客户端会收到 404，直到在账号上为模型开启。升级前先按 [../rollback/protocol-binding-release.md](../rollback/protocol-binding-release.md) 导出近 30 天实际发生过的转换，升级后照着配置。
 
+### 停机重新部署（计划带不过去的版本）
+
+Host API 变了的核心版本（例如 0.1.304，见它在 CHANGELOG 里的升级须知）不能用计划升级：新核心要求的内置插件只在计划完成后才升级，主节点一直不就绪。改为停机重新部署（网关 0.1.139 起，CONTRACTS §34“停机重新部署”）：
+
+1. 停掉全部节点的网关（`docker compose stop`），把镜像换成支持目标核心的网关版本。
+2. 等 20 秒，让各节点在 Redis 里的实时心跳过期；在任一节点以同一份配置执行一次：
+
+   ```sh
+   docker compose run --rm node-a redeploy -config /etc/sub2api/shell.json -manifest <核心清单 URL>
+   ```
+
+   版本已由更新源（GitHub Release）或 `import` 导入时改用 `-digest <摘要>`。它导入清单，有节点心跳还新鲜或有 running/paused 计划时拒绝；否则把集群基线换成这个版本、清掉本集群的准入记录。不停进程，不碰核心的库。
+3. 以 `serve -bootstrap` 启动主节点（临时 Compose override 把 `command` 设为 `[serve, -bootstrap, -config, /etc/sub2api/shell.json]`）：按首次启动处理，迁移、内置插件导入都在这一步。`/readyz` 200 后去掉 override。
+4. 照常启动其余节点，它们跟随主节点启动同一版本。
+5. 把非内置插件逐个装上为新核心构建的版本。
+
+回退只能用旧版网关、旧版核心和升级前的数据库备份一起恢复。
+
 核心升级期间，主节点不把流量转发给从节点；正常服务期间的 CPU 保护可将主节点新请求转移到满足条件的从节点。网关执行后台升级，不要求浏览器保持连接。清单不等于启动授权：核心会核对数据库中的本次 boot ID、摘要及准入记录。所有节点完成才提交新集群基线。
 
 管理页面暂时不可用时，仍可从本机 Unix 管理 socket 操作：

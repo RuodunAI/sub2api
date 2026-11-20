@@ -501,3 +501,12 @@ func TestVersionCommand(t *testing.T) {
 		t.Fatalf("%+v %v %q", opts, err, Version)
 	}
 }
+
+func TestRedeployNeedsExactlyOneRelease(t *testing.T) {
+	s := &shell{}
+	for _, args := range [][2]string{{"", ""}, {"https://releases.example/m.json", "sha256:x"}} {
+		if err := s.redeploy(context.Background(), args[0], args[1]); err == nil || !strings.Contains(err.Error(), "exactly one") {
+			t.Fatalf("redeploy %q %q: %v", args[0], args[1], err)
+		}
+	}
+}
