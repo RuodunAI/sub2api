@@ -26,6 +26,8 @@
 - **卸载**：“清除数据”删插件的表和身份；不清除时只留数据：表（连同索引、序列）和类型留给核心，插件的视图、物化视图、外部表和表上的触发器、规则、策略删掉，插件授出的权限（包括给 PUBLIC 的）收回，免得它们以核心的权限替别的插件读写核心的表；重装时交还新身份，已跑的脚本不重跑（删掉的视图要由之后版本的迁移重建）。插件在运行时把自己的表授权给别人，每次 Ensure 收回。停用的键“还有数据”改为看有没有带前缀的表。
 - **官方插件**：dynweight 0.6.0、guard 0.3.0、moderation 0.13.0、payment 0.2.0，表名、索引名和迁移脚本加前缀，模型常量 `model.Prefix`；`pgdb.TryXactLock` 的键改按插件身份（`current_user`）区分。
 - **打包工具**：`sub2api-plugin db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。
+- **多节点**：各节点记着本进程做过 Ensure 的插件，之后每次先确认插件的身份还在；经一个节点保留数据卸载、再重新上传时，别的节点上的上传、审查和 `GET /plugins/:key/database` 不再因身份已被删而报 `password authentication failed`，而是重建身份、把留下的表交还给它。
+- **同意**：非官方插件授予 `db.schema` 仍要超管专属的 `plugin:grant:db_schema_unconfined`（所有者决定保留）。理由改为：插件因此在核心的数据库里有自己的身份、自己的表和自己的连接；插件以外的表另由 `db.core_read` 把关。权限说明随之更新。停用插件不改变它身份的数据库权限（`db.core_read` 的授权留到卸载）。
 - **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑），旧角色照旧收回；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
 
 **升级须知**
@@ -45,7 +47,7 @@
 
 - 删掉 `GET /account-types/:plugin_key/:type/form`；`GET /plugins/:key/settings` 不再返回 `schema`、`ui_schema`；插件包不再打包、核心不再提供 `forms/`（`/plugin-ui/.../forms/...` 返回 404）。保存账号凭证只由插件的 `ValidateCredentials` 把关，保存插件设置只由插件的 `ValidateSettings`（可选）把关。
 - 插件设置的密钥改在清单 `ui.settings.secrets` 里声明（`[{path, sensitive?}]`）。native、iframe 设置必须写这个键（上传时缺了报 `ui.settings.secrets` `required`）：写了列表只掩码列出的字段，写成 `[]` 不掩码；已装的包没有这个键时，和此前一样每个顶层键都被掩码。路径中途遇到数组时整个数组按密钥掩码和保留（CONTRACTS §75.1、§75.5）。
-- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存，插件已启用但运行不起来时保存失败（`plugin_unavailable`，先停用再改）。请求带插件当前的授权（与 `Configure` 相同）。插件线协议（2）和 Host API（10）不变。
+- 新增可选的 `PluginService.ValidateSettings`：保存插件设置前由插件校验，可以返回字段错误或归一化后的设置；插件没实现时照常保存，插件已启用但运行不起来时保存失败（`plugin_unavailable`，先停用再改）。校验在保存的事务之外，插件回答期间不锁插件行；校验期间设置被别的保存改了，这次保存返回 409，重读后再存。请求带插件当前的授权（与 `Configure` 相同）。插件线协议（2）和 Host API（10）不变。
 - `GET /plugins` 的 `has_settings` 只对当前版本是 native 设置的插件为 true（iframe 设置控制台不打开，仍为 false）。
 - 清单检查：账号表单或设置的 `form.mode: "schema"`、页面的 `type: "table" | "form"` 上传时报 `unsupported`；native 设置要有 `component` 或 `page`。`manifest.Form` 删掉 `schema`、`uiSchema`，`manifest.Page` 删掉 `source`、`columns`、`schema`、`submit`、`search`、`create`，`check.Warnings` 删除。`sub2api-plugin` 严格读清单，旧字段报 unknown field。
 
