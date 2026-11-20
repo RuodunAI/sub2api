@@ -424,7 +424,6 @@
           "endpoints": [
             "chat_completions",
             "responses",
-            "responses_websocket",
             "embeddings"
           ],
           "passHeaders": [
@@ -520,7 +519,6 @@
           "endpoints": [
             "chat_completions",
             "responses",
-            "responses_websocket",
             "embeddings"
           ],
           "passHeaders": [

@@ -302,16 +302,17 @@ func TestManifest(t *testing.T) {
 		// The endpoints Ark serves on the built-in platform are listed, so an
 		// endpoint the core adds there (OpenAI's image generations and edits)
 		// does not reach Ark; Ark's own images are on the volcengine platform.
-		if want := []string{"chat_completions", "responses", "responses_websocket", "embeddings"}; !slices.Equal(ap.Endpoints, want) {
+		if want := []string{"chat_completions", "responses", "embeddings"}; !slices.Equal(ap.Endpoints, want) {
 			t.Errorf("%s openai endpoints = %v, want %v", id, ap.Endpoints, want)
 		}
 	}
 	if b := builtin(t); b != nil {
-		// WebSocket endpoints are only routed to plugins declaring
+		// Every endpoint listed is one the plugin serves; no WebSocket one,
+		// since the core routes those only to plugins declaring
 		// platform.websocket.v1, which this one does not.
 		var got []string
 		for _, e := range b.Endpoints {
-			if officialPlatforms[volcengine.PlatformID].SupportsEndpoint(e.ID) && !e.WebSocket() {
+			if officialPlatforms[volcengine.PlatformID].SupportsEndpoint(e.ID) {
 				got = append(got, e.Protocol)
 			}
 		}

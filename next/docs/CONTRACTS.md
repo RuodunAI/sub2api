@@ -8484,7 +8484,7 @@ ALTER TABLE usage_logs
 | openai `apikey` | 不写子集 | **服务**（预设有两条路由） |
 | codex `codex_oauth`、`codex_device` | `responses`、`responses_websocket`，`adapted` 列两个生图端点 | **经适配服务**：核心转成带 `image_generation` 工具的 Responses 请求，应答转回生图接口的形状（§121）。没有声明适配的同样子集的类型不是候选（`gateway/images_test.go` 的 `TestOpenAIImages`） |
 | azure-openai `azure_v1`（chat、responses、embeddings）、`azure_deployment`（chat、embeddings，`adapted` 只列 `responses`） | 写了子集 | 不服务；插件的路由表也没有这两个协议，`adapted` 也不列它们（§121.1） |
-| volcengine `apikey`、`relay` | 本批改为显式 `chat_completions`、`responses`、`responses_websocket`、`embeddings`（与之前实际服务的相同） | 不服务：方舟的生图（Seedream）在插件自己的 `volcengine` 平台上（`volcengine.images`），形状不同；不写子集的话调度会把 OpenAI 生图请求交给它，插件没有这条路由而报 `unsupported upstream protocol` |
+| volcengine `apikey`、`relay` | 本批改为显式 `chat_completions`、`responses`、`embeddings`（与之前实际服务的相同；插件没有 `platform.websocket.v1`，核心从不把 WebSocket 交给它，所以不列 `responses_websocket`） | 不服务：方舟的生图（Seedream）在插件自己的 `volcengine` 平台上（`volcengine.images`），形状不同；不写子集的话调度会把 OpenAI 生图请求交给它，插件没有这条路由而报 `unsupported upstream protocol` |
 | relay、anthropic、gemini、vertex、bedrock 的类型 | 不在 `openai` 平台上 | 不受影响 |
 
 - 账号层面：`protocols` 为 `null`（默认）的 OpenAI API Key 账号升级后**自动**开放 `openai.images`、`openai.images_edit`；`protocols` “指定”过的账号不会自动开放（§110.2 的既定行为），要的话运营方在“协议与模型”里勾上。`model_protocols` 照常可以把生图模型限定到这两个协议。
