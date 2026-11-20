@@ -7,16 +7,13 @@ import (
 	"net/url"
 	"strings"
 
-	"golang.org/x/net/http/httpguts"
-
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
-// validate is the gateway's check of a relay, before anything is sent: what
-// the runtime cannot judge (it has refused a missing URL and the
-// transport's header names already). It returns the URL to send to.
+// validate is the gateway's check of a relay, before anything is sent. It
+// returns the URL to send to.
 //
 // The body is not inspected: the plugin's bytes are final and the core does
 // not parse them again (the SDK conformance suite holds plugins to the
@@ -125,19 +122,13 @@ func (x *execution) checkResponseStream(name string) *gwError {
 	return nil
 }
 
-// checkRelayHeaders refuses a header the transport could not send: an
-// invalid method, name or value would fail the exchange after it started,
-// as if the upstream had.
+// checkRelayHeaders refuses a method or header that breaks the relay's rule
+// (protocol.CheckRelayHeaders): an invalid method, name or value would fail
+// the exchange after it started, as if the upstream had, and the
+// transport's headers are the host's.
 func checkRelayHeaders(req *pluginv1.UpstreamRequest) *gwError {
-	if m := req.GetMethod(); m != "" && !httpguts.ValidHeaderFieldName(m) {
-		return relayRefused("invalid method " + strconvQuote(m))
-	}
-	for _, headers := range []map[string]string{req.GetDefaultHeaders(), req.GetHeaders()} {
-		for k, v := range headers {
-			if !execfetch.ValidHeader(k, v) {
-				return relayRefused("invalid header " + strconvQuote(k))
-			}
-		}
+	if err := protocol.CheckRelayHeaders(req); err != nil {
+		return relayRefused(err.Error())
 	}
 	return nil
 }

@@ -242,7 +242,7 @@ IAM 权限：Access Key、临时凭证对应的身份要能调用 `bedrock:Invok
 - **Claude Code 的请求体会被清洗**：插件拿到完整请求体，删掉 Bedrock 不接受、Claude Code 写在深处的内容：工具定义里的 `custom`，`cache_control` 里的 `scope`（总是删）和模型不接受的 `ttl`（认出模型版本时，只有支持缓存 TTL 的模型保留 `5m`、`1h`；模型 ID 认不出版本时原样保留，以免把一小时的缓存悄悄变成五分钟），工具调用 ID 里 `[a-zA-Z0-9_-]` 以外的字符（换成 `_`），模型不接受的 thinking 设置。这套清洗只对照过旧版的规则和 AWS 文档，**Bedrock 账号主要给 Claude Code 用的话，先在测试分组里验证再放量。**
 - 除上一条的清洗外，请求体按客户端原样转发，顶层只处理这些字段：
   - 删除 `model`、`stream`（都移到地址里），写入 `anthropic_version: bedrock-2023-05-31`。走不走流式接口只看客户端请求本身是否流式（`meta.stream`），不看请求体里的 `stream`：运营方在参数覆盖里给非流式请求加 `stream: true` 不会把它变成流式。
-  - 删除 `metadata`、`provider`、`service_tier`、`inference_geo`、`speed`：InvokeModel 的请求体没有这些字段；Bedrock 上的数据驻留由推理配置的前缀决定，fast mode 不可用。（此前删的是拼错的 `interface_geo`，真正的 `inference_geo` 会作为未知字段发给 Bedrock。）会悄悄改变回答的字段（`mcp_servers`、`container`、`fallbacks`）不删，交给 Bedrock 拒绝。
+  - 删除 `metadata`、`provider`、`service_tier`、`inference_geo`、`speed`：InvokeModel 的请求体没有这些字段；Bedrock 上的数据驻留由推理配置的前缀决定，fast mode 不可用。（此前删的是拼错的 `interface_geo`，真正的 `inference_geo` 会作为未知字段发给 Bedrock。）会悄悄改变回答的字段（`mcp_servers`、`container`）不删，交给 Bedrock 拒绝。`fallbacks`（拒答时由服务端换模型重试，beta `server-side-fallback-2026-07-01`）一律删除：InvokeModel 没有这个功能，这个 beta 也不在下面的名单里，而 Claude Code、SDK 会自己带上 `"fallbacks":"default"`，不删时这些客户端经 Bedrock 账号的每个请求都是 400（`Extra inputs are not permitted`，原样返回、不换号），与旧版相同；请求里写的后备模型照旧先由核心按账号的模型列表准入（§13 `modelReferences`），删掉后不会被调用。`fallback_credit_token` 只在 beta 含 `fallback-credit-2026-07-01` 时保留，否则删除。
   - `anthropic_beta`：见下一条。
   - `context_management`：请求没有带 `context-management-2025-06-27` 这个 beta 时删除。
   - `output_config`、`output_format` **保留**（旧版会删除）：按 AWS 文档，InvokeModel 读 `output_config.format`（结构化输出）和 `output_config.effort`；`output_format` 是已废弃的写法，插件不替客户端转换。

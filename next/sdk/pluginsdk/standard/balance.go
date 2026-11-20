@@ -45,7 +45,7 @@ func (p *Platform) ParseBalanceResponse(_ context.Context, in *pluginv1.ParseBal
 	}
 	answers := in.GetAnswers()
 	if len(answers) != len(t.Balance.Requests) {
-		return &pluginv1.ParseBalanceResponseResponse{Result: transient(fmt.Sprintf("%d answers to %d balance requests", len(answers), len(t.Balance.Requests)))}, nil
+		return &pluginv1.ParseBalanceResponseResponse{Result: BalanceTransient(fmt.Sprintf("%d answers to %d balance requests", len(answers), len(t.Balance.Requests)))}, nil
 	}
 	return &pluginv1.ParseBalanceResponseResponse{Result: t.Balance.Read(r, answers)}, nil
 }
@@ -71,7 +71,7 @@ func BalanceFailure(a *pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	code := a.GetStatus()
 	switch {
 	case a.GetTransportError() != "" || code == 0:
-		return transient("transport error: " + textutil.Clip(a.GetTransportError(), classify.MaxReasonMessage))
+		return BalanceTransient("transport error: " + textutil.Clip(a.GetTransportError(), classify.MaxReasonMessage))
 	case code >= 200 && code < 300:
 		return nil
 	}
@@ -82,7 +82,7 @@ func BalanceFailure(a *pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	if code == http.StatusUnauthorized || code == http.StatusForbidden {
 		return &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED, ErrorMessage: msg}
 	}
-	return transient(msg)
+	return BalanceTransient(msg)
 }
 
 // decimalNumber is a plain decimal number: a sign, digits, a fraction.
@@ -111,6 +111,8 @@ func Micros(number string) (int64, bool) {
 	return n.Int64(), n.IsInt64()
 }
 
-func transient(msg string) *pluginv1.BalanceResult {
+// BalanceTransient is the ERROR_TYPE_TRANSIENT result with message msg: a
+// balance the answer does not give (a Read's own failures).
+func BalanceTransient(msg string) *pluginv1.BalanceResult {
 	return &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT, ErrorMessage: msg}
 }

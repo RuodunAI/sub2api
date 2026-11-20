@@ -24,9 +24,11 @@ const (
 
 // TestManifest runs manifest.json through the checks the core runs before
 // it installs a package and pins what the package keeps: an
-// account-type-only plugin whose apikey serves every endpoint of the
-// built-in openai and anthropic platforms, gemini without countTokens (the
-// site answers it 404) and the TypeSafe plugin's typesafe platform, each
+// account-type-only plugin whose apikey serves the routes a New API site
+// has: the built-in openai platform over HTTP only (the site has no
+// Responses WebSocket), anthropic messages and gemini generation without
+// their token counts (the site answers them 404, so the core estimates
+// them) and the TypeSafe plugin's typesafe platform, each
 // with the platform's own client headers; an address the caller sets
 // (account:relay guards it), a balance, and its own process that reads
 // only its own accounts and opens no connection.
@@ -38,8 +40,8 @@ func TestManifest(t *testing.T) {
 	if m.Entry.GRPC == nil || m.Entry.GRPC.Binaries == "" || m.HostCompat != ">=0.1.304 <0.2.0" {
 		t.Fatalf("entry/hostCompat = %+v %s", m.Entry, m.HostCompat)
 	}
-	// WebSocket: the openai preset's responses_ws route.
-	if caps := m.Capabilities; len(caps) != 2 || caps[0].ID != manifest.CapPlatformAdapter || caps[1].ID != manifest.CapPlatformWebSocket {
+	// No WebSocket: a site has no GET /v1/responses upgrade.
+	if caps := m.Capabilities; len(caps) != 1 || caps[0].ID != manifest.CapPlatformAdapter {
 		t.Fatalf("capabilities = %+v", caps)
 	}
 	if len(m.Platforms) != 0 || len(m.AccountTypes) != 1 || len(m.ExternalServices) != 0 {
@@ -47,8 +49,8 @@ func TestManifest(t *testing.T) {
 	}
 	at := m.AccountTypes[0]
 	want := []manifest.AccountPlatform{
-		{Platform: "openai"},
-		{Platform: "anthropic"},
+		{Platform: "openai", Endpoints: []string{"chat_completions", "responses", "embeddings", "images_generations", "images_edits"}},
+		{Platform: "anthropic", Endpoints: []string{"messages"}},
 		{Platform: "gemini", Endpoints: []string{"generate_content", "stream_generate_content"}},
 		{Platform: "typesafe"},
 	}
@@ -86,7 +88,7 @@ func TestManifest(t *testing.T) {
 // TestManifestServes runs the plugin with its embedded manifest.
 func TestManifestServes(t *testing.T) {
 	h := pluginsdktest.Start(t, newapi.New(), pluginsdktest.Options{Manifest: manifestJSON})
-	if h.Info.GetPluginKey() != key || h.Info.GetVersion() != version || !slices.Contains(h.Info.GetCapabilities(), manifest.CapPlatformWebSocket) {
+	if h.Info.GetPluginKey() != key || h.Info.GetVersion() != version || slices.Contains(h.Info.GetCapabilities(), manifest.CapPlatformWebSocket) {
 		t.Fatalf("info = %v", h.Info)
 	}
 }

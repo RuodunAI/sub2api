@@ -3,16 +3,14 @@
 // of a stored account, reading their fields, reporting a field error and
 // answering with what validation normalized.
 //
-// The api_key + base_url form has its whole implementation in apikey.Spec;
-// this package serves the account types whose fields are their own (cloud
-// credentials, key files).
+// The api_key + base_url form has its whole implementation in apikey.Spec,
+// which decodes with this package too; the rest of the package serves the
+// account types whose fields are their own (cloud credentials, key files).
 package accountform
 
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"io"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -27,19 +25,21 @@ import (
 // expiry, a large integer).
 type Object map[string]any
 
-// Decode decodes a JSON object; blank input and null are an empty one.
+// Decode decodes a JSON object; blank input and null are an empty one. Text
+// that is not one JSON value fails with json.Unmarshal's error.
 func Decode(raw string) (Object, error) {
 	o := Object{}
 	if strings.TrimSpace(raw) == "" {
 		return o, nil
 	}
+	if !json.Valid([]byte(raw)) {
+		var v any
+		return nil, json.Unmarshal([]byte(raw), &v)
+	}
 	dec := json.NewDecoder(strings.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(&o); err != nil {
 		return nil, err
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		return nil, errors.New("unexpected data after the JSON object")
 	}
 	if o == nil {
 		o = Object{}
@@ -51,6 +51,17 @@ func Decode(raw string) (Object, error) {
 func (o Object) Str(k string) string {
 	s, _ := o[k].(string)
 	return strings.TrimSpace(s)
+}
+
+// Lookup is the first non-nil value of k in objs, in order (credentials
+// before settings, or the other way round for a setting).
+func Lookup(k string, objs ...Object) (any, bool) {
+	for _, o := range objs {
+		if v, ok := o[k]; ok && v != nil {
+			return v, true
+		}
+	}
+	return nil, false
 }
 
 // JSON is o encoded.

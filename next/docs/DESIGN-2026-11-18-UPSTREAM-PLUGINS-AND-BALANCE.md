@@ -361,7 +361,7 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 | `guardedSettings` | 无（地址就是运营方填的） | 无 | `[{field:"base_url", allowed:["https://api.typesafe.ai"]}]`（照 openai/anthropic/gemini 插件：没有 `account:settings:custom` 的人只能用官方地址） |
 | `externalServices` | 无 | 无 | `["api.typesafe.ai"]` |
 | `hostPermissions` | `platform.register`、`accounts.credentials {"types":"own"}` | 同 | 加 `gateway.endpoint` |
-| `capabilities` | `platform.adapter.v1`、`platform.websocket.v1` | 同 | `platform.adapter.v1` |
+| `capabilities` | `platform.adapter.v1`（2026-11-20 去掉 `platform.websocket.v1`：New API 没有 Responses 的 WebSocket 模式） | `platform.adapter.v1`、`platform.websocket.v1` | `platform.adapter.v1` |
 | `net` 权限 | 不要 | 不要 | 不要 |
 | 余额 | `balance: {updateInterval: 600}` | `balance: {updateInterval: 600}` | 不声明 |
 | 默认模型 | 不写（账号默认服务所有模型；运营方用"拉取模型"） | 不写 | `jev-latest`、`jev-1.14.0`、`jev-1.13.0`、`jev-preview` |
@@ -377,8 +377,8 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 
 | 平台 | New API | Sub2API |
 |---|---|---|
-| `openai` | 全部端点（chat、responses、responses_websocket、embeddings、images、images_edit） | 全部端点 |
-| `anthropic` | 全部（messages、count_tokens；New API 的 count_tokens 不计费，转发照常） | 全部 |
+| `openai` | `endpoints: ["chat_completions","responses","embeddings","images_generations","images_edits"]`：New API 只有 `POST /v1/responses`，`GET /v1/responses` 的 WebSocket 升级 404（2026-11-20 改） | 全部端点 |
+| `anthropic` | `endpoints: ["messages"]`：New API 的 `/v1/messages/count_tokens` 路由被注释掉、回 404，去掉后核心对 `anthropic.count_tokens` 走本地估算（§88.2；2026-11-20 改） | 全部 |
 | `gemini` | `endpoints: ["generate_content","stream_generate_content"]`：New API 的 `:countTokens` 直接 404，去掉后核心对 `gemini.count_tokens` 走本地估算（§88.2） | 全部 |
 | `typesafe` | 列（转发 Jev，3.6） | 不列（所有者只要求三个协议族） |
 
@@ -474,7 +474,7 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 | D10 | 定时刷新用集群任务，不加 PG 租约；停用账号只在手动刷新时查 | 只读、只显示，重复一次 GET 没代价；与额度清扫的选法一致 | `account/tasks.go` |
 | D11 | 三个插件都是"内置、仅安装、默认不启用" | 所有者把它们当一等的上游类型，不想每个部署手工上传；与 volcengine 相同，启用后才生效 | `deploy/docker/build-go.sh` 两个列表、CONTRACTS 内置插件表 |
 | D12 | 插件 key `newapi`、`sub2api`、`typesafe`，账号类型都叫 `apikey` | 与官方插件的命名一致；`sub2api` 与发布者名同名但不冲突（不同命名空间） | 发布前改，发布后不能改 |
-| D13 | New API、Sub2API 的 openai、anthropic 平台不写端点子集（含 embeddings、count_tokens 和以后新增的端点）；New API 的 gemini 去掉 countTokens | 原样转发不花代价，运营方能按账号关掉；New API 的 countTokens 会 404 | 两个插件清单的 `endpoints` |
+| D13 | Sub2API 的 openai、anthropic 平台不写端点子集（含 embeddings、count_tokens 和以后新增的端点）；New API 只列站点真有的端点：openai 去掉 responses_websocket，anthropic 去掉 count_tokens，gemini 去掉 countTokens（2026-11-20 改，原来只去掉 gemini 的 countTokens） | 原样转发不花代价，运营方能按账号关掉；New API 对这三个都 404，404 不换号，原样回给客户端 | 两个插件清单的 `endpoints` |
 | D14 | 测试请求按账号开放的协议自动选（proto 加 `protocols`），不加界面 | 正对"上游 Key 只开通某类协议"，用的是运营方已经做的绑定 | 3.3.3；以后可加界面 |
 | D15 | New API 列 `typesafe` 平台，Sub2API 不列 | 所有者对 New API 明说了 Jev，对 Sub2API 只要了三个协议族 | sub2api 清单加一行即可 |
 | D16 | 生图用 `img` / `img_o` 加列（有迁移），本版做 generations 和 edits 的 JSON 形式 | 统计可见；edits 的 JSON 形式代价只有一个端点 | 3.4 |

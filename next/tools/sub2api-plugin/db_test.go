@@ -367,3 +367,28 @@ CREATE VIEW plg_demo__names AS SELECT id FROM users;`)
 		t.Fatalf("no hint with database.access: %s", msg)
 	}
 }
+
+// A field tagged unique on a new table gets GORM's constraint name
+// uni_<table>_<column>, without the prefix: diff refuses the migration and
+// says what to tag instead.
+func TestDBDiffUniqueHint(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go run on a plugin module and needs PostgreSQL")
+	}
+	dir := gormPlugin(t)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');`)
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), strings.Replace(demoModel(""),
+		"func All() []any { return []any{&T{}} }", `type U struct {
+	ID   int64  `+"`gorm:\"primaryKey\"`"+`
+	Code string `+"`gorm:\"unique\"`"+`
+}
+
+func (U) TableName() string { return "plg_demo__u" }
+
+func All() []any { return []any{&T{}, &U{}} }`, 1))
+	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, "index uni_plg_demo__u_code (not named plg_demo__...)") ||
+		!strings.Contains(msg, uniqueHint("demo")) {
+		t.Fatalf("diff with a unique tag on a new table: %s", msg)
+	}
+}

@@ -382,9 +382,23 @@ func (p *dbPlugin) verify(dsn string, files []sqlFile, next *migration, stderr i
 	}
 	if !report.Clean() {
 		printReport(stderr, report, " after it")
+		if slices.ContainsFunc(report.Refused, func(r string) bool { return strings.Contains(r, ": index "+gormUniquePrefix) }) {
+			return fmt.Errorf("the generated %s does not bring the schema to the models; not written: %s", next.name, uniqueHint(p.key))
+		}
 		return fmt.Errorf("the generated %s does not bring the schema to the models; not written", next.name)
 	}
 	return nil
+}
+
+// gormUniquePrefix starts the name GORM gives the unique constraint of a
+// field tagged unique: uni_<table>_<column>.
+const gormUniquePrefix = "uni_"
+
+// uniqueHint explains a refused uni_ index of the plugin key: the name of
+// a unique tag lacks the prefix, a named uniqueIndex has it.
+func uniqueHint(key string) string {
+	return "GORM names the unique constraint of a field tagged unique " + gormUniquePrefix + "<table>_<column>, without the plugin's prefix; " +
+		"tag the field uniqueIndex:" + manifest.TablePrefix(key) + "<name> instead"
 }
 
 var (

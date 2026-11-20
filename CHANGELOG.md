@@ -47,7 +47,7 @@
 - **迁移 0110**（`0110_drop_plugin_migration_funcs.sql`，单向）删除 0.1.303 的插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
 - **官方插件**：dynweight 0.6.0、guard 0.3.0、moderation 0.13.0、payment 0.2.0，表名、索引名和迁移脚本加前缀，模型常量 `model.Prefix`；`pgdb.TryXactLock` 的键改按插件身份（`current_user`）区分。
 - **控制台**：插件详情的“数据库”页只显示最后一次读取的结果：插件升级时 `desired_version`、`active_version` 先后变化引发的几次读取，先发的晚到时不再盖掉新版本的脚本和执行状态。
-- **打包工具**：`sub2api-plugin db diff|check` 以连接的用户执行迁移，不再建临时角色；`db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。
+- **打包工具**：`sub2api-plugin db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。迁移又以临时的 `NOLOGIN` 角色执行（只有临时 schema 的 `CREATE`，同宿主的插件身份），需要更多权限的语句（`ALTER … OWNER TO`、`CREATE SCHEMA`、`CREATE EXTENSION` 等）在工具里就失败；模式外的对象按属主查，`EXCEPTION` 块里建的也查得到。比对库的用户要能建角色（testpg 和 CI 的超级用户可以）。
 - **多节点**：各节点记着本进程做过 Ensure 的插件，之后每次先确认插件的身份还在；经一个节点保留数据卸载、再重新上传时，别的节点上的上传、审查和 `GET /plugins/:key/database` 不再因身份已被删而报 `password authentication failed`，而是重建身份、把留下的表交还给它。
 - **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑）；0.1.303 为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`，角色还有会话（旧插件进程未退出）时该插件整个留到下次 Ensure 或启动，记一次警告 `legacy plugin database role still has sessions`；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
 
@@ -117,6 +117,7 @@
 - azure-openai：资源地址按填写的保存，`/openai`、`/openai/v1` 只在请求时去掉，请求地址不变；Foundry 项目名里转义的斜杠（`/api/projects/a%2Fb`）由拒绝改为接受，作为一段保存和发出。项目名恰好是 `openai` 时，请求仍少掉项目自己那一段（与此前相同）。
 - SDK：删掉 `apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`；`Spec.StripSuffixes` 改名 `Versions`；`NormalizeBaseURL` 去掉第二个参数；`apikeytest` 删掉 `MinKey`，改为接受带空格、非 ASCII、4096 位的密钥，并检查 `/v1`、`%2F` 原样保存。
 - 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法。
+- `apikey.Spec` 解析凭证与设置改用 `accountform`（数字按原文保留）：凭证或设置里的其他数字字段保存时不再经 float64 改写（大于 2^53 的整数不再丢精度，`1.0` 不再变成 `1`）。SDK 删掉 `apikey.DecodeObject`、`apikey.Lookup`，改用 `accountform.Decode`、`accountform.Lookup`；`standard.Request.Field` 读数字时给出原文。
 
 #### 升级须知
 
@@ -275,6 +276,7 @@
 - 安装与升级的审查页对平台插件固定显示一句：插件会收到经它的账号发出的每个请求的完整内容，并决定请求发往哪个地址（不是权限，不能取消）。
 - 钩子调用因请求超过插件 gRPC 接收上限而失败的情况不再发生（插件的接收上限固定为传输层最大值），`requestTooLarge` 的熔断例外删除。
 - vertex：把客户端的 `user-agent`、`x-goog-api-client` 作为默认头转发。
+- 中继请求的方法与请求头只有一套规则（`sdk/protocol.CheckRelayHeaders`），核心的 `RelayUpstream`、网关发出前的检查和 SDK 都用它：头名必须小写、不能是传输层的头（含 `host`）、名和值要合法。核心以前只把头名转成小写后查传输头，现在大写头名在核心也被拒绝（用 SDK 构造器的插件本来就是小写，不受影响）。
 - **请求体上限**（`max_request_body_mb`，CONTRACTS §111）：每个网关请求的请求体、WebSocket 的单条消息都按网关设置里的值限制，超出回 413（WebSocket 以 1009 关闭），保存后各节点对新请求生效。环境变量 `max_request_body_mb`（全局层、分组层）和进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 删除，端点清单的 `request.maxBodyBytes` 删除（没有清单用过）。交给插件的请求体不按字节排队，网关设置里没有内存警告。
 - **插件内存默认不限**（CONTRACTS §111.5）：插件资源页给插件设的内存上限原样生效；节点封顶默认不封顶（见升级须知）。
 - **执行的恢复按存活判断**：插件解析用量的端点和任务提交在观察之后由网关每 15 秒续期，节点崩溃时恢复扫描在 2 分钟没有续期后把它关成零费用的“未上报”、释放预扣（约 3 分钟内），活着的执行不会因为时间长被关掉。
@@ -445,6 +447,7 @@
 
 - **会话 id 以账号 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为 `sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")` 排成的 UUID，账号 id 是核心里的账号编号，不发给上游。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；标识随账号不同，同一会话换到另一个 ChatGPT 账号时也会变。
 - **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数，以及授权（设备码申请、轮询、换令牌）——授权时账号还没保存，每次调用都带上表单此刻填的值。默认值不变，不设就与以前一样。
+- **凭证的 `expires_at` 写成数字时也要是非负整数**：手工粘贴的凭证里 `"expires_at": -1`、`1.5` 这类数字以前直接保存（写成字符串 `"-1"` 却会被拒），现在同样以 `expires_at`/`pattern` 拒绝。
 - **`instructions: null` 按缺省处理**：Responses 请求体里显式写 `"instructions": null` 时，与没写一样补成空串再发给 Codex 后端（以前原样发 `null`），与旧版后端一致。
 
 ### 删除 Claude OAuth 插件及两种账号类型（迁移 0111）
@@ -469,7 +472,7 @@
 - **bedrock**：只服务 anthropic 平台，Claude 走 InvokeModel / InvokeModelWithResponseStream。客户端用 OpenAI 协议（chat、responses）访问时由核心先转换成 Messages 请求，走同一条路（这是跨平台转换，要在 Bedrock 账号上为模型开启）；Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接，Claude 以外的 Bedrock 模型这一版不支持。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由插件用 `sdk/reqsign` 做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射（ID 按 2026-11-17 的 AWS 模型卡片，含 Fable 5.2、Opus / Sonnet / Haiku 5.5，不含 AWS 已停止服务的 Sonnet 4 和 Opus 4），可选跨区域推理前缀（us、eu、apac、jp、au、in、global）；按 AWS 模型卡片，现行的 Claude 模型几乎都只能经推理配置调用，所以前缀默认是 `global`（预填模型里只有 Opus 4.1 没有全球配置，它的映射直接写 `us.` 开头的 ID），要把请求留在某个地域内就改选地域前缀。账号测试的默认模型是 Haiku 4.5 的全球推理配置。中国区（`cn-*`）和隔离分区的区域在保存时被拒绝。请求体的处理（`internal/bedrock` 的 `body.go`、`beta.go`、`sanitize.go`、`upstream.go`）：
   - 顶层总是删除 `model`、`stream`、`metadata`、`provider`、`service_tier`、`inference_geo`、`speed`（后三项选的是 Anthropic 自己的服务等级、数据驻留和快速模式，Bedrock 没有，地域由推理配置决定），设上 Bedrock 要求的 `anthropic_version`。顶层的 `output_config`、`output_format` 保留（旧版会删）。
   - 这些删除都在插件里、在运营方的参数覆盖之后：运营方在参数覆盖里写这些字段会被删掉。develop 上的 bedrock 0.1.0 也是由插件的补丁在参数覆盖之后删（当时只删 `model`、`stream`、`metadata`、`provider`），顺序没有变，删除的字段多了 `service_tier`、`inference_geo`、`speed`。
-  - `anthropic_beta`：取客户端 `anthropic-beta` 头和请求体里要的功能，白名单 15 项（Bedrock 另有名字的改名，不支持的丢掉），再按工具自动加：computer use 工具加对应的 `computer-use-2025-01-24` / `computer-use-2025-11-24`，tool search 工具（在有 tool search 的模型上）、带 `input_examples` 或允许 code execution 调用的工具加 `tool-search-tool-2025-10-19`，有它时同时带 `tool-examples-2025-10-29`。没有对应功能的 `context_management` 删除。
+  - `anthropic_beta`：取客户端 `anthropic-beta` 头和请求体里要的功能，白名单 15 项（Bedrock 另有名字的改名，不支持的丢掉），再按工具自动加：computer use 工具加对应的 `computer-use-2025-01-24` / `computer-use-2025-11-24`，tool search 工具（在有 tool search 的模型上）、带 `input_examples` 或允许 code execution 调用的工具加 `tool-search-tool-2025-10-19`，有它时同时带 `tool-examples-2025-10-29`。没有对应功能的 `context_management`、`fallback_credit_token` 删除；`fallbacks` 一律删除（Bedrock 没有服务端拒答后备，Claude Code、SDK 默认带的 `"fallbacks":"default"` 不删会让每个请求 400，与旧版相同）。
   - 清洗 Claude Code 写在请求体深处、Bedrock 不接受的字段：工具定义的 `custom`；`cache_control` 的 `scope` 总是删，`ttl` 只在认出模型版本时按模型删（低于 4.5 的删，4.5 及以上只删 `5m`、`1h` 以外的值），**认不出模型版本时 `ttl` 原样保留**（删掉会把一小时缓存静默变成五分钟）；工具调用 ID 的非法字符；模型不接受的 thinking 设置。不用再在参数覆盖里手工删。
   - 是否流式只看请求的 `meta.stream`（客户端的选择），不看请求体里的 `stream`：运营方的参数覆盖给非流式请求加 `stream: true` 不会把它变成 InvokeModelWithResponseStream。
   - Access Key、API Key 账号上去掉 `x-amz-security-token`（`RemoveHeader`）：运营方经请求头覆盖加的这个头不再发给 AWS（否则签名校验失败）；临时凭证账号照常带。
@@ -484,7 +487,7 @@
 
 分支 `feat/upstream-plugins`。三个插件都**只对文档、单元测试、合规套件、黄金样例和模拟上游验证过，没有接过真实站点或真实 TypeSafe 账号**。契约见 CONTRACTS §119，填法见 [PLUGIN-NEWAPI.md](next/docs/PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](next/docs/PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](next/docs/PLUGIN-TYPESAFE.md)。
 
-- **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；Gemini `countTokens` 不转发，由核心本地估算。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
+- **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；只服务站点真有的端点：Anthropic `count_tokens` 与 Gemini `countTokens` 不转发（New API 对两者回 404），由核心本地估算，Responses 只有 HTTP，不声明 WebSocket（New API 没有 `GET /v1/responses` 升级，WebSocket 会话不再调度到这类账号而失败）。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
 - **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组没配限额（`subscription` 存在且 `remaining` 为 `-1`）时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。
@@ -537,7 +540,7 @@
 - **proto 清理**（转发 V2 收尾，删除没有使用者的字段）：
   - `EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
   - `UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
-  - `GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：插件一律经虚拟地址、以自己的数据库身份连接（CONTRACTS §130），这个字段没有意义了。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）不再建临时角色：以连接的用户在临时 schema 里执行迁移（`search_path` 指向它，代替宿主以插件身份执行时的核心模式），建在它之外或改动它之外的对象列为差异，每个脚本之后再列出宿主会拒绝的对象（不带前缀的对象，表、索引、序列、视图、类型以外的任何对象；见上面“插件数据库隔离”的“打包工具”）。
+  - `GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：插件一律经虚拟地址、以自己的数据库身份连接（CONTRACTS §130），这个字段没有意义了。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）以临时的 `NOLOGIN` 角色在临时 schema 里执行迁移（只有这个 schema 的 `USAGE`、`CREATE`，`search_path` 指向它，代替宿主以插件身份执行时的核心模式），它在 schema 之外拥有的对象按属主列为差异，每个脚本之后再列出宿主会拒绝的对象（不带前缀的对象，表、索引、序列、视图、类型以外的任何对象；见上面“插件数据库隔离”的“打包工具”）。
   - `truncated` 全部删除：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）、从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）、随 `usageMaxBytes` 删除的 `ExtractUsageRequest.truncated`（7）。回答不再截断，codex、vertex 已不读它们。`ExecuteHTTP` 的回答读不完整时照旧是 `transport_error`。
   - 代理票据新增 `HTTPRequest.execution_token`（10）、`ExecutionHTTPRequest.proxy_ticket`（7）。SDK：路由处理函数的 context 绑定执行令牌，`pluginsdk.Fetch` 在路由里可用并传 `ProxyTicket`；假宿主的 `Harness.DoAs` 发令牌（`FakeHost.BeginRoute`）。
 

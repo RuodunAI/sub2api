@@ -20,9 +20,9 @@ func APIKey(id string) standard.Type {
 			// wording is openai's, written into the golden case ("validate
 			// non-string key", with its note) when the 8-512 rule went.
 			Texts: apikey.Texts{
-				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
+				UnsupportedAccountType: apikey.UnsupportedAccountTypeText,
 				KeyNotString:           "API key must be a string / api_key 必须是字符串",
-				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
+				BaseURLFormat:          apikey.BaseURLFormatText,
 			},
 		},
 		Auth: standard.Auth{Header: "x-api-key"},

@@ -13,8 +13,9 @@ import (
 
 // TestInvokeBodyTopLevel: the path carries model and stream, so both leave
 // the body; anthropic_version is always set, the top-level fields InvokeModel
-// refuses leave, output_config stays, and the fallbacks the core guards are
-// never touched.
+// refuses leave, output_config stays, fallbacks always leaves (InvokeModel
+// has no server-side fallback) and fallback_credit_token leaves without its
+// feature.
 func TestInvokeBodyTopLevel(t *testing.T) {
 	for _, tc := range []struct {
 		name, header, body, want string
@@ -24,8 +25,14 @@ func TestInvokeBodyTopLevel(t *testing.T) {
 			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
 		{"what Claude Code sends Anthropic", "claude-code-20250219,context-1m-2025-08-07",
 			`{"model":"claude-haiku-4-5","stream":true,"max_tokens":8,"messages":[],"metadata":{"user_id":"u"},"provider":{"only":["x"]},"service_tier":"auto","inference_geo":"us","speed":"fast",` +
-				`"context_management":{"edits":[]},"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["oauth-2025-04-20"]}`,
-			`{"max_tokens":8,"messages":[],"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"fallbacks":[{"model":"claude-opus-4-8"}],"anthropic_beta":["context-1m-2025-08-07"],"anthropic_version":"bedrock-2023-05-31"}`},
+				`"context_management":{"edits":[]},"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"fallbacks":[{"model":"claude-opus-4-8"}],"fallback_credit_token":"t","anthropic_beta":["oauth-2025-04-20"]}`,
+			`{"max_tokens":8,"messages":[],"output_config":{"effort":"high"},"output_format":{"type":"json_schema"},"anthropic_beta":["context-1m-2025-08-07"],"anthropic_version":"bedrock-2023-05-31"}`},
+		{"Claude Code's default fallbacks", "server-side-fallback-2026-07-01",
+			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[],"fallbacks":"default"}`,
+			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},
+		{"a fallback credit with its feature", "fallback-credit-2026-07-01",
+			`{"model":"claude-haiku-4-5","max_tokens":8,"messages":[],"fallback_credit_token":"t"}`,
+			`{"max_tokens":8,"messages":[],"fallback_credit_token":"t","anthropic_version":"bedrock-2023-05-31","anthropic_beta":["fallback-credit-2026-07-01"]}`},
 		{"Anthropic's service choices", "",
 			`{"model":"claude-opus-5-5","inference_geo":"us","max_tokens":8,"speed":"fast","messages":[],"service_tier":"standard_only"}`,
 			`{"max_tokens":8,"messages":[],"anthropic_version":"bedrock-2023-05-31"}`},

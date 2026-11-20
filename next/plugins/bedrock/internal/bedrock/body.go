@@ -31,8 +31,11 @@ var anthropicVersion = []byte(`"` + AnthropicVersion + `"`)
 // given the client's anthropic-beta header: droppedFields leave, the
 // version Bedrock requires is set, the beta features asked for in the
 // header and in the body and those the tools need become the body's
-// anthropic_beta (or it leaves when none is left), context_management
-// leaves without its feature, and what Claude Code adds deeper inside that
+// anthropic_beta (or it leaves when none is left), context_management and
+// fallback_credit_token leave without their feature, fallbacks always
+// leaves (InvokeModel has no server-side fallback; Claude Code and the SDKs
+// send "fallbacks":"default" by themselves, and InvokeModel refuses the
+// field as an extra input), and what Claude Code adds deeper inside that
 // InvokeModel refuses is cleaned (sanitize). Everything else is the
 // client's bytes as they came.
 func invokeBody(body []byte, header, id string) ([]byte, error) {
@@ -51,6 +54,10 @@ func invokeBody(body []byte, header, id string) ([]byte, error) {
 			return len(betas) == 0
 		case fieldContextManagement:
 			return !slices.Contains(betas, betaContextManagement)
+		case fieldFallbackCreditToken:
+			return !slices.Contains(betas, betaFallbackCredit)
+		case fieldFallbacks:
+			return true
 		}
 		return slices.Contains(droppedFields, key)
 	})

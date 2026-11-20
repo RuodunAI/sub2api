@@ -419,19 +419,46 @@ func TestDriftLeavesNothing(t *testing.T) {
 	}
 }
 
-// Migrations run as the connecting user in a schema standing in for the
-// core's; what they create or change outside it is listed.
+// Migrations run as a role that may only create in a schema standing in
+// for the core's, as the host runs them as the plugin's identity: a
+// statement that needs more fails as on install, and what the role owns
+// outside the schema is listed, also when an EXCEPTION block (a
+// subtransaction) created it.
 func TestDriftListsWhatMigrationsTouchOutsideTheSchema(t *testing.T) {
+	db, err := pgdb.Open(testpg.URL(t), pgdb.Options{MaxConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pgdb.Close(db) //nolint:errcheck
+	// A schema where PUBLIC may create, as public is on PostgreSQL 14 and
+	// older.
+	open := fmt.Sprintf("drift_open_%d", os.Getpid())
+	if err := db.Exec("CREATE SCHEMA " + open + "; GRANT USAGE, CREATE ON SCHEMA " + open + " TO PUBLIC").Error; err != nil {
+		t.Fatal(err)
+	}
+	defer db.Exec("DROP SCHEMA " + open + " CASCADE") //nolint:errcheck
 	for sql, want := range map[string]string{
-		`CREATE TABLE public.drift_escape (id int)`:                                      "relation public.drift_escape",
-		`CREATE SCHEMA drift_other`:                                                      "schema drift_other",
-		`CREATE FUNCTION public.drift_f() RETURNS int LANGUAGE sql AS 'SELECT 1'`:        "function public.drift_f()",
-		`CREATE TYPE public.drift_mood AS ENUM ('ok')`:                                   "type public.drift_mood",
-		`CREATE TABLE drift_inside (id int); ALTER TABLE drift_inside SET SCHEMA public`: "relation public.drift_inside",
+		`CREATE TABLE ` + open + `.drift_escape (id int)`:                                 "relation " + open + ".drift_escape",
+		`CREATE FUNCTION ` + open + `.drift_f() RETURNS int LANGUAGE sql AS 'SELECT 1'`:   "function " + open + ".drift_f()",
+		`CREATE TYPE ` + open + `.drift_mood AS ENUM ('ok')`:                              "type " + open + ".drift_mood",
+		`CREATE TABLE drift_inside (id int); ALTER TABLE drift_inside SET SCHEMA ` + open: "relation " + open + ".drift_inside",
+		`DO $$ BEGIN CREATE FUNCTION ` + open + `.drift_g() RETURNS int LANGUAGE sql AS 'SELECT 1';
+			EXCEPTION WHEN duplicate_function THEN NULL; END $$`: "function " + open + ".drift_g()",
+		`DO $$ BEGIN CREATE TABLE ` + open + `.drift_shadow (id int);
+			EXCEPTION WHEN duplicate_table THEN NULL; END $$`: "relation " + open + ".drift_shadow",
 	} {
 		r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrate(t, sql), nil, nil)
 		if err != nil || !slices.Contains(r.Unmapped, want+" (outside the core's schema)") {
 			t.Errorf("%s: drift = %+v, %v", sql, r, err)
+		}
+	}
+	for _, sql := range []string{
+		`CREATE SCHEMA drift_other`,
+		`CREATE TABLE drift_t (id int); ALTER TABLE drift_t OWNER TO pg_read_all_data`,
+		`CREATE PUBLICATION drift_pub`,
+	} {
+		if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrate(t, sql), nil, nil); err == nil || !strings.Contains(err.Error(), "like the host runs it") {
+			t.Errorf("%s: %v, want the migration to fail", sql, err)
 		}
 	}
 }

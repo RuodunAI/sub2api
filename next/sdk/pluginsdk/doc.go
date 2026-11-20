@@ -214,9 +214,12 @@
 // Both compare on the test PostgreSQL (TEST_DATABASE_URL, or the local
 // server of package testpg), in one transaction they roll back
 // (pgdbtool.Drift). They run migrations/ in a scratch schema standing in
-// for the core's, as the connecting user with search_path on that schema,
-// and list what a migration created or changed outside that schema (a table
-// in public, another schema, an extension) as a difference. After each
+// for the core's, as a scratch NOLOGIN role that may only create in that
+// schema, as the host runs them as the plugin's identity: a statement that
+// needs more (ALTER ... OWNER TO, CREATE SCHEMA, CREATE EXTENSION) fails
+// here as on install, and what the role owns outside the schema (where
+// PUBLIC may create: public on PostgreSQL 14 and older, pg_temp) is listed
+// as a difference. The comparison role must be able to create roles. After each
 // file, as the host checks, they list with the file's name what the host
 // refuses (DriftReport.Refused): a relation or type without the plugin's
 // prefix (an index or sequence PostgreSQL named after a table included),

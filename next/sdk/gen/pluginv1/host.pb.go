@@ -976,9 +976,12 @@ type UpstreamRequest struct {
 	// account's header override and parameter override may replace or
 	// remove them.
 	//
-	// In both maps names are lower-case, and content-length, accept-encoding,
-	// connection and transfer-encoding are the transport's: a request naming
-	// one is refused. A name in both maps takes the authoritative value.
+	// In both maps names are lower-case, and host, content-length,
+	// accept-encoding, connection and transfer-encoding are the transport's
+	// (host is the URL's): a request naming one, or a name or value HTTP
+	// cannot carry, is refused (sdk/protocol.CheckRelayHeaders, which the host
+	// and the SDK both apply). A name in both maps takes the authoritative
+	// value.
 	DefaultHeaders map[string]string `protobuf:"bytes,4,rep,name=default_headers,json=defaultHeaders,proto3" json:"default_headers,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 	// The final body bytes; for a websocket turn the message of this turn.
 	// The host does not bound it (the request body limit applies to the

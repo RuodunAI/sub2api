@@ -36,12 +36,19 @@ const (
 	fieldBetas = "anthropic_beta"
 	// fieldContextManagement needs betaContextManagement.
 	fieldContextManagement = "context_management"
+	// fieldFallbacks asks for the server-side fallback of a refused
+	// request (beta server-side-fallback-2026-07-01), which InvokeModel
+	// does not have.
+	fieldFallbacks = "fallbacks"
+	// fieldFallbackCreditToken needs betaFallbackCredit.
+	fieldFallbackCreditToken = "fallback_credit_token"
 )
 
 const (
 	betaComputerUse2501   = "computer-use-2025-01-24"
 	betaComputerUse2511   = "computer-use-2025-11-24"
 	betaContextManagement = "context-management-2025-06-27"
+	betaFallbackCredit    = "fallback-credit-2026-07-01"
 	betaToolSearch        = "tool-search-tool-2025-10-19"
 	betaToolExamples      = "tool-examples-2025-10-29"
 	betaAdvancedToolUse   = "advanced-tool-use-2025-11-20"
@@ -55,7 +62,7 @@ var supportedBetas = []string{
 	betaContextManagement,
 	"compact-2026-01-12",
 	"compact-2026-09-04",
-	"fallback-credit-2026-07-01",
+	betaFallbackCredit,
 	"thinking-display-updates-2026-08-18",
 	"mid-conversation-output-config-2026-07-01",
 	"mid-conversation-effort-2026-08-01",

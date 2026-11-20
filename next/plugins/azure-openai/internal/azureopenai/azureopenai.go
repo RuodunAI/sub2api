@@ -12,6 +12,7 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/jsonedit"
@@ -64,20 +65,20 @@ func (p *Platform) ValidateCredentials(ctx context.Context, in *pluginv1.Validat
 	if err != nil {
 		return resp, err
 	}
-	creds, errC := apikey.DecodeObject(in.GetCredentialsJson())
-	settings, errS := apikey.DecodeObject(in.GetSettingsJson())
-	if errC != nil || errS != nil {
+	form, refused := accountform.DecodeForm(in)
+	if refused != nil {
 		return resp, nil // the standard check refused it
 	}
+	creds, settings := form.Creds, form.Settings
 	var errs pluginsdk.FieldErrors
-	v, _ := apikey.Lookup("base_url", settings, creds)
+	v, _ := accountform.Lookup("base_url", settings, creds)
 	base, _ := v.(string)
 	// A base URL NormalizeBaseURL refuses the standard check refused.
 	if n, err := apikey.NormalizeBaseURL(base); err == nil && !EndpointPattern.MatchString(n) {
 		errs = errs.Add("base_url", "pattern", "Enter the resource endpoint only, without deployments, chat/completions or api-version / 只填资源地址，不要带 deployments、chat/completions 或 api-version")
 	}
 	if in.GetAccountType() == TypeDeployment {
-		v, _ = apikey.Lookup("api_version", creds, settings)
+		v, _ = accountform.Lookup("api_version", creds, settings)
 		s, _ := v.(string)
 		switch {
 		case v == nil || v == "":

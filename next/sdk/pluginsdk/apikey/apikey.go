@@ -24,6 +24,7 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
 )
 
@@ -57,6 +58,31 @@ type Texts struct {
 	// BaseURLFormat is the base_url format message; "{reason}" is replaced by
 	// the reason.
 	BaseURLFormat string
+}
+
+// The wording the built-in presets and plugins share for Texts.
+const (
+	// UnsupportedAccountTypeText is a Texts.UnsupportedAccountType naming
+	// the received type.
+	UnsupportedAccountTypeText = "unsupported account type {type} / 不支持的账号类型"
+	// BaseURLFormatText is a Texts.BaseURLFormat with the reason first.
+	BaseURLFormatText = "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址"
+)
+
+// SiteSpec is the Spec of a relay site's key (a New API or Sub2API site
+// serving several protocols): the base URL is required, saved as written
+// and taken less the one /v1beta or /v1 it may end in, with the shared
+// wording and baseURLRequired as the message of a missing one.
+func SiteSpec(baseURLRequired string) Spec {
+	return Spec{
+		RequireBaseURL: true,
+		Versions:       []string{"/v1beta", "/v1"},
+		Texts: Texts{
+			UnsupportedAccountType: UnsupportedAccountTypeText,
+			BaseURLRequired:        baseURLRequired,
+			BaseURLFormat:          BaseURLFormatText,
+		},
+	}
 }
 
 // placeholder replaces one named placeholder in a Texts message. It never
@@ -113,16 +139,11 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 		errs = errs.Add("account_type", "unsupported", msg)
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
 	}
-	creds, err := decodeObject(in.GetCredentialsJson())
-	if err != nil {
-		errs = errs.Add("", "invalid_json", "credentials must be a JSON object / 凭证必须是 JSON 对象")
-		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
+	form, refused := accountform.DecodeForm(in)
+	if refused != nil {
+		return refused
 	}
-	settings, err := decodeObject(in.GetSettingsJson())
-	if err != nil {
-		errs = errs.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象")
-		return &pluginv1.ValidateCredentialsResponse{Errors: errs}
-	}
+	creds, settings := form.Creds, form.Settings
 
 	key, errs := s.validateKey(errs, creds, settings)
 	baseURL, errs := s.validateBaseURL(errs, creds, settings)
@@ -134,8 +155,9 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 	// Normalize each object in place: api_key and base_url are rewritten
 	// where they are, the keys Fields names pass through untouched. Moving
 	// base_url from settings into credentials would take it out of reach of
-	// the core's guardedSettings check and the console form. An empty object
-	// stays empty: "" tells the core to keep what it has.
+	// the core's guardedSettings check and the console form. Numbers are
+	// re-encoded as written (accountform.Object). An empty object stays
+	// empty: "" tells the core to keep what it has.
 	return &pluginv1.ValidateCredentialsResponse{
 		NormalizedCredentialsJson: s.rewriteObject(creds, key, baseURL),
 		NormalizedSettingsJson:    s.rewriteObject(settings, key, baseURL),
@@ -145,8 +167,8 @@ func (s Spec) Validate(in *pluginv1.ValidateCredentialsRequest) *pluginv1.Valida
 // validateKey reads api_key from credentials then settings and returns the
 // trimmed key: any non-empty string. It appends exactly one api_key error
 // when the key is missing, blank or not a string.
-func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string]any) (string, pluginsdk.FieldErrors) {
-	rawKey, _ := lookup("api_key", creds, settings)
+func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings accountform.Object) (string, pluginsdk.FieldErrors) {
+	rawKey, _ := accountform.Lookup("api_key", creds, settings)
 	key, isString := rawKey.(string)
 	key = strings.TrimSpace(key)
 	switch {
@@ -164,11 +186,11 @@ func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string
 // validateBaseURL reads base_url from settings then credentials and returns
 // the normalized URL (s.DefaultBaseURL when absent). A type without base_url
 // leaves it to checkFields.
-func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings map[string]any) (string, pluginsdk.FieldErrors) {
+func (s Spec) validateBaseURL(errs pluginsdk.FieldErrors, creds, settings accountform.Object) (string, pluginsdk.FieldErrors) {
 	if s.NoBaseURL {
 		return "", errs
 	}
-	rawBase, _ := lookup("base_url", settings, creds)
+	rawBase, _ := accountform.Lookup("base_url", settings, creds)
 	baseStr, isStr := rawBase.(string)
 	baseStr = strings.TrimSpace(baseStr)
 	switch {
@@ -231,7 +253,7 @@ func normalized(obj map[string]any, key, baseURL string) map[string]any {
 
 // rewriteObject re-encodes obj with api_key and base_url normalized where the
 // key already exists; an empty object stays empty ("" keeps the core's value).
-func (s Spec) rewriteObject(obj map[string]any, key, baseURL string) string {
+func (s Spec) rewriteObject(obj accountform.Object, key, baseURL string) string {
 	if len(obj) == 0 {
 		return ""
 	}
@@ -246,17 +268,18 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	if acc == nil {
 		return nil, status.Error(codes.FailedPrecondition, "account required")
 	}
-	creds, err := decodeObject(acc.GetCredentialsJson())
+	// The wording of a bad object is pinned by the frozen golden cases.
+	creds, err := accountform.Decode(acc.GetCredentialsJson())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid credentials JSON: %v", err)
 	}
-	settings, err := decodeObject(acc.GetSettingsJson())
+	settings, err := accountform.Decode(acc.GetSettingsJson())
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid settings JSON: %v", err)
 	}
 
 	cfg := &Config{}
-	if v, ok := lookup("api_key", creds, settings); ok {
+	if v, ok := accountform.Lookup("api_key", creds, settings); ok {
 		cfg.APIKey, _ = v.(string)
 	}
 	cfg.APIKey = strings.TrimSpace(cfg.APIKey)
@@ -268,7 +291,7 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	}
 
 	base := ""
-	if v, ok := lookup("base_url", settings, creds); ok {
+	if v, ok := accountform.Lookup("base_url", settings, creds); ok {
 		base, _ = v.(string)
 	}
 	if cfg.BaseURL, err = s.normalizeBaseURL(strings.TrimSpace(base)); err != nil {
@@ -381,42 +404,4 @@ func ForwardHeaders(out, inbound map[string]string) {
 			out[strings.ToLower(name)] = value
 		}
 	}
-}
-
-// Helper functions
-
-// DecodeObject parses a JSON string into a map. An empty string (or "null")
-// yields an empty map, which is what a form posting nothing looks like.
-func DecodeObject(raw string) (map[string]any, error) {
-	return decodeObject(raw)
-}
-
-func decodeObject(raw string) (map[string]any, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "null" {
-		return map[string]any{}, nil
-	}
-	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return nil, err
-	}
-	if m == nil {
-		m = map[string]any{}
-	}
-	return m, nil
-}
-
-// Lookup searches the given maps in order and returns the first non-nil value
-// of key (the same precedence Spec.Validate applies).
-func Lookup(key string, objs ...map[string]any) (any, bool) {
-	return lookup(key, objs...)
-}
-
-func lookup(key string, objs ...map[string]any) (any, bool) {
-	for _, o := range objs {
-		if v, ok := o[key]; ok && v != nil {
-			return v, true
-		}
-	}
-	return nil, false
 }

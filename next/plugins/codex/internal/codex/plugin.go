@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -298,11 +299,17 @@ func (m credMap) agentError() (k, code, msg string) {
 }
 
 // normalizeExpiresAt turns a string expires_at into a number (an empty one is
-// dropped) and refuses anything that is not Unix seconds.
+// dropped) and refuses anything that is not Unix seconds, a non-negative
+// integer that fits int64, whether it came as a number or a string.
 func (m credMap) normalizeExpiresAt() (changed bool, bad *pluginv1.ValidateCredentialsResponse) {
 	const msg = "expires_at must be Unix seconds / expires_at 必须是 Unix 秒"
 	switch v := m["expires_at"].(type) {
-	case nil, float64:
+	case nil:
+		return false, nil
+	case float64:
+		if v < 0 || v != math.Trunc(v) || v >= math.MaxInt64 {
+			return false, invalid("expires_at", "pattern", msg)
+		}
 		return false, nil
 	case string:
 		if v == "" {
