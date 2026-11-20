@@ -8571,13 +8571,13 @@ ALTER TABLE usage_logs
 
 | 账号类型 | 平台：端点 |
 |---|---|
-| newapi `apikey` | `openai`：`chat_completions`、`responses`、`embeddings` 与 §118 的生图两条（不含 `responses_websocket`：New API 只有 `POST /v1/responses`，没有 Responses 的 WebSocket 模式）；`anthropic`：`messages`（不含 `count_tokens`）；`gemini`：`generate_content`、`stream_generate_content`（不含 `countTokens`）；`typesafe`：全部（平台由 typesafe 插件声明，§119.3）。两个计数协议 New API 都回 404 `Invalid URL`，由核心本地估算（§88.2 的 `local` 路由） |
+| newapi `apikey` | `openai`：全部（含 Responses WebSocket 与 §118 的生图两条）；`anthropic`：全部；`gemini`：`generate_content`、`stream_generate_content`（不含 `countTokens`，由核心本地估算，§88.2）；`typesafe`：全部（平台由 typesafe 插件声明，§119.3） |
 | sub2api `apikey` | `openai`、`anthropic`、`gemini`：全部 |
 | typesafe `apikey` | `typesafe`：`systemone` |
 
 - **同协议原样转发**，不做协议转换（跨平台转换按 §110 默认关闭）：请求体不改，OpenAI Chat 流式照 openai 预设补 `stream_options.include_usage`。每个协议用自己官方的鉴权头（路由级 `Auth`，§112.13）：OpenAI 系与 TypeSafe `Authorization: Bearer`，Anthropic `x-api-key`（没带 `anthropic-version` 时补默认值），Gemini 只用 `x-goog-api-key`。
 - 新建账号 `protocols` 为 `null`，上表的协议全部开放；上游 Key 只开通了部分协议时由运营方在协议绑定里收窄（§110.4）。上游不支持某协议时按该协议预设的失败分类（D20）：400 / 404 原样返回、5xx 换号并冷却、401 / 403 停用账号。
-- 能力：sub2api 是 `platform.adapter.v1`、`platform.websocket.v1`；newapi、typesafe 只有 `platform.adapter.v1`（2026-11-20 起 newapi 不再声明 `platform.websocket.v1`：此前 Responses WebSocket 会话会被调度到 newapi 账号，握手 `GET /v1/responses` 得到站点的 404，不换号，会话直接失败）。
+- 能力：newapi、sub2api 是 `platform.adapter.v1`、`platform.websocket.v1`；typesafe 只有 `platform.adapter.v1`。
 
 ### 119.3 typesafe 平台
 
@@ -8612,7 +8612,7 @@ ALTER TABLE usage_logs
 ### 119.7 已知限制
 
 - 都没有对真实站点或真实 TypeSafe 账号验证过；站点接口形状来自官方文档与源码行为。
-- newapi：余额是站点的额度点数，不是钱，不同站点的点数不可比；令牌不限额且站点没开"允许查询用户额度"时显示不限，看不到用户真实余额；Anthropic `count_tokens` 与 Gemini `countTokens` 不转发（按本地估算），Responses 没有 WebSocket 模式；New API 对"分组里没有这个模型"回的状态码未核实，回 403 时会误停用账号（先用协议绑定或故障策略 §58 处理）。
+- newapi：余额是站点的额度点数，不是钱，不同站点的点数不可比；令牌不限额且站点没开"允许查询用户额度"时显示不限，看不到用户真实余额；Gemini `countTokens` 不转发；Responses WebSocket 与 Anthropic `count_tokens` 以 touwaeriol/new-api 的 `codingplus` 分支为准（两条都有），上游 New API 没有（404 `Invalid URL`，不换号），接这类站点用协议绑定关掉 `openai.responses_ws`、`anthropic.count_tokens`；New API 对"分组里没有这个模型"回的状态码未核实，回 403 时会误停用账号（先用协议绑定或故障策略 §58 处理）。
 - sub2api：上游 Key 能用哪些协议取决于它在站点上的分组，插件看不出来，要运营方按分组收窄协议；旧版只配了速率限制、没配总额度的 Key 在 `/v1/usage` 里没有金额字段，余额显示为暂时失败；`rate_limits` 不读。
 - 生图只收 JSON 请求体（§118.1）。typesafe 的转发要本平台启用 typesafe 插件；经 newapi 转发还要上游站点装了 TypeSafe 扩展。
 

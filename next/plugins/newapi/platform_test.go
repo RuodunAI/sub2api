@@ -46,8 +46,8 @@ func TestGolden(t *testing.T) {
 		return !strings.HasSuffix(base, "/v1beta")
 	}
 	for plugin, protocols := range map[string][]string{
-		"openai":    {openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolEmbeddings},
-		"anthropic": {anthropic.ProtocolMessages},
+		"openai":    {openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolResponsesWS, openai.ProtocolEmbeddings},
+		"anthropic": {anthropic.ProtocolMessages, anthropic.ProtocolCountTokens},
 		"gemini":    {gemini.ProtocolGenerate, gemini.ProtocolStreamGenerate},
 	} {
 		t.Run(plugin, func(t *testing.T) {
@@ -85,6 +85,9 @@ func TestRequest(t *testing.T) {
 			"/v1/images/edits", "", bearer, json},
 		{anthropic.ProtocolMessages, "claude-sonnet-4-6", `{"model":"claude-sonnet-4-6","max_tokens":1,"messages":[]}`, false,
 			"/v1/messages", "", map[string]string{"x-api-key": apiKey},
+			map[string]string{"anthropic-version": anthropic.DefaultAPIVersion, "content-type": "application/json"}},
+		{anthropic.ProtocolCountTokens, "claude-sonnet-4-6", `{"model":"claude-sonnet-4-6","messages":[]}`, false,
+			"/v1/messages/count_tokens", "", map[string]string{"x-api-key": apiKey},
 			map[string]string{"anthropic-version": anthropic.DefaultAPIVersion, "content-type": "application/json"}},
 		{gemini.ProtocolGenerate, "gemini-2.5-flash", `{"contents":[]}`, false,
 			"/v1beta/models/gemini-2.5-flash:generateContent", "", map[string]string{"x-goog-api-key": apiKey}, json},
