@@ -4,7 +4,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { api, isApiError } from '@sub2api/host'
 import { SAlert, SBadge, SButton, SCard, SEmpty, SHint, SIcon, SLink, SPageHeader, SSpinner, confirm, toast } from '@sub2api/ui'
-import type { ConsentResult, HostPermissionReview, PluginReview, PluginRoleGrant, ReviewDiffItem, ReviewUserPermission } from '@/api/types'
+import type { ConsentResult, DatabaseAccess, HostPermissionReview, PluginReview, PluginRoleGrant, ReviewDiffItem, ReviewUserPermission } from '@/api/types'
 import { lt } from '@/i18n'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
@@ -20,6 +20,8 @@ import { useOptionalT } from '@/composables/optionalText'
 import { permissionFate, useConsentMatrix } from './consent/consentMatrix'
 import ConsentNeed from './consent/ConsentNeed.vue'
 import UpgradePermissionChanges from './consent/UpgradePermissionChanges.vue'
+import DatabaseMigrations from './consent/DatabaseMigrations.vue'
+import DatabaseAccessList from './parts/DatabaseAccessList.vue'
 import PermissionMatrix from '@/components/permission/PermissionMatrix.vue'
 import type { MatrixPerm } from '@/components/permission/useGrantMatrix'
 import StickyActionBar from '@/components/StickyActionBar.vue'
@@ -65,6 +67,9 @@ onBeforeRouteLeave(() => settled.value || confirmDiscard(consent.matrix.dirty.va
 /** Granting db.schema to this plugin takes the override as well (review.needs_db_schema_unconfined). */
 const DB_SCHEMA = 'db.schema'
 const DB_SCHEMA_UNCONFINED = P.PluginGrantDbSchemaUnconfined
+/** The tables outside its own the plugin asks for come with db.core_read: listed under it. */
+const DB_CORE_READ = 'db.core_read'
+const databaseAccess = computed(() => asArray<DatabaseAccess>(review.value?.database_access))
 
 function riskPermOf(hp: HostPermissionReview, risk: Risk): string | null {
   if (hp.requires) return hp.requires
@@ -321,7 +326,12 @@ onMounted(load)
       <UpgradePermissionChanges v-if="isUpgrade" :review="review" />
 
       <!-- host permissions -->
-      <HostPermissionTable :rows="rows" :checked="checked" :show-missing="showMissing" @toggle="toggle" />
+      <HostPermissionTable :rows="rows" :checked="checked" :show-missing="showMissing" @toggle="toggle">
+        <template #detail="{ row }">
+          <DatabaseAccessList v-if="row.id === DB_CORE_READ && databaseAccess.length" :access="databaseAccess" class="mt-2" />
+        </template>
+      </HostPermissionTable>
+      <DatabaseMigrations :review="review" />
 
       <!-- footer -->
       <StickyActionBar class="mt-4">

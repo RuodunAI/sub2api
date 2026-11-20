@@ -5,6 +5,7 @@ import { api } from '@sub2api/host'
 import { SButton, SChoiceCards, SField, SHint, SInput, SModal, SIcon, toast, type ChoiceOption } from '@sub2api/ui'
 import type { UninstallResult } from '@/api/types'
 import { notifyError } from '@/utils/errors'
+import { tablePrefix } from '../pluginUtil'
 
 // DELETE /plugins/:key?purge=&purge_accounts= (CONTRACTS §5.7, §14.3).
 // Accounts of the plugin's account types are kept (orphaned) unless
@@ -13,7 +14,7 @@ const props = defineProps<{ open: boolean; pluginKey: string; name: string }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'done'): void }>()
 const { t } = useI18n()
 
-/** Optional deletions picked in the dialog: 'purge' (plugin schema) and / or 'accounts'. */
+/** Optional deletions picked in the dialog: 'purge' (the plugin's tables and database identity; kept without it) and / or 'accounts'. */
 const purgeChoice = ref<ChoiceOption['value'][]>([])
 const purge = computed(() => purgeChoice.value.includes('purge'))
 const purgeAccounts = computed(() => purgeChoice.value.includes('accounts'))
@@ -26,7 +27,7 @@ const matches = computed(() => typed.value.trim() === props.pluginKey)
 const purgeOptions = computed<ChoiceOption[]>(() => [
   {
     value: 'purge',
-    label: t('plugins.uninstall.purge', { schema: 'plg_' + props.pluginKey }),
+    label: t('plugins.uninstall.purge', { prefix: tablePrefix(props.pluginKey) }),
     description: t('plugins.uninstall.purgeHint'),
     icon: 'trash',
     tone: 'danger'

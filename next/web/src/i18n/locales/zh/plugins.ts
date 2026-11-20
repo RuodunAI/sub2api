@@ -97,7 +97,7 @@ export default {
     accounts_auto_state: '修改账号自动状态',
     lock: '跨节点锁',
     fs_data: '读写本插件的数据目录',
-    db_schema: '独立数据库 schema',
+    db_schema: '插件自己的数据库表',
     net: '外部网络访问',
     routes_public: '公开接口',
     routes_webhook: 'Webhook 接口',
@@ -113,10 +113,12 @@ export default {
     ledger_debit: '余额扣款',
     ui_native: '原生界面',
     users_write: '修改用户',
-    db_core_views: '核心数据视图'
+    db_core_read: '访问插件以外的表'
   },
 
   hpDesc: {
+    db_schema: '在核心库里建表并读写，表名以 plg_<插件标识>__ 开头。插件以自己的数据库身份连接，碰不到核心和其他插件的表。',
+    db_core_read: '按申请的表、列和权限访问；其他插件的表不能申请。',
     fs_data: '读写核心分给本插件的数据目录里的文件（只在本节点）。不授予时插件不能读写任何文件。',
     broadcast: '向其他节点上的本插件实例广播消息（例如规则修改后让各节点立即重载）。',
     lock: '让不同节点上的本插件实例不同时做同一件事（例如定时同步）。它的锁对其他插件不可见。'
@@ -127,7 +129,7 @@ export default {
     ledger_credit: '插件可以给用户增加余额。',
     ledger_debit: '插件可以扣减用户余额。',
     users_write: '插件可以创建和修改用户。',
-    db_core_views: '插件可以通过数据库视图读取核心数据。'
+    db_core_read: '插件可以绕过核心的接口，按申请直接访问核心的表。'
   },
 
   fields: {
@@ -227,8 +229,6 @@ export default {
     diffUser: '新增 {added} 项、重新声明 {revived} 项、移除 {removed} 项',
     diffUserSee: '查看',
     database: '数据库',
-    migrations: '迁移 {n} 个',
-    showMigrations: '查看迁移',
     resources: '资源',
     externalServices: '外部服务',
     hostPermissionsHint: '低风险自动授予；高风险和极高风险需要逐项勾选。升级时已授予过的直接沿用，不算新授予。',
@@ -338,7 +338,8 @@ export default {
       egress: '外部访问',
       resources: '资源',
       settings: '设置',
-      audit: '审计'
+      audit: '审计',
+      database: '数据库'
     },
     auditHint: '本插件的变更：生命周期、设置，以及通过它的管理页面做的写操作（请求体已脱敏）。',
     overview: '摘要',
@@ -492,18 +493,52 @@ export default {
     releaseTitle: '释放标识 {key}',
     releaseBody: '释放后任何发布者都可以安装使用这个标识的插件。',
     purgeAccounts: '同时删除遗留的 {n} 个账号',
-    purge: '同时删除插件数据（schema {schema}）和缓存',
+    purge: '同时删除插件留下的表（{prefix} 开头）和缓存',
+    tables: '{prefix} 开头的表',
     inheritWarn: '没有删除的账号和数据会被下一个使用这个标识的插件继承，包括其中的凭据。',
     released: '已释放 {key}，删除了 {n} 个账号'
+  },
+
+  database: {
+    summary: '表前缀 {prefix}{sep}迁移脚本 {n} 个',
+    prefix: '表前缀',
+    prefixHint: '插件的表、索引和序列都以它开头，放在核心库里。',
+    role: '数据库身份',
+    roleHint: '插件以这个身份连接数据库：能读写自己的表，以及下面申请并获准的表。',
+    access: '插件以外的表',
+    accessHint: '下列表的访问随“访问插件以外的表”一起授予。',
+    noAccess: '没有申请插件以外的表。',
+    columns: '列',
+    allColumns: '全部列',
+    privileges: '权限',
+    privilege: {
+      select: '查询',
+      insert: '新增',
+      update: '修改',
+      delete: '删除',
+      references: '外键引用'
+    },
+    writeWarn: '直接写核心的表会绕过核心的缓存、权限版本和审计。',
+    migrations: '迁移脚本',
+    migrationsHint: '脚本以插件的数据库身份执行，只能新建以 {prefix} 开头的对象。',
+    noMigrations: '没有迁移脚本。',
+    nothingToRun: '本次没有要执行的脚本。',
+    willRun: '将执行',
+    willRerun: '内容有变，将重新执行',
+    appliedList: '已执行且未变的脚本（{n} 个）',
+    appliedAt: '执行于 {at}',
+    notApplied: '未执行',
+    showSql: '查看 SQL',
+    hideSql: '收起 SQL'
   },
 
   uninstall: {
     action: '卸载',
     title: '卸载 {name}',
     body: '卸载会删除插件包、插件注册的权限及其授权、事件游标和任务记录。',
-    purge: '同时删除插件数据（schema {schema}）',
-    purgeHint: '不勾选时数据会保留，重新安装后可以继续使用。',
-    purgeWarn: '插件数据将被永久删除。',
+    purge: '清除数据：删除插件的表（{prefix} 开头）和插件的数据库身份',
+    purgeHint: '不勾选则保留数据：表留在核心库里，下次安装同一插件继续使用。',
+    purgeWarn: '插件的表和数据将被永久删除。',
     purgeAccounts: '同时删除该插件账号类型下的所有账号',
     purgeAccountsHint: '默认保留这些账号，成为孤立账号：不再参与调度但仍可查看；重新安装插件后恢复服务。',
     purgeAccountsWarn: '这些账号将被删除，重新安装插件后也不会恢复。',

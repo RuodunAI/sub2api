@@ -23,6 +23,7 @@ import EventsTab from './detail/EventsTab.vue'
 import EgressTab from './detail/EgressTab.vue'
 import ResourcesTab from './detail/ResourcesTab.vue'
 import SettingsTab from './detail/SettingsTab.vue'
+import DatabaseTab from './detail/DatabaseTab.vue'
 import UninstallModal from './detail/UninstallModal.vue'
 import AuditLogTable from '@/components/AuditLogTable.vue'
 
@@ -66,6 +67,9 @@ const consentedAction = computed<'enable' | 'upgrade' | null>(() => {
   return null
 })
 
+/** The installed version declares a database (its review's or manifest's database). */
+const hasDatabase = computed(() => !!detail.value?.manifest?.database)
+
 const tabs = computed<TabItem[]>(() => {
   const d = detail.value
   const list: TabItem[] = [
@@ -77,6 +81,7 @@ const tabs = computed<TabItem[]>(() => {
     { key: 'jobs', label: t('plugins.detail.tabs.jobs'), badge: d?.jobs?.length },
     { key: 'events', label: t('plugins.detail.tabs.events') }
   ]
+  if (hasDatabase.value) list.push({ key: 'database', label: t('plugins.detail.tabs.database') })
   if (auth.has(['plugin:egress:read', 'plugin:manage'])) list.push({ key: 'egress', label: t('plugins.detail.tabs.egress') })
   list.push({ key: 'resources', label: t('plugins.detail.tabs.resources') })
   if (settings.value) list.push({ key: 'settings', label: t('plugins.detail.tabs.settings') })
@@ -285,6 +290,7 @@ onMounted(load)
         <HooksTab v-else-if="tab === 'hooks'" :detail="detail" />
         <JobsTab v-else-if="tab === 'jobs'" :detail="detail" />
         <EventsTab v-else-if="tab === 'events'" :detail="detail" />
+        <DatabaseTab v-else-if="tab === 'database' && hasDatabase" :detail="detail" />
         <EgressTab v-else-if="tab === 'egress'" :detail="detail" @changed="load" />
         <ResourcesTab v-else-if="tab === 'resources'" :detail="detail" @changed="load" />
         <SettingsTab v-else-if="tab === 'settings' && settings" :plugin-key="detail.key" :settings="settings" />

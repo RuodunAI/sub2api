@@ -2,16 +2,17 @@
 // "What the plugin provides" of the consent page: platforms, gateway endpoints,
 // account types, hooks, events, jobs, routes, menus, how many user
 // permissions (listed in the matrix and the upgrade's changes), the
-// database, resources and external services. Each entry renders only when the
-// review declares it; the whole card only when at least one is present.
+// database (its table prefix; the scripts are listed by DatabaseMigrations),
+// resources and external services. Each entry renders only when the review
+// declares it; the whole card only when at least one is present.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { SBadge, SCard, SDisclosure, SHint } from '@sub2api/ui'
+import { SBadge, SCard, SHint } from '@sub2api/ui'
 import type { PluginReview } from '@/api/types'
 import { lt } from '@/i18n'
 import { formatBytes } from '@/utils/format'
 import { useOptionalT } from '@/composables/optionalText'
-import { accountTypesOf, asArray, display, endpointText, formatDuration, hpKey, pick, platformsOf } from '../pluginUtil'
+import { accountTypesOf, asArray, display, endpointText, formatDuration, hpKey, pick, platformsOf, tablePrefix } from '../pluginUtil'
 import PluginGatewayDecl from '../parts/PluginGatewayDecl.vue'
 import { useConsentLabels } from './hostPermission'
 
@@ -196,14 +197,10 @@ const hasProvides = computed(() => {
 
       <li v-if="review.database">
         <span class="font-medium">{{ t('plugins.consent.database') }}{{ colon }}</span>
-        <span class="text-xs">
-          schema <code class="font-mono">{{ review.database.schema }}</code>{{ listSep }}{{ t('plugins.consent.migrations', { n: review.database.migrations?.length || 0 }) }}
+        <!-- The scripts themselves are the migrations card's below. -->
+        <span class="text-xs" data-testid="provides-database">
+          {{ t('plugins.database.summary', { prefix: tablePrefix(review.plugin_key), sep: listSep, n: asArray(review.database.migrations).length }) }}
         </span>
-        <SDisclosure v-if="review.database.migrations?.length" class="mt-1 pl-4" :label="t('plugins.consent.showMigrations')">
-          <ul class="font-mono">
-            <li v-for="m in review.database.migrations" :key="m">{{ m }}</li>
-          </ul>
-        </SDisclosure>
       </li>
 
       <li v-if="resourceItems.length">

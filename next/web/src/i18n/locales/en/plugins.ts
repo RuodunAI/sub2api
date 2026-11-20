@@ -97,7 +97,7 @@ export default {
     accounts_auto_state: 'Change account automatic state',
     lock: 'Cross-node lock',
     fs_data: 'Read and write its data directory',
-    db_schema: 'Dedicated database schema',
+    db_schema: 'Database tables of its own',
     net: 'External network access',
     routes_public: 'Public API routes',
     routes_webhook: 'Webhook routes',
@@ -113,10 +113,12 @@ export default {
     ledger_debit: 'Debit user balances',
     ui_native: 'Native console UI',
     users_write: 'Modify users',
-    db_core_views: 'Core database views'
+    db_core_read: 'Access tables outside the plugin'
   },
 
   hpDesc: {
+    db_schema: 'Create, read and write tables in the core database, named with the prefix plg_<plugin key>__. The plugin connects as a database identity of its own and cannot touch the tables of the core or of other plugins.',
+    db_core_read: 'The tables, columns and privileges it asks for; tables of other plugins cannot be asked for.',
     fs_data: 'Read and write files in the data directory the core gives this plugin (on this node only). Without it the plugin can read or write no files at all.',
     broadcast: 'Broadcast messages to the instances of this plugin on other nodes (e.g. reload rules right after they change).',
     lock: 'Keep the instances of this plugin on different nodes from doing the same work at the same time (e.g. a scheduled sync). Its locks are invisible to other plugins.'
@@ -127,7 +129,7 @@ export default {
     ledger_credit: 'The plugin can add balance to users.',
     ledger_debit: 'The plugin can deduct user balance.',
     users_write: 'The plugin can create and modify users.',
-    db_core_views: 'The plugin can read core data through database views.'
+    db_core_read: 'The plugin can access core tables directly, bypassing the core\'s APIs, as it asks.'
   },
 
   fields: {
@@ -227,8 +229,6 @@ export default {
     diffUser: '{added} new, {revived} declared again, {removed} removed',
     diffUserSee: 'Show',
     database: 'Database',
-    migrations: '{n} migration(s)',
-    showMigrations: 'Show migrations',
     resources: 'Resources',
     externalServices: 'External services',
     hostPermissionsHint: 'Low risk is granted automatically; high and very high risk must be ticked one by one. On an upgrade, what was granted before is kept without a new grant.',
@@ -338,7 +338,8 @@ export default {
       egress: 'External access',
       resources: 'Resources',
       settings: 'Settings',
-      audit: 'Audit'
+      audit: 'Audit',
+      database: 'Database'
     },
     auditHint: 'Changes to this plugin: lifecycle, settings and the writes made through its admin pages (request bodies redacted).',
     overview: 'Summary',
@@ -492,18 +493,52 @@ export default {
     releaseTitle: 'Release key {key}',
     releaseBody: 'Once released, a plugin of any publisher can be installed with this key.',
     purgeAccounts: 'Also delete the {n} account(s) left behind',
-    purge: 'Also delete plugin data (schema {schema}) and cache entries',
+    purge: 'Also delete the tables it left ({prefix}…) and cache entries',
+    tables: 'Tables {prefix}…',
     inheritWarn: 'Accounts and data not deleted are inherited by the next plugin with this key, credentials included.',
     released: '{key} released, {n} account(s) deleted'
+  },
+
+  database: {
+    summary: 'table prefix {prefix}{sep}{n} migration script(s)',
+    prefix: 'Table prefix',
+    prefixHint: 'Every table, index and sequence of the plugin is named with it, in the core database.',
+    role: 'Database identity',
+    roleHint: 'The plugin connects to the database as this identity: it reads and writes its own tables and the tables below it asked for and was granted.',
+    access: 'Tables outside the plugin',
+    accessHint: 'Access to these tables is granted with "Access tables outside the plugin".',
+    noAccess: 'No tables outside the plugin asked for.',
+    columns: 'Columns',
+    allColumns: 'all columns',
+    privileges: 'Privileges',
+    privilege: {
+      select: 'Select',
+      insert: 'Insert',
+      update: 'Update',
+      delete: 'Delete',
+      references: 'Foreign key references'
+    },
+    writeWarn: 'Writing core tables directly bypasses the core\'s caches, permission versions and audit.',
+    migrations: 'Migration scripts',
+    migrationsHint: 'The scripts run as the plugin\'s database identity and can only create objects named {prefix}….',
+    noMigrations: 'No migration scripts.',
+    nothingToRun: 'No script runs this time.',
+    willRun: 'Will run',
+    willRerun: 'Changed, will run again',
+    appliedList: 'Scripts already run and unchanged ({n})',
+    appliedAt: 'Ran {at}',
+    notApplied: 'Not run',
+    showSql: 'Show SQL',
+    hideSql: 'Hide SQL'
   },
 
   uninstall: {
     action: 'Uninstall',
     title: 'Uninstall {name}',
     body: 'Uninstalling removes the plugin package, its permissions and grants, event cursors and job records.',
-    purge: 'Also delete plugin data (schema {schema})',
-    purgeHint: 'Without this option the data is kept and restored if the plugin is installed again.',
-    purgeWarn: 'Plugin data will be permanently deleted.',
+    purge: 'Delete the data: the plugin\'s tables ({prefix}…) and its database identity',
+    purgeHint: 'Without this option the data is kept: the tables stay in the core database and the same plugin uses them again when it is installed next.',
+    purgeWarn: 'The plugin\'s tables and data will be permanently deleted.',
     purgeAccounts: 'Also delete all accounts of this plugin\'s account types',
     purgeAccountsHint: 'By default the accounts are kept as orphaned accounts: they stop serving requests but stay visible, and are served again if the plugin is reinstalled.',
     purgeAccountsWarn: 'These accounts will be deleted and will not come back when the plugin is reinstalled.',

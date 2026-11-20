@@ -376,10 +376,10 @@ describe('plugin consent page', () => {
 
   it('blocks approval when a permission needs a right the caller lacks', async () => {
     mocks.can = false
-    const w = render(review({ host_permissions: [{ id: 'db.core_views', risk: 'critical', requires: 'plugin:grant:critical' }] }))
+    const w = render(review({ host_permissions: [{ id: 'db.core_read', risk: 'critical', requires: 'plugin:grant:critical' }] }))
     await flushPromises()
     expect((w.get('[data-testid="consent-approve"]').element as HTMLButtonElement).disabled).toBe(true)
-    expect(w.text()).toContain('db.core_views')
+    expect(w.text()).toContain('db.core_read')
   })
 
   it('on an upgrade, keeps what was granted before without the grant right and sends only new grants', async () => {
@@ -388,12 +388,12 @@ describe('plugin consent page', () => {
       host_permissions: [
         { id: 'ui.native', risk: 'critical', current_status: 'granted', current_scope: null },
         { id: 'http.client', risk: 'high', current_status: 'granted' },
-        { id: 'db.core_views', risk: 'critical', optional: true }
+        { id: 'db.core_read', risk: 'critical', optional: true }
       ] as never,
-      diff: { added: [{ id: 'db.core_views', risk: 'critical' }], widened: [{ id: 'http.client', risk: 'high' }], removed: [] } as never
+      diff: { added: [{ id: 'db.core_read', risk: 'critical' }], widened: [{ id: 'http.client', risk: 'high' }], removed: [] } as never
     }))
     await flushPromises()
-    // ui.native is kept; http.client is widened, so it is a new grant; db.core_views is new and needs the right.
+    // ui.native is kept; http.client is widened, so it is a new grant; db.core_read is new and needs the right.
     // The diff lists items as the server sends them (review.go DiffItem), by id.
     expect(w.findAll('[data-testid="hp-carried"]')).toHaveLength(1)
     expect(w.text()).not.toContain('[object Object]')
@@ -401,7 +401,7 @@ describe('plugin consent page', () => {
     await w.findAll('[data-testid="host-permissions"] input[type="checkbox"]').find((b) => !(b.element as HTMLInputElement).disabled && !(b.element as HTMLInputElement).checked)!.setValue(true)
     await w.get('[data-testid="consent-approve"]').trigger('click')
     await flushPromises()
-    expect(mocks.post.mock.calls[0][1]).toMatchObject({ grants: [{ permission: 'http.client' }], denied: ['db.core_views'] })
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({ grants: [{ permission: 'http.client' }], denied: ['db.core_read'] })
   })
 
   it('on an upgrade, grants a revoked permission only when ticked, low risk included', async () => {
@@ -427,6 +427,75 @@ describe('plugin consent page', () => {
     await w.get('[data-testid="consent-approve"]').trigger('click')
     await flushPromises()
     expect(mocks.post.mock.calls[0][1]).toMatchObject({ grants: [{ permission: 'config' }, { permission: 'kv' }], denied: ['log'] })
+  })
+
+  describe('database', () => {
+    const CORE_READ = { id: 'db.core_read', risk: 'critical' as const }
+    const migration = (id: string, status: 'new' | 'changed' | 'applied') => ({ id, checksum: 'sha256:' + id, sql: `CREATE TABLE plg_demo__${id} ();`, status })
+
+    it('lists the tables outside its own under db.core_read: table, columns (all when none), privileges', async () => {
+      const w = render(review({
+        host_permissions: [{ id: 'db.schema', risk: 'high' }, CORE_READ],
+        database_access: [{ table: 'users', columns: ['id', 'email'], privileges: ['select'] }, { table: 'groups', privileges: ['select'] }]
+      }))
+      await flushPromises()
+      const rows = w.findAll('[data-testid="host-permissions"] li')
+      const coreRead = rows.find((r) => r.text().includes('db.core_read'))!
+      expect(coreRead.get('[data-table="users"]').text()).toContain('列：id, email')
+      expect(coreRead.get('[data-table="users"]').text()).toContain('查询')
+      expect(coreRead.get('[data-table="groups"]').text()).toContain('列：全部列')
+      expect(coreRead.get('[data-hp-desc="db.core_read"]').text()).toBe('按申请的表、列和权限访问；其他插件的表不能申请。')
+      // Asking only to select: no warning.
+      expect(w.find('[data-testid="database-access-writes"]').exists()).toBe(false)
+      expect(rows.find((r) => r.text().includes('db.schema'))!.find('[data-testid="database-access"]').exists()).toBe(false)
+    })
+
+    it('warns when it asks for any privilege but select', async () => {
+      for (const [privilege, label] of [['insert', '新增'], ['update', '修改'], ['delete', '删除'], ['references', '外键引用']] as const) {
+        const w = render(review({ host_permissions: [CORE_READ], database_access: [{ table: 'usage_logs', columns: ['status'], privileges: ['select', privilege] }] }))
+        await flushPromises()
+        expect(w.get('[data-table="usage_logs"]').text()).toContain(label)
+        expect(w.get('[data-testid="database-access-writes"]').text()).toBe('直接写核心的表会绕过核心的缓存、权限版本和审计。')
+        w.unmount()
+      }
+    })
+
+    it('shows no table list without database_access', async () => {
+      for (const over of [{}, { database_access: [] }]) {
+        const w = render(review({ host_permissions: [CORE_READ], ...over }))
+        await flushPromises()
+        expect(w.find('[data-testid="database-access"]').exists()).toBe(false)
+        w.unmount()
+      }
+    })
+
+    it('lists the scripts approving runs with their SQL, the ones already run behind a toggle', async () => {
+      const w = render(review({
+        database: { migrations: ['0001', '0002', '0003'] },
+        database_migrations: [migration('0001', 'applied'), migration('0002', 'changed'), migration('0003', 'new')]
+      }))
+      await flushPromises()
+      expect(w.get('[data-testid="provides-database"]').text()).toBe('表前缀 plg_demo__、迁移脚本 3 个')
+      const card = w.get('[data-testid="database-migrations"]')
+      expect(card.text()).toContain('只能新建以 plg_demo__ 开头的对象')
+      expect(card.get('[data-migration="0002"]').text()).toContain('内容有变，将重新执行')
+      expect(card.get('[data-migration="0003"]').text()).toContain('将执行')
+      expect(card.find('[data-migration="0001"]').exists()).toBe(false)
+      expect(card.find('[data-testid="migration-sql"]').exists()).toBe(false)
+      await card.get('[data-migration="0003"] button').trigger('click')
+      expect(card.get('[data-testid="migration-sql"]').text()).toBe('CREATE TABLE plg_demo__0003 ();')
+      await card.findAll('button').find((b) => b.text().includes('已执行且未变的脚本（1 个）'))!.trigger('click')
+      expect(card.find('[data-testid="database-migrations-applied"] [data-migration="0001"]').exists()).toBe(true)
+    })
+
+    it('says nothing runs when every script ran as it is, and shows no card without scripts', async () => {
+      const w = render(review({ database: { migrations: ['0001'] }, database_migrations: [migration('0001', 'applied')] }))
+      await flushPromises()
+      expect(w.get('[data-testid="database-migrations"]').text()).toContain('本次没有要执行的脚本。')
+      const none = render(review())
+      await flushPromises()
+      expect(none.find('[data-testid="database-migrations"]').exists()).toBe(false)
+    })
   })
 
   it('asks for the missing required permissions instead of submitting', async () => {
