@@ -106,7 +106,7 @@ service HostService {
   // core master key (AES-256-GCM). The ciphertext is bound to the calling
   // plugin and to `context`, so another plugin, or another row of the same
   // plugin, cannot open it. The plugin stores the ciphertext itself, e.g. an
-  // upstream API key in its own schema (CONTRACTS §72.2).
+  // upstream API key in its own tables (CONTRACTS §72.2).
   rpc SecretSeal(SecretSealRequest) returns (SecretSealResponse);
   rpc SecretOpen(SecretOpenRequest) returns (SecretOpenResponse);
 
@@ -115,12 +115,11 @@ service HostService {
   // multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
   rpc PriceUsage(PriceUsageRequest) returns (PriceUsageResponse);
 
-  // db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
-  // egress tunnel it is the virtual address db.sub2api:5432 without
-  // credentials, which the core logs in to as its own database user with
-  // search_path on the schema; without the tunnel (development) it is the
-  // core's DSN with search_path pinned. The SDK dialer goes through
-  // EgressService automatically.
+  // db.schema: the DSN of the plugin's database (CONTRACTS §130): the
+  // virtual address db.sub2api:5432 without credentials, strict network
+  // mode or not, which the core logs in to as the plugin's database
+  // identity with search_path on the core's schema, where the plugin's
+  // tables are. The SDK dials it through EgressService.
   rpc GetDSN(GetDSNRequest) returns (GetDSNResponse);
 
   // authz: does a console user hold a permission? Own keys always; others
@@ -728,8 +727,9 @@ message KVListResponse {
 message GetDSNRequest {}
 
 message GetDSNResponse {
-  // postgres:// DSN of the plugin schema (see GetDSN).
+  // postgres:// DSN of the plugin's database (see GetDSN).
   string dsn = 1;
+  // The core's schema, where the plugin's tables are.
   string schema = 2;
   reserved 3;
   reserved "role_isolated";

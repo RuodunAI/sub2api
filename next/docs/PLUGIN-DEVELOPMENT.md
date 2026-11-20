@@ -357,17 +357,33 @@ if !sticky.Enabled { ... }
 
 ## 6.1 插件自己的表：`Host.DB` 与 DSN
 
-- 插件在 manifest 声明 `database`（`schema` 必须是 `plg_<key>`）并获授 `db.schema` 后，用 `Host.DB(ctx)` 拿 GORM 句柄，每次调用重新取（CONTRACTS §2“插件数据库”）。
-- 句柄背后的 DSN 来自 `HostService.GetDSN`：在沙箱里（严格网络）是 `postgres://plugin@db.sub2api:5432/plg_<key>?sslmode=disable`，没有密码。连接经出口隧道到核心，核心用自己的数据库配置代为登录（TLS、密码认证都在核心），把会话的 `search_path` 设成 `plg_<key>`，之后原样转发协议；语句的 ctx 结束时 pgx 发的取消请求也由核心转给服务器（CONTRACTS §115）。插件进程里没有数据库凭据，也没有插件专用的数据库用户。不在沙箱里（开发模式、严格网络关闭）时 DSN 是核心自己的，直接连库。
-- 连接数由插件自己的池决定（默认每节点 4 个，`pluginsdk.WithDBPoolSize`），每条都是核心对数据库的一条连接，运维按它规划 `max_connections`。
-- 所以不写 schema 前缀的表名都落在自己的 schema 里，但 `search_path` 不是边界：句柄能访问核心的用户能访问的所有表。只访问自己 schema 里的表是插件的义务；访问别处的数据走 Host API。
-- 迁移由核心执行（以核心的用户、`search_path` 为自己的 schema），脚本必须幂等（CONTRACTS §36）；表的属主是核心的用户。
+插件的表放在核心所用的模式里（线上是 `public`），和核心的表、别的插件的表并列；隔离靠名字前缀和数据库身份，不靠 schema（CONTRACTS §130）。
+
+- **声明**：manifest 声明 `database`（`{"migrations": "migrations/"}`，没有 `schema` 字段）并获授 `db.schema`。
+- **名字前缀**：插件的表、索引、序列、视图、类型、函数一律命名 `plg_<key>__<本地名>`（`manifest.TablePrefix(key)`，例如 `plg_moderation__rules`），名字不超过 63 字节（PostgreSQL 会不报错地截断更长的名字）。PostgreSQL 自动起的名字也算：主键索引 `<表>_pkey`、唯一约束的索引 `<表>_<列>_key`、`serial`/`bigserial`/identity 列的序列 `<表>_<列>_seq`，表名带了前缀它们也就带上；自己起名的索引和约束（`CREATE INDEX`、`CONSTRAINT ... UNIQUE`）要自己写上前缀，GORM 模型里的 `index:<名字>`、`uniqueIndex:<名字>` 同样写带前缀的名字（不带名字的 `unique` 让 GORM 起名 `uni_<表>_<列>`，没有前缀，`db diff` 生成的迁移过不了检查）。插件键不含 `__`、不以 `_` 结尾、最多 30 字节，所以一个插件的前缀不会是另一个插件前缀的开头。
+- **一个身份**：每个插件有一个自己的数据库身份（登录角色 `plg<库OID>_<key>`），密码由核心主密钥派生，只在核心进程里。插件的表归这个身份所有；核心的表、别的插件的表它没有任何权限，漏写前缀去改核心的表会被数据库拒绝。
+- **连接**：`Host.DB(ctx)` 拿 GORM 句柄，每次调用重新取（CONTRACTS §2“插件数据库”）。句柄背后的 DSN 来自 `HostService.GetDSN`，不论是否开严格网络都是虚拟地址 `postgres://plugin@db.sub2api:5432/...?sslmode=disable`，没有密码；SDK 按地址选路，虚拟地址一律经出口隧道到核心的数据库代理，核心以插件的身份登录（TLS、密码认证都在核心），把会话的 `search_path` 固定为核心模式，之后原样转发协议；语句的 ctx 结束时 pgx 发的取消请求也由核心转给服务器。`GetDSN` 返回的 `schema` 是核心模式。插件进程里没有数据库凭据。
+- **连接数**：由插件自己的池决定（默认每节点 4 个，`pluginsdk.WithDBPoolSize`），每条都是插件身份对数据库的一条连接，运维按它规划 `max_connections`。
+- **迁移以插件身份执行**：核心在跑脚本前临时给身份核心模式上的 `CREATE`，以该身份另开连接登录，每个脚本一个事务，全部跑完或中途失败都立刻收回。事务提交前核心检查本事务新建的对象，名字不带本插件前缀就回滚整个脚本。脚本必须幂等、对旧版本向后兼容（CONTRACTS §36）。迁移记录写在插件自己的表 `plg_<key>__schema_migrations`（`migration_id`、`checksum`、`applied_at`），由核心以插件身份建表、与每个脚本同一事务写入；脚本内容变了会重跑并更新记录。插件自己不要建、不要改这张表。
+- **运行时没有建表权限**：插件进程连上来时身份没有 `CREATE`，只能对自己的表增删改查；建表、加列、加索引都写进迁移。
+- **插件以外的表**：迁移或运行时要用核心的表，在清单 `database.access` 逐表申请，需要宿主权限 `db.core_read`（critical，只有超管能批）：
+
+  ```json
+  "database": {"migrations": "migrations/", "access": [
+    {"table": "users", "columns": ["id", "email"], "privileges": ["select"]}
+  ]},
+  "hostPermissions": [{"id": "db.schema"}, {"id": "db.core_read"}]
+  ```
+
+  `privileges` 取 `select`、`insert`、`update`、`delete`、`references`；`columns` 省略时是整张表。管理员在安装确认页看到每一条（表、列、权限），同意即照申请授予（列级或表级 GRANT）；每次安装、升级、启动先收回再按当前清单重授。别的插件的表（`plg_` 开头）不能申请。直接写核心的表会绕过核心的缓存、权限版本和审计：有对应 Host API 的用 Host API，确实没有时才申请写权限。
+- **卸载**：卸载并清除数据时删掉身份拥有的全部对象（含迁移记录表）和身份本身；保留数据时表留在库里，重装时交还给新身份。
+- **单元测试**：`pluginsdktest.NewSchema` 建一个临时模式当作核心模式，`ApplyMigrations` 在里面跑真实的迁移（以测试库的用户），`FakeHost.SetDSN(dsn, schema)` 把它交给 `Host.DB`；测试库的地址不是虚拟地址，SDK 直接连。带前缀的表名在临时模式里照常使用。脚本里的名字是否都带前缀由 `sub2api-plugin db check` 检查（`pack` 默认先跑它）：脚本建出的表、索引、序列等名字（含 PostgreSQL 自动起的）不带 `manifest.TablePrefix(key)` 或超过 63 字节、GORM 模型的表名不带前缀，都会失败。
 
 ## 6.2 文件：默认没有，要用就申请 `fs.data`
 
 - Linux 上插件跑在 Landlock 沙箱里（CONTRACTS §43.8，默认开启）：除了自己的二进制、go-plugin 的 socket 目录、`/dev/null` 和时区文件，插件**读写不了任何文件**，包括 `TMPDIR`（`os.CreateTemp("", …)`、`os.MkdirTemp("", …)` 得到 EACCES）、`/etc` 下的配置、其他插件的目录和 `/proc`。获授 `net` 的插件另外能读 CA 证书（经出口隧道做 TLS 用）。
 - 要读写文件，在 manifest 申请宿主权限 `fs.data`（风险中，管理员在安装审查时同意）：`{"id": "fs.data", "reason": {"zh": "缓存下载的模型列表", "en": "Caches downloaded model lists"}}`。获授后插件从环境变量 `SUB2API_PLUGIN_DATA_DIR` 拿到数据目录（也是进程的工作目录），在里面读写文件和子目录、改名、截断；不能建 socket、fifo、符号链接。临时文件也放这里：`os.CreateTemp(os.Getenv("SUB2API_PLUGIN_DATA_DIR"), "…")`。没获授时这个变量不存在，代码要能在没有它时工作（或把它当成配置错误报告）。
-- 数据目录只在本节点，不跨节点同步、不备份；要在节点之间共享或长期保存的数据放进自己的 schema（6.1 节）或 `Host.KV`。
+- 数据目录只在本节点，不跨节点同步、不备份；要在节点之间共享或长期保存的数据放进自己的表（6.1 节）或 `Host.KV`。
 - 插件必须静态链接（`sub2api-plugin build` 用 `CGO_ENABLED=0`）：沙箱不放行动态链接器和系统库。`time.LoadLocation` 能用（时区库放行），也可以内嵌 `time/tzdata`。
 - 只在开发模式（`SUB2API_PLUGIN_DEV_MODE=true`，`sub2api dev`）或 `SUB2API_PLUGIN_LANDLOCK=false` 时没有这些限制；在本机测通的读写文件，打包前确认清单申请了 `fs.data`。
 

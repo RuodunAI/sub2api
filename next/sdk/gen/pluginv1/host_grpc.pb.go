@@ -110,19 +110,18 @@ type HostServiceClient interface {
 	// core master key (AES-256-GCM). The ciphertext is bound to the calling
 	// plugin and to `context`, so another plugin, or another row of the same
 	// plugin, cannot open it. The plugin stores the ciphertext itself, e.g. an
-	// upstream API key in its own schema (CONTRACTS §72.2).
+	// upstream API key in its own tables (CONTRACTS §72.2).
 	SecretSeal(ctx context.Context, in *SecretSealRequest, opts ...grpc.CallOption) (*SecretSealResponse, error)
 	SecretOpen(ctx context.Context, in *SecretOpenRequest, opts ...grpc.CallOption) (*SecretOpenResponse, error)
 	// prices (grant "prices"): price token usage of a model with the core
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(ctx context.Context, in *PriceUsageRequest, opts ...grpc.CallOption) (*PriceUsageResponse, error)
-	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
-	// egress tunnel it is the virtual address db.sub2api:5432 without
-	// credentials, which the core logs in to as its own database user with
-	// search_path on the schema; without the tunnel (development) it is the
-	// core's DSN with search_path pinned. The SDK dialer goes through
-	// EgressService automatically.
+	// db.schema: the DSN of the plugin's database (CONTRACTS §130): the
+	// virtual address db.sub2api:5432 without credentials, strict network
+	// mode or not, which the core logs in to as the plugin's database
+	// identity with search_path on the core's schema, where the plugin's
+	// tables are. The SDK dials it through EgressService.
 	GetDSN(ctx context.Context, in *GetDSNRequest, opts ...grpc.CallOption) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.
@@ -715,19 +714,18 @@ type HostServiceServer interface {
 	// core master key (AES-256-GCM). The ciphertext is bound to the calling
 	// plugin and to `context`, so another plugin, or another row of the same
 	// plugin, cannot open it. The plugin stores the ciphertext itself, e.g. an
-	// upstream API key in its own schema (CONTRACTS §72.2).
+	// upstream API key in its own tables (CONTRACTS §72.2).
 	SecretSeal(context.Context, *SecretSealRequest) (*SecretSealResponse, error)
 	SecretOpen(context.Context, *SecretOpenRequest) (*SecretOpenResponse, error)
 	// prices (grant "prices"): price token usage of a model with the core
 	// model price table, exactly as gateway settlement would before the group
 	// multiplier. Read only: nothing is charged or recorded (CONTRACTS §72.13.1).
 	PriceUsage(context.Context, *PriceUsageRequest) (*PriceUsageResponse, error)
-	// db.schema: the DSN of the plugin schema (CONTRACTS §115). Behind the
-	// egress tunnel it is the virtual address db.sub2api:5432 without
-	// credentials, which the core logs in to as its own database user with
-	// search_path on the schema; without the tunnel (development) it is the
-	// core's DSN with search_path pinned. The SDK dialer goes through
-	// EgressService automatically.
+	// db.schema: the DSN of the plugin's database (CONTRACTS §130): the
+	// virtual address db.sub2api:5432 without credentials, strict network
+	// mode or not, which the core logs in to as the plugin's database
+	// identity with search_path on the core's schema, where the plugin's
+	// tables are. The SDK dials it through EgressService.
 	GetDSN(context.Context, *GetDSNRequest) (*GetDSNResponse, error)
 	// authz: does a console user hold a permission? Own keys always; others
 	// need authz.read.

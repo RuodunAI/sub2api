@@ -739,13 +739,14 @@ func (v *validator) jobs() {
 	}
 }
 
-// databaseAccess checks the tables outside the plugin it asks to read: named
-// tables, never a plugin's (no "plg_"), each once, reads only.
+// databaseAccess checks the tables outside the plugin it asks for: named
+// tables, never a plugin's (no "plg_"), each once, with privileges of
+// manifest.DatabasePrivileges.
 func (v *validator) databaseAccess(access []manifest.DatabaseAccess) {
 	if len(access) == 0 {
 		return
 	}
-	v.needPerm("database.access", "db.core_read", "reads of tables outside the plugin")
+	v.needPerm("database.access", "db.core_read", "access to tables outside the plugin")
 	tables := map[string]bool{}
 	for i, a := range access {
 		f := fmt.Sprintf("database.access[%d]", i)

@@ -52,7 +52,7 @@ const demoManifest = `{
   "apiVersion": 1, "key": "demo", "name": {"en": "Demo", "zh": "演示"}, "version": "0.1.0",
   "publisher": "tester", "runtime": "grpc", "entry": {"grpc": {"binaries": "runtimes/{os}-{arch}/plugin"}},
   "hostCompat": ">=0.1.0 <0.2.0", "hostUICompat": ">=0.1.0 <0.2.0", "capabilities": [{"id": "http.routes.v1"}],
-  "database": {"schema": "plg_demo", "migrations": "migrations/"},
+  "database": {"migrations": "migrations/"},
   "hostPermissions": [{"id": "db.schema"}, {"id": "ui.native"}],
   "ui": {"native": {"entry": "ui/native/entry.js"}, "settings": {"mode": "native", "component": "DemoSettings", "secrets": []}}
 }`
@@ -65,7 +65,7 @@ func demoPlugin(t *testing.T) string {
 	writeFile(t, filepath.Join(dir, "forms", "s.json"), `{}`)
 	writeFile(t, filepath.Join(dir, "assets", "brand.svg"), `<svg/>`)
 	writeFile(t, filepath.Join(dir, "assets", "LICENSE.txt"), `license notice`)
-	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"), `CREATE TABLE t (id int);`)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"), `CREATE TABLE plg_demo__t (id int);`)
 	writeFile(t, filepath.Join(dir, "ui", "native", "src", "main.ts"), `source, not packed`)
 	writeFile(t, filepath.Join(dir, "ui", "native", "dist", "entry.js"), `export function register() {}`)
 	writeFile(t, filepath.Join(dir, "ui", "native", "dist", "assets", "a.css"), `.a{}`)
@@ -75,7 +75,7 @@ func demoPlugin(t *testing.T) string {
 	writeFile(t, filepath.Join(dir, "runtimes", "linux-arm64", "plugin"), "ELF-arm64")
 	writeFile(t, filepath.Join(dir, ".hidden"), "skip me")
 	writeFile(t, filepath.Join(dir, "testdata", "v2", "manifest.patch.json"), `{"version": "0.2.0", "name": {"zh": null}}`)
-	writeFile(t, filepath.Join(dir, "testdata", "v2", "migrations", "0002_more.sql"), `ALTER TABLE t ADD COLUMN x int;`)
+	writeFile(t, filepath.Join(dir, "testdata", "v2", "migrations", "0002_more.sql"), `ALTER TABLE plg_demo__t ADD COLUMN x int;`)
 	return dir
 }
 

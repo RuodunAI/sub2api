@@ -3657,8 +3657,9 @@ type GetDSNResponse struct {
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	// postgres:// DSN of the plugin schema (see GetDSN).
-	Dsn    string `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	// postgres:// DSN of the plugin's database (see GetDSN).
+	Dsn string `protobuf:"bytes,1,opt,name=dsn,proto3" json:"dsn,omitempty"`
+	// The core's schema, where the plugin's tables are.
 	Schema string `protobuf:"bytes,2,opt,name=schema,proto3" json:"schema,omitempty"`
 }
 

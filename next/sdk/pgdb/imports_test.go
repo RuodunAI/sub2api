@@ -16,9 +16,9 @@ import (
 const pgxModule = "github.com/jackc/" + "pgx"
 
 // pgxDir is the one package outside the core that imports pgx: the driver's
-// configuration (where the dial hook of strict network mode's egress tunnel
-// goes) and the array type come from there for the core, the gateway and
-// the SDK alike.
+// configuration (where the dial hook of the egress tunnel to the plugin's
+// database goes) and the array type come from there for the core, the
+// gateway and the SDK alike.
 const pgxDir = "runtime-contract/gormpg/"
 
 // No Go file of the SDK, the plugins, the gateway, the tools, the end-to-end

@@ -120,11 +120,28 @@
 //
 // # Database
 //
-// A plugin with a database (manifest "database", grant "db.schema") owns one
-// schema, plg_<key>. Host.DB returns a GORM handle on it (package pgdb:
-// search_path on the schema, the egress tunnel in strict network mode), at
-// most 4 connections per node unless WithDBPoolSize says otherwise; the core
-// opens them as its own database user (CONTRACTS §115).
+// A plugin with a database (manifest "database", grant "db.schema") keeps
+// its tables in the core's schema beside the core's and other plugins'
+// (CONTRACTS §130). Every table, index, sequence and other object it
+// creates is named with manifest.TablePrefix: plg_<key>__<name>, at most 63
+// bytes, PostgreSQL's own names included (<table>_pkey, <table>_<column>_key,
+// <table>_<column>_seq carry the prefix when the table does; an index or
+// constraint named by hand must carry it too). The plugin has one database
+// identity, which owns its tables and reaches nothing else: the core's
+// tables and other plugins' refuse it. Tables outside the plugin are asked
+// for in the manifest's database.access (table, columns, privileges, host
+// permission "db.core_read"), granted on the administrator's consent;
+// writing the core's tables directly bypasses its caches, authorization
+// versions and audit, so use the Host API where there is one.
+//
+// Host.DB returns a GORM handle (package pgdb) with search_path on the
+// core's schema, at most 4 connections per node unless WithDBPoolSize says
+// otherwise. Its DSN names the virtual address egress.DatabaseAddress,
+// without a password: the SDK dials it through the host's tunnel, strict
+// network mode or not, and the core logs in as the plugin's identity; any
+// other address (a unit test's database) is dialled directly. The identity
+// has no CREATE at run time: it reads and writes its tables, and only
+// migrations change them.
 // The handle is bound to the context Host.DB was called with: ask again for
 // each call (it is cheap, the connections are shared) and never keep one,
 // e.g. from Init for a goroutine; a kept handle fails every statement once
@@ -163,19 +180,26 @@
 //     as it is in the database: `gorm:"type:jsonb;not null;default:'{}'"`,
 //     a PostgreSQL array as a pgdb.Array[T] with its type (type:text[]),
 //     an index, check or foreign key constraint by its name
-//     (index:<name>, check:<name>,<expr>, constraint:<name>,). A unique
-//     column is `unique`: GORM names a constraint it creates
-//     uni_<table>_<column>, and takes any unique constraint on just that
-//     column for it. Name a new one so in the migration too, or declare
-//     uniqueIndex:<name>: a model that drops `unique` from a column whose
-//     constraint has another name cannot be diffed (check lists the
-//     constraint; drop it by hand). Turn GORM's automatic
+//     (index:<name>, check:<name>,<expr>, constraint:<name>,; an index's
+//     name carries the plugin's prefix). A unique column is `unique`, which
+//     takes any unique constraint on just that column for it; the name GORM
+//     gives one it creates, uni_<table>_<column>, has no prefix, so write a
+//     new one in the migration (the column's own UNIQUE, which PostgreSQL
+//     names <table>_<column>_key) or declare uniqueIndex:<prefixed name>.
+//     A model that drops `unique` from a column whose constraint has
+//     another name than uni_<table>_<column> cannot be diffed (check lists
+//     the constraint; drop it by hand). Turn GORM's automatic
 //     created_at/updated_at off (autoCreateTime:false, autoUpdateTime:false)
 //     where the database default fills them.
 //
 //   - migrations/*.sql are what the host runs: in file name order, each in
-//     its own transaction with search_path on the schema, and idempotent.
-//     The plugin never runs AutoMigrate.
+//     its own transaction, logged in as the plugin's identity (CREATE on the
+//     core's schema granted for the run only) with search_path on that
+//     schema, and idempotent. Before a transaction commits the host checks
+//     that everything it created carries the plugin's prefix, or rolls it
+//     back. The host records each in the plugin's own table
+//     plg_<key>__schema_migrations (and runs a changed one again); the
+//     migrations leave that table alone. The plugin never runs AutoMigrate.
 //
 // The sub2api-plugin command keeps the two together:
 //
@@ -184,11 +208,13 @@
 //
 // Both compare on the test PostgreSQL (TEST_DATABASE_URL, or the local
 // server of package testpg), in one transaction they roll back
-// (pgdbtool.Drift). They run migrations/ in a scratch schema as the
-// connecting user with search_path on that schema, as the host runs them
-// with the core's user, and list what a migration created or changed
-// outside that schema (a table in public, another schema, an extension) as
-// a difference. They let
+// (pgdbtool.Drift). They run migrations/ in a scratch schema standing in
+// for the core's, as the connecting user with search_path on that schema,
+// and list what a migration created or changed outside that schema (a table
+// in public, another schema, an extension) as a difference, and what it
+// named in it without the plugin's prefix or longer than 63 bytes (a
+// table, an index or sequence PostgreSQL named after one, a view, type or
+// function; DriftReport.Misnamed), which the host refuses. They let
 // AutoMigrate build All() in a second, empty schema and compare the two
 // catalogs: the tables; each column's type, NOT NULL and default (by value:
 // '{}' and '{}'::jsonb, 0 and '0'::numeric are the same); primary keys; and
@@ -197,7 +223,8 @@
 // turned plain, another CHECK expression or ON DELETE is a difference even
 // under the same name, while the names GORM gives unique constraints
 // (uni_<table>_<column>), foreign keys and checks need not be the
-// migrations'. A model's TableName must not name a schema. To reach
+// migrations'. A model's TableName must not name a schema and must start
+// with the plugin's prefix. To reach
 // internal/model they generate a main package in the plugin module and go
 // run it (pgdbtool.DriftMain).
 //
@@ -229,7 +256,10 @@
 // stop it again when they started it and no other program (another pack,
 // a test) uses it.
 //
-// Tests run the real migrations: pluginsdktest.NewSchema and ApplyMigrations.
+// Tests run the real migrations: pluginsdktest.NewSchema makes a schema
+// standing in for the core's, ApplyMigrations runs them in it and
+// FakeHost.SetDSN hands it to Host.DB; the prefixed tables work there as in
+// production.
 //
 // The pluginsdktest sub-package runs a plugin in-process over bufconn with a
 // fake host, for unit tests: Harness.Execute and Harness.Monitor make the

@@ -91,21 +91,22 @@ func TestNewMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if m, err := newMigration(dir, "plg_x", "models", &pgdbtool.DriftReport{}); m != nil || err != nil {
+	if m, err := newMigration(dir, "x", "models", &pgdbtool.DriftReport{}); m != nil || err != nil {
 		t.Fatalf("no change rendered %v %v", m, err)
 	}
 	for _, r := range []pgdbtool.DriftReport{
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`, `ALTER TABLE "t" ALTER COLUMN "s" TYPE varchar(9) USING "s"::varchar(9)`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint NOT NULL`}},
 		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Unmapped: []string{"column t.old"}},
+		{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}, Misnamed: []string{"table t (not named plg_x__...)"}},
 		// What AutoMigrate does not change, e.g. a NOT NULL it never adds.
 		{Differences: []string{"column t.n: migrations: bigint; models: bigint NOT NULL"}},
 	} {
-		if m, err := newMigration(dir, "plg_x", "models", &r); !errors.Is(err, errManual) || m != nil {
+		if m, err := newMigration(dir, "x", "models", &r); !errors.Is(err, errManual) || m != nil {
 			t.Fatalf("%+v rendered %v %v", r, m, err)
 		}
 	}
-	m, err := newMigration(dir, "plg_x", "add_n", &pgdbtool.DriftReport{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}})
+	m, err := newMigration(dir, "x", "add_n", &pgdbtool.DriftReport{Statements: []string{`ALTER TABLE "t" ADD "n" bigint`}})
 	if err != nil || m.name != "0004_add_n.sql" {
 		t.Fatalf("rendered %v %v", m, err)
 	}
@@ -117,7 +118,7 @@ func TestNewMigration(t *testing.T) {
 		t.Fatal("overwrote a migration")
 	}
 	b, err := os.ReadFile(path)
-	if err != nil || !strings.HasPrefix(string(b), "-- plg_x 0004:") ||
+	if err != nil || !strings.HasPrefix(string(b), "-- x 0004:") || !strings.Contains(string(b), "every name starts with plg_x__.") ||
 		!strings.HasSuffix(string(b), "\n\nALTER TABLE \"t\" ADD COLUMN IF NOT EXISTS \"n\" bigint;\n") {
 		t.Fatalf("migration:\n%s %v", b, err)
 	}
@@ -191,7 +192,7 @@ func gormPlugin(t *testing.T) string {
 		"replace github.com/Sub2API-Devs/sup2api/next/sdk => "+sdk+"\n\n"+
 		"replace github.com/Sub2API-Devs/sup2api/next/runtime-contract => "+filepath.Join(sdk, "..", "runtime-contract")+"\n")
 	writeFile(t, filepath.Join(dir, "go.sum"), string(sum))
-	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"), `CREATE TABLE t (id bigserial PRIMARY KEY);`)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"), `CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY);`)
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel(""))
 	// Outside the workspace, offline: the module cache has what the SDK
 	// needs, and go.mod may take the requirements it is missing.
@@ -212,7 +213,7 @@ type T struct {
 	` + extra + `
 }
 
-func (T) TableName() string { return "t" }
+func (T) TableName() string { return "plg_demo__t" }
 
 func All() []any { return []any{&T{}} }
 `
@@ -243,20 +244,20 @@ func TestDBDiff(t *testing.T) {
 	}
 
 	// testdata/v2 adds column x to t, which no model maps.
-	if msg := runFail(t, "db", "check", "--dir", dir, "--overlay", "testdata/v2"); !strings.Contains(msg, "column t.x") {
+	if msg := runFail(t, "db", "check", "--dir", dir, "--overlay", "testdata/v2"); !strings.Contains(msg, "column plg_demo__t.x") {
 		t.Fatalf("check with overlay: %s", msg)
 	}
-	if msg := runFail(t, "pack", "--dir", dir, "--overlay", "testdata/v2", "--out-dir", t.TempDir()); !strings.Contains(msg, "column t.x") {
+	if msg := runFail(t, "pack", "--dir", dir, "--overlay", "testdata/v2", "--out-dir", t.TempDir()); !strings.Contains(msg, "column plg_demo__t.x") {
 		t.Fatalf("pack with overlay: %s", msg)
 	}
 
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel("M int64 `gorm:\"not null\"`"))
-	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "t" ADD "m" bigint NOT NULL`) {
+	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "plg_demo__t" ADD "m" bigint NOT NULL`) {
 		t.Fatalf("diff with a NOT NULL column: %s", msg)
 	}
 	// A UNIQUE on a table that has rows fails on duplicates: left to a person.
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), demoModel("U string `gorm:\"unique\"`"))
-	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "t" ADD CONSTRAINT "uni_t_u" UNIQUE ("u")`) {
+	if msg := runFail(t, "db", "diff", "--dir", dir); !strings.Contains(msg, `! ALTER TABLE "plg_demo__t" ADD CONSTRAINT "uni_plg_demo__t_u" UNIQUE ("u")`) {
 		t.Fatalf("diff with a new UNIQUE on an existing table: %s", msg)
 	}
 }
@@ -264,7 +265,7 @@ func TestDBDiff(t *testing.T) {
 // A plugin with models and no database packs: there is nothing to check.
 func TestPackModelsWithoutDatabase(t *testing.T) {
 	dir := demoPlugin(t)
-	m := strings.Replace(demoManifest, `"database": {"schema": "plg_demo", "migrations": "migrations/"},`, "", 1)
+	m := strings.Replace(demoManifest, `"database": {"migrations": "migrations/"},`, "", 1)
 	m = strings.Replace(m, `{"id": "db.schema"}, `, "", 1)
 	writeFile(t, filepath.Join(dir, "manifest.json"), m)
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"), "package model\n")
@@ -282,8 +283,8 @@ func TestDBDiffDifferences(t *testing.T) {
 	}
 	dir := gormPlugin(t)
 	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
-		`CREATE TABLE t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text DEFAULT '');`)
-	want := "column t.code: migrations: text DEFAULT ''::text; models: text NOT NULL DEFAULT ''::text"
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text DEFAULT '');`)
+	want := "column plg_demo__t.code: migrations: text DEFAULT ''::text; models: text NOT NULL DEFAULT ''::text"
 	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, want) {
 		t.Fatalf("check: %s", msg)
 	}
@@ -300,12 +301,42 @@ func TestDBCheckUnmanaged(t *testing.T) {
 	}
 	dir := gormPlugin(t)
 	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
-		`CREATE TABLE t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
-CREATE FUNCTION t_count() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM t';`)
-	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "function t_count()") {
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
+CREATE FUNCTION plg_demo__t_count() RETURNS bigint LANGUAGE sql AS 'SELECT count(*) FROM plg_demo__t';`)
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, "function plg_demo__t_count()") {
 		t.Fatalf("check: %s", msg)
 	}
 	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "unmanaged.go"),
-		"package model\n\nfunc Unmanaged() []string { return []string{\"function t_count()\"} }\n")
+		"package model\n\nfunc Unmanaged() []string { return []string{\"function plg_demo__t_count()\"} }\n")
 	runOK(t, "db", "check", "--dir", dir)
+}
+
+// The plugin's tables share the core's schema: check and diff fail on a
+// migration that names a table, or PostgreSQL an index or sequence of it,
+// without the plugin's prefix, and on a model table without it.
+func TestDBCheckPrefix(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs go run on a plugin module and needs PostgreSQL")
+	}
+	dir := gormPlugin(t)
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');
+CREATE TABLE extra (id serial PRIMARY KEY);`)
+	for _, args := range [][]string{{"db", "check"}, {"db", "diff"}} {
+		msg := runFail(t, append(args, "--dir", dir)...)
+		for _, want := range []string{misnamedTitle, "table extra (not named plg_demo__...)", "index extra_pkey (not named plg_demo__...)",
+			"sequence extra_id_seq (not named plg_demo__...)"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("%v: no %q in %s", args, want, msg)
+			}
+		}
+	}
+	writeFile(t, filepath.Join(dir, "migrations", "0001_init.sql"),
+		`CREATE TABLE plg_demo__t (id bigserial PRIMARY KEY, n bigint NOT NULL DEFAULT 0, code text NOT NULL DEFAULT '');`)
+	runOK(t, "db", "check", "--dir", dir)
+	writeFile(t, filepath.Join(dir, filepath.FromSlash(modelDir), "model.go"),
+		strings.Replace(demoModel(""), `return "plg_demo__t"`, `return "t"`, 1))
+	if msg := runFail(t, "db", "check", "--dir", dir); !strings.Contains(msg, `is not named with the plugin's prefix "plg_demo__"`) {
+		t.Fatalf("check with an unprefixed model table: %s", msg)
+	}
 }

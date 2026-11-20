@@ -886,21 +886,22 @@ func (j Job) NodeScope() bool { return j.Scope == JobScopeNode }
 // (CONTRACTS §130).
 type Database struct {
 	Migrations string `json:"migrations"` // package directory, e.g. "migrations/"
-	// Access lists the tables outside the plugin it reads, granted on the
-	// administrator's consent (host permission "db.core_read").
+	// Access lists the tables outside the plugin it uses, granted as asked
+	// on the administrator's consent (host permission "db.core_read").
 	Access []DatabaseAccess `json:"access,omitempty"`
 }
 
 // DatabaseAccess asks for privileges on one table outside the plugin.
 type DatabaseAccess struct {
 	Table      string   `json:"table"`
-	Columns    []string `json:"columns,omitempty"` // none: every column the core allows
+	Columns    []string `json:"columns,omitempty"` // none: the whole table
 	Privileges []string `json:"privileges"`        // DatabasePrivileges
 }
 
 // DatabasePrivileges are the privileges a plugin may ask for on a table
-// outside it: reads only, the core's data is written through the Host API.
-var DatabasePrivileges = []string{"select"}
+// outside it. Writing the core's tables directly bypasses the core's
+// caches, authorization versions and audit: the consent page says so.
+var DatabasePrivileges = []string{"select", "insert", "update", "delete", "references"}
 
 // TablePrefix is the prefix of every table, index and sequence of plugin
 // pluginKey: "plg_<key>__". Plugin keys hold no "__" and do not end in "_",
@@ -1203,7 +1204,7 @@ var HostPermissionRisk = map[string]string{
 	"ledger.debit":        RiskCritical,
 	"ui.native":           RiskCritical,
 	"users.write":         RiskCritical,
-	"db.core_read":        RiskCritical, // database.access: reads of tables outside the plugin
+	"db.core_read":        RiskCritical, // database.access: access to tables outside the plugin
 }
 
 // Values of Endpoint.Kind.

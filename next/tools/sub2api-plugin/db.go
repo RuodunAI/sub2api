@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/mod/modfile"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb/pgdbtool"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
@@ -108,7 +109,11 @@ func printReport(w io.Writer, report *pgdbtool.DriftReport, after string) {
 	printStatements(w, "DDL the models still need"+after+":", report.Statements)
 	printStatements(w, "defined differently (migrations; models)"+after+":", report.Differences)
 	printStatements(w, "in the schema, in no model"+after+":", report.Unmapped)
+	printStatements(w, misnamedTitle+after+":", report.Misnamed)
 }
+
+// misnamedTitle heads DriftReport.Misnamed.
+const misnamedTitle = "named against the core's schema rules (every name starts with the plugin's prefix, at most 63 bytes)"
 
 // comparisonServer is the PostgreSQL db diff and check compare on:
 // TEST_DATABASE_URL, or the local testpg server, which release stops again
@@ -155,12 +160,13 @@ func cmdDBDiff(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	next, err := newMigration(p.migrations, p.schema, *name, report)
+	next, err := newMigration(p.migrations, p.key, *name, report)
 	switch {
 	case errors.Is(err, errManual):
 		printStatements(stderr, "DDL the models need (! can lose data, rewrite a table or fail on existing rows):", markManual(report.Statements))
 		printStatements(stderr, "defined differently (migrations; models), which this DDL may not change:", report.Differences)
 		printStatements(stderr, "in the schema, in no model (drop it, map it again, or list it in Unmanaged):", report.Unmapped)
+		printStatements(stderr, misnamedTitle+" (rename it in its migration):", report.Misnamed)
 		return err
 	case err != nil:
 		return err
@@ -194,7 +200,7 @@ func printStatements(w io.Writer, title string, lines []string) {
 type dbPlugin struct {
 	dir        string // absolute
 	module     string // Go module path
-	schema     string // plg_<key>
+	key        string // the manifest's key
 	migrations string // absolute migrations directory
 	overlay    string // the overlay's migrations directory, "" for none
 }
@@ -225,7 +231,7 @@ func loadDBPlugin(dir, overlay string) (*dbPlugin, error) {
 	if module == "" {
 		return nil, fmt.Errorf("%s/go.mod: no module path", abs)
 	}
-	p := &dbPlugin{dir: abs, module: module, schema: m.Database.Schema,
+	p := &dbPlugin{dir: abs, module: module, key: m.Key,
 		migrations: filepath.Join(abs, filepath.FromSlash(m.Database.Migrations))}
 	// Overlay files land in the package at their own path (collectPackage),
 	// so the overlay's copy of the migrations directory joins the plugin's.
@@ -336,7 +342,7 @@ func (p *dbPlugin) drift(dsn string, files []sqlFile, stderr io.Writer) (*pgdbto
 		}
 	}
 	var out bytes.Buffer
-	cmd := exec.Command("go", "run", "./"+filepath.Base(tmp), migrations)
+	cmd := exec.Command("go", "run", "./"+filepath.Base(tmp), "-key", p.key, migrations)
 	cmd.Dir = p.dir
 	cmd.Env = append(os.Environ(), pgdbtool.DriftDSNEnv+"="+dsn)
 	cmd.Stdout, cmd.Stderr = &out, stderr
@@ -440,13 +446,13 @@ type migration struct {
 
 // newMigration renders report's statements as the next migration file of
 // dir; nil when there is nothing to write. It renders nothing (errManual)
-// when a statement needs a person, something is unmapped or the schemas
+// when a statement needs a person, something is unmapped or misnamed, or the schemas
 // differ in what no statement changes (AutoMigrate never tightens NOT NULL,
 // changes a primary key or redefines an index it finds by name): a partial
 // file would hide what is left. verify catches a difference the statements
 // leave.
-func newMigration(dir, schema, name string, report *pgdbtool.DriftReport) (*migration, error) {
-	if slices.Contains(manual(report.Statements), true) || len(report.Unmapped) > 0 ||
+func newMigration(dir, key, name string, report *pgdbtool.DriftReport) (*migration, error) {
+	if slices.Contains(manual(report.Statements), true) || len(report.Unmapped) > 0 || len(report.Misnamed) > 0 ||
 		(len(report.Statements) == 0 && len(report.Differences) > 0) {
 		return nil, errManual
 	}
@@ -458,8 +464,8 @@ func newMigration(dir, schema, name string, report *pgdbtool.DriftReport) (*migr
 		return nil, err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "-- %s %s: written by `sub2api-plugin db diff` from the GORM models (%s).\n", schema, number, modelDir)
-	fmt.Fprintf(&b, "-- Runs with search_path pinned to the plugin schema (%s).\n", schema)
+	fmt.Fprintf(&b, "-- %s %s: written by `sub2api-plugin db diff` from the GORM models (%s).\n", key, number, modelDir)
+	fmt.Fprintf(&b, "-- Runs as the plugin's database identity in the core's schema: every name starts with %s.\n", manifest.TablePrefix(key))
 	b.WriteString("-- Idempotent: every statement can run again.\n\n")
 	for _, s := range report.Statements {
 		b.WriteString(idempotent(s) + ";\n")

@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/grpc"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
 
@@ -49,5 +51,37 @@ func TestHostDBBoundToContext(t *testing.T) {
 	}
 	if err := db.Raw("SELECT 2").Scan(&one).Error; err != nil || one != 2 {
 		t.Fatalf("handle asked again: %v", err)
+	}
+}
+
+// refusingEgress refuses every tunnel and counts the attempts.
+type refusingEgress struct {
+	pluginv1.EgressServiceClient
+	dials *atomic.Int32
+}
+
+func (e refusingEgress) Dial(context.Context, ...grpc.CallOption) (pluginv1.EgressService_DialClient, error) {
+	e.dials.Add(1)
+	return nil, errors.New("no tunnel here")
+}
+
+// The virtual database address goes through the host's tunnel whether or
+// not the egress tunnel is installed (strict network mode); any other
+// address, a plugin unit test's database, is dialled directly
+// (TestHostDBBoundToContext, whose host has no tunnel at all).
+func TestHostDBDialsVirtualAddressThroughTunnel(t *testing.T) {
+	e := refusingEgress{dials: new(atomic.Int32)}
+	dsn := "postgres://plugin@" + egress.DatabaseAddress + "/plugin?sslmode=disable"
+	h := newHost(HostInfo{}, dsnHost{dsn: dsn}, e, false, 1)
+	defer h.closeDB()
+	db, err := h.DB(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("SELECT 1").Error; err == nil || !strings.Contains(err.Error(), "no tunnel here") {
+		t.Fatalf("query: %v", err)
+	}
+	if e.dials.Load() == 0 {
+		t.Fatal("the virtual address was not dialled through the tunnel")
 	}
 }
