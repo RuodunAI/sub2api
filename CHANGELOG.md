@@ -8,6 +8,26 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 插件数据库隔离：插件的表放进核心的模式、带前缀，每个插件一个数据库身份（核心；没有核心迁移，已有数据在启动时搬迁；随 0.1.304 发布，单向；取代下面 0.1.304 一节的“插件数据库只用核心的数据库用户”）
+
+所有者定稿“同一个模式，加前缀，一个身份”。规则见 CONTRACTS §130。
+
+- **布局**：插件的表、索引、序列在核心的模式（线上 `public`）里，名字一律以 `plg_<key>__` 开头；不再有每插件一个的 schema `plg_<key>`。
+- **身份**：每个用数据库的插件一个登录角色 `plg<库OID>_<key>`，密码由主密钥派生、不落库（只发 SCRAM 校验值），插件的表归它所有；核心的表和别的插件的表它没有权限，漏写前缀改到核心的表由数据库拒绝。
+- **迁移**以这个身份另开连接执行（临时给模式的 CREATE，跑完或失败立即收回），每个脚本一个事务，建了不带前缀的对象就回滚该脚本；记录写在插件自己的表 `plg_<key>__schema_migrations`，核心的 `plugin_migrations` 只记数据迁移。
+- **插件以外的表**：清单 `database.access` 逐表申请列和权限，要宿主权限 `db.core_read`（极高风险，只有超管能批）；上传时检查表和列存在；授予照申请做列级或表级 GRANT；升级多要任何东西都要重新同意。审查新增 `database_access` 和 `database_migrations`（每个脚本的 SQL 与 `new`/`changed`/`applied`），新接口 `GET /api/v1/plugins/:key/database`。
+- **连接**：插件一律拿到虚拟地址 `db.sub2api:5432`，核心的 pgproxy 以插件的身份登录；出口策略里“有数据库的插件可以拨真实数据库地址”的例外删除。
+- **卸载**：“清除数据”删插件的表和身份；不清除时表留给核心，重装时交还新身份，已跑的脚本不重跑。停用的键“还有数据”改为看有没有带前缀的表。
+- **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑），旧角色照旧收回；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
+
+**升级须知**
+
+- **核心的数据库用户又需要 `CREATEROLE`**（以及 PostgreSQL 16 及以上）。没有时用数据库的插件（dynweight、guard、moderation、payment）迁移失败、不启动，报 `plugin_db_isolation_unavailable`，不降级。升级前确认：`SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`。
+- 新核心第一次启动会搬迁上面四个插件的表（线上 35 张表），日志里每个插件一行 `moved the plugin's tables into the core's schema`；出现 `convert the legacy database layout of a plugin` 错误时该插件起不来，按错误处理后重启。
+- PostgreSQL 14 及更早建的库，核心启动时收回 PUBLIC 在核心模式上的 CREATE，收不回启动失败（线上已确认没有开放）。
+- 插件的每条数据库连接是它自己身份的一个会话，计入 `max_connections`，规划同前（节点数 ×（核心池 + 每个用数据库的插件 4 个））。
+- **单向**：搬迁后旧核心找不到 `plg_<key>` schema，回退要连同数据库回到升级前的备份（与 0.1.304 一节相同）。
+
 ### 插件界面只用代码写：删掉声明式表单与页面，界面契约 4.0（核心、SDK、控制台、全部带界面的第一方插件；无迁移，随 0.1.304 发布；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
 
 账号表单、插件设置和插件页面只能用代码写：插件自带的原生界面（`ui/native`，受信任发布者，宿主权限 `ui.native`）或 iframe。声明式的 JSON Schema 表单（`form.mode: "schema"`）和表格、表单页面（`type: "table" | "form"`）整个删除，核心不再读、不再校验 JSON Schema 表单。规则见 CONTRACTS §23、§75.1、§75.5。
@@ -116,7 +136,7 @@
 
 - **平台插件转发 V2**：每个平台插件都是有进程的代码插件，每个网关请求只有 `Execute` 一条路径，插件拿完整请求体、构造最终请求，由核心发出；请求体上限改到网关设置；插件内存默认不限；请求路径上写死的超时与限制去掉（CONTRACTS §111、§112）。
 - **账号协议绑定**：账号可以限定开放的本平台协议、模型的协议；**跨平台协议转换改为默认关闭**，要在账号上为模型开启（CONTRACTS §110）。
-- **插件数据库只用核心的数据库用户**，不再给插件建数据库角色，核心代理插件的数据库连接（CONTRACTS §115）。
+- **插件数据库隔离**：插件的表放进核心的模式、带前缀，每个插件一个数据库身份，核心代理插件的数据库连接并以插件的身份登录（CONTRACTS §130，见上面“插件数据库隔离”；取代 §115 的“只用核心的数据库用户”）。
 - **插件联网**：管理员可以指定插件能访问、不能访问的域名，管插件经核心发出的全部网络（插件自己的连接和平台插件发往上游的请求），默认行为不变（CONTRACTS §113）。
 - **插件包不再依赖主节点**（网关；CONTRACTS §114）。
 - **授权请求走账号表单选的代理**（代理票据，codex 0.2.0；CONTRACTS §117）。
@@ -147,14 +167,14 @@
 
 **回退**
 
-- **单向**：迁移 0110 删除了旧插件角色记录迁移用的两个 SECURITY DEFINER 函数，之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来；新核心第一次启动还会收回旧的插件数据库角色。所以回退只能把上一版核心和上一版整套插件一起重新部署，**并连同数据库回到升级前的备份**。
+- **单向**：迁移 0110 删除了旧插件角色记录迁移用的两个 SECURITY DEFINER 函数，之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来；新核心第一次启动还会收回旧的插件数据库角色，并把插件的表从 `plg_<key>` schema 搬进核心的模式（CONTRACTS §130.8）。所以回退只能把上一版核心和上一版整套插件一起重新部署，**并连同数据库回到升级前的备份**。
 - 其它迁移各自的说明（原文）：迁移 0107 只改数据，回到旧核心后请求体上限按默认 128 MB，调过的要在“环境变量”页重填；迁移 0108 不用撤，旧核心读写 `text` 列照常（旧核心自己会把模型名截到 200）；迁移 0106 不回填；迁移 0111 只在装过 Claude OAuth 的库上删东西，可以重跑。
 
 **升级前要做的**
 
 - **导出存量的跨平台协议转换**：升级后跨平台转换默认关闭，迁移不回填，依赖它的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启；新字段升级后才存在，没法提前配置。升级前按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。原生请求、同一平台内的转换、声明了多个平台的账号类型（newapi、sub2api）不受影响。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）。迁移 0107 把全局层的值搬进网关设置，**分组层的值丢弃**；升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。
-- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 4 个官方插件用数据库：dynweight、guard、moderation、payment）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
+- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 4 个官方插件用数据库：dynweight、guard、moderation、payment）由核心以插件自己的数据库身份代为打开，计入数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户**仍需要** `CREATEROLE`（见上面“插件数据库隔离”）。
 - **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样）。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
 - **检查旧策略下留下的未结算记录**（只读）：`SELECT count(*) FROM usage_logs WHERE billing_status IN ('pending','failed') AND expr_hash = '';` 结果不为 0，表示有“免费放行”下留下、还没结算完的记录。升级后它们不会被当作免费：结算报错，计入重试次数，用完重试次数后停在 `failed`，不会自动处理，需要管理员处理。
 - **进行中的 Codex 授权要重来**：codex 0.2.0 的开始路由要 `proxy_ticket`，升级前开始、没完成的设备码或 Sign in with Codex 授权在升级后重新开始。

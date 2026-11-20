@@ -78,7 +78,7 @@ CCGateway 插件（Claude Code 托管账号、它的 companions 与 `cli-reverse
 
 - 插件是独立进程，经 hashicorp/go-plugin + gRPC（本机 unix socket）与核心通信；只有 `plugin/grpcruntime` 直接用 go-plugin。Linux 上有 Landlock（默认开启：插件不申请 `fs.data` 就读写不了文件，CONTRACTS §43.8）、seccomp、rlimit、内存看门狗（只在管理员给插件设了内存上限或节点封顶时生效，默认不限，CONTRACTS §111.5）和出口隧道（插件的对外连接经核心转发）。
 - 插件包：`manifest.json`、`migrations/*.sql`、`i18n/`、`assets/`、`ui/`（`ui/iframe/` 沙箱页面或 `ui/native/` 原生微前端）。插件界面只用代码写：没有声明式的 schema 表单与表格页，也没有 `forms/`；账号凭证与插件设置只由插件的 `ValidateCredentials`、`ValidateSettings` 把关，设置的密钥在清单 `ui.settings.secrets` 里声明（CONTRACTS §23、§75.1）。包用 Ed25519 签名，市场索引是签名的静态 JSON。
-- 每个插件有自己的 schema `plg_<key>`，插件用核心的数据库用户访问它（没有插件专用的数据库角色，`search_path` 不是边界，CONTRACTS §115）。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
+- 插件的表在核心的模式里，表、索引、序列一律以 `plg_<key>__` 开头（`manifest.TablePrefix`）；每个插件有自己的数据库身份 `plg<库OID>_<key>`，表归它所有，迁移和运行时都以它登录，核心的表和别的插件的表它碰不到，要用插件以外的表在清单 `database.access` 里申请（宿主权限 `db.core_read`，CONTRACTS §130）。插件迁移由核心执行一次，脚本必须幂等、对旧版本向后兼容；各节点独立切换版本（CONTRACTS §36）。插件的 GORM 模型放在 `internal/model`，`sub2api-plugin db check` 对照迁移检查，`pack` 会自动执行。
 - 一次请求上的超时和大小上限只有管理员配置的（请求体上限、上游超时、钩子和热路径超时等），加上安全、钱算对和防止崩溃的检查；不要在请求路径上加写死的超时、大小或次数上限（所有者决定，完整列表见 CONTRACTS §112.16）。
 - 平台插件（声明账号类型的插件）都是有进程的代码插件，没有只有清单的插件。每个网关请求只有一条路径（CONTRACTS §112）：核心做完协议转换和运营方的改写，把完整请求体交给账号类型插件的 `PlatformService.Execute`；插件构造最终请求，经 `HostService.RelayUpstream` 交给核心的 HTTP 客户端发出（插件不开套接字，账号代理、SSRF、超时、运营方的请求头设置由核心强制；插件随 `Account` 收到账号的凭证和代理详情，但代理只是数据，不得用于自行联网，CONTRACTS §124）；用量与任务事实只在 `Execute` / `Monitor` 的返回值里。插件写法、`sdk/pluginsdk/standard` 库、`jsonedit`、一致性套件见 `next/docs/PLUGIN-DEVELOPMENT.md`。
 - 平台插件必须遵守全部系统设置：每项设置在 HTTP 与 WebSocket 两种传输上由谁生效、插件要配合什么，见 `next/docs/PLUGIN-DEVELOPMENT.md` 第 5 节，改动相关行为时同步它。
@@ -183,7 +183,7 @@ CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。
 
 ## 读代码从哪里开始
 
-- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§127（密钥与基础地址）、§128（删除 volcengine）、§129（删除 anthropic 的模型目录）、§23 与 §75（插件界面只用代码写、界面包 4.0）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
+- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§130（插件数据库隔离，取代 §115）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§127（密钥与基础地址）、§128（删除 volcengine）、§129（删除 anthropic 的模型目录）、§23 与 §75（插件界面只用代码写、界面包 4.0）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
 - 架构与数据模型：`next/docs/ARCHITECTURE.md` §2–§5、§13、§16。
 - 最近发生了什么：`CHANGELOG.md` 的“未发布”与最新几节。
 - 组装入口：`next/server/cmd/sub2api/main.go`、`next/server/internal/app`。

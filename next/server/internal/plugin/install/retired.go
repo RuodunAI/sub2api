@@ -18,7 +18,7 @@ import (
 )
 
 // A plugin key stays with its publisher after an uninstall (audit 2026-10-09
-// P1-4): the plugin's accounts and their credentials, its plg_<key> schema
+// P1-4): the plugin's accounts and their credentials, its tables (plg_<key>__*)
 // and its KV entries can outlive the plugin, and whoever installs the key
 // next reads them. Uninstall records the key in plugin_key_retirements; only
 // the same publisher may install it again until an administrator releases
@@ -100,7 +100,8 @@ type RetiredKey struct {
 	Installed bool `json:"installed"`
 	// Accounts not deleted that still belong to the key.
 	Accounts int `json:"accounts"`
-	// Schema: the plg_<key> schema (dbschema.SchemaName) still exists.
+	// Schema: the core's schema still holds objects of the key's prefix
+	// (manifest.TablePrefix), the data an uninstall without purge kept.
 	Schema bool `json:"schema"`
 }
 
@@ -134,7 +135,7 @@ func retiredKeys(db *gorm.DB) *gorm.DB {
 		Select("r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (?) AS installed, (?) AS accounts, EXISTS (?) AS schema",
 			db.Table("plugins AS p").Select("1").Where("p.key = r.plugin_key"),
 			db.Table("accounts AS a").Select("count(*)").Where("a.plugin_key = r.plugin_key AND a.deleted_at IS NULL"),
-			db.Table("pg_namespace AS n").Select("1").Where("n.nspname = 'plg_' || r.plugin_key")).
+			db.Table("pg_class AS c").Select("1").Where("c.relnamespace = current_schema()::regnamespace AND starts_with(c.relname, 'plg_' || r.plugin_key || '__')")).
 		Joins("LEFT JOIN publishers pub ON pub.id = r.publisher_id").
 		Order("r.retired_at DESC")
 }
@@ -143,7 +144,7 @@ func retiredKeys(db *gorm.DB) *gorm.DB {
 type ReleaseOptions struct {
 	// PurgeAccounts deletes the key's remaining accounts.
 	PurgeAccounts bool `json:"purge_accounts"`
-	// Purge drops the plg_<key> schema and deletes the key's KV entries.
+	// Purge drops the objects of the key's prefix and deletes its KV entries.
 	Purge bool `json:"purge"`
 }
 
@@ -191,8 +192,8 @@ func (s *Service) ReleaseRetiredKey(ctx context.Context, key string, opt Release
 			}
 		}
 		if opt.Purge && s.d.Schemas != nil {
-			if err := s.d.Schemas.DropTx(ctx, tx, key); err != nil {
-				return fmt.Errorf("drop plugin schema: %w", err)
+			if err := s.d.Schemas.DropTx(ctx, tx, key, true); err != nil {
+				return fmt.Errorf("drop the plugin's tables: %w", err)
 			}
 		}
 		if err := retirement(g, key).Delete(&model.PluginKeyRetirement{}).Error; err != nil {

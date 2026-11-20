@@ -1,0 +1,9 @@
+-- sql
+(SELECT c.relname AS name FROM pg_class AS c WHERE c.relnamespace = $1::regnamespace AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND NOT starts_with(c.relname, $2)) UNION ALL (SELECT t.typname FROM pg_type AS t WHERE t.typnamespace = $3::regnamespace AND t.typowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND t.typrelid = 0 AND NOT EXISTS (SELECT 1 FROM pg_type AS e WHERE e.typarray = t.oid) AND NOT starts_with(t.typname, $4)) UNION ALL (SELECT p.proname FROM pg_proc AS p WHERE p.pronamespace = $5::regnamespace AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND NOT starts_with(p.proname, $6))
+-- vars
+$1 string "public"
+$2 string "plg_demo__"
+$3 string "public"
+$4 string "plg_demo__"
+$5 string "public"
+$6 string "plg_demo__"

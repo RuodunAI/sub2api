@@ -56,7 +56,7 @@ func Guard(key, version, publisher string) *manifest.Manifest {
 		}},
 		Events:   &manifest.Events{Subscribe: []string{"usage.recorded"}, BatchSize: 100},
 		Jobs:     []manifest.Job{{ID: "rollup", Schedule: "@every 5m", TimeoutSec: 60}, {ID: "cleanup", Schedule: "0 3 * * *"}},
-		Database: &manifest.Database{Schema: "plg_" + key, Migrations: "migrations/"},
+		Database: &manifest.Database{Migrations: "migrations/"},
 		UserPermissions: []manifest.UserPermission{
 			{Key: "rules:read", Label: manifest.LocalizedText{"en": "View rules", "zh": "查看拦截规则"}},
 			{Key: "rules:manage", Label: manifest.LocalizedText{"en": "Manage rules", "zh": "管理拦截规则"}},
@@ -192,7 +192,7 @@ func Files(m *manifest.Manifest) map[string][]byte {
 		"runtimes/linux-arm64/plugin": []byte("\x7fELF arm64"),
 	}
 	if m.Database != nil {
-		files[m.Database.Migrations+"0001_init.sql"] = []byte("CREATE TABLE rules (id bigserial PRIMARY KEY);")
+		files[m.Database.Migrations+"0001_init.sql"] = []byte("CREATE TABLE " + manifest.TablePrefix(m.Key) + "rules (id bigserial PRIMARY KEY);")
 	}
 	if m.UI != nil && m.UI.Native != nil {
 		files[m.UI.Native.Entry] = []byte("export default {}")

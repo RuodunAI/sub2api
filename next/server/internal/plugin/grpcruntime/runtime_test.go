@@ -21,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/cluster"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema/dbschematest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
@@ -110,11 +111,11 @@ func setupPackage(t *testing.T, grants map[string]string, bin []byte, mod func(*
 		mod(m)
 	}
 	pkg := registrytest.Package(t, m, bin, map[string][]byte{
-		"migrations/0001_init.sql": []byte(`CREATE TABLE items (id int PRIMARY KEY);`),
+		"migrations/0001_init.sql": []byte(`CREATE TABLE plg_` + key + `__items (id int PRIMARY KEY);`),
 	})
 	registrytest.Install(t, db, m, pkg, grants, "enabled")
-	schemas := dbschema.New(db, testutil.DSN(db), nil)
-	t.Cleanup(func() { _ = schemas.Drop(context.Background(), key) })
+	schemas := dbschematest.New(t, db, testutil.DSN(db))
+	t.Cleanup(func() { _ = schemas.Drop(context.Background(), key, true) })
 	pkgs := registry.NewPackages(db, t.TempDir(), registry.WithSource(registrytest.Source()))
 	t.Cleanup(pkgs.Close)
 	return &env{db: db, rdb: rdb, mr: mr, cipher: c, launcher: &registrytest.Launcher{}, ledger: &fakeLedger{},
@@ -250,12 +251,12 @@ func TestRuntimeLifecycle(t *testing.T) {
 		t.Fatalf("authz via host: %v %v", out, err)
 	}
 
-	// GetDSN through dbschema.
+	// GetDSN through dbschema: the plugin's tables are in the core's schema.
 	out, err = httpCall(t, inst, &pluginv1.HTTPRequest{Method: "GET", Path: "/dsn"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if out["schema"] != "plg_"+e.key || out["dsn"] == "" {
+	if out["schema"] != e.schemas.Schema() || out["dsn"] == "" {
 		t.Fatalf("dsn: %v", out)
 	}
 

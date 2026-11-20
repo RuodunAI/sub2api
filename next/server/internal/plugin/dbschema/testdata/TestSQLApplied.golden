@@ -1,4 +1,3 @@
 -- sql
-SELECT migration_id, checksum FROM "public"."plugin_migrations" WHERE plugin_key = $1
+SELECT migration_id, checksum FROM "public"."plg_demo__schema_migrations"
 -- vars
-$1 string "demo"

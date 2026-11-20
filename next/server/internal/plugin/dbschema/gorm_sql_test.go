@@ -5,7 +5,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/gormtest"
 )
 
@@ -19,25 +18,21 @@ func TestSQLRoleOwned(t *testing.T) {
 	})
 }
 
-func TestSQLPending(t *testing.T) {
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		var n int64
-		return pluginMigrations(tx, "demo").Where("migration_id = ANY(?)", store.Strings{"0001_init.sql"}).Count(&n)
-	})
-}
-
-func TestSQLDropMigrationRecords(t *testing.T) {
-	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB { return dropMigrationRecords(tx, "demo") })
-}
-
 func TestSQLApplied(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return Tracker{PluginKey: "demo"}.appliedQuery(tx).Scan(&[]migrationRecord{})
+		return tx.Table(Tracker{Schema: "public", Table: "plg_demo__schema_migrations"}.table()).Select("migration_id, checksum").Scan(&[]migrationRecord{})
 	})
 }
 
 func TestSQLRecord(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		return Tracker{PluginKey: "demo"}.recordQuery(tx, "0001_init.sql", "abc")
+		return Tracker{Schema: "public", Table: "plg_demo__schema_migrations"}.recordQuery(tx, "0001_init.sql", "abc")
+	})
+}
+
+func TestSQLStrayObjects(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+		var names []string
+		return strayObjects(tx, "public", "plg_demo__").Pluck("name", &names)
 	})
 }

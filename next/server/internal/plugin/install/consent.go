@@ -14,6 +14,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/perm"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
@@ -107,7 +108,7 @@ func decide(m *manifest.Manifest, req ConsentRequest, current map[string]Grant, 
 	}
 	var out []decision
 	for _, hp := range m.HostPermissions {
-		reqScope := pkg.NormalizeScope(hp.Scope)
+		reqScope := requestedScope(m, hp)
 		risk := riskOf(hp.ID)
 		f := "permission:" + hp.ID
 		if g, ok := grants[hp.ID]; ok {
@@ -850,12 +851,26 @@ func (s *Service) RevokeGrant(ctx context.Context, key, permission string, actor
 		if !revoked {
 			return core.ErrNotFound.WithMessage("grant not found")
 		}
+		if err := s.syncAccess(ctx, tx, key, permission); err != nil {
+			return err
+		}
 		return audit.Audit(ctx, tx, actorID, "plugin.grant.revoke", "plugin", key, map[string]any{"permission": permission})
 	})
 	if err == nil {
 		s.Notify(ctx, key)
 	}
 	return err
+}
+
+// syncAccess carries a change of the db.core_read grant into the
+// database in tx (core.PluginSchemaManager.SyncAccessTx): the plugin's
+// identity loses (or gets) its grants on tables outside the plugin when tx
+// commits.
+func (s *Service) syncAccess(ctx context.Context, tx *gorm.DB, key, permission string) error {
+	if permission != dbschema.AccessPermission || s.d.Schemas == nil {
+		return nil
+	}
+	return s.d.Schemas.SyncAccessTx(ctx, tx, key)
 }
 
 // consentablePlugin is what loadConsentable reads of the plugin row. Live

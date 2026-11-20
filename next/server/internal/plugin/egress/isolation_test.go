@@ -176,23 +176,25 @@ func TestEgressRebindingDialsCheckedAddress(t *testing.T) {
 }
 
 // The core's Redis and PostgreSQL are refused by name, by IP and by another
-// name of the same address - even with the private-network test switch on.
-// PostgreSQL is reachable only with the database exception, by its
-// configured name.
+// name of the same address - even with the private-network test switch on,
+// and for a plugin with its own database too, which reaches it only at the
+// virtual address (CONTRACTS §130).
 func TestEgressDeniesCoreServices(t *testing.T) {
 	rec := &dialRecorder{}
 	opts := Options{Dial: rec.dial, LookupIP: isolationLookup,
-		CoreAddrs: []string{"redis.internal:6379", "127.0.0.1:6380"}, DatabaseAddrs: []string{"pg.internal:5432"},
-		AllowPrivate: true}
+		CoreAddrs: []string{"redis.internal:6379", "127.0.0.1:6380", "pg.internal:5432"}, AllowPrivate: true}
 	e := newEnvRaw(t, nil, opts)
-	e.policy.set(core.EgressPolicy{Mode: PolicyAllowAll, Net: true})
-	for _, target := range []string{
+	targets := []string{
 		"redis.internal:6379", "REDIS.internal.:6379", "10.1.2.3:6379", "alias.example:6379",
 		"127.0.0.1:6380", "localhost:6380", "[::1]:6380", "0.0.0.0:6380",
 		"pg.internal:5432", "10.1.2.4:5432",
-	} {
-		if err := dialErr(target); err == nil || !strings.Contains(err.Error(), "core service") {
-			t.Fatalf("%s: %v", target, err)
+	}
+	for _, pol := range []core.EgressPolicy{{Mode: PolicyAllowAll, Net: true}, {Mode: PolicyAllowAll, Net: true, Database: true}} {
+		e.policy.set(pol)
+		for _, target := range targets {
+			if err := dialErr(target); err == nil || !strings.Contains(err.Error(), "core service") {
+				t.Fatalf("%+v %s: %v", pol, target, err)
+			}
 		}
 	}
 	if d := rec.list(); len(d) != 0 {
@@ -203,23 +205,12 @@ func TestEgressDeniesCoreServices(t *testing.T) {
 	if err := dialErr("10.1.2.3:8080"); err != nil {
 		t.Fatalf("test switch: %v", err)
 	}
-	// A plugin with its own database reaches PostgreSQL by the configured
-	// name (dialled by name), not Redis, and without net nothing else.
+	// Without net a database-only plugin reaches nothing else.
 	e.policy.set(core.EgressPolicy{Database: true})
-	if err := dialErr("pg.internal:5432"); err != nil {
-		t.Fatalf("database exception: %v", err)
-	}
-	if err := dialErr("10.1.2.4:5432"); err == nil {
-		t.Fatal("database reached by address instead of the configured name")
-	}
-	if err := dialErr("redis.internal:6379"); err == nil {
-		t.Fatal("redis reached with the database exception")
-	}
-	if err := dialErr("public.example:443"); err == nil || !strings.Contains(err.Error(), "no net permission") {
-		t.Fatalf("database-only plugin reached the internet: %v", err)
-	}
-	if d := rec.list(); len(d) != 2 || d[1] != "tcp pg.internal:5432" {
-		t.Fatalf("dialled %v", d)
+	for _, target := range []string{"pg.internal:5432", "public.example:443"} {
+		if err := dialErr(target); err == nil || !strings.Contains(err.Error(), "no net permission") {
+			t.Fatalf("database-only plugin reached %s: %v", target, err)
+		}
 	}
 }
 

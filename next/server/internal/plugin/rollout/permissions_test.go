@@ -9,7 +9,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/authz"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema/dbschematest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
@@ -44,7 +44,7 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 		for _, p := range perms {
 			m.UserPermissions = append(m.UserPermissions, manifest.UserPermission{Key: p})
 		}
-		return m, registrytest.Package(t, m, h.bin, map[string][]byte{"migrations/0001.sql": []byte(`CREATE TABLE a (id int);`)})
+		return m, registrytest.Package(t, m, h.bin, map[string][]byte{"migrations/0001.sql": []byte(`CREATE TABLE plg_` + h.key + `__a (id int);`)})
 	}
 	defaults := install.NewDefaultsApplier(az)
 	sync := func(ms ...*manifest.Manifest) {
@@ -71,7 +71,7 @@ func TestPermissionCatalogFollowsRollouts(t *testing.T) {
 
 	m1, p1 := version("1.0.0", "rules:read")
 	registrytest.Install(t, h.db, m1, p1, map[string]string{"db.schema": "{}"}, "installed")
-	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil).Drop(context.Background(), h.key) })
+	t.Cleanup(func() { _ = dbschematest.New(t, h.db, "").Drop(context.Background(), h.key, true) })
 	// Consent of the first version: the plugin does not run yet.
 	sync(m1)
 	if got := status("rules:read"); got != "disabled" {

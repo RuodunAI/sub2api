@@ -86,7 +86,7 @@ flowchart LR
     nN["node-N ..."]
   end
 
-  pg[("PostgreSQL<br/>public：核心表<br/>plg_*：各插件的 schema<br/>updater：升级计划")]
+  pg[("PostgreSQL<br/>public：核心表、各插件的表（plg_&lt;key&gt;__*）<br/>updater：升级计划")]
   redis[("Redis / Valkey<br/>会话 · 节点注册 · 并发槽位 · 冷却 · 余额缓存<br/>分布式锁 · 广播 · 节点密钥登记")]
   rel["更新源<br/>GitHub Releases 或 HTTPS 目录（releases.json）<br/>核心与网关的清单与安装物"]
   market["插件市场索引<br/>签名的静态 JSON"]
@@ -412,7 +412,7 @@ erDiagram
 | schema | 内容 | 谁来迁移 |
 |---|---|---|
 | `public` | 所有核心表 | 核心启动时执行（advisory lock 保证只执行一次） |
-| `plg_<插件key>` | 插件自己的表 | 核心在发布插件时执行插件包里的迁移脚本 |
+| `public`，表名带前缀 `plg_<插件key>__` | 插件自己的表，归插件的数据库身份所有 | 核心在发布插件时以插件的身份执行插件包里的迁移脚本（CONTRACTS §130） |
 
 ### 4.3 accounts（通用账号表）
 
@@ -491,7 +491,7 @@ guard-0.1.0.s2plugin
   "jobs": [ { "id": "rollup", "schedule": "@every 5m", "timeoutSec": 60 },
             { "id": "cleanup", "schedule": "0 3 * * *", "timeoutSec": 300 } ],
 
-  "database": { "schema": "plg_guard", "migrations": "migrations/" },
+  "database": { "migrations": "migrations/" },  // 表名带前缀 plg_guard__；插件以外的表在 "access" 里申请，要 db.core_read（CONTRACTS §130）
 
   "userPermissions": [                          // 登记为 plugin.guard:<key>；risk/defaults 等需核心 >=0.1.290（CONTRACTS §4）
     { "key": "rules:read",   "label": { "zh": "查看拦截规则" }, "defaults": { "admin": true, "operator": true } },
@@ -663,26 +663,28 @@ stateDiagram-v2
 | 🟢 低 | `kv`、`config`、`log`、`broadcast`、`secrets`（§72.2）、`prices`（只读按模型价格试算费用，§72.13.1） |
 | 🟡 中 | `routes.admin`、`routes.user`、`events`、`jobs`、`ui.menu`、`ui.iframe`、`authz.read`（`AuthzCheck` 查询非本插件的权限 key）、`lock`（CONTRACTS §27.3）、`fs.data`（读写本插件的数据目录，不授予时插件不能读写任何文件，CONTRACTS §43.8） |
 | 🟠 高 | `accounts.auto_state`、`db.schema`、`net`（白名单模式下）、`routes.public`、`routes.webhook`、`gateway.hook`、`gateway.endpoint`、`gateway.observe`、`platform.register`、`scheduler.rank`、`sticky.clear`（§74.2）、`users.read`、`notify.send`（经其他插件的渠道向任意外部地址发通知，核心限速，§74.4） |
-| 🔴 极高 | `ledger.credit`、`ledger.debit`、`ui.native`、`users.write`、`db.core_views` |
+| 🔴 极高 | `ledger.credit`、`ledger.debit`、`ui.native`、`users.write`、`db.core_read`（清单 `database.access` 申请的插件以外的表，CONTRACTS §130.4） |
 
 - 高和极高风险需要逐项勾选；极高风险只能由拥有 `plugin:grant:critical` 的用户批准（2026-10-05 起不再要求再次输入密码，CONTRACTS §3.3）
 - 批准结果写入 `plugin_permission_grants(plugin_key, permission, scope, status, plugin_version, manifest_hash, granted_by, granted_at)`；管理员可以把范围改得比申请的更小（比如入账上限）
 - 运行时插件每次调用 HostService，核心都在服务端检查授权
 - 升级时新增权限或扩大范围，新版本进入 `awaiting_consent`，旧版本继续运行；有版本在运行时，对新版本的同意先记为待生效授予（`plugin_staged_grants`），只作用于新版本的实例，发布提交时才成为插件的授予，升级失败或取消时撤回（CONTRACTS §5.7）
 
-### 5.6 插件数据库 schema 与迁移
+### 5.6 插件数据库：表、身份与迁移（CONTRACTS §130）
 
 | 项目 | 做法 |
 |---|---|
-| schema | 首次发布前创建 `plg_<key>` |
-| 数据库用户 | 只有核心的用户（2026-11-18 起不再给插件建角色，CONTRACTS §115）。插件通过 `HostService.GetDSN` 拿到不带凭据的虚拟地址 `db.sub2api:5432`，连接经出口隧道到核心，核心用自己的数据库配置代为登录（`search_path` 固定为 `plg_<key>`）后原样转发协议；插件进程里没有数据库密码（严格网络关闭时才直接给核心的 DSN）。schema 只是默认位置，不是边界：持有 `db.schema` 的插件能读写核心的用户能访问的所有表，分隔靠约定和安装时的同意（非官方插件要 `plugin:grant:db_schema_unconfined`） |
-| 迁移脚本 | 核心以自己的用户执行 `migrations/*.sql`，按文件名排序，每个文件一个事务，执行前 `SET LOCAL search_path TO plg_<key>`；对象属于核心的用户 |
-| 迁移记录 | `plugin_migrations(plugin_key, migration_id, checksum, applied_at)`；已执行文件被修改时重新执行并更新校验和（脚本必须幂等，CONTRACTS §36） |
-| 执行时机 | 发布的"准备"阶段、任何节点激活新版本之前；`pg_advisory_lock(hash(plugin_key))` |
+| 表 | 在核心的模式里（核心连接的 `current_schema()`，线上 `public`），表、索引、序列、视图一律以 `plg_<key>__` 开头（`manifest.TablePrefix`） |
+| 数据库身份 | 每个插件一个登录角色 `plg<库OID>_<key>`，密码由主密钥派生、不落库（设密码只发 SCRAM 校验值）；插件的表归它所有，核心的表和别的插件的表它没有权限。核心的用户要有 `CREATEROLE`，否则 `plugin_db_isolation_unavailable`，插件不启动 |
+| 连接 | `HostService.GetDSN` 一律给不带凭据的虚拟地址 `db.sub2api:5432`，连接经出口隧道到核心的 pgproxy，核心以插件的身份登录（`search_path` 为核心的模式）后原样转发协议；插件进程里没有数据库密码，核心的真实数据库地址任何插件都连不上 |
+| 插件以外的表 | 清单 `database.access` 逐表申请列和权限（select/insert/update/delete/references），要 `db.core_read`（极高风险）；授予记在该授予的范围里，升级多要任何东西都要重新同意；身份的 GRANT 照授予执行 |
+| 迁移脚本 | 核心临时给身份模式的 CREATE，以身份另开连接执行 `migrations/*.sql`，按文件名排序，每个文件一个事务；身份建了不带前缀的对象就回滚该文件；结束或失败都收回 CREATE |
+| 迁移记录 | 插件自己的表 `plg_<key>__schema_migrations(migration_id, checksum, applied_at)`，与脚本同一事务写入；已执行文件被修改时重新执行并更新校验和（脚本必须幂等，CONTRACTS §36）。核心的 `plugin_migrations` 只记数据迁移 |
+| 执行时机 | 发布的"准备"阶段、任何节点激活新版本之前；插件迁移锁（advisory lock） |
 | 数据迁移 | 简单转换写在 SQL 里；复杂转换实现 `MigrationService.MigrateData(from, to)`，在 SQL 之后调用 |
 | 兼容要求 | 升级期间新旧版本同时运行，迁移必须"先扩展、后收缩" |
-| 卸载 | 选择"清除数据"时 `DROP SCHEMA plg_<key> CASCADE`，删除迁移记录 |
-| 旧角色 | 旧版本建的 `plg_<key>` 登录角色在启动时和 Ensure 时转换：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`；还有会话的留到下次（CONTRACTS §115） |
+| 卸载 | 清除数据：删前缀下的全部关系、`DROP OWNED`、`DROP ROLE`；保留数据：`REASSIGN OWNED` 给核心、`DROP OWNED`、`DROP ROLE`，重装时交还新身份 |
+| 旧布局 | 0.1.303 及更早的 `plg_<key>` 角色和 schema 在启动时与 Ensure 时搬迁：表改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（过渡代码，CONTRACTS §130.8） |
 
 ### 5.7 多节点发布（先准备、再激活）
 
@@ -1248,7 +1250,7 @@ http.Get / GORM（Host.DB）/ redis …
 - HTTPS 在插件与目标之间端到端加密，核心只看到域名、端口和流量
 - `plugin_egress_logs(id, plugin_key, node_id, host, port, started_at, duration_ms, bytes_in, bytes_out, result)`，批量写入，保留 7 天；插件详情页按域名汇总展示，出现新域名时告警
 - 出口策略（每个插件单独配置）：`allow_all`（默认，只记录）或 `allowlist`（只允许批准的 `net` 域名）
-- 插件访问核心的 PostgreSQL 也走隧道：拨虚拟地址 `db.sub2api:5432`，核心代为登录后转发（CONTRACTS §115）
+- 插件访问核心的 PostgreSQL 也走隧道：拨虚拟地址 `db.sub2api:5432`，核心以插件自己的数据库身份代为登录后转发（CONTRACTS §130）
 - 管理员的“插件联网”设置（全局的屏蔽列表或允许列表，CONTRACTS §113）由 `egress.Provider` 持有和缓存；它既是隧道的一道检查，也经 `core.PluginNetworkAccess` 注入网关、插件运行时和账号模块，管核心替插件发出的中继、取回、`SendAccountRequest`、配额、续期、测试与模型列表请求（§113.3）。被拒的请求同样写进 `plugin_egress_logs`
 
 ### 9.2 严格模式（Linux）
@@ -1549,8 +1551,8 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 | 能力 | 内容 |
 |---|---|
 | 网关钩子 | `gateway.request`：从 `prompt_text` 中匹配拦截规则（关键词、正则），命中返回 403；`failure=open`、超时 300ms |
-| 规则管理 | 规则存在 `plg_guard.rules`；接口 `GET/PUT /rules`；插件在内存中缓存规则，规则更新后立即生效 |
-| 事件订阅 | `usage.recorded`：按分钟统计各分组、模型的请求量，写入 `plg_guard.stats_minutely` |
+| 规则管理 | 规则存在 `plg_guard__rules`；接口 `GET/PUT /rules`；插件在内存中缓存规则，规则更新后立即生效 |
+| 事件订阅 | `usage.recorded`：按分钟统计各分组、模型的请求量，写入 `plg_guard__stats_minutely` |
 | 后台任务 | `rollup` 每 5 分钟把分钟统计汇总为小时统计；`cleanup` 每天清理 30 天前的数据 |
 | 出口访问 | 命中规则时向配置的 webhook 地址发送告警（`http.Post`，经出口隧道，能在"外部访问"页看到） |
 | 原生界面 | "请求守卫"大盘页面（拦截趋势图、规则命中排行）+ 首页的"今日拦截"卡片 |
@@ -1946,7 +1948,7 @@ flowchart LR
 │   · 订阅事件：usage.recorded    · 后台任务：rollup（每 5 分钟）、cleanup │
 │   · 菜单：请求守卫（原生界面）   · 首页卡片：今日拦截                    │
 │   · 用户权限：查看规则 / 管理规则 / 查看统计   授予角色：☑ admin ☐ user  │
-│   · 数据库：schema plg_guard，迁移 2 个                                  │
+│   · 数据库：表前缀 plg_guard__，迁移 2 个                                │
 │   · 资源：内存 128MB、CPU 0.25 核                                        │
 │                                                                          │
 │ 插件申请的核心能力                                                       │

@@ -290,7 +290,9 @@ func TestValidateConsistency(t *testing.T) {
 			m.Capabilities = append(m.Capabilities, manifest.Capability{ID: manifest.CapAppBroadcast})
 		}, "capabilities[4]", "missing_host_permission"},
 		{"bad cron", func(m *manifest.Manifest, _ map[string][]byte) { m.Jobs[0].Schedule = "every day" }, "jobs[0].schedule", "invalid"},
-		{"db schema name", func(m *manifest.Manifest, _ map[string][]byte) { m.Database.Schema = "plg_other" }, "database.schema", "invalid"},
+		{"db access perm", func(m *manifest.Manifest, _ map[string][]byte) {
+			m.Database.Access = []manifest.DatabaseAccess{{Table: "users", Columns: []string{"id"}, Privileges: []string{"select"}}}
+		}, "database.access", "missing_host_permission"},
 		{"db perm", dropPerm("db.schema"), "database", "missing_host_permission"},
 		{"no migrations", func(_ *manifest.Manifest, f map[string][]byte) { delete(f, "migrations/0001_init.sql") }, "database.migrations", "file_missing"},
 		{"routes perm", dropPerm("routes.admin"), "routes[0].scope", "missing_host_permission"},

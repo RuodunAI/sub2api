@@ -362,10 +362,15 @@ func (h *hostServer) GetDSN(ctx context.Context, _ *pluginv1.GetDSNRequest) (*pl
 	if h.i.rt.o.Schemas == nil {
 		return nil, status.Error(codes.Unavailable, "database schemas unavailable")
 	}
-	dsn, schema, err := h.i.rt.o.Schemas.DSN(ctx, h.key(), h.i.rt.o.StrictNetwork)
+	dsn, schema, err := h.i.rt.o.Schemas.DSN(ctx, h.key())
 	if err != nil {
 		h.i.log.Error("GetDSN failed", "err", err)
-		return nil, status.Error(codes.Unavailable, "database schema unavailable")
+		// A refusal of the core's (plugin_db_isolation_unavailable) says
+		// what the operator has to change.
+		if ce := (*core.Error)(nil); errors.As(err, &ce) {
+			return nil, status.Error(codes.FailedPrecondition, ce.Code+": "+ce.Message)
+		}
+		return nil, status.Error(codes.Unavailable, "database unavailable")
 	}
 	return &pluginv1.GetDSNResponse{Dsn: dsn, Schema: schema}, nil
 }

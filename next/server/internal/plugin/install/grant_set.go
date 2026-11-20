@@ -61,7 +61,7 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 		if i < 0 {
 			return core.ErrNotFound.WithMessage(fmt.Sprintf("permission %q is not requested by version %s", permission, version))
 		}
-		requested := pkg.NormalizeScope(m.HostPermissions[i].Scope)
+		requested := requestedScope(m, m.HostPermissions[i])
 		if scope == nil {
 			scope = requested
 		}
@@ -104,6 +104,9 @@ func (s *Service) SetGrant(ctx context.Context, key, permission string, scope ma
 			return err
 		}
 		out = current[permission]
+		if err := s.syncAccess(ctx, tx, key, permission); err != nil {
+			return err
+		}
 		detail := map[string]any{"permission": permission, "version": version, "scope": scope}
 		if held {
 			detail["previous"] = map[string]any{"status": prev.Status, "scope": prev.Scope}

@@ -3,14 +3,17 @@ package install
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -49,7 +52,14 @@ type Review struct {
 	Resources        ReviewResources     `json:"resources"`
 	ExternalServices []string            `json:"external_services"`
 	HostPermissions  []ReviewHostPerm    `json:"host_permissions"`
-	Diff             *ReviewDiff         `json:"diff,omitempty"`
+	// DatabaseAccess is the manifest's database.access: the tables outside
+	// the plugin it asks for, under host permission db.core_read (CONTRACTS
+	// §130).
+	DatabaseAccess []manifest.DatabaseAccess `json:"database_access,omitempty"`
+	// DatabaseMigrations are the version's migration scripts with what
+	// installing it does with each (noteDatabase).
+	DatabaseMigrations []ReviewMigration `json:"database_migrations,omitempty"`
+	Diff               *ReviewDiff       `json:"diff,omitempty"`
 	// PermissionGroups and RoleColumns lay out the consent matrix of
 	// UserPermissions: its rows' groups and its columns, every role, as the
 	// viewer may name them.
@@ -216,9 +226,25 @@ type ReviewRemovedPerm struct {
 }
 
 type ReviewDatabase struct {
-	Schema     string   `json:"schema"`
 	Migrations []string `json:"migrations"`
 }
+
+// ReviewMigration is a migration script of the reviewed version.
+type ReviewMigration struct {
+	ID       string `json:"id"`
+	Checksum string `json:"checksum"`
+	SQL      string `json:"sql"`
+	// Status: MigrationNew (runs), MigrationChanged (applied with other
+	// content: runs again) or MigrationApplied (applied as it is).
+	Status string `json:"status"`
+}
+
+// Review migration statuses.
+const (
+	MigrationNew     = "new"
+	MigrationChanged = "changed"
+	MigrationApplied = "applied"
+)
 
 type ReviewResources struct {
 	MemoryMB     int     `json:"memory_mb"`
@@ -446,14 +472,16 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 			Scope: core.StoredPluginScope(up.Scope), Defaults: defaults, InheritFrom: up.InheritFrom, Cells: map[string]ReviewCell{}})
 	}
 	if m.Database != nil {
-		r.Database = &ReviewDatabase{Schema: m.Database.Schema, Migrations: pkg.MigrationFiles(files, m.Database.Migrations)}
+		r.Database = &ReviewDatabase{Migrations: pkg.MigrationFiles(files, m.Database.Migrations)}
+		r.DatabaseAccess = m.Database.Access
+		r.DatabaseMigrations = migrationScripts(m, files)
 	}
 	if m.Resources != nil {
 		r.Resources = ReviewResources{MemoryMB: m.Resources.MemoryMB, CPU: m.Resources.CPU, MaxThreads: m.Resources.MaxThreads, MaxOpenFiles: m.Resources.MaxOpenFiles}
 	}
 	for _, hp := range m.HostPermissions {
 		risk := riskOf(hp.ID)
-		item := ReviewHostPerm{ID: hp.ID, Risk: risk, Scope: pkg.NormalizeScope(hp.Scope), Reason: core.LocalizedText(hp.Reason),
+		item := ReviewHostPerm{ID: hp.ID, Risk: risk, Scope: requestedScope(m, hp), Reason: core.LocalizedText(hp.Reason),
 			Optional: hp.Optional, Requires: RequiredGrantPermission(risk)}
 		if g, ok := current[hp.ID]; ok {
 			item.CurrentStatus = g.Status
@@ -465,6 +493,52 @@ func buildReview(m *manifest.Manifest, files map[string][]byte, ver *pkg.Verific
 		r.Diff = diffGrants(m, current)
 	}
 	return r
+}
+
+// migrationScripts lists the migration scripts of m in files, in order,
+// as MigrationNew.
+func migrationScripts(m *manifest.Manifest, files map[string][]byte) []ReviewMigration {
+	dir := strings.TrimSuffix(m.Database.Migrations, "/") + "/"
+	var out []ReviewMigration
+	for _, name := range pkg.MigrationFiles(files, m.Database.Migrations) {
+		body := files[dir+name]
+		out = append(out, ReviewMigration{ID: name, Checksum: store.MigrationChecksum(body), SQL: string(body), Status: MigrationNew})
+	}
+	return out
+}
+
+// requestedScope is the scope m asks for hp with: hp's own, and for
+// db.core_read the database.access it asks for as well
+// (dbschema.AccessScope), so that asking for anything more than the
+// granted access is a wider scope, consented to again.
+func requestedScope(m *manifest.Manifest, hp manifest.HostPermission) map[string]any {
+	scope := pkg.NormalizeScope(hp.Scope)
+	if hp.ID == dbschema.AccessPermission && m.Database != nil {
+		maps.Copy(scope, pkg.NormalizeScope(dbschema.AccessScope(m.Database.Access)))
+	}
+	return scope
+}
+
+// noteDatabase sets the status of each migration script of the review
+// against the plugin's records: a version installed for the first time
+// runs every script.
+func (s *Service) noteDatabase(ctx context.Context, r *Review) error {
+	if len(r.DatabaseMigrations) == 0 || s.d.Schemas == nil {
+		return nil
+	}
+	applied, err := s.d.Schemas.AppliedMigrations(ctx, r.PluginKey)
+	if err != nil {
+		return err
+	}
+	for i, mg := range r.DatabaseMigrations {
+		if rec, ok := applied[mg.ID]; ok {
+			r.DatabaseMigrations[i].Status = MigrationChanged
+			if rec.Checksum == mg.Checksum {
+				r.DatabaseMigrations[i].Status = MigrationApplied
+			}
+		}
+	}
+	return nil
 }
 
 // noteRevoked marks the host permissions an administrator revoked, which
@@ -481,7 +555,7 @@ func diffGrants(m *manifest.Manifest, current map[string]Grant) *ReviewDiff {
 	requested := map[string]bool{}
 	for _, hp := range m.HostPermissions {
 		requested[hp.ID] = true
-		scope := pkg.NormalizeScope(hp.Scope)
+		scope := requestedScope(m, hp)
 		g, ok := current[hp.ID]
 		switch {
 		case !ok || g.Status != GrantGranted:
@@ -746,6 +820,9 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)
+	if err := s.noteDatabase(ctx, r); err != nil {
+		return nil, err
+	}
 	r.ConsentStatus = consent
 	r.PackageSHA256, r.PackageSize, r.UploadedAt = sha, size, uploadedAt
 	r.UpgradeFrom = upgradeFrom

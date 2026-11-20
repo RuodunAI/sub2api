@@ -13,8 +13,8 @@ import (
 )
 
 // Tracker records which migrations have been applied for one scope.
-// CoreTracker covers the core schema; the plugin runtime provides a tracker
-// backed by plugin_migrations.
+// CoreTracker covers the core schema; the plugin runtime provides one backed
+// by each plugin's own table.
 type Tracker interface {
 	// Ensure creates the tracking table if needed (runs outside the lock tx).
 	Ensure(ctx context.Context, q *gorm.DB) error
@@ -35,6 +35,10 @@ type MigrateOptions struct {
 	// idempotent, so a corrected script converges; core migrations keep the
 	// strict rule.
 	RerunChanged bool
+	// Check, when set, runs in each file's transaction after the file and
+	// before its record; an error rolls the file back (a plugin's objects
+	// must carry its prefix, CONTRACTS §130).
+	Check func(ctx context.Context, tx *gorm.DB) error
 }
 
 // Migrate applies *.sql files from fsys in lexical order. Each file runs in
@@ -44,35 +48,61 @@ type MigrateOptions struct {
 // A session advisory lock on one connection serializes runs across nodes;
 // the files' transactions run on that connection.
 func Migrate(ctx context.Context, db *DB, fsys fs.FS, tr Tracker, opt MigrateOptions) (done []string, err error) {
+	err = db.WithConn(ctx, func(conn *gorm.DB) error {
+		return WithSessionLock(ctx, conn, opt.LockKey, func() error {
+			done, err = migrateOn(ctx, conn, fsys, tr, opt)
+			return err
+		})
+	})
+	return done, err
+}
+
+// MigrateLocked is Migrate for a caller that holds opt.LockKey itself, on
+// a connection of another login role (WithSessionLock): a plugin's
+// migrations run as the plugin's database identity while the core holds
+// the lock and the identity's CREATE (CONTRACTS §130).
+func MigrateLocked(ctx context.Context, db *DB, fsys fs.FS, tr Tracker, opt MigrateOptions) (done []string, err error) {
+	err = db.WithConn(ctx, func(conn *gorm.DB) error {
+		done, err = migrateOn(ctx, conn, fsys, tr, opt)
+		return err
+	})
+	return done, err
+}
+
+// WithSessionLock runs fn holding the session advisory lock key on conn (a
+// connection of WithConn), the lock store.Migrate takes.
+func WithSessionLock(ctx context.Context, conn *gorm.DB, key int64, fn func() error) error {
+	if err := conn.Exec("SELECT pg_advisory_lock(?)", key).Error; err != nil {
+		return fmt.Errorf("acquire migration lock: %w", err)
+	}
+	defer conn.WithContext(context.WithoutCancel(ctx)).Exec("SELECT pg_advisory_unlock(?)", key)
+	return fn()
+}
+
+// migrateOn applies the files of fsys on conn.
+func migrateOn(ctx context.Context, conn *gorm.DB, fsys fs.FS, tr Tracker, opt MigrateOptions) (done []string, err error) {
 	names, err := fs.Glob(fsys, "*.sql")
 	if err != nil {
 		return nil, err
 	}
 	sort.Strings(names)
-	err = db.WithConn(ctx, func(conn *gorm.DB) error {
-		if err := conn.Exec("SELECT pg_advisory_lock(?)", opt.LockKey).Error; err != nil {
-			return fmt.Errorf("acquire migration lock: %w", err)
-		}
-		defer conn.WithContext(context.WithoutCancel(ctx)).Exec("SELECT pg_advisory_unlock(?)", opt.LockKey)
-		if err := tr.Ensure(ctx, conn); err != nil {
-			return err
-		}
-		applied, err := tr.Applied(ctx, conn)
+	if err := tr.Ensure(ctx, conn); err != nil {
+		return nil, err
+	}
+	applied, err := tr.Applied(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		ran, err := migrateFile(ctx, conn, fsys, name, applied, tr, opt)
 		if err != nil {
-			return err
+			return done, err
 		}
-		for _, name := range names {
-			ran, err := migrateFile(ctx, conn, fsys, name, applied, tr, opt)
-			if err != nil {
-				return err
-			}
-			if ran {
-				done = append(done, name)
-			}
+		if ran {
+			done = append(done, name)
 		}
-		return nil
-	})
-	return done, err
+	}
+	return done, nil
 }
 
 // migrateFile runs file name unless it is applied with the same checksum,
@@ -113,6 +143,11 @@ func migrateFile(ctx context.Context, conn *gorm.DB, fsys fs.FS, name string, ap
 				return fmt.Errorf("migration %s: %w; hint: %s", name, err, hint)
 			}
 			return fmt.Errorf("migration %s: %w", name, err)
+		}
+		if opt.Check != nil {
+			if err := opt.Check(ctx, tx); err != nil {
+				return fmt.Errorf("migration %s: %w", name, err)
+			}
 		}
 		return tr.Record(ctx, tx, name, checksum)
 	})
