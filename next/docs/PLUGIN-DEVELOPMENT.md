@@ -55,7 +55,7 @@ func (p *Plugin) BuildUpstream(ctx context.Context, in *pluginv1.ExecuteRequest)
 }
 ```
 
-`ExecuteDefault` 按两个标志选形式（第 1 节的表）：普通端点 `Relay` 后返回 `ReportHostUsage()`；`extract_usage` 时 `RelayAndWait` 后调插件的 `UsageExtractor`（没有实现、出错或返回空时回落到 `host_usage`）；`task_submission` 时 `RelayAndWait` 后调 `TaskSubmissionParser`（没有实现时在构造之前就报错）；等待形式的上游错误用插件的 `ClassifyError` 分类。`BuildUpstream` 返回 `pluginsdk.Classified(c)` 时（例如 `Fetch` 被上游拒绝），`ExecuteDefault` 回 `ReportClassification(c)`，核心按分类裁决而不是当成插件故障。
+`ExecuteDefault` 按两个标志选形式（第 1 节的表）：普通端点 `Relay` 后返回 `ReportHostUsage()`；`extract_usage` 时 `RelayAndWait` 后调插件的 `UsageExtractor`（没有实现、出错或返回空时回落到 `host_usage`）；`task_submission` 时 `RelayAndWait` 后调 `TaskSubmissionParser`（清单有任务端点或 `platform.tasks.v1`、插件又没有自己的 `Executor` 时必须实现，否则 `Serve` 启动即失败）；等待形式的上游错误用插件的 `ClassifyError` 分类。`BuildUpstream` 返回 `pluginsdk.Classified(c)` 时（例如 `Fetch` 被上游拒绝），`ExecuteDefault` 回 `ReportClassification(c)`，核心按分类裁决而不是当成插件故障。
 
 自己写 `Execute`（实现 `Executor`）也可以，其中仍可调 `pluginsdk.ExecuteDefault(ctx, p, in)` 做默认的部分；返回值用 `ReportHostUsage`、`ReportUsage`、`ReportTask`、`ReportClassification`。SDK 先拦住明显的错误并说明原因：第二次中继、没有标志却等待、`Monitor` 里中继、`host_usage` 却没有中继过、`usage` / `task` 却没有等待过、大写的头名和传输层的头。中继请求的方法和请求头由 `ValidateUpstreamRequest` 按宿主同一套规则（`httpguts`）判断，SDK 放行的宿主也放行。
 

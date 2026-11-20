@@ -2375,7 +2375,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 
 ### 28.1 声明与插件接口
 
-插件必须同时声明 `platform.adapter.v1`、`platform.monitor.v1` 和 `platform.tasks.v1`，实现 `Platform`、`TaskSubmissionParser`、`TaskMonitor`（SDK 的 `Serve` 在启动时检查）。插件线协议版本由 go-plugin 握手检查（现为 2，§112.10）：只有上传时的校验不够，其他节点可能直接从共享 PG 加载已批准包，必须保留这道进程握手检查。
+插件必须同时声明 `platform.adapter.v1`、`platform.monitor.v1` 和 `platform.tasks.v1`，实现 `Platform`、`TaskSubmissionParser`（自己实现 `Executor` 的插件在自己的 `Execute` 里给出 `task`，不需要它）、`TaskMonitor`（SDK 的 `Serve` 在启动时检查，缺了不启动）。插件线协议版本由 go-plugin 握手检查（现为 2，§112.10）：只有上传时的校验不够，其他节点可能直接从共享 PG 加载已批准包，必须保留这道进程握手检查。
 
 同一插件内每个 `task.kind` 必须有且仅有一个 submit 和一个 query：
 

@@ -17,6 +17,18 @@ type monitorTestPlatform struct {
 	TaskMonitor
 }
 
+// taskTestPlatform submits tasks through ExecuteDefault.
+type taskTestPlatform struct {
+	monitorTestPlatform
+	TaskSubmissionParser
+}
+
+// taskExecutorPlatform submits tasks through an Execute of its own.
+type taskExecutorPlatform struct {
+	monitorTestPlatform
+	Executor
+}
+
 type rankOnly struct{ AccountRanker }
 
 func TestCapabilitiesAreInferredFromInterfaces(t *testing.T) {
@@ -42,7 +54,7 @@ func manifestWith(caps ...string) []byte {
 // manifest declares them, and only a Platform can make them.
 func TestDeclaredPromisesAreReported(t *testing.T) {
 	all := []string{manifest.CapPlatformAdapter, manifest.CapPlatformMonitor, manifest.CapPlatformTasks, manifest.CapPlatformWebSocket}
-	rt, err := newRuntime(monitorTestPlatform{}, options{manifestRaw: manifestWith(all...)}, nil)
+	rt, err := newRuntime(taskTestPlatform{}, options{manifestRaw: manifestWith(all...)}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +82,9 @@ func TestManifestPromisesNeedTheirImplementation(t *testing.T) {
 		"monitor without a TaskMonitor":  {ordinaryTestPlatform{}, []string{manifest.CapPlatformAdapter, manifest.CapPlatformMonitor}},
 		"monitor without the adapter":    {monitorTestPlatform{}, []string{manifest.CapPlatformMonitor}},
 		"tasks without a TaskMonitor":    {ordinaryTestPlatform{}, []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks}},
-		"tasks without monitor declared": {monitorTestPlatform{}, []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks}},
+		"tasks without monitor declared": {taskTestPlatform{}, []string{manifest.CapPlatformAdapter, manifest.CapPlatformTasks}},
+		"tasks without a TaskSubmissionParser": {monitorTestPlatform{},
+			[]string{manifest.CapPlatformAdapter, manifest.CapPlatformMonitor, manifest.CapPlatformTasks}},
 	} {
 		if _, err := newRuntime(tc.p, options{manifestRaw: manifestWith(tc.caps...)}, nil); err == nil {
 			t.Errorf("%s accepted", name)
@@ -79,8 +93,13 @@ func TestManifestPromisesNeedTheirImplementation(t *testing.T) {
 	// A task endpoint is a promise even without platform.tasks.v1.
 	raw := []byte(`{"key":"p","version":"0.1.0","capabilities":[{"id":"platform.adapter.v1"},{"id":"platform.monitor.v1"}],
 		"platforms":[{"id":"x","endpoints":[{"protocol":"x.submit","task":{"action":"submit"}}]}]}`)
-	if _, err := newRuntime(monitorTestPlatform{}, options{manifestRaw: raw}, nil); err == nil {
+	if _, err := newRuntime(taskTestPlatform{}, options{manifestRaw: raw}, nil); err == nil {
 		t.Error("task endpoint without platform.tasks.v1 accepted")
+	}
+	// A Platform with an Execute of its own describes its submissions there.
+	tasks := manifestWith(manifest.CapPlatformAdapter, manifest.CapPlatformMonitor, manifest.CapPlatformTasks)
+	if _, err := newRuntime(taskExecutorPlatform{}, options{manifestRaw: tasks}, nil); err != nil {
+		t.Errorf("tasks with an Executor: %v", err)
 	}
 	// Inferred without a manifest, a monitor still needs its Platform.
 	if _, err := newRuntime(struct{ TaskMonitor }{}, options{key: "p", version: "0.1.0"}, nil); err == nil {
