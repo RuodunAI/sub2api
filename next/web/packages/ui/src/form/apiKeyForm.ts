@@ -82,15 +82,18 @@ export interface FieldSection {
   collapsed?: boolean
 }
 
-const BASE_URL = /^(https?:\/\/[^\s?#]+)?$/
-const BASE_URL_REQUIRED = /^https?:\/\/[^\s?#]+$/
+// base_url as the plugins' apikey.NormalizeBaseURL takes it: surrounding
+// whitespace is trimmed (blank is empty), then an http(s) URL in any scheme
+// case with a host and no userinfo, whitespace, query or fragment.
+const BASE_URL = /^\s*(https?:\/\/[^\s/?#@]+(\/[^\s?#]*)?)?\s*$/i
+const BASE_URL_REQUIRED = /^\s*https?:\/\/[^\s/?#@]+(\/[^\s?#]*)?\s*$/i
 
 /** The rules of the spec: api_key, base_url, then each extra field's (gated by its `when`). */
 function specRules(spec: ApiKeyFormSpec): Rules<Model> {
   const k = spec.apiKey ?? {}
   const rules: Rules<Model> = { api_key: { required: true, whitespace: true, min: k.min, max: k.max, pattern: k.pattern } }
   const b = spec.baseUrl ?? {}
-  if (b) rules.base_url = [{ required: b.required }, { pattern: b.pattern ?? (b.required ? BASE_URL_REQUIRED : BASE_URL), message: b.message }]
+  if (b) rules.base_url = [{ required: b.required, whitespace: b.required }, { pattern: b.pattern ?? (b.required ? BASE_URL_REQUIRED : BASE_URL), message: b.message }]
   for (const f of spec.extra ?? []) {
     const when = f.when
     rules[f.key] = toList(f.rules).map((r) => (when ? { ...r, when: (m: Model) => when(m) && (!r.when || r.when(m)) } : r))
