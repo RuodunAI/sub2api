@@ -434,7 +434,7 @@ Anthropic 的 `cache_creation_input_tokens` 是总量（含 1 小时缓存）。
 
 ### 11.7 插件调用超时（C2）与任务、事件（H）
 
-- 超时：控制台路径的平台调用（ValidateCredentials、BuildTestRequest）每次插件调用 10 秒，账号测试接口整体（含向上游发测试请求）30 秒；请求热路径 2 秒，调度扩展点 200 毫秒，钩子按 manifest 且最多 30 秒（§20.1；原为 2 秒），未声明 `timeoutMs` 的钩子用 `default_hook_timeout_ms`（50–2000）
+- 超时：控制台路径的平台调用（ValidateCredentials、BuildTestRequest）每次插件调用 10 秒；账号测试与拉取模型列表整体不设时限，跟随控制台请求，客户端断开即取消上游请求（2026-11-20 起，§15.9；此前 30 秒）；请求热路径 2 秒，调度扩展点 200 毫秒，钩子按 manifest 且最多 30 秒（§20.1；原为 2 秒），未声明 `timeoutMs` 的钩子用 `default_hook_timeout_ms`（50–2000）
 - 数据迁移 `MigrateData` 在协调者被接管后可能重复执行，插件必须保证幂等
 - 任务 cron 默认按 UTC 计算（可用 `CRON_TZ=` 前缀指定时区）；`@every` 的触发时间对齐到周期整数倍，各节点一致；每个触发时间点全集群只执行一次
 - 事件投递至少一次：`OnEvents` 返回的确认 id 没有超过游标时按失败处理（退避，连续 10 次失败的批次进入死信）；新订阅从当前最大事件开始，不回放历史
@@ -814,7 +814,8 @@ GET `/ui/plugins`（`self:plugin_ui`，会话天然持有，§80.1）→ 不分�
 POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 - 请求体可省略或为空；可选 `{model}`（交给插件 `BuildTestRequest`）。为空时核心按账号自己的配置选：账号有模型列表时取列表第一个，没有列表但有模型映射时取映射里按字典序最小的请求模型，两者都没有才交空模型、由插件选默认模型（2026-11-18 起；此前一律由插件选，会测到账号列表里没有的模型）。2026-11-19 起跳过下一条去掉协议后已无协议可测的模型（§122.2）。选出的模型同样经映射，`requested_model` 仍是调用方给的（这时为空串）。
 - 交给插件的 `protocols`（2026-11-18 起，§52 同批）：账号在本平台上原生开放的协议，按类型 `platforms` 与平台端点的声明顺序，去掉 WebSocket 与计数协议；测试有模型（调用方给的，或上一条按账号配置选的，映射之前）时只留账号协议绑定里服务这个模型的（`ProtocolRules.Serves`）。插件取第一个它有测试的协议，在 `usage_protocol` 回报实际用的；测试失败时核心把它作为 `ClassifyError` 的 `meta.protocol`，“效果”提示按这个协议的失败规则判断。列表为空表示没有偏好（只在没有被测模型时出现）。2026-11-19 起（§122）：去掉端点 `test` 为 `never` 的协议，不带 `model` 时再去掉 `explicit` 的；模型在 `model_protocols` 里有条目时按条目的协议顺序排；不带 `model` 时默认模型取第一个仍有协议可测的；被测模型没有可测协议时不调用插件，回 400 `no_testable_protocol`；结果带 `protocol`。
-- 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。整个测试（含插件构造请求）超时 30 秒。
+- 响应 `{ok, status, latency_ms, message}`：由声明插件构造测试请求，核心经账号的代理（或直连）发出；`ok` = 上游 2xx；`status` 为上游状态码（未发出或网络错误时为 0）；失败时 `message` 为上游响应体前 1 KB（为空时为状态行）或错误信息，成功时为空串。
+- 测试整体不设时限（2026-11-20 起，所有者：“去掉超时，但是用户可以提前结束”；此前整个测试含插件构造请求限 30 秒，生图这类慢测试被截断）：测试跟随这次 HTTP 请求，直到上游应答或客户端断开；断开（控制台点“停止”、关掉测试弹窗、离开页面）即取消发往上游的请求（经代理、读响应体时同样），也不再向插件要失败分类。客户端提前结束的测试不写 `last_test`（§50）。留下的界限：插件构造请求的那次调用 10 秒（§11.7），管理员配置的上游超时不作用于测试。控制台：单个测试的那一行在测试中显示“停止”，弹窗底部“停止”结束弹窗里所有进行中的测试（含拉取模型），关闭弹窗或离开页面同样中止；被中止的测试显示“已取消”，不算失败；账号列表的批量测试“停止”中止进行中的测试并不再开始新的，这些账号保留原来的最近测试。控制台请求本身也没有超时（此前 120 秒）。
 - 测试失败（包括上游地址为内网/回环被拒、代理被禁用）仍返回 HTTP 200、`ok:false`；只有插件未启用（503 `plugin_unavailable`）、账号不存在（404）、插件调用出错、被测模型没有可测协议（400 `no_testable_protocol`，§122.2）时返回错误状态。
 - 直连时目标地址为回环、私有、链路本地等地址会被拒绝（`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 时放行）；经代理时域名交给代理解析，本机不解析，只拒绝字面的私网地址和 `localhost`（与网关同一条规则 `netguard.CheckHostVia`，§43.4）。
 - 2026-10-05 起：响应另含 `model`（实际请求的模型：插件报告的，否则为映射后的模型）、`requested_model`（调用方选的模型、映射前；未给时为空串，字段总在）、`upstream`、`body`、`usage`、`reason`、`effect`（2026-11-19 起另有 `protocol`，§122.4）；每次测试结束写入账号的 `last_test`（§50）。测试仍**不改变账号状态**（不冷却、不禁用、不改 `updated_at`）。
@@ -834,7 +835,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 | 7 | `/ledger` 另支持 `from`、`to`；`/me/ledger` 支持 `kind`、`from`、`to` | **以代码为准**。§5.5 已改 |
 | 8 | `/usage` 的筛选参数更多；`/me/usage` 不支持 `user_id`、`account_id`、`account_type` | **以代码为准**，参数以 §15.2 为准。§5.5 已改 |
 | 9 | `/prices` 的 `platform` 筛选已删除 | **以代码为准**：`mode`、`source`、`plugin_key`、`enabled`、`q`。§5.5 已改；§5.4 `/accounts` 的 `platform` 筛选同理改为 `plugin_key`、`type` |
-| 10 | 账号测试超时 30 秒与平台调用 10 秒 | **两者都对，不冲突**：每次插件调用（`BuildTestRequest`）限 10 秒（`grpcruntime.TimeoutPlatformConsole`），测试接口整体（含向上游发送测试请求）限 30 秒。§11.7 已改 |
+| 10 | 账号测试超时 30 秒与平台调用 10 秒 | **两者都对，不冲突**：每次插件调用（`BuildTestRequest`）限 10 秒（`grpcruntime.TimeoutPlatformConsole`），测试接口整体（含向上游发送测试请求）限 30 秒。§11.7 已改。2026-11-20 起测试接口整体不设时限（§15.9），插件调用的 10 秒不变 |
 | 11 | `/me/api-keys` 不含 `user_email`；普通用户没有修改自己 Key 的接口 | **以代码为准**：用户只能删除后重建（Key 绑定的分组不应由用户随意切换，名称和过期时间也不是必要功能）。2026-10-26 起已加 `PATCH /me/api-keys/:id`，以 §5.3、§15.1 为准 |
 | 12 | §14 部分条目当时尚未实现 | 已于第四轮实现，见 §14 |
 
@@ -980,7 +981,7 @@ POST `/accounts/:id/test`（`account:test` / `account:own:test`）：
 | POST `/account-types/:plugin_key/:type/models/fetch` | `account:create` | `{credentials, proxy_id?}`：表单里填的凭证（先由插件 `ValidateCredentials` 校验，错误格式同创建账号；2026-11-19 前还先按表单 Schema 校验），账号还没保存时用 |
 | POST `/accounts/:id/models/fetch` | `account:test` | 可选 `{credentials}` 覆盖已保存的凭证（敏感字段传 `"******"` 保留原值），编辑表单里改了 Key 还没保存时用 |
 
-响应 `{models:[...], skipped, status}`：`models` 去重、按字母排序、只含合法的完整模型 ID（§16），最多 5000 条；`skipped` 是被丢弃的非法 ID 数；`status` 是上游状态码。错误：插件不支持返回 501 `unsupported`；上游非 2xx 返回 503 `unavailable`，`details.status` 为上游状态码、message 含响应片段；网络错误、内网地址被拒同样是 503 `unavailable`；插件未启用 503 `plugin_unavailable`。整个拉取超时 30 秒，响应体最多读 8 MiB。
+响应 `{models:[...], skipped, status}`：`models` 去重、按字母排序、只含合法的完整模型 ID（§16），最多 5000 条；`skipped` 是被丢弃的非法 ID 数；`status` 是上游状态码。错误：插件不支持返回 501 `unsupported`；上游非 2xx 返回 503 `unavailable`，`details.status` 为上游状态码、message 含响应片段；网络错误、内网地址被拒同样是 503 `unavailable`；插件未启用 503 `plugin_unavailable`。拉取不设时限（2026-11-20 起，与账号测试相同，§15.9；此前 30 秒）：跟随这次 HTTP 请求，客户端断开即取消上游请求；插件构造请求的调用仍是 10 秒。响应体最多读 8 MiB。控制台编辑页拉取中显示“停止获取”，关掉编辑页同样中止；测试弹窗里的拉取由弹窗的“停止”中止。
 
 **控制台**：模型列表区有"从上游获取"按钮；拉回来的模型在弹窗里勾选（默认全选，已在列表里的标出），确认后合并进模型列表（不会删掉已有的）。mock-upstream 增加 `GET /v1/models` 和 `GET /v1beta/models`（e2e AC21）。
 
@@ -3246,7 +3247,7 @@ claude-oauth 插件原来有个每 30 分钟跑一次的 `refresh_tokens` 任务
 new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠道的 `test_time` / `response_time`，列表里显示"上次测试时间、响应时间"。这里同样记录，另外记成功与否、模型和失败原因。
 
 - 迁移 0031（可重跑、只加可空列，旧核心跑在新表上不受影响）：`accounts` 增加 `last_test_at timestamptz`、`last_test_ok boolean`、`last_test_latency_ms integer`、`last_test_model text`、`last_test_message text`。
-- 每次 `POST /accounts/:id/test` 结束后写入（插件 `BuildTestRequest` 报错也记为失败，`latency_ms` 0）：
+- 每次 `POST /accounts/:id/test` 结束后写入（插件 `BuildTestRequest` 报错也记为失败，`latency_ms` 0；客户端提前结束的测试不写，2026-11-20 起，§15.9）：
   - `ok`、`latency_ms` 同 TestResult；`model` 为 TestResult 的 `model`（实际请求的模型，映射后）；
   - `message`：成功为空串；失败时为插件的 `reason` 加上游返回（`reason: message`，两者相同或缺一则只取有的那个；只有 reason 会看不到真实原因，2026-10-05 改），按字节截到 512（不截断半个字符）。控制台模型测试的"结果"列同样先显示 reason，再显示上游返回的错误内容。
   - 写入不改 `updated_at`、不发 `account:changed` / 事件、不影响调度；写入失败只记日志，不影响测试响应。
@@ -8217,7 +8218,8 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | 宿主调用 4 MiB（中继和取回以外）、broker 接收上限由最大请求体推出、中继请求体不超过 max(交给插件的, 请求体上限) + 1 MiB | `RESOURCE_EXHAUSTED` / `INVALID_ARGUMENT` | 有缺陷的插件可以让核心为一次 `KVSet`、`Publish`、`Log` 或一个中继请求分配到 gRPC 的上限（约 2 GiB） |
 | WebSocket：上游单条消息 64 MiB；每个 API Key 64 个会话（第 65 个 429）；上游握手 30 秒；写客户端和写上游 1 分钟 | 关闭连接或拒绝升级 | 超大的上游消息整条进内存；一个 Key 能开任意多会话（仍计入 `ws` 槽位，Redis 出错时照样拒绝升级）；握手挂住时等到客户端离开；不读的一方由没有应答的心跳 ping 结束 |
 | HTTP 写客户端 60 秒 | 按客户端断开处理 | 客户端连着但不读时，请求一直占着账号和 API Key 的槽位，直到连接断开 |
-| 代理传输的拨号 15 秒、TLS 握手 15 秒 | 传输错误 | 由操作系统的连接超时约束；网关的响应头计时从拨号之前开始，仍然管住挂住的拨号或握手；额度、续期、模型列表、测试、探测、`Monitor` 取回这些用同一客户端的地方各有自己的 context 时限 |
+| 代理传输的拨号 15 秒、TLS 握手 15 秒 | 传输错误 | 由操作系统的连接超时约束；网关的响应头计时从拨号之前开始，仍然管住挂住的拨号或握手；额度、续期、探测、`Monitor` 取回这些用同一客户端的地方各有自己的 context 时限，账号测试与模型列表跟随控制台请求（下一行） |
+| 控制台账号测试与拉取模型列表整体 30 秒（`account.testTimeout`；2026-11-20，所有者：“去掉超时，但是用户可以提前结束”） | 超过即 `request_timeout`，记为测试失败；生图这类慢测试被截断 | 一直等到上游应答或客户端断开（断开即取消上游请求，测试不记 `last_test`）；控制台可以随时停止，挂住的上游让测试一直进行到用户停止或关掉页面（§15.9、§19） |
 | 每个插件实例 1024 个并发 `Execute` | 等不到槽位 503 | 没有兜底：并发只由账号和 API Key 的槽位限制 |
 | `RequestMeta.path_params`、`query` 32 个、名 64 字节、值 512 字节 | 截断 | 客户端发的大参数整份交给插件 |
 | SSE 单行 16 MiB | 切断流 | 超长的一行整行进内存 |
