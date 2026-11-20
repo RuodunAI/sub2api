@@ -21,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/httpapi"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -28,9 +29,6 @@ import (
 // Mask replaces secret setting values in responses; sending it back in a
 // PUT keeps the stored value.
 const Mask = "******"
-
-// ConfigAAD binds plugins.config_enc to its plugin (shared with the runtime).
-func ConfigAAD(key string) []byte { return []byte("plugin-config:" + key) }
 
 func isNoRows(err error) bool { return store.IsNoRows(err) }
 
@@ -276,7 +274,7 @@ func (a *API) loadValues(c *gin.Context, q *gorm.DB, key string, forUpdate bool)
 	if a.d.Cipher == nil {
 		return nil, core.ErrUnavailable.WithMessage("settings encryption unavailable")
 	}
-	plain, err := a.d.Cipher.Decrypt(enc, ConfigAAD(key))
+	plain, err := a.d.Cipher.Decrypt(enc, rows.ConfigAAD(key))
 	if err != nil {
 		return nil, fmt.Errorf("decrypt plugin settings: %w", err)
 	}
@@ -346,7 +344,7 @@ func (a *API) putSettings(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		enc, err := a.d.Cipher.Encrypt(plain, ConfigAAD(key))
+		enc, err := a.d.Cipher.Encrypt(plain, rows.ConfigAAD(key))
 		if err != nil {
 			return err
 		}

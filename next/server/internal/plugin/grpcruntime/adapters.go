@@ -31,7 +31,6 @@ const (
 	TimeoutHTTP            = 30 * time.Second
 	TimeoutEvents          = 30 * time.Second
 	TimeoutJobDefault      = 60 * time.Second
-	TimeoutScheduler       = 200 * time.Millisecond
 	TimeoutRankDefault     = 200 * time.Millisecond // manifest scheduler.rank.timeoutMs = 0
 	TimeoutRankMax         = time.Second            // pkg.MaxRankTimeout
 	TimeoutPoll            = 30 * time.Second

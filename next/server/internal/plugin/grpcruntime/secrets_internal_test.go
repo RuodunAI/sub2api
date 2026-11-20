@@ -13,6 +13,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/secret"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 )
 
 func TestHostSecrets(t *testing.T) {
@@ -48,7 +49,7 @@ func TestHostSecrets(t *testing.T) {
 	}
 	// Bound to the plugin key: another plugin's AAD, the plugin config AAD
 	// and an account AAD do not open it.
-	for _, aad := range [][]byte{SecretAAD("other", "channel:1"), ConfigAAD(i.pkg.Key), []byte("account:1")} {
+	for _, aad := range [][]byte{SecretAAD("other", "channel:1"), rows.ConfigAAD(i.pkg.Key), []byte("account:1")} {
 		if _, err := c.Decrypt(sealed.GetCiphertext(), aad); err == nil {
 			t.Fatalf("opened with AAD %q", aad)
 		}

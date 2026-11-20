@@ -165,13 +165,9 @@ func (emptyNodes) LiveNodes(context.Context) ([]core.NodeStatus, error) {
 	return []core.NodeStatus{}, nil
 }
 
-func (f *fakeSchemas) Drop(_ context.Context, key string) error {
+func (f *fakeSchemas) DropTx(_ context.Context, _ *gorm.DB, key string) error {
 	f.dropped = append(f.dropped, key)
 	return nil
-}
-
-func (f *fakeSchemas) DropTx(ctx context.Context, _ *gorm.DB, key string) error {
-	return f.Drop(ctx, key)
 }
 
 type fakeAccounts struct{ purged []string }

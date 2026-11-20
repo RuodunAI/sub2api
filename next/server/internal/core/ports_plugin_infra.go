@@ -103,11 +103,10 @@ type RolloutController interface {
 	Cancel(ctx context.Context, pluginKey string, rolloutID, actorID int64) error
 }
 
-// PluginSchemaManager (C2) owns plg_<key> schemas, roles and migrations.
+// PluginSchemaManager (C2) owns plg_<key> schemas and their migrations.
 type PluginSchemaManager interface {
-	// Drop removes schema, role and migration records (uninstall with purge).
-	Drop(ctx context.Context, pluginKey string) error
-	// DropTx participates in the lifecycle transaction holding the plugin row.
+	// DropTx removes the schema and its migration records (uninstall with
+	// purge). It participates in the lifecycle transaction holding the plugin row.
 	// A concurrent re-install cannot begin between DROP and plugin deletion.
 	DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) error
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
@@ -275,9 +276,6 @@ type resourceLimits struct {
 	MaxOpenFiles int     `json:"max_open_files"`
 }
 
-// ConfigAAD is the AES-GCM associated data of plugins.config_enc.
-func ConfigAAD(pluginKey string) []byte { return []byte("plugin-config:" + pluginKey) }
-
 // loadSettings reads the settings an instance of pkg runs with; its grants
 // are those of its own version (grants.Granted).
 func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*settings, error) {
@@ -290,7 +288,7 @@ func (r *Runtime) loadSettings(ctx context.Context, pkg *registry.Package) (*set
 	enc, limits := row.ConfigEnc, []byte(row.ResourceLimits)
 	st := &settings{configJSON: "{}", egress: core.ValueOr(row.EgressPolicy, "")}
 	if len(enc) > 0 {
-		plain, err := r.o.Cipher.Decrypt(enc, ConfigAAD(key))
+		plain, err := r.o.Cipher.Decrypt(enc, rows.ConfigAAD(key))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt plugin config: %w", err)
 		}
