@@ -150,6 +150,26 @@ func TestDecodeSettings(t *testing.T) {
 			t.Errorf("%s: %v", raw, err)
 		}
 	}
+	// An integer the Go type cannot hold as written (a fraction or an
+	// exponent, or past its range) is refused at its field, not as settings
+	// that are not an object.
+	type nested struct {
+		Limits struct {
+			Retries int8 `json:"retries"`
+		} `json:"limits"`
+	}
+	nestedRules := fieldcheck.Fields{"limits": fieldcheck.Object(fieldcheck.Fields{"retries": fieldcheck.Integer()})}
+	for raw, field := range map[string]string{`{"port":60.0}`: "port", `{"port":6e1}`: "port", `{"limits":{"retries":300}}`: "limits/retries"} {
+		var out any = &s
+		r := rules
+		if field != "port" {
+			out, r = &nested{}, nestedRules
+		}
+		err := fieldcheck.DecodeSettings(pluginsdk.Config{JSON: json.RawMessage(raw)}, r, out)
+		if !errors.As(err, &fe) || len(fe) != 1 || fe[0].GetField() != field || fe[0].GetCode() != "type" {
+			t.Errorf("%s: %v", raw, err)
+		}
+	}
 }
 
 // String-only rules on another kind would never be checked: building one
