@@ -329,7 +329,10 @@ func (c *call) retryBlocked(ctx context.Context, res attemptResult, attempts int
 	if res.kind != attemptFailover {
 		return "not_replayable"
 	}
-	if c.c != nil && c.c.Writer.Written() {
+	// A WebSocket plans failures only for its handshake (connect): the
+	// client has had the protocol upgrade and nothing else, and later turns
+	// never replay.
+	if c.c != nil && c.c.Writer.Written() && !c.ep.WebSocket() {
 		return "response_committed"
 	}
 	if c.task != nil || c.failureState.unsafeTransport {

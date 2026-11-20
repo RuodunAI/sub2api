@@ -146,14 +146,6 @@ func (c *call) hostUsageChosen() error {
 	return errHostReadingEmpty
 }
 
-func (c *call) usageFallback(ctx context.Context, rt *typeRoute, why string, err error) {
-	c.rec.UsageExtract = core.UsageExtractFallback
-	slog.WarnContext(ctx, "gateway: plugin usage extraction failed, billing from the declarative rules",
-		"request_id", c.rid, "plugin", rt.binding.Plugin.Key, "platform", rt.platform,
-		"protocol", rt.upstream, "endpoint", c.ep.Path, "reason", why, "err", err,
-		"input_tokens", c.rec.Tokens.Input, "output_tokens", c.rec.Tokens.Output)
-}
-
 // applyUsageReport writes the upstream facts the plugin stated into the usage
 // record - and nothing else.
 //

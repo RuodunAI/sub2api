@@ -38,9 +38,9 @@ type UninstallResult struct {
 }
 
 // Uninstall disables the plugin if needed, optionally drops its schema, and
-// deletes the plugin row (cascading grants, versions, cursors, job runs,
-// rollouts, plugin-default prices and sticky rules) and its egress domains. Accounts are kept and
-// show up as orphaned unless opt.PurgeAccounts is set. The key stays with the
+// deletes the plugin row (cascading its versions, grants, permissions,
+// rollouts, event cursors and dead letters and job runs) and its egress
+// domains. Accounts are kept and show up as orphaned unless opt.PurgeAccounts is set. The key stays with the
 // plugin's publisher (retired.go).
 func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOptions, actorID int64) (UninstallResult, error) {
 	var res UninstallResult

@@ -12,10 +12,12 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
-func (c *call) taskPair(query bool) (manifest.Endpoint, bool) {
+// taskQueryEndpoint is the query endpoint of the plugin's task kind of this
+// (submit) endpoint.
+func (c *call) taskQueryEndpoint() (manifest.Endpoint, bool) {
 	for _, b := range c.gen.Endpoints() {
 		e := b.Endpoint
-		if b.Plugin.Key == c.plugin.Key && e.Task != nil && e.Task.Kind == c.ep.Task.Kind && e.TaskQuery() == query {
+		if b.Plugin.Key == c.plugin.Key && e.Task != nil && e.Task.Kind == c.ep.Task.Kind && e.TaskQuery() {
 			return e, true
 		}
 	}
@@ -30,12 +32,8 @@ func (c *call) resolveTask(ctx context.Context) *gwError {
 	if c.g.d.Tasks == nil {
 		return fromCore(core.ErrUnavailable.WithMessage("task service unavailable"), errTypeInternal)
 	}
-	submit, ok := c.taskPair(false)
-	if !ok {
-		return fromCore(core.ErrUnavailable.WithMessage("task submit endpoint unavailable"), errTypeInternal)
-	}
 	t, err := c.g.d.Tasks.FindTask(ctx, core.TaskQuery{ID: c.params[c.ep.Task.IDParam], PluginKey: c.plugin.Key, Kind: c.ep.Task.Kind,
-		UserID: c.principal.UserID, GroupID: c.principal.Group.ID, SubmitProtocol: submit.Protocol, IDPaths: c.ep.Task.IDPaths})
+		UserID: c.principal.UserID, GroupID: c.principal.Group.ID})
 	if err != nil {
 		return fromCore(core.AsError(err), errTypeInvalidRequest)
 	}

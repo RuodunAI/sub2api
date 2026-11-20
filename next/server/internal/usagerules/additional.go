@@ -11,7 +11,6 @@ import (
 )
 
 const MaxAdditionalItems = 128
-const maxAdditionalTokens int64 = 1_000_000_000_000
 
 // WithPrimaryModel must receive the host-admitted, account-mapped model,
 // never an untrusted response's top-level model field.
@@ -85,7 +84,7 @@ func (u *Acc) applyAdditional(event string, body []byte, stream bool) {
 					continue
 				}
 				n, err := strconv.ParseInt(value.Raw, 10, 64)
-				if value.Type != gjson.Number || err != nil || n < 0 || n > maxAdditionalTokens {
+				if value.Type != gjson.Number || err != nil || !core.ValidTokenCount(n) {
 					fail(fmt.Errorf("invalid token counter %s", field))
 					valid = false
 					break

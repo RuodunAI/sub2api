@@ -137,6 +137,17 @@ func TestLandlockRulesAllowList(t *testing.T) {
 	if full["/data/p/work"] != llDataDir || full["/e2e-tls"] != llRead || full["/etc/ssl/certs"] != llRead {
 		t.Fatalf("fs.data / net rules %v", full)
 	}
+	// Without strict network a "net" plugin resolves names itself; under it
+	// the SDK resolves through the tunnel and the files stay closed.
+	strict := paths(&execOptions{Binary: "/opt/p/bin", CACerts: true, StrictNetwork: true})
+	for _, p := range resolverFiles {
+		if full[p] != llRead || base[p] != 0 {
+			t.Fatalf("%s: net without strict network %d, no net %d", p, full[p], base[p])
+		}
+		if _, ok := strict[p]; ok {
+			t.Fatalf("%s granted under strict network", p)
+		}
+	}
 	shared := filepath.Clean(os.TempDir())
 	for p := range full {
 		if p == "/data/.run/p-1" || p == env["TMPDIR"] || p == shared || strings.HasPrefix(shared+"/", p+"/") {

@@ -36,8 +36,7 @@ func TestTaskCrossNodeRegistrationIdentityAndDebit(t *testing.T) {
 			Snapshot: body, IDPaths: []string{"id"}, NextCheckAfter: time.Minute, Deadline: time.Hour, Record: rec}
 	}
 	query := func(id string) core.TaskQuery {
-		return core.TaskQuery{ID: id, PluginKey: "vid", Kind: "video", SubmitProtocol: "vid.gen",
-			UserID: f.user, GroupID: f.group, IDPaths: []string{"id"}}
+		return core.TaskQuery{ID: id, PluginKey: "vid", Kind: "video", UserID: f.user, GroupID: f.group}
 	}
 	assertAbsent := func(q core.TaskQuery) {
 		t.Helper()

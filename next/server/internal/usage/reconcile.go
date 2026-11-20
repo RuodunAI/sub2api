@@ -144,7 +144,6 @@ type settleEntry struct {
 	deadlineAt   time.Time
 	task         *taskClaim
 	account      core.AccountRef // the fixed account used by this observation
-	monitor      *monitorOutcome // the claim of the Monitor result being applied
 }
 
 // ReconcileDue runs one sweep: claim the due entries and work through them,
@@ -396,7 +395,7 @@ func (s *Service) rescheduleAttempt(ctx context.Context, e *settleEntry, cfg res
 		// One last attempt exactly at the deadline rather than one fewer.
 		next = e.deadlineAt
 	}
-	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		status, err := lockUsageRow(ctx, tx, e.usageLogID)
 		if err != nil {
 			return err
@@ -456,7 +455,7 @@ func (s *Service) settleReconciled(ctx context.Context, e *settleEntry, row *res
 	var ledgerRes *core.LedgerResult
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err = s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+	err = s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "closed"); err != nil {
 			return err
 		}
@@ -530,7 +529,7 @@ func (s *Service) refundFailed(ctx context.Context, e *settleEntry, row *reserve
 	var ledgerRes *core.LedgerResult
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "closed"); err != nil {
 			return err
 		}
@@ -671,7 +670,7 @@ func (s *Service) keepEstimate(ctx context.Context, e *settleEntry, row *reserve
 	p := row.p
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		observation := "closed"
 		if entryState == SettleStateAbandoned {
 			observation = "abandoned"

@@ -36,7 +36,6 @@ func All() []any {
 		&PluginHistory{},
 		&PluginJobRun{},
 		&PluginKeyRetirement{},
-		&PluginMonitorReceipt{},
 		&PluginPermissionGrant{},
 		&PluginRolloutCleanup{},
 		&PluginRolloutNode{},

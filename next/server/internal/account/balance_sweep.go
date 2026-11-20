@@ -47,12 +47,13 @@ func (s *Service) sweepDueBalances(ctx context.Context) (int, error) {
 }
 
 // dueBalances selects up to limit live accounts of type bt whose balance is
-// due (balanceDue, on the database clock): the schedulable ones and those
-// never read, a disabled account being read only on an administrator's
-// refresh. The longest unread first.
+// due (balanceDue, on the database clock): the active, schedulable ones and
+// those never read, a disabled account (whatever its scheduling switch) or
+// one with scheduling off being read only on an administrator's refresh.
+// The longest unread first.
 func dueBalances(db *gorm.DB, bt core.AccountTypeBinding, limit int) *gorm.DB {
 	return db.Table("accounts a").Joins("LEFT JOIN account_balances b ON b.account_id = a.id").
-		Where("a.deleted_at IS NULL AND a.plugin_key = ? AND a.type = ? AND (a.schedulable OR b.account_id IS NULL)", bt.Plugin.Key, bt.Type.ID).
+		Where("a.deleted_at IS NULL AND a.plugin_key = ? AND a.type = ? AND (a.status = 'active' AND a.schedulable OR b.account_id IS NULL)", bt.Plugin.Key, bt.Type.ID).
 		Where("b.account_id IS NULL OR GREATEST(b.updated_at, b.error_at) <= now() - make_interval(secs => ?::float8)", balanceInterval(bt).Seconds()).
 		Order("GREATEST(b.updated_at, b.error_at) NULLS FIRST, a.id").Limit(limit)
 }

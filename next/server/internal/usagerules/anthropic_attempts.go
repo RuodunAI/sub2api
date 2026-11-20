@@ -185,7 +185,7 @@ func attemptTokens(v gjson.Result) (core.UsageTokens, error) {
 			continue
 		}
 		n, e := strconv.ParseInt(value.Raw, 10, 64)
-		if value.Type != gjson.Number || e != nil || n < 0 || n > 1e12 {
+		if value.Type != gjson.Number || e != nil || !core.ValidTokenCount(n) {
 			return core.UsageTokens{}, fmt.Errorf("invalid attempt token counter")
 		}
 		values[i] = n

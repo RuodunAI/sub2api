@@ -1,10 +1,13 @@
 package grpcruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -527,6 +530,39 @@ func TestMemoryLimitOnlyByOperator(t *testing.T) {
 	} {
 		if got := spec(tc.declared, tc.operator, tc.cap); got != tc.want {
 			t.Errorf("declared %d, operator %d, cap %d: %d MB, want %d", tc.declared, tc.operator, tc.cap, got, tc.want)
+		}
+	}
+}
+
+// A host call that panics in the core answers Internal and leaves the panic
+// and its stack in the log: the plugin's error says only "failed internally".
+func TestHostCallPanicIsLogged(t *testing.T) {
+	var logged bytes.Buffer
+	client := core.ExecutionClient{
+		Relay: func(context.Context, *pluginv1.UpstreamRequest) (*pluginv1.RelayUpstreamResponse, error) {
+			panic("relay boom")
+		},
+		Fetch: func(context.Context, *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
+			panic("fetch boom")
+		},
+	}
+	side := &pluginSide{execute: func(ctx context.Context, h *hostServer, in *pluginv1.ExecuteRequest) (*pluginv1.ExecuteResponse, error) {
+		if _, err := relay(ctx, h, in.GetExecutionToken(), true, 1); status.Code(err) != codes.Internal {
+			t.Errorf("relay: %v", err)
+		}
+		if _, err := fetch(ctx, h, in.GetExecutionToken(), "https://api.example.com/x", 1); status.Code(err) != codes.Internal {
+			t.Errorf("fetch: %v", err)
+		}
+		return usage, nil
+	}}
+	i, a := executionInstance(t, side)
+	i.log = slog.New(slog.NewTextHandler(&logged, nil))
+	if _, err := a.Execute(context.Background(), &pluginv1.ExecuteRequest{ExtractUsage: true}, client); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"panic=\"relay boom\"", "panic=\"fetch boom\"", "execute.go"} {
+		if !strings.Contains(logged.String(), want) {
+			t.Fatalf("log lacks %q:\n%s", want, logged.String())
 		}
 	}
 }

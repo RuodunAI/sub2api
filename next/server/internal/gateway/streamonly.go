@@ -209,14 +209,21 @@ func streamOnlyError(name string, data []byte) (int, []byte) {
 // replaces resp with the JSON answer for the non-streaming path (failed
 // false) or returns the attempt's result (failed true). An upstream that
 // answered JSON after all is left untouched.
+//
+// The upstream answered and is producing while it is read, so a client that
+// leaves meanwhile is a hang-up of an answered request (CONTRACTS §25.8):
+// under "continue" the stream is read on to its end and the JSON answer
+// billed, otherwise the request pays the estimate.
 func (c *call) collectStreamOnly(ctx, uctx context.Context, x *execution, resp *http.Response) (res attemptResult, failed bool) {
 	if !isSSE(resp.Header.Get("Content-Type")) {
 		return attemptResult{}, false
 	}
+	c.drain.arm()
 	ans := readStreamOnly(resp.Body)
 	switch {
 	case ans.broken != nil:
 		if ctx.Err() != nil {
+			c.upstreamResponded = true
 			return attemptResult{kind: attemptCanceled, err: canceledErr()}, true
 		}
 		msg := ans.broken.Error()

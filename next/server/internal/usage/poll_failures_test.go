@@ -130,9 +130,6 @@ func TestPollFailurePolicyThroughMonitor(t *testing.T) {
 			} else if f.scalar(`SELECT poll_failures FROM pending_settlements`) != "1" {
 				t.Fatal("failure not counted")
 			}
-			if f.scalar(`SELECT count(*) FROM plugin_monitor_receipts`) != "1" {
-				t.Fatal("the outcome committed without its claim's receipt")
-			}
 		})
 	}
 	if DefaultReconcileSettings().resolve().maxPollFailures != 20 {

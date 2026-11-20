@@ -3,60 +3,16 @@ package usage
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
-	"gorm.io/gorm"
-
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
-
-// monitorOutcome is the claim a Monitor result is applied under: its
-// receipt commits with the outcome, so one claim has one outcome.
-type monitorOutcome struct {
-	id, digest, taskID string
-}
-
-// outcomeTx adds the result receipt to the existing financial transaction.
-// Its advisory lock serializes the claim's outcome before task→usage→pending.
-func (s *Service) outcomeTx(ctx context.Context, e *settleEntry, fn func(*gorm.DB) error) error {
-	m := e.monitor
-	if m == nil {
-		return s.db.Tx(ctx, fn)
-	}
-	return s.db.Tx(ctx, func(tx *gorm.DB) error {
-		g := store.G(ctx, tx)
-		if err := store.XactLock(ctx, tx, "plugin-monitor:"+m.id); err != nil {
-			return err
-		}
-		var digest string
-		err := g.Model(&model.PluginMonitorReceipt{}).Select("digest").Where("id = ?", m.id).Row().Scan(&digest)
-		if err == nil {
-			if digest != m.digest {
-				return core.ErrConflict.WithMessage("monitor result already committed")
-			}
-			return nil
-		}
-		if !store.IsNoRows(err) {
-			return err
-		}
-		if err = fn(tx); err != nil {
-			return err
-		}
-		return g.Create(&model.PluginMonitorReceipt{ID: m.id, Digest: m.digest, TaskID: m.taskID}).Error
-	})
-}
 
 // askMonitor runs the plugin's Monitor once for e on the account call
 // holds. Any error is one failed query; a fetch the account's limiter
-// refused is errTaskDeferred, whatever the plugin made of it. A result
-// arms e.monitor for the outcome written from it.
+// refused is errTaskDeferred, whatever the plugin made of it.
 func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observationCall) (*pluginv1.ReconcileResult, error) {
 	var deferred atomic.Bool
 	fetch := func(ctx context.Context, in *pluginv1.ExecutionHTTPRequest) (*pluginv1.ExecutionHTTPResponse, error) {
@@ -79,10 +35,6 @@ func (s *Service) askMonitor(ctx context.Context, e *settleEntry, call observati
 		return nil, err
 	case res == nil:
 		return nil, errors.New("Monitor returned no result")
-	}
-	e.monitor = &monitorOutcome{id: fmt.Sprintf("entry:%d:%s", e.id, uuid.NewString()), digest: core.FactDigest(res)}
-	if e.task != nil {
-		e.monitor.id, e.monitor.taskID = e.task.id+":"+e.task.token, e.task.id
 	}
 	return res, nil
 }

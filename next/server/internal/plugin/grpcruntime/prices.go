@@ -9,13 +9,11 @@ import (
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/billing/expr"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
 // PermPrices grants PriceUsage (CONTRACTS §72.13.1).
 const PermPrices = "prices"
-
-// maxPricedTokens bounds each token count of a PriceUsage request.
-const maxPricedTokens = 1_000_000_000_000
 
 // UsagePricer prices token usage of a model (billing.Service).
 type UsagePricer interface {
@@ -41,7 +39,7 @@ func (h *hostServer) PriceUsage(ctx context.Context, in *pluginv1.PriceUsageRequ
 	t := expr.Tokens{Input: in.GetInput(), Output: in.GetOutput(), CacheRead: in.GetCacheRead(),
 		CacheCreation: in.GetCacheCreation(), CacheCreation1h: in.GetCacheCreation_1H()}
 	for _, n := range []int64{t.Input, t.Output, t.CacheRead, t.CacheCreation, t.CacheCreation1h} {
-		if n < 0 || n > maxPricedTokens {
+		if !core.ValidTokenCount(n) {
 			return nil, status.Error(codes.InvalidArgument, "token counts must be between 0 and 1e12")
 		}
 	}

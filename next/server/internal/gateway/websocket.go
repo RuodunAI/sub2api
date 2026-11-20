@@ -44,14 +44,12 @@ import (
 // the upstream closes or a ping goes unanswered); keepalive pings on both
 // connections keep proxies from dropping it and find dead peers.
 type wsLimits struct {
-	firstMessage time.Duration // upgrade to the first client message; 0 = none
-	idle         time.Duration // end of a turn to the next message; 0 = none
-	ping         time.Duration // keepalive ping interval on both connections; 0 = none
-	pingTimeout  time.Duration // a ping unanswered this long closes that connection
-	slotWait     time.Duration // later turns wait this long for the account
-	auth         time.Duration // re-authenticating the key before a turn
-	drainGrace   time.Duration // a turn in progress when draining starts
-	drainPoll    time.Duration
+	ping        time.Duration // keepalive ping interval on both connections; 0 = none
+	pingTimeout time.Duration // a ping unanswered this long closes that connection
+	slotWait    time.Duration // later turns wait this long for the account
+	auth        time.Duration // re-authenticating the key before a turn
+	drainGrace  time.Duration // a turn in progress when draining starts
+	drainPoll   time.Duration
 }
 
 func defaultWSLimits() wsLimits {
@@ -174,18 +172,6 @@ func (s *wsSession) run(ctx context.Context) {
 			turn.release()
 		}
 	}()
-	asked := false // a response.create arrived
-	idle := time.NewTimer(time.Hour)
-	idle.Stop()
-	defer idle.Stop()
-	// resetIdle arms the idle timer; a zero limit means no timeout.
-	resetIdle := func(d time.Duration) {
-		idle.Stop()
-		if d > 0 {
-			idle.Reset(d)
-		}
-	}
-	resetIdle(s.g.ws.firstMessage)
 	var keepalive <-chan time.Time
 	if s.g.ws.ping > 0 {
 		t := time.NewTicker(s.g.ws.ping)
@@ -230,7 +216,6 @@ func (s *wsSession) run(ctx context.Context) {
 				end(wsCloseRestart, "node is draining; reconnect")
 				return
 			}
-			asked = true
 			// The message is checked first: one that cannot start a turn
 			// costs no key lookup.
 			e, code := wsMessageError(m.data), websocket.StatusCode(0)
@@ -240,7 +225,6 @@ func (s *wsSession) run(ctx context.Context) {
 			if e != nil {
 				s.sendError(sctx, e)
 				if code == 0 {
-					resetIdle(s.g.ws.idle)
 					continue
 				}
 				end(code, truncateUTF8(e.Message, 120))
@@ -251,7 +235,6 @@ func (s *wsSession) run(ctx context.Context) {
 				end(websocket.StatusInternalError, "upstream connection failed; reconnect")
 				return
 			}
-			resetIdle(s.g.ws.idle)
 			if turn != nil {
 				upstreamIdle.Reset(turn.cl.streamIdle())
 			}
@@ -278,7 +261,6 @@ func (s *wsSession) run(ctx context.Context) {
 				s.finish(sctx, turn, out)
 				turn = nil
 				upstreamIdle.Stop()
-				resetIdle(s.g.ws.idle)
 				if !drainDeadline.IsZero() {
 					end(wsCloseRestart, "node is draining; reconnect")
 					return
@@ -300,16 +282,6 @@ func (s *wsSession) run(ctx context.Context) {
 			if s.up != nil {
 				s.keepalive(sctx, s.up, &upPing)
 			}
-		case <-idle.C:
-			if turn != nil {
-				continue
-			}
-			if !asked {
-				end(websocket.StatusPolicyViolation, "no response.create received")
-			} else {
-				end(websocket.StatusNormalClosure, "idle timeout")
-			}
-			return
 		case <-poll.C:
 			if !s.g.draining() && ctx.Err() == nil {
 				continue
@@ -585,8 +557,13 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 		}
 	}()
 	for cl.rec.Attempts < cl.attemptLimit() {
-		ref, release, busy := cl.pick(ctx, cands, excluded)
+		available, err := cl.policyCandidates(ctx, cands)
+		if err != nil {
+			return nil, fromCore(core.ErrUnavailable.WithMessage("account selection unavailable"), errTypeInternal)
+		}
+		ref, release, busy := cl.pick(ctx, available, excluded)
 		if ref == nil {
+			cl.endFailurePolicy("no_eligible_account")
 			if last == nil {
 				last = fromCore(core.ErrNoAvailableAccount, errTypeNoAccount)
 				if busy {
@@ -607,6 +584,7 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 			}
 		}
 		cl.rec.Attempts++
+		stickyAttempt := cl.sticky != nil && cl.sticky.hit && cl.sticky.bound == ref.ID
 		cl.startObservationAttempt(ref)
 		cl.beginFailureAttempt(ref)
 		begun := cl.g.now()
@@ -627,14 +605,11 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 		cl.observeAttemptResult(ref, res)
 		switch res.kind {
 		case attemptFailover:
-			excluded[ref.ID] = true
-			cl.skipAccount(ref.ID, core.SchedAttemptFailed, attemptFailureDetail(res.err))
 			last = res.err
-			if cl.sticky != nil && cl.sticky.hit && cl.sticky.bound == ref.ID && cl.sticky.rule.OnFailure == onFailureStick {
+			if cl.failOver(ctx, ref, res, excluded, stickyAttempt) {
 				cl.finishSticky(ctx, ref.ID, false)
 				return nil, last
 			}
-			cl.leaveSession(ctx, ref)
 		default:
 			cl.finishSticky(ctx, ref.ID, false)
 			return nil, res.err

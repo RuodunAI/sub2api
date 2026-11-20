@@ -27,8 +27,7 @@ type Instance interface {
 	Stop()
 }
 
-// Runtime starts plugin instances of the package's manifest runtime: a
-// plugin process for "grpc"; a JS runtime later.
+// Runtime starts plugin instances of a package: a plugin process ("grpc").
 type Runtime interface {
 	Load(ctx context.Context, pkg *registry.Package) (Instance, error)
 }

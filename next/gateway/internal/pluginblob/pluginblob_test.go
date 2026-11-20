@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
 )
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -187,6 +189,33 @@ func TestNoNodeHoldsThePackage(t *testing.T) {
 	}
 	if w := call(t, alone["x"].svc.Local(), http.MethodGet, "../../etc/passwd", nil); w.Code != http.StatusNotFound {
 		t.Fatalf("path escape: %d", w.Code)
+	}
+}
+
+type refusingTransport struct{ err error }
+
+func (r refusingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, r.err }
+
+// A fetch this node fails itself (its peer transport refuses the target,
+// lacks credentials, or the request ended) is not an unreachable peer, so it
+// never answers "no reachable node holds the plugin package".
+func TestLocalFetchFailureIsNotNotFound(t *testing.T) {
+	for _, refused := range []error{peer.ErrForbidden, peer.ErrUnauthorized, peer.ErrUnavailable} {
+		c := cluster(t, "a", "b")
+		sum := digest([]byte("held by a"))
+		c["b"].svc.Client = &http.Client{Transport: refusingTransport{refused}}
+		w := call(t, c["b"].svc.Local(), http.MethodGet, sum, nil)
+		if w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), "no reachable node") || !strings.Contains(w.Body.String(), refused.Error()) {
+			t.Fatalf("%v: %d %q", refused, w.Code, w.Body)
+		}
+	}
+	c := cluster(t, "a", "b")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := httptest.NewRecorder()
+	c["b"].svc.Local().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/system/plugin-blobs/"+digest([]byte("x")), nil).WithContext(ctx))
+	if w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), "no reachable node") {
+		t.Fatalf("canceled request: %d %q", w.Code, w.Body)
 	}
 }
 

@@ -3,6 +3,7 @@ package grpcruntime
 import (
 	"context"
 	"errors"
+	"runtime/debug"
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -42,8 +43,8 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 		return nil, err
 	}
 	defer func() {
-		if recover() != nil {
-			out, err = nil, status.Error(codes.Internal, "relay failed internally")
+		if v := recover(); v != nil {
+			out, err = nil, h.panicked(v, "relay failed internally")
 		}
 		sc.leave()
 	}()
@@ -81,6 +82,14 @@ func (h *hostServer) RelayUpstream(ctx context.Context, in *pluginv1.RelayUpstre
 	return out, nil
 }
 
+// panicked is the answer to a host call that panicked in the core: Internal
+// with msg for the plugin, an ERROR with the panic and its stack for the
+// operator, who would otherwise see only msg.
+func (h *hostServer) panicked(v any, msg string) error {
+	h.i.log.Error("host call panicked", "panic", v, "stack", string(debug.Stack()))
+	return status.Error(codes.Internal, msg)
+}
+
 // refusal is the text of a host refusal for the plugin: the message of a
 // core error, without its internal cause.
 func refusal(err error) string {
@@ -99,8 +108,8 @@ func (h *hostServer) ExecuteHTTP(ctx context.Context, in *pluginv1.ExecutionHTTP
 		return nil, err
 	}
 	defer func() {
-		if recover() != nil {
-			out, err = nil, status.Error(codes.Internal, "execution HTTP failed internally")
+		if v := recover(); v != nil {
+			out, err = nil, h.panicked(v, "execution HTTP failed internally")
 		}
 		sc.leave()
 	}()

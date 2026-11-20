@@ -23,7 +23,7 @@ import (
 // The relay that waits (design §4.3): an endpoint whose usage the plugin
 // reads, or a task submission. The request is sent inside the plugin's
 // Execute call (ExecutionClient.Relay, on the runtime's goroutine while the
-// handler's waits in Execute); the plugin gets the bounded observation and
+// handler's waits in Execute); the plugin gets the observation and
 // states the facts in Execute's return value. The execution's records make
 // those facts durable before anything is published: BeginExecution before
 // the send, ObserveExecution with the core's reading once the exchange
@@ -75,11 +75,10 @@ type waitedRelay struct {
 	header    http.Header
 	raw       []byte
 	errorBody *upstreamErrorBody
-	// relayObserved: the observation the plugin reads, whether its usage
-	// may be read from it, the core's reading, the answer held back until
-	// the facts commit, and a task submission's answer.
+	// relayObserved: the observation the plugin reads, the core's reading,
+	// the answer held back until the facts commit, and a task submission's
+	// answer.
 	observation *pluginv1.ExtractUsageRequest
-	extractable bool
 	base        *core.UsageRecord
 	spool       *bufferedResponse
 	taskBody    []byte
@@ -198,7 +197,6 @@ func (w *waitedRelay) read(ctx context.Context, resp *http.Response) attemptResu
 	if p := c.usage; p != nil {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: p.meta, Account: p.account, Status: int32(p.status), Headers: p.headers,
 			Body: p.cap.body, Events: p.cap.events, Fields: p.fields}
-		w.extractable = x.rt.pluginUsage && !c.ep.TaskSubmit()
 	} else {
 		w.observation = &pluginv1.ExtractUsageRequest{Meta: c.metaFor(x.rt), Account: x.acct, Status: int32(resp.StatusCode)}
 	}
@@ -390,11 +388,7 @@ func (w *waitedRelay) facts(ctx context.Context, out *pluginv1.ExecuteResponse) 
 		if c.ep.TaskSubmit() {
 			return commit, nil, errors.New("usage reported for a task submission")
 		}
-		if w.extractable {
-			c.applyUsageReport(ctx, rt, rt.binding.Plugin.Key, r.Usage)
-		} else {
-			c.usageFallback(ctx, rt, "the observation was too large to read the usage from", nil)
-		}
+		c.applyUsageReport(ctx, rt, rt.binding.Plugin.Key, r.Usage)
 		commit.Digest = core.FactDigest(r.Usage)
 	case *pluginv1.ExecuteResponse_HostUsage:
 		if c.ep.TaskSubmit() {
@@ -438,7 +432,7 @@ func (w *waitedRelay) task(ctx context.Context, parsed *pluginv1.TaskSubmission)
 	if err != nil {
 		return nil, nil, err
 	}
-	query, ok := c.taskPair(true)
+	query, ok := c.taskQueryEndpoint()
 	if !ok {
 		return nil, nil, errors.New("missing task query contract")
 	}

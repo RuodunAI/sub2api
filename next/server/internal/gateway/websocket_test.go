@@ -41,6 +41,7 @@ type wsUpstream struct {
 
 	mu       sync.Mutex
 	reject   map[string]int // api key -> handshake status
+	dialed   []string       // api key of every handshake, rejected ones included
 	keys     []string       // api key of every accepted handshake
 	headers  []http.Header
 	messages []string
@@ -59,6 +60,7 @@ func (u *wsUpstream) handle(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	u.mu.Lock()
 	status := u.reject[key]
+	u.dialed = append(u.dialed, key)
 	u.mu.Unlock()
 	if status != 0 {
 		w.Header().Set("Content-Type", "application/json")
@@ -574,27 +576,17 @@ func TestWebSocketConnectionLimits(t *testing.T) {
 		t.Fatalf("plain GET: %v %v", resp, err)
 	}
 	resp.Body.Close()
-	e.gw.ws.firstMessage = 200 * time.Millisecond
-	// No limit on the sessions of a key: they are only counted.
+	// No limit on the sessions of a key: they are only counted, until each
+	// client leaves.
 	var open []*wsClient
 	for range 70 {
 		open = append(open, e.mustDial())
 	}
 	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 70 })
 	for _, c := range open {
-		if code := c.closed(); code != websocket.StatusPolicyViolation {
-			t.Fatalf("no first message: %d", code)
-		}
+		_ = c.conn.CloseNow()
 	}
 	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 0 })
-	e.gw.ws.idle = 200 * time.Millisecond
-	c := e.mustDial()
-	c.send(create(wsModel, "hi"))
-	c.until("response.completed")
-	e.record()
-	if code := c.closed(); code != websocket.StatusNormalClosure {
-		t.Fatalf("idle session: %d", code)
-	}
 }
 
 func TestWebSocketNeedsAPluginThatBuildsWebSockets(t *testing.T) {
@@ -876,7 +868,7 @@ func TestWebSocketHandshakeHeaderLayers(t *testing.T) {
 // connection and serves the next turn. Keepalive pings keep running.
 func TestWebSocketSessionHasNoIdleTimeout(t *testing.T) {
 	e := newWSEnv(t)
-	if d := defaultWSLimits(); d.firstMessage != 0 || d.idle != 0 || d.ping <= 0 || d.pingTimeout <= 0 {
+	if d := defaultWSLimits(); d.ping <= 0 || d.pingTimeout <= 0 {
 		t.Fatalf("default limits = %+v", d)
 	}
 	e.gw.ws.ping = 20 * time.Millisecond
@@ -1071,7 +1063,6 @@ func TestWebSocketGroupChangeAsksToReconnect(t *testing.T) {
 
 func TestWebSocketAuthUnavailableFailsOnlyTheTurn(t *testing.T) {
 	e := newWSEnv(t)
-	e.gw.ws.firstMessage = 300 * time.Millisecond
 	c := e.mustDial()
 	unavailable := func(input string) {
 		t.Helper()
@@ -1083,10 +1074,7 @@ func TestWebSocketAuthUnavailableFailsOnlyTheTurn(t *testing.T) {
 		e.noRecord()
 		e.auth.change(func(a *fakeAuth) { a.err = nil })
 	}
-	// The failed message is the session's first: the first-message timer
-	// stops with it and does not close the session later.
 	unavailable("first")
-	time.Sleep(400 * time.Millisecond)
 	if r := e.turn(c, "second"); !r.Success {
 		t.Fatalf("turn after auth came back: %+v", r)
 	}
@@ -1134,5 +1122,111 @@ func TestWebSocketRetryableReturnErrorReachesTheClient(t *testing.T) {
 	}
 	if keys, _ := e.wsUp.snapshot(); len(keys) != 0 {
 		t.Fatalf("handshakes: %v", keys)
+	}
+}
+
+// handshakes is the api key of every handshake the upstream saw.
+func (u *wsUpstream) handshakes() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.dialed...)
+}
+
+// A published failure policy decides the first turn's handshake like an
+// HTTP attempt (CONTRACTS §35, §69): the protocol upgrade the client got is
+// no committed response. A failed handshake switches, or retries the same
+// account and then switches, as the rule says; a handshake the core refuses
+// moves on without an account rule.
+func TestWebSocketHandshakeUnderFailurePolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, action string
+		want         []string
+	}{
+		{"switch", failureReset, []string{"oa-11", "oa-12"}},
+		{"same then switch", failureRetry, []string{"oa-11", "oa-11", "oa-12"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newWSEnv(t)
+			p := testFailurePolicy()
+			p.RetryEnabled, p.MaxRetries = true, 2
+			p.RetryRules[0].Action, p.RetryRules[0].SameAccountRetries, p.RetryRules[0].ExhaustedAction = tc.action, 1, failureReset
+			e.setFailurePolicy(p)
+			e.wsUp.reject["oa-11"] = http.StatusServiceUnavailable
+			c := e.mustDial()
+			c.send(create(wsModel, "hello"))
+			c.until("response.completed")
+			r := e.record()
+			if !r.Success || r.AccountID == nil || *r.AccountID != 12 || r.Attempts != len(tc.want) {
+				t.Fatalf("record: %+v", r)
+			}
+			if got := e.wsUp.handshakes(); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("handshakes %v, want %v", got, tc.want)
+			}
+			if strings.Contains(r.FailurePolicy, "response_committed") {
+				t.Fatalf("failure policy events %s", r.FailurePolicy)
+			}
+		})
+	}
+	t.Run("refused handshake", func(t *testing.T) {
+		e := newWSEnv(t)
+		p := testFailurePolicy()
+		p.RetryEnabled, p.MaxRetries = true, 2
+		e.setFailurePolicy(p)
+		e.wsPlat.amend = func(_ int, in *pluginv1.ExecuteRequest, out *pluginv1.UpstreamRequest) error {
+			if in.GetAccount().GetId() == 11 {
+				out.Method = "POST"
+			}
+			return nil
+		}
+		c := e.mustDial()
+		c.send(create(wsModel, "hello"))
+		c.until("response.completed")
+		r := e.record()
+		if !r.Success || r.AccountID == nil || *r.AccountID != 12 || r.Attempts != 2 {
+			t.Fatalf("record: %+v", r)
+		}
+		if !strings.Contains(r.FailurePolicy, `"account_result":"unchanged"`) || len(e.accounts.cooldowns) != 0 || len(e.accounts.disabled) != 0 {
+			t.Fatalf("the refused account was penalized: %s cooldowns %v disabled %v", r.FailurePolicy, e.accounts.cooldowns, e.accounts.disabled)
+		}
+	})
+}
+
+// Without a failure policy a handshake that fails over releases the
+// session's sticky binding to the failed account, as an HTTP failover does:
+// the next connection of the session goes straight to the account that
+// served it.
+func TestWebSocketHandshakeFailoverReleasesTheBinding(t *testing.T) {
+	e := newWSEnv(t)
+	r := builtinPlatform(t, manifest.PlatformOpenAI).StickyRules[0]
+	e.gw.rules.mu.Lock()
+	e.gw.rules.override = activeRules([]*stickyRule{{ID: 1, Name: r.Name, Source: sourceBuiltin, Enabled: true, Priority: 100,
+		Match: r.Match, KeySources: r.KeySources, TTLSeconds: r.TTLSeconds, KeyIncludes: r.KeyIncludes, OnFailure: onFailureFailover}})
+	e.gw.rules.mu.Unlock()
+	e.setSettings(noQueueSettings(), StickySettings{Enabled: true, DefaultTTLSeconds: 3600})
+	turn := func() *core.UsageRecord {
+		t.Helper()
+		msg := create(wsModel, "hello")
+		msg["prompt_cache_key"] = "pk-1"
+		c := e.mustDial()
+		c.send(msg)
+		c.until("response.completed")
+		return e.record()
+	}
+	if rec := turn(); *rec.AccountID != 11 {
+		t.Fatalf("first connection on %d", *rec.AccountID)
+	}
+	// The core refuses account 11's handshake from now on: no account rule,
+	// the session moves to 12.
+	e.wsPlat.amend = func(_ int, in *pluginv1.ExecuteRequest, out *pluginv1.UpstreamRequest) error {
+		if in.GetAccount().GetId() == 11 {
+			out.Method = "POST"
+		}
+		return nil
+	}
+	if rec := turn(); *rec.AccountID != 12 || rec.Attempts != 2 {
+		t.Fatalf("failover: account %d attempts %d", *rec.AccountID, rec.Attempts)
+	}
+	if rec := turn(); *rec.AccountID != 12 || rec.Attempts != 1 || !rec.StickyHit {
+		t.Fatalf("after the failover: account %d attempts %d sticky hit %v", *rec.AccountID, rec.Attempts, rec.StickyHit)
 	}
 }

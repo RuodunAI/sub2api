@@ -188,7 +188,7 @@ func asyncTask(db *gorm.DB, id string) *gorm.DB {
 func (s *Service) finishTaskOnly(ctx context.Context, e *settleEntry, observation string) {
 	ctx, cancel := bookkeeping(ctx)
 	defer cancel()
-	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error { return s.lockTaskOutcome(ctx, tx, e, observation) })
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error { return s.lockTaskOutcome(ctx, tx, e, observation) })
 	if err != nil && !errors.Is(err, errNotPending) {
 		s.rec.log.Error("task outcome write failed", "task", e.task.id, "err", err)
 	}
@@ -209,7 +209,7 @@ func (s *Service) rescheduleTask(ctx context.Context, e *settleEntry, cfg resolv
 	if next.After(e.deadlineAt) {
 		next = e.deadlineAt
 	}
-	err := s.outcomeTx(ctx, e, func(tx *gorm.DB) error {
+	err := s.db.Tx(ctx, func(tx *gorm.DB) error {
 		if err := s.lockTaskOutcome(ctx, tx, e, "pending"); err != nil {
 			return err
 		}

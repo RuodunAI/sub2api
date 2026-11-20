@@ -9,8 +9,7 @@ import (
 
 // ============================================================ plugin extension points (registry owner: C plugin-runtime)
 //
-// Capability interfaces are runtime-agnostic: the gRPC runtime implements them
-// over go-plugin today; a JS runtime would implement the same interfaces.
+// The gRPC runtime implements the capability interfaces over go-plugin.
 // Implementations apply per-plugin concurrency limits and call timeouts, and
 // return ErrPluginUnavailable when the plugin instance is down.
 

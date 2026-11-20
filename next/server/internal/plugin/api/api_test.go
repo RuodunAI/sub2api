@@ -33,6 +33,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/task"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
@@ -408,7 +409,7 @@ func TestAPIFlow(t *testing.T) {
 	var enc []byte
 	_ = h.db.SQL.QueryRowContext(ctx, `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc)
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
-	plain, err := cipher.Decrypt(enc, ConfigAAD("guard"))
+	plain, err := cipher.Decrypt(enc, rows.ConfigAAD("guard"))
 	if err != nil || !bytes.Contains(plain, []byte(`"webhook_secret":"s3cret"`)) || !bytes.Contains(plain, []byte(`"threshold":4`)) {
 		t.Fatalf("stored settings = %s %v", plain, err)
 	}
@@ -778,7 +779,7 @@ func TestSettingsWithoutFormAreAllMasked(t *testing.T) {
 	var enc []byte
 	require.NoError(t, h.db.SQL.QueryRowContext(context.Background(), `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc))
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
-	plain, err := cipher.Decrypt(enc, ConfigAAD("guard"))
+	plain, err := cipher.Decrypt(enc, rows.ConfigAAD("guard"))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"api_key":"k-1","upstream":{"url":"https://u.example","token":"t-1"},"note":"n"}`, string(plain))
 }

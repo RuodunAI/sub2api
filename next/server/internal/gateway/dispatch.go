@@ -169,23 +169,12 @@ func (c *call) dispatch(ctx context.Context) {
 			c.finishSticky(ctx, ref.ID, false)
 			return
 		case attemptFailover:
-			if c.failurePolicy != nil {
-				last = res.err
-				continue
-			}
-			excluded[ref.ID] = true
-			c.skipAccount(ref.ID, core.SchedAttemptFailed, attemptFailureDetail(res.err))
 			last = res.err
-			if stickyAttempt && c.sticky.rule.OnFailure == onFailureStick {
-				// Protect the upstream cache: do not move the session.
+			if c.failOver(ctx, ref, res, excluded, stickyAttempt) {
 				c.fail(last)
 				c.finishSticky(ctx, ref.ID, false)
 				return
 			}
-			if err := c.releaseBinding(ctx, ref.ID); err != nil {
-				slog.WarnContext(ctx, "gateway: release sticky binding", "err", err)
-			}
-			c.releaseSession(ctx, ref)
 		}
 	}
 	if last == nil || (last.RecordType != errTypeUpstream && last.RecordType != errTypeInvalidRequest && last.RecordType != errTypeModelAvailability &&
@@ -201,6 +190,29 @@ func (c *call) dispatch(ctx context.Context) {
 	}
 	c.fail(last)
 	c.finishSticky(ctx, 0, false)
+}
+
+// failOver moves the request off ref after a failed attempt (HTTP and a
+// WebSocket handshake alike). With a failure policy, planFailure has done
+// so already (or kept ref for a retry). Without one ref is excluded, and the
+// session's sticky binding to ref and its session slot there are released,
+// unless the sticky rule that put the session on ref keeps it there on
+// failure ("stick": protect the upstream cache): stick is true and the
+// caller ends the request. stickyAttempt says the attempt was the binding's.
+func (c *call) failOver(ctx context.Context, ref *core.AccountRef, res attemptResult, excluded map[int64]bool, stickyAttempt bool) (stick bool) {
+	if c.failurePolicy != nil {
+		return false
+	}
+	excluded[ref.ID] = true
+	c.skipAccount(ref.ID, core.SchedAttemptFailed, attemptFailureDetail(res.err))
+	if stickyAttempt && c.sticky.rule.OnFailure == onFailureStick {
+		return true
+	}
+	if err := c.releaseBinding(ctx, ref.ID); err != nil {
+		slog.WarnContext(ctx, "gateway: release sticky binding", "err", err)
+	}
+	c.releaseSession(ctx, ref)
+	return false
 }
 
 // sessionIdentity is the request's session for the limiter's session caps

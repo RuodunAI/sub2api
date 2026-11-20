@@ -236,24 +236,22 @@ func (s *Service) deferExecutionRecovery(ctx context.Context, id string, cause e
 func (s *Service) cleanupExecutionReceipts(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	for _, table := range []string{"plugin_executions", "plugin_monitor_receipts"} {
-		for range 20 {
+	for range 20 {
+		if ctx.Err() != nil {
+			return nil
+		}
+		// Up to 1000 rows older than seven days, the oldest first.
+		g := store.G(ctx, s.db.Gorm)
+		old := g.Table("plugin_executions").Select("id").Where("created_at<clock_timestamp()-interval '7 days'").Order("created_at").Limit(1000)
+		res := g.Table("plugin_executions").Where("id IN (?)", old).Delete(nil)
+		if err := res.Error; err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			// Up to 1000 rows older than seven days, the oldest first.
-			g := store.G(ctx, s.db.Gorm)
-			old := g.Table(table).Select("id").Where("created_at<clock_timestamp()-interval '7 days'").Order("created_at").Limit(1000)
-			res := g.Table(table).Where("id IN (?)", old).Delete(nil)
-			if err := res.Error; err != nil {
-				if ctx.Err() != nil {
-					return nil
-				}
-				return err
-			}
-			if res.RowsAffected < 1000 {
-				break
-			}
+			return err
+		}
+		if res.RowsAffected < 1000 {
+			return nil
 		}
 	}
 	return nil

@@ -121,7 +121,7 @@ type call struct {
 	session string
 	rec     *core.UsageRecord
 
-	// metaPathParams and metaQuery are the bounded maps handed to plugins in
+	// metaPathParams and metaQuery are the maps handed to plugins in
 	// RequestMeta; built once per request because meta() runs for every hook,
 	// ranker and upstream attempt. nil when the pattern has no parameters /
 	// the endpoint declares no request.queryParams.
@@ -823,6 +823,24 @@ func (c *call) finalizeBillability(ctx context.Context, rec *core.UsageRecord, b
 		c.dropReservation(ctx, rec, billing, hasUsage)
 		rec.Price = nil
 	}
+	if rec.Success && !rec.Billable && !hasUsage && rec.UsageExtract == "" && !strings.EqualFold(billing, "free") {
+		c.readingEmpty(ctx, rec)
+	}
+}
+
+// errReadingEmpty is why a request is unreported whose usage is the core's
+// reading when that reading holds no usage.
+var errReadingEmpty = errors.New("the upstream answered and the core's reading of it holds no usage")
+
+// readingEmpty ends as unreported a served request of an endpoint whose usage
+// the core reads when its reading found nothing to bill: there are no facts
+// and the core makes none up, the same record as a plugin's host_usage
+// without a reading (hostUsageChosen), so the missing usage shows instead of
+// passing as a free request.
+func (c *call) readingEmpty(ctx context.Context, rec *core.UsageRecord) {
+	rec.SetUnreported(errReadingEmpty.Error())
+	slog.WarnContext(ctx, "gateway: upstream answer holds no usage, not billed", "request_id", c.rid,
+		"plugin", rec.PluginKey, "account_type", rec.AccountType, "endpoint", c.ep.Path, "protocol", rec.UpstreamProtocol)
 }
 
 // settleCanceled decides what a request pays whose client hung up while the

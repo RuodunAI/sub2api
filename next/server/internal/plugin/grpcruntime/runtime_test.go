@@ -24,6 +24,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -122,7 +123,7 @@ func setupPackage(t *testing.T, grants map[string]string, bin []byte, mod func(*
 
 func (e *env) setConfig(t *testing.T, cfg string) {
 	t.Helper()
-	enc, err := e.cipher.Encrypt([]byte(cfg), grpcruntime.ConfigAAD(e.key))
+	enc, err := e.cipher.Encrypt([]byte(cfg), rows.ConfigAAD(e.key))
 	if err != nil {
 		t.Fatal(err)
 	}

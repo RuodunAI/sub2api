@@ -103,6 +103,12 @@ var caCertPaths = []string{
 	"/usr/share/ca-certificates", "/usr/local/share/ca-certificates",
 }
 
+// resolverFiles are what the system resolver reads. A plugin granted "net"
+// reads them only without strict network: it then dials directly and
+// resolves host names itself, where under strict network the SDK resolves
+// through the tunnel.
+var resolverFiles = []string{"/etc/resolv.conf", "/etc/hosts", "/etc/nsswitch.conf"}
+
 // envUnixSocketDir is go-plugin's EnvUnixSocketDir: the directory, inside the
 // plugin's private run directory, that holds both unix sockets.
 const envUnixSocketDir = "PLUGIN_UNIX_SOCKET_DIR"
@@ -143,7 +149,8 @@ type landlockRule struct {
 
 // landlockRules is the allow list (CONTRACTS §43.8): the plugin binary,
 // go-plugin's socket directory, /dev/null, time zones, and only when
-// granted the data directory ("fs.data") and the CA certificates ("net").
+// granted the data directory ("fs.data") and the CA certificates ("net"),
+// with the resolver files too when the network is not strict.
 // The rest of the run directory (TMPDIR) and the shared temporary directory
 // are not granted.
 func landlockRules(o *execOptions, getenv func(string) string) []landlockRule {
@@ -162,6 +169,9 @@ func landlockRules(o *execOptions, getenv func(string) string) []landlockRule {
 	if o.CACerts {
 		paths := append([]string{getenv("SSL_CERT_FILE")}, caCertPaths...)
 		paths = append(paths, filepath.SplitList(getenv("SSL_CERT_DIR"))...)
+		if !o.StrictNetwork {
+			paths = append(paths, resolverFiles...)
+		}
 		for _, p := range paths {
 			rules = append(rules, landlockRule{p, llRead})
 		}

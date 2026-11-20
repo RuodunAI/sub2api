@@ -235,6 +235,11 @@ func TestQuotaAutomaticInactiveAndAdmission(t *testing.T) {
 	e.withQuota(&manifest.AccountQuota{Query: true, AutoRefresh: true})
 	id := e.mkRawAccount("anthropic", "apikey", "active", "sk-good-key-123", true)
 	off := e.mkRawAccount("anthropic", "apikey", "off", "sk-good-key-123", false)
+	// Disabled with its scheduling switch left on (PATCH status does not
+	// touch it).
+	disabled := e.mkRawAccount("anthropic", "apikey", "disabled", "sk-good-key-123", true)
+	_, err := e.db.SQL.ExecContext(t.Context(), `UPDATE accounts SET status='disabled' WHERE id=$1`, disabled)
+	require.NoError(t, err)
 	e.svc.d.CanWork = func() bool { return false }
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
 	require.Zero(t, up.calls.Load())
@@ -243,7 +248,7 @@ func TestQuotaAutomaticInactiveAndAdmission(t *testing.T) {
 	// A disabled account is only kept out of scheduling: like any account
 	// with scheduling off, it gets its initial recording, then no automatic
 	// refresh.
-	require.EqualValues(t, 2, up.calls.Load())
+	require.EqualValues(t, 3, up.calls.Load())
 	snapshots, err := e.svc.AccountQuotaSnapshots(t.Context(), []int64{id, off})
 	require.NoError(t, err)
 	require.NotNil(t, snapshots[id])
@@ -251,7 +256,7 @@ func TestQuotaAutomaticInactiveAndAdmission(t *testing.T) {
 	_, err = e.db.SQL.ExecContext(t.Context(), `UPDATE account_quota_snapshots SET next_check_at=now()-interval '1 second',last_active_at=now()-interval '31 minutes'`)
 	require.NoError(t, err)
 	require.NoError(t, e.svc.sweepQuotas(t.Context()))
-	require.EqualValues(t, 3, up.calls.Load(), "only the schedulable account is refreshed again")
+	require.EqualValues(t, 4, up.calls.Load(), "only the active, schedulable account is refreshed again")
 }
 
 type heldQuotaPlugin struct {

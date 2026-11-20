@@ -109,7 +109,8 @@ func (m *Manager) Ensure(ctx context.Context, pluginKey string) error {
 // core created for this database, the roles of plugins no longer installed
 // included (see convertRole). A role that cannot be converted is logged and
 // left for the next Ensure of its plugin or the next start; it does not fail
-// the start.
+// the start. Transitional: it goes, with convertRole, once every database
+// has started under core 0.1.304 or later (CONTRACTS §115).
 func (m *Manager) ConvertLegacyRoles(ctx context.Context) {
 	var roles []string
 	err := store.G(ctx, m.db.Gorm).Table("pg_roles").Where("rolname LIKE ?", `plg\_%`).Order("rolname").Pluck("rolname", &roles).Error
@@ -272,7 +273,7 @@ func (m *Manager) DSN(ctx context.Context, pluginKey string, tunnelled bool) (ds
 	return dsn, schema, err
 }
 
-// Drop removes the schema and the migration records.
+// Drop is DropTx in a transaction of its own.
 func (m *Manager) Drop(ctx context.Context, pluginKey string) error {
 	return m.db.Tx(ctx, func(tx *gorm.DB) error { return m.DropTx(ctx, tx, pluginKey) })
 }

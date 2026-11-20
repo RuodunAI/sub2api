@@ -429,8 +429,7 @@ func TestExecutionWatchCommitsTaskAndMonitorSettles(t *testing.T) {
 	due()
 	final := f.cost(r.RequestID)
 	if f.scalar(`SELECT billing_status || ' ' || input_tokens::text FROM usage_logs WHERE request_id='watch'`) != "billed 4000" ||
-		!before.Sub(f.balance()).Equal(final) || f.scalar(`SELECT state FROM async_tasks WHERE public_id=$1`, public) != "succeeded" ||
-		f.scalar(`SELECT count(*) FROM plugin_monitor_receipts WHERE task_id=$1`, public) != "2" {
+		!before.Sub(f.balance()).Equal(final) || f.scalar(`SELECT state FROM async_tasks WHERE public_id=$1`, public) != "succeeded" {
 		t.Fatal("the terminal result did not settle the actual usage")
 	}
 }

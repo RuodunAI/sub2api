@@ -70,15 +70,17 @@ func (h HostPolicy) normalized() HostPolicy {
 
 // refusal is why host (lower-case, without port, as the plugin dialled or
 // queried it) may not be reached, "" when it may. A listed domain matches
-// itself and its subdomains (manifest.ExternalServiceHost).
+// itself and its subdomains (manifest.ExternalServiceHost). host is compared
+// in the stored form of the entries (storedForm).
 func (h HostPolicy) refusal(host string) string {
+	stored := storedForm(host)
 	if h.Mode == HostBlockAll {
-		if !manifest.ExternalServiceHost(h.AllowedDomains, host) {
+		if !manifest.ExternalServiceHost(h.AllowedDomains, stored) {
 			return host + " is not on the allowed list of plugin network access"
 		}
 		return ""
 	}
-	if manifest.ExternalServiceHost(h.BlockedDomains, host) {
+	if manifest.ExternalServiceHost(h.BlockedDomains, stored) {
 		return host + " is on the blocked list of plugin network access"
 	}
 	return ""
@@ -115,6 +117,17 @@ func NormalizeDomain(s string) (string, bool) {
 		}
 	}
 	return ascii, true
+}
+
+// storedForm is host as NormalizeDomain stores a list entry (punycode, a
+// canonical IP literal), an IPv6 literal without the brackets
+// manifest.ExternalServiceHost takes off an entry. A host that is not a
+// host name stays as it is.
+func storedForm(host string) string {
+	if n, ok := NormalizeDomain(host); ok {
+		return strings.Trim(n, "[]")
+	}
+	return host
 }
 
 // errHostPolicyUnread: the setting was never read on this node.

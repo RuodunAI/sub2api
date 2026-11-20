@@ -145,3 +145,17 @@ func TestToolingMode(t *testing.T) {
 		}
 	}
 }
+
+// A plugin declaring account types never connects on its own (CONTRACTS
+// §124.1), so "net" is refused for it and only for it.
+func TestPlatformPluginCannotRequestNet(t *testing.T) {
+	m := minimal()
+	m.HostPermissions = []manifest.HostPermission{{ID: "net"}}
+	if err := Validate(m, nil, ValidateOptions{Tooling: true}); err != nil {
+		t.Fatalf("net without account types: %v", codes(err))
+	}
+	m.AccountTypes = []manifest.AccountType{{ID: "apikey"}}
+	if c := codes(Validate(m, nil, ValidateOptions{Tooling: true})); c["hostPermissions[0].id"] != "platform_net" {
+		t.Fatalf("net with account types: %v", c)
+	}
+}

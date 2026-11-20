@@ -17,6 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg/pkgtest"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rows"
 )
 
 // settingsCheck is a plugin's ValidateSettings: it records what it was
@@ -57,7 +58,7 @@ func (h *harness) storedSettings() string {
 	var enc []byte
 	require.NoError(h.t, h.db.SQL.QueryRowContext(context.Background(), `SELECT config_enc FROM plugins WHERE key = 'guard'`).Scan(&enc))
 	cipher, _ := secret.New(bytes.Repeat([]byte{7}, 32))
-	plain, err := cipher.Decrypt(enc, ConfigAAD("guard"))
+	plain, err := cipher.Decrypt(enc, rows.ConfigAAD("guard"))
 	require.NoError(h.t, err)
 	return string(plain)
 }
