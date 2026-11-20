@@ -8143,7 +8143,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 核心认领到期任务后调 `Monitor(PollRequest) returns (MonitorResponse)`，`MonitorResponse.result`（`ReconcileResult`）就是这次观察的结果，核心在一个事务里重排或结算（租约、调度、原账号、快照、账务都归核心，§28）。
 
 - 插件只能经 `ExecuteHTTP` 查上游，不能中继。
-- 没有结果、或报错：算一次查询失败。终态（`PENDING`、`POLL_FAILED` 以外）必须伴随这次调用里一次完整、成功的取回（拿到 HTTP 状态、没有传输错误），否则同样算一次查询失败。结果的大小不限（此前超过 512 KiB 算一次查询失败）：事实照常校验，按摘要提交。
+- 没有结果、或报错：算一次查询失败。终态（`PENDING`、`POLL_FAILED` 以外）必须伴随这次调用里一次完整、成功的取回（拿到 HTTP 状态、没有传输错误），否则同样算一次查询失败。结果的大小不限（此前超过 512 KiB 算一次查询失败）：事实照常校验，在这次认领的结算事务里应用一次。此前每个结果另写一条按“认领 ID + 摘要”去重的回执（`plugin_monitor_receipts`），是插件经宿主回调上报、同一认领可能报多次时的设计；`Monitor` 只返回一个结果、每个认领的 ID 都是新的之后它从没去重过，迁移 0119 删表（`usage/monitor.go` 的 `outcomeTx` 随之删除，`TestMigration0119DropsMonitorReceipts`）。
 - 整个调用 30 秒，调用方的 context 更短时取更短的；每次取回 20 秒。
 - 原账号永远问不了（没有记录账号、账号已删除、账号属于别的插件）算一次查询失败，消耗失败次数，最终退款（`errTaskAccountGone`；此前和账号冷却一样延后到期限，到期按估算扣费）；冷却、槽位满、限流、查询账号出错仍然延后。
 - SDK：`TaskMonitor.Monitor(ctx, *PollRequest) (*ReconcileResult, error)`；`PollFailure`、`TaskNotFound` 不变；`ClassifyPollResponse(status, transportError)` 去掉了 `truncated` 参数（§32）。

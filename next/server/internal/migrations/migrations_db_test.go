@@ -1353,3 +1353,30 @@ func TestMigration0118DropsVolcengineAPIKeyPrefixes(t *testing.T) {
 	require.Equal(t, want, state())
 	require.Equal(t, before, versions(all), "a rerun wrote a row")
 }
+
+// 0119 drops plugin_monitor_receipts, which nothing reads any more; a rerun
+// changes nothing.
+func TestMigration0119DropsMonitorReceipts(t *testing.T) {
+	const id = "0119_drop_plugin_monitor_receipts.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exists := func() bool {
+		var ok bool
+		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT to_regclass('plugin_monitor_receipts') IS NOT NULL`).Scan(&ok))
+		return ok
+	}
+	_, err := db.SQL.ExecContext(ctx, `INSERT INTO plugin_monitor_receipts (id, digest) VALUES ('entry:1:x', 'd')`)
+	require.NoError(t, err)
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.False(t, exists())
+	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
+	require.NoError(t, err)
+	require.Equal(t, []string{id}, migrate())
+	require.False(t, exists())
+}
