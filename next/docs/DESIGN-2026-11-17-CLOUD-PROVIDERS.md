@@ -205,7 +205,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 ### 7.2 转发
 
-主机：`location` 为 `global` 时 `aiplatform.googleapis.com`，否则 `{location}-aiplatform.googleapis.com`。
+主机：`location` 为 `global` 时 `aiplatform.googleapis.com`；为多区域 `us`、`eu` 时 `aiplatform.{location}.rep.googleapis.com`（Google 文档的“多区域端点”，与 new-api `relay/channel/vertex/url_builder.go` 相同）；否则 `{location}-aiplatform.googleapis.com`。
 
 | 情况 | URL |
 |---|---|

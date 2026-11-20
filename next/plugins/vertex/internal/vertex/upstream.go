@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -32,13 +33,17 @@ const (
 )
 
 // apiBase is the scheme and host serving t: the global host for the express
-// address and the global location, else the location's own.
+// address and the global location, the multi-region's own for us and eu
+// (aiplatform.<us|eu>.rep.googleapis.com, Google's "multi-regional
+// endpoints"), else the region's.
 func (p *Plugin) apiBase(t target) string {
 	switch {
 	case p.ep.API != "":
 		return p.ep.API
 	case t.express() || t.Location == LocationGlobal:
 		return "https://" + APIHost
+	case slices.Contains(MultiRegions, t.Location):
+		return "https://aiplatform." + t.Location + ".rep.googleapis.com"
 	}
 	return "https://" + t.Location + "-" + APIHost
 }

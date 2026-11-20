@@ -48,7 +48,8 @@ const (
 	// sends the exchange for the plugin, so a pasted file must not be able
 	// to point it elsewhere.
 	TokenURL = "https://oauth2.googleapis.com/token"
-	// APIHost is the global Vertex AI host; a region's is "<region>-" + it.
+	// APIHost is the global Vertex AI host; a region's is "<region>-" + it,
+	// a multi-region's (MultiRegions) its own.
 	APIHost = "aiplatform.googleapis.com"
 	// LocationGlobal is the location served by APIHost itself.
 	LocationGlobal = "global"
@@ -56,6 +57,11 @@ const (
 	// DefaultTestModel is used by BuildTestRequest when no model is given.
 	DefaultTestModel = "gemini-2.5-flash"
 )
+
+// MultiRegions are the locations served from a host of their own,
+// aiplatform.<location>.rep.googleapis.com, rather than "<location>-" +
+// APIHost.
+var MultiRegions = []string{"us", "eu"}
 
 // Endpoints are the addresses the plugin builds requests for. The zero value
 // of a field means the production address; tests point them at fake servers.

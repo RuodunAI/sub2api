@@ -124,6 +124,10 @@ func executeCases() []executeCase {
 			regionalBase + "tuned%2Fmodel%3Fx%23y:generateContent", "tuned/model?x#y", tokenAuth},
 		executeCase{"another region", executeRequest(saAccount(map[string]any{fieldProject: testProject, fieldLocation: "europe-west4"}), ProtocolGenerate, model),
 			"https://europe-west4-aiplatform.googleapis.com/v1/projects/my-project-123456/locations/europe-west4/publishers/google/models/" + model + ":generateContent", model, tokenAuth},
+		executeCase{"us multi-region", executeRequest(saAccount(map[string]any{fieldProject: testProject, fieldLocation: "us"}), ProtocolGenerate, model),
+			"https://aiplatform.us.rep.googleapis.com/v1/projects/my-project-123456/locations/us/publishers/google/models/" + model + ":generateContent", model, tokenAuth},
+		executeCase{"eu multi-region", executeRequest(apiKeyAccount(map[string]any{fieldProject: testProject, fieldLocation: "eu"}), ProtocolStreamGenerate, model),
+			"https://aiplatform.eu.rep.googleapis.com/v1/projects/my-project-123456/locations/eu/publishers/google/models/" + model + ":streamGenerateContent?alt=sse", model, keyAuth},
 		executeCase{"api key express without settings", executeRequest(apiKeyAccount(nil), ProtocolStreamGenerate, "models/"+model),
 			expressBase + model + ":streamGenerateContent?alt=sse", model, keyAuth},
 		// A token that has not expired yet is sent.
