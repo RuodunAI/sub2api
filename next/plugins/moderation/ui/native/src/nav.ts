@@ -1,10 +1,9 @@
 import { computed, watch, type Ref } from 'vue'
-import { satisfiesRange, type PluginHost } from '@sub2api/host'
+import type { PluginHost } from '@sub2api/host'
 
-// The sections of the moderation page and their groups. A console from UI
-// 3.14 lists them in its sidebar (manifest ui.pages.dashboard.nav, which
-// nav.spec.ts keeps equal to this list) and opens ?tab=<key>; an older one
-// ignores the declaration and the page shows the same list as tabs.
+// The sections of the moderation page and their groups. The console lists
+// them in its sidebar (manifest ui.pages.dashboard.nav, which nav.spec.ts
+// keeps equal to this list) and opens ?tab=<key>.
 
 /** Who may open a section: readers, moderation:manage, or those who may edit the settings. */
 export type Access = 'read' | 'manage' | 'settings'
@@ -82,21 +81,17 @@ export function visibleGroups(may: (a: Access) => boolean) {
   return GROUPS.map((g) => ({ key: g.key, items: g.items.filter((i) => may(i.access)) })).filter((g) => g.items.length)
 }
 
-/** The console lists the sections in its sidebar (UI 3.14). */
-export const hostShowsNav = (host: Pick<PluginHost, 'version'>) => satisfiesRange(host.version, '>=3.14.0')
-
 /**
  * The section shown and the way to change it, on the page that is open now.
  * ?tab= names it (a ?record= link without one opens the records); the page
  * writes the section it resolved back into ?tab= (a replace), so the
  * console's sidebar lights the same item, an old ?tab=settings link turns
  * into the page it opens, and closing a linked record keeps the records.
- * Changing the section adds a history entry when the sidebar lists the
- * sections (like a click in it), and replaces it with tabs; it drops
- * ?record= and ?user= (their drawers belong to the section left). A ?user=
- * link without a section opens the watch list.
+ * Changing the section adds a history entry (like a click in the sidebar);
+ * it drops ?record= and ?user= (their drawers belong to the section left).
+ * A ?user= link without a section opens the watch list.
  */
-export function useSection(router: PluginHost['router'], visible: Ref<readonly SectionKey[]>, inSidebar: boolean) {
+export function useSection(router: PluginHost['router'], visible: Ref<readonly SectionKey[]>) {
   const route = router.currentRoute
   const page = route.value.path
   let last: SectionKey = visible.value[0]
@@ -121,7 +116,7 @@ export function useSection(router: PluginHost['router'], visible: Ref<readonly S
   return computed<SectionKey>({
     get: () => section.value,
     set: (v) => {
-      if (v !== section.value && visible.value.includes(v)) go(v, inSidebar ? 'push' : 'replace')
+      if (v !== section.value && visible.value.includes(v)) go(v, 'push')
     }
   })
 }

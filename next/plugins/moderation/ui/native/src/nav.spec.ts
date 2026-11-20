@@ -5,15 +5,16 @@ import messages from './messages'
 import { NAV_GROUPS, isSettingsPage, sectionOf, useSection, visibleGroups, type SectionKey } from './nav'
 
 // The console lists the sections from the manifest (ui.pages.dashboard.nav);
-// an older console gets them as tabs from nav.ts. The two must not drift.
+// the page resolves ?tab= against nav.ts and titles a section with its
+// nav.items message. The two must not drift.
 describe('page sections', () => {
   it('declares in the manifest what nav.ts lists, with the same labels and permissions', () => {
-    const label = (part: 'groups' | 'items', key: string) => ({ en: messages.en.nav[part][key as never], zh: messages.zh.nav[part][key as never] })
+    const label = (key: string) => ({ en: messages.en.nav.items[key as never], zh: messages.zh.nav.items[key as never] })
     const permissions = { read: {}, manage: { permission: 'moderation:manage' }, settings: { permission: 'moderation:manage', corePermission: 'plugin:manage' } }
     const expected = NAV_GROUPS.map((g) => ({
       key: g.key,
-      label: label('groups', g.key),
-      items: g.items.map((i) => ({ key: i.key, label: label('items', i.key), icon: i.icon, ...permissions[i.access] }))
+      label: { en: expect.any(String), zh: expect.any(String) },
+      items: g.items.map((i) => ({ key: i.key, label: label(i.key), icon: i.icon, ...permissions[i.access] }))
     }))
     expect(manifest.ui.pages.dashboard.nav.groups).toEqual(expected)
   })
@@ -62,9 +63,9 @@ describe('useSection', () => {
     return { currentRoute, push: go('push'), replace: go('replace'), back }
   }
   const flush = () => nextTick()
-  async function at(path: string, inSidebar = true) {
+  async function at(path: string) {
     const router = fakeRouter(path)
-    const section = useSection(router as never, ref<SectionKey[]>(['overview', 'events', 'policy', 'watch']), inSidebar)
+    const section = useSection(router as never, ref<SectionKey[]>(['overview', 'events', 'policy', 'watch']))
     await flush()
     return { router, section, q: () => router.currentRoute.value.query }
   }
@@ -98,19 +99,17 @@ describe('useSection', () => {
     expect(q().tab).toBe('policy')
   })
 
-  it('adds a history entry in the sidebar, replaces it with tabs, and ignores sections the caller cannot open', async () => {
-    for (const inSidebar of [true, false]) {
-      const { router, section, q } = await at('/p/moderation/dashboard?tab=overview', inSidebar)
-      section.value = 'events'
-      await flush()
-      expect(q().tab).toBe('events')
-      router.back()
-      await flush()
-      expect(q().tab).toBe(inSidebar ? 'overview' : 'events')
-      section.value = 'test' as SectionKey
-      await flush()
-      expect(section.value).not.toBe('test')
-    }
+  it('adds a history entry for a section change and ignores sections the caller cannot open', async () => {
+    const { router, section, q } = await at('/p/moderation/dashboard?tab=overview')
+    section.value = 'events'
+    await flush()
+    expect(q().tab).toBe('events')
+    router.back()
+    await flush()
+    expect(q().tab).toBe('overview')
+    section.value = 'test' as SectionKey
+    await flush()
+    expect(section.value).not.toBe('test')
   })
 
   it('keeps its section while the console leaves the page', async () => {

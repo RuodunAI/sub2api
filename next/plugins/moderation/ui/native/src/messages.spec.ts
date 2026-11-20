@@ -1,18 +1,31 @@
+/// <reference types="vite/client" />
 import { describe, expect, it } from 'vitest'
+import { checkMessages } from '@sub2api/ui/testing'
 import messages from './messages'
 import { validateSpec } from './flowValidate'
 import type { Spec } from './types'
 
-// zh and en must have the same keys (a missing one shows the raw key).
-const keys = (o: unknown, prefix = ''): string[] =>
-  o && typeof o === 'object' ? Object.entries(o).flatMap(([k, v]) => keys(v, prefix ? `${prefix}.${k}` : k)) : [prefix]
+// Groups of keys looked up with a computed suffix: enumLabel / enumOptions
+// (format.ts) take the group, the rest are t(`group.${…}`) in the views.
+const ENUM_GROUPS = [
+  'auditorType', 'auditors.preset', 'channelType', 'combine', 'cost.range', 'costSource', 'deniedAction', 'detail.level', 'detail.match', 'err',
+  'fallbackReason', 'flows.combineOpt', 'flows.scope', 'flows.simUser', 'level', 'modelFilter', 'priceReason', 'protocol', 'result', 'review',
+  'role', 'settingsTab.format', 'severity', 'source', 'stageResult', 'stats.granularity', 'timing', 'trend', 'userStatus', 'watchAction',
+  'watchList.lockedOpt', 'watchList.sort', 'watchSource'
+]
+const COMPUTED = [
+  'auditors.defaultState', 'auditors.diff', 'auditors.restoreConfirm', 'auditors.viewDefault', 'bindings.kind', 'bindings.kindHint', 'cat',
+  'channelTypeHint', 'detail.f', 'duration', 'flows.coverage', 'flows.issue', 'flows.role', 'flows.simUserHint', 'flows.template', 'jev_default_set.items',
+  'kpi', 'lists.hint', 'lists.name', 'lock.action', 'lock.confirm', 'mode', 'nav.desc', 'nav.items', 'perf.tile', 'queue.name', 'scoreLevel',
+  'settingsTab.field', 'settingsTab.option', 'settingsTab.section', 'settingsTab.unit', 'statusLine', 'test.sample', 'todayCost', 'trace', 'userDaily',
+  'verdict', 'watchActions.add', 'watchActions.desc', 'watchActions.set', 'watchActions.title', 'watchEdit.defaultExpiry'
+]
 
 describe('messages', () => {
-  it('zh and en have the same keys', () => {
-    const zh = new Set(keys(messages.zh))
-    const en = new Set(keys(messages.en))
-    expect([...zh].filter((k) => !en.has(k))).toEqual([])
-    expect([...en].filter((k) => !zh.has(k))).toEqual([])
+  checkMessages(messages, {
+    sources: import.meta.glob<string>(['./**/*.vue', './**/*.ts', '!./**/*.spec.ts', '!./messages.ts'], { query: '?raw', import: 'default', eager: true }),
+    // flowOps passOutcome / hitOutcome and FlowEditor saveLive build the rest: t(`flows.${…}`), t(`flows.${field}Saved`).
+    dynamic: [...[...ENUM_GROUPS, ...COMPUTED].map((g) => `${g}.`), 'flows.pass', 'flows.hit', 'flows.enabledSaved', 'flows.scopeSaved']
   })
 
   // 0.8.0 (new-api parity): the names the views build keys from.
