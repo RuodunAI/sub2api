@@ -1,5 +1,5 @@
-// Package model is the schema of plg_dynweight as GORM models: the one
-// description of its tables. migrations/*.sql stay what the host runs;
+// Package model describes the tables of dynweight as GORM models: the one
+// description of them. migrations/*.sql stay what the host runs;
 // `sub2api-plugin db diff` writes the next one from a change made here, and
 // `sub2api-plugin db check` (run by pack) fails while the two disagree.
 package model
@@ -16,19 +16,23 @@ func All() []any {
 	return []any{&Config{}, &Obs{}, &State{}, &Base{}, &Event{}, &StickyPending{}}
 }
 
+// Prefix starts the name of every table, index and sequence of the plugin:
+// they live in the core's schema (manifest.TablePrefix, CONTRACTS §130).
+const Prefix = "plg_dynweight__"
+
 // ConfigID is the id of the one configuration row.
 const ConfigID = 1
 
 // Config holds the configuration document (rules.Config), one row.
 type Config struct {
-	ID        int16           `gorm:"primaryKey;autoIncrement:false;check:config_id_check,id = 1"`
+	ID        int16           `gorm:"primaryKey;autoIncrement:false;check:plg_dynweight__config_id_check,id = 1"`
 	Doc       json.RawMessage `gorm:"type:jsonb;not null"`
 	Version   int64           `gorm:"not null"`
 	UpdatedAt time.Time       `gorm:"not null;default:now();autoUpdateTime:false"`
 	UpdatedBy int64           `gorm:"not null;default:0"`
 }
 
-func (Config) TableName() string { return "config" }
+func (Config) TableName() string { return Prefix + "config" }
 
 // Obs holds the attempt counters of an (account, group, client model) in
 // one window, summed by every node (rules.Counts fields).
@@ -36,17 +40,17 @@ type Obs struct {
 	AccountID   int64           `gorm:"primaryKey;autoIncrement:false"`
 	GroupID     int64           `gorm:"primaryKey;autoIncrement:false"`
 	Model       string          `gorm:"primaryKey"`
-	WindowStart int64           `gorm:"primaryKey;autoIncrement:false;index:obs_window_start_idx"` // unix seconds
+	WindowStart int64           `gorm:"primaryKey;autoIncrement:false;index:plg_dynweight__obs_window_start_idx"` // unix seconds
 	Counts      json.RawMessage `gorm:"type:jsonb;not null"`
 }
 
-func (Obs) TableName() string { return "obs" }
+func (Obs) TableName() string { return Prefix + "obs" }
 
 // State is the evaluation state of an (account, group, client model)
 // (rules.State). Base, Eff and Tombstone repeat the document for the
 // scheduling snapshot; Gen guards the write-back against a concurrent reset.
 type State struct {
-	AccountID  int64           `gorm:"primaryKey;autoIncrement:false;index:state_changed_idx,where:NOT tombstone AND eff <> base"`
+	AccountID  int64           `gorm:"primaryKey;autoIncrement:false;index:plg_dynweight__state_changed_idx,where:NOT tombstone AND eff <> base"`
 	GroupID    int64           `gorm:"primaryKey;autoIncrement:false"`
 	Model      string          `gorm:"primaryKey"`
 	Data       json.RawMessage `gorm:"type:jsonb;not null"`
@@ -58,7 +62,7 @@ type State struct {
 	UpdatedAt  time.Time       `gorm:"not null;default:now();autoUpdateTime:false"`
 }
 
-func (State) TableName() string { return "state" }
+func (State) TableName() string { return Prefix + "state" }
 
 // Base is the base weight scheduling handed in for an (account, group):
 // the evaluation runs outside requests and reads it here.
@@ -70,13 +74,13 @@ type Base struct {
 	SeenAt    time.Time `gorm:"not null;default:now()"`
 }
 
-func (Base) TableName() string { return "bases" }
+func (Base) TableName() string { return Prefix + "bases" }
 
 // Event is what an evaluation did (rules.Event), or a manual reset.
 type Event struct {
 	ID         int64              `gorm:"primaryKey"`
-	CreatedAt  time.Time          `gorm:"not null;default:now();autoCreateTime:false;index:events_created_at_idx;index:events_account_idx,priority:2"`
-	AccountID  int64              `gorm:"not null;index:events_account_idx,priority:1"`
+	CreatedAt  time.Time          `gorm:"not null;default:now();autoCreateTime:false;index:plg_dynweight__events_created_at_idx;index:plg_dynweight__events_account_idx,priority:2"`
+	AccountID  int64              `gorm:"not null;index:plg_dynweight__events_account_idx,priority:1"`
 	GroupID    int64              `gorm:"not null"`
 	Model      string             `gorm:"not null"`
 	Kind       string             `gorm:"not null"`
@@ -87,7 +91,7 @@ type Event struct {
 	Detail     json.RawMessage    `gorm:"type:jsonb;not null;default:'{}'"`
 }
 
-func (Event) TableName() string { return "events" }
+func (Event) TableName() string { return Prefix + "events" }
 
 // StickyPending is a sticky clear an evaluation decided and the core has not
 // done yet, one per (account, group, client model). Salt is the window
@@ -102,8 +106,8 @@ type StickyPending struct {
 	Zero         bool      `gorm:"not null;default:false"`
 	Weight       float64   `gorm:"type:double precision;not null;default:0"`
 	Attempts     int       `gorm:"type:integer;not null;default:0"`
-	CreatedAt    time.Time `gorm:"not null;default:now();autoCreateTime:false;index:sticky_pending_created_idx"`
+	CreatedAt    time.Time `gorm:"not null;default:now();autoCreateTime:false;index:plg_dynweight__sticky_pending_created_idx"`
 	ClaimedUntil time.Time `gorm:"not null;default:'-infinity'"`
 }
 
-func (StickyPending) TableName() string { return "sticky_pending" }
+func (StickyPending) TableName() string { return Prefix + "sticky_pending" }

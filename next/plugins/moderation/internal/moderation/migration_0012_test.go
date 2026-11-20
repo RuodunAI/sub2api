@@ -16,7 +16,7 @@ import (
 // tables.
 const (
 	// store.go:183
-	insertEvent093 = `INSERT INTO events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
+	insertEvent093 = `INSERT INTO plg_moderation__events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
 				verdict, action, categories, severity, reason, error, text, text_chars, text_hash, cached,
 				llm_model, turns, latency_ms, prompt_tokens, completion_tokens,
 				result, timing, flow_id, flow_version, highest_category, highest_score, hit_categories, trace,
@@ -24,13 +24,13 @@ const (
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'','',$13,$14,$15,false,'',0,$16,0,0,
 				$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33) RETURNING id`
 	// store.go:302 (auto_watch)
-	insertAutoWatch093 = `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
+	insertAutoWatch093 = `INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $4)`
 	// watch.go:290 (POST /watchlist)
-	insertManualWatch093 = `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
+	insertManualWatch093 = `INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$4)`
 	// watch.go:357 (PATCH /watchlist/:user_id)
-	updateWatch093 = `UPDATE watchlist SET level = $2, expires_at = $3, note = $4, updated_at = $6,
+	updateWatch093 = `UPDATE plg_moderation__watchlist SET level = $2, expires_at = $3, note = $4, updated_at = $6,
 			source = CASE WHEN $5 THEN 'manual' ELSE source END,
 			since_at = CASE WHEN $5 THEN $6 ELSE since_at END,
 			violation_count = CASE WHEN $5 THEN 0 ELSE violation_count END,
@@ -48,7 +48,7 @@ const (
 	counted, input_format, text_chars, image_count, input_message_size, latency_ms, queue_ms, keep_until, replayed,
 	ai_verdict, ai_severity, ai_category, ai_evidence, ai_reason, ai_analysis_id, verdict, reason, error, llm_model`
 	// snapshot.go:468 (reloadWatch)
-	reloadWatch093 = `SELECT user_id, level, expires_at FROM watchlist WHERE expires_at IS NULL OR expires_at > $1`
+	reloadWatch093 = `SELECT user_id, level, expires_at FROM plg_moderation__watchlist WHERE expires_at IS NULL OR expires_at > $1`
 )
 
 // Migration 0012 is rolling-safe: on a 0.9.3 database (migrations up to
@@ -85,10 +85,10 @@ func TestMigration0012Rolling(t *testing.T) {
 	}
 	read093 := func() {
 		t.Helper()
-		if err := drain(conn.QueryContext(ctx, `SELECT `+watchColumns093+` FROM watchlist`)); err != nil {
+		if err := drain(conn.QueryContext(ctx, `SELECT `+watchColumns093+` FROM plg_moderation__watchlist`)); err != nil {
 			t.Fatal(err)
 		}
-		for _, q := range []string{`SELECT ` + eventColumns093 + ` FROM events`, reloadWatch093} {
+		for _, q := range []string{`SELECT ` + eventColumns093 + ` FROM plg_moderation__events`, reloadWatch093} {
 			args := []any{}
 			if q == reloadWatch093 {
 				args = append(args, now)

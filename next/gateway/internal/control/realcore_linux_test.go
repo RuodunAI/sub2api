@@ -317,9 +317,9 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 			var busy bool
 			_ = testDB.WithContext(ctx).Raw(`SELECT status, coalesce(active_version,''),
 				(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=? WHERE r.plugin_key=? AND NOT r.stopped AND n.ready),
-				(SELECT count(*) FROM plugin_migrations WHERE plugin_key=? AND migration_id=?),
+				(SELECT count(*) FROM plg_dynweight__schema_migrations WHERE migration_id=?),
 				EXISTS(SELECT 1 FROM plugin_rollouts WHERE plugin_key=? AND phase IN ('preparing','activating')) OR EXISTS(SELECT 1 FROM plugin_rollout_cleanup WHERE state='cleanup_pending')
-				FROM plugins WHERE key=?`, dbname, nextKey, nextKey, nextMigration, nextKey, nextKey).Row().Scan(&status, &active, &running, &migrations, &busy)
+				FROM plugins WHERE key=?`, dbname, nextKey, nextMigration, nextKey, nextKey).Row().Scan(&status, &active, &running, &migrations, &busy)
 			if status == "enabled" && active == nextVersion && migrations == 1 && running >= len(nodes) && !busy {
 				t.Logf("bundled %s upgraded to %s with the core on all %d nodes; its migration ran once", nextKey, nextVersion, len(nodes))
 				break

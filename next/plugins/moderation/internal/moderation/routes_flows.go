@@ -68,11 +68,11 @@ type flowViewRow struct {
 
 // flowViews reads the live flows, or the one of id (0 = all).
 func (p *Plugin) flowViews(db *gorm.DB, id int64) ([]FlowView, error) {
-	q := db.Table("flows f").Select(`f.id, f.name, f.enabled, f.draft, f.published, f.version, f.published_at, f.published_by, f.scope,
-			coalesce((SELECT array_agg(group_id ORDER BY group_id) FROM flow_groups g WHERE g.flow_id = f.id), '{}') AS group_ids,
+	q := db.Table(model.Prefix + "flows f").Select(`f.id, f.name, f.enabled, f.draft, f.published, f.version, f.published_at, f.published_by, f.scope,
+			coalesce((SELECT array_agg(group_id ORDER BY group_id) FROM ` + model.Prefix + `flow_groups g WHERE g.flow_id = f.id), '{}') AS group_ids,
 			coalesce((SELECT jsonb_agg(jsonb_build_object('group_id', a.group_id, 'account_id', a.account_id) ORDER BY a.account_id, a.group_id)
-				FROM flow_accounts a WHERE a.flow_id = f.id), '[]') AS accounts,
-			coalesce((SELECT v.auto_timeout FROM flow_versions v WHERE v.flow_id = f.id AND v.version = f.version), false) AS published_auto_timeout,
+				FROM ` + model.Prefix + `flow_accounts a WHERE a.flow_id = f.id), '[]') AS accounts,
+			coalesce((SELECT v.auto_timeout FROM ` + model.Prefix + `flow_versions v WHERE v.flow_id = f.id AND v.version = f.version), false) AS published_auto_timeout,
 			f.created_at, f.updated_at`).Where("f.deleted_at IS NULL")
 	if id != 0 {
 		q = q.Where("f.id = ?", id)
@@ -298,8 +298,8 @@ func (p *Plugin) deleteFlow(ctx context.Context, req *pluginv1.HTTPRequest) (*pl
 	var resp *pluginv1.HTTPResponse
 	err := p.configTx(ctx, func(tx *gorm.DB) error {
 		var inUse bool
-		err := tx.Table("flows f").Select(`f.enabled AND (EXISTS (SELECT 1 FROM flow_groups g WHERE g.flow_id = f.id)
-				OR EXISTS (SELECT 1 FROM flow_accounts a WHERE a.flow_id = f.id))`).
+		err := tx.Table(model.Prefix+"flows f").Select(`f.enabled AND (EXISTS (SELECT 1 FROM `+model.Prefix+`flow_groups g WHERE g.flow_id = f.id)
+				OR EXISTS (SELECT 1 FROM `+model.Prefix+`flow_accounts a WHERE a.flow_id = f.id))`).
 			Where("f.id = ? AND f.deleted_at IS NULL", id).Clauses(forUpdate()).Take(&inUse).Error
 		if err == nil && inUse {
 			resp = pluginsdk.ErrorResponse(http.StatusConflict, "flow_in_use",
@@ -481,7 +481,7 @@ func auditorTimeouts(db *gorm.DB) (map[int64]int, error) {
 		Type      string
 		TimeoutMs int
 	}
-	err := db.Table("auditors a").Select("a.id, c.type, c.timeout_ms").Joins("JOIN channels c ON c.id = a.channel_id").
+	err := db.Table(model.Prefix + "auditors a").Select("a.id, c.type, c.timeout_ms").Joins("JOIN " + model.Prefix + "channels c ON c.id = a.channel_id").
 		Where("a.deleted_at IS NULL").Scan(&rows).Error
 	out := make(map[int64]int, len(rows))
 	for _, r := range rows {

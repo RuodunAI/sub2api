@@ -16,7 +16,7 @@ import (
 // the contracted tables.
 const (
 	// store.go:200
-	insertEvent0100 = `INSERT INTO events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
+	insertEvent0100 = `INSERT INTO plg_moderation__events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
 				verdict, action, categories, severity, reason, error, text, text_chars, text_hash, cached,
 				llm_model, turns, latency_ms, prompt_tokens, completion_tokens,
 				result, timing, flow_id, flow_version, highest_category, highest_score, hit_categories, trace,
@@ -34,13 +34,13 @@ const (
 	// watch list)
 	watchColumns0100 = `user_id, level, source, since_at, expires_at, hit_count, violation_count, violation_epoch, last_hit_at, hits_since_seen, note, updated_at, locked`
 	// store.go:338 (auto_watch)
-	insertAutoWatch0100 = `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
+	insertAutoWatch0100 = `INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at, violation_epoch, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $4)`
 	// watch.go:260 (POST /watchlist)
-	insertManualWatch0100 = `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
+	insertManualWatch0100 = `INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at, violation_epoch, note, updated_at)
 			VALUES ($1,$2,$3,$4,$5,$6,$7,$4)`
 	// watch.go:324 (PATCH /watchlist/:user_id)
-	updateWatch0100 = `UPDATE watchlist SET level = $2, expires_at = $3, note = $4, updated_at = $6,
+	updateWatch0100 = `UPDATE plg_moderation__watchlist SET level = $2, expires_at = $3, note = $4, updated_at = $6,
 			source = CASE WHEN $5 THEN 'manual' ELSE source END,
 			since_at = CASE WHEN $5 THEN $6 ELSE since_at END,
 			violation_count = CASE WHEN $5 THEN 0 ELSE violation_count END,
@@ -48,15 +48,15 @@ const (
 			hits_since_seen = CASE WHEN $5 THEN 0 ELSE hits_since_seen END
 			WHERE user_id = $1`
 	// locks.go:175 (the reconcile of the locked entries)
-	lockWatch0100 = `INSERT INTO watchlist (user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at)
+	lockWatch0100 = `INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at)
 			VALUES ($1, $2, 'manual', $3, NULL, $4, true, $3)
 			ON CONFLICT (user_id) DO UPDATE SET level = EXCLUDED.level, source = 'manual', expires_at = NULL, locked = true,
 				updated_at = EXCLUDED.updated_at,
-				since_at = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.since_at ELSE EXCLUDED.since_at END,
-				violation_count = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_count ELSE 0 END,
-				violation_epoch = CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_epoch ELSE EXCLUDED.violation_epoch END`
+				since_at = CASE WHEN plg_moderation__watchlist.level = EXCLUDED.level THEN plg_moderation__watchlist.since_at ELSE EXCLUDED.since_at END,
+				violation_count = CASE WHEN plg_moderation__watchlist.level = EXCLUDED.level THEN plg_moderation__watchlist.violation_count ELSE 0 END,
+				violation_epoch = CASE WHEN plg_moderation__watchlist.level = EXCLUDED.level THEN plg_moderation__watchlist.violation_epoch ELSE EXCLUDED.violation_epoch END`
 	// snapshot.go:586 (reloadWatch)
-	reloadWatch0100 = `SELECT user_id, level, expires_at, locked FROM watchlist WHERE expires_at IS NULL OR expires_at > $1`
+	reloadWatch0100 = `SELECT user_id, level, expires_at, locked FROM plg_moderation__watchlist WHERE expires_at IS NULL OR expires_at > $1`
 )
 
 // Migration 0013 is rolling-safe and leaves a rollback possible: on a
@@ -97,8 +97,8 @@ func TestMigration0013Rolling(t *testing.T) {
 			sql  string
 			args []any
 		}{
-			{`SELECT ` + watchColumns0100 + ` FROM watchlist`, nil},
-			{`SELECT ` + eventColumns0100 + ` FROM events`, nil},
+			{`SELECT ` + watchColumns0100 + ` FROM plg_moderation__watchlist`, nil},
+			{`SELECT ` + eventColumns0100 + ` FROM plg_moderation__events`, nil},
 			{reloadWatch0100, []any{now}},
 		} {
 			if err := drain(conn.QueryContext(ctx, q.sql, q.args...)); err != nil {
@@ -120,7 +120,7 @@ func TestMigration0013Rolling(t *testing.T) {
 		t.Fatalf("%d analysis columns left (%v)", left, err)
 	}
 	var gone bool
-	if err := db.Raw(`SELECT to_regclass(?) IS NULL`, ident(schema, "user_analyses")).Row().Scan(&gone); err != nil || !gone {
+	if err := db.Raw(`SELECT to_regclass(?) IS NULL`, ident(schema, "plg_moderation__user_analyses")).Row().Scan(&gone); err != nil || !gone {
 		t.Fatalf("user_analyses dropped = %v (%v)", gone, err)
 	}
 	// 0.11.0 runs with every migration applied and reads the 0.10.0 rows.
@@ -142,7 +142,7 @@ func TestMigration0013Rolling(t *testing.T) {
 		}
 	}
 	var imported bool
-	if err := db.Raw(`SELECT lists_imported FROM config_state WHERE id = 1`).Row().Scan(&imported); err != nil || imported {
+	if err := db.Raw(`SELECT lists_imported FROM plg_moderation__config_state WHERE id = 1`).Row().Scan(&imported); err != nil || imported {
 		t.Fatalf("lists_imported = %v (%v)", imported, err)
 	}
 }

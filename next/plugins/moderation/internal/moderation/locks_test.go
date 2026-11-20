@@ -27,7 +27,7 @@ func TestLockAPI(t *testing.T) {
 		t.Helper()
 		db, err := p.db(context.Background())
 		if err == nil {
-			err = db.Raw(`SELECT watch_version FROM config_state WHERE id = 1`).Row().Scan(&v)
+			err = db.Raw(`SELECT watch_version FROM plg_moderation__config_state WHERE id = 1`).Row().Scan(&v)
 		}
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +104,7 @@ func TestWatchListStaff(t *testing.T) {
 	ctx := context.Background()
 	db, err := p.db(ctx)
 	if err == nil {
-		err = db.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, violation_epoch, locked, updated_at)
+		err = db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, violation_epoch, locked, updated_at)
 			VALUES (6, 'observe', 'manual', now(), 1, true, now())`).Error
 	}
 	if err != nil {
@@ -149,7 +149,7 @@ func TestListsImport(t *testing.T) {
 		{12, LevelEnforce, nil, true},                     // on neither list: unlocked
 		{13, LevelObserve, nil, false},                    // on neither list, not locked
 	} {
-		if err := conn.Exec(`INSERT INTO `+ident(fh.SchemaValue, "watchlist")+`
+		if err := conn.Exec(`INSERT INTO `+ident(fh.SchemaValue, "plg_moderation__watchlist")+`
 			(user_id, level, source, since_at, expires_at, violation_epoch, locked, updated_at) VALUES (?, ?, 'manual', ?, ?, 1, ?, ?)`, e.uid, e.level, now, e.expires, e.locked, now).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -208,7 +208,7 @@ func TestListsImport(t *testing.T) {
 	if !listsImported() {
 		t.Fatal("status: lists_imported = false after the import")
 	}
-	if err := conn.Exec(`UPDATE ` + ident(fh.SchemaValue, "config_state") + ` SET lists_imported = false`).Error; err != nil {
+	if err := conn.Exec(`UPDATE ` + ident(fh.SchemaValue, "plg_moderation__config_state") + ` SET lists_imported = false`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if listsImported() {

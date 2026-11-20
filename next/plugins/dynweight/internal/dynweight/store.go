@@ -31,7 +31,7 @@ func compareKeys(a, b key) int {
 	return cmp.Or(cmp.Compare(a.AccountID, b.AccountID), cmp.Compare(a.GroupID, b.GroupID), strings.Compare(a.Model, b.Model))
 }
 
-// store is the plugin schema.
+// store is the plugin's tables.
 type store struct{ db *gorm.DB }
 
 // with is the store's handle bound to ctx.
@@ -110,8 +110,8 @@ type obsDelta struct {
 
 // sumCounts merges the counters of a conflicting row: every node adds its
 // own, so the fields are summed.
-const sumCounts = `(SELECT jsonb_object_agg(f, COALESCE((obs.counts->>f)::bigint, 0) + COALESCE((EXCLUDED.counts->>f)::bigint, 0))
-	FROM (SELECT jsonb_object_keys(obs.counts) UNION SELECT jsonb_object_keys(EXCLUDED.counts)) AS u(f))`
+const sumCounts = `(SELECT jsonb_object_agg(f, COALESCE((` + model.Prefix + `obs.counts->>f)::bigint, 0) + COALESCE((EXCLUDED.counts->>f)::bigint, 0))
+	FROM (SELECT jsonb_object_keys(` + model.Prefix + `obs.counts) UNION SELECT jsonb_object_keys(EXCLUDED.counts)) AS u(f))`
 
 // addObs adds counters (deltas come sorted, one per key and window).
 func (s store) addObs(ctx context.Context, deltas []obsDelta) error {
@@ -200,11 +200,11 @@ func (s store) writeState(ctx context.Context, k key, st rules.State, gen int64,
 		}
 		// A map on the table, not the model: no RETURNING of the defaults
 		// ('-infinity' does not fit a time.Time).
-		return tx.Table("sticky_pending").Clauses(clause.OnConflict{
+		return tx.Table(model.Prefix + "sticky_pending").Clauses(clause.OnConflict{
 			Columns: keyColumns,
 			DoUpdates: append(clause.AssignmentColumns([]string{"salt", "strategies", "weight"}), clause.Assignments(map[string]any{
-				"percent":       gorm.Expr("GREATEST(sticky_pending.percent, EXCLUDED.percent)"),
-				"zero":          gorm.Expr("sticky_pending.zero OR EXCLUDED.zero"),
+				"percent":       gorm.Expr("GREATEST(" + model.Prefix + "sticky_pending.percent, EXCLUDED.percent)"),
+				"zero":          gorm.Expr(model.Prefix + "sticky_pending.zero OR EXCLUDED.zero"),
 				"attempts":      0,
 				"created_at":    gorm.Expr("now()"),
 				"claimed_until": gorm.Expr("'-infinity'"),
@@ -306,7 +306,7 @@ func (s store) tombstone(ctx context.Context, keys []key, window func(key) int64
 	return pgdb.InsertAll(s.with(ctx), rows, clause.OnConflict{
 		Columns: keyColumns,
 		DoUpdates: append(clause.AssignmentColumns([]string{"data", "base", "eff", "tombstone", "eval_window"}),
-			clause.Assignments(map[string]any{"gen": gorm.Expr("state.gen + 1"), "updated_at": gorm.Expr("now()")})...),
+			clause.Assignments(map[string]any{"gen": gorm.Expr(model.Prefix + "state.gen + 1"), "updated_at": gorm.Expr("now()")})...),
 	})
 }
 
@@ -326,9 +326,9 @@ func (s store) loadWeights(ctx context.Context) (map[key]weight, error) {
 		model.State
 		SeenAt time.Time
 	}
-	err := s.with(ctx).Table("state s").
+	err := s.with(ctx).Table(model.Prefix + "state s").
 		Select("s.account_id, s.group_id, s.model, s.base, s.eff, COALESCE(b.seen_at, 'epoch') AS seen_at").
-		Joins("LEFT JOIN bases b ON b.account_id = s.account_id AND b.group_id = s.group_id").
+		Joins("LEFT JOIN " + model.Prefix + "bases b ON b.account_id = s.account_id AND b.group_id = s.group_id").
 		Where("NOT s.tombstone AND s.eff <> s.base").Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -479,8 +479,8 @@ func (s store) listEvents(ctx context.Context, f filter, kind string, limit, off
 		AccountName string
 	}
 	// The account's name as scheduling last saw it, in any group.
-	err := s.with(ctx).Scopes(match).Select(`events.*, COALESCE((SELECT b.name FROM bases b
-			WHERE b.account_id = events.account_id ORDER BY b.seen_at DESC LIMIT 1), '') AS account_name`).
+	err := s.with(ctx).Scopes(match).Select(model.Prefix + `events.*, COALESCE((SELECT b.name FROM ` + model.Prefix + `bases b
+			WHERE b.account_id = ` + model.Prefix + `events.account_id ORDER BY b.seen_at DESC LIMIT 1), '') AS account_name`).
 		Order("id DESC").Limit(limit).Offset(offset).Find(&rows).Error
 	if err != nil {
 		return nil, 0, err
@@ -556,8 +556,10 @@ func (s store) prune(ctx context.Context, since int64, eventsBefore, staleBefore
 		{&model.Obs{}, oldObs(db, since)},
 		{&model.Event{}, db.Where("created_at < ?", eventsBefore)},
 		{&model.State{}, db.Where(`(tombstone OR eff = base) AND eval_window < ? AND NOT EXISTS (
-			SELECT 1 FROM obs o WHERE o.account_id = state.account_id AND o.group_id = state.group_id AND o.model = state.model)`, since)},
-		{&model.State{}, db.Where(`NOT EXISTS (SELECT 1 FROM bases b WHERE b.account_id = state.account_id AND b.group_id = state.group_id AND b.seen_at >= ?)`, staleBefore)},
+			SELECT 1 FROM `+model.Prefix+`obs o WHERE o.account_id = `+model.Prefix+`state.account_id
+			AND o.group_id = `+model.Prefix+`state.group_id AND o.model = `+model.Prefix+`state.model)`, since)},
+		{&model.State{}, db.Where(`NOT EXISTS (SELECT 1 FROM `+model.Prefix+`bases b WHERE b.account_id = `+model.Prefix+`state.account_id
+			AND b.group_id = `+model.Prefix+`state.group_id AND b.seen_at >= ?)`, staleBefore)},
 		{&model.Base{}, db.Where("seen_at < ?", staleBefore)},
 		{&model.StickyPending{}, db.Where("created_at < ?", clearsBefore)},
 	} {

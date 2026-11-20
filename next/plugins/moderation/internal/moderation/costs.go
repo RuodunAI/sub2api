@@ -349,9 +349,9 @@ func (p *Plugin) loadCostReport(ctx context.Context, db *gorm.DB, r *CostReport,
 		Deleted                         bool
 		Sum                             costSumRow `gorm:"embedded"`
 	}
-	err := db.Table("costs k").Select(`k.channel_id, coalesce(c.name, '') AS name, coalesce(c.type, '') AS type, coalesce(c.model, '') AS model,
+	err := db.Table(model.Prefix+"costs k").Select(`k.channel_id, coalesce(c.name, '') AS name, coalesce(c.type, '') AS type, coalesce(c.model, '') AS model,
 			coalesce(c.billing_model, '') AS billing_model, c.id IS NULL OR c.deleted_at IS NOT NULL AS deleted, `+costSums).
-		Joins("LEFT JOIN channels c ON c.id = k.channel_id").Where("k.hour >= ?", r.From).
+		Joins("LEFT JOIN "+model.Prefix+"channels c ON c.id = k.channel_id").Where("k.hour >= ?", r.From).
 		Group("k.channel_id, c.id").Order("sum(k.cost) DESC, k.channel_id").Scan(&channels).Error
 	if err != nil {
 		return err

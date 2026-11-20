@@ -101,8 +101,8 @@ func addStats(tx *gorm.DB, rows []model.StatsMinutely) error {
 	return pgdb.Insert(tx, rows, clause.OnConflict{
 		Columns: []clause.Column{{Name: "minute"}, {Name: "group_id"}, {Name: "model"}},
 		DoUpdates: clause.Set{
-			{Column: clause.Column{Name: "requests"}, Value: gorm.Expr("stats_minutely.requests + EXCLUDED.requests")},
-			{Column: clause.Column{Name: "blocked"}, Value: gorm.Expr("stats_minutely.blocked + EXCLUDED.blocked")},
+			{Column: clause.Column{Name: "requests"}, Value: gorm.Expr(model.Prefix + "stats_minutely.requests + EXCLUDED.requests")},
+			{Column: clause.Column{Name: "blocked"}, Value: gorm.Expr(model.Prefix + "stats_minutely.blocked + EXCLUDED.blocked")},
 		},
 	})
 }
@@ -122,7 +122,7 @@ func (p *Plugin) RunJob(ctx context.Context, in *pluginv1.RunJobRequest) (*plugi
 			Select("date_trunc('hour', minute, 'UTC'), group_id, model, sum(requests), sum(blocked)").
 			Where("minute >= date_trunc('hour', ?::timestamptz, 'UTC')", now.Add(-rollupLookback)).
 			Group("1, 2, 3")
-		res := pgdb.InsertSelect(db, "stats_hourly", []string{"hour", "group_id", "model", "requests", "blocked"}, hours,
+		res := pgdb.InsertSelect(db, model.Prefix+"stats_hourly", []string{"hour", "group_id", "model", "requests", "blocked"}, hours,
 			&clause.OnConflict{Columns: []clause.Column{{Name: "hour"}, {Name: "group_id"}, {Name: "model"}},
 				DoUpdates: clause.AssignmentColumns([]string{"requests", "blocked"})})
 		if res.Error != nil {

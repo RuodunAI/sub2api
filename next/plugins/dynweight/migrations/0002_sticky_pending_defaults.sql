@@ -1,6 +1,7 @@
--- plg_dynweight 0002 (CONTRACTS §74.5, dynweight 0.3.0): pending sticky
+-- dynweight 0002 (CONTRACTS §74.5, dynweight 0.3.0): pending sticky
 -- clears, and the 0.2.0 default rules moved over to the 0.3.0 ones.
--- Runs with search_path pinned to the plugin schema (plg_dynweight).
+-- Runs as the plugin's database role in the core's schema: every table,
+-- index and sequence is named plg_dynweight__<name> (CONTRACTS §130).
 -- Idempotent: the table is created once, and a moved layer no longer matches.
 
 -- Sticky clears an evaluation decided and the core has not done yet, one per
@@ -9,7 +10,7 @@
 -- events and the notifications, within a budget of its own, and deletes each
 -- once done. salt is the window start (the same salt selects the same
 -- bindings, so a retry is idempotent). claimed_until leases a row to one run.
-CREATE TABLE IF NOT EXISTS sticky_pending (
+CREATE TABLE IF NOT EXISTS plg_dynweight__sticky_pending (
     account_id    bigint           NOT NULL,
     group_id      bigint           NOT NULL,
     model         text             NOT NULL,
@@ -23,7 +24,7 @@ CREATE TABLE IF NOT EXISTS sticky_pending (
     claimed_until timestamptz      NOT NULL DEFAULT '-infinity',
     PRIMARY KEY (account_id, group_id, model)
 );
-CREATE INDEX IF NOT EXISTS sticky_pending_created_idx ON sticky_pending (created_at);
+CREATE INDEX IF NOT EXISTS plg_dynweight__sticky_pending_created_idx ON plg_dynweight__sticky_pending (created_at);
 
 -- The 0.2.0 default rules timed the whole attempt of streams (a normal long
 -- stream degraded the key by half and kept it down) and needed first token
@@ -34,21 +35,21 @@ CREATE INDEX IF NOT EXISTS sticky_pending_created_idx ON sticky_pending (created
 -- keep referencing them. A layer whose rules were changed in any way is left
 -- alone: saving it warns about the same risks. The version moves so every
 -- node reloads.
-UPDATE config SET doc = jsonb_set(doc, '{rules}', d.new), version = version + 1, updated_at = now()
+UPDATE plg_dynweight__config SET doc = jsonb_set(doc, '{rules}', d.new), version = version + 1, updated_at = now()
 FROM (VALUES (
     '[{"name":"错误率过高","conditions":[{"metric":"error_rate","op":"gte","value":30}],"periods":3,"hit_periods":2},{"name":"首字 p95 过慢","conditions":[{"metric":"ttfb","p":95,"op":"gte","value":10000}],"periods":3,"hit_periods":2},{"name":"首字挂死","conditions":[{"metric":"ttfb","p":100,"op":"gte","value":60000},{"join":"or","metric":"latency","p":100,"op":"gte","value":120000}],"periods":1,"hit_periods":1},{"name":"健康恢复","conditions":[{"metric":"error_rate","op":"lt","value":15},{"join":"and","metric":"ttfb","p":95,"op":"lt","value":10000},{"join":"and","metric":"ttfb","p":100,"op":"lt","value":60000},{"join":"and","metric":"latency","p":100,"op":"lt","value":120000}],"periods":1,"hit_periods":1},{"name":"复活探测","conditions":[{"metric":"weight","op":"lte","value":0}],"periods":2,"hit_periods":2}]'::jsonb,
     '[{"name":"错误率过高","conditions":[{"metric":"error_rate","op":"gte","value":30}],"periods":3,"hit_periods":2},{"name":"首字 p95 过慢","conditions":[{"metric":"ttfb","p":95,"op":"gte","value":10000}],"periods":3,"hit_periods":2},{"name":"首字挂死","conditions":[{"metric":"ttfb","p":100,"op":"gte","value":60000},{"join":"or","metric":"latency","p":100,"op":"gte","value":120000,"scope":"non_stream"}],"periods":1,"hit_periods":1},{"name":"健康恢复","conditions":[{"metric":"error_rate","op":"lt","value":15},{"join":"and","metric":"ttfb","p":95,"op":"lt","value":10000,"when_empty":"pass"},{"join":"and","metric":"ttfb","p":100,"op":"lt","value":60000,"when_empty":"pass"},{"join":"and","metric":"latency","p":100,"op":"lt","value":120000,"scope":"non_stream","when_empty":"pass"}],"periods":1,"hit_periods":1},{"name":"复活探测","conditions":[{"metric":"weight","op":"lte","value":0}],"periods":2,"hit_periods":2}]'::jsonb
 )) AS d(old, new)
-WHERE config.doc->'rules' = d.old;
+WHERE plg_dynweight__config.doc->'rules' = d.old;
 
 -- The same for every group layer.
-UPDATE config SET doc = jsonb_set(doc, '{groups}', (
+UPDATE plg_dynweight__config SET doc = jsonb_set(doc, '{groups}', (
         SELECT jsonb_object_agg(g.key, CASE WHEN g.value->'rules' = d.old THEN jsonb_set(g.value, '{rules}', d.new) ELSE g.value END)
-        FROM jsonb_each(config.doc->'groups') AS g)),
+        FROM jsonb_each(plg_dynweight__config.doc->'groups') AS g)),
     version = version + 1, updated_at = now()
 FROM (VALUES (
     '[{"name":"错误率过高","conditions":[{"metric":"error_rate","op":"gte","value":30}],"periods":3,"hit_periods":2},{"name":"首字 p95 过慢","conditions":[{"metric":"ttfb","p":95,"op":"gte","value":10000}],"periods":3,"hit_periods":2},{"name":"首字挂死","conditions":[{"metric":"ttfb","p":100,"op":"gte","value":60000},{"join":"or","metric":"latency","p":100,"op":"gte","value":120000}],"periods":1,"hit_periods":1},{"name":"健康恢复","conditions":[{"metric":"error_rate","op":"lt","value":15},{"join":"and","metric":"ttfb","p":95,"op":"lt","value":10000},{"join":"and","metric":"ttfb","p":100,"op":"lt","value":60000},{"join":"and","metric":"latency","p":100,"op":"lt","value":120000}],"periods":1,"hit_periods":1},{"name":"复活探测","conditions":[{"metric":"weight","op":"lte","value":0}],"periods":2,"hit_periods":2}]'::jsonb,
     '[{"name":"错误率过高","conditions":[{"metric":"error_rate","op":"gte","value":30}],"periods":3,"hit_periods":2},{"name":"首字 p95 过慢","conditions":[{"metric":"ttfb","p":95,"op":"gte","value":10000}],"periods":3,"hit_periods":2},{"name":"首字挂死","conditions":[{"metric":"ttfb","p":100,"op":"gte","value":60000},{"join":"or","metric":"latency","p":100,"op":"gte","value":120000,"scope":"non_stream"}],"periods":1,"hit_periods":1},{"name":"健康恢复","conditions":[{"metric":"error_rate","op":"lt","value":15},{"join":"and","metric":"ttfb","p":95,"op":"lt","value":10000,"when_empty":"pass"},{"join":"and","metric":"ttfb","p":100,"op":"lt","value":60000,"when_empty":"pass"},{"join":"and","metric":"latency","p":100,"op":"lt","value":120000,"scope":"non_stream","when_empty":"pass"}],"periods":1,"hit_periods":1},{"name":"复活探测","conditions":[{"metric":"weight","op":"lte","value":0}],"periods":2,"hit_periods":2}]'::jsonb
 )) AS d(old, new)
-WHERE jsonb_typeof(config.doc->'groups') = 'object'
-  AND EXISTS (SELECT 1 FROM jsonb_each(config.doc->'groups') AS g WHERE g.value->'rules' = d.old);
+WHERE jsonb_typeof(plg_dynweight__config.doc->'groups') = 'object'
+  AND EXISTS (SELECT 1 FROM jsonb_each(plg_dynweight__config.doc->'groups') AS g WHERE g.value->'rules' = d.old);

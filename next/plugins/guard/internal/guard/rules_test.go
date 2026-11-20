@@ -113,7 +113,7 @@ func TestPutRulesConcurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback() // a no-op once rolled back below
-	if err := tx.Exec(`LOCK TABLE rules IN SHARE ROW EXCLUSIVE MODE`).Error; err != nil {
+	if err := tx.Exec(`LOCK TABLE plg_guard__rules IN SHARE ROW EXCLUSIVE MODE`).Error; err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan int32, 1)

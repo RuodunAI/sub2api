@@ -788,7 +788,7 @@ func TestRetentionPurgeBatchesOnOneNode(t *testing.T) {
 	db, _ := p.db(ctx)
 	defer func(b int, d time.Duration) { purgeBatch, purgePause = b, d }(purgeBatch, purgePause)
 	purgeBatch, purgePause = 2, 0
-	if err := db.Exec(`INSERT INTO events (user_id, mode, verdict, action, result, keep_until, created_at)
+	if err := db.Exec(`INSERT INTO plg_moderation__events (user_id, mode, verdict, action, result, keep_until, created_at)
 		SELECT 1, 'observe', 'pass', 'allow', 'pass', now() - interval '1 hour', now() - interval '2 days' FROM generate_series(1, 5)
 		UNION ALL SELECT 1, 'observe', 'flag', 'allow', 'hit', now() + interval '1 day', now() - interval '200 days' FROM generate_series(1, 3)
 		UNION ALL SELECT 1, 'observe', 'flag', 'allow', 'hit', now() + interval '1 day', now()`).Error; err != nil {
@@ -816,7 +816,7 @@ func TestRetentionPurgeBatchesOnOneNode(t *testing.T) {
 		t.Fatalf("purge = %d %v, want 8", n, err)
 	}
 	var left int
-	if err := db.Raw(`SELECT count(*) FROM events`).Row().Scan(&left); err != nil || left != 1 {
+	if err := db.Raw(`SELECT count(*) FROM plg_moderation__events`).Row().Scan(&left); err != nil || left != 1 {
 		t.Fatalf("left = %d %v, want the young hit", left, err)
 	}
 	// The purge let the lock go: another node can take it.
@@ -830,20 +830,20 @@ func TestCleanupAndImport(t *testing.T) {
 	p, h, _ := startDB(t, map[string]any{"mode": ModeObserve})
 	ctx := context.Background()
 	db, _ := p.db(ctx)
-	if err := db.Exec(`INSERT INTO events (user_id, mode, verdict, action, result, keep_until) VALUES
+	if err := db.Exec(`INSERT INTO plg_moderation__events (user_id, mode, verdict, action, result, keep_until) VALUES
 		(1,'observe','pass','allow','pass', now() - interval '1 hour'), (1,'observe','flag','allow','hit', now() + interval '1 day')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO events (user_id, mode, verdict, action, result, keep_until, request_id, created_at) VALUES
+	if err := db.Exec(`INSERT INTO plg_moderation__events (user_id, mode, verdict, action, result, keep_until, request_id, created_at) VALUES
 		(1,'observe','flag','allow','hit', now() + interval '170 days', 'aged-hit', now() - interval '10 days')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, expires_at) VALUES (5,'observe','auto', now() - interval '1 minute')`).Error; err != nil {
+	if err := db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, expires_at) VALUES (5,'observe','auto', now() - interval '1 minute')`).Error; err != nil {
 		t.Fatal(err)
 	}
 	// A row a 0.1 node wrote after the migration: backfilled by the cleanup, a
 	// flag becomes hit but never counts as a violation.
-	if err := db.Exec(`INSERT INTO events (user_id, mode, verdict, action, request_id) VALUES (9,'observe','flag','allow','old-flag'), (9,'enforce','block','deny','old-block')`).Error; err != nil {
+	if err := db.Exec(`INSERT INTO plg_moderation__events (user_id, mode, verdict, action, request_id) VALUES (9,'observe','flag','allow','old-flag'), (9,'enforce','block','deny','old-block')`).Error; err != nil {
 		t.Fatal(err)
 	}
 	out, err := p.RunJob(ctx, &pluginv1.RunJobRequest{JobId: JobCleanup})
@@ -852,7 +852,7 @@ func TestCleanupAndImport(t *testing.T) {
 	}
 	var res string
 	var keep time.Time
-	if err := db.Raw(`SELECT result, keep_until FROM events WHERE request_id = 'old-flag'`).Row().Scan(&res, &keep); err != nil || res != ResultHit || keep.Before(time.Now().Add(170*24*time.Hour)) {
+	if err := db.Raw(`SELECT result, keep_until FROM plg_moderation__events WHERE request_id = 'old-flag'`).Row().Scan(&res, &keep); err != nil || res != ResultHit || keep.Before(time.Now().Add(170*24*time.Hour)) {
 		t.Fatalf("backfill = %s %v %v", res, keep, err)
 	}
 	if n, err := countViolations(db, 9, time.Now().Add(-time.Hour)); err != nil || n != 1 {
@@ -865,10 +865,10 @@ func TestCleanupAndImport(t *testing.T) {
 	}
 	waitFor(t, "retention cleanup", func() bool {
 		var n int
-		return db.Raw(`SELECT count(*) FROM events WHERE request_id = 'aged-hit'`).Row().Scan(&n) == nil && n == 0
+		return db.Raw(`SELECT count(*) FROM plg_moderation__events WHERE request_id = 'aged-hit'`).Row().Scan(&n) == nil && n == 0
 	})
 	var left int
-	if err := db.Raw(`SELECT count(*) FROM events WHERE user_id = 1`).Row().Scan(&left); err != nil || left != 1 {
+	if err := db.Raw(`SELECT count(*) FROM plg_moderation__events WHERE user_id = 1`).Row().Scan(&left); err != nil || left != 1 {
 		t.Fatalf("records younger than the retention = %d %v", left, err)
 	}
 	doc := map[string]any{"data": map[string]any{
@@ -914,7 +914,7 @@ func TestCleanupAndImport(t *testing.T) {
 	llmDoc["preview"] = false
 	decodeData[map[string]any](t, h.Do("POST", "/import", nil, llmDoc))
 	var typ, cfg, chType string
-	if err := db.Raw(`SELECT a.type, a.config::text, c.type FROM auditors a JOIN channels c ON c.id = a.channel_id WHERE a.name = 'judge'`).Row().Scan(&typ, &cfg, &chType); err != nil ||
+	if err := db.Raw(`SELECT a.type, a.config::text, c.type FROM plg_moderation__auditors a JOIN plg_moderation__channels c ON c.id = a.channel_id WHERE a.name = 'judge'`).Row().Scan(&typ, &cfg, &chType); err != nil ||
 		typ != AuditorLLMQuestions || chType != ChannelLLM || !strings.Contains(cfg, `"q?"`) {
 		t.Fatalf("imported llm auditor = %s %s %s %v", typ, chType, cfg, err)
 	}
@@ -928,7 +928,7 @@ func TestCleanupAndImport(t *testing.T) {
 	sw := func(name string) string {
 		t.Helper()
 		var v *string
-		if err := db.Raw(`SELECT config->>'review_images' FROM auditors WHERE name = ? AND deleted_at IS NULL`, name).Row().Scan(&v); err != nil {
+		if err := db.Raw(`SELECT config->>'review_images' FROM plg_moderation__auditors WHERE name = ? AND deleted_at IS NULL`, name).Row().Scan(&v); err != nil {
 			t.Fatalf("auditor %s: %v", name, err)
 		}
 		if v == nil {
@@ -1043,7 +1043,7 @@ func TestMigration0010Idempotent(t *testing.T) {
 		var def *string
 		var nullable string
 		if err := conn.Raw(`SELECT column_default, is_nullable FROM information_schema.columns
-			WHERE table_schema = ? AND table_name = ? AND column_name = ?`, schema, c[0], c[1]).Row().Scan(&def, &nullable); err != nil {
+			WHERE table_schema = ? AND table_name = ? AND column_name = ?`, schema, "plg_moderation__"+c[0], c[1]).Row().Scan(&def, &nullable); err != nil {
 			t.Fatalf("%s.%s: %v", c[0], c[1], err)
 		}
 		if def == nil || nullable != "NO" {
@@ -1053,7 +1053,7 @@ func TestMigration0010Idempotent(t *testing.T) {
 	// The time of the watch list conversion: unset until it ran.
 	var typ, nullable string
 	if err := conn.Raw(`SELECT data_type, is_nullable FROM information_schema.columns
-		WHERE table_schema = ? AND table_name = 'config_state' AND column_name = 'parity_converted_at'`, schema).Row().Scan(&typ, &nullable); err != nil ||
+		WHERE table_schema = ? AND table_name = 'plg_moderation__config_state' AND column_name = 'parity_converted_at'`, schema).Row().Scan(&typ, &nullable); err != nil ||
 		typ != "timestamp with time zone" || nullable != "YES" {
 		t.Fatalf("config_state.parity_converted_at: %s nullable %s (%v)", typ, nullable, err)
 	}
@@ -1061,16 +1061,16 @@ func TestMigration0010Idempotent(t *testing.T) {
 	var def string
 	if err := conn.Raw(`SELECT count(*), max(pg_get_constraintdef(c.oid)) FROM pg_constraint c
 		JOIN pg_class r ON r.oid = c.conrelid JOIN pg_namespace ns ON ns.oid = r.relnamespace
-		WHERE ns.nspname = ? AND r.relname = 'auditors' AND c.contype = 'c' AND pg_get_constraintdef(c.oid) LIKE '%type%'`, schema).Row().Scan(&n, &def); err != nil {
+		WHERE ns.nspname = ? AND r.relname = 'plg_moderation__auditors' AND c.contype = 'c' AND pg_get_constraintdef(c.oid) LIKE '%type%'`, schema).Row().Scan(&n, &def); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 || !strings.Contains(def, "llm_questions") || !strings.Contains(def, "llm_verdict") {
 		t.Fatalf("auditors type checks = %d: %s", n, def)
 	}
 	// The constraint takes the new type and still refuses unknown ones.
-	insert := `INSERT INTO ` + ident(schema, "auditors") + ` (name, type, channel_id, config, created_at, updated_at) VALUES ('a', ?, ?, '{}', now(), now())`
+	insert := `INSERT INTO ` + ident(schema, "plg_moderation__auditors") + ` (name, type, channel_id, config, created_at, updated_at) VALUES ('a', ?, ?, '{}', now(), now())`
 	var chID int64
-	if err := conn.Raw(`INSERT INTO ` + ident(schema, "channels") + ` (type, protocol, name, base_url, model, billing_model, timeout_ms, enabled, created_at, updated_at)
+	if err := conn.Raw(`INSERT INTO ` + ident(schema, "plg_moderation__channels") + ` (type, protocol, name, base_url, model, billing_model, timeout_ms, enabled, created_at, updated_at)
 		VALUES ('llm', 'openai_chat', 'c', 'https://x', 'm', '', 15000, true, now(), now()) RETURNING id`).Row().Scan(&chID); err != nil {
 		t.Fatal(err)
 	}
@@ -1547,7 +1547,7 @@ func TestPostPanicIsCountedOnce(t *testing.T) {
 	p.flushStats(ctx)
 	db, _ := p.db(ctx)
 	var audited, suspicious, errored int64
-	if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0), coalesce(sum(errors), 0) FROM user_daily WHERE user_id = 3`).Row().
+	if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0), coalesce(sum(errors), 0) FROM plg_moderation__user_daily WHERE user_id = 3`).Row().
 		Scan(&audited, &suspicious, &errored); err != nil || audited != 2 || suspicious != 1 || errored != 1 {
 		t.Fatalf("user day: audited %d, suspicious %d, errors %d (%v)", audited, suspicious, errored, err)
 	}

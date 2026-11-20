@@ -1,4 +1,4 @@
--- plg_moderation 0013: moderation 0.11.0, the contract step of 0.10.0
+-- moderation 0013: moderation 0.11.0, the contract step of 0.10.0
 -- (CONTRACTS §72 0.11.0).
 --
 -- Drops what the AI analysis left behind; 0.10.0 stopped reading and
@@ -23,10 +23,10 @@
 -- version still serving, and a retry runs the file again.
 SET LOCAL lock_timeout = '10s';
 
-DROP TABLE IF EXISTS user_analyses; -- drops user_analyses_user_idx with it
+DROP TABLE IF EXISTS plg_moderation__user_analyses; -- drops user_analyses_user_idx with it
 
-DROP INDEX IF EXISTS watchlist_analysis_requested_idx;
-ALTER TABLE watchlist
+DROP INDEX IF EXISTS plg_moderation__watchlist_analysis_requested_idx;
+ALTER TABLE plg_moderation__watchlist
     DROP COLUMN IF EXISTS analysis_requested_at,
     DROP COLUMN IF EXISTS analysis_source,
     DROP COLUMN IF EXISTS analysis_claim_until,
@@ -37,7 +37,7 @@ ALTER TABLE watchlist
     DROP COLUMN IF EXISTS latest_suggestion,
     DROP COLUMN IF EXISTS analyzed_at;
 
-ALTER TABLE events
+ALTER TABLE plg_moderation__events
     DROP COLUMN IF EXISTS ai_verdict,
     DROP COLUMN IF EXISTS ai_severity,
     DROP COLUMN IF EXISTS ai_category,
@@ -47,4 +47,4 @@ ALTER TABLE events
 
 -- The one-time import of the settings' user lists into locked watch entries
 -- ran (upgrade.go). 0.10.0 does not read config_state with a star.
-ALTER TABLE config_state ADD COLUMN IF NOT EXISTS lists_imported boolean NOT NULL DEFAULT false;
+ALTER TABLE plg_moderation__config_state ADD COLUMN IF NOT EXISTS lists_imported boolean NOT NULL DEFAULT false;

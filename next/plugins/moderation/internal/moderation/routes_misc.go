@@ -434,7 +434,7 @@ func (p *Plugin) expireBlocks(ctx context.Context, db *gorm.DB, now time.Time) (
 				unblocks[i] = model.Unblock{UserID: b.UserID, At: *b.ExpiresAt}
 			}
 			err = tx.Clauses(clause.OnConflict{Columns: columns("user_id"),
-				DoUpdates: clause.Set{assign("at", "GREATEST(unblocks.at, EXCLUDED.at)")}}).Create(&unblocks).Error
+				DoUpdates: clause.Set{assign("at", "GREATEST("+model.Prefix+"unblocks.at, EXCLUDED.at)")}}).Create(&unblocks).Error
 			if err != nil {
 				return err
 			}
@@ -502,7 +502,7 @@ func (p *Plugin) purgeRetention(ctx context.Context, db *gorm.DB, now time.Time)
 	for result, keep := range retention {
 		results, cuts = append(results, result), append(cuts, now.Add(-keep))
 	}
-	n, err := deleteBatches(ctx, db, &model.Event{}, db.Table("events e").Select("e.ctid").Joins(`JOIN unnest(?::text[], ?::timestamptz[]) AS r(result, cut)
+	n, err := deleteBatches(ctx, db, &model.Event{}, db.Table(model.Prefix+"events e").Select("e.ctid").Joins(`JOIN unnest(?::text[], ?::timestamptz[]) AS r(result, cut)
 		ON e.result = r.result AND e.created_at < r.cut`, pgdb.Array[string](results), pgdb.Array[time.Time](cuts)))
 	deleted += n
 	if err != nil {

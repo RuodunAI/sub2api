@@ -34,7 +34,7 @@ type reloadBarrier struct {
 // afterQuery runs after a GORM query has read its rows. The armed rule
 // load stops there until released: read, but not published yet.
 func (b *reloadBarrier) afterQuery(tx *gorm.DB) {
-	if strings.Contains(tx.Statement.SQL.String(), `FROM "rules"`) && b.armed.CompareAndSwap(true, false) {
+	if strings.Contains(tx.Statement.SQL.String(), `FROM "plg_guard__rules"`) && b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
 		<-b.release
 	}
@@ -63,7 +63,7 @@ func TestRuleCacheRejectsLateReload(t *testing.T) {
 			var once sync.Once
 			release := func() { once.Do(func() { close(barrier.release) }) }
 			defer release()
-			if err := db.WithContext(ctx).Exec(`UPDATE rules SET pattern='old'`).Error; err != nil {
+			if err := db.WithContext(ctx).Exec(`UPDATE plg_guard__rules SET pattern='old'`).Error; err != nil {
 				t.Fatal(err)
 			}
 			p := New()
@@ -81,7 +81,7 @@ func TestRuleCacheRejectsLateReload(t *testing.T) {
 			if cancelOld {
 				stopOld()
 			} else {
-				if err := db.WithContext(ctx).Exec(`UPDATE rules SET pattern='new'`).Error; err != nil {
+				if err := db.WithContext(ctx).Exec(`UPDATE plg_guard__rules SET pattern='new'`).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := p.reloadRules(ctx); err != nil {

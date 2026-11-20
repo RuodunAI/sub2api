@@ -35,7 +35,7 @@ func TestAdminErrorText(t *testing.T) {
 	h := p.httpHandler
 
 	// Every code collides with the first one.
-	if err := db.Exec(`CREATE UNIQUE INDEX redeem_codes_one ON redeem_codes ((true))`).Error; err != nil {
+	if err := db.Exec(`CREATE UNIQUE INDEX redeem_codes_one ON plg_payment__redeem_codes ((true))`).Error; err != nil {
 		t.Fatal(err)
 	}
 	body, _ := json.Marshal(GenerateCodesRequest{Count: 2, Type: RedeemTypeBalance, Value: decimal.NewFromInt(1)})
@@ -54,7 +54,7 @@ func TestAdminErrorText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`ALTER TABLE promo_codes ADD CONSTRAINT promo_codes_status_known CHECK (status IN ('active', 'disabled'))`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE plg_payment__promo_codes ADD CONSTRAINT promo_codes_status_known CHECK (status IN ('active', 'disabled'))`).Error; err != nil {
 		t.Fatal(err)
 	}
 	body, _ = json.Marshal(map[string]any{"status": "bogus", "max_uses": 1})
@@ -63,12 +63,12 @@ func TestAdminErrorText(t *testing.T) {
 		t.Fatal(err)
 	}
 	msg = errorMessage(t, resp)
-	if want := `update promo code: ERROR: new row for relation "promo_codes" violates check constraint "promo_codes_status_known" (SQLSTATE 23514)`; resp.GetStatus() != 400 || msg != want {
+	if want := `update promo code: ERROR: new row for relation "plg_payment__promo_codes" violates check constraint "promo_codes_status_known" (SQLSTATE 23514)`; resp.GetStatus() != 400 || msg != want {
 		t.Errorf("update promo: %d %q, want 400 %q", resp.GetStatus(), msg, want)
 	}
 
 	// An unknown column fails the page statement of an admin list.
-	if err := db.Exec(`ALTER TABLE redeem_codes DROP COLUMN notes`).Error; err != nil {
+	if err := db.Exec(`ALTER TABLE plg_payment__redeem_codes DROP COLUMN notes`).Error; err != nil {
 		t.Fatal(err)
 	}
 	resp, err = h.handleListRedeemCodes(ctx, &pluginv1.HTTPRequest{})

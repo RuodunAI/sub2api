@@ -158,10 +158,10 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	read := func() (s state) {
 		t.Helper()
 		p.flushStats(ctx)
-		if err := db.Raw(`SELECT hit_count, violation_count, expires_at FROM watchlist WHERE user_id = 3`).Row().Scan(&s.hits, &s.violations, &s.expires); err != nil {
+		if err := db.Raw(`SELECT hit_count, violation_count, expires_at FROM plg_moderation__watchlist WHERE user_id = 3`).Row().Scan(&s.hits, &s.violations, &s.expires); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0) FROM user_daily WHERE user_id = 3`).Row().Scan(&s.audited, &s.suspcious); err != nil {
+		if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(suspicious), 0) FROM plg_moderation__user_daily WHERE user_id = 3`).Row().Scan(&s.audited, &s.suspcious); err != nil {
 			t.Fatal(err)
 		}
 		return s
@@ -169,7 +169,7 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	flowRow := func() (audited, hit, rep int64) {
 		t.Helper()
 		p.flushStats(ctx)
-		if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(hit), 0), coalesce(sum(replayed), 0) FROM stats_hourly
+		if err := db.Raw(`SELECT coalesce(sum(audited), 0), coalesce(sum(hit), 0), coalesce(sum(replayed), 0) FROM plg_moderation__stats_hourly
 			WHERE flow_id = ? AND stage = 0`, flow).Row().Scan(&audited, &hit, &rep); err != nil {
 			t.Fatal(err)
 		}
@@ -213,7 +213,7 @@ func TestReplayIsNotAViolation(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	p.flushStats(ctx)
 	var watched, days int
-	if err := db.Raw(`SELECT (SELECT count(*) FROM watchlist WHERE user_id = 4), (SELECT count(*) FROM user_daily WHERE user_id = 4)`).Row().Scan(&watched, &days); err != nil {
+	if err := db.Raw(`SELECT (SELECT count(*) FROM plg_moderation__watchlist WHERE user_id = 4), (SELECT count(*) FROM plg_moderation__user_daily WHERE user_id = 4)`).Row().Scan(&watched, &days); err != nil {
 		t.Fatal(err)
 	}
 	if watched != 0 || days != 0 || p.watchLevel(4) != "" {

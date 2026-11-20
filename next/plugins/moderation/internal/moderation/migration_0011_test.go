@@ -15,26 +15,26 @@ import (
 // columns to, verbatim.
 const (
 	// routes_flows.go:202 (createFlow).
-	v093InsertFlow = `INSERT INTO flows (name, draft, created_at, updated_at) VALUES ($1,$2,$3,$3) RETURNING id`
+	v093InsertFlow = `INSERT INTO plg_moderation__flows (name, draft, created_at, updated_at) VALUES ($1,$2,$3,$3) RETURNING id`
 	// routes_flows.go:236 (updateFlow).
-	v093UpdateFlow = `UPDATE flows SET name=$2, draft=$3, updated_at=$4 WHERE id=$1 AND deleted_at IS NULL`
+	v093UpdateFlow = `UPDATE plg_moderation__flows SET name=$2, draft=$3, updated_at=$4 WHERE id=$1 AND deleted_at IS NULL`
 	// routes_flows.go:417 (publishSpec).
-	v093PublishFlow = `UPDATE flows SET draft=$2, published=$3, version=$4, published_at=$5, published_by=$6, updated_at=$5 WHERE id=$1`
+	v093PublishFlow = `UPDATE plg_moderation__flows SET draft=$2, published=$3, version=$4, published_at=$5, published_by=$6, updated_at=$5 WHERE id=$1`
 	// routes_flows.go:473 (setFlowEnabled).
-	v093EnableFlow = `UPDATE flows SET enabled=$2, updated_at=$3 WHERE id=$1 AND deleted_at IS NULL`
+	v093EnableFlow = `UPDATE plg_moderation__flows SET enabled=$2, updated_at=$3 WHERE id=$1 AND deleted_at IS NULL`
 	// snapshot.go:317 (loadSnapshot).
-	v093LiveFlows = `SELECT id, name, version, published FROM flows
+	v093LiveFlows = `SELECT id, name, version, published FROM plg_moderation__flows
 		WHERE deleted_at IS NULL AND enabled AND published IS NOT NULL`
 	// routes_flows.go:52-58 (flowViews).
 	v093FlowViews = `SELECT f.id, f.name, f.enabled, f.draft, f.published, f.version, f.published_at, f.published_by,
-			coalesce((SELECT array_agg(group_id ORDER BY group_id) FROM flow_groups g WHERE g.flow_id = f.id), '{}'),
+			coalesce((SELECT array_agg(group_id ORDER BY group_id) FROM plg_moderation__flow_groups g WHERE g.flow_id = f.id), '{}'),
 			coalesce((SELECT jsonb_agg(jsonb_build_object('group_id', a.group_id, 'account_id', a.account_id) ORDER BY a.account_id, a.group_id)
-				FROM flow_accounts a WHERE a.flow_id = f.id), '[]'),
-			coalesce((SELECT v.auto_timeout FROM flow_versions v WHERE v.flow_id = f.id AND v.version = f.version), false),
+				FROM plg_moderation__flow_accounts a WHERE a.flow_id = f.id), '[]'),
+			coalesce((SELECT v.auto_timeout FROM plg_moderation__flow_versions v WHERE v.flow_id = f.id AND v.version = f.version), false),
 			f.created_at, f.updated_at
-		FROM flows f WHERE f.deleted_at IS NULL  ORDER BY f.id`
+		FROM plg_moderation__flows f WHERE f.deleted_at IS NULL  ORDER BY f.id`
 	// store.go:183-193 (writeEvents).
-	v093InsertEvent = `INSERT INTO events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
+	v093InsertEvent = `INSERT INTO plg_moderation__events (created_at, request_id, user_id, api_key_id, group_id, model, protocol, mode,
 				verdict, action, categories, severity, reason, error, text, text_chars, text_hash, cached,
 				llm_model, turns, latency_ms, prompt_tokens, completion_tokens,
 				result, timing, flow_id, flow_version, highest_category, highest_score, hit_categories, trace,
@@ -45,7 +45,7 @@ const (
 	v093GetEvent = `SELECT id, created_at, request_id, user_id, api_key_id, group_id, model, protocol, endpoint, session_fp, mode, timing, result,
 	flow_id, flow_version, severity, hit_categories, highest_category, highest_score, review_status, reviewed_by, reviewed_at,
 	counted, input_format, text_chars, image_count, input_message_size, latency_ms, queue_ms, keep_until, replayed,
-	ai_verdict, ai_severity, ai_category, ai_evidence, ai_reason, ai_analysis_id, verdict, reason, error, llm_model, text, trace FROM events WHERE id = $1`
+	ai_verdict, ai_severity, ai_category, ai_evidence, ai_reason, ai_analysis_id, verdict, reason, error, llm_model, text, trace FROM plg_moderation__events WHERE id = $1`
 )
 
 // Migration 0011 during a rolling upgrade: 0.9.3 nodes write and read flows
@@ -92,7 +92,7 @@ func TestMigration0011Rolling(t *testing.T) {
 			}
 		}
 		var ids []int64
-		if err := db.Raw(`SELECT id FROM events`).Scan(&ids).Error; err != nil {
+		if err := db.Raw(`SELECT id FROM plg_moderation__events`).Scan(&ids).Error; err != nil {
 			t.Fatal(err)
 		}
 		for _, id := range ids {

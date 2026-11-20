@@ -1,28 +1,28 @@
--- plg_moderation 0004: moderation 0.3 (CONTRACTS §72.13): AI analysis of
+-- moderation 0004: moderation 0.3 (CONTRACTS §72.13): AI analysis of
 -- watched users, per-record AI verdicts, the billing model of channels and
 -- the hourly cost table. Idempotent; every new column has a default so 0.2
 -- ignores it.
 
 -- llm channels speak openai_chat, openai_responses or anthropic; the cost of
 -- a call is priced on billing_model ('' = model).
-ALTER TABLE channels ADD COLUMN IF NOT EXISTS billing_model text NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__channels ADD COLUMN IF NOT EXISTS billing_model text NOT NULL DEFAULT '';
 
 -- Analysis queue and latest conclusion on the watch entry (§72.13.4).
 -- analysis_requested_at set = queued; analysis_claim_until / analysis_token
 -- = a node runs it (the claim expires after 2 x analysis_timeout_ms).
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS analysis_requested_at  timestamptz;
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS analysis_source        text   NOT NULL DEFAULT '';
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS analysis_claim_until   timestamptz;
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS analysis_token         bigint NOT NULL DEFAULT 0;
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS latest_analysis_id     bigint NOT NULL DEFAULT 0;
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS latest_analysis_status text   NOT NULL DEFAULT '';
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS latest_trend           text   NOT NULL DEFAULT '';
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS latest_suggestion      text   NOT NULL DEFAULT '';
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS analyzed_at            timestamptz;
-CREATE INDEX IF NOT EXISTS watchlist_analysis_requested_idx ON watchlist (analysis_requested_at) WHERE analysis_requested_at IS NOT NULL;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS analysis_requested_at  timestamptz;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS analysis_source        text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS analysis_claim_until   timestamptz;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS analysis_token         bigint NOT NULL DEFAULT 0;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS latest_analysis_id     bigint NOT NULL DEFAULT 0;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS latest_analysis_status text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS latest_trend           text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS latest_suggestion      text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS analyzed_at            timestamptz;
+CREATE INDEX IF NOT EXISTS plg_moderation__watchlist_analysis_requested_idx ON plg_moderation__watchlist (analysis_requested_at) WHERE analysis_requested_at IS NOT NULL;
 
 -- One analysis run; only the latest analysis_keep_per_user per user are kept.
-CREATE TABLE IF NOT EXISTS user_analyses (
+CREATE TABLE IF NOT EXISTS plg_moderation__user_analyses (
     id              bigserial   PRIMARY KEY,
     user_id         bigint      NOT NULL,
     source          text        NOT NULL DEFAULT '',
@@ -45,20 +45,20 @@ CREATE TABLE IF NOT EXISTS user_analyses (
     duration_ms     bigint      NOT NULL DEFAULT 0,
     created_at      timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS user_analyses_user_idx ON user_analyses (user_id, id);
+CREATE INDEX IF NOT EXISTS plg_moderation__user_analyses_user_idx ON plg_moderation__user_analyses (user_id, id);
 
 -- AI verdict of a suspicious record (never overrides the review status).
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_verdict     text   NOT NULL DEFAULT '';
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_severity    text   NOT NULL DEFAULT '';
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_category    text   NOT NULL DEFAULT '';
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_evidence    text   NOT NULL DEFAULT '';
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_reason      text   NOT NULL DEFAULT '';
-ALTER TABLE events ADD COLUMN IF NOT EXISTS ai_analysis_id bigint NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS events_user_created_idx ON events (user_id, created_at);
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_verdict     text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_severity    text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_category    text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_evidence    text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_reason      text   NOT NULL DEFAULT '';
+ALTER TABLE plg_moderation__events ADD COLUMN IF NOT EXISTS ai_analysis_id bigint NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS plg_moderation__events_user_created_idx ON plg_moderation__events (user_id, created_at);
 
 -- Hourly cost of the upstream calls per channel and source (audit, analysis,
 -- test, try, simulate). Written by adding (upsert).
-CREATE TABLE IF NOT EXISTS costs (
+CREATE TABLE IF NOT EXISTS plg_moderation__costs (
     hour            timestamptz NOT NULL,
     channel_id      bigint      NOT NULL,
     source          text        NOT NULL,

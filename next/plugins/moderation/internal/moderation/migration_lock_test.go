@@ -26,9 +26,9 @@ func TestMigrationsFailFastOnLock(t *testing.T) {
 		want      int
 	}{
 		{[]string{"0011_flow_scope_source.sql", "0012_lists_level.sql"}, `(table_name, column_name) IN
-			(('flows', 'scope'), ('events', 'flow_source'), ('watchlist', 'locked'), ('events', 'level'))`, 0},
+			(('plg_moderation__flows', 'scope'), ('plg_moderation__events', 'flow_source'), ('plg_moderation__watchlist', 'locked'), ('plg_moderation__events', 'level'))`, 0},
 		{[]string{"0013_contract.sql"}, `(table_name, column_name) IN
-			(('events', 'ai_verdict'), ('watchlist', 'latest_trend'), ('user_analyses', 'id'), ('config_state', 'lists_imported'))`, 3},
+			(('plg_moderation__events', 'ai_verdict'), ('plg_moderation__watchlist', 'latest_trend'), ('plg_moderation__user_analyses', 'id'), ('plg_moderation__config_state', 'lists_imported'))`, 3},
 	} {
 		first := step.files[0]
 		pluginsdktest.ApplyMigrations(t, dsn, schema, migrationDir(t, func(n string) bool { return n < first }))
@@ -37,7 +37,7 @@ func TestMigrationsFailFastOnLock(t *testing.T) {
 		if reader.Error != nil {
 			t.Fatal(reader.Error)
 		}
-		if err := reader.Exec(`SELECT count(*) FROM ` + ident(schema, "events")).Error; err != nil {
+		if err := reader.Exec(`SELECT count(*) FROM ` + ident(schema, "plg_moderation__events")).Error; err != nil {
 			t.Fatal(err)
 		}
 		for _, name := range step.files {

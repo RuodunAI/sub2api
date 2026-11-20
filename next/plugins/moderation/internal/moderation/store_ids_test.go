@@ -32,7 +32,7 @@ func TestWriteEventsIDs(t *testing.T) {
 		RequestID string
 		UserID    int64
 	}
-	if err := db.Raw(`SELECT id, request_id, user_id FROM events WHERE request_id LIKE 'ids-%' ORDER BY id`).Scan(&rows).Error; err != nil {
+	if err := db.Raw(`SELECT id, request_id, user_id FROM plg_moderation__events WHERE request_id LIKE 'ids-%' ORDER BY id`).Scan(&rows).Error; err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != len(evs) || len(rows) != len(evs) {

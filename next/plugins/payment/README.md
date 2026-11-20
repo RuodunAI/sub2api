@@ -12,6 +12,8 @@
 
 ### 数据表
 
+表放在核心所用的模式里，名字都带插件前缀 `plg_payment__`（下面写的是前缀后的本地名，CONTRACTS §130）：
+
 - `payment_orders`：订单表（状态机、金额、支付渠道、过期时间）
 - `payment_provider_instances`：支付渠道实例配置
 - `redeem_codes`：兑换码（哈希存储、金额/订阅组、使用状态）
@@ -21,7 +23,7 @@
 
 ### 权限申请
 
-- `db.schema`：插件专属 schema `plg_payment`（迁移由核心按 `database.migrations` 执行）
+- `db.schema`：插件自己的表（`plg_payment__*`，属于插件自己的数据库身份；迁移由核心以该身份按 `database.migrations` 执行）
 - `ledger.credit`：通过核心账本接口入账，scope `{maxPerTx: 100000, maxPerDay: 1000000}`（幂等键 = `payment_order_{id}` / `redeem_code_{id}` / `promo_{id}_{user}`）
 - `routes.user`、`routes.admin`、`routes.webhook`：HTTP 路由（用户接口需权限 `recharge:use`，管理接口需 `config:manage`）
 - 前端未实现，暂不申请 `ui.menu` / `ui.native`

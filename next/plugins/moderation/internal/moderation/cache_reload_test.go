@@ -34,7 +34,7 @@ type reloadBarrier struct {
 // hold runs after the block reload's SELECT: its snapshot is taken and its
 // rows read, but the plugin has not published them.
 func (b *reloadBarrier) hold(db *gorm.DB) {
-	if strings.Contains(db.Statement.SQL.String(), `SELECT user_id, expires_at FROM "blocks"`) && b.armed.CompareAndSwap(true, false) {
+	if strings.Contains(db.Statement.SQL.String(), `SELECT user_id, expires_at FROM "plg_moderation__blocks"`) && b.armed.CompareAndSwap(true, false) {
 		close(b.entered)
 		<-b.release
 	}
@@ -63,7 +63,7 @@ func TestBlockCacheRejectsLateReload(t *testing.T) {
 			var once sync.Once
 			release := func() { once.Do(func() { close(barrier.release) }) }
 			defer release()
-			if err := db.Exec(`INSERT INTO blocks(user_id,source) VALUES (3,'manual')`).Error; err != nil {
+			if err := db.Exec(`INSERT INTO plg_moderation__blocks(user_id,source) VALUES (3,'manual')`).Error; err != nil {
 				t.Fatal(err)
 			}
 			p := New()
@@ -81,7 +81,7 @@ func TestBlockCacheRejectsLateReload(t *testing.T) {
 			if cancelOld {
 				stopOld()
 			} else {
-				if err := db.Exec(`UPDATE blocks SET user_id=4 WHERE user_id=3`).Error; err != nil {
+				if err := db.Exec(`UPDATE plg_moderation__blocks SET user_id=4 WHERE user_id=3`).Error; err != nil {
 					t.Fatal(err)
 				}
 				if err := p.reloadBlocks(ctx); err != nil {

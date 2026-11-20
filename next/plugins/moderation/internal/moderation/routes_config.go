@@ -650,10 +650,10 @@ type auditorViewRow struct {
 
 // auditorViews reads the live auditors, or the one of id (0 = all).
 func (p *Plugin) auditorViews(db *gorm.DB, id int64) ([]AuditorView, error) {
-	q := db.Table("auditors a").
+	q := db.Table(model.Prefix + "auditors a").
 		Select(`a.id, a.name, a.type, a.channel_id, a.config, coalesce(c.name, '') AS channel_name, coalesce(c.type, '') AS channel_type,
 			coalesce(c.enabled, false) AS channel_enabled, coalesce(c.timeout_ms, 0) AS channel_timeout_ms, a.created_at, a.updated_at`).
-		Joins("LEFT JOIN channels c ON c.id = a.channel_id AND c.deleted_at IS NULL").Where("a.deleted_at IS NULL")
+		Joins("LEFT JOIN " + model.Prefix + "channels c ON c.id = a.channel_id AND c.deleted_at IS NULL").Where("a.deleted_at IS NULL")
 	if id != 0 {
 		q = q.Where("a.id = ?", id)
 	}

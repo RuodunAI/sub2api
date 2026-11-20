@@ -228,7 +228,7 @@ func (p *Plugin) writeEvents(ctx context.Context, evs []eventRec) ([]int64, erro
 	}
 	// Drawn ascending: a batch's records get them in order, as they did
 	// one INSERT each.
-	ids, err := pgdb.NextIDs(db, "events", len(evs))
+	ids, err := pgdb.NextIDs(db, model.Prefix+"events", len(evs))
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +514,7 @@ func (p *Plugin) applyBans(ctx context.Context, users map[int64]bool) {
 			res := tx.Clauses(clause.OnConflict{
 				Columns:   columns("user_id"),
 				DoUpdates: clause.AssignmentColumns([]string{"reason", "violations", "source", "created_at", "expires_at", "created_by"}),
-				Where:     clause.Where{Exprs: []clause.Expression{gorm.Expr("blocks.expires_at IS NOT NULL AND blocks.expires_at <= ?", now)}},
+				Where:     clause.Where{Exprs: []clause.Expression{gorm.Expr(model.Prefix+"blocks.expires_at IS NOT NULL AND "+model.Prefix+"blocks.expires_at <= ?", now)}},
 			}).Create(&model.Block{UserID: uid, Reason: reason, Violations: int(n), Source: "auto", CreatedAt: now, ExpiresAt: expires})
 			banned = res.RowsAffected > 0
 			return res.Error
