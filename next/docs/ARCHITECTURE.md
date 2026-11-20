@@ -1541,7 +1541,7 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 | 构造请求 | `Execute`（`sdk/pluginsdk/standard` 加 anthropic 预设）：按 `meta.protocol` 选上游路径 `base_url + /v1/messages` 或 `/v1/messages/count_tokens`；`x-api-key` 是权威头，`anthropic-version`（客户端没带时默认 `2023-06-01`）、`anthropic-beta`（透传）是默认头；请求体是核心改写（含模型映射）之后的，原样交回 |
 | 错误分类 | 400 直接返回；401/403 切换并禁用账号；429 切换并冷却到 `retry-after`（默认 60 秒）；529 切换并冷却 30 秒；5xx 切换并冷却 10 秒 |
 | 数据 | 不用数据库、不提供插件接口和用户权限（0.4.0 删除了模型目录，CONTRACTS §129） |
-| 升级演示 | 测试版本 `0.4.1-test`（`testdata/upgrade`，只改版本号）在流量下升级，验证切换期间请求不中断；带迁移的升级由 dynweight 的测试版本 `0.5.13-test` 演示（`0004_config_rule_count.sql`，加字段并回填已保存的配置） |
+| 升级演示 | 测试版本 `0.4.1-test`（`testdata/upgrade`，只改版本号）在流量下升级，验证切换期间请求不中断；带迁移的升级由 dynweight 的测试版本 `0.6.1-test` 演示（`0004_config_rule_count.sql`，加字段并回填已保存的配置） |
 | 权限 | `platform.register`、`ui.native` |
 
 另有市场插件 **relay（Claude 中转）**：只声明账号类型 `relay_key`（支持平台 `anthropic`，按平台覆盖 passHeaders），演示多个插件的账号类型在同一分组中共同服务 `/v1/messages`。
