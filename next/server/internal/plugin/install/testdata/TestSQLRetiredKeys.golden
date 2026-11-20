@@ -1,3 +1,5 @@
 -- sql
-SELECT r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (SELECT 1 FROM plugins AS p WHERE p.key = r.plugin_key) AS installed, (SELECT count(*) FROM accounts AS a WHERE a.plugin_key = r.plugin_key AND a.deleted_at IS NULL) AS accounts, EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relnamespace = current_schema()::regnamespace AND starts_with(c.relname, 'plg_' || r.plugin_key || '__')) AS schema FROM plugin_key_retirements AS r LEFT JOIN publishers pub ON pub.id = r.publisher_id ORDER BY r.retired_at DESC
+SELECT r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (SELECT 1 FROM plugins AS p WHERE p.key = r.plugin_key) AS installed, (SELECT count(*) FROM accounts AS a WHERE a.plugin_key = r.plugin_key AND a.deleted_at IS NULL) AS accounts, EXISTS (SELECT 1 FROM pg_class AS c WHERE c.relnamespace = current_schema()::regnamespace AND starts_with(c.relname, $1 || r.plugin_key || $2)) AS schema FROM plugin_key_retirements AS r LEFT JOIN publishers pub ON pub.id = r.publisher_id ORDER BY r.retired_at DESC
 -- vars
+$1 string "plg_"
+$2 string "__"

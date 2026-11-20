@@ -146,7 +146,7 @@ func (m *Manager) removeStrays(ctx context.Context, tx *gorm.DB, pluginKey strin
 		return err
 	}
 	for _, o := range owned {
-		if err := alterOwner(g, o.Kind, sid, store.Ident(o.Name), "CURRENT_USER"); err != nil {
+		if err := alterOwner(g, o.Kind, sid, store.Ident(o.Name), store.CurrentUser); err != nil {
 			return err
 		}
 	}
@@ -238,6 +238,15 @@ type grant struct {
 	Grantee string `gorm:"column:grantee"`
 }
 
+// grantee is the grant's grantee in a DDL statement: store.Public for ""
+// (PUBLIC), else the role.
+func (gr grant) grantee() store.DDLArg {
+	if gr.Grantee == "" {
+		return store.Public
+	}
+	return store.Ident(gr.Grantee)
+}
+
 // foreignGrants selects, as grant rows, the privileges on the relations
 // (and their columns) and types of prefix in schema held by PUBLIC or a
 // role other than the object's owner.
@@ -280,7 +289,7 @@ func (m *Manager) resetGrants(ctx context.Context, tx *gorm.DB, pluginKey string
 			return err
 		}
 		for _, gr := range found {
-			if err := revokeAll(g, gr.Kind, sid, store.Ident(gr.Name), gr.Grantee); err != nil {
+			if err := revokeAll(g, gr.Kind, sid, store.Ident(gr.Name), gr.grantee()); err != nil {
 				return fmt.Errorf("revoke the privileges on %s: %w", gr.Name, err)
 			}
 		}
@@ -288,31 +297,19 @@ func (m *Manager) resetGrants(ctx context.Context, tx *gorm.DB, pluginKey string
 	return fmt.Errorf("privileges on objects named %s... held by other roles remain", manifest.TablePrefix(pluginKey))
 }
 
-// revokeAll takes back every privilege grantee ("" for PUBLIC) holds on
-// the object schema.name of kind (object.Kind), and what it passed on.
-func revokeAll(g *gorm.DB, kind string, schema, name store.Ident, grantee string) error {
-	if grantee == "" {
-		switch kind {
-		case "S":
-			return store.DDL(g, "REVOKE ALL ON SEQUENCE %s.%s FROM PUBLIC CASCADE", schema, name)
-		case "type", "c":
-			return store.DDL(g, "REVOKE ALL ON TYPE %s.%s FROM PUBLIC CASCADE", schema, name)
-		case "domain":
-			return store.DDL(g, "REVOKE ALL ON DOMAIN %s.%s FROM PUBLIC CASCADE", schema, name)
-		default:
-			return store.DDL(g, "REVOKE ALL ON TABLE %s.%s FROM PUBLIC CASCADE", schema, name)
-		}
-	}
-	rid := store.Ident(grantee)
+// revokeAll takes back every privilege grantee (store.Public or a role)
+// holds on the object schema.name of kind (object.Kind), and what it
+// passed on.
+func revokeAll(g *gorm.DB, kind string, schema, name store.Ident, grantee store.DDLArg) error {
 	switch kind {
 	case "S":
-		return store.DDL(g, "REVOKE ALL ON SEQUENCE %s.%s FROM %s CASCADE", schema, name, rid)
+		return store.DDL(g, "REVOKE ALL ON SEQUENCE %s.%s FROM %s CASCADE", schema, name, grantee)
 	case "type", "c":
-		return store.DDL(g, "REVOKE ALL ON TYPE %s.%s FROM %s CASCADE", schema, name, rid)
+		return store.DDL(g, "REVOKE ALL ON TYPE %s.%s FROM %s CASCADE", schema, name, grantee)
 	case "domain":
-		return store.DDL(g, "REVOKE ALL ON DOMAIN %s.%s FROM %s CASCADE", schema, name, rid)
+		return store.DDL(g, "REVOKE ALL ON DOMAIN %s.%s FROM %s CASCADE", schema, name, grantee)
 	default:
-		return store.DDL(g, "REVOKE ALL ON TABLE %s.%s FROM %s CASCADE", schema, name, rid)
+		return store.DDL(g, "REVOKE ALL ON TABLE %s.%s FROM %s CASCADE", schema, name, grantee)
 	}
 }
 
@@ -365,34 +362,23 @@ func (m *Manager) handBack(ctx context.Context, tx *gorm.DB, pluginKey string) e
 		return err
 	}
 	for _, o := range foreign {
-		if err := alterOwner(g, o.Kind, store.Ident(m.schema), store.Ident(o.Name), role); err != nil {
+		if err := alterOwner(g, o.Kind, store.Ident(m.schema), store.Ident(o.Name), store.Ident(role)); err != nil {
 			return fmt.Errorf("hand %s to role %s: %w", o.Name, role, err)
 		}
 	}
 	return nil
 }
 
-// alterOwner makes owner ("CURRENT_USER" or a role) the owner of the
+// alterOwner makes owner (store.CurrentUser or a role) the owner of the
 // object schema.name of kind (object.Kind).
-func alterOwner(g *gorm.DB, kind string, schema, name store.Ident, owner string) error {
-	if owner == "CURRENT_USER" {
-		switch kind {
-		case "c", "type":
-			return store.DDL(g, "ALTER TYPE %s.%s OWNER TO CURRENT_USER", schema, name)
-		case "domain":
-			return store.DDL(g, "ALTER DOMAIN %s.%s OWNER TO CURRENT_USER", schema, name)
-		default:
-			return store.DDL(g, "ALTER TABLE %s.%s OWNER TO CURRENT_USER", schema, name)
-		}
-	}
-	rid := store.Ident(owner)
+func alterOwner(g *gorm.DB, kind string, schema, name store.Ident, owner store.DDLArg) error {
 	switch kind {
 	case "c", "type":
-		return store.DDL(g, "ALTER TYPE %s.%s OWNER TO %s", schema, name, rid)
+		return store.DDL(g, "ALTER TYPE %s.%s OWNER TO %s", schema, name, owner)
 	case "domain":
-		return store.DDL(g, "ALTER DOMAIN %s.%s OWNER TO %s", schema, name, rid)
+		return store.DDL(g, "ALTER DOMAIN %s.%s OWNER TO %s", schema, name, owner)
 	default:
-		return store.DDL(g, "ALTER TABLE %s.%s OWNER TO %s", schema, name, rid)
+		return store.DDL(g, "ALTER TABLE %s.%s OWNER TO %s", schema, name, owner)
 	}
 }
 

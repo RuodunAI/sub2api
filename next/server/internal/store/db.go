@@ -1,6 +1,7 @@
 // Package store owns the PostgreSQL pool, transactions and the migration
-// runner shared by the core schema and plugin schemas. Statements are built
-// and run by GORM over that pool (see gorm.go).
+// runner shared by the core's and the plugins' migrations (the plugins'
+// tables live in the core's schema under plg_<key>__, CONTRACTS §130).
+// Statements are built and run by GORM over that pool (see gorm.go).
 package store
 
 import (

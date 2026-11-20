@@ -132,9 +132,7 @@ func (m *Manager) relocate(ctx context.Context, tx *gorm.DB, pluginKey string) e
 		}
 	}
 	var top []string
-	ownedSeq := g.Table("pg_depend AS d").Select("1").
-		Where("d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')")
-	if err := g.Table("pg_class AS c").Where("c.relnamespace = ?::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND NOT EXISTS (?)", old, ownedSeq).
+	if err := g.Table("pg_class AS c").Where("c.relnamespace = ?::regnamespace AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND NOT EXISTS (?)", old, columnOwned(g)).
 		Order("c.relname").Pluck("c.relname", &top).Error; err != nil {
 		return err
 	}

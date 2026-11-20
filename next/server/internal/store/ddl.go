@@ -13,9 +13,25 @@ import (
 // DDLArg values, each quoted as what it is, so no input reaches the text
 // unquoted and no caller joins SQL text with a variable.
 
-// DDLArg is a value written into a DDL statement: an Ident, a Literal or
-// Privileges.
+// DDLArg is a value written into a DDL statement: an Ident, a Literal,
+// Privileges or a Keyword.
 type DDLArg interface{ ddl() (string, error) }
+
+// Keyword is a role keyword written where a role name (an Ident) may also
+// stand: only Public and CurrentUser exist.
+type Keyword struct{ word string }
+
+var (
+	Public      = Keyword{"PUBLIC"}
+	CurrentUser = Keyword{"CURRENT_USER"}
+)
+
+func (k Keyword) ddl() (string, error) {
+	if k.word == "" {
+		return "", fmt.Errorf("empty keyword")
+	}
+	return k.word, nil
+}
 
 // Ident is a name in a DDL statement, written as a quoted identifier
 // (QuoteIdent).
