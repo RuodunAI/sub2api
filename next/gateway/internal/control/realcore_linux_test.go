@@ -165,6 +165,28 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 	for _, n := range nodes {
 		c.run(n)
 	}
+	// The engine loops heartbeat in the background. The primary's last
+	// telemetry dates from its bootstrap, before the followers joined and its
+	// route changed, so preflight must wait for a fresh observation of every
+	// node rather than race the first loop pass.
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(200 * time.Millisecond) {
+		listed, e := store.Nodes(ctx)
+		if e != nil {
+			t.Fatal(e)
+		}
+		serving := 0
+		for _, n := range listed {
+			if n.ServingLocal(time.Now()) {
+				serving++
+			}
+		}
+		if serving == len(listed) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("nodes not serving locally before the update: %+v", listed)
+		}
+	}
 	pf, err := store.Preflight(ctx, target.Digest)
 	if err != nil || len(pf.Blockers) > 0 {
 		t.Fatalf("preflight: %+v %v", pf, err)
