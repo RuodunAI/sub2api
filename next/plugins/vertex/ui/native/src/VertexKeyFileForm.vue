@@ -20,7 +20,7 @@ const t = useVertexHost().t
 
 const type = computed(() => keyFileType(props.accountType, props.account))
 const field = computed(() => KEY_FIELD[type.value])
-const form = useCredentialForm(props, emit, { rules: () => keyFileRules(type.value), defaults: KEY_FILE_DEFAULTS })
+const form = useCredentialForm(props, emit, { rules: () => keyFileRules(type.value, t), defaults: KEY_FILE_DEFAULTS })
 defineExpose({ validate: form.validate })
 </script>
 

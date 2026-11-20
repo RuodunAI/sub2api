@@ -4,7 +4,8 @@
 // The constraints (internal/vertex/credentials.go holds the same on save):
 //   service_account_json / authorized_user_json  required, 2-32768 characters (secret)
 //   api_key      required, not blank (secret)
-//   project_id   ^([a-z][a-z0-9-]{4,28}[a-z0-9])?$
+//   project_id   ^([a-z][a-z0-9-]{4,28}[a-z0-9])?$; a key file account needs one when its file names none,
+//                an API key account both project and location or neither (target.check)
 //   location     ^([a-z0-9-]{2,32})?$, default global for the key file types
 //   access_token, expires_at, token_for  the core's (token renewal): never shown, kept as they are
 import { SECRET_MASK } from '@sub2api/ui'
@@ -31,6 +32,9 @@ const SA = JSON.stringify({
   token_uri: 'https://oauth2.googleapis.com/token'
 })
 const USER = JSON.stringify({ type: 'authorized_user', client_id: 'id.apps.googleusercontent.com', client_secret: 'secret', refresh_token: '1//0refresh', quota_project_id: 'my-project-123456' })
+/** Key files naming no project: the account form must. */
+const SA_NO_PROJECT = JSON.stringify({ ...JSON.parse(SA), project_id: undefined })
+const USER_NO_PROJECT = JSON.stringify({ ...JSON.parse(USER), quota_project_id: ' ' })
 const KEY = 'AQ.Ab8RN6-example-key'
 const GLOBAL = { location: 'global' }
 /** A key file account as the editor loads it: the file and the token masked, the token state as the core wrote it. */
@@ -51,6 +55,10 @@ export const CASES: FormCase[] = [
   { name: 'sa: project ending in a dash', type: 'vertex_sa', input: { service_account_json: SA, project_id: 'my-project-' }, out: { service_account_json: SA, project_id: 'my-project-', ...GLOBAL }, ok: false },
   { name: 'sa: upper-case location', type: 'vertex_sa', input: { service_account_json: SA, location: 'US' }, out: { service_account_json: SA, location: 'US' }, ok: false },
   { name: 'sa: location naming a host', type: 'vertex_sa', input: { service_account_json: SA, location: 'evil.example' }, out: { service_account_json: SA, location: 'evil.example' }, ok: false },
+  { name: 'sa: key file without a project and no project', type: 'vertex_sa', input: { service_account_json: SA_NO_PROJECT }, out: { service_account_json: SA_NO_PROJECT, ...GLOBAL }, ok: false },
+  { name: 'sa: key file without a project, the project typed', type: 'vertex_sa', input: { service_account_json: SA_NO_PROJECT, project_id: 'my-project-123456' }, out: { service_account_json: SA_NO_PROJECT, project_id: 'my-project-123456', ...GLOBAL }, ok: true },
+  // A file that is not JSON is the plugin's to refuse, at the file.
+  { name: 'sa: key file that is not JSON and no project', type: 'vertex_sa', input: { service_account_json: 'not json' }, out: { service_account_json: 'not json', ...GLOBAL }, ok: true },
   { name: 'sa: location cleared (global)', type: 'vertex_sa', input: { service_account_json: SA, location: '' }, out: { service_account_json: SA, location: '' }, ok: true },
   { name: 'sa: edit, nothing changed: the token state goes back as it is', type: 'vertex_sa', stored: STORED_SA, out: STORED_SA, ok: true },
   { name: 'sa: edit, project changed: the token state is kept', type: 'vertex_sa', stored: STORED_SA, input: { project_id: 'other-project-1' }, out: { ...STORED_SA, project_id: 'other-project-1' }, ok: true },
@@ -66,6 +74,10 @@ export const CASES: FormCase[] = [
   { name: 'user: project and region', type: 'vertex_authorized_user', input: { authorized_user_json: USER, project_id: 'billing-project', location: 'us-central1' }, out: { authorized_user_json: USER, project_id: 'billing-project', location: 'us-central1' }, ok: true },
   { name: 'user: project starting with a digit', type: 'vertex_authorized_user', input: { authorized_user_json: USER, project_id: '1project' }, out: { authorized_user_json: USER, project_id: '1project', ...GLOBAL }, ok: false },
   { name: 'user: location of 33 characters', type: 'vertex_authorized_user', input: { authorized_user_json: USER, location: 'a'.repeat(33) }, out: { authorized_user_json: USER, location: 'a'.repeat(33) }, ok: false },
+  { name: 'user: file without a quota project and no project', type: 'vertex_authorized_user', input: { authorized_user_json: USER_NO_PROJECT }, out: { authorized_user_json: USER_NO_PROJECT, ...GLOBAL }, ok: false },
+  { name: 'user: file without a quota project, the project typed', type: 'vertex_authorized_user', input: { authorized_user_json: USER_NO_PROJECT, project_id: 'billing-project' }, out: { authorized_user_json: USER_NO_PROJECT, project_id: 'billing-project', ...GLOBAL }, ok: true },
+  // The stored file is masked: whether it names a project is the plugin's to say.
+  { name: 'user: edit, project cleared', type: 'vertex_authorized_user', stored: STORED_USER, input: { project_id: '' }, out: { ...STORED_USER, project_id: '' }, ok: true },
   { name: 'user: edit, nothing changed: the token state goes back as it is', type: 'vertex_authorized_user', stored: STORED_USER, out: STORED_USER, ok: true },
   { name: 'user: edit, location changed: the token state is kept', type: 'vertex_authorized_user', stored: STORED_USER, input: { location: 'global' }, out: { ...STORED_USER, location: 'global' }, ok: true },
 
@@ -78,8 +90,9 @@ export const CASES: FormCase[] = [
   { name: 'apikey: key of 513 characters', type: 'vertex_apikey', input: { api_key: 'k'.repeat(513) }, out: { api_key: 'k'.repeat(513) }, ok: true },
   { name: 'apikey: key with a space', type: 'vertex_apikey', input: { api_key: 'AQ.Ab8 RN6' }, out: { api_key: 'AQ.Ab8 RN6' }, ok: true },
   { name: 'apikey: project address', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, out: { api_key: KEY, project_id: 'my-project-123456', location: 'us-central1' }, ok: true },
-  // Both or neither is the plugin's rule on save (target.check), as the section says; the form leaves it to the plugin.
-  { name: 'apikey: project only (refused on save)', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456' }, out: { api_key: KEY, project_id: 'my-project-123456' }, ok: true },
+  // Both or neither, as the section says (target.check).
+  { name: 'apikey: project only', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456' }, out: { api_key: KEY, project_id: 'my-project-123456' }, ok: false },
+  { name: 'apikey: location only', type: 'vertex_apikey', input: { api_key: KEY, location: 'us-central1' }, out: { api_key: KEY, location: 'us-central1' }, ok: false },
   { name: 'apikey: bad location', type: 'vertex_apikey', input: { api_key: KEY, project_id: 'my-project-123456', location: 'us_central1' }, out: { api_key: KEY, project_id: 'my-project-123456', location: 'us_central1' }, ok: false },
   { name: 'apikey: edit, stored key kept', type: 'vertex_apikey', stored: { api_key: SECRET_MASK, project_id: 'my-project-123456', location: 'global' }, out: { api_key: SECRET_MASK, project_id: 'my-project-123456', location: 'global' }, ok: true },
   { name: 'apikey: edit, key replaced', type: 'vertex_apikey', stored: { api_key: SECRET_MASK }, input: { api_key: KEY }, out: { api_key: KEY }, ok: true }

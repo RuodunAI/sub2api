@@ -77,6 +77,17 @@ describe('vertex forms: fields and texts', () => {
     expect(w.findAll('input').map((i) => i.classes('font-mono'))).toEqual([false, true, true])
   })
 
+  it('says at the missing field what the plugin would refuse: half a project address, a project nobody names', async () => {
+    const api = form('vertex_apikey')
+    await fillControls(api.w, LABELS.vertex_apikey, { api_key: 'AQ.key', project_id: 'my-project-123456' })
+    expect(await api.validate()).toBe(false)
+    expect(api.w.text()).toContain('Fill in both the project ID and the location, or neither')
+    const user = form('vertex_authorized_user')
+    await fillControls(user.w, LABELS.vertex_authorized_user, { authorized_user_json: JSON.stringify({ type: 'authorized_user', refresh_token: 'r' }) })
+    expect(await user.validate()).toBe(false)
+    expect(user.w.text()).toContain('The key file names no project: enter the project ID')
+  })
+
   it('shows the server errors at their fields until the field changes', async () => {
     const { w } = form('vertex_apikey', { errors: { location: 'location is required when the other of project ID and location is set' } })
     await flushPromises()
