@@ -1,11 +1,11 @@
 // Package pgproxy logs in to PostgreSQL on behalf of a client that has no
 // credentials, then relays the wire protocol unchanged. The core uses it for
-// plugin database connections (CONTRACTS §115): a plugin connects through
+// plugin database connections (CONTRACTS §130): a plugin connects through
 // the egress tunnel to a fixed virtual address, the core terminates the
-// start-up, opens the server connection with its own configuration (TLS and
-// password authentication included) and the plugin's schema as search_path,
-// and from then on copies bytes both ways. No database credential reaches the
-// client.
+// start-up, opens the server connection with its own configuration (host,
+// TLS) as the plugin's database identity (a user and the password only the
+// core derives) with the core's schema as search_path, and from then on
+// copies bytes both ways. No database credential reaches the client.
 //
 // It lives under runtime-contract/gormpg because that is the only place that
 // may import pgx.
@@ -44,7 +44,8 @@ type session struct {
 	tlsConfig *tls.Config // nil when the server connection is not TLS
 }
 
-// New parses dsn (URL or key=value, as the core's own pool does) once.
+// New parses dsn (URL or key=value, as the core's own pool does) once; its
+// credentials are not used (Session.User).
 func New(dsn string) (*Proxy, error) {
 	cfg, err := gormpg.ParseConfig(dsn)
 	if err != nil {
@@ -58,6 +59,9 @@ type Session struct {
 	// Client identifies the client (the plugin key). A cancel request is
 	// forwarded only for a session of the same client.
 	Client string
+	// User and Password log in to the server in place of the proxy's
+	// configured credentials.
+	User, Password string
 	// Params override run-time parameters of the server session, after the
 	// client's own start-up parameters (e.g. search_path, application_name).
 	Params map[string]string
@@ -133,10 +137,12 @@ func (p *Proxy) Serve(ctx context.Context, client net.Conn, s Session) error {
 	return nil
 }
 
-// connect opens the server connection with the proxy's configuration, the
-// client's protocol version and run-time parameters, and s.Params.
+// connect opens the server connection with the proxy's configuration as
+// s.User, the client's protocol version and run-time parameters, and
+// s.Params.
 func (p *Proxy) connect(ctx context.Context, start *pgproto3.StartupMessage, s Session) (*pgconn.HijackedConn, error) {
 	cfg := p.cfg.Copy()
+	cfg.User, cfg.Password = s.User, s.Password
 	for k, v := range start.Parameters {
 		switch {
 		case k == "user", k == "database", k == "options", k == "replication", strings.HasPrefix(k, "_pq_."):

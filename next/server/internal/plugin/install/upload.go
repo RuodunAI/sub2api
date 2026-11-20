@@ -81,6 +81,9 @@ func (s *Service) Upload(ctx context.Context, data []byte, actorID int64, opt Up
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)
+	if err := s.noteDatabase(ctx, r); err != nil {
+		return nil, err
+	}
 	r.ConsentStatus = rec.consent
 	r.PackageSHA256, r.PackageSize, r.UploadedAt = p.SHA256, int64(len(p.Raw)), rec.uploadedAt
 	r.UpgradeFrom = rec.upgradeOf
@@ -138,7 +141,7 @@ func (s *Service) validatePackage(ctx context.Context, p *pkg.Package, opt Uploa
 	if err != nil {
 		return err
 	}
-	return pkg.Validate(m, p.Files, pkg.ValidateOptions{
+	if err := pkg.Validate(m, p.Files, pkg.ValidateOptions{
 		HostVersion:    s.opt.HostVersion,
 		DevMode:        s.opt.Plugins.DevMode,
 		GOOS:           s.opt.GOOS,
@@ -147,7 +150,19 @@ func (s *Service) validatePackage(ctx context.Context, p *pkg.Package, opt Uploa
 		OtherEndpoints: otherEndpoints,
 		OtherPlatforms: otherPlatforms,
 		OtherChannels:  otherChannels,
-	})
+	}); err != nil {
+		return err
+	}
+	// The tables and columns outside the plugin it asks for must be the
+	// core's (CONTRACTS §130).
+	if m.Database == nil || len(m.Database.Access) == 0 || s.d.Schemas == nil {
+		return nil
+	}
+	errs, err := s.d.Schemas.CheckAccess(ctx, m.Database.Access)
+	if err != nil || len(errs) == 0 {
+		return err
+	}
+	return core.InvalidFields(errs...).WithMessage("database.access names tables or columns the core does not have")
 }
 
 // recordUpload writes the plugin row, the version row and the audit entry in

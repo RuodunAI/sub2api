@@ -7,9 +7,9 @@ import (
 
 // DatabaseHost/DatabasePort is the virtual address a plugin's database
 // connections go to (the DSN of HostService.GetDSN under strict network).
-// The core logs in to PostgreSQL for the plugin and relays the protocol
-// (Options.DatabaseProxy, CONTRACTS §115), so the plugin holds no database
-// credential.
+// The core logs in to PostgreSQL as the plugin's database identity and
+// relays the protocol (Options.DatabaseProxy, CONTRACTS §130), so the
+// plugin holds no database credential.
 const (
 	DatabaseHost = "db.sub2api"
 	DatabasePort = 5432

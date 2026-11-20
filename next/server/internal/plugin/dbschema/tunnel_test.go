@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	sdkegress "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -83,45 +84,54 @@ func pluginDB(t *testing.T, dsn, schema string, conns int) *gorm.DB {
 	return db
 }
 
-// A plugin behind the tunnel gets a DSN without credentials, and the core
-// logs in for it with its own user (password authentication) and the
-// plugin's schema as search_path.
+// Every plugin gets a DSN without credentials at the virtual address, and
+// the core logs in for it as the plugin's identity (password
+// authentication with the derived password) with the core's schema as
+// search_path.
 func TestTunnelProxy(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
-	host, hostDSN, core := coreUser(t, db)
+	host, hostDSN, core := coreUser(t, db, true)
 	u, _ := url.Parse(hostDSN)
 	password, _ := u.User.Password()
 	key := randKey()
-	m := dbschema.New(host, byAddress(t, hostDSN), nil)
-	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
+	install(t, db, key, nil, false)
+	m := newManager(t, db, host, byAddress(t, hostDSN), nil)
+	t.Cleanup(func() { _ = m.Drop(context.Background(), key, true) })
+	if _, err := m.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE `+manifest.TablePrefix(key)+`items (id int PRIMARY KEY, v text)`)); err != nil {
+		t.Fatal(err)
+	}
 	tunnel(t, m, key, true)
 
-	dsn, schema, err := m.DSN(ctx, key, true)
+	dsn, schema, err := m.DSN(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(dsn, password) || strings.Contains(dsn, core) || !strings.Contains(dsn, egress.DatabaseHost) {
-		t.Fatalf("tunnel DSN %s carries the core's credentials or not the virtual address", dsn)
+	if schema != "public" || strings.Contains(dsn, password) || strings.Contains(dsn, core) || strings.Contains(dsn, m.Password(key)) ||
+		!strings.Contains(dsn, egress.DatabaseHost) {
+		t.Fatalf("tunnel DSN %s (schema %s) carries credentials or not the virtual address", dsn, schema)
 	}
 	pdb := pluginDB(t, dsn, schema, 8)
+	items := manifest.TablePrefix(key) + "items"
 
-	// Its own table, its schema, the core's user.
-	if err := pdb.Exec(`CREATE TABLE items (id int PRIMARY KEY, v text)`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := pdb.Exec(`INSERT INTO items VALUES (1, 'a')`).Error; err != nil {
+	// Its own table, the core's schema, its identity; nothing it may not.
+	if err := pdb.Exec(`INSERT INTO ` + items + ` VALUES (1, 'a')`).Error; err != nil {
 		t.Fatal(err)
 	}
 	var who struct {
 		User, Path string
 		N          int
 	}
-	if err := pdb.Raw(`SELECT current_user AS "user", current_setting('search_path') AS path, (SELECT count(*) FROM items) AS n`).Scan(&who).Error; err != nil {
+	if err := pdb.Raw(`SELECT current_user AS "user", current_setting('search_path') AS path, (SELECT count(*) FROM ` + items + `) AS n`).Scan(&who).Error; err != nil {
 		t.Fatal(err)
 	}
-	if who.User != core || who.Path != schema || who.N != 1 {
-		t.Fatalf("session = %+v, want user %s, search_path %s, 1 row", who, core, schema)
+	if who.User != m.Identity(key) || who.Path != schema || who.N != 1 {
+		t.Fatalf("session = %+v, want user %s, search_path %s, 1 row", who, m.Identity(key), schema)
+	}
+	for _, q := range []string{`SELECT * FROM users`, `CREATE TABLE ` + manifest.TablePrefix(key) + `more (id int)`} {
+		if err := pdb.Exec(q).Error; err == nil {
+			t.Fatalf("the plugin ran %s", q)
+		}
 	}
 	// The server connection is encrypted exactly when the core's own are.
 	var coreTLS, pluginTLS bool
@@ -132,10 +142,6 @@ func TestTunnelProxy(t *testing.T) {
 		t.Fatalf("plugin session TLS %v, core's %v: %v", pluginTLS, coreTLS, err)
 	}
 	t.Logf("server connections encrypted: %v", coreTLS)
-	var owner string
-	if err := host.SQL.QueryRowContext(ctx, `SELECT tableowner FROM pg_tables WHERE schemaname = $1 AND tablename = 'items'`, schema).Scan(&owner); err != nil || owner != core {
-		t.Fatalf("table owner %s %v", owner, err)
-	}
 
 	// A large result set.
 	var rows []struct {
@@ -149,18 +155,18 @@ func TestTunnelProxy(t *testing.T) {
 	// Transactions: a rollback leaves nothing, a commit stays.
 	boom := errors.New("boom")
 	if err := pdb.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec(`INSERT INTO items VALUES (2, 'b')`).Error; err != nil {
+		if err := tx.Exec(`INSERT INTO ` + items + ` VALUES (2, 'b')`).Error; err != nil {
 			return err
 		}
 		return boom
 	}); !errors.Is(err, boom) {
 		t.Fatal(err)
 	}
-	if err := pdb.Transaction(func(tx *gorm.DB) error { return tx.Exec(`INSERT INTO items VALUES (3, 'c')`).Error }); err != nil {
+	if err := pdb.Transaction(func(tx *gorm.DB) error { return tx.Exec(`INSERT INTO ` + items + ` VALUES (3, 'c')`).Error }); err != nil {
 		t.Fatal(err)
 	}
 	var ids []int
-	if err := pdb.Raw(`SELECT id FROM items ORDER BY id`).Scan(&ids).Error; err != nil || len(ids) != 2 || ids[1] != 3 {
+	if err := pdb.Raw(`SELECT id FROM ` + items + ` ORDER BY id`).Scan(&ids).Error; err != nil || len(ids) != 2 || ids[1] != 3 {
 		t.Fatalf("after the transactions: %v %v", ids, err)
 	}
 
@@ -172,7 +178,7 @@ func TestTunnelProxy(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			var n int
-			if err := pdb.Raw(`SELECT count(*) + ? FROM items, pg_sleep(0.05)`, i).Scan(&n).Error; err != nil || n != 2+i {
+			if err := pdb.Raw(`SELECT count(*) + ? FROM `+items+`, pg_sleep(0.05)`, i).Scan(&n).Error; err != nil || n != 2+i {
 				errs <- errors.Join(err, errors.New("wrong count"))
 			}
 		}()
@@ -209,7 +215,7 @@ func TestTunnelProxy(t *testing.T) {
 	}
 	// The handle still works afterwards.
 	var n int
-	if err := pdb.Raw(`SELECT count(*) FROM items`).Scan(&n).Error; err != nil || n != 2 {
+	if err := pdb.Raw(`SELECT count(*) FROM ` + items).Scan(&n).Error; err != nil || n != 2 {
 		t.Fatalf("after the cancel: %d %v", n, err)
 	}
 
@@ -265,10 +271,10 @@ func TestTunnelProxyNeedsDatabaseGrant(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
 	key := randKey()
-	m := dbschema.New(db, testutil.DSN(db), nil)
-	t.Cleanup(func() { _ = m.Drop(context.Background(), key) })
+	m := newManager(t, db, db, testutil.DSN(db), nil)
+	t.Cleanup(func() { _ = m.Drop(context.Background(), key, true) })
 	tunnel(t, m, key, false)
-	dsn, schema, err := m.DSN(ctx, key, true)
+	dsn, schema, err := m.DSN(ctx, key)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -93,7 +93,7 @@ func Manifest(key, version string) *manifest.Manifest {
 			Platforms: []manifest.AccountPlatform{{Platform: "p_" + key}},
 		}},
 		Hooks:           []manifest.Hook{{Point: "gateway.request", Order: 10, Needs: []string{"model", "prompt_text"}, TimeoutMs: 500}},
-		Database:        &manifest.Database{Schema: "plg_" + key, Migrations: "migrations/"},
+		Database:        &manifest.Database{Migrations: "migrations/"},
 		UserPermissions: []manifest.UserPermission{{Key: "rules:read", Label: manifest.LocalizedText{"en": "Read rules"}}},
 		Routes: []manifest.Route{
 			{Method: "GET", Path: "/echo/:id", Scope: "admin", Permission: "rules:read"},

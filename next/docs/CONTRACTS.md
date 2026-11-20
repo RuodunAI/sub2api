@@ -32,7 +32,7 @@
 - 下载依赖：`GOPROXY=https://goproxy.cn,direct`（只在命令里临时设置）；整理依赖用 `GOWORK=off go mod tidy`
 - 重新生成 proto：`cd sdk && buf generate`（工具在 `go env GOBIN`；版本 buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0，输出与提交的生成代码逐字节相同，生成后 `git status --short gen` 应当没有意外的差异）
 - 每个模块完成时必须通过：`gofmt -l .` 无输出、`go vet ./...`、`go build ./...`、本模块的 `go test ./...`（工作区模式，不设 `GOWORK`）。CI（`.github/workflows/next-ci.yml`）对每个模块跑的就是这四条，脚本是 `.github/next-ci/next-check-module.sh`，可在仓库根本地执行（`sh .github/next-ci/next-check-module.sh next/server`）；`e2e` 只编译不运行（`--no-test`）。核心另在 CI 里交叉编译 `GOOS=linux/windows/darwin go build ./...`，并跑 `go test -race ./gateway/... ./runtime-contract/... ./server/internal/app/... ./server/internal/background/...`（在 `next/` 下）；`next-sums-clean.sh` 检查 `go.sum`/`go.work.sum` 没有未提交的改动
-- **插件数据库**（2026-11-15，2026-11-16 改为目录比对、共用 `runtime-contract/gormpg`；插件 SDK 0.2.0）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），连接池大小由调用方给定（`gormpg.Settings`：核心默认 20 个、`SUB2API_PG_MAX_CONNS` 可改，网关默认 8 个、`SUB2API_GATEWAY_POOL_MAX_CONNS` 可改，插件按 `pgdb.Options`），DSN 不带 `pool_*` 参数（带了 `gormpg.ParseConfig` 启动即报错，只列参数名，见 §101.2），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；拨号钩子（严格网络模式的出口隧道）装在它解析出的驱动配置上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）和 PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`IsForeignKeyViolation`、`IsDeadlock`、`SQLState`、`ConstraintName`、`Hint`，核心经 `store` 的同名函数）也在这里，它是唯一 import pgx 的包。句柄绑定调用时的 ctx，每次调用重新取（连接共享，开销很小），不要缓存（例如在 Init 里取了交给后台任务）：ctx 结束后缓存的句柄每条语句都报错，语句不执行，错误包装 ctx 的错误（`context.Canceled` 或 `context.DeadlineExceeded`），并提示缓存的句柄是可能的原因（正常的取消、超时也是这条错误，提示写成条件句）。连接池默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，`pluginsdk.WithDBPoolSize` 可改）；插件的连接由核心代为登录、用核心的数据库用户（§115），这些连接与核心自己的连接池一起计入数据库的连接上限，规划 `max_connections` 时按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”算。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`；迁移里有模型描述不了的函数、视图、序列、触发器、类型时再导出 `func Unmanaged() []string`，如 `"function touch()"`、`"trigger t.t_touch"`、`"view v"`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff|check` 在比对库的一个事务里完成全部工作，结束时回滚（中断也不留下 schema，见 `sdk/pgdb/pgdbtool`）：以连接的用户执行迁移、只把 `search_path` 设为临时 schema（与宿主一致：宿主 2026-11-18 起以核心的用户执行，§115；此前用一个只拥有临时 schema 的临时角色，比宿主严），迁移在 schema 之外建立或改动的表、函数、类型、schema 和扩展（本事务写过的系统目录行）列为差异，在另一个空 schema 上对模型跑 AutoMigrate，比较两边的系统目录：表；每列的 `format_type`、NOT NULL、默认值（按值比较，`0` 与 `'0'::numeric` 相同）；主键；索引与约束按定义（`pg_get_indexdef`、`pg_get_constraintdef`，与名字无关，唯一约束与同列唯一索引视为相同）。模型的 `TableName` 不得带 schema。`db diff` 把 AutoMigrate 在迁移 schema 上执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），AutoMigrate 不处理的差异（给已有列加 NOT NULL、改主键、同名索引或约束改定义），以及库里有而模型里没有的表、列、索引、约束、未声明为 Unmanaged 的视图、序列、函数、触发器、类型只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动且没有其他程序在用时在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节。插件和 SDK 的语句（2026-11-16 起）全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Select`、`Create`、`Updates`、`Delete`、`clause.OnConflict`、`clause.Returning`），不手写整条 SQL：`Raw`/`Exec` 只组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），序列和锁走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`（键为 `hashtextextended(名字 || ':' || current_schema(), 0)`）；`Exists`、`InsertSelect`、`NextIDs`、`TryXactLock` 是 `runtime-contract/gormpg` 同名组合器的转交，核心和网关用的是同一份。SQL 文本的规则与核心相同（见下条“核心的 SQL”，同一个检查器 `runtime-contract/gormpg/sqlcheck`）：必须是常量或只由常量拼成，值只走 `?` 参数，请求选择的列和排序经固定白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.SQL` 标记交给辅助函数的 SQL 片段（只有常量能隐式转换）。`sdk/pgdb` 的 `TestNoRawSQL` 检查 SDK、仓库里全部插件和 `tools` 的非测试代码（`[raw-sql]`、`[sql-const]`，以及不经 gorm 的 `ConnPool` 或 `(*gorm.DB).DB()` 拿连接、`*sql.DB` 执行语句的 `[gorm-instance]`；GORM 的泛型 API `gorm.G` 不许用，它的方法检查器看不到），例外按声明（`包.函数`）登记原因，目前只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL（标识符经 `clause.Table` 引用）和 `pgdb.LockTable`，连接池上只有 `pgdb.Close`、testpg 的探测和 `hierarchy.requireTx`（只看句柄是否在事务里）。插件要在自己的表上存树（层级）用 `sdk/hierarchy`（0.1.292，核心的用户上级是它的第一个使用者，§103.2）：表按约定有 `id`、`parent_id`（无 ON DELETE）、`path bigint[] NOT NULL DEFAULT '{}'`（祖先，自顶向下到父节点，GIN 索引）和 `CHECK (path[cardinality(path)] IS NOT DISTINCT FROM parent_id)`，`hierarchy.New(table, maxDepth)` 给出 `Tree`（列名不同时直接填 `Tree` 的字段）；新行作为根插入，同一事务里 `Move` 放到父节点下，`Move` 是父列与路径的唯一写入者
+- **插件数据库**（2026-11-15，2026-11-16 改为目录比对、共用 `runtime-contract/gormpg`；插件 SDK 0.2.0）：插件用 `Host.DB` 返回的 `*gorm.DB`（`sdk/pgdb`），插件、SDK、网关和工具都不 import pgx（`sdk/pgdb` 的 `TestNoPgxImports` 检查，测试文件也算；核心是 gormguard `[pgx-import]`）。连接的打开由 `runtime-contract/gormpg` 一处实现，核心、网关、SDK 共用：pgx 解析 DSN（URL 或 key=value），连接池大小由调用方给定（`gormpg.Settings`：核心默认 20 个、`SUB2API_PG_MAX_CONNS` 可改，网关默认 8 个、`SUB2API_GATEWAY_POOL_MAX_CONNS` 可改，插件按 `pgdb.Options`），DSN 不带 `pool_*` 参数（带了 `gormpg.ParseConfig` 启动即报错，只列参数名，见 §101.2），固定 `datestyle=ISO`、`intervalstyle=postgres`，`stdlib.OpenDB` 交给 database/sql 池，GORM 跑在 `sqlpool` 上；拨号钩子（严格网络模式的出口隧道）装在它解析出的驱动配置上；数组参数类型 `gormpg.Array`（`pgdb.Array`、`store.Array` 是它的别名）和 PostgreSQL 错误的读取（`IsNoRows`、`IsUniqueViolation`、`IsForeignKeyViolation`、`IsDeadlock`、`SQLState`、`ConstraintName`、`Hint`，核心经 `store` 的同名函数）也在这里，它是唯一 import pgx 的包。句柄绑定调用时的 ctx，每次调用重新取（连接共享，开销很小），不要缓存（例如在 Init 里取了交给后台任务）：ctx 结束后缓存的句柄每条语句都报错，语句不执行，错误包装 ctx 的错误（`context.Canceled` 或 `context.DeadlineExceeded`），并提示缓存的句柄是可能的原因（正常的取消、超时也是这条错误，提示写成条件句）。连接池默认每节点每插件 4 个（`pgdb.DefaultMaxConns`，`pluginsdk.WithDBPoolSize` 可改）；插件的连接由核心代为登录、用插件自己的数据库身份（§130），这些连接与核心自己的连接池一起计入数据库的连接上限，规划 `max_connections` 时按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”算。表结构以插件 `internal/model` 包的 GORM 模型为唯一描述（导出 `func All() []any`；迁移里有模型描述不了的函数、视图、序列、触发器、类型时再导出 `func Unmanaged() []string`，如 `"function touch()"`、`"trigger t.t_touch"`、`"view v"`），宿主仍只执行 `migrations/*.sql`，运行时不跑 AutoMigrate。`sub2api-plugin db diff|check` 在比对库的一个事务里完成全部工作，结束时回滚（中断也不留下 schema，见 `sdk/pgdb/pgdbtool`）：以连接的用户执行迁移、只把 `search_path` 设为临时 schema（宿主 2026-11-20 起以插件自己的数据库身份在核心的模式里执行、表名带前缀 `plg_<key>__`，§130），迁移在 schema 之外建立或改动的表、函数、类型、schema 和扩展（本事务写过的系统目录行）列为差异，在另一个空 schema 上对模型跑 AutoMigrate，比较两边的系统目录：表；每列的 `format_type`、NOT NULL、默认值（按值比较，`0` 与 `'0'::numeric` 相同）；主键；索引与约束按定义（`pg_get_indexdef`、`pg_get_constraintdef`，与名字无关，唯一约束与同列唯一索引视为相同）。模型的 `TableName` 不得带 schema。`db diff` 把 AutoMigrate 在迁移 schema 上执行的 DDL（改写成可重复执行）写成下一个编号的迁移（编号位数沿用已有文件），写之前在临时 schema 上把它连跑两次并确认再无差异；无变化时提示；改列类型、删除、`SET NOT NULL`、无默认值的 `NOT NULL` 新列、给已有表加 CHECK/唯一/外键约束或唯一索引（标 `!`），AutoMigrate 不处理的差异（给已有列加 NOT NULL、改主键、同名索引或约束改定义），以及库里有而模型里没有的表、列、索引、约束、未声明为 Unmanaged 的视图、序列、函数、触发器、类型只打印、不生成。`db check` 有任何差异就失败，`pack` 自动执行（含 `--overlay` 的迁移；插件没有 `internal/model` 或 manifest 没有 `database` 时跳过；没设 `TEST_DATABASE_URL` 时启动本机 testpg 服务器，由它启动且没有其他程序在用时在结束时停掉；`--skip-db-check` 关闭，镜像构建用它，CI 由 `tools/sub2api-plugin` 的 `TestDBCheck` 检查所有带模型的内置插件）。说明见 `sdk/pluginsdk/doc.go` 的 Database 一节。插件和 SDK 的语句（2026-11-16 起）全部由 GORM 按模型生成（`Model`/`Table`、`Where`、`Select`、`Create`、`Updates`、`Delete`、`clause.OnConflict`、`clause.Returning`），不手写整条 SQL：`Raw`/`Exec` 只组合已生成的查询（`(?) UNION ALL (?)`、`pgdb.Exists`、`pgdb.InsertSelect`），序列和锁走 `pgdb.NextIDs`、`pgdb.LockTable`、`pgdb.TryXactLock`（键为 `hashtextextended(名字 || ':' || current_schema(), 0)`）；`Exists`、`InsertSelect`、`NextIDs`、`TryXactLock` 是 `runtime-contract/gormpg` 同名组合器的转交，核心和网关用的是同一份。SQL 文本的规则与核心相同（见下条“核心的 SQL”，同一个检查器 `runtime-contract/gormpg/sqlcheck`）：必须是常量或只由常量拼成，值只走 `?` 参数，请求选择的列和排序经固定白名单进 `clause.Column`/`clause.OrderByColumn`；`pgdb.SQL` 标记交给辅助函数的 SQL 片段（只有常量能隐式转换）。`sdk/pgdb` 的 `TestNoRawSQL` 检查 SDK、仓库里全部插件和 `tools` 的非测试代码（`[raw-sql]`、`[sql-const]`，以及不经 gorm 的 `ConnPool` 或 `(*gorm.DB).DB()` 拿连接、`*sql.DB` 执行语句的 `[gorm-instance]`；GORM 的泛型 API `gorm.G` 不许用，它的方法检查器看不到），例外按声明（`包.函数`）登记原因，目前只有 `pgdbtool` 的系统目录读取、迁移执行与 DDL（标识符经 `clause.Table` 引用）和 `pgdb.LockTable`，连接池上只有 `pgdb.Close`、testpg 的探测和 `hierarchy.requireTx`（只看句柄是否在事务里）。插件要在自己的表上存树（层级）用 `sdk/hierarchy`（0.1.292，核心的用户上级是它的第一个使用者，§103.2）：表按约定有 `id`、`parent_id`（无 ON DELETE）、`path bigint[] NOT NULL DEFAULT '{}'`（祖先，自顶向下到父节点，GIN 索引）和 `CHECK (path[cardinality(path)] IS NOT DISTINCT FROM parent_id)`，`hierarchy.New(table, maxDepth)` 给出 `Tree`（列名不同时直接填 `Tree` 的字段）；新行作为根插入，同一事务里 `Move` 放到父节点下，`Move` 是父列与路径的唯一写入者
 - **核心的 SQL**（raw-SQL 策略，2026-11-16，0.1.290；gormguard `[raw-sql]`、`[sql-const]`，规则在 `runtime-contract/gormpg/sqlcheck`，允许列表在 `server/internal/store/gormguard/rawsql_test.go`）：核心的语句一律由 GORM 的模型与查询构造器生成（`Create`、`Updates`、`clause.OnConflict`、`clause.Returning`、`store.ForUpdate()`，统计用 `Select`/`Group` 里的表达式，子查询与 `UNION ALL` 用 `(?)` 组合构造器查询），多行插入一次 `Create` 一个切片，需要按顺序拿 id 时先 `gormpg.NextIDs`，行数随批次变化的写入按 `store.InsertChunk` 行一条（`CreateInBatches`，满条的文本相同）。插入的行用类型化的行结构体（带 `TableName`，只含要写的列，没有默认值标签，所以不读回；数据库时钟的列用 `store.DBNow`，值是其他 SQL 表达式（子查询、时钟加间隔）的列用 `store.ExprValue`），行从查询里来的用 `gormpg.InsertSelect`；不用没有 `Model` 的列映射（GORM 每次把映射当模型解析，失败后把整个映射格式化进丢弃的错误）。整条手写的语句只留在允许列表里按名字（`包.函数`）登记、写明理由的地方：账本的 data-modifying CTE（预扣、结算、释放、退款）、`store/system.go` 里非数据语句的小助手（事务级 advisory 锁 `XactLock`/`TryXactLock`（按名字，`hashtextextended`）与 `XactLockID`（按 id，只用于要与同 id 的迁移会话锁互斥的插件迁移锁）、`SetLocal`（`set_config(名, 值, true)`，只在事务里）、`ClockTimestamp`、`CurrentSnapshot`、`CurrentDatabase`）、`DDL`、迁移执行器、开发工具 `modelgen`，以及插件迁移记录的 SECURITY DEFINER 函数调用；核心、网关、SDK 共用的组合器 `runtime-contract/gormpg` 的 `ExistsQuery`/`Exists`、`InsertSelect`、`NextIDs`（核对取到的个数）、`RelationExists`、`TryXactLock` 在那个模块登记；只由 `(?)`（或 `?`）与集合运算组成的组合文本自动放行。交给 GORM 的 SQL 文本必须由常量构成，值只走 `?` 参数：`Raw`、`Exec`、`Where`、`Not`、`Or`、`Having`、`Order`、`Group`、`Joins`、`InnerJoins`、`Table`、`Pluck` 的第一个参数，`Select`/`Distinct` 的全部参数（字符串或 `[]string`），`Find`/`First`/`Take`/`Last`/`Delete`/`FirstOrInit`/`FirstOrCreate`/`Preload` 的内联条件，`gorm.Expr`、`clause.Expr`/`NamedExpr` 的 SQL（含给 `.SQL` 字段赋值），`Raw: true` 的 `clause.Column`/`clause.Table` 的名字（字面量之外给 `Name`/`Table`/`Alias` 赋值一律要常量，`Raw` 只能在字面量里设），经 `WriteString`/`WriteByte` 等直接写进语句的文本（`gorm.Statement`、它的 `SQL`、`clause.Builder`/`Writer`），放进 `any` 参数的字符串，登记为 SQL 文本的函数（`store.Conds.And`、`UpdateFrom`、`NewNumbered`，`DDL` 按签名取第一个字符串参数即格式串）；经接口、方法值或方法表达式调用的同名方法同样检查，把这些方法当值用（不调用）直接失败。常量跟踪是保守的，只认：常量及其 `+`、`strings.Join`/`fmt.Sprintf`/`Repeat`/修剪、`append`/`slices.Concat`；本包里每个取值（声明、赋值、`range`、`v, ok := m[k]`）都是常量、没有被取地址或交给可能改写它的函数的局部变量、未导出的包变量和未导出字段；本包未导出、无接收者、只被直接调用的函数的参数（每个调用都传常量）；本包函数的返回值（多返回值也算）。其余一律当未知：导出的包变量（别的包能改）、导出函数和方法的参数、接收者、函数字面量的参数、type switch 的绑定。GORM 的泛型 API `gorm.G` 不许用（`[raw-sql]`）；gorm 的 `ConnPool`（读或写）和 `(*gorm.DB).DB()` 只在允许列表 `Pool` 登记的声明里出现（`[gorm-instance]`，核心是 `store` 的 `WithConn`、`SQLTx`、`InTx`、迁移执行器和测试设施）；运行时选的列名经固定映射变成 `clause.Column`/`clause.OrderByColumn`，不拼进文本；检查跟不出的（如账本 CTE 的拼接、统计的度量表）在允许列表 `Dynamic` 里登记理由。允许列表（`Raw`、`Dynamic`、`Quoting` 等）里没有命中的条目也算失败（名字写错、函数已删除都会报）。规则实现在 `runtime-contract/gormpg/sqlcheck`，核心、网关（§39）、SDK 与插件共用，各模块只保留自己的允许列表（核心是 `server/internal/store/gormguard/rawsql_test.go` 的 `sqlPolicy`）。
 - **数据库测试**：核心用 `testutil.DB(t)`，插件用 `pluginsdktest.NewSchema(t, …)`，两者都从 `sdk/testpg` 拿库：
   - 设置了 `TEST_DATABASE_URL`（超级用户 DSN，如 CI）就用它；
@@ -401,7 +401,7 @@ func Install(client pluginv1.EgressServiceClient) error
 func DialContext(ctx context.Context, network, address string) (net.Conn, error)
 ```
 
-插件的 PostgreSQL 连接（`GetDSN` 的 DSN，§115）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起），插件用它就不必自己连库。
+插件的 PostgreSQL 连接（`GetDSN` 的 DSN，§130）必须使用 `DialContext`。`Host.DB` 返回的 GORM 句柄已经这样拨号（`sdk/pgdb`，2026-11-15 起），插件用它就不必自己连库。
 
 **插件 SDK 0.2.0 的不兼容改动**（`pluginsdk.SDKVersion`，随 `GetInfoResponse.sdk_version` 上报）：`Host.DB(ctx)` 从返回 `*pgxpool.Pool` 改为返回绑定 ctx 的 `*gorm.DB`。第三方插件把 `next/sdk` 升到 0.2.0 后，`h.DB(ctx)` 的调用点和自己实现的 `pluginsdk.Host` 测试替身编译不过：改用 GORM 的模型与查询构建器（§2“插件数据库”，数组参数与数组列用 `pgdb.Array`），测试替身用 `pgdb.Open` 返回句柄；句柄每次调用重新取，不要跨调用缓存（见上文“插件数据库”）。已编译的旧插件不受影响：gRPC 协议没变。
 
@@ -2570,7 +2570,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 用户要求：插件更新时每个节点各自“同步代码 + 准备 + 更新”，一个节点失败不能拖住其他节点；插件的迁移脚本由核心执行且只执行一次，脚本统一幂等。取代 §5.7 中“某节点准备失败即取消发布”的规则。
 
 **流程。** 管理员发起启用或升级后：
-1. 协调节点（核心）在插件迁移锁内执行目标版本的 `migrations/*.sql`。每个文件在独立事务中执行，并记录在 `plugin_migrations`，已记录且内容未变的文件不再执行。
+1. 协调节点（核心）在插件迁移锁内执行目标版本的 `migrations/*.sql`。每个文件在独立事务中执行，并记录在 `plugin_migrations`，已记录且内容未变的文件不再执行。（2026-11-20 起以插件的数据库身份执行，记录在插件自己的表 `plg_<key>__schema_migrations`，`plugin_migrations` 只留下面第 3 条的数据迁移记录，§130.3。）
 2. 每个节点各自同步插件包（上传和首装的包向持有它的任一在线节点取，§114；市场包从市场下载）、校验，在旧版本继续服务的同时启动新版本待命。
 3. 声明了 `migration.data.v1` 的插件，由协调节点调用本机新版本的 `MigrateData`。每次发布只调用一次，完成后记为 `plugin_migrations` 中的 `data:rollout-<id>:<from>-><to>`，协调节点被接管时不再重复调用。协调节点自己的新版本启动失败时，把协调权交给已就绪的节点。
 4. 至少一个节点的新版本就绪，并且其余存活节点都已就绪或失败，或者准备期（默认 120 秒）已满，就提交新版本。只有没有任何节点能就绪（全部失败，或准备期满仍无就绪），或迁移失败时，发布才失败，所有节点继续使用旧版本。
@@ -2777,7 +2777,7 @@ PUT 是补丁语义（省略的字段不变），响应为保存后的完整设�
 插件出站隧道（`plugin/egress`）的规则：
 
 - 先按插件的出站策略过滤域名，再按管理员的“插件联网”设置过滤（§113），再解析主机名，检查每个解析结果。
-- 解析结果是私网地址时拒绝。例外：策略为 `allow_all`；目标是插件数据库地址（`PGAddrs`）；目标在 `AlwaysAllow` 里（核心把自己的 PG 地址放在这里）。
+- 解析结果是私网地址时拒绝。例外：策略为 `allow_all`；目标是插件数据库地址（`PGAddrs`）；目标在 `AlwaysAllow` 里（核心把自己的 PG 地址放在这里）。（2026-11-20 起没有数据库地址的例外：核心的 PostgreSQL 与 Redis 一样任何插件都连不上，插件只经虚拟地址 `db.sub2api:5432` 由核心以插件的身份代为登录，§130.5。）
 - 注意：`allowlist` 里明确列出的域名如果解析到私网，同样会被拒绝，只有 `allow_all` 能连私网。
 - 2026-10-05 修正：检查通过后**直接连检查过的那几个地址**（按解析顺序，按 `tcp4`/`tcp6` 过滤），不再用主机名重新解析。之前两次解析之间 DNS 答案可以变（DNS rebinding），第二次解析到私网也会连上。例外目标仍按名字连接。
 
@@ -3375,8 +3375,8 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 - **私有 run 目录 + 双向 TLS**：每个插件进程一个 `<SUB2API_PLUGIN_RUN_DIR>/<key>-<随机>/`（0700，默认 `<插件数据目录>/.run`；路径对 unix socket 过长时退回 `/tmp/sub2api-<uid>`，须是本用户 0700 的真目录），go-plugin 的两个 socket 和插件的 `TMPDIR` 都在里面，进程结束即删除。核心与插件之间所有连接（插件服务端、核心 broker 上的 HostService/EgressService）都是 go-plugin AutoMTLS，一次性证书，其他进程无法连入或冒充该插件。
 - **核心**：读完配置后从进程环境删除秘密（`DATABASE_URL`、`REDIS_URL`、`SUB2API_MASTER_KEY`、引导管理员密码、控制令牌等，并清空 `/proc/<pid>/environ` 的初始块），Linux 上 `PR_SET_DUMPABLE=0`。外壳同样 `PR_SET_DUMPABLE=0`。
-- **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
-- ~~**数据库角色隔离不再降级**~~：每个插件一个数据库角色的做法已在 2026-11-18 删除，插件用核心的数据库用户，`plugin_db_isolation_unavailable`、`plugin_db_role_conflict`、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 都不再存在，见 §115。
+- **出站隧道**：没有 `net` 授权的插件什么都连不了，只有声明了 `database` 且获授 `db.schema` 的插件可按配置的名字连 PostgreSQL（2026-11-20 起只经虚拟地址 `db.sub2api:5432`，以插件自己的数据库身份，§130.5）。任何策略（含 `allow_all`）都拒绝私网/回环/链路本地等非公网地址与核心的 Redis/PostgreSQL（按解析后的地址比对，按检查过的地址拨号防 DNS 重绑定）；`dns.sub2api` 不返回非公网地址。`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true` 只用于测试/开发，Redis/PG 仍拒绝。没有 `net` 也没有数据库的插件不注册隧道服务。
+- ~~**数据库角色隔离不再降级**~~：每个插件一个数据库角色的做法已在 2026-11-18 删除，插件用核心的数据库用户，`plugin_db_isolation_unavailable`、`plugin_db_role_conflict`、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 都不再存在，见 §115。2026-11-20 起又是每个插件一个数据库身份，核心的用户没有 `CREATEROLE` 时报 `plugin_db_isolation_unavailable`、不降级，见 §130；`plugin_db_role_conflict`、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 仍不存在。
 - **外壳管理 socket 令牌**：外壳每次启动生成 32 字节随机令牌写入 `management_token_file`（默认管理 socket 旁的 `shell.token`，0600），所有管理请求须带 `Authorization: Bearer <64 hex>`，否则 `401 updater_unauthorized`。核心只拿到文件路径 `SUB2API_UPDATER_TOKEN_FILE`，转发升级接口与插件包读写时带上；托管核心（`SUB2API_MANAGED=true`）没有这个变量、文件读不到或内容不是 64 位十六进制时启动失败，非托管核心不读它。不带令牌的请求一律拒绝：迁移开关 `allow_tokenless_management` / `SUB2API_ALLOW_TOKENLESS_MANAGEMENT` 及其指标、preflight `warnings` 已随 0.1.286 删除（自 2026-10 起所有核心都带令牌；新外壳读到旧配置键或环境变量时忽略）。`sub2api-gateway status/pause/...` 本地命令读同一文件。
 - **核心环境白名单**：外壳只把进程基础变量与核心实际读取的配置变量（`supervisor.inheritedEnv`）传给核心，另加 `core_env_inherit` 列出的名字；`SUB2API_PEER_AUTH_KEY` 无论如何不传。进程基础变量含 `HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及小写写法，核心里用到它们的是到 Gemini 的媒体下载（§88.5）和插件市场、插件包下载。
 - **部署**：Redis/Valkey 必须 `requirepass`，`REDIS_URL` 带密码（建议十六进制密码免转义）；网关容器 `no-new-privileges`、`cap_drop: [ALL]`。迁移顺序见 `deploy/gateway/ovh/README.md`。
@@ -3384,9 +3384,9 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 ## 55. 插件独享资源的分配与归属 P1（2026-10-10，审查 `docs/audits/2026-10-09-plugin-resources.md` 的 P1）
 
 ### 55.1 卸载后标识仍归原发布者（P1-4）
-- 卸载时把 `(插件标识, 发布者)` 记入 `plugin_key_retirements`（迁移 0047；未签名插件发布者为 NULL）。账号、`plg_<key>` schema、KV 可能还在，谁装上这个标识谁就能读到。
+- 卸载时把 `(插件标识, 发布者)` 记入 `plugin_key_retirements`（迁移 0047；未签名插件发布者为 NULL）。账号、`plg_<key>` schema（2026-11-20 起是前缀 `plg_<key>__` 的表，§130.6）、KV 可能还在，谁装上这个标识谁就能读到。
 - 新安装（该标识当前没有插件行）时：没有退役记录或发布者相同 → 照常；内置插件（`Source: builtin`）→ 收回标识并删除退役记录（镜像说了算，保留表已挡住其他发布者）；否则 `409 plugin_key_retired`。同一发布者重装后退役记录保留，直到管理员释放。
-- `GET /api/v1/plugins/retired-keys`（`plugin:read`）：`{items:[{key, publisher, retired_at, installed, accounts, schema}]}`，`accounts` 为未删除的遗留账号数，`schema` 为 `plg_<key>` 是否还在。
+- `GET /api/v1/plugins/retired-keys`（`plugin:read`）：`{items:[{key, publisher, retired_at, installed, accounts, schema}]}`，`accounts` 为未删除的遗留账号数，`schema` 为 `plg_<key>` 是否还在（2026-11-20 起为核心的模式里是否还有前缀 `plg_<key>__` 的关系，§130.6）。
 - `POST /api/v1/plugins/retired-keys/:key/release`（`plugin:uninstall`）body `{purge, purge_accounts}`：删除退役记录，可选删遗留账号、删 schema 与 KV；返回 `{accounts_deleted, kv_deleted}`；该标识当前已安装时 409，未退役 404；审计 `plugin.key.release`。未删除的东西由下一个用这个标识的插件继承（控制台释放对话框明确提示）。
 - 卸载 `purge=true` 现在同时删除插件的 KV（`plugin:kv:<key>:*`，事务外尽力而为，失败只记日志）。
 
@@ -8297,7 +8297,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 113.2 出口隧道的判断
 
 - 每个节点缓存设置 10 秒（与网关设置相同）；收到上述广播立即失效，过期时先用旧值、后台重读。读失败沿用上次的值；本节点从未读成功时拒绝连接（`plugin network access settings could not be read`），不按默认放行。
-- 新连接的检查顺序（`Provider.check`）：数据库例外（核心 DSN 里的真实地址，只给有 Database 的插件；严格网络下插件拿到的是虚拟地址 `db.sub2api:5432`，用到它的只有在不要求严格网络的核心上用 `pluginsdk.WithStrictNetwork(StrictAlways)` 自己装隧道的插件，§115）→ `net` 授权 → 本插件的出口策略（`allowlist` 时只能去 `net` 授权的域名）→ **插件联网** → 核心服务地址 → 解析结果必须是公网地址。目标要同时通过插件自己的授权、策略和管理员的设置；管理员的允许列表不放宽任何插件的授权。数据库例外不受插件联网影响。
+- 新连接的检查顺序（`Provider.check`）：`net` 授权 → 本插件的出口策略（`allowlist` 时只能去 `net` 授权的域名）→ **插件联网** → 核心服务地址 → 解析结果必须是公网地址。目标要同时通过插件自己的授权、策略和管理员的设置；管理员的允许列表不放宽任何插件的授权。原来排在最前的数据库例外（核心 DSN 里的真实地址）2026-11-20 删除：插件只经虚拟地址 `db.sub2api:5432` 连数据库，核心的 PostgreSQL 地址任何插件都连不上（§130.5）；虚拟地址不受插件联网影响。
 - 插件的 DNS 查询（`dns.sub2api`）同样过插件联网，被拒回 REFUSED。
 - 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。比较前名字按列表条目保存时的规则（`NormalizeDomain`）规范化：国际化域名转 punycode，IPv6 按规范写法，IPv4 映射的 IPv6 按它的 IPv4，所以 `bücher.example` 与 `xn--bcher-kva.example`、`2001:db8:0:0::1` 与 `2001:db8::1`、`::ffff:93.184.216.34` 与 `93.184.216.34` 是同一个目标；规范化不了的名字原样比较。
 - 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
@@ -8337,7 +8337,9 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **取舍**：上传后、其他节点取走之前，包只在接到上传的节点上；它永久丢失就要重新上传。持有某个包的节点都连不上时，需要这个包的安装、升级、新节点加载都做不了，直到其中一个回来。
 - **升级**：没有迁移。旧主节点上已有的包原地保留，和其他节点一样被问到。网关滚动更新期间，旧网关节点上的上传仍要推给主节点；主节点换成新网关后不再接受（403），在旧网关节点上上传会失败；旧网关的主节点自己缺包时不问别人，在新网关节点上传的包它取不到。换完网关再上传、启用即可。
 
-## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0110；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）
+## 115. 插件数据库只用核心的数据库用户（2026-11-18，所有者决定“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”；迁移 0110；设计见 [DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md](DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md)）——**已被 §130 取代**
+
+**现状（2026-11-20 起，§130）**：这一节在 0.1.304 发布前就被 §130 取代，没有上线。插件不再用核心的数据库用户、也没有 schema `plg_<key>`：每个插件一个数据库身份 `plg<库OID>_<key>`，表在核心的模式里、带前缀 `plg_<key>__`，迁移以身份执行，记录在插件自己的表，`GetDSN` 一律给虚拟地址，pgproxy 以身份登录，出口策略里的真实数据库地址例外删除，核心的用户又需要 `CREATEROLE`（没有时 `plugin_db_isolation_unavailable`）。下文仍然成立的只有：迁移 0110 删除记录函数（单向）、pgproxy 的协议处理（登录身份除外）、数据库连接不算外部访问、旧角色 `plg_<key>` 的转换（并入 §130.8 的搬迁）、`SUB2API_PLUGIN_DB_ROLE_ISOLATION` 留在外壳的 `legacyCoreEnv`。下文是 2026-11-18 的原文。
 
 取代 §54 的“数据库角色隔离不再降级”、§5.6 的角色隔离和 0003/0023 的迁移记录函数。
 
@@ -8851,7 +8853,7 @@ ALTER TABLE usage_logs
 
 ### 124.4 如实写明的边界
 
-- “只有声明者拿得到”只对凭证明文和代理密码成立：持有 `db.schema` 的插件用核心的数据库用户，能读 `accounts`、`proxies` 的全部非加密列，包括代理的 host、port、username（§115）。安装提示不暗示“其他插件看不到账号信息”。
+- “只有声明者拿得到”只对凭证明文和代理密码成立：持有 `db.schema` 的插件用核心的数据库用户，能读 `accounts`、`proxies` 的全部非加密列，包括代理的 host、port、username（§115）。安装提示不暗示“其他插件看不到账号信息”。（2026-11-20 起插件用自己的数据库身份，只能读写自己的表和 `db.core_read` 授予的表与列，§130.4；申请了 `accounts`、`proxies` 并获批的插件仍能读到这些列。）
 - `GetEnvironment` 不检查授权（§74.3“always granted”），返回任意分组和账号的数值环境变量，不存在的返回 `{}`。
 - 安装审核对声明账号类型的包固定显示（`install.requestAccessStatement`）：插件会收到它声明的账号类型下账号的全部信息（设置、解密的凭证、代理的地址、用户名和密码）以及经这些账号发出的每个请求的完整内容和与响应有关的数据，并决定请求发往哪个地址；请求都由核心发出，插件自己不联网；不是权限，不能取消。不按信任级别加限制。
 
@@ -9011,3 +9013,87 @@ anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/mo
 ### 129.3 装过的实例
 
 升级后 `GET /api/v1/p/anthropic/models` 返回 404，角色里的“查看模型目录”消失；目录数据随 schema 删除，要留就在升级前备份 schema `plg_anthropic`。调度、价格、账号的模型列表不受影响。
+
+## 130. 插件数据库隔离：插件的表放进核心的模式、带前缀，每个插件一个数据库身份（2026-11-20，所有者定稿“同一个模式，加前缀，一个身份”；没有核心迁移，已有数据在启动时搬迁；插件协议、Host API 不变；核心 0.1.304，单向；取代 §115）
+
+取代 §115（插件用核心的数据库用户）和 §5.6 的每插件一个 schema。§115 只留作历史。
+
+### 130.1 布局与身份
+
+- **一个模式**：插件的表、索引、序列、视图都在核心所用的模式里（启动时核心连接的 `current_schema()`，线上是 `public`；`dbschema.Manager.Schema`，新代码不写死 `public`），名字一律以 `manifest.TablePrefix(key)` = `plg_<key>__` 开头。插件键的规则是 `^[a-z](_?[a-z0-9]){1,29}$` 且不超过 30 字节（不含 `__`、不以 `_` 结尾，清单校验与 `dbschema` 同一条），所以一个插件的前缀不会是另一个插件前缀的开头。一个库只放一套核心。
+- **一个身份**：每个持有 `db.schema` 的插件有一个数据库登录角色 `plg<库 OID>_<key>`（`Manager.Identity`，例如 `plg713988_moderation`；角色属于整个 PostgreSQL 集群，库 OID 把同一集群里不同库的插件分开）。属性 `LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`，不设连接上限。密码是 `base64url(HMAC-SHA256(主密钥, "sub2api plugin database password\x00" + 库OID + "\x00" + key))`（无填充），只在核心进程里，不落库；设密码时发 SCRAM-SHA-256 校验值（4096 次迭代、随机盐），明文不到服务器和它的日志。各节点主密钥相同，所以派生出同一个密码。
+- **插件的对象归它的身份**。身份对核心的表、别的插件的表没有任何权限（130.4 授予的除外），脚本漏写前缀去改核心的表由 PostgreSQL 拒绝（`must be owner of table …`）。作为属主，它能改、删自己的表（所有者已知并接受）。
+- **要求**：核心的数据库用户要有 `CREATEROLE`（或是超级用户），否则 Ensure 报 409 `plugin_db_isolation_unavailable`，持有 `db.schema` 的插件迁移失败、不启动，不降级为核心的用户；PostgreSQL 16 及以上（`GRANT … WITH SET, INHERIT`）。
+- **PUBLIC 不能建对象**：核心启动时（`dbschema.New`）检查 PUBLIC 能否在核心的模式里建对象（PostgreSQL 14 及更早建的库默认可以），能就 `REVOKE CREATE ON SCHEMA <核心模式> FROM PUBLIC`；收不回则启动失败，提示由模式的属主执行这条语句。
+
+### 130.2 Ensure
+
+`Manager.Ensure` 幂等，各节点都可做，每个进程对每个插件做一次（迁移前强制再做），在插件的锁里（事务锁 `plugin-schema:<key>`，再取插件迁移锁，迁移持有 CREATE 时 Ensure、卸载都等它）：
+
+1. 转换旧布局（130.8）；
+2. 身份没有就建，有就重设密码；
+3. `GRANT <身份> TO CURRENT_USER WITH SET TRUE, INHERIT TRUE`：核心成为身份的成员（PostgreSQL 16 起建角色者只有 ADMIN，线上 `createrole_self_grant` 为空）；
+4. 前缀下属主不是身份的关系（不带属主的恢复、保留数据卸载后的重装）`ALTER … OWNER TO <身份>`（新属主要有模式的 CREATE：同一事务里临时授予，第 5 步收回）；
+5. 确认身份没有核心模式的 CREATE，有就收回；经 PUBLIC 或别的角色得来、收不回时报错；
+6. 按 130.4 同步它在插件以外的表上的权限。
+
+改所有插件共用的目录行（模式的 ACL、核心表的授权、旧角色 `DROP OWNED` 收回的授权）时另取全局事务锁 `plugin-database-acl`，总是最后取；否则并发的 `GRANT`/`REVOKE` 会报 `tuple concurrently updated`。
+
+**与定稿的偏离**：定稿写 `INHERIT FALSE`。`REASSIGN OWNED`、`DROP OWNED` 要求当前用户拥有该角色的权限（`has_privs_of_role`，即经 INHERIT 的成员关系），`INHERIT FALSE` 时卸载做不到（PostgreSQL 16 实测 `permission denied to reassign objects`）。所以用 `INHERIT TRUE`：核心的会话随之拥有身份的权限，也就是插件自己的表，核心本来就要读其中的迁移记录表。
+
+### 130.3 迁移
+
+- `Manager.Migrate`：强制 Ensure，然后在插件迁移锁里（核心一条连接上的会话级 advisory 锁，`store.WithSessionLock`）：`GRANT CREATE ON SCHEMA <核心模式> TO <身份>`；**以身份真实登录另开一个连接**（`store.OpenAs`，1 条连接；不用 `SET ROLE`，脚本里 `RESET ROLE` 就回到核心的用户）按文件名执行 `migrations/*.sql`，每个文件一个事务，`SET LOCAL search_path` 为核心模式；全部跑完或中途失败都立即 `REVOKE CREATE`（ctx 结束也照做）。
+- **记录在插件自己的表** `plg_<key>__schema_migrations`（`migration_id text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now()`）：身份在跑脚本前 `CREATE TABLE IF NOT EXISTS`，与每个脚本同一事务写入。已记录且内容未变的文件不再执行，内容变了重跑并更新记录（`RerunChanged`，§36）。核心的 `plugin_migrations` 不再记插件脚本（身份写不了它），只留核心写的数据迁移记录 `data:rollout-<id>:<from>-><to>`（§36 第 3 条）。
+- **前缀检查**：每个脚本提交前（`store.MigrateOptions.Check`）查身份（事务的当前用户）在核心模式里拥有的关系、类型、函数，名字不带本插件前缀就回滚整个脚本（`objects without the plugin's prefix plg_<key>__: …`）；表的行类型、数组类型和索引随表名，记录表本身也带前缀。**与定稿的偏离**：定稿写按 `xmin = 本事务号` 找新建对象，但 PL/pgSQL 带 `EXCEPTION` 的块是子事务，里面建的对象 `xmin` 是子事务号，查不到；身份在模式里建的对象都归它，所以按属主查覆盖了全部情况。
+- **多节点**：沿用按插件的迁移锁；一个节点跑迁移的几秒里，其他节点上同一插件的旧实例用的是同一个身份，也有 CREATE，所有者接受。
+
+### 130.4 插件以外的表：`database.access` 与 `db.core_read`
+
+- 清单 `database.access: [{table, columns?, privileges}]`，权限取 `manifest.DatabasePrivileges`（`select`、`insert`、`update`、`delete`、`references`），需要宿主权限 `db.core_read`（critical，要 `plugin:grant:critical`；取代从未实现的 `db.core_views`）。`plg_` 开头的表不能申请（清单校验）。没有“不可申请的列”：管理员同意即授予。直接写核心的表会绕过核心的缓存、权限版本和审计，确认页逐条写明表、列、权限并给出这条提示。
+- **上传时**核心检查表和列在核心模式里存在（`PluginSchemaManager.CheckAccess`），不存在时 400，`fields[{database.access[i].table 或 database.access[i].columns[j], unknown}]`。
+- **授予记在 `db.core_read` 的授予范围里**：`{"access": ["<权限>:<表>.<列>" 或 "<权限>:<表>.*", …]}`（`dbschema.AccessScope`；不写列为整表，`delete` 没有列级、总是整表）。审查、确认和 `SetGrant` 里 `db.core_read` 的请求范围就是它，所以升级多要了任何东西（表、列、权限，例如 `select` 变成 `select`+`update`）都是更宽的范围：进 `diff.widened`，确认时不沿用旧授予，要重新批准；不变或更窄的沿用（`install.TestDatabaseAccessWideningIsConsentedAgain`）。
+- **身份的权限等于授予**：取插件 `COALESCE(desired_version, active_version)` 那个版本的 `db.core_read` 授予（升级在新版本的授予下迁移，滚动期间不来回翻转）。与身份现有的不同时，先 `REVOKE ALL` 它在前缀以外每张有权限的表上的权限，再按表和权限 `GRANT <权限> (<列>…) ON TABLE …`（整表时不带列）；能 `insert` 的表，其列的序列另授 `USAGE`（`nextval` 要）。PUBLIC 没有核心模式的 `USAGE` 时授予它。时点：每次 Ensure（启动后首次连接、每次迁移前），以及确认、`PUT /plugins/:key/grants/db.core_read`、撤销该授予的同一事务（`PluginSchemaManager.SyncAccessTx`），事务提交即生效。
+
+### 130.5 连接
+
+- `HostService.GetDSN` 不论严格网络是否开启都返回虚拟地址 `postgres://plugin@db.sub2api:5432/<核心模式>?sslmode=disable`，没有密码和真实地址；`schema` 为核心模式。严格网络关闭时直接给核心 DSN 的路径删除。SDK 按地址选路：虚拟地址经宿主连接拨号（出口隧道），其他地址直连（只用于插件单元测试）。
+- 出口隧道把 `db.sub2api:5432` 交给 `dbschema.Manager.ServeTunnel` → `runtime-contract/gormpg/pgproxy`：登录前 Ensure；核心以插件的身份（用户名加派生密码，`pgproxy.Session.User`/`Password`）、核心 DSN 的主机与 TLS 登录，固定 `search_path=<核心模式>`、`application_name=sub2api plugin <key>`；其余代理行为同 §115。Ensure 失败（例如 `plugin_db_isolation_unavailable`）时关闭连接并记错误日志。
+- **出口策略里“有数据库的插件可以拨真实数据库地址”的例外删除**（`egress.Options.DatabaseAddrs` 删除）：核心的 PostgreSQL 地址与 Redis 一样在 `CoreAddrs` 里，任何插件、任何策略（含 `allow_all`、`SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE`）都连不上；插件到数据库只有虚拟地址一条路。
+- 插件的每条连接是身份在 PostgreSQL 上的一个会话，计入数据库的 `max_connections`，不计入核心用户的连接。
+
+### 130.6 卸载与停用的键
+
+- **卸载并清除数据**（`purge=true`）：前缀下的关系全部 `DROP … CASCADE`（不论属主：保留数据卸载后属主是核心），删除 `plugin_migrations` 里它的数据迁移记录，`DROP OWNED BY <身份>`（它拥有的其余对象和它得到的授权），`DROP ROLE`。
+- **卸载但保留数据**：`REASSIGN OWNED BY <身份> TO CURRENT_USER`，再 `DROP OWNED BY`，再 `DROP ROLE`（顺序不能反，否则表被删）。表连同 `plg_<key>__schema_migrations` 留下，属于核心；重装时 Ensure 把它们交还新身份，记录仍在，已跑的脚本不重跑。
+- 两种都在删除插件行的同一事务里（`PluginSchemaManager.DropTx(ctx, tx, key, purge)`）；先转换旧布局（130.8）。
+- `GET /api/v1/plugins/retired-keys` 的 `schema` 改为：核心模式里还有没有以该键前缀开头的关系（§55.1）；释放时 `purge` 按“清除数据”删除。
+
+### 130.7 审查与 `GET /api/v1/plugins/:key/database`
+
+- 安装、升级的审查（上传与 `GET /plugins/:key/versions/:version/review` 的回答）新增：
+  - `database_access`：目标版本清单的 `database.access` 原样（`[{table, columns, privileges}]`），没有时不出现；
+  - `database_migrations`：`[{id, checksum, sql, status}]`，按文件名排序，`status` 为 `new`（本次将执行）、`changed`（执行过、内容变了，将重跑）、`applied`（执行过且未变），对照插件的 `plg_<key>__schema_migrations`；版本没有 `database` 时不出现。
+  - `database` 去掉 `schema`，只剩 `migrations`（文件名）。
+- `GET /api/v1/plugins/:key/database`（`plugin:read`，与插件详情相同）：`{prefix, role, access, migrations: [{id, checksum, applied_at, sql}]}`。版本是插件运行的那个，没有则是要运行的那个（`install.CurrentVersion`）；`migrations` 按该版本包里的脚本列出，`applied_at` 取自插件的记录表，没执行过为 `null`；版本没有 `database` 时 `access`、`migrations` 为空数组。插件没有版本 404；节点上没有数据库管理时 503 `unavailable`。控制台插件详情的“数据库”标签显示这些。
+
+### 130.8 已有数据的搬迁（过渡代码）
+
+- **时点**：核心启动时一次（`Manager.ConvertLegacy`，对所有 `plg_` 开头的角色和模式，插件装没装都做），以及每次 Ensure、DropTx 某插件时；每插件一个事务，在插件的锁里。某插件失败只记错误日志，不影响启动和别的插件，下次 Ensure 或启动再试。
+- **步骤**：
+  1. 旧角色 `plg_<key>` 照 §115 的转换处理（`REASSIGN OWNED` 给核心、`DROP OWNED`、`DROP ROLE`）；还有会话就整个留到下次，这时模式也不搬，Ensure 报错；
+  2. 旧模式 `plg_<key>` 里的表、索引、序列、视图改名为 `plg_<key>__<原名>`；不靠索引的约束（外键、检查）从 `N` 改名为 `plg_<key>__N`，GORM 命名的外键 `fk_<旧表>_<…>` 改为 `fk_<新表>_<…>`（例如 payment 的 `fk_payment_orders_provider_instance` 改为 `fk_plg_payment__payment_orders_provider_instance`），主键、唯一、排他约束随索引改名，与全新安装的名字相同；然后 `ALTER … SET SCHEMA <核心模式>`（索引和列的序列随表），`DROP SCHEMA plg_<key>`（不级联）；
+  3. `plugin_migrations` 里该插件的脚本记录搬进 `plg_<key>__schema_migrations`，校验值记为 `relocated`；下一次迁移（新包）把这些记录的校验值改为新脚本的，脚本不重跑；数据迁移记录留在 `plugin_migrations`；
+  4. 搬过来的关系暂时属于核心，随后的 Ensure 交给新身份；
+  5. 旧模式里有搬不走的对象（函数、类型等）时 `DROP SCHEMA` 失败，该插件的搬迁整个回滚并报错；改名后超过 63 字节同样中止。
+- `plg_anthropic`、`plg_volcengine` 已由迁移 0120、0119 删除，不搬。用数据库的旧版插件包（脚本不带前缀）按 `hostCompat` 下限拒绝启动。
+- **验收**：搬迁结果与全新安装逐项相同：关系、列、默认值、约束名与定义、索引、视图、属主、授权、迁移记录（`dbschema.TestRelocationMatchesFreshInstall`）。
+- **删除时机**：核心 0.1.304 发布、线上各库都已在 0.1.304 或更新的核心下启动过一次（`pg_roles` 里没有注释为 `sub2api plugin role; database=<本库>; …` 的角色，也没有 `plg_<key>` 模式）之后，在下一个核心版本删除 `dbschema/legacy.go`、它的调用（启动的 `ConvertLegacy`，Ensure 和 DropTx 里的 `convertLegacy`，Migrate 里的 `adoptRelocated`）和 `legacy_test.go`。
+
+### 130.9 如实写明的边界
+
+- 身份是插件表的属主：能改、删自己的表，能把自己的表授权给别的角色。
+- 迁移的几秒里，其他节点上同一插件的旧实例也有 CREATE（130.3）。
+- 核心的会话经成员关系拥有插件表的全部权限（130.2 的偏离）；核心代码只读记录表、在卸载和搬迁时动这些表。
+- 主密钥换了，派生的密码跟着变，下次 Ensure（启动后首次连接）重设。
+- **单向**：搬迁之后旧核心找不到 `plg_<key>` 模式，持有 `db.schema` 的插件在旧核心上起不来；回退要连同数据库回到升级前的备份。

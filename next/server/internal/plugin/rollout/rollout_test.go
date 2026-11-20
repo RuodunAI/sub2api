@@ -17,7 +17,7 @@ import (
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema/dbschematest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
@@ -210,7 +210,7 @@ func (h *harness) manifest(version string) *manifest.Manifest {
 func (h *harness) pkg(version string, migrations ...string) []byte {
 	extra := map[string][]byte{}
 	for i, sql := range migrations {
-		extra[fmt.Sprintf("migrations/%04d.sql", i+1)] = []byte(sql)
+		extra[fmt.Sprintf("migrations/%04d.sql", i+1)] = []byte(strings.ReplaceAll(sql, "{prefix}", manifest.TablePrefix(h.key)))
 	}
 	return registrytest.Package(h.t, h.manifest(version), h.bin, extra)
 }
@@ -225,7 +225,7 @@ func (h *harness) node(name, boot string, adjust ...func(*rollout.Options)) *nod
 	nd.Heartbeat(context.Background())
 	opts := rollout.Options{
 		DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: pkgs, Registry: reg, Runtime: rt,
-		Schemas:  dbschema.New(h.db, testutil.DSN(h.db), nil),
+		Schemas:  dbschematest.New(t, h.db, testutil.DSN(h.db)),
 		Defaults: h.rec, Perms: h.rec, Events: h.rec,
 		ReconcileInterval: 150 * time.Millisecond,
 		LeaseTTL:          8 * time.Second,
@@ -263,6 +263,15 @@ func (h *harness) plugin() (status, active, desired string) {
 	return
 }
 
+// migrations counts the plugin's applied migration files.
+func (h *harness) migrations() int {
+	applied, err := dbschematest.New(h.t, h.db, "").AppliedMigrations(context.Background(), h.key)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return len(applied)
+}
+
 func (h *harness) rolloutRow(id int64) (phase, coordBoot, errMsg string) {
 	if err := h.db.SQL.QueryRowContext(context.Background(), `SELECT phase, COALESCE(coordinator_boot_id, ''), error FROM plugin_rollouts WHERE id = $1`, id).
 		Scan(&phase, &coordBoot, &errMsg); err != nil {
@@ -288,8 +297,8 @@ func waitFor(t *testing.T, what string, fn func() bool) {
 func TestTwoNodeRollout(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
-	registrytest.Install(t, h.db, h.manifest("1.0.0"), h.pkg("1.0.0", `CREATE TABLE a (id int);`), map[string]string{"db.schema": "{}"}, "installed")
-	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil).Drop(context.Background(), h.key) })
+	registrytest.Install(t, h.db, h.manifest("1.0.0"), h.pkg("1.0.0", `CREATE TABLE {prefix}a (id int);`), map[string]string{"db.schema": "{}"}, "installed")
+	t.Cleanup(func() { _ = dbschematest.New(t, h.db, "").Drop(context.Background(), h.key, true) })
 
 	a := h.node("node-a", "boot-a")
 	b := h.node("node-b", "boot-b")
@@ -331,8 +340,7 @@ func TestTwoNodeRollout(t *testing.T) {
 		t.Fatalf("rollout nodes active = %d, tracked for cleanup = %d", nodesActive, nodesTracked)
 	}
 	var mig int
-	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
-	if mig != 1 {
+	if mig = h.migrations(); mig != 1 {
 		t.Fatalf("migrations applied = %d", mig)
 	}
 	if got := a.rt.instances("1.0.0")[0].migrated; got != "->1.0.0" {
@@ -350,7 +358,7 @@ func TestTwoNodeRollout(t *testing.T) {
 	}
 
 	// ---- upgrade: node B is slow to prepare; nobody switches until it is ready.
-	registrytest.AddVersion(t, h.db, h.manifest("2.0.0"), h.pkg("2.0.0", `CREATE TABLE a (id int);`, `ALTER TABLE a ADD COLUMN b int;`))
+	registrytest.AddVersion(t, h.db, h.manifest("2.0.0"), h.pkg("2.0.0", `CREATE TABLE {prefix}a (id int);`, `ALTER TABLE {prefix}a ADD COLUMN b int;`))
 	b.rt.setHold("2.0.0", true)
 	r, err = a.ctl.Upgrade(ctx, h.key, "2.0.0", 0)
 	if err != nil {
@@ -398,8 +406,7 @@ func TestTwoNodeRollout(t *testing.T) {
 	if _, defs, _ := h.rec.snapshot(); len(defs) != 1 || defs[0] != "2.0.0" {
 		t.Fatalf("ApplyDefaults calls = %v", defs)
 	}
-	_ = h.db.SQL.QueryRowContext(ctx, `SELECT count(*) FROM plugin_migrations WHERE plugin_key = $1 AND migration_id LIKE '%.sql'`, h.key).Scan(&mig)
-	if mig != 2 {
+	if mig = h.migrations(); mig != 2 {
 		t.Fatalf("migrations applied = %d", mig)
 	}
 
@@ -412,7 +419,7 @@ func TestTwoNodeRollout(t *testing.T) {
 
 	// ---- a node that fails to prepare holds nobody back: A switches to
 	// 3.0.0, B keeps serving 2.0.0 and retries until 3.0.0 starts there too.
-	registrytest.AddVersion(t, h.db, h.manifest("3.0.0"), h.pkg("3.0.0", `CREATE TABLE a (id int);`, `ALTER TABLE a ADD COLUMN b int;`))
+	registrytest.AddVersion(t, h.db, h.manifest("3.0.0"), h.pkg("3.0.0", `CREATE TABLE {prefix}a (id int);`, `ALTER TABLE {prefix}a ADD COLUMN b int;`))
 	b.rt.mu.Lock()
 	b.rt.fail["3.0.0"] = true
 	b.rt.mu.Unlock()
@@ -449,7 +456,7 @@ func TestTwoNodeRollout(t *testing.T) {
 	})
 
 	// ---- a version no node can start fails the rollout; everyone keeps 3.0.0.
-	registrytest.AddVersion(t, h.db, h.manifest("4.0.0"), h.pkg("4.0.0", `CREATE TABLE a (id int);`, `ALTER TABLE a ADD COLUMN b int;`))
+	registrytest.AddVersion(t, h.db, h.manifest("4.0.0"), h.pkg("4.0.0", `CREATE TABLE {prefix}a (id int);`, `ALTER TABLE {prefix}a ADD COLUMN b int;`))
 	for _, n := range []*node{a, b} {
 		n.rt.mu.Lock()
 		n.rt.fail["4.0.0"] = true
@@ -533,7 +540,7 @@ func TestRolloutDoesNotWaitForAStuckNode(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	registrytest.Install(t, h.db, h.manifest("1.0.0"), h.pkg("1.0.0"), map[string]string{"db.schema": "{}"}, "installed")
-	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil).Drop(context.Background(), h.key) })
+	t.Cleanup(func() { _ = dbschematest.New(t, h.db, "").Drop(context.Background(), h.key, true) })
 	short := func(o *rollout.Options) { o.PrepareTimeout, o.ActivateTimeout = 3*time.Second, 2*time.Second }
 	a := h.node("node-a", "boot-a", short)
 	b := h.node("node-b", "boot-b", short)
@@ -565,7 +572,7 @@ func TestRolloutTakeoverAndLateJoiner(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	registrytest.Install(t, h.db, h.manifest("1.0.0"), h.pkg("1.0.0"), map[string]string{"db.schema": "{}"}, "installed")
-	t.Cleanup(func() { _ = dbschema.New(h.db, "", nil).Drop(context.Background(), h.key) })
+	t.Cleanup(func() { _ = dbschematest.New(t, h.db, "").Drop(context.Background(), h.key, true) })
 
 	a := h.node("node-a", "boot-a")
 	b := h.node("node-b", "boot-b")

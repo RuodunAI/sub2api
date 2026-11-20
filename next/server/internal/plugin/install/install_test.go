@@ -3,6 +3,7 @@ package install
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
@@ -157,7 +158,14 @@ func (f *fakeRollout) Disable(ctx context.Context, key string, _ int64, reason s
 func (f *fakeRollout) Current(context.Context, string) (*core.Rollout, error) { return nil, nil }
 func (f *fakeRollout) Cancel(context.Context, string, int64, int64) error     { return nil }
 
-type fakeSchemas struct{ dropped []string }
+type fakeSchemas struct {
+	dropped []string
+	purged  []bool
+	synced  []string
+	applied map[string]core.PluginMigrationRecord
+	// missing are the tables of database.access CheckAccess reports.
+	missing map[string]bool
+}
 
 type emptyNodes struct{ core.NodeRegistry }
 
@@ -165,10 +173,32 @@ func (emptyNodes) LiveNodes(context.Context) ([]core.NodeStatus, error) {
 	return []core.NodeStatus{}, nil
 }
 
-func (f *fakeSchemas) DropTx(_ context.Context, _ *gorm.DB, key string) error {
+func (f *fakeSchemas) DropTx(_ context.Context, _ *gorm.DB, key string, purge bool) error {
 	f.dropped = append(f.dropped, key)
+	f.purged = append(f.purged, purge)
 	return nil
 }
+
+func (f *fakeSchemas) SyncAccessTx(_ context.Context, _ *gorm.DB, key string) error {
+	f.synced = append(f.synced, key)
+	return nil
+}
+
+func (f *fakeSchemas) CheckAccess(_ context.Context, access []manifest.DatabaseAccess) ([]core.FieldError, error) {
+	var out []core.FieldError
+	for i, a := range access {
+		if f.missing[a.Table] {
+			out = append(out, core.FieldError{Field: fmt.Sprintf("database.access[%d].table", i), Code: "unknown"})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSchemas) AppliedMigrations(context.Context, string) (map[string]core.PluginMigrationRecord, error) {
+	return f.applied, nil
+}
+
+func (f *fakeSchemas) Identity(key string) string { return "plg1_" + key }
 
 type fakeAccounts struct{ purged []string }
 

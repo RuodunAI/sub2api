@@ -278,21 +278,25 @@ func (b *boot) startEgress() error {
 	if err != nil {
 		return err
 	}
-	// Plugins reach PostgreSQL only through the address GetDSN hands out
-	// (and only with db.schema); Redis and every private address are never
-	// reachable through the tunnel (audit 2026-10-09 P0-3).
-	var coreAddrs []string
+	// Plugins reach PostgreSQL only through the virtual address GetDSN
+	// hands out (and only with db.schema), as their own database identity;
+	// the real one, Redis and every private address are never reachable
+	// through the tunnel (audit 2026-10-09 P0-3, CONTRACTS §130).
+	coreAddrs := []string{pgAddr}
 	if ra, ok := redisAddr(cfg.RedisURL); ok {
 		coreAddrs = append(coreAddrs, ra)
 	}
 	if cfg.Plugins.EgressAllowPrivate {
 		b.log.Warn("plugins may reach private network addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true); tests and development only")
 	}
-	schemas := dbschema.New(b.db, cfg.DatabaseURL, b.log)
-	// Roles of the per-plugin database user model (removed) are taken back once
-	// at start; Ensure retries the ones left (docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md).
-	schemas.ConvertLegacyRoles(b.ctx)
-	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseAddrs: []string{pgAddr}, DatabaseProxy: schemas.ServeTunnel, CoreAddrs: coreAddrs,
+	schemas, err := dbschema.New(b.ctx, b.db, cfg.DatabaseURL, cfg.MasterKey, b.log)
+	if err != nil {
+		return fmt.Errorf("plugin databases: %w", err)
+	}
+	// The legacy plugin roles and schemas (cores up to 0.1.303) are
+	// converted once at start; Ensure retries the ones left (CONTRACTS §130).
+	schemas.ConvertLegacy(b.ctx)
+	egress := egress.New(b.db, egress.Options{NodeID: cfg.NodeID, DatabaseProxy: schemas.ServeTunnel, CoreAddrs: coreAddrs,
 		AllowPrivate: cfg.Plugins.EgressAllowPrivate, Events: b.events, Bus: b.cl.Bus, Logger: b.log})
 	b.schemas, b.egress = schemas, egress
 	b.stopper.add("egress", func(context.Context) { egress.Close() })
@@ -676,7 +680,7 @@ func (b *boot) publishManaged() {
 }
 
 // databaseAddr extracts host:port from a PostgreSQL URL or key=value DSN;
-// plugins reach this address through the egress tunnel.
+// no plugin may reach this address through the egress tunnel.
 func databaseAddr(dsn string) (string, error) {
 	host, port := "", "5432"
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"time"
 
 	"gorm.io/gorm"
 
@@ -103,12 +104,32 @@ type RolloutController interface {
 	Cancel(ctx context.Context, pluginKey string, rolloutID, actorID int64) error
 }
 
-// PluginSchemaManager (C2) owns plg_<key> schemas and their migrations.
+// PluginSchemaManager (C2) owns the plugins' database side: each plugin's
+// database identity, the objects of its prefix in the core's schema, its
+// migrations and its grants outside the prefix (CONTRACTS §130).
 type PluginSchemaManager interface {
-	// DropTx removes the schema and its migration records (uninstall with
-	// purge). It participates in the lifecycle transaction holding the plugin row.
-	// A concurrent re-install cannot begin between DROP and plugin deletion.
-	DropTx(ctx context.Context, tx *gorm.DB, pluginKey string) error
+	// DropTx drops the plugin's database identity in the lifecycle
+	// transaction holding the plugin row, so a concurrent re-install cannot
+	// begin in between. With purge the plugin's objects and its records go
+	// too; without, the core keeps its tables for a reinstall.
+	DropTx(ctx context.Context, tx *gorm.DB, pluginKey string, purge bool) error
+	// SyncAccessTx sets the identity's grants on tables outside the plugin
+	// to what its db.core_read grant now holds, in the transaction that
+	// changes that grant.
+	SyncAccessTx(ctx context.Context, tx *gorm.DB, pluginKey string) error
+	// CheckAccess reports the tables and columns of a manifest's
+	// database.access the core does not have, as field errors.
+	CheckAccess(ctx context.Context, access []manifest.DatabaseAccess) ([]FieldError, error)
+	// AppliedMigrations reads the plugin's migration records by file name.
+	AppliedMigrations(ctx context.Context, pluginKey string) (map[string]PluginMigrationRecord, error)
+	// Identity is the name of the plugin's database identity.
+	Identity(pluginKey string) string
+}
+
+// PluginMigrationRecord is a plugin's record of an applied migration file.
+type PluginMigrationRecord struct {
+	Checksum  string
+	AppliedAt time.Time
 }
 
 // PluginDefaultsApplier (C1) writes version-scoped defaults (user

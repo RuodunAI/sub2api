@@ -46,7 +46,7 @@ var sqlPolicy = sqlcheck.Policy{
 		"internal/store.CurrentSnapshot":         "pg_current_snapshot(): server state, no table",
 		"internal/store.CurrentDatabase":         "current_database(): server state, no table",
 		"internal/store.ClockTimestamp":          "clock_timestamp(): the database clock, outside any table",
-		"internal/store.Migrate":                 "the migrations runner: session advisory lock and unlock",
+		"internal/store.WithSessionLock":         "the migrations runner: session advisory lock and unlock",
 		"internal/store.migrateFile":             "the migrations runner: SET LOCAL search_path and the migration files' DDL",
 		"internal/store.CoreTracker.Ensure":      "the migrations runner: DDL of schema_migrations",
 		"internal/store/modelgen.FromMigrations": "dev tool: CREATE / DROP DATABASE of a scratch database",

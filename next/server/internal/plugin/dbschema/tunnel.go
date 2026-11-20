@@ -10,9 +10,9 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/egress"
 )
 
-// tunnelDSN is the DSN of a plugin behind the egress tunnel: the virtual
-// database address, no password. The user and database name only satisfy
-// the client's DSN parser; the core logs in with its own configuration.
+// tunnelDSN is the DSN every plugin gets: the virtual database address of
+// the egress tunnel, no password. The user and database name only satisfy
+// the client's DSN parser; the core logs in as the plugin's identity.
 func tunnelDSN(schema string) string {
 	u := url.URL{
 		Scheme:   "postgres",
@@ -26,8 +26,9 @@ func tunnelDSN(schema string) string {
 
 // ServeTunnel serves one connection of plugin pluginKey to the virtual
 // database address (egress.Options.DatabaseProxy): it ensures the plugin's
-// schema, logs in to PostgreSQL with the core's configuration and the
-// schema as search_path, and relays the protocol (pgproxy).
+// database side, logs in to PostgreSQL as the plugin's identity with the
+// core's host configuration and the core's schema as search_path, and
+// relays the protocol (pgproxy).
 func (m *Manager) ServeTunnel(ctx context.Context, conn net.Conn, pluginKey string) {
 	m.proxyOnce.Do(func() { m.proxy, m.proxyErr = pgproxy.New(m.databaseURL) })
 	err := m.proxyErr
@@ -39,11 +40,13 @@ func (m *Manager) ServeTunnel(ctx context.Context, conn net.Conn, pluginKey stri
 		m.log.Error("plugin database connection", "plugin", pluginKey, "err", err)
 		return
 	}
-	schema := SchemaName(pluginKey)
-	err = m.proxy.Serve(ctx, conn, pgproxy.Session{Client: pluginKey, Params: map[string]string{
-		"search_path":      schema,
-		"application_name": "sub2api plugin " + pluginKey,
-	}})
+	err = m.proxy.Serve(ctx, conn, pgproxy.Session{
+		Client: pluginKey, User: m.Identity(pluginKey), Password: m.password(pluginKey),
+		Params: map[string]string{
+			"search_path":      m.schema,
+			"application_name": "sub2api plugin " + pluginKey,
+		},
+	})
 	if err != nil && ctx.Err() == nil {
 		m.log.Warn("plugin database connection", "plugin", pluginKey, "err", err)
 	}

@@ -32,11 +32,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store/model"
 )
 
-// SchemaDSN hands out plugin DSNs (implemented by dbschema.Manager);
-// tunnelled is set when the plugin's connections go through the egress
-// tunnel (strict network), which then carries no database credential.
+// SchemaDSN hands out plugin DSNs (implemented by dbschema.Manager): the
+// virtual database address of the egress tunnel, without credentials, and
+// the core's schema (CONTRACTS §130).
 type SchemaDSN interface {
-	DSN(ctx context.Context, pluginKey string, tunnelled bool) (dsn, schema string, err error)
+	DSN(ctx context.Context, pluginKey string) (dsn, schema string, err error)
 }
 
 // Options configures the runtime. DB, Redis, Cipher, Node and Launcher are

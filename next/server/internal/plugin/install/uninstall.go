@@ -25,7 +25,8 @@ func running(status string) bool {
 
 // UninstallOptions select what uninstall removes besides the plugin row.
 type UninstallOptions struct {
-	// Purge drops the plugin's database schema and deletes its KV entries.
+	// Purge drops the plugin's tables and deletes its KV entries; without
+	// it the core keeps the tables for a reinstall (CONTRACTS §130).
 	Purge bool
 	// PurgeAccounts deletes the accounts of the plugin's account types
 	// through Deps.Accounts; otherwise they are kept and show up orphaned.
@@ -37,7 +38,8 @@ type UninstallResult struct {
 	AccountsDeleted int `json:"accounts_deleted"`
 }
 
-// Uninstall disables the plugin if needed, optionally drops its schema, and
+// Uninstall disables the plugin if needed, drops its database identity
+// (with purge its tables too), and
 // deletes the plugin row (cascading its versions, grants, permissions,
 // rollouts, event cursors and dead letters and job runs) and its egress
 // domains. Accounts are kept and show up as orphaned unless opt.PurgeAccounts is set. The key stays with the
@@ -90,9 +92,9 @@ func (s *Service) Uninstall(ctx context.Context, key string, opt UninstallOption
 				return err
 			}
 		}
-		if purge && s.d.Schemas != nil {
-			if err := s.d.Schemas.DropTx(ctx, tx, key); err != nil {
-				return fmt.Errorf("drop plugin schema: %w", err)
+		if s.d.Schemas != nil {
+			if err := s.d.Schemas.DropTx(ctx, tx, key, purge); err != nil {
+				return fmt.Errorf("drop the plugin's database identity: %w", err)
 			}
 		}
 		if s.d.Permissions != nil {

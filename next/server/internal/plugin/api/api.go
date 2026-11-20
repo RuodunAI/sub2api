@@ -62,6 +62,7 @@ func (a *API) RegisterRoutes(r *httpapi.Router) {
 	r.Perm(http.MethodGet, "/plugins/rollouts", PermRead, a.listRollouts)
 	r.Perm(http.MethodGet, "/plugins/:key/rollouts", PermRead, a.listRollouts)
 	r.Perm(http.MethodGet, "/plugins/:key/history", PermRead, a.pluginHistory)
+	r.Perm(http.MethodGet, "/plugins/:key/database", PermRead, a.pluginDatabase)
 	// Code execution and trust roots: a step-up proof each time (§80.2).
 	install, grant, publishers := r.StepUp(core.StepUpPluginInstall), r.StepUp(core.StepUpPluginGrant), r.StepUp(core.StepUpPublisherManage)
 	install.Perm(http.MethodPost, "/plugins/upload", PermInstall, a.upload)

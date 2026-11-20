@@ -54,23 +54,15 @@ const (
 type Options struct {
 	NodeID      string
 	DialTimeout time.Duration // default 10 s
-	// DatabaseAddrs lists the "host:port" of the PostgreSQL server in the
-	// DSN HostService.GetDSN hands out without strict network (the core's
-	// DSN; under strict network a plugin gets the virtual address instead,
-	// DatabaseProxy). A plugin reaches it through the tunnel only when it
-	// installs the tunnel on a host that does not require it
-	// (pluginsdk.WithStrictNetwork(StrictAlways)). Only a plugin whose
-	// policy has Database may reach it, by exactly this name; it is dialled
-	// by name.
-	DatabaseAddrs []string
 	// DatabaseProxy serves a connection to DatabaseHost:DatabasePort of a
 	// plugin whose policy has Database (database.go); without it that
-	// address is refused.
+	// address is refused. It is a plugin's only way to its database: every
+	// plugin gets that address (CONTRACTS §130).
 	DatabaseProxy func(ctx context.Context, conn net.Conn, pluginKey string)
 	// CoreAddrs lists "host:port" targets no plugin may reach under any
-	// policy, AllowPrivate included: the core's Redis (and PostgreSQL for
-	// plugins without Database). Names are resolved, so an IP literal or
-	// another name of the same address is refused too.
+	// policy, AllowPrivate included: the core's Redis and PostgreSQL. Names
+	// are resolved, so an IP literal or another name of the same address is
+	// refused too.
 	CoreAddrs []string
 	// AllowPrivate lets plugins reach private, loopback, link-local and
 	// other non-public addresses (SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE).
@@ -102,14 +94,13 @@ type Options struct {
 
 // Provider implements core.EgressProvider.
 type Provider struct {
-	opts     Options
-	log      *slog.Logger
-	logs     *logWriter
-	database map[string]bool // normalized host:port
-	core     *coreAddrs
-	db       *store.DB     // plugin network access API; nil in unit tests
-	hosts    *hostPolicies // plugin network access, cached
-	unsub    func()
+	opts  Options
+	log   *slog.Logger
+	logs  *logWriter
+	core  *coreAddrs
+	db    *store.DB     // plugin network access API; nil in unit tests
+	hosts *hostPolicies // plugin network access, cached
+	unsub func()
 }
 
 var (
@@ -158,15 +149,8 @@ func newProvider(st logStore, opts Options) *Provider {
 			return addrs, nil
 		}
 	}
-	p := &Provider{opts: opts, log: opts.Logger, database: map[string]bool{}}
-	for _, a := range opts.DatabaseAddrs {
-		if k, ok := addrKey(a); ok {
-			p.database[k] = true
-		}
-	}
-	// The database is a core service too: reachable only through the
-	// Database exception, by its configured name.
-	p.core = newCoreAddrs(append(append([]string(nil), opts.CoreAddrs...), opts.DatabaseAddrs...), opts.LookupIP)
+	p := &Provider{opts: opts, log: opts.Logger}
+	p.core = newCoreAddrs(opts.CoreAddrs, opts.LookupIP)
 	p.logs = newLogWriter(st, opts)
 	load := opts.LoadHostPolicy
 	if load == nil {
@@ -322,14 +306,7 @@ func (s *server) Dial(stream pluginv1.EgressService_DialServer) error {
 			return sendResult(stream, false, "egress: "+msg, "")
 		}
 		err = errors.New("no address of " + host + " matches network " + open.Network)
-		var targets []string
-		if resolved == nil {
-			// The configured database address: dialled by its name.
-			targets = []string{net.JoinHostPort(host, portStr)}
-		} else {
-			targets = dialTargets(open.Network, resolved, portStr)
-		}
-		for _, target := range targets {
+		for _, target := range dialTargets(open.Network, resolved, portStr) {
 			dctx, cancel := context.WithTimeout(ctx, s.p.opts.DialTimeout)
 			conn, err = s.p.opts.Dial(dctx, open.Network, target)
 			cancel()
@@ -471,12 +448,10 @@ func normalizeHost(h string) string {
 
 func truncate(s string, n int) string { return x.Truncate(s, n) }
 
-// check decides one TCP connection. It returns the addresses to dial (nil
-// with an empty reason: the configured database address, dialled by name),
-// or a reason ("denied" or "resolve") and a message.
+// check decides one TCP connection. It returns the addresses to dial, or a
+// reason ("denied" or "resolve") and a message.
 //
-// Order: the database exception (Database policy, exact configured name);
-// the net grant; the plugin's domain policy; the administrator's plugin
+// Order: the net grant; the plugin's domain policy; the administrator's plugin
 // network access (both must pass); then the resolved addresses - every one
 // must be public (unless AllowPrivate) and none may be a core service. The
 // addresses that were checked are the ones dialled: resolving the name again
@@ -484,9 +459,6 @@ func truncate(s string, n int) string { return x.Truncate(s, n) }
 // reach an address that was never checked.
 func (p *Provider) check(ctx context.Context, pol core.EgressPolicy, host string, port int) ([]netip.Addr, string, string) {
 	hp := net.JoinHostPort(host, strconv.Itoa(port))
-	if pol.Database && p.database[hp] {
-		return nil, "", ""
-	}
 	if !pol.Net {
 		return nil, ResultDenied, "the plugin has no net permission"
 	}

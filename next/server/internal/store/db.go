@@ -31,7 +31,7 @@ type DB struct {
 // the defaults (pool.go).
 func Open(ctx context.Context, dsn string) (*DB, error) {
 	s := poolDefaults.WithMaxConns(os.Getenv("SUB2API_PG_MAX_CONNS"))
-	db, err := open(ctx, dsn, s)
+	db, err := open(ctx, dsn, s, "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -41,20 +41,31 @@ func Open(ctx context.Context, dsn string) (*DB, error) {
 }
 
 // OpenSized connects to dsn with a pool of at most maxConns connections,
-// whatever the environment says: a pool for one job, such as running a
-// plugin's migrations as its own role.
+// whatever the environment says: a pool for one job.
 func OpenSized(ctx context.Context, dsn string, maxConns int) (*DB, error) {
-	s := poolDefaults
-	s.MaxConns = maxConns
-	return open(ctx, dsn, s)
+	return OpenAs(ctx, dsn, "", "", maxConns)
 }
 
-// open connects to dsn with a pool of s and pings it. gormpg.ParseConfig
-// pins DateStyle ISO, the format Times parses array text in (pgtext.go).
-func open(ctx context.Context, dsn string, s gormpg.Settings) (*DB, error) {
+// OpenAs is OpenSized logged in as user with password instead of the
+// credentials of dsn, whose other settings (host, TLS) stay; an empty user
+// keeps them. A plugin's migrations run as the plugin's database identity
+// on such a pool (CONTRACTS §130).
+func OpenAs(ctx context.Context, dsn, user, password string, maxConns int) (*DB, error) {
+	s := poolDefaults
+	s.MaxConns = maxConns
+	return open(ctx, dsn, s, user, password)
+}
+
+// open connects to dsn (as user when given) with a pool of s and pings it.
+// gormpg.ParseConfig pins DateStyle ISO, the format Times parses array text
+// in (pgtext.go).
+func open(ctx context.Context, dsn string, s gormpg.Settings, user, password string) (*DB, error) {
 	cfg, err := gormpg.ParseConfig(dsn)
 	if err != nil {
 		return nil, err
+	}
+	if user != "" {
+		cfg.User, cfg.Password = user, password
 	}
 	g, sqlDB, err := gormpg.Open(cfg, gormpg.Options{Pool: s, Gorm: gormConfig(), Setup: registerTimestamps})
 	if err != nil {

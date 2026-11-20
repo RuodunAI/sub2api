@@ -408,6 +408,16 @@ func (a *API) installFromMarket(c *gin.Context) {
 	httpapi.OK(c, r)
 }
 
+// pluginDatabase shows the plugin's database side (CONTRACTS §130).
+func (a *API) pluginDatabase(c *gin.Context) {
+	d, err := a.d.Install.Database(ctx(c), c.Param("key"))
+	if err != nil {
+		httpapi.Fail(c, err)
+		return
+	}
+	httpapi.OK(c, d)
+}
+
 func (a *API) review(c *gin.Context) {
 	r, err := a.d.Install.Review(c.Request.Context(), c.Param("key"), c.Param("version"), actor(c))
 	if err != nil {
