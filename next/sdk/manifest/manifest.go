@@ -347,10 +347,9 @@ type AccountType struct {
 	// declare none are unrestricted.
 	GuardedSettings []GuardedSetting `json:"guardedSettings,omitempty"`
 	// UpstreamFields are the top-level credentials/settings keys that say
-	// where requests go (base_url, endpoints). nil: not declared (the legacy
-	// rule applies); []: the type has no
+	// where requests go (base_url, endpoints); required. []: the type has no
 	// caller-set address (OAuth and managed types). omitzero keeps [] apart
-	// from nil.
+	// from a missing key, which the manifest check rejects.
 	UpstreamFields []string          `json:"upstreamFields,omitzero"`
 	Platforms      []AccountPlatform `json:"platforms"`
 	// DefaultModels and DefaultModelMapping prefill the core account fields
@@ -388,22 +387,11 @@ type AccountType struct {
 	Refresh *AccountRefresh `json:"refresh,omitempty"`
 }
 
-// AddressFields returns the upstream address fields of the type and whether
-// they are known, that is declared in UpstreamFields.
-func (at AccountType) AddressFields() ([]string, bool) {
-	return at.UpstreamFields, at.UpstreamFields != nil
-}
-
 // CustomUpstream reports whether a caller without account:settings:custom
-// can still point an account of the type anywhere: some address field is
-// not pinned by a guardedSetting. Unknown address fields keep the legacy
-// rule (no guardedSettings = custom).
+// can still point an account of the type anywhere: some upstream field is
+// not pinned by a guardedSetting.
 func (at AccountType) CustomUpstream() bool {
-	fields, known := at.AddressFields()
-	if !known {
-		return len(at.GuardedSettings) == 0
-	}
-	return slices.ContainsFunc(fields, func(f string) bool {
+	return slices.ContainsFunc(at.UpstreamFields, func(f string) bool {
 		return !slices.ContainsFunc(at.GuardedSettings, func(g GuardedSetting) bool { return g.Field == f })
 	})
 }

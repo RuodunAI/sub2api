@@ -130,27 +130,11 @@ func unmask(b, old []byte, sensitive []string) ([]byte, []string) {
 	return b, restored
 }
 
-// addressFields are the fields that say where an account of the type sends
-// requests: the declared or derived AddressFields, otherwise the guarded
-// settings plus base_url.
-func addressFields(at manifest.AccountType) []string {
-	if f, known := at.AddressFields(); known {
-		return f
-	}
-	f := []string{"base_url"}
-	for _, g := range at.GuardedSettings {
-		if !slices.Contains(f, g.Field) {
-			f = append(f, g.Field)
-		}
-	}
-	return f
-}
-
-// addressChanged reports whether any address field of the type differs
+// addressChanged reports whether any upstream field of the type differs
 // between the submitted credentials b and the stored ones old (nil on create:
 // any non-empty address).
 func addressChanged(b, old []byte, at manifest.AccountType) bool {
-	return slices.ContainsFunc(addressFields(at), func(f string) bool {
+	return slices.ContainsFunc(at.UpstreamFields, func(f string) bool {
 		return addressValue(b, f) != addressValue(old, f)
 	})
 }

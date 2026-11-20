@@ -894,8 +894,8 @@ func TestMaskedSecretToNewAddress(t *testing.T) {
 
 func TestAddressChanged(t *testing.T) {
 	declared := manifest.AccountType{UpstreamFields: []string{"endpoint"}}
-	legacy := manifest.AccountType{GuardedSettings: []manifest.GuardedSetting{{Field: "region"}}}
-	versioned := manifest.AccountType{GuardedSettings: []manifest.GuardedSetting{{Field: "base_url", Versions: []string{"/v1"}}}}
+	versioned := manifest.AccountType{UpstreamFields: []string{"base_url"},
+		GuardedSettings: []manifest.GuardedSetting{{Field: "base_url", Versions: []string{"/v1"}}}}
 	cases := []struct {
 		at      manifest.AccountType
 		b, old  string
@@ -903,9 +903,8 @@ func TestAddressChanged(t *testing.T) {
 	}{
 		{declared, `{"endpoint":"https://a","base_url":"x"}`, `{"endpoint":"https://a/","base_url":"y"}`, false},
 		{declared, `{"endpoint":"https://b"}`, `{"endpoint":"https://a"}`, true},
-		{legacy, `{"base_url":"https://a","region":"eu"}`, `{"base_url":"https://a","region":"us"}`, true},
-		{legacy, `{"base_url":null}`, `{}`, false},
-		{legacy, `{"base_url":"https://a"}`, ``, true},
+		{declared, `{"endpoint":null}`, `{}`, false},
+		{declared, `{"endpoint":"https://a"}`, ``, true},
 		// Versions are not applied: only a version segment apart is a change.
 		{versioned, `{"base_url":"https://x/v1"}`, `{"base_url":"https://x"}`, true},
 		{manifest.AccountType{UpstreamFields: []string{}}, `{"base_url":"https://b"}`, `{"base_url":"https://a"}`, false},

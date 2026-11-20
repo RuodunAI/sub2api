@@ -301,8 +301,9 @@ func TestAccountTypeUsageOverride(t *testing.T) {
 	m.Platforms = []manifest.Platform{validPlatform()}
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
-		Form:      keyForm(m),
-		Platforms: []manifest.AccountPlatform{{Platform: "video", Usage: map[string]manifest.UsageRules{"video.gen": {}}}},
+		Form:           keyForm(m),
+		UpstreamFields: []string{},
+		Platforms:      []manifest.AccountPlatform{{Platform: "video", Usage: map[string]manifest.UsageRules{"video.gen": {}}}},
 	}}
 	files := map[string][]byte{}
 	if err := Validate(m, files, ValidateOptions{Tooling: true}); err != nil {
@@ -352,6 +353,7 @@ func TestAccountTypeDefaultModels(t *testing.T) {
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
 		Form:                keyForm(m),
+		UpstreamFields:      []string{},
 		Platforms:           []manifest.AccountPlatform{{Platform: "video"}},
 		DefaultModels:       []string{"video-2", "video-2-260101"},
 		DefaultModelMapping: map[string]string{"video-2": "video-2-260101"},
@@ -410,8 +412,9 @@ func TestAccountTypeDefaultLimits(t *testing.T) {
 	prio, weight, rpm, spm := 5, 20, 60, 3
 	m.AccountTypes = []manifest.AccountType{{
 		ID: "apikey", Label: manifest.LocalizedText{"en": "Key"},
-		Form:      keyForm(m),
-		Platforms: []manifest.AccountPlatform{{Platform: "video"}},
+		Form:           keyForm(m),
+		UpstreamFields: []string{},
+		Platforms:      []manifest.AccountPlatform{{Platform: "video"}},
 		DefaultLimits: &manifest.AccountDefaultLimits{Priority: &prio, Weight: &weight, RPMLimit: &rpm, SPMLimit: &spm,
 			ModelLimits: []manifest.DefaultModelLimit{{Models: []string{"video-2", "video-3"}, MaxConcurrency: 2, SPMLimit: 1}}},
 	}}

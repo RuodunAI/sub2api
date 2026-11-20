@@ -11,7 +11,7 @@ func TestUpstreamFields(t *testing.T) {
 		fields []string
 		want   map[string]string
 	}{
-		{nil, map[string]string{}},
+		{nil, map[string]string{f: "required"}},
 		{[]string{}, map[string]string{}},
 		{[]string{"base_url", "video_endpoint"}, map[string]string{}},
 		{[]string{"base_url", " "}, map[string]string{f + "[1]": "required"}},
