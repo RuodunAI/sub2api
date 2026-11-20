@@ -5,6 +5,8 @@ package protocol
 import (
 	"context"
 	"fmt"
+	"net"
+	"strconv"
 
 	"github.com/hashicorp/go-plugin"
 	"google.golang.org/grpc"
@@ -83,6 +85,19 @@ type Client struct {
 func PluginMap(p *GRPCPlugin) map[string]plugin.Plugin {
 	return map[string]plugin.Plugin{PluginName: p}
 }
+
+// DatabaseHost and DatabasePort are the virtual address of a plugin's
+// database, which the DSN of HostService.GetDSN names: the core serves it at
+// the end of the plugin's egress tunnel, logged in as the plugin's database
+// identity, strict network mode or not (CONTRACTS §130).
+const (
+	DatabaseHost = "db.sub2api"
+	DatabasePort = 5432
+)
+
+// DatabaseAddress is DatabaseHost:DatabasePort, the address Host.DB dials
+// through the tunnel.
+var DatabaseAddress = net.JoinHostPort(DatabaseHost, strconv.Itoa(DatabasePort))
 
 // Environment variables the host sets for every plugin process.
 const (

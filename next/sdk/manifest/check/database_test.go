@@ -77,6 +77,8 @@ func TestDatabaseAccess(t *testing.T) {
 			"database.access[0].privileges[1]", "invalid"},
 		{"upper case privilege", users(func(a *manifest.DatabaseAccess) { a.Privileges = []string{"SELECT"} }),
 			"database.access[0].privileges[0]", "invalid"},
+		{"delete of columns", users(func(a *manifest.DatabaseAccess) { a.Privileges = []string{"select", "delete"} }),
+			"database.access[0].privileges", "invalid"},
 		{"duplicate privilege", users(func(a *manifest.DatabaseAccess) { a.Privileges = []string{"update", "update"} }),
 			"database.access[0].privileges[1]", "invalid"},
 	}

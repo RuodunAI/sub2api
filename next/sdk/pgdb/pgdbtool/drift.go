@@ -36,32 +36,34 @@ type DriftReport struct {
 	// Unmapped is what the migrations create and no model maps: "table t",
 	// "column t.c", "index t.i", "constraint t.c <definition>" (a check,
 	// foreign key, exclusion or unique constraint), "view v", "materialized
-	// view v", "sequence s", "function f(args)", "trigger t.g", "type x",
-	// and anything they create outside the plugin schema. A field or model
-	// removed from the code shows up here.
+	// view v", "sequence s", "type x", and anything they create outside the
+	// core's schema. A field or model removed from the code shows up here.
 	Unmapped []string `json:"unmapped"`
 	// Differences is what the two schemas define differently: a column's
 	// type, NOT NULL or default, a table's primary key, an index or
 	// constraint of the same name, and what only the models declare.
 	Differences []string `json:"differences"`
-	// Misnamed is what the migrations name against the rule of the plugin's
-	// tables sharing the core's schema (CONTRACTS §130): "table t", "index
-	// t_pkey", "sequence t_id_seq", "view v", "type x", "function f" without
-	// the plugin's prefix (also the names PostgreSQL gives a primary key's
-	// or unique constraint's index and a serial column's sequence), and
-	// "identifier <name> in <file>: N bytes" for a name longer than the
-	// 63 bytes PostgreSQL keeps of it.
-	Misnamed []string `json:"misnamed"`
+	// Refused is what the host refuses in a migration file, which shares
+	// the core's schema with the core and every plugin (CONTRACTS §130), as
+	// "<file>: <what>": a relation (table, index, sequence, view) or type
+	// whose name lacks the plugin's prefix, PostgreSQL's own names included
+	// ("index t_pkey", "sequence t_id_seq"); any other kind of object
+	// ("function f", "trigger t.g", "operator", ...), prefixed or not; and
+	// "identifier <name>: N bytes" for a name longer than the 63 bytes
+	// PostgreSQL keeps of it. An object is reported for the first file
+	// after which it exists, as the host checks after each file.
+	Refused []string `json:"refused"`
 }
 
 // Clean reports whether the models and the migrations agree.
 func (r *DriftReport) Clean() bool {
-	return len(r.Statements) == 0 && len(r.Unmapped) == 0 && len(r.Differences) == 0 && len(r.Misnamed) == 0
+	return len(r.Statements) == 0 && len(r.Unmapped) == 0 && len(r.Differences) == 0 && len(r.Refused) == 0
 }
 
 // unmanagedKinds are what a model package may declare unmanaged: objects no
-// GORM model describes, which the migrations create by hand.
-var unmanagedKinds = []string{"function ", "view ", "materialized view ", "sequence ", "trigger ", "type "}
+// GORM model describes, which the migrations create by hand. Functions,
+// triggers and other kinds are refused (DriftReport.Refused).
+var unmanagedKinds = []string{"view ", "materialized view ", "sequence ", "type "}
 
 // errRollback ends Drift's transaction: nothing it did is kept.
 var errRollback = errors.New("pgdbtool: rollback")
@@ -72,14 +74,13 @@ var errRollback = errors.New("pgdbtool: rollback")
 // manifest.TablePrefix, which every name of its tables, indexes, sequences
 // and other objects in the core's schema starts with. It
 //
-//   - refuses models whose tables are not named with prefix or longer than
-//     PostgreSQL keeps;
+//   - refuses models whose tables or indexes are not named with prefix or
+//     are longer than PostgreSQL keeps;
 //   - runs migrations in a scratch schema as the connecting user with
 //     search_path on that schema, standing in for the core's schema the
 //     host runs them in as the plugin's database identity (CONTRACTS §130),
-//     lists what they created or changed outside it, and lists what they
-//     name in it without prefix or too long (DriftReport.Misnamed), which
-//     the host refuses;
+//     lists what they created or changed outside it, and after each file
+//     what the host refuses in it (DriftReport.Refused);
 //   - lets AutoMigrate build models in a second, empty schema;
 //   - compares the two schemas' catalogs: tables, each column's type, NOT
 //     NULL and default (by value, so that 0 and '0'::numeric agree), primary
@@ -110,9 +111,6 @@ func Drift(ctx context.Context, dsn, prefix string, migrations []Migration, mode
 		return nil, err
 	}
 	report := &DriftReport{}
-	if report.Misnamed, err = longNames(migrations); err != nil {
-		return nil, err
-	}
 	if err := db.Callback().Raw().After("gorm:raw").Register("pgdbtool:record", record); err != nil {
 		return nil, err
 	}
@@ -121,17 +119,12 @@ func Drift(ctx context.Context, dsn, prefix string, migrations []Migration, mode
 		if err != nil {
 			return err
 		}
-		if err := s.migrate(tx, migrations); err != nil {
+		if report.Refused, err = s.migrate(tx, prefix, migrations); err != nil {
 			return err
 		}
 		if report.Unmapped, err = s.outside(tx); err != nil {
 			return err
 		}
-		unprefixed, err := s.unprefixed(tx, prefix)
-		if err != nil {
-			return err
-		}
-		report.Misnamed = append(report.Misnamed, unprefixed...)
 		if _, err := converge(tx, s.models, models); err != nil {
 			return err
 		}
@@ -162,34 +155,39 @@ func Drift(ctx context.Context, dsn, prefix string, migrations []Migration, mode
 	}
 	slices.Sort(report.Unmapped)
 	slices.Sort(report.Differences)
-	slices.Sort(report.Misnamed)
 	return report, nil
 }
 
 // checkTableNames refuses a model whose table names a schema (AutoMigrate
 // would create it there, outside the scratch schemas, and a migration
-// written from it would put the plugin's table in another schema), is not
-// named with prefix, or is longer than PostgreSQL keeps.
+// written from it would put the plugin's table in another schema), or
+// whose table or index is not named with prefix or is longer than
+// PostgreSQL keeps. An index declared without a name (index, uniqueIndex)
+// is named idx_<table>_<column> by GORM, without the prefix.
 func checkTableNames(db *gorm.DB, prefix string, models []any) error {
 	for _, model := range models {
 		stmt := &gorm.Statement{DB: db}
 		if err := stmt.Parse(model); err != nil {
 			return err
 		}
-		tables := []string{stmt.Schema.Table}
+		names := [][2]string{{"table", stmt.Schema.Table}}
 		for _, rel := range stmt.Schema.Relationships.Relations {
 			if rel.JoinTable != nil {
-				tables = append(tables, rel.JoinTable.Table)
+				names = append(names, [2]string{"table", rel.JoinTable.Table})
 			}
 		}
-		for _, t := range tables {
+		for _, idx := range stmt.Schema.ParseIndexes() {
+			names = append(names, [2]string{"index", idx.Name})
+		}
+		for _, n := range names {
+			kind, name := n[0], n[1]
 			switch {
-			case strings.Contains(t, "."):
-				return fmt.Errorf("pgdbtool: model %s: table %q names a schema; a plugin's tables are in the core's schema: name them without one", stmt.Schema.Name, t)
-			case !strings.HasPrefix(t, prefix):
-				return fmt.Errorf("pgdbtool: model %s: table %q is not named with the plugin's prefix %q", stmt.Schema.Name, t, prefix)
-			case len(t) > maxIdentifier:
-				return fmt.Errorf("pgdbtool: model %s: table %q is %d bytes, PostgreSQL keeps %d", stmt.Schema.Name, t, len(t), maxIdentifier)
+			case strings.Contains(name, "."):
+				return fmt.Errorf("pgdbtool: model %s: %s %q names a schema; a plugin's tables are in the core's schema: name them without one", stmt.Schema.Name, kind, name)
+			case !strings.HasPrefix(name, prefix):
+				return fmt.Errorf("pgdbtool: model %s: %s %q is not named with the plugin's prefix %q", stmt.Schema.Name, kind, name, prefix)
+			case len(name) > maxIdentifier:
+				return fmt.Errorf("pgdbtool: model %s: %s %q is %d bytes, PostgreSQL keeps %d", stmt.Schema.Name, kind, name, len(name), maxIdentifier)
 			}
 		}
 	}
@@ -255,12 +253,15 @@ func newScratch(tx *gorm.DB) (*scratch, error) {
 
 // migrate runs migrations in s.migrated as the connecting user, with
 // search_path on that schema alone: what the host does in the core's schema
-// as the plugin's identity.
-func (s *scratch) migrate(tx *gorm.DB, migrations []Migration) error {
+// as the plugin's identity. After each file it lists, as "<file>: <what>",
+// what the host refuses (DriftReport.Refused) that no earlier file left.
+func (s *scratch) migrate(tx *gorm.DB, prefix string, migrations []Migration) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
 	for _, m := range migrations {
 		text, err := os.ReadFile(m.Path)
 		if err != nil {
-			return fmt.Errorf("pgdbtool: read %s: %w", m.Name, err)
+			return nil, fmt.Errorf("pgdbtool: read %s: %w", m.Name, err)
 		}
 		err = searchPath(tx, s.migrated)
 		if err == nil {
@@ -269,10 +270,20 @@ func (s *scratch) migrate(tx *gorm.DB, migrations []Migration) error {
 			err = tx.Exec(string(text)).Error
 		}
 		if err != nil {
-			return fmt.Errorf("pgdbtool: migration %s: %w", m.Name, err)
+			return nil, fmt.Errorf("pgdbtool: migration %s: %w", m.Name, err)
+		}
+		refused, err := s.refused(tx, prefix)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range append(longNames(string(text)), refused...) {
+			if !seen[r] {
+				seen[r] = true
+				out = append(out, m.Name+": "+r)
+			}
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // outside lists what the migrations created or changed outside their schema
@@ -293,30 +304,49 @@ func (s *scratch) outside(tx *gorm.DB) ([]string, error) {
 		UNION ALL SELECT 'extension ' || e.extname FROM pg_extension e, s
 			WHERE e.xmin = s.x`, s.migrated, s.models).Scan(&out).Error
 	for i := range out {
-		out[i] += " (outside the plugin schema)"
+		out[i] += " (outside the core's schema)"
 	}
 	return out, err
 }
 
-// unprefixed lists what the migrations created in s.migrated without
-// prefix: every relation (tables; indexes, including those PostgreSQL names
-// for a primary key or a unique constraint; sequences, including a serial
-// column's; views; composite types), enum, domain and range type, and
-// function. The host refuses them all: the core's schema holds the core's
-// objects and every plugin's.
-func (s *scratch) unprefixed(tx *gorm.DB, prefix string) ([]string, error) {
+// refused lists what the host refuses in s.migrated, sorted: a relation
+// of an allowed kind (table, index, sequence, view, materialized view,
+// composite type) or an enum, domain or range type without prefix, which
+// covers PostgreSQL's names for a primary key's or unique constraint's
+// index and a serial column's sequence; a relation of any other kind; and
+// every object of other kinds: functions (but those PostgreSQL makes for a
+// range type), operators, operator classes and families, collations,
+// conversions, text search configurations and dictionaries, statistics
+// objects, and the triggers, rules and policies on its tables.
+func (s *scratch) refused(tx *gorm.DB, prefix string) ([]string, error) {
 	var out []string
-	err := tx.Raw(`SELECT CASE c.relkind WHEN 'r' THEN 'table ' WHEN 'p' THEN 'table ' WHEN 'i' THEN 'index ' WHEN 'I' THEN 'index '
-				WHEN 'S' THEN 'sequence ' WHEN 'v' THEN 'view ' WHEN 'm' THEN 'materialized view ' WHEN 'c' THEN 'type ' ELSE 'relation ' END || c.relname
-			FROM pg_class c WHERE c.relnamespace = ?::regnamespace AND NOT starts_with(c.relname, ?)
-		UNION ALL SELECT 'type ' || t.typname FROM pg_type t
-			WHERE t.typnamespace = ?::regnamespace AND t.typtype IN ('e', 'd', 'r', 'm') AND NOT starts_with(t.typname, ?)
-		UNION ALL SELECT 'function ' || p.proname FROM pg_proc p
-			WHERE p.pronamespace = ?::regnamespace AND NOT starts_with(p.proname, ?)`,
-		s.migrated, prefix, s.migrated, prefix, s.migrated, prefix).Scan(&out).Error
-	for i := range out {
-		out[i] += " (not named " + prefix + "...)"
-	}
+	err := tx.Raw(`WITH s AS (SELECT ?::regnamespace AS n, ?::text AS prefix)
+		SELECT CASE WHEN c.relkind NOT IN ('r', 'p', 'i', 'I', 'S', 'v', 'm', 'c') THEN 'relation ' || c.relname || ' (not allowed)'
+				ELSE CASE c.relkind WHEN 'r' THEN 'table ' WHEN 'p' THEN 'table ' WHEN 'i' THEN 'index ' WHEN 'I' THEN 'index '
+					WHEN 'S' THEN 'sequence ' WHEN 'v' THEN 'view ' WHEN 'm' THEN 'materialized view ' ELSE 'type ' END
+					|| c.relname || ' (not named ' || s.prefix || '...)' END
+			FROM pg_class c, s WHERE c.relnamespace = s.n
+				AND (c.relkind NOT IN ('r', 'p', 'i', 'I', 'S', 'v', 'm', 'c') OR NOT starts_with(c.relname, s.prefix))
+		UNION ALL SELECT 'type ' || t.typname || ' (not named ' || s.prefix || '...)' FROM pg_type t, s
+			WHERE t.typnamespace = s.n AND t.typtype IN ('e', 'd', 'r', 'm') AND NOT starts_with(t.typname, s.prefix)
+		UNION ALL SELECT 'function ' || p.proname || ' (not allowed)' FROM pg_proc p, s
+			WHERE p.pronamespace = s.n AND NOT EXISTS (SELECT 1 FROM pg_depend d
+				WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.refclassid = 'pg_type'::regclass AND d.deptype = 'i')
+		UNION ALL SELECT 'operator ' || o.oprname || ' (not allowed)' FROM pg_operator o, s WHERE o.oprnamespace = s.n
+		UNION ALL SELECT 'operator class ' || o.opcname || ' (not allowed)' FROM pg_opclass o, s WHERE o.opcnamespace = s.n
+		UNION ALL SELECT 'operator family ' || o.opfname || ' (not allowed)' FROM pg_opfamily o, s WHERE o.opfnamespace = s.n
+		UNION ALL SELECT 'collation ' || o.collname || ' (not allowed)' FROM pg_collation o, s WHERE o.collnamespace = s.n
+		UNION ALL SELECT 'conversion ' || o.conname || ' (not allowed)' FROM pg_conversion o, s WHERE o.connamespace = s.n
+		UNION ALL SELECT 'text search configuration ' || o.cfgname || ' (not allowed)' FROM pg_ts_config o, s WHERE o.cfgnamespace = s.n
+		UNION ALL SELECT 'text search dictionary ' || o.dictname || ' (not allowed)' FROM pg_ts_dict o, s WHERE o.dictnamespace = s.n
+		UNION ALL SELECT 'statistics ' || o.stxname || ' (not allowed)' FROM pg_statistic_ext o, s WHERE o.stxnamespace = s.n
+		UNION ALL SELECT 'trigger ' || c.relname || '.' || g.tgname || ' (not allowed)' FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid, s
+			WHERE c.relnamespace = s.n AND NOT g.tgisinternal
+		UNION ALL SELECT 'rule ' || c.relname || '.' || r.rulename || ' (not allowed)' FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class, s
+			WHERE c.relnamespace = s.n AND r.rulename <> '_RETURN'
+		UNION ALL SELECT 'policy ' || c.relname || '.' || p.polname || ' (not allowed)' FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid, s
+			WHERE c.relnamespace = s.n
+		ORDER BY 1`, s.migrated, prefix).Scan(&out).Error
 	return out, err
 }
 

@@ -2,7 +2,6 @@ package pgdbtool
 
 import (
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -10,29 +9,27 @@ import (
 // - 1); it cuts a longer one without an error.
 const maxIdentifier = 63
 
-// longNames lists the names in migrations longer than maxIdentifier, as
-// DriftReport.Misnamed: PostgreSQL would give the object another name than
-// the one written, and the catalog shows only the cut one.
-func longNames(migrations []Migration) ([]string, error) {
+// longNames lists the names in a migration's text longer than
+// maxIdentifier, for DriftReport.Refused: PostgreSQL would give the object
+// another name than the one written, and the catalog shows only the cut
+// one.
+func longNames(sql string) []string {
 	var out []string
-	for _, m := range migrations {
-		text, err := os.ReadFile(m.Path)
-		if err != nil {
-			return nil, fmt.Errorf("pgdbtool: read %s: %w", m.Name, err)
-		}
-		for _, name := range identifiers(string(text)) {
-			if len(name) > maxIdentifier {
-				out = append(out, fmt.Sprintf("identifier %s in %s: %d bytes, PostgreSQL keeps %d", name, m.Name, len(name), maxIdentifier))
-			}
+	for _, name := range identifiers(sql) {
+		if len(name) > maxIdentifier {
+			out = append(out, fmt.Sprintf("identifier %s: %d bytes, PostgreSQL keeps %d", name, len(name), maxIdentifier))
 		}
 	}
-	return out, nil
+	return out
 }
 
 // identifiers returns the words and quoted identifiers of SQL text, outside
-// comments and string literals. Dollar-quoted bodies are code (DO blocks,
-// functions) and are read as such. Keywords are among the words: none is
-// near maxIdentifier.
+// comments and string literals ('...', and E'...' with its backslash
+// escapes). A dollar-quoted body is read as code, not skipped as a string:
+// with functions refused, it is a DO block (db diff writes one around each
+// new constraint), whose statements name objects as the file does. A name
+// a DO block builds in a string for EXECUTE is not seen. Keywords are among
+// the words: none is near maxIdentifier.
 func identifiers(sql string) []string {
 	var out []string
 	for i := 0; i < len(sql); {
@@ -47,9 +44,11 @@ func identifiers(sql string) []string {
 			end := afterQuoted(sql, i, '"')
 			out = append(out, strings.ReplaceAll(strings.TrimSuffix(sql[i+1:end], `"`), `""`, `"`))
 			i = end
+		case (c == 'E' || c == 'e') && strings.HasPrefix(sql[i+1:], "'") && (i == 0 || !identPart(sql[i-1])):
+			i = afterEscaped(sql, i+1)
 		case identStart(c):
 			j := i + 1
-			for j < len(sql) && (identStart(sql[j]) || sql[j] >= '0' && sql[j] <= '9' || sql[j] == '$') {
+			for j < len(sql) && identPart(sql[j]) {
 				j++
 			}
 			out = append(out, sql[i:j])
@@ -65,10 +64,29 @@ func identStart(c byte) bool {
 	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_' || c >= 0x80
 }
 
+func identPart(c byte) bool { return identStart(c) || c >= '0' && c <= '9' || c == '$' }
+
 // after is the index after the first end at or after i, or len(s).
 func after(s string, i int, end string) int {
 	if n := strings.Index(s[i:], end); n >= 0 {
 		return i + n + len(end)
+	}
+	return len(s)
+}
+
+// afterEscaped is the index after the quote that closes the escape string
+// literal whose quote is at i (a backslash escapes the next byte, a doubled
+// quote is one), or len(s).
+func afterEscaped(s string, i int) int {
+	for j := i + 1; j < len(s); j++ {
+		switch {
+		case s[j] == '\\':
+			j++
+		case s[j] == '\'' && j+1 < len(s) && s[j+1] == '\'':
+			j++
+		case s[j] == '\'':
+			return j + 1
+		}
 	}
 	return len(s)
 }

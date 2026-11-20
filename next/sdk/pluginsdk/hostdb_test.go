@@ -10,7 +10,7 @@ import (
 	"google.golang.org/grpc"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/testpg"
 )
 
@@ -71,7 +71,7 @@ func (e refusingEgress) Dial(context.Context, ...grpc.CallOption) (pluginv1.Egre
 // (TestHostDBBoundToContext, whose host has no tunnel at all).
 func TestHostDBDialsVirtualAddressThroughTunnel(t *testing.T) {
 	e := refusingEgress{dials: new(atomic.Int32)}
-	dsn := "postgres://plugin@" + egress.DatabaseAddress + "/plugin?sslmode=disable"
+	dsn := "postgres://plugin@" + protocol.DatabaseAddress + "/plugin?sslmode=disable"
 	h := newHost(HostInfo{}, dsnHost{dsn: dsn}, e, false, 1)
 	defer h.closeDB()
 	db, err := h.DB(context.Background())

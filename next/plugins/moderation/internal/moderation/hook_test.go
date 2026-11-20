@@ -794,9 +794,9 @@ func TestRetentionPurgeBatchesOnOneNode(t *testing.T) {
 		UNION ALL SELECT 1, 'observe', 'flag', 'allow', 'hit', now() + interval '1 day', now()`).Error; err != nil {
 		t.Fatal(err)
 	}
-	// The key pgdb.TryXactLock derives from purgeLock: the one of the
-	// nodes before it, so a mixed fleet still purges one at a time.
-	const purgeLockKey = `hashtextextended('` + purgeLock + `' || ':' || current_schema(), 0)`
+	// The key pgdb.TryXactLock derives from purgeLock for the connected
+	// user (here the test database's; the plugin's identity on a node).
+	const purgeLockKey = `hashtextextended('` + purgeLock + `' || ':' || current_user, 0)`
 	// Another node: a session of its own (a transaction holds one).
 	other := db.Begin()
 	if other.Error != nil {

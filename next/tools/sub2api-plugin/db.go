@@ -109,11 +109,11 @@ func printReport(w io.Writer, report *pgdbtool.DriftReport, after string) {
 	printStatements(w, "DDL the models still need"+after+":", report.Statements)
 	printStatements(w, "defined differently (migrations; models)"+after+":", report.Differences)
 	printStatements(w, "in the schema, in no model"+after+":", report.Unmapped)
-	printStatements(w, misnamedTitle+after+":", report.Misnamed)
+	printStatements(w, refusedTitle+after+":", report.Refused)
 }
 
-// misnamedTitle heads DriftReport.Misnamed.
-const misnamedTitle = "named against the core's schema rules (every name starts with the plugin's prefix, at most 63 bytes)"
+// refusedTitle heads DriftReport.Refused.
+const refusedTitle = "refused by the host (only relations and types named with the plugin's prefix, names at most 63 bytes)"
 
 // comparisonServer is the PostgreSQL db diff and check compare on:
 // TEST_DATABASE_URL, or the local testpg server, which release stops again
@@ -166,7 +166,7 @@ func cmdDBDiff(args []string, stdout, stderr io.Writer) error {
 		printStatements(stderr, "DDL the models need (! can lose data, rewrite a table or fail on existing rows):", markManual(report.Statements))
 		printStatements(stderr, "defined differently (migrations; models), which this DDL may not change:", report.Differences)
 		printStatements(stderr, "in the schema, in no model (drop it, map it again, or list it in Unmanaged):", report.Unmapped)
-		printStatements(stderr, misnamedTitle+" (rename it in its migration):", report.Misnamed)
+		printStatements(stderr, refusedTitle+" (change it in its migration):", report.Refused)
 		return err
 	case err != nil:
 		return err
@@ -201,6 +201,7 @@ type dbPlugin struct {
 	dir        string // absolute
 	module     string // Go module path
 	key        string // the manifest's key
+	access     bool   // the manifest asks for tables outside the plugin (database.access)
 	migrations string // absolute migrations directory
 	overlay    string // the overlay's migrations directory, "" for none
 }
@@ -231,7 +232,7 @@ func loadDBPlugin(dir, overlay string) (*dbPlugin, error) {
 	if module == "" {
 		return nil, fmt.Errorf("%s/go.mod: no module path", abs)
 	}
-	p := &dbPlugin{dir: abs, module: module, key: m.Key,
+	p := &dbPlugin{dir: abs, module: module, key: m.Key, access: len(m.Database.Access) > 0,
 		migrations: filepath.Join(abs, filepath.FromSlash(m.Database.Migrations))}
 	// Overlay files land in the package at their own path (collectPackage),
 	// so the overlay's copy of the migrations directory joins the plugin's.
@@ -341,12 +342,15 @@ func (p *dbPlugin) drift(dsn string, files []sqlFile, stderr io.Writer) (*pgdbto
 			return nil, err
 		}
 	}
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	cmd := exec.Command("go", "run", "./"+filepath.Base(tmp), "-key", p.key, migrations)
 	cmd.Dir = p.dir
 	cmd.Env = append(os.Environ(), pgdbtool.DriftDSNEnv+"="+dsn)
-	cmd.Stdout, cmd.Stderr = &out, stderr
+	cmd.Stdout, cmd.Stderr = &out, io.MultiWriter(stderr, &errOut)
 	if err := cmd.Run(); err != nil {
+		if p.access && strings.Contains(errOut.String(), undefinedTable) {
+			return nil, fmt.Errorf("compare the models with migrations/: %w; %s", err, accessHint)
+		}
 		return nil, fmt.Errorf("compare the models with migrations/: %w", err)
 	}
 	var report pgdbtool.DriftReport
@@ -355,6 +359,15 @@ func (p *dbPlugin) drift(dsn string, files []sqlFile, stderr io.Writer) (*pgdbto
 	}
 	return &report, nil
 }
+
+// undefinedTable is PostgreSQL's SQLSTATE for a relation that does not
+// exist, as the driver's error text carries it.
+const undefinedTable = "SQLSTATE 42P01"
+
+// accessHint explains a missing relation in the migrations of a plugin that
+// asks for core tables: db check cannot check migrations that use them.
+const accessHint = "the migrations name a relation that does not exist; db check runs them in an empty schema, without the core's tables, " +
+	"so migrations that use the tables of database.access cannot be checked (see docs/PLUGIN-DEVELOPMENT.md 6.1)"
 
 // verify runs next after files twice (the host may run a migration again)
 // and fails unless both runs succeed and leave nothing to change: a
@@ -446,13 +459,13 @@ type migration struct {
 
 // newMigration renders report's statements as the next migration file of
 // dir; nil when there is nothing to write. It renders nothing (errManual)
-// when a statement needs a person, something is unmapped or misnamed, or the schemas
+// when a statement needs a person, something is unmapped or refused, or the schemas
 // differ in what no statement changes (AutoMigrate never tightens NOT NULL,
 // changes a primary key or redefines an index it finds by name): a partial
 // file would hide what is left. verify catches a difference the statements
 // leave.
 func newMigration(dir, key, name string, report *pgdbtool.DriftReport) (*migration, error) {
-	if slices.Contains(manual(report.Statements), true) || len(report.Unmapped) > 0 || len(report.Misnamed) > 0 ||
+	if slices.Contains(manual(report.Statements), true) || len(report.Unmapped) > 0 || len(report.Refused) > 0 ||
 		(len(report.Statements) == 0 && len(report.Differences) > 0) {
 		return nil, errManual
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
@@ -184,13 +185,7 @@ func buildGuardBinary(t testing.TB, goos, goarch, key, version string, extra ...
 	dir := filepath.Join(filepath.Dir(self), "..", "plugins", "guard")
 	out := filepath.Join(t.TempDir(), "plugin")
 	sdk := "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	// The binary names the tables of key (model.Prefix, manifest.TablePrefix).
-	const modelFile = "internal/model/model.go"
-	src, err := os.ReadFile(filepath.Join(dir, modelFile))
-	if err != nil || !bytes.Contains(src, []byte(manifest.TablePrefix("guard"))) {
-		t.Fatalf("guard %s: no table prefix (%v)", modelFile, err)
-	}
-	files := map[string]string{modelFile: strings.ReplaceAll(string(src), manifest.TablePrefix("guard"), manifest.TablePrefix(key))}
+	files := renamedTables(t, dir, key)
 	for _, e := range extra {
 		maps.Copy(files, e)
 	}
@@ -208,6 +203,35 @@ func buildGuardBinary(t testing.TB, goos, goarch, key, version string, extra ...
 		t.Fatal(err)
 	}
 	return b
+}
+
+// renamedTables returns guard's Go files (tests aside) that name its
+// tables, with key's table prefix (manifest.TablePrefix) for guard's.
+func renamedTables(t testing.TB, dir, key string) map[string]string {
+	t.Helper()
+	from, to := manifest.TablePrefix("guard"), manifest.TablePrefix(key)
+	files := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir() && d.Name() == "node_modules":
+			return filepath.SkipDir
+		case d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go"):
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(src, []byte(from)) {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		files[filepath.ToSlash(rel)] = strings.ReplaceAll(string(src), from, to)
+		return err
+	})
+	if err != nil || len(files) == 0 {
+		t.Fatalf("guard: no Go file names its tables %s… (%v)", from, err)
+	}
+	return files
 }
 
 // buildOverlay writes files to a temporary directory and returns a go build

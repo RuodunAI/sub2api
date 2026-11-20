@@ -122,11 +122,13 @@
 //
 // A plugin with a database (manifest "database", grant "db.schema") keeps
 // its tables in the core's schema beside the core's and other plugins'
-// (CONTRACTS §130). Every table, index, sequence and other object it
-// creates is named with manifest.TablePrefix: plg_<key>__<name>, at most 63
-// bytes, PostgreSQL's own names included (<table>_pkey, <table>_<column>_key,
-// <table>_<column>_seq carry the prefix when the table does; an index or
-// constraint named by hand must carry it too). The plugin has one database
+// (CONTRACTS §130). Its migrations create relations (tables, indexes,
+// sequences, views) and types only, named with manifest.TablePrefix:
+// plg_<key>__<name>, at most 63 bytes, PostgreSQL's own names included
+// (<table>_pkey, <table>_<column>_key, <table>_<column>_seq carry the
+// prefix when the table does; an index or constraint named by hand must
+// carry it too). Functions, triggers, operators and every other kind of
+// object are refused, prefixed or not. The plugin has one database
 // identity, which owns its tables and reaches nothing else: the core's
 // tables and other plugins' refuse it. Tables outside the plugin are asked
 // for in the manifest's database.access (table, columns, privileges, host
@@ -136,7 +138,7 @@
 //
 // Host.DB returns a GORM handle (package pgdb) with search_path on the
 // core's schema, at most 4 connections per node unless WithDBPoolSize says
-// otherwise. Its DSN names the virtual address egress.DatabaseAddress,
+// otherwise. Its DSN names the virtual address protocol.DatabaseAddress,
 // without a password: the SDK dials it through the host's tunnel, strict
 // network mode or not, and the core logs in as the plugin's identity; any
 // other address (a unit test's database) is dialled directly. The identity
@@ -180,8 +182,10 @@
 //     as it is in the database: `gorm:"type:jsonb;not null;default:'{}'"`,
 //     a PostgreSQL array as a pgdb.Array[T] with its type (type:text[]),
 //     an index, check or foreign key constraint by its name
-//     (index:<name>, check:<name>,<expr>, constraint:<name>,; an index's
-//     name carries the plugin's prefix). A unique column is `unique`, which
+//     (index:<name>, check:<name>,<expr>, constraint:<name>,). An index's
+//     name carries the plugin's prefix: GORM names one declared without a
+//     name (index, uniqueIndex) idx_<table>_<column>, which check refuses.
+//     A unique column is `unique`, which
 //     takes any unique constraint on just that column for it; the name GORM
 //     gives one it creates, uni_<table>_<column>, has no prefix, so write a
 //     new one in the migration (the column's own UNIQUE, which PostgreSQL
@@ -196,8 +200,9 @@
 //     its own transaction, logged in as the plugin's identity (CREATE on the
 //     core's schema granted for the run only) with search_path on that
 //     schema, and idempotent. Before a transaction commits the host checks
-//     that everything it created carries the plugin's prefix, or rolls it
-//     back. The host records each in the plugin's own table
+//     everything the identity owns in the core's schema, not only what the
+//     file created: a relation or type without the plugin's prefix, or an
+//     object of any other kind, rolls the file back. The host records each in the plugin's own table
 //     plg_<key>__schema_migrations (and runs a changed one again); the
 //     migrations leave that table alone. The plugin never runs AutoMigrate.
 //
@@ -211,10 +216,14 @@
 // (pgdbtool.Drift). They run migrations/ in a scratch schema standing in
 // for the core's, as the connecting user with search_path on that schema,
 // and list what a migration created or changed outside that schema (a table
-// in public, another schema, an extension) as a difference, and what it
-// named in it without the plugin's prefix or longer than 63 bytes (a
-// table, an index or sequence PostgreSQL named after one, a view, type or
-// function; DriftReport.Misnamed), which the host refuses. They let
+// in public, another schema, an extension) as a difference. After each
+// file, as the host checks, they list with the file's name what the host
+// refuses (DriftReport.Refused): a relation or type without the plugin's
+// prefix (an index or sequence PostgreSQL named after a table included),
+// an object of any other kind (a function, a trigger, ...), and a name
+// longer than 63 bytes in the file. The scratch schema has none of the
+// core's tables, so migrations that use the tables of database.access
+// cannot be checked (check says so when a relation is missing). They let
 // AutoMigrate build All() in a second, empty schema and compare the two
 // catalogs: the tables; each column's type, NOT NULL and default (by value:
 // '{}' and '{}'::jsonb, 0 and '0'::numeric are the same); primary keys; and
@@ -223,8 +232,8 @@
 // turned plain, another CHECK expression or ON DELETE is a difference even
 // under the same name, while the names GORM gives unique constraints
 // (uni_<table>_<column>), foreign keys and checks need not be the
-// migrations'. A model's TableName must not name a schema and must start
-// with the plugin's prefix. To reach
+// migrations'. A model's TableName must not name a schema, and it and the
+// model's index names must start with the plugin's prefix. To reach
 // internal/model they generate a main package in the plugin module and go
 // run it (pgdbtool.DriftMain).
 //
@@ -240,13 +249,12 @@
 // (it never adds NOT NULL to an existing column, changes a primary key or
 // redefines an index or constraint it finds by name), or when the schema
 // has what no model maps: a table, column, index or constraint (a field
-// removed from the code). Views, sequences, functions, triggers and types
-// that no model can describe are declared by the model package:
+// removed from the code). Views, sequences and types that no model can
+// describe are declared by the model package:
 //
-//	func Unmanaged() []string { return []string{"function touch_updated_at()", "trigger orders.orders_touch", "view order_totals"} }
+//	func Unmanaged() []string { return []string{"view plg_shop__order_totals", "sequence plg_shop__ticket_seq"} }
 //
-// (kinds: function with its argument types, view, materialized view,
-// sequence, trigger as table.trigger, type); check fails on any other and
+// (kinds: view, materialized view, sequence, type); check fails on any other and
 // on a declared one the migrations do not create. Their definitions are not
 // compared. check fails on any difference; pack runs it with the overlay's
 // migrations.

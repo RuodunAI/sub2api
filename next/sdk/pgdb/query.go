@@ -47,10 +47,12 @@ func LockTable(tx *gorm.DB, table string) error {
 	return tx.Exec("LOCK TABLE ? IN SHARE ROW EXCLUSIVE MODE", clause.Table{Name: table}).Error
 }
 
-// TryXactLock tries the transaction-level advisory lock of name in the
-// current schema (installs sharing a database keep their own keys) and
-// reports whether tx got it; it is held until tx ends. The key is
-// hashtextextended(name || ':' || current_schema(), 0) (gormpg.TryXactLock).
+// TryXactLock tries the transaction-level advisory lock of name for the
+// connected user, the plugin's database identity, which names the plugin
+// and the database (so plugins, and installs sharing a server, keep their
+// own keys), and reports whether tx got it; it is held until tx ends. The
+// key is hashtextextended(name || ':' || current_user, 0)
+// (gormpg.TryXactLock).
 func TryXactLock(tx *gorm.DB, name string) (bool, error) {
-	return gormpg.TryXactLock(tx, gorm.Expr("? || ':' || current_schema()", name))
+	return gormpg.TryXactLock(tx, gorm.Expr("? || ':' || current_user", name))
 }
