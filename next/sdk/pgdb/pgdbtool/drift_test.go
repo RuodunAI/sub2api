@@ -54,9 +54,13 @@ func migrate(t *testing.T, files ...string) []pgdbtool.Migration {
 	return m
 }
 
+// noPrefix is the prefix of the tests that compare catalogs: every name has
+// it. TestDriftPrefix covers the plugin's prefix.
+const noPrefix = ""
+
 func drift(t *testing.T, migrations []pgdbtool.Migration, models ...any) *pgdbtool.DriftReport {
 	t.Helper()
-	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), migrations, models, nil)
+	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrations, models, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +398,7 @@ func (escaping) TableName() string { return "public.drift_escape" }
 
 // A model may not name a schema: AutoMigrate would leave the scratch schema.
 func TestDriftRefusesSchemaQualifiedTables(t *testing.T) {
-	_, err := pgdbtool.Drift(context.Background(), testpg.URL(t), migrate(t), []any{&escaping{}}, nil)
+	_, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrate(t), []any{&escaping{}}, nil)
 	if err == nil || !strings.Contains(err.Error(), "names a schema") {
 		t.Fatalf("err = %v", err)
 	}
@@ -416,8 +420,8 @@ func TestDriftLeavesNothing(t *testing.T) {
 	}
 }
 
-// Migrations run as the connecting user, like the host runs them as the
-// core's; what they create or change outside the plugin schema is listed.
+// Migrations run as the connecting user in a schema standing in for the
+// core's; what they create or change outside it is listed.
 func TestDriftListsWhatMigrationsTouchOutsideTheSchema(t *testing.T) {
 	for sql, want := range map[string]string{
 		`CREATE TABLE public.drift_escape (id int)`:                                      "relation public.drift_escape",
@@ -426,7 +430,7 @@ func TestDriftListsWhatMigrationsTouchOutsideTheSchema(t *testing.T) {
 		`CREATE TYPE public.drift_mood AS ENUM ('ok')`:                                   "type public.drift_mood",
 		`CREATE TABLE drift_inside (id int); ALTER TABLE drift_inside SET SCHEMA public`: "relation public.drift_inside",
 	} {
-		r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), migrate(t, sql), nil, nil)
+		r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, migrate(t, sql), nil, nil)
 		if err != nil || !slices.Contains(r.Unmapped, want+" (outside the plugin schema)") {
 			t.Errorf("%s: drift = %+v, %v", sql, r, err)
 		}
@@ -447,15 +451,82 @@ func TestDriftUnmanaged(t *testing.T) {
 	if !slices.Equal(r.Unmapped, unmanaged) && !slices.Equal(r.Unmapped, []string{"function touch()", "trigger t.t_touch", "type mood", "view t_x"}) {
 		t.Fatalf("without unmanaged: %+v", r)
 	}
-	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), m, []any{&bigintKeyModel{}}, unmanaged)
+	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, []any{&bigintKeyModel{}}, unmanaged)
 	if err != nil || !r.Clean() {
 		t.Fatalf("with unmanaged: %+v, %v", r, err)
 	}
-	r, err = pgdbtool.Drift(context.Background(), testpg.URL(t), m, []any{&bigintKeyModel{}}, append(unmanaged, "view gone"))
+	r, err = pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, []any{&bigintKeyModel{}}, append(unmanaged, "view gone"))
 	if err != nil || !slices.Equal(r.Differences, []string{"unmanaged view gone: not in migrations"}) {
 		t.Fatalf("stale unmanaged: %+v, %v", r, err)
 	}
-	if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), m, nil, []string{"table t"}); err == nil {
+	if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), noPrefix, m, nil, []string{"table t"}); err == nil {
 		t.Fatal("a table cannot be unmanaged")
+	}
+}
+
+// prefixed is a plugin x's table, named with its prefix.
+type prefixed struct {
+	ID   int64  `gorm:"primaryKey"`
+	Code string `gorm:"type:text;not null;uniqueIndex:plg_x__p_code_key"`
+}
+
+func (prefixed) TableName() string { return "plg_x__p" }
+
+type unprefixed struct{ ID int64 }
+
+func (unprefixed) TableName() string { return "p" }
+
+type longTable struct{ ID int64 }
+
+func (longTable) TableName() string { return "plg_x__" + strings.Repeat("t", 57) }
+
+// The plugin's tables share the core's schema (CONTRACTS §130): everything
+// its migrations name, PostgreSQL's own names for a primary key's and a
+// unique constraint's index and a serial column's sequence included, starts
+// with its prefix and fits the 63 bytes PostgreSQL keeps of a name.
+func TestDriftPrefix(t *testing.T) {
+	const prefix = "plg_x__"
+	ok := `CREATE TABLE plg_x__p (id bigserial PRIMARY KEY, code text NOT NULL, CONSTRAINT plg_x__p_code_key UNIQUE (code));
+-- a comment may say anything: ` + strings.Repeat("c", 70) + `
+CREATE INDEX IF NOT EXISTS plg_x__p_code_idx ON plg_x__p (code) WHERE code <> '` + strings.Repeat("s", 70) + `';
+DROP INDEX plg_x__p_code_idx;`
+	r, err := pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t, ok), []any{&prefixed{}}, nil)
+	if err != nil || !r.Clean() {
+		t.Fatalf("prefixed: %+v, %v", r, err)
+	}
+
+	long := strings.Repeat("l", 64)
+	r, err = pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t, `CREATE TABLE p (id serial PRIMARY KEY, code text UNIQUE);
+CREATE TABLE plg_x__q (id bigint CONSTRAINT q_pkey PRIMARY KEY);
+CREATE INDEX q_id_idx ON plg_x__q (id);
+CREATE SEQUENCE s;
+CREATE VIEW v AS SELECT 1 AS one;
+CREATE TYPE mood AS ENUM ('ok');
+CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1';
+DO $$ BEGIN CREATE TABLE "plg_x__`+long+`" (id int); END $$;`), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"function f (not named plg_x__...)",
+		"identifier plg_x__" + long + " in 0001_m.sql: 71 bytes, PostgreSQL keeps 63",
+		"index p_code_key (not named plg_x__...)",
+		"index p_pkey (not named plg_x__...)",
+		"index q_id_idx (not named plg_x__...)",
+		"index q_pkey (not named plg_x__...)",
+		"sequence p_id_seq (not named plg_x__...)",
+		"sequence s (not named plg_x__...)",
+		"table p (not named plg_x__...)",
+		"type mood (not named plg_x__...)",
+		"view v (not named plg_x__...)",
+	}
+	if !slices.Equal(r.Misnamed, want) || r.Clean() {
+		t.Fatalf("misnamed = %q", r.Misnamed)
+	}
+
+	for model, msg := range map[any]string{&unprefixed{}: `table "p" is not named with the plugin's prefix "plg_x__"`, &longTable{}: "is 64 bytes, PostgreSQL keeps 63"} {
+		if _, err := pgdbtool.Drift(context.Background(), testpg.URL(t), prefix, migrate(t), []any{model}, nil); err == nil || !strings.Contains(err.Error(), msg) {
+			t.Errorf("model %T: %v", model, err)
+		}
 	}
 }

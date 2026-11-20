@@ -42,7 +42,8 @@ type FakeHost struct {
 	pluginv1.UnimplementedEgressServiceServer
 
 	mu sync.Mutex
-	// DSN returned by GetDSN ("" = FAILED_PRECONDITION).
+	// DSN returned by GetDSN ("" = FAILED_PRECONDITION), and the schema
+	// standing in for the core's (NewSchema).
 	DSNValue    string
 	SchemaValue string
 	// Authz decides AuthzCheck; nil allows everything.

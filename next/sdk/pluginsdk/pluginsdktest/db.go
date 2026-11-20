@@ -19,7 +19,12 @@ var schemaSeq atomic.Int64
 
 // NewSchema creates a fresh schema in the test PostgreSQL (testpg.URL:
 // TEST_DATABASE_URL, or a local server started from Go) and returns a DSN
-// whose search_path is pinned to it, like the DSN the host hands out. The schema is dropped on cleanup.
+// whose search_path is pinned to it. The schema stands in for the core's
+// schema the host pins search_path to: the plugin's tables, named with
+// manifest.TablePrefix, are created and used in it as in production, and
+// FakeHost.SetDSN(dsn, schema) hands both to Host.DB, which dials this
+// address directly (only the virtual database address goes through the
+// tunnel). The schema is dropped on cleanup.
 func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 	t.Helper()
 	base := testpg.URL(t)
@@ -45,7 +50,10 @@ func NewSchema(t testing.TB, prefix string) (dsn, schema string) {
 
 // ApplyMigrations runs every *.sql file of dirs (merged, sorted by file
 // name) in its own transaction with search_path set to schema, like the
-// host migration runner (ARCHITECTURE 5.6). Returns the applied file names.
+// host migration runner (ARCHITECTURE 5.6), as the test database's user:
+// the host runs them as the plugin's database identity, which may create
+// only what carries the plugin's prefix (sub2api-plugin db check holds the
+// scripts to that). Returns the applied file names.
 func ApplyMigrations(t testing.TB, dsn, schema string, dirs ...string) []string {
 	t.Helper()
 	migrations, err := pgdbtool.ReadMigrations(dirs...)

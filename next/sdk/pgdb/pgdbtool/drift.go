@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 )
 
@@ -43,11 +44,19 @@ type DriftReport struct {
 	// type, NOT NULL or default, a table's primary key, an index or
 	// constraint of the same name, and what only the models declare.
 	Differences []string `json:"differences"`
+	// Misnamed is what the migrations name against the rule of the plugin's
+	// tables sharing the core's schema (CONTRACTS §130): "table t", "index
+	// t_pkey", "sequence t_id_seq", "view v", "type x", "function f" without
+	// the plugin's prefix (also the names PostgreSQL gives a primary key's
+	// or unique constraint's index and a serial column's sequence), and
+	// "identifier <name> in <file>: N bytes" for a name longer than the
+	// 63 bytes PostgreSQL keeps of it.
+	Misnamed []string `json:"misnamed"`
 }
 
 // Clean reports whether the models and the migrations agree.
 func (r *DriftReport) Clean() bool {
-	return len(r.Statements) == 0 && len(r.Unmapped) == 0 && len(r.Differences) == 0
+	return len(r.Statements) == 0 && len(r.Unmapped) == 0 && len(r.Differences) == 0 && len(r.Misnamed) == 0
 }
 
 // unmanagedKinds are what a model package may declare unmanaged: objects no
@@ -59,11 +68,18 @@ var errRollback = errors.New("pgdbtool: rollback")
 
 // Drift compares migrations with models on the PostgreSQL server at dsn (a
 // role that may create schemas), in one transaction that it rolls back: an
-// interrupted run leaves nothing behind. It
+// interrupted run leaves nothing behind. prefix is the plugin's
+// manifest.TablePrefix, which every name of its tables, indexes, sequences
+// and other objects in the core's schema starts with. It
 //
+//   - refuses models whose tables are not named with prefix or longer than
+//     PostgreSQL keeps;
 //   - runs migrations in a scratch schema as the connecting user with
-//     search_path on that schema, like the host runs them as the core's user
-//     (CONTRACTS §115), and lists what they created or changed outside it;
+//     search_path on that schema, standing in for the core's schema the
+//     host runs them in as the plugin's database identity (CONTRACTS §130),
+//     lists what they created or changed outside it, and lists what they
+//     name in it without prefix or too long (DriftReport.Misnamed), which
+//     the host refuses;
 //   - lets AutoMigrate build models in a second, empty schema;
 //   - compares the two schemas' catalogs: tables, each column's type, NOT
 //     NULL and default (by value, so that 0 and '0'::numeric agree), primary
@@ -75,7 +91,7 @@ var errRollback = errors.New("pgdbtool: rollback")
 //     "view v", ...: see unmanagedKinds);
 //   - runs AutoMigrate on the migrated schema for the DDL a new migration
 //     needs.
-func Drift(ctx context.Context, dsn string, migrations []Migration, models []any, unmanaged []string) (*DriftReport, error) {
+func Drift(ctx context.Context, dsn, prefix string, migrations []Migration, models []any, unmanaged []string) (*DriftReport, error) {
 	for _, u := range unmanaged {
 		if !slices.ContainsFunc(unmanagedKinds, func(k string) bool { return strings.HasPrefix(u, k) }) {
 			return nil, fmt.Errorf("pgdbtool: unmanaged %q: start it with one of %q", u, unmanagedKinds)
@@ -90,13 +106,16 @@ func Drift(ctx context.Context, dsn string, migrations []Migration, models []any
 	if err := wrapDialector(db); err != nil {
 		return nil, err
 	}
-	if err := checkTableNames(db, models); err != nil {
+	if err := checkTableNames(db, prefix, models); err != nil {
+		return nil, err
+	}
+	report := &DriftReport{}
+	if report.Misnamed, err = longNames(migrations); err != nil {
 		return nil, err
 	}
 	if err := db.Callback().Raw().After("gorm:raw").Register("pgdbtool:record", record); err != nil {
 		return nil, err
 	}
-	report := &DriftReport{}
 	err = db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		s, err := newScratch(tx)
 		if err != nil {
@@ -108,6 +127,11 @@ func Drift(ctx context.Context, dsn string, migrations []Migration, models []any
 		if report.Unmapped, err = s.outside(tx); err != nil {
 			return err
 		}
+		unprefixed, err := s.unprefixed(tx, prefix)
+		if err != nil {
+			return err
+		}
+		report.Misnamed = append(report.Misnamed, unprefixed...)
 		if _, err := converge(tx, s.models, models); err != nil {
 			return err
 		}
@@ -138,13 +162,15 @@ func Drift(ctx context.Context, dsn string, migrations []Migration, models []any
 	}
 	slices.Sort(report.Unmapped)
 	slices.Sort(report.Differences)
+	slices.Sort(report.Misnamed)
 	return report, nil
 }
 
-// checkTableNames refuses a model whose table names a schema: AutoMigrate
+// checkTableNames refuses a model whose table names a schema (AutoMigrate
 // would create it there, outside the scratch schemas, and a migration
-// written from it would put the plugin's table in another schema.
-func checkTableNames(db *gorm.DB, models []any) error {
+// written from it would put the plugin's table in another schema), is not
+// named with prefix, or is longer than PostgreSQL keeps.
+func checkTableNames(db *gorm.DB, prefix string, models []any) error {
 	for _, model := range models {
 		stmt := &gorm.Statement{DB: db}
 		if err := stmt.Parse(model); err != nil {
@@ -157,8 +183,13 @@ func checkTableNames(db *gorm.DB, models []any) error {
 			}
 		}
 		for _, t := range tables {
-			if strings.Contains(t, ".") {
-				return fmt.Errorf("pgdbtool: model %s: table %q names a schema; a plugin's tables are in its own schema: name them without one", stmt.Schema.Name, t)
+			switch {
+			case strings.Contains(t, "."):
+				return fmt.Errorf("pgdbtool: model %s: table %q names a schema; a plugin's tables are in the core's schema: name them without one", stmt.Schema.Name, t)
+			case !strings.HasPrefix(t, prefix):
+				return fmt.Errorf("pgdbtool: model %s: table %q is not named with the plugin's prefix %q", stmt.Schema.Name, t, prefix)
+			case len(t) > maxIdentifier:
+				return fmt.Errorf("pgdbtool: model %s: table %q is %d bytes, PostgreSQL keeps %d", stmt.Schema.Name, t, len(t), maxIdentifier)
 			}
 		}
 	}
@@ -223,7 +254,8 @@ func newScratch(tx *gorm.DB) (*scratch, error) {
 }
 
 // migrate runs migrations in s.migrated as the connecting user, with
-// search_path on that schema alone: what the host does with the core's user.
+// search_path on that schema alone: what the host does in the core's schema
+// as the plugin's identity.
 func (s *scratch) migrate(tx *gorm.DB, migrations []Migration) error {
 	for _, m := range migrations {
 		text, err := os.ReadFile(m.Path)
@@ -266,14 +298,37 @@ func (s *scratch) outside(tx *gorm.DB) ([]string, error) {
 	return out, err
 }
 
+// unprefixed lists what the migrations created in s.migrated without
+// prefix: every relation (tables; indexes, including those PostgreSQL names
+// for a primary key or a unique constraint; sequences, including a serial
+// column's; views; composite types), enum, domain and range type, and
+// function. The host refuses them all: the core's schema holds the core's
+// objects and every plugin's.
+func (s *scratch) unprefixed(tx *gorm.DB, prefix string) ([]string, error) {
+	var out []string
+	err := tx.Raw(`SELECT CASE c.relkind WHEN 'r' THEN 'table ' WHEN 'p' THEN 'table ' WHEN 'i' THEN 'index ' WHEN 'I' THEN 'index '
+				WHEN 'S' THEN 'sequence ' WHEN 'v' THEN 'view ' WHEN 'm' THEN 'materialized view ' WHEN 'c' THEN 'type ' ELSE 'relation ' END || c.relname
+			FROM pg_class c WHERE c.relnamespace = ?::regnamespace AND NOT starts_with(c.relname, ?)
+		UNION ALL SELECT 'type ' || t.typname FROM pg_type t
+			WHERE t.typnamespace = ?::regnamespace AND t.typtype IN ('e', 'd', 'r', 'm') AND NOT starts_with(t.typname, ?)
+		UNION ALL SELECT 'function ' || p.proname FROM pg_proc p
+			WHERE p.pronamespace = ?::regnamespace AND NOT starts_with(p.proname, ?)`,
+		s.migrated, prefix, s.migrated, prefix, s.migrated, prefix).Scan(&out).Error
+	for i := range out {
+		out[i] += " (not named " + prefix + "...)"
+	}
+	return out, err
+}
+
 // DriftMain is the main of the program sub2api-plugin db generates inside a
 // plugin module (its internal/model package is out of reach elsewhere):
 //
 //	func main() { pgdbtool.DriftMain(model.All(), model.Unmanaged()...) }
 //
 // (Unmanaged when the package declares it). It reads the server DSN from
-// DriftDSNEnv and the migrations directory from its only argument, runs
-// Drift and writes the DriftReport as JSON to stdout.
+// DriftDSNEnv, the plugin key from -key and the migrations directory from
+// its only argument, runs Drift with the key's manifest.TablePrefix and
+// writes the DriftReport as JSON to stdout.
 func DriftMain(models []any, unmanaged ...string) {
 	if err := driftMain(os.Args[1:], os.Stdout, models, unmanaged); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -283,18 +338,19 @@ func DriftMain(models []any, unmanaged ...string) {
 
 func driftMain(args []string, stdout io.Writer, models []any, unmanaged []string) error {
 	fs := flag.NewFlagSet("drift", flag.ContinueOnError)
+	key := fs.String("key", "", "plugin key")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	dsn := os.Getenv(DriftDSNEnv)
-	if dsn == "" || fs.NArg() != 1 {
-		return errors.New("usage: " + DriftDSNEnv + "=<dsn> drift <migrations dir>")
+	if dsn == "" || *key == "" || fs.NArg() != 1 {
+		return errors.New("usage: " + DriftDSNEnv + "=<dsn> drift -key <plugin key> <migrations dir>")
 	}
 	migrations, err := ReadMigrations(fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	report, err := Drift(context.Background(), dsn, migrations, models, unmanaged)
+	report, err := Drift(context.Background(), dsn, manifest.TablePrefix(*key), migrations, models, unmanaged)
 	if err != nil {
 		return err
 	}

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -46,7 +47,7 @@ type Host interface {
 	// SealSecret encrypts plaintext (<= 64 KiB) with the core master key
 	// (grant "secrets"); the ciphertext only opens for this plugin and the
 	// same context (<= 128 bytes, e.g. "channel:3"). Store the ciphertext in
-	// the plugin's own schema and OpenSecret it on use.
+	// the plugin's own tables and OpenSecret it on use.
 	SealSecret(ctx context.Context, context string, plaintext []byte) ([]byte, error)
 	OpenSecret(ctx context.Context, context string, ciphertext []byte) ([]byte, error)
 
@@ -54,13 +55,15 @@ type Host interface {
 	// (grant "prices"), before any group multiplier; nothing is charged.
 	PriceUsage(ctx context.Context, u PriceUsage) (*PriceQuote, error)
 
-	// DSN returns the restricted database DSN (grant "db.schema").
+	// DSN returns the plugin's database DSN (grant "db.schema"): the
+	// virtual address egress.DatabaseAddress, without a password.
 	DSN(ctx context.Context) (*DSNInfo, error)
-	// DB returns the plugin's GORM handle on its schema, bound to ctx: use
-	// it for the call at hand and ask again for the next one (cheap: the
-	// connections are shared, opened on first use from DSN). search_path is
-	// the plugin schema, and with the egress tunnel installed (strict
-	// network mode) connections are dialled through it. The tables are
+	// DB returns the plugin's GORM handle, bound to ctx: use it for the call
+	// at hand and ask again for the next one (cheap: the connections are
+	// shared, opened on first use from DSN). search_path is the core's
+	// schema, where the plugin's tables are, named with
+	// manifest.TablePrefix; connections to the virtual database address go
+	// through the host's tunnel, strict network mode or not. The tables are
 	// those of migrations/*.sql, which the host runs: never AutoMigrate here
 	// (see "Database" in the package documentation).
 	DB(ctx context.Context) (*gorm.DB, error)
@@ -108,7 +111,7 @@ type Host interface {
 	// EVERY call is written to the host's audit log, by design: reading a
 	// credential without upstream traffic to justify it is exactly what an
 	// administrator has to be able to review afterwards. Fetch on use, do not
-	// cache the plaintext, and never persist it in the plugin's own schema.
+	// cache the plaintext, and never persist it in the plugin's own tables.
 	// The proxy is data: every request of the account goes out through the
 	// host (SendAccountRequest, Fetch, RelayUpstream), never through a
 	// connection of the plugin's own. Read it with AccountProxyOf and never
@@ -128,9 +131,10 @@ type Host interface {
 	EgressInstalled() bool
 }
 
-// DSNInfo is the database access handed out by the host (CONTRACTS §115).
+// DSNInfo is the database access handed out by the host (CONTRACTS §130).
 type DSNInfo struct {
-	DSN    string
+	DSN string
+	// Schema is the core's schema, where the plugin's tables are.
 	Schema string
 }
 
@@ -280,11 +284,8 @@ func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 		if err != nil {
 			return nil, fmt.Errorf("pluginsdk: get dsn: %w", err)
 		}
-		o := pgdb.Options{SearchPath: info.Schema, MaxConns: int(h.poolSize)}
-		if h.installed {
-			// The host resolves the database host name at the tunnel's end.
-			o.Dial, o.DialByName = egress.DialContext, true
-		}
+		// The host resolves the database host name at the tunnel's end.
+		o := pgdb.Options{SearchPath: info.Schema, MaxConns: int(h.poolSize), Dial: h.dialDB, DialByName: true}
 		db, err := pgdb.Open(info.DSN, o)
 		if err != nil {
 			return nil, fmt.Errorf("pluginsdk: %w", err)
@@ -296,6 +297,16 @@ func (h *host) DB(ctx context.Context) (*gorm.DB, error) {
 		h.db = db
 	}
 	return h.db.WithContext(ctx), nil
+}
+
+// dialDB routes by address: the virtual database address through the
+// host's tunnel, installed or not; any other, which only a plugin's unit
+// test hands out (a real test database), directly.
+func (h *host) dialDB(ctx context.Context, network, addr string) (net.Conn, error) {
+	if addr == egress.DatabaseAddress {
+		return egress.Dial(ctx, h.egress, network, addr)
+	}
+	return pgdb.DialDirect(ctx, network, addr)
 }
 
 // guardContext stops a statement whose context is done before it runs,

@@ -5,8 +5,8 @@
 // After InitHost, call Install once: http.DefaultTransport and
 // net.DefaultResolver are replaced, so net/http clients built on the default
 // transport (or a Clone of it) and Go DNS lookups go through the tunnel.
-// Redis and gRPC clients must use DialContext explicitly; Host.DB already
-// dials the plugin database through it.
+// Redis and gRPC clients must use DialContext explicitly; Host.DB dials the
+// plugin database through the tunnel whether or not it is installed.
 package egress
 
 import (
@@ -22,6 +22,12 @@ import (
 
 // DNSAddress is the host-provided DNS-over-TCP endpoint.
 const DNSAddress = "dns.sub2api:53"
+
+// DatabaseAddress is the virtual address of the plugin's database, which
+// the DSN of HostService.GetDSN names: the core serves it at the tunnel's
+// end, logged in as the plugin's database identity, strict network mode or
+// not. Host.DB dials it through the tunnel (Dial).
+const DatabaseAddress = "db.sub2api:5432"
 
 // ErrNotInstalled is returned by DialContext before Install.
 var ErrNotInstalled = errors.New("egress: not installed")
@@ -68,6 +74,11 @@ func Install(c pluginv1.EgressServiceClient) error {
 		},
 	}
 	return nil
+}
+
+// Dial opens a TCP connection through c's tunnel, Install or not.
+func Dial(ctx context.Context, c pluginv1.EgressServiceClient, network, address string) (net.Conn, error) {
+	return dial(ctx, c, network, address)
 }
 
 // DialContext opens a tunnelled TCP connection (for DB/Redis/gRPC clients).

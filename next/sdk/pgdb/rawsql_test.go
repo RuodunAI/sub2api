@@ -28,6 +28,7 @@ var sqlPolicy = sqlcheck.Policy{
 		"sdk/pgdb/pgdbtool.newScratch":                    "migration replay: the scratch schema and role (DDL)",
 		"sdk/pgdb/pgdbtool.scratch.migrate":               "migration replay: SET LOCAL ROLE, the migration files, RESET ROLE",
 		"sdk/pgdb/pgdbtool.scratch.outside":               "migration replay: the catalog read of the role's grants",
+		"sdk/pgdb/pgdbtool.scratch.unprefixed":            "migration replay: the catalog read of what the migrations named without the plugin's prefix",
 		"sdk/pgdb/pgdbtool.ApplyMigrations":               "migration runner: SET LOCAL search_path and the migration files (DDL)",
 		"sdk/pgdb/pgdbtool.CreateSchema":                  "migration runner: CREATE SCHEMA",
 		"sdk/pgdb/pgdbtool.DropSchema":                    "migration runner: DROP SCHEMA",

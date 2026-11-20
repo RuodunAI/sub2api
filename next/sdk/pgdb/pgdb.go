@@ -3,9 +3,9 @@
 // pgdbtool's, which only tests and sub2api-plugin import.
 //
 // No file of the SDK imports pgx: the driver configuration (where the
-// dial hook of strict network mode's egress tunnel goes) and the array type
-// come from runtime-contract/gormpg, which opens the core's and the
-// gateway's handles too. Everything else, the plugins included, speaks GORM
+// dial hook of the egress tunnel to the plugin's database goes) and the
+// array type come from runtime-contract/gormpg, which opens the core's and
+// the gateway's handles too. Everything else, the plugins included, speaks GORM
 // (TestNoPgxImports).
 package pgdb
 
@@ -22,9 +22,9 @@ import (
 )
 
 // DefaultMaxConns is the connection limit of a handle opened without one,
-// per plugin and node. The core opens each of them as its own database user
-// (CONTRACTS §115), so they count against the database's limits beside the
-// core's pool. pluginsdk.WithDBPoolSize sets another.
+// per plugin and node. The core opens each of them as the plugin's database
+// identity (CONTRACTS §130), so they count against the database's limits
+// beside the core's pool. pluginsdk.WithDBPoolSize sets another.
 const DefaultMaxConns = 4
 
 // Options tune Open. The zero value dials directly with the defaults.
@@ -33,7 +33,7 @@ type Options struct {
 	SearchPath string
 	// MaxConns caps the open connections (0 = DefaultMaxConns).
 	MaxConns int
-	// Dial opens the TCP connections (nil = a net.Dialer).
+	// Dial opens the TCP connections (nil = DialDirect).
 	Dial func(ctx context.Context, network, addr string) (net.Conn, error)
 	// DialByName hands host names to Dial unresolved: the egress tunnel
 	// resolves them on the host, where the plugin's DNS cannot.
@@ -54,11 +54,9 @@ func Open(dsn string, o Options) (*gorm.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pgdb: parse dsn: %w", err)
 	}
+	cfg.DialFunc = DialDirect
 	if o.Dial != nil {
 		cfg.DialFunc = o.Dial
-	} else {
-		d := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
-		cfg.DialFunc = d.DialContext
 	}
 	if o.DialByName {
 		cfg.LookupFunc = func(_ context.Context, host string) ([]string, error) { return []string{host}, nil }
@@ -90,6 +88,14 @@ func Open(dsn string, o Options) (*gorm.DB, error) {
 	db.Dialector = driverWording{db.Dialector}
 	return db, nil
 }
+
+// DialDirect opens a TCP connection without a tunnel: the dialer of a
+// handle opened without Options.Dial.
+func DialDirect(ctx context.Context, network, addr string) (net.Conn, error) {
+	return directDialer.DialContext(ctx, network, addr)
+}
+
+var directDialer = &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
 
 // Close closes the connections of a handle Open returned.
 func Close(db *gorm.DB) error {
