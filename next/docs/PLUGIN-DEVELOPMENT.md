@@ -378,7 +378,7 @@ if !sticky.Enabled { ... }
   `privileges` 取 `select`、`insert`、`update`、`delete`、`references`；`columns` 省略时是整张表。管理员在安装确认页看到每一条（表、列、权限），同意即照申请授予（列级或表级 GRANT）；每次安装、升级、启动先收回再按当前清单重授。别的插件的表（`plg_` 开头）不能申请。直接写核心的表会绕过核心的缓存、权限版本和审计：有对应 Host API 的用 Host API，确实没有时才申请写权限。
 - **卸载**：卸载并清除数据时删掉身份拥有的全部对象（含迁移记录表）和身份本身；保留数据时表留在库里，重装时交还给新身份。
 - **单元测试**：`pluginsdktest.NewSchema` 建一个临时模式当作核心模式，`ApplyMigrations` 在里面跑真实的迁移（以测试库的用户），`FakeHost.SetDSN(dsn, schema)` 把它交给 `Host.DB`；测试库的地址不是虚拟地址，SDK 直接连。带前缀的表名在临时模式里照常使用。
-- **`sub2api-plugin db check`**（`pack` 默认先跑它）按核心的规则逐个脚本检查：每个脚本跑完后，留下的关系或类型名字不带 `manifest.TablePrefix(key)`（含 PostgreSQL 自动起的名字）、有其他种类的对象、脚本里有超过 63 字节的名字，都列出来并注明脚本文件名，检查失败。GORM 模型的表名或索引名不带前缀，直接报错。
+- **`sub2api-plugin db check`**（`pack` 默认先跑它）按核心的规则逐个脚本检查：每个脚本跑完后，留下的关系或类型名字不带 `manifest.TablePrefix(key)`（含 PostgreSQL 自动起的名字）、有其他种类的对象、脚本里有超过 63 字节的名字，都列出来并注明脚本文件名，检查失败。迁移以一个只能在临时模式里建对象的临时角色执行（同宿主的插件身份），需要更多权限的语句（`ALTER … OWNER TO`、`CREATE SCHEMA`、`CREATE EXTENSION` 等）在检查时就失败；它在模式外拥有的对象（只在 PUBLIC 能建的地方）也列出来，`EXCEPTION` 块里建的也算。GORM 模型的表名或索引名不带前缀，直接报错。
 - **db check 的限制**：它在一个空的临时模式里跑迁移，里面没有核心的表，所以迁移里用到 `database.access` 申请的核心表（例如建一个读 `users` 的视图）时检查跑不通，会报“relation does not exist”，并附上这条限制的说明。工具没有为核心表做替身。现在没有官方插件这样用。真有这种插件时只能用 `pack --skip-db-check` 打包，迁移要在装好核心的库上自己验证。
 
 ## 6.2 文件：默认没有，要用就申请 `fs.data`

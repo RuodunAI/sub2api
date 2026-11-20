@@ -69,18 +69,21 @@ var unmanagedKinds = []string{"view ", "materialized view ", "sequence ", "type 
 var errRollback = errors.New("pgdbtool: rollback")
 
 // Drift compares migrations with models on the PostgreSQL server at dsn (a
-// role that may create schemas), in one transaction that it rolls back: an
-// interrupted run leaves nothing behind. prefix is the plugin's
+// role that may create roles and schemas), in one transaction that it rolls
+// back: an interrupted run leaves nothing behind. prefix is the plugin's
 // manifest.TablePrefix, which every name of its tables, indexes, sequences
 // and other objects in the core's schema starts with. It
 //
 //   - refuses models whose tables or indexes are not named with prefix or
 //     are longer than PostgreSQL keeps;
-//   - runs migrations in a scratch schema as the connecting user with
-//     search_path on that schema, standing in for the core's schema the
-//     host runs them in as the plugin's database identity (CONTRACTS §130),
-//     lists what they created or changed outside it, and after each file
-//     what the host refuses in it (DriftReport.Refused);
+//   - runs migrations in a scratch schema as a scratch role with search_path
+//     on that schema, standing in for the core's schema and the plugin's
+//     database identity the host runs them as (CONTRACTS §130): the role
+//     may create in the schema and do nothing else, so a statement that
+//     needs more (ALTER ... OWNER TO, CREATE SCHEMA, CREATE PUBLICATION)
+//     fails here as on install; it lists what the role owns outside the
+//     schema, and after each file what the host refuses in it
+//     (DriftReport.Refused);
 //   - lets AutoMigrate build models in a second, empty schema;
 //   - compares the two schemas' catalogs: tables, each column's type, NOT
 //     NULL and default (by value, so that 0 and '0'::numeric agree), primary
@@ -236,25 +239,42 @@ func searchPath(tx *gorm.DB, schema string) error {
 
 // scratch names what Drift creates in its transaction.
 type scratch struct {
-	migrated string // the migrations' schema
+	role     string // runs the migrations, like the plugin's identity
+	migrated string // the migrations' schema, where role may create
 	models   string // AutoMigrate's schema
 }
 
 func newScratch(tx *gorm.DB) (*scratch, error) {
 	base := fmt.Sprintf("sub2api_drift_%d_%d", os.Getpid(), time.Now().UnixNano())
-	s := &scratch{migrated: base + "_m", models: base + "_g"}
-	for _, schema := range []string{s.migrated, s.models} {
-		if err := tx.Exec("CREATE SCHEMA ?", clause.Table{Name: schema}).Error; err != nil {
-			return nil, fmt.Errorf("pgdbtool: scratch schemas (the comparison server's role must be able to create schemas): %w", err)
+	s := &scratch{role: base, migrated: base + "_m", models: base + "_g"}
+	role, migrated := clause.Table{Name: s.role}, clause.Table{Name: s.migrated}
+	// A new role has none of SUPERUSER, CREATEDB, CREATEROLE, REPLICATION
+	// and BYPASSRLS, like the plugin's identity, and gets USAGE and CREATE
+	// on the schema, as the host grants them for the migrations. Membership
+	// lets a comparison role that is no superuser SET ROLE to it and alter
+	// what it creates (PostgreSQL 16 does not grant SET on the roles one
+	// creates).
+	for _, q := range []struct {
+		sql  string
+		args []any
+	}{
+		{"CREATE ROLE ? NOLOGIN", []any{role}},
+		{"GRANT ? TO CURRENT_USER", []any{role}},
+		{"CREATE SCHEMA ?", []any{migrated}},
+		{"GRANT USAGE, CREATE ON SCHEMA ? TO ?", []any{migrated, role}},
+		{"CREATE SCHEMA ?", []any{clause.Table{Name: s.models}}},
+	} {
+		if err := tx.Exec(q.sql, q.args...).Error; err != nil {
+			return nil, fmt.Errorf("pgdbtool: scratch schemas (the comparison server's role must be able to create roles and schemas): %w", err)
 		}
 	}
 	return s, nil
 }
 
-// migrate runs migrations in s.migrated as the connecting user, with
-// search_path on that schema alone: what the host does in the core's schema
-// as the plugin's identity. After each file it lists, as "<file>: <what>",
-// what the host refuses (DriftReport.Refused) that no earlier file left.
+// migrate runs migrations in s.migrated as s.role, with search_path on that
+// schema alone: what the host does in the core's schema as the plugin's
+// identity. After each file it lists, as "<file>: <what>", what the host
+// refuses (DriftReport.Refused) that no earlier file left.
 func (s *scratch) migrate(tx *gorm.DB, prefix string, migrations []Migration) ([]string, error) {
 	var out []string
 	seen := map[string]bool{}
@@ -263,14 +283,20 @@ func (s *scratch) migrate(tx *gorm.DB, prefix string, migrations []Migration) ([
 		if err != nil {
 			return nil, fmt.Errorf("pgdbtool: read %s: %w", m.Name, err)
 		}
-		err = searchPath(tx, s.migrated)
+		err = tx.Exec("SET LOCAL ROLE ?", clause.Table{Name: s.role}).Error
+		if err == nil {
+			err = searchPath(tx, s.migrated)
+		}
 		if err == nil {
 			// No arguments: the driver sends the file as one simple query,
 			// so it may hold several statements.
 			err = tx.Exec(string(text)).Error
 		}
+		if err == nil {
+			err = tx.Exec("RESET ROLE").Error
+		}
 		if err != nil {
-			return nil, fmt.Errorf("pgdbtool: migration %s: %w", m.Name, err)
+			return nil, fmt.Errorf("pgdbtool: migration %s (run as a role that may only create in the schema, like the host runs it): %w", m.Name, err)
 		}
 		refused, err := s.refused(tx, prefix)
 		if err != nil {
@@ -286,23 +312,26 @@ func (s *scratch) migrate(tx *gorm.DB, prefix string, migrations []Migration) ([
 	return out, nil
 }
 
-// outside lists what the migrations created or changed outside their schema
-// (its tables' TOAST tables aside): the catalog rows this transaction wrote
-// in another schema, other schemas than the scratch ones, and extensions.
-// The transaction has written nothing else yet.
+// outside lists what s.role owns outside s.migrated, found by owner as the
+// host finds its identity's objects (CONTRACTS §130.3), so a PL/pgSQL
+// EXCEPTION block (a subtransaction) hides nothing: the relations (TOAST
+// tables aside; temporary ones included, which the host's identity cannot
+// create) and the enum, domain and range types by their owner columns, and
+// every object of another catalog by its pg_shdepend row. The role can
+// create there only where PUBLIC may (public on PostgreSQL 14 and older,
+// pg_temp while PUBLIC holds TEMPORARY).
 func (s *scratch) outside(tx *gorm.DB) ([]string, error) {
 	var out []string
-	err := tx.Raw(`WITH s AS (SELECT pg_current_xact_id()::xid AS x, ?::regnamespace AS schema, ?::regnamespace AS models)
+	err := tx.Raw(`WITH s AS (SELECT ?::regrole AS role, ?::regnamespace AS schema)
 		SELECT 'relation ' || c.oid::regclass::text FROM pg_class c, s
-			WHERE c.xmin = s.x AND c.relnamespace NOT IN (s.schema, s.models, 'pg_toast'::regnamespace) AND c.relpersistence <> 't'
-		UNION ALL SELECT 'function ' || p.oid::regprocedure::text FROM pg_proc p, s
-			WHERE p.xmin = s.x AND p.pronamespace NOT IN (s.schema, s.models)
+			WHERE c.relowner = s.role AND c.relnamespace <> s.schema AND c.relkind <> 't'
+				AND NOT starts_with(c.relnamespace::regnamespace::text, 'pg_toast')
 		UNION ALL SELECT 'type ' || t.oid::regtype::text FROM pg_type t, s
-			WHERE t.xmin = s.x AND t.typnamespace NOT IN (s.schema, s.models) AND t.typtype IN ('e', 'd', 'r')
-		UNION ALL SELECT 'schema ' || n.nspname FROM pg_namespace n, s
-			WHERE n.xmin = s.x AND n.oid NOT IN (s.schema, s.models)
-		UNION ALL SELECT 'extension ' || e.extname FROM pg_extension e, s
-			WHERE e.xmin = s.x`, s.migrated, s.models).Scan(&out).Error
+			WHERE t.typowner = s.role AND t.typnamespace <> s.schema AND t.typtype IN ('e', 'd', 'r')
+		UNION ALL SELECT o.type || ' ' || o.identity FROM pg_shdepend d CROSS JOIN LATERAL pg_identify_object(d.classid, d.objid, d.objsubid) o, s
+			WHERE d.deptype = 'o' AND d.refclassid = 'pg_authid'::regclass AND d.refobjid = s.role
+				AND d.classid NOT IN ('pg_class'::regclass, 'pg_type'::regclass)
+				AND o.schema IS DISTINCT FROM s.schema::text`, s.role, s.migrated).Scan(&out).Error
 	for i := range out {
 		out[i] += " (outside the core's schema)"
 	}
