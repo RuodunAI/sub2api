@@ -34,7 +34,7 @@ func APIKey(id string) standard.Type {
 			// The non-string key keeps code "pattern" and this wording: the
 			// frozen golden cases ("validate non-string key") pin them.
 			Texts: apikey.Texts{
-				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
+				UnsupportedAccountType: apikey.UnsupportedAccountTypeText,
 				KeyNotString:           "API key must be a string / api_key 必须是字符串",
 			},
 		},

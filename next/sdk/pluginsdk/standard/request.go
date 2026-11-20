@@ -2,10 +2,12 @@ package standard
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/accountform"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/apikey"
 )
 
@@ -33,7 +35,7 @@ type Request struct {
 	// balance.
 	Client map[string]string
 
-	fields []map[string]any
+	fields []accountform.Object
 }
 
 // Field reads an account field: the credentials first, then the settings;
@@ -43,16 +45,16 @@ func (r *Request) Field(name string) string {
 	if r.fields == nil {
 		// Both decoded once already (apikey.Spec.FromAccount), so they are
 		// JSON objects.
-		creds, _ := apikey.DecodeObject(r.Account.GetCredentialsJson())
-		settings, _ := apikey.DecodeObject(r.Account.GetSettingsJson())
-		r.fields = []map[string]any{creds, settings}
+		creds, settings, _ := accountform.DecodeAccount(r.Account)
+		r.fields = []accountform.Object{creds, settings}
 	}
-	switch v, _ := apikey.Lookup(name, r.fields...); v := v.(type) {
+	switch v, _ := accountform.Lookup(name, r.fields...); v := v.(type) {
 	case string:
 		return v
-	case float64, bool:
-		b, _ := json.Marshal(v)
-		return string(b)
+	case json.Number:
+		return v.String()
+	case bool:
+		return strconv.FormatBool(v)
 	}
 	return ""
 }

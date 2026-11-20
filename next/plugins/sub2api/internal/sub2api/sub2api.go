@@ -32,16 +32,7 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 // credentials), with the balance of the key from GET
 // /v1/usage.
 func APIKey() standard.Type {
-	spec := apikey.Spec{
-		RequireBaseURL: true,
-		Versions:       []string{"/v1beta", "/v1"},
-		Texts: apikey.Texts{
-			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-			BaseURLRequired:        BaseURLRequired,
-			BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
-		},
-	}
-	t := standard.Merge(TypeAPIKey, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""))
+	t := standard.Merge(TypeAPIKey, apikey.SiteSpec(BaseURLRequired), openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""))
 	t.Balance = &standard.Balance{Requests: []standard.BalanceRequest{{Path: "/v1/usage"}}, Read: readBalance}
 	return t
 }
@@ -73,15 +64,11 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 		}
 	}
 	if !amount.Exists() {
-		return transient("no remaining, balance or quota.remaining in /v1/usage / 应答里没有余额")
+		return standard.BalanceTransient("no remaining, balance or quota.remaining in /v1/usage / 应答里没有余额")
 	}
 	m, ok := standard.Micros(amount.String())
 	if !ok {
-		return transient("amount " + strconv.Quote(amount.Raw) + " is not a number in range / 余额不是可读的数字")
+		return standard.BalanceTransient("amount " + strconv.Quote(amount.Raw) + " is not a number in range / 余额不是可读的数字")
 	}
 	return &pluginv1.BalanceResult{AmountMicros: m, Currency: b.Get("unit").String()}
-}
-
-func transient(msg string) *pluginv1.BalanceResult {
-	return &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT, ErrorMessage: msg}
 }

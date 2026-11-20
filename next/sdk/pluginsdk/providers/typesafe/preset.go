@@ -18,8 +18,8 @@ func APIKey(id string) standard.Type {
 			DefaultBaseURL: DefaultBaseURL,
 			Versions:       []string{"/v1"},
 			Texts: apikey.Texts{
-				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-				BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
+				UnsupportedAccountType: apikey.UnsupportedAccountTypeText,
+				BaseURLFormat:          apikey.BaseURLFormatText,
 			},
 		},
 		Auth:            standard.Auth{Header: "authorization", Prefix: "Bearer "},

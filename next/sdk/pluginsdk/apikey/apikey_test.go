@@ -52,6 +52,12 @@ func TestValidateNormalizesInPlace(t *testing.T) {
 		r.GetNormalizedSettingsJson() != `{"base_url":"https://proxy.example.com/v1","region":"eu"}` {
 		t.Fatalf("creds=%s settings=%s", r.GetNormalizedCredentialsJson(), r.GetNormalizedSettingsJson())
 	}
+	// Other numbers are saved as written: no float64 round trip.
+	r = s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey",
+		CredentialsJson: `{"api_key":"sk-example-123","note":12345678901234567890}`, SettingsJson: `{"region":1.0}`})
+	if r.GetNormalizedCredentialsJson() != `{"api_key":"sk-example-123","note":12345678901234567890}` || r.GetNormalizedSettingsJson() != `{"region":1.0}` {
+		t.Fatalf("numbers: creds=%s settings=%s", r.GetNormalizedCredentialsJson(), r.GetNormalizedSettingsJson())
+	}
 	// Nothing in settings: "" keeps whatever the core has.
 	r = s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":"sk-example-123"}`})
 	if r.GetNormalizedSettingsJson() != "" || r.GetNormalizedCredentialsJson() != `{"api_key":"sk-example-123"}` {

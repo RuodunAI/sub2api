@@ -33,16 +33,7 @@ func New() *standard.Platform { return standard.New(APIKey()) }
 // credentials), with the balance of the key in the site's
 // own quota.
 func APIKey() standard.Type {
-	spec := apikey.Spec{
-		RequireBaseURL: true,
-		Versions:       []string{"/v1beta", "/v1"},
-		Texts: apikey.Texts{
-			UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
-			BaseURLRequired:        BaseURLRequired,
-			BaseURLFormat:          "base_url {reason} / base_url 必须是不含账号、查询参数的 http(s) 地址",
-		},
-	}
-	t := standard.Merge(TypeAPIKey, spec, openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
+	t := standard.Merge(TypeAPIKey, apikey.SiteSpec(BaseURLRequired), openai.APIKey(""), anthropic.APIKey(""), gemini.APIKey(""), typesafe.APIKey(""))
 	t.Balance = &standard.Balance{Requests: []standard.BalanceRequest{{Path: "/api/usage/token/"}}, Read: readBalance}
 	return t
 }
@@ -58,7 +49,7 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 	}
 	token := gjson.ParseBytes(answers[0].GetBody())
 	if !token.Get("code").Bool() {
-		return transient("token usage refused: " + token.Get("message").String() + " / 站点拒绝查询令牌额度")
+		return standard.BalanceTransient("token usage refused: " + token.Get("message").String() + " / 站点拒绝查询令牌额度")
 	}
 	var quotas []gjson.Result
 	if !token.Get("data.unlimited_quota").Bool() {
@@ -74,13 +65,9 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 	for _, q := range quotas {
 		m, ok := standard.Micros(q.String())
 		if !ok {
-			return transient("total_available " + strconv.Quote(q.Raw) + " is not a number in range / 额度不是可读的数字")
+			return standard.BalanceTransient("total_available " + strconv.Quote(q.Raw) + " is not a number in range / 额度不是可读的数字")
 		}
 		lowest = min(lowest, m)
 	}
 	return &pluginv1.BalanceResult{AmountMicros: lowest}
-}
-
-func transient(msg string) *pluginv1.BalanceResult {
-	return &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_TRANSIENT, ErrorMessage: msg}
 }

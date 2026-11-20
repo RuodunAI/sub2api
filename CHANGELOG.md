@@ -89,6 +89,7 @@
 - azure-openai：资源地址按填写的保存，`/openai`、`/openai/v1` 只在请求时去掉，请求地址不变；Foundry 项目名里转义的斜杠（`/api/projects/a%2Fb`）由拒绝改为接受，作为一段保存和发出。项目名恰好是 `openai` 时，请求仍少掉项目自己那一段（与此前相同）。
 - SDK：删掉 `apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`；`Spec.StripSuffixes` 改名 `Versions`；`NormalizeBaseURL` 去掉第二个参数；`apikeytest` 删掉 `MinKey`，改为接受带空格、非 ASCII、4096 位的密钥，并检查 `/v1`、`%2F` 原样保存。
 - 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法。
+- `apikey.Spec` 解析凭证与设置改用 `accountform`（数字按原文保留）：凭证或设置里的其他数字字段保存时不再经 float64 改写（大于 2^53 的整数不再丢精度，`1.0` 不再变成 `1`）。SDK 删掉 `apikey.DecodeObject`、`apikey.Lookup`，改用 `accountform.Decode`、`accountform.Lookup`；`standard.Request.Field` 读数字时给出原文。
 
 #### 升级须知
 
