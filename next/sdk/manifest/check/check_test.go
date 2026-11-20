@@ -48,7 +48,7 @@ func TestPathsOverlap(t *testing.T) {
 
 // Endpoint paths are matched on whole segments, so a path that merely
 // starts with the text of a core route is free. The core owns /api/v1, not
-// all of /api: /api/v3 (Volcengine Ark's official path) is a gateway path.
+// all of /api: /api/v3 is a gateway path.
 func TestReservedPath(t *testing.T) {
 	for _, p := range []string{"/api", "/api/", "/API", "/api/v1", "/api/v1/x", "/Api/V1/chat", "/api/:version/x", "/api/*rest",
 		"/plugin-ui/x", "/healthz", "/HEALTHZ/x"} {
@@ -57,7 +57,7 @@ func TestReservedPath(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"/apifoo/v1", "/healthcheck", "/plugin-uix/a", "/v1/messages", "/api/v3/chat/completions",
-		"/api/v3/responses", "/api/v1x/a", "/api/v2", "/doubao/api/v3/chat/completions", "/api/v3/:model/x"} {
+		"/api/v3/responses", "/api/v1x/a", "/api/v2", "/vendor/api/v3/chat/completions", "/api/v3/:model/x"} {
 		if msg := checkEndpointPath(p); msg != "" {
 			t.Errorf("%s: %s", p, msg)
 		}

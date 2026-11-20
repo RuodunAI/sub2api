@@ -9,7 +9,7 @@ func TestChatPingBodyLimit(t *testing.T) {
 	const tok, reason = `"max_tokens":1`, `"max_completion_tokens":16`
 	for model, limit := range map[string]string{
 		"gpt-4o-mini": tok, "gpt-4.1": tok, "gpt-image-1": tok, "gpt-oss-120b": tok,
-		"golden-model": tok, "doubao-seed-1-6": tok, "omni-moderation-latest": tok,
+		"golden-model": tok, "deepseek-chat": tok, "omni-moderation-latest": tok,
 		"o1": reason, "o3-mini": reason, "o4-mini": reason,
 		"gpt-5": reason, "gpt-5.4": reason, "gpt-5-mini": reason,
 		"gpt-6.2-astra": reason, "gpt-10": reason,

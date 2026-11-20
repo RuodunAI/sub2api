@@ -204,11 +204,10 @@ func oldNormalizeBaseURL(baseStr string, stripSuffixes []string) (string, error)
 // Every route is appended to that root, so equal roots are equal requests.
 func TestStoredBaseURLsKeepTheirRequests(t *testing.T) {
 	versions := [][]string{
-		nil,                       // volcengine relay
+		nil,                       // no version segment
 		{"/v1"},                   // openai, anthropic, relay, typesafe
 		{"/v1beta", "/v1"},        // gemini, newapi, sub2api
 		{"/openai/v1", "/openai"}, // azure_v1, azure_deployment
-		{"/api/v3"},               // volcengine apikey
 	}
 	paths := []string{
 		"", "/", "/v1", "/v1/", "/v1/v1", "/v1/v1beta", "/v1beta", "/v1beta/v1", "/v1beta/v1beta", "/V1", "/xv1",

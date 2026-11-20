@@ -9,8 +9,7 @@ import (
 // (the console and admin API, including plugin routes under /api/v1/p), the
 // bare /api, /plugin-ui (native plugin UI modules) and /healthz (the liveness
 // probe registered in server/internal/app). Everything else is free for
-// gateway endpoints (ARCHITECTURE 6.4) - /api/v3/... included, the path of
-// Volcengine Ark's official API.
+// gateway endpoints (ARCHITECTURE 6.4) - /api/v3/... included.
 const (
 	RouteAPI        = "api"
 	RouteAPIVersion = "v1"
