@@ -457,7 +457,7 @@
 
 分支 `feat/upstream-plugins`。三个插件都**只对文档、单元测试、合规套件、黄金样例和模拟上游验证过，没有接过真实站点或真实 TypeSafe 账号**。契约见 CONTRACTS §119，填法见 [PLUGIN-NEWAPI.md](next/docs/PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](next/docs/PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](next/docs/PLUGIN-TYPESAFE.md)。
 
-- **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；Gemini `countTokens` 不转发，由核心本地估算。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
+- **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；只服务站点真有的端点：Anthropic `count_tokens` 与 Gemini `countTokens` 不转发（New API 对两者回 404），由核心本地估算，Responses 只有 HTTP，不声明 WebSocket（New API 没有 `GET /v1/responses` 升级，WebSocket 会话不再调度到这类账号而失败）。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
 - **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组没配限额（`subscription` 存在且 `remaining` 为 `-1`）时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。

@@ -14,9 +14,8 @@ import (
 )
 
 // TestConformance runs the platform plugin conformance suite over every
-// HTTP protocol the type serves (gemini without countTokens, the TypeSafe
-// plugin's platform handed in), a Responses WebSocket turn and the
-// balance: each protocol's own auth header is the authoritative one.
+// protocol the type serves (no token counts, no WebSocket, the TypeSafe
+// plugin's platform handed in) and the balance: each protocol's own auth header is the authoritative one.
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:  newapi.New(),
@@ -24,7 +23,7 @@ func TestConformance(t *testing.T) {
 		Platforms: []manifest.Platform{typesafe.Platform()},
 		Protocols: []string{
 			openai.ProtocolChat, openai.ProtocolResponses, openai.ProtocolEmbeddings, openai.ProtocolImages, openai.ProtocolImagesEdit,
-			anthropic.ProtocolMessages, anthropic.ProtocolCountTokens,
+			anthropic.ProtocolMessages,
 			gemini.ProtocolGenerate, gemini.ProtocolStreamGenerate,
 			typesafe.ProtocolSystemOne,
 		},
@@ -50,12 +49,9 @@ func conformanceCases() []conformance.Case {
 	both(openai.ProtocolImages, "gpt-image-1.5", `"prompt":"a cat"`)
 	both(openai.ProtocolImagesEdit, "gpt-image-1.5", `"prompt":"a hat","images":[{"image_url":"https://example.com/cat.png"}]`)
 	both(anthropic.ProtocolMessages, "claude-sonnet-4-6", `"max_tokens":16,"messages":[{"role":"user","content":"Hi"}]`)
-	add(anthropic.ProtocolCountTokens, "claude-sonnet-4-6", `{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Hi"}]}`, false)
 	contents := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`
 	add(gemini.ProtocolGenerate, "gemini-2.5-flash", contents, false)
 	add(gemini.ProtocolStreamGenerate, "gemini-2.5-flash", contents, true)
 	add(typesafe.ProtocolSystemOne, "jev-latest", `{"model":"jev-latest","state":"hi","questions":{"q":{"type":"noul","instructions":"Greeting?"}}}`, false)
-	return append(cases, conformance.Case{Account: account, WebSocket: true,
-		Meta: &pluginv1.RequestMeta{Protocol: openai.ProtocolResponsesWS, Model: "gpt-4o-mini", Stream: true},
-		Body: []byte(`{"type":"response.create","model":"gpt-4o-mini","input":"hi"}`)})
+	return cases
 }

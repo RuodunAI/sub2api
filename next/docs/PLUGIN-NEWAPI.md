@@ -27,8 +27,8 @@
 
 | 平台 | 端点 | 说明 |
 |---|---|---|
-| openai | 全部：`/v1/chat/completions`、`/v1/responses`（含 WebSocket）、`/v1/embeddings`、`/v1/images/generations`、`/v1/images/edits` | 生图两条都只收 JSON 请求体；multipart 形式的 edits 在网关就以 400 拒绝 |
-| anthropic | 全部：`/v1/messages`、`/v1/messages/count_tokens` | 站点的 count_tokens 不计费，转发照常 |
+| openai | `/v1/chat/completions`、`/v1/responses`（只有 HTTP）、`/v1/embeddings`、`/v1/images/generations`、`/v1/images/edits` | 不含 Responses 的 WebSocket 模式：New API 只注册了 `POST /v1/responses`，`GET /v1/responses` 的升级请求得到 404 `Invalid URL`，所以 WebSocket 会话不会调度到这类账号。生图两条都只收 JSON 请求体；multipart 形式的 edits 在网关就以 400 拒绝 |
+| anthropic | `/v1/messages` | 不含 `/v1/messages/count_tokens`：New API 的这条路由被注释掉了（`relay-router.go` 的 TODO），对它回 404；这个协议由核心本地估算（§88.2） |
 | gemini | `generateContent`、`streamGenerateContent` | 不含 `countTokens`：New API 对它直接回 404；这个协议由核心本地估算（§88.2） |
 | typesafe | `/v1/systemone` | 平台由 TypeSafe 插件声明（D15）。TypeSafe 插件没启用时这个协议不存在（注册表每次换代记一条警告，`/v1/systemone` 404）；启用后，上游站点自己也要装了 TypeSafe 扩展才有这个接口，否则请求得到站点的 404 原样返回 |
 
@@ -58,13 +58,14 @@
 ## 5. 权限
 
 - 宿主权限：`platform.register`（账号随调用下发，不需要授权，CONTRACTS §124）、`ui.native`（账号表单 `NewAPIKeyForm`，插件自带的原生界面 `ui/native`，用 `@sub2api/ui` 的 `createApiKeyForm`；保存时的校验在插件的 `ValidateCredentials`）；没有 `net`、没有文件权限、没有 `gateway.endpoint`（不声明端点）。
-- 能力：`platform.adapter.v1`、`platform.websocket.v1`（Responses 的 WebSocket 模式）。
+- 能力：只有 `platform.adapter.v1`。不声明 `platform.websocket.v1`：站点没有 Responses 的 WebSocket 模式（第 3 节）。
 - 不在清单里写价格：模型价格由管理员在核心录入；生图模型按设计 3.4.5 录表达式价格；转发 Jev 时按 TypeSafe 的价格（PLUGIN-TYPESAFE.md 第 4 节）。
 
 ## 6. 已知限制
 
 - 无限额令牌在站点没开"允许查询用户额度"时显示"不限"，看不到用户真实余额。
-- Gemini 的 `countTokens` 不转发，按本地估算。
+- Anthropic 的 `count_tokens` 与 Gemini 的 `countTokens` 不转发，按本地估算；以后 New API 恢复了 count_tokens 路由，要改清单的 `endpoints` 并写明最低站点版本。
+- 没有 Responses 的 WebSocket 模式，WebSocket 客户端由别的账号类型服务。
 - 生图只收 JSON 请求体。
 - TypeSafe 的转发取决于两件事：本平台装了并启用 TypeSafe 插件、上游站点装了 TypeSafe 扩展。
 - 上游令牌能用哪些协议插件看不出来，要运营方用协议绑定收窄；站点对"不支持"回 403 时会误停用账号，这种情况先用协议绑定关掉，或用故障策略（§58）改写分类。
