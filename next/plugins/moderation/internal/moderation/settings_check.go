@@ -11,9 +11,9 @@ import (
 )
 
 // The rules of the settings (CONTRACTS §72.10, §75.1): the keys the plugin
-// accepts with their type, bounds, options and lengths, as the settings
-// form of forms/settings.schema.json declared them until 0.12.2 removed it. The
-// console's settings pages (ui/native settingsForm.ts) show the same
+// accepts with their type, bounds, options and lengths (those of the
+// settings schema the plugin shipped up to 0.12.1). The console's settings
+// pages (ui/native settingsForm.ts) show the same
 // limits while typing; ValidateSettings is the final check. Every key not
 // listed is refused (code "unknown"), the retired ones too: the pages drop
 // them before saving.
