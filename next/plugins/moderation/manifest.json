@@ -53,7 +53,9 @@
           "openai.responses",
           "openai.responses_ws",
           "gemini.generate",
-          "gemini.stream_generate"
+          "gemini.stream_generate",
+          "openai.images",
+          "openai.images_edit"
         ]
       },
       "needs": [
@@ -65,7 +67,9 @@
         "instructions|@this",
         "contents|@this",
         "systemInstruction|@this",
-        "system_instruction|@this"
+        "system_instruction|@this",
+        "prompt|@this",
+        "images|@this"
       ],
       "timeoutMs": 30000,
       "failure": "open"
@@ -81,7 +85,9 @@
           "openai.responses",
           "openai.responses_ws",
           "gemini.generate",
-          "gemini.stream_generate"
+          "gemini.stream_generate",
+          "openai.images",
+          "openai.images_edit"
         ]
       },
       "needs": [
@@ -93,7 +99,9 @@
         "instructions|@this",
         "contents|@this",
         "systemInstruction|@this",
-        "system_instruction|@this"
+        "system_instruction|@this",
+        "prompt|@this",
+        "images|@this"
       ],
       "timeoutMs": 30000,
       "failure": "open"
@@ -778,12 +786,14 @@
           "instructions|@this",
           "contents|@this",
           "systemInstruction|@this",
-          "system_instruction|@this"
+          "system_instruction|@this",
+          "prompt|@this",
+          "images|@this"
         ]
       },
       "reason": {
-        "en": "Read the model and the client-controlled content of gateway requests (messages of every role, system prompt or instructions, tool calls, results and definitions, documents, images) to moderate it (before scheduling, or once the account is chosen when the flow is bound to accounts), refuse violating requests, and refuse banned users on every protocol",
-        "zh": "读取网关请求的模型和客户端可控的全部内容（各角色的消息、系统提示词或 instructions、工具调用、结果与定义、文档、图片）进行审核（调度前审核；流程绑定到账号时在选定账号后、发往该账号前审核），拒绝违规请求，并在所有协议上拒绝被封禁的用户"
+        "en": "Read the model and the client-controlled content of gateway requests (messages of every role, system prompt or instructions, tool calls, results and definitions, documents, images, image prompts) to moderate it (before scheduling, or once the account is chosen when the flow is bound to accounts), refuse violating requests, and refuse banned users on every protocol",
+        "zh": "读取网关请求的模型和客户端可控的全部内容（各角色的消息、系统提示词或 instructions、工具调用、结果与定义、文档、图片、生图提示词）进行审核（调度前审核；流程绑定到账号时在选定账号后、发往该账号前审核），拒绝违规请求，并在所有协议上拒绝被封禁的用户"
       }
     },
     {

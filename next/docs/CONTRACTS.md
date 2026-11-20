@@ -3963,7 +3963,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 | 方面 | §20（0.1.x） | new-api | 0.2 做法 |
 |---|---|---|---|
-| 审什么 | 最新一条 user 消息，只有文字；剥掉 `<system-reminder>` | 只审最后一条是 user 的请求；取结尾连续的 user 消息（Anthropic 的 tool_result 不算文字），文字加图片，保留 `<system-reminder>`，压缩空白后截到 12000 字 | 0.2–0.5 照 new-api；**0.6.0 起改为请求里客户端可控的全部内容**（各角色的消息、system/instructions、工具调用与结果、文档、工具定义、图片），按内容片段缓存、超长分块（72.4）。new-api 的做法只防得住诚实的客户端（2026-10-31 团队审核 P1-6） |
+| 审什么 | 最新一条 user 消息，只有文字；剥掉 `<system-reminder>` | 只审最后一条是 user 的请求；取结尾连续的 user 消息（Anthropic 的 tool_result 不算文字），文字加图片，保留 `<system-reminder>`，压缩空白后截到 12000 字 | 0.2–0.5 照 new-api；**0.6.0 起改为请求里客户端可控的全部内容**（各角色的消息、system/instructions、工具调用与结果、文档、工具定义、图片），按内容片段缓存、超长分块（72.4）。new-api 的做法只防得住诚实的客户端（2026-10-31 团队审核 P1-6）。0.13.0 起生图请求（`openai.images`、`openai.images_edit`）审提示词和 edits 的输入图片，new-api 对生图同样检查提示词（`ImageRequest` 的 `CombineText` 就是 `prompt`）；0.6.0–0.12.1 审的生图是 volcengine 的 |
 | 怎么判 | 一个 LLM + `submit_verdict` | 审核器：OpenAI `/v1/moderations` 按类别分数比阈值；TypeSafe Jev 按问题打分 | 四种审核器：`openai_moderation`、`typesafe`、`llm_verdict`，0.8.0 加 `llm_questions`（new-api 11 月新增的题表式 `llm` 审核器）（72.6） |
 | 组合 | 一次调用 | 多级流程：同级审核器并发，组合方式 any/all/at_least；某一级判通过就整体通过。11 月起：没有结论的级跳过、前面的命中保留；补审级；初审命中传给后级 | 照 new-api（72.7）；11 月的改动在 0.8.0 跟进 |
 | 配置粒度 | 全局 | 分组绑定流程，流程可发布、有版本、可回滚 | 分组绑定流程；`group_id=0` 是默认流程，没有单独绑定的分组都走它 |
@@ -3992,9 +3992,9 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 ### 72.3 manifest 变化
 
 - 版本 0.2.0；能力不变（`gateway.hook.v1`、`app.jobs.v1`、`app.broadcast.v1`、`http.routes.v1`），宿主权限加 `secrets`。
-- 钩子 `needs` 改为：`model`、`messagesTAIL16`、`inputTAIL16`、`[input]|#(%"*")`、`contentsTAIL16`（`TAIL16` 见 72.2 第 1 条，manifest 里写展开后的原文）。`scope.fields` 照抄。**0.6.0 起**改为各顶层字段整体：`model`、`system|@this`、`messages|@this`、`tools|@this`、`input|@this`、`instructions|@this`、`contents|@this`、`systemInstruction|@this`、`system_instruction|@this`（0.6.0 到 0.12.1 还有 volcengine 用的 `prompt|@this`、`content|@this`、`image|@this`，0.12.2 随 volcengine 删除，§128）。写成 `|@this` 查询而不是普通路径，是为了让这些字段只读（核心不允许钩子修补查询字段，`hooks.go` `isQueryField`）。`gateway.hook` 的 `scope.fields` 变了，**升级 0.6.0 需要管理员重新批准该权限**（风险 high）。
-- 钩子 `match.protocols`：`anthropic.messages`、`openai.chat`、`openai.responses`、`openai.responses_ws`、`gemini.generate`、`gemini.stream_generate`。`openai.responses_ws`（2026-10-31 补上）：核心对 WebSocket 的每条 `response.create` 单独跑钩子，字段从这条消息本身取（`model`、`input` 在顶层，与 HTTP Responses 相同），漏掉它时拦截级用户和被封禁用户走 WebSocket 就完全不经审核。0.6.0 加上的 `volcengine.images`、`volcengine.video_submit` 在 0.12.2 随 volcengine 删除（§128）。
-- **封禁钩子（0.6.0）**：另一个钩子 `ban`（order 199，`match` 为空即匹配所有协议，不要任何字段，超时 2 秒，failure open），只做 72.5 第 1、2 步：被封禁用户在 `openai.embeddings`、`*.count_tokens`、`openai.images` 以及平台插件自己声明的协议上也被拒绝（2026-10-31 团队审核 P2；此前 §72.1 "封禁"的定义言过其实）。内容审核钩子仍只匹配上面 6 个协议：embeddings 和 count_tokens 不生成内容，而且 count_tokens 的请求体就是整段对话，匹配它们只会把大请求白白发给插件。核心对空 `match`（或 `"*"`）匹配全部协议、这些协议都会执行请求钩子（2026-10-31 与核心确认；`video_query` 是 GET，没有请求体，字段为空）。封禁钩子与审核钩子对 8 个审核协议各调一次插件，封禁检查只读内存，开销可以忽略。
+- 钩子 `needs` 改为：`model`、`messagesTAIL16`、`inputTAIL16`、`[input]|#(%"*")`、`contentsTAIL16`（`TAIL16` 见 72.2 第 1 条，manifest 里写展开后的原文）。`scope.fields` 照抄。**0.6.0 起**改为各顶层字段整体：`model`、`system|@this`、`messages|@this`、`tools|@this`、`input|@this`、`instructions|@this`、`contents|@this`、`systemInstruction|@this`、`system_instruction|@this`（0.6.0 到 0.12.1 还有 volcengine 用的 `prompt|@this`、`content|@this`、`image|@this`，0.12.2 随 volcengine 删除，§128）；**0.13.0** 为 OpenAI 生图加上 `prompt|@this`、`images|@this`（72.4）。内置插件随镜像升级时由系统同意授予，`scope.fields` 扩大不需要管理员重新批准（§5.7“内置插件”）。写成 `|@this` 查询而不是普通路径，是为了让这些字段只读（核心不允许钩子修补查询字段，`hooks.go` `isQueryField`）。`gateway.hook` 的 `scope.fields` 变了，**升级 0.6.0 需要管理员重新批准该权限**（风险 high）。
+- 钩子 `match.protocols`：`anthropic.messages`、`openai.chat`、`openai.responses`、`openai.responses_ws`、`gemini.generate`、`gemini.stream_generate`。`openai.responses_ws`（2026-10-31 补上）：核心对 WebSocket 的每条 `response.create` 单独跑钩子，字段从这条消息本身取（`model`、`input` 在顶层，与 HTTP Responses 相同），漏掉它时拦截级用户和被封禁用户走 WebSocket 就完全不经审核。0.6.0 加上的 `volcengine.images`、`volcengine.video_submit` 在 0.12.2 随 volcengine 删除（§128）；**0.13.0** 加上 `openai.images`、`openai.images_edit`（§118、§121），共 8 个协议。两个钩子都按客户端协议匹配（核心 `hooks.go` `matchesRequest`），codex 账号经转换服务的生图请求也按 `openai.images*` 审，字段取自客户端的请求体。
+- **封禁钩子（0.6.0）**：另一个钩子 `ban`（order 199，`match` 为空即匹配所有协议，不要任何字段，超时 2 秒，failure open），只做 72.5 第 1、2 步：被封禁用户在 `openai.embeddings`、`*.count_tokens` 以及平台插件自己声明的协议上也被拒绝（2026-10-31 团队审核 P2；此前 §72.1 "封禁"的定义言过其实）。内容审核钩子只匹配上面 8 个协议：embeddings 和 count_tokens 不生成内容，而且 count_tokens 的请求体就是整段对话，匹配它们只会把大请求白白发给插件。核心对空 `match`（或 `"*"`）匹配全部协议、这些协议都会执行请求钩子（2026-10-31 与核心确认；`video_query` 是 GET，没有请求体，字段为空）。封禁钩子与审核钩子对 8 个审核协议各调一次插件，封禁检查只读内存，开销可以忽略。
 - 权限：保留 `moderation:read`、`moderation:manage`，和 new-api 的 read / write 一一对应。read 能看全部页面，包括原文；manage 负责所有修改和要花钱的调用（试跑、测试、手动分析）。
 - 任务：`cleanup` 保留（72.10）；P2 加 `analysis`（`@every 1m`，处理分析队列，72.13），0.10.0 删除。
 - **0.8.0**：版本 0.8.0，`hostCompat` 不变（`>=0.1.258 <0.2.0`，没有用到新的宿主接口）。
@@ -4021,6 +4021,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - `anthropic.messages`：`system` + `messages` + `tools`；`openai.chat`：`messages` + `tools`；
   - `openai.responses`、`openai.responses_ws`：`instructions` + `input`（数组或字符串）+ `tools`；
   - `gemini.generate`、`gemini.stream_generate`：`systemInstruction`（或 `system_instruction`）+ `contents` + `tools`；
+  - `openai.images`、`openai.images_edit`（0.13.0）：`prompt` + `images[].image_url`（edits 的 JSON 形式；`file_id` 引用读不到，不审；`mask` 是遮罩，不审）。两个协议读同样的字段，生成请求里多带的 `images` 也照审。表单上传的 edits 核心不收（§118.1）；
   - 其他协议不审内容（只有封禁钩子，72.3）。此前按"`messages` 存在就用 `messages`"选择，Responses / Gemini 请求附带一个假的 `messages` 数组就能绕过（P1-3）。重复键（`{"messages":[良性],"messages":[违规]}`）由核心在网关统一拒绝（400），插件不处理。
 - **审核范围 = 请求里客户端可控的全部内容**（0.10.0 起这是流程 `scope = all` 的内容，`input`、`tools` 只审其中一部分，见 72 开头"0.10.0 审核逻辑"）：
   - 所有角色的消息：user、assistant（含预填）、system、developer、tool / function；
@@ -4028,7 +4029,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - 工具调用的参数（Anthropic `tool_use.input`、chat `tool_calls[].function.arguments`、Responses `function_call.arguments`、Gemini `functionCall.args`）和工具结果（Anthropic `tool_result`、chat `role:tool`、Responses `function_call_output`、Gemini `functionResponse`）；参数和结果是 JSON 时取其中的字符串值；
   - 文档：Anthropic `document`（`text`、`content`、base64 文本文件）、`search_result`，Responses `input_file` / chat `file` 的 data URL 文本文件（`text/*`、JSON、XML、YAML），Gemini 文本类 `inlineData`；
   - 工具定义（`tools`）：名称、描述、枚举值、属性名，一个工具一段；
-  - 图片：照旧（Anthropic `image`、`image_url`、`input_image`、Gemini 图片 `inlineData` / `fileData`，生图的 `image`），URL 图片一律不下载；
+  - 图片：照旧（Anthropic `image`、`image_url`、`input_image`、Gemini 图片 `inlineData` / `fileData`，生图 edits 的 `images[].image_url`），URL 图片一律不下载；
   - 不审：thinking / reasoning 块（上游只收回自己签名或加密过的）、PDF 和其他二进制文件。
 - **片段（segment）**：上面每一项是一个片段。文字规范化后（空白压缩成一个空格；去掉 NUL、其他控制字符和零宽字符；非法 UTF-8 换成 U+FFFD，所以一定能写进 PostgreSQL 的 text 列，P1-5），非 user 的片段加角色前缀 `[assistant] `、`[system] `、`[tool] `、`[tools] `、`[document] `、`[developer] `，让审核器看得出这是哪一部分。同一请求里规范化后相同的片段只审一次（例如每轮都带的同一段提醒）。**不剥掉 `<system-reminder>`**。
 - **片段判定缓存**（0.8.0；0.6–0.7 是只存"干净通过"的放行缓存，键为 `config_version`、flow_id、flow_version、片段哈希）：缓存按片段记两种结论（72.5 第 8 步）。
@@ -8959,7 +8960,7 @@ ALTER TABLE usage_logs
 - 插件目录、`plugins/released.json` 里它那一条、`go.work` 的模块、`plugins/.gitignore` 的产物行；`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS_INSTALL_ONLY` 去掉它（变成 `mailer dynweight newapi sub2api typesafe`），`deploy/ci/check.sh` 的内置包检查只剩 anthropic、openai、guard、relay。
 - 插件键 `volcengine` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.304）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`。平台 `volcengine` 原来在 `reservedPlatforms` 里只许它声明；键已经装不上，这一条不再有意义，删除。`TestReservedCoverRepo` 加上反向检查：`reservedPlatforms`、`reservedChannels` 的每个持有者都必须是仓库里的插件。
 - SDK：`providers/volcengine`（方舟的鉴权、路径、视频任务的请求与解析）删除；`providers/openai` 里只有它用的 `StreamUsage` 预设并入 `IncludeStreamUsage`。
-- moderation 0.12.2：钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，`needs` 与 `gateway.hook` 的 `scope.fields` 去掉 `prompt|@this`、`content|@this`、`image|@this`（§72）。
+- moderation 0.12.2：钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，`needs` 与 `gateway.hook` 的 `scope.fields` 去掉 `prompt|@this`、`content|@this`、`image|@this`（§72）。同批的 moderation 0.13.0 改审 OpenAI 生图，加回 `prompt|@this` 并加 `images|@this`（§72.3、72.4）。
 - mock 上游：视频任务（`video.go`）与方舟素材库（`ark.go`）删除；新增 codex 重置次数的 GET 端点 `/backend-api/wham/rate-limit-reset-credits`，给 AC43 用。
 - e2e：AC24（异步视频任务）整个删除；AC32 去掉“任务进行中核心崩溃”子测试；AC40 只剩 `azure_deployment`；AC30 的平台插件矩阵去掉它，变成十一个插件；AC43 改用 codex 账号（经 mock 代理查重置次数，§124）。网关 `control` 的真实核心测试去掉视频任务那一段。
 - 控制台：mock 里的方舟账号、插件界面与拓扑示例；`brands.ts` 的平台 → 厂商表（只有 `volcengine` → `doubao` 一条）删除，`platformBrand` 直接用平台 id；请求头覆盖提示里点它名字的句子。模型名 → 厂商里的豆包（`doubao`）保留：它是模型厂商，别的渠道也会转发豆包模型。

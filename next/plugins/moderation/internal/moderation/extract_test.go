@@ -76,6 +76,7 @@ func TestExtractFollowsProtocol(t *testing.T) {
 		{"gemini.stream_generate", `{` + decoy + `,"contents":[{"role":"user","parts":[{"text":"MOD-HIT-stream"}]}]}`, "MOD-HIT-stream", "benign decoy"},
 		{"anthropic.messages", `{"input":"decoy input","contents":[{"parts":[{"text":"decoy contents"}]}],"messages":[{"role":"user","content":"MOD-HIT-real"}]}`, "MOD-HIT-real", "decoy"},
 		{"openai.chat", `{"input":"decoy input","messages":[{"role":"user","content":"MOD-HIT-chat"}]}`, "MOD-HIT-chat", "decoy"},
+		{"openai.images", `{` + decoy + `,"prompt":"MOD-HIT-image"}`, "MOD-HIT-image", "benign decoy"},
 	} {
 		t.Run(tc.protocol, func(t *testing.T) {
 			got := allText(extractReq(t, tc.protocol, tc.body))
@@ -139,6 +140,8 @@ func TestExtractCoversClientControlledContent(t *testing.T) {
 			`{"contents":[{"role":"model","parts":[{"text":"MOD-HIT-model"}]},{"parts":[{"text":"ok"}]}]}`, "[assistant] MOD-HIT-model"},
 		{"tool definitions", "openai.chat",
 			`{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{"name":"f","description":"MOD-HIT-tooldef","parameters":{"type":"object"}}}]}`, "[tools] f MOD-HIT-tooldef"},
+		{"image prompt", "openai.images", `{"model":"gpt-image-2","prompt":"MOD-HIT-image"}`, "MOD-HIT-image"},
+		{"image edit prompt", "openai.images_edit", `{"model":"gpt-image-2","prompt":"MOD-HIT-edit","images":[{"file_id":"file-1"}]}`, "MOD-HIT-edit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := allText(extractReq(t, tc.protocol, tc.body)); !strings.Contains(got, tc.want) {

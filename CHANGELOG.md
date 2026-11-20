@@ -8,6 +8,12 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 审核 OpenAI 生图的提示词（moderation 0.13.0；无迁移，随 0.1.304 发布）
+
+- 审核钩子（调度前的 `moderation` 与按账号的 `moderation_attempt`）加上 `openai.images`、`openai.images_edit`：审 `prompt`，JSON 形式的 edits 另审 `images[].image_url` 的图片（`file_id` 引用和 `mask` 不审）。此前删除 volcengine 时一并删掉了生图提示词的审核，而本批新开放的 OpenAI 生图（OpenAI API Key 账号、codex 账号经转换）只经过封禁钩子，拦截级用户发到 `/v1/images/generations`、`/v1/images/edits` 的违规提示词不审、也不留记录。new-api 对生图请求同样检查提示词。规则见 CONTRACTS §72.3、72.4。
+- 钩子 `needs` 与 `gateway.hook` 的 `scope.fields` 加 `prompt|@this`、`images|@this`。moderation 是内置插件，随镜像升级时由系统同意，不需要管理员重新批准。
+- 生图请求的审核记录 `input_format` 为 `openai.images` / `openai.images_edit`；审核按流程的范围照常执行，提示词和图片都算用户内容，三种范围都审。
+
 ### 一个事务里多次升授权版本时，节点不再先等自己还没提交的版本（核心；无迁移，随 0.1.304 发布）
 
 插件升级的激活（`ApplyDefaults` 的 `SyncPlugin` 加 `SetPluginActive`）、带角色授予的同意（`CanGrantToRoles` 加 `SyncPlugin`）、复核授予多个键等，在同一个事务里升两次以上版本。第二次升版本时节点把第一次（同一事务、尚未提交）的版本当成已提交，enforcer 读不到它，反复记 `casbinx: … the database is at authz version N, below M heard of`，本节点的权限判断等到提交才恢复；事务回滚时这个版本永远不会出现，本节点所有判断返回 503，直到另有授权写入提交到该版本或重启核心。现在只把别的事务提交的版本当成已知（CONTRACTS §99.4 原本的约定）。与数据库是否从备份恢复无关。
@@ -118,7 +124,7 @@
 - 插件键 `volcengine` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.12.x 包同样被拒）；平台 `volcengine` 不再保留给它。
 - **迁移 0119**（`0119_drop_volcengine_plugin.sql`）：装过它的库像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予、事件游标）、它的权限（`assets:read`、`assets:manage`）与授予、出网域名、任务、插件迁移记录和 schema `plg_volcengine`（素材库的本地索引；素材本身还在火山引擎），键记入 `plugin_key_retirements`；可以重跑。它的账号、使用记录、账本、审计日志保留。
 - 原来随这一批发布的迁移 0118（清掉方舟 API Key 账号设置里的前缀键）一并撤回，原 0119 改号为 0118。
-- moderation 0.12.2：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `prompt`、`content`、`image` 三个字段（`gateway.hook` 的字段范围随之变小）。
+- moderation 0.12.2：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `prompt`、`content`、`image` 三个字段（`gateway.hook` 的字段范围随之变小）。同批的 moderation 0.13.0 改审 OpenAI 生图，重新读 `prompt`（见上面“审核 OpenAI 生图的提示词”）。
 - SDK：`providers/volcengine` 删除；`providers/openai.StreamUsage` 并入 `IncludeStreamUsage`。e2e 的异步视频任务用例 AC24 删除，AC43 改用 codex 账号。
 
 **升级须知**：
