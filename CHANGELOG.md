@@ -14,28 +14,32 @@
 
 同时修正：调用方事务里的授权写入（插件目录、`ClearScopeGrants`）由 `committedLater` 轮询到版本可见后广播，以前带上本节点登记的范围；事务回滚、而别的节点又提交了同一个版本号时，会以错误的范围广播（例如把一次用户写入说成策略写入），各节点据此保留了本该重读的用户，真正的广播又因版本不新被丢掉。现在轮询广播一律不带范围，各节点整体重载。
 
-### 插件数据库隔离：插件的表放进核心的模式、带前缀，每个插件一个数据库身份（核心；没有核心迁移，已有数据在启动时搬迁；随 0.1.304 发布，单向；取代下面 0.1.304 一节的“插件数据库只用核心的数据库用户”）
+### 插件数据库隔离：插件的表放进核心的模式、带前缀，每个插件一个数据库身份（核心；没有核心迁移，已有数据在启动时搬迁；随 0.1.304 发布，单向）
 
-所有者定稿“同一个模式，加前缀，一个身份”。规则见 CONTRACTS §130。
+所有者定稿“同一个模式，加前缀，一个身份”。规则见 CONTRACTS §130。2026-11-18 定下的“插件只用核心的数据库用户”（CONTRACTS §115）在发布前被它取代，没有上线，本节只写最终的做法。
 
 - **布局**：插件的表、索引、序列在核心的模式（线上 `public`）里，名字一律以 `plg_<key>__` 开头；不再有每插件一个的 schema `plg_<key>`。
 - **身份**：每个用数据库的插件一个登录角色 `plg<库OID>_<key>`，密码由主密钥派生、不落库（只发 SCRAM 校验值），插件的表归它所有；核心的表和别的插件的表它没有权限，漏写前缀改到核心的表由数据库拒绝。
 - **迁移**以这个身份另开连接执行（临时给模式的 CREATE，跑完或失败立即收回），每个脚本一个事务；只能建带前缀的表、索引、序列、视图和类型，建了别的（不带前缀的对象，任何函数、运算符、collation、触发器等）就回滚该脚本，提前 `COMMIT` 逃出事务的也在迁移结束时删掉；记录写在插件自己的表 `plg_<key>__schema_migrations`，核心只以插件的身份读写它，核心的 `plugin_migrations` 只记数据迁移。
 - **插件以外的表**：清单 `database.access` 逐表申请列和权限，要宿主权限 `db.core_read`（极高风险，只有超管能批）；上传时检查表和列存在；授予照申请做列级或表级 GRANT；升级多要任何东西都要重新同意。审查新增 `database_access` 和 `database_migrations`（每个脚本的 SQL 与 `new`/`changed`/`applied`），新接口 `GET /api/v1/plugins/:key/database`。
-- **连接**：插件一律拿到虚拟地址 `db.sub2api:5432`，核心的 pgproxy 以插件的身份登录；出口策略里“有数据库的插件可以拨真实数据库地址”的例外删除。
+- **连接**：插件一律拿到虚拟地址 `db.sub2api:5432`，核心的 pgproxy 以插件的身份登录（`pg_stat_activity` 里 `application_name` 是 `sub2api plugin <key>`），插件拿不到数据库的地址和密码；出口策略里“有数据库的插件可以拨真实数据库地址”的例外删除。
 - **卸载**：“清除数据”删插件的表和身份；不清除时只留数据：表（连同索引、序列）和类型留给核心，插件的视图、物化视图、外部表和表上的触发器、规则、策略删掉，插件授出的权限（包括给 PUBLIC 的）收回，免得它们以核心的权限替别的插件读写核心的表；重装时交还新身份，已跑的脚本不重跑（删掉的视图要由之后版本的迁移重建）。插件在运行时把自己的表授权给别人，每次 Ensure 收回。停用的键“还有数据”改为看有没有带前缀的表。
+- **授予 `db.schema`**：非官方插件一律要求超管专属的 `plugin:grant:db_schema_unconfined`（0.1.303 只在关闭角色隔离时要求），官方插件不变。
+- **迁移 0110**（`0110_drop_plugin_migration_funcs.sql`，单向）删除 0.1.303 的插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
 - **官方插件**：dynweight 0.6.0、guard 0.3.0、moderation 0.13.0、payment 0.2.0，表名、索引名和迁移脚本加前缀，模型常量 `model.Prefix`；`pgdb.TryXactLock` 的键改按插件身份（`current_user`）区分。
-- **打包工具**：`sub2api-plugin db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。
-- **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑），旧角色照旧收回；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
+- **打包工具**：`sub2api-plugin db diff|check` 以连接的用户执行迁移，不再建临时角色；`db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。
+- **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑）；0.1.303 为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`，角色还有会话（旧插件进程未退出）时该插件整个留到下次 Ensure 或启动，记一次警告 `legacy plugin database role still has sessions`；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
 
 **升级须知**
 
-- **核心的数据库用户又需要 `CREATEROLE`**（以及 PostgreSQL 16 及以上）。没有时用数据库的插件（dynweight、guard、moderation、payment）迁移失败、不启动，报 `plugin_db_isolation_unavailable`，不降级。升级前确认：`SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`。
+- **核心的数据库用户需要 `CREATEROLE`**（或是超级用户；以及 PostgreSQL 16 及以上）。0.1.303 设了 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false` 时不需要，现在没有这个开关。没有时用数据库的插件（dynweight、guard、moderation、payment）迁移失败、不启动，报 `plugin_db_isolation_unavailable`，不降级。升级前按 0.1.304 一节“升级前要做的”里的只读查询检查。
+- **插件身份要能以密码登录本库**：迁移和 pgproxy 都以 `plg<库OID>_<key>` 另开连接，核心不给它授 `CONNECT`。`pg_hba.conf` 只放行核心的用户的，要加上允许 `plg<库OID>_*` 角色以密码（`scram-sha-256`）连本库的规则；PUBLIC 在本库上的 `CONNECT`（PostgreSQL 默认有）不能收回，收回过的要还给 PUBLIC 或逐个授给插件身份。否则 Ensure 成功，但迁移和插件的数据库连接登录被拒，带数据库的插件起不来。
 - 新核心第一次启动会搬迁上面四个插件的表（线上 35 张表），日志里每个插件一行 `moved the plugin's tables into the core's schema`；出现 `convert the legacy database layout of a plugin` 错误时该插件起不来，按错误处理后重启。
 - PostgreSQL 14 及更早建的库，核心启动时收回 PUBLIC 在核心模式上的 CREATE，收不回启动失败（线上已确认没有开放）。
-- **核心启动时收回 PUBLIC 在库上的 `TEMPORARY`**（`REVOKE TEMPORARY ON DATABASE <库> FROM PUBLIC`，库级改动，PostgreSQL 默认开放）：插件身份不能再建临时表和 `pg_temp` 里的函数（否则插件表上的触发器可以借核心的权限执行它）。核心的数据库用户须是库的属主（属主自己仍可建临时表），不是时启动失败并给出要执行的语句，由属主执行后重启。用同一个库、靠 PUBLIC 建临时表的其他数据库用户（报表、运维账号）升级后要单独 `GRANT TEMPORARY ON DATABASE <库> TO <用户>`。
+- **核心启动时收回 PUBLIC 在库上的 `TEMPORARY`**（`REVOKE TEMPORARY ON DATABASE <库> FROM PUBLIC`，库级改动，PostgreSQL 默认开放）：插件身份不能再建临时表和 `pg_temp` 里的函数（否则插件表上的触发器可以借核心的权限执行它）。所以 PUBLIC 还有 `TEMPORARY` 时，核心的数据库用户须是库的属主或超级用户（属主自己仍可建临时表），否则**核心整个启动失败**（不只是插件），日志给出要执行的语句；升级前用 0.1.304 一节“升级前要做的”里的查询确认，不满足的先由库的属主执行 `REVOKE TEMPORARY ON DATABASE <库> FROM PUBLIC`，或把库的属主改成核心的用户。用同一个库、靠 PUBLIC 建临时表的其他数据库用户（报表、运维账号）升级后要单独 `GRANT TEMPORARY ON DATABASE <库> TO <用户>`。
 - 插件的每条数据库连接是它自己身份的一个会话，计入 `max_connections`，规划同前（节点数 ×（核心池 + 每个用数据库的插件 4 个））。
 - **单向**：搬迁后旧核心找不到 `plg_<key>` schema，回退要连同数据库回到升级前的备份（与 0.1.304 一节相同）。
+- **设过 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false` 的部署先别删它**：网关外壳与核心分开换，先换上这一版外壳时它启动的仍是 0.1.303 核心，旧核心没有这个值就重新打开角色隔离，数据库用户没有 `CREATEROLE` 时持有 `db.schema` 的插件起不来。所以外壳继续把它传给核心（`supervisor.legacyCoreEnv`），全部集群换上 0.1.304 之后的下一个外壳版本删除；新核心设了也不读。
 
 ### 插件界面只用代码写：删掉声明式表单与页面，界面契约 4.0（核心、SDK、控制台、全部带界面的第一方插件；无迁移，随 0.1.304 发布；设计见 [DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md](next/docs/DESIGN-2026-11-19-PLUGIN-UI-CODE-ONLY.md)）
 
@@ -68,7 +72,7 @@
 - API Key 类账号（anthropic、gemini、typesafe、openai、relay、newapi、sub2api、azure-openai）：表单改为插件的 `ui/native`（`createApiKeyForm`），字段名、默认值、文案与原表单相同，编辑时不改密钥仍保留已存的值，Base URL 仍按受限设置只给官方地址；清单改为 `form.mode: "native"`，加 `ui.native`。relay、newapi、sub2api、azure-openai 的表单把站点地址放在 API Key 前面；openai 的组织 ID、项目 ID 放在“高级（可选）”一节下，默认收起，有值或有错误时自动展开。`ValidateCredentials` 拒绝表单不会发的键（`unknown`；openai 只另外允许 `organization`、`project`，`azure_deployment` 只另外允许 `api_version`），基础地址路径里的空格由转成 `%20` 改为拒绝。插件补上原来只写在 schema 里的校验：openai 的组织 ID、项目 ID 不超过 128 个可见 ASCII 字符（错误码随 `fieldcheck`：不是字符串报 `type`、超长报 `maxLength`、字符不对报 `pattern`；为 `null` 时由忽略改为报 `type`）；azure-openai 的资源地址只能是资源根地址（可带 `/openai`、`/openai/v1` 或 Foundry 项目路径；表单与插件一样按规范化后的地址判断：去首尾空白、协议名不分大小写、去掉末尾斜杠），`azure_deployment` 的 `api_version` 必填、须是 `2024-10-21` 或 `2025-04-01-preview` 这样的日期，新建时表单仍预填 `2024-10-21`，编辑已有账号不再补默认值。密钥与地址的规则见下一节。
 - bedrock：三种账号类型的表单改为原生组件 `BedrockAccountForm`，字段、默认值（区域 `us-east-1`、前缀 `global`）和文案不变；编辑已有账号时不再自动补区域和前缀（保存时插件照旧补上）；原 schema 的约束都由 `ValidateCredentials` 检查，拒绝表单没有的键（三种类型各按原 schema 的键）；不认识的账号类型不再当作 `bedrock_apikey` 显示；区域填中国区（`cn-*`）或隔离分区（`us-iso-*`、`eu-isoe-*` 等）时表单当场报错（插件保存时同样拒绝）。
 - vertex：表单改为原生组件 `VertexKeyFileForm`（服务账号、用户凭证）和 `VertexApiKeyForm`（直接用 `createApiKeyForm`），字段、默认值（密钥文件类型的区域 `global`）和文案不变；核心续期写回的 `access_token`、`expires_at`、`token_for` 不显示、保存时原样带回；编辑已有账号时不再自动补区域；密钥文件 32768 个字符的上限从 schema 搬进插件；表单当场报出插件会拒的两种缺项：API Key 账号只填了项目 ID 和区域中的一个，密钥文件里没有项目（服务账号的 `project_id`、用户凭证的 `quota_project_id`）而项目 ID 留空。拒绝表单没有声明的键（`unknown`）：密钥文件类型允许密钥文件、`project_id`、`location` 和 `access_token`、`expires_at`、`token_for`，`vertex_apikey` 允许 `api_key`、`project_id`、`location`。
-- moderation 0.12.2：设置页不再用表单 JSON，改用 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。删掉只为 UI 3.13 及更早的控制台留的页内标签页回退（`hostUICompat ^4.0` 下不会走到）和用不到的文案；删除回滚 0.10.0 的脚本 `tools/settings_cleanup.py`：核心 0.1.304 起设置接口不返回 `schema`，它在新核心上不能用（旧核心上需要时的取法见 CONTRACTS §72 的 0.11.0“回滚到 0.10.0”）。
+- moderation 0.13.0：设置页不再用表单 JSON，改用 `useForm`、`SForm`、`SSecretInput` 写成代码，分区、顺序、文案和保存方式不变；清单 `ui.settings` 声明 `secrets`（`api_key`、`notify_webhook_secret`，`notify_webhook_url` 为敏感地址）；插件实现 `ValidateSettings`，按原 schema 的每条约束校验并拒绝未知键。删掉只为 UI 3.13 及更早的控制台留的页内标签页回退（`hostUICompat ^4.0` 下不会走到）和用不到的文案；删除回滚 0.10.0 的脚本 `tools/settings_cleanup.py`：核心 0.1.304 起设置接口不返回 `schema`，它在新核心上不能用（旧核心上需要时的取法见 CONTRACTS §72 的 0.11.0“回滚到 0.10.0”）。
 - 插件设置（mailer、codex、guard）改为原生组件，保存前由插件 Go 校验（`ValidateSettings`，与 `Configure` 共用一套规则，拒绝未知键）：mailer 新建界面工程，`timeout_seconds` 超出 5–25 秒改为报错（原来加载时夹到范围内，控制台本就按 schema 拒绝），可以清除已存的 SMTP 密码，填了 SMTP 服务器而发件地址为空或不像地址时设置页当场在发件地址一行报错（插件的检查仍是最终的）；codex 的设置（`user_agent`、`originator`）由 `CodexSettings` 显示，校验（只拒绝控制字符）搬到插件，账号表单里账号自己的这两项也按同一规则当场在对应一行报错；guard 的设置由 `GuardSettings` 显示（webhook 用 `SUrlPresetInput`），webhook 地址格式、冷却时间 0–300 秒和未知键由插件拒绝（冷却时间越界的错误码由 `range` 改为 `minimum`/`maximum`）。四个插件的 `ui.settings.secrets` 都显式写出：mailer 为 `[{path: "password"}]`，moderation 见上，codex、guard 为 `[]`。
 
 #### 升级须知
@@ -96,9 +100,9 @@
 - 写了 `versions` 的插件要求核心 0.1.304 起（旧核心忽略这个字段，只是带版本的官方地址被拒）。
 - 第三方插件用到 `StripSuffixes`、`KeyValidator`、`apikey.OpenAI`、`NormalizeBaseURL` 的第二个参数或 `apikeytest.MinKey` 的，按上面改名或删掉后重新编译。
 
-### 审核题集：保存时拒绝运行时会丢弃的题集（moderation 0.12.2；无迁移，随 0.1.304 发布）
+### 审核题集：保存时拒绝运行时会丢弃的题集（moderation 0.13.0；无迁移，随 0.1.304 发布）
 
-- moderation 0.12.2：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；名称与问题两条与运行时共用 `engine.go` 的函数，三条的等价由测试保证。设置页把错误逐格显示在出错那一题的对应格子里（类别、名称、问题、回答、阈值，开头说明也一样；题数不对、题里有编辑器没有的字段仍显示在题集那一行），服务端拒绝的指针也落到对应格子，改动题集后消失。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）；这时别的设置页的提示会点名是哪项已存设置不符合现在的规则、要先到它所在的设置页改对，不再只弹一条 `invalid argument`。只有 `moderation:manage`、没有核心插件管理权限的人存着 Webhook 签名密钥时，核心要求修改设置时重新填写它（`reenter`），而它只在“高级”页：在别的设置页保存时，提示如实说明本页因此无法保存，不再说成那项设置不符合规则（到“高级”页重填也不能让别的页保存，这是原有的限制）。
+- moderation 0.13.0：Jev 默认题集（`jev_default_set`）保存时也按运行时的 `JevQuestions.Validate` 拒绝三种表，此前它们能存进去，运行时却被整套丢弃、静默改用内置题集：类别重复（`items/<i>/category` `duplicate`）、自定义类别（不是 OpenAI 的类别）没填名称（`items/<i>/label` `required`）、问题只有空白（`items/<i>/question` `required`）；名称与问题两条与运行时共用 `engine.go` 的函数，三条的等价由测试保证。设置页把错误逐格显示在出错那一题的对应格子里（类别、名称、问题、回答、阈值，开头说明也一样；题数不对、题里有编辑器没有的字段仍显示在题集那一行），服务端拒绝的指针也落到对应格子，改动题集后消失。`Configure` 照旧宽松（已存的这类题集仍改用内置题集，只记一条不含值的警告）。**后果**：库里已存着这类题集时，之后在任何设置页保存都会被拒，直到把题集改对（与已存越界数值的处理一致）；这时别的设置页的提示会点名是哪项已存设置不符合现在的规则、要先到它所在的设置页改对，不再只弹一条 `invalid argument`。只有 `moderation:manage`、没有核心插件管理权限的人存着 Webhook 签名密钥时，核心要求修改设置时重新填写它（`reenter`），而它只在“高级”页：在别的设置页保存时，提示如实说明本页因此无法保存，不再说成那项设置不符合规则（到“高级”页重填也不能让别的页保存，这是原有的限制）。
 
 ### 删除 growth 插件（核心；迁移 0117，随 0.1.304 发布）
 
@@ -110,7 +114,7 @@
 
 **升级须知**：装过 growth 的库升级时会被卸载（同 purge），schema `plg_growth` 连同邀请、返利、签到记录删除；要留这些数据，升级前先备份这个 schema。没装过的库什么都不变。
 
-### 删除 volcengine 插件（核心、moderation 0.12.2；迁移 0119，随 0.1.304 发布）
+### 删除 volcengine 插件（核心、moderation 0.13.0；迁移 0119，随 0.1.304 发布）
 
 所有者决定整个删除，不留兼容。规则见 CONTRACTS §128。**线上装着它，有账号**（OVH 已启用）。
 
@@ -118,7 +122,7 @@
 - 插件键 `volcengine` 列入已删除插件键：任何来源、任何签名的包都不能再安装，返回 403 `plugin_key_reserved`（已签名的 0.12.x 包同样被拒）；平台 `volcengine` 不再保留给它。
 - **迁移 0119**（`0119_drop_volcengine_plugin.sql`）：装过它的库像带 purge 的卸载那样删除插件行（连同版本、发布状态、宿主权限授予、事件游标）、它的权限（`assets:read`、`assets:manage`）与授予、出网域名、任务、插件迁移记录和 schema `plg_volcengine`（素材库的本地索引；素材本身还在火山引擎），键记入 `plugin_key_retirements`；可以重跑。它的账号、使用记录、账本、审计日志保留。
 - 原来随这一批发布的迁移 0118（清掉方舟 API Key 账号设置里的前缀键）一并撤回，原 0119 改号为 0118。
-- moderation 0.12.2：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `prompt`、`content`、`image` 三个字段（`gateway.hook` 的字段范围随之变小）。
+- moderation 0.13.0：审核钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，不再读 `prompt`、`content`、`image` 三个字段（`gateway.hook` 的字段范围随之变小）。
 - SDK：`providers/volcengine` 删除；`providers/openai.StreamUsage` 并入 `IncludeStreamUsage`。e2e 的异步视频任务用例 AC24 删除，AC43 改用 codex 账号。
 
 **升级须知**：
@@ -133,19 +137,19 @@
 
 - anthropic 0.4.0 不再有模型目录：插件接口 `GET /api/v1/p/anthropic/models`、用户权限 `model_catalog:read`、表 `plg_anthropic.model_catalog` 删除；清单去掉 `database`、`routes`、`userPermissions`、能力 `http.routes.v1` 和宿主权限 `db.schema`、`routes.admin`，审查里少了它们。插件只剩 API Key 账号类型，不再用数据库。0.4.0 还没有发布，版本号不再另升。
 - **迁移 0120**（`0120_drop_anthropic_model_catalog.sql`）：删除权限 `plugin.anthropic:model_catalog:read` 与它的授予、schema `plg_anthropic` 和 anthropic 的插件迁移记录（以及带核心标记的旧角色 `plg_anthropic`）；插件本身、账号不动，可以重跑。
-- 测试夹具：anthropic 的升级夹具 `0.4.1-test` 只改版本号；带迁移的升级夹具改为 dynweight 的 `0.5.13-test`（`0004_config_rule_count.sql`，加字段并回填），市场里两个都有，真实核心升级测试（`deploy/ci/check.sh`）改由它演示内置插件随核心升级并跑迁移。e2e AC03 改为经 anthropic 账号分别请求两个节点；AC05 在流量下先后升级 anthropic 与 dynweight，查 dynweight 的迁移只跑一次、升级前保存的配置仍在并已回填；AC06 的权限与插件接口随停用变化移到 dynweight（`TestAC06_DisableGreysOutPermissionsAndRoutes`）。
+- 测试夹具：anthropic 的升级夹具 `0.4.1-test` 只改版本号；带迁移的升级夹具改为 dynweight 的 `0.6.1-test`（`0004_config_rule_count.sql`，给 `plg_dynweight__config` 加字段并回填），市场里两个都有，真实核心升级测试（`deploy/ci/check.sh`）改由它演示内置插件随核心升级并跑迁移。e2e AC03 改为经 anthropic 账号分别请求两个节点；AC05 在流量下先后升级 anthropic 与 dynweight，查 dynweight 的迁移只跑一次、升级前保存的配置仍在并已回填；AC06 的权限与插件接口随停用变化移到 dynweight（`TestAC06_DisableGreysOutPermissionsAndRoutes`）。
 
 **升级须知**：角色里的“查看模型目录”消失；目录是插件自带的种子数据，删除不影响调度、价格和账号的模型列表，要留的话升级前备份 schema `plg_anthropic`。
 
-### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0120；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
+### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库隔离（每插件一个身份）、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0120；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
-这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0119（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删除没有读者的 `plugin_monitor_receipts`，0119 删除 volcengine 插件），没有插件迁移。
+这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0120（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删除没有读者的 `plugin_monitor_receipts`，0119 删除 volcengine 插件，0120 删除 anthropic 的模型目录），没有新的插件迁移（已有脚本随插件数据库隔离加了前缀，搬迁后不重跑）。
 
 内容：
 
 - **平台插件转发 V2**：每个平台插件都是有进程的代码插件，每个网关请求只有 `Execute` 一条路径，插件拿完整请求体、构造最终请求，由核心发出；请求体上限改到网关设置；插件内存默认不限；请求路径上写死的超时与限制去掉（CONTRACTS §111、§112）。
 - **账号协议绑定**：账号可以限定开放的本平台协议、模型的协议；**跨平台协议转换改为默认关闭**，要在账号上为模型开启（CONTRACTS §110）。
-- **插件数据库隔离**：插件的表放进核心的模式、带前缀，每个插件一个数据库身份，核心代理插件的数据库连接并以插件的身份登录（CONTRACTS §130，见上面“插件数据库隔离”；取代 §115 的“只用核心的数据库用户”）。
+- **插件数据库隔离**：插件的表放进核心的模式、带前缀，每个插件一个数据库身份，核心代理插件的数据库连接并以插件的身份登录（CONTRACTS §130，见上面“插件数据库隔离”）。
 - **插件联网**：管理员可以指定插件能访问、不能访问的域名，管插件经核心发出的全部网络（插件自己的连接和平台插件发往上游的请求），默认行为不变（CONTRACTS §113）。
 - **插件包不再依赖主节点**（网关；CONTRACTS §114）。
 - **授权请求走账号表单选的代理**（代理票据，codex 0.2.0；CONTRACTS §117）。
@@ -181,9 +185,19 @@
 
 **升级前要做的**
 
+- **确认核心的数据库用户的权限**（插件数据库隔离，见上面“插件数据库隔离”）：以线上 `DATABASE_URL` 的用户连上线上的库，执行只读查询
+  ```sql
+  SELECT r.rolsuper OR r.rolcreaterole AS createrole,
+         r.rolsuper OR d.datdba = r.oid OR NOT has_database_privilege('public', d.oid, 'TEMPORARY') AS temp_ok,
+         has_database_privilege('public', d.oid, 'CONNECT') AS public_connect,
+         current_setting('server_version_num')::int >= 160000 AS pg16
+  FROM pg_database d JOIN pg_roles r ON r.rolname = current_user
+  WHERE d.datname = current_database();
+  ```
+  四项都要为真。`createrole` 为假：给这个用户 `CREATEROLE`，否则用数据库的四个插件起不来。`temp_ok` 为假（它既不是库的属主也不是超级用户，PUBLIC 又还有 `TEMPORARY`）：新核心收不回 PUBLIC 的 `TEMPORARY`，**整个启动失败**；先由库的属主执行 `REVOKE TEMPORARY ON DATABASE <库> FROM PUBLIC`（或 `ALTER DATABASE <库> OWNER TO <核心的用户>`），再查一次。`public_connect` 为假：插件身份连不上本库，把 `CONNECT` 还给 PUBLIC。`pg16` 为假：先升级 PostgreSQL。另外确认 `pg_hba.conf` 允许 `plg<库OID>_*` 角色以密码（`scram-sha-256`）连本库（查询看不出来）。
 - **导出存量的跨平台协议转换**：升级后跨平台转换默认关闭，迁移不回填，依赖它的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启；新字段升级后才存在，没法提前配置。升级前按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。原生请求、同一平台内的转换、声明了多个平台的账号类型（newapi、sub2api）不受影响。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）。迁移 0107 把全局层的值搬进网关设置，**分组层的值丢弃**；升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。
-- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 4 个官方插件用数据库：dynweight、guard、moderation、payment）由核心以插件自己的数据库身份代为打开，计入数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户**仍需要** `CREATEROLE`（见上面“插件数据库隔离”）。
+- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 4 个官方插件用数据库：dynweight、guard、moderation、payment）由核心以插件自己的数据库身份代为打开，计入数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。
 - **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样）。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
 - **检查旧策略下留下的未结算记录**（只读）：`SELECT count(*) FROM usage_logs WHERE billing_status IN ('pending','failed') AND expr_hash = '';` 结果不为 0，表示有“免费放行”下留下、还没结算完的记录。升级后它们不会被当作免费：结算报错，计入重试次数，用完重试次数后停在 `failed`，不会自动处理，需要管理员处理。
 - **进行中的 Codex 授权要重来**：codex 0.2.0 的开始路由要 `proxy_ticket`，升级前开始、没完成的设备码或 Sign in with Codex 授权在升级后重新开始。
@@ -205,11 +219,11 @@
 - **生图模型要先录价格**：没有价格的生图模型与其他模型一样回 403 `model_price_not_configured`（缺价一律报错，见上面）。Responses 里用生图工具的请求按客户请求的模型计价，生图工具的 token 计入它（CONTRACTS §118.10），应答回显的 `gpt-image-2-codex` 等生图模型不需要价格。要按图片 token 正确计费，给生图模型录表达式价格（变量 `img`、`img_o`，参考价见 CONTRACTS §118.6）；models.dev 同步来的生图价只有文字价，会少收，要改成表达式价格。
 - **协议绑定“指定”过的 OpenAI 账号要手动勾选生图协议**：`protocols` 为空（默认）的 OpenAI API Key 账号升级后自动服务两个生图端点；指定过协议的账号不会自动开放，要的话在“协议与模型”里勾上 `openai.images`、`openai.images_edit`（CONTRACTS §118.5）。
 - **界面、密钥与地址、审核题集、growth、volcengine 的升级须知**见上面各自一节：带界面的非内置插件要重装，已存的越界设置值让第一次保存失败，装过的 growth 被卸载并删除 `plg_growth`，volcengine 被卸载、账号留下待删、在跑的视频任务失败退款。
-- 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见下文“对运维”）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
+- 配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读；网关外壳仍把它传给 0.1.303 核心，见上面“插件数据库隔离”的升级须知）；环境变量 `max_request_body_mb`（全局层、分组层）删除。
 
 #### 插件版本
 
-全部 `hostCompat >=0.1.304 <0.2.0`（以各插件 `manifest.json` 为准；`next/plugins/released.json` 发布后按测试说明重写）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.2.0、azure_openai / vertex / bedrock 0.1.0（首发），newapi / sub2api / typesafe 0.1.0（首发，内置只安装），以及只因 SDK 重新构建的 dynweight 0.5.12、guard 0.2.11、mailer 0.1.5、moderation 0.12.2、payment 0.1.3。codex 发给上游和授权服务器的 `User-Agent` 是 `sup2api-codex/<版本>`，随之从 `sup2api-codex/0.1.11` 变成 `sup2api-codex/0.2.0`。
+全部 `hostCompat >=0.1.304 <0.2.0`（以各插件 `manifest.json` 为准；`next/plugins/released.json` 发布后按测试说明重写）：anthropic 0.4.0、openai 0.5.0、gemini 0.4.0、relay 0.4.0、codex 0.2.0、azure_openai / vertex / bedrock 0.1.0（首发），newapi / sub2api / typesafe 0.1.0（首发，内置只安装），dynweight 0.6.0、guard 0.3.0、moderation 0.13.0、payment 0.2.0（表名随插件数据库隔离加前缀，界面与设置的改动见上面各节），mailer 0.1.5（设置页改为原生界面）。codex 发给上游和授权服务器的 `User-Agent` 是 `sup2api-codex/<版本>`，随之从 `sup2api-codex/0.1.11` 变成 `sup2api-codex/0.2.0`。
 
 ### 插件按归属收到账号的全部信息，删除两个账号授权（核心、SDK、11 个平台插件、控制台；迁移 0116）
 
@@ -390,18 +404,6 @@
 - 删除节点间插件包上传（`PUT /internal/plugin-blobs/`、范围 `plugin-upload`、每节点 2 个并发上传的限制）。`plugin_store_max_bytes` 总量上限保留。
 - 升级要换网关二进制，滚动更新期间不要上传插件（见升级须知）。
 
-### 插件数据库只用核心的数据库用户，不再给插件建数据库角色（迁移 0110，**单向**）
-
-所有者决定：“它访问数据库都是通过核心的数据库配置来访问，而不需要任何新数据库用户”。设计见 `next/docs/DESIGN-2026-11-18-PLUGIN-DB-CORE-USER.md`，契约 CONTRACTS §115。
-
-- **对运维**：新版本第一次启动时，核心把旧版本为插件建的登录角色 `plg_<key>`（含已卸载插件留下的）逐个收回：`REASSIGN OWNED` 给核心的用户、`DROP OWNED`、`DROP ROLE`，日志 `converted legacy plugin database role`。多个节点同时启动只转换一次；某个角色还有会话（旧插件进程未退出）时留下并记一次警告 `legacy plugin database role still has sessions`，下次该插件取 DSN、迁移或下次启动时再转换；转换失败只记日志，不阻止启动。核心的数据库用户不再需要 `CREATEROLE`；配置 `SUB2API_PLUGIN_DB_ROLE_ISOLATION` 删除（新核心设了也不读），错误 `plugin_db_isolation_unavailable`、`plugin_db_role_conflict` 不再出现。**设过 `SUB2API_PLUGIN_DB_ROLE_ISOLATION=false` 的部署先别删它**：网关外壳与核心分开换，先换上这一版外壳时它启动的仍是 0.1.303 核心，旧核心没有这个值就重新打开角色隔离，数据库用户没有 `CREATEROLE` 时持有 `db.schema` 的插件起不来；所以外壳继续把它传给核心（`supervisor.legacyCoreEnv`），全部集群换上 0.1.304 之后的下一个外壳版本删除。
-- **备份与恢复不再依赖属主**：插件的 schema 和表都属于核心的用户。不带属主恢复（`--no-owner`）后直接可用；带属主恢复的库有旧角色，启动时照上面转换。
-- **连接数**：见升级须知。
-- **隔离（直说）**：持有 `db.schema` 的插件现在能读写核心的用户能访问的所有表，包括核心自己的表和其他插件的表；分隔只靠约定和安装时对 `db.schema` 的同意，PostgreSQL 不再强制。主密钥加密的列（账号凭据、代理密码、可还原的 API Key、TOTP、插件加密设置）读不出明文，API Key 与用户密码只存哈希，但余额、授权等都能被改写。因此非官方插件授予 `db.schema` 一律要求超管专属的 `plugin:grant:db_schema_unconfined`（以前只在关闭角色隔离时要求），官方插件不变。
-- **迁移 0110**（`0110_drop_plugin_migration_funcs.sql`）删除旧插件角色记录迁移用的两个 SECURITY DEFINER 函数 `plugin_migrations_applied`、`plugin_migration_record`；插件迁移由核心以自己的用户执行并直接记录。之后旧核心无法再给插件建角色，持有 `db.schema` 的插件在旧核心上起不来。
-- **核心代理插件的数据库连接，凭据不进插件**（所有者补充“数据库直接委托给核心来代理就行了”）：沙箱里的插件（严格网络，Linux 默认）从 `GetDSN` 拿到不带密码的虚拟地址 `db.sub2api:5432`，经出口隧道连到核心，核心用自己的数据库配置（含 TLS、SCRAM）代为登录、把 `search_path` 设为插件的 schema 后原样转发协议，取消请求也转给服务器。在 `pg_stat_activity` 里这些连接的 `application_name` 是 `sub2api plugin <key>`。严格网络关闭时（开发、非 Linux）插件仍拿到核心的 DSN 直连。插件代码和 SDK 不用改。所以隔离的准确说法是：插件拿不到数据库密码，但能执行核心的数据库用户能执行的任何 SQL。
-- `sub2api-plugin db diff|check` 不再建临时角色，像宿主一样以连接的用户执行迁移（见“插件作者须知”）。
-
 ### 授权请求走账号表单选的代理：代理票据（核心、SDK、UI 3.20、codex 0.2.0；无迁移）
 
 所有者要求“账号授权时的第一次换令牌不走代理：修复bug”，粘贴的代理串也要支持。规则见 CONTRACTS §117，设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](next/docs/DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)。
@@ -509,7 +511,7 @@
 - **proto 清理**（转发 V2 收尾，删除没有使用者的字段）：
   - `EstimateUsageRequest.fields_omitted`（3）、`ExtractUsageRequest.fields_omitted`（9）删除。核心自转发 V2 收尾起就不再填它，唯一读过它的火山插件也已不读。
   - `UpstreamOptions` 消息及 `UpstreamRequest.options`（8）、`ExecutionHTTPRequest.options`（6）删除。它只能收紧核心的响应头超时和整体超时，现在超时只由核心（账号与管理员的设置）决定。核心里对应的 `execfetch.Tighten` 一并删除。
-  - `GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：没有插件数据库角色以后它恒为 false。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）不再建临时角色，像宿主一样以连接的用户、只设 `search_path` 执行迁移；迁移在插件 schema 之外建立或改动的表、函数、类型、schema、扩展照旧列为差异（以前靠临时角色的属主判断，现在看本事务写过的系统目录行）。以前在工具里因为“临时角色没有权限”失败、而宿主能执行的迁移（例如 `CREATE EXTENSION`），现在工具里也能执行，在 schema 之外建的对象列为差异。
+  - `GetDSNResponse.role_isolated`（3）与 SDK 的 `DSNInfo.RoleIsolated` 删除：插件一律经虚拟地址、以自己的数据库身份连接（CONTRACTS §130），这个字段没有意义了。`sub2api-plugin db diff|check`（`pgdbtool.Drift`）不再建临时角色：以连接的用户在临时 schema 里执行迁移（`search_path` 指向它，代替宿主以插件身份执行时的核心模式），建在它之外或改动它之外的对象列为差异，每个脚本之后再列出宿主会拒绝的对象（不带前缀的对象，表、索引、序列、视图、类型以外的任何对象；见上面“插件数据库隔离”的“打包工具”）。
   - `truncated` 全部删除：`ExecutionHTTPResponse.truncated`（5）、`ParseQuotaResponseRequest.truncated`（6）、`ParseRefreshResponseRequest.truncated`（6）、从没有核心调用方的 `ParseBalanceResponseRequest.truncated`（6）、随 `usageMaxBytes` 删除的 `ExtractUsageRequest.truncated`（7）。回答不再截断，codex、vertex 已不读它们。`ExecuteHTTP` 的回答读不完整时照旧是 `transport_error`。
   - 代理票据新增 `HTTPRequest.execution_token`（10）、`ExecutionHTTPRequest.proxy_ticket`（7）。SDK：路由处理函数的 context 绑定执行令牌，`pluginsdk.Fetch` 在路由里可用并传 `ProxyTicket`；假宿主的 `Harness.DoAs` 发令牌（`FakeHost.BeginRoute`）。
 

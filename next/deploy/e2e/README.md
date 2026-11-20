@@ -108,7 +108,7 @@ export E2E_LONG=1
 
 节点采用 `restart: "no"`，保证 SIGKILL 后不会自动复活干扰接管断言；测试负责重启，测试异常退出后可重新 `up -d`。节点内存固定为 1 GiB，匹配 AC14 的 1500 MiB OOM 场景。插件内存默认不限（不设 `SUB2API_PLUGIN_MAX_MEMORY_MB`），需要上限的用例（AC14）自己经 `PUT /plugins/:key/resources` 设插件上限。节点停止宽限为 180 秒，允许 HTTP、后台工作和账务完成排空。
 
-插件的 strict network、seccomp、Landlock（核心默认开启，CONTRACTS §43.8；生效到哪一层看节点日志里的 `plugin sandbox:` 几行，Docker 默认的 seccomp 配置放行它的系统调用）和签名校验全部开启（插件数据库用核心的用户，没有角色隔离可开，CONTRACTS §115），开发模式及未签名包关闭。网络策略例外只有两项：`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 与 `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true`（插件自己的出口，如 guard 的 webhook、moderation 的审核模型调用），因为 mock 位于专用容器私网；这两项只适合隔离测试，不应复制到生产。
+插件的 strict network、seccomp、Landlock（核心默认开启，CONTRACTS §43.8；生效到哪一层看节点日志里的 `plugin sandbox:` 几行，Docker 默认的 seccomp 配置放行它的系统调用）和签名校验全部开启，开发模式及未签名包关闭。插件数据库隔离（每个插件一个数据库身份，CONTRACTS §130）始终开启：栈里的 `POSTGRES_USER` 是超级用户，也是库的属主。网络策略例外只有两项：`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM=true` 与 `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE=true`（插件自己的出口，如 guard 的 webhook、moderation 的审核模型调用），因为 mock 位于专用容器私网；这两项只适合隔离测试，不应复制到生产。
 
 其他与生产不同、只为这套环境存在的安排：
 

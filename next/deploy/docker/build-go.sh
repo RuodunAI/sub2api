@@ -59,8 +59,9 @@ manifest_version() {
 
 # build-demo.sh builds, packs and signs one package per
 # plugins/<name>/manifest.json (the list is discovered there, so a new plugin
-# needs no change in either script), plus the e2e fixtures (anthropic's
-# upgrade version, the guard test build), and writes the signed index.
+# needs no change in either script), plus the e2e fixtures (the anthropic and
+# dynweight upgrade versions, the guard test build), and writes the signed
+# index.
 # Everything packaged here is in the market; only BUILTIN_PLUGINS below is
 # built into the image. pack refuses a plugin whose native UI was not built
 # (build-ui.sh, the ui stage of next/Dockerfile).
