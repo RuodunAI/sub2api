@@ -2,14 +2,15 @@
 // GET /plugins/:key/database (CONTRACTS §130): the plugin's table prefix and
 // database identity, the tables outside its own it asks for, and the
 // migration scripts of the version it runs with when each ran. Loaded again
-// when that version changes.
-import { onMounted, ref, watch } from 'vue'
+// when that version changes; only the latest load is shown.
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
 import { SBadge, SButton, SCard, SDescItem, SDescriptions, SEmpty, SHint, SSpinner } from '@sub2api/ui'
 import type { PluginDatabase } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
 import { errorMessage } from '@/utils/errors'
+import { latestOnly } from '@/composables/useLatestRequest'
 import type { PluginDetail } from '../pluginUtil'
 import DatabaseAccessList from '../parts/DatabaseAccessList.vue'
 import MigrationScript from '../parts/MigrationScript.vue'
@@ -20,23 +21,26 @@ const { t } = useI18n()
 const data = ref<PluginDatabase | null>(null)
 const loading = ref(false)
 const loadError = ref('')
+const begin = latestOnly()
 
 async function load() {
+  const latest = begin()
   loading.value = true
   loadError.value = ''
   try {
-    data.value = await api.get<PluginDatabase>(`/plugins/${encodeURIComponent(props.detail.key)}/database`)
+    const r = await api.get<PluginDatabase>(`/plugins/${encodeURIComponent(props.detail.key)}/database`)
+    if (latest()) data.value = r
   } catch (e) {
+    if (!latest()) return
     data.value = null
     loadError.value = errorMessage(e)
   } finally {
-    loading.value = false
+    if (latest()) loading.value = false
   }
 }
 
-onMounted(load)
 // The version the plugin runs (the core's CurrentVersion): its scripts and access.
-watch([() => props.detail.active_version, () => props.detail.desired_version], load)
+watch([() => props.detail.active_version, () => props.detail.desired_version], load, { immediate: true })
 </script>
 
 <template>
