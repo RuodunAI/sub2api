@@ -15,9 +15,6 @@ import (
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
-// transportHeaders belong to the host's transport (§5.4).
-var transportHeaders = []string{"content-length", "transfer-encoding", "connection", "accept-encoding"}
-
 // duplicateKey returns the path of the first key that repeats within one
 // JSON object of body, "" when none does. body is valid JSON.
 func duplicateKey(body []byte) string {

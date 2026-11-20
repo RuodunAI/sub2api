@@ -89,11 +89,12 @@ func BalanceFailure(a *pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 var decimalNumber = regexp.MustCompile(`^(-?)(\d+)(?:\.(\d+))?$`)
 
 // Micros is the plain decimal number an upstream answered (e.g. "7.25",
-// "1250000", "-1"; gjson's String of a JSON number is one) in millionths,
-// BalanceResult.amount_micros: the same number in another form, not a
-// conversion (CONTRACTS §52). It is exact to the sixth decimal, a further
-// one rounded half away from zero; false for anything else or a number
-// whose millionths do not fit an int64 (beyond about 9.2 trillion).
+// "1250000", "-1") in millionths, BalanceResult.amount_micros: the same
+// number in another form, not a conversion (CONTRACTS §52). It is exact to
+// the sixth decimal, a further one rounded half away from zero. It is false
+// for anything else, exponents included ("1e3": gjson's String of a JSON
+// number is its text as written), and for a number whose millionths do not
+// fit an int64 (beyond about 9.2 trillion).
 func Micros(number string) (int64, bool) {
 	m := decimalNumber.FindStringSubmatch(number)
 	if m == nil {

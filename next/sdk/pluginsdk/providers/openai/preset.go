@@ -36,7 +36,6 @@ func APIKey(id string) standard.Type {
 			Texts: apikey.Texts{
 				UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 				KeyNotString:           "API key must be a string / api_key 必须是字符串",
-				KeyNotStringCode:       "pattern",
 			},
 		},
 		Auth:    standard.Auth{Header: "authorization", Prefix: "Bearer "},

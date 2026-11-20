@@ -280,7 +280,6 @@ func TestTextsKeepShippedWording(t *testing.T) {
 	s := Spec{AccountType: "relay_key", RequireBaseURL: true, Texts: Texts{
 		UnsupportedAccountType: "unsupported account type {type} / 不支持的账号类型",
 		KeyNotString:           "API key must be a string / api_key 必须是字符串",
-		KeyNotStringCode:       "pattern",
 		BaseURLRequired:        "Base URL of the relay is required / 请填写中转站的 Base URL",
 	}}
 	r := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey"})
@@ -315,7 +314,6 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 	s := Spec{AccountType: "apikey", DefaultBaseURL: "https://api.example.com", Texts: Texts{
 		UnsupportedAccountType: "unsupported account type {type} (100% sure) / 不支持的账号类型",
 		KeyNotString:           "key must be text, 100% / key 必须是字符串",
-		KeyNotStringCode:       "type",
 		BaseURLFormat:          "base_url {reason}: must be 100% absolute / base_url 格式错误",
 	}}
 	r := s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "other"})
@@ -326,13 +324,6 @@ func TestTextsAreNotFormatStrings(t *testing.T) {
 	if got := r.GetErrors()[0].GetMessage(); got != "key must be text, 100% / key 必须是字符串" {
 		t.Fatalf("key message = %q", got)
 	}
-	r = s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":42}`})
-	if e := r.GetErrors()[0]; e.GetCode() != "type" || e.GetMessage() != "key must be text, 100% / key 必须是字符串" {
-		t.Fatalf("non-string key = %v", e)
-	}
-	// The code is configured separately from the message: leaving it empty
-	// keeps the historical "pattern".
-	s.Texts.KeyNotStringCode = ""
 	r = s.Validate(&pluginv1.ValidateCredentialsRequest{AccountType: "apikey", CredentialsJson: `{"api_key":42}`})
 	if e := r.GetErrors()[0]; e.GetCode() != "pattern" || e.GetMessage() != "key must be text, 100% / key 必须是字符串" {
 		t.Fatalf("non-string key = %v", e)
