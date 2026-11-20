@@ -23,8 +23,12 @@ func validate(t *testing.T, typ string, creds, settings map[string]any) (*plugin
 	if err != nil {
 		t.Fatalf("ValidateCredentials: %v", err)
 	}
-	if resp.GetNormalizedCredentialsJson() != "" {
-		t.Fatalf("credentials are never rewritten, got %d bytes", len(resp.GetNormalizedCredentialsJson()))
+	// Credentials are only rewritten to trim an API key.
+	if c := resp.GetNormalizedCredentialsJson(); c != "" {
+		key, _ := creds[fieldAPIKey].(string)
+		if want := mustJSON(with(creds, map[string]any{fieldAPIKey: strings.TrimSpace(key)})); key == strings.TrimSpace(key) || c != want {
+			t.Fatalf("credentials rewritten to %s", c)
+		}
 	}
 	return resp, normalized(t, resp.GetNormalizedSettingsJson(), settings)
 }
@@ -62,8 +66,8 @@ func TestValidateCredentialsAccepts(t *testing.T) {
 			}
 		})
 	}
-	// Any non-blank API key is accepted (DESIGN-2026-11-20 §5.1), and the
-	// request carries it trimmed.
+	// Any non-blank API key is accepted (DESIGN-2026-11-20 §5.1), saved
+	// trimmed (CONTRACTS §127.1), and the request carries it trimmed.
 	for name, key := range map[string]string{
 		"1 character":        "k",
 		"4096 characters":    strings.Repeat("k", 4096),
@@ -72,8 +76,12 @@ func TestValidateCredentialsAccepts(t *testing.T) {
 		"surrounding spaces": "  " + testAPIKey + "\n",
 	} {
 		creds := map[string]any{fieldAPIKey: key}
-		if resp, _ := validate(t, TypeAPIKey, creds, nil); len(resp.GetErrors()) != 0 {
+		resp, _ := validate(t, TypeAPIKey, creds, nil)
+		if len(resp.GetErrors()) != 0 {
 			t.Fatalf("api key %s: errors = %v", name, fieldErrors(resp))
+		}
+		if trimmed := key != strings.TrimSpace(key); trimmed != (resp.GetNormalizedCredentialsJson() != "") {
+			t.Fatalf("api key %s: saved credentials %q", name, resp.GetNormalizedCredentialsJson())
 		}
 		up := build(t, executeRequest(stored(TypeAPIKey, creds, nil), testHaiku, false, claudeBody(testHaiku, false)))
 		if got := up.GetHeaders()["authorization"]; got != "Bearer "+strings.TrimSpace(key) {
