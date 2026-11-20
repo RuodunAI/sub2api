@@ -495,6 +495,29 @@ func TestNoWaitEmptyHostReadingIsUnreported(t *testing.T) {
 	}
 }
 
+// An endpoint whose usage the core reads, served by the upstream, whose
+// reading holds no usage (these rules declare no json map): the same free
+// unreported record as a plugin's empty host reading, logged at WARN, not a
+// silent free request.
+func TestEmptyCoreReadingIsUnreported(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		logs := captureWarnings(t)
+		e, _ := usageEnvEP(t, pluginUsageRules(), func(ep *manifest.Endpoint) { ep.UsageSource = "" })
+		res := e.do("/pu/v1/chat", body(testModel, stream), nil)
+		if res.status != 200 || len(res.body) == 0 {
+			t.Fatalf("stream %v: the answer did not reach the client: %d %s", stream, res.status, res.body)
+		}
+		rec := e.record()
+		if rec.Success || rec.Billable || rec.ErrorType != core.UsageErrorUnreported || rec.UsageExtract != core.UsageExtractUnreported ||
+			rec.StatusCode != 200 {
+			t.Fatalf("stream %v: free record %+v", stream, rec)
+		}
+		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "holds no usage") {
+			t.Fatalf("stream %v: logs %s", stream, logs)
+		}
+	}
+}
+
 // Only a relay that waits keeps a copy of the answer for the plugin's
 // observation: one that does not wait is read by no plugin, so forward
 // captures nothing for it even on an endpoint whose usage the plugin reads.

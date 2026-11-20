@@ -1919,7 +1919,7 @@ message RankedAccount {
 
 #### 读不出用量 = 采用核心的读数，并且标出来
 
-插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
+插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。用量由核心读的端点（不是 `plugin`）同样如此：上游成功应答、端点按用量计费而核心的读数完全为空（没有可计价的东西）时，记录改成同一条零费用的 `usage_unreported` 记录（`anomalies.usage_extract = "unreported"`），记一条 WARN（插件、账号类型、端点、协议），不再静默地当成免费请求；按次计价的端点、`billing: "free"` 的端点不受影响。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
 
 #### 边界：插件填事实，核心补齐并覆盖
 
