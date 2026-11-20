@@ -404,6 +404,50 @@ func TestDrop(t *testing.T) {
 	}
 }
 
+// An uninstall that keeps the data, on another node, drops the identity
+// this node has ensured: the reinstall's reads of the records (upload,
+// review) and the plugin's DSN on this node still get the identity, with
+// the kept tables handed back to it.
+func TestKeepDataReinstallOnAnotherNode(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	a := newManager(t, db, host, dsn, nil)
+	b, err := a.Peer(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := randKey()
+	install(t, db, key, nil, false)
+	p := manifest.TablePrefix(key)
+	if _, err := a.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE `+p+`items (v text)`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.DSN(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	writes := func(step string) {
+		t.Helper()
+		if err := queryErr(asPlugin(t, b, dsn, key), `INSERT INTO `+p+`items VALUES ('x')`); err != nil {
+			t.Fatalf("%s: write as the identity: %v", step, err)
+		}
+	}
+	if err := a.Drop(ctx, key, false); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := b.AppliedMigrations(ctx, key); err != nil || len(applied) != 1 {
+		t.Fatalf("records on the other node: %v %v", applied, err)
+	}
+	writes("after reading the records")
+	if err := a.Drop(ctx, key, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := b.DSN(ctx, key); err != nil {
+		t.Fatalf("DSN on the other node: %v", err)
+	}
+	writes("after the DSN")
+}
+
 // An uninstall that keeps the data keeps only the data: a view or a rule
 // of the plugin's that the core owned would run with the core's rights,
 // and the plugin's grants on it would lend them to every role. Ensure
