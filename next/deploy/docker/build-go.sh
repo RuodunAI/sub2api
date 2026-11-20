@@ -94,8 +94,7 @@ ls -l "$OUT/market"
 #
 # The anthropic/openai/gemini platforms and their endpoints are built into the
 # core itself; the anthropic, openai and gemini plugins only add the API key
-# account types of their platform (anthropic also a model catalog). Like
-# every plugin they have a process: build-demo.sh builds binaries for all of
+# account types of their platform. Like every plugin they have a process: build-demo.sh builds binaries for all of
 # them and every package carries its runtimes.
 # moderation is the LLM prompt moderation hook (CONTRACTS §20):
 # enabled at install, but its mode defaults to off until configured.

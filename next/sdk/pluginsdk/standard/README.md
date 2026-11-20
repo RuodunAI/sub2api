@@ -178,46 +178,25 @@ standard.Route{
 
 ## 例子三：Anthropic 风格（anthropic 插件的 `apikey`，relay 插件）
 
-anthropic 插件已经有进程（模型目录的路由），把平台嵌进现有的 `Plugin`：
+anthropic 插件就是预设本身：
 
 ```go
 package anthropic
 
 import (
-	"context"
-
-	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/providers/anthropic"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard"
 )
 
-// Plugin is the anthropic plugin: the apikey platform (pluginsdk.Platform)
-// and the model catalog route (pluginsdk.HTTP).
-type Plugin struct {
-	*pluginsdk.Router
-	*standard.Platform
-	host pluginsdk.Host
-}
+// New returns the platform of the apikey account type.
+func New() *standard.Platform { return standard.New(APIKey()) }
 
-// New returns the plugin.
-func New() *Plugin {
-	p := &Plugin{Router: pluginsdk.NewRouter(), Platform: standard.New(APIKey())}
-	p.Handle("GET", "/models", p.listModels)
-	return p
-}
-
-// APIKey is the apikey type: the anthropic preset as it is (every request
-// field is forwarded).
+// APIKey is the apikey type: the anthropic preset (every request field is
+// forwarded), its credentials api_key and base_url only.
 func APIKey() standard.Type { return anthropic.APIKey("apikey") }
-
-// Init implements pluginsdk.Initializer.
-func (p *Plugin) Init(_ context.Context, h pluginsdk.Host) error {
-	p.host = h
-	return nil
-}
 ```
 
-`main.go` 不变（`pluginsdk.Serve(anthropic.New(), pluginsdk.WithManifest(manifestJSON))`）。
+`main.go`：`pluginsdk.Serve(anthropic.New(), pluginsdk.WithManifest(manifestJSON))`。
 
 relay 是同一个预设加三处差异（它收到哪两个客户端请求头由清单的 `passHeaders` 决定，核心过滤）：
 

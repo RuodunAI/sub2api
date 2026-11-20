@@ -31,7 +31,10 @@ func TestAC05_UpgradePluginsWithoutDowntime(t *testing.T) {
 	admin := e.Admin()
 	e.EnsurePlugin(admin, "anthropic", e.defaultVersion("anthropic"))
 	d, _ := e.Plugin(admin, "dynweight")
-	wasEnabled := d.Get("status").String() == "enabled"
+	if d.Get("status").String() != "enabled" {
+		// Registered before EnsurePlugin, which enables it even when it skips.
+		t.Cleanup(func() { e.Disable(admin, "dynweight") })
+	}
 	e.EnsurePlugin(admin, "dynweight", e.defaultVersion("dynweight"))
 	tn := e.NewTenant(admin, TenantOpts{Accounts: 2, Balance: "50"})
 
@@ -48,9 +51,6 @@ func TestAC05_UpgradePluginsWithoutDowntime(t *testing.T) {
 	t.Cleanup(func() {
 		cur := admin.OK(t, http.MethodGet, "/p/dynweight/config", nil)
 		admin.OK(t, http.MethodPut, "/p/dynweight/config", map[string]any{"config": json.RawMessage(original.Get("config").Raw), "version": cur.Get("version").Int()})
-		if !wasEnabled {
-			e.Disable(admin, "dynweight")
-		}
 	})
 
 	// Stage both fixtures: they ask for no new permission, so they should
