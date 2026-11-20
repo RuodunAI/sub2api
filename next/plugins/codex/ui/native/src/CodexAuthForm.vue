@@ -2,7 +2,7 @@
 // Native account form of the codex plugin (manifest accountTypes[].form
 // {mode: "native", component: "CodexAuthForm"}). The account editor mounts it
 // as <component v-model="credentials" :mode :account :errors> (plus
-// :account-type and, UI 3.20, :proxy-ticket) and calls validate() before
+// :account-type and :proxy-ticket) and calls validate() before
 // saving. Every call of a login (start, each poll, the exchange) asks
 // proxyTicket for the form's current proxy choice, so each request to OpenAI
 // leaves through the proxy the form names at that moment.
@@ -16,12 +16,14 @@
 // - The account's own User-Agent and originator (credentials user_agent /
 //   originator, empty for the plugin settings' or built-in values), kept
 //   across re-authorizations. Every call of a login sends their current
-//   values too, so the authorization requests already use them.
+//   values too, so the authorization requests already use them. A value the
+//   plugin refuses (the settings' rule) shows at its field and fails validate().
 import { computed, nextTick, ref, watch } from 'vue'
 import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SField, SHint, SInput, STabs } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
 import { useCodexHost, type CodexCredentials } from './host'
-import { agentOf, flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
+import { AGENT_FIELDS, agentOf, flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
+import { HEADER_VALUE } from './settings'
 import DeviceFlow from './DeviceFlow.vue'
 import OAuthFlow from './OAuthFlow.vue'
 
@@ -33,7 +35,7 @@ const props = withDefaults(
     errors?: Record<string, string>
     /** The editor's account type (the auth method picked when creating). */
     accountType?: { type?: string } | null
-    /** A proxy ticket of the editor's current proxy choice (UI 3.20, CONTRACTS §117). */
+    /** A proxy ticket of the editor's current proxy choice (CONTRACTS §117). */
     proxyTicket: ProxyTicketSource
   }>(),
   { mode: 'create', account: null, errors: () => ({}), accountType: null }
@@ -117,6 +119,8 @@ function again() {
 
 /** The account's own client headers as the form holds them now. */
 const agent = computed(() => agentOf(props.modelValue))
+/** The message of a client header the plugin would refuse, '' when it takes it. */
+const agentError = (k: AgentField) => (HEADER_VALUE.test(agent.value[k]) ? '' : t('agent.invalid'))
 
 function setAgent(k: AgentField, v: string) {
   emit('update:modelValue', { ...(props.modelValue || {}), [k]: v })
@@ -135,7 +139,7 @@ function cancelReauth() {
 async function validate(): Promise<boolean> {
   if (hasAccessToken(props.modelValue)) {
     localError.value = ''
-    return true
+    return AGENT_FIELDS.every((k) => !agentError(k))
   }
   localError.value = t(flowBusy.value ? 'validate.inProgress' : 'validate.required')
   await nextTick()
@@ -190,10 +194,10 @@ defineExpose({ validate })
     <!-- The account's own client headers -->
     <div class="cx-panel" data-testid="codex-agent">
       <span class="cx-title">{{ t('agent.title') }}</span>
-      <SField :label="t('agent.userAgent')" :hint="t('agent.userAgentHint')" size="sm">
+      <SField :label="t('agent.userAgent')" :hint="t('agent.userAgentHint')" :error="agentError('user_agent')" size="sm">
         <SInput :model-value="agent.user_agent" mono autocomplete="off" spellcheck="false" placeholder="sup2api-codex/<version>" data-testid="codex-user-agent" @update:model-value="setAgent('user_agent', String($event ?? ''))" />
       </SField>
-      <SField :label="t('agent.originator')" :hint="t('agent.originatorHint')" size="sm">
+      <SField :label="t('agent.originator')" :hint="t('agent.originatorHint')" :error="agentError('originator')" size="sm">
         <SInput :model-value="agent.originator" mono autocomplete="off" spellcheck="false" placeholder="sup2api" data-testid="codex-originator" @update:model-value="setAgent('originator', String($event ?? ''))" />
       </SField>
     </div>

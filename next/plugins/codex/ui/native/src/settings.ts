@@ -11,7 +11,7 @@ export interface CodexSettingsValue extends Record<string, unknown> {
 export const SETTINGS_DEFAULTS: CodexSettingsValue = { user_agent: '', originator: '' }
 
 /** A header value: no control character but tab (Go: paramoverride.ValidHeaderValue). */
-const HEADER_VALUE = /^[^\x00-\x08\x0A-\x1F\x7F]*$/
+export const HEADER_VALUE = /^[^\x00-\x08\x0A-\x1F\x7F]*$/
 
 export const SETTINGS_RULES: Rules<CodexSettingsValue> = {
   user_agent: { type: 'string', pattern: HEADER_VALUE },

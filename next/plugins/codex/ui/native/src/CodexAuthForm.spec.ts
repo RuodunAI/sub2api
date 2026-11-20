@@ -34,7 +34,7 @@ const CALLBACK = 'http://localhost:1455/auth/callback'
 /** The client headers a call of a form without its own carries. */
 const NO_AGENT = { user_agent: '', originator: '' }
 
-/** The editor's proxyTicket (UI 3.20): a ticket of its current proxy choice. */
+/** The editor's proxyTicket: a ticket of its current proxy choice. */
 let proxyTicket: ReturnType<typeof vi.fn<() => Promise<string>>>
 
 let wrapper: VueWrapper | null = null
@@ -92,6 +92,16 @@ describe('CodexAuthForm: client headers', () => {
     expect((w.get('[data-testid="codex-user-agent"]').element as HTMLInputElement).value).toBe('')
     await w.get('[data-testid="codex-user-agent"]').setValue('ua-acct')
     expect(lastValue(w)).toEqual({ ...loaded, user_agent: 'ua-acct' })
+  })
+
+  it('refuses a control character but tab at its field, as the plugin does (paramoverride.ValidHeaderValue)', async () => {
+    const loaded = { access_token: '******', email: 'me@example.com' }
+    const w = mountForm({ mode: 'edit', account: { id: 1, type: 'codex_device' }, accountType: { type: 'codex_device' }, modelValue: { ...loaded, user_agent: 'ua\tok' } })
+    expect(await (w.vm as unknown as { validate(): Promise<boolean> }).validate()).toBe(true)
+    await w.setProps({ modelValue: { ...loaded, originator: 'or\nbad' } })
+    expect(await (w.vm as unknown as { validate(): Promise<boolean> }).validate()).toBe(false)
+    expect(w.get('[data-testid="codex-agent"]').text()).toContain('agent.invalid')
+    expect(w.find('[data-testid="codex-validate-error"]').exists()).toBe(false)
   })
 
   it('sends the form\'s current values with every call of a login', async () => {
