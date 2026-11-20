@@ -17,7 +17,7 @@
     { "id": "http.routes.v1" }
   ],
 
-  "database": { "schema": "plg_payment", "migrations": "migrations/" },
+  "database": { "migrations": "migrations/" },
 
   "userPermissions": [
     {

@@ -20,7 +20,10 @@ import (
 )
 
 var (
-	keyRe           = regexp.MustCompile(`^[a-z][a-z0-9_]{1,29}$`)
+	keyRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,29}$`)
+	// pluginKeyRe is keyRe without "__" or a trailing "_", so that no
+	// plugin's table prefix (manifest.TablePrefix) starts another's.
+	pluginKeyRe     = regexp.MustCompile(`^[a-z](_?[a-z0-9]){1,29}$`)
 	userPermKeyRe   = regexp.MustCompile(`^[a-z0-9_]+(:[a-z0-9_]+)+$`)
 	idRe            = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,63}$`)
 	accountTypeIDRe = regexp.MustCompile(`^[a-z][a-z0-9_]{1,49}$`)
@@ -331,8 +334,8 @@ func (v *validator) basics() {
 	if m.APIVersion != manifest.APIVersion {
 		v.add("apiVersion", "unsupported", "apiVersion must be %d", manifest.APIVersion)
 	}
-	if !keyRe.MatchString(m.Key) {
-		v.add("key", "invalid_format", "key must match %s", keyRe.String())
+	if !pluginKeyRe.MatchString(m.Key) || len(m.Key) > 30 {
+		v.add("key", "invalid_format", "key must match %s and be at most 30 bytes", pluginKeyRe.String())
 	} else if coreKeys[m.Key] {
 		v.add("key", "reserved", "key %q is reserved for the core", m.Key)
 	}
@@ -736,6 +739,44 @@ func (v *validator) jobs() {
 	}
 }
 
+// databaseAccess checks the tables outside the plugin it asks to read: named
+// tables, never a plugin's (no "plg_"), each once, reads only.
+func (v *validator) databaseAccess(access []manifest.DatabaseAccess) {
+	if len(access) == 0 {
+		return
+	}
+	v.needPerm("database.access", "db.core_read", "reads of tables outside the plugin")
+	tables := map[string]bool{}
+	for i, a := range access {
+		f := fmt.Sprintf("database.access[%d]", i)
+		switch {
+		case !sqlIdentRe.MatchString(a.Table):
+			v.add(f+".table", "invalid", "must be a table name matching %s", sqlIdentRe)
+		case strings.HasPrefix(a.Table, "plg_"):
+			v.add(f+".table", "invalid", "tables of plugins cannot be asked for")
+		case tables[a.Table]:
+			v.add(f+".table", "duplicate", "table %q is listed twice", a.Table)
+		}
+		tables[a.Table] = true
+		for j, c := range a.Columns {
+			if !sqlIdentRe.MatchString(c) || slices.Contains(a.Columns[:j], c) {
+				v.add(fmt.Sprintf("%s.columns[%d]", f, j), "invalid", "must be a distinct column name matching %s", sqlIdentRe)
+			}
+		}
+		if len(a.Privileges) == 0 {
+			v.add(f+".privileges", "required", "at least one privilege")
+		}
+		for j, p := range a.Privileges {
+			if !slices.Contains(manifest.DatabasePrivileges, p) || slices.Contains(a.Privileges[:j], p) {
+				v.add(fmt.Sprintf("%s.privileges[%d]", f, j), "invalid", "must be a distinct one of %v", manifest.DatabasePrivileges)
+			}
+		}
+	}
+}
+
+// sqlIdentRe is an unquoted PostgreSQL identifier the core can name as is.
+var sqlIdentRe = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,62}$`)
+
 // maxJobTitle bounds a job's title. The job limits are
 // manifest.MaxClusterJobTimeoutSec and its neighbours.
 const maxJobTitle = 100
@@ -745,10 +786,8 @@ func (v *validator) database() {
 	if d == nil {
 		return
 	}
-	v.needPerm("database", "db.schema", "a database schema")
-	if d.Schema != "plg_"+v.m.Key {
-		v.add("database.schema", "invalid", "schema must be %q", "plg_"+v.m.Key)
-	}
+	v.needPerm("database", "db.schema", "a database")
+	v.databaseAccess(d.Access)
 	if d.Migrations == "" {
 		v.add("database.migrations", "required", "migrations directory is required")
 		return

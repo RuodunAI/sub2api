@@ -21,7 +21,7 @@ type LocalizedText map[string]string
 // Manifest is the root of manifest.json.
 type Manifest struct {
 	APIVersion   int           `json:"apiVersion"`
-	Key          string        `json:"key"` // ^[a-z][a-z0-9_]{1,29}$
+	Key          string        `json:"key"` // ^[a-z](_?[a-z0-9])+$, at most 30 bytes
 	Name         LocalizedText `json:"name"`
 	Description  LocalizedText `json:"description,omitempty"`
 	Version      string        `json:"version"` // semver
@@ -880,10 +880,32 @@ const (
 // NodeScope reports whether every node runs the job.
 func (j Job) NodeScope() bool { return j.Scope == JobScopeNode }
 
+// Database is the plugin's own tables. They live in the core's schema, every
+// table, index and sequence named with TablePrefix; the plugin's database
+// identity owns them and reaches nothing else but what Access asks for
+// (CONTRACTS §130).
 type Database struct {
-	Schema     string `json:"schema"`     // must be "plg_" + key
 	Migrations string `json:"migrations"` // package directory, e.g. "migrations/"
+	// Access lists the tables outside the plugin it reads, granted on the
+	// administrator's consent (host permission "db.core_read").
+	Access []DatabaseAccess `json:"access,omitempty"`
 }
+
+// DatabaseAccess asks for privileges on one table outside the plugin.
+type DatabaseAccess struct {
+	Table      string   `json:"table"`
+	Columns    []string `json:"columns,omitempty"` // none: every column the core allows
+	Privileges []string `json:"privileges"`        // DatabasePrivileges
+}
+
+// DatabasePrivileges are the privileges a plugin may ask for on a table
+// outside it: reads only, the core's data is written through the Host API.
+var DatabasePrivileges = []string{"select"}
+
+// TablePrefix is the prefix of every table, index and sequence of plugin
+// pluginKey: "plg_<key>__". Plugin keys hold no "__" and do not end in "_",
+// so no plugin's prefix starts another's.
+func TablePrefix(pluginKey string) string { return "plg_" + pluginKey + "__" }
 
 // ---------------------------------------------------------------- permissions, routes, ui
 
@@ -1181,7 +1203,7 @@ var HostPermissionRisk = map[string]string{
 	"ledger.debit":        RiskCritical,
 	"ui.native":           RiskCritical,
 	"users.write":         RiskCritical,
-	"db.core_views":       RiskCritical,
+	"db.core_read":        RiskCritical, // database.access: reads of tables outside the plugin
 }
 
 // Values of Endpoint.Kind.

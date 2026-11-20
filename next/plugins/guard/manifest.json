@@ -42,7 +42,7 @@
     { "id": "cleanup", "schedule": "0 3 * * *", "timeoutSec": 300 }
   ],
 
-  "database": { "schema": "plg_guard", "migrations": "migrations/" },
+  "database": { "migrations": "migrations/" },
 
   "userPermissions": [
     { "key": "rules:read", "defaults": { "admin": true }, "label": { "en": "View guard rules", "zh": "查看拦截规则" } },

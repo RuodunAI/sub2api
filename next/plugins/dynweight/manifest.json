@@ -34,7 +34,7 @@
     { "id": "cleanup", "schedule": "17 * * * *", "timeoutSec": 300 }
   ],
 
-  "database": { "schema": "plg_dynweight", "migrations": "migrations/" },
+  "database": { "migrations": "migrations/" },
 
   "userPermissions": [
     {

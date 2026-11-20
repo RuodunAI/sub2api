@@ -111,10 +111,7 @@
       "timeoutSec": 50
     }
   ],
-  "database": {
-    "schema": "plg_moderation",
-    "migrations": "migrations/"
-  },
+  "database": { "migrations": "migrations/" },
   "userPermissions": [
     {
       "key": "moderation:read",
