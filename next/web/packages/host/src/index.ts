@@ -239,6 +239,24 @@ export function satisfiesRange(version: string, range: string | undefined | null
   )
 }
 
+/**
+ * Whether version is below every alternative of range, so only a newer host
+ * can satisfy it ("^4.1" for 4.0.0; not "^3.20", which wants an older one).
+ * False for an empty or "*" range and for an alternative without a lower bound.
+ */
+export function belowRange(version: string, range: string | undefined | null): boolean {
+  if (!range || range.trim() === '' || range.trim() === '*') return false
+  const v = parse(version)
+  if (!v) return false
+  return range.split('||').every(alt =>
+    alt
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .some(cmp => belowFloor(v, cmp))
+  )
+}
+
 function parse(s: string): [number, number, number] | null {
   const m = /^v?(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?/.exec(s.trim())
   if (!m) return null
@@ -249,6 +267,22 @@ function parse(s: string): [number, number, number] | null {
 function cmpV(a: number[], b: number[]): number {
   for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] - b[i]
   return 0
+}
+
+/** Whether v is below the lower bound comparator c sets; an upper bound (<, <=) sets none. */
+function belowFloor(v: [number, number, number], c: string): boolean {
+  const m = /^(\^|~|>=|<=|>|<|=)?(.+)$/.exec(c)
+  const b = m ? parse(m[2]) : null
+  if (!m || !b) return false
+  switch (m[1] || '') {
+    case '<':
+    case '<=':
+      return false
+    case '>':
+      return cmpV(v, b) <= 0
+    default:
+      return cmpV(v, b) < 0
+  }
 }
 
 function check(v: [number, number, number], c: string): boolean {

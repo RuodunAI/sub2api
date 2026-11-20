@@ -8,7 +8,7 @@ import PluginComponent from './PluginComponent.vue'
 // The plugin store as PluginComponent reads it; refresh() is the console's
 // reload of the plugin list and the native modules not loaded.
 const store = vi.hoisted(() => ({
-  state: null as unknown as { listed: boolean; pending: Record<string, boolean>; errors: Record<string, string>; outdated: string[]; components: Record<string, unknown> },
+  state: null as unknown as { listed: boolean; pending: Record<string, boolean>; errors: Record<string, string>; mismatch: Record<string, 'plugin' | 'core'>; components: Record<string, unknown> },
   refresh: vi.fn()
 }))
 vi.mock('@/stores/plugins', () => ({
@@ -16,7 +16,7 @@ vi.mock('@/stores/plugins', () => ({
     get listed() { return store.state.listed },
     get pending() { return store.state.pending },
     get errors() { return store.state.errors },
-    outdated: (key: string) => store.state.outdated.includes(key),
+    uiMismatch: (key: string) => store.state.mismatch[key] ?? null,
     component: (key: string, name?: string) => (key === 'mailer' && name ? store.state.components[name] : undefined),
     refresh: store.refresh
   })
@@ -37,7 +37,7 @@ describe('PluginComponent', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     i18n.global.locale.value = 'en'
-    store.state = reactive({ listed: true, pending: {}, errors: {}, outdated: [], components: {} })
+    store.state = reactive({ listed: true, pending: {}, errors: {}, mismatch: {}, components: {} })
   })
 
   it('waits for the plugin list and the plugin module, then mounts the component through the slot', async () => {
@@ -72,9 +72,17 @@ describe('PluginComponent', () => {
 
   it('asks to upgrade a plugin whose module was built for an older UI contract, without Retry', () => {
     store.state.errors.mailer = 'hostUICompat ^3.20 does not match host UI 4.0.0'
-    store.state.outdated.push('mailer')
+    store.state.mismatch.mailer = 'plugin'
     const w = render()
     expect(w.get('[data-testid="plugin-component-failed"]').text()).toBe("This plugin version's interface is no longer supported. Upgrade the plugin.")
+    expect(w.find('[data-testid="plugin-component-retry"]').exists()).toBe(false)
+  })
+
+  it('asks to upgrade the core for a module built for a newer UI contract, without Retry', () => {
+    store.state.errors.mailer = 'hostUICompat ^4.1 does not match host UI 4.0.0'
+    store.state.mismatch.mailer = 'core'
+    const w = render()
+    expect(w.get('[data-testid="plugin-component-failed"]').text()).toBe("This plugin's interface needs a newer console. Upgrade the core.")
     expect(w.find('[data-testid="plugin-component-retry"]').exists()).toBe(false)
   })
 

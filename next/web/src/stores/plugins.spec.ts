@@ -19,6 +19,7 @@ const FAST = 'fast'
 const SLOW = 'slow'
 const CHANGED = 'changed'
 const OLD = 'old'
+const NEW = 'new'
 const plugin = (key: string, entry: string): UIPlugin =>
   ({
     key,
@@ -200,16 +201,19 @@ describe('plugin store outdated native UIs', () => {
     mocks.get.mockReset()
   })
 
-  it('marks a trusted native UI built for another host UI contract as outdated and does not load it', async () => {
+  it('tells a trusted native UI built for an older or a newer host UI contract and does not load it', async () => {
     mocks.get.mockResolvedValue([
       { ...plugin(OLD, 'fast-plugin.ts'), host_ui_compat: '^3.20' },
       { ...plugin(FAST, 'fast-plugin.ts'), host_ui_compat: '^4.0' },
+      { ...plugin(NEW, 'fast-plugin.ts'), host_ui_compat: '^4.1' },
       { ...plugin('community', 'fast-plugin.ts'), host_ui_compat: '^3.20', trust: 'community' }
     ])
     const store = usePluginStore()
     await store.refresh()
-    expect([OLD, FAST, 'community', 'gone'].map(k => store.outdated(k))).toEqual([true, false, false, false])
+    expect([OLD, FAST, NEW, 'community', 'gone'].map(k => store.uiMismatch(k))).toEqual(['plugin', null, 'core', null, null])
     expect(store.component(OLD, 'FastPage')).toBeUndefined()
+    expect(store.component(NEW, 'FastPage')).toBeUndefined()
     expect(store.errors[OLD]).toBe('hostUICompat ^3.20 does not match host UI 4.0.0')
+    expect(store.errors[NEW]).toBe('hostUICompat ^4.1 does not match host UI 4.0.0')
   })
 })

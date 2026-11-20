@@ -61,6 +61,7 @@
 - `@sub2api/ui` 新增：`SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）、`SSecretInput` 的 `plain`（敏感地址用文本框输入）；`createApiKeyForm` 的额外字段可写 `mono`（`text`、`textarea` 用等宽字体）。`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
 - `SSettingsPage` 在同一路由换查询参数时也先询问未保存的修改：插件详情页切换 `?tab=` 标签（mailer、codex、guard 的设置就在这个标签里）、插件页面用 `?tab=` 切分区，此前只在离开路由时询问，切走设置标签修改直接丢失。
 - `@sub2api/host` 新增 `definePluginHost(name)`：插件模块级 host 的 `setHost`、`useHost`（`register` 之前调用抛错）；bedrock、vertex、mailer、guard、codex、moderation、dynweight 的 `host.ts` 改用它，不再各写一份（CONTRACTS §23.1）。
+- 插件的界面契约比控制台新（例如插件只把 `hostUICompat` 抬到 `^4.1` 而没抬 `hostCompat`，装在 UI 4.0.0 的核心上）时，账号表单、插件设置和插件页面提示“此插件的界面需要更新的控制台，请升级核心”，不再误报成“请升级插件”；`@sub2api/host` 新增 `belowRange` 判断这个方向。
 - `@sub2api/ui/testing`：账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
 - 仓库里的插件界面工程用控制台的 vite、vue-tsc、vitest 构建和测试（`@sub2api/vite-preset` 提供基础 tsconfig 与构建配置），CI 的插件界面检查任何一步失败都报错；工程有自己的 lockfile 时才 `npm ci`。
 

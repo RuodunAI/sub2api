@@ -441,6 +441,7 @@ const { EntityMultiPicker } = host.components
 - 本包删除 JSON Schema 表单：`SchemaForm`、`SchemaField`、`SCHEMA_WIDGETS_KEY`、`BUILTIN_WIDGETS`、`uiGet`、`childUI`、`schemaType`、`isSecret`、`enumOptions`、`resolveWidget`、`fieldLabel`、`fieldHelp`、`orderedKeys`、`isVisible`、`schemaWithDefaults`、`validateSchema`，类型 `JSONSchema`、`UISchema`、`EnumOption`、`ValidateMessages`，以及文案 `ui.schema.*`（必填等校验文案在 `ui.form.v.*`）。`localizedText` 保留。
 - 控制台不再渲染账号表单的 `form.mode: "schema"`（编辑账号时凭证卡片提示升级插件，其它分区照常编辑，凭证原样送回）、`schema` 模式的设置，以及 `ui.pages.*.type` 为 `table`、`form` 的页面（显示"不支持的页面类型"）。宿主部件 `proxy-select`、`group-select`、`entity-select`、`header-override` 随之删除；表单里改用 `host.components` 的 `ProxyPicker`、`EntityPicker`（`kind="group"` 等）、`EntityMultiPicker`、`HeaderOverrideEditor`。
 - `@sub2api/host` 新增 `definePluginHost(name)`，返回一对 `{ setHost, useHost }`：插件的 `host.ts` 写 `export const { setHost, useHost: useShopHost } = definePluginHost('shop')`，`register(host)` 里 `setHost(host)`，`unregister` 里 `setHost(null)`；`register` 之前调 `useShopHost()` 抛错（CONTRACTS §23.1）。
+- `@sub2api/host` 新增 `belowRange(version, range)`：`version` 低于 `range` 每个分支的下限时为真（`belowRange('4.0.0', '^4.1')`），控制台据此把“插件的界面契约比控制台新”提示成升级核心，而不是升级插件（CONTRACTS §23.1）。
 - 带原生界面的插件声明 `hostUICompat: "^4.0"`，`hostCompat` 要求高于 0.1.303（0.1.303 是最后一个带 UI 3.x 的核心）。3.x 的控制台不加载 `^4.0` 的插件；声明 `^3.N` 的插件 4.0 的控制台也不加载。
 
 ## 表单校验框架（UI SDK 4.0）

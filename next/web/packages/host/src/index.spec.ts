@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createPluginHost, definePluginHost, HOST_COMPONENT_NAMES, pluginPermissionKey, type HostContext, type PluginHost } from './index'
+import { belowRange, createPluginHost, definePluginHost, HOST_COMPONENT_NAMES, pluginPermissionKey, type HostContext, type PluginHost } from './index'
 
 describe('plugin host', () => {
   it('hands every plugin the core components of the host (UI 3.7 editors, UI 3.11 / 3.12 entity pickers)', () => {
@@ -47,5 +47,24 @@ describe('pluginPermissionKey', () => {
     expect(host.can('orders:read')).toBe(true)
     expect(host.can('orders:write')).toBe(false)
     expect(host.can('')).toBe(false)
+  })
+})
+
+describe('belowRange', () => {
+  it.each([
+    ['^4.1', true],
+    ['4.1', true],
+    ['>4.0.0', true],
+    ['>=4.0.1 <5.0.0', true],
+    ['^4.1 || ^5.0', true],
+    ['^4.0', false],
+    ['4.x', false],
+    ['^3.20', false],
+    ['<4.0.0', false],
+    ['^3.20 || ^4.1', false],
+    ['*', false],
+    ['', false]
+  ])('4.0.0 against %j: %s', (range, want) => {
+    expect(belowRange('4.0.0', range)).toBe(want)
   })
 })
