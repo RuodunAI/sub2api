@@ -228,18 +228,24 @@ func (coolingAccounts) IsCoolingDown(context.Context, int64) (bool, error) { ret
 // An account that cannot be asked now (cooling down) defers the query
 // without spending the failure budget; one that can never be asked again
 // (deleted, or of another plugin) is a failed query, and the budget's end
-// refunds the reserve instead of keeping the estimate at the deadline.
+// refunds the reserve instead of keeping the estimate at the deadline. So
+// is a reserve of a plugin no longer loaded (a removed plugin's in-flight
+// tasks, as after migration 0119, CONTRACTS §128).
 func TestUnaskableTaskAccount(t *testing.T) {
 	for name, acc := range map[string]*core.Account{
-		"cooling":      {AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
-		"deleted":      {AccountRef: core.AccountRef{ID: 8, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
-		"other plugin": {AccountRef: core.AccountRef{ID: 7, PluginKey: "img", Type: "img_key"}, Status: "active"},
+		"cooling":        {AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
+		"deleted":        {AccountRef: core.AccountRef{ID: 8, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
+		"other plugin":   {AccountRef: core.AccountRef{ID: 7, PluginKey: "img", Type: "img_key"}, Status: "active"},
+		"removed plugin": {AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			rf := reconcileFixtureWith(t, acc)
 			f, ctx := rf.fixture, context.Background()
-			if name == "cooling" {
+			switch name {
+			case "cooling":
 				f.svc.rec.Accounts = coolingAccounts{recAccounts{acc: acc}}
+			case "removed plugin":
+				f.svc.rec.Registry = recRegistry{gen: &recGen{info: core.PluginInfo{Key: "img"}, pf: manifest.Platform{ID: "img"}, client: rf.plugin}}
 			}
 			before := f.balance()
 			f.svc.process(ctx, []*core.UsageRecord{f.reserved("unaskable", "raw", core.UsageTokens{Input: 1000, Output: 100})})
