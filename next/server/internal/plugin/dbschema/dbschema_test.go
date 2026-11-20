@@ -404,6 +404,147 @@ func TestDrop(t *testing.T) {
 	}
 }
 
+// An uninstall that keeps the data keeps only the data: a view or a rule
+// of the plugin's that the core owned would run with the core's rights,
+// and the plugin's grants on it would lend them to every role. Ensure
+// takes the plugin's grants back too.
+func TestKeepDataKeepsOnlyData(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	m := newManager(t, db, host, dsn, nil)
+	if _, err := host.SQL.ExecContext(ctx, `CREATE TABLE core_secret (v text); INSERT INTO core_secret VALUES ('secret')`); err != nil {
+		t.Fatal(err)
+	}
+	a, b := randKey(), randKey()
+	install(t, db, a, nil, false)
+	install(t, db, b, nil, false)
+	p := manifest.TablePrefix(a)
+	fsys := scripts("0001.sql", `CREATE TABLE `+p+`items (id int PRIMARY KEY, v text); INSERT INTO `+p+`items VALUES (1, 'x');
+		CREATE VIEW `+p+`leak AS SELECT v FROM core_secret`)
+	if _, err := m.Migrate(ctx, a, fsys); err != nil {
+		t.Fatal(err)
+	}
+	pa := asPlugin(t, m, dsn, a)
+	// What plugin a can do to its own objects at run time.
+	leave := func() {
+		t.Helper()
+		if err := queryErr(pa, `GRANT ALL ON `+p+`leak, `+p+`items TO PUBLIC; GRANT SELECT (v) ON `+p+`items TO PUBLIC;
+			CREATE RULE `+p+`r AS ON UPDATE TO `+p+`items DO ALSO UPDATE core_secret SET v = 'pwned';
+			ALTER TABLE `+p+`items ENABLE ROW LEVEL SECURITY; CREATE POLICY `+p+`p ON `+p+`items USING (true)`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// left counts the privileges on a's objects that their owner does
+	// not hold and the rules, policies and views of a's prefix.
+	left := func() (grants, code int) {
+		t.Helper()
+		if err := db.SQL.QueryRowContext(ctx, `SELECT
+			(SELECT count(*) FROM pg_class c, aclexplode(c.relacl) a WHERE starts_with(c.relname, $1) AND a.grantee <> c.relowner)
+			+ (SELECT count(*) FROM pg_attribute t JOIN pg_class c ON c.oid = t.attrelid, aclexplode(t.attacl) a
+				WHERE starts_with(c.relname, $1) AND a.grantee <> c.relowner),
+			(SELECT count(*) FROM pg_rewrite r JOIN pg_class c ON c.oid = r.ev_class WHERE starts_with(c.relname, $1) AND r.rulename <> '_RETURN')
+			+ (SELECT count(*) FROM pg_policy o JOIN pg_class c ON c.oid = o.polrelid WHERE starts_with(c.relname, $1))
+			+ (SELECT count(*) FROM pg_class c WHERE starts_with(c.relname, $1) AND c.relkind IN ('v', 'm'))`, p).Scan(&grants, &code); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	leave()
+	if err := m.EnsureAgain(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if grants, code := left(); grants != 0 || code != 1 { // the view stays the plugin's
+		t.Fatalf("after Ensure: %d grants, %d rules, policies and views", grants, code)
+	}
+	// Between two Ensures the plugin can do it again; the uninstall comes.
+	leave()
+	if err := m.Drop(ctx, a, false); err != nil {
+		t.Fatal(err)
+	}
+	if grants, code := left(); grants != 0 || code != 0 {
+		t.Fatalf("kept: %d grants, %d rules, policies and views", grants, code)
+	}
+	if err := m.Ensure(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	pb := asPlugin(t, m, dsn, b)
+	var v string
+	if err := pb.SQL.QueryRowContext(ctx, `SELECT v FROM `+p+`leak`).Scan(&v); err == nil {
+		t.Fatalf("plugin b reads core_secret through a's view: %s", v)
+	}
+	for _, q := range []string{`SELECT v FROM ` + p + `items`, `SELECT v FROM ` + p + `items WHERE id = 1`, `UPDATE ` + p + `items SET v = 'y'`} {
+		if err := queryErr(pb, q); err == nil {
+			t.Fatalf("plugin b ran %q on a's table", q)
+		}
+	}
+	if err := db.SQL.QueryRowContext(ctx, `SELECT v FROM core_secret`).Scan(&v); err != nil || v != "secret" {
+		t.Fatalf("core_secret: %q %v", v, err)
+	}
+	// The reinstall gets the data back, and only the data.
+	if applied, err := m.Migrate(ctx, a, fsys); err != nil || len(applied) != 0 {
+		t.Fatalf("reinstall: %v %v", applied, err)
+	}
+	pa = asPlugin(t, m, dsn, a)
+	if err := pa.SQL.QueryRowContext(ctx, `SELECT v FROM `+p+`items WHERE id = 1`).Scan(&v); err != nil || v != "x" {
+		t.Fatalf("read after the reinstall: %q %v", v, err)
+	}
+	if err := queryErr(pa, `UPDATE `+p+`items SET v = 'y'; INSERT INTO `+p+`items VALUES (2, 'z')`); err != nil {
+		t.Fatalf("write after the reinstall: %v", err)
+	}
+	if err := db.SQL.QueryRowContext(ctx, `SELECT v FROM core_secret`).Scan(&v); err != nil || v != "secret" {
+		t.Fatalf("core_secret after the reinstall: %q %v", v, err)
+	}
+}
+
+// PUBLIC may create temporary objects by default; the manager takes that
+// back at start, so that a plugin's identity cannot create a function in
+// pg_temp for a trigger or policy of its tables to call with the rights
+// of whoever fires it. The core's user, the database's owner, keeps it.
+func TestPublicTempRevoked(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	if _, err := db.SQL.ExecContext(ctx, `DO $$ BEGIN EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO PUBLIC', current_database()); END $$`); err != nil {
+		t.Fatal(err)
+	}
+	m := newManager(t, db, host, dsn, nil)
+	var open bool
+	if err := db.SQL.QueryRowContext(ctx, `SELECT has_database_privilege('public', current_database(), 'TEMPORARY')`).Scan(&open); err != nil || open {
+		t.Fatalf("PUBLIC may still create temporary objects: %v %v", open, err)
+	}
+	key := randKey()
+	install(t, db, key, nil, false)
+	if err := m.Ensure(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	pl := asPlugin(t, m, dsn, key)
+	for _, q := range []string{`CREATE TEMP TABLE t (id int)`, `CREATE FUNCTION pg_temp.f() RETURNS int LANGUAGE sql AS 'SELECT 1'`} {
+		if err := queryErr(pl, q); err == nil {
+			t.Fatalf("the identity ran %q", q)
+		}
+	}
+	if err := queryErr(host, `BEGIN; CREATE TEMP TABLE t (id int); ROLLBACK`); err != nil {
+		t.Fatalf("the core lost TEMPORARY: %v", err)
+	}
+}
+
+// A core that does not own its database cannot take TEMPORARY back from
+// PUBLIC and does not start.
+func TestPublicTempNotOwner(t *testing.T) {
+	db := testutil.DB(t)
+	host, dsn, _ := coreUser(t, db, true)
+	if _, err := db.SQL.ExecContext(context.Background(), `DO $$ BEGIN
+		EXECUTE format('ALTER DATABASE %I OWNER TO CURRENT_USER', current_database());
+		EXECUTE format('GRANT TEMPORARY ON DATABASE %I TO PUBLIC', current_database()); END $$`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := dbschema.New(context.Background(), host, dsn, make([]byte, 32), nil)
+	if err == nil || !strings.Contains(err.Error(), "REVOKE TEMPORARY ON DATABASE") {
+		t.Fatalf("New: %v", err)
+	}
+}
+
 // A database created by PostgreSQL 14 or older lets every role create
 // tables in public: the manager takes that back at start.
 func TestPublicCreateRevoked(t *testing.T) {

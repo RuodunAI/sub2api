@@ -1,0 +1,10 @@
+-- sql
+(SELECT c.relkind::text AS kind, c.relname AS name, CASE a.grantee WHEN 0 THEN '' ELSE pg_get_userbyid(a.grantee) END AS grantee FROM pg_class AS c CROSS JOIN LATERAL aclexplode(c.relacl) AS a WHERE c.relnamespace = $1::regnamespace AND starts_with(c.relname, $2) AND a.grantee <> c.relowner) UNION (SELECT c.relkind::text, c.relname, CASE a.grantee WHEN 0 THEN '' ELSE pg_get_userbyid(a.grantee) END FROM pg_attribute AS t JOIN pg_class AS c ON c.oid = t.attrelid CROSS JOIN LATERAL aclexplode(t.attacl) AS a WHERE c.relnamespace = $3::regnamespace AND starts_with(c.relname, $4) AND t.attnum > 0 AND a.grantee <> c.relowner) UNION (SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END, t.typname, CASE a.grantee WHEN 0 THEN '' ELSE pg_get_userbyid(a.grantee) END FROM pg_type AS t CROSS JOIN LATERAL aclexplode(t.typacl) AS a WHERE t.typnamespace = $5::regnamespace AND starts_with(t.typname, $6) AND t.typtype <> 'm' AND NOT EXISTS (SELECT 1 FROM pg_type AS e WHERE e.typarray = t.oid)
+			AND (t.typrelid = 0 OR EXISTS (SELECT 1 FROM pg_class AS r WHERE r.oid = t.typrelid AND r.relkind = 'c')) AND a.grantee <> t.typowner)
+-- vars
+$1 string "public"
+$2 string "plg_demo__"
+$3 string "public"
+$4 string "plg_demo__"
+$5 string "public"
+$6 string "plg_demo__"

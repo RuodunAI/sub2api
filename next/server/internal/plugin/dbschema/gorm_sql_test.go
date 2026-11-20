@@ -36,3 +36,17 @@ func TestSQLStrayObjects(t *testing.T) {
 		return strayObjects(tx, "public", "plg_demo__", "plg1_demo").Scan(&found)
 	})
 }
+
+func TestSQLCodeObjects(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+		var found []stray
+		return codeObjects(tx, "public", "plg_demo__").Scan(&found)
+	})
+}
+
+func TestSQLForeignGrants(t *testing.T) {
+	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
+		var found []grant
+		return foreignGrants(tx, "public", "plg_demo__").Scan(&found)
+	})
+}

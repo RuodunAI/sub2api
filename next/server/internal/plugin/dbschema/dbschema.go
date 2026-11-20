@@ -55,6 +55,7 @@ type Manager struct {
 	masterKey   []byte
 	schema      string // the core's schema, current_schema() of its connections
 	dbOID       string // this database's OID, in identity names
+	dbName      string // this database's name
 	log         *slog.Logger
 
 	mu      sync.Mutex
@@ -81,11 +82,14 @@ func New(ctx context.Context, db *store.DB, databaseURL string, masterKey []byte
 	}
 	m := &Manager{db: db, databaseURL: databaseURL, masterKey: masterKey, log: log, ensured: map[string]bool{}, busy: map[string]bool{}}
 	g := store.G(ctx, db.Gorm)
-	if err := g.Table("pg_database").Select("current_schema(), oid::text").Where("datname = current_database()").
-		Row().Scan(&m.schema, &m.dbOID); err != nil {
+	if err := g.Table("pg_database").Select("current_schema(), oid::text, datname").Where("datname = current_database()").
+		Row().Scan(&m.schema, &m.dbOID, &m.dbName); err != nil {
 		return nil, fmt.Errorf("read the core's schema: %w", err)
 	}
 	if err := m.closePublicCreate(g); err != nil {
+		return nil, err
+	}
+	if err := m.closePublicTemp(g); err != nil {
 		return nil, err
 	}
 	if err := m.revokeLeftCreate(ctx); err != nil {
@@ -112,6 +116,36 @@ func (m *Manager) closePublicCreate(g *gorm.DB) error {
 	}
 	m.log.Info("revoked the right of every role to create objects in the core's schema", "schema", m.schema)
 	return nil
+}
+
+// closePublicTemp takes back the right of PUBLIC to create temporary
+// objects in the database, which PostgreSQL gives by default: a plugin's
+// identity could otherwise create a function in pg_temp at run time, and
+// a trigger or policy of its tables calling it would run with the rights
+// of whoever fires it, the core included (CONTRACTS §130.3). The core's
+// user keeps the right as the database's owner.
+func (m *Manager) closePublicTemp(g *gorm.DB) error {
+	open, err := publicTemps(g)
+	if err != nil || !open {
+		return err
+	}
+	err = store.DDL(g, "REVOKE TEMPORARY ON DATABASE %s FROM PUBLIC", store.Ident(m.dbName))
+	if err == nil {
+		open, err = publicTemps(g)
+	}
+	if err != nil || open {
+		return errors.Join(fmt.Errorf("every role may create temporary objects in database %s and the core's user cannot revoke it; run REVOKE TEMPORARY ON DATABASE %s FROM PUBLIC as its owner", m.dbName, m.dbName), err)
+	}
+	m.log.Info("revoked the right of every role to create temporary objects in the core's database", "database", m.dbName)
+	return nil
+}
+
+// publicTemps reports whether PUBLIC may create temporary objects in the
+// core's database.
+func publicTemps(g *gorm.DB) (bool, error) {
+	var open bool
+	err := g.Table("pg_database").Select("has_database_privilege('public', oid, 'TEMPORARY')").Where("datname = current_database()").Row().Scan(&open)
+	return open, err
 }
 
 // revokeLeftCreate takes back CREATE on the core's schema from every
@@ -188,7 +222,8 @@ const aclLock = "plugin-database-acl"
 // it (WITH SET, INHERIT: REASSIGN OWNED, DROP OWNED and ALTER ... OWNER
 // need both), hands the objects of the plugin's prefix back to it (a
 // restore without owners, a reinstall after an uninstall that kept the
-// data), takes back a CREATE on the core's schema and sets the grants on
+// data), drops its strays, takes back every grant on its objects but
+// the owner's, takes back a CREATE on the core's schema and sets the grants on
 // tables outside the plugin to what its db.core_read grant holds.
 func (m *Manager) Ensure(ctx context.Context, pluginKey string) error {
 	return m.ensure(ctx, pluginKey, false)
@@ -276,6 +311,9 @@ func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) e
 		return err
 	}
 	if err := m.removeStrays(ctx, tx, pluginKey); err != nil {
+		return err
+	}
+	if err := m.resetGrants(ctx, tx, pluginKey); err != nil {
 		return err
 	}
 	if err := m.setSchemaCreate(ctx, tx, role, false); err != nil {
@@ -473,9 +511,11 @@ func (m *Manager) Drop(ctx context.Context, pluginKey string, purge bool) error 
 // plugin's goes: the objects of its prefix (whoever owns them: after an
 // uninstall that kept them, the core), whatever else the identity owns and
 // its grants (DROP OWNED), and the core's records of its data migrations.
-// Without, its objects stay, owned by the core, and its grants go
-// (REASSIGN OWNED, then DROP OWNED: the other order would drop the tables);
-// a reinstall hands them back (Ensure). An earlier layout is converted
+// Without, only its data stays, owned by the core: its strays and the
+// code of its prefix (views, rules, ...: dropCode), which would run with
+// the core's rights, go first, then REASSIGN OWNED, then every grant on
+// what stays but the owner's (resetGrants), then DROP OWNED (the other
+// order would drop the tables); a reinstall hands them back (Ensure). An earlier layout is converted
 // first. The local cache is reset even on rollback; Ensure rebuilds it.
 func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string, purge bool) error {
 	if err := validKey(pluginKey); err != nil {
@@ -525,8 +565,24 @@ func (m *Manager) dropTx(ctx context.Context, tx *gorm.DB, pluginKey string, pur
 		if err := dataMigrations(g, pluginKey).Delete(nil).Error; err != nil {
 			return err
 		}
-	} else if exists {
-		if err := store.DDL(g, "REASSIGN OWNED BY %s TO CURRENT_USER", rid); err != nil {
+	} else {
+		// Only the data stays: what would run with the core's rights
+		// once it owns it goes first (dropCode), the plugin's grants on
+		// it after (resetGrants).
+		if exists {
+			if err := m.removeStrays(ctx, tx, pluginKey); err != nil {
+				return err
+			}
+		}
+		if err := m.dropCode(ctx, tx, pluginKey); err != nil {
+			return err
+		}
+		if exists {
+			if err := store.DDL(g, "REASSIGN OWNED BY %s TO CURRENT_USER", rid); err != nil {
+				return err
+			}
+		}
+		if err := m.resetGrants(ctx, tx, pluginKey); err != nil {
 			return err
 		}
 	}

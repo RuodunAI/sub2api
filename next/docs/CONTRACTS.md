@@ -9033,14 +9033,15 @@ anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/mo
 1. 转换旧布局（130.8）；
 2. 身份没有就建，有就重设密码；
 3. `GRANT <身份> TO CURRENT_USER WITH SET TRUE, INHERIT TRUE`：核心成为身份的成员（PostgreSQL 16 起建角色者只有 ADMIN，线上 `createrole_self_grant` 为空）；
-4. 前缀下属主不是身份的对象（不带属主的恢复、保留数据卸载后的重装）交还身份：表（分区子表逐个，属主不随父表）、视图、不属于列的序列、复合类型用 `ALTER TABLE`/`ALTER TYPE … OWNER TO <身份>`，枚举、range、域等独立的类型用 `ALTER TYPE`/`ALTER DOMAIN`（新属主要有模式的 CREATE：同一事务里临时授予，第 6 步收回）；
+4. 前缀下属主不是身份的对象（不带属主的恢复、保留数据卸载后的重装）交还身份：表（分区子表逐个，属主不随父表）、视图、不属于列的序列、复合类型用 `ALTER TABLE`/`ALTER TYPE … OWNER TO <身份>`，枚举、range、域等独立的类型用 `ALTER TYPE`/`ALTER DOMAIN`（新属主要有模式的 CREATE：同一事务里临时授予，第 7 步收回）；
 5. 删掉身份不该拥有的对象（130.3 的“清理”）；
-6. 确认身份没有核心模式的 CREATE，有就收回；经 PUBLIC 或别的角色得来、收不回时报错；
-7. 按 130.4 同步它在插件以外的表上的权限。
+6. 前缀下对象（关系连同其列、类型）的权限只留属主：PUBLIC 和属主以外任何角色持有的权限逐个 `REVOKE ALL … FROM … CASCADE`（`resetGrants`；插件把自己的表授权给 PUBLIC 或别的插件，在这里收回）；
+7. 确认身份没有核心模式的 CREATE，有就收回；经 PUBLIC 或别的角色得来、收不回时报错；
+8. 按 130.4 同步它在插件以外的表上的权限。
 
 改所有插件共用的目录行（模式的 ACL、核心表的授权、旧角色 `DROP OWNED` 收回的授权）时另取全局事务锁 `plugin-database-acl`，总是最后取；否则并发的 `GRANT`/`REVOKE` 会报 `tuple concurrently updated`。
 
-核心启动时（`dbschema.New`）还收回本库每个插件身份（`plg<本库OID>_` 开头的角色）残留的核心模式 CREATE：迁移中途核心停掉会留下它。每个先等该插件正在别的节点上跑的迁移（插件迁移锁）。别的 OID 开头的 `plg…_` 角色（库被重建或从备份恢复成新库后旧库留下的身份）不自动删除：同一个 PostgreSQL 集群里可能有另一套部署，它的身份同样是这种形状，只能由运维确认后手工 `DROP ROLE`。
+核心启动时（`dbschema.New`）收回 PUBLIC 在核心模式上的 CREATE（PostgreSQL 14 及更早建的库默认有）和 PUBLIC 在本库上的 `TEMPORARY`（PostgreSQL 默认就有；130.3），核心的用户收不回（不是库的属主）时启动失败并给出要执行的语句；核心的用户作为库的属主自己仍有 `TEMPORARY`。还收回本库每个插件身份（`plg<本库OID>_` 开头的角色）残留的核心模式 CREATE：迁移中途核心停掉会留下它。每个先等该插件正在别的节点上跑的迁移（插件迁移锁）。别的 OID 开头的 `plg…_` 角色（库被重建或从备份恢复成新库后旧库留下的身份）不自动删除：同一个 PostgreSQL 集群里可能有另一套部署，它的身份同样是这种形状，只能由运维确认后手工 `DROP ROLE`。
 
 **与定稿的偏离**：定稿写 `INHERIT FALSE`。`REASSIGN OWNED`、`DROP OWNED` 要求当前用户拥有该角色的权限（`has_privs_of_role`，即经 INHERIT 的成员关系），`INHERIT FALSE` 时卸载做不到（PostgreSQL 16 实测 `permission denied to reassign objects`）。所以用 `INHERIT TRUE`：核心的会话随之拥有身份的权限，也就是插件自己的表，核心本来就要读其中的迁移记录表。
 
@@ -9050,7 +9051,8 @@ anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/mo
 - **记录在插件自己的表** `plg_<key>__schema_migrations`（`migration_id text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now()`）：身份在跑脚本前 `CREATE TABLE IF NOT EXISTS`，与每个脚本同一事务写入。已记录且内容未变的文件不再执行，内容变了重跑并更新记录（`RerunChanged`，§36）。核心的 `plugin_migrations` 不再记插件脚本（身份写不了它），只留核心写的数据迁移记录 `data:rollout-<id>:<from>-><to>`（§36 第 3 条）。
 - **身份能拥有什么**（所有者 2026-11-20 定：迁移只能建带前缀的 relation 和带前缀的类型）：核心模式里以前缀开头的表（含分区）、索引、序列、视图、物化视图和类型（复合、枚举、range、域），以及随它们产生的对象（TOAST 表、列的序列、行类型、数组类型、multirange 类型和 range 的构造函数）。其余都不行：不带前缀的对象（主键、唯一、排他约束的索引也算），任何别的目录里的对象——函数、过程（带前缀也不行）、运算符、collation、conversion、全文检索配置与词典、统计对象等——以及插件表上的触发器、规则（视图的 `_RETURN` 除外）和策略。理由：核心模式里的运算符或函数会被核心自己的查询选中（CVE-2018-1058：例如 `=(varchar, varchar)` 比 `pg_catalog` 里需要隐式转换的那个更匹配），其余插件用不到；官方四个插件都不用。
 - **检查**（`dbschema.strayObjects`）：按属主列举身份拥有的全部对象——`pg_shdepend` 里本库、属主依赖（`deptype = 'o'`）指向身份的行覆盖所有目录，类别不是 `pg_class`、`pg_type` 的一律算违规；`pg_class`、`pg_type` 按属主列与名字查（索引、行类型、数组类型没有自己的 `pg_shdepend` 行），另查插件表上的触发器、规则、策略。每个脚本提交前（`store.MigrateOptions.Check`，在脚本的事务里、以身份）检查一次，有违规就回滚整个脚本（`plugin migrations may create only tables, indexes, sequences, views and types named plg_<key>__...: …`）。**与定稿的偏离**：定稿写按 `xmin = 本事务号` 找新建对象，但 PL/pgSQL 带 `EXCEPTION` 的块是子事务，里面建的对象 `xmin` 是子事务号，查不到；身份在模式里建的对象都归它，所以按属主查覆盖了全部情况，也包括已经提交的。
-- **清理**（`removeStrays`）：脚本可以 `COMMIT;` 提前提交自己的事务，让违规对象逃出回滚。所以每次迁移结束（成功或失败）都在迁移锁里再做一遍 Ensure（`ensureTx`），每次 Ensure 也做：触发器、规则、策略、约束、索引、列的序列按名字删；还有别的违规时，把前缀下的关系和类型暂时交给核心，`DROP OWNED BY <身份> CASCADE` 删掉身份拥有的其余一切（连同它得到的授权，第 7 步重授），再把前缀下的对象交还身份；依赖违规对象的东西随之删除（例如用了不带前缀类型的列）。删过东西时记一条 WARN（`dropped objects the plugin's database identity may not own`），清不掉时 Ensure 失败。插件进程运行时（没有 CREATE）只能在自己的表上加触发器、规则、策略，下次 Ensure 删掉。
+- **清理**（`removeStrays`）：脚本可以 `COMMIT;` 提前提交自己的事务，让违规对象逃出回滚。所以每次迁移结束（成功或失败）都在迁移锁里再做一遍 Ensure（`ensureTx`），每次 Ensure 也做：触发器、规则、策略、约束、索引、列的序列按名字删；还有别的违规时，把前缀下的关系和类型暂时交给核心，`DROP OWNED BY <身份> CASCADE` 删掉身份拥有的其余一切（连同它得到的授权，第 8 步重授），再把前缀下的对象交还身份；依赖违规对象的东西随之删除（例如用了不带前缀类型的列）。删过东西时记一条 WARN（`dropped objects the plugin's database identity may not own`），清不掉时 Ensure 失败。插件进程运行时（没有 CREATE）只能在自己的表上加触发器、规则、策略，下次 Ensure 删掉。
+- **临时对象**：PUBLIC 默认可在库里建临时对象，身份就能在运行时建 `pg_temp` 里的函数，自己表上的触发器或策略调用它时以触发者的权限执行，触发者可以是核心（例如核心的 `DELETE` 经授予了 `references` 的外键级联到插件表）。所以核心启动时 `REVOKE TEMPORARY ON DATABASE <本库> FROM PUBLIC`（130.2）：身份不能 `CREATE TEMP TABLE`，也不能在 `pg_temp` 里建函数；官方插件不用临时表。
 - **多节点**：沿用按插件的迁移锁；一个节点跑迁移的几秒里，其他节点上同一插件的旧实例用的是同一个身份，也有 CREATE，所有者接受。
 
 ### 130.4 插件以外的表：`database.access` 与 `db.core_read`
@@ -9070,7 +9072,7 @@ anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/mo
 ### 130.6 卸载与停用的键
 
 - **卸载并清除数据**（`purge=true`）：前缀下的关系和类型全部 `DROP … CASCADE`（不论属主：保留数据卸载后属主是核心），删除 `plugin_migrations` 里它的数据迁移记录，`DROP OWNED BY <身份>`（它拥有的其余对象和它得到的授权），`DROP ROLE`。
-- **卸载但保留数据**：`REASSIGN OWNED BY <身份> TO CURRENT_USER`，再 `DROP OWNED BY`，再 `DROP ROLE`（顺序不能反，否则表被删）。表连同 `plg_<key>__schema_migrations` 留下，属于核心；重装时 Ensure 把它们交还新身份，记录仍在，已跑的脚本不重跑。
+- **卸载但保留数据**：只留数据。属主变成核心之后，视图（含物化视图）的查询、规则（`DO ALSO`/`INSTEAD`）、外部表的用户映射都以核心的权限执行，插件留下的授权（包括给 PUBLIC 的）会把它们借给任何角色（混淆代理：另一个插件经 A 的视图读核心的表、经 A 表上的规则改核心的表）。所以依次：删掉身份不该拥有的对象（130.3 的清理），删掉前缀下的视图、物化视图、外部表，以及前缀下关系上的触发器、规则、策略（`dropCode`，不论属主）；`REASSIGN OWNED BY <身份> TO CURRENT_USER`；收回前缀下对象上属主以外所有角色和 PUBLIC 的权限（`resetGrants`）；再 `DROP OWNED BY`，再 `DROP ROLE`（`REASSIGN` 与 `DROP OWNED` 的顺序不能反，否则表被删）。表（连同索引、序列）、类型和 `plg_<key>__schema_migrations` 留下，属于核心，只有核心能用；重装时 Ensure 把它们交还新身份，记录仍在，已跑的脚本不重跑——所以被删的视图不会因为重装同一版本而重建，插件要视图时由之后版本的迁移重建（`CREATE OR REPLACE VIEW`）。
 - 两种都在删除插件行的同一事务里（`PluginSchemaManager.DropTx(ctx, tx, key, purge)`）；先转换旧布局（130.8）。
 - `GET /api/v1/plugins/retired-keys` 的 `schema` 改为：核心模式里还有没有以该键前缀开头的关系（§55.1）；释放时 `purge` 按“清除数据”删除。
 
@@ -9099,7 +9101,7 @@ anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/mo
 
 ### 130.9 如实写明的边界
 
-- 身份是插件表的属主：能改、删自己的表，能把自己的表授权给别的角色。
+- 身份是插件表的属主：能改、删自己的表，能把自己的表授权给 PUBLIC 或别的角色，PostgreSQL 拦不住属主。Ensure 把这些授权收回（130.2 第 6 步），但两次 Ensure 之间（每个进程每个插件一次，加上每次迁移前后）插件在运行时授出的权限一直有效，直到下次 Ensure、卸载或重启。
 - 迁移的几秒里，其他节点上同一插件的旧实例也有 CREATE（130.3）。
 - 核心的会话经成员关系拥有插件表的全部权限（130.2 的偏离），但**核心不以自己的用户读写插件拥有的关系**：插件可以把记录表换成视图、加触发器，让核心执行插件写的东西。迁移记录的读写（审查、`GET …/database`、发布的 `Pending`、迁移、认领搬迁记录）一律经以身份登录的连接（`asIdentity`，`store.OpenAs`；不用 `SET ROLE`），读之前先 Ensure（保留数据卸载或搬迁后表暂属核心）。核心对插件对象只做按名字的 DDL（改属主、删除、改名）和系统目录查询；搬迁时写的记录表是核心在同一事务里刚建的。
 - 脚本 `COMMIT;` 逃出事务后建的违规对象，到该次迁移结束的清理之间（通常不到一秒）存在于核心模式里；在这段时间里核心的查询可能用到插件建的运算符。

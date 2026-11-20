@@ -1,0 +1,11 @@
+-- sql
+(SELECT c.relkind::text AS kind, '' AS tbl, c.relname AS name FROM pg_class AS c WHERE c.relnamespace = $1::regnamespace AND starts_with(c.relname, $2) AND c.relkind IN ('v', 'm', 'f')) UNION ALL (SELECT 'trigger', c.relname, tg.tgname FROM pg_trigger AS tg JOIN pg_class AS c ON c.oid = tg.tgrelid WHERE c.relnamespace = $3::regnamespace AND starts_with(c.relname, $4) AND NOT tg.tgisinternal) UNION ALL (SELECT 'rule', c.relname, rw.rulename FROM pg_rewrite AS rw JOIN pg_class AS c ON c.oid = rw.ev_class WHERE c.relnamespace = $5::regnamespace AND starts_with(c.relname, $6) AND rw.rulename <> '_RETURN') UNION ALL (SELECT 'policy', c.relname, pol.polname FROM pg_policy AS pol JOIN pg_class AS c ON c.oid = pol.polrelid WHERE c.relnamespace = $7::regnamespace AND starts_with(c.relname, $8))
+-- vars
+$1 string "public"
+$2 string "plg_demo__"
+$3 string "public"
+$4 string "plg_demo__"
+$5 string "public"
+$6 string "plg_demo__"
+$7 string "public"
+$8 string "plg_demo__"

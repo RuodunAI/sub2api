@@ -17,7 +17,7 @@
 - **迁移**以这个身份另开连接执行（临时给模式的 CREATE，跑完或失败立即收回），每个脚本一个事务；只能建带前缀的表、索引、序列、视图和类型，建了别的（不带前缀的对象，任何函数、运算符、collation、触发器等）就回滚该脚本，提前 `COMMIT` 逃出事务的也在迁移结束时删掉；记录写在插件自己的表 `plg_<key>__schema_migrations`，核心只以插件的身份读写它，核心的 `plugin_migrations` 只记数据迁移。
 - **插件以外的表**：清单 `database.access` 逐表申请列和权限，要宿主权限 `db.core_read`（极高风险，只有超管能批）；上传时检查表和列存在；授予照申请做列级或表级 GRANT；升级多要任何东西都要重新同意。审查新增 `database_access` 和 `database_migrations`（每个脚本的 SQL 与 `new`/`changed`/`applied`），新接口 `GET /api/v1/plugins/:key/database`。
 - **连接**：插件一律拿到虚拟地址 `db.sub2api:5432`，核心的 pgproxy 以插件的身份登录；出口策略里“有数据库的插件可以拨真实数据库地址”的例外删除。
-- **卸载**：“清除数据”删插件的表和身份；不清除时表留给核心，重装时交还新身份，已跑的脚本不重跑。停用的键“还有数据”改为看有没有带前缀的表。
+- **卸载**：“清除数据”删插件的表和身份；不清除时只留数据：表（连同索引、序列）和类型留给核心，插件的视图、物化视图、外部表和表上的触发器、规则、策略删掉，插件授出的权限（包括给 PUBLIC 的）收回，免得它们以核心的权限替别的插件读写核心的表；重装时交还新身份，已跑的脚本不重跑（删掉的视图要由之后版本的迁移重建）。插件在运行时把自己的表授权给别人，每次 Ensure 收回。停用的键“还有数据”改为看有没有带前缀的表。
 - **官方插件**：dynweight 0.6.0、guard 0.3.0、moderation 0.13.0、payment 0.2.0，表名、索引名和迁移脚本加前缀，模型常量 `model.Prefix`；`pgdb.TryXactLock` 的键改按插件身份（`current_user`）区分。
 - **打包工具**：`sub2api-plugin db check` 每个脚本跑完后检查一次，拒绝不带前缀的对象和表、类型以外的任何对象，也检查模型的表名和索引名带前缀、不超过 63 字节。
 - **搬迁**（过渡代码，所有库都在 0.1.304 或更新的核心下启动过后的下一个核心版本删除）：新核心启动时逐个插件把旧 schema `plg_<key>` 的表、索引、序列、约束改名加前缀、移进核心的模式，迁移记录搬进插件的记录表（脚本不重跑），旧角色照旧收回；搬不走（schema 里有函数、类型）的插件搬迁中止并记错误日志，不影响别的插件。结果与全新安装逐项相同（含约束名，例如 `fk_payment_orders_provider_instance` 变成 `fk_plg_payment__payment_orders_provider_instance`）。
@@ -27,6 +27,7 @@
 - **核心的数据库用户又需要 `CREATEROLE`**（以及 PostgreSQL 16 及以上）。没有时用数据库的插件（dynweight、guard、moderation、payment）迁移失败、不启动，报 `plugin_db_isolation_unavailable`，不降级。升级前确认：`SELECT rolcreaterole FROM pg_roles WHERE rolname = current_user`。
 - 新核心第一次启动会搬迁上面四个插件的表（线上 35 张表），日志里每个插件一行 `moved the plugin's tables into the core's schema`；出现 `convert the legacy database layout of a plugin` 错误时该插件起不来，按错误处理后重启。
 - PostgreSQL 14 及更早建的库，核心启动时收回 PUBLIC 在核心模式上的 CREATE，收不回启动失败（线上已确认没有开放）。
+- **核心启动时收回 PUBLIC 在库上的 `TEMPORARY`**（`REVOKE TEMPORARY ON DATABASE <库> FROM PUBLIC`，库级改动，PostgreSQL 默认开放）：插件身份不能再建临时表和 `pg_temp` 里的函数（否则插件表上的触发器可以借核心的权限执行它）。核心的数据库用户须是库的属主（属主自己仍可建临时表），不是时启动失败并给出要执行的语句，由属主执行后重启。用同一个库、靠 PUBLIC 建临时表的其他数据库用户（报表、运维账号）升级后要单独 `GRANT TEMPORARY ON DATABASE <库> TO <用户>`。
 - 插件的每条数据库连接是它自己身份的一个会话，计入 `max_connections`，规划同前（节点数 ×（核心池 + 每个用数据库的插件 4 个））。
 - **单向**：搬迁后旧核心找不到 `plg_<key>` schema，回退要连同数据库回到升级前的备份（与 0.1.304 一节相同）。
 
