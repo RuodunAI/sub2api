@@ -32,3 +32,17 @@ func RequireTx(q *gorm.DB) error {
 	}
 	return ErrNoTx
 }
+
+// TxKey identifies a transaction: the handles of one transaction have
+// equal keys, those of another a different one. It reaches nothing; the
+// zero key stands for no transaction.
+type TxKey struct{ c gorm.ConnPool }
+
+// TxKeyOf is the TxKey of the transaction q runs in, the zero key outside
+// one (InTx).
+func TxKeyOf(q *gorm.DB) TxKey {
+	if !InTx(q) {
+		return TxKey{}
+	}
+	return TxKey{q.Statement.ConnPool}
+}

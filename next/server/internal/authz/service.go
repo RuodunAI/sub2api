@@ -48,9 +48,9 @@ type Service struct {
 	// minVersion is the newest authz version this node knows of: every
 	// decision waits for the enforcer to hold it.
 	minVersion int64
-	// pending holds what each version this node bumped changed, until
-	// Committed announces it.
-	pending   map[int64]authzChange
+	// pending holds what each version this node bumped changed, and the
+	// transaction it was bumped in, until Committed announces it.
+	pending   map[int64]pendingChange
 	listeners []func()
 	stepUp    core.StepUpVerifier
 	// menuKeys are the permissions of each core menu item (BindMenuRoutes).
@@ -74,7 +74,7 @@ func New(d Deps) *Service {
 	if d.PollInterval <= 0 {
 		d.PollInterval = 30 * time.Second
 	}
-	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, pending: map[int64]authzChange{}}
+	s := &Service{db: d.DB, bus: d.Bus, plugins: d.Plugins, poll: d.PollInterval, pending: map[int64]pendingChange{}}
 	if d.DB != nil {
 		s.casbin = casbinx.New(casbinx.NewLoader(d.DB), SelfPermissionKeys(), casbinx.Options{})
 	}
@@ -170,6 +170,13 @@ type authzChange struct {
 	Users []int64 `json:"u,omitempty"`
 }
 
+// pendingChange is a version this node bumped: what it changed, and the
+// transaction that bumped it.
+type pendingChange struct {
+	authzChange
+	tx store.TxKey
+}
+
 // parseChange reads an authz:changed payload; false when it is not one.
 func parseChange(payload []byte) (authzChange, bool) {
 	var c authzChange
@@ -180,9 +187,11 @@ func parseChange(payload []byte) (authzChange, bool) {
 // status of users (none: of users it does not name, every user's set then
 // drops), and returns the new value. It also takes the authz_meta row
 // lock, serializing all authz mutations. Holding the lock, v-1 is the
-// latest committed version, so entries this node cached before it are
-// dropped: checks made inside tx never trust a cache that missed a
-// broadcast.
+// latest committed version, unless tx bumped it itself, so entries this
+// node cached before it are dropped: checks made inside tx never trust a
+// cache that missed a broadcast. A version tx bumped is not taken in
+// before it commits: no other connection sees it until then (the
+// enforcer's reads would fall behind it), nor ever after a rollback.
 func (s *Service) Bump(ctx context.Context, tx *gorm.DB, users ...int64) (int64, error) {
 	return s.bump(ctx, tx, false, users)
 }
@@ -202,10 +211,14 @@ func (s *Service) bump(ctx context.Context, tx *gorm.DB, policy bool, users []in
 		return 0, err
 	}
 	c := authzChange{Version: m.Version, Policy: m.PolicyVersion, Users: slices.Clone(users)}
-	s.invalidate(authzChange{Version: c.Version - 1})
+	in := store.TxKeyOf(tx)
 	s.mu.Lock()
-	s.pending[c.Version] = c
+	prev, ok := s.pending[c.Version-1]
+	s.pending[c.Version] = pendingChange{c, in}
 	s.mu.Unlock()
+	if !ok || prev.tx != in {
+		s.invalidate(authzChange{Version: c.Version - 1})
+	}
 	return c.Version, nil
 }
 
@@ -234,9 +247,10 @@ func (s *Service) Committed(ctx context.Context, version int64) {
 		return
 	}
 	s.mu.Lock()
-	c, ok := s.pending[version]
+	p, ok := s.pending[version]
 	delete(s.pending, version)
 	s.mu.Unlock()
+	c := p.authzChange
 	if !ok {
 		c = authzChange{Version: version}
 	}

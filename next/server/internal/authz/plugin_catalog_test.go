@@ -279,9 +279,8 @@ func TestGrantPluginPermission(t *testing.T) {
 	if n := auditCount(t, db, "authz.sync.grant", key, "review"); n != 1 {
 		t.Fatalf("%d audits", n)
 	}
-	if s.Version() <= before {
-		t.Fatal("authz version did not move")
-	}
+	// Announced once the caller's transaction has committed (committedLater).
+	eventually(t, func() bool { return s.Version() > before })
 	grant("user:read", RoleUser)
 	if got := permissionHolders(t, db, "user:read"); slices.Contains(got, RoleUser) {
 		t.Fatalf("a core permission was granted: %v", got)

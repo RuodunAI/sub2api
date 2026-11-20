@@ -2,7 +2,10 @@ package authz
 
 import (
 	"context"
+	"errors"
 	"testing"
+
+	"gorm.io/gorm"
 
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
@@ -50,4 +53,36 @@ func TestVersion(t *testing.T) {
 func (s *Service) currentVersion(ctx context.Context) (int64, error) {
 	v, _, err := s.currentVersions(ctx)
 	return v, err
+}
+
+// A transaction that bumps twice (a plugin upgrade's commit: ApplyDefaults'
+// SyncPlugin, then SetPluginActive) never has the node wait for its own
+// first version: no other connection sees it before the commit, and none
+// ever does after a rollback, which would leave every decision failing.
+func TestBumpTwiceInOneTx(t *testing.T) {
+	t.Parallel()
+	db := testutil.DB(t)
+	s := newService(t, db, newMemBus(), nil)
+	ctx := context.Background()
+	uid := addUser(t, s, "twice@example.com", RoleUser)
+	start := s.Version()
+	rollback := errors.New("rollback")
+	err := db.Tx(ctx, func(tx *gorm.DB) error {
+		if err := s.SyncPlugin(ctx, tx, "guard", nil); err != nil {
+			return err
+		}
+		if err := s.SetPluginActive(ctx, tx, "guard", true); err != nil {
+			return err
+		}
+		if got := s.Version(); got != start {
+			t.Errorf("version inside the transaction: %d, want %d (none committed since)", got, start)
+		}
+		return rollback
+	})
+	if !errors.Is(err, rollback) {
+		t.Fatal(err)
+	}
+	if _, err := s.Can(ctx, uid, "user.read"); err != nil {
+		t.Fatalf("a decision after the rollback: %v", err)
+	}
 }

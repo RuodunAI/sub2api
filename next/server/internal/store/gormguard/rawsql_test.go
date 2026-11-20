@@ -70,6 +70,7 @@ var sqlPolicy = sqlcheck.Policy{
 		"internal/store.DB.WithConn":        "points a session at the connection it took from the pool",
 		"internal/store.SQLTx":              "the database/sql transaction under a handle, for River's InsertTx",
 		"internal/store.InTx":               "whether the connection under a handle is a transaction (RequireTx)",
+		"internal/store.TxKeyOf":            "the transaction under a handle as a key that reaches nothing, to tell one transaction from another",
 		"internal/store.migrateFile":        "runs a migration file on the transaction's connection, past GORM's placeholder parsing",
 		"internal/store/gormtest.AssertRun": "a DryRun session on a connection that stands for a transaction",
 		"internal/testutil.Traced":          "a session on a connection pool that logs the statements of a test",
