@@ -89,8 +89,6 @@
       "reason": { "en": "Store the model catalog", "zh": "保存模型目录" } },
     { "id": "routes.admin",
       "reason": { "en": "Serve the model catalog over the admin API", "zh": "通过管理接口提供模型目录" } },
-    { "id": "kv",
-      "reason": { "en": "Cache small runtime state", "zh": "缓存少量运行时状态" } },
     { "id": "ui.native",
       "reason": { "en": "The API key account form (AnthropicKeyForm)", "zh": "API Key 账号表单（AnthropicKeyForm）" } }
   ],

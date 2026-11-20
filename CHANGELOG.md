@@ -117,7 +117,7 @@
   - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
   - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
 - **非内置插件升级后停用，直到装上新版本。** 内置插件随核心镜像升级（anthropic、openai、gemini、moderation、codex 启用；volcengine、mailer、dynweight、newapi、sub2api、typesafe 只安装，见 `deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）。其余插件——relay、guard、payment，以及装过的 azure_openai、vertex、bedrock——的旧版本在新核心上加载被拒，它们的账号不可用、功能不运行，直到逐个装上新版本。**guard 停着期间它的请求检查静默不运行**：没加载的插件不注册钩子，请求照常放行，只有插件列表上能看到拒绝原因。
-- **重装 relay、azure_openai 时审查多一项 `accounts.credentials`**：声明了账号类型就必须申请它（CONTRACTS §112.12）。develop 上这两个插件的清单只有 `platform.register`。内置的 anthropic、openai、gemini 清单同样新增了这一项，由内置同步自动批准；vertex、bedrock、codex、volcengine 原本就有。codex、volcengine 的清单去掉了 `net`，审查里少了这一项。
+- **重装 relay、azure_openai 时审查多一项 `accounts.credentials`**：声明了账号类型就必须申请它（CONTRACTS §112.12）。develop 上这两个插件的清单只有 `platform.register`。内置的 anthropic、openai、gemini 清单同样新增了这一项，由内置同步自动批准；vertex、bedrock、codex、volcengine 原本就有。codex、volcengine 的清单去掉了 `net`，anthropic 的清单去掉了没有代码用到的 `kv`，审查里少了这些项。
 - **网关也要换。** 插件包不再依赖主节点是网关二进制的改动，单发核心不会生效（核心只改了 `package_gone` 的文案）。网关滚动更新期间不要上传插件：旧网关节点上的上传仍要推主节点，主节点换新后会被拒；旧网关的主节点取不到在新网关节点上传的包。全部换完再上传、启用。
 
 **回退**
