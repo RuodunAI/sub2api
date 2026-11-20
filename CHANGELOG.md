@@ -8,6 +8,12 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 兑换码只有余额一种，兑换不了的码不再被用掉（payment 0.2.0；无迁移）
+
+- 生成兑换码（`POST /redeem-codes`）时 `type` 不写即为 `balance`，写了别的值 400 `unsupported code type`；不再接受 `group_id`、`validity_days`（从没生效过），管理员列表不再返回 `validity_days`。此前不写 `type` 存成空串，`subscription`、`invitation` 或任意字符串也照收。
+- 兑换时先查类型：不是 `balance` 的码返回 400 `unsupported code type`，码保持未使用。此前这样的码被标成已用、接口返回成功，余额却没有变化。new-api 的兑换码同样只给额度。规则见 CONTRACTS §46.6。
+- **升级须知**：库里已有类型不是 `balance` 的未用兑换码（直接调接口生成时没带 `type`，或带了别的类型）的，升级后兑换会被拒、码不再被消耗；需要时作废它们，按 `balance` 重新生成。查询：`SELECT id, type, value FROM plg_payment__redeem_codes WHERE status = 'unused' AND type <> 'balance'`。
+
 ### 审核 OpenAI 生图的提示词（moderation 0.13.0；无迁移，随 0.1.304 发布）
 
 - 审核钩子（调度前的 `moderation` 与按账号的 `moderation_attempt`）加上 `openai.images`、`openai.images_edit`：审 `prompt`，JSON 形式的 edits 另审 `images[].image_url` 的图片（`file_id` 引用和 `mask` 不审）。此前删除 volcengine 时一并删掉了生图提示词的审核，而本批新开放的 OpenAI 生图（OpenAI API Key 账号、codex 账号经转换）只经过封禁钩子，拦截级用户发到 `/v1/images/generations`、`/v1/images/edits` 的违规提示词不审、也不留记录。new-api 对生图请求同样检查提示词。规则见 CONTRACTS §72.3、72.4。

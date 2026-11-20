@@ -27,12 +27,8 @@ const (
 	OrderTypeSubscription = "subscription"
 )
 
-// Redeem code types
-const (
-	RedeemTypeBalance      = "balance"
-	RedeemTypeSubscription = "subscription"
-	RedeemTypeInvitation   = "invitation"
-)
+// RedeemTypeBalance is the only redeem code type: it credits the balance.
+const RedeemTypeBalance = "balance"
 
 // Redeem code statuses
 const (
@@ -133,20 +129,18 @@ type Order struct {
 
 // RedeemCode represents a redeem code
 type RedeemCode struct {
-	ID           int64
-	Code         string
-	CodeHash     string
-	Type         string
-	Value        decimal.Decimal
-	GroupID      *int64
-	ValidityDays int
-	Status       string
-	UsedBy       *int64
-	UsedAt       *time.Time
-	ExpiresAt    *time.Time
-	Notes        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID        int64
+	Code      string
+	CodeHash  string
+	Type      string
+	Value     decimal.Decimal
+	Status    string
+	UsedBy    *int64
+	UsedAt    *time.Time
+	ExpiresAt *time.Time
+	Notes     string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // IsUsed returns true if code is used

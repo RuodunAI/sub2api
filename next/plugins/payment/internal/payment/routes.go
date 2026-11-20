@@ -292,15 +292,14 @@ func (h *HTTPHandler) handleListRedeemCodes(ctx context.Context, req *pluginv1.H
 	items := make([]map[string]any, len(codes))
 	for i, c := range codes {
 		items[i] = map[string]any{
-			"id":            c.ID,
-			"type":          c.Type,
-			"value":         c.Value.String(),
-			"status":        c.Status,
-			"validity_days": c.ValidityDays,
-			"expires_at":    formatTimePtr(c.ExpiresAt),
-			"used_by":       c.UsedBy,
-			"used_at":       formatTimePtr(c.UsedAt),
-			"created_at":    c.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			"id":         c.ID,
+			"type":       c.Type,
+			"value":      c.Value.String(),
+			"status":     c.Status,
+			"expires_at": formatTimePtr(c.ExpiresAt),
+			"used_by":    c.UsedBy,
+			"used_at":    formatTimePtr(c.UsedAt),
+			"created_at": c.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
 		}
 	}
 

@@ -3053,9 +3053,9 @@ QuotaSnapshot = { supported: boolean, source: "passive"|"active"|"", updated_at:
 
 **兑换码**（真实实现）：
 
-- 生成：`POST /redeem-codes {count (1–1000), type, value, group_id?, validity_days?, expires_at?, notes?}`，在一个事务里批量插入，返回明文码。
-- 兑换：`POST /redeem {code}`。先 trim 并转大写，算出 `code_hash`，然后在事务内 `SELECT … FOR UPDATE`，校验状态为 `unused` 且未过期，标记为 `used`。只有 `type = balance` 才调用 `LedgerCredit{idempotency_key = "redeem_code_<code id>", ref_type = "redeem_code"}`。并发兑换由行锁保证只有一次成功。
-  - ⚠ `subscription` 和 `invitation` 类型的码会被标记为已用，但不会产生任何效果。
+- 生成：`POST /redeem-codes {count (1–1000), type?, value, expires_at?, notes?}`，在一个事务里批量插入，返回明文码。**只有 `balance` 一种类型**（与 new-api 的兑换码只给额度相同）：`type` 不写时为 `balance`，写了别的值 400（`unsupported code type`）。0.2.0 起不再接受 `group_id`、`validity_days`（JSON 里的这两个键被忽略、不再写入），此前接受的 `subscription`、`invitation` 从没实现过；表里这两列保留（插件迁移须向后兼容旧版本），不再读写，管理员列表也不再返回 `validity_days`。
+- 兑换：`POST /redeem {code}`。先 trim 并转大写，算出 `code_hash`，然后在事务内 `SELECT … FOR UPDATE`，校验状态为 `unused` 且未过期，再校验 `type = balance`，然后标记为 `used` 并调用 `LedgerCredit{idempotency_key = "redeem_code_<code id>", ref_type = "redeem_code"}`。并发兑换由行锁保证只有一次成功。
+  - 类型不是 `balance` 的码（旧版本存下的空串、`subscription` 等）兑换时 400 `unsupported code type`，**码保持 `unused`**（0.2.0 起；此前标成已用、返回成功，却什么都不给）。管理员可以作废它们，按 `balance` 重新生成。
   - ⚠ 账本调用发生在事务提交之前。如果入账成功而提交失败，码仍然是 `unused`，别人再兑换时只会拿到 `Duplicate`（余额已经记在第一个人名下）。没有失败计数和锁定（常量 `RedeemMaxFailedAttempts` 定义了但没用上），可以被暴力枚举，只靠 128 位随机码的熵兜底。
 
 **优惠码**：
