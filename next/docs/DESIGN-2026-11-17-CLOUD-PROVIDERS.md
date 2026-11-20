@@ -1,6 +1,6 @@
 # 云厂商上游：Vertex AI Gemini、Azure OpenAI、AWS Bedrock，以及 OpenAI 的组织 / 项目参数
 
-2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，已合并进 develop（`9a503d974`），未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；bedrock 清单的 `hostCompat` 写的是 `>=0.1.304 <0.2.0`，实际发布号不是 0.1.304 时要改清单和它的测试（azure_openai 不依赖核心改动，是 `>=0.1.290 <0.2.0`）。
+2026-11-17，设计稿；**已在分支 `feat/cloud-providers` 上实现，已合并进 develop（`9a503d974`），未发布**。代码依据：develop `10d459e59`（核心最新发布 0.1.302）。文中“核心 0.1.N”指带上第 8 节两个扩展点的下一次核心发布。写完之后核心 0.1.303 已经发布（不含本分支，openai 0.4.3 随它发布），所以第一个带本分支的核心是 0.1.304；三个插件的清单 `hostCompat` 都是 `>=0.1.304 <0.2.0`（它们随转发 V2 改成按插件协议 2 构建，旧核心本来就装不上），实际发布号不是 0.1.304 时要改清单和它的测试。
 
 > **2026-11-18 转发 V2（CONTRACTS §112）之后**：核心替插件签名的扩展点（`signing`）删除，签名由插件用 `sdk/reqsign` 自己做；`response_stream` 留在插件交给核心的 `UpstreamRequest` 上；azure_openai 和 openai 改成用 `sdk/pluginsdk/standard` 的代码插件；bedrock 拿到完整请求体后清洗 Claude Code 的深层字段（第 12 节的已知限制已解决）。下文里的 `BuildUpstreamRequest`、补丁、`requestFields`、清单 `upstream` 声明都是当时的接口。现行说明见 CONTRACTS §109、§112 和 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md)。
 
@@ -64,7 +64,7 @@
 | Bedrock | `bedrock_aksk`（长期 AK/SK） | 同上 | gRPC 进程 | 保留键一行 + 请求签名（8.1）+ 响应流格式 |
 | Bedrock | `bedrock_sts`（临时凭证） | 同上 | gRPC 进程 | 同上 |
 
-保留键一行：每个新的第一方插件的键都要加进核心的保留键列表（`server/internal/plugin/install/reserved.go` 的 `reservedKeys`，这次加了 `azure_openai`、`bedrock`、`vertex`），否则 `TestReservedCoverRepo` 失败。所以新增插件并不是“核心零改动”。它只影响没有官方签名的手动上传；Vertex 和 Azure 的功能不依赖它，从市场安装到更早的核心（`hostCompat` 下限 0.1.290）上照样能用。
+保留键一行：每个新的第一方插件的键都要加进核心的保留键列表（`server/internal/plugin/install/reserved.go` 的 `reservedKeys`，这次加了 `azure_openai`、`bedrock`、`vertex`），否则 `TestReservedCoverRepo` 失败。所以新增插件并不是“核心零改动”。它只影响没有官方签名的手动上传；Vertex 和 Azure 的功能不依赖它；三个插件的 `hostCompat` 下限都是 0.1.304（转发 V2，插件协议 2）。
 
 三个新插件都只进市场，不进内置列表（`deploy/docker/build-go.sh:165-166` 不改；市场列表按 `plugins/*` 自动发现，`tools/sub2api-plugin/scripts/build-demo.sh:105-118`）。
 
@@ -157,7 +157,7 @@ WebSocket 路由（`openai.responses_ws`）用同一套共用头，握手也会�
 
 ### 6.3 令牌与错误分类
 
-没有令牌。两个类型都用预设的 `openai` 策略，不新增策略（清单不写 `classify`）。实现中一度加过 `azure_openai` 策略让 404 `DeploymentNotFound` 换号，合并后撤掉了：这件事由管理员在失败处理设置里配重试规则完成（16.5 第 5 条）。插件的 `hostCompat` 是 `>=0.1.290 <0.2.0`。
+没有令牌。两个类型都用预设的 `openai` 策略，不新增策略（清单不写 `classify`）。实现中一度加过 `azure_openai` 策略让 404 `DeploymentNotFound` 换号，合并后撤掉了：这件事由管理员在失败处理设置里配重试规则完成（16.5 第 5 条）。插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`。
 
 | 上游回答 | 结果 | 依据 |
 |---|---|---|
@@ -520,7 +520,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 
 1. openai 0.4.4、vertex 0.1.0：不依赖核心改动，可以先发。openai 是内置插件，随核心同步；vertex 只进市场，管理员自己安装。
 2. 核心 0.1.N（实际是 0.1.304；S1、S2、C1、C2，保留键）：改的是核心里的网关流水线（`server/internal/gateway`），节点外壳 `next/gateway` 没有改动，不用发新网关；按核心发布流程。没有迁移。
-3. bedrock 0.1.0：核心 0.1.N 上线之后发，`hostCompat`（`>=0.1.304`）挡住旧核心。azure_openai 0.1.0 不依赖核心改动（`>=0.1.290`），可以与第 1 步一起发；它的键在 0.1.304 才进保留键列表。都只进市场。
+3. azure_openai、vertex、bedrock 0.1.0：核心 0.1.304 上线之后发，`hostCompat`（`>=0.1.304`）挡住旧核心。都只进市场。
 
 回滚：
 
@@ -552,7 +552,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
 
 1. **插件键**：Azure 插件的键是 `azure_openai`，目录是 `plugins/azure-openai`，`creationGroup` 仍是 `azure-openai`。
 2. **新插件需要一行核心改动**：三个新插件的键加进保留键列表（`install/reserved.go`），见第 4 节表下的说明。设计写的“需要核心改动：无”不成立。
-3. **版本**：Vertex 和 Azure 的 `hostCompat` 是 `>=0.1.290 <0.2.0`；Bedrock 是 `>=0.1.304 <0.2.0`（第 8 节的两个扩展点）。核心 0.1.303 已发布、不含本分支，第一个带本分支的核心是 0.1.304。openai 是 0.4.4，清单的 `hostCompat` 仍是 `>=0.1.290 <0.2.0`；0.4.3 已随核心 0.1.303 发布。
+3. **版本**：Vertex、Azure、Bedrock 的 `hostCompat` 都是 `>=0.1.304 <0.2.0`（转发 V2 起按插件协议 2 构建；Bedrock 另依赖第 8 节的两个扩展点）。核心 0.1.303 已发布、不含本分支，第一个带本分支的核心是 0.1.304。openai 随这一批是 0.5.0（`>=0.1.304 <0.2.0`）；0.4.3 已随核心 0.1.303 发布。
 4. **发布说明里的“网关二进制有变更”**指核心里的网关流水线，节点外壳没有改动（第 13 节已改）。
 
 ### 16.2 核心扩展点（第 8 节）
@@ -591,7 +591,7 @@ Vertex 和 Bedrock 首版没有 docker e2e：那需要一个在生产包里也�
    - 拒绝：带 `deployments/...`、`chat/completions`、`/models` 等路径；带查询串或 `#`；带 `用户@`；大小写不同的 `/OpenAI/V1`；协议大写；前后有空格。报错文字是“只填资源地址，不要带 deployments、chat/completions 或 api-version”。
    - **`http://` 仍然接受**，因为 docker e2e 的模拟上游是 http。生产上应当只填 https。
 4. `azure_deployment` 的 `api_version` 存在设置里，经 `credentials.fields` 进路径模板；`azure_v1` 没有这个字段。
-5. **分类策略是 `openai`，与设计一致**。实现中加过 `azure_openai` 策略（`openai.AzurePolicy`，404 `DeploymentNotFound` 换号、不动账号，`hostCompat >=0.1.304`），合并后撤掉：失败策略发布后请求是否重试、换号只由失败策略决定（`server/internal/gateway/dispatch.go` 的 `applyClassification`、`failure_policy_runtime.go` 的 `classifyFailure`），插件分类的 action 不参与，这条规则只在没有发布失败策略时才起作用。现在由管理员在失败处理设置里加重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`，不配账号规则，见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md) §3.4）。`classify` 可取的名字仍是 `openai`、`anthropic`、`gemini`，插件的 `hostCompat` 是 `>=0.1.290 <0.2.0`。
+5. **分类策略是 `openai`，与设计一致**。实现中加过 `azure_openai` 策略（`openai.AzurePolicy`，404 `DeploymentNotFound` 换号、不动账号，`hostCompat >=0.1.304`），合并后撤掉：失败策略发布后请求是否重试、换号只由失败策略决定（`server/internal/gateway/dispatch.go` 的 `applyClassification`、`failure_policy_runtime.go` 的 `classifyFailure`），插件分类的 action 不参与，这条规则只在没有发布失败策略时才起作用。现在由管理员在失败处理设置里加重试规则（上游 HTTP 响应、404、关键词 `DeploymentNotFound` / `model_not_found`，不配账号规则，见 [PLUGIN-CLOUD-PROVIDERS.md](PLUGIN-CLOUD-PROVIDERS.md) §3.4）。`classify` 可取的名字仍是 `openai`、`anthropic`、`gemini`，插件的 `hostCompat` 是 `>=0.1.304 <0.2.0`。
 
 ### 16.6 Vertex AI（第 7 节）
 
