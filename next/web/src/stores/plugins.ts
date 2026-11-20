@@ -48,12 +48,15 @@ export const usePluginStore = defineStore('plugins', () => {
     return assetURL(p, p.native_entry)
   }
 
+  /** A trusted plugin's native UI built for another host UI contract (an older package): it is not loaded; upgrading the plugin fixes it. */
+  function uiOutdated(p: UIPlugin): boolean {
+    return !!p.native_entry && TRUSTED.has(String(p.trust)) && !satisfiesRange(HOST_UI_VERSION, p.host_ui_compat)
+  }
+
   function nativeAllowed(p: UIPlugin): { ok: boolean; reason?: string } {
     if (!p.native_entry) return { ok: false }
     if (!TRUSTED.has(String(p.trust))) return { ok: false, reason: `untrusted publisher (${p.trust})` }
-    if (!satisfiesRange(HOST_UI_VERSION, p.host_ui_compat)) {
-      return { ok: false, reason: `hostUICompat ${p.host_ui_compat} does not match host UI ${HOST_UI_VERSION}` }
-    }
+    if (uiOutdated(p)) return { ok: false, reason: `hostUICompat ${p.host_ui_compat} does not match host UI ${HOST_UI_VERSION}` }
     return { ok: true }
   }
 
@@ -166,6 +169,12 @@ export const usePluginStore = defineStore('plugins', () => {
     return p && pg ? { plugin: p, page: pg } : null
   }
 
+  /** The listed plugin's native UI is outdated (see uiOutdated). */
+  function outdated(key: string): boolean {
+    const p = plugin(key)
+    return !!p && uiOutdated(p)
+  }
+
   function component(key: string, name: string | undefined): Component | undefined {
     if (!name) return undefined
     return components[key]?.[name]
@@ -200,6 +209,7 @@ export const usePluginStore = defineStore('plugins', () => {
     reset,
     plugin,
     page,
+    outdated,
     component,
     slotEntries,
     nativeAllowed

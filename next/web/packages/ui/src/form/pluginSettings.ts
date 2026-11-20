@@ -1,11 +1,9 @@
 // usePluginSettings: a plugin's settings (GET / PUT /plugins/:key/settings,
-// CONTRACTS §75) as a form, taken from the console's settings tab
-// (views/plugins/detail/SettingsTab.vue): the loaded value with the
-// defaults filled is the "unchanged" baseline; saving validates, PUTs the
-// whole value, toasts, and reads the settings again (as the console does
-// after saving: kept and new secrets come back as "******"), without
-// switching to `loading`; on refusal it shows the field errors at their
-// fields (errors of the whole object as a toast). Secrets come back as
+// CONTRACTS §75) as a form: the loaded value with the defaults filled is the
+// "unchanged" baseline; saving validates, PUTs the whole value, toasts, and
+// reads the settings again (kept and new secrets come back as "******"),
+// without switching to `loading`; on refusal it shows the field errors at
+// their fields (errors of the whole object as a toast). Secrets come back as
 // "******" and go back as is to keep them; a caller with only the plugin's
 // settings permission who changes something while keeping a secret is
 // asked to type it again (field code "reenter").

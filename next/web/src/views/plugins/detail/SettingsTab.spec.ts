@@ -19,7 +19,7 @@ const MailerSettings = defineComponent({
   }
 })
 vi.mock('@/stores/plugins', () => ({
-  usePluginStore: () => ({ listed: true, pending: {}, errors: {}, component: (key: string, name?: string) => (key === 'mailer' && name === 'MailerSettings' ? MailerSettings : undefined), refresh: vi.fn() })
+  usePluginStore: () => ({ listed: true, pending: {}, errors: {}, outdated: () => false, component: (key: string, name?: string) => (key === 'mailer' && name === 'MailerSettings' ? MailerSettings : undefined), refresh: vi.fn() })
 }))
 enableAutoUnmount(afterEach)
 

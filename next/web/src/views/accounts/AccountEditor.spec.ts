@@ -23,7 +23,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), patch: vi.fn(), p
 vi.mock('@sub2api/host', async (original) => ({ ...await original<object>(), api: mocks }))
 vi.mock('@sub2api/ui', async (original) => ({ ...await original<typeof import('@sub2api/ui')>(), toast: mocks.toast }))
 const ownership = vi.hoisted(() => ({ scope: 'all' as 'all' | 'own' }))
-const pluginStore = vi.hoisted(() => ({ listed: true, pending: {} as Record<string, boolean>, errors: {} as Record<string, string>, plugin: () => null, component: (() => null) as (key: string, name?: string) => unknown, slotEntries: (() => []) as (slot: string) => unknown[], refresh: vi.fn() }))
+const pluginStore = vi.hoisted(() => ({ listed: true, pending: {} as Record<string, boolean>, errors: {} as Record<string, string>, plugin: () => null, outdated: () => false, component: (() => null) as (key: string, name?: string) => unknown, slotEntries: (() => []) as (slot: string) => unknown[], refresh: vi.fn() }))
 vi.mock('@/stores/plugins', () => ({ usePluginStore: () => pluginStore, assetURL: () => '' }))
 const perms = vi.hoisted(() => ({ denied: [] as string[] }))
 // Keys compare in their canonical spelling (CONTRACTS §21).
@@ -55,6 +55,7 @@ function render(account?: Account, realSelect = false, type: AccountType = accou
     SSettingsGroup: { template: '<div><slot /></div>' },
     SField: { props: ['error'], template: '<div><slot /><p v-if="error">{{ error }}</p><slot v-else name="hint" /></div>' },
     SHint: { template: '<p><slot /></p>' },
+    SAlert: { props: ['title'], template: '<div><b v-if="title">{{ title }}</b><slot /></div>' },
     SSegmented: false,
     SSelect: realSelect ? false : { props: ['modelValue', 'options', 'disabled', 'searchable'], emits: ['update:modelValue'], template: '<input :value="modelValue" :disabled="disabled" @input="$emit(\'update:modelValue\', $event.target.value)" />' },
     // Like SInput, type="number" emits a number (null when empty).
@@ -93,6 +94,36 @@ describe('a form mode this console does not render', () => {
     expect(w.find('[data-testid="form-unavailable-old"]').exists()).toBe(true)
     await w.get('form').trigger('submit'); await flushPromises()
     expect(mocks.patch).toHaveBeenCalledWith('/accounts/1', expect.objectContaining({ credentials: { api_key: '******' } }))
+  })
+
+  // A refused credential field has no plugin form to show it: the editor lists it.
+  const refusedKey = () => new ApiError(400, { code: 'invalid_argument', message: 'invalid', details: { fields: [{ field: 'credentials.extra', code: 'unknown', message: 'unknown field' }] } })
+
+  it('lists the refused credential fields itself', async () => {
+    mocks.patch.mockRejectedValueOnce(refusedKey())
+    const w = render({ ...savedAccount(), credentials: { api_key: '******', extra: 'x' } } as unknown as Account, false, oldType)
+    await flushPromises()
+    expect(w.find('[data-testid="credential-errors"]').exists()).toBe(false)
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(w.get('[data-testid="credential-errors"]').text()).toBe('插件未接受以下凭证字段extra: unknown field')
+    expect(w.getComponent(AccountEditorNav).props('errors')).toMatchObject({ connection: true })
+  })
+
+  it('lists them when the native form failed to load, and leaves them to a loaded form', async () => {
+    pluginStore.component = () => null
+    mocks.patch.mockRejectedValueOnce(refusedKey())
+    const w = render(savedAccount())
+    await flushPromises()
+    await w.get('form').trigger('submit'); await flushPromises()
+    expect(w.get('[data-testid="credential-errors"]').text()).toContain('extra: unknown field')
+
+    pluginStore.component = () => KeyForm
+    mocks.patch.mockRejectedValueOnce(refusedKey())
+    const loaded = render(savedAccount())
+    await flushPromises()
+    await loaded.get('form').trigger('submit'); await flushPromises()
+    expect(loaded.getComponent(KeyForm).vm.$attrs.errors).toEqual({ extra: 'unknown field' })
+    expect(loaded.find('[data-testid="credential-errors"]').exists()).toBe(false)
   })
 })
 

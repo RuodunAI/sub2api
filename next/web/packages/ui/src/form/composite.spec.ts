@@ -10,7 +10,7 @@ import SSettingsGroup from '../SSettingsGroup.vue'
 import SInput from '../SInput.vue'
 import SField from '../SField.vue'
 import { confirmState, settleConfirm, toastState } from '../feedback'
-import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-router'
 import { createApiKeyForm } from './apiKeyForm'
 import { nativeAccountFormProps, useCredentialForm, type NativeAccountFormProps } from './credential'
 import SFormSection from './SFormSection.vue'
@@ -273,7 +273,8 @@ describe('SFormSection', () => {
 
 // The anthropic account form written with createApiKeyForm (DESIGN §5.10):
 //   api_key required, any non-blank string (DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES §5.1);
-//   base_url ^(https?://[^\s?#]+)?$ with the preset https://api.anthropic.com; no defaults.
+//   base_url as the plugins' apikey.NormalizeBaseURL takes it (trimmed; http(s), any scheme case, a host,
+//   no userinfo, whitespace, query or fragment) with the preset https://api.anthropic.com; no defaults.
 describe('createApiKeyForm: the anthropic form', () => {
   const Anthropic = createApiKeyForm({
     baseUrl: { presets: ['https://api.anthropic.com'], placeholder: () => 'Leave empty to use https://api.anthropic.com' },
@@ -294,6 +295,10 @@ describe('createApiKeyForm: the anthropic form', () => {
     { name: 'key with a space', key: 'sk-ant api03', out: { api_key: 'sk-ant api03' }, ok: true },
     { name: 'base URL with a query', key: 'sk-ant-api03-abcdef', url: 'https://x.example.com/?a=1', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https://x.example.com/?a=1' }, ok: false },
     { name: 'base URL not http', key: 'sk-ant-api03-abcdef', url: 'ftp://x.example.com', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'ftp://x.example.com' }, ok: false },
+    { name: 'base URL with an upper-case scheme', key: 'sk-ant-api03-abcdef', url: 'HTTPS://x.example.com', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'HTTPS://x.example.com' }, ok: true },
+    { name: 'base URL with @ in the path', key: 'sk-ant-api03-abcdef', url: 'https://x.example.com/a@b', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https://x.example.com/a@b' }, ok: true },
+    { name: 'base URL with userinfo', key: 'sk-ant-api03-abcdef', url: 'https://user:pass@x.example.com', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https://user:pass@x.example.com' }, ok: false },
+    { name: 'base URL without a host', key: 'sk-ant-api03-abcdef', url: 'https:///v1', out: { api_key: 'sk-ant-api03-abcdef', base_url: 'https:///v1' }, ok: false },
     { name: 'key of 513 characters', key: 'k'.repeat(513), out: { api_key: 'k'.repeat(513) }, ok: true }
   ]
   for (const c of cases) {
@@ -309,6 +314,18 @@ describe('createApiKeyForm: the anthropic form', () => {
       expect(await validate()).toBe(c.ok)
     })
   }
+
+  // A URL box strips surrounding ASCII spaces itself; other Unicode spaces
+  // (a pasted no-break space) reach the rules, and the plugin trims them too.
+  it('trims surrounding Unicode spaces of the base URL as the plugin does, and takes a blank one as empty', async () => {
+    const verdicts: Record<string, boolean> = {}
+    for (const base_url of ['\u00a0https://x.example.com/a\u00a0', '\u00a0', '\u00a0https://user@x.example.com']) {
+      const { validate } = editor(Anthropic, { modelValue: { api_key: 'sk-ant-api03-abcdef', base_url } })
+      await flushPromises()
+      verdicts[base_url] = await validate()
+    }
+    expect(verdicts).toEqual({ '\u00a0https://x.example.com/a\u00a0': true, '\u00a0': true, '\u00a0https://user@x.example.com': false })
+  })
 
   it('labels, star, placeholders and the preset menu', async () => {
     const { w } = editor(Anthropic)
@@ -755,6 +772,44 @@ describe('SSettingsPage route leave', () => {
     settleConfirm(true)
     await again
     expect(router.currentRoute.value.path).toBe('/other')
+  })
+
+  it('asks before another ?tab= of the same route unmounts it', async () => {
+    fakeHost(['plugin:manage'])
+    const { api } = settingsApi({ values: { host: 'a' } })
+    let settings!: PluginSettingsForm<M>
+    const Settings = defineComponent({
+      setup() {
+        settings = usePluginSettings<M>({ pluginKey: 'demo', api, rules: {} })
+        return () => h(SSettingsPage, { settings })
+      }
+    })
+    // Like the console's plugin detail page: the tab is the address's ?tab=.
+    const Detail = defineComponent({
+      setup() {
+        const route = useRoute()
+        return () => (route.query.tab === 'settings' ? h(Settings) : h('p', 'overview'))
+      }
+    })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Detail }] })
+    await router.push('/?tab=settings')
+    const w = mount(RouterView, { global: { plugins: [router] } })
+    mounted.push(w)
+    await flushPromises()
+    settings.set('host', 'b')
+    const switching = router.replace({ query: { tab: 'overview' } })
+    await flushPromises()
+    expect(confirmState.current?.title).toBe('Discard unsaved changes?')
+    settleConfirm(false)
+    await switching
+    expect(router.currentRoute.value.query.tab).toBe('settings')
+    expect(w.find('[data-testid="plugin-settings"]').exists()).toBe(true)
+    const again = router.replace({ query: { tab: 'overview' } })
+    await flushPromises()
+    settleConfirm(true)
+    await again
+    await flushPromises()
+    expect(w.text()).toBe('overview')
   })
 })
 

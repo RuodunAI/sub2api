@@ -127,11 +127,14 @@ export function keyAndUrlCases(key: string, url: string, required: boolean, fill
     { name: 'base URL with a space', ...withUrl('https://x.example.com/a b'), ok: false },
     { name: 'base URL not http', ...withUrl('ftp://x.example.com'), ok: false },
     { name: 'base URL without a host', ...withUrl('https://'), ok: false },
+    { name: 'base URL with userinfo', ...withUrl('https://user:pass@x.example.com'), ok: false },
     { name: 'edit: untouched', stored, out: stored, ok: true },
     { name: 'edit: the emptied key box keeps the stored key', stored, input: { api_key: '' }, out: stored, ok: true },
     { name: 'edit: a new key replaces it', stored, input: { api_key: key }, out: { ...stored, api_key: key }, ok: true },
     { name: 'edit: a blank new key', stored, input: { api_key: '   ' }, out: { ...stored, api_key: '   ' }, ok: false },
     { name: 'edit: a stored base URL the rules refuse', stored: { ...stored, base_url: 'ftp://x.example.com' }, out: { ...stored, base_url: 'ftp://x.example.com' }, ok: false },
+    // A URL box strips surrounding ASCII spaces itself; other Unicode spaces reach the rules, and the plugin trims them (blank: none given).
+    { name: 'edit: a base URL of no-break spaces', stored: { ...stored, base_url: '\u00a0' }, out: { ...stored, base_url: '\u00a0' }, ok: !required },
     { name: 'edit: a key the form does not know goes back as it is', stored: { ...stored, legacy: 'x' }, out: { ...stored, legacy: 'x' }, ok: true }
   ]
 }

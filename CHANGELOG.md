@@ -30,6 +30,7 @@
 
 - 界面包 `@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 升到 4.0.0（`HOST_UI_VERSION`），删掉 `SchemaForm`、`SchemaField` 等 schema 导出；控制台删掉声明式表单、表格、表单页的渲染。全部带原生界面的第一方插件（16 个，payment 没有界面）`hostUICompat` 都是 `^4.0`。
 - `@sub2api/ui` 新增：`SFormSection`（表单分节：标题、说明、可折叠，有值或有错误时自动展开；`createApiKeyForm` 的 `section` 可写 `{ title, help, collapsed }`）、`SDateTimeInput`（RFC 3339 的日期时间输入，清空不发该键；`createApiKeyForm` 的 `date-time` 改用它）、`nativeAccountFormProps`（§23.5 props 的运行时对象，插件写 `defineProps(nativeAccountFormProps)`）、`useForm` 的 `bindNumber(path)`（数字框清空时不发该键）、`SSecretInput` 的 `plain`（敏感地址用文本框输入）；`createApiKeyForm` 的额外字段可写 `mono`（`text`、`textarea` 用等宽字体）。`useForm` 的 `get()` 在写入后的同一拍里渲染时不再丢掉对值的依赖（此前 `v-if` 绑在 `get()` 上的字段第二次切换后不再更新）。
+- `SSettingsPage` 在同一路由换查询参数时也先询问未保存的修改：插件详情页切换 `?tab=` 标签（mailer、codex、guard 的设置就在这个标签里）、插件页面用 `?tab=` 切分区，此前只在离开路由时询问，切走设置标签修改直接丢失。
 - `@sub2api/ui/testing`：账号表单（`fakeHost`、`mountAccountForm`、`fillControls`、`keyAndUrlCases`）、设置表单（`fakeCore`、`mountSettings`）、文案（`checkMessages`）的测试辅助和 `cleanup`；只能在 spec 里引用，不进 import map。
 - 仓库里的插件界面工程用控制台的 vite、vue-tsc、vitest 构建和测试（`@sub2api/vite-preset` 提供基础 tsconfig 与构建配置），CI 的插件界面检查任何一步失败都报错；工程有自己的 lockfile 时才 `npm ci`。
 
@@ -45,7 +46,7 @@
 #### 升级须知
 
 - **非内置的带界面插件要管理员装上新版本**：relay、guard、azure-openai、vertex、bedrock（payment 没有界面，本节不涉及它，但仍要按 0.1.304 的升级须知重装）。内置插件随核心升级。重装审查多一项“在控制台运行插件界面”（`ui.native`）。
-- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“不支持的页面类型：{type}”（`table` 或 `form`）。
+- **装着旧包也照常加载**（加载时只检查契约版本）：schema 模式的账号类型照常服务，控制台编辑页的凭证部分显示“此插件版本的界面已不受支持，请升级插件”，其它部分照常保存；按 3.x 界面契约构建的原生界面（`hostUICompat` 不含 4.0）不加载，账号表单、插件设置和插件页面同样显示这句（此前显示版本不匹配的技术原因和一个无用的“重试”）；保存时插件拒绝的凭证字段，在没有插件表单可显示的这些情况下由编辑页自己列出（此前只在左侧分区标红，没有任何文字）；schema 设置、带 schema 却没写 `secrets` 的 native 设置，值全部遮蔽，控制台不显示设置页；声明式页面显示“不支持的页面类型：{type}”（`table` 或 `form`）。
 - **第三方插件作者**：表单与页面只能用 native（受信任发布者）或 iframe 写，设置的密钥在 `ui.settings.secrets` 里声明。schema 模式的第三方插件升级后没有界面（见上一条），新包上传时报 `unsupported`。直接用 SDK 预设或 `apikey.Spec` 而没写 `Fields` 的插件，用新 SDK 重新编译后保存账号时拒绝 `api_key`、`base_url` 以外的键（`unknown`）；已存账号带其它键的，下次保存会被拒，要在 `Fields` 里列出这些键。
 - **已存的越界设置值让升级后的第一次保存失败**：插件设置的校验从控制台搬到了插件（`ValidateSettings`），库里已存着越界或不合规则的值时（例如 mailer 的 `timeout_seconds`、guard 的冷却时间、moderation 的数值项，以及下面“审核题集”里那几种题集），之后在任何设置页保存都会被拒，直到把那个值改对；审核题集也可以改回用内置题集。请求时的行为不变。
 
@@ -53,7 +54,7 @@
 
 所有者要求“密钥不要做任何限制”、地址里的 `%2F` 不再被还原、版本后缀“没有就加上，有就不管”。规则见 CONTRACTS §127。
 
-- **密钥不再限制格式和长度**：`apikey.Spec` 管的 `api_key`（anthropic、openai、gemini、typesafe、relay、newapi、sub2api、azure-openai、volcengine 两种类型、vertex_apikey）以及 bedrock 的 `api_key` 只要求是非空字符串，保存去掉首尾空白后的值；不再检查前缀、字符集和长度（原来 8–512 个可见 ASCII 字符，openai 另有 512 上限，bedrock 8–2048）。带 CR、LF 等控制字符的密钥能保存，但每次请求都以“请求头无效”失败，不会注入请求头。`createApiKeyForm` 的 `api_key` 默认规则改为只要求非空（`min`、`max`、`pattern` 仍可按需写）。newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`。bedrock 的 AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不变。
+- **密钥不再限制格式和长度**：`apikey.Spec` 管的 `api_key`（anthropic、openai、gemini、typesafe、relay、newapi、sub2api、azure-openai、volcengine 两种类型、vertex_apikey）以及 bedrock 的 `api_key` 只要求是非空字符串，保存去掉首尾空白后的值；不再检查前缀、字符集和长度（原来 8–512 个可见 ASCII 字符，openai 另有 512 上限，bedrock 8–2048）。带 CR、LF 等控制字符的密钥能保存，但每次请求都以“请求头无效”失败，不会注入请求头。`createApiKeyForm` 的 `api_key` 默认规则改为只要求非空（`min`、`max`、`pattern` 仍可按需写）；`base_url` 的默认规则改为与插件后端一致：首尾的空白不再报格式错误（地址框本就会去掉首尾的 ASCII 空格，不换行空格等其它空白也一样），只有空白算没填，scheme 不分大小写，带 userinfo（`https://user:pass@host`）、没有主机（`https:///v1`）的地址当场报错，不再等保存时由插件拒绝。newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`。bedrock 的 AK/SK/会话令牌、vertex 密钥文件、volcengine AK/SK 不变。
 - **基础地址按填写的保存**：只去首尾空白、scheme 转小写、去掉末尾的 `/`；路径的转义原样保留（`%2F`、`%7E` 不再还原成 `/`、`~`），保存时不再剥掉版本后缀（`/v1`、`/v1beta`、`/openai`、`/openai/v1`、`/api/v3`）。控制台显示的就是填写的地址。
 - **请求时至多去掉一个版本段**：插件按账号类型声明的版本段（`apikey.Spec.Versions`，原 `StripSuffixes`），在地址转义形式的路径末尾整段、区分大小写地去掉最长的一个（scheme 和主机不参与），再把各接口的完整路径接上。所以 `https://x/v1/v1` 现在请求 `https://x/v1/v1/...`（以前少一段 `/v1`，配不通）；`…/a%2Fv1` 不算版本。gemini、newapi、sub2api 的地址带另一个版本时按接口换成它要的版本（如 gemini 填 `…/v1` 请求 `…/v1beta/...`）。volcengine 中转（`relay`）的地址规则不变，带 `/v1`、`/api/v3` 仍在保存时拒绝，也按转义形式判断（`…/a%2Fv1` 接受，此前误拒）。
 - **受限地址比较认版本段**：清单 `accountTypes[].guardedSettings[]` 新增可选的 `versions`（如 `["/v1"]`）：核心比较受限设置时，提交值、`allowed` 各项、账号原值都先按同一规则去掉至多一个版本段，所以没有 `account:settings:custom` 的人填带版本的官方地址（如 `https://api.openai.com/v1`）也能保存。没写 `versions` 的受限设置行为不变。清单检查：每项非空、以 `/` 开头、不以 `/` 结尾、不重复。`GET /account-types` 的 `guarded_settings` 随之带出 `versions`（没写时不出现）。写了它的清单：anthropic、openai、typesafe、gemini、volcengine `apikey`（CONTRACTS §21.3）。

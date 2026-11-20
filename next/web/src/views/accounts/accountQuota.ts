@@ -75,7 +75,7 @@ export function useQuotaClock(): Readonly<Ref<number>> {
 
 // ---------------------------------------------------------------- manual refresh
 
-export type RefreshOutcome = 'ok' | 'busy' | 'throttled' | 'error'
+export type RefreshOutcome = 'ok' | 'busy' | 'error'
 
 export interface RefreshOptions<T> {
   /** A fresh snapshot for the account. */

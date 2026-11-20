@@ -24,7 +24,7 @@ const accounts = computed(() => Object.fromEntries(props.served.map(s => [s.prot
   <div class="space-y-2" data-testid="group-served-protocols">
     <SHint v-if="!groups.length" size="xs" tone="warning" data-testid="group-served-none">{{ t('platforms.servedNone') }}</SHint>
     <template v-else>
-      <PlatformEndpointList v-for="g in groups" :key="g.id" v-bind="g" known :accounts="accounts" />
+      <PlatformEndpointList v-for="g in groups" :key="g.id" v-bind="g" :accounts="accounts" />
       <SHint size="xs">{{ t('platforms.servedHint') }}</SHint>
     </template>
   </div>

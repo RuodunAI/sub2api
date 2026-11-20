@@ -65,7 +65,6 @@ interface MockAccountType {
   subset?: string[]
   default_models?: string[]
   default_model_mapping?: Record<string, string>
-  extensions_schema?: { type: 'object'; properties: Record<string, unknown> }
   default_limits?: Record<string, unknown>
   /** Declared common controls (mock/controls.ts); others come from the plugin manifest. */
   common_controls?: Record<string, any>
