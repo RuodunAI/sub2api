@@ -193,3 +193,23 @@ describe('plugin store slots', () => {
     ])
   })
 })
+
+describe('plugin store outdated native UIs', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    mocks.get.mockReset()
+  })
+
+  it('marks a trusted native UI built for another host UI contract as outdated and does not load it', async () => {
+    mocks.get.mockResolvedValue([
+      { ...plugin(OLD, 'fast-plugin.ts'), host_ui_compat: '^3.20' },
+      { ...plugin(FAST, 'fast-plugin.ts'), host_ui_compat: '^4.0' },
+      { ...plugin('community', 'fast-plugin.ts'), host_ui_compat: '^3.20', trust: 'community' }
+    ])
+    const store = usePluginStore()
+    await store.refresh()
+    expect([OLD, FAST, 'community', 'gone'].map(k => store.outdated(k))).toEqual([true, false, false, false])
+    expect(store.component(OLD, 'FastPage')).toBeUndefined()
+    expect(store.errors[OLD]).toBe('hostUICompat ^3.20 does not match host UI 4.0.0')
+  })
+})

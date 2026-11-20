@@ -628,7 +628,7 @@ const { save } = useAccountSave({
               </PluginComponent>
             </template>
             <!-- An older package's form mode: the credentials are sent back unchanged. -->
-            <SAlert v-else tone="warning" data-testid="form-unavailable-old">{{ t('accounts.formUnavailableOld') }}</SAlert>
+            <SAlert v-else tone="warning" data-testid="form-unavailable-old">{{ t('pluginHost.outdated') }}</SAlert>
 
             <div class="mt-4 space-y-3 empty:hidden">
               <PluginSlot name="account.form.widgets" :props="{ account, accountType, credentials }" />

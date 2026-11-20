@@ -4,12 +4,13 @@ import { useI18n } from 'vue-i18n'
 import { SButton, SHint, SSpinner } from '@sub2api/ui'
 import { usePluginStore } from '@/stores/plugins'
 
-// A component a plugin registered in its native module (a settings form, an
-// account credential form), shown the way plugin pages show theirs: a spinner
-// while the plugin list or the plugin's module loads, then the component, or
-// why there is none (the module failed to load, the component is not
-// registered, it failed while rendering) with Retry. Retry loads the plugin
-// list and the modules not loaded again, or remounts a component that failed.
+// A component a plugin registered in its native module (a plugin page, a
+// settings form, an account credential form): a spinner while the plugin list
+// or the plugin's module loads, then the component, or why there is none (the
+// module failed to load, the component is not registered, it failed while
+// rendering) with Retry. Retry loads the plugin list and the modules not
+// loaded again, or remounts a component that failed. A module built for an
+// older UI contract asks to upgrade the plugin instead (Retry cannot help).
 // The caller renders the component in the default slot ({ component }), so
 // it binds its own props and ref; a failure stays inside this box.
 const props = defineProps<{ pluginKey: string; name?: string }>()
@@ -23,8 +24,10 @@ const crashed = ref('')
 const attempt = ref(0)
 const retrying = ref(false)
 
+const outdated = computed(() => plugins.outdated(props.pluginKey))
 const problem = computed(() => {
   if (crashed.value) return t('pluginHost.componentCrashed', { reason: crashed.value })
+  if (outdated.value) return t('pluginHost.outdated')
   const reason = plugins.errors[props.pluginKey]
   return reason ? t('pluginHost.nativeFailed', { reason }) : t('pluginHost.nativeMissing', { component: props.name || '?' })
 })
@@ -57,6 +60,6 @@ async function retry() {
   <slot v-else-if="component && !crashed" :key="attempt" :component="component" />
   <div v-else class="flex flex-wrap items-center gap-3" data-testid="plugin-component-failed">
     <SHint tone="danger">{{ problem }}</SHint>
-    <SButton size="sm" icon="refresh" :loading="retrying" data-testid="plugin-component-retry" @click="retry">{{ t('pluginHost.retry') }}</SButton>
+    <SButton v-if="!outdated" size="sm" icon="refresh" :loading="retrying" data-testid="plugin-component-retry" @click="retry">{{ t('pluginHost.retry') }}</SButton>
   </div>
 </template>
