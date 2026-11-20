@@ -7,11 +7,11 @@ package volcengine
 //	POST /api/v3/contents/generations/tasks        video_submit (usageSource plugin)
 //	GET  /api/v3/contents/generations/tasks/:id    video_query  (core snapshot, billing free)
 //
-// Both are also served under /doubao/api/v3 (endpoints doubao_video_submit /
-// doubao_video_query, same protocols, task kind "doubao_video"). The plugin
-// sees only the protocol, never the client path, so nothing here depends on
-// which prefix the client used; the response carries the core's public task
-// ID, not a URL, so there is no polling path to keep in step with the prefix.
+// Both are also served under /v1/contents/generations/tasks (endpoints
+// v1_video_submit / v1_video_query, same protocols, task kind "v1_video").
+// The plugin sees only the protocol, never the client path, so nothing here
+// depends on which path the client used; the response carries the core's
+// public task ID, not a URL, so there is no polling path to keep in step.
 //
 //	ParseTaskSubmission    parses the upstream ID, initial snapshot and estimate
 //	videoUsage             computes that estimate without storing task identity
@@ -62,7 +62,7 @@ const TaskIDParam = "task_id"
 
 // videoTasksPath is Ark's own task collection, under the account's video
 // prefix. It is the upstream path, independent of the client-facing one
-// (/api/v3/... or /doubao/api/v3/...).
+// (/api/v3/... or /v1/...).
 //
 // A function rather than a constant because the prefix is per account: a relay
 // may mount Ark's native video tasks under its own namespace
@@ -124,12 +124,7 @@ const (
 	runningCheckSec = 30
 )
 
-// The estimate itself lives in videospec.go. What used to be here - a
-// tier-to-16:9-pixels switch, a fixed 10-second assumption and a
-// ModelMaxResolution table - could not do better, because the usage reading was not
-// shown the request (CONTRACTS §25.5 gap 1). It is now, so the estimate reads
-// the requested resolution, ratio and duration instead of guessing them, and
-// uses Ark's own per-generation pixel table rather than assuming 16:9.
+// The estimate itself lives in videospec.go.
 
 // ---------------------------------------------------------------- submission
 
@@ -359,14 +354,8 @@ func (p *Plugin) readTaskQuery(entry *pluginv1.ReconcileEntry, answer *pluginv1.
 // succeededTokens is the real output-token usage of a finished task:
 // usage.completion_tokens, falling back to usage.total_tokens. It returns 0
 // when Ark reports a succeeded task with NO usage at all, which the caller
-// turns into SETTLED_ESTIMATE rather than into a settle at zero.
-//
-// It does not read the historical plugin est_tokens column: that column was this
-// plugin's workaround for a core that could not express "keep the estimate",
-// and reading it here meant the plugin restating a figure the core already
-// held on the reserved row - two copies of one number, with the plugin's copy
-// the one that could be missing (a ledger write that failed at submit, a task
-// from before the table existed) and silently settle the row at zero.
+// turns into SETTLED_ESTIMATE rather than into a settle at zero: the core
+// holds the estimate on the reserved row.
 func succeededTokens(body []byte) int64 {
 	if n := gjson.GetBytes(body, "usage.completion_tokens").Int(); n > 0 {
 		return n

@@ -369,13 +369,6 @@ func (p *Plugin) listGroupIndex(ctx context.Context, req *pluginv1.HTTPRequest) 
 // The parameter name is this plugin's own choice: the native list pages
 // (ui/native/src/IndexPage.vue, SResourcePage's `search`) send the typed text
 // under it, so the constant below and the pages have to agree.
-//
-// That is the second half of the fix. These two routes shipped reading only
-// index_status and group_id, while the console drew a search box on every
-// table page: the box sent nothing, the route answered the full list, and the
-// console rendered it as a result set - worse than an empty table, because it
-// looks like an answer. The front end deleted the box; it comes back because
-// both halves now exist.
 const SearchParam = "q"
 
 func searchQuery(req *pluginv1.HTTPRequest) string {
