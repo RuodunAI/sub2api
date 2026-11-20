@@ -49,7 +49,7 @@ type Service struct {
 	// decision waits for the enforcer to hold it.
 	minVersion int64
 	// pending holds what each version this node bumped changed, and the
-	// transaction it was bumped in, until Committed announces it.
+	// transaction it was bumped in, until the version is announced.
 	pending   map[int64]pendingChange
 	listeners []func()
 	stepUp    core.StepUpVerifier
@@ -272,10 +272,15 @@ func (s *Service) announce(ctx context.Context, c authzChange) {
 }
 
 // committedLater is used when the transaction belongs to the caller: it waits
-// until the bumped version is visible, then notifies. If the transaction
-// rolls back the wait times out and nothing is published (the poller keeps
-// caches correct either way). A service without a database (tests) has
-// nothing to wait on.
+// until the bumped version is visible, then announces it without a scope
+// (what it changed is unknown: nodes load the policy and read users
+// again). The version seen need not be this transaction's: it may have
+// rolled back and another transaction committed the same version since,
+// whose scope this node does not know, so the pending scope is dropped
+// rather than announced for it. If no transaction commits the version the
+// wait times out and nothing is published (the poller keeps caches
+// correct either way). A service without a database (tests) has nothing
+// to wait on.
 func (s *Service) committedLater(version int64) {
 	if s.db == nil {
 		return
@@ -291,7 +296,12 @@ func (s *Service) committedLater(version int64) {
 			}
 			v, _, err := s.currentVersions(ctx)
 			if err == nil && v >= version {
-				s.Committed(ctx, version)
+				s.mu.Lock()
+				delete(s.pending, version)
+				s.mu.Unlock()
+				c := authzChange{Version: version}
+				s.invalidate(c)
+				s.announce(ctx, c)
 				return
 			}
 		}

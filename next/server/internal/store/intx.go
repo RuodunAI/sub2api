@@ -35,7 +35,10 @@ func RequireTx(q *gorm.DB) error {
 
 // TxKey identifies a transaction: the handles of one transaction have
 // equal keys, those of another a different one. It reaches nothing; the
-// zero key stands for no transaction.
+// zero key stands for no transaction. It holds a reference to the
+// transaction object itself, not its address or a hash of it: while a key
+// is kept, that object cannot be freed and its address taken by a later
+// transaction, so a kept key never equals a later transaction's.
 type TxKey struct{ c gorm.ConnPool }
 
 // TxKeyOf is the TxKey of the transaction q runs in, the zero key outside
