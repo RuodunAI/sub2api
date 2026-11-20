@@ -4693,7 +4693,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 ### 72.15 界面（插件 `ui/native`，只用 `@sub2api/ui` 和 `@sub2api/host`）
 
-**标签页**：概览、记录、观察名单、封禁、流程、绑定（0.7.0，72.17）、审核器、渠道、测试、设置。设置标签页对核心 `plugin:manage` 或 `moderation:manage`（§75.1）可见，没有设置权限的人看不到设置入口（标签页、概览里的设置链接都不显示）。设置标签页是表单页，自己限宽（约 56rem），页头的模式徽标放在 `#filters`，不用 `#title-extra`（后者会让页面说明留在页内）。
+**分区**（清单 `nav`，§90.7，在控制台侧栏按 `?tab=` 切换）：运行（概览、审核记录、在线测试）、策略（审核流程、流程绑定、执行策略、缓存与输入）、名单与处置（观察名单、封禁用户、名单规则）、资源（审核器、渠道、Jev 默认题集）、系统（拦截提示、记录与保留、高级）。设置类分区按清单里各项的 `permission` / `corePermission` 显示（核心 `plugin:manage` 或 `moderation:manage`，§75.1），没有设置权限的人看不到这些入口（概览里的设置链接也不显示）。设置分区是表单页，自己限宽（约 56rem），页头的模式徽标放在 `#filters`，不用 `#title-extra`（后者会让页面说明留在页内）。
 
 **设置全部在这里编辑**（0.6.1 起，2026-10-31 用户要求；manifest `ui.settings` 为 `{"mode":"native","page":"dashboard",…}`，§75.5；0.12.2 起不带 schema，改为声明 `secrets`）。插件详情页不再有设置标签，`/plugins/moderation/settings` 转到本页 `?tab=settings`；插件页也不再有"完整设置"按钮或链接。存储不变：仍是核心的 `GET/PUT /plugins/moderation/settings`（核心加密保存、按 `ui.settings.secrets` 掩码密钥、保存前交插件 `ValidateSettings` 校验、改动后通知插件）。
 
