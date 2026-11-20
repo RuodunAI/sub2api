@@ -1322,6 +1322,36 @@ export interface HostPermissionReview {
   revoked?: boolean
 }
 
+/** A privilege a plugin asks for on a table outside its own (manifest.DatabasePrivileges). */
+export type DatabasePrivilege = 'select' | 'insert' | 'update' | 'delete' | 'references'
+
+/** One entry of the manifest's database.access: a table outside the plugin's own, granted with db.core_read (CONTRACTS §130). */
+export interface DatabaseAccess {
+  table: string
+  /** Empty or left out: every column. */
+  columns?: string[]
+  privileges: DatabasePrivilege[]
+}
+
+/** A migration script of the reviewed version, against what the plugin's schema_migrations table records. */
+export interface ReviewMigration {
+  id: string
+  checksum: string
+  sql: string
+  /** new: runs now; changed: ran with other content, runs again; applied: ran as it is. */
+  status: 'new' | 'changed' | 'applied'
+}
+
+/** GET /plugins/:key/database: the plugin's tables, database identity, grants and the scripts of its installed version. */
+export interface PluginDatabase {
+  /** plg_<key>__: every table, index and sequence of the plugin is named with it. */
+  prefix: string
+  /** The plugin's database identity (login role). */
+  role: string
+  access: DatabaseAccess[]
+  migrations: Array<{ id: string; checksum: string; sql: string; applied_at: string | null }>
+}
+
 /** One host permission of an upgrade's diff (review.go DiffItem). */
 export interface ReviewDiffItem {
   id: string
@@ -1373,10 +1403,14 @@ export interface PluginReview {
   role_columns?: ReviewRoleColumn[]
   /** Upgrades: the keys this version no longer declares (kept on their holders, not in force); holders left out for a viewer without role:read (C4). */
   removed_user_permissions?: Array<{ key: string; label: LText; holders?: string[] }>
-  database?: { schema: string; migrations: string[] } | null
+  database?: { migrations: string[] } | null
   resources?: Record<string, any> | null
   external_services: string[]
   host_permissions: HostPermissionReview[]
+  /** The tables outside the plugin's own it asks for (database.access); left out when none. */
+  database_access?: DatabaseAccess[]
+  /** The version's migration scripts and whether the consent runs them. */
+  database_migrations?: ReviewMigration[]
   diff?: { added: ReviewDiffItem[]; widened: ReviewDiffItem[]; removed: ReviewDiffItem[] } | null
   /** Role grants the new permissions get without overrides (defaults, inheritFrom holders). */
   new_role_grants?: PluginRoleGrant[]
@@ -1702,7 +1736,7 @@ export interface RetiredKey {
   installed: boolean
   /** Accounts left behind (not deleted). */
   accounts: number
-  /** The plg_<key> schema still exists. */
+  /** Tables named with the key's prefix (plg_<key>__) are left in the core's schema. */
   schema: boolean
 }
 

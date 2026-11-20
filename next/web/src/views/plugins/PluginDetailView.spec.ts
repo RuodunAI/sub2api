@@ -21,6 +21,7 @@ const matrixOf = (key: string) => ({
 async function render(query = '', extra: Record<string, unknown> = {}, settings: Record<string, unknown> = { mode: 'none', values: {} }) {
   mocks.get.mockImplementation(async (path: string) => {
     if (path.endsWith('/settings')) return settings
+    if (path === '/plugins/guard/database') return DATABASE
     const matrix = path.match(/^\/permissions\/plugins\/(\w+)$/)?.[1]
     if (matrix) return matrixOf(matrix)
     const key = path.match(/^\/plugins\/(\w+)$/)?.[1]
@@ -38,6 +39,15 @@ async function render(query = '', extra: Record<string, unknown> = {}, settings:
   const w = mount({ template: '<router-view />' }, { global: { plugins: [i18n, router], stubs: { OverviewTab: true, NodesTab: true, SettingsTab: { props: ['pluginKey', 'settings'], template: '<div data-testid="settings-tab">{{ settings.component }}</div>' } } } })
   await flushPromises()
   return { w, router }
+}
+const DATABASE = {
+  prefix: 'plg_guard__',
+  role: 'plg713988_guard',
+  access: [{ table: 'users', columns: ['id', 'email'], privileges: ['select'] }, { table: 'usage_logs', privileges: ['select', 'update'] }],
+  migrations: [
+    { id: '0001_init.sql', checksum: 'a', sql: 'CREATE TABLE plg_guard__rules (id bigint);', applied_at: '2026-11-18T08:00:00Z' },
+    { id: '0002_stats.sql', checksum: 'b', sql: 'CREATE TABLE plg_guard__stats (day date);', applied_at: null }
+  ]
 }
 /** Edits the permissions tab's matrix: it now holds unsaved edits. */
 const edit = (w: Awaited<ReturnType<typeof render>>['w']) => w.get(`tr[data-permission="${READ}"] td[data-role="admin"] input`).setValue(true)
@@ -132,6 +142,27 @@ describe('plugin detail view', () => {
     const { w, router } = await render('?tab=settings', {}, { mode: 'native', page: 'dashboard', values: {} })
     expect(router.currentRoute.value.fullPath).toBe('/p/guard/dashboard?tab=settings')
     expect(w.find('[data-testid="settings-tab"]').exists()).toBe(false)
+  })
+
+  it('shows the database tab only for a plugin with a database', async () => {
+    const { w, router } = await render('?tab=database')
+    expect(w.findAll('[role="tab"]').some((b) => b.text().startsWith('Database'))).toBe(false)
+    expect(router.currentRoute.value.query.tab).toBe('overview')
+    expect(mocks.get).not.toHaveBeenCalledWith('/plugins/guard/database')
+  })
+
+  it('shows the table prefix, database identity, tables outside its own and the scripts with when each ran', async () => {
+    const { w } = await render('?tab=database', { manifest: { database: { migrations: ['0001_init.sql', '0002_stats.sql'] } } })
+    const tab = w.get('[data-testid="plugin-database"]')
+    expect(tab.text()).toContain('plg_guard__')
+    expect(tab.text()).toContain('plg713988_guard')
+    expect(tab.get('[data-table="users"]').text()).toContain('Columns: id, email')
+    expect(tab.get('[data-table="usage_logs"]').text()).toContain('all columns')
+    expect(tab.find('[data-testid="database-access-writes"]').exists()).toBe(true)
+    expect(tab.get('[data-migration="0001_init.sql"]').text()).toContain('Ran ')
+    expect(tab.get('[data-migration="0002_stats.sql"]').text()).toContain('Not run')
+    await tab.get('[data-migration="0002_stats.sql"] button').trigger('click')
+    expect(tab.get('[data-migration="0002_stats.sql"] [data-testid="migration-sql"]').text()).toBe('CREATE TABLE plg_guard__stats (day date);')
   })
 
   it('has no settings tab for a plugin without settings', async () => {

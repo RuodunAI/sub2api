@@ -41,17 +41,20 @@ export const HOST_PERMISSION_RISK: Record<string, Risk> = {
   'ledger.debit': 'critical',
   'ui.native': 'critical',
   'users.write': 'critical',
-  'db.core_views': 'critical'
+  'db.core_read': 'critical'
 }
 
 export const RISK_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 }
 
-/** Copy of the plugin key rule of sdk/manifest/check (keyRe). */
-const PLUGIN_KEY = /^[a-z][a-z0-9_]{1,29}$/
+/** Copy of the plugin key rule of sdk/manifest/check (pluginKeyRe, at most 30 bytes). */
+const PLUGIN_KEY = /^[a-z](_?[a-z0-9]){1,29}$/
 
 export function isPluginKey(key: string): boolean {
-  return PLUGIN_KEY.test(key)
+  return key.length <= 30 && PLUGIN_KEY.test(key)
 }
+
+/** The prefix of every table, index and sequence of the plugin in the core's schema (manifest.TablePrefix). */
+export const tablePrefix = (key: string) => `plg_${key}__`
 
 export function riskOf(id: string, fallback?: string): Risk {
   const r = (fallback || HOST_PERMISSION_RISK[id] || 'high') as Risk

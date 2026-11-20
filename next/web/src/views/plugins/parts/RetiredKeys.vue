@@ -7,6 +7,7 @@ import type { ReleaseRetiredKeyResult, RetiredKey } from '@/api/types'
 import { notifyError } from '@/utils/errors'
 import { useAuthStore } from '@/stores/auth'
 import { formatDateTime } from '@/utils/format'
+import { tablePrefix } from '../pluginUtil'
 
 // Keys of uninstalled plugins stay with their publisher (CONTRACTS §55.1): only
 // that publisher may install the key again until an administrator releases
@@ -16,7 +17,7 @@ const auth = useAuthStore()
 
 const items = ref<RetiredKey[]>([])
 const releasing = ref<RetiredKey | null>(null)
-/** What to delete before releasing the key: 'accounts' and / or 'purge' (plugin schema). */
+/** What to delete before releasing the key: 'accounts' and / or 'purge' (the plugin's tables, KV entries). */
 const purgeChoice = ref<ChoiceOption['value'][]>([])
 const purge = computed(() => purgeChoice.value.includes('purge'))
 const purgeAccounts = computed(() => purgeChoice.value.includes('accounts'))
@@ -29,7 +30,7 @@ const purgeOptions = computed<ChoiceOption[]>(() => {
   if (!k) return []
   return [
     { value: 'accounts', label: t('plugins.retired.purgeAccounts', { n: k.accounts }), icon: 'account', tone: 'danger' },
-    { value: 'purge', label: t('plugins.retired.purge', { schema: 'plg_' + k.key }), icon: 'trash', tone: 'danger' }
+    { value: 'purge', label: t('plugins.retired.purge', { prefix: tablePrefix(k.key) }), icon: 'trash', tone: 'danger' }
   ]
 })
 
@@ -93,7 +94,7 @@ defineExpose({ load })
       <template #cell-left="{ row }">
         <div class="flex flex-wrap gap-1">
           <SBadge v-if="row.accounts > 0" tone="warning">{{ t('plugins.retired.accounts', { n: row.accounts }) }}</SBadge>
-          <SBadge v-if="row.schema" tone="warning">plg_{{ row.key }}</SBadge>
+          <SBadge v-if="row.schema" tone="warning">{{ t('plugins.retired.tables', { prefix: tablePrefix(row.key) }) }}</SBadge>
           <SHint v-if="!row.accounts && !row.schema" inline>—</SHint>
         </div>
       </template>

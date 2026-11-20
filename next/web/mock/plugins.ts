@@ -69,8 +69,67 @@ function guardManifest(version: string): Any {
       pages: { dashboard: { type: 'native', component: 'GuardDashboard' } },
       slots: [{ slot: 'dashboard.widgets', component: 'BlockedTodayCard' }]
     },
+    database: { migrations: guardMigrations(version).map((m) => m.id), access: guardAccess(version) },
     resources: { memoryMB: 128, cpu: 0.25, maxProcs: 64, maxOpenFiles: 256 }
   }
+}
+
+/**
+ * Guard's migration scripts by version (CONTRACTS §130): 0.2.0 changes the
+ * second one and adds a third. Tables are named with the plugin's prefix.
+ */
+function guardMigrations(version: string): Array<{ id: string; checksum: string; sql: string }> {
+  const upgraded = version >= '0.2.0'
+  const list = [
+    {
+      id: '0001_init.sql',
+      checksum: 'sha256:7d1f0c2a9e',
+      sql: `CREATE TABLE IF NOT EXISTS plg_guard__rules (
+  id         bigserial PRIMARY KEY,
+  pattern    text        NOT NULL,
+  action     text        NOT NULL DEFAULT 'block',
+  enabled    boolean     NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS plg_guard__rules_enabled_idx ON plg_guard__rules (enabled);`
+    },
+    {
+      id: '0002_stats.sql',
+      checksum: upgraded ? 'sha256:c4b81e07aa' : 'sha256:5a9e33d210',
+      sql: `CREATE TABLE IF NOT EXISTS plg_guard__stats (
+  day      date   NOT NULL,
+  rule_id  bigint NOT NULL REFERENCES plg_guard__rules (id) ON DELETE CASCADE,
+  blocked  bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (day, rule_id)
+);${upgraded ? `
+ALTER TABLE plg_guard__stats ADD COLUMN IF NOT EXISTS user_id bigint;
+CREATE INDEX IF NOT EXISTS plg_guard__stats_user_idx ON plg_guard__stats (user_id, day);` : ''}`
+    }
+  ]
+  if (upgraded) {
+    list.push({
+      id: '0003_group_rules.sql',
+      checksum: 'sha256:0be2f6c871',
+      sql: `ALTER TABLE plg_guard__rules ADD COLUMN IF NOT EXISTS group_id bigint REFERENCES groups (id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS plg_guard__rules_group_idx ON plg_guard__rules (group_id);`
+    })
+  }
+  return list
+}
+
+/** Guard's database.access: 0.2.0 asks for writes and a foreign key as well. */
+function guardAccess(version: string): Any[] {
+  const access: Any[] = [{ table: 'users', columns: ['id', 'email', 'status'], privileges: ['select'] }]
+  if (version >= '0.2.0') {
+    access.push({ table: 'groups', privileges: ['select', 'references'] }, { table: 'usage_logs', columns: ['status', 'error_message'], privileges: ['select', 'update'] })
+  }
+  return access
+}
+
+/** The installed guard's migrations as review database_migrations would mark them against the target version's. */
+function guardReviewMigrations(installed: string | null, version: string): Any[] {
+  const ran = new Map(installed ? guardMigrations(installed).map((m) => [m.id, m.checksum]) : [])
+  return guardMigrations(version).map((m) => ({ ...m, status: !ran.has(m.id) ? 'new' : ran.get(m.id) === m.checksum ? 'applied' : 'changed' }))
 }
 
 function anthropicManifest(version: string): Any {
@@ -116,6 +175,7 @@ plugins.set('guard', {
   grants: [
     grant('kv'),
     grant('db.schema'),
+    grant('db.core_read'),
     grant('gateway.hook', { points: ['gateway.request'], fields: ['model', 'prompt_text'] }),
     grant('events', { subscribe: ['usage.recorded'] }),
     grant('jobs'),
@@ -419,13 +479,17 @@ function guardReview(version: string, diff?: Any): Any {
     ],
     menus: [{ id: 'guard', label: { en: 'Guard', zh: '请求守卫' }, type: 'native' }],
     ...guardUserPermissions(!!diff),
-    database: { schema: 'plg_guard', migrations: ['0001_init.sql', '0002_stats.sql'] },
+    database: { migrations: guardMigrations(version).map((m) => m.id) },
+    database_access: guardAccess(version),
+    // An upgrade runs against the scripts of the installed 0.1.0.
+    database_migrations: guardReviewMigrations(diff ? '0.1.0' : null, version),
     resources: { memoryMB: 128, cpu: 0.25, maxProcs: 64, maxOpenFiles: 256 },
     external_services: ['hooks.example.com'],
     host_permissions: [
       { id: 'kv', risk: 'low' },
       { id: 'broadcast', risk: 'low', reason: { en: 'Reload rules on every node right after they change', zh: '规则修改后通知各节点立即重载' } },
       { id: 'db.schema', risk: 'high', reason: { en: 'Store rules and statistics', zh: '保存拦截规则和统计' }, requires: 'plugin:grant:high' },
+      { id: 'db.core_read', risk: 'critical', reason: { en: 'Match rules against users and groups', zh: '按用户和分组匹配规则' }, requires: 'plugin:grant:critical', ...(diff ? { current_status: 'granted' } : {}) },
       {
         id: 'gateway.hook',
         risk: 'high',
@@ -982,6 +1046,19 @@ on('DELETE', '/plugins/:key', (req) => {
   const deleted = uninstallPluginAccounts(p.key, purgeAccounts)
   retiredKeys.set(p.key, { key: p.key, publisher: p.publisher || '', retired_at: now(), accounts: pluginAccountCount(p.key), schema: req.query.purge !== 'true' })
   return { accounts_deleted: deleted }
+})
+
+on('GET', '/plugins/:key/database', (req) => {
+  const p = find(req.params.key)
+  if (!p) return notFound(req.params.key)
+  const db = p.manifest?.database
+  if (!db || !p.active_version) return fail(404, 'not_found', 'the plugin has no database')
+  return {
+    prefix: `plg_${p.key}__`,
+    role: `plg713988_${p.key}`,
+    access: db.access ?? [],
+    migrations: p.key === 'guard' ? guardMigrations(p.active_version).map((m) => ({ ...m, applied_at: now(-86400 * 3) })) : []
+  }
 })
 
 on('GET', '/plugins/:key/versions/:version/review', (req) => {
