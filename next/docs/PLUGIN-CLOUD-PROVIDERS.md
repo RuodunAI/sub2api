@@ -127,7 +127,7 @@ API Key 类型的项目 ID 和区域**要么都填，要么都不填**：都填�
 - 用户凭证：运行 `gcloud auth application-default login` 后生成的 `application_default_credentials.json`，同样整个粘贴。必须是 `"type": "authorized_user"`，有 `client_id`、`client_secret`、`refresh_token`。
 - 输入框是单行的密码框（没有多行的密文控件），粘贴进去看不到内容和换行，这是正常的；长度上限 32768 个字符。保存后不再显示明文，编辑账号时不改它就留着不动。
 
-**区域与主机**：`global` 发往 `aiplatform.googleapis.com`，其他区域发往 `<区域>-aiplatform.googleapis.com`。不是每个模型在每个区域都有。
+**区域与主机**：`global` 发往 `aiplatform.googleapis.com`，多区域 `us`、`eu` 发往 `aiplatform.us.rep.googleapis.com`、`aiplatform.eu.rep.googleapis.com`，其他区域发往 `<区域>-aiplatform.googleapis.com`。不是每个模型在每个区域都有。
 
 ### 4.3 保存之后
 

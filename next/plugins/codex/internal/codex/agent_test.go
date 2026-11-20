@@ -186,9 +186,17 @@ func TestValidateSettings(t *testing.T) {
 			t.Errorf("%s: Configure accepted it", c.settings)
 		}
 	}
-	for _, ok := range []string{`{}`, `{"user_agent":"","originator":""}`, `{"user_agent":"sup2api-codex/0.2.0\tx","originator":"codex_cli_rs"}`} {
+	// Values are trimmed before the check, as an account's own are.
+	for _, ok := range []string{`{}`, `{"user_agent":"","originator":""}`, `{"user_agent":"sup2api-codex/0.2.0\tx","originator":"codex_cli_rs"}`, `{"user_agent":"UA/1\n","originator":" o\r\n"}`} {
 		if resp, err := h.ValidateSettings(ok, nil); err != nil || len(resp.GetErrors()) != 0 || resp.GetNormalizedConfigJson() != "" {
 			t.Errorf("%s: %v %v", ok, resp.GetErrors(), err)
 		}
+	}
+	p := mustPlugin(DefaultEndpoints)
+	if err := p.Configure(context.Background(), pluginsdk.Config{JSON: []byte(`{"user_agent":"UA/1\n","originator":" o\r\n"}`)}); err != nil {
+		t.Fatalf("configure trimmed values: %v", err)
+	}
+	if got := p.agent(credentials{}); got != (agent{UserAgent: "UA/1", Originator: "o"}) {
+		t.Fatalf("agent = %+v, want the trimmed settings", got)
 	}
 }

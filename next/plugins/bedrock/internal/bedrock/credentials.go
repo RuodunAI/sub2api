@@ -204,7 +204,8 @@ func (a auth) check(creds, settings object) *pluginv1.FieldError {
 }
 
 // ValidateCredentials implements pluginsdk.Platform. An account without a
-// region or a prefix choice is stored with the defaults.
+// region or a prefix choice is stored with the defaults, an API key without
+// its surrounding spaces.
 func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCredentialsRequest) (*pluginv1.ValidateCredentialsResponse, error) {
 	form, refused := accountform.DecodeForm(in)
 	if refused != nil {
@@ -224,6 +225,10 @@ func (p *Plugin) ValidateCredentials(_ context.Context, in *pluginv1.ValidateCre
 	}
 	if bad != nil {
 		return accountform.Invalid(bad), nil
+	}
+	if !a.signed {
+		// Saved trimmed, as apikey.Spec saves an api_key (CONTRACTS §127.1).
+		form.Creds[fieldAPIKey] = form.Creds.Str(fieldAPIKey)
 	}
 	return form.Normalized(), nil
 }

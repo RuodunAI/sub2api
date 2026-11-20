@@ -2,8 +2,8 @@ package codex
 
 import (
 	"context"
+	"encoding/json"
 	"strconv"
-	"sync"
 	"time"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
@@ -24,10 +24,6 @@ const (
 	kvResetCount = "reset_count"
 	// resetCountTTL is how long a count is kept without a refresh.
 	resetCountTTL = 7 * 24 * time.Hour
-	// summaryReaders and summaryTimeout bound the KV reads of one summary
-	// (the KV serves one key per call).
-	summaryReaders = 16
-	summaryTimeout = 5 * time.Second
 )
 
 // ResetCount is one account's cached count; UpdatedAt is Unix seconds.
@@ -57,36 +53,32 @@ func (p *Plugin) storeResetCount(ctx context.Context, id int64, n int) {
 	}
 }
 
-// loadResetCounts reads the cached counts of ids, a few at a time and within
-// summaryTimeout. Unreadable entries are left out (and logged once).
+// loadResetCounts reads the cached counts of ids in one batch KV call.
+// Unreadable entries are left out (and logged once).
 func (p *Plugin) loadResetCounts(ctx context.Context, ids []int64) map[string]ResetCount {
-	ctx, cancel := context.WithTimeout(ctx, summaryTimeout)
-	defer cancel()
-	var (
-		mu     sync.Mutex
-		wg     sync.WaitGroup
-		out    = map[string]ResetCount{}
-		failed int
-		slots  = make(chan struct{}, summaryReaders)
-	)
-	for _, id := range ids {
-		slots <- struct{}{}
-		wg.Go(func() {
-			defer func() { <-slots }()
-			var c ResetCount
-			found, err := p.loadCached(ctx, kvResetCount, resetCountKey(id), &c)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				failed++
-			} else if found {
-				out[resetCountKey(id)] = c
-			}
-		})
+	out := map[string]ResetCount{}
+	keys := make([]string, len(ids))
+	for i, id := range ids {
+		keys[i] = resetCountKey(id)
 	}
-	wg.Wait()
+	values, err := pluginsdk.KVGetMany(ctx, p.host.KV(), kvResetCount, keys)
+	if err != nil {
+		p.log.Warn("codex: read cached reset counts", "accounts", len(ids), "error", err.Error())
+		return out
+	}
+	failed := 0
+	for i, v := range values {
+		var c ResetCount
+		switch {
+		case !v.Found:
+		case json.Unmarshal(v.Value, &c) != nil:
+			failed++
+		default:
+			out[keys[i]] = c
+		}
+	}
 	if failed > 0 {
-		p.log.Warn("codex: read cached reset counts", "failed", failed, "of", len(ids))
+		p.log.Warn("codex: decode cached reset counts", "failed", failed, "of", len(ids))
 	}
 	return out
 }

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 )
 
 // failingKV fails every call, as the host KV does when Redis is down.
@@ -23,6 +25,30 @@ func (failingKV) Set(context.Context, string, string, []byte, time.Duration) err
 func (failingKV) Delete(context.Context, string, string) error                     { return errKVDown }
 func (failingKV) List(context.Context, string, string, string, int) ([]string, string, error) {
 	return nil, "", errKVDown
+}
+
+// batchKV serves the host KV and counts the single and batch reads.
+type batchKV struct {
+	pluginsdk.KV
+	gets, getManys atomic.Int32
+}
+
+func (k *batchKV) Get(ctx context.Context, ns, key string) ([]byte, bool, error) {
+	k.gets.Add(1)
+	return k.KV.Get(ctx, ns, key)
+}
+
+func (k *batchKV) GetMany(ctx context.Context, ns string, keys []string) ([]pluginsdk.KVValue, error) {
+	k.getManys.Add(1)
+	return pluginsdk.KVGetMany(ctx, k.KV, ns, keys)
+}
+
+func (k *batchKV) SetMany(ctx context.Context, ns string, items []pluginsdk.KVItem) error {
+	return pluginsdk.KVSetMany(ctx, k.KV, ns, items)
+}
+
+func (k *batchKV) DeleteMany(ctx context.Context, ns string, keys []string) error {
+	return pluginsdk.KVDeleteMany(ctx, k.KV, ns, keys)
 }
 
 // summary asks POST /reset-credits/summary for ids and returns the counts.
@@ -68,6 +94,16 @@ func TestResetSummary(t *testing.T) {
 	}
 	if r := e.h.Do("POST", "/reset-credits/summary", nil, "{"); r.GetStatus() != 400 {
 		t.Fatalf("invalid json = %d %s", r.GetStatus(), r.GetBody())
+	}
+
+	// One summary is one batch read, however many accounts it lists.
+	kv := &batchKV{KV: e.host.Host.KV()}
+	e.host.kv = kv
+	if got := e.summary(t, 29, 30, 31); len(got) != 2 || got["29"].AvailableCount != 2 {
+		t.Fatalf("batch summary = %+v", got)
+	}
+	if kv.getManys.Load() != 1 || kv.gets.Load() != 0 {
+		t.Fatalf("summary made %d batch and %d single reads, want 1 and 0", kv.getManys.Load(), kv.gets.Load())
 	}
 
 	// An unreadable KV leaves the accounts out; the route still answers.

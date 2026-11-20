@@ -59,11 +59,16 @@ package volcengine
 //     corrects it. Worth knowing before reading a pre-charge as a promise.
 
 import (
+	"errors"
+	"math"
+	"math/bits"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // videoGeneration is a Seedance family. Ark publishes a separate output pixel
@@ -108,7 +113,23 @@ const videoFPS = 24
 // fits 96 frames exactly. Ark's published formula (seconds x fps) omits that
 // frame, so every duration-based estimate came out about 1/(24N+1) low. An
 // explicit frames parameter is already the rendered count and is used as is.
-func framesFor(seconds int64) int64 { return seconds*videoFPS + 1 }
+// ok is false when the count does not fit an int64.
+func framesFor(seconds int64) (frames int64, ok bool) {
+	n, ok := mulPositive(seconds, videoFPS)
+	return n + 1, ok && n < math.MaxInt64
+}
+
+// mulPositive is a x b for positive a and b; ok is false when the product
+// does not fit an int64.
+func mulPositive(a, b int64) (product int64, ok bool) {
+	hi, lo := bits.Mul64(uint64(a), uint64(b))
+	return int64(lo), hi == 0 && lo <= math.MaxInt64
+}
+
+// errVideoOutOfRange refuses a submit whose frames or duration put the
+// estimate beyond an int64: wrapped around, the product would pre-charge
+// nothing (or a negative amount) for a request no model can render.
+var errVideoOutOfRange = status.Error(codes.InvalidArgument, "frames or duration is too large / 帧数或时长过大")
 
 // pixelArea is width x height of one output, by generation, resolution tier
 // and aspect ratio, transcribed from Ark's own table on the create-task page
@@ -379,11 +400,11 @@ func readVideoSpec(fields map[string]string) videoSpec {
 					ratios = append(ratios, r)
 				}
 			case "dur", "duration":
-				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				if n, ok := promptInt(v); ok {
 					durations = append(durations, n)
 				}
 			case "frames":
-				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				if n, ok := promptInt(v); ok {
 					frames = append(frames, n)
 				}
 			}
@@ -414,7 +435,8 @@ func readCandidates[T any](path string, fields map[string]string, normalize func
 
 // jsonInt reads an integer out of a raw JSON value. gjson coerces a quoted
 // number, so a client that sends "duration": "5" is read rather than
-// estimated at the model's maximum.
+// estimated at the model's maximum, and it reads a number beyond the int64
+// range as the nearest end of it.
 func jsonInt(raw string) (int64, bool) {
 	if raw == "" {
 		return 0, false
@@ -424,6 +446,15 @@ func jsonInt(raw string) (int64, bool) {
 		return 0, false
 	}
 	return r.Int(), true
+}
+
+// promptInt reads an integer out of a prompt command. Like jsonInt, a number
+// beyond the int64 range reads as the nearest end of it, so an overlong
+// duration reaches estimateVideo (which refuses it) rather than reading as
+// none.
+func promptInt(v string) (int64, bool) {
+	n, err := strconv.ParseInt(v, 10, 64)
+	return n, err == nil || errors.Is(err, strconv.ErrRange)
 }
 
 // mostExpensiveResolution picks between contradictory readings.
@@ -554,8 +585,10 @@ type videoEstimate struct {
 	Assumed []string
 }
 
-// estimateVideo turns a model and a spec into the reservation.
-func estimateVideo(model string, spec videoSpec) videoEstimate {
+// estimateVideo turns a model and a spec into the reservation. It fails with
+// errVideoOutOfRange when the frames the request asks for do not fit the
+// arithmetic.
+func estimateVideo(model string, spec videoSpec) (videoEstimate, error) {
 	p := profileOf(model)
 	est := videoEstimate{}
 
@@ -590,11 +623,13 @@ func estimateVideo(model string, spec videoSpec) videoEstimate {
 		est.Assumed = append(est.Assumed, assumedRatio)
 	}
 	if frames <= 0 {
-		if seconds > 0 {
-			frames = framesFor(seconds)
-		} else {
-			frames = framesFor(p.maxDurationSec)
+		if seconds <= 0 {
+			seconds = p.maxDurationSec
 			est.Assumed = append(est.Assumed, assumedDuration)
+		}
+		var ok bool
+		if frames, ok = framesFor(seconds); !ok {
+			return videoEstimate{}, errVideoOutOfRange
 		}
 	}
 
@@ -611,8 +646,12 @@ func estimateVideo(model string, spec videoSpec) videoEstimate {
 		}
 		est.Assumed = append(est.Assumed, assumedPixelArea)
 	}
+	product, ok := mulPositive(frames, area)
+	if !ok {
+		return videoEstimate{}, errVideoOutOfRange
+	}
 	est.Resolution = tier
-	est.Tokens = frames * area / 1024
+	est.Tokens = product / 1024
 	est.Seconds = float64(frames-1) / videoFPS
 	est.Pixels = area
 	// Recover the exact table dimensions, never dimensions rounded from a
@@ -626,5 +665,5 @@ func estimateVideo(model string, spec videoSpec) videoEstimate {
 		}
 	}
 	est.Width, est.Height = dimensionsForArea(area, ratio)
-	return est
+	return est, nil
 }

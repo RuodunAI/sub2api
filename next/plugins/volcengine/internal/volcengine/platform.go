@@ -12,8 +12,7 @@
 //
 // Image generation (Seedream) has no built-in platform, so the manifest
 // declares the "volcengine" platform with its endpoint, POST
-// /api/v3/images/generations (Ark's own path; also served under
-// /doubao/api/v3). It declares no price: the images fact
+// /api/v3/images/generations (Ark's own path). It declares no price: the images fact
 // (usage.generated_images) and the output tokens are the metering keys an
 // administrator writes a price expression against (ARCHITECTURE 7.3).
 //
@@ -53,12 +52,10 @@ const PlatformID = "openai"
 // (manifest platforms[]): Ark capabilities that have no built-in platform.
 const PlatformVolcengine = "volcengine"
 
-// PlatformAnthropic is the second built-in platform the apikey account type
-// serves. Ark exposes an Anthropic-Messages-compatible surface, and the core
-// registers no protocol converters at all (gateway/convert: the list is
-// empty), so a client speaking Anthropic can only reach an Ark account if the
-// account type declares this platform and the plugin forwards the body as it
-// arrived - protocol in, same protocol out.
+// PlatformAnthropic is the second built-in platform the account types
+// serve. Ark exposes an Anthropic-Messages-compatible surface, so the account
+// types declare this platform and the plugin forwards the body as it arrived
+// - protocol in, same protocol out - rather than having the core convert it.
 const PlatformAnthropic = "anthropic"
 
 // Protocol ids of the built-in openai platform's endpoints
@@ -80,8 +77,7 @@ const ProtocolMessages = sdkvolcengine.ProtocolMessages
 // Protocol ids of the volcengine platform declared in manifest.json.
 const (
 	// ProtocolImages is synchronous image generation (Seedream), served to
-	// clients at POST /api/v3/images/generations and its alias
-	// /doubao/api/v3/images/generations. Text-to-image and
+	// clients at POST /api/v3/images/generations. Text-to-image and
 	// image-to-image share this one upstream path.
 	ProtocolImages = "volcengine.images"
 )
@@ -190,10 +186,9 @@ var assetKeys = fieldcheck.Fields{
 // relaySpec describes the relay account type. Two deliberate differences from
 // spec:
 //
-//   - No DefaultBaseURL. A relay has no default address, so an account with no
-//     base_url is a misconfiguration rather than an official account, and
-//     relayBaseURL below says so instead of quietly sending a relay's key to
-//     Ark.
+//   - No DefaultBaseURL but RequireBaseURL. A relay has no default address,
+//     so an account with no base_url is refused instead of quietly sending a
+//     relay's key to Ark.
 //   - No Versions. On the apikey type, leaving a trailing /api/v3 out undoes
 //     a paste of Ark's documented SDK base URL. Here the base URL is the
 //     relay's root and the layout is named by api_prefix, so leaving anything
@@ -204,7 +199,9 @@ var assetKeys = fieldcheck.Fields{
 //
 // Its form also sends the relay's endpoints and the legacy prefixes
 // (checked by validatePrefixFields and the endpoint checks).
-var relaySpec = apikey.Spec{AccountType: AccountTypeRelay, Fields: relayFields()}
+var relaySpec = apikey.Spec{AccountType: AccountTypeRelay, RequireBaseURL: true, Fields: relayFields(),
+	Texts: apikey.Texts{BaseURLRequired: "base_url is required for a relay account - there is no default relay address / " +
+		"中转账号必须填写 base_url —— 中转站没有默认地址"}}
 
 func relayFields() fieldcheck.Fields {
 	fields := maps.Clone(assetKeys)
@@ -214,12 +211,10 @@ func relayFields() fieldcheck.Fields {
 	return fields
 }
 
-// specFor returns the credential spec of an account type. An empty type means
-// the official one: that is what an account row carried before the split, and
-// what a caller that did not fill Account.type means.
+// specFor returns the credential spec of an account type.
 func specFor(accountType string) (apikey.Spec, error) {
 	switch accountType {
-	case AccountTypeAPIKey, "":
+	case AccountTypeAPIKey:
 		return spec, nil
 	case AccountTypeRelay:
 		return relaySpec, nil
@@ -238,10 +233,6 @@ func accountConfig(acc *pluginv1.Account) (*apikey.Config, prefixes, error) {
 	cfg, err := sp.FromAccount(acc)
 	if err != nil {
 		return nil, prefixes{}, err
-	}
-	if acc.GetType() == AccountTypeRelay && cfg.BaseURL == "" {
-		return nil, prefixes{}, status.Errorf(codes.FailedPrecondition,
-			"account %d: a %s account needs a base_url - there is no default relay address", acc.GetId(), AccountTypeRelay)
 	}
 	px, err := prefixesOf(acc.GetType(), acc.GetSettingsJson())
 	if err != nil {
@@ -315,9 +306,8 @@ func chatPath(prefix, model string) string {
 //
 // The image path is the same for text-to-image and image-to-image: Ark
 // decides from the request body, not the URL. The client-facing path
-// (/api/v3/images/generations, or the /doubao/api/v3 alias) never reaches
-// this function: upstream it is always the account's own
-// <prefix>/images/generations, whichever prefix the client used.
+// (/api/v3/images/generations) never reaches this function: upstream it is
+// always the account's own <prefix>/images/generations.
 func upstreamPath(px prefixes, protocol, model string) (string, error) {
 	switch protocol {
 	case ProtocolChat, "":
@@ -329,9 +319,9 @@ func upstreamPath(px prefixes, protocol, model string) (string, error) {
 	case ProtocolImages:
 		return px.api + "/images/generations", nil
 	case ProtocolMessages:
-		// Forwarded as it arrived: the core has no Anthropic-to-OpenAI
-		// converter, so the body reaching us is already Anthropic-shaped and
-		// the only decision is where to send it.
+		// Forwarded as it arrived: the account types serve the anthropic
+		// platform natively, so the body is Anthropic-shaped and the only
+		// decision is where to send it.
 		//
 		// Official Ark serves /api/compatible/v1/messages. Relays keep their
 		// configured path; neither requires protocol conversion.
@@ -412,9 +402,8 @@ func upstreamBody(in *pluginv1.ExecuteRequest) ([]byte, error) {
 
 // BuildUpstream implements pluginsdk.UpstreamBuilder: {base_url}{prefix}/...
 // following meta.protocol and, for chat completions, the model (bots have
-// their own path). Every header is authoritative: before forwarding v2 this
-// plugin's headers were written above the operator's passthrough and
-// override, and that behaviour is kept.
+// their own path). Every header is authoritative: the operator's passthrough
+// and overrides cannot change them.
 func (p *Plugin) BuildUpstream(_ context.Context, in *pluginv1.ExecuteRequest) (*pluginv1.UpstreamRequest, error) {
 	acc, meta := in.GetAccount(), in.GetMeta()
 	cfg, px, err := accountConfig(acc)

@@ -324,6 +324,26 @@ func normalizeAssetFields(objJSON string) string {
 	return string(b)
 }
 
+// validateAssetEndpoint checks a relay's asset_endpoint (the official type's
+// spec refuses the key): a string that resolves against the base URL, set
+// only with an AK/SK pair.
+func validateAssetEndpoint(errs pluginsdk.FieldErrors, credentialsJSON, settingsJSON string) pluginsdk.FieldErrors {
+	endpoint, err := assetSetting(credentialsJSON, settingsJSON, FieldAssetEndpoint)
+	switch {
+	case err != nil:
+		return errs.Add(FieldAssetEndpoint, "type", err.Error())
+	case endpoint == "":
+		return errs
+	}
+	if _, err := effectiveAssetEndpoint(AccountTypeRelay, credentialsJSON, settingsJSON, ""); err != nil {
+		errs = errs.Add(FieldAssetEndpoint, "format", err.Error())
+	}
+	if ak, sk, _, _, _ := assetFields(credentialsJSON, settingsJSON); ak == "" && sk == "" {
+		errs = errs.Add(FieldAccessKey, "required", "asset_endpoint requires access_key and secret_key / 填写素材端点需要 Access Key 和 Secret Key")
+	}
+	return errs
+}
+
 // validateWithAssets runs the shared API-key validation and then the asset
 // library rules on top of it. The spec depends on the account type being
 // created: the two differ in whether base_url has a default (assets.go's own
@@ -348,22 +368,7 @@ func (p *Plugin) validateWithAssets(in *pluginv1.ValidateCredentialsRequest) *pl
 	if in.GetAccountType() == AccountTypeRelay {
 		errs = validateRelayBaseURL(errs, in.GetCredentialsJson(), in.GetSettingsJson())
 		errs = validatePrefixFields(errs, in.GetSettingsJson())
-	}
-	endpoint, endpointErr := assetSetting(in.GetCredentialsJson(), in.GetSettingsJson(), FieldAssetEndpoint)
-	if endpointErr != nil {
-		errs = errs.Add(FieldAssetEndpoint, "type", endpointErr.Error())
-	} else if endpoint != "" {
-		if in.GetAccountType() != AccountTypeRelay {
-			errs = errs.Add(FieldAssetEndpoint, "unsupported", "asset_endpoint is only available for Doubao video accounts / 素材端点自定义仅适用于豆包视频账号")
-		} else {
-			if _, err := effectiveAssetEndpoint(AccountTypeRelay, in.GetCredentialsJson(), in.GetSettingsJson(), ""); err != nil {
-				errs = errs.Add(FieldAssetEndpoint, "format", err.Error())
-			}
-			ak, sk, _, _, _ := assetFields(in.GetCredentialsJson(), in.GetSettingsJson())
-			if ak == "" && sk == "" {
-				errs = errs.Add(FieldAccessKey, "required", "asset_endpoint requires access_key and secret_key / 填写素材端点需要 Access Key 和 Secret Key")
-			}
-		}
+		errs = validateAssetEndpoint(errs, in.GetCredentialsJson(), in.GetSettingsJson())
 	}
 	if len(errs) > 0 {
 		return &pluginv1.ValidateCredentialsResponse{Errors: errs}

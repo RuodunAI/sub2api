@@ -75,6 +75,12 @@ func TestAssetEndpointValidation(t *testing.T) {
 			t.Fatalf("missing %s validation: %+v", tc.field, res.Errors)
 		})
 	}
+	// The official type's spec refuses the key, once.
+	official, err := New().ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: AccountTypeAPIKey,
+		CredentialsJson: `{"api_key":"test-api-key"}`, SettingsJson: `{"asset_endpoint":42}`})
+	if errs := official.GetErrors(); err != nil || len(errs) != 1 || errs[0].GetField() != FieldAssetEndpoint || errs[0].GetCode() != "unknown" {
+		t.Fatalf("official asset_endpoint: %v %+v", err, errs)
+	}
 	creds := `{"api_key":"test-api-key","access_key":"` + testAK + `","secret_key":"` + testSK + `"}`
 	res, err := New().ValidateCredentials(context.Background(), &pluginv1.ValidateCredentialsRequest{AccountType: AccountTypeRelay, CredentialsJson: creds, SettingsJson: `{"base_url":"https://relay.example","asset_endpoint":" /api/support/v1/asset "}`})
 	if err != nil || len(res.GetErrors()) != 0 {

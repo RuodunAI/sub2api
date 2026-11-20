@@ -54,7 +54,7 @@
 
 - 目录 `next/plugins/codex`，key `codex`，runtime grpc，能力 `platform.adapter.v1`、`platform.websocket.v1`、`http.routes.v1`。
 - 两个账号类型都挂内置 `openai` 平台，`endpoints: ["responses", "responses_websocket"]`（chat 由核心转换成 Responses；0.2.0 起要在 `adapted` 里显式列出 `chat_completions` 和两个生图端点，第 21 节），`streamOnly: ["openai.responses"]`，`refresh: {}`，`sensitiveFields: ["access_token","refresh_token","id_token"]`（没有 `settingsFields`：账号的代理是账号的 `proxy_id` 列，原来写的 `settingsFields: ["proxy_id"]` 没有写入方，已删，第 22 节），表单 `mode: "native"`、组件 `CodexAuthForm`。
-- 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 时补空串；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
+- 插件只实现 `BuildUpstream`，`Execute` 由 SDK 的 `ExecuteDefault` 提供（不等待地中继，返回 `host_usage`，用量由核心按 `openai.responses` 规则读）；`BuildUpstream` 两种类型完全相同，上游是 `chatgpt.com/backend-api/codex/responses`（§2.1 第 7 条的 URL 与头）；请求体用 `jsonedit` 一次改完：`store=false`；字符串 `input` 转数组（空白字符串转 `[]`，其余包成一条 user 消息）；`role:"system"` 的 input 项改成 `developer`；缺 `instructions` 或为 `null` 时补空串（与旧版后端一致；其他值原样转发）；删除不支持字段；WebSocket 协议换成 `wss` + `GET` + `openai-beta`，每轮 `response.create` 消息同样改写（不碰 stream 相关字段；核心每轮调一次 `Execute`，CONTRACTS §83.6）。插件的头全部是权威头（与转发 V2 之前一样，运营方的透传和覆盖改不了），不转发任何客户端头；请求体里有非空字符串 `prompt_cache_key` 时加 `session_id` 和 `conversation_id`（第 16 节）。
 - `ClassifyError`：reason 一律纯英文（与 SDK `classify` 一致）；401 → 冷却并提示重新授权（刷新由核心按 `refresh` 声明处理）；429 且响应头显示某个用量窗口 ≥100% 并给出重置时刻 → 自动禁用到最晚的重置时刻（0.1.7 起只看响应头，见第 13 节；0.1.2–0.1.6 见第 9 节）；其他 429 原样返回客户端、不冷却不禁用（0.1.2 起；0.1.1 为冷却）；其他 403 → 禁用；400 原样返回。
 - 刷新：`BuildRefreshRequest` / `ParseRefreshResponse`，两种类型相同（Codex 客户端的 `POST /oauth/token` JSON，§2.1 第 5 条）；轮换后的 refresh token 一并保存。
 - 管理路由（`scope: admin`，权限 `codex:manage`）。响应按 CONTRACTS §3.1：成功为 `{"data": ...}`（`pluginsdk.DataResponse`，下面写的是 `data` 的内容，控制台 `pluginApi` 自动解包）；请求本身不合法（缺 `session_id`、请求体不是合法 JSON）为 400 `invalid_argument`，`details.fields = [{field, code, message}]`（`pluginsdk.BadRequest`；field 为 `session_id` / `body`，code 为 `required` / `invalid_json`）；授权流程本身的拒绝保留各自的错误码（`device_auth_disabled`、`invalid_callback`、`state_mismatch`、`access_denied`、`authorization_failed` 为 400，`session_expired` 为 404，`upstream_unavailable` / `upstream_error` / `token_exchange_failed` 为 502）。所有 message 为“English / 中文”双语（CONTRACTS §10）。
@@ -199,8 +199,8 @@
 - 写入：`/reset-credits/list` 成功时用应答的 `available_count` 写入。0.1.3–0.1.6 还在 `ParseQuotaResponse` 解析 `wham/usage` 时写入，0.1.7 随查询一起删除（第 13 节），所以次数只由 list 刷新、由 consume 删除。
 - 失效：consume 得到 `reset` / `already_redeemed` 或未知 `code`（可能已扣）后**删除**该账号的缓存键，而不是写“原数 − 1”（原数可能已过时，`already_redeemed` 也未必是这次扣的），也不为此再调一次 list（多一次上游请求）。装饰器在下次打开明细（list）后恢复显示。`nothing_to_reset` / `no_credit` 不动缓存。
 - KV 读写失败一律只记 warn：不让 list / consume 失败；summary 中读失败的账号视为没有缓存（一次请求只记一条 warn，带失败个数）。
-- summary 的 KV 只有单键 `Get`，所以并发读：最多 16 个同时进行，整次请求限时 5 秒（超时后未读到的账号视为没有缓存）。
-- 测试：`resetcache_test.go`：summary（去重与非正整数过滤、缺失账号不出现、500 个通过、501 个 400、坏 JSON、KV 失败仍 200、不发上游请求）、list 写入与 consume 后删除（拒绝的 consume 不删，KV 失败不影响 consume）。
+- summary 一次批量读（`pluginsdk.KVGetMany`，CONTRACTS §93）取全部账号的缓存；一次至多 500 个账号，在批量读 512 个键的上限内。批量读失败时全部视为没有缓存，单个值解不开的只略过该账号。
+- 测试：`resetcache_test.go`：summary（去重与非正整数过滤、缺失账号不出现、500 个通过、501 个 400、坏 JSON、一次 summary 只有一次批量读、KV 失败仍 200、不发上游请求）、list 写入与 consume 后删除（拒绝的 consume 不删，KV 失败不影响 consume）。
 
 ## 11. 0.1.4：权限加固（2026-11-13，随核心权限加固发布）
 

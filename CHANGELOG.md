@@ -117,7 +117,7 @@
   - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`、宿主授权 `accounts.credentials` / `accounts.read`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
   - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
 - **非内置插件升级后停用，直到装上新版本。** 内置插件随核心镜像升级（anthropic、openai、gemini、moderation、codex 启用；volcengine、mailer、dynweight、newapi、sub2api、typesafe 只安装，见 `deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）。其余插件——relay、guard、payment，以及装过的 azure_openai、vertex、bedrock——的旧版本在新核心上加载被拒，它们的账号不可用、功能不运行，直到逐个装上新版本。**guard 停着期间它的请求检查静默不运行**：没加载的插件不注册钩子，请求照常放行，只有插件列表上能看到拒绝原因。
-- **审查里不再有账号授权**：`accounts.credentials`、`accounts.read` 已删除，声明账号类型只需 `platform.register`（CONTRACTS §124）；清单还写着它们的包按旧契约被拒（见上一条）。codex、volcengine 的清单去掉了这两项和 `net`，审查里少了它们。
+- **审查里不再有账号授权**：`accounts.credentials`、`accounts.read` 已删除，声明账号类型只需 `platform.register`（CONTRACTS §124）；清单还写着它们的包按旧契约被拒（见上一条）。codex、volcengine 的清单去掉了这两项和 `net`，anthropic 的清单去掉了没有代码用到的 `kv`，审查里少了它们。
 - **网关也要换。** 插件包不再依赖主节点是网关二进制的改动，单发核心不会生效（核心只改了 `package_gone` 的文案）。网关滚动更新期间不要上传插件：旧网关节点上的上传仍要推主节点，主节点换新后会被拒；旧网关的主节点取不到在新网关节点上传的包。全部换完再上传、启用。
 
 **回退**
@@ -357,6 +357,7 @@
 
 - **会话 id 以账号 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为 `sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")` 排成的 UUID，账号 id 是核心里的账号编号，不发给上游。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；标识随账号不同，同一会话换到另一个 ChatGPT 账号时也会变。
 - **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数，以及授权（设备码申请、轮询、换令牌）——授权时账号还没保存，每次调用都带上表单此刻填的值。默认值不变，不设就与以前一样。
+- **`instructions: null` 按缺省处理**：Responses 请求体里显式写 `"instructions": null` 时，与没写一样补成空串再发给 Codex 后端（以前原样发 `null`），与旧版后端一致。
 
 ### 删除 Claude OAuth 插件及两种账号类型（迁移 0111）
 
@@ -376,6 +377,7 @@
 - **azure_openai**（用 `standard` 库的代码插件）：Azure OpenAI 资源地址加 API Key（`api-key` 头）。两种类型：v1 接口（chat、responses、embeddings）和按部署的经典接口（chat、embeddings，带 `api-version`；`/v1/responses` 请求由核心转成 chat）。错误分类与 OpenAI 账号相同（openai 预设的策略）。部署不存在（404 `DeploymentNotFound`）默认原样回给客户端；要换到下一个账号，由管理员在「调度策略」的失败处理里加一条自动重试规则（来源：上游 HTTP 响应；错误码 `404`；关键词 `DeploymentNotFound`、`model_not_found`，一行一个），不配账号规则，账号不受惩罚。上游模型就是部署名，用账号的模型映射对应。客户端的 `OpenAI-Organization` / `OpenAI-Project` 和请求体里的 `service_tier`、`safety_identifier` 不转给 Azure。粘贴带 deployments、chat/completions 或 api-version 的请求地址会在保存时报错。不支持 Entra ID 令牌。
   - **顺序变化**：这两个过滤字段现在在插件里、排在账号参数覆盖之后删除。运营方在 Azure 账号的参数覆盖里写这两个字段之一时，以前发给上游，现在被删掉。
 - **vertex**：Vertex AI 上的 Gemini（generateContent、streamGenerateContent、countTokens）。三种鉴权：服务账号 JSON、用户凭证 JSON（`gcloud auth application-default login`）、API Key。访问令牌由核心换取并自动续期（CONTRACTS §48），插件自身不联网。服务账号 JWT 用 `github.com/golang-jwt/jwt/v5` 签名，凭证文件由插件自己解析（Google 的库没有只签断言、不发请求的公开接口，能单独签名的 `golang.org/x/oauth2/jws` 标着 Deprecated）；`token_uri` 必须是 Google 的令牌地址，按解析后生效的值判断。不支持 Vertex 上的 Claude。
+  区域填多区域 `us`、`eu` 时请求发往 `aiplatform.us.rep.googleapis.com`、`aiplatform.eu.rep.googleapis.com`（Google 的多区域端点），其余区域发往 `<区域>-aiplatform.googleapis.com`（此前多区域也按后者拼，这样的主机不存在，请求连不上）。
 - **bedrock**：只服务 anthropic 平台，Claude 走 InvokeModel / InvokeModelWithResponseStream。客户端用 OpenAI 协议（chat、responses）访问时由核心先转换成 Messages 请求，走同一条路（这是跨平台转换，要在 Bedrock 账号上为模型开启）；Bedrock 自己的 OpenAI 兼容接口（`/openai/v1`）没有接，Claude 以外的 Bedrock 模型这一版不支持。三种鉴权：Bedrock API Key、长期 Access Key、临时凭证（后两种由插件用 `sdk/reqsign` 做 SigV4 签名；都不自动续期）。新建账号时预填“Anthropic 模型名 → Bedrock 模型 ID”的映射（ID 按 2026-11-17 的 AWS 模型卡片，含 Fable 5.2、Opus / Sonnet / Haiku 5.5，不含 AWS 已停止服务的 Sonnet 4 和 Opus 4），可选跨区域推理前缀（us、eu、apac、jp、au、in、global）；按 AWS 模型卡片，现行的 Claude 模型几乎都只能经推理配置调用，所以前缀默认是 `global`（预填模型里只有 Opus 4.1 没有全球配置，它的映射直接写 `us.` 开头的 ID），要把请求留在某个地域内就改选地域前缀。账号测试的默认模型是 Haiku 4.5 的全球推理配置。中国区（`cn-*`）和隔离分区的区域在保存时被拒绝。请求体的处理（`internal/bedrock` 的 `body.go`、`beta.go`、`sanitize.go`、`upstream.go`）：
   - 顶层总是删除 `model`、`stream`、`metadata`、`provider`、`service_tier`、`inference_geo`、`speed`（后三项选的是 Anthropic 自己的服务等级、数据驻留和快速模式，Bedrock 没有，地域由推理配置决定），设上 Bedrock 要求的 `anthropic_version`。顶层的 `output_config`、`output_format` 保留（旧版会删）。
   - 这些删除都在插件里、在运营方的参数覆盖之后：运营方在参数覆盖里写这些字段会被删掉。develop 上的 bedrock 0.1.0 也是由插件的补丁在参数覆盖之后删（当时只删 `model`、`stream`、`metadata`、`provider`），顺序没有变，删除的字段多了 `service_tier`、`inference_geo`、`speed`。
@@ -395,7 +397,7 @@
 分支 `feat/upstream-plugins`。三个插件都**只对文档、单元测试、合规套件、黄金样例和模拟上游验证过，没有接过真实站点或真实 TypeSafe 账号**。契约见 CONTRACTS §119，填法见 [PLUGIN-NEWAPI.md](next/docs/PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](next/docs/PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](next/docs/PLUGIN-TYPESAFE.md)。
 
 - **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；Gemini `countTokens` 不转发，由核心本地估算。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
-- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，`-1` 为不限，`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
+- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组的 `subscription` 三项限额都为空时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。
 - **模拟上游与 e2e**：mock 新增两个站点的余额接口、OpenAI 生图接口、TypeSafe 主机名下的模型列表（`api.typesafe.ai` 加进 e2e 网络别名）；AC30 加 newapi、sub2api、typesafe 三行和 New API 账号转发 Jev，新增 AC39（账号余额）、AC40（OpenAI 生图）、AC41（Responses 生图工具的 token 计入请求模型，一条记录、一笔扣费、没有另计分项）；mock 的 Responses 对 `image_generation` 工具回 `tools`（模型 `gpt-image-2-codex`）与 `tool_usage.image_gen`。
@@ -423,6 +425,10 @@
 - 清单去掉 `net` 权限：插件不再自己联网。升级审查里少了这一项；管理员给它设过的出口白名单不再需要。
 - Chat Completions 的流式判断与 openai 预设一致（`pluginsdk.RequestStream`：`meta.stream` 或请求体的 `stream` 为真）：运营方的参数覆盖给非流式请求加 `stream: true` 时，发往上游的请求体现在会多带 `stream_options.include_usage: true`（以前只看 `meta.stream`，不加）。volcengine 没有只流式的账号类型，核心不会替它强制流式。
 - 任务提交不再检查清单的 `usageMaxBytes`（该字段已删除）。
+- 视频完成时上游只给分辨率和比例、模型又认不出代际（Endpoint ID 等）时，宽高与像素数记 0、按基础价格结算：以前取各代同一档里最大的尺寸并当作实际尺寸，可能按不对的尺寸价计费。
+- 两个账号类型在 openai 平台上的端点不再列 `responses_websocket`：插件不服务 WebSocket（没有 `platform.websocket.v1`，核心从不把 WebSocket 请求交给它），这一项只会让账号的“本平台协议”多出一个永远命不中的 Responses WebSocket。
+- 视频提交的帧数或时长大到估算超出 int64 时回 400（`EstimateUsage` 报 `InvalidArgument`，不调度、不发上游）：以前乘积回绕成 0 或负数，可以把预扣压到 0 绕过余额门槛。不设帧数、时长上限，能算出的照常按请求估算。
+- 素材库的账号列表（`GET /accounts`）和素材组、素材列表里的账号名也包括豆包视频（`relay`）账号：此前只读官方 `apikey` 账号，配了 `asset_endpoint` 的中转账号能建素材组和素材，却不出现在账号列表里，列表里它的账号名是空的。
 
 ### 控制台与小改动（无迁移）
 

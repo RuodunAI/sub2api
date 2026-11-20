@@ -12,9 +12,15 @@ package volcengine
 // and each has its own test below.
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 )
 
 // ---------------------------------------------------------------- the pixel table
@@ -230,7 +236,7 @@ func TestReadVideoSpecStructuredFields(t *testing.T) {
 	if spec.Frames != 133 || spec.Seconds != 5 {
 		t.Fatalf("frames/seconds = %d/%d", spec.Frames, spec.Seconds)
 	}
-	est := estimateVideo("doubao-seedance-1-0-pro-250528", spec)
+	est := mustEstimate(t, "doubao-seedance-1-0-pro-250528", spec)
 	if want := int64(133) * pixelArea[gen10][Res720][Ratio219] / 1024; est.Tokens != want {
 		t.Fatalf("frames estimate = %d, want %d (133 frames, not 5 seconds)", est.Tokens, want)
 	}
@@ -347,7 +353,7 @@ func TestTheMoreExpensiveReadingWins(t *testing.T) {
 func TestUnreadableRequestIsBoundedFromAbove(t *testing.T) {
 	const model = "doubao-seedance-2-0-260128" // the one 4k model, 15s maximum
 
-	absentRes := estimateVideo(model, readVideoSpec(map[string]string{PathDuration: `5`,
+	absentRes := mustEstimate(t, model, readVideoSpec(map[string]string{PathDuration: `5`,
 		PathContentCount: `1`, "content.0.text": `"a cat"`}))
 	if absentRes.Resolution != Res720 {
 		t.Fatalf("absent resolution priced at %q, want the model's documented default", absentRes.Resolution)
@@ -356,7 +362,7 @@ func TestUnreadableRequestIsBoundedFromAbove(t *testing.T) {
 	// or whatever Ark adds next: something was asked for, and there is no
 	// cell for it. Ark accepted it (a wrong value never reaches a 2xx), so it
 	// is real, and the bound is the model's maximum.
-	unknownTier := estimateVideo(model, readVideoSpec(map[string]string{
+	unknownTier := mustEstimate(t, model, readVideoSpec(map[string]string{
 		PathResolution: `"2k"`, PathDuration: `5`, PathContentCount: `1`, "content.0.text": `"a cat"`,
 	}))
 	if unknownTier.Resolution != Res4K {
@@ -367,7 +373,7 @@ func TestUnreadableRequestIsBoundedFromAbove(t *testing.T) {
 	// text is not delivered at all, so a command in it would never be seen,
 	// and nothing the request said can be trusted - not even the structured
 	// fields, because Ark states no precedence between the two forms.
-	longArray := estimateVideo(model, readVideoSpec(map[string]string{
+	longArray := mustEstimate(t, model, readVideoSpec(map[string]string{
 		PathResolution: `"480p"`, PathDuration: `4`, PathContentCount: `4`,
 		"content.0.text": `"a cat"`,
 	}))
@@ -482,7 +488,7 @@ func TestEstimateVideoExactNumbers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			est := estimateVideo(tc.model, readVideoSpec(tc.fields))
+			est := mustEstimate(t, tc.model, readVideoSpec(tc.fields))
 			want := (tc.sec*videoFPS + 1) * tc.w * tc.h / 1024
 			if est.Tokens != want {
 				t.Errorf("tokens = %d, want %d ((%ds x %dfps + 1) x %dx%d / 1024)",
@@ -527,7 +533,7 @@ func TestEstimateIsNeverZero(t *testing.T) {
 	}
 	for _, model := range models {
 		for i, f := range specs {
-			est := estimateVideo(model, readVideoSpec(f))
+			est := mustEstimate(t, model, readVideoSpec(f))
 			if est.Tokens <= 0 {
 				t.Errorf("model %q spec #%d estimated %d tokens", model, i, est.Tokens)
 			}
@@ -544,7 +550,7 @@ func TestEstimateIsNeverZero(t *testing.T) {
 // the estimate still has to produce a number for a generation that publishes
 // no 4k row.
 func TestFourKAskedOfAModelWithoutIt(t *testing.T) {
-	est := estimateVideo("doubao-seedance-2-5-260628", readVideoSpec(map[string]string{
+	est := mustEstimate(t, "doubao-seedance-2-5-260628", readVideoSpec(map[string]string{
 		PathResolution: `"4k"`, PathRatio: `"16:9"`, PathDuration: `5`,
 		PathContentCount: `1`, "content.0.text": `"a cat"`,
 	}))
@@ -558,7 +564,7 @@ func TestFourKAskedOfAModelWithoutIt(t *testing.T) {
 	}
 	// And a tier that exists nowhere falls back to the model's own maximum
 	// rather than to nothing.
-	est = estimateVideo("doubao-seedance-1-0-pro-250528", videoSpec{
+	est = mustEstimate(t, "doubao-seedance-1-0-pro-250528", videoSpec{
 		Resolution: "8k", Seconds: 5, PromptFullyRead: true,
 	})
 	if est.Resolution != Res1080 || est.Tokens <= 0 {
@@ -575,9 +581,46 @@ func TestFourKAskedOfAModelWithoutIt(t *testing.T) {
 func TestEstimateMatchesARealArkTask(t *testing.T) {
 	fields := map[string]string{PathResolution: `"480p"`, PathRatio: `"16:9"`, PathDuration: `4`,
 		PathContentCount: `1`, "content.0.text": `"A red ball slowly rolls across a wooden table, soft daylight"`}
-	est := estimateVideo("doubao-seedance-2-0-mini-260615", readVideoSpec(fields))
+	est := mustEstimate(t, "doubao-seedance-2-0-mini-260615", readVideoSpec(fields))
 	if est.Tokens != 40594 || est.Resolution != Res480 || len(est.Assumed) != 0 {
 		t.Fatalf("estimate = %d tokens at %s (assumed %v), want 40594 at 480p with nothing assumed - the completion_tokens Ark really billed",
 			est.Tokens, est.Resolution, est.Assumed)
+	}
+}
+
+func mustEstimate(t *testing.T, model string, spec videoSpec) videoEstimate {
+	t.Helper()
+	est, err := estimateVideo(model, spec)
+	if err != nil {
+		t.Fatalf("estimate %s %+v: %v", model, spec, err)
+	}
+	return est
+}
+
+// TestVideoEstimateOutOfRange: frames or a duration whose estimate does not
+// fit an int64 are refused (InvalidArgument, before the submit) rather than
+// wrapped around into a zero or negative pre-charge; anything that fits is
+// estimated however large.
+func TestVideoEstimateOutOfRange(t *testing.T) {
+	const model = "doubao-seedance-1-0-pro-250528"
+	for name, fields := range map[string]map[string]string{
+		"frames wrap to zero":   {PathResolution: `"720p"`, PathRatio: `"16:9"`, PathFrames: `4503599627370496`},
+		"frames wrap negative":  {PathResolution: `"720p"`, PathRatio: `"16:9"`, PathFrames: `20000000000000`},
+		"duration":              {PathResolution: `"720p"`, PathRatio: `"16:9"`, PathDuration: `400000000000000`},
+		"duration beyond int64": {PathDuration: `1e30`},
+		"prompt beyond int64":   {PathContentCount: `1`, "content.0.text": `"a cat --dur 99999999999999999999"`},
+	} {
+		if _, err := estimateVideo(model, readVideoSpec(fields)); status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: err = %v, want InvalidArgument", name, err)
+		}
+		_, err := New().EstimateUsage(context.Background(), &pluginv1.EstimateUsageRequest{
+			Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: model}, Fields: fields})
+		if status.Code(err) != codes.InvalidArgument {
+			t.Errorf("%s: EstimateUsage err = %v, want InvalidArgument", name, err)
+		}
+	}
+	est := mustEstimate(t, model, readVideoSpec(map[string]string{PathResolution: `"720p"`, PathRatio: `"16:9"`, PathFrames: `1000000000000`}))
+	if want := 1000000000000 * est.Pixels / 1024; est.Pixels == 0 || est.Tokens != want {
+		t.Fatalf("tokens = %d, want %d", est.Tokens, want)
 	}
 }

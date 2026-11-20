@@ -424,7 +424,6 @@
           "endpoints": [
             "chat_completions",
             "responses",
-            "responses_websocket",
             "embeddings"
           ],
           "passHeaders": [
@@ -520,7 +519,6 @@
           "endpoints": [
             "chat_completions",
             "responses",
-            "responses_websocket",
             "embeddings"
           ],
           "passHeaders": [
@@ -773,8 +771,8 @@
     {
       "id": "gateway.endpoint",
       "reason": {
-        "en": "Serve Ark image generation at POST /api/v3/images/generations and Doubao Seedance video generation at POST/GET /api/v3/contents/generations/tasks, the paths of the official Ark API; the same endpoints are also served under /doubao/api/v3",
-        "zh": "在 POST /api/v3/images/generations 上提供方舟图片生成，在 POST/GET /api/v3/contents/generations/tasks 上提供豆包 Seedance 视频生成，与方舟官方路径一致；同样的端点也在 /doubao/api/v3 下提供"
+        "en": "Serve Ark image generation at POST /api/v3/images/generations and Doubao Seedance video generation at POST/GET /api/v3/contents/generations/tasks, the paths of the official Ark API; the video endpoints are also served under /v1/contents/generations/tasks",
+        "zh": "在 POST /api/v3/images/generations 上提供方舟图片生成，在 POST/GET /api/v3/contents/generations/tasks 上提供豆包 Seedance 视频生成，与方舟官方路径一致；视频端点也在 /v1/contents/generations/tasks 下提供"
       }
     },
     {

@@ -480,6 +480,10 @@ func TestValidateRelayBaseURL(t *testing.T) {
 			t.Errorf("%s: error on %q, want base_url", bad, errs[0].GetField())
 		}
 	}
+	// A missing base_url is refused once.
+	if errs := validate(`{}`); len(errs) != 1 || errs[0].GetCode() != "required" {
+		t.Errorf("a missing base_url: %v, want one required error", errs)
+	}
 	if errs := validate(`{"base_url":"https://relay.test","video_api_prefix":"/doubao/api/v3"}`); len(errs) != 0 {
 		t.Errorf("the verified configuration must be accepted: %v", errs)
 	}

@@ -107,10 +107,9 @@ func prefixesOf(accountType, settingsJSON string) (prefixes, error) {
 }
 
 // validateRelayBaseURL refuses a relay base_url that already carries a path
-// prefix, and refuses a missing one.
+// prefix (a missing one relaySpec refuses).
 //
-// Both halves exist because of the same failure, which is a billing failure
-// rather than a 404. relaySpec has no Versions (see its comment), so a base URL
+// It exists because of a billing failure rather than a 404. relaySpec has no Versions (see its comment), so a base URL
 // of "https://r/v1" with the default prefix yields "https://r/v1/v1/...". On
 // the text surface that is a loud 404. On the video surface the submit 404s,
 // but if a relay instead answers 200 for the submit and 404 for the poll - or
@@ -134,14 +133,9 @@ func validateRelayBaseURL(errs pluginsdk.FieldErrors, credentialsJSON, settingsJ
 			break
 		}
 	}
-	if raw == "" {
-		return errs.Add("base_url", "required",
-			"base_url is required for a relay account - there is no default relay address / "+
-				"中转账号必须填写 base_url —— 中转站没有默认地址")
-	}
 	u, err := url.Parse(raw)
-	if err != nil {
-		// apikey.Spec.Validate has already reported this shape.
+	if raw == "" || err != nil {
+		// relaySpec.Validate has already reported this shape.
 		return errs
 	}
 	// The escaped path, as the address is saved and sent: "a%2Fv1" does not end in a /v1 segment.

@@ -19,7 +19,10 @@ func (p *Plugin) EstimateUsage(ctx context.Context, in *pluginv1.EstimateUsageRe
 		// local tokenizer for image/text protocols.
 		return nil, pluginsdk.ErrUnimplemented("usage estimation only available for video protocol")
 	}
-	est := estimateVideo(in.GetMeta().GetModel(), readVideoSpec(in.GetFields()))
+	est, err := estimateVideo(in.GetMeta().GetModel(), readVideoSpec(in.GetFields()))
+	if err != nil {
+		return nil, err
+	}
 	return &pluginv1.UsageReport{Tokens: &pluginv1.UsageTokens{OutputTokens: est.Tokens}, Facts: estimatedVideoFacts(est, in.GetFields())}, nil
 }
 
@@ -99,8 +102,11 @@ func completedVideoFacts(body []byte, model string) map[string]string {
 		if ratio == "" {
 			ratio = gjson.GetBytes(body, "content.ratio").String()
 		}
-		if facts[FactResolution] != "" && ratio != "" {
-			w, h = dimensionsForArea(tierArea(profileOf(model).gen, facts[FactResolution], ratio), ratio)
+		// The table gives the exact size only for a known generation: an
+		// unknown one (an Endpoint ID) would take the largest of the
+		// generations' sizes, which is not what Ark rendered.
+		if gen := profileOf(model).gen; gen != genUnknown && facts[FactResolution] != "" && ratio != "" {
+			w, h = dimensionsForArea(tierArea(gen, facts[FactResolution], ratio), ratio)
 		}
 	}
 	if w > 0 && h > 0 && w <= 16384 && h <= 16384 {
