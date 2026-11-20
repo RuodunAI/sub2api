@@ -313,8 +313,8 @@ func (s Spec) normalizeBaseURL(baseStr string) (string, error) {
 // in the escaped form the user wrote ("%2F" stays "%2F", raw non-ASCII is
 // percent-encoded) without trailing "/". No suffix is removed. Empty, whitespace
 // inside, "?", "#", userinfo and anything but an absolute http(s) URL are
-// refused (the account forms' ^https?://[^\s?#]+$). A value it returns
-// normalizes to itself.
+// refused; the account forms' base_url rule (@sub2api/ui apiKeyForm.ts)
+// follows this function. A value it returns normalizes to itself.
 func NormalizeBaseURL(baseStr string) (string, error) {
 	baseStr = strings.TrimSpace(baseStr)
 	if baseStr == "" {

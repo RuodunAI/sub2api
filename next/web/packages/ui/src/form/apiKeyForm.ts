@@ -35,7 +35,7 @@ export interface ApiKeyFormSpec {
     | {
         required?: boolean
         presets?: string[]
-        /** Default /^(https?:\/\/[^\s?#]+)?$/, required: /^https?:\/\/[^\s?#]+$/. */
+        /** Default: base_url as apikey.NormalizeBaseURL accepts it (see BASE_URL below). */
         pattern?: RegExp
         /** The message of a value the pattern refuses (default: the generic "invalid format"). */
         message?: Text
