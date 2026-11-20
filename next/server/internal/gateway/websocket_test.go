@@ -22,6 +22,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/awseventstream"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/observation"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/account"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
@@ -125,6 +126,9 @@ func (u *wsUpstream) handle(w http.ResponseWriter, r *http.Request) {
 		send(map[string]any{"type": "response.output_text.delta", "delta": "hi"})
 		completed := map[string]any{"id": id, "model": model, "status": "completed",
 			"usage": map[string]any{"input_tokens": wsInput, "output_tokens": wsOutput, "input_tokens_details": map[string]any{"cached_tokens": wsCacheRead}}}
+		if gjson.GetBytes(data, "input").String() == "no-usage" { // answered, but nothing to bill
+			delete(completed, "usage")
+		}
 		if gjson.GetBytes(data, "input").String() == "image" { // the image tool's usage beside the turn's
 			completed["tools"] = []any{map[string]any{"type": "image_generation", "model": "gpt-image-2-codex"}}
 			completed["tool_usage"] = map[string]any{"image_gen": map[string]any{"input_tokens": 39, "output_tokens": 515,
@@ -346,6 +350,30 @@ func TestWebSocketTurnsShareOneUpstreamAndAreBilledEach(t *testing.T) {
 		n, _ := e.slots.InUse(context.Background(), "ws", 5)
 		return n == 0 && e.wsUp.open.Load() == 0
 	})
+}
+
+// A turn answered without usage is unreported, and observed as the failure
+// it is recorded as, as an HTTP request is (sendParked).
+func TestWebSocketUnreportedTurnIsObservedAsAFailure(t *testing.T) {
+	e := newWSEnv(t)
+	capture := observationCapture{events: make(chan *pluginv1.RequestObservation, 32)}
+	e.gw.d.Observations = capture
+	c := e.mustDial()
+	c.send(create(wsModel, "no-usage"))
+	c.until("response.completed")
+	r := e.record()
+	if r.Success || r.ErrorType != core.UsageErrorUnreported || r.Billable {
+		t.Fatalf("record: %+v", r)
+	}
+	for len(capture.events) > 0 {
+		if ev := <-capture.events; ev.Phase == observation.AttemptFinished {
+			if ev.Success || !ev.LocalFailure {
+				t.Fatalf("attempt observed as success %v local %v", ev.Success, ev.LocalFailure)
+			}
+			return
+		}
+	}
+	t.Fatal("no AttemptFinished observation")
 }
 
 func TestWebSocketHandshakeFailoverDisablesTheAccount(t *testing.T) {

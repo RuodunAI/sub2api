@@ -924,15 +924,20 @@ func (s *wsSession) finish(ctx context.Context, t *wsTurn, out wsOutcome) {
 		}
 	}
 	t.release()
-	cl.publishObservation(observation.AttemptFinished, rec, !out.ok && isLocalFailure(out.local, out.errType))
+	id := s.ref
+	if id != nil {
+		// Before the observation, as sendParked does: an unreported turn is
+		// observed as the failure it is recorded as.
+		cl.endUnreported(ctx, id.ID, cl.readingEmpty())
+	}
+	cl.publishObservation(observation.AttemptFinished, rec, !rec.Success && isLocalFailure(out.local, rec.ErrorType))
 	// Only a turn the client abandoned counts the prompt when no usage came
 	// back; an upstream failure consumed nothing we know of.
 	if out.errType != errTypeClientCanceled {
 		cl.rateEstimate.prompt = 0
 	}
 	defer cl.releaseHolds(ctx)
-	if id := s.ref; id != nil {
-		cl.endUnreported(ctx, id.ID, cl.readingEmpty())
+	if id != nil {
 		cl.countTokens(ctx, id.ID)
 		if rec.Success {
 			s.g.d.Accounts.TouchLastUsed(context.WithoutCancel(ctx), id.ID)
