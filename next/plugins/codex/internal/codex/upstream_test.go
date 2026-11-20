@@ -135,6 +135,11 @@ func TestValidateCredentials(t *testing.T) {
 		{TypeDevice, `{"access_token":5}`, "access_token", "pattern"},
 		{TypeDevice, `[1]`, "access_token", "invalid"},
 		{TypeDevice, `{"access_token":"x","expires_at":"soon"}`, "expires_at", "pattern"},
+		{TypeDevice, `{"access_token":"x","expires_at":"-1"}`, "expires_at", "pattern"},
+		{TypeDevice, `{"access_token":"x","expires_at":-1}`, "expires_at", "pattern"},
+		{TypeDevice, `{"access_token":"x","expires_at":1.5}`, "expires_at", "pattern"},
+		{TypeDevice, `{"access_token":"x","expires_at":1e19}`, "expires_at", "pattern"},
+		{TypeDevice, `{"access_token":"x","expires_at":true}`, "expires_at", "pattern"},
 		{TypeDevice, `{"access_token":"x","refresh_token":1}`, "refresh_token", "pattern"},
 		{"chatgpt_siwc", `{"access_token":"x"}`, "account_type", "unsupported"},
 		{TypeOAuth, `{"access_token":"x","email":1}`, "email", "pattern"},
@@ -146,6 +151,9 @@ func TestValidateCredentials(t *testing.T) {
 		if len(r.GetErrors()) != 1 || r.GetErrors()[0].GetField() != tc.field || r.GetErrors()[0].GetCode() != tc.code {
 			t.Errorf("%s %s: errors = %v, want %s/%s", tc.typ, tc.creds, r.GetErrors(), tc.field, tc.code)
 		}
+	}
+	if r := validate(TypeDevice, `{"access_token":"x","expires_at":1800000000}`); len(r.GetErrors()) != 0 || r.GetNormalizedCredentialsJson() != "" {
+		t.Errorf("numeric expires_at: %v", r)
 	}
 }
 

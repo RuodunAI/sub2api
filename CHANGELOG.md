@@ -418,6 +418,7 @@
 
 - **会话 id 以账号 id 加盐**：发给上游的 `session_id` / `conversation_id` 改为 `sha256("<账号 id>:<api_key_id>:<prompt_cache_key>")` 排成的 UUID，账号 id 是核心里的账号编号，不发给上游。**升级后每个会话的上游 session 变一次**，上游提示缓存的落点重来一次；标识随账号不同，同一会话换到另一个 ChatGPT 账号时也会变。
 - **User-Agent 与 originator 可自定义**：账号编辑页 codex 表单新增“客户端标识”两个输入框，插件设置新增同名两项；取值为账号 → 插件设置 → 内置（`sup2api-codex/<版本>`、`sup2api`），留空沿用上一级。用于这个账号发往 OpenAI 的全部请求：转发（HTTP、WebSocket）、账号测试、令牌刷新、重置次数，以及授权（设备码申请、轮询、换令牌）——授权时账号还没保存，每次调用都带上表单此刻填的值。默认值不变，不设就与以前一样。
+- **凭证的 `expires_at` 写成数字时也要是非负整数**：手工粘贴的凭证里 `"expires_at": -1`、`1.5` 这类数字以前直接保存（写成字符串 `"-1"` 却会被拒），现在同样以 `expires_at`/`pattern` 拒绝。
 - **`instructions: null` 按缺省处理**：Responses 请求体里显式写 `"instructions": null` 时，与没写一样补成空串再发给 Codex 后端（以前原样发 `null`），与旧版后端一致。
 
 ### 删除 Claude OAuth 插件及两种账号类型（迁移 0111）
