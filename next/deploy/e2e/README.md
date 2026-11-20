@@ -56,13 +56,13 @@ Caddy 路由：
 在 Docker 主机上的完整仓库目录中执行，宿主无需安装 Go：
 
 ```sh
-# 整套约 35 分钟，脚本默认 -timeout=150m。
+# 整套约 27 分钟，脚本默认 -timeout=150m。
 sh next/deploy/e2e/test.sh
 # 只跑选定用例；参数直接传给 go test。
 sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 ```
 
-用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC37、AC38 是同批的插件联网与授权代理票据，AC39–AC41 是上游插件一批的账号余额、OpenAI 生图与 Responses 生图工具，AC42 是 Codex 账号经核心转换服务 OpenAI 生图：
+用例按 `acNN_*_test.go` 编号。转发 V2 的用例是 AC30–AC36，AC37、AC38 是同批的插件联网与授权代理票据，AC39–AC41 是上游插件一批的账号余额、OpenAI 生图与 Responses 生图工具，AC42 是 Codex 账号经核心转换服务 OpenAI 生图，AC43 是插件账号上下文：
 
 | 用例 | 内容 |
 |---|---|
@@ -78,6 +78,7 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 | AC40 | OpenAI 生图（CONTRACTS §118）：OpenAI API Key、New API、Sub2API 账号各转发 generations（JSON、流式）与 edits（JSON），使用记录有图片输入 / 输出 token，表达式价格 `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 按分组倍率 1.5 计费（算式在用例注释里）；multipart 的 edits 在网关回 400、留一条免费的 `invalid_request` 记录；volcengine、Azure 部署（`azure_deployment`）账号不服务生图端点（404；codex 账号经转换服务，见 AC42）；没有价格的模型 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3），都不到 mock |
 | AC41 | Responses 的 `image_generation` 工具（CONTRACTS §17.2、§118.10）：OpenAI API Key 账号（JSON、流式、WebSocket 一轮）与 codex 账号（客户端 JSON，到达 Codex 后端时是 `stream: true`、`store: false` 的请求，网关聚合流式应答，图片在应答里）的请求只有一条使用记录、一笔扣费，按客户请求的模型计价：token 是对话与 `tool_usage.image_gen` 之和（输入 159、输出 557、图片输出 515），金额按请求模型的表达式价格乘分组倍率（算式在用例注释里）；`billing_detail` 没有附加或替代分项、没有 `primary_*`；应答 `tools` 回显的生图模型和请求里工具点名的模型都不需要价格；不带工具的请求只有对话的用量 |
 | AC42 | Codex 账号经核心转换服务 OpenAI 生图（CONTRACTS §121）：经账号代理，generations（JSON、流式）与 edits（JSON）到达 Codex 后端时是流式的 Responses 请求（顶层 `gpt-6-luna`，强制的 `image_generation` 工具带客户端的模型，edits 带 `action: edit` 和输入图片）；客户端拿到 Images API 形状（`data[].b64_json`、生图部分的 `usage`；流式最后是 `image_generation.completed`）；一条记录：`openai.images` / `openai.images_edit`、上游协议 `openai.responses`、客户端模型、上游模型为上游回显的 `gpt-image-2-codex`，token 是对话与生图两部分之和，按客户端模型的表达式价格乘分组倍率（算式在用例注释里），一笔扣费；上游完成但没出图（mock 的 `MOCK-NO-IMAGE`，不带 `tool_usage`）时 200、`data` 为空、没有 `usage`（流式没有 `completed` 也没有 `error` 事件），记录成功、`error_type` 为空、照扣，账号不记失败（仍启用、可调度、没有冷却）；`n: 2` 回 400、缺价 403，都不到 mock |
+| AC43 | 插件账号上下文（CONTRACTS §124）：插件不需授权就收到自己账号类型的账号。volcengine 中转账号挂 mock 的代理：资产库路由经 `HostService.GetAccount` 读账号，审计写一条 `plugin.account.read`（写明插件、账号类型和 `host.GetAccount`，不含密钥和代理）；插件描述的资产库请求由核心经账号代理发出（mock 记 `proxied`）；仍申请 `accounts.credentials` 或 `accounts.read` 的包在上传时以旧契约的固定信息被拒（400） |
 
 插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 

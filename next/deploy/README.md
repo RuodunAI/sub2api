@@ -63,9 +63,10 @@ using the dedicated Compose project `sub2api-next-e2e` by default.
   from the dev public key unless those variables are set.
 
 Node settings live in each stack's `compose.yml`. The E2E stack explicitly
-enables package signature checks, plugin seccomp, strict networking and
-database role isolation. Its private-upstream exception is only for the mock
-on that stack's internal network.
+enables package signature checks, plugin seccomp and strict networking. Its
+private-address exceptions (`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` for the
+upstreams, `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE` for the plugins' own egress)
+are only for the mock on that stack's internal network.
 
 ## mock-upstream
 
@@ -90,9 +91,9 @@ through the gateway use `/__control` rules or key markers.
 ```bash
 # First start the dedicated stack as documented in e2e/README.md.
 # Run on its Docker host from the full repository checkout; no host Go needed.
-# The full suite takes about 27 minutes: pass -timeout=150m (the script's
-# default -timeout=30m is too short; a later -timeout overrides it).
-sh next/deploy/e2e/test.sh -timeout=150m
+# The full suite takes about 27 minutes; the script's default -timeout=150m
+# covers it (a later -timeout overrides it).
+sh next/deploy/e2e/test.sh
 ```
 
 The opt-in runner compiles and executes tests under `/src` with Go 1.27.

@@ -37,7 +37,7 @@
 //	CONNECT host:port               HTTPS through the mock as a forward proxy (connect.go)
 //	GET  /v1/models                 Anthropic/OpenAI style list {"data":[{"id":...}]}
 //	GET  /v1beta/models             Gemini style list {"models":[{"name":"models/..."}]}
-//	GET  /api/usage/token/, /api/status, /v1/usage
+//	GET  /api/usage/token/, /v1/usage
 //	                                New API and Sub2API balances (sites.go)
 //	POST /v1/images/{generations,edits}  OpenAI image generation, JSON or SSE (sites.go)
 //	GET  /__requests[?since=ID]     last 100 recorded requests (newest last)
