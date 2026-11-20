@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"math"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -51,7 +50,7 @@ type Category struct {
 
 // Settings is the plugin configuration (CONTRACTS §72.10; the keys and
 // limits CheckSettings accepts). Of the keys retired in 0.11.0 only those of
-// retiredKeys are read, from settings not saved since.
+// retiredKeys are read, from settings not saved since (transitional).
 type Settings struct {
 	Mode string `json:"mode"`
 
@@ -109,22 +108,6 @@ type Settings struct {
 	StatsRetentionDays    int    `json:"stats_retention_days"`
 	NotifyWebhookURL      string `json:"notify_webhook_url"`
 	NotifyWebhookSecret   string `json:"notify_webhook_secret"`
-
-	// lists: the retired user lists, read only by the one-time import into
-	// locked watch entries (upgrade.go).
-	lists retiredLists
-	// setup01: the settings hold a 0.1 single-model setup (base_url and
-	// model), which 0.11.0 no longer converts (upgradeOnce logs it).
-	setup01 bool
-}
-
-// retiredLists are the user lists of the settings before 0.11.0: the
-// allowlist (allowlist_user_ids, or the older exempt_user_ids while that key
-// is absent) and the blocklist, which wins. invalid counts the entries that
-// are no user id.
-type retiredLists struct {
-	allow, block []int64
-	invalid      int
 }
 
 // DefaultBlockMessage is the default deny message of a hit.
@@ -244,51 +227,23 @@ func (d decoder) boolean(k string, dst *bool) {
 	}
 }
 
-func (d decoder) strList(k string) []string {
-	var out []string
-	if v, ok := d.m[k]; ok {
-		var xs []any
-		if json.Unmarshal(v, &xs) == nil {
-			for _, x := range xs {
-				switch t := x.(type) {
-				case string:
-					out = append(out, t)
-				case float64:
-					out = append(out, strconv.FormatFloat(t, 'f', -1, 64))
-				}
-			}
-		}
-	}
-	return out
-}
-
 // has: the key holds a value (null counts as absent).
 func (d decoder) has(k string) bool {
 	v, ok := d.m[k]
 	return ok && string(v) != "null"
 }
 
-// userIDs reads a list of user ids (strings or numbers); invalid counts the
-// entries that are no positive integer.
-func (d decoder) userIDs(k string) (ids []int64, invalid int) {
-	for _, u := range d.strList(k) {
-		if u = strings.TrimSpace(u); u == "" {
-			continue
-		}
-		if id, err := strconv.ParseInt(u, 10, 64); err == nil && id > 0 {
-			ids = append(ids, id)
-		} else {
-			invalid++
-		}
-	}
-	return ids, invalid
-}
-
 // retiredKey is a key 0.11.0 removed from the settings that is still read
-// while its successor is absent ("" = none: always). The core keeps the
-// stored values until the settings are saved again, and the console drops
-// keys the plugin no longer accepts when it saves, so only settings not saved
-// since 0.11.0 hold them (CONTRACTS §72 0.11.0).
+// while its successor is absent. The core keeps the stored values until the
+// settings are saved again, and the console folds them into their successors
+// when it saves (settingsForm.ts RETIRED), so only settings not saved since
+// 0.11.0 hold them (CONTRACTS §72.10).
+//
+// Transitional: 0.12.1 reads them the same way and the stored settings of a
+// deployment are not known to be saved since 0.11.0, so the upgrade to 0.13.0
+// keeps them. Remove them, and RETIRED, in the first release after every
+// deployment has saved its moderation settings once under 0.13.0 (its GET
+// /plugins/moderation/settings holds none of these keys).
 type retiredKey struct {
 	key, successor string
 	read           func(d decoder, s *Settings)
@@ -316,33 +271,15 @@ var retiredKeys = []retiredKey{
 		d.integer("retention_days", &days, 1, 3650)
 		s.HitRetentionDays = max(s.HitRetentionDays, days)
 	}},
-	// The user lists, only for the one-time import (upgrade.go).
-	{"allowlist_user_ids", "", func(d decoder, s *Settings) { s.lists.readAllow(d, "allowlist_user_ids") }},
-	{"exempt_user_ids", "allowlist_user_ids", func(d decoder, s *Settings) { s.lists.readAllow(d, "exempt_user_ids") }},
-	{"blocklist_user_ids", "", func(d decoder, s *Settings) {
-		var invalid int
-		s.lists.block, invalid = d.userIDs("blocklist_user_ids")
-		s.lists.invalid += invalid
-	}},
 }
 
-func (l *retiredLists) readAllow(d decoder, key string) {
-	var invalid int
-	l.allow, invalid = d.userIDs(key)
-	l.invalid += invalid
-}
-
-// retired applies retiredKeys, and notes a 0.1 setup (setup01).
+// retired applies retiredKeys.
 func (d decoder) retired(s *Settings) {
 	for _, r := range retiredKeys {
-		if d.has(r.key) && (r.successor == "" || !d.has(r.successor)) {
+		if d.has(r.key) && !d.has(r.successor) {
 			r.read(d, s)
 		}
 	}
-	var base, model string
-	d.str("base_url", &base)
-	d.str("model", &model)
-	s.setup01 = strings.TrimSpace(base) != "" && strings.TrimSpace(model) != ""
 }
 
 func (d decoder) enum(k string, dst *string, allowed ...string) {

@@ -453,16 +453,13 @@ func TestDecodeSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.Mode != ModeObserve || s.BlockStatus != 500 || s.HitRetentionDays != 400 || s.PassRetentionDays != 3 ||
-		s.WatchDays != 1 || s.InputMaxChars != 12000 || !s.AutoWatch || s.setup01 {
+		s.WatchDays != 1 || s.InputMaxChars != 12000 || !s.AutoWatch {
 		t.Fatalf("settings = %+v", s)
 	}
 	// A missing record_pass_input_message is on.
 	c := compile(s)
 	if !c.enabled || c.defaultLevel != LevelObserve || c.retention[ResultPass] != 3*24*time.Hour || !s.RecordPassInputMessage {
 		t.Fatalf("config = %+v", c)
-	}
-	if s, _ := DecodeSettings([]byte(`{"base_url":"https://x","model":"m","api_key":"k"}`)); !s.setup01 {
-		t.Fatal("a 0.1 setup is not noticed")
 	}
 	if s, _ := DecodeSettings([]byte(`{"record_pass_input_message":false}`)); s.RecordPassInputMessage {
 		t.Fatal("record_pass_input_message false ignored")

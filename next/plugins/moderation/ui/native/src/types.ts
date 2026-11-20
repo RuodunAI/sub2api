@@ -524,8 +524,6 @@ export interface Status {
   watch: WatchCounts
   /** bindings whose flow is disabled, unpublished or deleted (0.10.0): their requests go by a wider binding */
   stale_bindings?: number
-  /** the one-time import of the user lists of the settings into locked watch entries is done (0.11.0) */
-  lists_imported: boolean
   auditors: HealthRow[]
   channels: HealthRow[]
   funnels: Funnel[]

@@ -243,10 +243,13 @@ func TestSettingsSecrets(t *testing.T) {
 	if !reflect.DeepEqual(got, schemaSecrets) {
 		t.Fatalf("ui.settings.secrets = %v, want %v", got, schemaSecrets)
 	}
-	// Each one is a setting the plugin accepts.
+	// Each one is a setting the plugin accepts, except the 0.1 api_key: it is
+	// declared only so the core masks a stored one (transitional, CONTRACTS
+	// §72.10), and every save drops it.
 	for k := range schemaSecrets {
-		for _, e := range moderation.CheckSettings([]byte(`{"` + k + `":""}`)) {
-			t.Errorf("secret %s: %v", k, e)
+		errs := moderation.CheckSettings([]byte(`{"` + k + `":""}`))
+		if (k == "api_key") != (len(errs) == 1 && errs[0].GetCode() == "unknown") {
+			t.Errorf("secret %s: %v", k, errs)
 		}
 	}
 }
@@ -278,7 +281,7 @@ func TestValidateSettings(t *testing.T) {
 // older bounds - still configure (read and clamped), so the plugin starts.
 func TestConfigureAppliesStoredSettings(t *testing.T) {
 	h := pluginsdktest.Start(t, moderation.New(), pluginsdktest.Options{Manifest: manifestJSON})
-	stored := `{"mode":"observe","cache_ttl_seconds":0,"ban_window_hours":2,"allowlist_user_ids":["8"],"base_url":"https://old.example","pass_retention_days":9,"watch_days":0}`
+	stored := `{"mode":"observe","cache_ttl_seconds":0,"ban_window_hours":2,"allowlist_user_ids":["8"],"base_url":"https://old.example","api_key":"sk-old","pass_retention_days":9,"watch_days":0}`
 	if resp, err := h.ValidateSettings(stored, nil); err != nil || len(resp.GetErrors()) == 0 {
 		t.Fatalf("ValidateSettings must refuse them: %v %v", resp, err)
 	}

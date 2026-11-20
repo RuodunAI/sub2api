@@ -8,6 +8,13 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+### 审核插件删掉更早版本的升级代码（moderation 0.13.0；无迁移，随 0.1.304 发布）
+
+- 删除 0.8.0 的观察名单转换、0.11.0 从设置导入名单（连同只给它读的 `allowlist_user_ids`、`exempt_user_ids`、`blocklist_user_ids`）和 0.1 单模型设置的错误日志；`GET /status` 不再有 `lists_imported`，设置页也不再因“名单导入尚未完成”而不能保存。线上的 0.12.1 早已做完这些一次性步骤（两个部署都以 0.12.1 运行过，代码与删除前相同）。
+- 设置接口不再接受 0.1 的 `api_key`（`ValidateSettings` 回 `unknown`；控制台保存时本来就去掉它）。
+- 保留为过渡代码：已存设置里的 `cache_ttl_seconds`、`ban_window_hours`、`retention_days` 仍在新键不存在时读（控制台保存时折算进新键），已存的 `api_key` 仍由核心遮蔽。所有部署都在 0.13.0 下保存过一次审核设置之后的下一个版本删除。规则见 CONTRACTS §72.10。
+- **升级须知**：只能从 moderation 0.12.1 升级（更早的版本先升到 0.12.1）。升级后在审核设置的任一页点一次“保存”（不用改值：没有改动时页面照样写回去掉、折算后的设置），已存设置里的旧键与 `api_key` 就被去掉；之后 `GET /api/v1/plugins/moderation/settings` 的 `values` 里应没有上面四个键。
+
 ### 兑换码只有余额一种，兑换不了的码不再被用掉（payment 0.2.0；无迁移）
 
 - 生成兑换码（`POST /redeem-codes`）时 `type` 不写即为 `balance`，写了别的值 400 `unsupported code type`；不再接受 `group_id`、`validity_days`（从没生效过），管理员列表不再返回 `validity_days`。此前不写 `type` 存成空串，`subscription`、`invitation` 或任意字符串也照收。

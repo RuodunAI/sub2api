@@ -16,7 +16,8 @@ import (
 
 // The settings form of forms/settings.schema.json (removed in 0.12.2) as plain
 // data: the defaults of every key, and the bounds of the integer keys.
-// CheckSettings holds the same rules; these tests keep it to them.
+// CheckSettings holds the same rules; these tests keep it to them. The
+// form's api_key (the 0.1 key) is no longer accepted (0.13.0).
 var schemaDefaults = map[string]any{
 	"mode": "off", "fail_policy": "open", "block_status": 403, "block_message": DefaultBlockMessage,
 	"auto_watch": true, "watch_days": 30, "escalate_violations": 0, "escalate_window_seconds": 3600, "ban_threshold": 0,
@@ -26,7 +27,7 @@ var schemaDefaults = map[string]any{
 	"pass_retention_days": 3, "stats_retention_days": 90, "max_concurrency": 16, "queue_size": 1000, "ttft_timeout_ms": 10000,
 	"verdict_cache_days": 7, "hit_replay": "new_content", "cache_entries": 100000, "input_max_chars": 12000, "input_max_chunks": 8,
 	"input_overflow": "sample", "input_max_images": 8, "max_inflight_mb": 128, "error_text_max_chars": 2000, "min_chars": 2,
-	"jev_default_set": nil, "api_key": "",
+	"jev_default_set": nil,
 }
 
 var schemaIntegers = map[string][2]float64{
@@ -56,7 +57,6 @@ func fullSettings() map[string]any {
 	m := maps.Clone(schemaDefaults)
 	m["notify_webhook_url"] = "https://hooks.example/x"
 	m["notify_webhook_secret"] = "s3cret"
-	m["api_key"] = "sk-old"
 	var set any
 	_ = json.Unmarshal([]byte(`{"preamble":"p","items":[`+jevRow+`]}`), &set)
 	m["jev_default_set"] = set
@@ -87,7 +87,7 @@ func byField(t *testing.T, errs pluginsdk.FieldErrors) map[string]string {
 }
 
 func TestCheckSettingsAcceptsTheDefaults(t *testing.T) {
-	if len(schemaDefaults) != 39 {
+	if len(schemaDefaults) != 38 {
 		t.Fatalf("%d keys", len(schemaDefaults))
 	}
 	if errs := check(t, schemaDefaults); len(errs) > 0 {
@@ -104,9 +104,6 @@ func TestCheckSettingsAcceptsTheDefaults(t *testing.T) {
 	var d map[string]any
 	_ = json.Unmarshal(b, &d)
 	for k, v := range schemaDefaults {
-		if k == "api_key" {
-			continue
-		}
 		if fmt.Sprint(d[k]) != fmt.Sprint(v) {
 			t.Errorf("DefaultSettings %s = %v, the form's default %v", k, d[k], v)
 		}
@@ -132,6 +129,7 @@ func TestCheckSettingsRefusals(t *testing.T) {
 		{"unknown", `1`, "unknown", "unknown"},
 		{"cache_ttl_seconds", `600`, "cache_ttl_seconds", "unknown"},
 		{"allowlist_user_ids", `["7"]`, "allowlist_user_ids", "unknown"},
+		{"api_key", `"sk-old"`, "api_key", "unknown"},
 		{"mode", `"bogus"`, "mode", "enum"},
 		{"mode", `1`, "mode", "type"},
 		{"fail_policy", `"closed"`, "fail_policy", "enum"},
@@ -145,8 +143,6 @@ func TestCheckSettingsRefusals(t *testing.T) {
 		{"notify_webhook_url", `" https://x"`, "notify_webhook_url", "pattern"},
 		{"notify_webhook_secret", `"` + strings.Repeat("x", 201) + `"`, "notify_webhook_secret", "maxLength"},
 		{"notify_webhook_secret", `true`, "notify_webhook_secret", "type"},
-		{"api_key", `"` + strings.Repeat("x", 1001) + `"`, "api_key", "maxLength"},
-		{"api_key", `null`, "api_key", "type"},
 		// jev_default_set: null or a table {preamble?, items}
 		{"jev_default_set", `"builtin"`, "jev_default_set", "type"},
 		{"jev_default_set", `{"items":[` + jevRow + `],"extra":1}`, "jev_default_set/extra", "unknown"},
