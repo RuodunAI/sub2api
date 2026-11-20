@@ -32,13 +32,26 @@ func (s *Service) handlePollResult(ctx context.Context, e *settleEntry, row *res
 	}
 }
 
+// errEntryBudget is the cause of an observation that used its whole budget.
+var errEntryBudget = fmt.Errorf("no answer within the %s entry budget", reconcileEntryBudget)
+
 func (s *Service) handlePollError(ctx context.Context, e *settleEntry, row *reservedRowState, cfg resolved, err error) {
-	// Local account pressure or a cancelled worker did not observe the upstream.
-	if errors.Is(err, errTaskDeferred) || ctx.Err() != nil {
+	// Local account pressure or a cancelled worker did not observe the
+	// upstream. A plugin or upstream that used the whole entry budget did not
+	// answer the query, which is a failed query like any other.
+	budgetSpent := errors.Is(context.Cause(ctx), errEntryBudget)
+	if errors.Is(err, errTaskDeferred) || ctx.Err() != nil && !budgetSpent {
 		s.rescheduleAttempt(ctx, e, cfg, 0, err.Error(), false)
 		return
 	}
-	s.recordPollFailure(ctx, e, row, cfg, err.Error(), 0)
+	reason := err.Error()
+	if budgetSpent {
+		reason = errEntryBudget.Error()
+		var cancel context.CancelFunc
+		ctx, cancel = bookkeeping(ctx)
+		defer cancel()
+	}
+	s.recordPollFailure(ctx, e, row, cfg, reason, 0)
 }
 
 func (s *Service) recordPollFailure(ctx context.Context, e *settleEntry, row *reservedRowState, cfg resolved, reason string, delay time.Duration) {

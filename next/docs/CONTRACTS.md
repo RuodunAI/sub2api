@@ -2507,7 +2507,7 @@ sub2api 按多节点部署设计，**插件的每个实例都跑在每个节点�
 
 SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` 以及可选的 `ClassifyPollResponse(status, transportError)`（转发 V2 收尾起两个参数：取回的回答不再截断，`truncated` 参数随之删除；读不完整是传输错误）。默认分类把 404/410 视作 NOT_FOUND，其他非 2xx 以及传输错误视作 POLL_FAILED；HTTP 200 返回业务错误的服务由插件根据供应商契约解释。任务不存在是领域结果，不使用 gRPC NotFound 代替。网络不完整时宿主允许报告 POLL_FAILED，但仍禁止据此报告成功或 NOT_FOUND。
 
-`settings.reconcile.max_poll_failures` 默认 20，允许 0–1000，0 关闭连续失败次数限制。第 20 次失败与停止任务、退款在原有账务事务中一同提交；配置为其他正数时按配置执行。`poll_failures` 存于 PG，换节点与重启不会清零；旧记录导入托管任务时继承计数。账号忙、冷却、限额暂缓及核心调用取消不计失败。Monitor 结果的提交带这次观察的标识和结果摘要（`core.FactDigest`），不能重复累计或退款。
+`settings.reconcile.max_poll_failures` 默认 20，允许 0–1000，0 关闭连续失败次数限制。第 20 次失败与停止任务、退款在原有账务事务中一同提交；配置为其他正数时按配置执行。`poll_failures` 存于 PG，换节点与重启不会清零；旧记录导入托管任务时继承计数。账号忙、冷却、限额暂缓及核心调用取消（如节点停止）不计失败；单条 30 秒预算用光（插件或上游一直不答）算一次失败查询，`last_error` 记为预算用光（2026-11-20 起，所有者决定；此前不计）。Monitor 结果的提交带这次观察的标识和结果摘要（`core.FactDigest`），不能重复累计或退款。
 
 托管任务不再用 `max_reconcile_attempts` 限制正常进度查询，总尝试次数仅作记录；旧结算队列保留原总次数上限。托管任务仍使用插件期限与 `max_reconcile_age_sec` 的较小值（默认最大 7 天），到期后以 `task_timeout` 结束并退回尚未结算的预扣费用。已经确认成功、后由管理员重新对账的任务不会因查询失败推翻已确认结果，仍保留原估算结算语义。
 

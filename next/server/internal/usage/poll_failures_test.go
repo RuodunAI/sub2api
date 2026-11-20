@@ -70,8 +70,23 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	if got := f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id); got != "1" {
 		t.Fatal(got)
 	}
+	// A worker stopped mid-query does not spend it; a query that used the
+	// whole entry budget does.
+	pollAfter := func(cause error) string {
+		t.Helper()
+		qctx, cancel := context.WithCancelCause(ctx)
+		cancel(cause)
+		nodeB.handlePollError(qctx, claim(nodeB), row, nodeB.reconcileSettings(ctx), qctx.Err())
+		return f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id)
+	}
+	if got := pollAfter(context.Canceled); got != "1" {
+		t.Fatal("a stopped worker spent the failure budget", got)
+	}
+	if got := pollAfter(errEntryBudget); got != "2" || f.scalar(`SELECT last_error FROM async_tasks WHERE public_id=$1`, id) != errEntryBudget.Error() {
+		t.Fatal("a spent entry budget was not counted as a failed query", got)
+	}
 	nodeB.reconcileTask(ctx, claim(nodeB))
-	if got := f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id); got != "2" {
+	if got := f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id); got != "3" {
 		t.Fatal(got)
 	}
 	// More than the old total-attempt limit still permits a valid pending observation.
