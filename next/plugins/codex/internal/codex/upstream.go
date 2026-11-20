@@ -190,7 +190,8 @@ func (p *Plugin) transport(protocol string) (u *pluginsdk.Upstream, ws bool, err
 //     is required; a blank (whitespace-only) string becomes []);
 //   - input items with role "system" get role "developer" (instructions or
 //     developer messages carry the system prompt);
-//   - instructions "" when the body has none (the field is required);
+//   - instructions "" when the body has none or null (the field is
+//     required);
 //   - the fields the upstream refuses are removed (removedFields).
 func codexBody(body []byte, ws bool) ([]byte, error) {
 	d, err := jsonedit.Parse(body)
@@ -201,7 +202,9 @@ func codexBody(body []byte, ws bool) ([]byte, error) {
 		d.Delete(f)
 	}
 	d.Set("store", []byte("false"))
-	d.Default("instructions", []byte(`""`))
+	if d.Root().Get("instructions").Type == gjson.Null {
+		d.Set("instructions", []byte(`""`))
+	}
 	inputEdits(d, d.Root().Get("input"))
 	out, err := d.Bytes()
 	if err != nil {

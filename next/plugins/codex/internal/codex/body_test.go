@@ -19,7 +19,7 @@ func TestCodexBodyBytes(t *testing.T) {
 		{"first members go", `{"user":"u", "metadata":{},"model":"m","input":[]}`, `{"model":"m","input":[],"store":false,"instructions":""}`, false},
 		{"middle and last go", `{"model":"m",  "top_p":1,"input":[] ,"truncation":"auto"}`, `{"model":"m","input":[],"store":false,"instructions":""}`, false},
 		{"all go", `{ "user":"u" , "top_p":1 }`, `{ "store":false,"instructions":"" }`, false},
-		{"store replaced in place", "{\"store\": true,\n\"instructions\":null}", "{\"store\": false,\n\"instructions\":null}", false},
+		{"store and null instructions replaced in place", "{\"store\": true,\n\"instructions\":null}", "{\"store\": false,\n\"instructions\":\"\"}", false},
 		{"nested names stay", `{"input":[{"role":"user","content":"hi","metadata":{"user":1}}],"instructions":"","store":false}`, `{"input":[{"role":"user","content":"hi","metadata":{"user":1}}],"instructions":"","store":false}`, false},
 		{"unicode and escapes stay", `{"input":"h\u00e9 \"q\"","instructions":"é","store":false}`, `{"input":[{"content":[{"text":"hé \"q\"","type":"input_text"}],"role":"user","type":"message"}],"instructions":"é","store":false}`, false},
 		{"http drops stream_options", `{"stream":true,"stream_options":{"include_usage":true},"store":false,"instructions":""}`, `{"stream":true,"store":false,"instructions":""}`, false},
