@@ -50,8 +50,3 @@ export const apiKeyTarget = (t: T) => {
 
 /** Filled into a new key file account: vertex.LocationGlobal. An API key account has no default (the express address, apiKeyForm). */
 export const KEY_FILE_DEFAULTS = { location: 'global' }
-
-/** The key file type of the form (CONTRACTS §23.5: accountType, else the edited account's). */
-export function keyFileType(accountType?: { type?: string } | null, account?: { type?: string } | null): KeyFileType {
-  return (accountType?.type || account?.type) === 'vertex_authorized_user' ? 'vertex_authorized_user' : 'vertex_sa'
-}

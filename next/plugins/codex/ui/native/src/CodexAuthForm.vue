@@ -7,8 +7,8 @@
 // proxyTicket for the form's current proxy choice, so each request to OpenAI
 // leaves through the proxy the form names at that moment.
 //
-// - Only the flow of the account type is shown (codex_device: device code,
-//   codex_oauth: Sign in with Codex); both, as tabs, when the type is not known.
+// - The flow of the account type is shown (codex_device: device code,
+//   codex_oauth: Sign in with Codex).
 // - A finished flow writes the credentials it returned into v-model.
 // - Editing: the current email / plan / expiry and "Re-authorize". Until a
 //   re-authorization finishes v-model is left as loaded, so the masked
@@ -19,10 +19,10 @@
 //   values too, so the authorization requests already use them. A value the
 //   plugin refuses (the settings' rule) shows at its field and fails validate().
 import { computed, nextTick, ref, watch } from 'vue'
-import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SField, SHint, SInput, STabs } from '@sub2api/ui'
+import { SAlert, SBadge, SButton, SDescItem, SDescriptions, SField, SHint, SInput } from '@sub2api/ui'
 import type { ProxyTicketSource } from '@sub2api/host'
 import { useCodexHost, type CodexCredentials } from './host'
-import { AGENT_FIELDS, agentOf, flowsFor, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, typeOf, withAgent, type AgentField, type Flow } from './flow'
+import { AGENT_FIELDS, agentOf, FLOW_OF, hasAccessToken, KNOWN_PLANS, mergeCredentials, summarize, withAgent, type AgentField } from './flow'
 import { HEADER_VALUE } from './settings'
 import DeviceFlow from './DeviceFlow.vue'
 import OAuthFlow from './OAuthFlow.vue'
@@ -34,18 +34,18 @@ const props = withDefaults(
     account?: ({ id?: number; type?: string } & Record<string, unknown>) | null
     errors?: Record<string, string>
     /** The editor's account type (the auth method picked when creating). */
-    accountType?: { type?: string } | null
+    accountType: { type: string }
     /** A proxy ticket of the editor's current proxy choice (CONTRACTS §117). */
     proxyTicket: ProxyTicketSource
   }>(),
-  { mode: 'create', account: null, errors: () => ({}), accountType: null }
+  { mode: 'create', account: null, errors: () => ({}) }
 )
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown>): void }>()
 const host = useCodexHost()
 const t = host.t
 
-const type = computed(() => typeOf(props.accountType, props.account))
-const flows = computed(() => flowsFor(type.value))
+const type = computed(() => props.accountType.type)
+const flow = computed(() => FLOW_OF[type.value])
 const editing = computed(() => props.mode === 'edit')
 
 /** v-model as the editor loaded it (edit: the masked credentials), restored when a re-authorization is undone. */
@@ -53,7 +53,6 @@ const original = ref<Record<string, unknown>>({ ...(props.modelValue || {}) })
 /** Credentials a flow returned in this form. */
 const fresh = ref<CodexCredentials | null>(null)
 const reauthOpen = ref(false)
-const tab = ref<Flow>(flows.value[0])
 const flowBusy = ref(false)
 const localError = ref('')
 const root = ref<HTMLElement>()
@@ -68,7 +67,6 @@ watch(
     reauthOpen.value = false
     flowBusy.value = false
     localError.value = ''
-    tab.value = flows.value[0]
   }
 )
 // The editor cleared the credentials under us (e.g. reopened for a new account).
@@ -81,10 +79,9 @@ watch(
 
 const current = computed(() => summarize(original.value))
 const hasCurrent = computed(() => editing.value && hasAccessToken(original.value))
-/** The flows are shown: creating without fresh tokens, or re-authorizing. */
-const showFlows = computed(() => !fresh.value && (!hasCurrent.value || reauthOpen.value))
+/** The flow is shown: creating without fresh tokens, or re-authorizing. */
+const showFlow = computed(() => !fresh.value && (!hasCurrent.value || reauthOpen.value))
 const freshSummary = computed(() => summarize(fresh.value as Record<string, unknown> | null))
-const tabs = computed(() => flows.value.map((f) => ({ key: f, label: t(`tabs.${f}`) })))
 const errorList = computed(() => Object.entries(props.errors || {}).filter(([, v]) => !!v))
 
 function planLabel(plan: string): string {
@@ -109,7 +106,7 @@ function onAuthorized(creds: CodexCredentials) {
   emit('update:modelValue', mergeCredentials(props.modelValue, creds))
 }
 
-/** Throws the fresh tokens away and shows the flows again. */
+/** Throws the fresh tokens away and shows the flow again. */
 function again() {
   fresh.value = null
   localError.value = ''
@@ -151,7 +148,7 @@ defineExpose({ validate })
 </script>
 
 <template>
-  <div ref="root" class="cx-form" data-testid="codex-auth-form" :data-type="type || 'unknown'" :data-mode="mode">
+  <div ref="root" class="cx-form" data-testid="codex-auth-form" :data-type="type" :data-mode="mode">
     <!-- Editing: what the account holds now -->
     <div v-if="hasCurrent && !fresh" class="cx-panel" data-testid="codex-current">
       <div class="cx-panel-head">
@@ -183,13 +180,11 @@ defineExpose({ validate })
       </template>
     </SAlert>
 
-    <!-- The flows: creating, or re-authorizing -->
-    <STabs v-if="showFlows" v-model="tab" :tabs="tabs" size="sm" :aria-label="t('tabsLabel')" data-testid="codex-flows">
-      <template #default="{ active }">
-        <DeviceFlow v-if="active === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
-        <OAuthFlow v-else-if="active === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
-      </template>
-    </STabs>
+    <!-- The flow: creating, or re-authorizing -->
+    <template v-if="showFlow">
+      <DeviceFlow v-if="flow === 'device'" :key="`device-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
+      <OAuthFlow v-else-if="flow === 'oauth'" :key="`oauth-${type}`" :proxy-ticket="proxyTicket" :agent="agent" @authorized="onAuthorized" @busy="onBusy" />
+    </template>
 
     <!-- The account's own client headers -->
     <div class="cx-panel" data-testid="codex-agent">

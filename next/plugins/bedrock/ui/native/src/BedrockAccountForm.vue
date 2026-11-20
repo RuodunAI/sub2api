@@ -19,8 +19,8 @@ const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ (e: 'update:modelValue', value: Record<string, unknown>): void }>()
 const t = useBedrockHost().t
 
-// CONTRACTS §23.5: accountType, else the edited account's.
-const type = computed(() => (props.accountType?.type || props.account?.type) as BedrockType)
+// CONTRACTS §23.5: the editor always passes accountType.
+const type = computed(() => props.accountType!.type as BedrockType)
 const signed = computed(() => type.value !== 'bedrock_apikey')
 const form = useCredentialForm(props, emit, { rules: () => RULES[type.value], defaults: DEFAULTS })
 defineExpose({ validate: form.validate })

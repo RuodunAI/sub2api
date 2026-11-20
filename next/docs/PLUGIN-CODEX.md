@@ -74,7 +74,7 @@
 - 其他宿主权限：`platform.register`、`kv`（授权会话）、`lock`（设备码轮询的会话锁，见上）、`routes.admin`、`ui.native`；0.1.3 起另有 `accounts.auto_state`（`types: own`），见第 10 节。
 - 日志：`Init` 取 `Host.Logger()`；授权失败、令牌换取失败、删除会话失败、锁获取/释放失败记 warn，只记状态码、OAuth 错误码、错误文本；绝不记录令牌、授权码、PKCE verifier、state 或会话 id。
 - `ValidateCredentials` 会解析调用方提交的 `id_token`（不验签），用来补缺的 `email`、`plan_type` 与 `chatgpt_account_id`，后者会作为上游头 `chatgpt-account-id` 发送。凭证是运营者自己的（只有有账号权限的管理员能提交），上游会用 access token 校验账号 id，填错只会让运营者自己的请求失败，sup2api 也不据此做任何授权判断，所以不验签（`identity.go` `jwtClaims` 注释）。
-- 原生表单 `CodexAuthForm`：设备码页签（开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 页签（2026-11-17 起取代 Sign in with ChatGPT 页签；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。按账号类型只显示对应页签。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
+- 原生表单 `CodexAuthForm`：设备码流程（`codex_device`；开始 → 显示链接与验证码、复制按钮、倒计时、自动轮询 → 成功后填入凭证并显示邮箱/套餐）；Sign in with Codex 流程（`codex_oauth`；2026-11-17 起取代 Sign in with ChatGPT；生成链接 → 新窗口打开 → 粘贴回调网址输入框 → 换取 → 填入凭证）；编辑已有账号时显示当前邮箱与“重新授权”。只显示编辑器传的 `accountType` 对应的那一种（编辑器总会传，CONTRACTS §23.5；0.2.0 起不再有类型未知时两种并列的页签）。中英文文案。回调网址的格式提示与插件 `parseCallback` 一致（完整网址、不带 scheme 的地址、只有查询串 `?code=…` / `code=…`、片段里的参数都接受；只有插件也解析不了的——非法 `%` 转义或分号——才禁用“完成授权”）。失败时优先显示 `details.fields` 里的字段消息，否则显示错误的 message。
 
 ## 5. 内置
 

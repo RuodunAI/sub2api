@@ -2,8 +2,7 @@
 // vue-i18n syntax: avoid the special characters @ | { } in plain text.
 const zh = {
   // tabs.CodexResetTab is the account detail tab's label (plugin.codex.tabs.<component>).
-  tabs: { device: '设备码', oauth: 'Codex', CodexResetTab: '官方重置' },
-  tabsLabel: '授权方式',
+  tabs: { CodexResetTab: '官方重置' },
   intro: {
     device: '在任意设备的浏览器里打开 OpenAI 验证页并输入验证码，授权后自动完成。与 Codex CLI 设备码登录相同。',
     oauth: '与 Codex CLI 的浏览器登录相同。在浏览器里登录 ChatGPT 并同意后，把跳转后的网址粘回这里。'
@@ -133,8 +132,7 @@ const zh = {
 type Messages = typeof zh
 
 const en: Messages = {
-  tabs: { device: 'Device Code', oauth: 'Codex', CodexResetTab: 'Official resets' },
-  tabsLabel: 'Sign-in method',
+  tabs: { CodexResetTab: 'Official resets' },
   intro: {
     device: 'Open the OpenAI verification page in a browser on any device and enter the code; this form finishes by itself once you approve. Same as the Codex CLI device code login.',
     oauth: "Same as the Codex CLI's browser sign-in. Sign in to ChatGPT and consent in your browser, then paste the address you land on back here."

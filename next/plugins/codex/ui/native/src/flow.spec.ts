@@ -1,21 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { agentOf, callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, flowsFor, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, typeOf, withAgent } from './flow'
-
-describe('flowsFor / typeOf', () => {
-  it('shows only the flow of a known type, both otherwise', () => {
-    expect(flowsFor('codex_device')).toEqual(['device'])
-    expect(flowsFor('codex_oauth')).toEqual(['oauth'])
-    expect(flowsFor('')).toEqual(['device', 'oauth'])
-    expect(flowsFor(undefined)).toEqual(['device', 'oauth'])
-    expect(flowsFor('other')).toEqual(['device', 'oauth'])
-  })
-
-  it('prefers the editor account type over the account', () => {
-    expect(typeOf({ type: 'codex_oauth' }, { type: 'codex_device' })).toBe('codex_oauth')
-    expect(typeOf(null, { type: 'codex_device' })).toBe('codex_device')
-    expect(typeOf(undefined, null)).toBe('')
-  })
-})
+import { agentOf, callbackShape, CODEX_FIELDS, DEFAULT_POLL_MS, formatCountdown, hasAccessToken, mergeCredentials, MIN_POLL_SECONDS, pollDelay, summarize, withAgent } from './flow'
 
 describe('withAgent', () => {
   it('takes the client headers the source has and keeps the rest of the base', () => {

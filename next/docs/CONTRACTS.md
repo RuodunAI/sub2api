@@ -1534,14 +1534,13 @@ type ProxyResolver interface {
 | `v-model`（`modelValue` + `update:modelValue`） | 凭证对象 `Record<string, any>`（`credentials`）。新建时为空对象，编辑时为 `account.credentials` 的浅拷贝（敏感字段为 `"******"`，原样交回表示不修改）。组件通过 `update:modelValue` 交回要保存的完整凭证对象 |
 | `mode` | `'create'` \| `'edit'` |
 | `account` | 编辑时为账号对象（含 `id`、`type`、`credentials` 等）；新建时为 `null` / 未传 |
-| `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分 |
+| `accountType` | 正在录入或编辑的账号类型（`GET /account-types` 的一项，含 `plugin_key`、`type`、`label`、`form` 等）。**总会传**：编辑器只在找到账号类型时才挂原生表单（找不到时显示孤儿账号的提示），能加载声明 `hostUICompat: "^4.0"` 的插件的控制台都传它。同一插件把多个账号类型指向同一个组件时（如 codex 的 `codex_device` 与 `codex_oauth`），靠 `accountType.type` 区分，不要退回 `account.type`，也不要为"没有类型"写默认行为 |
 | `proxyTicket` | `ProxyTicketSource`（`() => Promise<string>`，UI 3.20，§117）：按表单**当前**的代理选择（已有代理、粘贴的代理串、不用代理）向核心要一张代理票据。在账号建好之前要访问外部服务的授权流程，**每次**调用自己插件的路由（开始、每次轮询、换令牌）之前都调用它，把这次的票据交给路由；插件这次调用的取回带上它，核心从这个代理发出，所以授权开始后改了代理，下一次调用就走新代理（§117.2）。要不到时以核心的 `ApiError` 拒绝，编辑器同时把字段错误显示在代理输入下。对所有原生表单都传 |
 | `errors` | `Record<string, string>`：保存或拉取模型被服务端拒绝时，`invalid_argument` 的 `details.fields[]`（§3.1）中 `credentials.<字段>` 的那些，键去掉 `credentials.` 前缀（`web/src/views/accounts/editorErrors.ts` `splitFieldErrors`）；用户再改凭证即清空。组件应显示在对应输入旁 |
 
 - **expose**（可选）：组件可以 `defineExpose({ validate })`，`validate(): boolean | Promise<boolean>`。保存时编辑器先调用它，返回 `false` 则不保存（组件自己显示原因）；没有暴露 `validate` 时直接取 `v-model` 的值保存。
-- **兼容**：`accountType` 是后加的 prop（与 codex 内置插件同批加入，未提升 `HOST_UI_VERSION`），旧控制台不传。插件读账号类型时应写成 `accountType?.type || account?.type`：编辑时旧控制台下退回 `account.type`；新建时旧控制台两者都没有，插件需要有不依赖类型的默认行为（或只把该组件用于一个账号类型）。codex 的 `ui/native/src/flow.ts` `typeOf` 即按此实现。
 - 组件同样遵守 §23.4 的约定（用 `@sub2api/ui` 组件、`SField` 显示 `errors` 等）。
-- 这些 props 由 `@sub2api/ui` 的运行时对象 `nativeAccountFormProps` 声明（`defineProps(nativeAccountFormProps)`；默认值：`modelValue` `{}`、`mode` `'create'`、`account` / `accountType` `null`），类型是 `NativeAccountFormProps`。插件工程里写 `defineProps<NativeAccountFormProps>()` 编译不了（SFC 编译器解析不了别的包导出的类型）（2026-11-19 U3a）。
+- 这些 props 由 `@sub2api/ui` 的运行时对象 `nativeAccountFormProps` 声明（`defineProps(nativeAccountFormProps)`；默认值：`modelValue` `{}`、`mode` `'create'`、`account` / `accountType` `null`；`accountType` 的 `null` 只是声明上的默认，编辑器总会传它，表单直接读 `props.accountType!.type`），类型是 `NativeAccountFormProps`。插件工程里写 `defineProps<NativeAccountFormProps>()` 编译不了（SFC 编译器解析不了别的包导出的类型）（2026-11-19 U3a）。
 
 ## 24. 插件改写候选账号的调度参数（priority / weight）（2026-09-29，用户要求）
 

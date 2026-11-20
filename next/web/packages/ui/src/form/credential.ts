@@ -12,7 +12,7 @@ export interface NativeAccountFormProps {
   modelValue: Record<string, unknown>
   mode: 'create' | 'edit'
   account?: { id: number; type: string; credentials: Record<string, unknown>; [key: string]: unknown } | null
-  /** Includes guarded_settings, custom_upstream, sensitive_fields. */
+  /** Includes guarded_settings, custom_upstream, sensitive_fields. The editor always passes it (§23.5). */
   accountType?: AccountTypeView | null
   errors?: Record<string, string>
   proxyTicket?: ProxyTicketSource
