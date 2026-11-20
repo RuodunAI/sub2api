@@ -82,8 +82,8 @@ const (
 	// reported back (the whole prefix is used for usage extraction).
 	maxTestBody    = 8 << 10
 	maxTestBodyOut = 4 << 10
-	// classifyTimeout bounds the ClassifyError call of a failed test; the
-	// test context may already be done (timeout), so it is not inherited.
+	// classifyTimeout bounds the ClassifyError call of a failed test; it
+	// ends with the test when the caller leaves.
 	classifyTimeout = 5 * time.Second
 )
 
@@ -118,8 +118,6 @@ func (s *Service) test(c *gin.Context) {
 		httpapi.Fail(c, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, testTimeout)
-	defer cancel()
 	// The account's model mapping applies to test calls too (CONTRACTS §18).
 	requested := strings.TrimSpace(in.Model)
 	// Naming the model is what makes a test explicit (CONTRACTS §122).
@@ -265,8 +263,14 @@ const (
 
 // recordTest stores the outcome as the account's last test. Like the test
 // itself it changes nothing the gateway uses (no updated_at, no account
-// broadcast); a failed write is only logged.
+// broadcast); a failed write is only logged. A test has no time limit of its
+// own: it runs until the upstream answers or the caller leaves (CONTRACTS
+// §15.9); one the caller ended says nothing about the account and is not
+// recorded.
 func (s *Service) recordTest(ctx context.Context, id int64, res TestResult) {
+	if ctx.Err() != nil {
+		return
+	}
 	msg := ""
 	if !res.OK {
 		// The plugin's reason first, then what the upstream answered: the
@@ -359,10 +363,6 @@ func (s *Service) runTest(ctx context.Context, bt core.AccountTypeBinding, acct 
 			if reason, ok := known.Details["reason"].(string); ok && reason != "" {
 				res.ErrorCode = reason
 			}
-		} else if errors.Is(err, context.DeadlineExceeded) {
-			res.ErrorCode = "request_timeout"
-		} else if errors.Is(err, context.Canceled) {
-			res.ErrorCode = "request_canceled"
 		}
 		res.Reason, res.Effect, _ = s.classifyTest(ctx, bt, acct, res.Model, tr.GetUsageProtocol(), 0, nil, nil, res.Message)
 		return res
@@ -491,7 +491,7 @@ func (s *Service) testUsage(bt core.AccountTypeBinding, protocol string, body []
 // both values empty.
 func (s *Service) classifyTest(ctx context.Context, bt core.AccountTypeBinding, acct *pluginv1.Account,
 	model, protocol string, status int, header http.Header, body []byte, transportErr string) (reason, effect string, local bool) {
-	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), classifyTimeout)
+	cctx, cancel := context.WithTimeout(ctx, classifyTimeout)
 	defer cancel()
 	cls, err := bt.Client.ClassifyError(cctx, &pluginv1.ClassifyErrorRequest{
 		Meta:    &pluginv1.RequestMeta{Model: model, Protocol: protocol},

@@ -25,6 +25,7 @@ import { assetURL, usePluginStore } from '@/stores/plugins'
 import { useEnvironmentLayer, useGroupsWith, useProxiesLookup } from '@/composables/lookups'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
 import { useAccountCaps } from '@/composables/useAccountCaps'
+import { useAbortScope } from '@/composables/useAbortScope'
 import { fieldErrors, notifyError } from '@/utils/errors'
 import { looksLikeProxyURL, parseProxyURL } from '@/utils/proxyUrl'
 import { groupPolicies, policyLabel, policyOptions, policySourceHint } from '@/utils/conversion'
@@ -384,6 +385,8 @@ async function probeProxyUrl() {
 
 const fetchOpen = ref(false)
 const fetching = ref(false)
+/** The model fetch in flight: no time limit, the user stops it (or closes the editor). */
+const fetchRequests = useAbortScope()
 const fetched = ref<{ models: string[]; skipped: number }>({ models: [], skipped: 0 })
 const canFetch = computed(() => !!props.accountType && !props.account?.orphaned && (editing.value ? canTestAccount.value : caps.scope.value !== null && caps.creatable(props.accountType)))
 
@@ -404,26 +407,29 @@ async function fetchModels() {
     return
   }
   fetching.value = true
-  try {
-    const r = editing.value
-      ? await api.post<{ models: string[]; skipped: number }>(`/accounts/${props.account!.id}/models/fetch`, { credentials: creds })
-      : await api.post<{ models: string[]; skipped: number }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/models/fetch`, { credentials: creds, ...proxyChoice() })
-    fetched.value = { models: r.models || [], skipped: r.skipped || 0 }
-    if (fetched.value.models.length) fetchOpen.value = true
-    else toast(t('accounts.fetchEmpty'), 'warning')
-  } catch (e) {
-    // Credential problems land on the plugin form, like a failed save.
-    const fe = fieldErrors(e)
-    if (Object.keys(fe).length) {
-      const { cred } = splitFieldErrors(fe)
-      showCredentialErrors(cred)
-      if (Object.keys(cred).length || fe.proxy_url) activeSection.value = 'connection'
-      if (fe.proxy_url) errors.value = { ...errors.value, proxy_url: fe.proxy_url }
+  await fetchRequests.run(async ({ signal }) => {
+    try {
+      const r = editing.value
+        ? await api.post<{ models: string[]; skipped: number }>(`/accounts/${props.account!.id}/models/fetch`, { credentials: creds }, { signal })
+        : await api.post<{ models: string[]; skipped: number }>(`/account-types/${encodeURIComponent(at.plugin_key)}/${encodeURIComponent(at.type)}/models/fetch`, { credentials: creds, ...proxyChoice() }, { signal })
+      fetched.value = { models: r.models || [], skipped: r.skipped || 0 }
+      if (fetched.value.models.length) fetchOpen.value = true
+      else toast(t('accounts.fetchEmpty'), 'warning')
+    } catch (e) {
+      if (signal.aborted) return
+      // Credential problems land on the plugin form, like a failed save.
+      const fe = fieldErrors(e)
+      if (Object.keys(fe).length) {
+        const { cred } = splitFieldErrors(fe)
+        showCredentialErrors(cred)
+        if (Object.keys(cred).length || fe.proxy_url) activeSection.value = 'connection'
+        if (fe.proxy_url) errors.value = { ...errors.value, proxy_url: fe.proxy_url }
+      }
+      notifyError(e)
+    } finally {
+      fetching.value = false
     }
-    notifyError(e)
-  } finally {
-    fetching.value = false
-  }
+  })
 }
 
 /** Merges the ticked models into the list (existing entries are kept). */
@@ -655,6 +661,7 @@ const { save } = useAccountSave({
             :merge-models="mergeModels"
             :mapping-control="controls.model_mapping"
             @fetch="fetchModels"
+            @stop-fetch="fetchRequests.stopAll"
           />
           <ModelProtocolsCard v-if="accountType" :editor="protocolEdit" :models="models" :mapping="mapping" :options="modelLimitOptions" :errors="errors" :disabled="saving" />
         </div>

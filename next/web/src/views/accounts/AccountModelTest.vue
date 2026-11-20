@@ -3,6 +3,9 @@
 // candidates = the account's model list, or (all-models accounts) its mapping
 // request models + the plugin default models; more can be typed in or fetched
 // from the upstream. Single / selected / all tests run at most 3 at a time.
+// A test has no time limit: the user stops one (its row) or all of them, and
+// closing the dialog or leaving the page stops them too; a stopped test shows
+// as canceled, not failed.
 // A test is a diagnosis: it never cools down or disables the account, the
 // HTTP failures show the response without the plugin's inferred reason/effect.
 import { computed, reactive, ref, watch } from 'vue'
@@ -11,6 +14,7 @@ import { api } from '@sub2api/host'
 import { SBadge, SButton, SCheckbox, SCode, SCopyButton, SDescItem, SDescriptions, SHint, SIcon, SInput, SLink, SModal, STable, toast, type TableColumn } from '@sub2api/ui'
 import type { Account, AccountLastTest, AccountTestResult, AccountType } from '@/api/types'
 import { ACCOUNT_ACTIONS, useScope } from '@/composables/useScope'
+import { useAbortScope } from '@/composables/useAbortScope'
 import { confirmAction } from '@/composables/crud'
 import { errorMessage, notifyError } from '@/utils/errors'
 import { copyText } from '@/utils/format'
@@ -38,7 +42,7 @@ const custom = ref('')
 const customError = ref('')
 const fetching = ref(false)
 const running = ref(false)
-let ctrl: AbortController | null = null
+const requests = useAbortScope()
 
 const canFetch = computed(() => !!props.account && !props.account.orphaned && scope.can(props.account, ACCOUNT_ACTIONS.test))
 const canUpdate = computed(() => !!props.account && !props.account.orphaned && scope.can(props.account, ACCOUNT_ACTIONS.update))
@@ -64,6 +68,8 @@ const visible = computed(() => {
 })
 const tableRows = computed(() => (probe.value ? [probe.value, ...visible.value] : visible.value))
 const sum = computed(() => summarize(rows.value))
+/** Something the stop button would end: a run, a test (the probe too) or the model fetch. */
+const busy = computed(() => running.value || fetching.value || sum.value.testing > 0 || probe.value?.state === 'testing')
 const okModels = computed(() => rows.value.filter((r) => r.state === 'ok').map((r) => r.model))
 const failedModels = computed(() => rows.value.filter((r) => r.state === 'fail').map((r) => r.model))
 /** Failed models that are on the account's list (only those can be removed). */
@@ -99,35 +105,40 @@ async function testRow(row: TestRow) {
   row.state = 'testing'
   row.result = undefined
   row.error = undefined
-  try {
-    const r = await api.post<AccountTestResult>(`/accounts/${a.id}/test`, row.model ? { model: row.model } : {}, { signal: AbortSignal.timeout(120000) })
-    row.result = r
-    row.state = r.ok ? 'ok' : 'fail'
-    emit('tested', a.id, lastTestOf(r, row.model))
-  } catch (e) {
-    row.state = 'fail'
-    row.error = errorMessage(e)
-  }
+  await requests.run(async (ctrl) => {
+    const stop = (row.stop = () => ctrl.abort())
+    try {
+      const r = await api.post<AccountTestResult>(`/accounts/${a.id}/test`, row.model ? { model: row.model } : {}, { signal: ctrl.signal })
+      row.result = r
+      row.state = r.ok ? 'ok' : 'fail'
+      emit('tested', a.id, lastTestOf(r, row.model))
+    } catch (e) {
+      row.state = ctrl.signal.aborted ? 'canceled' : 'fail'
+      if (!ctrl.signal.aborted) row.error = errorMessage(e)
+    } finally {
+      if (row.stop === stop) row.stop = undefined
+    }
+  })
 }
 
 async function runMany(list: TestRow[]) {
   if (running.value || !list.length) return
   running.value = true
-  ctrl = new AbortController()
-  try {
-    await runPool(list, TEST_CONCURRENCY, (r) => testRow(r), ctrl.signal)
-  } finally {
-    running.value = false
-    ctrl = null
-  }
+  const stopped = await requests.run(async ({ signal }) => {
+    try {
+      await runPool(list, TEST_CONCURRENCY, (r) => testRow(r), signal)
+    } finally {
+      running.value = false
+    }
+    return signal.aborted
+  })
   const s = summarize(list)
-  toast(t('accounts.modelTest.doneToast', { ok: s.ok, fail: s.fail }), s.fail ? 'warning' : 'success')
+  const msg = t(stopped ? 'accounts.modelTest.stoppedToast' : 'accounts.modelTest.doneToast', { ok: s.ok, fail: s.fail })
+  toast(msg, s.fail ? 'warning' : stopped ? 'info' : 'success')
 }
 const testAll = () => runMany(visible.value)
 const testSelected = () => runMany(rows.value.filter((r) => selected.has(r.model)))
-function stop() {
-  ctrl?.abort()
-}
+const stop = requests.stopAll
 
 function testProbe() {
   if (!probe.value) probe.value = { model: '', source: 'default', state: 'idle' }
@@ -159,15 +170,17 @@ async function fetchUpstream() {
   const a = props.account
   if (!a || fetching.value) return
   fetching.value = true
-  try {
-    const r = await api.post<{ models: string[]; skipped: number }>(`/accounts/${a.id}/models/fetch`, {})
-    const added = addRows(r.models || [], 'upstream')
-    toast(added ? t('accounts.modelTest.fetchAdded', { n: added }) : t('accounts.modelTest.fetchNothing'), added ? 'success' : 'info')
-  } catch (e) {
-    notifyError(e)
-  } finally {
-    fetching.value = false
-  }
+  await requests.run(async ({ signal }) => {
+    try {
+      const r = await api.post<{ models: string[]; skipped: number }>(`/accounts/${a.id}/models/fetch`, {}, { signal })
+      const added = addRows(r.models || [], 'upstream')
+      toast(added ? t('accounts.modelTest.fetchAdded', { n: added }) : t('accounts.modelTest.fetchNothing'), added ? 'success' : 'info')
+    } catch (e) {
+      if (!signal.aborted) notifyError(e)
+    } finally {
+      fetching.value = false
+    }
+  })
 }
 
 async function copyList(list: string[]) {
@@ -215,6 +228,7 @@ function stateBadge(r: TestRow): { tone: 'gray' | 'info' | 'success' | 'danger';
   if (r.state === 'testing') return { tone: 'info', label: t('accounts.modelTest.state.testing') }
   if (r.state === 'ok') return { tone: 'success', label: t('accounts.modelTest.state.ok') }
   if (r.state === 'fail') return { tone: 'danger', label: t('accounts.modelTest.state.fail') }
+  if (r.state === 'canceled') return { tone: 'gray', label: t('accounts.modelTest.state.canceled') }
   return { tone: 'gray', label: t('accounts.modelTest.state.idle') }
 }
 function effectBadge(e?: string): { tone: 'warning' | 'danger'; label: string } | null {
@@ -252,6 +266,7 @@ function actualModel(r: TestRow): string {
         <SBadge tone="success" dot>{{ t('accounts.modelTest.okCount', { n: sum.ok }) }}</SBadge>
         <SBadge tone="danger" dot>{{ t('accounts.modelTest.failCount', { n: sum.fail }) }}</SBadge>
         <SBadge v-if="sum.testing" tone="info" dot>{{ t('accounts.modelTest.testingCount', { n: sum.testing }) }}</SBadge>
+        <SBadge v-if="sum.canceled" tone="gray" dot>{{ t('accounts.modelTest.canceledCount', { n: sum.canceled }) }}</SBadge>
         <span class="ml-auto flex flex-wrap items-center gap-1.5">
           <SButton size="sm" variant="ghost" icon="copy" :disabled="!okModels.length" data-testid="model-test-copy-ok" @click="copyList(okModels)">{{ t('accounts.modelTest.copyOk') }}</SButton>
           <SButton size="sm" variant="ghost" icon="copy" :disabled="!failedModels.length" data-testid="model-test-copy-fail" @click="copyList(failedModels)">{{ t('accounts.modelTest.copyFail') }}</SButton>
@@ -326,7 +341,8 @@ function actualModel(r: TestRow): string {
           </div>
         </template>
         <template #cell-actions="{ row }">
-          <SButton size="sm" variant="ghost" :loading="row.state === 'testing'" :disabled="running && row.state !== 'testing'" data-testid="model-test-one" @click="testRow(row)">{{ t('common.test') }}</SButton>
+          <SButton v-if="row.state === 'testing'" size="sm" variant="ghost" icon="stop" data-testid="model-test-cancel" @click="row.stop?.()">{{ t('accounts.modelTest.stop') }}</SButton>
+          <SButton v-else size="sm" variant="ghost" :disabled="running" data-testid="model-test-one" @click="testRow(row)">{{ t('common.test') }}</SButton>
         </template>
         <template #expand="{ row }">
           <div class="space-y-3 px-2 py-2 text-xs">
@@ -370,7 +386,7 @@ function actualModel(r: TestRow): string {
       <SHint v-else size="xs">{{ t('accounts.modelTest.noMatch') }}</SHint>
     </div>
     <template #footer>
-      <SButton v-if="running" variant="danger" icon="stop" data-testid="model-test-stop" @click="stop">{{ t('accounts.modelTest.stop') }}</SButton>
+      <SButton v-if="busy" variant="danger" icon="stop" data-testid="model-test-stop" @click="stop">{{ t('accounts.modelTest.stop') }}</SButton>
       <SButton @click="close">{{ t('common.close') }}</SButton>
       <SButton :disabled="!selected.size || running" data-testid="model-test-selected" @click="testSelected">{{ t('accounts.modelTest.testSelected', { n: selected.size }) }}</SButton>
       <SButton variant="primary" :loading="running" :disabled="!visible.length || running" data-testid="model-test-all" @click="testAll">{{ t('accounts.modelTest.testAll', { n: visible.length }) }}</SButton>

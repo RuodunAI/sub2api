@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -745,5 +746,60 @@ func TestAccountTestCarriesTheProxy(t *testing.T) {
 	d := gjson.GetBytes(raw, "data")
 	if code != 200 || d.Get("ok").Bool() || d.Get("message").String() != "proxy disabled" || len(built()) != 1 || hits.Load() != 1 {
 		t.Fatalf("test with the proxy disabled: %d %s (builds %d, proxy hits %d)", code, raw, len(built()), hits.Load())
+	}
+}
+
+// TestConsoleUpstreamCallsFollowTheClient: the account test and the model
+// list have no time limit of their own (the plugin call that builds the
+// request gets no deadline from the account service); they run until the
+// upstream answers or the client leaves, which cancels the upstream request.
+// A test the client ended is not recorded as the account's last test.
+func TestConsoleUpstreamCallsFollowTheClient(t *testing.T) {
+	e := setup(t)
+	arrived, gone := make(chan string, 1), make(chan struct{}, 1)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the body first: only then does the server notice the client
+		// closing the connection.
+		_, _ = io.ReadAll(r.Body)
+		arrived <- r.URL.Path
+		<-r.Context().Done()
+		gone <- struct{}{}
+	}))
+	t.Cleanup(up.Close)
+	e.plat.testURL = up.URL + "/v1/messages"
+	id := e.mkAccount("sk-good-key-123")
+
+	for _, path := range []string{fmt.Sprintf("/accounts/%d/test", id), fmt.Sprintf("/accounts/%d/models/fetch", id)} {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			_, _ = e.callCtx(ctx, fmt.Sprintf("u%d", e.uid), "POST", path, nil)
+		}()
+		select {
+		case <-arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: the upstream request was not sent", path)
+		}
+		e.plat.mu.Lock()
+		deadline := e.plat.deadline
+		e.plat.mu.Unlock()
+		if deadline {
+			t.Fatalf("%s: the request was built under a time limit", path)
+		}
+		cancel()
+		select {
+		case <-gone:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: the upstream request outlived the client", path)
+		}
+		<-done
+	}
+	var at *time.Time
+	if err := e.db.SQL.QueryRowContext(context.Background(), `SELECT last_test_at FROM accounts WHERE id = $1`, id).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	if at != nil {
+		t.Fatalf("a test the client ended was recorded at %v", at)
 	}
 }

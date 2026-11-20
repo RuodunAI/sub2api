@@ -240,6 +240,52 @@ describe('account forwarding and proxy', () => {
 
 })
 
+// Fetching the models has no time limit (CONTRACTS §19): the user stops it,
+// or closing the editor does, and a stopped fetch is no error.
+describe('fetching models from the upstream', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    i18n.global.locale.value = 'zh'
+    mocks.get.mockImplementation((path: string) => Promise.resolve(path === '/accounts/auto-disable' ? { enabled: true } : {}))
+  })
+
+  /** A models request that never answers: it rejects like fetch once its signal aborts. */
+  function hangingFetch() {
+    const signals: AbortSignal[] = []
+    mocks.post.mockImplementation((_path: string, _body: unknown, opts?: { signal?: AbortSignal }) => new Promise((_resolve, reject) => {
+      signals.push(opts!.signal!)
+      opts!.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+    }))
+    return signals
+  }
+  const click = (w: ReturnType<typeof render>, id: string) => w.findAllComponents({ name: 'SButton' }).find((b) => b.attributes('data-testid') === id)!.vm.$emit('click')
+
+  it('stops the fetch on request: aborted, the button back, no error', async () => {
+    const signals = hangingFetch()
+    const w = render(savedAccount())
+    await flushPromises()
+    expect(w.find('[data-testid="models-fetch-stop"]').exists()).toBe(false)
+    click(w, 'models-fetch')
+    await flushPromises()
+    expect(mocks.post).toHaveBeenCalledWith('/accounts/1/models/fetch', expect.anything(), { signal: signals[0] })
+    click(w, 'models-fetch-stop')
+    await flushPromises()
+    expect(signals[0].aborted).toBe(true)
+    expect(w.find('[data-testid="models-fetch-stop"]').exists()).toBe(false)
+    expect(mocks.toast).not.toHaveBeenCalled()
+  })
+
+  it('stops the fetch when the editor closes', async () => {
+    const signals = hangingFetch()
+    const w = render(savedAccount())
+    await flushPromises()
+    click(w, 'models-fetch')
+    await flushPromises()
+    w.unmount()
+    expect(signals[0].aborted).toBe(true)
+  })
+})
+
 // A plugin's native account form (form.mode "native", e.g. codex's
 // CodexAuthForm) comes from the plugin store: wait while the plugin list or
 // the plugin's module loads, then show the component or why it is missing
