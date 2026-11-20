@@ -29,7 +29,7 @@ const zh = {
   },
   location: {
     label: '区域',
-    help: '请求发往的 Vertex AI 区域：global（主机 aiplatform.googleapis.com），或 us-central1、europe-west4、asia-northeast1 这样的区域（主机 <区域>-aiplatform.googleapis.com）。并非每个模型在每个区域都可用。'
+    help: '请求发往的 Vertex AI 区域：global（主机 aiplatform.googleapis.com）；多区域 us、eu（主机 aiplatform.us.rep.googleapis.com、aiplatform.eu.rep.googleapis.com）；或 us-central1、europe-west4、asia-northeast1 这样的区域（主机 <区域>-aiplatform.googleapis.com）。并非每个模型在每个区域都可用。'
   },
   // The optional project address of an API key account.
   express: {
@@ -69,7 +69,7 @@ const en: typeof zh = {
   },
   location: {
     label: 'Location',
-    help: 'The Vertex AI location requests go to: global (host aiplatform.googleapis.com) or a region such as us-central1, europe-west4 or asia-northeast1 (host <region>-aiplatform.googleapis.com). Not every model is served in every location.'
+    help: 'The Vertex AI location requests go to: global (host aiplatform.googleapis.com), the multi-regions us and eu (hosts aiplatform.us.rep.googleapis.com and aiplatform.eu.rep.googleapis.com), or a region such as us-central1, europe-west4 or asia-northeast1 (host <region>-aiplatform.googleapis.com). Not every model is served in every location.'
   },
   express: {
     title: 'Project address (optional)',
