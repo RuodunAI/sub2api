@@ -8,19 +8,15 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"net/http"
 	"strings"
 	"testing"
-	"time"
 )
 
 // AC 32: failover across accounts under forwarding v2. An upstream error of
 // the first account's request, or a failure of its plugin before anything
 // was sent (here: a Vertex service account that has no access token yet, so
 // its Execute fails), moves the request to the next account; the request is
-// billed once. A plugin killed while it waits for a task submission's
-// answer leaves the task unregistered and the request free, its pre-charge
-// released (DESIGN §4.3, §12.4).
+// billed once (DESIGN §4.3).
 func TestAC32_FailoverAndUnreported(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -77,56 +73,6 @@ func TestAC32_FailoverAndUnreported(t *testing.T) {
 				t.Fatalf("request %d: attempt trail does not start with the Vertex account %d: %s", i, vertexID, u.Get("attempt_trail").Raw)
 			}
 		}
-	})
-
-	t.Run("plugin killed while waiting for a task submission", func(t *testing.T) {
-		e := e.With(t)
-		e.RequireDocker()
-		k := e.Name("video-crash")
-		st := e.singleAccount(admin, "grp-task-crash", AccountSpec{PluginKey: "volcengine", Type: "relay", APIKey: k, MaxConcurrency: 4,
-			Settings: map[string]any{"video_api_prefix": "/api/v3"}}, k, "doubao-seedance-2-0-mini", e.Name("crash"))
-		// The upstream holds the submission long enough to kill the plugin.
-		m.SetRule(t, MockRule{APIKey: k, DelayMS: 6000})
-		defer m.ClearRule(t, k)
-		before := Money(t, e.Balance(st.User))
-		mark := m.Mark(t)
-		// The goroutine only sends: the test fails on this goroutine.
-		type submitted struct {
-			res *Resp
-			err error
-		}
-		done := make(chan submitted, 1)
-		go func() {
-			res, err := NewClient(e.NodeURLs[0]).Try(http.MethodPost, videoPath, map[string]any{
-				"model": st.Model, "content": []map[string]string{{"type": "text", "text": "crash"}},
-				"resolution": "480p", "ratio": "16:9", "duration": 4,
-			}, Header("Authorization", "Bearer "+st.APIKey))
-			done <- submitted{res, err}
-		}()
-		Eventually(t, 20*time.Second, 100*time.Millisecond, "the submission reached the upstream", func() bool {
-			return len(mockCallsOf(t, m, mark, k)) > 0
-		})
-		e.KillPluginProcesses(1, "volcengine")
-		sub := <-done
-		if sub.err != nil {
-			t.Fatalf("submission whose plugin died while waiting: %v", sub.err)
-		}
-		res := sub.res
-		if res.Status < 500 {
-			t.Fatalf("submission whose plugin died while waiting: %s (want 5xx)", res)
-		}
-		rid := res.Header.Get("X-Request-Id")
-		if rows := e.SQL(fmt.Sprintf(`SELECT count(*) FROM async_tasks t JOIN usage_logs u ON u.id=t.usage_log_id WHERE u.request_id=%s`, sqlText(rid))); len(rows) != 1 || rows[0] != "0" {
-			t.Fatalf("a task was registered: %v", rows)
-		}
-		u := e.UsageByRequest(admin, st.User.UserID, rid)
-		if u.Get("billing_status").String() != "free" || Money(t, u.Get("total_cost").String()).Sign() != 0 {
-			t.Fatalf("usage of the unconfirmed submission: %s", u.Raw)
-		}
-		Eventually(t, 20*time.Second, 500*time.Millisecond, "pre-charge released", func() bool {
-			return Money(t, e.Balance(st.User)).Cmp(before) == 0
-		})
-		e.WaitPlugin(admin, "volcengine", "enabled", "")
 	})
 }
 

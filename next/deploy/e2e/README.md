@@ -66,19 +66,19 @@ sh next/deploy/e2e/test.sh -run '^TestAC(14|15|17)'
 
 | 用例 | 内容 |
 |---|---|
-| AC30 | 十二个平台插件各经 `Execute` 转发一个非流式、一个流式请求（typesafe 的 `/v1/systemone` 只有非流式），另有 New API 账号转发 Jev；mock 看到的是插件构造的请求（主机、路径、凭证、请求体；sub2api 的 Gemini 只带 `x-goog-api-key`，systemone 的请求体逐字节不变、危险区头透传），请求只计费一次。newapi、sub2api、typesafe 是只安装的内置插件，用例先启用；它们不申请文件和网络权限，在默认沙箱下运行 |
+| AC30 | 十一个平台插件各经 `Execute` 转发一个非流式、一个流式请求（typesafe 的 `/v1/systemone` 只有非流式），另有 New API 账号转发 Jev；mock 看到的是插件构造的请求（主机、路径、凭证、请求体；sub2api 的 Gemini 只带 `x-goog-api-key`，systemone 的请求体逐字节不变、危险区头透传），请求只计费一次。newapi、sub2api、typesafe 是只安装的内置插件，用例先启用；它们不申请文件和网络权限，在默认沙箱下运行 |
 | AC31 | 运营方的请求头覆盖压过插件的默认头、透传只补没有的头、签名（权威）头改不了、账号代理 |
-| AC32 | 上游出错和插件在发送前失败时换号（只计费一次，账号不受罚）；插件在等待任务提交时被杀，任务不登记、请求免费 |
+| AC32 | 上游出错和插件在发送前失败时换号（只计费一次，账号不受罚） |
 | AC33 | 旧契约的清单在上传时以固定信息被拒、不留版本行；旧协议的二进制在首次启用时加载被拒，发布在准备阶段失败后插件列表的 `refusal` 仍给出代码、版本、核心版本和信息 |
 | AC34、AC35 | Responses WebSocket 逐轮（openai、codex）；请求体上限设置（413、WebSocket 1009、运行时调高） |
 | AC36 | 官方 OpenAI（openai-go）和 Anthropic（anthropic-sdk-go）Go SDK 驱动网关：同协议、流式与非流式、工具调用往返、Responses WebSocket，账号开启转换后的跨协议（开启前 404） |
 | AC37 | 插件联网（CONTRACTS §113）：guard 的 webhook 告警在默认设置下送达 mock；mock 的主机进屏蔽列表后连接被拒、出口日志记 `denied` 和屏蔽原因；切到“屏蔽所有域名”而允许列表没有它时被拒，加进允许列表后送达。设置只管新建连接，用例先等 guard 到 mock 的空闲连接关闭；另一个用例把 anthropic 账号的上游主机（mock）加进屏蔽列表或不列进允许列表，经网关的请求不再到达 mock、客户端得到 5xx、anthropic 的出口日志记 `denied` 和原因，移出或列入后恢复；保存与触发都发到节点 1（另一节点要等广播）；结束时恢复默认 |
 | AC38 | codex 授权走账号表单选的代理（CONTRACTS §117）：已有代理、粘贴的代理串、不用代理三种选择下，设备码登录的全部请求（申请、一次待批准的轮询、批准的轮询、换令牌）到达 `auth.openai.com` 时全部经过代理或全部直连，粘贴的代理串不留代理记录；令牌经 `POST /accounts` 建成账号后经网关发一条请求到 Codex 后端并计费；Sign in with Codex 的换令牌经已有代理 |
 | AC39 | 账号余额（CONTRACTS §52，显示上游的数字和单位本身、不换算）：New API 账号（额度点数 1250000、没有单位，用户额度更低时取它，不限额）与 Sub2API 账号（旧版额度 7.5 USD、没有 `unit` 时没有单位、任意文字的 `unit` 原样、订阅 `-1` 为不限、钱包、`isValid:false` 为认证被拒）手动刷新的结果，余额请求带 Bearer、不请求 `/api/status`、返回没有 `source`；新账号不刷新，由集群任务 `core.account.balance_sweep` 在几分钟内填上；站点回 401 时记失败、账号仍启用可调度；经账号代理（mock 记 `proxied`）；mock 主机进插件联网屏蔽列表后刷新失败、mock 收不到请求、newapi 的出口日志记 `denied`（设置的保存与刷新都发到节点 1，结束时恢复默认） |
-| AC40 | OpenAI 生图（CONTRACTS §118）：OpenAI API Key、New API、Sub2API 账号各转发 generations（JSON、流式）与 edits（JSON），使用记录有图片输入 / 输出 token，表达式价格 `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 按分组倍率 1.5 计费（算式在用例注释里）；multipart 的 edits 在网关回 400、留一条免费的 `invalid_request` 记录；volcengine、Azure 部署（`azure_deployment`）账号不服务生图端点（404；codex 账号经转换服务，见 AC42）；没有价格的模型 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3），都不到 mock |
+| AC40 | OpenAI 生图（CONTRACTS §118）：OpenAI API Key、New API、Sub2API 账号各转发 generations（JSON、流式）与 edits（JSON），使用记录有图片输入 / 输出 token，表达式价格 `p*5 + cr*1.25 + img*8 + img_o*32 + c*10` 按分组倍率 1.5 计费（算式在用例注释里）；multipart 的 edits 在网关回 400、留一条免费的 `invalid_request` 记录；Azure 部署（`azure_deployment`）账号不服务生图端点（404；codex 账号经转换服务，见 AC42）；没有价格的模型 403 `model_price_not_configured`（缺价一律报错，CONTRACTS §17.3），都不到 mock |
 | AC41 | Responses 的 `image_generation` 工具（CONTRACTS §17.2、§118.10）：OpenAI API Key 账号（JSON、流式、WebSocket 一轮）与 codex 账号（客户端 JSON，到达 Codex 后端时是 `stream: true`、`store: false` 的请求，网关聚合流式应答，图片在应答里）的请求只有一条使用记录、一笔扣费，按客户请求的模型计价：token 是对话与 `tool_usage.image_gen` 之和（输入 159、输出 557、图片输出 515），金额按请求模型的表达式价格乘分组倍率（算式在用例注释里）；`billing_detail` 没有附加或替代分项、没有 `primary_*`；应答 `tools` 回显的生图模型和请求里工具点名的模型都不需要价格；不带工具的请求只有对话的用量 |
 | AC42 | Codex 账号经核心转换服务 OpenAI 生图（CONTRACTS §121）：经账号代理，generations（JSON、流式）与 edits（JSON）到达 Codex 后端时是流式的 Responses 请求（顶层 `gpt-6-luna`，强制的 `image_generation` 工具带客户端的模型，edits 带 `action: edit` 和输入图片）；客户端拿到 Images API 形状（`data[].b64_json`、生图部分的 `usage`；流式最后是 `image_generation.completed`）；一条记录：`openai.images` / `openai.images_edit`、上游协议 `openai.responses`、客户端模型、上游模型为上游回显的 `gpt-image-2-codex`，token 是对话与生图两部分之和，按客户端模型的表达式价格乘分组倍率（算式在用例注释里），一笔扣费；上游完成但没出图（mock 的 `MOCK-NO-IMAGE`，不带 `tool_usage`）时 200、`data` 为空、没有 `usage`（流式没有 `completed` 也没有 `error` 事件），记录成功、`error_type` 为空、照扣，账号不记失败（仍启用、可调度、没有冷却）；`n: 2` 回 400、缺价 403，都不到 mock |
-| AC43 | 插件账号上下文（CONTRACTS §124）：插件不需授权就收到自己账号类型的账号。volcengine 中转账号挂 mock 的代理：资产库路由经 `HostService.GetAccount` 读账号，审计写一条 `plugin.account.read`（写明插件、账号类型和 `host.GetAccount`，不含密钥和代理）；插件描述的资产库请求由核心经账号代理发出（mock 记 `proxied`）；仍申请 `accounts.credentials` 或 `accounts.read` 的包在上传时以旧契约的固定信息被拒（400） |
+| AC43 | 插件账号上下文（CONTRACTS §124）：插件不需授权就收到自己账号类型的账号。codex 账号挂 mock 的代理：重置次数列表路由经 `HostService.GetAccount` 读账号，审计写一条 `plugin.account.read`（写明插件、账号类型和 `host.GetAccount`，不含令牌和代理）；插件描述的 Codex 后端请求（`GET /backend-api/wham/rate-limit-reset-credits`，mock 回答没有重置次数）由核心经账号代理发出（mock 记 `proxied`、主机 `chatgpt.com`）；仍申请 `accounts.credentials` 或 `accounts.read` 的包在上传时以旧契约的固定信息被拒（400） |
 
 插件发布期间节点保持就绪，测试不等 `/healthz`（AC05 的启用用例在发布内置插件期间探测两个节点和负载均衡）。上传插件遇到 409 `cluster_change_busy`（另一个集群变更正在提交）时重试最多 20 秒：上一个用例的卸载要等各节点停掉插件，期间占着集群变更锁。
 

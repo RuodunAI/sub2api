@@ -158,7 +158,6 @@ type server struct {
 	nextID int64
 	log    []recorded
 	rules  map[string]*controlRule
-	video  *videoStore
 	// devicePolled holds the device codes polled once (openaiauth.go).
 	devicePolled map[string]bool
 	// tunnels is where CONNECT hands its connections (connect.go).
@@ -186,7 +185,7 @@ func main() {
 }
 
 func newServer() *server {
-	return &server{rules: map[string]*controlRule{}, video: newVideoStore(), devicePolled: map[string]bool{}}
+	return &server{rules: map[string]*controlRule{}, devicePolled: map[string]bool{}}
 }
 
 func (s *server) handler() http.Handler {
@@ -211,10 +210,6 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/models", s.listModels)
 	mux.HandleFunc("GET /v1beta/models", s.listGeminiModels)
 	s.siteRoutes(mux)
-	mux.HandleFunc("POST /api/v3/contents/generations/tasks", s.submitVideo)
-	mux.HandleFunc("GET /api/v3/contents/generations/tasks/{id}", s.queryVideo)
-	mux.HandleFunc("POST /__video/control", s.controlVideo)
-	mux.HandleFunc("GET /__video/stats", s.videoStats)
 	mux.HandleFunc("GET /__requests", s.listRequests)
 	mux.HandleFunc("DELETE /__requests", s.clearRequests)
 	mux.HandleFunc("GET /__control", s.listRules)
@@ -222,7 +217,7 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /__control", s.clearRules)
 	mux.HandleFunc("/__webhook/", s.webhook)
 	s.openAIAuthRoutes(mux)
-	s.arkRoutes(mux)
+	s.codexRoutes(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
 			s.connect(w, r)

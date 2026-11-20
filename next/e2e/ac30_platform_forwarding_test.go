@@ -158,15 +158,6 @@ func platformCases() []platformCase {
 				}
 				validJSONBody(t, r, model, prompt, "azure")
 			}},
-		{name: "volcengine", plugin: "volcengine", typ: "relay", family: "gpt", usage: usageOpenAI,
-			creds: keyURL, call: chatCall,
-			check: func(t *testing.T, r MockRequest, k, model, prompt string, stream bool) {
-				expectPath(t, r, "", "/v1/chat/completions")
-				if r.Header("authorization") != "Bearer "+k {
-					t.Fatalf("volcengine headers: %s", r.Headers.Raw)
-				}
-				validJSONBody(t, r, model, prompt, "volcengine")
-			}},
 		// The upstream sites (CONTRACTS §119): one key type on the built-in
 		// platforms, each protocol forwarded as it is with its own auth header.
 		{name: "newapi", plugin: NewAPIPlugin, typ: APIKeyType, family: "gpt", usage: usageOpenAI,
@@ -253,7 +244,7 @@ func platformCases() []platformCase {
 }
 
 // AC 30: every platform plugin forwards through Execute (forwarding v2).
-// For each of the twelve plugins (and a New API key on TypeSafe's
+// For each of the eleven plugins (and a New API key on TypeSafe's
 // platform), a non-stream and a stream request (non-stream only on
 // /v1/systemone) reach the mock as the request the plugin built (address,
 // credential header, body), the client gets a complete answer, and the
