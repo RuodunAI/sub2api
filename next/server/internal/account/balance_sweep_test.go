@@ -11,7 +11,8 @@ import (
 // core.account.balance_sweep reads, at the type's interval, the balances
 // due: schedulable accounts whose last read (successful or not) is older
 // than it, and accounts never read, disabled ones included. A disabled
-// account read before and a deleted one are left alone.
+// account read before (its scheduling switch on or off) and a deleted one
+// are left alone.
 func TestBalanceSweepReadsDueAccounts(t *testing.T) {
 	e := setup(t)
 	tasks := newFakeTasks()
@@ -37,6 +38,12 @@ func TestBalanceSweepReadsDueAccounts(t *testing.T) {
 		return `INSERT INTO account_balances (account_id, amount_micros, currency, updated_at, error, error_at)
 			VALUES ($1, 1, 'USD', now() - interval '` + updated + `', '` + failed + `', ` + map[bool]string{true: "now() - interval '" + failed + "'", false: "NULL"}[failed != ""] + `)`
 	}
+	disabledSchedulable := func(id int64) int64 {
+		if _, err := e.db.SQL.ExecContext(ctx, `UPDATE accounts SET status = 'disabled' WHERE id = $1`, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
 	due := []int64{
 		mk("new", true, ""),
 		mk("stale", true, snap("11 minutes", "")),
@@ -46,6 +53,9 @@ func TestBalanceSweepReadsDueAccounts(t *testing.T) {
 		mk("fresh", true, snap("1 minute", "")),
 		mk("failed-lately", true, snap("20 minutes", "1 minute")),
 		mk("disabled-old", false, snap("1 hour", "")),
+		// Disabled with its scheduling switch left on (PATCH status does not
+		// touch it).
+		disabledSchedulable(mk("disabled-schedulable", true, snap("1 hour", ""))),
 		mk("deleted", true, `UPDATE accounts SET deleted_at = now() WHERE id = $1`),
 	}
 	before := time.Now()

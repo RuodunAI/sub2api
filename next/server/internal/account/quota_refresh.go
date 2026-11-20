@@ -228,14 +228,15 @@ func accountsOfTypes(db *gorm.DB, keys []string, after int64, limit int) *gorm.D
 		Order("id").Limit(limit)
 }
 
-// dueQuotaIDs selects the accounts whose quota is due for a refresh now.
+// dueQuotaIDs selects the accounts whose quota is due for a refresh now:
+// active and schedulable, or never recorded.
 func (s *Service) dueQuotaIDs(ctx context.Context, keys []string) ([]int64, error) {
 	ids := []int64{}
 	g := store.G(ctx, s.d.DB.Gorm)
 	err := g.Table("account_quota_snapshots q").Joins("JOIN accounts a ON a.id = q.account_id").
 		Where(`q.auto_refresh AND q.next_check_at <= now() AND (q.lease_until IS NULL OR q.lease_until <= now())
 			AND (q.last_active_at IS NULL OR q.last_active_at <= now() - make_interval(secs => ?::float8))
-			AND (a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key || '/' || a.type = ANY(?)`,
+			AND (a.status = 'active' AND a.schedulable OR q.updated_at IS NULL) AND a.deleted_at IS NULL AND a.plugin_key || '/' || a.type = ANY(?)`,
 			quotaQueryFloor.Seconds(), store.Strings(keys)).
 		Order("q.next_check_at, q.account_id").Limit(quotaSweepPage).Pluck("q.account_id", &ids).Error
 	return ids, err

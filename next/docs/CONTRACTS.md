@@ -3316,7 +3316,7 @@ new-api 的渠道测试（`controller/channel-test.go`）每次测试后写渠�
 
 - 缓存键 `account:balance:<id>`，值是快照的 JSON（`{account_id, amount_micros, currency, unlimited, updated_at, error, error_at}`），TTL 10 分钟；每次写库后写穿，读不到时回 PG 并回填；Redis 不可用时读 PG、只记 WARN。删账号、重置状态（§44.5）、改凭证 / 设置 / 代理时删键。
 - **到期**：距最近一次查询（`updated_at` 与 `error_at` 的较晚者）达到类型的间隔；没有快照也算到期。非强制的 `GET /balance` 与定时任务都按它判断。
-- **集群任务 `core.account.balance_sweep`**（§77，`Every` 1 分钟，`Timeout` 15 分钟）：对每个声明了 `balance`、插件已加载的类型，选一页（64 个，`quotaSweepPage`）到期的账号逐个查询，最久没查的在前；没轮到的下一轮仍然到期。选法：未删除，且**可调度或从未查过**（没有快照行）；停用、关了调度的账号只在管理员手动刷新时查。
+- **集群任务 `core.account.balance_sweep`**（§77，`Every` 1 分钟，`Timeout` 15 分钟）：对每个声明了 `balance`、插件已加载的类型，选一页（64 个，`quotaSweepPage`）到期的账号逐个查询，最久没查的在前；没轮到的下一轮仍然到期。选法：未删除，且**启用（`status = active`）并可调度，或从未查过**（没有快照行）；停用（不论调度开关，`PATCH status` 不动它）、关了调度的账号只在管理员手动刷新时查。额度的定时刷新（§44.4 `quota.autoRefresh`）用同一条件。
 
 ### 52.5 接口
 
