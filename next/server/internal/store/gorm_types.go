@@ -156,10 +156,19 @@ func (Strings) GormDataType() string { return "text[]" }
 // which NULL means "no filter" (?::text[] IS NULL OR x = ANY(?)), where
 // Strings(nil), the empty array, would match nothing.
 func NullStrings(a []string) any {
+	if p := NullStringsPtr(a); p != nil {
+		return *p
+	}
+	return nil
+}
+
+// NullStringsPtr is a as a nullable text[] value, such as a *Strings model
+// field: nil (SQL NULL) for a nil slice.
+func NullStringsPtr(a []string) *Strings {
 	if a == nil {
 		return nil
 	}
-	return Strings(a)
+	return new(Strings(a))
 }
 
 // Scan implements sql.Scanner.

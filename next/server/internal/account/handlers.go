@@ -1413,14 +1413,6 @@ func nonZero[T comparable](v T) *T {
 	return &v
 }
 
-// nullStrings is the nullable text[] value of a: nil (NULL) for a nil slice.
-func nullStrings(a []string) *store.Strings {
-	if a == nil {
-		return nil
-	}
-	return new(store.Strings(a))
-}
-
 // rawJSON is the jsonb value of a document, nil (NULL) for none.
 func rawJSON(doc *string) json.RawMessage {
 	if doc == nil {
@@ -1616,7 +1608,7 @@ func (s *Service) create(c *gin.Context) {
 			HeaderPassthrough: store.Strings(headerPassthrough), ParamOverride: rawJSON(overrideColumn(in.ParamOverride)),
 			HeaderOverride:       rawJSON(overrideColumn(in.HeaderOverride)),
 			ConversionLossPolicy: in.ConversionLossPolicy.Stored(), SpmWindowSeconds: &spmWindow,
-			Protocols:      nullStrings(in.Protocols.V),
+			Protocols:      store.NullStringsPtr(in.Protocols.V),
 			ModelProtocols: json.RawMessage(modelProtocolsJSON(core.ValueOr(in.ModelProtocols, nil)))}
 		if err := store.G(ctx, tx).Select(accountInsertColumns).Create(&created).Error; err != nil {
 			return err
