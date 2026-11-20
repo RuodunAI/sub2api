@@ -2,18 +2,19 @@ package openai
 
 import "testing"
 
-// The chat test asks for one token in the field the model takes: OpenAI
-// refuses max_tokens for the o series and gpt-5 onward, every other model
-// (and every OpenAI-compatible upstream) keeps max_tokens.
+// The chat test asks for one token in max_tokens, except from the models
+// OpenAI refuses max_tokens for (the o series and gpt-5 onward): they reason
+// within the limit and get max_completion_tokens 16.
 func TestChatPingBodyLimit(t *testing.T) {
+	const tok, reason = `"max_tokens":1`, `"max_completion_tokens":16`
 	for model, limit := range map[string]string{
-		"gpt-4o-mini": "max_tokens", "gpt-4.1": "max_tokens", "gpt-image-1": "max_tokens", "gpt-oss-120b": "max_tokens",
-		"golden-model": "max_tokens", "doubao-seed-1-6": "max_tokens", "omni-moderation-latest": "max_tokens",
-		"o1": "max_completion_tokens", "o3-mini": "max_completion_tokens", "o4-mini": "max_completion_tokens",
-		"gpt-5": "max_completion_tokens", "gpt-5.4": "max_completion_tokens", "gpt-5-mini": "max_completion_tokens",
-		"gpt-6.2-astra": "max_completion_tokens", "gpt-10": "max_completion_tokens",
+		"gpt-4o-mini": tok, "gpt-4.1": tok, "gpt-image-1": tok, "gpt-oss-120b": tok,
+		"golden-model": tok, "doubao-seed-1-6": tok, "omni-moderation-latest": tok,
+		"o1": reason, "o3-mini": reason, "o4-mini": reason,
+		"gpt-5": reason, "gpt-5.4": reason, "gpt-5-mini": reason,
+		"gpt-6.2-astra": reason, "gpt-10": reason,
 	} {
-		want := `{"` + limit + `":1,"messages":[{"content":"ping","role":"user"}],"model":"` + model + `"}`
+		want := `{` + limit + `,"messages":[{"content":"ping","role":"user"}],"model":"` + model + `"}`
 		if got := ChatPingBody(model, 1); got != want {
 			t.Errorf("%s: %s, want %s", model, got, want)
 		}
