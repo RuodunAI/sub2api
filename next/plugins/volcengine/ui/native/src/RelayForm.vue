@@ -5,7 +5,7 @@
 // error. The relay type has no guarded settings.
 import { nativeAccountFormProps, SCredentialForm, SField, SFormSection, SInput, SSecretInput, useCredentialForm } from '@sub2api/ui'
 import { useVolcHost } from './host'
-import { ASSET_KEY, ASSET_REGION, ENDPOINT, OPTIONAL_URL, PATH_PREFIX } from './rules'
+import { ASSET_KEY, ASSET_REGION, BASE_URL, ENDPOINT, OPTIONAL_URL, PATH_PREFIX } from './rules'
 
 const props = defineProps(nativeAccountFormProps)
 const emit = defineEmits<{ 'update:modelValue': [Record<string, unknown>] }>()
@@ -15,7 +15,7 @@ const t = host.t
 const form = useCredentialForm(props, emit, {
   rules: {
     api_key: { required: true, whitespace: true },
-    base_url: { required: true, pattern: /^https?:\/\/[^\s?#]+$/ },
+    base_url: BASE_URL,
     video_endpoint: ENDPOINT,
     asset_endpoint: ENDPOINT,
     access_key: ASSET_KEY,

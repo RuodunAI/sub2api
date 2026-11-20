@@ -7,6 +7,8 @@ import type { Rule } from '@sub2api/ui'
 export const ASSET_KEY: Rule = { min: 8, max: 256, pattern: /^[!-~]*$/ }
 /** asset_region: a region id such as cn-beijing. */
 export const ASSET_REGION: Rule = { max: 64, pattern: /^[a-z0-9-]*$/ }
+/** base_url: as apikey.NormalizeBaseURL takes it (the same rule as createApiKeyForm's): surrounding whitespace trimmed, then an http(s) URL in any scheme case with a host and no userinfo, whitespace, query or fragment. */
+export const BASE_URL: Rule = { required: true, pattern: /^\s*https?:\/\/[^\s/?#@]+(\/[^\s?#]*)?\s*$/i }
 /** asset_base_url: an optional http(s) URL without query or fragment. */
 export const OPTIONAL_URL: Rule = { pattern: /^(https?:\/\/[^\s?#]+)?$/ }
 /** api_prefix, video_api_prefix: "/" or a path below one slash. */
