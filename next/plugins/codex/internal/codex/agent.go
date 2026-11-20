@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"strings"
 
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/fieldcheck"
@@ -72,16 +71,18 @@ var settingsRules = fieldcheck.Fields{
 }
 
 // parseSettings decodes and checks the settings: the one check of Configure
-// and ValidateSettings.
+// and ValidateSettings. Like an account's own values, a value is trimmed
+// before it is checked.
 func parseSettings(cfg pluginsdk.Config) (*Settings, error) {
 	var m credMap
 	if err := fieldcheck.DecodeSettings(cfg, settingsRules, &m); err != nil {
 		return nil, err
 	}
+	m.trimStrings()
 	if k, code, msg := m.agentError(); k != "" {
 		return nil, pluginsdk.FieldErrors{}.Add(k, code, msg).Err()
 	}
 	ua, _ := m.str("user_agent")
 	originator, _ := m.str("originator")
-	return &Settings{UserAgent: strings.TrimSpace(ua), Originator: strings.TrimSpace(originator)}, nil
+	return &Settings{UserAgent: ua, Originator: originator}, nil
 }
