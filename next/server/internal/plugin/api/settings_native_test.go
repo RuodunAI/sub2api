@@ -21,15 +21,20 @@ import (
 )
 
 // settingsCheck is a plugin's ValidateSettings: it records what it was
-// given and answers answer (or err).
+// given, runs during (once) and answers answer (or err).
 type settingsCheck struct {
 	got    []string
 	answer *pluginv1.ValidateSettingsResponse
 	err    error
+	during func()
 }
 
 func (s *settingsCheck) ValidateSettings(_ context.Context, in *pluginv1.ValidateSettingsRequest) (*pluginv1.ValidateSettingsResponse, error) {
 	s.got = append(s.got, in.GetConfigJson())
+	if during := s.during; during != nil {
+		s.during = nil
+		during()
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -202,6 +207,26 @@ func TestSettingsValidatedByPlugin(t *testing.T) {
 	code, out = put(map[string]any{"threshold": 8})
 	require.NotEqual(t, http.StatusOK, code, out)
 	assert.JSONEq(t, `{"threshold":7,"webhook_secret":"s3cret"}`, h.storedSettings())
+}
+
+// The plugin checks the settings outside the saving transaction: another
+// save while it checks (here from inside the check) is not blocked, and
+// the first save then fails with 409 rather than overwrite it.
+func TestSettingsChangedWhileValidated(t *testing.T) {
+	h, root := newHarness(t)
+	installNativeSettings(t, h, root, guardSecrets)
+	put := func(values map[string]any) (int, map[string]any) {
+		return h.do("PUT", "/plugins/guard/settings", "admin", map[string]any{"values": values})
+	}
+	check := &settingsCheck{answer: &pluginv1.ValidateSettingsResponse{}}
+	check.during = func() {
+		code, out := put(map[string]any{"threshold": 2})
+		assert.Equal(t, http.StatusOK, code, out)
+	}
+	h.validators["guard"] = check
+	code, out := put(map[string]any{"threshold": 1})
+	require.Equal(t, http.StatusConflict, code, out)
+	assert.JSONEq(t, `{"threshold":2}`, h.storedSettings())
 }
 
 // has_settings: the current version declares native ui.settings; the
