@@ -297,7 +297,7 @@
 分支 `feat/plugin-sandbox-fs`。契约见 CONTRACTS §43.8，设计见 [设计文档](next/docs/DESIGN-2026-11-18-PLUGIN-SANDBOX-FS.md)。
 
 - **`SUB2API_PLUGIN_LANDLOCK` 在 Linux 上默认开启**（此前默认关闭，只有网关托管的核心由网关打开）。规则集按内核的 Landlock 版本处理它支持的全部限制：文件（含建 socket、fifo、链接、设备节点、跨目录移动、截断、设备 ioctl），内核 6.12 起抽象 unix socket 与给沙箱外进程发信号，7.1 起路径型 unix socket（只放行插件自己的 socket 目录），严格网络下 6.7 起 TCP、7.2 起 UDP（seccomp 之下的第二道）。
-- **插件默认没有文件访问**：只放行自己的二进制、go-plugin 的 socket 目录、`/dev/null`、时区文件，获授 `net` 的插件另外能读 CA 证书。去掉了 `/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`、`/etc/services`、`/etc/ca-certificates`、`/dev/urandom`，以及以前放行的工作目录和整个私有运行目录（插件的 `TMPDIR` 不再可写）。同用户的网关管理令牌、其他插件的目录、`/proc` 都读不到（e2e 栈里用探针核对过）。
+- **插件默认没有文件访问**：只放行自己的二进制、go-plugin 的 socket 目录、`/dev/null`、时区文件，获授 `net` 的插件另外能读 CA 证书，关了严格网络（`SUB2API_PLUGIN_STRICT_NETWORK=false`）时还能读 `/etc/resolv.conf`、`/etc/hosts`、`/etc/nsswitch.conf`（此时插件自己解析域名，读不到就解析不了）。去掉了 `/etc/services`、严格网络下的这三个解析文件、`/etc/ca-certificates`、`/dev/urandom`，以及以前放行的工作目录和整个私有运行目录（插件的 `TMPDIR` 不再可写）。同用户的网关管理令牌、其他插件的目录、`/proc` 都读不到（e2e 栈里用探针核对过）。
 - **新宿主权限 `fs.data`**（风险中，审查页“读写本插件的数据目录”）：只有获授它的插件才有数据目录（`<SUB2API_PLUGIN_DIR>/<key>/work`，环境变量 `SUB2API_PLUGIN_DATA_DIR`，也是进程的工作目录）；授予或撤销它会重启插件进程。现有插件都不读写文件，没有插件申请它，插件版本都不变。
 - **内核不支持某一层时照常启动插件**：核心启动时每层记一条 WARN（缺什么、后果、需要的内核），全部生效时记 INFO；控制台节点页新增“插件沙箱”一列（全部生效 / 缺几层 / 未开启），`GET /nodes` 带 `plugin_sandbox`。
 - 网关的 `plugin_landlock_disabled: true` 现在写 `SUB2API_PLUGIN_LANDLOCK=false`（以前只是不写，核心默认开启以后就关不掉了）。
