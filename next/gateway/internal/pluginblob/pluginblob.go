@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sub2API-Devs/sup2api/next/gateway/internal/peer"
 	rc "github.com/Sub2API-Devs/sup2api/next/runtime-contract"
 )
 
@@ -330,8 +331,9 @@ func (s *Service) pull(ctx context.Context, sum string) error {
 
 // fetch downloads the package from one peer and stores it. A peer that does
 // not hold it returns found=false, err=nil; one the request does not reach
-// returns errUnreachable; bytes that fail the digest or size checks, and any
-// other failure, return the error.
+// over the network returns errUnreachable; a request this node fails itself
+// (localFailure), bytes that fail the digest or size checks, and any other
+// failure return the error.
 func (s *Service) fetch(ctx context.Context, origin, sum string) (found bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/internal/plugin-blobs/"+sum, nil)
 	if err != nil {
@@ -339,7 +341,11 @@ func (s *Service) fetch(ctx context.Context, origin, sum string) (found bool, er
 	}
 	res, err := s.Client.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("%w: fetch package from %s: %w", errUnreachable, origin, err)
+		err = fmt.Errorf("fetch package from %s: %w", origin, err)
+		if localFailure(ctx, err) {
+			return false, err
+		}
+		return false, fmt.Errorf("%w: %w", errUnreachable, err)
 	}
 	defer res.Body.Close()
 	switch {
@@ -350,4 +356,11 @@ func (s *Service) fetch(ctx context.Context, origin, sum string) (found bool, er
 	default:
 		return false, fmt.Errorf("fetch package from %s: HTTP %d", origin, res.StatusCode)
 	}
+}
+
+// localFailure reports a fetch that failed on this node rather than on the
+// way to the peer: the peer transport refused the target or had no
+// credentials for it, or the request's own context ended.
+func localFailure(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, peer.ErrForbidden) || errors.Is(err, peer.ErrUnauthorized) || errors.Is(err, peer.ErrUnavailable)
 }
