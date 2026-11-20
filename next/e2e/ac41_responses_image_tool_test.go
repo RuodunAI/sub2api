@@ -53,8 +53,9 @@ const (
 // and neither the answer's tools echo (gpt-image-2-codex) nor a model the
 // request's tool names needs a price. Over an OpenAI API key (JSON,
 // stream, a WebSocket turn) and a codex account (a client JSON request the
-// gateway streams and gathers back, the image in it). A request without
-// the tool is the conversation alone.
+// gateway sends to the Codex backend as a stream with store=false and
+// gathers back, the image in it). A request without the tool is the
+// conversation alone.
 func TestAC41_ResponsesImageTool(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -77,8 +78,9 @@ func TestAC41_ResponsesImageTool(t *testing.T) {
 	// A tool model that has no price: it plays no part in billing.
 	toolModel := fmt.Sprintf("gpt-image-e2e-%s-toolmodel", e.RunID)
 
+	m := e.Mock()
 	openai, _ := e.imageTenant(admin, "tool-openai", AccountSpec{PluginKey: OpenAIPlugin, Type: APIKeyType})
-	codex, _ := e.imageTenant(admin, "tool-codex", AccountSpec{PluginKey: "codex", Type: "codex_oauth"})
+	codex, codexKey := e.imageTenant(admin, "tool-codex", AccountSpec{PluginKey: "codex", Type: "codex_oauth"})
 
 	for _, c := range []struct {
 		name   string
@@ -98,9 +100,17 @@ func TestAC41_ResponsesImageTool(t *testing.T) {
 			if c.tool != nil {
 				body["tools"] = []any{c.tool}
 			}
+			mark := m.Mark(t)
 			g := e.OpenAI(c.tn.APIKey, "/v1/responses", body)
 			if g.Status != 200 {
 				t.Fatalf("HTTP %d %s", g.Status, g.Body)
+			}
+			if c.tn == codex {
+				r := oneMockCall(t, m, mark, codexKey, c.name)
+				if r.Path != "/backend-api/codex/responses" || gjson.Get(r.Body, "stream").Raw != "true" || gjson.Get(r.Body, "store").Raw != "false" ||
+					gjson.Get(r.Body, "tools.0.type").String() != "image_generation" {
+					t.Fatalf("Codex backend request %s: %s", r.Path, r.Body)
+				}
 			}
 			if c.tool != nil && !c.stream && !g.JSON().Get(`output.#(type=="image_generation_call").result`).Exists() {
 				t.Fatalf("no image in the answer: %s", g.Body)

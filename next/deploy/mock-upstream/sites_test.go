@@ -134,7 +134,7 @@ func TestResponsesImageTool(t *testing.T) {
 	// Stream: the image call's events and item first, the message after
 	// it, then completed; the Codex backend lists no output.
 	for path, outputs := range map[string]int{"/v1/responses": 2, "/backend-api/codex/responses": 0} {
-		events, data := sseData(t, post(t, srv, path, auth, `{"model":"gpt-x","input":"draw","stream":true,"tools":[{"type":"image_generation","output_format":"webp","action":"edit"}]}`))
+		events, data := sseData(t, post(t, srv, path, auth, `{"model":"gpt-x","input":"draw","stream":true,"store":false,"tools":[{"type":"image_generation","output_format":"webp","action":"edit"}]}`))
 		want := []string{"response.created", "response.in_progress", "response.output_item.added", "response.image_generation_call.in_progress",
 			"response.image_generation_call.generating", "response.image_generation_call.completed", "response.output_item.done"}
 		if len(events) < len(want)+1 || strings.Join(events[:len(want)], ",") != strings.Join(want, ",") || events[len(events)-1] != "response.completed" {
@@ -150,7 +150,7 @@ func TestResponsesImageTool(t *testing.T) {
 		}
 	}
 	// No image: the tool offered, the answer only a message, no tool_usage.
-	events, data := sseData(t, post(t, srv, "/backend-api/codex/responses", auth, `{"model":"gpt-x","input":"`+imageToolNoImage+`","stream":true,"tools":[{"type":"image_generation"}]}`))
+	events, data := sseData(t, post(t, srv, "/backend-api/codex/responses", auth, `{"model":"gpt-x","input":"`+imageToolNoImage+`","stream":true,"store":false,"tools":[{"type":"image_generation"}]}`))
 	var done map[string]any
 	_ = json.Unmarshal([]byte(data[len(data)-1]), &done)
 	if strings.Contains(strings.Join(events, ","), "image_generation_call") || get(done, "response", "tool_usage") != nil || get(done, "response", "tools") == nil {

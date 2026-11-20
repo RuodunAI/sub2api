@@ -25,11 +25,13 @@
 //	POST /model/{id}/invoke         Bedrock InvokeModel for Claude: Anthropic JSON
 //	POST /model/{id}/invoke-with-response-stream
 //	                                the same as an AWS event stream (application/vnd.amazon.eventstream);
-//	                                a SigV4 request must be signed with the secret "mock-secret-<access key id>"
+//	                                a SigV4 request must be signed with the secret "mock-secret-<access key id>",
+//	                                scoped to the service bedrock and the region of bedrock-runtime.<region>.amazonaws.com
 //	POST /v1/projects/{p}/locations/{l}/publishers/google/models/{m}:{action}
 //	POST /v1/publishers/google/models/{m}:{action}
 //	                                Vertex AI: the Gemini actions above
-//	POST /backend-api/codex/responses  the Codex backend: OpenAI Responses (GET = WebSocket mode)
+//	POST /backend-api/codex/responses  the Codex backend: OpenAI Responses, refused (400 {"detail"}) unless
+//	                                stream is true and store is false (GET = WebSocket mode)
 //	POST /api/accounts/deviceauth/{usercode,token}, POST /oauth/token
 //	                                the OpenAI authorization server of the codex logins (openaiauth.go)
 //	CONNECT host:port               HTTPS through the mock as a forward proxy (connect.go)

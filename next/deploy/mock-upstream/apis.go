@@ -101,6 +101,7 @@ func readBody(r *http.Request) []byte {
 type openaiRequest struct {
 	Model         string         `json:"model"`
 	Stream        bool           `json:"stream"`
+	Store         *bool          `json:"store"`
 	Metadata      map[string]any `json:"metadata"`
 	StreamOptions *struct {
 		IncludeUsage bool `json:"include_usage"`
@@ -256,6 +257,11 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 		openaiError(w, 400, "invalid_request_error", "model", "mock: missing required parameter: 'model'")
 		return
 	}
+	if msg := codexReject(r, req); msg != "" {
+		s.setStatus(id, 400)
+		writeJSON(w, 400, map[string]any{"detail": msg})
+		return
+	}
 	s.setStatus(id, 200)
 	respID := fmt.Sprintf("resp_mock_%d_%06d", id, rand.IntN(1000000))
 	msgID := fmt.Sprintf("msg_mock_%d", id)
@@ -320,6 +326,21 @@ func (s *server) responses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ev("response.completed", map[string]any{"response": final})
+}
+
+// codexReject is why the Codex backend (paths under /backend-api/) refuses a
+// Responses request, "" when it does not: it stores nothing and only
+// streams. It answers ChatGPT's {"detail": ...} errors.
+func codexReject(r *http.Request, req *openaiRequest) string {
+	switch {
+	case !strings.HasPrefix(r.URL.Path, "/backend-api/"):
+		return ""
+	case req.Store == nil || *req.Store:
+		return "Store must be set to false"
+	case !req.Stream:
+		return "Stream must be set to true"
+	}
+	return ""
 }
 
 // responsesTextPart is the output_text part shared by the SSE and WebSocket
