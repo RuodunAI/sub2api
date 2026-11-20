@@ -210,15 +210,16 @@ func normalizedBalance(res *pluginv1.BalanceResult, snap *store.BalanceSnapshot)
 }
 
 // saveBalance stores the outcome of one read of a: the new balance, or the
-// failure on top of the last successful balance. It writes through to the
-// cache and returns the snapshot as stored.
+// failure on top of the last successful balance. It returns the snapshot as
+// stored and, once that is committed, evicts the cached one: the next read
+// fills the cache from PG, so nothing uncommitted reaches it and Redis is
+// never waited on with the account row locked.
 //
 // A read made with credentials, settings or a proxy the account no longer
 // has is dropped and the snapshot as stored returned: the update that
 // changed them deleted the balance (CONTRACTS §52.3), and the old key's
-// balance must not come back as the new one's. The account row stays
-// locked until the cache is written, so such an update, which evicts the
-// cache once committed, comes wholly before this write or wholly after it.
+// balance must not come back as the new one's. The account row is locked
+// for the comparison, so such an update comes wholly before or after it.
 func (s *Service) saveBalance(ctx context.Context, a *row, res *pluginv1.BalanceResult, failed error) (*store.BalanceSnapshot, error) {
 	now := time.Now().Truncate(time.Microsecond) // as PG keeps it: the view reads the same either way
 	snap := &store.BalanceSnapshot{AccountID: a.ID}
@@ -246,13 +247,13 @@ func (s *Service) saveBalance(ctx context.Context, a *row, res *pluginv1.Balance
 			}
 			snap.Error, snap.ErrorAt = truncate(failed.Error(), maxQuotaError), &now
 		}
-		if err := store.UpsertBalanceTx(ctx, tx, snap); err != nil {
-			return err
-		}
-		s.writeBalanceCache(ctx, snap)
-		return nil
+		return store.UpsertBalanceTx(ctx, tx, snap)
 	})
-	return snap, err
+	if err != nil {
+		return nil, err
+	}
+	s.evictBalanceCache(ctx, a.ID)
+	return snap, nil
 }
 
 // sameBalanceInputs reports whether a balance read of b holds for a: the

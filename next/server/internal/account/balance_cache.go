@@ -11,8 +11,9 @@ import (
 )
 
 // Redis cache of balance snapshots (CONTRACTS §52.4), parallel to the quota
-// cache: PG is the source of truth, every write goes through to Redis, a
-// read falls back to PG for missing keys and when Redis is down.
+// cache: PG is the source of truth, a committed balance read evicts its key
+// (saveBalance), a read falls back to PG for missing keys, fills them, and
+// reads PG alone when Redis is down.
 
 const balanceCacheTTL = 10 * time.Minute
 
