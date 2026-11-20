@@ -10,7 +10,7 @@ import SSettingsGroup from '../SSettingsGroup.vue'
 import SInput from '../SInput.vue'
 import SField from '../SField.vue'
 import { confirmState, settleConfirm, toastState } from '../feedback'
-import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { createMemoryHistory, createRouter, RouterView, useRoute } from 'vue-router'
 import { createApiKeyForm } from './apiKeyForm'
 import { nativeAccountFormProps, useCredentialForm, type NativeAccountFormProps } from './credential'
 import SFormSection from './SFormSection.vue'
@@ -755,6 +755,44 @@ describe('SSettingsPage route leave', () => {
     settleConfirm(true)
     await again
     expect(router.currentRoute.value.path).toBe('/other')
+  })
+
+  it('asks before another ?tab= of the same route unmounts it', async () => {
+    fakeHost(['plugin:manage'])
+    const { api } = settingsApi({ values: { host: 'a' } })
+    let settings!: PluginSettingsForm<M>
+    const Settings = defineComponent({
+      setup() {
+        settings = usePluginSettings<M>({ pluginKey: 'demo', api, rules: {} })
+        return () => h(SSettingsPage, { settings })
+      }
+    })
+    // Like the console's plugin detail page: the tab is the address's ?tab=.
+    const Detail = defineComponent({
+      setup() {
+        const route = useRoute()
+        return () => (route.query.tab === 'settings' ? h(Settings) : h('p', 'overview'))
+      }
+    })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: Detail }] })
+    await router.push('/?tab=settings')
+    const w = mount(RouterView, { global: { plugins: [router] } })
+    mounted.push(w)
+    await flushPromises()
+    settings.set('host', 'b')
+    const switching = router.replace({ query: { tab: 'overview' } })
+    await flushPromises()
+    expect(confirmState.current?.title).toBe('Discard unsaved changes?')
+    settleConfirm(false)
+    await switching
+    expect(router.currentRoute.value.query.tab).toBe('settings')
+    expect(w.find('[data-testid="plugin-settings"]').exists()).toBe(true)
+    const again = router.replace({ query: { tab: 'overview' } })
+    await flushPromises()
+    settleConfirm(true)
+    await again
+    await flushPromises()
+    expect(w.text()).toBe('overview')
   })
 })
 

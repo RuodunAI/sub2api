@@ -2,11 +2,13 @@
 // A plugin's settings page over usePluginSettings: optional title, the
 // errors no row claims, the default slot (SSettingsGroup blocks of
 // SSettingRow with `prop`), and for callers who may edit a bar pinned to
-// the bottom: the unsaved-changes note, Reset and Save (as the console's
-// settings tab). Leaving with unsaved changes asks first (route leave and
-// closing the tab). Without edit rights every control is disabled.
+// the bottom: the unsaved-changes note, Reset and Save. Leaving with unsaved
+// changes asks first: another route, the same route with another query (a
+// page's ?tab= sections, the console's plugin detail tabs, which unmount the
+// settings), and closing the browser tab. Without edit rights every control
+// is disabled.
 import { onBeforeUnmount, onMounted } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import SAlert from '../SAlert.vue'
 import SButton from '../SButton.vue'
 import SHint from '../SHint.vue'
@@ -20,11 +22,11 @@ import type { PluginSettingsForm } from './pluginSettings'
 const props = defineProps<{ settings: PluginSettingsForm<any>; title?: string; description?: string }>()
 const t = useUiT()
 
-onBeforeRouteLeave(
-  () =>
-    !props.settings.dirty.value ||
-    confirm({ title: t('ui.form.leave.title'), message: t('ui.form.leave.message'), cancelText: t('ui.form.leave.stay'), confirmText: t('ui.form.leave.discard'), danger: true })
-)
+const confirmLeave = () =>
+  !props.settings.dirty.value ||
+  confirm({ title: t('ui.form.leave.title'), message: t('ui.form.leave.message'), cancelText: t('ui.form.leave.stay'), confirmText: t('ui.form.leave.discard'), danger: true })
+onBeforeRouteLeave(confirmLeave)
+onBeforeRouteUpdate(confirmLeave)
 function beforeUnload(e: BeforeUnloadEvent) {
   if (props.settings.dirty.value) e.preventDefault()
 }
