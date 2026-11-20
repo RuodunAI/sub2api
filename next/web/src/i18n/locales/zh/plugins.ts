@@ -493,7 +493,8 @@ export default {
     releaseTitle: '释放标识 {key}',
     releaseBody: '释放后任何发布者都可以安装使用这个标识的插件。',
     purgeAccounts: '同时删除遗留的 {n} 个账号',
-    purge: '同时删除插件留下的表（{prefix} 开头）和缓存',
+    purge: '同时删除插件留下的表（{prefix} 开头）和 KV 数据',
+    purgeKv: '同时删除插件留下的 KV 数据',
     tables: '{prefix} 开头的表',
     inheritWarn: '没有删除的账号和数据会被下一个使用这个标识的插件继承，包括其中的凭据。',
     released: '已释放 {key}，删除了 {n} 个账号'
@@ -510,7 +511,6 @@ export default {
     noAccess: '没有申请插件以外的表。',
     columns: '列',
     allColumns: '全部列',
-    privileges: '权限',
     privilege: {
       select: '查询',
       insert: '新增',
@@ -518,9 +518,12 @@ export default {
       delete: '删除',
       references: '外键引用'
     },
+    added: '新增',
     writeWarn: '直接写核心的表会绕过核心的缓存、权限版本和审计。',
+    referencesWarn: '外键引用会限制核心删除被引用的行。',
     migrations: '迁移脚本',
-    migrationsHint: '脚本以插件的数据库身份执行，只能新建以 {prefix} 开头的对象。',
+    migrationsHint: '脚本以插件的数据库身份执行，只能新建以 {prefix} 开头的表、索引、序列、视图和类型，不能建函数和触发器。',
+    loadFailed: '无法读取插件的数据库信息。',
     noMigrations: '没有迁移脚本。',
     nothingToRun: '本次没有要执行的脚本。',
     willRun: '将执行',
@@ -528,17 +531,20 @@ export default {
     appliedList: '已执行且未变的脚本（{n} 个）',
     appliedAt: '执行于 {at}',
     notApplied: '未执行',
-    showSql: '查看 SQL',
-    hideSql: '收起 SQL'
+    showSql: '查看 {id} 的 SQL',
+    hideSql: '收起 {id} 的 SQL',
+    sqlOf: '{id} 的 SQL'
   },
 
   uninstall: {
     action: '卸载',
     title: '卸载 {name}',
     body: '卸载会删除插件包、插件注册的权限及其授权、事件游标和任务记录。',
-    purge: '清除数据：删除插件的表（{prefix} 开头）和插件的数据库身份',
-    purgeHint: '不勾选则保留数据：表留在核心库里，下次安装同一插件继续使用。',
-    purgeWarn: '插件的表和数据将被永久删除。',
+    purge: '清除数据：删除插件的表（{prefix} 开头）和 KV 数据',
+    purgeKv: '清除数据：删除插件的 KV 数据',
+    purgeHint: '不勾选则保留数据，下次安装同一插件继续使用。插件的数据库身份不论勾选与否都会删除，重新安装时重建。',
+    purgeHintKv: '不勾选则保留数据，下次安装同一插件继续使用。',
+    purgeWarn: '这些数据将被永久删除。',
     purgeAccounts: '同时删除该插件账号类型下的所有账号',
     purgeAccountsHint: '默认保留这些账号，成为孤立账号：不再参与调度但仍可查看；重新安装插件后恢复服务。',
     purgeAccountsWarn: '这些账号将被删除，重新安装插件后也不会恢复。',

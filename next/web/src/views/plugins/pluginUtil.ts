@@ -1,7 +1,7 @@
 // Shared helpers and DTOs of the plugin pages (list, consent, detail,
 // rollout, market). Shapes not frozen by CONTRACTS.md are typed loosely and
 // read tolerantly (camelCase or snake_case).
-import type { LText, PluginRefusal, PluginRoleGrant, PluginSummary, Trust, ResourceConflict } from '@/api/types'
+import type { DatabaseAccess, LText, PluginRefusal, PluginRoleGrant, PluginSummary, Trust, ResourceConflict } from '@/api/types'
 import type { Tone } from '@sub2api/ui'
 import { useOptionalT } from '@/composables/optionalText'
 
@@ -55,6 +55,16 @@ export function isPluginKey(key: string): boolean {
 
 /** The prefix of every table, index and sequence of the plugin in the core's schema (manifest.TablePrefix). */
 export const tablePrefix = (key: string) => `plg_${key}__`
+
+/**
+ * The db.core_read scope entries of an access entry, as the core grants and
+ * compares them (dbschema.AccessScope): "<privilege>:<table>.<column>", or
+ * "<privilege>:<table>.*" without columns and always for delete.
+ */
+export function accessScopeEntries(a: DatabaseAccess): string[] {
+  const columns = asArray<string>(a.columns)
+  return a.privileges.flatMap((p) => (columns.length === 0 || p === 'delete' ? [`${p}:${a.table}.*`] : columns.map((c) => `${p}:${a.table}.${c}`)))
+}
 
 export function riskOf(id: string, fallback?: string): Risk {
   const r = (fallback || HOST_PERMISSION_RISK[id] || 'high') as Risk

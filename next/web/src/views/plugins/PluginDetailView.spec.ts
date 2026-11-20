@@ -158,7 +158,7 @@ describe('plugin detail view', () => {
     expect(tab.text()).toContain('plg713988_guard')
     expect(tab.get('[data-table="users"]').text()).toContain('Columns: id, email')
     expect(tab.get('[data-table="usage_logs"]').text()).toContain('all columns')
-    expect(tab.find('[data-testid="database-access-writes"]').exists()).toBe(true)
+    expect(tab.get('[data-testid="database-access-warn"]').text()).toBe('Writing core tables directly bypasses the core\'s caches, permission versions and audit.')
     expect(tab.get('[data-migration="0001_init.sql"]').text()).toContain('Ran ')
     expect(tab.get('[data-migration="0002_stats.sql"]').text()).toContain('Not run')
     await tab.get('[data-migration="0002_stats.sql"] button').trigger('click')

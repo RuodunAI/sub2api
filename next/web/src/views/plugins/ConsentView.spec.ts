@@ -434,10 +434,9 @@ describe('plugin consent page', () => {
     const migration = (id: string, status: 'new' | 'changed' | 'applied') => ({ id, checksum: 'sha256:' + id, sql: `CREATE TABLE plg_demo__${id} ();`, status })
 
     it('lists the tables outside its own under db.core_read: table, columns (all when none), privileges', async () => {
-      const w = render(review({
-        host_permissions: [{ id: 'db.schema', risk: 'high' }, CORE_READ],
-        database_access: [{ table: 'users', columns: ['id', 'email'], privileges: ['select'] }, { table: 'groups', privileges: ['select'] }]
-      }))
+      const access = [{ table: 'users', columns: ['id', 'email'], privileges: ['select' as const] }, { table: 'groups', privileges: ['select' as const] }]
+      // The core sends the access as db.core_read's scope too: listed once, as the table list.
+      const w = render(review({ host_permissions: [{ id: 'db.schema', risk: 'high' }, { ...CORE_READ, scope: { access: ['select:users.id', 'select:users.email', 'select:groups.*'] } }], database_access: access }))
       await flushPromises()
       const rows = w.findAll('[data-testid="host-permissions"] li')
       const coreRead = rows.find((r) => r.text().includes('db.core_read'))!
@@ -445,19 +444,55 @@ describe('plugin consent page', () => {
       expect(coreRead.get('[data-table="users"]').text()).toContain('查询')
       expect(coreRead.get('[data-table="groups"]').text()).toContain('列：全部列')
       expect(coreRead.get('[data-hp-desc="db.core_read"]').text()).toBe('按申请的表、列和权限访问；其他插件的表不能申请。')
-      // Asking only to select: no warning.
-      expect(w.find('[data-testid="database-access-writes"]').exists()).toBe(false)
+      expect(coreRead.text()).not.toContain('select:users.id')
+      // Asking only to select: no warning, and nothing marked new on an install.
+      expect(w.find('[data-testid="database-access-warn"]').exists()).toBe(false)
+      expect(w.text()).not.toContain('新增')
       expect(rows.find((r) => r.text().includes('db.schema'))!.find('[data-testid="database-access"]').exists()).toBe(false)
     })
 
-    it('warns when it asks for any privilege but select', async () => {
-      for (const [privilege, label] of [['insert', '新增'], ['update', '修改'], ['delete', '删除'], ['references', '外键引用']] as const) {
-        const w = render(review({ host_permissions: [CORE_READ], database_access: [{ table: 'usage_logs', columns: ['status'], privileges: ['select', privilege] }] }))
+    it('says what writing and referencing core tables mean, by the privileges asked for', async () => {
+      const WRITE = '直接写核心的表会绕过核心的缓存、权限版本和审计。'
+      const REFERENCE = '外键引用会限制核心删除被引用的行。'
+      const cases = [
+        [['insert'], '新增', [WRITE]],
+        [['update'], '修改', [WRITE]],
+        [['delete'], '删除', [WRITE]],
+        [['references'], '外键引用', [REFERENCE]],
+        [['update', 'references'], '修改', [WRITE, REFERENCE]]
+      ] as const
+      for (const [privileges, label, warnings] of cases) {
+        const w = render(review({ host_permissions: [CORE_READ], database_access: [{ table: 'usage_logs', columns: ['status'], privileges: ['select', ...privileges] }] }))
         await flushPromises()
         expect(w.get('[data-table="usage_logs"]').text()).toContain(label)
-        expect(w.get('[data-testid="database-access-writes"]').text()).toBe('直接写核心的表会绕过核心的缓存、权限版本和审计。')
+        expect(w.findAll('[data-testid="database-access-warn"] p').map((p) => p.text())).toEqual(warnings)
         w.unmount()
       }
+    })
+
+    it('on an upgrade, marks the tables and privileges the grant in force does not hold yet', async () => {
+      const w = render(review({
+        host_permissions: [{ ...CORE_READ, current_status: 'granted', current_scope: { access: ['select:users.id', 'select:groups.*'] } }],
+        database_access: [
+          { table: 'users', columns: ['id'], privileges: ['select'] },
+          { table: 'groups', privileges: ['select', 'references'] },
+          { table: 'usage_logs', columns: ['status'], privileges: ['select', 'update'] }
+        ],
+        diff: { added: [], widened: [{ id: 'db.core_read', risk: 'critical' }], removed: [] }
+      }))
+      await flushPromises()
+      const users = w.get('[data-table="users"]')
+      expect(users.find('[data-testid="access-added"]').exists()).toBe(false)
+      expect(users.get('[data-privilege="select"]').text()).toBe('查询')
+      const groups = w.get('[data-table="groups"]')
+      expect(groups.find('[data-testid="access-added"]').exists()).toBe(false)
+      expect(groups.get('[data-privilege="select"]').text()).toBe('查询')
+      expect(groups.get('[data-privilege="references"]').text()).toBe('外键引用 · 新增')
+      const logs = w.get('[data-table="usage_logs"]')
+      expect(logs.get('[data-testid="access-added"]').text()).toBe('新增')
+      expect(logs.get('[data-privilege="update"]').text()).toBe('修改')
+      // Widened: consented to again, not carried.
+      expect(w.find('[data-testid="hp-carried"]').exists()).toBe(false)
     })
 
     it('shows no table list without database_access', async () => {
@@ -477,13 +512,17 @@ describe('plugin consent page', () => {
       await flushPromises()
       expect(w.get('[data-testid="provides-database"]').text()).toBe('表前缀 plg_demo__、迁移脚本 3 个')
       const card = w.get('[data-testid="database-migrations"]')
-      expect(card.text()).toContain('只能新建以 plg_demo__ 开头的对象')
+      expect(card.text()).toContain('只能新建以 plg_demo__ 开头的表、索引、序列、视图和类型，不能建函数和触发器')
       expect(card.get('[data-migration="0002"]').text()).toContain('内容有变，将重新执行')
       expect(card.get('[data-migration="0003"]').text()).toContain('将执行')
       expect(card.find('[data-migration="0001"]').exists()).toBe(false)
       expect(card.find('[data-testid="migration-sql"]').exists()).toBe(false)
-      await card.get('[data-migration="0003"] button').trigger('click')
-      expect(card.get('[data-testid="migration-sql"]').text()).toBe('CREATE TABLE plg_demo__0003 ();')
+      const toggle = card.get('[data-migration="0003"] button')
+      expect(toggle.text()).toBe('查看 0003 的 SQL')
+      await toggle.trigger('click')
+      const sql = card.get('[data-testid="migration-sql"]')
+      expect(sql.text()).toBe('CREATE TABLE plg_demo__0003 ();')
+      expect(sql.attributes()).toMatchObject({ tabindex: '0', role: 'region', 'aria-label': '0003 的 SQL' })
       await card.findAll('button').find((b) => b.text().includes('已执行且未变的脚本（1 个）'))!.trigger('click')
       expect(card.find('[data-testid="database-migrations-applied"] [data-migration="0001"]').exists()).toBe(true)
     })

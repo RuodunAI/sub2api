@@ -10,11 +10,12 @@ import { tablePrefix } from '../pluginUtil'
 // DELETE /plugins/:key?purge=&purge_accounts= (CONTRACTS §5.7, §14.3).
 // Accounts of the plugin's account types are kept (orphaned) unless
 // purge_accounts is set; the response then reports accounts_deleted.
-const props = defineProps<{ open: boolean; pluginKey: string; name: string }>()
+/** hasDatabase: the plugin declares a database, so purging drops its tables as well. */
+const props = defineProps<{ open: boolean; pluginKey: string; name: string; hasDatabase: boolean }>()
 const emit = defineEmits<{ (e: 'update:open', v: boolean): void; (e: 'done'): void }>()
 const { t } = useI18n()
 
-/** Optional deletions picked in the dialog: 'purge' (the plugin's tables and database identity; kept without it) and / or 'accounts'. */
+/** Optional deletions picked in the dialog: 'purge' (the plugin's tables and KV data; kept without it) and / or 'accounts'. */
 const purgeChoice = ref<ChoiceOption['value'][]>([])
 const purge = computed(() => purgeChoice.value.includes('purge'))
 const purgeAccounts = computed(() => purgeChoice.value.includes('accounts'))
@@ -27,8 +28,8 @@ const matches = computed(() => typed.value.trim() === props.pluginKey)
 const purgeOptions = computed<ChoiceOption[]>(() => [
   {
     value: 'purge',
-    label: t('plugins.uninstall.purge', { prefix: tablePrefix(props.pluginKey) }),
-    description: t('plugins.uninstall.purgeHint'),
+    label: props.hasDatabase ? t('plugins.uninstall.purge', { prefix: tablePrefix(props.pluginKey) }) : t('plugins.uninstall.purgeKv'),
+    description: props.hasDatabase ? t('plugins.uninstall.purgeHint') : t('plugins.uninstall.purgeHintKv'),
     icon: 'trash',
     tone: 'danger'
   },

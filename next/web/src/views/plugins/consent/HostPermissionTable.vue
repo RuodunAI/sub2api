@@ -2,7 +2,8 @@
 // Host permissions of the consent page: one row per host permission with its
 // risk, diff tag, description and the grant checkbox (low risk is always
 // granted; a permission the caller may not grant stays disabled). Slot
-// #detail (props: row) adds to a row what the permission covers.
+// #scope (props: row) replaces a row's scope chips: what the permission
+// covers, shown the permission's own way.
 import { useI18n } from 'vue-i18n'
 import { SBadge, SCard, SCheckbox, SEmpty, SHint, SIcon } from '@sub2api/ui'
 import { lt } from '@/i18n'
@@ -57,8 +58,7 @@ const descOf = (id: string) => tr(`plugins.hpDesc.${hpKey(id)}`, undefined, '')
           <SHint v-if="descOf(row.id)" size="xs" class="mt-0.5" :data-hp-desc="row.id">{{ descOf(row.id) }}</SHint>
           <p v-if="row.reason" class="mt-0.5 text-sm text-gray-600 dark:text-gray-300">{{ lt(row.reason) }}</p>
           <p v-if="row.risk === 'critical'" class="mt-0.5 text-xs text-red-600 dark:text-red-400">{{ warnOf(row.id) }}</p>
-          <ScopeChips :scope="row.scope" class="mt-1" />
-          <slot name="detail" :row="row" />
+          <slot name="scope" :row="row"><ScopeChips :scope="row.scope" class="mt-1" /></slot>
           <p v-if="!row.allowed" class="mt-1 flex items-center gap-1 text-xs text-orange-700 dark:text-orange-300">
             <SIcon name="lock" class="h-3.5 w-3.5" />
             {{ t('plugins.consent.needPermission', { perm: row.requiredPerm }) }}

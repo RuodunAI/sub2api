@@ -493,7 +493,8 @@ export default {
     releaseTitle: 'Release key {key}',
     releaseBody: 'Once released, a plugin of any publisher can be installed with this key.',
     purgeAccounts: 'Also delete the {n} account(s) left behind',
-    purge: 'Also delete the tables it left ({prefix}…) and cache entries',
+    purge: 'Also delete the tables it left ({prefix}…) and its KV data',
+    purgeKv: 'Also delete the KV data it left',
     tables: 'Tables {prefix}…',
     inheritWarn: 'Accounts and data not deleted are inherited by the next plugin with this key, credentials included.',
     released: '{key} released, {n} account(s) deleted'
@@ -510,7 +511,6 @@ export default {
     noAccess: 'No tables outside the plugin asked for.',
     columns: 'Columns',
     allColumns: 'all columns',
-    privileges: 'Privileges',
     privilege: {
       select: 'Select',
       insert: 'Insert',
@@ -518,9 +518,12 @@ export default {
       delete: 'Delete',
       references: 'Foreign key references'
     },
+    added: 'New',
     writeWarn: 'Writing core tables directly bypasses the core\'s caches, permission versions and audit.',
+    referencesWarn: 'Foreign key references keep the core from deleting the rows referenced.',
     migrations: 'Migration scripts',
-    migrationsHint: 'The scripts run as the plugin\'s database identity and can only create objects named {prefix}….',
+    migrationsHint: 'The scripts run as the plugin\'s database identity and can create only tables, indexes, sequences, views and types named {prefix}…, no functions or triggers.',
+    loadFailed: 'The plugin\'s database information could not be loaded.',
     noMigrations: 'No migration scripts.',
     nothingToRun: 'No script runs this time.',
     willRun: 'Will run',
@@ -528,17 +531,20 @@ export default {
     appliedList: 'Scripts already run and unchanged ({n})',
     appliedAt: 'Ran {at}',
     notApplied: 'Not run',
-    showSql: 'Show SQL',
-    hideSql: 'Hide SQL'
+    showSql: 'Show the SQL of {id}',
+    hideSql: 'Hide the SQL of {id}',
+    sqlOf: 'SQL of {id}'
   },
 
   uninstall: {
     action: 'Uninstall',
     title: 'Uninstall {name}',
     body: 'Uninstalling removes the plugin package, its permissions and grants, event cursors and job records.',
-    purge: 'Delete the data: the plugin\'s tables ({prefix}…) and its database identity',
-    purgeHint: 'Without this option the data is kept: the tables stay in the core database and the same plugin uses them again when it is installed next.',
-    purgeWarn: 'The plugin\'s tables and data will be permanently deleted.',
+    purge: 'Delete the data: the plugin\'s tables ({prefix}…) and its KV data',
+    purgeKv: 'Delete the data: the plugin\'s KV data',
+    purgeHint: 'Without this option the data is kept and the same plugin uses it again when it is installed next. The plugin\'s database identity is deleted either way and created again on reinstall.',
+    purgeHintKv: 'Without this option the data is kept and the same plugin uses it again when it is installed next.',
+    purgeWarn: 'This data will be permanently deleted.',
     purgeAccounts: 'Also delete all accounts of this plugin\'s account types',
     purgeAccountsHint: 'By default the accounts are kept as orphaned accounts: they stop serving requests but stay visible, and are served again if the plugin is reinstalled.',
     purgeAccountsWarn: 'These accounts will be deleted and will not come back when the plugin is reinstalled.',

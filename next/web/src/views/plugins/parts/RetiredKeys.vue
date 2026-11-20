@@ -17,7 +17,7 @@ const auth = useAuthStore()
 
 const items = ref<RetiredKey[]>([])
 const releasing = ref<RetiredKey | null>(null)
-/** What to delete before releasing the key: 'accounts' and / or 'purge' (the plugin's tables, KV entries). */
+/** What to delete before releasing the key: 'accounts' and / or 'purge' (the tables the plugin left, KV data). */
 const purgeChoice = ref<ChoiceOption['value'][]>([])
 const purge = computed(() => purgeChoice.value.includes('purge'))
 const purgeAccounts = computed(() => purgeChoice.value.includes('accounts'))
@@ -30,7 +30,7 @@ const purgeOptions = computed<ChoiceOption[]>(() => {
   if (!k) return []
   return [
     { value: 'accounts', label: t('plugins.retired.purgeAccounts', { n: k.accounts }), icon: 'account', tone: 'danger' },
-    { value: 'purge', label: t('plugins.retired.purge', { prefix: tablePrefix(k.key) }), icon: 'trash', tone: 'danger' }
+    { value: 'purge', label: k.schema ? t('plugins.retired.purge', { prefix: tablePrefix(k.key) }) : t('plugins.retired.purgeKv'), icon: 'trash', tone: 'danger' }
   ]
 })
 
