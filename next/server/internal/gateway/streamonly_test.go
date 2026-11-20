@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -746,5 +747,70 @@ func TestSamePlatformConversionScope(t *testing.T) {
 	e4, plat, _ := sameChatEnv(t, sp)
 	if r := e4.chat(false); r.status != 404 || plat.buildCount() != 0 {
 		t.Fatalf("not adapted: %d %s", r.status, r.body)
+	}
+}
+
+// A non-streaming client of a stream-only upstream that hangs up while the
+// stream is collected left an answered request (CONTRACTS §25.8): under
+// "continue" the stream is read to its end and its usage billed, under
+// "precharge" the upstream stops and the request pays the estimate.
+func TestStreamOnlyClientHangUpIsBilled(t *testing.T) {
+	for _, policy := range []string{core.DisconnectContinue, core.DisconnectPrecharge} {
+		t.Run(policy, func(t *testing.T) {
+			started, canceled, finish := make(chan struct{}), make(chan struct{}, 1), make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n")
+				w.(http.Flusher).Flush()
+				close(started)
+				select {
+				case <-r.Context().Done():
+					canceled <- struct{}{}
+				case <-finish:
+					fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":11,\"output_tokens\":22}}}\n\n")
+				}
+			}))
+			defer srv.Close()
+			defer close(finish)
+			e := newEnv(t)
+			e.balance.disconnect = policy
+			plat := &fakePlatform{route: func(*pluginv1.ExecuteRequest) string { return srv.URL + "/v1/responses" }}
+			e.addAccountType("codexlike", "chatgpt", plat, openAIStreamOnly())
+			e.accounts.addTyped(testGroup, 10, 100, "codex-10", "codexlike", "chatgpt")
+
+			ctx, hangUp := context.WithCancel(context.Background())
+			// Hang up once the core is collecting the stream: the headers
+			// reached it right after the first event was flushed.
+			go func() { <-started; time.Sleep(100 * time.Millisecond); hangUp() }()
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.srv.URL+"/v1/responses",
+				strings.NewReader(`{"model":"`+testModel+`","input":"hi","stream":false}`))
+			req.Header.Set("authorization", "Bearer "+testKey)
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				resp.Body.Close()
+				t.Fatal("the client got an answer although it hung up")
+			}
+			if policy == core.DisconnectContinue {
+				select {
+				case <-canceled:
+					t.Fatal("upstream canceled although the answer is to be read on")
+				case <-time.After(300 * time.Millisecond):
+				}
+				finish <- struct{}{}
+				rec := e.record()
+				if rec.ErrorType != errTypeClientCanceled || !rec.Billable || rec.UsageExtract == core.UsageExtractPrecharge ||
+					rec.Tokens.Input != 11 || rec.Tokens.Output != 22 {
+					t.Fatalf("record: type %q billable %v extract %q tokens %+v", rec.ErrorType, rec.Billable, rec.UsageExtract, rec.Tokens)
+				}
+				return
+			}
+			select {
+			case <-canceled:
+			case <-time.After(10 * time.Second):
+				t.Fatal("upstream not canceled when the client left")
+			}
+			if rec := e.record(); rec.ErrorType != errTypeClientCanceled || !rec.Billable || rec.UsageExtract != core.UsageExtractPrecharge {
+				t.Fatalf("record: type %q billable %v extract %q", rec.ErrorType, rec.Billable, rec.UsageExtract)
+			}
+		})
 	}
 }

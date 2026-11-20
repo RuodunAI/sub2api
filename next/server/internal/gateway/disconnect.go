@@ -132,14 +132,16 @@ func (d *upstreamDrain) served() bool {
 }
 
 // arm marks the exchange as worth finishing: forward is about to relay a
-// successful answer. A client that left before this has already canceled it.
+// successful answer, or a stream-only answer is being collected for it. A
+// client that left before the first arm has already canceled it; one that
+// left after it stays armed for forward.
 func (d *upstreamDrain) arm() {
 	if d == nil || !d.keep {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.armed = !d.left
+	d.armed = d.armed || !d.left
 }
 
 // dropOutput reports whether what would be written now goes nowhere: the
