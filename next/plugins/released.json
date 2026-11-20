@@ -2,44 +2,68 @@
   "_comment": "The plugin versions production runs and the digests of their sources: TestReleasedPluginsBumped (tools/sub2api-plugin) fails when a plugin's sources changed and its version did not. Rewrite after each release.",
   "plugins": {
     "anthropic": {
-      "version": "0.3.4",
-      "digest": "sha256:efe2891f6c99d5f82677d1948921c5da958cca165d59e66f74c280be18956ea5"
+      "version": "0.4.0",
+      "digest": "sha256:8dfa359ab7aa1019be64906bc315c01e70bd8cbc9a6fea7a0f3bcdaf88b9420f"
+    },
+    "azure-openai": {
+      "version": "0.1.0",
+      "digest": "sha256:bac50cef902341560878afe3ed8c24ca42726c50e9571940c5a128fc759d5745"
+    },
+    "bedrock": {
+      "version": "0.1.0",
+      "digest": "sha256:a1ebcf2a58e5929dc650d7f85669ba199e93dab3df776aacb9cab9b792d4e628"
     },
     "codex": {
-      "version": "0.1.11",
-      "digest": "sha256:b1201427c407c0de6ca6f0bd6ea415a2ebd022c8b8342648b37c4a1f300286c4"
+      "version": "0.2.0",
+      "digest": "sha256:78edbfe5e88103bb691434135355c1e49cf8687547d79e55f3a1d3ed051ad240"
     },
     "dynweight": {
-      "version": "0.5.11",
-      "digest": "sha256:0be6507364d372a8146ee2123ac0e073d2465d01a93c6998d99fb86598dd0d2e"
+      "version": "0.6.0",
+      "digest": "sha256:842200b08ec729465edc4391a0a02453220cf9aa8d5ba9aa02664ed9761a3294"
     },
     "gemini": {
-      "version": "0.3.2",
-      "digest": "sha256:98ddcb191e4fbc0301f728ad78923f8293e6efebd4c8286f8868b0009c5f2778"
+      "version": "0.4.0",
+      "digest": "sha256:ee008f377766dc32f81a2362b5a2245db1f6c8e9a793fade6769e73c4cadc3a9"
     },
     "guard": {
-      "version": "0.2.10",
-      "digest": "sha256:ef2987b6fa4659d24fdc0afa54d5c96009d1cf8677573a03164f3945b584af3f"
+      "version": "0.3.0",
+      "digest": "sha256:991d0fe9497754f9e6bfad7dd69e4dc4c2bcc2f323d8d1e25bb30f5df8f2262d"
     },
     "mailer": {
-      "version": "0.1.4",
-      "digest": "sha256:72bdf826d42d1f8e191a2f75975f5a57900848d110a2b77194f6d333a0b4dfc8"
+      "version": "0.1.5",
+      "digest": "sha256:dc7303b2e69124a201d6206e74706d9801b594b09c2fdbadb496b29607297e88"
     },
     "moderation": {
-      "version": "0.12.1",
-      "digest": "sha256:92a95ffa34045d0ea739791942be89a5f10f04e140707bfe4b8c9dd47216c209"
+      "version": "0.13.0",
+      "digest": "sha256:593b2f9ab0eefa0e5a2695983e16e63c9ecee6060ac813b7c972982cabae8c51"
+    },
+    "newapi": {
+      "version": "0.1.0",
+      "digest": "sha256:323bed1585a5bf79f736d198c0b8ec922d99730ed1761064d32405731986988c"
     },
     "openai": {
-      "version": "0.4.3",
-      "digest": "sha256:d8cd9300a28d0e9a9504baa7f763c9167c13a4afbb3ac59e1d44157e2b2c372b"
+      "version": "0.5.0",
+      "digest": "sha256:9e5cdf9ad7395169467495e318b4f269d3b6b2584bccc7a0d37713e073ae4e7b"
     },
     "payment": {
-      "version": "0.1.2",
-      "digest": "sha256:7607e604c34282be726eebe5678777368b9da17ed46d9cba6046877ab38e3909"
+      "version": "0.2.0",
+      "digest": "sha256:6264f9127876c11a59ba28a4cf087489ca3f3778049a1efbc1ada5edf15b08cb"
     },
     "relay": {
-      "version": "0.3.2",
-      "digest": "sha256:810ac0159b530b1a7eb47d3da69fc39b2e26528e8b86f0b7a1cda7644bfe0eeb"
+      "version": "0.4.0",
+      "digest": "sha256:059333811a9eadc931976e3655a65e4e2258acfb01ab9bfb3bd45f90a310d734"
+    },
+    "sub2api": {
+      "version": "0.1.0",
+      "digest": "sha256:63ce00d5439ae0d3196a92a4546ca63875e5793396b1ce4bd76b213d1ccb554d"
+    },
+    "typesafe": {
+      "version": "0.1.0",
+      "digest": "sha256:bbdfa7d43d1b38b5a9fcdfb4006fed9dc4c351c421b6d8a8dc984f83cf397ce5"
+    },
+    "vertex": {
+      "version": "0.1.0",
+      "digest": "sha256:fda352875938cbeb6b72dd8378d2a6dc1f6d1adb3ff249d7b6d2588bae9897ec"
     }
   }
 }

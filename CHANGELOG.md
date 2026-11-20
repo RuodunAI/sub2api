@@ -8,6 +8,8 @@
 
 开发完成、尚未上线的改动。发布时改成发布日期的一节，补上提交、实际版本号和发布过程。
 
+## 2026-11-21
+
 ### 审核插件删掉更早版本的升级代码（moderation 0.13.0；无迁移，随 0.1.304 发布）
 
 - 删除 0.8.0 的观察名单转换、0.11.0 从设置导入名单（连同只给它读的 `allowlist_user_ids`、`exempt_user_ids`、`blocklist_user_ids`）和 0.1 单模型设置的错误日志；`GET /status` 不再有 `lists_imported`，设置页也不再因“名单导入尚未完成”而不能保存。线上的 0.12.1 早已做完这些一次性步骤（两个部署都以 0.12.1 运行过，代码与删除前相同）。
@@ -168,6 +170,7 @@
 
 ### 网关 0.1.139：停机重新部署命令 `redeploy`、插件包不再依赖主节点（与核心版本 0.1.304 同时发布，该核心要求这一版网关）
 
+- **Release 与上线**：tag `gateway-v0.1.139`（`05638760e`，run 44798617353，北京时间 03:24:12 发布）。网关清单 sha256 `19b7181429f49f3cbdf9c16adffb7601709a0673d796b39370d9cf4314a94f67`，amd64 二进制 `c02f39bfdeccafa6f2f75cb62c91cdc12887e5e22a5c35606236b75131ec9870`。ovh 集群随核心 0.1.304 的停机重新部署一起换上（见下一节），两节点 `updater.nodes` 0.1.139；ec2pool 没有动。
 - 一次性命令失败时日志写“<命令> failed”，不再写“gateway stopped”（只有 `serve` 退出才这样写）。
 - **`sub2api-gateway redeploy -manifest <核心清单 URL>`（或 `-digest <摘要>`，版本已由 `import` 或更新源导入）**：计划带不过去的核心版本（Host API 变了，例如 0.1.304）停机换用。全部网关停掉后，在任一节点上以同一份配置执行一次：导入清单（同 `import`），任一节点心跳还新鲜（20 秒内，读 Redis 的实时心跳和数据库里的节点登记）、任一核心还在 Redis 核心登记里或有 running/paused 计划时拒绝（因此必须连得上 Redis）；否则把集群基线换成这个版本、删掉本集群的 `updater.node_admissions`，接着以 `serve -bootstrap` 启动主节点（按首次启动处理：允许迁移、内置插件随包导入），主节点就绪后以 `serve` 启动其余节点（主节点就绪前重启仍带 `-bootstrap`；从节点抢先启动的话要全部停掉重新 `redeploy`）。计划、步骤和事件照旧留作记录；它不停任何进程，也不碰核心的库（CONTRACTS §34“停机重新部署”）。此前这一步只能手工改 `updater.clusters.baseline` 和 `updater.node_admissions`。
 - **插件包不再依赖主节点**：每个节点留一份自己存过、用过的包，缺包时向任一启用节点取，心跳新鲜的先问；只把网络上连不上的节点记为“连不上”，本机拒绝对方身份（节点目录还不认识它）记为认证失败（CONTRACTS §114）。删除节点间上传 `PUT /internal/plugin-blobs/` 与范围 `plugin-upload`。
@@ -176,6 +179,13 @@
 - **升级**：可以先单独换网关（`sub2api-shell yield` 后换镜像，核心 0.1.303 照常运行）；核心 0.1.304 只能按它的升级须知停机重新部署，网关 0.1.138 过不了它的预检。网关不能回退到 0.1.135 及更早。
 
 ### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库隔离（每插件一个身份）、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0120；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
+
+- **Release**：tag `core-v0.1.304`（`05638760e`；`92af2ee0a` 加一处 CHANGELOG 标题修正：网关 0.1.139 的标题原来两次写着“核心 0.1.304”，`changelog-notes.sh` 会把它当成核心 Release 的说明，改掉字面后两条线各取各的小节）。上游 develop 从 `af7927bd5` 快进到 `05638760e`。run 44798616699 门禁全过，北京时间 03:24:52 发布（`package` 任务的 `release` 环境审批何时通过没有观察到，两次轮询之间流水线已经完成）。清单 sha256 `af321be48f5cbb024456a3a2defca1aedc31e713d55af40b3a075925b9d81548`（amd64 bundle `0d4dde09…81e9`、arm64 `66c4164a…d4d1`，下载后核对摘要一致），strategy maintenance，Host API 10，schema `19cabc85…c100` → `6c0c081d…ae59`。内置包的 `trust.pub` 仍是 `sup2api-plugins-2026`，与线上 `SUB2API_BUILTIN_TRUST_KEY` 相同。`next/plugins/released.json` 按 `05638760e` 重写（16 个插件）。
+- **发布前**：只读预检（数据库用户权限四项为真、近 30 天没有跨平台转换、没有分组设过请求体上限、`missing_price_policy` 为 reject、没有非内置插件、volcengine 没有在途任务），并在生产库副本上演练两次：第二次用生产主密钥、从网关 0.1.138 + 核心 0.1.303 的两节点集群起步、完全照网关手册“停机重新部署”，停机到主节点就绪 36.9 秒。所有者决定不做 `pg_dump`，回退依靠 Supabase 的自动备份。
+- **ovh 集群**（北京时间 2026-11-21 03:32–03:34，照网关手册“停机重新部署”）：`status` 无在途计划；03:32:09.8 停两个网关（sup2api-1 03:32:12.8、sup2api-ccp 03:32:13.5 退出，`Exited (0)`），`.env` 的 `GATEWAY_IMAGE` 换成 0.1.139；03:32:35.0 在 sup2api-1 执行 `redeploy -manifest https://releases/sup2api/af321be4….json`，0.9 秒返回，基线换成 0.1.304、`revision` 572→573、准入记录清空；03:32:42.2 主节点以 `serve -bootstrap` 启动，迁移 0106–0120 于 03:32:45 应用，03:33:08.3 `/readyz` 200；03:33:15.0 启动 sup2api-ccp，03:33:38.0 就绪；03:33:48.3 去掉 override 重建主节点，03:33:57.2 就绪。**停服**：api.prophey.ai `/readyz` 03:32:10.5→03:33:08.4 约 58 秒 503/502；重建主节点时 03:33:48.8→03:33:56.9 又有约 8 秒：clicodeplus 的 Caddy `fail_duration 30s` 这时还把刚就绪的本机节点记为失败、请求落到 ovh。从节点就绪后等满 30 秒再重建主节点可以避免这一段。
+- **核验**：两节点核心 0.1.304、网关 0.1.139，anthropic 0.4.0、codex 0.2.0、dynweight 0.6.0、gemini 0.4.0、mailer 0.1.5、moderation 0.13.0、openai 0.5.0 active、ready、restarts 0，newapi、sub2api、typesafe 0.1.0 只安装；7 次 rollout 都是 active。`schema_migrations` 120 条；`plg_*` schema 与旧角色（含 `plg_guard`）全部消失，新身份 `plg713988_dynweight`、`plg713988_moderation` 各自拥有 7、17 张表并以自己的身份连库，已卸载的 guard 的 6 张表归核心用户；抽查的 9 张插件表和 users、groups、accounts 等核心表，搬迁前后行数相同；PUBLIC 在库上的 `TEMPORARY` 已收回；volcengine 记入已退役键。审核与邮件设置可读（键与升级前相同），插件“数据库”页 200。经 api.prophey.ai 用临时密钥发了一个非流式、一个流式 `/v1/messages`（分组 9），都是 200、`billed`，密钥随后删除。强制检测核心 0.1.304、网关 0.1.139 无更新、无错误。主节点重建后和 sup2api-ccp 的日志无 ERROR；03:25–03:50 除这两个核验请求外无请求（392 关着，没有动）。主节点 bootstrap 那一次启动的日志随容器重建丢失，没有留存。clicodeplus 内核 6.1，Landlock 只有基础的文件层生效（`fs_truncate`、`tcp`、`scope`、`unix`、`udp` 各记一条 WARN）；ovh 内核 6.12，缺 `unix`、`udp` 两层。
+- **ec2pool**：这次没有动，也没有查看（上一次记录是核心 0.1.303）；升级时照同一手册停机重新部署。`next/deploy/rollback/protocol-binding-*` 因此保留。
+- 回滚：单向。核心不回退，出问题修复前进；必须回退时用网关 0.1.138、核心 0.1.303 和升级前的数据库备份一起恢复（Supabase 的备份按整个项目恢复，同一项目里的其他库会一起回到备份时刻）。
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0120（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删除没有读者的 `plugin_monitor_receipts`，0119 删除 volcengine 插件，0120 删除 anthropic 的模型目录），没有新的插件迁移（已有脚本随插件数据库隔离加了前缀，搬迁后不重跑）。
 
