@@ -16,8 +16,8 @@ describe('API key clients', () => {
     expect(extractor({ isValid: false, remaining: 0 })).toEqual({ isValid: false, remaining: 0, unit: 'USD' })
   })
   it('offers the clients of the platforms a key reaches', () => {
-    expect(clientsFor(['openai', 'volcengine', 'anthropic']).map(c => c.id)).toEqual(['claude', 'codex'])
-    expect(clientsFor(['volcengine'])).toEqual([])
+    expect(clientsFor(['openai', 'typesafe', 'anthropic']).map(c => c.id)).toEqual(['claude', 'codex'])
+    expect(clientsFor(['typesafe'])).toEqual([])
     expect(clientsFor(undefined)).toEqual([])
   })
   it('writes the environment for each shell', () => {

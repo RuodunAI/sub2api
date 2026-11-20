@@ -29,8 +29,8 @@ describe('protocols a group serves', () => {
   })
 
   it('lists a protocol the catalog does not know by its id, under the platform it names', () => {
-    const groups = servedEndpoints(BUILTIN_PLATFORMS, [{ protocol: 'openai.responses_ws', accounts: 1 }, { protocol: 'volcengine.images', accounts: 2 }])
-    expect(groups.map(g => [g.id, g.endpoints])).toEqual([['openai', [{ protocol: 'openai.responses_ws' }]], ['volcengine', [{ protocol: 'volcengine.images' }]]])
+    const groups = servedEndpoints(BUILTIN_PLATFORMS, [{ protocol: 'openai.responses_ws', accounts: 1 }, { protocol: 'typesafe.systemone', accounts: 2 }])
+    expect(groups.map(g => [g.id, g.endpoints])).toEqual([['openai', [{ protocol: 'openai.responses_ws' }]], ['typesafe', [{ protocol: 'typesafe.systemone' }]]])
   })
 
   it('shows each endpoint with the number of member accounts serving it', async () => {

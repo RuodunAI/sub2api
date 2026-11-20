@@ -2,9 +2,9 @@ import { BRAND_MARKS } from './brandMarks'
 
 // One colour and mark per model vendor, shared by everything the console
 // colours by platform or model: platform and group badges, account types,
-// model names. A platform maps to its vendor; a model name to the vendor
-// whose family it belongs to; anything else gets a stable colour of its own
-// and the first letter of its label as its mark.
+// model names. A platform id is its vendor id; a model name maps to the
+// vendor whose family it belongs to; anything else gets a stable colour of
+// its own and the first letter of its label as its mark.
 
 export interface Brand {
   /** Vendor id (a BRAND_MARKS key when it has a mark). */
@@ -31,9 +31,6 @@ const COLORS: Record<string, Pick<Brand, 'color' | 'dark'>> = {
   meta: { color: '#0668E1', dark: '#5A9BEF' },
   minimax: { color: '#E73562' }
 }
-
-/** Platform ids (CONTRACTS §13) whose vendor differs from the id. */
-const PLATFORM_VENDORS: Record<string, string> = { volcengine: 'doubao' }
 
 /** Model families, first match wins (lower-cased name without its `vendor/` prefix). */
 const MODEL_VENDORS: [RegExp, string][] = [
@@ -80,7 +77,8 @@ export function brand(id: string): Brand {
   return { id, color, dark }
 }
 
-export const platformBrand = (platform: string) => brand(own(PLATFORM_VENDORS, platform) ?? platform)
+/** The brand of a platform id (CONTRACTS §13). */
+export const platformBrand = (platform: string) => brand(platform)
 
 /** The vendor of a model name ('' when no family matches). */
 export function modelVendor(model: string): string {

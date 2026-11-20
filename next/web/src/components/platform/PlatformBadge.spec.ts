@@ -13,25 +13,25 @@ const render = (props: InstanceType<typeof PlatformBadge>['$props']) => mount(Pl
 describe('platform badge', () => {
   beforeEach(() => {
     i18n.global.locale.value = 'zh'
-    get.mockResolvedValue([{ id: 'volcengine', label: { en: 'Volcengine Ark', zh: '火山方舟' }, builtin: false, endpoints: [] }])
+    get.mockResolvedValue([{ id: 'gemini', label: { en: 'Google Gemini', zh: '谷歌 Gemini' }, builtin: true, endpoints: [] }])
   })
 
   it('loads the platform list once however many badges are shown', async () => {
-    const badges = ['anthropic', 'openai', 'volcengine'].map(id => render({ id }))
+    const badges = ['anthropic', 'openai', 'gemini'].map(id => render({ id }))
     await flushPromises()
-    render({ id: 'gemini' })
+    render({ id: 'typesafe' })
     expect(get.mock.calls).toEqual([['/me/platforms']])
-    expect(badges[2].text()).toBe('火山方舟')
+    expect(badges[2].text()).toBe('谷歌 Gemini')
   })
 
   it("shows the mark and the label in the vendor's colours, the mark left to the label for assistive technology", async () => {
-    const w = render({ id: 'volcengine' })
+    const w = render({ id: 'gemini' })
     await flushPromises()
     expect(w.classes()).toContain('brand-tint')
-    expect(w.attributes('style')).toContain(platformBrand('volcengine').color)
-    expect(w.attributes('data-platform')).toBe('volcengine')
-    expect(w.get('svg[data-brand="doubao"]').attributes('aria-hidden')).toBe('true')
-    expect(w.text()).toBe('火山方舟')
+    expect(w.attributes('style')).toContain(platformBrand('gemini').color)
+    expect(w.attributes('data-platform')).toBe('gemini')
+    expect(w.get('svg[data-brand="gemini"]').attributes('aria-hidden')).toBe('true')
+    expect(w.text()).toBe('谷歌 Gemini')
   })
 
   it('names a platform the list does not have by the label of the payload, else by its id', () => {

@@ -101,7 +101,7 @@ describe('sidebar', () => {
     { section: 'finance', items: [item('recharge', '/p/payment/recharge')] },
     { section: 'users', items: [item('users', '/users'), item('roles', '/roles')] },
     { section: 'plugins', items: [item('plugins', '/plugins'), item('market', '/market'), item('inbox', '/p/mailer/inbox')] },
-    { section: 'vol:ark', label: { zh: '火山方舟' }, items: [item('assets', '/p/vol/assets'), item('sets', '/p/vol/sets')] },
+    { section: 'acme:media', label: { zh: '媒体库' }, items: [item('assets', '/p/acme/assets'), item('sets', '/p/acme/sets')] },
     { section: 'system', items: [item('nodes', '/nodes'), item('tasks', '/system/tasks'), settings] },
     { section: 'me', items: [item('wallet', '/me/wallet')] }
   ]
@@ -111,7 +111,7 @@ describe('sidebar', () => {
     const { wrapper, app } = await mountSidebar(operatorMenu)
     expect(wrapper.get('[data-testid="nav-group-admin"]').text()).toContain('管理员')
     expect(labels(wrapper)).toEqual([...flat, '系统设置'])
-    expect(submenus(wrapper)).toEqual(['用户', '插件', '火山方舟', '系统'])
+    expect(submenus(wrapper)).toEqual(['用户', '插件', '媒体库', '系统'])
     expect(wrapper.findAll('nav a').at(-1)!.attributes('href')).toBe('/settings')
     // The settings page is reached by its own entry, not from the system submenu.
     await wrapper.get('[data-testid="nav-submenu-system"]').trigger('click')
@@ -150,9 +150,9 @@ describe('sidebar', () => {
 
   it('opens the submenu of the current page and remembers the ones opened before', async () => {
     localStorage.setItem('s2a.navOpen', JSON.stringify(['other:x']))
-    const { wrapper } = await mountSidebar(operatorMenu, '/p/vol/sets')
+    const { wrapper } = await mountSidebar(operatorMenu, '/p/acme/sets')
     expect(labels(wrapper)).toContain('sets')
-    await wrapper.get('[data-testid="nav-submenu-vol:ark"]').trigger('click')
+    await wrapper.get('[data-testid="nav-submenu-acme:media"]').trigger('click')
     expect(labels(wrapper)).not.toContain('sets')
     expect(JSON.parse(localStorage.getItem('s2a.navOpen') || '[]')).toEqual(['other:x'])
   })

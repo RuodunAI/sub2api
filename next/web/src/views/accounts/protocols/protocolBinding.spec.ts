@@ -193,7 +193,7 @@ describe('checks of the binding', () => {
 
   it('warns about an own protocol the account does not open, a protocol the type cannot serve and a conversion for every other model', () => {
     expect(codes(['openai.chat'], { a: ['openai.chat', 'openai.embeddings'] })).toEqual([['warning', 'closed_protocol', 'a', 'openai.embeddings']])
-    expect(codes(null, { a: ['openai.chat', 'volcengine.images'] })).toEqual([['warning', 'unknown_protocol', 'a', 'volcengine.images']])
+    expect(codes(null, { a: ['openai.chat', 'typesafe.systemone'] })).toEqual([['warning', 'unknown_protocol', 'a', 'typesafe.systemone']])
     expect(codes(null, { '*': ['openai.chat', 'anthropic.messages'], a: ['anthropic.messages'] })).toEqual([['warning', 'rest_conversion', '*']])
   })
 

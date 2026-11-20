@@ -16,7 +16,7 @@ const PLUGINS = [
 ]
 
 /** A GET /ui/plugins entry with no menu or page, only the native entry holding the account forms. */
-export const nativeFormUIPlugin = (p: { key: string; version: string; name: unknown }) => ({
+const nativeFormUIPlugin = (p: { key: string; version: string; name: unknown }) => ({
   ...p,
   asset_base: `/plugin-ui/${p.key}/${p.version}-dev`,
   menus: [],
@@ -46,7 +46,7 @@ export function apiKeyFormAsset(key: string, path: string): { type: string; body
 }
 
 /** ui/native/<path> of a plugin from plugins/<dir>/ui/native/dist; null when absent. */
-export function nativeDistAsset(dir: string, path: string): { type: string; body: Buffer } | null {
+function nativeDistAsset(dir: string, path: string): { type: string; body: Buffer } | null {
   if (!path.startsWith('ui/native/')) return null
   const rel = normalize(path.slice('ui/native/'.length))
   if (rel.startsWith('..')) return null

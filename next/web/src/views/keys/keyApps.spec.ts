@@ -29,7 +29,7 @@ describe('Magpie import link', () => {
     [['openai'], ['chat', 'responses']],
     [['gemini'], ['gemini']],
     [
-      ['gemini', 'volcengine', 'anthropic'],
+      ['gemini', 'typesafe', 'anthropic'],
       ['anthropic', 'gemini']
     ]
   ])('names only the protocols of %j', (platforms, endpoints) => {
@@ -73,16 +73,16 @@ describe('quick setups of a key', () => {
       { id: 'ccswitch:gemini', app: 'CC Switch', label: 'CC Switch · Gemini CLI', client: 'gemini' },
       { id: 'magpie', app: 'Magpie', label: 'Magpie', client: undefined }
     ])
-    expect(keyAppsFor(['openai', 'volcengine']).map(a => a.id)).toEqual(['ccswitch:codex', 'magpie'])
+    expect(keyAppsFor(['openai', 'typesafe']).map(a => a.id)).toEqual(['ccswitch:codex', 'magpie'])
   })
-  it.each([[['volcengine']], [[]], [null], [undefined]])('offers nothing for %j', platforms => {
+  it.each([[['typesafe']], [[]], [null], [undefined]])('offers nothing for %j', platforms => {
     expect(keyAppsFor(platforms)).toEqual([])
   })
   it.each(CLIENTS)('links CC Switch · $label as the client does', client => {
     expect(app(all, `ccswitch:${client.id}`).link(base, 'gw.example.com', key)).toBe(ccSwitchLink(client, base, 'gw.example.com', key))
   })
   it('links Magpie with the endpoints of the platforms it was offered for', () => {
-    expect(app(['openai', 'volcengine'], 'magpie').link(base, 'gw.example.com', key)).toBe(
+    expect(app(['openai', 'typesafe'], 'magpie').link(base, 'gw.example.com', key)).toBe(
       magpieLink(['openai'], base, 'gw.example.com', key)
     )
   })
