@@ -153,7 +153,15 @@ func newRealCluster(t *testing.T, ctx context.Context, options realOptions) *rea
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 20*time.Second)
 		defer done()
+		// The plugins' database identities, plg<database OID>_<key>
+		// (CONTRACTS §130.1), belong to the PostgreSQL cluster and outlive
+		// the database; no core drops another database's identities.
+		var roles []string
+		admin.WithContext(cleanup).Raw("SELECT rolname FROM pg_roles WHERE starts_with(rolname, 'plg' || (SELECT oid FROM pg_database WHERE datname = ?) || '_')", c.dbname).Scan(&roles)
 		admin.WithContext(cleanup).Exec("DROP DATABASE " + quoted + " WITH (FORCE)")
+		for _, role := range roles {
+			admin.WithContext(cleanup).Exec("DROP ROLE IF EXISTS " + quoteIdent(role))
+		}
 	})
 	c.coreDSN = dsn + " dbname=" + c.dbname
 	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
