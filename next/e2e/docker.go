@@ -96,6 +96,9 @@ func (e *Env) SQL(query string) []string {
 	return rows
 }
 
+// sqlText quotes s as an SQL string literal for SQL.
+func sqlText(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+
 // Redis runs the cache CLI in the compose cache container (valkey-cli, or
 // redis-cli when E2E_REDIS_IMAGE is a Redis image) and returns trimmed output.
 func (e *Env) Redis(args ...string) string {

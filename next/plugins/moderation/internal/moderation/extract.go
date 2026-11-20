@@ -28,15 +28,12 @@ const (
 	FieldContents           = "contents|@this"
 	FieldSystemInstruction  = "systemInstruction|@this"
 	FieldSystemInstruction2 = "system_instruction|@this"
-	FieldPrompt             = "prompt|@this"
-	FieldContent            = "content|@this"
-	FieldImage              = "image|@this"
 )
 
 // HookFields are the needs of the moderation hook, in manifest order.
 var HookFields = []string{
 	FieldModel, FieldSystem, FieldMessages, FieldTools, FieldInput, FieldInstructions,
-	FieldContents, FieldSystemInstruction, FieldSystemInstruction2, FieldPrompt, FieldContent, FieldImage,
+	FieldContents, FieldSystemInstruction, FieldSystemInstruction2,
 }
 
 // Hook ids (manifest hooks[].id).
@@ -61,26 +58,22 @@ const (
 	familyChat      = "chat"
 	familyResponses = "responses"
 	familyGemini    = "gemini"
-	familyImages    = "images"
-	familyVideo     = "video"
 )
 
 var protocolFamilies = map[string]string{
-	"anthropic.messages":      familyAnthropic,
-	"openai.chat":             familyChat,
-	"openai.responses":        familyResponses,
-	"openai.responses_ws":     familyResponses,
-	"gemini.generate":         familyGemini,
-	"gemini.stream_generate":  familyGemini,
-	"volcengine.images":       familyImages,
-	"volcengine.video_submit": familyVideo,
+	"anthropic.messages":     familyAnthropic,
+	"openai.chat":            familyChat,
+	"openai.responses":       familyResponses,
+	"openai.responses_ws":    familyResponses,
+	"gemini.generate":        familyGemini,
+	"gemini.stream_generate": familyGemini,
 }
 
 // ModeratedProtocols are the protocols whose content is moderated (the
 // moderation hook's match.protocols).
 var ModeratedProtocols = []string{
 	"anthropic.messages", "openai.chat", "openai.responses", "openai.responses_ws",
-	"gemini.generate", "gemini.stream_generate", "volcengine.images", "volcengine.video_submit",
+	"gemini.generate", "gemini.stream_generate",
 }
 
 // Message formats of a saved input_message (record detail).
@@ -205,17 +198,6 @@ func extractPieces(protocol string, f map[string]string) (pieces []piece, modera
 			e.geminiParts(geminiRole(c.Get("role").String()), c.Get("parts"))
 		}
 		e.tools(get(FieldTools))
-	case familyImages:
-		e.content(RoleUser, get(FieldPrompt))
-		img := get(FieldImage)
-		if img.Type == gjson.String {
-			e.image(RoleUser, imageFromURL(img.Str))
-		}
-		for _, u := range arr(img) {
-			e.image(RoleUser, imageFromURL(u.String()))
-		}
-	case familyVideo:
-		e.content(RoleUser, get(FieldContent))
 	default:
 		return nil, false
 	}
@@ -254,7 +236,7 @@ func geminiRole(role string) string {
 }
 
 // content reads a message content: a string, or an array of blocks
-// (Anthropic, OpenAI chat and Responses parts, volcengine video content).
+// (Anthropic, OpenAI chat and Responses parts).
 // Thinking and reasoning blocks are skipped: Anthropic and OpenAI only take
 // back the ones they signed or encrypted.
 func (e *extractor) content(role string, c gjson.Result) {

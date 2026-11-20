@@ -70,14 +70,6 @@ var scopeCases = []struct {
 	// A role the client made up is kept by every scope.
 	{protocol: "openai.chat", body: `{"messages":[{"role":"narrator","content":"N"}]}`,
 		input: []string{"narrator:N"}, tools: []string{"narrator:N"}, all: []string{"narrator:N"}},
-	{protocol: "volcengine.images", body: `{"prompt":"P","image":["data:image/png;base64,AAAA"]}`,
-		input: []string{"user:P", "user:image"},
-		tools: []string{"user:P", "user:image"},
-		all:   []string{"user:P", "user:image"}},
-	{protocol: "volcengine.video_submit", body: `{"content":[{"type":"text","text":"P"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}`,
-		input: []string{"user:P", "user:image"},
-		tools: []string{"user:P", "user:image"},
-		all:   []string{"user:P", "user:image"}},
 }
 
 // Every protocol x every audit scope: exactly the pieces the scope keeps

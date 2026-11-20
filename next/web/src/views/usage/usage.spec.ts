@@ -6,7 +6,7 @@ describe('accountPlatform', () => {
     ['anthropic.messages', 'anthropic'],
     ['openai.responses_ws', 'openai'],
     ['gemini.stream_generate', 'gemini'],
-    ['volcengine.video_submit', 'volcengine'],
+    ['typesafe.systemone', 'typesafe'],
     // a protocol name may itself contain dots; the platform is what precedes the first
     ['acme.v2.chat', 'acme']
   ])('reads the platform off the upstream protocol %s', (upstream_protocol, platform) => {

@@ -122,7 +122,7 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 	}
 
 	// ---- bundled packages: imported on the primary, pulled by followers
-	for _, key := range []string{"anthropic", "volcengine"} {
+	for _, key := range []string{"anthropic", "openai"} {
 		wait(key+" enabled on every node", 3*time.Minute, func() bool { return enabledEverywhere(key) })
 		sum := digestOf(key)
 		for _, id := range []string{"a", "b", "c"} {
@@ -216,7 +216,7 @@ func TestRealCorePluginPackagesTravelBetweenNodes(t *testing.T) {
 		return err == nil && st.Ready && mode == "local" && st.BootID != bootC && probe(restartedC) == 401
 	})
 	wait(uploadKey+" running on the restarted c", 3*time.Minute, func() bool { return runningOn("c", uploadKey) })
-	for _, key := range []string{"anthropic", "volcengine", uploadKey} {
+	for _, key := range []string{"anthropic", "openai", uploadKey} {
 		if !held("c", digestOf(key)) {
 			t.Fatalf("restarted c did not fetch %s from b", key)
 		}

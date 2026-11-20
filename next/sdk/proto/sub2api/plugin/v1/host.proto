@@ -220,9 +220,9 @@ service HostService {
   // outside a gateway request - a plugin's own HTTP routes get only
   // Caller{user_id, request_id, client_ip, locale}, so without them a console
   // page that has to talk to the upstream with the account's own credentials
-  // (the Volcengine Ark asset library signs its OpenAPI calls with the
-  // account's AK/SK) cannot be built at all. No grant: a plugin receives the
-  // accounts of the account types it declares (CONTRACTS §124).
+  // (codex lists and spends an account's reset credits with its token)
+  // cannot be built at all. No grant: a plugin receives the accounts of the
+  // account types it declares (CONTRACTS §124).
   //
   // Only accounts whose account type this plugin declares are visible.
   // Anything else is reported as NOT_FOUND, never PERMISSION_DENIED: a

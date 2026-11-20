@@ -179,42 +179,9 @@ func (c *apiClient) login(email, password string) *apiClient {
 	return s
 }
 
-// videoTenant is a restricted group with one relay video account on the
-// mock, a funded user and that user's API key.
-type videoTenant struct {
-	model      string
-	accountID  int64
-	accountKey string
-	userID     int64
-	user       *apiClient
-	apiKey     string
-}
-
-func newVideoTenant(t *testing.T, admin *apiClient, mockURL, suffix string) videoTenant {
-	t.Helper()
-	tn := videoTenant{model: "doubao-seedance-2-0-mini-real-" + suffix, accountKey: "video-real-" + suffix}
-	admin.ok(http.MethodPost, "/prices", map[string]any{"model": tn.model, "mode": "per_token", "note": "real-core run price",
-		"config": map[string]float64{"p": 3, "c": 15, "cr": 0.3, "cc": 3.75, "cc1h": 6}})
-	group := admin.ok(http.MethodPost, "/groups", map[string]any{"name": "video-" + suffix, "description": "real-core", "visibility": "restricted", "rate_multiplier": "1", "model_allowlist": []string{}}).id("data.id")
-	tn.accountID = admin.ok(http.MethodPost, "/accounts", map[string]any{
-		"name": "video-" + suffix, "plugin_key": "volcengine", "type": "relay", "group_ids": []int64{group}, "proxy_id": nil,
-		"priority": 10, "max_concurrency": 4, "schedulable": true,
-		"credentials": map[string]any{"api_key": tn.accountKey, "base_url": mockURL, "video_api_prefix": "/api/v3"},
-	}).id("data.id")
-	email, password := "video-"+suffix+"@real.test", "Real-"+suffix+"-pass!"
-	tn.userID = admin.ok(http.MethodPost, "/users", map[string]any{"email": email, "display_name": email, "password": password, "role_keys": []string{"user"}}).id("data.id")
-	admin.grantGroup(tn.userID, group)
-	admin.ok(http.MethodPost, fmt.Sprintf("/users/%d/balance/adjust", tn.userID), map[string]any{"amount": "20", "credit": true, "note": "real-core credit"})
-	tn.user = admin.login(email, password)
-	tn.apiKey = tn.user.ok(http.MethodPost, "/me/api-keys", map[string]any{"name": "video-" + suffix, "group_id": group}).str("data.key")
-	if !strings.HasPrefix(tn.apiKey, "sk-s2a-") || tn.accountID == 0 || tn.userID == 0 {
-		t.Fatalf("video tenant incomplete: %+v", tn)
-	}
-	return tn
-}
-
-// streamTenant is the same shape for an anthropic API-key account whose
-// responses the mock streams slowly.
+// streamTenant is a restricted group with one anthropic API-key account on
+// the mock, whose responses it streams slowly, a funded user and that
+// user's API key.
 type streamTenant struct {
 	model      string
 	accountKey string
@@ -242,39 +209,6 @@ func newStreamTenant(t *testing.T, admin *apiClient, mockURL, suffix string) str
 
 // mockClient controls the mock upstream started next to the test.
 type mockClient struct{ *apiClient }
-
-func (m mockClient) video(key, state string, block bool) {
-	m.t.Helper()
-	if r := m.do(http.MethodPost, "/__video/control", map[string]any{"api_key": key, "state": state, "block": block, "output_tokens": 17, "delay_ms": 25}, nil); r.status != 200 {
-		m.t.Fatalf("video control: %s", r)
-	}
-}
-
-type mockVideoTask struct {
-	ID        string `json:"id"`
-	APIKey    string `json:"api_key"`
-	Active    int    `json:"active"`
-	MaxActive int    `json:"max_active"`
-	Queries   []struct {
-		APIKey   string `json:"api_key"`
-		Source   string `json:"source"`
-		Active   bool   `json:"active"`
-		Canceled bool   `json:"canceled"`
-		Status   int    `json:"status"`
-	} `json:"queries"`
-}
-
-func (m mockClient) videoTasks(key string) []mockVideoTask {
-	m.t.Helper()
-	r := m.do(http.MethodGet, "/__video/stats?api_key="+key, nil, nil)
-	var out struct {
-		Tasks []mockVideoTask `json:"tasks"`
-	}
-	if r.status != 200 || json.Unmarshal(r.body, &out) != nil {
-		m.t.Fatalf("video stats: %s", r)
-	}
-	return out.Tasks
-}
 
 func (m mockClient) rule(rule map[string]any) {
 	m.t.Helper()

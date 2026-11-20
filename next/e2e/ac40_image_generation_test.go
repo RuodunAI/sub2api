@@ -42,8 +42,8 @@ var (
 // (JSON and stream) and /v1/images/edits (JSON): the usage record has the
 // image input and output tokens, and the expression price bills them apart,
 // times the group rate. A multipart edits request is a 400 in the gateway
-// with a free invalid_request record and no account; volcengine and Azure
-// deployment accounts do not serve the endpoint; a model without a price is refused
+// with a free invalid_request record and no account; Azure deployment
+// accounts do not serve the endpoint; a model without a price is refused
 // with 403 model_price_not_configured before any upstream call (CONTRACTS
 // §17.3: no price is always an error).
 func TestAC40_ImageGeneration(t *testing.T) {
@@ -130,24 +130,19 @@ func TestAC40_ImageGeneration(t *testing.T) {
 		}
 	})
 
-	// Types with an endpoint subset on openai that neither lists the image
-	// endpoints nor adapts them (CONTRACTS §121.1) do not serve them: Ark,
-	// and an Azure deployment (chat, embeddings, responses adapted). Codex
-	// accounts serve them through the core's conversion (AC42).
-	for name, spec := range map[string]AccountSpec{
-		"volcengine":       {PluginKey: "volcengine", Type: "relay"},
-		"azure_deployment": {PluginKey: AzurePlugin, Type: AzureDeploymentType, Settings: map[string]any{"api_version": azureAPIVersion}},
-	} {
-		t.Run(name+" not served", func(t *testing.T) {
-			e := e.With(t)
-			tn, k := e.imageTenant(admin, name, spec)
-			mark := m.Mark(t)
-			expectNotFound(t, e.OpenAI(tn.APIKey, "/v1/images/generations", body("not served", false)), "openai", endpointNotServedMessage)
-			if calls := mockCallsOf(t, m, mark, k); len(calls) != 0 {
-				t.Fatalf("%s: reached the mock: %+v", name, calls)
-			}
-		})
-	}
+	// A type with an endpoint subset on openai that neither lists the image
+	// endpoints nor adapts them (CONTRACTS §121.1) does not serve them: an
+	// Azure deployment (chat, embeddings, responses adapted). Codex accounts
+	// serve them through the core's conversion (AC42).
+	t.Run("azure_deployment not served", func(t *testing.T) {
+		e := e.With(t)
+		tn, k := e.imageTenant(admin, "azure_deployment", AccountSpec{PluginKey: AzurePlugin, Type: AzureDeploymentType, Settings: map[string]any{"api_version": azureAPIVersion}})
+		mark := m.Mark(t)
+		expectNotFound(t, e.OpenAI(tn.APIKey, "/v1/images/generations", body("not served", false)), "openai", endpointNotServedMessage)
+		if calls := mockCallsOf(t, m, mark, k); len(calls) != 0 {
+			t.Fatalf("azure_deployment: reached the mock: %+v", calls)
+		}
+	})
 
 	t.Run("no price", func(t *testing.T) {
 		e := e.With(t)

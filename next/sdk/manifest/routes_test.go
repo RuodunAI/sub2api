@@ -14,7 +14,7 @@ func TestCoreRouteOf(t *testing.T) {
 		}
 	}
 	for _, p := range []string{"/apifoo", "/api/v3/chat/completions", "/api/v1x", "/api/v2/x",
-		"/doubao/api/v3/x", "/v1/messages", "/healthcheck", "/plugin-uix", "/"} {
+		"/vendor/api/v3/x", "/v1/messages", "/healthcheck", "/plugin-uix", "/"} {
 		if got, ok := CoreRouteOf(p); ok {
 			t.Errorf("%s reserved as %s", p, got)
 		}

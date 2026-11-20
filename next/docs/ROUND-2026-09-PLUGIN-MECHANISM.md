@@ -1,7 +1,7 @@
 # 这一轮的前因后果：一个插件需求如何变成核心契约的五期改造
 
 > 2026-09-29 ~ 2026-09-30。分支 `feat/next-platform`。
-> 这份文档讲**为什么**。要查**是什么**，去 [CONTRACTS](CONTRACTS.md) §25 / §26（落地记录，按契约条目组织）；要查当初**怎么设计的**，去 [PLUGIN-EXECUTES-CORE-RECORDS](PLUGIN-EXECUTES-CORE-RECORDS.md) 和 [PLUGIN-VOLCENGINE-ARK](PLUGIN-VOLCENGINE-ARK.md)。
+> 这份文档讲**为什么**。要查**是什么**，去 [CONTRACTS](CONTRACTS.md) §25 / §26（落地记录，按契约条目组织）；要查当初**怎么设计的**，去 [PLUGIN-EXECUTES-CORE-RECORDS](PLUGIN-EXECUTES-CORE-RECORDS.md) 和 PLUGIN-VOLCENGINE-ARK（随插件在 0.1.304 删除，CONTRACTS §128；`git show b58f8149e:next/docs/PLUGIN-VOLCENGINE-ARK.md`）。
 > 那三份是参考资料，密度高但没有时间线。这份是时间线，读完能回答「当初为什么这么定」。
 
 ---

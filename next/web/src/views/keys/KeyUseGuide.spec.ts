@@ -119,7 +119,7 @@ describe('API key use guide', () => {
     expect((await guide({ platforms: ['anthropic'] })).findComponent(PlatformEndpointsPreview).exists()).toBe(false)
   })
   it('has no client or app to set up for other platforms', async () => {
-    const w = await guide({ platforms: ['volcengine'] })
+    const w = await guide({ platforms: ['typesafe'] })
     expect(tabs(w)).toEqual([])
     expect(w.find('[data-testid="key-use-snippet"]').exists()).toBe(false)
     expect(w.get('[data-testid="key-use-guide"]').text()).toContain('没有内置的客户端配置')

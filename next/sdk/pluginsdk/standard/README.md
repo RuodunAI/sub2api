@@ -44,7 +44,7 @@
 
 ## 请求体
 
-- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`（改写本身是 `openai.StreamUsage`，自己改请求体的插件如 volcengine 直接调它，流式按 `pluginsdk.RequestStream` 判断）：
+- **按路径改，不整份解析**：改写都用 SDK 的 `jsonedit`（`sdk/pluginsdk/jsonedit`）。没有改写的请求体原样交回（同一个切片）；改写只动它自己的字节，键顺序、空白、未知字段、`\u` 转义、超出 float64 的数字都不变，只解析一次、最多拷贝一次。`FilterFields` 是几个 `Delete`；`Edit` 在同一个 `Doc` 上接着改，例如 openai 的 `IncludeStreamUsage`（流式按 `Request.Stream`，即 `pluginsdk.RequestStream` 判断）：
 
   ```go
   func IncludeStreamUsage(d *jsonedit.Doc, r *standard.Request) {

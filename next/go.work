@@ -20,7 +20,6 @@ use (
 	./plugins/sub2api
 	./plugins/typesafe
 	./plugins/vertex
-	./plugins/volcengine
 	./protocol-codec
 	./runtime-contract
 	./sdk

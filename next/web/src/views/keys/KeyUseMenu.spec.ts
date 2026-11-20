@@ -82,7 +82,7 @@ describe('API key quick setup menu', () => {
     pick('手动配置说明')
     expect(w.emitted('guide')).toHaveLength(1)
   })
-  it.each([[['volcengine']], [null]])('offers only the guide for platforms %j', async platforms => {
+  it.each([[['typesafe']], [null]])('offers only the guide for platforms %j', async platforms => {
     const { w, pick } = await opened({ platforms })
     expect(items().map(b => b.textContent?.trim())).toEqual(['手动配置说明'])
     expect(header()).toEqual([])

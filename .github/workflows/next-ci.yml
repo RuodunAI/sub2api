@@ -3,7 +3,7 @@ name: next CI
 # CI for the next/ platform (multi-module Go workspace). Until this workflow
 # existed, nothing in .github/workflows referenced next/ at all -- backend-ci.yml
 # only runs backend/ -- so "next is green" meant "green on a developer's
-# machine". See next/docs/PLUGIN-VOLCENGINE-ARK.md §9.8.
+# machine".
 #
 # next/e2e is deliberately NOT run here. It drives a deployed stack (two nodes,
 # mock-upstream and the /__node1 /__node2 /__mock helper routes behind one

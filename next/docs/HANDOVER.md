@@ -77,7 +77,7 @@
 | [`CONTRACTS.md`](CONTRACTS.md) | **开发契约 + 落地记录**。§25 是插件执行核心记录（§25.1–§25.7 按期递增），§26 是插件机制加固（§26.1–§26.7）。§2 是构建与测试 | **动手前必读 §2**；改契约前必读对应的 §25/§26 小节。**这是权威**，与设计稿冲突时以它为准 |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | 整体设计（1940 行） | 需要了解某个子系统时按章查 |
 | [`PLUGIN-EXECUTES-CORE-RECORDS.md`](PLUGIN-EXECUTES-CORE-RECORDS.md) | 核心契约扩展的**原始设计稿**。头部已标注「正文里有若干条后来被证伪」 | 想看当初的推演。**别当现状读** |
-| [`PLUGIN-VOLCENGINE-ARK.md`](PLUGIN-VOLCENGINE-ARK.md) | 火山方舟插件设计 + 落地记录。§9 是挖出的核心缺陷清单、§10 是三期代价、§11 是五期收尾与 Ark 事实表 | 动这个插件前必读。**§11.1 的 Ark 事实表对账时会反复用到** |
+| `PLUGIN-VOLCENGINE-ARK.md`（插件与这份文档在 0.1.304 删除，CONTRACTS §128；`git show b58f8149e:next/docs/PLUGIN-VOLCENGINE-ARK.md`） | 火山方舟插件设计 + 落地记录。§9 是挖出的核心缺陷清单、§10 是三期代价、§11 是五期收尾与 Ark 事实表 | 动这个插件前必读。**§11.1 的 Ark 事实表对账时会反复用到** |
 | [`PROGRESS.md`](PROGRESS.md) | 更早几轮的交接记录，**停在 2026-09-25，这一轮不在里面** | 考古用 |
 
 **一条硬规则**：这些文档是真相源，**先读文档再动手，不要凭记忆或猜测回答**。设计稿与 CONTRACTS 冲突时，CONTRACTS 赢。

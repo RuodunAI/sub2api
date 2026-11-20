@@ -9,7 +9,7 @@
 - 迁移不回填（用户 2026-11-17 决定）。字段升级后才存在，没法提前配置，所以**从升级完成到配置好之间，依赖转换的客户端会收到 404** `no account in this group serves this model on this endpoint`。404 不会被客户端当成过载重试。
 - 不受影响的：
   - 同一平台内的适配。codex 账号回答 `/v1/chat/completions`（转到 Responses）、只有 chat 的 OpenAI 类型回答 `/v1/responses` 照常工作。
-  - 账号类型声明了多个平台的（如 volcengine 声明 openai、anthropic、volcengine），这些平台的协议都是本平台协议，照常工作。
+  - 账号类型声明了多个平台的（如 sub2api 声明 openai、anthropic、gemini），这些平台的协议都是本平台协议，照常工作。
   - 原生请求。
 - Bedrock 账号只声明 anthropic 平台：OpenAI 协议的客户端访问 Bedrock 账号属于跨平台转换，升级后同样要开启。
 

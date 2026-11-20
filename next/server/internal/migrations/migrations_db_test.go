@@ -1136,16 +1136,16 @@ func TestMigration0116DropsAccountGrants(t *testing.T) {
 		require.NoError(t, err)
 		return done
 	}
-	exec(`INSERT INTO plugins (key, name, status) VALUES ('volcengine', '{"en":"v"}', 'enabled');
+	exec(`INSERT INTO plugins (key, name, status) VALUES ('codex', '{"en":"c"}', 'enabled');
 		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
-			VALUES ('volcengine', '0.13.0', '{}', 'x', 'x', 1, 'valid');
+			VALUES ('codex', '0.2.0', '{}', 'x', 'x', 1, 'valid');
 		INSERT INTO plugin_permission_grants (plugin_key, permission, scope, status, plugin_version, manifest_hash) VALUES
-			('volcengine', 'accounts.credentials', '{"types":"own"}', 'granted', '0.12.8', 'x'),
-			('volcengine', 'accounts.read', '{}', 'revoked', '0.12.8', 'x'),
-			('volcengine', 'platform.register', '{}', 'granted', '0.12.8', 'x');
+			('codex', 'accounts.credentials', '{"types":"own"}', 'granted', '0.1.11', 'x'),
+			('codex', 'accounts.read', '{}', 'revoked', '0.1.11', 'x'),
+			('codex', 'platform.register', '{}', 'granted', '0.1.11', 'x');
 		INSERT INTO plugin_staged_grants (plugin_key, version, permission, scope, status, manifest_hash) VALUES
-			('volcengine', '0.13.0', 'accounts.credentials', '{"types":"own"}', 'granted', 'x'),
-			('volcengine', '0.13.0', 'db.schema', '{}', 'granted', 'x')`)
+			('codex', '0.2.0', 'accounts.credentials', '{"types":"own"}', 'granted', 'x'),
+			('codex', '0.2.0', 'db.schema', '{}', 'granted', 'x')`)
 	state := func() string {
 		return read(`SELECT concat_ws(' | ',
 			(SELECT string_agg(permission, ' ' ORDER BY permission) FROM plugin_permission_grants),
@@ -1305,59 +1305,10 @@ func TestMigration0117DropsGrowthPlugin(t *testing.T) {
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }
 
-// 0118 drops api_prefix and video_api_prefix from the settings of volcengine
-// apikey accounts and keeps their other keys (CONTRACTS §126); relay
-// accounts, which use both keys, and other plugins' accounts keep theirs. A
-// rerun changes nothing.
-func TestMigration0118DropsVolcengineAPIKeyPrefixes(t *testing.T) {
-	const id = "0118_volcengine_apikey_prefix_settings.sql"
-	db := testutil.DBThrough(t, migrationBefore(t, id))
-	ctx := t.Context()
-	migrate := func() []string {
-		t.Helper()
-		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
-		require.NoError(t, err)
-		return done
-	}
-	_, err := db.SQL.ExecContext(ctx, `INSERT INTO accounts (name, plugin_key, type, credentials_enc, settings) VALUES
-		('ark', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example", "video_api_prefix": "/api/v3", "api_prefix": "/api/v3", "asset_region": "cn-beijing"}'),
-		('ark-video', 'volcengine', 'apikey', '', '{"video_api_prefix": "/api/v3"}'),
-		('ark-clean', 'volcengine', 'apikey', '', '{"base_url": "https://ark.example"}'),
-		('relay', 'volcengine', 'relay', '', '{"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}'),
-		('other', 'newapi', 'apikey', '', '{"api_prefix": "/x", "video_api_prefix": "/y"}')`)
-	require.NoError(t, err)
-	state := func() string {
-		var v string
-		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(name || '=' || settings::text, ' ' ORDER BY name) FROM accounts`).Scan(&v))
-		return v
-	}
-	// The row versions show which rows an UPDATE wrote.
-	versions := func(names string) string {
-		var v string
-		require.NoError(t, db.SQL.QueryRowContext(ctx, `SELECT string_agg(xmin::text, ' ' ORDER BY name) FROM accounts WHERE name = ANY(string_to_array($1, ' '))`, names).Scan(&v))
-		return v
-	}
-	const untouched = "ark-clean other relay"
-	const want = `ark={"base_url": "https://ark.example", "asset_region": "cn-beijing"} ark-clean={"base_url": "https://ark.example"} ark-video={} ` +
-		`other={"api_prefix": "/x", "video_api_prefix": "/y"} relay={"base_url": "https://relay.example", "api_prefix": "/v1", "video_api_prefix": "/doubao/api/v3"}`
-	before := versions(untouched)
-	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
-	require.Equal(t, want, state())
-	require.Equal(t, before, versions(untouched), "a row without the keys was written")
-
-	_, err = db.SQL.ExecContext(ctx, `DELETE FROM schema_migrations WHERE id = '`+id+`'`)
-	require.NoError(t, err)
-	all := "ark ark-video " + untouched
-	before = versions(all)
-	require.Equal(t, []string{id}, migrate())
-	require.Equal(t, want, state())
-	require.Equal(t, before, versions(all), "a rerun wrote a row")
-}
-
-// 0119 drops plugin_monitor_receipts, which nothing reads any more; a rerun
+// 0118 drops plugin_monitor_receipts, which nothing reads any more; a rerun
 // changes nothing.
-func TestMigration0119DropsMonitorReceipts(t *testing.T) {
-	const id = "0119_drop_plugin_monitor_receipts.sql"
+func TestMigration0118DropsMonitorReceipts(t *testing.T) {
+	const id = "0118_drop_plugin_monitor_receipts.sql"
 	db := testutil.DBThrough(t, migrationBefore(t, id))
 	ctx := t.Context()
 	migrate := func() []string {
@@ -1379,4 +1330,75 @@ func TestMigration0119DropsMonitorReceipts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{id}, migrate())
 	require.False(t, exists())
+}
+
+// 0119 removes the volcengine plugin (CONTRACTS §128) as an uninstall with
+// purge would: its row (cascading the versions and rollouts), its migration
+// records, its permissions and their grants, its egress domains and its
+// schema. Its accounts and the other plugins stay; a rerun changes nothing.
+func TestMigration0119DropsVolcenginePlugin(t *testing.T) {
+	const id = "0119_drop_volcengine_plugin.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO roles (key, name, superuser) VALUES ('ops', '{}', false), ('other', '{}', false);
+		INSERT INTO plugins (key, name, status, builtin) VALUES ('volcengine', '{"en":"Volcengine Ark"}', 'enabled', true), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO plugin_versions (plugin_key, version, manifest, manifest_hash, package_sha256, package_size, signature_status)
+			VALUES ('volcengine', '0.12.8', '{}', 'x', 'x', 1, 'valid'), ('guard', '0.2.10', '{}', 'y', 'y', 1, 'valid');
+		INSERT INTO plugin_rollouts (plugin_key, action, target_version, phase) VALUES ('volcengine', 'enable', '0.12.8', 'active');
+		INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ('volcengine', '0001_init.sql', 'c'), ('guard', '0001_init.sql', 'g');
+		INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+			('plugin.volcengine:assets:read', 'volcengine', '{}', 'plugin', 'volcengine'), ('plugin.volcengine:assets:manage', 'volcengine', '{}', 'plugin', 'volcengine'),
+			('guard:x', 'guard', '{}', 'plugin', 'guard');
+		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'plugin.volcengine:assets:read', '*'), ('p', 'r:ops', 'plugin.volcengine:assets:manage', '*'),
+			('p', 'r:other', 'guard:x', '*');
+		INSERT INTO plugin_egress_domains (plugin_key, host) VALUES ('volcengine', 'ark.cn-beijing.volces.com'), ('guard', 'example.com');
+		INSERT INTO scheduled_tasks (name, source, timeout_ms, plugin_key) VALUES ('core.usage.rollup', 'core', 1000, NULL);
+		INSERT INTO accounts (name, plugin_key, type, credentials_enc) VALUES ('ark', 'volcengine', 'apikey', ''), ('doubao', 'volcengine', 'relay', '');
+		CREATE SCHEMA plg_volcengine; CREATE TABLE plg_volcengine.assets (id int)`)
+	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
+	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
+
+	state := func() string {
+		return read(`SELECT concat_ws(' | ',
+			(SELECT string_agg(key, ' ') FROM plugins),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_versions),
+			(SELECT count(*)::text FROM plugin_rollouts),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_migrations),
+			(SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL),
+			(SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_egress_domains),
+			(SELECT string_agg(name, ' ') FROM scheduled_tasks),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_key_retirements),
+			(SELECT count(*)::text FROM pg_namespace WHERE nspname = 'plg_volcengine'),
+			(SELECT string_agg(name, ' ' ORDER BY name) FROM accounts WHERE plugin_key = 'volcengine'))`)
+	}
+	const want = "guard | guard | 0 | guard | guard:x | r:other guard:x | guard | core.usage.rollup | volcengine | 0 | ark doubao"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	after := read(revisions)
+	require.NotEqual(t, before, after, "the role that held the permissions keeps its revision")
+	require.Equal(t, strings.Split(before, " ")[1], strings.Split(after, " ")[1], "another role moved")
+	require.NotEqual(t, version, read(`SELECT policy_version::text FROM authz_meta`))
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	version = read(`SELECT policy_version::text FROM authz_meta`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }

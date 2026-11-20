@@ -74,7 +74,7 @@ describe('brands', () => {
   it('gives a platform the brand of its vendor', () => {
     expect(platformBrand('anthropic')).toMatchObject({ id: 'anthropic', color: '#D97757' })
     expect(platformBrand('anthropic').mark?.length).toBeGreaterThan(0)
-    expect(platformBrand('volcengine')).toEqual(brand('doubao'))
+    expect(platformBrand('gemini')).toEqual(brand('gemini'))
     expect(modelBrand('claude-sonnet-4-5')).toEqual(brand('anthropic'))
   })
 

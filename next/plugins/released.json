@@ -40,10 +40,6 @@
     "relay": {
       "version": "0.3.2",
       "digest": "sha256:810ac0159b530b1a7eb47d3da69fc39b2e26528e8b86f0b7a1cda7644bfe0eeb"
-    },
-    "volcengine": {
-      "version": "0.12.8",
-      "digest": "sha256:56e1ea4a1d766e919e8cfbdeb2f58592d75fdeb5454c1026dc4c48fbfb4a129c"
     }
   }
 }

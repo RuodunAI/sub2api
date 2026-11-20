@@ -1,6 +1,6 @@
 // Package apikey validates and reads the api_key + base_url credential form.
 // Spec.Validate is its one ValidateCredentials (anthropic, openai, gemini,
-// relay, volcengine and the other key-based types use it): the key is any
+// relay and the other key-based types use it): the key is any
 // non-empty string, saved trimmed; the base URL is saved as the user wrote it,
 // normalized only in ways that keep its meaning (NormalizeBaseURL).
 // Spec.FromAccount reads them for a request, the base URL without the one

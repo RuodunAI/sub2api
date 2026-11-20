@@ -70,7 +70,7 @@ func TestAssetsAndReserved(t *testing.T) {
 		}
 	}
 	// The core owns /api/v1, not all of /api: an unmatched /api/v3 path (a
-	// gateway path, e.g. Volcengine Ark's) is treated like any other one.
+	// gateway path) is treated like any other one.
 	for _, p := range []string{"/api/v3/chat/completions", "/apifoo", "/healthcheck"} {
 		if w := get(e, http.MethodGet, p); w.Code != 200 || !strings.Contains(w.Body.String(), "importmap") {
 			t.Fatalf("%s: %d %s", p, w.Code, w.Body.String())

@@ -158,18 +158,24 @@ func TestResponsesImageTool(t *testing.T) {
 	}
 }
 
-// The Ark asset library answers every Action with an empty result and
-// records it.
-func TestArkAsset(t *testing.T) {
+// The Codex backend's reset credit list answers no credits and records the
+// request.
+func TestCodexResetCredits(t *testing.T) {
 	s, srv := newTestServer(t)
-	m := decode(t, post(t, srv, arkAssetPath+"?Action=ListAssetGroups&Version=2024-01-01", nil, `{}`))
-	if get(m, "ResponseMetadata", "Action") != "ListAssetGroups" || num(get(m, "Result", "TotalCount")) != 0 {
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+codexResetCreditsPath, nil)
+	req.Header.Set("Authorization", "Bearer tok-e2e")
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := decode(t, resp)
+	if num(get(m, "available_count")) != 0 || get(m, "credits") == nil {
 		t.Fatalf("answer = %v", m)
 	}
 	s.mu.Lock()
 	rec := s.log[len(s.log)-1]
 	s.mu.Unlock()
-	if rec.Path != arkAssetPath || rec.Query != "Action=ListAssetGroups&Version=2024-01-01" || rec.Status != 200 {
+	if rec.Path != codexResetCreditsPath || rec.APIKey != "tok-e2e" || rec.Status != 200 {
 		t.Fatalf("recorded = %+v", rec)
 	}
 }
