@@ -166,6 +166,7 @@
 - `HostService.GetAccount` 取代 `GetAccountCredentials`：返回与平台调用相同的完整账号，审计 action 改为 `plugin.account.read`（只记插件、类型、账号名）。用量观察里的账号就是 `Execute` 收到的那个（含凭证）。
 - 宿主授权 `accounts.credentials`、`accounts.read` 删除：声明账号类型只需 `platform.register`；`ListAccounts`、`SendAccountRequest`、`AccountScopeCheck` 不再检查授权。清单里还写着这两个授权的包按旧契约拒绝（与协议 1 的包同一条信息）。迁移 0116 删除这两个授权的全部授予行（含撤销的、暂存的）。
 - 安装审核的固定提示改为写明插件收到账号的全部信息（含代理密码）、请求都由核心发出。控制台去掉这两个授权的风险等级与文案。
+- 平台插件不能申请联网：声明了账号类型的清单申请宿主权限 `net` 时，清单检查报 `hostPermissions[i].id` 的 `platform_net`（上传、安装、加载同一处，此前只靠第一方清单不写），所以审核提示里“插件自己不联网”对每个能装上的包都成立。第一方插件都不受影响。
 - 12 个平台插件的清单去掉这两个授权，volcengine 素材库、codex 重置次数改用 `GetAccount`；codex 去掉没有写入方的 `settingsFields: ["proxy_id"]`。版本在这一批未发布的版本上继续累计。
 - 升级须知：按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可；第三方平台插件本来就要用新 SDK 重新构建，清单里删掉这两个授权。
 

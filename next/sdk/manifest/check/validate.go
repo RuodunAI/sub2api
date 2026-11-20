@@ -430,6 +430,11 @@ func (v *validator) hostPermissions() {
 		if hp.ID == "accounts.auto_state" && !reflect.DeepEqual(NormalizeScope(hp.Scope), scopeOwn) {
 			v.add(f+".scope", "invalid", `%s scope must be {"types": "own"}`, hp.ID)
 		}
+		if hp.ID == "net" && len(v.m.AccountTypes) > 0 {
+			// A platform plugin's upstream traffic leaves only through the
+			// core's client, under the account's proxy (CONTRACTS §124.1).
+			v.add(f+".id", "platform_net", "a plugin declaring account types cannot request %q: the core sends every request of a platform plugin", hp.ID)
+		}
 		if hp.ID == "net" {
 			if d, ok := StringList(hp.Scope, "domains"); ok {
 				for _, dom := range d {

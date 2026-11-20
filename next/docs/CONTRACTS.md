@@ -8824,7 +8824,7 @@ ALTER TABLE usage_logs
 - 核心把哪个账号的请求交给插件执行，就把这个账号的全部信息给这个插件：属性、设置、解密的凭证，以及代理的地址、用户名和密码（`Account.proxy`）。收到的插件就是声明该账号类型的插件（“归属”：账号的 `plugin_key` 等于这个插件）。
 - 这次的“全部信息”只在已有的 `Account` 上加代理详情，不扩其它字段。
 - 没有宿主授权：`accounts.credentials`、`accounts.read` 删除，声明账号类型只需要 `platform.adapter.v1` 和 `platform.register`。清单里还写着这两个授权的包按旧契约拒绝（`check.CodeOutdatedContract`，上传、安装、加载同一条 `protocol.OutdatedContractMessage`，§112.10）。迁移 0116 删除 `plugin_permission_grants`、`plugin_staged_grants` 里这两个授权的全部行（含撤销状态和暂存的）。
-- **插件严禁联网**：代理信息只是数据。账号的请求只经核心的客户端发出（`RelayUpstream`；`Execute`/`Monitor` 里的 `Fetch`；路由调用里带代理票据的 `Fetch`；`SendAccountRequest`；核心代发的测试、模型、额度、续期、余额请求），核心强制账号代理，配了代理绝不直连。任何平台插件都不申请 `net`，出口隧道拒绝它们的连接（§113.3）。SDK 不提供把代理变成传输或拨号器的函数。
+- **插件严禁联网**：代理信息只是数据。账号的请求只经核心的客户端发出（`RelayUpstream`；`Execute`/`Monitor` 里的 `Fetch`；路由调用里带代理票据的 `Fetch`；`SendAccountRequest`；核心代发的测试、模型、额度、续期、余额请求），核心强制账号代理，配了代理绝不直连。任何平台插件都不申请 `net`，出口隧道拒绝它们的连接（§113.3）；清单校验强制这一点：声明了账号类型的清单申请 `net` 报 `hostPermissions[i].id` 的 `platform_net`，上传、安装、加载走同一处校验。SDK 不提供把代理变成传输或拨号器的函数。
 
 ### 124.2 `Account.proxy`
 
