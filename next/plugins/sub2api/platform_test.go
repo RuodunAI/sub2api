@@ -180,8 +180,11 @@ func TestBalance(t *testing.T) {
 			`"rate_limits":[{"window":"5h","limit":5,"used":1,"remaining":4}]}`, &pluginv1.BalanceResult{AmountMicros: 7500000, Currency: "USD"}},
 		"legacy, a subscription": {`{"mode":"unrestricted","isValid":true,"planName":"pro","unit":"USD","remaining":3.25,` +
 			`"subscription":{"daily_usage_usd":1.75,"daily_limit_usd":5}}`, &pluginv1.BalanceResult{AmountMicros: 3250000, Currency: "USD"}},
-		"legacy, a subscription without limits": {`{"mode":"unrestricted","isValid":true,"planName":"pro","unit":"USD","remaining":-1,"subscription":{}}`, &pluginv1.BalanceResult{Unlimited: true}},
-		"legacy, the wallet":                    {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":42.125,"unit":"USD","balance":42.125}`, &pluginv1.BalanceResult{AmountMicros: 42125000, Currency: "USD"}},
+		"legacy, a subscription without limits": {`{"mode":"unrestricted","isValid":true,"planName":"pro","unit":"USD","remaining":-1,` +
+			`"subscription":{"daily_usage_usd":1,"daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null}}`, &pluginv1.BalanceResult{Unlimited: true}},
+		"legacy, a subscription without its limit keys": {`{"remaining":-1,"subscription":{}}`, &pluginv1.BalanceResult{Unlimited: true}},
+		"legacy, a wallet at -1":                        {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":-1,"unit":"USD","balance":-1}`, &pluginv1.BalanceResult{AmountMicros: -1000000, Currency: "USD"}},
+		"legacy, the wallet":                            {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":42.125,"unit":"USD","balance":42.125}`, &pluginv1.BalanceResult{AmountMicros: 42125000, Currency: "USD"}},
 		"next": {`{"mode":"quota_limited","isValid":true,"status":"active","planName":"","remaining":0.5,"unit":"USD","balance":20,` +
 			`"quota":{"limit":1,"used":0.5,"remaining":0.5,"unit":"USD"},"rate_limits":[{"type":"rpm","window":"1m","limit":60,"used":0,"remaining":60}]}`, &pluginv1.BalanceResult{AmountMicros: 500000, Currency: "USD"}},
 		"balance only":        {`{"balance":3}`, &pluginv1.BalanceResult{AmountMicros: 3000000}},

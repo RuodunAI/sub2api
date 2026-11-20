@@ -61,7 +61,7 @@ func TestAC39_AccountBalance(t *testing.T) {
 		{name: "sub2api legacy quota", plugin: Sub2APIPlugin, want: balanceWant{amount: "7.500000", currency: "USD"}},
 		{name: "sub2api without unit", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":7.5}`, want: balanceWant{amount: "7.500000"}},
 		{name: "sub2api any unit", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":12,"unit":"site credits"}`, want: balanceWant{amount: "12.000000", currency: "site credits"}},
-		{name: "sub2api subscription without limits", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":-1,"unit":"USD"}`, want: balanceWant{unlimited: true}},
+		{name: "sub2api subscription without limits", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":-1,"unit":"USD","subscription":{"daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null}}`, want: balanceWant{unlimited: true}},
 		{name: "sub2api wallet", plugin: Sub2APIPlugin, balance: `{"isValid":true,"remaining":3.25,"balance":3.25,"unit":"USD"}`, want: balanceWant{amount: "3.250000", currency: "USD"}},
 		{name: "sub2api key invalid", plugin: Sub2APIPlugin, balance: `{"isValid":false,"remaining":0,"unit":"USD"}`, want: balanceWant{errPrefix: "auth_rejected: "}},
 	}

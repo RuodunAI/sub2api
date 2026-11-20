@@ -397,7 +397,7 @@ edits 相同，事件名 `image_edit.completed`。`partial_image` 事件没有�
 
 读法：令牌限额时可用 = `total_available`，有 `user_quota` 时取两者较小；令牌不限额时有 `user_quota` 取它，没有则 `unlimited = true`。金额 = 可用 ÷ `quota_per_unit`，币种 `USD`（站点的"显示为人民币 / token"只是显示设置，不影响这里）。失败：`standard.BalanceFailure`；`code` 不为真 → TRANSIENT，信息带 `message`；读不到正数的 `quota_per_unit` → TRANSIENT"无法读取站点的额度换算比例"，**不猜 500000**。
 
-**余额（Sub2API）**：一个请求 `GET /v1/usage`（Bearer；旧版和新版都接受）。依次读 `remaining`、`balance`、`quota.remaining`，取第一个存在的数；`-1` → `unlimited`（旧版订阅分组什么限额都没配时）；币种取 `unit`（缺省 `USD`；不是三位大写字母 → TRANSIENT）。`isValid` 为假 → AUTH_REJECTED"上游报告此 Key 已停用或过期"。读法同时覆盖新旧两版的形状（新版 `remaining` 总有、不会是 -1）。
+**余额（Sub2API）**：一个请求 `GET /v1/usage`（Bearer；旧版和新版都接受）。依次读 `remaining`、`balance`、`quota.remaining`，取第一个存在的数；旧版订阅分组什么限额都没配时（`subscription` 的三项限额都为空，`remaining` 是 `-1`）→ `unlimited`，钱包余额恰好是 `-1` 照数字（实现时改为按 `subscription` 判断，与 new-api 相同）；币种取 `unit`（缺省 `USD`；不是三位大写字母 → TRANSIENT）。`isValid` 为假 → AUTH_REJECTED"上游报告此 Key 已停用或过期"。读法同时覆盖新旧两版的形状（新版 `remaining` 总有、不会是 -1）。
 
 #### 3.5.3 TypeSafe
 
