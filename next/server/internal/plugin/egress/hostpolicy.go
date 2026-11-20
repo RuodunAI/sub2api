@@ -90,8 +90,8 @@ var domainLabel = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 
 // NormalizeDomain turns one entry of a list into its stored form: trimmed,
 // lower-case, without a trailing dot, an internationalized name in
-// punycode, an IPv6 literal in brackets (the form ExternalServiceHost
-// reads). ok is false for anything else: a scheme, path, port, wildcard,
+// punycode, an IPv4-mapped IPv6 literal as its IPv4 address, any other IPv6
+// literal in brackets (the form ExternalServiceHost reads). ok is false for anything else: a scheme, path, port, wildcard,
 // blank or a name that is not a host name.
 func NormalizeDomain(s string) (string, bool) {
 	s = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(s)), ".")
@@ -99,6 +99,7 @@ func NormalizeDomain(s string) (string, bool) {
 		return "", false
 	}
 	if addr, err := netip.ParseAddr(strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")); err == nil {
+		addr = addr.Unmap()
 		switch {
 		case addr.Zone() != "":
 			return "", false
