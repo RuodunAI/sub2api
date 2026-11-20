@@ -8244,6 +8244,10 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 | WebSocket 心跳 ping 30 秒间隔、30 秒应答，排空宽限 30 秒，后续轮次等账号 10 秒，重新鉴权 10 秒 | 发现死掉的对端；节点停机时有界地排空；调度而不是上限 |
 | SSRF 规则、中继 / 取回 / `SendAccountRequest` 的主机规则（`manifest.UpstreamHostAllowed`，§112.17）、拒绝 `Host` 和 hop-by-hop 头、不跟随重定向、执行令牌的范围 | 安全 |
 | 任务快照 256 KiB（`protocol.MaxTaskSnapshotBytes`）、清单的计数（`usageStreamEvents` 8 个、`usageRequestFields` 16 条）、KV 自己的规则（单值 64 KiB、一次批量 3 MiB） | 存储格式和清单的规则，不是请求路径的上限 |
+| 一种 token 的计数 0 到 1e12（`core.MaxUsageTokens`，`core.ValidTokenCount` 一处检查：预估、插件上报、附加用量规则、`PriceUsage`、Anthropic 尝试计数）；一条记录的附加项加替换项最多 128 条（`usagerules.MaxAdditionalItems`，结算时 `billing/additional.go` 再查一次） | 钱：超出的读数不是能计价的用量（计价不溢出），按无效用量处理 |
+| 预扣（余额闸门的 `Precharge`）15 秒（`gateway/precharge.go`） | 钱：预扣是转发前的一次账本写入，数据库挂住时请求以错误结束，不无限等着；不是对上游或插件的时限 |
+| 插件要求按期限停用账号时写库 2 秒（`gateway/dispatch.go` 的 `AutoDisableUntil`） | 不拒绝请求：只限这次写入，写不进记 WARN、账号这次不停用，请求照常走失败处理 |
+| 协议转换下载请求里的媒体 URL（转 Gemini 内联数据）每个文件 60 秒（`gateway/convert_media.go` 的 `mediaDownloadTimeout`，大小由 `media_download_max_mb` 管） | 核心替客户端去取一个由客户端指定的外部地址，不是上游交换；下载失败只让需要它的转换用不了 |
 
 代码里还有几处不拒绝请求、只截断**派生副本**的常量，不在上表：交给钩子的 `prompt_text`（默认 32 KiB，清单可调）、交给 `EstimateUsage` 的提示文本 1 MiB、本地分词统计 32 MiB（§25.8）、上游的 HTTP 错误体在内存里只留前 64 KiB（`maxErrorBody`，`gateway/upstream_error.go`；更长的部分落临时文件，整份转给客户端，WebSocket 握手失败的错误体只读前 64 KiB），其中前 4 KiB 交给 `ClassifyError`（`core.ClassifyPrefixBytes`，`ClassifyErrorRequest.body_prefix`）与故障策略的关键词匹配（§58）。（`sdk/awseventstream` 的单条消息上限 4 MiB 已按上表删除。）
 
