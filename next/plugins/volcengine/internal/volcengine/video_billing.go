@@ -102,8 +102,11 @@ func completedVideoFacts(body []byte, model string) map[string]string {
 		if ratio == "" {
 			ratio = gjson.GetBytes(body, "content.ratio").String()
 		}
-		if facts[FactResolution] != "" && ratio != "" {
-			w, h = dimensionsForArea(tierArea(profileOf(model).gen, facts[FactResolution], ratio), ratio)
+		// The table gives the exact size only for a known generation: an
+		// unknown one (an Endpoint ID) would take the largest of the
+		// generations' sizes, which is not what Ark rendered.
+		if gen := profileOf(model).gen; gen != genUnknown && facts[FactResolution] != "" && ratio != "" {
+			w, h = dimensionsForArea(tierArea(gen, facts[FactResolution], ratio), ratio)
 		}
 	}
 	if w > 0 && h > 0 && w <= 16384 && h <= 16384 {

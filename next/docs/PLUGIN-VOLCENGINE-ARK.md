@@ -1059,7 +1059,7 @@ new-api 的两个渠道是同一条轴（下表是读代码得到的，不是看
 - `resolution_prices`：精确尺寸覆盖，不区分横竖屏，各项正价独立覆盖；0/留空回退基础字段。拒绝重复尺寸、负数、非有限数和空覆盖。
 - 收到实际 Token 后按提交时的表达式快照重新结算，多退少补；成功无用量继续保留预扣，失败继续走宿主退款。查询接口免费，重复查询不重复扣款。视频模板价格只适用于托管视频提交端点。
 
-方舟官方 `apikey` 和豆包视频 `relay` 共用这些计量字段：`resolution`、`video_seconds`、`video_pixels`、`video_width`、`video_height`、`video_input`、`video_draft`、`video_estimated`。提交时 `video_estimated=true`；返回真实 Token 后为 `false`。最终轮询仅覆盖上游实际提供的字段，保留提交时的视频输入与 Draft 标记。若上游给了分辨率但无法确认精确宽高，不沿用旧尺寸覆盖，回退基础价格。
+方舟官方 `apikey` 和豆包视频 `relay` 共用这些计量字段：`resolution`、`video_seconds`、`video_pixels`、`video_width`、`video_height`、`video_input`、`video_draft`、`video_estimated`。提交时 `video_estimated=true`；返回真实 Token 后为 `false`。最终轮询仅覆盖上游实际提供的字段，保留提交时的视频输入与 Draft 标记。若上游给了分辨率但无法确认精确宽高，不沿用旧尺寸覆盖，回退基础价格。上游只给分辨率和比例时按像素表换算宽高，只限认得出代际的模型；认不出代际的（Endpoint ID 等）各代同一档的尺寸不同，算作无法确认。
 
 `usageRequestFields` 新增有界数组属性投影，例如 `content.#.type`。只传内容类型，避免长提示词或内联图片挤掉视频输入标记；仍受已有字段数和字节预算约束（字节预算已在转发 V2 收尾删除，见 §11.2；每个端点最多 16 个字段的上限仍在）。插件 0.12.0 需要同时升级本次宿主与 SDK，沿用内置插件随核心打包的升级流程。
 

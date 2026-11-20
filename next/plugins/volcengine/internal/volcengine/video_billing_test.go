@@ -31,6 +31,25 @@ func TestVideoBillingFacts(t *testing.T) {
 	}
 }
 
+// TestVideoFinalSizeOfAnUnknownGeneration: a model whose generation is not
+// known (an Endpoint ID) has no exact size for a resolution and ratio, so the
+// final facts carry none and the base price applies, rather than the largest
+// size of any generation.
+func TestVideoFinalSizeOfAnUnknownGeneration(t *testing.T) {
+	final := New().readTaskQuery(&pluginv1.ReconcileEntry{Model: "ep-20261120-abcde"},
+		&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":100000},"resolution":"480p","ratio":"16:9","duration":4}`)})
+	f := final.GetFacts()
+	if f["video_estimated"] != "false" || f[FactResolution] != Res480 || f["video_width"] != "0" || f["video_height"] != "0" || f["video_pixels"] != "0" {
+		t.Fatalf("final: %v", f)
+	}
+	// A size the answer states is used whatever the model.
+	final = New().readTaskQuery(&pluginv1.ReconcileEntry{Model: "ep-20261120-abcde"},
+		&pluginv1.ExecutionHTTPResponse{Status: 200, Body: []byte(`{"status":"succeeded","usage":{"completion_tokens":100000},"resolution":"480p","ratio":"16:9","width":864,"height":480}`)})
+	if f := final.GetFacts(); f["video_width"] != "864" || f["video_height"] != "480" || f["video_pixels"] != "414720" {
+		t.Fatalf("final with a stated size: %v", f)
+	}
+}
+
 func TestVideoEstimateBeforeUpstreamTaskExists(t *testing.T) {
 	r, err := New().EstimateUsage(context.Background(), &pluginv1.EstimateUsageRequest{Meta: &pluginv1.RequestMeta{Protocol: ProtocolVideoSubmit, Model: "doubao-seedance-2-5"}, Fields: map[string]string{"duration": "5", "resolution": `"720p"`, "ratio": `"16:9"`}, PreConsumeTokens: 500})
 	if err != nil || r.GetTokens().GetOutputTokens() != 108900 || r.GetReserve() != nil || r.GetFacts()["video_estimated"] != "true" {
