@@ -10,9 +10,8 @@ import (
 )
 
 // TestConformance runs the platform conformance suite against the plugin as
-// it is served: the apikey platform and the catalog route in one process,
-// with this manifest. x-api-key is the only authoritative header, as in the
-// golden cases.
+// it is served: the apikey platform with this manifest. x-api-key is the
+// only authoritative header, as in the golden cases.
 func TestConformance(t *testing.T) {
 	conformance.Run(t, conformance.Plugin{
 		Platform:    anthropic.New(),

@@ -6054,7 +6054,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - 用户组（§97 起）：id `segments`，标签“用户组 / User groups”，图标 `publisher`，地址 `/segments`，持有 `segment:read` 才返回；排在“用户”之后、“角色与权限”之前，和它们一起进“用户”目录（90.3）。分组一侧的授权、专属倍率和分组内定价没有单独的菜单项，在分组页（系统设置视图，90.2）里。
 - 余额流水（`/ledger`，`balance:all:read`）在核心 `finance` 区有菜单项“余额流水”（2026-11-13 权限加固 T80），也可从用户列表的行操作打开；页面和接口不变。
 - 平台页取消，没有菜单项（地址见 90.4）；接口 `GET /platforms`、`GET /me/platforms` 不变，控制台的平台列表一律取 `GET /me/platforms`。
-- 模型目录：anthropic 0.3.1 去掉了菜单 `anthropic-models`、页面 `models` 和宿主权限 `ui.menu`；插件接口 `GET /api/v1/p/anthropic/models` 和权限 `model_catalog:read` 保留。
+- 模型目录：anthropic 0.3.1 去掉了菜单 `anthropic-models`、页面 `models` 和宿主权限 `ui.menu`；插件接口 `GET /api/v1/p/anthropic/models` 和权限 `model_catalog:read` 随 0.4.0 一并删除（§129）。
 - 系统设置：id `settings`，是 `system` 区最后一个核心项，持有 `settings:read`、`sticky:read`、`group:read`、`price:read` 任意一个就返回：后两个是因为分组、模型价格从系统设置视图进入，内置运维角色有它们而没有 `settings` / `sticky` 权限。`section:"system"` 的插件菜单仍并入 `system` 区，排在 `/settings` 之后（如 dynweight 0.5.4 的动态权重），和其余项一起进“系统”目录。
 - 账号、代理、角色与权限、插件管理各项的权限和图标不变。只有 `account:own:*` / `proxy:own:*` 的调用者（供应商）在 `gateway` 区看到账号、代理，没有 `system` 区；再有 `group:read` 或 `price:read` 时，`system` 区只有“系统设置”一项，视图里只列他能打开的页面。
 - 各区仍按 `CoreMenuSections()` 的 order 返回（`me` 是 800），三组的排列由控制台决定。
@@ -8979,3 +8979,35 @@ ALTER TABLE usage_logs
 ### 128.4 删掉它以后没有使用者、暂时保留的能力
 
 它是异步任务（`taskContract`、`Monitor`、核对循环、`s2task_` 公开 ID、§112.9）和视频计费（价格的视频配置 `expr.ExpressionConfig.Video`、只能用于视频的价格 `VideoOnly`）唯一的第一方使用者，也是宿主接口 `HostService.ListAccounts`、端点的 `usageSource: "plugin"` 与 `usageRequestFields`、SDK 的 `PollFailure`、`ClassifyPollResponse` 和一致性套件 `conformance.TaskSubmission` 唯一的第一方使用者。这些是给第三方插件的通用契约，保留；但 e2e 不再覆盖异步任务的全链路（原 AC24、AC32 的崩溃子测试），只剩核心包里的单元与数据库测试。
+
+## 129. 删除 anthropic 的模型目录（2026-11-20，所有者决定“删掉，测试换探针”；迁移 0120，核心 0.1.304，anthropic 0.4.0）
+
+anthropic 插件自带的模型目录（插件接口 `GET /api/v1/p/anthropic/models`、用户权限 `plugin.anthropic:model_catalog:read`、表 `plg_anthropic.model_catalog` 与建表加种子数据的迁移 `0001_init.sql`）整体删除，不留兼容。网关、价格、账号的模型列表都不读它（模型价格在核心，§17；账号模型与映射在核心，§18），种子数据停在 Fable 5.1，管理员也改不了它。线上装着 anthropic，有这张表。最后的源码是 `1fbf3c470`（`git show 1fbf3c470:next/plugins/anthropic/internal/anthropic/models.go`）。前面章节里提到它的句子是当时的记录，不再逐条改（§90.1 的现状一句已改）。
+
+### 129.1 删除了什么
+
+- anthropic 0.4.0：清单去掉 `database`、`userPermissions`、`routes`、能力 `http.routes.v1`、宿主权限 `db.schema` 和 `routes.admin`；`internal/anthropic.New` 直接返回 `apikey` 类型的 `standard.Platform`（与 gemini、typesafe 相同），`internal/model`、`migrations/` 删除，模块不再直接依赖 GORM。0.4.0 还没有发布（`released.json` 记的是 0.3.4），版本号不再另升，`TestReleasedPluginsBumped` 照常通过。
+- 升级夹具：`plugins/anthropic/testdata/upgrade` 只剩 `manifest.patch.json`（`0.4.1-test`，只改版本号），`0002_add_family.sql` 删除。带迁移的升级夹具改为 `plugins/dynweight/testdata/upgrade`：`0.5.13-test`，`0004_config_rule_count.sql` 给 `config` 加 `rule_count` 并按已保存配置的全局规则数回填，可以重跑（`dbschema.TestOfficialPluginMigrationsAreIdempotent` 覆盖），没有模型对应，打包时 `--skip-db-check`。`tools/sub2api-plugin/scripts/build-demo.sh` 把两个夹具都放进市场。`deploy/ci/check.sh` 的真实核心测试改为 R1 内置 dynweight、R2 内置它的夹具，`gateway/internal/control` 的升级检查（随核心升级到夹具版本、每个节点在跑、迁移只记一次、内置升级的历史和审计）改看 dynweight 和 0004。`tools/sub2api-plugin` 的 `TestReleaseAndUpgradeFixturesRemainDistinct` 对每个插件的 `testdata/upgrade` 检查：夹具版本高于正式版、包名不同、夹具迁移只在夹具包里、打包夹具不改动正式包。
+- e2e：
+  - AC03：不再读目录。审查里没有数据库；经 anthropic 账号分别发往两个节点的请求成功，上游各收到一次带账号密钥的请求（插件在每个节点上运行并构造了请求）。
+  - AC05（`TestAC05_UpgradePluginsWithoutDowntime`）：在负载均衡的流量下先把 anthropic 升到 `0.4.1-test`（构造每个上游请求的平台插件），再把 dynweight 升到 `0.5.13-test`（用例先保存一份打开了 dynweight 的配置，于是它给账号排序、观察每次尝试，也在请求路径上），请求全部成功；两个节点都跑夹具版本，升级前保存的配置在两个节点上版本不变；能连 PostgreSQL 时再查 0004 只记一次、已保存的行已回填。用例结束时恢复 dynweight 原来的配置和启停状态（内置插件不能降版本，它停在夹具版本）。
+  - AC06：“插件权限变灰、角色的授予保留但停用期间不生效、插件接口在每个节点消失、重新启用后恢复”移到新用例 `TestAC06_DisableGreysOutPermissionsAndRoutes`，用内置的 dynweight（`dynweight:read`、`GET /p/dynweight/config`），结束时恢复它原来的启停状态；`TestAC06_DisableEnableUninstall` 保留 anthropic 的账号、内置端点、账号类型、分组平台与不能卸载的检查。
+- 控制台 mock：这条权限、运维角色里的它、anthropic 审查示例里的数据库与 `db.schema`；发布进度示例的迁移改名 `0002_stats.sql`（ARCHITECTURE A.11 同步）。
+
+### 129.2 数据库：迁移 0120
+
+`0120_drop_anthropic_model_catalog.sql`，可以重跑：删除权限 `plugin.anthropic:model_catalog:read` 和它的全部授予，持有者角色升 `revision`，权限存在时 `authz_meta` 两个版本各加一；`DROP SCHEMA IF EXISTS plg_anthropic CASCADE` 与 anthropic 的全部 `plugin_migrations` 记录；带核心标记的旧角色 `plg_anthropic`（同 `dbschema.DropTx`）。插件行、版本与授权、账号都不动；迁移之后核心照常把内置的 anthropic 升到 0.4.0。
+
+为什么用核心迁移：
+
+- 新版本不再声明数据库时核心什么都不做：升级不会被拒，`rollout.migrate` 对没有 `database` 的目标直接返回，没有“插件不再用数据库”的清理路径，schema 和迁移记录会一直留着；
+- 让插件再带一条删表迁移，就要为删一张表永远保留 `database` 声明和 `db.schema` 授权（每节点还占 4 个数据库连接），属于过渡代码；
+- 0.1.304 是停机的单向发布，内置 anthropic 随这一版升级，0.3.x 在新核心上本来就被拒（§112.10），迁移删掉的东西没有任何能运行的版本再用；写法和 0111、0117、0119 删除插件时相同。
+
+权限也在这里删除，而不是留给升级时的同步把它标成 `removed`（那是为了以后的版本再声明时恢复授予）：功能不会回来，留下一个永远停用的权限只会出现在角色编辑里；新装的实例本来就没有它，迁移后新旧实例一致。托管模式只核对核心迁移的记录（`app/managed_checks.go`），0120 随这一版进入清单，插件迁移记录的删除不影响它。
+
+测试：`migrations.TestMigration0120DropsAnthropicModelCatalog`（权限与授予、schema、迁移记录删除；插件行、别的权限、别的插件的迁移记录不变；持有者角色升版本、别的角色不变；重跑不变、不再升策略版本）。
+
+### 129.3 装过的实例
+
+升级后 `GET /api/v1/p/anthropic/models` 返回 404，角色里的“查看模型目录”消失；目录数据随 schema 删除，要留就在升级前备份 schema `plg_anthropic`。调度、价格、账号的模型列表不受影响。

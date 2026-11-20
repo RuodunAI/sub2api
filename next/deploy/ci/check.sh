@@ -68,11 +68,12 @@ mutation() {
   [ "$rc" -ne 0 ]
 }
 
-# Signed test packages for the bundled-plugin bootstrap (anthropic, openai).
+# Signed test packages for the bundled-plugin bootstrap (anthropic, openai,
+# dynweight).
 plugins() {
   set -e
   # pack compares the GORM models of every plugin with internal/model
-  # (anthropic, guard) with its migrations, on PostgreSQL: the pg
+  # (dynweight, guard) with its migrations, on PostgreSQL: the pg
   # service of isolated-compose.yml, whose DSN the gotest container has. The
   # embedded fallback cannot run here (initdb refuses root).
   # pack also refuses a plugin whose native UI is not built (every plugin
@@ -86,20 +87,21 @@ plugins() {
   CGO_ENABLED=0 go build -o "$checks/sub2api-plugin" ./tools/sub2api-plugin
   [ -f "$checks/keys/managed-test.key" ] || "$checks/sub2api-plugin" keygen --key-id managed-test --out "$checks/keys" > "$out/plugin-keygen.log"
   mkdir -p "$checks/upload" "$checks/market"
-  # anthropic and openai are bundled, guard is uploaded, relay comes from a market.
-  for spec in anthropic:builtin openai:builtin guard:upload relay:market; do
+  # anthropic, openai and dynweight are bundled, guard is uploaded, relay comes
+  # from a market.
+  for spec in anthropic:builtin openai:builtin dynweight:builtin guard:upload relay:market; do
     p=${spec%%:*}; dest="$checks/${spec#*:}"
     "$checks/sub2api-plugin" build --dir "plugins/$p" --out "$checks/$p-runtime" > "$out/plugin-build-$p.log"
     pkg=$("$checks/sub2api-plugin" pack --dir "plugins/$p" --runtimes "$checks/$p-runtime" --out-dir "$dest")
     "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-$p.log"
   done
-  # R2 alone bundles a newer anthropic (the 0.4.1-test overlay, which adds a
+  # R2 alone bundles a newer dynweight (the 0.5.13-test overlay, which adds a
   # migration), so updating the core must update it.
   mkdir -p "$checks/builtin-next"
-  "$checks/sub2api-plugin" build --dir plugins/anthropic --overlay testdata/upgrade --out "$checks/anthropic-next-runtime" >> "$out/plugin-build-anthropic.log"
+  "$checks/sub2api-plugin" build --dir plugins/dynweight --overlay testdata/upgrade --out "$checks/dynweight-next-runtime" >> "$out/plugin-build-dynweight.log"
   # The overlay's migration has no model on purpose: no db check for it.
-  pkg=$("$checks/sub2api-plugin" pack --dir plugins/anthropic --runtimes "$checks/anthropic-next-runtime" --overlay testdata/upgrade --skip-db-check --out-dir "$checks/builtin-next")
-  "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-anthropic.log"
+  pkg=$("$checks/sub2api-plugin" pack --dir plugins/dynweight --runtimes "$checks/dynweight-next-runtime" --overlay testdata/upgrade --skip-db-check --out-dir "$checks/builtin-next")
+  "$checks/sub2api-plugin" sign --key "$checks/keys/managed-test.key" --key-id managed-test --publisher sub2api "$pkg" >> "$out/plugin-build-dynweight.log"
   "$checks/sub2api-plugin" index --dir "$checks/market" --key "$checks/keys/managed-test.key" > "$out/plugin-market-index.log"
   ls "$checks/builtin" "$checks/builtin-next" "$checks/upload" "$checks/market"
 }

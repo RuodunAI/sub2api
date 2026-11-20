@@ -105,8 +105,6 @@ const MODULES: ModuleDef[] = [
   { module: 'system', label: L('Core updates', '核心升级'), source: 'core', status: 'active', permissions: [
     { key: 'system:update:read', label: L('View', '查看') }, { key: 'system:update:execute', label: L('Upgrade', '升级'), risk: 'sensitive' },
     { key: 'system:update:recover', label: L('Recover', '恢复'), risk: 'sensitive' }] },
-  { module: 'plugin.anthropic', label: L('Anthropic', 'Anthropic'), source: 'plugin', plugin_key: 'anthropic', status: 'active', permissions: [
-    { key: 'plugin.anthropic:model_catalog:read', label: L('View model catalog', '查看模型目录') }] },
   // Groups, a resource scope, an enum scope and a critical key: the permission matrix (UI 3.16).
   { module: 'plugin.guard', label: L('Guard', 'Guard'), source: 'plugin', plugin_key: 'guard', status: 'active',
     groups: [{ key: 'rules', label: L('Rules', '拦截规则'), sort: 10 }, { key: 'ops', label: L('Operations', '运行'), sort: 20 }], permissions: [
@@ -214,7 +212,7 @@ const roles: MockRole[] = [
   // The manager's role: some guard keys (rules:manage at the own scope) and the disabled foo plugin's key.
   builtin(2, 'admin', [...MANAGER_PLUGIN_KEYS, 'plugin.foo:dashboard:read']),
   builtin(3, 'user'),
-  builtin(4, 'operator', ['plugin.anthropic:model_catalog:read', 'plugin.guard:stats:read', 'plugin.guard:rules:test']),
+  builtin(4, 'operator', ['plugin.guard:stats:read', 'plugin.guard:rules:test']),
   builtin(9, 'supplier'),
   builtin(11, 'supplier_agent'),
   // CONTRACTS §21.1 typical roles: vendor (own-level only, no settings:custom) and read-only.

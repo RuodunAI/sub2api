@@ -3,8 +3,8 @@
   "key": "anthropic",
   "name": { "en": "Anthropic", "zh": "Anthropic" },
   "description": {
-    "en": "Anthropic API key account type and a model catalog. The anthropic platform and its endpoints are built into the core; the plugin builds the upstream requests of its accounts and the core sends them. Model prices are set by administrators in the core.",
-    "zh": "Anthropic API Key 账号类型与模型目录（anthropic 平台及其端点由核心内置；插件构造本类型账号的上游请求，由核心发送；模型价格由管理员在核心中配置）。"
+    "en": "Anthropic API key account type. The anthropic platform and its endpoints are built into the core; the plugin builds the upstream requests of its accounts and the core sends them. Model prices are set by administrators in the core.",
+    "zh": "Anthropic API Key 账号类型（anthropic 平台及其端点由核心内置；插件构造本类型账号的上游请求，由核心发送；模型价格由管理员在核心中配置）。"
   },
   "version": "0.4.0",
   "publisher": "sub2api",
@@ -15,8 +15,7 @@
   "hostUICompat": "^4.0",
 
   "capabilities": [
-    { "id": "platform.adapter.v1" },
-    { "id": "http.routes.v1" }
+    { "id": "platform.adapter.v1" }
   ],
 
   "accountTypes": [
@@ -61,21 +60,6 @@
     }
   ],
 
-  "database": { "schema": "plg_anthropic", "migrations": "migrations/" },
-
-  "userPermissions": [
-    {
-      "key": "model_catalog:read",
-      "defaults": { "admin": true },
-      "label": { "en": "View model catalog", "zh": "查看模型目录" },
-      "description": { "en": "List the Claude models known to the Anthropic plugin.", "zh": "查看 Anthropic 插件提供的 Claude 模型目录。" }
-    }
-  ],
-
-  "routes": [
-    { "method": "GET", "path": "/models", "scope": "admin", "permission": "model_catalog:read" }
-  ],
-
   "ui": {
     "native": { "entry": "ui/native/entry.js" }
   },
@@ -85,10 +69,6 @@
   "hostPermissions": [
     { "id": "platform.register",
       "reason": { "en": "Register the Anthropic API key account type for the built-in anthropic platform", "zh": "为内置 anthropic 平台注册 Anthropic API Key 账号类型" } },
-    { "id": "db.schema",
-      "reason": { "en": "Store the model catalog", "zh": "保存模型目录" } },
-    { "id": "routes.admin",
-      "reason": { "en": "Serve the model catalog over the admin API", "zh": "通过管理接口提供模型目录" } },
     { "id": "ui.native",
       "reason": { "en": "The API key account form (AnthropicKeyForm)", "zh": "API Key 账号表单（AnthropicKeyForm）" } }
   ],

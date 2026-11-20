@@ -300,12 +300,14 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 			t.Fatalf("a release with the same bundle changed plugin state: before=%s after=%s", pluginsBefore, after)
 		}
 	} else {
-		// R2 bundles a newer anthropic: updating the core updates it on every
-		// node once the plan completed, running its new migration once.
+		// R2 bundles a newer dynweight (its testdata/upgrade fixture):
+		// updating the core updates it on every node once the plan completed,
+		// running its new migration once.
+		const nextKey, nextMigration = "dynweight", "0004_config_rule_count.sql"
 		var nextVersion string
 		for _, f := range c.bundledNext {
-			if name := strings.TrimSuffix(filepath.Base(f.name), ".s2plugin"); strings.HasPrefix(name, "anthropic-") {
-				nextVersion = strings.TrimPrefix(name, "anthropic-")
+			if name := strings.TrimSuffix(filepath.Base(f.name), ".s2plugin"); strings.HasPrefix(name, nextKey+"-") {
+				nextVersion = strings.TrimPrefix(name, nextKey+"-")
 			}
 		}
 		deadline := time.Now().Add(4 * time.Minute)
@@ -314,12 +316,12 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 			var running, migrations int
 			var busy bool
 			_ = testDB.WithContext(ctx).Raw(`SELECT status, coalesce(active_version,''),
-				(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=? WHERE r.plugin_key='anthropic' AND NOT r.stopped AND n.ready),
-				(SELECT count(*) FROM plugin_migrations WHERE plugin_key='anthropic' AND migration_id='0002_add_family.sql'),
-				EXISTS(SELECT 1 FROM plugin_rollouts WHERE plugin_key='anthropic' AND phase IN ('preparing','activating')) OR EXISTS(SELECT 1 FROM plugin_rollout_cleanup WHERE state='cleanup_pending')
-				FROM plugins WHERE key='anthropic'`, dbname).Row().Scan(&status, &active, &running, &migrations, &busy)
+				(SELECT count(*) FROM plugin_runtime_nodes r JOIN updater.nodes n ON n.core_boot_id=r.boot_id AND n.cluster_id=? WHERE r.plugin_key=? AND NOT r.stopped AND n.ready),
+				(SELECT count(*) FROM plugin_migrations WHERE plugin_key=? AND migration_id=?),
+				EXISTS(SELECT 1 FROM plugin_rollouts WHERE plugin_key=? AND phase IN ('preparing','activating')) OR EXISTS(SELECT 1 FROM plugin_rollout_cleanup WHERE state='cleanup_pending')
+				FROM plugins WHERE key=?`, dbname, nextKey, nextKey, nextMigration, nextKey, nextKey).Row().Scan(&status, &active, &running, &migrations, &busy)
 			if status == "enabled" && active == nextVersion && migrations == 1 && running >= len(nodes) && !busy {
-				t.Logf("bundled anthropic upgraded to %s with the core on all %d nodes; its migration ran once", nextVersion, len(nodes))
+				t.Logf("bundled %s upgraded to %s with the core on all %d nodes; its migration ran once", nextKey, nextVersion, len(nodes))
 				break
 			}
 			if time.Now().After(deadline) {
@@ -330,9 +332,9 @@ func TestRealCoreRollingUpgrade(t *testing.T) {
 		pluginsBefore = pluginSnapshot()
 		var stages, historyNodes, audits int
 		if err := testDB.WithContext(ctx).Raw(`SELECT
-			(SELECT count(*) FROM plugin_history WHERE plugin_key='anthropic' AND node_id='' AND state='active' AND version=?),
-			(SELECT count(DISTINCT node_id) FROM plugin_history WHERE plugin_key='anthropic' AND node_id<>''),
-			(SELECT count(*) FROM audit_logs WHERE action='plugin.upgrade' AND target_id='anthropic' AND detail->>'source'='builtin' AND detail->>'version'=?)`, nextVersion, nextVersion).Row().Scan(&stages, &historyNodes, &audits); err != nil || stages < 1 || historyNodes < len(nodes) || audits != 1 {
+			(SELECT count(*) FROM plugin_history WHERE plugin_key=? AND node_id='' AND state='active' AND version=?),
+			(SELECT count(DISTINCT node_id) FROM plugin_history WHERE plugin_key=? AND node_id<>''),
+			(SELECT count(*) FROM audit_logs WHERE action='plugin.upgrade' AND target_id=? AND detail->>'source'='builtin' AND detail->>'version'=?)`, nextKey, nextVersion, nextKey, nextKey, nextVersion).Row().Scan(&stages, &historyNodes, &audits); err != nil || stages < 1 || historyNodes < len(nodes) || audits != 1 {
 			t.Fatalf("missing durable builtin history: stages=%d nodes=%d audits=%d err=%v", stages, historyNodes, audits, err)
 		}
 	}

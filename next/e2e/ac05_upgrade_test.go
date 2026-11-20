@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -8,31 +9,61 @@ import (
 	"time"
 )
 
-// anthropicUpgradeFixture is the market's test build of anthropic that adds
-// a migration (the plugins/anthropic/testdata/upgrade overlay).
-const anthropicUpgradeFixture = "0.4.1-test"
+// The market's test builds that upgrade a release (each plugin's
+// testdata/upgrade overlay): anthropic's changes the version only,
+// dynweight's adds a migration.
+const (
+	anthropicUpgradeFixture   = "0.4.1-test"
+	dynweightUpgradeFixture   = "0.5.13-test"
+	dynweightFixtureMigration = "0004_config_rule_count.sql"
+)
 
-// AC 5: upgrade anthropic from the market's base version to the fixture: the migration runs once, old rows are
-// backfilled and requests keep succeeding on both nodes during the switch.
-func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
+// AC 5: upgrade two plugins on the request path from the market's base
+// version to their fixtures while requests flow through the load balancer:
+// anthropic, whose platform builds every upstream request, and dynweight
+// (switched on), which ranks the accounts and observes every attempt and
+// keeps its data in plg_dynweight. Requests keep succeeding on both nodes
+// during both switches; dynweight's migration runs once and backfills the
+// configuration saved before the upgrade, which the new version serves on
+// both nodes.
+func TestAC05_UpgradePluginsWithoutDowntime(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
 	e.EnsurePlugin(admin, "anthropic", e.defaultVersion("anthropic"))
+	d, _ := e.Plugin(admin, "dynweight")
+	wasEnabled := d.Get("status").String() == "enabled"
+	e.EnsurePlugin(admin, "dynweight", e.defaultVersion("dynweight"))
 	tn := e.NewTenant(admin, TenantOpts{Accounts: 2, Balance: "50"})
 
-	before := admin.OK(t, http.MethodGet, "/p/anthropic/models", nil).Array()
-	if len(before) == 0 {
-		t.Fatal("model catalog empty before upgrade")
+	// The plugin's data: a configuration saved before the upgrade, which also
+	// switches dynweight on. The factory one and the plugin state come back
+	// afterwards, so later tests schedule as before.
+	original := admin.OK(t, http.MethodGet, "/p/dynweight/config", nil)
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(original.Get("config").Raw), &cfg); err != nil {
+		t.Fatal(err)
 	}
+	cfg["enabled"] = true
+	saved := admin.OK(t, http.MethodPut, "/p/dynweight/config", map[string]any{"config": cfg, "version": original.Get("version").Int()})
+	t.Cleanup(func() {
+		cur := admin.OK(t, http.MethodGet, "/p/dynweight/config", nil)
+		admin.OK(t, http.MethodPut, "/p/dynweight/config", map[string]any{"config": json.RawMessage(original.Get("config").Raw), "version": cur.Get("version").Int()})
+		if !wasEnabled {
+			e.Disable(admin, "dynweight")
+		}
+	})
 
-	// Upload the fixture: it adds a migration and asks for no new permission, so it
-	// should not need consent; if it does, approve it.
-	rev := e.InstallFromMarket(admin, "anthropic", anthropicUpgradeFixture)
-	if d := rev.Get("diff"); d.Exists() {
-		t.Logf("permission diff: %s", d.Raw)
-	}
-	if rev.Get("consent_status").String() == "awaiting_consent" {
-		e.ConsentAll(admin, rev, []string{"admin"})
+	// Stage both fixtures: they ask for no new permission, so they should
+	// not need consent; if they do, approve it.
+	fixtures := map[string]string{"anthropic": anthropicUpgradeFixture, "dynweight": dynweightUpgradeFixture}
+	for key, version := range fixtures {
+		rev := e.InstallFromMarket(admin, key, version)
+		if d := rev.Get("diff"); d.Exists() {
+			t.Logf("%s permission diff: %s", key, d.Raw)
+		}
+		if rev.Get("consent_status").String() == "awaiting_consent" {
+			e.ConsentAll(admin, rev, []string{"admin"})
+		}
 	}
 
 	// Traffic generator: 4 workers alternating stream/non-stream through the LB.
@@ -66,56 +97,44 @@ func TestAC05_UpgradeAnthropicWithoutDowntime(t *testing.T) {
 		}(w)
 	}
 
-	time.Sleep(2 * time.Second) // baseline traffic before the switch
+	time.Sleep(2 * time.Second) // baseline traffic before the switches
 	e.Upgrade(admin, "anthropic", anthropicUpgradeFixture)
-	time.Sleep(3 * time.Second) // traffic after the switch
+	e.Upgrade(admin, "dynweight", dynweightUpgradeFixture)
+	time.Sleep(3 * time.Second) // traffic after the switches
 	close(stop)
 	wg.Wait()
 
 	if failed.Load() > 0 {
 		failures.Range(func(k, v any) bool { t.Logf("failed request %v: %v", k, v); return true })
-		t.Fatalf("%d of %d requests failed during the upgrade", failed.Load(), ok.Load()+failed.Load())
+		t.Fatalf("%d of %d requests failed during the upgrades", failed.Load(), ok.Load()+failed.Load())
 	}
 	if ok.Load() < 20 {
-		t.Fatalf("too little traffic during the upgrade: %d", ok.Load())
+		t.Fatalf("too little traffic during the upgrades: %d", ok.Load())
 	}
 
-	// Both nodes run the fixture and serve the backfilled catalog.
-	d := e.WaitPlugin(admin, "anthropic", "enabled", anthropicUpgradeFixture)
-	if d.Get("desired_version").Exists() && d.Get("desired_version").String() != anthropicUpgradeFixture {
-		t.Fatalf("desired_version: %s", d.Raw)
+	// Both nodes run the fixtures; the new dynweight serves the saved
+	// configuration on each.
+	for key, version := range fixtures {
+		d := e.WaitPlugin(admin, key, "enabled", version)
+		if d.Get("desired_version").Exists() && d.Get("desired_version").String() != version {
+			t.Fatalf("%s desired_version: %s", key, d.Raw)
+		}
 	}
 	e.OnEachNode(admin, func(n int, c *Client) {
-		r := c.API(t, http.MethodGet, "/p/anthropic/models", nil)
-		if r.Status != 200 {
-			t.Fatalf("node-%d models: %s", n, r)
-		}
-		rows := r.Data().Array()
-		if len(rows) < len(before) {
-			t.Fatalf("node-%d: %d rows after upgrade, %d before", n, len(rows), len(before))
-		}
-		for _, row := range rows {
-			if row.Get("family").String() == "" {
-				t.Fatalf("node-%d: row not backfilled: %s", n, row.Raw)
-			}
+		r := c.API(t, http.MethodGet, "/p/dynweight/config", nil)
+		if r.Status != 200 || r.Data().Get("version").Int() != saved.Get("version").Int() || !r.Data().Get("config.enabled").Bool() {
+			t.Fatalf("node-%d config after the upgrade: %s, saved %s", n, r, saved.Raw)
 		}
 	})
 
-	// The migration ran exactly once (needs PG access).
+	// The migration ran exactly once and backfilled the saved row (needs PG
+	// access).
 	if e.DockerHost != "" {
-		rows := e.SQL(`SELECT migration_id FROM plugin_migrations WHERE plugin_key='anthropic' ORDER BY migration_id`)
-		n := 0
-		for _, r := range rows {
-			if r == "0002_add_family.sql" {
-				n++
-			}
+		if n := e.SQL(`SELECT count(*) FROM plugin_migrations WHERE plugin_key='dynweight' AND migration_id=` + sqlText(dynweightFixtureMigration)); len(n) != 1 || n[0] != "1" {
+			t.Fatalf("%s recorded %v times", dynweightFixtureMigration, n)
 		}
-		if n != 1 {
-			t.Fatalf("0002_add_family.sql recorded %d times: %v", n, rows)
-		}
-		cols := e.SQL(`SELECT count(*) FROM information_schema.columns WHERE table_schema='plg_anthropic' AND table_name='model_catalog' AND column_name='family'`)
-		if len(cols) != 1 || cols[0] != "1" {
-			t.Fatalf("family column: %v", cols)
+		if n := e.SQL(`SELECT count(*) FROM plg_dynweight.config WHERE rule_count = jsonb_array_length(doc->'rules')`); len(n) != 1 || n[0] != "1" {
+			t.Fatalf("configuration rows backfilled: %v", n)
 		}
 	}
 }

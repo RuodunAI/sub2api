@@ -470,18 +470,17 @@ function anthropicReview(version: string): Any {
     routes: [{ method: 'POST', path: '/oauth/callback', scope: 'webhook' }],
     menus: [],
     user_permissions: [],
-    database: { schema: 'plg_anthropic', migrations: ['0001_init.sql', '0002_add_family.sql'] },
+    database: null,
     resources: { memoryMB: 256, cpu: 0.5 },
     external_services: ['api.anthropic.com', 'console.anthropic.com'],
     host_permissions: [
       { id: 'kv', risk: 'low' },
       { id: 'platform.register', risk: 'high', requires: 'plugin:grant:high' },
-      { id: 'db.schema', risk: 'high', requires: 'plugin:grant:high' },
       { id: 'jobs', risk: 'medium' },
       { id: 'routes.webhook', risk: 'high', scope: { paths: ['/oauth/callback'] }, requires: 'plugin:grant:high' },
       { id: 'net', risk: 'high', scope: { domains: ['api.anthropic.com', 'console.anthropic.com'] }, requires: 'plugin:grant:high' }
     ],
-    diff: version === '0.1.0' ? null : { added: [diffItem('db.schema', 'high'), diffItem('jobs', 'medium'), diffItem('routes.webhook', 'high')], widened: [diffItem('net', 'high')], removed: [] }
+    diff: version === '0.1.0' ? null : { added: [diffItem('jobs', 'medium'), diffItem('routes.webhook', 'high')], widened: [diffItem('net', 'high')], removed: [] }
   }
 }
 
@@ -801,7 +800,7 @@ function rolloutView(r: MockRollout): Any {
     coordinator: 'node-2',
     error,
     nodes: NODES.map((n, i) => ({ node_id: n, boot_id: `b00t${i}a7c9e1f2`, state: nodeStates[i], error: nodeStates[i] === 'failed' ? 'health check failed' : '' })),
-    migrations: r.action === 'disable' || s < 1 ? [] : [{ id: '0002_add_family.sql', node_id: 'node-2', duration_ms: 120 }]
+    migrations: r.action === 'disable' || s < 1 ? [] : [{ id: '0002_stats.sql', node_id: 'node-2', duration_ms: 120 }]
   }
 }
 

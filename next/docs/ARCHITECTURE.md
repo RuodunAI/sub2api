@@ -54,7 +54,7 @@
 | | 资源限制 | 每个插件的内存、CPU、文件数限制：GOMEMLIMIT + 内存看门狗 + oom_score_adj + nice + rlimit，都不需要特权（cgroup 预留） |
 | | 签名与市场 | Ed25519 发布者签名、信任级别、发布者密钥管理与吊销；从插件市场索引（签名的静态 JSON）浏览、安装、检查更新 |
 | | 前端扩展 | 沙箱 iframe、**原生微前端**（受信插件把 Vue 组件挂进控制台；2026-11-19 起不再有声明式的 schema 表单与表格页，CONTRACTS §23） |
-| 演示插件 | anthropic | API Key 账号类型 + 默认价格 + 模型目录（内置插件）；另有市场插件 relay（中转 Key 账号类型） |
+| 演示插件 | anthropic | API Key 账号类型 + 默认价格（内置插件）；另有市场插件 relay（中转 Key 账号类型） |
 | | guard | 网关钩子（关键词拦截）+ 事件订阅 + 后台任务 + 出口访问 + 原生界面 + 资源限制 |
 | 部署 | docker compose | PostgreSQL、Redis、2 个节点、Caddy 负载均衡 |
 
@@ -227,7 +227,7 @@ flowchart LR
 | `plugin` | 插件包、签名与信任、manifest、授权确认、迁移、注册表、发布、Runtime 抽象、市场索引 | 核心 |
 | `plugin/grpcruntime` | go-plugin 进程管理、HostService、EgressService | 核心 |
 | `plugin/sandbox` | 启动器：Landlock、seccomp、rlimit、oom_score_adj、nice；内存看门狗 | 核心 |
-| anthropic 插件 | `apikey` 账号类型（支持内置平台 anthropic）：`Execute` 构造上游请求（`sdk/pluginsdk/standard`）、错误分类；默认价格、模型目录 | **插件** |
+| anthropic 插件 | `apikey` 账号类型（支持内置平台 anthropic）：`Execute` 构造上游请求（`sdk/pluginsdk/standard`）、错误分类；默认价格 | **插件** |
 | guard 插件 | 请求钩子（关键词拦截）、事件订阅（统计）、后台任务（汇总与清理）、对外告警、原生界面 | **插件** |
 
 **划分原则**：核心负责"数据、钱、安全、调度"，以及内置平台（anthropic、openai、gemini）的端点定义——它们是数据文件（`sdk/platforms/*.json`），流水线代码本身不针对任何平台写死逻辑；插件负责"某种账号怎么对接上游"以及"额外的业务逻辑"。平台插件拿到完整请求体，构造最终的上游请求，交给核心的 HTTP 客户端发出（账号代理、SSRF、超时、运营方的请求头设置由核心强制）；用量与任务事实只在插件调用的返回值里（CONTRACTS §112）。插件**永远不能直接改余额**，只能调用受限的账本接口。
@@ -1538,9 +1538,9 @@ anthropic 平台及其端点、用量规则、默认粘性规则由**核心内�
 | 账号类型 | `apikey`：支持平台 `anthropic`；字段 `api_key`（敏感）、`base_url`（默认 `https://api.anthropic.com`）、`model_mapping` |
 | 构造请求 | `Execute`（`sdk/pluginsdk/standard` 加 anthropic 预设）：按 `meta.protocol` 选上游路径 `base_url + /v1/messages` 或 `/v1/messages/count_tokens`；`x-api-key` 是权威头，`anthropic-version`（客户端没带时默认 `2023-06-01`）、`anthropic-beta`（透传）是默认头；请求体是核心改写（含模型映射）之后的，原样交回 |
 | 错误分类 | 400 直接返回；401/403 切换并禁用账号；429 切换并冷却到 `retry-after`（默认 60 秒）；529 切换并冷却 30 秒；5xx 切换并冷却 10 秒 |
-| 模型目录 | 自己的 schema `plg_anthropic.model_catalog` + 迁移 `0001_init.sql`；接口 `GET /models`；用户权限 `model_catalog:read`（0.3.1 起没有控制台菜单和页面，CONTRACTS §90） |
-| 升级演示 | 测试用 `0.2.0` 增加 `0002_add_family.sql`（加字段并回填），验证升级迁移和旧数据迁移 |
-| 权限 | `platform.register`、`db.schema`、`routes.admin`、`kv` |
+| 数据 | 不用数据库、不提供插件接口和用户权限（0.4.0 删除了模型目录，CONTRACTS §129） |
+| 升级演示 | 测试版本 `0.4.1-test`（`testdata/upgrade`，只改版本号）在流量下升级，验证切换期间请求不中断；带迁移的升级由 dynweight 的测试版本 `0.5.13-test` 演示（`0004_config_rule_count.sql`，加字段并回填已保存的配置） |
+| 权限 | `platform.register`、`ui.native` |
 
 另有市场插件 **relay（Claude 中转）**：只声明账号类型 `relay_key`（支持平台 `anthropic`，按平台覆盖 passHeaders），演示多个插件的账号类型在同一分组中共同服务 `/v1/messages`。
 
@@ -1693,9 +1693,9 @@ flowchart LR
 2. 超级管理员创建角色"运营"（只有账号、代理权限）并分配给新用户，该用户只能看到对应菜单，调用其他接口返回 403
 
 **插件与平台**
-3. 从市场索引安装 anthropic（签名为 official）→ 确认授权 → 启用 → 两个节点均为 active；模型目录接口（`GET /api/v1/p/anthropic/models`）返回数据，数据来自插件 schema
+3. 从市场索引安装 anthropic（签名为 official）→ 确认授权 → 启用 → 两个节点均为 active；经 anthropic 账号分别发往两个节点的请求都成功，上游收到插件构造的请求
 4. 新建账号：选择"Anthropic / API Key"→ 插件提供的录入界面 → 保存成功、凭证脱敏
-5. 升级到 anthropic 0.2.0：迁移执行一次、旧数据已回填、两个节点切换期间请求不中断
+5. 在流量下把 anthropic 与 dynweight 升到测试版本：两个节点切换期间请求不中断；dynweight 的迁移执行一次，升级前保存的配置仍在并已回填
 6. 禁用插件：账号保留、插件权限变灰、其端点消失（404）；重新启用恢复；内置插件不能卸载
 
 **分组与计费**
@@ -1980,9 +1980,9 @@ Guard v0.1.0   ● 已启用   official ✓                      [ 禁用 ] [ �
 ### A.11 发布进度
 
 ```
-Anthropic  ·  升级 v0.1.0 → v0.2.0                       阶段：准备中
+Guard  ·  升级 v0.1.0 → v0.2.0                           阶段：准备中
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ① 数据库迁移   ✓ 0002_add_family.sql（node-2 执行，120ms）           │
+│ ① 数据库迁移   ✓ 0002_stats.sql（node-2 执行，120ms）                │
 │ ② 各节点准备   node-1 ✓ 就绪    node-2 ✓ 就绪（协调者）              │
 │ ③ 激活         ⏳ 等待全部就绪                                        │
 │ 当前线上版本：v0.1.0（所有节点）                  [ 取消发布 ]        │

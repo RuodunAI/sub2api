@@ -1402,3 +1402,60 @@ func TestMigration0119DropsVolcenginePlugin(t *testing.T) {
 	require.Equal(t, want, state())
 	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
 }
+
+// 0120 removes the model catalog of the built-in plugin anthropic (CONTRACTS
+// §129): its permission and the grants of it, its schema and its migration
+// records go; the plugin itself, other permissions and other plugins stay.
+// A rerun changes nothing.
+func TestMigration0120DropsAnthropicModelCatalog(t *testing.T) {
+	const id = "0120_drop_anthropic_model_catalog.sql"
+	db := testutil.DBThrough(t, migrationBefore(t, id))
+	ctx := t.Context()
+	exec := func(sql string) {
+		t.Helper()
+		_, err := db.SQL.ExecContext(ctx, sql)
+		require.NoError(t, err)
+	}
+	read := func(sql string) (v string) {
+		t.Helper()
+		require.NoError(t, db.SQL.QueryRowContext(ctx, sql).Scan(&v))
+		return v
+	}
+	migrate := func() []string {
+		t.Helper()
+		done, err := store.Migrate(ctx, db, migrations.FS, store.CoreTracker{}, store.MigrateOptions{LockKey: store.CoreMigrationLockKey})
+		require.NoError(t, err)
+		return done
+	}
+	exec(`INSERT INTO roles (key, name, superuser) VALUES ('ops', '{}', false), ('other', '{}', false);
+		INSERT INTO plugins (key, name, status, builtin) VALUES ('anthropic', '{"en":"Anthropic"}', 'enabled', true), ('guard', '{"en":"Guard"}', 'enabled', false);
+		INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ('anthropic', '0001_init.sql', 'c'), ('guard', '0001_init.sql', 'g');
+		INSERT INTO permissions (key, module, label, source, plugin_key) VALUES
+			('plugin.anthropic:model_catalog:read', 'anthropic', '{}', 'plugin', 'anthropic'), ('guard:x', 'guard', '{}', 'plugin', 'guard');
+		INSERT INTO casbin_rule (ptype, v0, v1, v2) VALUES ('p', 'r:ops', 'plugin.anthropic:model_catalog:read', '*'), ('p', 'r:other', 'guard:x', '*');
+		CREATE SCHEMA plg_anthropic; CREATE TABLE plg_anthropic.model_catalog (id int)`)
+	revisions := `SELECT string_agg(key || '=' || revision, ' ' ORDER BY key) FROM roles WHERE key IN ('ops', 'other')`
+	before, version := read(revisions), read(`SELECT policy_version::text FROM authz_meta`)
+
+	state := func() string {
+		return read(`SELECT concat_ws(' | ',
+			(SELECT string_agg(key, ' ' ORDER BY key) FROM plugins),
+			(SELECT string_agg(plugin_key, ' ') FROM plugin_migrations),
+			(SELECT string_agg(key, ' ') FROM permissions WHERE plugin_key IS NOT NULL),
+			(SELECT string_agg(v0 || ' ' || v1, ' ') FROM casbin_rule),
+			(SELECT count(*)::text FROM pg_namespace WHERE nspname = 'plg_anthropic'))`)
+	}
+	const want = "anthropic guard | guard | guard:x | r:other guard:x | 0"
+	require.Equal(t, migrationsAfter(t, migrationBefore(t, id)), migrate())
+	require.Equal(t, want, state())
+	after := read(revisions)
+	require.NotEqual(t, before, after, "the role that held the permission keeps its revision")
+	require.Equal(t, strings.Split(before, " ")[1], strings.Split(after, " ")[1], "another role moved")
+	require.NotEqual(t, version, read(`SELECT policy_version::text FROM authz_meta`))
+
+	exec(`DELETE FROM schema_migrations WHERE id = '` + id + `'`)
+	version = read(`SELECT policy_version::text FROM authz_meta`)
+	require.Equal(t, []string{id}, migrate())
+	require.Equal(t, want, state())
+	require.Equal(t, version, read(`SELECT policy_version::text FROM authz_meta`), "a rerun moved the policy")
+}

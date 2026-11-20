@@ -6,51 +6,18 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/tidwall/gjson"
 )
 
-// AC 6: disabling a plugin keeps its accounts, greys out its permissions and
-// unregisters its account types. The anthropic endpoints are built into the
-// core, so they stay but answer 404 (no account in the group serves them) for a group with
-// only anthropic accounts; re-enabling restores it. anthropic is a built-in
+// AC 6: disabling a plugin keeps its accounts and unregisters its account
+// types. The anthropic endpoints are built into the core, so they stay but
+// answer 404 (no account in the group serves them) for a group with only
+// anthropic accounts; re-enabling restores it. anthropic is a built-in
 // plugin, so uninstalling it is refused.
 func TestAC06_DisableEnableUninstall(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
 	tn := e.NewTenant(admin, TenantOpts{})
 	e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "before disable", false), nil)
-
-	m, ok := e.PluginPermissions(admin, "anthropic")
-	if !ok || m.Get("status").String() != "active" || m.Get("source").String() != "plugin" {
-		t.Fatalf("plugin permission module before disable: %s", m.Raw)
-	}
-	// Permissions a former version no longer declares stay removed through
-	// disable and enable; the others follow the plugin.
-	removed := map[string]bool{}
-	for _, p := range m.Get("permissions").Array() {
-		removed[p.Get("key").String()] = p.Get("status").String() == "removed"
-	}
-	expectStatus := func(m gjson.Result, status string) {
-		t.Helper()
-		for _, p := range m.Get("permissions").Array() {
-			want := status
-			if removed[p.Get("key").String()] {
-				want = "removed"
-			}
-			if got := p.Get("status").String(); got != want {
-				t.Fatalf("permission %s is %s, want %s", p.Get("key").String(), got, want)
-			}
-		}
-	}
-	// A role's grant of a plugin permission outlives the disable but takes
-	// no effect meanwhile.
-	const catalogRead = "plugin.anthropic:model_catalog:read"
-	roleKey := e.RoleKey("anth")
-	_, reader := e.NewUserWithRoles(admin, roleKey, []string{catalogRead})
-	if !reader.Permissions(t)[catalogRead] {
-		t.Fatalf("/me lacks %s before disable", catalogRead)
-	}
 
 	e.Disable(admin, "anthropic")
 
@@ -66,27 +33,10 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	if _, ok := Find(admin.OK(t, http.MethodGet, "/accounts", nil, Query("group_id", fmt.Sprint(tn.GroupID), "orphaned", "all")).Array(), "id", tn.Accounts[0].ID); !ok {
 		t.Fatal("orphaned account missing from ?orphaned=all")
 	}
-	// Plugin permissions greyed out.
-	m, ok = e.PluginPermissions(admin, "anthropic")
-	if !ok || m.Get("status").String() != "disabled" {
-		t.Fatalf("plugin permission module after disable: %s", m.Raw)
-	}
-	expectStatus(m, "disabled")
-	if !e.RolePermissionKeys(admin, roleKey)[catalogRead] {
-		t.Errorf("role %s lost %s on disable", roleKey, catalogRead)
-	}
-	if reader.Permissions(t)[catalogRead] {
-		t.Errorf("%s still effective while disabled", catalogRead)
-	}
-	// Plugin routes are gone on every node. The anthropic endpoints are
-	// built into the core (CONTRACTS 13) and stay, but no account type in
-	// the group serves them any more: 404 not_found_error, which clients do
-	// not retry, in the anthropic error format.
-	e.OnEachNode(admin, func(n int, c *Client) {
-		if r := c.API(t, http.MethodGet, "/p/anthropic/models", nil); r.Status < 400 {
-			t.Errorf("node-%d plugin route still served: %s", n, r)
-		}
-	})
+	// The anthropic endpoints are built into the core (CONTRACTS 13) and
+	// stay, but no account type in the group serves them any more: 404
+	// not_found_error, which clients do not retry, in the anthropic error
+	// format.
 	for i := 0; i < 4; i++ {
 		g := e.Messages(tn.APIKey, MessagesBody(tn.Model, "while disabled", false), nil)
 		if j := g.JSON(); g.Status != 404 || j.Get("error.type").String() != "not_found_error" || j.Get("type").String() != "error" || j.Get("error.code").String() != "not_found" {
@@ -110,14 +60,6 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	}
 
 	e.Enable(admin, "anthropic")
-	m, _ = e.PluginPermissions(admin, "anthropic")
-	if m.Get("status").String() != "active" {
-		t.Fatalf("permissions not restored: %s", m.Raw)
-	}
-	expectStatus(m, "active")
-	if !reader.Permissions(t)[catalogRead] {
-		t.Errorf("%s not effective again after enable", catalogRead)
-	}
 	e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "after enable", true), nil)
 
 	// Built-in: uninstall is refused even while disabled; data is untouched.
@@ -125,9 +67,6 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 	r := admin.API(t, http.MethodDelete, "/plugins/anthropic", nil, Query("purge", "false"))
 	if r.Status != 403 || r.JSON().Get("error.details.reason").String() != "builtin" {
 		t.Fatalf("uninstall of a built-in plugin: %s", r)
-	}
-	if _, ok := e.PluginPermissions(admin, "anthropic"); !ok {
-		t.Fatal("plugin permissions removed by a refused uninstall")
 	}
 	// While the plugin is disabled the account counts as orphaned (CONTRACTS
 	// §15.9); after re-enabling it must be back, untouched by the refused
@@ -138,6 +77,76 @@ func TestAC06_DisableEnableUninstall(t *testing.T) {
 		t.Errorf("account orphaned by a refused uninstall: %s", acct.Raw)
 	}
 	e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "after re-enable", false), nil)
+}
+
+// AC 6 (permissions and routes): disabling a plugin greys out its
+// permissions and takes its routes off every node; a role's grant of one of
+// them outlives the disable but takes no effect meanwhile, and re-enabling
+// restores both. dynweight is a built-in plugin with user permissions and
+// admin routes; it is left enabled or disabled as it was found.
+func TestAC06_DisableGreysOutPermissionsAndRoutes(t *testing.T) {
+	e := Setup(t)
+	admin := e.Admin()
+	const key, read = "dynweight", "plugin.dynweight:dynweight:read"
+	d, _ := e.Plugin(admin, key)
+	wasEnabled := d.Get("status").String() == "enabled"
+	e.EnsurePlugin(admin, key, "")
+
+	m, ok := e.PluginPermissions(admin, key)
+	if !ok || m.Get("status").String() != "active" || m.Get("source").String() != "plugin" {
+		t.Fatalf("plugin permission module before disable: %s", m.Raw)
+	}
+	// Permissions a former version no longer declares stay removed through
+	// disable and enable; the others follow the plugin.
+	removed := map[string]bool{}
+	for _, p := range m.Get("permissions").Array() {
+		removed[p.Get("key").String()] = p.Get("status").String() == "removed"
+	}
+	expectStatus := func(status string) {
+		t.Helper()
+		m, ok := e.PluginPermissions(admin, key)
+		if !ok || m.Get("status").String() != status {
+			t.Fatalf("plugin permission module, want %s: %s", status, m.Raw)
+		}
+		for _, p := range m.Get("permissions").Array() {
+			want := status
+			if removed[p.Get("key").String()] {
+				want = "removed"
+			}
+			if got := p.Get("status").String(); got != want {
+				t.Fatalf("permission %s is %s, want %s", p.Get("key").String(), got, want)
+			}
+		}
+	}
+	// The reader's grant is effective and the route serves it on every node.
+	roleKey := e.RoleKey("dw")
+	_, reader := e.NewUserWithRoles(admin, roleKey, []string{read})
+	served := func(want bool) {
+		t.Helper()
+		if got := reader.Permissions(t)[read]; got != want {
+			t.Fatalf("/me has %s: %v, want %v", read, got, want)
+		}
+		for n, base := range e.NodeURLs {
+			if r := e.PluginRoute(reader, base, http.MethodGet, key, "/config", nil); want && r.Status != 200 || !want && r.Status < 400 {
+				t.Fatalf("node-%d GET /p/%s/config (served %v): %s", n+1, key, want, r)
+			}
+		}
+	}
+	served(true)
+
+	e.Disable(admin, key)
+	expectStatus("disabled")
+	if !e.RolePermissionKeys(admin, roleKey)[read] {
+		t.Errorf("role %s lost %s on disable", roleKey, read)
+	}
+	served(false)
+
+	e.Enable(admin, key)
+	expectStatus("active")
+	served(true)
+	if !wasEnabled {
+		e.Disable(admin, key)
+	}
 }
 
 // AC 6 (plugin permissions): uninstalling a plugin deletes its permissions
