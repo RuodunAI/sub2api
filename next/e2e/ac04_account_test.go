@@ -30,7 +30,10 @@ func TestAC04_CreateAnthropicAccount(t *testing.T) {
 	}
 
 	// The form is the plugin's native component; the core serves no schema.
-	ExpectNativeForm(t, admin.Client, at, "AnthropicKeyForm")
+	ExpectNativeForm(t, at, "AnthropicKeyForm")
+	if r := admin.API(t, http.MethodGet, "/account-types/"+AnthropicPlugin+"/"+AnthropicAPIKey+"/form", nil); r.Status != http.StatusNotFound {
+		t.Fatalf("the form schema endpoint must be gone: %s", r)
+	}
 
 	// The plugin's validation: missing api_key -> invalid_argument with field details.
 	gid := e.CreateGroup(admin, e.Name("grp"), "public", 1, nil)

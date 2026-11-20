@@ -156,6 +156,31 @@ func TestOpenAIResponsesAndEmbeddings(t *testing.T) {
 	}
 }
 
+// The Codex backend refuses a Responses request that may be stored or does
+// not stream, recording it with the refusal; /v1/responses takes both.
+func TestCodexBackendStreamsAndStoresNothing(t *testing.T) {
+	s, srv := newTestServer(t)
+	auth := map[string]string{"Authorization": "Bearer codex-at", "x-mock-chunk-delay-ms": "1"}
+	for body, detail := range map[string]string{
+		`{"model":"gpt-c","input":[],"stream":true}`:                "Store must be set to false",
+		`{"model":"gpt-c","input":[],"stream":true,"store":true}`:   "Store must be set to false",
+		`{"model":"gpt-c","input":[],"store":false}`:                "Stream must be set to true",
+		`{"model":"gpt-c","input":[],"stream":false,"store":false}`: "Stream must be set to true",
+	} {
+		resp := post(t, srv, "/backend-api/codex/responses", auth, body)
+		if m := decode(t, resp); resp.StatusCode != 400 || get(m, "detail") != detail || s.lastRecorded().Status != 400 {
+			t.Errorf("%s: %d %v", body, resp.StatusCode, m)
+		}
+		if resp := post(t, srv, "/v1/responses", auth, body); resp.StatusCode != 200 {
+			t.Errorf("/v1/responses %s: %d", body, resp.StatusCode)
+		}
+	}
+	events, _ := sseData(t, post(t, srv, "/backend-api/codex/responses", auth, `{"model":"gpt-c","input":[],"stream":true,"store":false}`))
+	if events[len(events)-1] != "response.completed" {
+		t.Fatalf("events = %v", events)
+	}
+}
+
 func TestGemini(t *testing.T) {
 	s, srv := newTestServer(t)
 	key := map[string]string{"x-goog-api-key": "AIza-mock-1", "x-mock-chunk-delay-ms": "1"}

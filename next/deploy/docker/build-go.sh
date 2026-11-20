@@ -3,13 +3,13 @@
 #
 # Builds (inside the Docker build stage, cwd-independent):
 #   <out>/bin/sub2api          core server (-X main.Version=$VERSION)
-#   <out>/bin/sub2api-plugin   plugin CLI (if tools/sub2api-plugin exists)
+#   <out>/bin/sub2api-plugin   plugin CLI
 #   <out>/market/              *.s2plugin signed with the dev key, index.json,
 #                              index.json.sig, dev-official.pub, dev-official.keyid
+#   <out>/builtin/             the built-in plugins' packages and trust key
 #
-# Every step is skipped when its sources do not exist yet, so the skeleton
-# image builds from day one. The dev key lives in <keydir> (a BuildKit cache
-# mount) and is created on first use; it must never be copied into the image.
+# The dev key lives in <keydir> (a BuildKit cache mount) and is created on
+# first use; it must never be copied into the image.
 #
 # GO_BINARIES_ONLY=1 stops after bin/ (cross builds with GOARCH set, whose
 # plugin CLI cannot run here). SKIP_DB_CHECK=0 packs plugins with the GORM
@@ -41,25 +41,11 @@ echo "==> go version: $(go version)"
 echo "==> building server $VERSION"
 (cd server && go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "$OUT/bin/sub2api" ./cmd/sub2api)
 
-CLI=""
-if [ -f tools/sub2api-plugin/go.mod ]; then
-  echo "==> building tools/sub2api-plugin"
-  (cd tools/sub2api-plugin && go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "$OUT/bin/sub2api-plugin" .)
-  CLI="$OUT/bin/sub2api-plugin"
-fi
+echo "==> building tools/sub2api-plugin"
+CLI="$OUT/bin/sub2api-plugin"
+(cd tools/sub2api-plugin && go build -trimpath -ldflags "-s -w -X main.Version=$VERSION" -o "$CLI" .)
 [ "${GO_BINARIES_ONLY:-0}" = 1 ] && exit 0
 export PATH="$OUT/bin:$PATH"
-
-write_empty_index() {
-  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  printf '{"version":1,"generated_at":"%s","plugins":[]}\n' "$now" > "$OUT/market/index.json"
-}
-
-if [ -z "$CLI" ]; then
-  echo "==> tools/sub2api-plugin not found: market contains an empty, UNSIGNED index"
-  write_empty_index
-  exit 0
-fi
 
 mkdir -p "$KEYS"
 if [ ! -f "$KEYS/$KEY_ID.key" ]; then
@@ -71,54 +57,18 @@ manifest_version() {
   sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n1
 }
 
-if [ -f tools/sub2api-plugin/scripts/build-demo.sh ]; then
-  # Owned by the SDK team: builds, packs and signs one package per
-  # plugins/<name>/manifest.json (the list is discovered there, so a new plugin
-  # needs no change in either script), plus the e2e fixtures (anthropic's
-  # upgrade version, the guard test build), and writes the signed index.
-  # Everything packaged here is in the market; only BUILTIN_PLUGINS below is
-  # built into the image.
-  echo "==> tools/sub2api-plugin/scripts/build-demo.sh"
-  # No PostgreSQL in the image build (initdb refuses root): the GORM models
-  # are compared with migrations/ by TestDBCheck in CI instead. The release
-  # workflow has one and passes SKIP_DB_CHECK=0.
-  SKIP_DB_CHECK=${SKIP_DB_CHECK:-1} sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
-else
-  # Generic fallback: one package per plugins/<name>/manifest.json.
-  TMP=$(mktemp -d)
-  found=0
-  for dir in plugins/*/; do
-    dir=${dir%/}
-    [ -f "$dir/manifest.json" ] || continue
-    name=$(basename "$dir")
-    ver=$(manifest_version "$dir/manifest.json")
-    echo "==> packaging $name $ver"
-    "$CLI" build --dir "$dir" --out "$TMP/$name"
-    # No PostgreSQL in the image build: the GORM models are compared with
-    # migrations/ by the sub2api-plugin tests (TestDBCheck) in CI instead.
-    # A plugin's forms and settings pages exist only as its native UI
-    # (build-ui.sh, the ui stage of next/Dockerfile): never pack without it.
-    if grep -q '"native"' "$dir/manifest.json" && [ ! -f "$dir/ui/native/dist/entry.js" ]; then
-      echo "::error::$name: ui/native/dist/entry.js missing; run deploy/docker/build-ui.sh first" >&2
-      exit 1
-    fi
-    "$CLI" pack --dir "$dir" --runtimes "$TMP/$name" --out "$OUT/market/$name-$ver.s2plugin" --skip-db-check
-    "$CLI" sign --key "$KEYS/$KEY_ID.key" --key-id "$KEY_ID" "$OUT/market/$name-$ver.s2plugin"
-    found=1
-  done
-  rm -rf "$TMP"
-  if [ "$found" = 1 ]; then
-    "$CLI" index --dir "$OUT/market" --key "$KEYS/$KEY_ID.key"
-  fi
-fi
-
-if [ ! -f "$OUT/market/index.json" ]; then
-  echo "==> no plugins packaged: writing an empty index"
-  write_empty_index
-  if "$CLI" index --help >/dev/null 2>&1; then
-    "$CLI" index --dir "$OUT/market" --key "$KEYS/$KEY_ID.key" || true
-  fi
-fi
+# build-demo.sh builds, packs and signs one package per
+# plugins/<name>/manifest.json (the list is discovered there, so a new plugin
+# needs no change in either script), plus the e2e fixtures (anthropic's
+# upgrade version, the guard test build), and writes the signed index.
+# Everything packaged here is in the market; only BUILTIN_PLUGINS below is
+# built into the image. pack refuses a plugin whose native UI was not built
+# (build-ui.sh, the ui stage of next/Dockerfile).
+echo "==> tools/sub2api-plugin/scripts/build-demo.sh"
+# No PostgreSQL in the image build (initdb refuses root): the GORM models
+# are compared with migrations/ by TestDBCheck in CI instead. The release
+# workflow has one and passes SKIP_DB_CHECK=0.
+SKIP_DB_CHECK=${SKIP_DB_CHECK:-1} sh tools/sub2api-plugin/scripts/build-demo.sh "$OUT/market" "$KEYS" "$KEY_ID"
 
 # Public half of the dev key; the entrypoint derives the trust settings from it.
 cp "$KEYS/$KEY_ID.pub" "$OUT/market/dev-official.pub"

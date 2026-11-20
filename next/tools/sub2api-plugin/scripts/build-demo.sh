@@ -8,7 +8,7 @@
 #   `sub2api-plugin keygen --key-id <keyid> --out <keydir>`); it is reused,
 #   never regenerated. The same key signs the packages and the index.
 #   Every plugin with a native UI needs its ui/native/dist first
-#   (deploy/docker/build-ui.sh builds them all); a missing one fails.
+#   (deploy/docker/build-ui.sh builds them all); pack refuses a missing one.
 #
 # Output:
 #   <outdir>/<name>-<version>.s2plugin for every next/plugins/<name> that has a
@@ -87,12 +87,6 @@ package() {
     set -- "$@" --skip-db-check
   fi
   [ -n "$overlay" ] && set -- "$@" --overlay "$overlay"
-  # A plugin's forms and settings pages exist only as its native UI, so a
-  # package without it is a broken package: build the UIs first.
-  if [ -f "$dir/manifest.json" ] && grep -q '"native"' "$dir/manifest.json" && [ ! -f "$dir/ui/native/dist/entry.js" ]; then
-    echo "$plugin: ui/native/dist/entry.js missing; build the native UIs first (sh deploy/docker/build-ui.sh <next> <out>)" >&2
-    exit 1
-  fi
   pkg=$("$BIN" "$@")
   "$BIN" sign --key "$KEY" --key-id "$KEYID" --publisher "$PUBLISHER" "$pkg"
 }

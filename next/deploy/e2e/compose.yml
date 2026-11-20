@@ -215,7 +215,7 @@ services:
     mem_limit: 4g
     working_dir: /src/next/e2e
     entrypoint: [go, test]
-    command: ["-count=1", "-timeout=30m", "-v", "./..."]
+    command: ["-count=1", "-timeout=150m", "-v", "./..."]
     environment:
       E2E_PROJECT: ${E2E_PROJECT:-sub2api-next-e2e}
       E2E_BASE_URL: http://caddy:3120

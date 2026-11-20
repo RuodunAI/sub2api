@@ -53,7 +53,7 @@ func TestAC20_OpenAIGeminiAPIKeys(t *testing.T) {
 		if !found {
 			t.Fatalf("%s/%s lacks native endpoint %s: %s", pl.plugin, APIKeyType, pl.endpoint, at.Get("endpoints").Raw)
 		}
-		ExpectNativeForm(t, admin.Client, at, pl.form)
+		ExpectNativeForm(t, at, pl.form)
 		p, _ := Find(platforms, "id", pl.platform)
 		if _, ok := PlatformAccountType(p, pl.plugin, APIKeyType); !ok {
 			t.Fatalf("/platforms %s lacks %s/%s: %s", pl.platform, pl.plugin, APIKeyType, p.Get("account_types").Raw)

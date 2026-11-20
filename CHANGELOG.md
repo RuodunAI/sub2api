@@ -261,7 +261,7 @@
 - **管理员要做的**：codex 账号的模型列表加 `gpt-image-2`（新账号默认模型已含它；列表为空的不用加），给 `gpt-image-2` 录表达式价格（CONTRACTS §118.6），建议在“模型的协议限定”里把它限定到两个生图协议。`protocols` 没指定过的 codex 账号升级后自动开放两个生图协议，不想出图的账号在“本平台协议”里取消。账号测试带模型名测 `gpt-image-2` 时会真实出一张图。
 - **同平台适配改为显式声明**：账号类型在平台上写了端点子集时，子集以外的端点只有在清单 `adapted` 里列出才经核心转换服务（此前对所有类型自动生效）。第一方插件已补声明：codex 列 chat 与两个生图端点，azure-openai 的“按部署”类型列 `/v1/responses`；行为与之前相同。**第三方插件**若依赖过隐式适配（子集里没有 chat 却服务 chat 之类），升级后那些端点不再服务，要在清单里补 `adapted`。
 - 清单新字段：`accountTypes[].platforms[].adapted`；插件协议仍是 2。用量照 Responses 端点自己的规则读（它已经把生图工具的 token 加进来）。
-- **模拟上游与 e2e**：mock 的 Responses 对 `image_generation` 工具按 Codex 后端实测的事件序列应答（生图项在前，`image_generation_call.in_progress` / `.generating` / `.completed`，图项带 `action`、`output_format`、`size`、`quality`、`revised_prompt`），提示词带 `MOCK-NO-IMAGE` 时只回文字；新增 AC42（Codex 账号经转换生图，见 `next/deploy/e2e/README.md`）；AC40 的“不服务生图”改为 volcengine 与 Azure 部署账号。
+- **模拟上游与 e2e**：mock 的 Responses 对 `image_generation` 工具按 Codex 后端实测的事件序列应答（生图项在前，`image_generation_call.in_progress` / `.generating` / `.completed`，图项带 `action`、`output_format`、`size`、`quality`、`revised_prompt`），提示词带 `MOCK-NO-IMAGE` 时只回文字；新增 AC42（Codex 账号经转换生图，见 `next/deploy/e2e/README.md`）；AC40 的“不服务生图”改为 volcengine 与 Azure 部署账号。mock 的 Codex 后端（`/backend-api/codex/responses`）像真实上游一样以 400 `{"detail": ...}` 拒绝没有 `store: false` 或不是流式的请求（此前照收，回归只能靠用例自己查请求体）；AC41 的 codex 用例也检查到达 Codex 后端的请求是 `stream: true`、`store: false`。
 
 ### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0115）
 
@@ -390,7 +390,7 @@
 - **核心：保存账号后立即续期到期的凭证**（CONTRACTS §48.3）：新建账号或修改凭证后，类型支持自动续期且凭证已到期时，后台马上续一次，不用等 5 分钟一轮的扫描。Vertex 账号保存后几秒内可用；其他账号类型（凭证没到期）不受影响。
 - **核心**：`azure_openai`、`bedrock`、`vertex` 加入保留的第一方插件键（没有官方签名的手动上传不能占用）。
 - **SDK**：新包 `next/sdk/pluginsdk/accountform`（自带账号表单的插件解码、校验、归一化的公共部分，vertex、bedrock 在用）。
-- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（运行情况见“验证状态”）。Vertex、Bedrock 没有 docker e2e。新表单没有做过控制台界面走查。
+- **模拟上游**新增 Azure（v1 与按部署）、Bedrock InvokeModel（含 event stream 和 SigV4 校验；凭证范围的服务名必须是 `bedrock`、区域必须是主机名 `bedrock-runtime.<区域>.amazonaws.com` 里的区域，与真实上游一样回 403 `InvalidSignatureException`）、Vertex 的路径；新增验收 `e2e/ac29_azure_test.go`（运行情况见“验证状态”）。Vertex、Bedrock 没有 docker e2e。新表单没有做过控制台界面走查。
 
 ### 上游站点插件：newapi、sub2api、typesafe（首发 0.1.0，内置、只安装；无核心迁移）
 
@@ -439,6 +439,7 @@
 - **使用记录详情重新逐条显示另算的分项**：计费详情里列出 `billing_detail.additional`（如请求里声明的 advisor 顾问模型）和 `billing_detail.replacement` 的每一项：种类（替代计费项按尝试轮次显示“第 N 轮”）、模型、该项的 token 用量、它自己的计算公式和金额；免费项标“免费”并显示原因。主用量公式以主用量自己的金额结尾，下面一行“主用量小计 + 各项 = 合计”；为此核心在有附加用量的记录明细里另存主用量的 `primary_cost`、`primary_list_cost`、`primary_total_cost`（只是把算出来的数存下，金额不变；之前结算的记录没有，详情里主用量公式只显示算式，CONTRACTS §120.3）。主用量被替代计费用量替换时不再画出“$0 × 0”的主用量公式。数据一直在记录里，之前随“生图另计价”一起删掉了这块显示；没有分项的记录不显示。
 - **`/me/usage` 不再露出分项背后的全局价**：分项按分组自定义价格计价时，它明细里的 `detail.inputs.pricing.base`（全局价表达式与哈希）现在和顶层的一样在普通用户的使用记录详情里删去。
 - **用 http 打开控制台时“系统 → 升级”页不再空白**：页面用了只在 HTTPS / localhost 下才有的 `crypto.randomUUID`。升级页和余额调整的幂等键改用 `@sub2api/ui` 已有的 `createItemId`（`crypto.getRandomValues`，非安全上下文可用），eslint 禁止再直接用 `crypto.randomUUID`。
+- **本地构建镜像不再带进旧的界面产物**：`next/Dockerfile.dockerignore` 原来排除的 `web/dist` 不是任何产物目录，开发机上 `npm run build` 留下的 `server/web/dist/assets/` 和插件 `ui/native/dist/` 旧文件会随构建上下文进镜像和插件包；现在排除这两处，由镜像的 ui 阶段重新构建。CI 与发布用干净检出，不受影响。
 
 ### 插件作者须知：SDK、清单与 proto 的变化
 
@@ -466,7 +467,7 @@
 ### 验证状态
 
 - 测试结果以各工作包的交付说明为准。
-- e2e 新增 AC30–AC36（平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端）、AC37（插件联网）、AC38（codex 授权走表单代理）；e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，要带 `-timeout=150m`。
+- e2e 新增 AC30–AC36（平台插件经 `Execute`、运营方设置、换号与未上报、旧契约的包被拒、Responses WebSocket 逐轮、请求体上限设置、以官方 OpenAI 与 Anthropic Go SDK 为客户端）、AC37（插件联网）、AC38（codex 授权走表单代理）；e2e 栈的部署也按现在的核心和插件改过（两节点共用插件包卷、默认镜像版本 0.1.999、厂商主机由 mock 以别名和自建 CA 扮演），运行方法见 `next/deploy/e2e/README.md`：整套约 27 分钟，`test.sh` 默认 `-timeout=150m`（直接 `go test` 时自己带上）。
 - **已经跑过的**：整套 e2e 当时的全部 49 个顶层用例（`next/e2e` 里的全部 `func Test`，含 AC19、AC29、AC30–AC36；当时 AC30 还是十个平台插件）在协议绑定与转发 V2 合并后的代码上运行，全部通过（记录于 `732587ea9`）。
 - **之后没有重跑整套 e2e**：此后的修正（上面“计费与正确性修正”里参数覆盖计量检查、强制流式、客户端离开、确定拒绝不重试、未上报记录、经代理不本机解析、失败策略下换号、客户端离开优先等）、删除 Claude OAuth（AC30 改成九个平台插件；删除后没有重跑 e2e）、新增的 AC37、AC38 都在那次运行之后，没有整套运行的记录，AC37、AC38 也没有单独运行的记录。现在共 51 个顶层用例（其中 43 个 `TestAC*`，编号到 AC38）。
 - 三家云厂商只对文档、黄金样例和模拟上游验证过，没有接过真实账号；新表单没有做过控制台界面走查。

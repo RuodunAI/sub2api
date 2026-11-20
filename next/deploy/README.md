@@ -47,26 +47,26 @@ using the dedicated Compose project `sub2api-next-e2e` by default.
 ## Image (`next/Dockerfile`, context `next/`)
 
 - `node:24` builds `web/` into `server/web/dist` and every `plugins/*/ui/native`
-  (skipped while `package.json` is missing; the placeholder page stays).
-- `golang:1.27-trixie` builds `sub2api` (`-X main.Version=$SUB2API_VERSION`),
-  `tools/sub2api-plugin` and the plugins when they exist. Plugins are packed and
-  signed with a **dev key** created on the first build and kept in the BuildKit
-  cache mount `sub2api-next-devkeys` (stable across rebuilds, never in the
-  image). `tools/sub2api-plugin/scripts/build-demo.sh` is used when present;
-  otherwise every `plugins/*/manifest.json` is packed generically. Either way
-  a plugin whose manifest declares a native UI without `ui/native/dist/entry.js`
-  fails the build (the forms and settings pages exist only as that UI).
+  (`docker/build-ui.sh`).
+- `golang:1.27-trixie` builds `sub2api` (`-X main.Version=$VERSION`),
+  `tools/sub2api-plugin` and the plugins (`docker/build-go.sh`). Every
+  `plugins/*/manifest.json` is packed by `tools/sub2api-plugin/scripts/build-demo.sh`
+  and signed with a **dev key** created on the first build and kept in the
+  BuildKit cache mount `sub2api-next-devkeys` (stable across rebuilds, never in
+  the image). `sub2api-plugin pack` refuses a plugin whose manifest declares a
+  native UI without `ui/native/dist/entry.js`, which fails the build (the forms
+  and settings pages exist only as that UI).
 - Runtime `debian:trixie-slim`, user `sub2api` (1000), `/usr/local/bin/sub2api`,
   `/usr/local/bin/sub2api-plugin`, `/opt/sub2api/market/`, data in `/var/lib/sub2api`.
 - The entrypoint derives `SUB2API_PLUGIN_OFFICIAL_KEYS=sub2api-dev=<pub>` and
   `SUB2API_MARKET_SOURCES=[{"name":"local-dev","url":$SUB2API_DEV_MARKET_URL,...}]`
   from the dev public key unless those variables are set.
-- Without the plugin CLI the market contains an empty, unsigned `index.json`.
 
 Node settings live in each stack's `compose.yml`. The E2E stack explicitly
-enables package signature checks, plugin seccomp, strict networking and
-database role isolation. Its private-upstream exception is only for the mock
-on that stack's internal network.
+enables package signature checks, plugin seccomp and strict networking. Its
+private-address exceptions (`SUB2API_GATEWAY_ALLOW_PRIVATE_UPSTREAM` for the
+upstreams, `SUB2API_PLUGIN_EGRESS_ALLOW_PRIVATE` for the plugins' own egress)
+are only for the mock on that stack's internal network.
 
 ## mock-upstream
 
@@ -91,9 +91,9 @@ through the gateway use `/__control` rules or key markers.
 ```bash
 # First start the dedicated stack as documented in e2e/README.md.
 # Run on its Docker host from the full repository checkout; no host Go needed.
-# The full suite takes about 27 minutes: pass -timeout=150m (the script's
-# default -timeout=30m is too short; a later -timeout overrides it).
-sh next/deploy/e2e/test.sh -timeout=150m
+# The full suite takes about 27 minutes; the script's default -timeout=150m
+# covers it (a later -timeout overrides it).
+sh next/deploy/e2e/test.sh
 ```
 
 The opt-in runner compiles and executes tests under `/src` with Go 1.27.

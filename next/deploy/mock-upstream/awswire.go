@@ -47,13 +47,24 @@ var sigV4Authorization = regexp.MustCompile(`^AWS4-HMAC-SHA256 Credential=([^/ ]
 // mockSecretAccessKey is the secret the mock expects for an access key id.
 func mockSecretAccessKey(accessKeyID string) string { return "mock-secret-" + accessKeyID }
 
-// verifySigV4 checks the signature of a SigV4 request as AWS would, taking
-// the secret of an access key id to be mockSecretAccessKey. A request with
-// any other Authorization (a Bedrock API key) is not checked.
+// bedrockRuntimeHost matches the Bedrock runtime host of a region.
+var bedrockRuntimeHost = regexp.MustCompile(`^bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com$`)
+
+// verifySigV4 checks a SigV4 request to the Bedrock runtime as AWS would:
+// the credential is scoped to the bedrock service and to the region of the
+// host, and the signature holds, taking the secret of an access key id to be
+// mockSecretAccessKey. A request with any other Authorization (a Bedrock API
+// key) is not checked.
 func verifySigV4(r *http.Request, body []byte) error {
 	m := sigV4Authorization.FindStringSubmatch(r.Header.Get("Authorization"))
 	if m == nil {
 		return nil
+	}
+	if m[4] != "bedrock" {
+		return fmt.Errorf("credential should be scoped to correct service: 'bedrock', not %q", m[4])
+	}
+	if host := bedrockRuntimeHost.FindStringSubmatch(r.Host); host == nil || host[1] != m[3] {
+		return fmt.Errorf("credential should be scoped to a valid region: %q is not the region of host %s", m[3], r.Host)
 	}
 	return checkSigV4(r, body, mockSecretAccessKey(m[1]), time.Now())
 }

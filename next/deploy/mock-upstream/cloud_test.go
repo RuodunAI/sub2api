@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -182,10 +183,10 @@ func TestBedrockInvokeWithResponseStream(t *testing.T) {
 	}
 }
 
-// signForMock signs req the way a client holding the mock's secret for
-// accessKey would (the algorithm is pinned against the AWS SDK in
-// awswire_test.go).
-func signForMock(req *http.Request, body, accessKey, secret, token string) {
+// signForMock signs req for the credential scope region/service the way a
+// client holding the mock's secret for accessKey would (the algorithm is
+// pinned against the AWS SDK in awswire_test.go).
+func signForMock(req *http.Request, body, accessKey, secret, token, region, service string) {
 	amzDate := time.Now().UTC().Format("20060102T150405Z")
 	req.Header.Set("X-Amz-Date", amzDate)
 	signed := "content-type;host;x-amz-date"
@@ -193,22 +194,21 @@ func signForMock(req *http.Request, body, accessKey, secret, token string) {
 		req.Header.Set("X-Amz-Security-Token", token)
 		signed += ";x-amz-security-token"
 	}
-	// The server sees the host the client dialled.
-	seen := req.Clone(req.Context())
-	seen.Host = req.URL.Host
-	sig, err := sigV4Signature(seen, []byte(body), secret, amzDate, "us-east-1", "bedrock", signed)
+	sig, err := sigV4Signature(req, []byte(body), secret, amzDate, region, service, signed)
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKey+"/"+amzDate[:8]+"/us-east-1/bedrock/aws4_request, SignedHeaders="+signed+", Signature="+sig)
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+accessKey+"/"+amzDate[:8]+"/"+region+"/"+service+"/aws4_request, SignedHeaders="+signed+", Signature="+sig)
 }
 
 func TestBedrockSigV4(t *testing.T) {
 	s, srv := newTestServer(t)
-	do := func(secret, token string, tamper func(*http.Request)) (*http.Response, map[string]any) {
+	// The credential is scoped to region and service, empty for the right ones.
+	do := func(secret, token, region, service string, tamper func(*http.Request)) (*http.Response, map[string]any) {
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/model/anthropic.claude-v1%3A0/invoke", strings.NewReader(bedrockBody))
+		req.Host = "bedrock-runtime.us-east-1.amazonaws.com"
 		req.Header.Set("Content-Type", "application/json")
-		signForMock(req, bedrockBody, "AKIAMOCK1", secret, token)
+		signForMock(req, bedrockBody, "AKIAMOCK1", secret, token, cmp.Or(region, "us-east-1"), cmp.Or(service, "bedrock"))
 		if tamper != nil {
 			tamper(req)
 		}
@@ -220,7 +220,7 @@ func TestBedrockSigV4(t *testing.T) {
 		return resp, decode(t, resp)
 	}
 	for _, token := range []string{"", "session-token-1"} {
-		if resp, m := do(mockSecretAccessKey("AKIAMOCK1"), token, nil); resp.StatusCode != 200 || get(m, "type") != "message" {
+		if resp, m := do(mockSecretAccessKey("AKIAMOCK1"), token, "", "", nil); resp.StatusCode != 200 || get(m, "type") != "message" {
 			t.Fatalf("signed (token %q): %d %v", token, resp.StatusCode, m)
 		}
 		if rec := s.lastRecorded(); rec.APIKey != "AKIAMOCK1" || rec.Headers["x-amz-security-token"] != token {
@@ -228,10 +228,12 @@ func TestBedrockSigV4(t *testing.T) {
 		}
 	}
 	for name, tc := range map[string]struct {
-		secret string
-		tamper func(*http.Request)
+		secret, region, service string
+		tamper                  func(*http.Request)
 	}{
-		"another secret": {secret: "not-the-mock-secret"},
+		"another service": {secret: mockSecretAccessKey("AKIAMOCK1"), service: "bedrock-runtime"},
+		"another region":  {secret: mockSecretAccessKey("AKIAMOCK1"), region: "us-west-2"},
+		"another secret":  {secret: "not-the-mock-secret"},
 		"another body": {secret: mockSecretAccessKey("AKIAMOCK1"), tamper: func(r *http.Request) {
 			r.Body = io.NopCloser(strings.NewReader(bedrockBody + " "))
 			r.ContentLength++
@@ -239,7 +241,7 @@ func TestBedrockSigV4(t *testing.T) {
 		"an unsigned session token": {secret: mockSecretAccessKey("AKIAMOCK1"), tamper: func(r *http.Request) { r.Header.Set("X-Amz-Security-Token", "t") }},
 		"an old date":               {secret: mockSecretAccessKey("AKIAMOCK1"), tamper: func(r *http.Request) { r.Header.Set("X-Amz-Date", "20200101T000000Z") }},
 	} {
-		resp, m := do(tc.secret, "", tc.tamper)
+		resp, m := do(tc.secret, "", tc.region, tc.service, tc.tamper)
 		if resp.StatusCode != 403 || resp.Header.Get("x-amzn-errortype") != "InvalidSignatureException" || get(m, "message") == nil {
 			t.Errorf("%s: %d %s %v", name, resp.StatusCode, resp.Header.Get("x-amzn-errortype"), m)
 		}

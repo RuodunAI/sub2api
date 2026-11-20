@@ -8,5 +8,8 @@
 !**/.env.example
 deploy/keys
 e2e/.cache
-web/dist
+# Build output the ui stage makes afresh (deploy/docker/build-ui.sh): a local
+# build's files would stay next to the new ones in the image and packages.
+server/web/dist/assets
+plugins/*/ui/native/dist
 .git

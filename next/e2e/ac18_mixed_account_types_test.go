@@ -65,7 +65,7 @@ func TestAC18_MixedAccountTypesServeOneEndpoint(t *testing.T) {
 	if !sensitive {
 		t.Fatalf("relay_key api_key must be sensitive: %s", rt.Raw)
 	}
-	ExpectNativeForm(t, admin.Client, rt, "RelayKeyForm")
+	ExpectNativeForm(t, rt, "RelayKeyForm")
 
 	// One group, two account types: anthropic/apikey (priority 50) and
 	// relay/relay_key (priority 1), both backed by the mock upstream.
