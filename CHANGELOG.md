@@ -240,7 +240,7 @@
 - 旧契约的插件首次启用就被拒、发布在准备阶段失败时，以前插件列表的 `refusal` 是 null（节点删掉了失败的实例，只剩 `status_reason` 的文字）；现在发布结束时把每个节点的拒绝代码记在 `plugin_rollout_nodes.code`（迁移 0109），列表和详情从那里给出 `refusal`。
 - 插件解析用量的端点上，插件选了核心的读数时不再每个请求记一条 WARN（只在规则一个用量都没读到时记）。
 - 启用 install-only 的内置插件（volcengine、mailer、dynweight）、重新启用被禁用的内置插件时，以前所有节点的 `/healthz` 同时变成 503，负载均衡在这段时间（发布期间加最多 5 秒；抢到内置插件安装锁的节点约 20 秒）把全部请求答成空的 503（develop 上同样存在）。内置插件的就绪检查现在只决定节点启动后何时第一次就绪，之后不再撤回（CONTRACTS §29.1）。同一个误判还让一个节点在发布期间每 5 秒跑一整轮内置插件安装，每次上传都占集群变更锁，管理员这时提交插件变更会收到 409；发布进行中的内置插件现在算已装好，不再触发安装。
-- **核心读用量的端点上，上游成功应答却一个用量都没读到时记“未上报”**：以前这样的记录静默地不计费，没有标记也没有日志；现在和插件选了核心读数而读数为空时一样，记零费用的 `usage_unreported` 记录（`anomalies.usage_extract = unreported`）并记一条 WARN，漏计费能在使用记录里查到。按次计价、`billing: "free"` 的端点不变（CONTRACTS §25.3）。
+- **核心读用量的端点上，上游成功应答却一个用量都没读到时记“未上报”**：以前这样的记录静默地不计费，没有标记也没有日志；现在和插件选了核心读数而读数为空时一样，记零费用的 `usage_unreported` 记录（`anomalies.usage_extract = unreported`）并记一条 WARN，漏计费能在使用记录里查到。按次计价、`billing: "free"` 的端点和任务提交不变（CONTRACTS §25.3）。
 - **发布了失败策略时 WebSocket 首轮握手失败照样重试、换号**：以前协议升级之后 gin 认为响应已经写出，策略把第一个账号的握手失败（上游 HTTP 错误、插件失败、目标被拒）一律判成 `response_committed`，直接把错误发给客户端，分组里其他账号都不试（`core-v0.1.303` 就是这样，本节和下面几处写的“握手换号”此前在线上不成立）。现在握手那一轮按 HTTP 尝试处理：策略的原账号重试、换号、出口约束都生效，核心拒绝的握手不罚账号就换号。没有策略时握手换号也解除会话粘在失败账号上的绑定（以前只放会话名额，绑定留在失败的账号上，同一会话的新连接每次先试它）。见 CONTRACTS §35。
 - **流式专用上游上，非流式客户端在核心收流期间离开照样计费**：codex 账号（含 chat 适配和经 Responses 生图）这类只流式的上游，核心要先把 SSE 读完再拼 JSON 交给非流式客户端；以前客户端在这段时间离开，上游立刻被取消、记录不计费（`continue`、`precharge` 都不生效，§83 起就有）。现在已开始读 2xx 的流就算上游已应答：`continue` 读完、按上游报告的用量计费，`precharge` 按预估计费（CONTRACTS §25.8）。
 - 发布了失败策略时插件和核心自己的失败换号、未上报的请求不续粘性会话、WebSocket 首轮参数覆盖失败换号、经代理的账号不在本机解析域名：见升级须知。
@@ -270,7 +270,7 @@
 
 ### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0115）
 
-- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。对话测试请求对 OpenAI 拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）改写 `max_completion_tokens`，其余模型照旧 `max_tokens`；volcengine 的对话测试同样如此。
+- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。对话测试请求对 OpenAI 拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）改写 `max_completion_tokens` 并取 16（推理占用这个上限，与 new-api 相同），其余模型照旧 `max_tokens`；volcengine 的对话测试同样如此。
 - **生图只在带了模型名时测**：清单端点新字段 `test`，`openai.json` 的生成图片标 `explicit`（会真的出一张图、花钱），编辑图片标 `never`（要输入图片）。“测试模型”里的单独测试、“测试所选”“测试全部”都带模型名，绑了生图协议的模型照常按生图协议测、真实出图；不带模型名的默认测试（账号列表的“批量测试”、“测试账号”）不会选生图协议。
 - 模型在“模型的协议限定”里有条目时按条目里写的协议顺序测；不点名模型时跳过只剩生图协议的模型。
 - **没有可测协议的模型不测**：被测模型在这个账号上没有可测的协议（例如只开了编辑图片）、或不点名时所有模型都没有，回 400 `no_testable_protocol` 并记为失败，不再拿默认的对话请求去测。`standard` 库收到协议列表而一个都没有测试请求时同样报错，不退回默认测试。
@@ -320,7 +320,7 @@
 - **新设置“系统设置 → 运行环境 → 插件联网”**：所有域名的默认设置二选一。“允许所有域名”（默认）下维护一张“已屏蔽的域名”，“屏蔽所有域名”下维护一张“已允许的域名”；列出的域名连同它的子域名生效，两张表分开保存，切换模式不会丢。添加对话框可以一次填多个，或批量粘贴（每行一个），格式不对的行逐行提示。保存后各节点对新连接立即生效（漏收广播的节点最多 10 秒），已建立的连接不断开。接口 `GET/PUT /settings/plugin-egress`（`settings:read` / `settings:manage`），每次保存记审计 `settings.plugin_egress.update`。
 - **只收紧，不放宽**：插件仍须持有 `net` 授权；插件详情“外部访问”里设为“仅白名单”的插件仍只能访问它获批的域名，管理员的允许列表不会把别的域名加给它。被拒的连接和 DNS 查询照常记在插件的外部访问日志里，结果“已拒绝”，原因写明是被屏蔽还是不在允许列表里。
 - **管插件经核心发出的全部网络**（所有者决定“插件的所有网络都通过核心发出，这时候来进行域名限制”，CONTRACTS §113.3）：插件自己的连接（出口隧道：Webhook、SMTP、审核渠道等），以及核心替插件发出的请求——转发（含 WebSocket 握手）、取回（含任务轮询和 codex 带代理票据的授权请求）、`SendAccountRequest`、配额查询、凭证续期、账号测试、拉取模型列表。目标主机先过清单与账号地址的规则（§112.17），再过这项设置，两道都过才发。被拒的转发什么都不发出、换下一个账号、不罚账号（原因 `upstream_host_blocked`），所有账号都被拒时客户端得到 `no_available_account`（不含主机名）；取回和 `SendAccountRequest` 回 `PERMISSION_DENIED`；配额与续期的插件看到传输错误；账号测试、模型列表显示原因。每个被拒的请求记在该插件“外部访问”的明细里（结果“已拒绝”，协议 `https`/`http`）。判断与隧道同一份缓存，请求路径上不读数据库。
-- 列表按规范写法匹配：请求的主机先按保存列表时的规则规范化再比较，国际化域名的 Unicode 写法、IPv6 的非规范写法（如 `[2001:db8:0:0::1]`）不再绕过屏蔽列表，也不再在“屏蔽所有域名”下被误拒（CONTRACTS §113.2）。
+- 列表按规范写法匹配：请求的主机先按保存列表时的规则规范化再比较，国际化域名的 Unicode 写法、IPv6 的非规范写法（如 `[2001:db8:0:0::1]`）、IPv4 映射的 IPv6（如 `::ffff:93.184.216.34`，列表里也按它的 IPv4 保存）不再绕过屏蔽列表，也不再在“屏蔽所有域名”下被误拒（CONTRACTS §113.2）。
 - 控制台：说明文字改为覆盖两条路；切换到“屏蔽所有域名”前要确认，选中时显示警告：允许列表里没有的上游域名对应的平台请求会全部被拒。
 - 以前没有全局的插件联网设置，按插件的出口策略（`allow_all` / `allowlist`）保持原样，没有要迁移的旧选项。升级要做的见升级须知。
 - e2e AC37 覆盖屏蔽列表、允许列表对 guard webhook 的效果与出口日志里的拒绝原因，以及对经网关的上游请求（anthropic 账号的 `base_url`）的效果（CONTRACTS §113.5）。
@@ -404,7 +404,7 @@
 分支 `feat/upstream-plugins`。三个插件都**只对文档、单元测试、合规套件、黄金样例和模拟上游验证过，没有接过真实站点或真实 TypeSafe 账号**。契约见 CONTRACTS §119，填法见 [PLUGIN-NEWAPI.md](next/docs/PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](next/docs/PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](next/docs/PLUGIN-TYPESAFE.md)。
 
 - **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；Gemini `countTokens` 不转发，由核心本地估算。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
-- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组的 `subscription` 三项限额都为空时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
+- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组没配限额（`subscription` 存在且 `remaining` 为 `-1`）时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。
 - **模拟上游与 e2e**：mock 新增两个站点的余额接口、OpenAI 生图接口、TypeSafe 主机名下的模型列表（`api.typesafe.ai` 加进 e2e 网络别名）；AC30 加 newapi、sub2api、typesafe 三行和 New API 账号转发 Jev，新增 AC39（账号余额）、AC40（OpenAI 生图）、AC41（Responses 生图工具的 token 计入请求模型，一条记录、一笔扣费、没有另计分项）；mock 的 Responses 对 `image_generation` 工具回 `tools`（模型 `gpt-image-2-codex`）与 `tool_usage.image_gen`。

@@ -973,11 +973,11 @@ func (s *Store) ValidateNode(ctx context.Context, node, boot string) error {
 	db := s.db(ctx)
 	err := gormpg.ExistsQuery(db, s.nodeRow(db, node).Where("shell_boot_id = ? AND enabled AND peer_protocol = ? AND strategy = ?", boot, PeerProtocol, PrimaryFirst)).Row().Scan(&ok)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", peer.ErrUnavailable, err)
 	}
 	if !ok {
 		s.validNodes.Delete(cacheKey)
-		return errors.New("node boot is disabled or not registered")
+		return fmt.Errorf("%w: node boot is disabled or not registered", peer.ErrUnauthorized)
 	}
 	s.validNodes.Store(cacheKey, time.Now().Add(validateNodeCacheTTL))
 	return nil

@@ -1919,7 +1919,7 @@ message RankedAccount {
 
 #### 读不出用量 = 采用核心的读数，并且标出来
 
-插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。用量由核心读的端点（不是 `plugin`）同样如此：上游成功应答、端点按用量计费而核心的读数完全为空（没有可计价的东西）时，记录改成同一条零费用的 `usage_unreported` 记录（`anomalies.usage_extract = "unreported"`），记一条 WARN（插件、账号类型、端点、协议），不再静默地当成免费请求；按次计价的端点、`billing: "free"` 的端点不受影响。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
+插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。用量由核心读的端点（不是 `plugin`）同样如此：上游成功应答、端点按用量计费而核心的读数完全为空（没有可计价的东西）时，记录改成同一条零费用的 `usage_unreported` 记录（`anomalies.usage_extract = "unreported"`），记一条 WARN（插件、账号类型、端点、协议），不再静默地当成免费请求；按次计价的端点、`billing: "free"` 的端点、任务提交（用量在任务结束时才有）不受影响。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
 
 #### 边界：插件填事实，核心补齐并覆盖
 
@@ -4791,7 +4791,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 流程除了绑定到分组，还可以绑定到**分组下的某个账号**和**某个账号（不论分组）**。三种绑定可以同时存在，一个请求只按其中一条审核。
 
-**优先级**（`snapshot.flowForAccount`，与界面的命中预览 `bindingOps.resolveBinding` 一致）：请求分组为 G、发往账号 A 时依次找
+**优先级**（`snapshot.flowForAccount`，与界面的命中预览 `bindingOps.resolveSteps` 一致）：请求分组为 G、发往账号 A 时依次找
 1. 分组 + 账号 `(G, A)`；
 2. 账号 `(0, A)`（任意分组）；
 3. 分组 G；
@@ -4824,7 +4824,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 **界面**：新标签页“绑定”（`BindingsTab.vue`），位于“流程”之后。
 - 列出全部绑定，按优先级排序；可按类型筛选、按账号 / 分组 / 流程搜索。手机上每条显示为卡片。
 - 新增或编辑在弹窗里进行（`BindingEditModal.vue`）：选类型，再选分组和账号（选“分组 + 账号”时只列出该分组的账号）和流程（含“不审核（免审）”）。读不到核心账号列表时改为填 ID。编辑只能改流程。
-- “命中预览”：选分组和账号，显示请求会按哪一条绑定审核；0.8.0 起跳过不生效的绑定，并列出被跳过的是哪几条（`bindingOps.resolveBinding`）。
+- “命中预览”：选分组和账号，显示请求会按哪一条绑定审核；0.8.0 起跳过不生效的绑定，并列出被跳过的是哪几条（`bindingOps.resolveSteps`）。
 - 0.8.0：不生效的绑定在列表里显示灰色徽标（“流程已停用，这条绑定不生效”等）和“现在按哪条绑定审核”或“现在不审核”。编辑时选了未启用的流程会提示保存后暂不生效、要不审核请选免审。流程页停用一个有绑定的流程时，确认框写明它的分组和账号将回落到更宽的绑定。
 - 流程列表的分组单元格显示“另有 N 个账号绑定”，可跳到绑定页；分组冲突的对方为 flow 0 时显示“不审核”。
 
@@ -8300,7 +8300,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 每个节点缓存设置 10 秒（与网关设置相同）；收到上述广播立即失效，过期时先用旧值、后台重读。读失败沿用上次的值；本节点从未读成功时拒绝连接（`plugin network access settings could not be read`），不按默认放行。
 - 新连接的检查顺序（`Provider.check`）：数据库例外（核心 DSN 里的真实地址，只给有 Database 的插件；严格网络下插件拿到的是虚拟地址 `db.sub2api:5432`，用到它的只有在不要求严格网络的核心上用 `pluginsdk.WithStrictNetwork(StrictAlways)` 自己装隧道的插件，§115）→ `net` 授权 → 本插件的出口策略（`allowlist` 时只能去 `net` 授权的域名）→ **插件联网** → 核心服务地址 → 解析结果必须是公网地址。目标要同时通过插件自己的授权、策略和管理员的设置；管理员的允许列表不放宽任何插件的授权。数据库例外不受插件联网影响。
 - 插件的 DNS 查询（`dns.sub2api`）同样过插件联网，被拒回 REFUSED。
-- 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。比较前名字按列表条目保存时的规则（`NormalizeDomain`）规范化：国际化域名转 punycode，IPv6 按规范写法，所以 `bücher.example` 与 `xn--bcher-kva.example`、`2001:db8:0:0::1` 与 `2001:db8::1` 是同一个目标；规范化不了的名字原样比较。
+- 匹配用 `manifest.ExternalServiceHost`：列出的域名匹配自己和所有子域名，不区分大小写；比较插件拨号或查询用的名字（解析之前），插件直接拨 IP 时按该 IP 比较，列表里的 IP 只匹配它自己；端口不参与。比较前名字按列表条目保存时的规则（`NormalizeDomain`）规范化：国际化域名转 punycode，IPv6 按规范写法，IPv4 映射的 IPv6 按它的 IPv4，所以 `bücher.example` 与 `xn--bcher-kva.example`、`2001:db8:0:0::1` 与 `2001:db8::1`、`::ffff:93.184.216.34` 与 `93.184.216.34` 是同一个目标；规范化不了的名字原样比较。
 - 被拒的连接照常写 `plugin_egress_logs`，`result = denied`，`error` 为 `<host> is on the blocked list of plugin network access`（`allow_all`）或 `<host> is not on the allowed list of plugin network access`（`block_all`），在 `GET /plugins/:key/egress` 的明细、汇总与访问过的域名里可见。
 - **局限**（所有者接受）：
   - `allow_all` 下屏蔽的是名字：插件直接拨 IP 字面量时按 IP 比较，屏蔽某个域名挡不住插件直接拨它解析出的 IP。要彻底限住插件能去哪里，用 `block_all`。
@@ -8587,7 +8587,7 @@ ALTER TABLE usage_logs
 | 账号类型 | 请求（都在账号的 `base_url` 上，经账号代理，`updateInterval` 600 秒） | 结果 |
 |---|---|---|
 | newapi | `GET /api/usage/token/`（带 Bearer），只这一个请求 | 站点的额度点数 `data.total_available` 原样，**没有单位**；带 `user_quota.total_available` 时取两者较小；令牌不限额时取用户额度，没有用户额度时为不限。`code` 不为真为暂时失败 |
-| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`，`-1` 为不限；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
+| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`；有 `subscription` 且 `remaining` 为 `-1`（旧版订阅分组没配限额）为不限，其他 `-1` 照数字（钱包可透支）；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
 | typesafe | 不声明 `balance` | TypeSafe 没有余额接口，控制台不查不显示 |
 
 - **余额显示上游返回的数字和单位本身，不做任何换算**（所有者 2026-11-18：“上游返回多少我们就是多少”）：不折算美元、不换汇率，数字或单位不对也照样显示。New API 显示的是站点的额度点数，没有单位。
@@ -8785,7 +8785,7 @@ ALTER TABLE usage_logs
 
 | 预设 | 协议 | 测试请求体 | 不点名时的模型 |
 |---|---|---|---|
-| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens`（`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
+| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens: 16`（推理占用这个上限，new-api 同为 16；`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
 | openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在请求带了模型名时用到，这时用的是那个模型名）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |

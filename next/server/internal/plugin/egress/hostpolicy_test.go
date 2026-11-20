@@ -26,6 +26,7 @@ func TestNormalizeDomain(t *testing.T) {
 		"93.184.216.34":           "93.184.216.34",
 		"2001:DB8::1":             "[2001:db8::1]",
 		"[2001:db8::1]":           "[2001:db8::1]",
+		"[::ffff:93.184.216.34]":  "93.184.216.34",
 		"a-b.c":                   "a-b.c",
 	}
 	for in, want := range ok {
@@ -49,6 +50,7 @@ func TestHostPolicyRefusal(t *testing.T) {
 	refused := map[string]bool{
 		"example.com": true, "api.example.com": true, "a.b.example.com": true, "badexample.com": false,
 		"other.org": false, "2001:db8::1": true, "2001:db8:0:0::1": true, "93.184.216.34": true, "93.184.216.35": false,
+		"::ffff:93.184.216.34": true, "::ffff:5db8:d822": true,
 		"bücher.example": true, "api.bücher.example": true, "xn--bcher-kva.example": true,
 	}
 	for host, want := range refused {

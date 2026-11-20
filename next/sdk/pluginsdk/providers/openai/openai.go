@@ -33,14 +33,15 @@ var Policy = classify.Policy{
 // asking the upstream to answer "ping". BuildTestRequest uses it so every
 // OpenAI-compatible plugin probes the same shape; maxTokens stays a parameter
 // because the minimum a model accepts differs (1 for OpenAI, 16 for some Ark
-// models). The limit is max_completion_tokens for a model OpenAI refuses
-// max_tokens for (maxCompletionTokensOnly), max_tokens, which every
-// OpenAI-compatible upstream knows, for any other. The result is
-// deterministic JSON: encoding/json sorts map keys.
+// models). A model OpenAI refuses max_tokens for (maxCompletionTokensOnly)
+// is a reasoning model whose reasoning counts against the limit, so it is
+// asked for max_completion_tokens 16 instead, as new-api's channel test does;
+// any other gets max_tokens, which every OpenAI-compatible upstream knows.
+// The result is deterministic JSON: encoding/json sorts map keys.
 func ChatPingBody(model string, maxTokens int) string {
 	limit := "max_tokens"
 	if maxCompletionTokensOnly.MatchString(model) {
-		limit = "max_completion_tokens"
+		limit, maxTokens = "max_completion_tokens", 16
 	}
 	return pingJSON(map[string]any{
 		"model":    model,
