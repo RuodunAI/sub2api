@@ -585,8 +585,13 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 		}
 	}()
 	for cl.rec.Attempts < cl.attemptLimit() {
-		ref, release, busy := cl.pick(ctx, cands, excluded)
+		available, err := cl.policyCandidates(ctx, cands)
+		if err != nil {
+			return nil, fromCore(core.ErrUnavailable.WithMessage("account selection unavailable"), errTypeInternal)
+		}
+		ref, release, busy := cl.pick(ctx, available, excluded)
 		if ref == nil {
+			cl.endFailurePolicy("no_eligible_account")
 			if last == nil {
 				last = fromCore(core.ErrNoAvailableAccount, errTypeNoAccount)
 				if busy {
@@ -607,6 +612,7 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 			}
 		}
 		cl.rec.Attempts++
+		stickyAttempt := cl.sticky != nil && cl.sticky.hit && cl.sticky.bound == ref.ID
 		cl.startObservationAttempt(ref)
 		cl.beginFailureAttempt(ref)
 		begun := cl.g.now()
@@ -627,14 +633,11 @@ func (s *wsSession) connect(ctx context.Context, cl *call) (func(), *gwError) {
 		cl.observeAttemptResult(ref, res)
 		switch res.kind {
 		case attemptFailover:
-			excluded[ref.ID] = true
-			cl.skipAccount(ref.ID, core.SchedAttemptFailed, attemptFailureDetail(res.err))
 			last = res.err
-			if cl.sticky != nil && cl.sticky.hit && cl.sticky.bound == ref.ID && cl.sticky.rule.OnFailure == onFailureStick {
+			if cl.failOver(ctx, ref, res, excluded, stickyAttempt) {
 				cl.finishSticky(ctx, ref.ID, false)
 				return nil, last
 			}
-			cl.leaveSession(ctx, ref)
 		default:
 			cl.finishSticky(ctx, ref.ID, false)
 			return nil, res.err
