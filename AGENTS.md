@@ -155,7 +155,7 @@ cd next/plugins/<name> && go test -count=1 ./...
 
 - 插件打包：`sub2api-plugin pack` 默认先跑 `db check`（需要 PostgreSQL，规则同上）。
 - 重新生成 proto：`cd next/sdk && buf generate`（buf 1.47.2、protoc-gen-go v1.31.0、protoc-gen-go-grpc v1.2.0）。
-- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（十二个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据），AC39 是账号余额，AC40 是 OpenAI 生图，AC41 是 Responses 生图工具的 token 计入请求模型，AC42 是 Codex 账号经核心转换服务 OpenAI 生图，AC43 是插件账号上下文（`GetAccount` 的审计、账号请求经账号代理、带旧账号授权的包被拒）。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
+- e2e 不在 CI 里运行，需要专用的 e2e 栈，见 `next/deploy/e2e/README.md`（建 `.env`、构建镜像、`up -d --wait` 之后在仓库根执行 `sh next/deploy/e2e/test.sh`；只跑几个用例时加 `-run '^TestAC(30|36)'`）。整套约 27 分钟，脚本默认 `-timeout=150m`（直接 `go test` 时自己带上）。AC30–AC36 是转发 V2 的用例（十一个平台插件经 `Execute`、运营方设置、换号与未上报、旧契约被拒、Responses WebSocket、请求体上限、官方 OpenAI / Anthropic Go SDK 作客户端），AC37 是插件联网，AC38 是 codex 授权经账号表单的代理（代理票据），AC39 是账号余额，AC40 是 OpenAI 生图，AC41 是 Responses 生图工具的 token 计入请求模型，AC42 是 Codex 账号经核心转换服务 OpenAI 生图，AC43 是插件账号上下文（`GetAccount` 的审计、账号请求经账号代理、带旧账号授权的包被拒）。mock 按客户端请求的主机名（SNI）用自建 CA 现签证书，厂商主机名只写在 e2e `compose.yml` 的网络别名里。
 
 ### 控制台（`next/web`，Node 24，npm）
 
@@ -183,7 +183,7 @@ CI 只跑 `npm ci`、`typecheck`、`test`；`lint` 本地也要跑。
 
 ## 读代码从哪里开始
 
-- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§126（迁移 0118 清理火山引擎陈旧键）、§127（密钥与基础地址）、§23 与 §75（插件界面只用代码写、界面包 4.0）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
+- 契约与构建规则：`next/docs/CONTRACTS.md` §1–§3；最近的大改动：§112（平台插件转发 V2）、§113（插件联网）、§114（插件包不依赖主节点）、§115（插件数据库只用核心的用户）、§116（删除 Claude OAuth）、§117（代理票据）、§118（OpenAI 生图）、§119（上游插件 newapi、sub2api、typesafe）、§124（插件按归属收到账号的全部信息）、§125（删除 growth）、§127（密钥与基础地址）、§128（删除 volcengine）、§23 与 §75（插件界面只用代码写、界面包 4.0）、§52（账号余额）、§111（请求体上限、插件内存）、§110（协议绑定）、§99（Casbin）、§100（会话）、§2 的“核心的 SQL”“插件数据库”。
 - 架构与数据模型：`next/docs/ARCHITECTURE.md` §2–§5、§13、§16。
 - 最近发生了什么：`CHANGELOG.md` 的“未发布”与最新几节。
 - 组装入口：`next/server/cmd/sub2api/main.go`、`next/server/internal/app`。

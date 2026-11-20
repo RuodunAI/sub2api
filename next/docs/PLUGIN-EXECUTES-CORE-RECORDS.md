@@ -3,7 +3,7 @@
 > **历史设计稿。** 现行契约是 CONTRACTS §112（转发 V2，2026-11-18）：每个平台插件只有 `Execute` 一条请求路径，插件拿到完整请求体、经核心的 HTTP 客户端发出请求，用量与任务事实只在 `Execute` / `Monitor` 的返回值里。本文里的 `BuildUpstreamRequest`、`requestFields`、`ExtractUsage` 事后调用、回调上报、`BuildReconcileRequest` / `ParseReconcileResponse` 都已删除。托管任务契约见 §28，后台执行器见 §30。本文写的大小预算（观察的 `maxBytes` 默认 256 KiB 与 64 条事件、`usageRequestFields` 单值 4 KiB / 总量 32 KiB 与 `fields_omitted`、`detail_json` 4 KiB、`path_params` 的个数和长度）在转发 V2 收尾时按所有者决定删除，默认都不限，见 CONTRACTS §112.16。
 
 > 状态：**已全部实现**（A–D 四期 + E 期收尾，2026-09-30）。落地记录与设计更正在 [CONTRACTS](CONTRACTS.md) §25.1–§25.6 —— **那里才是真相源**，本文是当初的设计稿，正文里有若干条后来被证伪（每条都在 §25 对应小节里点明）。
-> 这份文档讲的是**核心 SDK 契约的扩展**，不是某个插件。第一个用户是 [字节火山方舟 / 豆包插件](PLUGIN-VOLCENGINE-ARK.md)，但每一条都不带厂商语义。
+> 这份文档讲的是**核心 SDK 契约的扩展**，不是某个插件。第一个用户是字节火山方舟 / 豆包插件（0.1.304 删除，CONTRACTS §128；说明书见 `git show b58f8149e:next/docs/PLUGIN-VOLCENGINE-ARK.md`），但每一条都不带厂商语义。
 
 ---
 

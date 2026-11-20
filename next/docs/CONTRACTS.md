@@ -1884,7 +1884,7 @@ message RankedAccount {
 
 授权拆成两级：`ListAccounts` 由 **`accounts.read`**（Medium）授权且**绝不返回凭证**——这个权限在风险表里列着却从未被使用过，就是为这个入口预留的（`AccountScopeCheck` 也用它，见 §21.1 插件路由一条）；`GetAccountCredentials` 需要 **`accounts.credentials` 且 scope 必须是 `{"types":"own"}`**。
 
-> 这解冻了火山方舟插件三期（素材库），见 `PLUGIN-VOLCENGINE-ARK.md` §4.5.2。
+> 这解冻了火山方舟插件三期（素材库）。volcengine 插件在 0.1.304 删除（§128）。
 
 #### 3. 流式端点必须有生效的 SSE 用量规则
 
@@ -2221,16 +2221,16 @@ Linux 上 `go test -v ./...`（`next/server`）共 **599 个 `=== RUN`，只有 
 
 ### 26.8 内建插件分两种：安装并启用 / 只安装（2026-09-30）
 
-**用户裁定**：volcengine 随镜像内建安装，但默认不启用。它在运维加上 Ark 账号（每个部署自己的凭证和 base URL）之前什么都做不了，所以「每个镜像都带、默认启用」没有意义；而「只进市场」又要求每个部署自己去市场装一遍。这推翻了此前 `build-go.sh` 里「volcengine 故意不内置」那条决定（HANDOVER §6 旧行），理由正是它原来的理由：启用它才没有意义，安装它有意义。
+**用户裁定**（volcengine 在 0.1.304 删除，§128；只安装的列表沿用至今）：volcengine 随镜像内建安装，但默认不启用。它在运维加上 Ark 账号（每个部署自己的凭证和 base URL）之前什么都做不了，所以「每个镜像都带、默认启用」没有意义；而「只进市场」又要求每个部署自己去市场装一遍。这推翻了此前 `build-go.sh` 里「volcengine 故意不内置」那条决定（HANDOVER §6 旧行），理由正是它原来的理由：启用它才没有意义，安装它有意义。
 
 **两份列表**（`next/deploy/docker/build-go.sh`，都必须显式列举，不从 `plugins/*` 推导）：
 
 | 列表 | 默认值 | 含义 |
 |---|---|---|
 | `BUILTIN_PLUGINS` | `anthropic openai gemini moderation codex` | 安装，首次安装即启用 |
-| `BUILTIN_PLUGINS_INSTALL_ONLY` | `volcengine mailer dynweight newapi sub2api typesafe` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
+| `BUILTIN_PLUGINS_INSTALL_ONLY` | `mailer dynweight newapi sub2api typesafe` | 安装，**保持未启用**，由管理员在配置好之后手动启用 |
 
-（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节，`newapi`、`sub2api`、`typesafe` 见 §119；`custom` 在 0.1.301 删除，见 §106。）
+（默认值为 `build-go.sh` 的现值：本节写成时两份列表分别是 `anthropic openai gemini moderation` 与 `volcengine`，`codex` 见 §83，其余只安装插件见各自章节，`newapi`、`sub2api`、`typesafe` 见 §119；`custom` 在 0.1.301 删除，见 §106；`volcengine` 在 0.1.304 删除，见 §128。）
 
 同一个插件同时出现在两份列表里时构建失败。第二份列表写进内建目录的 **`install-only.txt`**（每行一个 key，`#` 注释、空行、CRLF 都容忍），核心的 `EnsureBuiltin`（`server/internal/plugin/install/builtin.go`）读它。
 
@@ -2512,7 +2512,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 核心政策结束与上游明确生成失败分开记录：`task_not_found`、`task_poll_failed`、`task_timeout` 保存到任务中。查询接口分别返回 HTTP 404、502、504，不再把旧的“处理中”快照当作当前结果；错误响应不透出上游私有信息。达到重试上限不意味着上游一定未完成，而是部署采用的停止观察并退款策略。
 
-内置 volcengine 已采用该接口：正常运行进度为 PENDING；完整 404/410 为 NOT_FOUND；网络错误、其他非 2xx、截断、无效 JSON、缺失或未知状态均为 POLL_FAILED。调度、连续失败上限和退款均由核心完成。
+内置 volcengine（0.1.304 删除，§128）曾采用该接口：正常运行进度为 PENDING；完整 404/410 为 NOT_FOUND；网络错误、其他非 2xx、截断、无效 JSON、缺失或未知状态均为 POLL_FAILED。调度、连续失败上限和退款均由核心完成。
 
 ## 33. 网关托管与兼容滚动升级（2026-10-01）
 
@@ -2662,7 +2662,7 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 
 ### 41.4 内置插件预设
 
-**2026-10-05 修订（用户决定）：插件预设模型映射一般留空。** 映射是账号自己的选择，插件不替用户把一个模型悄悄换成另一个；以前靠映射才能用的已退役模型也从预设模型列表里删掉了。目前只有 volcengine 保留预设映射（去日期后缀的名称 → 带日期的方舟模型 ID，属于"同一模型的别名"，不是换模型）。
+**2026-10-05 修订（用户决定）：插件预设模型映射一般留空。** 映射是账号自己的选择，插件不替用户把一个模型悄悄换成另一个；以前靠映射才能用的已退役模型也从预设模型列表里删掉了。曾经只有 volcengine 保留预设映射（去日期后缀的名称 → 带日期的方舟模型 ID），它在 0.1.304 删除（§128），现在没有第一方插件带预设映射。
 
 | 插件（版本） | 账号类型 | 预设模型 | 预设映射 |
 |---|---|---|---|
@@ -2670,11 +2670,9 @@ SDK 提供 `pluginsdk.TaskNotFound(reason)`、`pluginsdk.PollFailure(reason)` �
 | relay 0.2.2 | `relay_key` | 同 anthropic | 无（由中转站自己决定模型） |
 | openai 0.3.4 | `apikey` | new-api OpenAI 列表中走 chat / responses / embeddings 的模型（不含本平台没有端点的音频、图片、实时、视频模型，也不含 `gpt-4.5-preview*`、`o1-preview`、`o1-mini` 等已退役模型） | 无 |
 | gemini 0.2.4 | `apikey` | new-api Gemini 列表中走 generateContent 的模型（不含 imagen、veo、TTS、原生音频，也不含 `gemini-1.5-*` 与旧 2.5 预览版） | 无 |
-| volcengine 0.12.2 | `apikey`、`relay` | 豆包 Seed 1.6、Seedream 4.0/4.5、Seedance 1.0/1.5/2.0/2.5、文本向量（方舟没有能用 API Key 调用的模型列表接口，§19 不可用） | 去掉日期后缀的名称 → 带日期的方舟模型 ID（如 `doubao-seedance-2-0` → `doubao-seedance-2-0-260128`） |
 
-`defaultModelMapping` 字段与校验（41.1）、`default_model_mapping` 接口字段（41.2）和控制台的"填入预设映射"（41.3）都保留，供 volcengine 与第三方插件使用；预设映射为空时控制台不显示该按钮的数量提示即可。已经按旧预设建好的账号，映射仍保存在账号上，不受插件升级影响（§41 开头：预设与账号再无关联）。
+`defaultModelMapping` 字段与校验（41.1）、`default_model_mapping` 接口字段（41.2）和控制台的"填入预设映射"（41.3）都保留，供第三方插件使用；预设映射为空时控制台不显示该按钮的数量提示即可。已经按旧预设建好的账号，映射仍保存在账号上，不受插件升级影响（§41 开头：预设与账号再无关联）。
 
-volcengine 0.12.2 的两个表单同时用 `ui:section` 把素材库字段归入"素材库（可选）"，`relay` 的旧前缀字段归入默认折叠的"兼容配置"（0.13.0 起表单是原生组件，同样的分节用 `SFormSection`，兼容配置仍默认折叠）。
 
 计费、分组白名单、粘性会话仍按**映射前**的请求模型（§18）：客户端使用映射里的别名时，需要为别名配置价格。
 
@@ -3993,9 +3991,9 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 ### 72.3 manifest 变化
 
 - 版本 0.2.0；能力不变（`gateway.hook.v1`、`app.jobs.v1`、`app.broadcast.v1`、`http.routes.v1`），宿主权限加 `secrets`。
-- 钩子 `needs` 改为：`model`、`messagesTAIL16`、`inputTAIL16`、`[input]|#(%"*")`、`contentsTAIL16`（`TAIL16` 见 72.2 第 1 条，manifest 里写展开后的原文）。`scope.fields` 照抄。**0.6.0 起**改为各顶层字段整体：`model`、`system|@this`、`messages|@this`、`tools|@this`、`input|@this`、`instructions|@this`、`contents|@this`、`systemInstruction|@this`、`system_instruction|@this`、`prompt|@this`、`content|@this`、`image|@this`。写成 `|@this` 查询而不是普通路径，是为了让这些字段只读（核心不允许钩子修补查询字段，`hooks.go` `isQueryField`）。`gateway.hook` 的 `scope.fields` 变了，**升级 0.6.0 需要管理员重新批准该权限**（风险 high）。
-- 钩子 `match.protocols`：`anthropic.messages`、`openai.chat`、`openai.responses`、`openai.responses_ws`、`gemini.generate`、`gemini.stream_generate`。`openai.responses_ws`（2026-10-31 补上）：核心对 WebSocket 的每条 `response.create` 单独跑钩子，字段从这条消息本身取（`model`、`input` 在顶层，与 HTTP Responses 相同），漏掉它时拦截级用户和被封禁用户走 WebSocket 就完全不经审核。0.6.0 加上 `volcengine.images`（审 `prompt` 和 `image`）、`volcengine.video_submit`（审 `content` 里的文字和图片）。
-- **封禁钩子（0.6.0）**：另一个钩子 `ban`（order 199，`match` 为空即匹配所有协议，不要任何字段，超时 2 秒，failure open），只做 72.5 第 1、2 步：被封禁用户在 `openai.embeddings`、`*.count_tokens`、`volcengine.video_query` 以及平台插件自己声明的协议上也被拒绝（2026-10-31 团队审核 P2；此前 §72.1 "封禁"的定义言过其实）。内容审核钩子仍只匹配上面 8 个协议：embeddings 和 count_tokens 不生成内容，而且 count_tokens 的请求体就是整段对话，匹配它们只会把大请求白白发给插件。核心对空 `match`（或 `"*"`）匹配全部协议、这些协议都会执行请求钩子（2026-10-31 与核心确认；`video_query` 是 GET，没有请求体，字段为空）。封禁钩子与审核钩子对 8 个审核协议各调一次插件，封禁检查只读内存，开销可以忽略。
+- 钩子 `needs` 改为：`model`、`messagesTAIL16`、`inputTAIL16`、`[input]|#(%"*")`、`contentsTAIL16`（`TAIL16` 见 72.2 第 1 条，manifest 里写展开后的原文）。`scope.fields` 照抄。**0.6.0 起**改为各顶层字段整体：`model`、`system|@this`、`messages|@this`、`tools|@this`、`input|@this`、`instructions|@this`、`contents|@this`、`systemInstruction|@this`、`system_instruction|@this`（0.6.0 到 0.12.1 还有 volcengine 用的 `prompt|@this`、`content|@this`、`image|@this`，0.12.2 随 volcengine 删除，§128）。写成 `|@this` 查询而不是普通路径，是为了让这些字段只读（核心不允许钩子修补查询字段，`hooks.go` `isQueryField`）。`gateway.hook` 的 `scope.fields` 变了，**升级 0.6.0 需要管理员重新批准该权限**（风险 high）。
+- 钩子 `match.protocols`：`anthropic.messages`、`openai.chat`、`openai.responses`、`openai.responses_ws`、`gemini.generate`、`gemini.stream_generate`。`openai.responses_ws`（2026-10-31 补上）：核心对 WebSocket 的每条 `response.create` 单独跑钩子，字段从这条消息本身取（`model`、`input` 在顶层，与 HTTP Responses 相同），漏掉它时拦截级用户和被封禁用户走 WebSocket 就完全不经审核。0.6.0 加上的 `volcengine.images`、`volcengine.video_submit` 在 0.12.2 随 volcengine 删除（§128）。
+- **封禁钩子（0.6.0）**：另一个钩子 `ban`（order 199，`match` 为空即匹配所有协议，不要任何字段，超时 2 秒，failure open），只做 72.5 第 1、2 步：被封禁用户在 `openai.embeddings`、`*.count_tokens`、`openai.images` 以及平台插件自己声明的协议上也被拒绝（2026-10-31 团队审核 P2；此前 §72.1 "封禁"的定义言过其实）。内容审核钩子仍只匹配上面 6 个协议：embeddings 和 count_tokens 不生成内容，而且 count_tokens 的请求体就是整段对话，匹配它们只会把大请求白白发给插件。核心对空 `match`（或 `"*"`）匹配全部协议、这些协议都会执行请求钩子（2026-10-31 与核心确认；`video_query` 是 GET，没有请求体，字段为空）。封禁钩子与审核钩子对 8 个审核协议各调一次插件，封禁检查只读内存，开销可以忽略。
 - 权限：保留 `moderation:read`、`moderation:manage`，和 new-api 的 read / write 一一对应。read 能看全部页面，包括原文；manage 负责所有修改和要花钱的调用（试跑、测试、手动分析）。
 - 任务：`cleanup` 保留（72.10）；P2 加 `analysis`（`@every 1m`，处理分析队列，72.13），0.10.0 删除。
 - **0.8.0**：版本 0.8.0，`hostCompat` 不变（`>=0.1.258 <0.2.0`，没有用到新的宿主接口）。
@@ -4022,7 +4020,6 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
   - `anthropic.messages`：`system` + `messages` + `tools`；`openai.chat`：`messages` + `tools`；
   - `openai.responses`、`openai.responses_ws`：`instructions` + `input`（数组或字符串）+ `tools`；
   - `gemini.generate`、`gemini.stream_generate`：`systemInstruction`（或 `system_instruction`）+ `contents` + `tools`；
-  - `volcengine.images`：`prompt` + `image`；`volcengine.video_submit`：`content`；
   - 其他协议不审内容（只有封禁钩子，72.3）。此前按"`messages` 存在就用 `messages`"选择，Responses / Gemini 请求附带一个假的 `messages` 数组就能绕过（P1-3）。重复键（`{"messages":[良性],"messages":[违规]}`）由核心在网关统一拒绝（400），插件不处理。
 - **审核范围 = 请求里客户端可控的全部内容**（0.10.0 起这是流程 `scope = all` 的内容，`input`、`tools` 只审其中一部分，见 72 开头"0.10.0 审核逻辑"）：
   - 所有角色的消息：user、assistant（含预填）、system、developer、tool / function；
@@ -6127,7 +6124,7 @@ codex 插件要接入 OpenAI 官方的“用量重置次数”：插件要能用
 
 ### 91.1 `HostService.SendAccountRequest`
 
-宿主替插件为它**自己的某个账号**发一次 HTTP 请求，走该账号的代理，和插件描述的配额查询、凭证刷新请求同一条发送路径。使用者：codex 的重置次数、volcengine 的素材库（0.13.0 起，插件签名后交给它发出，插件不再申请 `net`，[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) §17）。
+宿主替插件为它**自己的某个账号**发一次 HTTP 请求，走该账号的代理，和插件描述的配额查询、凭证刷新请求同一条发送路径。使用者：codex 的重置次数（volcengine 的素材库也用过它，0.1.304 随插件删除，§128）。
 
 | 项 | 约定 |
 | --- | --- |
@@ -6244,7 +6241,7 @@ codex 插件要给 `codex_device` 账号加一个详情标签页、一个行操�
 
 ### 92.4 平台品牌色（控制台 `web/src/components/platform/`）
 
-- `brands.ts`：厂商表（id、亮色、可选的暗色、可选的图形标记），平台 → 厂商（平台 id 与厂商 id 相同的不用列，`volcengine` → `doubao`），模型名 → 厂商（正则表，先去掉 `厂商/` 路径前缀，按表的顺序取第一个命中的）。表里没有的 id 按字符串哈希从 8 组备用色里取一组，标记是首字母。厂商图形取自 @lobehub/icons（MIT，许可文本 `LOBE-ICONS-LICENSE.txt` 在组件目录和 `web/public/` 各一份）。
+- `brands.ts`：厂商表（id、亮色、可选的暗色、可选的图形标记），平台 id 就是厂商 id（`platformBrand`；原来唯一不同的 `volcengine` → `doubao` 随插件在 0.1.304 删除，§128），模型名 → 厂商（正则表，先去掉 `厂商/` 路径前缀，按表的顺序取第一个命中的）。表里没有的 id 按字符串哈希从 8 组备用色里取一组，标记是首字母。厂商图形取自 @lobehub/icons（MIT，许可文本 `LOBE-ICONS-LICENSE.txt` 在组件目录和 `web/public/` 各一份）。
 - 组件：`BrandMark`（厂商标记；`decorative` 时对读屏隐藏）、`PlatformIcon`（平台 id → 标记）、`PlatformBadge`（标记 + 平台名的色块；`unavailable` 给出原因时灰显、名称加删除线、原因在 `ProblemIcon` 里）、`ModelBadge`（标记 + 模型名；`plain` 只留标记不着色）、`GroupBadge`（分组名 + 倍率；**不带平台图标**；只有一个平台时着该厂商色，多个平台中性描边，没有平台灰色）。
 - 样式类 `.brand-tint`（厂商色文字 + 淡底）、`.brand-fg`（厂商色文字）在 `components/platform/brand.css`，由 `--brand`、`--brand-dark` 两个变量取色，文字与底色的对比度不低于 4.5:1。它们是控制台内部的类，不属于 §23.4 的插件契约。
 - `components/ProblemIcon.vue`：一个问题显示为警告图标，句子放在悬浮提示和 `aria-label` 里；键盘聚焦和触屏轻触都能打开提示。表格单元格里的问题说明一律用它，不写成一行文字。
@@ -7754,7 +7751,7 @@ WebSocket 轮次上给了 `response_stream` 的中继被拒绝（按插件不可
 
 - 只看账号类型的声明，与具体请求无关。网关在路由上记 `typeRoute.cross`（`gateway/routing.go`），只有一种算法：`crossPlatform`，即类型不声明入站端点的平台（`!AccountTypeBinding.Supports(入站平台)`），普通路由（`addRoute`）和 count_tokens 的本地估算路由（§88.2，`addLocalCountRoute`）都用它；账号模块校验和 `served_protocols` 用的 `typeProtocols` 也是同一个 `Supports`。选路逻辑本身没有改。
 - `Supports` 读的是注册表绑定后的账号类型。别的插件声明的平台上有“插件解析用量”或任务提交的端点时，跨插件规则（转发 V2 设计 4.3，清单检查 `foreign_facts`）让注册表不把类型绑到这个平台，并把它从绑定的 `Type.Platforms` 里去掉（`registry.withoutForeignFacts`，2026-11-18 合并两个分支时加）：这个平台对该类型既不是本平台，也没有原生路由；网关选路、`crossPlatform`、账号模块的 `typeProtocols` 和 `served_protocols` 读的是同一份平台列表。
-- 同时声明多个平台的类型（如 volcengine 声明 openai、anthropic、volcengine），这些平台的协议都是本平台协议；Gemini 请求打到它才算转换。
+- 同时声明多个平台的类型（如 sub2api 声明 openai、anthropic、gemini），这些平台的协议都是本平台协议；只有打到它没有声明的平台的请求才算转换。
 - 同平台适配不算转换，默认照常工作，可以用 `protocols` 关掉。
 
 ### 110.2 字段与默认值
@@ -7821,7 +7818,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - **被过滤的账号**只做了内存比较：不转换请求、不下载媒体、不做模型可用性预检、不参与粘性绑定、不取并发槽、不计尝试次数。调度记录里 `candidates` 计入它，`eligible` 不计入。
 - **粘性会话**：绑定的账号不再提供该协议或模型时，按“绑定账号已不在候选里”处理（§18.1），会话改绑到这次选中的账号。
 - **WebSocket**：首轮与 HTTP 相同；`openai.responses_ws` 是一个可以单独关闭的本平台协议。已建立的连接上，后续轮次换成该账号在这个协议下不提供的模型，返回现有的 400 `the account of this connection does not serve model …; open a new connection for it`，不是 404。
-- **不经调度的端点**：异步任务的查询端点（如 `volcengine.video_query`）不选账号，协议绑定对它不生效；校验和 `served_protocols` 仍把它当普通本平台协议。
+- **不经调度的端点**：异步任务的查询端点（第一方插件里原来只有 0.1.304 删除的 `volcengine.video_query`）不选账号，协议绑定对它不生效；校验和 `served_protocols` 仍把它当普通本平台协议。
 - 优先级、等级排序（§88.3）、丢失策略、故障策略、均衡负载都不变。没有配置这两个字段、请求走本平台协议的账号，行为与本节之前相同。
 
 **调度跳过原因**（§24.6 的表同步增加这三项，`core/ports_billing.go`）：
@@ -8089,7 +8086,7 @@ message UpstreamRequest {
 
 - 两个 map 的键都小写；`host`、`content-length`、`accept-encoding`、`connection`、`transfer-encoding` 归传输层，出现即拒绝（`Host` 永远是 URL 的主机，§112.17）；同名时权威头生效；名或值不合法拒绝。
 - 发送时自下而上（§86.5）：插件的**默认头** → 透传（账号 `header_passthrough` §81、`header_override` 的透传键 §108、粘性规则，**只补没有的**，不替换默认头）→ `header_override` 与 `param_override` 的请求头部分（可以设值或删除默认头）→ 插件的**权威头**（运营方改不掉；值为空表示删掉同名的头、不发，§112.17）→ 没有 Content-Type 时补 `application/json`。WebSocket 握手同样分层但不套透传。
-- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex、volcengine）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们；codex 的 `User-Agent`、`originator` 改为在账号凭证或插件设置里自定义，见 [PLUGIN-CODEX.md](PLUGIN-CODEX.md) 第 20 节）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
+- 放哪一类是插件的约定，核心不判断：鉴权头和签名写入或覆盖的头（含签名用的 Content-Type）放权威头，其余放默认头。例外由所有者定：已发布过的代码插件（codex；volcengine 也是，0.1.304 删除）改写后保持全部头为权威头（与改写前一样，运营方的透传和覆盖改不了它们；codex 的 `User-Agent`、`originator` 改为在账号凭证或插件设置里自定义，见 [PLUGIN-CODEX.md](PLUGIN-CODEX.md) 第 20 节）；原来声明式的五个类型只有鉴权头是权威头（与声明式时一样）。一致性套件第 4 条检查“声明的集合”：权威头的名字必须在插件声明的 `Credentials` 与 `Authoritative` 之内。
 - 插件交回的权威头能盖掉运营方设置的同名头，这是代码插件一直以来的行为，签名需要它。
 
 ### 112.5 发送前的检查
@@ -8143,7 +8140,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 核心认领到期任务后调 `Monitor(PollRequest) returns (MonitorResponse)`，`MonitorResponse.result`（`ReconcileResult`）就是这次观察的结果，核心在一个事务里重排或结算（租约、调度、原账号、快照、账务都归核心，§28）。
 
 - 插件只能经 `ExecuteHTTP` 查上游，不能中继。
-- 没有结果、或报错：算一次查询失败。终态（`PENDING`、`POLL_FAILED` 以外）必须伴随这次调用里一次完整、成功的取回（拿到 HTTP 状态、没有传输错误），否则同样算一次查询失败。结果的大小不限（此前超过 512 KiB 算一次查询失败）：事实照常校验，在这次认领的结算事务里应用一次。此前每个结果另写一条按“认领 ID + 摘要”去重的回执（`plugin_monitor_receipts`），是插件经宿主回调上报、同一认领可能报多次时的设计；`Monitor` 只返回一个结果、每个认领的 ID 都是新的之后它从没去重过，迁移 0119 删表（`usage/monitor.go` 的 `outcomeTx` 随之删除，`TestMigration0119DropsMonitorReceipts`）。
+- 没有结果、或报错：算一次查询失败。终态（`PENDING`、`POLL_FAILED` 以外）必须伴随这次调用里一次完整、成功的取回（拿到 HTTP 状态、没有传输错误），否则同样算一次查询失败。结果的大小不限（此前超过 512 KiB 算一次查询失败）：事实照常校验，在这次认领的结算事务里应用一次。此前每个结果另写一条按“认领 ID + 摘要”去重的回执（`plugin_monitor_receipts`），是插件经宿主回调上报、同一认领可能报多次时的设计；`Monitor` 只返回一个结果、每个认领的 ID 都是新的之后它从没去重过，迁移 0118 删表（原编号 0119，§126；`usage/monitor.go` 的 `outcomeTx` 随之删除，`TestMigration0118DropsMonitorReceipts`）。
 - 整个调用 30 秒，调用方的 context 更短时取更短的；每次取回 20 秒。
 - 原账号永远问不了（没有记录账号、账号已删除、账号属于别的插件）算一次查询失败，消耗失败次数，最终退款（`errTaskAccountGone`；此前和账号冷却一样延后到期限，到期按估算扣费）；冷却、槽位满、限流、查询账号出错仍然延后。
 - SDK：`TaskMonitor.Monitor(ctx, *PollRequest) (*ReconcileResult, error)`；`PollFailure`、`TaskNotFound` 不变；`ClassifyPollResponse(status, transportError)` 去掉了 `truncated` 参数（§32）。
@@ -8264,7 +8261,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - 清单的 `externalServices` 之一或其子域（`manifest.ExternalServiceHost`）：安装、升级时管理员审查过；
 - 这个账号自己的上游地址的主机：账号类型在清单 `upstreamFields` 里声明的字段，从账号的设置和凭证里取字符串值（URL 或 `host[:port]`），只比主机名、不含子域（`AccountType.AddressHosts`）：运营方填的。
 
-清单没有“默认上游地址”字段：插件代码里写死的默认地址（如 `api.openai.com`）要写进 `externalServices`，九个官方平台插件里 openai、anthropic、gemini、codex、volcengine 本来就写了；bedrock 加了 `amazonaws.com`（各区域的 `bedrock-runtime.<region>.amazonaws.com`），vertex 加了 `googleapis.com`（全局、各区域的 `<region>-aiplatform.googleapis.com` 与多区域的 `aiplatform.<us|eu>.rep.googleapis.com` 不是同一个域的子域，只能写到公共的上一级）；relay、azure_openai 的地址都来自账号的 `base_url`（`upstreamFields`）。
+清单没有“默认上游地址”字段：插件代码里写死的默认地址（如 `api.openai.com`）要写进 `externalServices`，官方平台插件里 openai、anthropic、gemini、codex 本来就写了；bedrock 加了 `amazonaws.com`（各区域的 `bedrock-runtime.<region>.amazonaws.com`），vertex 加了 `googleapis.com`（全局、各区域的 `<region>-aiplatform.googleapis.com` 与多区域的 `aiplatform.<us|eu>.rep.googleapis.com` 不是同一个域的子域，只能写到公共的上一级）；relay、azure_openai 的地址都来自账号的 `base_url`（`upstreamFields`）。
 
 为什么用 `upstreamFields` 识别“运营方填的上游地址”：它已经存在、按账号类型声明，账号的自定义上游判断（§21）和取回（§112.6）早就用它，不加新的清单字段；第三方插件作者只需要把写死的主机写进 `externalServices`、把让运营方填地址的字段写进 `upstreamFields`。没有采用“账号配置里所有形如 http(s) URL 的值”：设置和凭证里常有不是上游的 URL（vertex 的服务账号密钥文件里有 `auth_uri`、`token_uri`、`client_x509_cert_url` 等），它们是上传的内容而不是运营方填的地址，会放开没人审查过的主机。
 
@@ -8385,7 +8382,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 - **账号余额（§52）**：0.1.304 起已接通（核心调插件的 `BuildBalanceRequest` / `ParseBalanceResponse`，定时任务 `core.account.balance_sweep`），`BalanceProvider` 注册表已删除，见 §52。
 - **额度主动查询（§44）**：清单 `quota.query`、`quota.autoRefresh`，`PlatformService.BuildQuotaRequest` / `ParseQuotaResponse`（`pluginsdk.QuotaReader`），核心的主动查询与自动复查。现在没有第一方插件声明 `query`（codex 只用响应头被动采样），机制本身完整可用。
 
-仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex、volcengine 等）。
+仍在用、保留的：账号类型平台上的 `"passHeaders": []`（codex）、`"upstreamFields": []`（codex）、`refresh`（codex、vertex）、`pluginsdk.SaveCallerSession` / `LoadCallerSession`（codex）、`providers/anthropic`（bedrock、vertex 等）。
 
 ## 117. 代理票据：建账号之前的授权流程走账号表单选的代理（2026-11-18，所有者要求“账号授权时的第一次换令牌不走代理：修复bug”“在创建账号的时候通过代理获取授权”“如果是粘贴的代理串呢？”；无迁移；Host API 仍是 10；UI 3.20；设计见 [DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md](DESIGN-2026-11-18-ACCOUNT-PROXY-TICKET.md)）
 
@@ -8489,7 +8486,6 @@ ALTER TABLE usage_logs
 | openai `apikey` | 不写子集 | **服务**（预设有两条路由） |
 | codex `codex_oauth`、`codex_device` | `responses`、`responses_websocket`，`adapted` 列两个生图端点 | **经适配服务**：核心转成带 `image_generation` 工具的 Responses 请求，应答转回生图接口的形状（§121）。没有声明适配的同样子集的类型不是候选（`gateway/images_test.go` 的 `TestOpenAIImages`） |
 | azure-openai `azure_v1`（chat、responses、embeddings）、`azure_deployment`（chat、embeddings，`adapted` 只列 `responses`） | 写了子集 | 不服务；插件的路由表也没有这两个协议，`adapted` 也不列它们（§121.1） |
-| volcengine `apikey`、`relay` | 本批改为显式 `chat_completions`、`responses`、`embeddings`（与之前实际服务的相同；插件没有 `platform.websocket.v1`，核心从不把 WebSocket 交给它，所以不列 `responses_websocket`） | 不服务：方舟的生图（Seedream）在插件自己的 `volcengine` 平台上（`volcengine.images`），形状不同；不写子集的话调度会把 OpenAI 生图请求交给它，插件没有这条路由而报 `unsupported upstream protocol` |
 | relay、anthropic、gemini、vertex、bedrock 的类型 | 不在 `openai` 平台上 | 不受影响 |
 
 - 账号层面：`protocols` 为 `null`（默认）的 OpenAI API Key 账号升级后**自动**开放 `openai.images`、`openai.images_edit`；`protocols` “指定”过的账号不会自动开放（§110.2 的既定行为），要的话运营方在“协议与模型”里勾上。`model_protocols` 照常可以把生图模型限定到这两个协议。
@@ -8520,7 +8516,7 @@ ALTER TABLE usage_logs
 ### 118.8 测试
 
 - 核心：`usagerules/image_tokens_test.go`（两个字段进 `Tokens` 不进 `metrics`、非数字与负数；两个端点的规则对 JSON 带 / 不带输出明细、流式按文档与带明细、未命名事件）；`billing/expr` 的 `TestNormalizeImageTokens`（用到 / 没用到 `img`、`img_o` 时 `p`、`c` 的扣减、不为负，两种语义）；`billing/image_tokens_test.go`（两种表达式写法与流式的金额）；`billing` 的 `TestPriceAPI`（试算的 `img`、`img_o`）；`usage/image_tokens_db_test.go`（写两列、结算金额、事件、`/usage` 与 `/me/usage` 的列表和详情、其它请求的 `billing_detail` 不变）；`usage` 的 `TestInsertBatchMatchesValuesInsert`（两列逐列一致）；`gateway/images_test.go`（JSON 与流式、codex 子集不是候选、multipart 的 edits 在调度前 400 且只有免费的 `invalid_request` 记录）；迁移 `TestMigration0112UsageImageTokens`。
-- SDK 与插件：`sdk/platforms` 的协议表；openai 插件的合规套件覆盖两个新协议（非流式、流式），`TestImages` 钉住两条路由发给上游的字节，现有四个协议的黄金样例逐字节照旧；volcengine 的清单测试钉住 `openai` 平台上的端点子集。
+- SDK 与插件：`sdk/platforms` 的协议表；openai 插件的合规套件覆盖两个新协议（非流式、流式），`TestImages` 钉住两条路由发给上游的字节，现有四个协议的黄金样例逐字节照旧。
 - e2e（P9）：mock 上游的两个接口与 AC40，见设计文档 6。
 
 ### 118.9 以后
@@ -8785,7 +8781,7 @@ ALTER TABLE usage_logs
 
 | 预设 | 协议 | 测试请求体 | 不点名时的模型 |
 |---|---|---|---|
-| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens: 16`（推理占用这个上限，new-api 同为 16；`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
+| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens: 16`（推理占用这个上限，new-api 同为 16；`openai.ChatPingBody`） | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
 | openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在请求带了模型名时用到，这时用的是那个模型名）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |
@@ -8859,9 +8855,9 @@ ALTER TABLE usage_logs
 
 ### 124.5 插件与升级
 
-- 12 个声明账号类型的插件（anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex、volcengine）删掉 `accounts.credentials`，volcengine 另删 `accounts.read`；volcengine 素材库与 codex 重置次数改用 `GetAccount`。codex 删掉没有写入方的 `settingsFields: ["proxy_id"]`（账号的代理是 `accounts.proxy_id` 列）。版本号在这一批未发布的版本上继续累计，`hostCompat` 不动。
-- 0.1.304 本来就是停机、核心和全部插件一起换（§112.11）。按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（只有 volcengine、codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可。
-- 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/models_test.go` `TestTypeModelsFetchCarriesTheFormProxy`（建账号前拉模型：没填直连且为空、已有代理、粘贴的代理串、代理停用不调插件）、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`；`TestWebSocketTurnsKeepTheConnectionsProxy`：建连于代理 7 或直连、改到 8 后下一轮插件仍收到 7 或空、帧经原连接、这一轮的出口是 8，重连后都是 8）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：volcengine 账号经 mock 代理读上游素材组，审计行不含值，素材请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
+- 11 个声明账号类型的插件（anthropic、azure-openai、bedrock、codex、gemini、newapi、openai、relay、sub2api、typesafe、vertex）删掉 `accounts.credentials`；codex 重置次数改用 `GetAccount`（当时的 volcengine 也一样，它在同一批删除，§128）。codex 删掉没有写入方的 `settingsFields: ["proxy_id"]`（账号的代理是 `accounts.proxy_id` 列）。版本号在这一批未发布的版本上继续累计，`hostCompat` 不动。
+- 0.1.304 本来就是停机、核心和全部插件一起换（§112.11）。按协议 2 构建、调用过 `GetAccountCredentials` 的测试包（只有 codex）在新核心上会得到 `UNIMPLEMENTED`，重新装这一批的包即可。
+- 测试：`account/plugins_test.go`（归属、审计、审计失败、代理停用）、`account/testreq_test.go` `TestAccountTestCarriesTheProxy`、`account/models_test.go` `TestTypeModelsFetchCarriesTheFormProxy`（建账号前拉模型：没填直连且为空、已有代理、粘贴的代理串、代理停用不调插件）、`account/refresh_test.go`、`account/balance_test.go`（代理停用时不调 Build）、`gateway/egress_test.go`（每次 `Execute` 的 `Account.proxy` 依次是 7、8、空；`TestNoExecuteWithoutEgress`；`TestWebSocketTurnsKeepTheConnectionsProxy`：建连于代理 7 或直连、改到 8 后下一轮插件仍收到 7 或空、帧经原连接、这一轮的出口是 8，重连后都是 8）、`usage/poll_test.go`（`Monitor` 的账号带代理）、`core/proxyspec_test.go` 与 `pluginsdk/accountproxy_test.go`（遮蔽）、`grpcruntime/host_accounts_internal_test.go`、`check/retired_test.go`、`plugin/api/outdated_contract_test.go`、`migrations` `TestMigration0116DropsAccountGrants`；e2e AC43（`ac43_plugin_account_context_test.go`：原来是 volcengine 账号经 mock 代理读上游素材组，随它删除（§128）改为 codex 账号经 mock 代理查重置次数，审计行不含值，请求经代理；带旧授权的包上传被拒）与 AC03（不再出现这两个授予）。
 
 ## 125. 删除 growth 插件（2026-11-19，所有者同意删除；迁移 0117，核心 0.1.304）
 
@@ -8890,22 +8886,18 @@ ALTER TABLE usage_logs
 
 升级到 0.1.304 时迁移 0117 把它卸载干净（上一节），升级后插件列表里没有它，菜单“我的邀请”“每日签到”“增长管理”消失，`/api/v1/p/growth/*` 与任何没有安装的插件一样回 503 `plugin_unavailable`；再上传它的任何包都被 `removedKeys` 拒绝。邀请关系和返利、签到明细只在 `plg_growth` 里，迁移后只能从升级前的备份找回，要保留的在升级前导出。没装过的实例什么都不变。
 
-## 126. 迁移 0118：删掉火山引擎 `apikey` 账号设置里的前缀键（2026-11-19，所有者同意“升级时清理”；迁移 0118，核心 0.1.304；插件、清单、接口不变）
+## 126. 迁移 0118：删掉火山引擎 `apikey` 账号设置里的前缀键（已撤回）
 
-volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFields` 只有 `base_url`、`asset_base_url`、`asset_region`；`api_prefix`、`video_api_prefix` 只属于 `relay` 类型（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.2）。拆分类型之前保存的 `apikey` 账号可能在 `settings` 里留着这两个键：插件不读它们（`prefixesOf`），但编辑凭证时它们随已存的字段一起回到校验，不在 `settingsFields` 里的键被插件的 `apikey.Spec.Fields` 按未知键拒绝（`unknown`），界面又没有删掉它们的办法，账号凭证于是改不了。2026-11-19 只读查询线上有 2 个这样的账号（键 `video_api_prefix`）。
-
-`0118_volcengine_apikey_prefix_settings.sql`：`plugin_key = 'volcengine' AND type = 'apikey'` 且 `settings` 含其中任一键的账号（含已软删除的），从 `settings` 删掉 `api_prefix`、`video_api_prefix`，其余键不变；`relay` 账号和别的插件的账号不动；只写命中的行，可以重跑。不改 `updated_at`。请求行为不变：这两个键对 `apikey` 账号本来就不生效。加密的凭证部分迁移读不到，不处理（线上只查过 `settings`）。
-
-测试：`migrations.TestMigration0118DropsVolcengineAPIKeyPrefixes`（两个键删掉、其它键保留；`relay` 与别的插件的账号不变且没有被写；重跑不写任何行）。
+这条迁移没有发布过，随 volcengine 插件在同一批删除（§128）：它只改 volcengine 的账号设置，插件删除后没有意义。文件 `0118_volcengine_apikey_prefix_settings.sql` 删除，原 0119（`plugin_monitor_receipts`）改号为 0118，0119 现在是删除 volcengine 的迁移。
 
 ## 127. 密钥与基础地址（2026-11-20，所有者要求“密钥不要做任何限制”“地址里的 %2F 一起改了”“我们的插件自己处理兼容，不要去多也不要少”；方案 B；无迁移；插件协议、Host API 不变；清单加 `guardedSettings[].versions`，核心 0.1.304；设计见 [DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md](DESIGN-2026-11-20-KEY-AND-BASE-URL-RULES.md)）
 
-适用于用 `sdk/pluginsdk/apikey` 的 `Spec` 写的 API Key 加基础地址一类账号类型（anthropic、openai、gemini、relay、typesafe 的 `apikey`/`relay_key`，newapi、sub2api，azure_openai 的两个类型，volcengine 的 `apikey` 与 `relay`，vertex 的 `vertex_apikey`），以及 bedrock 的 `bedrock_apikey`（自己的代码，密钥规则相同）。本节取代 §86.1 原来的“基础地址的规则”。
+适用于用 `sdk/pluginsdk/apikey` 的 `Spec` 写的 API Key 加基础地址一类账号类型（anthropic、openai、gemini、relay、typesafe 的 `apikey`/`relay_key`，newapi、sub2api，azure_openai 的两个类型，vertex 的 `vertex_apikey`），以及 bedrock 的 `bedrock_apikey`（自己的代码，密钥规则相同）。本节取代 §86.1 原来的“基础地址的规则”。
 
 ### 127.1 密钥
 
 - `api_key` 只要求是非空字符串：先读凭证、再读设置；缺省、`null`、去掉首尾空白后为空报 `required`；不是字符串报 `type`（类型可以用 `Spec.Texts.KeyNotString` 换文案，错误码随之为 `pattern`：只有 anthropic、openai 的预设（以及从它们出发的 relay、azure_openai）这样做，为与冻结的黄金样例一致）。此外不检查前缀、字符集和长度，保存去掉首尾空白后的值；`Spec.FromAccount` 读取时同样去空白，空值报 `missing api_key`。
-- 删除的：`apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`，各插件各自的长度与字符集检查（原来大多是 8–512 个不含空格的可见字符，openai 不超过 512 个可见 ASCII 字符，bedrock 8–2048 个可见字符）。bedrock 的 AK/SK、会话令牌，vertex 的密钥文件，volcengine 的 AK/SK 规则不变。
+- 删除的：`apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`，各插件各自的长度与字符集检查（原来大多是 8–512 个不含空格的可见字符，openai 不超过 512 个可见 ASCII 字符，bedrock 8–2048 个可见字符）。bedrock 的 AK/SK、会话令牌，vertex 的密钥文件规则不变。
 - 控制字符不另外检查：密钥里带 CR、LF 等字符时，SDK、核心与 Go `net/http` 都拒绝把它写进请求头，不会注入；代价是这样的密钥能保存，但每次请求都失败（设计 Q1）。
 - 界面：`@sub2api/ui` 的 `createApiKeyForm` 默认只要求非空（`{required: true, whitespace: true}`），`spec.apiKey.min`/`max`/`pattern` 写了才检查（§23.3）；`@sub2api/ui/testing` 的 `keyAndUrlCases`、SDK 的 `apikey/apikeytest` 都按这条规则（只有空白的拒绝，1 位、4096 位、带空格、非 ASCII 的接受）。
 
@@ -8929,20 +8921,18 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 | openai、anthropic、relay、typesafe | `/v1` |
 | gemini、newapi、sub2api | `/v1beta`、`/v1` |
 | azure_v1、azure_deployment | `/openai/v1`、`/openai` |
-| volcengine `apikey` | `/api/v3` |
-| volcengine `relay`、vertex_apikey | 无 |
+| vertex_apikey | 无 |
 
-`Spec.FromAccount` 从存值算出“根”放进 `Config.BaseURL`：在存值的转义形式**路径**上找 `Versions` 里能作为后缀的项，取最长的一个，整段匹配、区分大小写，至多去掉一段，再去掉剩下的末尾 `/`；找不到就用存值。scheme 和主机不参与（`http://v1`、`http://api/v3` 的根就是它们本身）；核心比较受限地址用同一个函数 `manifest.TrimVersion`（§21.3）。路由、模型列表、余额的路径照旧完整接在根后面（`standard`、`ModelListRequest`、volcengine 的 `upstreamURL` 的拼接都没有变）。所以：
+`Spec.FromAccount` 从存值算出“根”放进 `Config.BaseURL`：在存值的转义形式**路径**上找 `Versions` 里能作为后缀的项，取最长的一个，整段匹配、区分大小写，至多去掉一段，再去掉剩下的末尾 `/`；找不到就用存值。scheme 和主机不参与（`http://v1`、`http://api/v3` 的根就是它们本身）；核心比较受限地址用同一个函数 `manifest.TrimVersion`（§21.3）。路由、模型列表、余额的路径照旧完整接在根后面（`standard`、`ModelListRequest` 的拼接都没有变）。所以：
 
 - 填 `https://x/v1` 与填 `https://x` 请求同样的地址；地址本身以 `/v1` 结尾的站点填 `https://x/v1/v1`，请求发往 `https://x/v1/v1/<路由>`。
 - 带的是另一个版本时按路由的来：gemini、newapi、sub2api 填 `…/v1` 时 Gemini 协议请求 `…/v1beta/…`；newapi、sub2api 的余额也从根拼。
 - `…/a%2Fv1` 不算以 `/v1` 结尾（请求 `…/a%2Fv1/v1/…`），`…/V1`、`…/xv1` 也不算；只认类型自己声明的版本段（智谱 `…/api/paas/v4` 这类仍配不通，与此前相同，设计 Q7）。
 - azure 的 Foundry 项目名恰好是 `openai` 时（`…/api/projects/openai`），末尾被当作版本段 `/openai`，请求少了项目那一段，与此前相同（设计 Q11，接受现状）。
-- volcengine `relay` 的地址规则不变：基础地址是中转站根地址，转义形式的路径以 `/v1` 或 `/api/v3` 结尾的在保存时拒绝（`…/a%2Fv1` 不算）并提示填 `api_prefix`（[PLUGIN-VOLCENGINE-ARK.md](PLUGIN-VOLCENGINE-ARK.md) 14.3）；只是它的密钥也按 127.1 放开。
 
 ### 127.4 受限地址
 
-没有 `account:settings:custom` 的人提交带版本段的官方地址（如 `https://api.openai.com/v1`）照样接受：清单 `accountTypes[].guardedSettings[].versions` 写出与 `Spec.Versions` 相同的值，核心比较受限设置前对提交值、`allowed` 各项、账号原值都按 127.3 的规则去掉至多一个版本段（§21.3）。写了 `versions` 的清单：anthropic、openai、typesafe（`["/v1"]`），gemini（`["/v1beta", "/v1"]`），volcengine `apikey` 的 `base_url`（`["/api/v3"]`）；各插件的清单测试断言它与 Go 里的 `Spec.Versions` 一致。旧核心忽略这个字段（只是带版本的官方地址被拒），所以这些插件 `hostCompat` 要求核心 0.1.304 起。
+没有 `account:settings:custom` 的人提交带版本段的官方地址（如 `https://api.openai.com/v1`）照样接受：清单 `accountTypes[].guardedSettings[].versions` 写出与 `Spec.Versions` 相同的值，核心比较受限设置前对提交值、`allowed` 各项、账号原值都按 127.3 的规则去掉至多一个版本段（§21.3）。写了 `versions` 的清单：anthropic、openai、typesafe（`["/v1"]`），gemini（`["/v1beta", "/v1"]`）；各插件的清单测试断言它与 Go 里的 `Spec.Versions` 一致。旧核心忽略这个字段（只是带版本的官方地址被拒），所以这些插件 `hostCompat` 要求核心 0.1.304 起。
 
 ### 127.5 已存账号的等价边界
 
@@ -8955,3 +8945,35 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 - 已存的、带其它版本段的地址不受影响（127.5），但**新保存**的地址不再被改写：控制台显示的、`GET /accounts/:id` 读到的就是填写的地址。
 - newapi、sub2api 的密钥不是字符串时错误码由 `pattern` 改为 `type`，文案“api_key 必须是字符串”。
 - 各插件表单的帮助文案改为“地址末尾的版本段在请求时按接口重新拼接”一类说法（各插件 `ui/native/src/messages.ts`）。
+
+## 128. 删除 volcengine 插件（2026-11-20，所有者决定；迁移 0119，核心 0.1.304）
+
+插件 `volcengine`（火山引擎方舟，目录 `next/plugins/volcengine`，账号类型 `apikey`“官方通用”与 `relay`“豆包视频”，平台 `volcengine` 的方舟生图与 Seedance 视频任务、方舟素材库；内置、只安装不启用，§26.8；未发布的 0.13.0，`released.json` 记的 0.12.8）整体删除，不留兼容。线上装着它，有账号。最后的源码是 `b58f8149e`（`git show b58f8149e:next/plugins/volcengine/manifest.json`），说明书 `PLUGIN-VOLCENGINE-ARK.md` 一并删除（`git show b58f8149e:next/docs/PLUGIN-VOLCENGINE-ARK.md`）。前面章节里提到它的句子是当时的记录，不再逐条改；§126 的迁移随它撤回。
+
+### 128.1 删除了什么
+
+- 插件目录、`plugins/released.json` 里它那一条、`go.work` 的模块、`plugins/.gitignore` 的产物行；`deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS_INSTALL_ONLY` 去掉它（变成 `mailer dynweight newapi sub2api typesafe`），`deploy/ci/check.sh` 的内置包检查只剩 anthropic、openai、guard、relay。
+- 插件键 `volcengine` 从保留的官方插件名移到已删除插件键（`install/reserved.go` 的 `removedKeys`，记 0.1.304）：任何来源、任何签名的包都不能安装，返回 403 `plugin_key_reserved`。平台 `volcengine` 原来在 `reservedPlatforms` 里只许它声明；键已经装不上，这一条不再有意义，删除。`TestReservedCoverRepo` 加上反向检查：`reservedPlatforms`、`reservedChannels` 的每个持有者都必须是仓库里的插件。
+- SDK：`providers/volcengine`（方舟的鉴权、路径、视频任务的请求与解析）删除；`providers/openai` 里只有它用的 `StreamUsage` 预设并入 `IncludeStreamUsage`。
+- moderation 0.12.2：钩子不再匹配 `volcengine.images`、`volcengine.video_submit`，`needs` 与 `gateway.hook` 的 `scope.fields` 去掉 `prompt|@this`、`content|@this`、`image|@this`（§72）。
+- mock 上游：视频任务（`video.go`）与方舟素材库（`ark.go`）删除；新增 codex 重置次数的 GET 端点 `/backend-api/wham/rate-limit-reset-credits`，给 AC43 用。
+- e2e：AC24（异步视频任务）整个删除；AC32 去掉“任务进行中核心崩溃”子测试；AC40 只剩 `azure_deployment`；AC30 的平台插件矩阵去掉它，变成十一个插件；AC43 改用 codex 账号（经 mock 代理查重置次数，§124）。网关 `control` 的真实核心测试去掉视频任务那一段。
+- 控制台：mock 里的方舟账号、插件界面与拓扑示例；`brands.ts` 的平台 → 厂商表（只有 `volcengine` → `doubao` 一条）删除，`platformBrand` 直接用平台 id；请求头覆盖提示里点它名字的句子。模型名 → 厂商里的豆包（`doubao`）保留：它是模型厂商，别的渠道也会转发豆包模型。
+
+### 128.2 数据库：迁移 0119
+
+`0119_drop_volcengine_plugin.sql` 照 0111（§116.2）、0117（§125.2）的先例，像带 purge 的 `install.Uninstall` 那样卸载它（不走节点屏障），可以重跑：它的 `scheduled_tasks` 行；全部权限（`plugin.volcengine:assets:read`、`plugin.volcengine:assets:manage`）和授予，持有者角色升 `revision`，插件存在时 `authz_meta` 两个版本各加一；键记入 `plugin_key_retirements`；插件行及其级联；`plugin_egress_domains`；`DROP SCHEMA IF EXISTS plg_volcengine CASCADE`（素材库的本地索引，素材本身还在火山引擎）与它的 `plugin_migrations` 记录，带核心标记的旧角色 `plg_volcengine`。
+
+保留：`plugin_key = 'volcengine'` 的账号（连同分组关系、使用记录、账本、余额快照）；`usage_logs`、`balance_ledger`、`audit_logs`；`plugin_executions`、`plugin_history`、`plugin_egress_logs`；`async_tasks`、`pending_settlements`、`task_submission_receipts`。
+
+升级时还在观察中的视频任务：核对循环找不到这个插件的平台服务，按查询失败计（与再也问不到的账号相同，§112.9），连续失败到 `max_poll_failures`（默认 20）时以 `task_poll_failed` 结束并在同一事务里退还预扣；失败上限关掉（0）时由任务截止时间以 `task_timeout` 结束。已经观察到成功的任务保留扣费，过期的提交回执照常清理。测试：`usage.TestUnaskableTaskAccount` 的“插件已删除”一例。
+
+迁移编号：未发布的 0118（§126）删除，原 0119（`plugin_monitor_receipts`）改号为 0118，本迁移占 0119，编号保持连续。测试：`migrations.TestMigration0119DropsVolcenginePlugin`（插件、权限与授予、出口域名、任务、schema 和迁移记录删除，别的插件与角色不变，账号保留，重跑不变）。
+
+### 128.3 装过它的实例
+
+升级后插件列表里没有它，平台 `volcengine` 的端点与任何没有安装的插件一样不可用，用方舟模型的 API Key 失去这些模型。它的账号显示为插件已卸载：逐个删除，或在已退役插件键里释放 `volcengine` 并带 `purge_accounts`（`POST /api/v1/plugins/retired-keys/volcengine/release`）一次删掉。还有任务在跑的，建议等它们结束再升级（`SELECT count(*) FROM async_tasks WHERE plugin_key = 'volcengine' AND observation_status = 'pending'`），否则按上一节退款。素材库的本地索引随 schema 删除，只能从升级前的备份找回。
+
+### 128.4 删掉它以后没有使用者、暂时保留的能力
+
+它是异步任务（`taskContract`、`Monitor`、核对循环、`s2task_` 公开 ID、§112.9）和视频计费（价格的视频配置 `expr.ExpressionConfig.Video`、只能用于视频的价格 `VideoOnly`）唯一的第一方使用者。这些是给第三方插件的通用契约，保留；但 e2e 不再覆盖异步任务的全链路（原 AC24、AC32 的崩溃子测试），只剩核心包里的单元与数据库测试。
