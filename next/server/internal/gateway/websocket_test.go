@@ -576,27 +576,17 @@ func TestWebSocketConnectionLimits(t *testing.T) {
 		t.Fatalf("plain GET: %v %v", resp, err)
 	}
 	resp.Body.Close()
-	e.gw.ws.firstMessage = 200 * time.Millisecond
-	// No limit on the sessions of a key: they are only counted.
+	// No limit on the sessions of a key: they are only counted, until each
+	// client leaves.
 	var open []*wsClient
 	for range 70 {
 		open = append(open, e.mustDial())
 	}
 	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 70 })
 	for _, c := range open {
-		if code := c.closed(); code != websocket.StatusPolicyViolation {
-			t.Fatalf("no first message: %d", code)
-		}
+		_ = c.conn.CloseNow()
 	}
 	waitFor(t, func() bool { n, _ := e.slots.InUse(context.Background(), "ws", 5); return n == 0 })
-	e.gw.ws.idle = 200 * time.Millisecond
-	c := e.mustDial()
-	c.send(create(wsModel, "hi"))
-	c.until("response.completed")
-	e.record()
-	if code := c.closed(); code != websocket.StatusNormalClosure {
-		t.Fatalf("idle session: %d", code)
-	}
 }
 
 func TestWebSocketNeedsAPluginThatBuildsWebSockets(t *testing.T) {
@@ -878,7 +868,7 @@ func TestWebSocketHandshakeHeaderLayers(t *testing.T) {
 // connection and serves the next turn. Keepalive pings keep running.
 func TestWebSocketSessionHasNoIdleTimeout(t *testing.T) {
 	e := newWSEnv(t)
-	if d := defaultWSLimits(); d.firstMessage != 0 || d.idle != 0 || d.ping <= 0 || d.pingTimeout <= 0 {
+	if d := defaultWSLimits(); d.ping <= 0 || d.pingTimeout <= 0 {
 		t.Fatalf("default limits = %+v", d)
 	}
 	e.gw.ws.ping = 20 * time.Millisecond
@@ -1073,7 +1063,6 @@ func TestWebSocketGroupChangeAsksToReconnect(t *testing.T) {
 
 func TestWebSocketAuthUnavailableFailsOnlyTheTurn(t *testing.T) {
 	e := newWSEnv(t)
-	e.gw.ws.firstMessage = 300 * time.Millisecond
 	c := e.mustDial()
 	unavailable := func(input string) {
 		t.Helper()
@@ -1085,10 +1074,7 @@ func TestWebSocketAuthUnavailableFailsOnlyTheTurn(t *testing.T) {
 		e.noRecord()
 		e.auth.change(func(a *fakeAuth) { a.err = nil })
 	}
-	// The failed message is the session's first: the first-message timer
-	// stops with it and does not close the session later.
 	unavailable("first")
-	time.Sleep(400 * time.Millisecond)
 	if r := e.turn(c, "second"); !r.Success {
 		t.Fatalf("turn after auth came back: %+v", r)
 	}
