@@ -22,7 +22,7 @@
 
 **SDK**
 
-- 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`（`OneOf`、`Pattern` 只能用于 `String()`，用错在构造时 panic；必填字段收到 `null` 报 `required`）、`fieldcheck.DecodeSettings`（设置的“解码 → 检查 → 解码进带默认值的结构体”）；`pluginsdktest.Harness.ValidateSettings` 多一个 `grants` 参数，新增 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
+- 新增 `pluginsdk.SettingsValidator` 和校验辅助包 `pluginsdk/fieldcheck`（`OneOf`、`Pattern` 只能用于 `String()`，用错在构造时 panic；必填字段收到 `null` 报 `required`）、`fieldcheck.DecodeSettings`（设置的“解码 → 检查 → 解码进带默认值的结构体”；`Check` 接受而结构体的 Go 类型装不下的值，例如写成 `60.0`、`6e1` 的整数或超出类型范围的数，报在该字段上、错误码 `type`，不再报成根上的“设置必须是 JSON 对象”，guard 的 `alert_cooldown_sec`、mailer 的 `port`、`timeout_seconds` 随之变化）；`pluginsdktest.Harness.ValidateSettings` 多一个 `grants` 参数，新增 `pluginsdktest.SettingsSecrets`（清单写出 `ui.settings.secrets` 且正好声明预期的密钥）。
 - `apikey.Spec.Fields` 改为 `fieldcheck.Fields`：一处声明既是允许的键又带规则（也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后、对将要保存的值即去空白的 key 和规范化后的地址运行），插件不必再包一层 `Platform` 改写 `ValidateCredentials`。`Fields` 为 `nil` 时也拒绝 `api_key`、`base_url` 以外的键（此前 `nil` 不检查），代替 schema 的 `additionalProperties:false`；`accountform.Form.Only` 同理。新增 `Spec.NoBaseURL`（vertex_apikey 用它拒绝 `base_url`）。新增测试辅助 `apikey/apikeytest`（api_key + base_url 类型共有的 `ValidateCredentials` 用例）。
 - `apikey.NormalizeBaseURL` 拒绝去掉首尾空白后仍含空白字符（任何 Unicode 空白）、`?` 或 `#` 的基础地址（与原表单 schema 一致；此前路径里的空格被转成 `%20` 保存）。已存的地址都是它的输出，空格与非 ASCII 字节都已百分号转义，请求地址不变。
 
@@ -114,10 +114,10 @@
 
 - **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法：停机，用新核心和新的整套插件重新部署，再把非内置插件逐个装上新版本。
 - **旧插件包装不上。** 按旧契约构建的包以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心；控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），插件列表和插件详情显示拒绝原因（`refusal`）。拒绝发生在两个时点：
-  - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
+  - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`、宿主授权 `accounts.credentials` / `accounts.read`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
   - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
 - **非内置插件升级后停用，直到装上新版本。** 内置插件随核心镜像升级（anthropic、openai、gemini、moderation、codex 启用；volcengine、mailer、dynweight、newapi、sub2api、typesafe 只安装，见 `deploy/docker/build-go.sh` 的 `BUILTIN_PLUGINS`）。其余插件——relay、guard、payment，以及装过的 azure_openai、vertex、bedrock——的旧版本在新核心上加载被拒，它们的账号不可用、功能不运行，直到逐个装上新版本。**guard 停着期间它的请求检查静默不运行**：没加载的插件不注册钩子，请求照常放行，只有插件列表上能看到拒绝原因。
-- **重装 relay、azure_openai 时审查多一项 `accounts.credentials`**：声明了账号类型就必须申请它（CONTRACTS §112.12）。develop 上这两个插件的清单只有 `platform.register`。内置的 anthropic、openai、gemini 清单同样新增了这一项，由内置同步自动批准；vertex、bedrock、codex、volcengine 原本就有。codex、volcengine 的清单去掉了 `net`，审查里少了这一项。
+- **审查里不再有账号授权**：`accounts.credentials`、`accounts.read` 已删除，声明账号类型只需 `platform.register`（CONTRACTS §124）；清单还写着它们的包按旧契约被拒（见上一条）。codex、volcengine 的清单去掉了这两项和 `net`，审查里少了它们。
 - **网关也要换。** 插件包不再依赖主节点是网关二进制的改动，单发核心不会生效（核心只改了 `package_gone` 的文案）。网关滚动更新期间不要上传插件：旧网关节点上的上传仍要推主节点，主节点换新后会被拒；旧网关的主节点取不到在新网关节点上传的包。全部换完再上传、启用。
 
 **回退**
@@ -265,7 +265,7 @@
 
 ### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0115）
 
-- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。
+- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。对话测试请求对 OpenAI 拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）改写 `max_completion_tokens`，其余模型照旧 `max_tokens`；volcengine 的对话测试同样如此。
 - **生图只在带了模型名时测**：清单端点新字段 `test`，`openai.json` 的生成图片标 `explicit`（会真的出一张图、花钱），编辑图片标 `never`（要输入图片）。“测试模型”里的单独测试、“测试所选”“测试全部”都带模型名，绑了生图协议的模型照常按生图协议测、真实出图；不带模型名的默认测试（账号列表的“批量测试”、“测试账号”）不会选生图协议。
 - 模型在“模型的协议限定”里有条目时按条目里写的协议顺序测；不点名模型时跳过只剩生图协议的模型。
 - **没有可测协议的模型不测**：被测模型在这个账号上没有可测的协议（例如只开了编辑图片）、或不点名时所有模型都没有，回 400 `no_testable_protocol` 并记为失败，不再拿默认的对话请求去测。`standard` 库收到协议列表而一个都没有测试请求时同样报错，不退回默认测试。
@@ -443,10 +443,11 @@
 - API Key 加基础地址的账号类型用新库 `sdk/pluginsdk/standard` 和预设 `providers/{openai,anthropic,gemini}.APIKey`；原声明式引擎的 1498 条黄金样例冻结在 `standard/goldentest`。
 - **余额与多平台组合**（上游插件一批）：新增可选接口 `pluginsdk.BalanceReader`；`standard` 库加 `Merge`（几份预设合成一个账号类型）、路由级 `Auth` / `Classify`、`Type.Tests`（按账号的协议选测试请求）、`Type.Balance`（余额请求与读法，带 `BalanceFailure` 与 `Micros(number string) (int64, bool)` 两个辅助）；`pluginsdktest.Harness.Balance` 不要求币种；新预设 `providers/typesafe`（平台定义的唯一来源 `Platform()`）。合规套件新增规则 `12_balance` 和 `Plugin.Platforms`（别的插件声明的平台）。
 - 一致性套件 `sdk/pluginsdk/pluginsdktest/conformance`（11 条检查，上游插件一批加第 12 条余额），十二个平台插件都调用它；`Plugin.Manifest` 必填（交给插件的客户端请求头从清单读），`Plugin.PassHeaders` 删除；每个协议的流式 / 非流式形式由套件从端点定义读出，插件不能声明自己不服务某种形式；WebSocket 协议只归第 11 条。只有 bedrock 有两处例外（InvokeModel 按地址选流式、不收 `anthropic-beta` 头）。
-- 假宿主 `pluginsdktest`：`Harness.Execute` / `Harness.Monitor`，`FakeHost.Begin` / `BeginMonitor`；取回的主机按 `FakeHost.Manifest`（启动时取 `WithManifest`，`pluginsdk.ManifestOf`）判断，不再默认放行所有主机；和宿主一样不限请求体、不数取回、不截回答，`Monitor` 的终态要有一次完整成功的取回。`MaxBodyBytes` 删除。假宿主对中继也执行主机规则（以前只管取回），测试里没给清单或指向 `127.0.0.1` 的假上游要设 `FakeHost.Manifest` / `ExternalServices`；`standardtest.Run` 回放黄金样例时同样检查主机。
-- 清单：账号类型写 `"passHeaders": []` 表示不交给插件任何客户端请求头（以前空列表会回落到平台的列表）；没写仍取平台的。跨插件事实的判断统一为 `AccountPlatform.ServesPluginFacts`，内置平台不参与。没有使用者的 `TransportHTTP`、`TransportWebSocket` 删除。声明了账号类型就必须申请 `accounts.credentials`；类型的地址字段只认清单的 `upstreamFields`（原来声明式类型自动得到 `base_url`）。
+- 假宿主 `pluginsdktest`：`Harness.Execute` / `Harness.Monitor`，`FakeHost.Begin` / `BeginMonitor`；取回的主机按 `FakeHost.Manifest`（`Start` 时取 `Options.Manifest`，同一份清单也经 `pluginsdk.WithManifest` 交给插件）判断，不再默认放行所有主机；和宿主一样不限请求体、不数取回、不截回答，`Monitor` 的终态要有一次完整成功的取回。`MaxBodyBytes` 删除。假宿主对中继也执行主机规则（以前只管取回），测试里没给清单或指向 `127.0.0.1` 的假上游要设 `FakeHost.Manifest` / `ExternalServices`；`standardtest.Run` 回放黄金样例时同样检查主机。
+- 清单：账号类型写 `"passHeaders": []` 表示不交给插件任何客户端请求头（以前空列表会回落到平台的列表）；没写仍取平台的。跨插件事实的判断统一为 `AccountPlatform.ServesPluginFacts`，内置平台不参与。没有使用者的 `TransportHTTP`、`TransportWebSocket` 删除。声明账号类型只需宿主授权 `platform.register`（§124 删除了 `accounts.credentials`、`accounts.read`，清单写着它们的包按旧契约被拒）；请求能发往的账号地址只认清单的 `upstreamFields`（原来声明式类型自动得到 `base_url`），没写这个字段的类型，核心判断地址是否改动、能否自定义上游时仍把 `base_url` 和 `guardedSettings` 的字段当作地址。`manifest.AccountType.PassHeaders`（为已删的上游模板 `{client_header.<名>}` 服务）删除，客户端请求头按平台逐个读 `AccountPlatform.ClientHeaders`。
 - **清单的 `usageMaxBytes` 删除**（端点读用量的观察的字节预算，没有插件声明过它）：观察总是整份。旧清单写着它时的表现见升级须知。
-- `standard` 库：`Type.PassHeaders`、`PlatformPassHeaders`、`Auth.Query`、`Route.Method` 删除（核心已按清单过滤客户端头，库把交来的都写成默认头；HTTP 路由一律 POST）；`Route.Edit` 改为 `func(*jsonedit.Doc, *Request)`，和过滤字段在同一次改写里；预设不再带过滤字段（azure_openai 自己写）；流式判断用 `Request.Stream`（`pluginsdk.RequestStream`：`meta.stream` 或请求体的 `stream` 为真），只流式类型的非流式请求也会加 `include_usage`（这一处改写抽成 `providers/openai.StreamUsage`，volcengine 也用它）；黄金样例用 `standardtest.Run(t, plugin, p)` 回放。`pluginsdk.WebSocketURL` 是 http 地址换成 ws 地址的唯一实现（codex 和 `standard` 库共用）。
+- `standard` 库：`Type.PassHeaders`、`PlatformPassHeaders`、`Auth.Query`、`Route.Method` 删除（核心已按清单过滤客户端头，库把交来的都写成默认头；HTTP 路由一律 POST）；`Route.Edit` 改为 `func(*jsonedit.Doc, *Request)`，和过滤字段在同一次改写里；预设不再带过滤字段（azure_openai 自己写）；流式判断用 `Request.Stream`（`pluginsdk.RequestStream`：`meta.stream` 或请求体的 `stream` 为真），只流式类型的非流式请求也会加 `include_usage`（这一处改写抽成 `providers/openai.StreamUsage`，volcengine 也用它）；黄金样例用 `standardtest.Run(t, plugin, manifestPath, p)` 回放。`pluginsdk.WebSocketURL` 是 http 地址换成 ws 地址的唯一实现（codex 和 `standard` 库共用）。
+- 账号表单辅助：`accountform.DecodeForm` 拒绝不是 JSON 对象的凭证或设置时错误码由 `invalid` 改为 `invalid_json`，与 `apikey.Spec` 相同（bedrock、vertex 随之变化）。`apikey.Texts.KeyNotStringCode` 删除：设了 `KeyNotString` 就报 `pattern`（只有 openai、anthropic 预设设它，冻结的黄金样例钉住了这个码），没设报 `type`。`providers/anthropic` 无人调用的 `Path`、`Headers` 删除。清单检查包的 `check.ParseRouteRef`（转调 `manifest.ParseRouteRef`）删除，`check.OutdatedContract` 不再导出（包级判断用 `check.OutdatedPackage`）。
 - `jsonedit`：同一成员上的改写按调用顺序生效（以前先 `Set` 后 `Delete` 会留下这个键）。`ValidateUpstreamRequest` 与宿主用同一套方法和请求头检查。
 - `SendAccountRequest` 能发往账号自己的上游地址（以前只认 `externalServices`），请求体、URL、方法不限大小，回答整份交还（以前截到 64 KiB）；配额查询、凭证续期的回答同样不再截断。
 - **proto 清理**（转发 V2 收尾，删除没有使用者的字段）：

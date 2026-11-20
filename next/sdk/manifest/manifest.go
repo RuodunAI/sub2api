@@ -635,22 +635,6 @@ func (a AccountPlatform) ClientHeaders(p *Platform) []string {
 	return a.PassHeaders
 }
 
-// PassHeaders are the client headers the account type receives over all
-// the platforms it serves (AccountPlatform.ClientHeaders), each once:
-// the names an upstream template may read as {client_header.<name>}.
-// platform looks a platform up, nil when unknown.
-func (at *AccountType) PassHeaders(platform func(id string) *Platform) []string {
-	out := []string{}
-	for _, ap := range at.Platforms {
-		for _, n := range ap.ClientHeaders(platform(ap.Platform)) {
-			if !slices.Contains(out, n) {
-				out = append(out, n)
-			}
-		}
-	}
-	return out
-}
-
 // SupportsEndpoint checks the platform-local endpoint selection.
 func (a AccountPlatform) SupportsEndpoint(id string) bool {
 	if a.Endpoints == nil {

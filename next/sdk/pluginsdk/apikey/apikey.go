@@ -47,12 +47,10 @@ type Texts struct {
 	// by the received account type, Go-quoted as %q used to quote it.
 	UnsupportedAccountType string
 	// KeyNotString, when set, reports a non-string api_key with this message
-	// instead of the SDK's own type message.
+	// and code "pattern" (what the openai and anthropic presets recorded in
+	// the frozen golden cases) instead of the SDK's own type message and
+	// code "type".
 	KeyNotString string
-	// KeyNotStringCode is the code reported with KeyNotString. Default
-	// "pattern" (the code this helper has always used for that message);
-	// plugins that keep the SDK's "type" code set it explicitly.
-	KeyNotStringCode string
 	// BaseURLRequired is the message of a missing base_url when
 	// RequireBaseURL is set.
 	BaseURLRequired string
@@ -156,11 +154,7 @@ func (s Spec) validateKey(errs pluginsdk.FieldErrors, creds, settings map[string
 		return "", errs.Add("api_key", "required", "API key is required / 请填写 API Key")
 	case !isString:
 		if s.Texts.KeyNotString != "" {
-			code := s.Texts.KeyNotStringCode
-			if code == "" {
-				code = "pattern"
-			}
-			return "", errs.Add("api_key", code, s.Texts.KeyNotString)
+			return "", errs.Add("api_key", "pattern", s.Texts.KeyNotString)
 		}
 		return "", errs.Add("api_key", "type", "api_key must be a string / api_key 必须是字符串")
 	}
@@ -279,12 +273,6 @@ func (s Spec) FromAccount(acc *pluginv1.Account) (*Config, error) {
 	}
 	if cfg.BaseURL, err = s.normalizeBaseURL(strings.TrimSpace(base)); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid base_url: %v", err)
-	}
-	if cfg.BaseURL == "" && s.RequireBaseURL {
-		return nil, status.Error(codes.InvalidArgument, "base_url is required")
-	}
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = s.DefaultBaseURL
 	}
 	cfg.BaseURL = s.root(cfg.BaseURL)
 

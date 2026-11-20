@@ -63,10 +63,8 @@ const (
 // could never match.
 var usageEventRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`)
 
-// usageOwner says where a UsageRules block is declared, which decides one
-// thing: whether semantics is required. (It used to decide a second - whether
-// the block could pick the usage source - which stopped being a question when
-// the source moved onto the endpoint.)
+// usageOwner says where a UsageRules block is declared, which decides
+// whether semantics is required.
 type usageOwner int
 
 const (
@@ -116,15 +114,9 @@ func (v *validator) usageRules(field string, u manifest.UsageRules, owner usageO
 // endpoint that lists usageStreamEvents while the host reads its usage from
 // the declarative rules is a manifest whose author believes something the
 // host does not do - and the symptom (usage counted from the gjson rules, as
-// always) looks exactly like success.
-//
-// There is no ban to write here any more. The field used to live on
-// UsageRules, where an account type's per-protocol override could reach it:
-// that needed an explicit "an account type may not choose the source" rule,
-// and even with it an override that simply omitted the source switched the
-// endpoint back to the declarative rules, silently, because an override
-// replaces the whole block. On the endpoint the question has one answer and
-// only the plugin declaring the platform can write it.
+// always) looks exactly like success. The source is the endpoint's: only
+// the plugin declaring the platform writes it, no account type's usage
+// override reaches it.
 func (v *validator) usageSource(f string, e manifest.Endpoint) {
 	if e.UsageSource != "" && !slices.Contains(UsageSources, e.UsageSource) {
 		v.add(f+".usageSource", "invalid", "usageSource must be one of %s", strings.Join(UsageSources, ", "))
@@ -147,31 +139,29 @@ func (v *validator) usageSource(f string, e manifest.Endpoint) {
 	}
 	// billing "free" and a plugin-reported usage cannot both be meant. With
 	// "free" the host never prices this endpoint, so every token, fact and -
-	// the case that hurts - every Reservation the plugin returns is dropped
-	// before it reaches the settler: no pre-charge, no pending_settlements
-	// entry, no reconcile, and until this rule nothing that said so. The
-	// endpoint that only starts a job is exactly the one an author is tempted
-	// to mark free ("the submit itself has no final usage"); the right value
-	// is "usage", the estimate is the charge and the reconcile corrects it.
+	// the case that hurts - every Reservation the plugin's Execute returns
+	// is dropped before it reaches the settler: no pre-charge, no
+	// pending_settlements entry, no reconcile. The endpoint that only starts
+	// a job is exactly the one an author is tempted to mark free ("the
+	// submit itself has no final usage"); the right value is "usage", the
+	// estimate is the charge and the reconcile corrects it.
 	//
-	// What this rule can and cannot see: it cannot know whether the plugin
-	// will return a Reservation - that is a runtime answer - so it refuses
-	// the whole combination, including a free endpoint that only wanted the
-	// plugin's token counts for statistics. That case is deliberately not
-	// carved out: the host would pay one hot-path RPC per request for numbers
-	// it never prices, and an author who really wants it should be told here
-	// rather than discover the silent half later. The runtime keeps its own
-	// guard for packages installed before this rule (gateway warns and marks
-	// the record when a reservation is dropped).
+	// The rule cannot know whether the plugin will return a Reservation -
+	// that is a runtime answer - so it refuses the whole combination,
+	// including a free endpoint that only wanted the plugin's token counts
+	// for statistics: every request would wait for the plugin's reading of
+	// numbers the host never prices. At runtime the gateway drops a
+	// reservation a request cannot carry, with a warning and a mark on the
+	// record.
 	if e.Billing == "free" && e.PluginUsage() {
 		v.add(f+".billing", "conflict",
-			"billing %q discards everything ExtractUsage reports for this endpoint, including a Reservation "+
+			"billing %q discards all the usage the plugin reports for this endpoint, including a Reservation "+
 				"(no pre-charge, no reconcile); an endpoint with usageSource %q must bill by usage",
 			e.Billing, manifest.UsageSourcePlugin)
 	}
 	if n := len(e.UsageStreamEvents); n > MaxUsageStreamEvents {
 		v.add(f+".usageStreamEvents", "too_many",
-			"at most %d event names may be collected for ExtractUsage (declared %d); the host never buffers a whole stream",
+			"at most %d event names may be collected for the plugin's usage (declared %d); the host never buffers a whole stream",
 			MaxUsageStreamEvents, n)
 	}
 	seen := map[string]bool{}
@@ -198,7 +188,7 @@ func (v *validator) usageSource(f string, e manifest.Endpoint) {
 func (v *validator) usageRequestFields(f string, e manifest.Endpoint) {
 	if n := len(e.UsageRequestFields); n > MaxUsageRequestFields {
 		v.add(f+".usageRequestFields", "too_many",
-			"at most %d request fields may be handed to ExtractUsage (declared %d); the request body is never handed over whole",
+			"at most %d request fields may be handed to the plugin (declared %d); the request body is never handed over whole",
 			MaxUsageRequestFields, n)
 	}
 	seen := map[string]bool{}
@@ -280,7 +270,7 @@ func (v *validator) usageFact(field, key string, f manifest.UsageFact, pluginSou
 	}
 	// A fact without a path is never extracted (usagerules.applyFacts skips
 	// it) yet still offers administrators a u() key that is always 0 - unless
-	// the plugin supplies the value itself through ExtractUsage, where a path
+	// the plugin reports the value itself (usageSource "plugin"), where a path
 	// would be the thing that means nothing. The declaration is still
 	// required either way: it is what makes the key (and its type) exist for
 	// price expressions and for the host's type check on what the plugin

@@ -5193,9 +5193,9 @@ new-api 的动态权重做在核心的渠道模型里（`model/channel_dynamic_w
     - 调用发生在锁住插件行（`SELECT … FOR UPDATE`）的事务里：这是取舍，保证校验的是与写入同一份已存值（换回的密钥、`changed_keys`、重填规则都基于它），代价是校验期间同一插件的启用、停用、升级等要锁这一行的操作要等校验返回（最长到上面的超时）。
     - 核心自己不校验设置的内容（2026-11-19 前带 schema 的设置先按 schema 校验，再调用插件）。
     - 插件线协议（2）和 Host API（10）都不变：新增的是可选 RPC，`HostService` 没改。
-    - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到 `Configure` 解码才失败；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
+    - SDK：插件实现 `pluginsdk.SettingsValidator`（`ValidateSettings(ctx, Config) (normalized json.RawMessage, err error)`，错误用 `FieldErrors`，`Config.Grants` 是当前授权），把 `Configure` 里的解码、默认值和检查拆成纯函数两边共用，保证存进去的值能 `Configure` 成功。`pluginsdk/fieldcheck` 是 Go 侧的规则（必填、按字符数的长度、pattern、上下限、枚举、嵌套对象），并拒绝没有列出的键（`code: "unknown"`，即原 schema 的 `additionalProperties:false`）。`fieldcheck` 与 JSON Schema 的差别：`Required()` 拒绝 `null` 和空字符串（比 schema 的 `required` 严）；`Integer()` 不配 `Range` 时不检查大小，超出 Go 整型范围的值要到解码进插件的结构体时才失败（`DecodeSettings` 把它报在字段上，见下一条）；`OneOf`、`Pattern` 只用于 `String()`，用在别的类型上构造规则时 panic。测试用 `pluginsdktest.Harness.ValidateSettings(config, grants)`。
     - 账号表单的同一条规则（拒绝未知键）：`apikey.Spec.Fields`（`fieldcheck.Fields`）列出 `api_key`、`base_url` 之外表单会发的键和各自的规则（只要允许、不检查的写 `fieldcheck.Any()`），按规则检查它们（先读凭证、再读设置）并拒绝凭证和设置里其他的键（`code: "unknown"`），`nil` 等同空 map（2026-11-19 D1 起总是检查，此前 `nil` 不检查）；没有 `base_url` 的类型设 `Spec.NoBaseURL`，`base_url` 也按未知键拒绝（vertex_apikey）；也可以给 `api_key`、`base_url` 加规则，只在 Spec 自己的检查通过后运行，看到的是 Validate 将要保存的值（key 去掉首尾空白，base_url 经规范化（不去版本段，§127），只替换对象里本来有这个键的地方，读取顺序与 Spec 自己相同），同一字段只报一个错误（2026-11-19 U3a；此前是只列键名的 `[]string`，插件要另包一层 `Platform` 改写 `ValidateCredentials` 才能加规则）。自己实现表单的插件用 `accountform.Form.Only(keys...)`。
-    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（只有空白的 api_key 被拒，带空格、非 ASCII、4096 位的接受；各种被拒的 base_url；表单不会发的键报 `unknown`；带 `/v1`、带 `%2F` 的地址原样保存；去空白与 scheme 转小写；§127），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
+    - 测试辅助（2026-11-19 U3a）：`fieldcheck.DecodeSettings(cfg, fields, &out)` 是 `ValidateSettings` 与 `Configure` 共用的"解码成对象 → `fieldcheck.Check` → 解码进带默认值的结构体"三步，不是对象报 `""` `invalid_json`；`Check` 接受而结构体的 Go 类型装不下的值（写成 `60.0`、`6e1` 的整数，或超出类型范围）报在该字段上，错误码 `type`（此前同样报成 `""` `invalid_json`“设置必须是 JSON 对象”）；`apikey/apikeytest` 的 `Form.Cases()` 是 api_key + base_url 类型共有的 `ValidateCredentials` 用例（只有空白的 api_key 被拒，带空格、非 ASCII、4096 位的接受；各种被拒的 base_url；表单不会发的键报 `unknown`；带 `/v1`、带 `%2F` 的地址原样保存；去空白与 scheme 转小写；§127），`Run(t, ValidateCredentials, cases)` 逐条断言；`pluginsdktest.SettingsSecrets(t, manifestJSON, want...)` 断言清单写出了 `ui.settings.secrets` 且正好声明 `want`。
   - **标记只能写在能掩码的位置**（2026-11-12；已删除，0.1.304）：原来是对设置 schema 里密钥标记位置的打包检查（`ui.settings.schema` `unmaskable_secret`，含 `$ref` 展开的规则），随 schema 表单删除。现在密钥只在 `ui.settings.secrets` 里按路径声明，路径的检查见上文（`manifest.SecretPath`）。原文见 `git show 99bc835a7:next/docs/CONTRACTS.md`。
   - **不知道哪些是密钥的设置**（没有 `ui.settings`；模式是本核心不认识的值，包括已装旧包的 `schema`；native / iframe 设置没有 `secrets` 键）：已存值的每个顶层键都按凭据掩码，`secret_fields` 列出它们，回传掩码沿用原值，上面的重填规则同样适用。native / iframe 设置写了 `secrets`（包括 `[]`）时按它掩码（上文）。
   - `GET` 的回答多一个 `permission`：完整的 RBAC key（`plugin.<key>:<permission>`），没有声明时省略。
@@ -5850,7 +5850,7 @@ PATCH `/users/:id` 只有改密码、邮箱时要 proof；PUT `/me/password` 先
 - “API Key + 基础地址、按上游协议选路由、Key 在请求头或查询串”的账号类型由插件用 `sdk/pluginsdk/standard` 实现，厂商预设在 `sdk/pluginsdk/providers/{openai,anthropic,gemini}`（`APIKey(id)`）。openai、gemini、relay、azure_openai 和 anthropic 的 `apikey` 都是这样；原清单声明的每一项在库里的对应见 [PLUGIN-DEVELOPMENT.md](PLUGIN-DEVELOPMENT.md) 第 3 节。账号类型 ID、凭证字段从声明式时起没有变过（表单 2026-11-19 起是插件的 native 组件），账号数据不迁移。
 - 密钥与基础地址的规则见 §127（2026-11-20 起；此前保存时就去掉类型声明的路径后缀，密钥按各类型的格式检查）：`api_key` 只要求是非空字符串；基础地址经 `apikey.NormalizeBaseURL` 规范化后**按填写的保存**（去首尾空白、scheme 转小写、路径保留转义形式并去掉末尾的 `/`，不去任何后缀；去掉首尾空白后仍含空白字符（`unicode.IsSpace`）、`?`、`#`、userinfo，或不是绝对 http(s) 地址的拒绝），请求时 `Spec.FromAccount` 从存值末尾至多去掉一个类型声明的版本段（`Spec.Versions`）得到根，再接上路由的完整路径。
 - 原声明式引擎的 1498 条录制样例冻结在 `sdk/pluginsdk/standard/goldentest`，用 `standard` 写的插件逐条回放一致。
-- passHeaders：账号类型 `platforms[]` 的列表为空（缺省或空数组）时用平台的（`manifest.AccountType.PassHeaders`，核心、校验、网关共用）。
+- passHeaders：账号类型 `platforms[]` 没写这个字段时用平台的，写了就用自己的（空数组表示一个也不交，`manifest.AccountPlatform.ClientHeaders`，网关、一致性套件、黄金样例回放共用）。
 - 可服务的端点 = 账号类型 `platforms[].endpoints` 覆盖到的协议加核心能转换到它们的协议（§110 起：跨平台转换到的端点要在账号上按模型开启才提供）。
 
 ### 86.5 请求构造顺序
@@ -8150,7 +8150,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 ### 112.10 旧契约的插件包
 
 - 版本：插件线协议 `sdk/protocol.ProtocolVersion` 1 → 2（go-plugin 握手和 `GetInfoResponse.protocol_version`），Host API 9 → 10（`runtime-contract.HostAPIVersion`；`sdk/protocol.HostAPIVersion` 定义为它，两者恒等）。
-- 清单检查报 `outdated_contract`（`check.CodeOutdatedContract`，`check.OutdatedContract(err)`）：`runtime: "none"`；声明 `platform.execute.v1` 或 `platform.poll.v1`；清单原文里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`（这几个字段已不在类型里，从包里的 `manifest.json` 原文读）。
+- 清单检查报 `outdated_contract`（`check.CodeOutdatedContract`，包级判断是 `check.OutdatedPackage`）：`runtime: "none"`；声明 `platform.execute.v1` 或 `platform.poll.v1`；清单原文里有 `accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`（这几个字段已不在类型里，从包里的 `manifest.json` 原文读）；§124 起还有宿主授权 `accounts.credentials`、`accounts.read`。
 - 判断只有一处：`check.OutdatedPackage(manifest, manifestJSON, hostVersion)` 只读清单，返回信息；运行时、上传安装和 CLI 各自包成自己的错误类型。
 - 上传、安装（`pkg.Validate`）和加载（`grpcruntime.Runtime.Load`：清单检查不过时不启动进程；握手协议不符；`GetInfo` 报的协议版本不符）都以同一条信息拒绝：`protocol.OutdatedContractMessage(key, version, hostVersion)`，即 `plugin <key>@<version> was built for an older plugin protocol and cannot be loaded by this core (<host>, plugin protocol 2); install a version built for core <first> or later`，`<first>` 是本插件协议的第一个核心版本 `protocol.FirstCoreVersion`（`0.1.304`；为它构建的插件能在之后同一协议的每个核心上加载，所以不要求为当前核心构建）；`errors.Is(err, grpcruntime.ErrOutdatedContract)` 为真。CLI 的测试要求每个平台插件的 `hostCompat` 下限等于它。
 - 加载失败时节点在实例状态里记结构化的 `code: "outdated_contract"`（`errors.Is(err, grpcruntime.ErrOutdatedContract)` 时），`error` 仍是显示的文字；接口按 `code` 判断，不比较文字（此前比较文字，而 rollout 把错误截到 500 字符，包装或长版本号会让拒绝悄悄丢失）。`GET /plugins` 的每项带 `refusal`（`{code: "outdated_contract", version, host_version, protocol_version, first_core_version, message}`），有节点以这条信息拒绝加载时非空，`GET /plugins/:key` 同样带它。节点的实例状态只在实例条目还在时报告这个代码；发布结束时它随各节点的结果写进 `plugin_rollout_nodes.code`（迁移 0109），所以首次启用就被拒、发布在准备阶段失败、节点不再有这个实例之后，`refusal` 取自该插件最近一次发布里带这个代码的节点结果（`version` 为发布的目标版本，`host_version` 为应答的核心版本，`message` 为该节点的错误）；有节点正在报告时以节点报告为准。控制台的文字以“请安装为核心 {first} 及以上构建的版本”结尾。
@@ -8780,7 +8780,7 @@ ALTER TABLE usage_logs
 
 | 预设 | 协议 | 测试请求体 | 不点名时的模型 |
 |---|---|---|---|
-| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}` | `gpt-4o-mini` |
+| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens`（`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
 | openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在请求带了模型名时用到，这时用的是那个模型名）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |
@@ -8899,7 +8899,7 @@ volcengine 的 `apikey` 类型（方舟官方）路径布局固定，`settingsFi
 
 ### 127.1 密钥
 
-- `api_key` 只要求是非空字符串：先读凭证、再读设置；缺省、`null`、去掉首尾空白后为空报 `required`；不是字符串报 `type`（类型可以用 `Spec.Texts.KeyNotString` 换文案和错误码：anthropic、openai、typesafe 的预设为 `pattern`，为与录制的样例一致）。此外不检查前缀、字符集和长度，保存去掉首尾空白后的值；`Spec.FromAccount` 读取时同样去空白，空值报 `missing api_key`。
+- `api_key` 只要求是非空字符串：先读凭证、再读设置；缺省、`null`、去掉首尾空白后为空报 `required`；不是字符串报 `type`（类型可以用 `Spec.Texts.KeyNotString` 换文案，错误码随之为 `pattern`：只有 anthropic、openai 的预设（以及从它们出发的 relay、azure_openai）这样做，为与冻结的黄金样例一致）。此外不检查前缀、字符集和长度，保存去掉首尾空白后的值；`Spec.FromAccount` 读取时同样去空白，空值报 `missing api_key`。
 - 删除的：`apikey.Validator`、`Spec.KeyValidator`、`apikey.OpenAI`，各插件各自的长度与字符集检查（原来大多是 8–512 个不含空格的可见字符，openai 不超过 512 个可见 ASCII 字符，bedrock 8–2048 个可见字符）。bedrock 的 AK/SK、会话令牌，vertex 的密钥文件，volcengine 的 AK/SK 规则不变。
 - 控制字符不另外检查：密钥里带 CR、LF 等字符时，SDK、核心与 Go `net/http` 都拒绝把它写进请求头，不会注入；代价是这样的密钥能保存，但每次请求都失败（设计 Q1）。
 - 界面：`@sub2api/ui` 的 `createApiKeyForm` 默认只要求非空（`{required: true, whitespace: true}`），`spec.apiKey.min`/`max`/`pattern` 写了才检查（§23.3）；`@sub2api/ui/testing` 的 `keyAndUrlCases`、SDK 的 `apikey/apikeytest` 都按这条规则（只有空白的拒绝，1 位、4096 位、带空格、非 ASCII 的接受）。

@@ -16,9 +16,9 @@ import (
 // protocol.OutdatedContractMessage instead of the field errors.
 const CodeOutdatedContract = "outdated_contract"
 
-// OutdatedContract reports whether err is a manifest validation error that
+// outdatedContract reports whether err is a manifest validation error that
 // includes a CodeOutdatedContract problem.
-func OutdatedContract(err error) bool {
+func outdatedContract(err error) bool {
 	fields, _ := Fields(err)
 	for _, f := range fields {
 		if f.Code == CodeOutdatedContract {
@@ -36,7 +36,7 @@ func OutdatedContract(err error) bool {
 // load and the CLI wrap it in their own error; nothing but the manifest is
 // read (a binary of an older protocol shows at its handshake).
 func OutdatedPackage(m *manifest.Manifest, manifestJSON []byte, hostVersion string) (string, bool) {
-	if m == nil || !OutdatedContract(Validate(m, map[string][]byte{"manifest.json": manifestJSON}, ValidateOptions{Tooling: true})) {
+	if m == nil || !outdatedContract(Validate(m, map[string][]byte{"manifest.json": manifestJSON}, ValidateOptions{Tooling: true})) {
 		return "", false
 	}
 	return protocol.OutdatedContractMessage(m.Key, m.Version, hostVersion), true

@@ -11,11 +11,6 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
-// ParseRouteRef is manifest.ParseRouteRef.
-func ParseRouteRef(ref, defaultMethod string) (method, path string, ok bool) {
-	return manifest.ParseRouteRef(ref, defaultMethod)
-}
-
 // routeRef checks one route reference (an account action's route) and
 // returns the declared route it names, or nil after recording the error.
 //

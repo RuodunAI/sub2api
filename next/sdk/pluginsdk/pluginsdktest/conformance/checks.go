@@ -218,15 +218,12 @@ func (s *suite) checkHeaders(t testing.TB, c *Case, seen map[string]bool) {
 			t.Errorf("client header %q, which the manifest passes and the core hands over, does not reach the upstream request: forward the inbound headers as default headers (the core has filtered them already)", name)
 		}
 	}
+	// A transport header never gets here: the fake host refuses the relay
+	// as the core does (pluginsdk.ValidateUpstreamRequest).
 	secrets := credentialValues(c.Account)
-	for kind, headers := range map[string]map[string]string{"authoritative": r.GetHeaders(), "default": r.GetDefaultHeaders()} {
-		for name, value := range headers {
-			switch {
-			case slices.Contains(transportHeaders, name):
-				t.Errorf("%s header %q belongs to the host's transport", kind, name)
-			case kind == "default" && slices.ContainsFunc(secrets, func(v string) bool { return strings.Contains(value, v) }):
-				t.Errorf("default header %q carries a credential: make it authoritative", name)
-			}
+	for name, value := range r.GetDefaultHeaders() {
+		if slices.ContainsFunc(secrets, func(v string) bool { return strings.Contains(value, v) }) {
+			t.Errorf("default header %q carries a credential: make it authoritative", name)
 		}
 	}
 }

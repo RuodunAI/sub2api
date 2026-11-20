@@ -176,18 +176,6 @@ func (b AccountTypeBinding) Key() AccountTypeKey {
 	return AccountTypeKey{PluginKey: b.Plugin.Key, Type: b.Type.ID}
 }
 
-// PassHeaders are the client headers the account type receives
-// (manifest.AccountType.PassHeaders) with platform, a Generation's Platform,
-// looking the platforms up.
-func (b AccountTypeBinding) PassHeaders(platform func(id string) (PlatformBinding, bool)) []string {
-	return b.Type.PassHeaders(func(id string) *manifest.Platform {
-		if pb, ok := platform(id); ok {
-			return &pb.Platform
-		}
-		return nil
-	})
-}
-
 // Supports returns the account type's entry for platform, if it serves it.
 func (b AccountTypeBinding) Supports(platformID string) (manifest.AccountPlatform, bool) {
 	for _, p := range b.Type.Platforms {

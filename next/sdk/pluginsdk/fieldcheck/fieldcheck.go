@@ -27,13 +27,15 @@
 //
 // Two differences from the JSON Schema rules worth knowing: Integer without
 // Range does not check the size, so a whole number past what the plugin's Go
-// type holds passes here and fails only when Configure decodes it; and
+// type holds passes Check and fails only when it is decoded (DecodeSettings
+// reports it at the field); and
 // Required refuses an empty string (and null), stricter than JSON Schema's
 // required, which only asks for the key.
 package fieldcheck
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"math"
@@ -169,7 +171,9 @@ func Unknown(known []string, objs ...map[string]any) pluginsdk.FieldErrors {
 // the object cfg holds is checked against fields (Check), then decoded into
 // out, whose values stay where a key is absent (the plugin's defaults).
 // Settings that are not a JSON object are refused at "" with code
-// "invalid_json". The error is a pluginsdk.FieldErrors one.
+// "invalid_json"; a value Check accepts that out's Go type cannot hold (an
+// Integer written 60.0 or 6e1, or past the type's range) is refused at its
+// field with code "type". The error is a pluginsdk.FieldErrors one.
 func DecodeSettings(cfg pluginsdk.Config, fields Fields, out any) error {
 	invalid := pluginsdk.FieldErrors{}.Add("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象").Err()
 	var values map[string]any
@@ -179,7 +183,14 @@ func DecodeSettings(cfg pluginsdk.Config, fields Fields, out any) error {
 	if err := Check(fields, values).Err(); err != nil {
 		return err
 	}
-	if err := cfg.Decode(out); err != nil {
+	var te *json.UnmarshalTypeError
+	switch err := cfg.Decode(out); {
+	case errors.As(err, &te) && te.Field != "":
+		// encoding/json names the value by its keys, each a JSON pointer
+		// token, joined with ".".
+		p := strings.ReplaceAll(te.Field, ".", "/")
+		return pluginsdk.FieldErrors{}.Add(p, "type", fmt.Sprintf("%s cannot be stored as %s (%s) / %s 的值无法存为 %s", p, te.Type, te.Value, p, te.Type)).Err()
+	case err != nil:
 		return invalid
 	}
 	return nil

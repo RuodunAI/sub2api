@@ -45,7 +45,7 @@ func at(root map[string]any, key string, i int) map[string]any {
 // declares is refused with CodeOutdatedContract, so the host can answer with
 // the one message for such packages.
 func TestOutdatedContract(t *testing.T) {
-	if err := Validate(controlsManifest(nil), controlFiles(t, controlsManifest(nil), func(map[string]any) {}), ValidateOptions{Tooling: true}); err != nil || OutdatedContract(err) {
+	if err := Validate(controlsManifest(nil), controlFiles(t, controlsManifest(nil), func(map[string]any) {}), ValidateOptions{Tooling: true}); err != nil || outdatedContract(err) {
 		t.Fatalf("current manifest: %v", err)
 	}
 	for _, tc := range []struct {
@@ -97,7 +97,7 @@ func TestOutdatedContract(t *testing.T) {
 		}
 		files := controlFiles(t, m, raw)
 		err := Validate(m, files, ValidateOptions{Tooling: true})
-		if !hasCode(err, tc.field, CodeOutdatedContract) || !OutdatedContract(err) {
+		if !hasCode(err, tc.field, CodeOutdatedContract) || !outdatedContract(err) {
 			t.Errorf("%s: want %s on %s, got %v", tc.name, CodeOutdatedContract, tc.field, err)
 		}
 		// The one decision upload, install, load and the CLI share reads
@@ -120,7 +120,7 @@ func TestRuntimeUnsupported(t *testing.T) {
 	m := controlsManifest(nil)
 	m.Runtime = "wasm"
 	err := Validate(m, nil, ValidateOptions{Tooling: true})
-	if !hasCode(err, "runtime", "unsupported") || OutdatedContract(err) {
+	if !hasCode(err, "runtime", "unsupported") || outdatedContract(err) {
 		t.Fatalf("errors = %v", err)
 	}
 }
