@@ -22,6 +22,7 @@ import ConsentNeed from './consent/ConsentNeed.vue'
 import UpgradePermissionChanges from './consent/UpgradePermissionChanges.vue'
 import DatabaseMigrations from './consent/DatabaseMigrations.vue'
 import DatabaseAccessList from './parts/DatabaseAccessList.vue'
+import ScopeChips from './parts/ScopeChips.vue'
 import PermissionMatrix from '@/components/permission/PermissionMatrix.vue'
 import type { MatrixPerm } from '@/components/permission/useGrantMatrix'
 import StickyActionBar from '@/components/StickyActionBar.vue'
@@ -67,9 +68,11 @@ onBeforeRouteLeave(() => settled.value || confirmDiscard(consent.matrix.dirty.va
 /** Granting db.schema to this plugin takes the override as well (review.needs_db_schema_unconfined). */
 const DB_SCHEMA = 'db.schema'
 const DB_SCHEMA_UNCONFINED = P.PluginGrantDbSchemaUnconfined
-/** The tables outside its own the plugin asks for come with db.core_read: listed under it. */
+/** The tables outside its own the plugin asks for are db.core_read's scope: listed under it in place of the raw scope. */
 const DB_CORE_READ = 'db.core_read'
 const databaseAccess = computed(() => asArray<DatabaseAccess>(review.value?.database_access))
+/** An upgrade's db.core_read grant in force, to mark what the request adds to it. */
+const grantedAccess = (row: HPRow) => (row.current_status === 'granted' ? asArray<string>(row.current_scope?.access) : undefined)
 
 function riskPermOf(hp: HostPermissionReview, risk: Risk): string | null {
   if (hp.requires) return hp.requires
@@ -327,8 +330,9 @@ onMounted(load)
 
       <!-- host permissions -->
       <HostPermissionTable :rows="rows" :checked="checked" :show-missing="showMissing" @toggle="toggle">
-        <template #detail="{ row }">
-          <DatabaseAccessList v-if="row.id === DB_CORE_READ && databaseAccess.length" :access="databaseAccess" class="mt-2" />
+        <template #scope="{ row }">
+          <DatabaseAccessList v-if="row.id === DB_CORE_READ && databaseAccess.length" :access="databaseAccess" :granted="grantedAccess(row)" class="mt-2" />
+          <ScopeChips v-else :scope="row.scope" class="mt-1" />
         </template>
       </HostPermissionTable>
       <DatabaseMigrations :review="review" />

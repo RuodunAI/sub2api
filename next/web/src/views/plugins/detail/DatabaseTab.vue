@@ -1,14 +1,15 @@
 <script setup lang="ts">
 // GET /plugins/:key/database (CONTRACTS §130): the plugin's table prefix and
-// database identity, the tables outside its own it was granted, and the
-// migration scripts of its installed version with when each ran.
-import { onMounted, ref } from 'vue'
+// database identity, the tables outside its own it asks for, and the
+// migration scripts of the version it runs with when each ran. Loaded again
+// when that version changes.
+import { onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { api } from '@sub2api/host'
-import { SBadge, SButton, SCard, SDescItem, SDescriptions, SHint, SSpinner } from '@sub2api/ui'
+import { SBadge, SButton, SCard, SDescItem, SDescriptions, SEmpty, SHint, SSpinner } from '@sub2api/ui'
 import type { PluginDatabase } from '@/api/types'
 import { formatDateTime } from '@/utils/format'
-import { notifyError } from '@/utils/errors'
+import { errorMessage } from '@/utils/errors'
 import type { PluginDetail } from '../pluginUtil'
 import DatabaseAccessList from '../parts/DatabaseAccessList.vue'
 import MigrationScript from '../parts/MigrationScript.vue'
@@ -18,41 +19,45 @@ const { t } = useI18n()
 
 const data = ref<PluginDatabase | null>(null)
 const loading = ref(false)
+const loadError = ref('')
 
 async function load() {
   loading.value = true
+  loadError.value = ''
   try {
     data.value = await api.get<PluginDatabase>(`/plugins/${encodeURIComponent(props.detail.key)}/database`)
   } catch (e) {
-    notifyError(e)
+    data.value = null
+    loadError.value = errorMessage(e)
   } finally {
     loading.value = false
   }
 }
 
 onMounted(load)
+// The version the plugin runs (the core's CurrentVersion): its scripts and access.
+watch([() => props.detail.active_version, () => props.detail.desired_version], load)
 </script>
 
 <template>
-  <div v-if="!data" class="flex justify-center py-12">
-    <SSpinner v-if="loading" />
-    <SButton v-else size="sm" icon="refresh" @click="load">{{ t('common.refresh') }}</SButton>
-  </div>
+  <div v-if="!data && loading" class="flex justify-center py-12"><SSpinner /></div>
+  <SCard v-else-if="!data">
+    <SEmpty icon="warning" :text="t('plugins.database.loadFailed')" data-testid="plugin-database-error">
+      <SHint v-if="loadError" size="xs" tone="danger">{{ loadError }}</SHint>
+      <SButton size="sm" :loading="loading" @click="load">{{ t('common.refresh') }}</SButton>
+    </SEmpty>
+  </SCard>
   <div v-else class="space-y-4" data-testid="plugin-database">
     <SCard :title="t('plugins.detail.tabs.database')">
       <template #actions>
         <SButton size="sm" variant="ghost" :loading="loading" icon="refresh" @click="load">{{ t('common.refresh') }}</SButton>
       </template>
       <SDescriptions>
-        <SDescItem :label="t('plugins.database.prefix')" :value="data.prefix" mono copyable>
-          <code class="break-all font-mono text-sm">{{ data.prefix }}</code>
-          <SHint size="xs">{{ t('plugins.database.prefixHint') }}</SHint>
-        </SDescItem>
-        <SDescItem :label="t('plugins.database.role')" :value="data.role" mono copyable>
-          <code class="break-all font-mono text-sm">{{ data.role }}</code>
-          <SHint size="xs">{{ t('plugins.database.roleHint') }}</SHint>
-        </SDescItem>
+        <SDescItem :label="t('plugins.database.prefix')" :value="data.prefix" mono copyable />
+        <SDescItem :label="t('plugins.database.role')" :value="data.role" mono copyable />
       </SDescriptions>
+      <SHint size="xs" class="mt-2">{{ t('plugins.database.prefixHint') }}</SHint>
+      <SHint size="xs" class="mt-1">{{ t('plugins.database.roleHint') }}</SHint>
     </SCard>
 
     <SCard :title="t('plugins.database.access')" :subtitle="data.access.length ? t('plugins.database.accessHint') : undefined">

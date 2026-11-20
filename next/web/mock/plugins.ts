@@ -69,7 +69,8 @@ function guardManifest(version: string): Any {
       pages: { dashboard: { type: 'native', component: 'GuardDashboard' } },
       slots: [{ slot: 'dashboard.widgets', component: 'BlockedTodayCard' }]
     },
-    database: { migrations: guardMigrations(version).map((m) => m.id), access: guardAccess(version) },
+    // As the detail's manifest (a review) has it: the scripts are GET /plugins/:key/database's.
+    database: { migrations: guardMigrations(version).map((m) => m.id) },
     resources: { memoryMB: 128, cpu: 0.25, maxProcs: 64, maxOpenFiles: 256 }
   }
 }
@@ -124,6 +125,11 @@ function guardAccess(version: string): Any[] {
     access.push({ table: 'groups', privileges: ['select', 'references'] }, { table: 'usage_logs', columns: ['status', 'error_message'], privileges: ['select', 'update'] })
   }
   return access
+}
+
+/** The db.core_read scope of access, as the core grants and compares it (dbschema.AccessScope). */
+function accessScope(access: Any[]): Any {
+  return { access: access.flatMap((a) => a.privileges.map((p: string) => (!a.columns?.length || p === 'delete' ? [`${p}:${a.table}.*`] : a.columns.map((c: string) => `${p}:${a.table}.${c}`))).flat()) }
 }
 
 /** The installed guard's migrations as review database_migrations would mark them against the target version's. */
@@ -489,7 +495,15 @@ function guardReview(version: string, diff?: Any): Any {
       { id: 'kv', risk: 'low' },
       { id: 'broadcast', risk: 'low', reason: { en: 'Reload rules on every node right after they change', zh: '规则修改后通知各节点立即重载' } },
       { id: 'db.schema', risk: 'high', reason: { en: 'Store rules and statistics', zh: '保存拦截规则和统计' }, requires: 'plugin:grant:high' },
-      { id: 'db.core_read', risk: 'critical', reason: { en: 'Match rules against users and groups', zh: '按用户和分组匹配规则' }, requires: 'plugin:grant:critical', ...(diff ? { current_status: 'granted' } : {}) },
+      {
+        id: 'db.core_read',
+        risk: 'critical',
+        scope: accessScope(guardAccess(version)),
+        reason: { en: 'Match rules against users and groups', zh: '按用户和分组匹配规则' },
+        requires: 'plugin:grant:critical',
+        // An upgrade from 0.1.0, which holds its access.
+        ...(diff ? { current_status: 'granted', current_scope: accessScope(guardAccess('0.1.0')) } : {})
+      },
       {
         id: 'gateway.hook',
         risk: 'high',
@@ -688,7 +702,8 @@ function settleRoleGrants(r: Any, who: Identity, overrides: Any): { error: Any }
 const reviews = new Map<string, Any>()
 // guard: a first install (as after an uninstall) and the pending 0.2.0 upgrade.
 reviews.set('guard@0.1.0', guardReview('0.1.0'))
-reviews.set('guard@0.2.0', guardReview('0.2.0', { added: [diffItem('net', 'high')], widened: [], removed: [] }))
+// 0.2.0 asks for more tables and privileges than the db.core_read grant of 0.1.0 holds: a wider scope.
+reviews.set('guard@0.2.0', guardReview('0.2.0', { added: [diffItem('net', 'high')], widened: [diffItem('db.core_read', 'critical')], removed: [] }))
 reviews.set('foo_platform@1.0.0', genericReview('foo_platform', '1.0.0', { en: 'Foo Platform', zh: 'Foo 平台' }, 'foo-labs', 'community'))
 reviews.set('anthropic@0.2.0', anthropicReview('0.2.0'))
 
@@ -1051,13 +1066,12 @@ on('DELETE', '/plugins/:key', (req) => {
 on('GET', '/plugins/:key/database', (req) => {
   const p = find(req.params.key)
   if (!p) return notFound(req.params.key)
-  const db = p.manifest?.database
-  if (!db || !p.active_version) return fail(404, 'not_found', 'the plugin has no database')
+  const guard = p.key === 'guard' && p.active_version
   return {
     prefix: `plg_${p.key}__`,
     role: `plg713988_${p.key}`,
-    access: db.access ?? [],
-    migrations: p.key === 'guard' ? guardMigrations(p.active_version).map((m) => ({ ...m, applied_at: now(-86400 * 3) })) : []
+    access: guard ? guardAccess(guard) : [],
+    migrations: guard ? guardMigrations(guard).map((m) => ({ ...m, applied_at: now(-86400 * 3) })) : []
   }
 })
 

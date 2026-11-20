@@ -301,7 +301,7 @@ onMounted(load)
 
       </STabs>
 
-      <UninstallModal v-model:open="uninstallOpen" :plugin-key="detail.key" :name="name" @done="onUninstalled" />
+      <UninstallModal v-model:open="uninstallOpen" :plugin-key="detail.key" :name="name" :has-database="hasDatabase" @done="onUninstalled" />
 
       <SFormModal v-model:open="upgradeOpen" :title="t('plugins.detail.upgradeTitle', { name })" width="sm" :loading="acting === 'upgrade'" :submit-disabled="!upgradeVersion" :submit-text="t('plugins.detail.upgrade')" :enter-submit="false" @submit="startRollout('upgrade', upgradeVersion)">
         <SHint class="mb-3">{{ t('plugins.detail.upgradeHint', { version: detail.active_version || '—' }) }}</SHint>
