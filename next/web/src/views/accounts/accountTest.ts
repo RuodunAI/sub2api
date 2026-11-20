@@ -68,16 +68,19 @@ export function formatLatency(ms: number | null | undefined): string {
   return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(2)} s`
 }
 
-export type RowState = 'idle' | 'testing' | 'ok' | 'fail'
+/** `canceled`: the user stopped the test (a test has no time limit of its own). */
+export type RowState = 'idle' | 'testing' | 'ok' | 'fail' | 'canceled'
 export interface TestRow extends Candidate {
   state: RowState
   result?: AccountTestResult
   /** Transport / API error of the console request itself (no result). */
   error?: string
+  /** Stops the test in flight (set while testing). */
+  stop?: () => void
 }
 
-export function summarize(rows: Pick<TestRow, 'state'>[]): { total: number; ok: number; fail: number; testing: number; idle: number } {
-  const s = { total: rows.length, ok: 0, fail: 0, testing: 0, idle: 0 }
+export function summarize(rows: Pick<TestRow, 'state'>[]): Record<RowState | 'total', number> {
+  const s = { total: rows.length, ok: 0, fail: 0, testing: 0, idle: 0, canceled: 0 }
   for (const r of rows) s[r.state]++
   return s
 }

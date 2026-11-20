@@ -26,7 +26,7 @@ const props = defineProps<{
   /** The model_mapping common control: hides or fixes the mapping card. */
   mappingControl?: ControlView
 }>()
-const emit = defineEmits<{ (e: 'fetch'): void }>()
+const emit = defineEmits<{ (e: 'fetch'): void; (e: 'stop-fetch'): void }>()
 
 const { t } = useI18n()
 const {
@@ -82,6 +82,7 @@ const serverMappingError = computed(() => mappingErrorText(props.errors))
       <div class="mt-3 flex flex-wrap items-center gap-2">
         <SButton v-if="defaultModels.length" size="sm" variant="primary" icon="download" data-testid="models-fill-defaults" :title="t('accounts.editorUi.fillDefaultsHint')" @click="fillDefaultModels()">{{ t('accounts.editorUi.fillDefaults', { n: defaultModels.length }) }}</SButton>
         <SButton v-if="canFetch" size="sm" icon="refresh" :loading="fetching" data-testid="models-fetch" :title="t('accounts.fetchModelsHint')" @click="emit('fetch')">{{ t('accounts.fetchModels') }}</SButton>
+        <SButton v-if="fetching" size="sm" variant="ghost" icon="stop" data-testid="models-fetch-stop" @click="emit('stop-fetch')">{{ t('accounts.fetchModelsStop') }}</SButton>
         <SButton v-if="modelsTextMode" size="sm" variant="ghost" icon="code" data-testid="models-format" @click="formatModelsText()">{{ t('accounts.editorUi.formatJson') }}</SButton>
         <SButton size="sm" variant="ghost" icon="copy" :disabled="!models.length" data-testid="models-copy" @click="copyModels()">{{ t('accounts.editorUi.copyModels') }}</SButton>
         <SButton size="sm" variant="ghost" icon="trash" :disabled="!models.length && !modelsText.trim()" data-testid="models-clear" @click="clearModels()">{{ t('accounts.editorUi.clearModels') }}</SButton>

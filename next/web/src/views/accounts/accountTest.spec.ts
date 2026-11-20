@@ -33,7 +33,7 @@ describe('account test helpers', () => {
   })
 
   it('summarizes row states', () => {
-    expect(summarize([{ state: 'ok' }, { state: 'fail' }, { state: 'fail' }, { state: 'testing' }, { state: 'idle' }])).toEqual({ total: 5, ok: 1, fail: 2, testing: 1, idle: 1 })
+    expect(summarize([{ state: 'ok' }, { state: 'fail' }, { state: 'fail' }, { state: 'testing' }, { state: 'idle' }, { state: 'canceled' }])).toEqual({ total: 6, ok: 1, fail: 2, testing: 1, idle: 1, canceled: 1 })
   })
 
   it('removes failed models, null when nothing changes', () => {
