@@ -518,6 +518,18 @@ func TestEmptyCoreReadingIsUnreported(t *testing.T) {
 	}
 }
 
+// A task submission's answer holds no usage by nature (the task bills when it
+// ends), so an empty reading of it is not an unreported request.
+func TestEmptyReadingOfATaskSubmissionIsNotUnreported(t *testing.T) {
+	logs := captureWarnings(t)
+	c := &call{ep: manifest.Endpoint{Task: &manifest.AsyncTaskEndpoint{Action: manifest.TaskActionSubmit}}}
+	rec := &core.UsageRecord{Success: true, StatusCode: 200}
+	c.finalizeBillability(context.Background(), rec, "")
+	if !rec.Success || rec.ErrorType == core.UsageErrorUnreported || strings.Contains(logs.String(), "holds no usage") {
+		t.Fatalf("task submission marked unreported: %+v, logs %s", rec, logs)
+	}
+}
+
 // Only a relay that waits keeps a copy of the answer for the plugin's
 // observation: one that does not wait is read by no plugin, so forward
 // captures nothing for it even on an endpoint whose usage the plugin reads.

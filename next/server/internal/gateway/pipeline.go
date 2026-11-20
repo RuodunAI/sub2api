@@ -823,7 +823,7 @@ func (c *call) finalizeBillability(ctx context.Context, rec *core.UsageRecord, b
 		c.dropReservation(ctx, rec, billing, hasUsage)
 		rec.Price = nil
 	}
-	if rec.Success && !rec.Billable && !hasUsage && rec.UsageExtract == "" && !strings.EqualFold(billing, "free") {
+	if rec.Success && !rec.Billable && !hasUsage && rec.UsageExtract == "" && !strings.EqualFold(billing, "free") && !c.ep.TaskSubmit() {
 		c.readingEmpty(ctx, rec)
 	}
 }
@@ -833,7 +833,8 @@ func (c *call) finalizeBillability(ctx context.Context, rec *core.UsageRecord, b
 var errReadingEmpty = errors.New("the upstream answered and the core's reading of it holds no usage")
 
 // readingEmpty ends as unreported a served request of an endpoint whose usage
-// the core reads when its reading found nothing to bill: there are no facts
+// the core reads when its reading found nothing to bill (a task submission
+// is not one: its usage comes when the task ends): there are no facts
 // and the core makes none up, the same record as a plugin's host_usage
 // without a reading (hostUsageChosen), so the missing usage shows instead of
 // passing as a free request.
