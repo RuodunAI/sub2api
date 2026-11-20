@@ -518,6 +518,8 @@ type fakeBalance struct {
 	disconnect string
 	// outputReserve is output_reserve_tokens; zero reserves nothing.
 	outputReserve int64
+	// mu guards precharged: concurrent requests pre-charge at once.
+	mu sync.Mutex
 	// precharged are the prices of the pre-charges made, in order.
 	precharged []*core.PriceRule
 }
@@ -535,7 +537,9 @@ func (b *fakeBalance) ClientDisconnectPolicy(context.Context) (string, error) {
 
 func (b *fakeBalance) PreConsumeTokens(context.Context) (int64, error) { return 500, nil }
 func (b *fakeBalance) Precharge(ctx context.Context, r *core.UsageRecord) error {
+	b.mu.Lock()
 	b.precharged = append(b.precharged, r.Price)
+	b.mu.Unlock()
 	return b.CheckBalance(ctx, r.UserID)
 }
 
