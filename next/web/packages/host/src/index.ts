@@ -206,6 +206,25 @@ export function createPluginHost(
   }
 }
 
+/**
+ * The module-level host of one plugin UI: register(host) calls setHost(host)
+ * (unregister and specs setHost(null)), the plugin's components and API
+ * helpers call useHost(), which throws before register. A plugin writes
+ * `export const { setHost, useHost: useShopHost } = definePluginHost('shop')`.
+ */
+export function definePluginHost(name: string): { setHost(h: PluginHost | null): void; useHost(): PluginHost } {
+  let host: PluginHost | null = null
+  return {
+    setHost: h => {
+      host = h
+    },
+    useHost: () => {
+      if (!host) throw new Error(`${name} UI used before register(host)`)
+      return host
+    }
+  }
+}
+
 /** Minimal semver range check used for hostUICompat ("^1.0", ">=1.0.0 <2.0.0", "1.x", "*"). */
 export function satisfiesRange(version: string, range: string | undefined | null): boolean {
   if (!range || range.trim() === '' || range.trim() === '*') return true

@@ -1,16 +1,7 @@
-import type { PluginHost } from '@sub2api/host'
+import { definePluginHost } from '@sub2api/host'
 
 // Plugin-scoped host handed to register(); shared by all guard components.
-let host: PluginHost | null = null
-
-export function setHost(h: PluginHost | null) {
-  host = h
-}
-
-export function useGuardHost(): PluginHost {
-  if (!host) throw new Error('guard UI used before register(host)')
-  return host
-}
+export const { setHost, useHost: useGuardHost } = definePluginHost('guard')
 
 /** Human-readable message of a failed call (ApiError is an Error), else `fallback`. */
 export function errorMessage(e: unknown, fallback: string): string {

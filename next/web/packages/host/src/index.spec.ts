@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createPluginHost, HOST_COMPONENT_NAMES, pluginPermissionKey, type HostContext } from './index'
+import { createPluginHost, definePluginHost, HOST_COMPONENT_NAMES, pluginPermissionKey, type HostContext, type PluginHost } from './index'
 
 describe('plugin host', () => {
   it('hands every plugin the core components of the host (UI 3.7 editors, UI 3.11 / 3.12 entity pickers)', () => {
@@ -7,6 +7,25 @@ describe('plugin host', () => {
     const base = { components, i18n: { t: (k: string) => k }, permissions: { has: () => true } } as unknown as HostContext
     const host = createPluginHost(base, { key: 'p', version: '1', assetBase: '/a', trust: 'official' }, () => undefined)
     expect(host.components).toBe(components)
+  })
+})
+
+describe('definePluginHost', () => {
+  it('holds the host register() set, and refuses before it and after unregister', () => {
+    const { setHost, useHost } = definePluginHost('shop')
+    expect(() => useHost()).toThrow('shop UI used before register(host)')
+    const host = { plugin: { key: 'shop' } } as unknown as PluginHost
+    setHost(host)
+    expect(useHost()).toBe(host)
+    setHost(null)
+    expect(() => useHost()).toThrow('shop UI used before register(host)')
+  })
+
+  it('keeps each plugin its own host', () => {
+    const a = definePluginHost('a')
+    const b = definePluginHost('b')
+    a.setHost({} as PluginHost)
+    expect(() => b.useHost()).toThrow('b UI used')
   })
 })
 

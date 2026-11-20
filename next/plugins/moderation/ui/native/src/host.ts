@@ -1,4 +1,4 @@
-import { apiBase, isApiError, listAll, pluginApiBase, requestRaw, useList, type ApiClient, type ListResult, type PageInfo, type PluginHost, type Query } from '@sub2api/host'
+import { apiBase, definePluginHost, isApiError, listAll, pluginApiBase, requestRaw, useList, type ApiClient, type ListResult, type PageInfo, type Query } from '@sub2api/host'
 import type {
   Auditor,
   AuditorDraft,
@@ -44,16 +44,7 @@ import type {
 
 // Plugin-scoped host handed to register(); shared by all moderation components.
 // The API calls (CONTRACTS §72.11) live in this file, their types in types.ts.
-let host: PluginHost | null = null
-
-export function setHost(h: PluginHost | null) {
-  host = h
-}
-
-export function useModHost(): PluginHost {
-  if (!host) throw new Error('moderation UI used before register(host)')
-  return host
-}
+export const { setHost, useHost: useModHost } = definePluginHost('moderation')
 
 /** Manifest userPermission (host.can prefixes it with plugin.moderation:). */
 export function canManage(): boolean {
