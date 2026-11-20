@@ -613,19 +613,19 @@ func added(table string, cols ...string) clause.Set {
 var (
 	statsUpsert = clause.OnConflict{
 		Columns: columns("hour", "group_id", "flow_id", "stage", "auditor_id", "timing"),
-		DoUpdates: append(added("stats_hourly", "audited", "hit", "blocked", "overturned", "errors", "cache_skipped", "calls",
+		DoUpdates: append(added(model.Prefix+"stats_hourly", "audited", "hit", "blocked", "overturned", "errors", "cache_skipped", "calls",
 			"tokens_in", "tokens_out", "latency_ms_sum", "cost", "priced_calls", "unpriced_calls", "unpriced_tokens", "free_calls", "replayed"),
-			latAdd("stats_hourly")),
+			latAdd(model.Prefix+"stats_hourly")),
 	}
 	costsUpsert = clause.OnConflict{
 		Columns: columns("hour", "channel_id", "source"),
-		DoUpdates: append(added("costs", "calls", "errors", "latency_ms_sum", "priced_calls", "unpriced_calls", "unpriced_tokens",
-			"free_calls", "tokens_in", "tokens_out", "cost"), latAdd("costs")),
+		DoUpdates: append(added(model.Prefix+"costs", "calls", "errors", "latency_ms_sum", "priced_calls", "unpriced_calls", "unpriced_tokens",
+			"free_calls", "tokens_in", "tokens_out", "cost"), latAdd(model.Prefix+"costs")),
 	}
 	userDailyUpsert = clause.OnConflict{
 		Columns: columns("day", "user_id"),
-		DoUpdates: append(added("user_daily", "audited", "suspicious", "high", "errors"),
-			assign("group_id", "EXCLUDED.group_id"), assign("last_hit_at", "GREATEST(user_daily.last_hit_at, EXCLUDED.last_hit_at)")),
+		DoUpdates: append(added(model.Prefix+"user_daily", "audited", "suspicious", "high", "errors"),
+			assign("group_id", "EXCLUDED.group_id"), assign("last_hit_at", "GREATEST("+model.Prefix+"user_daily.last_hit_at, EXCLUDED.last_hit_at)")),
 	}
 )
 

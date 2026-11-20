@@ -23,10 +23,10 @@ func TestParityConversionOnce(t *testing.T) {
 		// The start already ran the conversion on the empty list.
 		waitFor(t, "conversion at start", p.parityDone.Load)
 		db, _ := p.db(ctx)
-		if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, expires_at, violation_count) VALUES ` + rows).Error; err != nil {
+		if err := db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, expires_at, violation_count) VALUES ` + rows).Error; err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Exec(`UPDATE config_state SET parity_converted = false, parity_converted_at = NULL WHERE id = 1`).Error; err != nil {
+		if err := db.Exec(`UPDATE plg_moderation__config_state SET parity_converted = false, parity_converted_at = NULL WHERE id = 1`).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -34,7 +34,7 @@ func TestParityConversionOnce(t *testing.T) {
 		t.Helper()
 		db, _ := p.db(ctx)
 		out := map[int64]string{}
-		rows, err := db.Raw(`SELECT user_id, level || '/' || source || '/' || violation_count FROM watchlist`).Rows()
+		rows, err := db.Raw(`SELECT user_id, level || '/' || source || '/' || violation_count FROM plg_moderation__watchlist`).Rows()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +53,7 @@ func TestParityConversionOnce(t *testing.T) {
 		t.Helper()
 		db, _ := p.db(ctx)
 		var done bool
-		if err := db.Raw(`SELECT parity_converted FROM config_state WHERE id = 1`).Row().Scan(&done); err != nil {
+		if err := db.Raw(`SELECT parity_converted FROM plg_moderation__config_state WHERE id = 1`).Row().Scan(&done); err != nil {
 			t.Fatal(err)
 		}
 		return done
@@ -74,7 +74,7 @@ func TestParityConversionOnce(t *testing.T) {
 		prepare(t, p, rows)
 		db, _ := p.db(ctx)
 		var expires time.Time
-		if err := db.Raw(`SELECT expires_at FROM watchlist WHERE user_id = 21`).Row().Scan(&expires); err != nil {
+		if err := db.Raw(`SELECT expires_at FROM plg_moderation__watchlist WHERE user_id = 21`).Row().Scan(&expires); err != nil {
 			t.Fatal(err)
 		}
 		// Both nodes convert at the same time: the row lock lets one do it.
@@ -102,7 +102,7 @@ func TestParityConversionOnce(t *testing.T) {
 		history := func() string {
 			t.Helper()
 			var out []string
-			rows, err := db.Raw(`SELECT user_id, action, from_level, to_level, operator_id IS NULL, reason FROM watch_events ORDER BY user_id, id`).Rows()
+			rows, err := db.Raw(`SELECT user_id, action, from_level, to_level, operator_id IS NULL, reason FROM plg_moderation__watch_events ORDER BY user_id, id`).Rows()
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -126,7 +126,7 @@ func TestParityConversionOnce(t *testing.T) {
 			t.Fatalf("history = %s", got)
 		}
 		var after time.Time
-		if err := db.Raw(`SELECT expires_at FROM watchlist WHERE user_id = 21`).Row().Scan(&after); err != nil || !after.Equal(expires) {
+		if err := db.Raw(`SELECT expires_at FROM plg_moderation__watchlist WHERE user_id = 21`).Row().Scan(&after); err != nil || !after.Equal(expires) {
 			t.Fatalf("expiry %v -> %v (%v)", expires, after, err)
 		}
 		// The hooks of both nodes see the new levels.
@@ -142,10 +142,10 @@ func TestParityConversionOnce(t *testing.T) {
 		// Once the day after the conversion is over (TestParityConversionWindow)
 		// it never runs again: a later automatic observe entry stays, also
 		// after a restart (parityDone cleared).
-		if err := db.Exec(`UPDATE config_state SET parity_converted_at = now() - interval '25 hours' WHERE id = 1`).Error; err != nil {
+		if err := db.Exec(`UPDATE plg_moderation__config_state SET parity_converted_at = now() - interval '25 hours' WHERE id = 1`).Error; err != nil {
 			t.Fatal(err)
 		}
-		if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, expires_at) VALUES (27, 'observe', 'auto', now() + interval '5 days')`).Error; err != nil {
+		if err := db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, expires_at) VALUES (27, 'observe', 'auto', now() + interval '5 days')`).Error; err != nil {
 			t.Fatal(err)
 		}
 		p.parityDone.Store(false)
@@ -181,7 +181,7 @@ func TestParityConversionOnce(t *testing.T) {
 		}
 		db, _ := p.db(ctx)
 		var n int
-		if err := db.Raw(`SELECT count(*) FROM watch_events`).Row().Scan(&n); err != nil || n != 0 {
+		if err := db.Raw(`SELECT count(*) FROM plg_moderation__watch_events`).Row().Scan(&n); err != nil || n != 0 {
 			t.Fatalf("history rows = %d %v", n, err)
 		}
 	})
@@ -197,21 +197,21 @@ func TestParityConversionWindow(t *testing.T) {
 	waitFor(t, "conversion at start", p.parityDone.Load)
 	db, _ := p.db(ctx)
 	var at *time.Time
-	if err := db.Raw(`SELECT parity_converted_at FROM config_state WHERE id = 1 AND parity_converted`).Row().Scan(&at); err != nil || at == nil ||
+	if err := db.Raw(`SELECT parity_converted_at FROM plg_moderation__config_state WHERE id = 1 AND parity_converted`).Row().Scan(&at); err != nil || at == nil ||
 		time.Since(*at) > time.Minute {
 		t.Fatalf("conversion time = %v (%v)", at, err)
 	}
 	levels := func() string {
 		t.Helper()
 		var list []string
-		if err := db.Raw(`SELECT user_id || ':' || level FROM watchlist ORDER BY user_id`).Scan(&list).Error; err != nil {
+		if err := db.Raw(`SELECT user_id || ':' || level FROM plg_moderation__watchlist ORDER BY user_id`).Scan(&list).Error; err != nil {
 			t.Fatal(err)
 		}
 		return strings.Join(list, " ")
 	}
 	add := func(rows string) {
 		t.Helper()
-		if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, since_at, expires_at) VALUES ` + rows).Error; err != nil {
+		if err := db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, since_at, expires_at) VALUES ` + rows).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -265,7 +265,7 @@ func TestParityConversionWindow(t *testing.T) {
 	if got := levels(); !strings.Contains(got, "36:observe") || !p.parityDone.Load() {
 		t.Fatalf("after 25 hours: %s", got)
 	}
-	if err := db.Exec(`UPDATE config_state SET parity_converted_at = now() + interval '30 hours' WHERE id = 1`).Error; err != nil {
+	if err := db.Exec(`UPDATE plg_moderation__config_state SET parity_converted_at = now() + interval '30 hours' WHERE id = 1`).Error; err != nil {
 		t.Fatal(err)
 	}
 	p.convertParityOnce(ctx) // would convert 36 if it read the new time
@@ -282,10 +282,10 @@ func TestParityConversionLockOrder(t *testing.T) {
 	p, _, _ := startDB(t, map[string]any{"mode": ModeEnforce}, noRefreshTicks)
 	waitFor(t, "conversion at start", p.parityDone.Load)
 	db, _ := p.db(ctx)
-	if err := db.Exec(`INSERT INTO watchlist (user_id, level, source, expires_at) VALUES (41, 'observe', 'auto', now() + interval '5 days')`).Error; err != nil {
+	if err := db.Exec(`INSERT INTO plg_moderation__watchlist (user_id, level, source, expires_at) VALUES (41, 'observe', 'auto', now() + interval '5 days')`).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`UPDATE config_state SET parity_converted = false, parity_converted_at = NULL WHERE id = 1`).Error; err != nil {
+	if err := db.Exec(`UPDATE plg_moderation__config_state SET parity_converted = false, parity_converted_at = NULL WHERE id = 1`).Error; err != nil {
 		t.Fatal(err)
 	}
 	// A watch change of user 41 in progress, as writeWatch does it: the
@@ -298,7 +298,7 @@ func TestParityConversionLockOrder(t *testing.T) {
 	if err := lockBlockSubject(tx, 41); err != nil {
 		t.Fatal(err)
 	}
-	if err := tx.Exec(`UPDATE watchlist SET note = 'in progress' WHERE user_id = 41`).Error; err != nil {
+	if err := tx.Exec(`UPDATE plg_moderation__watchlist SET note = 'in progress' WHERE user_id = 41`).Error; err != nil {
 		t.Fatal(err)
 	}
 	p.parityDone.Store(false)
@@ -325,7 +325,7 @@ func TestParityConversionLockOrder(t *testing.T) {
 	// The change reaches config_state at once: the conversion does not hold
 	// its row while it waits for the entry (NOWAIT fails on a held row
 	// instead of waiting for it).
-	if err := tx.Exec(`SELECT 1 FROM config_state WHERE id = 1 FOR UPDATE NOWAIT`).Error; err != nil {
+	if err := tx.Exec(`SELECT 1 FROM plg_moderation__config_state WHERE id = 1 FOR UPDATE NOWAIT`).Error; err != nil {
 		t.Fatalf("config_state is held while the conversion waits: %v", err)
 	}
 	if err := bumpWatch(tx); err != nil {
@@ -337,7 +337,7 @@ func TestParityConversionLockOrder(t *testing.T) {
 	within(t, "the conversion", converted)
 	var level, note string
 	var done bool
-	if err := db.Raw(`SELECT w.level, w.note, s.parity_converted FROM watchlist w, config_state s WHERE w.user_id = 41 AND s.id = 1`).Row().Scan(&level, &note, &done); err != nil ||
+	if err := db.Raw(`SELECT w.level, w.note, s.parity_converted FROM plg_moderation__watchlist w, plg_moderation__config_state s WHERE w.user_id = 41 AND s.id = 1`).Row().Scan(&level, &note, &done); err != nil ||
 		level != LevelEnforce || note != "in progress" || !done || !p.parityDone.Load() {
 		t.Fatalf("entry = %s %q, converted = %v (%v)", level, note, done, err)
 	}

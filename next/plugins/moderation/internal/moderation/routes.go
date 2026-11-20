@@ -335,9 +335,9 @@ func eventFilter(req *pluginv1.HTTPRequest) *sqlFilter {
 	if v := pluginsdk.Query(req, "watch_level"); v != "" {
 		switch v {
 		case LevelObserve, LevelEnforce:
-			f.add("user_id IN (SELECT user_id FROM watchlist WHERE level = ?)", v)
+			f.add("user_id IN (SELECT user_id FROM "+model.Prefix+"watchlist WHERE level = ?)", v)
 		case "any":
-			f.add("user_id IN (SELECT user_id FROM watchlist)")
+			f.add("user_id IN (SELECT user_id FROM " + model.Prefix + "watchlist)")
 		default:
 			f.errs = f.errs.Add("watch_level", "enum", "watch_level must be observe, enforce or any / watch_level 取值为 observe、enforce、any")
 		}

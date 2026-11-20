@@ -1,8 +1,10 @@
 package e2e
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/tidwall/gjson"
+
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 )
 
 // RegisterPublisher creates a publisher with trust level (verified|community)
@@ -29,10 +33,11 @@ func (e *Env) RegisterPublisher(admin *Session, key *SigningKey, trust string) i
 }
 
 // DerivedGuardPackage builds a third-party package from the official guard
-// package: new plugin key and schema, publisher = key.Publisher, signed with
-// key. Unless keepNative, everything requiring ui.native is stripped so the
-// package is acceptable for community/verified publishers. edits then change
-// the manifest further (a version among them) before the binaries are built.
+// package: new plugin key (and table prefix), publisher = key.Publisher,
+// signed with key. Unless keepNative, everything requiring ui.native is
+// stripped so the package is acceptable for community/verified publishers.
+// edits then change the manifest further (a version among them) before the
+// binaries are built.
 func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative bool, edits ...func(m map[string]any)) Package {
 	e.T.Helper()
 	pkg := ReadPackage(e.T, e.MarketPackage("guard", e.defaultVersion("guard")))
@@ -40,9 +45,6 @@ func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative 
 	m["key"] = pluginKey
 	m["publisher"] = key.Publisher
 	m["name"] = map[string]any{"en": "E2E " + pluginKey, "zh": "E2E " + pluginKey}
-	if db, ok := m["database"].(map[string]any); ok {
-		db["schema"] = "plg_" + pluginKey
-	}
 	if !keepNative {
 		delete(m, "hostUICompat")
 		if ui, ok := m["ui"].(map[string]any); ok {
@@ -88,6 +90,14 @@ func (e *Env) DerivedGuardPackage(pluginKey string, key *SigningKey, keepNative 
 	}
 	for _, edit := range edits {
 		edit(m)
+	}
+	// The tables are named after the key (manifest.TablePrefix): the
+	// migrations create the new key's (buildGuardBinary renames the
+	// binary's).
+	for p, b := range pkg {
+		if strings.HasPrefix(p, "migrations/") {
+			pkg[p] = bytes.ReplaceAll(b, []byte(manifest.TablePrefix("guard")), []byte(manifest.TablePrefix(pluginKey)))
+		}
 	}
 	// The host checks GetInfo against the package, so the binaries must
 	// report the new key and version: rebuild them with the SDK build-time
@@ -174,11 +184,19 @@ func buildGuardBinary(t testing.TB, goos, goarch, key, version string, extra ...
 	dir := filepath.Join(filepath.Dir(self), "..", "plugins", "guard")
 	out := filepath.Join(t.TempDir(), "plugin")
 	sdk := "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
-	args := []string{"build", "-trimpath", "-o", out,
-		"-ldflags", fmt.Sprintf("-s -w -X %s.buildKey=%s -X %s.buildVersion=%s", sdk, key, sdk, version)}
-	if len(extra) > 0 {
-		args = append(args, "-overlay", buildOverlay(t, dir, extra[0]))
+	// The binary names the tables of key (model.Prefix, manifest.TablePrefix).
+	const modelFile = "internal/model/model.go"
+	src, err := os.ReadFile(filepath.Join(dir, modelFile))
+	if err != nil || !bytes.Contains(src, []byte(manifest.TablePrefix("guard"))) {
+		t.Fatalf("guard %s: no table prefix (%v)", modelFile, err)
 	}
+	files := map[string]string{modelFile: strings.ReplaceAll(string(src), manifest.TablePrefix("guard"), manifest.TablePrefix(key))}
+	for _, e := range extra {
+		maps.Copy(files, e)
+	}
+	args := []string{"build", "-trimpath", "-o", out,
+		"-ldflags", fmt.Sprintf("-s -w -X %s.buildKey=%s -X %s.buildVersion=%s", sdk, key, sdk, version),
+		"-overlay", buildOverlay(t, dir, files)}
 	cmd := exec.Command("go", append(args, ".")...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch, "CGO_ENABLED=0")
@@ -200,6 +218,9 @@ func buildOverlay(t testing.TB, dir string, files map[string]string) string {
 	replace := map[string]string{}
 	for name, src := range files {
 		path := filepath.Join(tmp, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
 		if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 			t.Fatal(err)
 		}

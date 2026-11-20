@@ -14,7 +14,7 @@ import (
 // dynweight's adds a migration.
 const (
 	anthropicUpgradeFixture   = "0.4.1-test"
-	dynweightUpgradeFixture   = "0.5.13-test"
+	dynweightUpgradeFixture   = "0.6.1-test"
 	dynweightFixtureMigration = "0004_config_rule_count.sql"
 )
 
@@ -22,7 +22,7 @@ const (
 // version to their fixtures while requests flow through the load balancer:
 // anthropic, whose platform builds every upstream request, and dynweight
 // (switched on), which ranks the accounts and observes every attempt and
-// keeps its data in plg_dynweight. Requests keep succeeding on both nodes
+// keeps its data in its plg_dynweight__ tables. Requests keep succeeding on both nodes
 // during both switches; dynweight's migration runs once and backfills the
 // configuration saved before the upgrade, which the new version serves on
 // both nodes.
@@ -130,10 +130,10 @@ func TestAC05_UpgradePluginsWithoutDowntime(t *testing.T) {
 	// The migration ran exactly once and backfilled the saved row (needs PG
 	// access).
 	if e.DockerHost != "" {
-		if n := e.SQL(`SELECT count(*) FROM plugin_migrations WHERE plugin_key='dynweight' AND migration_id=` + sqlText(dynweightFixtureMigration)); len(n) != 1 || n[0] != "1" {
+		if n := e.SQL(`SELECT count(*) FROM public.plg_dynweight__schema_migrations WHERE migration_id=` + sqlText(dynweightFixtureMigration)); len(n) != 1 || n[0] != "1" {
 			t.Fatalf("%s recorded %v times", dynweightFixtureMigration, n)
 		}
-		if n := e.SQL(`SELECT count(*) FROM plg_dynweight.config WHERE rule_count = jsonb_array_length(doc->'rules')`); len(n) != 1 || n[0] != "1" {
+		if n := e.SQL(`SELECT count(*) FROM public.plg_dynweight__config WHERE rule_count = jsonb_array_length(doc->'rules')`); len(n) != 1 || n[0] != "1" {
 			t.Fatalf("configuration rows backfilled: %v", n)
 		}
 	}

@@ -34,11 +34,11 @@ func TestJobsWaitForConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	var doc []byte
-	if err := s.db.Raw(`SELECT doc FROM config`).Row().Scan(&doc); err != nil {
+	if err := s.db.Raw(`SELECT doc FROM plg_dynweight__config`).Row().Scan(&doc); err != nil {
 		t.Fatal(err)
 	}
 	// As if Init could not read it, and it still does not decode.
-	if err := s.db.Exec(`UPDATE config SET doc = '{"window_seconds":"x"}'`).Error; err != nil {
+	if err := s.db.Exec(`UPDATE plg_dynweight__config SET doc = '{"window_seconds":"x"}'`).Error; err != nil {
 		t.Fatal(err)
 	}
 	e.p.cfg.Store(&compiledConfig{Compiled: rules.Compile(rules.DefaultConfig())})
@@ -54,7 +54,7 @@ func TestJobsWaitForConfig(t *testing.T) {
 	if err := e.p.reloadWeights(ctx); err != nil || len(*e.p.weights.Load()) != 1 {
 		t.Fatalf("degraded keys %v (%v) while the configuration is not loaded", *e.p.weights.Load(), err)
 	}
-	if err := s.db.Exec(`UPDATE config SET doc = ?`, doc).Error; err != nil {
+	if err := s.db.Exec(`UPDATE plg_dynweight__config SET doc = ?`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	if msg := e.window(0, 0); msg != "evaluated 1 keys, 0 changed" {
@@ -76,7 +76,7 @@ func TestStoredBadGroupDropped(t *testing.T) {
 	}
 	doc := `{"enabled": true, "window_seconds": 30, "min_samples": 0, "min_weight_mode": "base_percent", "min_weight": 0,
 		"groups": {"2": {"min_weight": null}, "3": {"window_seconds": 99999}, "4": {"window_seconds": 120}}}`
-	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 1)`, doc).Error; err != nil {
+	if err := s.db.Exec(`INSERT INTO plg_dynweight__config (id, doc, version) VALUES (1, ?, 1)`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := e.p.reloadConfig(ctx); err != nil {
@@ -172,7 +172,7 @@ func TestConfigUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.db.Exec(`UPDATE config SET updated_at = to_timestamp(1000)`).Error; err != nil {
+	if err := s.db.Exec(`UPDATE plg_dynweight__config SET updated_at = to_timestamp(1000)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if got := read(); got.UpdatedAt != 1000 {

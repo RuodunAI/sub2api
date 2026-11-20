@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/model"
 	"github.com/Sub2API-Devs/sup2api/next/plugins/payment/internal/payment"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
@@ -38,7 +39,7 @@ func TestManifestShape(t *testing.T) {
 	if err := dec.Decode(&m); err != nil {
 		t.Fatalf("manifest.json: %v", err)
 	}
-	if m.APIVersion != manifest.APIVersion || m.Key != "payment" || m.Runtime != "grpc" {
+	if m.APIVersion != manifest.APIVersion || m.Key != "payment" || m.Runtime != "grpc" || model.Prefix != manifest.TablePrefix(m.Key) {
 		t.Fatalf("identity = %d %s %s", m.APIVersion, m.Key, m.Runtime)
 	}
 	if m.Name["en"] == "" || m.Name["zh"] == "" || m.Description["en"] == "" || m.Description["zh"] == "" {

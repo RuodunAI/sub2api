@@ -17,7 +17,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
 
-func sdkOpts() []pluginsdk.Option { return []pluginsdk.Option{pluginsdk.WithInfo("guard", "0.2.11")} }
+func sdkOpts() []pluginsdk.Option { return []pluginsdk.Option{pluginsdk.WithInfo("guard", "0.3.0")} }
 
 func hookReq(prompt string) *pluginv1.GatewayRequestHookRequest {
 	return &pluginv1.GatewayRequestHookRequest{
@@ -309,7 +309,7 @@ func TestRulesStatsEventsJobs(t *testing.T) {
 
 	// Rule changes made on another node are picked up on reload.
 	db, _ := p.db(ctx)
-	if err := db.Exec(`UPDATE rules SET enabled = true WHERE id = ?`, demoID).Error; err != nil {
+	if err := db.Exec(`UPDATE plg_guard__rules SET enabled = true WHERE id = ?`, demoID).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := p.reloadRules(ctx); err != nil {

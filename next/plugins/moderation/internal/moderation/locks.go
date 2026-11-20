@@ -72,8 +72,8 @@ func lockEntry(tx *gorm.DB, w Watch, found bool, list string, now time.Time, c w
 	}
 	// A new level opens a new counting window; the same level keeps it.
 	same := func(col string) clause.Expr {
-		return gorm.Expr("CASE WHEN watchlist.level = EXCLUDED.level THEN ? ELSE ? END",
-			clause.Column{Table: "watchlist", Name: col}, clause.Column{Table: "excluded", Name: col})
+		return gorm.Expr("CASE WHEN "+model.Prefix+"watchlist.level = EXCLUDED.level THEN ? ELSE ? END",
+			clause.Column{Table: model.Prefix + "watchlist", Name: col}, clause.Column{Table: "excluded", Name: col})
 	}
 	row := model.Watch{UserID: c.uid, Level: c.to, Source: "manual", SinceAt: now, ViolationEpoch: newEpoch(), Locked: true, UpdatedAt: now}
 	err := tx.Clauses(clause.OnConflict{
@@ -81,7 +81,7 @@ func lockEntry(tx *gorm.DB, w Watch, found bool, list string, now time.Time, c w
 		DoUpdates: append(clause.AssignmentColumns([]string{"level", "updated_at"}), clause.Assignments(map[string]any{
 			"source": "manual", "expires_at": nil, "locked": true,
 			"since_at": same("since_at"), "violation_epoch": same("violation_epoch"),
-			"violation_count": gorm.Expr("CASE WHEN watchlist.level = EXCLUDED.level THEN watchlist.violation_count ELSE 0 END"),
+			"violation_count": gorm.Expr("CASE WHEN " + model.Prefix + "watchlist.level = EXCLUDED.level THEN " + model.Prefix + "watchlist.violation_count ELSE 0 END"),
 		})...),
 	}, clause.Returning{}).Create(&row).Error
 	w = watchOf(row)

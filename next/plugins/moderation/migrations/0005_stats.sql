@@ -1,4 +1,4 @@
--- plg_moderation 0005: moderation 0.4 (CONTRACTS §72.14): hourly statistics,
+-- moderation 0005: moderation 0.4 (CONTRACTS §72.14): hourly statistics,
 -- per-user daily counts, channel health on the hourly cost rows, channel
 -- proxies and the "seen" mark of watch entries. Idempotent; new columns have
 -- defaults so 0.3 ignores them.
@@ -7,7 +7,7 @@
 -- (flow 0, timing pre: latency moderation added to requests), flow (stage 0),
 -- stage (auditor 0) and auditor. Latency is counted in 9 buckets
 -- (<=50, 100, 200, 500, 1000, 2000, 5000, 10000 ms, more).
-CREATE TABLE IF NOT EXISTS stats_hourly (
+CREATE TABLE IF NOT EXISTS plg_moderation__stats_hourly (
     hour           timestamptz NOT NULL,
     group_id       bigint      NOT NULL DEFAULT 0,
     flow_id        bigint      NOT NULL DEFAULT 0,
@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS stats_hourly (
 );
 
 -- Moderated requests per user and UTC day (AI analysis summary, attention list).
-CREATE TABLE IF NOT EXISTS user_daily (
+CREATE TABLE IF NOT EXISTS plg_moderation__user_daily (
     day         date        NOT NULL,
     user_id     bigint      NOT NULL,
     group_id    bigint      NOT NULL DEFAULT 0,
@@ -41,13 +41,13 @@ CREATE TABLE IF NOT EXISTS user_daily (
     last_hit_at timestamptz,
     PRIMARY KEY (day, user_id)
 );
-CREATE INDEX IF NOT EXISTS user_daily_user_idx ON user_daily (user_id, day);
+CREATE INDEX IF NOT EXISTS plg_moderation__user_daily_user_idx ON plg_moderation__user_daily (user_id, day);
 
 -- Channel health next to the cost of the same hour and source.
-ALTER TABLE costs ADD COLUMN IF NOT EXISTS errors         bigint   NOT NULL DEFAULT 0;
-ALTER TABLE costs ADD COLUMN IF NOT EXISTS latency_ms_sum bigint   NOT NULL DEFAULT 0;
-ALTER TABLE costs ADD COLUMN IF NOT EXISTS lat            bigint[] NOT NULL DEFAULT '{0,0,0,0,0,0,0,0,0}';
+ALTER TABLE plg_moderation__costs ADD COLUMN IF NOT EXISTS errors         bigint   NOT NULL DEFAULT 0;
+ALTER TABLE plg_moderation__costs ADD COLUMN IF NOT EXISTS latency_ms_sum bigint   NOT NULL DEFAULT 0;
+ALTER TABLE plg_moderation__costs ADD COLUMN IF NOT EXISTS lat            bigint[] NOT NULL DEFAULT '{0,0,0,0,0,0,0,0,0}';
 
 -- Suspicious records since an administrator last looked at the entry.
-ALTER TABLE watchlist ADD COLUMN IF NOT EXISTS hits_since_seen integer NOT NULL DEFAULT 0;
+ALTER TABLE plg_moderation__watchlist ADD COLUMN IF NOT EXISTS hits_since_seen integer NOT NULL DEFAULT 0;
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/guard"
+	"github.com/Sub2API-Devs/sup2api/next/plugins/guard/internal/model"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/pluginsdktest"
 )
@@ -32,7 +33,7 @@ func TestManifest(t *testing.T) {
 	if err := dec.Decode(&m); err != nil {
 		t.Fatalf("manifest.json: %v", err)
 	}
-	if m.Key != "guard" || m.Version != "0.2.11" || m.HostUICompat == "" || m.UI == nil || m.UI.Native == nil {
+	if m.Key != "guard" || m.Version != "0.3.0" || model.Prefix != manifest.TablePrefix(m.Key) || m.HostUICompat == "" || m.UI == nil || m.UI.Native == nil {
 		t.Fatalf("manifest = %+v", m)
 	}
 	perms := map[string]bool{}

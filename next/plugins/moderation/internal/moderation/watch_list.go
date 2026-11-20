@@ -80,7 +80,7 @@ func watchFilter(req *pluginv1.HTTPRequest, now time.Time) *sqlFilter {
 			f.errs = f.errs.Add("category", "invalid", "category is invalid / 分类格式无效")
 		} else {
 			// By the record's highest category, like the row's top categories.
-			f.add("EXISTS (SELECT 1 FROM events e WHERE e.user_id = w.user_id AND e."+suspiciousResult+" AND e.highest_category = ?)", v)
+			f.add("EXISTS (SELECT 1 FROM "+model.Prefix+"events e WHERE e.user_id = w.user_id AND e."+suspiciousResult+" AND e.highest_category = ?)", v)
 		}
 	}
 	f.id(req, "user_id", "w.user_id")
@@ -113,7 +113,7 @@ func (p *Plugin) listWatch(ctx context.Context, req *pluginv1.HTTPRequest) (*plu
 	if err != nil {
 		return pluginsdk.Unavailable(err.Error()), nil
 	}
-	watched := func() *gorm.DB { return db.Table("watchlist w").Scopes(f.scope) }
+	watched := func() *gorm.DB { return db.Table(model.Prefix + "watchlist w").Scopes(f.scope) }
 	var total int64
 	if err := watched().Count(&total).Error; err != nil {
 		return nil, err

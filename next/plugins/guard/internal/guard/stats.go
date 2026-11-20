@@ -202,9 +202,9 @@ func (q statsQuery) trend(db *gorm.DB, st *Stats) error {
 
 // statsTopRules fills the ten rules that blocked most often.
 func statsTopRules(db *gorm.DB, st *Stats, from, to time.Time) error {
-	return db.Table("block_log b").
+	return db.Table(model.Prefix+"block_log b").
 		Select("b.rule_id, coalesce(r.name, max(b.rule_name)) AS name, coalesce(r.kind, '') AS kind, coalesce(r.pattern, '') AS pattern, count(*) AS hits").
-		Joins("LEFT JOIN rules r ON r.id = b.rule_id").
+		Joins("LEFT JOIN "+model.Prefix+"rules r ON r.id = b.rule_id").
 		Where("b.occurred_at >= ? AND b.occurred_at < ?", from, to).
 		Group("b.rule_id, r.name, r.kind, r.pattern").
 		Order("count(*) DESC, b.rule_id").Limit(10).Scan(&st.TopRules).Error

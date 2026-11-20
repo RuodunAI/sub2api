@@ -90,7 +90,7 @@ func (e *env) pendingClears() []pendingClear {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	rows, err := s.db.Raw(`SELECT account_id, group_id, model, salt, percent, zero, attempts FROM sticky_pending ORDER BY account_id`).Rows()
+	rows, err := s.db.Raw(`SELECT account_id, group_id, model, salt, percent, zero, attempts FROM plg_dynweight__sticky_pending ORDER BY account_id`).Rows()
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -304,7 +304,7 @@ func TestMigrationMovesOldDefaults(t *testing.T) {
 	doc := `{"enabled":true,"window_seconds":60,"min_samples":10,"exempt_status_codes":"400","min_weight_mode":"base_percent","min_weight":0,` +
 		`"rules":` + rules020 + `,"strategies":` + strategies020 + `,` +
 		`"groups":{"5":{"window_seconds":30,"rules":` + rules020 + `},"6":{"rules":` + changed + `}},"notify":{"enabled":false,"channel":"","recipients":[],"language":"zh"},"log_events":true}`
-	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
+	if err := s.db.Exec(`INSERT INTO plg_dynweight__config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0002_sticky_pending_defaults.sql"))
@@ -362,7 +362,7 @@ func TestMigrationAddsDefaultClearing(t *testing.T) {
 	doc := `{"enabled":true,"window_seconds":60,"min_samples":10,"exempt_status_codes":"400","min_weight_mode":"base_percent","min_weight":0,` +
 		`"rules":` + rules020 + `,"strategies":` + strategies020 + `,` +
 		`"groups":{"5":{"window_seconds":30,"strategies":` + strategies020 + `},"6":{"strategies":` + changed + `}},"notify":{"enabled":false,"channel":"","recipients":[],"language":"zh"},"log_events":true}`
-	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
+	if err := s.db.Exec(`INSERT INTO plg_dynweight__config (id, doc, version) VALUES (1, ?, 4)`, doc).Error; err != nil {
 		t.Fatal(err)
 	}
 	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0003_default_affinity_clear.sql"))

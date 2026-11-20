@@ -32,7 +32,7 @@ const (
 	maxNameLen    = 100
 )
 
-// Rule is one blocking rule as stored in plg_guard.rules.
+// Rule is one blocking rule as stored in plg_guard__rules.
 type Rule struct {
 	ID        int64     `json:"id,omitempty"`
 	Name      string    `json:"name"`
@@ -246,8 +246,8 @@ func (p *Plugin) putRules(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 // survive (or the two DELETEs deadlock on each other's rows). SHARE ROW
 // EXCLUSIVE conflicts with itself and with row writes, not with plain
 // SELECTs, so rule reloads and GET /rules are not blocked. Taking it needs
-// UPDATE/DELETE on rules, which this handler needs anyway; the core's
-// database user, which the plugin's connections log in as, owns the table.
+// UPDATE/DELETE on rules, which this handler needs anyway; the plugin's
+// database role, which its connections log in as, owns the table.
 //
 // A table lock rather than a cluster lock (host "lock" permission): those live
 // in Redis, are not fenced and are not part of this transaction - a holder
@@ -256,7 +256,7 @@ func (p *Plugin) putRules(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 // span to protect. Not pg_advisory_xact_lock either: advisory keys are
 // database-wide, shared with the core and every other plugin.
 func replaceRules(tx *gorm.DB, rules []Rule) error {
-	if err := pgdb.LockTable(tx, "rules"); err != nil {
+	if err := pgdb.LockTable(tx, model.Prefix+"rules"); err != nil {
 		return err
 	}
 	// Never nil: a NULL array matches no row, and nothing would be deleted.

@@ -7,6 +7,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"github.com/Sub2API-Devs/sup2api/next/plugins/moderation/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk"
@@ -74,9 +75,9 @@ func (p *Plugin) getUsers(ctx context.Context, req *pluginv1.HTTPRequest) (*plug
 	}
 	known := []int64{}
 	err = db.Table("unnest(?::bigint[]) AS u", pgdb.Array[int64](ids)).
-		Where(`EXISTS (SELECT 1 FROM events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watchlist WHERE user_id = u)
-		OR EXISTS (SELECT 1 FROM watch_events WHERE user_id = u) OR EXISTS (SELECT 1 FROM watch_events WHERE operator_id = u)
-		OR EXISTS (SELECT 1 FROM blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM unblocks WHERE user_id = u)`).
+		Where(`EXISTS (SELECT 1 FROM `+model.Prefix+`events WHERE user_id = u) OR EXISTS (SELECT 1 FROM `+model.Prefix+`watchlist WHERE user_id = u)
+		OR EXISTS (SELECT 1 FROM `+model.Prefix+`watch_events WHERE user_id = u) OR EXISTS (SELECT 1 FROM `+model.Prefix+`watch_events WHERE operator_id = u)
+		OR EXISTS (SELECT 1 FROM `+model.Prefix+`blocks WHERE user_id = u) OR EXISTS (SELECT 1 FROM `+model.Prefix+`unblocks WHERE user_id = u)`).
 		Pluck("u", &known).Error
 	ids = known
 	if err != nil {

@@ -577,7 +577,7 @@ func TestStoredShortWindowLoads(t *testing.T) {
 	g.Enabled, g.WindowSeconds = true, 2
 	c.Groups = map[int64]*rules.Layer{testGroup: &g}
 	raw, _ := json.Marshal(c)
-	if err := s.db.Exec(`INSERT INTO config (id, doc, version) VALUES (1, ?, 1)`, raw).Error; err != nil {
+	if err := s.db.Exec(`INSERT INTO plg_dynweight__config (id, doc, version) VALUES (1, ?, 1)`, raw).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := e.p.reloadConfig(ctx); err != nil {
@@ -648,7 +648,7 @@ func TestShortWindowCatchUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	var left int
-	if err := s.db.Raw(`SELECT count(*) FROM obs`).Row().Scan(&left); err != nil || left != 0 {
+	if err := s.db.Raw(`SELECT count(*) FROM plg_dynweight__obs`).Row().Scan(&left); err != nil || left != 0 {
 		t.Fatalf("counters left after the retention: %d %v", left, err)
 	}
 
@@ -782,7 +782,7 @@ func TestResetIsAtomic(t *testing.T) {
 	}
 	if err := s.db.Exec(`CREATE FUNCTION refuse_bad() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN IF NEW.model = 'bad' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$;
-		CREATE TRIGGER refuse_bad BEFORE INSERT OR UPDATE ON state FOR EACH ROW EXECUTE FUNCTION refuse_bad()`).Error; err != nil {
+		CREATE TRIGGER refuse_bad BEFORE INSERT OR UPDATE ON plg_dynweight__state FOR EACH ROW EXECUTE FUNCTION refuse_bad()`).Error; err != nil {
 		t.Fatal(err)
 	}
 	for _, model := range []string{"bad", "good"} {
@@ -806,7 +806,7 @@ func TestResetIsAtomic(t *testing.T) {
 	if len(events.Data) != 0 {
 		t.Fatalf("events %+v", events.Data)
 	}
-	if err := s.db.Exec(`DROP TRIGGER refuse_bad ON state`).Error; err != nil {
+	if err := s.db.Exec(`DROP TRIGGER refuse_bad ON plg_dynweight__state`).Error; err != nil {
 		t.Fatal(err)
 	}
 	if n, err := e.p.resetKeys(ctx, filter{AccountID: testAccount}, rules.ReasonManual, 1); n != 2 || err != nil {

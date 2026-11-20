@@ -1,8 +1,9 @@
--- plg_dynweight 0001: dynamic weight (CONTRACTS §73.5).
--- Runs with search_path pinned to the plugin schema (plg_dynweight).
+-- dynweight 0001: dynamic weight (CONTRACTS §73.5).
+-- Runs as the plugin's database role in the core's schema: every table,
+-- index and sequence is named plg_dynweight__<name> (CONTRACTS §130).
 
 -- The configuration document (rules.Config), one row.
-CREATE TABLE IF NOT EXISTS config (
+CREATE TABLE IF NOT EXISTS plg_dynweight__config (
     id         smallint    PRIMARY KEY CHECK (id = 1),
     doc        jsonb       NOT NULL,
     version    bigint      NOT NULL,
@@ -12,7 +13,7 @@ CREATE TABLE IF NOT EXISTS config (
 
 -- Attempt counters of an (account, group, client model) in one window,
 -- summed by every node (rules.Counts fields).
-CREATE TABLE IF NOT EXISTS obs (
+CREATE TABLE IF NOT EXISTS plg_dynweight__obs (
     account_id   bigint NOT NULL,
     group_id     bigint NOT NULL,
     model        text   NOT NULL,
@@ -20,12 +21,12 @@ CREATE TABLE IF NOT EXISTS obs (
     counts       jsonb  NOT NULL,
     PRIMARY KEY (account_id, group_id, model, window_start)
 );
-CREATE INDEX IF NOT EXISTS obs_window_start_idx ON obs (window_start);
+CREATE INDEX IF NOT EXISTS plg_dynweight__obs_window_start_idx ON plg_dynweight__obs (window_start);
 
 -- Evaluation state of an (account, group, client model) (rules.State).
 -- base / eff / tombstone repeat the document for the scheduling snapshot;
 -- gen guards the write-back against a concurrent reset.
-CREATE TABLE IF NOT EXISTS state (
+CREATE TABLE IF NOT EXISTS plg_dynweight__state (
     account_id  bigint           NOT NULL,
     group_id    bigint           NOT NULL,
     model       text             NOT NULL,
@@ -38,11 +39,11 @@ CREATE TABLE IF NOT EXISTS state (
     updated_at  timestamptz      NOT NULL DEFAULT now(),
     PRIMARY KEY (account_id, group_id, model)
 );
-CREATE INDEX IF NOT EXISTS state_changed_idx ON state (account_id) WHERE NOT tombstone AND eff <> base;
+CREATE INDEX IF NOT EXISTS plg_dynweight__state_changed_idx ON plg_dynweight__state (account_id) WHERE NOT tombstone AND eff <> base;
 
 -- Base weights the scheduler handed in, per (account, group): the
 -- evaluation runs outside requests and reads them here.
-CREATE TABLE IF NOT EXISTS bases (
+CREATE TABLE IF NOT EXISTS plg_dynweight__bases (
     account_id bigint      NOT NULL,
     group_id   bigint      NOT NULL,
     weight     integer     NOT NULL,
@@ -52,7 +53,7 @@ CREATE TABLE IF NOT EXISTS bases (
 );
 
 -- What the evaluations did (rules.Event), plus manual resets.
-CREATE TABLE IF NOT EXISTS events (
+CREATE TABLE IF NOT EXISTS plg_dynweight__events (
     id          bigserial        PRIMARY KEY,
     created_at  timestamptz      NOT NULL DEFAULT now(),
     account_id  bigint           NOT NULL,
@@ -65,5 +66,5 @@ CREATE TABLE IF NOT EXISTS events (
     rules       text[]           NOT NULL DEFAULT '{}',
     detail      jsonb            NOT NULL DEFAULT '{}'
 );
-CREATE INDEX IF NOT EXISTS events_created_at_idx ON events (created_at);
-CREATE INDEX IF NOT EXISTS events_account_idx ON events (account_id, created_at);
+CREATE INDEX IF NOT EXISTS plg_dynweight__events_created_at_idx ON plg_dynweight__events (created_at);
+CREATE INDEX IF NOT EXISTS plg_dynweight__events_account_idx ON plg_dynweight__events (account_id, created_at);

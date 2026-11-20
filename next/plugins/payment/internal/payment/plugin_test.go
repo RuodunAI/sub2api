@@ -59,7 +59,7 @@ func TestPlugin_OrderCreationAndFulfillment(t *testing.T) {
 
 	// Mock: directly update order and execute fulfillment
 	err = mustDB(t, p).Exec(`
-		UPDATE payment_orders
+		UPDATE plg_payment__payment_orders
 		SET status = ?, payment_trade_no = ?, paid_at = ?
 		WHERE out_trade_no = ?
 	`, StatusPaid, notification.TradeNo, time.Now(), notification.OutTradeNo).Error
@@ -75,7 +75,7 @@ func TestPlugin_OrderCreationAndFulfillment(t *testing.T) {
 
 	// Verify order status is completed
 	var status string
-	err = mustDB(t, p).Raw(`SELECT status FROM payment_orders WHERE id = ?`, order.OrderID).Row().Scan(&status)
+	err = mustDB(t, p).Raw(`SELECT status FROM plg_payment__payment_orders WHERE id = ?`, order.OrderID).Row().Scan(&status)
 	if err != nil {
 		t.Fatalf("Query order status failed: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestPlugin_RedeemCodeConcurrency(t *testing.T) {
 	var usedBy *int64
 	var status string
 	err = mustDB(t, p).Raw(`
-		SELECT status, used_by FROM redeem_codes WHERE code_hash = ?
+		SELECT status, used_by FROM plg_payment__redeem_codes WHERE code_hash = ?
 	`, HashRedeemCode(code)).Row().Scan(&status, &usedBy)
 	if err != nil {
 		t.Fatalf("Query code failed: %v", err)
@@ -378,7 +378,7 @@ func TestPlugin_PaymentNotificationAmountMismatch(t *testing.T) {
 
 	// Update to paid
 	err = mustDB(t, p).Exec(`
-		UPDATE payment_orders SET status = ?, payment_trade_no = ?
+		UPDATE plg_payment__payment_orders SET status = ?, payment_trade_no = ?
 		WHERE id = ?
 	`, StatusPaid, "test_trade", order.OrderID).Error
 	if err != nil {
@@ -419,7 +419,7 @@ func startDB(t *testing.T) (*Plugin, *pluginsdktest.FakeHost) {
 		Grants: []*pluginv1.Grant{
 			{Permission: "ledger.credit", ScopeJson: `{"maxPerTx":"100000","maxPerDay":"1000000"}`},
 		},
-		SDK: []pluginsdk.Option{pluginsdk.WithInfo("payment", "0.1.3")},
+		SDK: []pluginsdk.Option{pluginsdk.WithInfo("payment", "0.2.0")},
 	})
 	return p, fh
 }

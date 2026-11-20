@@ -400,7 +400,7 @@ func TestInactiveAccountBindingDoesNotDeferToAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO flow_accounts (group_id, account_id, flow_id) VALUES (3, 4, 99999)`).Error; err != nil {
+	if err := db.Exec(`INSERT INTO plg_moderation__flow_accounts (group_id, account_id, flow_id) VALUES (3, 4, 99999)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	v = decodeData[BindingsView](t, h.Do("GET", "/bindings", nil, nil))
@@ -540,7 +540,7 @@ func TestBindingInactiveFollowsSnapshot(t *testing.T) {
 	// table), the request is not moderated and the binding says so.
 	ctx := context.Background()
 	db, _ := p.db(ctx)
-	if err := db.Exec(`UPDATE flows SET published = published || '{"from_a_later_version": 1}'::jsonb WHERE id = ?`, flow).Error; err != nil {
+	if err := db.Exec(`UPDATE plg_moderation__flows SET published = published || '{"from_a_later_version": 1}'::jsonb WHERE id = ?`, flow).Error; err != nil {
 		t.Fatal(err)
 	}
 	if err := p.reloadConfig(ctx); err != nil {

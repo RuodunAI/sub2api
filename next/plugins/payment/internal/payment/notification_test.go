@@ -43,7 +43,7 @@ func pendingOrder(t *testing.T, p *Plugin) *CreateOrderResponse {
 	t.Helper()
 	ctx := context.Background()
 	if err := mustDB(t, p).Exec(`
-		INSERT INTO payment_provider_instances (provider_key, name) VALUES (?, 'test')
+		INSERT INTO plg_payment__payment_provider_instances (provider_key, name) VALUES (?, 'test')
 	`, ProviderAlipay).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func orderStatus(t *testing.T, p *Plugin, id int64) string {
 	t.Helper()
 	var status string
 	if err := mustDB(t, p).Raw(
-		`SELECT status FROM payment_orders WHERE id = ?`, id).Row().Scan(&status); err != nil {
+		`SELECT status FROM plg_payment__payment_orders WHERE id = ?`, id).Row().Scan(&status); err != nil {
 		t.Fatal(err)
 	}
 	return status
@@ -138,7 +138,7 @@ func TestWebhookFailsClosed(t *testing.T) {
 func TestWebhookDisabledInstanceIsUnknown(t *testing.T) {
 	p, _ := startDB(t)
 	if err := mustDB(t, p).Exec(`
-		INSERT INTO payment_provider_instances (provider_key, name, enabled) VALUES (?, 'off', false)
+		INSERT INTO plg_payment__payment_provider_instances (provider_key, name, enabled) VALUES (?, 'off', false)
 	`, ProviderStripe).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestWebhookTriesEveryInstance(t *testing.T) {
 	order := pendingOrder(t, p)
 	var second int64
 	if err := mustDB(t, p).Raw(`
-		INSERT INTO payment_provider_instances (provider_key, name, sort_order) VALUES (?, 'second', 1) RETURNING id
+		INSERT INTO plg_payment__payment_provider_instances (provider_key, name, sort_order) VALUES (?, 'second', 1) RETURNING id
 	`, ProviderAlipay).Row().Scan(&second); err != nil {
 		t.Fatal(err)
 	}

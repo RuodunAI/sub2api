@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/dynweight"
+	"github.com/Sub2API-Devs/sup2api/next/plugins/dynweight/internal/model"
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest/check"
@@ -43,7 +44,7 @@ func TestManifestShape(t *testing.T) {
 	if err := dec.Decode(&m); err != nil {
 		t.Fatalf("manifest.json: %v", err)
 	}
-	if m.Key != "dynweight" || m.Database == nil || m.Database.Schema != "plg_dynweight" {
+	if m.Key != "dynweight" || m.Database == nil || model.Prefix != manifest.TablePrefix(m.Key) {
 		t.Fatalf("identity = %s %+v", m.Key, m.Database)
 	}
 	for _, hp := range m.HostPermissions {

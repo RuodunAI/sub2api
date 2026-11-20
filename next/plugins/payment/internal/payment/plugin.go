@@ -74,7 +74,7 @@ func (p *Plugin) Shutdown(context.Context) error {
 	return nil
 }
 
-// db returns the plugin schema's handle, bound to ctx (grant "db.schema").
+// db returns the plugin's database handle, bound to ctx (grant "db.schema").
 func (p *Plugin) db(ctx context.Context) (*gorm.DB, error) {
 	if p.host == nil {
 		return nil, errors.New("payment: host not initialized")
