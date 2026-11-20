@@ -484,3 +484,30 @@ func TestClientLeavingAsTheFinalUsageIsWrittenWasServed(t *testing.T) {
 		t.Fatalf("served %v, canceled %v", d.served(), canceled)
 	}
 }
+
+// Whether a client was served by the final usage event is decided by where
+// its leaving falls against the event's write, under every policy: after it
+// (the client got the event, then closed), it was served; before it, it was
+// not, though the write went through - an exchange that is not kept
+// (precharge, free) was canceled when the client left, and the event forward
+// still read from its buffer went nowhere.
+func TestServedByWhereTheClientLeftAgainstTheWrite(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		for name, tc := range map[string]struct {
+			steps  func(d *upstreamDrain)
+			served bool
+		}{
+			"left after the write":  {func(d *upstreamDrain) { d.dropOutput(); d.clientLeft() }, true},
+			"left before the write": {func(d *upstreamDrain) { d.clientLeft(); d.dropOutput() }, false},
+			"the write failed":      {func(d *upstreamDrain) { d.dropOutput(); d.writeFailed() }, false},
+		} {
+			d := &upstreamDrain{cancel: func(error) {}, keep: keep}
+			d.arm()
+			tc.steps(d)
+			d.serve()
+			if d.served() != tc.served {
+				t.Errorf("keep %v, %s: served %v, want %v", keep, name, d.served(), tc.served)
+			}
+		}
+	}
+}

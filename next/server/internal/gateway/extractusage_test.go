@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -489,6 +491,9 @@ func TestNoWaitEmptyHostReadingIsUnreported(t *testing.T) {
 		if st := e.settler.executionStates(); len(st) != 0 {
 			t.Fatalf("stream %v: execution states %v", stream, st)
 		}
+		if n := e.accounts.touched[9]; n != 0 {
+			t.Fatalf("stream %v: an unreported request touched the account %d times", stream, n)
+		}
 		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "holds no usage") {
 			t.Fatalf("stream %v: logs %s", stream, logs)
 		}
@@ -497,8 +502,8 @@ func TestNoWaitEmptyHostReadingIsUnreported(t *testing.T) {
 
 // An endpoint whose usage the core reads, served by the upstream, whose
 // reading holds no usage (these rules declare no json map): the same free
-// unreported record as a plugin's empty host reading, logged at WARN, not a
-// silent free request.
+// unreported record as a plugin's empty host reading, logged at ERROR, not a
+// silent free request, and the account is not credited with it.
 func TestEmptyCoreReadingIsUnreported(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		logs := captureWarnings(t)
@@ -512,9 +517,43 @@ func TestEmptyCoreReadingIsUnreported(t *testing.T) {
 			rec.StatusCode != 200 {
 			t.Fatalf("stream %v: free record %+v", stream, rec)
 		}
-		if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "holds no usage") {
+		if n := e.accounts.touched[9]; n != 0 {
+			t.Fatalf("stream %v: an unreported request touched the account %d times", stream, n)
+		}
+		if !strings.Contains(logs.String(), "level=ERROR") || !strings.Contains(logs.String(), "holds no usage") {
 			t.Fatalf("stream %v: logs %s", stream, logs)
 		}
+	}
+}
+
+// An unreported request is a failed one to the account that served it: an
+// answer with no usage to read neither renews the session's sticky binding
+// nor touches the account's last use, though the upstream answered 200.
+func TestUnreportedRequestDoesNotCreditTheAccount(t *testing.T) {
+	e := newEnv(t)
+	e.enableSticky(onFailureFailover)
+	sess := withSession(body(testModel, false), "unreported-session")
+	id, upKey := bindSession(t, e, "unreported-session")
+	binding := stickyKey(&stickyRule{Name: "claude-code-session", KeyIncludes: []string{"group", "model", "rule"}}, testGroup, testModel, "unreported-session")
+	account, _ := strconv.ParseInt(id, 10, 64)
+	touched := e.accounts.touched[account]
+	e.mr.FastForward(30 * time.Minute)
+	before := e.mr.TTL(binding)
+	e.up.set(upKey, &upstreamRule{status: 200, body: `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello"}]}`})
+	if r := e.messages(sess); r.status != 200 {
+		t.Fatalf("%d %s", r.status, r.body)
+	}
+	if rec := e.record(); rec.ErrorType != core.UsageErrorUnreported || !rec.StickyHit {
+		t.Fatalf("record %+v", rec)
+	}
+	if ttl := e.mr.TTL(binding); ttl != before {
+		t.Fatalf("binding ttl %v, was %v: renewed", ttl, before)
+	}
+	if v, _ := e.mr.Get(binding); v != id {
+		t.Fatalf("binding %q, want %q", v, id)
+	}
+	if n := e.accounts.touched[account]; n != touched {
+		t.Fatalf("last use touched %d times, was %d", n, touched)
 	}
 }
 
@@ -522,8 +561,9 @@ func TestEmptyCoreReadingIsUnreported(t *testing.T) {
 // ends), so an empty reading of it is not an unreported request.
 func TestEmptyReadingOfATaskSubmissionIsNotUnreported(t *testing.T) {
 	logs := captureWarnings(t)
-	c := &call{ep: manifest.Endpoint{Task: &manifest.AsyncTaskEndpoint{Action: manifest.TaskActionSubmit}}}
 	rec := &core.UsageRecord{Success: true, StatusCode: 200}
+	c := &call{ep: manifest.Endpoint{Task: &manifest.AsyncTaskEndpoint{Action: manifest.TaskActionSubmit}}, rec: rec}
+	c.endUnreported(context.Background(), 1, c.readingEmpty())
 	c.finalizeBillability(context.Background(), rec, "")
 	if !rec.Success || rec.ErrorType == core.UsageErrorUnreported || strings.Contains(logs.String(), "holds no usage") {
 		t.Fatalf("task submission marked unreported: %+v, logs %s", rec, logs)

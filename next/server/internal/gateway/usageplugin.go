@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -126,24 +125,15 @@ func usageRequestFields(paths []string, body []byte) (fields map[string]string) 
 	return fields
 }
 
-// errHostReadingEmpty is why a request is unreported whose plugin chose the
-// host's reading when that reading holds no usage.
-var errHostReadingEmpty = errors.New("the plugin took the host's reading, which holds no usage")
-
 // hostUsageChosen marks the record of an endpoint whose usage the plugin
 // reads when the plugin chose the host's reading instead (host_usage, or a
 // relay that did not wait): the marker stays for the usage report
-// (usage_logs.anomalies), but a deliberate choice is no failure. When the
-// declarative rules found nothing in an answer that was served (no tokens,
-// metrics or other usage) there are no facts, and the core makes none up:
-// errHostReadingEmpty, and the caller ends the request as unreported.
+// (usage_logs.anomalies), but a deliberate choice is no failure. A reading
+// that holds nothing to bill is no fact either (readingEmpty), and the
+// caller ends the request as unreported.
 func (c *call) hostUsageChosen() error {
 	c.rec.UsageExtract = core.UsageExtractFallback
-	r := c.rec
-	if !r.Success || r.Tokens != (core.UsageTokens{}) || len(r.Metrics) > 0 || len(r.Additional) > 0 || len(r.Replacement) > 0 {
-		return nil
-	}
-	return errHostReadingEmpty
+	return c.readingEmpty()
 }
 
 // applyUsageReport writes the upstream facts the plugin stated into the usage

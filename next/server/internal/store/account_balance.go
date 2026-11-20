@@ -47,7 +47,12 @@ func scanBalance(r RowScanner) (*BalanceSnapshot, error) {
 
 // AccountBalance returns the snapshot of one account, nil when it has none.
 func (d *DB) AccountBalance(ctx context.Context, accountID int64) (*BalanceSnapshot, error) {
-	b, err := scanBalance(balances(G(ctx, d.Gorm)).Where("account_id = ?", accountID).Row())
+	return AccountBalanceTx(ctx, d.Gorm, accountID)
+}
+
+// AccountBalanceTx is AccountBalance in q, a transaction or the pool.
+func AccountBalanceTx(ctx context.Context, q *gorm.DB, accountID int64) (*BalanceSnapshot, error) {
+	b, err := scanBalance(balances(G(ctx, q)).Where("account_id = ?", accountID).Row())
 	if IsNoRows(err) {
 		return nil, nil
 	}
@@ -76,7 +81,12 @@ func (d *DB) AccountBalances(ctx context.Context, accountIDs []int64) (map[int64
 
 // UpsertBalance writes one balance snapshot.
 func (d *DB) UpsertBalance(ctx context.Context, b *BalanceSnapshot) error {
-	return upsertBalance(G(ctx, d.Gorm), b).Error
+	return UpsertBalanceTx(ctx, d.Gorm, b)
+}
+
+// UpsertBalanceTx is UpsertBalance in q, a transaction or the pool.
+func UpsertBalanceTx(ctx context.Context, q *gorm.DB, b *BalanceSnapshot) error {
+	return upsertBalance(G(ctx, q), b).Error
 }
 
 func upsertBalance(db *gorm.DB, b *BalanceSnapshot) *gorm.DB {

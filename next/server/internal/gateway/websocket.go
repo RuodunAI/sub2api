@@ -932,6 +932,7 @@ func (s *wsSession) finish(ctx context.Context, t *wsTurn, out wsOutcome) {
 	}
 	defer cl.releaseHolds(ctx)
 	if id := s.ref; id != nil {
+		cl.endUnreported(ctx, id.ID, cl.readingEmpty())
 		cl.countTokens(ctx, id.ID)
 		if rec.Success {
 			s.g.d.Accounts.TouchLastUsed(context.WithoutCancel(ctx), id.ID)

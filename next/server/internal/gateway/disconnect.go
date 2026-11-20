@@ -72,6 +72,7 @@ type upstreamDrain struct {
 	armed     bool // forward is relaying an answer worth finishing
 	left      bool // the client is gone
 	dropped   bool // output was withheld from it
+	missed    bool // output was written, or withheld, after it was recorded gone
 	delivered bool // the answer's final usage reached the client
 	stopped   bool
 }
@@ -108,18 +109,21 @@ func (d *upstreamDrain) leave() {
 }
 
 // serve records that forward relayed the event reporting the answer's final
-// usage (usagerules.Acc.Final) and flushed it. It counts unless output was
-// withheld from the client: every write checks dropOutput first, so a client
-// recorded as gone by now left after that event was written, like one that
-// closes right after the last byte. Such a client was served, and with the
-// final usage read there is nothing left to read on for.
+// usage (usagerules.Acc.Final) and flushed it. It counts unless the client
+// missed output: every write checks dropOutput first, whatever the policy,
+// so a client recorded as gone by now but not then left after that event
+// was written, like one that closes right after the last byte. Such a
+// client was served, and with the final usage read there is nothing left to
+// read on for. One that was gone at a write was not, though that write went
+// through: an exchange that is not kept was canceled when it left, and what
+// forward still read from its buffer went nowhere.
 func (d *upstreamDrain) serve() {
 	if d == nil {
 		return
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.delivered = d.delivered || !d.dropped
+	d.delivered = d.delivered || !d.missed
 	if d.left && d.delivered {
 		d.cancel(context.Canceled)
 	}
@@ -150,15 +154,17 @@ func (d *upstreamDrain) arm() {
 	d.armed = d.armed || !d.left
 }
 
-// dropOutput reports whether what would be written now goes nowhere: the
-// client is already known to be gone from an answer that is being kept.
+// dropOutput runs before every write. It records a client already known to
+// be gone as missing the output (serve), and reports whether what would be
+// written goes nowhere: the client left an answer that is being kept.
 func (d *upstreamDrain) dropOutput() bool {
-	if d == nil || !d.keep {
+	if d == nil {
 		return false
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	d.dropped = d.dropped || d.armed && d.left
+	d.missed = d.missed || d.left
+	d.dropped = d.dropped || d.keep && d.armed && d.left
 	return d.dropped
 }
 
@@ -171,6 +177,7 @@ func (d *upstreamDrain) writeFailed() bool {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.missed = true
 	if !d.armed {
 		return false
 	}
