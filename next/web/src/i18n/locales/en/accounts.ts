@@ -511,6 +511,7 @@ export default {
   credentials: 'Credentials',
   orphanedEdit: 'The plugin that owns this account type is not enabled, so credentials cannot be edited. Basic information can still be changed.',
   formUnavailable: 'The plugin form could not be loaded.',
+  credentialErrors: 'The plugin refused these credential fields',
   noTypes: 'No account type is available. Enable a plugin that declares account types.',
   servesEndpoints: 'Serves endpoints',
   endpointCount: '{n} endpoint(s)',

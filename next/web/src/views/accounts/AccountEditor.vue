@@ -392,6 +392,8 @@ function showCredentialErrors(cred: Record<string, string>) {
   credErrors.value = cred
   if (mode.value === 'iframe' && Object.keys(cred).length) iframe.value?.setErrors(cred)
 }
+/** The credential errors no plugin form is mounted to show (an older form mode, a form that failed to load): listed by the editor. */
+const unshownCredentialErrors = computed(() => (nativeRef.value || iframe.value ? [] : Object.entries(credErrors.value)))
 
 async function fetchModels() {
   const at = props.accountType
@@ -521,7 +523,6 @@ async function collectCredentials(): Promise<Record<string, unknown> | null> {
   return v?.ok ? (await iframe.value.getValue()) || {} : null
 }
 
-/** Checks done before the request; the section to show when one fails. */
 // The save pipeline (checks, request body, POST/PATCH, error routing) lives in
 // useAccountSave; the template and the wiring below stay here.
 const { save } = useAccountSave({
@@ -629,6 +630,9 @@ const { save } = useAccountSave({
             </template>
             <!-- An older package's form mode: the credentials are sent back unchanged. -->
             <SAlert v-else tone="warning" data-testid="form-unavailable-old">{{ t('pluginHost.outdated') }}</SAlert>
+            <SAlert v-if="unshownCredentialErrors.length" tone="danger" :title="t('accounts.credentialErrors')" class="mt-3" data-testid="credential-errors">
+              <p v-for="[field, message] in unshownCredentialErrors" :key="field"><code>{{ field }}</code>: {{ message }}</p>
+            </SAlert>
 
             <div class="mt-4 space-y-3 empty:hidden">
               <PluginSlot name="account.form.widgets" :props="{ account, accountType, credentials }" />

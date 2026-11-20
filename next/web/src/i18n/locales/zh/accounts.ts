@@ -509,6 +509,7 @@ export default {
   credentials: '凭证',
   orphanedEdit: '该账号类型所属的插件未启用，无法编辑凭证；基本信息仍可修改。',
   formUnavailable: '无法加载插件表单。',
+  credentialErrors: '插件未接受以下凭证字段',
   noTypes: '没有可用的账号类型，请启用声明了账号类型的插件。',
   servesEndpoints: '可服务的端点',
   endpointCount: '{n} 个端点',
