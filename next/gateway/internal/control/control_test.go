@@ -771,8 +771,10 @@ func TestPostgresNodeRegistrationDisableAndBootValidation(t *testing.T) {
 	if err := s.Register(ctx, a.Node); err == nil {
 		t.Fatal("disabled node registered")
 	}
-	if err := s.ValidateNode(ctx, a.Node.ID, a.Node.ShellBootID); err == nil {
-		t.Fatal("disabled identity accepted")
+	// A refused identity is an authentication failure, so a plugin blob fetch
+	// that it stops fails locally instead of reading as an unreachable peer.
+	if err := s.ValidateNode(ctx, a.Node.ID, a.Node.ShellBootID); !errors.Is(err, peer.ErrUnauthorized) {
+		t.Fatalf("disabled identity: %v", err)
 	}
 	if err := s.EnableNode(ctx, a.Node.ID); err != nil {
 		t.Fatal(err)
@@ -786,8 +788,8 @@ func TestPostgresNodeRegistrationDisableAndBootValidation(t *testing.T) {
 	if err := s.Register(ctx, a.Node); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ValidateNode(ctx, a.Node.ID, "different-boot"); err == nil {
-		t.Fatal("old boot accepted")
+	if err := s.ValidateNode(ctx, a.Node.ID, "different-boot"); !errors.Is(err, peer.ErrUnauthorized) {
+		t.Fatalf("old boot: %v", err)
 	}
 }
 
