@@ -42,7 +42,7 @@ func (p *Plugin) apiBase(t target) string {
 		return p.ep.API
 	case t.express() || t.Location == LocationGlobal:
 		return "https://" + APIHost
-	case slices.Contains(MultiRegions, t.Location):
+	case slices.Contains(multiRegions, t.Location):
 		return "https://aiplatform." + t.Location + ".rep.googleapis.com"
 	}
 	return "https://" + t.Location + "-" + APIHost
