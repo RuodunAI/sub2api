@@ -4791,7 +4791,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 
 流程除了绑定到分组，还可以绑定到**分组下的某个账号**和**某个账号（不论分组）**。三种绑定可以同时存在，一个请求只按其中一条审核。
 
-**优先级**（`snapshot.flowForAccount`，与界面的命中预览 `bindingOps.resolveBinding` 一致）：请求分组为 G、发往账号 A 时依次找
+**优先级**（`snapshot.flowForAccount`，与界面的命中预览 `bindingOps.resolveSteps` 一致）：请求分组为 G、发往账号 A 时依次找
 1. 分组 + 账号 `(G, A)`；
 2. 账号 `(0, A)`（任意分组）；
 3. 分组 G；
@@ -4824,7 +4824,7 @@ GET `/groups/:id/models`（`group:read`）返回所有未删除成员账号的�
 **界面**：新标签页“绑定”（`BindingsTab.vue`），位于“流程”之后。
 - 列出全部绑定，按优先级排序；可按类型筛选、按账号 / 分组 / 流程搜索。手机上每条显示为卡片。
 - 新增或编辑在弹窗里进行（`BindingEditModal.vue`）：选类型，再选分组和账号（选“分组 + 账号”时只列出该分组的账号）和流程（含“不审核（免审）”）。读不到核心账号列表时改为填 ID。编辑只能改流程。
-- “命中预览”：选分组和账号，显示请求会按哪一条绑定审核；0.8.0 起跳过不生效的绑定，并列出被跳过的是哪几条（`bindingOps.resolveBinding`）。
+- “命中预览”：选分组和账号，显示请求会按哪一条绑定审核；0.8.0 起跳过不生效的绑定，并列出被跳过的是哪几条（`bindingOps.resolveSteps`）。
 - 0.8.0：不生效的绑定在列表里显示灰色徽标（“流程已停用，这条绑定不生效”等）和“现在按哪条绑定审核”或“现在不审核”。编辑时选了未启用的流程会提示保存后暂不生效、要不审核请选免审。流程页停用一个有绑定的流程时，确认框写明它的分组和账号将回落到更宽的绑定。
 - 流程列表的分组单元格显示“另有 N 个账号绑定”，可跳到绑定页；分组冲突的对方为 flow 0 时显示“不审核”。
 
@@ -8587,7 +8587,7 @@ ALTER TABLE usage_logs
 | 账号类型 | 请求（都在账号的 `base_url` 上，经账号代理，`updateInterval` 600 秒） | 结果 |
 |---|---|---|
 | newapi | `GET /api/usage/token/`（带 Bearer），只这一个请求 | 站点的额度点数 `data.total_available` 原样，**没有单位**；带 `user_quota.total_available` 时取两者较小；令牌不限额时取用户额度，没有用户额度时为不限。`code` 不为真为暂时失败 |
-| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`，`-1` 为不限；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
+| sub2api | `GET /v1/usage`（带 Bearer） | 金额依次读 `remaining`、`balance`、`quota.remaining`；有 `subscription` 且 `remaining` 为 `-1`（旧版订阅分组没配限额）为不限，其他 `-1` 照数字（钱包可透支）；单位是 `unit` 原样，没有 `unit` 时没有单位；`isValid: false` 为认证被拒（D8）；三个都没有为暂时失败 |
 | typesafe | 不声明 `balance` | TypeSafe 没有余额接口，控制台不查不显示 |
 
 - **余额显示上游返回的数字和单位本身，不做任何换算**（所有者 2026-11-18：“上游返回多少我们就是多少”）：不折算美元、不换汇率，数字或单位不对也照样显示。New API 显示的是站点的额度点数，没有单位。
@@ -8785,7 +8785,7 @@ ALTER TABLE usage_logs
 
 | 预设 | 协议 | 测试请求体 | 不点名时的模型 |
 |---|---|---|---|
-| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens`（`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
+| openai | `openai.chat`（`Type.Test`） | `{"model":m,"max_tokens":1,"messages":[{"role":"user","content":"ping"}]}`；OpenAI 对它拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）写 `max_completion_tokens: 16`（推理占用这个上限，new-api 同为 16；`openai.ChatPingBody`，volcengine 也用它） | `gpt-4o-mini` |
 | openai | `openai.responses` | `{"model":m,"input":"ping","max_output_tokens":16}`（16 是官方允许的最小值） | `gpt-4o-mini` |
 | openai | `openai.embeddings` | `{"model":m,"input":"ping"}` | `text-embedding-3-small` |
 | openai | `openai.images` | `{"model":m,"prompt":"a small white dot","n":1,"size":"1024x1024","quality":"low"}` | `gpt-image-1-mini`（实际只在请求带了模型名时用到，这时用的是那个模型名）。`size: "1024x1024"`、`quality: "low"` 是 gpt-image 系列的取值，只适用于它们；DALL·E 等其他生图模型不接受这组参数，测试会失败 |

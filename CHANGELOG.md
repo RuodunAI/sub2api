@@ -270,7 +270,7 @@
 
 ### 账号测试按绑定的协议测（核心、SDK 清单与预设、控制台；迁移 0115）
 
-- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。对话测试请求对 OpenAI 拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）改写 `max_completion_tokens`，其余模型照旧 `max_tokens`；volcengine 的对话测试同样如此。
+- **测试用模型绑定的协议的真实请求**：OpenAI 预设补了 Responses、Embeddings、生图的最小测试请求，Gemini 预设补了流式生成；只绑了 Responses 或 Embeddings 的模型不再被拿去测 chat 而误报不可用。用这些预设的 openai、gemini、newapi、sub2api、azure-openai 插件随之生效（CONTRACTS §122）。对话测试请求对 OpenAI 拒收 `max_tokens` 的模型（o 系列、gpt-5 及以后，按模型名判断，与 new-api 的渠道测试同法）改写 `max_completion_tokens` 并取 16（推理占用这个上限，与 new-api 相同），其余模型照旧 `max_tokens`；volcengine 的对话测试同样如此。
 - **生图只在带了模型名时测**：清单端点新字段 `test`，`openai.json` 的生成图片标 `explicit`（会真的出一张图、花钱），编辑图片标 `never`（要输入图片）。“测试模型”里的单独测试、“测试所选”“测试全部”都带模型名，绑了生图协议的模型照常按生图协议测、真实出图；不带模型名的默认测试（账号列表的“批量测试”、“测试账号”）不会选生图协议。
 - 模型在“模型的协议限定”里有条目时按条目里写的协议顺序测；不点名模型时跳过只剩生图协议的模型。
 - **没有可测协议的模型不测**：被测模型在这个账号上没有可测的协议（例如只开了编辑图片）、或不点名时所有模型都没有，回 400 `no_testable_protocol` 并记为失败，不再拿默认的对话请求去测。`standard` 库收到协议列表而一个都没有测试请求时同样报错，不退回默认测试。
@@ -404,7 +404,7 @@
 分支 `feat/upstream-plugins`。三个插件都**只对文档、单元测试、合规套件、黄金样例和模拟上游验证过，没有接过真实站点或真实 TypeSafe 账号**。契约见 CONTRACTS §119，填法见 [PLUGIN-NEWAPI.md](next/docs/PLUGIN-NEWAPI.md)、[PLUGIN-SUB2API.md](next/docs/PLUGIN-SUB2API.md)、[PLUGIN-TYPESAFE.md](next/docs/PLUGIN-TYPESAFE.md)。
 
 - **newapi**：New API 站点的 Key（站点地址加 Key），一个账号同时服务 openai、anthropic、gemini，以及 typesafe 插件启用时的 typesafe 平台；同协议原样转发、各协议用官方鉴权头（Gemini 只用 `x-goog-api-key`）；Gemini `countTokens` 不转发，由核心本地估算。余额读 `/api/usage/token/`，显示站点的额度点数本身，没有单位（令牌限额、取用户额度、不限三种）。
-- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组的 `subscription` 三项限额都为空时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
+- **sub2api**：另一个 Sub2API 站点（旧版或 sub2api-next）的 Key，服务 openai、anthropic、gemini，同协议原样转发；余额读站点的 `/v1/usage`（`remaining`、`balance`、`quota.remaining` 依次取，单位是 `unit` 原样，旧版订阅分组没配限额（`subscription` 存在且 `remaining` 为 `-1`）时为不限（钱包余额恰好是 `-1` 照数字显示），`isValid: false` 为认证被拒）。上游 Key 能用哪些协议看它在站点上的分组，用协议绑定收窄。
 - **typesafe**：新平台 `typesafe` 与端点 `POST /v1/systemone`（TypeSafe 的 Jev 接口，只有非流式），请求原样转给官方地址（可在有权限时改地址），危险区两个请求头透传，用量读 `usage.input_tokens`。价格由管理员录（参考输入 $0.042 / 百万 token，输出 0）；没有余额接口。
 - 三个插件都不申请 `net`、`fs.data`：请求由核心发出，在默认开启的文件沙箱下运行。
 - **模拟上游与 e2e**：mock 新增两个站点的余额接口、OpenAI 生图接口、TypeSafe 主机名下的模型列表（`api.typesafe.ai` 加进 e2e 网络别名）；AC30 加 newapi、sub2api、typesafe 三行和 New API 账号转发 Jev，新增 AC39（账号余额）、AC40（OpenAI 生图）、AC41（Responses 生图工具的 token 计入请求模型，一条记录、一笔扣费、没有另计分项）；mock 的 Responses 对 `image_generation` 工具回 `tools`（模型 `gpt-image-2-codex`）与 `tool_usage.image_gen`。
