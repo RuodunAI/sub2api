@@ -531,3 +531,39 @@ func TestBalanceDroppedWhenCredentialsChange(t *testing.T) {
 		t.Fatalf("kept after a proxy change: %+v", s)
 	}
 }
+
+// A read in flight when the key changes was made with the old key: it is
+// not stored or cached as the new key's balance, and the next read asks
+// the upstream with the new key.
+func TestBalanceReadWithOldCredentialsIsDropped(t *testing.T) {
+	e := setup(t)
+	up := newBalanceUpstream(t)
+	fb := &fakeBalance{urls: []string{up.srv.URL + "/balance"}, gate: make(chan struct{}), entered: make(chan struct{}, 2)}
+	e.withBalance(fb, &manifest.AccountBalance{})
+	id := e.mkBalanceAccount("bal", up.srv.URL, true)
+	up.micros.Store(3_000_000)
+	done := make(chan map[string]any, 1)
+	go func() {
+		_, d := e.getBalance(id, true)
+		done <- d
+	}()
+	<-fb.entered // the read holds the old key
+	if code, out := e.do("PATCH", fmt.Sprintf("/accounts/%d", id),
+		map[string]any{"credentials": map[string]any{"api_key": "sk-good-key-456", "base_url": up.srv.URL}}); code != 200 {
+		t.Fatalf("new key: %d %v", code, out)
+	}
+	close(fb.gate)
+	if d := <-done; keys(d) != "1 supported" {
+		t.Fatalf("the old key's read answered %v", d)
+	}
+	if s, err := e.db.AccountBalance(t.Context(), id); s != nil || err != nil || e.mr.Exists(balanceCacheKey(id)) {
+		t.Fatalf("the old key's read was stored: %+v %v", s, err)
+	}
+	fb.gate = nil
+	if _, d := e.getBalance(id, true); d["amount"] != "3.000000" {
+		t.Fatalf("read with the new key: %v", d)
+	}
+	if got := up.requests(); len(got) != 2 || got[1] != "/balance key=sk-good-key-456" {
+		t.Fatalf("requests %v", got)
+	}
+}

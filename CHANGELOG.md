@@ -468,6 +468,7 @@
 
 - 账号余额显示上游返回的数字和单位原文，不做任何单位或汇率换算（2026-11-18 所有者决定，CONTRACTS §52）；上游没给单位时只显示数字，核心不再要求单位是三位大写币种代码。New API 插件余额只请求 `/api/usage/token/`，显示站点的额度点数。Sub2API 插件余额的单位取上游 `unit` 原文，没有时不带单位。
 - 声明了余额的账号类型由插件描述查询（`BuildBalanceRequest` / `ParseBalanceResponse`）、核心经账号代理发出：每个目标先过清单主机规则与插件联网（有一个被拒就一个都不发），不跟随重定向。控制台手动刷新（`GET /accounts/:id/balance?force=true`），集群任务 `core.account.balance_sweep` 每分钟按各类型的 `updateInterval` 读到期的账号（启用且可调度的和从没读过的；停用的（不论调度开关）和关了调度的只在手动刷新时读）。额度的定时刷新同样只刷新启用且可调度的账号：以前两者都只看调度开关，停用而调度开关仍开着的账号（`PATCH status` 不动调度开关）照样每个周期向上游查询。**只显示，不停用账号、不影响调度、不告警。**
+- 改账号的 Key、设置或代理时正在进行的余额查询（定时任务或另一个节点的手动刷新）用的是旧凭证，结果不再写库和缓存：以前它在修改删掉快照之后写回，旧 Key 的余额当成新 Key 的显示到下一个周期（CONTRACTS §52.3）。
 - 控制台余额格显示未查询、金额、不限、查询失败（带上次的金额）；余额显示为“数字 + 单位”（如 `7.5 USD`、`1,250,000`），不再显示货币符号；前端余额刷新不再有 2 秒冷却。
 - 迁移 0113：`account_balances.updated_at` 可空、加 `unlimited`、删 `source`。清单 `accountTypes[].balance.currency` 删除（见升级须知）。迁移 0114：`account_balances.currency` 从 `VARCHAR(3)` 改为 `text`。
 - 账号测试按账号的协议绑定把开放的协议按顺序传给插件（`BuildTestRequestRequest.protocols`），只开放了某些协议的账号测的是它真正服务的协议。

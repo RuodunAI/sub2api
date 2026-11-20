@@ -1,6 +1,7 @@
 package account
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"gorm.io/gorm"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
@@ -136,7 +138,7 @@ func (s *Service) readBalance(ctx context.Context, bt core.AccountTypeBinding, a
 			slog.DebugContext(ctx, "account: plugin declares balance but does not implement it", "plugin", bt.Plugin.Key, "type", a.Type)
 			return nil, err
 		}
-		return s.saveBalance(ctx, a.ID, res, err)
+		return s.saveBalance(ctx, a, res, err)
 	})
 	if err != nil {
 		return nil, err
@@ -207,32 +209,57 @@ func normalizedBalance(res *pluginv1.BalanceResult, snap *store.BalanceSnapshot)
 	return nil
 }
 
-// saveBalance stores the outcome of one read: the new balance, or the
+// saveBalance stores the outcome of one read of a: the new balance, or the
 // failure on top of the last successful balance. It writes through to the
 // cache and returns the snapshot as stored.
-func (s *Service) saveBalance(ctx context.Context, id int64, res *pluginv1.BalanceResult, failed error) (*store.BalanceSnapshot, error) {
+//
+// A read made with credentials, settings or a proxy the account no longer
+// has is dropped and the snapshot as stored returned: the update that
+// changed them deleted the balance (CONTRACTS §52.3), and the old key's
+// balance must not come back as the new one's. The account row stays
+// locked until the cache is written, so such an update, which evicts the
+// cache once committed, comes wholly before this write or wholly after it.
+func (s *Service) saveBalance(ctx context.Context, a *row, res *pluginv1.BalanceResult, failed error) (*store.BalanceSnapshot, error) {
 	now := time.Now().Truncate(time.Microsecond) // as PG keeps it: the view reads the same either way
-	snap := &store.BalanceSnapshot{AccountID: id}
+	snap := &store.BalanceSnapshot{AccountID: a.ID}
 	if failed == nil {
 		failed = normalizedBalance(res, snap)
 	}
-	if failed == nil {
-		snap.UpdatedAt = &now
-	} else {
-		prev, err := s.d.DB.AccountBalance(ctx, id)
+	err := s.d.DB.Tx(ctx, func(tx *gorm.DB) error {
+		cur, err := s.loadRow(ctx, tx, a.ID, core.AllScope, true)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if prev != nil {
-			snap = prev
+		if !sameBalanceInputs(cur, a) {
+			snap, err = store.AccountBalanceTx(ctx, tx, a.ID)
+			return err
 		}
-		snap.Error, snap.ErrorAt = truncate(failed.Error(), maxQuotaError), &now
-	}
-	if err := s.d.DB.UpsertBalance(ctx, snap); err != nil {
-		return nil, err
-	}
-	s.writeBalanceCache(ctx, snap)
-	return snap, nil
+		if failed == nil {
+			snap.UpdatedAt = &now
+		} else {
+			prev, err := store.AccountBalanceTx(ctx, tx, a.ID)
+			if err != nil {
+				return err
+			}
+			if prev != nil {
+				snap = prev
+			}
+			snap.Error, snap.ErrorAt = truncate(failed.Error(), maxQuotaError), &now
+		}
+		if err := store.UpsertBalanceTx(ctx, tx, snap); err != nil {
+			return err
+		}
+		s.writeBalanceCache(ctx, snap)
+		return nil
+	})
+	return snap, err
+}
+
+// sameBalanceInputs reports whether a balance read of b holds for a: the
+// credentials, settings and proxy it was made with are a's.
+func sameBalanceInputs(a, b *row) bool {
+	sameProxy := a.ProxyID == nil && b.ProxyID == nil || a.ProxyID != nil && b.ProxyID != nil && *a.ProxyID == *b.ProxyID
+	return sameProxy && bytes.Equal(a.CredEnc, b.CredEnc) && bytes.Equal(a.Settings, b.Settings)
 }
 
 // fillBalance populates the Balance field of views for accounts whose type
