@@ -96,9 +96,18 @@ var Version = "0.0.0-dev"
 
 func main() {
 	if err := run(); err != nil {
-		slog.Error("gateway stopped", "error", err)
+		slog.Error(failureMessage(os.Args[1:]), "error", err)
 		os.Exit(1)
 	}
+}
+
+// failureMessage names what failed: the gateway itself for serve, otherwise
+// the one-shot command the operator ran.
+func failureMessage(args []string) string {
+	if len(args) == 0 || args[0] == "serve" {
+		return "gateway stopped"
+	}
+	return args[0] + " failed"
 }
 
 // cliOptions is one parsed invocation.

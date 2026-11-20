@@ -510,3 +510,16 @@ func TestRedeployNeedsExactlyOneRelease(t *testing.T) {
 		}
 	}
 }
+
+// A refused one-shot command must not read as the gateway having stopped.
+func TestFailureMessageNamesTheCommand(t *testing.T) {
+	for args, want := range map[string]string{"": "gateway stopped", "serve": "gateway stopped", "redeploy": "redeploy failed"} {
+		var argv []string
+		if args != "" {
+			argv = []string{args, "-config", "x"}
+		}
+		if got := failureMessage(argv); got != want {
+			t.Fatalf("%q: %q, want %q", args, got, want)
+		}
+	}
+}

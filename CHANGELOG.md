@@ -168,6 +168,7 @@
 
 ### 网关 0.1.139：停机重新部署命令 `redeploy`、插件包不再依赖主节点（随核心 0.1.304 发布；核心 0.1.304 要求这一版网关）
 
+- 一次性命令失败时日志写“<命令> failed”，不再写“gateway stopped”（只有 `serve` 退出才这样写）。
 - **`sub2api-gateway redeploy -manifest <核心清单 URL>`（或 `-digest <摘要>`，版本已由 `import` 或更新源导入）**：计划带不过去的核心版本（Host API 变了，例如 0.1.304）停机换用。全部网关停掉后，在任一节点上以同一份配置执行一次：导入清单（同 `import`），任一节点心跳还新鲜（20 秒内，读 Redis 的实时心跳和数据库里的节点登记）、任一核心还在 Redis 核心登记里或有 running/paused 计划时拒绝（因此必须连得上 Redis）；否则把集群基线换成这个版本、删掉本集群的 `updater.node_admissions`，接着以 `serve -bootstrap` 启动主节点（按首次启动处理：允许迁移、内置插件随包导入），主节点就绪后以 `serve` 启动其余节点（主节点就绪前重启仍带 `-bootstrap`；从节点抢先启动的话要全部停掉重新 `redeploy`）。计划、步骤和事件照旧留作记录；它不停任何进程，也不碰核心的库（CONTRACTS §34“停机重新部署”）。此前这一步只能手工改 `updater.clusters.baseline` 和 `updater.node_admissions`。
 - **插件包不再依赖主节点**：每个节点留一份自己存过、用过的包，缺包时向任一启用节点取，心跳新鲜的先问；只把网络上连不上的节点记为“连不上”，本机拒绝对方身份（节点目录还不认识它）记为认证失败（CONTRACTS §114）。删除节点间上传 `PUT /internal/plugin-blobs/` 与范围 `plugin-upload`。
 - **`plugin_landlock_disabled`** 写 `SUB2API_PLUGIN_LANDLOCK=false` 给核心（核心 0.1.304 默认开 Landlock）。
@@ -202,7 +203,7 @@
 
 **部署方式**
 
-- **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法（网关 0.1.139）：先用 `sub2api-gateway status` 确认没有 running/paused 计划；停掉全部网关，确认各节点停止命令已返回（容器已退出），换成 0.1.139 的镜像；再等 20 秒，在任一节点执行 `sub2api-gateway redeploy`（`-manifest` 给 core-v0.1.304 的清单 URL，或 `-digest` 给已由更新源导入的摘要）；以 `serve -bootstrap` 启动主节点，`/readyz` 200 后启动其余节点；再把非内置插件逐个装上新版本。在生产库副本上演练过：主节点启动到迁移完成约 2 秒，到内置插件全部加载约 9 秒，到 `/readyz` 200 约 13 秒，从节点约 2 秒就绪。
+- **只能停机重新部署，核心和全部插件一起换。** Host API 变了，节点外壳不允许新旧核心滚动并存；托管升级也走不通（节点就绪要求每个已启用的插件都已加载，而内置插件在升级计划完成后才升级）。做法（网关 0.1.139，详见 next/deploy/gateway/README.md“停机重新部署”）：事先把 core-v0.1.304 的清单和 bundle 放进发布源、把网关 0.1.139 镜像拉到每台机器；先用 `sub2api-gateway status` 确认没有 running/paused 计划；停掉全部网关，确认各节点停止命令已返回（容器已退出），换成 0.1.139 的镜像；再等 20 秒，在任一节点执行 `sub2api-gateway redeploy`（`-manifest` 给 core-v0.1.304 的清单 URL，或 `-digest` 给已由更新源导入的摘要）；以 `serve -bootstrap` 启动主节点，`/readyz` 200 后启动其余节点；再把非内置插件逐个装上新版本。在生产库副本上按这套步骤演练过两次（第二次用生产主密钥、照网关 0.1.139 的手册走）：停网关到主节点 `/readyz` 200 约 37 秒（其中等心跳过期 20 秒，主节点启动约 13 秒），从节点再约 3 秒就绪；数据库备份另计。主节点启动时有约 30 行预期的 ERROR（旧内置插件协议不符、随后被停），看 `/readyz` 判断成败。
 - **旧插件包装不上。** 按旧契约构建的包以同一条信息被拒绝（`plugin <key>@<version> was built for an older plugin protocol ...; install a version built for core 0.1.304 or later`，要求的版本是这个插件协议的第一个核心，不是当前核心；控制台文字以“请安装为核心 0.1.304 及以上构建的版本”结尾），插件列表和插件详情显示拒绝原因（`refusal`）。拒绝发生在两个时点：
   - 清单里带旧契约标志的包（`runtime: "none"`、`accountTypes[].upstream`、`requestFields`、`request.maxBodyBytes`、能力 `platform.execute.v1` / `platform.poll.v1`、宿主授权 `accounts.credentials` / `accounts.read`）在**上传、安装时**就被拒（`pkg.CheckContract`），也不留版本行；
   - 清单没有这些标志、只是二进制是旧协议的包（例如旧的 guard、payment），上传时不被发现，到**启用、加载时**握手才被拒（`grpcruntime` 的 `checkContract` 与握手）。已经装着的旧版本就是这种情况。
