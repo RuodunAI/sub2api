@@ -8,8 +8,8 @@ import (
 // AC 3: anthropic is a built-in plugin: the core installs and enables it at
 // startup (signed as official, every host permission granted), it is active
 // on both nodes, it cannot be uninstalled, its only console UI is the native
-// API key form and its model catalog route serves data from the plugin
-// schema. The market still lists it.
+// API key form, it keeps no database and each node serves requests through
+// its account type. The market still lists it.
 func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -38,8 +38,8 @@ func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 	if rev.Get("trust").String() != "official" || rev.Get("signature_status").String() != "valid" {
 		t.Fatalf("review trust: %s", rev.Raw)
 	}
-	if rev.Get("database.schema").String() != "plg_anthropic" {
-		t.Fatalf("review database: %s", rev.Raw)
+	if d := rev.Get("database"); d.IsObject() {
+		t.Fatalf("review: anthropic keeps no database: %s", d.Raw)
 	}
 	// The anthropic platform and its endpoints are built into the core
 	// (CONTRACTS 13): the plugin declares no platform and no endpoint.
@@ -107,13 +107,19 @@ func TestAC03_InstallAnthropicFromMarket(t *testing.T) {
 		t.Fatalf("anthropic ui entry has pages: %s", pu.Raw)
 	}
 
-	// Data served by the plugin from plg_anthropic.model_catalog, on every node.
-	e.OnEachNode(admin, func(n int, c *Client) {
-		r := c.API(t, http.MethodGet, "/p/anthropic/models", nil)
-		if r.Status != 200 || len(r.Data().Array()) == 0 {
-			t.Fatalf("node-%d /p/anthropic/models: %s", n, r)
+	// The plugin runs on every node: a request through an anthropic account
+	// sent to each node succeeds, and reaches the upstream once with the
+	// account's key, as the plugin built it.
+	tn := e.NewTenant(admin, TenantOpts{})
+	m := e.Mock()
+	for i, base := range e.NodeURLs {
+		node := "node-" + itoa(int64(i+1))
+		mark := m.Mark(t)
+		if g := e.Gateway(t, base, "/v1/messages", tn.APIKey, MessagesBody(tn.Model, "served by "+node, false), nil); g.Status != 200 {
+			t.Fatalf("%s: HTTP %d %s", node, g.Status, g.Body)
 		}
-	})
+		oneMockCall(t, m, mark, tn.Accounts[0].Key, node)
+	}
 
 	// Account type is offered by the registry with the platform it serves
 	// (built in) and that platform's endpoints.

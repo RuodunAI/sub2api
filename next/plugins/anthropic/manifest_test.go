@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/Masterminds/semver/v3"
@@ -22,15 +21,16 @@ import (
 // TestManifest runs manifest.json through the checks the core runs before
 // it installs a package (sdk/manifest/check in tooling mode) and checks what
 // the plugin keeps: the apikey account type of the built-in anthropic
-// platform, served by the plugin's own platform (anthropic.APIKey), the
-// model catalog and its upgrade fixture.
+// platform, served by the plugin's own platform (anthropic.APIKey), and its
+// upgrade fixture.
 func TestManifest(t *testing.T) {
 	m := load(t)
 	if m.Key != "anthropic" || m.Version != "0.4.0" || m.APIVersion != manifest.APIVersion {
 		t.Fatalf("key/version = %s %s", m.Key, m.Version)
 	}
-	if m.Database == nil || m.Database.Schema != "plg_"+m.Key {
-		t.Fatalf("database = %+v", m.Database)
+	// The plugin keeps no data and serves no console API.
+	if m.Database != nil || len(m.Routes)+len(m.UserPermissions) != 0 {
+		t.Fatalf("database %+v, routes %+v, user permissions %+v: want none", m.Database, m.Routes, m.UserPermissions)
 	}
 
 	// The anthropic platform and its endpoints are built into the core
@@ -81,11 +81,11 @@ func TestManifest(t *testing.T) {
 	for _, c := range m.Capabilities {
 		caps[c.ID] = true
 	}
-	// One process serves the account type's platform (platform.adapter.v1,
-	// which includes Execute) and the catalog route; TestConformance serves
-	// the plugin with this manifest.
-	if len(caps) != 2 || !caps[manifest.CapPlatformAdapter] || !caps[manifest.CapHTTPRoutes] {
-		t.Fatalf("capabilities = %v, want platform.adapter.v1 and http.routes.v1", m.Capabilities)
+	// The process serves the account type's platform (platform.adapter.v1,
+	// which includes Execute); TestConformance serves the plugin with this
+	// manifest.
+	if len(caps) != 1 || !caps[manifest.CapPlatformAdapter] {
+		t.Fatalf("capabilities = %v, want platform.adapter.v1", m.Capabilities)
 	}
 	perms := map[string]manifest.HostPermission{}
 	for _, perm := range m.HostPermissions {
@@ -108,30 +108,17 @@ func TestManifest(t *testing.T) {
 	if _, ok := perms["accounts.credentials"]; ok {
 		t.Error("accounts.credentials was removed")
 	}
-	// The console runs the account form only: the catalog is an admin route
-	// without a menu or page.
+	// The console runs the account form only: no menu or page.
 	if _, ok := perms["ui.native"]; !ok {
 		t.Error("the native account form needs host permission ui.native")
 	}
 	if _, ok := perms["ui.menu"]; ok || !reflect.DeepEqual(m.UI, &manifest.UI{Native: &manifest.NativeUI{Entry: "ui/native/entry.js"}}) {
 		t.Errorf("ui = %+v, want ui.native only and no ui.menu permission", m.UI)
 	}
-	for _, r := range m.Routes {
-		found := false
-		for _, up := range m.UserPermissions {
-			found = found || up.Key == r.Permission
-		}
-		if !found {
-			t.Errorf("route %s %s uses undeclared permission %q", r.Method, r.Path, r.Permission)
-		}
-	}
-	if _, err := os.Stat(filepath.FromSlash(strings.TrimSuffix(m.Database.Migrations, "/"))); err != nil {
-		t.Fatalf("migrations dir: %v", err)
-	}
 	var patch map[string]any
 	raw := mustJSONFile(t, "testdata/upgrade/manifest.patch.json")
 	_ = json.Unmarshal(raw, &patch)
-	// The fixture upgrades the release (e2e AC05, deploy/ci/check.sh): its
+	// The fixture upgrades the release under traffic (e2e AC05): its
 	// version must stay above the manifest's.
 	fixture, _ := patch["version"].(string)
 	if v, err := semver.StrictNewVersion(fixture); err != nil || !v.GreaterThan(semver.MustParse(m.Version)) {
@@ -169,16 +156,17 @@ func load(t *testing.T) manifest.Manifest {
 		t.Fatalf("manifest.json: %v", err)
 	}
 	files := map[string][]byte{"manifest.json": manifestJSON}
-	for _, dir := range []string{"assets", "migrations"} {
-		entries, _ := os.ReadDir(dir)
-		for _, e := range entries {
-			p := path.Join(dir, e.Name())
-			b, err := os.ReadFile(p)
-			if err != nil {
-				t.Fatal(err)
-			}
-			files[p] = b
+	entries, err := os.ReadDir("assets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		p := path.Join("assets", e.Name())
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
 		}
+		files[p] = b
 	}
 	if err := check.Validate(&m, files, check.ValidateOptions{Tooling: true}); err != nil {
 		t.Fatal(err)

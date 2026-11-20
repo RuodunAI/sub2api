@@ -263,7 +263,6 @@ CI 有三个 job：`server (with PostgreSQL and Redis)` / `sdk, tools and e2e` /
 | 项 | 位置 | 说明 |
 |---|---|---|
 | **`manifest.StickyRule` 只能声明在 `Platform.StickyRules` 里，没有顶层 `stickyRules`** | `sdk/manifest` | 语义上粘性规则只需要端点协议 + 请求体路径，与平台账号无关（`matches(protocol, model, userAgent)` 不含平台参数，包校验也不检查协议是否属于所在平台）。**后果：插件想给内置端点加粘性规则，必须凭空声明一个平台，从而被迫申请 RiskHigh 的 `platform.register`。** 待办是提到顶层，并定一个比 `platform.register` 轻的权限（倾向新增 `scheduler.sticky`）。这条只在主控的记忆里，**文档里此前没有** |
-| `anthropic /models?q=` 不转义 LIKE 元字符 | `next/plugins/anthropic/internal/anthropic/models.go` | `?q=%` 返回全量目录并显示成搜索结果，`?q=a_c` 命中 `abc`。`moderation` 和 `volcengine` 都是正确写法，照抄即可（`volcengine` 的叫 `LikeTerm`）。可考虑把它提到 `pluginsdk` 省得每个插件各写一遍 |
 | `usageRequestFields` 表达不了数组任意元素 | CONTRACTS §25.7 第 2 条 | `ValidUsagePath` 只收单值路径，`content.#.text` 被拒。火山靠枚举 `content.0/1/2.text` + `content.#`（数组长度）绕过。建议允许受限的多值路径 |
 | `fields` 的值是原始 JSON 这件事要写进契约正文 | CONTRACTS §25.7 第 3 条 | 取的是 `gjson.Result.Raw`，字符串**带引号**。插件作者极易写错 |
 | `next-ci` 没有前端 job、不构建镜像 | `.github/workflows/next-ci.yml` | 所以 `build-go.sh` / `build-demo.sh` 这条打包路径**零 CI 覆盖**，前端的保证也只能挂在 Go 测试上 |

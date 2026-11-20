@@ -98,7 +98,17 @@
 - **升级时还在生成的视频任务失败并退款**：核心再也问不到这个插件，每次查询算一次失败，连续 20 次（`max_poll_failures`）后以 `task_poll_failed` 结束、退还预扣（失败上限关掉时到任务截止时间以 `task_timeout` 结束），客户端查到失败。想让它们正常完成，升级前等待 `SELECT count(*) FROM async_tasks WHERE plugin_key = 'volcengine' AND observation_status = 'pending'` 归零。已经成功的任务照常扣费。
 - 素材库的本地索引随 `plg_volcengine` 删除，要留的话升级前备份这个 schema。
 
-### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0119；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
+### 删除 anthropic 的模型目录（核心、anthropic 0.4.0；迁移 0120，随 0.1.304 发布）
+
+所有者决定删除，测试换别的探针。规则见 CONTRACTS §129。**线上装着 anthropic，有 `plg_anthropic.model_catalog` 表。**
+
+- anthropic 0.4.0 不再有模型目录：插件接口 `GET /api/v1/p/anthropic/models`、用户权限 `model_catalog:read`、表 `plg_anthropic.model_catalog` 删除；清单去掉 `database`、`routes`、`userPermissions`、能力 `http.routes.v1` 和宿主权限 `db.schema`、`routes.admin`，审查里少了它们。插件只剩 API Key 账号类型，不再用数据库。0.4.0 还没有发布，版本号不再另升。
+- **迁移 0120**（`0120_drop_anthropic_model_catalog.sql`）：删除权限 `plugin.anthropic:model_catalog:read` 与它的授予、schema `plg_anthropic` 和 anthropic 的插件迁移记录（以及带核心标记的旧角色 `plg_anthropic`）；插件本身、账号不动，可以重跑。
+- 测试夹具：anthropic 的升级夹具 `0.4.1-test` 只改版本号；带迁移的升级夹具改为 dynweight 的 `0.5.13-test`（`0004_config_rule_count.sql`，加字段并回填），市场里两个都有，真实核心升级测试（`deploy/ci/check.sh`）改由它演示内置插件随核心升级并跑迁移。e2e AC03 改为经 anthropic 账号分别请求两个节点；AC05 在流量下先后升级 anthropic 与 dynweight，查 dynweight 的迁移只跑一次、升级前保存的配置仍在并已回填；AC06 的权限与插件接口随停用变化移到 dynweight（`TestAC06_DisableGreysOutPermissionsAndRoutes`）。
+
+**升级须知**：角色里的“查看模型目录”消失；目录是插件自带的种子数据，删除不影响调度、价格和账号的模型列表，要留的话升级前备份 schema `plg_anthropic`。
+
+### 核心 0.1.304 + 全部插件：平台插件转发 V2、账号协议绑定、插件数据库只用核心的数据库用户、删除 Claude OAuth、growth 与 volcengine、三个云厂商插件、三个上游站点插件、账号余额、OpenAI 生图（插件协议 2、Host API 10；迁移 0106–0120；**停机重新部署，核心和全部插件一起换；单向，回退要连同数据库回到升级前的备份**）
 
 这一批在分支 `feat/forwarding-v2` 上一起发布：核心 0.1.304、全部第一方插件的新版本（`hostCompat` 都是 `>=0.1.304 <0.2.0`）、`@sub2api/ui`、`@sub2api/host`、`@sub2api/vite-preset` 4.0.0，以及一处网关改动。插件线协议从 1 升到 2，Host API 从 9 升到 10；核心迁移 0106–0119（0106 账号的协议绑定，0107 请求体上限搬进网关设置，0108 模型名的列改成 `text`，0109 发布的节点结果加拒绝代码，0110 删除插件迁移记录函数，0111 删除 Claude OAuth 插件，0112 使用记录加图片 token 两列，0113 账号余额表改形，0114 余额单位列改为 `text`，0115 账号记最近一次测试的协议，0116 删除两个账号授权的授予行，0117 删除 growth 插件，0118 删除没有读者的 `plugin_monitor_receipts`，0119 删除 volcengine 插件），没有插件迁移。
 
@@ -144,7 +154,7 @@
 
 - **导出存量的跨平台协议转换**：升级后跨平台转换默认关闭，迁移不回填，依赖它的客户端从升级完成起收到 404 `no account in this group serves this model on this endpoint`，直到管理员在账号上为模型开启；新字段升级后才存在，没法提前配置。升级前按 [升级手册](next/deploy/rollback/protocol-binding-release.md) 跑只读查询 `next/deploy/rollback/protocol-binding-conversions.sql`，导出近 30 天实际发生过转换的账号、入站协议、模型和请求数，升级后照着在控制台配置。受影响的例子：Anthropic 客户端（Claude Code 等）打到只有 OpenAI、codex 账号的分组；OpenAI 协议的客户端打到只有 Claude 账号或 Bedrock 账号的分组；Gemini 客户端打到非 Gemini 账号。原生请求、同一平台内的转换、声明了多个平台的账号类型（newapi、sub2api）不受影响。
 - **请求体上限改到“系统设置 → 网关设置”**（`max_request_body_mb`，默认 128 MB，范围 1–1024）。迁移 0107 把全局层的值搬进网关设置，**分组层的值丢弃**；升级前先查哪些分组设过并确认全局值够用：`SELECT id, name, environment->'max_request_body_mb' FROM groups WHERE environment ? 'max_request_body_mb'`。只靠进程环境变量 `SUB2API_MAX_REQUEST_BODY_MB` 设上限的实例迁移不到，升级后是 128 MB，要在网关设置里填；带着这个变量启动不报错，但它不再起作用。
-- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 5 个官方插件用数据库：anthropic、dynweight、guard、moderation、payment）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
+- **规划数据库连接数**：插件的数据库连接（每节点每个用数据库的插件默认 4 个；现有 4 个官方插件用数据库：dynweight、guard、moderation、payment）由核心代为打开，计入核心用户和数据库的连接上限，不在核心的连接池里，也不再受插件角色的 `CONNECTION LIMIT 20` 约束；`max_connections` 按“节点数 ×（核心池 + 每个用数据库的插件 4 个）”规划。核心的数据库用户不再需要 `CREATEROLE`。
 - **原来把“模型没有配置价格时”设成“免费放行”的实例，升级前先给要服务的模型补上价格**：这个设置（`missing_price_policy`）已删除，没有价格的模型一律拒绝。升级后这些模型的请求在调度前收到 403 `model_price_not_configured`（请求里声明的引用模型同样）。查当时的设置：`SELECT value->>'missing_price_policy' FROM settings WHERE key = 'billing'`，为 `free` 的就是（CONTRACTS §17.3）。
 - **检查旧策略下留下的未结算记录**（只读）：`SELECT count(*) FROM usage_logs WHERE billing_status IN ('pending','failed') AND expr_hash = '';` 结果不为 0，表示有“免费放行”下留下、还没结算完的记录。升级后它们不会被当作免费：结算报错，计入重试次数，用完重试次数后停在 `failed`，不会自动处理，需要管理员处理。
 - **进行中的 Codex 授权要重来**：codex 0.2.0 的开始路由要 `proxy_ticket`，升级前开始、没完成的设备码或 Sign in with Codex 授权在升级后重新开始。

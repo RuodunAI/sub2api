@@ -15,17 +15,11 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/standard/standardtest"
 )
 
-func start(t *testing.T) *pluginsdktest.Harness {
-	t.Helper()
-	return pluginsdktest.Start(t, New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.4.0")}})
-}
-
-// TestCapabilities: one process serves the apikey platform and the model
-// catalog route.
+// TestCapabilities: the process serves the apikey platform only.
 func TestCapabilities(t *testing.T) {
-	got := start(t).Info.GetCapabilities()
-	slices.Sort(got)
-	if want := []string{manifest.CapHTTPRoutes, manifest.CapPlatformAdapter}; !slices.Equal(got, want) {
+	h := pluginsdktest.Start(t, New(), pluginsdktest.Options{SDK: []pluginsdk.Option{pluginsdk.WithInfo("anthropic", "0.4.0")}})
+	got := h.Info.GetCapabilities()
+	if want := []string{manifest.CapPlatformAdapter}; !slices.Equal(got, want) {
 		t.Fatalf("capabilities = %v, want %v", got, want)
 	}
 }
@@ -34,7 +28,7 @@ func TestCapabilities(t *testing.T) {
 // against the platform the plugin serves, which now refuses a key the
 // account form never sends.
 func TestGolden(t *testing.T) {
-	standardtest.Run(t, "anthropic", "../../manifest.json", New().Platform,
+	standardtest.Run(t, "anthropic", "../../manifest.json", New(),
 		goldentest.Except("validate valid with other fields", "the account form's keys only: the others are refused"))
 }
 

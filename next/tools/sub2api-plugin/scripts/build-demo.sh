@@ -14,7 +14,8 @@
 #   <outdir>/<name>-<version>.s2plugin for every next/plugins/<name> that has a
 #     manifest.json -- the list is DISCOVERED, not enumerated here, so a new
 #     plugin lands in the market with no change to this script,
-#   <outdir>/anthropic-0.4.1-test.s2plugin  (upgrade test fixture),
+#   <outdir>/anthropic-0.4.1-test.s2plugin, dynweight-0.5.13-test.s2plugin
+#     (upgrade test fixtures),
 #   <outdir>/index.json, index.json.sig,
 #   <outdir>/test/guard-<version>-test.s2plugin  (guardtest build, not indexed)
 #
@@ -34,7 +35,7 @@
 set -eu
 
 if [ $# -lt 3 ]; then
-  sed -n '2,33p' "$0"
+  sed -n '2,34p' "$0"
   exit 2
 fi
 
@@ -81,7 +82,7 @@ package() {
 
   set -- pack --dir "$dir" --runtimes "$stage" --out-dir "$dest"
   # An overlay fixture carries migrations ahead of the plugin's GORM models
-  # on purpose (anthropic's upgrade adds a column no model maps): db check,
+  # on purpose (dynweight's upgrade adds a column no model maps): db check,
   # which compares the overlay's migrations too, does not apply to it.
   if [ -n "$overlay" ] || [ "${SKIP_DB_CHECK:-0}" = "1" ]; then
     set -- "$@" --skip-db-check
@@ -120,6 +121,7 @@ done
 # packaged above (a second version, a differently tagged build), not plugins of
 # their own, so they stay explicit.
 package anthropic anthropic-upgrade "$OUT" testdata/upgrade
+package dynweight dynweight-upgrade "$OUT" testdata/upgrade
 package guard guard-test "$OUT/test" testdata/guardtest guardtest
 
 "$BIN" index --dir "$OUT" --key "$KEY"

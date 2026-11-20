@@ -785,7 +785,7 @@ implies（`have → want = ok`）：
 
 | 插件 | 本地 key | 现状（sensitive / defaultRoles / inheritFrom） | 新 risk | 新 defaults | group | 备注 |
 |---|---|---|---|---|---|---|
-| anthropic | `model_catalog:read` | – / [admin] / – | low | `{admin:true}` | – | |
+| anthropic | `model_catalog:read` | – / [admin] / – | low | `{admin:true}` | – | 已随模型目录在 anthropic 0.4.0 删除（迁移 0120，CONTRACTS §129） |
 | claude-oauth | `claude_oauth:manage` | – / [admin, operator] / – | **sensitive** | `{admin:true, operator:true}` | – | 已定：提为 sensitive（会创建凭证） |
 | codex | `codex:manage` | – / [admin, operator] / – | **sensitive** | `{admin:true, operator:true}` | – | 同上 |
 | codex | `codex:reset` | – / [admin, operator] / – | low | `{admin:true, operator:true}` | – | 账号范围由路由 `accounts` 与 `account:update` 取交集（D4） |
