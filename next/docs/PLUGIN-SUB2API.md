@@ -45,7 +45,7 @@
 |---|---|
 | 旧版，带额度的 Key（`quota{…}`、顶层 `remaining` = 额度剩余） | 额度剩余 |
 | 旧版，订阅分组（`remaining` = 日 / 周 / 月剩余的最小值） | 该值 |
-| 旧版，订阅分组一项限额都没配（`subscription` 的 `daily_limit_usd`、`weekly_limit_usd`、`monthly_limit_usd` 都是 `null` 或没有；这时 `remaining: -1`） | **不限** |
+| 旧版，订阅分组一项限额都没配（`subscription` 的三项限额都是 `null`、`0` 或没有；旧版只在这时回 `remaining: -1`，其他情况不小于 0，所以按“有 `subscription` 且 `remaining` 为 `-1`”判断） | **不限** |
 | 旧版，余额计费（`remaining` = `balance` = 用户钱包，可以透支为负，包括 `-1`） | 钱包余额（`-1` 也照数字显示：“不限”只按 `subscription` 判断，与 new-api `controller/channel-billing.go` 相同） |
 | 新版（`remaining` 总有：余额与 Key 额度剩余取小） | `remaining` |
 | `isValid: false` | 认证被拒"上游报告此 Key 已停用或过期"（D8） |

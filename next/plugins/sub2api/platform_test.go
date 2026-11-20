@@ -183,6 +183,7 @@ func TestBalance(t *testing.T) {
 		"legacy, a subscription without limits": {`{"mode":"unrestricted","isValid":true,"planName":"pro","unit":"USD","remaining":-1,` +
 			`"subscription":{"daily_usage_usd":1,"daily_limit_usd":null,"weekly_limit_usd":null,"monthly_limit_usd":null}}`, &pluginv1.BalanceResult{Unlimited: true}},
 		"legacy, a subscription without its limit keys": {`{"remaining":-1,"subscription":{}}`, &pluginv1.BalanceResult{Unlimited: true}},
+		"legacy, a subscription whose limits are 0":     {`{"remaining":-1,"unit":"USD","subscription":{"daily_limit_usd":0,"weekly_limit_usd":0,"monthly_limit_usd":0}}`, &pluginv1.BalanceResult{Unlimited: true}},
 		"legacy, a wallet at -1":                        {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":-1,"unit":"USD","balance":-1}`, &pluginv1.BalanceResult{AmountMicros: -1000000, Currency: "USD"}},
 		"legacy, the wallet":                            {`{"mode":"unrestricted","isValid":true,"planName":"钱包余额","remaining":42.125,"unit":"USD","balance":42.125}`, &pluginv1.BalanceResult{AmountMicros: 42125000, Currency: "USD"}},
 		"next": {`{"mode":"quota_limited","isValid":true,"status":"active","planName":"","remaining":0.5,"unit":"USD","balance":20,` +

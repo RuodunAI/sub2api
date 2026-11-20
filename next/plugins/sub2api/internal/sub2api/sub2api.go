@@ -49,10 +49,11 @@ func APIKey() standard.Type {
 // readBalance reads both releases' answer as it is, never converted
 // (CONTRACTS §52): the amount is remaining, else balance, else
 // quota.remaining (the first present); the unit is unit as the site gives
-// it, none when it gives none. A legacy subscription without any limit
-// (daily, weekly and monthly_limit_usd all null; its remaining is -1) has
-// no limit; any other -1 is an amount (a wallet may be overdrawn). A key the
-// site reports invalid (disabled or expired) is rejected.
+// it, none when it gives none. A legacy subscription answers remaining -1
+// exactly when none of its limits is set (null or 0), any other remaining is
+// at least 0, so a subscription at -1 has no limit; any other -1 is an amount
+// (a wallet may be overdrawn). A key the site reports invalid (disabled or
+// expired) is rejected.
 func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *pluginv1.BalanceResult {
 	if f := standard.BalanceFailure(answers[0]); f != nil {
 		return f
@@ -62,7 +63,7 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 		return &pluginv1.BalanceResult{ErrorType: pluginv1.BalanceResult_ERROR_TYPE_AUTH_REJECTED,
 			ErrorMessage: "the site reports the key disabled or expired / 上游报告此 Key 已停用或过期"}
 	}
-	if unlimitedSubscription(b.Get("subscription")) {
+	if b.Get("subscription").IsObject() && b.Get("remaining").Num == -1 {
 		return &pluginv1.BalanceResult{Unlimited: true}
 	}
 	var amount gjson.Result
@@ -79,20 +80,6 @@ func readBalance(_ *standard.Request, answers []*pluginv1.BalanceAnswer) *plugin
 		return transient("amount " + strconv.Quote(amount.Raw) + " is not a number in range / 余额不是可读的数字")
 	}
 	return &pluginv1.BalanceResult{AmountMicros: m, Currency: b.Get("unit").String()}
-}
-
-// unlimitedSubscription reports whether sub is the subscription of a
-// legacy answer that sets none of its three limits.
-func unlimitedSubscription(sub gjson.Result) bool {
-	if !sub.IsObject() {
-		return false
-	}
-	for _, limit := range []string{"daily_limit_usd", "weekly_limit_usd", "monthly_limit_usd"} {
-		if sub.Get(limit).Type != gjson.Null {
-			return false
-		}
-	}
-	return true
 }
 
 func transient(msg string) *pluginv1.BalanceResult {
