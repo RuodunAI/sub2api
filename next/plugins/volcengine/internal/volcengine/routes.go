@@ -190,7 +190,7 @@ func (c *creds) accountNames(ctx context.Context) map[int64]string {
 	// ever returned the same cursor twice must not spin this loop.
 	for page := 0; page < maxAccountPages; page++ {
 		accs, next, err := c.p.host.ListAccounts(ctx, pluginsdk.AccountQuery{
-			Type: AccountTypeAPIKey, Cursor: cursor, Limit: accountPageSize, IncludeInactive: true,
+			Cursor: cursor, Limit: accountPageSize, IncludeInactive: true,
 		})
 		if err != nil {
 			// A missing name is cosmetic: the index rows are still returned.
@@ -291,7 +291,7 @@ func (p *Plugin) listAccounts(ctx context.Context, req *pluginv1.HTTPRequest) (*
 	skip := (page - 1) * size
 	for i := 0; i < maxAccountPages; i++ {
 		accs, next, err := p.host.ListAccounts(ctx, pluginsdk.AccountQuery{
-			Type: AccountTypeAPIKey, Cursor: cursor, Limit: accountPageSize, IncludeInactive: true,
+			Cursor: cursor, Limit: accountPageSize, IncludeInactive: true,
 		})
 		if err != nil {
 			return unavailable("cannot list accounts: " + err.Error()), nil

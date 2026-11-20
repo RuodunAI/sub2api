@@ -375,6 +375,31 @@ func TestAssetLibraryOffIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestRelayAccountsAreListed: a relay account has an asset library too
+// (asset_endpoint), so the account list and the account names of the index
+// carry it beside the official accounts.
+func TestRelayAccountsAreListed(t *testing.T) {
+	p, h, _ := startRoutes(t)
+	h.accounts[3] = &pluginv1.Account{Id: 3, Name: "doubao-relay", Type: AccountTypeRelay,
+		Properties:      &pluginv1.AccountProperties{Status: "active", Schedulable: true},
+		SettingsJson:    `{"base_url":"https://relay.example","asset_endpoint":"/api/v3/asset"}`,
+		CredentialsJson: `{"api_key":"relay-key-1234","access_key":"` + testAK + `","secret_key":"` + testSK + `"}`,
+	}
+	accounts := dataOf[[]AccountView](t, do(t, p, "GET", "/accounts", nil, nil, nil), http.StatusOK)
+	var relay *AccountView
+	for i := range accounts {
+		if accounts[i].ID == 3 {
+			relay = &accounts[i]
+		}
+	}
+	if len(accounts) != 3 || relay == nil || relay.AssetBaseURL != "https://relay.example/api/v3/asset" {
+		t.Fatalf("accounts = %+v", accounts)
+	}
+	if names := p.newCreds().accountNames(context.Background()); names[3] != "doubao-relay" {
+		t.Fatalf("account names = %v", names)
+	}
+}
+
 // TestUnknownAccountDoesNotLeakExistence: the host returns the same
 // NOT_FOUND for a missing account and for another plugin's account, and so
 // does the route.

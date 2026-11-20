@@ -424,6 +424,7 @@
 - 清单去掉 `net` 权限：插件不再自己联网。升级审查里少了这一项；管理员给它设过的出口白名单不再需要。
 - Chat Completions 的流式判断与 openai 预设一致（`pluginsdk.RequestStream`：`meta.stream` 或请求体的 `stream` 为真）：运营方的参数覆盖给非流式请求加 `stream: true` 时，发往上游的请求体现在会多带 `stream_options.include_usage: true`（以前只看 `meta.stream`，不加）。volcengine 没有只流式的账号类型，核心不会替它强制流式。
 - 任务提交不再检查清单的 `usageMaxBytes`（该字段已删除）。
+- 素材库的账号列表（`GET /accounts`）和素材组、素材列表里的账号名也包括豆包视频（`relay`）账号：此前只读官方 `apikey` 账号，配了 `asset_endpoint` 的中转账号能建素材组和素材，却不出现在账号列表里，列表里它的账号名是空的。
 
 ### 控制台与小改动（无迁移）
 
