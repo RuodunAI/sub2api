@@ -16,8 +16,7 @@ import (
 // whose group only has anthropic-type accounts, /v1/chat/completions is 404
 // (in the endpoint's openai error format, no upstream called) until an
 // account lists the model with openai.chat in its model_protocols, and a
-// served 200 from then on. While no protocol converter is registered it is
-// 503 no_available_account.
+// served 200 from then on.
 func TestAC19_BuiltinPlatforms(t *testing.T) {
 	e := Setup(t)
 	admin := e.Admin()
@@ -69,21 +68,19 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 		t.Fatalf("api key platforms = %v, want [anthropic]", ids)
 	}
 
-	// 3. /v1/chat/completions exists (it is built in) but which outcome is
-	// correct depends on whether the core registers an
-	// openai.chat -> anthropic.messages converter
-	// (server/internal/gateway/convert): with one, anthropic/apikey lists the
-	// endpoint as convertible, and an account serves it for the models it
-	// enables the conversion for, none by default; without one, nothing in
-	// the group can serve it and the answer is 503 in the endpoint's openai
-	// error format. Both are asserted below - a skip here would swallow the
-	// 503 branch the day the first converter lands, and would also mask the
-	// assertions this function already made.
+	// 3. /v1/chat/completions exists (it is built in), and the core's
+	// built-in openai.chat -> anthropic.messages converter
+	// (server/internal/gateway/convert) makes anthropic/apikey list it as
+	// convertible: an account serves it for the models it enables the
+	// conversion for, none by default.
 	at, ok := FindAccountType(admin.OK(t, http.MethodGet, "/account-types", nil).Array(), AnthropicPlugin, AnthropicAPIKey)
 	if !ok {
 		t.Fatal("anthropic/apikey not offered")
 	}
 	convEP, converted := AccountTypeEndpoint(at, http.MethodPost, "/v1/chat/completions")
+	if !converted {
+		t.Fatalf("anthropic/apikey does not list /v1/chat/completions as convertible: %s", at.Raw)
+	}
 	m := e.Mock()
 	body := map[string]any{
 		"model":    tn.Model,
@@ -96,7 +93,6 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 		return g, KeysUsed(m.Since(t, mark), "")
 	}
 	g, keysUsed := chat()
-	j := g.JSON()
 
 	// servedBy is how many accounts of the group serve protocol per the
 	// group's served_protocols (0 when it is not listed).
@@ -116,67 +112,50 @@ func TestAC19_BuiltinPlatforms(t *testing.T) {
 		t.Fatalf("group served_protocols lists openai.chat (%d accounts) before any account enables the conversion", n)
 	}
 
-	if converted {
-		// The conversion is off until an account enables it for the model:
-		// no account of the group serves the model on this endpoint, which
-		// is a 404 clients do not retry, in the OpenAI error format.
-		expectNotServed(t, g, "openai")
-		for _, k := range keysUsed {
-			if tn.AccountKeys()[k] {
-				t.Fatalf("an upstream was called with account key %s before the conversion was enabled", k)
-			}
+	// The conversion is off until an account enables it for the model:
+	// no account of the group serves the model on this endpoint, which
+	// is a 404 clients do not retry, in the OpenAI error format.
+	expectNotServed(t, g, "openai")
+	for _, k := range keysUsed {
+		if tn.AccountKeys()[k] {
+			t.Fatalf("an upstream was called with account key %s before the conversion was enabled", k)
 		}
-		// Zero attempts: a usage record of the 404, if any, names none.
-		if g.RequestID != "" {
-			if u, ok := Find(admin.ListAll(t, "/usage", "user_id", fmt.Sprint(tn.User.UserID)), "request_id", g.RequestID); ok && u.Get("attempts").Int() != 0 {
-				t.Fatalf("the 404 made %d attempts: %s", u.Get("attempts").Int(), u.Raw)
-			}
+	}
+	// Zero attempts: a usage record of the 404, if any, names none.
+	if g.RequestID != "" {
+		if u, ok := Find(admin.ListAll(t, "/usage", "user_id", fmt.Sprint(tn.User.UserID)), "request_id", g.RequestID); ok && u.Get("attempts").Int() != 0 {
+			t.Fatalf("the 404 made %d attempts: %s", u.Get("attempts").Int(), u.Raw)
 		}
-		// Enabled for the model, next to the account's own protocol: the
-		// request is served by an anthropic account and answered in the
-		// OpenAI chat-completion shape.
-		for _, a := range tn.Accounts {
-			e.enableProtocols(admin, a.ID, tn.Model, "anthropic.messages", "openai.chat")
-		}
-		// The group and the account report the protocol they now serve.
-		if n := servedBy("openai.chat"); n != int64(len(tn.Accounts)) {
-			t.Fatalf("group served_protocols openai.chat = %d accounts after enabling, want %d", n, len(tn.Accounts))
-		}
-		acct := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", tn.Accounts[0].ID), nil)
-		if sp, ok := Find(acct.Get("served_protocols").Array(), "protocol", "openai.chat"); !ok || sp.Get("via").String() != "converted" ||
-			!slices.Equal(Strings(sp.Get("models")), []string{tn.Model}) {
-			t.Fatalf("account served_protocols openai.chat: %s", acct.Get("served_protocols").Raw)
-		}
-		g, keysUsed = chat()
-		j = g.JSON()
-		if g.Status != http.StatusOK {
-			t.Fatalf("/v1/chat/completions with a convertible anthropic/apikey (%s): HTTP %d %s (want 200)", convEP.Raw, g.Status, g.Body)
-		}
-		if j.Get("choices.0.message.role").String() != "assistant" || j.Get("object").String() == "" {
-			t.Fatalf("/v1/chat/completions converted response is not in openai shape: %s", g.Body)
-		}
-		used := false
-		for _, k := range keysUsed {
-			used = used || tn.AccountKeys()[k]
-		}
-		if !used {
-			t.Fatalf("converted /v1/chat/completions answered 200 without calling any of the tenant's upstream accounts (keys used: %v)", keysUsed)
-		}
-	} else {
-		if g.Status != http.StatusServiceUnavailable {
-			t.Fatalf("/v1/chat/completions with only anthropic accounts: HTTP %d %s (want 503, not 404)", g.Status, g.Body)
-		}
-		// OpenAI error format: {"error": {"message", "type", "code", "param"}},
-		// without Anthropic's top-level "type": "error".
-		if j.Get("error.code").String() != "no_available_account" || j.Get("error.message").String() == "" ||
-			j.Get("error.type").String() == "" || j.Get("type").Exists() {
-			t.Fatalf("/v1/chat/completions error body (want openai format, no_available_account): %s", g.Body)
-		}
-		for _, k := range keysUsed {
-			if tn.AccountKeys()[k] {
-				t.Fatalf("an upstream was called with account key %s for an unservable endpoint", k)
-			}
-		}
+	}
+	// Enabled for the model, next to the account's own protocol: the
+	// request is served by an anthropic account and answered in the
+	// OpenAI chat-completion shape.
+	for _, a := range tn.Accounts {
+		e.enableProtocols(admin, a.ID, tn.Model, "anthropic.messages", "openai.chat")
+	}
+	// The group and the account report the protocol they now serve.
+	if n := servedBy("openai.chat"); n != int64(len(tn.Accounts)) {
+		t.Fatalf("group served_protocols openai.chat = %d accounts after enabling, want %d", n, len(tn.Accounts))
+	}
+	acct := admin.OK(t, http.MethodGet, fmt.Sprintf("/accounts/%d", tn.Accounts[0].ID), nil)
+	if sp, ok := Find(acct.Get("served_protocols").Array(), "protocol", "openai.chat"); !ok || sp.Get("via").String() != "converted" ||
+		!slices.Equal(Strings(sp.Get("models")), []string{tn.Model}) {
+		t.Fatalf("account served_protocols openai.chat: %s", acct.Get("served_protocols").Raw)
+	}
+	g, keysUsed = chat()
+	j := g.JSON()
+	if g.Status != http.StatusOK {
+		t.Fatalf("/v1/chat/completions with a convertible anthropic/apikey (%s): HTTP %d %s (want 200)", convEP.Raw, g.Status, g.Body)
+	}
+	if j.Get("choices.0.message.role").String() != "assistant" || j.Get("object").String() == "" {
+		t.Fatalf("/v1/chat/completions converted response is not in openai shape: %s", g.Body)
+	}
+	used := false
+	for _, k := range keysUsed {
+		used = used || tn.AccountKeys()[k]
+	}
+	if !used {
+		t.Fatalf("converted /v1/chat/completions answered 200 without calling any of the tenant's upstream accounts (keys used: %v)", keysUsed)
 	}
 	// The anthropic endpoint still works for the same key.
 	e.MustMessages(tn.APIKey, MessagesBody(tn.Model, "anthropic still served", false), nil)
