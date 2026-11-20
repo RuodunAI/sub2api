@@ -810,38 +810,64 @@ func (c *call) finalizeBillability(ctx context.Context, rec *core.UsageRecord, b
 	// answered, or the client left while it was answering and still owes for
 	// it (a per_request price is due in both cases).
 	owed, waived := c.settleCanceled(ctx, rec, billing)
-	completed := rec.Success || owed
-	hasUsage := rec.Tokens != (core.UsageTokens{}) || len(rec.Metrics) > 0
-	priced := rec.Price != nil && (hasUsage || (completed && rec.Price.Mode == "per_request"))
-	for _, item := range append(append([]core.PricedUsage(nil), rec.Additional...), rec.Replacement...) {
-		itemUsage := item.Tokens != (core.UsageTokens{}) || len(item.Metrics) > 0
-		hasUsage = hasUsage || itemUsage
-		priced = priced || (item.Price != nil && (itemUsage || (completed && item.Price.Mode == "per_request")))
-	}
+	hasUsage, priced := usageOf(rec, rec.Success || owed)
 	rec.Billable = !strings.EqualFold(billing, "free") && !waived && (priced || rec.BillingError != "")
 	if !rec.Billable {
 		c.dropReservation(ctx, rec, billing, hasUsage)
 		rec.Price = nil
 	}
-	if rec.Success && !rec.Billable && !hasUsage && rec.UsageExtract == "" && !strings.EqualFold(billing, "free") && !c.ep.TaskSubmit() {
-		c.readingEmpty(ctx, rec)
-	}
 }
 
-// errReadingEmpty is why a request is unreported whose usage is the core's
-// reading when that reading holds no usage.
-var errReadingEmpty = errors.New("the upstream answered and the core's reading of it holds no usage")
+// usageOf says whether rec holds usage, and whether it holds a price that is
+// due: one for that usage, or a per_request one when the upstream completed
+// the work.
+func usageOf(rec *core.UsageRecord, completed bool) (hasUsage, priced bool) {
+	hasUsage = rec.Tokens != (core.UsageTokens{}) || len(rec.Metrics) > 0
+	priced = rec.Price != nil && (hasUsage || (completed && rec.Price.Mode == "per_request"))
+	for _, item := range append(append([]core.PricedUsage(nil), rec.Additional...), rec.Replacement...) {
+		itemUsage := item.Tokens != (core.UsageTokens{}) || len(item.Metrics) > 0
+		hasUsage = hasUsage || itemUsage
+		priced = priced || (item.Price != nil && (itemUsage || (completed && item.Price.Mode == "per_request")))
+	}
+	return hasUsage, priced
+}
 
-// readingEmpty ends as unreported a served request of an endpoint whose usage
-// the core reads when its reading found nothing to bill (a task submission
-// is not one: its usage comes when the task ends): there are no facts
-// and the core makes none up, the same record as a plugin's host_usage
-// without a reading (hostUsageChosen), so the missing usage shows instead of
-// passing as a free request.
-func (c *call) readingEmpty(ctx context.Context, rec *core.UsageRecord) {
-	rec.SetUnreported(errReadingEmpty.Error())
-	slog.WarnContext(ctx, "gateway: upstream answer holds no usage, not billed", "request_id", c.rid,
-		"plugin", rec.PluginKey, "account_type", rec.AccountType, "endpoint", c.ep.Path, "protocol", rec.UpstreamProtocol)
+// errReadingEmpty is why a request is unreported whose usage is the host's
+// reading - the core's own, or the one a plugin chose (hostUsageChosen) -
+// when that reading holds nothing to bill.
+var errReadingEmpty = errors.New("the upstream answered and the host's reading of it holds no usage")
+
+// readingEmpty is errReadingEmpty when the request was served and the host's
+// reading of the answer found nothing to bill: there are no facts and the
+// core makes none up, so the missing usage shows instead of passing as a
+// free request. A free endpoint, a task submission (its usage comes when
+// the task ends), a per_request price and a billing error have something
+// else to say about the money.
+func (c *call) readingEmpty() error {
+	r := c.rec
+	if !r.Success || strings.EqualFold(c.ep.Billing, "free") || c.ep.TaskSubmit() || r.BillingError != "" {
+		return nil
+	}
+	if hasUsage, priced := usageOf(r, true); hasUsage || priced {
+		return nil
+	}
+	return errReadingEmpty
+}
+
+// endUnreported ends as unreported, when why says so, a request served by
+// account whose answer the host read: the client keeps what it was sent and
+// the record is the free usage_unreported one (submit releases the
+// precharge), logged at ERROR as ExecutionRecords.CloseExecutionUnreported
+// does for a relay that waited. It runs when the attempt ends, before the
+// account is credited with the request: an unreported request neither
+// renews its sticky binding nor touches the account's last use.
+func (c *call) endUnreported(ctx context.Context, account int64, why error) {
+	if why == nil {
+		return
+	}
+	c.rec.SetUnreported(why.Error())
+	slog.ErrorContext(ctx, "gateway: request unreported, not billed", "request_id", c.rid, "plugin", c.rec.PluginKey,
+		"account_id", account, "account_type", c.rec.AccountType, "endpoint", c.ep.Path, "protocol", c.rec.UpstreamProtocol, "reason", why.Error())
 }
 
 // settleCanceled decides what a request pays whose client hung up while the

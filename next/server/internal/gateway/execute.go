@@ -137,26 +137,25 @@ func (x *execution) run(ctx context.Context, upModel string, n int) (core.Execut
 
 // sendParked sends the relay the plugin confirmed with host_usage. A task
 // submission must wait: its task is registered from the facts Execute
-// returns, so one relayed without them is not sent. An endpoint whose usage
-// the plugin was to read falls back, once answered, to the core's reading; when that holds
-// no usage the request is unreported: the client keeps the answer it was
-// already sent, the record is the free usage_unreported one (submit
-// releases the precharge) and the core logs at ERROR, as
-// ExecutionRecords.CloseExecutionUnreported does for a relay that waited.
+// returns, so one relayed without them is not sent. An answered request is
+// billed by the host's reading - on an endpoint whose usage the plugin was
+// to read, as the plugin's fallback (hostUsageChosen) - and is unreported
+// when that holds nothing to bill (endUnreported).
 func (x *execution) sendParked(ctx context.Context, req *pluginv1.UpstreamRequest) attemptResult {
 	c := x.c
 	if c.ep.TaskSubmit() {
 		return x.pluginFailed(ctx, errors.New("a task submission was relayed without waiting"))
 	}
 	res := c.send(ctx, x, req)
-	if x.rt.pluginUsage && res.kind == attemptDone {
-		c.usage = nil
-		if err := c.hostUsageChosen(); err != nil {
-			c.rec.SetUnreported(err.Error())
-			slog.ErrorContext(ctx, "gateway: plugin execution unreported, not billed", "request_id", c.rid,
-				"plugin", x.rt.binding.Plugin.Key, "account_id", x.acc.ID, "endpoint", c.ep.Path, "reason", err.Error())
-		}
+	if res.kind != attemptDone {
+		return res
 	}
+	reading := c.readingEmpty
+	if x.rt.pluginUsage {
+		c.usage = nil
+		reading = c.hostUsageChosen
+	}
+	c.endUnreported(ctx, x.acc.ID, reading())
 	return res
 }
 

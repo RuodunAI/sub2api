@@ -1920,7 +1920,7 @@ message RankedAccount {
 
 #### 读不出用量 = 采用核心的读数，并且标出来
 
-插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。用量由核心读的端点（不是 `plugin`）同样如此：上游成功应答、端点按用量计费而核心的读数完全为空（没有可计价的东西）时，记录改成同一条零费用的 `usage_unreported` 记录（`anomalies.usage_extract = "unreported"`），记一条 WARN（插件、账号类型、端点、协议），不再静默地当成免费请求；按次计价的端点、`billing: "free"` 的端点、任务提交（用量在任务结束时才有）不受影响。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
+插件读不出用量时返回 `host_usage`（SDK 的 `ExecuteDefault` 在插件没有 `UsageExtractor`、它出错或返回空时这样做），核心按声明式规则的读数计费并记 `anomalies.usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费，按“未上报”处理（§112.7、§112.16）。用量由核心读的端点（不是 `plugin`）同样如此：上游成功应答、端点按用量计费而核心的读数完全为空（没有可计价的东西）时，记录改成同一条零费用的 `usage_unreported` 记录（`anomalies.usage_extract = "unreported"`），记一条 ERROR（插件、账号、账号类型、端点、协议、原因），不再静默地当成免费请求。两种读数用同一个判定（`gateway` 的 `readingEmpty`、`endUnreported`）：按次计价、`billing: "free"` 的端点、任务提交（用量在任务结束时才有）和带计费错误的记录不受影响；判定在尝试结束、账号记下这次请求之前做（HTTP 在 `sendParked` 里，WebSocket 每一轮在 `finish` 里），所以未上报的请求不续粘性绑定、不刷新账号的最后使用时间（此前核心读数为空的判定在 `submit()` 里，粘性和最后使用时间已经按成功更新）。**代价**：选了 `plugin` 的端点通常**没有**可用的 gjson 规则，fallback 往往计 0；`usage_extract` 标记让它不静默。插件什么都不返回（或报错、崩溃）是“未上报”：零费用记录，核心不补记（§112.7）。
 
 #### 边界：插件填事实，核心补齐并覆盖
 
@@ -8054,7 +8054,7 @@ ALTER TABLE accounts ADD COLUMN IF NOT EXISTS model_protocols jsonb NOT NULL DEF
 - 不等待的中继，且返回 `host_usage`：核心在 `Execute` **返回之后**发送、中继、按规则读用量，`submit()` 结算，不写执行记录；非流式回答照旧分块透传，不缓冲。插件之后崩溃、重启、换代都不影响这次交换。
 - 不等待的中继但返回了别的、或报错、崩溃：请求不发出，按插件不可用换号，账号不受罚（发布了失败策略时同样，不执行账号规则，§58）。`Execute` 不计时（§111.4）：插件挂住时这次尝试一直等，直到客户端离开或插件进程结束。插件没有中继而返回 `classification`：先看客户端是否已经离开（离开了按客户端断开结束，不采用这个分类，被客户端离开切断的取回不会让账号冷却），否则按这个分类裁决（发生在主请求之前，可以安全换号）；什么都没有：按插件不可用换号。
 - 客户端离开：`Execute` 在客户端的 context 下调用。等待形式（插件解析用量、任务提交）的调用在**中继开始发送之前**随客户端离开取消（什么都没发出，不计费、不写执行记录，槽位释放）；中继开始发送起不再随客户端取消（`execution.run` / `detach`）：上游交换按客户端断开的计费策略处理（§25.8 的 `client_disconnect_policy`，`gateway/disconnect.go`；回答可能继续读完用于计费），插件在观察之后的工作也不取消，因为事实还要提交。插件在转发的观察之后挂住时，这次执行只会随插件进程退出而结束；客户端离开不会结束它，因为事实还要提交。客户端离开之后插件才要求的等待中继不发送。
-- 带标志的执行上插件却用了不等待的中继并返回 `host_usage`：任务提交不发送（按插件失败换号）；插件解析用量的端点照常发送，按核心读数计费并记 `usage_extract = "fallback"`。核心的读数完全为空（没有 token、计量、附加项或替换项）时不按 0 计费：客户端已经拿到回答，核心写一条零费用的 `usage_unreported` 记录、释放预扣、记 ERROR 日志（与等待形式的未上报相同的记录，§112.7）。
+- 带标志的执行上插件却用了不等待的中继并返回 `host_usage`：任务提交不发送（按插件失败换号）；插件解析用量的端点照常发送，按核心读数计费并记 `usage_extract = "fallback"`。核心的读数里没有可计价的东西（与 §25.3 同一个判定：没有 token、计量、附加项或替换项，也不是按次计价、`free` 端点或带计费错误的记录）时不按 0 计费：客户端已经拿到回答，核心写一条零费用的 `usage_unreported` 记录、释放预扣、记 ERROR 日志（与等待形式的未上报相同的记录，§112.7）。
 - 等待形式：见 §112.7。
 
 上游错误：不等待形式下核心读错误体、调 `ClassifyError`（平台调用超时，失败用默认分类），按故障策略裁决；等待形式下用 `Execute` 返回的 `classification`，没有就用默认分类。故障策略下传输错误完全由策略决定。插件不重试、不换号。
@@ -8117,7 +8117,7 @@ SDK 名 `pluginsdk.Fetch`。一个有界、非流式的请求，回答交还插�
 只有等待形式写 `plugin_executions`（`intent` → `observed` → `committed` 或 `unreported`；`state` 是无 CHECK 的文本列，新值不需要改表）：
 
 1. 发送前 `BeginExecution`（意图：执行、请求、插件、账号和尝试的标识，`record` 为空；此前还写入请求前的使用记录，但没有任何地方读它，转发 V2 收尾删除了 `core.ExecutionIntent.Record`）；交换结束后 `ObserveExecution` 存核心的读数和观察（不限大小：`record` 是 jsonb、`observation` 是 bytea，大的值由 PostgreSQL 压缩、行外存放；此前超过 512 KiB 拒绝，请求以 503 和零费用记录结束）；非 SSE 的 2xx 回答先缓冲（内存 1 MiB，超出落临时文件，不限大小，此前最多 64 MiB），事实提交后才发布。临时文件建不了或写不进时，在任何提交之前按 3 关闭为未上报。
-2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数完全为空时不是事实，按 3 处理），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试；冲突（`ErrConflict`）和确定性的拒绝（`core.ErrExecutionRefused`：提交与执行不符、身份不符、观察没有落库、已有使用记录）不重试，立即按失败处理（此前除冲突外都重试满 15 秒）。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
+2. `Execute` 返回后，核心校验返回的种类：`usage` 和 `host_usage` 只在插件解析用量的端点合法（`host_usage` 记 `usage_extract = "fallback"`，核心的读数里没有可计价的东西时不是事实，按 3 处理；判定同 §25.3），`task` 只在任务提交端点合法；任务提交上返回 `usage` 或 `host_usage` 不是事实。合法时 `CommitExecution{Operation, Digest}`（`usage` / `host_usage` 的操作是 `usage`，`task` 是 `watch`；摘要是事实的确定性编码的 SHA-256，`host_usage` 为空串的摘要）。同一执行、相同操作和摘要重复提交是无操作，不同的是 `ErrConflict`。提交失败在 15 秒内（`core.ExecutionFinishTimeout`）用同一份提交重试，不落库重试；冲突（`ErrConflict`）和确定性的拒绝（`core.ErrExecutionRefused`：提交与执行不符、身份不符、观察没有落库、已有使用记录）不重试，立即按失败处理（此前除冲突外都重试满 15 秒）。任务提交的提交窗口用完时，核心先尝试关闭执行：关闭遇到冲突说明提交其实已经落库，任务照常交付；关闭成功才报提交失败、写零费用记录（此前直接报失败，最后一次重试晚到落库时任务已登记、预留已扣，客户端却拿到 503）。任务在同一个事务里登记，`task.usage.reserve` 原子地替换请求前的预扣；插件拿不到任务 ID 和回执。
 3. **没有合法事实**（没填、种类不对、`host_usage` 而核心读数完全为空、`Execute` 报错、插件崩溃，或一直提交不上）而观察已落库：
    - 同步请求：`CloseExecutionUnreported` 在一个事务里写一条零费用记录（`success = false`、`error_type = usage_unreported`、token 与计量清零、计费状态免费、`anomalies.usage_extract = "unreported"`），释放预扣，执行行改 `unreported`（`record`、`observation` 保留），每次写一条 ERROR 日志（请求 ID、执行 ID、插件、账号、原因）。缓冲的非流式回答不发出、回 503；已开始的流异常结束。核心不按自己的读数补记。`CloseExecutionUnreported` 对已有使用记录的请求只关执行行、不再写一条（观察落了库但确认丢失时，恢复扫描不会每轮失败）。
    - 观察没能落库（`ObserveExecution` 失败，行还在 `intent`）：这个请求自己的零费用记录照常经 `submit()` 写下，预扣立即释放（此前什么都不写，预扣挂到 24 小时到期）。
