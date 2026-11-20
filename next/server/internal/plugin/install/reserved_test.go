@@ -86,8 +86,12 @@ func TestRetiredKeyStaysWithPublisher(t *testing.T) {
 	if len(kv.purged) != 1 {
 		t.Fatalf("uninstall with purge: KV purges %v", kv.purged)
 	}
+	// A relation of the key's prefix is what the plugin left in the database.
+	if _, err := e.db.SQL.ExecContext(ctx, `CREATE TABLE plg_acme_tool__kept (id int)`); err != nil {
+		t.Fatal(err)
+	}
 	keys, err := e.svc.ListRetiredKeys(ctx)
-	if err != nil || len(keys) != 1 || keys[0].Key != "acme_tool" || keys[0].Publisher != "acme" || keys[0].Installed {
+	if err != nil || len(keys) != 1 || keys[0].Key != "acme_tool" || keys[0].Publisher != "acme" || keys[0].Installed || !keys[0].Schema {
 		t.Fatalf("retired keys: %v %+v", err, keys)
 	}
 	res, err := e.svc.ReleaseRetiredKey(ctx, "acme_tool", ReleaseOptions{Purge: true, PurgeAccounts: true}, e.admin)

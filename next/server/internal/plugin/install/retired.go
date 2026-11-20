@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/audit"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -135,7 +136,8 @@ func retiredKeys(db *gorm.DB) *gorm.DB {
 		Select("r.plugin_key AS key, COALESCE(pub.name, '') AS publisher, r.retired_at, EXISTS (?) AS installed, (?) AS accounts, EXISTS (?) AS schema",
 			db.Table("plugins AS p").Select("1").Where("p.key = r.plugin_key"),
 			db.Table("accounts AS a").Select("count(*)").Where("a.plugin_key = r.plugin_key AND a.deleted_at IS NULL"),
-			db.Table("pg_class AS c").Select("1").Where("c.relnamespace = current_schema()::regnamespace AND starts_with(c.relname, 'plg_' || r.plugin_key || '__')")).
+			db.Table("pg_class AS c").Select("1").Where("c.relnamespace = current_schema()::regnamespace AND starts_with(c.relname, ? || r.plugin_key || ?)",
+				manifest.TablePrefixHead, manifest.TablePrefixTail)).
 		Joins("LEFT JOIN publishers pub ON pub.id = r.publisher_id").
 		Order("r.retired_at DESC")
 }

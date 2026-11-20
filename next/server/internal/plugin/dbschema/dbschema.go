@@ -217,7 +217,8 @@ const aclLock = "plugin-database-acl"
 
 // Ensure brings plugin pluginKey's database side into its state
 // (idempotent, safe on every node, once per process unless something
-// changes it): converts an earlier layout (legacy.go), creates the
+// changes it; another node's uninstall drops the identity, and the next
+// Ensure here goes through again): converts an earlier layout (legacy.go), creates the
 // identity when missing and sets its password, makes the core a member of
 // it (WITH SET, INHERIT: REASSIGN OWNED, DROP OWNED and ALTER ... OWNER
 // need both), hands the objects of the plugin's prefix back to it (a
@@ -236,8 +237,12 @@ func (m *Manager) ensure(ctx context.Context, pluginKey string, force bool) erro
 	m.mu.Lock()
 	done := m.ensured[pluginKey]
 	m.mu.Unlock()
+	// Another node's uninstall drops the identity (DropTx) behind this
+	// process's cache: it holds only while the identity exists.
 	if done && !force {
-		return nil
+		if exists, err := m.identityExists(store.G(ctx, m.db.Gorm), pluginKey); err != nil || exists {
+			return err
+		}
 	}
 	if err := m.canCreateRoles(ctx); err != nil {
 		return err
@@ -284,11 +289,16 @@ func (m *Manager) canCreateRoles(ctx context.Context) error {
 	return nil
 }
 
+// identityExists reports whether plugin pluginKey's identity exists.
+func (m *Manager) identityExists(g *gorm.DB, pluginKey string) (bool, error) {
+	return gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", m.Identity(pluginKey)))
+}
+
 func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	g := store.G(ctx, tx)
 	role := m.Identity(pluginKey)
 	rid := store.Ident(role)
-	exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
+	exists, err := m.identityExists(g, pluginKey)
 	if err != nil {
 		return err
 	}
@@ -327,11 +337,16 @@ func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) e
 // included), views, sequences other than a column's and composite types;
 // not indexes, which go with their tables.
 func (m *Manager) prefixed(g *gorm.DB, pluginKey string) *gorm.DB {
-	ownedSeq := g.Table("pg_depend AS d").Select("1").
-		Where("d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')")
 	return g.Table("pg_class AS c").
 		Where("c.relnamespace = ?::regnamespace AND starts_with(c.relname, ?) AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S', 'c') AND NOT (c.relkind = 'S' AND EXISTS (?))",
-			m.schema, manifest.TablePrefix(pluginKey), ownedSeq)
+			m.schema, manifest.TablePrefix(pluginKey), columnOwned(g))
+}
+
+// columnOwned selects a row when relation c belongs to a column of
+// another (a serial's or an identity's sequence), which goes with its table.
+func columnOwned(g *gorm.DB) *gorm.DB {
+	return g.Table("pg_depend AS d").Select("1").
+		Where("d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')")
 }
 
 // setSchemaCreate grants (or takes back) role's CREATE on the core's
@@ -539,9 +554,8 @@ func (m *Manager) dropTx(ctx context.Context, tx *gorm.DB, pluginKey string, pur
 		return err
 	}
 	g := store.G(ctx, tx)
-	role := m.Identity(pluginKey)
-	rid := store.Ident(role)
-	exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
+	rid := store.Ident(m.Identity(pluginKey))
+	exists, err := m.identityExists(g, pluginKey)
 	if err != nil {
 		return err
 	}

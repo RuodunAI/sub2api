@@ -592,10 +592,13 @@ func (s *Service) consent(ctx context.Context, key, version string, req ConsentR
 }
 
 // dbSchemaUnconfined reports that granting db.schema takes
-// plugin:grant:db_schema_unconfined: schemas are managed and the plugin is
-// not from an official publisher. A plugin with db.schema uses the core's
-// database user, so it can reach every table the core can. The consent
-// check and the review (Review.NeedsDBSchemaUnconfined) both ask it.
+// plugin:grant:db_schema_unconfined: plugin databases are managed and the
+// plugin is not from an official publisher. Under CONTRACTS §130 the plugin
+// reaches no table outside its own prefix (that is db.core_read), but
+// db.schema still gives non-official code a database identity of its own,
+// owning its tables in the core's schema, and its own connections to the
+// core's database; the owner keeps that superadmin-only (2026-11-20). The
+// consent check and the review (Review.NeedsDBSchemaUnconfined) both ask it.
 func (s *Service) dbSchemaUnconfined(official bool) bool {
 	return s.d.Schemas != nil && !official
 }

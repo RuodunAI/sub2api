@@ -249,13 +249,15 @@ func mergeSettings(fields []manifest.SecretField, old, in map[string]any, manage
 	return changed, nil
 }
 
-func (a *API) loadValues(c *gin.Context, q *gorm.DB, key string, forUpdate bool) (map[string]any, error) {
+// storedSettings reads the plugin's encrypted settings; forUpdate locks
+// the row (in a transaction).
+func storedSettings(ctx context.Context, q *gorm.DB, key string, forUpdate bool) ([]byte, error) {
 	if forUpdate {
 		if err := store.RequireTx(q); err != nil {
 			return nil, err
 		}
 	}
-	db := store.G(c.Request.Context(), q).Select("config_enc").Where("key = ?", key)
+	db := store.G(ctx, q).Select("config_enc").Where("key = ?", key)
 	if forUpdate {
 		db = db.Clauses(store.ForUpdate())
 	}
@@ -266,7 +268,11 @@ func (a *API) loadValues(c *gin.Context, q *gorm.DB, key string, forUpdate bool)
 		}
 		return nil, err
 	}
-	enc := row.ConfigEnc
+	return row.ConfigEnc, nil
+}
+
+// decodeSettings decrypts the plugin's stored settings enc.
+func (a *API) decodeSettings(key string, enc []byte) (map[string]any, error) {
 	values := map[string]any{}
 	if len(enc) == 0 {
 		return values, nil
@@ -295,7 +301,11 @@ func (a *API) getSettings(c *gin.Context) {
 
 // renderSettings answers the form v with the stored values, secrets masked.
 func (a *API) renderSettings(c *gin.Context, key string, v *SettingsView) {
-	values, err := a.loadValues(c, a.d.DB.Gorm, key, false)
+	enc, err := storedSettings(c.Request.Context(), a.d.DB.Gorm, key, false)
+	var values map[string]any
+	if err == nil {
+		values, err = a.decodeSettings(key, enc)
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
@@ -329,37 +339,60 @@ func (a *API) putSettings(c *gin.Context) {
 		httpapi.Fail(c, core.ErrUnavailable.WithMessage("settings encryption unavailable"))
 		return
 	}
-	manager := core.HasGranted(c.Request.Context(), PermManage)
-	var changed []string
-	err := a.d.DB.Tx(c.Request.Context(), func(tx *gorm.DB) error {
-		old, err := a.loadValues(c, tx, key, true)
-		if err != nil {
-			return err
-		}
-		validate := func(v map[string]any) error { return a.pluginValidate(c.Request.Context(), key, v) }
-		if changed, err = mergeSettings(form.secrets(old, in.Values), old, in.Values, manager, validate); err != nil {
-			return err
-		}
-		plain, err := json.Marshal(in.Values)
-		if err != nil {
-			return err
-		}
-		enc, err := a.d.Cipher.Encrypt(plain, rows.ConfigAAD(key))
-		if err != nil {
-			return err
-		}
-		if err := updatePlugin(store.G(c.Request.Context(), tx), key, "config_enc", enc).Error; err != nil {
-			return err
-		}
-		// Only key names are audited; values may be secret.
-		return audit.Audit(ctx(c), tx, actor(c), "plugin.settings.update", "plugin", key, map[string]any{"changed_keys": changed, "request_id": core.RequestID(c.Request.Context())})
-	})
+	rctx := c.Request.Context()
+	read, enc, changed, err := a.newSettings(rctx, key, form, in.Values, core.HasGranted(rctx, PermManage))
+	if err == nil {
+		err = a.d.DB.Tx(rctx, func(tx *gorm.DB) error {
+			stored, err := storedSettings(rctx, tx, key, true)
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(stored, read) {
+				return errSettingsChanged
+			}
+			if err := updatePlugin(store.G(rctx, tx), key, "config_enc", enc).Error; err != nil {
+				return err
+			}
+			// Only key names are audited; values may be secret.
+			return audit.Audit(ctx(c), tx, actor(c), "plugin.settings.update", "plugin", key, map[string]any{"changed_keys": changed, "request_id": core.RequestID(rctx)})
+		})
+	}
 	if err != nil {
 		httpapi.Fail(c, err)
 		return
 	}
 	install.Notify(c.Request.Context(), a.d.Bus, key)
 	a.renderSettings(c, key, form)
+}
+
+// errSettingsChanged: another save changed the settings while the plugin
+// checked these.
+var errSettingsChanged = core.ErrConflict.WithMessage("the plugin's settings changed while saving; reload them and try again")
+
+// newSettings merges values into the stored settings (mergeSettings, with
+// the plugin's check) and encrypts the result. It runs outside the saving
+// transaction, so no row lock or connection waits on the plugin; read is
+// the stored ciphertext it started from, which the save compares.
+func (a *API) newSettings(ctx context.Context, key string, form *SettingsView, values map[string]any, manager bool) (read, enc []byte, changed []string, err error) {
+	if read, err = storedSettings(ctx, a.d.DB.Gorm, key, false); err != nil {
+		return nil, nil, nil, err
+	}
+	old, err := a.decodeSettings(key, read)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	validate := func(v map[string]any) error { return a.pluginValidate(ctx, key, v) }
+	if changed, err = mergeSettings(form.secrets(old, values), old, values, manager, validate); err != nil {
+		return nil, nil, nil, err
+	}
+	plain, err := json.Marshal(values)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if enc, err = a.d.Cipher.Encrypt(plain, rows.ConfigAAD(key)); err != nil {
+		return nil, nil, nil, err
+	}
+	return read, enc, changed, nil
 }
 
 // pluginValidate has the plugin check values (PluginService.ValidateSettings)

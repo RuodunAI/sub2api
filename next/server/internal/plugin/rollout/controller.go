@@ -506,9 +506,9 @@ func (c *Controller) Disable(ctx context.Context, pluginKey string, actorID int6
 		}).Error; err != nil {
 			return err
 		}
-		if err := c.syncAccess(ctx, tx, pluginKey); err != nil {
-			return err
-		}
+		// The identity keeps its database grants (CONTRACTS §130.4): the
+		// version they follow, COALESCE(desired_version, active_version),
+		// stays the active one.
 		if c.o.Perms != nil {
 			if err := c.o.Perms.SetPluginActive(ctx, tx, pluginKey, false); err != nil {
 				return err

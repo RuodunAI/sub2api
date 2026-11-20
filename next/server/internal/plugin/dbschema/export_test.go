@@ -27,3 +27,9 @@ func (m *Manager) Strays(ctx context.Context, pluginKey string) ([]string, error
 func (m *Manager) EnsureAgain(ctx context.Context, pluginKey string) error {
 	return m.ensure(ctx, pluginKey, true)
 }
+
+// Peer is another node's manager of the same database: same core user and
+// master key, a cache of its own.
+func (m *Manager) Peer(ctx context.Context) (*Manager, error) {
+	return New(ctx, m.db, m.databaseURL, m.masterKey, m.log)
+}

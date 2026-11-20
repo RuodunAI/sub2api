@@ -11,7 +11,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grants"
@@ -219,7 +218,7 @@ func (m *Manager) SyncAccessTx(ctx context.Context, tx *gorm.DB, pluginKey strin
 	delete(m.ensured, pluginKey)
 	m.mu.Unlock()
 	g := store.G(ctx, tx)
-	exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", m.Identity(pluginKey)))
+	exists, err := m.identityExists(g, pluginKey)
 	if err != nil || !exists {
 		return err
 	}

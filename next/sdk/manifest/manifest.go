@@ -906,7 +906,14 @@ var DatabasePrivileges = []string{"select", "insert", "update", "delete", "refer
 // TablePrefix is the prefix of every table, index and sequence of plugin
 // pluginKey: "plg_<key>__". Plugin keys hold no "__" and do not end in "_",
 // so no plugin's prefix starts another's.
-func TablePrefix(pluginKey string) string { return "plg_" + pluginKey + "__" }
+func TablePrefix(pluginKey string) string { return TablePrefixHead + pluginKey + TablePrefixTail }
+
+// TablePrefixHead and TablePrefixTail enclose the key in TablePrefix, for
+// SQL that builds the prefix from a key column.
+const (
+	TablePrefixHead = "plg_"
+	TablePrefixTail = "__"
+)
 
 // ---------------------------------------------------------------- permissions, routes, ui
 
