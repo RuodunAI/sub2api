@@ -265,9 +265,6 @@ type reservedRowState struct {
 // reconcileOne checks one entry and applies the outcome. It reports whether
 // the entry was abandoned.
 func (s *Service) reconcileOne(ctx context.Context, e *settleEntry) bool {
-	if ctx.Err() != nil {
-		return false
-	}
 	ctx, cancel := context.WithTimeoutCause(ctx, reconcileEntryBudget, errEntryBudget)
 	defer cancel()
 	return s.reconcileOneAdmitted(ctx, e)

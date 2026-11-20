@@ -47,14 +47,14 @@ func (s *Service) handlePollError(ctx context.Context, e *settleEntry, row *rese
 	reason := err.Error()
 	if budgetSpent {
 		reason = errEntryBudget.Error()
-		var cancel context.CancelFunc
-		ctx, cancel = bookkeeping(ctx)
-		defer cancel()
 	}
 	s.recordPollFailure(ctx, e, row, cfg, reason, 0)
 }
 
 func (s *Service) recordPollFailure(ctx context.Context, e *settleEntry, row *reservedRowState, cfg resolved, reason string, delay time.Duration) {
+	// The query may have used the whole entry budget; recording it may not.
+	ctx, cancel := bookkeeping(ctx)
+	defer cancel()
 	e.pollFailed, e.pollObserved = true, false
 	if reason == "" {
 		reason = "task query failed"

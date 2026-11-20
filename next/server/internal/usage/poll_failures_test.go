@@ -18,6 +18,16 @@ func (fakeQuoter) Quote(context.Context, core.QuoteInputs) (decimal.Decimal, err
 	return decimal.Zero, nil
 }
 
+// recordingEnvironment notes whether it was ever asked on an expired context.
+type recordingEnvironment struct{ expired bool }
+
+func (r *recordingEnvironment) ResolveEnvironment(ctx context.Context, _, _ int64) (core.Environment, error) {
+	r.expired = r.expired || ctx.Err() != nil
+	return nil, ctx.Err()
+}
+
+func (*recordingEnvironment) GlobalEnvironment(context.Context) core.EnvironmentValues { return nil }
+
 func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	rf := reconcileFixtureWith(t, &core.Account{AccountRef: core.AccountRef{ID: 7, PluginKey: "vid", Type: "vid_key"}, Status: "active"})
 	f, ctx := rf.fixture, context.Background()
@@ -59,7 +69,8 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 		t.Fatal(got)
 	}
 	// A new core instance resumes the same counter; a busy original account does not spend it.
-	nodeB := New(f.db, f.ledger, &fakeQuoter{}, nil, Options{})
+	env := &recordingEnvironment{}
+	nodeB := New(f.db, f.ledger, &fakeQuoter{}, nil, Options{Environment: env})
 	nodeB.rec = f.svc.rec
 	e := claim(nodeB)
 	row, err := nodeB.loadReserved(ctx, e.usageLogID)
@@ -84,6 +95,9 @@ func TestManagedPollFailuresPersistResetAndRefundAtomically(t *testing.T) {
 	}
 	if got := pollAfter(errEntryBudget); got != "2" || f.scalar(`SELECT last_error FROM async_tasks WHERE public_id=$1`, id) != errEntryBudget.Error() {
 		t.Fatal("a spent entry budget was not counted as a failed query", got)
+	}
+	if env.expired {
+		t.Fatal("the failure limit was resolved on the spent context")
 	}
 	nodeB.reconcileTask(ctx, claim(nodeB))
 	if got := f.scalar(`SELECT poll_failures FROM async_tasks WHERE public_id=$1`, id); got != "3" {
