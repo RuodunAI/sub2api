@@ -163,7 +163,7 @@ func TestValidateRejectsNonObjects(t *testing.T) {
 		{`[1]`, `{}`}, {`{`, `{}`}, {`{}`, `"x"`},
 	} {
 		resp, err := p.ValidateCredentials(t.Context(), validateRequest(TypeAPIKey, tc.creds, tc.settings))
-		if err != nil || !slices.Equal(fieldErrors(resp), []string{":invalid"}) {
+		if err != nil || !slices.Equal(fieldErrors(resp), []string{":invalid_json"}) {
 			t.Errorf("%s / %s: %v %v", tc.creds, tc.settings, fieldErrors(resp), err)
 		}
 	}

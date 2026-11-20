@@ -48,7 +48,7 @@ func TestForm(t *testing.T) {
 		{CredentialsJson: "{}", SettingsJson: "[]"},
 	} {
 		form, refused := DecodeForm(in)
-		if form != nil || !slices.Equal(fieldErrors(refused), []string{":invalid"}) {
+		if form != nil || !slices.Equal(fieldErrors(refused), []string{":invalid_json"}) {
 			t.Errorf("%v: form %v, errors %v", in, form, fieldErrors(refused))
 		}
 	}

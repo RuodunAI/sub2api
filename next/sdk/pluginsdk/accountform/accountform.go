@@ -83,11 +83,11 @@ type Form struct {
 func DecodeForm(in *pluginv1.ValidateCredentialsRequest) (*Form, *pluginv1.ValidateCredentialsResponse) {
 	creds, err := Decode(in.GetCredentialsJson())
 	if err != nil {
-		return nil, Invalid(FieldError("", "invalid", "credentials must be a JSON object / 凭证必须是 JSON 对象"))
+		return nil, Invalid(FieldError("", "invalid_json", "credentials must be a JSON object / 凭证必须是 JSON 对象"))
 	}
 	settings, err := Decode(in.GetSettingsJson())
 	if err != nil {
-		return nil, Invalid(FieldError("", "invalid", "settings must be a JSON object / 设置必须是 JSON 对象"))
+		return nil, Invalid(FieldError("", "invalid_json", "settings must be a JSON object / 设置必须是 JSON 对象"))
 	}
 	return &Form{Creds: creds, Settings: settings, creds: creds.JSON(), settings: settings.JSON()}, nil
 }

@@ -157,7 +157,7 @@ func TestValidateCredentialsMalformedJSON(t *testing.T) {
 		{AccountType: TypeAPIKey, CredentialsJson: mustJSON(apiKeyCreds), SettingsJson: `"x"`},
 	} {
 		resp, err := p.ValidateCredentials(context.Background(), in)
-		if err != nil || !slices.Equal(fieldErrors(resp), []string{":invalid"}) {
+		if err != nil || !slices.Equal(fieldErrors(resp), []string{":invalid_json"}) {
 			t.Fatalf("%v %v", fieldErrors(resp), err)
 		}
 	}
