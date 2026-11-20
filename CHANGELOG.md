@@ -433,6 +433,7 @@
 - **使用记录详情重新逐条显示另算的分项**：计费详情里列出 `billing_detail.additional`（如请求里声明的 advisor 顾问模型）和 `billing_detail.replacement` 的每一项：种类（替代计费项按尝试轮次显示“第 N 轮”）、模型、该项的 token 用量、它自己的计算公式和金额；免费项标“免费”并显示原因。主用量公式以主用量自己的金额结尾，下面一行“主用量小计 + 各项 = 合计”；为此核心在有附加用量的记录明细里另存主用量的 `primary_cost`、`primary_list_cost`、`primary_total_cost`（只是把算出来的数存下，金额不变；之前结算的记录没有，详情里主用量公式只显示算式，CONTRACTS §120.3）。主用量被替代计费用量替换时不再画出“$0 × 0”的主用量公式。数据一直在记录里，之前随“生图另计价”一起删掉了这块显示；没有分项的记录不显示。
 - **`/me/usage` 不再露出分项背后的全局价**：分项按分组自定义价格计价时，它明细里的 `detail.inputs.pricing.base`（全局价表达式与哈希）现在和顶层的一样在普通用户的使用记录详情里删去。
 - **用 http 打开控制台时“系统 → 升级”页不再空白**：页面用了只在 HTTPS / localhost 下才有的 `crypto.randomUUID`。升级页和余额调整的幂等键改用 `@sub2api/ui` 已有的 `createItemId`（`crypto.getRandomValues`，非安全上下文可用），eslint 禁止再直接用 `crypto.randomUUID`。
+- **本地构建镜像不再带进旧的界面产物**：`next/Dockerfile.dockerignore` 原来排除的 `web/dist` 不是任何产物目录，开发机上 `npm run build` 留下的 `server/web/dist/assets/` 和插件 `ui/native/dist/` 旧文件会随构建上下文进镜像和插件包；现在排除这两处，由镜像的 ui 阶段重新构建。CI 与发布用干净检出，不受影响。
 
 ### 插件作者须知：SDK、清单与 proto 的变化
 
