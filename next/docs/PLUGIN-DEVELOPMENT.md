@@ -416,7 +416,7 @@ if !sticky.Enabled { ... }
 | `Decode(raw) (Object, error)` | 解码一个 JSON 对象；空白和 `null` 得到空对象，对象后面还有内容报错 |
 | `FieldError(field, code, msg)` | 一条字段错误（`*pluginv1.FieldError`） |
 | `Invalid(e)` | 用一条字段错误拒绝表单的 `ValidateCredentials` 回答 |
-| `DecodeForm(in) (*Form, *ValidateCredentialsResponse)`，`Form{Creds, Settings}` | 解出 `ValidateCredentials` 请求的凭证和设置。有一个不是 JSON 对象时第二个返回值是拒绝的回答，直接返回它 |
+| `DecodeForm(in) (*Form, *ValidateCredentialsResponse)`，`Form{Creds, Settings}` | 解出 `ValidateCredentials` 请求的凭证和设置。有一个不是 JSON 对象时第二个返回值是拒绝的回答（字段 `""`、`invalid_json`，与 `apikey.Spec` 相同），直接返回它 |
 | `(*Form).Only(keys...)` | 凭证或设置里有 `keys` 以外的键时，返回拒绝的回答（`unknown`），否则 `nil`；拒绝表单不会发的键 |
 | `(*Form).Normalized()` | 接受表单的回答。校验过程可以直接改写 `Creds`、`Settings`（填默认值、归一化）；回答里只带被改过的那个对象的 JSON，没改的留空，核心保留提交的内容 |
 | `DecodeAccount(acc) (creds, settings Object, err error)` | 解出已存账号的凭证和设置（构造请求时用）；不是 JSON 对象时回 `INVALID_ARGUMENT` |
