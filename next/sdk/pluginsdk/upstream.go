@@ -7,23 +7,12 @@ import (
 	"net/url"
 	"strings"
 
-	"golang.org/x/net/http/httpguts"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
-
-// transportHeaders belong to the host's transport: a request naming one is
-// refused (host.proto, UpstreamRequest). Host is the URL's: the request
-// goes to the host the URL names, which is the host checked.
-var transportHeaders = map[string]bool{
-	"host":              true,
-	"content-length":    true,
-	"accept-encoding":   true,
-	"connection":        true,
-	"transfer-encoding": true,
-}
 
 // Upstream builds the final upstream request of one execution
 // (pluginv1.UpstreamRequest). Header names are lower-cased for the caller;
@@ -176,24 +165,15 @@ func (u *Upstream) Build() (*pluginv1.UpstreamRequest, error) {
 
 // ValidateUpstreamRequest checks what the host refuses in a relayed request
 // without looking at the account: the URL is absolute http(s) (ws(s) for a
-// websocket handshake), the method is empty or an HTTP token, header names
-// are lower-case HTTP tokens and none is the transport's, values are what
-// HTTP can carry (no control character but a tab). The host judges method, names and values with the same
-// functions (golang.org/x/net/http/httpguts). Relay applies it before the
-// host is asked.
+// websocket handshake), and the method and headers follow the host's own
+// rules (protocol.CheckRelayHeaders: lower-case names, none of the
+// transport's, method, names and values HTTP can carry). Relay applies it
+// before the host is asked.
 func ValidateUpstreamRequest(r *pluginv1.UpstreamRequest) error {
 	if r == nil {
 		return errors.New("upstream request is required")
 	}
-	var errs []error
-	if err := checkURL(r.GetUrl(), "http", "https", "ws", "wss"); err != nil {
-		errs = append(errs, err)
-	}
-	if m := r.GetMethod(); m != "" && !httpguts.ValidHeaderFieldName(m) {
-		errs = append(errs, fmt.Errorf("upstream method %q is not an HTTP method", m))
-	}
-	errs = append(errs, checkHeaders("headers", r.GetHeaders()), checkHeaders("default_headers", r.GetDefaultHeaders()))
-	return errors.Join(errs...)
+	return errors.Join(checkURL(r.GetUrl(), "http", "https", "ws", "wss"), protocol.CheckRelayHeaders(r))
 }
 
 func checkURL(raw string, schemes ...string) error {
@@ -207,19 +187,4 @@ func checkURL(raw string, schemes ...string) error {
 		}
 	}
 	return fmt.Errorf("upstream url %q is not an absolute %s URL", raw, strings.Join(schemes, "/"))
-}
-
-func checkHeaders(field string, headers map[string]string) error {
-	var errs []error
-	for name, value := range headers {
-		switch {
-		case name == "" || name != strings.ToLower(name):
-			errs = append(errs, fmt.Errorf("%s: header name %q must be lower-case", field, name))
-		case transportHeaders[name]:
-			errs = append(errs, fmt.Errorf("%s: header %q belongs to the host's transport and cannot be set", field, name))
-		case !httpguts.ValidHeaderFieldName(name) || !httpguts.ValidHeaderFieldValue(value):
-			errs = append(errs, fmt.Errorf("%s: header %q is malformed", field, name))
-		}
-	}
-	return errors.Join(errs...)
 }

@@ -4,30 +4,26 @@ import (
 	"context"
 	"errors"
 	"runtime/debug"
-	"strings"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/execfetch"
 )
 
 // checkUpstreamRequest is the part of validating a relay that needs nothing
-// of the gateway: the request is there and leaves the transport's headers
-// alone. Its body has no bound here: the client's body was admitted by the
+// of the gateway: the request is there, and its method and headers follow
+// protocol.CheckRelayHeaders, the rule the SDK applies before it relays.
+// Its body has no bound here: the client's body was admitted by the
 // gateway's request body limit, and what the plugin makes of it is its own.
 func checkUpstreamRequest(req *pluginv1.UpstreamRequest) error {
 	if req == nil || req.GetUrl() == "" {
 		return status.Error(codes.InvalidArgument, "request with a url is required")
 	}
-	for _, headers := range []map[string]string{req.GetHeaders(), req.GetDefaultHeaders()} {
-		for name := range headers {
-			if execfetch.RelayTransportHeaders[strings.ToLower(name)] {
-				return status.Errorf(codes.InvalidArgument, "header %q is set by the host's transport", name)
-			}
-		}
+	if err := protocol.CheckRelayHeaders(req); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	return nil
 }

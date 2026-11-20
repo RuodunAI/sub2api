@@ -4,8 +4,8 @@
 // those of Monitor through this one implementation, each with its own
 // binding (the account's client, the SSRF policy, its base timeouts, an
 // admission), so the rules for the request and the answer cannot drift
-// apart. It also holds the header rules every request a plugin builds
-// shares with the relay (RelayTransportHeaders, ValidHeader).
+// apart. The header rules of a relay are sdk/protocol's (CheckRelayHeaders),
+// which the SDK applies too.
 package execfetch
 
 import (
@@ -18,20 +18,13 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/net/http/httpguts"
-
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
 // TransportFailure is the plugin's text for an exchange that failed in
 // transport; the cause, which may name the proxy, stays in the host's log.
 const TransportFailure = "execution HTTP request failed"
-
-// RelayTransportHeaders are the request headers the host's transport decides
-// for a relayed request (UpstreamRequest); a relay naming one is refused.
-// Host is the URL's: a request goes to, and names, the host that was checked
-// (the SSRF policy, the account's proxy, the allowed upstream hosts).
-var RelayTransportHeaders = map[string]bool{"host": true, "content-length": true, "accept-encoding": true, "connection": true, "transfer-encoding": true}
 
 // FetchTransportHeaders are the headers a fetch may not set: they would
 // change where or how the request travels (Host against the checked URL,
@@ -43,12 +36,6 @@ var FetchTransportHeaders = map[string]bool{"host": true, "connection": true, "p
 // fetchDroppedHeader is left out of a fetch: the transport negotiates the
 // encoding and decodes the answer.
 const fetchDroppedHeader = "accept-encoding"
-
-// ValidHeader reports whether name and value form a header net/http can
-// send; one that is not would fail the exchange after it started.
-func ValidHeader(name, value string) bool {
-	return httpguts.ValidHeaderFieldName(name) && httpguts.ValidHeaderFieldValue(value)
-}
 
 // NoRedirects is a copy of client that returns a redirect as the answer,
 // without a client-wide timeout: the exchange's own timers bound it.
@@ -161,7 +148,7 @@ func checkRequest(in *pluginv1.ExecutionHTTPRequest) (method, refused string) {
 		method = http.MethodGet
 	}
 	for k, v := range in.GetHeaders() {
-		if !ValidHeader(k, v) {
+		if !protocol.ValidHeader(k, v) {
 			return "", "invalid execution request headers"
 		}
 		if FetchTransportHeaders[strings.ToLower(k)] {
