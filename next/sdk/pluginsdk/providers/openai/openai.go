@@ -6,6 +6,7 @@ package openai
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -32,14 +33,27 @@ var Policy = classify.Policy{
 // asking the upstream to answer "ping". BuildTestRequest uses it so every
 // OpenAI-compatible plugin probes the same shape; maxTokens stays a parameter
 // because the minimum a model accepts differs (1 for OpenAI, 16 for some Ark
-// models). The result is deterministic JSON: encoding/json sorts map keys.
+// models). The limit is max_completion_tokens for a model OpenAI refuses
+// max_tokens for (maxCompletionTokensOnly), max_tokens, which every
+// OpenAI-compatible upstream knows, for any other. The result is
+// deterministic JSON: encoding/json sorts map keys.
 func ChatPingBody(model string, maxTokens int) string {
+	limit := "max_tokens"
+	if maxCompletionTokensOnly.MatchString(model) {
+		limit = "max_completion_tokens"
+	}
 	return pingJSON(map[string]any{
-		"model":      model,
-		"max_tokens": maxTokens,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"model":    model,
+		limit:      maxTokens,
+		"messages": []map[string]string{{"role": "user", "content": "ping"}},
 	})
 }
+
+// maxCompletionTokensOnly matches the models whose chat completions OpenAI
+// refuses max_tokens for (400, "use max_completion_tokens"): the reasoning
+// models, the o series and gpt-5 onward. new-api's channel test picks the
+// field the same way.
+var maxCompletionTokensOnly = regexp.MustCompile(`^(o[1-9]|gpt-([5-9]|[1-9][0-9]+)([.-]|$))`)
 
 // ResponsesPingBody is the body of a minimal response: the input "ping" and
 // 16 output tokens, the least the Responses API accepts.
