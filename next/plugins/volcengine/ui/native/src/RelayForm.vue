@@ -15,7 +15,7 @@ const t = host.t
 const form = useCredentialForm(props, emit, {
   rules: {
     api_key: { required: true, whitespace: true },
-    base_url: { required: true, min: 8, pattern: /^https?:\/\/[^\s?#]+$/ },
+    base_url: { required: true, pattern: /^https?:\/\/[^\s?#]+$/ },
     video_endpoint: ENDPOINT,
     asset_endpoint: ENDPOINT,
     access_key: ASSET_KEY,

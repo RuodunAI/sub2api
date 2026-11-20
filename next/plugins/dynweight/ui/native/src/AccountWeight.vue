@@ -48,7 +48,7 @@ const badge = computed<{ tone: Tone; text: string; label: string } | null>(() =>
   if (!w) return null
   if (w.adjust_off) return { tone: 'gray', text: t('acct.badge.statsOnly'), label: t('acct.badge.statsOnlyAria') }
   const params = { w: w.lowest, base: w.base, n: w.degraded }
-  // ▲ only when every key below its base is listed and climbing (a plugin before 0.5.1 sends no state).
+  // ▲ only when every key below its base is listed and climbing.
   if (keys.value.length === w.degraded && keys.value.every(k => k.state === 'climbing')) {
     return { tone: 'success', text: `▲ ${w.lowest}`, label: t('acct.badge.climbingAria', params) }
   }

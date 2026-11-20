@@ -266,7 +266,6 @@ export const fetchCoreUser = (id: number) => useModHost().api.get<CoreUser>(`/us
 export const fetchUsers = (ids: number[]) => api().get<CoreUser[]>('/users', { ids: ids.join(',') })
 export const searchCoreUsers = (q: string) => useModHost().api.list<CoreUser>('/users', { q, page_size: 50 })
 
-export const SETTINGS_MASK = '******'
 const settingsApiPath = () => `/plugins/${encodeURIComponent(useModHost().plugin.key)}/settings`
 export const fetchPluginSettings = () => useModHost().api.get<PluginSettings>(settingsApiPath())
 export const savePluginSettings = (values: Record<string, unknown>) => useModHost().api.put<PluginSettings>(settingsApiPath(), { values })
@@ -274,7 +273,7 @@ export const savePluginSettings = (values: Record<string, unknown>) => useModHos
 /**
  * May read accounts of the console at any scope (all, own, groups, ids): a
  * caller who may not is not sent for a 403. Every console this plugin runs
- * on (UI 3.15) has hasAction.
+ * on (UI 4.0) has hasAction; @sub2api/host still types it optional.
  */
 const canReadAccounts = () => useModHost().permissions.hasAction?.('account:read') === true
 

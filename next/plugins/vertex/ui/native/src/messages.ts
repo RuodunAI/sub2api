@@ -24,11 +24,12 @@ const zh = {
       vertex_sa: '留空则使用密钥文件里的 project_id。',
       vertex_authorized_user: '请求计费的项目。只有凭证文件里带 quota_project_id 时才可以留空。'
     },
-    fromKeyFile: '留空使用密钥文件里的项目'
+    fromKeyFile: '留空使用密钥文件里的项目',
+    required: '密钥文件里没有项目，请填写项目 ID'
   },
   location: {
     label: '区域',
-    help: '请求发往的 Vertex AI 区域：global（主机 aiplatform.googleapis.com），或 us-central1、europe-west4、asia-northeast1 这样的区域（主机 <区域>-aiplatform.googleapis.com）。并非每个模型在每个区域都可用。'
+    help: '请求发往的 Vertex AI 区域：global（主机 aiplatform.googleapis.com）；多区域 us、eu（主机 aiplatform.us.rep.googleapis.com、aiplatform.eu.rep.googleapis.com）；或 us-central1、europe-west4、asia-northeast1 这样的区域（主机 <区域>-aiplatform.googleapis.com）。并非每个模型在每个区域都可用。'
   },
   // The optional project address of an API key account.
   express: {
@@ -36,7 +37,8 @@ const zh = {
     description: '项目 ID 和区域要么都填，要么都留空；都留空时使用 express 地址（https://aiplatform.googleapis.com/v1/publishers/google/models/...）。',
     project: '项目 ID（可选）',
     location: '区域（可选）',
-    placeholder: '留空使用 express 地址'
+    placeholder: '留空使用 express 地址',
+    both: '项目 ID 和区域要么都填，要么都不填'
   }
 }
 
@@ -62,18 +64,20 @@ const en: typeof zh = {
       vertex_sa: 'Leave empty to use the project_id of the key file.',
       vertex_authorized_user: 'The project requests are billed to. Leave empty only when the file has a quota_project_id.'
     },
-    fromKeyFile: "Leave empty to use the key file's project"
+    fromKeyFile: "Leave empty to use the key file's project",
+    required: 'The key file names no project: enter the project ID'
   },
   location: {
     label: 'Location',
-    help: 'The Vertex AI location requests go to: global (host aiplatform.googleapis.com) or a region such as us-central1, europe-west4 or asia-northeast1 (host <region>-aiplatform.googleapis.com). Not every model is served in every location.'
+    help: 'The Vertex AI location requests go to: global (host aiplatform.googleapis.com), the multi-regions us and eu (hosts aiplatform.us.rep.googleapis.com and aiplatform.eu.rep.googleapis.com), or a region such as us-central1, europe-west4 or asia-northeast1 (host <region>-aiplatform.googleapis.com). Not every model is served in every location.'
   },
   express: {
     title: 'Project address (optional)',
     description: 'Fill in both the project ID and the location, or leave both empty to use the express address (https://aiplatform.googleapis.com/v1/publishers/google/models/...).',
     project: 'Project ID (optional)',
     location: 'Location (optional)',
-    placeholder: 'Leave empty for the express address'
+    placeholder: 'Leave empty for the express address',
+    both: 'Fill in both the project ID and the location, or neither'
   }
 }
 

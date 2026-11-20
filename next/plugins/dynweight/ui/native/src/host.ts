@@ -352,7 +352,7 @@ export interface WeightKey {
   eff: number
   base: number
   /** 0.5.1: direction of the last weight change ('' = unknown) and when (absent = unknown; changedAt reads it). */
-  state?: '' | 'degrading' | 'climbing'
+  state: '' | 'degrading' | 'climbing'
   changed_at?: number | string
 }
 
@@ -360,8 +360,8 @@ export interface AccountWeight {
   degraded: number
   lowest: number
   base: number
-  /** The lowest keys (at most 10, eff ascending); absent from a plugin before 0.5.0. */
-  keys?: WeightKey[]
+  /** The lowest keys (at most 10, eff ascending). */
+  keys: WeightKey[]
   /** 0.5.1: the account override turns adjusting off (listed even without a degraded key). */
   adjust_off?: boolean
 }

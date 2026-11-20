@@ -1,4 +1,5 @@
 import type { Rules } from '@sub2api/ui'
+import { useBedrockHost } from './host'
 
 // The fields of the three account types and their rules: the bounds the
 // plugin's ValidateCredentials holds them to (internal/bedrock/credentials.go),
@@ -19,9 +20,18 @@ const ACCESS_KEY: Rules = {
   secret_access_key: { required: true, min: 1, max: 1024, pattern: VISIBLE }
 }
 
+/** A region outside amazonaws.com: China (cn-*) or isolated (us-iso-*, eu-isoe-*, ...), bedrock.unsupportedPartition. */
+const unsupportedPartition = (region: string) => {
+  const [geography, ...rest] = region.split('-')
+  return geography === 'cn' || rest.join('-').startsWith('iso')
+}
+
 /** Region and prefix, shared by every type. The empty region means the default. */
 const SETTINGS: Rules = {
-  region: { pattern: /^([a-z]{2}(-[a-z]+)+-\d)?$/ },
+  region: [
+    { pattern: /^([a-z]{2}(-[a-z]+)+-\d)?$/ },
+    { validator: (v) => (typeof v === 'string' && unsupportedPartition(v) ? useBedrockHost().t('region.unsupported') : undefined) }
+  ],
   inference_profile_prefix: { enum: PREFIXES }
 }
 

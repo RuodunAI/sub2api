@@ -58,6 +58,13 @@ describe('BedrockAccountForm: the fields of each type', () => {
     expect(credentials.value).toEqual(stored)
   })
 
+  it('says at the region that the China and isolated regions are not supported', async () => {
+    const { w, validate } = form('bedrock_apikey')
+    await fillControls(w, LABELS, { api_key: 'ABSKkey', region: 'cn-northwest-1' })
+    expect(await validate()).toBe(false)
+    expect(w.text()).toContain('The AWS China regions (cn-*) and the isolated regions')
+  })
+
   it('shows the server errors at their fields until the field changes', async () => {
     const { w } = form('bedrock_aksk', { errors: { region: 'the AWS China regions (cn-*) are not supported' } })
     await flushPromises()

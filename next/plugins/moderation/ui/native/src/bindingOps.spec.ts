@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bindingKind, exemptGroups, flowBindingsInactive, groupCoverage, hasAccountBindings, resolveBinding, resolveSteps, sortBindings, staleBinding } from './bindingOps'
+import { bindingKind, exemptGroups, flowBindingsInactive, groupCoverage, hasAccountBindings, resolveSteps, sortBindings, staleBinding } from './bindingOps'
 import type { Binding } from './types'
 
 describe('flowBindingsInactive', () => {
@@ -17,9 +17,11 @@ const b = (group_id: number, account_id: number, flow_id: number): Binding => ({
 /** Flows 1-3 are live, 4 and 5 are disabled or unpublished: GET /bindings marks their bindings inactive. */
 const all = (...list: Array<[number, number, number]>): Binding[] => list.map(([g, a, f]) => ({ ...b(g, a, f), ...(f > 3 ? { inactive: true } : {}) }))
 const keyOf = (x: Binding | undefined) => x && `${x.group_id}:${x.account_id}`
+/** The binding a request goes by. */
+const resolveBinding = (list: readonly Binding[], group: number, account: number) => resolveSteps(list, group, account).hit
 
 // The same cases as internal/moderation TestFlowForAccount.
-describe('resolveBinding', () => {
+describe('resolveSteps hit', () => {
   const list = [b(0, 0, 1), b(9, 0, 2), b(10, 0, 0), b(9, 7, 3), b(0, 7, 0), b(0, 8, 3)]
   it.each([
     [9, 7, '9:7'],
@@ -42,7 +44,7 @@ describe('resolveBinding', () => {
 
 // The 0.8.0 cases of TestFlowForAccount: a binding to a disabled or
 // unpublished flow does not apply and a wider binding decides.
-describe('resolveBinding with inactive bindings', () => {
+describe('resolveSteps hit with inactive bindings', () => {
   const flow = (list: Binding[], group: number, account: number) => resolveBinding(list, group, account)?.flow_id ?? 0
 
   it('group bound to a disabled flow takes the default flow', () => {

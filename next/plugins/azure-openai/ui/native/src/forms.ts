@@ -2,18 +2,25 @@ import type { Component } from 'vue'
 import { createApiKeyForm } from '@sub2api/ui'
 
 /**
+ * The resource endpoint: a host, optionally with /openai, /openai/v1 or a
+ * Foundry project path; nothing after it. The plugin matches
+ * azureopenai.EndpointPattern on the normalized address
+ * (apikey.NormalizeBaseURL: trimmed, the scheme lower-cased, trailing
+ * slashes dropped), so this takes what normalizes to a match.
+ */
+export const ENDPOINT = /^\s*[Hh][Tt][Tt][Pp][Ss]?:\/\/[^\s/?#@]+(\/openai(\/v1)?|\/api\/projects\/[^\s/?#]+)?\/*\s*$/
+
+/**
  * The account forms by component name (manifest accountTypes[].form.component).
  * `t` looks up this plugin's messages; texts are functions so they follow
  * the console's language. The Go side (ValidateCredentials) checks the same
  * rules and is final.
  */
 export function forms(t: (key: string) => string): Record<string, Component> {
-  // The resource endpoint: a host, optionally with /, /openai, /openai/v1 or
-  // a Foundry project path; nothing after it (Go: azureopenai.EndpointPattern).
   const endpoint = (help: string) => ({
     required: true,
     first: true,
-    pattern: /^https?:\/\/[^\s/?#@]+(\/|\/openai\/?|\/openai\/v1\/?|\/api\/projects\/[^\s/?#]+\/?)?$/,
+    pattern: ENDPOINT,
     message: () => t('baseUrl.pattern'),
     label: () => t('baseUrl.label'),
     placeholder: () => t('baseUrl.placeholder'),

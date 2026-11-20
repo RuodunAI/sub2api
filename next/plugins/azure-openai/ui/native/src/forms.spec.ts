@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { SECRET_MASK } from '@sub2api/ui'
 import { cleanup, control, fakeHost, fillControls, keyAndUrlCases, messagesT, mountAccountForm, type AccountFormCase } from '@sub2api/ui/testing'
-import { forms } from './forms'
+import { ENDPOINT, forms } from './forms'
 import messages from './messages'
 
 type M = Record<string, unknown>
@@ -18,9 +18,18 @@ function endpointCases(fill: M = {}): AccountFormCase[] {
   const typed = (u: string, ok: boolean) => ({ name: `endpoint ${u}`, input: { api_key: '0123456789abcdef', base_url: u }, out: { ...fill, api_key: '0123456789abcdef', base_url: u }, ok })
   return [
     ...['https://res.openai.azure.com/', 'https://res.openai.azure.com/openai', 'https://res.openai.azure.com/openai/v1/', 'https://res.services.ai.azure.com/api/projects/p1', 'https://res.services.ai.azure.com/api/projects/a%2Fb'].map((u) => typed(u, true)),
-    ...['https://res.openai.azure.com/openai/deployments/gpt/chat/completions', 'https://res.openai.azure.com/openai/v1/chat', 'https://user@res.openai.azure.com', 'https://res.openai.azure.com/other'].map((u) => typed(u, false))
+    // As the plugin matches it once normalized (apikey.NormalizeBaseURL: trimmed, the scheme lower-cased, trailing slashes dropped); the path keeps its case.
+    ...['HTTPS://res.openai.azure.com', 'https://res.openai.azure.com/openai//', 'Https://res.services.ai.azure.com/api/projects/p1/'].map((u) => typed(u, true)),
+    ...['https://res.openai.azure.com/openai/deployments/gpt/chat/completions', 'https://res.openai.azure.com/openai/v1/chat', 'https://user@res.openai.azure.com', 'https://res.openai.azure.com/other'].map((u) => typed(u, false)),
+    ...['https://res.openai.azure.com/OpenAI', 'https://res.openai.azure.com//openai'].map((u) => typed(u, false))
   ]
 }
+
+// The URL box drops ASCII spaces around what is typed; a non-breaking space stays, and the plugin trims it too.
+it('takes an endpoint with white space around it', () => {
+  expect(ENDPOINT.test('\u00a0https://res.openai.azure.com/openai\u00a0')).toBe(true)
+  expect(ENDPOINT.test('\u00a0https://res.openai.azure.com/other')).toBe(false)
+})
 
 describe('AzureV1Form', () => {
   const accountType = { plugin_key: 'azure-openai', type: 'azure_v1' }

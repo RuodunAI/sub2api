@@ -3,8 +3,8 @@ import type { Rule } from '@sub2api/ui'
 // The constraints the account fields share (the Go side, ValidateCredentials,
 // is the check that counts; these give feedback while typing).
 
-/** access_key, secret_key: at most 256 visible ASCII characters. */
-export const ASSET_KEY: Rule = { max: 256, pattern: /^[!-~]*$/ }
+/** access_key, secret_key: 8 to 256 visible ASCII characters (Go: assetKeyOK). */
+export const ASSET_KEY: Rule = { min: 8, max: 256, pattern: /^[!-~]*$/ }
 /** asset_region: a region id such as cn-beijing. */
 export const ASSET_REGION: Rule = { max: 64, pattern: /^[a-z0-9-]*$/ }
 /** asset_base_url: an optional http(s) URL without query or fragment. */

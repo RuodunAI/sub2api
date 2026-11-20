@@ -12,7 +12,7 @@ import { errorMessage, pollDevice, startDevice, useCodexHost, type CodexCredenti
 import { CHATGPT_SECURITY_URL, COUNTDOWN_TICK_MS, DEFAULT_CODE_TTL_SECONDS, DEFAULT_POLL_MS, formatCountdown, MAX_POLL_FAILURES, pollDelay, type FormAgent } from './flow'
 
 const props = defineProps<{
-  /** A proxy ticket of the account form's current proxy choice (UI 3.20), taken afresh for every call of the login. */
+  /** A proxy ticket of the account form's current proxy choice, taken afresh for every call of the login. */
   proxyTicket: ProxyTicketSource
   /** The account form's current User-Agent and originator, sent with every call of the login. */
   agent: FormAgent

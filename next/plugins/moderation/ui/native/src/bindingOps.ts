@@ -37,9 +37,6 @@ export function resolveSteps(bindings: readonly Binding[], groupId: number, acco
   return { hit: undefined, skipped }
 }
 
-/** The binding a request goes by (resolveSteps().hit); undefined when none applies (not moderated). */
-export const resolveBinding = (bindings: readonly Binding[], groupId: number, accountId: number): Binding | undefined => resolveSteps(bindings, groupId, accountId).hit
-
 /** A binding that does not apply (GET /bindings fallback_reason): why, and the flow its requests go by now. */
 export interface StaleBinding {
   reason: FallbackReason

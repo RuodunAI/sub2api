@@ -54,6 +54,10 @@ export const CASES: FormCase[] = [
   { name: 'aksk: another region and prefix', type: 'bedrock_aksk', input: { ...AKSK, region: 'ap-northeast-1', inference_profile_prefix: 'jp' }, out: { ...AKSK, region: 'ap-northeast-1', inference_profile_prefix: 'jp' }, ok: true },
   { name: 'aksk: prefix none', type: 'bedrock_aksk', input: { ...AKSK, inference_profile_prefix: 'None' }, out: { ...AKSK, region: 'us-east-1', inference_profile_prefix: 'none' }, ok: true },
   { name: 'aksk: GovCloud region', type: 'bedrock_aksk', input: { ...AKSK, region: 'us-gov-west-1' }, out: { ...AKSK, ...DEFAULTS, region: 'us-gov-west-1' }, ok: true },
+  // Partitions outside amazonaws.com (bedrock.unsupportedPartition).
+  { name: 'aksk: China region', type: 'bedrock_aksk', input: { ...AKSK, region: 'cn-north-1' }, out: { ...AKSK, ...DEFAULTS, region: 'cn-north-1' }, ok: false },
+  { name: 'aksk: isolated region', type: 'bedrock_aksk', input: { ...AKSK, region: 'us-isob-east-1' }, out: { ...AKSK, ...DEFAULTS, region: 'us-isob-east-1' }, ok: false },
+  { name: 'apikey: isolated European region', type: 'bedrock_apikey', input: { api_key: KEY, region: 'eu-isoe-west-1' }, out: { api_key: KEY, ...DEFAULTS, region: 'eu-isoe-west-1' }, ok: false },
   { name: 'aksk: region cleared (the default)', type: 'bedrock_aksk', input: { ...AKSK, region: '' }, out: { ...AKSK, ...DEFAULTS, region: '' }, ok: true },
   { name: 'aksk: upper-case region', type: 'bedrock_aksk', input: { ...AKSK, region: 'US-EAST-1' }, out: { ...AKSK, ...DEFAULTS, region: 'US-EAST-1' }, ok: false },
   { name: 'aksk: region without its number', type: 'bedrock_aksk', input: { ...AKSK, region: 'us-east' }, out: { ...AKSK, ...DEFAULTS, region: 'us-east' }, ok: false },

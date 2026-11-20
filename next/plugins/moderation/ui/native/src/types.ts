@@ -938,7 +938,7 @@ export interface CoreUser {
 /** GET /plugins/:key/settings; secret values come back masked and are kept when sent back masked. */
 export interface PluginSettings {
   values: Record<string, unknown>
-  /** keys whose stored value comes back as SETTINGS_MASK; sending the mask keeps it */
+  /** keys whose stored value comes back masked (SECRET_MASK of @sub2api/ui); sending the mask keeps it */
   secret_fields?: string[]
 }
 
