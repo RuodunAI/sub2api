@@ -8970,7 +8970,7 @@ ALTER TABLE usage_logs
 
 升级时还在观察中的视频任务：核对循环找不到这个插件的平台服务，按查询失败计（与再也问不到的账号相同，§112.9），连续失败到 `max_poll_failures`（默认 20）时以 `task_poll_failed` 结束并在同一事务里退还预扣；失败上限关掉（0）时由任务截止时间以 `task_timeout` 结束。已经观察到成功的任务保留扣费，过期的提交回执照常清理。测试：`usage.TestUnaskableTaskAccount` 的“插件已删除”一例。
 
-迁移编号：未发布的 0118（§126）删除，原 0119（`plugin_monitor_receipts`）改号为 0118，本迁移占 0119，编号保持连续。测试：`migrations.TestMigration0119DropsVolcenginePlugin`（插件、权限与授予、出口域名、任务、schema 和迁移记录删除，别的插件与角色不变，账号保留，重跑不变）。
+迁移编号：未发布的 0118（§126）删除，原 0119（`plugin_monitor_receipts`）改号为 0118，本迁移占 0119，编号保持连续。生产库不受影响（旧 0118、0119 从未发布）；跑过 develop 上旧 0118、0119 的库（保留数据卷的 e2e 栈、联调环境）在托管模式下启动会以 `database includes migrations unknown to this core` 被拒（`app/managed_checks.go`），处理办法是重建库，或删掉 `schema_migrations` 里那两条旧记录后再启动。测试：`migrations.TestMigration0119DropsVolcenginePlugin`（插件、权限与授予、出口域名、任务、schema 和迁移记录删除，别的插件与角色不变，账号保留，重跑不变）。
 
 ### 128.3 装过它的实例
 
@@ -8978,4 +8978,4 @@ ALTER TABLE usage_logs
 
 ### 128.4 删掉它以后没有使用者、暂时保留的能力
 
-它是异步任务（`taskContract`、`Monitor`、核对循环、`s2task_` 公开 ID、§112.9）和视频计费（价格的视频配置 `expr.ExpressionConfig.Video`、只能用于视频的价格 `VideoOnly`）唯一的第一方使用者。这些是给第三方插件的通用契约，保留；但 e2e 不再覆盖异步任务的全链路（原 AC24、AC32 的崩溃子测试），只剩核心包里的单元与数据库测试。
+它是异步任务（`taskContract`、`Monitor`、核对循环、`s2task_` 公开 ID、§112.9）和视频计费（价格的视频配置 `expr.ExpressionConfig.Video`、只能用于视频的价格 `VideoOnly`）唯一的第一方使用者，也是宿主接口 `HostService.ListAccounts`、端点的 `usageSource: "plugin"` 与 `usageRequestFields`、SDK 的 `PollFailure`、`ClassifyPollResponse` 和一致性套件 `conformance.TaskSubmission` 唯一的第一方使用者。这些是给第三方插件的通用契约，保留；但 e2e 不再覆盖异步任务的全链路（原 AC24、AC32 的崩溃子测试），只剩核心包里的单元与数据库测试。
