@@ -12,6 +12,8 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/config"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema/dbschematest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/install"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/pkg"
@@ -19,6 +21,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry/registrytest"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/rollout"
+	"github.com/Sub2API-Devs/sup2api/next/server/internal/testutil"
 )
 
 // allowAll lets the consenting operator grant anything.
@@ -86,8 +89,10 @@ func newStagedEnv(t *testing.T) *stagedEnv {
 		t.Fatal(err)
 	}
 	defaults := install.NewDefaultsApplier(h.rec)
+	schemas := dbschematest.New(t, h.db, testutil.DSN(h.db))
+	t.Cleanup(func() { _ = schemas.Drop(context.Background(), h.key, true) })
 	e.svc = install.New(install.Deps{DB: h.db, Trust: ts, Authz: allowAll{}, Permissions: h.rec, Defaults: defaults,
-		Packages: registrytest.Source()},
+		Schemas: schemas, Packages: registrytest.Source()},
 		install.Options{HostVersion: "0.1.290", Plugins: config.PluginConfig{MaxPackageBytes: 100 << 20, MaxMemoryMB: 1024}})
 	cipher, _ := secret.New(make([]byte, 32))
 	nd := &registrytest.Node{RDB: h.rdb, ID: "solo", Boot: "boot-solo"}
@@ -100,7 +105,7 @@ func newStagedEnv(t *testing.T) *stagedEnv {
 	e.pkgs = registry.NewPackages(h.db, t.TempDir(), registry.WithSource(registrytest.Source()))
 	t.Cleanup(e.pkgs.Close)
 	if e.ctl, err = rollout.New(rollout.Options{DB: h.db, Node: nd, Bus: registrytest.Bus{RDB: h.rdb}, Packages: e.pkgs,
-		Registry: e.reg, Runtime: e.rt, Defaults: defaults, Perms: h.rec, Events: h.rec,
+		Registry: e.reg, Runtime: e.rt, Schemas: schemas, Defaults: defaults, Perms: h.rec, Events: h.rec,
 		ReconcileInterval: 150 * time.Millisecond, LeaseTTL: 8 * time.Second, LeaseRenew: time.Second,
 		CoordinatorTick: 100 * time.Millisecond, PrepareTimeout: 60 * time.Second, DrainTimeout: time.Second}); err != nil {
 		t.Fatal(err)
@@ -329,4 +334,77 @@ func TestConsentDuringAnEnableWaitsForItsVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "0.2.0 served with lock", e.served("0.2.0", "lock"))
+}
+
+// The database grants of the plugin's identity follow the version it runs
+// or moves to (CONTRACTS §130.4): an upgrade asking for more gets it while
+// it prepares, and a failed or cancelled one hands the running version its
+// own grants back in the same transaction.
+func TestAbandonedUpgradeRestoresDatabaseGrants(t *testing.T) {
+	e := newStagedEnv(t)
+	ctx := context.Background()
+	version := func(v string, privileges ...string) {
+		t.Helper()
+		m := e.manifest(v, "db.schema", dbschema.AccessPermission)
+		m.Database = &manifest.Database{Migrations: "migrations/",
+			Access: []manifest.DatabaseAccess{{Table: "users", Columns: []string{"id"}, Privileges: privileges}}}
+		if _, err := e.svc.Upload(ctx, e.build(m), 0, install.UploadOptions{}); err != nil {
+			t.Fatalf("upload %s: %v", v, err)
+		}
+		e.consent(v, "db.schema", dbschema.AccessPermission)
+	}
+	identity := dbschematest.New(t, e.h.db, "").Identity(e.h.key)
+	canUpdate := func() bool {
+		t.Helper()
+		var ok bool
+		if err := e.h.db.SQL.QueryRowContext(ctx, `SELECT has_column_privilege($1, 'users', 'id', 'UPDATE')`, identity).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+
+	version("0.1.0", "select")
+	if _, err := e.ctl.Enable(ctx, e.h.key, 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "0.1.0 served", e.served("0.1.0", "kv"))
+	if canUpdate() {
+		t.Fatal("0.1.0 may update users")
+	}
+
+	version("0.2.0", "select", "update")
+	e.rt.set("0.2.0", true, false)
+	r, err := e.ctl.Upgrade(ctx, e.h.key, "0.2.0", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the upgrade fails", func() bool { phase, _, _ := e.h.rolloutRow(r.ID); return phase == rollout.PhaseFailed })
+	if canUpdate() {
+		t.Fatal("after the failed upgrade 0.1.0 may update users")
+	}
+
+	e.rt.set("0.2.0", false, true)
+	e.consent("0.2.0", "db.schema", dbschema.AccessPermission)
+	if r, err = e.ctl.Upgrade(ctx, e.h.key, "0.2.0", 0); err != nil {
+		t.Fatal(err)
+	}
+	if !canUpdate() {
+		t.Fatal("0.2.0 prepares without its grants")
+	}
+	if err := e.ctl.Cancel(ctx, e.h.key, r.ID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if canUpdate() {
+		t.Fatal("after the cancelled upgrade 0.1.0 may update users")
+	}
+
+	e.rt.set("0.2.0", false, false)
+	e.consent("0.2.0", "db.schema", dbschema.AccessPermission)
+	if _, err := e.ctl.Upgrade(ctx, e.h.key, "0.2.0", 0); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "0.2.0 served", e.served("0.2.0", dbschema.AccessPermission))
+	if !canUpdate() {
+		t.Fatal("0.2.0 may not update users")
+	}
 }

@@ -114,7 +114,7 @@ func TestReviewAndDatabaseShowMigrations(t *testing.T) {
 	sum := r.DatabaseMigrations[0].Checksum
 
 	at := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	for checksum, status := range map[string]string{sum: MigrationApplied, "other": MigrationChanged} {
+	for checksum, status := range map[string]string{sum: MigrationApplied, "other": MigrationChanged, dbschema.RelocatedChecksum: MigrationApplied} {
 		e.schemas.applied = map[string]core.PluginMigrationRecord{"0001_init.sql": {Checksum: checksum, AppliedAt: at}}
 		r, err := e.svc.Review(ctx, "guard", "0.1.0", e.admin)
 		if err != nil {
@@ -123,6 +123,11 @@ func TestReviewAndDatabaseShowMigrations(t *testing.T) {
 		if r.DatabaseMigrations[0].Status != status {
 			t.Fatalf("applied with %s: status %s, want %s", checksum, r.DatabaseMigrations[0].Status, status)
 		}
+	}
+
+	// The plugin detail leaves them to the database tab.
+	if r, err := e.svc.DetailReview(ctx, "guard", "0.1.0", e.admin); err != nil || r.DatabaseMigrations != nil || len(r.DatabaseAccess) != 1 {
+		t.Fatalf("detail review: migrations %v, access %v (%v)", r.DatabaseMigrations, r.DatabaseAccess, err)
 	}
 
 	d, err := e.svc.Database(ctx, "guard")

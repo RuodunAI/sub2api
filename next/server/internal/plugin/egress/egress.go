@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	pluginv1 "github.com/Sub2API-Devs/sup2api/next/sdk/gen/pluginv1"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/netguard"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/store"
@@ -54,7 +55,7 @@ const (
 type Options struct {
 	NodeID      string
 	DialTimeout time.Duration // default 10 s
-	// DatabaseProxy serves a connection to DatabaseHost:DatabasePort of a
+	// DatabaseProxy serves a connection to protocol.DatabaseHost:protocol.DatabasePort of a
 	// plugin whose policy has Database (database.go); without it that
 	// address is refused. It is a plugin's only way to its database: every
 	// plugin gets that address (CONTRACTS §130).
@@ -271,7 +272,7 @@ func (s *server) Dial(stream pluginv1.EgressService_DialServer) error {
 	}
 	pol := s.policy()
 	isDNS := host == DNSHost && port == DNSPort
-	isDB := host == DatabaseHost && port == DatabasePort
+	isDB := host == protocol.DatabaseHost && port == protocol.DatabasePort
 	if !isDNS && !isDB {
 		// Every connection attempt counts for the plugin's domain list
 		// (denied ones included: they show what the plugin tries to reach).

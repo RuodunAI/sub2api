@@ -13,6 +13,7 @@ package dbschema
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"strings"
@@ -29,10 +30,12 @@ import (
 // legacyName is the name earlier cores gave a plugin's role and schema.
 func legacyName(pluginKey string) string { return "plg_" + pluginKey }
 
-// relocatedChecksum marks a migration record relocate carried over: the
+// RelocatedChecksum marks a migration record relocate carried over: the
 // script was rewritten for the new layout, and the first migration records
-// its new checksum without running it (adoptRelocated).
-const relocatedChecksum = "relocated"
+// its new checksum without running it (adoptRelocated). The review counts
+// such a script as applied (install's noteDatabase, which goes with this
+// file).
+const RelocatedChecksum = "relocated"
 
 // ConvertLegacy converts, once at start, what earlier cores left for every
 // plugin, installed or not (convertLegacy). A plugin whose conversion fails
@@ -50,9 +53,6 @@ func (m *Manager) ConvertLegacy(ctx context.Context) {
 	}
 	for _, name := range names {
 		key := strings.TrimPrefix(name, "plg_")
-		if validKey(key) != nil {
-			continue
-		}
 		err := m.db.Tx(ctx, func(tx *gorm.DB) error {
 			if err := lockPlugin(ctx, tx, key); err != nil {
 				return err
@@ -92,7 +92,7 @@ func (m *Manager) convertLegacy(ctx context.Context, tx *gorm.DB, pluginKey stri
 // (table "items" becomes "plg_<key>__items", its index "items_pkey"
 // "plg_<key>__items_pkey"), the relations move (indexes and the sequences
 // of columns with their tables), the plugin's records in plugin_migrations
-// move to its records table (relocatedChecksum), and the empty schema is
+// move to its records table (RelocatedChecksum), and the empty schema is
 // dropped. The relations stay owned by the core until Ensure hands them to
 // the plugin's identity. Whatever cannot move (a function, a type) keeps
 // the schema from being dropped and fails the whole relocation.
@@ -197,13 +197,18 @@ func relocateRecords(ctx context.Context, tx *gorm.DB, schema, pluginKey string)
 	if err := sql.Select("migration_id, applied_at").Scan(&recs).Error; err != nil {
 		return err
 	}
+	// The core writes the records table only here, having just created it:
+	// a relation of the old schema by that name is the plugin's.
 	t := Tracker{Schema: schema, Table: recordsTable(pluginKey)}
+	if exists, err := gormpg.RelationExists(g, t.table()); err != nil || exists {
+		return errors.Join(err, fmt.Errorf("schema %s holds a relation named %s", legacyName(pluginKey), strings.TrimPrefix(t.Table, manifest.TablePrefix(pluginKey))))
+	}
 	if err := t.Ensure(ctx, tx); err != nil {
 		return err
 	}
 	for _, r := range recs {
 		if err := g.Table(t.table()).Clauses(clause.OnConflict{DoNothing: true}).
-			Create(&migrationRecord{MigrationID: r.MigrationID, Checksum: relocatedChecksum, AppliedAt: r.AppliedAt}).Error; err != nil {
+			Create(&migrationRecord{MigrationID: r.MigrationID, Checksum: RelocatedChecksum, AppliedAt: r.AppliedAt}).Error; err != nil {
 			return err
 		}
 	}
@@ -211,10 +216,11 @@ func relocateRecords(ctx context.Context, tx *gorm.DB, schema, pluginKey string)
 }
 
 // adoptRelocated records the checksum of each file of fsys whose record
-// relocate carried over, so that it is not run again.
-func (m *Manager) adoptRelocated(ctx context.Context, pluginKey string, fsys fs.FS) error {
-	g := store.G(ctx, m.db.Gorm)
-	table := store.QuoteIdent(m.schema, recordsTable(pluginKey))
+// relocate carried over, so that it is not run again, on pool (logged in
+// as the identity, asIdentity).
+func (m *Manager) adoptRelocated(ctx context.Context, pool *store.DB, pluginKey string, fsys fs.FS) error {
+	g := store.G(ctx, pool.Gorm)
+	table := m.tracker(pluginKey).table()
 	if exists, err := gormpg.RelationExists(g, table); err != nil || !exists {
 		return err
 	}
@@ -227,7 +233,7 @@ func (m *Manager) adoptRelocated(ctx context.Context, pluginKey string, fsys fs.
 		if err != nil {
 			return err
 		}
-		if err := g.Table(table).Where("migration_id = ? AND checksum = ?", name, relocatedChecksum).
+		if err := g.Table(table).Where("migration_id = ? AND checksum = ?", name, RelocatedChecksum).
 			Update("checksum", store.MigrationChecksum(body)).Error; err != nil {
 			return err
 		}

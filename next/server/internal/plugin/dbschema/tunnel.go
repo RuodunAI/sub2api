@@ -4,10 +4,9 @@ import (
 	"context"
 	"net"
 	"net/url"
-	"strconv"
 
 	"github.com/Sub2API-Devs/sup2api/next/runtime-contract/gormpg/pgproxy"
-	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/egress"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 )
 
 // tunnelDSN is the DSN every plugin gets: the virtual database address of
@@ -17,7 +16,7 @@ func tunnelDSN(schema string) string {
 	u := url.URL{
 		Scheme:   "postgres",
 		User:     url.User("plugin"),
-		Host:     net.JoinHostPort(egress.DatabaseHost, strconv.Itoa(egress.DatabasePort)),
+		Host:     protocol.DatabaseAddress,
 		Path:     "/" + schema,
 		RawQuery: "sslmode=disable",
 	}

@@ -265,7 +265,7 @@ func (h *harness) plugin() (status, active, desired string) {
 
 // migrations counts the plugin's applied migration files.
 func (h *harness) migrations() int {
-	applied, err := dbschematest.New(h.t, h.db, "").AppliedMigrations(context.Background(), h.key)
+	applied, err := dbschematest.New(h.t, h.db, testutil.DSN(h.db)).AppliedMigrations(context.Background(), h.key)
 	if err != nil {
 		h.t.Fatal(err)
 	}

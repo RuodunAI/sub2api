@@ -94,9 +94,11 @@ func TestIsolation(t *testing.T) {
 }
 
 // A script that misses the prefix on a core table is refused by the
-// database; one that creates an object without the prefix - also in a
-// subtransaction or through a function - is rolled back whole. CREATE is
-// taken back either way.
+// database; one that leaves anything but prefixed relations and types - an
+// object without the prefix (also in a subtransaction), a function, an
+// operator, a collation, a text search configuration, a trigger - fails,
+// and nothing of it is left, also when it commits its transaction halfway.
+// CREATE is taken back either way.
 func TestMigratePrefixCheck(t *testing.T) {
 	db := testutil.DB(t)
 	ctx := context.Background()
@@ -105,25 +107,39 @@ func TestMigratePrefixCheck(t *testing.T) {
 	key := randKey()
 	install(t, db, key, nil, false)
 	p := manifest.TablePrefix(key)
+	const refused = "plugin migrations may create only"
 	for _, c := range []struct{ name, sql, want string }{
 		{"core table", `CREATE TABLE ` + p + `a (id int); ALTER TABLE users ADD COLUMN x int`, "must be owner of table users"},
-		{"no prefix", `CREATE TABLE ` + p + `a (id int); CREATE TABLE items (id int)`, "without the plugin's prefix"},
-		{"index", `CREATE TABLE ` + p + `a (id int); CREATE INDEX a_id ON ` + p + `a (id)`, "a_id"},
+		{"no prefix", `CREATE TABLE ` + p + `a (id int); CREATE TABLE items (id int)`, "table items"},
+		{"index", `CREATE TABLE ` + p + `a (id int); CREATE INDEX a_id ON ` + p + `a (id)`, "index a_id"},
+		{"primary key", `CREATE TABLE ` + p + `a (id int, CONSTRAINT a_pk PRIMARY KEY (id))`, "constraint a_pk"},
 		{"subtransaction", `CREATE TABLE ` + p + `a (id int); DO $$ BEGIN CREATE TABLE sneaky (id int); EXCEPTION WHEN others THEN NULL; END $$`, "sneaky"},
-		{"function", `CREATE TABLE ` + p + `a (id int); CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1'`, "without the plugin's prefix"},
-		{"type", `CREATE TABLE ` + p + `a (id int); CREATE TYPE mood AS ENUM ('a')`, "mood"},
-		{"rename", `CREATE TABLE ` + p + `a (id int); ALTER TABLE ` + p + `a RENAME TO a`, "without the plugin's prefix"},
+		{"function", `CREATE TABLE ` + p + `a (id int); CREATE FUNCTION f() RETURNS int LANGUAGE sql AS 'SELECT 1'`, "function f()"},
+		{"prefixed function", `CREATE FUNCTION ` + p + `one() RETURNS int LANGUAGE sql AS 'SELECT 1'`, refused},
+		{"operator", `CREATE OPERATOR === (leftarg = text, rightarg = text, function = texteq)`, "operator ===(text,text)"},
+		{"collation", `CREATE COLLATION ` + p + `c (locale = 'C')`, "collation"},
+		{"text search", `CREATE TEXT SEARCH CONFIGURATION ` + p + `ts (copy = simple)`, "text search configuration"},
+		{"trigger", `CREATE TABLE ` + p + `a (id int); CREATE TRIGGER ` + p + `t BEFORE UPDATE ON ` + p + `a FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()`, "trigger"},
+		{"type", `CREATE TABLE ` + p + `a (id int); CREATE TYPE mood AS ENUM ('a')`, "type mood"},
+		{"rename", `CREATE TABLE ` + p + `a (id int); ALTER TABLE ` + p + `a RENAME TO a`, "table a"},
+		{"commit escape", `CREATE TABLE ` + p + `a (id int); COMMIT; CREATE OPERATOR === (leftarg = text, rightarg = text, function = texteq);
+			CREATE TABLE items (id int); BEGIN`, refused},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			_, err := m.Migrate(ctx, key, scripts("0001.sql", c.sql))
 			if err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("migrate: %v, want %q", err, c.want)
 			}
+			strays, err := m.Strays(ctx, key)
+			if err != nil || len(strays) > 0 {
+				t.Fatalf("left %v (%v)", strays, err)
+			}
 			var left int
 			var canCreate bool
-			if err := db.SQL.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM pg_class WHERE relname IN ($1, 'items', 'sneaky', 'a', 'a_id'))
-				+ (SELECT count(*) FROM pg_proc WHERE proname = 'f') + (SELECT count(*) FROM pg_type WHERE typname = 'mood'),
-				has_schema_privilege($2, 'public', 'CREATE')`, p+"a", m.Identity(key)).Scan(&left, &canCreate); err != nil {
+			if err := db.SQL.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM pg_class WHERE relname IN ('items', 'sneaky', 'a', 'a_id', 'a_pk'))
+				+ (SELECT count(*) FROM pg_proc WHERE proname IN ('f', $1 || 'one')) + (SELECT count(*) FROM pg_type WHERE typname = 'mood')
+				+ (SELECT count(*) FROM pg_operator WHERE oprname = '==='),
+				has_schema_privilege($2, 'public', 'CREATE')`, p, m.Identity(key)).Scan(&left, &canCreate); err != nil {
 				t.Fatal(err)
 			}
 			if left != 0 || canCreate {
@@ -131,12 +147,56 @@ func TestMigratePrefixCheck(t *testing.T) {
 			}
 		})
 	}
-	// Prefixed objects of every kind pass; the records table carries the
-	// prefix too.
-	if _, err := m.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE `+p+`a (id serial PRIMARY KEY, v text CHECK (v <> ''));
+	// Prefixed relations and types of every kind pass; the records table
+	// carries the prefix too. The table a script committed before its
+	// failure is still there, and the next run goes on from it.
+	if _, err := m.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE IF NOT EXISTS `+p+`a (id int);
+		ALTER TABLE `+p+`a ADD COLUMN IF NOT EXISTS v text CHECK (v <> ''), ADD PRIMARY KEY (id);
 		CREATE INDEX `+p+`a_v ON `+p+`a (v); CREATE VIEW `+p+`names AS SELECT v FROM `+p+`a;
-		CREATE TYPE `+p+`mood AS ENUM ('a'); CREATE FUNCTION `+p+`one() RETURNS int LANGUAGE sql AS 'SELECT 1'`)); err != nil {
+		CREATE TYPE `+p+`mood AS ENUM ('a'); CREATE TYPE `+p+`span AS RANGE (subtype = int4);
+		CREATE TYPE `+p+`pair AS (a int, b int); CREATE DOMAIN `+p+`pos AS int CHECK (VALUE > 0);
+		CREATE TABLE `+p+`parts (id int, m `+p+`mood) PARTITION BY RANGE (id);
+		CREATE TABLE `+p+`parts_1 PARTITION OF `+p+`parts FOR VALUES FROM (0) TO (10)`)); err != nil {
 		t.Fatal(err)
+	}
+	if strays, err := m.Strays(ctx, key); err != nil || len(strays) > 0 {
+		t.Fatalf("strays after a valid migration: %v (%v)", strays, err)
+	}
+}
+
+// What a plugin process adds to its own tables at run time (a trigger, a
+// policy) goes at its next Ensure.
+func TestEnsureRemovesStrays(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	m := newManager(t, db, host, dsn, nil)
+	key := randKey()
+	install(t, db, key, nil, false)
+	p := manifest.TablePrefix(key)
+	if _, err := m.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE `+p+`a (id int)`)); err != nil {
+		t.Fatal(err)
+	}
+	pl := asPlugin(t, m, dsn, key)
+	for _, q := range []string{
+		`CREATE TRIGGER t BEFORE UPDATE ON ` + p + `a FOR EACH ROW EXECUTE FUNCTION suppress_redundant_updates_trigger()`,
+		`CREATE POLICY pol ON ` + p + `a USING (true)`,
+	} {
+		if err := queryErr(pl, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if strays, _ := m.Strays(ctx, key); len(strays) != 2 {
+		t.Fatalf("strays = %v", strays)
+	}
+	if err := m.EnsureAgain(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if strays, err := m.Strays(ctx, key); err != nil || len(strays) > 0 {
+		t.Fatalf("strays after Ensure: %v (%v)", strays, err)
+	}
+	if err := queryErr(pl, `INSERT INTO `+p+`a VALUES (1)`); err != nil {
+		t.Fatalf("the plugin's table after Ensure: %v", err)
 	}
 }
 
@@ -276,18 +336,25 @@ func TestDrop(t *testing.T) {
 	key := randKey()
 	install(t, db, key, []manifest.DatabaseAccess{{Table: "users", Columns: []string{"id"}, Privileges: []string{"select"}}}, true)
 	p := manifest.TablePrefix(key)
-	fsys := scripts("0001.sql", `CREATE TABLE `+p+`items (id serial PRIMARY KEY, v text); INSERT INTO `+p+`items (v) VALUES ('a')`)
+	fsys := scripts("0001.sql", `CREATE TYPE `+p+`mood AS ENUM ('a', 'b');
+		CREATE TABLE `+p+`items (id serial PRIMARY KEY, v text, m `+p+`mood NOT NULL DEFAULT 'a'); INSERT INTO `+p+`items (v) VALUES ('a');
+		CREATE TABLE `+p+`parts (id int) PARTITION BY RANGE (id); CREATE TABLE `+p+`parts_1 PARTITION OF `+p+`parts FOR VALUES FROM (0) TO (10)`)
 	if _, err := m.Migrate(ctx, key, fsys); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.SQL.ExecContext(ctx, `INSERT INTO plugin_migrations (plugin_key, migration_id, checksum) VALUES ($1, 'data:x', 'data')`, key); err != nil {
 		t.Fatal(err)
 	}
+	// owner is the owner of the table, the enum type and the partition,
+	// when they agree.
 	state := func() (role bool, objects int, owner string, records int) {
 		t.Helper()
 		if err := db.SQL.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1),
-			(SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND starts_with(relname, $2)),
-			COALESCE((SELECT relowner::regrole::text FROM pg_class WHERE relname = $2 || 'items'), ''),
+			(SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND starts_with(relname, $2))
+				+ (SELECT count(*) FROM pg_type WHERE typname = $2 || 'mood'),
+			COALESCE((SELECT CASE WHEN count(DISTINCT o) = 1 THEN min(o) ELSE 'mixed' END FROM (
+				SELECT relowner::regrole::text AS o FROM pg_class WHERE relname IN ($2 || 'items', $2 || 'parts_1')
+				UNION ALL SELECT typowner::regrole::text FROM pg_type WHERE typname = $2 || 'mood') AS x), ''),
 			(SELECT count(*) FROM plugin_migrations WHERE plugin_key = $3)`, m.Identity(key), p, key).Scan(&role, &objects, &owner, &records); err != nil {
 			t.Fatal(err)
 		}
@@ -308,8 +375,12 @@ func TestDrop(t *testing.T) {
 		t.Fatalf("reinstalled: role %v owner %s", role, owner)
 	}
 	var n int
-	if err := asPlugin(t, m, dsn, key).SQL.QueryRowContext(ctx, `SELECT count(*) FROM `+p+`items, users`).Scan(&n); err != nil {
+	pl := asPlugin(t, m, dsn, key)
+	if err := pl.SQL.QueryRowContext(ctx, `SELECT count(*) FROM `+p+`items, users`).Scan(&n); err != nil {
 		t.Fatalf("read after the reinstall: %v", err)
+	}
+	if err := queryErr(pl, `INSERT INTO `+p+`items (v, m) VALUES ('b', 'b'); INSERT INTO `+p+`parts VALUES (1)`); err != nil {
+		t.Fatalf("write after the reinstall: %v", err)
 	}
 	// Purge after a keeping uninstall: the tables are the core's then.
 	if err := m.Drop(ctx, key, false); err != nil {
@@ -345,6 +416,28 @@ func TestPublicCreateRevoked(t *testing.T) {
 	var open bool
 	if err := db.SQL.QueryRowContext(context.Background(), `SELECT has_schema_privilege('public', 'public', 'CREATE')`).Scan(&open); err != nil || open {
 		t.Fatalf("PUBLIC may still create: %v %v", open, err)
+	}
+}
+
+// A core that stopped between the grant of CREATE and its revocation left
+// the identity able to create objects; the next start takes it back.
+func TestStartRevokesLeftCreate(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	m := newManager(t, db, host, dsn, nil)
+	key := randKey()
+	install(t, db, key, nil, false)
+	if err := m.Ensure(ctx, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.SQL.ExecContext(ctx, `GRANT CREATE ON SCHEMA public TO `+store.QuoteIdent(m.Identity(key))); err != nil {
+		t.Fatal(err)
+	}
+	newManager(t, db, host, dsn, nil)
+	var can bool
+	if err := db.SQL.QueryRowContext(ctx, `SELECT has_schema_privilege($1, 'public', 'CREATE')`, m.Identity(key)).Scan(&can); err != nil || can {
+		t.Fatalf("the identity may still create: %v %v", can, err)
 	}
 }
 
@@ -410,4 +503,30 @@ func names(files []string) []string {
 		out[i] = filepath.Base(f)
 	}
 	return out
+}
+
+// The core reads a plugin's records only logged in as its identity: a
+// view put in place of the records table runs as the plugin, not as the
+// core.
+func TestRecordsReadAsIdentity(t *testing.T) {
+	db := testutil.DB(t)
+	ctx := context.Background()
+	host, dsn, _ := coreUser(t, db, true)
+	m := newManager(t, db, host, dsn, nil)
+	key := randKey()
+	install(t, db, key, nil, false)
+	p := manifest.TablePrefix(key)
+	if _, err := m.Migrate(ctx, key, scripts("0001.sql", `CREATE TABLE `+p+`a (id int)`)); err != nil {
+		t.Fatal(err)
+	}
+	table := store.QuoteIdent(p + "schema_migrations")
+	if _, err := db.SQL.ExecContext(ctx, `DROP TABLE `+table+`; CREATE VIEW `+table+` AS
+		SELECT '0001.sql'::text AS migration_id, current_user::text AS checksum, now() AS applied_at;
+		ALTER VIEW `+table+` OWNER TO `+store.QuoteIdent(m.Identity(key))); err != nil {
+		t.Fatal(err)
+	}
+	applied, err := m.AppliedMigrations(ctx, key)
+	if err != nil || applied["0001.sql"].Checksum != m.Identity(key) {
+		t.Fatalf("records read as %+v (%v), want as %s", applied, err, m.Identity(key))
+	}
 }

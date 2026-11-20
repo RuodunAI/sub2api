@@ -32,7 +32,7 @@ func TestSQLRecord(t *testing.T) {
 
 func TestSQLStrayObjects(t *testing.T) {
 	gormtest.Assert(t, func(tx *gorm.DB) *gorm.DB {
-		var names []string
-		return strayObjects(tx, "public", "plg_demo__").Pluck("name", &names)
+		var found []stray
+		return strayObjects(tx, "public", "plg_demo__", "plg1_demo").Scan(&found)
 	})
 }

@@ -421,9 +421,12 @@ func (c *Controller) Enable(ctx context.Context, pluginKey string, actorID int64
 		if id, err = c.insertRollout(ctx, tx, pluginKey, "enable", nil, &target, PhasePreparing, actorID); err != nil {
 			return err
 		}
-		return updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{
+		if err := updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{
 			"status": "enabling", "status_reason": "", "desired_version": target,
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		return c.syncAccess(ctx, tx, pluginKey)
 	})
 	if err != nil {
 		return nil, err
@@ -461,7 +464,10 @@ func (c *Controller) Upgrade(ctx context.Context, pluginKey, version string, act
 		if id, err = c.insertRollout(ctx, tx, pluginKey, "upgrade", p.active, &version, PhasePreparing, actorID); err != nil {
 			return err
 		}
-		return updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{"status": "upgrading", "desired_version": version}).Error
+		if err := updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{"status": "upgrading", "desired_version": version}).Error; err != nil {
+			return err
+		}
+		return c.syncAccess(ctx, tx, pluginKey)
 	})
 	if err != nil {
 		return nil, err
@@ -498,6 +504,9 @@ func (c *Controller) Disable(ctx context.Context, pluginKey string, actorID int6
 		if err := updatePlugin(store.G(ctx, tx), pluginKey, map[string]any{
 			"status": "disabled", "status_reason": reason, "desired_version": nil,
 		}).Error; err != nil {
+			return err
+		}
+		if err := c.syncAccess(ctx, tx, pluginKey); err != nil {
 			return err
 		}
 		if c.o.Perms != nil {
@@ -619,6 +628,16 @@ func (c *Controller) loadRollout(ctx context.Context, id int64) (*rolloutRow, er
 	return rec.row(), nil
 }
 
+// syncAccess carries a change of the version the plugin runs or moves to
+// (desired_version, active_version) or of its grants into the database
+// grants of its identity, in tx (Schemas.SyncAccessTx).
+func (c *Controller) syncAccess(ctx context.Context, tx *gorm.DB, key string) error {
+	if c.o.Schemas == nil {
+		return nil
+	}
+	return c.o.Schemas.SyncAccessTx(ctx, tx, key)
+}
+
 // finishFailed moves a preparing rollout to failed/cancelled and reverts the
 // plugin status. The phase check alone guards against the commit point (the
 // commit CAS fails once the phase changed). Returns false when the rollout
@@ -652,6 +671,10 @@ func (c *Controller) finishFailed(ctx context.Context, r *rolloutRow, phase, msg
 		// What was approved for the target stays with it only until it is
 		// activated: an abandoned upgrade takes it back.
 		if err := grants.Withdraw(ctx, tx, r.key, deref(r.target), phase); err != nil {
+			return err
+		}
+		// The version the plugin is back on gets its own grants back.
+		if err := c.syncAccess(ctx, tx, r.key); err != nil {
 			return err
 		}
 		if err := c.writeNodes(ctx, tx, r); err != nil {

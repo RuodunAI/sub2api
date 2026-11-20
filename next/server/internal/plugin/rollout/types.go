@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/grpcruntime"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/registry"
 )
@@ -36,6 +38,10 @@ type Runtime interface {
 type Schemas interface {
 	Migrate(ctx context.Context, pluginKey string, fsys fs.FS) ([]string, error)
 	Pending(ctx context.Context, pluginKey string, ids []string) (bool, error)
+	// SyncAccessTx sets the identity's grants outside the plugin to the
+	// db.core_read grant of the version the plugin now runs or moves to
+	// (CONTRACTS §130.4), in the transaction that changes it.
+	SyncAccessTx(ctx context.Context, tx *gorm.DB, pluginKey string) error
 }
 
 // FromGRPC adapts a grpcruntime.Runtime to Runtime.
