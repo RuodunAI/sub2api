@@ -521,7 +521,9 @@ func requestedScope(m *manifest.Manifest, hp manifest.HostPermission) map[string
 
 // noteDatabase sets the status of each migration script of the review
 // against the plugin's records: a version installed for the first time
-// runs every script.
+// runs every script. A record the relocation of an earlier layout carried
+// over is applied: the next migration adopts the script's checksum
+// without running it (goes with dbschema/legacy.go).
 func (s *Service) noteDatabase(ctx context.Context, r *Review) error {
 	if len(r.DatabaseMigrations) == 0 || s.d.Schemas == nil {
 		return nil
@@ -533,7 +535,7 @@ func (s *Service) noteDatabase(ctx context.Context, r *Review) error {
 	for i, mg := range r.DatabaseMigrations {
 		if rec, ok := applied[mg.ID]; ok {
 			r.DatabaseMigrations[i].Status = MigrationChanged
-			if rec.Checksum == mg.Checksum {
+			if rec.Checksum == mg.Checksum || rec.Checksum == dbschema.RelocatedChecksum {
 				r.DatabaseMigrations[i].Status = MigrationApplied
 			}
 		}
@@ -776,6 +778,16 @@ func (s *Service) noteDBSchema(r *Review, m *manifest.Manifest) {
 // Review returns the review of a stored version (for the consent page), its
 // consent matrix as actorID may name the roles.
 func (s *Service) Review(ctx context.Context, key, version string, actorID int64) (*Review, error) {
+	return s.review(ctx, key, version, actorID, true)
+}
+
+// DetailReview is Review without database_migrations, for the plugin
+// detail: its database tab reads them from Database.
+func (s *Service) DetailReview(ctx context.Context, key, version string, actorID int64) (*Review, error) {
+	return s.review(ctx, key, version, actorID, false)
+}
+
+func (s *Service) review(ctx context.Context, key, version string, actorID int64, migrations bool) (*Review, error) {
 	var (
 		status, consent, sigStatus string
 		keyID                      *string
@@ -820,7 +832,9 @@ func (s *Service) Review(ctx context.Context, key, version string, actorID int64
 		return nil, err
 	}
 	s.noteDBSchema(r, p.Manifest)
-	if err := s.noteDatabase(ctx, r); err != nil {
+	if !migrations {
+		r.DatabaseMigrations = nil
+	} else if err := s.noteDatabase(ctx, r); err != nil {
 		return nil, err
 	}
 	r.ConsentStatus = consent

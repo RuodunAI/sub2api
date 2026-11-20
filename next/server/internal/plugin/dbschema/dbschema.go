@@ -9,6 +9,7 @@ package dbschema
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -84,21 +85,60 @@ func New(ctx context.Context, db *store.DB, databaseURL string, masterKey []byte
 		Row().Scan(&m.schema, &m.dbOID); err != nil {
 		return nil, fmt.Errorf("read the core's schema: %w", err)
 	}
+	if err := m.closePublicCreate(g); err != nil {
+		return nil, err
+	}
+	if err := m.revokeLeftCreate(ctx); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+// closePublicCreate takes back the right of PUBLIC to create objects in the
+// core's schema, which databases created by PostgreSQL 14 and older give.
+func (m *Manager) closePublicCreate(g *gorm.DB) error {
 	open, err := m.publicCreates(g)
 	if err != nil || !open {
-		return m, err
+		return err
 	}
 	if err := store.DDL(g, "REVOKE CREATE ON SCHEMA %s FROM PUBLIC", store.Ident(m.schema)); err != nil {
-		return nil, err
+		return err
 	}
 	if open, err = m.publicCreates(g); err != nil {
-		return nil, err
+		return err
 	}
 	if open {
-		return nil, fmt.Errorf("every role may create objects in schema %s and the core's user cannot revoke it; run REVOKE CREATE ON SCHEMA %s FROM PUBLIC as its owner", m.schema, m.schema)
+		return fmt.Errorf("every role may create objects in schema %s and the core's user cannot revoke it; run REVOKE CREATE ON SCHEMA %s FROM PUBLIC as its owner", m.schema, m.schema)
 	}
-	log.Info("revoked the right of every role to create objects in the core's schema", "schema", m.schema)
-	return m, nil
+	m.log.Info("revoked the right of every role to create objects in the core's schema", "schema", m.schema)
+	return nil
+}
+
+// revokeLeftCreate takes back CREATE on the core's schema from every
+// plugin identity of this database that still has it: a core that stopped
+// in the middle of a migration left it. Each waits for a migration of its
+// plugin that is running on another node.
+func (m *Manager) revokeLeftCreate(ctx context.Context) error {
+	var roles []string
+	if err := store.G(ctx, m.db.Gorm).Table("pg_roles").
+		Where("starts_with(rolname, ?) AND has_schema_privilege(oid, ?::regnamespace, 'CREATE')", m.identityPrefix(), m.schema).
+		Pluck("rolname", &roles).Error; err != nil {
+		return err
+	}
+	for _, role := range roles {
+		key := strings.TrimPrefix(role, m.identityPrefix())
+		err := m.db.Tx(ctx, func(tx *gorm.DB) error {
+			if err := store.XactLockID(ctx, tx, store.PluginMigrationLockKey(key)); err != nil {
+				return err
+			}
+			return m.setSchemaCreate(ctx, tx, role, false)
+		})
+		if err != nil {
+			return err
+		}
+		m.log.Warn("took back CREATE on the core's schema left with a plugin's database identity", "role", role)
+	}
+	return nil
 }
 
 // publicCreates reports whether PUBLIC may create objects in the core's
@@ -115,7 +155,10 @@ func (m *Manager) Schema() string { return m.schema }
 // Identity is the name of plugin pluginKey's database identity,
 // "plg<database OID>_<key>". Roles belong to the whole PostgreSQL cluster;
 // the OID keeps the plugins of two databases apart.
-func (m *Manager) Identity(pluginKey string) string { return "plg" + m.dbOID + "_" + pluginKey }
+func (m *Manager) Identity(pluginKey string) string { return m.identityPrefix() + pluginKey }
+
+// identityPrefix starts the name of every plugin identity of this database.
+func (m *Manager) identityPrefix() string { return "plg" + m.dbOID + "_" }
 
 // recordsTable is the plugin's migration records table.
 func recordsTable(pluginKey string) string {
@@ -209,7 +252,7 @@ func (m *Manager) canCreateRoles(ctx context.Context) error {
 func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) error {
 	g := store.G(ctx, tx)
 	role := m.Identity(pluginKey)
-	rid, sid := store.Ident(role), store.Ident(m.schema)
+	rid := store.Ident(role)
 	exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", role))
 	if err != nil {
 		return err
@@ -229,21 +272,11 @@ func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) e
 	if err := store.DDL(g, "GRANT %s TO CURRENT_USER WITH SET TRUE, INHERIT TRUE", rid); err != nil {
 		return fmt.Errorf("make the core a member of role %s: %w", role, err)
 	}
-	var foreign []string
-	if err := m.prefixed(g, pluginKey).Where("c.relowner <> ?::regrole", role).Pluck("c.relname", &foreign).Error; err != nil {
+	if err := m.handBack(ctx, tx, pluginKey); err != nil {
 		return err
 	}
-	if len(foreign) > 0 {
-		// The new owner must be able to create in the schema: CREATE for
-		// the rest of this transaction only (taken back below).
-		if err := m.setSchemaCreate(ctx, tx, role, true); err != nil {
-			return err
-		}
-		for _, name := range foreign {
-			if err := store.DDL(g, "ALTER TABLE %s.%s OWNER TO %s", sid, store.Ident(name), rid); err != nil {
-				return fmt.Errorf("hand %s to role %s: %w", name, role, err)
-			}
-		}
+	if err := m.removeStrays(ctx, tx, pluginKey); err != nil {
+		return err
 	}
 	if err := m.setSchemaCreate(ctx, tx, role, false); err != nil {
 		return err
@@ -251,14 +284,15 @@ func (m *Manager) ensureTx(ctx context.Context, tx *gorm.DB, pluginKey string) e
 	return m.syncAccess(ctx, tx, pluginKey)
 }
 
-// prefixed selects the relations of the plugin's prefix in the core's
-// schema that are not part of another one (indexes, sequences of a column),
-// as c.
+// prefixed selects, as c, the relations of the plugin's prefix in the
+// core's schema that have an owner of their own: tables (partitions
+// included), views, sequences other than a column's and composite types;
+// not indexes, which go with their tables.
 func (m *Manager) prefixed(g *gorm.DB, pluginKey string) *gorm.DB {
 	ownedSeq := g.Table("pg_depend AS d").Select("1").
 		Where("d.classid = 'pg_class'::regclass AND d.objid = c.oid AND d.refclassid = 'pg_class'::regclass AND d.deptype IN ('a', 'i')")
 	return g.Table("pg_class AS c").
-		Where("c.relnamespace = ?::regnamespace AND starts_with(c.relname, ?) AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') AND NOT EXISTS (?)",
+		Where("c.relnamespace = ?::regnamespace AND starts_with(c.relname, ?) AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S', 'c') AND NOT (c.relkind = 'S' AND EXISTS (?))",
 			m.schema, manifest.TablePrefix(pluginKey), ownedSeq)
 }
 
@@ -289,8 +323,12 @@ func (m *Manager) setSchemaCreate(ctx context.Context, tx *gorm.DB, role string,
 		return err
 	}
 	// Granted through PUBLIC or another role it cannot be taken back here.
-	if ok, err := has(); err != nil || ok {
-		return fmt.Errorf("role %s may still create objects in schema %s: %w", role, m.schema, err)
+	ok, err := has()
+	if err != nil {
+		return err
+	}
+	if ok {
+		return fmt.Errorf("role %s may still create objects in schema %s", role, m.schema)
 	}
 	return nil
 }
@@ -299,12 +337,12 @@ func (m *Manager) setSchemaCreate(ctx context.Context, tx *gorm.DB, role string,
 // migrations directory) as the plugin's identity and returns the applied
 // file names. It ensures the identity (forced: an install or upgrade may
 // change what it is granted), then, holding the plugin's migration lock,
-// grants it CREATE on the core's schema, runs the files on a connection
-// logged in as it (not SET ROLE, which a file could RESET) and takes the
-// CREATE back however the run ends. Each file runs in a transaction that
-// fails when it leaves an object of the identity's without the plugin's
-// prefix (prefixCheck). The records are the plugin's own table
-// (recordsTable).
+// grants it CREATE on the core's schema and runs the files on a connection
+// logged in as it (not SET ROLE, which a file could RESET). Each file runs
+// in a transaction that fails when it leaves a stray (prefixCheck). The
+// records are the plugin's own table (recordsTable). However the run ends,
+// the identity's strays go and the CREATE is taken back (ensureTx): a file
+// can commit its transaction and leave objects behind its failed check.
 func (m *Manager) Migrate(ctx context.Context, pluginKey string, fsys fs.FS) ([]string, error) {
 	if err := m.ensure(ctx, pluginKey, true); err != nil {
 		return nil, err
@@ -322,66 +360,50 @@ func (m *Manager) Migrate(ctx context.Context, pluginKey string, fsys fs.FS) ([]
 	return done, err
 }
 
-// migrateLocked is Migrate's run under the plugin's migration lock.
+// migrateLocked is Migrate's run under the plugin's migration lock (which
+// Ensure and Drop also take, so ensureTx runs here without the others).
 func (m *Manager) migrateLocked(ctx context.Context, pluginKey string, fsys fs.FS) (done []string, err error) {
 	role := m.Identity(pluginKey)
 	if err := m.db.Tx(ctx, func(tx *gorm.DB) error { return m.setSchemaCreate(ctx, tx, role, true) }); err != nil {
 		return nil, err
 	}
 	defer func() {
-		revoke := m.db.Tx(context.WithoutCancel(ctx), func(tx *gorm.DB) error {
-			return m.setSchemaCreate(context.WithoutCancel(ctx), tx, role, false)
-		})
-		if revoke != nil {
-			err = fmt.Errorf("take back CREATE from role %s: %w (after: %v)", role, revoke, err)
+		bg := context.WithoutCancel(ctx)
+		if clean := m.db.Tx(bg, func(tx *gorm.DB) error { return m.ensureTx(bg, tx, pluginKey) }); clean != nil {
+			err = errors.Join(err, fmt.Errorf("clean up after the migrations of plugin %s: %w", pluginKey, clean))
 		}
 	}()
-	if err := m.adoptRelocated(ctx, pluginKey, fsys); err != nil {
-		return nil, err
-	}
-	pool, err := store.OpenAs(ctx, m.databaseURL, role, m.password(pluginKey), 1)
-	if err != nil {
-		return nil, fmt.Errorf("connect as role %s: %w", role, err)
-	}
-	defer pool.Close()
-	// Plugin scripts are idempotent by contract: a script whose content
-	// changed after it was applied runs again and its record is updated.
-	opt := store.MigrateOptions{SearchPath: m.schema, RerunChanged: true, Check: m.prefixCheck(pluginKey)}
-	return store.MigrateLocked(ctx, pool, fsys, Tracker{Schema: m.schema, Table: recordsTable(pluginKey)}, opt)
-}
-
-// prefixCheck fails a migration file that leaves an object the identity
-// (the transaction's user) owns in the core's schema without the plugin's
-// prefix: a relation, a type or a function. A table's row and array types
-// and an index carry the table's name. It looks at owners, not at the
-// rows this transaction wrote: an object created in a subtransaction (a
-// PL/pgSQL block with EXCEPTION) carries another transaction id.
-func (m *Manager) prefixCheck(pluginKey string) func(context.Context, *gorm.DB) error {
-	prefix := manifest.TablePrefix(pluginKey)
-	return func(ctx context.Context, tx *gorm.DB) error {
-		var stray []string
-		if err := strayObjects(store.G(ctx, tx), m.schema, prefix).Pluck("name", &stray).Error; err != nil {
+	err = m.asIdentity(ctx, pluginKey, func(pool *store.DB) error {
+		if err := m.adoptRelocated(ctx, pool, pluginKey, fsys); err != nil {
 			return err
 		}
-		if len(stray) > 0 {
-			return fmt.Errorf("objects without the plugin's prefix %s: %s", prefix, strings.Join(stray, ", "))
-		}
-		return nil
-	}
+		// Plugin scripts are idempotent by contract: a script whose content
+		// changed after it was applied runs again and its record is updated.
+		opt := store.MigrateOptions{SearchPath: m.schema, RerunChanged: true, Check: m.prefixCheck(pluginKey)}
+		var err error
+		done, err = store.MigrateLocked(ctx, pool, fsys, m.tracker(pluginKey), opt)
+		return err
+	})
+	return done, err
 }
 
-// strayObjects selects, as name, what the current user owns in schema
-// without prefix.
-func strayObjects(g *gorm.DB, schema, prefix string) *gorm.DB {
-	const mine = "= (SELECT oid FROM pg_roles WHERE rolname = current_user)"
-	rels := g.Table("pg_class AS c").Select("c.relname AS name").
-		Where("c.relnamespace = ?::regnamespace AND c.relowner "+mine+" AND NOT starts_with(c.relname, ?)", schema, prefix)
-	arrayOf := g.Table("pg_type AS e").Select("1").Where("e.typarray = t.oid")
-	types := g.Table("pg_type AS t").Select("t.typname").
-		Where("t.typnamespace = ?::regnamespace AND t.typowner "+mine+" AND t.typrelid = 0 AND NOT EXISTS (?) AND NOT starts_with(t.typname, ?)", schema, arrayOf, prefix)
-	procs := g.Table("pg_proc AS p").Select("p.proname").
-		Where("p.pronamespace = ?::regnamespace AND p.proowner "+mine+" AND NOT starts_with(p.proname, ?)", schema, prefix)
-	return g.Raw("(?) UNION ALL (?) UNION ALL (?)", rels, types, procs)
+// asIdentity runs fn on a connection logged in as plugin pluginKey's
+// identity. The core reads and writes the plugin's records table only so:
+// the plugin owns it and could make it run its code (a view, a trigger),
+// which then runs as the identity, not as the core.
+func (m *Manager) asIdentity(ctx context.Context, pluginKey string, fn func(*store.DB) error) error {
+	role := m.Identity(pluginKey)
+	pool, err := store.OpenAs(ctx, m.databaseURL, role, m.password(pluginKey), 1)
+	if err != nil {
+		return fmt.Errorf("connect as role %s: %w", role, err)
+	}
+	defer pool.Close()
+	return fn(pool)
+}
+
+// tracker is the plugin's records table.
+func (m *Manager) tracker(pluginKey string) Tracker {
+	return Tracker{Schema: m.schema, Table: recordsTable(pluginKey)}
 }
 
 // Pending reports whether any of ids has not been applied yet.
@@ -402,20 +424,25 @@ func (m *Manager) Pending(ctx context.Context, pluginKey string, ids []string) (
 }
 
 // AppliedMigrations reads the plugin's migration records, by file name
-// (none before its first migration). The core reads the identity's table
-// as a member of it.
+// (none before its first migration), as the identity (asIdentity), after
+// ensuring it: the records of an uninstall that kept the data or of a
+// relocation are the core's until Ensure hands them back.
 func (m *Manager) AppliedMigrations(ctx context.Context, pluginKey string) (map[string]core.PluginMigrationRecord, error) {
 	if err := validKey(pluginKey); err != nil {
 		return nil, err
 	}
-	g := store.G(ctx, m.db.Gorm)
-	table := store.QuoteIdent(m.schema, recordsTable(pluginKey))
-	exists, err := gormpg.RelationExists(g, table)
+	exists, err := gormpg.RelationExists(store.G(ctx, m.db.Gorm), m.tracker(pluginKey).table())
 	if err != nil || !exists {
 		return map[string]core.PluginMigrationRecord{}, err
 	}
+	if err := m.Ensure(ctx, pluginKey); err != nil {
+		return nil, err
+	}
 	var rows []migrationRecord
-	if err := g.Table(table).Select("migration_id, checksum, applied_at").Scan(&rows).Error; err != nil {
+	err = m.asIdentity(ctx, pluginKey, func(pool *store.DB) error {
+		return store.G(ctx, pool.Gorm).Table(m.tracker(pluginKey).table()).Select("migration_id, checksum, applied_at").Scan(&rows).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	out := make(map[string]core.PluginMigrationRecord, len(rows))
@@ -450,11 +477,9 @@ func (m *Manager) Drop(ctx context.Context, pluginKey string, purge bool) error 
 // (REASSIGN OWNED, then DROP OWNED: the other order would drop the tables);
 // a reinstall hands them back (Ensure). An earlier layout is converted
 // first. The local cache is reset even on rollback; Ensure rebuilds it.
-// A key outside the plugin key rule (one installed before the rule
-// tightened) has nothing to drop: Ensure never gave it an identity.
 func (m *Manager) DropTx(ctx context.Context, tx *gorm.DB, pluginKey string, purge bool) error {
-	if validKey(pluginKey) != nil {
-		return nil
+	if err := validKey(pluginKey); err != nil {
+		return err
 	}
 	err := m.dropTx(ctx, tx, pluginKey, purge)
 	m.mu.Lock()
@@ -484,12 +509,16 @@ func (m *Manager) dropTx(ctx context.Context, tx *gorm.DB, pluginKey string, pur
 		return err
 	}
 	if purge {
-		var rels []relation
-		if err := m.prefixed(g, pluginKey).Select("c.relname AS name, c.relkind AS kind").Scan(&rels).Error; err != nil {
+		mine, err := m.ownedObjects(g, pluginKey, true)
+		if err != nil {
 			return err
 		}
-		for _, r := range rels {
-			if err := dropRelation(g, r.Kind, store.Ident(m.schema), store.Ident(r.Name)); err != nil {
+		others, err := m.ownedObjects(g, pluginKey, false)
+		if err != nil {
+			return err
+		}
+		for _, o := range append(mine, others...) {
+			if err := dropObject(g, o.Kind, store.Ident(m.schema), store.Ident(o.Name)); err != nil {
 				return err
 			}
 		}
@@ -510,12 +539,6 @@ func (m *Manager) dropTx(ctx context.Context, tx *gorm.DB, pluginKey string, pur
 	return store.DDL(g, "DROP ROLE %s", rid)
 }
 
-// relation is a row of Manager.prefixed in DropTx.
-type relation struct {
-	Name string `gorm:"column:name"`
-	Kind string `gorm:"column:kind"`
-}
-
 // dropRelation drops relation schema.name of pg_class kind relkind and
 // what depends on it (a view of it, a foreign key to it). A relation an
 // earlier drop took with it is skipped.
@@ -529,6 +552,10 @@ func dropRelation(g *gorm.DB, relkind string, schema, name store.Ident) error {
 		return store.DDL(g, "DROP FOREIGN TABLE IF EXISTS %s.%s CASCADE", schema, name)
 	case "S":
 		return store.DDL(g, "DROP SEQUENCE IF EXISTS %s.%s CASCADE", schema, name)
+	case "i", "I":
+		return store.DDL(g, "DROP INDEX IF EXISTS %s.%s CASCADE", schema, name)
+	case "c":
+		return store.DDL(g, "DROP TYPE IF EXISTS %s.%s CASCADE", schema, name)
 	default:
 		return store.DDL(g, "DROP TABLE IF EXISTS %s.%s CASCADE", schema, name)
 	}

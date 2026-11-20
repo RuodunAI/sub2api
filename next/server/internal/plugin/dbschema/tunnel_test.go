@@ -23,6 +23,7 @@ import (
 	"github.com/Sub2API-Devs/sup2api/next/sdk/manifest"
 	"github.com/Sub2API-Devs/sup2api/next/sdk/pgdb"
 	sdkegress "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/dbschema"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/plugin/egress"
@@ -108,7 +109,7 @@ func TestTunnelProxy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if schema != "public" || strings.Contains(dsn, password) || strings.Contains(dsn, core) || strings.Contains(dsn, m.Password(key)) ||
-		!strings.Contains(dsn, egress.DatabaseHost) {
+		!strings.Contains(dsn, protocol.DatabaseHost) {
 		t.Fatalf("tunnel DSN %s (schema %s) carries credentials or not the virtual address", dsn, schema)
 	}
 	pdb := pluginDB(t, dsn, schema, 8)
@@ -234,7 +235,7 @@ func TestTunnelProxy(t *testing.T) {
 // tunnel and returns every byte received up to and including ReadyForQuery.
 func rawStartup(t *testing.T) []byte {
 	t.Helper()
-	c, err := sdkegress.DialContext(context.Background(), "tcp", net.JoinHostPort(egress.DatabaseHost, "5432"))
+	c, err := sdkegress.DialContext(context.Background(), "tcp", net.JoinHostPort(protocol.DatabaseHost, "5432"))
 	if err != nil {
 		t.Fatal(err)
 	}

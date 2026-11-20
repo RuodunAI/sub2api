@@ -1,9 +1,22 @@
 -- sql
-(SELECT c.relname AS name FROM pg_class AS c WHERE c.relnamespace = $1::regnamespace AND c.relowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND NOT starts_with(c.relname, $2)) UNION ALL (SELECT t.typname FROM pg_type AS t WHERE t.typnamespace = $3::regnamespace AND t.typowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND t.typrelid = 0 AND NOT EXISTS (SELECT 1 FROM pg_type AS e WHERE e.typarray = t.oid) AND NOT starts_with(t.typname, $4)) UNION ALL (SELECT p.proname FROM pg_proc AS p WHERE p.pronamespace = $5::regnamespace AND p.proowner = (SELECT oid FROM pg_roles WHERE rolname = current_user) AND NOT starts_with(p.proname, $6))
+(SELECT d.classid::regclass::text AS kind, '' AS tbl, pg_describe_object(d.classid, d.objid, d.objsubid) AS name FROM pg_shdepend AS d WHERE d.dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) AND d.deptype = 'o'
+			AND d.refclassid = 'pg_authid'::regclass AND d.refobjid = $1::regrole
+			AND d.classid NOT IN ('pg_class'::regclass, 'pg_type'::regclass)) UNION ALL (SELECT c.relkind::text, '', c.relname FROM pg_class AS c WHERE c.relnamespace = $2::regnamespace AND c.relowner = $3::regrole AND NOT starts_with(c.relname, $4) AND NOT EXISTS (SELECT 1 FROM pg_constraint AS k WHERE k.conindid = c.oid AND k.contype IN ('p', 'u', 'x'))) UNION ALL (SELECT 'constraint', c.relname, k.conname FROM pg_constraint AS k JOIN pg_class AS i ON i.oid = k.conindid JOIN pg_class AS c ON c.oid = k.conrelid WHERE k.contype IN ('p', 'u', 'x') AND i.relnamespace = $5::regnamespace AND i.relowner = $6::regrole AND NOT starts_with(i.relname, $7)) UNION ALL (SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END, '', t.typname FROM pg_type AS t WHERE t.typnamespace = $8::regnamespace AND t.typowner = $9::regrole AND t.typrelid = 0 AND t.typtype <> 'm'
+			AND NOT EXISTS (SELECT 1 FROM pg_type AS e WHERE e.typarray = t.oid) AND NOT starts_with(t.typname, $10)) UNION ALL (SELECT 'trigger', c.relname, tg.tgname FROM pg_trigger AS tg JOIN pg_class AS c ON c.oid = tg.tgrelid WHERE c.relnamespace = $11::regnamespace AND c.relowner = $12::regrole AND NOT tg.tgisinternal) UNION ALL (SELECT 'rule', c.relname, rw.rulename FROM pg_rewrite AS rw JOIN pg_class AS c ON c.oid = rw.ev_class WHERE c.relnamespace = $13::regnamespace AND c.relowner = $14::regrole AND rw.rulename <> '_RETURN') UNION ALL (SELECT 'policy', c.relname, pol.polname FROM pg_policy AS pol JOIN pg_class AS c ON c.oid = pol.polrelid WHERE c.relnamespace = $15::regnamespace AND c.relowner = $16::regrole)
 -- vars
-$1 string "public"
-$2 string "plg_demo__"
-$3 string "public"
+$1 string "plg1_demo"
+$2 string "public"
+$3 string "plg1_demo"
 $4 string "plg_demo__"
 $5 string "public"
-$6 string "plg_demo__"
+$6 string "plg1_demo"
+$7 string "plg_demo__"
+$8 string "public"
+$9 string "plg1_demo"
+$10 string "plg_demo__"
+$11 string "public"
+$12 string "plg1_demo"
+$13 string "public"
+$14 string "plg1_demo"
+$15 string "public"
+$16 string "plg1_demo"

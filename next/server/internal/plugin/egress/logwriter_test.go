@@ -14,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	sdkegress "github.com/Sub2API-Devs/sup2api/next/sdk/pluginsdk/egress"
+	"github.com/Sub2API-Devs/sup2api/next/sdk/protocol"
 	"github.com/Sub2API-Devs/sup2api/next/server/internal/core"
 )
 
@@ -377,7 +378,7 @@ func TestDatabaseNotAnExternalHost(t *testing.T) {
 	}
 	e := newEnvStore(t, st, Options{Events: events, DatabaseProxy: proxy})
 	e.policy.set(core.EgressPolicy{Mode: PolicyAllowAll, Net: true, Database: true})
-	c, err := sdkegress.DialContext(context.Background(), "tcp", net.JoinHostPort(DatabaseHost, "5432"))
+	c, err := sdkegress.DialContext(context.Background(), "tcp", net.JoinHostPort(protocol.DatabaseHost, "5432"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -388,9 +389,9 @@ func TestDatabaseNotAnExternalHost(t *testing.T) {
 	if _, err := io.ReadFull(c, make([]byte, 4)); err != nil {
 		t.Fatal(err)
 	}
-	flushUntil(t, e, "database row", func() bool { return len(st.find(DatabaseHost, "tcp")) == 1 })
-	if st.domain(DatabaseHost) != nil || len(events.list()) != 0 {
-		t.Fatalf("database recorded as an external host: domain %+v, events %+v", st.domain(DatabaseHost), events.list())
+	flushUntil(t, e, "database row", func() bool { return len(st.find(protocol.DatabaseHost, "tcp")) == 1 })
+	if st.domain(protocol.DatabaseHost) != nil || len(events.list()) != 0 {
+		t.Fatalf("database recorded as an external host: domain %+v, events %+v", st.domain(protocol.DatabaseHost), events.list())
 	}
 }
 

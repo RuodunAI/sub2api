@@ -213,6 +213,11 @@ func (m *Manager) SyncAccessTx(ctx context.Context, tx *gorm.DB, pluginKey strin
 	if err := lockPlugin(ctx, tx, pluginKey); err != nil {
 		return err
 	}
+	// This node's next Ensure goes through again rather than trust a state
+	// that tx may change.
+	m.mu.Lock()
+	delete(m.ensured, pluginKey)
+	m.mu.Unlock()
 	g := store.G(ctx, tx)
 	exists, err := gormpg.Exists(g, g.Table("pg_roles").Where("rolname = ?", m.Identity(pluginKey)))
 	if err != nil || !exists {

@@ -420,6 +420,9 @@ func (c *Controller) commit(ctx context.Context, r *rolloutRow) error {
 		if err := grants.Promote(ctx, tx, r.key, target); err != nil {
 			return err
 		}
+		if err := c.syncAccess(ctx, tx, r.key); err != nil {
+			return err
+		}
 		upgraded := r.action == "upgrade" || (prevActive != nil && *prevActive != target)
 		if upgraded && c.o.Defaults != nil {
 			pkg, err := c.o.Packages.Open(ctx, r.key, target)

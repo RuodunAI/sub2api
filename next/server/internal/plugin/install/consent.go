@@ -348,6 +348,9 @@ func (s *Service) decideAndApply(ctx context.Context, tx *gorm.DB, key, version 
 	if err := grants.Record(ctx, tx, key, version, c.manifestHash, nullID(actorID), c.staged(), grantDecisions(decisions)); err != nil {
 		return nil, err
 	}
+	if err := s.syncAccess(ctx, tx, key, dbschema.AccessPermission); err != nil {
+		return nil, err
+	}
 	if err := versionRow(store.G(ctx, tx), key, version).Update("consent_status", ConsentApproved).Error; err != nil {
 		return nil, err
 	}
